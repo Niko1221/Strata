@@ -1,190 +1,58 @@
 # Hakua / Strata
 
-<!-- stable-059 -->
-## Stable 0.5.9
+[English](README.md) · [日本語](README.ja.md) · [Deutsch](README.de.md) · [Español](README.es.md) · [Français](README.fr.md) · [Polski](README.pl.md) · [Português](README.pt-BR.md) · [简体中文](README.zh-CN.md)
 
-Protects available system RAM throughout Windows local-model loading and generation. Research can only search and read pages, then returns its answer without tools. Inventory CSV audits use calculated comparison results: a passed check needs no additional evidence.
+Local AI for Windows, with chat, agent work, research and a choice of compatible models. Hakua is the zapabob fork of Niko1221/Strata; it is independently maintained and is not an upstream-endorsed distribution.
 
-[Windows NSIS](https://github.com/zapabob/Strata/releases/download/v0.5.9/Strata-0.5.9-windows-x64-setup.exe) · [tar.7z](https://github.com/zapabob/Strata/releases/download/v0.5.9/Strata-0.5.9-windows-x64.tar.7z) · [SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.5.9/SHA256SUMS.txt) · [Verification](_docs/2026-11-13_stable-059-workflow-safety_Codex.md)
+## Version and downloads
 
-App, Terminal, Control and native engine are all 0.5.9; RustXNG remains 0.31.1 Full. The formal release, all eight required CI workflows, actual-model workflow checks, overwrite installation and all public downloads are verified in the linked record. General answer quality, full-window inference and GPU concurrency remain unqualified (releaseQualified=false). Older releases and upstream acknowledgements are retained below.
+<!-- release-060-candidate -->
+This source is the 0.6.0 integration candidate. App, Terminal, Control and native source versions are coordinated at 0.6.0. Candidate build, installation and publication checks are still in progress; a version number is not proof that an asset is available. The retained verified release is [0.5.9](https://github.com/zapabob/Strata/releases/tag/v0.5.9). Use the delivery record to check the status of 0.6.0.
 
-
-<!-- stable-058 -->
-## Historical stable 0.5.8
-
-Repairs the extended context, compaction and search-guard tests. Each agent fixture owns its profile, and the actual Harness child receives the selected environment. CI also checks translation coverage, platform-specific fixtures and independent product/Control/engine versions.
-
-[Windows NSIS](https://github.com/zapabob/Strata/releases/download/v0.5.8/Strata-0.5.8-windows-x64-setup.exe) · [tar.7z](https://github.com/zapabob/Strata/releases/download/v0.5.8/Strata-0.5.8-windows-x64.tar.7z) · [SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.5.8/SHA256SUMS.txt) · [0.5.8 verification](_docs/2026-11-11_stable-058-context-ci_Codex.md)
-
-RustXNG 0.31.1 Full / app, Terminal, native engine and Control 0.5.8. Native model quality remains unqualified (`releaseQualified=false`). Previous releases and their measurements follow below.
-
-
-Local AI on Windows, with separate side questions, research with sources and your
-choice of models, memory and tools. This is the [zapabob fork](https://github.com/zapabob/Strata)
-of [Niko1221/Strata](https://github.com/Niko1221/Strata), integrating upstream 0.2.13.
-
-[Install on Windows](INSTALL.md) · [日本語](README.ja.md) · [Search and research](docs/BROWSER_SEARCH.md) · [Measured limits](docs/HAKUA_RELEASE.md)
-
-## Download
-
-The **0.5.8 stable release** retains real `/btw` subagents, workflow skill learning
-and automatic skill application. It retains `/deepresearch` and bundled
-**RustXNG 0.31.1 Full**. It uses upstream's Windows app layout: a per-user Tauri
-NSIS installer with private Node/Python and Control. The signed GPU engine is
-separate. The complete tar.7z includes the identical installer.
-
-| Package | Download |
-| --- | --- |
-| Windows x64 installer | [Setup EXE](https://github.com/zapabob/Strata/releases/download/v0.5.8/Strata-0.5.8-windows-x64-setup.exe) |
-| Installer, engine and instructions together | [tar.7z bundle](https://github.com/zapabob/Strata/releases/download/v0.5.8/Strata-0.5.8-windows-x64.tar.7z) |
-| Download verification | [SHA256SUMS.txt](https://github.com/zapabob/Strata/releases/download/v0.5.8/SHA256SUMS.txt) |
-| Previous preview / previous stable | [0.5.6-local.1](https://github.com/zapabob/Strata/releases/tag/v0.5.6-local.1) / [0.5.7](https://github.com/zapabob/Strata/releases/tag/v0.5.7) |
-
-The stable delivery is tracked at [the release](https://github.com/zapabob/Strata/releases/tag/v0.5.8). The [delivery record](_docs/2026-11-11_stable-058-context-ci_Codex.md)
-records installation, archive and public-download verification. At publication it was GitHub Latest and the mutable latest alias; 0.5.9 supersedes it. Native and Control
-0.5.8 packages are freshly built, signed and checked. This is a fork distribution; it is not endorsed by
-upstream. The EXE has no Windows code signature; component signatures are separate.
+[0.6.0](https://github.com/zapabob/Strata/releases/tag/v0.6.0) · [Strata-0.6.0-windows-x64-setup.exe](https://github.com/zapabob/Strata/releases/download/v0.6.0/Strata-0.6.0-windows-x64-setup.exe) · [tar.7z](https://github.com/zapabob/Strata/releases/download/v0.6.0/Strata-0.6.0-windows-x64.tar.7z) · [SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.6.0/SHA256SUMS.txt)
 
 ## Install or update
 
-Finish requests, unload models, back up app data and quit Strata, including its
-tray icon. Run the EXE using the existing installation folder. Models, chats and
-memories live separately from the installer-managed files.
+Use the Windows x64 NSIS installer for this fork. It installs per user and carries private Node, Python and Control; system development tools are unnecessary. The signed native CUDA engine is a separate component. The tar.7z bundle must contain the identical installer, component packages, instructions and checksums. It excludes model weights and personal data. Extract 7z first, then tar, and check BUNDLE-SHA256SUMS.txt.
 
-For the bundle, extract **7z first, then tar**, and check the internal
-`BUNDLE-SHA256SUMS.txt`. It contains the same EXE, signed native 0.5.8 engine,
-Control 0.5.8 and instructions. Import the compressed engine package using
-**I already have the file** in the app. Full model weights and personal data are
-excluded. System Python, Node and compilers are unnecessary.
+Finish requests, unload models, back up app data, then quit the app including its tray icon. Run the installer in the existing installation folder. Preserve model folders, chats, memory, tools, keys and approval choices. Import the compressed native component with I already have the file; choose a compatible model or a local GGUF, then Load. A model name alone does not establish engine compatibility. See [installation and rollback](docs/HAKUA_INSTALL.md).
 
-Select a compatible model or **Use a local GGUF**, then **Load**. Startup leaves
-models unloaded. [Installation, data paths and rollback](docs/HAKUA_INSTALL.md).
+## Features kept in this fork
 
-## Ask alongside the main task
+`/btw` starts a real tool-free side-question subagent with its own stop control. `/research` and `/deepresearch` collect sources; configured web search can use bundled RustXNG Full. Search queries go to the enabled external providers, so search is not entirely offline. Source counts do not establish answer accuracy.
 
-```text
-/btw What does the last error mean?
-```
+Workflow skill learning and automatic application are separate options; new profiles keep both off. Existing choices, editable private skills, revisions and undo are preserved. Workspace and sidebar file operations, scoped chat history and memory, compatible PrismML/TurboQuant paths, bounded expert memory, pack integrity and diagnostic measurements remain part of the fork. See [skills](docs/WORKFLOW_SKILLS.md) and [search](docs/BROWSER_SEARCH.md).
 
-A real subagent starts under a dedicated side-question parent and answers below
-the conversation. It receives a snapshot of completed messages and has no tools. It does not interrupt the main task or add its question
-or answer to the main agent's context. Stop and dismiss controls affect only the
-side question. Up to five answers are saved with the chat; unfinished answers
-are marked interrupted after reload. With one model request slot, inference can
-wait behind the main request.
+## Official integration and compatibility
 
-## Research with sources
+The pinned official source is [baf16363b4](https://github.com/Niko1221/Strata/commit/baf16363b4403ef0ed4f538f5d5ed11c43fb9535), associated with the official 0.2.14 / engine 0.1.60 generation. It brings networking, drafting selection, prompt kernels, memory handling and platform fixes. Fork versions are independent. DeepSeek compatibility is retained as an extension where official paths were removed; a missing dedicated runtime must prevent loading. This Windows package does not imply native image input, a distributed native DeepSeek engine, or qualified Linux/Mac inference.
 
-```text
-/deepresearch Compare the current requirements using official documentation
-```
+## Protection and measured limits
 
-With an agent model and web search enabled, the assistant gathers evidence before
-writing. The host checks for three distinct successful queries and four distinct
-successful page reads. One bounded follow-up asks for missing evidence. If those
-checks remain incomplete, the writing step must state the limitation. These
-counts do not establish accuracy or exhaustiveness. Existing `/research` remains
-the shorter workflow.
+Retain the 3 GiB available-RAM floor, 4 GiB commit headroom, at least 768 MiB GPU reserve and disk floors. The Windows RAM guard also observes loading and generation. Capacity is checked for the actual model and selected backend; 32 GB RAM and 16 GB VRAM do not guarantee every model or context fits. Full-window inference, general model quality and simultaneous GPU use remain unqualified: releaseQualified=false. The installer has no Windows Authenticode signature; component/feed signatures are a separate mechanism. Historical measurements keep their original versions in [release evidence](docs/HAKUA_RELEASE.md).
 
-Choose **RustXNG Full (no key)** in **Settings → Tools → Web search**. The app
-starts the pinned local service on `127.0.0.1` when needed and stops it with
-the host. There are no runtime downloads or self-updates. Manual **Search web**
-also uses the selected provider and attaches snippets to one tool-free answer.
+## Documentation and development
 
-Full sends queries to enabled external providers, including providers with
-restrictive or unreviewed automation terms. Use only providers you have permission
-to access. Paid sources need their own setup and are not activated by a Strata
-search key. Existing provider choices, saved keys and approval controls remain
-available. Search errors are visible; RustXNG is not silently replaced.
-
-## Learn and apply workflow skills
-
-Open **Skills** to enable learning from completed agent work and automatic
-application independently. The same task model reviews bounded, redacted tool
-metadata and may save a private, editable SKILL.md. Future matching workflows
-receive complete enabled instructions, with trigger phrases and workspace scope.
-Manual edits and approval choices are preserved; revision history and undo are
-available. New profiles keep both options off.
-[How it works and its limits](docs/WORKFLOW_SKILLS.md).
-
-We appreciate [Hermes Agent](https://github.com/NousResearch/hermes-agent) for
-its work on reusable procedural skills, which inspired this document-based loop.
-
-## Existing capabilities
-
-Reuse compatible GGUF shards and validated expert packs. Supported PQ2_0 models
-use PrismML; compatible ordinary GGUFs can use TurboQuant cache modes.
-[Model paths](docs/LOCAL_LLAMA_BACKENDS.md).
-
-Read, create, edit and rename workspace files/folders in the sidebar. Delete uses
-reversible trash, stale edits are rejected, and folder history cleanup requires
-confirmation. [Workspace guide](docs/WORKSPACE_FILES.md).
-
-Hakua memory has separate read/save consent per turn. Private conversation caches
-stay scoped to authenticated conversations; shared caches stay off. Spin(8),
-Triality and experimental projection remain opt-in.
-[Memory guide](serve/MEMORY_HARNESS.md).
-
-## Versions and verification
-
-| Component | Version |
-| --- | --- |
-| Desktop / Host | 0.5.8 |
-| Native CUDA engine | 0.5.8, frozen source c629ee37 |
-| Control / Terminal | 0.5.8, freshly built from 42ca8ebd |
-| RustXNG | 0.31.1 Full, official unmodified Windows executable |
-| PrismML / TurboQuant | 0.4.1 / 0.4.0 |
-| Private Node / Python | 24.22.2 / 3.12.15 |
-| Upstream integration | 0.2.13, f33c8c30 |
-
-On 2026-11-11, RustXNG Full returned five results each for two public documentation
-queries in 1783 ms and 902 ms on this PC/network. These are functional checks,
-not general search or generated-answer quality measurements. New installer and
-installed-app evidence is in this release's [delivery record](_docs/2026-11-11_stable-058-context-ci_Codex.md).
-
-Native 0.5.8 passed twenty-one numerical checks and sixteen short real-model
-requests at 4096 capacity on RTX 5060 Ti 16 GB / 32 GB RAM. Full-window generation, broad
-model/low-precision quality, other hardware and autonomous research quality
-remain unqualified; `releaseQualified=false`. The Windows engine has no native
-image input or separate native DeepSeek engine.
-[Evidence and retained failures](docs/HAKUA_RELEASE.md).
-
-## Development and licenses
+[Install](docs/HAKUA_INSTALL.md) · [Release evidence](docs/HAKUA_RELEASE.md) · [API and hardware](docs/AI_REFERENCE.md) · [Terminal](docs/TERMINAL.md) · [Source build](docs/SOURCE_INSTALL.md) · [Packaging](packaging/README.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [License](LICENSE)
 
 ```sh
-npm --prefix apps/host test
-npm --prefix apps/host run typecheck
-node apps/desktop/scripts/stage-rustxng.mjs --execute
+python -m pytest tests/terminal
 ```
 
-[Packaging](packaging/README.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
+```sh
+cd apps/host
+npm test
+npm run build
+```
 
-Strata is MIT-licensed. Bundled components and model weights keep their own
-licenses. RustXNG is a separate AGPL-3.0-or-later program. Its LICENSE, NOTICE,
-source identity, checksums and corresponding source archive are installed under
-`harness/rustxng`. [RustXNG documentation](https://github.com/sahenjp/RustXNG/tree/v0.31.1).
+### Niko1221/Strata — upstream Terminal reference
 
-## Supporting upstream Strata
+```sh
+curl -fsSL --connect-timeout 15 --max-time 120 https://github.com/Niko1221/Strata/releases/latest/download/install.sh -o install.sh && sh install.sh
+```
 
-Thank you to everyone who supports Strata.
+```powershell
+irm -TimeoutSec 120 https://github.com/Niko1221/Strata/releases/latest/download/install.ps1 | iex
+```
 
-<!-- supporters:start (one line per public supporter, newest last; copy a line and change the GitHub name in all four places) -->
-<a href="https://github.com/ryan4yin"><img src="https://github.com/ryan4yin.png?size=96" width="48" height="48" alt="ryan4yin" title="ryan4yin"></a>
-<a href="https://github.com/themactep"><img src="https://github.com/themactep.png?size=96" width="48" height="48" alt="themactep" title="themactep"></a>
-<a href="https://github.com/macintog"><img src="https://github.com/macintog.png?size=96" width="48" height="48" alt="macintog" title="macintog"></a>
-<a href="https://github.com/bisonbet"><img src="https://github.com/bisonbet.png?size=96" width="48" height="48" alt="bisonbet" title="bisonbet"></a>
-<a href="https://github.com/vizv"><img src="https://github.com/vizv.png?size=96" width="48" height="48" alt="vizv" title="vizv"></a>
-<a href="https://github.com/kod88vn"><img src="https://github.com/kod88vn.png?size=96" width="48" height="48" alt="kod88vn" title="kod88vn"></a>
-<a href="https://github.com/seoulworker"><img src="https://github.com/seoulworker.png?size=96" width="48" height="48" alt="seoulworker" title="seoulworker"></a>
-<a href="https://github.com/jackyini"><img src="https://github.com/jackyini.png?size=96" width="48" height="48" alt="jackyini" title="jackyini"></a>
-<a href="https://github.com/router0mail"><img src="https://github.com/router0mail.png?size=96" width="48" height="48" alt="router0mail" title="router0mail"></a>
-<!-- supporters:end -->
-
-## Acknowledgements
-
-We are grateful to the [Strata](https://github.com/Niko1221/Strata) developers for their careful work on local inference and an approachable desktop experience. This fork builds on that substantial foundation.
-
-Our appreciation also goes to [llama.cpp](https://github.com/ggml-org/llama.cpp) and its contributors for making C/C++ model inference accessible to developers and users, and to [RustXNG](https://github.com/sahenjp/RustXNG) for a useful, open search and evidence-retrieval service for local AI. Their engineering and continued maintenance deserve recognition.
-
-The integrations and modifications in this fork are maintained independently; these acknowledgements do not imply endorsement.
+[Niko1221/Strata](https://github.com/Niko1221/Strata) · [Hermes Agent](https://github.com/NousResearch/hermes-agent) · [Third-party sources and notices](third_party/)

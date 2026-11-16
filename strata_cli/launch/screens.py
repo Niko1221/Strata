@@ -49,6 +49,27 @@ def speed_choice_available(ctx) -> bool:
     return cached
 
 
+def middle_shorten(text: str, width: int, dots: str = "…") -> str:
+    """`text` in at most `width` terminal cells: when longer, its start and its end with `dots` between them (the drive and the folder's own
+    name stay readable). Unchanged when it fits; at least the dots and one character on each side."""
+    from rich.cells import cell_len
+    if cell_len(text) <= width:
+        return text
+    room = max(2, width - cell_len(dots))
+    head_n = max(1, room * 2 // 5)
+    tail_n = max(1, room - head_n)
+    head, tail = "", ""
+    for ch in text:                                  # by cells, so wide characters count twice
+        if cell_len(head + ch) > head_n:
+            break
+        head += ch
+    for ch in reversed(text):
+        if cell_len(ch + tail) > tail_n:
+            break
+        tail = ch + tail
+    return head + dots + tail
+
+
 def drafting_choice_available(ctx) -> bool:
     """The Drafting step exists only where there is something to choose: Qwen3.8-Flash-Next (qwen, gyro) on a computer whose engine can run DFlash2
     (CUDA or HIP, strata_control/drafting.py). Every other model has no step: DeepSeek has no MTP, the rest have only the MTP."""
@@ -1154,7 +1175,8 @@ class DraftingScreen(Base):
         from strata_cli.launch import modelstate
         now = {"dflash2": "DFlash2", "mtp": "MTP", "off": "Off"}[modelstate.resolved_drafting(None, s.family)]
         items = [Item([label, Cell(now, "") if key == "auto" else Cell("", "")], key=key) for key, label in self.CHOICES]
-        sel = [key for key, _ in self.CHOICES].index(s.drafting) if s.drafting in dict(self.CHOICES) else 0
+        shown = s.drafting if s.drafting in dict(self.CHOICES) else "off" if modelstate.layer_off_without_choice(self.ctx.base_config()) else "auto"
+        sel = [key for key, _ in self.CHOICES].index(shown)
         self.query_one(Menu).columns = [("", 24), ("", 0)]
         self.query_one(Menu).set_items(items, sel)
         self.paint()
@@ -1166,7 +1188,11 @@ class DraftingScreen(Base):
         key = self.menu().current.key
         from strata_cli.launch import modelstate
         # Auto stays "nobody chose" (a saved preset writes nothing) unless the model's file holds another choice the app saved: then Auto is written, so it wins
-        self.ctx.settings.drafting = modelstate.drafting_to_save(key, (self.ctx.base_config() or {}).get("drafting"))
+        base = self.ctx.base_config() or {}
+        layer_off = modelstate.layer_off_without_choice(base)  # the draft layer is off and nothing else is saved: the step showed Off
+        if layer_off and key == "off" and self.ctx.settings.drafting is None:
+            return                                            # Off left as it is: nothing new is written, the draft layer's "mtp": false keeps it
+        self.ctx.settings.drafting = modelstate.drafting_to_save(key, "off" if layer_off else base.get("drafting"))
 
 
 # ------------------------------------------------------------------------------------------------ 6 parallel
@@ -1651,6 +1677,7 @@ class SaveScreen(Base):
 
     def summary_lines(self) -> list[tuple[str, str]]:
         s = self.ctx.settings
+        from strata_cli.launch import modelstate
         r = next((x for x in self.ctx.rows if (x.family, x.model) == (s.family, s.model)), None)
         from strata_cli.launch.runner import faster_by_default
         lines = [("Model", (r.title if r else (s.model or "?")) + (" (your files)" if s.model_path else "")),
@@ -1658,7 +1685,7 @@ class SaveScreen(Base):
                  ("Pictures", "on" if s.vision != "off" else "off"),
                  *([("Speed", S.speed_words(s.speed or ("faster" if faster_by_default(self.ctx.computer, s) else "full"),
                                             s.speed is None))] if s.family == "deepseek41" and speed_choice_available(self.ctx) else []),
-                 *([("Drafting", dict(DraftingScreen.CHOICES).get(s.drafting or "auto", "Auto (recommended)"))] if drafting_choice_available(self.ctx) else []),
+                 *([("Drafting", dict(DraftingScreen.CHOICES).get(s.drafting or ("off" if modelstate.layer_off_without_choice(self.ctx.base_config()) else "auto"), "Auto (recommended)"))] if drafting_choice_available(self.ctx) else []),
                  ("Parallel", f"{s.parallel} at a time" if s.parallel else f"fit to your card ({S.fit_parallel(self.ctx.computer.main_vram_gb)})"),
                  ("Tuning", ({"quick": "quick (about 5-10 min)", "thorough": "thorough (about 10-15 min)", "skip": "skipped"} if s.family == "deepseek41"
                               else {"quick": "quick (about 20 min)", "thorough": "thorough (up to 2 h)", "skip": "skipped"})[s.tune]),
@@ -1704,6 +1731,8 @@ class SaveScreen(Base):
             t.append("  Name   ")
             t.append("(type below)\n", style=MUTE)
             for k, v in lines:
+                if k == "Storage":   # one row: a long folder wrapped and pushed the last choice off an 80x24 screen
+                    v = middle_shorten(v, self.width() - 14, "…" if self.g.unicode else "...")
                 t.append(f"  {k:<10}{v}\n")
             for n in warnings:
                 t.append(f"  ! {n}\n", style=WARN)

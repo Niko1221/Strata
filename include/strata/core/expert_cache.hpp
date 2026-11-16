@@ -140,7 +140,8 @@ public:
     int64_t mapped_bytes() const;
     /// Unmaps every segment past the first `keep_bytes` (rounded UP to a segment boundary): `slots()` becomes the
     /// slots wholly inside what stays.  Waits for the device first.  False with `err` when not segmented or a driver
-    /// call failed.
+    /// call failed. A segment unmap/release failure invalidates the whole cache:
+    /// slots() is zero, mapped_bytes() is -1, and resize is blocked until successful close/reopen.
     bool shrink(int64_t keep_bytes, std::string& err);
     /// Maps segments again up to `want_bytes` (rounded DOWN to a segment, at most the arena; the last, shorter
     /// segment only when `want_bytes` covers the arena).  Stops at the first segment the driver cannot back (false,
@@ -187,7 +188,7 @@ public:
     /// The slot range layer `l` may admit into under per-layer admission.  Exposed so a test can check it.
     void layer_slot_range(int64_t layer, int64_t& lo, int64_t& hi) const;
 
-    /// The device address of one slot.
+    /// The device address of one slot; null while closed or cleanup is pending.
     uint8_t* device_slot(int32_t slot);
     const uint8_t* device_slot(int32_t slot) const;
 

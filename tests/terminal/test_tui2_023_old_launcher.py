@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import strata_cli
 from strata_cli import handover
 
 ROOT = Path(__file__).resolve().parents[2]

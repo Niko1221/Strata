@@ -23,7 +23,7 @@ export const KNOWN_KEYS = new Set([
   'elastic', 'elastic_idle_s', 'elastic_mib', 'min_free_vram_mib', 'vram_segment_mib', 'slot_save_path', 'telemetry_read_key', 'batch_telemetry',
   'reasoning_effort', 'reasoning_close_retry', 'reasoning_loop_recovery', 'repeat_stop_tokens', 'tool_call_recovery', 'undeclared_tool_calls', 'codex_compaction_cache',
   'codex_thread_titles', 'expert_profile_save', 'expert_profile_save_every', 'images', 'vision', 'mmproj', 'draft_vocab', 'ui_resource_profile',
-  'ui_vision_enabled', 'ui_context_chosen', 'component', 'native', 'uma', 'remote_expert_opt', 'diffusion_model', 'llm', 'vae', 'quant', 'type', 'url', 'timeout_s',
+  'ui_vision_enabled', 'ui_vision_chosen', 'ui_context_chosen', 'component', 'native', 'uma', 'remote_expert_opt', 'diffusion_model', 'llm', 'vae', 'quant', 'type', 'url', 'timeout_s',
   'hakua_harness',
 ]);
 

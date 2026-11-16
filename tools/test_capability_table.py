@@ -21,20 +21,15 @@ class CapabilityTable(unittest.TestCase):
             self.assertTrue(ct.MARK_RE.search(text), p)
             self.assertEqual(ct.render(self.cap, self.release, text), text, p)
 
-    def test_deepseek_on_a_mac_is_packaged_and_marked_supported(self):
-        fam = {f["id"]: f for f in self.cap["families"]}["deepseek41"]
-        self.assertTrue(ct.packages(self.release, fam).get("mac"))
-        self.assertEqual(fam["cells"]["mac"]["supported"], "yes")
-
     def test_a_package_contradicts_a_no(self):
         cap = copy.deepcopy(self.cap)
-        {f["id"]: f for f in cap["families"]}["deepseek41"]["cells"]["mac"]["supported"] = "no"
+        {f["id"]: f for f in cap["families"]}["qwen38"]["cells"]["mac"]["supported"] = "no"
         problems = ct.validate(cap, self.release)
-        self.assertTrue(any("deepseek41 on mac is marked 'no'" in p for p in problems), problems)
+        self.assertTrue(any("qwen38 on mac is marked 'no'" in p for p in problems), problems)
 
     def test_a_yes_without_a_package_is_reported(self):
         cap = copy.deepcopy(self.cap)
-        {f["id"]: f for f in cap["families"]}["deepseek41"]["cells"]["intel_linux"]["supported"] = "yes"
+        {f["id"]: f for f in cap["families"]}["qwen36"]["cells"]["intel_linux"]["supported"] = "yes"
         problems = ct.validate(cap, self.release)
         self.assertTrue(any("no package for it" in p for p in problems), problems)
 
@@ -44,6 +39,35 @@ class CapabilityTable(unittest.TestCase):
         self.assertNotIn("mac", pk)
         self.assertNotIn("intel_linux", pk)
         self.assertIn("nvidia_win", pk)
+
+    def test_the_version_line_names_carried_packages(self):
+        rel = {"product_version": "0.2.14", "control_version": "0.1.60", "engine_version": "0.1.60",
+               "assets": ["strata-engine-0.1.60-linux-x86_64-cuda-cuda13.tar.gz", "strata-engine-0.1.59-linux-x86_64-sycl.tar.gz",
+                          "strata-control-0.1.60-windows-x86_64.zip", "strata-control-0.1.59-linux-aarch64.tar.gz",
+                          "strata-dsv41-0.1.59-macos-arm64-metal.tar.gz", "Strata-0.2.14-macos-arm64.dmg"]}
+        self.assertEqual(ct.versions_line(rel), "App and Terminal 0.2.14, Control and engines 0.1.60; these packages stay at 0.1.59: "
+                         "Control linux-aarch64; DeepSeek engines macos-arm64-metal; engines linux-x86_64-sycl. "
+                         "App, Control and engine versions differ on purpose.")
+        hotfix = {"product_version": "0.2.13", "control_version": "0.1.59.1", "engine_version": "0.1.59",
+                  "assets": ["strata-control-0.1.59.1-linux-x86_64.tar.gz", "strata-engine-0.1.59-linux-x86_64-sycl.tar.gz"]}
+        self.assertEqual(ct.versions_line(hotfix), "App and Terminal 0.2.13, Control 0.1.59.1, engines 0.1.59. "
+                         "App, Control and engine versions differ on purpose.")
+
+    def test_source_route_does_not_invent_a_current_package_or_remove_the_backend(self):
+        family = next(f for f in self.cap['families'] if f['id'] == 'qwen38')
+        self.assertEqual(family['cells']['intel_linux']['supported'], 'source-only')
+        self.assertNotIn('intel_linux', ct.packages(self.release, family))
+        self.assertEqual(ct.validate(self.cap, self.release), [])
+        self.assertIn('Source route only, without a package in this release: Intel Arc on Linux', ct.summary(self.cap, family))
+        changed = copy.deepcopy(self.release)
+        changed['upstream']['assets'].append('strata-engine-0.1.60-linux-x86_64-sycl.tar.gz')
+        self.assertTrue(any('source-only but the release has a package' in p for p in ct.validate(self.cap, changed)))
+
+    def test_control_only_hotfix_keeps_all_four_actual_versions(self):
+        release = {'product_version': '0.2.14', 'terminal_version': '0.2.14.1',
+                   'control_version': '0.1.60.1', 'engine_version': '0.1.60', 'assets': []}
+        self.assertEqual(ct.versions_line(release), 'App 0.2.14, Terminal 0.2.14.1, Control 0.1.60.1, engines 0.1.60. '
+                         'App, Control and engine versions differ on purpose.')
 
     def test_no_page_keeps_the_old_mac_sentence(self):
         for p in ct.PAGES:

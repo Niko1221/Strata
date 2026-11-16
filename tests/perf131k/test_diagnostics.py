@@ -168,14 +168,21 @@ class DiagnosticsTests(unittest.TestCase):
             return text[start:end]
         functions = "\n".join(function(source, signature) for signature in (
             "bool map_segment(", "bool ExpertCache::open_segmented(", "void ExpertCache::release_segmented(",
-            "int64_t ExpertCache::mapped_bytes(", "bool ExpertCache::shrink(", "bool ExpertCache::grow("))
+            "int64_t ExpertCache::mapped_bytes(", "bool ExpertCache::shrink(", "bool ExpertCache::grow(",
+            "uint8_t* ExpertCache::device_slot(", "const uint8_t* ExpertCache::device_slot("))
         generate = Path(os.environ.get("P01_GENERATE_UNDER_TEST") or ROOT / "src/program/generate.cpp").read_text(encoding="utf-8")
         start = generate.index("const uint8_t* b = srcp->blob_stable(profile[(size_t) i].first")
         end = generate.index("        fill_bytes +=", start)
         template = (ROOT / "tests/perf131k/diagnostics_cpu.cpp").read_text(encoding="utf-8")
         cpp = base / "diagnostics.cpp"
         valid = function((ROOT / "include/strata/core/expert_cache.hpp").read_text(encoding="utf-8"), "bool valid() const")
+        shrink_start = generate.index("const bool shrunk = xcache.shrink(keep, e);")
+        shrink_end = generate.index("            } else if (mapped < xcache.full_bytes())", shrink_start)
+        guard = "if (xcache.mapped_bytes() < 0) return 1;"
+        self.assertIn(guard, generate)
         cpp.write_text(template.replace("// @CACHE_FUNCTIONS@", functions).replace("// @CACHE_VALID@", valid)
+                       .replace("// @SHRINK_CALLER@", generate[shrink_start:shrink_end])
+                       .replace("// @REQUEST_GUARD@", guard)
                        .replace("// @GENERATE_BLOCK@", generate[start:end]), encoding="utf-8")
         receipt = json.loads(Path("H:/Strata/evidence/p01-b0-20261025/build/compile-expert_source.json").read_text())
         compiler = Path(receipt["command"][0])

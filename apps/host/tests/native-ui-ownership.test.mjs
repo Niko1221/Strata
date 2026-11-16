@@ -205,6 +205,21 @@ function preparedModel(policy=ordinaryPolicy,kv='int8') {
     const s=state([]);s.catalog.families=[{family:'qwen',title:'Qwen',images:false,sizes:[{id:'B',model:'B',download_gb:1,ram_needed_gb:1,experts_gb:1}]}];
     s.installed.models=[{model:'B',ready:true,context:32768,contextChosen:true,kv}];s.servingPolicies={B:policy};return s;
 }
+
+test('DeepSeek remains selected with an unavailable-runtime reason and cannot load or tune',async t=>{
+    const p=await fixture(t,'models');
+    const s=preparedModel({id:'deepseek41',ordinaryKv:[],note:'Dedicated engine'});
+    s.catalog.families[0].family='deepseek41';s.catalog.families[0].title='DeepSeek';
+    s.installed.models[0].runtime={available:false,reason:'Dedicated DeepSeek engine is missing.',executionCompatibility:'unverified'};
+    await p.evaluate(s=>window.__putNative(s),s);
+    assert.equal(await p.getByRole('button',{name:'Load model',exact:true}).isDisabled(),true);
+    assert.equal(await p.getByRole('button',{name:'Tune model',exact:true}).isDisabled(),true);
+    assert.equal(await p.getByRole('status').filter({hasText:'Dedicated DeepSeek engine is missing.'}).count(),1);
+    assert.equal(await p.evaluate(()=>window.__actions.length),0);
+    s.installed.models[0].runtime={available:true,reason:null,executionCompatibility:'unverified'};
+    await p.evaluate(s=>window.__putNative(s),s);
+    assert.equal(await p.getByRole('button',{name:'Load model',exact:true}).isEnabled(),true);
+});
 test('NativeModels applies changed ordinary KV directly without preparation and shows FP16',async t=>{
     const p=await fixture(t,'models');await p.evaluate(s=>window.__putNative(s),preparedModel());
     await p.getByRole('button',{name:'Expert mode',exact:true}).click();

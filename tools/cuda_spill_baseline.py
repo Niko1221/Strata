@@ -2,6 +2,7 @@
 from __future__ import annotations
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -30,6 +31,26 @@ def source_digest(root):
 
 def dependency_commit(root):
     root = Path(root)
+    # Official builds now use a vendored, patched ggml tree. Bind its actual
+    # contents rather than accidentally using the enclosing Strata Git HEAD.
+    if (root / "UPSTREAM.md").is_file() and (root / "ggml/CMakeLists.txt").is_file():
+        for path in (root, *root.parents):
+            if path.is_symlink() or path.is_junction():
+                raise ValueError("Linked vendored ggml source input")
+        rows = {}
+        for directory, folders, files in os.walk(root, followlinks=False):
+            for name in folders + files:
+                path = Path(directory) / name
+                if path.is_symlink() or path.is_junction():
+                    raise ValueError("Linked vendored ggml source input")
+            for name in files:
+                path = Path(directory) / name
+                raw = path.read_bytes()
+                if b"\0" not in raw:
+                    raw = raw.replace(b"\r\n", b"\n")
+                rows[path.relative_to(root).as_posix()] = hashlib.sha256(raw).hexdigest()
+        digest = hashlib.sha256(json.dumps(rows, sort_keys=True).encode()).hexdigest()
+        return "vendored-sha256:" + digest
     revision = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
     dirty = subprocess.check_output(["git", "-C", str(root), "status", "--porcelain"], text=True).strip()
     if dirty or not re.fullmatch(r"[0-9a-f]{40}", revision):

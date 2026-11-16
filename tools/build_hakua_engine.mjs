@@ -2,7 +2,7 @@
 import {spawnSync} from 'node:child_process';
 import {existsSync,readFileSync,writeFileSync} from 'node:fs';
 import {resolve,join,relative} from 'node:path';
-import {nativeSources,sha256} from '../apps/host/scripts/release-integrity.mjs';
+import {nativeSources,sha256,ggmlIdentity} from '../apps/host/scripts/release-integrity.mjs';
 const root=resolve(import.meta.dirname,'..');
 const build=process.argv[2] && resolve(process.argv[2]);
 if(!build)throw new Error('Usage: node tools/build_hakua_engine.mjs <configured-build-directory> [parallelism]');
@@ -13,21 +13,17 @@ const cache=readFileSync(cachePath,'utf8');
 const get=key=>new RegExp('^'+key+':[^=]+=(.*)$','m').exec(cache)?.[1]?.trim();
 if(process.platform!=='win32'||get('STRATA_PORTABLE')!=='ON'||get('STRATA_ENABLE_CUDA')!=='ON')throw new Error('Configure a Windows portable CUDA build first');
 if(resolve(get('CMAKE_HOME_DIRECTORY')??'')!==root)throw new Error('The build belongs to a different source checkout');
-const before=nativeSources(root),cacheHash=sha256(cachePath);
+const before=nativeSources(root),cacheHash=sha256(cachePath),dependency=get('STRATA_GGML_DIR');
+const ggml=ggmlIdentity(root,dependency);
 const result=spawnSync('cmake',['--build',build,'--config','Release','--parallel',String(parallel)],{cwd:root,stdio:'inherit',windowsHide:true});
 if(result.error)throw result.error;
 if(result.status!==0)process.exit(result.status??1);
-if(JSON.stringify(before)!==JSON.stringify(nativeSources(root))||cacheHash!==sha256(cachePath))throw new Error('Build inputs changed while compiling; rebuild');
+if(JSON.stringify(before)!==JSON.stringify(nativeSources(root))||cacheHash!==sha256(cachePath)||JSON.stringify(ggml)!==JSON.stringify(ggmlIdentity(root,dependency)))throw new Error('Build inputs changed while compiling; rebuild');
 const exe=join(build,'Release','strata.exe');
 if(!existsSync(exe))throw new Error('The fresh engine executable is missing');
 const version=/project\(strata VERSION ([\d.]+)/.exec(readFileSync(join(root,'CMakeLists.txt'),'utf8'))?.[1];
 const probe=spawnSync(exe,['--version'],{encoding:'utf8',windowsHide:true,timeout:15000});
 if(probe.status!==0||!new RegExp('(^|\\s)'+version.replaceAll('.','\\.')+'(\\s|$)').test(probe.stdout??''))throw new Error('Built executable reports the wrong version');
-const dependency=get('STRATA_GGML_DIR');
-const git=spawnSync('git',['-C',dependency??root,'rev-parse','HEAD'],{encoding:'utf8',windowsHide:true});
-if(git.status!==0)throw new Error('Cannot identify the ggml source revision');
-const dirty=spawnSync('git',['-C',dependency??root,'status','--porcelain'],{encoding:'utf8',windowsHide:true});
-if(dirty.status!==0||dirty.stdout.trim())throw new Error('The ggml dependency has unrecorded changes');
 let cudaSpillBaseline;
 const baseline=get('STRATA_CUDA_SPILL_BASELINE');
 if(baseline) {
@@ -44,6 +40,6 @@ if(baseline) {
  if(checked.status!==0)throw new Error('CUDA resource qualification failed or was skipped');
  cudaSpillBaseline={path:name,sha256:sha256(path)};
 }
-const record={schema:1,version,entrypoint:relative(join(build,'Release'),exe),sha256:sha256(exe),sources:before,recipe:{portable:true,cudaArchs:get('CMAKE_CUDA_ARCHITECTURES'),spin8:get('STRATA_ENABLE_SPIN8'),ggmlCommit:git.stdout.trim(),...(cudaSpillBaseline?{cudaSpillBaseline}:{})}};
+const record={schema:1,version,entrypoint:relative(join(build,'Release'),exe),sha256:sha256(exe),sources:before,recipe:{portable:true,cudaArchs:get('CMAKE_CUDA_ARCHITECTURES'),spin8:get('STRATA_ENABLE_SPIN8'),ggmlCommit:ggml.commit,ggml,...(cudaSpillBaseline?{cudaSpillBaseline}:{})}};
 writeFileSync(join(build,'Release','native-build.json'),JSON.stringify(record,null,2)+'\n');
 console.log('Native build identity recorded: '+version+' '+record.sha256);

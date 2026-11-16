@@ -32,6 +32,9 @@ delete env.STRATA_SETTINGS_FILE;
 // Acquisition policy is selected by each fixture; a packaged caller would mask mocked downloads.
 delete env.STRATA_NO_ACQUIRE;
 delete env.STRATA_PACKAGED;
+/* Run from PowerShell 7 (GitHub's Windows runners), PSModulePath names PowerShell 7's module folders first and a Windows PowerShell 5.1 child
+   that a test starts cannot load Get-Acl / Get-FileHash from them: keep only the folders that are not PowerShell 7's. */
+if(process.platform==='win32'&&env.PSModulePath){const ps7=p=>{const l=p.toLowerCase().replace(/\//g,'\\');return l.includes('\\powershell\\')&&!l.includes('\\windowspowershell\\');};env.PSModulePath=env.PSModulePath.split(';').filter(p=>p&&!ps7(p)).join(';');}
 const requested=process.env.STRATA_TEST_CONCURRENCY;
 const concurrency=requested===undefined?null:Number(requested);
 if(concurrency!==null&&(!Number.isSafeInteger(concurrency)||concurrency<1||concurrency>16))throw new Error('STRATA_TEST_CONCURRENCY must be an integer from 1 to 16');

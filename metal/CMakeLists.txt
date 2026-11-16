@@ -28,7 +28,7 @@ set(CMAKE_CXX_FLAGS_RELEASE "-O2")
 set(CMAKE_OBJCXX_FLAGS_RELEASE "-O2")
 
 get_filename_component(STRATA_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
-set(GGML_COMMON "${STRATA_ROOT}/third_party/ggml/ggml-common.h")
+set(GGML_COMMON "${STRATA_ROOT}/third_party/strata-ggml/strata-quant-common.h")   # the quant header's text (third_party/ggml/ggml-common.h forwards to it)
 
 # ---- the kernel tree (mac-kern) ------------------------------------------------------------------------------------
 add_library(mtl_rt STATIC src/mtl_rt.mm src/ref_quant.cpp src/gguf_lite.cpp)
@@ -83,6 +83,17 @@ if(NOT EXISTS "${_strata_ggml_root}/ggml/CMakeLists.txt")
   message(FATAL_ERROR "ggml sources not found in '${_strata_ggml_root}' (third_party/strata-ggml, or the -DSTRATA_GGML_DIR checkout)")
 endif()
 strata_metal_ggml()
+# OWN-2N: the CPU expert rows, the DeepSeek CPU lane's rows and the --mtp-q4 requantizer on the Strata quant layer (src/quant, its Arm NEON tier, no ggml-cpu
+# call from the pool) instead of ggml-cpu's type traits.  OFF by default on Metal until the layer's oracle (tests/quant/run_oracle.sh, Apple Clang) and unit tests
+# have passed on the Mac; -DSTRATA_OWN_CPU_QUANT=ON builds the engine on the layer.
+option(STRATA_OWN_CPU_QUANT "CPU expert pool, DeepSeek CPU lane and --mtp-q4 on the Strata quant layer instead of ggml-cpu's type traits" OFF)
+option(STRATA_BUILD_TESTS "Build the quant layer's self-test and ggml oracle test (needs STRATA_OWN_CPU_QUANT)" OFF)
+if(STRATA_OWN_CPU_QUANT)
+  set(STRATA_QUANT_ROOT ${STRATA_ROOT})
+  set(STRATA_CPU_X86 OFF)
+  include(${STRATA_ROOT}/cmake/backends/quant.cmake)
+  strata_quant_layer()
+endif()
 # ref_quant's IQ1_S / IQ1_M / Q6_K dequantizers against ggml's own (the Unsloth sets' kernels are checked against ref_quant: dsu_parity)
 add_executable(dsu_ref_vs_ggml tests/dsu_ref_vs_ggml.cpp)
 target_include_directories(dsu_ref_vs_ggml PRIVATE ${_strata_ggml_root}/ggml/include)
@@ -110,9 +121,13 @@ file(GLOB STRATA_METAL_ENGINE_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_D
 add_library(strata_metal_host STATIC ${STRATA_METAL_HOST_SOURCES})
 target_include_directories(strata_metal_host PUBLIC ${STRATA_ROOT}/include ${S}/core ${STRATA_ROOT}/third_party/ggml
                            ${_strata_ggml_root}/ggml/include ${_strata_ggml_root}/ggml/src ${_strata_ggml_root}/ggml/src/ggml-cpu)
-target_compile_definitions(strata_metal_host PUBLIC STRATA_NATIVE_EXPERTS=1 STRATA_HAVE_DFLASH2=1 STRATA_VERSION="0.5.9")
+target_compile_definitions(strata_metal_host PUBLIC STRATA_NATIVE_EXPERTS=1 STRATA_HAVE_DFLASH2=1 STRATA_VERSION="0.6.0")
 target_compile_options(strata_metal_host PRIVATE -Wno-unused-parameter -Wno-deprecated-declarations)
 target_link_libraries(strata_metal_host PUBLIC strata_gpu_metal ggml-cpu ggml-base)
+if(STRATA_OWN_CPU_QUANT)
+  target_link_libraries(strata_metal_host PUBLIC strata_quant)
+  target_compile_definitions(strata_metal_host PUBLIC STRATA_OWN_CPU_QUANT=1)
+endif()
 
 add_library(strata_metal_kernels STATIC ${STRATA_METAL_ENGINE_SOURCES})
 target_include_directories(strata_metal_kernels PRIVATE src ${STRATA_ROOT}/third_party/ggml)

@@ -26,9 +26,11 @@ import numpy as np
 import torch
 from safetensors import safe_open
 
-LLAMA = pathlib.Path(__file__).resolve().parents[1] / "third_party" / "llama.cpp"
-sys.path.insert(0, str(LLAMA / "gguf-py"))
-from gguf import GGUFReader, GGMLQuantizationType as Q, quants  # noqa: E402
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from _paths import add_gguf_py, gguf_lib  # noqa: E402
+add_gguf_py()                                           # nvfp4_verify (below) loads llama.cpp's converter, which imports gguf-py itself
+_gguf = gguf_lib()                                      # the reader and dequantizers: tools/strata_gguf.py (STRATA_GGUF_PY: gguf-py's)
+GGUFReader, Q, quants = _gguf.GGUFReader, _gguf.GGMLQuantizationType, _gguf.quants
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from nvfp4_verify import modelopt_dequant  # noqa: E402

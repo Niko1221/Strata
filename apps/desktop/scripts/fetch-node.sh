@@ -15,25 +15,25 @@
 #   apps/desktop/scripts/fetch-node.sh --target linux-x64
 #   apps/desktop/scripts/fetch-node.sh --check         # verify what is already installed
 #
-# The Node version must satisfy the App Host's own `engines.node` (>= 24.22.2).
+# The Node version must satisfy the App Host's own `engines.node` (>= 24.22.3).
 set -euo pipefail
 
-NODE_VERSION="${STRATA_NODE_VERSION:-24.22.2}"
-if [ "$NODE_VERSION" != "24.22.2" ]; then echo "fetch-node: no recorded checksum for v$NODE_VERSION; update both fetch scripts first" >&2; exit 1; fi
+NODE_VERSION="${STRATA_NODE_VERSION:-24.22.3}"
+if [ "$NODE_VERSION" != "24.22.3" ]; then echo "fetch-node: no recorded checksum for v$NODE_VERSION; update both fetch scripts first" >&2; exit 1; fi
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEST="$HERE/../src-tauri/resources/node"
 
 # Published SHA-256 of each official nodejs.org archive, recorded so a tampered or truncated
 # download is refused rather than shipped. Add a row when bumping the version.
-# Taken from nodejs.org's own SHASUMS256.txt for v24.22.2, which is published over HTTPS beside
+# Taken from nodejs.org's own SHASUMS256.txt for v24.22.3, which is published over HTTPS beside
 # the archives. Recorded here so the fetch is verified against a value that does not come from the
 # same response as the payload.
 digest_for() {
   case "$1" in
-    darwin-arm64) echo "aa9549349e47dffaa42dcf95d6e06ade8c4bdafc980979883b88767670df385a" ;;
-    linux-x64)    echo "361718c444e49af2ca5a110c83ba6a8901143f23ab285ebbef0341f391f482a9" ;;
-    linux-arm64)  echo "95c264150aceb7f3437a29fd6984924f5f8d1511ea3cbd6c508b83f6c555dae2" ;;
-    win-x64)      echo "ca1bff5d8ead13c9f2ea404a176db46bd430704d5b5113734049fa365e7799e2" ;;
+    darwin-arm64) echo "ff6e17d4874b76d272212b908cc020d6e815fba5a6c7eaaa06add725840307fd" ;;
+    linux-x64)    echo "061ec3e3062115705b56b51fa9cc330ab50d34b6969387d4e4b1a50c6809acc2" ;;
+    linux-arm64)  echo "261af2af250dfd7e9f25cf151d1b2713a0adf8f10a9ad116c4947f68627affe8" ;;
+    win-x64)      echo "e612af99f626ab415ea225af6bce5c971feb448cb5cae250bb1c3fa50c5f7d9f" ;;
     *)            echo "" ;;
   esac
 }

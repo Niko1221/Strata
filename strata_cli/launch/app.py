@@ -21,7 +21,7 @@ from strata_cli.launch import params as P
 from strata_cli.launch import settings as S
 from strata_cli.launch import store
 from strata_cli.launch.catalog import Catalog
-from strata_cli.launch.runner import Cancelled, Event, LaunchError, Result, Runner, read_config
+from strata_cli.launch.runner import Cancelled, Event, LaunchError, Result, Runner, auto_signals, read_config
 from strata_cli.launch.screens import (AccessScreen, AdvancedScreen, CardsScreen, ConfirmScreen, ContextScreen, DraftingScreen, FolderScreen,
                                        ModelScreen, ParallelScreen, PicturesScreen, RunScreen, SaveScreen, SpeedScreen, StartScreen,
                                        TuningScreen, flow_for)
@@ -126,7 +126,7 @@ class Ctx:
         s = self.settings
         return modelstate.assess(self.catalog, s.family, s.model, vision=s.vision, model_path=s.model_path,
                                  data_dir=data_dir if data_dir is not None else s.data_dir, rows=self.rows, mtp=s.mtp,
-                                 drafting=modelstate.resolved_drafting(s.drafting, s.family))
+                                 drafting=modelstate.resolved_drafting(s.drafting, s.family, **auto_signals(self.catalog, s, s.family)))
 
     def default_folder(self) -> Path:
         """The folder the Folder step starts with: where the chosen model already is (installed, or the person's own files with their
@@ -137,7 +137,7 @@ class Ctx:
                 from strata_control import discovery
                 p = Path(s.model_path).expanduser()
                 first = p if p.is_file() else next(iter(sorted(p.glob("*.gguf"))), None)
-                found = discovery.prepared_beside(first)["data_dir"] if first else None
+                found = discovery.writable_beside(first) if first else None     # not a folder Strata cannot write to, nor a Hugging Face cache
                 if found:
                     return Path(found)
             except OSError:
@@ -349,10 +349,7 @@ class LaunchApp(App):
         def show() -> None:
             self.push_screen(ConfirmScreen(title, text, options or [("go", "Download anyway"), ("no", "Not now")]), done)
 
-        try:
-            if not self.call_later(show):
-                return False
-        except Exception:                                    # noqa: BLE001 - the app is closing
+        if not self._call(show):                             # the app is closing
             return False
         while not answered.wait(0.2):
             if self.cancel.is_set() or not self.is_running:
@@ -362,10 +359,21 @@ class LaunchApp(App):
     def _emit(self, ev: Event) -> None:
         screen = self.run_screen
         if screen is not None:
-            try:
-                self.call_later(screen.handle_event, ev)
-            except Exception:                                # noqa: BLE001 - the app is closing
-                pass
+            self._call(screen.handle_event, ev)
+
+    def _call(self, fn, *args) -> bool:
+        """call_from_thread from a worker thread, False when it could not be made: after a quit the app's loop is closed and
+        the call raises ("Event loop is closed"); the screen is gone then, so there is nothing to tell.  A loop already closed is not
+        asked at all: Textual makes the call's coroutine before it finds the loop closed, and that left a "coroutine was
+        never awaited" warning on the terminal."""
+        loop = getattr(self, "_loop", None)
+        if loop is not None and loop.is_closed():
+            return False
+        try:
+            self.call_from_thread(fn, *args)
+        except Exception:                                    # noqa: BLE001 - the app is closing
+            return False
+        return True
 
     def _work(self) -> None:
         try:

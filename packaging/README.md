@@ -1,29 +1,28 @@
 # Strata packaging: targets, recipes and locks
 
-Upstream reference: app and Terminal 0.2.13, Control and engines 0.1.59.
+This page is for developers who build the desktop app, Terminal and engine packages.
+Upstream reference: app and Terminal 0.2.14, Control and engines 0.1.60.
+The Hakua fork uses independent versions; its current source candidate is 0.6.0.
+To install the fork on Windows, use [docs/HAKUA_INSTALL.md](../docs/HAKUA_INSTALL.md).
+The cross-platform recipes below describe upstream builds, not measured Hakua
+inference on every platform.
 
-The 0.5.6-local.1 app preview adds bundled RustXNG Full and keeps the signed
-0.5.5 engine / 0.5.6 Control components independent. Before a Windows build, run
-`node apps/desktop/scripts/stage-rustxng.mjs --execute` at the repository root.
-The stager pins official binary, attribution and corresponding-source bytes;
-the normal packaging verifier checks them. These files stay under the existing
-installer-managed `harness/rustxng` tree, so the standard NSIS upgrade cleanup
-still owns their replacement. See the [new delivery record](../_docs/2026-11-11_btw-deepresearch-rustxng_Codex.md).
+The Windows fork keeps the upstream per-user Tauri NSIS layout, private Node and
+Python, and independently signed engine/Control packages. Its tar.7z contains
+the identical installer plus components, instructions and checksums. Model
+weights and personal data are excluded. Component/feed signatures are separate
+from Windows Authenticode; the installer has no Windows code signature.
+Actual build, installation, publication and qualification evidence belongs in
+[HAKUA_RELEASE.md](../docs/HAKUA_RELEASE.md); old measurements remain historical.
 
-This page is for developers who build the desktop app, the Terminal archive and the engine packages. To install this Hakua
-Windows fork, use [INSTALL.md](../INSTALL.md) or [docs/HAKUA_INSTALL.md](../docs/HAKUA_INSTALL.md). The
-0.5.5-local.1 preview integrates official0.2.13 while preserving Hakua memory,
-workspace CRUD and the fork's native cache/model-reuse paths. Its exact measured
-app/Control source is35863dea and native sourceb995af13. Product0.5.5-local.1,
-Control0.5.6, native0.5.5, PrismML0.4.1 and TurboQuant0.4.0 remain independently
-versioned. The unchanged resource guard passes with zero violations; broader
-quality remains unqualified and releaseQualified=false. Stable
-0.5.1 and GitHub Latest are retained. Windows distribution uses an NSIS installer
-and a tar.7z bundle containing
-the same installer plus signed components, feed and checksums. Component signing
-does not provide a Windows code signature for the installer. The
-actual qualification and publication status are in [HAKUA_RELEASE.md](../docs/HAKUA_RELEASE.md). The cross-platform recipes below
-are upstream reference and do not establish qualification of a Hakua package on those platforms.
+Before staging the Windows app, run
+`node apps/desktop/scripts/stage-rustxng.mjs --execute` from the repository root.
+It verifies the pinned RustXNG Full binary, attribution and corresponding source.
+The files remain under installer-managed `harness/rustxng`, with normal NSIS
+upgrade cleanup. Never substitute an old signed component for a newly labelled
+source build. Preserve the 3 GiB RAM, 4 GiB commit and disk floors and use at
+most five compiler jobs for this PC's candidate builds.
+
 How packages are signed and published is in [UPDATES.md](UPDATES.md), and the package format is in [ENGINE-COMPONENT.md](ENGINE-COMPONENT.md).
 
 Release assets show what was published; the platform guides and retained reports show what was tested. A published package does not
@@ -60,24 +59,10 @@ Each row is an OS, CPU ABI and backend. A row is `qualified` only after the acce
 | `windows-x86_64-hip` | NSIS `.exe` (Tauri) | `tools/hip/build_windows.bat` | Published. Strix Halo inference is recorded in [STRIX_HALO.md](../docs/STRIX_HALO.md). This does not qualify every discrete Radeon card ([AMD_HIP.md](../docs/AMD_HIP.md)). |
 | `linux-x86_64-cuda` | AppImage (Tauri) | `packaging/build_cuda_linux.sh`, built in a glibc 2.35 chroot | `cuda13` built and tested on RTX 3060 and RTX A4000 (app in the browser, a real model, a picture). `cuda12` built. |
 | `linux-x86_64-hip` | AppImage (Tauri) | `packaging/build_hip_linux.sh` | `rx9070` (gfx1200 / gfx1201) built and tested on a Radeon AI PRO R9700. `rx7900` (gfx1100 / 1101 / 1102) built, not run on an RX 7000 card. `rx6000` (gfx1030 / 1031) built, not tested on a real RX 6000 card. |
-| `linux-aarch64-cuda` | none (no AppImage for arm64) | `packaging/build_cuda_linux_aarch64.sh`, built on the DGX Spark (`cuda13`, `sm_121`) | Engine packages (Qwen with `strata-dsv41` inside, and the separate DeepSeek one) and the Terminal archive built and tested on one DGX Spark ([DGX_SPARK_LINUX.md](../docs/DGX_SPARK_LINUX.md)). Not tried on any other arm64 machine. |
+| `linux-aarch64-cuda` | none (no AppImage for arm64) | `packaging/build_cuda_linux_aarch64.sh`, built on the DGX Spark (`cuda13`, `sm_121`) | The engine package and the Terminal archive built and tested on one DGX Spark ([DGX_SPARK_LINUX.md](../docs/DGX_SPARK_LINUX.md)). Not tried on any other arm64 machine. |
 | `linux-x86_64-sycl` | none | `packaging/build_sycl_linux.sh` (one JIT package for Alchemist and Battlemage) | Engine package built and tested on an Arc A750. Battlemage is supported and untested by us. |
 | `windows-x86_64-sycl` | none | none | Gated. No native Windows SYCL path exists upstream. |
 | `macos-x86_64-*` | none | none | Unsupported. The macOS engine is Apple Silicon only. |
-
-**DeepSeek V4.1-Flash.** The signed feed's `dsv41` member carries the DeepSeek engine `strata-dsv41` as its own package: Windows
-NVIDIA `cuda13`, Linux NVIDIA `cuda13`, Linux AMD `rx9070`, and since 0.2.7 Windows AMD `rdna3` (Ryzen AI Max, gfx1151). All other
-engine packages carry no DeepSeek engine. Build `strata-dsv41` with `packaging/build_dsv41_cuda.sh` (Linux) or
-`packaging/build_dsv41_windows.bat` (Windows), then package it with `package_engine.py --require-dsv41`; or pack it as the separate
-download (`feed_tool.py pack-engine --prefix strata-dsv41`, [UPDATES.md](UPDATES.md#the-feed)).
-
-Windows AMD (gfx1151): build `strata-dsv41` with `tools\dsv41\win\build_hip_win.bat` (the ROCm venv, default `gfx1151`) and stage
-it with the ROCm runtime the Qwen Windows `rdna3` package already carries: the HIP and C++ runtime DLLs beside the program,
-`rocm/bin` (hipBLAS / rocBLAS / hipBLASLt and their imports), `rocm/bin/rocblas/library/gfx1151`,
-`rocm/bin/hipblaslt/library/gfx1151`, `rocm/.kpack/blas_lib_gfx1151.kpack`, `rocm/licenses`, and a `BUILD.json` that names
-`"lib_dirs": ["rocm/bin"]`. Package it with `package_engine.py --backend hip --platform windows-x86_64 --arch gfx1151 --entrypoint
-strata-dsv41.exe --variant rdna3` (about 240 MiB, 280 files). Strata puts the package's `lib_dirs` on the engine's library path
-(`strata_control/dsv41_engine.py lib_dirs`), so the HIP runtime is found the same way the Qwen engine finds it.
 
 Cross-compilation is not attempted for the desktop app. Tauri bundles are per OS, and the Windows installer is built on Windows.
 The Python contracts, the owner transport, the checks and the engine build recipes are portable.

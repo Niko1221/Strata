@@ -23,8 +23,11 @@ function fixture(config = {}, id = 'deepseek-v4.1-flash-ist-das-2.25bpw') {
   process.env.STRATA_INSTALL_DIR = install;
   const path = join(install, `strata-${id}.json`);
   writeFileSync(path, JSON.stringify({
-    exe: 'C:\\Users\\x\\AppData\\Local\\Strata\\engine-dsv41\\0.1.55-windows-x86_64-cuda-cuda13\\strata-dsv41.exe', arch: 'deepseek41',
+    exe: join(install, 'engine-dsv41', '0.1.55-windows-x86_64-cuda-cuda13', 'strata-dsv41.exe'), arch: 'deepseek41',
     tokenizer: join(install, 'tok'), args: DS_ARGS, model_name: 'DeepSeek V4.1', port: 8080, ...config }));
+  const engine = join(install, 'engine-dsv41', '0.1.55-windows-x86_64-cuda-cuda13');
+  mkdirSync(engine, { recursive: true });
+  writeFileSync(join(engine, 'strata-dsv41.exe'), 'inert dedicated-engine fixture; Control start is mocked');
   const saved = [];
   const control = {
     control: { dir: join(root, 'control') }, version: '0.2.9',

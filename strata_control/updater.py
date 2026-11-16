@@ -355,6 +355,7 @@ class Context:
     allow_no_model_smoke: bool = True
     state_base: Path | None = None                # where tuning/recheck.json goes (default: the per-user state folder)
     feed_timeout: float = 30.0                    # seconds a read of the feed may wait (the quiet daily check uses 5)
+    automatic: bool = False                       # a read of the feed nobody asked for by name (netpolicy rule 4b: the refusal note)
     gate: object | None = None                    # strata_control.engine_update.ModelGate: what to do when a model is loaded (None: refuse before anything is downloaded)
 
     def say(self, phase: str, message: str, **extra) -> None:
@@ -379,7 +380,8 @@ def open_feed(ctx: Context, state: State) -> feedmod.Feed:
     last = (state.data.get("feed") or {}).get("sequence")
     ctx.say("feed", "Reading the signed update feed")
     try:
-        loaded = feedmod.fetch(ctx.source, ctx.trusted, timeout=ctx.feed_timeout, last_sequence=last, channel=ctx.channel, now=ctx.now)
+        loaded = feedmod.fetch(ctx.source, ctx.trusted, timeout=ctx.feed_timeout, last_sequence=last, channel=ctx.channel, now=ctx.now,
+                               automatic=ctx.automatic)
     except feedmod.FeedDowngrade as exc:
         raise feedmod.FeedDowngrade(downgrade_words(exc.sequence, exc.accepted, state.path)) from None
     for line in loaded.skipped:                       # an entry from a newer release that this Control cannot use: said once, never an error
@@ -513,7 +515,9 @@ def _download(ctx: Context, state_name: str, url_ref: str, size: int, sha256: st
 
     ctx.say("download", f"Downloading {label} ({megabytes(size)} MB)", component=state_name)
     try:
-        return transfer.download(feed.url(url_ref), partial, size=size, sha256=sha256, progress=progress, cancel=ctx.cancel)
+        what = label if label.lower().startswith("the ") else "the " + label          # "the engine 0.1.59 (cuda)", in the network rule's sentences
+        return transfer.download(feed.url(url_ref), partial, size=size, sha256=sha256, progress=progress, cancel=ctx.cancel, what=what,
+                                 say=lambda line: ctx.say("download", line, component=state_name))
     except transfer.Cancelled:
         raise UpdateError("the update was stopped; the partial download is kept and the next update resumes it", 130) from None
     except transfer.ChecksumMismatch as exc:
@@ -1004,6 +1008,9 @@ def default_test_start(stage_root: Path, component: ec.EngineComponent, ctx: Con
     sandbox = Path(tempfile.mkdtemp(prefix="t-", dir=stage_root))
     try:
         cfg = json.loads(source.read_text(encoding="utf-8-sig"))
+        # paths setup wrote inside a Control folder that is gone (an AppImage's /tmp/.mount_<random>, a moved install): this Control's own files (QAGUI-LIN 0213)
+        from strata_control import control_paths
+        cfg = control_paths.repoint(cfg)
         cfg["exe"] = ec.REFERENCE_PREFIX + ec.COMPONENT_ID
         cfg["backend"] = component.backend
         cfg.pop("lib_dirs", None)

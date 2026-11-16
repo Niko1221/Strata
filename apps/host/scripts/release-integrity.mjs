@@ -21,9 +21,26 @@ export function hostSources(root) {
   return Object.fromEntries(paths.map(path=>[relative(root,path).replaceAll('\\','/'),sha256(path)]).sort(([a],[b])=>a.localeCompare(b)));
 }
 export function nativeSources(root) {
-  const paths=['src','include','cmake','spin8/src','spin8/include','spin8/third_party','tqcodec/src','tqcodec/include'].filter(name=>existsSync(join(root,name))).flatMap(name=>files(join(root,name)));
-  for(const name of ['CMakeLists.txt','spin8/CMakeLists.txt','tqcodec/CMakeLists.txt']) if(existsSync(join(root,name)))paths.push(join(root,name));
+  const paths=['src','include','cmake','spin8/src','spin8/include','spin8/third_party','tqcodec/src','tqcodec/include','third_party/strata-ggml'].filter(name=>existsSync(join(root,name))).flatMap(name=>files(join(root,name)));
+  for(const name of ['CMakeLists.txt','spin8/CMakeLists.txt','tqcodec/CMakeLists.txt','third_party/ggml/VERSION.txt']) if(existsSync(join(root,name)))paths.push(join(root,name));
   return Object.fromEntries(paths.map(path=>[relative(root,path).replaceAll('\\','/'),sha256(path)]).sort(([a],[b])=>a.localeCompare(b)));
+}
+/** Identify actual vendored bytes, or an explicitly selected clean external ggml checkout. */
+export function ggmlIdentity(root, dependency) {
+  const vendor=join(resolve(root),'third_party','strata-ggml');
+  const selected=dependency?.trim()?resolve(dependency):vendor;
+  if(selected===vendor){
+    const pin=/^([a-f0-9]{40})(?:\s|$)/.exec(readFileSync(join(root,'third_party','ggml','VERSION.txt'),'utf8'))?.[1];
+    if(!pin)throw new Error('The vendored ggml upstream pin is missing or invalid');
+    const content=Object.fromEntries(files(vendor).map(path=>[relative(vendor,path).replaceAll('\\','/'),sha256(path)]).sort(([a],[b])=>a.localeCompare(b)));
+    if(!Object.keys(content).length)throw new Error('The vendored ggml tree is empty');
+    return {mode:'vendored',commit:pin,sha256:createHash('sha256').update(JSON.stringify(content)).digest('hex')};
+  }
+  const git=spawnSync('git',['-C',selected,'rev-parse','HEAD'],{encoding:'utf8',windowsHide:true,timeout:15000});
+  if(git.error||git.status!==0||!/^[a-f0-9]{40}$/.test(git.stdout.trim()))throw new Error('Cannot identify the ggml source revision');
+  const dirty=spawnSync('git',['-C',selected,'status','--porcelain'],{encoding:'utf8',windowsHide:true,timeout:15000});
+  if(dirty.error||dirty.status!==0||dirty.stdout.trim())throw new Error('The ggml dependency has unrecorded changes');
+  return {mode:'external',commit:git.stdout.trim()};
 }
 export function verifyTree(source, staged, {pythonOnly=false}={}) {
   const select=root=>files(root).filter(path=>!pythonOnly || path.endsWith('.py'));
@@ -62,6 +79,10 @@ export function verifyNativeBuild(folder,root,manifest,{sourceRoot,sourceCommit,
   const record=JSON.parse(readFileSync(join(folder,'native-build.json'),'utf8'));
   if(record.version!==manifest.version || record.entrypoint!==manifest.entrypoint || record.sha256!==sha256(join(folder,manifest.entrypoint)))throw new Error('Stale native build identity');
   if(JSON.stringify(record.sources)!==JSON.stringify(nativeSources(root)))throw new Error('Native engine sources changed: rebuild the engine');
+  if(record.recipe?.ggml?.mode==='vendored'){
+    const current=ggmlIdentity(root);
+    if(record.recipe.ggml.commit!==current.commit||record.recipe.ggml.sha256!==current.sha256||record.recipe.ggmlCommit!==current.commit)throw new Error('Vendored ggml identity changed: rebuild the engine');
+  }
   const baseline=record.recipe?.cudaSpillBaseline;
   if(baseline!==undefined) {
     if(!baseline||typeof baseline.path!=='string'||isAbsolute(baseline.path)||baseline.path.split(/[\\/]/).some(part=>!part||part==='.'||part==='..')||!/^[a-f0-9]{64}$/.test(baseline.sha256??''))throw new Error('Unsafe CUDA resource baseline identity');

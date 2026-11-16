@@ -8,6 +8,7 @@ import subprocess
 import sys
 from typing import Any
 
+from strata_control.childenv import quiet_crash_env
 from strata_control.bundle_identity import VerifiedBundle
 from strata_control.backend_contracts import BackendCapabilities
 from strata_control.model_bundle import inspect_gguf
@@ -126,7 +127,8 @@ def prepare_dsv41(
                     "--out",
                     str(request.output_dir),
                 ]
-                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120,
+                                      env=quiet_crash_env(dict(os.environ)))
                 if proc.returncode == 0 and ds4_txt.exists():
                     is_ready = True
                 else:

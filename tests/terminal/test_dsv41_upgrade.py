@@ -80,8 +80,20 @@ class Upgrade(Dsv41Engine):
         self.assertLess(key("0.1.49.1-x"), key("0.1.49.10-x"))
         self.assertGreater(key("0.1.49.1-x"), key("0.1.49-x"))
 
-    def test_an_unreachable_feed_is_silent_and_the_installed_engine_stays(self):
-        for dead in ("http://127.0.0.1:9/strata-feed.json", str(self.root / "no-such-feed")):       # nothing answers / the folder is gone
+    def test_an_explicit_unreachable_feed_warns_once_and_the_installed_engine_stays(self):
+        from tests.terminal import net_dead
+        for kind in net_dead.KINDS:                                   # no network at all / a refused port / a server that never answers
+            with net_dead.dead_feed(kind) as dead:
+                lines = []
+                with mock.patch.object(dsv41_engine, "_test_start", return_value=(True, "x")) as start:
+                    self.assertIsNone(dsv41_engine.upgrade(self.dest, dead, installed=self.old, hardware=self.hw, emit=lines.append))
+                self.assertEqual(len(lines), 1, (kind, dead, lines))
+                self.assertIn("could not be checked", lines[0])
+                self.assertTrue(lines[0].endswith("still using 0.1.49."), lines)
+                start.assert_not_called()
+                self.assertEqual(self.folders(), ["0.1.49"])
+                self.assertTrue(self.old.is_file())
+        for dead in (str(self.root / "no-such-feed"),):               # the folder is gone
             lines = []
             with mock.patch.object(dsv41_engine, "_test_start", return_value=(True, "x")):
                 self.assertIsNone(dsv41_engine.upgrade(self.dest, dead, installed=self.old, hardware=self.hw, emit=lines.append))
@@ -151,6 +163,15 @@ class LaunchChoice(unittest.TestCase):
         found = Path("/x/engine-dsv41/0.1.49-a/strata-dsv41")
         with mock.patch.object(dsv41_engine, "source_reachable", return_value=True),                 mock.patch.object(dsv41_engine, "upgrade", side_effect=AssertionError("a launch must not upgrade")):
             self.assertEqual(self.runner().upgrade_dsv41_engine(found), found)
+
+    def test_an_offline_default_launch_never_probes_updates_or_warns(self) -> None:
+        found = Path("/x/engine-dsv41/0.1.49-a/strata-dsv41")
+        runner = self.runner()
+        runner.emit = mock.Mock()
+        with mock.patch.object(dsv41_engine, "source_reachable", side_effect=AssertionError("no automatic network probe")), \
+                mock.patch.object(dsv41_engine, "upgrade", side_effect=AssertionError("no automatic upgrade")):
+            self.assertEqual(runner.upgrade_dsv41_engine(found), found)
+        runner.emit.assert_not_called()
 
 
 class SetupPathLines(unittest.TestCase):

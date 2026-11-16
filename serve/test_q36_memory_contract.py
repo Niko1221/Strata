@@ -220,7 +220,10 @@ class Q36MemoryContract(unittest.TestCase):
         proc.__enter__.return_value = proc
         proc.stdout = io.BytesIO((kv_tests.LINE + "\n" + line).encode())
         proc.wait.return_value = 0
-        with mock.patch.object(
+        with mock.patch.dict(
+            os.environ,
+            {"STRATA_BACKTRACE": "0", "STRATA_API_KEY": "synthetic-probe-secret"},
+        ), mock.patch.object(
             server.subprocess, "Popen", return_value=proc
         ) as spawn, mock.patch.object(server, "q36_binary_sha256", return_value=SHA):
             self.assertEqual(
@@ -231,9 +234,14 @@ class Q36MemoryContract(unittest.TestCase):
             self.assertEqual(spawn.call_args.args[0], ["fake", "--help"])
             self.assertTrue(
                 set(k.upper() for k in spawn.call_args.kwargs["env"]).issubset(
-                    {"PATH", "SYSTEMROOT", "WINDIR", "LD_LIBRARY_PATH", "CUDA_PATH"}
+                    {
+                        "PATH", "SYSTEMROOT", "WINDIR", "LD_LIBRARY_PATH",
+                        "CUDA_PATH", "GGML_NO_BACKTRACE",
+                    }
                 )
             )
+            self.assertEqual(spawn.call_args.kwargs["env"].get("GGML_NO_BACKTRACE"), "1")
+            self.assertNotIn("STRATA_API_KEY", spawn.call_args.kwargs["env"])
         proc.stdout = io.BytesIO(line.encode())
         with mock.patch.object(
             server.subprocess, "Popen", return_value=proc

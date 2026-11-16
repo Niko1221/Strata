@@ -1,95 +1,104 @@
 {
- "_about": "Current Hakua Windows fork source release. Upstream references and immutable historical installers are declared independently; the checker never rewrites their URLs.",
- "tag": "v0.5.9",
- "product_version": "0.5.9",
- "control_version": "0.5.9",
- "engine_version": "0.5.9",
- "installer_names": [
-  "Strata-{v}-windows-x64-setup.exe"
- ],
- "assets": [
-  "Strata-0.5.9-windows-x64-setup.exe",
-  "Strata-0.5.9-windows-x64.tar.7z"
- ],
- "upstream": {
-  "tag": "v0.2.13",
-  "published": "2026-11-09",
-  "product_version": "0.2.13",
-  "control_version": "0.1.59",
-  "engine_version": "0.1.59",
+  "_about": "Current Hakua Windows fork source release. Upstream references and immutable historical installers are declared independently; the checker never rewrites their URLs.",
+  "tag": "v0.6.0",
+  "product_version": "0.6.0",
+  "control_version": "0.6.0",
+  "engine_version": "0.6.0",
+  "installer_names": [
+    "Strata-{v}-windows-x64-setup.exe"
+  ],
   "assets": [
-   "SHA256SUMS.txt",
-   "Strata-0.2.13-linux-x86_64.AppImage",
-   "Strata-0.2.13-linux-x86_64.AppImage.sig",
-   "Strata-0.2.13-macos-arm64.dmg",
-   "Strata-0.2.13-windows-x64-setup.exe",
-   "Strata-0.2.13-windows-x64-setup.exe.sig",
-   "Strata.app.tar.gz",
-   "Strata.app.tar.gz.sig",
-   "install-manifest.txt",
-   "install.ps1",
-   "install.sh",
-   "latest.json",
-   "qwen3.8-flash-next-dflash2.strata1.q4_0-bf16sel.pack",
-   "qwen3.8-flash-next-dflash2.strata1.q4_0-selq4.pack",
-   "strata-control-0.1.59-linux-aarch64.tar.gz",
-   "strata-control-0.1.59-linux-x86_64.tar.gz",
-   "strata-control-0.1.59-macos-arm64.tar.gz",
-   "strata-control-0.1.59-windows-x86_64.zip",
-   "strata-dsv41-0.1.59-linux-aarch64-cuda-cuda13.tar.gz",
-   "strata-dsv41-0.1.59-linux-x86_64-cuda-cuda13.tar.gz",
-   "strata-dsv41-0.1.59-linux-x86_64-hip-rx9070.tar.gz",
-   "strata-dsv41-0.1.59-macos-arm64-metal.tar.gz",
-   "strata-dsv41-0.1.59-windows-x86_64-cuda-cuda13.tar.gz",
-   "strata-dsv41-0.1.59-windows-x86_64-hip-rdna3.tar.gz",
-   "strata-engine-0.1.59-linux-aarch64-cuda-cuda13.tar.gz",
-   "strata-engine-0.1.59-linux-x86_64-cuda-cuda12.tar.gz",
-   "strata-engine-0.1.59-linux-x86_64-cuda-cuda13.tar.gz",
-   "strata-engine-0.1.59-linux-x86_64-hip-halo.tar.gz",
-   "strata-engine-0.1.59-linux-x86_64-hip-rx6000.tar.gz",
-   "strata-engine-0.1.59-linux-x86_64-hip-rx7900.tar.gz",
-   "strata-engine-0.1.59-linux-x86_64-hip-rx9070.tar.gz",
-   "strata-engine-0.1.59-linux-x86_64-sycl.tar.gz",
-   "strata-engine-0.1.59-macos-arm64-metal.tar.gz",
-   "strata-engine-0.1.59-windows-x86_64-cuda-cuda12.tar.gz",
-   "strata-engine-0.1.59-windows-x86_64-cuda-cuda13.tar.gz",
-   "strata-engine-0.1.59-windows-x86_64-hip-rdna2.tar.gz",
-   "strata-engine-0.1.59-windows-x86_64-hip-rdna3.tar.gz",
-   "strata-engine-0.1.59-windows-x86_64-hip-rx9070.tar.gz",
-   "strata-feed-linux-aarch64.json",
-   "strata-feed-linux-aarch64.json.sig",
-   "strata-feed.json",
-   "strata-feed.json.sig"
-  ]
- },
- "historical_releases": [
-  {
-   "tag": "v0.5.0",
-   "product_version": "0.5.0",
-   "assets": [
-    "Strata-0.5.0-windows-x64-setup.exe"
-   ]
+    "Strata-0.6.0-windows-x64-setup.exe",
+    "Strata-0.6.0-windows-x64.tar.7z"
+  ],
+  "upstream": {
+    "tag": "v0.2.14",
+    "published_at": "2026-11-15T18:08:50Z",
+    "url": "https://github.com/Niko1221/Strata/releases/tag/v0.2.14",
+    "product_version": "0.2.14",
+    "control_version": "0.1.60.1",
+    "engine_version": "0.1.60",
+    "assets": [
+      "install-manifest.txt",
+      "install.ps1",
+      "install.sh",
+      "latest.json",
+      "qwen3.8-flash-next-dflash2.strata1.q4_0-bf16sel.pack",
+      "qwen3.8-flash-next-dflash2.strata1.q4_0-selq4.pack",
+      "SHA256SUMS.txt",
+      "Strata-0.2.14-linux-x86_64.AppImage",
+      "Strata-0.2.14-linux-x86_64.AppImage.sig",
+      "Strata-0.2.14-macos-arm64.dmg",
+      "Strata-0.2.14-windows-x64-setup.exe",
+      "Strata-0.2.14-windows-x64-setup.exe.sig",
+      "strata-control-0.1.59-linux-aarch64.tar.gz",
+      "strata-control-0.1.60-linux-x86_64.tar.gz",
+      "strata-control-0.1.60-macos-arm64.tar.gz",
+      "strata-control-0.1.60-windows-x86_64.zip",
+      "strata-control-0.1.60.1-linux-x86_64.tar.gz",
+      "strata-control-0.1.60.1-macos-arm64.tar.gz",
+      "strata-control-0.1.60.1-windows-x86_64.zip",
+      "strata-dsv41-0.1.59-linux-aarch64-cuda-cuda13.tar.gz",
+      "strata-engine-0.1.59-linux-aarch64-cuda-cuda13.tar.gz",
+      "strata-engine-0.1.60-linux-x86_64-cuda-cuda12.tar.gz",
+      "strata-engine-0.1.60-linux-x86_64-cuda-cuda13.tar.gz",
+      "strata-engine-0.1.60-linux-x86_64-hip-halo.tar.gz",
+      "strata-engine-0.1.60-linux-x86_64-hip-rx6000.tar.gz",
+      "strata-engine-0.1.60-linux-x86_64-hip-rx7900.tar.gz",
+      "strata-engine-0.1.60-linux-x86_64-hip-rx9070.tar.gz",
+      "strata-engine-0.1.60-macos-arm64-metal.tar.gz",
+      "strata-engine-0.1.60-windows-x86_64-cuda-cuda12.tar.gz",
+      "strata-engine-0.1.60-windows-x86_64-cuda-cuda13.tar.gz",
+      "strata-engine-0.1.60-windows-x86_64-hip-rdna2.tar.gz",
+      "strata-engine-0.1.60-windows-x86_64-hip-rdna3.tar.gz",
+      "strata-engine-0.1.60-windows-x86_64-hip-rx9070.tar.gz",
+      "strata-feed-linux-aarch64.json",
+      "strata-feed-linux-aarch64.json.sig",
+      "strata-feed.json",
+      "strata-feed.json.sig",
+      "Strata.app.tar.gz",
+      "Strata.app.tar.gz.sig"
+    ],
+    "published": "2026-11-16",
+    "terminal_version": "0.2.14.1",
+    "source_commit": "baf16363b4403ef0ed4f538f5d5ed11c43fb9535"
   },
-  {
-   "tag": "v0.5.1",
-   "product_version": "0.5.1",
-   "assets": [
-    "Strata-0.5.1-windows-x64-setup.exe"
-   ]
-  },
-  {
-   "tag": "v0.5.7",
-   "product_version": "0.5.7",
-   "assets": [
-    "Strata-0.5.7-windows-x64-setup.exe"
-   ]
-  },
-  {
-   "tag": "v0.5.8",
-   "product_version": "0.5.8",
-   "assets": [
-    "Strata-0.5.8-windows-x64-setup.exe"
-   ]
-  }
- ]
+  "historical_releases": [
+    {
+      "tag": "v0.5.0",
+      "product_version": "0.5.0",
+      "assets": [
+        "Strata-0.5.0-windows-x64-setup.exe"
+      ]
+    },
+    {
+      "tag": "v0.5.1",
+      "product_version": "0.5.1",
+      "assets": [
+        "Strata-0.5.1-windows-x64-setup.exe"
+      ]
+    },
+    {
+      "tag": "v0.5.7",
+      "product_version": "0.5.7",
+      "assets": [
+        "Strata-0.5.7-windows-x64-setup.exe"
+      ]
+    },
+    {
+      "tag": "v0.5.8",
+      "product_version": "0.5.8",
+      "assets": [
+        "Strata-0.5.8-windows-x64-setup.exe"
+      ]
+    },
+    {
+      "tag": "v0.5.9",
+      "product_version": "0.5.9",
+      "assets": [
+        "Strata-0.5.9-windows-x64-setup.exe"
+      ]
+    }
+  ],
+  "terminal_version": "0.6.0"
 }
