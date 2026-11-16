@@ -3215,6 +3215,11 @@ class Vision:
         # elastic_mib of VRAM free for it (Service._vision_up / _vision_idle_down)
         self.max_tokens = self.token_limit(cfg)
         self.elastic = cfg.get("elastic") is True
+        # "elastic_ram": the reader runs on a device of its own (the Windows iGPU through Vulkan), so the engine's expert cache is
+        # neither asked for room (POST /v1/vram) nor grown back; it starts with the first new picture and stops when idle (owner rule
+        # 2026-11-01 in RAM, not VRAM, applied to a second GPU).  It is elastic all the same: the start is the first picture's.
+        self.elastic_ram = cfg.get("elastic_ram") is True
+        self.elastic = self.elastic or self.elastic_ram
         self.elastic_mib = self.elastic_ask_mib(cfg, self.max_tokens)
         self.elastic_idle_s = float(cfg.get("elastic_idle_s") or 120)
         if not lazy and not self.elastic:
@@ -3257,6 +3262,13 @@ class Vision:
             args += ["--max-tokens", str(limit)]
         if cfg.get("min_tokens"):                       # #767: mtmd's image_min_tokens (a hand-edited key)
             args += ["--min-tokens", str(cfg["min_tokens"])]
+        vk = vision_reader.VULKAN_READER in str(cfg.get("exe") or "").lower()
+        flash = cfg.get("flash_attn") or ("off" if vk else "")
+        if flash:                                       # "off" on a Vulkan iGPU: the FA path falls back to the CPU there (41 s against 10.8 s at 1,024 tokens)
+            args += ["--flash-attn", str(flash)]
+        warm = cfg.get("warmup")
+        if warm is False or (warm is None and vk and (cfg.get("elastic") or cfg.get("elastic_ram"))):
+            args.append("--no-warmup")                  # an on-demand reader restarts often: the 2,048x2,048 warm-up would cost 12-14 s a start
         return args
 
     def _ensure_dir(self):
@@ -4608,8 +4620,19 @@ def vision_card_off_igpu(env: dict, archs: dict[int, str] | None = None) -> int 
 def vision_env(cfg: dict, env: dict, archs: dict[int, str] | None = None) -> dict:
     """The image encoder's environment: the engine's, unless the config's vision section names its own "cuda_device"
     (numbered like nvidia-smi) - then the encoder runs on that card alone, so a spare GPU can hold it while the engine
-    keeps all of its own cards' VRAM (#408, Efs-O).  Without it, nothing changes."""
-    dev = (cfg.get("vision") or {}).get("cuda_device")
+    keeps all of its own cards' VRAM (#408, Efs-O).  A Vulkan reader (the Windows iGPU, strata-vision-vk) is shown only the
+    card "vk_visible_devices" names (ggml-vulkan's own switch), and its f16 accumulation is turned off unless
+    "disable_f16" is false (24 embedding rows fall below cosine 0.99 with it on an Intel iGPU).  Without any of these,
+    nothing changes."""
+    vis = cfg.get("vision") or {}
+    if vision_reader.VULKAN_READER in str(vis.get("exe") or "").lower():
+        env = dict(env)
+        if vis.get("vk_visible_devices") is not None:
+            env["GGML_VK_VISIBLE_DEVICES"] = str(vis["vk_visible_devices"])
+        if vis.get("disable_f16") is not False:
+            env.setdefault("GGML_VK_DISABLE_F16", "1")
+        return env
+    dev = vis.get("cuda_device")
     if dev is None and cfg.get("backend") == "hip":
         dev = vision_card_off_igpu(env, archs)
     if dev is None:
@@ -5063,6 +5086,7 @@ class Service:
             yield
         finally:
             self.fifo.release()
+            self._vision_idle_after_turn()
 
     def begin_drain(self) -> int:
         """Stop new inference admission and return the number of owned calls to drain."""
@@ -5242,6 +5266,15 @@ class Service:
         v = self.vision
         if not getattr(v, "elastic", False) or v.alive():
             return
+        if getattr(v, "elastic_ram", False):
+            # the reader runs on a device of its own: the engine's expert cache keeps its VRAM, nothing is asked for room
+            t0 = time.time()
+            try:
+                v.restart()
+            except Exception as e:
+                raise EngineDied(f"the image encoder failed to start: {e}") from e
+            print(f"[strata] images: the image encoder started in {time.time() - t0:.1f} s, no engine VRAM", flush=True)
+            return
         if hasattr(self.engine, "vram") and self.loaded() and not self.vision_no_shrink:
             try:
                 out = self.engine.vram((self._engine_reserve() or 0) + v.elastic_mib)
@@ -5299,10 +5332,12 @@ class Service:
         try:
             v.unload()
             back = ""
-            if self.vision_held and hasattr(self.engine, "vram") and self.loaded():
+            if self.vision_held and not getattr(v, "elastic_ram", False) and hasattr(self.engine, "vram") and self.loaded():
                 out = self.engine.vram(self._engine_reserve())
                 back = (f"; the expert cache took its VRAM back ({out.get('expert_cache_mib')} of "
                         f"{out.get('expert_cache_full_mib')} MiB)")
+            elif getattr(v, "elastic_ram", False):
+                back = "; its RAM is back"
             # also when the cache never made room (a layer split, an engine without --vram-elastic): the stop happened
             print(f"[strata] images: the image encoder stopped after {v.elastic_idle_s:g} s without a picture{back}",
                   flush=True)
@@ -5311,16 +5346,28 @@ class Service:
         finally:
             self.fifo.release()
 
+    def _vision_idle_after_turn(self):
+        """An image turn ended (the FIFO is free again): an "elastic_ram" reader that has been idle for elastic_idle_s stops now, not only
+        when the polling thread happens to find the FIFO free (a chat sends its next turn before the poll: the timer would never fire)."""
+        v = self.vision
+        if v is None or not getattr(v, "elastic_ram", False):
+            return
+        try:
+            self._vision_idle_down()
+        except Exception:
+            pass
+
     def start_vision_idle(self):
         v = self.vision
         if not getattr(v, "elastic", False):
             return
         print(f"[strata] images: the image encoder starts with the first picture and stops after {v.elastic_idle_s:g} s "
-              f"without one", flush=True)
+              f"without one"
+              + (", on its own device; the engine's VRAM stays" if getattr(v, "elastic_ram", False) else ""), flush=True)
 
         def loop():
             while True:
-                time.sleep(max(1.0, min(30.0, v.elastic_idle_s / 4)))
+                time.sleep(1.0 if getattr(v, "elastic_ram", False) else max(1.0, min(30.0, v.elastic_idle_s / 4)))
                 try:
                     self._vision_idle_down()
                 except Exception as e:                 # tried again at the next turn; the thread keeps running
@@ -5922,6 +5969,7 @@ class Service:
             yield
         finally:
             self.fifo.release()
+            self._vision_idle_after_turn()
 
     def _note_unreadable_tool_images(self, messages, cancel=None):
         """A picture a tool returned (Claude Code's Read of an image file) that this server cannot read - it has no
@@ -6015,13 +6063,15 @@ class Service:
             # "reading the prompt" with CPU and GPU busy, for good (reproduced).  So encoding takes its turn in the
             # same FIFO as the requests.
             with self._turn(cancel):
-                if not (hasattr(self.vision, "all_cached") and self.vision.all_cached(images)):
+                fresh = not (hasattr(self.vision, "all_cached") and self.vision.all_cached(images))
+                if fresh:
                     self._vision_up()
                 try:
                     encoded = (self.vision.encode_all(images, cancel) if hasattr(self.vision, "encode_all")
                                else [self.vision.encode(src) for src in images])
                 finally:
-                    self.last_image_at = time.time()
+                    if fresh:
+                        self.last_image_at = time.time()   # a picture already encoded (a client resends its history) does not keep the reader up
             # one <|image_pad|> per image -> one per image token.  Only the markers the template writes for an image
             # (right after <|vision_start|>) are images: the same text inside a message (an agent reading these docs,
             # #150) is kept as plain text, or it took an image's place and the counts no longer matched.
@@ -9770,7 +9820,8 @@ _ON_DEMAND_NOT_WITH = ("--kv-grow", "--batch", "--slots", "--peer-device", "--ex
 
 def vision_on_demand_by_default(cfg: dict) -> bool:
     """True when this config's GPU reader should start on demand without the config saying so: a GPU reader (vision.gpu) of the NVIDIA
-    kind (or AMD's, with its CPU reader) on one GPU, no batch slots, no --kv-grow, no helper caches, and nothing in the vision section that says otherwise.  Not Intel or a Mac (not measured there), not a reader pinned to another card (vision.cuda_device)."""
+    kind, AMD's (with its CPU reader) or the Windows iGPU's Vulkan reader on one GPU, no batch slots, no --kv-grow, no helper caches, and
+    nothing in the vision section that says otherwise.  Not a Mac, not a reader pinned to another card (vision.cuda_device)."""
     vis = cfg.get("vision")
     if not VISION_ON_DEMAND_BY_DEFAULT or not isinstance(vis, dict) or vis.get("gpu") is not True or "elastic" in vis:
         return False
@@ -9783,6 +9834,9 @@ def vision_on_demand_by_default(cfg: dict) -> bool:
     if len(gpu_list(cfg)) > 1 or parallel_slots(cfg) or any(a in args for a in _ON_DEMAND_NOT_WITH):
         return False
     name = re.split(r"[\\/:]", str(vis.get("exe") or ""))[-1].lower()      # a path or a "component:..." reference
+    if name in (vision_reader.VULKAN_READER, vision_reader.VULKAN_READER + ".exe"):
+        # the Windows iGPU reader: it runs on the iGPU, so the engine's expert cache is not asked for anything (elastic_ram)
+        return True
     if backend == "hip":       # AMD: the HIP reader, with the CPU reader setup wrote beside it to read when the card has no room
         return VISION_ON_DEMAND_AMD_BY_DEFAULT and name in (vision_reader.GPU_READER, vision_reader.GPU_READER + ".exe") and bool(vis.get("cpu_exe"))
     if vision_reader.shared_memory_nvidia_host():      # a DGX Spark: the reader stays loaded (owner 2026-11-11; vision_reader.shared_memory_nvidia_host)
@@ -9802,6 +9856,11 @@ def apply_vision_defaults(cfg: dict) -> dict:
     if not vision_on_demand_by_default(cfg):
         return cfg
     cfg["vision"] = {**cfg["vision"], "elastic": True}
+    if "strata-vision-vk" in str(cfg["vision"].get("exe") or "").lower():
+        # the reader is on the iGPU: no engine VRAM is held back or made for it ("elastic_ram": no POST /v1/vram, no --vram-elastic)
+        cfg["vision"]["elastic_ram"] = True
+        cfg["vision"].setdefault("elastic_idle_s", 30)   # 30 s without a NEW picture, as the measured setup: a client that resends its history does not keep it up
+        return cfg
     if VISION_NO_RESERVE_BY_DEFAULT and cfg.get("backend") != "hip" and "vram_elastic" not in cfg:
         cfg["vram_elastic"] = True                     # the cache gives the reader its room when a picture comes; nothing is held back before
         return cfg
@@ -10199,7 +10258,7 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
                     for k, v in cfg["vision"].items() if not (k == "exe" and engine_component.is_reference(v))}
             if engine_component.is_reference(cfg["vision"].get("exe")):     # the engine from the component folder
                 vcfg["exe"] = _component_exe(cfg["vision"]["exe"], cfg)
-            if vcfg.get("elastic") is True and layer_split_of(cfg):
+            if vcfg.get("elastic") is True and layer_split_of(cfg) and vcfg.get("elastic_ram") is not True:
                 # the engine turns --vram-elastic off on a layer split (a cache per GPU): the encoder still starts
                 # with the first picture and stops when idle, but its VRAM has to be free already
                 print('[strata] images: on a layer split the expert cache cannot make room for the image encoder (the '

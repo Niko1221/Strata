@@ -5,6 +5,7 @@
 #   cmake -S tools/vision -B build-vision -G Ninja -DCMAKE_BUILD_TYPE=Release [-DLLAMA_DIR=<a llama.cpp checkout: an override, kept for two releases>]
 #         [-DSTRATA_VISION_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=native] [-DSTRATA_PORTABLE=OFF]
 #         [-DSTRATA_VISION_SYCL=ON -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx (oneAPI sourced; Linux)]
+#         [-DSTRATA_VISION_VULKAN=ON (builds ggml-vulkan; Windows Intel iGPUs; needs the Vulkan SDK: headers, glslc, loader)]
 #         [-DSTRATA_VISION_HIP=ON -DSTRATA_VISION_HIP_ARCHS="gfx1200;gfx1201" + the HIP compiler the engine build uses]
 #   cmake --build build-vision --target strata-vision
 #
@@ -19,12 +20,16 @@ set(LLAMA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/strata-llama" CACHE
 option(STRATA_VISION_CUDA "run the vision encoder on the GPU (builds ggml-cuda)" OFF)
 option(STRATA_VISION_HIP "run the vision encoder on an AMD GPU (builds ggml-hip); the program is named strata-vision-hip" OFF)
 option(STRATA_VISION_SYCL "run the vision encoder on an Intel GPU (builds ggml-sycl, needs the oneAPI icx/icpx compilers); the program is named strata-vision-sycl" OFF)
+option(STRATA_VISION_VULKAN "run the vision encoder on a Vulkan GPU (builds ggml-vulkan; the Windows Intel iGPU reader); the program is named strata-vision-vk" OFF)
 set(STRATA_VISION_HIP_ARCHS "" CACHE STRING "the gfx architectures strata-vision-hip is compiled for (';'-separated)")
 if(STRATA_VISION_HIP AND STRATA_VISION_CUDA)
   message(FATAL_ERROR "strata-vision: STRATA_VISION_CUDA and STRATA_VISION_HIP are two different programs")
 endif()
 if(STRATA_VISION_SYCL AND (STRATA_VISION_CUDA OR STRATA_VISION_HIP))
   message(FATAL_ERROR "strata-vision: STRATA_VISION_SYCL is its own program: not together with CUDA or HIP")
+endif()
+if(STRATA_VISION_VULKAN AND (STRATA_VISION_CUDA OR STRATA_VISION_HIP OR STRATA_VISION_SYCL))
+  message(FATAL_ERROR "strata-vision: STRATA_VISION_VULKAN is its own program: not together with CUDA, HIP or SYCL")
 endif()
 if(STRATA_VISION_HIP AND NOT STRATA_VISION_HIP_ARCHS)
   message(FATAL_ERROR "strata-vision: STRATA_VISION_HIP needs STRATA_VISION_HIP_ARCHS, for example \"gfx1200;gfx1201\"")
@@ -105,6 +110,7 @@ if(APPLE)
   set(GGML_METAL ${STRATA_VISION_METAL} CACHE BOOL "" FORCE)
   set(GGML_METAL_EMBED_LIBRARY ${STRATA_VISION_METAL} CACHE BOOL "" FORCE)
 endif()
+set(GGML_VULKAN ${STRATA_VISION_VULKAN} CACHE BOOL "" FORCE)
 set(GGML_SYCL ${STRATA_VISION_SYCL} CACHE BOOL "" FORCE)
 if(STRATA_VISION_SYCL)
   set(GGML_SYCL_TARGET "INTEL" CACHE STRING "" FORCE)
@@ -142,6 +148,11 @@ if(STRATA_VISION_SYCL)
   # the Intel GPU reader is its own program too, beside the CPU reader "strata-vision" it falls back on
   set_target_properties(strata-vision PROPERTIES OUTPUT_NAME strata-vision-sycl)
   target_compile_definitions(strata-vision PRIVATE STRATA_VISION_SYCL)
+endif()
+if(STRATA_VISION_VULKAN)
+  # the Windows iGPU reader is its own program too, beside the CPU reader "strata-vision" it falls back on
+  set_target_properties(strata-vision PROPERTIES OUTPUT_NAME strata-vision-vk)
+  target_compile_definitions(strata-vision PRIVATE STRATA_VISION_VULKAN)
 endif()
 if(WIN32 AND STRATA_VISION_HIP)
   # hipblas.dll (and rocblas.dll behind it) live in rocm\bin of the engine package: loaded on first use, after main() has put that folder on

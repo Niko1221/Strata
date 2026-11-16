@@ -1,5 +1,5 @@
-"""Which picture reader an engine folder gets: the GPU one (`strata-vision-hip` on AMD, `strata-vision-sycl` on Intel Arc, `strata-vision --gpu`
-on a Mac) or the CPU one (`strata-vision`).
+"""Which picture reader an engine folder gets: the GPU one (`strata-vision-hip` on AMD, `strata-vision-vk` on a Windows Intel iGPU,
+`strata-vision-sycl` on Intel Arc, `strata-vision --gpu` on a Mac) or the CPU one (`strata-vision`).
 
 An AMD engine package carries two programs for pictures.  `strata-vision` is the CPU reader: it needs nothing from the GPU
 runtime, so it starts on every PC.  `strata-vision-hip` is the same reader on the card (llama.cpp's HIP backend), a
@@ -15,7 +15,10 @@ on the GPU), and the CPU reader takes ~50 s for a 260-token picture where the GP
 ARM).  So a Mac reads on the GPU unless the person asks for the CPU.
 
 An Intel Arc engine folder (engine-sycl/) carries the CPU reader; `strata-vision-sycl` (llama.cpp's SYCL backend, tools/vision with
-STRATA_VISION_SYCL, built by `setup --backend sycl --vision gpu` on a PC that has the oneAPI compiler) is the GPU reader there.
+STRATA_VISION_SYCL, built by `setup --backend sycl --vision gpu` on a PC that has the oneAPI compiler) is the GPU reader there.  On Windows
+`strata-vision-vk` (tools/vision with STRATA_VISION_VULKAN, ggml's Vulkan backend) reads on the Intel iGPU, beside a discrete card that serves
+the text model: `--vision gpu` on an Intel PC gets it when the engine folder carries it; the default stays the CPU reader (a new feature is
+opt-in), and the program without `--gpu` is the CPU reader it falls back on.
 
 `choose` is the whole decision; setup.py calls it, and tools/test_vision_reader.py checks every branch.
 """
@@ -27,8 +30,9 @@ from pathlib import Path
 
 CPU_READER = "strata-vision"
 GPU_READER = "strata-vision-hip"
+VULKAN_READER = "strata-vision-vk"
 SYCL_READER = "strata-vision-sycl"
-GPU_READERS = (GPU_READER, SYCL_READER)       # the GPU reader of an engine folder: the first one it carries
+GPU_READERS = (GPU_READER, VULKAN_READER, SYCL_READER)     # the GPU reader of an engine folder: the first one it carries
 
 #: Owner decision 2026-10-18: pictures are ON by default, and the reader runs on the CPU for a card under 24 GB (the GPU reader keeps about
 #: 1-1.4 GB of VRAM that the experts would use: a few % of decode, more on some PCs, #2406) and on the GPU for 24 GB and above - on every make
@@ -198,9 +202,9 @@ def cpu_fallback(vision_cfg: dict, same_program: bool = False) -> dict | None:
         return None
     cpu = vision_cfg.get("cpu_exe")
     if not cpu and same_program:
-        # the NVIDIA reader and the Mac's are one program: without --gpu it reads on the CPU (same picture tokens, so the same answers)
+        # the NVIDIA reader, the Windows iGPU reader and the Mac's are one program: without --gpu they read on the CPU (same picture tokens, so the same answers)
         exe = str(vision_cfg.get("exe") or "")
-        if Path(exe).name.lower() not in (CPU_READER, CPU_READER + ".exe"):
+        if Path(exe).name.lower() not in (CPU_READER, CPU_READER + ".exe", VULKAN_READER, VULKAN_READER + ".exe"):
             return None
         cpu = exe
     if not cpu:

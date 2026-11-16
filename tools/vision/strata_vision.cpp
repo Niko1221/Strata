@@ -5,7 +5,7 @@
 // rows at the image's pad tokens and gives them their 2-D M-RoPE positions (see --serve GENI in generate.cpp).
 //
 //   strata-vision --mmproj <mmproj.gguf> --model <text model .gguf, first split> [--gpu] [--threads N]
-//                 [--max-tokens N] [--min-tokens N] [--flash-attn on|off|auto]
+//                 [--max-tokens N] [--min-tokens N] [--flash-attn on|off|auto] [--no-warmup]
 // Flash attention defaults to auto, and to off on the CPU when ggml is built with AVX-512 (see main).
 //
 // Resident: prints "READY <n_embd> <reader>" (reader: own or mtmd; older builds print two words), then per stdin line
@@ -88,6 +88,7 @@ int main(int argc, char** argv) {
 #endif
     std::string mmproj, model;
     bool gpu = false;
+    bool warmup = true;
     int threads = 0, max_tokens = 0, min_tokens = 0;
     llama_flash_attn_type fa = LLAMA_FLASH_ATTN_TYPE_AUTO;
     bool fa_given = false;
@@ -107,6 +108,7 @@ int main(int argc, char** argv) {
         if (a == "--mmproj") mmproj = next();
         else if (a == "--model") model = next();
         else if (a == "--gpu") gpu = true;
+        else if (a == "--no-warmup") warmup = false;
         else if (a == "--tower") {
             tower = next();
             if (tower != "mtmd" && tower != "own" && tower != "auto") { std::fprintf(stderr, "--tower takes mtmd, own or auto\n"); return 2; }
@@ -118,6 +120,8 @@ int main(int argc, char** argv) {
             std::printf("strata-vision metal\n");
 #elif defined(STRATA_VISION_SYCL)
             std::printf("strata-vision sycl (Intel GPU)\n");
+#elif defined(STRATA_VISION_VULKAN)
+            std::printf("strata-vision vulkan\n");
 #else
             std::printf("strata-vision\n");
 #endif
@@ -144,7 +148,7 @@ int main(int argc, char** argv) {
     }
     if (mmproj.empty() || (model.empty() && tower != "own")) {   // our tower needs no text model: it never tokenizes
         std::fprintf(stderr, "usage: strata-vision --mmproj <mmproj.gguf> --model <model.gguf> [--gpu] [--threads N] "
-                             "[--max-tokens N] [--min-tokens N] [--flash-attn on|off|auto]\n");
+                             "[--max-tokens N] [--min-tokens N] [--flash-attn on|off|auto] [--no-warmup]\n");
         return 2;
     }
     // On the CPU the GPU stays unseen: a CUDA build otherwise opens a context there (measured: 0.4-0.7 GB of VRAM,
@@ -177,9 +181,11 @@ int main(int argc, char** argv) {
     llama_log_set(quiet_log, nullptr);
     mtmd_helper_log_set(quiet_log, nullptr);
     llama_backend_init();
-#if defined(STRATA_VISION_HIP) || defined(STRATA_VISION_SYCL)
-#ifdef STRATA_VISION_SYCL
+#if defined(STRATA_VISION_HIP) || defined(STRATA_VISION_SYCL) || defined(STRATA_VISION_VULKAN)
+#if defined(STRATA_VISION_SYCL)
 #define STRATA_VISION_BUILT_FOR "Intel GPUs"
+#elif defined(STRATA_VISION_VULKAN)
+#define STRATA_VISION_BUILT_FOR "Vulkan GPUs"
 #else
 #define STRATA_VISION_BUILT_FOR STRATA_VISION_HIP_ARCHS
 #endif
@@ -289,6 +295,7 @@ int main(int argc, char** argv) {
     // On the CPU there is no VRAM to reserve, and the warm-up would only delay the engine's start by one encode
     // (~6 s at 1,024 tokens).
     if (!gpu) std::fprintf(stderr, "strata-vision: on the CPU, %d threads, no warm-up\n", threads);
+    else if (!warmup) std::fprintf(stderr, "strata-vision: warm-up skipped (asked)\n");
     else {
         const auto warm_t0 = std::chrono::steady_clock::now();
         const uint32_t side = 2048;
