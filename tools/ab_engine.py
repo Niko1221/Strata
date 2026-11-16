@@ -14,9 +14,10 @@ control's own defaults.  `--tune quick|thorough` tunes each version once, before
     python tools/ab_engine.py --model-path <gguf|folder> --engines 0.1.55,0.1.56 [--tune quick] [--rounds 3]
 
 `--engines` takes a list (`0.1.55,0.1.56`) or a range (`0.1.50..0.1.56`).  The packages are downloaded from the GitHub
-release, checked against its SHA256SUMS.txt and kept in `~/strata-ab` (or `--bench-dir`).  The real Strata install is
-never used or changed; the tool compares its files before and after the run and exits with 1 if any of them changed.
-Stop the normal Strata server first: the tool refuses to run beside one.
+release, checked against its SHA256SUMS.txt and kept in `~/strata-ab` (or `--bench-dir`).  Each version runs in a
+fresh home of its own, so the tool does not change your models, settings or engines; it compares the install's files
+before and after the run and exits with 1 if any of them changed.  Stop the normal Strata server and close the Strata
+app first: the tool refuses to run beside a server.
 
 On NVIDIA it takes the CUDA 13 build when a release has both; use `--backend cuda-cuda12` for an older driver.  On AMD
 with several builds, name one with `--backend`.
@@ -24,6 +25,8 @@ with several builds, name one with `--backend`.
 Results go to `<bench-dir>/runs/<timestamp>/`: results.json, report.html and report.png (the PNG needs Edge, Chrome or
 Chromium).  The generated and tuned configs are kept in `<bench-dir>/configs/<version>/<timestamp>/`.  Nothing in the
 bench folder is deleted.  The configs can contain the API key of the test home: do not attach that folder to an issue.
+Disk: each engine is in `<bench-dir>/packages` and again in each run's home, `<bench-dir>/homes/<version>/<timestamp>/`.
+Delete old homes by hand when you no longer need them.
 """
 from __future__ import annotations
 
@@ -162,6 +165,10 @@ def run_versions(a: argparse.Namespace) -> int:
     if not model.exists():
         fail(f"--model-path {model} does not exist")
     bench = Path(a.bench_dir or Path.home() / "strata-ab").expanduser()
+    roots = av.live_roots(os.environ, model)
+    inside = next((r for r in roots if bench.resolve().is_relative_to(Path(r).resolve())), None)
+    if inside:
+        fail(f"--bench-dir {bench} is inside {inside}, a folder of the real Strata install; pick another folder")
     target, family = detect()
     backend = a.backend or family
     if not backend:
@@ -178,7 +185,6 @@ def run_versions(a: argparse.Namespace) -> int:
     except av.Busy as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
-    roots = av.live_roots(os.environ, model)
     before = av.snapshot(roots)
     stamp = time.strftime("%Y%m%d-%H%M%S")
     run_dir = bench / "runs" / stamp
@@ -191,7 +197,7 @@ def run_versions(a: argparse.Namespace) -> int:
     out = open(run_dir / "ab_engine.jsonl", "a")
     try:
         for v in versions:
-            homes[v] = bench / "homes" / v
+            homes[v] = bench / "homes" / v / stamp                # fresh per run: no preset or launch config of an earlier run
             try:
                 pkgs[v] = av.ensure_packages(pairs[v], bench / "packages")
                 env[v] = (av.provision_home(homes[v], pkgs[v]), av.isolated_env(homes[v], os.environ))
@@ -222,10 +228,15 @@ def run_versions(a: argparse.Namespace) -> int:
                     print(f"round {rnd} v{v}: ready in {r.seconds:.0f} s", flush=True)
                     post(a.port, "Say hi.", 8)                       # warm-up, as the config mode's wait_ready does
                     run_requests(a.port, reqs, a.max_new, rnd, f"v{v}", out, got)
+                except Exception as e:                               # noqa: BLE001 - one version that crashes skips, the rest run
+                    arm.update(status="skipped", reason=f"{type(e).__name__}: {e}")
+                    dead.add(v)
+                    print(f"round {rnd} v{v}: skipped: {arm['reason']}", flush=True)
                 finally:
                     if got:                                          # also the rows answered before an interrupt
                         arm["rows"] += [{k: row[k] for k in ("round", "req", "decode", "prompt", "prompt_n", "n")} for row in got]
-                        arm.update(status="ran", reason="")
+                        if v not in dead:
+                            arm.update(status="ran", reason="")
                     av.stop(control, venv)                         # also after a failed or timed-out start: nothing survives into the next arm
     except KeyboardInterrupt:
         print("\ninterrupted; the results so far are kept", file=sys.stderr)
@@ -237,10 +248,10 @@ def run_versions(a: argparse.Namespace) -> int:
                    "rounds": a.rounds, "requests": [t for t, _ in reqs], "arms": list(arms.values()), "untouched": not diff,
                    "changed": diff}
         (run_dir / "results.json").write_text(json.dumps(results, indent=1), encoding="utf-8")
+        if diff:                                                     # in finally, before the report: shown even if either fails
+            print("error: files of the real Strata install changed during the run:\n  " + "\n  ".join(diff), file=sys.stderr)
         html, png = ab_report.write_report(results, run_dir)
         print(f"\nresults: {run_dir / 'results.json'}\nreport:  {html}" + (f"\ncard:    {png}" if png else ""))
-        if diff:                                                     # inside finally: shown even when an exception ends the run
-            print("error: files of the real Strata install changed during the run:\n  " + "\n  ".join(diff), file=sys.stderr)
     return 1 if diff else code
 
 
