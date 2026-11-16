@@ -804,6 +804,10 @@ struct Options {
     std::string kv = "fp16";           ///< plan v0.3 P7: KV storage, fp16 (default) or int8 (half the VRAM)
     int64_t kv_resident = 0;           ///< KV streaming: resident cells per QSA layer (0: all in VRAM)
     bool kv_grow = false;              ///< the elastic K/V (--kv-grow, STRATA_KV_GROW=1; kvg_ensure)
+    /// Layer split: the idle stage lends its GPU for one-chunk prompts (the prefill code reads it as the env
+    /// STRATA_PREFILL_HELP); these flags are the official interface. The helped rows round differently, repeatable.
+    bool prefill_help = false;
+    double prefill_help_frac = -1.0;   ///< >= 0: fix the helper's share for every prompt size (env STRATA_PREFILL_HELP_FRAC)
     std::string dump_residual;
     /// The head input, `bb.mixed`.  It exists so the head can be SPLIT: steps 1-4 (the per-stream norm, the two
     /// bf16 projections and the stream mean) recompute cheaply in Python, and only the 794 MB GEMV does not.
@@ -1344,6 +1348,8 @@ void usage() {
                  "                       and the LM head, so it is NOT the GPU floor (R0.3, Memory/ERRORS.md A4)\n"
                  "  --gpu-only-full      MEASURE: replay pre+post for all 48 layers plus the LM head, no pool.\n"
                  "                       THE TRUE PER-TOKEN GPU FLOOR.  Quote this one, not --graph-only.\n"
+                 "  --prefill-help       layer split: an idle stage streams and computes a share of the prompt's experts\n"
+                 "  --prefill-help-frac F  fix the helper's share for every prompt size (default: it falls with T)\n"
                  "  --system-probe       print every GPU's host->device GB/s, which GPU pairs have P2P, and RAM read\n"
                  "                       GB/s over all threads (the installer's --system-check), then exit\n"
                  "  --stats              print the per-stage breakdown\n"
@@ -3782,6 +3788,8 @@ int main(int argc, char** argv) {
         else if (a == "--ple-sync-submit") o.ple_sync_submit = true;
         else if (a == "--kv") o.kv = next("--kv");
         else if (a == "--kv-resident") o.kv_resident = std::atoll(next("--kv-resident"));
+        else if (a == "--prefill-help") o.prefill_help = true;
+        else if (a == "--prefill-help-frac") o.prefill_help_frac = std::atof(next("--prefill-help-frac"));
         else if (a == "--kv-grow") o.kv_grow = true;
         else if (a == "--no-kv-grow") o.kv_grow = false;
         else if (a == "--stream-token") o.stream_token = true;
@@ -4787,6 +4795,15 @@ int main(int argc, char** argv) {
         return 2;
     }
     strata::core::qsa_set_kv_resident(o.kv_resident);
+    // The prompt-path helper (layer split) reads its switch from the environment once, when the first Prefill is
+    // built; --prefill-help* set it here so the flags work wherever the env did.  STRATA_PREFILL_HELP stays honoured.
+    if (o.prefill_help) setenv("STRATA_PREFILL_HELP", "1", 1);
+    if (o.prefill_help_frac >= 0.0 && o.prefill_help_frac <= 1.0) {
+        char fb[32];
+        std::snprintf(fb, sizeof fb, "%g", o.prefill_help_frac);
+        setenv("STRATA_PREFILL_HELP_FRAC", fb, 1);
+    }
+
     // Prompt lookup (the suffix drafter, on by default): the MTP keeps its --spec windows and a lookup window may be
     // up to 2 tokens longer; the draft policy (strata/spec/draft_policy.hpp) takes one only where it pays. Code
     // edits +6-11%, ordinary text unchanged (bench/results/2026-09-27-spec). --suffix-draft 0 turns it off.
