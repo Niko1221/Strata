@@ -9,7 +9,10 @@ import os
 import re
 import shutil
 import socket
+import subprocess
 import sys
+import tempfile
+import time
 import urllib.request
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
@@ -262,3 +265,128 @@ def live_roots(env: Mapping[str, str], model_path: Path) -> list[Path]:
                 roots.append(data)
             break
     return list(dict.fromkeys(roots))
+
+
+@dataclass
+class LaunchResult:
+    ok: bool
+    seconds: float
+    reason: str = ""
+
+
+def control_command(control_dir: Path) -> list[str]:
+    """How to start the release Control in `control_dir`. On Windows its own Python runs `strata.py` directly when the package
+    carries one: `bin/strata.cmd` goes through cmd.exe, which mangles `&`, `%` and `^` in arguments (a model path is an argument)."""
+    if os.name != "nt":
+        return [str(control_dir / "bin" / "strata")]
+    py = control_dir / "python" / "python.exe"
+    return [str(py), str(control_dir / "strata.py")] if py.exists() else [str(control_dir / "bin" / "strata.cmd")]
+
+
+def _run(control_dir: Path, env: Mapping[str, str], args: list[str], timeout: float) -> tuple[int | None, str]:
+    """Run the Control with `args`; returns (exit code or None on timeout, stdout + stderr). Output goes to files, not pipes:
+    `launch --no-tui` leaves a server running that could keep a pipe open."""
+    env = {k: v for k, v in env.items() if k not in ("PYTHONHOME", "PYTHONPATH")} | {"PYTHONUTF8": "1", "PYTHONNOUSERSITE": "1"}
+    with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+        try:
+            code = subprocess.run(control_command(control_dir) + args, env=env, stdin=subprocess.DEVNULL, stdout=out, stderr=err,
+                                  timeout=timeout).returncode
+        except subprocess.TimeoutExpired:
+            code = None
+        text = ""
+        for f in (out, err):
+            f.seek(0)
+            text += f.read().decode("utf-8", "replace") + "\n"
+    return code, text
+
+
+def _last_line(text: str) -> str:
+    """The last non-empty line; for a `--output json` failure line, its error message."""
+    line = next((x.strip() for x in reversed(text.splitlines()) if x.strip()), "")
+    try:
+        return json.loads(line)["error"]["message"]
+    except (ValueError, KeyError, TypeError):
+        return line
+
+
+def _engine_logs(home: Path) -> list[Path]:
+    return sorted(home.rglob("*.engine.log"), key=lambda p: p.stat().st_mtime_ns, reverse=True)
+
+
+def launch(control_dir: Path, env: dict, model_path: Path, data_dir: Path, port: int, tune: str | None, timeout: float = 7200,
+           opener=urllib.request.urlopen) -> LaunchResult:
+    """`strata launch` with the release's own defaults (and its tuning when `tune`); ok = exit 0 and /health says ok."""
+    args = ["launch", "--model-path", str(model_path), "--data-dir", str(data_dir), "--port", str(port),
+            "--yes", "--no-tui", "--output", "json"] + (["--tune", tune, "--retune"] if tune else [])
+    start = time.monotonic()
+    code, text = _run(control_dir, env, args, timeout)
+    seconds = time.monotonic() - start
+    if code == 0:
+        try:
+            with opener(f"http://127.0.0.1:{port}/health", timeout=30) as r:
+                status = json.loads(r.read()).get("status")
+        except (OSError, ValueError, AttributeError) as e:
+            status = f"error {e}"
+        if status == "ok":
+            return LaunchResult(True, seconds)
+        return LaunchResult(False, seconds, f"health check: {status}")
+    reason = _last_line(text)
+    if not reason:
+        logs = _engine_logs(Path(env["HOME"]))
+        reason = _last_line(logs[0].read_text(encoding="utf-8", errors="replace")) if logs else ""
+    if code is None:
+        reason = f"timed out after {timeout:.0f} s" + (f": {reason}" if reason else "")
+    return LaunchResult(False, seconds, reason or f"exit {code}")
+
+
+def stop(control_dir: Path, env: dict) -> None:
+    """`strata launch --stop`; a failure is printed, never raised."""
+    try:
+        code, text = _run(control_dir, env, ["launch", "--stop"], 300)
+    except OSError as e:
+        code, text = -1, str(e)
+    if code != 0:
+        print(f"strata launch --stop failed ({code}): {_last_line(text)}", file=sys.stderr)
+
+
+ENGINE_STARTED = re.compile(r'engine started: (?:"([^"]+)"|(.+?)) --serve')
+
+
+def served_engine(home: Path) -> Path | None:
+    """The folder of the engine the newest `engine started: <exe> --serve` line under `home` names (serve/server.py writes it)."""
+    for log in _engine_logs(home):
+        found = ENGINE_STARTED.findall(log.read_text(encoding="utf-8", errors="replace"))
+        if found:
+            return Path(found[-1][0] or found[-1][1]).parent
+    return None
+
+
+def version_problem(home: Path, packages: Packages) -> str | None:
+    """None when the served engine is the one `packages` provisioned, else why the arm must be skipped."""
+    served = served_engine(home)
+    if served is not None and served.name == packages.engine_dir.name:
+        return None
+    return f"served engine {served.name if served else 'unknown'}, expected {packages.engine_dir.name}"
+
+
+# Windows state is %LOCALAPPDATA%/Strata, POSIX ~/.local/state/strata (matched without case); tuned presets and profiles live
+# under %APPDATA%/Strata or ~/.config/strata; native-tune is written by the desktop host only.
+CONFIG_GLOBS = ("**/Strata/launch/*.json", "**/Strata/tuning/**/*", "**/Strata/presets/**/*", "**/Strata/profiles/**/*",
+                "**/.strata/data/native-tune/**/*")
+
+
+def collect_configs(home: Path, dest: Path) -> list[Path]:
+    """Copy every config file under `home` (CONFIG_GLOBS, no logs) to `dest` at its relative path; never overwrites
+    (an existing copy gets the next `.1`, `.2` suffix). Returns the copies."""
+    found = {p for pattern in CONFIG_GLOBS for p in home.glob(pattern, case_sensitive=False) if p.is_file() and p.suffix != ".log"}
+    copies = []
+    for src in sorted(found):
+        target = dest / src.relative_to(home)
+        n, base = 0, target
+        while target.exists():
+            n += 1
+            target = base.with_name(f"{base.name}.{n}")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, target)
+        copies.append(target)
+    return copies
