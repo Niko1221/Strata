@@ -3,6 +3,7 @@
 Packages come only from a download into the bench cache. Nothing is ever read from the real Strata install."""
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import json
 import os
@@ -175,7 +176,8 @@ def ensure_packages(pair: ReleasePair, cache: Path, opener=urllib.request.urlope
 
 
 def isolated_env(home: Path, base: Mapping[str, str]) -> dict[str, str]:
-    """`base` with every per-user folder under `home`, every STRATA_ variable dropped, and acquiring engines switched off."""
+    """`base` with every per-user folder under `home` and every STRATA_ variable dropped. STRATA_NO_ACQUIRE is set, but
+    `strata launch` drops it for its children (launch may download); version_problem is the real guard against another engine."""
     env = {k: v for k, v in base.items() if not k.startswith("STRATA_")}
     for key, sub in (("HOME", ""), ("USERPROFILE", ""), ("APPDATA", "AppData/Roaming"), ("LOCALAPPDATA", "AppData/Local"),
                      ("XDG_STATE_HOME", ".local/state"), ("XDG_DATA_HOME", ".local/share"),
@@ -301,12 +303,14 @@ def _run(control_dir: Path, env: Mapping[str, str], args: list[str], timeout: fl
 
 
 def _last_line(text: str) -> str:
-    """The last non-empty line; for a `--output json` failure line, its error message."""
-    line = next((x.strip() for x in reversed(text.splitlines()) if x.strip()), "")
-    try:
-        return json.loads(line)["error"]["message"]
-    except (ValueError, KeyError, TypeError):
-        return line
+    """The error message of the last `--output json` failure line (stdout, before stderr noise), else the last non-empty line."""
+    lines = [x.strip() for x in text.splitlines() if x.strip()]
+    for line in reversed(lines):
+        try:
+            return json.loads(line)["error"]["message"]
+        except (ValueError, KeyError, TypeError):
+            continue
+    return lines[-1] if lines else ""
 
 
 def _engine_logs(home: Path) -> list[Path]:
@@ -369,16 +373,18 @@ def version_problem(home: Path, packages: Packages) -> str | None:
     return f"served engine {served.name if served else 'unknown'}, expected {packages.engine_dir.name}"
 
 
-# Windows state is %LOCALAPPDATA%/Strata, POSIX ~/.local/state/strata (matched without case); tuned presets and profiles live
-# under %APPDATA%/Strata or ~/.config/strata; native-tune is written by the desktop host only.
-CONFIG_GLOBS = ("**/Strata/launch/*.json", "**/Strata/tuning/**/*", "**/Strata/presets/**/*", "**/Strata/profiles/**/*",
-                "**/.strata/data/native-tune/**/*")
+# Windows state is %LOCALAPPDATA%/Strata, POSIX ~/.local/state/strata; tuned presets and profiles live under %APPDATA%/Strata or
+# ~/.config/strata; native-tune is written by the desktop host only. fnmatch patterns for "/" + the lower-cased relative path
+# (`*` also crosses "/"), so no case-insensitive glob (Python 3.12) is needed.
+CONFIG_GLOBS = ("*/strata/launch/*.json", "*/strata/tuning/*", "*/strata/presets/*", "*/strata/profiles/*",
+                "*/.strata/data/native-tune/*")
 
 
 def collect_configs(home: Path, dest: Path) -> list[Path]:
     """Copy every config file under `home` (CONFIG_GLOBS, no logs) to `dest` at its relative path; never overwrites
     (an existing copy gets the next `.1`, `.2` suffix). Returns the copies."""
-    found = {p for pattern in CONFIG_GLOBS for p in home.glob(pattern, case_sensitive=False) if p.is_file() and p.suffix != ".log"}
+    found = {p for p in home.rglob("*") if p.suffix != ".log" and p.is_file()
+             and any(fnmatch.fnmatchcase("/" + p.relative_to(home).as_posix().lower(), pat) for pat in CONFIG_GLOBS)}
     copies = []
     for src in sorted(found):
         target = dest / src.relative_to(home)
