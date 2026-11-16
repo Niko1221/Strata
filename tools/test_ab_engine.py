@@ -96,6 +96,7 @@ class VersionsMode(unittest.TestCase):
         arm = results["arms"][0]
         self.assertEqual((arm["version"], arm["status"], arm["reason"], arm["rows"]), ("0.1.55", "skipped", "served engine x, expected y", []))
         self.assertEqual(results["arms"][1]["status"], "ran")
+        self.assertIn("served engine x, expected y", ab_report.build_html(results))
         self.assertEqual([c.args[0] for c in m["launch"].call_args_list].count(self.bench / "homes" / "0.1.55" / "control"), 1)
 
     def test_tune_only_in_first_round(self):
@@ -106,11 +107,15 @@ class VersionsMode(unittest.TestCase):
         self.assertEqual((results["arms"][0]["setup_s"], results["arms"][0]["start_s"]), (12.0, [12.0]))
 
     def test_interrupt_stops_server(self):
-        code, results, m = self.run_tool(run_requests=mock.Mock(side_effect=KeyboardInterrupt))
-        self.assertEqual(m["stop"].call_count, 1)
+        requests = mock.Mock(side_effect=[[dict(ROW, round=0, arm="v0.1.55")], KeyboardInterrupt])
+        code, results, m = self.run_tool(run_requests=requests)
+        self.assertEqual(m["stop"].call_count, 2)
         self.assertEqual(m["snapshot"].call_count, 2)
-        self.assertEqual([x["version"] for x in results["arms"]], ["0.1.55", "0.1.56"])
+        first, second = results["arms"]
+        self.assertEqual((first["version"], first["status"], len(first["rows"])), ("0.1.55", "ran", 1))
+        self.assertEqual((second["version"], second["status"]), ("0.1.56", "skipped"))
         self.assertNotEqual(code, 0)
+        self.assertIn('data-version="0.1.55" data-req="chat0" data-decode="50.0"', ab_report.build_html(results))
 
     def test_failed_launch_still_stops(self):
         code, results, m = self.run_tool(launch=mock.Mock(return_value=LaunchResult(False, 3.0, "timed out after 7200 s")))
