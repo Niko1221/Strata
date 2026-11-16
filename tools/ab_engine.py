@@ -7,6 +7,11 @@ every other key is set in the engine's environment.  Each round starts the serve
 answer, then sends the same requests: greedy, fixed prompts, a short chat set and one long prompt.  Prints the
 server's own timings (llama.cpp's `timings`: decode and prompt tokens per second) per request and the per-arm
 medians.  Decode numbers move run to run (the adaptive expert tier, the OS), so compare medians over rounds.
+
+Versions mode compares Strata releases (engine + control of one release, with that release's own defaults), each in its own
+home under --bench-dir, and writes results.json and a report there:
+
+    python tools/ab_engine.py --model-path <gguf|folder> --engines 0.1.55,0.1.56 [--tune quick] [--rounds 3]
 """
 from __future__ import annotations
 
@@ -14,6 +19,7 @@ import argparse
 import json
 import os
 import random
+import re
 import statistics
 import subprocess
 import sys
@@ -64,16 +70,185 @@ def wait_ready(port: int, proc: subprocess.Popen, timeout: float = 1800) -> None
     raise TimeoutError("server not ready")
 
 
-def main() -> int:
+def run_requests(port: int, reqs: list[tuple[str, str]], max_new: int, rnd: int, arm: str, out) -> list[dict]:
+    """Send `reqs` once each; every row goes to `out` (jsonl) and to the screen as it comes in."""
+    rows = []
+    for tag, p in reqs:
+        r = post(port, p, max_new)
+        t = r.get("timings", {})
+        row = {"round": rnd, "arm": arm, "req": tag, "decode": t.get("predicted_per_second"),
+               "prompt": t.get("prompt_per_second"), "prompt_n": t.get("prompt_n"),
+               "n": r.get("usage", {}).get("completion_tokens"),
+               "text": r["choices"][0]["message"].get("content", "")[:80]}
+        out.write(json.dumps(row) + "\n")
+        out.flush()
+        rows.append(row)
+        print(f"  {tag:6s} decode {row['decode']} tok/s  prompt {row['prompt']} tok/s ({row['prompt_n']})  "
+              f"n {row['n']}", flush=True)
+    return rows
+
+
+def detect() -> tuple[str, str | None]:
+    """(target, engine family) of this machine, e.g. ("windows-x86_64", "cuda")."""
+    import ab_versions
+    ab_versions._control_on_path()
+    from strata_control.engine_component import detect_backend
+    from strata_control.targets import host_platform
+    return host_platform(), detect_backend()[0]
+
+
+def gpu_name() -> str:
+    try:
+        return subprocess.run(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"], capture_output=True,
+                              text=True, timeout=30).stdout.strip().splitlines()[0]
+    except (OSError, subprocess.SubprocessError, IndexError):
+        return ""
+
+
+def fail(msg: str):
+    raise SystemExit(f"error: {msg}")
+
+
+def pick_pairs(releases: list[dict], target: str, backend: str, spec: str) -> tuple[str, list, dict]:
+    """(backend, versions, pairs) for `spec`. A bare family ("cuda") is matched to the asset variants that carry every
+    version asked for ("cuda-cuda13"); several such variants -> an error naming them."""
+    import ab_versions
+    backends = {backend}
+    if "-" not in backend:
+        found = (re.fullmatch(rf"strata-engine-[\d.]+-{re.escape(target)}-({re.escape(backend)}(?:-[\w.]+)?)\.tar\.gz", x["name"])
+                 for rel in releases for x in rel.get("assets", []))
+        backends = {m[1] for m in found if m} or backends
+    fits, errors = {}, []
+    for b in sorted(backends):
+        pairs = ab_versions.pairs_from_releases(releases, target, b)
+        try:
+            versions = ab_versions.resolve_versions(spec, pairs)
+        except ValueError as e:
+            errors.append(f"{b}: {e}")
+            continue
+        if not versions:
+            fail(f"--engines {spec!r} names no version")
+        fits[b] = (versions, pairs)
+    if not fits:
+        fail("; ".join(errors))
+    if len(fits) > 1:
+        fail(f"several engine builds fit {target}/{backend}; pick one with --backend: {', '.join(fits)}")
+    (b, (versions, pairs)), = fits.items()
+    return b, versions, pairs
+
+
+def run_versions(a: argparse.Namespace) -> int:
+    """Each Strata version (engine + control of one release) in its own home under the bench dir, with that release's own defaults."""
+    import ab_report
+    import ab_versions as av
+    model = Path(a.model_path)
+    if not model.exists():
+        fail(f"--model-path {model} does not exist")
+    bench = Path(a.bench_dir).expanduser()
+    target, family = detect()
+    backend = a.backend or family
+    if not backend:
+        fail("no graphics card found; name the engine build with --backend (e.g. cuda-cuda13)")
+    releases = av.list_releases()
+    backend, versions, pairs = pick_pairs(releases, target, backend, a.engines)
+    reqs = [(f"chat{i}", p) for i, p in enumerate(PROMPTS)] + [("long", long_prompt(a.long_words))]
+    print(f"{len(versions)} versions ({', '.join(versions)}) for {target}/{backend}: {len(versions) * a.rounds} starts, "
+          f"{len(versions) if a.tune else 0} tunings.", flush=True)
+    try:
+        av.assert_idle([a.port])
+    except av.Busy as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    roots = av.live_roots(os.environ, model)
+    before = av.snapshot(roots)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    run_dir = bench / "runs" / stamp
+    run_dir.mkdir(parents=True, exist_ok=True)
+    data = bench / "data"
+    data.mkdir(parents=True, exist_ok=True)
+    arms = {v: {"version": v, "status": "ran", "reason": "", "setup_s": None, "start_s": [], "rows": []} for v in versions}
+    homes, env, pkgs = {}, {}, {}
+    code = 0
+    out = open(run_dir / "ab_engine.jsonl", "a")
+    try:
+        for v in versions:
+            homes[v] = bench / "homes" / v
+            try:
+                pkgs[v] = av.ensure_packages(pairs[v], bench / "packages")
+                env[v] = (av.provision_home(homes[v], pkgs[v]), av.isolated_env(homes[v], os.environ))
+            except Exception as e:                                  # noqa: BLE001 - one version that cannot be set up skips, the rest run
+                arms[v].update(status="skipped", reason=f"setup: {e}")
+        for rnd in range(a.rounds):
+            order = versions if rnd % 2 == 0 else versions[::-1]
+            for v in order:
+                arm = arms[v]
+                if arm["status"] == "skipped":
+                    continue
+                control, venv = env[v]
+                try:
+                    r = av.launch(control, venv, model, data, a.port, a.tune if rnd == 0 else None)
+                    av.collect_configs(homes[v], bench / "configs" / v / stamp)
+                    if rnd == 0:
+                        arm["setup_s"] = round(r.seconds, 1)
+                    elif r.ok:
+                        arm["start_s"].append(round(r.seconds, 1))
+                    reason = av.version_problem(homes[v], pkgs[v]) if r.ok else r.reason
+                    if reason:
+                        arm.update(status="skipped", reason=reason)
+                        print(f"round {rnd} v{v}: skipped: {reason}", flush=True)
+                        continue
+                    print(f"round {rnd} v{v}: ready in {r.seconds:.0f} s", flush=True)
+                    post(a.port, "Say hi.", 8)                       # warm-up, as the config mode's wait_ready does
+                    arm["rows"] += [{k: row[k] for k in ("round", "req", "decode", "prompt", "prompt_n", "n")}
+                                    for row in run_requests(a.port, reqs, a.max_new, rnd, f"v{v}", out)]
+                finally:
+                    av.stop(control, venv)                           # also after a failed or timed-out start: nothing survives into the next arm
+    except KeyboardInterrupt:
+        print("\ninterrupted; the results so far are kept", file=sys.stderr)
+        code = 130
+    finally:
+        out.close()
+        diff = av.changed(before, av.snapshot(roots))
+        results = {"created": time.strftime("%Y-%m-%dT%H:%M:%S"), "model": model.name, "gpu": gpu_name(), "tune": a.tune,
+                   "rounds": a.rounds, "requests": [t for t, _ in reqs], "arms": list(arms.values()), "untouched": not diff,
+                   "changed": diff}
+        (run_dir / "results.json").write_text(json.dumps(results, indent=1), encoding="utf-8")
+        html, png = ab_report.write_report(results, run_dir)
+        print(f"\nresults: {run_dir / 'results.json'}\nreport:  {html}" + (f"\ncard:    {png}" if png else ""))
+    if diff:
+        print("error: files of the real Strata install changed during the run:\n  " + "\n  ".join(diff), file=sys.stderr)
+        return 1
+    return code
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap = argparse.ArgumentParser()
-    ap.add_argument("config")
-    ap.add_argument("arms", nargs="+")
+    ap.add_argument("config", nargs="?")
+    ap.add_argument("arms", nargs="*")
     ap.add_argument("--rounds", type=int, default=3)
     ap.add_argument("--port", type=int, default=8090)
     ap.add_argument("--max-new", type=int, default=256)
     ap.add_argument("--long-words", type=int, default=6000)
     ap.add_argument("--log", default="ab_engine.jsonl")
-    a = ap.parse_args()
+    ap.add_argument("--model-path", help="versions mode: the model (GGUF file or folder); only read")
+    ap.add_argument("--engines", help="versions mode: engine versions, `0.1.55,0.1.56` or `0.1.50..0.1.56`")
+    ap.add_argument("--tune", choices=("quick", "thorough"), help="versions mode: each version tunes once before round 0")
+    ap.add_argument("--bench-dir", default=str(Path.home() / "strata-ab"), help="versions mode: packages, homes, configs, runs")
+    ap.add_argument("--backend", help="versions mode: engine build, e.g. cuda-cuda13 (default: this machine's)")
+    a = ap.parse_intermixed_args(argv)
+    if a.config is not None and (a.model_path or a.engines):
+        ap.error("use either <config> <arms...> or --model-path with --engines, not both")
+    if a.config is None and not (a.model_path and a.engines):
+        ap.error("give <config> <arms...>, or --model-path and --engines")
+    if a.config is not None and not a.arms:
+        ap.error("the following arguments are required: arms")
+    return a
+
+
+def main(argv: list[str] | None = None) -> int:
+    a = parse_args(argv)
+    if a.config is None:
+        return run_versions(a)
     base = json.loads(Path(a.config).read_text())
     arms = []
     for s in a.arms:
@@ -104,18 +279,8 @@ def main() -> int:
                 t0 = time.time()
                 wait_ready(a.port, proc)
                 print(f"round {rnd} {name}: ready in {time.time() - t0:.0f} s", flush=True)
-                for tag, p in reqs:
-                    r = post(a.port, p, a.max_new)
-                    t = r.get("timings", {})
-                    row = {"round": rnd, "arm": name, "req": tag, "decode": t.get("predicted_per_second"),
-                           "prompt": t.get("prompt_per_second"), "prompt_n": t.get("prompt_n"),
-                           "n": r.get("usage", {}).get("completion_tokens"),
-                           "text": r["choices"][0]["message"].get("content", "")[:80]}
-                    out.write(json.dumps(row) + "\n")
-                    out.flush()
-                    res[name].setdefault(tag, []).append(row)
-                    print(f"  {tag:6s} decode {row['decode']} tok/s  prompt {row['prompt']} tok/s ({row['prompt_n']})  "
-                          f"n {row['n']}", flush=True)
+                for row in run_requests(a.port, reqs, a.max_new, rnd, name, out):
+                    res[name].setdefault(row["req"], []).append(row)
             finally:
                 proc.terminate()
                 try:
