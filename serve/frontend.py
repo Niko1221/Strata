@@ -1228,7 +1228,7 @@ class OutputParser:
         self.after_think = False     # #4077: the reasoning ended at a bare `</think>` (a second one in the answer is a stray)
         self.stray_think = 0         # ... and the strays of that kind dropped from the answer
         self.refused = 0             # declared calls kept as reasoning text (quoted, or the turn was cut)
-        self.fence, self.line, self.ticks = "", "", 0
+        self.fence, self.line, self.par_runs, self.par_open = "", "", 0, False
         self._prev_blank = self._indented = False   # #4703: the line before was blank / this is inside an indented (4-space) code block
         # recover (on in the server since 0.2.8, off for a bare OutputParser; the config's "tool_call_recovery": false turns it off): a declared tool's call written next to the template's
         # form is the call - `<parameter=NAME>` as the opener, JSON inside <tool_call>, a bare <function=NAME> at the
@@ -1348,8 +1348,8 @@ class OutputParser:
         self._line_blocks = None
 
     def _track(self, text: str) -> str:
-        """Follow the reasoning text that has gone out: the open code fence, the current line, and the backticks of
-        the current paragraph.  Returns the text."""
+        """Follow the reasoning text that has gone out: the open code fence, the current line, and whether a
+        backtick run at the end of the last line still has its closing run coming.  Returns the text."""
         # Most token fragments stay on the current line. Fence and paragraph
         # bookkeeping happens only when a newline completes that line.
         if "\n" not in text:
@@ -1380,9 +1380,18 @@ class OutputParser:
                 elif s[:3] in ("```", "~~~") and (s[0] * 3) not in s[3:]:
                     self.fence = s[0] * (len(s) - len(s.lstrip(s[0])))
                 elif not s:
-                    self.ticks = 0
+                    self.par_runs, self.par_open = 0, False   # a paragraph ends here
                 else:
-                    self.ticks += line.count("`")
+                    # #4923: the runs of backticks are paired across the paragraph, and a span only stays open
+                    # while the run that opened it ENDED its line ("wrapped `example").  A run with text after it
+                    # is a stray character: counting it as an open span had turned every later line of the
+                    # paragraph into inline code, and a real <tool_call> written after it was then kept as
+                    # reasoning text - the client saw thinking only and waited in "thinking" for a tool call the
+                    # engine had already produced.
+                    runs = self._backtick_runs(line)
+                    self.par_runs += runs
+                    if runs:                                   # a line without backticks does not move the last run
+                        self.par_open = line.endswith("`")
                 # #4703: an indented (4 spaces or a tab) code block starts after a blank line and goes on until a line that is not indented
                 if was_fenced or self.fence:
                     self._prev_blank = self._indented = False
@@ -1398,28 +1407,58 @@ class OutputParser:
                     self._line_parts.append(part)
         return text
 
+    @staticmethod
+    def _backtick_runs(line: str) -> int:
+        """How many runs of backticks the line holds: "a `b` c" has two, "``x``" has two, "``x" has one."""
+        runs, in_run = 0, False
+        for ch in line:
+            if ch == "`":
+                if not in_run:
+                    runs += 1
+                    in_run = True
+            else:
+                in_run = False
+        return runs
+
     def _opener_ok(self) -> bool:
         """The reasoning text so far puts a `<tool_call>` at the start of a line, outside a code fence and outside
-        inline code."""
-        return not self.fence and not self.line.strip() and self.ticks % 2 == 0 and not self._in_indented_block()
+        inline code (see _in_code for what counts as inline code)."""
+        return not self._in_code() and not self.line.strip()
 
     def _in_indented_block(self) -> bool:
         """#4703: the current line is part of an indented code block: four spaces or a tab, after a blank line or another such line."""
         return (self._prev_blank or self._indented) and self.line.startswith(("    ", "\t"))
 
     def _snap(self) -> tuple:
-        return (self.fence, self.line, self.ticks, self._prev_blank, self._indented)
+        return (self.fence, self.line, self.par_runs, self.par_open, self._prev_blank, self._indented)
 
     def _restore(self, snap: tuple) -> None:
-        self.fence, self.line, self.ticks, self._prev_blank, self._indented = snap
+        self.fence, self.line, self.par_runs, self.par_open, self._prev_blank, self._indented = snap
 
     def _reset_track(self) -> None:
-        self.fence, self.line, self.ticks = "", "", 0
+        self.fence, self.line, self.par_runs, self.par_open = "", "", 0, False
         self._prev_blank = self._indented = False
 
     def _in_code(self) -> bool:
-        """The text so far leaves the next character inside a code fence, inline code or an indented code block."""
-        return bool(self.fence) or (self.ticks + self.line.count("`")) % 2 == 1 or self._in_indented_block()
+        """The text so far leaves the next character inside a code fence, inline code or an indented code block.
+
+        #4923: the runs of backticks are paired across the paragraph, and a span only stays open while the run that
+        opened it ENDED its line - the way a wrapped `example` reads.  A run with text after it is a stray character,
+        not an opening run: a model writing "let me use `run_commands to check" leaves one behind, and counting the
+        backticks of the whole paragraph had then read every later line as inline code, so the real `<tool_call>`
+        that followed was kept as reasoning text.  The client received thinking only, never a tool_use block, and
+        waited in "thinking" for a call the engine had already generated and thrown away.  A quoted call is written
+        on its own line inside backticks or in a fence; both readings are unchanged.  A stray and a span that
+        genuinely stays open are the same shape and cannot be told apart without lookahead; this resolves towards
+        delivering the call, which for an agentic client is the cheaper error."""
+        if self._in_indented_block():
+            return True
+        if self.fence:
+            return True
+        runs = self._backtick_runs(self.line)
+        if runs:
+            return (self.par_runs + runs) % 2 == 1 and self.line.endswith("`")
+        return self.par_runs % 2 == 1 and self.par_open
 
     def _quoted_think_end(self, i: int) -> bool | None:
         """#537: the `</think>` at self.buf[i] is the model quoting the tag while it thinks, not the end of the

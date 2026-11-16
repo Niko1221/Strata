@@ -23,9 +23,12 @@ class ReferenceParser(OutputParser):
                 elif s[:3] in ("```", "~~~") and (s[0] * 3) not in s[3:]:
                     self.fence = s[0] * (len(s) - len(s.lstrip(s[0])))
                 elif not s:
-                    self.ticks = 0
+                    self.par_runs, self.par_open = 0, False
                 else:
-                    self.ticks += line.count("`")
+                    runs = self._backtick_runs(line)
+                    self.par_runs += runs
+                    if runs:
+                        self.par_open = line.endswith("`")
                 if was_fenced or self.fence:                                       # #4703: indented code blocks
                     self._prev_blank = self._indented = False
                 elif not s:
@@ -42,20 +45,21 @@ class ReferenceParser(OutputParser):
 
 class TrackTests(unittest.TestCase):
     def assert_state(self, actual, expected):
-        self.assertEqual((actual.line, actual.fence, actual.ticks, actual._prev_blank, actual._indented),
-                         (expected.line, expected.fence, expected.ticks, expected._prev_blank, expected._indented))
+        self.assertEqual((actual.line, actual.fence, actual.par_runs, actual.par_open, actual._prev_blank, actual._indented),
+                         (expected.line, expected.fence, expected.par_runs, expected.par_open, expected._prev_blank, expected._indented))
         self.assertEqual(actual._opener_ok(), expected._opener_ok())
         self.assertEqual(actual._in_code(), expected._in_code())
 
     def test_fragment_state_from_varied_initial_states(self):
         fragments = ("", "a", "é🙂", "`", "``", "```", "~~~", "\r", "\n", "\r\n",
                      "\n\n", "\n    code\n", "    x\n", "  ```python\n", "````md\n", "```quoted```\n", "~\ntext", "\t\nrest")
-        for fence, line, ticks, text in itertools.product(("", "`", "~"),
-                                                         ("", "  ", "``", "code `"),
-                                                         (0, 1, 2, 3), fragments):
+        for fence, line, (par_runs, par_open), text in itertools.product(("", "`", "~"),
+                                                                      ("", "  ", "``", "code `"),
+                                                                      ((0, False), (1, False), (1, True), (2, True)),
+                                                                      fragments):
             actual, expected = OutputParser(), ReferenceParser()
             for parser in (actual, expected):
-                parser.fence, parser.line, parser.ticks = fence, line, ticks
+                parser.fence, parser.line, parser.par_runs, parser.par_open = fence, line, par_runs, par_open
             self.assertEqual(actual._track(text), expected._track(text))
             self.assert_state(actual, expected)
 
@@ -82,10 +86,10 @@ class TrackTests(unittest.TestCase):
                 parser._track("abc café 🙂 `")
         self.assert_state(actual, expected)
         for parser in (actual, expected):
-            saved = (parser.fence, parser.line, parser.ticks)
+            saved = (parser.fence, parser.line, parser.par_runs, parser.par_open)
             parser.buf = "\n```python\nignored"
             parser._ok_at(len(parser.buf))
-            self.assertEqual((parser.fence, parser.line, parser.ticks), saved)
+            self.assertEqual((parser.fence, parser.line, parser.par_runs, parser.par_open), saved)
             parser._track("more text")
             self.assertEqual(saved[1] + "more text", parser.line)
             parser._track("\n~~~\ninside\n~~~\n")
