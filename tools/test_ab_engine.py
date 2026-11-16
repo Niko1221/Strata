@@ -20,11 +20,17 @@ def a(name):
 
 RELEASES = [
     {"tag_name": "v0.2.10", "assets": [a("strata-engine-0.1.56-windows-x86_64-cuda-cuda13.tar.gz"),
+                                       a("strata-engine-0.1.56-windows-x86_64-hip-rdna2.tar.gz"),
+                                       a("strata-engine-0.1.56-windows-x86_64-hip-rdna3.tar.gz"),
                                        a("strata-control-0.1.56-windows-x86_64.zip"), a("SHA256SUMS.txt")]},
-    {"tag_name": "v0.2.9", "assets": [a("strata-engine-0.1.55-windows-x86_64-cuda-cuda13.tar.gz"),
-                                      a("strata-engine-0.1.55-windows-x86_64-cuda-cuda12.tar.gz"),
+    {"tag_name": "v0.2.9", "assets": [a("strata-engine-0.1.55-windows-x86_64-cuda-cuda12.tar.gz"),
+                                      a("strata-engine-0.1.55-windows-x86_64-cuda-cuda13.tar.gz"),
                                       a("strata-control-0.1.55-windows-x86_64.zip"), a("SHA256SUMS.txt")]},
+    {"tag_name": "v0.2.8", "assets": [a("strata-engine-0.1.54-windows-x86_64-cuda-cuda12.tar.gz"),
+                                      a("strata-control-0.1.54-windows-x86_64.zip"), a("SHA256SUMS.txt")]},
 ]
+ANSWER = {"timings": {"predicted_per_second": 50.0, "prompt_per_second": 900.0, "prompt_n": 40}, "usage": {"completion_tokens": 256},
+          "choices": [{"message": {"content": "hi"}}]}
 ROW = {"round": 0, "arm": "x", "req": "chat0", "decode": 50.0, "prompt": 900.0, "prompt_n": 40, "n": 256, "text": "hi"}
 
 
@@ -48,7 +54,7 @@ class VersionsMode(unittest.TestCase):
              "snapshot": mock.Mock(return_value={}), "changed": mock.Mock(return_value=[]), "live_roots": mock.Mock(return_value=[]),
              "launch": mock.Mock(return_value=LaunchResult(True, 12.0)), "stop": mock.Mock(),
              "collect_configs": mock.Mock(return_value=[]), "version_problem": mock.Mock(return_value=None)}
-        e = {"run_requests": mock.Mock(side_effect=lambda port, reqs, max_new, rnd, arm, out: [dict(ROW, round=rnd, arm=arm)]),
+        e = {"run_requests": mock.Mock(side_effect=lambda port, reqs, max_new, rnd, arm, out, rows: rows.append(dict(ROW, round=rnd, arm=arm))),
              "post": mock.Mock(), "gpu_name": mock.Mock(return_value="RTX 3090, 24576 MiB"),
              "detect": mock.Mock(return_value=("windows-x86_64", "cuda"))}
         r = {"write_report": mock.Mock(return_value=(self.bench / "report.html", None))}
@@ -107,7 +113,12 @@ class VersionsMode(unittest.TestCase):
         self.assertEqual((results["arms"][0]["setup_s"], results["arms"][0]["start_s"]), (12.0, [12.0]))
 
     def test_interrupt_stops_server(self):
-        requests = mock.Mock(side_effect=[[dict(ROW, round=0, arm="v0.1.55")], KeyboardInterrupt])
+        def answer(port, reqs, max_new, rnd, arm, out, rows):
+            if arm != "v0.1.55":
+                raise KeyboardInterrupt
+            rows.append(dict(ROW, round=rnd, arm=arm))
+
+        requests = mock.Mock(side_effect=answer)
         code, results, m = self.run_tool(run_requests=requests)
         self.assertEqual(m["stop"].call_count, 2)
         self.assertEqual(m["snapshot"].call_count, 2)
@@ -155,13 +166,49 @@ class VersionsMode(unittest.TestCase):
         self.assertEqual(m["live_roots"].call_args.args[1], self.model)
         m["write_report"].assert_called_once()
 
-    def test_backend_family_with_several_variants_asks(self):
-        with mock.patch("sys.stderr"), self.assertRaises(SystemExit):
-            self.run_tool(["--backend", "cuda", "--engines", "0.1.55"])
+    def engines_used(self, m):
+        return [c.args[0].engine_name for c in m["ensure_packages"].call_args_list]
 
-    def test_backend_family_with_one_variant_is_used(self):
-        code, results, m = self.run_tool(["--engines", "0.1.56", "--backend", "cuda"])
-        self.assertEqual(m["ensure_packages"].call_args.args[0].engine_name, "strata-engine-0.1.56-windows-x86_64-cuda-cuda13.tar.gz")
+    def test_bare_cuda_prefers_cuda13_and_falls_back_per_version(self):
+        code, results, m = self.run_tool(["--backend", "cuda", "--engines", "0.1.54..0.1.56"])
+        self.assertEqual(self.engines_used(m), ["strata-engine-0.1.54-windows-x86_64-cuda-cuda12.tar.gz",
+                                                "strata-engine-0.1.55-windows-x86_64-cuda-cuda13.tar.gz",
+                                                "strata-engine-0.1.56-windows-x86_64-cuda-cuda13.tar.gz"])
+
+    def test_detected_family_needs_no_backend(self):
+        argv = ["--model-path", str(self.model), "--engines", "0.1.55,0.1.56", "--bench-dir", str(self.bench)]
+        with mock.patch.object(ab_engine, "run_versions", mock.Mock(return_value=0)) as rv:
+            ab_engine.main(argv)
+        self.assertIsNone(rv.call_args.args[0].backend)
+        code, results, m = self.run_tool(["--backend", ""])          # "" -> the detected family, "cuda"
+        self.assertEqual(self.engines_used(m)[0], "strata-engine-0.1.55-windows-x86_64-cuda-cuda13.tar.gz")
+
+    def test_exact_backend_overrides(self):
+        code, results, m = self.run_tool(["--backend", "cuda-cuda12", "--engines", "0.1.55"])
+        self.assertEqual(self.engines_used(m), ["strata-engine-0.1.55-windows-x86_64-cuda-cuda12.tar.gz"])
+
+    def test_several_hip_builds_ask(self):
+        with mock.patch("sys.stderr"), self.assertRaises(SystemExit):
+            self.run_tool(["--backend", "hip", "--engines", "0.1.56"])
+
+    def test_interrupt_mid_round_keeps_answered_rows(self):
+        post = mock.Mock(side_effect=[ANSWER, ANSWER, KeyboardInterrupt])     # warm-up, chat0, then Ctrl-C on chat1
+        code, results, m = self.run_tool(run_requests=ab_engine.run_requests, post=post)
+        first = results["arms"][0]
+        self.assertEqual((first["status"], [r["req"] for r in first["rows"]]), ("ran", ["chat0"]))
+        self.assertEqual(m["stop"].call_count, 1)
+        self.assertEqual(code, 130)
+
+    def test_changed_files_are_named_even_when_the_run_crashes(self):
+        with mock.patch("builtins.print") as pr, self.assertRaises(RuntimeError):
+            self.run_tool(changed=mock.Mock(return_value=["~x"]), launch=mock.Mock(side_effect=RuntimeError("boom")))
+        self.assertTrue(any("~x" in str(c) for c in pr.call_args_list))
+
+    def test_old_mode_refuses_versions_flags(self):
+        with mock.patch("sys.stderr"):
+            for flag in (["--tune", "quick"], ["--backend", "cuda"], ["--bench-dir", "x"]):
+                with self.subTest(flag=flag), self.assertRaises(SystemExit):
+                    ab_engine.parse_args(["cfg.json", "A:exe=x", *flag])
 
 
 if __name__ == "__main__":
