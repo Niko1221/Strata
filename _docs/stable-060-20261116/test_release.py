@@ -293,5 +293,162 @@ class PreparedInputs(unittest.TestCase):
                 release.host_dependency_root()
 
 
+class PreservedNotices(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.base = Path(self.temp.name).resolve()
+        self.source = self.base / "source"
+        self.resources = self.source / "resources"
+        self.work = self.base / "notices-r1"
+        self.prior = self.base / "inputs/notices"
+        self.prior.mkdir(parents=True)
+        self.work.mkdir()
+        for context in (
+            patch.dict(os.environ, {}, clear=True),
+            patch.object(release, "ROOT", self.source),
+            patch.object(release, "OUT", self.base),
+            patch.object(release, "RES", self.resources),
+        ):
+            context.start()
+            self.addCleanup(context.stop)
+        self.vendor = []
+        for name in ("Microsoft-One.docx", "Microsoft-Two.docx", "Microsoft-Three.docx"):
+            self.write(self.prior / name, "synthetic " + name)
+            self.vendor.append({"file": name, "sha256": release.sha(self.prior / name)})
+        self.write(self.source / "packaging/microsoft-2022-notice-sources.json", json.dumps(self.vendor))
+        self.record = {"schema": 1, "files": {v["file"]: v["sha256"] for v in self.vendor}}
+        self.write(self.prior / ".gitignore", "*\n")
+        self.write(self.prior / "NOTICES.json", json.dumps(self.record))
+        self.args = release.arguments(
+            [
+                "notices",
+                "--reviewed-commit",
+                "a" * 40,
+                "--prior-notices",
+                str(self.prior),
+                "--prior-notices-manifest-sha256",
+                release.sha(self.prior / "NOTICES.json"),
+                "--cuda-dir",
+                str(self.base / "cuda"),
+            ]
+        )
+
+    def write(self, path: Path, text: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+
+    def repin_manifest(self) -> None:
+        self.write(self.prior / "NOTICES.json", json.dumps(self.record))
+        self.args.prior_notices_manifest_sha256 = release.sha(self.prior / "NOTICES.json")
+
+    def prepare_current_licenses(self) -> Path:
+        for path in (
+            self.source / "LICENSE",
+            self.source / "third_party/strata-ggml/LICENSE",
+            self.source / "third_party/libstrix/NOTICE.md",
+            self.source / "packaging/hakua-third-party-notices.md",
+            self.args.cuda_dir / "EULA.txt",
+            self.args.cuda_dir / "LICENSE",
+            self.resources / "node/LICENSE",
+            self.resources / "control/python/LICENSE",
+        ):
+            self.write(path, "current synthetic licence " + path.name)
+        qwen = self.source / "data/experimental-speed-projection/LICENSE"
+        self.write(qwen, "synthetic community licence")
+        self.write(qwen.with_name("PROVENANCE.json"), json.dumps({"license": {"sha256": release.sha(qwen)}}))
+        deps = self.base / "host-deps"
+        for name in ("react", "react-dom", "scheduler", "katex", "prismjs", "pdfjs-dist", "html-to-image"):
+            self.write(deps / name / "LICENSE", "synthetic " + name)
+        return deps
+
+    def test_preserved_input_and_fresh_target_complete_without_old_primary_notices(self) -> None:
+        deps = self.prepare_current_licenses()
+        identity = release.prior_notice_identity(self.args, self.work)
+        with patch.object(release, "host_dependency_root", return_value=deps):
+            result = release.notices(self.args, self.work)
+        self.assertEqual(result["priorNotices"], identity)
+        self.assertEqual(release.prior_notice_identity(self.args, self.work), identity)
+        self.assertIn("Node-LICENSE.txt", result["noticeFiles"])
+        self.assertEqual(
+            (self.resources / "notices/Microsoft-One.docx").read_bytes(),
+            (self.prior / "Microsoft-One.docx").read_bytes(),
+        )
+
+    def test_occupied_target_still_refused_and_preserved(self) -> None:
+        deps = self.prepare_current_licenses()
+        target = self.resources / "notices/old-payload"
+        self.write(target, "preserve this")
+        with patch.object(release, "host_dependency_root", return_value=deps):
+            with self.assertRaisesRegex(RuntimeError, "Existing staged payload"):
+                release.notices(self.args, self.work)
+        self.assertEqual(target.read_text(), "preserve this")
+
+    def test_prior_input_required_only_for_notices_unless_explicitly_passed(self) -> None:
+        for phase in release.PHASES:
+            args = release.arguments([phase])
+            if phase == "notices":
+                with self.assertRaisesRegex(RuntimeError, "Explicit prior notices"):
+                    release.prior_notice_identity(args, self.work)
+            else:
+                with patch.object(Path, "resolve", side_effect=AssertionError("Input examined")):
+                    self.assertIsNone(release.prior_notice_identity(args, self.work))
+
+    def test_worker_receives_path_and_full_identity_including_scaffold(self) -> None:
+        worker = release.arguments(release.worker_command(self.args)[3:])
+        identity = release.prior_notice_identity(worker, self.work)
+        self.assertEqual(identity, release.prior_notice_identity(self.args, self.work))
+        self.assertIn(".gitignore", identity["files"])
+        self.assertIn("NOTICES.json", identity["files"])
+        self.assertEqual(len(identity["files"]), 5)
+
+    def test_manifest_wrong_hash_and_traversal_rejected(self) -> None:
+        self.args.prior_notices_manifest_sha256 = "0" * 64
+        with self.assertRaisesRegex(RuntimeError, "manifest SHA-256 mismatch"):
+            release.prior_notice_identity(self.args, self.work)
+        self.record["files"]["../outside"] = "a" * 64
+        self.repin_manifest()
+        with self.assertRaisesRegex(RuntimeError, "Unsafe prior notice"):
+            release.prior_notice_identity(self.args, self.work)
+
+    def test_membership_and_payload_changes_rejected(self) -> None:
+        extra = self.prior / "extra"
+        self.write(extra, "extra")
+        with self.assertRaisesRegex(RuntimeError, "membership or bytes"):
+            release.prior_notice_identity(self.args, self.work)
+        extra.unlink()
+        self.write(self.prior / "Microsoft-One.docx", "changed")
+        with self.assertRaisesRegex(RuntimeError, "membership or bytes"):
+            release.prior_notice_identity(self.args, self.work)
+
+    def test_vendor_change_rejected_even_with_new_manifest_pin(self) -> None:
+        self.write(self.prior / "Microsoft-One.docx", "changed")
+        self.record["files"]["Microsoft-One.docx"] = release.sha(self.prior / "Microsoft-One.docx")
+        self.repin_manifest()
+        with self.assertRaisesRegex(RuntimeError, "vendor notice pin mismatch"):
+            release.prior_notice_identity(self.args, self.work)
+
+    def test_reserved_scaffold_change_rejected(self) -> None:
+        identity = release.prior_notice_identity(self.args, self.work)
+        self.write(self.prior / ".gitignore", "changed scaffold")
+        with self.assertRaisesRegex(RuntimeError, "Reserved prior notices changed"):
+            release.unchanged_prior_notices(self.args, self.work, identity)
+
+    def test_target_attempt_overlap_outside_and_reparse_inputs_rejected(self) -> None:
+        for resource in (self.prior.parent, self.prior / "child"):
+            with patch.object(release, "RES", resource):
+                with self.assertRaisesRegex(RuntimeError, "overlap"):
+                    release.prior_notice_identity(self.args, self.work)
+        with self.assertRaisesRegex(RuntimeError, "overlap"):
+            release.prior_notice_identity(self.args, self.prior)
+        self.args.prior_notices = self.base
+        with self.assertRaisesRegex(RuntimeError, "inside release inputs"):
+            release.prior_notice_identity(self.args, self.work)
+        self.args.prior_notices = self.prior
+        with patch.object(release, "no_links", side_effect=RuntimeError("Reparse path refused")):
+            with self.assertRaisesRegex(RuntimeError, "Reparse"):
+                release.prior_notice_identity(self.args, self.work)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -281,6 +281,72 @@ def unchanged_public_assets(args: argparse.Namespace, expected: dict | None) -> 
     require(public_asset_identity(args) == expected, "Reserved public asset inputs changed")
 
 
+def prior_notice_identity(args: argparse.Namespace, work: Path) -> dict | None:
+    """Verify preserved old notices independently of the fresh resource destination."""
+    prior, expected = args.prior_notices, args.prior_notices_manifest_sha256
+    if prior is None and expected is None and args.phase != "notices":
+        return None
+    require(
+        prior is not None and bool(re.fullmatch("[a-f0-9]{64}", expected or "")),
+        "Explicit prior notices and expected manifest SHA-256 required",
+    )
+    require(prior.is_absolute(), "Absolute prior notices input required")
+    no_links(prior)
+    inputs = OUT / "inputs"
+    require(
+        prior.resolve(strict=True) == prior and prior != inputs and prior.is_relative_to(inputs),
+        "Prior notices must be a physical directory inside release inputs",
+    )
+    for other in (RES / "notices", work):
+        no_links(other)
+        physical = other.resolve()
+        require(
+            not prior.is_relative_to(physical) and not physical.is_relative_to(prior),
+            "Prior notices overlap resource target or attempt",
+        )
+    manifest = prior / "NOTICES.json"
+    no_links(manifest)
+    raw = manifest.read_bytes()
+    require(hashlib.sha256(raw).hexdigest() == expected, "Prior notices manifest SHA-256 mismatch")
+    old = json.loads(raw.decode("utf-8-sig"))
+    files = old.get("files")
+    require(
+        old.get("schema") == 1 and isinstance(files, dict) and bool(files),
+        "Prior notices file inventory required",
+    )
+    for name, checksum in files.items():
+        require(
+            isinstance(name, str)
+            and name != "NOTICES.json"
+            and not any(c in name for c in ("\\", ":"))
+            and all(p not in {"", ".", ".."} for p in name.split("/"))
+            and isinstance(checksum, str)
+            and bool(re.fullmatch("[a-f0-9]{64}", checksum)),
+            "Unsafe prior notice inventory member",
+        )
+    actual = inventory(prior)
+    require(
+        set(actual) - set(files) <= {".gitignore", "NOTICES.json"}
+        and actual.get("NOTICES.json") == expected
+        and all(actual.get(name) == checksum for name, checksum in files.items()),
+        "Prior notices membership or bytes changed",
+    )
+    vendor = load(ROOT / "packaging/microsoft-2022-notice-sources.json")
+    for item in vendor:
+        require(
+            bool(re.fullmatch("[A-Za-z0-9.-]+", item["file"]))
+            and files.get(item["file"]) == item["sha256"]
+            and actual.get(item["file"]) == item["sha256"],
+            "Prior vendor notice pin mismatch",
+        )
+    require(sha(manifest) == expected, "Prior notices manifest changed during verification")
+    return {"root": str(prior), "manifestSHA256": expected, "files": actual, "microsoftSources": vendor}
+
+
+def unchanged_prior_notices(args: argparse.Namespace, work: Path, expected: dict | None) -> None:
+    require(prior_notice_identity(args, work) == expected, "Reserved prior notices changed")
+
+
 def freeze(args: argparse.Namespace, work: Path) -> dict:
     identity = reviewed(args.reviewed_commit)
     files = {}
@@ -435,11 +501,8 @@ def host_dependency_root() -> Path:
 def notices(args: argparse.Namespace, work: Path) -> dict:
     """Fresh notices bind current dependencies; never reuse the obsolete external ggml pin."""
     require(args.cuda_dir is not None, "Explicit CUDA toolkit directory required")
-    prior = PRIMARY_RES / "notices"
-    old = load(prior / "NOTICES.json")
-    require(
-        all(sha(prior / n) == h for n, h in old["files"].items()), "Prior vendor notice inventory differs"
-    )
+    prior_identity = prior_notice_identity(args, work)
+    prior = args.prior_notices
     destination = work / "notices"
     destination.mkdir()
     entries: dict[str, str] = {}
@@ -504,7 +567,12 @@ def notices(args: argparse.Namespace, work: Path) -> dict:
         destination / "NOTICES.json",
         {"schema": 1, "microsoftSources": vendor, "qwenSource": qwen, "files": entries},
     )
-    return {"noticeFiles": stage(destination, RES / "notices"), "ggmlMode": "vendored"}
+    unchanged_prior_notices(args, work, prior_identity)
+    return {
+        "noticeFiles": stage(destination, RES / "notices"),
+        "ggmlMode": "vendored",
+        "priorNotices": prior_identity,
+    }
 
 
 def component(args: argparse.Namespace, work: Path) -> dict:
@@ -696,6 +764,7 @@ PATH_OPTIONS = (
     "key",
     "public-assets",
     "public-assets-receipt",
+    "prior-notices",
 )
 
 
@@ -708,6 +777,7 @@ def arguments(argv: list[str] | None = None) -> argparse.Namespace:
     for name in PATH_OPTIONS:
         parser.add_argument("--" + name, type=Path)
     parser.add_argument("--public-assets-receipt-sha256")
+    parser.add_argument("--prior-notices-manifest-sha256")
     parser.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
     return parser.parse_args(argv)
 
@@ -725,7 +795,7 @@ def worker_command(args: argparse.Namespace) -> list[str]:
         "--attempt",
         args.attempt,
     ]
-    for name in (*PATH_OPTIONS, "public-assets-receipt-sha256"):
+    for name in (*PATH_OPTIONS, "public-assets-receipt-sha256", "prior-notices-manifest-sha256"):
         value = getattr(args, name.replace("-", "_"))
         if value is not None:
             argv.extend(["--" + name, str(value)])
@@ -757,6 +827,7 @@ def main() -> int:
     require(os.name == "nt" and sys.version_info >= (3, 12), "Windows Python 3.12+ required")
     identity = reviewed(args.reviewed_commit)
     public_assets = public_asset_identity(args)
+    prior_notices = prior_notice_identity(args, work)
     admit()
     if args.worker:
         reservation = load(work / "reservation.json")
@@ -770,6 +841,7 @@ def main() -> int:
             "Reserved helper bytes changed",
         )
         require(reservation["publicAssets"] == public_assets, "Reserved public asset inputs changed")
+        require(reservation["priorNotices"] == prior_notices, "Reserved prior notices changed")
         import ctypes
         from ctypes import wintypes
         from perf131k.windows_job import api
@@ -781,6 +853,7 @@ def main() -> int:
         )
         result = PHASES[args.phase](args, work)
         unchanged_public_assets(args, public_assets)
+        unchanged_prior_notices(args, work, prior_notices)
         require(reviewed(args.reviewed_commit) == identity, "Source changed during phase")
         require(
             reservation["helpers"] == {p.name: sha(p) for p in (HERE / "release.py", HERE / "verify.mjs")},
@@ -795,6 +868,7 @@ def main() -> int:
                 "releaseQualified": False,
                 **result,
                 "publicAssets": public_assets,
+                "priorNotices": prior_notices,
             },
         )
         return 0
@@ -811,6 +885,7 @@ def main() -> int:
             "token": token,
             "helpers": {p.name: sha(p) for p in (HERE / "release.py", HERE / "verify.mjs")},
             "publicAssets": public_assets,
+            "priorNotices": prior_notices,
         },
     )
     env = worker_environment(work, token)
@@ -848,8 +923,10 @@ def main() -> int:
     )
     require(reviewed(args.reviewed_commit) == identity, "Source changed after worker exit")
     unchanged_public_assets(args, public_assets)
+    unchanged_prior_notices(args, work, prior_notices)
     result = load(work / "pending.json")
     require(result["publicAssets"] == public_assets, "Worker public asset identity differs")
+    require(result["priorNotices"] == prior_notices, "Worker prior notices identity differs")
     save(work / "receipt.json", result)
     LOG.info(json.dumps({"ok": True, "receipt": str(work / "receipt.json"), "releaseQualified": False}))
     return 0
