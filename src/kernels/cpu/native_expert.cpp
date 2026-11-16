@@ -502,8 +502,8 @@ void native_gu_rows_impl(const NativeFmt& f, const uint8_t* blob, const void* co
     // (x512_bench), the same output.  Where the multi-token rule (#152) already sends one token to the multi-token kernel
     // (STRATA_IQ_MT_MIN=1) that stays; STRATA_NO_IQ512X1=1 turns this off; the first use checks the bits against this ggml.
     static const bool x512_one = avx512 && iq512_gather_on() && std::getenv("STRATA_NO_IQ512X1") == nullptr;
-    if (x512_one && nt == 1 && nt < native_gu_mt_min(f.gu_type) && f.tail_off == 0 && (f.gu_type == 18 || f.gu_type == 21) &&
-        x512_one_ok(f.gu_type)) {
+    if (x512_one && nt == 1 && nt < native_gu_mt_min(f.gu_type) && f.tail_off == 0 &&
+        (f.gu_type == 18 || f.gu_type == 21 || (f.gu_type == 22 && iq512_fast_on())) && x512_one_ok(f.gu_type)) {
         const int n1 = (int) f.n_embd;
         float g[64], u[64];
         float* gp[1] = {g};

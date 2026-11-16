@@ -11,6 +11,9 @@ bool iq512_supported(int ggml_type) noexcept;
 /// Whether the grid lookups of these rows are gathers (the default where cpu_gather_fast(), STRATA_IQ_GATHER=1 / 0 force it): the
 /// same words, so the same bits as the scalar lookups, and 1.3-2x faster where a gather is cheap (Sapphire Rapids).
 bool iq512_gather_on() noexcept;
+/// STRATA_IQ_FAST=1 on a CPU with AVX512 VBMI + BITALG + VPOPCNTDQ: the block-at-once gate/up rows of IQ3_XXS / IQ3_S / IQ2_S
+/// (iq_avx512.cpp), bitwise the default kernels' rows
+bool iq512_fast_on() noexcept;
 /// ff[t][r] = silu(gate_r . a[t]) * (up_r . a[t]), rows [r0, r1); gate rows at blob, up rows at blob + up_off.
 void iq512_gu_rows(int ggml_type, const uint8_t* blob, size_t gu_row, size_t up_off, int n, const void* const* act,
                    int nt, float* const* ff, int r0, int r1);

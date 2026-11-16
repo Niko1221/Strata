@@ -256,7 +256,10 @@ macro(strata_cpu_native_experts)
     # the older CPUs' i-quant expert rows (iq_avx1.hpp): 128-bit SSSE3/SSE2 integer, SSE2 float, no FMA/F16C
     set_source_files_properties(src/kernels/cpu/iq_avx1.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX")
   else()
-    set_source_files_properties(src/kernels/cpu/iq_avx512.cpp src/kernels/cpu/nvfp4_avx512.cpp PROPERTIES COMPILE_OPTIONS
+    # iq_avx512.cpp also holds the STRATA_IQ_FAST rows (vpopcntb: AVX512_BITALG, behind their own CPUID check)
+    set_source_files_properties(src/kernels/cpu/iq_avx512.cpp PROPERTIES COMPILE_OPTIONS
+                                "-mavx512f;-mavx512bw;-mavx512vl;-mavx512dq;-mavx512vnni;-mavx512vbmi;-mavx512vpopcntdq;-mavx512bitalg;-mbmi2;-mf16c;-mfma")
+    set_source_files_properties(src/kernels/cpu/nvfp4_avx512.cpp PROPERTIES COMPILE_OPTIONS
                                 "-mavx512f;-mavx512bw;-mavx512vl;-mavx512dq;-mavx512vnni;-mavx512vbmi;-mavx512vpopcntdq;-mbmi2;-mf16c;-mfma")
     set_source_files_properties(src/kernels/cpu/iq_avx2.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma;-mf16c")
     set_source_files_properties(src/kernels/cpu/kq_avx2.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma;-mf16c")
@@ -341,12 +344,14 @@ macro(strata_cpu_native_experts)
   add_executable(iq_avx2_parity src/kernels/cpu/iq_avx2_parity.cpp)
   target_link_libraries(iq_avx2_parity PRIVATE strata_kernels_cpu)
   # the 512-bit i-quant rows against ggml-cpu's dot: the exact rows bit for bit at 1-4 tokens, the engine's multi-token rows to float
-  # rounding, with the grid lookups as scalar loads and as gathers (SKIP without AVX-512)
+  # rounding, the gate/up rows bit for bit against those sums, with the grid lookups as scalar loads, as gathers and with the
+  # STRATA_IQ_FAST block-at-once rows (SKIP without AVX-512; without VBMI / BITALG the third run checks the default rows again)
   add_executable(iq512_gather_parity src/kernels/cpu/iq512_gather_parity.cpp)
   target_link_libraries(iq512_gather_parity PRIVATE strata_kernels_cpu)
   if(STRATA_BUILD_TESTS)
     add_test(NAME iq512_gather_parity_scalar COMMAND ${CMAKE_COMMAND} -E env STRATA_IQ_GATHER=0 $<TARGET_FILE:iq512_gather_parity>)
     add_test(NAME iq512_gather_parity_gather COMMAND ${CMAKE_COMMAND} -E env STRATA_IQ_GATHER=1 $<TARGET_FILE:iq512_gather_parity>)
+    add_test(NAME iq512_gather_parity_fast COMMAND ${CMAKE_COMMAND} -E env STRATA_IQ_FAST=1 $<TARGET_FILE:iq512_gather_parity>)
   endif()
   # MODEL-UPDATE: the pool's expert rows per format on T threads against the RAM bandwidth (a benchmark, no test)
   add_executable(kq_cpu_bench src/kernels/cpu/kq_cpu_bench.cpp)
@@ -354,6 +359,13 @@ macro(strata_cpu_native_experts)
   # round 0216: a hash per (pair, token count, row range) of the pool's native expert calls, to compare a change switched off and on
   add_executable(cpu_dispatch_dump src/kernels/cpu/cpu_dispatch_dump.cpp)
   target_link_libraries(cpu_dispatch_dump PRIVATE strata_kernels_cpu)
+  # #6085: the smallest run of the pool's rows with STRATA_IQ_FAST set.  On a CPU without AVX-512 the switch must be ignored:
+  # the first version filled its control tables in a static initialiser of iq_avx512.cpp, GCC vectorized it, and an AVX2-only
+  # CPU died before main() whatever the switch said (isa_guard_check below is the static check of the same thing).
+  if(STRATA_BUILD_TESTS)
+    add_test(NAME cpu_dispatch_dump_iq_fast COMMAND ${CMAKE_COMMAND} -E env STRATA_IQ_FAST=1
+             $<TARGET_FILE:cpu_dispatch_dump> --pairs iq3_s/iq4_nl --nt-max 1 --experts 1)
+  endif()
   # round 0216: the CPU pool's part of a decode window replayed without a GPU (per-layer format pairs, calibrated expert and row counts, cold DRAM)
   add_executable(kq_window_bench src/kernels/cpu/kq_window_bench.cpp)
   target_link_libraries(kq_window_bench PRIVATE strata_kernels_cpu)
@@ -524,6 +536,11 @@ if(STRATA_BUILD_TESTS)
       endforeach()
       if(TARGET q2_bitplane_parity)
         set_tests_properties(sde_${_chip}_q2_bitplane_parity PROPERTIES ENVIRONMENT "STRATA_Q2_BITPLANE=1")
+      endif()
+      if(TARGET cpu_dispatch_dump)   # #6085: start-up and one row call with STRATA_IQ_FAST set, on a CPU without AVX-512
+        add_test(NAME sde_${_chip}_cpu_dispatch_dump_iq_fast COMMAND ${STRATA_SDE} -${_chip} --
+                 $<TARGET_FILE:cpu_dispatch_dump> --pairs iq3_s/iq4_nl --nt-max 1 --experts 1)
+        set_tests_properties(sde_${_chip}_cpu_dispatch_dump_iq_fast PROPERTIES ENVIRONMENT "STRATA_IQ_FAST=1" TIMEOUT 900)
       endif()
     endforeach()
   endif()

@@ -14284,6 +14284,41 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_IQ_FAST",
+   "backends": [
+    "cpu"
+   ],
+   "reads": [
+    {
+     "file": "src/kernels/cpu/iq_avx512.cpp",
+     "line": 678,
+     "backend": "cpu",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/DETAILS.md:1099"
+   ],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "kernels/cpu",
+   "note": "[reviewed] Block-at-once IQ3_XXS / IQ3_S / IQ2_S gate/up rows on AVX-512 VBMI + BITALG + VPOPCNTDQ; the same bits as the default rows.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_IQ_GATHER",
    "backends": [
     "cpu"

@@ -117,6 +117,7 @@ void iq512_rows(int, const uint8_t*, size_t, int, const void* const*, int, float
     unsupported("the AVX-512 i-quant kernel");
 }
 bool iq512_gather_on() noexcept { return false; }
+bool iq512_fast_on() noexcept { return false; }
 bool iq512x_supported(int) noexcept { return false; }
 void iq512x_rows(int, const uint8_t*, size_t, int, const void* const*, int, float* const*, int, int) {
     unsupported("the AVX-512 exact i-quant kernel");
