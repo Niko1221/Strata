@@ -8,7 +8,7 @@ The controller owns the final reviewed commit, native compilation/binding, quali
 
 R1: frozen identity. `release.py freeze` captures the exact clean commit/tree and SHA-256 of every tracked physical file. Every other phase independently requires the same explicit clean current commit and 0.6.0 version files. The native binding must name the actual executing checkout. Moving the helper from H: to C: does not rebind the old H: CUDA build or certify its bytes as a new build.
 
-R2: unchanged dependencies. `dependencies` verifies the reviewed Harness commit and output-budget patch, its missing-import check, RustXNG Full version/source/binary/licences, local-backend manifests and pinned public assets. It inventories managed Harness/local-backends before and after copying and compares every destination hash. Node 24.22.3 executable and licence are independently pinned. Model/profile trees and primary resources are not modified. Destinations must be absent or contain only tracked scaffolding; existing payload causes refusal. No recursive delete/move is implemented by this helper.
+R2: unchanged dependencies. `dependencies` verifies the reviewed Harness commit and output-budget patch, its missing-import check, RustXNG Full version/source/binary/licences, local-backend manifests and explicitly supplied pinned public assets. It inventories managed Harness/local-backends before and after copying and compares every destination hash. When both physical resource paths are exactly the primary resource root, it instead verifies twice and compares complete inventories before and after, recording `verified-in-place` and `copied:false`. Other destinations must be absent or contain only tracked scaffolding; existing payload causes refusal. This exception never applies to Control, notices or native component replacement. Node 24.22.3 executable and licence are independently pinned. No model/profile copying or recursive delete/move is implemented.
 
 R3: fresh Terminal/Control. `control` requires an existing CPython 3.12.15 archive matching the reviewed source pin and a flat wheelhouse accepted by the current 25-package hash lock. It copies these inputs into the fresh attempt, invokes the production Terminal packager with the explicit reviewed commit and offline wheels, stages a new private Control directory with the production stager, validates version/lock/installed packages/COMMIT, fills the integration's scaffold-only Control resources and packs a new Control ZIP. Production tools may remove their own fresh extraction scratch; these targets are prechecked absent under the new attempt. Nothing is installed into the global interpreter or the user's app.
 
@@ -22,25 +22,28 @@ All mutating phases require `--execute`. Plans do not inspect private keys or cr
 
 ## Later controller invocation sequence
 
-Review and commit changes with the final source first; the clean-source gate intentionally refuses uncommitted changes. Use PowerShell from primary C: main after migration, or the exact temporary H: integration branch before migration. The placeholders below are required verified inputs, not claims that those files already exist. Existing managed-resource preservation and dependency-cache prerequisites still apply; this path migration does not execute staging or make existing payloads replaceable.
+Review and commit changes with the final source first; the clean-source gate intentionally refuses uncommitted changes. Use PowerShell from primary C: main. The H: integration worktree has been removed. The placeholders below are required verified inputs, not claims that all preparation has completed. Existing managed-resource preservation and dependency-cache prerequisites still apply; this path migration does not execute staging or make existing payloads replaceable.
 
 ```powershell
 $py = 'C:/Users/downl/AppData/Local/Programs/Python/Python312/python.exe'
 $helper = 'C:/Users/downl/Documents/ChatGPT/Strata/_docs/stable-060-20261116/release.py'
 $commit = '<final reviewed full 40-character commit>'
-$pythonCache = 'H:/Strata/releases/stable-059-20261113-codex/app-059-control-r2/packaging-cache'
-$wheels = '<existing verified flat wheelhouse for the current 25-package lock>'
+$pythonCache = 'H:/Strata/evidence/upstream-sync-20261116/control-inputs-v2/python-cache'
+$wheels = 'H:/Strata/evidence/upstream-sync-20261116/control-inputs-v2/wheels'
+$assetArgs = @('--public-assets', 'H:/Strata/releases/stable-060-20261116-codex/inputs/public-assets',
+  '--public-assets-receipt', 'H:/Strata/releases/stable-060-20261116-codex/inputs/lucide-sources/provenance.json',
+  '--public-assets-receipt-sha256', 'c1b03b0352525867d5f6bb7864790f8ca0e2d11f28731c1de73d3c16322c3abf')
 $cuda = '<actual CUDA toolkit root with EULA.txt and LICENSE>'
 $native = '<fresh root-built unsigned 0.6.0 native component folder>'
 $binding = '<fresh controller binding receipt JSON>'
 $keyPath = '<absolute existing signing-key path outside all source/release trees>'
-uv run --offline --no-project --python $py python -B $helper freeze --reviewed-commit $commit
-uv run --offline --no-project --python $py python -B $helper freeze --reviewed-commit $commit --execute
-uv run --offline --no-project --python $py python -B $helper dependencies --reviewed-commit $commit --execute
-uv run --offline --no-project --python $py python -B $helper control --reviewed-commit $commit --python-cache $pythonCache --wheelhouse $wheels --execute
-uv run --offline --no-project --python $py python -B $helper notices --reviewed-commit $commit --cuda-dir $cuda --execute
-uv run --offline --no-project --python $py python -B $helper component --reviewed-commit $commit --native-component $native --native-binding $binding --key $keyPath --execute
-uv run --offline --no-project --python $py python -B $helper app --reviewed-commit $commit --native-binding $binding --execute
+uv run --offline --no-project --python $py python -B $helper freeze --reviewed-commit $commit @assetArgs
+uv run --offline --no-project --python $py python -B $helper freeze --reviewed-commit $commit @assetArgs --execute
+uv run --offline --no-project --python $py python -B $helper dependencies --reviewed-commit $commit @assetArgs --execute
+uv run --offline --no-project --python $py python -B $helper control --reviewed-commit $commit --python-cache $pythonCache --wheelhouse $wheels @assetArgs --execute
+uv run --offline --no-project --python $py python -B $helper notices --reviewed-commit $commit --cuda-dir $cuda @assetArgs --execute
+uv run --offline --no-project --python $py python -B $helper component --reviewed-commit $commit --native-component $native --native-binding $binding --key $keyPath @assetArgs --execute
+uv run --offline --no-project --python $py python -B $helper app --reviewed-commit $commit --native-binding $binding @assetArgs --execute
 ```
 
 Default attempt is `r1`; use `--attempt r2` only after reviewing the failed receipt and fresh resource state. A failed phase may have filled managed integration resources. Those bytes are retained and the helper will refuse to replace them; the controller must inventory and preserve them before any new staging attempt. It must not reuse a failed receipt as success.
@@ -99,3 +102,17 @@ The existing `_docs/upstream-sync-20261116/check.py` guard ran `helper-primary-m
 The exact code diff is available with `git diff 4282fce334e0d6c1843c74bca5d4063bd784bc05 -- _docs/stable-060-20261116/release.py _docs/stable-060-20261116/test_release.py`. It contains 77 insertions and 13 deletions before this report update. Final physical SHA-256 values: `release.py` = `19cee832591dd72ff55dfa2995d9051ecb147aa527348c95bfffd2c1446db947`; `test_release.py` = `af9ba409476ef512ceed6c31210c55b691df3173bbbf9795816ba8453c2b4337`.
 
 Release execution from C: remains NOT_RUN. In particular, existing managed resources cannot be overwritten by rerunning staging, and the currently pinned Host dependency cache remains a separately verified prerequisite. The controller owns source integration, push and exact-target cleanup; none is performed by this helper task.
+
+## Explicit prepared inputs after cleanup
+
+This follow-up is based on clean C main `ed2c923a1da45c55906e643e24b8b66a799b2e2c`. It removes the helper's dependency on the deleted historical public asset directory and receipt. It does not reconstruct that receipt or claim recovery of its acquisition history. The controller prepared new inputs with unchanged `packaging/full_assets.py`; the explicit example above names its new receipt. Executing dependencies, component or app now requires all three asset arguments. Other phases accept the same arguments to bind the complete preparation sequence.
+
+The helper requires existing absolute physical paths under the release output's `inputs` directory, rejects reparse points and unsafe inventory names, verifies the caller's expected receipt SHA-256, pinned Lucide commit, exact membership and every output hash. It records the full identity in the parent reservation, checks it in the owned worker before and after its phase, and checks again before publishing the final receipt. The Node verifier receives the same explicit paths and expected hash and runs production `verifyPublicAssets`. This is new input verification, not a replacement for source acquisition evidence. The expected receipt hash must come from the controller's reviewed preparation record. Before/after checks detect drift; these checks do not provide filesystem immutability against a concurrent privileged writer.
+
+Only unchanged Harness/local-backends may use the exact-primary verified-in-place branch. Fresh Control, notices and signed native payloads retain the existing overwrite refusal. The Host dependency prerequisite now names `H:/Strata/evidence/upstream-sync-20261116/host-deps-060/node_modules`, checks the physical target, and requires Vite 6.4.6. Both notices and app phases enforce it. The controller must prepare the primary dependency entrypoint and reviewed lock; this helper never installs dependencies or changes that route. The controller reports that primary Node is now a physical pinned 24.22.3 payload. Fresh C-source native binding and preservation/preparation of existing Control/notices/native staging remain separate required gates.
+
+Validation used the existing C-root `check.py` owned-Job guard through offline uv and Python 3.12. Initial 20 Python boundary tests passed. The added actual Node boundary case initially failed with exit 134 because an entirely empty Windows environment did not initialise Node; the test now supplies only the fixed OS root in an otherwise synthetic environment. Final `helper-inputs-fix-tests-v3` passed all 21 tests, retaining the original 11. It covers CLI-to-worker-to-Node propagation, expected receipt identity, changed bytes/membership/receipt, traversal and linked/outside input refusal, double in-place verification and drift detection, separate-target overwrite refusal, and exact Host cache/version checks. Actual Node accepts the synthetic valid inventory and rejects both a different receipt hash and changed asset bytes. No caller environment dump or real signing key is used.
+
+Final `helper-inputs-fix-static-v2` passed Python AST parsing, Black check at 110 columns, flake8 at 140 columns and Node syntax checking. The final test command-log SHA-256 is `025778a19d3052d50fdcb77bf5ef195f1d97916a0e352c8414ed56fa3a7359c6`; the static command-log SHA-256 is `42952929f98ff284b84ffc33f5fca4e517620f9b2ceb3fca1375e504affa8195`. Guard receipts record successful termination and zero remaining owned processes. RAM/commit/H/C floors remain 3/4/10/5 GiB, compiler jobs five and test concurrency one. Existing offline uv dangling dist-info warnings remain unchanged.
+
+Only this report, `release.py`, `verify.mjs` and `test_release.py` were changed. Exact before/after files, baseline diff, hashes and this task's guard receipts are frozen under `H:/Strata/private-backups/cleanup-20261116/release-helper-inputs-fix-v1`. Applied the previously selected common/start/skill/security/Python engineering SOPs, build-manager and evidence-changelog-closeout; this does not assert formal MILSPEC certification. NOT_RUN: any actual release phase, current dependency preparation, native/product build, signing, installation, GPU/model qualification or publication. `releaseQualified=false` remains unchanged. No commit or push was performed by this implementation task.

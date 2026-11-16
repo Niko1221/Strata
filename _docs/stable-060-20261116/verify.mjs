@@ -5,13 +5,24 @@ import {readFileSync} from 'node:fs';
 import {join, resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
 
-const [mode, rootArg, inputArg, commit, receiptArg] = process.argv.slice(2);
+const [mode, rootArg, inputArg, commit, receiptArg,
+  publicAssets, publicReceipt, publicReceiptSHA256] = process.argv.slice(2);
 const root = resolve(rootArg), input = resolve(inputArg);
 const mod = async name => import(pathToFileURL(join(root, name)).href);
 const {sha256, nativeSources, ggmlIdentity, verifyEngine, verifyNativeBuild,
   verifyPublicAssets} = await mod('apps/host/scripts/release-integrity.mjs');
 const json = path => JSON.parse(readFileSync(path, 'utf8').replace(/^\uFEFF/, ''));
-if (mode === 'dependencies') {
+function verifyPreparedAssets() {
+  assert.ok(publicAssets && publicAssets !== '-' && publicReceipt && publicReceipt !== '-');
+  assert.match(publicReceiptSHA256 ?? '', /^[a-f0-9]{64}$/);
+  assert.equal(sha256(publicReceipt), publicReceiptSHA256);
+  verifyPublicAssets(publicAssets, json(publicReceipt));
+  assert.equal(sha256(publicReceipt), publicReceiptSHA256);
+}
+if (mode === 'dependencies' || mode === 'public-assets' || (publicAssets && publicAssets !== '-')) verifyPreparedAssets();
+if (mode === 'public-assets') {
+  // Synthetic checks may exercise the asset boundary without any managed runtime inputs.
+} else if (mode === 'dependencies') {
   const harness = join(input, 'harness'), bundle = json(join(harness, 'BUNDLE.json'));
   assert.equal(bundle.commit, '571902028a75c64c1d767f4ae5fd099485f0ddf0');
   const {HARNESS_BUDGET_PATCH: patch} = await mod('apps/desktop/scripts/harness-budget.mjs');
@@ -33,7 +44,6 @@ if (mode === 'dependencies') {
     const manifest = await verifyLocalBackend(findLocalBackend(choice, {installRoot: input}), choice);
     assert.equal(manifest.version, LOCAL_BACKENDS[choice].packageVersion);
   }
-  verifyPublicAssets('H:/Strata/releases/hakua033-public-assets', json('H:/Strata/releases/hakua033-public-assets.receipt.json'));
 } else if (mode === 'native') {
   assert.match(commit, /^[a-f0-9]{40}$/);
   assert.equal(execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], {encoding:'utf8'}).trim(), commit);
@@ -52,4 +62,5 @@ if (mode === 'dependencies') {
   verifyNativeBuild(input, root, manifest, {sourceRoot:root, sourceCommit:commit,
     manifestSHA256:sha256(join(input, 'engine-component.json'))});
 } else throw new Error('Unknown verification mode');
+if (mode === 'dependencies' || (publicAssets && publicAssets !== '-')) verifyPreparedAssets();
 console.log(JSON.stringify({ok:true, mode, releaseQualified:false}));

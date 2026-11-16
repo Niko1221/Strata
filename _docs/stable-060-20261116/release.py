@@ -212,7 +212,73 @@ def admit() -> None:
 
 
 def verify(mode: str, path: Path, args: argparse.Namespace, receipt: Path | None = None) -> None:
-    command([NODE, HERE / "verify.mjs", mode, ROOT, path, args.reviewed_commit, str(receipt or "-")])
+    command(
+        [
+            NODE,
+            HERE / "verify.mjs",
+            mode,
+            ROOT,
+            path,
+            args.reviewed_commit,
+            str(receipt or "-"),
+            str(args.public_assets or "-"),
+            str(args.public_assets_receipt or "-"),
+            args.public_assets_receipt_sha256 or "-",
+        ]
+    )
+
+
+def public_asset_identity(args: argparse.Namespace) -> dict | None:
+    """Bind explicit, physical prepared inputs; never infer historical provenance."""
+    paths = (args.public_assets, args.public_assets_receipt)
+    expected = args.public_assets_receipt_sha256
+    if not any(paths) and not expected and args.phase not in {"dependencies", "component", "app"}:
+        return None
+    require(
+        all(paths) and bool(re.fullmatch("[a-f0-9]{64}", expected or "")),
+        "Explicit public assets, receipt and expected receipt SHA-256 required",
+    )
+    inputs = OUT / "inputs"
+    no_links(inputs)
+    for path in paths:
+        require(path.is_absolute(), "Absolute public asset input required")
+        no_links(path)
+        require(
+            path.resolve(strict=True) == path and path.is_relative_to(inputs),
+            "Public asset inputs must be physical paths inside release inputs",
+        )
+    raw = args.public_assets_receipt.read_bytes()
+    require(hashlib.sha256(raw).hexdigest() == expected, "Public asset receipt SHA-256 mismatch")
+    record = json.loads(raw.decode("utf-8-sig"))
+    require(
+        record.get("lucide_commit") == "03f11e2d6adc319ea21e9a1d5820a99cd3767257",
+        "Unreviewed public asset source",
+    )
+    files = record.get("files")
+    require(isinstance(files, dict) and bool(files), "Public asset file inventory required")
+    for name, checksum in files.items():
+        require(
+            isinstance(name, str)
+            and not any(c in name for c in ("\\", ":"))
+            and all(p not in {"", ".", ".."} for p in name.split("/"))
+            and "gtwalsheim" not in name.lower()
+            and isinstance(checksum, str)
+            and bool(re.fullmatch("[a-f0-9]{64}", checksum)),
+            "Unsafe public asset inventory member",
+        )
+    require(inventory(args.public_assets) == files, "Public asset membership or bytes changed")
+    require(sha(args.public_assets_receipt) == expected, "Public asset receipt changed during verification")
+    return {
+        "root": str(args.public_assets),
+        "receipt": str(args.public_assets_receipt),
+        "receiptSHA256": expected,
+        "lucideCommit": record["lucide_commit"],
+        "files": files,
+    }
+
+
+def unchanged_public_assets(args: argparse.Namespace, expected: dict | None) -> None:
+    require(public_asset_identity(args) == expected, "Reserved public asset inputs changed")
 
 
 def freeze(args: argparse.Namespace, work: Path) -> dict:
@@ -228,15 +294,21 @@ def freeze(args: argparse.Namespace, work: Path) -> dict:
 
 def dependencies(args: argparse.Namespace, work: Path) -> dict:
     verify("dependencies", PRIMARY_RES, args)
+    no_links(PRIMARY_RES)
+    no_links(RES)
+    same = PRIMARY_RES == RES and PRIMARY_RES.resolve(strict=True) == RES.resolve(strict=True)
     before = {name: inventory(PRIMARY_RES / name) for name in ("harness", "local-backends")}
-    staged = {name: stage(PRIMARY_RES / name, RES / name) for name in before}
+    staged = before if same else {name: stage(PRIMARY_RES / name, RES / name) for name in before}
     verify("dependencies", RES, args)
     require(all(inventory(PRIMARY_RES / n) == rows for n, rows in before.items()), "Source dependency drift")
+    require(all(inventory(RES / n) == rows for n, rows in staged.items()), "Staged dependency drift")
     return {
+        "mode": "verified-in-place" if same else "verified-copy",
+        "copied": not same,
         "sourceRoot": str(PRIMARY_RES),
         "sourceFiles": before,
         "stagedFiles": staged,
-        "publicAssetsReceiptSHA256": sha(Path("H:/Strata/releases/hakua033-public-assets.receipt.json")),
+        "publicAssetsReceiptSHA256": args.public_assets_receipt_sha256,
         "modelsOrProfilesCopied": False,
         "noticeStage": "fresh after Control",
     }
@@ -348,6 +420,18 @@ def control(args: argparse.Namespace, work: Path) -> dict:
     }
 
 
+def host_dependency_root() -> Path:
+    """Permit only the reviewed cache through the primary dependency entrypoint."""
+    host_deps = (ROOT / "apps/host/node_modules").resolve(strict=True)
+    require(
+        host_deps == Path("H:/Strata/evidence/upstream-sync-20261116/host-deps-060/node_modules"),
+        "Unexpected Host dependency root",
+    )
+    no_links(host_deps)
+    require(load(host_deps / "vite/package.json")["version"] == "6.4.6", "Reviewed Vite 6.4.6 required")
+    return host_deps
+
+
 def notices(args: argparse.Namespace, work: Path) -> dict:
     """Fresh notices bind current dependencies; never reuse the obsolete external ggml pin."""
     require(args.cuda_dir is not None, "Explicit CUDA toolkit directory required")
@@ -393,12 +477,7 @@ def notices(args: argparse.Namespace, work: Path) -> dict:
     copy(
         ROOT / "data/experimental-speed-projection/LICENSE", "Qwen-Community-License-1.0.txt", qwen["sha256"]
     )
-    # The integration's reviewed dependency junction is allowed only for this explicit source read.
-    host_deps = (ROOT / "apps/host/node_modules").resolve(strict=True)
-    require(
-        host_deps == Path("H:/Strata/evidence/upstream-sync-20261116/host-deps-060").resolve(),
-        "Unexpected Host dependency root",
-    )
+    host_deps = host_dependency_root()
     for name in ("react", "react-dom", "scheduler", "katex", "prismjs", "pdfjs-dist", "html-to-image"):
         folder = host_deps / name
         found = [
@@ -513,6 +592,7 @@ def component(args: argparse.Namespace, work: Path) -> dict:
 
 def app(args: argparse.Namespace, work: Path) -> dict:
     require(args.native_binding, "Fresh native binding receipt required")
+    host_dependency_root()
     native = RES / "engine-bundle" / NAME
     verify("native", native, args, args.native_binding)
     target = work / "cargo-target"
@@ -520,8 +600,8 @@ def app(args: argparse.Namespace, work: Path) -> dict:
     os.environ.update(
         CARGO_TARGET_DIR=str(target),
         STRATA_PUBLIC_PACKAGE="1",
-        STRATA_PUBLIC_ASSETS="H:/Strata/releases/hakua033-public-assets",
-        STRATA_PUBLIC_ASSETS_RECEIPT="H:/Strata/releases/hakua033-public-assets.receipt.json",
+        STRATA_PUBLIC_ASSETS=str(args.public_assets),
+        STRATA_PUBLIC_ASSETS_RECEIPT=str(args.public_assets_receipt),
         STRATA_NATIVE_SOURCE_ROOT=str(ROOT),
         STRATA_NATIVE_SOURCE_COMMIT=args.reviewed_commit,
         STRATA_NATIVE_MANIFEST_SHA256=sha(native / "engine-component.json"),
@@ -607,16 +687,53 @@ def worker_environment(work: Path, token: str) -> dict[str, str]:
     return env
 
 
-def main() -> int:
+PATH_OPTIONS = (
+    "python-cache",
+    "wheelhouse",
+    "cuda-dir",
+    "native-component",
+    "native-binding",
+    "key",
+    "public-assets",
+    "public-assets-receipt",
+)
+
+
+def arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("phase", choices=PHASES, nargs="?", default="freeze")
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--reviewed-commit")
     parser.add_argument("--attempt", default="r1")
-    for name in ("python-cache", "wheelhouse", "cuda-dir", "native-component", "native-binding", "key"):
+    for name in PATH_OPTIONS:
         parser.add_argument("--" + name, type=Path)
+    parser.add_argument("--public-assets-receipt-sha256")
     parser.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
-    args = parser.parse_args()
+    return parser.parse_args(argv)
+
+
+def worker_command(args: argparse.Namespace) -> list[str]:
+    argv = [
+        sys.executable,
+        "-B",
+        str(HERE / "release.py"),
+        args.phase,
+        "--execute",
+        "--worker",
+        "--reviewed-commit",
+        args.reviewed_commit,
+        "--attempt",
+        args.attempt,
+    ]
+    for name in (*PATH_OPTIONS, "public-assets-receipt-sha256"):
+        value = getattr(args, name.replace("-", "_"))
+        if value is not None:
+            argv.extend(["--" + name, str(value)])
+    return argv
+
+
+def main() -> int:
+    args = arguments()
     require(bool(re.fullmatch("r[1-9][0-9]*", args.attempt)), "Attempt must be r1, r2, ...")
     work = OUT / (args.phase + "-" + args.attempt)
     if not args.execute:
@@ -639,6 +756,7 @@ def main() -> int:
         return 0
     require(os.name == "nt" and sys.version_info >= (3, 12), "Windows Python 3.12+ required")
     identity = reviewed(args.reviewed_commit)
+    public_assets = public_asset_identity(args)
     admit()
     if args.worker:
         reservation = load(work / "reservation.json")
@@ -651,6 +769,7 @@ def main() -> int:
             reservation["helpers"] == {p.name: sha(p) for p in (HERE / "release.py", HERE / "verify.mjs")},
             "Reserved helper bytes changed",
         )
+        require(reservation["publicAssets"] == public_assets, "Reserved public asset inputs changed")
         import ctypes
         from ctypes import wintypes
         from perf131k.windows_job import api
@@ -661,6 +780,7 @@ def main() -> int:
             "Owned Windows Job required",
         )
         result = PHASES[args.phase](args, work)
+        unchanged_public_assets(args, public_assets)
         require(reviewed(args.reviewed_commit) == identity, "Source changed during phase")
         require(
             reservation["helpers"] == {p.name: sha(p) for p in (HERE / "release.py", HERE / "verify.mjs")},
@@ -668,7 +788,14 @@ def main() -> int:
         )
         save(
             work / "pending.json",
-            {"ok": True, **identity, "phase": args.phase, "releaseQualified": False, **result},
+            {
+                "ok": True,
+                **identity,
+                "phase": args.phase,
+                "releaseQualified": False,
+                **result,
+                "publicAssets": public_assets,
+            },
         )
         return 0
     no_links(OUT)
@@ -683,6 +810,7 @@ def main() -> int:
             "identity": identity,
             "token": token,
             "helpers": {p.name: sha(p) for p in (HERE / "release.py", HERE / "verify.mjs")},
+            "publicAssets": public_assets,
         },
     )
     env = worker_environment(work, token)
@@ -699,7 +827,7 @@ def main() -> int:
         output_bytes=16 * 1024**2,
     )
     run = run_owned(
-        [sys.executable, "-B", str(HERE / "release.py"), *sys.argv[1:], "--worker"],
+        worker_command(args),
         ROOT,
         env,
         work / "worker.log",
@@ -719,7 +847,9 @@ def main() -> int:
         "Owned phase failed; preserve evidence, no automatic retry",
     )
     require(reviewed(args.reviewed_commit) == identity, "Source changed after worker exit")
+    unchanged_public_assets(args, public_assets)
     result = load(work / "pending.json")
+    require(result["publicAssets"] == public_assets, "Worker public asset identity differs")
     save(work / "receipt.json", result)
     LOG.info(json.dumps({"ok": True, "receipt": str(work / "receipt.json"), "releaseQualified": False}))
     return 0
