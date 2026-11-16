@@ -581,8 +581,10 @@ uint64_t g_kv_host_bytes = 0;
 // registered Portable|Mapped before any page is touched, which also leaves WSL's small cudaHostAlloc budget to the
 // staging buffers. Elsewhere cudaHostAlloc stays first. Either way the other method is the fallback when the first
 // is refused. STRATA_KV_HOST_REGISTER=1/0 forces registering first or cudaHostAlloc first. Like the cudaHostAlloc
-// copy it lives as long as the process.
-uint8_t* kv_host_alloc(uint64_t bytes) {
+// copy it lives as long as the process.  `registered` reports which of the two paths produced the block, so the
+// free path (qsa_state_free_host) does not have to guess it from cudaHostUnregister.
+uint8_t* kv_host_alloc(uint64_t bytes, bool& registered) {
+    registered = false;
     auto host_alloc = [](uint64_t n) -> uint8_t* {
         uint8_t* h = nullptr;
         if (strata::core::host_alloc_guarded((void**) &h, n, cudaHostAllocMapped | cudaHostAllocPortable) == cudaSuccess) return h;
@@ -597,10 +599,10 @@ uint8_t* kv_host_alloc(uint64_t bytes) {
         if (e != nullptr && (e[0] == '0' || e[0] == '1')) return e[0] == '1';
         return std::filesystem::exists("/dev/dxg");
     }();
-    auto register_anon = [](uint64_t n) -> uint8_t* {
+    auto register_anon = [&](uint64_t n) -> uint8_t* {
         void* m = mmap(nullptr, (size_t) n, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
         if (m == MAP_FAILED) return nullptr;
-        if (cudaHostRegister(m, (size_t) n, cudaHostRegisterPortable | cudaHostRegisterMapped) != cudaSuccess) {
+        if (strata::core::pin_register(m, (size_t) n, cudaHostRegisterPortable | cudaHostRegisterMapped) != cudaSuccess) {
             (void) cudaGetLastError();
             munmap(m, (size_t) n);
             return nullptr;
@@ -610,6 +612,7 @@ uint8_t* kv_host_alloc(uint64_t bytes) {
             std::fprintf(stderr, "strata: KV streaming: the host copy is pinned with cudaHostRegister\n");
             said = true;
         }
+        registered = true;
         return (uint8_t*) m;
     };
     if (register_first) {
@@ -921,8 +924,7 @@ uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, Q
         const uint64_t bytes = (uint64_t) pages * strata::kernels::kv_block_bytes(s, qsa_kv_format(st)) + 4 * 256;
         uint8_t* h = nullptr;
         uint8_t* d = nullptr;
-        if ((h = kv_host_alloc(bytes)) == nullptr ||
-            cudaHostGetDevicePointer((void**) &d, h, 0) != cudaSuccess) {
+        if ((h = kv_host_alloc(bytes, st.host_registered)) == nullptr) {
             // both cudaHostRegister and cudaHostAlloc were refused (kv_host_alloc): usually not enough free RAM
             if (p.mode == 1) std::fprintf(stderr, "strata: KV streaming: cannot pin %.2f GiB of RAM for a layer's KV copy "
                                  "(%.2f GiB pinned so far): RAM or the driver refused to pin it - lower the context, "
@@ -930,7 +932,12 @@ uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, Q
                                  (double) g_kv_host_bytes / 1073741824.0);
             return 0;
         }
+        st.host_base = h;   // recorded BEFORE the device-pointer query, so a failure below is freed like any other
         g_kv_host_bytes += bytes;
+        if (cudaHostGetDevicePointer((void**) &d, h, 0) != cudaSuccess) {
+            if (p.mode == 1) std::fprintf(stderr, "strata: KV streaming: the pinned K/V copy has no device pointer\n");
+            return 0;
+        }
         Cursor hc{d};
         if (st.kv_hybrid) {
             st.host.k_q = hc.take<int8_t>(hrows * s.head_dim);
@@ -1007,6 +1014,29 @@ void qsa_state_zero(const QsaState& st, const ModelGeometry& g, void* stream) {
     cudaMemsetAsync(st.idx_tail, 0, (size_t) (s.idx_block - 1) * s.idx_dim * 4, cs);
     cudaMemsetAsync(st.idx_dead, 0, (size_t) s.idx_dim * 4, cs);
     cudaMemsetAsync(st.idx_pooled, 0, (size_t) st.idx_pooled_rows * s.idx_dim * 4, cs);
+}
+
+void qsa_state_free_host(const ModelGeometry& g, QsaState& st) {
+    if (st.host_step != nullptr) { strata::core::pin_free(st.host_step); st.host_step = nullptr; }
+    if (st.host_pos != nullptr) { strata::core::pin_free(st.host_pos); st.host_pos = nullptr; }
+    if (st.kv_mode != 0 && st.host_base != nullptr) {
+        const uint64_t bytes = (uint64_t) st.n_pages * strata::kernels::kv_block_bytes(qsa_shapes(g), qsa_kv_format(st)) + 4 * 256;
+        // the kind was recorded when it was allocated: do not ask cudaHostUnregister whether the block is registered
+        // (its refusal also means "some other allocation of ours", and on Windows there is no mmap to give back)
+        if (st.host_registered) {
+#ifndef _WIN32
+            (void) strata::core::pin_unregister(st.host_base);
+            (void) munmap(st.host_base, (size_t) bytes);              // registered anonymous memory (the WSL2 path)
+#else
+            (void) cudaFreeHost(st.host_base);                        // not reachable: _WIN32 always uses cudaHostAlloc
+#endif
+        } else {
+            strata::core::pin_free(st.host_base);                     // cudaHostAllocMapped
+        }
+        g_kv_host_bytes = bytes <= g_kv_host_bytes ? g_kv_host_bytes - bytes : 0;
+        st.host_base = nullptr;
+        st.host_registered = false;
+    }
 }
 
 strata::kernels::QsaAttnPools qsa_attn_pools(const QsaState& st) {
