@@ -221,7 +221,6 @@ function supervisorAgentRow() {
   return supervisorLocalInstance(engine, {
     authenticationKey: () => supervisor.authenticationKey() || store.get().serving?.apiKey || null,
     label: v?.label ?? v?.name ?? engine.modelId,
-    context: v?.contextMax ?? undefined,
     vision: false,
   });
 }
@@ -2322,7 +2321,8 @@ async function api(req, res, path, method, url) {
       chatId,
       remoteModel: !!body.remoteModel,
       nativeLive: native.hasLive(),
-      supervisorLive: supervisorIsReady(supervisor.status()),
+      supervisorLive: !!supervisorAgentRow(),
+      supervisorContextUnavailable: supervisorIsReady(supervisor.status()) && !supervisorAgentRow(),
     });
     if (chatId && !agentSkip) {
       const capability = agent.status();

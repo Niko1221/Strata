@@ -52,6 +52,8 @@ const state = {
 };
 
 let child = null;
+let contextOwner = null, contextCapacity = null;
+let launchSequence = 0;
 let ramGuard = null;
 let observation = null;
 export function runObservation(){return observation?.snapshot()??null;}
@@ -289,6 +291,26 @@ async function waitForHealth(port, timeoutMs = 90_000, proc, getSpawnError = () 
   throw new Error(`Engine did not become healthy in time (budget ${timeoutMs} ms; ${attempts} probes; last: ${lastProbe})`);
 }
 
+/** Read the server's effective per-slot window once, never GGUF training metadata.
+ * llama.cpp /props default_generation_settings.n_ctx is already per slot (and
+ * can be capped below the requested -c). Do not divide it by total_slots again.
+ */
+async function readContextCapacity(port, modelPath, key) {
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/props`, {
+      signal: AbortSignal.timeout(1500), redirect: 'error',
+      headers: key ? { authorization: `Bearer ${key}` } : undefined,
+    });
+    if (!response.ok) return null;
+    const props = await response.json();
+    const capacity = props?.default_generation_settings?.n_ctx;
+    if (!Number.isSafeInteger(capacity) || capacity <= 0) return null;
+    // Bind the response to the launched model as well as the owned child.
+    if (typeof props.model_path !== 'string' || resolve(props.model_path) !== resolve(modelPath)) return null;
+    return capacity;
+  } catch { return null; } // Capability failure leaves plain chat available.
+}
+
 /** Validate a selected runtime before an already loaded model is stopped. */
 export async function preflight({config,modelPath}) {
   const backend=localBackendChoice(config?.expert);
@@ -330,7 +352,9 @@ export async function start({ modelId, modelPath, port = 8080, config, hardware,
   state.requestedBackend=backend;
   state.runtimeVersion=runtime?`${backend} ${runtime.version} · ${runtime.source.commit.slice(0,8)}`:null;
 
+  const sequence = ++launchSequence;
   state.status = 'starting';
+  contextOwner = null; contextCapacity = null;
   state.port = port;
   state.modelId = modelId;
   state.modelPath = modelPath;
@@ -373,6 +397,7 @@ export async function start({ modelId, modelPath, port = 8080, config, hardware,
     capture?.finish(state.status==='stopping'?'stopped':state.status==='starting'?'startup_exit':code===0?'stopped':'error',code);
     if(capture)void capture.sampleGpu();
     if(child!==launched)return; // A late exit from the previous process cannot stop its replacement.
+    contextOwner = null; contextCapacity = null;
     ramGuard?.dispose();
     log('supervisor', `engine exited (${signal ?? code})`);
     child = null;
@@ -406,6 +431,9 @@ export async function start({ modelId, modelPath, port = 8080, config, hardware,
     if (memoryFailure) throw memoryFailure;
     if (child !== launched) throw new Error('The engine was stopped while loading.');
   } catch (err) {
+    // Exit can clear child before this continuation runs. A generation also
+    // distinguishes that legitimate startup failure from a stop/replacement.
+    if (launchSequence !== sequence) throw err;
     // Only offer the predictor diagnosis after proving every trunk tensor. A
     // filename or one missing layer alone cannot distinguish a broken download.
     if(/tensor 'blk\.32\.attn_norm\.weight' not found/.test(err.message)){
@@ -415,13 +443,24 @@ export async function start({ modelId, modelPath, port = 8080, config, hardware,
       }catch{ /* Preserve the original loader error if structural proof is unavailable. */ }
     }
     capture?.finish(launched.exitCode!==null?'startup_exit':'error',launched.exitCode);
+    const cleanupSequence = launchSequence + 1;
     await stop();
+    if (launchSequence !== cleanupSequence) throw err;
     state.status = 'error';
     state.error = err.message;
     hubRef?.send('engine-status', status());
     throw err;
   }
 
+  const capacity = await readContextCapacity(port, modelPath, privateKey || config.serving?.apiKey || '');
+  // A stop/replacement during the probe must not resurrect this process or
+  // publish its capacity for a new child, even if the model id is unchanged.
+  if (child !== launched || state.status !== 'starting' || launched.exitCode !== null || launched.signalCode !== null) {
+    throw new Error('The engine was stopped while checking its context size.');
+  }
+  contextOwner = launched;
+  contextCapacity = capacity;
+  if (capacity === null) log('supervisor', 'Agent context size unavailable; plain chat remains available.');
   state.status = 'running';
   capture?.ready();
   if(capture)void capture.sampleGpu({ownedPids:[launched.pid]});
@@ -433,6 +472,8 @@ export async function start({ modelId, modelPath, port = 8080, config, hardware,
 }
 
 export async function stop() {
+  launchSequence++;
+  contextOwner = null; contextCapacity = null;
   ramGuard?.dispose();
   if(state.status==='starting'&&observation?.snapshot().outcome==='starting')observation.finish('cancelled');
   for(const listener of stopListeners)listener();
@@ -567,6 +608,7 @@ export function status() {
     port: state.port,
     modelId: state.modelId,
     modelPath: state.modelPath,
+    contextCapacity: state.status === 'running' && child && contextOwner === child ? contextCapacity : null,
     startedAt: state.startedAt,
     error: state.error,
     args: publicArgs(),

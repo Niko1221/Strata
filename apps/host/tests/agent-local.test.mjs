@@ -18,8 +18,8 @@ test('supervisor ready gate rejects starting/stopped engines', () => {
 
 test('supervisorLocalInstance builds an agent route for Hikari-style GGUF', () => {
   const row = supervisorLocalInstance(
-    { status: 'running', modelId: 'local-e7d83e78598be18b75bf0498', port: 8080 },
-    { authenticationKey: () => 'sk-test', label: 'Hikari', context: 131072 },
+    { status: 'running', modelId: 'local-e7d83e78598be18b75bf0498', port: 8080, contextCapacity: 131072 },
+    { authenticationKey: () => 'sk-test', label: 'Hikari' },
   );
   assert.equal(row.id, 'supervisor:local-e7d83e78598be18b75bf0498');
   assert.equal(row.baseUrl, 'http://127.0.0.1:8080/v1');
@@ -32,7 +32,7 @@ test('supervisorLocalInstance builds an agent route for Hikari-style GGUF', () =
 
 test('a supervisor-backed agent can open its serving request without native GPU fields', () => {
   const row = supervisorLocalInstance(
-    { status: 'running', modelId: 'local-prism', port: 8080 },
+    { status: 'running', modelId: 'local-prism', port: 8080, contextCapacity: 32768 },
     { authenticationKey: () => 'fixture-owner-key', label: 'Prism' },
   );
   // runAgentTurn uses the same serving metadata contract for either local route.
@@ -44,12 +44,24 @@ test('a supervisor-backed agent can open its serving request without native GPU 
 test('merge prefers native ids and still adds supervisor Hikari', () => {
   const native = [{ id: 'n1', label: 'Native' }];
   const hikari = supervisorLocalInstance(
-    { status: 'running', modelId: 'local-hikari', port: 8080 },
+    { status: 'running', modelId: 'local-hikari', port: 8080, contextCapacity: 32768 },
     { label: 'Hikari' },
   );
   const merged = mergeAgentLocalInstances(native, hikari);
   assert.deepEqual(merged.map(r => r.id), ['n1', 'supervisor:local-hikari']);
   assert.equal(mergeAgentLocalInstances(native, null).length, 1);
+});
+
+test('unknown runtime capacity cannot fall back to metadata or the profile default', () => {
+  for (const contextCapacity of [undefined, null, 0, -1, 1.5, '32768', Infinity, NaN, Number.MAX_SAFE_INTEGER + 1]) {
+    assert.equal(supervisorLocalInstance(
+      { status: 'running', modelId: 'gguf', port: 8080, contextCapacity },
+      { context: 262144 },
+    ), null);
+  }
+  assert.match(agentSkipReason({ chatId: 'c1', supervisorContextUnavailable: true }), /context size.*plain chat/);
+  assert.equal(agentSkipReason({ chatId: 'c1', nativeLive: true, supervisorContextUnavailable: true }), null);
+  assert.equal(agentSkipReason({ chatId: 'c1', remoteModel: true, supervisorContextUnavailable: true }), null);
 });
 
 test('agent skip allows supervisor-only Hikari (web search can reach it)', () => {
