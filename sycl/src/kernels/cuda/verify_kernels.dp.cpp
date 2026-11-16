@@ -646,7 +646,7 @@ auto &sk = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[S]>(
 }
 
 
-template <bool OUT>
+template <bool WRITE_OUTPUT>
 /*
 DPCT1110: The total declared local variable size in device function
 gdn_step_split_kernel exceeds 128 bytes and may cause high register pressure.
@@ -729,7 +729,7 @@ auto &sk = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[S]>(
             s[r] = sycl::fma((float)g, s[r], sk[rg * RPG + r] * delta);
             o = sycl::fma(s[r], sq[rg * RPG + r], o);
         }
-        if (!OUT) continue;
+        if (!WRITE_OUTPUT) continue;
         /*
         DPCT1118: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
