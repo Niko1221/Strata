@@ -5,6 +5,7 @@
 //   gate = exp(softplus(alpha + dt) * a)  (softplus = v > 20 ? v : log1p(exp(v))),  beta = sigmoid(beta)
 //   kv_j = sum_i S[i][j] k[i];  delta_j = (v_j - gate * kv_j) * beta;  S = gate * S + k[i] delta_j
 //   o_j = (sum_i S[i][j] q[i]) / sqrt(128);  y_j = o_j * rsqrt(mean(o^2) + eps) * gamma_j * sigmoid(z_j)
+//                                             (silu(z_j) with the function constant GDN_SILU_Z, below)
 //
 // State layout as Strata's: S[(i * h_v + h) * 128 + j].  Value head h reads q/k head h % h_k.
 // One threadgroup per value head, 512 threads = 16 simdgroups: simdgroup s holds columns j = 32 (s % 4) + lane and
@@ -35,6 +36,15 @@ constant int GDN_NTOK [[function_constant(2)]];
 // output are row y of the window's arrays.  Off: exactly the plain kernel.
 constant bool GDN_ROWS_C [[function_constant(31)]];
 constant bool gdn_rows = is_function_constant_defined(GDN_ROWS_C) && GDN_ROWS_C;
+
+// The output gate: sigmoid(z) (Flash-Next, the default) or silu(z) = z * sigmoid(z) (Qwen3.6: rms(o) * gamma * silu(z)).
+// Opt-in function constant 12 (GDN_SILU_Z true); undefined or false leaves the sigmoid arithmetic untouched.  Declared
+// under a guard: gdn_prompt.metal carries the same declaration and the two files may share one translation unit.
+#ifndef STRATA_GDN_SILU_Z_DECLARED
+#define STRATA_GDN_SILU_Z_DECLARED 1
+constant bool GDN_SILU_Z [[function_constant(12)]];
+constant bool gdn_silu_z = is_function_constant_defined(GDN_SILU_Z) && GDN_SILU_Z;
+#endif
 
 struct GdnArgs {
     uint h_k;        // 16
@@ -163,7 +173,8 @@ kernel void gdn_step_t(device float* state [[buffer(0)]], device float* hist [[b
             const float tot = (part[0] + part[1]) + (part[2] + part[3]);
             const float rs = rsqrt(tot / float(S) + a.eps);
             const float zz = z[tr * hv * S + h * S + j];
-            const float yv = ((rs * o) * gamma[j]) * (1.0f / (1.0f + exp(-zz)));
+            const float gate = gdn_silu_z ? zz / (1.0f + exp(-zz)) : 1.0f / (1.0f + exp(-zz));
+            const float yv = ((rs * o) * gamma[j]) * gate;
             y[tr * hv * S + h * S + j] = yv;
             if (a.plane) {
                 const float q2s[8] = {1.0f, 0.25f, 0.0625f, 0.015625f, 0.00390625f, 0.0009765625f, 0.000244140625f,
