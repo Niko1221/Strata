@@ -798,15 +798,19 @@ class RemoteBoundaries(Scratch):
         for content, accepted in ((b"good", True), (b"evil", False), (b"good-plus-extra", False)):
             target = self.root / ("result-" + str(len(content)) + ("yes" if accepted else "no"))
             with patch.object(p, "public_open", return_value=Response(content)), patch.object(
-                p.release, "admit"
+                p.release,
+                "admit",
+                return_value={"available_ram": 1, "commit_headroom": 2, "H_free": 3, "C_free": 4},
             ):
                 if accepted:
                     self.assertTrue(
-                        p.download(args, "unused", target, row(b"good"))["unauthenticated"]
+                        p.download(args, "unused", target, row(b"good"), io.StringIO())[
+                            "unauthenticated"
+                        ]
                     )
                 else:
                     with self.assertRaises(RuntimeError):
-                        p.download(args, "unused", target, row(b"good"))
+                        p.download(args, "unused", target, row(b"good"), io.StringIO())
 
     def test_public_client_rejects_credentials_http_and_foreign_redirects(self) -> None:
         for url in (

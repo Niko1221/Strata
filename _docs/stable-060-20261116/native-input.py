@@ -49,6 +49,14 @@ def parser(description: str) -> argparse.ArgumentParser:
     return result
 
 
+def explicit_attempt(argv: list[str], attempt: str) -> None:
+    release.require(
+        sum(v == "--attempt" or v.startswith("--attempt=") for v in argv) == 1
+        and bool(re.fullmatch(r"r[1-9][0-9]*", attempt)),
+        "Execution requires one explicit valid --attempt before controller admission",
+    )
+
+
 def environment(work: Path, token: str) -> dict[str, str]:
     """Use the existing guard's credential-free tool environment and five jobs."""
     guard = release.module("native060_environment", PRIMARY / "_docs/local-053-20261109/native/common.py")
@@ -351,6 +359,7 @@ def main(argv: list[str] | None = None) -> int:
     args = cli.parse_args(argv)
     args.phase = "native-input"
     if args.execute:
+        explicit_attempt(argv, args.attempt)
         package_command(args, release.OUT / (args.phase + "-" + args.attempt))
     result = run_controller(args, HERE / "native-input.py", native, argv)
     if args.execute and not args.worker:

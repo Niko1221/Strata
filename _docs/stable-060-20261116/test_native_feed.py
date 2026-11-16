@@ -81,6 +81,64 @@ class Boundaries(unittest.TestCase):
             ), self.assertRaises(RuntimeError):
                 controller.main(["--execute", "--reviewed-commit", self.commit])
 
+    def test_explicit_attempt_required_with_all_other_inputs(self) -> None:
+        native_args = ["--execute", "--reviewed-commit", self.commit, "--min-driver", "nvidia=580.65"]
+        feed_args = [
+            "--execute",
+            "--reviewed-commit",
+            self.commit,
+            "--no-dsv41-carry",
+            "--key",
+            str(self.feed.KEY),
+            "--previous-source",
+            self.feed.CURRENT,
+            "--control-receipt",
+            "control",
+            "--component-receipt",
+            "component",
+            "--previous-feed",
+            "feed",
+            "--sequence",
+            "1",
+        ]
+        for controller, runner, args in (
+            (self.native, self.native, native_args),
+            (self.feed, self.feed.native, feed_args),
+        ):
+            for flags in ([], ["--attempt", "r1", "--attempt=r2"], ["--attempt", "r0"]):
+                with self.subTest(controller=controller.__name__, flags=flags), patch.object(
+                    runner, "run_controller", side_effect=AssertionError("runner started")
+                ), self.assertRaisesRegex(RuntimeError, "explicit valid --attempt"):
+                    controller.main(args + flags)
+
+    def test_native_and_feed_accept_both_explicit_attempt_forms(self) -> None:
+        native_args = ["--execute", "--reviewed-commit", self.commit, "--min-driver", "nvidia=580.65"]
+        feed_args = [
+            "--execute",
+            "--reviewed-commit",
+            self.commit,
+            "--no-dsv41-carry",
+            "--key",
+            str(self.feed.KEY),
+            "--previous-source",
+            self.feed.CURRENT,
+            "--control-receipt",
+            "control",
+            "--component-receipt",
+            "component",
+            "--previous-feed",
+            "feed",
+            "--sequence",
+            "1",
+        ]
+        for flags in (["--attempt", "r2"], ["--attempt=r2"]):
+            with patch.object(self.native, "package_command"), patch.object(
+                self.native, "run_controller", return_value=0
+            ), patch.object(self.native, "finalize_binding"):
+                self.assertEqual(self.native.main(native_args + flags), 0)
+            with patch.object(self.feed.native, "run_controller", return_value=0):
+                self.assertEqual(self.feed.main(feed_args + flags), 0)
+
     def test_native_production_selector_driver_and_cuda_path(self) -> None:
         args = argparse.Namespace(
             min_driver="nvidia=580.65", cuda_search=self.native.CUDA / "bin/x64", reviewed_commit=self.commit

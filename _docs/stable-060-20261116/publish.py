@@ -398,7 +398,7 @@ def alias_phase(
     return intent
 
 
-def download(args: argparse.Namespace, url: str, target: Path, expected: dict) -> dict:
+def download(args: argparse.Namespace, url: str, target: Path, expected: dict, admissions) -> dict:
     digest, count = hashlib.sha256(), 0
     release.no_links(target.parent)
     with public_open(url) as response, target.open("xb") as output:
@@ -412,7 +412,12 @@ def download(args: argparse.Namespace, url: str, target: Path, expected: dict) -
         while block := response.read(1024 * 1024):
             count += len(block)
             require(count <= expected["bytes"], "Public download exceeded expected bytes")
-            release.admit(allow_low_ram=args.allow_low_ram)
+            observation = release.admit(allow_low_ram=args.allow_low_ram)
+            admissions.write(json.dumps(observation, separators=(",", ":")) + "\n")
+            require(
+                admissions.tell() <= 256 * 1024 * 1024,
+                "Publication admission evidence exceeds limit",
+            )
             digest.update(block)
             output.write(block)
     result = {"bytes": count, "sha256": digest.hexdigest()}
@@ -524,18 +529,33 @@ def phase(args: argparse.Namespace, work: Path) -> dict:
                     "Anonymous download space refused",
                 )
                 observed = {}
+                admission_path = work / "publication-admissions.jsonl"
+                with admission_path.open("x", encoding="utf-8", newline="\n") as admissions:
+                    admissions.write(
+                        json.dumps(
+                            {"workerContextSHA256": release.sha(work / "operation-worker.json")}
+                        )
+                        + "\n"
+                    )
                 for tag in (TAG, "latest"):
                     target = work / tag
                     target.mkdir()
-                    observed[tag] = {
-                        name: download(
-                            args,
-                            "https://github.com/" + REPO + "/releases/download/" + tag + "/" + name,
-                            target / name,
-                            expected,
-                        )
-                        for name, expected in sorted(built["assets"].items())
-                    }
+                    with admission_path.open("a", encoding="utf-8", newline="\n") as admissions:
+                        observed[tag] = {
+                            name: download(
+                                args,
+                                "https://github.com/"
+                                + REPO
+                                + "/releases/download/"
+                                + tag
+                                + "/"
+                                + name,
+                                target / name,
+                                expected,
+                                admissions,
+                            )
+                            for name, expected in sorted(built["assets"].items())
+                        }
                     results.update({tag + ":" + n: artifact(target / n) for n in built["assets"]})
                 outcome["anonymousBytes"] = observed
                 outcome["complete"] = True

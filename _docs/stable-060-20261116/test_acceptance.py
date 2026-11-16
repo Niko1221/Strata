@@ -975,6 +975,225 @@ def test_bound_operation_exception_through_pinned_consumer(
 
 
 @pytest.mark.parametrize(
+    "phase,adapter", [("native-input", "native-input.py"), ("component", "components-feed.py")]
+)
+@pytest.mark.parametrize("damage", ["none", "absent", "mismatched", "tampered"])
+def test_current_native_job_requires_its_bound_low_ram_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str, adapter: str, damage: str
+) -> None:
+    path, record = acceptance_fixture(tmp_path, monkeypatch, low_ram=True)
+    old = path.parent
+    work = old.parent / (phase + "-r1")
+    old.rename(work)
+    record["phase"] = phase
+    command = a.release.load(work / "operation-worker.json")["command"]
+    command[2] = str(HERE / adapter)
+    reservation = a.release.load(work / "reservation.json")
+    reservation["command"] = command
+    reservation["helpers"] = {
+        name: a.release.sha(HERE / name) for name in ("release.py", "verify.mjs", adapter)
+    }
+    put(work / "reservation.json", reservation)
+    context = a.release.load(work / "operation-worker.json")
+    context.update(
+        command=command, attemptRoot=str(work), reservationSHA256=a.release.sha(work / "reservation.json")
+    )
+    put(work / "operation-worker.json", context)
+    current = a.release.load(work / "owned-job.json")
+    current["operationExecution"].update(
+        command=command,
+        attemptRoot=str(work),
+        reservationSHA256=a.release.sha(work / "reservation.json"),
+        workerContextSHA256=a.release.sha(work / "operation-worker.json"),
+    )
+    if damage == "absent":
+        del record["ramPolicy"]
+    elif damage == "mismatched":
+        record["phase"] = "other"
+    elif damage == "tampered":
+        context["admission"]["available_ram"] += 1
+        put(work / "operation-worker.json", context)
+    if damage == "none":
+        a.successful_job(current, record, work)
+    else:
+        with pytest.raises(RuntimeError):
+            a.successful_job(current, record, work)
+
+
+def bind_current_native_jobs(record: dict) -> None:
+    """Turn the fixture's current native and component jobs into bound low-RAM jobs."""
+    inputs = record["inputs"]
+    for phase, adapter, key in (
+        ("native-input", "native-input.py", "native"),
+        ("component", "components-feed.py", "component"),
+    ):
+        receipt = Path(inputs[key]["path"])
+        work = receipt.parent
+        data = a.release.load(receipt)
+        data.update(
+            phase=phase,
+            sourceRoot=record["sourceRoot"],
+            sourceCommit=COMMIT,
+            tree=record["tree"],
+            ramPolicy=a.release.ram_policy(True)
+            | {"samples": 4, "nominalBreachSamples": 4, "minAvailableBytes": 2 * a.release.GIB},
+        )
+        identity = {k: data[k] for k in ("sourceRoot", "sourceCommit", "tree")}
+        command = [
+            sys.executable,
+            "-B",
+            str(HERE / adapter),
+            "--execute",
+            "--worker",
+            "--reviewed-commit",
+            COMMIT,
+            "--attempt",
+            "r1",
+            "--allow-low-ram",
+        ]
+        policy = a.release.ram_policy(True)
+        reservation = {
+            "identity": identity,
+            "command": command,
+            "ramPolicy": policy,
+            "helpers": {n: a.release.sha(HERE / n) for n in ("release.py", "verify.mjs", adapter)},
+        }
+        put(work / "reservation.json", reservation)
+        resources = {
+            "available_ram": 2 * a.release.GIB,
+            "commit_headroom": 5 * a.release.GIB,
+            "H_free": 11 * a.release.GIB,
+            "C_free": 6 * a.release.GIB,
+        }
+        context = {
+            "command": command,
+            "identity": identity,
+            "ramPolicy": policy,
+            "pid": 1,
+            "creationFiletime": 123,
+            "attemptRoot": str(work),
+            "reservationSHA256": a.release.sha(work / "reservation.json"),
+            "admission": resources,
+        }
+        put(work / "operation-worker.json", context)
+        current = job()
+        current.update(
+            root_creation_filetime=123,
+            ramPolicy=data["ramPolicy"],
+            operationRAMSamples=[2 * a.release.GIB] * 4,
+            operationAdmissions=[resources],
+            operationExecution={
+                "command": command,
+                "cwd": record["sourceRoot"],
+                "attemptRoot": str(work),
+                "reservationSHA256": a.release.sha(work / "reservation.json"),
+                "workerContextSHA256": a.release.sha(work / "operation-worker.json"),
+                "installAdmissionSHA256": None,
+                "admission": resources,
+            },
+        )
+        current["memory_diagnostics"]["min_available_ram"] = 2 * a.release.GIB
+        put(work / "owned-job.json", current)
+        if key == "native":
+            inputs["native"] = a.artifact(put(receipt, data))
+            inputs["native_job"] = a.artifact(work / "owned-job.json")
+            binding_path = Path(inputs["nativeBinding"]["path"])
+            binding = a.release.load(binding_path)
+            binding.update(
+                receiptSHA256=inputs["native"]["sha256"], ownedJobSHA256=inputs["native_job"]["sha256"]
+            )
+            inputs["nativeBinding"] = a.artifact(put(binding_path, binding))
+        else:
+            data["nativeBindingSHA256"] = inputs["nativeBinding"]["sha256"]
+            inputs["component"] = a.artifact(put(receipt, data))
+            inputs["component_job"] = a.artifact(work / "owned-job.json")
+
+
+def test_final_native_consumer_rechecks_bound_current_jobs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path, record = acceptance_fixture(tmp_path, monkeypatch, "final-native")
+    bind_current_native_jobs(record)
+    monkeypatch.setattr(a.delivery, "receipt", lambda path, *_args: a.release.load(path))
+    seen = []
+    original = a.successful_job
+
+    def capture(current, receipt=None, work=None):
+        if receipt is not None:
+            seen.append((receipt["phase"], work))
+        return original(current, receipt, work)
+
+    monkeypatch.setattr(a, "successful_job", capture)
+    a.validate_native_proof(record, path.parent)
+    assert seen == [
+        ("native-input", Path(record["inputs"]["native"]["path"]).parent),
+        ("component", Path(record["inputs"]["component"]["path"]).parent),
+    ]
+
+
+def test_final_native_producer_rechecks_bound_current_jobs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path, record = acceptance_fixture(tmp_path, monkeypatch, "final-native")
+    inputs = record["inputs"]
+    native_receipt = Path(inputs["native"]["path"])
+    component_receipt = Path(inputs["component"]["path"])
+    signed = Path(a.release.load(component_receipt)["signedComponent"])
+    for backend in ("prism", "turboquant"):
+        (signed / "local-backends" / backend).mkdir(parents=True)
+    unsigned = native_receipt.parent / "unsigned" / a.release.NAME
+    unsigned.mkdir(parents=True)
+    for name in ("strata.exe", "strata-q36.exe"):
+        shutil.copyfile(signed / name, unsigned / name)
+        shutil.copyfile(signed / name, a.native.BUILD / "Release" / name)
+    shutil.copyfile(signed / "native-build.json", a.native.BUILD / "Release" / "native-build.json")
+    built = a.release.load(native_receipt)
+    built.update(nativeComponent=str(unsigned), files=a.release.inventory(unsigned))
+    put(native_receipt, built)
+    put(native_receipt.parent / "worker.log", "native synthetic")
+    put(component_receipt.parent / "worker.log", "component synthetic")
+    bind_current_native_jobs(record)
+    monkeypatch.setattr(a.delivery, "receipt", lambda path, *_args: a.release.load(path))
+    monkeypatch.setattr(
+        a.native,
+        "configured_inputs",
+        lambda _build: a.release.load(Path(inputs["inputs-before.json"]["path"])),
+    )
+    monkeypatch.setattr(
+        a.native, "toolkit_libraries", lambda _path: {"toolkit.dll": inputs["library:toolkit.dll"]["sha256"]}
+    )
+    monkeypatch.setattr(a.release, "verify", lambda *_args: None)
+    monkeypatch.setattr(a.release, "command", lambda *_args, **_kwargs: "0.6.0")
+    real_module = a.release.module
+    monkeypatch.setattr(
+        a.release,
+        "module",
+        lambda name, module_path: (
+            SimpleNamespace(uncovered=lambda *_args: [])
+            if name == "acceptance_pe"
+            else real_module(name, module_path)
+        ),
+    )
+    args = SimpleNamespace(reviewed_commit=COMMIT)
+    for name in a.EXTERNAL_INPUTS:
+        setattr(args, name + "_receipt", Path(inputs[name]["path"]))
+        setattr(args, name + "_receipt_sha256", inputs[name]["sha256"])
+    seen = []
+    original = a.successful_job
+
+    def capture(current, receipt=None, work=None):
+        if receipt is not None:
+            seen.append((receipt["phase"], work))
+        return original(current, receipt, work)
+
+    monkeypatch.setattr(a, "successful_job", capture)
+    producer_work = tmp_path / "producer-output"
+    producer_work.mkdir()
+    a.final_native(args, producer_work)
+    assert seen == [("native-input", native_receipt.parent), ("component", component_receipt.parent)]
+
+
+@pytest.mark.parametrize(
     "change", ("none", "stale-source", "phase", "schema", "result", "job", "log", "raw-receipt")
 )
 def test_consumer_requires_frozen_post_drain_receipt(

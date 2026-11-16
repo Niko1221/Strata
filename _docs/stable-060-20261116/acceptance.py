@@ -672,7 +672,8 @@ def final_native(args: argparse.Namespace, work: Path) -> dict:
     ):
         path = receipt_path.parent / "owned-job.json"
         require(path == getattr(args, name + "_receipt"), "Owned Job must belong to the pinned phase attempt")
-        successful_job(release.load(path))
+        current = built if name == "native_job" else component_record
+        successful_job(release.load(path), current, receipt_path.parent)
         inputs[name + "Log"] = artifact(receipt_path.parent / "worker.log")
     inputs["nativeBinding"] = artifact(binding_path)
     inputs["nativeBuild"] = artifact(component / "native-build.json")
@@ -1100,8 +1101,15 @@ def validate_native_proof(record: dict, work: Path) -> None:
         evidence(record, "inputs", "builderLog", native_receipt.parent / "builder.log"),
         binding["builder"]["logSHA256"],
     )
-    for name, path in (("native_job", native_receipt), ("component_job", component_receipt)):
-        successful_job(release.load(evidence(record, "inputs", name, path.parent / "owned-job.json")))
+    for name, path, current in (
+        ("native_job", native_receipt, built),
+        ("component_job", component_receipt, component),
+    ):
+        successful_job(
+            release.load(evidence(record, "inputs", name, path.parent / "owned-job.json")),
+            current,
+            path.parent,
+        )
     build = release.load(evidence(record, "inputs", "nativeBuild", signed / "native-build.json"))
     require(
         inputs["nativeBuild"]["sha256"] == binding.get("nativeBuildSHA256"),

@@ -325,6 +325,7 @@ def main(argv: list[str] | None = None) -> int:
     args = cli.parse_args(argv)
     args.phase = "feed"
     if args.execute:
+        native.explicit_attempt(argv, args.attempt)
         release.require(
             args.no_dsv41_carry
             and args.key == KEY

@@ -242,6 +242,28 @@ def admit(*, allow_low_ram: bool = False) -> dict:
     return values
 
 
+def publication_admissions(work: Path) -> list[dict]:
+    """Read a bounded, worker-bound stream of successful readback admissions."""
+    path = work / "publication-admissions.jsonl"
+    no_links(path)
+    require(
+        path.is_file() and path.stat().st_size <= 256 * 1024 * 1024,
+        "Publication admission evidence missing or oversized",
+    )
+    with path.open("r", encoding="utf-8") as stream:
+        header = json.loads(stream.readline())
+        require(
+            header == {"workerContextSHA256": sha(work / "operation-worker.json")},
+            "Publication admission worker binding differs",
+        )
+        rows = []
+        for line in stream:
+            require(len(rows) < 1000000 and len(line) <= 1024, "Publication admission evidence exceeds limit")
+            rows.append(json.loads(line))
+    require(rows, "Publication admission evidence empty")
+    return rows
+
+
 def receipt_ram_floor(record: dict, work: Path, job: dict) -> int:
     """Lower a consumer floor only with the observed command and owned worker proof."""
     policy = record.get("ramPolicy")
@@ -344,9 +366,14 @@ def receipt_ram_floor(record: dict, work: Path, job: dict) -> int:
     context = load(work / "operation-worker.json")
     admissions = job.get("operationAdmissions")
     install = record["phase"] == "install"
+    publication = record["phase"] == "publication-readback"
+    chunk_path = work / "publication-admissions.jsonl"
+    chunks = publication_admissions(work) if publication else []
+    require(publication or not chunk_path.exists(), "Unexpected publication admission evidence")
     require(
         isinstance(admissions, list)
-        and len(admissions) == 1 + int(install)
+        and len(admissions) == 1 + int(install) + len(chunks)
+        and (not publication or admissions[1:] == chunks)
         and all(
             isinstance(v, dict)
             and set(v) == {"available_ram", "commit_headroom", "H_free", "C_free"}
@@ -385,17 +412,19 @@ def receipt_ram_floor(record: dict, work: Path, job: dict) -> int:
         and context["creationFiletime"] > 0,
         "Operation worker identity/policy differs",
     )
+    expected_execution = {
+        "command": command,
+        "cwd": record["sourceRoot"],
+        "attemptRoot": str(work),
+        "reservationSHA256": sha(work / "reservation.json"),
+        "workerContextSHA256": sha(work / "operation-worker.json"),
+        "installAdmissionSHA256": install_sha,
+        "admission": execution.get("admission"),
+    }
+    if publication:
+        expected_execution["publicationAdmissionsSHA256"] = sha(chunk_path)
     require(
-        execution
-        == {
-            "command": command,
-            "cwd": record["sourceRoot"],
-            "attemptRoot": str(work),
-            "reservationSHA256": sha(work / "reservation.json"),
-            "workerContextSHA256": sha(work / "operation-worker.json"),
-            "installAdmissionSHA256": install_sha,
-            "admission": execution.get("admission"),
-        },
+        execution == expected_execution,
         "Unbound operation Job",
     )
     admission, diag = execution["admission"], job.get("memory_diagnostics", {})
@@ -1194,11 +1223,16 @@ def main() -> int:
     # parent/monitor minima, which may all be higher than these observations.
     admissions = []
     install_path = work / "operation-install-admission.json"
+    chunk_path = work / "publication-admissions.jsonl"
     try:
         if (work / "operation-worker.json").is_file():
             admissions.append(load(work / "operation-worker.json")["admission"])
         if install_path.is_file():
             admissions.append(load(install_path)["resources"])
+        if args.phase == "publication-readback":
+            admissions.extend(publication_admissions(work))
+        else:
+            require(not chunk_path.exists(), "Unexpected publication admission evidence")
         for value in admissions:
             observe_ram(policy, value, ram_samples)
     except Exception as error:
@@ -1217,6 +1251,8 @@ def main() -> int:
         else None,
         "installAdmissionSHA256": sha(install_path) if install_path.is_file() else None,
     }
+    if args.phase == "publication-readback" and chunk_path.is_file():
+        run["operationExecution"]["publicationAdmissionsSHA256"] = sha(chunk_path)
     save(work / "owned-job.json", run)
     require(
         "admissionEvidenceError" not in run, "Worker admission evidence invalid; raw Job retained"

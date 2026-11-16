@@ -1,6 +1,8 @@
 """No-build boundary tests. These tests do not touch release/resource folders."""
 
 import importlib.util
+import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -489,16 +491,21 @@ class OperationRAM(unittest.TestCase):
         worker_ram: int | None = None,
         install_ram: int | None = None,
         high_monitor: bool = False,
+        publication: bool = False,
     ) -> tuple[dict, dict, Path]:
         args = release.arguments(
             ["freeze", "--execute", "--allow-low-ram", "--reviewed-commit", "a" * 40]
         )
         if install_ram is not None:
             args.phase = "install"
+        if publication:
+            args.phase = "publication-readback"
         work = self.root / (args.phase + "-r1")
         command_argv = release.worker_command(args)
         if install_ram is not None:
             command_argv[2] = str(release.HERE / "delivery.py")
+        if publication:
+            command_argv[2] = str(release.HERE / "publish.py")
         worker_admission = self.values | {
             "available_ram": worker_ram if worker_ram is not None else self.values["available_ram"]
         }
@@ -533,6 +540,37 @@ class OperationRAM(unittest.TestCase):
                         "workerContextSHA256": release.sha(work / "operation-worker.json"),
                     },
                 )
+            if publication:
+                spec = importlib.util.spec_from_file_location(
+                    "synthetic_publisher", release.HERE / "publish.py"
+                )
+                publisher = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(publisher)
+
+                class Response(io.BytesIO):
+                    status = 200
+                    headers = {}
+
+                data = b"synthetic publication"
+                target = work / "download"
+                stream_path = work / "publication-admissions.jsonl"
+                with stream_path.open("x", encoding="utf-8") as stream:
+                    stream.write(
+                        json.dumps({"workerContextSHA256": release.sha(work / "operation-worker.json")})
+                        + "\n"
+                    )
+                    with patch.object(publisher, "public_open", return_value=Response(data)), patch.object(
+                        publisher.release,
+                        "admit",
+                        return_value=self.values | {"available_ram": 2 * release.GIB},
+                    ):
+                        publisher.download(
+                            args,
+                            "unused",
+                            target,
+                            {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()},
+                            stream,
+                        )
             release.save(
                 work / "pending.json",
                 {
@@ -595,6 +633,21 @@ class OperationRAM(unittest.TestCase):
             | {"samples": 4, "nominalBreachSamples": 4, "minAvailableBytes": release.GIB},
         )
         self.assertIn("--allow-low-ram", job["operationExecution"]["command"])
+
+    def test_publication_chunk_admission_reaches_receipt_and_tamper_is_refused(self) -> None:
+        record, job, work = self.produce(worker_ram=5 * release.GIB, high_monitor=True, publication=True)
+        self.assertEqual(record["ramPolicy"]["samples"], 5)
+        self.assertEqual(record["ramPolicy"]["nominalBreachSamples"], 1)
+        self.assertEqual(record["ramPolicy"]["minAvailableBytes"], 2 * release.GIB)
+        self.assertEqual(release.receipt_ram_floor(record, work, job), 0)
+        path = work / "publication-admissions.jsonl"
+        original = path.read_bytes()
+        path.write_bytes(original + b"{}\n")
+        with self.assertRaises((RuntimeError, ValueError)):
+            release.receipt_ram_floor(record, work, job)
+        path.unlink()
+        with self.assertRaises((RuntimeError, OSError)):
+            release.receipt_ram_floor(record, work, job)
 
     def test_worker_and_install_admissions_lower_than_every_monitor_are_included(self) -> None:
         for install_ram in (None, release.GIB):
