@@ -25,6 +25,29 @@ export function nativeSources(root) {
   for(const name of ['CMakeLists.txt','spin8/CMakeLists.txt','tqcodec/CMakeLists.txt','third_party/ggml/VERSION.txt']) if(existsSync(join(root,name)))paths.push(join(root,name));
   return Object.fromEntries(paths.map(path=>[relative(root,path).replaceAll('\\','/'),sha256(path)]).sort(([a],[b])=>a.localeCompare(b)));
 }
+/** The owned Q38 closure excludes unused llama/ggml runtime trees. */
+export function q38Sources(root) {
+  const paths=['include','src/qwen38','spin8/src','spin8/include','spin8/third_party','tqcodec/src','tqcodec/include'].flatMap(name=>files(join(root,name)));
+  paths.push(join(root,'data/spin8/reference.profile'),join(root,'src/kernels/cuda/fused_gdn.cu'));
+  return Object.fromEntries(paths.map(path=>[relative(root,path).replaceAll('\\','/'),sha256(path)]).sort(([a],[b])=>a<b?-1:a>b?1:0));
+}
+/** A distinct portable record binds the already compiled helper, never the app commit. */
+export function verifyQ38Build(folder,root,manifest) {
+  const record=JSON.parse(readFileSync(join(folder,'q38-build.json'),'utf8'));
+  if(record.schema!==1||record.version!==manifest.version||record.entrypoint!=='strata-q38.exe'||record.sourceCommit!=='6ee425434c98277555332c7934e1ac51436eb198'||record.sha256!==sha256(join(folder,record.entrypoint))||record.releaseQualified!==false)throw new Error('Stale Q38 build identity');
+  if(JSON.stringify(record.sources)!==JSON.stringify(q38Sources(root)))throw new Error('Q38 compiled source bytes changed');
+  const recipe=record.recipe;
+  if(recipe?.cudaArchs!=='120'||recipe.cudaRuntime!=='static'||recipe.runtimeImplementation!=='Strata-owned'||recipe.embeddedProfileSHA256!==sha256(join(root,'data/spin8/reference.profile'))||recipe.compilerManifestSHA256!=='40851d465307d73a8c3844222112be5bfab87ca23c070923539c3bab53be4fcb')throw new Error('Changed Q38 build recipe/profile');
+  const members=new Set(manifest.files?.map(entry=>entry.path.toLowerCase())??[]);
+  for(const name of ['strata-q38.exe','q38-build.json',...Object.keys(record.notices??{})])if(!members.has(name.toLowerCase()))throw new Error('Uncovered Q38 package member: '+name);
+  if(!Array.isArray(record.requiredLibraries)||!record.requiredLibraries.length||!Array.isArray(record.imports)||record.imports.some(name=>/llama|ggml/i.test(name)))throw new Error('Invalid Q38 runtime closure');
+  for(const name of record.requiredLibraries)if(typeof name!=='string'||/[\\/]/.test(name)||!members.has(name.toLowerCase()))throw new Error('Missing Q38 runtime library: '+name);
+  if(JSON.stringify(Object.keys(record.runtimeLibraries??{}).sort())!==JSON.stringify([...record.requiredLibraries].sort()))throw new Error('Incomplete Q38 runtime hashes');
+  for(const [name,hash] of Object.entries(record.runtimeLibraries))if(sha256(join(folder,name))!==hash)throw new Error('Changed Q38 runtime library: '+name);
+  for(const [name,hash] of Object.entries(record.notices??{}))if(!/^LICENSE-[a-z0-9-]+\.txt$/.test(name)||sha256(join(folder,name))!==hash)throw new Error('Changed Q38 format notice');
+  for(const [source,name] of [['src/qwen38/LICENSE-formats.txt','LICENSE-q38-formats.txt'],['tqcodec/DIALECT_LICENSE.txt','LICENSE-turbo-dialects.txt']])if(record.notices?.[name]!==sha256(join(root,source)))throw new Error('Missing Q38 format notice');
+  return record;
+}
 /** Identify actual vendored bytes, or an explicitly selected clean external ggml checkout. */
 export function ggmlIdentity(root, dependency) {
   const vendor=join(resolve(root),'third_party','strata-ggml');
@@ -94,6 +117,7 @@ export function verifyNativeBuild(folder,root,manifest,{sourceRoot,sourceCommit,
     const status=spawnSync('git',['-C',root,'status','--porcelain','--untracked-files=all','--',...paths],{encoding:'utf8',timeout:15000,windowsHide:true});
     if(status.error||status.status!==0||status.stdout.trim())throw new Error('Separate native source checkout is not frozen');
   }
+  if(existsSync(join(folder,'strata-q38.exe'))||existsSync(join(folder,'q38-build.json')))verifyQ38Build(folder,root,manifest);
   return {sourceRoot:resolve(root),sourceCommit:sourceCommit??null,manifestSHA256:sha256(join(folder,'engine-component.json')),engineSHA256:record.sha256,buildId:manifest.build_id??null};
 }
 /** The one model-derived fixture allowed in the base runtime, with its full licence. */

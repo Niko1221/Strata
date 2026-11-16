@@ -13,6 +13,15 @@ helper. Control verifies the complete parent component inventory before selectin
 it. An older component without that helper reports an error. Explicit PrismML
 and TurboQuant adapter selections remain available through their existing routes.
 
+The combined native path reads original PrismML 0.4.1 PQ2_0, including its
+admitted Hadamard metadata, and the supported mixed-IQ tensor formats directly.
+Its packed-format mathematics retain their pinned source attribution and MIT
+notices. Strata owns model loading and execution; this runner links no llama or
+ggml runtime. `q38-build.json` identifies its separate compiled commit and exact
+source/profile bytes. The fixed Spin8 reference profile is embedded, so normal
+installed operation does not depend on the working directory. CUDA is linked
+statically; the required Microsoft release CRT DLLs are covered by the component.
+
 The Terminal uses the same registration and serving configuration:
 
 ```powershell
@@ -41,6 +50,12 @@ If none fits the resource reserves, loading fails. The running engine's INFO and
 service metrics report the effective KV format, allocation and selection reason.
 Saved `auto` remains `auto` for future loads. Neither the app nor the Terminal
 predicts admission from the preview.
+
+The Turbo modes retain F16 keys and compress values to two, three or four bits;
+they do not enable every standalone TurboQuant K/V combination. Trunk and head
+weights remain packed on the GPU, while the original embedding is read through
+a host mapping with bounded per-token transfer. Activations and GDN state use
+FP32. Model/context admission includes those allocations and keeps the reserves.
 
 The app offers 98,304 and 131,072 tokens as explicit requests. Full-input quality
 and a five-minute first response at those lengths remain unqualified. Capacity
@@ -82,7 +97,19 @@ Font fallback can display a shared Han code point with a different glyph shape;
 that is separate from the actual generated Unicode code point. UI language does
 not select the model's output profile.
 
-The current source integration has fixture and numerical regression coverage.
-Actual checkpoint language quality, installed application behaviour and release
-publication require their own recorded acceptance; source tests alone do not
-establish those outcomes.
+Source integration has fixture and numerical regression coverage. Four
+predeclared actual Soya Japanese cases later passed with the 963b6a19 app/Control
+consumer and the separately compiled 6ee42543 native binary, including visible
+Japanese reasoning, literal names and original executable code. Earlier failed
+language attempts remain recorded. This is sampled acceptance, not a universal
+language or answer-quality guarantee. The later PQ run passed all finite-script,
+visible-reasoning, raw/service-wire and reset checks, but passed only two of four
+overall tasks: it returned bare names instead of a Japanese sentence and omitted
+a requested code fence around otherwise correct Python. Those format failures
+remain open. Earlier hardware-source checks separately
+measured short PQ/mixed-IQ mechanics, near-budget IQ4_XS/F16 at 1,024 capacity and
+short PQ auto/Turbo4 requests at 131,072 capacity. None processed a full window.
+Soya's earlier 1,434-token prefill at 2,048 capacity took about 364.9 seconds;
+no real-model speed improvement was demonstrated. Installed application behaviour
+and public release still require their own receipts. Stable remains 0.5.9 until
+the standard overwrite and public readback complete; releaseQualified=false.

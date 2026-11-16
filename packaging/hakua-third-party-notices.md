@@ -2,6 +2,8 @@
 
 Strata, the GUI and the native engine retain the repository MIT licence. The exact ggml dependency licence is included. PrismML and TurboQuant retain their own licences in their individual runtime directories.
 
+The owned Q38 CUDA runner includes attributed PrismML 0.4.1 PQ2_0 and ggml packed-format mathematics under Q38-formats-MIT.txt. Turbo scalar tables/layout adaptations retain their immutable source pins and MIT notice in Turbo-dialects-MIT.txt. Spin8's SHA-256 and rotate-bits source notices accompany the component. q38-build.json records the source-relative compiled closure and fixed embedded profile. These numerical format ports do not introduce a llama runtime dependency into Q38; the older native engine and standalone runtimes retain their separate dependencies.
+
 The upstream source attribution for libstrix's workgroup barrier is included as libstrix-NOTICE.md. Its original author and licence link are retained.
 
 Node's official licence contains its bundled dependency notices. Python's licence and the locked Python distributions' available licence files accompany this package. Harness keeps its own licence and dependency notices inside its runtime directory. The GUI includes React, React DOM, Scheduler, KaTeX, PrismJS, PDF.js and html-to-image notices. Public icons use the pinned Lucide ISC source and the repository's owned artwork; supplied GT Walsheim Pro fonts and unqualified supplied artwork are excluded.

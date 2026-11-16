@@ -1,5 +1,15 @@
 # Hakua Windows release qualification
 
+## 0.6.0 owned Q38 source candidate
+
+The new Windows CUDA 13 / Blackwell dense GGUF runner uses Strata-owned loading, forward execution and CUDA operations. It reuses Strata's GDN kernel and attributed PrismML/ggml format mathematics, Spin8 and Turbo scalar tables, without a llama runtime dependency. PrismML 0.4.1 PQ2_0 weights and F16-K/Turbo2/3/4-V or Spin8 K8V4 caches share this native path. The original standalone PrismML 0.4.1 and TurboQuant 0.4.0 packages retain their separate identities and evidence. Their old signatures do not qualify the combined native executable.
+
+The Q38 binary was compiled from 6ee425434c98277555332c7934e1ac51436eb198 with SHA-256 706867da2b9ad1a1debf09b0ac2f02ce3921412382e167ff4d1211efb7012af7. Later app/Control commits are separate consumers. A portable q38-build.json binds the compiled source closure, embedded profile, format pins, toolchain options, executable and runtime imports. The full private compiler/SDK inventory is retained as evidence and is not shipped. Production packaging retains strata.exe and strata-q36.exe and must close all PE dependencies before signing. The native component covers Q38 and its provenance; the original GGUF weights remain separate.
+
+Earlier hardware-source actual checks passed short PQ and mixed-IQ mechanics and sampled answers, including IQ4_XS/F16 at 1,024 capacity with four finite teacher-forced rows. PQ auto at 131,072 capacity selected F16/Turbo4 and processed short requests; it did not process a full window. Soya at 2,048 capacity needed 364,856.9 ms to prefill 1,434 tokens. No real-model speedup was demonstrated. Later language-source checks are separate: the current app consumer passed four predeclared Soya Japanese cases and manual review, including visible Japanese reasoning and preserved executable literal code. The later PQ run passed finite-script, visible-language, raw/service-wire and reset checks but only two of four overall tasks; it returned bare names instead of a Japanese sentence and omitted a requested code fence. PQ overall format acceptance did not pass. Earlier failed language attempts remain retained. These sampled checks do not establish general answer quality or universal language/format compliance.
+
+Sequential prefill, no native image input, no MTP, no full CUDA graphs, no batched prefill and no native private KV persistence remain explicit limits. Practical 98,304/131,072-token input and a first response within five minutes remain follow-up targets. The RAM, commit, GPU and disk reserves are unchanged. Installed-app acceptance, final-source hosted CI, standard overwrite and public anonymous readback remain separate delivery gates. Current installed/public stable remains 0.5.9; releaseQualified=false. Windows Authenticode signing remains absent. Component and feed signatures are distinct. See [the native trial guide](QWEN38_DENSE_NATIVE.md).
+
 ## Stable 0.5.9 workflow safety release
 
 Repairs Windows local-engine physical-memory containment, research capability

@@ -150,7 +150,7 @@ class Boundaries(unittest.TestCase):
             self.assertEqual(command[command.index("--build-id") + 1], self.commit)
             self.assertEqual(
                 [command[i + 1] for i, v in enumerate(command) if v == "--include"],
-                ["strata-q36.exe", "native-build.json"],
+                list(self.native.PAYLOAD),
             )
             for bad in (None, "", "580.65", "nvidia=", "nvidia=580.65 --tree", "amd=580.65"):
                 args.min_driver = bad
@@ -389,7 +389,7 @@ class Boundaries(unittest.TestCase):
         ), self.assertRaises(RuntimeError):
             self.feed.feed_phase(argparse.Namespace(no_dsv41_carry=False), self.root)
 
-    def test_native_success_probes_both_binaries_before_packaging(self) -> None:
+    def test_native_success_probes_all_binaries_before_packaging(self) -> None:
         build = self.root / "build"
         (build / "Release").mkdir(parents=True)
         toolkit = self.root / "cuda"
@@ -420,13 +420,18 @@ class Boundaries(unittest.TestCase):
                     },
                 )
             if name == "package":
-                self.assertEqual(probes, ["strata.exe", "strata-q36.exe"])
+                self.assertEqual(probes, ["strata.exe", "strata-q36.exe", "strata-q38.exe"])
                 import shutil
 
-                shutil.copytree(build / "Release", work / "unsigned" / self.native.release.NAME)
+                shutil.copytree(work / "package-input", work / "unsigned" / self.native.release.NAME)
             return {"command": list(map(str, argv)), "exitCode": 0}
 
-        with patch.object(self.native, "BUILD", build), patch.object(
+        def stage_q38(_release, _root, destination):
+            (destination / "strata-q38.exe").write_bytes(b"synthetic q38")
+            self.write(destination / "q38-build.json", {"sourceCommit": self.native.Q38.COMMIT})
+            return {"sourceCommit": self.native.Q38.COMMIT}
+
+        with patch.object(self.native.Q38, "stage", side_effect=stage_q38), patch.object(self.native, "BUILD", build), patch.object(
             self.native, "CUDA", toolkit
         ), patch.object(self.native, "package_command", return_value=["synthetic-packager"]), patch.object(
             self.native, "configured_inputs", return_value=inputs
@@ -445,7 +450,7 @@ class Boundaries(unittest.TestCase):
         self.assertFalse(result["signed"])
         self.assertEqual(verify.call_args.args[0], "native")
         binding = self.native.release.load(work / "native-binding.pending.json")
-        self.assertEqual(set(binding["binaries"]), {"strata.exe", "strata-q36.exe"})
+        self.assertEqual(set(binding["binaries"]), {"strata.exe", "strata-q36.exe", "strata-q38.exe"})
         self.assertEqual(binding["builder"]["exitCode"], 0)
         self.assertFalse((work / "native-binding.json").exists())
 

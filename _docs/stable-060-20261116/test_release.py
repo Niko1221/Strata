@@ -349,6 +349,11 @@ class PreservedNotices(unittest.TestCase):
             self.source / "LICENSE",
             self.source / "third_party/strata-ggml/LICENSE",
             self.source / "third_party/libstrix/NOTICE.md",
+            self.source / "src/qwen38/LICENSE-formats.txt",
+            self.source / "tqcodec/DIALECT_LICENSE.txt",
+            self.source / "spin8/third_party/sha256/LICENSE",
+            self.source / "spin8/third_party/sha256/PROVENANCE.md",
+            self.source / "spin8/third_party/sha256/rotate-bits/LICENSE.md",
             self.source / "packaging/hakua-third-party-notices.md",
             self.args.cuda_dir / "EULA.txt",
             self.args.cuda_dir / "LICENSE",
@@ -372,6 +377,9 @@ class PreservedNotices(unittest.TestCase):
         self.assertEqual(result["priorNotices"], identity)
         self.assertEqual(release.prior_notice_identity(self.args, self.work), identity)
         self.assertIn("Node-LICENSE.txt", result["noticeFiles"])
+        self.assertIn("Q38-formats-MIT.txt", result["noticeFiles"])
+        self.assertIn("Turbo-dialects-MIT.txt", result["noticeFiles"])
+        self.assertIn("Spin8-rotate-bits-LICENSE.md", result["noticeFiles"])
         self.assertEqual(
             (self.resources / "notices/Microsoft-One.docx").read_bytes(),
             (self.prior / "Microsoft-One.docx").read_bytes(),

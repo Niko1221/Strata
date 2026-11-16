@@ -10,7 +10,7 @@ const [mode, rootArg, inputArg, commit, receiptArg,
 const root = resolve(rootArg), input = resolve(inputArg);
 const mod = async name => import(pathToFileURL(join(root, name)).href);
 const {sha256, nativeSources, ggmlIdentity, verifyEngine, verifyNativeBuild,
-  verifyPublicAssets} = await mod('apps/host/scripts/release-integrity.mjs');
+  verifyPublicAssets, verifyQ38Build} = await mod('apps/host/scripts/release-integrity.mjs');
 const json = path => JSON.parse(readFileSync(path, 'utf8').replace(/^\uFEFF/, ''));
 function verifyPreparedAssets() {
   assert.ok(publicAssets && publicAssets !== '-' && publicReceipt && publicReceipt !== '-');
@@ -52,13 +52,15 @@ if (mode === 'public-assets') {
   assert.equal(resolve(record.sourceRoot), root);
   assert.equal(record.releaseQualified, false);
   assert.equal(record.nativeBuildSHA256, sha256(join(input, 'native-build.json')));
+  assert.equal(record.q38BuildSHA256, sha256(join(input, 'q38-build.json')));
   assert.equal(manifest.build_id.replace(/-hakua-runtimes-v1$/, ''), commit);
-  for (const binary of ['strata.exe', 'strata-q36.exe'])
+  for (const binary of ['strata.exe', 'strata-q36.exe', 'strata-q38.exe'])
     assert.equal(record.binaries[binary], sha256(join(input, binary)));
   const build = json(join(input, 'native-build.json'));
   assert.deepEqual(build.sources, nativeSources(root));
   assert.deepEqual(build.recipe.ggml, ggmlIdentity(root));
   assert.equal(build.recipe.ggml.mode, 'vendored');
+  assert.equal(record.q38CompiledSourceCommit, verifyQ38Build(input, root, manifest).sourceCommit);
   verifyNativeBuild(input, root, manifest, {sourceRoot:root, sourceCommit:commit,
     manifestSHA256:sha256(join(input, 'engine-component.json'))});
 } else throw new Error('Unknown verification mode');

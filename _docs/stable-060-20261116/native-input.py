@@ -25,6 +25,8 @@ spec.loader.exec_module(release)
 PRIMARY = Path("C:/Users/downl/Documents/ChatGPT/Strata")
 BUILD = Path("H:/Strata/evidence/upstream-sync-20261116/cuda-build")
 CUDA = Path("C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.3")
+Q38 = release.module("release060_q38_input", HERE / "q38-input.py")
+PAYLOAD = ("strata-q36.exe", "strata-q38.exe", "native-build.json", "q38-build.json", "LICENSE-q38-formats.txt", "LICENSE-turbo-dialects.txt")
 
 
 def parser(description: str) -> argparse.ArgumentParser:
@@ -123,7 +125,7 @@ def configured_inputs(build: Path) -> dict:
     release.no_links(build)
     cache = build / "CMakeCache.txt"
     release.no_links(cache)
-    values = dict(re.findall(r"^([^/#][^:=]*):[^=]+=(.*)$", cache.read_text(), re.M))
+    values = cache_values(cache.read_text())
     release.require(
         Path(values.get("CMAKE_HOME_DIRECTORY", "")) == PRIMARY,
         "Configured build belongs to a different source",
@@ -160,6 +162,16 @@ def configured_inputs(build: Path) -> dict:
     }
 
 
+def cache_values(text: str) -> dict[str, str]:
+    """CMake records are single lines; comments and blank lines cannot consume keys."""
+    values = {}
+    for line in text.splitlines():
+        match = re.fullmatch(r"([^/#:=][^:=]*):[^=]+=(.*)", line)
+        if match:
+            values[match[1]] = match[2]
+    return values
+
+
 def package_command(args: argparse.Namespace, work: Path) -> list[str | Path]:
     """Use the production selector and only the approved CUDA library root."""
     release.require(
@@ -174,7 +186,7 @@ def package_command(args: argparse.Namespace, work: Path) -> list[str | Path]:
         "-B",
         PRIMARY / "packaging/package_engine.py",
         "--src",
-        BUILD / "Release",
+        work / "package-input",
         "--backend",
         "cuda",
         "--version",
@@ -189,10 +201,7 @@ def package_command(args: argparse.Namespace, work: Path) -> list[str | Path]:
         args.reviewed_commit,
         "--min-driver",
         args.min_driver,
-        "--include",
-        "strata-q36.exe",
-        "--include",
-        "native-build.json",
+        *[v for name in PAYLOAD for v in ("--include", name)],
         "--search",
         args.cuda_search,
         "--out",
@@ -213,14 +222,14 @@ def capture_outputs(work: Path, label: str) -> dict[str, str]:
     return release.inventory(target)
 
 
-def toolkit_libraries(search: Path) -> dict[str, str]:
+def toolkit_libraries(search: Path, source: Path | None = None) -> dict[str, str]:
     """Inventory installed CUDA sources referenced by the production selection."""
     sys.path[:0] = [str(PRIMARY), str(PRIMARY / "packaging")]
     packager = release.module("native060_packager", PRIMARY / "packaging/package_engine.py")
     deps = packager.binary_deps
-    source = BUILD / "Release"
+    source = source or BUILD / "Release"
     selected = packager.select(
-        source, "strata.exe", tree=False, include=["strata-q36.exe", "native-build.json"]
+        source, "strata.exe", tree=False, include=list(PAYLOAD)
     )
     installed = {p.name.lower(): p for p in search.glob("*.dll")}
     pending = [source / name for name in selected if Path(name).suffix.lower() in (".exe", ".dll")]
@@ -262,16 +271,24 @@ def native(args: argparse.Namespace, work: Path) -> dict:
         and build_record["recipe"].get("cudaSpillBaseline") == before["baseline"],
         "Builder did not bind and qualify the configured inputs",
     )
+    # Stage a bounded selection, preserving the incremental cache and all old evidence.
+    source = work / "package-input"
+    source.mkdir()
+    sys.path[:0] = [str(PRIMARY), str(PRIMARY / "packaging")]
+    packager = release.module("native060_stage_packager", PRIMARY / "packaging/package_engine.py")
+    for name in packager.select(BUILD / "Release", "strata.exe", tree=False, include=["strata-q36.exe", "native-build.json"]):
+        shutil.copy2(BUILD / "Release" / name, source / name)
+    q38 = Q38.stage(release, PRIMARY, source)
     probes = {}
-    for binary in ("strata.exe", "strata-q36.exe"):
-        probes[binary] = release.command([BUILD / "Release" / binary, "--version"], timeout=20)
+    for binary in ("strata.exe", "strata-q36.exe", "strata-q38.exe"):
+        probes[binary] = release.command([source / binary, "--version"], timeout=20)
         release.require(re.search(r"(^|\s)0\.6\.0(\s|$)", probes[binary]), "Native version probe failed")
     release.save(work / "version-probes.json", probes)
     toolkit = release.load(CUDA / "version.json")
     release.require(toolkit.get("cuda", {}).get("version") == "13.3.1", "Unexpected CUDA toolkit version")
     toolkit_version_sha = release.sha(CUDA / "version.json")
     # Record actual library bytes before packaging; the production packager owns PE closure.
-    libraries = toolkit_libraries(args.cuda_search)
+    libraries = toolkit_libraries(args.cuda_search, source)
     release.save(
         work / "toolkit-inputs.json",
         {"versionSHA256": toolkit_version_sha, "libraries": libraries},
@@ -284,7 +301,7 @@ def native(args: argparse.Namespace, work: Path) -> dict:
                 release.sha(path) == libraries[path.name] == release.sha(args.cuda_search / path.name),
                 "CUDA DLL changed during packaging",
             )
-    release.require(toolkit_libraries(args.cuda_search) == libraries, "CUDA toolkit inputs changed")
+    release.require(toolkit_libraries(args.cuda_search, source) == libraries, "CUDA toolkit inputs changed")
     release.require(
         release.sha(CUDA / "version.json") == toolkit_version_sha, "CUDA version metadata changed"
     )
@@ -293,6 +310,8 @@ def native(args: argparse.Namespace, work: Path) -> dict:
         "sourceCommit": args.reviewed_commit,
         "releaseQualified": False,
         "nativeBuildSHA256": release.sha(component / "native-build.json"),
+        "q38BuildSHA256": release.sha(component / "q38-build.json"),
+        "q38CompiledSourceCommit": q38["sourceCommit"],
         "binaries": {n: release.sha(component / n) for n in probes},
         "builder": builder,
         "inputsBeforeSHA256": release.sha(work / "inputs-before.json"),

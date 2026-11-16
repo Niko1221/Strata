@@ -19,13 +19,17 @@ Finish requests, unload models, back up app data, then quit the app including it
 
 ## Features kept in this fork
 
+The 0.6.0 source candidate adds a [local Qwen3.8-27B-family dense GGUF trial](docs/QWEN38_DENSE_NATIVE.md) on Windows CUDA 13 / Blackwell. Strata owns its loader, forward pass and CUDA operations, with attributed numerical format ports and no llama runtime dependency in this runner. The signed component must cover the additional `strata-q38.exe`; original model weights stay separate. Metadata and full tensor validation determine compatibility, including renamed checkpoints. Existing native engines and standalone PrismML 0.4.1 / TurboQuant 0.4.0 choices remain available.
+
+The new path supports original PrismML PQ2_0 weights and explicit F16, Spin8 K8V4 or F16-K/Turbo2/3/4-V cache modes. Auto tries F16, Turbo4, then Spin8 under the unchanged resource reserves. Japanese output uses a no-training instruction profile and finite generation-time suppression, preserving literal input; model-default disables both. This cannot guarantee universally Japanese answers. Short-context mechanics and sampled answers have been measured; practical 98,304/131,072-token input and a five-minute first response remain pending. Prefill is still sequential. MTP, full CUDA graphs and batched prefill are deferred until after packaging.
+
 `/btw` starts a real tool-free side-question subagent with its own stop control. `/research` and `/deepresearch` collect sources; configured web search can use bundled RustXNG Full. Search queries go to the enabled external providers, so search is not entirely offline. Source counts do not establish answer accuracy.
 
 Workflow skill learning and automatic application are separate options; new profiles keep both off. Existing choices, editable private skills, revisions and undo are preserved. Workspace and sidebar file operations, scoped chat history and memory, compatible PrismML/TurboQuant paths, bounded expert memory, pack integrity and diagnostic measurements remain part of the fork. See [skills](docs/WORKFLOW_SKILLS.md) and [search](docs/BROWSER_SEARCH.md).
 
 ## Official integration and compatibility
 
-The pinned official source is [baf16363b4](https://github.com/Niko1221/Strata/commit/baf16363b4403ef0ed4f538f5d5ed11c43fb9535), associated with the official 0.2.14 / engine 0.1.60 generation. It brings networking, drafting selection, prompt kernels, memory handling and platform fixes. Fork versions are independent. DeepSeek compatibility is retained as an extension where official paths were removed; a missing dedicated runtime must prevent loading. This Windows package does not imply native image input, a distributed native DeepSeek engine, or qualified Linux/Mac inference.
+The pinned official source is [c775728069](https://github.com/Niko1221/Strata/commit/c77572806996349b49995e4f98d41b5294d36a21), associated with official 0.2.15 / engine 0.1.60. It brings networking, drafting selection, prompt kernels, memory handling and platform fixes. Fork versions are independent. DeepSeek compatibility is retained as an extension where official paths were removed; a missing dedicated runtime must prevent loading. This Windows package does not imply native image input, a distributed native DeepSeek engine, or qualified Linux/Mac inference.
 
 ## Protection and measured limits
 

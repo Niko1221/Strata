@@ -1,5 +1,11 @@
 # Install Hakua / Strata on Windows
 
+## 0.6.0 candidate and local dense GGUF
+
+The reviewed source candidate adds the Windows CUDA 13 / Blackwell Qwen3.8-27B-family native trial. Installation and public delivery of 0.6.0 remain pending their receipts; the installed and published stable release remains 0.5.9. After a component covering `strata-q38.exe` is delivered, choose Use a local GGUF, select the original checkpoint, check it, then Prepare and load. A previous component without this helper reports a missing-engine error. Do not copy a development executable into the installed application.
+
+The combined native path supports PrismML 0.4.1 PQ2_0 weights and Spin8 or F16-K/Turbo-V cache choices. It preserves the original model file. The installer, native component and tar.7z do not contain complete model weights. Auto KV preserves the requested context and fails if no supported placement fits the reserves. Start with the measured short-context scope; explicit 98,304/131,072 capacity is not evidence that full input is practical. Read [native choices and measured limits](QWEN38_DENSE_NATIVE.md). Existing Hermes memory, workflow learning, tool/key/approval choices and separately installed runtime selections remain preserved.
+
 ## 0.5.9 workflow safety update
 
 The published coordinated Windows release is 0.5.9 for app, Terminal, Control and
