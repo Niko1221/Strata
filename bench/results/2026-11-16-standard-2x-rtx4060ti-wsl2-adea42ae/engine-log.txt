@@ -1,0 +1,144 @@
+Nov 16 13:13:39 DESKTOP-92JK34K python3.12[186]: [strata] reading the prompt: 70 of 75 tokens, 3 s so far
+Nov 16 13:13:40 DESKTOP-92JK34K python3.12[186]: [strata] thinking: 30 of max 128 tokens, 40.8 tok/s, 4 s
+Nov 16 13:13:41 DESKTOP-92JK34K python3.12[186]: [strata] thinking: 72 of max 128 tokens, 41.0 tok/s, 6 s
+Nov 16 13:13:42 DESKTOP-92JK34K python3.12[186]: [strata] answering: 126 of max 128 tokens, 45.6 tok/s, 7 s
+Nov 16 13:13:42 DESKTOP-92JK34K python3.12[186]: [strata] done: 128 tokens in 7 s (45.5 tok/s) (length, cancel=False), expert cache 75.8% hit (+0.1% of the routed experts over PCIe)
+Nov 16 13:13:43 DESKTOP-92JK34K python3.12[186]: [strata] reading the prompt: 76 of 77 tokens, 1 s so far
+Nov 16 13:13:44 DESKTOP-92JK34K python3.12[186]: [strata] thinking: 57 of max 512 tokens, 57.0 tok/s, 2 s
+Nov 16 13:13:45 DESKTOP-92JK34K python3.12[186]: [strata] answering: 119 of max 512 tokens, 59.1 tok/s, 3 s
+Nov 16 13:13:46 DESKTOP-92JK34K python3.12[186]: [strata] answering: 196 of max 512 tokens, 64.6 tok/s, 4 s
+Nov 16 13:13:47 DESKTOP-92JK34K python3.12[186]: [strata] answering: 262 of max 512 tokens, 64.6 tok/s, 5 s
+Nov 16 13:13:48 DESKTOP-92JK34K python3.12[186]: [strata] answering: 331 of max 512 tokens, 65.1 tok/s, 6 s
+Nov 16 13:13:48 DESKTOP-92JK34K python3.12[186]: [strata] done: 356 tokens in 7 s (65.5 tok/s) (stop, cancel=False), expert cache 90.8% hit
+Nov 16 13:13:53 DESKTOP-92JK34K python3.12[186]: [strata] reading the prompt: 4,088 of 4,093 tokens, 5 s so far
+Nov 16 13:13:54 DESKTOP-92JK34K python3.12[186]: [strata] thinking: 9 of max 512 tokens, 36.0 tok/s, 6 s
+Nov 16 13:13:55 DESKTOP-92JK34K python3.12[186]: [strata] thinking: 74 of max 512 tokens, 61.7 tok/s, 7 s
+Nov 16 13:13:56 DESKTOP-92JK34K python3.12[186]: [strata] thinking: 122 of max 512 tokens, 53.8 tok/s, 8 s
+Nov 16 13:13:57 DESKTOP-92JK34K python3.12[186]: [strata] thinking: 184 of max 512 tokens, 56.1 tok/s, 9 s
+Nov 16 13:13:58 DESKTOP-92JK34K python3.12[186]: [strata] thinking: 234 of max 512 tokens, 54.7 tok/s, 10 s
+Nov 16 13:14:00 DESKTOP-92JK34K python3.12[186]: [strata] thinking: 292 of max 512 tokens, 55.2 tok/s, 11 s
+Nov 16 13:14:01 DESKTOP-92JK34K python3.12[186]: [strata] thinking: 354 of max 512 tokens, 56.1 tok/s, 12 s
+Nov 16 13:14:02 DESKTOP-92JK34K python3.12[186]: [strata] thinking: 408 of max 512 tokens, 55.7 tok/s, 13 s
+Nov 16 13:14:03 DESKTOP-92JK34K python3.12[186]: [strata] answering: 464 of max 512 tokens, 55.5 tok/s, 14 s
+Nov 16 13:14:03 DESKTOP-92JK34K python3.12[186]: [strata] done: 512 tokens in 15 s (57.2 tok/s) (length, cancel=False), expert cache 93.1% hit
+Nov 16 13:14:11 DESKTOP-92JK34K python3.12[186]: [strata] reading the prompt: 8,192 of 16,387 tokens, 8 s so far
+Nov 16 13:14:15 DESKTOP-92JK34K python3.12[186]: [strata] reading the prompt: 16,382 of 16,387 tokens, 12 s so far
+Nov 16 13:14:17 DESKTOP-92JK34K python3.12[186]: [strata] reading the prompt: 16,386 of 16,387 tokens, 13 s so far
+Nov 16 13:14:18 DESKTOP-92JK34K python3.12[186]: [strata] thinking: 56 of max 512 tokens, 57.2 tok/s, 14 s
+Nov 16 13:14:19 DESKTOP-92JK34K python3.12[186]: [strata] thinking: 132 of max 512 tokens, 66.0 tok/s, 15 s
+Nov 16 13:14:20 DESKTOP-92JK34K python3.12[186]: [strata] thinking: 202 of max 512 tokens, 67.0 tok/s, 16 s
+Nov 16 13:14:21 DESKTOP-92JK34K python3.12[186]: [strata] thinking: 265 of max 512 tokens, 65.8 tok/s, 17 s
+Nov 16 13:14:22 DESKTOP-92JK34K python3.12[186]: [strata] thinking: 315 of max 512 tokens, 62.5 tok/s, 18 s
+Nov 16 13:14:23 DESKTOP-92JK34K python3.12[186]: [strata] thinking: 378 of max 512 tokens, 62.4 tok/s, 19 s
+Nov 16 13:14:24 DESKTOP-92JK34K python3.12[186]: [strata] answering: 442 of max 512 tokens, 62.5 tok/s, 20 s
+Nov 16 13:14:24 DESKTOP-92JK34K python3.12[186]: [strata] done: 512 tokens in 21 s (65.7 tok/s) (length, cancel=False), expert cache 95.6% hit
+Nov 16 13:14:25 DESKTOP-92JK34K python3.12[186]: [strata] reading the prompt: 72 of 77 tokens, 1 s so far
+Nov 16 13:14:26 DESKTOP-92JK34K python3.12[186]: [strata] thinking: 45 of max 512 tokens, 59.1 tok/s, 2 s
+Nov 16 13:14:27 DESKTOP-92JK34K python3.12[186]: [strata] answering: 109 of max 512 tokens, 61.4 tok/s, 3 s
+Nov 16 13:14:28 DESKTOP-92JK34K python3.12[186]: [strata] answering: 191 of max 512 tokens, 68.2 tok/s, 4 s
+Nov 16 13:14:29 DESKTOP-92JK34K python3.12[186]: [strata] answering: 259 of max 512 tokens, 67.6 tok/s, 5 s
+Nov 16 13:14:30 DESKTOP-92JK34K python3.12[186]: [strata] answering: 331 of max 512 tokens, 68.4 tok/s, 6 s
+Nov 16 13:14:31 DESKTOP-92JK34K python3.12[186]: [strata] done: 349 tokens in 6 s (69.1 tok/s) (stop, cancel=False), expert cache 93.3% hit
+Nov 16 13:14:36 DESKTOP-92JK34K python3.12[186]: [strata] reading the prompt: 4,088 of 4,093 tokens, 5 s so far
+Nov 16 13:14:37 DESKTOP-92JK34K python3.12[186]: [strata] thinking: 6 of max 512 tokens, 24.0 tok/s, 6 s
+Nov 16 13:14:38 DESKTOP-92JK34K python3.12[186]: [strata] thinking: 65 of max 512 tokens, 54.8 tok/s, 7 s
+Nov 16 13:14:39 DESKTOP-92JK34K python3.12[186]: [strata] thinking: 125 of max 512 tokens, 56.7 tok/s, 8 s
+Nov 16 13:14:40 DESKTOP-92JK34K python3.12[186]: [strata] thinking: 188 of max 512 tokens, 58.5 tok/s, 9 s
+Nov 16 13:14:41 DESKTOP-92JK34K python3.12[186]: [strata] thinking: 240 of max 512 tokens, 56.7 tok/s, 10 s
+Nov 16 13:14:42 DESKTOP-92JK34K python3.12[186]: [strata] thinking: 294 of max 512 tokens, 56.0 tok/s, 11 s
+Nov 16 13:14:43 DESKTOP-92JK34K python3.12[186]: [strata] answering: 370 of max 512 tokens, 59.0 tok/s, 12 s
+Nov 16 13:14:44 DESKTOP-92JK34K python3.12[186]: [strata] answering: 460 of max 512 tokens, 63.3 tok/s, 13 s
+Nov 16 13:14:45 DESKTOP-92JK34K python3.12[186]: [strata] done: 512 tokens in 14 s (65.2 tok/s) (length, cancel=False), expert cache 92.3% hit
+Nov 16 13:14:53 DESKTOP-92JK34K python3.12[186]: [strata] reading the prompt: 8,192 of 16,387 tokens, 8 s so far
+Nov 16 13:14:56 DESKTOP-92JK34K python3.12[186]: [strata] reading the prompt: 16,382 of 16,387 tokens, 12 s so far
+Nov 16 13:14:58 DESKTOP-92JK34K python3.12[186]: [strata] reading the prompt: 16,386 of 16,387 tokens, 13 s so far
+Nov 16 13:14:59 DESKTOP-92JK34K python3.12[186]: [strata] thinking: 58 of max 512 tokens, 58.1 tok/s, 14 s
+Nov 16 13:15:00 DESKTOP-92JK34K python3.12[186]: [strata] thinking: 122 of max 512 tokens, 60.4 tok/s, 15 s
+Nov 16 13:15:01 DESKTOP-92JK34K python3.12[186]: [strata] thinking: 180 of max 512 tokens, 59.4 tok/s, 16 s
+Nov 16 13:15:02 DESKTOP-92JK34K python3.12[186]: [strata] thinking: 232 of max 512 tokens, 57.3 tok/s, 17 s
+Nov 16 13:15:03 DESKTOP-92JK34K python3.12[186]: [strata] thinking: 282 of max 512 tokens, 55.8 tok/s, 18 s
+Nov 16 13:15:04 DESKTOP-92JK34K python3.12[186]: [strata] thinking: 337 of max 512 tokens, 55.5 tok/s, 19 s
+Nov 16 13:15:05 DESKTOP-92JK34K python3.12[186]: [strata] thinking: 390 of max 512 tokens, 55.1 tok/s, 20 s
+Nov 16 13:15:06 DESKTOP-92JK34K python3.12[186]: [strata] thinking: 451 of max 512 tokens, 55.8 tok/s, 21 s
+Nov 16 13:15:07 DESKTOP-92JK34K python3.12[186]: [strata] done: 512 tokens in 22 s (57.2 tok/s) (length, cancel=False), expert cache 94.7% hit
+Nov 16 13:15:08 DESKTOP-92JK34K python3.12[186]: [strata] reading the prompt: 72 of 77 tokens, 1 s so far
+Nov 16 13:15:09 DESKTOP-92JK34K python3.12[186]: [strata] thinking: 50 of max 512 tokens, 63.5 tok/s, 2 s
+Nov 16 13:15:10 DESKTOP-92JK34K python3.12[186]: [strata] answering: 115 of max 512 tokens, 63.3 tok/s, 3 s
+Nov 16 13:15:11 DESKTOP-92JK34K python3.12[186]: [strata] answering: 189 of max 512 tokens, 66.7 tok/s, 4 s
+Nov 16 13:15:12 DESKTOP-92JK34K python3.12[186]: [strata] answering: 281 of max 512 tokens, 72.6 tok/s, 5 s
+Nov 16 13:15:12 DESKTOP-92JK34K python3.12[186]: [strata] done: 315 tokens in 6 s (71.6 tok/s) (stop, cancel=False), expert cache 92.1% hit
+Nov 16 13:15:17 DESKTOP-92JK34K python3.12[186]: [strata] reading the prompt: 4,088 of 4,093 tokens, 5 s so far
+Nov 16 13:15:18 DESKTOP-92JK34K python3.12[186]: [strata] thinking: 6 of max 512 tokens, 24.0 tok/s, 6 s
+Nov 16 13:15:20 DESKTOP-92JK34K python3.12[186]: [strata] thinking: 74 of max 512 tokens, 63.5 tok/s, 7 s
+Nov 16 13:15:21 DESKTOP-92JK34K python3.12[186]: [strata] thinking: 134 of max 512 tokens, 61.1 tok/s, 8 s
+Nov 16 13:15:22 DESKTOP-92JK34K python3.12[186]: [strata] thinking: 181 of max 512 tokens, 56.5 tok/s, 9 s
+Nov 16 13:15:23 DESKTOP-92JK34K python3.12[186]: [strata] thinking: 234 of max 512 tokens, 55.6 tok/s, 10 s
+Nov 16 13:15:24 DESKTOP-92JK34K python3.12[186]: [strata] thinking: 281 of max 512 tokens, 53.8 tok/s, 11 s
+Nov 16 13:15:25 DESKTOP-92JK34K python3.12[186]: [strata] answering: 345 of max 512 tokens, 55.1 tok/s, 12 s
+Nov 16 13:15:26 DESKTOP-92JK34K python3.12[186]: [strata] answering: 429 of max 512 tokens, 58.7 tok/s, 13 s
+Nov 16 13:15:27 DESKTOP-92JK34K python3.12[186]: [strata] done: 512 tokens in 14 s (62.0 tok/s) (length, cancel=False), expert cache 93.1% hit
+Nov 16 13:15:35 DESKTOP-92JK34K python3.12[186]: [strata] reading the prompt: 8,192 of 16,387 tokens, 8 s so far
+Nov 16 13:15:38 DESKTOP-92JK34K python3.12[186]: [strata] reading the prompt: 16,382 of 16,387 tokens, 12 s so far
+Nov 16 13:15:40 DESKTOP-92JK34K python3.12[186]: [strata] reading the prompt: 16,386 of 16,387 tokens, 13 s so far
+Nov 16 13:15:41 DESKTOP-92JK34K python3.12[186]: [strata] thinking: 60 of max 512 tokens, 61.2 tok/s, 14 s
+Nov 16 13:15:42 DESKTOP-92JK34K python3.12[186]: [strata] thinking: 118 of max 512 tokens, 59.3 tok/s, 15 s
+Nov 16 13:15:43 DESKTOP-92JK34K python3.12[186]: [strata] thinking: 172 of max 512 tokens, 57.5 tok/s, 16 s
+Nov 16 13:15:44 DESKTOP-92JK34K python3.12[186]: [strata] thinking: 228 of max 512 tokens, 57.0 tok/s, 17 s
+Nov 16 13:15:45 DESKTOP-92JK34K python3.12[186]: [strata] thinking: 275 of max 512 tokens, 55.0 tok/s, 18 s
+Nov 16 13:15:46 DESKTOP-92JK34K python3.12[186]: [strata] thinking: 326 of max 512 tokens, 54.3 tok/s, 19 s
+Nov 16 13:15:47 DESKTOP-92JK34K python3.12[186]: [strata] thinking: 376 of max 512 tokens, 53.6 tok/s, 20 s
+Nov 16 13:15:48 DESKTOP-92JK34K python3.12[186]: [strata] thinking: 444 of max 512 tokens, 55.4 tok/s, 21 s
+Nov 16 13:15:49 DESKTOP-92JK34K python3.12[186]: [strata] thinking: 498 of max 512 tokens, 55.2 tok/s, 22 s
+Nov 16 13:15:49 DESKTOP-92JK34K python3.12[186]: [strata] done: 512 tokens in 23 s (55.2 tok/s) (length, cancel=False), expert cache 95.9% hit
+Nov 16 13:15:49 DESKTOP-92JK34K python3.12[186]: [strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+Nov 16 13:15:49 DESKTOP-92JK34K python3.12[186]: [strata] thinking limited to 1536 of max_tokens 2048 so the answer has room ("answer_room": false in the config turns this off)
+Nov 16 13:15:50 DESKTOP-92JK34K python3.12[186]: [strata] reading the prompt: 77 of 82 tokens, 1 s so far
+Nov 16 13:15:51 DESKTOP-92JK34K python3.12[186]: [strata] answering: 53 of max 2048 tokens, 66.7 tok/s, 2 s
+Nov 16 13:15:51 DESKTOP-92JK34K python3.12[186]: [strata] done: 55 tokens in 2 s (67.4 tok/s) (stop, cancel=False), expert cache 86.7% hit
+Nov 16 13:15:51 DESKTOP-92JK34K python3.12[186]: [strata] thinking limited to 1536 of max_tokens 2048 so the answer has room ("answer_room": false in the config turns this off)
+Nov 16 13:15:53 DESKTOP-92JK34K python3.12[186]: [strata] reading the prompt: 89 of 90 tokens, 1 s so far
+Nov 16 13:15:53 DESKTOP-92JK34K python3.12[186]: [strata] done: 73 tokens in 2 s (74.8 tok/s) (stop, cancel=False), expert cache 87.9% hit
+Nov 16 13:15:53 DESKTOP-92JK34K python3.12[186]: [strata] thinking limited to 1536 of max_tokens 2048 so the answer has room ("answer_room": false in the config turns this off)
+Nov 16 13:15:55 DESKTOP-92JK34K python3.12[186]: [strata] reading the prompt: 84 of 85 tokens, 1 s so far
+Nov 16 13:15:56 DESKTOP-92JK34K python3.12[186]: [strata] answering: 69 of max 2048 tokens, 69.0 tok/s, 2 s
+Nov 16 13:15:56 DESKTOP-92JK34K python3.12[186]: [strata] done: 73 tokens in 2 s (71.5 tok/s) (stop, cancel=False), expert cache 91.2% hit
+Nov 16 13:15:56 DESKTOP-92JK34K python3.12[186]: [strata] thinking limited to 1536 of max_tokens 2048 so the answer has room ("answer_room": false in the config turns this off)
+Nov 16 13:15:57 DESKTOP-92JK34K python3.12[186]: [strata] reading the prompt: 70 of 71 tokens, 1 s so far
+Nov 16 13:15:57 DESKTOP-92JK34K python3.12[186]: [strata] done: 38 tokens in 2 s (66.6 tok/s) (stop, cancel=False), expert cache 94.7% hit
+Nov 16 13:15:57 DESKTOP-92JK34K python3.12[186]: [strata] thinking limited to 1536 of max_tokens 2048 so the answer has room ("answer_room": false in the config turns this off)
+Nov 16 13:16:02 DESKTOP-92JK34K python3.12[186]: [strata] reading the prompt: 4,084 of 4,089 tokens, 5 s so far
+Nov 16 13:16:03 DESKTOP-92JK34K python3.12[186]: [strata] thinking: 9 of budget 1536 (max 2048) tokens, 36.0 tok/s, 6 s
+Nov 16 13:16:04 DESKTOP-92JK34K python3.12[186]: [strata] done: 56 tokens in 7 s (65.5 tok/s) (stop, cancel=False), expert cache 92.4% hit
+Nov 16 13:16:04 DESKTOP-92JK34K python3.12[186]: [strata] thinking limited to 1536 of max_tokens 2048 so the answer has room ("answer_room": false in the config turns this off)
+Nov 16 13:16:09 DESKTOP-92JK34K python3.12[186]: [strata] reading the prompt: 4,084 of 4,089 tokens, 5 s so far
+Nov 16 13:16:10 DESKTOP-92JK34K python3.12[186]: [strata] thinking: 8 of budget 1536 (max 2048) tokens, 32.0 tok/s, 6 s
+Nov 16 13:16:11 DESKTOP-92JK34K python3.12[186]: [strata] done: 55 tokens in 7 s (68.9 tok/s) (stop, cancel=False), expert cache 94.1% hit
+Nov 16 13:16:11 DESKTOP-92JK34K python3.12[186]: [strata] thinking limited to 1536 of max_tokens 2048 so the answer has room ("answer_room": false in the config turns this off)
+Nov 16 13:16:19 DESKTOP-92JK34K python3.12[186]: [strata] reading the prompt: 8,192 of 16,382 tokens, 8 s so far
+Nov 16 13:16:23 DESKTOP-92JK34K python3.12[186]: [strata] reading the prompt: 16,377 of 16,382 tokens, 12 s so far
+Nov 16 13:16:24 DESKTOP-92JK34K python3.12[186]: [strata] reading the prompt: 16,381 of 16,382 tokens, 13 s so far
+Nov 16 13:16:25 DESKTOP-92JK34K python3.12[186]: [strata] thinking: 66 of budget 1536 (max 2048) tokens, 65.3 tok/s, 14 s
+Nov 16 13:16:25 DESKTOP-92JK34K python3.12[186]: [strata] done: 86 tokens in 14 s (71.8 tok/s) (stop, cancel=False), expert cache 95.0% hit
+Nov 16 13:16:25 DESKTOP-92JK34K python3.12[186]: [strata] thinking limited to 1536 of max_tokens 2048 so the answer has room ("answer_room": false in the config turns this off)
+Nov 16 13:16:33 DESKTOP-92JK34K python3.12[186]: [strata] reading the prompt: 8,192 of 16,390 tokens, 8 s so far
+Nov 16 13:16:37 DESKTOP-92JK34K python3.12[186]: [strata] reading the prompt: 16,384 of 16,390 tokens, 12 s so far
+Nov 16 13:16:39 DESKTOP-92JK34K python3.12[186]: [strata] reading the prompt: 16,389 of 16,390 tokens, 13 s so far
+Nov 16 13:16:40 DESKTOP-92JK34K python3.12[186]: [strata] thinking: 74 of budget 1536 (max 2048) tokens, 72.8 tok/s, 14 s
+Nov 16 13:16:41 DESKTOP-92JK34K python3.12[186]: [strata] thinking: 141 of budget 1536 (max 2048) tokens, 68.9 tok/s, 15 s
+Nov 16 13:16:42 DESKTOP-92JK34K python3.12[186]: [strata] answering: 211 of max 2048 tokens, 68.2 tok/s, 17 s
+Nov 16 13:16:42 DESKTOP-92JK34K python3.12[186]: [strata] done: 226 tokens in 17 s (69.5 tok/s) (stop, cancel=False), expert cache 92.6% hit
+Nov 16 13:16:42 DESKTOP-92JK34K python3.12[186]: [strata] thinking limited to 1536 of max_tokens 2048 so the answer has room ("answer_room": false in the config turns this off)
+Nov 16 13:16:44 DESKTOP-92JK34K python3.12[186]: [strata] reading the prompt: 320 of 325 tokens, 2 s so far
+Nov 16 13:16:45 DESKTOP-92JK34K python3.12[186]: [strata] done: 50 tokens in 3 s (71.0 tok/s) (stop, cancel=False), expert cache 87.8% hit (+0.1% of the routed experts over PCIe)
+Nov 16 13:16:45 DESKTOP-92JK34K python3.12[186]: [strata] thinking limited to 1536 of max_tokens 2048 so the answer has room ("answer_room": false in the config turns this off)
+Nov 16 13:16:48 DESKTOP-92JK34K python3.12[186]: [strata] reading the prompt: 330 of 335 tokens, 2 s so far
+Nov 16 13:16:49 DESKTOP-92JK34K python3.12[186]: [strata] thinking: 45 of budget 1536 (max 2048) tokens, 58.5 tok/s, 3 s
+Nov 16 13:16:49 DESKTOP-92JK34K python3.12[186]: [strata] done: 80 tokens in 4 s (68.3 tok/s) (stop, cancel=False), expert cache 87.6% hit (+0.1% of the routed experts over PCIe)
+Nov 16 13:16:49 DESKTOP-92JK34K python3.12[186]: [strata] thinking limited to 1536 of max_tokens 2048 so the answer has room ("answer_room": false in the config turns this off)
+Nov 16 13:16:51 DESKTOP-92JK34K python3.12[186]: [strata] reading the prompt: 347 of 352 tokens, 2 s so far
+Nov 16 13:16:52 DESKTOP-92JK34K python3.12[186]: [strata] writing a tool call: convert_units: 50 of max 2048 tokens, 65.0 tok/s, 3 s
+Nov 16 13:16:53 DESKTOP-92JK34K python3.12[186]: [strata] done: 89 tokens in 4 s (74.1 tok/s) (stop, cancel=False), expert cache 88.6% hit (+0.1% of the routed experts over PCIe)
+Nov 16 13:16:53 DESKTOP-92JK34K python3.12[186]: [strata] thinking limited to 1536 of max_tokens 2048 so the answer has room ("answer_room": false in the config turns this off)
+Nov 16 13:16:55 DESKTOP-92JK34K python3.12[186]: [strata] reading the prompt: 334 of 339 tokens, 2 s so far
+Nov 16 13:16:56 DESKTOP-92JK34K python3.12[186]: [strata] writing a tool call: get_build_status: 60 of max 2048 tokens, 78.5 tok/s, 3 s
+Nov 16 13:16:56 DESKTOP-92JK34K python3.12[186]: [strata] done: 78 tokens in 4 s (82.8 tok/s) (stop, cancel=False), expert cache 91.5% hit
