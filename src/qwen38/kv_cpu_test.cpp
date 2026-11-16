@@ -43,8 +43,10 @@ int main(int argc,char** argv){try{
         size_t consumed=0,calls=0,checks=0;
         reader.read(17,bytes-17,[&]{++checks;},[&](uint64_t offset,const uint8_t* p,size_t n){demand(n<=Q::UploadReader::chunk_bytes,"oversized chunk");demand(std::equal(p,p+n,input.data()+17+offset),"upload byte mismatch");consumed+=n;++calls;});
         demand(consumed==bytes-17&&calls==2&&checks==calls,"chunk/resource checks");
-        auto no=[]{};auto never=[](uint64_t,const uint8_t*,size_t){throw std::runtime_error("unexpected delivery");};
-        rejects([&]{reader.read(bytes,1,no,never);});rejects([&]{reader.read(UINT64_MAX,2,no,never);});rejects([&]{reader.read(1,UINT64_MAX,no,never);});
+        auto no=[]{};size_t invalid_deliveries=0;auto count_delivery=[&](uint64_t,const uint8_t*,size_t){++invalid_deliveries;};
+        rejects([&]{reader.read(bytes,1,no,count_delivery);});demand(invalid_deliveries==0,"out-of-range read delivered data");
+        rejects([&]{reader.read(UINT64_MAX,2,no,count_delivery);});demand(invalid_deliveries==0,"overflowing offset delivered data");
+        rejects([&]{reader.read(1,UINT64_MAX,no,count_delivery);});demand(invalid_deliveries==0,"overflowing length delivered data");
         // File shrinks after admission: no partial first chunk may reach consume.
         std::filesystem::resize_file(path,1024);bool delivered=false;
         rejects([&]{reader.read(0,bytes,no,[&](uint64_t,const uint8_t*,size_t){delivered=true;});});demand(!delivered,"short read delivered partial data");
