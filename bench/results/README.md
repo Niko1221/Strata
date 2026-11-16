@@ -4,7 +4,7 @@ Raw results and short reports from measurement runs, one folder per run, named b
 the Strata version, hardware and method of its own day, and none is a statement about a later release. Current numbers are in the
 [docs](../../docs/README.md) and the [README](../../README.md); how to measure is in [BENCHMARK_PROTOCOL.md](../../docs/BENCHMARK_PROTOCOL.md).
 
-This page is built by `python tools/bench_results_index.py` (`--check` fails when a folder is missing from it). 153 folders and 3 loose files, 2242 files in all.
+This page is built by `python tools/bench_results_index.py` (`--check` fails when a folder is missing from it). 155 folders and 3 loose files, 2256 files in all.
 
 
 ## 2026-09
@@ -174,6 +174,8 @@ This page is built by `python tools/bench_results_index.py` (`--check` fails whe
 | Folder | What | Files |
 | --- | --- | ---: |
 | [2026-11-04-dev-256k-standard-v1](2026-11-04-dev-256k-standard-v1/) | Strata standard benchmark: unknown GPU | 7 |
+| [2026-11-16-dev-256k-standard-v1](2026-11-16-dev-256k-standard-v1/) | Strata standard benchmark: Intel(R) Arc(TM) Pro B70 Graphics | 7 |
+| [2026-11-16-dev-256k-standard-v1-b](2026-11-16-dev-256k-standard-v1-b/) | Strata standard benchmark: Intel(R) Arc(TM) Pro B70 Graphics | 7 |
 
 ## Loose files
 
