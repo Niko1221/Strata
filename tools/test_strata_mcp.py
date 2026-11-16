@@ -985,10 +985,6 @@ class MixedGraphics(unittest.TestCase):
         self.assertEqual(setup_config.UMA_WIN_RESERVE_MIB, 700)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class RemoveMissingFilesTest(unittest.TestCase):
     """Deleting a model whose plan lists files that are already gone (or inside a folder removed earlier) is a success, not 'Some files could not be removed'."""
 
@@ -1161,3 +1157,7 @@ class DraftLayerAndCancel(unittest.TestCase):
             for pid in (grand, top.pid):
                 subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True)
             top.wait(10)
+
+
+if __name__ == "__main__":
+    unittest.main()
