@@ -646,6 +646,190 @@ htest("language: /?lang= is for one visit, an unknown code stays English, every 
   }
 });
 
+
+// ------------------------------------------------------------------------------------------------ compaction + current history controls
+htest("compaction: respects history locks and keeps summary cards out of answer editing", async ({browser, mock}) => {
+  const page = await openPage(browser, mock, {seed: {...on(), chat: [
+    turn("user", "first"), turn("assistant", "answer"), turn("user", "recent"), turn("assistant", "recent answer"),
+  ]}});
+  await page.evaluate(() => editAnswerAt(1));
+  assert.equal(await page.$eval("#compact-btn", el => el.disabled), true);
+  await page.evaluate(() => compactChat());
+  assert.equal(await page.evaluate(() => !!panel && document.contains(panel.el)), true, "the editor stays attached");
+  assert.equal(mock.state.requests.length, 0, "an open editor prevents a compaction request");
+  await page.evaluate(() => closePanel());
+  await page.click("#compact-btn");
+  await page.waitForSelector(".st-compact");
+  await idle(page);
+  assert.deepEqual(await page.$$eval(".st-compact + .history-actions button", buttons => buttons.map(button => button.textContent)), ["Edit summary"]);
+  await page.evaluate(() => document.querySelectorAll(".st-toast").forEach(el => el.remove()));
+  await say(page, "#hold keep writing");
+  await page.waitForFunction(() => !!busy);
+  assert.equal(await page.$eval("[data-msg-unfold]", el => el.disabled), true);
+  // Dispatch directly too: the handler must reject an unfold even without the disabled button's protection.
+  await page.evaluate(() => document.querySelector("[data-msg-unfold]").dispatchEvent(new MouseEvent("click", {bubbles:true})));
+  assert.equal(await page.evaluate(() => messages.some(m => m.compact)), true);
+  await page.click("#stop-btn");
+  await idle(page);
+  assert.equal(await page.$eval("[data-msg-unfold]", el => el.disabled), false);
+  await page.close();
+});
+
+htest("compaction: saved chats discard transient placeholders on save and reload", async ({browser, mock}) => {
+  const page = await openPage(browser, mock, {seed: {...on(), chat: [turn("user", "first"), turn("assistant", "answer")]}});
+  assert.equal(await page.evaluate(() => H.cleanMessages([...messages, {role:"assistant", compacting:true}]).some(m => m.compacting)), false);
+  // Simulate a record saved by the older version while a summary was being generated.
+  await page.evaluate(async () => {
+    await chatStore.put({...chat, messages:[...messages, {role:"assistant", compacting:true, time:3}]});
+  });
+  await page.reload({waitUntil:"networkidle0"});
+  await page.waitForFunction(() => messages.length > 0);
+  assert.equal(await page.evaluate(() => messages.some(m => m.compacting)), false);
+  assert.equal(await page.$(".st-msg--compacting"), null);
+  assert.deepEqual(await page.evaluate(() => messages.map(m => m.text)), ["first", "answer"]);
+  await page.close();
+});
+
+htest("compaction: expanding a long user message keeps the streaming answer attached", async ({browser, mock}) => {
+  const page = await openPage(browser, mock, {seed: {chat:[turn("user", "long line\n".repeat(20)), turn("assistant", "answer")]}});
+  await say(page, "#long continue");
+  await page.waitForFunction(() => !!busy && busy.msg.text.length > 0);
+  await page.click("[data-msg-user-more]");
+  await idle(page);
+  const result = await page.evaluate(() => ({displayed:document.querySelector(".st-msg:last-child .st-bubble").textContent,
+    actual:messages.at(-1).text}));
+  assert.equal(result.displayed, result.actual, "the complete response reaches the visible bubble");
+  assert.ok(result.actual.length > 200);
+  await page.close();
+});
+
+
+htest("compaction: applying chat settings preserves summary cards", async ({browser, mock}) => {
+  const page = await openPage(browser, mock, {seed:{...on(), chat:[
+    turn("user", "first"), turn("assistant", "answer"), turn("user", "recent"), turn("assistant", "recent answer"),
+  ]}});
+  await page.click("#compact-btn");
+  await idle(page);
+  const payload = await page.evaluate(() => apiMessages());
+  await openSettings(page);
+  await page.click("#s-math");
+  await page.click("#s-apply");
+  await page.waitForFunction(() => document.getElementById("drawer").dataset.open === "false");
+  assert.deepEqual(await page.evaluate(() => apiMessages()), payload);
+  assert.equal(await page.$$eval(".st-compact", cards => cards.length), 1);
+  assert.deepEqual(page.errors, []);
+  await page.close();
+});
+
+htest("compaction: queued messages follow the normal success, failure, stop and interject rules", async ({browser, mock}) => {
+  for (const outcome of ["failure", "empty", "stop", "success", "interject"]) {
+    const page = await openPage(browser, mock, {seed:{...on({whileBusy:outcome === "interject" ? "interject" : "queue"}), chat:[
+      turn("user", "first"), turn("assistant", "answer"), turn("user", "recent"), turn("assistant", "recent answer"),
+    ]}});
+    await page.setRequestInterception(true);
+    page.on("request", req => {
+      if (req.url().endsWith("/v1/chat/completions") && JSON.parse(req.postData() || "{}").stream === false) {
+        setTimeout(() => req.respond({status:outcome === "failure" ? 500 : 200, contentType:"application/json",
+          body:JSON.stringify(outcome === "failure" ? {error:{message:"Summary failed"}} : {
+            choices:[{message:{content:outcome === "empty" ? "   " : "Summary"}, finish_reason:"stop"}], usage:{completion_tokens:5},
+          })}).catch(() => {}), 600);
+      } else req.continue();
+    });
+    const before = mock.state.requests.length;
+    await page.click("#compact-btn");
+    await page.waitForFunction(() => !!busy?.compaction);
+    await say(page, "follow-up " + outcome);
+    if (outcome === "stop") await page.click("#stop-btn");
+    await idle(page);
+    const shouldSend = outcome === "success" || outcome === "interject";
+    assert.equal(mock.state.requests.slice(before).some(req => JSON.stringify(req.messages).includes("follow-up " + outcome)), shouldSend, outcome);
+    assert.equal(await page.evaluate(() => !!pending), !shouldSend, outcome);
+    assert.equal(await page.evaluate(() => messages.some(m => m.compacting)), false, outcome);
+    assert.equal(await page.evaluate(() => messages.some(m => m.compact)), outcome === "success", outcome);
+    await page.close();
+  }
+});
+
+
+htest("compaction: undoing a chat deletion restores it without switching the active request", async ({browser, mock}) => {
+  const page = await openPage(browser, mock, {seed:{...on(), chat:[turn("user", "original question"), turn("assistant", "original answer")]}});
+  const ids = await page.evaluate(() => {
+    const deleted = chatId;
+    deleteChat(chat);
+    messages.push({role:"user", text:"new question", time:3}, {role:"assistant", text:"new answer", time:4});
+    saveChat(); renderChat();
+    const active = chatId;
+    compactChat();
+    document.querySelector(".st-toast button").click();
+    return {deleted, active};
+  });
+  await idle(page);
+  assert.deepEqual(await page.evaluate(({deleted, active}) => ({
+    sameChat:chatId === active, compacted:messages.some(m => m.compact),
+    restored:chats.find(c => c.id === deleted).messages.map(m => m.text),
+    placeholders:chats.some(c => c.messages.some(m => m.compacting)),
+  }), ids), {sameChat:true, compacted:true, restored:["original question", "original answer"], placeholders:false});
+  await page.close();
+});
+
+
+htest("compaction: reload preserves valid context estimates in single and saved chats", async ({browser, mock}) => {
+  for (const chatList of [false, true]) {
+    const page = await openPage(browser, mock, {seed:{sampling:{chatList}, chat:[
+      turn("user", "first"), turn("assistant", "answer"), turn("user", "recent"), turn("assistant", "recent answer"),
+      turn("assistant", "Summary", {compact:true, folded:2, stats:{summary:5000, read:5000, ctx:10064}}),
+    ]}});
+    await page.reload({waitUntil:"networkidle0"});
+    assert.equal(await page.evaluate(() => messages.at(-1).stats.ctx), 10064, `chatList=${chatList}`);
+    assert.match(await page.$eval("#ctx-pill", el => el.title), /10,064/, "the gauge includes the retained tail");
+    await page.close();
+  }
+});
+
+
+htest("compaction: edit summary preserves the boundary and other messages, with Undo and reload", async ({browser, mock}) => {
+  const page = await openPage(browser, mock, {seed:{...on(), chat:[
+    turn("user", "first"), turn("assistant", "answer"), turn("user", "recent"), turn("assistant", "recent answer"),
+  ]}});
+  await page.click("#compact-btn");
+  await idle(page);
+  await page.evaluate(() => document.querySelectorAll(".st-toast").forEach(el => el.remove()));
+  await page.evaluate(() => send({text:"#tool newer question", images:[], files:[{name:"notes.txt", text:"RETAINED FILE"}]}));
+  await idle(page);
+  const before = await page.evaluate(() => JSON.parse(JSON.stringify(messages)));
+  const tail = await page.evaluate(() => apiMessages().slice(1));
+  const requests = mock.state.requests.length;
+  await clickAction(page, 4, "Edit summary");
+  assert.equal(await page.$eval(".history-editor label", el => el.textContent), "Edit the conversation summary");
+  assert.equal(await page.$eval("#compact-btn", el => el.disabled), true);
+  assert.equal(await page.$eval("[data-msg-unfold]", el => el.disabled), true);
+  await page.$eval(".history-editor textarea", el => { el.value = "   "; });
+  await page.click("[data-edit-save]");
+  assert.deepEqual(await page.evaluate(() => messages), before, "empty input does not change the summary or history");
+  assert.notEqual(await page.$(".history-editor"), null);
+  await page.$eval(".history-editor textarea", el => { el.value = "Edited conversation summary"; });
+  await page.click("[data-edit-save]");
+  const expected = structuredClone(before);
+  expected[4].text = "Edited conversation summary";
+  expected[4].stats.summary = null;
+  expected[4].stats.ctx = null;
+  assert.deepEqual(await page.evaluate(() => messages), expected, "only the summary text and its outdated token counts change");
+  assert.deepEqual(await page.evaluate(() => apiMessages().slice(1)), tail, "files and tool results remain in context");
+  assert.match(await page.evaluate(() => apiMessages()[0].content), /Edited conversation summary/);
+  assert.equal(mock.state.requests.length, requests, "editing sends no API request");
+  await page.click("#history-undo button");
+  assert.deepEqual(await page.evaluate(() => messages), before);
+  await clickAction(page, 4, "Edit summary");
+  await page.$eval(".history-editor textarea", el => { el.value = "Saved summary"; });
+  await page.click("[data-edit-save]");
+  await page.evaluate(() => chatStore.all());   // wait for the preceding IndexedDB write
+  await page.reload({waitUntil:"networkidle0"});
+  assert.deepEqual(await page.evaluate(() => ({text:messages[4].text, compact:messages[4].compact,
+    boundary:messages[4].folded, count:messages.length, last:messages.at(-1).text})),
+    {text:"Saved summary", compact:true, boundary:before[4].folded, count:before.length, last:before.at(-1).text});
+  await page.close();
+});
+
 const mock = await startMock();
 const browser = await launch();
 await run(async () => ({ browser, mock, close: async () => { await browser.close(); await mock.stop(); } }));

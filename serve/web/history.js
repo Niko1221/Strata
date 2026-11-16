@@ -24,7 +24,7 @@
   }
 
   // pictures and files are kept as their names only: a data URL would fill the browser's storage
-  const cleanMessages = (list) => list.map((m) => ({...m, images: (m.images || []).map((i) => ({name: i.name})),
+  const cleanMessages = (list) => list.filter((m) => !m.compacting).map((m) => ({...m, images: (m.images || []).map((i) => ({name: i.name})),
                                                     files: (m.files || []).map((f) => ({name: f.name}))}));
   const cleanChat = (c) => ({...c, messages: cleanMessages(c.messages)});
 
@@ -70,10 +70,16 @@
     if (u < 0 || !messages[u]) return null;
     return {keep: messages.slice(0, u + 1), hidden: messages.length - u - 1};
   }
-  // Edit the answer at i: its text replaced, its thinking, tool calls, error and stats dropped, everything after it hidden
+  // Summary edits preserve the conversation and boundary; ordinary answer edits hide later messages.
   function editAnswer(messages, i, text, meta = "Edited") {
     const m = messages[i];
     if (!m || m.role !== "assistant") return null;
+    if (m.compact) {
+      const edited = {...m, text};
+      // Token counts for the generated summary no longer describe the edited text.
+      if (m.stats) edited.stats = {...m.stats, summary: null, ctx: null};
+      return {keep: messages.map((entry, at) => at === i ? edited : entry), hidden: 0};
+    }
     return {keep: [...messages.slice(0, i), {role: "assistant", text, time: m.time, meta}], hidden: messages.length - i - 1};
   }
   // A branch: a new chat that starts with a copy of the first `end` messages. The original is not touched. The title says
