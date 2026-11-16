@@ -349,3 +349,118 @@ class EmptyConversation(unittest.TestCase):
         with self.assertRaises(ValueError):
             require_messages(openai_to_messages({})[0])
         require_messages(openai_to_messages({"messages": [{"role": "user", "content": "hi"}]})[0])
+
+
+class ContinueFinalMessage(unittest.TestCase):
+    """The final assistant turn is rendered as llama.cpp does: history + a generation prompt + the prefill."""
+
+    HISTORY = [{"role": "user", "content": "write one"},
+               {"role": "assistant", "content": "the answer so far"}]
+
+    def setUp(self):
+        self.template = ChatTemplate(Path(__file__).with_name("chat_template.jinja"))
+        tok = ByteTokenizer()
+        self.service = Service(MockEngine(tok, "ok"), tok, self.template)
+
+    def kwargs_of(self, **body):
+        body.setdefault("messages", self.HISTORY)
+        return openai_to_messages(body)[2]
+
+    def render(self, messages, **body):
+        messages, tools, kwargs = openai_to_messages({"messages": messages, **body})
+        return self.service.render_prompt(messages, tools, kwargs)
+
+    def test_the_template_kwarg_survives_either_json_order(self):
+        for ctk in ({"enable_thinking": False, "continue_final_message": True},
+                    {"continue_final_message": True, "enable_thinking": False}):
+            with self.subTest(order=list(ctk)):
+                got = self.kwargs_of(chat_template_kwargs=ctk)
+                self.assertIs(got.get("continue_final_message"), True)
+                self.assertIn("enable_thinking", got)          # thinking is still off
+
+    def test_the_request_body_field_is_read_as_well(self):
+        self.assertIs(self.kwargs_of(continue_final_message=True).get("continue_final_message"), True)
+
+    def test_the_three_llama_forms_are_kept(self):
+        for value in (True, "content", "reasoning_content"):
+            with self.subTest(value=value):
+                self.assertEqual(self.kwargs_of(continue_final_message=value).get("continue_final_message"), value)
+
+    def test_the_template_kwarg_accepts_the_same_forms(self):
+        for value in (True, "content", "reasoning_content"):
+            with self.subTest(value=value):
+                self.assertEqual(self.kwargs_of(chat_template_kwargs={"continue_final_message": value})
+                                 .get("continue_final_message"), value)
+
+    def test_the_request_body_field_wins(self):
+        got = self.kwargs_of(continue_final_message=False,
+                             chat_template_kwargs={"continue_final_message": True})
+        self.assertNotIn("continue_final_message", got)
+        self.assertEqual(self.kwargs_of(continue_final_message="content",
+                                        chat_template_kwargs={"continue_final_message": True})
+                         .get("continue_final_message"), "content")
+
+    def test_false_and_null_do_not_continue(self):
+        for value in (False, None):
+            with self.subTest(value=value):
+                self.assertNotIn("continue_final_message", self.kwargs_of(continue_final_message=value))
+
+    def test_invalid_values_are_rejected(self):
+        for value in (1, 0, "answer", "Content"):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    self.kwargs_of(continue_final_message=value)
+
+    def test_auto_with_content_uses_content(self):
+        self.assertEqual(
+            self.render(self.HISTORY, continue_final_message=True, chat_template_kwargs={"enable_thinking": False}),
+            "<|im_start|>user\nwrite one<|im_end|>\n"
+            "<|im_start|>assistant\n<think>\n\n</think>\n\nthe answer so far")
+
+    def test_auto_with_only_reasoning_continues_thinking(self):
+        messages = [{"role": "user", "content": "write one"},
+                    {"role": "assistant", "content": "", "reasoning_content": "step"}]
+        prompt = self.render(messages, continue_final_message=True,
+                             chat_template_kwargs={"enable_thinking": False})
+        self.assertTrue(prompt.endswith("<|im_start|>assistant\n<think>\nstep"))
+        self.assertNotIn("</think>", prompt)
+
+    def test_explicit_content_closes_the_thinking_block(self):
+        messages = [{"role": "user", "content": "write one"},
+                    {"role": "assistant", "content": "answer", "reasoning_content": "step"}]
+        prompt = self.render(messages, continue_final_message="content",
+                             chat_template_kwargs={"enable_thinking": False})
+        self.assertTrue(prompt.endswith("<|im_start|>assistant\n<think>\nstep\n</think>\n\nanswer"))
+
+    def test_content_also_closes_the_block_when_thinking_is_on(self):
+        messages = [{"role": "user", "content": "write one"},
+                    {"role": "assistant", "content": "answer", "reasoning_content": "step"}]
+        prompt = self.render(messages, continue_final_message="content",
+                             chat_template_kwargs={"enable_thinking": True})
+        self.assertTrue(prompt.endswith("<|im_start|>assistant\n<think>\nstep\n</think>\n\nanswer"))
+
+    def test_explicit_reasoning_does_not_append_the_content(self):
+        messages = [{"role": "user", "content": "write one"},
+                    {"role": "assistant", "content": "answer", "reasoning_content": "step"}]
+        prompt = self.render(messages, continue_final_message="reasoning_content",
+                             chat_template_kwargs={"enable_thinking": False})
+        self.assertTrue(prompt.endswith("<|im_start|>assistant\n<think>\nstep"))
+        self.assertNotIn("answer", prompt)
+        self.assertNotIn("</think>", prompt)
+
+    def test_auto_with_both_uses_content(self):
+        messages = [{"role": "user", "content": "write one"},
+                    {"role": "assistant", "content": "answer", "reasoning_content": "step"}]
+        prompt = self.render(messages, continue_final_message=True,
+                             chat_template_kwargs={"enable_thinking": False})
+        self.assertTrue(prompt.endswith("<|im_start|>assistant\n<think>\nstep\n</think>\n\nanswer"))
+
+    def test_a_final_assistant_with_tool_calls_is_rejected(self):
+        messages = self.HISTORY[:1] + [{"role": "assistant", "content": "calling", "tool_calls": [
+            {"id": "call_1", "type": "function", "function": {"name": "f", "arguments": "{}"}}]}]
+        with self.assertRaises(ValueError):
+            self.render(messages, continue_final_message=True)
+
+    def test_the_final_message_must_be_assistant(self):
+        with self.assertRaises(ValueError):
+            self.render([{"role": "user", "content": "write one"}], continue_final_message=True)

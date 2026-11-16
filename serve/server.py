@@ -61,7 +61,8 @@ from urllib.parse import parse_qs, urlsplit
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(ROOT))   # run as a script (run-<model>.bat) as well as a module
-from serve.frontend import (THINK_END, ChatTemplate, Event, OutputParser, parser_for_template, anthropic_to_messages, anthropic_tools,  # noqa: E402
+from serve.frontend import (THINK_END, THINK_START, ChatTemplate, Event, OutputParser, TemplateRequestError, _text_of, parser_for_template,  # noqa: E402
+                            anthropic_to_messages, anthropic_tools,
                             forced_call, images_of, literal_tags, mark_think_literals, openai_to_messages, require_messages,
                             tool_choice_of, unmark_think_literals)
 from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
@@ -5879,6 +5880,62 @@ class Service:
         thinking) is rendered as a default one up to the answer - the same prompt start, so the conversation cache
         keeps it - and its effort follows in a short system turn right before the answer (thinking off: the template's
         empty thinking block).  The engine (--tail-role-token) checkpoints in front of that turn."""
+        # continue_final_message (llama.cpp): remove the final assistant message from the template's messages,
+        # render the history, and append the template's generation prompt with the selected block prefilled.
+        # AUTO (true) continues content unless only reasoning_content is present.  CONTENT closes the thinking
+        # block and continues the answer; REASONING_CONTENT leaves it open and continues the thinking (#537: a
+        # literal <think> in the client's text is escaped before this method, so only the template's own tag is
+        # used here).  The effort_end split is skipped as before: it assumes a user turn before the answer.
+        continuation = kwargs.get("continue_final_message")
+        if continuation:
+            if not messages or messages[-1].get("role") != "assistant":
+                raise TemplateRequestError(
+                    "continue_final_message requires the last message to be an assistant message")
+            final = messages[-1]
+            if final.get("tool_calls"):
+                raise TemplateRequestError(
+                    "continue_final_message cannot continue an assistant message with tool_calls")
+            history = messages[:-1]
+            body = {k: v for k, v in kwargs.items() if k != "continue_final_message"}
+            base = self.template.render(history, tools=tools, add_generation_prompt=False, **body)
+            full = self.template.render(history, tools=tools, add_generation_prompt=True, **body)
+            # llama.cpp's generation prompt is the part the template adds after the shared history.  Keep
+            # only the full render's suffix, so the continued prompt has exactly the history plus the turn.
+            n = 0
+            while n < min(len(base), len(full)) and base[n] == full[n]:
+                n += 1
+            generation_prompt = full[n:]
+            content = _text_of(final.get("content"))
+            reasoning = final.get("reasoning_content") if isinstance(final.get("reasoning_content"), str) else ""
+            if continuation is True:
+                continuation = "reasoning_content" if reasoning and not final.get("content") else "content"
+            open_at = generation_prompt.find(THINK_START)
+            if open_at < 0:
+                if continuation == "reasoning_content":
+                    raise TemplateRequestError(
+                        "continue_final_message reasoning_content needs a reasoning block in the template")
+                return base + generation_prompt + content
+            # The template's own assistant opener/closer: <|im_start|>assistant\n<think>\n ... \n</think>\n\n.
+            # The reasoning block may be absent from a thinking-on generation prompt, so the closer is the
+            # template's usual one when it is not there to read.
+            open_end = open_at + len(THINK_START)
+            if generation_prompt[open_end:open_end + 1] == "\n":
+                open_end += 1
+            close_at = generation_prompt.find(THINK_END, open_end)
+            if close_at >= 0:
+                close_start = close_at
+                if close_start > 0 and generation_prompt[close_start - 1] == "\n":
+                    close_start -= 1
+                close_end = close_at + len(THINK_END)
+                while close_end < len(generation_prompt) and generation_prompt[close_end] in "\r\n":
+                    close_end += 1
+                close_text = generation_prompt[close_start:close_end]
+            else:
+                close_text = "\n" + THINK_END + "\n\n"
+            continued = generation_prompt[:open_at] + generation_prompt[open_at:open_end] + reasoning
+            if continuation == "content":
+                continued += close_text + content
+            return base + continued
         effort = kwargs.get("reasoning_effort")
         off = kwargs.get("enable_thinking") is False
         if not self.effort_end or (not off and effort in (None, "", "xhigh", "high")):
