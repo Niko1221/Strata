@@ -6,8 +6,7 @@ an installation or connect their own software. It describes the current release.
 [History / older measurements](#history--older-measurements) at the end.
 
 New here? Start with the [README](../README.md). Installing is in [INSTALL.md](INSTALL.md), the models are in
-[MODELS.md](MODELS.md), common problems are in [TROUBLESHOOTING.md](TROUBLESHOOTING.md). DeepSeek V4.1-Flash has its own
-engine and is covered in [MODELS.md](MODELS.md); nothing below applies to it unless stated.
+[MODELS.md](MODELS.md), common problems are in [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 
 > **On this page:** [Quick start](#quick-start) · [Speed](#speed-measured) · [Which model?](#which-model) ·
 > [Windows](#windows) · [Linux](#linux) · [Memory modes](#memory-modes) · [Sharing the GPU](#sharing-the-gpu-with-other-programs-optional) ·
@@ -90,7 +89,7 @@ changes the order only with `--reorder` (your trace's pairs first, then the base
 ## Which model?
 
 [MODELS.md](MODELS.md) is the page for choosing a model: sizes, memory, providers and what fits. The families are
-DeepSeek V4.1-Flash, Qwen3.8-Flash-Next (with its Coder, Swift, Gyro, Unsloth and NVFP4 variants) and Qwen3.6-35B-A3B
+Qwen3.8-Flash-Next (with its Coder, Swift, Gyro, Unsloth and NVFP4 variants) and Qwen3.6-35B-A3B
 ([QWEN36.md](QWEN36.md)). The ISTA-DASLab Qwen3.8-Flash-Next packs are:
 
 | Model | Download | RAM it uses | Speed | Quality |
@@ -338,11 +337,11 @@ that reads this line must accept `ms/window = adapt wait` for a serial run.
 | --- | --- |
 | `--mtp` | Use the model's MTP draft layer (setup passes it). The server also runs without it: drafts then come from the suffix and prompt-lookup drafter only, every token is still verified, and the draft layer's ~0.7-1 GiB of VRAM goes to the expert cache. |
 | `--spec N`, `--spec-min-p P` | Draft depth and the confidence needed to add a guess. Setup's default is `--spec 4 --spec-min-p 0.5`. |
-| `--draft-vocab en\|cyrillic\|fr` (setup) | The draft layer can only propose tokens from a subset of the vocabulary. The default subset includes every Chinese, Japanese and Korean token. `en` keeps the English and code subset (~110 MiB less VRAM, English 1-2% faster, CJK gets almost no drafts). `cyrillic` and `fr` add those scripts. `tools/draft_vocab.py` builds and inspects subsets. |
+| `--draft-vocab en\|cyrillic\|fr\|latin` (setup) | The draft layer can only propose tokens from a subset of the vocabulary. The default subset includes every Chinese, Japanese and Korean token. `en` keeps the English and code subset (~110 MiB less VRAM, English 1-2% faster, CJK gets almost no drafts). `cyrillic` and `fr` add those scripts; `latin` adds German, Spanish, French and Polish together. With no choice, Strata picks `cyrillic` or `latin` by itself when the languages of this computer (display language, regional format, keyboards) are Cyrillic or Latin-script and none of them is Chinese, Japanese or Korean; the pick is made at every start and written nowhere, and a choice you make always wins. On an RTX PRO 5000 (IQ3_S), default file -> chosen file, tok/s: Russian 180.0 -> 227.6 (`cyrillic`); German 211.7 -> 233.6, Spanish 220.1 -> 244.5, French 221.9 -> 249.1, Polish 188.4 -> 203.2 (`latin`); English 265.2 with the default, 266.0 with `latin`, 266.6 with `cyrillic`; Chinese 238.4 -> 199.2 and Japanese 222.2 -> 194.4 with `latin`, which is why any Chinese, Japanese or Korean signal keeps the default. `tools/draft_vocab.py` builds and inspects subsets. |
 | `--lookup-chain-min M`, `--mtp-hnorm stream`, `--mtp-draft-vocab FILE` | Finer controls: the shortest context match `--lookup-chain` extends (default 3), one norm per stream, and a token subset of your own. |
 
 When the start stops with "the draft head does not fit" (a 12 GB card with a long context), the engine says how much it needs
-and which smaller subset fits. Setup suggests `--draft-vocab en` on cards under 14 GB; nothing changes unless you pass it.
+and which smaller subset fits. Setup suggests `--draft-vocab en` on cards under 14 GB and does not set it.
 
 **Reproducible output.** With the IQ models the CPU rounds one-token expert groups and multi-token groups differently, so the
 same prompt at temperature 0 can end in a different, equally good answer when drafting, cache state or a resumed conversation
@@ -1010,7 +1009,7 @@ every turn, is encoded once.
 | `"min_tokens": N` | Scales a small picture up to at least N tokens (passed to the encoder as `--min-tokens`). Qwen-VL grounding tasks want at least 1,024. A larger minimum changes image answers and costs encode time. |
 | `"mmproj"` | Points to another mmproj file of this model, for example a Q8_0 one (`llama-quantize mmproj-Qwen3.8-Flash-Next-BF16.gguf mmproj-Qwen3.8-Flash-Next-Q8_0.gguf Q8_0`): 590 MiB against 865 MiB, about 280 MiB less encoder RAM, and it can encode faster on the CPU. **Recommended for `--vision cpu`.** Embedding cosine against BF16 is 0.997-0.999. Setup downloads the BF16 file and keeps a file of your own that still exists. |
 | `"cuda_device": N` | Runs the encoder on a spare card (numbered like `nvidia-smi`). Lower `--vram-reserve-mib` in `"args"` to 700 as well. The card needs code in the ready-made encoder (RTX 20/30/40/50). |
-| `"elastic": false` | Keeps the GPU encoder on the card from the start (the NVIDIA one-GPU default is to start it with the first picture and stop it after `"elastic_idle_s"`, default 120, without one). `"elastic": true` asks for the on-demand start on any card; with `"vram_elastic": true` too the expert cache gives the room (`"elastic_mib"`, default 2048), which turns `--kv-grow` off ([VRAM_ELASTIC.md](VRAM_ELASTIC.md#the-image-encoder-on-demand)). |
+| `"elastic": false` | Keeps the GPU encoder on the card from the start (the NVIDIA one-GPU default is to start it with the first picture and stop it after `"elastic_idle_s"`, default 120, without one). `"elastic": true` asks for the on-demand start on any card; with `"vram_elastic": true` too the expert cache gives the room (`"elastic_mib"`; when it is not set: 2,048 MiB, or what the reader needs when the picture limit `"max_tokens"` is higher, for example 3,674 MiB at a limit of 16,384 or with no limit (0); the room is given back when the encoder stops), which turns `--kv-grow` off ([VRAM_ELASTIC.md](VRAM_ELASTIC.md#the-image-encoder-on-demand)). |
 | `--flash-attn on\|off\|auto` (`strata-vision`) | Flash attention is turned off on the CPU when ggml has AVX-512 (a build from source), because ggml's fallback kernel is several times slower and accumulates in FP16. Release builds use AVX2 and leave it on. |
 
 On an NVIDIA card under 24 GB the CPU encoder is the default, because the GPU encoder takes ~850 expert slots of a 16 GB card's ~4,500
@@ -1402,7 +1401,6 @@ Strata itself: [MIT](../LICENSE). The model files are not part of it; their lice
 - [llama.cpp / ggml](https://github.com/ggml-org/llama.cpp) (MIT): the i-quant formats, the GPU dot products and dequantizers
   transcribed in `src/kernels/cuda/iq_kernels.cu`, the CPU backend linked for the i-quant experts, the `mtmd` library behind the
   image encoder (`tools/vision/`), and `gguf-py` used by the tools. See `third_party/ggml/LICENSE`.
-- [antirez/ds4](https://github.com/antirez/ds4) (MIT, commit 890898cf): the Metal vision-tower kernels of the Mac DeepSeek engine (`metal/src/engine/msl/ds4_vision.metal`, `ds4_vision_metal.cpp`) follow its `metal/deepseek4_vision.metal` and the tower's host code. See `third_party/antirez-ds4/NOTICE.md`.
 - Ideas from [Splash](https://github.com/incoai/splash), [ninfer](https://github.com/Neroued/ninfer) and
   [HyperQwen](https://github.com/syv-ai/HyperQwen); references in the paper.
 - The DFlash2 drafter's Q4_0 selector (174 MiB less graphics memory, same drafts and same text) is nazeshinjite's idea:
