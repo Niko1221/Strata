@@ -50,8 +50,24 @@ class CapabilityTable(unittest.TestCase):
                          "App, Control and engine versions differ on purpose.")
         hotfix = {"product_version": "0.2.13", "control_version": "0.1.59.1", "engine_version": "0.1.59",
                   "assets": ["strata-control-0.1.59.1-linux-x86_64.tar.gz", "strata-engine-0.1.59-linux-x86_64-sycl.tar.gz"]}
-        self.assertEqual(ct.versions_line(hotfix), "App and Terminal 0.2.13, Control and engines 0.1.59. "
+        self.assertEqual(ct.versions_line(hotfix), "App and Terminal 0.2.13, Control 0.1.59.1, engines 0.1.59. "
                          "App, Control and engine versions differ on purpose.")
+
+    def test_source_route_does_not_invent_a_current_package_or_remove_the_backend(self):
+        family = next(f for f in self.cap['families'] if f['id'] == 'qwen38')
+        self.assertEqual(family['cells']['intel_linux']['supported'], 'source-only')
+        self.assertNotIn('intel_linux', ct.packages(self.release, family))
+        self.assertEqual(ct.validate(self.cap, self.release), [])
+        self.assertIn('Source route only, without a package in this release: Intel Arc on Linux', ct.summary(self.cap, family))
+        changed = copy.deepcopy(self.release)
+        changed['upstream']['assets'].append('strata-engine-0.1.60-linux-x86_64-sycl.tar.gz')
+        self.assertTrue(any('source-only but the release has a package' in p for p in ct.validate(self.cap, changed)))
+
+    def test_control_only_hotfix_keeps_all_four_actual_versions(self):
+        release = {'product_version': '0.2.14', 'terminal_version': '0.2.14.1',
+                   'control_version': '0.1.60.1', 'engine_version': '0.1.60', 'assets': []}
+        self.assertEqual(ct.versions_line(release), 'App 0.2.14, Terminal 0.2.14.1, Control 0.1.60.1, engines 0.1.60. '
+                         'App, Control and engine versions differ on purpose.')
 
     def test_no_page_keeps_the_old_mac_sentence(self):
         for p in ct.PAGES:

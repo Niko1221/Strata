@@ -1172,10 +1172,13 @@ class StrataEngine:
                  env: dict | None = None, lazy: bool = False, cpus: list[int] | None = None, _attempt: int = 0,
                  retry_args: list[str] | None = None, retry_vram_args: list[str] | None = None):
         # Re-entered on restart: even a failed config/probe must retire the old receipt.
-        self._native_admitted_child = self._q36_memory_observation = None
-        child_attempt = object()
-        self._child_observation_attempt = child_attempt
-        self._child_generation = None
+        with self.__dict__.setdefault("_process_guard_lock", threading.RLock()):
+            self.proc, self.pump, self.log = None, None, None
+            self.ended, self.unloaded = True, True
+            self._native_admitted_child = self._q36_memory_observation = None
+            child_attempt = object()
+            self._child_observation_attempt = child_attempt
+            self._child_generation = None
         # Proof and READY admission must describe the same captured start.
         args = list(args)
         env = dict(os.environ if env is None else env)
@@ -1190,8 +1193,6 @@ class StrataEngine:
         paths = {k: v for k, v in zip(args, args[1:]) if k in ("--native", "--pack")}
         self.model_path = paths.get("--native") or paths.get("--pack", "pack/full")
         self.log_path = log
-        self.proc, self.pump, self.log = None, None, None
-        self.ended, self.unloaded = True, True
         self.max_context = int(args[args.index("--max-context") + 1]) if "--max-context" in args else 4096
         self.can_stop = False            # the engine honours a STOP line mid-request (READY <ctx> stop)
         self.can_hold = False            # the engine takes GEN hold=N:ID (READY <ctx> ... hold)
@@ -1272,20 +1273,21 @@ class StrataEngine:
                 raise OSError("Qwen3.6 engine binary changed after KV capability negotiation")
             if memory_cap and q36_binary_sha256(exe) != memory_cap["binarySha256"]:
                 raise OSError("Qwen3.6 engine binary changed after memory capability negotiation")
-            self.proc = popen("the Strata engine", [exe, "--serve", *args], cwd=cwd, stdin=subprocess.PIPE,
+            proc = popen("the Strata engine", [exe, "--serve", *args], cwd=cwd, stdin=subprocess.PIPE,
                               stdout=subprocess.PIPE, stderr=self.log, text=True, encoding="utf-8", errors="replace",
                               bufsize=1, env=child_env, **pin)    # (#5044: a byte that is not UTF-8 killed the reader thread)
+            with self.__dict__.setdefault("_process_guard_lock", threading.RLock()):
+                self.proc = proc
         except OSError:                                  # nothing started: the narrator stops, the log handle goes back
             loading.set()
             if log:
                 self.log.close()
             raise
-        proc = self.proc                                 # THIS start's process: a close() from another thread may set self.proc to None meanwhile (#4792)
         startup_child_receipt("spawned", proc.pid)
         # the READY read has a timeout (#1317): the lines come from a thread, up to READY, so the rest of the stream
         # stays for _pump (one reader at a time)
         ready_q: queue.Queue = queue.Queue()
-        threading.Thread(target=self._ready_pump, args=(self.proc, ready_q), daemon=True).start()
+        threading.Thread(target=self._ready_pump, args=(proc, ready_q), daemon=True).start()
         ready_deadline = None if ENGINE_READY_S is None else time.monotonic() + ENGINE_READY_S
         timed_out = False
         while True:
@@ -1630,11 +1632,12 @@ class StrataEngine:
         proc = self.proc                                 # read once: restart() / close() may set it to None meanwhile
         return proc is not None and not getattr(self, "ended", False) and proc.poll() is None
 
-    def exit_code(self):
-        if self.proc is None:
+    def exit_code(self, proc=None):
+        proc = self.proc if proc is None else proc
+        if proc is None:
             return None
         try:
-            return self.proc.wait(timeout=5)
+            return proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             return None
 
@@ -1660,6 +1663,10 @@ class StrataEngine:
         finally:
             if not done:
                 out.put(None)
+
+    def _process_guard(self):
+        """One lock survives reinitialisation and serialises child replacement/failure state."""
+        return self.__dict__.setdefault("_process_guard_lock", threading.RLock())
 
     def restart(self, tries: int = 3):
         """Start the engine again (the same command) after it died; the new process has its own line queue.
@@ -1697,29 +1704,32 @@ class StrataEngine:
                     self.slot_cv.notify_all()    # new engine, or (it did not start) end with a clean EngineDied
         self.info = {**info, **self.info}
 
-    def _parse_done(self, line):
+    def _parse_done(self, line, *, publish=True):
         if (audit := perf_e2e.current()) is not None:
             audit.native_done(line)
         f = line.split()
-        self.last = {"generated": int(f[1]), "prompt_tokens": int(f[2]), "prompt_ms": float(f[3]),
+        last = {"generated": int(f[1]), "prompt_tokens": int(f[2]), "prompt_ms": float(f[3]),
                      "decode_ms": float(f[4]), "finish": f[5]}
         if len(f) >= 9:                                   # the conversation cache's fields (engine 0.1.3+)
-            self.last.update(drafts_accepted=int(f[6]), drafts_offered=int(f[7]), reused=int(f[8]))
+            last.update(drafts_accepted=int(f[6]), drafts_offered=int(f[7]), reused=int(f[8]))
         if len(f) >= 11:                                  # decode hit rate fields
-            self.last.update(hits=int(f[9]), lookups=int(f[10]))
+            last.update(hits=int(f[9]), lookups=int(f[10]))
         if len(f) >= 14:                                  # the expert tiers (engine 0.1.31+): RAM / file blobs, file MB
-            self.last.update(ram_blobs=int(f[11]), file_blobs=int(f[12]), file_mb=float(f[13]))
+            last.update(ram_blobs=int(f[11]), file_blobs=int(f[12]), file_mb=float(f[13]))
         if len(f) >= 15:                                  # #471 (engine 0.1.36+): the prompt tokens actually read
-            self.last.update(prompt_read=int(f[14]))
+            last.update(prompt_read=int(f[14]))
         if len(f) >= 16:                                  # #588 (engine 0.1.39+): routed experts read over PCIe
-            self.last.update(offloaded=int(f[15]))
+            last.update(offloaded=int(f[15]))
         for tok in f[16:]:                                # key=value fields after the positional ones (the prompt's
             key, eq, value = tok.partition("=")           # first chunk and its streamed expert blobs)
             if eq and key in ("chunk", "experts_streamed"):
                 try:
-                    self.last[key] = int(value)
+                    last[key] = int(value)
                 except ValueError:
                     pass
+        if publish:
+            self.last = last
+        return last
 
     @contextlib.contextmanager
     def _exclusive_control(self):
@@ -2074,16 +2084,18 @@ class StrataEngine:
                          "decode_ms": admission_ms + float(f[4]) if admission_ms is not None else None,
                          "generated": int(f[2]) if f[2].isdigit() else None}
 
-    def _raise_if_fatal_gpu(self, line: str) -> None:
+    def _raise_if_fatal_gpu(self, line: str, *, proc=None) -> None:
         """#4350: the engine's ERR line "fatal GPU error: ..." means it is ending (its GPU context is gone).  The request in flight fails
         as an engine death (a 503 the client can send again), not as a bad request (400), and the engine counts as ended, so the next
         request starts it again at once instead of finding a closed pipe."""
         text = line[4:].strip()
         if not text.startswith("fatal GPU error"):
             return
-        self.last_err = text
-        self._clear_child_observation()
-        self.ended = True
+        with self._process_guard():
+            if proc is None or self.proc is proc:
+                self.last_err = text
+                self._clear_child_observation()
+                self.ended = True
         raise EngineDied("the GPU reported a fatal error and the engine ended: " + text[len("fatal GPU error:"):].strip()[:200])
 
     def _bdone_after_eos(self, slot: int, wait_s: float = 2.0, q=None):
@@ -2904,24 +2916,30 @@ class StrataEngine:
                 audit.fail("unsupported_native_route")
             yield from self.generate_batched(ids, max_new, sampling, cancel, embeddings)
             return
-        proc = self.proc                          # this exchange's pipe, even if close/restart replaces self.proc before cleanup
+        with self._process_guard():
+            if not self.alive():
+                raise EngineDied("the engine is unavailable; this request was not sent")
+            proc, lines_q = self.proc, self.lines
+            can_stop, multi = self.can_stop, self.multi
+            write_lock = getattr(self, "wlock", None)
+            rid_queues = getattr(self, "rid_q", None)
         self.progress, self.progress_ms, self.reused = None, 0, 0
         self.prefill_tok_s_mean = None
         # DeepSeek --parallel: the engine holds several conversations; this request is one of them (GEN ... rid=<id>), its
         # lines come on a queue of their own and its STOP names it.  One at a time (self.multi 0): the one queue, as before.
-        rid, lines_q, stop_line = None, self.lines, "STOP\n"
-        if self.multi:
+        rid, stop_line = None, "STOP\n"
+        if multi:
             with self.rid_lock:
                 self.rid_n += 1
                 rid = self.rid_n
             lines_q = queue.Queue()
-            self.rid_q[rid] = lines_q
+            rid_queues[rid] = lines_q
             stop_line = f"STOP {rid}\n"
         # logprobs: the engine writes "LP <logprob> [id:logprob ...]" right after each "T <id>" (the same
         # flush), read here before the token is yielded, so whoever takes the token finds its line in
         # lp_lines.  Not asked for = the deque stays empty and nothing on this path changes.
         want_lp = top_logprobs(sampling or {}) is not None
-        self.lp_lines = LPLines(cancel)
+        lp_lines = self.lp_lines = LPLines(cancel)
         carry = NO_LINE                  # a line read for a token's LP line, held until it is used
         # an image request takes the same sampling keys as text (#75: it used to decode greedily whatever was asked)
         rid_key = f" rid={rid}" if rid is not None else ""
@@ -2939,14 +2957,16 @@ class StrataEngine:
             audit.native_begin(ids, max_new, embeddings=embeddings, pid=getattr(proc, "pid", None))
         try:
             if rid is not None:                          # several requests write to the engine at once
-                self._send(f"{head} {','.join(str(int(t)) for t in ids)}")
+                with write_lock:
+                    proc.stdin.write(f"{head} {','.join(str(int(t)) for t in ids)}\n")
+                    proc.stdin.flush()
             else:
                 proc.stdin.write(f"{head} {','.join(str(int(t)) for t in ids)}\n")
                 proc.stdin.flush()
         except (OSError, ValueError, EngineDied):        # the pipe is gone or closed: the engine died (not the client)
             if rid is not None:
-                self.rid_q.pop(rid, None)
-            raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})") from None
+                rid_queues.pop(rid, None)
+            raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code(proc)})") from None
         done = False
         # #481: how long the engine may stay silent from here.  Until the first line: the request's first prompt
         # chunk at the slowest prompt reading on top of silence_s; a PP line resets it to its own chunk's time.
@@ -2963,8 +2983,8 @@ class StrataEngine:
                     wait = min(wait, allow - (time.monotonic() - heard))
                     if wait <= 0:
                         done = True                       # no STOP and no drain: nothing is listening
-                        raise self._silent(f"the engine said nothing for {time.monotonic() - heard:.0f} s during "
-                                           "the request")
+                        raise self._silent_process(proc, f"the engine said nothing for {time.monotonic() - heard:.0f} s during "
+                                                   "the request")
                 try:
                     if carry is not NO_LINE:              # the line read after a token for its LP line
                         line, carry = carry, NO_LINE
@@ -2975,7 +2995,8 @@ class StrataEngine:
                         return
                     if stall_s > 0:
                         try:
-                            self._stall_check(heard, stall_state, stall_s)
+                            self._stall_check(heard, stall_state, stall_s,
+                                              silent=lambda what: self._silent_process(proc, what))
                         except EngineSilent:
                             done = True                   # as above: nothing is listening
                             raise
@@ -2987,7 +3008,7 @@ class StrataEngine:
                     continue
                 if line is None:
                     done = True
-                    raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})")
+                    raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code(proc)})")
                 heard = time.monotonic()                  # any line is output: T, PP, RESUME, INFO ...
                 beat = heard
                 if stall_state:
@@ -3008,7 +3029,7 @@ class StrataEngine:
                         except queue.Empty:
                             carry = NO_LINE
                         if isinstance(carry, str) and carry.startswith("LP "):
-                            self.lp_lines.append((t, carry))
+                            lp_lines.append((t, carry))
                             carry = NO_LINE
                     yield t
                 elif line.startswith("PP "):
@@ -3030,14 +3051,15 @@ class StrataEngine:
                     except (IndexError, ValueError):
                         pass
                 elif line.startswith("DONE"):
-                    self._parse_done(line)
+                    with self._process_guard():
+                        finished = self._parse_done(line, publish=self.proc is proc)
                     done = True
-                    if self.last.get("finish") == "nonfinite":   # #879
+                    if finished.get("finish") == "nonfinite":   # #879: this request's finish, never its successor's
                         raise EngineNonFinite("the engine's logits became non-finite (#879)")
                     return
                 elif line.startswith("ERR"):
                     done = True
-                    self._raise_if_fatal_gpu(line)
+                    self._raise_if_fatal_gpu(line, proc=proc)
                     self._swallow_trailing_done(lines_q)  # an engine that ended the request on ERR may still print its DONE
                     raise ValueError(line[4:].strip())
         finally:
@@ -3045,8 +3067,7 @@ class StrataEngine:
                 # the engine can be ended or restarted on another thread meanwhile: Engine.close() closes stdin (a
                 # write then raises ValueError) before it clears `proc` (None then) - the STOP has nobody to reach, and
                 # the request's own outcome must not be replaced by that error
-                proc = self.proc
-                if self.can_stop and proc is not None:
+                if can_stop and proc is not None:
                     try:
                         proc.stdin.write(stop_line)
                         proc.stdin.flush()
@@ -3066,19 +3087,22 @@ class StrataEngine:
                         else:
                             line = lines_q.get(timeout=left)
                     except queue.Empty:
-                        raise self._silent("the engine did not finish the request after it was stopped (STOP) "
-                                           f"within {allow:.0f} s") from None
+                        if rid is not None:
+                            rid_queues.pop(rid, None)
+                        raise self._silent_process(proc, "the engine did not finish the request after it was stopped (STOP) "
+                                                   f"within {allow:.0f} s") from None
                     if line is None or line.startswith("ERR"):
                         break
                     if line.startswith("DONE"):
-                        self._parse_done(line)
+                        with self._process_guard():
+                            self._parse_done(line, publish=self.proc is proc)
                         break
                     if line.startswith("T ") and audit is not None:
                         audit.drain_token(line)
-                    if not self.can_stop:
+                    if not can_stop:
                         heard = time.monotonic()
             if rid is not None:                           # this request's lines are over (a late one goes nowhere)
-                self.rid_q.pop(rid, None)
+                rid_queues.pop(rid, None)
 
     @staticmethod
     def _swallow_trailing_done(lines_q, wait: float = 0.3) -> None:
@@ -3109,7 +3133,7 @@ class StrataEngine:
         except Exception:  # noqa: BLE001 - psutil missing, the process gone, no permission: no reading
             return None
 
-    def _stall_check(self, heard: float, state: dict, stall_s: float) -> None:
+    def _stall_check(self, heard: float, state: dict, stall_s: float, *, silent=None) -> None:
         """#1317: called while the engine is silent.  Takes a baseline soon after the last line, and at stall_s of silence
         compares: no CPU and no I/O in all that time -> the engine is ended (EngineSilent); work going on -> one warning."""
         age = time.monotonic() - heard
@@ -3124,8 +3148,9 @@ class StrataEngine:
         except Exception:  # noqa: BLE001 - a telemetry hiccup must not decide anything
             gpu_working = False
         if now is not None and not gpu_working and engine_frozen(state["base"], now):
-            raise self._silent(f"the engine said nothing for {age:.0f} s and used no CPU or disk in that time (frozen; "
-                               "STRATA_ENGINE_STALL_S sets this, 0 = off)")
+            fail = self._silent if silent is None else silent
+            raise fail(f"the engine said nothing for {age:.0f} s and used no CPU or disk in that time (frozen; "
+                       "STRATA_ENGINE_STALL_S sets this, 0 = off)")
         if now is not None:   # working: look again after another window from here, and say so once
             state["base"], state["next"] = now, age + stall_s
             if not state.get("warned"):
@@ -3136,14 +3161,18 @@ class StrataEngine:
             state["next"] = float("inf")   # no reading (psutil missing): nothing to decide on
 
     def _silent(self, what: str) -> EngineSilent:
+        return self._silent_process(self.proc, what)
+
+    def _silent_process(self, proc, what: str) -> EngineSilent:
         """#481: end an engine that lost step with the server (its main thread waits for a command the server never
         sends), so the next request starts it again: killed now, its GPU and RAM go back with the process."""
-        self.silent_note = ("The engine and the server lost step (issue #481; a very slow PC can raise "
+        with self._process_guard():
+            if proc is not None and self.proc is proc:
+                self.silent_note = ("The engine and the server lost step (issue #481; a very slow PC can raise "
                             "\"engine_silence_s\" in the config, 0 = wait forever). If it happens again, please add "
                             "the end of the engine log to github.com/Niko1221/Strata/issues/481.")
-        self._clear_child_observation()
-        self.ended = True                               # not alive from now: the next request restarts it
-        proc = self.proc
+                self._clear_child_observation()
+                self.ended = True                       # not alive from now: the next request restarts it
         try:
             proc.kill()
             proc.wait(timeout=20)                       # restart() -> close() handles one that is still exiting
@@ -3267,6 +3296,10 @@ class StrataEngine:
             raise out_of_step(line)
 
     def close(self):
+        with self._process_guard():
+            return self._close_process()
+
+    def _close_process(self):
         """End the engine process: STOP + QUIT first (the engine frees its memory itself - unpinning tens of GB can take
         a while; ENGINE_QUIT_WAIT_S), then terminate (ENGINE_TERM_WAIT_S), then kill (ENGINE_KILL_WAIT_S).  Raises
         EngineStuck when it still runs after all three."""

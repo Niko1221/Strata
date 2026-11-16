@@ -330,25 +330,47 @@ class VisionPrepareTempFiles(unittest.TestCase):
         return sorted(p.name for p in Path(d).glob("req-*.sve"))
 
     def test_a_refused_request_writes_none(self):
+        import serve.server as server
         from serve.server import EngineStarting
         tok = ByteTokenizer()
         with tempfile.TemporaryDirectory() as d:
             engine = MockEngine(tok, "ok", max_context=0)
             svc = Service(engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"),
                           vision=ImageMarkers.FakeVision(d), fit_max_tokens=False)
-            with self.assertRaises(EngineStarting):
-                svc.prepare(self.MSGS, None, {}, 16)
-            engine.max_context = 64                                  # the prompt alone fills it
-            with self.assertRaisesRegex(ValueError, "no room to answer"):
-                svc.prepare(self.MSGS, None, {})
-            engine.max_context = CTX
-            with self.assertRaisesRegex(ValueError, "exceeds the context"):
-                svc.prepare(self.MSGS, None, {}, CTX)
-            self.assertEqual(self.leftovers(d), [])
-            svc.prepare(self.MSGS, None, {}, 16)                     # one that fits has it
-            self.assertEqual(len(self.leftovers(d)), 1)
-            svc.drop_embeddings()                                    # ... until the request is done
-            self.assertEqual(self.leftovers(d), [])
+            request_file = Path(d) / "req-controlled.sve"
+            try:
+                # Placement has its own platform tests; here observe whether a
+                # request allocates/writes at all, with the real writer intact.
+                with mock.patch.object(server, "combined_embeddings_path", return_value=request_file) as allocate, \
+                        mock.patch.object(server, "write_temporary", wraps=server.write_temporary) as write:
+                    def assert_unwritten():
+                        allocate.assert_not_called()
+                        write.assert_not_called()
+                        self.assertEqual(self.leftovers(d), [])
+
+                    with self.assertRaises(EngineStarting):
+                        svc.prepare(self.MSGS, None, {}, 16)
+                    assert_unwritten()
+                    engine.max_context = 64                          # the prompt alone fills it
+                    with self.assertRaisesRegex(ValueError, "no room to answer"):
+                        svc.prepare(self.MSGS, None, {})
+                    assert_unwritten()
+                    engine.max_context = CTX
+                    with self.assertRaisesRegex(ValueError, "exceeds the context"):
+                        svc.prepare(self.MSGS, None, {}, CTX)
+                    assert_unwritten()
+                    svc.prepare(self.MSGS, None, {}, 16)             # one that fits has it
+                    allocate.assert_called_once()
+                    write.assert_called_once()
+                    self.assertEqual(write.call_args.args[0], request_file)
+                    self.assertTrue(request_file.is_file())
+                    self.assertEqual(self.leftovers(d), [request_file.name])
+                    svc.drop_embeddings()                            # ... until the request is done
+                    self.assertFalse(request_file.exists())
+                    self.assertEqual(self.leftovers(d), [])
+            finally:
+                svc.drop_embeddings()
+                request_file.unlink(missing_ok=True)
 
     def test_over_http(self):
         import serve.server as server

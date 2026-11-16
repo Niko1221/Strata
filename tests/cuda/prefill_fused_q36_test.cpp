@@ -11,6 +11,7 @@
 // all-zero token, per-expert blobs at unrelated (2-byte aligned) addresses, three launches of different expert ranges; then the tails and
 // tile edges (33, 1, 130, 517 tokens).  Part 2 (timing): one layer at the engine's chunks (2048, 8192 tokens; 256 experts, top 8) on both
 // paths, the grouping checked and a sample of rows against the reference.  --no-ref, --no-timing, --only=NAME, --chunks=A,B,
+// --spill-ww4 checks the required IQ2_S/IQ4_NL, IQ2_XS/IQ4_NL and NVFP4/NVFP4 pairs with WW4/NT512/F16false.
 // --host-blobs=N [--expect-fallback | --expect-no-fallback] (the first N experts' blobs in host memory: the weight-staging check fails for the launches that hold one and they take the
 // unstaged kernel, same output bits; timing part, use with --no-ref).
 // Exit 77 without a CUDA device of sm_80 or newer.
@@ -61,7 +62,10 @@ struct Pair {
     const char* name;
     bool optional = false;   // a pair this build may not cover yet: skipped with a printed line instead of failing (UD-Q4_K_XL's K-quant downs)
 };
-bool mmq_ok(const Pair& p) { return mmq::supported((int) p.gu) && mmq::supported((int) p.d); }
+bool nvfp4_pair(const Pair& p) { return p.gu == GGML_TYPE_NVFP4 && p.d == GGML_TYPE_NVFP4; }
+// The MMQ test helper does not apply the per-expert NVFP4 tail scales. That pair
+// uses the independent dequantized reference and the unchanged no-MMQ ceilings.
+bool mmq_ok(const Pair& p) { return !nvfp4_pair(p) && mmq::supported((int) p.gu) && mmq::supported((int) p.d); }
 int g_host_blobs = 0;       // --host-blobs=N (the timing part): the first N experts' blobs in pinned host memory, see timing_part; use with --no-ref
 int g_expect_fallback = 0;  // --expect-fallback (+1) / --expect-no-fallback (-1): with --host-blobs, require that some / no launch took the unstaged kernel
 size_t row_size(ggml_type t, int64_t n) { return (size_t) (n / ggml_blck_size(t)) * ggml_type_size(t); }
@@ -74,6 +78,7 @@ struct Geo {
         up_off = gu_row * FF;
         down_off = 2 * up_off;
         bytes = down_off + d_row * N;
+        if (nvfp4_pair(p)) bytes += 16;   // {s_gate, s_up, s_down, 0} after the down matrix
     }
     fq::NativeGeom native(const Pair& p) const {
         fq::NativeGeom g;
@@ -91,6 +96,14 @@ void fill_matrix(uint8_t* m, ggml_type t, int64_t rows, int64_t cols, std::mt199
                    : t == GGML_TYPE_Q8_0 ? 0.0001f : t == GGML_TYPE_Q6_K ? 0.000005f : 0.0008f;
     std::uniform_real_distribution<float> sc(lo, 6.0f * lo);
     for (size_t i = 0; i < nb * bs; ++i) m[i] = (uint8_t) byte(rng);
+    if (t == GGML_TYPE_NVFP4) {
+        // Same valid UE4M3 scales as the original-geometry independent fixture;
+        // the remaining 32 bytes contain random E2M1 codes, not an fp16 scale.
+        std::uniform_int_distribution<int> ub(0x28, 0x58);
+        for (size_t b = 0; b < nb; ++b)
+            for (int k = 0; k < 4; ++k) m[b * bs + (size_t) k] = (uint8_t) ub(rng);
+        return;
+    }
     for (size_t b = 0; b < nb; ++b) {
         const ggml_fp16_t h = ggml_fp32_to_fp16(sc(rng));
         std::memcpy(m + b * bs + (t == GGML_TYPE_Q6_K ? 208 : 0), &h, 2);   // (Q6_K keeps d at its end; its 16 int8 scales stay random bytes)
@@ -104,6 +117,11 @@ std::vector<uint8_t> make_blob(const Pair& p, const Geo& g, std::mt19937& rng) {
     std::vector<uint8_t> b(g.bytes);
     fill_matrix(b.data(), p.gu, FF2, N, rng);
     fill_matrix(b.data() + g.down_off, p.d, N, FF, rng);
+    if (nvfp4_pair(p)) {
+        std::uniform_real_distribution<float> ss(2e-4f, 2e-3f);
+        const float tail[4] = {ss(rng), ss(rng), ss(rng), 0.0f};
+        std::memcpy(b.data() + g.bytes - 16, tail, 16);
+    }
     return b;
 }
 
@@ -115,6 +133,15 @@ void dequant(const Pair& p, const Geo& g, const std::vector<uint8_t>& b, std::ve
     const auto* td = ggml_get_type_traits(p.d);
     for (int r = 0; r < FF2; ++r) tg->to_float(b.data() + (size_t) r * g.gu_row, gu.data() + (size_t) r * N, N);
     for (int r = 0; r < N; ++r) td->to_float(b.data() + g.down_off + (size_t) r * g.d_row, dn.data() + (size_t) r * FF, FF);
+    if (nvfp4_pair(p)) {
+        float tail[4];
+        std::memcpy(tail, b.data() + g.bytes - 16, 16);
+        for (int r = 0; r < FF; ++r)
+            for (int k = 0; k < N; ++k) gu[(size_t) r * N + k] *= tail[0];
+        for (int r = FF; r < FF2; ++r)
+            for (int k = 0; k < N; ++k) gu[(size_t) r * N + k] *= tail[1];
+        for (float& value : dn) value *= tail[2];
+    }
 }
 
 // activations: N(0, 1) with a few large values (the hidden state has outliers); token `zero` all zero
@@ -610,6 +637,29 @@ int main(int argc, char** argv) {
         setenv("STRATA_PF_FUSED_Q8GU", "1", 1);
         setenv("STRATA_MMQ_KQ", "1", 1);
 #endif
+        // This optional test mode targets the exact WW4/NT512/F16false stack
+        // regressions. The default keeps the original six pairs' tile policy.
+        bool spill_ww4 = false;
+        for (int i = 1; i < argc; ++i) spill_ww4 |= std::strcmp(argv[i], "--spill-ww4") == 0;
+#if defined(__HIPCC__) || defined(__HIP_PLATFORM_AMD__)
+        if (spill_ww4) throw std::runtime_error("--spill-ww4 requires the CUDA native kernel instances");
+#endif
+        if (spill_ww4) {
+#ifdef _WIN32
+            _putenv_s("STRATA_PF_FUSED_TILE", "64");
+            _putenv_s("STRATA_PF_FUSED_NT", "512");
+            _putenv_s("STRATA_PF_FUSED_F16", "0");
+            _putenv_s("STRATA_PF_FUSED_WS", "0");
+            _putenv_s("STRATA_PREFILL_NVFP4", "w4a8");
+#else
+            setenv("STRATA_PF_FUSED_TILE", "64", 1);
+            setenv("STRATA_PF_FUSED_NT", "512", 1);
+            setenv("STRATA_PF_FUSED_F16", "0", 1);
+            setenv("STRATA_PF_FUSED_WS", "0", 1);
+            setenv("STRATA_PREFILL_NVFP4", "w4a8", 1);
+#endif
+            std::printf("Q36 compiler-resource regression: forced WW4 (64-row tiles), all three formats required\n");
+        }
         int n = 0;
         if (cudaGetDeviceCount(&n) != cudaSuccess || n == 0) { std::printf("no CUDA device: skipped\n"); return 77; }
 #if defined(__HIPCC__) || defined(__HIP_PLATFORM_AMD__)
@@ -634,7 +684,14 @@ int main(int argc, char** argv) {
             {GGML_TYPE_Q4_K, GGML_TYPE_Q5_K, "Q4_K / Q5_K", true},
             {GGML_TYPE_Q4_K, GGML_TYPE_Q6_K, "Q4_K / Q6_K", true},
             {GGML_TYPE_Q5_K, GGML_TYPE_Q6_K, "Q5_K / Q6_K", true},
-            {GGML_TYPE_Q5_K, GGML_TYPE_Q5_K, "Q5_K / Q5_K", true}};
+            {GGML_TYPE_Q5_K, GGML_TYPE_Q5_K, "Q5_K / Q5_K", true}
+#if !defined(__HIPCC__) && !defined(__HIP_PLATFORM_AMD__)
+            ,
+            {GGML_TYPE_IQ2_S, GGML_TYPE_IQ4_NL, "IQ2_S / IQ4_NL"},
+            {GGML_TYPE_IQ2_XS, GGML_TYPE_IQ4_NL, "IQ2_XS / IQ4_NL"},
+            {GGML_TYPE_NVFP4, GGML_TYPE_NVFP4, "NVFP4 / NVFP4"}
+#endif
+        };
         const char* only = nullptr;   // --only=NAME: the pairs whose name contains NAME
         bool timing = true, ref = true;
         std::vector<int> chunks = {2048, 8192};   // --chunks=A,B: the timing part's chunk sizes
@@ -654,9 +711,12 @@ int main(int argc, char** argv) {
                 }
             }
         }
+        if (spill_ww4 && (only || !ref))
+            throw std::runtime_error("--spill-ww4 requires all three pairs and their reference checks");
         cudaStream_t s = nullptr;
         ck(cudaStreamCreateWithFlags(&s, cudaStreamNonBlocking), "stream");
         for (const Pair& p : pairs) {
+            if (spill_ww4 && p.gu != GGML_TYPE_IQ2_S && p.gu != GGML_TYPE_IQ2_XS && p.gu != GGML_TYPE_NVFP4) continue;
             if (only && std::string(p.name).find(only) == std::string::npos) continue;
             if (!fq::native_supported_ext((int) p.gu, (int) p.d)) {
                 if (p.optional) { std::printf("%s: not covered by this build of the Qwen3.6 kernels (skipped)\n", p.name); continue; }

@@ -17,8 +17,12 @@ from types import SimpleNamespace
 from typing import Any
 import uuid
 
-HERE = Path(__file__).resolve().parent
-ROOT = Path("H:/Strata/worktrees/upstream-sync-20261116")
+HERE = Path(__file__).absolute().parent
+ROOT = HERE.parents[1]
+CHECKOUT_BRANCHES = {
+    Path("C:/Users/downl/Documents/ChatGPT/Strata"): "main",
+    Path("H:/Strata/worktrees/upstream-sync-20261116"): "codex/upstream-sync-20261116",
+}
 OUT = Path("H:/Strata/releases/stable-060-20261116-codex")
 RES = ROOT / "apps/desktop/src-tauri/resources"
 PRIMARY_RES = Path("C:/Users/downl/Documents/ChatGPT/Strata/apps/desktop/src-tauri/resources")
@@ -140,14 +144,33 @@ def git(*args: str) -> str:
     return command(["git", "-C", ROOT, *args], timeout=90)
 
 
+def validate_checkout(root: Path, branch: str) -> None:
+    """Accept only the named physical checkout and its corresponding branch."""
+    no_links(root)
+    require(root in CHECKOUT_BRANCHES and root.resolve(strict=True) == root, "Unapproved checkout or alias")
+    require(branch == CHECKOUT_BRANCHES[root], "Wrong branch for approved checkout")
+
+
+def signing_key_path(key: Path) -> Path:
+    """Validate key location without reading its contents or moving it."""
+    require(key.is_absolute(), "Absolute key path required")
+    no_links(key)
+    resolved = key.resolve(strict=True)
+    require(resolved.is_file(), "Existing regular signing key required")
+    for tree in (*CHECKOUT_BRANCHES, ROOT, Path("H:/Strata/worktrees"), Path("H:/Strata/releases"), OUT):
+        no_links(tree)
+        require(not resolved.is_relative_to(tree.resolve()), "Key must be outside source and release trees")
+    return resolved
+
+
 def reviewed(commit: str) -> dict[str, str]:
     require(bool(re.fullmatch("[a-f0-9]{40}", commit or "")), "Explicit full reviewed commit required")
-    no_links(ROOT)
+    no_links(HERE / "release.py")
+    validate_checkout(ROOT, git("branch", "--show-current"))
     require(
         git("rev-parse", "HEAD") == commit and not git("status", "--porcelain", "--untracked-files=all"),
-        "Clean reviewed integration HEAD required",
+        "Clean reviewed checkout HEAD required",
     )
-    require(git("branch", "--show-current") == "codex/upstream-sync-20261116", "Wrong integration branch")
     for name in ("VERSION", "CONTROL_VERSION"):
         require((ROOT / name).read_text().strip() == VERSION, "Version mismatch")
     require(
@@ -410,14 +433,7 @@ def component(args: argparse.Namespace, work: Path) -> dict:
         args.native_component and args.native_binding and args.key,
         "Native package, binding receipt and external key path required",
     )
-    key = args.key
-    require(key.is_absolute(), "Absolute key path required")
-    no_links(key)
-    require(
-        not key.resolve().is_relative_to(Path("H:/Strata").resolve())
-        and not key.resolve().is_relative_to(Path("C:/Users/downl/Documents").resolve()),
-        "Key must be outside source and release trees",
-    )
+    key = signing_key_path(args.key)
     verify("native", args.native_component, args, args.native_binding)
     require(
         not any(

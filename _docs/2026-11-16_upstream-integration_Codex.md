@@ -93,11 +93,34 @@ passed all four checks. Compute Sanitizer reported zero errors for both KV
 lifecycle cases, and Spin8 first-use/full synthetic checks passed. These are
 compiled capability and numerical checks, not model-quality measurements.
 
-The final default CUDA resource check failed on three Q36 specializations:
-NVFP4 STACK 32, IQ2_S STACK 24 and IQ2_XS STACK 24, each against the unchanged
-16-byte limit, with LOCAL zero. Those exact Q36 formats are outside the existing
-six-pair Q36 fixture. The finding remains open pending a bounded correction and
-explicit coverage; no limit or default baseline is relaxed.
+The initial default CUDA resource check failed on three Q36 specializations.
+The bounded scheduling correction reduces NVFP4 STACK from 32 to 16 bytes.
+IQ2_S and IQ2_XS remain at STACK 24, LOCAL zero, against the unchanged default
+16-byte limit. The default check therefore still fails on those two entries.
+Mandatory WW4 reference tests now cover all three exact formats; both final
+runs passed, and the registered Q36/original numerical group passed three cases.
+
+Independent review approved the explicit SM120/CUDA 13.3/MSVC 14.44 measurement
+profile. The controller accepts that profile only for its bound source,
+compiler and vendored ggml identity. It records 451 measured nonzero entries;
+unlisted entries retain zero allowance. Its SHA-256 is
+a6a68113670400e151a37c92d8d7c3b158043d14d5e0081f0d89d8c39ae8ce67.
+The cost remains 24 bytes per thread for those two IQ2 entries. This is not a
+repair of the default limit, a blanket waiver, or a model/performance claim.
+The final five-job product relink, configured-profile replay and authoritative
+native identity passed. All nine measured library hashes remained unchanged.
+The resulting strata.exe SHA-256 is
+0d8bc027c649bfde788c72ba61be025dfa013679ceb48e3b49069d14c7d10ab4.
+
+Hosted Linux checks at 4282fce exposed stale-request process ownership and a
+shared-memory fixture assumption. The corrected server retains the initiating
+process throughout STOP, drain, timeout, DONE and fatal-error handling. A stale
+request keeps its own result without changing its successor's state. Focused
+replacement tests reproduced two failures before correction, then passed 36
+nearby cases and 13 final ownership/fatal-bookkeeping cases. Independent scoped
+re-review approved the correction. Hosted replay of the final source remains
+separate. The vision fixture observes the real write in controlled scratch;
+production shared-memory placement and refusal rules remain unchanged.
 
 The segmented-cache error contract intentionally remains fail-closed: a driver
 error blocks further serving until successful cleanup and reopen. Accurate
@@ -158,8 +181,8 @@ build/test admission resumed without changing the floor or moving data to C.
 
 The root integration review found and corrected one malformed Metal CI step;
 actionlint and scoped re-review passed. Hosted Metal compilation is separate.
-The final source gate still needs applicable numerical checks, final snapshot
-replay and whole-branch review. Fresh frozen-source app/native/Control
+The final snapshot replay passed all 60 cases and the final GPU group passed
+all nine. Whole-branch review remains separate. Fresh frozen-source app/Control
 packages, exact-source hosted checks, standard backed-up overwrite installation,
 installed-app acceptance, immutable v0.6.0 tag, installer/tar.7z publication and
 anonymous checksum readback remain required. Candidate README status must be

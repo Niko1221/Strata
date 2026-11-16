@@ -298,6 +298,50 @@ class BlockedConsole(unittest.TestCase):
 
 
 class ExchangePipeOwnership(unittest.TestCase):
+    def assert_old_terminal_line_preserves_successor(self, line, error, successor_finish):
+        import io
+        import queue
+        engine = StrataEngine.__new__(StrataEngine)
+        original = mock.Mock(stdin=io.StringIO())
+        successor = mock.Mock(stdin=io.StringIO())
+        original.poll.return_value = successor.poll.return_value = None
+        engine.proc, engine.lines = original, queue.Queue()
+        engine.can_stop, engine.silence_s, engine.max_context = True, 0, 4096
+        engine.lines.put("T 5")
+        engine.lines.put(line)
+        run = engine.generate([1], 10, {}, threading.Event())
+        self.assertEqual(next(run), 5)
+        engine.proc, engine.lines = successor, queue.Queue()
+        successor_last = {"owner": "successor", "finish": successor_finish}
+        receipt, attempt = object(), object()
+        engine.last = successor_last
+        engine._q36_memory_observation = engine._native_admitted_child = receipt
+        engine._child_observation_attempt = attempt
+        engine.ended, engine.last_err, engine.silent_note = False, "healthy", "healthy"
+        with self.assertRaises(error):
+            next(run)
+        self.assertIs(engine.last, successor_last)
+        self.assertIs(engine._q36_memory_observation, receipt)
+        self.assertIs(engine._native_admitted_child, receipt)
+        self.assertIs(engine._child_observation_attempt, attempt)
+        self.assertEqual((engine.ended, engine.last_err, engine.silent_note), (False, "healthy", "healthy"))
+        self.assertTrue(engine.alive())
+        self.assertEqual(successor.stdin.getvalue(), "")
+        self.assertNotIn("STOP", original.stdin.getvalue())
+        original.kill.assert_not_called()
+        successor.kill.assert_not_called()
+
+    def test_receiving_old_done_uses_its_finish_without_publishing_successor_statistics(self):
+        from serve.server import EngineNonFinite
+        for finish, error, other_finish in (("length", StopIteration, "nonfinite"),
+                                            ("nonfinite", EngineNonFinite, "length")):
+            with self.subTest(finish=finish):
+                self.assert_old_terminal_line_preserves_successor("DONE 1 1 1 1 " + finish, error, other_finish)
+
+    def test_receiving_old_fatal_error_does_not_retire_the_successor(self):
+        from serve.server import EngineDied
+        self.assert_old_terminal_line_preserves_successor("ERR fatal GPU error: synthetic failure", EngineDied, "length")
+
     def test_cleanup_never_sends_stop_to_a_replacement_process(self):
         import io
         import queue
@@ -320,6 +364,85 @@ class ExchangePipeOwnership(unittest.TestCase):
                 self.assertEqual(successor.stdin.getvalue(), "", "cleanup must not stop a successor's request")
                 if replaced:
                     self.assertIn("STOP\n", original.stdin.getvalue())
+
+    def test_stop_timeout_cannot_kill_or_clear_a_successor_published_by_stop(self):
+        import io
+        import queue
+        from serve.server import EngineSilent
+
+        engine = StrataEngine.__new__(StrataEngine)
+        original = mock.Mock(stdin=io.StringIO())
+        successor = mock.Mock(stdin=io.StringIO())
+        original.poll.return_value = successor.poll.return_value = None
+        engine.proc, engine.lines = original, queue.Queue()
+        engine.can_stop, engine.silence_s, engine.max_context = True, 0.001, 4096
+        engine.lines.put("T 5")
+        successor_receipt = {"synthetic": "successor"}
+        successor_lines = queue.Queue()
+
+        class RestartOnStop(io.StringIO):
+            def write(self, text):
+                if text == "STOP\n":
+                    engine.proc, engine.lines = successor, successor_lines
+                    engine.ended, engine.silent_note = False, "successor is healthy"
+                    engine._q36_memory_observation = successor_receipt
+                    engine._native_admitted_child = successor_receipt
+                    engine.last = {"owner": "successor"}
+                return super().write(text)
+
+        original.stdin = RestartOnStop()
+        run = engine.generate([1], 10, {}, threading.Event())
+        self.assertEqual(next(run), 5)
+        with self.assertRaises(EngineSilent):
+            run.close()
+        self.assertIn("STOP\n", original.stdin.getvalue())
+        original.kill.assert_called_once()
+        successor.kill.assert_not_called()
+        self.assertEqual(successor.stdin.getvalue(), "")
+        self.assertIs(engine.proc, successor)
+        self.assertIs(engine.lines, successor_lines)
+        self.assertFalse(engine.ended)
+        self.assertEqual(engine.silent_note, "successor is healthy")
+        self.assertIs(engine._q36_memory_observation, successor_receipt)
+        self.assertIs(engine._native_admitted_child, successor_receipt)
+        self.assertEqual(engine.last, {"owner": "successor"})
+
+    def test_draining_old_done_does_not_replace_successor_statistics(self):
+        import io
+        import queue
+        engine = StrataEngine.__new__(StrataEngine)
+        original = mock.Mock(stdin=io.StringIO())
+        successor = mock.Mock(stdin=io.StringIO())
+        original.poll.return_value = successor.poll.return_value = None
+        engine.proc, engine.lines = original, queue.Queue()
+        engine.can_stop, engine.silence_s, engine.max_context = True, 0, 4096
+        engine.lines.put("T 5")
+        engine.lines.put("DONE 1 1 1 1 length")
+        run = engine.generate([1], 10, {}, threading.Event())
+        self.assertEqual(next(run), 5)
+        engine.proc = successor
+        engine.last = {"owner": "successor"}
+        run.close()
+        self.assertEqual(engine.last, {"owner": "successor"})
+        self.assertEqual(successor.stdin.getvalue(), "")
+        successor.kill.assert_not_called()
+
+    def test_unchanged_process_still_gets_stop_and_done_is_drained(self):
+        import io
+        import queue
+        engine = StrataEngine.__new__(StrataEngine)
+        original = mock.Mock(stdin=io.StringIO())
+        original.poll.return_value = None
+        engine.proc, engine.lines = original, queue.Queue()
+        engine.can_stop, engine.silence_s, engine.max_context = True, 0, 4096
+        engine.lines.put("T 5")
+        engine.lines.put("DONE 1 1 1 1 length")
+        run = engine.generate([1], 10, {}, threading.Event())
+        self.assertEqual(next(run), 5)
+        run.close()
+        self.assertTrue(original.stdin.getvalue().endswith("STOP\n"))
+        self.assertTrue(engine.lines.empty())
+        original.kill.assert_not_called()
 
 
 class EngineOutputDecoding(FakeEngines, unittest.TestCase):

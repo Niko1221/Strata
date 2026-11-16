@@ -903,6 +903,10 @@ native_kernel(const BatchOf<NT> b, const NativeGeom geo, const Tables tb, const 
     constexpr int ACT_LD = NS * AB;                       // bytes per activation row: 3200 (a token), 800 (a row's H)
     constexpr int BS = block_bytes(WT);
     constexpr bool K16 = per16(WT);
+    // Q36's NVFP4 WW4 gate/up instance otherwise keeps the next raw unit live
+    // across all 32 accumulators. Load the same unit at its decode point instead.
+    constexpr bool LATE_RAW = GU_ROWS_K == 2048 && D_ROWS_K == 512 && GU && WW == 4 && NT == 512 && !F16 &&
+                              WT == T_NVFP4;
     // weight staging (see sw_on): this instance's slots, its activation depth, and a ring at the end of shared memory
     constexpr int AST = SWT ? kSwAst : ASTAGES_DEV;
     constexpr int SW_SPB = sw_spb(WT, GU), SW_SB = sw_slot_bytes(WT, GU), SW_NCH = sw_chunks(WT, GU), SW_ROW = 16 * SW_NCH;
@@ -1140,9 +1144,11 @@ native_kernel(const BatchOf<NT> b, const NativeGeom geo, const Tables tb, const 
         if (dec) load_unit<WT>(unit(0), sub(0), raw);
         if (dec && TWO_PASS && 2 < NS) issue(2);
         put(raw, 0);
+        if constexpr (!LATE_RAW) {
         if constexpr (SWT) { if (dec) load_sw(1, raw); } else
         if constexpr (KLEAN) { if (dec) kq_lean_load<WT>(unit(1), sub(1), uj, raw); } else
         if (dec) load_unit<WT>(unit(1), sub(1), raw);
+        }
         // a warp whose rows are all past the tile's end only takes part in the loads
         const bool on0 = nb0 < nrows, on1 = nb0 + 8 < nrows;
         float acc[4][2][4];
@@ -1272,8 +1278,11 @@ native_kernel(const BatchOf<NT> b, const NativeGeom geo, const Tables tb, const 
             // this stage's products instead was slower on the RTX 5070: a layer of 2048 / 3584 / 8192 tokens, IQ2_S
             // 5.2 / 9.5 / 17.5 ms -> 6.0 / 10.2 / 18.3.)
             if (s + 1 < NS) {
+                if constexpr (LATE_RAW) {
+                    if (dec) load_unit<WT>(unit(s + 1), sub(s + 1), raw);
+                }
                 put(raw, (s + 1) & 1);
-                if (dec && s + 2 < NS) {
+                if (!LATE_RAW && dec && s + 2 < NS) {
                     if constexpr (TWO_PASS) {
                         take(s + 2);
                         if (s + 3 < NS) issue(s + 3);

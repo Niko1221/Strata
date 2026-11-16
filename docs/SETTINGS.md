@@ -10,7 +10,7 @@ debugging and are kept in `data/settings-register.json`.
 A number or a word is set like any environment variable, for example `STRATA_KVA=1`. In the Terminal, `strata launch --set NAME=value`
 puts it in the model's run configuration.
 
-## Switches you can turn on (272)
+## Switches you can turn on (275)
 
 Off unless you set them. The last column says where each one is described.
 
@@ -50,6 +50,9 @@ Off unless you set them. The last column says where each one is described.
 | `STRATA_DISJOINT_ADAPT` | number | NVIDIA and AMD, Intel Arc | [DISJOINT_EXPERT_CACHE.md](DISJOINT_EXPERT_CACHE.md) |
 | `STRATA_DMA_BATCH` | number | NVIDIA and AMD | [BATCHED_DMA.md](BATCHED_DMA.md), [DETAILS.md](DETAILS.md) |
 | `STRATA_DOWN_WS` | on / off | NVIDIA and AMD | [OLDER_GPUS.md](OLDER_GPUS.md), [release-notes-0.2.7.md](release-notes-0.2.7.md) |
+| `STRATA_DS4_READ_PIECES` | number | NVIDIA and AMD | - |
+| `STRATA_DS4_SLOT_GB` | number | NVIDIA and AMD | - |
+| `STRATA_DS4_SLOT_KEEP` | number | NVIDIA and AMD | - |
 | `STRATA_DUMP_FIRST_LOGITS` | on / off | NVIDIA and AMD, Intel Arc | [DGX_SPARK_LINUX.md](DGX_SPARK_LINUX.md) |
 | `STRATA_DUMP_MOE_INPUT` | text | NVIDIA and AMD | [NVFP4.md](NVFP4.md) |
 | `STRATA_EMBED_VRAM` | on / off | NVIDIA and AMD | [DETAILS.md](DETAILS.md) |
@@ -206,7 +209,7 @@ Off unless you set them. The last column says where each one is described.
 | `STRATA_PLE_COPY_STREAM` | on / off | NVIDIA and AMD | [DETAILS.md](DETAILS.md) |
 | `STRATA_POOL_CORES` | on / off | NVIDIA and AMD, Intel Arc | [DETAILS.md](DETAILS.md), [release-notes-0.2.2.md](release-notes-0.2.2.md) |
 | `STRATA_PREFILL_AUTO_MAX` | number | NVIDIA and AMD, Intel Arc | [DETAILS.md](DETAILS.md) |
-| `STRATA_PREFILL_BORROW` | text | NVIDIA, AMD | [STRIX_HALO.md](STRIX_HALO.md), [STRIX_HALO_WINDOWS.md](STRIX_HALO_WINDOWS.md) |
+| `STRATA_PREFILL_BORROW` | on / off | NVIDIA, AMD | [STRIX_HALO.md](STRIX_HALO.md), [STRIX_HALO_WINDOWS.md](STRIX_HALO_WINDOWS.md) |
 | `STRATA_PREFILL_CPU_SHARE_BATCH` | on / off | NVIDIA and AMD | - |
 | `STRATA_PREFILL_CPU_SHARE_MAX` | number | NVIDIA and AMD | [DETAILS.md](DETAILS.md) |
 | `STRATA_PREFILL_EQUAL` | text | NVIDIA and AMD, Intel Arc | [DETAILS.md](DETAILS.md) |
@@ -355,7 +358,7 @@ version made it the default.
 | `STRATA_QSA_EARLY_EXIT` | number | NVIDIA and AMD, Intel Arc | v0.1.40.1 | - |
 | `STRATA_QSA_FUSE_NR` | on / off | NVIDIA and AMD | v0.2.10 | - |
 | `STRATA_REMOTE_SPIN` | on / off | NVIDIA, AMD, Intel Arc | v0.1.40.1 | - |
-| `STRATA_RESIDENT_PIN` | on / off | NVIDIA and AMD, Intel Arc | v0.1.40.1 | [DETAILS.md](DETAILS.md), [TROUBLESHOOTING.md](TROUBLESHOOTING.md), [UNSLOTH_Q4.md](UNSLOTH_Q4.md) |
+| `STRATA_RESIDENT_PIN` | on / off | NVIDIA and AMD, Intel Arc | v0.1.40.1 | [DETAILS.md](DETAILS.md), [PERF131K_STARTUP_BUDGET.md](PERF131K_STARTUP_BUDGET.md), [TROUBLESHOOTING.md](TROUBLESHOOTING.md) |
 | `STRATA_RING_BYTES` | on / off | NVIDIA and AMD, Intel Arc | v0.1.40.1 | [DETAILS.md](DETAILS.md) |
 | `STRATA_S2_SWIGLU_Q8` | on / off | NVIDIA and AMD, Intel Arc | v0.1.40.1 | - |
 | `STRATA_SCORES_THREAD` | number | NVIDIA and AMD | v0.1.45 | [AMD_HIP.md](AMD_HIP.md), [DETAILS.md](DETAILS.md) |

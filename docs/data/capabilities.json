@@ -21,7 +21,7 @@
     "nvidia_spark": {"supported": "yes", "hardware": "GB10", "limits": "", "measured": "[DGX_SPARK_LINUX.md](DGX_SPARK_LINUX.md)"},
     "amd_win": {"supported": "yes", "hardware": "RX 6000, 7000 and 9000, Ryzen AI Max", "limits": "", "measured": "[STRIX_HALO_WINDOWS.md](STRIX_HALO_WINDOWS.md); [AMD_HIP.md](AMD_HIP.md)"},
     "amd_linux": {"supported": "yes", "hardware": "RX 6000, 7000 and 9000, Radeon AI PRO R9700, Ryzen AI Max", "limits": "RX 6000 is validated differently from the newer cards ([AMD_HIP.md](AMD_HIP.md)).", "measured": "[AMD_HIP.md](AMD_HIP.md); [STRIX_HALO.md](STRIX_HALO.md)"},
-    "intel_linux": {"supported": "yes", "hardware": "Arc A-series and B-series", "limits": "Linux only (Ubuntu 24.04 or newer); the model is prepared for the card first, with per-card limits ([INTEL_ARC.md](INTEL_ARC.md)).", "measured": "[INTEL_ARC.md](INTEL_ARC.md)"},
+    "intel_linux": {"supported": "source-only", "hardware": "Arc A-series and B-series", "limits": "The backend source remains available ([INTEL_ARC.md](INTEL_ARC.md)); the current official release asset inventory has no SYCL package. Earlier package/API compatibility is not qualified here.", "measured": "[INTEL_ARC.md](INTEL_ARC.md) (historical upstream measurements)"},
     "mac": {"supported": "yes", "hardware": "M1 or newer, macOS 15 or newer", "limits": "", "measured": "[MAC.md](MAC.md#measured-m5-max-128-gb) (M5 Max, 128 GB)"}
    }
   },

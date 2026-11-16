@@ -14,6 +14,54 @@ spec.loader.exec_module(release)
 
 
 class Boundaries(unittest.TestCase):
+    def test_only_exact_checkout_branch_pairs_are_accepted(self) -> None:
+        primary = Path("C:/Users/downl/Documents/ChatGPT/Strata")
+        integration = Path("H:/Strata/worktrees/upstream-sync-20261116")
+        with patch.dict(os.environ, {}, clear=True), patch.object(release, "no_links"), patch.object(
+            Path, "resolve", autospec=True, side_effect=lambda path, **_kwargs: path
+        ):
+            release.validate_checkout(primary, "main")
+            release.validate_checkout(integration, "codex/upstream-sync-20261116")
+            for root, branch in (
+                (primary, "codex/upstream-sync-20261116"),
+                (integration, "main"),
+                (Path("H:/Strata/worktrees/other"), "main"),
+            ):
+                with self.subTest(root=root, branch=branch), self.assertRaises(RuntimeError):
+                    release.validate_checkout(root, branch)
+
+    def test_checkout_alias_is_rejected(self) -> None:
+        primary = Path("C:/Users/downl/Documents/ChatGPT/Strata")
+        with patch.dict(os.environ, {}, clear=True), patch.object(release, "no_links"), patch.object(
+            Path, "resolve", return_value=Path("H:/Strata/worktrees/other")
+        ):
+            with self.assertRaisesRegex(RuntimeError, "alias"):
+                release.validate_checkout(primary, "main")
+
+    def test_protected_sibling_key_allowed_but_source_and_release_keys_rejected(self) -> None:
+        sibling = Path("H:/Strata/private-keys/synthetic/feed-key.json")
+        forbidden = [
+            Path("C:/Users/downl/Documents/ChatGPT/Strata/key.json"),
+            Path("H:/Strata/worktrees/another/key.json"),
+            Path("H:/Strata/releases/another/key.json"),
+        ]
+        with patch.dict(os.environ, {}, clear=True), patch.object(release, "no_links"), patch.object(
+            Path, "resolve", autospec=True, side_effect=lambda path, **_kwargs: path
+        ), patch.object(Path, "is_file", return_value=True), patch.object(
+            Path, "open", side_effect=AssertionError("Key content must not be opened")
+        ):
+            self.assertEqual(release.signing_key_path(sibling), sibling)
+            for key in forbidden:
+                with self.subTest(key=key), self.assertRaisesRegex(RuntimeError, "outside source"):
+                    release.signing_key_path(key)
+
+    def test_linked_key_is_rejected_before_resolution_or_read(self) -> None:
+        with patch.dict(os.environ, {}, clear=True), patch.object(
+            release, "no_links", side_effect=RuntimeError("Reparse path refused")
+        ), patch.object(Path, "resolve", side_effect=AssertionError("Alias resolved too soon")):
+            with self.assertRaisesRegex(RuntimeError, "Reparse"):
+                release.signing_key_path(Path("H:/Strata/private-keys/synthetic/key.json"))
+
     def test_unit_only_tauri_override_does_not_cross_production_boundary(self) -> None:
         override = json.dumps({"bundle": {"resources": {}}})
         with patch.dict(os.environ, {"TAURI_CONFIG": override, "PATH": "test-only-path"}, clear=True):

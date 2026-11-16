@@ -2,11 +2,11 @@
 
 These are new preparation recipes, not release receipts. No build, packaging, signing, installation, model run, download or publication was executed by this task. `releaseQualified=false` remains mandatory. Qwen3.8 prototype work and missing/deleted Qwen3.6 weights are outside this delivery; no model is copied or downloaded.
 
-The controller owns the final reviewed integration commit, native compilation/binding, quality records, installed-app checks, backup/standard overwrite, tar.7z delivery and public release. These helpers use the integration checkout at `H:/Strata/worktrees/upstream-sync-20261116`, never primary C: main. The controller subsequently discovered official changes through `baf16363b4403ef0ed4f538f5d5ed11c43fb9535`; therefore no commit was hard-coded as the accepted source. Every execution requires the final clean full commit on `codex/upstream-sync-20261116`.
+The controller owns the final reviewed commit, native compilation/binding, quality records, installed-app checks, backup/standard overwrite, tar.7z delivery and public release. The helper derives its checkout from its own tracked location. It accepts only `C:/Users/downl/Documents/ChatGPT/Strata` on `main`, or the temporary migration checkout `H:/Strata/worktrees/upstream-sync-20261116` on `codex/upstream-sync-20261116`. Other roots, mismatched branches and reparse/path aliases are refused. Every execution still requires an explicit clean full commit; no release build is implied by migration to main.
 
 ## Requirements and implementation
 
-R1: frozen identity. `release.py freeze` captures the exact clean commit/tree and SHA-256 of every tracked physical file. Every other phase independently requires the same explicit clean current commit and 0.6.0 version files. This recipe deliberately selects the integration checkout as the native source root, which matches the controller's existing CUDA build. It does not create a detached source worktree or pretend an old build belongs to one.
+R1: frozen identity. `release.py freeze` captures the exact clean commit/tree and SHA-256 of every tracked physical file. Every other phase independently requires the same explicit clean current commit and 0.6.0 version files. The native binding must name the actual executing checkout. Moving the helper from H: to C: does not rebind the old H: CUDA build or certify its bytes as a new build.
 
 R2: unchanged dependencies. `dependencies` verifies the reviewed Harness commit and output-budget patch, its missing-import check, RustXNG Full version/source/binary/licences, local-backend manifests and pinned public assets. It inventories managed Harness/local-backends before and after copying and compares every destination hash. Node 24.22.3 executable and licence are independently pinned. Model/profile trees and primary resources are not modified. Destinations must be absent or contain only tracked scaffolding; existing payload causes refusal. No recursive delete/move is implemented by this helper.
 
@@ -22,11 +22,11 @@ All mutating phases require `--execute`. Plans do not inspect private keys or cr
 
 ## Later controller invocation sequence
 
-Review and commit these helpers with the final source first: the directory is currently untracked, so a clean-source gate will intentionally refuse execution until the controller includes it in the source cut or otherwise deliberately freezes its own reviewed arrangement. Use PowerShell from the integration checkout. The placeholders below are required verified inputs, not claims that those files already exist.
+Review and commit changes with the final source first; the clean-source gate intentionally refuses uncommitted changes. Use PowerShell from primary C: main after migration, or the exact temporary H: integration branch before migration. The placeholders below are required verified inputs, not claims that those files already exist. Existing managed-resource preservation and dependency-cache prerequisites still apply; this path migration does not execute staging or make existing payloads replaceable.
 
 ```powershell
 $py = 'C:/Users/downl/AppData/Local/Programs/Python/Python312/python.exe'
-$helper = 'H:/Strata/worktrees/upstream-sync-20261116/_docs/stable-060-20261116/release.py'
+$helper = 'C:/Users/downl/Documents/ChatGPT/Strata/_docs/stable-060-20261116/release.py'
 $commit = '<final reviewed full 40-character commit>'
 $pythonCache = 'H:/Strata/releases/stable-059-20261113-codex/app-059-control-r2/packaging-cache'
 $wheels = '<existing verified flat wheelhouse for the current 25-package lock>'
@@ -52,7 +52,7 @@ The native binding receipt contract is:
 ```json
 {
   "sourceCommit": "<final reviewed full commit>",
-  "sourceRoot": "H:/Strata/worktrees/upstream-sync-20261116",
+  "sourceRoot": "C:/Users/downl/Documents/ChatGPT/Strata",
   "releaseQualified": false,
   "nativeBuildSHA256": "<sha256 of fresh native-build.json>",
   "binaries": {
@@ -85,3 +85,17 @@ Read the canonical `C:/Users/downl/_docs/prompts/CLAUDE-FABLE-5.md`, PC-wide/hom
 The changes are restricted to this new helper directory and the separately authorised Metal workflow. No old recipe/result, primary source, runtime profile, key or model was changed. Source/data rollback is retention: failed attempts stay in their unique directory and no automated rollback/deletion runs. Full package runtime and owner acceptance are still controller gates. The guard depends on the repository's existing Windows Job implementation; these tests do not exercise job containment or memory-pressure behavior.
 
 Self-review-event: ticket_completed for preparation artifacts only; qa_defect for the independent Metal workflow finding. Decision: review-only for governance. The useful narrow prevention is explicit dry-run/overwrite boundary tests and actionlint; no AGENTS/SOP/skill modifications are warranted.
+
+## Migration follow-up: primary main and protected signing-key location
+
+This follow-up changes only `release.py`, `test_release.py` and this report, against source `4282fce334e0d6c1843c74bca5d4063bd784bc05`. `ROOT` is derived from `HERE.parents[1]`; a fixed root/branch allowlist and physical-path checks enforce the two approved migration locations. `HERE` retains the lexical absolute path until validation so symlink/junction aliases cannot be silently resolved into an approved path.
+
+The key-location check no longer rejects the whole H:/Strata parent. It requires an existing absolute regular file through a path without reparse points, resolves its location, and rejects containment within either approved source checkout, any H:/Strata/worktrees tree, any H:/Strata/releases tree, or the actual release output. A protected private-keys sibling is therefore permitted without copying it. Only metadata/path checks occur in this validator; key contents are neither read nor printed. Production signature verification with bundled trusted public keys and the inherited `TAURI_CONFIG` exclusion remain unchanged.
+
+Four focused synthetic cases were added for accepted and mismatched checkout/branch pairs, path-alias refusal, protected-sibling versus source/release key containment, and linked-key refusal before resolution/read. They clear the test environment and never open a real key. All existing seven tests plus these four passed: 11 total. Python AST, Black check (110 columns) and flake8 (140 maximum columns) passed. No dependency, build, signing, model, installation, publication or Git commit command ran in this follow-up.
+
+The existing `_docs/upstream-sync-20261116/check.py` guard ran `helper-primary-migration-tests-v1` with `python -B _docs/stable-060-20261116/test_release.py -v`, and `helper-primary-migration-static-v1` with AST parsing followed by the Black and flake8 commands. Receipts are under `H:/Strata/evidence/upstream-sync-20261116/receipts/`; command-log SHA-256 values are `d88e0bb0be7576613f2bed099c8d59859e3cfea0982bf9138372237789c2adc3` and `817b9e6364f77bdf917dde4e09dacf2161c1760c90bb6f61d6ba961ce8eecb82`, respectively. Both owned Jobs finished with exit 0, `termination_confirmed=true` and `job_active_after=0`. No owned test/static-check job remains active.
+
+The exact code diff is available with `git diff 4282fce334e0d6c1843c74bca5d4063bd784bc05 -- _docs/stable-060-20261116/release.py _docs/stable-060-20261116/test_release.py`. It contains 77 insertions and 13 deletions before this report update. Final physical SHA-256 values: `release.py` = `19cee832591dd72ff55dfa2995d9051ecb147aa527348c95bfffd2c1446db947`; `test_release.py` = `af9ba409476ef512ceed6c31210c55b691df3173bbbf9795816ba8453c2b4337`.
+
+Release execution from C: remains NOT_RUN. In particular, existing managed resources cannot be overwritten by rerunning staging, and the currently pinned Host dependency cache remains a separately verified prerequisite. The controller owns source integration, push and exact-target cleanup; none is performed by this helper task.
