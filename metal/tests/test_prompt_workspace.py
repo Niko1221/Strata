@@ -45,7 +45,11 @@ def main():
     buffers = section(window, "struct PromptBufs {", "// The vision path")
     geometry = section(window, "constexpr int N =", "constexpr int P_MAXE")
     constants = section(chain, "constexpr int PC_QB", "struct PcDqArgs")
-    setup = section(chain, "bool Window::pc_setup(int C)", "// one chunk of nT rows")
+    # pc_setup alone: main defines further Window members after it (pc_kprof)
+    start = chain.index("bool Window::pc_setup(int C)")
+    setup = chain[start:chain.index("\n}\n", start) + 3]
+    # pc_setup compiles its libraries with the prelude main derives from the model's down experts.
+    prelude = re.search(r"std::string kq_down_prelude\(const gguf::File& f\) \{.*?\n\}\n", window, re.S).group(0)
 
     # Enumerate actual members, independently of the fix's ownership vector.
     declaration = re.search(r"mtl::Buffer\s+([^;]+);", buffers)
@@ -67,16 +71,23 @@ def main():
 #import <Metal/Metal.h>
 #include "mtl_rt.h"
 #include "gguf_lite.h"
+#include "ref_quant.h"
+#include "engine/msl_libs.h"
+#include "strata/kernels/ngram.hpp"   // NG_HIST, in the geometry block
 #include <mach/mach.h>
 #include <array>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
+#include <string>
 #include <set>
 #include <vector>
 
+namespace geo = strata_metal::geo;
 @GEOMETRY@
 @CONSTANTS@
 @BUFFERS@
+@PRELUDE@
 static bool gdn_fused_inputs(const std::string&) { return false; }   // the M5-only projections stay out of this fixture
 double now_ms() {
     return std::chrono::duration<double, std::milli>(
@@ -92,6 +103,7 @@ struct Window {
     bool mtp_on_ = false;
     bool mtp_ovl_ = false;
     gguf::Tensor gate;
+    gguf::File f_;   // no tensors: kq_down_prelude gives the default prelude
     // Metadata-only fixtures; no M5 kernels or Gyro model are executed.
     bool coop_k4() { return layout_k4; }
     const gguf::Tensor& T(const std::string&) const { return gate; }
@@ -212,7 +224,7 @@ int main() {
                         '"growth preserves expert-layout selection")) return false;')
     replacements = {
         "@GEOMETRY@": geometry, "@CONSTANTS@": constants,
-        "@BUFFERS@": buffers, "@SETUP@": setup,
+        "@BUFFERS@": buffers, "@SETUP@": setup, "@PRELUDE@": prelude,
         "@COUNT@": str(len(names)),
         "@REFERENCES@": ", ".join("&w.pb_." + name for name in names),
         "@DRAIN@": "true" if args.drain_allocation_pools else "false",
@@ -231,7 +243,7 @@ int main() {
         source.write_text(harness, encoding="utf-8")
         subprocess.run([
             args.cxx, "-std=c++20", "-O1", "-fobjc-arc",
-            "-I", str(root / "metal/src"), str(source), str(args.runtime.resolve()),
+            "-I", str(root / "metal/src"), "-I", str(root / "include"), str(source), str(args.runtime.resolve()),
             "-framework", "Metal", "-framework", "Foundation", "-o", str(binary),
         ], check=True)
         return subprocess.run([str(binary)]).returncode
