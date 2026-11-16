@@ -19,6 +19,7 @@ struct Buffer {
     void zero(cudaStream_t s){ck(cudaMemsetAsync(data,0,bytes,s));}
 };
 void decode(int type,const void* input,float* output,int n,cudaStream_t stream);
+void preload_ops();
 void matvec(int type,const void* weights,const float* input,float* output,int n,int rows,cudaStream_t stream);
 void rms(const float* x,const float* weight,float* out,int n,float eps,cudaStream_t s);
 void add(float* x,const float* y,int n,cudaStream_t s);
@@ -31,7 +32,7 @@ void hadamard(const float* x,const float* signs,float* y,int n,bool inverse,bool
 void attention_prepare(const float* qg,const float* k,const float* v,const float* qw,const float* kw,
                        float* q,float* gate,half* kc,half* vc,int pos,int ctx,float eps,float base,cudaStream_t s);
 void attention_apply(const float* q,const float* gate,const half* kc,const half* vc,float* out,
-                     float* scores,int pos,int ctx,cudaStream_t s);
+                     float* scores,int pos,int ctx,cudaStream_t s,const int* status=nullptr);
 void attention_normalize(const float* qg,const float* k,const float* qw,const float* kw,
                          float* q,float* gate,float* normalized_k,int pos,float eps,float base,cudaStream_t s);
 }

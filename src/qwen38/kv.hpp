@@ -4,6 +4,7 @@
 #include <vector>
 
 namespace strata::qwen38 {
+void preload_kv();
 enum class KvMode { f16, k8v4, spin8_k8v4, f16_turbo2, f16_turbo3, f16_turbo4 };
 // Immutable CPU admission. Invalid profiles fail before any CUDA allocation.
 struct KvConfig {
@@ -46,11 +47,19 @@ class KvCache {
     Buffer keys_,values_;
     Buffer matrix_,q_,k_,v_,aggregate_,status_;
     bool poisoned_=false;
+    bool conservative_=false;
+    uint64_t fences_=0;
 public:
-    KvCache(const KvConfig&,int capacity,int layers,cudaStream_t);
+    KvCache(const KvConfig&,int capacity,int layers,cudaStream_t,bool conservative=false);
     void reset();
     void step(int layer,int position,const float* q,const float* k,const float* v,
               const float* gate,float* output,float* scores);
+    // enqueue leaves errors sticky until check/reset; downstream cache kernels
+    // cannot consume failed storage. Caller must check before publishing output.
+    void enqueue(int layer,int position,const float* q,const float* k,const float* v,
+                 const float* gate,float* output,float* scores);
+    void check();
+    uint64_t fences()const{return fences_;}
     const KvConfig& config()const{return config_;}
     size_t persistent_bytes()const;
     size_t scratch_bytes()const;

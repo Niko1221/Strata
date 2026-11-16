@@ -135,8 +135,9 @@ scores (24 * context FP32 elements), transform/aggregation scratch is bounded
 to one position. Reset clears packed history, lengths, GDN, convolution and
 error state through the same production helper used by cancellation and errors.
 Invalid positions/rewinds are rejected. Numerical errors poison the cache until
-whole-session reset. Codec completion and status are checked before the output
-can be used by the forward loop.
+whole-session reset. Device status prevents attention from reading failed
+encoded storage. The forward loop checks sticky status at bounded group fences
+and before any token can be published.
 
 At 16 attention layers, 4 KV heads, head dimension 256 and capacity 4096,
 the payload is 268435456 bytes for F16/F16, 109051904 for Q8_0/Q4_0, 152043520
@@ -170,3 +171,38 @@ one-byte-below, no-fit, overflow and explicit-mode boundaries, profile admission
 and exact reader bytes/bounds/short reads. The existing CUDA dialect golden-file
 suite also covers the extracted scalar decoder. These tests do not qualify
 27B model answers, 98k/131k full-window inference, throughput or application delivery.
+
+## Weight arena and bounded execution
+
+One session-owned allocation contains GPU weights as 256-byte-aligned,
+non-owning spans. The original compressed payloads and host-only embedding stay
+unchanged. Auxiliary conversion writes into its exact F32 span and retains at
+most one temporary compressed auxiliary tensor. The 16 MiB pageable upload
+reader and resource checks remain. Checked layout arithmetic includes padding
+in admission; stderr reports payload, arena bytes, padding, allocation count,
+and measured free VRAM before/after allocation. Failed construction releases
+the owner once. Individual views cannot free storage.
+
+Before admission, explicit kernel attribute queries and a tiny production KV
+and GDN warmup observe initial code/launch residency. The small-pool allowance
+is retained and another 128 MiB covers launch-size-dependent residency beyond
+that warmup. This allowance is conservative, not a proven universal maximum.
+The 768 MiB GPU reserve and RAM/commit/disk floors are unchanged. Any later
+reserve failure remains fatal with stage, tensor, free, needed and reserve
+bytes. Preload snapshots do not establish the cause of any historical failure.
+
+Normal execution checks STOP before each layer and synchronizes at most eight
+layers at once. At the fence it checks sticky KV and activation errors, STOP,
+and resource floors. KV consumers check device status before reading encoded
+storage. Numerical validation remains enabled; cancellation/error still resets
+the whole session. `--conservative-sync` is a diagnostic reference path with
+per-layer and intermediate KV status fences, not a product UI setting.
+
+The hardware fixture checks bit-exact conservative/grouped outputs for all six
+KV modes, all three Spin8 views and changing inputs at capacities 9 and 33;
+NaN/encoding overflow, poison/reset/reuse; exact/below admission; allocation
+alignment, overflow, conversion boundaries and failed-construction cleanup.
+Its CUDA-event and wall timings include bounded host scheduling gaps. It reports
+two warmup runs and seven measurements per mode, plus explicit host-fence counts.
+These are small synthetic KV measurements, not full-model throughput. Packed
+matvec specialization, batched prefill, MTP and graphs are not part of this pass.

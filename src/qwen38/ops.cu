@@ -80,12 +80,14 @@ __global__ void prep(const float* qg,const float* k,const float* v,const float* 
     else{int kh=head-24;if(normalized_k)normalized_k[kh*256+i]=z;
         else{kc[(size_t(kh)*ctx+pos)*256+i]=__float2half(z);vc[(size_t(kh)*ctx+pos)*256+i]=__float2half(v[kh*256+i]);}}
 }
-__global__ void score(const float* q,const half* k,float* s,int pos,int ctx){
+__global__ void score(const float* q,const half* k,float* s,int pos,int ctx,const int* status){
+    if(status&&*status)return;
     int t=blockIdx.x*8+threadIdx.x/32,head=blockIdx.y,lane=threadIdx.x%32;if(t>pos)return;int kh=head/6;
     float a=0;for(int i=lane;i<256;i+=32)a=fmaf(q[head*256+i],__half2float(k[(size_t(kh)*ctx+t)*256+i]),a);
     a=sum(a);if(!lane)s[size_t(head)*ctx+t]=a/16;
 }
-__global__ void attend(const float* scores,const half* v,const float* gate,float* out,int pos,int ctx){
+__global__ void attend(const float* scores,const half* v,const float* gate,float* out,int pos,int ctx,const int* status){
+    if(status&&*status)return;
     // One block per query head; stable softmax then each lane's value component.
     __shared__ float tmp[256],maxi,denom;int head=blockIdx.x,i=threadIdx.x;const float* s=scores+size_t(head)*ctx;
     float mx=-INFINITY;for(int t=i;t<=pos;t+=256)mx=fmaxf(mx,s[t]);tmp[i]=mx;__syncthreads();
@@ -95,6 +97,12 @@ __global__ void attend(const float* scores,const half* v,const float* gate,float
     float y=0;for(int t=0;t<=pos;++t)y=fmaf(expf(s[t]-maxi)/denom,__half2float(v[(size_t(head/6)*ctx+t)*256+i]),y);
     out[head*256+i]=y/(1+expf(-gate[head*256+i]));
 }
+}
+void preload_ops(){
+    cudaFuncAttributes a{};
+    ck(cudaFuncGetAttributes(&a,deq));ck(cudaFuncGetAttributes(&a,mv));ck(cudaFuncGetAttributes(&a,norm));
+    ck(cudaFuncGetAttributes(&a,elt));ck(cudaFuncGetAttributes(&a,gb));ck(cudaFuncGetAttributes(&a,fin));
+    ck(cudaFuncGetAttributes(&a,had));ck(cudaFuncGetAttributes(&a,prep));ck(cudaFuncGetAttributes(&a,score));ck(cudaFuncGetAttributes(&a,attend));
 }
 void decode(int type,const void* p,float* y,int n,cudaStream_t s){shape(type,n,1);if(!p||!y)throw std::runtime_error("null decoder input");deq<<<(n+255)/256,256,0,s>>>(type,(const uint8_t*)p,y,n);ck(cudaGetLastError());}
 void matvec(int type,const void* w,const float* x,float* y,int n,int rows,cudaStream_t s){shape(type,n,rows);if(!w||!x||!y)throw std::runtime_error("null matrix input");mv<<<(rows+7)/8,256,0,s>>>(type,(const uint8_t*)w,x,y,n,rows,row_bytes(type,n));ck(cudaGetLastError());}
@@ -108,8 +116,8 @@ void hadamard(const float* x,const float* signs,float* y,int n,bool inverse,bool
     had<<<n/1024,1024,0,s>>>(x,signs,y,inverse,grouped);ck(cudaGetLastError());}
 void attention_prepare(const float* qg,const float* k,const float* v,const float* qw,const float* kw,float* q,float* gate,half* kc,half* vc,int pos,int ctx,float eps,float base,cudaStream_t s){
     if(pos<0||pos>=ctx)throw std::runtime_error("attention position out of range");prep<<<28,256,0,s>>>(qg,k,v,qw,kw,q,gate,kc,vc,pos,ctx,eps,base);ck(cudaGetLastError());}
-void attention_apply(const float* q,const float* gate,const half* kc,const half* vc,float* out,float* scores,int pos,int ctx,cudaStream_t s){
-    if(pos<0||pos>=ctx)throw std::runtime_error("attention position out of range");score<<<dim3((pos+8)/8,24),256,0,s>>>(q,kc,scores,pos,ctx);attend<<<24,256,0,s>>>(scores,vc,gate,out,pos,ctx);ck(cudaGetLastError());}
+void attention_apply(const float* q,const float* gate,const half* kc,const half* vc,float* out,float* scores,int pos,int ctx,cudaStream_t s,const int* status){
+    if(pos<0||pos>=ctx)throw std::runtime_error("attention position out of range");score<<<dim3((pos+8)/8,24),256,0,s>>>(q,kc,scores,pos,ctx,status);attend<<<24,256,0,s>>>(scores,vc,gate,out,pos,ctx,status);ck(cudaGetLastError());}
 void attention_normalize(const float* qg,const float* k,const float* qw,const float* kw,float* q,float* gate,float* nk,int pos,float eps,float base,cudaStream_t s){
     if(pos<0||!qg||!k||!qw||!kw||!q||!gate||!nk)throw std::runtime_error("invalid attention normalization");
     prep<<<28,256,0,s>>>(qg,k,nullptr,qw,kw,q,gate,nullptr,nullptr,pos,0,eps,base,nk);ck(cudaGetLastError());}

@@ -9,6 +9,9 @@
 #include "kv.hpp"
 #include "upload_reader.hpp"
 #include "session_state.hpp"
+#include "weight_arena.hpp"
+#include "layer_fence.hpp"
+#include "startup.cuh"
 #include <memory>
 #include <cstdio>
 #include <fstream>
@@ -23,12 +26,17 @@ namespace Q=strata::qwen38;
 namespace K=strata::kernels;
 using Clock=std::chrono::steady_clock;
 using strata::qwen35::Sampling;
-struct Cancelled{};
-static void gpu_resources(size_t need=0){size_t free=0,total=0;Q::ck(cudaMemGetInfo(&free,&total));if(free<Q::GPU_RESERVE||need>free-Q::GPU_RESERVE)throw Q::ResourceError("CUDA capacity would violate 768 MiB reserve");}
+using Q::Cancelled;
+static void gpu_resources(size_t need=0,const std::string& stage="execution",const std::string& tensor="none"){
+    size_t free=0,total=0;Q::ck(cudaMemGetInfo(&free,&total));
+    if(free<Q::GPU_RESERVE||need>free-Q::GPU_RESERVE)
+        throw Q::ResourceError("CUDA reserve: stage="+stage+" tensor="+tensor+" free="+std::to_string(free)+" needed="+std::to_string(need)+" reserve="+std::to_string(Q::GPU_RESERVE));
+}
 struct Stream {cudaStream_t s=nullptr;Stream(){Q::ck(cudaStreamCreate(&s));}~Stream(){if(s)cudaStreamDestroy(s);}};
-struct Weight {Q::Buffer b;int type=0,n=0,rows=0;};
+struct Weight {Q::WeightSpan b;int type=0,n=0,rows=0;};
 struct Engine {
     strata::GgufFile file;Q::Admission admission;int ctx;Stream stream;
+    std::unique_ptr<Q::WeightArena> weight_arena;
     std::map<std::string,Weight> weights;std::vector<Q::RecurrentState> states;
     std::unique_ptr<Q::KvCache> kv;
     Q::KvSelection kv_selection;
@@ -36,9 +44,14 @@ struct Engine {
     Q::Buffer x,h,y,qkv,z,al,be,hc,gdn,qg,k,v,q,gate,att,fg,fu,scores,logits,embrow,error;
     uint64_t cache_bytes=0,scratch_bytes=0;size_t emb_stride=0;const strata::TensorInfo* embedding=nullptr;
     int position=0;
-    Engine(const std::string& path,int context,const Q::KvConfig& config):file(path,Q::retained_metadata(),true),admission(Q::inspect(file)),ctx(context){
+    bool conservative=false;
+    Engine(const std::string& path,int context,const Q::KvConfig& config,bool reference=false):file(path,Q::retained_metadata(),true),admission(Q::inspect(file)),ctx(context),conservative(reference){
         Q::host_resources();Q::ck(cudaSetDevice(0));cudaDeviceProp prop{};Q::ck(cudaGetDeviceProperties(&prop,0));
         Q::require(prop.major==12&&prop.minor==0,"this build requires CUDA SM120 device 0");
+        size_t before_preload=0,after_preload=0,preload_total=0;
+        Q::ck(cudaMemGetInfo(&before_preload,&preload_total));Q::warmup_runtime(stream.s);
+        Q::ck(cudaMemGetInfo(&after_preload,&preload_total));
+        std::fprintf(stderr,"kernel_preload_free_before=%zu free_after=%zu\n",before_preload,after_preload);
         const uint64_t recurrent_bytes=48ull*(10240*3+48*128*128)*4;
         embedding=file.find("token_embd.weight");emb_stride=Q::payload(*embedding)/248320;
         // Exact owned activation/score/logit buffers, weight-transform scratch,
@@ -48,17 +61,27 @@ struct Engine {
         // Include measured 2 MiB backing slack for large cudaMalloc buffers.
         // The retained 16 MiB safety allowance also covers small-buffer pools.
         auto large_slack=[](uint64_t bytes)->uint64_t {constexpr uint64_t granule=2*1024*1024;return bytes>=1024*1024?(granule-bytes%granule)%granule:0;};
-        uint64_t allocator_allowance=16*1024*1024+48*large_slack(48*128*128*4)+large_slack(24ull*ctx*4);
+        // Retain the small-pool allowance and another 128 MiB for launch-size
+        // dependent residency beyond the tiny pre-admission startup warmup.
+        constexpr uint64_t first_use_allowance=128ull*1024*1024;
+        uint64_t allocator_allowance=16*1024*1024+first_use_allowance+48*large_slack(48*128*128*4)+large_slack(24ull*ctx*4);
+        Q::WeightLayout layout;
         uint64_t conversion_peak=0;for(const auto& name:admission.required){const auto& t=*file.find(name);if(name=="token_embd.weight")continue;
-            allocator_allowance+=large_slack(Q::convert_auxiliary(t)?t.elements()*4:Q::payload(t));
+            layout.append(Q::convert_auxiliary(t)?Q::WeightLayout::f32_bytes(t.elements()):Q::payload(t));
             if(Q::convert_auxiliary(t)&&t.type!=0)conversion_peak=std::max(conversion_peak,Q::payload(t));}
+        Q::require(layout.payload()==admission.gpu_weights,"weight arena/admission payload mismatch");
+        allocator_allowance+=large_slack(layout.bytes());
         size_t available=0,total=0;Q::ck(cudaMemGetInfo(&available,&total));
-        kv_selection=Q::select_kv(config,ctx,16,{admission.gpu_weights,recurrent_bytes,scratch_bytes,conversion_peak,allocator_allowance},available,Q::GPU_RESERVE);
+        kv_selection=Q::select_kv(config,ctx,16,{layout.bytes(),recurrent_bytes,scratch_bytes,conversion_peak,allocator_allowance},available,Q::GPU_RESERVE);
         const auto& effective=kv_selection.config;cache_bytes=recurrent_bytes+kv_selection.payload;
         std::fprintf(stderr,"kv_requested=%s kv_effective=%s kv_k=%s kv_v=%s reason=%s required_with_reserve=%llu available=%llu reserve=%llu\n",kv_selection.requested.c_str(),effective.name(),effective.key_format(),effective.value_format(),kv_selection.reason.c_str(),(unsigned long long)kv_selection.required,(unsigned long long)kv_selection.available,(unsigned long long)kv_selection.reserve);
         std::fprintf(stderr,"kv_payload_bytes=%llu kv_allocator_slack=%llu nonkv_allocator_allowance=%llu recurrent_bytes=%llu scratch_bytes=%llu auxiliary_peak_bytes=%llu\n",(unsigned long long)kv_selection.payload,(unsigned long long)kv_selection.allocator_slack,(unsigned long long)allocator_allowance,(unsigned long long)recurrent_bytes,(unsigned long long)scratch_bytes,(unsigned long long)conversion_peak);
-        gpu_resources(kv_selection.required-Q::GPU_RESERVE);
-        kv=std::make_unique<Q::KvCache>(effective,ctx,16,stream.s);
+        gpu_resources(kv_selection.required-Q::GPU_RESERVE,"admission");
+        gpu_resources(layout.bytes(),"weight_arena");
+        size_t arena_before=0,arena_after=0;Q::ck(cudaMemGetInfo(&arena_before,&total));
+        weight_arena=std::make_unique<Q::WeightArena>(layout);Q::ck(cudaMemGetInfo(&arena_after,&total));
+        std::fprintf(stderr,"weight_arena_payload=%zu weight_arena_bytes=%zu weight_arena_padding=%zu weight_arena_allocations=1 free_before=%zu free_after=%zu first_use_allowance=%llu\n",layout.payload(),layout.bytes(),layout.bytes()-layout.payload(),arena_before,arena_after,(unsigned long long)first_use_allowance);
+        kv=std::make_unique<Q::KvCache>(effective,ctx,16,stream.s,conservative);
         rotated.allocate(17408*4);
         for(const auto& entry:admission.signs){Q::Buffer b(entry.second.size()*4);Q::ck(cudaMemcpy(b.data,entry.second.data(),b.bytes,cudaMemcpyHostToDevice));signs.emplace(entry.first,std::move(b));}
         std::fprintf(stderr,"own-native CUDA SM120 weights=%llu cache=%llu scratch_upper=%llu host_embedding=%llu ignored_mtp=%llu\n",
@@ -67,19 +90,20 @@ struct Engine {
         {
         Q::UploadReader reader(path,file.file_size());
         std::fprintf(stderr,"weight_upload=bounded_file_read host_staging_bytes=%zu\n",reader.staging_bytes());
-        auto upload=[&](const strata::TensorInfo& t,Q::Buffer& dest){
-            reader.read(file.data_start()+t.offset,dest.bytes,[]{Q::host_resources();gpu_resources();},
+        auto upload=[&](const strata::TensorInfo& t,Q::WeightSpan dest,const std::string& name){
+            reader.read(file.data_start()+t.offset,dest.bytes,[&]{Q::host_resources();gpu_resources(0,"weight_upload",name);},
                 [&](uint64_t offset,const uint8_t* bytes,size_t n){Q::ck(cudaMemcpy(dest.as<uint8_t>()+offset,bytes,n,cudaMemcpyHostToDevice));});
         };
-        for(const auto& name:admission.required){
+        size_t weight_index=0;for(const auto& name:admission.required){
             if(name=="token_embd.weight")continue;Q::host_resources();const auto& t=*file.find(name);Weight w;
+            w.b=weight_arena->view(weight_index++);
             w.n=int(t.shape[0]);w.rows=t.shape.size()==2?int(t.shape[1]):1;w.type=t.type;
             if(Q::convert_auxiliary(t)&&t.type!=0){
                 // Conversion scratch never exceeds one auxiliary tensor (alpha/beta < 1 MiB).
-                Q::Buffer raw(Q::payload(t));upload(t,raw);
-                w.b.allocate(t.elements()*4);Q::decode(t.type,raw.data,w.b.as(),int(t.elements()),stream.s);Q::ck(cudaStreamSynchronize(stream.s));w.type=0;
-            }else{w.b.allocate(Q::payload(t));upload(t,w.b);}
-            weights.emplace(name,std::move(w));gpu_resources();
+                gpu_resources(Q::payload(t),"auxiliary_conversion",name);Q::Buffer raw(Q::payload(t));upload(t,{raw.data,raw.bytes},name);
+                Q::decode(t.type,raw.data,w.b.as(),int(t.elements()),stream.s);Q::ck(cudaStreamSynchronize(stream.s));w.type=0;
+            }else{upload(t,w.b,name);}
+            weights.emplace(name,std::move(w));gpu_resources(0,"weight_uploaded",name);
         }
         }
         states.resize(64);
@@ -90,6 +114,7 @@ struct Engine {
         a(scores,size_t(24)*ctx);a(logits,248320);a(error,1);
         embrow.allocate(emb_stride);
         reset();gpu_resources();Q::host_resources();
+        std::fprintf(stderr,"native_execution=%s layer_fence_interval=%d\n",conservative?"conservative":"grouped",conservative?1:8);
     }
     const float* f(const std::string& name){return weights.at(name).b.as();}
     void mm(const std::string& name,const Q::Buffer& in,Q::Buffer& out){const auto& w=weights.at(name);const float* input=in.as();
@@ -104,8 +129,13 @@ struct Engine {
         Q::ck(cudaMemcpyAsync(embrow.data,file.tensor_data(*embedding)+size_t(token)*emb_stride,emb_stride,cudaMemcpyHostToDevice,stream.s));
         Q::decode(embedding->type,embrow.data,x.as(),5120,stream.s);
         if(admission.inverse_embedding){Q::hadamard(x.as(),signs.at(5120).as(),rotated.as(),5120,true,false,stream.s);Q::ck(cudaMemcpyAsync(x.data,rotated.data,5120*4,cudaMemcpyDeviceToDevice,stream.s));}
+        const Q::LayerFence fences(conservative?1:8);
+        auto check=[&]{
+            int bad=0;Q::ck(cudaMemcpyAsync(&bad,error.data,4,cudaMemcpyDeviceToHost,stream.s));
+            kv->check();Q::require(!bad,"non-finite activation/state/logit");Q::host_resources();gpu_resources();
+        };
         for(int i=0;i<64;++i){
-            if(stop.load())throw Cancelled{};
+            fences.before(stop);
             auto n=[i](const char* r){return Q::layer_name(i,r);};auto& st=states[i];
             Q::rms(x.as(),f(n("attn_norm.weight")),h.as(),5120,admission.eps,stream.s);
             if((i+1)%4){
@@ -117,18 +147,18 @@ struct Engine {
             }else{
                 mm(n("attn_q.weight"),h,qg);mm(n("attn_k.weight"),h,k);mm(n("attn_v.weight"),h,v);
                 Q::attention_normalize(qg.as(),k.as(),f(n("attn_q_norm.weight")),f(n("attn_k_norm.weight")),q.as(),gate.as(),k.as(),position,admission.eps,admission.rope_base,stream.s);
-                kv->step(i/4,position,q.as(),k.as(),v.as(),gate.as(),att.as(),scores.as());
+                kv->enqueue(i/4,position,q.as(),k.as(),v.as(),gate.as(),att.as(),scores.as());
                 mm(n("attn_output.weight"),att,y);
             }
             Q::add(x.as(),y.as(),5120,stream.s);Q::rms(x.as(),f(n("post_attention_norm.weight")),h.as(),5120,admission.eps,stream.s);
             mm(n("ffn_gate.weight"),h,fg);mm(n("ffn_up.weight"),h,fu);Q::swiglu(fg.as(),fu.as(),17408,stream.s);mm(n("ffn_down.weight"),fg,y);
             Q::add(x.as(),y.as(),5120,stream.s);Q::finite(x.as(),5120,error.as<int>(),stream.s);
             // Bounded synchronization makes STOP/resource checks effective during a long token.
-            Q::ck(cudaStreamSynchronize(stream.s));if(i%8==7){Q::host_resources();gpu_resources();}
+            fences.after(i,stop,check);
         }
         if(head){Q::rms(x.as(),f("output_norm.weight"),h.as(),5120,admission.eps,stream.s);mm("output.weight",h,logits);Q::finite(logits.as(),248320,error.as<int>(),stream.s);}
         int bad=0;Q::ck(cudaMemcpyAsync(&bad,error.data,4,cudaMemcpyDeviceToHost,stream.s));Q::ck(cudaStreamSynchronize(stream.s));
-        Q::require(!bad,"non-finite activation/state/logit");++position;
+        Q::require(!bad,"non-finite activation/state/logit");fences.before(stop);++position;
     }
     std::vector<float> read_logits(){std::vector<float> v(248320);Q::ck(cudaMemcpy(v.data(),logits.data,v.size()*4,cudaMemcpyDeviceToHost));return v;}
 };
@@ -201,13 +231,14 @@ static void serve(Engine& e){
     if(reader.joinable()){if(!state.input_ended())CancelSynchronousIo(reader.native_handle());reader.join();}
 }
 int main(int argc,char** argv){try{
-    std::string model,tokens,forced,dump,kv_mode="auto",spin_view,spin_profile;int ctx=4096,count=32;bool resident=false,inspection=false;Sampling sampling;
+    std::string model,tokens,forced,dump,kv_mode="auto",spin_view,spin_profile;int ctx=4096,count=32;bool resident=false,inspection=false,conservative=false;Sampling sampling;
     for(int i=1;i<argc;++i){std::string a=argv[i];auto value=[&](){Q::require(i+1<argc,"missing option value");return std::string(argv[++i]);};
-        if(a=="--help"||a=="-h"){std::puts("strata-q38 own-native CUDA SM120\n--model FILE --ctx-size N (4096) --serve\n--tokens IDS --n N [--force IDS] [--dump-full-logits FILE]\n--kv auto|f16|k8v4|spin8_k8v4|f16_turbo2|f16_turbo3|f16_turbo4 (auto default)\nAuto order: f16, f16_turbo4, spin8_k8v4; context and weights unchanged.\n--spin8-view vector|plus|minus --spin8-profile FILE (compiled reference default)\n--inspect (CPU only) --version\nFP32 recurrent state, sequential prefill; no vision/prefix/shift/speculation/graph.");return 0;}
+        if(a=="--help"||a=="-h"){std::puts("strata-q38 own-native CUDA SM120\n--model FILE --ctx-size N (4096) --serve\n--tokens IDS --n N [--force IDS] [--dump-full-logits FILE]\n--kv auto|f16|k8v4|spin8_k8v4|f16_turbo2|f16_turbo3|f16_turbo4 (auto default)\nAuto order: f16, f16_turbo4, spin8_k8v4; context and weights unchanged.\n--spin8-view vector|plus|minus --spin8-profile FILE (compiled reference default)\n--conservative-sync (diagnostic reference execution)\n--inspect (CPU only) --version\nFP32 recurrent state, sequential prefill; no vision/prefix/shift/speculation/graph.");return 0;}
         if(a=="--version"){std::puts("strata-q38 own-native 0.6.0-dev CUDA13 SM120");return 0;}
         if(a=="--model")model=value();else if(a=="--ctx-size")ctx=integer(value(),1,262144);else if(a=="--tokens")tokens=value();else if(a=="--n")count=integer(value(),0,262144);
         else if(a=="--force")forced=value();else if(a=="--dump-full-logits")dump=value();else if(a=="--serve")resident=true;else if(a=="--inspect")inspection=true;
         else if(a=="--kv")kv_mode=value();else if(a=="--spin8-view")spin_view=value();else if(a=="--spin8-profile")spin_profile=value();
+        else if(a=="--conservative-sync")conservative=true;
         else if(a=="--seed")option(sampling,"seed",value(),ctx);else if(a=="--temperature")option(sampling,"temperature",value(),ctx);else throw std::runtime_error("unsupported option: "+a);
     }
     Q::require(!model.empty(),"--model is required");
@@ -215,5 +246,5 @@ int main(int argc,char** argv){try{
     if(inspection){strata::GgufFile f(model,Q::retained_metadata(),true);auto a=Q::inspect(f);std::printf("GGUF own-native qwen35 dense layers=64 tensors=%zu nextn_ignored=%d gpu_weight_bytes=%llu host_embedding_bytes=%llu folded=%zu inverse_embedding=%d grouped_gdn=%d\n",f.tensors().size(),a.nextn,(unsigned long long)a.gpu_weights,(unsigned long long)a.embedding_bytes,a.folded.size(),a.inverse_embedding,a.grouped_gdn);return 0;}
     Q::require(resident!=!tokens.empty(),"choose exactly one of --serve or --tokens");Q::require(!resident||(forced.empty()&&dump.empty()),"force/logits are standalone options");
     auto prompt=tokens.empty()?std::vector<int32_t>{}:ids(tokens);auto force=forced.empty()?std::vector<int32_t>{}:ids(forced);if(!force.empty())count=int(force.size()+1);
-    Q::host_resources();Engine e(model,ctx,kv_config);if(resident)serve(e);else{std::atomic<bool> stop{false};run(e,prompt,count,sampling,stop,nullptr,force,dump);}return 0;
+    Q::host_resources();Engine e(model,ctx,kv_config,conservative);if(resident)serve(e);else{std::atomic<bool> stop{false};run(e,prompt,count,sampling,stop,nullptr,force,dump);}return 0;
 }catch(const std::exception& e){std::fprintf(stderr,"strata-q38: %s\n",e.what());return 1;}}
