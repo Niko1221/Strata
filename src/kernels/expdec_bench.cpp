@@ -5,7 +5,7 @@
 //
 // The model's routed expert formats at its geometry (n_embd 2560, n_ff 640): gate/up IQ2_XXS (16), IQ2_XS (17), IQ3_XXS
 // (18), IQ3_S (21), IQ2_S (22); down IQ4_NL (20), Q2_0 (42).  `pairs` is a comma list of gu/down type ids ("21/20,16/42")
-// or "all" (the 10 pairs).  `choices` is a comma list of kernel choices:
+// or "all" (the 11 pairs, including Q6_K/Q8_0).  `choices` is a comma list of kernel choices:
 //   def                     the default kernels (STRATA_EXPDEC off); the reference for the bitwise check
 //   dec[:r<n>][:d<n>][:b<n>][:w<n>][:x<n>][:g<n>][:h<n>][:m<n>]
 //                           EXPDEC with r = gate/up rows per lane (1, 2), d = down rows per lane (1, 2, 4), b = the
@@ -48,23 +48,27 @@ namespace K = strata::kernels;
 
 namespace {
 
-constexpr int kEmbd = 2560, kFf = 640, kTop = 10, kMaxT = 4;
+constexpr int kEmbd = 2560, kFf = 640, kTop = 10, kMaxT = 6;   // T51 (p58/t51-down): 6, the decode windows' T=4-6 (was 4)
 constexpr int kMaxEntries = kMaxT * kTop;
 
 struct Pair { int gu, d; };
-const Pair kModelPairs[] = { {16, 20}, {17, 20}, {18, 20}, {21, 20}, {22, 20}, {16, 42}, {17, 42}, {18, 42}, {21, 42}, {22, 42} };
+const Pair kModelPairs[] = { {16, 20}, {17, 20}, {18, 20}, {21, 20}, {22, 20}, {16, 42}, {17, 42}, {18, 42}, {21, 42}, {22, 42}, {14, 8} };
 
 const char* type_name(int t) {
     switch (t) {
         case 16: return "IQ2_XXS"; case 17: return "IQ2_XS"; case 18: return "IQ3_XXS"; case 21: return "IQ3_S";
-        case 22: return "IQ2_S"; case 20: return "IQ4_NL"; case 42: return "Q2_0"; default: return "?";
+        case 22: return "IQ2_S"; case 20: return "IQ4_NL"; case 42: return "Q2_0";
+        case 14: return "Q6_K"; case 8: return "Q8_0"; default: return "?";
     }
 }
-int qk_of(int t) { return t == 20 ? 32 : t == 42 ? 64 : 256; }
+int qk_of(int t) { return t == 20 || t == 8 ? 32 : t == 42 ? 64 : 256; }
+// the fp16 block scale's offset in a block: 0 for every format above except Q6_K (ql 128, qh 64, scales 16, then d)
+size_t d_off_of(int t) { return t == 14 ? 208 : 0; }
 
 struct Choice {
     std::string name;
     bool dec = false;
+    int q8d = 0;   // T51: STRATA_Q8_DOWN's variant (0 = the default down kernel)
     K::NativeExpertExpdecParams p;   // only explicitly specified fields set; unspecified fields keep their sentinels
 };
 
@@ -86,6 +90,8 @@ bool parse_choice(const std::string& s, Choice& c) {
     c = Choice{};
     c.name = s;
     if (s == "def") return true;
+    // T51: "q8d1" | "q8d2" | "q8d3" = STRATA_Q8_DOWN 1 / 2 / 3 (EXPDEC off), compared against def bit for bit
+    if (s == "q8d1" || s == "q8d2" || s == "q8d3") { c.q8d = s[3] - '0'; return true; }
     if (s.rfind("dec", 0) != 0) return false;
     c.dec = true;
     size_t i = 3;
@@ -115,6 +121,7 @@ bool parse_choice(const std::string& s, Choice& c) {
 void apply_choice(const K::NativeExpertExpdecParams& base, const Choice& c) {
     K::native_expert_set_expdec(c.dec ? 1 : 0);
     K::native_expert_set_expdec_params(resolve_choice_params(base, c));
+    K::native_expert_set_q8_down(c.q8d);
 }
 
 bool g_cuda_error = false;
@@ -142,12 +149,12 @@ void fill_blob(uint8_t* b, const K::NativeExpertLayout& L, std::mt19937& rng) {
     const size_t gu_blocks = (size_t) 2 * (size_t) L.n_ff * (size_t) (L.n_embd / qk_of(L.gu_type));
     for (size_t k = 0; k < gu_blocks; ++k) {
         const uint16_t h = sane_half(rng);
-        std::memcpy(b + k * gu_block, &h, 2);
+        std::memcpy(b + k * gu_block + d_off_of(L.gu_type), &h, 2);
     }
     const size_t d_blocks = (size_t) L.n_embd * (size_t) (L.n_ff / qk_of(L.d_type));
     for (size_t k = 0; k < d_blocks; ++k) {
         const uint16_t h = sane_half(rng);
-        std::memcpy(b + L.down_off + k * d_block, &h, 2);
+        std::memcpy(b + L.down_off + k * d_block + d_off_of(L.d_type), &h, 2);
     }
 }
 
@@ -395,12 +402,12 @@ int main(int argc, char** argv) {
     for (const std::string& s : split_commas(argc > 5 ? argv[5] : "def,dec,dec:r2,dec:b4,dec:r2:b4")) {
         Choice c;
         if (!parse_choice(s, c)) {
-            std::printf("expdec_bench: choice '%s' is not def or dec[:r<1|2>][:d<1|2|4>][:b<2|4>][:x<0|1>][:g<n>][:h<n>][:m<n>]\n", s.c_str());
+            std::printf("expdec_bench: choice '%s' is not def, q8d1|q8d2|q8d3 or dec[:r<1|2>][:d<1|2|4>][:b<2|4>][:x<0|1>][:g<n>][:h<n>][:m<n>]\n", s.c_str());
             return 1;
         }
         choices.push_back(c);
     }
-    if (choices.empty() || choices[0].dec) {
+    if (choices.empty() || choices[0].dec || choices[0].q8d) {
         Choice d;
         parse_choice("def", d);
         choices.insert(choices.begin(), d);   // the reference first
