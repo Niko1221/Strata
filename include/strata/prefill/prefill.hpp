@@ -40,6 +40,8 @@ struct PrefillStats {
     int64_t experts_direct = 0;     ///< ...of which MMQ read in their cache slots, not gathered (STRATA_MMQ_DIRECT=1)
     int64_t experts_cpu = 0;        ///< ...computed on the CPU pool instead of streamed (STRATA_PREFILL_CPU_SHARE)
     double cpu_share = 0;           ///< ...the share of the streamed ones it took last (measured by default)
+    double cpu_share_balanced = 0;  ///< the balanced share as last measured (the default share's EMA of CPU / GPU ms per expert)
+    int64_t cpu_share_readings = 0; ///< how many measurements that balance has taken since the start
     double ms_ple = 0;
 };
 
@@ -83,8 +85,16 @@ public:
 
     /// With borrowed buffers: lay them out again for chunks of `chunk` tokens (at most `init`'s) in `borrow` - a
     /// request lends only the slots its prompt needs.  The stream must be idle (between prompts).
-    bool relayout(int64_t chunk, void* borrow, uint64_t borrow_bytes, std::string& err);
+    /// `tail` (>= 0, a fused layout only): the MMQ rows, in tokens, the layout holds for a chunk below the stream floor
+    /// (loan_rules.hpp: a lent layout is sized for its segment's own short last chunk, not for floor - 1); -1: floor - 1.
+    bool relayout(int64_t chunk, void* borrow, uint64_t borrow_bytes, std::string& err, int64_t tail = -1);
     int64_t chunk() const;
+    /// The tail the layout in place was carved with (-1: the default, floor - 1), and the MMQ tokens a chunk below the
+    /// floor may bring into it (a layout that is not fused takes any chunk it has: INT64_MAX).
+    int64_t layout_tail() const;
+    int64_t tail_room() const;
+    /// True when a layout for `chunk` is the fused one, whose MoE buffers carry a tail (see relayout).
+    static bool tail_matters(int64_t chunk, bool src);
 
     /// The share of the streamed experts' bytes DMA-able straight from pinned RAM (1 = all).  Sizes the streamed
     /// ring (a big one only pays when the copy engine, not the host copies, is the limit); set before bytes_needed.
@@ -94,6 +104,13 @@ public:
     /// stages only the experts it routes to.  1024, or STRATA_PREFILL_STREAM_MIN, or the CPU share's limit once that
     /// is armed (3072 when STRATA_PREFILL_CPU_SHARE is set).
     static int64_t stream_all_min_tokens();
+    /// --serve's `--short-read` default for this run: `base` (64), or, where the staged walk's fused entry takes the pieces below the floor on this class
+    /// (staged_fo_rule.hpp: Windows gfx1151, every layer without an MMQ tile and on the fused kernels, entry on), the measured crossing of the verify windows and that entry.
+    /// A `--short-read` given on the command line is not asked.  Call once the expert layout is known.
+    static int64_t short_read_default(int64_t base);
+    /// STRATA_SWITCH_POINT (on by default for the class in switch_point_rule.hpp, =0 off): the expert cache's live slots and layers x experts of the single card's own model, before the first lend; the floor above is then
+    /// chosen from the share of experts the card does not hold, scaled by the cache's mean blob (MB), the start-up link probe (GB/s) and the card's SM count (switch_point_rule.hpp; 0 = unknown: the default floor).  With STRATA_SWITCH_POINT=0 this changes nothing.
+    static void set_card_expert_share(int64_t resident_slots, int64_t total_pairs, double blob_mb = 0.0, double link_gbps = 0.0);
     /// --prefill-pipe (opt-in): the chunk a layer split's first stage reads an `n`-token prompt in, for `stages`
     /// stages, chunks of at most `cap` (the buffers' size) and a stage-chunk cost of b + a C with b/a = `ratio` tokens
     /// (0: unknown - STRATA_PREFILL_EQUAL's rule: the same chunk count as `cap` gives, evened out when its last chunk
@@ -162,7 +179,7 @@ public:
     /// Device bytes `init` needs for a chunk of `chunk` tokens (what a borrowed region must hold).  `src`: init gets an
     /// ExpertSource (carve picks the fused MoE layout only then).
     static uint64_t bytes_needed(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk,
-                                 bool src = true);
+                                 bool src = true, int64_t tail = -1);
 
     /// The same without the streamed ring: what the chunk's own buffers cost.  The auto chunk scan sizes the chunk
     /// first and hands the ring what the chunk leaves over, so it needs the chunk priced on its own.
@@ -295,6 +312,11 @@ public:
     /// STRATA_PREFILL_CPU_SHARE_BATCH=1 (batch slots beside the pool): set before each read - true while a slot decodes
     /// (its windows use the pool), so no chunk of that read takes the share; false lets the read's chunks take it.
     static void set_share_blocked(bool blocked);
+    /// --draft-costs (repeatable output): the default-armed share at a fixed value learned once on this machine (< 0: measured
+    /// again, as before).  STRATA_PREFILL_CPU_SHARE, when set, still wins.  The balance's EMA and the per-layer gate are then skipped.
+    static void fix_cpu_share(double share);
+    /// Is the share on and still balancing from measured times (armed by default, no variable, no fixed value)?
+    static bool cpu_share_balancing();
 
     /// Layer-major prefill (STRATA_PREFILL_LAYER_MAJOR=1): true while `on_chunk` reports a sub-chunk before the end of
     /// its super-chunk.  The session state is already at the super-chunk's end then, so no checkpoint may be taken.
@@ -320,7 +342,7 @@ public:
 
 private:
     static uint64_t bytes_needed_impl(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk,
-                                      bool owned_pages, bool src);
+                                      bool owned_pages, bool src, int64_t tail = -1);
     kernels::cpu::ExpertPool* cpu_pool_ = nullptr;   ///< set_cpu_pool
     // Layer-major prefill: the super-chunk's buffers for an n-token prompt (its size, 0 = not this prompt: `why`),
     // the run, and the buffers given back after it.  `cap` (> 0): at most that many tokens (a layer split's stages
