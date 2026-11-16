@@ -17,6 +17,7 @@ services:
       MODEL_PATH: ${MODEL_PATH:-}            # GGUF files you already have, as seen inside the container (mount them below)
       CONTEXT: ${CONTEXT:-32k}
       PARALLEL: ${PARALLEL:-}
+      DRAFTING: ${DRAFTING:-}
       VISION: ${VISION:-off}
       TUNE: ${TUNE:-skip}
       API_KEY: ${API_KEY:-}

@@ -18,6 +18,7 @@ services:
       MODEL_PATH: ${MODEL_PATH:-}            # GGUF files you already have, as seen inside the container (mount them below)
       CONTEXT: ${CONTEXT:-32k}
       PARALLEL: ${PARALLEL:-}                # empty: fit to the card
+      DRAFTING: ${DRAFTING:-}                # auto, mtp, dflash2 or off; empty: the saved choice, else auto
       VISION: ${VISION:-off}                 # on: the model reads pictures (about 0.9 GB more to download)
       TUNE: ${TUNE:-skip}                    # quick: up to about 20 minutes, once, then kept
       API_KEY: ${API_KEY:-}                  # empty: made on the first start; docker exec strata strata launch --show-key
