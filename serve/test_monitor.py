@@ -226,6 +226,26 @@ class ConversationCacheCard(unittest.TestCase):
             self.assertEqual(c.poll(str(log), log.stat().st_size)["parked"], 0)   # the engine started again
             self.assertEqual(c.poll(None, None)["parked"], 0)
 
+    def test_the_disk_tier(self):
+        """--conversation-disk-dir: what is on the disk and how often it gave a conversation back; a conversation the
+        RAM budget sent to the disk counts as a park."""
+        from serve.server import ConvCacheLog
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d) / "strata.log"
+            log.write_text("", encoding="utf-8")
+            c = ConvCacheLog()
+            self.assertIsNone(c.poll(str(log), 0)["on_disk"])
+            log.write_text(
+                "strata serve: conversation disk: wrote 90000 tokens: 2778 MiB in 2 files, 4000 ms (728 MB/s); on disk 3, "
+                "9000 MiB; 0 removed for the budget, 0 expired\n"
+                "strata serve: conversation disk: disk hit: 90000 tokens, 2778 MiB in 2 files, 3600 ms (809 MB/s)\n"
+                "strata serve: conversation cache: sent to the disk 91000 tokens in 900.0 ms; parked=1 bytes=104857600 "
+                "evictions=0 snapshot_bytes=2913000000 reused_kv_bytes=0\n", encoding="utf-8")
+            st = c.poll(str(log), 0)
+            self.assertEqual((st["on_disk"], st["disk_mib"], st["disk_hits"]), (3, 9000, 1))
+            self.assertEqual((st["parks"], st["last_event"], st["last_tokens"]), (1, "sent to the disk", 91000))
+
     def test_metrics(self):
         tok = ByteTokenizer()
         engine = MockEngine(tok, "Thought.</think>\nHello.", max_context=4096)

@@ -731,6 +731,9 @@ system prompt with a billing header that changes on every request; the server pi
 | `--conversation-cache-min-tokens N` | Park only conversations of at least N tokens, so short side requests do not evict a long conversation. Default `0` (park all). |
 | `--conversation-cache-park-gain N` (opt-in) | Park a conversation again only after it advanced N tokens past the copy it would replace. |
 | `--conversation-cache-min-free-mib N` | RAM floor, default 2560. Parking and session files are skipped when less than the snapshot plus the floor is available. |
+| `--conversation-disk-dir DIR` (opt-in, needs the conversation cache) | A conversation the RAM cache evicts (slots or byte budget full) is written to `DIR` instead of being dropped, and read back when a request continues it and the disk holds a longer prefix than the session, a batch slot or the RAM cache. A park that does not fit the byte budget goes there too (`sent to the disk`). [Details below](#parked-conversations-on-the-disk). |
+| `--conversation-disk-mib N` | The disk tier's total, oldest out first. Default 32768. |
+| `--conversation-disk-persist off\|on\|exit-only` | `on`: the conversations outlive the engine (QUIT writes the current and the parked ones first); `exit-only`: the same, but nothing is written while the engine runs. Default `off` (the files are this run's and are removed at start and end). |
 | `--memory-limit-mib N` (or `STRATA_MEMORY_LIMIT_MIB`) | Total RAM this engine's container may use, for when a container cannot see its own limit. Config `args`: `"--memory-limit-mib", "102400"`. `0` = none. |
 
 The RAM figure the floor is checked against is the smallest of `MemAvailable`, the room under each cgroup limit visible to
@@ -810,6 +813,42 @@ curl -X POST "http://127.0.0.1:8080/slots/0?action=restore" -H "Content-Type: ap
 - Not supported with `--layer-split`, `--peer-device`, `--batch` or `--prompt-cache 0`. The engine has been run on Linux and CUDA
   only for this feature. Exact token replay across restarts is not guaranteed: expert residency and CPU/GPU rounding can
   change later output.
+
+### Parked conversations on the disk
+
+Without a disk folder, a conversation the RAM cache evicts is dropped, and a client that comes back to it reads the
+whole prompt again: an agent that switches between its main conversation and sub-agents too large for the budget
+together reads ~150K tokens again on every switch. With `--conversation-disk-dir DIR`:
+
+- every image of the conversation (one per stage with `--layer-split`) is one session file, written and read with the
+  session files' code above (the same size, header and hash checks, and the free-space preflight
+  `--session-min-free-mib`), with the live state and every checkpoint, as in RAM;
+- a background thread (CPU nice 10 on Linux) writes the files, so a switch never waits for the disk; a conversation
+  asked for again before its write ends comes back from the write queue (a "RAM hit"). A queued image holds its RAM
+  until it is written: when RAM is short, parking and a read back wait for the queue before they evict more;
+- a read back needs RAM for the whole image above `--conversation-cache-min-free-mib`, as a park does; without it the
+  prompt is read again (`not restored (not enough RAM ...)`). A read back removes the conversation from the disk (the
+  session holds it again, and it is parked again on the next switch);
+- a file is read back only when that is faster than reading the tokens it adds, by this run's measured disk speed and
+  prompt speed (the prompt path's parts of 2,048 tokens or more). Until both speeds are measured the file is read; a
+  skip is logged (`not read`, with both estimates);
+- the log has a line for every queue, write, hit and wait (MiB, ms, MB/s) and a totals line
+  (`strata serve: conversation disk: ...`); a request reused from the disk says so at the end of its line, and the
+  Monitor's conversation cache card shows what is on the disk.
+
+`--conversation-disk-persist on|exit-only` binds the files to the session files' identity (the model files, the engine
+version and the settings that change the saved bytes). A small index file beside each conversation lets the next start
+take them in without reading the images; files of another model, engine version or settings, a damaged index and
+leftovers of an interrupted write are removed at start. On QUIT the engine parks the current conversation, moves every
+parked one to the disk and waits for the writes; the server waits up to 300 s for that. While persist is on, the engine
+ignores SIGINT, SIGTERM and SIGHUP and ends only through its stdin (the server's QUIT, or EOF when the server is gone),
+so Ctrl+C and a shutdown's SIGTERM do not cut the save short. A crash or `kill -9` keeps what was already written.
+
+Measured on 2x CMP 50HX (sm_75, layer split), 2x Xeon E5-2670 v2: three conversations that share no prefix (41,839,
+41,846 and 165,558 tokens, read cold in 22.5, 23.3 and 73.3 s), then a SIGTERM to the server: saved in 17.0 s (5,786
+MiB, NVMe). The next start took in all three, and each came back with the same answer as before the restart, in 2.6,
+2.9 and 8.4 s. From a 7,200 rpm hard disk: 286,199 tokens (5,352 MiB) back in 41.7 s against a ~136 s cold read. Unit
+test: `conversation_disk_test` (CPU only, `-DSTRATA_BUILD_CONVERSATION_TESTS=ON`). Run on Linux and CUDA only.
 
 ### The web page (Chat, Images, Monitor, About)
 

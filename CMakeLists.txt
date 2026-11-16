@@ -243,6 +243,13 @@ if(STRATA_BUILD_CONVERSATION_TESTS)
   add_executable(conversation_file_test src/core/conversation_file_test.cpp src/core/conversation_file.cpp)
   target_include_directories(conversation_file_test PRIVATE include)
   add_test(NAME conversation_file_test COMMAND conversation_file_test)
+  # the disk tier of the parked conversations (conversation_disk.hpp): write, match, read back, budget
+  add_executable(conversation_disk_test src/core/conversation_disk_test.cpp src/core/conversation_disk.cpp
+                 src/core/conversation_file.cpp)
+  target_include_directories(conversation_disk_test PRIVATE include)
+  find_package(Threads REQUIRED)   # the tier's background writer
+  target_link_libraries(conversation_disk_test PRIVATE Threads::Threads)
+  add_test(NAME conversation_disk_test COMMAND conversation_disk_test)
   add_executable(session_save_reclaim_test src/core/session_save_reclaim_test.cpp src/core/conversation_file.cpp)
   target_include_directories(session_save_reclaim_test PRIVATE include)
   add_test(NAME session_save_reclaim_test COMMAND session_save_reclaim_test)
