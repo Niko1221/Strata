@@ -70,9 +70,10 @@ def wait_ready(port: int, proc: subprocess.Popen, timeout: float = 1800) -> None
     raise TimeoutError("server not ready")
 
 
-def run_requests(port: int, reqs: list[tuple[str, str]], max_new: int, rnd: int, arm: str, out) -> list[dict]:
-    """Send `reqs` once each; every row goes to `out` (jsonl) and to the screen as it comes in."""
-    rows = []
+def run_requests(port: int, reqs: list[tuple[str, str]], max_new: int, rnd: int, arm: str, out, rows: list | None = None) -> list[dict]:
+    """Send `reqs` once each; every row goes to `out` (jsonl), to the screen and to `rows` (if given) as it comes in, so an
+    interrupt keeps the rows already answered."""
+    rows = [] if rows is None else rows
     for tag, p in reqs:
         r = post(port, p, max_new)
         t = r.get("timings", {})
@@ -109,32 +110,36 @@ def fail(msg: str):
     raise SystemExit(f"error: {msg}")
 
 
-def pick_pairs(releases: list[dict], target: str, backend: str, spec: str) -> tuple[str, list, dict]:
-    """(backend, versions, pairs) for `spec`. A bare family ("cuda") is matched to the asset variants that carry every
-    version asked for ("cuda-cuda13"); several such variants -> an error naming them."""
+# The tie-break of feed.select_engine / engine_component.resolve (same version: the build for the newer NVIDIA driver) reads the
+# packages' manifests; from release asset names alone it is this order. HIP builds depend on the card, so several of them still ask.
+BUILD_PREFERENCE = ("cuda-cuda13", "cuda-cuda12")
+
+
+def pick_pairs(releases: list[dict], target: str, backend: str, spec: str) -> tuple[list, dict]:
+    """(versions, pairs) for `spec`. An exact build ("cuda-cuda12") is used as given. A bare family ("cuda") takes, per version, the
+    build BUILD_PREFERENCE ranks first, or the only one that version has; several unranked builds -> an error naming them."""
     import ab_versions
-    backends = {backend}
+    builds = [backend]
     if "-" not in backend:
         found = (re.fullmatch(rf"strata-engine-[\d.]+-{re.escape(target)}-({re.escape(backend)}(?:-[\w.]+)?)\.tar\.gz", x["name"])
                  for rel in releases for x in rel.get("assets", []))
-        backends = {m[1] for m in found if m} or backends
-    fits, errors = {}, []
-    for b in sorted(backends):
-        pairs = ab_versions.pairs_from_releases(releases, target, b)
-        try:
-            versions = ab_versions.resolve_versions(spec, pairs)
-        except ValueError as e:
-            errors.append(f"{b}: {e}")
-            continue
-        if not versions:
-            fail(f"--engines {spec!r} names no version")
-        fits[b] = (versions, pairs)
-    if not fits:
-        fail("; ".join(errors))
-    if len(fits) > 1:
-        fail(f"several engine builds fit {target}/{backend}; pick one with --backend: {', '.join(fits)}")
-    (b, (versions, pairs)), = fits.items()
-    return b, versions, pairs
+        rank = {b: i for i, b in enumerate(BUILD_PREFERENCE)}
+        builds = sorted({m[1] for m in found if m}, key=lambda b: (rank.get(b, len(rank)), b)) or builds
+    pairs, choices = {}, {}
+    for b in builds:
+        for v, pair in ab_versions.pairs_from_releases(releases, target, b).items():
+            pairs.setdefault(v, pair)
+            choices.setdefault(v, []).append(b)
+    try:
+        versions = ab_versions.resolve_versions(spec, pairs)
+    except ValueError as e:
+        fail(f"{e} ({target}/{backend})")
+    if not versions:
+        fail(f"--engines {spec!r} names no version")
+    unclear = [f"{v}: {', '.join(choices[v])}" for v in versions if len(choices[v]) > 1 and choices[v][0] not in BUILD_PREFERENCE]
+    if unclear:
+        fail(f"several engine builds fit; pick one with --backend ({'; '.join(unclear)})")
+    return versions, pairs
 
 
 def run_versions(a: argparse.Namespace) -> int:
@@ -144,16 +149,18 @@ def run_versions(a: argparse.Namespace) -> int:
     model = Path(a.model_path).absolute()                 # live_roots finds the data folder from the parents
     if not model.exists():
         fail(f"--model-path {model} does not exist")
-    bench = Path(a.bench_dir).expanduser()
+    bench = Path(a.bench_dir or Path.home() / "strata-ab").expanduser()
     target, family = detect()
     backend = a.backend or family
     if not backend:
         fail("no graphics card found; name the engine build with --backend (e.g. cuda-cuda13)")
     releases = av.list_releases()
-    backend, versions, pairs = pick_pairs(releases, target, backend, a.engines)
+    versions, pairs = pick_pairs(releases, target, backend, a.engines)
     reqs = [(f"chat{i}", p) for i, p in enumerate(PROMPTS)] + [("long", long_prompt(a.long_words))]
-    print(f"{len(versions)} versions ({', '.join(versions)}) for {target}/{backend}: {len(versions) * a.rounds} starts, "
+    print(f"{len(versions)} versions for {target}/{backend}: {len(versions) * a.rounds} starts, "
           f"{len(versions) if a.tune else 0} tunings.", flush=True)
+    for v in versions:
+        print(f"  v{v}: {pairs[v].engine_name} ({pairs[v].tag})", flush=True)
     try:
         av.assert_idle([a.port])
     except av.Busy as e:
@@ -186,6 +193,7 @@ def run_versions(a: argparse.Namespace) -> int:
                 if v in dead:
                     continue
                 control, venv = env[v]
+                got: list[dict] = []
                 try:
                     r = av.launch(control, venv, model, data, a.port, a.tune if rnd == 0 else None)
                     av.collect_configs(homes[v], bench / "configs" / v / stamp)
@@ -201,11 +209,12 @@ def run_versions(a: argparse.Namespace) -> int:
                         continue
                     print(f"round {rnd} v{v}: ready in {r.seconds:.0f} s", flush=True)
                     post(a.port, "Say hi.", 8)                       # warm-up, as the config mode's wait_ready does
-                    arm["rows"] += [{k: row[k] for k in ("round", "req", "decode", "prompt", "prompt_n", "n")}
-                                    for row in run_requests(a.port, reqs, a.max_new, rnd, f"v{v}", out)]
-                    arm.update(status="ran", reason="")
+                    run_requests(a.port, reqs, a.max_new, rnd, f"v{v}", out, got)
                 finally:
-                    av.stop(control, venv)                           # also after a failed or timed-out start: nothing survives into the next arm
+                    if got:                                          # also the rows answered before an interrupt
+                        arm["rows"] += [{k: row[k] for k in ("round", "req", "decode", "prompt", "prompt_n", "n")} for row in got]
+                        arm.update(status="ran", reason="")
+                    av.stop(control, venv)                         # also after a failed or timed-out start: nothing survives into the next arm
     except KeyboardInterrupt:
         print("\ninterrupted; the results so far are kept", file=sys.stderr)
         code = 130
@@ -218,10 +227,9 @@ def run_versions(a: argparse.Namespace) -> int:
         (run_dir / "results.json").write_text(json.dumps(results, indent=1), encoding="utf-8")
         html, png = ab_report.write_report(results, run_dir)
         print(f"\nresults: {run_dir / 'results.json'}\nreport:  {html}" + (f"\ncard:    {png}" if png else ""))
-    if diff:
-        print("error: files of the real Strata install changed during the run:\n  " + "\n  ".join(diff), file=sys.stderr)
-        return 1
-    return code
+        if diff:                                                     # inside finally: shown even when an exception ends the run
+            print("error: files of the real Strata install changed during the run:\n  " + "\n  ".join(diff), file=sys.stderr)
+    return 1 if diff else code
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -236,11 +244,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--model-path", help="versions mode: the model (GGUF file or folder); only read")
     ap.add_argument("--engines", help="versions mode: engine versions, `0.1.55,0.1.56` or `0.1.50..0.1.56`")
     ap.add_argument("--tune", choices=("quick", "thorough"), help="versions mode: each version tunes once before round 0")
-    ap.add_argument("--bench-dir", default=str(Path.home() / "strata-ab"), help="versions mode: packages, homes, configs, runs")
+    ap.add_argument("--bench-dir", help="versions mode: packages, homes, configs, runs (default: ~/strata-ab)")
     ap.add_argument("--backend", help="versions mode: engine build, e.g. cuda-cuda13 (default: this machine's)")
     a = ap.parse_intermixed_args(argv)
-    if a.config is not None and (a.model_path or a.engines):
-        ap.error("use either <config> <arms...> or --model-path with --engines, not both")
+    if a.config is not None and any(x is not None for x in (a.model_path, a.engines, a.tune, a.bench_dir, a.backend)):
+        ap.error("--model-path, --engines, --tune, --bench-dir and --backend belong to the versions mode, not to <config> <arms...>")
     if a.config is None and not (a.model_path and a.engines):
         ap.error("give <config> <arms...>, or --model-path and --engines")
     if a.config is not None and not a.arms:
