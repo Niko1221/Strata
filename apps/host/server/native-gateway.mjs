@@ -7,7 +7,7 @@ export async function nativeGateway({req,res,path,body,control,serving,fetcher=f
  let tokensIn=null,tokensOut=null,tps=null,promptTps=null;
  const observe=value=>{/* Anthropic's stream carries the prompt count in message_start (message.usage) and only the output count in message_delta (usage): both are read (#4678). */for(const usage of [value.message?.usage,value.usage??value.response?.usage])if(usage){tokensIn=usage.prompt_tokens??usage.input_tokens??tokensIn;tokensOut=usage.completion_tokens??usage.output_tokens??tokensOut;}if(value.timings){tps=value.timings.predicted_per_second??tps;promptTps=value.timings.prompt_per_second??promptTps;}};
  try{
-  const response=await fetcher(`http://127.0.0.1:${instance.port}${path}`,{method:'POST',headers:{'content-type':'application/json',authorization:`Bearer ${instance.key}`},signal:abort.signal,body:JSON.stringify({...body,model:instance.apiModelId,strata_mcp:false})});
+  const response=await fetcher(`http://127.0.0.1:${instance.port}${path}`,{method:'POST',headers:{'content-type':'application/json',authorization:`Bearer ${instance.key}`},signal:abort.signal,body:JSON.stringify({...body,model:instance.apiModelId,strata_mcp:body.strata_mcp===true})});
   if(!response.ok){const content=await response.text();serving.finish(entry.id,{durationMs:Date.now()-started,error:`Engine returned ${response.status}`});res.writeHead(response.status,{'content-type':response.headers.get('content-type')??'application/json'});res.end(content);return;}
   serving.mark(entry.id,{state:'generating'});
   res.writeHead(response.status,{'content-type':response.headers.get('content-type')??'application/json','cache-control':'no-cache','x-strata-request-id':entry.id,'x-accel-buffering':'no'});

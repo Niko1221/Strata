@@ -18,13 +18,30 @@ test('native gateway preserves all three protocols and routes exact IDs, usage, 
  const call=async(path,body)=>fetch(`http://127.0.0.1:${publicPort}${path}`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
  try{
   const tools=[{type:'function',name:'lookup',parameters:{type:'object'}}];const input=[{type:'message',role:'user',content:[{type:'input_text',text:'Hello'}]},{type:'function_call_output',call_id:'c1',output:'Found'}];
-  let result=await call('/v1/responses',{model:'native-b',input,tools,strata_mcp:true,reasoning:{effort:'high'}});assert.equal(result.status,200);assert.equal((await result.json()).output[0].name,'lookup');assert.deepEqual(received[0].body.input,input);assert.deepEqual(received[0].body.tools,tools);assert.equal(received[0].body.model,'native-b');assert.equal(received[0].body.strata_mcp,false);assert.equal(received[0].key,'Bearer private-b');assert.equal(records[0].tokensIn,12);assert.equal(records[0].tokensOut,3);
+  let result=await call('/v1/responses',{model:'native-b',input,tools,strata_mcp:true,reasoning:{effort:'high'}});assert.equal(result.status,200);assert.equal((await result.json()).output[0].name,'lookup');assert.deepEqual(received[0].body.input,input);assert.deepEqual(received[0].body.tools,tools);assert.equal(received[0].body.model,'native-b');assert.equal(received[0].body.strata_mcp,true);assert.equal(received[0].key,'Bearer private-b');assert.equal(records[0].tokensIn,12);assert.equal(records[0].tokensOut,3);
   result=await call('/v1/messages',{model:'native-a',messages:[{role:'user',content:'Hello'}],max_tokens:50});assert.equal((await result.json()).type,'message');assert.equal(received[1].path,'/v1/messages');assert.equal(received[1].key,'Bearer private-a');
   result=await call('/v1/chat/completions',{model:'native-a',messages:[{role:'user',content:'Hello'}]});assert.equal(result.status,200);await result.text();assert.equal(received[2].path,'/v1/chat/completions');
   result=await call('/v1/responses',{model:'native-b',stream:true,input:'Hello'});assert.match(await result.text(),/event: response.completed/);assert.equal(records[3].tokensOut,3);
   result=await call('/v1/responses',{model:'missing',input:'Hello'});assert.equal(result.status,400);assert.equal((await result.json()).error.param,'model');
   result=await call('/v1/responses',{model:'native-b',input:'fail'});assert.equal(result.status,422);assert.equal((await result.json()).error.message,'Invalid native input');
   result=await call('/v1/responses',{model:'native-a',input:'slow',stream:true});const read=result.body.getReader();await read.read();await read.cancel();for(let n=0;n<30&&!cancelled;n++)await new Promise(r=>setTimeout(r,20));assert.equal(cancelled,true);
+ }finally{await close(gateway);await close(engine);}
+});
+test('strata_mcp reaches the engine only as a boolean true (#5661)',{timeout:10000},async()=>{
+ const received=[];
+ const engine=http.createServer(async(req,res)=>{let text='';for await(const chunk of req)text+=chunk;received.push(JSON.parse(text));res.writeHead(200,{'content-type':'application/json'});res.end('{"choices":[{"message":{"role":"assistant","content":"ok"}}]}');});
+ const port=await listen(engine);const records=[];
+ const serving={open:value=>{const record={...value,id:String(records.length)};records.push(record);return record;},mark:()=>{},finish:()=>{}};
+ const control={resolveInstance:()=>({id:'x',apiModelId:'iq3_s',port,key:'k',gpus:[0]})};
+ const gateway=http.createServer(async(req,res)=>{let text='';for await(const chunk of req)text+=chunk;await nativeGateway({req,res,path:req.url,body:JSON.parse(text),control,serving});});
+ const gatewayPort=await listen(gateway);
+ const call=extra=>fetch(`http://127.0.0.1:${gatewayPort}/v1/chat/completions`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({model:'iq3_s',messages:[{role:'user',content:'Use the configured MCP filesystem tool.'}],...extra})});
+ try{
+  for(const [extra,want] of [[{strata_mcp:true},true],[{strata_mcp:false},false],[{},false],[{strata_mcp:'true'},false],[{strata_mcp:1},false],[{strata_mcp:null},false]]){
+   const before=received.length;const result=await call(extra);assert.equal(result.status,200);await result.text();
+   assert.equal(received[before].strata_mcp,want,JSON.stringify(extra));assert.equal(received[before].model,'iq3_s');
+   assert.deepEqual(received[before].messages,[{role:'user',content:'Use the configured MCP filesystem tool.'}]);
+  }
  }finally{await close(gateway);await close(engine);}
 });
 test('a client that hangs up right after data: [DONE] has its answer: the request is done, not "Request cancelled." (#4690)',{timeout:30000},async()=>{
