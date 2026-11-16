@@ -1,12 +1,21 @@
-"""Strata release helpers for ab_engine's versions mode: find engine/control pairs and resolve version specs."""
+"""Strata release helpers for ab_engine's versions mode: find engine/control pairs, resolve version specs, and fetch packages.
+
+Packages come only from a download into the bench cache. Nothing is ever read from the real Strata install."""
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+import shutil
+import sys
 import urllib.request
 from dataclasses import dataclass
+from pathlib import Path
 
 VER = r"(\d+(?:\.\d+)*)"
+CHUNK = 1 << 20
+# The signed feed's size cap is not available for a release asset; the sha256 check is the integrity guard, this only stops a bomb.
+MAX_UNPACKED = 1 << 40
 
 
 @dataclass(frozen=True)
@@ -72,3 +81,83 @@ def list_releases(repo: str = "Niko1221/Strata", opener=urllib.request.urlopen) 
             return out
         out += batch
         page += 1
+
+
+@dataclass(frozen=True)
+class Packages:
+    version: str
+    engine_dir: Path
+    control_dir: Path
+
+
+def parse_sums(text: str) -> dict[str, str]:
+    """`sha256sum` output -> {file name: sha256}; accepts the binary-mode `*` marker."""
+    out: dict[str, str] = {}
+    for line in text.splitlines():
+        parts = line.split(None, 1)
+        if len(parts) == 2:
+            out[parts[1].strip().lstrip("*")] = parts[0].lower()
+    return out
+
+
+def _stem(name: str) -> str:
+    return name[:-len(".tar.gz")] if name.endswith(".tar.gz") else name[:-len(".zip")]
+
+
+def _fetch(url: str, dest: Path, opener) -> str:
+    """Stream `url` into `dest`; returns its sha256. Removes `dest` if the transfer fails."""
+    h = hashlib.sha256()
+    try:
+        with opener(url, timeout=60) as r, dest.open("wb") as f:
+            while chunk := r.read(CHUNK):
+                h.update(chunk)
+                f.write(chunk)
+    except BaseException:
+        dest.unlink(missing_ok=True)
+        raise
+    return h.hexdigest()
+
+
+def _ensure_one(name: str, url: str, sums: dict[str, str] | None, cache: Path, opener, *, allow_links: bool) -> Path:
+    from strata_control import updater
+    target = cache / _stem(name)
+    if (target / ".ok").is_file():
+        return target
+    if target.exists():
+        raise RuntimeError(f"{target} exists without a .ok marker; remove it and run again")
+    part = cache / f"{name}.part"
+    try:
+        got = _fetch(url, part, opener)
+        want = sums.get(name)
+        if want is None:
+            raise ValueError(f"no sha256 for {name} in SHA256SUMS.txt")
+        if got != want:
+            raise ValueError(f"sha256 mismatch for {name}: expected {want}, got {got}")
+        tmp = cache / f"{target.name}.tmp"
+        try:
+            updater.extract(part, tmp, "zip" if name.endswith(".zip") else "tar.gz", MAX_UNPACKED, allow_links=allow_links)
+            (tmp / ".ok").write_bytes(b"")          # the marker goes in before the rename, so a folder never shows up unmarked
+            tmp.rename(target)
+        except BaseException:
+            shutil.rmtree(tmp, ignore_errors=True)
+            raise
+    finally:
+        part.unlink(missing_ok=True)
+    return target
+
+
+def ensure_packages(pair: ReleasePair, cache: Path, opener=urllib.request.urlopen) -> Packages:
+    """Engine and control of `pair` unpacked under `cache/<asset-stem>/`, downloaded and sha256-checked if not already there.
+    A folder with its `.ok` marker is a cache hit and needs no network. A failed download or check leaves nothing behind."""
+    root = Path(__file__).resolve().parents[1]
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+    cache.mkdir(parents=True, exist_ok=True)
+    needed = [n for n in (pair.engine_name, pair.control_name) if not (cache / _stem(n) / ".ok").is_file()]
+    sums = None
+    if needed:
+        with opener(pair.sums_url, timeout=60) as r:
+            sums = parse_sums(r.read().decode("utf-8"))
+    engine = _ensure_one(pair.engine_name, pair.engine_url, sums, cache, opener, allow_links=False)
+    control = _ensure_one(pair.control_name, pair.control_url, sums, cache, opener, allow_links=pair.control_name.endswith(".tar.gz"))
+    return Packages(pair.version, engine, control)
