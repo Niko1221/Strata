@@ -9,6 +9,7 @@ import shutil
 import statistics
 import subprocess
 import sys
+import tempfile
 from html import escape
 from pathlib import Path
 
@@ -51,10 +52,10 @@ def _card(results: dict, old: dict, new: dict) -> str:
     reqs = results.get("requests") or []
     dec = {q: (_median(old, q, "decode"), _median(new, q, "decode")) for q in reqs}
     gains = [g for g in (_rel(a, b) for a, b in dec.values()) if g is not None]
-    top = max(dec_v for pair in dec.values() for dec_v in pair if dec_v is not None) if gains else 1
+    top = max((v for pair in dec.values() for v in pair if v), default=0) or 1  # no positive value: all bars empty
     bars = []
     for q, (a, b) in dec.items():
-        bar = lambda v, cls: (f'<div class="bar {cls}"><i style="width:{(v or 0) / top * 100:.1f}%"></i>'  # noqa: E731
+        bar = lambda v, cls: (f'<div class="bar {cls}"><i style="width:calc((100% - 80px) * {max(v or 0, 0) / top:.4f})"></i>'  # noqa: E731
                               f'<b>{_num(v)}</b></div>')
         bars.append(f'<div class="pair"><span>{e(q)}</span><div>{bar(a, "old")}{bar(b, "new")}</div></div>')
     lp = (_median(old, "long", "prompt"), _median(new, "long", "prompt"))
@@ -111,7 +112,7 @@ body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;b
 #card .pair>span{width:80px;font-size:20px;color:#cbd5e1}
 #card .pair>div{flex:1}
 #card .bar{position:relative;height:22px;margin:3px 0;display:flex;align-items:center}
-#card .bar i{display:block;height:100%;border-radius:6px;max-width:calc(100% - 80px)}
+#card .bar i{display:block;height:100%;border-radius:6px}
 #card .bar b{margin-left:10px;font-size:18px;font-weight:600}
 #card .tiles{flex:1;display:flex;flex-direction:column;gap:20px}
 #card .tile{flex:1;background:#fff;border-radius:24px;padding:20px 30px;box-shadow:0 6px 24px rgba(15,23,42,.08);
@@ -137,7 +138,7 @@ const tb=document.querySelector('tbody'),sel=document.getElementById('base');
 function delta(){const base={};
  for(const r of tb.rows)if(r.dataset.version===sel.value)base[r.dataset.req]=parseFloat(r.dataset.decode);
  for(const r of tb.rows){const c=r.querySelector('.delta'),b=base[r.dataset.req],d=parseFloat(r.dataset.decode);
-  if(isNaN(b)||isNaN(d)||r.dataset.version===sel.value){c.textContent='';c.className='delta';continue}
+  if(!(b>0)||isNaN(d)||r.dataset.version===sel.value){c.textContent='';c.className='delta';continue}
   const p=Math.round((d/b-1)*100);c.textContent=(p>=0?'+':'-')+Math.abs(p)+'%';c.className='delta '+(p>=0?'pos':'neg')}}
 sel.addEventListener('change',delta);delta();
 document.querySelectorAll('th').forEach((th,i)=>th.addEventListener('click',()=>{
@@ -185,12 +186,14 @@ def find_browser() -> str | None:
 
 
 def render_png(browser: str, html: Path, png: Path) -> bool:
-    cmd = [browser, "--headless=new", "--disable-gpu", "--hide-scrollbars", "--window-size=1600,900",
-           f"--screenshot={png}", html.resolve().as_uri() + "#card"]
-    try:
-        done = subprocess.run(cmd, capture_output=True, timeout=120)
-    except (OSError, subprocess.SubprocessError):
-        return False
+    # A private profile, so a running Edge/Chrome cannot take over the URL and exit without the screenshot.
+    with tempfile.TemporaryDirectory(prefix="strata-ab-browser-", ignore_cleanup_errors=True) as profile:
+        cmd = [browser, "--headless=new", "--disable-gpu", "--hide-scrollbars", "--window-size=1600,900",
+               f"--user-data-dir={profile}", f"--screenshot={png}", html.resolve().as_uri() + "#card"]
+        try:
+            done = subprocess.run(cmd, capture_output=True, timeout=120)
+        except (OSError, subprocess.SubprocessError):
+            return False
     return done.returncode == 0 and png.is_file()
 
 
