@@ -83,6 +83,87 @@ __global__ void kernel(const int8_t* __restrict__ qs, const half* __restrict__ d
     }
 }
 
+// STRATA_Q8_SM60_EXACT=1 (with STRATA_Q8_SM60=1): the same packed planes, the same activation staging and one warp per
+// row, but native_small_mmvq_kernel's arithmetic (native_mmvq.cu), so every output is bitwise the exact kernels'.  That
+// kernel runs a row on 4 warps x 32 threads; thread tid takes the blocks tid / 4 + 32 k at ints 2 (tid % 4) and
+// 2 (tid % 4) + 1 (sumi = dp4a(v0, u0, 0), then dp4a(v1, u1, sumi); tmp += d0 * d1 * float(sumi)), then warp 0 adds
+// warps 1, 2, 3 in that order and runs warp_sum (xor 16 .. 1).  Here lane L of the row's warp carries the four threads
+// L, L + 32, L + 64, L + 96 (blocks L / 4 + 8 w of each run of 32) as acc[.][w] and adds them in the same order before the
+// same butterfly.  Its multi-column kernels are bitwise the single-column one, so one twin covers every column count.
+template<int NCOLS>
+__launch_bounds__(THREADS)
+__global__ void kernel_exact(const int8_t* __restrict__ qs, const half* __restrict__ dpl, const Q81Block* __restrict__ x,
+                             float* __restrict__ y, int n_in, int n_out) {
+    extern __shared__ int4 q8sm60_smem[];
+    int8_t* sx = reinterpret_cast<int8_t*>(q8sm60_smem);                         // [NCOLS][n_in]
+    float* sd = reinterpret_cast<float*>(sx + std::size_t(NCOLS) * n_in);       // [NCOLS][n_in / 32]
+    const int nb = n_in / 32;
+    for (int b = int(threadIdx.x); b < NCOLS * nb; b += THREADS) {
+        const Q81Block* xb = x + b;
+        const int* src = reinterpret_cast<const int*>(xb->qs);
+        int* dst = reinterpret_cast<int*>(sx + std::size_t(b) * 32);
+#pragma unroll
+        for (int i = 0; i < 8; ++i) dst[i] = src[i];
+        sd[b] = __low2float(xb->ds);
+    }
+    __syncthreads();
+    constexpr int RPB = THREADS / 32;
+    const int lane = int(threadIdx.x) % 32;
+    const int rloc = int(threadIdx.x) / 32;
+    const int kq = 2 * (lane % 4);                                               // the thread's first int of a block
+    const int groups = (n_out + RPB - 1) / RPB;
+    for (int g = int(blockIdx.x); g < groups; g += int(gridDim.x)) {
+        const int row = g * RPB + rloc;
+        float acc[NCOLS][4];
+#pragma unroll
+        for (int j = 0; j < NCOLS; ++j)
+#pragma unroll
+            for (int w = 0; w < 4; ++w) acc[j][w] = 0.0f;
+        if (row < n_out) {
+            const int8_t* wrow = qs + std::size_t(row) * n_in;
+            const half* d = dpl + std::size_t(row) * nb;
+            for (int base = 0; base < nb; base += 32) {                          // one pass of the exact kernel's loop
+#pragma unroll
+                for (int w = 0; w < 4; ++w) {
+                    const int kbx = base + lane / 4 + 8 * w;                     // thread lane + 32 w's block of this pass
+                    if (kbx < nb) {
+                        const int2 wv = __ldg(reinterpret_cast<const int2*>(wrow + std::size_t(kbx) * 32 + 4 * kq));
+                        const float d0 = __half2float(d[kbx]);
+#pragma unroll
+                        for (int j = 0; j < NCOLS; ++j) {
+                            const int2 xv = *reinterpret_cast<const int2*>(sx + std::size_t(j) * n_in + std::size_t(kbx) * 32 + 4 * kq);
+                            int sumi = STRATA_DP4A(wv.x, xv.x, 0);
+                            sumi = STRATA_DP4A(wv.y, xv.y, sumi);
+                            const float d1 = sd[j * nb + kbx];
+                            acc[j][w] += d0 * d1 * float(sumi);
+                        }
+                    }
+                }
+            }
+        }
+#pragma unroll
+        for (int j = 0; j < NCOLS; ++j) {                                       // every lane takes part, row or not
+            float v = acc[j][0];
+            v += acc[j][1];
+            v += acc[j][2];
+            v += acc[j][3];
+#pragma unroll
+            for (int o = 16; o > 0; o >>= 1) v += __shfl_xor_sync(0xffffffffu, v, o, 32);
+            if (lane == 0 && row < n_out) y[std::size_t(j) * n_out + row] = v;
+        }
+    }
+}
+
+inline bool exact_on() {
+    static const bool v = [] {
+        const char* e = std::getenv("STRATA_Q8_SM60_EXACT");
+        const bool yes = e && e[0] == '1' && e[1] == '\0';
+        if (yes) std::fprintf(stderr, "strata q8 sm60: the bitwise twin of the exact kernels (STRATA_Q8_SM60_EXACT=1)\n");
+        return yes;
+    }();
+    return v;
+}
+
 // One workgroup per SM would leave too few rows in flight on a 48-SM die; four per SM is what the shapes of
 // Qwen3.8-Flash-Next measured best (STRATA_Q8_SM60_BPS overrides it).
 inline int blocks_per_sm() {
@@ -103,6 +184,12 @@ inline int sm_count() {
 
 template<int NCOLS, int TPR>
 void launch_one(const int8_t* qs, const half* d, const Q81Block* x, float* y, int n_in, int n_out, cudaStream_t s) {
+    if (exact_on()) {   // one warp per row whatever the width (the exact kernels' arithmetic, see kernel_exact)
+        const int groups = (n_out + THREADS / 32 - 1) / (THREADS / 32);
+        const int grid = (std::min)(groups, sm_count() * blocks_per_sm());
+        kernel_exact<NCOLS><<<unsigned(grid), THREADS, smem_bytes(NCOLS, n_in), s>>>(qs, d, x, y, n_in, n_out);
+        return;
+    }
     constexpr int RPB = THREADS / TPR;
     const int groups = (n_out + RPB - 1) / RPB;
     const int grid = (std::min)(groups, sm_count() * blocks_per_sm());
