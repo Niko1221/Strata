@@ -10,8 +10,9 @@ import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from ab_versions import (Packages, ReleasePair, ensure_packages, isolated_env, list_releases, pairs_from_releases,  # noqa: E402
-                         parse_sums, provision_home, resolve_versions)
+import socket  # noqa: E402
+from ab_versions import (Busy, Packages, ReleasePair, assert_idle, changed, ensure_packages, isolated_env, list_releases,  # noqa: E402
+                         live_roots, pairs_from_releases, parse_sums, provision_home, resolve_versions, snapshot)
 
 
 def a(name):
@@ -264,6 +265,60 @@ class HomeTest(unittest.TestCase):
         self.assertEqual(provision_home(self.home, pk), control)
         self.assertTrue((control / "tuning.json").is_file())
         self.assertEqual(len(self.scan(self.components_dir(isolated_env(self.home, {})))[0]), 1)
+
+
+class GuardTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+
+    def free_port(self):
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            return s.getsockname()[1]
+
+    def test_busy_when_port_open(self):
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            s.listen()
+            port = s.getsockname()[1]
+            with self.assertRaisesRegex(Busy, str(port)):
+                assert_idle([port], serving=lambda: [])
+
+    def test_busy_when_strata_serving(self):
+        with self.assertRaises(Busy):
+            assert_idle([], serving=lambda: [{"pid": 1}])
+
+    def test_idle_passes(self):
+        assert_idle([self.free_port()], serving=lambda: [])
+
+    def test_changed_lists_new_removed_modified(self):
+        self.assertEqual(changed({"a": (1, 1), "b": (1, 1)}, {"a": (2, 1), "c": (1, 1)}), ["+c", "-b", "~a"])
+
+    def test_snapshot_detects_edits_and_keeps_roots_apart(self):
+        r1, r2 = self.root / "one", self.root / "two"
+        for r in (r1, r2):
+            (r / "sub").mkdir(parents=True)
+            (r / "sub" / "f.txt").write_text("x", encoding="utf-8")
+        roots = [r1, r2, self.root / "missing"]
+        before = snapshot(roots)
+        self.assertEqual(len(before), 2)                                    # same relative path in two roots, no collision
+        (r2 / "sub" / "f.txt").write_text("longer", encoding="utf-8")
+        (r1 / "new.txt").write_text("n", encoding="utf-8")
+        diff = changed(before, snapshot(roots))
+        self.assertEqual(len(diff), 2)
+        self.assertTrue(diff[0].startswith("+") and diff[0].endswith("new.txt"))
+        self.assertTrue(diff[1].startswith("~") and diff[1].endswith("f.txt"))
+
+    def test_live_roots_cover_install_dot_strata_and_model_data_folder(self):
+        home = self.root / "u"
+        env = {"LOCALAPPDATA": str(self.root / "local"), "XDG_DATA_HOME": str(self.root / "share"), "USERPROFILE": str(home), "HOME": str(home)}
+        roots = live_roots(env, self.root / "data" / "models" / "tag" / "m.gguf")
+        self.assertIn(home / ".strata", roots)
+        self.assertIn(self.root / "data", roots)
+        self.assertTrue(any(r.name.lower() == "strata" and r.parent in (self.root / "local", self.root / "share") for r in roots))
+        self.assertNotIn(self.root / "data", live_roots(env, self.root / "elsewhere" / "m.gguf"))
 
 
 if __name__ == "__main__":
