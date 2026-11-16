@@ -474,7 +474,7 @@ def config_problems(config: Path, data: Path, install: Path, out: str, *, backen
         problems.append("the run config does not defer engine resolution to component:strata-engine")
     if "--mtp" in args or d.get("vision") or "--vision" in args:
         problems.append("the no-draft/off-vision install configured a draft layer or picture reader")
-    if d.get("backend") == "metal":                       # a Mac (setup's mac_control_setup): the Metal engine maps the GGUF in place, its arena is its RAM budget
+    if backend == "metal":                              # a Mac (setup's mac_control_setup): the Metal engine maps the GGUF in place, its arena is its RAM budget
         if "--mmap-experts" not in args:
             problems.append("the Mac run config has no --mmap-experts (the experts read in place from the GGUF)")
     elif backend == "cuda" and argument_value(args, "--resident-budget-gib") is None:             # F5: a feed qwen4exp size is read in place with a RAM budget of its experts
