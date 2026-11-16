@@ -27,7 +27,7 @@ import json
 import time
 import uuid
 
-from serve.frontend import Event, _late_system_to_user, _parts_of, effort_kwargs
+from serve.frontend import Event, _late_system_to_user, _parts_of, effort_kwargs, preserve_reasoning_kwargs
 
 ENCRYPTED_PREFIX = "strata.r1:"                   # our own reasoning replay strings; others' are ignored
 HOSTED_TOOLS = ("web_search", "web_search_preview", "file_search", "computer_use_preview", "computer_use",
@@ -458,9 +458,12 @@ def template_kwargs(req: dict, shared: dict) -> dict:
     if effort is None:
         effort = shared.get("reasoning_effort")      # the Chat settings shared with apps, as on the chat path
     try:
-        return effort_kwargs(effort)
+        kwargs = effort_kwargs(effort)
     except ValueError as e:
         raise ResponsesError(str(e), "reasoning.effort") from None
+    kwargs.update(preserve_reasoning_kwargs(shared))
+    kwargs.update(preserve_reasoning_kwargs(req))
+    return kwargs
 
 
 # ------------------------------------------------------------------------------------------------ output
