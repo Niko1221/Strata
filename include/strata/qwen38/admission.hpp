@@ -7,7 +7,7 @@ namespace strata::qwen38 {
 inline std::set<std::string> retained_metadata(){return {"prism.hadamard.weight_names","prism.hadamard.inverse_weight_names","prism.hadamard.sign_widths","prism.hadamard.sign_values","qwen35.attention.recurrent_layers"};}
 inline void require(bool ok, const std::string& why) { if (!ok) throw std::runtime_error(why); }
 inline bool auxiliary(int type) { return type == 0 || type == 1 || type == 30; }
-inline bool matrix_type(int type) { return auxiliary(type) || type == 8 || type == 12 || type == 13 || type == 14 || type == 23 || type == 142; }
+inline bool matrix_type(int type) { return auxiliary(type) || type == 8 || type == 12 || type == 13 || type == 14 || type == 21 || type == 22 || type == 23 || type == 142; }
 inline bool convert_auxiliary(const TensorInfo& t){return auxiliary(t.type)&&(t.shape.size()==1||t.name.find(".ssm_conv1d.")!=std::string::npos||t.name.find(".ssm_alpha.")!=std::string::npos||t.name.find(".ssm_beta.")!=std::string::npos);}
 // PQ2_0 is deliberately local: the MoE reader's type 42 remains 64/18.
 inline uint64_t payload(const TensorInfo& t) {

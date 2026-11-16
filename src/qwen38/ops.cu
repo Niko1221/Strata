@@ -2,6 +2,8 @@
 // PQ2_0 follows PrismML 0.4.1 commit 1965755ceee6738b9a04ceaf5d30e6305d6ccd00.
 // See README.md and LICENSE-formats.txt. No model/graph/runtime code is linked.
 #include "ops.cuh"
+#include "iq_tables.hpp"
+#include "iq_decode.hpp"
 #include <cmath>
 namespace strata::qwen38 {
 namespace {
@@ -12,6 +14,7 @@ __device__ float value(int type,const uint8_t* p,int i) {
     if(type==30)return __uint_as_float(uint32_t(reinterpret_cast<const uint16_t*>(p)[i])<<16);
     if(type==142){p+=size_t(i/128)*34;i%=128;return h(p)*(int((p[2+i/4]>>(2*(i%4)))&3)-1);}
     if(type==8){p+=size_t(i/32)*34;i%=32;return h(p)*reinterpret_cast<const int8_t*>(p+2)[i];}
+    if(type==21||type==22){p+=size_t(i/256)*(type==21?110:82);i%=256;return iq_value(type,p,i,h(p),q38_iq2s_grid,q38_iq3s_grid);}
     if(type==23){
         p+=size_t(i/256)*136;i%=256;int b=i/32,j=i%32;
         int scale=((p[4+b/2]>>(4*(b%2)))&15)|(((uint16_t(p[2])|uint16_t(p[3])<<8)>>(2*b)&3)<<4);
@@ -36,9 +39,9 @@ __device__ float value(int type,const uint8_t* p,int i) {
 }
 size_t row_bytes(int type,int n){
     switch(type){case 0:return size_t(n)*4;case 1:case 30:return size_t(n)*2;case 142:return size_t(n/128)*34;
-    case 8:return size_t(n/32)*34;case 12:return size_t(n/256)*144;case 13:return size_t(n/256)*176;case 14:return size_t(n/256)*210;case 23:return size_t(n/256)*136;default:throw std::runtime_error("unsupported matrix type");}
+    case 8:return size_t(n/32)*34;case 12:return size_t(n/256)*144;case 13:return size_t(n/256)*176;case 14:return size_t(n/256)*210;case 21:return size_t(n/256)*110;case 22:return size_t(n/256)*82;case 23:return size_t(n/256)*136;default:throw std::runtime_error("unsupported matrix type");}
 }
-void shape(int type,int n,int rows){int block=type==142?128:type==8?32:(type==12||type==13||type==14||type==23)?256:1;
+void shape(int type,int n,int rows){int block=type==142?128:type==8?32:(type==12||type==13||type==14||type==21||type==22||type==23)?256:1;
     if(n<=0||rows<=0||n%block)throw std::runtime_error("invalid packed matrix dimensions");(void)row_bytes(type,n);}
 __global__ void deq(int type,const uint8_t* p,float* y,int n){int i=blockIdx.x*blockDim.x+threadIdx.x;if(i<n)y[i]=value(type,p,i);}
 __device__ float sum(float v){for(int i=16;i;i/=2)v+=__shfl_down_sync(0xffffffffu,v,i);return v;}

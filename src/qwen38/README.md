@@ -43,7 +43,15 @@ prefill is the only supported batch behavior; there is no CUDA graph.
 PQ2_0 is type 142, 128 elements per 34 bytes, independently of the existing
 MoE type 42 (64/18). The owned CUDA dot accumulates FP32 activations against
 decoded original packed values. It does not first quantize activations to Q8.
-Supported matrices are F32, F16, BF16, PQ2_0, IQ4_XS, Q4_K, Q5_K, Q6_K and Q8_0.
+Supported matrices are F32, F16, BF16, PQ2_0, IQ2_S, IQ3_S, IQ4_XS, Q4_K, Q5_K, Q6_K and Q8_0.
+IQ2_S and IQ3_S retain their original GGUF bytes and use 256-value blocks of
+82 and 110 bytes respectively. Their codebooks and decoding follow ggml commit
+`643956891dfdf51aecdbd05ca508dd21e21e8195`; the corresponding tables and
+decoder bodies also match the model producer's commit
+`030ebb558a5820b444a8f836ed5cdd46c9b4bd7a`. See `LICENSE-formats.txt`.
+The runner validates and skips optional MTP tensors; it does not execute MTP
+drafting, and reports `drafting=off`. Presence of those tensors does not enable
+MTP acceleration. GPU and real-model acceptance must be recorded separately.
 
 The Hikari checkpoint also requires its explicit Hadamard metadata. Version 1,
 normalized Sylvester H1024, explicit sign vectors and the input-last-dimension
