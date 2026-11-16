@@ -344,6 +344,33 @@ int main(int argc, char** argv) {
                 }
             }
             unset_env("STRATA_EXCHANGE_ROTATE");
+            {   // #3708: memory not placed per node (the arena path): the automatic split is not tried, the one-socket
+                // default count and cores stay; STRATA_NUMA_SPLIT=1 still forces it
+                put_env("STRATA_NUMA_POOL", "0");
+                cpu::ExpertPool off(0, true, true);
+                const int off_workers = off.workers();
+                const std::vector<int> off_cores = off.worker_cores();
+                unset_env("STRATA_NUMA_POOL");
+                cpu::set_numa_pool_veto("test veto");
+                bool ok = true;
+                {
+                    cpu::ExpertPool pool(0, true, true);
+                    ok = !cpu::active_numa_split().on && pool.numa_slices() == 0 && cpu::active_numa_split().why.empty() &&
+                         pool.workers() == off_workers && pool.worker_cores() == off_cores;
+                }
+                put_env("STRATA_NUMA_SPLIT", "1");
+                {
+                    cpu::ExpertPool pool(workers, true, true);
+                    if (!cpu::active_numa_split().on || pool.numa_slices() != 2) {
+                        std::fprintf(stderr, "a NUMA pool veto stopped STRATA_NUMA_SPLIT=1\n");
+                        ok = false;
+                    }
+                }
+                unset_env("STRATA_NUMA_SPLIT");
+                cpu::set_numa_pool_veto("");
+                if (!ok) { std::fprintf(stderr, "a NUMA pool veto did not keep the one-socket pool\n"); return 1; }
+                std::printf("pool tasks: fake two nodes, veto: split off, %d workers as with STRATA_NUMA_POOL=0\n", off_workers);
+            }
             for (int nodes : {1, 3}) {   // one node: the pool before the split; three: not supported, the pool as it was
                 build(nodes);
                 cpu::ExpertPool pool(workers, true, true);
