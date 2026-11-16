@@ -369,12 +369,12 @@ def bounded_component_match(actual: Path, relative: str, commit: str) -> dict:
             and (physical == canonical or physical.replace(b"\r\n", b"\n") == canonical),
             "Provenance differs beyond CRLF checkout conversion",
         )
-    release.require(release.git("hash-object", "--", str(source)) == blob, "Tracked component source changed")
+    release.require(release.git("hash-object", "--", relative) == blob, "Tracked component source changed")
     expected = release.sha(source)
     release.require(release.sha(actual) == expected, "Known component bytes differ; copy refused")
     release.require(
         source.stat().st_size == actual.stat().st_size == size
-        and release.git("hash-object", "--", str(source)) == blob
+        and release.git("hash-object", "--", relative) == blob
         and before == (identity(source), identity(actual)),
         "Component identity changed during bounded validation",
     )

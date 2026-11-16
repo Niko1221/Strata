@@ -97,7 +97,7 @@ class Boundaries(unittest.TestCase):
         )
         folder = Path(vector_name).parent
         vector = self.delivery.APP / vector_name
-        licence = b"synthetic fixture licence"
+        licence = b"synthetic fixture licence\r\nintentional CRLF\r\n"
         document = {
             "schema": 1,
             "vector": {
@@ -136,7 +136,7 @@ class Boundaries(unittest.TestCase):
             if args[0] == "cat-file":
                 return str(blobs[args[-1]])
             if args[0] == "hash-object":
-                data = Path(args[-1]).read_bytes()
+                data = (self.release.ROOT / args[-1]).read_bytes()
                 return hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
             raise AssertionError(args)
 
@@ -195,11 +195,18 @@ class Boundaries(unittest.TestCase):
             self.assertEqual(physical, canonical.replace(b"\n", b"\r\n"))
             self.assertNotEqual(len(physical), len(canonical))
             installed.write_bytes(physical)
+            licence_relative = "data/experimental-speed-projection/LICENSE"
+            licence_bytes = (self.release.ROOT / licence_relative).read_bytes()
+            self.assertIn(b"\r\n", licence_bytes)
+            licence_blob = git("rev-parse", "HEAD:" + licence_relative).strip()
+            self.assertEqual(git("hash-object", "--", licence_relative).strip(), licence_blob)
+            self.assertEqual(git("hash-object", "--no-filters", "--", licence_relative).strip(), licence_blob)
             admitted = self.delivery.reject_app_weights(self.delivery.APP, self.commit)
             self.assertEqual(len(admitted), 11)
             vector = next(row for row in admitted.values() if row["role"] == "controlvector")
             self.assertEqual(vector["provenance"]["bytes"], len(physical))
             self.assertEqual(vector["provenance"]["sha256"], hashlib.sha256(physical).hexdigest())
+            self.assertEqual(vector["license"]["sha256"], hashlib.sha256(licence_bytes).hexdigest())
             self.assertEqual(git("status", "--porcelain"), b"")
             installed.write_bytes(canonical)
             with self.assertRaisesRegex(RuntimeError, "before hashing"):
@@ -226,6 +233,13 @@ class Boundaries(unittest.TestCase):
                     path.write_bytes(original + b"\r\n")
                     actual.write_bytes(original + b"\r\n")
                     with self.assertRaisesRegex(RuntimeError, "Reviewed source size differs"):
+                        self.delivery.reject_app_weights(self.delivery.APP, self.commit)
+                path.write_bytes(original)
+                actual.write_bytes(original)
+                with self.subTest(relative=relative, change="same-size-content"):
+                    path.write_bytes(b"X" + original[1:])
+                    actual.write_bytes(b"X" + original[1:])
+                    with self.assertRaisesRegex(RuntimeError, "Tracked component source changed"):
                         self.delivery.reject_app_weights(self.delivery.APP, self.commit)
                 path.write_bytes(original)
                 actual.write_bytes(original)
@@ -384,7 +398,7 @@ class Boundaries(unittest.TestCase):
 
         def drift(*args):
             nonlocal checks
-            if args[0] == "hash-object" and Path(args[-1]) == source:
+            if args[0] == "hash-object" and self.release.ROOT / args[-1] == source:
                 checks += 1
                 if checks == 2:
                     return "b" * 40
