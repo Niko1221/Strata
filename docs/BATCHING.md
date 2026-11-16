@@ -9,6 +9,18 @@ conversations at the same time instead of waiting for each other.
 
 It is opt-in and changes nothing when the options are absent (#465; the engine part is PR #559).
 
+The shared engine and SYCL paths retain a text slot's valid prompt checkpoints within `--prompt-cache`.
+Zero keeps none; one keeps the deepest point. Larger budgets retain every valid point that fits. Over-budget
+selection follows the existing root, pin and least-recent-use rules, or the shared engine's configured spread
+policy. Selection checks token prefixes, copied range and later-stage parts before copying any state.
+The existing optional move still transfers only an eligible unpinned turn checkpoint; other retained points
+are independent copies; the shared engine waits for pending checkpoint host copies first. An allocation failure
+skips the remaining copies and leaves the source reusable.
+Whole-slot return uses the existing upstream checkpoint transfer and clears the previous main chain's tail
+marker for an ordinary text return. BYIELD and selected-checkpoint bookkeeping keep their existing paths.
+Each copied point includes all stage payloads and token vectors. If every valid point fits, copying can cost
+as much as a full chain copy: the count budget is not a byte limit. Image slots do not use this text admission.
+
 **Qwen3.6-35B-A3B** has the same option on its own engine path (`"parallel": N`, `--batch N`, `--batch-mtp`, up to 8 slots, the same
 engine protocol and the same server): its numbers, what a slot costs and where setup recommends it are in [QWEN36.md](QWEN36.md).
 
