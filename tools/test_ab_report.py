@@ -78,6 +78,20 @@ class Html(unittest.TestCase):
         self.assertNotEqual(w[1], w[3])  # 120 vs 110 differ
         self.assertNotIn("max-width:calc(100% - 80px)", build_html(r))
 
+    def test_subtitle_without_gpu_has_no_leading_dot(self):
+        r = copy.deepcopy(RESULTS)
+        r["gpu"] = ""
+        self.assertIn('<p class="sub">Qwen3.6-35B-A3B', card(build_html(r)))
+
+    def test_isolation_result_under_the_table_not_on_the_card(self):
+        h = build_html(RESULTS)
+        self.assertIn("untouched", h[h.index("</table>"):])
+        self.assertNotIn("untouched", card(h))
+        r = dict(RESULTS, untouched=False, changed=["~C:/Users/x/AppData/Local/Strata/<a>.json"])
+        h = build_html(r)
+        self.assertIn("<code>~C:/Users/x/AppData/Local/Strata/&lt;a&gt;.json</code>", h[h.index("</table>"):])
+        self.assertNotIn("AppData", card(h))
+
     def test_regression_shown_negative(self):
         r = copy.deepcopy(RESULTS)
         r["arms"][1] = arm("0.1.56", [90, 95, 88, 80], [300, 310, 305, 1200])
