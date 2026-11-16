@@ -12,7 +12,7 @@ import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from ab_versions import (Busy, Packages, ReleasePair, assert_idle, changed, collect_configs, control_command, ensure_packages,  # noqa: E402
+from ab_versions import (Busy, _last_line,Packages, ReleasePair, assert_idle, changed, collect_configs, control_command, ensure_packages,  # noqa: E402
                          isolated_env, launch, list_releases, live_roots, pairs_from_releases, parse_sums, provision_home,
                          resolve_versions, served_engine, snapshot, version_problem)
 
@@ -489,7 +489,17 @@ class LaunchTest(unittest.TestCase):
         presets = self.home / ".config" / "strata" / "presets"
         presets.mkdir(parents=True)
         (presets / "p.json").write_text("{}", encoding="utf-8")
-        self.assertEqual(sorted(p.name for p in collect_configs(self.home, self.root / "c")), ["p.json", "x.choices.json"])
+        tune = self.home / ".strata" / "data" / "native-tune" / "a"
+        tune.mkdir(parents=True)
+        (tune / "t.json").write_text("{}", encoding="utf-8")
+        (self.home / "other.json").write_text("{}", encoding="utf-8")
+        self.assertEqual(sorted(p.name for p in collect_configs(self.home, self.root / "c")), ["p.json", "t.json", "x.choices.json"])
+
+    def test_last_line_prefers_json_error_over_stderr_noise(self):
+        text = 'progress\n{"error": {"message": "no engine for this card"}}\n\nWarning: something on stderr\n'
+        self.assertEqual(_last_line(text), "no engine for this card")
+        self.assertEqual(_last_line("a\nb\n\n"), "b")
+        self.assertEqual(_last_line(""), "")
 
 
 if __name__ == "__main__":
