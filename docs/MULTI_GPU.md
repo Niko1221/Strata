@@ -5,6 +5,7 @@ several cards. NVIDIA is described here; AMD limits and measurements are in [AMD
 
 > **On this page:** [Using it](#using-it) · [Main, Helper, Off](#main-helper-off) · [How the split works](#how-the-split-works) ·
 > [Tuning options](#tuning-options) · [Pipeline windows](#pipeline-windows) · [Two models on two cards](#two-models-on-two-cards) ·
+> [Two makes of card behind one server](#two-makes-of-card-behind-one-server) ·
 > [Limits](#limits) · [History](#history--older-measurements)
 
 ## Using it
@@ -87,10 +88,11 @@ estimated 2 GB of its own buffers.
   with `--gpus` (or `--gpu`, `--cuda 12`) and then run the experimental CUDA 12 engine ([OLDER_GPUS.md](OLDER_GPUS.md)).
 - A card with less than 8 GB of VRAM together with others, because each card holds a copy of the dense weights and its own
   prompt buffers. If you name it with `--gpus`, setup states the risk and asks (`--yes` goes ahead).
-- Intel GPUs in a split, and a mix of NVIDIA and AMD cards. An engine drives one make of card. The app, `strata launch` and setup
+- Intel GPUs in a split, and a mix of NVIDIA and AMD cards **in a split**. An engine drives one make of card. The app, `strata launch` and setup
   offer only the cards the engine can drive, and say so when the other make has the bigger card. AMD cards share a model among
   themselves: `./setup.sh --backend hip --gpus 1,0` ([AMD_HIP.md](AMD_HIP.md)).
   A prompt read on one card and an answer made on another, with the session handed over in RAM, is a different opt-in: [SPLIT_SERVE.md](SPLIT_SERVE.md).
+  Two makes of card **behind one server**, one engine each and no hand-over, is what the replica router now allows: [Two makes of card behind one server](#two-makes-of-card-behind-one-server).
 
 ## How the split works
 
@@ -210,6 +212,42 @@ for the next model, and explains a failed start on a card that is taken. Two mod
 **Measured on:** a PC with two of four Radeon AI PRO R9700 cards, Linux, AMD build, Q2_0 on one card and IQ3_XXS on the other.
 Both loaded (33 s and 59 s with the files cached, 114 s the first time) and answered chats at about 60 tokens/s each. Unloading
 one left the other answering. The same app code drives NVIDIA cards, but two models on two NVIDIA cards were not run.
+
+## Two makes of card behind one server
+
+A PC with one NVIDIA card and one AMD card can serve both behind one server: one model, one API key, one address. It is
+the replica router that does it, not the split. An entry of `"replicas"` may name its own `"backend"` (`cuda` or `hip`)
+and its own `"exe"` (the engine program of that replica), so a CUDA engine and a HIP engine run behind the same front,
+each on its own card:
+
+```json
+"replicas": [
+  {"backend": "cuda", "gpus": [0], "exe": "/opt/strata/components/engine/<pkg-cuda>/strata",
+   "env": {"LD_LIBRARY_PATH": "/opt/strata/components/engine/<pkg-cuda>"}},
+  {"backend": "hip",  "gpus": [0], "exe": "/opt/strata/components/engine/<pkg-hip>/strata",
+   "env": {"LD_LIBRARY_PATH": "/opt/strata/components/engine/<pkg-hip>"}}
+]
+```
+
+Each replica's `"gpus"` are numbered as **its own** backend numbers the cards (nvidia-smi for CUDA, HIP for AMD), so
+card 0 of a CUDA replica and card 0 of a HIP replica are two different cards. A card in two replicas is still refused,
+per backend: two replicas of the same backend may not take the same card, two replicas of different backends may both
+name card 0.
+
+The two engines never exchange a session: each keeps its own conversations, and the router sends a conversation back to
+the replica that holds it. Nothing of the session file crosses the backends. A prompt read on one card and an answer
+made on another, with the session handed over in RAM, is the other thing, and it is
+[SPLIT_SERVE.md](SPLIT_SERVE.md).
+
+`"replica_shared_arena": true` makes the experts sit in RAM once for the two engines (one shared memory object, the
+engine's `--shared-expert-arena`). Without it each engine holds its own copy of the experts, and two copies of a large
+model do not fit in a small machine.
+
+The two engine builds must be of the same Strata version: they serve the same model files. Nothing checks it.
+
+**Measured on:** a PC with an RTX 2070 (sm_75) and an RX 9060 XT (gfx1200), Debian 13, 31 GiB of RAM, Coder IQ1_M, the
+two engines behind one server with the shared arena. Both answered, each on its own card. The two engines share the
+machine's CPU pool, so they share its work too.
 
 ## Small cards: what a split gives up when it is short of memory
 

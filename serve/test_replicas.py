@@ -49,6 +49,34 @@ class Config(unittest.TestCase):
         self.assertEqual(cfg["args"], ["--x"])                       # the original is untouched
         self.assertEqual(replica_cfg({"gpu": [0, 1], "args": []}, 0, [3])["gpu"], 3)
 
+    def test_two_cards_of_different_makes(self):
+        """A CUDA replica and a HIP replica: card 0 of each is a different card."""
+        cfg = {"replicas": [{"backend": "cuda", "gpus": [0], "exe": "/e/strata-cuda"},
+                            {"backend": "hip", "gpus": [0], "exe": "/e/strata-hip"}]}
+        self.assertEqual(gpu_groups(cfg), [[0], [0]])            # the same number, two different cards
+        a, b = replica_cfg(cfg, 0, [0]), replica_cfg(cfg, 1, [0])
+        self.assertEqual((a["backend"], b["backend"]), ("cuda", "hip"))
+        self.assertEqual((a["exe"], b["exe"]), ("/e/strata-cuda", "/e/strata-hip"))
+        self.assertEqual(a["gpu"], 0)
+        self.assertEqual(b["gpu"], 0)
+
+    def test_the_same_card_twice_is_still_refused(self):
+        """Two replicas of the same backend may not take the same card."""
+        with self.assertRaises(ReplicaConfigError):
+            gpu_groups({"replicas": [{"backend": "cuda", "gpus": [0]}, {"backend": "cuda", "gpus": [0]}]})
+        with self.assertRaises(ReplicaConfigError):
+            gpu_groups({"replicas": [{"backend": "hip", "gpus": [1]}, {"backend": "hip", "gpus": [1]}]})
+        # the same number in two backends is fine
+        self.assertEqual(gpu_groups({"replicas": [{"backend": "cuda", "gpus": [1]},
+                                                   {"backend": "hip", "gpus": [1]}]}), [[1], [1]])
+
+    def test_a_backend_is_kept_when_the_entry_names_none(self):
+        """An entry without a backend keeps the config's."""
+        cfg = {"backend": "hip", "replicas": [{"gpus": [0]}, {"gpus": [1]}]}
+        a, b = replica_cfg(cfg, 0, [0]), replica_cfg(cfg, 1, [1])
+        self.assertEqual(a["backend"], "hip")
+        self.assertEqual(b["backend"], "hip")
+
     def test_cpu_sets_off(self):
         self.assertIsNone(cpu_sets(2, enabled=False))
         self.assertIsNone(cpu_sets(1))

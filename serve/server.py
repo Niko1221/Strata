@@ -9570,12 +9570,13 @@ def start_replicas(cfg: dict, groups: list[list[int]], exe: str, effort_end: lis
 
     def one(i: int):
         rc = rp.replica_cfg(cfg, i, groups[i])
+        rex = rc.get("exe") or exe      # a replica may run another engine build (a CUDA one and a HIP one)
         if arena:
             rc["args"] = list(rc["args"]) + ["--shared-expert-arena", arena]
         try:
-            engines[i] = StrataEngine(exe, engine_args(rc, exe) + effort_end, cwd=rc.get("cwd"), log=rc.get("log"),
+            engines[i] = StrataEngine(rex, engine_args(rc, rex) + effort_end, cwd=rc.get("cwd"), log=rc.get("log"),
                                       env=child_env(rc, offline=offline), lazy=lazy, cpus=cpus[i] if cpus else None,
-                                      retry_args=mtp_retry_args(rc, exe, effort_end), retry_vram_args=nodraft_retry_args(rc, exe, effort_end))
+                                      retry_args=mtp_retry_args(rc, rex, effort_end), retry_vram_args=nodraft_retry_args(rc, rex, effort_end))
         except BaseException as e:        # noqa: BLE001
             errors.append((i, e))
     rc0 = rp.replica_cfg(cfg, 0, groups[0])
