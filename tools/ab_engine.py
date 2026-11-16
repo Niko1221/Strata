@@ -8,10 +8,22 @@ answer, then sends the same requests: greedy, fixed prompts, a short chat set an
 server's own timings (llama.cpp's `timings`: decode and prompt tokens per second) per request and the per-arm
 medians.  Decode numbers move run to run (the adaptive expert tier, the OS), so compare medians over rounds.
 
-Versions mode compares Strata releases (engine + control of one release, with that release's own defaults), each in its own
-home under --bench-dir, and writes results.json and a report there:
+Versions mode compares Strata releases.  Each version is the engine and the control of one release, run with that
+control's own defaults.  `--tune quick|thorough` tunes each version once, before round 1.
 
     python tools/ab_engine.py --model-path <gguf|folder> --engines 0.1.55,0.1.56 [--tune quick] [--rounds 3]
+
+`--engines` takes a list (`0.1.55,0.1.56`) or a range (`0.1.50..0.1.56`).  The packages are downloaded from the GitHub
+release, checked against its SHA256SUMS.txt and kept in `~/strata-ab` (or `--bench-dir`).  The real Strata install is
+never used or changed; the tool compares its files before and after the run and exits with 1 if any of them changed.
+Stop the normal Strata server first: the tool refuses to run beside one.
+
+On NVIDIA it takes the CUDA 13 build when a release has both; use `--backend cuda-cuda12` for an older driver.  On AMD
+with several builds, name one with `--backend`.
+
+Results go to `<bench-dir>/runs/<timestamp>/`: results.json, report.html and report.png (the PNG needs Edge, Chrome or
+Chromium).  The generated and tuned configs are kept in `<bench-dir>/configs/<version>/<timestamp>/`.  Nothing in the
+bench folder is deleted.  The configs can contain the API key of the test home: do not attach that folder to an issue.
 """
 from __future__ import annotations
 

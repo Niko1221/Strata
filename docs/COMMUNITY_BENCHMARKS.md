@@ -141,6 +141,16 @@ python tools/strata_bench.py --compare OLD_FOLDER --compare-only NEW_FOLDER   # 
 The tool is a speed check, not a quality test. For recall and other checks, see [Optional correctness
 checks](#optional-correctness-checks); for A/B tests of two builds use `tools/ab_engine.py`.
 
+To compare Strata releases, each with its own defaults, give `tools/ab_engine.py` a model and the versions. Stop the
+normal Strata server first. The tool downloads the packages into `~/strata-ab` and never uses or changes your install:
+
+```bash
+python tools/ab_engine.py --model-path /path/to/model.gguf --engines 0.1.55,0.1.56 --rounds 3   # add --tune quick to tune each version once
+```
+
+It writes `results.json`, `report.html` and `report.png` to `~/strata-ab/runs/<timestamp>/`. The `configs` folder next to
+it can contain the API key of the test home, so do not attach it to an issue. Details: the top of `tools/ab_engine.py`.
+
 ## What to record
 
 Include enough information for someone else to repeat your run:
