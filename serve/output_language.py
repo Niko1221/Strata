@@ -1,7 +1,7 @@
 """Finite Japanese output preference. No conversion, training or hidden reasoning access."""
 SUPPRESSED = "這們讓嗎與會說國體學發夠麼邊從來應對關實點處臺灣"
 VERSION = "ja-finite-v1"
-INSTRUCTION = "回答と、表示する推論・説明は日本語で書いてください。中国語の文体や繁体字表記を混ぜず、自然な日本語を使ってください。ただし入力にある固有名詞、引用、識別子、コードは原文を忠実に保ってください。"
+INSTRUCTION = "最終回答だけでなく、表示する推論欄（thinking/reasoning）の本文自体も最初から最後まで日本語で書いてください。英語や中国語の説明文、繁体字表記を混ぜず、自然な日本語を使ってください。指定された出力形式（文章、列挙、コードブロックなど）に従ってください。ただし入力にある固有名詞、引用、識別子、コードは原文を忠実に保ってください。"
 
 def instruct(messages: list[dict]) -> list[dict]:
     result = [dict(m) for m in messages]

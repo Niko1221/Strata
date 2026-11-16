@@ -28,6 +28,12 @@ preserves previously saved choices. New registrations start at 4,096 tokens,
 the saved choice, or use that default for a new model. Manage models can load a
 registered dense model again; normal native instance controls stop and unload it.
 
+Explicit `user_args` and hand-edited raw arguments take priority over registration
+defaults for context, KV and language. When `args_written` records generated
+arguments, unchanged generated values still follow the scalar settings. Invalid
+or unsupported explicit arguments fail validation. Saved and running scalar
+reports are reconciled with the effective arguments, including `model-default`.
+
 Supported requested KV formats are `auto`, `f16`, `k8v4`, `spin8_k8v4`,
 `f16_turbo2`, `f16_turbo3` and `f16_turbo4`. The native planner tries F16, then
 Turbo4, then Spin8 for `auto`. It keeps the requested context and original weights.

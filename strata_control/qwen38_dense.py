@@ -32,7 +32,12 @@ def preview(metadata: dict, files: int) -> tuple[dict | None, str | None]:
             "expected_tensor_count": metadata.get("tensor_count_scanned"), "native_load": "unverified"}, None
 
 def arguments(cfg: dict) -> list[str]:
-    """Validate the complete actual argv, without MoE, drafter or private-KV defaults."""
+    """Validate argv and reconcile effective scalar reports after user-owned options.
+
+    Without args_written, raw args are explicit. With it, unchanged generated
+    options use scalar settings; hand edits and user_args keep their authority.
+    Mutate the effective fields only after all validation, for normal writers.
+    """
     from strata_control import user_args
     unsupported = ("cache_type_k", "cache_type_v", "q36_memory", "q36_run", "spin8_mode", "spin8_native_config",
                    "spin8_native_sha256", "layer_split", "replicas", "split_fallback", "slot_save_path", "gpu_layers",
@@ -40,7 +45,10 @@ def arguments(cfg: dict) -> list[str]:
     for key in unsupported:
         if cfg.get(key) not in (None, "", False):
             raise ValueError(f"dense native does not support {key}")
-    args = user_args.merge(cfg.get("args", []), cfg.get("user_args", []))
+    owned = (user_args.capture(cfg) if isinstance(cfg.get("args_written"), list)
+             else user_args.merge(cfg.get("args", []), cfg.get("user_args", [])))
+    args = user_args.merge(cfg.get("args", []), owned)
+    explicit = {user_args.flag_of(group) for group in user_args.groups(owned)}
     accepted = {"--model", "--ctx-size", "--kv", "--spin8-view", "--spin8-profile", "--output-language"}
     values = {}
     if len(args) % 2:
@@ -51,18 +59,23 @@ def arguments(cfg: dict) -> list[str]:
         values[flag] = value
     if not Path(values.get("--model", "")).is_absolute():
         raise ValueError("dense native requires an absolute --model GGUF path")
-    context = cfg.get("max_context", values.get("--ctx-size", 4096))
+    context = values["--ctx-size"] if "--ctx-size" in explicit else cfg.get("max_context", values.get("--ctx-size", 4096))
     if isinstance(context, bool) or not str(context).isascii() or not str(context).isdecimal() or not 1 <= int(context) <= 262144:
         raise ValueError("dense native context must be 1..262144")
     values["--ctx-size"] = str(context)
-    values["--kv"] = cfg.get("dense_kv", values.get("--kv", "auto"))
-    values["--output-language"] = cfg.get("output_language", values.get("--output-language", "ja"))
+    if "--kv" not in explicit:
+        values["--kv"] = cfg.get("dense_kv", values.get("--kv", "auto"))
+    if "--output-language" not in explicit:
+        values["--output-language"] = cfg.get("output_language", values.get("--output-language", "ja"))
     if values["--kv"] not in KV or values["--output-language"] not in LANGUAGES:
         raise ValueError("invalid dense native KV or output language")
     if values.get("--spin8-view", "vector") not in ("vector", "plus", "minus"):
         raise ValueError("invalid dense native Spin8 view")
     if cfg.get("parallel", 1) != 1 or cfg.get("vision") or cfg.get("drafting", "off") != "off" or cfg.get("mtp", False):
         raise ValueError("dense native supports one text session with drafting off")
+    cfg.update(max_context=int(context), dense_kv=values["--kv"], output_language=values["--output-language"])
+    if owned:
+        cfg["user_args"] = owned
     return [part for pair in values.items() for part in pair]
 
 def register(path: str, *, directory: Path | None = None, context: int | None = None, kv: str | None = None, language: str | None = None) -> dict:

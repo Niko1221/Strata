@@ -966,9 +966,12 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
    if(adopted&&instance.profile&&Date.now()-lastAsked>10000){lastAsked=Date.now();const st=await control.status(instance.profile).catch(()=>null);if(st&&['failed','stopped','stale'].includes(st.state)){const error={message:st.error||'server_exited',output:st};instance.status='error';instance.error=humanStartError(error);emit();throw startFailure(error,instance.error);}}
    try{const response=await fetcher(`http://127.0.0.1:${instance.port}/health`,{headers:{authorization:`Bearer ${key}`},signal:AbortSignal.timeout(2000)});if(job.state!=='running'){await stopCancelledLoad(job,instance,id);return;}if(response.ok){instance.status='ready';instance.phase='idle';await noteDrafting(job,instance,key);
     // Persist only load-owned choices into the current file; later edits and READY survive save failure.
-    if(resources||args.kv!==undefined||args.vision!==undefined||args.contextChosen===true||JSON.stringify(cfg[USER_KEY]??null)!==JSON.stringify(config[USER_KEY]??null)){
-     try{const path=record(args.model).path;const current=readJson(path),selected=persistOrdinaryKv(current,config,args.kv,policyFor(args.model,config));
-      writeModelConfig(path,{...selected,...(resources?{...resources,ui_resource_profile:args.resourceProfile}:{}),...visionPreferences,...(args.contextChosen===true?{ui_context_chosen:true}:{}),...(args.kv===undefined&&cfg[USER_KEY]?{[USER_KEY]:cfg[USER_KEY]}:{})});instance.configSave={status:'saved'};
+    if(denseConfig(cfg)||resources||args.kv!==undefined||args.vision!==undefined||args.contextChosen===true||JSON.stringify(cfg[USER_KEY]??null)!==JSON.stringify(config[USER_KEY]??null)){
+     try{const path=record(args.model).path;const current=readJson(path);
+      // Dense raw choices own both this run and future loads. If the file was
+      // edited while loading, reconcile that newer file instead of overwriting it.
+      const selected=denseConfig(cfg)?denseRunConfig(JSON.stringify(current)===JSON.stringify(config)?{...current,max_context:cfg.max_context,dense_kv:cfg.dense_kv,output_language:cfg.output_language,[USER_KEY]:cfg[USER_KEY]}:current):persistOrdinaryKv(current,config,args.kv,policyFor(args.model,config));
+      writeModelConfig(path,{...selected,...(resources?{...resources,ui_resource_profile:args.resourceProfile}:{}),...visionPreferences,...(args.contextChosen===true?{ui_context_chosen:true}:{}),...(!denseConfig(cfg)&&args.kv===undefined&&cfg[USER_KEY]?{[USER_KEY]:cfg[USER_KEY]}:{})});instance.configSave={status:'saved'};
      }catch(error){instance.configSave={status:'failed',code:error.code??'save_failed',message:error.message,retryable:true};append(id,`Settings were not saved after load: ${error.message}`);}
     }else instance.configSave={status:'not_requested'};
     emit();ensurePoll();instance.parallelNote=parallelNote;return {summary:retried?`${instance.label} is ready, after a second try: ${retried.words}`:`${instance.label} is ready.${parallelNote?' '+parallelNote:''}${picturesNote?' '+picturesNote:''}`,instanceId:id};}}catch{}

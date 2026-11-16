@@ -61,6 +61,50 @@ def test_preview_rejects_incompatible_dense(tmp_path,options,reason):
 def test_invalid_dense_options(patch):
     with pytest.raises(ValueError):dense.arguments({"args":["--model",str(Path.cwd()/"x.gguf")],**patch})
 
+@pytest.mark.parametrize("source", ["user", "raw", "edited", "generated"])
+def test_dense_explicit_argument_precedence_and_scalar_reports(source):
+    model=["--model",str(Path.cwd()/"original.gguf")]
+    choices=["--ctx-size","131072","--kv","f16","--output-language","model-default"]
+    defaults=["--ctx-size","4096","--kv","auto","--output-language","ja"]
+    cfg={"args":model,"max_context":4096,"dense_kv":"auto","output_language":"ja"}
+    if source=="user":cfg.update(args=model+defaults,args_written=model+defaults,user_args=choices)
+    elif source=="raw":cfg["args"]=model+choices
+    elif source=="edited":cfg.update(args=model+choices,args_written=model+defaults,user_args=defaults)
+    else:cfg.update(args=model+defaults,args_written=model+defaults,max_context=131072,dense_kv="f16",output_language="model-default")
+    assert dense.arguments(cfg)==model+choices
+    assert (cfg["max_context"],cfg["dense_kv"],cfg["output_language"])==(131072,"f16","model-default")
+    assert dense.arguments(cfg)==model+choices
+
+@pytest.mark.parametrize("choices", [["--ctx-size","0"],["--ctx-size","1e5"],["--kv","invalid"],["--output-language","zh"],["--gpu-layers","64"]])
+def test_explicit_arguments_cannot_bypass_validation(choices):
+    import copy
+    cfg={"args":["--model",str(Path.cwd()/"original.gguf")],"user_args":choices,"max_context":4096,"dense_kv":"auto","output_language":"ja"}
+    before=copy.deepcopy(cfg)
+    with pytest.raises(ValueError):dense.arguments(cfg)
+    assert cfg==before
+
+def test_terminal_reconciles_user_arguments_for_saved_and_future_load(tmp_path):
+    from tests.terminal.launch_support import Home, catalog
+    from strata_cli.launch.settings import LaunchSettings
+    from strata_cli.launch.runner import Runner
+    from serve.server import engine_args
+    model=fixture(tmp_path/"original.gguf")
+    choices=["--ctx-size","131072","--kv","f16","--output-language","model-default"]
+    with Home():
+        runner=Runner(LaunchSettings(model_path=str(model)),catalog=catalog())
+        runner.plan()
+        base=runner.ensure_model()
+        cfg=json.loads(base.read_text(encoding="utf-8"));cfg["user_args"]=choices
+        base.write_text(json.dumps(cfg),encoding="utf-8")
+        run=json.loads(runner.build_config(base).read_text(encoding="utf-8"))
+        assert (run["max_context"],run["dense_kv"],run["output_language"])==(131072,"f16","model-default")
+        assert engine_args(run)[-6:]==choices
+        runner.ensure_model()  # normal re-registration reconciles future reporting too
+        saved=json.loads(base.read_text(encoding="utf-8"))
+        assert (saved["max_context"],saved["dense_kv"],saved["output_language"])==(131072,"f16","model-default")
+        assert saved["user_args"][-6:]==choices
+        assert engine_args(saved)[-6:]==choices
+
 def test_signed_parent_full_inventory_and_covered_helper(tmp_path):
     helper="strata-q38.exe" if os.name=="nt" else "strata-q38"
     folder=make_package(tmp_path,extra={helper:b"runner", "sidecar.dat":b"covered"})
@@ -95,6 +139,8 @@ def test_literal_and_rendering_production_boundary():
     tools=[{"name":"literal_學","parameters":{}}]
     rendered=svc.render_prompt(messages,tools,{})
     assert INSTRUCTION in rendered and "keep system" in rendered and "國/臺灣 𠮷 JSON" in rendered and "literal_學" in rendered
+    assert "推論欄（thinking/reasoning）の本文自体" in rendered and "最初から最後まで日本語" in rendered
+    assert "指定された出力形式" in rendered and "コードは原文を忠実に保ってください" in rendered
     assert messages[0]["content"]=="keep system"
     mask=int(literal_exceptions(messages,tools),16)
     assert mask&(1<<7) and mask&(1<<22) and mask&(1<<23) and not mask&1
