@@ -403,7 +403,7 @@ bool map_segment(const Vmm& v, int dev, CUdeviceptr va, size_t bytes, unsigned l
 
 #if !defined(STRATA_EC_NO_VMM)
 // the driver and this GPU offer the virtual memory functions the segmented arena needs (the check open_segmented makes first)
-static bool segmented_supported() {
+static bool vmm_segmented_supported() {
     const Vmm& v = vmm();
     int dev = 0, supported = 0;
     CUdevice cu = 0;
@@ -411,6 +411,14 @@ static bool segmented_supported() {
            v.attribute(&supported, CU_DEVICE_ATTRIBUTE_VIRTUAL_MEMORY_MANAGEMENT_SUPPORTED, cu) == CUDA_SUCCESS && supported;
 }
 #endif
+
+bool ExpertCache::segmented_supported() {
+#if defined(STRATA_EC_NO_VMM)
+    return false;
+#else
+    return vmm_segmented_supported();
+#endif
+}
 
 bool ExpertCache::open_segmented(uint64_t want, std::string& err) {
 #if defined(STRATA_EC_NO_VMM)
@@ -639,7 +647,7 @@ bool ExpertCache::open(int64_t n_slots, int64_t n_layers, int64_t n_expert, int6
     }
 
 #if !defined(STRATA_EC_NO_VMM)
-    if (seg_req_ > 0 && !segmented_supported()) {   // a driver without them: one block, the engine starts all the same
+    if (seg_req_ > 0 && !vmm_segmented_supported()) {   // a driver without them: one block, the engine starts all the same
         std::fprintf(stderr, "ExpertCache: --vram-elastic is off: the driver or this GPU offers no virtual memory management; "
                              "the cache is one block\n");
         seg_req_ = 0;

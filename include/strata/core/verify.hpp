@@ -27,6 +27,7 @@
 #include "strata/core/flag_order.hpp"
 #include "strata/core/layer.hpp"
 #include "strata/core/session.hpp"
+#include "strata/core/slot_settings.hpp"
 #include "strata/kernels/sampler.hpp"
 #include "strata/kernels/window_limits.hpp"
 #include "strata/kernels/verify_kernels.hpp"
@@ -246,7 +247,14 @@ public:
     //
     // Greedy only, no drafts (MTP) in a batch window.  `init_slots` once after `init` (S <= max_t); a layer
     // split's stages each get their own sessions, and run_slots/commit_slots continue into the next stage.
+    // `resize_slots` then replaces the layout between requests (--parallel-recycle): the slots that stay keep
+    // the sampling, logit bias and penalty tail admission gave them, and only the new slots start at `sampling_`.
     bool init_slots(const std::vector<SessionState*>& slots, std::string& err);
+    /// #adaptive-slots: replace the slot sessions of the batch windows.  The batch-only buffers and the captured
+    /// batch graphs are released (a graph names those buffers), then `init_slots(slots)` builds them for this count.
+    /// A slot that survives the resize keeps its sampling / logit bias / penalty history; the bias arrays of the
+    /// slots that are dropped are freed here.  Only at a request boundary: nothing may be decoding.
+    bool resize_slots(const std::vector<SessionState*>& slots, std::string& err);
     int n_slots() const { return (int) slots_.size(); }
     /// One batch window over slots [0, S): tokens[s] at positions pos[s]; out[s] = the greedy pick after it.
     bool run_slots(int S, const int32_t* tokens, const int64_t* pos, PoolMultiFn pool, void* user, int32_t* out,
@@ -301,9 +309,10 @@ public:
     /// its row is drawn again on the last stage with Philox(seed, position), as a solo window draws it.  Greedy by
     /// default.  Set on the first stage, it reaches the last.
     void set_slot_sampling(int slot, const strata::kernels::SamplerParams& sp) {
-        if (slot >= 0 && slot < (int) slot_sp_.size()) {
-            slot_sp_[(size_t) slot] = sp;
-            slot_sp_[(size_t) slot].logit_bias = slot < (int) slot_bias_dev_.size() ? slot_bias_dev_[(size_t) slot] : nullptr;   // the slot's own bias array (set_slot_logit_bias)
+        if (slot >= 0 && slot < (int) slot_settings_.sp.size()) {
+            slot_settings_.sp[(size_t) slot] = sp;
+            slot_settings_.sp[(size_t) slot].logit_bias =
+                slot < (int) slot_settings_.bias_dev.size() ? slot_settings_.bias_dev[(size_t) slot] : nullptr;   // the slot's own bias array (set_slot_logit_bias)
         }
         if (next_) next_->set_slot_sampling(slot, sp);
     }
@@ -312,7 +321,8 @@ public:
     /// The slot's reply tail for its penalty window: the `n` tokens its session consumed since the reply began (the last penalty_last_n are used), the
     /// fed-back head not included.  Set before every batch window that holds the slot while it has a penalty; reaches the last stage.
     void set_slot_history(int slot, const int32_t* tail, int64_t n) {
-        if (slot >= 0 && slot < (int) slot_tail_.size()) slot_tail_[(size_t) slot].assign(tail, tail + (n > 0 ? n : 0));
+        if (slot >= 0 && slot < (int) slot_settings_.tail.size())
+            slot_settings_.tail[(size_t) slot].assign(tail, tail + (n > 0 ? n : 0));
         if (next_) next_->set_slot_history(slot, tail, n);
     }
     const int32_t* batch_out() const { return b_out_; }
@@ -492,9 +502,7 @@ private:
     }
     std::chrono::steady_clock::time_point ext_checked_{};   ///< batch_poll's last check with external serving
     int32_t b_out_[strata::kernels::kWindowMaxT] = {};
-    std::vector<strata::kernels::SamplerParams> slot_sp_;
-    std::vector<float*> slot_bias_dev_;                  ///< per slot: its logit bias on the device (null = none)
-    std::vector<std::vector<int32_t>> slot_tail_;        ///< per slot: its reply tail for the penalty window (set_slot_history)
+    strata::core::SlotSettings<strata::kernels::SamplerParams> slot_settings_;   ///< #adaptive-slots: per-slot request settings (see slot_settings.hpp)
     int32_t* slot_hist_d_ = nullptr;                     ///< the penalty-history rows of the current batch window (device)
     size_t slot_hist_cap_ = 0;
     bool sample_rows(int S, std::string& err);
