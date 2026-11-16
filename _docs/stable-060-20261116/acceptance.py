@@ -133,10 +133,10 @@ GPU_NAMES = {
 }
 SCENARIOS = {"upgrade", "fresh", "empty", "locked", "junction", "root-junction"}
 GPU_PINS = {
-    "gpu_binding": "9b1b0241186b8d8d199365d5198d8601660527e29af03292944437d021483e2b",
-    "gpu_report": "a163cd37148ead75b98765e7cd5e0a93f5e2485b0e4cff054f39df7cf3308006",
-    "gpu_guard": "7161c2b9f7bdebc2c3437d42347ad4ce8d2f1be359cc858165284dfde09b629d",
-    "gpu_junit": "08bb84b18db07e4d09e372b4887b6a12cdef48fb4a7f6ee2871ce7df422e6431",
+    "gpu_binding": "62abfb79bec6a56693a5b8ab65546d16edcec0d1debdfe49313d861877a09788",
+    "gpu_report": "24c5dae74cadff5b91eac19a66f334f935bc21598250b13b608844ef8ed4bc73",
+    "gpu_guard": "e885bbbe1f8418d1b94cdd8cd5c8429ea6fed366a4e500555e9b0a1734042a5e",
+    "gpu_junit": "b239f5cfcbebf8b77a88d5252b9dc3f3f60f4eff5f0001219693b0d4f7054e8f",
 }
 EXTERNAL_INPUTS = ("native", "component", "native_job", "component_job", *GPU_PINS)
 COMPILED_LIBRARIES = {

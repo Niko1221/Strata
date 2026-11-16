@@ -18,31 +18,31 @@ spec = importlib.util.spec_from_file_location("acceptance_test_target", HERE / "
 a = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(a)
 COMMIT = "a" * 40
-CAPTURE = Path("H:/Strata/private-backups/cleanup-20261116/native-c775-profile-v1")
+CAPTURE = Path("H:/Strata/evidence/upstream-sync-20261116/native-q38-legacy-refresh-r1")
 GPU_CAPTURE = {
-    "gpu_binding": Path("H:/Strata/private-backups/cleanup-20261116/gpu-c775-v1/binding.json"),
-    "gpu_report": Path("H:/Strata/evidence/upstream-sync-20261116/gpu-c775-v1.json"),
-    "gpu_guard": Path("H:/Strata/evidence/upstream-sync-20261116/receipts/gpu-c775-v1.json"),
-    "gpu_junit": Path("H:/Strata/evidence/upstream-sync-20261116/gpu-c775-v1.xml"),
+    "gpu_binding": CAPTURE / "binding.json",
+    "gpu_report": Path("H:/Strata/evidence/upstream-sync-20261116/gpu-q38-legacy-r1.json"),
+    "gpu_guard": Path("H:/Strata/evidence/upstream-sync-20261116/receipts/gpu-q38-legacy-r1.json"),
+    "gpu_junit": Path("H:/Strata/evidence/upstream-sync-20261116/gpu-q38-legacy-r1.xml"),
 }
-MEASURED_SOURCE = "1c7811ccd9ebe8a853469b468ea196757a6d95332fe030b3e5f8d1512aedeaef"
+MEASURED_SOURCE = "39e2edfabca66d1a6467d7fb8769b7948c7e361d14debac75465b73a806c1c07"
 MEASURED_BINARIES = {
-    "strata.exe": "94e13464087b8944665dc226d798df4942cb74199022fed20947101b53d7f99c",
-    "strata-q36.exe": "51d4a189cb6ab53641008a6ecbecd89af6f0a37ec33d45da3515bf4779a77b60",
+    "strata.exe": "b00e4ee065740fb9b25b57d946103096d4af4078989b316c6c62077e3c62d73f",
+    "strata-q36.exe": "2eb40da0d574031eaa685939dbaacbb1eb1335d7c35159b674fa1a4f5a88b858",
 }
 
 
 def test_selected_profile_is_complete_actual_capture() -> None:
-    """The reviewed capture includes a newly measured DLL, with no resource growth."""
+    """Select the complete recapture after a real rebuild, with no resource growth."""
     profile = HERE.parents[1] / a.PROFILE
-    expected = "45c1fdb68fbe506c2790643c3295d59aa01f160cd1976ef9031469cd6ce028e5"
+    expected = "1db8c735238f98167cb676eec672a69586c7ee70e73a42e949a5eb53de8bd621"
     a.artifact(profile, expected)
     a.artifact(CAPTURE / "candidate-measurements.json", expected)
     assert profile.read_bytes() == (CAPTURE / "candidate-measurements.json").read_bytes()
     comparison = a.release.load(CAPTURE / "comparison.json")
     a.artifact(
         CAPTURE / "comparison.json",
-        "fa9154e1f6c2d8738a52956c297ade1f6e08a36d2200e36176cf6b227e0dbfaf",
+        "f0461fd49ebf6aabaf70ec4a206ec78c679a337d4d23c224ba28d97205c11b08",
     )
     assert comparison["measuredEntries"] == 451
     assert (
@@ -61,11 +61,74 @@ def test_selected_profile_is_complete_actual_capture() -> None:
     )
     assert bindings == comparison["bindings"]
     assert len(measured.load(profile, bindings)) == 451
+    assert (
+        a.release.load(profile)["entries"]
+        == a.release.load(CAPTURE / "historical-profile.json")["entries"]
+    )
     libraries = a.compiled_libraries(a.release.load(profile), a.native.BUILD / "Release")
+    after = a.release.load(CAPTURE / "after.json")
+    assert all(
+        row["sha256"] == after["outputs"][name]["sha256"] == comparison["outputs"][name]
+        for name, row in libraries.items()
+    )
     assert (
         libraries["strata_kq.dll"]["sha256"]
         == "7f42796411387ef9d7d0d9cca8000bf3009bb85990a9f21633c6b10e6bab2bf8"
     )
+
+
+def test_selected_profile_refresh_is_guarded_remeasurement() -> None:
+    """Bind real rebuild provenance and keep every established resource floor."""
+    before = a.release.load(CAPTURE / "before.json")
+    after = a.release.load(CAPTURE / "after.json")
+    assert (
+        before["candidateNativeDigest"]
+        == after["sourceDigestBefore"]
+        == after["sourceDigestAfter"]
+        == MEASURED_SOURCE
+    )
+    assert after["sourceUnchanged"] is True and after["exitCode"] == 0
+    assert before["compilerJobs"] == after["compilerJobs"] == 5
+    assert before["command"][-2:] == ["--parallel", "5"]
+    assert {
+        name
+        for name, row in after["outputs"].items()
+        if row["sha256"] != before["outputs"][name]["sha256"]
+    } == {
+        "strata.exe",
+        "strata-q36.exe",
+        "strata_kernels.lib",
+        "strata_engine.lib",
+        "strata_prefill.lib",
+        "strata_qwen35.lib",
+    }
+    for name, digest in MEASURED_BINARIES.items():
+        assert after["outputs"][name]["sha256"] == digest
+    for name in ("native-q38-legacy-refresh-r1", "native-q38-legacy-capture-r1"):
+        receipt = a.release.load(CAPTURE.parent / "receipts" / (name + ".json"))
+        assert receipt["passed"] is True
+        a.successful_job(receipt["run"])
+        assert receipt["run"]["configured_job_commit_bytes"] is None
+        assert receipt["ramPolicy"]["allowLowRam"] is False
+        assert receipt["ramPolicy"]["nominalBreachSamples"] == 0
+        for field, floor in (
+            ("available_ram", 3),
+            ("commit_headroom", 4),
+            ("H_free", 10),
+            ("C_free", 5),
+        ):
+            assert receipt["admission"][field] >= floor * a.release.GIB
+
+
+@pytest.mark.parametrize("change", ("missing", "altered"))
+def test_selected_profile_rejects_changed_library(change: str) -> None:
+    profile = a.release.load(HERE.parents[1] / a.PROFILE)
+    if change == "missing":
+        profile["measuredLibraries"].pop()
+    else:
+        profile["measuredLibraries"][0]["sha256"] = "0" * 64
+    with pytest.raises(RuntimeError):
+        a.compiled_libraries(profile, a.native.BUILD / "Release")
 
 
 @pytest.mark.parametrize("field", ("sourceDigest", "compilerKey", "ggmlCommit"))
@@ -136,7 +199,7 @@ def frozen_gpu() -> tuple[dict, dict, dict, dict]:
 def test_frozen_gpu_capture_and_fail_closed_boundaries(change: str) -> None:
     binding, report, guard, binaries = frozen_gpu()
     if change == "old-source":
-        binding["sourceDigest"] = "8bc0448a35e217052eb0537285c7e38e724f0422a02f33f30554d2fb07d6a848"
+        binding["sourceDigest"] = "1c7811ccd9ebe8a853469b468ea196757a6d95332fe030b3e5f8d1512aedeaef"
     elif change in binaries:
         binaries[change] = "f" * 64
     elif change == "failed":
@@ -150,7 +213,6 @@ def test_frozen_gpu_capture_and_fail_closed_boundaries(change: str) -> None:
     elif change == "ram-admission":
         guard["admission"]["available_ram"] = 3 * a.release.GIB - 1
     elif change == "ram-observed":
-        # This capture's self-described exception has no authenticated outer flag.
         guard["run"]["memory_diagnostics"]["min_available_ram"] = 3 * a.release.GIB - 1
     elif change == "commit":
         guard["run"]["memory_diagnostics"]["min_commit_headroom"] = 4 * a.release.GIB - 1
@@ -171,12 +233,24 @@ def test_frozen_gpu_capture_and_fail_closed_boundaries(change: str) -> None:
 
 
 @pytest.mark.parametrize("name", tuple(GPU_CAPTURE))
-def test_frozen_gpu_input_sha_rejects_changed_bytes(tmp_path: Path, name: str) -> None:
+@pytest.mark.parametrize("change", ("altered", "missing", "stale"))
+def test_frozen_gpu_input_sha_rejects_changed_bytes(tmp_path: Path, name: str, change: str) -> None:
     original = GPU_CAPTURE[name]
     a.artifact(original, a.GPU_PINS[name])
     changed = tmp_path / original.name
-    changed.write_bytes(original.read_bytes() + b" ")
-    with pytest.raises(RuntimeError, match="digest"):
+    if change == "altered":
+        changed.write_bytes(original.read_bytes() + b" ")
+    elif change == "stale":
+        old = {
+            "gpu_binding": Path(
+                "H:/Strata/private-backups/cleanup-20261116/gpu-c775-v1/binding.json"
+            ),
+            "gpu_report": CAPTURE.parent / "gpu-c775-v1.json",
+            "gpu_guard": CAPTURE.parent / "receipts/gpu-c775-v1.json",
+            "gpu_junit": CAPTURE.parent / "gpu-c775-v1.xml",
+        }
+        changed.write_bytes(old[name].read_bytes())
+    with pytest.raises(RuntimeError, match="missing" if change == "missing" else "digest"):
         a.artifact(changed, a.GPU_PINS[name])
 
 

@@ -2,7 +2,7 @@
   "bindings": {
     "compilerKey": "3d02d9aa3a340546a098972927f76942ce6b1bb54348a6699d26fc9dc9195d65",
     "ggmlCommit": "vendored-sha256:00d79121e61703168b5f335234d8b391edd3192560b5bc98216a9c8fe8401af1",
-    "sourceDigest": "1c7811ccd9ebe8a853469b468ea196757a6d95332fe030b3e5f8d1512aedeaef"
+    "sourceDigest": "39e2edfabca66d1a6467d7fb8769b7948c7e361d14debac75465b73a806c1c07"
   },
   "entries": {
     "strata_kernels.lib|dequant_bf16.obj|sm_120|_ZN6strata7kernels48_GLOBAL__N__d9afac2b_15_dequant_bf16_cu_b8976c8914dequant_kernelILi11ENS1_3H16ELb0EEEvPKhxxxxxPT0_": [
@@ -1813,7 +1813,7 @@
   "measuredLibraries": [
     {
       "library": "strata_kernels.lib",
-      "sha256": "32c0feb64396f2b5eae86fc207ccd4c7de6a4c1c65aa204e01f220462cc9d6bb"
+      "sha256": "d62d3ff2033a84ffbedf96d92c7b7d7bcfb8c2fa0d2afb54daae2e730ed4f44b"
     },
     {
       "library": "strata_core.lib",
@@ -1821,15 +1821,15 @@
     },
     {
       "library": "strata_engine.lib",
-      "sha256": "4f6b41426f246ea0532e39ac3a6178f588e973f2aa5d63fbf3b46f35d50bafb5"
+      "sha256": "fad710b18e7fb34c1ed15130c28293953934ef5135fc258d6d6aee21a5f636ef"
     },
     {
       "library": "strata_prefill.lib",
-      "sha256": "6ed9791c40e2ebaafab9deb08ec392784040f6b5aed4be9a446cdcef9a2c1d4f"
+      "sha256": "290ed735be311901df2ab1acf6b32abd87214da0aa146a90e3d9508ac711fe71"
     },
     {
       "library": "strata_qwen35.lib",
-      "sha256": "bd9e346d13c5465f8a0a3d48d409ca1b68a8bce4107c33df21e280df220cea91"
+      "sha256": "86c825910a408315687bffef94a390917aafe6e09707a488c1d2391b8031c0c9"
     },
     {
       "library": "strata_mmq.lib",
