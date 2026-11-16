@@ -140,6 +140,34 @@ class StoragePath(Base):
                 check()
             self.run_app(case, ctx=ctx, size=(80, 24))
 
+    def test_compact_summary_keeps_the_storage_path_ends_and_all_actions_visible(self):
+        ctx = make_ctx()
+
+        async def case(app, pilot, ctx):
+            await press(pilot, *("enter",) * 7, "n", "enter")
+            ctx.settings.data_dir = path_of(200)
+
+            def check():
+                self.assertTrue(app.screen._compact)
+                shown = text_of(app)
+                row = next(line.strip() for line in shown.splitlines() if "Storage" in line)
+                self.assertIn("/home/ana/", row)
+                self.assertIn("…", row)
+                self.assertTrue(row.endswith("/Strata-data"), row)
+                self.assertLessEqual(len(row), 80)
+                for choice in ("Save as a preset and launch", "Launch without saving", "Save the preset and stop here"):
+                    self.assertIn(choice, shown)
+                self.assertLessEqual(app.screen.menu().region.bottom, app.screen.query_one("#body").region.bottom)
+
+            # Warnings also require compact mode at 80x24, even after the path
+            # itself has been counted as one shortened row.
+            with mock.patch.object(ctx, "warnings", return_value=["Synthetic configuration warning."] * 5):
+                app.screen.paint()
+                await settled(pilot, check)
+                check()
+
+        self.run_app(case, ctx=ctx, size=(80, 24))
+
     def test_middle_shorten(self):
         from strata_cli.launch.screens import middle_shorten
         self.assertEqual(middle_shorten("C:/a/b", 10), "C:/a/b")

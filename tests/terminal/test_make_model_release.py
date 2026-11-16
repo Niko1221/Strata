@@ -67,6 +67,12 @@ class Plan(unittest.TestCase):
     def base(self, rep, *extra):
         return ["--intake", str(rep), "--id", "m1", "--app-version", "0.2.12", "--sequence", "122", "--prev-upload", str(self.prev), *extra]
 
+    def test_deepseek_archives_are_kept_separate_from_qwen_shape_build_inputs(self):
+        scanned = M.scan_upload(self.prev)
+        name = "strata-dsv41-0.1.57-linux-x86_64-cuda-cuda13.tar.gz"
+        self.assertEqual([(item["name"], item["size"]) for item in scanned["dsv41"]], [(name, PREV[name])])
+        self.assertNotIn(name, {item["name"] for item in scanned["engine"] + scanned["other"]})
+
     def test_case_a_is_feed_and_app_only(self):
         code, out, err = run(self.base(self.a, "--json", "--revision", "abc", "--hf-repo", "x/y"))
         self.assertEqual(code, 0, err)

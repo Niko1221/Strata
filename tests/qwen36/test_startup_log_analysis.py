@@ -89,7 +89,7 @@ class StartupLogAnalysisTest(unittest.TestCase):
                      "native_admission_from_env": native_admission_from_env,
                      "NativeAdmission": NativeAdmission, "q36_memory_mode": q36_memory_mode,
                      "validate_q36_memory_args": validate_q36_memory_args,
-                     "threading": SimpleNamespace(Event=threading.Event, Thread=mock.Mock()), "subprocess": subprocess,
+                     "threading": SimpleNamespace(Event=threading.Event, Thread=mock.Mock(), RLock=threading.RLock), "subprocess": subprocess,
                      "engine_nice": lambda env: 0, "end_leftover_engines": mock.Mock(), "popen": fake_popen,
                      "narrate_start": mock.Mock(), "_echoing": set()}
         exec(compile(module, str(path), "exec"), namespace)

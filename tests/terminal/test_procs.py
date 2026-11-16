@@ -305,7 +305,7 @@ class WindowsOrphanScan(unittest.TestCase):
 
     def test_the_same_orphans_as_reading_every_process(self):
         new, _ = self.scan(windows=True)
-        old, _ = self.scan(windows=False)                            # the full read, as before (and as Linux and macOS still do)
+        old, _ = self.scan(windows=False)                            # executable matching also accepts POSIX hard links
         self.assertEqual(new, old)
         self.assertEqual(new, [101, 102, 103, 104])
 
@@ -313,7 +313,7 @@ class WindowsOrphanScan(unittest.TestCase):
         _, asked = self.scan(windows=True)
         self.assertEqual(sorted(asked), [101, 102, 103, 104, 107, 108])
         _, asked_before = self.scan(windows=False)
-        self.assertEqual(sorted(asked_before), sorted(self.table()))
+        self.assertEqual(sorted(asked_before), [101, 102, 103, 104, 108])
 
     def test_the_files_own_short_name_matches(self):
         self.assertTrue(procs._name_may_be("SVIHIP~2.EXE", "strata-vision-hip.exe", "svihip~2.exe"))

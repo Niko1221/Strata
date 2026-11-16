@@ -1,5 +1,5 @@
 """build-feed --carry-dsv41 (owner 11-11, "Keep frozen"): the last feed's DeepSeek engine packages go into the new feed as they were, with each
-package URL made absolute to the release that holds the archive, so Strata 0.2.13 and earlier keep their DeepSeek engine; this Strata never
+package URL made absolute to the release that holds the archive, so Strata 0.2.13 and earlier keep their DeepSeek engine; this fork also
 reads the member.  No network: the reader path an older Control takes is the entry schema (feed._engine_package, unchanged since 0.2.7) and
 the reference resolver (transfer.resolve_ref), both run on the carried entry here."""
 from __future__ import annotations
@@ -93,8 +93,16 @@ class OlderControlReadsIt(unittest.TestCase):
         self.assertTrue(transfer.resolve_ref(base, "strata-dsv41-0.1.59-linux-x86_64-cuda-cuda13.tar.gz").startswith(
             "https://github.com/Niko1221/Strata/releases/latest/download/"))
 
-    def test_this_control_ignores_the_member(self):
-        self.assertFalse(hasattr(feedmod.Feed, "dsv41"))
+    def test_this_control_reads_the_carried_member(self):
+        with tempfile.TemporaryDirectory() as d:
+            member = feed_tool.carried_dsv41(previous(Path(d), [entry("strata-dsv41-0.1.59-linux-x86_64-cuda-cuda13.tar.gz")]), BASE)
+        document = {"schema_version": 1, "feed": "strata-updates", "sequence": 123,
+                    "channel": "stable", "generated_at": "2026-11-16T00:00:00Z",
+                    "engine": {"packages": []}, "dsv41": member}
+        feed = feedmod.parse(json.dumps(document).encode(), source=FEED_URL, key_id="synthetic-key")
+        self.assertEqual(len(feed.dsv41), 1)
+        self.assertEqual(feed.dsv41[0].url, BASE + "strata-dsv41-0.1.59-linux-x86_64-cuda-cuda13.tar.gz")
+        self.assertEqual(feed.dsv41[0].version, "0.1.59")
 
 
 if __name__ == "__main__":

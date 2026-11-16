@@ -26,10 +26,21 @@ class PerToken(unittest.TestCase):
 
     def test_the_figure_follows_the_engines_allocations(self):
         src = ENGINE.read_text(encoding="utf-8")
-        # the session's fp32 K and V per attention layer and for the MTP block (4 calls at n_head_kv x ctx x head_dim floats)
-        self.assertEqual(len(re.findall(r"ss\.[kv]c\.push_back\(dalloc\(\(size_t\) g\.n_head_kv \* ctx \* g\.head_dim\)\)", src)), 4)
-        # one fp16 copy of K and V at the full context
-        self.assertEqual(len(re.findall(r"[kv]16 = dalloc_t<__half>\(\(size_t\) g\.n_head_kv \* ctx \* g\.head_dim\)", src)), 2)
+        # Both the attention layers and MTP use the typed layout allocator.
+        self.assertEqual(len(re.findall(r"ss\.kc\.push_back\(alloc_kv\(true\)\)", src)), 2)
+        self.assertEqual(len(re.findall(r"ss\.vc\.push_back\(alloc_kv\(false\)\)", src)), 2)
+        self.assertIn("bool kv_k_f16 = false, kv_v_f16 = false", src)
+        for side, flag in (("key", "k"), ("value", "v")):
+            self.assertIn(f"{side}_layout = strata::qwen35::make_kv_layout(kv_{flag}_f16 ? strata::qwen35::Q36KvType::Fp16 : "
+                          "strata::qwen35::Q36KvType::Fp32, ctx, g.n_head_kv, g.head_dim)", src)
+        self.assertIn("const size_t bytes = (key ? key_layout : value_layout).allocation_bytes", src)
+        self.assertIn("CK(cudaMalloc(&p, bytes))", src)
+        layout = (ROOT / "include" / "strata" / "qwen35" / "kv_layout.hpp").read_text(encoding="utf-8")
+        self.assertIn("l.row_stride = kv_checked_mul(dim, type == Q36KvType::Fp32 ? 4 : 2)", layout)
+        self.assertIn("l.head_stride = kv_checked_mul(context, l.row_stride)", layout)
+        self.assertIn("l.payload_bytes = l.allocation_bytes = kv_checked_mul(heads, l.head_stride)", layout)
+        # The default FP32 cache still needs one shared FP16 copy of K and V.
+        self.assertEqual(len(re.findall(r"[kv]16 = kv_[kv]_f16 \? nullptr : dalloc_t<__half>\(\(size_t\) g\.n_head_kv \* ctx \* g\.head_dim\)", src)), 2)
 
     def test_inputs_for_the_sizes_and_nothing_for_other_models(self):
         self.assertEqual(Q4, {"bytes_per_token": 47104, "fixed_gb": round(8.55 + 1256 / 1024 + 0.07e9 / 2 ** 30, 4)})

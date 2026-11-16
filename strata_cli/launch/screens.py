@@ -1708,6 +1708,10 @@ class SaveScreen(Base):
         width = max(1, body.size.width - 4)
         console = Console(width=width, color_system=None)
         rows = lambda value: len(Text(value).wrap(console, width))
+        # Count the path as it will be rendered; its unshortened length must not
+        # force a compact summary that then hides the destination's last folder.
+        lines = [(k, middle_shorten(v, self.width() - 14, "…" if self.g.unicode else "...")) if k == "Storage" else (k, v)
+                 for k, v in lines]
         full_need = 2 + sum(rows(f"  {k:<10}{v}") for k, v in lines) + sum(rows(f"  ! {n}") for n in warnings) + 3 + 3
         compact = bool(body_h) and full_need > body_h
         name = self.query_one("#name", Input)
@@ -1716,9 +1720,13 @@ class SaveScreen(Base):
             t = Text(no_wrap=True, overflow="ellipsis")
             tiny = body_h < 9
             model = dict(lines)["Model"].replace("Qwen3.8-Flash-Next ", "")
+            access_line = f"Access {s.access}, port {s.port}"
+            if s.data_dir:
+                prefix = access_line + " · Storage "
+                access_line = prefix + middle_shorten(s.data_dir, max(3, width - len(prefix)), "…" if self.g.unicode else "...")
             rows = [f"{model} \u00b7 {S.context_label(s.context)} \u00b7 memory {s.kv or 'int8'}",
                     f"Pictures {'on' if s.vision != 'off' else 'off'} \u00b7 Parallel {s.parallel or 'auto'} \u00b7 Tuning {s.tune}",
-                    f"Access {s.access}, port {s.port}" + (f" \u00b7 Storage {s.data_dir}" if s.data_dir else "")]
+                    access_line]
             t.append("Save, then launch   name:\n" if tiny else "Save as preset, then launch   name:\n", style=f"bold {ACCENT}")
             for ln in rows[:2 if tiny else 3]:
                 t.append("  " + ln + "\n")
@@ -1731,8 +1739,6 @@ class SaveScreen(Base):
             t.append("  Name   ")
             t.append("(type below)\n", style=MUTE)
             for k, v in lines:
-                if k == "Storage":   # one row: a long folder wrapped and pushed the last choice off an 80x24 screen
-                    v = middle_shorten(v, self.width() - 14, "…" if self.g.unicode else "...")
                 t.append(f"  {k:<10}{v}\n")
             for n in warnings:
                 t.append(f"  ! {n}\n", style=WARN)

@@ -40,6 +40,7 @@ sys.path.insert(0, str(ROOT))                         # strata_control.shape_eng
 
 # artifact names in a release upload folder (phaseA-tests/rel0211/PUBLISH-PLAN.md, scripts/relfinal/expect_rc1.py)
 ENGINE_RE = re.compile(r"^strata-engine-(?P<v>\d[\d.]*)-(?P<plat>.+?)\.(?:tar\.gz|zip)$")
+DSV41_RE = re.compile(r"^strata-dsv41-(?P<v>\d[\d.]*)-(?P<plat>.+?)\.(?:tar\.gz|zip)$")
 CONTROL_RE = re.compile(r"^strata-control-(?P<v>\d[\d.]*)-(?P<plat>.+?)\.(?:tar\.gz|zip)$")
 APP_RE = re.compile(r"^(Strata-\d[\d.]*-(windows-x64-setup\.exe|linux-x86_64\.AppImage|macos-arm64\.dmg)(\.sig)?|Strata\.app\.tar\.gz(\.sig)?)$")
 FEED_NAMES = ["strata-feed.json", "strata-feed.json.sig", "strata-feed-linux-aarch64.json", "strata-feed-linux-aarch64.json.sig"]
@@ -69,14 +70,14 @@ def box_for(plat: str) -> str:
 
 
 def scan_upload(folder: Path | None) -> dict:
-    out = {"engine": [], "control": [], "app": [], "feed": [], "small": [], "other": []}
+    out = {"engine": [], "dsv41": [], "control": [], "app": [], "feed": [], "small": [], "other": []}
     if folder is None:
         return out
     for p in sorted(folder.iterdir()):
         if not p.is_file():
             continue
         n, size = p.name, p.stat().st_size
-        for key, rx in (("engine", ENGINE_RE), ("control", CONTROL_RE), ("app", APP_RE)):
+        for key, rx in (("engine", ENGINE_RE), ("dsv41", DSV41_RE), ("control", CONTROL_RE), ("app", APP_RE)):
             m = rx.match(n)
             if m:
                 out[key].append({"name": n, "size": size, "plat": m.groupdict().get("plat", ""), "version": m.groupdict().get("v", "")})
@@ -109,6 +110,8 @@ def plan(report: dict, set_index: int, a, prev: dict) -> dict:
     steps: list[dict] = []
     changed: list[dict] = []        # files that are new or different in the upload folder
     kept: list[dict] = []
+    # A Qwen model intake never rebuilds the separate DeepSeek engine, including case B.
+    kept += [{"name": e["name"], "size": e["size"], "why": "the separate DeepSeek engine is unchanged"} for e in prev["dsv41"]]
 
     def step(sid, what, where, minutes, cmds, outputs=None, owner=False, note=None):
         steps.append({"id": sid, "what": what, "where": where, "minutes": minutes, "commands": cmds, "outputs": outputs or [],

@@ -382,11 +382,18 @@ def _engine_candidates(engine_exe: str):
 
     Windows: reading a command line costs 30-150 ms for each protected process that refuses it (svchost, lsass ...): over 250 processes
     that was 4-9 s at every server start. So the names come first (cheap) and only a process whose image name can be the engine's
-    file is read in full; a process whose name cannot be read is read in full as before. Elsewhere every process is read, as before
-    (a Linux name is the 15-character comm and can be a link's name)."""
+    file is read in full; a process whose name cannot be read is read in full as before. Elsewhere the executable is matched before
+    reading ownership or command lines (a Linux name is the 15-character comm and can be a link's name)."""
     full = ["pid", "ppid", "cmdline", "create_time"]
     if not WINDOWS:
-        yield from psutil.process_iter(full)
+        for p in psutil.process_iter(["pid"]):
+            try:
+                if not same_file(p.exe(), engine_exe):
+                    continue
+                p.info = p.as_dict(attrs=full)
+            except (psutil.Error, OSError):
+                continue
+            yield p
         return
     import ntpath                                       # Windows path rules (os.path there; named so the tests can run elsewhere)
     base = ntpath.basename(str(engine_exe)).lower()

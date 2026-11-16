@@ -48,7 +48,7 @@ jobs:
   snapshot:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: ${{ matrix.os == 'windows-2022' && 45 || 30 }}
     strategy:
       fail-fast: false
       matrix:
@@ -64,7 +64,7 @@ jobs:
           cache-dependency-path: requirements*.txt
       - uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version: '24.22.3'
           cache: npm
           cache-dependency-path: apps/host/package-lock.json
       - name: Python packages
@@ -73,7 +73,11 @@ jobs:
         working-directory: apps/host
         run: npm ci --no-audit --no-fund
       - name: tools/check snapshot
+        if: runner.os != 'Windows'
         run: python tools/check --only snapshot --keep --scratch "${{ runner.temp }}/check"
+      - name: tools/check snapshot (Windows)
+        if: runner.os == 'Windows'
+        run: python tools/check --only snapshot --timeout-scale 2 --keep --scratch "${{ runner.temp }}/check"
       - name: Logs
         if: ${{ failure() }}
         uses: actions/upload-artifact@v4

@@ -82,5 +82,15 @@ class ByPathToolsAreBundled(unittest.TestCase):
         missing = {p: sorted(by) for p, by in referenced_tools().items() if p not in NOT_BUNDLED and not (self.root / p).is_file()}
         self.assertEqual(missing, {}, f"run by path, absent from the packaged Terminal: {missing}")
 
+    def test_deepseek_tools_run_from_the_bundle_without_the_checkout(self):
+        env = {k: os.environ[k] for k in ("SYSTEMROOT", "WINDIR", "TEMP", "TMP", "PATH") if k in os.environ}
+        with tempfile.TemporaryDirectory() as empty:
+            for name in ("pack_gguf", "smoke", "tune"):
+                with self.subTest(tool=name):
+                    result = subprocess.run([sys.executable, str(self.root / "tools" / "dsv41" / f"{name}.py"), "--help"],
+                                            cwd=empty, env=env, capture_output=True, text=True, timeout=20)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn("usage:", result.stdout)
+
 if __name__ == "__main__":
     unittest.main()

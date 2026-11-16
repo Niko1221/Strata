@@ -27,6 +27,12 @@ def scaled():
 
 
 class SetupDownloadWaits(unittest.TestCase):
+    def assert_timeout_reason(self, out):
+        # Real sockets and scheduling can move 1.3 s across the rounding boundary
+        # on Windows. Keep the elapsed bound separate from the displayed integer.
+        match = re.search(r"\[X\]  127\.0\.0\.1 did not answer within ([12]) seconds, so the model files could not be downloaded\.", out)
+        self.assertIsNotNone(match, out)
+
     def setUp(self):
         import tempfile
         from pathlib import Path
@@ -59,7 +65,7 @@ class SetupDownloadWaits(unittest.TestCase):
         self.assertEqual(code, 1, out)
         self.assertLess(took, 2.5, out)                                  # 0.4 + 0.1 + 0.8, not 5 x 60 + 4 x 5 s
         self.assertRegex(out, r"(?m)^  Waiting for 127\.0\.0\.1 to answer \(0 s so far\) \.\.\.$")
-        self.assertRegex(out, r"\[X\]  127\.0\.0\.1 did not answer within 1 seconds, so the model files could not be downloaded\.")
+        self.assert_timeout_reason(out)
         self.assertIn("Check that this computer can open https://127.0.0.1, then run the same command again: what is already downloaded is kept. "
                       "Models that are already on this computer still start without the internet.", out)
         self.assertEqual(len(hole.held), 2)
@@ -82,8 +88,9 @@ class SetupDownloadWaits(unittest.TestCase):
         code, out, took = self.download(f"http://127.0.0.1:{hole.port}/m/model-00001-of-00002.gguf")
         self.assertEqual(code, 1)
         self.assertGreater(took, 1.0)
+        self.assertLess(took, 2.5, out)
         self.assertEqual(len(hole.held), 4)
-        self.assertIn("[X]  127.0.0.1 did not answer within 1 seconds, so the model files could not be downloaded.", out)
+        self.assert_timeout_reason(out)
         self.assertNotIn("a moment ago", out)
 
     def test_the_picture_reader_is_named(self):
@@ -159,6 +166,13 @@ class LaunchShowsTheWait(FlowBase):
 
 
 class Words(unittest.TestCase):
+    def test_timeout_seconds_round_at_the_half_second_boundary(self):
+        for elapsed, shown in ((0.1, 1), (1.3, 1), (1.499, 1), (1.5, 2), (1.8, 2)):
+            with self.subTest(elapsed=elapsed):
+                failure = netpolicy.NetFailure("synthetic.invalid", "no_answer", seconds=elapsed)
+                self.assertEqual(failure.headline("the model files"),
+                                 f"synthetic.invalid did not answer within {shown} seconds, so the model files could not be downloaded.")
+
     def test_the_waiting_phase(self):
         w = progress_words.describe(5, ["=== Step 5: downloading x ===", "  Waiting for github.com to answer (25 s so far) ..."])
         self.assertEqual((w.phase, w.label), ("waiting", "Waiting for github.com to answer (25 s so far)"))

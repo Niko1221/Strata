@@ -23,11 +23,13 @@ ENV = {      # what each switch writes outside its default
     "faster_long_prompts": {"STRATA_KVA": "1"},
     "faster_12gb_nvidia": {"STRATA_ROUTE_PRIOR": "1.5"},
     "faster_radeon_9000": {"STRATA_PCIE_FRAC_DEFAULT": "old"},
+    "deepseek_speedups": {"DS4_DEFAULTS": "026", "DS4_FAST_ATTN": "0", "DS4_ATTN_SLAB": "0", "DS4_COPY_PIN": "0",
+                          "DS4_COPY_HUGETLB": "0", "DS4_STORE_SPARE": "0", "DS4_STORE_PUT": "0"},
     "picture_reader": {"STRATA_VISION_TOWER": "mtmd"},       # llama.cpp's picture reader instead of Strata's own (owner 11-11)
     "qwen_defaults_026": {"STRATA_DEFAULTS": "026"},         # the Terminal's troubleshooting switch: not in the app
 }
 DEFAULT = {"faster_long_prompts": "off", "faster_12gb_nvidia": "off", "faster_radeon_9000": "on", "picture_reader": "on",
-           "qwen_defaults_026": "off"}
+           "deepseek_speedups": "on", "qwen_defaults_026": "off"}
 RTX3060 = {"name": "NVIDIA GeForce RTX 3060", "vendor": "nvidia", "arch": "86", "vram_gb": 12.0}
 RTX4070S = {"name": "NVIDIA GeForce RTX 4070 SUPER", "vendor": "nvidia", "arch": "89", "vram_gb": 12.0}
 RTX4060TI16 = {"name": "NVIDIA GeForce RTX 4060 Ti 16GB", "vendor": "nvidia", "arch": "89", "vram_gb": 16.0}
@@ -47,7 +49,7 @@ def ids(cfg, gpus, backend=None):
 
 
 class Contract(unittest.TestCase):
-    def test_five_switches_with_the_contract_names_and_their_defaults(self):
+    def test_six_switches_with_the_contract_names_and_their_defaults(self):
         self.assertEqual([s.id for s in W.SWITCHES], list(ENV))
         for s in W.SWITCHES:
             self.assertEqual(dict(s.env), ENV[s.id], s.id)
@@ -72,8 +74,8 @@ class Contract(unittest.TestCase):
         self.assertEqual(ids({**QWEN, "backend": "cuda"}, [RTX, R9700]), ["faster_long_prompts"], "the Radeon switch needs the HIP engine")
         for backend in ("sycl", "metal", "cpu", None):
             self.assertEqual(ids({**QWEN, "backend": backend}, [R9700]), [], backend)
-        self.assertEqual(ids(DEEPSEEK, [R9700]), [], "a DeepSeek config (no longer run): no switch")
-        self.assertEqual(ids({"exe": "C:/x/strata-dsv41.exe"}, [RTX]), [], "found by the engine's name too")
+        self.assertEqual(ids(DEEPSEEK, [R9700]), ["deepseek_speedups"], "the separate DeepSeek switch only")
+        self.assertEqual(ids({"exe": "C:/x/strata-dsv41.exe"}, [RTX]), ["deepseek_speedups"], "found by the engine's name too")
 
     def test_faster_answers_on_12gb_nvidia_cards_only_where_the_engine_routing_default_applies(self):
         """The engine turns residency-biased routing on by default on a DISCRETE NVIDIA card of 13 GiB or less in a CUDA build (the Flash-Next shape)."""
@@ -132,7 +134,16 @@ class Contract(unittest.TestCase):
         for family in ("qwen3.8-flash-next-iq3_s", "swift-1.5-iq3_s", "qwen3.8-flash-next-coder-iq3_s", "qwen3.8-flash-next-unsloth-ud-q4_k_xl",
                        "qwen3.8-flash-next-gyro-gyro-s", "qwen3.8-flash-next-nvfp4-nvfp4"):
             self.assertEqual(ids({**QWEN, "model_name": family}, [RTX]), ["faster_long_prompts"], family)
-        self.assertEqual(ids(DEEPSEEK, [RTX]), [])
+        self.assertEqual(ids(DEEPSEEK, [RTX]), ["deepseek_speedups"])
+
+    def test_deepseek_legacy_off_entries_reset_without_changing_other_environment(self):
+        sw = W.BY_ID["deepseek_speedups"]
+        legacy = {k: v for k, v in ENV[sw.id].items() if k != "DS4_DEFAULTS"}
+        self.assertEqual(dict(sw.legacy), legacy)
+        base = {"PATH": "/synthetic/bin", "DS4_ASYNC_T": "4"}
+        self.assertFalse(W.is_on({**base, **legacy}, sw))
+        self.assertEqual(W.set_switch({**base, **legacy}, sw, True), base)
+        self.assertEqual(W.set_switch(base, sw, False), {**base, **ENV[sw.id]})
 
     def test_outside_the_default_and_back_is_the_identical_environment(self):
         env = {"PATH": "/bin", "STRATA_PREFILL": "2"}
