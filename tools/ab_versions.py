@@ -6,10 +6,12 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import os
 import shutil
+import socket
 import sys
 import urllib.request
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -17,6 +19,13 @@ VER = r"(\d+(?:\.\d+)*)"
 CHUNK = 1 << 20
 # The signed feed's size cap is not available for a release asset; the sha256 check is the integrity guard, this only stops a bomb.
 MAX_UNPACKED = 1 << 40
+
+
+def _control_on_path() -> None:
+    """Make `strata_control` importable (repo root on sys.path); the import itself stays lazy."""
+    root = Path(__file__).resolve().parents[1]
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
 
 
 @dataclass(frozen=True)
@@ -150,9 +159,7 @@ def _ensure_one(name: str, url: str, sums: dict[str, str] | None, cache: Path, o
 def ensure_packages(pair: ReleasePair, cache: Path, opener=urllib.request.urlopen) -> Packages:
     """Engine and control of `pair` unpacked under `cache/<asset-stem>/`, downloaded and sha256-checked if not already there.
     A folder with its `.ok` marker is a cache hit and needs no network. A failed download or check leaves nothing behind."""
-    root = Path(__file__).resolve().parents[1]
-    if str(root) not in sys.path:
-        sys.path.insert(0, str(root))
+    _control_on_path()
     cache.mkdir(parents=True, exist_ok=True)
     needed = [n for n in (pair.engine_name, pair.control_name) if not (cache / _stem(n) / ".ok").is_file()]
     sums = None
@@ -178,9 +185,7 @@ def isolated_env(home: Path, base: Mapping[str, str]) -> dict[str, str]:
 def provision_home(home: Path, packages: Packages) -> Path:
     """Put the engine and control of `packages` where the release Control looks for them under `home`; returns the control folder.
     Idempotent: a folder that is already there is reused, nothing is ever deleted."""
-    root = Path(__file__).resolve().parents[1]
-    if str(root) not in sys.path:
-        sys.path.insert(0, str(root))
+    _control_on_path()
     from strata_control.engine_component import components_dir
     components = components_dir(isolated_env(home, {}))
     engine = components / "engine" / packages.engine_dir.name
@@ -191,3 +196,59 @@ def provision_home(home: Path, packages: Packages) -> Path:
             shutil.copytree(src, dest, ignore=shutil.ignore_patterns(".ok"))     # .ok is the download cache's marker, not package content
     (control.parent / "active.json").write_text(json.dumps({"version": packages.version, "folder": packages.version}), encoding="utf-8")
     return control
+
+
+class Busy(RuntimeError):
+    """A live Strata server or a busy port: running a bench now would disturb it."""
+
+
+def assert_idle(ports: Iterable[int], serving=None) -> None:
+    """Raise `Busy` if Strata is serving or something accepts connections on 127.0.0.1:<port> for any of `ports`."""
+    if serving is None:
+        _control_on_path()
+        from strata_control import updater
+        serving = updater.serving_now
+    if serving():
+        raise Busy("a Strata server is already serving; stop it first (`strata launch --stop`)")
+    for port in ports:
+        try:
+            socket.create_connection(("127.0.0.1", port), timeout=0.5).close()
+        except OSError:                                                     # refused (or unreachable) = nobody listens
+            continue
+        raise Busy(f"port {port} on 127.0.0.1 is in use")
+
+
+def snapshot(roots: Iterable[Path]) -> dict[str, tuple[int, int]]:
+    """Every file under `roots` -> (size, mtime_ns); keys are `<root>/<relative path>` so equal names in two roots never collide.
+    A root that does not exist adds nothing."""
+    out: dict[str, tuple[int, int]] = {}
+    for root in roots:
+        for dirpath, _dirs, files in os.walk(root):
+            for name in files:
+                path = Path(dirpath, name)
+                try:
+                    st = path.stat()
+                except OSError:                                             # vanished between listing and stat
+                    continue
+                out[str(root / path.relative_to(root))] = (st.st_size, st.st_mtime_ns)
+    return out
+
+
+def changed(before: dict, after: dict) -> list[str]:
+    """Differences between two snapshots: `+new`, `-gone`, `~modified`, each group sorted, in that order."""
+    return ([f"+{k}" for k in sorted(after.keys() - before.keys())] + [f"-{k}" for k in sorted(before.keys() - after.keys())]
+            + [f"~{k}" for k in sorted(k for k in before.keys() & after.keys() if before[k] != after[k])])
+
+
+def live_roots(env: Mapping[str, str], model_path: Path) -> list[Path]:
+    """The folders of the real install that a bench must leave alone: Strata's component folder parent, `~/.strata`, and the Strata data
+    folder (parent of a `models` folder) that holds `model_path`."""
+    _control_on_path()
+    from strata_control.engine_component import components_dir
+    home = Path(env.get("USERPROFILE") or env.get("HOME") or Path.home())
+    roots = [components_dir(env).parent, home / ".strata"]
+    for parent in Path(model_path).parents:
+        if parent.name.lower() == "models":
+            roots.append(parent.parent)
+            break
+    return roots
