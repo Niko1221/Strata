@@ -4103,6 +4103,19 @@ int main(int argc, char** argv) {
             if (const char* v = std::getenv("STRATA_RESIDENT_HEADROOM_GIB"); v != nullptr && std::atof(v) >= 0.0)
                 o.resident_headroom = (uint64_t) (std::atof(v) * 1073741824.0);
         }
+        else if (a == "--expert-support") {
+            // The same check the expert layout load runs below, without a pack or a GPU: the installer asks it
+            // for every (gate/up, down, size) combination of a GGUF before it prepares anything.
+            std::vector<int64_t> v;
+            std::string e;
+            if (!parse_i64_list(next("--expert-support"), v, e) || v.size() != 4) {
+                std::fprintf(stderr, "--expert-support wants GU,D,N_EMBD,N_FF (ggml type ids and sizes)\n");
+                return 2;
+            }
+            const bool ok = strata::kernels::native_expert_supported((int) v[0], (int) v[1], v[2], v[3]);
+            std::printf("%s\n", ok ? "supported" : "unsupported");
+            return ok ? 0 : 3;
+        }
         else if (a == "--system-probe") return system_probe();
         else if (a == "--stats") o.stats = true;
         else if (a == "--shared-late") o.shared_late = true;
