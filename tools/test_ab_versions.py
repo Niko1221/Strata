@@ -2,6 +2,8 @@
 import hashlib
 import io
 import json
+import os
+import socket
 import sys
 import tarfile
 import tempfile
@@ -10,7 +12,6 @@ import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import socket  # noqa: E402
 from ab_versions import (Busy, Packages, ReleasePair, assert_idle, changed, ensure_packages, isolated_env, list_releases,  # noqa: E402
                          live_roots, pairs_from_releases, parse_sums, provision_home, resolve_versions, snapshot)
 
@@ -311,14 +312,42 @@ class GuardTest(unittest.TestCase):
         self.assertTrue(diff[0].startswith("+") and diff[0].endswith("new.txt"))
         self.assertTrue(diff[1].startswith("~") and diff[1].endswith("f.txt"))
 
-    def test_live_roots_cover_install_dot_strata_and_model_data_folder(self):
+    def live_env(self, **extra):
         home = self.root / "u"
-        env = {"LOCALAPPDATA": str(self.root / "local"), "XDG_DATA_HOME": str(self.root / "share"), "USERPROFILE": str(home), "HOME": str(home)}
-        roots = live_roots(env, self.root / "data" / "models" / "tag" / "m.gguf")
+        return {"LOCALAPPDATA": str(self.root / "local"), "APPDATA": str(self.root / "roaming"), "XDG_DATA_HOME": str(self.root / "share"),
+                "XDG_STATE_HOME": str(self.root / "state"), "XDG_CONFIG_HOME": str(self.root / "config"),
+                "USERPROFILE": str(home), "HOME": str(home), **extra}
+
+    def test_live_roots_cover_every_folder_the_control_writes(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        from strata_control.engine_component import components_dir
+        from strata_control.paths import state_base
+        env = self.live_env()
+        roots = live_roots(env, self.root / "elsewhere" / "m.gguf")
+        home = self.root / "u"
         self.assertIn(home / ".strata", roots)
-        self.assertIn(self.root / "data", roots)
-        self.assertTrue(any(r.name.lower() == "strata" and r.parent in (self.root / "local", self.root / "share") for r in roots))
-        self.assertNotIn(self.root / "data", live_roots(env, self.root / "elsewhere" / "m.gguf"))
+        self.assertIn(components_dir(env), roots)
+        self.assertIn(state_base(env, home=home), roots)
+        self.assertIn(self.root / ("roaming" if os.name == "nt" else "config") / ("Strata" if os.name == "nt" else "strata"), roots)
+        self.assertEqual(len(roots), len(set(roots)))
+        custom = self.root / "custom-components"
+        self.assertIn(custom, live_roots(self.live_env(STRATA_COMPONENTS_DIR=str(custom)), self.root / "x.gguf"))
+
+    def test_live_roots_include_a_real_looking_data_folder(self):
+        data = self.root / "data"
+        (data / "models" / "tag").mkdir(parents=True)
+        (data / "packs").mkdir()
+        self.assertIn(data, live_roots(self.live_env(), data / "models" / "tag" / "m.gguf"))
+
+    def test_live_roots_never_a_drive_root_or_home(self):
+        home = self.root / "u"
+        (home / "models").mkdir(parents=True)
+        (home / "packs").mkdir()                                     # a marker, but this is the home folder itself
+        self.assertNotIn(home, live_roots(self.live_env(), home / "models" / "x.gguf"))
+        (self.root / "models").mkdir()                               # a models folder with no marker beside it
+        self.assertNotIn(self.root, live_roots(self.live_env(), self.root / "models" / "x.gguf"))
+        anchor = Path(self.root.anchor)                              # D:/models/x.gguf style: the drive root
+        self.assertNotIn(anchor, live_roots(self.live_env(), anchor / "models" / "x.gguf"))
 
 
 if __name__ == "__main__":
