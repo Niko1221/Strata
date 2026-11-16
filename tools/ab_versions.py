@@ -5,8 +5,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 import os
+import re
 import shutil
 import socket
 import sys
@@ -241,14 +241,24 @@ def changed(before: dict, after: dict) -> list[str]:
 
 
 def live_roots(env: Mapping[str, str], model_path: Path) -> list[Path]:
-    """The folders of the real install that a bench must leave alone: Strata's component folder parent, `~/.strata`, and the Strata data
-    folder (parent of a `models` folder) that holds `model_path`."""
+    """Every real Strata folder a bench must leave alone, derived from `env`: the component folder, the state folder, the profile folder,
+    `%APPDATA%/Strata` (Windows), `~/.strata`, and the Strata data folder that holds `model_path`. The data folder counts only when it
+    looks like one (a `models` folder next to `packs` or `mtp`); a drive root or the home folder is never returned."""
     _control_on_path()
     from strata_control.engine_component import components_dir
+    from strata_control.paths import state_base
     home = Path(env.get("USERPROFILE") or env.get("HOME") or Path.home())
-    roots = [components_dir(env).parent, home / ".strata"]
+    if os.name == "nt":
+        profiles = Path(env.get("APPDATA") or home / "AppData" / "Roaming") / "Strata"
+    else:
+        profiles = Path(env.get("XDG_CONFIG_HOME") or home / ".config") / "strata"
+    roots = [components_dir(env), state_base(env, home=home), profiles, home / ".strata"]
+    if env.get("STRATA_PROFILE_DIR"):
+        roots.append(Path(env["STRATA_PROFILE_DIR"]))
     for parent in Path(model_path).parents:
         if parent.name.lower() == "models":
-            roots.append(parent.parent)
+            data = parent.parent
+            if data != data.parent and data != home and any((data / sub).is_dir() for sub in ("packs", "mtp")):
+                roots.append(data)
             break
-    return roots
+    return list(dict.fromkeys(roots))
