@@ -54,6 +54,7 @@ PROFILE_PATH_ENV = (
     "STRATA_APPDIR",
     "STRATA_DIST",
     "DSH_HOME",
+    "HERMES_HOME",
     "WEBVIEW2_USER_DATA_FOLDER",
     "XDG_CONFIG_HOME",
     "XDG_DATA_HOME",
@@ -91,12 +92,17 @@ def filtered_paths(environment: dict, cwd: str) -> dict:
     for key in set(PROFILE_PATH_ENV) - {"HOMEDRIVE", "HOMEPATH"}:
         value = selected[key]
         if value:
+            if key == "HERMES_HOME":
+                release.require(
+                    not value.startswith("~") or value == "~" or value.startswith(("~/", "~\\")),
+                    "Only current-user tilde is valid for HERMES_HOME",
+                )
             selected[key] = path_identity(
                 value,
                 cwd,
                 user=(
                     environment.get("USERPROFILE")
-                    if key in {"STRATA_PROFILE_DIR", "STRATA_RUNTIME_DIR", "STRATA_PRESET_DIR"}
+                    if key in {"HERMES_HOME", "STRATA_PROFILE_DIR", "STRATA_RUNTIME_DIR", "STRATA_PRESET_DIR"}
                     else None
                 ),
             )

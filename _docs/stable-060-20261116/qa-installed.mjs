@@ -7,9 +7,18 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync, lstatSync } from 'n
 import { join, resolve, dirname, basename } from 'node:path';
 import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
+import { fileURLToPath } from 'node:url';
+
+/** Build only the isolated shell environment; importing this helper starts nothing. */
+export function isolatedShellEnvironment(home,debugPort){
+  const env=Object.fromEntries(Object.entries(process.env).filter(([key])=>!/^(STRATA_|DSH_|WEBVIEW2_|HERMES_HOME$)/i.test(key)&&!/(API_KEY|TOKEN|SECRET|PASSWORD)$/i.test(key)));
+  Object.assign(env,{HERMES_HOME:join(home,'.hermes'),STRATA_HOME:home,STRATA_INSTALL_DIR:join(home,'install'),STRATA_COMPONENTS_DIR:join(home,'components'),STRATA_PROFILE_DIR:join(home,'profiles'),STRATA_RUNTIME_DIR:join(home,'runtime'),STRATA_SETTINGS_FILE:join(home,'settings.json'),STRATA_MODELS_DIR:join(home,'models'),STRATA_WORKSPACE:join(home,'workspace'),STRATA_DESKTOP_DATA_DIR:join(home,'desktop'),STRATA_NO_ACQUIRE:'1',STRATA_NO_BUNDLED_ENGINE:'1',STRATA_NO_REPAIR_ACCESS:'1',STRATA_NO_DIALOG:'1',DSH_HOME:join(home,'harness'),APPDATA:join(home,'Roaming'),LOCALAPPDATA:join(home,'Local'),TEMP:join(home,'temp'),TMP:join(home,'temp'),WEBVIEW2_USER_DATA_FOLDER:join(home,'webview'),WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:`--remote-debugging-address=127.0.0.1 --remote-debugging-port=${debugPort}`});
+  return env;
+}
 
 const root='C:/Users/downl/Documents/ChatGPT/Strata';
 const out='H:/Strata/releases/stable-060-20261116-codex';
+async function main(){
 if(process.argv[2]!=='--execute'){
   console.log(JSON.stringify({execute:false,entry:'delivery.py candidate-qa or installed-qa',mockModelOnly:true}));
   process.exit(0);
@@ -36,7 +45,7 @@ else {assert.equal(dirname(dirname(app)),resolve(out));assert.match(basename(dir
 assert.equal(digest(join(app,'strata-desktop.exe')),contract.nsisShellSHA256);
 assert.equal(JSON.parse(readFileSync(join(app,'harness/rustxng/SOURCE.json'),'utf8')).profile,'full');
 const home=join(work,'qa-home');noLinks(home);mkdirSync(home);
-for(const name of ['data','workspace','models','components','profiles','runtime','desktop','Local','Roaming','temp','screenshots'])mkdirSync(join(home,name));
+for(const name of ['.hermes','data','workspace','models','components','profiles','runtime','desktop','Local','Roaming','temp','screenshots'])mkdirSync(join(home,name));
 for(const name of ['first','second','third'])writeFileSync(join(home,'workspace',name+'.txt'),'PRIVATE_FIXTURE_CONTENT_'+name,{flag:'wx'});
 writeFileSync(join(home,'data/state.json'),JSON.stringify({version:1,setup:{complete:true,flowVersion:2,step:4,history:[]},installed:{},current:null,loaded:null,expert:{'sample.maxTokens':64}}),{flag:'wx'});
 const requests=[];let mainResponse=null,mainClosed=false,mainReleased=false;
@@ -87,8 +96,7 @@ const portProbe=http.createServer();await new Promise(resolve=>portProbe.listen(
 const hostProbe=http.createServer();await new Promise(resolve=>hostProbe.listen(0,'127.0.0.1',resolve));const hostPort=hostProbe.address().port;await new Promise(resolve=>hostProbe.close(resolve));
 assert.notEqual(hostPort,debugPort);
 writeFileSync(join(home,'desktop/shell-prefs.json'),JSON.stringify({port:hostPort,tray:false,language:'en'}),{flag:'wx'});
-const env=Object.fromEntries(Object.entries(process.env).filter(([key])=>!/^(STRATA_|DSH_|WEBVIEW2_)/i.test(key)&&!/(API_KEY|TOKEN|SECRET|PASSWORD)$/i.test(key)));
-Object.assign(env,{STRATA_HOME:home,STRATA_INSTALL_DIR:join(home,'install'),STRATA_COMPONENTS_DIR:join(home,'components'),STRATA_PROFILE_DIR:join(home,'profiles'),STRATA_RUNTIME_DIR:join(home,'runtime'),STRATA_SETTINGS_FILE:join(home,'settings.json'),STRATA_MODELS_DIR:join(home,'models'),STRATA_WORKSPACE:join(home,'workspace'),STRATA_DESKTOP_DATA_DIR:join(home,'desktop'),STRATA_NO_ACQUIRE:'1',STRATA_NO_BUNDLED_ENGINE:'1',STRATA_NO_REPAIR_ACCESS:'1',STRATA_NO_DIALOG:'1',DSH_HOME:join(home,'harness'),APPDATA:join(home,'Roaming'),LOCALAPPDATA:join(home,'Local'),TEMP:join(home,'temp'),TMP:join(home,'temp'),WEBVIEW2_USER_DATA_FOLDER:join(home,'webview'),WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:`--remote-debugging-address=127.0.0.1 --remote-debugging-port=${debugPort}`});
+const env=isolatedShellEnvironment(home,debugPort);
 const child=spawn(join(app,'strata-desktop.exe'),[],{env,windowsHide:true,stdio:'ignore'});
 const {chromium}=createRequire(join(root,'apps/host/package.json'))('playwright-core');
 let browser,page,base;const errors=[],sideBodies=[];
@@ -180,3 +188,5 @@ try{
 
 }
 console.log(JSON.stringify(report,null,2));
+}
+if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url))await main();

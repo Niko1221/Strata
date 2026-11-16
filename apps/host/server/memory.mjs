@@ -1,7 +1,7 @@
 // apps/host/server/memory.mjs - HTTP routes and agent bridge for Strata Unified Long-Term Memory
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { dirname, resolve } from 'node:path';
+import { dirname, isAbsolute, parse, resolve } from 'node:path';
 import { readFileSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 
@@ -65,7 +65,21 @@ export function runMemoryCli(action, args = {}) {
  * Returns cached or live SOUL.md directive if available.
  */
 export function getSoulDirective() {
-  const candidates = [
+  const override = process.env.HERMES_HOME;
+  let candidates;
+  if (override !== undefined && override !== '') {
+    // An explicit profile must never fall back to another profile's directive.
+    if (/[\0\r\n]/.test(override) || (override.startsWith('~') && !/^~(?:[\\/]|$)/.test(override))) return '';
+    try {
+      const expanded = override === '~' ? homedir()
+        : /^~[\\/]/.test(override) ? resolve(homedir(), override.slice(2)) : override;
+      const root = parse(expanded).root;
+      if ((root && !isAbsolute(expanded)) || (process.platform === 'win32' && /^[\\/]$/.test(root))) return '';
+      candidates = [resolve(expanded, 'SOUL.md')];
+    } catch {
+      return '';
+    }
+  } else candidates = [
     resolve(homedir(), '.hermes/SOUL.md'),
     resolve(REPO_ROOT, 'SOUL.md'),
   ];

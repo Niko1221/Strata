@@ -853,6 +853,92 @@ class Boundaries(unittest.TestCase):
             str(self.root / "workspace"),
         )
 
+    def test_isolated_self_test_environment_overrides_inherited_soul_home(self) -> None:
+        home = self.root / "self-test-home"
+        inherited = {
+            "SYSTEMROOT": self.windows_root,
+            "USERPROFILE": str(self.root / "synthetic-user"),
+            "HERMES_HOME": str(self.root / "other-soul-home"),
+        }
+        with patch.dict(os.environ, inherited), patch.object(
+            self.delivery.native, "environment", return_value=dict(inherited)
+        ):
+            isolated = self.delivery.isolated_environment(home)
+        self.assertEqual(isolated["HERMES_HOME"], str(home / ".hermes"))
+        self.assertEqual(isolated["USERPROFILE"], inherited["USERPROFILE"])
+
+    def test_isolated_shell_environment_overrides_inherited_soul_home(self) -> None:
+        node = self.release.ROOT / "apps/desktop/src-tauri/resources/node/node.exe"
+        helper = Path(__file__).with_name("qa-installed.mjs").resolve().as_uri()
+        script = """
+          import assert from 'node:assert/strict';
+          import {join} from 'node:path';
+          const {isolatedShellEnvironment} = await import(process.argv[1]);
+          const home = process.argv[2];
+          const env = isolatedShellEnvironment(home, 12345);
+          assert.equal(env.HERMES_HOME, join(home, '.hermes'));
+          assert.equal(env.USERPROFILE, process.env.USERPROFILE);
+          assert.deepEqual(Object.keys(env).filter(k=>k.toUpperCase()==='HERMES_HOME'), ['HERMES_HOME']);
+          assert.equal(env.WEBVIEW2_USER_DATA_FOLDER, join(home, 'webview'));
+          console.log('synthetic shell environment isolated');
+        """
+        result = subprocess.run(
+            [str(node), "--input-type=module", "-e", script, helper, str(self.root / "qa-home")],
+            env={
+                "SYSTEMROOT": self.windows_root,
+                "USERPROFILE": str(self.root / "synthetic-user"),
+                "Hermes_Home": str(self.root / "other-soul-home"),
+            },
+            capture_output=True, text=True, timeout=15, creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "synthetic shell environment isolated")
+        plan = subprocess.run(
+            [str(node), str(Path(__file__).with_name("qa-installed.mjs"))],
+            env={"SYSTEMROOT": self.windows_root}, capture_output=True, text=True,
+            timeout=15, creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        self.assertEqual(plan.returncode, 0, plan.stderr)
+        self.assertIs(json.loads(plan.stdout)["execute"], False)
+        self.assertFalse((self.root / "qa-home").exists())
+
+    def test_soul_home_identity_preserves_empty_state_and_current_user_paths(self) -> None:
+        absent = self.profile_fixture()
+        empty = self.profile_fixture({"HERMES_HOME": ""})
+        self.assertIsNone(absent["hostPaths"]["HERMES_HOME"])
+        self.assertEqual(empty["hostPaths"]["HERMES_HOME"], "")
+        self.assertNotEqual(absent, empty)
+        for value, expected in (
+            ("~", self.root / "user"),
+            ("~/custom home", self.root / "user/custom home"),
+            ("~\\custom home", self.root / "user/custom home"),
+            (" relative home", self.root / "host/ relative home"),
+        ):
+            with self.subTest(value=value):
+                identity = self.profile_fixture({"HERMES_HOME": value})["hostPaths"]["HERMES_HOME"]
+                self.assertEqual(identity["lexical"], os.path.normcase(str(expected)))
+        for value in ("~other-user", "bad\0path", "bad\rpath", "bad\npath", "C:relative", "/drive-less", "\\drive-less"):
+            with self.subTest(value=value), self.assertRaises(RuntimeError):
+                self.profile_fixture({"HERMES_HOME": value})
+
+    def test_changed_soul_home_rejects_normal_profile_before_choices_read(self) -> None:
+        original = self.profile_fixture({"HERMES_HOME": "~/.hermes"})
+        changed = self.profile_fixture({"HERMES_HOME": str(self.root / "changed-soul")})
+        args = argparse.Namespace(port=12345, choices_sha256="a" * 64)
+        with patch.object(
+            self.normal, "original_baseline", return_value={"profileIdentity": original}
+        ), patch.object(
+            self.normal.delivery, "prior",
+            return_value={"installed": True, "exactPayloadMatch": True, "payload": {}},
+        ), patch.object(
+            self.normal.delivery, "payload", return_value={}
+        ), patch.object(self.normal, "owned_processes"), patch.object(
+            self.normal, "profile_identity", return_value=changed
+        ), patch.object(self.normal, "choices") as choices:
+            with self.assertRaisesRegex(RuntimeError, "Original effective profile identity"):
+                self.normal.verify(args, self.root)
+        choices.assert_not_called()
+
     def test_original_profile_binding_rejects_isolated_copy_with_identical_choices(self) -> None:
         original = self.profile_fixture()
         isolated = self.profile_fixture({"STRATA_HOME": str(self.root / "isolated")})

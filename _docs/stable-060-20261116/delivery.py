@@ -520,6 +520,7 @@ def isolated_environment(home: Path) -> dict:
         "APPDATA": "Roaming",
         "LOCALAPPDATA": "Local",
         "DSH_HOME": "harness",
+        "HERMES_HOME": ".hermes",
         "TEMP": "temp",
         "TMP": "temp",
     }.items():
@@ -552,7 +553,7 @@ def extract(args: argparse.Namespace, work: Path) -> dict:
     )
     home = work / "self-test-home"
     home.mkdir()
-    for name in ("workspace", "Roaming", "Local", "temp"):
+    for name in (".hermes", "workspace", "Roaming", "Local", "temp"):
         (home / name).mkdir()
     report = work / "self-test.json"
     subprocess.run(
