@@ -68,6 +68,8 @@ upstream-main binary (the pipelined arm is our build, started with the flags 0.1
 
 Our measurement of `--batch-mtp` on a layer split with 2x R9700 and all experts in VRAM: 80.2 -> 62.7 tok/s (-21.9%, 0/5 pairs faster) against the pipelined default, so it pays only when the experts do not all fit in VRAM.
 
+On SYCL with 2x Arc Pro B70 and all experts in VRAM (Swift 1.5 Flash-Next IQ2_XS, `"layer_split": "26"`, `--batch 2`, `--spec 4`), `--batch-mtp` with `--batch-groups 1` against the pipelined default (`--batch-groups 2`), two greedy requests at once: 102.9 against 84.9 tok/s (prose and code) and 84.1 against 74.7 (maths and an edit), each request's text the same as alone.
+
 Earlier, on engine 0.1.40.3 with this change and the same two cards, two concurrent streams: UD-Q4_K_XL 39.9 to 43.5
 tok/s without and 44.5 to 51.3 with `--batch-mtp` (2 runs per arm), and a small Coder IQ1_M test model with all
 experts in VRAM 84.0 without and 101.2 with it, the greedy text of both streams identical.
