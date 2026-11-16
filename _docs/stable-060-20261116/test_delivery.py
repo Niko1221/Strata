@@ -688,31 +688,49 @@ class Boundaries(unittest.TestCase):
         def corrupt(_argv, _work, _label, _timeout):
             (self.delivery.APP / "host/fixture.txt").write_bytes(b"broken install")
 
-        with patch.object(
-            self.delivery, "extraction", return_value=(build, {"payload": expected}, self.root)
-        ), patch.object(
-            self.delivery, "prior", return_value={"installerSHA256": "a" * 64, "resultSHA256": "b" * 64}
-        ), patch.object(
-            self.delivery, "pinned", return_value={}
-        ), patch.object(
-            self.delivery, "validate_qa"
-        ), patch.object(
-            self.delivery, "backup_identity", return_value=({}, before)
-        ), patch.object(
-            self.delivery, "quiescent"
-        ), patch.object(
-            self.release, "admit"
-        ), patch.object(
-            self.delivery.native, "logged", side_effect=corrupt
-        ) as launch:
+        self.write(self.root / "operation-worker.json", {"synthetic": "immutable worker identity"})
+        observed = {
+            "available_ram": self.release.GIB,
+            "commit_headroom": 5 * self.release.GIB,
+            "H_free": 11 * self.release.GIB,
+            "C_free": 6 * self.release.GIB,
+        }
+        with (
+            patch.object(
+                self.delivery, "extraction", return_value=(build, {"payload": expected}, self.root)
+            ),
+            patch.object(
+                self.delivery,
+                "prior",
+                return_value={"installerSHA256": "a" * 64, "resultSHA256": "b" * 64},
+            ),
+            patch.object(self.delivery, "pinned", return_value={}),
+            patch.object(self.delivery, "validate_qa"),
+            patch.object(self.delivery, "backup_identity", return_value=({}, before)),
+            patch.object(self.delivery, "quiescent"),
+            patch.object(self.release, "admit", return_value=observed) as admission,
+            patch.object(self.delivery.native, "logged", side_effect=corrupt) as launch,
+        ):
             with self.assertRaisesRegex(RuntimeError, "managed payload differs"):
                 self.delivery.install(
                     argparse.Namespace(
-                        candidate_qa_receipt=self.root / "candidate/receipt.json", reviewed_commit=self.commit
+                        candidate_qa_receipt=self.root / "candidate/receipt.json",
+                        reviewed_commit=self.commit,
+                        allow_low_ram=True,
                     ),
                     self.root,
                 )
-        self.assertEqual(launch.call_args.args[0], ["fixture.exe", "/S", "/D=" + str(self.delivery.APP)])
+        self.assertEqual(
+            launch.call_args.args[0], ["fixture.exe", "/S", "/D=" + str(self.delivery.APP)]
+        )
+        admission.assert_called_once_with(allow_low_ram=True)
+        self.assertEqual(
+            self.release.load(self.root / "operation-install-admission.json"),
+            {
+                "resources": observed,
+                "workerContextSHA256": self.release.sha(self.root / "operation-worker.json"),
+            },
+        )
 
     def test_extra_app_user_files_preserved_separately(self) -> None:
         rows = {

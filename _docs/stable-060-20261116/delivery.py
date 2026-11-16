@@ -98,7 +98,7 @@ def receipt(path: Path, expected: str, phase: str, commit: str) -> dict:
         and record.get("releaseQualified") is False,
         "Receipt source or status mismatch",
     )
-    feed.successful_job(path.parent / "owned-job.json")
+    feed.successful_job(path.parent / "owned-job.json", record)
     return record
 
 
@@ -657,7 +657,8 @@ def install(args: argparse.Namespace, work: Path) -> dict:
     build, extracted, _ = extraction(args)
     candidate = prior(args, "candidate_qa", "candidate-qa")
     release.require(
-        candidate.get("installerSHA256") == build["installerSHA256"], "Candidate QA installer differs"
+        candidate.get("installerSHA256") == build["installerSHA256"],
+        "Candidate QA installer differs",
     )
     qa_report = pinned(
         args.candidate_qa_receipt.parent / "qa-home/result.json", candidate.get("resultSHA256")
@@ -666,11 +667,19 @@ def install(args: argparse.Namespace, work: Path) -> dict:
     backup_record, before = backup_identity(args, build)
     quiescent()
     release.require(
-        user_files() == before["user"] and files(APP) == before["installed"], "State changed since backup"
+        user_files() == before["user"] and files(APP) == before["installed"],
+        "State changed since backup",
     )
     # Official Tauri per-user NSIS upgrade, with the existing literal destination.
     release.no_links(APP)
-    release.admit()
+    admission = release.admit(allow_low_ram=args.allow_low_ram)
+    release.save(
+        work / "operation-install-admission.json",
+        {
+            "resources": admission,
+            "workerContextSHA256": release.sha(work / "operation-worker.json"),
+        },
+    )
     quiescent()
     native.logged([build["installer"], "/S", "/D=" + str(APP)], work, "nsis-install", 600)
     quiescent()
@@ -679,9 +688,12 @@ def install(args: argparse.Namespace, work: Path) -> dict:
         app_user_files(files(APP)) == app_user_files(before["installed"]),
         "User files beside the installed app changed",
     )
-    release.require(user_files() == before["user"], "User bytes or membership changed during install")
     release.require(
-        model_identity() == before["selectedModel"], "Original selected model changed during install"
+        user_files() == before["user"], "User bytes or membership changed during install"
+    )
+    release.require(
+        model_identity() == before["selectedModel"],
+        "Original selected model changed during install",
     )
     release.require(app_build(args) == build, "Installer changed during install")
     return {

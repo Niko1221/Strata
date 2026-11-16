@@ -450,5 +450,321 @@ class PreservedNotices(unittest.TestCase):
                 release.prior_notice_identity(self.args, self.work)
 
 
+class OperationRAM(unittest.TestCase):
+    """Exercise the real controller/consumer with synthetic contained-worker output."""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.identity = {
+            "sourceCommit": "a" * 40,
+            "sourceRoot": str(release.ROOT),
+            "tree": "b" * 40,
+        }
+        for item in (
+            patch.object(release, "OUT", self.root),
+            patch.object(release, "reviewed", return_value=self.identity),
+            patch.object(release, "public_asset_identity", return_value=None),
+            patch.object(release, "prior_notice_identity", return_value=None),
+            patch.object(release, "unchanged_public_assets"),
+            patch.object(release, "unchanged_prior_notices"),
+        ):
+            item.start()
+            self.addCleanup(item.stop)
+        self.values = {
+            "available_ram": 2 * release.GIB,
+            "commit_headroom": 5 * release.GIB,
+            "H_free": 11 * release.GIB,
+            "C_free": 6 * release.GIB,
+        }
+        sys.path.insert(0, str(release.ROOT / "tools"))
+        from perf131k import windows_job
+
+        self.windows_job = windows_job
+
+    def produce(
+        self,
+        *,
+        worker_ram: int | None = None,
+        install_ram: int | None = None,
+        high_monitor: bool = False,
+    ) -> tuple[dict, dict, Path]:
+        args = release.arguments(
+            ["freeze", "--execute", "--allow-low-ram", "--reviewed-commit", "a" * 40]
+        )
+        if install_ram is not None:
+            args.phase = "install"
+        work = self.root / (args.phase + "-r1")
+        command_argv = release.worker_command(args)
+        if install_ram is not None:
+            command_argv[2] = str(release.HERE / "delivery.py")
+        worker_admission = self.values | {
+            "available_ram": worker_ram if worker_ram is not None else self.values["available_ram"]
+        }
+
+        def owned(command, root, env, raw, budget, sample, **kwargs):
+            self.assertEqual(budget.min_available_ram, 0)
+            self.assertEqual(
+                (budget.min_commit_headroom, budget.min_H_free), (4 * release.GIB, 10 * release.GIB)
+            )
+            self.assertIsNone(budget.job_commit_bytes)
+            self.assertTrue(kwargs["memory_diagnostics"])
+            self.assertEqual(env["CARGO_BUILD_JOBS"], "5")
+            samples = [sample(root), sample(root)]
+            release.save(
+                work / "operation-worker.json",
+                {
+                    "command": command,
+                    "identity": self.identity,
+                    "ramPolicy": release.ram_policy(True),
+                    "pid": 123,
+                    "creationFiletime": 456,
+                    "attemptRoot": str(work),
+                    "reservationSHA256": release.sha(work / "reservation.json"),
+                    "admission": worker_admission,
+                },
+            )
+            if install_ram is not None:
+                release.save(
+                    work / "operation-install-admission.json",
+                    {
+                        "resources": self.values | {"available_ram": install_ram},
+                        "workerContextSHA256": release.sha(work / "operation-worker.json"),
+                    },
+                )
+            release.save(
+                work / "pending.json",
+                {
+                    "ok": True,
+                    **self.identity,
+                    "phase": args.phase,
+                    "publicAssets": None,
+                    "priorNotices": None,
+                },
+            )
+            raw.write_bytes(b"synthetic worker output")
+            return {
+                "status": "FINISHED",
+                "exit_code": 0,
+                "native_exit_code": 0,
+                "contained_before_resume": True,
+                "termination_confirmed": True,
+                "job_active_after": 0,
+                "observed_dropped_bytes": 0,
+                "owned_root_pid": 123,
+                "root_creation_filetime": 456,
+                "resource_samples": len(samples),
+                "last_resources": samples[-1],
+                "memory_diagnostics": {
+                    "status": "AVAILABLE",
+                    "samples": len(samples),
+                    "min_available_ram": min(v["available_ram"] for v in samples),
+                    "min_commit_headroom": 5 * release.GIB,
+                    "min_H_free": 11 * release.GIB,
+                },
+            }
+
+        with (
+            patch.object(release, "arguments", return_value=args),
+            patch.object(release, "worker_command", return_value=command_argv),
+            patch.object(
+                release,
+                "sample",
+                side_effect=[
+                    self.values | {"available_ram": 5 * release.GIB}
+                    if high_monitor
+                    else self.values,
+                    self.values | {"available_ram": (6 if high_monitor else 1) * release.GIB},
+                    self.values | {"available_ram": 6 * release.GIB}
+                    if high_monitor
+                    else self.values,
+                ],
+            ),
+            patch.object(self.windows_job, "run_owned", side_effect=owned),
+        ):
+            self.assertEqual(release.main(), 0)
+        return release.load(work / "receipt.json"), release.load(work / "owned-job.json"), work
+
+    def test_explicit_controller_binds_below_floor_and_reports_real_breaches(self) -> None:
+        record, job, work = self.produce()
+        self.assertEqual(release.receipt_ram_floor(record, work, job), 0)
+        self.assertEqual(
+            record["ramPolicy"],
+            release.ram_policy(True)
+            | {"samples": 4, "nominalBreachSamples": 4, "minAvailableBytes": release.GIB},
+        )
+        self.assertIn("--allow-low-ram", job["operationExecution"]["command"])
+
+    def test_worker_and_install_admissions_lower_than_every_monitor_are_included(self) -> None:
+        for install_ram in (None, release.GIB):
+            record, job, work = self.produce(
+                worker_ram=2 * release.GIB, install_ram=install_ram, high_monitor=True
+            )
+            self.assertEqual(release.receipt_ram_floor(record, work, job), 0)
+            self.assertEqual(
+                job["operationExecution"]["admission"]["available_ram"], 5 * release.GIB
+            )
+            self.assertEqual(job["memory_diagnostics"]["min_available_ram"], 6 * release.GIB)
+            self.assertEqual(record["ramPolicy"]["samples"], 4 if install_ram is None else 5)
+            self.assertEqual(
+                record["ramPolicy"]["nominalBreachSamples"], 1 if install_ram is None else 2
+            )
+            self.assertEqual(
+                record["ramPolicy"]["minAvailableBytes"],
+                2 * release.GIB if install_ram is None else release.GIB,
+            )
+            self.assertEqual(
+                job["operationRAMSamples"],
+                [
+                    5 * release.GIB,
+                    6 * release.GIB,
+                    6 * release.GIB,
+                    2 * release.GIB,
+                    *([] if install_ram is None else [release.GIB]),
+                ],
+            )
+
+    def test_missing_or_forged_admission_observations_and_pins_are_rejected(self) -> None:
+        from copy import deepcopy
+
+        record, job, work = self.produce(
+            worker_ram=2 * release.GIB, install_ram=release.GIB, high_monitor=True
+        )
+        for damage in (
+            "missing-worker",
+            "missing-install",
+            "worker-map",
+            "install-map",
+            "count",
+            "pin",
+            "admission-error",
+        ):
+            raw = deepcopy(job)
+            if damage == "missing-worker":
+                raw["operationAdmissions"].pop(0)
+            elif damage == "missing-install":
+                raw["operationAdmissions"].pop()
+            elif damage == "worker-map":
+                raw["operationAdmissions"][0]["available_ram"] = 7 * release.GIB
+            elif damage == "install-map":
+                raw["operationAdmissions"][1]["available_ram"] = 7 * release.GIB
+            elif damage == "count":
+                raw["resource_samples"] += 1
+            elif damage == "pin":
+                raw["operationExecution"]["installAdmissionSHA256"] = "0" * 64
+            else:
+                raw["admissionEvidenceError"] = "KeyError"
+            with self.subTest(damage=damage), self.assertRaises(RuntimeError):
+                release.receipt_ram_floor(record, work, raw)
+        path = work / "operation-install-admission.json"
+        original = path.read_text()
+        changed = json.loads(original)
+        changed["workerContextSHA256"] = "0" * 64
+        path.write_text(json.dumps(changed))
+        with self.assertRaisesRegex(RuntimeError, "Install admission"):
+            release.receipt_ram_floor(record, work, job)
+        path.write_text(original)
+        path.rename(work / "retained-missing-install-admission.json")
+        with self.assertRaises(FileNotFoundError):
+            release.receipt_ram_floor(record, work, job)
+
+    def test_default_below_floor_refuses_before_attempt_or_job(self) -> None:
+        args = release.arguments(["freeze", "--execute", "--reviewed-commit", "a" * 40])
+        with (
+            patch.object(release, "arguments", return_value=args),
+            patch.object(release, "sample", return_value=self.values),
+            patch.object(
+                self.windows_job, "run_owned", side_effect=AssertionError("Job must not launch")
+            ),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "available_ram"):
+                release.main()
+        self.assertFalse((self.root / "freeze-r1").exists())
+
+    def test_exception_keeps_every_non_ram_admission_floor(self) -> None:
+        for key, floor in (("commit_headroom", 4), ("H_free", 10), ("C_free", 5)):
+            with (
+                self.subTest(key=key),
+                patch.object(
+                    release, "sample", return_value=self.values | {key: floor * release.GIB - 1}
+                ),
+            ):
+                with self.assertRaisesRegex(RuntimeError, key):
+                    release.admit(allow_low_ram=True)
+
+    def test_parser_and_worker_require_explicit_boolean_option(self) -> None:
+        args = release.arguments(["freeze", "--reviewed-commit", "a" * 40])
+        with patch.dict(os.environ, {"ALLOW_LOW_RAM": "1", "HAKUA060_ALLOW_LOW_RAM": "1"}):
+            self.assertFalse(args.allow_low_ram)
+            self.assertNotIn("--allow-low-ram", release.worker_command(args))
+        for invalid in (None, 1, "true"):
+            with self.assertRaisesRegex(RuntimeError, "boolean"):
+                release.ram_policy(invalid)
+
+    def test_consumer_rejects_forged_unbound_changed_or_undrained_policy(self) -> None:
+        record, job, work = self.produce()
+        from copy import deepcopy
+
+        for damage in (
+            "flag",
+            "source",
+            "reservation",
+            "worker",
+            "policy",
+            "breaches",
+            "samples",
+            "commit",
+            "H",
+            "C",
+            "sample-values",
+            "sample-types",
+            "null-policy",
+            "output",
+            "drain",
+            "stopped",
+        ):
+            candidate, raw = deepcopy(record), deepcopy(job)
+            if damage == "flag":
+                raw["operationExecution"]["command"].remove("--allow-low-ram")
+            elif damage == "source":
+                candidate["sourceCommit"] = "c" * 40
+            elif damage == "reservation":
+                raw["operationExecution"]["reservationSHA256"] = "0" * 64
+            elif damage == "worker":
+                raw["root_creation_filetime"] += 1
+            elif damage == "policy":
+                candidate["ramPolicy"]["effectiveFloorBytes"] = 1
+            elif damage == "breaches":
+                candidate["ramPolicy"]["nominalBreachSamples"] = 0
+                raw["ramPolicy"] = candidate["ramPolicy"]
+            elif damage == "samples":
+                raw["resource_samples"] = 0
+            elif damage == "commit":
+                raw["memory_diagnostics"]["min_commit_headroom"] = 4 * release.GIB - 1
+            elif damage == "H":
+                raw["memory_diagnostics"]["min_H_free"] = 10 * release.GIB - 1
+            elif damage == "C":
+                raw["last_resources"]["C_free"] = 5 * release.GIB - 1
+            elif damage == "sample-values":
+                raw["operationRAMSamples"][1] = 4 * release.GIB
+            elif damage == "sample-types":
+                raw["operationRAMSamples"][1] = True
+            elif damage == "null-policy":
+                candidate["ramPolicy"] = None
+            elif damage == "output":
+                raw["observed_dropped_bytes"] = 1
+            elif damage == "drain":
+                raw["job_active_after"] = 1
+            else:
+                raw.update(status="RESOURCE_PRESSURE", exit_code=125)
+            with self.subTest(damage=damage), self.assertRaises(RuntimeError):
+                release.receipt_ram_floor(candidate, work, raw)
+        with self.assertRaisesRegex(RuntimeError, "Missing receipt"):
+            release.receipt_ram_floor(
+                {k: v for k, v in record.items() if k != "ramPolicy"}, work, job
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

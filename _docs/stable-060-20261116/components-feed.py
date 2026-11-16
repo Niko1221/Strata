@@ -27,9 +27,11 @@ KEY = Path("H:/Strata/private-keys/hakua-feed-20261101/feed-key.json")
 CURRENT = "https://github.com/zapabob/Strata/releases/latest/download/strata-feed.json"
 
 
-def successful_job(path: Path) -> dict:
+def successful_job(path: Path, record: dict | None = None) -> dict:
     """A phase receipt is consumable only with its drained successful owned Job."""
     job = release.load(path)
+    if record is not None:
+        release.receipt_ram_floor(record, path.parent, job)
     release.require(
         job.get("status") == "FINISHED"
         and job.get("exit_code") == 0
@@ -65,10 +67,12 @@ def receipt_assets(path: Path, expected: str, phase: str, commit: str) -> dict:
         and record.get("releaseQualified") is False,
         "Phase source or status mismatch",
     )
-    successful_job(path.parent / "owned-job.json")
+    successful_job(path.parent / "owned-job.json", record)
     assets = path.parent / "assets"
     files = release.inventory(assets)
-    release.require(files and files == record.get("assets"), "Phase asset bytes or membership changed")
+    release.require(
+        files and files == record.get("assets"), "Phase asset bytes or membership changed"
+    )
     entries = [name for name in files if name.endswith(".entry.json")]
     release.require(len(entries) == 1, "Exactly one current Windows entry required per phase")
     entry = release.load(assets / entries[0])

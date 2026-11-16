@@ -205,10 +205,241 @@ def sample(_root: Any = None) -> dict[str, int]:
     }
 
 
-def admit() -> None:
+def ram_policy(allow_low_ram: bool) -> dict:
+    """Select this invocation's operation floor; never consult inherited settings."""
+    require(type(allow_low_ram) is bool, "Explicit boolean RAM exception required")
+    return {
+        "allowLowRam": allow_low_ram,
+        "nominalFloorBytes": 3 * GIB,
+        "effectiveFloorBytes": 0 if allow_low_ram else 3 * GIB,
+        "authorization": "user-explicit-2026-11-16-operation-only" if allow_low_ram else None,
+    }
+
+
+def observe_ram(policy: dict, values: dict, observations: list[int] | None = None) -> dict:
+    """Keep actual minima and nominal breaches even when the exception is selected."""
+    available = values["available_ram"]
+    require(type(available) is int and available >= 0, "Invalid RAM observation")
+    policy["samples"] += 1
+    policy["nominalBreachSamples"] += int(available < 3 * GIB)
+    previous = policy["minAvailableBytes"]
+    policy["minAvailableBytes"] = available if previous is None else min(previous, available)
+    if observations is not None:
+        observations.append(available)
+    return values
+
+
+def admit(*, allow_low_ram: bool = False) -> dict:
+    policy = ram_policy(allow_low_ram)
     values = sample()
-    for key, floor in (("available_ram", 3), ("commit_headroom", 4), ("H_free", 10), ("C_free", 5)):
-        require(values[key] >= floor * GIB, "Resource floor refused: " + key)
+    for key, floor in (
+        ("available_ram", policy["effectiveFloorBytes"]),
+        ("commit_headroom", 4 * GIB),
+        ("H_free", 10 * GIB),
+        ("C_free", 5 * GIB),
+    ):
+        require(values[key] >= floor, "Resource floor refused: " + key)
+    return values
+
+
+def receipt_ram_floor(record: dict, work: Path, job: dict) -> int:
+    """Lower a consumer floor only with the observed command and owned worker proof."""
+    policy = record.get("ramPolicy")
+    if "ramPolicy" not in record:
+        require(
+            "ramPolicy" not in job and "operationExecution" not in job, "Missing receipt RAM policy"
+        )
+        return 3 * GIB
+    require(isinstance(policy, dict), "Malformed RAM policy")
+    selected = ram_policy(policy.get("allowLowRam"))
+    require(
+        set(policy) == set(selected) | {"samples", "nominalBreachSamples", "minAvailableBytes"}
+        and all(type(policy.get(k)) is type(v) and policy.get(k) == v for k, v in selected.items()),
+        "RAM policy selection differs",
+    )
+    count, breaches, minimum = (
+        policy[k] for k in ("samples", "nominalBreachSamples", "minAvailableBytes")
+    )
+    require(
+        type(count) is int
+        and count > 1
+        and type(breaches) is int
+        and 0 <= breaches <= count
+        and type(minimum) is int
+        and minimum >= selected["effectiveFloorBytes"]
+        and (minimum < 3 * GIB) == (breaches > 0),
+        "Invalid RAM policy observations",
+    )
+    raw_policy = job.get("ramPolicy")
+    require(
+        isinstance(raw_policy, dict)
+        and set(raw_policy) == set(policy)
+        and all(type(raw_policy[k]) is type(v) and raw_policy[k] == v for k, v in policy.items()),
+        "Receipt/raw Job RAM policy differs",
+    )
+    observations = job.get("operationRAMSamples")
+    require(
+        isinstance(observations, list)
+        and len(observations) == count
+        and all(type(v) is int and v >= 0 for v in observations)
+        and min(observations) == minimum
+        and sum(v < 3 * GIB for v in observations) == breaches,
+        "Raw RAM sample/breach counts differ",
+    )
+    reservation = load(work / "reservation.json")
+    identity = {k: record[k] for k in ("sourceCommit", "sourceRoot", "tree")}
+    execution = job.get("operationExecution", {})
+    command = execution.get("command", [])
+    require(
+        isinstance(command, list)
+        and len(command) > 3
+        and all(isinstance(v, str) for v in command)
+        and Path(command[0]) == Path(sys.executable)
+        and command[1] == "-B"
+        and Path(command[2]).parent == HERE
+        and Path(command[2]).name
+        in {
+            "release.py",
+            "native-input.py",
+            "components-feed.py",
+            "delivery.py",
+            "acceptance.py",
+            "real-model.py",
+            "normal-start.py",
+            "bundle.py",
+            "publish.py",
+            "original-engine.py",
+        },
+        "Foreign operation worker command",
+    )
+
+    def option(name: str) -> str:
+        values = [command[i + 1] for i, v in enumerate(command[:-1]) if v == name]
+        values += [v.split("=", 1)[1] for v in command[3:] if v.startswith(name + "=")]
+        require(len(values) == 1, "Missing/duplicate operation argument: " + name)
+        return values[0]
+
+    require(
+        command.count("--allow-low-ram") == int(selected["allowLowRam"])
+        and not any(v.startswith("--allow-low-ram=") for v in command)
+        and command.count("--execute") == 1
+        and command.count("--worker") == 1
+        and option("--reviewed-commit") == record["sourceCommit"]
+        and work == OUT / (record["phase"] + "-" + option("--attempt")),
+        "Operation policy argv differs",
+    )
+    require(
+        reservation.get("identity") == identity
+        and reservation.get("ramPolicy") == selected
+        and reservation.get("command") == command,
+        "Operation reservation policy/source differs",
+    )
+    helpers = reservation.get("helpers", {})
+    require(
+        set(helpers) == {"release.py", "verify.mjs", Path(command[2]).name},
+        "Reserved operation helpers differ",
+    )
+    for path in (HERE / name for name in helpers):
+        require(helpers.get(path.name) == sha(path), "Reserved operation source changed")
+    context = load(work / "operation-worker.json")
+    admissions = job.get("operationAdmissions")
+    install = record["phase"] == "install"
+    require(
+        isinstance(admissions, list)
+        and len(admissions) == 1 + int(install)
+        and all(
+            isinstance(v, dict)
+            and set(v) == {"available_ram", "commit_headroom", "H_free", "C_free"}
+            and all(type(n) is int and n >= 0 for n in v.values())
+            for v in admissions
+        ),
+        "Missing/malformed worker or install admission observations",
+    )
+    install_sha = None
+    if install:
+        install_path = work / "operation-install-admission.json"
+        require(
+            load(install_path)
+            == {
+                "resources": admissions[1],
+                "workerContextSHA256": sha(work / "operation-worker.json"),
+            },
+            "Install admission worker binding differs",
+        )
+        install_sha = sha(install_path)
+    require(
+        context
+        == {
+            "command": command,
+            "identity": identity,
+            "ramPolicy": selected,
+            "pid": job.get("owned_root_pid"),
+            "creationFiletime": job.get("root_creation_filetime"),
+            "attemptRoot": str(work),
+            "reservationSHA256": sha(work / "reservation.json"),
+            "admission": admissions[0],
+        }
+        and type(context.get("pid")) is int
+        and context["pid"] > 0
+        and type(context.get("creationFiletime")) is int
+        and context["creationFiletime"] > 0,
+        "Operation worker identity/policy differs",
+    )
+    require(
+        execution
+        == {
+            "command": command,
+            "cwd": record["sourceRoot"],
+            "attemptRoot": str(work),
+            "reservationSHA256": sha(work / "reservation.json"),
+            "workerContextSHA256": sha(work / "operation-worker.json"),
+            "installAdmissionSHA256": install_sha,
+            "admission": execution.get("admission"),
+        },
+        "Unbound operation Job",
+    )
+    admission, diag = execution["admission"], job.get("memory_diagnostics", {})
+    require(
+        isinstance(admission, dict)
+        and diag.get("status") == "AVAILABLE"
+        and type(job.get("resource_samples")) is int
+        and job["resource_samples"] > 0
+        and diag.get("samples") == job["resource_samples"]
+        and count == job["resource_samples"] + 1 + len(admissions),
+        "Operation resource samples differ",
+    )
+    require(
+        observations[0] == admission.get("available_ram")
+        and min(observations[1 : 1 + job["resource_samples"]]) == diag.get("min_available_ram")
+        and observations[1 + job["resource_samples"] :] == [v["available_ram"] for v in admissions]
+        and minimum >= selected["effectiveFloorBytes"],
+        "Operation measured RAM minimum differs",
+    )
+    for key, floor in (
+        ("available_ram", selected["effectiveFloorBytes"]),
+        ("commit_headroom", 4 * GIB),
+        ("H_free", 10 * GIB),
+        ("C_free", 5 * GIB),
+    ):
+        require(
+            all(v.get(key, -1) >= floor for v in [admission, *admissions]),
+            "Operation admission floor violated",
+        )
+    for key, floor in (("min_commit_headroom", 4 * GIB), ("min_H_free", 10 * GIB)):
+        require(diag.get(key, -1) >= floor, "Operation observed non-RAM floor violated")
+    require(
+        job.get("last_resources", {}).get("C_free", -1) >= 5 * GIB
+        and job.get("status") == "FINISHED"
+        and job.get("exit_code") == 0
+        and job.get("native_exit_code") == 0
+        and job.get("contained_before_resume") is True
+        and job.get("termination_confirmed") is True
+        and job.get("job_active_after") == 0
+        and job.get("observed_dropped_bytes") == 0
+        and "admissionEvidenceError" not in job,
+        "Successful sampled drained operation Job required",
+    )
+    return selected["effectiveFloorBytes"]
 
 
 def verify(mode: str, path: Path, args: argparse.Namespace, receipt: Path | None = None) -> None:
@@ -772,6 +1003,11 @@ def arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("phase", choices=PHASES, nargs="?", default="freeze")
     parser.add_argument("--execute", action="store_true")
+    parser.add_argument(
+        "--allow-low-ram",
+        action="store_true",
+        help="Explicit operation-only RAM exception; retain commit/disk/Job guards",
+    )
     parser.add_argument("--reviewed-commit")
     parser.add_argument("--attempt", default="r1")
     for name in PATH_OPTIONS:
@@ -795,6 +1031,8 @@ def worker_command(args: argparse.Namespace) -> list[str]:
         "--attempt",
         args.attempt,
     ]
+    if args.allow_low_ram:
+        argv.append("--allow-low-ram")
     for name in (*PATH_OPTIONS, "public-assets-receipt-sha256", "prior-notices-manifest-sha256"):
         value = getattr(args, name.replace("-", "_"))
         if value is not None:
@@ -804,6 +1042,7 @@ def worker_command(args: argparse.Namespace) -> list[str]:
 
 def main() -> int:
     args = arguments()
+    selected_policy = ram_policy(args.allow_low_ram)
     require(bool(re.fullmatch("r[1-9][0-9]*", args.attempt)), "Attempt must be r1, r2, ...")
     work = OUT / (args.phase + "-" + args.attempt)
     if not args.execute:
@@ -819,6 +1058,7 @@ def main() -> int:
                     "jobs": 5,
                     "testJobs": 1,
                     "floorsGiB": {"RAM": 3, "commit": 4, "H": 10, "C": 5},
+                    "ramPolicy": selected_policy,
                     "releaseQualified": False,
                 }
             )
@@ -828,19 +1068,27 @@ def main() -> int:
     identity = reviewed(args.reviewed_commit)
     public_assets = public_asset_identity(args)
     prior_notices = prior_notice_identity(args, work)
-    admit()
+    admission = admit(allow_low_ram=args.allow_low_ram)
+    command_argv = worker_command(args)
+    helpers = {
+        p.name: sha(p) for p in (HERE / "release.py", HERE / "verify.mjs", Path(command_argv[2]))
+    }
     if args.worker:
         reservation = load(work / "reservation.json")
         require(
             os.environ.get("HAKUA060_WORKER_TOKEN") == reservation["token"]
-            and reservation["identity"] == identity,
+            and reservation["identity"] == identity
+            and reservation["ramPolicy"] == selected_policy
+            and reservation["command"] == command_argv,
             "Owned worker token mismatch",
         )
         require(
-            reservation["helpers"] == {p.name: sha(p) for p in (HERE / "release.py", HERE / "verify.mjs")},
+            reservation["helpers"] == helpers,
             "Reserved helper bytes changed",
         )
-        require(reservation["publicAssets"] == public_assets, "Reserved public asset inputs changed")
+        require(
+            reservation["publicAssets"] == public_assets, "Reserved public asset inputs changed"
+        )
         require(reservation["priorNotices"] == prior_notices, "Reserved prior notices changed")
         import ctypes
         from ctypes import wintypes
@@ -848,15 +1096,40 @@ def main() -> int:
 
         present = wintypes.BOOL()
         require(
-            api().IsProcessInJob(wintypes.HANDLE(-1), None, ctypes.byref(present)) and present.value,
+            api().IsProcessInJob(wintypes.HANDLE(-1), None, ctypes.byref(present))
+            and present.value,
             "Owned Windows Job required",
+        )
+        times = [ctypes.c_ulonglong() for _ in range(4)]
+        require(
+            api().GetProcessTimes(wintypes.HANDLE(-1), *[ctypes.byref(t) for t in times]),
+            "Cannot observe operation worker identity",
+        )
+        save(
+            work / "operation-worker.json",
+            {
+                "command": [sys.executable, "-B", *sys.argv],
+                "identity": identity,
+                "ramPolicy": selected_policy,
+                "pid": os.getpid(),
+                "creationFiletime": times[0].value,
+                "attemptRoot": str(work),
+                "reservationSHA256": sha(work / "reservation.json"),
+                "admission": admission,
+            },
+        )
+        require(
+            load(work / "operation-worker.json")["command"] == command_argv,
+            "Actual worker argv differs",
         )
         result = PHASES[args.phase](args, work)
         unchanged_public_assets(args, public_assets)
         unchanged_prior_notices(args, work, prior_notices)
         require(reviewed(args.reviewed_commit) == identity, "Source changed during phase")
         require(
-            reservation["helpers"] == {p.name: sha(p) for p in (HERE / "release.py", HERE / "verify.mjs")},
+            reservation["helpers"] == helpers
+            and load(work / "reservation.json") == reservation
+            and ram_policy(args.allow_low_ram) == selected_policy,
             "Helper bytes changed during phase",
         )
         save(
@@ -883,35 +1156,71 @@ def main() -> int:
         {
             "identity": identity,
             "token": token,
-            "helpers": {p.name: sha(p) for p in (HERE / "release.py", HERE / "verify.mjs")},
+            "helpers": helpers,
+            "command": command_argv,
+            "ramPolicy": selected_policy,
             "publicAssets": public_assets,
             "priorNotices": prior_notices,
         },
     )
     env = worker_environment(work, token)
+    reservation_sha = sha(work / "reservation.json")
+    policy = {**selected_policy, "samples": 0, "nominalBreachSamples": 0, "minAvailableBytes": None}
+    ram_samples: list[int] = []
+    observe_ram(policy, admission, ram_samples)
     sys.path.insert(0, str(ROOT / "tools"))
     from perf131k.windows_job import run_owned
 
     budget = SimpleNamespace(
         job_commit_bytes=None,
         max_processes=64,
-        min_available_ram=3 * GIB,
+        min_available_ram=selected_policy["effectiveFloorBytes"],
         min_commit_headroom=4 * GIB,
         min_H_free=10 * GIB,
         timeout_s=6000,
         output_bytes=16 * 1024**2,
     )
     run = run_owned(
-        worker_command(args),
+        command_argv,
         ROOT,
         env,
         work / "worker.log",
         budget,
-        sample,
+        lambda root=None: observe_ram(policy, sample(root), ram_samples),
         memory_diagnostics=True,
         on_tick=lambda: "C_disk_floor" if shutil.disk_usage("C:/").free < 5 * GIB else None,
     )
+    # Reconcile child-only admission samples after drain; never infer them from
+    # parent/monitor minima, which may all be higher than these observations.
+    admissions = []
+    install_path = work / "operation-install-admission.json"
+    try:
+        if (work / "operation-worker.json").is_file():
+            admissions.append(load(work / "operation-worker.json")["admission"])
+        if install_path.is_file():
+            admissions.append(load(install_path)["resources"])
+        for value in admissions:
+            observe_ram(policy, value, ram_samples)
+    except Exception as error:
+        run["admissionEvidenceError"] = type(error).__name__
+    run["ramPolicy"] = policy
+    run["operationRAMSamples"] = ram_samples
+    run["operationAdmissions"] = admissions
+    run["operationExecution"] = {
+        "command": command_argv,
+        "cwd": str(ROOT),
+        "attemptRoot": str(work),
+        "reservationSHA256": reservation_sha,
+        "admission": admission,
+        "workerContextSHA256": sha(work / "operation-worker.json")
+        if (work / "operation-worker.json").is_file()
+        else None,
+        "installAdmissionSHA256": sha(install_path) if install_path.is_file() else None,
+    }
     save(work / "owned-job.json", run)
+    require(
+        "admissionEvidenceError" not in run, "Worker admission evidence invalid; raw Job retained"
+    )
     require(
         run["status"] == "FINISHED"
         and run["exit_code"] == 0
@@ -922,13 +1231,22 @@ def main() -> int:
         "Owned phase failed; preserve evidence, no automatic retry",
     )
     require(reviewed(args.reviewed_commit) == identity, "Source changed after worker exit")
+    require(
+        sha(work / "reservation.json") == reservation_sha
+        and ram_policy(args.allow_low_ram) == selected_policy,
+        "Reserved operation policy changed after worker exit",
+    )
     unchanged_public_assets(args, public_assets)
     unchanged_prior_notices(args, work, prior_notices)
     result = load(work / "pending.json")
     require(result["publicAssets"] == public_assets, "Worker public asset identity differs")
     require(result["priorNotices"] == prior_notices, "Worker prior notices identity differs")
+    result["ramPolicy"] = policy
+    receipt_ram_floor(result, work, run)
     save(work / "receipt.json", result)
-    LOG.info(json.dumps({"ok": True, "receipt": str(work / "receipt.json"), "releaseQualified": False}))
+    LOG.info(
+        json.dumps({"ok": True, "receipt": str(work / "receipt.json"), "releaseQualified": False})
+    )
     return 0
 
 

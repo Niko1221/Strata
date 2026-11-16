@@ -1039,7 +1039,7 @@ def validate_real_model(path: Path, expected_sha: str, commit: str) -> dict:
     artifact(path.parent / "owned-job.json", record["ownedJobSHA256"])
     artifact(path.parent / "worker.log", record["workerLogSHA256"])
     job = release.load(path.parent / "owned-job.json")
-    acceptance.successful_job(job)
+    acceptance.successful_job(job, record, path.parent)
     validate_proof(record, path.parent, job)
     artifact(path, expected_sha)
     return record
@@ -1090,7 +1090,7 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         windows_job.run_owned = original
     raw, job = release.load(work / "receipt.json"), release.load(work / "owned-job.json")
-    acceptance.successful_job(job)
+    acceptance.successful_job(job, raw, work)
     validate_proof(raw, work, job)
     release.save(
         work / "real-model.json",

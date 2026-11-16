@@ -31,6 +31,11 @@ def parser(description: str) -> argparse.ArgumentParser:
     """Common argv for two small adapters of release.py's guarded runner."""
     result = argparse.ArgumentParser(description=description)
     result.add_argument("--execute", action="store_true")
+    result.add_argument(
+        "--allow-low-ram",
+        action="store_true",
+        help="Explicit operation-only RAM exception; keep other resource guards",
+    )
     result.add_argument("--reviewed-commit")
     result.add_argument("--attempt", default="r1")
     result.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)

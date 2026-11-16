@@ -24,6 +24,13 @@ producer = importlib.util.module_from_spec(producer_spec)
 producer_spec.loader.exec_module(producer)
 
 
+def test_operation_ram_option_is_explicit_and_does_not_change_plan_mode(monkeypatch) -> None:
+    monkeypatch.setenv("HAKUA060_ALLOW_LOW_RAM", "1")
+    assert producer.parsed([]).allow_low_ram is False
+    args = producer.parsed(["--allow-low-ram"])
+    assert args.allow_low_ram is True and args.execute is False
+
+
 def test_production_gate_boundary() -> None:
     """Observe permission decisions with fake services; execute no proposed tools."""
     completed = subprocess.run(

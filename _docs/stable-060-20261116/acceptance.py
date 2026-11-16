@@ -201,7 +201,7 @@ def check_artifacts(rows: dict) -> None:
         artifact(Path(row["path"]), row["sha256"])
 
 
-def successful_job(job: dict) -> None:
+def successful_job(job: dict, record: dict | None = None, work: Path | None = None) -> None:
     """Reject stopped, undrained, truncated or unobserved runs."""
     require(
         job.get("status") == "FINISHED"
@@ -217,9 +217,20 @@ def successful_job(job: dict) -> None:
         "Successful observed drained Job required",
     )
     diag = job.get("memory_diagnostics", {})
-    require(diag.get("status") == "AVAILABLE" and diag.get("samples", 0) > 0, "Resource samples required")
-    for name, floor in (("min_available_ram", 3), ("min_commit_headroom", 4), ("min_H_free", 10)):
-        require(diag.get(name, 0) >= floor * release.GIB, "Observed resource floor violated")
+    require(
+        diag.get("status") == "AVAILABLE" and diag.get("samples", 0) > 0,
+        "Resource samples required",
+    )
+    ram_floor = 3 * release.GIB
+    if record is not None:
+        require(work is not None, "Operation receipt location required")
+        ram_floor = release.receipt_ram_floor(record, work, job)
+    for name, floor in (
+        ("min_available_ram", ram_floor),
+        ("min_commit_headroom", 4 * release.GIB),
+        ("min_H_free", 10 * release.GIB),
+    ):
+        require(diag.get(name, -1) >= floor, "Observed resource floor violated")
     require(job.get("last_resources", {}).get("C_free", 0) >= 5 * release.GIB, "C reserve violated")
 
 
@@ -1204,14 +1215,18 @@ def validate_acceptance(path: Path, expected_sha: str, mode: str, commit: str) -
         "Acceptance identity differs",
     )
     require(
-        {k: v for k, v in record.items() if k not in ("receiptSHA256", "ownedJobSHA256", "workerLogSHA256")}
+        {
+            k: v
+            for k, v in record.items()
+            if k not in ("receiptSHA256", "ownedJobSHA256", "workerLogSHA256")
+        }
         == raw,
         "Acceptance result differs from drained receipt",
     )
     artifact(path.parent / "owned-job.json", record["ownedJobSHA256"])
     artifact(path.parent / "worker.log", record["workerLogSHA256"])
     job = release.load(path.parent / "owned-job.json")
-    successful_job(job)
+    successful_job(job, record, path.parent)
     validate_proof(record, path.parent, job)
     artifact(path, expected_sha)
     return record
@@ -1225,7 +1240,9 @@ def main(argv: list[str] | None = None) -> int:
             path = getattr(args, name + "_receipt")
             digest = getattr(args, name + "_receipt_sha256")
             require(
-                path is not None and path.is_absolute() and re.fullmatch(r"[a-f0-9]{64}", digest or ""),
+                path is not None
+                and path.is_absolute()
+                and re.fullmatch(r"[a-f0-9]{64}", digest or ""),
                 "Explicit absolute input and expected SHA required: " + name,
             )
     native.environment = environment
@@ -1245,7 +1262,7 @@ def main(argv: list[str] | None = None) -> int:
         work = release.OUT / (args.phase + "-" + args.attempt)
         raw = release.load(work / "receipt.json")
         job = release.load(work / "owned-job.json")
-        successful_job(job)
+        successful_job(job, raw, work)
         validate_proof(raw, work, job)
         release.save(
             work / "acceptance.json",
@@ -1257,7 +1274,10 @@ def main(argv: list[str] | None = None) -> int:
             },
         )
         validate_acceptance(
-            work / "acceptance.json", release.sha(work / "acceptance.json"), args.mode, args.reviewed_commit
+            work / "acceptance.json",
+            release.sha(work / "acceptance.json"),
+            args.mode,
+            args.reviewed_commit,
         )
     return result
 

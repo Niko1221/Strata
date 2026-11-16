@@ -111,8 +111,6 @@ test('actual Harness confines disabled tools and honours explicit agents-home wh
   const sideAddress=side.find(f=>f.type==='btw-agent');
   assert.ok(sideAddress?.childSessionId && sideAddress.childSessionId!==sideAddress.parentSessionId);
   assert.ok(worker.requests.length>0&&worker.requests.every(row=>row.toolNames.length===0));
-  const sideHeaders=requestHeaders(join(root,'agent')).filter(h=>h.sessionId===sideAddress.childSessionId);
-  assert.ok(sideHeaders.length>0&&sideHeaders.every(h=>h.tools.length===0&&h.maxTokens===1536));
   off.add('helpers');
   worker.requests.length = 0;
   delete env.DSH_AGENTS_HOME; // A fresh runtime now uses the ordinary synthetic global home.
@@ -125,6 +123,10 @@ test('actual Harness confines disabled tools and honours explicit agents-home wh
   assert.ok(worker.requests.some(row => row.raw.includes('SYNTHETIC_OUTSIDE_INSTRUCTION_060')));
   assert.ok(worker.requests.some(row => row.raw.includes('SYNTHETIC_DEFAULT_AGENTS_060')));
   assert.equal(worker.requests.some(row => row.raw.includes('SYNTHETIC_OVERRIDE_AGENTS_060')), false);
+  // Snapshot durable headers only after the owned writer drains its atomic session saves.
+  await bridge.close();
+  const sideHeaders=requestHeaders(join(root,'agent')).filter(h=>h.sessionId===sideAddress.childSessionId);
+  assert.ok(sideHeaders.length>0&&sideHeaders.every(h=>h.tools.length===0&&h.maxTokens===1536));
   const durableHeaders = requestHeaders(join(root, 'agent'));
   assert.ok(durableHeaders.length > 0, 'Canonical persisted request headers must be readable');
   assert.ok(durableHeaders.every(header => header.provider === 'strata-local' && header.model === 'scripted-model'));

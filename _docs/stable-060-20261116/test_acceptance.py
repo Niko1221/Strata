@@ -150,6 +150,19 @@ def test_job_rejects_memory_floor_violation() -> None:
         a.successful_job(record)
 
 
+def test_unbound_policy_never_lowers_floor_but_nominal_gpu_observation_remains_valid() -> None:
+    record = job()
+    record["ramPolicy"] = a.release.ram_policy(True) | {
+        "samples": 2,
+        "nominalBreachSamples": 0,
+        "minAvailableBytes": 4 * a.release.GIB,
+    }
+    a.successful_job(record)
+    record["memory_diagnostics"]["min_available_ram"] = a.release.GIB
+    with pytest.raises(RuntimeError, match="resource floor"):
+        a.successful_job(record)
+
+
 def tap() -> str:
     return "TAP version 13\nok 1 - required case\n1..1\n# tests 1\n# pass 1\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0\n"
 
@@ -476,7 +489,7 @@ def native_proof_fixture(raw: dict, work: Path, monkeypatch: pytest.MonkeyPatch)
 
 
 def acceptance_fixture(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str = "harness"
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str = "harness", *, low_ram: bool = False
 ) -> tuple[Path, dict]:
     """A substantive synthetic proof for each mode, never actual acceptance evidence."""
     original_root = a.native.PRIMARY
@@ -559,12 +572,15 @@ def acceptance_fixture(
             inputs[name] = a.artifact(source("apps/host/" + name))
         for name in ("test-fs-guard.mjs", "test-environment.mjs"):
             inputs[name] = a.artifact(source("apps/host/scripts/" + name))
-        inputs["harnessBudgetModule"] = a.artifact(source("apps/desktop/scripts/harness-budget.mjs"))
+        inputs["harnessBudgetModule"] = a.artifact(
+            source("apps/desktop/scripts/harness-budget.mjs")
+        )
         budget = Path(inputs["harnessBudgetModule"]["path"]).read_text(encoding="utf-8")
         import re
 
         patch = {
-            key: re.findall(r"\b" + key + r": '([^']+)'", budget)[0] for key in ("id", "file", "beforeSha256")
+            key: re.findall(r"\b" + key + r": '([^']+)'", budget)[0]
+            for key in ("id", "file", "beforeSha256")
         }
         inputs["harnessPatch"] = a.artifact(
             put(a.release.RES / "harness" / patch["file"], "synthetic patched content")
@@ -575,7 +591,10 @@ def acceptance_fixture(
         inputs["harnessInventory"] = a.artifact(
             put(
                 work / "harness-inventory.json",
-                {"BUNDLE.json": inputs["harnessBundle"]["sha256"], patch["file"]: patch["afterSha256"]},
+                {
+                    "BUNDLE.json": inputs["harnessBundle"]["sha256"],
+                    patch["file"]: patch["afterSha256"],
+                },
             )
         )
         identity = {
@@ -587,10 +606,10 @@ def acceptance_fixture(
         }
         contract = a.harness_contract(root)
         count = len(contract["names"])
-        text = "TAP version 13\n" + "".join(f"ok {i + 1} - {n}\n" for i, n in enumerate(contract["names"]))
-        text += (
-            f"1..{count}\n# tests {count}\n# pass {count}\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0\n"
+        text = "TAP version 13\n" + "".join(
+            f"ok {i + 1} - {n}\n" for i, n in enumerate(contract["names"])
         )
+        text += f"1..{count}\n# tests {count}\n# pass {count}\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0\n"
         command = [
             str(a.release.NODE),
             "--import",
@@ -673,8 +692,19 @@ def acceptance_fixture(
                 option + "-receipt-sha256",
                 inputs[name]["sha256"],
             ]
+    if low_ram:
+        command.append("--allow-low-ram")
     results["workerCommand"] = a.artifact(put(work / "worker-command.json", command))
-    put(work / "reservation.json", {"identity": {k: raw[k] for k in ("sourceCommit", "sourceRoot", "tree")}})
+    reservation = {"identity": {k: raw[k] for k in ("sourceCommit", "sourceRoot", "tree")}}
+    if low_ram:
+        reservation.update(
+            ramPolicy=a.release.ram_policy(True),
+            command=command,
+            helpers={
+                n: a.release.sha(HERE / n) for n in ("release.py", "verify.mjs", "acceptance.py")
+            },
+        )
+    put(work / "reservation.json", reservation)
     reservation_sha = a.release.sha(work / "reservation.json")
     results["workerContext"] = a.artifact(
         put(
@@ -701,11 +731,87 @@ def acceptance_fixture(
             "adapterSHA256": inputs["acceptance.py"]["sha256"],
         },
     )
+    if low_ram:
+        policy = a.release.ram_policy(True) | {
+            "samples": 4,
+            "nominalBreachSamples": 4,
+            "minAvailableBytes": 2 * a.release.GIB,
+        }
+        raw["ramPolicy"] = policy
+        current_job["ramPolicy"] = policy
+        current_job["operationRAMSamples"] = [2 * a.release.GIB] * 4
+        observed = {
+            "available_ram": 2 * a.release.GIB,
+            "commit_headroom": 5 * a.release.GIB,
+            "H_free": 11 * a.release.GIB,
+            "C_free": 6 * a.release.GIB,
+        }
+        current_job["operationAdmissions"] = [observed]
+        current_job["memory_diagnostics"]["min_available_ram"] = 2 * a.release.GIB
+        context = {
+            "command": command,
+            "identity": reservation["identity"],
+            "ramPolicy": a.release.ram_policy(True),
+            "pid": 1,
+            "creationFiletime": 123,
+            "attemptRoot": str(work),
+            "reservationSHA256": reservation_sha,
+            "admission": observed,
+        }
+        put(work / "operation-worker.json", context)
+        current_job["operationExecution"] = {
+            "command": command,
+            "cwd": str(root),
+            "attemptRoot": str(work),
+            "reservationSHA256": reservation_sha,
+            "workerContextSHA256": a.release.sha(work / "operation-worker.json"),
+            "installAdmissionSHA256": None,
+            "admission": {
+                "available_ram": 2 * a.release.GIB,
+                "commit_headroom": 5 * a.release.GIB,
+                "H_free": 11 * a.release.GIB,
+                "C_free": 6 * a.release.GIB,
+            },
+        }
     put(work / "owned-job.json", current_job)
     put(work / "worker.log", "synthetic worker output")
     path = work / "acceptance.json"
     repin(path, raw)
     return path, raw
+
+
+@pytest.mark.parametrize(
+    "damage", ["none", "flag", "source", "reservation", "minimum", "breaches", "policy", "stopped"]
+)
+def test_bound_operation_exception_through_pinned_consumer(
+    tmp_path: Path, monkeypatch, damage: str
+) -> None:
+    path, record = acceptance_fixture(tmp_path, monkeypatch, low_ram=True)
+    work = path.parent
+    current_job = a.release.load(work / "owned-job.json")
+    if damage == "none":
+        a.validate_acceptance(path, a.release.sha(path), "harness", COMMIT)
+        return
+    if damage == "flag":
+        current_job["operationExecution"]["command"].remove("--allow-low-ram")
+    elif damage == "source":
+        record["sourceCommit"] = "c" * 40
+    elif damage == "reservation":
+        reservation = a.release.load(work / "reservation.json")
+        reservation["ramPolicy"] = a.release.ram_policy(False)
+        put(work / "reservation.json", reservation)
+    elif damage == "minimum":
+        current_job["memory_diagnostics"]["min_available_ram"] -= 1
+    elif damage == "breaches":
+        record["ramPolicy"]["nominalBreachSamples"] = 0
+    elif damage == "policy":
+        del record["ramPolicy"]
+    else:
+        current_job.update(status="TIMEOUT", exit_code=124)
+    put(work / "owned-job.json", current_job)
+    repin(path, record)
+    with pytest.raises(RuntimeError):
+        a.validate_acceptance(path, a.release.sha(path), "harness", COMMIT)
 
 
 @pytest.mark.parametrize(

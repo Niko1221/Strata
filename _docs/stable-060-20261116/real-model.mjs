@@ -73,14 +73,31 @@ function ancestry(pid, owner) {
 
 /** Canonical session event logs, scoped to the isolated agent root. */
 export function requestHeaders(agentRoot) {
-  const found=[];
-  if(!existsSync(agentRoot))return found;
-  function visit(dir){for(const e of readdirSync(dir,{withFileTypes:true})){const p=join(dir,e.name);noLinks(p);if(e.isDirectory())visit(p);else if(/\.jsonl(?:\.zstd)?$/.test(e.name)){
-    assert.ok(statSync(p).size<=16*1024*1024);const bytes=readFileSync(p);const text=(p.endsWith('.zstd')?zstdDecompressSync(bytes,{maxOutputLength:32*1024*1024}):bytes).toString('utf8');
-    for(const line of text.split('\n').filter(Boolean)){const row=JSON.parse(line),event=row.type==='event'?row.event:row;
-      if(event?.type==='request/header'){const header=event.data.header;found.push({file:p,fileSHA256:sha(bytes),seq:event.seq,sessionId:event.sessionId??basename(dirname(p)),provider:header.config.provider,model:header.config.model,maxTokens:header.config.maxTokens??null,tools:header.tools??[]});}
+  if(!existsSync(agentRoot))return [];
+  for(let attempt=0;attempt<3;attempt++) {
+    const found=[];let vanishedAtomic=false;
+    noLinks(agentRoot);
+    function visit(dir){for(const e of readdirSync(dir,{withFileTypes:true})){const p=join(dir,e.name);
+      try {noLinks(p);} catch(error) {
+        // Harness atomically renames regular .UUID.tmp files. Restart the entire
+        // snapshot, retaining no partial rows; all canonical-log errors stay fatal.
+        if(error.code==='ENOENT'&&e.isFile()&&/^\.[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\.tmp$/i.test(e.name)
+          &&typeof error.path==='string'&&resolve(error.path)===resolve(p)) {
+          noLinks(dir);vanishedAtomic=true;
+        }
+        throw error;
+      }
+      if(e.isDirectory())visit(p);else if(/\.jsonl(?:\.zstd)?$/.test(e.name)){
+        assert.ok(statSync(p).size<=16*1024*1024);const bytes=readFileSync(p);const text=(p.endsWith('.zstd')?zstdDecompressSync(bytes,{maxOutputLength:32*1024*1024}):bytes).toString('utf8');
+        for(const line of text.split('\n').filter(Boolean)){const row=JSON.parse(line),event=row.type==='event'?row.event:row;
+          if(event?.type==='request/header'){const header=event.data.header;found.push({file:p,fileSHA256:sha(bytes),seq:event.seq,sessionId:event.sessionId??basename(dirname(p)),provider:header.config.provider,model:header.config.model,maxTokens:header.config.maxTokens??null,tools:header.tools??[]});}
+        }
+      }
+    }}
+    try {visit(agentRoot);return found;} catch(error) {
+      if(!vanishedAtomic||attempt===2)throw error;
     }
-  }}}visit(agentRoot);return found;
+  }
 }
 
 async function execute(inputPath, expectedSHA) {
