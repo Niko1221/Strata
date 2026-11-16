@@ -5,8 +5,8 @@ interleaved copy of the q8_1 activations. Every choice it makes gives the same b
 (`STRATA_MMVQ_IL=0` turns the whole path off); only the speed differs. How many matrix rows one warp takes
 (1, 2 or 4, or 0 = use the plain kernel) is a table in `src/kernels/cuda/native_mmvq.cu`, indexed by the
 quantisation type (IQ4_XS, Q4_K, Q5_K, Q6_K, Q3_K), the token count (2-4) and the matrix's row count (five classes).
-Windows of 5 to 8 tokens have a second table (`kIlRows58_<cc>`, 1 or 2 rows a warp); only sm_120 has one so far (measured on
-the RTX PRO 5000: e.g. the Q5_K head at 5 tokens 899 -> 491 us), every other card keeps the plain kernels there.
+Windows of 5 to 8 tokens have a second table (`kIlRows58_<cc>`, 1 or 2 rows a warp); sm_120 (measured on the RTX PRO 5000:
+e.g. the Q5_K head at 5 tokens 899 -> 491 us), sm_80 and sm_75 have one, every other card keeps the plain kernels there.
 `STRATA_MMVQ_IL_WIDE=0` turns the 5-8 token path off. `--emit-table` prints both tables.
 
 Which table a card gets:
@@ -18,7 +18,8 @@ Which table a card gets:
 | sm_89 (Ada) | `kIlRows_89`, ON by default on compute capability 8.9 cards only (0.2.7): the cells where an RTX 4070 (46 SMs) and an RTX 4080 (48 SMs) community run gave the same rows count, else 0 (the plain kernel); one column: Q3_K only. `STRATA_MMVQ_IL_89=0` or `STRATA_DEFAULTS=026` gives the shared table (`kIlRowsShared`) again, as in 0.2.6; an explicit `STRATA_MMVQ_IL_89=1` wins over the master switch. The output is bitwise the same either way (a table only changes how many rows a warp takes). Not measured on an Ada card by us: no sm_89 card has run `mmvq_il_parity` on this code, and the issue saw no end-to-end decode change on a 4090 or a 4080 (issue 3453), so the gain may be a microbenchmark one. The reporter tests 0.2.7 and reports back. No 5-8 column table: the 4080's changed in 10-14 of 20 entries between runs of the same card. To check a card: run `mmvq_il_parity` on it (it must end with `OK`) and an interleaved decode A/B with the variable at 1 and 0. |
 | sm_80 (A100, A30, CMP 170HX) | `kIlRows_80`, `kIlRows58_80` and `kIl1Rows_80`, read off `--emit-table` by the author of PR #3779 on one CMP 170HX (not an A100: re-measure there); `STRATA_MMVQ_IL_SM80=0` or `STRATA_DEFAULTS=026` gives the card the shared table again |
 | every other sm_80+ card | `kIlRowsShared` |
-| sm_75 and older | the path is off; the plain kernels run |
+| sm_75 (Turing) | off unless `STRATA_SM75_IL=1` or `STRATA_SM75_PERF=1`; then `kIlRows_75` (measured on an RTX 2080 Ti) and `kIlRows58_75` (5-8 tokens, measured on a CMP 50HX) |
+| sm_70 and older | see `il_arch_ok` in `src/kernels/cuda/native_mmvq.cu` |
 | a card listed in `kIlArch` | its own table |
 
 ## Measuring a card that has no table yet

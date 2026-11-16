@@ -154,7 +154,10 @@ bool native_mmvq_pair(int ggml_type, const void* w1, const void* w2, const void*
 
 // Fork F4 (Eddoursul): 2..4 columns also INTERLEAVED, so one 16-byte load reads a position of every column: CP = 2 (2
 // columns) or 4 (3-4), zero-padded; nb = n_in / 32 blocks; int32 bm[nb][8][CP] (block-major), int32 pm[8][nb][CP]
-// (position-major), float d[nb][CP] (each block's scale as the dots read it, __low2float of ds).
+// (position-major), float d[nb][CP] (each block's scale as the dots read it, __low2float of ds).  In sm_75 code, 5..8
+// columns (CP = 8): pm is two 4-column planes, columns 0-3 then 4-7 (pm[2][8][nb][4], the same bytes), so a 16-byte load
+// of IQ4_XS's position-major reads (its lanes on consecutive blocks) covers whole entries; with 32-byte entries each load
+// touched twice the sectors.  bm and d keep CP-wide entries; other architectures keep the 32-byte pm entries.
 constexpr int native_q8_1_il_cp(int ncols) { return ncols <= 2 ? 2 : ncols <= 4 ? 4 : 8; }
 std::size_t native_q8_1_il_bytes(int n_in, int ncols);
 // Writes the interleaved copy of 2..4 columns of plain q8_1 blocks (native_quantize_q8_1's, or a fused producer's)
