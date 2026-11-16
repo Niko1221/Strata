@@ -3637,5 +3637,7 @@
   "uxtool002": "Kein Schlüssel gespeichert. Die autonome Agentensuche verwendet ersatzweise DuckDuckGo / Bing. Die manuelle Websuche unterstützt nur den integrierten Anbieter.",
   "uxweb029": "Suchen",
   "wc05801": "Arbeitsbereich",
-  "wc05802": "In den Papierkorb verschieben"
+  "wc05802": "In den Papierkorb verschieben",
+  "q38ui001": "Ausgabesprache",
+  "q38ui002": "Gesprächsspeicher"
 }

@@ -3637,5 +3637,7 @@
   "uxtool002": "Aucune clé n’est enregistrée. La recherche autonome de l’agent utilise DuckDuckGo / Bing en secours. La recherche web manuelle prend uniquement en charge le fournisseur intégré.",
   "uxweb029": "Rechercher",
   "wc05801": "Espace de travail",
-  "wc05802": "Déplacer vers la corbeille"
+  "wc05802": "Déplacer vers la corbeille",
+  "q38ui001": "Langue de sortie",
+  "q38ui002": "Mémoire de conversation"
 }

@@ -76,6 +76,18 @@ test('memory read/save consent and result notices are translated in every suppor
   setTranslationLanguage('en');
 });
 
+test('dense model language and conversation memory labels are translated in every supported language', () => {
+  try {
+    for (const language of languages.filter(value => value !== 'en')) {
+      setTranslationLanguage(language);
+      for (const label of ['Output language', 'Conversation memory']) assert.notEqual(tr(label), label, `${language}: ${label}`);
+    }
+    setTranslationLanguage('ja');
+    assert.equal(tr('Output language'), '出力言語');
+    assert.equal(tr('Conversation memory'), '会話メモリ');
+  } finally { setTranslationLanguage('en'); }
+});
+
 test('the /plan, /research and /new hints and the four "Open ..." hints are translated (#3479, #3825)', () => {
   for (const language of ['zh', 'ru']) {
     setTranslationLanguage(language);

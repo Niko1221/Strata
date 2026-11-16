@@ -352,7 +352,9 @@ def validate_tap(text: str, names: list[str]) -> dict:
         not re.search(r"^\s*(?:ok|not ok) \d+ .*#\s*(SKIP|TODO)\b", text, re.I | re.M),
         "Skipped/TODO TAP case",
     )
-    actual = re.findall(r"^ok \d+ - (.+)$", text, re.M)
+    # Node's TAP reporter escapes literal hashes and backslashes in case names.
+    # Decode those characters once; retain every name and its multiplicity.
+    actual = [re.sub(r"\\([\\#])", r"\1", name) for name in re.findall(r"^ok \d+ - (.+)$", text, re.M)]
     require(sorted(actual) == sorted(names), "Missing/duplicate/unexpected TAP cases")
     counters = {}
     for key in ("tests", "pass", "fail", "cancelled", "skipped", "todo"):

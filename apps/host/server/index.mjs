@@ -1710,11 +1710,13 @@ async function api(req, res, path, method, url) {
       const candidate=models.library().variants.find(v=>v.id===id);if(!candidate||!models.isOnDisk(id)||['loading','downloading','unloading'].includes(candidate.state))return error(res,409,'Download this model before loading it.');
       const loadConfig={ beginner: store.get().beginner, expert: engine.params(), serving: store.get().serving };
       if (!['PrismML', 'TurboQuant'].includes(localBackendChoice(loadConfig.expert))) {
-        const path=models.pathFor(candidate),preview=await native.localPreview(path);
-        if(preview.file_set_status==='plausible'&&preview.candidate_selection?.family==='qwen38_dense'){
-          const job=native.operation('install',{family:'qwen38_dense',model:'local',gguf_dir:path,loadAfter:true});
-          return json(res,200,{...runtimeModels.libraryState(models.library()),nativeJob:job});
-        }
+        if(control)try{
+          const path=models.pathFor(candidate),preview=await native.localPreview(path);
+          if(preview.file_set_status==='plausible'&&preview.candidate_selection?.family==='qwen38_dense'){
+            const job=native.operation('install',{family:'qwen38_dense',model:'local',gguf_dir:path,loadAfter:true});
+            return json(res,200,{...runtimeModels.libraryState(models.library()),nativeJob:job});
+          }
+        }catch(err){return error(res,409,err.message);}
         return error(res, 409, 'Strata runs models on its own engine. Choose a verified PrismML or TurboQuant adapter explicitly for this imported model.');
       }
       try{requireModelKvCompatible(candidate,loadConfig.expert);}catch(err){return error(res,409,err.message);}

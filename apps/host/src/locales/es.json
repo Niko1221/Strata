@@ -3637,5 +3637,7 @@
   "uxtool002": "No hay una clave guardada. La búsqueda autónoma del agente recurre a DuckDuckGo / Bing. La búsqueda web manual solo admite el proveedor integrado.",
   "uxweb029": "Buscar",
   "wc05801": "Espacio de trabajo",
-  "wc05802": "Mover a la papelera"
+  "wc05802": "Mover a la papelera",
+  "q38ui001": "Idioma de salida",
+  "q38ui002": "Memoria de la conversación"
 }

@@ -3637,5 +3637,7 @@
   "uxtool002": "No key is saved. Autonomous agent search falls back to DuckDuckGo / Bing. Manual Search web supports the built-in provider only.",
   "uxweb029": "Search",
   "wc05801": "Workspace",
-  "wc05802": "Move to trash"
+  "wc05802": "Move to trash",
+  "q38ui001": "Output language",
+  "q38ui002": "Conversation memory"
 }

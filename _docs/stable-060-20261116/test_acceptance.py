@@ -396,6 +396,48 @@ def test_tap_requires_names_and_complete_summary() -> None:
     assert len(a.harness_contract(a.native.PRIMARY)["names"]) > 40
 
 
+def test_tap_accepts_actual_escaped_harness_name() -> None:
+    work = Path("H:/Strata/releases/stable-060-20261116-codex/acceptance-harness-r1")
+    text = (work / "harness.tap").read_text(encoding="utf-8")
+    contract = json.loads((work / "harness-contract.json").read_text(encoding="utf-8"))
+    assert r"(\#4750)" in text
+    assert a.validate_tap(text, contract["names"])["pass"] == 58
+
+
+@pytest.mark.parametrize(
+    "change", ("none", "missing", "duplicate", "skip", "todo", "failed", "wrong-name", "summary")
+)
+def test_tap_escaped_hash_keeps_exact_case_and_pass_requirements(change: str) -> None:
+    name = "the summary request asks for the language of the conversation and leaves the original messages alone (#4750)"
+    escaped = name.replace("#", r"\#")
+    text = tap().replace("required case", escaped)
+    if change == "missing":
+        text = text.replace(f"ok 1 - {escaped}\n", "")
+    elif change == "duplicate":
+        text = text.replace("1..1", f"ok 2 - {escaped}\n1..1")
+    elif change in ("skip", "todo"):
+        text = text.replace(escaped, escaped + " # " + change.upper())
+    elif change == "failed":
+        text = text.replace("ok 1", "not ok 1")
+    elif change == "wrong-name":
+        text = text.replace("4750", "4751")
+    elif change == "summary":
+        text = text.replace("# pass 1", "# pass 0")
+    if change == "none":
+        assert a.validate_tap(text, [name])["pass"] == 1
+    else:
+        with pytest.raises(RuntimeError):
+            a.validate_tap(text, [name])
+
+
+def test_tap_unescapes_backslashes_and_hashes_only_once() -> None:
+    name = r"literal \#4750"
+    escaped = name.replace("\\", "\\\\").replace("#", r"\#")
+    assert a.validate_tap(tap().replace("required case", escaped), [name])["pass"] == 1
+    with pytest.raises(RuntimeError):
+        a.validate_tap(tap().replace("required case", r"literal \#4750"), [name])
+
+
 @pytest.mark.parametrize(
     "text",
     (

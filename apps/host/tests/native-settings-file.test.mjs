@@ -14,8 +14,8 @@ async function cleanup(f) {
   await f.cleanup();
 }
 
-for (const validFirst of [true, false]) test(`a load ${validFirst ? 'uses a valid' : 'refuses an invalid'} captured config even if the file changes after reading`, async t => {
-  const f = nativeFixture();
+for (const packaged of [false, true]) for (const validFirst of [true, false]) test(`${packaged ? 'packaged' : 'source'} load ${validFirst ? 'uses a valid' : 'refuses an invalid'} captured config even if the file changes after reading`, async t => {
+  const f = nativeFixture({ packaged, draftingPlan: async () => null });
   try {
     await f.control.refresh(true);
     const path = configOf(f), good = JSON.parse(readFileSync(path, 'utf8'));
