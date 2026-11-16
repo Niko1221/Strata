@@ -50,7 +50,7 @@ const bundle=json(join(control,'BUNDLE.json'));
 if(bundle.version!==controlVersion || read(join(control,'VERSION')).trim()!==controlVersion) throw new Error('Stale Control package version');
 if(bundle.installed?.['hakua-memory']!=='0.3.5') throw new Error('Missing locked Hakua-memory runtime');
 const py=process.platform==='win32'?join(control,'python/python.exe'):join(control,'python/bin/python3');
-const probe=spawnSync(py,['-I','-c',"import importlib.metadata as m; from hakua_memory.ebbinghaus.store import EbbinghausMemoryStore; from hakua_memory.composite import CompositeMemory; assert m.version('hakua-memory') == '0.3.5'"],{encoding:'utf8',timeout:30000,windowsHide:true});
+const probe=spawnSync(py,['-I','-B','-c',"import importlib.metadata as m; from hakua_memory.ebbinghaus.store import EbbinghausMemoryStore; from hakua_memory.composite import CompositeMemory; assert m.version('hakua-memory') == '0.3.5'"],{encoding:'utf8',timeout:30000,windowsHide:true});
 if(probe.error || probe.status!==0) throw new Error(`Hakua runtime probe failed: ${probe.error??probe.stderr}`);
 if(!existsSync(join(root,'apps/host/hakua-chatbot.enabled'))) throw new Error('Missing Hakua enable marker');
 const harness=join(resources,'harness'),harnessBundle=json(join(harness,'BUNDLE.json'));

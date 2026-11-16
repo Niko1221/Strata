@@ -543,6 +543,50 @@ def validate_gpu(binding: dict, report: dict, guard: dict, digest: str, binaries
         require(guard.get("admission", {}).get(key, 0) >= floor * release.GIB, "GPU admission floor violated")
 
 
+def q38_identity(signed: Path, native_receipt: Path, built: dict, binding: dict, legacy: dict) -> dict:
+    """Bind current owned Q38 separately from the two historical GPU binaries."""
+    expected = {**legacy, "strata-q38.exe": native.Q38.EXECUTABLE_SHA256}
+    require(binding.get("binaries") == expected, "Native binding executable identities differ")
+    unsigned = native_receipt.parent / "unsigned" / release.NAME
+    require(Path(built.get("nativeComponent", "")) == unsigned, "Foreign unsigned Q38 component")
+    executable = artifact(signed / "strata-q38.exe", native.Q38.EXECUTABLE_SHA256)
+    build = artifact(signed / "q38-build.json", binding.get("q38BuildSHA256"))
+    require(binding.get("q38BuildSHA256") == build["sha256"], "Q38 build binding missing")
+    for name, row in (("strata-q38.exe", executable), ("q38-build.json", build)):
+        require(built["files"].get(name) == row["sha256"], "Q38 unsigned inventory differs")
+        artifact(unsigned / name, row["sha256"])
+    record = release.load(signed / "q38-build.json")
+    require(
+        record.get("sourceCommit") == binding.get("q38CompiledSourceCommit") == native.Q38.COMMIT
+        and record.get("sha256") == executable["sha256"],
+        "Q38 compiled source/executable proof differs",
+    )
+    verifier = artifact(native.PRIMARY / "apps/host/scripts/release-integrity.mjs")
+    # Reuse the reviewed source-closure, recipe, runtime and notice verifier.
+    # Q38 was compiled separately; never compare it to the legacy build folder.
+    release.command(
+        [
+            release.NODE,
+            "--input-type=module",
+            "-e",
+            "import{readFileSync}from'node:fs';import{join}from'node:path';"
+            "const[url,folder,root]=process.argv.slice(1);"
+            "const{verifyQ38Build}=await import(url);"
+            "verifyQ38Build(folder,root,JSON.parse(readFileSync(join(folder,'engine-component.json'),'utf8')));",
+            Path(verifier["path"]).as_uri(),
+            signed,
+            native.PRIMARY,
+        ]
+    )
+    return {
+        "executable": executable,
+        "build": build,
+        "compiledSourceCommit": record["sourceCommit"],
+        "verifier": verifier,
+        "scope": "Current owned Q38 provenance; no historical GPU replay claim",
+    }
+
+
 def final_native(args: argparse.Namespace, work: Path) -> dict:
     """Read fresh native/component receipts and qualify historical GPU equality only."""
     inputs = {}
@@ -628,6 +672,10 @@ def final_native(args: argparse.Namespace, work: Path) -> dict:
     for name, digest in libraries["libraries"].items():
         inputs["library:" + name] = artifact(component / name, digest)
     binaries = {n: release.sha(component / n) for n in ("strata.exe", "strata-q36.exe")}
+    q38 = q38_identity(component, args.native_receipt, built, binding, binaries)
+    inputs.update(
+        {"strata-q38.exe": q38["executable"], "q38Build": q38["build"], "q38Verifier": q38["verifier"]}
+    )
     probes = {}
     for name, digest in binaries.items():
         require(
@@ -691,6 +739,7 @@ def final_native(args: argparse.Namespace, work: Path) -> dict:
         "profileBindings": profile_bindings,
         "compiledLibraries": measured_outputs,
         "binaries": binaries,
+        "q38": q38,
         "versionProbes": probes,
         "versionProbeCommands": [[str(component / name), "--version"] for name in binaries],
         "retainedLimitation": (
@@ -1165,7 +1214,20 @@ def validate_native_proof(record: dict, work: Path) -> None:
         "Native source/compiler/dependency proof differs",
     )
     binaries = {name: inputs[name]["sha256"] for name in ("strata.exe", "strata-q36.exe")}
-    require(binding.get("binaries") == binaries, "Native binding executable identities differ")
+    for label, expected in (
+        ("strata-q38.exe", signed / "strata-q38.exe"),
+        ("q38Build", signed / "q38-build.json"),
+        ("q38Verifier", native.PRIMARY / "apps/host/scripts/release-integrity.mjs"),
+    ):
+        evidence(record, "inputs", label, expected)
+    q38 = q38_identity(signed, native_receipt, built, binding, binaries)
+    require(
+        equality.get("q38") == q38
+        and inputs["strata-q38.exe"] == q38["executable"]
+        and inputs["q38Build"] == q38["build"]
+        and inputs["q38Verifier"] == q38["verifier"],
+        "Q38 current provenance proof differs",
+    )
     for name, digest in binaries.items():
         evidence(record, "inputs", name, signed / name)
         require(

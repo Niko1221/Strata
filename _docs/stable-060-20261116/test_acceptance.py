@@ -614,10 +614,10 @@ def repin(path: Path, record: dict) -> str:
 
 
 def native_proof_fixture(raw: dict, work: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Synthetic native evidence; only signature verification is isolated here.
+    """Synthetic native evidence; signature and Q38 JS boundaries are isolated here.
 
     No actual build/engine/probe/signature/GPU work is performed. The existing
-    production signature verifier is separately covered by the feed tests.
+    production signature and Q38 source verifiers have separate actual-byte coverage.
     """
     inputs, root, build = raw["inputs"], a.native.PRIMARY, a.native.BUILD
     put(root / "CMakeLists.txt", "synthetic source")
@@ -651,6 +651,17 @@ def native_proof_fixture(raw: dict, work: Path, monkeypatch: pytest.MonkeyPatch)
         put(signed / name, "synthetic binary " + name)
         inputs[name if name.endswith(".exe") else "library:" + name] = a.artifact(signed / name)
     binaries = {n: inputs[n]["sha256"] for n in ("strata.exe", "strata-q36.exe")}
+    put(signed / "strata-q38.exe", "synthetic owned Q38 executable")
+    q38_hash = a.release.sha(signed / "strata-q38.exe")
+    monkeypatch.setattr(a.native.Q38, "EXECUTABLE_SHA256", q38_hash)
+    put(signed / "q38-build.json", {"sourceCommit": a.native.Q38.COMMIT, "sha256": q38_hash})
+    # Isolate the real JS source verifier only for synthetic source trees.
+    monkeypatch.setattr(a.release, "command", lambda *_args, **_kwargs: "0.6.0")
+    put(root / "apps/host/scripts/release-integrity.mjs", "synthetic verifier boundary")
+    unsigned = native_work / "unsigned" / a.release.NAME
+    unsigned.mkdir(parents=True)
+    for name in ("strata.exe", "strata-q36.exe", "strata-q38.exe", "q38-build.json"):
+        shutil.copyfile(signed / name, unsigned / name)
     put(
         signed / "native-build.json",
         {
@@ -682,7 +693,8 @@ def native_proof_fixture(raw: dict, work: Path, monkeypatch: pytest.MonkeyPatch)
         "sourceRoot": str(root),
         "sourceCommit": COMMIT,
         "releaseQualified": False,
-        "files": binaries,
+        "nativeComponent": str(unsigned),
+        "files": a.release.inventory(unsigned),
         "builder": builder,
     }
     inputs["native"] = a.artifact(put(native_work / "receipt.json", built))
@@ -696,7 +708,9 @@ def native_proof_fixture(raw: dict, work: Path, monkeypatch: pytest.MonkeyPatch)
         "inputsAfterSHA256": inputs["inputs-after.json"]["sha256"],
         "toolkitInputsSHA256": inputs["toolkit-inputs.json"]["sha256"],
         "nativeBuildSHA256": inputs["nativeBuild"]["sha256"],
-        "binaries": binaries,
+        "binaries": {**binaries, "strata-q38.exe": q38_hash},
+        "q38BuildSHA256": a.release.sha(signed / "q38-build.json"),
+        "q38CompiledSourceCommit": a.native.Q38.COMMIT,
     }
     inputs["nativeBinding"] = a.artifact(put(native_work / "native-binding.json", binding))
     component_files = {p.name: a.release.sha(p) for p in signed.iterdir()}
@@ -751,6 +765,11 @@ def native_proof_fixture(raw: dict, work: Path, monkeypatch: pytest.MonkeyPatch)
         "historicalSourceDigest": bindings["sourceDigest"],
         "historicalSourceUnchangedAttested": True,
     }
+    q38 = a.q38_identity(signed, native_work / "receipt.json", built, binding, binaries)
+    equality["q38"] = q38
+    inputs.update(
+        {"strata-q38.exe": q38["executable"], "q38Build": q38["build"], "q38Verifier": q38["verifier"]}
+    )
     raw["results"]["equality"] = a.artifact(put(work / "native-equality.json", equality))
 
 
@@ -1237,7 +1256,7 @@ def test_final_native_consumer_rechecks_bound_current_jobs(
     ]
 
 
-def test_final_native_producer_rechecks_bound_current_jobs(
+def test_final_native_producer_consumer_roundtrip_rechecks_bound_current_jobs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path, record = acceptance_fixture(tmp_path, monkeypatch, "final-native")
@@ -1248,7 +1267,7 @@ def test_final_native_producer_rechecks_bound_current_jobs(
     for backend in ("prism", "turboquant"):
         (signed / "local-backends" / backend).mkdir(parents=True)
     unsigned = native_receipt.parent / "unsigned" / a.release.NAME
-    unsigned.mkdir(parents=True)
+    unsigned.mkdir(parents=True, exist_ok=True)
     for name in ("strata.exe", "strata-q36.exe"):
         shutil.copyfile(signed / name, unsigned / name)
         shutil.copyfile(signed / name, a.native.BUILD / "Release" / name)
@@ -1295,8 +1314,74 @@ def test_final_native_producer_rechecks_bound_current_jobs(
     monkeypatch.setattr(a, "successful_job", capture)
     producer_work = tmp_path / "producer-output"
     producer_work.mkdir()
-    a.final_native(args, producer_work)
-    assert seen == [("native-input", native_receipt.parent), ("component", component_receipt.parent)]
+    produced = a.final_native(args, producer_work)
+    a.validate_native_proof({"sourceCommit": COMMIT, **produced}, producer_work)
+    assert seen == [("native-input", native_receipt.parent), ("component", component_receipt.parent)] * 2
+    equality = a.release.load(producer_work / "native-equality.json")
+    assert set(equality["binaries"]) == {"strata.exe", "strata-q36.exe"}
+    assert equality["q38"]["compiledSourceCommit"] == a.native.Q38.COMMIT
+
+
+@pytest.mark.parametrize(
+    "change",
+    (
+        "missing-input",
+        "missing-equality",
+        "changed-equality",
+        "extra-binary",
+        "missing-binary",
+        "changed-binary-binding",
+        "missing-build-binding",
+        "changed-compiled-commit",
+        "signed-binary",
+        "unsigned-binary",
+        "signed-build",
+    ),
+)
+def test_final_native_consumer_rejects_invalid_current_q38(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    path, record = acceptance_fixture(tmp_path, monkeypatch, "final-native")
+    bind_current_native_jobs(record)
+    monkeypatch.setattr(a.delivery, "receipt", lambda path, *_args: a.release.load(path))
+    inputs = record["inputs"]
+    binding_path = Path(inputs["nativeBinding"]["path"])
+    binding = a.release.load(binding_path)
+    signed = Path(inputs["strata-q38.exe"]["path"]).parent
+    if change == "missing-input":
+        del inputs["q38Build"]
+    elif change in ("missing-equality", "changed-equality"):
+        equality_path = Path(record["results"]["equality"]["path"])
+        equality = a.release.load(equality_path)
+        if change == "missing-equality":
+            del equality["q38"]
+        else:
+            equality["q38"]["compiledSourceCommit"] = "f" * 40
+        put(equality_path, equality)
+        record["results"]["equality"] = a.artifact(equality_path)
+    elif change in ("signed-binary", "signed-build", "unsigned-binary"):
+        folder = signed if change.startswith("signed") else binding_path.parent / "unsigned" / a.release.NAME
+        put(folder / ("q38-build.json" if change == "signed-build" else "strata-q38.exe"), "tampered")
+    else:
+        if change == "extra-binary":
+            binding["binaries"]["unexpected.exe"] = "f" * 64
+        elif change == "missing-binary":
+            del binding["binaries"]["strata-q38.exe"]
+        elif change == "changed-binary-binding":
+            binding["binaries"]["strata-q38.exe"] = "f" * 64
+        elif change == "missing-build-binding":
+            del binding["q38BuildSHA256"]
+        else:
+            binding["q38CompiledSourceCommit"] = "f" * 40
+        put(binding_path, binding)
+        inputs["nativeBinding"] = a.artifact(binding_path)
+        component_path = Path(inputs["component"]["path"])
+        component = a.release.load(component_path)
+        component["nativeBindingSHA256"] = inputs["nativeBinding"]["sha256"]
+        put(component_path, component)
+        inputs["component"] = a.artifact(component_path)
+    with pytest.raises(RuntimeError):
+        a.validate_native_proof(record, path.parent)
 
 
 @pytest.mark.parametrize(
