@@ -2,7 +2,7 @@
 import threading
 import unittest
 from serve.server import (Service, ByteTokenizer, MockEngine, HIGH_EFFORT,
-                          reasoning_repeat_coverage, focused_recovery_prompt)
+                          reasoning_repeat_coverage, focused_recovery_prompt, reasoning_degeneracy)
 
 
 class Tokenizer(ByteTokenizer):
@@ -31,6 +31,13 @@ class ReasoningLoopRecovery(unittest.TestCase):
             '<|im_end|>\n<|im_start|>user\nSolve this unchanged task<|im_end|>\n'
             '<|im_start|>assistant\n<think>\n', parse_special=True)
         self.loop = 'Need maybe Agent support agent seven b. ' * 700
+
+    def test_degeneracy_signals(self):
+        self.assertIsNone(reasoning_degeneracy('A normal answer with sentences. ' * 80))
+        run_on = '-'.join('alpha' for _ in range(80))
+        self.assertEqual(reasoning_degeneracy(run_on)[0], 'hyphen run-on')
+        flat = 'line without any sentence end ' * 200
+        self.assertEqual(reasoning_degeneracy(flat)[0], 'run-on')
 
     def test_repetition_and_novel_work(self):
         self.assertEqual(reasoning_repeat_coverage(' '.join(str(i) for i in range(4000))), 0)
@@ -133,6 +140,21 @@ class ReasoningLoopRecovery(unittest.TestCase):
         self.assertEqual(events[-1][1]['finish'], 'length')
         self.assertLess(events[-1][1]['completion_tokens'], 5000)
         self.assertEqual(events[-1][1]['reasoning_recoveries'], 0)
+
+    def test_wrap_reports_what_it_changed(self):
+        """A wrap is visible in the transcript: reason, position and injected characters."""
+        run_on = '-'.join('alpha' for _ in range(400))
+        engine = RecordingEngine(self.tok, [run_on])
+        service = Service(engine, self.tok, None)
+        service.answer_room = False
+        service.reasoning_loop_recovery = False
+        service.reasoning_degeneracy = "wrap"
+        events = list(service.run(self.ids, True, [], 40000, {}, threading.Event()))
+        done = events[-1][1]
+        self.assertTrue(done.get("strata_wrap"))
+        self.assertEqual(done["strata_wrap"]["reason"], "hyphen run-on")
+        self.assertGreater(done["strata_wrap"]["at_token"], 0)
+        self.assertGreater(done["strata_wrap"]["injected_chars"], 0)
 
     def test_disabled_is_one_pass(self):
         engine, events = self.run_case(False)
