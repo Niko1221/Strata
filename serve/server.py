@@ -7536,6 +7536,12 @@ def anthropic_collect(events) -> dict:
 
 # ------------------------------------------------------------------------------------------------ HTTP
 CHUNKED_BODY_MAX = 256 << 20                # #893: the most a Transfer-Encoding: chunked body may hold (read into memory)
+# the longest a request's socket may stay silent before its thread gives it up.  Without one, a client whose
+# connection dies without a close (a laptop sleeping, a link dropping mid-body) left the handler thread blocked in
+# rfile.read() forever: the request never reached the engine, the Monitor kept showing "waiting for a request",
+# and the thread was lost for the life of the server.  It is a per-read deadline, not a total one - a slow client
+# that keeps sending bytes is never cut off.  STRATA_HTTP_BODY_S changes it (0 = off, the old behaviour).
+HTTP_BODY_S = _timeout_env("STRATA_HTTP_BODY_S", 60.0)
 
 
 def body_limit() -> int:
@@ -7566,6 +7572,9 @@ def make_handler(svc: Service):
         cancel_event = None                                 # active generation owned by this handler
         body_read = False                                   # whether a handler took this request's body
         DRAIN_SECONDS = 5                                   # the longest an unread body is read and dropped
+        timeout = HTTP_BODY_S                               # socketserver puts it on the connection: every read
+        # (headers, body) and every write carries it, so no half-open client can hold a handler thread forever.
+        # A header read that expires is ended by handle_one_request itself; a stalled body becomes a 408 in _body.
 
         def log_message(self, fmt, *args):
             pass
@@ -7596,7 +7605,10 @@ def make_handler(svc: Service):
                     if wait <= 0:
                         return b"".join(parts)
                     self.connection.settimeout(wait)
-                line = self.rfile.readline(1025)
+                try:
+                    line = self.rfile.readline(1025)
+                except (TimeoutError, OSError) as e:       # Handler.timeout: a stalled body ends the request, not the thread
+                    raise BadBody(408, "the chunked request body stopped arriving") from e
                 if not line.endswith(b"\n"):
                     raise BadBody(400, "malformed chunked request body")
                 try:
@@ -7619,7 +7631,10 @@ def make_handler(svc: Service):
                     raise BadBody(413, f"the request body is larger than {limit >> 20} MiB")
                 left = size
                 while left > 0:
-                    piece = self.rfile.read(min(left, 1 << 20))
+                    try:
+                        piece = self.rfile.read(min(left, 1 << 20))
+                    except (TimeoutError, OSError) as e:
+                        raise BadBody(408, "the chunked request body stopped arriving") from e
                     if not piece:
                         raise BadBody(400, "the chunked request body ended early")
                     left -= len(piece)
@@ -7643,7 +7658,11 @@ def make_handler(svc: Service):
                 self.close_connection = True               # the body is not read: the connection ends with the answer
                 raise BadBody(413, f"the request body is larger than {limit >> 20} MiB "
                                    "(STRATA_MAX_BODY_MIB raises the limit)")
-            return self.rfile.read(length)
+            try:
+                return self.rfile.read(length)
+            except (TimeoutError, OSError) as e:           # the client stopped sending (Handler.timeout, HTTP_BODY_S)
+                self.close_connection = True               # or died without a close: give the thread back
+                raise BadBody(408, "the request body stopped arriving") from e
 
         def _drain_body(self):
             """An answer sent before the body was read (a 401, a 403, /load, a method with no handler) must not close
