@@ -8,7 +8,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <string>
+#include <string_view>
 
 int main(int argc, char** argv) {
     uint64_t ctx = 20480;
@@ -16,10 +16,10 @@ int main(int argc, char** argv) {
     strata::plan::Costs costs;
     bool state_given = false;
     for (int i = 1; i < argc; ++i) {
-        const std::string a = argv[i];
+        const std::string_view a = argv[i];
         auto next = [&](uint64_t& out) {
             if (i + 1 >= argc) {
-                std::fprintf(stderr, "%s needs a value\n", a.c_str());
+                std::fprintf(stderr, "%s needs a value\n", a.data());
                 std::exit(2);
             }
             out = std::strtoull(argv[++i], nullptr, 10);
@@ -49,7 +49,7 @@ int main(int argc, char** argv) {
                         "  planned without 117.7 MB (85 expert slots) of non-evictable state.\n");
             return 0;
         } else {
-            std::fprintf(stderr, "unknown argument: %s\n", a.c_str());
+            std::fprintf(stderr, "unknown argument: %s\n", a.data());
             return 2;
         }
     }
