@@ -57,17 +57,12 @@ export function checkHeaders(rows, allowed, route) {
   assert.ok(rows.length>0);
   for(const row of rows){assert.equal(row.provider,route);assert.ok(row.model);assert.ok(row.tools.every(t=>allowed.includes(t.name)));}
 }
-function gpu() {
-  const exe='C:/Windows/System32/nvidia-smi.exe';
-  const query=field=>{const p=spawnSync(exe,[field,'--format=csv,noheader,nounits'],{encoding:'utf8',windowsHide:true,timeout:15000});assert.equal(p.status,0);return p.stdout.trim();};
-  return {freeMiB:Number(query('--query-gpu=memory.free')),pids:query('--query-compute-apps=pid').split(/\r?\n/).filter(Boolean).map(Number)};
-}
 function ancestry(pid, owner) {
   assert.ok(Number.isSafeInteger(pid)&&pid>0&&Number.isSafeInteger(owner)&&owner>0);
   // Output is captured privately, parsed in memory, then only the verified
   // executable and two non-secret argument checks are retained.
   const script=`[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); $n=${pid}; $rows=@(); for($i=0;$i -lt 20 -and $n -gt 0;$i++){ $p=Get-CimInstance Win32_Process -Filter ('ProcessId='+$n); if(!$p){break}; $rows+=@{pid=[int]$p.ProcessId;parent=[int]$p.ParentProcessId;exe=$p.ExecutablePath;command=$p.CommandLine}; if($n -eq ${owner}){break}; $n=[int]$p.ParentProcessId }; ConvertTo-Json -InputObject @($rows) -Compress`;
-  const result=spawnSync('powershell.exe',['-NoProfile','-NonInteractive','-Command',script],{encoding:'utf8',windowsHide:true,timeout:15000});
+  const result=spawnSync('C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe',['-NoProfile','-NonInteractive','-Command',script],{encoding:'utf8',windowsHide:true,timeout:15000});
   assert.equal(result.status,0);const rows=JSON.parse(result.stdout);assert.ok(rows.length&&rows.at(-1).pid===owner);return {...rows[0],chain:rows.map(({pid,parent,exe})=>({pid,parent,exe}))};
 }
 
@@ -105,6 +100,18 @@ async function execute(inputPath, expectedSHA) {
   const contract=json(inputPath),work=resolve(contract.work),home=join(work,'real-home'),ws=join(home,'workspace');
   assert.equal(dirname(work),OUT);assert.match(basename(work),/^real-model-r[1-9][0-9]*$/);assert.equal(resolve(inputPath),join(work,'input.json'));
   assert.equal(contract.ownerPID,process.ppid);assert.ok(process.env.HAKUA060_WORKER_TOKEN);assert.equal(json(join(work,'reservation.json')).token,process.env.HAKUA060_WORKER_TOKEN);
+  let gpuObservationIndex=0;
+  const gpu=(minimumFreeMiB=8192)=>{
+    assert.equal(resolve(contract.gpuObserver.path),join(HERE,'gpu-admission.py'));
+    assert.equal(hash(contract.gpuObserver.path),contract.gpuObserver.sha256);
+    assert.equal(hash(contract.pythonExecutable.path),contract.pythonExecutable.sha256);
+    const result=spawnSync(contract.pythonExecutable.path,['-B',contract.gpuObserver.path],{
+      input:JSON.stringify({...contract.gpuPolicy,minimumFreeMiB}),encoding:'utf8',
+      windowsHide:true,timeout:90000,maxBuffer:8*1024*1024});
+    writeFileSync(join(work,`gpu-observation-${++gpuObservationIndex}.json`),JSON.stringify({status:result.status,stdout:result.stdout,stderr:result.stderr}),{flag:'wx'});
+    assert.equal(result.status,0,'GPU identity admission failed; private observation required');
+    return JSON.parse(result.stdout);
+  };
   assert.equal(resolve(contract.app),APP);noLinks(APP);assert.equal(hash(join(APP,'strata-desktop.exe')),contract.shellSHA256);
   assert.equal(hash(contract.component.archive),contract.component.entry.sha256);assert.equal(hash(join(work,'capability.json')),contract.capabilitySHA256);
   assert.equal(statSync(contract.model.path).size,contract.model.bytes);
@@ -136,8 +143,8 @@ async function execute(inputPath, expectedSHA) {
     const files={};for(const f of manifest.files){const p=resolve(runtimeDir,f.path);assert.ok(p.startsWith(runtimeDir+'\\'));noLinks(p);assert.equal(hash(p),f.sha256);files[f.path]=f.sha256;}
     const observation=ancestry(s.pid,child.pid);assert.equal(resolve(observation.exe),resolve(s.binary.path));assert.ok(resolve(s.binary.path).startsWith(runtimeDir+'\\'));
     assert.ok(observation.command.includes(contract.model.path));assert.match(observation.command,/(?:^|\s)(?:-c|--ctx-size)(?:=|\s+)32768(?:\s|$)/);
-    const g=gpu();assert.ok(g.freeMiB>=768&&g.pids.includes(s.pid));
-    const row={backend:s.requestedBackend,runtimeVersion:manifest.version,runtimeCommit:manifest.source.commit,manifest:artifact(join(runtimeDir,'runtime.json')),componentManifest:artifact(componentManifest),runtimeFiles:files,executable:observation.exe,executableSHA256:hash(observation.exe),pid:s.pid,port:s.port,modelSHA256:contract.model.sha256,contextCapacity:s.contextCapacity,ownedAncestry:true,ancestry:observation.chain,modelArgumentMatched:true,contextArgumentMatched:true,gpuPIDs:g.pids,gpuFreeMiB:g.freeMiB};
+    const g=gpu(768);assert.ok(g.freeMiB>=768&&g.ownedPIDs.includes(s.pid)&&g.computePIDs.includes(s.pid));
+    const row={backend:s.requestedBackend,runtimeVersion:manifest.version,runtimeCommit:manifest.source.commit,manifest:artifact(join(runtimeDir,'runtime.json')),componentManifest:artifact(componentManifest),runtimeFiles:files,executable:observation.exe,executableSHA256:hash(observation.exe),pid:s.pid,port:s.port,modelSHA256:contract.model.sha256,contextCapacity:s.contextCapacity,ownedAncestry:true,ancestry:observation.chain,modelArgumentMatched:true,contextArgumentMatched:true,gpuPIDs:g.observedPIDs,gpuFreeMiB:g.freeMiB,gpuObservation:g};
     report.runtime.push(row);currentRuntime=row;checkpoint();return row;
   }
   function observeHeaders(phase,allowed,sessionId=null) {
@@ -195,7 +202,7 @@ async function execute(inputPath, expectedSHA) {
     const registered=await call('/api/local-models','POST',{path:contract.model.path,name:'Private real-model 060 reference'});variantId=registered.variantId;assert.equal(typeof variantId,'string');report.variantId=variantId;report.instanceId='supervisor:'+variantId;report.route='strata-local';
     const configuration={variantId,beginner:{contextLength:'32k'},expert:Object.entries({'runtime.backend':'PrismML','server.parallel':1,'mem.mmap':true,'perf.batch':128}).map(([id,value])=>({id,value}))};
     const validation=await call('/api/engine/validate','POST',configuration);assert.equal(validation.ok,true);report.engineValidation=validation;await call('/api/engine','PATCH',configuration);report.engineConfiguration=configuration;
-    const beforeLoad=gpu();assert.ok(beforeLoad.freeMiB>=8192&&beforeLoad.pids.length===0);report.gpuBeforeLoad=beforeLoad;
+    const beforeLoad=gpu();report.gpuBeforeLoad=beforeLoad;checkpoint();
     await call('/api/models/'+encodeURIComponent(variantId)+'/load','POST',{},180000);await attest();report.checks.runtime='PASS';checkpoint();
     const settings=await call('/api/agent/tools','PUT',{groups:Object.fromEntries(GROUPS.map(k=>[k,k==='skills'])),browser:{enabled:false},webWithoutAsking:false,search:{provider:'rustxng'}});
     assert.ok(settings.custom.length===0);const created=await call('/api/agent/tools/custom','POST',{name:'Owned Audit',about:'Read exactly three owned synthetic CSVs and persist one fixed audit.',kind:'server',address:join(APP,'node/node.exe'),args:[join(HERE,'real-model-mcp.mjs'),ws]});
@@ -228,7 +235,7 @@ async function execute(inputPath, expectedSHA) {
     let access=await memoryAccess();const storeTurnId=randomUUID();report.memory={profileRoot:access.profileRoot,storeTurnId,recallHistoryIncludesAnswer:false};
     const stored=await stream('memoryStore','/api/hakua/chat',{runtimeId:access.runtimeId,messages:[{role:'user',content:'Remember this synthetic test fact for later: the validation orchid code is CERULEAN-684. Acknowledge briefly.'}],max_tokens:128,stream:true,strata_memory:{read:false,store_summary:true,turn_id:storeTurnId}},'memory',180000,{authorization:'Bearer '+access.profileKey});
     report.memory.store=stored;assert.equal(stored.at(-1)?.done,true);assert.equal(stored.at(-1)?.memory,'stored');report.checks.memoryStore='PASS';access=null;checkpoint();
-    await unload();const reloadGPU=gpu();assert.ok(reloadGPU.freeMiB>=8192&&reloadGPU.pids.length===0);report.gpuBeforeReload=reloadGPU;await call('/api/models/'+encodeURIComponent(variantId)+'/load','POST',{},180000);await attest();
+    await unload();const reloadGPU=gpu();report.gpuBeforeReload=reloadGPU;checkpoint();await call('/api/models/'+encodeURIComponent(variantId)+'/load','POST',{},180000);await attest();
     stage='memoryRecall';access=await memoryAccess();const recallTurnId=randomUUID();report.memory.recallTurnId=recallTurnId;
     const recalled=await stream('memoryRecall','/api/hakua/chat',{runtimeId:access.runtimeId,messages:[{role:'user',content:'What is the validation orchid code I asked you to remember?'}],max_tokens:128,stream:true,strata_memory:{read:true,store_summary:false,turn_id:recallTurnId}},'memory',180000,{authorization:'Bearer '+access.profileKey});
     access=null;report.memory.recall=recalled;assert.equal(recalled.at(-1)?.done,true);report.checks.memoryRecall='PASS';checkpoint();

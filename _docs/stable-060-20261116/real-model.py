@@ -25,9 +25,11 @@ acceptance = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(acceptance)
 delivery, native, release = acceptance.delivery, acceptance.native, acceptance.release
 require, artifact = release.require, acceptance.artifact
+gpu_policy = release.module("real_model_gpu_policy", HERE / "gpu-admission.py")
 SCHEMA = "strata.real-model.v1"
 INPUTS = ("app", "extract", "install", "installed_qa", "component")
 ADAPTERS = (
+    "gpu-admission.py",
     "real-model.py",
     "real-model.mjs",
     "real-model-mcp.mjs",
@@ -76,11 +78,14 @@ CHECKS = (
 
 def parsed(argv: list[str]) -> argparse.Namespace:
     cli = native.parser(__doc__)
+    cli.add_argument("--gpu-desktop-baseline", type=Path)
+    cli.add_argument("--gpu-desktop-baseline-sha256")
     for name in INPUTS:
         cli.add_argument("--" + name.replace("_", "-") + "-receipt", type=Path)
         cli.add_argument("--" + name.replace("_", "-") + "-receipt-sha256")
     args = cli.parse_args(argv)
     args.phase = "real-model"
+    baseline_binding(args)
     require(not args.worker or args.execute, "Worker requires execute")
     if args.execute:
         require(
@@ -99,35 +104,21 @@ def parsed(argv: list[str]) -> argparse.Namespace:
     return args
 
 
-def gpu_snapshot() -> dict:
-    """Only numeric, non-secret NVIDIA observations; never stop another owner."""
-    executable = Path("C:/Windows/System32/nvidia-smi.exe")
-    require(executable.is_file(), "GPU observation unavailable")
-
-    def query(args: list[str]) -> str:
-        result = subprocess.run(
-            [str(executable), *args, "--format=csv,noheader,nounits"],
-            capture_output=True,
-            timeout=15,
-            creationflags=subprocess.CREATE_NO_WINDOW,
-        )
-        require(result.returncode == 0, "GPU observation failed")
-        return result.stdout.decode("utf-8", errors="strict").strip()
-
-    rows = [
-        [int(n.strip()) for n in line.split(",")]
-        for line in query(["--query-gpu=index,memory.free"]).splitlines()
-    ]
-    pids = [
-        int(line.strip())
-        for line in query(["--query-compute-apps=pid"]).splitlines()
-        if line.strip()
-    ]
+def baseline_binding(args: argparse.Namespace) -> dict | None:
+    """No baseline is the original strict path; opt-in requires both pins."""
+    path, sha = args.gpu_desktop_baseline, args.gpu_desktop_baseline_sha256
+    if path is None and sha is None:
+        return None
     require(
-        len(rows) == 1 and rows[0][0] == 0 and rows[0][1] >= 8192 and not pids,
-        "GPU admission requires one idle GPU with 8192 MiB free",
+        path is not None and path.is_absolute() and re.fullmatch(r"[a-f0-9]{64}", sha or ""),
+        "Explicit desktop baseline pin required",
     )
-    return {"device": 0, "freeMiB": rows[0][1], "computePIDs": pids, "reserveMiB": 768}
+    return {"path": str(path), "sha256": sha}
+
+
+def gpu_snapshot(binding: dict | None = None) -> dict:
+    """Private raw observations and exact identity policy; never stop owners."""
+    return gpu_policy.observe(binding)
 
 
 def selected_original_hashes() -> dict:
@@ -168,7 +159,14 @@ def admission(args: argparse.Namespace, work: Path) -> dict:
     model = artifact(delivery.MODEL, MODEL_SHA)
     require(delivery.MODEL.stat().st_size == MODEL_SIZE, "Model size differs")
     delivery.quiescent()
-    gpu = gpu_snapshot()
+    try:
+        gpu = gpu_snapshot(baseline_binding(args))
+    except Exception as error:
+        release.save(
+            work / "gpu-admission-failure.json",
+            {"error": type(error).__name__, "observation": getattr(error, "gpu_observation", None)},
+        )
+        raise
     # Same production modules and pinned SDK as the installed payload. The
     # synthetic proof is prevention by configuration, not a live endpoint claim.
     for path in (native.PRIMARY / "apps/host/server").rglob("*.mjs"):
@@ -230,6 +228,9 @@ def admission(args: argparse.Namespace, work: Path) -> dict:
         "shellSHA256": release.sha(delivery.APP / "strata-desktop.exe"),
         "model": {**model, "bytes": MODEL_SIZE},
         "gpuAdmission": gpu,
+        "gpuPolicy": {"baseline": baseline_binding(args), "owner": gpu["owner"]},
+        "gpuObserver": artifact(HERE / "gpu-admission.py"),
+        "pythonExecutable": artifact(Path(sys.executable)),
         "component": {
             "archive": str(Path(component["assets"]) / component["entry"]["url"]),
             "entry": component["entry"],
@@ -319,6 +320,7 @@ def phase(args: argparse.Namespace, work: Path) -> dict:
         }
     )
     inputs["nodeExecutable"] = artifact(release.NODE)
+    inputs["pythonExecutable"] = artifact(Path(sys.executable))
     original = selected_original_hashes()
     release.save(work / "original-config-before.json", original)
     contract = admission(args, work)
@@ -419,6 +421,7 @@ def validate_observations(report: dict, contract: dict) -> None:
     """Pure typed semantic consumer. Artifacts alone do not imply a pass."""
     require(report.get("schema") == "strata.real-model.observations.v1", "Wrong observations")
     require(report.get("sourceCommit") == contract["sourceCommit"], "Observation source differs")
+    validate_gpu_observations(report, contract)
     checks = report.get("checks", {})
     require(set(checks) == set(CHECKS), "Missing named checks")
     require(
@@ -794,15 +797,43 @@ def validate_observations(report: dict, contract: dict) -> None:
     )
 
 
+def validate_gpu_observations(report: dict, contract: dict) -> None:
+    """Replay every GPU classification, including actual runtime ownership."""
+    policy = contract["gpuPolicy"]
+    owner, binding = policy["owner"], policy["baseline"]
+    require(owner["pid"] == contract["ownerPID"], "Foreign GPU worker")
+    gpu_policy.validate(contract["gpuAdmission"], binding, owner, 8192)
+    for key in ("gpuBeforeLoad", "gpuBeforeReload"):
+        gpu_policy.validate(report.get(key), binding, owner, 8192)
+    for row in report.get("runtime", []):
+        observation = row.get("gpuObservation")
+        gpu_policy.validate(observation, binding, owner, 768)
+        require(
+            row["pid"] in observation["ownedPIDs"]
+            and row["pid"] in observation["computePIDs"]
+            and row["gpuPIDs"] == observation["observedPIDs"]
+            and row["gpuFreeMiB"] == observation["freeMiB"],
+            "Runtime GPU evidence differs",
+        )
+        actual = next(p for p in observation["raw"]["processes"] if p["pid"] == row["pid"])
+        require(
+            actual["executable"] == row["executable"]
+            and actual["sha256"] == row["executableSHA256"],
+            "Runtime GPU identity differs",
+        )
+
+
 def validate_proof(record: dict, work: Path, job: dict) -> None:
     require(
-        set(record.get("inputs", {})) == set(ADAPTERS) | set(INPUTS) | {"nodeExecutable"}
+        set(record.get("inputs", {}))
+        == set(ADAPTERS) | set(INPUTS) | {"nodeExecutable", "pythonExecutable"}
         and set(record.get("results", {})) == set(RESULTS),
         "Missing/foreign named evidence",
     )
     for name in ADAPTERS:
         acceptance.evidence(record, "inputs", name, HERE / name)
     acceptance.evidence(record, "inputs", "nodeExecutable", release.NODE)
+    acceptance.evidence(record, "inputs", "pythonExecutable", Path(sys.executable))
     for name in record["results"]:
         acceptance.evidence(record, "results", name, work / name)
     command = release.load(work / "worker-command.json")
@@ -872,10 +903,16 @@ def validate_proof(record: dict, work: Path, job: dict) -> None:
         "Runner model/app identity differs",
     )
     require(
-        contract.get("gpuAdmission", {}).get("freeMiB", 0) >= 8192
-        and contract["gpuAdmission"].get("computePIDs") == []
-        and contract["gpuAdmission"].get("reserveMiB") == 768,
-        "Missing idle GPU admission",
+        contract.get("gpuPolicy", {}).get("baseline") == baseline_binding(args)
+        and contract["gpuPolicy"]["owner"]["pid"] == job["owned_root_pid"]
+        and gpu_policy.creation_filetime(contract["gpuPolicy"]["owner"])
+        == job["root_creation_filetime"]
+        and contract.get("gpuObserver") == record["inputs"]["gpu-admission.py"]
+        and contract.get("pythonExecutable") == record["inputs"]["pythonExecutable"],
+        "GPU policy, helper or worker identity differs",
+    )
+    gpu_policy.validate(
+        contract.get("gpuAdmission"), baseline_binding(args), contract["gpuPolicy"]["owner"], 8192
     )
     build = release.load(args.app_receipt)
     require(

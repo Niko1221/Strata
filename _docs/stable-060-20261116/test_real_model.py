@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 import sys
 import copy
+from datetime import datetime
 import json
 import io
 import pytest
@@ -379,6 +380,50 @@ def synthetic_observations(tmp_path: Path) -> tuple[dict, dict]:
         }
         for i in (1, 2, 3)
     ]
+    owner = {
+        "pid": 100,
+        "parentPID": 50,
+        "created": "2026-11-16T13:05:01.7009610Z",
+        "executable": "C:\\Python\\python.exe",
+        "sha256": "e" * 64,
+    }
+    delta = datetime(2026, 11, 16, 13, 5, 1, 700961) - datetime(1601, 1, 1)
+    owner["creationFiletime"] = (
+        (delta.days * 86400 + delta.seconds) * 1000000 + delta.microseconds
+    ) * 10
+
+    def gpu_fixture(pid: int | None = None) -> dict:
+        processes = [owner]
+        node = ""
+        if pid is not None:
+            processes.append(
+                {
+                    "pid": pid,
+                    "parentPID": 100,
+                    "created": "2026-11-16T13:05:02.7009610Z",
+                    "executable": "C:\\Prism\\llama-server.exe",
+                    "sha256": "d" * 64,
+                    "creationFiletime": owner["creationFiletime"] + 10000000,
+                }
+            )
+            node = f"<process_info><pid>{pid}</pid><type>C</type></process_info>"
+        free = 800 if pid is not None else 14811
+        raw = {
+            "gpuXML": "<nvidia_smi_log><attached_gpus>1</attached_gpus><gpu>"
+            f"<uuid>GPU-fixture</uuid><fb_memory_usage><free>{free} MiB</free>"
+            "</fb_memory_usage><processes>" + node + "</processes></gpu></nvidia_smi_log>",
+            "gpuRows": [[0, "GPU-fixture", free]],
+            "freeMiB": free,
+            "computeQueryPIDs": [pid] if pid else [],
+            "processes": processes,
+        }
+        return p.gpu_policy.classify(raw, None, owner, 768 if pid else 8192)
+
+    contract.update(
+        ownerPID=100, gpuPolicy={"baseline": None, "owner": owner}, gpuAdmission=gpu_fixture()
+    )
+    for row in runtime:
+        row.update(executable="C:\\Prism\\llama-server.exe", gpuObservation=gpu_fixture(row["pid"]))
     settings = {
         "groups": [
             {"id": k, "enabled": k == "skills"}
@@ -494,6 +539,7 @@ def synthetic_observations(tmp_path: Path) -> tuple[dict, dict]:
             "releaseQualified": False,
         },
     }
+    report.update(gpuBeforeLoad=gpu_fixture(), gpuBeforeReload=gpu_fixture())
     return report, contract
 
 
@@ -597,6 +643,7 @@ def test_worker_job_source_attempt_and_pin_binding(
     inputs = {name: {"path": str(HERE / name), "sha256": "d" * 64} for name in p.ADAPTERS}
     inputs.update({name: {"path": str(path), "sha256": "b" * 64} for name, path in paths.items()})
     inputs["nodeExecutable"] = {"path": str(release.NODE), "sha256": "e" * 64}
+    inputs["pythonExecutable"] = {"path": sys.executable, "sha256": "e" * 64}
     record = {
         **identity,
         "inputs": inputs,
