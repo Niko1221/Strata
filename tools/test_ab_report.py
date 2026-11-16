@@ -67,6 +67,17 @@ class Html(unittest.TestCase):
         self.assertIn("served engine 0.1.53, expected 0.1.54", h)
         self.assertIn("Strata 0.1.55 → 0.1.56", re.sub(r"<[^>]+>", "", h))
 
+    def test_bar_widths_are_proportional(self):
+        r = copy.deepcopy(RESULTS)
+        r["arms"] = [arm("0.1.55", [60, 30, 0, 50], [1] * 4), arm("0.1.56", [120, 110, 90, 100], [1] * 4)]
+        w = [float(x) for x in re.findall(r"width:calc\(\(100% - 80px\) \* ([0-9.]+)\)", card(build_html(r)))]
+        self.assertEqual(len(w), 8)  # old, new per request
+        top = 120.2  # largest median (120 + round-2 offset 0.2)
+        for got, want in zip(w, [60.2, 120.2, 30.2, 110.2, 0.2, 90.2, 50.2, 100.2]):
+            self.assertAlmostEqual(got, want / top, places=3)
+        self.assertNotEqual(w[1], w[3])  # 120 vs 110 differ
+        self.assertNotIn("max-width:calc(100% - 80px)", build_html(r))
+
     def test_regression_shown_negative(self):
         r = copy.deepcopy(RESULTS)
         r["arms"][1] = arm("0.1.56", [90, 95, 88, 80], [300, 310, 305, 1200])
@@ -93,6 +104,9 @@ class Png(unittest.TestCase):
                 self.assertIn("timeout", kw)
                 self.assertTrue(cmd[-1].endswith("#card") and cmd[-1].startswith("file:"))
                 self.assertIn(f"--screenshot={png}", cmd)
+                profile = [c for c in cmd if c.startswith("--user-data-dir=")]
+                self.assertEqual(len(profile), 1)
+                self.assertTrue(Path(profile[0].split("=", 1)[1]).is_dir())
                 png.write_bytes(b"png")
                 return mock.Mock(returncode=0)
             with mock.patch.object(ab_report.subprocess, "run", side_effect=fake):
