@@ -148,6 +148,24 @@ bool igpu_uma_arena_default(const char* gcn_arch, bool integrated, bool windows,
     return on && strata::kernels::gfx_arch_is(gcn_arch, "gfx1103");
 }
 
+bool igpu_arena_no_thp_default(const char* gcn_arch, bool integrated, bool windows) {
+    if (!integrated || windows) return false;
+    return strata::kernels::gfx_arch_is(gcn_arch, "gfx1103") || strata::kernels::gfx_arch_is(gcn_arch, "gfx1150") ||
+           strata::kernels::gfx_arch_is(gcn_arch, "gfx1151");
+}
+
+bool igpu_kfd_settle_default(const char* gcn_arch, bool integrated, bool windows) {
+    return igpu_arena_no_thp_default(gcn_arch, integrated, windows);   // the same device class
+}
+
+bool igpu_cache_drop_default(const char* gcn_arch, bool integrated, bool windows) {
+    return igpu_arena_no_thp_default(gcn_arch, integrated, windows);   // the same device class
+}
+
+bool igpu_fused_prompt_default(const char* gcn_arch, bool integrated, bool windows) {
+    return igpu_arena_no_thp_default(gcn_arch, integrated, windows);   // the same device class
+}
+
 std::vector<std::pair<std::string, std::string>> igpu_default_env(const char* gcn_arch, bool integrated) {
     std::vector<std::pair<std::string, std::string>> t;
     if (!integrated || !igpu_prompt_defaults_arch(gcn_arch)) return t;
@@ -187,6 +205,11 @@ std::vector<std::pair<std::string, std::string>> igpu_default_env(const char* gc
             // interleaved 8K pairs, same engine: IQ3_S x1.022 (4 of 4 pairs), UD-IQ4_XS x1.026 (3 of 3), UD-Q4_K_XL x1.012 (3 of 4); the first-token KL
             // is 1e-4 at 8K and 0.02-0.04 on agent transcripts (information).  STRATA_PF_DM16=0 turns it off.
             {"STRATA_PF_DM16", "1"},
+            // The Q4_K gate/up + Q5_1 down layers (43 of 48 in UD-Q4_K_XL) on the F16 WMMA kernels of src/prefill/moe_p1a.cu; other layers
+            // and packs keep the kernels above.  Windows gfx1151, UD-Q4_K_XL, 5 interleaved pairs: prompt x1.046 (4K), x1.043 (8K),
+            // x1.043 (32K), decode unchanged (job strix-20261114-1347-9a28).  KL to the FP16 truth, 24 prompts a size: on 0.0112 / 0.0116
+            // against off 0.0179 / 0.0118 at 4K / 8K (job strix-20261114-1347-238b).  STRATA_PF_P1A=0 turns it off.
+            {"STRATA_PF_P1A", "1"},
         };
     }
     return t;
@@ -276,7 +299,7 @@ std::vector<std::pair<std::string, std::string>> launch_default_env(const char* 
     return t;
 }
 
-std::vector<std::string> apply_arch_defaults(const char* gcn_arch, bool integrated, int batch_slots) {
+std::vector<std::string> apply_arch_defaults(const char* gcn_arch, bool integrated, int batch_slots, bool mmq_built) {
     std::vector<std::string> set;
     // the community-made gfx1010 / gfx1030 changes (amd_community.hpp): one line, and only on those two cards
     if (const std::string note = strata::amd_community::startup_line(gcn_arch); !note.empty())
@@ -307,7 +330,10 @@ std::vector<std::string> apply_arch_defaults(const char* gcn_arch, bool integrat
             set_default(kv);
             if (kv.first == "STRATA_MMQ_KQ") kq = true; else any = true;
         }
-        if (kq)   // the engine says nothing more on a pack without K-quant experts: the variable is never read there
+        if (kq && !mmq_built)   // a build without MMQ: the 'prompt kernels' line (prefill.cpp mmq_plan) follows in every such build once a prompt runs
+            std::fprintf(stderr, "strata: gfx12 (RDNA4): a model with K-quant experts (Unsloth UD-Q4/Q5/Q6_K_XL) reads its prompt on Strata's own kernels; "
+                                 "the 'prompt kernels' line below gives the counts\n");
+        else if (kq)   // the engine says nothing more on a pack without K-quant experts: the variable is never read there
             std::fprintf(stderr, "strata: gfx12 (RDNA4): a model with K-quant experts (Unsloth UD-Q4/Q5/Q6_K_XL) reads its prompt on llama.cpp's MMQ kernels (+10..17%% prompt speed on an R9700, "
                                  "first-token KL against the FP16 path about 0.03; STRATA_MMQ_KQ=0 or STRATA_GFX12_DEFAULTS=0 turns it off)\n");
         const char* wm = std::getenv("STRATA_SELECT_WMMA");   // the line is only true while the scorer switch is not set to 0
@@ -352,6 +378,10 @@ std::vector<std::string> apply_arch_defaults(const char* gcn_arch, bool integrat
 #else
     const bool win_host = false;
 #endif
+    // Linux integrated gfx11 (gfx1103 / gfx1150 / gfx1151): the prompt experts on Strata's fused int8 kernels.  Silent: the prefill's own line
+    // ("prompt experts on the fused int8 kernels (STRATA_PF_FUSED=1 ...") is printed when the kernels are taken.  A value the user set is kept (=0 = MMQ).
+    if (igpu_fused_prompt_default(gcn_arch, integrated, win_host) && std::getenv("STRATA_PF_FUSED") == nullptr)
+        set_default({"STRATA_PF_FUSED", "1"});
     for (const auto& kv : parallel_default_env(gcn_arch, win_host, batch_slots)) {
         if (std::getenv(kv.first.c_str()) != nullptr) continue;
         set_default(kv);

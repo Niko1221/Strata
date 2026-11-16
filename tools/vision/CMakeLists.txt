@@ -1,7 +1,8 @@
 # tools/vision - strata-vision, the image encoder for Strata's multimodal path (optional; setup.py builds it when
-# the vision encoder is chosen).  Uses llama.cpp's mtmd library at the same pinned commit as the engine's ggml.
+# the vision encoder is chosen).  Uses llama.cpp's mtmd library at the same pinned commit as the engine's ggml, from the vendored
+# third_party/strata-llama (own-stack phase 1B; phase 3 replaces this program with a native vision tower).
 #
-#   cmake -S tools/vision -B build-vision -G Ninja -DCMAKE_BUILD_TYPE=Release -DLLAMA_DIR=third_party/llama.cpp
+#   cmake -S tools/vision -B build-vision -G Ninja -DCMAKE_BUILD_TYPE=Release [-DLLAMA_DIR=<a llama.cpp checkout: an override, kept for two releases>]
 #         [-DSTRATA_VISION_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=native] [-DSTRATA_PORTABLE=OFF]
 #         [-DSTRATA_VISION_SYCL=ON -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx (oneAPI sourced; Linux)]
 #         [-DSTRATA_VISION_HIP=ON -DSTRATA_VISION_HIP_ARCHS="gfx1200;gfx1201" + the HIP compiler the engine build uses]
@@ -14,7 +15,7 @@
 cmake_minimum_required(VERSION 3.21)
 project(strata_vision C CXX)
 
-set(LLAMA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/llama.cpp" CACHE PATH "llama.cpp checkout")
+set(LLAMA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/strata-llama" CACHE PATH "llama.cpp tree: the vendored third_party/strata-llama (llama, mtmd and ggml at the pin, nothing is downloaded), or a llama.cpp checkout")
 option(STRATA_VISION_CUDA "run the vision encoder on the GPU (builds ggml-cuda)" OFF)
 option(STRATA_VISION_HIP "run the vision encoder on an AMD GPU (builds ggml-hip); the program is named strata-vision-hip" OFF)
 option(STRATA_VISION_SYCL "run the vision encoder on an Intel GPU (builds ggml-sycl, needs the oneAPI icx/icpx compilers); the program is named strata-vision-sycl" OFF)
@@ -65,6 +66,33 @@ else()
   endforeach()
   message(STATUS "strata-vision: native build for this CPU (STRATA_PORTABLE=OFF) - not for other PCs")
 endif()
+# An older-CPU test build (the engine's STRATA_ISA_FLOOR, CMakeLists.txt at the top): ggml-cpu, and the own tower's reference, for that floor instead of this
+# machine's, so a newer box builds the program a CPU without AVX2 runs (with -DSTRATA_PORTABLE=OFF).  none = SSE4.2 (Nehalem / Westmere), avx = Sandy Bridge
+# (AVX, no F16C / FMA), avx_f16c = Ivy Bridge.  Empty (the default) changes nothing; on such a CPU setup's native build is this build.
+set(STRATA_ISA_FLOOR "" CACHE STRING "older-CPU test build: empty (default), none (SSE4.2), avx or avx_f16c")
+set_property(CACHE STRATA_ISA_FLOOR PROPERTY STRINGS "" none avx avx_f16c)
+if(STRATA_ISA_FLOOR)
+  if(NOT STRATA_ISA_FLOOR MATCHES "^(none|avx|avx_f16c)$")
+    message(FATAL_ERROR "STRATA_ISA_FLOOR must be empty, none, avx or avx_f16c (got '${STRATA_ISA_FLOOR}')")
+  endif()
+  if(STRATA_PORTABLE)
+    message(FATAL_ERROR "STRATA_ISA_FLOOR (an older-CPU build) needs -DSTRATA_PORTABLE=OFF")
+  endif()
+  set(GGML_NATIVE OFF CACHE BOOL "" FORCE)
+  set(GGML_CPU_ALL_VARIANTS OFF CACHE BOOL "" FORCE)
+  set(GGML_SSE42 ON CACHE BOOL "" FORCE)
+  foreach(_f GGML_AVX GGML_F16C GGML_AVX2 GGML_FMA GGML_BMI2 GGML_AVX_VNNI GGML_AVX512 GGML_AVX512_VBMI GGML_AVX512_VNNI
+             GGML_AVX512_BF16 GGML_AMX_TILE GGML_AMX_INT8 GGML_AMX_BF16)
+    set(${_f} OFF CACHE BOOL "" FORCE)
+  endforeach()
+  if(STRATA_ISA_FLOOR MATCHES "^avx")
+    set(GGML_AVX ON CACHE BOOL "" FORCE)
+  endif()
+  if(STRATA_ISA_FLOOR STREQUAL "avx_f16c")
+    set(GGML_F16C ON CACHE BOOL "" FORCE)
+  endif()
+  message(STATUS "strata-vision: ggml-cpu for the floor ${STRATA_ISA_FLOOR} (an older-CPU test build)")
+endif()
 set(GGML_BACKEND_DL OFF CACHE BOOL "" FORCE)
 set(GGML_CUDA ${STRATA_VISION_CUDA} CACHE BOOL "" FORCE)
 set(GGML_HIP ${STRATA_VISION_HIP} CACHE BOOL "" FORCE)
@@ -97,7 +125,7 @@ add_executable(strata-vision strata_vision.cpp)
 if(MSVC)   # #3202: the ANSI code page of the process is UTF-8, so a Cyrillic model folder reaches the reader intact (see ../../CMakeLists.txt)
   target_sources(strata-vision PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/strata-utf8.manifest)
 endif()
-target_link_libraries(strata-vision PRIVATE mtmd llama)
+target_link_libraries(strata-vision PRIVATE mtmd llama strata_vit_own)
 target_compile_features(strata-vision PRIVATE cxx_std_17)
 set_target_properties(strata-vision PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 if(STRATA_VISION_HIP)
@@ -134,6 +162,16 @@ if(STRATA_VISION_SYCL AND UNIX AND NOT APPLE)
   get_filename_component(_icpx_lib "${_icpx_bin}/../lib" ABSOLUTE)
   set_target_properties(strata-vision PROPERTIES INSTALL_RPATH "$ORIGIN;${_icpx_lib}")
 endif()
+
+# our own Qwen vision tower (own-stack phase 3): tools/vision/own, no ggml or llama.cpp inside
+add_subdirectory(own)
+
+# mtmd's side of the picture-preparation check (see own/oracle_prep.cpp): the same preprocessor class mtmd_tokenize uses
+add_executable(strata-vision-prep-oracle EXCLUDE_FROM_ALL own/oracle_prep.cpp)
+target_link_libraries(strata-vision-prep-oracle PRIVATE mtmd llama)
+target_include_directories(strata-vision-prep-oracle PRIVATE ${LLAMA_DIR}/tools/mtmd ${LLAMA_DIR}/ggml/include ${LLAMA_DIR}/include)
+target_compile_features(strata-vision-prep-oracle PRIVATE cxx_std_17)
+set_target_properties(strata-vision-prep-oracle PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
 # opens a GGUF that has tensor types llama.cpp does not know (a Gyro quantization's TQK6 / TQK7) for its vocabulary only
 add_executable(strata-vision-gguf-test EXCLUDE_FROM_ALL gguf_meta_test.cpp)

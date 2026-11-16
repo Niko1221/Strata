@@ -1,0 +1,388 @@
+// tools/vision/own/test_cpu_kernels.cpp - every kernel tier of the CPU tower (the ones this CPU runs) against double-precision references, odd sizes and tails
+// included, and the fork-join team (every task of every run exactly once).   strata-vision-own-cpu-test
+#include "cpu_kernels.h"
+#include "cpu_team.h"
+#include "vit_cpu.h"
+#include "vit_f16.h"
+
+#include <atomic>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <limits>
+#include <random>
+#include <vector>
+
+using namespace strata_vit;
+
+static int g_fail = 0;
+static void check(bool ok, const char* what, const char* tier, double worst, double tol) {
+    if (!ok) {
+        ++g_fail;
+        std::printf("FAIL %-8s %s: worst %.3g (tolerance %.3g)\n", tier, what, worst, tol);
+    }
+}
+
+static std::mt19937 rng(12345);
+static float rnd(float lo, float hi) { return std::uniform_real_distribution<float>(lo, hi)(rng); }
+
+static void test_gemm(const CpuOps& o) {
+    const int Ms[] = {1, 5, 13, 49, 100}, Ks[] = {1, 7, 72, 256, 300}, Ns[] = {1, 8, 17, 33, 72, 100};
+    double worst = 0, tol = 0;
+    for (int M : Ms)
+        for (int K : Ks)
+            for (int N : Ns)
+                for (int init = 0; init < 3; ++init) {
+                    const int lda = K + 3, ldb = (N + 63) / 64 * 64 + 64, ldc = N + 5;
+                    std::vector<float> A((size_t) M * lda), B((size_t) K * ldb + 128), C((size_t) M * ldc), C0, bias((size_t) N);
+                    for (auto& v : A) v = rnd(-1, 1);
+                    for (auto& v : B) v = rnd(-1, 1);
+                    for (auto& v : C) v = rnd(-1, 1);
+                    for (auto& v : bias) v = rnd(-1, 1);
+                    C0 = C;
+                    o.gemm(A.data(), (size_t) lda, M, B.data(), (size_t) ldb, K, N, C.data(), (size_t) ldc, init, init == 1 ? nullptr : bias.data());
+                    for (int m = 0; m < M; ++m)
+                        for (int n = 0; n < N; ++n) {
+                            double s = init == 0 ? 0.0 : C0[(size_t) m * ldc + n];
+                            if (init != 1) s += bias[(size_t) n];
+                            for (int k = 0; k < K; ++k) s += (double) A[(size_t) m * lda + k] * B[(size_t) k * ldb + n];
+                            worst = std::max(worst, std::fabs(s - C[(size_t) m * ldc + n]));
+                        }
+                    // columns past N and rows past M must be untouched
+                    for (int m = 0; m < M; ++m)
+                        for (int n = N; n < ldc; ++n)
+                            if (C[(size_t) m * ldc + n] != C0[(size_t) m * ldc + n]) worst = 1e9;
+                    tol = std::max(tol, 1e-5 * (K + 2));
+                }
+    check(worst <= tol, "gemm (odd M, K, N; init modes 0, 1, 2)", o.name, worst, tol);
+}
+
+static uint16_t rnd_f16bits() { return (uint16_t) ((rng() & 0x8000) | ((rng() % 28 + 2) << 10) | (rng() & 0x3ff)); }   // a finite normal half
+static uint16_t rnd_bf16bits() { return (uint16_t) ((rng() & 0x8000) | ((rng() % 200 + 20) << 7) | (rng() & 0x7f)); }
+
+static void test_pack_values(const CpuOps& o) {
+    const int ldw = 300, rows = 40, K = 300;
+    for (int kind = 0; kind <= 2; ++kind) {
+        std::vector<uint16_t> w16((size_t) rows * ldw);
+        std::vector<float> w32((size_t) rows * ldw);
+        for (size_t i = 0; i < w16.size(); ++i) {
+            w16[i] = kind == 2 ? rnd_f16bits() : rnd_bf16bits();
+            w32[i] = rnd(-2, 2);
+        }
+        const void* W = kind == 0 ? (const void*) w32.data() : (const void*) w16.data();
+        for (int nvalid : {o.NR, 5}) {
+            const int n0 = 3, k0 = 17, kc = 200;
+            std::vector<float> dst((size_t) kc * o.NR, -7.0f);
+            o.pack_w(W, kind, (size_t) ldw, n0, nvalid, k0, kc, dst.data());
+            double worst = 0;
+            for (int k = 0; k < kc; ++k)
+                for (int c = 0; c < o.NR; ++c) {
+                    float want = 0.0f;
+                    if (c < nvalid) {
+                        const size_t idx = (size_t) (n0 + c) * ldw + (size_t) (k0 + k);
+                        if (kind == 0) want = w32[idx];
+                        else if (kind == 1) want = quant::bf16_to_f32(w16[idx]);
+                        else want = quant::f16_to_f32(w16[idx]);
+                    }
+                    worst = std::max(worst, (double) std::fabs(want - dst[(size_t) k * o.NR + c]));
+                }
+            check(worst == 0.0, kind == 0 ? "pack_w float32" : kind == 1 ? "pack_w BF16" : "pack_w F16", o.name, worst, 0.0);
+        }
+    }
+    (void) K;
+}
+
+static void test_conv(const CpuOps& o) {
+    for (int kind = 1; kind <= 2; ++kind)
+        for (size_t n : {1u, 15u, 32u, 33u, 5000u, 8192u + 7u}) {
+            std::vector<uint16_t> w(n);
+            for (auto& v : w) v = kind == 2 ? rnd_f16bits() : rnd_bf16bits();
+            std::vector<float> d(n, -1.0f);
+            o.conv(w.data(), kind, n, d.data());
+            double worst = 0;
+            for (size_t i = 0; i < n; ++i) worst = std::max(worst, (double) std::fabs(d[i] - (kind == 1 ? quant::bf16_to_f32(w[i]) : quant::f16_to_f32(w[i]))));
+            check(worst == 0.0, kind == 1 ? "conv BF16" : "conv F16", o.name, worst, 0.0);
+        }
+}
+
+static void test_round(const CpuOps& o) {
+    const CpuOps& ref = cpu_ops_scalar();
+    for (int kind = 1; kind <= 2; ++kind)
+        for (size_t n : {1u, 7u, 8u, 17u, 100u, 4099u}) {
+            std::vector<float> x(n), a, b;
+            for (size_t i = 0; i < n; ++i) x[i] = (i % 5 == 0) ? rnd(-1e-4f, 1e-4f) : (i % 7 == 0) ? rnd(-3000, 3000) : rnd(-4, 4);
+            a = x;
+            b = x;
+            o.round16(a.data(), n, kind);
+            ref.round16(b.data(), n, kind);
+            size_t bad = 0;
+            for (size_t i = 0; i < n; ++i) bad += std::memcmp(&a[i], &b[i], 4) != 0;
+            check(bad == 0, kind == 1 ? "round16 BF16 equals the scalar tier bit for bit" : "round16 F16 equals the scalar tier bit for bit", o.name, (double) bad, 0.0);
+        }
+}
+
+static void test_gelu(const CpuOps& o) {
+    const int rows = 3, n = 203, ld = 211;
+    std::vector<float> x((size_t) rows * ld), y;
+    for (auto& v : x) v = rnd(-12, 12);
+    y = x;
+    o.gelu(y.data(), (size_t) ld, rows, n);
+    double worst = 0;
+    for (int r = 0; r < rows; ++r)
+        for (int i = 0; i < n; ++i) {
+            const double v = x[(size_t) r * ld + i];
+            const double want = 0.5 * v * (1.0 + std::tanh(0.7978845608028654 * v * (1.0 + 0.044715 * v * v)));
+            worst = std::max(worst, std::fabs(want - y[(size_t) r * ld + i]) / std::max(1.0, std::fabs(v)));
+        }
+    for (int r = 0; r < rows; ++r)
+        for (int i = n; i < ld; ++i)
+            if (y[(size_t) r * ld + i] != x[(size_t) r * ld + i]) worst = 1e9;
+    check(worst <= 3e-6, "gelu", o.name, worst, 3e-6);
+}
+
+static void test_layernorm(const CpuOps& o) {
+    for (int D : {1152, 7, 72, 4608}) {
+        std::vector<float> x((size_t) D), w((size_t) D), b((size_t) D), y((size_t) D);
+        for (int i = 0; i < D; ++i) { x[(size_t) i] = rnd(-3, 5); w[(size_t) i] = rnd(0.5f, 1.5f); b[(size_t) i] = rnd(-1, 1); }
+        o.layernorm(x.data(), y.data(), D, w.data(), b.data(), 1e-6f);
+        double s = 0, q = 0, worst = 0;
+        for (int i = 0; i < D; ++i) s += x[(size_t) i];
+        const double mean = s / D;
+        for (int i = 0; i < D; ++i) q += (x[(size_t) i] - mean) * (x[(size_t) i] - mean);
+        const double scale = 1.0 / std::sqrt(q / D + 1e-6);
+        for (int i = 0; i < D; ++i) worst = std::max(worst, std::fabs((x[(size_t) i] - mean) * scale * w[(size_t) i] + b[(size_t) i] - y[(size_t) i]));
+        check(worst <= 2e-5, "layernorm", o.name, worst, 2e-5);
+    }
+}
+
+static void test_add(const CpuOps& o) {
+    for (size_t n : {1u, 7u, 8u, 33u, 1000u}) {
+        std::vector<float> x(n), y(n), z;
+        for (size_t i = 0; i < n; ++i) { x[i] = rnd(-1, 1); y[i] = rnd(-1, 1); }
+        z = x;
+        o.add(z.data(), y.data(), n);
+        double worst = 0;
+        for (size_t i = 0; i < n; ++i) worst = std::max(worst, (double) std::fabs(z[i] - (x[i] + y[i])));
+        check(worst == 0.0, "add", o.name, worst, 0.0);
+    }
+}
+
+// the online softmax over two key tiles, then P*V by the product kernel, against a plain softmax in double
+static void test_attention(const CpuOps& o) {
+    const int qr = 13, hd = 72, T1 = 100, T2 = 37, n = T1 + T2, lds = 256, ldo = 80, ldv = 3 * 1152;
+    std::vector<float> S1((size_t) qr * lds), S2((size_t) qr * lds), Sfull((size_t) qr * n), V((size_t) n * ldv + 256), O((size_t) qr * ldo, 0.0f), m((size_t) qr, -3.0e38f), l((size_t) qr, 0.0f);
+    for (int r = 0; r < qr; ++r)
+        for (int j = 0; j < n; ++j) {
+            const float s = rnd(-30, 30);
+            Sfull[(size_t) r * n + j] = s;
+            (j < T1 ? S1[(size_t) r * lds + j] : S2[(size_t) r * lds + (j - T1)]) = s;
+        }
+    for (auto& v : V) v = rnd(-1, 1);
+    o.softmax_update(S1.data(), (size_t) lds, qr, T1, m.data(), l.data(), O.data(), (size_t) ldo, hd);
+    o.gemm(S1.data(), (size_t) lds, qr, V.data(), (size_t) ldv, T1, hd, O.data(), (size_t) ldo, 1, nullptr);
+    o.softmax_update(S2.data(), (size_t) lds, qr, T2, m.data(), l.data(), O.data(), (size_t) ldo, hd);
+    o.gemm(S2.data(), (size_t) lds, qr, V.data() + (size_t) T1 * ldv, (size_t) ldv, T2, hd, O.data(), (size_t) ldo, 1, nullptr);
+    double worst = 0;
+    for (int r = 0; r < qr; ++r) {
+        double mx = -1e300, den = 0;
+        for (int j = 0; j < n; ++j) mx = std::max(mx, (double) Sfull[(size_t) r * n + j]);
+        for (int j = 0; j < n; ++j) den += std::exp(Sfull[(size_t) r * n + j] - mx);
+        for (int d = 0; d < hd; ++d) {
+            double acc = 0;
+            for (int j = 0; j < n; ++j) acc += std::exp(Sfull[(size_t) r * n + j] - mx) / den * V[(size_t) j * ldv + d];
+            worst = std::max(worst, std::fabs(acc - O[(size_t) r * ldo + d] / l[(size_t) r]));
+        }
+    }
+    check(worst <= 2e-5, "online softmax + P*V", o.name, worst, 2e-5);
+}
+
+// the rotary of one token row and the position add against double
+static void test_rope_pos(const CpuOps& o) {
+    const int H = 3, HD = 72, D = H * HD, half = HD / 2, quarter = HD / 4;
+    std::vector<float> row((size_t) 2 * D + 16), c1(quarter), s1(quarter), c2(quarter), s2(quarter);
+    for (auto& v : row) v = rnd(-2, 2);
+    for (int j = 0; j < quarter; ++j) { c1[j] = std::cos(0.3f * j); s1[j] = std::sin(0.3f * j); c2[j] = std::cos(0.7f * j + 1); s2[j] = std::sin(0.7f * j + 1); }
+    std::vector<float> got = row;
+    o.rope_row(got.data(), (size_t) D, H, HD, c1.data(), s1.data(), c2.data(), s2.data());
+    double worst = 0;
+    for (int part = 0; part < 2; ++part)
+        for (int hh = 0; hh < H; ++hh)
+            for (int j = 0; j < half; ++j) {
+                const size_t i0 = (size_t) part * D + (size_t) hh * HD + j, i1 = i0 + half;
+                const double co = j < quarter ? c1[j] : c2[j - quarter], si = j < quarter ? s1[j] : s2[j - quarter];
+                worst = std::max(worst, std::fabs((double) row[i0] * co - (double) row[i1] * si - got[i0]));
+                worst = std::max(worst, std::fabs((double) row[i0] * si + (double) row[i1] * co - got[i1]));
+            }
+    for (size_t i = (size_t) 2 * D; i < row.size(); ++i) if (got[i] != row[i]) worst = 1e9;
+    check(worst <= 2e-6, "rope_row", o.name, worst, 2e-6);
+    const int n = 1152;
+    std::vector<float> x(n), a(n), b(n), c(n), d(n);
+    for (int i = 0; i < n; ++i) { x[i] = rnd(-1, 1); a[i] = rnd(-1, 1); b[i] = rnd(-1, 1); c[i] = rnd(-1, 1); d[i] = rnd(-1, 1); }
+    std::vector<float> y = x;
+    const float dx = 0.37f, dy = 0.81f;
+    o.pos_add(y.data(), a.data(), b.data(), c.data(), d.data(), dx, dy, n);
+    worst = 0;
+    for (int i = 0; i < n; ++i) {
+        const double want = x[i] + a[i] * (1.0 - dx) * (1.0 - dy) + b[i] * (double) dx * (1.0 - dy) + c[i] * (1.0 - dx) * dy + d[i] * (double) dx * dy;
+        worst = std::max(worst, std::fabs(want - y[i]));
+    }
+    check(worst <= 2e-6, "pos_add", o.name, worst, 2e-6);
+}
+// The SSE4.1 tier multiplies then adds in the scalar tier's k order, so on x86 its products equal the scalar tier's bit for bit (cpu_kernels_sse41.cpp)
+static void test_gemm_equals_scalar(const CpuOps& o) {
+    const CpuOps& ref = cpu_ops_scalar();
+    size_t bad = 0;
+    for (int M : {1, 7, 13, 50})
+        for (int K : {1, 72, 300})
+            for (int N : {3, 8, 21, 72})
+                for (int init = 0; init < 3; ++init) {
+                    const int lda = K + 1, ldb = (N + 63) / 64 * 64 + 64, ldc = N + 3;
+                    std::vector<float> A((size_t) M * lda), B((size_t) K * ldb + 128), C((size_t) M * ldc), bias((size_t) N);
+                    for (auto& v : A) v = rnd(-1, 1);
+                    for (auto& v : B) v = rnd(-1, 1);
+                    for (auto& v : C) v = rnd(-1, 1);
+                    for (auto& v : bias) v = rnd(-1, 1);
+                    std::vector<float> C2 = C;
+                    o.gemm(A.data(), (size_t) lda, M, B.data(), (size_t) ldb, K, N, C.data(), (size_t) ldc, init, bias.data());
+                    ref.gemm(A.data(), (size_t) lda, M, B.data(), (size_t) ldb, K, N, C2.data(), (size_t) ldc, init, bias.data());
+                    for (size_t i = 0; i < C.size(); ++i) bad += std::memcmp(&C[i], &C2[i], 4) != 0;
+                }
+    check(bad == 0, "gemm equals the scalar tier bit for bit", o.name, (double) bad, 0.0);
+}
+static void test_team() {
+    for (int nth : {1, 2, 7, 16}) {
+        Team t(nth);
+        bool ok = true;
+        for (int run = 0; run < 300 && ok; ++run) {
+            const int n = 1 + (run * 7) % 90;
+            std::vector<std::atomic<int>> hits((size_t) n);
+            for (auto& h : hits) h.store(0);
+            std::atomic<int> bad_thread{0};
+            t.run(n, [&](int task, int thr) {
+                if (thr < 0 || thr >= nth) bad_thread.fetch_add(1);
+                hits[(size_t) task].fetch_add(1);
+            });
+            if (bad_thread.load()) { ok = false; std::printf("team(%d) run %d: %d tasks saw a thread index out of range\n", nth, run, bad_thread.load()); }
+            for (size_t i = 0; i < hits.size(); ++i)
+                if (hits[i].load() != 1) { ok = false; std::printf("team(%d) run %d of %d tasks: task %zu ran %d times\n", nth, run, n, i, hits[i].load()); }
+            if (run % 50 == 0) std::this_thread::sleep_for(std::chrono::milliseconds(2));      // let the workers go to sleep once in a while
+        }
+        check(ok, "team: every task once, thread index in range", "-", 0, 0);
+    }
+}
+
+// the CPU tower's rounding default: none for every weight type (BF16 included since 11-14: code4217.png token 47 0.627 -> 1.000 against float32);
+// STRATA_VIT_REF_ROUND=1 rounds to the weight's 16-bit type, float32 / Q8_0-expanded never round
+static void test_round_choice() {
+    struct Case { int kind; const char* env; int want; };
+    const Case cs[] = {{1, nullptr, 0}, {2, nullptr, 0}, {0, nullptr, 0}, {1, "0", 0}, {2, "1", 2}, {1, "1", 1}, {2, "0", 0}, {0, "1", 0}, {1, "", 0}, {2, "", 0}};
+    bool ok = true;
+    for (const Case& c : cs) ok = ok && vit_cpu_round_kind(c.kind, c.env) == c.want;
+    check(ok, "rounding default per weight type and its override", "-", 0, 0);
+}
+
+// the GPU reader's F16 kind (vit_f16.h): which BF16 values F16 holds, the error of the others, the activation clamp and STRATA_VIT_BF16_AS_F16
+static float bf16_value(uint16_t b) { const uint32_t u = (uint32_t) b << 16; float f; std::memcpy(&f, &u, 4); return f; }
+static void test_f16_kind() {
+    // named cases: 1.0, -1.0, 2^-14, 2^-17 with all mantissa bits, 2^-18 with the lowest bit (not) and the second lowest (yes), 2^-24, 2^-25,
+    // 65,280 (the largest BF16 value under 65,504), 65,536, 2^20, +-0, inf, -inf, nan, a BF16 subnormal, -(2^-18 + lowest bit)
+    struct Case { uint16_t b; bool exact; };
+    const Case cs[] = {{0x3F80, true}, {0xBF80, true}, {0x3880, true}, {0x377F, true}, {0x3681, false}, {0x3682, true}, {0x3380, true}, {0x3300, false},
+                       {0x477F, true}, {0x4780, false}, {0x4980, false}, {0x0000, true}, {0x8000, true}, {0x7F80, false}, {0xFF80, false}, {0x7FC0, false},
+                       {0x0001, false}, {0xB681, false}};
+    bool ok = true;
+    for (const Case& c : cs) if (bf16_exact_in_f16(c.b) != c.exact) { ok = false; std::printf("  bf16 0x%04x: exact %d, want %d\n", c.b, (int) !c.exact, (int) c.exact); }
+    check(ok, "F16 kind: named BF16 values", "-", 0, 0);
+    // all 65,536 BF16 values against an independent rule in double precision: finite, |v| <= 65504 and a multiple of F16's step at that size
+    // (2^-24 under 2^-14, else 2^(floor(log2 |v|) - 10)); the error of the others in range is the distance to the nearest step multiple (ties to even)
+    int bad = 0, bad_err = 0;
+    double worst_err = 0.0;
+    for (uint32_t b = 0; b < 65536; ++b) {
+        const double v = bf16_value((uint16_t) b), a = std::fabs(v);
+        const bool fin = std::isfinite(v);
+        bool want = false;
+        double want_err = 0.0;
+        if (fin && a <= 65504.0) {
+            int ex = 0;
+            (void) std::frexp(a, &ex);   // a = f * 2^ex, f in [0.5, 1)
+            const double step = a < std::ldexp(1.0, -14) ? std::ldexp(1.0, -24) : std::ldexp(1.0, ex - 1 - 10);
+            const double q = a / step, r = std::nearbyint(q);
+            want = a == 0.0 || q == r;
+            want_err = want ? 0.0 : std::fabs(q - r) * step;
+        }
+        if (bf16_exact_in_f16((uint16_t) b) != want) ++bad;
+        const double got_err = bf16_f16_abs_error((uint16_t) b);
+        if (got_err != want_err) ++bad_err;
+        if (got_err > worst_err) worst_err = got_err;
+    }
+    check(bad == 0, "F16 kind: every BF16 value against the double-precision rule", "-", (double) bad, 0.0);
+    check(bad_err == 0 && worst_err == std::ldexp(1.0, -25), "F16 kind: rounding error of the values under 2^-14 (largest 2^-25)", "-", worst_err, std::ldexp(1.0, -25));
+    // a matrix: counts, and it stays BF16 only for a weight beyond F16's range
+    const uint16_t w1[] = {0x3F80, 0x3681, 0x3300, 0x377F, 0x0001};
+    const uint16_t w2[] = {0x3F80, 0x4780, 0x7FC0, 0x3681};
+    const Bf16F16Count c1 = bf16_count_f16(w1, 5), c2 = bf16_count_f16(w2, 4);
+    check(c1.not_exact == 3 && c1.overflow == 0 && c1.max_abs_error == std::ldexp(1.0, -25) && bf16_matrix_fits_f16(c1.overflow) &&
+          c2.not_exact == 3 && c2.overflow == 2 && !bf16_matrix_fits_f16(c2.overflow), "F16 kind: matrix counts and the BF16 fallback", "-", 0, 0);
+    // the overflow count the load uses (no trace) equals the full count's over all 65,536 values: exponents 143-255, both signs
+    std::vector<uint16_t> all(65536);
+    for (uint32_t b = 0; b < 65536; ++b) all[b] = (uint16_t) b;
+    const Bf16F16Count ca = bf16_count_f16(all.data(), 65536);
+    const long long nb = bf16_count_beyond_f16(all.data(), 65536);
+    check(nb == ca.overflow && nb == 113LL * 256 && !bf16_beyond_f16(0x477F) && bf16_beyond_f16(0x4780) && bf16_beyond_f16(0xFFC0),
+          "F16 kind: the overflow count of the load", "-", (double) nb, (double) ca.overflow);
+    // the activation clamp: F16's finite range, NaN stays NaN
+    const float big = 70000.0f, inf = std::numeric_limits<float>::infinity();
+    check(f16_clamp(big) == 65504.0f && f16_clamp(-big) == -65504.0f && f16_clamp(inf) == 65504.0f && f16_clamp(-inf) == -65504.0f &&
+          f16_clamp(65504.0f) == 65504.0f && f16_clamp(-1.5f) == -1.5f && f16_clamp(0.0f) == 0.0f && std::isnan(f16_clamp(std::nanf(""))),
+          "F16 kind: activation clamp to +-65,504", "-", 0, 0);
+    // STRATA_VIT_BF16_AS_F16: unset = the card's default; 0 / empty / not a number = as stored; 2 = F16 inputs; any other number = the BF16-rounded kind
+    struct M { const char* env; int dflt; int want; };
+    const M ms[] = {{nullptr, BF16_TO_F16, BF16_TO_F16}, {nullptr, BF16_ROUNDED, BF16_ROUNDED}, {"0", BF16_TO_F16, BF16_STORED}, {"0", BF16_ROUNDED, BF16_STORED},
+                    {"", BF16_TO_F16, BF16_STORED}, {"x", BF16_TO_F16, BF16_STORED}, {"1", BF16_TO_F16, BF16_ROUNDED}, {"1", BF16_ROUNDED, BF16_ROUNDED},
+                    {"2", BF16_ROUNDED, BF16_TO_F16}, {"2", BF16_TO_F16, BF16_TO_F16}, {"3", BF16_TO_F16, BF16_ROUNDED}, {"-1", BF16_TO_F16, BF16_ROUNDED},
+                    {" 2", BF16_STORED, BF16_TO_F16}, {"12", BF16_TO_F16, BF16_ROUNDED}};
+    bool mok = true;
+    for (const M& c : ms) if (vit_gpu_bf16_mode(c.env, c.dflt) != c.want) { mok = false; std::printf("  env '%s' default %d: %d, want %d\n", c.env ? c.env : "(unset)", c.dflt, vit_gpu_bf16_mode(c.env, c.dflt), c.want); }
+    check(mok, "F16 kind: STRATA_VIT_BF16_AS_F16 values", "-", 0, 0);
+}
+
+int main(int argc, char** argv) {
+    if (argc > 1 && std::strcmp(argv[1], "team") == 0) {     // only the fork-join team (a loop under ThreadSanitizer)
+        const int reps = argc > 2 ? std::atoi(argv[2]) : 1;
+        for (int i = 0; i < reps; ++i) test_team();
+        std::printf(g_fail ? "%d FAILED\n" : "team: all passed\n", g_fail);
+        return g_fail ? 1 : 0;
+    }
+    const quant::Caps& c = quant::caps();
+    std::printf("cpu: sse41 %d avx %d avx2 %d fma %d f16c %d avx512 %d; best tier %s\n", c.sse41, c.avx, c.avx2, c.fma, c.f16c, c.avx512,
+                quant::isa_name(quant::best_isa()));
+    // every tier this CPU runs, capped by STRATA_FORCE_ISA as in the tower (an emulated older CPU never reaches a wider tier); NEON on Arm
+    const int cap = (int) quant::best_isa();
+    std::vector<const CpuOps*> tiers = {&cpu_ops_scalar()};
+    if (cap >= (int) quant::Isa::Sse41 && cap != (int) quant::Isa::Neon && quant::isa_ok(quant::Isa::Sse41)) tiers.push_back(&cpu_ops_sse41());
+    if (cap >= (int) quant::Isa::Avx && cap != (int) quant::Isa::Neon && quant::isa_ok(quant::Isa::Avx)) tiers.push_back(&cpu_ops_avx());
+    if (cap >= (int) quant::Isa::Avx2 && cap != (int) quant::Isa::Neon && quant::isa_ok(quant::Isa::Avx2)) tiers.push_back(&cpu_ops_avx2());
+    if (cap == (int) quant::Isa::Avx512 && quant::isa_ok(quant::Isa::Avx512)) tiers.push_back(&cpu_ops_avx512());
+    if (quant::isa_ok(quant::Isa::Neon)) tiers.push_back(&cpu_ops_neon());
+    for (const CpuOps* o : tiers) {
+        std::printf("tier %s (tile %d x %d)\n", o->name, o->MR, o->NR);
+        test_gemm(*o);
+        test_pack_values(*o);
+        test_conv(*o);
+        test_round(*o);
+        test_gelu(*o);
+        test_layernorm(*o);
+        test_add(*o);
+        test_attention(*o);
+        test_rope_pos(*o);
+#if defined(__x86_64__) || defined(_M_X64)
+        if (std::strcmp(o->name, "sse41") == 0) test_gemm_equals_scalar(*o);
+#endif
+    }
+    test_team();
+    test_round_choice();
+    test_f16_kind();
+    std::printf(g_fail ? "%d FAILED\n" : "all passed\n", g_fail);
+    return g_fail ? 1 : 0;
+}

@@ -1,7 +1,7 @@
 # Strata Engine - top-level build.
 #
 # One project builds the engine for every backend: CUDA (STRATA_ENABLE_CUDA), HIP (STRATA_ENABLE_HIP; the layer-split
-# and DeepSeek engines are the STRATA_BUILD_SPLIT / STRATA_BUILD_DSV41 options), the CPU-only build, and the test
+# engine is the STRATA_BUILD_SPLIT option), the CPU-only build, and the test
 # programs.  The Intel Arc (SYCL) engine is a separate project in sycl/ (STRATA_ENABLE_SYCL), and the Metal engine
 # one in metal/.  CMakePresets.json has the CPU check preset (`cmake --preset cpu-check`) and the compile-only
 # backend presets used by tools/check and the CI workflows; the release scripts in packaging/ pass their own flags.
@@ -10,12 +10,13 @@
 # building for a pre-Ampere arch would produce a binary that runs and is wrong about its own performance, which is
 # the worst of both outcomes.
 cmake_minimum_required(VERSION 3.24)
-project(strata VERSION 0.1.59.1 LANGUAGES CXX)
+project(strata VERSION 0.1.60.1 LANGUAGES CXX)
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/strata_geometry.cmake)   # -DSTRATA_GEOMETRY=<name>: the model shape the kernels are compiled for (default flash_next, no flag added)
 # The build is cut by backend (cleanup 5.4): each file below only DEFINES macros (strata_<part>()), which run here, in this scope, at the place their
 # block used to be - so this file reads in the order the old single CMakeLists.txt evaluated.
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/strata_ggml.cmake)          # which ggml: the vendored third_party/strata-ggml, or -DSTRATA_GGML_DIR
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/backends/cpu.cmake)         # strata_kernels_cpu, the native (ggml-cpu) expert rows, the CPU tests
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/backends/quant.cmake)       # strata_quant: the Strata quant layer (no ggml) and its oracle tests
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/backends/cuda.cmake)        # NVIDIA: toolchain, llama.cpp's MMQ kernels (strata_mmq, strata_kq)
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/backends/hip.cmake)         # AMD: gfx906 compat, MMQ on HIP
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/strata_gpu_engine.cmake)    # the GPU engine both of them build
@@ -101,7 +102,14 @@ if(STRATA_HIP_GFX906)
   set(STRATA_ENABLE_CUDA ON CACHE BOOL "" FORCE)
 endif()
 option(STRATA_ENABLE_HIP "Build the HIP targets for wave32 AMD GPUs (gfx1100, gfx1201; gfx1012/gfx1030 unvalidated)" OFF)
-option(STRATA_PREFILL_MMQ "Build the optional GGML MMQ prefill path for HIP" OFF)
+option(STRATA_PREFILL_MMQ "Build the optional GGML MMQ prefill path for HIP (only together with STRATA_MMQ=ON)" OFF)
+# P4-SPLIT: llama.cpp's MMQ prompt kernels (strata_mmq, strata_mmq_w4a4, strata_kq) are built only with -DSTRATA_MMQ=ON: on CUDA, and on HIP
+# together with STRATA_PREFILL_MMQ=ON.  The default (OFF) leaves them out of both.  Strata's own prompt kernels (strata_pf_own: the fused experts
+# and their helpers) are built either way; without MMQ the prompt path takes them where they cover a layer and the FP16 path elsewhere.  A name
+# of its own rather than STRATA_PREFILL_MMQ for CUDA: every CUDA build folder configured before has STRATA_PREFILL_MMQ=OFF in its cache.
+# A build folder configured before the default changed keeps STRATA_MMQ=ON in its cache: setup and the packaging scripts pass the value.
+# -DSTRATA_MMQ=ON builds the old path (for A/B runs).
+option(STRATA_MMQ "Build llama.cpp's MMQ prompt kernels (CUDA; HIP together with STRATA_PREFILL_MMQ)" OFF)
 # The community-made AMD changes (include/strata/core/amd_community.hpp): on by default.  This option is the build half of the one
 # switch STRATA_AMD_COMMUNITY_TUNING: OFF compiles the portable signed-byte dot for gfx1010 again (the SDWA sequence of #4855).
 # The rocBLAS tables are switched at run time (STRATA_AMD_COMMUNITY_TUNING=0).
@@ -197,12 +205,35 @@ option(STRATA_WERROR "Treat compiler warnings as errors" OFF)
 # #2027: defined here, before the GPU section reads it to register the native-expert tests (it was defined at the
 # native-experts section far below, so a first configure registered four tests fewer than the second)
 option(STRATA_NATIVE_EXPERTS "Native (IQ) expert support through ggml-cpu" ON)
+# Own-stack phase 2: the CPU expert pool's dot products, activation quantizers and the --mtp-q4 requantizer come from the Strata quant layer
+# (src/quant, no ggml-cpu in the pool) instead of ggml-cpu's type traits.  OFF keeps the ggml path, selectable for two releases.  Default ON on x86 (AVX /
+# AVX2 tiers) and on arm64 (the NEON tier: bit-exact against ggml-cpu's NEON dots, tests/quant/run_oracle.sh and pool_rows_bench on the Spark and the Mac,
+# token gates identical).  arm64 was OFF until the gate/up loop's store-forwarding stall was fixed (OWN-2N2); the Spark pool decode then measured
+# 0.992 of ggml's over 18 interleaved pairs.  -DSTRATA_OWN_CPU_QUANT=OFF builds the ggml-cpu pool.
+option(STRATA_OWN_CPU_QUANT "CPU expert pool on the Strata quant layer (src/quant) instead of ggml-cpu's type traits" ON)
 
 if(STRATA_BUILD_CONVERSATION_TESTS)
   enable_testing()
   add_executable(conversation_cache_test src/core/conversation_cache_test.cpp)
   target_include_directories(conversation_cache_test PRIVATE include)
   add_test(NAME conversation_cache_test COMMAND conversation_cache_test)
+  # STRATA_PARK_SEGPOOL_MIB: the arena behind the conversation buffers' segments (header-only; a fake OS counts the calls)
+  find_package(Threads REQUIRED)
+  add_executable(conversation_segment_pool_test src/core/conversation_segment_pool_test.cpp)
+  target_include_directories(conversation_segment_pool_test PRIVATE include)
+  target_compile_features(conversation_segment_pool_test PRIVATE cxx_std_17)
+  target_link_libraries(conversation_segment_pool_test PRIVATE Threads::Threads)
+  add_test(NAME conversation_segment_pool_test COMMAND conversation_segment_pool_test)
+  add_executable(conversation_buffer_pool_test src/core/conversation_buffer_pool_test.cpp)
+  target_include_directories(conversation_buffer_pool_test PRIVATE include)
+  target_compile_features(conversation_buffer_pool_test PRIVATE cxx_std_17)
+  target_link_libraries(conversation_buffer_pool_test PRIVATE Threads::Threads)
+  add_test(NAME conversation_buffer_pool_test COMMAND conversation_buffer_pool_test)
+  # the park pools' sizes from the cache budget (header-only), with the sizes small machines get
+  add_executable(park_pool_policy_test src/core/park_pool_policy_test.cpp)
+  target_include_directories(park_pool_policy_test PRIVATE include)
+  target_compile_features(park_pool_policy_test PRIVATE cxx_std_17)
+  add_test(NAME park_pool_policy_test COMMAND park_pool_policy_test)
   add_executable(conversation_split_failure_test src/core/conversation_split_failure_test.cpp)
   target_include_directories(conversation_split_failure_test PRIVATE include)
   add_test(NAME conversation_split_failure_test COMMAND conversation_split_failure_test)
@@ -269,6 +300,46 @@ if(STRATA_BUILD_TESTS)
   add_executable(batch_telemetry_test src/core/batch_telemetry_test.cpp)
   target_include_directories(batch_telemetry_test PRIVATE include)
   add_test(NAME batch_telemetry_test COMMAND batch_telemetry_test)
+  # #5697: an evicted parked conversation gives its RAM back to the system (glibc's heap; RSS before and after)
+  add_executable(conversation_heap_test src/core/conversation_heap_test.cpp)
+  target_include_directories(conversation_heap_test PRIVATE include)
+  add_test(NAME conversation_heap_test COMMAND conversation_heap_test)
+  # the residency entries past what the shrinking expert cache still maps, also after a shrink refused part way (no GPU)
+  add_executable(residency_trim_test tests/core/residency_trim_test.cpp)
+  target_include_directories(residency_trim_test PRIVATE include)
+  add_test(NAME residency_trim_test COMMAND residency_trim_test)
+  # #5718 follow-up: the stall report's list of GPU streams a host may wait on, and its lines (faked queries, no GPU)
+  add_executable(stream_watch_test tests/core/stream_watch_test.cpp)
+  target_include_directories(stream_watch_test PRIVATE include)
+  add_test(NAME stream_watch_test COMMAND stream_watch_test)
+  # AMD on Linux: how long the driver paused this process's GPU work (a fake KFD tree; the stall and request lines)
+  add_executable(gpu_pause_time_test tests/core/gpu_pause_time_test.cpp)
+  target_include_directories(gpu_pause_time_test PRIVATE include)
+  add_test(NAME gpu_pause_time_test COMMAND gpu_pause_time_test)
+  # the picture reader's room in the resident RAM mode (owner 11-11, reader on demand): the reserve rule, no GPU
+  add_executable(reader_room_test tests/core/reader_room_test.cpp)
+  target_include_directories(reader_room_test PRIVATE include)
+  add_test(NAME reader_room_test COMMAND reader_room_test)
+  # the elastic K/V once the expert cache is known: it always grows when the pools are elastic, from the cache only when it can give (no GPU)
+  add_executable(kv_grow_rules_test tests/core/kv_grow_rules_test.cpp)
+  target_include_directories(kv_grow_rules_test PRIVATE include)
+  add_test(NAME kv_grow_rules_test COMMAND kv_grow_rules_test)
+  # how the prompt path's K/V append reaches the host copy under KV streaming: the switch both ways, the backend defaults, no pool (no GPU)
+  add_executable(kv_host_dma_test tests/core/kv_host_dma_test.cpp)
+  target_include_directories(kv_host_dma_test PRIVATE include)
+  add_test(NAME kv_host_dma_test COMMAND kv_host_dma_test)
+  # the wait before READY on an integrated AMD GPU (the counter reader and the wait, faked clock; no GPU)
+  add_executable(kfd_settle_test tests/core/kfd_settle_test.cpp)
+  target_include_directories(kfd_settle_test PRIVATE include)
+  add_test(NAME kfd_settle_test COMMAND kfd_settle_test)
+  # keeping the KFD quiet on an integrated gfx11 GPU: the switches, the load order's rule (no GPU)
+  add_executable(kfd_quiet_test tests/core/kfd_quiet_test.cpp)
+  target_include_directories(kfd_quiet_test PRIVATE include)
+  add_test(NAME kfd_quiet_test COMMAND kfd_quiet_test)
+  # the file-cache give-back during and after the expert load on an integrated AMD GPU (a temporary file; no GPU)
+  add_executable(page_cache_drop_test tests/core/page_cache_drop_test.cpp)
+  target_include_directories(page_cache_drop_test PRIVATE include)
+  add_test(NAME page_cache_drop_test COMMAND page_cache_drop_test)
   add_executable(logit_bias_test src/core/logit_bias_test.cpp)
   target_include_directories(logit_bias_test PRIVATE include)
   add_test(NAME logit_bias_test COMMAND logit_bias_test)
@@ -299,6 +370,14 @@ if(STRATA_BUILD_TESTS)
   target_include_directories(tuning_header_arch_family_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/prefill")
   add_test(NAME tuning_header_arch_family_test COMMAND tuning_header_arch_family_test)
 
+  # #5722: each layer-split participant's prompt loan priced on its own device (faked devices, no GPU)
+  add_executable(split_part_price_test tests/program/split_part_price_test.cpp)
+  target_include_directories(split_part_price_test PRIVATE include)
+  add_test(NAME split_part_price_test COMMAND split_part_price_test)
+  # STRATA_RESIDENT_PIN read for the automatic RAM copy too, and that copy's clamp line names no flag (header-only, no GPU)
+  add_executable(resident_ram_copy_test tests/core/resident_ram_copy_test.cpp)
+  target_include_directories(resident_ram_copy_test PRIVATE include)
+  add_test(NAME resident_ram_copy_test COMMAND resident_ram_copy_test)
   # the auto layer split's minimum stage size (#1616): header-only rule, no GPU
   add_executable(split_rules_test tests/program/split_rules_test.cpp)
   target_include_directories(split_rules_test PRIVATE include)
@@ -326,10 +405,110 @@ if(STRATA_BUILD_TESTS)
   target_include_directories(prefill_plan_test PRIVATE include)
   add_test(NAME prefill_plan_test COMMAND prefill_plan_test)
 
+  # #5715: strata-q36's one-session context check (the reporter's 12 GB card from its log): header-only, no GPU
+  add_executable(q36_context_fit_test tests/program/q36_context_fit_test.cpp)
+  target_include_directories(q36_context_fit_test PRIVATE include)
+  add_test(NAME q36_context_fit_test COMMAND q36_context_fit_test)
+
   # the default CPU prefill share is not armed when every expert is resident (#1595): header-only rule, no GPU
   add_executable(share_rules_test tests/prefill/share_rules_test.cpp)
   target_include_directories(share_rules_test PRIVATE include)
   add_test(NAME share_rules_test COMMAND share_rules_test)
+
+  # the chunk a prompt piece below the walk floor lends its buffers for (the staged layout, not the rounded chunk's streamed one): header-only rule, no GPU
+  add_executable(loan_rules_test tests/prefill/loan_rules_test.cpp)
+  target_include_directories(loan_rules_test PRIVATE include)
+  add_test(NAME loan_rules_test COMMAND loan_rules_test)
+
+  # how a long prompt segment is cut into chunks: equal chunks, ceil(tokens / chunk) of them, on one GPU in a build without MMQ (header-only rule, no GPU)
+  add_executable(equal_cut_rule_test tests/prefill/equal_cut_rule_test.cpp)
+  target_include_directories(equal_cut_rule_test PRIVATE include)
+  add_test(NAME equal_cut_rule_test COMMAND equal_cut_rule_test)
+
+  # which tail the serve auto chunk scan counts in a build without MMQ with the equal cut on (header-only rule, no GPU)
+  add_executable(fit_out_rule_test tests/prefill/fit_out_rule_test.cpp)
+  target_include_directories(fit_out_rule_test PRIVATE include)
+  add_test(NAME fit_out_rule_test COMMAND fit_out_rule_test)
+
+  # which work item (128 or 64 routed rows) the CUDA fused prompt kernels take, per card class (pick_ww): the pure rule, pinned at the two sides of every threshold for the
+  # measured classes and compared with the previous rule for every class that must not change (header-only, no GPU)
+  add_executable(fused_tile_rule_test tests/prefill/fused_tile_rule_test.cpp)
+  target_include_directories(fused_tile_rule_test PRIVATE include)
+  add_test(NAME fused_tile_rule_test COMMAND fused_tile_rule_test)
+
+  # whether the staged walk (chunks below 1,024 tokens) takes the batched group entry: on by default in a CUDA build, opt-in in a HIP build, STRATA_PF_FUSED=1 / =0 both ways
+  # (header-only, no GPU)
+  add_executable(staged_group_rule_test tests/prefill/staged_group_rule_test.cpp)
+  target_include_directories(staged_group_rule_test PRIVATE include)
+  add_test(NAME staged_group_rule_test COMMAND staged_group_rule_test)
+
+  # when a prompt layer's expert groups take our own int8 kernels (native_expert_i8): STRATA_EXPERT_I8 = 1 / 0 / unset, where unset means the HIP cards gfx1030 / 1031 / 1032 from
+  # 256 entries per group and every other card keeps MMQ (header-only, no GPU)
+  add_executable(i8_expert_rule_test tests/prefill/i8_expert_rule_test.cpp)
+  target_include_directories(i8_expert_rule_test PRIVATE include)
+  add_test(NAME i8_expert_rule_test COMMAND i8_expert_rule_test)
+  # which kernels carry one Qwen3.6 layer's prompt experts (strata-q36): fused > int8 (switch set to 1) > MMQ > int8 > grouped, in a build with and without MMQ (header-only, no GPU)
+  add_executable(q36_prompt_route_test tests/prefill/q36_prompt_route_test.cpp)
+  target_include_directories(q36_prompt_route_test PRIVATE include)
+  add_test(NAME q36_prompt_route_test COMMAND q36_prompt_route_test)
+  # from which chunk size a prompt chunk takes the long-prompt path: 1,024, or the lower floor of a layer set that is fused-only on every layer on Windows gfx1151 (header-only, no GPU)
+  add_executable(stream_floor_rule_test tests/prefill/stream_floor_rule_test.cpp)
+  target_include_directories(stream_floor_rule_test PRIVATE include)
+  add_test(NAME stream_floor_rule_test COMMAND stream_floor_rule_test)
+
+  # whether the staged walk's group entry also takes a layer with no MMQ tile that the fused kernels cover (research switch STRATA_PF_STAGED_FO=1, off by default; header-only, no GPU)
+  add_executable(staged_fo_rule_test tests/prefill/staged_fo_rule_test.cpp)
+  target_include_directories(staged_fo_rule_test PRIVATE include)
+  add_test(NAME staged_fo_rule_test COMMAND staged_fo_rule_test)
+
+  # whether a layer the CPU share took experts of keeps the staged fused entry and the int8 kernels for the GPU's own experts: yes in a build without MMQ, no in a build with MMQ (header-only, no GPU)
+  add_executable(share_own_rule_test tests/prefill/share_own_rule_test.cpp)
+  target_include_directories(share_own_rule_test PRIVATE include)
+  add_test(NAME share_own_rule_test COMMAND share_own_rule_test)
+
+  # the long-prompt floor of the plain pack by card class and share state: 1,536 tokens on a discrete CUDA card in a build without MMQ, the old answer elsewhere (header-only, no GPU)
+  add_executable(plain_floor_rule_test tests/prefill/plain_floor_rule_test.cpp)
+  target_include_directories(plain_floor_rule_test PRIVATE include)
+  add_test(NAME plain_floor_rule_test COMMAND plain_floor_rule_test)
+
+  # the start-up sentence of an engine built without llama.cpp's MMQ prompt kernels (layer counts per path; header-only, no GPU)
+  add_executable(own_only_line_test tests/prefill/own_only_line_test.cpp)
+  target_include_directories(own_only_line_test PRIVATE include)
+  add_test(NAME own_only_line_test COMMAND own_only_line_test)
+
+  # the opt-in fused-kernel switches a build without MMQ turns on by default, per backend (header-only, no GPU)
+  add_executable(own_only_switches_test tests/prefill/own_only_switches_test.cpp)
+  target_include_directories(own_only_switches_test PRIVATE include)
+  add_test(NAME own_only_switches_test COMMAND own_only_switches_test)
+
+  # how many tokens the FP16 expert path's buffers (Xs, Hh) are sized for: the tail below the stream floor in a fused layout, the full chunk elsewhere (header-only, no GPU)
+  add_executable(fp16_rows_rule_test tests/prefill/fp16_rows_rule_test.cpp)
+  target_include_directories(fp16_rows_rule_test PRIVATE include)
+  add_test(NAME fp16_rows_rule_test COMMAND fp16_rows_rule_test)
+
+  # the expert-paths bench's per-expert blob change never touches a scale byte of the gate/up format's block (test-only header; no GPU, no ggml)
+  add_executable(bench_blob_layout_test tests/prefill/bench_blob_layout_test.cpp)
+  # with the quant layer (STRATA_NATIVE_EXPERTS, defined further down): the table's geometry against strata::quant::type_info too
+  target_link_libraries(bench_blob_layout_test PRIVATE $<TARGET_NAME_IF_EXISTS:strata_quant>)
+  target_compile_definitions(bench_blob_layout_test PRIVATE $<$<TARGET_EXISTS:strata_quant>:BBL_HAVE_QUANT=1>)
+  add_test(NAME bench_blob_layout_test COMMAND bench_blob_layout_test)
+
+  # STRATA_SWITCH_POINT (on by default for NVIDIA sm_86, one GPU): the floor from the card's share of non-resident experts, a cost estimate of the staged and the streamed walk (header-only, no GPU)
+  add_executable(switch_point_rule_test tests/prefill/switch_point_rule_test.cpp)
+  target_include_directories(switch_point_rule_test PRIVATE include)
+  add_test(NAME switch_point_rule_test COMMAND switch_point_rule_test)
+
+  # whether the CUDA fused prompt kernels take the Gyro trellis experts by default (STRATA_PF_FUSED_TQ unset: the sm_86 cards with 80+ SMs; =1 any card; =0 off): the pure
+  # rule, pinned for every card class (header-only, no GPU)
+  add_executable(fused_tq_default_test tests/prefill/fused_tq_default_test.cpp)
+  target_include_directories(fused_tq_default_test PRIVATE include)
+  add_test(NAME fused_tq_default_test COMMAND fused_tq_default_test)
+
+  # whether a HIP device's fused prompt kernels take the Gyro trellis experts (gfx12 with STRATA_PF_FUSED_TQ=1; gfx1151 by STRATA_PF_TQ_G1151 and its Windows
+  # default): the pure rule, pinned over every input (header-only, no GPU)
+  add_executable(fused_tq_hip_test tests/prefill/fused_tq_hip_test.cpp)
+  target_include_directories(fused_tq_hip_test PRIVATE include)
+  add_test(NAME fused_tq_hip_test COMMAND fused_tq_hip_test)
 
   # STRATA_SELECT_TWO_PASS: the bound between the single-pass and 3xTF32 QSA block scores and the cut-off rule that
   # keeps the selection (header-only, no GPU)
@@ -358,6 +537,16 @@ if(STRATA_BUILD_TESTS)
   add_executable(mmq_ids_margin_test tests/prefill/mmq_ids_margin_test.cpp)
   target_include_directories(mmq_ids_margin_test PRIVATE include)
   add_test(NAME mmq_ids_margin_test COMMAND mmq_ids_margin_test)
+
+  # few-row experts on the FP16 prompt path: the research switch and the rule (header-only, no GPU)
+  add_executable(fewrows_rule_test tests/prefill/fewrows_rule_test.cpp)
+  target_include_directories(fewrows_rule_test PRIVATE include)
+  add_test(NAME fewrows_rule_test COMMAND fewrows_rule_test)
+
+  # Tesla P100: when the prompt experts take the FP16 path by default instead of MMQ (header-only, no GPU)
+  add_executable(gp100_prompt_default_test tests/prefill/gp100_prompt_default_test.cpp)
+  target_include_directories(gp100_prompt_default_test PRIVATE include)
+  add_test(NAME gp100_prompt_default_test COMMAND gp100_prompt_default_test)
 
   # PR #4844: the adaptive tier's copy-in range across serial, pipelined and drained rounds (header-only, no GPU)
   add_executable(adaptive_range_test tests/program/adaptive_range_test.cpp)
@@ -413,15 +602,25 @@ if(STRATA_NATIVE_EXPERTS)
   enable_language(C)
   strata_ggml_configure_root()
   strata_cpu_native_experts()
+  strata_quant_layer()
   strata_ggml_mmq_types()
   # #296: OrcaRouter Q4_K_S's Q5_0 experts (Q4_K and Q5_1 come with STRATA_MMQ_KQUANTS on CUDA, S5's branch)
   if(STRATA_ORCA_Q4KS_MMQ)
     list(APPEND _strata_mmq_types q5_0)
   endif()
-  if(STRATA_ENABLE_CUDA)
+  if(STRATA_ENABLE_CUDA AND STRATA_MMQ)
     strata_cuda_mmq()
-  elseif(STRATA_PREFILL_MMQ)
+  elseif(STRATA_ENABLE_CUDA)
+    strata_cuda_pf_own()   # P4-SPLIT: no MMQ, Strata's own prompt kernels only
+  elseif(STRATA_PREFILL_MMQ AND STRATA_MMQ)
     strata_hip_mmq()
+  elseif(STRATA_ENABLE_HIP)
+    strata_hip_pf_own()
+  endif()
+  if(STRATA_ENABLE_CUDA)
+    strata_cuda_prompt_tests()
+  elseif(STRATA_ENABLE_HIP)
+    strata_hip_prompt_tests()
   endif()
   if(STRATA_ENABLE_HIP)
     # Optional real-model diagnostic: pass the GGUF shard containing the native PLE key.
@@ -431,6 +630,9 @@ if(STRATA_NATIVE_EXPERTS)
   # the NVFP4 AVX-512 and AVX2 rows vs ggml-cpu's vec_dot, and their speed (CPU only; optional arg: a pack's experts.bin)
   add_executable(nvfp4_avx512_parity src/kernels/cpu/nvfp4_avx512_parity.cpp)
   target_link_libraries(nvfp4_avx512_parity PRIVATE strata_kernels_cpu)
+  if(STRATA_ISA_FLOOR)   # ggml-cpu without AVX2 / FMA: its dot is not the AVX2 one, so no bit-equality check (cmake/backends/cpu.cmake)
+    target_compile_definitions(nvfp4_avx512_parity PRIVATE STRATA_TEST_GGML_WITHOUT_AVX2=1)
+  endif()
   add_test(NAME nvfp4_cpu_parity COMMAND nvfp4_avx512_parity)   # random blocks; the AVX2 rows bit-equal to ggml's
   set_tests_properties(nvfp4_cpu_parity PROPERTIES TIMEOUT 120)
   if(STRATA_ENABLE_CUDA)   # the NVFP4 decode kernels vs ggml's reference
@@ -557,6 +759,11 @@ if(STRATA_NATIVE_EXPERTS)
     add_executable(ple_fp8_parity src/kernels/ple_fp8_parity.cpp)
     target_link_libraries(ple_fp8_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   endif()
+elseif(STRATA_BUILD_TESTS)
+  # without the native experts (the cpu-check preset) there is no ggml, but the quant layer needs none: its own tests (quant_selftest,
+  # nvfp4_decode_model_test) are built and run here too; the ggml oracle tests (quant_parity and the benches against ggml-cpu) stay native-only
+  set(STRATA_QUANT_NO_GGML ON)
+  strata_quant_layer()
 endif()
 
 if(STRATA_ENABLE_CUDA AND STRATA_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/bench/micro/hit_cpu_order_parity.cu")
@@ -583,13 +790,6 @@ endif()
 
 # ---- HIP gfx906: every CUDA source of the tree (and the ggml-cuda MMQ sources) is compiled as HIP ----
 strata_hip_gfx906_sources()
-
-# ---- DeepSeek-V4.1 on a box with no GPU toolkit ------------------------------------------------
-# The whole DSV41 block above lives inside if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP), so with neither backend on
-# -DSTRATA_BUILD_DSV41=ON was silently unused and the host-side benchmark could not be built at all (found on p1004,
-# 2026-10-23: the CPU lane is exactly what a box without a usable GPU needs to measure).  This branch builds the one target
-# that has no device code, so the CPU-lane A/B runs anywhere.
-strata_cpu_dsv41_host_bench()
 
 # ---- strata-split: the opt-in engine that splits every layer across 2-4 NVIDIA cards (src/split, from sFNX, MIT, John Fink) ----
 # OFF by default, Linux + CUDA or HIP only, no other target depends on it; see src/split/CMakeLists.txt and docs/SPLIT_ENGINE.md.
