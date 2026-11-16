@@ -1,11 +1,11 @@
 # Set up Strata for a user
 
-Use this guide when a user asks an AI agent to install Strata (version 0.2.13). There are two release routes. Pick
+Use this guide when a user asks an AI agent to install Strata (version 0.2.14). There are two release routes. Pick
 one; do not start from a source checkout.
 
 - **The Terminal and `strata launch`** (below). This is the route for an agent that has a shell.
-- **The desktop app.** One installer per system: `Strata-0.2.13-windows-x64-setup.exe`,
-  `Strata-0.2.13-linux-x86_64.AppImage`, `Strata-0.2.13-macos-arm64.dmg`, from the
+- **The desktop app.** One installer per system: `Strata-0.2.14-windows-x64-setup.exe`,
+  `Strata-0.2.14-linux-x86_64.AppImage`, `Strata-0.2.14-macos-arm64.dmg`, from the
   [latest release](https://github.com/Niko1221/Strata/releases/latest). The Windows and Linux installers carry no
   engine: on first start the app shows the engine for the user's graphics card and downloads it, or installs a file the
   user already has ("I already have the file"). Details: [INSTALL.md](INSTALL.md).
@@ -18,12 +18,6 @@ Model availability, provider preference and API details are in [AI_REFERENCE.md]
 - Use the [hardware guides](INSTALL.md#what-you-need). Linux and Windows packages are x86-64; Mac packages are
   Apple Silicon and need macOS 15 or newer. Older GPUs, Intel Arc and low-memory machines have specific limits.
 - Model support is separate from hardware support. <!-- cap:summary:qwen36 -->Qwen3.6-35B-A3B runs in the desktop app and in the Terminal. Hardware: NVIDIA on Windows; NVIDIA on Linux; AMD on Windows; AMD on Linux. Package present but not tested: NVIDIA DGX Spark. Does not run on: Intel Arc on Linux, Apple silicon. Per-hardware limits and measurements: [CAPABILITIES.md](CAPABILITIES.md#qwen36).<!-- /cap -->
-  <!-- cap:summary:deepseek41 -->DeepSeekV4.1-Flash-1017 runs in the desktop app and in the Terminal. Hardware: NVIDIA on Windows (RTX 30, 40 and 50); NVIDIA on Linux (RTX 30, 40 and 50); NVIDIA DGX Spark (GB10); AMD on Windows (Ryzen AI Max / Strix Halo, gfx1151); AMD on Linux (Radeon AI PRO R9700); Apple silicon (64 GB or more, macOS 15 or newer). Does not run on: Intel Arc on Linux. Per-hardware limits and measurements: [CAPABILITIES.md](CAPABILITIES.md#deepseek41).<!-- /cap -->
-  DeepSeekV4.1-Flash-1017 (`--family deepseek41`) has three sets: 1.75 bpw (239 GB of disk),
-  2.00 bpw (257 GB) and 2.25 bpw (274 GB), and for a 12 GB card it needs 46 to 64 GB of RAM. The context is 8K.
-  `--speed faster|full` (or `--full-quality`) chooses how many experts it uses per word; Faster is the default on a
-  PC with 16 GB of graphics memory or less. Print the plan first:
-  `strata launch --plan --family deepseek41 --model ist-das-2.00bpw`.
 - Check the **chosen pack's** memory and disk needs. Do not reuse a Flash-Next estimate for every family.
   Unified memory is one pool, not RAM plus VRAM. A completed download does not establish that a model can run.
 - Keep the default local-only access. Share the server over a network only when the user asks; recommend an API key
@@ -97,7 +91,7 @@ Useful options:
 | `--data-dir PATH` | Folder for new downloads; existing files stay put unless `--move-data` is also given |
 | `--vision on\|off\|gpu\|cpu` | Picture reading, subject to model and packaged-reader support |
 | `--gpu 0,1` | Selected GPUs; do not use source setup's `--gpus` spelling here |
-| `--parallel N` | Requested concurrent slots, 1–8; check what actually fits and starts. DeepSeek is one at a time unless you ask |
+| `--parallel N` | Requested concurrent slots, 1–8; check what actually fits and starts |
 | `--save-preset NAME` | Keep these launch choices for later |
 | `--open` | Open the server's browser page after it starts |
 | `--restart` | Replace an already running launch with different settings; interrupts active answers |

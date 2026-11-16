@@ -22,12 +22,18 @@ The config's "images" section (written by setup --images, tools/image/install.py
    "llm": "...Qwen3-VL-8B-Instruct-UD-Q4_K_XL.gguf", "quant": "Q8_0", "args": ["--diffusion-fa"],
    "gpu_policy": "auto", "reload": "lazy"|"eager", "max_n": 4, "max_side": 2048, "timeout_s": 3600,
    "lib_dirs": [...], "uma": false, "need_mib": null, "out_dir": null, "keep_files": 64,
-   "native": false}   (native: Strata's own DiT runner, tools/image/sdcpp_native; CUDA / HIP builds)
+   "native": false, "noise": "sdcpp"}
+   (native: Strata's own DiT runner, tools/image/sdcpp_native; CUDA / HIP builds.  noise: "sdcpp" (default) is
+   stable-diffusion.cpp's own noise; "strata" is Strata's generator, tools/image/sdcpp_noise: the same stream on every
+   operating system and CPU, built into sd-cli by setup --image-noise on.  "vae_decoder": "sdcpp" (default) is
+   stable-diffusion.cpp's VAE decoder; "strata" is Strata's own, src/image/vae via tools/image/sdcpp_vae, CUDA / HIP
+   builds only, built into sd-cli by setup --image-vae on)
 """
 from __future__ import annotations
 
 import base64
 import contextlib
+import json
 import os
 import random
 import re
@@ -46,6 +52,20 @@ TURBO_SIGMAS = "1.0,0.978453,0.95418,0.926626,0.89508,0.845148,0.704534,0.414568
 TURBO_STEPS = 8
 MODEL_NAME = "qwen-image-2.1-turbo"
 POLICIES = ("auto", "keep", "shrink", "unload")
+NOISES = ("sdcpp", "strata")
+# shown (log line at start, and as the failure of an image request) when the config asks for Strata's noise but the
+# built sd-cli does not have it: ONE next step, in plain words
+NOISE_MISSING = ("Image generation is set to use Strata's own noise (\"noise\": \"strata\" in the images settings), but "
+                 "the image program here was built without it. Run setup again with: --images qwen-image --image-noise on")
+VAE_DECODERS = ("sdcpp", "strata")
+VAE_DECODER_BACKENDS = ("cuda", "hip")
+# the same two cases for Strata's own VAE decoder (the owner's wording, 11-11)
+VAE_MISSING = ("Image generation is set to use Strata's own picture decoder (\"vae_decoder\": \"strata\" in the images "
+               "settings), but the image program here was built without it. Run setup again with: --images qwen-image "
+               "--image-vae on")
+VAE_BACKEND = ("Image generation is set to use Strata's own picture decoder (\"vae_decoder\": \"strata\" in the images "
+               "settings), which needs the CUDA (NVIDIA) or ROCm (AMD) build of the image program; this one was built "
+               "for {backend}. Set \"vae_decoder\" to \"sdcpp\" in the images settings.")   # {backend}: as setup prints it
 SIZE_STEP = 32                     # sd.cpp's Qwen-Image-2.1 docs: dimensions divisible by 32
 MIN_SIDE = 256
 FILE_NAME = re.compile(r"^[0-9a-f]{32}\.png$")
@@ -142,8 +162,15 @@ def sd_cli_args(cfg: dict, job: dict, out_pattern: str, prompt_file: str) -> lis
         cmd += ["-b", str(job["n"])]
     cmd += ["-o", out_pattern]
     cmd += [str(a) for a in (cfg.get("args") or [])]
+    model_args = []
     if cfg.get("native") is True:                   # Strata's DiT runner inside sd-cli (CUDA / HIP builds)
-        cmd += ["--model-args", "qwen_image_2_1_native=1"]
+        model_args.append("qwen_image_2_1_native=1")
+    if cfg.get("noise") == "strata":                # Strata's noise generator inside sd-cli (tools/image/sdcpp_noise)
+        model_args.append("strata_noise=1")
+    if cfg.get("vae_decoder") == "strata":          # Strata's VAE decoder inside sd-cli (tools/image/sdcpp_vae)
+        model_args.append("strata_vae=1")
+    if model_args:
+        cmd += ["--model-args", ",".join(model_args)]
     return cmd
 
 
@@ -342,6 +369,11 @@ class ImageGen:
         for k in ("exe", "diffusion_model", "vae", "llm"):
             if not isinstance(self.cfg.get(k), str) or not self.cfg[k]:
                 raise ValueError(f'the config\'s "images" section needs "{k}" (run setup with --images again)')
+        if self.cfg.get("noise", "sdcpp") not in NOISES:
+            raise ValueError(f'images "noise" must be one of {", ".join(NOISES)}, not {self.cfg["noise"]!r}')
+        if self.cfg.get("vae_decoder", "sdcpp") not in VAE_DECODERS:
+            raise ValueError(f'images "vae_decoder" must be one of {", ".join(VAE_DECODERS)}, '
+                             f'not {self.cfg["vae_decoder"]!r}')
         self.policy, self.reload = policy, reload
         self.model = self.cfg.get("model_name") or MODEL_NAME
         self.log = log
@@ -356,6 +388,32 @@ class ImageGen:
 
     def missing(self) -> list[str]:
         return [self.cfg[k] for k in ("exe", "diffusion_model", "vae", "llm") if not Path(self.cfg[k]).exists()]
+
+    def noise_problem(self) -> str | None:
+        """NOISE_MISSING when the config says "noise": "strata" and the sd-cli it runs was not built with Strata's noise
+        generator (its BUILD.json, written by setup, has no "noise" stamp); else None.  Without this the arg would be
+        ignored and the picture would quietly get stable-diffusion.cpp's noise."""
+        if self.cfg.get("noise") != "strata":
+            return None
+        try:
+            meta = json.loads(Path(self.cfg["exe"]).with_name("BUILD.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return NOISE_MISSING
+        return None if isinstance(meta, dict) and meta.get("noise") else NOISE_MISSING
+
+    def vae_problem(self) -> str | None:
+        """VAE_BACKEND when the config says "vae_decoder": "strata" for a backend that has no such decoder (Vulkan,
+        CPU), VAE_MISSING when the sd-cli it runs was not built with it (no "vae_decoder" stamp in its BUILD.json);
+        else None.  Without this sd-cli would ignore the arg and decode with stable-diffusion.cpp's decoder."""
+        if self.cfg.get("vae_decoder") != "strata":
+            return None
+        if self.cfg.get("backend") not in VAE_DECODER_BACKENDS:
+            return VAE_BACKEND.format(backend=self.cfg.get("backend") or "another backend")
+        try:
+            meta = json.loads(Path(self.cfg["exe"]).with_name("BUILD.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return VAE_MISSING
+        return None if isinstance(meta, dict) and meta.get("vae_decoder") else VAE_MISSING
 
     def _say(self, text: str) -> None:
         print(f"[strata] {text}", flush=True)
@@ -383,6 +441,10 @@ class ImageGen:
     def run(self, job: dict, cancel: threading.Event | None = None) -> tuple[list[bytes], dict]:
         """Run sd-cli for `job` (parse_request's dict) -> (the PNG files' bytes in order, figures).  The caller holds
         the GPU turn.  ImageJobFailed when sd-cli fails, times out or is cancelled."""
+        problem = self.noise_problem() or self.vae_problem()
+        if problem:
+            self.totals["failed"] += 1
+            raise ImageJobFailed(problem)
         work = Path(tempfile.mkdtemp(prefix="job-", dir=self.dir))
         pattern = str(work / "img_%d.png")
         try:

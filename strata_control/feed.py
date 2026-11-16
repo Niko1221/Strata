@@ -284,9 +284,6 @@ class Feed:
     source: str                    # where it was read from (the base for relative URLs)
     key_id: str                    # who signed it
     raw: bytes = field(default=b"", repr=False)
-    #: the DeepSeek-V4.1 engine packages (feed member ``dsv41``, same entry shape as ``engine``): a separate download that setup fetches when
-    #: DeepSeek is chosen. Kept out of ``engine`` so that `strata update` and select_engine never pick one as THE engine. Older Controls ignore the member.
-    dsv41: tuple[EnginePackage, ...] = ()
     #: entries this Control does not know how to use (a platform, a backend or an archive format added after it was built): left out, one plain line each.
     #: A feed with such an entry is still a feed; only an entry of a kind this Control knows and that is malformed refuses the feed.
     skipped: tuple[str, ...] = ()
@@ -610,18 +607,8 @@ def parse(payload: bytes, *, source: str, key_id: str) -> Feed:
             if ident in seen:
                 raise FeedError(f"the feed lists engine {pkg.label} twice")
             seen.add(ident)
-    dsv41 = []
-    raw_dsv41 = data.get("dsv41")
-    if raw_dsv41 is not None:
-        if not isinstance(raw_dsv41, dict) or not isinstance(raw_dsv41.get("packages"), list):
-            raise FeedError("the feed's dsv41 member lists no packages")
-        dsv41 = [e for e in (_engine_package(item, skipped) for item in raw_dsv41["packages"]) if e is not None]
-        seen = set()
-        for pkg in dsv41:
-            ident = (pkg.version, pkg.platform, pkg.backend, pkg.variant)
-            if ident in seen:
-                raise FeedError(f"the feed lists DeepSeek engine {pkg.label} twice")
-            seen.add(ident)
+    # (the member "dsv41", the DeepSeek-V4.1 engine packages of Strata 0.2.13 and earlier, may still be in the feed for those versions, frozen;
+    # this Control runs no DeepSeek model and does not read it)
     shapes = []
     raw_shapes = data.get("shape_engines")
     if raw_shapes is not None:
@@ -644,7 +631,7 @@ def parse(payload: bytes, *, source: str, key_id: str) -> Feed:
             raise FeedError("the feed lists a drafter twice")
     models, models_dropped = _models_member(data.get("models"))
     return Feed(sequence=sequence, channel=channel, generated_at=generated, expires_at=expires, app=app,
-                control=tuple(control), engine=tuple(engine), source=source, key_id=key_id, raw=payload, dsv41=tuple(dsv41),
+                control=tuple(control), engine=tuple(engine), source=source, key_id=key_id, raw=payload,
                 skipped=tuple(skipped), drafters=tuple(drafters), models=tuple(models), models_dropped=tuple(models_dropped), shape_engines=tuple(shapes))
 
 
@@ -701,8 +688,9 @@ def feed_name(platform: str | None = None) -> str:
     return AARCH64_FEED_NAME if platform == "linux-aarch64" else FEED_NAME
 
 
-def fetch(source: str, trusted: dict[str, bytes], *, timeout: float = 30, say=None, **guards) -> Feed:
-    """Read the feed and its signature from `source` (an https URL, a loopback http URL, a file URL or a folder/file path)."""
+def fetch(source: str, trusted: dict[str, bytes], *, timeout: float = 30, say=None, automatic: bool = False, **guards) -> Feed:
+    """Read the feed and its signature from `source` (an https URL, a loopback http URL, a file URL or a folder/file path).  `automatic`: a read
+    nobody asked for by name (strata_control/netpolicy.py rule 4b: a host that refused within the last hours is not asked again)."""
     if not trusted:
         raise FeedError("this build trusts no update key (update_keys.json is empty and STRATA_UPDATE_TRUSTED_KEYS is not set), "
                         "so no update can be verified; nothing was downloaded")
@@ -716,8 +704,8 @@ def fetch(source: str, trusted: dict[str, bytes], *, timeout: float = 30, say=No
     elif transfer.kind_of(source) in ("http", "https") and not source.rsplit("/", 1)[-1].endswith(".json"):
         location = source.rstrip("/") + "/" + feed_name()
     try:
-        payload = transfer.read_small(location, timeout=timeout, say=say)
-        signature = transfer.read_small(location + SIGNATURE_SUFFIX, timeout=timeout, say=say)
+        payload = transfer.read_small(location, timeout=timeout, say=say, automatic=automatic)
+        signature = transfer.read_small(location + SIGNATURE_SUFFIX, timeout=timeout, say=say, automatic=automatic)
     except transfer.Unreachable as exc:
         f = exc.failure                                  # the network rule (W7 and its two companions): the host, and that nothing installed is lost
         key = {"offline": "update_offline", "again": "update_again"}.get(f.kind, "update_no_answer")
