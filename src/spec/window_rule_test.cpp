@@ -102,6 +102,10 @@ int main() {
         check(!mtp_q_applies(true, false, true, false, false, 1), "one row: no q");
         check(!mtp_q_applies(true, false, false, false, false, 4), "greedy / mode off: no q");
         check(!mtp_q_applies(false, false, true, false, false, 4), "no MTP: no q");
+        check(mtp_window_invariant_applies(true, false, true), "MTP probabilistic decode: WindowInvariant CPU pool");
+        check(!mtp_window_invariant_applies(true, true, true), "DFlash2 active beside MTP: keep multi-token grouped CPU pool");
+        check(!mtp_window_invariant_applies(true, false, false), "MTP greedy / prob off: keep multi-token grouped CPU pool");
+        check(!mtp_window_invariant_applies(false, false, true), "no MTP: keep multi-token grouped CPU pool");
     }
     std::printf("%s\n", g_fail == 0 ? "window_rule_test: ok" : "window_rule_test: FAILED");
     return g_fail == 0 ? 0 : 1;
