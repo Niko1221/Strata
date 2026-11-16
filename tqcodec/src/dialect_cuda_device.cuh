@@ -290,10 +290,8 @@ __device__ inline void turbo_pack(uint32_t id, const float *x, float norm,
   const float recon = __fsqrt_rn(sum);
   store16(p, half_encode(recon > 1e-10f ? __fdiv_rn(norm, recon) : norm));
 }
-__device__ inline void turbo_decode(uint32_t id, const uint8_t *p, float *x) {
-  const float norm = half_decode(load16(p)), *c = centroids(id);
-#pragma unroll 1
-  for (int i = 0; i < 128; ++i) {
+// Random-access stored-basis decode also serves native packed attention.
+__device__ inline float turbo_value(uint32_t id, const uint8_t *p, int i) {
     int idx;
     if (id <= 2) {
       idx = (p[2 + i / 4] >> ((i % 4) * 2)) & 3;
@@ -306,8 +304,11 @@ __device__ inline void turbo_decode(uint32_t id, const uint8_t *p, float *x) {
       if (id == 5)
         idx |= ((p[66 + i / 4] >> ((i % 4) * 2)) & 3) << 4;
     }
-    x[i] = __fmul_rn(c[idx], norm);
-  }
+    return __fmul_rn(centroids(id)[idx], half_decode(load16(p)));
+}
+__device__ inline void turbo_decode(uint32_t id, const uint8_t *p, float *x) {
+#pragma unroll 1
+  for (int i = 0; i < 128; ++i) x[i] = turbo_value(id, p, i);
 }
 
 } // namespace tqc_cuda_detail

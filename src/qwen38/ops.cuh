@@ -32,4 +32,6 @@ void attention_prepare(const float* qg,const float* k,const float* v,const float
                        float* q,float* gate,half* kc,half* vc,int pos,int ctx,float eps,float base,cudaStream_t s);
 void attention_apply(const float* q,const float* gate,const half* kc,const half* vc,float* out,
                      float* scores,int pos,int ctx,cudaStream_t s);
+void attention_normalize(const float* qg,const float* k,const float* qw,const float* kw,
+                         float* q,float* gate,float* normalized_k,int pos,float eps,float base,cudaStream_t s);
 }

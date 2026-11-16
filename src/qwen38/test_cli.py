@@ -33,8 +33,13 @@ for opt in ('--vision', '--shift', '--snapshot', '--graph', '--prompt'):
     check('unsupported '+opt, [opt], False, 'unsupported option')
 check('invalid context', ['--ctx-size', '0'], False)
 check('missing file', ['--model', 'missing.gguf', '--inspect'], False)
+for mode in ('turbo2','q8_turbo3','spin8_turbo4','automatic'):
+    check('invalid KV '+mode,['--model','missing.gguf','--kv',mode,'--inspect'],False,'unsupported KV')
+check('profile incompatible with auto',['--model','missing.gguf','--kv','auto','--spin8-view','plus','--inspect'],False,'requires spin8_k8v4')
 for model in models:
     check('complete file inspect '+model.name, ['--model', model, '--inspect'], True, 'layers=64')
+    for mode in ('auto','f16','k8v4','spin8_k8v4','f16_turbo2','f16_turbo3','f16_turbo4'):
+        check('KV CLI '+mode+' '+model.name,['--model',model,'--kv',mode,'--inspect'],True,'layers=64')
 
 g = GGUFFile(models[0])
 with models[0].open('rb') as f:

@@ -67,14 +67,15 @@ __global__ void had(const float* x,const float* signs,float* y,bool inverse,bool
 }
 // Based on Strata q36 k_attn_prep: Q and output gates interleave per head.
 __global__ void prep(const float* qg,const float* k,const float* v,const float* qw,const float* kw,float* q,float* gate,
-                     half* kc,half* vc,int pos,int ctx,float eps,float base){
+                     half* kc,half* vc,int pos,int ctx,float eps,float base,float* normalized_k=nullptr){
     __shared__ float buf[256],part[8];int head=blockIdx.x,i=threadIdx.x;bool isq=head<24;
     const float* x=isq?qg+head*512:k+(head-24)*256;float z=x[i];float s=sum(z*z);
     if(!(i%32))part[i/32]=s;__syncthreads();s=0;for(int j=0;j<8;++j)s+=part[j];
     buf[i]=z*rsqrtf(s/256+eps)*(isq?qw[i]:kw[i]);__syncthreads();z=buf[i];
     if(i<64){int p=i%32;float angle=pos*powf(base,-float(p)/32),sn,cs;sincosf(angle,&sn,&cs);z=i<32?buf[i]*cs-buf[i+32]*sn:buf[i-32]*sn+buf[i]*cs;}
     if(isq){q[head*256+i]=z;gate[head*256+i]=qg[head*512+256+i];}
-    else{int kh=head-24;kc[(size_t(kh)*ctx+pos)*256+i]=__float2half(z);vc[(size_t(kh)*ctx+pos)*256+i]=__float2half(v[kh*256+i]);}
+    else{int kh=head-24;if(normalized_k)normalized_k[kh*256+i]=z;
+        else{kc[(size_t(kh)*ctx+pos)*256+i]=__float2half(z);vc[(size_t(kh)*ctx+pos)*256+i]=__float2half(v[kh*256+i]);}}
 }
 __global__ void score(const float* q,const half* k,float* s,int pos,int ctx){
     int t=blockIdx.x*8+threadIdx.x/32,head=blockIdx.y,lane=threadIdx.x%32;if(t>pos)return;int kh=head/6;
@@ -106,4 +107,7 @@ void attention_prepare(const float* qg,const float* k,const float* v,const float
     if(pos<0||pos>=ctx)throw std::runtime_error("attention position out of range");prep<<<28,256,0,s>>>(qg,k,v,qw,kw,q,gate,kc,vc,pos,ctx,eps,base);ck(cudaGetLastError());}
 void attention_apply(const float* q,const float* gate,const half* kc,const half* vc,float* out,float* scores,int pos,int ctx,cudaStream_t s){
     if(pos<0||pos>=ctx)throw std::runtime_error("attention position out of range");score<<<dim3((pos+8)/8,24),256,0,s>>>(q,kc,scores,pos,ctx);attend<<<24,256,0,s>>>(scores,vc,gate,out,pos,ctx);ck(cudaGetLastError());}
+void attention_normalize(const float* qg,const float* k,const float* qw,const float* kw,float* q,float* gate,float* nk,int pos,float eps,float base,cudaStream_t s){
+    if(pos<0||!qg||!k||!qw||!kw||!q||!gate||!nk)throw std::runtime_error("invalid attention normalization");
+    prep<<<28,256,0,s>>>(qg,k,nullptr,qw,kw,q,gate,nullptr,nullptr,pos,0,eps,base,nk);ck(cudaGetLastError());}
 }

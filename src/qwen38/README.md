@@ -37,7 +37,7 @@ Weights remain original compressed rows on CUDA. Embeddings remain a read-only
 host mapping and upload one compressed row per input token, without pinning
 the mapping. There is PCIe traffic. F32/F16/BF16 auxiliary tensors convert in
 bounded tensor scratch; compressed alpha/beta remain compressed matvecs.
-Attention uses F16 K/V. GDN state and activations are FP32. Sequential token
+Attention uses the selected native packed KV mode. GDN state and activations are FP32. Sequential token
 prefill is the only supported batch behavior; there is no CUDA graph.
 
 PQ2_0 is type 142, 128 elements per 34 bytes, independently of the existing
@@ -82,3 +82,83 @@ so QUIT requests cancellation. Format attribution is in LICENSE-formats.txt.
 Actual full-model acceptance and comparison with an independently built Prism
 oracle are a separate controller operation after this source/build handoff.
 This implementation does not claim release qualification.
+
+## Native KV storage and automatic admission
+
+The new runner defaults to `--kv auto`. Before bulk CUDA allocations it budgets
+original GPU weights, unchanged GDN/conv state, the entire explicitly requested
+context, activation/score/logit buffers, embedding row, sign and rotation data,
+bounded auxiliary conversion scratch and allocator allowances. The CUDA reserve
+remains 768 MiB. Auto tries `f16`, then `f16_turbo4`, then `spin8_k8v4`. This is
+an allocation policy, not a measured model-quality ranking. An explicit `--kv`
+mode is never changed. If no candidate fits, admission fails with the required,
+available and reserve bytes. Concurrent later VRAM pressure still fails through
+the normal guard; a live session never changes its format. Context 98304 and
+131072 remain valid requested capacities, without an inference-quality claim.
+
+Available modes are `f16`, `k8v4`, `spin8_k8v4`, `f16_turbo2`, `f16_turbo3` and
+`f16_turbo4`. K and V have separate formats in INFO. Ordinary `k8v4` stores
+Q8_0 K and Q4_0 V. Spin8 uses those same physical layouts after its selected
+rotation. Turbo modes retain ordinary post-RoPE F16 K and ordinary Q; only V
+uses Turbo2, Turbo3 or Turbo4. Turbo K and composed Spin8+Turbo modes are absent.
+
+For Spin8, `--spin8-view vector|plus|minus` selects one representation, default
+vector. `--spin8-profile FILE` optionally replaces the reference profile.
+Both switches require explicit `spin8_k8v4`. The default embeds the exact bytes
+of `data/spin8/reference.profile` at build time and works without source files or
+a working-directory convention. Actual `spin8_plan_create`, plan audit and
+`spin8_plan_matrix` produce the chosen matrix. Rounded F32 coefficients receive
+another orthogonality/determinant audit before allocation. INFO binds the
+effective mode, view, profile SHA-256 and deployed matrix SHA-256.
+
+The block-diagonal 8x8 matrix rotates Q and K after normalization and partial
+RoPE, and rotates V once. Packed attention reads Q8_0/Q4_0 history directly.
+The transpose rotates the aggregate back before the nonuniform sigmoid gate.
+Turbo V uses the pinned TheTom 64395689 F=D2 H128 D1/sqrt128 transform, two
+independent blocks per head, nonuniform centroids and corrected FP16 norm.
+The inverse is D1 H128 D2/sqrt128, applied once to the value aggregate before
+the gate. Production reuses `tqcodec/src/dialect_cuda_device.cuh`, including
+its scalar decoder; attribution remains in `tqcodec/DIALECT_LICENSE.txt`.
+Q8_0/Q4_0 layouts and rounding follow the pinned ggml reference encoders.
+
+Two session-owned CUDA allocations contain all layers' K and V, with non-owning
+per-layer views. There is no full-history floating shadow. Apart from causal
+scores (24 * context FP32 elements), transform/aggregation scratch is bounded
+to one position. Reset clears packed history, lengths, GDN, convolution and
+error state through the same production helper used by cancellation and errors.
+Invalid positions/rewinds are rejected. Numerical errors poison the cache until
+whole-session reset. Codec completion and status are checked before the output
+can be used by the forward loop.
+
+At 16 attention layers, 4 KV heads, head dimension 256 and capacity 4096,
+the payload is 268435456 bytes for F16/F16, 109051904 for Q8_0/Q4_0, 152043520
+for F16/Turbo2, 160432128 for F16/Turbo3 and 168820736 for F16/Turbo4.
+Q8_0/Q4_0 use 34/18 bytes per 32 values; Turbo2/3/4 use 34/50/66 bytes per 128.
+Fixed cache scratch is 4 bytes for F16, 24580 for plain K8/V4 or Turbo V, 57348 for
+Spin8; Spin8 coefficients add 256 bytes. Alignment/backing allocation is separate:
+CUDA 13/SM120 measurements showed 2 MiB granularity, including small-buffer pools.
+Admission reserves per-allocation rounded slack for KV, observed large-buffer
+slack for other allocations and the existing 16 MiB general safety allowance.
+INFO reports requested/effective modes, selection reason, estimated total with
+reserve, available bytes at admission, packed payload, scratch and coefficients.
+
+GPU weight upload now uses a native 16 MiB pageable staging reader, exact admitted
+offsets and short-read checks, and resource checks per chunk. It copies original
+packed bytes without full-weight mmap access, host weight mirrors or pinning.
+The read-only metadata/embedding mapping is retained for individual embedding
+rows. This addresses a demonstrated RAM-pressure stop in the prior upload path;
+the actual IQ4_XS replay remains a separate acceptance test.
+
+The focused CUDA suite compares all stored bytes against independent CPU layouts
+and the pinned CPU Turbo dialect, over 257 positions for every exposed mode/view.
+It checks GQA 24/4, causal lengths 1/31/32/33/127/128/129/255/256/257, nonuniform
+gates, nonsymmetric Spin8 inverse, F16 legacy equivalence and whole reset/error
+reuse. Attention tolerance is absolute 3e-5 plus relative 4e-5 against FP64 CPU
+attention over decoded stored bytes; pure F32 Spin8 inverse uses 5e-7 + 5e-7 relative.
+These tolerances concern arithmetic correctness, not quantization quality.
+Actual allocation snapshots at 513 and 4096 cells bound allocator overhead and
+establish fixed scratch. The CPU suite checks production auto-selection exact-fit,
+one-byte-below, no-fit, overflow and explicit-mode boundaries, profile admission
+and exact reader bytes/bounds/short reads. The existing CUDA dialect golden-file
+suite also covers the extracted scalar decoder. These tests do not qualify
+27B model answers, 98k/131k full-window inference, throughput or application delivery.
