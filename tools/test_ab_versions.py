@@ -10,7 +10,8 @@ import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from ab_versions import ReleasePair, ensure_packages, list_releases, pairs_from_releases, parse_sums, resolve_versions  # noqa: E402
+from ab_versions import (Packages, ReleasePair, ensure_packages, isolated_env, list_releases, pairs_from_releases,  # noqa: E402
+                         parse_sums, provision_home, resolve_versions)
 
 
 def a(name):
@@ -205,6 +206,64 @@ class PackagesTest(unittest.TestCase):
 
     def test_parse_sums_handles_star_and_spaces(self):
         self.assertEqual(parse_sums("abc *x.tar.gz\ndef  y.zip\n"), {"x.tar.gz": "abc", "y.zip": "def"})
+
+
+def fake_packages(root: Path, version: str) -> Packages:
+    """Flat engine and control package folders with the smallest manifest read_manifest accepts."""
+    engine = root / f"strata-engine-{version}-windows-x86_64-cuda-cuda13"
+    control = root / f"strata-control-{version}-windows-x86_64"
+    engine.mkdir(parents=True)
+    control.mkdir(parents=True)
+    (engine / "strata-engine.exe").write_bytes(b"engine")
+    (control / "strata.py").write_text("print('control')", encoding="utf-8")
+    (engine / "engine-component.json").write_text(json.dumps({
+        "schema_version": 1, "id": "strata-engine", "version": version, "platform": "windows-x86_64", "backend": "cuda",
+        "entrypoint": "strata-engine.exe", "files": [{"path": "strata-engine.exe", "sha256": "0" * 64, "bytes": 6}]}), encoding="utf-8")
+    return Packages(version, engine, control)
+
+
+class HomeTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.home = self.root / "home"
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        from strata_control.engine_component import components_dir, scan
+        self.components_dir, self.scan = components_dir, scan
+
+    def test_env_points_inside_home_and_scrubs_strata(self):
+        env = isolated_env(self.home, {"LOCALAPPDATA": "/real", "STRATA_COMPONENTS_DIR": "x", "PATH": "p"})
+        for key in ("HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "XDG_STATE_HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME"):
+            self.assertTrue(Path(env[key]).is_relative_to(self.home), key)
+        self.assertNotIn("STRATA_COMPONENTS_DIR", env)
+        self.assertEqual(env["STRATA_NO_ACQUIRE"], "1")
+        self.assertEqual(env["PATH"], "p")
+
+    def test_components_dir_follows_env_on_every_platform(self):
+        env = isolated_env(self.home, {})
+        for windows in (True, False):
+            self.assertTrue(self.components_dir(env, windows=windows).is_relative_to(self.home))
+
+    def test_provisioned_engine_is_the_only_one_scan_sees(self):
+        pk = fake_packages(self.root / "pk", "0.1.55")
+        control = provision_home(self.home, pk)
+        components = self.components_dir(isolated_env(self.home, {}))
+        found, problems = self.scan(components)
+        self.assertEqual([c.version for c in found], ["0.1.55"])
+        self.assertEqual(problems, [])
+        self.assertEqual(control, components / "control" / "0.1.55")
+        self.assertTrue((control / "strata.py").is_file())
+        self.assertEqual(json.loads((components / "control" / "active.json").read_text(encoding="utf-8")),
+                         {"version": "0.1.55", "folder": "0.1.55"})
+
+    def test_provision_twice_reuses_and_deletes_nothing(self):
+        pk = fake_packages(self.root / "pk", "0.1.55")
+        control = provision_home(self.home, pk)
+        (control / "tuning.json").write_text("{}", encoding="utf-8")        # something a run left behind
+        self.assertEqual(provision_home(self.home, pk), control)
+        self.assertTrue((control / "tuning.json").is_file())
+        self.assertEqual(len(self.scan(self.components_dir(isolated_env(self.home, {})))[0]), 1)
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@ import re
 import shutil
 import sys
 import urllib.request
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -161,3 +162,32 @@ def ensure_packages(pair: ReleasePair, cache: Path, opener=urllib.request.urlope
     engine = _ensure_one(pair.engine_name, pair.engine_url, sums, cache, opener, allow_links=False)
     control = _ensure_one(pair.control_name, pair.control_url, sums, cache, opener, allow_links=pair.control_name.endswith(".tar.gz"))
     return Packages(pair.version, engine, control)
+
+
+def isolated_env(home: Path, base: Mapping[str, str]) -> dict[str, str]:
+    """`base` with every per-user folder under `home`, every STRATA_ variable dropped, and acquiring engines switched off."""
+    env = {k: v for k, v in base.items() if not k.startswith("STRATA_")}
+    for key, sub in (("HOME", ""), ("USERPROFILE", ""), ("APPDATA", "AppData/Roaming"), ("LOCALAPPDATA", "AppData/Local"),
+                     ("XDG_STATE_HOME", ".local/state"), ("XDG_DATA_HOME", ".local/share"),
+                     ("XDG_CONFIG_HOME", ".config"), ("XDG_CACHE_HOME", ".cache")):
+        env[key] = str(home / sub)
+    env["STRATA_NO_ACQUIRE"] = "1"
+    return env
+
+
+def provision_home(home: Path, packages: Packages) -> Path:
+    """Put the engine and control of `packages` where the release Control looks for them under `home`; returns the control folder.
+    Idempotent: a folder that is already there is reused, nothing is ever deleted."""
+    root = Path(__file__).resolve().parents[1]
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+    from strata_control.engine_component import components_dir
+    components = components_dir(isolated_env(home, {}))
+    engine = components / "engine" / packages.engine_dir.name
+    control = components / "control" / packages.version
+    for src, dest in ((packages.engine_dir, engine), (packages.control_dir, control)):
+        if not dest.exists():
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(src, dest, ignore=shutil.ignore_patterns(".ok"))     # .ok is the download cache's marker, not package content
+    (control.parent / "active.json").write_text(json.dumps({"version": packages.version, "folder": packages.version}), encoding="utf-8")
+    return control
