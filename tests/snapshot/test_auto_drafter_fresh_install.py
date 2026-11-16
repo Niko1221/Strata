@@ -137,6 +137,8 @@ def net_launch(m, s, extra=(), offline=False, setup_disagrees=False):
     try:
         with world.patched(), ExitStack() as st:
             if offline:
+                from strata_control import netpolicy
+                world.setup_said = ["  [X]  " + netpolicy.WORDS["offline"].format(host="huggingface.co", what="the draft layer")]   # tools/mtp_fetch.py's line
                 st.enter_context(mock.patch.object(driver, "setup_fetches_layer", lambda *a, **k: None))
                 st.enter_context(mock.patch.object(drafting_fetch, "online", lambda *a, **k: False))
             if setup_disagrees == "blocked":
@@ -171,6 +173,15 @@ class StartSafetyNet(unittest.TestCase):
                 rec = net_launch(get_machine(mkey), get_set(skey), extra, offline=True, setup_disagrees=disagrees)
                 self.assertNotIn("failed", rec, "no stop")
                 self.assertEqual(drafter(rec), "off")
+                from strata_control import drafting
+                self.assertEqual(rec["notices"].count(drafting.MTP_OFFLINE_NOTE), 1, f"the offline line, once: {rec['notices']}")
+
+    def test_the_offline_line_is_not_said_when_another_drafter_runs_or_off_was_chosen(self):
+        from strata_control import drafting
+        rec = net_launch(get_machine("nv_resident"), get_set("iq3_s"), ("--drafting", "off"), offline=True, setup_disagrees="blocked")
+        self.assertNotIn(drafting.MTP_OFFLINE_NOTE, rec["notices"])
+        rec = net_launch(get_machine("nv_12gb_streaming"), get_set("ud_q4_k_xl"), (), offline=True)          # Auto is DFlash2 there: its drafter runs
+        self.assertNotIn(drafting.MTP_OFFLINE_NOTE, rec["notices"])
 
     def test_a_chosen_off_is_not_fetched_for(self):
         rec = net_launch(get_machine("nv_resident"), get_set("iq3_s"), ("--drafting", "off"), setup_disagrees="blocked")
@@ -189,6 +200,30 @@ class MacSetupFetchesThePickedDrafter(unittest.TestCase):
                     first, = first_launches(get_machine(mkey), s, n=1)
                     self.assertEqual(setup_drafter(first), want, f"setup is told the drafter the start runs: {first['setup_args']}")
                     self.assertEqual("mtp" in first["plan_parts"], want is None, f"plan {first['plan_parts']}")
+
+
+class MacOffFetchesNothing(unittest.TestCase):
+    # DF-REAL on an M5 Max (Q2_0): `--drafting off` on a fresh install fetched the 5.2 GB draft layer (setup_args left --mtp off out on a Mac), the plan said Nothing to download
+    def test_metal_off_on_a_fresh_install(self):
+        from tests.snapshot.matrix import ModelSet
+        q2 = ModelSet("q2_0", "qwen", "Q2_0", "qwen3.8-flash-next-q2_0", ("Qwen3.8-Flash-Next-Q2_0-00001-of-00002.gguf", "Qwen3.8-Flash-Next-Q2_0-00002-of-00002.gguf"))
+        for mkey in ("mac_small", "mac_large"):
+            for s in (get_set("iq3_s"), q2, get_set("ud_q4_k_xl")):
+                with self.subTest(machine=mkey, set=s.key):
+                    world = fresh_world(get_machine(mkey), s)
+                    try:
+                        with world.patched():
+                            rec = drive_launch(world, ("--drafting", "off"), setup_runs=True, fresh=True)
+                        self.assertNotIn("failed", rec)
+                        rec = normalize(rec, world)
+                    finally:
+                        world.close()
+                    a = rec["setup_args"]
+                    self.assertIn("--mtp", a, a)
+                    self.assertEqual(a[a.index("--mtp") + 1], "off", a)
+                    self.assertEqual(rec["fetches"], [], "nothing is fetched")
+                    self.assertNotIn("mtp", rec["plan_parts"])
+                    self.assertEqual(drafter(rec), "off")
 
 
 class SavedOffHolds(unittest.TestCase):
