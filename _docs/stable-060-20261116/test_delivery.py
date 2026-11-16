@@ -1,11 +1,13 @@
 """Synthetic boundaries only: no real profile, installer, model or network."""
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import os
 from pathlib import Path
 import sys
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
@@ -46,6 +48,7 @@ class Boundaries(unittest.TestCase):
         self.delivery.APP = self.root / "installed"
         self.delivery.PRIVATE = self.root / "private"
         self.delivery.USER_ROOTS = (self.root / "user", self.root / "absent")
+        self.windows_root = os.environ.get("SYSTEMROOT", "C:/Windows")
         env = patch.dict(os.environ, {}, clear=True)
         env.start()
         self.addCleanup(env.stop)
@@ -78,6 +81,232 @@ class Boundaries(unittest.TestCase):
             (root / name).mkdir()
             (root / name / "fixture.txt").write_bytes(b"fixture")
         return self.delivery.payload(root)
+
+    def fixture_control_data(self):
+        """Small synthetic tracked blobs; never inspect the real APP or source data."""
+        self.release.ROOT = self.root / "trusted-source"
+        for name in self.delivery.SHIPPED_CONTROL_DATA:
+            data = ("fixture " + name).encode()
+            for path in (self.delivery.APP / name, self.release.ROOT / name.removeprefix("control/")):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(data)
+        vector_name = next(
+            n for n, role in self.delivery.SHIPPED_CONTROL_DATA.items() if role == "controlvector"
+        )
+        folder = Path(vector_name).parent
+        vector = self.delivery.APP / vector_name
+        licence = b"synthetic fixture licence"
+        document = {
+            "schema": 1,
+            "vector": {
+                "file": vector.name,
+                "kind": "controlvector",
+                "default": "off",
+                "bytes": vector.stat().st_size,
+                "sha256": self.release.sha(vector),
+            },
+            "license": {
+                "file": "LICENSE",
+                "name": "Qwen Community License 1.0",
+                "bytes": len(licence),
+                "sha256": hashlib.sha256(licence).hexdigest(),
+            },
+        }
+        for base in (self.delivery.APP / folder, self.release.ROOT / folder.relative_to("control")):
+            (base / "LICENSE").write_bytes(licence)
+            self.write(base / "PROVENANCE.json", document)
+        blobs = {}
+        tracked = {}
+        for path in self.release.ROOT.rglob("*"):
+            if path.is_file():
+                data = path.read_bytes()
+                blob = hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
+                tracked[path.relative_to(self.release.ROOT).as_posix()] = blob
+                blobs[blob] = len(data)
+
+        def git(*args):
+            if args[0] == "ls-files":
+                return args[-1] if args[-1] in tracked else ""
+            if args[0] == "rev-parse":
+                return tracked[args[1].split(":", 1)[1]]
+            if args[0] == "cat-file":
+                return str(blobs[args[-1]])
+            if args[0] == "hash-object":
+                data = Path(args[-1]).read_bytes()
+                return hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
+            raise AssertionError(args)
+
+        for name, replacement in (
+            ("git", git),
+            ("reviewed", lambda commit: self.assertEqual(commit, self.commit)),
+        ):
+            handle = patch.object(self.release, name, side_effect=replacement)
+            handle.start()
+            self.addCleanup(handle.stop)
+        return tracked, git, vector_name
+
+    def test_eleven_named_control_roles_copy_identical_bytes(self):
+        self.fixture_control_data()
+        admitted = self.delivery.reject_app_weights(self.delivery.APP, self.commit)
+        self.assertEqual(len(admitted), 11)
+        self.assertEqual(
+            sorted(row["role"] for row in admitted.values()),
+            sorted(["vocabulary"] * 4 + ["routing-profile"] * 6 + ["controlvector"]),
+        )
+        rows = self.delivery.files(self.delivery.APP)
+        target = self.root / "copied"
+        self.delivery.copy_rows(
+            self.delivery.APP, target, rows, reject_weights=True, shipped_control_data=admitted
+        )
+        self.assertEqual(self.delivery.files(target), rows)
+        for name, identity in admitted.items():
+            self.assertEqual((target / name).read_bytes(), (self.delivery.APP / name).read_bytes())
+            self.assertEqual(identity["sourceCommit"], self.commit)
+        self.assertEqual(admitted[next(n for n in admitted if n.endswith(".gguf"))]["default"], "off")
+
+    def test_synthetic_backup_declares_component_data_and_retains_originals(self):
+        self.fixture_control_data()
+        self.write(self.delivery.APP / "host/package.json", {"version": "0.5.9"})
+        original = self.delivery.files(self.delivery.APP)
+        with patch.object(
+            self.delivery, "extraction", return_value=({"installerSHA256": "a" * 64}, {}, self.root)
+        ), patch.object(self.delivery, "quiescent"), patch.object(
+            self.delivery, "model_identity", return_value={"synthetic": True}
+        ), patch.object(
+            self.delivery, "private_directory", side_effect=lambda path: path.mkdir(parents=True)
+        ), patch.object(
+            self.release, "command", return_value=""
+        ), patch.object(
+            self.delivery.shutil, "disk_usage", return_value=argparse.Namespace(free=100 * self.release.GIB)
+        ):
+            receipt = self.delivery.backup(
+                argparse.Namespace(attempt="r1", reviewed_commit=self.commit), self.root
+            )
+        self.assertFalse(receipt["modelsCopied"])
+        self.assertIn("inference-model", receipt["modelsCopiedScope"])
+        self.assertEqual(len(receipt["shippedControlDataCopied"]), 11)
+        self.assertTrue(receipt["rollbackRetained"])
+        self.assertEqual(self.delivery.files(Path(receipt["backup"]) / "installed-app"), original)
+        self.assertEqual(self.delivery.files(self.delivery.APP), original)
+
+    def test_allowlist_is_exact_named_roles_not_suffix_or_tracked_growth(self):
+        tracked, _, _ = self.fixture_control_data()
+        self.assertEqual(
+            set(self.delivery.SHIPPED_CONTROL_DATA),
+            {
+                "control/data/" + name
+                for name in (
+                    "draft_vocab.bin",
+                    "draft_vocab_cyrillic.bin",
+                    "draft_vocab_en.bin",
+                    "draft_vocab_fr.bin",
+                    "expert-profile.bin",
+                    "expert-profile-coder.bin",
+                    "expert-profile-sycl.bin",
+                    "dsv41/profile-2.00.bin",
+                    "dsv41/profile-2.25.bin",
+                    "dsv41/profile-coder.bin",
+                    "experimental-speed-projection/Qwen3.8-Flash-Next-experimental-speed-projection.gguf",
+                )
+            },
+        )
+        for name in ("control/data/user.gguf", "control/data/user.bin", "other/draft_vocab.bin"):
+            with self.subTest(name=name):
+                candidate = self.delivery.APP / name
+                candidate.parent.mkdir(parents=True, exist_ok=True)
+                candidate.write_bytes(b"private model")
+                tracked[name.removeprefix("control/")] = "b" * 40
+                with patch.object(
+                    self.release, "sha", side_effect=AssertionError("candidate hash")
+                ), patch.object(
+                    self.release, "reviewed", side_effect=AssertionError("late metadata refusal")
+                ):
+                    with self.assertRaisesRegex(RuntimeError, "weights refused before backup"):
+                        self.delivery.reject_app_weights(self.delivery.APP, self.commit)
+                candidate.unlink()
+
+    def test_known_wrong_size_refuses_before_hash_and_same_size_edit_refuses_after_bounded_hash(self):
+        self.fixture_control_data()
+        name = "control/data/draft_vocab.bin"
+        actual = self.delivery.APP / name
+        original = actual.read_bytes()
+        actual.write_bytes(original + b"extra")
+        with patch.object(self.release, "sha", side_effect=AssertionError("content hash")):
+            with self.assertRaisesRegex(RuntimeError, "before hashing"):
+                self.delivery.bounded_component_match(actual, name.removeprefix("control/"), self.commit)
+        actual.write_bytes(b"X" * len(original))
+        with patch.object(self.release, "sha", wraps=self.release.sha) as hashed:
+            with self.assertRaisesRegex(RuntimeError, "bytes differ"):
+                self.delivery.reject_app_weights(self.delivery.APP, self.commit)
+            self.assertIn(actual, [call.args[0] for call in hashed.call_args_list])
+        self.assertFalse((self.root / "copied").exists())
+
+    def test_untracked_or_oversized_source_refused_before_content_hash(self):
+        tracked, _, _ = self.fixture_control_data()
+        relative = "data/draft_vocab.bin"
+        del tracked[relative]
+        with patch.object(self.release, "sha", side_effect=AssertionError("content hash")):
+            with self.assertRaisesRegex(RuntimeError, "not Git tracked"):
+                self.delivery.reject_app_weights(self.delivery.APP, self.commit)
+        (self.release.ROOT / relative).write_bytes(b"x" * (self.delivery.SHIPPED_DATA_LIMIT + 1))
+        with self.assertRaisesRegex(RuntimeError, "bounded size"):
+            self.delivery.reject_app_weights(self.delivery.APP, self.commit)
+
+    def test_vector_provenance_or_license_change_refused(self):
+        _, _, name = self.fixture_control_data()
+        folder = self.delivery.APP / Path(name).parent
+        for member in ("PROVENANCE.json", "LICENSE"):
+            with self.subTest(member=member):
+                path = folder / member
+                original = path.read_bytes()
+                path.write_bytes(b"X" * len(original))
+                with self.assertRaisesRegex(RuntimeError, "bytes differ"):
+                    self.delivery.reject_app_weights(self.delivery.APP, self.commit)
+                path.write_bytes(original)
+        real_load = self.release.load
+        for field, value in (
+            ("kind", "inference-model"),
+            ("default", "on"),
+            ("bytes", 999),
+            ("sha256", "0" * 64),
+        ):
+
+            def changed(path):
+                document = real_load(path)
+                document["vector"][field] = value
+                return document
+
+            with self.subTest(field=field), patch.object(self.release, "load", side_effect=changed):
+                with self.assertRaisesRegex(RuntimeError, "provenance differs"):
+                    self.delivery.reject_app_weights(self.delivery.APP, self.commit)
+
+    def test_component_reparse_and_source_drift_refused(self):
+        _, git, _ = self.fixture_control_data()
+        relative = "data/draft_vocab.bin"
+        source = self.release.ROOT / relative
+        original_no_links = self.release.no_links
+
+        def reparse(path):
+            if path == source:
+                raise RuntimeError("Synthetic reparse refused")
+            return original_no_links(path)
+
+        with patch.object(self.release, "no_links", side_effect=reparse):
+            with self.assertRaisesRegex(RuntimeError, "reparse"):
+                self.delivery.reject_app_weights(self.delivery.APP, self.commit)
+        checks = 0
+
+        def drift(*args):
+            nonlocal checks
+            if args[0] == "hash-object" and Path(args[-1]) == source:
+                checks += 1
+                if checks == 2:
+                    return "b" * 40
+            return git(*args)
+
+        with patch.object(self.release, "git", side_effect=drift):
+            with self.assertRaisesRegex(RuntimeError, "identity changed"):
+                self.delivery.reject_app_weights(self.delivery.APP, self.commit)
 
     def test_default_controllers_never_write_spawn_or_fetch(self) -> None:
         for controller, argv in (
@@ -249,26 +478,64 @@ class Boundaries(unittest.TestCase):
             self.delivery.quiescent()
 
     def test_private_acl_is_checked_before_accepting_backup_directory(self) -> None:
-        sid = "S-1-5-21-123-456-789-1001"
-        acl = {
-            "protected": True,
-            "rules": [
-                {"sid": owner, "allow": True, "inherited": False, "rights": 2032127, "inheritance": 3}
-                for owner in (sid, "S-1-5-18")
-            ],
-        }
         with patch.dict(os.environ, {"SYSTEMROOT": str(self.root / "Windows")}), patch.object(
-            self.release, "command", side_effect=[f'"fixture","{sid}"', "", json.dumps(acl)]
+            self.release, "command", return_value='{"verified":true}'
         ):
-            self.delivery.private_directory(self.root / "acl-good")
-        acl["rules"].append(
-            {"sid": "S-1-1-0", "allow": True, "inherited": False, "rights": 2032127, "inheritance": 3}
-        )
+            self.delivery.private_directory(self.delivery.PRIVATE / "backup-r1")
         with patch.dict(os.environ, {"SYSTEMROOT": str(self.root / "Windows")}), patch.object(
-            self.release, "command", side_effect=[f'"fixture","{sid}"', "", json.dumps(acl)]
+            self.release, "command", return_value='{"verified":false}'
         ), self.assertRaisesRegex(RuntimeError, "ACL verification"):
-            self.delivery.private_directory(self.root / "acl-bad")
-        self.assertEqual(list((self.root / "acl-bad").iterdir()), [])
+            self.delivery.private_directory(self.delivery.PRIVATE / "backup-r2")
+        self.assertEqual(list((self.delivery.PRIVATE / "backup-r2").iterdir()), [])
+
+    def test_private_acl_refuses_existing_nonempty_outside_and_reparse_before_command(self):
+        target = self.delivery.PRIVATE / "backup-r1"
+        target.mkdir(parents=True)
+        original = target / "private.txt"
+        original.write_bytes(b"preserve")
+        with patch.object(self.release, "command", side_effect=AssertionError("ACL mutation")):
+            for path in (target, self.root / "backup-r1", self.delivery.PRIVATE / "unexpected"):
+                with self.subTest(path=path), self.assertRaises(RuntimeError):
+                    self.delivery.private_directory(path)
+            with patch.object(self.release, "no_links", side_effect=RuntimeError("Synthetic reparse")):
+                with self.assertRaisesRegex(RuntimeError, "reparse"):
+                    self.delivery.private_directory(self.delivery.PRIVATE / "backup-r2")
+        self.assertEqual(original.read_bytes(), b"preserve")
+        self.assertFalse((self.delivery.PRIVATE / "backup-r2").exists())
+
+    def test_private_acl_live_h_empty_fixture_removes_explicit_broad_grant(self):
+        # The only live ACL mutation is a fresh synthetic owned H: directory.
+        with tempfile.TemporaryDirectory(
+            prefix="delivery-acl-", dir="H:/Strata/evidence/upstream-sync-20261116/temp"
+        ) as temp:
+            self.delivery.PRIVATE = Path(temp).resolve()
+            target = self.delivery.PRIVATE / "backup-r1"
+            original_command = self.release.command
+
+            def inject_broad_then_apply(args):
+                subprocess.run(
+                    [
+                        str(Path(self.windows_root) / "System32/icacls.exe"),
+                        str(target),
+                        "/grant",
+                        "*S-1-1-0:(OI)(CI)F",
+                    ],
+                    check=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                )
+                return original_command(args)
+
+            with patch.dict(os.environ, {"SYSTEMROOT": self.windows_root}), patch.object(
+                self.release, "command", side_effect=inject_broad_then_apply
+            ):
+                self.delivery.private_directory(target)
+            self.assertEqual(list(target.iterdir()), [])
+            # Success requires the production readback's exact two-identity DACL;
+            # otherwise private_directory raises and no fixture payload is copied.
+            (target / "synthetic.txt").write_bytes(b"fixture")
+            self.assertEqual((target / "synthetic.txt").read_bytes(), b"fixture")
 
     def test_quiescence_refuses_access_denied(self) -> None:
         import psutil

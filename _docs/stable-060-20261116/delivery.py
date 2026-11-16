@@ -7,10 +7,9 @@ Job. No process stop, model unload, setting change or publication is performed.
 from __future__ import annotations
 
 import argparse
-import csv
+import base64
 import hashlib
 import importlib.util
-import io
 import json
 import logging
 import os
@@ -38,6 +37,20 @@ USER_ROOTS = (
 MANAGED = ("control", "host", "node", "harness", "engine-bundle", "local-backends", "notices")
 WEIGHTS = {".gguf", ".safetensors", ".pack", ".weights", ".q36epk"}
 INSTALLER = "Strata-0.6.0-windows-x64-setup.exe"
+SHIPPED_CONTROL_DATA = {
+    "control/data/draft_vocab.bin": "vocabulary",
+    "control/data/draft_vocab_cyrillic.bin": "vocabulary",
+    "control/data/draft_vocab_en.bin": "vocabulary",
+    "control/data/draft_vocab_fr.bin": "vocabulary",
+    "control/data/expert-profile.bin": "routing-profile",
+    "control/data/expert-profile-coder.bin": "routing-profile",
+    "control/data/expert-profile-sycl.bin": "routing-profile",
+    "control/data/dsv41/profile-2.00.bin": "routing-profile",
+    "control/data/dsv41/profile-2.25.bin": "routing-profile",
+    "control/data/dsv41/profile-coder.bin": "routing-profile",
+    "control/data/experimental-speed-projection/Qwen3.8-Flash-Next-experimental-speed-projection.gguf": "controlvector",
+}
+SHIPPED_DATA_LIMIT = 1024**2
 QA_CHECKS = {
     "installed-host-shell-renderer-identity",
     "btw-typed-during-main-stream",
@@ -221,35 +234,65 @@ def quiescent() -> None:
 
 
 def private_directory(path: Path) -> None:
+    release.require(
+        path.is_absolute()
+        and path.parent == PRIVATE
+        and re.fullmatch(r"(?:backup|original-profile)-r[1-9][0-9]*", path.name),
+        "Private ACL target must be an approved attempt child",
+    )
     release.no_links(path)
     release.require(not path.exists(), "Preserve private backup; fresh attempt required")
     path.mkdir(parents=True)
-    who = release.command(["whoami.exe", "/user", "/fo", "csv", "/nh"])
-    sid = next(csv.reader(io.StringIO(who)))[1]
-    release.require(re.fullmatch(r"S-1-\d+(?:-\d+)+", sid), "Invalid current owner SID")
-    release.command(
-        ["icacls.exe", path, "/inheritance:r", "/grant:r", f"*{sid}:(OI)(CI)F", "*S-1-5-18:(OI)(CI)F"],
-        quiet=True,
-    )
-    literal = str(path).replace("'", "''")
-    script = (
-        "$a=Get-Acl -LiteralPath '" + literal + "';"
-        "$rules=@($a.Access|ForEach-Object{[pscustomobject]@{"
-        "sid=$_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value;"
-        "allow=($_.AccessControlType -eq 'Allow');inherited=$_.IsInherited;"
-        "rights=[int]$_.FileSystemRights;inheritance=[int]$_.InheritanceFlags}});"
-        "[pscustomobject]@{protected=$a.AreAccessRulesProtected;rules=$rules}|ConvertTo-Json -Depth 4 -Compress"
-    )
+    release.no_links(path)
+    release.require(not any(path.iterdir()), "Private ACL target must remain empty")
+    # Encode data only; never evaluate a path as PowerShell source. Access-only
+    # .NET persistence avoids Set-Acl's unnecessary audit/owner privilege request.
+    encoded = base64.b64encode(str(path).encode()).decode()
+    parent = base64.b64encode(str(PRIVATE).encode()).decode()
+    script = r"""
+$ErrorActionPreference='Stop'
+$target=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('TARGET64'))
+$parent=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('PARENT64'))
+$sid=[Security.Principal.WindowsIdentity]::GetCurrent().User
+$system=[Security.Principal.SecurityIdentifier]::new('S-1-5-18')
+$directory=[IO.DirectoryInfo]::new($target)
+if ($directory.FullName -ne $target -or $directory.Parent.FullName -ne $parent -or
+    $directory.Name -notmatch '^(backup|original-profile)-r[1-9][0-9]*$') { throw 'Private target invalid' }
+for ($item=$directory; $null -ne $item; $item=$item.Parent) {
+    if (-not $item.Exists -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Private path invalid' }
+}
+if (@($directory.EnumerateFileSystemInfos()).Count -ne 0) { throw 'Private target nonempty' }
+$owner=[IO.Directory]::GetAccessControl($target,[Security.AccessControl.AccessControlSections]::Owner)
+if ($owner.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $sid.Value) { throw 'Private owner differs' }
+$acl=[IO.Directory]::GetAccessControl($target,[Security.AccessControl.AccessControlSections]::Access)
+$acl.SetAccessRuleProtection($true,$false)
+foreach ($rule in @($acl.Access)) { [void]$acl.RemoveAccessRuleSpecific($rule) }
+foreach ($principal in @($sid,$system)) {
+    $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+        $principal,'FullControl','ContainerInherit,ObjectInherit','None','Allow'))
+}
+if (@($directory.EnumerateFileSystemInfos()).Count -ne 0) { throw 'Private target changed' }
+[IO.Directory]::SetAccessControl($target,$acl)
+$verified=[IO.Directory]::GetAccessControl($target,[Security.AccessControl.AccessControlSections]::Access)
+$rules=@($verified.Access)
+if (-not $verified.AreAccessRulesProtected -or $rules.Count -ne 2) { throw 'Private ACL verification failed' }
+$owners=@()
+foreach ($rule in $rules) {
+    $identity=$rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
+    $owners += $identity
+    if ($identity -notin @($sid.Value,$system.Value) -or $rule.IsInherited -or
+        $rule.AccessControlType -ne 'Allow' -or [int]$rule.FileSystemRights -ne 2032127 -or
+        [int]$rule.InheritanceFlags -ne 3 -or [int]$rule.PropagationFlags -ne 0) { throw 'Private ACL verification failed' }
+}
+if (@($owners | Select-Object -Unique).Count -ne 2) { throw 'Private ACL identities differ' }
+if (@($directory.EnumerateFileSystemInfos()).Count -ne 0) { throw 'Private target changed' }
+'{"verified":true}'
+""".replace("TARGET64", encoded).replace("PARENT64", parent)
     powershell = Path(os.environ["SYSTEMROOT"]) / "System32/WindowsPowerShell/v1.0/powershell.exe"
     acl = json.loads(release.command([powershell, "-NoProfile", "-NonInteractive", "-Command", script]))
+    release.no_links(path)
     release.require(
-        acl.get("protected") is True
-        and len(acl.get("rules", [])) == 2
-        and {row["sid"] for row in acl["rules"]} == {sid, "S-1-5-18"}
-        and all(
-            row["allow"] and not row["inherited"] and row["rights"] == 2032127 and row["inheritance"] == 3
-            for row in acl["rules"]
-        ),
+        acl == {"verified": True} and not any(path.iterdir()),
         "Private backup ACL verification failed; no private bytes copied",
     )
 
@@ -264,21 +307,127 @@ def app_weight_name(name: str) -> bool:
     )
 
 
-def reject_app_weights(root: Path) -> None:
-    """Metadata-only admission: never read, copy, move or delete weight bytes."""
+def source_metadata(relative: str, commit: str) -> tuple[Path, int, str]:
+    """Require a small regular source file tracked by the reviewed commit."""
+    source = release.ROOT / relative
+    release.no_links(source)
+    release.require(source.is_file(), "Tracked component source absent")
+    size = source.stat().st_size
+    release.require(0 < size <= SHIPPED_DATA_LIMIT, "Component source exceeds bounded size")
+    release.require(
+        release.git("ls-files", "--error-unmatch", "--", relative) == relative,
+        "Component source is not Git tracked",
+    )
+    blob = release.git("rev-parse", commit + ":" + relative)
+    release.require(re.fullmatch(r"[a-f0-9]{40}", blob), "Reviewed component blob absent")
+    release.require(int(release.git("cat-file", "-s", blob)) == size, "Reviewed source size differs")
+    return source, size, blob
+
+
+def bounded_component_match(actual: Path, relative: str, commit: str) -> dict:
+    source, size, blob = source_metadata(relative, commit)
+    release.no_links(actual)
+    release.require(
+        actual.is_file() and actual.stat().st_size == size,
+        "Known component size differs; refused before hashing",
+    )
+
+    def identity(path):
+        item = path.stat()
+        return item.st_dev, item.st_ino, item.st_size, item.st_mtime_ns, item.st_ctime_ns
+
+    before = (identity(source), identity(actual))
+    release.require(release.git("hash-object", "--", str(source)) == blob, "Tracked component source changed")
+    expected = release.sha(source)
+    release.require(release.sha(actual) == expected, "Known component bytes differ; copy refused")
+    release.require(
+        source.stat().st_size == actual.stat().st_size == size
+        and release.git("hash-object", "--", str(source)) == blob
+        and before == (identity(source), identity(actual)),
+        "Component identity changed during bounded validation",
+    )
+    release.no_links(source)
+    release.no_links(actual)
+    return {"bytes": size, "sha256": expected, "source": relative, "sourceBlob": blob, "sourceCommit": commit}
+
+
+def vector_provenance(root: Path, name: str, identity: dict, commit: str) -> dict:
+    folder = Path(name).parent
+    relative = (Path("data") / folder.relative_to("control/data") / "PROVENANCE.json").as_posix()
+    provenance = bounded_component_match(root / folder / "PROVENANCE.json", relative, commit)
+    document = release.load(root / folder / "PROVENANCE.json")
+    release.require(
+        release.sha(root / folder / "PROVENANCE.json") == provenance["sha256"],
+        "Control-vector provenance changed during read",
+    )
+    vector, licence = document.get("vector", {}), document.get("license", {})
+    release.require(
+        document.get("schema") == 1
+        and vector.get("kind") == "controlvector"
+        and vector.get("file") == Path(name).name
+        and vector.get("default") == "off"
+        and vector.get("bytes") == identity["bytes"]
+        and vector.get("sha256") == identity["sha256"],
+        "Control-vector provenance differs",
+    )
+    release.require(
+        licence.get("file") == "LICENSE" and licence.get("name") == "Qwen Community License 1.0",
+        "Control-vector licence declaration differs",
+    )
+    licence_source = (Path(relative).parent / "LICENSE").as_posix()
+    checked = bounded_component_match(root / folder / "LICENSE", licence_source, commit)
+    release.require(
+        licence.get("bytes") == checked["bytes"] and licence.get("sha256") == checked["sha256"],
+        "Control-vector licence identity differs",
+    )
+    return {"provenance": provenance, "license": checked, "default": "off"}
+
+
+def reject_app_weights(root: Path, commit: str | None = None) -> dict:
+    """Reject unknown weights without reading them; hash only eleven bounded managed roles."""
     release.no_links(root)
     release.require(root.is_dir(), "Installed app absent")
+    candidates, seen = [], set()
     for directory, dirs, names in os.walk(root, followlinks=False):
         for name in dirs + names:
             path = Path(directory) / name
             release.no_links(path)
+            relative = path.relative_to(root).as_posix()
             release.require(
-                not app_weight_name(path.relative_to(root).as_posix()),
+                relative.casefold() not in seen and ":" not in relative, "Case collision or ADS in app"
+            )
+            seen.add(relative.casefold())
+            if not app_weight_name(relative):
+                continue
+            release.require(
+                root == APP and relative in SHIPPED_CONTROL_DATA and path.is_file(),
                 "App-resident model or pack weights refused before backup; originals preserved",
             )
+            candidates.append(relative)
+    if not candidates:
+        return {}
+    release.reviewed(commit)
+    identities = {}
+    for name in sorted(candidates):
+        relative = (Path("data") / Path(name).relative_to("control/data")).as_posix()
+        identities[name] = {
+            "role": SHIPPED_CONTROL_DATA[name],
+            **bounded_component_match(root / name, relative, commit),
+        }
+        if SHIPPED_CONTROL_DATA[name] == "controlvector":
+            identities[name].update(vector_provenance(root, name, identities[name], commit))
+    release.reviewed(commit)
+    return identities
 
 
-def copy_rows(source: Path, target: Path, rows: dict, *, reject_weights: bool = False) -> None:
+def copy_rows(
+    source: Path,
+    target: Path,
+    rows: dict,
+    *,
+    reject_weights: bool = False,
+    shipped_control_data: dict | None = None,
+) -> None:
     release.no_links(source)
     release.no_links(target)
     release.require(not target.exists(), "Fresh copy required")
@@ -287,9 +436,15 @@ def copy_rows(source: Path, target: Path, rows: dict, *, reject_weights: bool = 
         release.require(
             not relative.anchor and ".." not in relative.parts and ":" not in name, "Unsafe inventory member"
         )
-        release.require(
-            not reject_weights or not app_weight_name(name), "Model weights refused before app copy"
-        )
+        if reject_weights and app_weight_name(name):
+            admitted = (shipped_control_data or {}).get(name, {})
+            release.require(
+                source == APP
+                and name in SHIPPED_CONTROL_DATA
+                and admitted.get("role") == SHIPPED_CONTROL_DATA[name]
+                and {key: admitted.get(key) for key in ("sha256", "bytes")} == rows[name],
+                "Model weights refused before app copy",
+            )
     target.mkdir(parents=True)
     for name, row in rows.items():
         relative = Path(name)
@@ -395,7 +550,7 @@ def extract(args: argparse.Namespace, work: Path) -> dict:
 def backup(args: argparse.Namespace, work: Path) -> dict:
     build, extracted, _ = extraction(args)
     quiescent()
-    reject_app_weights(APP)
+    shipped = reject_app_weights(APP, getattr(args, "reviewed_commit", None))
     release.require(
         release.load(APP / "host/package.json").get("version") == "0.5.9",
         "Fresh 0.5.9 baseline observation required",
@@ -409,9 +564,10 @@ def backup(args: argparse.Namespace, work: Path) -> dict:
     release.require(shutil.disk_usage(root).free > size + 10 * release.GIB, "Backup disk reserve")
     release.save(root / "source-inventory.json", {"user": users, "installed": old})
     release.require(
-        not any(app_weight_name(name) for name in old), "App weight inventory changed; no payload copied"
+        reject_app_weights(APP, args.reviewed_commit) == shipped,
+        "App component admission changed; no payload copied",
     )
-    copy_rows(APP, root / "installed-app", old, reject_weights=True)
+    copy_rows(APP, root / "installed-app", old, reject_weights=True, shipped_control_data=shipped)
     for index, (source, rows) in enumerate(users.items()):
         if rows is not None:
             copy_rows(Path(source), root / f"user-{index}", rows)
@@ -419,6 +575,9 @@ def backup(args: argparse.Namespace, work: Path) -> dict:
     release.require(
         user_files() == users and files(APP) == old and model_identity() == model,
         "Source changed during backup",
+    )
+    release.require(
+        reject_app_weights(APP, args.reviewed_commit) == shipped, "Shipped Control data changed during backup"
     )
     release.command(
         [
@@ -436,6 +595,8 @@ def backup(args: argparse.Namespace, work: Path) -> dict:
         "inventorySHA256": release.sha(root / "inventory.json"),
         "installerSHA256": build["installerSHA256"],
         "modelsCopied": False,
+        "modelsCopiedScope": "No inference-model or user-pack weights; declared component data listed separately",
+        "shippedControlDataCopied": shipped,
         "rollbackRetained": True,
         "observedBaselineVersion": "0.5.9",
     }
