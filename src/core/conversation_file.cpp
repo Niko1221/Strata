@@ -1,5 +1,11 @@
 #include "strata/core/conversation_file.hpp"
 
+#if defined(__APPLE__)
+#include <crt_externs.h>     // _NSGetEnviron(): the environment of a macOS process, valid inside dylibs too
+#elif !defined(_WIN32)
+extern "C" char** environ;   // glibc declares it inside __BEGIN_DECLS; <cstdlib> has _environ on Windows
+#endif
+
 #include <algorithm>
 #include <bit>
 #include <cerrno>
@@ -875,6 +881,47 @@ void SessionIdentityBuilder::f64(const std::string& tag, double v) {
 }
 void SessionIdentityBuilder::bytes(const std::string& tag, const void* data, size_t n) { field(tag, 'b', data, n); }
 
+// runtime-only STRATA_* names (#5379): the park's placement variables only say *where* the bytes live - a parked image
+// is the same bytes with any of them (DETAILS.md), - and a report or trace knob changes what prints,  Everything else
+// that starts with STRATA_ joins the config fingerprint - the kernel layer picks its fast paths from these at
+// load time, and the engine keeps no registry of which: STRATA_HC_Q8 changes which bytes exist, STRATA_ROUTE_TAIL_SKIP
+// swaps the scorer, and a new one lands every train.  Names the engine itself sets at start (auto-injected
+// defaults) count too - the resolved environment is the identity, set or inherited.  The prefix compare is
+// case-sensitive; on Windows the CRT's getenv matches case-insensitively, so a lowercase-set knob would move a
+// fast path yet stay out of the fingerprint - a documented limit, as everywhere the engine reads STRATA_*.
+static bool session_env_excluded(const std::string& name) {
+    const auto ends = [&name](const char* s) {
+        const size_t n = std::strlen(s);
+        return name.size() >= n && name.compare(name.size() - n, n, s) == 0;
+    };
+    return name.rfind("STRATA_PARK_", 0) == 0          // park placement; the park tag hashes these itself
+        || name == "STRATA_MANIFEST"                     // the run manifest's output path (a diagnostic file)
+        || ends("_DUMP") || ends("_TRACE") || ends("_STATS")
+        || ends("_PROF") || ends("_PROFILE")
+        || ends("_LOG");                                 // reports and traces (STRATA_LOGPOS forces tokens: it COUNTS)
+}
+
+void session_env_identity(std::vector<std::pair<std::string, std::string>>& out) {
+    out.clear();
+    char** env =
+#if defined(_WIN32)
+        _environ;
+#elif defined(__APPLE__)
+        *(_NSGetEnviron());
+#else
+        ::environ;
+#endif
+    for (; env != nullptr && *env != nullptr; ++env) {
+        const char* line = *env;
+        const char* sep = std::strchr(line, '=');
+        if (sep == nullptr) continue;
+        std::string name(line, static_cast<size_t>(sep - line));
+        if (name.rfind("STRATA_", 0) != 0 || session_env_excluded(name)) continue;
+        out.emplace_back(std::move(name), std::string(sep + 1));
+    }
+    std::sort(out.begin(), out.end());   // the environment's own order is process noise; the identity is the SET
+}
+
 uint64_t session_config_fingerprint(const SessionConfig& c) {
     SessionIdentityBuilder b(0x434f4e4649473031ull);   // "CONFIG01"
     b.str("engine", c.engine_version);
@@ -896,6 +943,10 @@ uint64_t session_config_fingerprint(const SessionConfig& c) {
     b.u64("cvec", c.cvec);
     b.u64("switches", c.switches.size());
     for (const auto& [name, value] : c.switches) b.i64("switch." + name, value);
+    b.u64("env", c.env.size());                       // #5379: the fast-path environment, sorted
+    for (const auto& [name, value] : c.env) b.str("env." + name, value);
+    b.u64("devices", c.devices.size());               // #5379: the device plan in stage order - order matters
+    for (size_t i = 0; i < c.devices.size(); ++i) b.str("device." + std::to_string(i), c.devices[i]);
     return b.digest();
 }
 
