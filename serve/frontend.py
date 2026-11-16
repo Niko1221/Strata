@@ -692,7 +692,10 @@ def anthropic_to_messages(req: dict, think_unasked: bool = True) -> tuple[list[d
             elif kind in IMAGE_PARTS:
                 parts.append(block)
             elif kind == "thinking":
-                reasoning.append(block.get("thinking", ""))
+                thinking = block.get("thinking", "")
+                if not isinstance(thinking, str):     # a non-string value crashed "".join(reasoning) below; name the
+                    raise ValueError(f"messages[{i}].content[{j}].thinking must be a string")   # field, as text (#6098)
+                reasoning.append(thinking)
             elif kind == "tool_use":
                 calls.append({"function": {"name": block.get("name"), "arguments": tool_arguments(block.get("input"))},
                               "_call_id": block.get("id")})
