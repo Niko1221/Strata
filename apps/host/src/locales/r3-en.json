@@ -1,6 +1,6 @@
 {
  "r3_01": "Needs an engine update",
- "r3_02": "SSD streaming · will run slower",
+ "r3_02": "may run slower",
  "r3_03": "This much context takes about {0} GB of graphics memory and leaves little room for the model on this card. Strata will try it; if it does not start, choose a shorter context.",
  "r3_04": "Working · {0}",
  "r3_05": "{0} chats working",

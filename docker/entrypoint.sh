@@ -12,7 +12,7 @@
 #   MODEL_PATH    GGUF files you already have, a folder or one .gguf, inside the container (mount it read-only)
 #   ALLOW_DOWNLOAD  1: go on and download the model although model files of the older layout (/data/models) were left unread (default: stop)
 #   CONTEXT       32k, 64k, 128k, 256k or a number of tokens
-#   PARALLEL      requests answered at the same time, 1 to 8 (empty: fit to the card; DeepSeek: one at a time)
+#   PARALLEL      requests answered at the same time, 1 to 8 (empty: fit to the card)
 #   VISION        off | on | gpu | cpu  (pictures; the picture reader file is downloaded with the model)
 #   KV            int8 | q4_0 | k8v4 | fp16  (conversation memory format)
 #   GPU / GPUS    card numbers, e.g. 0 or 0,1 (empty or "all": the engine's choice)
@@ -56,10 +56,6 @@ if [ "$#" -gt 0 ] && [ "$1" != "run" ] && [ "$1" != "serve" ]; then
 fi
 
 mkdir -p /data/state /data/home /data/install /data/Strata-data /run 2>/dev/null || die "/data is not writable. Mount a volume there: -v strata-data:/data"
-# llama.cpp at the pinned commit is part of the image: link it into the install folder, so the first start fetches nothing from GitHub
-if [ -d /opt/strata/seed/third_party/llama.cpp ] && [ ! -e /data/install/third_party/llama.cpp ]; then
-  mkdir -p /data/install/third_party && ln -s /opt/strata/seed/third_party/llama.cpp /data/install/third_party/llama.cpp
-fi
 if ! grep -q " /data " /proc/self/mountinfo 2>/dev/null; then
   warn "/data is not a volume, so the model and your settings are lost when this container is removed. Add: -v strata-data:/data"
 fi

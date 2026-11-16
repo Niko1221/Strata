@@ -116,7 +116,7 @@ test('staging refuses a module hardlinked to another copy', t => {
 });
 
 test('patching a disposable copy leaves the installed original hash unchanged', {
-  skip: !process.env.STRATA_TEST_PI_AI_DIR,
+  skip: !process.env.STRATA_TEST_PI_AI_DIR && 'STRATA_TEST_PI_AI_DIR is not set (the Harness AI package folder)',
 }, t => {
   const installed = join(process.env.STRATA_TEST_PI_AI_DIR, 'dist', 'api', 'simple-options.js');
   const before = sha256(readFileSync(installed));

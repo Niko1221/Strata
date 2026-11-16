@@ -92,6 +92,17 @@ class WheelLocks(unittest.TestCase):
                 self.assertNotIn("cmake", names)             # build tools never ship in the bundle
                 self.assertNotIn("ninja", names)
 
+    def test_pillow_is_the_patched_release_everywhere_it_is_pinned(self):
+        """#4220: 12.3.0's bundled OpenJPEG has a heap overflow (GHSA-78g4-xqwv-q3g8, fixed in 13.0.0). Pillow 13 needs Python 3.11, so
+        requirements.txt keeps 12.3.0 for 3.10 only; every hash-locked bundle (Python 3.12) carries 13.0.0 or later."""
+        lines = [l.split(" #")[0].strip() for l in (ROOT / "requirements.txt").read_text(encoding="utf-8").splitlines()]
+        pillow = [l for l in lines if l.lower().startswith("pillow")]
+        self.assertEqual(sorted(pillow), ['pillow==12.3.0; python_version < "3.11"', 'pillow==13.0.0; python_version >= "3.11"'])
+        for lock in self.locks():
+            with self.subTest(lock.name):
+                version = pt.lock_names(lock)["pillow"]
+                self.assertGreaterEqual(tuple(int(x) for x in version.split(".")), (13, 0, 0), version)
+
     def test_the_build_installs_with_hash_checking_and_no_resolution(self):
         text = (ROOT / "packaging" / "package_terminal.py").read_text(encoding="utf-8")
         for flag in ("--require-hashes", "--no-deps", "--only-binary=:all:"):

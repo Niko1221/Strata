@@ -97,11 +97,31 @@ def _sequence_findall(patterns, text: str) -> list[str]:
     return pieces
 
 
+class UnknownPreTokenizer(ValueError):
+    """The model names a pre-tokenizer type this file has no splitting rule for."""
+
+
+def pre_tokenizer_kind(pre) -> str | None:
+    """The splitting rule `pre` (the GGUF's tokenizer.ggml.pre, or a pack's tokenizer.json "pre") stands for: "qwen35", "deepseek3", or
+    None for a type this file does not know.  An empty or missing value is the qwen35 default, as it always was."""
+    p = "qwen35" if pre is None or pre == "" else str(pre)
+    if p == "qwen35":
+        return "qwen35"
+    if p.startswith("deepseek"):
+        return "deepseek3"
+    return None
+
+
 class Tokenizer:
     def __init__(self, tokens: list[str], merges: list[str], token_types: list[int] | None = None,
                  pre: str = "qwen35", special_ids: dict[str, int] | None = None):
         self.tokens = tokens
         self.pre = pre
+        if pre_tokenizer_kind(pre) is None:
+            # Not a fallback: another model's pre-tokenizer splits text differently, so encoding with the qwen35 rule would
+            # change every prompt without any error (llama.cpp has one rule per `tokenizer.ggml.pre` type for the same reason).
+            raise UnknownPreTokenizer("This model splits text with a rule Strata doesn't have yet (%r), so it isn't loaded: "
+                                      "running it with the wrong rule would change what it reads." % (pre,))
         self.token_types = token_types
         self.special_ids = special_ids or {}
         self.ids = {t: i for i, t in enumerate(tokens)}
@@ -119,7 +139,7 @@ class Tokenizer:
             if parts[0] not in self.ids or parts[1] not in self.ids:
                 raise ValueError("merge %d names a token outside the vocabulary: %r" % (i, m))
             self.ranks[(parts[0], parts[1])] = i
-        if str(pre).startswith("deepseek"):
+        if pre_tokenizer_kind(pre) == "deepseek3":
             seq = [regex.compile(x) for x in DEEPSEEK3_PATTERNS]
             self._split = lambda text: _sequence_findall(seq, text)
         else:

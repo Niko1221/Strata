@@ -22,10 +22,12 @@
 #include <cstdlib>
 #include <mutex>
 
+#include "strata/core/geometry.hpp"
+
 namespace strata::prefill {
 namespace {
 
-constexpr int S = 128, HK = 16, HV = 48, C = 10240;  // the geometry of src/prefill/kernels.cu
+constexpr int S = strata::core::kCompiledGeometry.ssm_state_size, HK = strata::core::kCompiledGeometry.ssm_k_heads, HV = strata::core::kCompiledGeometry.ssm_v_heads, C = strata::core::kCompiledGeometry.ssm_conv_channels;  // as src/prefill/kernels.cu
 constexpr int CH = 64;                               // tokens per chunk (the reference's chunk)
 constexpr int NS = 32;                               // value columns per fwd CTA
 constexpr int NSE = S / NS;                          // 4 slices per head

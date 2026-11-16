@@ -4,7 +4,7 @@
 # taken from ../src unless this directory carries a migrated copy: `src/X.cu` -> `sycl/src/X.dp.cpp`,
 # `src/X.cpp` -> `sycl/src/X.cpp` (only host files that called the CUDA runtime were migrated). Headers resolve
 # the same way through the include order. Upstream files are never edited, so the port is the content of this
-# directory plus the tool that produced it (../../sycl/migrate.sh).
+# directory plus the tool that produced it (../../sycl/tools/migrate.sh).
 #
 #   cmake -S sycl -B build-sycl -G Ninja -DCMAKE_CXX_COMPILER=icpx && cmake --build build-sycl
 #
@@ -20,6 +20,7 @@ else()
 endif()
 project(strata_sycl VERSION ${STRATA_SYCL_VERSION} LANGUAGES C CXX)
 set(STRATA_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/..)
+include(${STRATA_ROOT}/cmake/strata_geometry.cmake)   # -DSTRATA_GEOMETRY=<name> (default flash_next, no flag added)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -27,6 +28,20 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
 endif()
 add_compile_definitions(STRATA_VERSION="${PROJECT_VERSION}")
+option(STRATA_SYCL_WORKLOAD_TRACE "Build diagnostic CPU annotations and optional routing audit" OFF)
+if(STRATA_SYCL_WORKLOAD_TRACE)
+  set_property(SOURCE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/prefill/prefill.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/prefill/gemm.dp.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/program/generate.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/verify.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/mtp.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/cuda/native_mmvq.dp.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/cuda/iq_kernels.dp.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/cuda/qsa_decode_attn.dp.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/cuda/fused_gr.dp.cpp
+    APPEND PROPERTY COMPILE_DEFINITIONS STRATA_SYCL_WORKLOAD_TRACE=1)
+endif()
 
 set(STRATA_SYCL_AOT "" CACHE STRING "AOT device for the GPU code, e.g. bmg-g31 (empty: SPIR-V, JIT at run time)")
 # PR #4185 (glorysdj): the packed Q2 / IQ4 lookup / IQ3_S sign arithmetic of the mixed-IQ3 decode kernels. Integer arithmetic with the
@@ -183,31 +198,11 @@ option(STRATA_Q6K_EXPERTS "Build the Q6_K gate/up grouped expert kernels (UD-Q6_
 if(STRATA_Q6K_EXPERTS)
   add_compile_definitions(STRATA_Q6K_EXPERTS=1)
 endif()
-set(STRATA_GGML_DIR "" CACHE PATH "llama.cpp checkout to take ggml from (empty: fetch the pinned commit)")
+include(${STRATA_ROOT}/cmake/strata_ggml.cmake)        # -DSTRATA_GGML_DIR, or the vendored third_party/strata-ggml
+include(${STRATA_ROOT}/cmake/backends/sycl.cmake)
+strata_ggml_resolve("${STRATA_ROOT}")
 if(STRATA_NATIVE_EXPERTS)
-  set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
-  set(GGML_STATIC ON CACHE BOOL "" FORCE)
-  set(GGML_CUDA OFF CACHE BOOL "" FORCE)
-  set(GGML_SYCL OFF CACHE BOOL "" FORCE)
-  set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
-  set(GGML_BACKEND_DL OFF CACHE BOOL "" FORCE)
-  set(GGML_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-  set(GGML_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-  set(GGML_NATIVE ON CACHE BOOL "" FORCE)
-  if(STRATA_GGML_DIR)
-    add_subdirectory(${STRATA_GGML_DIR}/ggml ${CMAKE_BINARY_DIR}/ggml EXCLUDE_FROM_ALL)
-  else()
-    include(FetchContent)
-    FetchContent_Declare(strata_llamacpp
-      GIT_REPOSITORY https://github.com/ggml-org/llama.cpp.git
-      GIT_TAG 3cf03257f219afbe7334045ff7c6a06ac68c627d
-      GIT_SHALLOW FALSE)
-    FetchContent_GetProperties(strata_llamacpp)
-    if(NOT strata_llamacpp_POPULATED)
-      FetchContent_Populate(strata_llamacpp)
-    endif()
-    add_subdirectory(${strata_llamacpp_SOURCE_DIR}/ggml ${CMAKE_BINARY_DIR}/ggml EXCLUDE_FROM_ALL)
-  endif()
+  strata_sycl_ggml()
   strata_resolve(_cpu_native src/kernels/cpu/native_expert.cpp src/kernels/cpu/iq_avx512.cpp src/kernels/cpu/iq_avx2.cpp
                              src/kernels/cpu/kq_avx2.cpp src/kernels/cpu/kq_avx1.cpp   # 0.1.31: the Q4_K/Q5_K/Q5_1/Q8_0 expert rows
                              src/kernels/cpu/q2_avx1.cpp src/kernels/cpu/iq_avx1.cpp   # 0.1.42: AVX1 (no AVX2) Q2_0 / i-quant rows
@@ -254,6 +249,7 @@ endforeach()
 strata_resolve(_kernels ${_kernel_files} src/kernels/ngram.cpp src/ngram/ple_reader.cpp src/platform/direct_file.cpp)
 list(APPEND _kernels ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/cuda/qsa_prompt_attn_xmx.dp.cpp)   # port-only: the XMX prompt attention
 list(APPEND _kernels ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/cuda/qsa_prompt_attn_esimd.dp.cpp)   # port-only: the int8 DPAS (ESIMD) prompt attention
+list(APPEND _kernels ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/cuda/weight_permute.dp.cpp)
 add_library(strata_kernels STATIC ${_kernels})
 target_include_directories(strata_kernels PRIVATE ${STRATA_ROOT}/third_party/ggml)
 target_link_libraries(strata_kernels PUBLIC strata_core)
@@ -280,6 +276,31 @@ add_library(strata_prefill STATIC ${_prefill}
 target_compile_options(strata_prefill PUBLIC -qmkl=sequential)
 target_link_options(strata_prefill PUBLIC -qmkl=sequential)
 target_link_libraries(strata_prefill PUBLIC strata_engine)
+
+# Optional TLA data movement for exact FP32 sparse prompt attention on B70.
+# A caller-provided header checkout avoids adding a download to default builds.
+option(STRATA_SYCL_TLA_ATTN "Build opt-in TLA FP32 prompt attention for B70" OFF)
+set(STRATA_SYCL_TLA_DIR "" CACHE PATH "sycl-tla checkout containing include/cute/tensor.hpp")
+if(STRATA_SYCL_TLA_ATTN)
+  if(NOT STRATA_SYCL_AOT STREQUAL "bmg-g31")
+    message(FATAL_ERROR "STRATA_SYCL_TLA_ATTN requires STRATA_SYCL_AOT=bmg-g31")
+  endif()
+  if(NOT EXISTS "${STRATA_SYCL_TLA_DIR}/include/cute/tensor.hpp" OR
+     NOT EXISTS "${STRATA_SYCL_TLA_DIR}/include/cute/atom/copy_traits_xe_2d.hpp")
+    message(FATAL_ERROR "STRATA_SYCL_TLA_DIR must name a sycl-tla header checkout")
+  endif()
+  if(NOT STRATA_ZE_LOADER)
+    message(FATAL_ERROR "STRATA_SYCL_TLA_ATTN requires Level Zero")
+  endif()
+  set(_tla_attn ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/cuda/qsa_prompt_attn_tla.dp.cpp)
+  target_sources(strata_kernels PRIVATE ${_tla_attn})
+  set_property(SOURCE ${_tla_attn} APPEND PROPERTY COMPILE_OPTIONS
+    "-isystem" "${STRATA_SYCL_TLA_DIR}/include")
+  set_property(SOURCE ${_tla_attn} APPEND PROPERTY COMPILE_DEFINITIONS
+    CUTLASS_ENABLE_SYCL SYCL_INTEL_TARGET CUTLASS_ENABLE_HEADERS_ONLY)
+  target_compile_definitions(strata_prefill PRIVATE STRATA_SYCL_TLA_ATTN=1)
+endif()
+
 
 strata_resolve(_main src/program/generate.cpp)
 add_executable(strata ${_main})
@@ -316,6 +337,9 @@ if(STRATA_SYCL_PARITY)
     add_test(NAME native_arithmetic_parity_nvfp4_ggml COMMAND ${CMAKE_COMMAND} -E env
              STRATA_NO_NVFP4_512=1 STRATA_NO_NVFP4_256=1 $<TARGET_FILE:native_arithmetic_parity>)
   endif()
+  add_executable(gemm_stride_parity src/prefill/gemm_stride_parity.cpp)
+  target_link_libraries(gemm_stride_parity PRIVATE strata_prefill)
+  add_test(NAME gemm_stride_parity COMMAND gemm_stride_parity)
   foreach(p IN ITEMS dequant_s2 s2_gemv shared_expert gr gdn s2_gemv_q8 sampler rope quantize_act router_top10
                      s_gemv elementwise bf16_gemv s_gemv_q8k qsa kv_q8 kv_stream kv_q4 cvec)
     strata_resolve(_src src/kernels/${p}_parity.cpp)
@@ -482,6 +506,13 @@ if(STRATA_SYCL_PARITY)
     add_executable(native_expert_parity ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/native_expert_parity.cpp)
     target_include_directories(native_expert_parity PRIVATE ${STRATA_ROOT}/third_party/ggml)
     target_link_libraries(native_expert_parity PRIVATE strata_kernels strata_kernels_cpu)
+    # round 0214: every expert type pair of the new Unsloth Qwen3.8-Flash-Next sets (ggml-quantized random weights at 2560/640)
+    foreach(_g iq1_m iq2_xxs iq2_xs iq2_s q2_0 iq3_xxs iq4_xs)
+      foreach(_d q2_0 iq4_nl q5_0 q8_0)
+        add_test(NAME native_expert_parity_new_${_g}_${_d} COMMAND native_expert_parity --synthetic ${_g}/${_d})
+        set_tests_properties(native_expert_parity_new_${_g}_${_d} PROPERTIES TIMEOUT 600)
+      endforeach()
+    endforeach()
     # SYCL port: the same grouped native experts timed per mode on real GGUF rows at the decode window's shape
     # (G experts, T tokens), checked bit for bit against the reference mode.  The source was in the tree without a
     # target, so the numbers that decide the decode expert path could not be reproduced.

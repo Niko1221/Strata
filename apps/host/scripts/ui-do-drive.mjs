@@ -62,7 +62,8 @@ export async function open(scheme, width, height, sessions, { hash = '#/chat', p
     try {
       if (sessionStorage.getItem('ui-do-seeded')) return;
       sessionStorage.setItem('ui-do-seeded', '1');
-      if (sessions) localStorage.setItem('strata.sessions.v1', JSON.stringify(sessions));
+      // The chats are files on the host: put the seed there (a synchronous request, so it is in place before the page starts).
+      for (const chat of sessions ?? []) { const request = new XMLHttpRequest(); request.open('PUT', '/api/chats/' + encodeURIComponent(chat.id), false); request.setRequestHeader('x-strata-client', 'ui'); request.send(JSON.stringify({ messages: [], ...chat })); }
       if (Object.keys(prefs).length) localStorage.setItem('strata.prefs.v1', JSON.stringify(prefs));
     } catch { /* storage refused */ }
   }, { sessions, prefs });

@@ -6,6 +6,7 @@
 // rounded to BF16, which is also what llama.cpp's batched CUDA path does.  Tensor-core GEMM through cuBLAS.
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -103,6 +104,12 @@ private:
     int64_t w16_reserve_ = 2ll << 30;   // VRAM kept free after a cached weight
     bool w16_logged_ = false;
     static constexpr int64_t kW16AutoReserve = 3ll << 30;
+public:
+    /// The engine's own default for the FP16 weight cache when STRATA_PF_W16_CACHE_MIB is not set: true -> sized by the card (weights are cached while
+    /// kW16AutoReserve stays free).  generate.cpp sets it on Linux CUDA when the engine runs batch slots (round0212 item 7).  =0 in the environment wins.
+    static void set_w16_auto_default(bool on) { w16_auto_default_().store(on); }
+private:
+    static std::atomic<bool>& w16_auto_default_() { static std::atomic<bool> v{false}; return v; }
     void* hipblaslt_state_ = nullptr;
     void* rocblas_state_ = nullptr;   // HIP: the rocBLAS solution table of f16_inplace (STRATA_ROCBLAS_TUNING)
     bool f16_io_ = false;

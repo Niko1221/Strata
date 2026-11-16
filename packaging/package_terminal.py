@@ -127,14 +127,31 @@ INSTALLER_FILES = ("setup.py", "ref/load.py")   # ref/load.py: strata_pack.py (t
 INSTALLER_TOOLS = ("strata_mcp", "iq_pack", "strata_pack", "pack_index", "mtp_fetch", "mtp_pack", "mtp_rt", "draft_vocab",
                    "strata_tokenizer", "gguf_reader", "calibrate")
 #: tools run BY PATH (`python tools/.../x.py`) by setup.py, strata_cli or strata_control: no import names them, so setup_tool_imports() cannot find
-#: them.  DeepSeek's setup and launch run dsv41/pack_gguf.py (the model folder), dsv41/smoke.py (the engine's first answer) and dsv41/tune.py
-#: (the short tune); setup.py's other by-path tools (nvfp4_local_pack, strata_bench, strata_inspect) were missing from the bundle the same way.
+#: them.  setup.py's by-path tools (nvfp4_local_pack, strata_bench, strata_inspect) were missing from the bundle once.
 #: tests/terminal/test_bundle_tools_paths.py reads the by-path references out of the source and fails when one is missing from the bundle.
-INSTALLER_SCRIPTS = ("dsv41/pack_gguf", "dsv41/smoke", "dsv41/tune", "nvfp4_local_pack", "strata_bench", "strata_inspect")
+INSTALLER_SCRIPTS = ("nvfp4_local_pack", "strata_bench", "strata_inspect")
 INSTALLER_DATA = "data"           # draft vocabularies, expert profiles: 2 MB
+#: gguf-py and llama.cpp's HF converter at the llama.cpp pin (third_party/strata-gguf-py, 1.8 MB, MIT): the preparation tools import them, so
+#: no llama.cpp download is needed to prepare a model (before 0.2.15 the installed Terminal fetched the 170 MB zip for this)
+INSTALLER_THIRD_PARTY = ("third_party/strata-gguf-py",)
+#: the Mac install's tools (setup.py's mac_control_setup runs them by path): Unsloth's many-shard sets become ONE GGUF for the Metal engine (stdlib only, 15 KB)
+INSTALLER_METAL_TOOLS = ("metal_repack", "stream_experts")
 
 #: packages the bundle must import after the install (the API server's and the CLI's).
 PROBE = "import jinja2, yaml, regex, psutil, requests, numpy, PIL, tqdm; print('deps ok')"
+
+
+def run_probe(py: Path, root: Path, code: str = PROBE) -> "subprocess.CompletedProcess[str]":
+    """Run the import probe with the bundled interpreter, from the bundle folder, without leaving anything in it.
+
+    The probe imports the runtime packages, which would write a __pycache__ folder next to every module it loads; those compiled files
+    would then be in the archive whenever the caller had not set PYTHONDONTWRITEBYTECODE itself, so the archive's file set depended on who
+    built it. The probe turns bytecode writing off for itself (the variable and -B).
+    """
+    env = {**os.environ, "PYTHONNOUSERSITE": "1", "PYTHONDONTWRITEBYTECODE": "1"}
+    for k in ("PYTHONHOME", "PYTHONPATH"):
+        env.pop(k, None)
+    return subprocess.run([str(py), "-B", "-c", code], capture_output=True, text=True, cwd=str(root), env=env)
 
 
 def host_target() -> str:
@@ -257,7 +274,7 @@ def local_imports(folder: Path, entry: tuple[str, ...]) -> list[str]:
         source = folder / "tools" / f"{name}.py"
         if not source.exists():
             raise SystemExit(f"installer tool missing: tools/{name}.py")
-        sub = name.rsplit("/", 1)[0] + "/" if "/" in name else ""     # (tools/dsv41/tune.py imports its neighbour smoke.py)
+        sub = name.rsplit("/", 1)[0] + "/" if "/" in name else ""     # (a nested tool imports its neighbours first)
         for node in ast.walk(ast.parse(source.read_text(encoding="utf-8-sig"))):
             names = [a.name.split(".")[0] for a in node.names] if isinstance(node, ast.Import) else                 [node.module.split(".")[0]] if isinstance(node, ast.ImportFrom) and node.module and node.level == 0 else []
             for m in names:
@@ -295,9 +312,18 @@ def add_installer(folder: Path, source: Path = ROOT) -> dict:
         (folder / "tools" / f"{name}.py").parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source / "tools" / f"{name}.py", folder / "tools" / f"{name}.py")
         copied.append(f"tools/{name}.py")
+    (folder / "metal" / "tools").mkdir(parents=True, exist_ok=True)
+    for name in INSTALLER_METAL_TOOLS:
+        shutil.copy2(source / "metal" / "tools" / f"{name}.py", folder / "metal" / "tools" / f"{name}.py")
+        copied.append(f"metal/tools/{name}.py")
     if (folder / INSTALLER_DATA).exists():
         shutil.rmtree(folder / INSTALLER_DATA)
     shutil.copytree(source / INSTALLER_DATA, folder / INSTALLER_DATA, ignore=shutil.ignore_patterns("__pycache__"))
+    for name in INSTALLER_THIRD_PARTY:
+        if (folder / name).exists():
+            shutil.rmtree(folder / name)
+        shutil.copytree(source / name, folder / name, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        copied.append(name + "/")
     return {"files": copied, "data": INSTALLER_DATA, "setup_sha256": sha256(folder / "setup.py"),
             "mode": "STRATA_CONTROL_INSTALL=1: downloads the chosen model, prepares it, installs no package and no engine"}
 
@@ -431,10 +457,7 @@ def main() -> int:
             for cache_dir in list(root.rglob("__pycache__")):
                 shutil.rmtree(cache_dir, ignore_errors=True)
 
-        env = {**os.environ, "PYTHONNOUSERSITE": "1"}
-        for k in ("PYTHONHOME", "PYTHONPATH"):
-            env.pop(k, None)
-        probe = subprocess.run([str(py), "-c", PROBE], capture_output=True, text=True, cwd=str(root), env=env)
+        probe = run_probe(py, root)
         print("  " + (probe.stdout.strip() or probe.stderr.strip()[:200]))
         if not args.skip_deps and probe.returncode != 0:
             raise SystemExit("the bundled interpreter cannot import the runtime packages")

@@ -62,7 +62,7 @@ export function MonitorScreen() {
     // While this screen is open and visible the host reads the graphics card every 3 s; otherwise it asks only every 30 s (#4066).
     useEffect(() => {
         const ask = () => { if (typeof document === 'undefined' || document.visibilityState !== 'hidden')
-            void api.get('/api/monitor').catch(() => undefined); };
+            void api.get('/api/monitor?drives=1').catch(() => undefined); };
         ask();
         const timer = setInterval(ask, 10000);
         return () => clearInterval(timer);

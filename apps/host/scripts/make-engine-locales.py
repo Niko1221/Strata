@@ -204,6 +204,36 @@ add("A newer engine is already on this computer. Update switches to it; nothing 
     "Auf diesem Computer ist schon eine neuere Engine. Das Update wechselt zu ihr; es wird nichts heruntergeladen.", "Este equipo ya tiene un motor más reciente. Actualizar cambia a él; no se descarga nada.",
     "На этом компьютере уже есть более новый движок. Обновление переключит на него; ничего не скачивается.", "Este computador já tem um motor mais novo. Atualizar troca para ele; nada é baixado.",
     "이 컴퓨터에 이미 더 새로운 엔진이 있습니다. 업데이트하면 그 엔진으로 전환되며, 내려받는 것은 없습니다.", "Cet ordinateur a déjà un moteur plus récent. La mise à jour bascule dessus ; rien n'est téléchargé.")
+# ---- the Use dialog of a Qwen4 model shape's engine (owner 11-09: {0} is the group's title, the model's own name; {1} the engine's version). Only the first
+# sentence is new: the two after it ("Your models and settings stay as they are. You can switch back at any time.") are the existing translations, taken from the
+# Strata engine's Use sentence below so they read exactly the same in every language.
+_SHAPE_FIRST = dict(en="{0} runs on engine {1} from its next start.",
+                    zh="{0} 将从下次启动起使用引擎 {1}。", ja="{0} は次回の起動からエンジン {1} で動作します。",
+                    de="{0} läuft ab dem nächsten Start mit Engine {1}.", es="{0} funcionará con el motor {1} a partir de su próximo inicio.",
+                    ru="{0} будет работать на движке {1} со следующего запуска.", pt="{0} roda no motor {1} a partir da próxima inicialização.",
+                    ko="{0}은(는) 다음 시작부터 엔진 {1}에서 실행됩니다.", fr="{0} fonctionnera avec le moteur {1} dès son prochain démarrage.")
+_USE = next(e for e in S if e["en"].startswith("Models you start from now on run on engine {0}."))
+
+
+def _rest(lang):
+    """The existing Use sentence without its first sentence: the reassurance, as it is translated today."""
+    text = _USE[lang]
+    cut = re.search(r"[。.]\s*", text)
+    return text[cut.end():]
+
+
+add(*[_SHAPE_FIRST[l] + ("" if l in ("zh", "ja") else " ") + _rest(l) for l in LANGS])
+# ---- the setup wizard after an install whose files are all in, while the engine for this PC is missing or can't be used (DL99; owner's wording 11-15, with
+# the screen's real name: an engine is installed from Settings > About; Settings > Engine lists the installed ones)
+add("Your model is downloaded, but the engine for this PC isn't ready yet. Open Settings > About to install it.",
+    "模型已下载，但这台电脑的引擎还没有准备好。请打开 设置 > 关于 来安装它。",
+    "モデルはダウンロード済みですが、このPC用のエンジンはまだ準備できていません。設定 > 情報 を開いてインストールしてください。",
+    "Dein Modell ist heruntergeladen, aber die Engine für diesen PC ist noch nicht bereit. Öffne Einstellungen > Über, um sie zu installieren.",
+    "Tu modelo está descargado, pero el motor para este equipo aún no está listo. Abre Ajustes > Acerca de para instalarlo.",
+    "Модель скачана, но движок для этого компьютера ещё не готов. Откройте Настройки > О программе, чтобы установить его.",
+    "Seu modelo foi baixado, mas o motor para este computador ainda não está pronto. Abra Configurações > Sobre para instalá-lo.",
+    "모델은 내려받았지만, 이 PC용 엔진이 아직 준비되지 않았습니다. 설정 > 정보를 열어 설치하세요.",
+    "Votre modèle est téléchargé, mais le moteur pour cet ordinateur n'est pas encore prêt. Ouvrez Réglages > À propos pour l'installer.")
 
 here = Path(__file__).resolve().parent.parent / "src" / "locales"
 NBSP = " "

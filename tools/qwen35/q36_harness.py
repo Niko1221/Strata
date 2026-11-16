@@ -7,7 +7,7 @@
                               together -> dict(tokens=[..per req], wall, steady_tok_s, ...)
 Run on the lent box; the box's lock / memory cap wrap the whole python call (see run.sh).
 """
-import json, os, queue, subprocess, sys, threading, time
+import os, queue, subprocess, threading, time
 
 
 def load_prompts(path):

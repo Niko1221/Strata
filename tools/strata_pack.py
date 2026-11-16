@@ -25,7 +25,6 @@ import argparse
 import hashlib
 import json
 import pathlib
-import struct
 import sys
 
 import numpy as np

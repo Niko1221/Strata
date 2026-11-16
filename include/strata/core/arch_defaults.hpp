@@ -11,6 +11,8 @@
 // A switch the user set (to anything) is never overridden; STRATA_GFX1151_DEFAULTS=0 turns the whole table off.
 #pragma once
 
+#include "strata/kernels/gfx_arch.hpp"
+
 #include <string>
 #include <utility>
 #include <vector>
@@ -55,6 +57,41 @@ bool igpu_prompt_set_enabled(const char* gcn_arch, bool windows);
 inline constexpr bool kIgpuUmaArenaDefaultOn = false;
 bool igpu_uma_arena_default(const char* gcn_arch, bool integrated, bool windows, bool on = kIgpuUmaArenaDefaultOn);
 
+/// the registered expert arena asks for no transparent huge pages on an integrated gfx11 GPU under Linux (gfx1103 Radeon
+/// 780M, gfx1150 880M / 890M, gfx1151 Strix Halo; detected from the device: `integrated` and the arch name).  MADV_HUGEPAGE on a registered
+/// range adds direct compaction and khugepaged collapse in it; each move invalidates the range, KFD evicts the process's queues, and the
+/// gc 11 MES firmware resets the GPU when a dispatch sits in a barrier (notes-minipc.md).  Radeon 780M, Q2_0 pack, registered 31.6 GiB arena,
+/// one engine at a time: huge pages requested 9 starts, 8 ended in "unspecified launch failure" in the first prompt; not requested 3 of 3 ran.
+/// Setup already wrote STRATA_NO_ARENA_THP=1 for its 780M opt-in; this makes it the engine's own rule.
+/// STRATA_NO_ARENA_THP=0 asks for them (unset = this rule; =1 = never, as before).  Windows and discrete cards: unchanged.
+bool igpu_arena_no_thp_default(const char* gcn_arch, bool integrated, bool windows);
+/// the wait before READY (strata/core/kfd_settle.hpp) applies to the same class: an integrated gfx11 GPU under Linux (gfx1103,
+/// gfx1150, gfx1151), where the registered expert arena is a KFD userptr and the kernel's page moves right after the load evict the
+/// process's queues.  Never Windows, never a discrete card.  STRATA_NO_KFD_SETTLE=1 turns the wait off.
+bool igpu_kfd_settle_default(const char* gcn_arch, bool integrated, bool windows);
+/// the file-cache give-back during and after the expert load (strata/core/page_cache_drop.hpp) applies to the same class: an integrated
+/// gfx11 GPU under Linux (gfx1103, gfx1150, gfx1151).  Never Windows, never a discrete card.  STRATA_NO_ARENA_CACHE_DROP=1 turns it off.
+bool igpu_cache_drop_default(const char* gcn_arch, bool integrated, bool windows);
+/// the prompt experts on Strata's own fused int8 kernels (STRATA_PF_FUSED=1) instead of llama.cpp's MMQ, for the same class: an integrated gfx11 GPU
+/// under Linux (gfx1103, gfx1150, gfx1151).  Never Windows (gfx1151 there has it in igpu_default_env), never a discrete card.  apply_arch_defaults sets
+/// STRATA_PF_FUSED=1 where the user has not set the variable; STRATA_PF_FUSED=0 is the way back to MMQ.
+bool igpu_fused_prompt_default(const char* gcn_arch, bool integrated, bool windows);
+/// The 16-bit prompt GEMMs FP16 in and out (STRATA_HIP_PROMPT_F16, gemm.cu prompt_f16()): `env` is the variable's text (nullptr = unset).  "1" = on, any other set
+/// value = off (as before); unset = the device rule: on for a Radeon 780M (gfx1103, integrated, Linux), off everywhere else (every other gfx11, gfx12, gfx103x,
+/// Windows and discrete cards are unchanged).  Inline: src/prefill/gemm.cu uses it without linking arch_defaults.cpp.
+inline bool prompt_f16_resolve(const char* env, const char* gcn_arch, bool integrated, bool windows) {
+    if (env != nullptr) return env[0] == '1';
+    return integrated && !windows && strata::kernels::gfx_arch_is(gcn_arch, "gfx1103");
+}
+/// Whether the expert arena skips its MADV_HUGEPAGE request: `no_arena_thp` is STRATA_NO_ARENA_THP (nullptr when unset): "0" asks for the huge
+/// pages, any other value skips the request; unset leaves it to `igpu_rule` (igpu_arena_no_thp_default for this device).  `thp_always`: the
+/// kernel's THP mode is "always" (the request would add nothing, #771).  Inline: src/core/pinned.cu (strata_core) uses it without
+/// linking arch_defaults.cpp.
+inline bool arena_skip_thp_request(const char* no_arena_thp, bool thp_always, bool igpu_rule) {
+    if (no_arena_thp != nullptr) return no_arena_thp[0] != '0' || thp_always;   // the user's own value: 0 = ask for them, else skip
+    return thp_always || igpu_rule;
+}
+
 /// The matrix-core prompt set an integrated GPU takes when `igpu_prompt_set_enabled()`: STRATA_HIP_WMMA, STRATA_PF_GEMM, STRATA_PA_FAST,
 /// STRATA_SELECT_WMMA, STRATA_HC_UPMIX, all "1".  Empty unless `integrated` (hipDeviceProp_t::integrated: the device
 /// shares the host's memory) AND the architecture is one of `igpu_prompt_defaults_arch`: a discrete card of the same
@@ -69,6 +106,30 @@ std::vector<std::pair<std::string, std::string>> igpu_default_env(const char* gc
 /// Empty for every other architecture / platform, below 2 slots, and with STRATA_GFX1151_DEFAULTS=0.  A switch the user set is kept.
 std::vector<std::pair<std::string, std::string>> parallel_default_env(const char* gcn_arch, bool windows, int batch_slots);
 
+/// The same nine switches for Linux CUDA (the Qwen engine of generate.cpp) with 2 or more batch slots: what serve/server.py's
+/// PARALLEL_STACK_ENV set for a managed start, now the engine's own so a plain start is the same.  QUAL-PAR: bit-exact against the plain
+/// slots (greedy identity at c=1, first-token KL 0).  `linux_cuda` is false on HIP, Windows, Metal and SYCL builds (empty then).  Each
+/// switch keeps =0 as its off switch; a value the user set is kept.  Silent: the launcher printed nothing for these either.
+std::vector<std::pair<std::string, std::string>> parallel_default_env_cuda(bool linux_cuda, int batch_slots);
+
+/// Sets `parallel_default_env_cuda` in this process's environment where the user has not set the variable; returns the names it set.
+/// Call once, before any engine code reads its switches.
+std::vector<std::string> apply_parallel_defaults_cuda(bool linux_cuda, int batch_slots);
+
+/// The tensor-core GDN prompt scan and the one-pass conv (QUAL-GDN, l620: prompt +4.4% at 4K, +5.5% at 16K, +5.7% at 32K; first-token KL mean
+/// 0.0019, max 0.0125; owner yes 2026-11-07): STRATA_GDN_TC=1 and STRATA_GDN_CONVL2=2 on Linux CUDA, what serve/server.py's GDN_STACK_CUDA set.
+/// The engine still gates the scan at run time (compute capability 8 or more, one SM per value head, shared memory) and falls back to the old
+/// kernels.  Empty when `linux_cuda` is false (HIP, Windows, Metal, SYCL).  =0 turns each off; a value the user set is kept.  Silent.
+std::vector<std::pair<std::string, std::string>> gdn_default_env_cuda(bool linux_cuda);
+std::vector<std::string> apply_gdn_defaults_cuda(bool linux_cuda);
+
+/// gfx12 (RDNA4, R9700 / RX 9000) on Linux, when EVERY visible card is gfx12 (the same rule as serve/server.py's GDN_STACK_GFX12): the chunked GDN scan
+/// from the first 64-token chunk instead of from 30,000 tokens (owner yes 2026-11-07).  R9700: +3.5% prompt speed at 4K, +5.5% at 16K, first-token KL mean
+/// 0.0025, 61-task suite 55 vs 56.  STRATA_GDN_CHUNKED=0 turns it off; a value the user set is kept.  Empty elsewhere.  Silent: the engine's own
+/// "prompt chunks of 30,000+ tokens" line is not printed when the variable is set, as with a launcher start.
+std::vector<std::pair<std::string, std::string>> gdn_chunked_default_env(bool linux_host, bool all_gfx12);
+std::vector<std::string> apply_gdn_chunked_default(bool linux_host, bool all_gfx12);
+
 /// 0.2.10 (STRIX-TDR): a Windows Strix Halo (gfx1151) launches the verify window's graph from a helper thread, so the main thread can
 /// serve the GPU's doorbells while the launch call is still running.  On the strix box the launch call of the first window sometimes never
 /// returned (host in the driver, GPU already past layer 0, "GPU rang 1, flags served 0": the Q4_K_XL start stall); the helper thread
@@ -79,7 +140,8 @@ std::vector<std::pair<std::string, std::string>> launch_default_env(const char* 
 /// Sets `arch_default_env(gcn_arch)` and, when `integrated`, `igpu_default_env(gcn_arch, true)` in this process's
 /// environment where the user has not set the variable, prints one line to stderr per table when it set anything, and
 /// returns the names it set.  `integrated` is true when every visible GPU is an integrated one.  Call once, before any
-/// engine code reads its switches (they are read lazily, at first use).
-std::vector<std::string> apply_arch_defaults(const char* gcn_arch, bool integrated = false, int batch_slots = 0);
+/// engine code reads its switches (they are read lazily, at first use).  `mmq_built`: llama.cpp's MMQ prompt kernels are in the build (the caller knows:
+/// STRATA_PREFILL_MMQ is defined on strata_prefill only); the gfx12 K-quant line names them only then.
+std::vector<std::string> apply_arch_defaults(const char* gcn_arch, bool integrated = false, int batch_slots = 0, bool mmq_built = true);
 
 }  // namespace strata::core

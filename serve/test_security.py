@@ -6,6 +6,7 @@ against the mock engine (no GPU, no pack).
 from __future__ import annotations
 
 import contextlib
+import errno
 import http.client
 import io
 import json
@@ -59,6 +60,20 @@ class HostNames(unittest.TestCase):
 
 
 class ListenAddress(unittest.TestCase):
+    def test_bind_does_not_look_up_a_host_name(self):
+        """http.server's own server_bind asks socket.getfqdn for the address: on a Mac whose reverse lookup stalls (GitHub's macOS runner:
+        35 s for the first lookup of every new process) a start listened that much later. No network answer may delay a start."""
+        with mock.patch.object(socket, "getfqdn", side_effect=AssertionError("server_bind looked up a host name")), \
+                mock.patch.object(socket, "gethostbyaddr", side_effect=AssertionError("server_bind looked up a host name")):
+            with Server(("127.0.0.1", 0), BaseHTTPRequestHandler) as s:
+                self.assertNotEqual(s.server_address[1], 0)
+
+    def test_bind_sets_server_name_to_the_address_and_server_port(self):
+        # (http.server set server_name to the looked-up name, "localhost" for 127.0.0.1; no Strata code reads it)
+        with Server(("127.0.0.1", 0), BaseHTTPRequestHandler) as s:
+            self.assertEqual((s.server_name, s.server_port), ("127.0.0.1", s.server_address[1]))
+            self.assertGreater(s.server_port, 0)
+
     def test_ipv4_address_family(self):
         with Server(("127.0.0.1", 0), BaseHTTPRequestHandler, bind_and_activate=False) as s:
             self.assertEqual(s.address_family, socket.AF_INET)
@@ -82,6 +97,13 @@ class ListenAddress(unittest.TestCase):
             self.assertEqual(httpd.address_family, socket.AF_INET6)
             c = http.client.HTTPConnection("::1", httpd.server_address[1], timeout=10)
             try:
+                try:
+                    c.connect()
+                except OSError as e:
+                    # a box whose loopback has no ::1 (IPv6 off for lo: Boston) can listen on :: but not reach ::1
+                    if e.errno in (errno.EADDRNOTAVAIL, errno.ENETUNREACH, errno.EAFNOSUPPORT):
+                        self.skipTest(f"no IPv6 loopback address (::1) on this computer: {e}")
+                    raise
                 c.request("GET", "/health")
                 r = c.getresponse()
                 self.assertEqual(r.status, 200)

@@ -350,13 +350,13 @@ class TheQ4Pack(unittest.TestCase):
 
 
 class TheTerminalStep(unittest.TestCase):
-    """strata launch: the Drafting step exists only where there is something to choose, like the DeepSeek-only Speed step."""
+    """strata launch: the Drafting step exists only where there is something to choose."""
 
     def flow(self, family, hardware):
         from types import SimpleNamespace
         from strata_cli.launch.screens import flow_for
         ctx = SimpleNamespace(computer=SimpleNamespace(usable_gpus=[0]), settings=SimpleNamespace(family=family))
-        with mock.patch.object(drafting, "detect_hardware", return_value=hardware), serving_dflash2(),                 mock.patch("strata_cli.launch.screens.speed_choice_available", return_value=False):
+        with mock.patch.object(drafting, "detect_hardware", return_value=hardware), serving_dflash2():
             return flow_for(ctx)
 
     def test_only_flash_next_on_a_cuda_or_hip_engine_gets_the_step(self):
@@ -365,7 +365,7 @@ class TheTerminalStep(unittest.TestCase):
         self.assertEqual(flow.index("drafting"), flow.index("pictures") + 1)
         self.assertIn("drafting", self.flow("gyro", ("hip", ["gfx1151"])))
         self.assertIn("drafting", self.flow("unsloth", ("cuda", ["sm_120"])))
-        for family in ("deepseek41", "swift", "coder", "nvfp4", "qwen36", None):
+        for family in ("swift", "coder", "nvfp4", "qwen36", None):
             self.assertNotIn("drafting", self.flow(family, ("cuda", ["sm_120"])), family)
         self.assertIn("drafting", self.flow("qwen", ("sycl", [])))
         for hardware in (("cpu", []), (None, [])):
@@ -390,6 +390,7 @@ class TheTerminalStep(unittest.TestCase):
         folder = ROOT / "apps" / "host" / "src" / "locales"
         en = json.loads((folder / "df2-en.json").read_text(encoding="utf-8"))
         self.assertEqual((en["df03"], en["df04"], en["df05"]), (drafting.LINE_TESTED, drafting.LINE_SLOWER, drafting.LINE_UNTESTED))
+        self.assertEqual(en["df21"], drafting.LINE_METAL)
         self.assertEqual(en["df06"], drafting.mtp_line(drafting.NOT_THIS_CARD))
         self.assertEqual(en["df07"], "There is no internet connection, so the DFlash2 drafter can't be downloaded now.")
         self.assertEqual(en["df09"], drafting.ONE_REQUEST_NOTE)

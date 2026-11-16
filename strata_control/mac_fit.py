@@ -16,6 +16,11 @@ MIN_MACOS = (15, 0)        # MTLResidencySet (the engine keeps every buffer resi
 
 # The Mac's packs.  shard1_gb: the file the GPU maps (resident in unified memory while the model runs); the n-gram
 # table (shard 2, 28.8 GB) is read from the SSD a few rows at a time.  tested: measured on the M5 Max (docs/MAC.md).
+# Round 0214: ONE switch for Unsloth's v3.1 sets that have Q5_0 expert downs (UD-IQ2_XS and UD-Q2_K_XL: one layer, UD-Q3_K_XL: 20, the v3.1 UD-IQ4_XS: 33).  The Metal engine
+# has no Q5_0 down kernel yet (moe.metal's DN_SET stops at Q5_1 / Q8_0 / Q2_0 / IQ4_NL), so those four are listed with "missing" (the Terminal's menu leaves them out, --model
+# names them and says so) until the METAL stream lands the kernel and flips this to True.  The other new sets use kernels the Mac has.  UD-IQ1_S needs no entry (never offered).
+METAL_Q5_0_DOWN = True
+_NO_Q5_0 = {} if METAL_Q5_0_DOWN else {"missing": "the Q5_0 expert kernels"}
 MAC_MODELS = {
     "Q2_0": {"shard1_gb": 37.6, "tested": True},
     "IQ3_XXS": {"shard1_gb": 47.0, "tested": True},
@@ -23,6 +28,14 @@ MAC_MODELS = {
     # Unsloth's ~4-6-bit files (family "unsloth", 4-6 shards cutting through layers): setup repacks the experts and
     # dense tensors into one GGUF for the GPU (metal/tools/metal_repack.py); shard1_gb is that file, the n-gram
     # table stays in its shard on the SSD
+    # (the sets below are the v3.1 files: shard1_gb = their download less the 28.8 GB n-gram table; nothing of them was run on a Mac yet)
+    "UD-IQ1_M": {"shard1_gb": 39.2, "tested": False, "family": "unsloth", "shards": 3},
+    "UD-Q2_0": {"shard1_gb": 41.7, "tested": False, "family": "unsloth", "shards": 3},
+    "UD-IQ2_XS": {"shard1_gb": 47.0, "tested": False, "family": "unsloth", "shards": 3, **_NO_Q5_0},
+    "UD-Q2_K_XL": {"shard1_gb": 50.8, "tested": False, "family": "unsloth", "shards": 4, **_NO_Q5_0},
+    "UD-IQ3_XXS": {"shard1_gb": 54.8, "tested": False, "family": "unsloth", "shards": 4},
+    "UD-Q3_K_XL": {"shard1_gb": 60.7, "tested": False, "family": "unsloth", "shards": 4, **_NO_Q5_0},
+    "UD-IQ4_XS-v31": {"shard1_gb": 64.9, "tested": False, "family": "unsloth", "shards": 4, **_NO_Q5_0},
     "UD-Q4_K_XL": {"shard1_gb": 82.6, "tested": True, "family": "unsloth", "shards": 4},
     "UD-Q5_K_XL": {"shard1_gb": 103.9, "tested": True, "family": "unsloth", "shards": 6},
     "UD-Q6_K_XL": {"shard1_gb": 114.8, "tested": True, "family": "unsloth", "shards": 6},
@@ -51,19 +64,9 @@ STREAM_SPEC = 3
 # (section 31.1 of the same file; it has no Mac setup entry yet, the name is what a config for it would pass).
 SPEC3_MODELS = ("IQ3_S", "Q2_0", "CODER")
 SPEC3_MIN_P = "0.5"
-# STRATA_METAL_F16=1 (the fp16 decode windows, PR 4807) is the default of a resident IQ3_S or Q2_0 pack.  M5 Max: decode +9 to +15% (Q2_0)
-# and +9 to +12% (IQ3_S); top-1 agreement against the fp32 path 97.1% (Q2_0) / 96.2% (IQ3_S), mean KL 0.009 / 0.016 (sections 20, 22);
-# the 61-task quality suite (section 30): same tasks passed with it on and off, no family drop, no new hallucination flag, 0 pass/fail
-# changes between two runs of the same arm.  The owner's rule was an option unless it passes that suite.  STRATA_METAL_F16=0 in the config's
-# env turns it off.  Other sets (and a streaming pack, where the windows are not fp16) are not set.
-F16_MODELS = ("IQ3_S", "Q2_0")
-
-
-def engine_env(model: str, stream: bool) -> dict[str, str]:
-    """The engine variables a Mac config carries besides STRATA_METAL_STREAM: STRATA_METAL_F16=1 for a resident IQ3_S or Q2_0 pack."""
-    if not stream and (model or "").upper() in F16_MODELS:
-        return {"STRATA_METAL_F16": "1"}
-    return {}
+# STRATA_METAL_F16 (the fp16 decode windows, PR 4807) is the ENGINE's default for a resident IQ3_S or Q2_0 pack since 0.2.13 (metal window.cpp
+# f16_auto_for, found from the GGUF file name).  M5 Max: decode +9 to +15% (Q2_0) and +9 to +12% (IQ3_S); top-1 agreement 97.1% / 96.2%, mean KL
+# 0.009 / 0.016; the 61-task suite passed the same tasks.  STRATA_METAL_F16=0 in the config's env turns it off.  Setup writes nothing for it.
 
 
 def spec_args(model: str, stream: bool, mtp: bool) -> list[str]:
@@ -89,7 +92,14 @@ RESIDENT_LEAVE_SHARE = 0.30
 BIG_MAC_GB = 64.0
 GIB_GB = 1.073741824    # a GiB in GB: ram_gb is binary, the model sizes are decimal
 CONTEXTS = [8192, 32768, 65536, 131072]
-MAC_ABOUT = {"Q2_0": "2-bit, the fastest", "IQ3_XXS": "3-bit i-quant, better quality",
+MAC_ABOUT = {"UD-IQ1_M": "~1-bit (Unsloth Dynamic v3.1), the smallest download",
+             "UD-Q2_0": "2-bit (Unsloth Dynamic v3.1)",
+             "UD-IQ2_XS": "2-bit i-quant (Unsloth Dynamic v3.1)",
+             "UD-Q2_K_XL": "2-bit (Unsloth Dynamic v3.1) with some 3-bit experts",
+             "UD-IQ3_XXS": "3-bit i-quant (Unsloth Dynamic v3.1)",
+             "UD-Q3_K_XL": "3-bit (Unsloth Dynamic v3.1) with some 4-bit experts",
+             "UD-IQ4_XS-v31": "~4-bit i-quant (Unsloth Dynamic v3.1), a newer file than UD-IQ4_XS with other tensor types",
+                          "Q2_0": "2-bit, the fastest", "IQ3_XXS": "3-bit i-quant, better quality",
              "IQ3_S": "3.5-bit i-quant, the best quality (matches the full model), the slowest",
              "UD-Q4_K_XL": "Unsloth ~4.5-bit (111 GB download)", "UD-Q5_K_XL": "Unsloth ~5.5-bit (158 GB download)",
              "UD-Q6_K_XL": "Unsloth ~6.5-bit (169 GB download)",
@@ -163,6 +173,36 @@ def gpu_budget_gb(ram_gb: float) -> float:
     return ws
 
 
+# The families the Mac app (setup.py's mac_control_setup and the app's model list) installs: the GSQ-RCO Qwen files, Unsloth's sets (several shards:
+# metal/tools/metal_repack.py writes one GGUF for the GPU) and Gyro.  A set with "missing" is left out (METAL_Q5_0_DOWN above).
+APP_FAMILIES = ("qwen", "unsloth", "gyro")
+#: the signed feed's models that run on a Mac (strata_control/feed_models.py adds them; empty without a feed list)
+FEED_FAMILIES: list = []
+
+
+def all_families() -> tuple:
+    """The families the Mac app and Terminal offer: the built-in ones, then the signed feed's."""
+    return (*APP_FAMILIES, *FEED_FAMILIES)
+# What the repack and the pack work in beside the shards (the Mac install path counts it; the repacked file is MAC_MODELS' shard1_gb).
+REPACK_WORK_GB = 6.0
+
+
+def app_sizes(family: str) -> list[str]:
+    """The sizes the Mac app offers for a family: every MAC_MODELS entry of it that the Metal engine can run."""
+    return [m for m, d in MAC_MODELS.items() if d.get("family", "qwen") == family and not d.get("missing")]
+
+
+def repacked_gb(model: str) -> float:
+    """The disk the repacked GGUF takes (GB): shard1_gb for a many-shard Unsloth set, 0 for a file the engine maps as it is."""
+    d = MAC_MODELS.get(model, {})
+    return float(d["shard1_gb"]) if d.get("family") == "unsloth" and int(d.get("shards", 2)) > 2 else 0.0
+
+
+def install_disk_gb(model: str, download_left_gb: float) -> float:
+    """The free disk an install needs: what is still to download, the repacked file, and room to work."""
+    return float(download_left_gb) + repacked_gb(model) + REPACK_WORK_GB
+
+
 def model_need_gb(model: str) -> float:
     return MAC_MODELS[model]["shard1_gb"] + OVERHEAD_GB
 
@@ -223,8 +263,8 @@ def engine_args(pack: Path, shards: list, rt: Path, ctx: int, stream: bool = Fal
     hyper-connection read (the engine's default on Metal; STRATA_HC_Q8=0 in the config's env gives the exact BF16
     read).  Streaming from the SSD: one token per step, no draft layer (measured faster on the 32 GB M4); a streaming
     Mac with STREAM_MTP_FROM_GB or more keeps the draft layer and uses --spec STREAM_SPEC."""
-    mtp = stream_mtp(stream, ram_gb)
-    args = ["--pack", str(pack), "--native", str(shards[0]), "--ple-gguf", str(shards[1])]
+    mtp = stream_mtp(stream, ram_gb) and not MAC_MODELS.get(model, {}).get("no_mtp")       # a feed model whose entry says "drafter: none" has no draft layer
+    args = ["--pack", str(pack), "--native", str(shards[0]), "--ple-gguf", str(shards[1] if len(shards) > 1 else shards[0])]       # one file: its own PLE table
     if shards[0].name.endswith("-metal.gguf"):         # the repacked file: it is its own dense GGUF
         args += ["--native-dense-gguf", str(shards[0])]
     args += [

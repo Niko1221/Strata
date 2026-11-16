@@ -183,7 +183,7 @@ class RedactionTests(unittest.TestCase):
         self.assertNotIn(str(B.ROOT), red(f"loading {B.ROOT / 'strata-x.json'}"))
         self.assertIn("<strata>", red(f"loading {B.ROOT / 'strata-x.json'}"))
         self.assertNotIn(str(Path.home()), red(f"in {Path.home() / 'data'}"))
-        if len(user) >= 4:
+        if len(user) >= 4 and user.lower() not in "<user><home><ip><strata>":     # a user called "user" is left in the <user> that replaces it
             self.assertNotIn(user, red(f"hello {user} world"))
 
     def test_a_folder_under_a_short_home_keeps_its_own_placeholder(self):

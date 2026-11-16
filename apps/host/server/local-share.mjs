@@ -3,6 +3,7 @@ import http from 'node:http';
 import os from 'node:os';
 import { apiPath } from './api-paths.mjs';
 import { listenProblem } from './ports.mjs';
+import { badRequest, requestUrl } from './util.mjs';
 /** Sharing without a key is allowed (owner decision, 0.2.2): the person is told once, in plain words, and the app keeps offering to make a key. */
 export const NO_KEY_WARNING = 'No API key is set, so any device on this network can use your model. Create an API key to protect it.';
 export function createLocalShare({ handle, hasKey, changed = () => {}, host = '0.0.0.0', port = 8792 }) {
@@ -13,7 +14,9 @@ export function createLocalShare({ handle, hasKey, changed = () => {}, host = '0
     if (active) return state();
     if (listener) throw new Error('Sharing is already starting.');
     listener = http.createServer(async (req, res) => {
-      const path = apiPath(new URL(req.url ?? '/', 'http://localhost').pathname);
+      const url = requestUrl({ url: req.url, headers: {} });   // the Host header is not read here; a request target that is not a path is a 400 (#4397)
+      if (!url) return badRequest(res);
+      const path = apiPath(url.pathname);
       const method = req.method ?? 'GET';
       // #3208: with an API key set, a browser page of any site can call the shared API - the key decides, not the
       // origin. The browser's preflight (OPTIONS) never carries the key (the spec says so), so it is answered here,

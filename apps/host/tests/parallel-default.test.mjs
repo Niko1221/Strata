@@ -179,7 +179,7 @@ test('the draft layer (MTP) is part of what the card is sized for; switched off,
   assert.equal(slots(12, { mtp: false }), 1, 'a 12 GB card still gets one request at a time');
 });
 
-test('DFlash2 chosen on purpose means one request at a time unless the person picked a number (the engine keeps the MTP with request slots)', () => {
+test('DFlash2 chosen on purpose means one request at a time unless the person picked a number (a number they picked is kept and DFlash2 serves that many)', () => {
   const big = hw(72);
   const auto = chooseParallel({ config: cfg(32768), hardware: big });
   assert.ok(auto.slots > 1, 'a card with room gets slots by default');
@@ -191,4 +191,31 @@ test('DFlash2 chosen on purpose means one request at a time unless the person pi
   assert.equal(chooseParallel({ config: cfg(32768), values: { drafting: 'mtp' }, hardware: big }).slots, auto.slots, 'MTP and Auto keep the slots');
   assert.equal(chooseParallel({ config: cfg(32768), values: { drafting: 'dflash2', parallel: 3 }, hardware: big }).slots, 3, 'a number the person chose is theirs');
   assert.equal(applyParallel(cfg(32768, { parallel: 4 }), chosen).cfg.parallel, undefined, 'and the saved config carries no slots');
+});
+
+test('DFlash2 named with a number of requests the person chose: that many, no note, the number stays in the run config (owner 2026-11-03)', () => {
+  const big = hw(72);
+  for (const n of [2, 4, 8]) {
+    const viaValues = chooseParallel({ config: cfg(32768), values: { drafting: 'dflash2', parallel: n }, hardware: big });
+    assert.deepEqual([viaValues.slots, viaValues.explicit, viaValues.note], [n, true, null], `values ${n}`);
+    const viaConfig = chooseParallel({ config: cfg(32768, { drafting: 'dflash2', parallel: n }), hardware: big });
+    assert.deepEqual([viaConfig.slots, viaConfig.explicit, viaConfig.note], [n, true, null], `saved ${n}`);
+    const applied = applyParallel(cfg(32768, { drafting: 'dflash2', parallel: n }), viaConfig);
+    assert.equal(applied.cfg.parallel, n, 'the number stays');
+    assert.equal(applied.note, null);
+    assert.ok(!applied.cfg.args.includes('--batch-mtp'), 'no wish, no --batch-mtp');
+  }
+  // the same through the resolved drafter the load passes, and a --batch in the engine arguments
+  assert.equal(chooseParallel({ config: cfg(32768, { drafting: 'dflash2', parallel: 4 }), drafter: 'dflash2', hardware: big }).slots, 4);
+  const withBatch = chooseParallel({ config: { ...cfg(32768, { drafting: 'dflash2' }), args: ['--max-context', '32768', '--mtp', '/m', '--batch', '3'] }, drafter: 'dflash2', hardware: big });
+  assert.deepEqual([withBatch.explicit, withBatch.note], [true, null]);
+  // Expert mode's batch-mtp wish is passed on exactly as in 0.2.10 for every drafter: the server drops --batch-mtp when DFlash2 runs and keeps it when the MTP runs (Metal)
+  const wish = (extra, drafter) => chooseParallel({ config: cfg(32768), values: { parallel: 4, batchMtp: true, ...extra }, drafter, hardware: big }).batchMtp;
+  assert.equal(wish({ drafting: 'dflash2' }, 'dflash2'), true);
+  assert.equal(wish({ drafting: 'mtp' }, 'mtp'), true);
+  assert.equal(wish({}, 'dflash2'), true, 'Auto that resolved to DFlash2 is not named: the MTP serves the several requests');
+  assert.equal(wish({ drafting: 'dflash2' }, 'mtp'), true, 'named, but the drafter is not here yet: the MTP runs and keeps its slot switch');
+  // one request chosen is one request, and nothing chosen under DFlash2 is still one with the note
+  assert.equal(chooseParallel({ config: cfg(32768), values: { drafting: 'dflash2', parallel: 1 }, hardware: big }).slots, 1);
+  assert.match(chooseParallel({ config: cfg(32768), values: { drafting: 'dflash2' }, hardware: big }).note, /DFlash2 answers one request at a time/);
 });

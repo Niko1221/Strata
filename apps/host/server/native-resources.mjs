@@ -36,6 +36,12 @@ export function defaultReserves(config,hardware,baselineReserve=0){
  /* A card that shares the PC's memory (Strix Halo, other APUs) has no memory of its own to keep a fifth of: that fifth is RAM, and "Leave 20% for my work" already keeps it
   *  through the RAM budget. A fifth of the shared pool here held back 16 GB of expert cache for nothing (#3510); the display floor stays. */
  const shared=placed.length>0&&placed.some(g=>g.uma===true||g.unified===true);
+ /* A chip that shares the PC's memory has no memory of its own for the driver to page out of (#2065 is a display card's): the reserve is the one setup wrote into
+  *  the run config (Windows Strix Halo: 700, strata_control/setup_config.py UMA_WIN_RESERVE_MIB, pictures on or off), on both profiles, so the app's Load starts the
+  *  engine as `strata launch` does (QAGUI-STRIX 11-09: the Load made it 1024, 2048 with pictures). A config with none of setup's (an old one): the one setup would
+  *  write for this chip, which Control's hardware report carries (setup_reserve_mib, one-card runs only, as setup's rule); without that (Linux, an older Control)
+  *  the floor below, as before (with no reserve at all a Windows engine applies its own 2560 MiB floor, which hung UD-Q4_K_XL on Strix Halo: G16). */
+ if(shared){const own=baselineReserve>0?baselineReserve:placement.length===1&&placed.length===1&&wholeMib(placed[0].setup_reserve_mib)>0?wholeMib(placed[0].setup_reserve_mib):null;if(own!==null)return {work:own,performance:own};}
  /* "work" keeps a fifth of the card, but on a card of 16 GB or less no more than 1536 MiB: a fifth of 12 GB (2457) cost 20% of the speed against 1536, which already leaves 1.1 GiB of VRAM free after the load (RTX 5070, Gyro-S 64K, 5 pairs; notes-023-tune.md). */
  const fifth=gpuMemory.length?Math.floor(Math.min(...gpuMemory)*1024*.2):0,cap=gpuMemory.length&&Math.min(...gpuMemory)<=16?1536:Infinity;
  return {work:gpuMemory.length&&!headless&&!shared?Math.max(safety,Math.min(fifth,cap)):safety,performance:safety};
@@ -125,6 +131,8 @@ export const engineVersionOfExe=exe=>{const m=/engine[\\/](\d+(?:\.\d+)+)-/.exec
    technical line for Details. The caller tries once and never again, and does not save this config. */
 export function saferStart(config,hardware,model,failure){
  const text=String(failure??'');
+ // The engine refused an oversized prompt chunk at the start (an APU whose pool the expert cache fills; the person or the environment named the chunk): the same chunk would fail again, and a memory setting is not the cause.
+ if(/prompt chunk does not fit/i.test(text))return null;
  // A start that died for a reason that is not memory (a missing or bad DLL, a crash, a blocked file) is not helped by a memory setting, and must not be called a memory failure.
  if(/0xC0000135|0xC000007B|0xC0000142|0xC000001D|0xC0000005|0xC0000409|0xC0000022|error while loading shared libraries|cannot open shared object file|\bENOENT\b|exit code 127|exit code 139|illegal instruction/i.test(text))return null;
  const ranOut=/out of memory|memory guard|\boom\b|\bkilled\b|exit code 137|cannot allocate|not enough memory|bad_alloc|insufficient memory/i.test(text),first=ranOut?'The first start ran out of memory':'The first start did not finish';

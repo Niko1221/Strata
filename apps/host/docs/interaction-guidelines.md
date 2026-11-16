@@ -6,7 +6,7 @@ measure` / `npm run motion` (runtime), so a violation fails a command rather tha
 a code review.
 
 Companion documents: [`design-system-notes.md`](design-system-notes.md) for how
-the app maps onto the kit, [`dsh-recon.md`](dsh-recon.md) for the product this
+the app maps onto the kit, [`dsh-recon.md`](../../../history/apps/host/docs/dsh-recon.md) (archived) for the product this
 one is modelled on.
 
 ---

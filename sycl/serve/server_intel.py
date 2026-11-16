@@ -331,15 +331,16 @@ def install_two_card_spec():
     from strata_control import intel_spec
     original = S.engine_args
 
-    def engine_args(cfg):
-        args = original(cfg)
+    def engine_args(cfg, exe=None, *, announce=True):      # the base signature (serve/server.py engine_args): start calls it with exe, the budget check with announce=False
+        args = original(cfg, exe, announce=announce)
         try:
             if cfg.get("backend") == "sycl" and S.layer_split_of(cfg):
                 sysfs = intel_spec.sysfs_cards()
                 cards = [sysfs[i] for i in S.gpu_list(cfg) if isinstance(i, int) and 0 <= i < len(sysfs)]
                 new, note = intel_spec.plan(args, cfg.get("user_args"), cards, mtp_off=cfg.get("mtp") is False)
                 if note:
-                    print("[strata] " + note, flush=True)
+                    if announce:                                   # (announce=False builds the arguments without any line)
+                        print("[strata] " + note, flush=True)
                     return new
         except Exception as exc:  # noqa: BLE001 - a rule that cannot be read leaves the config's own args
             print(f"[strata] two-card --spec rule skipped: {exc}", flush=True)

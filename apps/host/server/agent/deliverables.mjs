@@ -49,6 +49,44 @@ export function isWithin(parent, child) {
   return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
 }
 
+/**
+ * Who made which file when several chats work in one folder (#5008). A folder chosen for two chats is shared on purpose, but a
+ * chat's list of "files this turn made" is private to that turn: a file another chat wrote must not be shown as this chat's work.
+ * One registry is shared by the turns of a host. A turn `begin`s on its folder, `claim`s the files its own file tools wrote, and
+ * `end`s. Turns that were running at the same time in the same folder are `overlapped`: for them the end-of-turn sweep reports only
+ * files nobody else claimed AND that no overlapping turn could have written; since a script's output cannot be told apart, it is
+ * left out for an overlapped turn rather than given to the wrong chat.
+ */
+export class FolderClaims {
+  #active = new Map();     // folder key -> Set(owner)
+  #overlap = new Map();    // folder key + owner -> true
+  #claims = new Map();     // folder key -> Map(rel path -> owner)
+  #key(root) { return same(resolve(String(root))); }
+  begin(root, owner) {
+    const k = this.#key(root);
+    const set = this.#active.get(k) ?? new Set();
+    const others = [...set].filter(o => o !== owner);
+    if (others.length) { for (const o of [...others, owner]) this.#overlap.set(`${k}|${o}`, true); }
+    set.add(owner); this.#active.set(k, set);
+  }
+  end(root, owner) {
+    const k = this.#key(root);
+    const set = this.#active.get(k);
+    if (!set) return;
+    set.delete(owner); this.#overlap.delete(`${k}|${owner}`);
+    if (!set.size) { this.#active.delete(k); this.#claims.delete(k); }
+  }
+  claim(root, rel, owner) {
+    const k = this.#key(root);
+    if (!this.#active.has(k)) return;
+    const m = this.#claims.get(k) ?? new Map();
+    m.set(rel, owner); this.#claims.set(k, m);
+  }
+  ownerOf(root, rel) { return this.#claims.get(this.#key(root))?.get(rel) ?? null; }
+  /** True when another turn was running in this folder at any time during this owner's turn. */
+  overlapped(root, owner) { return this.#overlap.get(`${this.#key(root)}|${owner}`) === true; }
+}
+
 export class DeliverableTracker {
   /**
    * `exclude`: folders that are never searched when they lie inside the chat's folder (the app, the engine and its components, AppData,
@@ -56,8 +94,9 @@ export class DeliverableTracker {
    * tracked at all. The turn only reports files the turn itself wrote: an explicit file-tool call, or (for scripts) a file whose modified
    * or creation time is after the turn started.
    */
-  constructor(root, { now = Date.now, exclude = [], forbid = [] } = {}) {
+  constructor(root, { now = Date.now, exclude = [], forbid = [], claims = null, owner = null } = {}) {
     this.root = root ? resolve(root) : null;
+    this.claims = claims; this.owner = owner;
     this.now = now;
     if (this.root && forbid.filter(Boolean).some(p => isWithin(p, this.root))) this.root = null;
     // only the folders that lie inside the chat's folder matter for the search
@@ -104,13 +143,15 @@ export class DeliverableTracker {
   }
 
   /** The deliverable for one path now, compared with the snapshot (and the last report), or null when nothing changed. */
-  check(rawPath) {
+  check(rawPath, { explicit = false } = {}) {
     if (!this.root) return null;
     const full = resolve(this.root, String(rawPath ?? ''));
     const rel = relative(this.root, full).split(sep).join('/');
     if (!rel || rel.startsWith('..') || isAbsolute(rel) || rel.split('/').some(seg => SKIP_DIR.test(seg)) || this.#excluded(dirname(full))) return null;
     let st; try { st = statSync(full); } catch { return null; }
     if (!st.isFile()) return null;
+    // A file this chat's own file tool wrote is this chat's, whoever else works in the folder (#5008).
+    if (explicit && this.claims && this.owner) this.claims.claim(this.root, rel, this.owner);
     const old = this.before.get(rel);
     if (old && old.size === st.size && old.mtimeMs === st.mtimeMs) return null;
     const type = fileType(rel);
@@ -139,7 +180,14 @@ export class DeliverableTracker {
       // modified during the turn; or created during it (a copy that kept its old modified time), which is only certain when the first look saw the whole folder
       const fresh = st.mtimeMs >= since || (!this.snapshotTruncated && (st.birthtimeMs || 0) >= since);
       if (!fresh) return;
-      const d = this.check(relative(this.root, full)); if (d) out.push(d);
+      const rel = relative(this.root, full).split(sep).join('/');
+      if (this.claims && this.owner) {
+        // Another chat's file tool wrote it: not ours. Written by a script while another chat was working in the same folder: nobody can say whose it is.
+        const by = this.claims.ownerOf(this.root, rel);
+        if (by && by !== this.owner) return;
+        if (!by && this.claims.overlapped(this.root, this.owner)) return;
+      }
+      const d = this.check(rel); if (d) out.push(d);
     });
     return out;
   }

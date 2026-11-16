@@ -581,7 +581,8 @@ function renderAbout(eng, hw, st) {
     ["Context", eng.max_context ? `${fmt(eng.max_context)} tokens` : null],
     ["KV cache", kv ? `${kv}${eng.kv_resident ? `, streamed: ${fmt(eng.kv_resident)} positions per layer in VRAM, the rest in RAM` : ", all in VRAM"}` : null],
     ["Experts in VRAM", eng.expert_slots ? `${fmt(eng.expert_slots)} (${gb((eng.expert_cache_mib || 0) * 1048576)} GB)` : null],
-    ["Speculation", eng.spec ? `MTP drafts up to ${Math.max(0, (eng.mtp_max || eng.spec) - 1)} tokens${eng.lookup ? ", prompt lookup on" : ""}` : null],
+    // #5080: the MTP line only when the MTP is the drafter (eng.drafting, strata_control/drafting.py engine_info; an engine too old to say had only the MTP)
+    ["Speculation", eng.spec && (eng.drafting == null || eng.drafting === "mtp") ? `MTP drafts up to ${Math.max(0, (eng.mtp_max || eng.spec) - 1)} tokens${eng.lookup ? ", prompt lookup on" : ""}` : null],
     ["Images", eng.images ? "on" : "off"],
     ["Experimental speed projection", projectionText(eng.cvec)],
   ]);
@@ -1574,10 +1575,17 @@ async function start() {
   if (settings.chatList) await setChatList(true, false);       // the saved-chats list is read before the first draw
   setBusy(false);
   renderChat();
-  const startQuestion = new URLSearchParams(location.search).get("q");   // /?q=... starts a chat (a shortcut)
-  if (startQuestion) history.replaceState(null, "", location.pathname + location.hash);
-  loadHealth().then(loadMcp).then(() => { if (startQuestion) { $("input").value = startQuestion; send(); } });
+  // /?q=... fills the question in and focuses the box; it is never sent from the address (#4221): any page can link here,
+  // and a send would go out with the API key and the MCP tools saved in this browser. The person presses Send.
+  const startQuestion = new URLSearchParams(location.search).get("q");
+  if (startQuestion) {
+    history.replaceState(null, "", location.pathname + location.hash);
+    $("input").value = startQuestion;
+    autosize();
+  }
+  loadHealth().then(loadMcp);
   showTab(location.hash.slice(1) || "chat");
+  if (startQuestion && tab === "chat") $("input").focus();
   poll();
   requestAnimationFrame(fitHeader);
 }

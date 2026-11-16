@@ -36,6 +36,35 @@ std::vector<std::string> apply_nv_defaults(int major, int minor);
 
 namespace strata::core {
 
+/// NVIDIA default that changes the answers (round 0212, NVSINGLE; the owner said yes 11-03): STRATA_MMQ_KQ=1, the K-quant MMQ prompt
+/// kernels for the experts of Unsloth's UD-Q4/Q5/Q6_K_XL files (Q4_K / Q5_K / Q5_1 / Q6_K), which otherwise are dequantized to FP16 and multiplied by
+/// cuBLAS.  A pack without K-quant experts never reads the variable.  Cards of compute capability 8.0 and up only (measured on sm_86 and sm_120).
+/// On by default; STRATA_MMQ_KQ=0, STRATA_NV_KQ_DEFAULT=0 and STRATA_DEFAULTS=026 are the off switches (kNvKqDefaultOn=false would leave it behind
+/// STRATA_NV_KQ_DEFAULT=1).  Measured: RTX PRO 6000 prompt +26..38%, A6000 +2..11%, first-token KL 0.024 / 0.035, 61-task suite 54 vs 53.
+/// min_major / min_minor are the lowest compute capability among the visible cards.
+constexpr bool kNvKqDefaultOn = true;
+std::vector<std::pair<std::string, std::string>> nv_kq_default_env(int min_major, int min_minor, bool defaults026);
+std::vector<std::pair<std::string, std::string>> nv_kq_default_env(int min_major, int min_minor);
+/// Sets what nv_kq_default_env returns where the user has not set the variable; prints one line to stderr when it set anything and `say` is true.  fused_here: Strata's own fused
+/// kernels read the K-quant experts on this machine (nv_kq_fused_here for a visible card); the line then says so, otherwise it is the earlier line, byte for byte.
+/// The engine calls it with say = false before it knows the model (option time) and prints the line itself once the expert layout is loaded, only when
+/// nv_kq_line_wanted says the loaded set has experts the switch decides for.
+std::vector<std::string> apply_nv_kq_default(int min_major, int min_minor, bool fused_here = false, bool say = true);
+/// A ggml type of an expert tensor whose prompt products STRATA_MMQ_KQ / STRATA_PF_FUSED_KQ decide: Q4_K, Q5_K, Q6_K and Q5_1 (the four types
+/// prefill::mmq::supported() hands to the K-quant switch).  IQ types, Q2_0, Q8_0, Q4_0 ... are not decided by it.
+bool nv_kq_expert_type(int ggml_type);
+/// Whether the start-up line about K-quant experts is true of the loaded set: some layer has such a type as gate/up or as down (pairs of ggml types per layer).
+/// IQ3_S / IQ2_XS sets: no.  UD-Q4_K_XL (Q4_K / Q5_K gate/up): yes.  A set whose only K-quant-family tensor is a Q5_1 down: yes, the switch decides that product.
+bool nv_kq_line_wanted(const std::vector<std::pair<int, int>>& layer_gate_up_down_types);
+/// Whether a CUDA card (raw compute capability, its multiprocessor count) reads UD-Q4_K_XL's K-quant experts (Q4_K / Q5_K gate/up with a Q5_1 or Q8_0 down) on Strata's
+/// own fused kernels, from the environment as the engine reads it: the card rule of fused_tile::kq_takes with STRATA_PF_FUSED_KQ, STRATA_PF_FUSED_SM40 and
+/// STRATA_PF_FUSED_SM86; STRATA_PF_FUSED=0 turns every fused kernel off.
+bool nv_kq_fused_here(int major, int minor, int sms);
+/// The line apply_nv_kq_default prints (without the newline).
+std::string nv_kq_default_line(bool fused_here);
+/// The same line for a build with (mmq_built) or without llama.cpp's MMQ kernels; the caller knows the build (STRATA_PREFILL_MMQ is defined on strata_prefill only).
+std::string nv_kq_default_line(bool fused_here, bool mmq_built);
+
 /// dflash2-kern: the speculative runs' faster start-up adaptation of the expert tier (opt-in on sm_86 with STRATA_SPEC_ADAPT_SM86=1 since owner round 9; STRATA_SPEC_ADAPT_EVERY / _WARM, read by
 /// generate.cpp): sm_86 only (z440 A4000 Q2_0; the P100 is opt-in through the two variables, notes-dflash2-kern.md).  Not part of
 /// the exact table above: the residency it changes decides which experts the GPU rounds, as the adaptive tier always does.  The user's

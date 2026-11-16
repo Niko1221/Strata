@@ -30,18 +30,23 @@ import strata_mcp  # noqa: E402
 
 CHUNK = 64 << 10                                       # the tests' piece size (setup uses 32 MiB)
 DATA = bytes((i * 7 + (i >> 8)) & 0xFF for i in range(CHUNK * 40 + 12345))       # 40 whole pieces and a short last one
+BIG = (bytes((i * 11 + (i >> 9)) & 0xFF for i in range(1 << 16)) * 170)[:(10 << 20) + 12345]     # 10 MiB and a bit: longer than the one-stream read
 NAME = "t.gguf"
 
 
 class Server:
     """A threaded HTTP server for one file.  `faults(path, start, end, nth)` may answer a request with an error."""
 
-    def __init__(self, data=DATA, ranges=True, length=True, redirect=False, delay=0.002, faults=None):
+    def __init__(self, data=DATA, ranges=True, length=True, redirect=False, delay=0.002, faults=None, hold_from=None):
         self.data, self.ranges, self.length, self.redirect, self.delay = data, ranges, length, redirect, delay
         self.faults = faults
+        # hold_from: a body byte at this file offset or later is not sent until the "release" event is set (the headers and every byte before it are):
+        # a client is at a known place, with no timing in it, until the test lets go (a kill test; release.set() also frees the handlers)
+        self.hold_from, self.release = hold_from, threading.Event()
         self.lock = threading.Lock()
         self.gets, self.heads, self.redirects = [], 0, 0           # gets: (start, end) of every ranged GET
         self.active = self.max_active = 0
+        self.streams = self.max_streams = 0                         # the same without setup's one-byte probes (Range: bytes=0-0)
         self.nth = {}
         outer = self
 
@@ -104,6 +109,10 @@ class Server:
             self.nth[key] = n = self.nth.get(key, 0) + 1
             self.active += 1
             self.max_active = max(self.max_active, self.active)
+            probe = rng == "bytes=0-0"
+            if not probe:
+                self.streams += 1
+                self.max_streams = max(self.max_streams, self.streams)
         try:
             fault = self.faults(path, start, end, n) if self.faults else None
             if fault and fault[0] == "status":
@@ -122,6 +131,8 @@ class Server:
             cut = fault[1] if fault and fault[0] == "cut" else None
             try:
                 for i in range(0, len(body), 16384):
+                    if self.hold_from is not None and start + i >= self.hold_from:
+                        self.release.wait(120)
                     if cut is not None and i >= cut:
                         h.connection.shutdown(2)           # the connection drops in the middle of the body
                         return
@@ -133,6 +144,8 @@ class Server:
         finally:
             with self.lock:
                 self.active -= 1
+                if not probe:
+                    self.streams -= 1
 
 
 def pin_of(data):
@@ -169,8 +182,11 @@ def run(server, d, pin="auto", name=NAME):
 
 
 def asked(srv):
-    """The pieces (indexes) the server was asked for, one entry per request; the one-byte probe is left out."""
-    return [s // CHUNK for s, e in srv.gets if (s, e) != (0, 0)]
+    """The pieces (indexes) the server was asked for, one entry per request; the one-byte probe is left out, and so is the
+    plain whole-file GET that Python before 3.13 sends when it follows the HEAD's redirect (urllib turns the redirected HEAD into
+    a GET and the download closes it at once); no piece is that big."""
+    whole = (0, len(srv.data) - 1)
+    return [s // CHUNK for s, e in srv.gets if (s, e) not in ((0, 0), whole)]
 
 
 def files(d):
@@ -201,7 +217,7 @@ class ParallelDownload(unittest.TestCase):
             code, out = run(srv, d)
             self.assertIsNone(code, out)
             self.assertEqual((Path(d) / NAME).read_bytes(), DATA)
-            self.assertEqual(srv.max_active, 1)
+            self.assertEqual(srv.max_streams, 1)   # (the one-byte probe can still be sending: not a stream)
             self.assertEqual(len(srv.gets), 1)
 
     def test_one_connection_variable_restores_one_stream(self):
@@ -210,7 +226,7 @@ class ParallelDownload(unittest.TestCase):
                 code, out = run(srv, d)
             self.assertIsNone(code, out)
             self.assertEqual((Path(d) / NAME).read_bytes(), DATA)
-            self.assertEqual(srv.max_active, 1)
+            self.assertEqual(srv.max_streams, 1)   # (the one-byte probe can still be sending: not a stream)
             self.assertEqual(srv.gets, [(0, len(DATA) - 1)])                # one request for the whole file
 
     def test_connection_count_variable(self):
@@ -227,7 +243,7 @@ class NoRangeSupport(unittest.TestCase):
             code, out = run(srv, d)
             self.assertIsNone(code, out)
             self.assertEqual((Path(d) / NAME).read_bytes(), DATA)
-            self.assertEqual(srv.max_active, 1)
+            self.assertEqual(srv.max_streams, 1)   # (the one-byte probe can still be sending: not a stream)
             self.assertEqual(files(d), [NAME, NAME + ".done"])
 
     def test_a_server_without_any_length_is_read_in_one_stream(self):
@@ -235,7 +251,7 @@ class NoRangeSupport(unittest.TestCase):
             code, out = run(srv, d, pin=None)                                # no length, so nothing to check a pin against first
             self.assertIsNone(code, out)
             self.assertEqual((Path(d) / NAME).read_bytes(), DATA)
-            self.assertEqual(srv.max_active, 1)
+            self.assertEqual(srv.max_streams, 1)   # (the one-byte probe can still be sending: not a stream)
 
     def test_a_head_without_a_length_still_gets_the_connections(self):
         """ModelScope's HEAD has no Content-Length (#1915): the length comes from a one-byte ranged GET, not 'unknown'."""
@@ -297,41 +313,78 @@ class Resume(unittest.TestCase):
             self.assertEqual(again | done, set(range(41)))
             self.assertEqual(files(d), [NAME, NAME + ".done"])
 
-    def test_a_killed_download_continues(self):
+    def killed_download_continues(self, one_stream):
+        """Kill setup.download in a subprocess once 12 pieces are on disk, then run it again: it continues and fetches none of them again.
+        No timing decides this: the test server sends nothing from file offset HOLD on until the test has killed the runner (Server.hold_from), so the
+        runner is always found part-way, however slow or fast the machine is. one_stream: the range probe fails in the runner, so setup reads the
+        file in one stream (parallel_download returns False), whose .part is an unbroken run from the start."""
+        # The parallel path saves every finished piece, so 13 whole pieces may arrive and 12 are on disk before the kill. The one-stream path writes
+        # what it reads in blocks of 8 MiB (setup.download_single), so its file must be longer than that: 8 MiB land on disk, then the server holds.
+        data = BIG if one_stream else DATA
+        HOLD = 9 << 20 if one_stream else 13 * CHUNK
+        pin = (len(data), hashlib.sha256(data).hexdigest())
+        probe = "setup._probe_ranges = lambda *a, **k: False\n" if one_stream else ""
         runner = (
             "import sys; sys.path[:0] = [%r, %r]\n"
             "import setup\n"
             "setup.DL_CHUNK = %d; setup.DL_MIN_PARALLEL = 0; setup.DL_SAVE_EVERY = 0.05; setup.DL_CONNECTIONS = 4\n"
+            "%s"
             "pin = (%d, %r)\n"
             "setup.file_pin = lambda u: pin\n"
             "setup.download(sys.argv[1], __import__('pathlib').Path(sys.argv[2]) / %r, 'the model')\n"
-            % (str(ROOT), str(ROOT / "tools"), CHUNK, len(DATA), hashlib.sha256(DATA).hexdigest(), NAME))
-        with small_pieces(), Server(delay=0.05) as srv, tempfile.TemporaryDirectory() as d:
+            % (str(ROOT), str(ROOT / "tools"), CHUNK, probe, pin[0], pin[1], NAME))
+        with small_pieces(), Server(data=data, hold_from=HOLD) as srv, tempfile.TemporaryDirectory() as d:
+            self.addCleanup(srv.release.set)                    # never leave a handler thread waiting
             env = dict(os.environ, STRATA_SOURCE="huggingface")
-            proc = subprocess.Popen([sys.executable, "-c", runner, srv.url, d], env=env,
-                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            err = Path(d) / "runner.err"
+            with open(err, "wb") as err_file:
+                proc = subprocess.Popen([sys.executable, "-c", runner, srv.url, d], env=env,
+                                        stdout=subprocess.DEVNULL, stderr=err_file)
+            side = Path(d) / (NAME + ".part.chunks")
+            part = Path(d) / (NAME + ".part")
+            started = time.time()
+            deadline = started + 60
             try:
-                deadline = time.time() + 60
-                side = Path(d) / (NAME + ".part.chunks")
                 while time.time() < deadline and proc.poll() is None:
                     try:
-                        if sum(b - a for a, b in json.loads(side.read_text())["done"]) >= 12:
+                        if side.is_file():
+                            if sum(b - a for a, b in json.loads(side.read_text())["done"]) >= 12:
+                                break
+                        elif part.is_file() and part.stat().st_size >= 12 * CHUNK:   # the one-stream fallback (below)
                             break
                     except (OSError, ValueError, KeyError):
                         pass
-                    time.sleep(0.05)
+                    threading.Event().wait(0.02)                # (not time.sleep: small_pieces() makes that a no-op)
             finally:
+                code = proc.poll()
                 proc.kill()
                 proc.wait()
-            self.assertTrue((Path(d) / (NAME + ".part")).exists(), "the download finished before it was killed")
-            saved = json.loads(side.read_text())
-            done = {i for a, b in saved["done"] for i in range(a, b)}
-            self.assertGreaterEqual(len(done), 12)
+                srv.release.set()
+            state = "the runner %s after %.1f s; its stderr: %s" % (
+                "was still running" if code is None else "had already ended with exit code %s" % code, time.time() - started,
+                err.read_text(errors="replace")[-2000:] or "(empty)")
+            self.assertTrue(part.exists(), "the .part file is missing at the kill: " + state)
+            if side.exists():
+                saved = json.loads(side.read_text())
+                done = {i for a, b in saved["done"] for i in range(a, b)}
+            else:
+                # One failed range probe makes setup read the file in one stream (parallel_download returns False): its .part is an
+                # unbroken run from the start and has no piece list, which the next run reads as finished pieces (_load_pieces).
+                # Seen on GitHub's Linux and macOS runners (run 42699343686); both ways must continue without fetching them again.
+                done = set(range(part.stat().st_size // CHUNK))
+            self.assertGreaterEqual(len(done), 12, "%d pieces at the kill; %s" % (len(done), state))
+            srv.hold_from = None                                # the second run is not held
             srv.gets.clear()
-            code, out = run(srv, d)
+            code, out = run(srv, d, pin=pin)
             self.assertIsNone(code, out)
-            self.assertEqual((Path(d) / NAME).read_bytes(), DATA)
+            self.assertEqual((Path(d) / NAME).read_bytes(), data)
             self.assertFalse(set(asked(srv)) & done, "pieces that were finished before the kill are fetched again")
+
+    def test_a_killed_download_continues(self):
+        self.killed_download_continues(one_stream=False)
+
+    def test_a_killed_one_stream_download_continues(self):
+        self.killed_download_continues(one_stream=True)
 
     def test_a_part_from_one_stream_continues_after_its_last_whole_piece(self):
         with small_pieces(), Server() as srv, tempfile.TemporaryDirectory() as d:
@@ -398,20 +451,78 @@ class Failures(unittest.TestCase):
             self.assertEqual((Path(d) / NAME).read_bytes(), DATA)
             self.assertGreater(srv.redirects, 2)                            # HEAD + first probe + a new address after the 403
 
-    def test_a_pinned_hash_mismatch_deletes_the_file_and_stops(self):
+    def test_a_pinned_hash_mismatch_keeps_the_file_as_bad_and_stops(self):
         wrong = bytes(reversed(DATA))
         with small_pieces(), Server() as srv, tempfile.TemporaryDirectory() as d:
             code, out = run(srv, d, pin=pin_of(wrong))
             self.assertEqual(code, 1)
-            self.assertEqual(files(d), [])                                  # no file, no .done, no .part, no piece list
+            self.assertEqual(files(d), [NAME + ".bad"])                     # no file, no .done, no .part, no piece list; the bytes are kept
+            self.assertEqual((Path(d) / (NAME + ".bad")).read_bytes(), DATA)
 
     def test_a_pinned_hash_mismatch_with_the_same_size(self):
         other = bytes((b ^ 0x55) for b in DATA)
         with small_pieces(), Server(data=other) as srv, tempfile.TemporaryDirectory() as d:
             code, out = run(srv, d)
             self.assertEqual(code, 1)
-            self.assertIn("wrong SHA-256", out)
-            self.assertEqual(files(d), [])
+            self.assertIn("does not match the pinned SHA-256", out)
+            self.assertIn(NAME + ".bad", out)
+            self.assertIn("the server sends exactly the bytes you have", out)      # the repair compared every block: the server's file is this one
+            self.assertEqual(files(d), [NAME + ".bad"])
+
+    def test_a_kept_bad_file_is_taken_back_when_it_matches_the_pin_now(self):
+        """A false mismatch (a bad read, a pin that was wrong and is fixed) costs one hash, not the download: the .bad file is the file again."""
+        wrong = bytes(reversed(DATA))
+        with small_pieces(), Server() as srv, tempfile.TemporaryDirectory() as d:
+            code, _ = run(srv, d, pin=pin_of(wrong))
+            self.assertEqual(code, 1)
+            srv.gets.clear()
+            code, out = run(srv, d)                                        # the right pin now
+            self.assertIsNone(code, out)
+            self.assertEqual(srv.gets, [], "nothing was asked of the server")
+            self.assertEqual(files(d), [NAME, NAME + ".done"])
+            self.assertEqual((Path(d) / NAME).read_bytes(), DATA)
+
+    def test_a_kept_bad_file_is_removed_by_a_good_download(self):
+        other = bytes((b ^ 0x55) for b in DATA)
+        with small_pieces(), Server() as srv, tempfile.TemporaryDirectory() as d:
+            (Path(d) / (NAME + ".bad")).write_bytes(other)                  # kept by an earlier run; not the pinned bytes
+            code, out = run(srv, d)
+            self.assertIsNone(code, out)
+            self.assertEqual(files(d), [NAME, NAME + ".done"])
+            self.assertEqual((Path(d) / NAME).read_bytes(), DATA)
+
+    def test_a_kept_bad_file_is_removed_when_there_is_no_room_for_the_new_copy(self):
+        other = bytes((b ^ 0x55) for b in DATA)
+        usage = type("U", (), {"free": 1000, "total": 10 ** 6, "used": 0})()
+        seen = []
+
+        def faults(path, start, end, nth):
+            seen.append(files(self.d))
+            return None
+
+        with small_pieces(), Server(faults=faults) as srv, tempfile.TemporaryDirectory() as d,                 mock.patch.object(setup.shutil, "disk_usage", lambda p: usage):
+            self.d = d
+            (Path(d) / (NAME + ".bad")).write_bytes(other)
+            code, out = run(srv, d)
+            self.assertIsNone(code, out)
+            self.assertTrue(seen and NAME + ".bad" not in seen[0], seen[:1])   # gone before the first piece came down
+            self.assertEqual(files(d), [NAME, NAME + ".done"])
+
+    def test_a_kept_bad_file_stays_while_there_is_room(self):
+        other = bytes((b ^ 0x55) for b in DATA)
+        seen = []
+
+        def faults(path, start, end, nth):
+            seen.append(files(self.d))
+            return None
+
+        with small_pieces(), Server(faults=faults) as srv, tempfile.TemporaryDirectory() as d:
+            self.d = d
+            (Path(d) / (NAME + ".bad")).write_bytes(other)
+            code, out = run(srv, d)
+            self.assertIsNone(code, out)
+            self.assertTrue(seen and NAME + ".bad" in seen[0], "kept until the new copy is checked")
+            self.assertNotIn(NAME + ".bad", files(d))
 
     def test_a_full_disk_stops_with_a_message(self):
         with small_pieces(), Server() as srv, tempfile.TemporaryDirectory() as d:
@@ -440,7 +551,9 @@ class Failures(unittest.TestCase):
             self.d = d
             code, out = run(srv, d)
             self.assertIsNone(code, out)
-            self.assertTrue(seen and seen[0] is not None and seen[0] <= 32 * CHUNK, seen)
+            # a preallocated file would already be the full size (len(DATA)) here; what the other connection has written ahead of piece 30 is
+            # thread timing (Windows put it at 34 and 39 pieces), so the check is only that the file has not been made full size
+            self.assertTrue(seen and seen[0] is not None and seen[0] < len(DATA), seen)
 
 
 class Progress(unittest.TestCase):
@@ -558,3 +671,70 @@ class Runs(unittest.TestCase):
         self.assertGreaterEqual(setup.DL_CONNECTIONS, 8)
         self.assertGreaterEqual(setup.DL_RUN, 2)
         self.assertEqual(setup.DL_CHUNK, 32 << 20)                           # the piece list on disk names this size: resumes need it
+
+
+class WholeMarkNeedsThePin(unittest.TestCase):
+    """#4088: a full-length shard with no finish mark and a pinned SHA-256 must not be marked "whole" (the approach of PR #4318, written here).
+
+    A run killed between the rename of a finished .part and the end of its hash leaves exactly that state; the mark the next run wrote made done()
+    true, download() skipped the file, the pinned hash was never checked and a shard damaged by that crash stayed in place."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.folder = Path(self.tmp.name)
+        self.repo = next(r for r, files in setup.REPO_PINS.items() if files)
+        self.name = next(iter(setup.REPO_PINS[self.repo]))
+        self.hf = f"https://huggingface.co/{self.repo}/resolve/main/"
+        patch = mock.patch.object(setup, "whole_shard", return_value=True)       # the test is about the mark, not the GGUF header
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def test_a_pinned_shard_is_left_for_the_download_check(self):
+        shard = self.folder / self.name
+        shard.write_bytes(b"x")
+        self.assertIsNotNone(setup.file_pin(self.hf + self.name), "the file needs a pin for this test to mean anything")
+        setup.mark_whole_unless_pinned([shard], self.hf, own=False)
+        self.assertFalse(setup.done(shard), "no finish mark: download() hashes it and repairs it")
+        self.assertFalse(shard.with_name(shard.name + ".done").exists())
+
+    def test_a_file_without_a_pin_keeps_the_whole_mark(self):
+        shard = self.folder / "hand-copied.gguf"
+        shard.write_bytes(b"x")
+        self.assertIsNone(setup.file_pin(self.hf + shard.name))
+        setup.mark_whole_unless_pinned([shard], self.hf, own=False)
+        self.assertTrue(setup.done(shard))
+        self.assertIn("whole", shard.with_name(shard.name + ".done").read_text(encoding="utf-8"))
+
+    def test_the_persons_own_file_keeps_the_mark(self):
+        shard = self.folder / self.name
+        shard.write_bytes(b"x")
+        setup.mark_whole_unless_pinned([shard], self.hf, own=True)           # --gguf-dir: not a download
+        self.assertTrue(setup.done(shard))
+
+    def test_a_family_with_no_hf_folder_keeps_the_mark_and_does_not_raise(self):
+        """The NVFP4 families have no "hf" key (they download a file list): the helper must not need one (it raised KeyError in main())."""
+        shard = self.folder / self.name
+        shard.write_bytes(b"x")
+        setup.mark_whole_unless_pinned([shard], None, own=False)
+        self.assertTrue(setup.done(shard))
+        setup.mark_whole_unless_pinned([], None, own=False)
+
+    def test_a_marked_or_missing_file_is_not_touched(self):
+        shard = self.folder / "marked.gguf"
+        shard.write_bytes(b"x")
+        setup.mark(shard, "sha256 abc")
+        setup.mark_whole_unless_pinned([shard, self.folder / "absent.gguf"], self.hf, own=False)
+        self.assertEqual(shard.with_name(shard.name + ".done").read_text(encoding="utf-8").strip(), "sha256 abc")
+
+    def test_the_damaged_pinned_file_is_then_hashed_by_the_download(self):
+        """The whole path: full length, no mark, wrong bytes -> not marked -> download() takes its 'stopped before the check' branch and hashes it."""
+        shard = self.folder / self.name
+        shard.write_bytes(b"x" * 8)
+        pin = (8, "ab" * 32)                                                  # a pin of this file's size, so the "full length" branch is the one taken
+        calls = []
+        with mock.patch.dict(setup.REPO_PINS[self.repo], {self.name: pin}), mock.patch.object(setup, "range_total", return_value=8),                 mock.patch.object(setup, "_urlopen", lambda *a, **k: type("R", (), {"headers": {"Content-Length": "8"}, "__enter__": lambda s: s, "__exit__": lambda s, *e: False, "close": lambda s: None})()),                 mock.patch.object(setup, "verify_sha256", lambda *a, **k: calls.append(a)):
+            setup.mark_whole_unless_pinned([shard], self.hf, own=False)
+            self.assertFalse(setup.done(shard))
+            setup.download(self.hf + self.name, shard)
+        self.assertTrue(calls and calls[0][1:3] == pin, "the pinned hash was checked")
