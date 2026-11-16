@@ -1323,8 +1323,7 @@ __global__ void native_mmvq_multi_kernel(const typename F::Block* __restrict__ w
         const int k = s26ts::tsum_token<P>(int(threadIdx.x));
         const int j = k / ROWS, i = k % ROWS;
         if (int(threadIdx.x) == s26ts::tsum_lane<P>(k) && k < V && row0 + i < n_out) y[std::size_t(j) * n_out + row0 + i] = sum;
-        return;
-    }
+    } else {
 #pragma unroll
     for (int j = 0; j < NCOLS; ++j) {
 #pragma unroll
@@ -1334,6 +1333,7 @@ __global__ void native_mmvq_multi_kernel(const typename F::Block* __restrict__ w
             tmp[j][i] = warp_sum(tmp[j][i]);
             if (threadIdx.x == i && row0 + i < n_out) y[std::size_t(j) * n_out + row0 + i] = tmp[j][i];
         }
+    }
     }
 }
 

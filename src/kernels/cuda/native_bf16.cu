@@ -281,8 +281,7 @@ __global__ void bf16_f32_mmvf_rows_kernel(const float* __restrict__ x, int64_t l
         }
         const int r = j / NT, k = j % NT;
         if (own && o0 + r < n_out && k < n_tok) y[(size_t) k * ldy + o0 + r] = sum;
-        return;
-    }
+    } else {
 #pragma unroll
     for (int r = 0; r < RPB; ++r)
 #pragma unroll
@@ -307,6 +306,7 @@ __global__ void bf16_f32_mmvf_rows_kernel(const float* __restrict__ x, int64_t l
 #pragma unroll
                 for (int k = 0; k < NT; ++k)
                     if (k < n_tok) y[(size_t) k * ldy + o0 + r] = acc[r][k];
+    }
 }
 
 template <int B>
