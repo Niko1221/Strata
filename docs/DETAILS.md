@@ -513,6 +513,14 @@ applies at the next start. Network, key, MCP and program keys are not editable t
 - With `"stream": true` everything arrives as it is made: thinking, answer and tool calls (the tool's name first, then its
   arguments piece by piece). While the model reads a long prompt the stream sends keep-alives. The server window prints progress
   every 15 s and `GET /status` says what it is doing. Closing the connection or pressing stop in your app stops the model.
+- **Continuous usage in the stream (opt-in, `/v1/chat/completions` only).** vLLM 风格：`"stream": true` 且
+  `"stream_options": {"include_usage": true, "continuous_usage_stats": true}` 时，每个数据 chunk 都携带从请求开始
+  **累计**的 usage（`prompt_tokens` / `completion_tokens` / `total_tokens`），供 omp 等客户端在生成过程中实时计算
+  tok/s。计数是引擎的真实输出 token 数（含 thinking、工具调用参数和 wrap-up 补充；MCP 多轮时跨轮累计、不重置），
+  不是文本长度或 chunk 数估算；同一请求内单调不减，`total_tokens = prompt_tokens + completion_tokens` 始终成立。
+  中间 usage 省略 `prompt_tokens_details`（准确的 `cached_tokens` 要等引擎 DONE）；最终 chunk 的权威 usage
+  （含缓存统计和 `timings`）覆盖中间快照。默认关闭：不传 `stream_options`、或只传 `include_usage`，保持原行为
+  （仅最终 usage）。Anthropic `/v1/messages` 和 Responses `/v1/responses` 不受影响。
 - A tool call counts only when it names a tool the request declared. A namespaced tool (`mcp__filesystem.write_file`) is
   that call when the model writes `mcp__filesystem__write_file`, `mcp__filesystem=write_file`, `mcp__filesystem_write_file`,
   or the bare member (`write_file`) and exactly one declared tool has that member. A name with `__` in it (`mcp__playwright__browser_navigate`)

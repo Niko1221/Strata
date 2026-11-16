@@ -3,6 +3,8 @@
     python -m unittest serve.test_request_accounting -v
 """
 import json
+import os
+import tempfile
 import unittest
 import urllib.error
 import urllib.request
@@ -74,9 +76,10 @@ class RequestAccounting(unittest.TestCase):
             raw = response.read().decode()
             return response.status, raw
 
-    def chat(self, path="/v1/chat/completions", stream=False, budget=20):
+    def chat(self, path="/v1/chat/completions", stream=False, budget=20, options=None):
         code, raw = self.request(path, {"model": "m", "messages": [{"role": "user", "content": "2+2?"}],
-                                       "max_tokens": 400, "reasoning_budget_tokens": budget, "stream": stream})
+                                       "max_tokens": 400, "reasoning_budget_tokens": budget, "stream": stream,
+                                       **({"stream_options": options} if options else {})})
         self.assertEqual(code, 200, raw)
         if stream:
             return [json.loads(line[6:]) for line in raw.splitlines() if line.startswith("data: {")]
@@ -132,6 +135,20 @@ class RequestAccounting(unittest.TestCase):
         self.assertEqual(final["choices"][0]["finish_reason"], "stop")
         self.assert_original_input(final["usage"])
         self.assert_request_work(final["timings"], final["usage"]["completion_tokens"])
+
+    def test_openai_stream_continuous_usage_survives_budget_wrap_up(self):
+        # continuous_usage_stats 跨 reasoning-budget wrap-up（第二次 engine generate）：计数不重置，
+        # 最终口径与关闭时完全一致（原始 API prompt、cached_tokens == REUSED、wrap-up token 计入输出）
+        events = self.chat(stream=True, options={"include_usage": True, "continuous_usage_stats": True})
+        self.assertTrue(all("usage" in c for c in events[:-1]), "每个数据 chunk 都带累计 usage")
+        seen = [c["usage"]["completion_tokens"] for c in events[:-1]]
+        self.assertEqual(seen[0], 0, "role chunk 从 0 开始")
+        self.assertEqual(seen, sorted(seen), "跨 wrap-up 的第二次 generate 计数不重置")
+        final = events[-1]
+        self.assertEqual(final["choices"][0]["finish_reason"], "stop")
+        self.assert_original_input(final["usage"])
+        self.assert_request_work(final["timings"], final["usage"]["completion_tokens"])
+        self.assertGreaterEqual(final["usage"]["completion_tokens"], seen[-1])
 
     def test_cancelled_continuation_keeps_original_input_and_counts_each_done_once(self):
         self.engine.cancel_continuation = True

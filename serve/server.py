@@ -6209,21 +6209,25 @@ class Service:
         return now
 
     def run(self, ids, thinking, tools, max_new, sampling, cancel, force=None,
-            declared_only=False, deferred=False) -> Iterator[tuple[str, object]]:
+            declared_only=False, deferred=False, progress=None) -> Iterator[tuple[str, object]]:
         """The request's events (see _run); with "prevent_sleep" in the config, the PC stays awake while it runs or waits."""
         ka = self.keep_awake
         if ka is not None:
             ka.acquire()
         try:
-            yield from self._run(ids, thinking, tools, max_new, sampling, cancel, force, declared_only, deferred)
+            yield from self._run(ids, thinking, tools, max_new, sampling, cancel, force, declared_only, deferred,
+                                 progress=progress)
         finally:
             if ka is not None:
                 ka.release()
 
     def _run(self, ids, thinking, tools, max_new, sampling, cancel, force=None,
-             declared_only=False, deferred=False) -> Iterator[tuple[str, object]]:
+             declared_only=False, deferred=False, progress=None) -> Iterator[tuple[str, object]]:
         """Yields ("event", Event) as text arrives, then ("done", {"finish": .., "completion_tokens": ..}).
-        `force` (forced_call): the opening of the call the reply must make - see prepare()."""
+        `force` (forced_call): the opening of the call the reply must make - see prepare().
+        `progress`: a per-request dict for continuous_usage_stats (openai_chunks reads it); only then is it
+        updated, with this run's true token count n, so the mid-stream usage and the final usage come from
+        one counter."""
         # the model card's sampling for this thinking state, then the config's block, then the Chat settings shared with
         # apps; the request's own fields win over all of them
         defaults = {**model_card_sampling(self.model_arch, thinking), **self.sampling_defaults, **self.shared}
@@ -6257,6 +6261,12 @@ class Service:
         thinking_n = 0                                  # tokens written while thinking (Responses' reasoning_tokens)
         stop_list = stop_strings(sampling)
         stops = StopMatcher(stop_list) if stop_list else None
+
+        def note_live_progress():
+            # continuous_usage_stats: the live count for openai_chunks' mid-stream usage.  The same n the final
+            # usage uses, so wrap-up/close-retry tokens count and the two can never disagree.
+            if progress is not None:
+                progress["round_completion_tokens"] = n
 
         def cut(evs):
             """The events with the answer's text cut at a stop string (OpenAI stop, Anthropic stop_sequences)."""
@@ -6433,6 +6443,7 @@ class Service:
                                     yield "ping", None
                                     continue
                                 n += 1
+                                note_live_progress()
                                 if first_engine_token_s is None:
                                     first_engine_token_s = round(time.perf_counter() - waiting, 3)
                                     with self.status_lock:
@@ -6587,6 +6598,7 @@ class Service:
                                       "thinking once and continuing (reasoning_close_retry)", flush=True)
                                 for t in extra:
                                     n += 1
+                                    note_live_progress()
                                     raw_ids.append(t)
                                     thinking_n += parser.state in ("reasoning", "rcall")
                                     evs = cut(parser.feed(detok.push(t)))
@@ -6624,6 +6636,7 @@ class Service:
                                   flush=True)
                         for t in extra:
                             n += 1
+                            note_live_progress()
                             raw_ids.append(t)
                             thinking_n += parser.state in ("reasoning", "rcall")
                             evs = cut(parser.feed(detok.push(t)))
@@ -6916,7 +6929,7 @@ def _debug_req(api, req, messages, tools, max_new, thinking, prompt_tokens):
 
 # ------------------------------------------------------------------------------------------------ MCP tool loop
 def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new, max_req, sampling, cancel,
-                 mcp_names):
+                 mcp_names, progress=None):
     """Service.run with the MCP tools executed here: the model writes a call to an MCP tool, the server runs it, adds
     the call and its result to the conversation and lets the model continue - up to `max_rounds` times.  Yields what
     Service.run yields (text, thinking, the request's own tool calls) plus ("mcp", {...}) for the tool activity, and
@@ -6932,7 +6945,8 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
     messages = list(messages)
     while True:
         text, reasoning, calls, own_calls = [], [], [], 0
-        for kind, x in svc.run(ids, thinking, tools, max_new, sampling, cancel, declared_only=True):
+        for kind, x in svc.run(ids, thinking, tools, max_new, sampling, cancel, declared_only=True,
+                               progress=progress):
             if kind == "done":
                 done = x
                 continue
@@ -6952,6 +6966,11 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
                     reasoning.append(ev.text)
             yield kind, x
         total += done["completion_tokens"]
+        if progress is not None:
+            # continuous_usage_stats: the next round (and the tool-running heartbeats before it) report the
+            # running total, so completion_tokens never restarts at 0 between MCP rounds
+            progress["completed_before_round"] = total
+            progress["round_completion_tokens"] = 0
         run_them = calls and not own_calls and not finalizing and done["finish"] == "stop" and not cancel.is_set()
         if not run_them:
             for c in calls:                              # announced, never run: close them in the client's view
@@ -7011,6 +7030,9 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
             yield "mcp", {"event": "limit", "max_rounds": max_rounds}
         try:
             ids, thinking, max_new = svc.prepare(messages, tools, kw, max_req, cancel=cancel)
+            if progress is not None:
+                progress["prompt_tokens"] = len(ids)   # the last round's prompt, as the final usage reports
+                progress["round_completion_tokens"] = 0
         except ClientGone:                                      # #1999: the client left while a picture was prepared
             done = {**done, "finish": "cancel"}
             break
@@ -7180,7 +7202,18 @@ def prompt_progress(svc: Service):
             "time_ms": int(getattr(engine, "progress_ms", 0) or 0)}
 
 
-def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel, run=None, force=None):
+def continuous_usage_requested(req: dict) -> bool:
+    """vLLM 风格的连续 usage：stream + stream_options.include_usage + stream_options.continuous_usage_stats
+    三个条件同时成立才启用。中间 chunk 携带的是从请求开始累计的真实 token 数（与最终 usage 同源），
+    供 omp 等客户端在流式生成过程中实时计算 tok/s；默认路径（未显式开启）行为完全不变。"""
+    options = req.get("stream_options")
+    return bool(req.get("stream") is True and isinstance(options, dict)
+                and options.get("include_usage") is True
+                and options.get("continuous_usage_stats") is True)
+
+
+def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel, run=None, force=None,
+                  progress=None):
     """`run`: the events to send instead of Service.run's (run_with_mcp); its ("mcp", {...}) items become chunks with
     an empty delta and a `strata_mcp` field, which only the web app reads.  `force`: see Service.run."""
     cid, created = "chatcmpl-" + uuid.uuid4().hex[:24], int(time.time())
@@ -7189,11 +7222,22 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
     # that does not.  Strata already sends a keep-alive comment on every PP line, so this only fills that line in.
     want_progress = bool(req.get("return_progress"))
 
+    def add_live_usage(c):
+        """连续 usage（仅 continuous_usage_requested 时 progress 非 None）：给数据 chunk 附累计 usage。
+        计数来自 progress 对象（Service._run 的真实 n），不是文本/chunk 估算；最终 chunk 的权威
+        usage 另行设置，会覆盖这里的中间快照。keep-alive 是 SSE comment，不经过这里。"""
+        if progress is None:
+            return c
+        pt = progress["prompt_tokens"]
+        ct = progress["completed_before_round"] + progress["round_completion_tokens"]
+        c["usage"] = {"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": pt + ct}
+        return c
+
     def chunk(delta, finish=None):
         return {"id": cid, "object": "chat.completion.chunk", "created": created, "model": model,
                 "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
 
-    yield chunk({"role": "assistant", "content": ""})
+    yield add_live_usage(chunk({"role": "assistant", "content": ""}))
     lp = LogprobEntries(svc, allowed_ids(req), cancel) if top_logprobs(req) is not None else None
 
     def with_lp(c, key):
@@ -7206,36 +7250,37 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
     finished = set()                               # ... and the ones whose final tool_call came (#211)
     answered_done = False                          # the run's own end (its "done" event) arrived
     born = getattr(svc.engine, "gen", None)        # the engine process this request is on (read again with every event: a start inside the run is its own)
-    for kind, x in run if run is not None else svc.run(ids, thinking, tools, max_new, req, cancel, force=force, declared_only=True):
+    for kind, x in run if run is not None else svc.run(ids, thinking, tools, max_new, req, cancel, force=force,
+                                                       declared_only=True, progress=progress):
         born = getattr(svc.engine, "gen", born)
         if kind == "ping":
             # a PP line: the prompt is being read and there is nothing to say yet.  It used to be only the SSE comment;
             # now it carries the progress when the client asked, and stays the comment when there is nothing to report.
             pp = prompt_progress(svc) if want_progress else None
-            yield None if pp is None else {**chunk({}), "prompt_progress": pp}
+            yield None if pp is None else add_live_usage({**chunk({}), "prompt_progress": pp})
         elif kind == "mcp":
             c = chunk({})
             c["strata_mcp"] = x
-            yield c
+            yield add_live_usage(c)
         elif kind == "event":
             ev: Event = x
             if ev.kind == "reasoning" and ev.text:
-                yield with_lp(chunk({"reasoning_content": ev.text}), "reasoning_content")
+                yield add_live_usage(with_lp(chunk({"reasoning_content": ev.text}), "reasoning_content"))
             elif ev.kind == "content" and ev.text:
-                yield with_lp(chunk({"content": ev.text}), "content")
+                yield add_live_usage(with_lp(chunk({"content": ev.text}), "content"))
             elif ev.kind == "tool_start":
                 streamed[ev.call.id] = calls
                 calls += 1
-                yield chunk({"tool_calls": [{"index": streamed[ev.call.id], "id": ev.call.id, "type": "function",
-                                             "function": {"name": ev.call.name, "arguments": ""}}]})
+                yield add_live_usage(chunk({"tool_calls": [{"index": streamed[ev.call.id], "id": ev.call.id, "type": "function",
+                                             "function": {"name": ev.call.name, "arguments": ""}}]}))
             elif ev.kind == "tool_args":
-                yield chunk({"tool_calls": [{"index": streamed[ev.call.id], "function": {"arguments": ev.text}}]})
+                yield add_live_usage(chunk({"tool_calls": [{"index": streamed[ev.call.id], "function": {"arguments": ev.text}}]}))
             elif ev.kind == "tool_call" and ev.call.id in streamed:
                 finished.add(ev.call.id)
             elif ev.kind == "tool_call":
-                yield chunk({"tool_calls": [{"index": calls, "id": ev.call.id, "type": "function",
+                yield add_live_usage(chunk({"tool_calls": [{"index": calls, "id": ev.call.id, "type": "function",
                                              "function": {"name": ev.call.name,
-                                                          "arguments": json.dumps(ev.call.arguments, ensure_ascii=False)}}]})
+                                                          "arguments": json.dumps(ev.call.arguments, ensure_ascii=False)}}]}))
                 calls += 1
         else:
             answered_done = True
@@ -8691,9 +8736,12 @@ def make_handler(svc: Service):
             self._watch_client(cancel)                       # #430 #431 (#1999: before prepare, which can take long)
             ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new, force=force, req=req, cancel=cancel)
             _debug_req("openai", req, messages, tools, max_new, thinking, len(ids))
-            run = run_with_mcp(svc, svc.mcp, messages, tools, kw, ids, thinking, max_new, max_req, req, cancel,
-                               {t["name"] for t in extra}) if use_mcp else None
-            chunks = openai_chunks(svc, req, ids, thinking, tools, max_new, cancel, run=run, force=force)
+            progress = ({"prompt_tokens": len(ids), "completed_before_round": 0, "round_completion_tokens": 0}
+                        if continuous_usage_requested(req) else None)   # one object per request: the run and the
+            run = run_with_mcp(svc, svc.mcp, messages, tools, kw, ids, thinking, max_new, max_req, req, cancel,      # stream share it
+                               {t["name"] for t in extra}, progress=progress) if use_mcp else None
+            chunks = openai_chunks(svc, req, ids, thinking, tools, max_new, cancel, run=run, force=force,
+                                   progress=progress)
             if validator is not None:
                 chunks = structured_chunks(chunks, validator)
             chunks = self._capture(chunks, "openai")
