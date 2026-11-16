@@ -45,7 +45,7 @@ struct GdnArgs { uint32_t h_k, h_v, channels, commit; float eps; uint32_t plane;
 struct GdnPArgs { uint32_t n_tok, h_k, h_v, channels; float eps; uint32_t f32; };
 struct QsaArgs { uint32_t pos0, pos_base, max_cells, n_tok; float eps; };
 struct MmPlanArgs { uint32_t n_ent, topk, n_expert, tm, n_blocks; };
-struct MmArgs { uint64_t gate_off, up_off, down_off, gu_stride, d_stride; uint32_t gu_row, d_row, n_embd, n_ff; };
+struct MmArgs { uint64_t gate_off, up_off, down_off, gu_stride, d_stride; uint32_t gu_row, d_row, n_embd, n_ff, ebase, ecount; };
 struct ArgArgs { uint32_t n_vocab, parts; };
 
 double median(std::vector<double> v) { std::sort(v.begin(), v.end()); return v[v.size() / 2]; }
@@ -153,7 +153,7 @@ int main(int argc, char** argv) {
                 qcur = F32(MT * 24 * 256), qcurh = F16(MT * 24 * 256), qidx = F32(MT * 4 * 128), scores = F32(MT * MB), qids = cx.alloc(4 * MT * QB),
                 part = F32(MT * QCHUNKS * 24 * 258), XQ = F32(4 * MT * 6144 + MT * 384), xqh = F16(MT * 6144);
     mtl::Buffer logits = F32(MT * NEXP), ids = cx.alloc(4 * MT * TOPK), wts = F32(MT * TOPK),
-                bcnt = cx.alloc(4 * (size_t)nblk_max * NEXP), boff = cx.alloc(4 * (size_t)nblk_max * NEXP), eoff = cx.alloc(4 * NEXP),
+                bcnt = cx.alloc(4 * (size_t)nblk_max * NEXP), boff = cx.alloc(4 * (size_t)nblk_max * NEXP), eoff = cx.alloc(4 * (NEXP + 1)),
                 tiles = cx.alloc(8 * (size_t)(maxrows / TM + 1)), meta = cx.alloc(64), stok = cx.alloc(4 * (size_t)maxrows),
                 sw = F32(maxrows), pos = cx.alloc(4 * MT * TOPK), XS = F16((size_t)maxrows * N), HS = F16((size_t)maxrows * NFF),
                 YE = F32((size_t)maxrows * N), yr = F32(MT * N), gsh = F32(MT * NFF), ush = F32(MT * NFF), hh = F16(MT * NFF),
