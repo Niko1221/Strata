@@ -29,6 +29,11 @@ Q38 = release.module("release060_q38_input", HERE / "q38-input.py")
 PAYLOAD = ("strata-q36.exe", "strata-q38.exe", "native-build.json", "q38-build.json", "LICENSE-q38-formats.txt", "LICENSE-turbo-dialects.txt")
 
 
+def validate_version(output: str) -> None:
+    """Require the stable token for every runner, including the owned Q38."""
+    release.require(re.search(r"(^|\s)0\.6\.0(\s|$)", output), "Native version probe failed")
+
+
 def parser(description: str) -> argparse.ArgumentParser:
     """Common argv for two small adapters of release.py's guarded runner."""
     result = argparse.ArgumentParser(description=description)
@@ -282,7 +287,7 @@ def native(args: argparse.Namespace, work: Path) -> dict:
     probes = {}
     for binary in ("strata.exe", "strata-q36.exe", "strata-q38.exe"):
         probes[binary] = release.command([source / binary, "--version"], timeout=20)
-        release.require(re.search(r"(^|\s)0\.6\.0(\s|$)", probes[binary]), "Native version probe failed")
+        validate_version(probes[binary])
     release.save(work / "version-probes.json", probes)
     toolkit = release.load(CUDA / "version.json")
     release.require(toolkit.get("cuda", {}).get("version") == "13.3.1", "Unexpected CUDA toolkit version")

@@ -5,6 +5,7 @@
 #include "ops.cuh"
 #include "resources.hpp"
 #include "protocol.hpp"
+#include "input_reader.hpp"
 #include "protocol_output.hpp"
 #include "kv.hpp"
 #include "upload_reader.hpp"
@@ -208,10 +209,7 @@ static void run(Engine& e,const std::vector<int32_t>& prompt,int count,Sampling 
 }
 static void serve(Engine& e){
     Q38Protocol state;
-    std::thread reader([&]{std::string line;bool overflow=false;char c;while(std::cin.get(c)){
-        if(c=='\n'){if(!overflow){if(!line.empty()&&line.back()=='\r')line.pop_back();state.submit(line);}else state.submit("INVALID_LINE_TOO_LONG");line.clear();overflow=false;}
-        else if(!overflow){if(line.size()>=4*1024*1024){line.clear();overflow=true;}else line+=c;}
-    }state.end_input();});
+    Q38InputReader reader(GetStdHandle(STD_INPUT_HANDLE),state);
     // All INFO values are fixed ASCII tokens or numbers, never file metadata.
     const auto& c=e.kv->config();
     std::printf("INFO output_language=%s orthography=%s session_reset=every_request private_kv=unsupported\n",e.japanese?"ja":"model-default",e.japanese?Q::orthography_version:"off");
@@ -232,13 +230,13 @@ static void serve(Engine& e){
         }
         if(fatal)break;
     }
-    if(reader.joinable()){if(!state.input_ended())CancelSynchronousIo(reader.native_handle());reader.join();}
+    reader.stop_and_join();
 }
 int main(int argc,char** argv){try{
     std::string model,tokens,forced,dump,kv_mode="auto",spin_view,spin_profile,language="model-default";int ctx=4096,count=32;bool resident=false,inspection=false,conservative=false;Sampling sampling;
     for(int i=1;i<argc;++i){std::string a=argv[i];auto value=[&](){Q::require(i+1<argc,"missing option value");return std::string(argv[++i]);};
         if(a=="--help"||a=="-h"){std::puts("strata-q38 own-native CUDA SM120\n--model FILE --ctx-size N (4096) --serve\n--tokens IDS --n N [--force IDS] [--dump-full-logits FILE]\n--kv auto|f16|k8v4|spin8_k8v4|f16_turbo2|f16_turbo3|f16_turbo4 (auto default)\nAuto order: f16, f16_turbo4, spin8_k8v4; context and weights unchanged.\n--spin8-view vector|plus|minus --spin8-profile FILE (compiled reference default)\n--output-language ja|model-default (standalone default: model-default)\n--conservative-sync (diagnostic reference execution)\n--inspect (CPU only) --version\nFP32 recurrent state, sequential prefill; no vision/prefix/shift/speculation/graph.");return 0;}
-        if(a=="--version"){std::puts("strata-q38 own-native 0.6.0-dev CUDA13 SM120");return 0;}
+        if(a=="--version"){std::puts("strata-q38 own-native 0.6.0 CUDA13 SM120");return 0;}
         if(a=="--model")model=value();else if(a=="--ctx-size")ctx=integer(value(),1,262144);else if(a=="--tokens")tokens=value();else if(a=="--n")count=integer(value(),0,262144);
         else if(a=="--force")forced=value();else if(a=="--dump-full-logits")dump=value();else if(a=="--serve")resident=true;else if(a=="--inspect")inspection=true;
         else if(a=="--kv")kv_mode=value();else if(a=="--spin8-view")spin_view=value();else if(a=="--spin8-profile")spin_profile=value();

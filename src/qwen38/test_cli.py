@@ -28,7 +28,7 @@ def check(label, args, expected, contains=''):
     results.append({'case': label, 'exit': p.returncode, 'stdout': p.stdout, 'stderr': p.stderr})
     print('PASS', label)
 check('help', ['--help'], True, 'own-native')
-check('version', ['--version'], True, 'own-native')
+check('version', ['--version'], True, 'strata-q38 own-native 0.6.0 CUDA13 SM120\n')
 check('language help', ['--help'], True, '--output-language ja|model-default')
 check('invalid language', ['--model', 'missing.gguf', '--output-language', 'zh', '--inspect'], False, 'output language must be')
 check('Japanese forced diagnostics rejected', ['--model', 'missing.gguf', '--output-language', 'ja', '--tokens', '1', '--force', '2'], False, 'constraints off')

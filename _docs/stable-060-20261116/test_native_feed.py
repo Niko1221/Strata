@@ -389,6 +389,14 @@ class Boundaries(unittest.TestCase):
         ), self.assertRaises(RuntimeError):
             self.feed.feed_phase(argparse.Namespace(no_dsv41_carry=False), self.root)
 
+    def test_actual_runner_version_contract(self) -> None:
+        for output in ("Strata 0.6.0", "strata-q38 own-native 0.6.0 CUDA13 SM120\n"):
+            with self.subTest(output=output):
+                self.native.validate_version(output)
+        for output in ("strata-q38 own-native 0.6.0-dev CUDA13 SM120", "Strata 0.6.00", "Strata v0.6.0", "Strata 0.6.0+local", ""):
+            with self.subTest(output=output), self.assertRaises(RuntimeError):
+                self.native.validate_version(output)
+
     def test_native_success_probes_all_binaries_before_packaging(self) -> None:
         build = self.root / "build"
         (build / "Release").mkdir(parents=True)
@@ -405,7 +413,7 @@ class Boundaries(unittest.TestCase):
 
         def command(argv, **_kwargs):
             probes.append(Path(argv[0]).name)
-            return "Strata 0.6.0"
+            return "strata-q38 own-native 0.6.0 CUDA13 SM120\n" if Path(argv[0]).name == "strata-q38.exe" else "Strata 0.6.0"
 
         def logged(argv, _work, name, *_args):
             if name == "builder":
