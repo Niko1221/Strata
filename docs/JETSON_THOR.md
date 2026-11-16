@@ -17,7 +17,7 @@ This page was written on one Jetson AGX Thor Developer Kit:
 
 ## What works, and what does not
 
-- **Works from source:** the engine build (`spark/build_engine.sh`, engine and `strata-dsv41`), the CUDA kernel parity tests on the
+- **Works from source:** the engine build (`spark/build_engine.sh`), the CUDA kernel parity tests on the
   GPU, and the Terminal reading the machine (`strata doctor`, `setup.py --check`: the Thor is found, counted as unified memory and asked
   for `sm_110`).  One test fix came with it: on any ARM64 host the `quantize_act_parity` host references now compile `-ffp-contract=off`
   (CMake sets it) - gcc on aarch64 fuses the host's `iscale * xb[j]` into the rounding trick that follows, which stops it matching the
