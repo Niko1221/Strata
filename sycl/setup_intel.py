@@ -560,7 +560,20 @@ def install(argv) -> None:
     sys.exit(S.main())
 
 
+def use_venv() -> None:
+    """Started with the system Python (`python sycl/setup_intel.py`): run again with setup.sh's .venv. setup installs its
+    packages into sys.prefix and writes its stamp there, which is /usr for the system Python (Permission denied)."""
+    if sys.prefix != sys.base_prefix:                  # already in a virtual environment
+        return
+    venv = ROOT / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    if not venv.is_file():
+        S.say("This needs Strata's own Python environment. Run: ./setup.sh --backend sycl [setup's options]")
+        sys.exit(1)
+    os.execv(str(venv), [str(venv), str(Path(__file__).resolve()), *sys.argv[1:]])
+
+
 if __name__ == "__main__":
+    use_venv()
     try:
         install(sys.argv[1:])
     except KeyboardInterrupt:
