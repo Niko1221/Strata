@@ -62,8 +62,33 @@ The delivery regression stages the actual PE/CRT payload, executes its version
 probe through the production validator, and verifies its portable record with
 the actual Node consumer. Focused delivery Python tests passed 23/23 and Node
 identity tests passed 4/4 (`q38-final-delivery-python-r1` and
-`q38-final-delivery-node-r1`). The separate legacy source/resource/GPU binding
-still needs the root-owned fresh measurements before its selection is updated.
+`q38-final-delivery-node-r1`).
+
+Root then ran the fresh legacy build, resource recapture and ten serial GPU
+cases against clean consumer B `221ee683df6c8727146f6af2810ac47183cafe37`.
+Observed completion was handed back before any final tracked edit. Receipts
+`q38-final-legacy-build-r1`, `q38-final-legacy-capture-r1` and
+`gpu-q38-final-legacy-r1` all passed with Job active-after 0. All eleven recorded
+legacy outputs were byte-identical before/after the no-op build. All 451 resource
+entries and library hashes matched the preceding profile; only the native source
+digest changed to `1f992dc100ee7806b00563b7c4568cc03c30a476a8ae6a2c7377dc097887a899`.
+The selected baseline is byte-identical to the measured candidate, SHA-256
+`863c2dc3fc077de7b12000a9d043a841059dabe772465e3fae90d3b4e2c51122`.
+Its private comparison SHA-256 is
+`9861b9aae9a374d7ced7d5ddc82ac58212cfb06c2a72df20bdce565c28121a5d`.
+
+acceptance.py now pins the four actual final legacy proof artifacts. The direct
+fixture checks their new paths, source digest, exact candidate/comparison hashes,
+unchanged outputs, actual consumer B and the observed 1200-second outer deadline.
+The GPU suite itself ran 442.135 seconds, with ten passes, zero failures/errors/
+skips, minimum available RAM 11170017280 bytes and minimum free GPU memory
+10807 MiB. These are root-produced synthetic numerical/lifecycle observations.
+The final worker CPU check `q38-final-legacy-bindings-r1` passed 42 tests with
+120 deselected, plus focused Ruff, whitespace and AST checks. The AST comparison
+proves production validation changed only in four proof pins. No resource amount,
+compiler/ggml identity, library hash or resource floor was relaxed. Old captures
+and reports remain intact. The one final scoped independent review follows this
+source/binding repair; root still owns later release operations.
 
 Exact commands are retained in each named receipt's `command` array and adjacent
 `.command.txt`. The final command shapes were `cmake --build <build> --config

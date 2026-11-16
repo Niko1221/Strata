@@ -18,14 +18,14 @@ spec = importlib.util.spec_from_file_location("acceptance_test_target", HERE / "
 a = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(a)
 COMMIT = "a" * 40
-CAPTURE = Path("H:/Strata/evidence/upstream-sync-20261116/native-q38-legacy-refresh-r1")
+CAPTURE = Path("H:/Strata/evidence/upstream-sync-20261116/native-q38-final-legacy-r1")
 GPU_CAPTURE = {
     "gpu_binding": CAPTURE / "binding.json",
-    "gpu_report": Path("H:/Strata/evidence/upstream-sync-20261116/gpu-q38-legacy-r1.json"),
-    "gpu_guard": Path("H:/Strata/evidence/upstream-sync-20261116/receipts/gpu-q38-legacy-r1.json"),
-    "gpu_junit": Path("H:/Strata/evidence/upstream-sync-20261116/gpu-q38-legacy-r1.xml"),
+    "gpu_report": Path("H:/Strata/evidence/upstream-sync-20261116/gpu-q38-final-legacy-r1.json"),
+    "gpu_guard": Path("H:/Strata/evidence/upstream-sync-20261116/receipts/gpu-q38-final-legacy-r1.json"),
+    "gpu_junit": Path("H:/Strata/evidence/upstream-sync-20261116/gpu-q38-final-legacy-r1.xml"),
 }
-MEASURED_SOURCE = "39e2edfabca66d1a6467d7fb8769b7948c7e361d14debac75465b73a806c1c07"
+MEASURED_SOURCE = "1f992dc100ee7806b00563b7c4568cc03c30a476a8ae6a2c7377dc097887a899"
 MEASURED_BINARIES = {
     "strata.exe": "b00e4ee065740fb9b25b57d946103096d4af4078989b316c6c62077e3c62d73f",
     "strata-q36.exe": "2eb40da0d574031eaa685939dbaacbb1eb1335d7c35159b674fa1a4f5a88b858",
@@ -33,16 +33,16 @@ MEASURED_BINARIES = {
 
 
 def test_selected_profile_is_complete_actual_capture() -> None:
-    """Select the complete recapture after a real rebuild, with no resource growth."""
+    """Select the complete recapture after a real build, with no resource growth."""
     profile = HERE.parents[1] / a.PROFILE
-    expected = "1db8c735238f98167cb676eec672a69586c7ee70e73a42e949a5eb53de8bd621"
+    expected = "863c2dc3fc077de7b12000a9d043a841059dabe772465e3fae90d3b4e2c51122"
     a.artifact(profile, expected)
     a.artifact(CAPTURE / "candidate-measurements.json", expected)
     assert profile.read_bytes() == (CAPTURE / "candidate-measurements.json").read_bytes()
     comparison = a.release.load(CAPTURE / "comparison.json")
     a.artifact(
         CAPTURE / "comparison.json",
-        "f0461fd49ebf6aabaf70ec4a206ec78c679a337d4d23c224ba28d97205c11b08",
+        "9861b9aae9a374d7ced7d5ddc82ac58212cfb06c2a72df20bdce565c28121a5d",
     )
     assert comparison["measuredEntries"] == 451
     assert (
@@ -78,7 +78,7 @@ def test_selected_profile_is_complete_actual_capture() -> None:
 
 
 def test_selected_profile_refresh_is_guarded_remeasurement() -> None:
-    """Bind real rebuild provenance and keep every established resource floor."""
+    """Bind the actual no-op build and keep every established resource floor."""
     before = a.release.load(CAPTURE / "before.json")
     after = a.release.load(CAPTURE / "after.json")
     assert (
@@ -90,21 +90,11 @@ def test_selected_profile_refresh_is_guarded_remeasurement() -> None:
     assert after["sourceUnchanged"] is True and after["exitCode"] == 0
     assert before["compilerJobs"] == after["compilerJobs"] == 5
     assert before["command"][-2:] == ["--parallel", "5"]
-    assert {
-        name
-        for name, row in after["outputs"].items()
-        if row["sha256"] != before["outputs"][name]["sha256"]
-    } == {
-        "strata.exe",
-        "strata-q36.exe",
-        "strata_kernels.lib",
-        "strata_engine.lib",
-        "strata_prefill.lib",
-        "strata_qwen35.lib",
-    }
+    assert before["locationHead"] == "221ee683df6c8727146f6af2810ac47183cafe37"
+    assert before["outputs"] == after["outputs"]
     for name, digest in MEASURED_BINARIES.items():
         assert after["outputs"][name]["sha256"] == digest
-    for name in ("native-q38-legacy-refresh-r1", "native-q38-legacy-capture-r1"):
+    for name in ("q38-final-legacy-build-r1", "q38-final-legacy-capture-r1"):
         receipt = a.release.load(CAPTURE.parent / "receipts" / (name + ".json"))
         assert receipt["passed"] is True
         a.successful_job(receipt["run"])
@@ -226,7 +216,7 @@ def test_frozen_gpu_capture_and_fail_closed_boundaries(change: str) -> None:
         a.validate_gpu(binding, report, guard, MEASURED_SOURCE, binaries)
         assert binding["reportSHA256"] == a.GPU_PINS["gpu_report"]
         assert report["command"][report["command"].index("--parallel") + 1] == "1"
-        assert guard["deadlineSeconds"] == 900
+        assert guard["deadlineSeconds"] == 1200
     else:
         with pytest.raises(RuntimeError):
             a.validate_gpu(binding, report, guard, MEASURED_SOURCE, binaries)
