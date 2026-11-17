@@ -297,6 +297,34 @@ macro(strata_cuda_mmq)
       set_tests_properties(prefill_fused_iq_test_f16 PROPERTIES ENVIRONMENT "STRATA_PF_FUSED_F16=1" SKIP_RETURN_CODE 77 TIMEOUT 600)
       add_test(NAME prefill_fused_iq_test_ws COMMAND prefill_fused_iq_test)
       set_tests_properties(prefill_fused_iq_test_ws PROPERTIES ENVIRONMENT "STRATA_PF_FUSED_WS=1" SKIP_RETURN_CODE 77 TIMEOUT 600)
+      # the opt-in STRATA_PF_FUSED_Q50=1 (phase 4 step 1): UD-IQ4_XS v31's Q5_0 down layers on the native kernels, against the reference
+      # (this build has no Q5_0 MMQ), with the tails and tile boundaries the test adds for every Q5_0 pair (77 below sm_80)
+      add_test(NAME prefill_fused_iq_test_q50 COMMAND prefill_fused_iq_test "--only=Q5_0" --no-timing)
+      set_tests_properties(prefill_fused_iq_test_q50 PROPERTIES ENVIRONMENT "STRATA_PF_FUSED_Q50=1" SKIP_RETURN_CODE 77 TIMEOUT 600)
+      # the opt-in STRATA_PF_FUSED_KQ=1 (phase 4): UD-Q4_K_XL's Q4_K / Q5_K gate/up with Q5_1 / Q8_0 down on the native kernels, against the
+      # reference and the int8 model at every shape (--edge), MMQ's K-quant library alongside (STRATA_MMQ_KQ=1; 77 below sm_80)
+      add_test(NAME prefill_fused_iq_test_kq COMMAND prefill_fused_iq_test "--only=K / Q" --edge --no-timing)
+      set_tests_properties(prefill_fused_iq_test_kq PROPERTIES ENVIRONMENT "STRATA_PF_FUSED_KQ=1;STRATA_MMQ_KQ=1" SKIP_RETURN_CODE 77 TIMEOUT 600)
+      # the opt-in STRATA_PF_FUSED_Q8D=1 (phase 4): the pinned UD-IQ4_XS's IQ3_S / Q8_0 and IQ4_XS / Q8_0 layers on the native kernels, against the
+      # reference, the int8 model and MMQ at every shape (--edge; 77 below sm_80)
+      add_test(NAME prefill_fused_iq_test_q8d COMMAND prefill_fused_iq_test "--only=S / Q8_0" --edge --no-timing)
+      set_tests_properties(prefill_fused_iq_test_q8d PROPERTIES ENVIRONMENT "STRATA_PF_FUSED_Q8D=1" SKIP_RETURN_CODE 77 TIMEOUT 600)
+      # the opt-in STRATA_PF_FUSED_Q8GU=1 (phase 4): the Q8_0 set's Q8_0 / Q8_0 layers on the native kernels, against the reference, the int8
+      # model and MMQ at every shape (--edge; 77 below sm_80)
+      add_test(NAME prefill_fused_iq_test_q8gu COMMAND prefill_fused_iq_test "--only=Q8_0 / Q8_0" --edge --no-timing)
+      set_tests_properties(prefill_fused_iq_test_q8gu PROPERTIES ENVIRONMENT "STRATA_PF_FUSED_Q8GU=1" SKIP_RETURN_CODE 77 TIMEOUT 600)
+      # the opt-in STRATA_PF_FUSED_Q6K=1 (phase 4): UD-Q6_K_XL's Q6_K gate/up with a Q8_0 down on the native kernels, against the reference, the
+      # int8 model and MMQ's K-quant library (STRATA_MMQ_KQ=1) at every shape (--edge; 77 below sm_80)
+      add_test(NAME prefill_fused_iq_test_q6k COMMAND prefill_fused_iq_test "--only=Q6_K + Q8_0" --edge --no-timing)
+      set_tests_properties(prefill_fused_iq_test_q6k PROPERTIES ENVIRONMENT "STRATA_PF_FUSED_Q6K=1;STRATA_MMQ_KQ=1" SKIP_RETURN_CODE 77 TIMEOUT 600)
+      # the opt-in STRATA_PF_FUSED_TQ=1 (phase 4): Gyro-S's TQK6 / TQK7 and Gyro-M's TQ2_T / TQ2_T layers on the native kernels, against a reference
+      # from the format definition (fp16 codebook), the int8 model (the int8 codebook) and the overlay's trellis MMQ at every shape (--edge; 77 below sm_80)
+      add_test(NAME prefill_fused_iq_test_tq COMMAND prefill_fused_iq_test "--only=+ T" --edge --no-timing)
+      set_tests_properties(prefill_fused_iq_test_tq PROPERTIES ENVIRONMENT "STRATA_PF_FUSED_TQ=1" SKIP_RETURN_CODE 77 TIMEOUT 900)
+      # the same pairs as Hadamard-folded experts (the Gyro packs' form): the gate/up input and H rotated per 128 values with random signs; the
+      # fused path's H rotation (set_down_rotation) against the host-side rotation of the reference and MMQ with its H rotated on the device
+      add_test(NAME prefill_fused_iq_test_tqh COMMAND prefill_fused_iq_test "--only=+ T" --folded --edge --no-timing)
+      set_tests_properties(prefill_fused_iq_test_tqh PROPERTIES ENVIRONMENT "STRATA_PF_FUSED_TQ=1" SKIP_RETURN_CODE 77 TIMEOUT 900)
       # the MoE input quantized per token and scattered to its rows (mmq::quantize_scatter) against the per-row
       # gather: the same q8_1 bytes for every MMQ layout (--bench: both at 2K, 8K and 32K tokens)
       # the Unsloth v3.1 sets' expert formats through MMQ (Q5_0 down only in a STRATA_ORCA_Q4KS_MMQ build), and --bench

@@ -16,6 +16,7 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/strata_geometry.cmake)   # -DSTRATA_GE
 # block used to be - so this file reads in the order the old single CMakeLists.txt evaluated.
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/strata_ggml.cmake)          # which ggml: the vendored third_party/strata-ggml, or -DSTRATA_GGML_DIR
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/backends/cpu.cmake)         # strata_kernels_cpu, the native (ggml-cpu) expert rows, the CPU tests
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/backends/quant.cmake)       # strata_quant: the Strata quant layer (no ggml) and its oracle tests
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/backends/cuda.cmake)        # NVIDIA: toolchain, llama.cpp's MMQ kernels (strata_mmq, strata_kq)
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/backends/hip.cmake)         # AMD: gfx906 compat, MMQ on HIP
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/strata_gpu_engine.cmake)    # the GPU engine both of them build
@@ -197,6 +198,16 @@ option(STRATA_WERROR "Treat compiler warnings as errors" OFF)
 # #2027: defined here, before the GPU section reads it to register the native-expert tests (it was defined at the
 # native-experts section far below, so a first configure registered four tests fewer than the second)
 option(STRATA_NATIVE_EXPERTS "Native (IQ) expert support through ggml-cpu" ON)
+# Own-stack phase 2: the CPU expert pool's dot products, activation quantizers and the --mtp-q4 requantizer come from the Strata quant layer
+# (src/quant, no ggml-cpu in the pool) instead of ggml-cpu's type traits.  OFF keeps the ggml path, selectable for two releases.  Default: ON on x86 (AVX /
+# AVX2 tiers); OFF on arm64: the NEON tier is bit-exact against ggml-cpu's NEON dots (tests/quant/run_oracle.sh; Spark and Mac oracles, token gates identical,
+# RESULTS-OWN-2N.md) but the pool decode on the DGX Spark measured about 1.5% slower with it (IQ3_S gate/up, 8 + 6 interleaved pairs), and the plan's gate is the
+# same answers at least as fast.  -DSTRATA_OWN_CPU_QUANT=ON still builds it.
+if(STRATA_CPU_X86)
+  option(STRATA_OWN_CPU_QUANT "CPU expert pool on the Strata quant layer (src/quant) instead of ggml-cpu's type traits" ON)
+else()
+  option(STRATA_OWN_CPU_QUANT "CPU expert pool on the Strata quant layer (src/quant) instead of ggml-cpu's type traits" OFF)
+endif()
 
 if(STRATA_BUILD_CONVERSATION_TESTS)
   enable_testing()
@@ -269,6 +280,14 @@ if(STRATA_BUILD_TESTS)
   add_executable(batch_telemetry_test src/core/batch_telemetry_test.cpp)
   target_include_directories(batch_telemetry_test PRIVATE include)
   add_test(NAME batch_telemetry_test COMMAND batch_telemetry_test)
+  # #5697: an evicted parked conversation gives its RAM back to the system (glibc's heap; RSS before and after)
+  add_executable(conversation_heap_test src/core/conversation_heap_test.cpp)
+  target_include_directories(conversation_heap_test PRIVATE include)
+  add_test(NAME conversation_heap_test COMMAND conversation_heap_test)
+  # #5718 follow-up: the stall report's list of GPU streams a host may wait on, and its lines (faked queries, no GPU)
+  add_executable(stream_watch_test tests/core/stream_watch_test.cpp)
+  target_include_directories(stream_watch_test PRIVATE include)
+  add_test(NAME stream_watch_test COMMAND stream_watch_test)
   add_executable(logit_bias_test src/core/logit_bias_test.cpp)
   target_include_directories(logit_bias_test PRIVATE include)
   add_test(NAME logit_bias_test COMMAND logit_bias_test)
@@ -299,6 +318,14 @@ if(STRATA_BUILD_TESTS)
   target_include_directories(tuning_header_arch_family_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/prefill")
   add_test(NAME tuning_header_arch_family_test COMMAND tuning_header_arch_family_test)
 
+  # #5722: each layer-split participant's prompt loan priced on its own device (faked devices, no GPU)
+  add_executable(split_part_price_test tests/program/split_part_price_test.cpp)
+  target_include_directories(split_part_price_test PRIVATE include)
+  add_test(NAME split_part_price_test COMMAND split_part_price_test)
+  # STRATA_RESIDENT_PIN read for the automatic RAM copy too, and that copy's clamp line names no flag (header-only, no GPU)
+  add_executable(resident_ram_copy_test tests/core/resident_ram_copy_test.cpp)
+  target_include_directories(resident_ram_copy_test PRIVATE include)
+  add_test(NAME resident_ram_copy_test COMMAND resident_ram_copy_test)
   # the auto layer split's minimum stage size (#1616): header-only rule, no GPU
   add_executable(split_rules_test tests/program/split_rules_test.cpp)
   target_include_directories(split_rules_test PRIVATE include)
@@ -330,6 +357,12 @@ if(STRATA_BUILD_TESTS)
   add_executable(share_rules_test tests/prefill/share_rules_test.cpp)
   target_include_directories(share_rules_test PRIVATE include)
   add_test(NAME share_rules_test COMMAND share_rules_test)
+
+  # which work item (128 or 64 routed rows) the CUDA fused prompt kernels take, per card class (pick_ww): the pure rule, pinned at the two sides of every threshold for the
+  # measured classes and compared with the previous rule for every class that must not change (header-only, no GPU)
+  add_executable(fused_tile_rule_test tests/prefill/fused_tile_rule_test.cpp)
+  target_include_directories(fused_tile_rule_test PRIVATE include)
+  add_test(NAME fused_tile_rule_test COMMAND fused_tile_rule_test)
 
   # STRATA_SELECT_TWO_PASS: the bound between the single-pass and 3xTF32 QSA block scores and the cut-off rule that
   # keeps the selection (header-only, no GPU)
@@ -413,6 +446,7 @@ if(STRATA_NATIVE_EXPERTS)
   enable_language(C)
   strata_ggml_configure_root()
   strata_cpu_native_experts()
+  strata_quant_layer()
   strata_ggml_mmq_types()
   # #296: OrcaRouter Q4_K_S's Q5_0 experts (Q4_K and Q5_1 come with STRATA_MMQ_KQUANTS on CUDA, S5's branch)
   if(STRATA_ORCA_Q4KS_MMQ)
@@ -431,6 +465,9 @@ if(STRATA_NATIVE_EXPERTS)
   # the NVFP4 AVX-512 and AVX2 rows vs ggml-cpu's vec_dot, and their speed (CPU only; optional arg: a pack's experts.bin)
   add_executable(nvfp4_avx512_parity src/kernels/cpu/nvfp4_avx512_parity.cpp)
   target_link_libraries(nvfp4_avx512_parity PRIVATE strata_kernels_cpu)
+  if(STRATA_ISA_FLOOR)   # ggml-cpu without AVX2 / FMA: its dot is not the AVX2 one, so no bit-equality check (cmake/backends/cpu.cmake)
+    target_compile_definitions(nvfp4_avx512_parity PRIVATE STRATA_TEST_GGML_WITHOUT_AVX2=1)
+  endif()
   add_test(NAME nvfp4_cpu_parity COMMAND nvfp4_avx512_parity)   # random blocks; the AVX2 rows bit-equal to ggml's
   set_tests_properties(nvfp4_cpu_parity PROPERTIES TIMEOUT 120)
   if(STRATA_ENABLE_CUDA)   # the NVFP4 decode kernels vs ggml's reference

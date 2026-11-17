@@ -21,6 +21,7 @@
 // (SwiGLU, H to int8 per 32 features; down into the per-slot rows) are moe_fused.cu's.
 #include "strata/prefill/moe_fused_iq.hpp"
 #include "strata/prefill/pf_fused_override.hpp"
+#include "strata/prefill/fused_tile_rule.hpp"
 #include "strata/kernels/gfx_arch.hpp"
 #include "strata/core/emulate.hpp"
 #include "strata/core/sm120_series.hpp"
@@ -39,6 +40,11 @@
 #define GGML_COMMON_DECL_CUDA
 #define GGML_COMMON_IMPL_CUDA
 #include "ggml-common.h"
+#if !defined(__HIPCC__)
+// (CUDA, STRATA_PF_FUSED_TQ=1) the trellis types' int8 codebook, the same table the decode kernels and the trellis MMQ tiles read
+// (tq.cuh's tq_lane_to_q8): the fused kernels take MMQ's int8 weight values exactly
+#include "../kernels/cuda/tq_lut_i8.cuh"
+#endif
 
 #include <algorithm>
 #include <cstdio>
@@ -91,27 +97,38 @@ constexpr int T_IQ2_XXS = GGML_TYPE_IQ2_XXS, T_IQ2_XS = GGML_TYPE_IQ2_XS, T_IQ2_
               //   sum w x = d_x (d_w sum q a + m_w sum a):
               // the activation blocks carry sum a per 32 values in their eight spare bytes (quant_act_nat_kernel and
               // the H epilogue write it for every path; no other format reads it)
-              T_Q4_K = GGML_TYPE_Q4_K, T_Q5_K = GGML_TYPE_Q5_K, T_Q5_0 = GGML_TYPE_Q5_0, T_Q5_1 = GGML_TYPE_Q5_1, T_Q8_0 = GGML_TYPE_Q8_0;
+              T_Q4_K = GGML_TYPE_Q4_K, T_Q5_K = GGML_TYPE_Q5_K, T_Q5_0 = GGML_TYPE_Q5_0, T_Q5_1 = GGML_TYPE_Q5_1, T_Q8_0 = GGML_TYPE_Q8_0,
+              // CUDA opt-in (STRATA_PF_FUSED_Q6K=1): UD-Q6_K_XL's gate/up (47 layers; UD-Q5_K_XL's one Q6_K layer): w = d sc (q - 32), an
+              // int8 scale per 16 values, no minimum
+              T_Q6_K = GGML_TYPE_Q6_K,
+              // CUDA opt-in (STRATA_PF_FUSED_TQ=1): the Gyro trellis types (agentionai's ids, cmake/strata_ggml_tq_overlay.cmake; the pinned
+              // ggml.h has no enumerators for them): 128 weights a block, {fp16 d; qs}; Gyro-M TQ2_T, Gyro-S TQK6 gate/up + TQK7 down
+              T_TQ2_T = 144, T_TQK6 = 145, T_TQK7 = 146;
+// the trellis types: 128-value blocks (32 steps of 4 weights), two 32-value sub-blocks a 64-value stage
+__host__ __device__ constexpr bool is_tq(int t) { return t == T_TQ2_T || t == T_TQK6 || t == T_TQK7; }
+__host__ __device__ constexpr int tq_k(int t) { return t == T_TQK6 ? 6 : t == T_TQK7 ? 7 : 8; }
 static_assert(sizeof(block_iq2_xxs) == 66 && sizeof(block_iq2_xs) == 74 && sizeof(block_iq2_s) == 82 &&
               sizeof(block_iq3_xxs) == 98 && sizeof(block_iq3_s) == 110 && sizeof(block_iq4_xs) == 136 &&
               sizeof(block_iq4_nl) == 18 && sizeof(block_q2_0) == 18 && sizeof(block_q4_K) == 144 &&
-              sizeof(block_q5_K) == 176 && sizeof(block_q5_0) == 22 && sizeof(block_q5_1) == 24 && sizeof(block_q8_0) == 34,
+              sizeof(block_q5_K) == 176 && sizeof(block_q5_0) == 22 && sizeof(block_q5_1) == 24 && sizeof(block_q8_0) == 34 &&
+              sizeof(block_q6_K) == 210,
               "the block layouts this file decodes");
 
 // block bytes, scale per 16 values, codebook bytes in shared memory
 __host__ __device__ constexpr int block_bytes(int t) {
     return t == T_IQ2_XXS ? 66 : t == T_IQ2_XS ? 74 : t == T_IQ2_S ? 82 : t == T_IQ3_XXS ? 98 : t == T_IQ3_S ? 110
-         : t == T_IQ4_XS ? 136 : t == T_Q4_K ? 144 : t == T_Q5_K ? 176 : t == T_Q5_0 ? 22 : t == T_Q5_1 ? 24 : t == T_Q8_0 ? 34 : 18;
+         : t == T_IQ4_XS ? 136 : t == T_Q4_K ? 144 : t == T_Q5_K ? 176 : t == T_Q5_0 ? 22 : t == T_Q5_1 ? 24 : t == T_Q8_0 ? 34
+         : t == T_Q6_K ? 210 : t == T_TQ2_T ? 34 : t == T_TQK6 ? 26 : t == T_TQK7 ? 30 : 18;
 }
 // the formats with a minimum (w = d q + m), and the raw words a sub-block's load stage holds
 __host__ __device__ constexpr bool has_min(int t) { return t == T_Q4_K || t == T_Q5_K || t == T_Q5_1; }
 __host__ __device__ constexpr int raw_words(int t) {
-    return t == T_Q4_K ? 10 : t == T_Q5_K ? 18 : t == T_Q5_0 ? 6 : t == T_Q5_1 ? 6 : t == T_Q8_0 ? 9 : 5;
+    return t == T_Q4_K ? 10 : t == T_Q5_K ? 18 : t == T_Q5_0 ? 6 : t == T_Q5_1 ? 6 : t == T_Q8_0 ? 9 : t == T_Q6_K ? 18 : t == T_TQ2_T ? 4 : 5;
 }
-__host__ __device__ constexpr bool per16(int t) { return t == T_IQ2_XS || t == T_IQ2_S; }
+__host__ __device__ constexpr bool per16(int t) { return t == T_IQ2_XS || t == T_IQ2_S || t == T_Q6_K; }
 __host__ __device__ constexpr int grid_bytes(int t) {
     return t == T_IQ2_XXS ? 256 * 8 : t == T_IQ2_XS ? 512 * 8 : t == T_IQ2_S ? 1024 * 8 : t == T_IQ3_XXS ? 256 * 4
-         : t == T_IQ3_S ? 512 * 4 : 0;
+         : t == T_IQ3_S ? 512 * 4 : is_tq(t) ? 2048 * 2 : 0;   // (the trellis types: the int8 codebook tq_lut_i8, 2,048 points of two int8)
 }
 constexpr int WLDH = 144;               // F16: bytes per decoded weight row of a stage: 64 halves + 16 (ldmatrix rows apart)
 __host__ __device__ constexpr size_t smem_bytes(int t, int ww, int astages = ASTAGES, int nt = THREADS, bool f16 = false) {
@@ -155,6 +172,71 @@ __global__ void quant_act_nat_kernel(const float* __restrict__ x, int64_t nblk, 
     }
     if (lane == 0) *(float4*) (out + 64) = make_float4(a0 / 127.0f, a1 / 127.0f, (float) s0, (float) s1);
 }
+
+#if !defined(__HIPCC__)
+// (CUDA, STRATA_PF_FUSED_TQ=1) the block-Hadamard rotation of a Hadamard-folded expert's input (include/strata/kernels/cpu/hadamard.hpp):
+// y = H_128 (s * x) / sqrt(128) per block of 128 values, H the Sylvester-Walsh-Hadamard matrix.  One warp a block: lane l holds values
+// 32 k + l (k = 0..3); the in-place fast transform's butterflies over strides 1-16 by shuffles, 32 and 64 between the registers.
+__device__ __forceinline__ void fwht128_warp(float (&v)[4], int lane) {
+#pragma unroll
+    for (int st = 1; st < 32; st <<= 1) {
+#pragma unroll
+        for (int k = 0; k < 4; ++k) {
+            const float o = __shfl_xor_sync(0xffffffffu, v[k], st);
+            v[k] = (lane & st) ? o - v[k] : v[k] + o;
+        }
+    }
+    const float a0 = v[0] + v[1], a1 = v[0] - v[1], a2 = v[2] + v[3], a3 = v[2] - v[3];
+    v[0] = (a0 + a2) * 0.08838834764831845f; v[1] = (a1 + a3) * 0.08838834764831845f;   // (1 / sqrt(128))
+    v[2] = (a0 - a2) * 0.08838834764831845f; v[3] = (a1 - a3) * 0.08838834764831845f;
+}
+// in place, rows x cols (cols a multiple of 128): every row's blocks rotated (signs: nullptr = identity)
+__global__ void hadamard128_kernel(float* __restrict__ x, int64_t nblk, int cols, const float* __restrict__ signs) {
+    const int64_t w = (int64_t) blockIdx.x * (blockDim.x / 32) + threadIdx.x / 32;
+    const int lane = threadIdx.x & 31;
+    if (w >= nblk) return;
+    float* p = x + w * 128;
+    const int c0 = (int) ((w * 128) % cols);
+    float v[4];
+#pragma unroll
+    for (int k = 0; k < 4; ++k) v[k] = p[32 * k + lane] * (signs ? signs[c0 + 32 * k + lane] : 1.0f);
+    fwht128_warp(v, lane);
+#pragma unroll
+    for (int k = 0; k < 4; ++k) p[32 * k + lane] = v[k];
+}
+// the FP32 H rows the trellis gate/up wrote (a folded down; n_ff values at the start of each row's n_embd-float down-output row): rotated,
+// then int8 per 32 values into the down product's activation layout (quant_act_nat_kernel's: 64 codes, the two scales, the two code sums
+// per 80 bytes), for the rows of experts e0..e1 only (tb.off on the device)
+__global__ void rot_quant_h_kernel(const float* __restrict__ hf, const int32_t* __restrict__ off, int e0, int e1, int64_t n,
+                                   const float* __restrict__ signs, uint8_t* __restrict__ ha) {
+    constexpr int BLK = D_ROWS_K / 128;   // Hadamard blocks a row (5 for n_ff 640)
+    const int64_t w = (int64_t) blockIdx.x * (blockDim.x / 32) + threadIdx.x / 32;
+    const int lane = threadIdx.x & 31;
+    if (w >= n * BLK) return;
+    const int64_t row = w / BLK;
+    const int b = (int) (w % BLK);
+    if (row < off[e0] || row >= off[e1]) return;
+    const float* p = hf + row * D_ROWS_N + 128 * b;
+    float v[4];
+#pragma unroll
+    for (int k = 0; k < 4; ++k) v[k] = p[32 * k + lane] * (signs ? signs[128 * b + 32 * k + lane] : 1.0f);
+    fwht128_warp(v, lane);
+#pragma unroll
+    for (int k = 0; k < 4; ++k) {   // value 128 b + 32 k + lane: AB block (128 b + 32 k) / 64, half k & 1
+        float am = fabsf(v[k]);
+#pragma unroll
+        for (int o = 16; o > 0; o >>= 1) am = fmaxf(am, __shfl_xor_sync(0xffffffffu, am, o));
+        const int code = am > 0.0f ? __float2int_rn(v[k] * (127.0f / am)) : 0;
+        int cs = code;
+#pragma unroll
+        for (int o = 16; o > 0; o >>= 1) cs += __shfl_xor_sync(0xffffffffu, cs, o);
+        uint8_t* o = ha + row * H_ROW_BYTES + ((128 * b + 32 * k) / 64) * AB;
+        const int hh = k & 1;
+        o[32 * hh + lane] = (uint8_t) (int8_t) code;
+        if (lane == 0) { *(float*) (o + 64 + 4 * hh) = am / 127.0f; *(float*) (o + 72 + 4 * hh) = (float) cs; }
+    }
+}
+#endif
 
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
 __device__ __forceinline__ void cp16(void* dst, const void* src) {
@@ -367,6 +449,36 @@ template <int T, int NW> __device__ __forceinline__ void load_unit(const uint8_t
 #pragma unroll
         for (int k = 0; k < 8; ++k) w[k] = ld32(bp + 2 + 4 * k);
         w[8] = ld16(bp);
+    } else if constexpr (T == T_Q6_K) {
+        // ql[128], qh[64], scales[16] (int8), d (210 bytes: 2-byte aligned only).  Sub-block ib = values 32 ib.. of the 256: half
+        // n = ib / 4, quarter r = ib % 4 (ggml's dequantize_row_q6_K): low nibbles from ql[64 n + 32 (r & 1) ..] (bits 4 (r >> 1)..),
+        // two high bits from qh[32 n ..] (bits 2 r..), scales[8 n + 2 r] for values 0-15 and [.. + 1] for 16-31.  w[0..7] ql, w[8..15]
+        // qh, w[16] = d | the two scales << 16, w[17] = r
+        const int n = ib >> 2, r = ib & 3;
+#pragma unroll
+        for (int k = 0; k < 8; ++k) w[k] = ld32(bp + 64 * n + 32 * (r & 1) + 4 * k);
+#pragma unroll
+        for (int k = 0; k < 8; ++k) w[8 + k] = ld32(bp + 128 + 32 * n + 4 * k);
+        w[16] = ld16(bp + 208) | (ld16(bp + 192 + 8 * n + 2 * r) << 16);
+        w[17] = (uint32_t) r;
+#if !defined(__HIPCC__)
+    } else if constexpr (T == T_TQ2_T) {
+        // (CUDA, STRATA_PF_FUSED_TQ=1) sub-block ib = steps 8 ib .. 8 ib + 7 of the block {fp16 d; qs[32]}: step t's state is
+        // qs[(t + 31) % 32] << 8 | qs[t] (tq.cuh tq_states4), so the 8 bytes qs[8 ib ..] and the byte before them (circular)
+        w[0] = ld32(bp + 2 + 8 * ib); w[1] = ld32(bp + 6 + 8 * ib); w[2] = bp[2 + ((8 * ib + 31) & 31)]; w[3] = ld16(bp);
+    } else if constexpr (T == T_TQK6 || T == T_TQK7) {
+        // (CUDA, STRATA_PF_FUSED_TQ=1) {fp16 d; qs[4 K]}, qs a circular stream of 32 K bits (2 K u16 words, LSB first); step t's state is the 16
+        // bits from stream bit (31 - t) K (tq.cuh tq_states4).  Steps 8 ib .. 8 ib + 7 lie in the 8 K + 15 bits from bit (24 - 8 ib) K: six u16
+        // words from word (24 - 8 ib) K / 16, wrapped modulo 2 K, into w[0..2]; w[3] = d, w[4] = the start bit inside the first word
+        constexpr int K = tq_k(T), NW = 2 * K;
+        const int s0 = (24 - 8 * ib) * K, wb = s0 >> 4;
+        uint32_t h[6];
+#pragma unroll
+        for (int k = 0; k < 6; ++k) h[k] = ld16(bp + 2 + 2 * ((wb + k) % NW));
+        w[0] = h[0] | (h[1] << 16); w[1] = h[2] | (h[3] << 16); w[2] = h[4] | (h[5] << 16);
+        w[3] = ld16(bp);
+        w[4] = (uint32_t) (s0 & 15);
+#endif
     } else {   // Q2_0
         w[0] = ld32(bp + 2 + 8 * ib); w[1] = ld32(bp + 6 + 8 * ib); w[2] = ld16(bp);
     }
@@ -466,6 +578,48 @@ __device__ __forceinline__ void convert(const uint32_t (&w)[NW], const uint8_t* 
 #pragma unroll
         for (int k = 0; k < 8; ++k) q[k] = w[k];
         s0 = s1 = half_at(w[8]);
+    } else if constexpr (T == T_Q6_K) {   // w = d sc (q - 32): the signed codes, an int8 scale per 16 values, no minimum
+        const int r = (int) w[17], sl = 4 * (r >> 1), sh = 2 * r;
+#pragma unroll
+        for (int k = 0; k < 8; ++k) {
+            const uint32_t a = ((w[k] >> sl) & 0x0F0F0F0Fu) | (((w[8 + k] >> sh) & 0x03030303u) << 4);   // 0..63 a byte
+            q[k] = ((a | 0x80808080u) - 0x20202020u) ^ 0x80808080u;                                   // the int8 a - 32
+        }
+        const float d = half_at(w[16]);
+        s0 = d * (float) (int8_t) (w[16] >> 16);
+        s1 = d * (float) (int8_t) (w[16] >> 24);
+#if !defined(__HIPCC__)
+    } else if constexpr (is_tq(T)) {
+        // (CUDA, STRATA_PF_FUSED_TQ=1) the 8 steps' 15-bit states, each x = s * 0x9e3779b1 -> codebook points x >> 21 and (x >> 10) & 2047, two
+        // int8 each (tq_lut_i8 in shared memory): 4 weights a step, in weight order, as tq.cuh's tq_lane_to_q8 packs them for MMQ; one scale
+        // d * TQ_LUT_I8_SCALE for the block
+        const uint16_t* lut = (const uint16_t*) grid;
+        uint32_t st[8];
+        if constexpr (T == T_TQ2_T) {
+            uint32_t prev = w[2];
+#pragma unroll
+            for (int j = 0; j < 8; ++j) {
+                const uint32_t b = (w[j >> 2] >> (8 * (j & 3))) & 0xFFu;
+                st[j] = (prev << 8) | b;
+                prev = b;
+            }
+        } else {
+            constexpr int K = tq_k(T);
+            const uint64_t lo = (uint64_t) w[0] | ((uint64_t) w[1] << 32), hi = (uint64_t) w[1] | ((uint64_t) w[2] << 32);
+            const int r = (int) w[4];
+#pragma unroll
+            for (int j = 0; j < 8; ++j) {
+                const int rel = r + (7 - j) * K;   // <= 15 + 7 K: inside the 96 bits
+                st[j] = (uint32_t) ((rel <= 48 ? lo >> rel : hi >> (rel - 32)) & 0xFFFFu);
+            }
+        }
+#pragma unroll
+        for (int j = 0; j < 8; ++j) {
+            const uint32_t x = (st[j] & 0x7FFFu) * 0x9e3779b1u;   // (TQ_STATE_MASK: 15 state bits)
+            q[j] = (uint32_t) lut[x >> 21] | ((uint32_t) lut[(x >> 10) & 2047u] << 16);
+        }
+        s0 = s1 = half_at(w[3]) * TQ_LUT_I8_SCALE;
+#endif
     } else if constexpr (T == T_IQ2_XXS) {
         const uint2* g = (const uint2*) grid;
 #pragma unroll
@@ -560,6 +714,9 @@ template <int T> __device__ __forceinline__ const void* grid_src() {
     else if constexpr (T == T_IQ2_S) return iq2s_grid;
     else if constexpr (T == T_IQ3_XXS) return iq3xxs_grid;
     else if constexpr (T == T_IQ3_S) return iq3s_grid;
+#if !defined(__HIPCC__)
+    else if constexpr (is_tq(T)) return tq_lut_i8;   // (CUDA, STRATA_PF_FUSED_TQ=1)
+#endif
     else return nullptr;
 }
 #endif
@@ -579,6 +736,76 @@ template <int T> __device__ __forceinline__ const void* grid_src() {
 // per 32 values.  The k order inside a 16-value group is permuted the same way for both operands (stored half2 word t
 // holds values 4t, 4t + 1 and word 4 + t values 4t + 2, 4t + 3), so the activations' int8 ldmatrix fragments become
 // the F16 B fragments in registers; the accumulator layout, and so the epilogues, are the int8 kernel's.
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 750
+// (CUDA, STRATA_PF_FUSED_KQ=1, A1b) a register-lean load of the K-quant gate/up sub-blocks.  The row's two decode threads (uj 0
+// and 1, adjacent lanes) read the same 32 qs bytes (Q5_K also the same 32 qh bytes) and each keeps one nibble (one bit) of every
+// byte: here each loads only its half (16 bytes: bytes 16 uj ..) and the two halves are swapped by a shuffle when the stage is
+// decoded (kq_lean_expand), so a thread holds 6 (Q4_K) / 10 (Q5_K) raw words across a stage instead of load_unit's 10 / 18.
+// The words kq_lean_expand gives are load_unit's: convert<WT> and so the arithmetic are unchanged.
+template <int T> __host__ __device__ constexpr int kq_lean_words() { return T == T_Q4_K ? 6 : 10; }
+template <int T> __device__ __forceinline__ void kq_lean_load(const uint8_t* bp, int ib, int uj, uint32_t (&w)[kq_lean_words<T>()]) {
+    constexpr int QS = T == T_Q4_K ? 16 : 48;
+    const uint8_t* q = bp + QS + 32 * (ib >> 1) + 16 * uj;
+#pragma unroll
+    for (int k = 0; k < 4; ++k) w[k] = ld32a(q + 4 * k);
+    w[4] = ld32a(bp);
+    const uint8_t* sc = bp + 4;
+    w[5] = ib < 4 ? (uint32_t) sc[ib] | ((uint32_t) sc[ib + 4] << 8)
+                  : (uint32_t) sc[ib + 4] | ((uint32_t) sc[ib - 4] << 8) | ((uint32_t) sc[ib] << 16);
+    w[5] |= (uint32_t) ib << 24;
+    if constexpr (T == T_Q5_K) {
+#pragma unroll
+        for (int k = 0; k < 4; ++k) w[6 + k] = ld32a(bp + 16 + 16 * uj + 4 * k);   // qh
+    }
+}
+// load_unit's words from the lean ones and the partner thread's (lane ^ 1: every lane of the warp calls this)
+template <int T> __device__ __forceinline__ void kq_lean_expand(const uint32_t (&w)[kq_lean_words<T>()], int uj, uint32_t (&f)[raw_words(T)]) {
+#pragma unroll
+    for (int k = 0; k < 4; ++k) {
+        const uint32_t o = __shfl_xor_sync(0xffffffffu, w[k], 1);
+        f[k] = uj ? o : w[k];
+        f[4 + k] = uj ? w[k] : o;
+    }
+    f[8] = w[4];
+    f[9] = w[5];
+    if constexpr (T == T_Q5_K) {
+#pragma unroll
+        for (int k = 0; k < 4; ++k) {
+            const uint32_t o = __shfl_xor_sync(0xffffffffu, w[6 + k], 1);
+            f[10 + k] = uj ? o : w[6 + k];
+            f[14 + k] = uj ? w[6 + k] : o;
+        }
+    }
+}
+// (CUDA, STRATA_PF_FUSED_Q6K=1) the same for the Q6_K gate/up: the row's two decode threads take sub-blocks 2 k and 2 k + 1 of a stage,
+// whose low nibbles are different ql bytes (each loads its own 32) but whose two high bits come from the same 32 qh bytes: each loads
+// half of them (bytes 16 uj ..) and the halves are swapped when the stage is decoded.  14 raw words across a stage instead of 18; the
+// words kq_lean_expand gives are load_unit<T_Q6_K>'s, so convert and the arithmetic are unchanged.  (Explicit specializations: the
+// Q4_K / Q5_K forms above are not touched.)
+template <> __host__ __device__ constexpr int kq_lean_words<T_Q6_K>() { return 14; }
+template <> __device__ __forceinline__ void kq_lean_load<T_Q6_K>(const uint8_t* bp, int ib, int uj, uint32_t (&w)[14]) {
+    const int n = ib >> 2, r = ib & 3;
+#pragma unroll
+    for (int k = 0; k < 8; ++k) w[k] = ld32(bp + 64 * n + 32 * (r & 1) + 4 * k);
+#pragma unroll
+    for (int k = 0; k < 4; ++k) w[8 + k] = ld32(bp + 128 + 32 * n + 16 * uj + 4 * k);
+    w[12] = ld16(bp + 208) | (ld16(bp + 192 + 8 * n + 2 * r) << 16);
+    w[13] = (uint32_t) r;
+}
+template <> __device__ __forceinline__ void kq_lean_expand<T_Q6_K>(const uint32_t (&w)[14], int uj, uint32_t (&f)[raw_words(T_Q6_K)]) {
+#pragma unroll
+    for (int k = 0; k < 8; ++k) f[k] = w[k];
+#pragma unroll
+    for (int k = 0; k < 4; ++k) {
+        const uint32_t o = __shfl_xor_sync(0xffffffffu, w[8 + k], 1);
+        f[8 + k] = uj ? o : w[8 + k];
+        f[12 + k] = uj ? w[8 + k] : o;
+    }
+    f[16] = w[12];
+    f[17] = w[13];
+}
+#endif
+
 template <int NT> using BatchOf = std::conditional_t<NT == THREADS, Batch, WideBatch>;
 template <int WT, bool GU, int WW, int NT = THREADS, bool F16 = false>
 __global__ void __launch_bounds__(NT, NT == THREADS ? 1 : 2)
@@ -590,6 +817,10 @@ native_kernel(const BatchOf<NT> b, const NativeGeom geo, const Tables tb, const 
     constexpr int WLDX = F16 ? WLDH : WLD;
     constexpr int WT_BYTES = WR * WLDX, WS_FLOATS = F16 ? 0 : WR * 4, ACT_STAGE = TR * AB;
     constexpr bool TWO_PASS = NT != THREADS;   // the two-pass loads (load_unit_l) only in the opt-in NT = 256 kernels
+    static_assert(!(TWO_PASS && WT == T_Q5_0), "the NT = 256 kernels have no Q5_0 form");
+    static_assert(!(TWO_PASS && (has_min(WT) || WT == T_Q8_0 || WT == T_Q6_K || is_tq(WT))), "the NT = 256 kernels have no K-quant / Q5_1 / Q8_0 / Q6_K / trellis form");
+    constexpr bool KLEAN = GU && (WT == T_Q4_K || WT == T_Q5_K || WT == T_Q6_K);   // (A1b) the K-quant gate/up's lean loads (kq_lean_load)
+    constexpr int RAW = KLEAN ? kq_lean_words<WT>() : raw_words(WT) > 5 ? raw_words(WT) : 5;   // the raw words of a sub-block: 5, Q5_0's 6
     constexpr int NS = (GU ? GU_ROWS_K : D_ROWS_K) / 64;   // 64-value stages along K
     constexpr int NFB = (GU ? GU_ROWS_N : D_ROWS_N) / WR;          // weight-row blocks per tile
     static_assert(GU_ROWS_N % WR == 0 && D_ROWS_N % WR == 0, "the weight rows of a product are whole work items (2 n_ff and n_embd are multiples of 64 WW)");
@@ -636,18 +867,21 @@ native_kernel(const BatchOf<NT> b, const NativeGeom geo, const Tables tb, const 
         const uint8_t* wrow = GU ? blob + ((ur & 8) ? geo.up_off : 0) +
                                        (size_t) (fb * (WR / 2) + 8 * (ur >> 4) + (ur & 7)) * geo.gu_row
                                  : blob + geo.down_off + (size_t) (rbase + ur) * geo.d_row;
-        // gate/up in Q2_0 (64-value blocks): a block per stage, as the down rows read theirs
-        constexpr bool GU256 = GU && WT != T_Q2_0;
+        // gate/up in Q2_0 (64-value blocks): a block per stage, as the down rows read theirs; in Q8_0 (32-value blocks, CUDA
+        // STRATA_PF_FUSED_Q8GU=1): two blocks a stage, as the Q8_0 down rows read theirs
+        constexpr bool GU256 = GU && WT != T_Q2_0 && WT != T_Q8_0 && !is_tq(WT);
+        constexpr bool B128 = is_tq(WT);   // (CUDA, STRATA_PF_FUSED_TQ=1) 128-value blocks, gate/up and down: a block per two stages, sub-blocks 0-3
         auto unit = [&](int s) -> const uint8_t* {                  // the block of stage s's sub-block
+            if (B128) return wrow + (s >> 1) * BS;
             if (GU256) return wrow + (s >> 2) * BS;
-            return WT == T_IQ4_NL ? wrow + (2 * s + uj) * BS : wrow + s * BS;
+            return (WT == T_IQ4_NL || WT == T_Q5_0 || WT == T_Q5_1 || WT == T_Q8_0) ? wrow + (2 * s + uj) * BS : wrow + s * BS;   // 32-value blocks: two a stage
         };
-        auto sub = [&](int s) { return GU256 ? 2 * (s & 3) + uj : uj; };
+        auto sub = [&](int s) { return B128 ? 2 * (s & 1) + uj : GU256 ? 2 * (s & 3) + uj : uj; };
         // the weight bytes into L2 ahead of the register loads (one stage ahead only - less than a DRAM round trip):
         // gate/up PF super-blocks ahead (the row's two threads take a block's first and last line), down the whole row
         // slice at once (180 or 360 bytes a row)
         constexpr int PF = 2;
-        constexpr int SBB = WT == T_Q2_0 ? 4 * BS : BS;              // bytes per 256 values of a row
+        constexpr int SBB = WT == T_Q2_0 ? 4 * BS : WT == T_Q8_0 ? 8 * BS : is_tq(WT) ? 2 * BS : BS;   // bytes per 256 values of a row
         auto prefetch_sb = [&](int sb) {
             if (dec && sb < GU_ROWS_K / 256) pf_l2(wrow + sb * SBB + (uj ? SBB - 1 : 0));
         };
@@ -669,10 +903,15 @@ native_kernel(const BatchOf<NT> b, const NativeGeom geo, const Tables tb, const 
                 if (r < nrows) cp16(st + r * AB + q * 16, act + (size_t) srow[r] * ACT_LD + s * AB + q * 16);
             }
         };
-        auto put = [&](const uint32_t (&raw)[5], int buf) {
+        auto put = [&](const uint32_t (&raw)[RAW], int buf) {
             if (!dec) return;
             uint32_t q[8];
             float s0, s1;
+            if constexpr (KLEAN) {   // load_unit's words back from the lean ones (a shuffle with the row's other thread)
+                uint32_t f[raw_words(WT)];
+                kq_lean_expand<WT>(raw, uj, f);
+                convert<WT>(f, sgrid, kv, q, s0, s1);
+            } else
             convert<WT>(raw, sgrid, kv, q, s0, s1);
             if constexpr (F16) {   // two 16-value groups of 8 half2 words (the permuted order above)
                 uint4* d = (uint4*) (wt + buf * WT_BYTES + ur * WLDX + 64 * uj);
@@ -697,13 +936,16 @@ native_kernel(const BatchOf<NT> b, const NativeGeom geo, const Tables tb, const 
             if (s < NS) load_act(s);
             cp_commit();
         }
-        uint32_t raw[5] = {0, 0, 0, 0, 0};
+        uint32_t raw[RAW] = {};
         uint32_t pc[NP];   // stage s + 2's pieces in flight (load_unit_l)
-        auto issue = [&](int s) { LdIssue l{pc, 0}; uint32_t w[5]; load_unit_l<WT>(l, unit(s), sub(s), w); };
-        auto take = [&](int s) { LdTake l{pc, 0}; load_unit_l<WT>(l, unit(s), sub(s), raw); };
+        // (the two-pass loads exist for the NT = 256 instances' formats only: no Q5_0 instance takes them)
+        auto issue = [&](int s) { if constexpr (TWO_PASS) { LdIssue l{pc, 0}; uint32_t w[5]; load_unit_l<WT>(l, unit(s), sub(s), w); } };
+        auto take = [&](int s) { if constexpr (TWO_PASS) { LdTake l{pc, 0}; load_unit_l<WT>(l, unit(s), sub(s), raw); } };
+        if constexpr (KLEAN) { if (dec) kq_lean_load<WT>(unit(0), sub(0), uj, raw); } else
         if (dec) load_unit<WT>(unit(0), sub(0), raw);
         if (dec && TWO_PASS && 2 < NS) issue(2);
         put(raw, 0);
+        if constexpr (KLEAN) { if (dec) kq_lean_load<WT>(unit(1), sub(1), uj, raw); } else
         if (dec) load_unit<WT>(unit(1), sub(1), raw);
         // a warp whose rows are all past the tile's end only takes part in the loads
         const bool on0 = nb0 < nrows, on1 = nb0 + 8 < nrows;
@@ -730,6 +972,17 @@ native_kernel(const BatchOf<NT> b, const NativeGeom geo, const Tables tb, const 
                 for (int n = 0; n < 2; ++n)
 #pragma unroll
                     for (int cc = 0; cc < 2; ++cc) dx[n][cc] = F16 ? float2{} : *(const float2*) (sa + (nb0 + 8 * n + 2 * tig + cc) * AB + 64);
+                // (the formats with a minimum, CUDA K-quant opt-in) the activation codes' sums per 32 values, bytes 72-79
+                float2 sx[2][2];
+                if constexpr (has_min(WT)) {
+#pragma unroll
+                    for (int n = 0; n < 2; ++n)
+#pragma unroll
+                        for (int cc = 0; cc < 2; ++cc) {   // (A1b) d_x times the sum, once a stage: the minimum term is then one FMA
+                            const float2 sm = *(const float2*) (sa + (nb0 + 8 * n + 2 * tig + cc) * AB + 72);
+                            sx[n][cc] = make_float2(dx[n][cc].x * sm.x, dx[n][cc].y * sm.y);
+                        }
+                }
                 if constexpr (F16) {
 #pragma unroll
                     for (int h = 0; h < 2; ++h) {
@@ -810,6 +1063,8 @@ native_kernel(const BatchOf<NT> b, const NativeGeom geo, const Tables tb, const 
                                 for (int q = 0; q < 4; ++q) {
                                     const float p = (q < 2 ? wa0 : wb0) * (h ? dx[n][q & 1].y : dx[n][q & 1].x);
                                     acc[i][n][q] = fmaf(p, dotf(d[q]), acc[i][n][q]);
+                                    if constexpr (has_min(WT))   // w = s0 q + s1: + s1 d_x (sum of the codes), as native_w11_kernel
+                                        acc[i][n][q] = fmaf(q < 2 ? wa1 : wb1, h ? sx[n][q & 1].y : sx[n][q & 1].x, acc[i][n][q]);
                                 }
                             }
                         }
@@ -826,6 +1081,7 @@ native_kernel(const BatchOf<NT> b, const NativeGeom geo, const Tables tb, const 
                         take(s + 2);
                         if (s + 3 < NS) issue(s + 3);
                     } else {
+                        if constexpr (KLEAN) kq_lean_load<WT>(unit(s + 2), sub(s + 2), uj, raw); else
                         load_unit<WT>(unit(s + 2), sub(s + 2), raw);
                     }
                 }
@@ -853,6 +1109,38 @@ native_kernel(const BatchOf<NT> b, const NativeGeom geo, const Tables tb, const 
                     for (int o = 4; o < 32; o <<= 1) am = fmaxf(am, __shfl_xor_sync(0xffffffffu, am, o));
                     const float inv = am > 0.0f ? 127.0f / am : 0.0f;
                     const int r = nb0 + 8 * n + 2 * tig + c;
+                    if constexpr (is_tq(WT)) {
+                        // (CUDA, STRATA_PF_FUSED_TQ=1, a Hadamard-folded down: set_down_rotation) H as FP32, n_ff values at the start of the row's
+                        // own down-output row in `dm` (n_embd floats a row; the down product rewrites it only after rot_quant_h_kernel has read
+                        // it): rotated and quantized there before the down product (the rotation needs the whole 128-feature block of the row)
+                        if (dm != nullptr) {
+                            if (r < nrows) {
+#pragma unroll
+                                for (int i = 0; i < 4; ++i) dm[(size_t) (row0 + r) * D_ROWS_N + (WR / 2) * fb + 32 * wf + 8 * i + g] = h[i];
+                            }
+                            continue;
+                        }
+                    }
+                    if constexpr (has_min(WT)) {
+                        // (K-quant gate/up, STRATA_PF_FUSED_KQ=1, CUDA) the down formats with a minimum (Q5_1) read the codes' sum
+                        // per 32 values from the H block's spare bytes 72-79, as quant_act_nat_kernel writes them for the
+                        // activations and HIP's native_w11_kernel for H: the same codes, summed over the warp's 32 features
+                        int code[4], cs = 0;
+#pragma unroll
+                        for (int i = 0; i < 4; ++i) { code[i] = __float2int_rn(h[i] * inv); cs += code[i]; }
+#pragma unroll
+                        for (int o = 4; o < 32; o <<= 1) cs += __shfl_xor_sync(0xffffffffu, cs, o);
+                        if (r < nrows) {
+                            uint8_t* o = out + (size_t) (row0 + r) * H_ROW_BYTES + (blk >> 1) * AB;
+                            const int hh = blk & 1;
+#pragma unroll
+                            for (int i = 0; i < 4; ++i) o[32 * hh + 8 * i + g] = (uint8_t) (int8_t) code[i];
+                            if (g == 0) {
+                                *(float*) (o + 64 + 4 * hh) = am / 127.0f;
+                                *(float*) (o + 72 + 4 * hh) = (float) cs;
+                            }
+                        }
+                    } else
                     if (r < nrows) {
                         uint8_t* o = out + (size_t) (row0 + r) * H_ROW_BYTES + (blk >> 1) * AB;
                         const int hh = blk & 1;
@@ -1702,6 +1990,21 @@ struct DevInfo {
     int sms = 0, occ = 1;
     int occ_nt = 0;     // blocks per multiprocessor of the NT = 256 kernels (0: not set up)
     bool ws = false;    // STRATA_PF_FUSED_WS: the warp-specialized kernels are set up
+#if !defined(__HIPCC__)
+    bool q50 = false;   // sm_80+ with STRATA_PF_FUSED_Q50=1: the Q5_0 down kernels are set up (opt-in, phase 4 step 1)
+    int occ_q50 = 1;    // their blocks per multiprocessor (kept apart, so the other formats' grids do not change)
+    bool kq = false;    // sm_80+ with STRATA_PF_FUSED_KQ=1: the K-quant kernels (Q4_K / Q5_K gate/up, Q5_1 down) are set up (opt-in, phase 4)
+    int occ_kq = 1;     // their blocks per multiprocessor (their own, as occ_q50)
+    bool kq8 = false;   // with kq: the Q8_0 down kernels are set up too (A2; UD-Q4_K_XL's five Q8_0-down layers)
+    int occ_kq8 = 1;
+    bool q8d = false;   // sm_80+ with STRATA_PF_FUSED_Q8D=1: the same Q8_0 down kernels behind an i-quant gate/up (opt-in, phase 4; their occupancy is occ_kq8)
+    bool q8gu = false;  // sm_80+ with STRATA_PF_FUSED_Q8GU=1: the Q8_0 gate/up kernels, and the Q8_0 down ones behind them (opt-in, phase 4)
+    int occ_q8gu = 1;   // the Q8_0 gate/up kernels' blocks per multiprocessor (the down keeps occ_kq8)
+    bool q6k = false;   // sm_80+ with STRATA_PF_FUSED_Q6K=1: the Q6_K gate/up kernels, and the Q8_0 down ones behind them (opt-in, phase 4)
+    int occ_q6k = 1;    // the Q6_K gate/up kernels' blocks per multiprocessor (the down keeps occ_kq8)
+    bool tq = false;    // sm_80+ with STRATA_PF_FUSED_TQ=1: the trellis kernels (TQK6 / TQ2_T gate/up, TQK7 / TQ2_T down) are set up (opt-in, phase 4)
+    int occ_tq_gu = 1, occ_tq_d = 1;   // their blocks per multiprocessor (their own)
+#endif
 };
 std::mutex g_mu;
 DevInfo g_dev[32];
@@ -1719,6 +2022,37 @@ int host_astages() {
     }
     return per[dev];
 }
+// STRATA_PF_FUSED_Q50 on CUDA: "1" sets the Q5_0 down kernels up (dev_info) and lets native_supported take the Q5_0-down layers on
+// any sm_80+ card; anything else (unset, "0") keeps those layers on the dequantize + FP16 GEMM path (the default)
+bool q50_cuda_requested() {
+    static const bool on = [] { const char* v = std::getenv("STRATA_PF_FUSED_Q50"); return v != nullptr && v[0] == '1'; }();
+    return on;
+}
+// STRATA_PF_FUSED_Q8D on CUDA: "1" sets the Q8_0 down kernels up (dev_info) and lets native_supported take a Q8_0 down behind an i-quant
+// gate/up (the pinned UD-IQ4_XS: IQ3_S / Q8_0 in 4 layers, IQ4_XS / Q8_0 in 1) on any sm_80+ card; anything else keeps those layers on MMQ
+bool q8d_cuda_requested() {
+    static const bool on = [] { const char* v = std::getenv("STRATA_PF_FUSED_Q8D"); return v != nullptr && v[0] == '1'; }();
+    return on;
+}
+// STRATA_PF_FUSED_Q8GU on CUDA: "1" sets the Q8_0 gate/up kernels up (dev_info) and lets native_supported take a Q8_0 gate/up with a Q8_0
+// down (the Q8_0 set's 48 layers, UD-Q6_K_XL's one Q8_0 layer) on any sm_80+ card; anything else keeps those layers on MMQ
+bool q8gu_cuda_requested() {
+    static const bool on = [] { const char* v = std::getenv("STRATA_PF_FUSED_Q8GU"); return v != nullptr && v[0] == '1'; }();
+    return on;
+}
+// STRATA_PF_FUSED_Q6K on CUDA: "1" sets the Q6_K gate/up kernels up (dev_info) and lets native_supported take a Q6_K gate/up with a Q8_0
+// down (UD-Q6_K_XL's 47 layers, UD-Q5_K_XL's one Q6_K layer) on any sm_80+ card; anything else keeps those layers on MMQ
+bool q6k_cuda_requested() {
+    static const bool on = [] { const char* v = std::getenv("STRATA_PF_FUSED_Q6K"); return v != nullptr && v[0] == '1'; }();
+    return on;
+}
+// STRATA_PF_FUSED_TQ on CUDA: "1" sets the trellis kernels up (dev_info) and lets native_supported take Gyro-S's TQK6 / TQK7 and Gyro-M's TQ2_T /
+// TQ2_T layers on any sm_80+ card (layers whose experts are Hadamard-folded are still declined by the prompt path); anything else: MMQ
+bool tq_cuda_requested() {
+    static const bool on = [] { const char* v = std::getenv("STRATA_PF_FUSED_TQ"); return v != nullptr && v[0] == '1'; }();
+    return on;
+}
+bool kq_on();   // STRATA_PF_FUSED_KQ (below): on CUDA "1" sets the K-quant kernels up (dev_info)
 template <int T, bool GU, int WW, int NT = THREADS, bool F16 = false> bool setup_ww(int& occ) {
     cudaFuncAttributes fa{};
     if (cudaFuncGetAttributes(&fa, native_kernel<T, GU, WW, NT, F16>) != cudaSuccess || fa.ptxVersion < 75) return false;
@@ -1855,6 +2189,51 @@ const DevInfo& dev_info() {
     static const bool q2n = [] { const char* v = std::getenv("STRATA_PF_FUSED_Q2N"); return v != nullptr && v[0] == '1'; }();
     if (int o2 = occ; q2n && d.ok && setup_one<T_Q2_0, true>(o2)) { d.q2n = true; occ = o2; }
     d.occ = d.ok ? occ : 1;
+    // STRATA_PF_FUSED_Q50=1 (opt-in on CUDA, off by default): the Q5_0 down projections (UD-IQ4_XS v31: 33 of 48 layers, which have
+    // no MMQ tile here and otherwise take the dequantize + FP16 GEMM path) on native_kernel - the decode is the HIP kernels'
+    // (load_unit / convert<T_Q5_0>: int8 codes q - 16, one scale per 32 values), the products the IQ4_NL down's (int8 mma.sync,
+    // FP32 scales and sums).  Their occupancy is their own (occ_q50), so the other formats' launches do not change; a failed
+    // setup leaves those layers on the FP16 path.
+    if (int o3 = 1 << 20; d.ok && q50_cuda_requested() && setup_one<T_Q5_0, false>(o3)) { d.q50 = true; d.occ_q50 = o3; }
+    // STRATA_PF_FUSED_KQ=1 (opt-in on CUDA, off by default; the HIP switch's name and meaning): the K-quant experts of UD-Q4_K_XL -
+    // gate/up Q4_K / Q5_K, down Q5_1 - on native_kernel instead of MMQ (libstrata_kq).  The decode is the HIP kernels' (load_unit /
+    // convert: int8 codes, a scale and a minimum per 32 values); the minimum enters as s1 d_x (sum of the activation codes), from the
+    // sums quant_act_nat_kernel and the K-quant gate/up epilogue store in the spare bytes.  Their own occupancy (occ_kq); a failed
+    // setup leaves those layers on MMQ.
+    if (int o4 = 1 << 20; d.ok && kq_on() && setup_one<T_Q4_K, true>(o4) && setup_one<T_Q5_K, true>(o4) && setup_one<T_Q5_1, false>(o4)) {
+        d.kq = true;
+        d.occ_kq = o4;
+        // (A2) the Q8_0 down behind a K-quant gate/up: int8 codes and one scale per 32 values, no minimum (load_unit / convert<T_Q8_0>);
+        // its own occupancy, and a failed setup leaves those layers on MMQ
+        if (int o5 = 1 << 20; setup_one<T_Q8_0, false>(o5)) { d.kq8 = true; d.occ_kq8 = o5; }
+    }
+    // STRATA_PF_FUSED_Q8D=1 (opt-in on CUDA, off by default): the Q8_0 down behind an i-quant gate/up on the same Q8_0 down instances as
+    // A2's.  The Q8_0 down reads no code sums (has_min is false), so the i-quant gate/up epilogue's H feeds it unchanged.  The occupancy is
+    // the one A2 found for the same instances (occ_kq8); a failed setup leaves those layers on MMQ.
+    if (int o6 = 1 << 20; d.ok && q8d_cuda_requested() && setup_one<T_Q8_0, false>(o6)) { d.q8d = true; d.occ_kq8 = o6; }
+    // STRATA_PF_FUSED_Q8GU=1 (opt-in on CUDA, off by default): a Q8_0 gate/up (int8 codes, one scale per 32 values: two blocks a 64-value
+    // stage, as the Q8_0 down reads them) with a Q8_0 down on A2's down instances.  Both set up or neither; the gate/up's occupancy is its own.
+    if (int o7 = 1 << 20, o8 = 1 << 20; d.ok && q8gu_cuda_requested() && setup_one<T_Q8_0, true>(o7) && setup_one<T_Q8_0, false>(o8)) {
+        d.q8gu = true;
+        d.occ_q8gu = o7;
+        d.occ_kq8 = o8;
+    }
+    // STRATA_PF_FUSED_Q6K=1 (opt-in on CUDA, off by default): a Q6_K gate/up (int8 codes q - 32, an int8 scale times d per 16 values: the
+    // per-16-value scale path of IQ2_XS / IQ2_S) with a Q8_0 down on A2's down instances.  Both set up or neither; its own occupancy.
+    if (int o9 = 1 << 20, o10 = 1 << 20; d.ok && q6k_cuda_requested() && setup_one<T_Q6_K, true>(o9) && setup_one<T_Q8_0, false>(o10)) {
+        d.q6k = true;
+        d.occ_q6k = o9;
+        d.occ_kq8 = o10;
+    }
+    // STRATA_PF_FUSED_TQ=1 (opt-in on CUDA, off by default): the trellis experts (Gyro-S TQK6 gate/up + TQK7 down, Gyro-M TQ2_T both) on native_kernel:
+    // the decode is MMQ's (tq.cuh: 15-bit states, the int8 codebook tq_lut_i8, one scale d * TQ_LUT_I8_SCALE a 128-value block), the products the int8
+    // mma.sync path.  All four instance pairs set up or none; their own occupancy.
+    if (int og = 1 << 20, od = 1 << 20; d.ok && tq_cuda_requested() && setup_one<T_TQK6, true>(og) && setup_one<T_TQ2_T, true>(og) &&
+                                       setup_one<T_TQK7, false>(od) && setup_one<T_TQ2_T, false>(od)) {
+        d.tq = true;
+        d.occ_tq_gu = og;
+        d.occ_tq_d = od;
+    }
     if (d.ok && nt256_requested()) {
         int o2 = 1 << 20;
         const bool ok2 = setup_nt<T_IQ2_XXS, true>(o2) && setup_nt<T_IQ2_XS, true>(o2) && setup_nt<T_IQ2_S, true>(o2) &&
@@ -1907,6 +2286,10 @@ bool gu_covered(int t) {
     return t == T_IQ2_XXS || t == T_IQ2_XS || t == T_IQ2_S || t == T_IQ3_XXS || t == T_IQ3_S || t == T_IQ4_XS
 #if !defined(__HIPCC__)
            || (t == T_Q2_0 && (dev_info().t75 || dev_info().q2n))   // Q2_0 gate/up: the Turing opt-in, or STRATA_PF_FUSED_Q2N=1 on sm_80+
+           || ((t == T_Q4_K || t == T_Q5_K) && dev_info().kq)       // STRATA_PF_FUSED_KQ=1 and its kernels set up
+           || (t == T_Q8_0 && dev_info().q8gu)                      // STRATA_PF_FUSED_Q8GU=1 and its kernels set up
+           || (t == T_Q6_K && dev_info().q6k)                       // STRATA_PF_FUSED_Q6K=1 and its kernels set up
+           || ((t == T_TQK6 || t == T_TQ2_T) && dev_info().tq)      // STRATA_PF_FUSED_TQ=1 and its kernels set up
 #endif
 #if defined(__HIPCC__)
            || (t == T_Q2_0 && dev_info().w12)   // gfx12: the native Q2_0 pack's gate/up on native_w11_kernel (64-value blocks)
@@ -1966,6 +2349,11 @@ bool d_covered_on(int t, const DevInfo& d) {
 #if defined(__HIPCC__)
     if (t == T_Q5_0) return d.w12 ? q50_on(d) : q50_on(d) && f16::requested();   // gfx1151 has no int8 kernel for Q5_0 down (the F16 prompt set must be on); gfx12 has only the int8 one
     if (t == T_Q8_0 && !d.w12 && (f16::requested() || q8d_f16_default(d))) return true;
+#else
+    if (t == T_Q5_0) return d.q50;   // STRATA_PF_FUSED_Q50=1 and its kernels set up (dev_info)
+    if (t == T_Q5_1) return d.kq;    // STRATA_PF_FUSED_KQ=1 (behind a K-quant gate/up only: native_supported)
+    if (t == T_TQK7 || t == T_TQ2_T) return d.tq;   // STRATA_PF_FUSED_TQ=1 (behind a trellis gate/up only: native_supported)
+    if (t == T_Q8_0) return d.kq8 || d.q8d || d.q8gu || d.q6k;   // STRATA_PF_FUSED_KQ=1, A2 (behind a K-quant gate/up), STRATA_PF_FUSED_Q8D=1 (behind an i-quant one), _Q8GU=1 (behind a Q8_0 one) or _Q6K=1 (behind a Q6_K one): native_supported
 #endif
     (void) d;
     return d_covered(t);
@@ -2013,21 +2401,20 @@ int pick_ww(int64_t n, int n_expert) {
         return t == 64 ? 4 : t == 128 ? 2 : 0;
     }();
     if (forced) return forced;
-    const double avg = (double) n / std::max(n_expert, 1);
-    // GB10 (sm_121, 48 SMs): the launch's average is above 112 rows an expert for every prompt size here, so the 5070's
-    // 56-112 band never fires and the 64-row tile would be chosen everywhere.  Forcing 128 rows measured +3.7% [1.030, 1.079]
-    // and +3.4% [1.030, 1.038] at 16K in two independent order-balanced block pairs (12 samples a cell) and +4.3% at 32K
-    // in the second pair, with 4K neutral-to-slightly-worse (0.989x, 0.962x, intervals spanning 1.0).  So on this part the
-    // 128-row tile is taken from 65,536 routed rows a launch (about an 11K-token prompt at six experts) up; 4K keeps 64.
-    // STRATA_PF_TILE_DEBUG=1 prints the choice of every launch.
-    if (dev_info().s121) {
+    // the rule itself (the card classes, the thresholds and the measurements behind them) is include/strata/prefill/fused_tile_rule.hpp, a pure function the unit test
+    // tests/prefill/fused_tile_rule_test.cpp pins for every measured card class.  STRATA_PF_TILE_DEBUG=1 prints the choice of every launch of a class that has its own rule.
+    const DevInfo& d = dev_info();
+    const strata::prefill::fused_tile::Pick pk = strata::prefill::fused_tile::pick({d.s120, d.s121, d.sms}, n, n_expert);
+    using strata::prefill::fused_tile::Why;
+    if (pk.why != Why::kBand) {
         static const bool dbg = [] { const char* v = std::getenv("STRATA_PF_TILE_DEBUG"); return v != nullptr && v[0] == '1'; }();
-        const int ww = n >= 65536 ? 2 : 4;
-        if (dbg) std::fprintf(stderr, "strata: fused tile: rows %lld experts %d avg %.1f s121 yes -> ww %d\n",
-                              (long long) n, n_expert, avg, ww);
-        return ww;
+        if (dbg) {
+            const double avg = (double) n / std::max(n_expert, 1);
+            const char* cls = pk.why == Why::kS121 ? "s121" : pk.why == Why::kS120Small ? "s120 small" : "s120";
+            std::fprintf(stderr, "strata: fused tile: rows %lld experts %d avg %.1f %s yes -> ww %d\n", (long long) n, n_expert, avg, cls, pk.ww);
+        }
     }
-    return avg > 56.0 && avg <= 112.0 ? 2 : 4;
+    return pk.ww;
 }
 
 }  // namespace
@@ -2060,6 +2447,51 @@ bool native_supported(int gu_type, int d_type) {
     if (off || env == 0 || !gu_covered(gu_type)) return false;
     if (strata::prefill::pf_fused_override().load(std::memory_order_relaxed) == 0) return false;   // the small-card prompt path (pf_fused_override.hpp)
 #if !defined(__HIPCC__)
+    // CUDA, a K-quant gate/up (phase 4, opt-in): with STRATA_PF_FUSED_KQ=1 a Q4_K / Q5_K gate/up with a Q5_1 down takes the fused
+    // kernels on any sm_80+ card whose K-quant kernels were set up, whatever the 80-SM rule says; other downs keep MMQ for now.  A Q5_1
+    // down needs the code sums only the K-quant gate/up epilogue writes, so it is never taken behind another gate/up.  Not with the
+    // NT = 256 / warp-specialized opt-ins (no K-quant form): MMQ.
+    // CUDA, a Q8_0 down behind an i-quant gate/up (phase 4, opt-in): with STRATA_PF_FUSED_Q8D=1 such a layer takes the fused kernels on
+    // any sm_80+ card whose Q8_0 down kernels were set up, whatever the 80-SM rule says (the pinned UD-IQ4_XS's five Q8_0-down layers;
+    // its other 43 layers follow their own rule).  Not behind the Q2_0 gate/up of STRATA_PF_FUSED_Q2N, not with the NT = 256 /
+    // warp-specialized opt-ins (no Q8_0 form): MMQ.
+    // A Q8_0 gate/up (phase 4, opt-in STRATA_PF_FUSED_Q8GU=1; gu_covered checked q8gu above): with a Q8_0 down only, same conditions.
+    if (gu_type == T_Q8_0) {
+        const DevInfo& d = dev_info();
+        return d_type == T_Q8_0 && d.ok && d.q8gu && !d.t75 && d.occ_nt <= 0 && !d.ws;
+    }
+    // A Q6_K gate/up (phase 4, opt-in STRATA_PF_FUSED_Q6K=1; gu_covered checked q6k above): with a Q8_0 down only, same conditions.
+    if (gu_type == T_Q6_K) {
+        const DevInfo& d = dev_info();
+        return d_type == T_Q8_0 && d.ok && d.q6k && !d.t75 && d.occ_nt <= 0 && !d.ws;
+    }
+    // The trellis pairs (phase 4, opt-in STRATA_PF_FUSED_TQ=1): Gyro-S's TQK6 / TQK7 and Gyro-M's TQ2_T / TQ2_T only, same conditions.  (A trellis
+    // down behind any other gate/up, or the reverse: MMQ.)
+    if (is_tq(gu_type) || is_tq(d_type)) {
+        // the compiled geometry must suit the trellis path: whole 128-value blocks along both K, and (a folded down) the FP32 H of a row,
+        // n_ff floats, inside the row's own n_embd-float down-output row (set_down_rotation's invariant); the geometry checks allow n_ff up to
+        // 1,100 and n_embd down to 1,024, so a geometry that breaks it declines the trellis fused path (MMQ) instead of overrunning the row
+        constexpr bool geo_ok = D_ROWS_K <= D_ROWS_N && D_ROWS_K % 128 == 0 && GU_ROWS_K % 128 == 0;
+        const DevInfo& d = dev_info();
+        const bool pair = (gu_type == T_TQK6 && d_type == T_TQK7) || (gu_type == T_TQ2_T && d_type == T_TQ2_T);
+        return geo_ok && pair && d.ok && d.tq && !d.t75 && d.occ_nt <= 0 && !d.ws;
+    }
+    if (d_type == T_Q8_0 && gu_type != T_Q4_K && gu_type != T_Q5_K) {
+        const DevInfo& d = dev_info();
+        return gu_type != T_Q2_0 && d.ok && d.q8d && !d.t75 && d.occ_nt <= 0 && !d.ws;
+    }
+    if (gu_type == T_Q4_K || gu_type == T_Q5_K || d_type == T_Q5_1 || d_type == T_Q8_0) {
+        const DevInfo& d = dev_info();
+        return (gu_type == T_Q4_K || gu_type == T_Q5_K) && (d_type == T_Q5_1 || (d_type == T_Q8_0 && d.kq8)) && d.ok && d.kq && !d.t75 &&
+               d.occ_nt <= 0 && !d.ws;
+    }
+    // CUDA, a Q5_0 down (phase 4 step 1, opt-in): with STRATA_PF_FUSED_Q50=1 such a layer takes the fused kernels on any sm_80+ card
+    // whose Q5_0 kernels were set up, whatever the 80-SM rule below says (STRATA_PF_FUSED=0 still turns every fused kernel off, above).
+    // Not with the NT = 256 / warp-specialized opt-ins (their kernels have no Q5_0 form): those layers keep the FP16 path.
+    if (d_type == T_Q5_0) {
+        const DevInfo& d = dev_info();
+        return d.ok && d.q50 && !d.t75 && d.occ_nt <= 0 && !d.ws;
+    }
     // CUDA: unset, on by default on a compute capability 12.0 card with 80+ SMs (sm120_series.hpp, STRATA_SM120_PERF=0 off) for the gate/up
     // formats measured there - the IQ3_S pack's IQ2_S, IQ3_XXS, IQ3_S and IQ4_XS layers with IQ4_NL / Q2_0 down (RTX PRO 5000:
     // prompt +7.0% 4K, +5.2% 20K, +3.4% 98K; teacher-forced KL against MMQ 0.0002 over 5998 positions, 0.0010 over 1760 long
@@ -2101,6 +2533,24 @@ void quantize_act_native(const float* x, int64_t rows, int64_t cols, void* xa, v
 static bool g_dm16_want = false, g_dm16_used = false;
 void want_dm_f16(bool on) { g_dm16_want = on; }
 bool dm_f16_used() { return g_dm16_used; }
+
+// (CUDA, STRATA_PF_FUSED_TQ=1) a Hadamard-folded down (set_down_rotation): on, and the down input's sign vector
+static const float* g_rot_signs = nullptr;
+static bool g_rot_on = false;
+void set_down_rotation(bool on, const float* signs) { g_rot_on = on; g_rot_signs = on ? signs : nullptr; }
+void hadamard128_rows(float* x, int64_t rows, int64_t cols, const float* signs, void* stream) {
+#if !defined(__HIPCC__)
+    if (rows <= 0) return;
+    if (cols % 128 != 0) { std::fprintf(stderr, "hadamard128_rows: %lld columns are not whole 128-value blocks\n", (long long) cols); std::exit(1); }
+    const int64_t nblk = rows * (cols / 128);
+    hadamard128_kernel<<<blocks(nblk, 8), 256, 0, (cudaStream_t) stream>>>(x, nblk, (int) cols, signs);
+    ck(cudaGetLastError(), "hadamard128_rows");
+#else
+    (void) x; (void) rows; (void) cols; (void) signs; (void) stream;
+    std::fprintf(stderr, "hadamard128_rows: not built for HIP\n");
+    std::exit(1);
+#endif
+}
 
 void experts_native(const Batch& b, const NativeGeom& g, int n_expert, int64_t n, const void* scratch, const void* xa,
                     const int32_t* src, void* ha, float* dm, void* stream) {
@@ -2213,6 +2663,24 @@ void experts_native(const Batch& b, const NativeGeom& g, int n_expert, int64_t n
     const int64_t tiles = (n + kTileRows - 1) / kTileRows + (b.e1 - b.e0);
     const unsigned g_gu = (unsigned) std::min<int64_t>(tiles * (GU_ROWS_N / weight_rows(ww)), (int64_t) d.sms * d.occ);
     const unsigned g_d = (unsigned) std::min<int64_t>(tiles * (D_ROWS_N / weight_rows(ww)), (int64_t) d.sms * d.occ);
+#if !defined(__HIPCC__)   // (a HIP build returns above; no K-quant instance of native_kernel in its code objects)
+    if (g.gu_type == T_Q4_K || g.gu_type == T_Q5_K) {   // STRATA_PF_FUSED_KQ=1 (gu_covered / d_covered_on checked d.kq above); their own occupancy
+        const unsigned k_gu = (unsigned) std::min<int64_t>(tiles * (GU_ROWS_N / weight_rows(ww)), (int64_t) d.sms * d.occ_kq);
+        const unsigned k_d = (unsigned) std::min<int64_t>(tiles * (D_ROWS_N / weight_rows(ww)), (int64_t) d.sms * d.occ_kq);
+        if (g.d_type != T_Q5_1 && !(g.d_type == T_Q8_0 && d.kq8)) {
+            std::fprintf(stderr, "prefill fused experts (native): K-quant gate/up with down type %d is not covered here\n", g.d_type);
+            std::exit(1);
+        }
+        if (g.gu_type == T_Q4_K) launch<T_Q4_K, true>(ww, k_gu, b, g, tb, xa, src, ha, nullptr, s);
+        else launch<T_Q5_K, true>(ww, k_gu, b, g, tb, xa, src, ha, nullptr, s);
+        if (g.d_type == T_Q8_0) {   // (A2) its own occupancy
+            const unsigned k8 = (unsigned) std::min<int64_t>(tiles * (D_ROWS_N / weight_rows(ww)), (int64_t) d.sms * d.occ_kq8);
+            launch<T_Q8_0, false>(ww, k8, b, g, tb, ha, src, nullptr, dm, s);
+        } else launch<T_Q5_1, false>(ww, k_d, b, g, tb, ha, src, nullptr, dm, s);
+        ck(cudaGetLastError(), "experts_native");
+        return;
+    }
+#endif
     switch (g.gu_type) {
         case T_IQ2_XXS: launch<T_IQ2_XXS, true>(ww, g_gu, b, g, tb, xa, src, ha, nullptr, s); break;
         case T_IQ2_XS: launch<T_IQ2_XS, true>(ww, g_gu, b, g, tb, xa, src, ha, nullptr, s); break;
@@ -2220,9 +2688,44 @@ void experts_native(const Batch& b, const NativeGeom& g, int n_expert, int64_t n
         case T_IQ3_XXS: launch<T_IQ3_XXS, true>(ww, g_gu, b, g, tb, xa, src, ha, nullptr, s); break;
         case T_IQ3_S: launch<T_IQ3_S, true>(ww, g_gu, b, g, tb, xa, src, ha, nullptr, s); break;
         case T_Q2_0: launch<T_Q2_0, true>(ww, g_gu, b, g, tb, xa, src, ha, nullptr, s); break;
+#if !defined(__HIPCC__)   // (STRATA_PF_FUSED_Q8GU=1, gu_covered checked d.q8gu above; a HIP build returns above and has no such instance)
+        case T_Q8_0:
+            launch<T_Q8_0, true>(ww, (unsigned) std::min<int64_t>(tiles * (GU_ROWS_N / weight_rows(ww)), (int64_t) d.sms * d.occ_q8gu), b, g, tb,
+                                 xa, src, ha, nullptr, s);
+            break;
+        case T_Q6_K:   // (STRATA_PF_FUSED_Q6K=1, gu_covered checked d.q6k above)
+            launch<T_Q6_K, true>(ww, (unsigned) std::min<int64_t>(tiles * (GU_ROWS_N / weight_rows(ww)), (int64_t) d.sms * d.occ_q6k), b, g, tb,
+                                 xa, src, ha, nullptr, s);
+            break;
+        case T_TQK6:   // (STRATA_PF_FUSED_TQ=1, gu_covered checked d.tq above; native_supported pairs it with a TQK7 down)
+            launch<T_TQK6, true>(ww, (unsigned) std::min<int64_t>(tiles * (GU_ROWS_N / weight_rows(ww)), (int64_t) d.sms * d.occ_tq_gu), b, g, tb,
+                                 xa, src, ha, g_rot_on ? dm : nullptr, s);   // (a folded down: the FP32 H rows into dm; else H as int8, as every format)
+            break;
+        case T_TQ2_T:   // (the same; with a TQ2_T down)
+            launch<T_TQ2_T, true>(ww, (unsigned) std::min<int64_t>(tiles * (GU_ROWS_N / weight_rows(ww)), (int64_t) d.sms * d.occ_tq_gu), b, g, tb,
+                                  xa, src, ha, g_rot_on ? dm : nullptr, s);
+            break;
+#endif
         default: launch<T_IQ4_XS, true>(ww, g_gu, b, g, tb, xa, src, ha, nullptr, s); break;
     }
     if (g.d_type == T_Q2_0) launch<T_Q2_0, false>(ww, g_d, b, g, tb, ha, src, nullptr, dm, s);
+#if !defined(__HIPCC__)   // (a HIP build returns above; no Q5_0 instance of native_kernel in its code objects)
+    else if (g.d_type == T_Q5_0) {   // STRATA_PF_FUSED_Q50=1 (d_covered_on checked d.q50 above); its own occupancy
+        const unsigned g_q = (unsigned) std::min<int64_t>(tiles * (D_ROWS_N / weight_rows(ww)), (int64_t) d.sms * d.occ_q50);
+        launch<T_Q5_0, false>(ww, g_q, b, g, tb, ha, src, nullptr, dm, s);
+    } else if (g.d_type == T_Q8_0) {   // STRATA_PF_FUSED_Q8D=1 (d_covered_on checked d.q8d above); A2's instances and occupancy
+        const unsigned g8 = (unsigned) std::min<int64_t>(tiles * (D_ROWS_N / weight_rows(ww)), (int64_t) d.sms * d.occ_kq8);
+        launch<T_Q8_0, false>(ww, g8, b, g, tb, ha, src, nullptr, dm, s);
+    } else if (g.d_type == T_TQK7 || g.d_type == T_TQ2_T) {   // STRATA_PF_FUSED_TQ=1 (d_covered_on checked d.tq above); their own occupancy
+        if (g_rot_on) {   // a folded down (set_down_rotation): the FP32 H rows of this call's experts (in dm), rotated and quantized into ha
+            const int64_t nw = n * (D_ROWS_K / 128);
+            rot_quant_h_kernel<<<blocks(nw, 8), 256, 0, s>>>(dm, tb.off, b.e0, b.e1, n, g_rot_signs, (uint8_t*) ha);
+        }
+        const unsigned gt = (unsigned) std::min<int64_t>(tiles * (D_ROWS_N / weight_rows(ww)), (int64_t) d.sms * d.occ_tq_d);
+        if (g.d_type == T_TQK7) launch<T_TQK7, false>(ww, gt, b, g, tb, ha, src, nullptr, dm, s);
+        else launch<T_TQ2_T, false>(ww, gt, b, g, tb, ha, src, nullptr, dm, s);
+    }
+#endif
     else launch<T_IQ4_NL, false>(ww, g_d, b, g, tb, ha, src, nullptr, dm, s);
     ck(cudaGetLastError(), "experts_native");
 }
@@ -2233,7 +2736,14 @@ void experts_native(const WideBatch& b, const NativeGeom& g, int n_expert, int64
                     const int32_t* src, void* ha, float* dm, void* stream) {
     if (b.e1 <= b.e0 || n <= 0) return;
     const DevInfo& d = dev_info();
-    if ((d.occ_nt <= 0 && !d.ws) || !gu_covered(g.gu_type) || !d_covered_on(g.d_type, d)) {
+#if !defined(__HIPCC__)
+    // (no Q5_0 / K-quant / Q5_1 form of the NT = 256 kernels: native_supported keeps those layers off this path)
+    const bool q50 = g.d_type == T_Q5_0 || g.gu_type == T_Q4_K || g.gu_type == T_Q5_K || g.d_type == T_Q5_1 || g.d_type == T_Q8_0 ||
+                     is_tq(g.gu_type) || is_tq(g.d_type);
+#else
+    constexpr bool q50 = false;
+#endif
+    if ((d.occ_nt <= 0 && !d.ws) || !gu_covered(g.gu_type) || !d_covered_on(g.d_type, d) || q50) {
         std::fprintf(stderr, "prefill fused experts (native, NT = 256): types %d / %d are not covered here\n", g.gu_type,
                      g.d_type);
         std::exit(1);

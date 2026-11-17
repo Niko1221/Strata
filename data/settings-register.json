@@ -25564,7 +25564,7 @@
    "last_date": "2026-11-05",
    "status": "opt-in",
    "owner": "prefill",
-   "note": "[reviewed] Documented: K-quant packs take fused experts only with this set. [docs/STRIX_HALO.md:228]",
+   "note": "[reviewed] Documented: K-quant packs take fused experts only with this set. [docs/STRIX_HALO.md:228] CUDA (phase 4, opt-in, default off): Q4_K / Q5_K gate/up with a Q5_1 down on the fused native kernels on any sm_80+ card instead of MMQ.",
    "retire_after": "",
    "retired_in": ""
   },
@@ -25719,6 +25719,105 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_PF_FUSED_Q6K",
+   "backends": [
+    "cuda"
+   ],
+   "reads": [
+    {
+     "file": "src/prefill/moe_fused_iq.cu",
+     "line": 1969,
+     "backend": "cuda",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "",
+   "first_date": "",
+   "since": "",
+   "last_commit": "",
+   "last_date": "",
+   "status": "research",
+   "owner": "prefill",
+   "note": "CUDA (phase 4, opt-in, default off): a Q6_K gate/up with a Q8_0 down (UD-Q6_K_XL's 47 layers, UD-Q5_K_XL's one Q6_K layer) on the fused native kernels on any sm_80+ card instead of MMQ.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_PF_FUSED_Q8D",
+   "backends": [
+    "cuda"
+   ],
+   "reads": [
+    {
+     "file": "src/prefill/moe_fused_iq.cu",
+     "line": 1957,
+     "backend": "cuda",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "",
+   "first_date": "",
+   "since": "",
+   "last_commit": "",
+   "last_date": "",
+   "status": "research",
+   "owner": "prefill",
+   "note": "CUDA (phase 4, opt-in, default off): a Q8_0 down behind an i-quant gate/up (the pinned UD-IQ4_XS's five Q8_0-down layers) on the fused native kernels on any sm_80+ card instead of MMQ.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_PF_FUSED_Q8GU",
+   "backends": [
+    "cuda"
+   ],
+   "reads": [
+    {
+     "file": "src/prefill/moe_fused_iq.cu",
+     "line": 1963,
+     "backend": "cuda",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "",
+   "first_date": "",
+   "since": "",
+   "last_commit": "",
+   "last_date": "",
+   "status": "research",
+   "owner": "prefill",
+   "note": "CUDA (phase 4, opt-in, default off): a Q8_0 gate/up with a Q8_0 down (the Q8_0 set, UD-Q6_K_XL's one Q8_0 layer) on the fused native kernels on any sm_80+ card instead of MMQ.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_PF_FUSED_SM75",
    "backends": [
     "cuda-hip"
@@ -25796,6 +25895,39 @@
    "status": "research",
    "owner": "prefill",
    "note": "[reviewed] Tile tuning: nothing on sm_86, auto stays. [phaseA-tests/notes-144-pfiq.md:12]",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_PF_FUSED_TQ",
+   "backends": [
+    "cuda"
+   ],
+   "reads": [
+    {
+     "file": "src/prefill/moe_fused_iq.cu",
+     "line": 1975,
+     "backend": "cuda",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "",
+   "first_date": "",
+   "since": "",
+   "last_commit": "",
+   "last_date": "",
+   "status": "research",
+   "owner": "prefill",
+   "note": "CUDA (phase 4, opt-in, default off): the Gyro trellis experts (TQK6 / TQK7, TQ2_T / TQ2_T) on the fused native kernels on any sm_80+ card instead of MMQ; Hadamard-folded layers are still declined by the prompt path.",
    "retire_after": "",
    "retired_in": ""
   },
