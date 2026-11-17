@@ -1203,6 +1203,16 @@ MemSample mem_sample() {
     return m;
 }
 
+// STRATA_MEM_TRACE=1 (diagnosis): this process's commit at a phase of a request, so a per-request host growth can be
+// attributed to the prompt read or to the generation instead of guessed (the A770 report on PR #3607).
+void mem_probe(const char* where) {
+    static const bool on = std::getenv("STRATA_MEM_TRACE") != nullptr;
+    if (!on) return;
+    const MemSample m = mem_sample();
+    std::fprintf(stderr, "strata mem: %-12s commit %llu MiB  rss %llu MiB\n", where, m.commit_mib, m.rss_mib);
+    std::fflush(stderr);
+}
+
 // the stage the watchdog names: "<where> <detail>", and the prompt chunk a batched read is in (#251)
 std::string stage_text() {
     const strata::core::Progress& p = strata::core::progress();
@@ -11265,6 +11275,7 @@ int main(int argc, char **argv) try {
             if (pipe) ver_b.set_history(hist_n > 0 ? d_hist : nullptr, hist_n);
             bool cancelled = false;
             tr("prompt start", n - 1);
+            mem_probe("start");
             strata::workload_trace::Scope prompt_trace("request.prefill", nullptr, n - 1);
             // The prompt is read in two parts when it has a turn boundary past `resume`: up to the last <|im_start|>
             // (the conversation so far), a checkpoint there, then the new turn's header.  The next request of the same
@@ -11371,6 +11382,7 @@ int main(int argc, char **argv) try {
                                      "them\n", (long long) il_parts + 1, il_ms);
             prompt_trace.finish();
             const double prompt_ms = std::chrono::duration<double, std::milli>(Clock::now() - r0).count();
+            mem_probe("after prompt");
             std::printf("REUSED %lld\n", (long long) resume);   // the prompt is read; the first window comes next
             std::fflush(stdout);
             // the verify windows: the first holds the last prompt token alone
@@ -12858,6 +12870,7 @@ int main(int argc, char **argv) try {
             if (drive.routing != nullptr) std::fflush(drive.routing);   // the routing trace survives a crash and is watchable mid-session
             request_trace.finish();
             strata::workload_trace::flush();
+            mem_probe("end");
             // "12288 of 98179" when cancelled mid-read (#471), the rate from what was read
             char read_txt[64];
             if (cancelled)
