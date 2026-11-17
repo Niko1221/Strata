@@ -62,6 +62,34 @@ SCHED_FIFO = os.environ.get("STRATA_GW_SCHED", "sjf") == "off"
 # Startup fingerprint manifest (md5 of gateway/server sources + engine argv);
 # meant for self-hosted daily-report joins. Off by default.
 STARTUP_MANIFEST = os.environ.get("STRATA_GW_STARTUP_MANIFEST", "0") == "1"
+# Managed-role mode: register this gateway with the Control process group
+# (strata_control/procs.py) so its lifecycle is tracked and leftovers are
+# reclaimed by the next Control start. Requires running from the repo tree.
+# Unset (default): standalone mode, no registration.
+GW_ROLE = os.environ.get("STRATA_GW_ROLE", "") == "1"
+GW_ROLE_TOKEN = None
+
+def _role_register() -> None:
+    """Best-effort registration with the Control process group; never fatal."""
+    global GW_ROLE_TOKEN
+    if not GW_ROLE:
+        return
+    try:
+        from strata_control import procs
+        GW_ROLE_TOKEN = procs.write_record(os.getpid(), "gateway", cmd=list(__import__("sys").argv))
+        if GW_ROLE_TOKEN is None:
+            print("[gw] role: registration declined (no token); running unmanaged", flush=True)
+    except Exception as e:  # ImportError outside the repo tree, or any I/O hiccup
+        print(f"[gw] role: unavailable ({e}); running unmanaged", flush=True)
+
+def _role_unregister() -> None:
+    if GW_ROLE_TOKEN is None:
+        return
+    try:
+        from strata_control import procs
+        procs.drop_record(os.getpid(), GW_ROLE_TOKEN)
+    except Exception:
+        pass
 # Engine conversation_file_v2 reader hard limit. A larger file must never
 # reach restorepp/restorep/full-fallback: an oversized snapshot can
 # desynchronize the protocol and make the server exit(-9).
@@ -3497,4 +3525,9 @@ if __name__ == "__main__":
 
     print(f"[gw] session-gateway v2.1.3 on {LISTEN} → {ENGINE}, snapdir={SNAP_DIR}, "
           f"families={len(fam_idx)}, l2={l2_total_bytes()/1e9:.1f}G/{L2_BUDGET_BYTES/1e9:.0f}G", flush=True)
+    import atexit
+    atexit.register(_role_unregister)
+    _role_register()
+    if GW_ROLE_TOKEN:
+        print(f"[gw] role: registered with the Control process group (pid {os.getpid()})", flush=True)
     ThreadingHTTPServer(LISTEN, Proxy).serve_forever()
