@@ -22,9 +22,11 @@ void decode(int type,const void* input,float* output,int n,cudaStream_t stream);
 void preload_ops();
 void matvec(int type,const void* weights,const float* input,float* output,int n,int rows,cudaStream_t stream);
 void rms(const float* x,const float* weight,float* out,int n,float eps,cudaStream_t s);
+void rms_batch(const float* x,const float* weight,float* out,int rows,int n,float eps,cudaStream_t s);
 void add(float* x,const float* y,int n,cudaStream_t s);
 void swiglu(float* gate,const float* up,int n,cudaStream_t s);
 void gdn_gates(float* alpha,float* beta,const float* dt,const float* a,int n,cudaStream_t s);
+void gdn_gates_batch(float* alpha,float* beta,const float* dt,const float* a,int rows,int n,cudaStream_t s);
 void finite(const float* x,size_t n,int* error,cudaStream_t s);
 void hadamard(const float* x,const float* signs,float* y,int n,bool inverse,bool grouped_gdn,cudaStream_t s);
 // Text positions use identical t/h/w coordinates in IMRoPE sections 11/11/10.

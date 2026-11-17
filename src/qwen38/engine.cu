@@ -1,8 +1,10 @@
 // Strata-owned dense Qwen35/Q38 inference. No external inference runtime.
 #include "strata/qwen38/admission.hpp"
+#include "strata/qwen38/universal_layer.hpp"
 #include "strata/kernels/fused_gdn.hpp"
 #include "strata/qwen35/sampling.hpp"
 #include "ops.cuh"
+#include "prefill_gemm.cuh"
 #include "resources.hpp"
 #include "protocol.hpp"
 #include "input_reader.hpp"
@@ -35,21 +37,36 @@ static void gpu_resources(size_t need=0,const std::string& stage="execution",con
         throw Q::ResourceError("CUDA reserve: stage="+stage+" tensor="+tensor+" free="+std::to_string(free)+" needed="+std::to_string(need)+" reserve="+std::to_string(Q::GPU_RESERVE));
 }
 struct Stream {cudaStream_t s=nullptr;Stream(){Q::ck(cudaStreamCreate(&s));}~Stream(){if(s)cudaStreamDestroy(s);}};
-struct Weight {Q::WeightSpan b;int type=0,n=0,rows=0;};
+struct Weight {
+    Q::WeightSpan b;int type=0,n=0,rows=0;
+    Q::StrataQuantTensor quant()const{return Q::make_quant_tensor(b.data,type,n,rows);}
+};
 struct Engine {
+    static constexpr int kPrefillChunk=64;
+    static constexpr size_t kPrefillTileBytes=16ull*1024*1024;
     std::unique_ptr<Q::Orthography> orthography;
     bool japanese=false;
     strata::GgufFile file;Q::Admission admission;int ctx;Stream stream;
     std::unique_ptr<Q::WeightArena> weight_arena;
+    std::unique_ptr<Q::WeightArena> mtp_arena;
     std::map<std::string,Weight> weights;std::vector<Q::RecurrentState> states;
+    std::vector<Q::RecurrentState> snap_states;
+    std::vector<Q::UniversalTransformerLayer> layers;
+    Q::PrefillGemmWorkspace prefill_ws;
     std::unique_ptr<Q::KvCache> kv;
+    std::unique_ptr<Q::KvCache> mtp_kv;
     Q::KvSelection kv_selection;
     std::map<int,Q::Buffer> signs;Q::Buffer rotated;
     Q::Buffer x,h,y,qkv,z,al,be,hc,gdn,qg,k,v,q,gate,att,fg,fu,scores,logits,embrow,error;
+    Q::Buffer bx,bh,by,bqkv,bz,bal,bbe,bgdn,bqg,bk,bv,bq,bgate,batt,bfg,bfu,brot;
+    Q::Buffer mtp_hidden,mtp_eh,mtp_logits;
     uint64_t cache_bytes=0,scratch_bytes=0;size_t emb_stride=0;const strata::TensorInfo* embedding=nullptr;
     int position=0;
     bool conservative=false;
-    Engine(const std::string& path,int context,const Q::KvConfig& config,bool reference=false,bool ja=false):file(path,Q::retained_metadata(),true,65536,64*1024*1024),admission(Q::inspect(file)),ctx(context),conservative(reference){
+    int spec_draft_n_max=0;
+    bool mtp_present=false;
+    bool mtp_ready=false;
+    Engine(const std::string& path,int context,const Q::KvConfig& config,bool reference=false,bool ja=false,int draft_n_max=0):file(path,Q::retained_metadata(),true,65536,64*1024*1024),admission(Q::inspect(file)),ctx(context),conservative(reference),spec_draft_n_max(draft_n_max){
         japanese=ja;
         if(ja){strata::GgufFile vocabulary(path,{"tokenizer.ggml.tokens","tokenizer.ggml.token_type"},true,248320);
             const auto* ts=vocabulary.get("tokenizer.ggml.tokens");const auto* ty=vocabulary.get("tokenizer.ggml.token_type");
@@ -66,8 +83,11 @@ struct Engine {
         const uint64_t recurrent_bytes=48ull*(10240*3+48*128*128)*4;
         embedding=file.find("token_embd.weight");emb_stride=Q::payload(*embedding)/248320;
         // Exact owned activation/score/logit buffers, weight-transform scratch,
-        // embedding row and retained signs. Auxiliary conversion peak is separate.
-        scratch_bytes=(5120ull*3+10240*2+6144*5+48*2+12288+1024*2+17408*2+24ull*ctx+248320)*4+4+17408*4+emb_stride;
+        // batched prefill GEMM workspace + activations, embedding row and retained signs.
+        const uint64_t prefill_batch_bytes=reference?0:(
+            kPrefillTileBytes*2 + uint64_t(kPrefillChunk)*17408*2 +
+            uint64_t(kPrefillChunk)*(5120ull*3+10240+6144*5+48*2+12288+1024*2+17408*3)*4);
+        scratch_bytes=(5120ull*3+10240*2+6144*5+48*2+12288+1024*2+17408*2+24ull*ctx+248320)*4+4+17408*4+emb_stride+prefill_batch_bytes;
         for(const auto& entry:admission.signs)scratch_bytes+=entry.second.size()*4;
         // Include measured 2 MiB backing slack for large cudaMalloc buffers.
         // The retained 16 MiB safety allowance also covers small-buffer pools.
@@ -124,15 +144,137 @@ struct Engine {
         a(qg,12288);a(k,1024);a(v,1024);a(q,6144);a(gate,6144);a(att,6144);a(fg,17408);a(fu,17408);
         a(scores,size_t(24)*ctx);a(logits,248320);a(error,1);
         embrow.allocate(emb_stride);
+        if(!conservative){
+            prefill_ws.init(kPrefillChunk,17408,kPrefillTileBytes);
+            a(bx,size_t(kPrefillChunk)*5120);a(bh,size_t(kPrefillChunk)*5120);a(by,size_t(kPrefillChunk)*5120);
+            a(bqkv,size_t(kPrefillChunk)*10240);a(bz,size_t(kPrefillChunk)*6144);a(bgdn,size_t(kPrefillChunk)*6144);
+            a(bal,size_t(kPrefillChunk)*48);a(bbe,size_t(kPrefillChunk)*48);
+            a(bqg,size_t(kPrefillChunk)*12288);a(bk,size_t(kPrefillChunk)*1024);a(bv,size_t(kPrefillChunk)*1024);
+            a(bq,size_t(kPrefillChunk)*6144);a(bgate,size_t(kPrefillChunk)*6144);
+            a(batt,size_t(kPrefillChunk)*6144);a(bfg,size_t(kPrefillChunk)*17408);a(bfu,size_t(kPrefillChunk)*17408);
+            a(brot,size_t(kPrefillChunk)*17408);
+        }
+        layers.resize(64);
+        for(int i=0;i<64;++i){
+            auto& L=layers[i];
+            L.layer_index=i;
+            L.mixer_type=((i+1)%4)?Q::SequenceMixerType::GATED_DELTANET_GROUPED:Q::SequenceMixerType::GATED_ATTENTION_PARTIAL_ROPE;
+            L.ffn_type=Q::FfnBlockType::DENSE_SWIGLU;
+            auto n=[i](const char* r){return Q::layer_name(i,r);};
+            L.attn_norm=weights.at(n("attn_norm.weight")).quant();
+            L.post_attn_norm=weights.at(n("post_attention_norm.weight")).quant();
+            if(L.mixer_type==Q::SequenceMixerType::GATED_DELTANET_GROUPED){
+                L.w_qkv=weights.at(n("attn_qkv.weight")).quant();
+                L.w_out_gate=weights.at(n("attn_gate.weight")).quant();
+                L.w_out_proj=weights.at(n("ssm_out.weight")).quant();
+                L.w_ssm_conv1d=weights.at(n("ssm_conv1d.weight")).quant();
+                L.w_ssm_alpha=weights.at(n("ssm_alpha.weight")).quant();
+                L.w_ssm_beta=weights.at(n("ssm_beta.weight")).quant();
+                L.w_ssm_dt_bias=weights.at(n("ssm_dt.bias")).quant();
+                L.w_ssm_a=weights.at(n("ssm_a")).quant();
+                L.w_ssm_norm=weights.at(n("ssm_norm.weight")).quant();
+            }else{
+                L.w_q=weights.at(n("attn_q.weight")).quant();
+                L.w_k=weights.at(n("attn_k.weight")).quant();
+                L.w_v=weights.at(n("attn_v.weight")).quant();
+                L.w_q_norm=weights.at(n("attn_q_norm.weight")).quant();
+                L.w_k_norm=weights.at(n("attn_k_norm.weight")).quant();
+                L.w_out_proj=weights.at(n("attn_output.weight")).quant();
+            }
+            L.w_ffn_gate=weights.at(n("ffn_gate.weight")).quant();
+            L.w_ffn_up=weights.at(n("ffn_up.weight")).quant();
+            L.w_ffn_down=weights.at(n("ffn_down.weight")).quant();
+        }
+        mtp_present=(admission.nextn==1 && file.find("blk.64.nextn.eh_proj.weight")!=nullptr);
+        if(mtp_present && spec_draft_n_max>0 && !conservative){
+            Q::WeightLayout mtp_layout;
+            for(const auto& name:admission.mtp_required){
+                const auto& t=*file.find(name);
+                mtp_layout.append(Q::convert_auxiliary(t)?Q::WeightLayout::f32_bytes(t.elements()):Q::payload(t));
+            }
+            const uint64_t mtp_kv_bytes=Q::kv_storage_bytes(effective,ctx,1);
+            const uint64_t mtp_need=mtp_layout.bytes()+mtp_kv_bytes+recurrent_bytes+uint64_t(4)*248320*4+64ull*1024*1024;
+            size_t avail_mtp=0,tot_mtp=0;Q::ck(cudaMemGetInfo(&avail_mtp,&tot_mtp));
+            if(avail_mtp>Q::GPU_RESERVE && mtp_need<=avail_mtp-Q::GPU_RESERVE){
+                mtp_arena=std::make_unique<Q::WeightArena>(mtp_layout);
+                Q::UploadReader mtp_reader(path,file.file_size());
+                size_t wi=0;
+                for(const auto& name:admission.mtp_required){
+                    const auto& t=*file.find(name);Weight w;
+                    w.b=mtp_arena->view(wi++);w.n=int(t.shape[0]);w.rows=t.shape.size()==2?int(t.shape[1]):1;w.type=t.type;
+                    auto up=[&](const strata::TensorInfo& ti,Q::WeightSpan dst){
+                        mtp_reader.read(file.data_start()+ti.offset,dst.bytes,[&]{Q::host_resources();gpu_resources(0,"mtp_upload",name);},
+                            [&](uint64_t off,const uint8_t* bytes,size_t n){Q::ck(cudaMemcpy(dst.as<uint8_t>()+off,bytes,n,cudaMemcpyHostToDevice));});
+                    };
+                    if(Q::convert_auxiliary(t)&&t.type!=0){
+                        Q::Buffer raw(Q::payload(t));up(t,{raw.data,raw.bytes});
+                        Q::decode(t.type,raw.data,w.b.as(),int(t.elements()),stream.s);Q::ck(cudaStreamSynchronize(stream.s));w.type=0;
+                    }else{up(t,w.b);}
+                    weights.emplace(name,std::move(w));
+                }
+                mtp_kv=std::make_unique<Q::KvCache>(effective,ctx,1,stream.s,false);
+                snap_states.resize(64);
+                for(int i=0;i<64;++i)if((i+1)%4){snap_states[i].conv.allocate(10240*3*4);snap_states[i].gdn.allocate(48*128*128*4);}
+                a(mtp_hidden,5120);a(mtp_eh,10240);a(mtp_logits,size_t(4)*248320);
+                mtp_ready=true;
+            }
+        }
         reset();gpu_resources();Q::host_resources();
-        std::fprintf(stderr,"native_execution=%s layer_fence_interval=%d\n",conservative?"conservative":"grouped",conservative?1:8);
+        std::fprintf(stderr,"native_execution=%s layer_fence_interval=%d prefill_gemm=%s mtp_present=%d mtp_ready=%d spec_draft_n_max=%d\n",conservative?"conservative":"grouped",conservative?1:8,conservative?"off":"cublas_tensor_op",mtp_present?1:0,mtp_ready?1:0,spec_draft_n_max);
     }
     const float* f(const std::string& name){return weights.at(name).b.as();}
     void mm(const std::string& name,const Q::Buffer& in,Q::Buffer& out){const auto& w=weights.at(name);const float* input=in.as();
         if(admission.folded.count(name)){Q::hadamard(input,signs.at(w.n).as(),rotated.as(),w.n,false,admission.grouped_gdn&&name.find(".ssm_out.")!=std::string::npos,stream.s);input=rotated.as();}
         Q::matvec(w.type,w.b.data,input,out.as(),w.n,w.rows,stream.s);}
+    void mm_batch(const std::string& name,const Q::StrataQuantTensor& qt,const float* in,float* out,int n_tokens){
+        const float* input=in;
+        if(admission.folded.count(name)){
+            const bool grp=admission.grouped_gdn&&name.find(".ssm_out.")!=std::string::npos;
+            const float* sg=signs.at(qt.ne0).as();
+            for(int t=0;t<n_tokens;++t)
+                Q::hadamard(in+size_t(t)*qt.ne0,sg,brot.as()+size_t(t)*qt.ne0,qt.ne0,false,grp,stream.s);
+            input=brot.as();
+        }
+        prefill_ws.matmul_batch(qt,input,out,n_tokens,stream.s);
+    }
     void reset(){
         Q::reset_session(states,*kv,error,position,stream.s);
+        if(mtp_kv)mtp_kv->reset();
+    }
+    void snapshot_gdn(){
+        for(int i=0;i<64;++i)if((i+1)%4){
+            Q::ck(cudaMemcpyAsync(snap_states[i].conv.data,states[i].conv.data,states[i].conv.bytes,cudaMemcpyDeviceToDevice,stream.s));
+            Q::ck(cudaMemcpyAsync(snap_states[i].gdn.data,states[i].gdn.data,states[i].gdn.bytes,cudaMemcpyDeviceToDevice,stream.s));
+        }
+    }
+    void restore_gdn(){
+        for(int i=0;i<64;++i)if((i+1)%4){
+            Q::ck(cudaMemcpyAsync(states[i].conv.data,snap_states[i].conv.data,states[i].conv.bytes,cudaMemcpyDeviceToDevice,stream.s));
+            Q::ck(cudaMemcpyAsync(states[i].gdn.data,snap_states[i].gdn.data,states[i].gdn.bytes,cudaMemcpyDeviceToDevice,stream.s));
+        }
+    }
+    int mtp_draft_step(int token,int mtp_pos){
+        Q::require(token>=0&&token<248320&&mtp_pos<ctx,"MTP token or context out of range");
+        Q::ck(cudaMemcpyAsync(embrow.data,file.tensor_data(*embedding)+size_t(token)*emb_stride,emb_stride,cudaMemcpyHostToDevice,stream.s));
+        Q::decode(embedding->type,embrow.data,x.as(),5120,stream.s);
+        if(admission.inverse_embedding){Q::hadamard(x.as(),signs.at(5120).as(),rotated.as(),5120,true,false,stream.s);Q::ck(cudaMemcpyAsync(x.data,rotated.data,5120*4,cudaMemcpyDeviceToDevice,stream.s));}
+        Q::rms(x.as(),f("blk.64.nextn.enorm.weight"),mtp_eh.as(),5120,admission.eps,stream.s);
+        Q::rms(mtp_hidden.as(),f("blk.64.nextn.hnorm.weight"),mtp_eh.as()+5120,5120,admission.eps,stream.s);
+        mm("blk.64.nextn.eh_proj.weight",mtp_eh,x);
+        Q::rms(x.as(),f("blk.64.attn_norm.weight"),h.as(),5120,admission.eps,stream.s);
+        mm("blk.64.attn_q.weight",h,qg);mm("blk.64.attn_k.weight",h,k);mm("blk.64.attn_v.weight",h,v);
+        Q::attention_normalize(qg.as(),k.as(),f("blk.64.attn_q_norm.weight"),f("blk.64.attn_k_norm.weight"),q.as(),gate.as(),k.as(),mtp_pos,admission.eps,admission.rope_base,stream.s);
+        mtp_kv->enqueue(0,mtp_pos,q.as(),k.as(),v.as(),gate.as(),att.as(),scores.as());
+        mm("blk.64.attn_output.weight",att,y);
+        Q::add(x.as(),y.as(),5120,stream.s);
+        Q::rms(x.as(),f("blk.64.post_attention_norm.weight"),h.as(),5120,admission.eps,stream.s);
+        mm("blk.64.ffn_gate.weight",h,fg);mm("blk.64.ffn_up.weight",h,fu);Q::swiglu(fg.as(),fu.as(),17408,stream.s);mm("blk.64.ffn_down.weight",fg,y);
+        Q::add(x.as(),y.as(),5120,stream.s);
+        Q::ck(cudaMemcpyAsync(mtp_hidden.data,x.data,5120*4,cudaMemcpyDeviceToDevice,stream.s));
+        Q::rms(x.as(),f("blk.64.nextn.shared_head_norm.weight"),h.as(),5120,admission.eps,stream.s);
+        mm("output.weight",h,logits);
+        auto lg=read_logits();
+        return int(std::max_element(lg.begin(),lg.end())-lg.begin());
     }
     void step(int token,std::atomic<bool>& stop,bool head){
         Q::require(token>=0&&token<248320&&position<ctx,"token or context out of range");
@@ -171,6 +313,80 @@ struct Engine {
         int bad=0;Q::ck(cudaMemcpyAsync(&bad,error.data,4,cudaMemcpyDeviceToHost,stream.s));Q::ck(cudaStreamSynchronize(stream.s));
         Q::require(!bad,"non-finite activation/state/logit");fences.before(stop);++position;
     }
+    void prefill_chunk(const int32_t* tokens,int n_tokens,std::atomic<bool>& stop,bool head){
+        Q::require(n_tokens>0&&n_tokens<=kPrefillChunk&&position+n_tokens<=ctx,"prefill chunk out of range");
+        Q::host_resources();gpu_resources();error.zero(stream.s);
+        for(int t=0;t<n_tokens;++t){
+            const int tok=tokens[t];Q::require(tok>=0&&tok<248320,"token out of range");
+            Q::ck(cudaMemcpyAsync(embrow.data,file.tensor_data(*embedding)+size_t(tok)*emb_stride,emb_stride,cudaMemcpyHostToDevice,stream.s));
+            Q::decode(embedding->type,embrow.data,bx.as()+size_t(t)*5120,5120,stream.s);
+            if(admission.inverse_embedding){
+                Q::hadamard(bx.as()+size_t(t)*5120,signs.at(5120).as(),rotated.as(),5120,true,false,stream.s);
+                Q::ck(cudaMemcpyAsync(bx.as()+size_t(t)*5120,rotated.data,5120*4,cudaMemcpyDeviceToDevice,stream.s));
+            }
+        }
+        const Q::LayerFence fences(8);
+        auto check=[&]{
+            int bad=0;Q::ck(cudaMemcpyAsync(&bad,error.data,4,cudaMemcpyDeviceToHost,stream.s));
+            kv->check();Q::require(!bad,"non-finite activation/state/logit");Q::host_resources();gpu_resources();
+        };
+        for(int i=0;i<64;++i){
+            fences.before(stop);
+            const auto& L=layers[i];auto n=[i](const char* r){return Q::layer_name(i,r);};auto& st=states[i];
+            Q::rms_batch(bx.as(),static_cast<const float*>(L.attn_norm.d_data),bh.as(),n_tokens,5120,admission.eps,stream.s);
+            if(L.mixer_type==Q::SequenceMixerType::GATED_DELTANET_GROUPED){
+                mm_batch(n("attn_qkv.weight"),L.w_qkv,bh.as(),bqkv.as(),n_tokens);
+                mm_batch(n("attn_gate.weight"),L.w_out_gate,bh.as(),bz.as(),n_tokens);
+                mm_batch(n("ssm_alpha.weight"),L.w_ssm_alpha,bh.as(),bal.as(),n_tokens);
+                mm_batch(n("ssm_beta.weight"),L.w_ssm_beta,bh.as(),bbe.as(),n_tokens);
+                Q::gdn_gates_batch(bal.as(),bbe.as(),static_cast<const float*>(L.w_ssm_dt_bias.d_data),static_cast<const float*>(L.w_ssm_a.d_data),n_tokens,48,stream.s);
+                for(int t=0;t<n_tokens;++t){
+                    K::fused_gdn_conv_l2(st.conv.as(),bqkv.as()+size_t(t)*10240,static_cast<const float*>(L.w_ssm_conv1d.d_data),hc.as(),10240,32,admission.eps,stream.s);
+                    K::fused_gdn_step_norm_silu(st.gdn.as(),hc.as(),hc.as()+2048,hc.as()+4096,bal.as()+size_t(t)*48,bbe.as()+size_t(t)*48,bz.as()+size_t(t)*6144,static_cast<const float*>(L.w_ssm_norm.d_data),admission.eps,bgdn.as()+size_t(t)*6144,16,48,stream.s);
+                }
+                Q::finite(st.gdn.as(),48*128*128,error.as<int>(),stream.s);
+                mm_batch(n("ssm_out.weight"),L.w_out_proj,bgdn.as(),by.as(),n_tokens);
+            }else{
+                mm_batch(n("attn_q.weight"),L.w_q,bh.as(),bqg.as(),n_tokens);
+                mm_batch(n("attn_k.weight"),L.w_k,bh.as(),bk.as(),n_tokens);
+                mm_batch(n("attn_v.weight"),L.w_v,bh.as(),bv.as(),n_tokens);
+                for(int t=0;t<n_tokens;++t){
+                    Q::attention_normalize(bqg.as()+size_t(t)*12288,bk.as()+size_t(t)*1024,static_cast<const float*>(L.w_q_norm.d_data),static_cast<const float*>(L.w_k_norm.d_data),bq.as()+size_t(t)*6144,bgate.as()+size_t(t)*6144,bk.as()+size_t(t)*1024,position+t,admission.eps,admission.rope_base,stream.s);
+                }
+                kv->enqueue_batch(i/4,position,n_tokens,bq.as(),bk.as(),bv.as(),bgate.as(),batt.as(),scores.as());
+                mm_batch(n("attn_output.weight"),L.w_out_proj,batt.as(),by.as(),n_tokens);
+            }
+            Q::add(bx.as(),by.as(),n_tokens*5120,stream.s);
+            Q::rms_batch(bx.as(),static_cast<const float*>(L.post_attn_norm.d_data),bh.as(),n_tokens,5120,admission.eps,stream.s);
+            mm_batch(n("ffn_gate.weight"),L.w_ffn_gate,bh.as(),bfg.as(),n_tokens);
+            mm_batch(n("ffn_up.weight"),L.w_ffn_up,bh.as(),bfu.as(),n_tokens);
+            Q::swiglu(bfg.as(),bfu.as(),n_tokens*17408,stream.s);
+            mm_batch(n("ffn_down.weight"),L.w_ffn_down,bfg.as(),by.as(),n_tokens);
+            Q::add(bx.as(),by.as(),n_tokens*5120,stream.s);
+            Q::finite(bx.as(),size_t(n_tokens)*5120,error.as<int>(),stream.s);
+            fences.after(i,stop,check);
+        }
+        if(head){
+            Q::rms(bx.as()+size_t(n_tokens-1)*5120,f("output_norm.weight"),h.as(),5120,admission.eps,stream.s);
+            mm("output.weight",h,logits);
+            Q::finite(logits.as(),248320,error.as<int>(),stream.s);
+        }
+        int bad=0;Q::ck(cudaMemcpyAsync(&bad,error.data,4,cudaMemcpyDeviceToHost,stream.s));Q::ck(cudaStreamSynchronize(stream.s));
+        Q::require(!bad,"non-finite activation/state/logit");fences.before(stop);position+=n_tokens;
+    }
+    void prefill_chunk_all_logits(const int32_t* tokens,int n_tokens,std::atomic<bool>& stop){
+        prefill_chunk(tokens,n_tokens,stop,false);
+        Q::rms_batch(bx.as(),f("output_norm.weight"),bh.as(),n_tokens,5120,admission.eps,stream.s);
+        mm_batch("output.weight",weights.at("output.weight").quant(),bh.as(),mtp_logits.as(),n_tokens);
+        Q::finite(mtp_logits.as(),size_t(n_tokens)*248320,error.as<int>(),stream.s);
+        int bad=0;Q::ck(cudaMemcpyAsync(&bad,error.data,4,cudaMemcpyDeviceToHost,stream.s));Q::ck(cudaStreamSynchronize(stream.s));
+        Q::require(!bad,"non-finite MTP verify logits");
+    }
+    std::vector<float> read_mtp_logits(int row){
+        std::vector<float> v(248320);
+        Q::ck(cudaMemcpy(v.data(),mtp_logits.as()+size_t(row)*248320,v.size()*4,cudaMemcpyDeviceToHost));
+        return v;
+    }
     std::vector<float> read_logits(){std::vector<float> v(248320);Q::ck(cudaMemcpy(v.data(),logits.data,v.size()*4,cudaMemcpyDeviceToHost));return v;}
 };
 static int integer(const std::string& s,int lo,int hi){size_t n=0;long long v;try{v=std::stoll(s,&n);}catch(...){throw std::runtime_error("invalid integer");}Q::require(n==s.size()&&v>=lo&&v<=hi,"integer out of range");return int(v);}
@@ -192,13 +408,85 @@ static void run(Engine& e,const std::vector<int32_t>& prompt,int count,Sampling 
     std::ofstream out;if(!dump.empty()){out.open(dump,std::ios::binary|std::ios::trunc);Q::require(bool(out),"cannot open logits output");}
     std::mt19937_64 rng(sampling.seed);auto hist=strata::qwen35::penalty_history_start(prompt,false);
     try{
-        for(size_t i=0;i<prompt.size();++i){if(stop.load())throw Cancelled{};e.step(prompt[i],stop,i+1==prompt.size());++read;if(protocol){std::printf("PP %zu %zu\n",read,prompt.size());std::fflush(stdout);}}
+        if(!e.conservative&&prompt.size()>=8){
+            for(size_t off=0;off<prompt.size();){
+                if(stop.load())throw Cancelled{};
+                const int chunk=int(std::min<size_t>(Engine::kPrefillChunk,prompt.size()-off));
+                e.prefill_chunk(prompt.data()+off,chunk,stop,off+size_t(chunk)==prompt.size());
+                off+=size_t(chunk);read=off;
+                if(protocol){std::printf("PP %zu %zu\n",read,prompt.size());std::fflush(stdout);}
+            }
+        }else{
+            for(size_t i=0;i<prompt.size();++i){if(stop.load())throw Cancelled{};e.step(prompt[i],stop,i+1==prompt.size());++read;if(protocol){std::printf("PP %zu %zu\n",read,prompt.size());std::fflush(stdout);}}
+        }
         prefill=Clock::now();
-        for(int i=0;i<count;++i){if(stop.load())throw Cancelled{};auto lg=e.read_logits();if(out.is_open()){out.write(reinterpret_cast<const char*>(lg.data()),lg.size()*4);Q::require(bool(out),"logits write failed");}
-            int token=size_t(i)<force.size()?force[i]:Q::sample(lg,sampling,hist,rng,e.orthography.get());if(e.orthography)e.orthography->accept(token);++produced;hist.push_back(token);
-            if(protocol)std::printf("T %d\n",token);else std::printf("%s%d",i?",":"",token);std::fflush(stdout);
-            if(force.empty()&&(token==e.admission.eos||token==248044)){finish="eos";break;}
-            if(i+1<count)e.step(token,stop,true);
+        auto emit=[&](int token){
+            if(e.orthography)e.orthography->accept(token);
+            ++produced;hist.push_back(token);
+            if(protocol)std::printf("T %d\n",token);else std::printf("%s%d",produced>1?",":"",token);
+            std::fflush(stdout);
+            if(force.empty()&&(token==e.admission.eos||token==248044)){finish="eos";return false;}
+            return true;
+        };
+        if(e.mtp_ready&&e.spec_draft_n_max>0&&force.empty()&&!out.is_open()&&count>0){
+            auto lg0=e.read_logits();
+            int tok0=Q::sample(lg0,sampling,hist,rng,e.orthography.get());
+            if(emit(tok0)&&produced<count){
+                const float* h_last=(!e.conservative&&prompt.size()>=8)
+                    ?(e.bx.as()+size_t((prompt.size()-1)%Engine::kPrefillChunk)*5120)
+                    :e.x.as();
+                Q::ck(cudaMemcpyAsync(e.mtp_hidden.data,h_last,5120*4,cudaMemcpyDeviceToDevice,e.stream.s));
+                int mtp_pos=0;
+                while(produced<count&&!stop.load()){
+                    const int k=std::min(e.spec_draft_n_max,count-produced);
+                    if(k<=0||e.position+k+1>e.ctx||mtp_pos+k>e.ctx){e.step(tok0,stop,true);auto lg=e.read_logits();tok0=Q::sample(lg,sampling,hist,rng,e.orthography.get());if(!emit(tok0))break;continue;}
+                    std::vector<int32_t> batch(1+k);
+                    batch[0]=tok0;
+                    const int mtp_pos_before=mtp_pos;
+                    for(int j=0;j<k;++j){batch[1+j]=e.mtp_draft_step(batch[j],mtp_pos+j);}
+                    const int pos_before=e.position;
+                    e.snapshot_gdn();
+                    e.prefill_chunk_all_logits(batch.data(),1+k,stop);
+                    int accepted=0;
+                    int next_tok=0;
+                    bool ended=false;
+                    for(int j=0;j<k;++j){
+                        auto row_lg=e.read_mtp_logits(j);
+                        int target=Q::sample(row_lg,sampling,hist,rng,e.orthography.get());
+                        if(!emit(target)){ended=true;break;}
+                        if(target==batch[1+j]&&produced<count){
+                            ++accepted;
+                        }else{
+                            next_tok=target;
+                            break;
+                        }
+                    }
+                    if(ended)break;
+                    if(accepted==k&&produced<count){
+                        auto row_lg=e.read_mtp_logits(k);
+                        next_tok=Q::sample(row_lg,sampling,hist,rng,e.orthography.get());
+                        if(!emit(next_tok))break;
+                        mtp_pos+=k;
+                        Q::ck(cudaMemcpyAsync(e.mtp_hidden.data,e.bx.as()+size_t(k)*5120,5120*4,cudaMemcpyDeviceToDevice,e.stream.s));
+                    }else if(accepted<k){
+                        e.restore_gdn();
+                        e.kv->rewind(pos_before);
+                        e.mtp_kv->rewind(mtp_pos_before+accepted);
+                        e.position=pos_before;
+                        for(int j=0;j<=accepted;++j)e.step(batch[j],stop,j==accepted);
+                        Q::ck(cudaMemcpyAsync(e.mtp_hidden.data,e.x.data,5120*4,cudaMemcpyDeviceToDevice,e.stream.s));
+                        mtp_pos=mtp_pos_before+accepted;
+                    }
+                    tok0=next_tok;
+                }
+            }
+        }else{
+            for(int i=0;i<count;++i){if(stop.load())throw Cancelled{};auto lg=e.read_logits();if(out.is_open()){out.write(reinterpret_cast<const char*>(lg.data()),lg.size()*4);Q::require(bool(out),"logits write failed");}
+                int token=size_t(i)<force.size()?force[i]:Q::sample(lg,sampling,hist,rng,e.orthography.get());if(e.orthography)e.orthography->accept(token);++produced;hist.push_back(token);
+                if(protocol)std::printf("T %d\n",token);else std::printf("%s%d",i?",":"",token);std::fflush(stdout);
+                if(force.empty()&&(token==e.admission.eos||token==248044)){finish="eos";break;}
+                if(i+1<count)e.step(token,stop,true);
+            }
         }
     }catch(const Cancelled&){finish="cancel";if(read<prompt.size())prefill=Clock::now();}
     catch(...){if(e.orthography)e.orthography->reset(false);e.reset();throw;}
@@ -233,14 +521,14 @@ static void serve(Engine& e){
     reader.stop_and_join();
 }
 int main(int argc,char** argv){try{
-    std::string model,tokens,forced,dump,kv_mode="auto",spin_view,spin_profile,language="model-default";int ctx=4096,count=32;bool resident=false,inspection=false,conservative=false;Sampling sampling;
+    std::string model,tokens,forced,dump,kv_mode="auto",spin_view,spin_profile,language="model-default";int ctx=4096,count=32,draft_n_max=0;bool resident=false,inspection=false,conservative=false;Sampling sampling;
     for(int i=1;i<argc;++i){std::string a=argv[i];auto value=[&](){Q::require(i+1<argc,"missing option value");return std::string(argv[++i]);};
-        if(a=="--help"||a=="-h"){std::puts("strata-q38 own-native CUDA SM120\n--model FILE --ctx-size N (4096) --serve\n--tokens IDS --n N [--force IDS] [--dump-full-logits FILE]\n--kv auto|f16|k8v4|spin8_k8v4|f16_turbo2|f16_turbo3|f16_turbo4 (auto default)\nAuto order: f16, f16_turbo4, spin8_k8v4; context and weights unchanged.\n--spin8-view vector|plus|minus --spin8-profile FILE (compiled reference default)\n--output-language ja|model-default (standalone default: model-default)\n--conservative-sync (diagnostic reference execution)\n--inspect (CPU only) --version\nFP32 recurrent state, sequential prefill; no vision/prefix/shift/speculation/graph.");return 0;}
-        if(a=="--version"){std::puts("strata-q38 own-native 0.6.0 CUDA13 SM120");return 0;}
+        if(a=="--help"||a=="-h"){std::puts("strata-q38 own-native CUDA SM120\n--model FILE --ctx-size N (4096) --serve\n--tokens IDS --n N [--force IDS] [--dump-full-logits FILE]\n--kv auto|f16|k8v4|spin8_k8v4|f16_turbo2|f16_turbo3|f16_turbo4 (auto default)\nAuto order: f16, f16_turbo4, spin8_k8v4; context and weights unchanged.\n--spin8-view vector|plus|minus --spin8-profile FILE (compiled reference default)\n--output-language ja|model-default (standalone default: model-default)\n--spec-draft-n-max N (0..3, MTP draft cap when blk.64.nextn.* is present)\n--conservative-sync (diagnostic reference execution)\n--inspect (CPU only) --version");return 0;}
+        if(a=="--version"){std::puts("strata-q38 own-native 0.6.1 CUDA13 SM120");return 0;}
         if(a=="--model")model=value();else if(a=="--ctx-size")ctx=integer(value(),1,262144);else if(a=="--tokens")tokens=value();else if(a=="--n")count=integer(value(),0,262144);
         else if(a=="--force")forced=value();else if(a=="--dump-full-logits")dump=value();else if(a=="--serve")resident=true;else if(a=="--inspect")inspection=true;
         else if(a=="--kv")kv_mode=value();else if(a=="--spin8-view")spin_view=value();else if(a=="--spin8-profile")spin_profile=value();
-        else if(a=="--conservative-sync")conservative=true;
+        else if(a=="--conservative-sync")conservative=true;else if(a=="--spec-draft-n-max")draft_n_max=integer(value(),0,3);
         else if(a=="--output-language")language=value();
         else if(a=="--seed")option(sampling,"seed",value(),ctx);else if(a=="--temperature")option(sampling,"temperature",value(),ctx);else throw std::runtime_error("unsupported option: "+a);
     }
@@ -251,5 +539,5 @@ int main(int argc,char** argv){try{
     Q::require(resident!=!tokens.empty(),"choose exactly one of --serve or --tokens");Q::require(!resident||(forced.empty()&&dump.empty()),"force/logits are standalone options");
     auto prompt=tokens.empty()?std::vector<int32_t>{}:ids(tokens);auto force=forced.empty()?std::vector<int32_t>{}:ids(forced);if(!force.empty())count=int(force.size()+1);
     if(!forced.empty()||!dump.empty())std::fprintf(stderr,"diagnostic output_language=model-default orthography=off\n");
-    Q::host_resources();Engine e(model,ctx,kv_config,conservative,japanese);if(resident)serve(e);else{std::atomic<bool> stop{false};run(e,prompt,count,sampling,stop,nullptr,force,dump);}return 0;
+    Q::host_resources();Engine e(model,ctx,kv_config,conservative,japanese,draft_n_max);if(resident)serve(e);else{std::atomic<bool> stop{false};run(e,prompt,count,sampling,stop,nullptr,force,dump);}return 0;
 }catch(const std::exception& e){std::fprintf(stderr,"strata-q38: %s\n",e.what());return 1;}}

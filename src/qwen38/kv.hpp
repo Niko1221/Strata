@@ -52,12 +52,15 @@ class KvCache {
 public:
     KvCache(const KvConfig&,int capacity,int layers,cudaStream_t,bool conservative=false);
     void reset();
+    void rewind(int new_length);
     void step(int layer,int position,const float* q,const float* k,const float* v,
               const float* gate,float* output,float* scores);
     // enqueue leaves errors sticky until check/reset; downstream cache kernels
     // cannot consume failed storage. Caller must check before publishing output.
     void enqueue(int layer,int position,const float* q,const float* k,const float* v,
                  const float* gate,float* output,float* scores);
+    void enqueue_batch(int layer,int pos_start,int n_tokens,const float* q_batch,const float* k_batch,
+                       const float* v_batch,const float* gate_batch,float* output_batch,float* scores);
     void check();
     uint64_t fences()const{return fences_;}
     const KvConfig& config()const{return config_;}

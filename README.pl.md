@@ -2,38 +2,45 @@
 
 [English](README.md) · [日本語](README.ja.md) · [Deutsch](README.de.md) · [Español](README.es.md) · [Français](README.fr.md) · [Polski](README.pl.md) · [Português](README.pt-BR.md) · [简体中文](README.zh-CN.md)
 
-Lokalna AI w Windows: rozmowy, zadania agentów i badania ze źródłami. Hakua to niezależnie utrzymywany przez zapabob fork Niko1221/Strata, bez deklarowanego poparcia oryginalnego projektu.
+Lokalne AI dla systemu Windows z czatem, pracą agentów, wyszukiwaniem źródeł i wyborem kompatybilnych modeli. Hakua to fork projektu Niko1221/Strata rozwijany niezależnie przez zapabob i nie jest oficjalnie zatwierdzoną dystrybucją upstream.
 
-## Wersja i pliki
+## Wersja i pobieranie
 
-<!-- release-060-candidate -->
-Ten kod jest kandydatem integracji 0.6.0. Aplikacja, Terminal, Control i źródła silnika natywnego mają wersję 0.6.0. Weryfikacja kompilacji, instalacji i publikacji trwa; numer wersji nie dowodzi dostępności plików. Zachowano zweryfikowane [wydanie 0.5.9](https://github.com/zapabob/Strata/releases/tag/v0.5.9). Faktyczny stan 0.6.0 podaje zapis dostarczenia.
+<!-- release-061-stable -->
+Aktualne wydanie: [0.6.1](https://github.com/zapabob/Strata/releases/tag/v0.6.1) (Aplikacja `0.6.1`, Native Q38 `0.6.1` SM120, Control `0.6.0`). Status `releaseQualified=false` pozostaje jawny; pełne okno kontekstu i ogólna jakość modeli nie są certyfikowane.
 
-[0.6.0](https://github.com/zapabob/Strata/releases/tag/v0.6.0) · [Strata-0.6.0-windows-x64-setup.exe](https://github.com/zapabob/Strata/releases/download/v0.6.0/Strata-0.6.0-windows-x64-setup.exe) · [tar.7z](https://github.com/zapabob/Strata/releases/download/v0.6.0/Strata-0.6.0-windows-x64.tar.7z) · [SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.6.0/SHA256SUMS.txt)
+[0.6.1](https://github.com/zapabob/Strata/releases/tag/v0.6.1) · [Strata-0.6.1-windows-x64-setup.exe](https://github.com/zapabob/Strata/releases/download/v0.6.1/Strata-0.6.1-windows-x64-setup.exe) · [tar.7z](https://github.com/zapabob/Strata/releases/download/v0.6.1/Strata-0.6.1-windows-x64.tar.7z) · [SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.6.1/SHA256SUMS.txt)
+
+![Hakua / Strata real-model Japanese chat on Qwen3.8-27B](docs/media/native-qwen38-japanese-chat.png)
+*Zainstalowana aplikacja Hakua / Strata uruchamiająca `qwen3.8-27b-abliterated-3.69bpw-12GB-MTP.gguf` przez `strata-q38.exe` (CUDA 13 / RTX 5060 Ti 16 GB).*
 
 ## Instalacja i aktualizacja
 
-Użyj instalatora NSIS Windows x64 tego forka. Instaluje się dla użytkownika i zawiera własne Node, Python i Control; narzędzia programistyczne nie są potrzebne. Podpisany silnik CUDA to osobny komponent. tar.7z ma zawierać ten sam instalator, komponenty, instrukcje i sumy kontrolne, bez wag modeli i danych osobistych. Rozpakuj najpierw 7z, potem tar, i sprawdź BUNDLE-SHA256SUMS.txt.
+Użyj instalatora NSIS Windows x64 dla tego forka. Instaluje się na użytkownika i zawiera prywatne Node, Python oraz Control; systemowe narzędzia deweloperskie nie są wymagane. Natywny silnik CUDA jest osobnym komponentem. Archiwum `tar.7z` zawiera instalator, pakiet silnika CUDA, pakiet Control, instrukcje i sumy kontrolne, bez wag modeli i danych osobowych.
 
-Zakończ żądania, zwolnij modele z pamięci, zrób kopię danych i zamknij aplikację również w zasobniku. Zainstaluj w istniejącym katalogu. Zachowaj modele, rozmowy, pamięć, narzędzia, klucze i zgody. Zaimportuj skompresowany silnik opcją posiadanego pliku, wybierz zgodny model lub lokalny GGUF i załaduj go. Nazwa modelu nie dowodzi zgodności z silnikiem. [Instalacja i powrót do poprzedniej wersji](docs/HAKUA_INSTALL.md).
+Zakończ bieżące żądania, odładuj modele, wykonaj kopię zapasową danych i zamknij aplikację wraz z ikoną w zasobniku. Uruchom instalator w istniejącym folderze instalacji, aby nadpisać pliki z zachowaniem modeli, czatów, pamięci, narzędzi, kluczy i ustawień uprawnień. Zaimportuj skompresowany komponent CUDA przez opcję *Mam już plik*, wybierz zgodny model lub lokalny plik GGUF i załaduj go. Zobacz [instalacja i wycofanie zmian](docs/HAKUA_INSTALL.md).
 
-## Zachowane funkcje
+## Nowości w 0.6.1 i funkcje forka
 
-`/btw` uruchamia rzeczywistego podagenta bez narzędzi do pytania pobocznego, z osobnym zatrzymaniem. `/research` i `/deepresearch` gromadzą źródła. Wyszukiwanie może używać dołączonego RustXNG Full. Zapytania trafiają do włączonych dostawców zewnętrznych; wyszukiwanie nie jest całkowicie offline. Liczba źródeł nie gwarantuje poprawności.
+Wersja 0.6.1 rozbudowuje [lokalny runner GGUF dla rodziny Qwen3.8-27B (`strata-q38.exe`)](docs/QWEN38_DENSE_NATIVE.md) na Windows CUDA 13 / Blackwell (SM120):
+- **Polimorfizm kwantyzacji na poziomie tensora (`StrataQuantTensor`)**: obsługuje 11 typów GGML/Strata (`F32`, `F16`, `BF16`, `Q8_0`, `Q4_K`, `Q5_K`, `Q6_K`, `IQ3_S`, `IQ2_S`, `IQ4_XS` oraz PrismML `PQ2_0=142`) osobno dla każdego tensora.
+- **Wsadowy prefill Tensor Core + wsadowe KV `spin8_triality.cuh` (`KvCache::enqueue_batch`)**: zastępuje sekwencyjne GEMV podwójnie buforowanym `cublasGemmEx` (`prefill_gemm=cublas_tensor_op`, opcjonalnie `STRATA_FP8_PREFILL=1`). W teście 140 tokenów prefill + 8 tokenów dekodowania (`--kv spin8_k8v4 --ctx-size 4096`) na RTX 5060 Ti SM120 czas prefill spadł z `36 760,7 ms` (`3,81 tok/s`, `--conservative-sync`) do `11 387,4 ms` (`12,29 tok/s`, **przyspieszenie 3,23x**).
+- **Rzeczywista weryfikacja szkiców MTP `K=3` (`blk.64.nextn.*`)**: obsługuje `--spec-draft-n-max 0..3` z `KvCache::rewind` i przywracaniem stanu GDN.
+- **Pamięć podręczna KV i profil japoński**: tryby `F16`, `Spin8 K8V4` i `F16-K / Turbo2/3/4-V` (kolejność `auto`: `f16` → `f16_turbo4` → `spin8_k8v4`) oraz opcjonalny profil wyjścia japońskiego.
 
-Uczenie umiejętności i automatyczne stosowanie to osobne opcje, obie wyłączone w nowych profilach. Zachowane są ustawienia, prywatne edytowalne umiejętności, wersje i cofanie zmian. Pozostają operacje plikowe, ograniczony zakres historii i pamięci, zgodne ścieżki PrismML/TurboQuant, ograniczona pamięć ekspertów, integralność pakietów oraz diagnostyka. [Umiejętności](docs/WORKFLOW_SKILLS.md) · [Wyszukiwanie](docs/BROWSER_SEARCH.md).
+`/btw` uruchamia podagenta bez narzędzi do pytań pobocznych z własnym przyciskiem zatrzymania. `/research` i `/deepresearch` zbierają źródła przez wbudowany RustXNG Full (zapytania trafiają do włączonych dostawców zewnętrznych). Nauka i automatyczne stosowanie umiejętności workflow są osobnymi opcjami, domyślnie wyłączonymi w nowych profilach. Zobacz [umiejętności](docs/WORKFLOW_SKILLS.md) oraz [wyszukiwanie](docs/BROWSER_SEARCH.md).
 
-## Integracja oficjalnego projektu
+## Integracja z upstreamem i zgodność
 
-Punktem odniesienia jest oficjalny commit [baf16363b4](https://github.com/Niko1221/Strata/commit/baf16363b4403ef0ed4f538f5d5ed11c43fb9535), generacja 0.2.14 / silnik 0.1.60: sieć, wybór modelu pomocniczego, jądra promptów, pamięć i poprawki platform. Numeracja forka jest niezależna. Usunięte ścieżki DeepSeek pozostają rozszerzeniem; brak dedykowanego środowiska ma blokować ładowanie. Pakiet Windows nie potwierdza natywnego wejścia obrazu, dystrybucji silnika DeepSeek ani sprawdzonej inferencji Linux/Mac.
+Przypięte źródło oficjalne to [c775728069](https://github.com/Niko1221/Strata/commit/c77572806996349b49995e4f98d41b5294d36a21) (odpowiednik 0.2.15 / silnik 0.1.60). Wersje forka są niezależne. Zgodność z DeepSeek jest utrzymywana jako rozszerzenie i blokuje ładowanie bez dedykowanego środowiska uruchomieniowego. Ten pakiet Windows nie oznacza natywnego wejścia obrazu, dystrybuowanego natywnego silnika DeepSeek ani certyfikowanej inferencji na Linux/Mac.
 
-## Ochrona i ograniczenia pomiarów
+## Ochrona i zmierzone limity
 
-Zachowane minima to 3 GiB dostępnego RAM, 4 GiB zapasu pamięci zadeklarowanej, co najmniej 768 MiB rezerwy GPU i wolne miejsce na dyskach. Ochrona RAM w Windows obserwuje też ładowanie i generowanie. 32 GB RAM i 16 GB VRAM nie gwarantują dowolnego modelu lub kontekstu. Pełne okno, ogólna jakość modeli i współbieżność GPU pozostają niezakwalifikowane: releaseQualified=false. Instalator nie ma podpisu Windows Authenticode; podpisy komponentów i kanału aktualizacji są odrębne. [Dawne pomiary](docs/HAKUA_RELEASE.md) zachowują pierwotne wersje.
+Zachowaj minimalne progi: 3 GiB wolnej pamięci RAM, 4 GiB zapasu commit, co najmniej 768 MiB rezerwy GPU oraz limity miejsca na dysku. 32 GB RAM i 16 GB VRAM nie gwarantują dopasowania każdego modelu lub kontekstu. `releaseQualified=false` pozostaje w mocy, a instalator nie ma podpisu Windows Authenticode. Historyczne pomiary znajdują się w [dowodach wydań](docs/HAKUA_RELEASE.md).
 
 ## Dokumentacja i rozwój
 
-[Install](docs/HAKUA_INSTALL.md) · [Release evidence](docs/HAKUA_RELEASE.md) · [API and hardware](docs/AI_REFERENCE.md) · [Terminal](docs/TERMINAL.md) · [Source build](docs/SOURCE_INSTALL.md) · [Packaging](packaging/README.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [License](LICENSE)
+[Instalacja](docs/HAKUA_INSTALL.md) · [Dowody wydań](docs/HAKUA_RELEASE.md) · [API i sprzęt](docs/AI_REFERENCE.md) · [Terminal](docs/TERMINAL.md) · [Budowanie ze źródeł](docs/SOURCE_INSTALL.md) · [Pakowanie](packaging/README.md) · [Wkład](CONTRIBUTING.md) · [Bezpieczeństwo](SECURITY.md) · [Licencja](LICENSE)
 
 ```sh
 python -m pytest tests/terminal
@@ -41,11 +48,11 @@ python -m pytest tests/terminal
 
 ```sh
 cd apps/host
-npm test
-npm run build
+pnpm test
+pnpm run build
 ```
 
-### Niko1221/Strata — upstream Terminal reference
+### Niko1221/Strata — oficjalne odniesienie Terminal
 
 ```sh
 curl -fsSL --connect-timeout 15 --max-time 120 https://github.com/Niko1221/Strata/releases/latest/download/install.sh -o install.sh && sh install.sh
@@ -55,4 +62,4 @@ curl -fsSL --connect-timeout 15 --max-time 120 https://github.com/Niko1221/Strat
 irm -TimeoutSec 120 https://github.com/Niko1221/Strata/releases/latest/download/install.ps1 | iex
 ```
 
-[Niko1221/Strata](https://github.com/Niko1221/Strata) · [Hermes Agent](https://github.com/NousResearch/hermes-agent) · [Źródła i informacje stron trzecich](third_party/)
+[Niko1221/Strata](https://github.com/Niko1221/Strata) · [Hermes Agent](https://github.com/NousResearch/hermes-agent) · [Źródła i noty stron trzecich](third_party/)

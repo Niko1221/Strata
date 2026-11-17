@@ -72,6 +72,31 @@ __global__ void inverse_turbo(const float* in,float* out){
     for(int i=0;i<128;++i)out[block*128+i]=x[i];
 }
 __global__ void apply_gate(float* out,const float* gate){int i=blockIdx.x*256+threadIdx.x;if(i<6144)out[i]/=1+expf(-gate[i]);}
+__global__ void spin8_store_q_batch_kernel(const float* in,uint8_t* cache,const float* r,int pos_start,int n_tokens,int ctx,bool q8,int* status){
+    if(atomicAdd(status,0))return;
+    const int tok=blockIdx.x;
+    const int b=threadIdx.x; // 32 blocks of 32 elems = 1024 elems (4 KV heads * 256)
+    if(tok>=n_tokens||b>=32)return;
+    const float* src=in+size_t(tok)*1024+b*32;
+    float rot[32];
+    for(int g=0;g<4;++g){
+        for(int row=0;row<8;++row){
+            float v=0.f;
+            for(int j=0;j<8;++j)v=fmaf(r[row*8+j],src[g*8+j],v);
+            rot[g*8+row]=v;
+        }
+    }
+    const int pos=pos_start+tok;
+    uint8_t* p=cache+(size_t(b/8)*ctx+pos)*(q8?272:144)+(b%8)*(q8?34:18);
+    float amax=0,signed_max=0;
+    for(int i=0;i<32;++i){float a=fabsf(rot[i]);if(a>amax){amax=a;signed_max=rot[i];}}
+    float d=q8?amax/127.f:signed_max/-8.f,inv=d?1.f/d:0.f;
+    if(!isfinite(inv)){atomicExch(status,1);return;}
+    auto hd=__float2half_rn(d);if(!isfinite(__half2float(hd))){atomicExch(status,1);return;}
+    tqc_cuda_detail::store16(p,__half_as_ushort(hd));
+    if(q8)for(int i=0;i<32;++i)p[2+i]=uint8_t(int8_t(roundf(rot[i]*inv)));
+    else for(int i=0;i<16;++i){int lo=min(15,int(rot[i]*inv+8.5f)),hi=min(15,int(rot[i+16]*inv+8.5f));p[2+i]=uint8_t(lo|(hi<<4));}
+}
 void demand(bool b,const char* message){if(!b)throw std::runtime_error(message);}
 }
 void preload_kv(){
@@ -111,6 +136,43 @@ size_t KvCache::scratch_bytes()const{return q_.bytes+k_.bytes+v_.bytes+aggregate
 void KvCache::reset(){
     ck(cudaStreamSynchronize(stream_));keys_.zero(stream_);values_.zero(stream_);for(auto& l:layers_)l.length=0;
     if(status_.data)status_.zero(stream_);ck(cudaStreamSynchronize(stream_));poisoned_=false;
+}
+void KvCache::rewind(int new_length){
+    demand(!poisoned_&&new_length>=0&&new_length<=capacity_,"invalid KV rewind");
+    for(auto& l:layers_){demand(new_length<=l.length,"KV rewind cannot advance");l.length=new_length;}
+}
+void KvCache::enqueue_batch(int index,int pos_start,int n_tokens,const float* q_batch,const float* k_batch,const float* v_batch,const float* gate_batch,float* output_batch,float* scores){
+    if(n_tokens<=0)return;
+    if(config_.mode==KvMode::spin8_k8v4){
+        demand(!poisoned_,"KV session requires reset after error");
+        demand(index>=0&&index<int(layers_.size()),"invalid attention layer");
+        auto& l=layers_[index];
+        demand(pos_start==l.length&&pos_start>=0&&pos_start+n_tokens<=capacity_,"KV batch position out of range");
+        finite(q_batch,size_t(n_tokens)*6144,status_.as<int>(),stream_);
+        finite(k_batch,size_t(n_tokens)*1024,status_.as<int>(),stream_);
+        finite(v_batch,size_t(n_tokens)*1024,status_.as<int>(),stream_);
+        finite(gate_batch,size_t(n_tokens)*6144,status_.as<int>(),stream_);
+        spin8_store_q_batch_kernel<<<n_tokens,32,0,stream_>>>(k_batch,l.key.as<uint8_t>(),matrix_.as(),pos_start,n_tokens,capacity_,true,status_.as<int>());
+        spin8_store_q_batch_kernel<<<n_tokens,32,0,stream_>>>(v_batch,l.value.as<uint8_t>(),matrix_.as(),pos_start,n_tokens,capacity_,false,status_.as<int>());
+        ck(cudaGetLastError());
+        for(int t=0;t<n_tokens;++t){
+            const int pos=pos_start+t;
+            float* out=output_batch+size_t(t)*6144;
+            const float* gate=gate_batch+size_t(t)*6144;
+            ck(cudaMemsetAsync(out,0,6144*4,stream_));
+            if(aggregate_.data)aggregate_.zero(stream_);
+            kv_spin_transform(q_batch+size_t(t)*6144,q_.as(),matrix_.as(),24,false,stream_);
+            scores_kernel<<<dim3((pos+8)/8,24),256,0,stream_>>>(q_.as(),l.key.as<uint8_t>(),scores,pos,capacity_,int(config_.key_row_bytes()),true,status_.as<int>());
+            aggregate_kernel<<<24,256,0,stream_>>>(scores,l.value.as<uint8_t>(),aggregate_.as(),pos,capacity_,int(config_.value_row_bytes()),int(config_.mode),status_.as<int>());
+            kv_spin_transform(aggregate_.as(),out,matrix_.as(),24,true,stream_);
+            apply_gate<<<24,256,0,stream_>>>(out,gate);
+            ++l.length;
+        }
+        return;
+    }
+    for(int t=0;t<n_tokens;++t){
+        enqueue(index,pos_start+t,q_batch+size_t(t)*6144,k_batch+size_t(t)*1024,v_batch+size_t(t)*1024,gate_batch+size_t(t)*6144,output_batch+size_t(t)*6144,scores);
+    }
 }
 void KvCache::enqueue(int index,int pos,const float* q,const float* k,const float* v,const float* gate,float* output,float* scores){
     demand(!poisoned_,"KV session requires reset after error");demand(index>=0&&index<int(layers_.size()),"invalid attention layer");auto& l=layers_[index];

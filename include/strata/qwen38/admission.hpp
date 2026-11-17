@@ -20,7 +20,8 @@ inline uint64_t payload(const TensorInfo& t) {
 inline std::string layer_name(int i, const char* role) { return "blk." + std::to_string(i) + "." + role; }
 struct Admission {
     std::set<std::string> required;
-    uint64_t gpu_weights = 0, embedding_bytes = 0, ignored_bytes = 0;
+    std::set<std::string> mtp_required;
+    uint64_t gpu_weights = 0, mtp_weights = 0, embedding_bytes = 0, ignored_bytes = 0;
     int nextn = 0, eos = 248046;
     float eps = 1e-6f, rope_base = 1e7f;
     std::set<std::string> folded;
@@ -116,7 +117,7 @@ inline Admission inspect(const GgufFile& f) {
         extents.emplace_back(t.offset,t.offset+bytes);
         if(t.name=="token_embd.weight") a.embedding_bytes=bytes;
         else if(a.required.count(t.name)) a.gpu_weights+=convert_auxiliary(t)?t.elements()*4:bytes;
-        else { require(a.nextn==1 && t.name.rfind("blk.64.",0)==0,"unknown tensor role: "+t.name);a.ignored_bytes+=bytes; }
+        else { require(a.nextn==1 && t.name.rfind("blk.64.",0)==0,"unknown tensor role: "+t.name);a.ignored_bytes+=bytes;a.mtp_required.insert(t.name);a.mtp_weights+=convert_auxiliary(t)?t.elements()*4:bytes; }
     }
     std::sort(extents.begin(),extents.end());
     for(size_t i=1;i<extents.size();++i)require(extents[i].first>=extents[i-1].second,"overlapping tensor payloads");

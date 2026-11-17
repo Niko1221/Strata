@@ -265,9 +265,14 @@ def inputs(args: argparse.Namespace) -> tuple[dict, dict, dict | None, dict]:
 
 
 def release_row() -> dict:
-    matches = releases()
-    require(TAG in matches, "Expected exact formal release")
-    return matches[TAG]
+    import time
+
+    for _ in range(5):
+        matches = releases()
+        if TAG in matches:
+            return matches[TAG]
+        time.sleep(2)
+    require(False, "Expected exact formal release")
 
 
 def snapshot_phase(work: Path) -> dict:

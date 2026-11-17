@@ -52,13 +52,20 @@ __global__ void mv(int type,const uint8_t* w,const float* x,float* y,int n,int r
     s=sum(s);if(!lane)y[row]=s;
 }
 __global__ void norm(const float* x,const float* w,float* y,int n,float eps){
-    __shared__ float sums[8];float v=0;for(int i=threadIdx.x;i<n;i+=256)v+=x[i]*x[i];v=sum(v);
+    __shared__ float sums[8];
+    const float* xr=x+size_t(blockIdx.x)*n; float* yr=y+size_t(blockIdx.x)*n;
+    float v=0;for(int i=threadIdx.x;i<n;i+=256)v+=xr[i]*xr[i];v=sum(v);
     if(!(threadIdx.x%32))sums[threadIdx.x/32]=v;__syncthreads();
     float s=0;for(int i=0;i<8;++i)s+=sums[i];float r=rsqrtf(s/n+eps);
-    for(int i=threadIdx.x;i<n;i+=256)y[i]=x[i]*r*w[i];
+    for(int i=threadIdx.x;i<n;i+=256)yr[i]=xr[i]*r*w[i];
 }
 __global__ void elt(float* x,const float* y,int n,bool sw){int i=blockIdx.x*256+threadIdx.x;if(i<n)x[i]=sw?x[i]/(1+expf(-x[i]))*y[i]:x[i]+y[i];}
-__global__ void gb(float* al,float* be,const float* dt,const float* a,int n){int i=threadIdx.x;if(i<n){float v=al[i]+dt[i];al[i]=(v>20?v:log1pf(expf(v)))*a[i];be[i]=1/(1+expf(-be[i]));}}
+__global__ void gb(float* al,float* be,const float* dt,const float* a,int n){
+    int i=threadIdx.x;if(i<n){
+        const size_t off=size_t(blockIdx.x)*n+i;
+        float v=al[off]+dt[i];al[off]=(v>20?v:log1pf(expf(v)))*a[i];be[off]=1/(1+expf(-be[off]));
+    }
+}
 __global__ void fin(const float* x,size_t n,int* err){size_t i=size_t(blockIdx.x)*256+threadIdx.x;if(i<n&&!isfinite(x[i]))atomicExch(err,1);}
 __global__ void had(const float* x,const float* signs,float* y,bool inverse,bool grouped){
     __shared__ float b[1024];int j=threadIdx.x,index=blockIdx.x*1024+j,src=index;
@@ -107,9 +114,11 @@ void preload_ops(){
 void decode(int type,const void* p,float* y,int n,cudaStream_t s){shape(type,n,1);if(!p||!y)throw std::runtime_error("null decoder input");deq<<<(n+255)/256,256,0,s>>>(type,(const uint8_t*)p,y,n);ck(cudaGetLastError());}
 void matvec(int type,const void* w,const float* x,float* y,int n,int rows,cudaStream_t s){shape(type,n,rows);if(!w||!x||!y)throw std::runtime_error("null matrix input");mv<<<(rows+7)/8,256,0,s>>>(type,(const uint8_t*)w,x,y,n,rows,row_bytes(type,n));ck(cudaGetLastError());}
 void rms(const float* x,const float* w,float* y,int n,float eps,cudaStream_t s){norm<<<1,256,0,s>>>(x,w,y,n,eps);ck(cudaGetLastError());}
+void rms_batch(const float* x,const float* w,float* y,int rows,int n,float eps,cudaStream_t s){if(rows<=0)return;norm<<<rows,256,0,s>>>(x,w,y,n,eps);ck(cudaGetLastError());}
 void add(float* x,const float* y,int n,cudaStream_t s){elt<<<(n+255)/256,256,0,s>>>(x,y,n,false);ck(cudaGetLastError());}
 void swiglu(float* x,const float* y,int n,cudaStream_t s){elt<<<(n+255)/256,256,0,s>>>(x,y,n,true);ck(cudaGetLastError());}
 void gdn_gates(float* al,float* be,const float* dt,const float* a,int n,cudaStream_t s){gb<<<1,256,0,s>>>(al,be,dt,a,n);ck(cudaGetLastError());}
+void gdn_gates_batch(float* al,float* be,const float* dt,const float* a,int rows,int n,cudaStream_t s){if(rows<=0)return;gb<<<rows,256,0,s>>>(al,be,dt,a,n);ck(cudaGetLastError());}
 void finite(const float* x,size_t n,int* e,cudaStream_t s){fin<<<unsigned((n+255)/256),256,0,s>>>(x,n,e);ck(cudaGetLastError());}
 void hadamard(const float* x,const float* signs,float* y,int n,bool inverse,bool grouped,cudaStream_t s){
     if(n<=0||n%1024||!x||!signs||!y||x==y||(grouped&&(n!=6144||inverse)))throw std::runtime_error("invalid Hadamard arguments");

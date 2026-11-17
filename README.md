@@ -6,37 +6,39 @@ Local AI for Windows, with chat, agent work, research and a choice of compatible
 
 ## Version and downloads
 
-<!-- release-060-stable -->
-Current stable release: [0.6.0](https://github.com/zapabob/Strata/releases/tag/v0.6.0) (App `21013e19b`, Component/Control `b1cabf926`, Native Q38 `8b0b3c745`). `releaseQualified=false` remains explicit; full-window inference and general model quality remain unqualified.
+<!-- release-061-stable -->
+Current release: [0.6.1](https://github.com/zapabob/Strata/releases/tag/v0.6.1) (App `0.6.1`, Native Q38 `0.6.1` SM120, Control `0.6.0`). `releaseQualified=false` remains explicit; full-window inference and general model quality remain unqualified.
 
-[0.6.0](https://github.com/zapabob/Strata/releases/tag/v0.6.0) · [Strata-0.6.0-windows-x64-setup.exe](https://github.com/zapabob/Strata/releases/download/v0.6.0/Strata-0.6.0-windows-x64-setup.exe) · [tar.7z](https://github.com/zapabob/Strata/releases/download/v0.6.0/Strata-0.6.0-windows-x64.tar.7z) · [SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.6.0/SHA256SUMS.txt)
+[0.6.1](https://github.com/zapabob/Strata/releases/tag/v0.6.1) · [Strata-0.6.1-windows-x64-setup.exe](https://github.com/zapabob/Strata/releases/download/v0.6.1/Strata-0.6.1-windows-x64-setup.exe) · [tar.7z](https://github.com/zapabob/Strata/releases/download/v0.6.1/Strata-0.6.1-windows-x64.tar.7z) · [SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.6.1/SHA256SUMS.txt)
 
-![Hakua / Strata 0.6.0 real-model Japanese chat on Qwen3.8-27B](docs/media/native-qwen38-japanese-chat.png)
-*Actual installed Hakua / Strata 0.6.0 desktop running `qwen3.8-27b-abliterated-3.69bpw-12GB-MTP.gguf` via `strata-q38.exe` (CUDA 13 / RTX 5060 Ti 16 GB, `installed-q38-r8`).*
+![Hakua / Strata real-model Japanese chat on Qwen3.8-27B](docs/media/native-qwen38-japanese-chat.png)
+*Hakua / Strata desktop running `qwen3.8-27b-abliterated-3.69bpw-12GB-MTP.gguf` via `strata-q38.exe` (CUDA 13 / RTX 5060 Ti 16 GB).*
 
 ## Install or update
 
-Use the Windows x64 NSIS installer for this fork. It installs per user and carries private Node, Python and Control; system development tools are unnecessary. The signed native CUDA engine is a separate component. The tar.7z bundle must contain the identical installer, component packages, instructions and checksums. It excludes model weights and personal data. Extract 7z first, then tar, and check BUNDLE-SHA256SUMS.txt.
+Use the Windows x64 NSIS installer for this fork. It installs per user and carries private Node, Python and Control; system development tools are unnecessary. The native CUDA engine is a separate component. The `tar.7z` bundle contains the installer, CUDA engine package, Control package, instructions and checksums, excluding model weights and personal data.
 
-Finish requests, unload models, back up app data, then quit the app including its tray icon. Run the installer in the existing installation folder. Preserve model folders, chats, memory, tools, keys and approval choices. Import the compressed native component with I already have the file; choose a compatible model or a local GGUF, then Load. A model name alone does not establish engine compatibility. See [installation and rollback](docs/HAKUA_INSTALL.md).
+Finish requests, unload models, back up app data, then quit the app including its tray icon. Run the installer in the existing installation folder to overwrite-update while preserving model folders, chats, memory, tools, keys and approval choices. Import the compressed native component with *I already have the file*, choose a compatible model or local GGUF, then Load. A model name alone does not establish engine compatibility. See [installation and rollback](docs/HAKUA_INSTALL.md).
 
 ## Features kept in this fork
 
-The 0.6.0 source candidate adds a [local Qwen3.8-27B-family dense GGUF trial](docs/QWEN38_DENSE_NATIVE.md) on Windows CUDA 13 / Blackwell. Strata owns its loader, forward pass and CUDA operations, with attributed numerical format ports and no llama runtime dependency in this runner. The signed component must cover the additional `strata-q38.exe`; original model weights stay separate. Metadata and full tensor validation determine compatibility, including renamed checkpoints. Existing native engines and standalone PrismML 0.4.1 / TurboQuant 0.4.0 choices remain available.
+0.6.1 upgrades the [local Qwen3.8-27B-family dense GGUF runner (`strata-q38.exe`)](docs/QWEN38_DENSE_NATIVE.md) on Windows CUDA 13 / Blackwell (SM120):
+- **Per-tensor mixed-quantization polymorphism (`StrataQuantTensor`)**: supports 11 GGML/Strata types (`F32`, `F16`, `BF16`, `Q8_0`, `Q4_K`, `Q5_K`, `Q6_K`, `IQ3_S`, `IQ2_S`, `IQ4_XS`, and PrismML `PQ2_0=142`) on a per-tensor basis.
+- **Tensor Core batched prefill + `spin8_triality.cuh` batch KV (`KvCache::enqueue_batch`)**: replaces per-token prefill GEMV with ping-pong double-buffered `cublasGemmEx` (`prefill_gemm=cublas_tensor_op`, plus opt-in `STRATA_FP8_PREFILL=1`). In a 140-token prefill + 8-token decode benchmark (`--kv spin8_k8v4 --ctx-size 4096`) on RTX 5060 Ti SM120, prefill improved from `36,760.7 ms` (`3.81 tok/s`, `--conservative-sync`) to `11,387.4 ms` (`12.29 tok/s`, **3.23x** speedup).
+- **Real MTP `K=3` draft/verify (`blk.64.nextn.*`)**: supports `--spec-draft-n-max 0..3` with `KvCache::rewind` and GDN state snapshot/restore.
+- **KV cache & Japanese profile**: supports `F16`, `Spin8 K8V4`, and `F16-K / Turbo2/3/4-V` cache modes (`auto` order: `f16` → `f16_turbo4` → `spin8_k8v4`), plus optional Japanese output profile (`model-default` disables constraints).
 
-The new path supports original PrismML PQ2_0 weights and explicit F16, Spin8 K8V4 or F16-K/Turbo2/3/4-V cache modes. Auto tries F16, Turbo4, then Spin8 under the unchanged resource reserves. Japanese output uses a no-training instruction profile and finite generation-time suppression, preserving literal input; model-default disables both. This cannot guarantee universally Japanese answers. Short-context mechanics and sampled answers have been measured; practical 98,304/131,072-token input and a five-minute first response remain pending. Prefill is still sequential. MTP, full CUDA graphs and batched prefill are deferred until after packaging.
-
-`/btw` starts a real tool-free side-question subagent with its own stop control. `/research` and `/deepresearch` collect sources; configured web search can use bundled RustXNG Full. Search queries go to the enabled external providers, so search is not entirely offline. Source counts do not establish answer accuracy.
+`/btw` starts a real tool-free side-question subagent with its own stop control. `/research` and `/deepresearch` collect sources; configured web search can use bundled RustXNG Full. Search queries go to enabled external providers, so search is not entirely offline. Source counts do not establish answer accuracy.
 
 Workflow skill learning and automatic application are separate options; new profiles keep both off. Existing choices, editable private skills, revisions and undo are preserved. Workspace and sidebar file operations, scoped chat history and memory, compatible PrismML/TurboQuant paths, bounded expert memory, pack integrity and diagnostic measurements remain part of the fork. See [skills](docs/WORKFLOW_SKILLS.md) and [search](docs/BROWSER_SEARCH.md).
 
 ## Official integration and compatibility
 
-The pinned official source is [c775728069](https://github.com/Niko1221/Strata/commit/c77572806996349b49995e4f98d41b5294d36a21), associated with official 0.2.15 / engine 0.1.60. It brings networking, drafting selection, prompt kernels, memory handling and platform fixes. Fork versions are independent. DeepSeek compatibility is retained as an extension where official paths were removed; a missing dedicated runtime must prevent loading. This Windows package does not imply native image input, a distributed native DeepSeek engine, or qualified Linux/Mac inference.
+The pinned official source is [c775728069](https://github.com/Niko1221/Strata/commit/c77572806996349b49995e4f98d41b5294d36a21), associated with official 0.2.15 / engine 0.1.60. It brings networking, drafting selection, prompt kernels, memory handling and platform fixes. Fork versions are independent. DeepSeek compatibility is retained as an extension where official paths were removed; a missing dedicated runtime prevents loading. This Windows package does not imply native image input, a distributed native DeepSeek engine, or qualified Linux/Mac inference.
 
 ## Protection and measured limits
 
-Retain the 3 GiB available-RAM floor, 4 GiB commit headroom, at least 768 MiB GPU reserve and disk floors. The Windows RAM guard also observes loading and generation. Capacity is checked for the actual model and selected backend; 32 GB RAM and 16 GB VRAM do not guarantee every model or context fits. Full-window inference, general model quality and simultaneous GPU use remain unqualified: releaseQualified=false. The installer has no Windows Authenticode signature; component/feed signatures are a separate mechanism. Historical measurements keep their original versions in [release evidence](docs/HAKUA_RELEASE.md).
+Retain the 3 GiB available-RAM floor, 4 GiB commit headroom, at least 768 MiB GPU reserve and disk floors. The Windows RAM guard observes loading and generation. Capacity is checked for the actual model and selected backend; 32 GB RAM and 16 GB VRAM do not guarantee every model or context fits. Full-window inference, general model quality and simultaneous GPU use remain unqualified: `releaseQualified=false`. The installer has no Windows Authenticode signature. Historical measurements keep their original versions in [release evidence](docs/HAKUA_RELEASE.md).
 
 ## Documentation and development
 
@@ -48,8 +50,8 @@ python -m pytest tests/terminal
 
 ```sh
 cd apps/host
-npm test
-npm run build
+pnpm test
+pnpm run build
 ```
 
 ### Niko1221/Strata — upstream Terminal reference
