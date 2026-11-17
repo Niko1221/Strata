@@ -38,6 +38,7 @@
 #include "strata/core/pinned_ring.hpp"
 #include "strata/core/progress.hpp"
 #include "strata/core/on_device.hpp"
+#include "strata/core/local_expert_relay.hpp"
 #include "strata/core/stream_watch.hpp"
 #include "strata/platform/aux_cpus.hpp"
 
@@ -84,6 +85,32 @@ bool native_expert_i8_floor_gated() noexcept;   // true: the unset int8 default 
 }  // namespace strata::kernels
 
 namespace {
+#if defined(STRATA_LOCAL_CUDA_RELAY)
+std::atomic<unsigned> g_local_prefill_runs{0};
+std::atomic<bool> g_local_prefill_concurrent{false};
+thread_local bool tl_local_prefill_run_solo = false;
+
+struct LocalPrefillRunScope {
+    bool enabled = false, previous_solo = false;
+    explicit LocalPrefillRunScope(bool on) : enabled(on), previous_solo(tl_local_prefill_run_solo) {
+        if (!enabled) return;
+        const unsigned previous = g_local_prefill_runs.fetch_add(1, std::memory_order_acq_rel);
+        tl_local_prefill_run_solo = previous == 0;
+        if (previous != 0) g_local_prefill_concurrent.store(true, std::memory_order_release);
+    }
+    ~LocalPrefillRunScope() {
+        if (!enabled) return;
+        const unsigned previous = g_local_prefill_runs.fetch_sub(1, std::memory_order_acq_rel);
+        tl_local_prefill_run_solo = previous_solo;
+        if (previous == 1) g_local_prefill_concurrent.store(false, std::memory_order_release);
+    }
+};
+
+bool local_prefill_run_is_solo() {
+    return tl_local_prefill_run_solo && g_local_prefill_runs.load(std::memory_order_acquire) == 1 &&
+           !g_local_prefill_concurrent.load(std::memory_order_acquire);
+}
+#endif
 // STRATA_PLE_BATCH for the prompt path: the user's variable wins; unset, it is on except for an engine built with CUDA 12.8 on a compute capability 12.0 card
 // (sm120_series.hpp ple_batch_default), which says so once.
 bool ple_batch_enabled() {
@@ -1111,7 +1138,12 @@ struct Stager {
         dma_done.assign((size_t) kRing, nullptr);
         pageable.resize(kRing);
         for (int i = 0; i < kRing; ++i) {
-            pinned[i] = !force_pageable() && cudaHostAlloc((void**) &buf[i], blob_bytes, cudaHostAllocDefault) == cudaSuccess;
+            unsigned int pin_flags = cudaHostAllocDefault;
+#if defined(STRATA_LOCAL_CUDA_RELAY)
+            if (core::local_prefill_relay != nullptr && core::local_prefill_relay->active())
+                pin_flags |= cudaHostAllocPortable;   // CUDA1's relay upload worker reads CUDA0's stager buffers
+#endif
+            pinned[i] = !force_pageable() && cudaHostAlloc((void**) &buf[i], blob_bytes, pin_flags) == cudaSuccess;
             if (!pinned[i]) {
                 cudaGetLastError();
                 pageable[(size_t) i].resize(blob_bytes);
@@ -4559,6 +4591,9 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
         std::atomic<bool> a_stop{false};
         double iss_ms = 0;
         int64_t iss_streamed = 0, iss_dma = 0;
+#if defined(STRATA_LOCAL_CUDA_RELAY)
+        std::atomic<int> relay_error{(int) cudaSuccess};
+#endif
         std::thread issuer;
         struct IssuerJoin {
             std::atomic<bool>* stop;
@@ -4566,6 +4601,36 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
             ~IssuerJoin() { if (t->joinable()) { stop->store(true); t->join(); } }
         } issuer_join{&a_stop, &issuer};
         const bool threaded_issue = stream_all && issuer_on;
+#if defined(STRATA_LOCAL_CUDA_RELAY)
+        core::LocalExpertRelay* relay = core::local_prefill_relay;
+        const bool relay_requested = relay != nullptr && relay->active();
+        bool relay_chunk = relay_requested && m.device == 0 && threaded_issue && m.pp == nullptr && !ps_on && !rs_on &&
+                           !seq.empty() && local_prefill_run_is_solo();
+        size_t relay_bytes_before = 0, relay_copies_before = 0, relay_planned_bytes = 0;
+        if (relay_requested && m.device == 0) {
+            for (const StreamEntry& en : seq) relay_planned_bytes += (size_t) lay0.blob_bytes(en.l);
+            const char* route = relay_chunk ? "enabled (full relay, solo threaded issuer)"
+                                 : !stream_all ? "direct (chunk below stream-all threshold)"
+                                 : !threaded_issue ? "direct (threaded issuer disabled)"
+                                 : m.pp != nullptr ? "direct (peer/helper stage active)"
+                                 : ps_on ? "direct (peer expert streaming active)"
+                                 : rs_on ? "direct (routed stream active)"
+                                 : !local_prefill_run_is_solo() ? "direct (concurrent prefill request)"
+                                 : "direct (no streamed experts)";
+            std::fprintf(stderr, "strata local: PREFILL_RELAY CUDA0 chunk pos=%lld tokens=%lld planned_blobs=%zu "
+                                 "planned_bytes=%zu route=%s\n",
+                         (long long) p0, (long long) T, seq.size(), relay_planned_bytes, route);
+            if (relay_chunk) {
+                relay_bytes_before = relay->bytes();
+                relay_copies_before = relay->copies();
+                const cudaError_t rc = relay->begin(m.copy, m.device);
+                if (rc != cudaSuccess) {
+                    err = std::string("prefill relay begin: ") + cudaGetErrorString(rc);
+                    return false;
+                }
+            }
+        }
+#endif
         // Opt-in, the threaded issuer only: under WDDM every cudaEventRecord and cross-stream wait is a
         // submission of its own (~80 / ~45 us each on a 6900 XT under Windows 11, ~3 / ~0 us on Linux), and the
         // streamed walk paid one record and one wait per expert although a group gathers after ONE wait on its last
@@ -4659,12 +4724,35 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         prev_rel = -1;
                     }
                     if (en.job < 0) {
-                        cudaMemcpyAsync(m.stage_dev[sl], en.blob, bytes, cudaMemcpyHostToDevice, m.copy);
+                        cudaError_t upload_rc = cudaSuccess;
+#if defined(STRATA_LOCAL_CUDA_RELAY)
+                        if (relay_chunk) upload_rc = relay->copy(m.stage_dev[sl], en.blob, bytes, m.copy, m.device);
+                        else
+#endif
+                            upload_rc = cudaMemcpyAsync(m.stage_dev[sl], en.blob, bytes, cudaMemcpyHostToDevice, m.copy);
+#if defined(STRATA_LOCAL_CUDA_RELAY)
+                        if (upload_rc != cudaSuccess) {
+                            relay_error.store((int) upload_rc, std::memory_order_release);
+                            a_stop.store(true, std::memory_order_release);
+                            return;
+                        }
+#endif
                         ++iss_dma;
                     } else {
                         cover(idx);   // the stager may make the issuer wait
                         const uint8_t* hb = m.stager->wait(en.job);
+#if defined(STRATA_LOCAL_CUDA_RELAY)
+                        const cudaError_t upload_rc = relay_chunk
+                            ? relay->copy(m.stage_dev[sl], hb, bytes, m.copy, m.device)
+                            : cudaMemcpyAsync(m.stage_dev[sl], hb, bytes, cudaMemcpyHostToDevice, m.copy);
+                        if (upload_rc != cudaSuccess) {
+                            relay_error.store((int) upload_rc, std::memory_order_release);
+                            a_stop.store(true, std::memory_order_release);
+                            return;
+                        }
+#else
                         cudaMemcpyAsync(m.stage_dev[sl], hb, bytes, cudaMemcpyHostToDevice, m.copy);
+#endif
                         m.stager->issued_one(en.job, m.copy);
                     }
                     if (!sparse_copied) cudaEventRecord(m.copied[sl], m.copy);
@@ -4679,9 +4767,21 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
             issue_until((size_t) m.ring);   // layer 0's first experts, behind the embedding and the PLE
         }
         // the consumer's side: entry k's copy is on the copy stream (the thread issued it), then k is given back
-        auto wait_issued = [&](size_t k) {
-            if (!threaded_issue) return;
-            while (a_issued.load(std::memory_order_acquire) <= k) std::this_thread::yield();
+        auto wait_issued = [&](size_t k) -> bool {
+            if (!threaded_issue) return true;
+            while (a_issued.load(std::memory_order_acquire) <= k) {
+#if defined(STRATA_LOCAL_CUDA_RELAY)
+                const int rc = relay_error.load(std::memory_order_acquire);
+                if (rc != (int) cudaSuccess) {
+                    err = std::string("prefill relay copy: ") + cudaGetErrorString((cudaError_t) rc);
+                    a_stop.store(true, std::memory_order_release);
+                    return false;
+                }
+#endif
+                if (a_stop.load(std::memory_order_acquire)) return false;
+                std::this_thread::yield();
+            }
+            return true;
         };
         // the compute stream waits for entry k's copy: on its slot's event (`slot`, as before this switch existed), or
         // (sparse_copied) on the first recorded entry at or after it.  That event's slot cannot be re-recorded before k
@@ -5533,7 +5633,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             if (k > k0) {
                                 // one copy stream, in order: the batch's last blob covers the others
                                 pt.mark(kPfWaitCopy, cs);
-                                wait_issued(k - 1);
+                                if (!wait_issued(k - 1)) return false;
                                 wait_copied(k - 1, (k - 1) % (size_t) m.ring);
                             }
                             pt.mark(kPfGemmGU, cs);
@@ -7034,7 +7134,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                 release_to(e);
                                 if (k < kend && seq[k].e == e) {
                                     const int sl = (int) (k % (size_t) m.ring);
-                                    wait_issued(k);
+                                    if (!wait_issued(k)) return false;
                                     if (!group_gather) {
                                         pt.mark(kPfWaitCopy, cs);
                                         wait_copied(k, (size_t) sl);
@@ -7198,6 +7298,21 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
         if (!ple_land()) return false;   // a stage that ends before layer 1: the rows land anyway, the next gather starts
         if (issuer.joinable()) {
             issuer.join();
+#if defined(STRATA_LOCAL_CUDA_RELAY)
+            const int relay_rc = relay_error.load(std::memory_order_acquire);
+            if (relay_rc != (int) cudaSuccess) {
+                err = std::string("prefill relay copy: ") + cudaGetErrorString((cudaError_t) relay_rc);
+                return false;
+            }
+            if (relay_chunk) {
+                const size_t submitted_blobs = relay->copies() - relay_copies_before;
+                const size_t submitted_bytes = relay->bytes() - relay_bytes_before;
+                std::fprintf(stderr, "strata local: PREFILL_RELAY bytes pos=%lld tokens=%lld planned_blobs=%zu "
+                                     "planned_bytes=%zu submitted_blobs=%zu submitted_bytes=%zu\n",
+                             (long long) p0, (long long) T, seq.size(), relay_planned_bytes,
+                             submitted_blobs, submitted_bytes);
+            }
+#endif
             stats_.ms_experts_host += iss_ms;
             stats_.experts_streamed += iss_streamed;
             stats_.experts_dma += iss_dma;
@@ -8961,6 +9076,10 @@ bool Prefill::reserve_uploads(int64_t T) {
 }
 
 bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& err) {
+#if defined(STRATA_LOCAL_CUDA_RELAY)
+    LocalPrefillRunScope local_prefill_scope(core::local_prefill_relay != nullptr &&
+                                              core::local_prefill_relay->active());
+#endif
 #if defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906)
     (void) strata::kernels::qsa_two_pass_on();   // HIP: a set STRATA_SELECT_TWO_PASS says once it is not used
 #endif

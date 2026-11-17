@@ -6,6 +6,15 @@
 # the GPU engine of the CUDA and HIP builds (strata_core, strata_kernels, strata_prefill, strata_engine, strata, the Qwen3.6 engine and their tests): shared by both backends
 macro(strata_gpu_engine)
 if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
+  if(STRATA_ENABLE_CUDA AND STRATA_BUILD_TESTS AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(expert_relay_test tests/local/expert_relay.cu)
+    target_include_directories(expert_relay_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_compile_definitions(expert_relay_test PRIVATE STRATA_LOCAL_CUDA_RELAY_BUILD=1)
+    target_link_libraries(expert_relay_test PRIVATE CUDA::cudart ${CMAKE_DL_LIBS})
+    add_test(NAME expert_relay_test COMMAND expert_relay_test)
+    set_tests_properties(expert_relay_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 90)
+  endif()
+
   add_library(strata_core STATIC src/core/device.cu src/core/pinned.cu src/platform/memory.cpp src/platform/io_priority.cpp src/core/graph.cpp src/core/weights.cpp
                                src/core/layout.cpp)
   target_include_directories(strata_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -448,6 +457,9 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   endif()
   target_include_directories(strata_prefill PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include ${_strata_gpu_include_directories})
   target_link_libraries(strata_prefill PUBLIC strata_engine ${_strata_gpu_blas_target} ${_strata_gpu_runtime_target})
+  if(STRATA_ENABLE_CUDA AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_compile_definitions(strata_prefill PRIVATE STRATA_LOCAL_CUDA_RELAY_BUILD=1)
+  endif()
   if(STRATA_ENABLE_CUDA)
     # v100/gdn-chunk: the chunked Volta GDN prompt recurrence.  The dispatch (src/prefill/kernels.cu) is
     # Volta-only (cc 7.0) and gated on STRATA_EXPERIMENTAL_SM60; the path itself stays opt-in (STRATA_GDN_CHUNK).
@@ -511,6 +523,10 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   strata_utf8_manifest(strata)
   target_include_directories(strata PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(strata PRIVATE strata_engine strata_prefill strata_spec ${_strata_gpu_runtime_target})
+  if(STRATA_ENABLE_CUDA AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_compile_definitions(strata PRIVATE STRATA_LOCAL_CUDA_RELAY_BUILD=1)
+    target_link_libraries(strata PRIVATE ${CMAKE_DL_LIBS})
+  endif()
   if(WIN32 AND STRATA_ENABLE_HIP)
     # 0.2.1.2: the ROCm math libraries live in <package>\rocm\bin, which is on PATH only when the launcher starts the engine; load them on first
     # use (main() adds that folder to the DLL search first) so `strata.exe --version` works from the package folder.  amdhip64_7.dll and the
