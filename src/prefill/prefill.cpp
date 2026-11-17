@@ -58,6 +58,7 @@
 #include "strata/prefill/moe_fused_iq.hpp"
 #include "strata/prefill/moe_mmq.hpp"
 #include "strata/prefill/routed_stream.hpp"
+#include "strata/prefill/split_relay_rule.hpp"
 #include "strata/core/peer_experts.hpp"
 #include "strata/core/expert_nibble.hpp"
 #include "strata/core/sm120_series.hpp"
@@ -1031,6 +1032,59 @@ struct PeerPrefill {
     }
 };
 
+// layer split, STRATA_PREFILL_SPLIT_RELAY=1 (opt-in, split_relay_rule.hpp): a share of the staged walk's expert copies
+// goes host -> the other stage's card (its own PCIe link, idle while a one-chunk prompt reads here) -> this card's ring
+// slot (a peer copy).  The H2D and the peer copy run on two streams of the donor card, through kSlots bounce buffers,
+// so the next upload overlaps the last peer copy.  The receiver's copy stream waits for each relayed copy before it
+// records the slot's `copied` event, so that stream stays in order (the grouped walk waits on a group's LAST copy only).
+struct SplitRelay {
+    static constexpr int kSlots = 4;
+    int dev = -1;                       // the donor card
+    double frac = 0.5;
+    cudaStream_t s_up = nullptr, s_peer = nullptr;
+    uint8_t* bounce[kSlots] = {};
+    cudaEvent_t ev_up[kSlots] = {}, ev_done[kSlots] = {};
+    bool live[kSlots] = {};             // ev_done[k] was recorded: bounce[k]'s last peer copy must finish first
+    int next = 0;
+    int64_t copies = 0;                 // this run's (reset per chunk), for the timing line
+    uint64_t bytes = 0;
+    // One relayed copy into `dst` on `recv_dev`.  `slot_free`: the receiver's event the slot's last reader recorded
+    // (nullptr: the slot is fresh).  `recv_copy`: the receiver's copy stream, made to wait for this copy.
+    cudaError_t copy(uint8_t* dst, const uint8_t* src, size_t n, cudaEvent_t slot_free, cudaStream_t recv_copy, int recv_dev) {
+        const int k = next;
+        next = (next + 1) % kSlots;
+        cudaError_t e = cudaSuccess;
+        {
+            const core::OnDevice on(dev);
+            if (live[k]) e = cudaStreamWaitEvent(s_up, ev_done[k], 0);
+            if (e == cudaSuccess) e = cudaMemcpyAsync(bounce[k], src, n, cudaMemcpyHostToDevice, s_up);
+            if (e == cudaSuccess) e = cudaEventRecord(ev_up[k], s_up);
+            if (e == cudaSuccess) e = cudaStreamWaitEvent(s_peer, ev_up[k], 0);
+            if (e == cudaSuccess && slot_free) e = cudaStreamWaitEvent(s_peer, slot_free, 0);
+            if (e == cudaSuccess) e = cudaMemcpyPeerAsync(dst, recv_dev, bounce[k], dev, n, s_peer);
+            if (e == cudaSuccess) e = cudaEventRecord(ev_done[k], s_peer);
+            live[k] = e == cudaSuccess;
+        }
+        if (e == cudaSuccess) e = cudaStreamWaitEvent(recv_copy, ev_done[k], 0);
+        if (e == cudaSuccess) {
+            ++copies;
+            bytes += n;
+        }
+        return e;
+    }
+    ~SplitRelay() {
+        if (dev < 0) return;
+        const core::OnDevice on(dev);
+        if (s_up) { cudaStreamSynchronize(s_up); cudaStreamDestroy(s_up); }
+        if (s_peer) { cudaStreamSynchronize(s_peer); cudaStreamDestroy(s_peer); }
+        for (int k = 0; k < kSlots; ++k) {
+            if (bounce[k]) cudaFree(bounce[k]);
+            if (ev_up[k]) cudaEventDestroy(ev_up[k]);
+            if (ev_done[k]) cudaEventDestroy(ev_done[k]);
+        }
+    }
+};
+
 // #1712: a chunk's small int32 tables (the QSA step records, the token ids) go up from a pinned buffer.  A cudaMemcpyAsync
 // from pageable memory is staged by the runtime; on gfx1100 the first text prompt after a picture one was seen to read stale
 // step records that way.  The event holds the next upload back until the last one has left the buffer.  No pinned RAM:
@@ -1287,6 +1341,7 @@ struct Prefill::Impl {
     // layer split: the next stage's GPU as a stream-only peer (set_stage_helper); its buffers are that stage's own
     // prompt buffers, bound per prompt, and it takes the place of `pp` for a run it helps
     std::unique_ptr<PeerPrefill> help_pp;
+    std::unique_ptr<SplitRelay> relay;       // layer split: the other stage's card relays staged copies (set_stage_helper)
     // layer-major prefill (STRATA_PREFILL_LAYER_MAJOR=1): a super-chunk's state between a layer's attention halves
     // and its experts - device buffers per prompt (lm_prepare / lm_release), pinned host buffers kept
     struct LmBufs {
@@ -2550,9 +2605,47 @@ void peer_had_signs(PeerPrefill& P) {
 }
 }  // namespace
 
+namespace {
+// STRATA_PREFILL_SPLIT_RELAY=1: the stage on `recv` gets the card `donor` as its relay (SplitRelay).  A card pair
+// without a working direct path, or a donor short of VRAM for the bounce buffers, leaves it off with one line.
+std::unique_ptr<SplitRelay> arm_split_relay(int recv, int donor) {
+    static const bool on = split_relay_on(std::getenv("STRATA_PREFILL_SPLIT_RELAY"));
+    if (!on || recv < 0 || donor < 0 || recv == donor) return nullptr;
+    if (const char* why = split_help_p2p_fail(recv, donor)) {
+        std::fprintf(stderr, "strata prefill: split relay, CUDA%d -> CUDA%d: off (%s)\n", donor, recv, why);
+        return nullptr;
+    }
+    auto r = std::make_unique<SplitRelay>();
+    r->dev = donor;
+    r->frac = split_relay_frac(std::getenv("STRATA_PREFILL_SPLIT_RELAY_FRAC"));
+    const size_t slot = (size_t) MAXBLOB();
+    bool ok = true;
+    {
+        const core::OnDevice on_donor(donor);
+        ok = cudaStreamCreateWithFlags(&r->s_up, cudaStreamNonBlocking) == cudaSuccess &&
+             cudaStreamCreateWithFlags(&r->s_peer, cudaStreamNonBlocking) == cudaSuccess;
+        for (int k = 0; ok && k < SplitRelay::kSlots; ++k)
+            ok = cudaMalloc((void**) &r->bounce[k], slot) == cudaSuccess &&
+                 cudaEventCreateWithFlags(&r->ev_up[k], cudaEventDisableTiming) == cudaSuccess &&
+                 cudaEventCreateWithFlags(&r->ev_done[k], cudaEventDisableTiming) == cudaSuccess;
+    }
+    if (!ok) {
+        cudaGetLastError();
+        std::fprintf(stderr, "strata prefill: split relay, CUDA%d -> CUDA%d: off (%d bounce buffers of %.1f MiB do not fit)\n",
+                     donor, recv, SplitRelay::kSlots, (double) slot / 1048576.0);
+        return nullptr;   // ~SplitRelay frees what was made
+    }
+    std::fprintf(stderr, "strata prefill: split relay, CUDA%d -> CUDA%d: on for one-chunk staged prompts (share %.2f, "
+                         "%d bounce buffers of %.1f MiB)\n", donor, recv, r->frac, SplitRelay::kSlots, (double) slot / 1048576.0);
+    return r;
+}
+}  // namespace
+
 bool Prefill::set_stage_helper(Prefill* helper, std::string& err) {
     Impl& m = *impl_;
     m.help_pp.reset();
+    m.relay.reset();
+    if (helper != nullptr && helper != this) m.relay = arm_split_relay(m.device, helper->impl_->device);
     if (helper == nullptr || helper == this || !split_help_env()) return true;
     const Impl& h = *helper->impl_;
     if (m.device < 0 || h.device < 0 || h.device == m.device || !mmq_plan().any) return true;
@@ -3803,6 +3896,10 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
         // `used` event recorded), so the copy stream never waits on an event that is not queued yet
         const strata::kernels::cpu::ExpertLayout& lay0 = strata::kernels::cpu::expert_layout();
         const bool stream_all = m.ring > STAGE && T >= stream_all_min() && m.src != nullptr;
+        // STRATA_PREFILL_SPLIT_RELAY: a one-chunk staged read shares the other card's link (split_relay_rule.hpp)
+        const bool relay_chunk = split_relay_chunk(m.relay != nullptr, single_chunk, m.pp != nullptr, stream_all);
+        RelayShare relay_share{relay_chunk ? m.relay->frac : 0.0};
+        if (m.relay) { m.relay->copies = 0; m.relay->bytes = 0; }
         // the CPU share: this chunk takes the pool if no other stage of a layer split has it now (released at the end
         // of the chunk, after the last layer's CPU thread is joined)
         struct PoolHold {
@@ -5817,7 +5914,17 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             const bool pinned = m.src->pinned(l, e);   // pinned: never transient
                             const uint8_t* b = pinned ? m.src->blob_stable(l, e) : nullptr;
                             if (pinned && !b) { err = "prefill: expert source has no blob"; return false; }
-                            if (pinned) {
+                            if (pinned && relay_chunk && relay_share.take((uint64_t) lay.blob_bytes(l))) {
+                                // through the other card (SplitRelay): its peer copy waits for the slot instead
+                                const cudaError_t rc = m.relay->copy(m.stage_dev[sl], b, (size_t) lay.blob_bytes(l),
+                                                                     m.stage_live[sl] ? m.used[m.used_of[sl]] : nullptr,
+                                                                     m.copy, m.device);
+                                if (rc != cudaSuccess) {
+                                    err = std::string("prefill: split relay copy: ") + cudaGetErrorString(rc);
+                                    return false;
+                                }
+                                ++stats_.experts_dma;
+                            } else if (pinned) {
                                 // DMA straight from the page-locked arena: the copy stream only waits for the slot
                                 if (m.stage_live[sl]) cudaStreamWaitEvent(m.copy, m.used[m.used_of[sl]], 0);
                                 cudaMemcpyAsync(m.stage_dev[sl], b, (size_t) lay.blob_bytes(l), cudaMemcpyHostToDevice, m.copy);
@@ -6562,6 +6669,9 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
         std::fprintf(stderr, "strata prefill timing: host: chunk setup (PLE rows, the expert stream plan) %.0f ms, "
                              "waiting for each chunk %.0f ms, after each chunk (the draft layer, progress) %.0f ms, "
                              "PLE %.0f ms\n", host_setup_ms, host_sync_ms, host_chunk_ms, stats_.ms_ple);
+        if (m.relay && m.relay->copies > 0)
+            std::fprintf(stderr, "strata prefill timing: split relay CUDA%d -> CUDA%d: %lld staged copies, %.1f MiB\n",
+                         m.relay->dev, m.device, (long long) m.relay->copies, (double) m.relay->bytes / 1048576.0);
         if (pe.on) {
             int pd = 0; cudaGetDevice(&pd); cudaSetDevice(pe.dev); cudaStreamSynchronize(m.pp->s); pe.fold(); cudaSetDevice(pd);
             std::string pl;

@@ -356,6 +356,11 @@ if(STRATA_BUILD_TESTS)
   target_include_directories(share_rules_test PRIVATE include)
   add_test(NAME share_rules_test COMMAND share_rules_test)
 
+  # the staged walk's relay through the other card of a layer split: switch, share, per-chunk rule (header-only, no GPU)
+  add_executable(split_relay_rule_test tests/prefill/split_relay_rule_test.cpp)
+  target_include_directories(split_relay_rule_test PRIVATE include)
+  add_test(NAME split_relay_rule_test COMMAND split_relay_rule_test)
+
   # STRATA_SELECT_TWO_PASS: the bound between the single-pass and 3xTF32 QSA block scores and the cut-off rule that
   # keeps the selection (header-only, no GPU)
   add_executable(qsa_two_pass_test tests/prefill/qsa_two_pass_test.cpp)
