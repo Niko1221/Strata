@@ -23,6 +23,9 @@ for line in sys.stdin:
   if not state.exists():
    state.write_text('first request was attempted')
    if mode=='invalid':print('ERR prompt exceeds context',flush=True)
+   elif mode=='lost':
+    print('ERR verify: timed out at layer 18; its GPU waits were released, and the GPU stopped answering: all CUDA-capable devices are busy or unavailable (#5990: check dmesg for an Xid - a card that left the bus needs a power cycle)',flush=True)
+    print('DONE 0 1 0 1 error',flush=True)
    else:
     kind='verify batch' if mode=='batch' else 'verify'
     print(f'ERR {kind}: timed out at layer 18; its GPU waits were released and the GPU finished (#267)',flush=True)
@@ -77,6 +80,15 @@ class FatalRecovery(unittest.TestCase):
             with urllib.request.urlopen(base+'/health',timeout=5) as r:self.assertTrue(json.load(r)['loaded'])
         finally:
             http.shutdown();http.server_close();svc.engine.close()
+    def test_a_lost_card_is_named_as_one_and_not_a_verifier_bug(self):
+        # #5990: the same fatal family, but the drain saw the device answering errors instead of finishing.  The note
+        # must not send the reader after a verifier bug, and must not say the GPU "finished".
+        e=self.engine('lost');svc=self.service(e)
+        with self.assertRaises(EngineDied):self.run_request(svc)
+        self.wait_dead(e)
+        note=e.death_note()
+        self.assertIn('device lost',note.lower())
+        self.assertNotIn('Unrecoverable native verification failure',note)
     def test_batch_timeout_signature_also_invalidates_engine(self):
         e=self.engine('batch')
         with self.assertRaises(EngineDied):list(e.generate([1],8,{},threading.Event()))

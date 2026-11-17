@@ -20,6 +20,15 @@ NativeHead::~NativeHead() {
 }
 
 void NativeHead::unload() {
+    // #5990: every buffer below is read by the GPU - `weights_` by the head GEMV, and when `host_` is set it is the
+    // mapped host copy that the same GEMV reads OVER PCIe for every logits row (load(), below).  Freeing either while a
+    // kernel can still be reading it leaves the card chasing a dead address, and nothing in this class prevented it:
+    // unload() also runs mid-serve, before the workspace is rebuilt (generate.cpp's --prefill-head-alias transition).
+    // One device-wide sync makes the free safe on its own terms instead of relying on every caller having drained.
+    // Its error is ignored: on a device that has already left the bus nothing is reading the memory any more, and the
+    // cudaFreeHost below is the call that reports that state.  Skipped when there is nothing to free (the destructor of
+    // a head that was never loaded must not make a driver call).
+    if (weights_ || host_ || scratch_) (void) cudaDeviceSynchronize();
     if (weights_) strata::kernels::native_q6_k_unpack(weights_);
     if (weights_) strata::kernels::native_q8_0_sm60_release(weights_);
     if (scratch_) cudaFree(scratch_);
