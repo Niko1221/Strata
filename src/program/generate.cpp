@@ -3677,8 +3677,7 @@ int main(int argc, char** argv) {
         if (a == "--help" || a == "-h") { usage(); return 0; }
         else if (a == "--gpu") { (void) next("--gpu"); }   // applied at startup, before any CUDA call
         else if (a == "--expert-support") {
-            // The same check the expert layout load runs below, without a pack or a GPU: the installer asks it
-            // for every (gate/up, down, size) combination of a GGUF before it prepares anything.
+            // Runs the shared `native_expert_supported` helper - the same one the expert-layout load consults below (line ~5066) - directly, without a pack or a GPU: the installer asks it for every (gate/up, down, size) combination of a GGUF before it prepares anything. Exit status is its contract: 0 = supported, 2 = bad arguments, 3 = unsupported (stdout carries "supported"/"unsupported").
             std::vector<int64_t> v;
             std::string e;
             if (!parse_i64_list(next("--expert-support"), v, e) || v.size() != 4) {
