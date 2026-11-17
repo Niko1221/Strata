@@ -801,3 +801,20 @@ tokens in a load test without stalls. llama.cpp (3cf0325, ROCm) on the same mach
 **Community gfx1150 (890M).** Prompts 3.6K tokens 124 -> 216 tok/s and 7K 130 -> 226 tok/s with the table, decode unchanged.
 
 **gfx1151 table (100400).** `hip_prefill_hipblaslt_gemm` passes (`launches=4 fallbacks=0`); HIP ctest 61 of 62.
+
+## mixed gfx1032 + gfx1200 in one binary (RX 9060 XT + 2x RX 6600)
+
+One HIP build can drive both families at once: `-DCMAKE_HIP_ARCHITECTURES="gfx1032;gfx1200"`
+(0.1.60, native HIP MMQ included; no gfx103x stub is needed since `STRATA_MMQ` /
+`STRATA_PREFILL_MMQ` cover HIP) produces a single engine running an RX 9060 XT (gfx1200)
+primary with two RX 6600 (gfx1032) cards as `--expert-cache-device1/2` helper tiers.
+
+Wheel fact that decides the library order on such boards: the gfx103X-all rocBLAS/Tensile
+set also carries gfx1200 kernels, while the gfx120X-all set hard-refuses gfx1032 (its
+TensileLibrary.dat ships lazy_gfx1200 only).  `lib_dirs` must therefore lead with
+gfx103X_all (or a symlink union of both) no matter which card is the primary.
+
+Verified in weeks of production on exactly that board: Qwen3.8-Flash-Next IQ3_XXS,
+262144 ctx, KV int8 / resident 32768, MTP on; marker-in-prompt requests up to 211,427
+tokens answered 3/3; 800+ soak requests; decode expert-cache hit 90.0%; KV streaming
+99.5% in VRAM; zero corrected memory errors and zero GPU faults over the campaign.
