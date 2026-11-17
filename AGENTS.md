@@ -1,11 +1,38 @@
 # AGENTS.md
 
-Current stable release: Hakua product version 0.5.9; app, Terminal, Control and native engine 0.5.9.
-Formal v0.5.9, GitHub Latest and the latest alias are published. All seventeen
+Current stable release: Hakua product version 0.6.0; app, Terminal, Control and native engine 0.6.0.
+Formal v0.6.0, GitHub Latest and the refs/tags/latest alias are published. All seventeen
+public assets were downloaded anonymously from v0.6.0 and matched frozen SHA-256 values
+(`READBACK_SHA256: 1ce2c6f16130eeefca54d1c0363a13d718cd14c8f9ac545c7d7f34595d563547`).
+App build (`app-g-r1`) and all nine hosted CI workflows (`acceptance-ci-r4`, including all
+thirteen Checks jobs) use `21013e19b1e3c43c42d6f13e84792501f26c87ff`.
+Component/Control source is `b1cabf92628c64a4015a2ced606399c52698e0ed`;
+compiled Q38 native source (`strata-q38.exe`) is `8b0b3c74514d26e5ca73496f0b268d66a0cb99a5`.
+Targeted app overwrite (`install-g-r1`) updated the installed shell and five Host files while
+preserving user preferences, and `finished-original-g-r3` verified normal-profile startup plus
+signed 0.6.0 CUDA engine import/selection. In `installed-q38-r8` (under GPU baseline `r9`),
+all Q38 real-model Japanese chat turns (`qwen3.8-27b-abliterated-3.69bpw-12GB-MTP.gguf`)
+and screenshot capture (`native-qwen38-japanese-chat.png`) passed, with `nativeExited=true`
+and `modelStatUnchanged=true`; `shellExited` timed out at 30s while Playwright CDP was attached.
+Full installed fixture remains `NOT_ACCEPTED`; general model quality, full-window inference
+and GPU concurrency remain unqualified (`releaseQualified=false`). Windows Authenticode signing
+is absent; component/feed signatures were verified with bundled production public keys.
+Old engines `0.5.1` through `0.5.8` were removed from `AppData/Local/Strata/components/engine`;
+`0.5.9` and `0.6.0` remain installed.
+See `_docs/2026-11-17_stable-060-release_Antigravity.md` for exact scope and evidence.
+
+Keep upstream Niko1221 0.2.15 at
+`c77572806996349b49995e4f98d41b5294d36a21` (upstream engine 0.1.60;
+fork versions remain independent).
+
+## Historical 0.5.9 records
+
+Previous stable release: Hakua product version 0.5.9; app, Terminal, Control and native engine 0.5.9.
+Formal v0.5.9, GitHub Latest and the latest alias were published. All seventeen
 public assets were downloaded anonymously and matched frozen SHA-256 values.
-App build and all eight hosted CI workflows use e6bd6a4ebc8b5e8a0c6f68de8acf76a861adeb49;
-all thirteen Checks jobs passed. Native source is db640451e677ba2c43ebfb555a505e4c037e0bd1;
-Control source is d11edad8200f1ba9bf4ef4bab30e5c1e5616f6ea.
+App build and all eight hosted CI workflows used e6bd6a4ebc8b5e8a0c6f68de8acf76a861adeb49;
+all thirteen Checks jobs passed. Native source was db640451e677ba2c43ebfb555a505e4c037e0bd1;
+Control source was d11edad8200f1ba9bf4ef4bab30e5c1e5616f6ea.
 The standard NSIS overwrite matched 29558 managed files and preserved 3789 user
 files during installation. Real-model workflow checks passed in an isolated
 installed-app profile with explicitly selected PrismML 0.4.1. A genuine RAM
@@ -16,16 +43,9 @@ writes. Its generated answer still had a factual error, recorded in QUALITY.json
 General model quality, full-window inference and GPU concurrency remain
 unqualified; releaseQualified=false. Windows Authenticode signing is absent;
 component/feed signatures were verified with bundled production public keys.
-The original user profile is normally running with its settings and prior skills
+The original user profile was normally running with its settings and prior skills
 preserved, learning and auto-application enabled, RustXNG Full and no loaded model.
 See _docs/2026-11-13_stable-059-workflow-safety_Codex.md for exact scope and evidence.
-
-Keep upstream Niko1221 0.2.15 at
-c77572806996349b49995e4f98d41b5294d36a21 (upstream engine 0.1.60;
-fork versions remain independent). Source candidate: Hakua product version 0.6.0;
-app, Terminal, Control and native engine 0.6.0. Do not claim its build,
-installation or publication before checking its receipts. Current installed and
-published stable remains 0.5.9 until the standard overwrite and public readback pass.
 
 ## Historical 0.5.8 records
 

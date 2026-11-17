@@ -36,19 +36,19 @@
 
   <!-- Hero Section -->
   <main>
-    <section class="container" aria-labelledby="preview131k-title" style="padding:1rem;border:2px solid #b7791f;border-radius:12px;margin:1rem auto;">
-      <h2 id="preview131k-title">Windows inference preview / 推論動作確認プレビュー</h2>
-      <p><strong>Product 0.3.2-preview.20261029.2 · engine 0.1.53 — synced with upstream v0.2.7.1 (28 Oct 2026).</strong>
-      Hakua sidebar marker, Hermes <code>SOUL.md</code>/<code>MEMORY.md</code> → hakua-memory (Ebbinghaus, RAG + semantic graph, Obsidian, sleep), run-config keys and load-cancel hardening stay in this fork. Earlier measured 4K/32K generation on RTX 5060 Ti 16 GiB / RAM 32 GiB still stands; full-length 131k certification remains open.</p>
+    <section class="container" aria-labelledby="preview131k-title" style="padding:1rem;border:2px solid #1f7a4c;border-radius:12px;margin:1rem auto;">
+      <h2 id="preview131k-title">Hakua / Strata 0.6.0 — Windows x64 Release &amp; Real-Model Verification</h2>
+      <p><strong>Product 0.6.0 (App <code>21013e19b</code> · Component/Control <code>b1cabf926</code> · Native Q38 <code>8b0b3c745</code>) — synced with upstream 0.2.15 (<code>c775728069</code>).</strong>
+      Includes the native Windows CUDA 13 SM120 <code>strata-q38.exe</code> runner for Qwen3.8-27B-family GGUF models, Japanese instruction/finite-suppression profile, <code>/btw</code> subagents, workflow skill learning, and RustXNG 0.31.1 Full. Full-window inference, general model quality, and GPU concurrency remain unqualified (<code>releaseQualified=false</code>).</p>
       <p>Released Windows NSIS (unsigned):
-      <a href="https://github.com/zapabob/Strata/releases/tag/v0.3.2-preview.20261029.2">v0.3.2-preview.20261029.2</a>
-      → <code>Strata_0.3.2-preview.20261029.2_x64-setup.exe</code>.
-      Source sync notes:
-      <a href="https://github.com/zapabob/Strata/releases/tag/v0.3.2-preview.20261028.1">v0.3.2-preview.20261028.1</a>.
-      Memory harness stays opt-in; pip pin <code>hakua-memory==0.3.5</code>.</p>
-      <p><a href="https://github.com/zapabob/Strata/releases/tag/v0.3.2-preview.20261029.2">NSIS, checksums / 配布とハッシュ</a> ·
-      <a href="https://github.com/zapabob/Strata/blob/main/docs/PERF131K.md">Measurements and limits / 実測と制限</a> ·
-      <a href="https://github.com/zapabob/Strata/blob/main/docs/PUBLISH_PAGES.md">Pages publish notes</a></p>
+      <a href="https://github.com/zapabob/Strata/releases/tag/v0.6.0">v0.6.0</a>
+      → <a href="https://github.com/zapabob/Strata/releases/download/v0.6.0/Strata-0.6.0-windows-x64-setup.exe"><code>Strata-0.6.0-windows-x64-setup.exe</code></a> ·
+      <a href="https://github.com/zapabob/Strata/releases/download/v0.6.0/Strata-0.6.0-windows-x64.tar.7z"><code>tar.7z</code></a> ·
+      <a href="https://github.com/zapabob/Strata/releases/download/v0.6.0/SHA256SUMS.txt"><code>SHA256SUMS.txt</code></a></p>
+      <figure style="margin:1rem 0 0;">
+        <img src="media/native-qwen38-japanese-chat.png" alt="Hakua / Strata 0.6.0 real-model Japanese chat on Qwen3.8-27B" style="max-width:100%;height:auto;border-radius:8px;border:1px solid #d0d7de;">
+        <figcaption style="font-size:0.9rem;color:#57606a;margin-top:0.4rem;">Actual installed Hakua / Strata 0.6.0 desktop running <code>qwen3.8-27b-abliterated-3.69bpw-12GB-MTP.gguf</code> via <code>strata-q38.exe</code> on RTX 5060 Ti 16 GB (<code>installed-q38-r8</code>).</figcaption>
+      </figure>
     </section>
 
     <section class="hero-section">

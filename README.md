@@ -6,10 +6,13 @@ Local AI for Windows, with chat, agent work, research and a choice of compatible
 
 ## Version and downloads
 
-<!-- release-060-candidate -->
-This source is the 0.6.0 integration candidate. App, Terminal, Control and native source versions are coordinated at 0.6.0. Candidate build, installation and publication checks are still in progress; a version number is not proof that an asset is available. The retained verified release is [0.5.9](https://github.com/zapabob/Strata/releases/tag/v0.5.9). Use the delivery record to check the status of 0.6.0.
+<!-- release-060-stable -->
+Current stable release: [0.6.0](https://github.com/zapabob/Strata/releases/tag/v0.6.0) (App `21013e19b`, Component/Control `b1cabf926`, Native Q38 `8b0b3c745`). `releaseQualified=false` remains explicit; full-window inference and general model quality remain unqualified.
 
 [0.6.0](https://github.com/zapabob/Strata/releases/tag/v0.6.0) · [Strata-0.6.0-windows-x64-setup.exe](https://github.com/zapabob/Strata/releases/download/v0.6.0/Strata-0.6.0-windows-x64-setup.exe) · [tar.7z](https://github.com/zapabob/Strata/releases/download/v0.6.0/Strata-0.6.0-windows-x64.tar.7z) · [SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.6.0/SHA256SUMS.txt)
+
+![Hakua / Strata 0.6.0 real-model Japanese chat on Qwen3.8-27B](docs/media/native-qwen38-japanese-chat.png)
+*Actual installed Hakua / Strata 0.6.0 desktop running `qwen3.8-27b-abliterated-3.69bpw-12GB-MTP.gguf` via `strata-q38.exe` (CUDA 13 / RTX 5060 Ti 16 GB, `installed-q38-r8`).*
 
 ## Install or update
 
