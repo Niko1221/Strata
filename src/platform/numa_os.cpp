@@ -101,22 +101,25 @@ bool bind_thread_to_node(int node) {
                                             bytes, &bytes, GetCurrentProcess(), 0)) return false;
     constexpr size_t header_size = offsetof(SYSTEM_CPU_SET_INFORMATION, CpuSet);
     std::vector<ULONG> ids;
+    unsigned char seen[256] = {};
+    int distinct = 0;
     for (size_t off = 0; off + header_size <= bytes;) {
         const auto* info = reinterpret_cast<const SYSTEM_CPU_SET_INFORMATION*>(buf.data() + off);
         if (info->Size < header_size || info->Size > bytes - off) break;
-        if (info->Type == CpuSetInformation && info->Size >= sizeof(SYSTEM_CPU_SET_INFORMATION) &&
-            (!info->CpuSet.Allocated || info->CpuSet.AllocatedToTargetProcess)) {
-            // NumaNodeIndex cannot be trusted: on firmware where every set reports 0 a node-0 request would
-            // select ALL sockets and report success.  Resolve each set's real node from its processor group
-            // + index instead; if that fails for every set, ids stays empty and the group-mask fallback runs.
-            PROCESSOR_NUMBER pn{ (WORD) info->CpuSet.Group, (BYTE) info->CpuSet.LogicalProcessorIndex, 0 };
-            USHORT real_node = 0xFFFF;
-            if (GetNumaProcessorNodeEx(&pn, &real_node) && (int) real_node == node)
+        if (info->Type == CpuSetInformation && info->Size >= sizeof(SYSTEM_CPU_SET_INFORMATION)) {
+            const BYTE nn = info->CpuSet.NumaNodeIndex;
+            if (!seen[nn]) { seen[nn] = 1; ++distinct; }
+            if ((int) nn == node &&
+                (!info->CpuSet.Allocated || info->CpuSet.AllocatedToTargetProcess))
                 ids.push_back(info->CpuSet.Id);
         }
         off += info->Size;
     }
-    if (!ids.empty())
+    // CPU Sets carry no NUMA mapping on some firmware (every entry reports NumaNodeIndex 0 even on a
+    // real multi-node box): a node-0 match there selects EVERY socket and reports success.  When the
+    // metadata cannot tell the machine's nodes apart, skip the sets and take the group-mask fallback
+    // for every node instead.
+    if (!ids.empty() && (distinct >= 2 || numa_node_count_os() <= 1))
         return SetThreadSelectedCpuSets(GetCurrentThread(), ids.data(), (ULONG) ids.size()) != FALSE;
     // CPU Sets carry no NUMA mapping on some firmware (every entry reports NumaNodeIndex 0 even on a
     // real multi-node box): fall back to the node's processor-group mask.  A node whose CPUs span
