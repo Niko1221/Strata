@@ -7703,9 +7703,18 @@ int64_t Prefill::lm_prepare(int64_t n, std::string& why, int64_t cap) {
     Impl::LmBufs& lb = m.lm;
     // pinned host: the routing's copy, the tables, and (host mode) the residual rows
     const size_t idsw = (size_t) (2 * s_use * K), tab = (size_t) lm_table_ints(s_use * K, G);
-    auto host_grow = [](int32_t*& p, size_t& have, size_t want_n) -> bool {
+    // #5990: these rows are GPU-readable pinned memory, written by `cs` (`idsw_host`'s download) and by `m.copy`
+    // (`R_host`, both ways), so one may only be freed once neither stream can still touch it.  Today's callers happen
+    // to have drained both at the end of a run; this makes the free safe on its own instead of by their order.
+    auto host_grow = [&m](int32_t*& p, size_t& have, size_t want_n) -> bool {
         if (have >= want_n) return true;
-        if (p) cudaFreeHost(p);
+        if (p) {
+            // a device that has already left the bus answers these with an error, which is ignored: nothing is
+            // reading the memory any more, and cudaHostAlloc below is the call that reports that state.
+            if (m.cs) (void) cudaStreamSynchronize(m.cs);
+            if (m.copy) (void) cudaStreamSynchronize(m.copy);
+            cudaFreeHost(p);
+        }
         p = nullptr;
         have = 0;
         if (cudaHostAlloc((void**) &p, want_n * 4, cudaHostAllocDefault) != cudaSuccess) { cudaGetLastError(); p = nullptr; return false; }

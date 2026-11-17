@@ -112,6 +112,11 @@ public:
     /// paths that give up on the engine (a timed-out window, the serve watchdog): the window then ran on whatever
     /// the flags guarded, so this verifier refuses every later window.  True when the streams finished.
     bool release_gpu_waits(int timeout_ms);
+    /// #5990: the error a release's drain saw, if any.  `cudaStreamQuery` answers an error, not `cudaErrorNotReady`,
+    /// when the device stopped answering (a card that left the bus answers `cudaErrorDevicesUnavailable` after Xid 79)
+    /// or the context is unusable; `cudaSuccess` when no release ran or it saw none.  The window's error text names it
+    /// (`release_note`) instead of claiming the GPU finished, and the server no longer files it as a verifier bug.
+    cudaError_t release_error() const { return release_err_; }
 
     /// `max_t` <= kVerifyLongT (past kVerifyMaxT: one-conversation windows only).  `head` may be null (the canonical head is then run per token).
     bool init(const WeightTable& wt, const ModelGeometry& g, SessionState& ss, const VerifyHits& hits,
@@ -576,6 +581,10 @@ private:
     int device_ = -1;                    ///< the device `init` ran on: run/commit switch to it (layer split)
     unsigned long long* rr_stats_ = nullptr;   ///< STRATA_ROUTE_RESIDENT's counters on device_ (#1578); null: none
     std::atomic<bool> released_{false};  ///< #267: release_gpu_waits ran (maybe on the watchdog thread): no more windows
+    cudaError_t release_err_ = cudaSuccess;  ///< #5990: the first drain answer that was neither Success nor NotReady
+    /// #5990: the tail of a window's error text after a release - names the device error when the drain saw one,
+    /// instead of "the GPU finished" for a card that had stopped answering (#267's text, kept for a clean drain).
+    std::string release_note(bool drained) const;
     bool all_resident_ = false;           ///< 100% of experts in [lb_, le_) resident in VRAM: zero-doorbell graph
     /// #871: the zero-doorbell graph plans from the device residency table alone, so it is only right while every
     /// expert of the stage is in VRAM.  A prompt loan, a VRAM shrink or an adaptive swap marks some -1 for a while:
