@@ -142,8 +142,11 @@ void NativeHead::unload() {
         cudaDeviceSynchronize();   // caller runs this under OnDevice(device_), so it waits that card's work
         if (v.ok && v.unmap((CUdeviceptr) va_, (size_t) vmm_size_) == CUDA_SUCCESS) {
             v.release((CUmemGenericAllocationHandle) phys_);
-            phys_ = 0;
-        }   // a failed unmap leaves the mapping in place rather than release it under a live reader
+            phys_ = 0;   // a successful unmap releases the physical handle and keeps the VA for a stable remap
+        } else {   // unmap failed under a possible live reader: releasing would risk use-after-free, and dropping weights_/phys_ here would leave load() to remap against stale state (a null memcpy). Keep the head loaded on its still-live mapping - a rare catastrophic-context leak is acceptable there - so the next load() reports "already loaded" instead of corrupting.
+            std::fprintf(stderr, "strata generate: native head: unmap failed on unload; keeping it mapped rather than release under a possible reader\n");
+            return;
+        }
     } else
 #endif
     if (host_) cudaFreeHost(host_);   // the mapped-host fallback (weights_ is its device alias)
@@ -256,7 +259,7 @@ bool NativeHead::load(const std::vector<std::string>& shards, int64_t n_in, int6
 }
 
 bool NativeHead::to_host(std::string& err) {
-    if (weights_ == nullptr || host_ != nullptr || (type_ == 14 && strata::kernels::native_q6_k_packed_enabled()) || (type_ == 8 && std::getenv("STRATA_Q8_SM60") != nullptr)) return false;   // (repacked in place: those stay in VRAM)
+    if (weights_ == nullptr || host_ != nullptr || phys_ != 0 || (type_ == 14 && strata::kernels::native_q6_k_packed_enabled()) || (type_ == 8 && std::getenv("STRATA_Q8_SM60") != nullptr)) return false;   // (repacked in place, or VMM-backed: weights_ is not a cudaMalloc pointer to move/cudaFree here)
     { int d = 0; cudaDeviceProp pr{}; if (cudaGetDevice(&d) != cudaSuccess || cudaGetDeviceProperties(&pr, d) != cudaSuccess || !strata::spill_allowed(strata::kSpillMetalBuild, pr.integrated != 0)) { (void) cudaGetLastError(); return false; } }   // (Q6_K / Q8_0 may be repacked in place: those stay)
     void* hp = nullptr;
     void* dp = nullptr;
