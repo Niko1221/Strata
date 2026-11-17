@@ -1389,6 +1389,8 @@ void mem_probe(const char* where) {
 #if defined(_WIN32)
     unsigned long long used = 0, blocks = 0;
     unsigned long long cls[4] = {}, cnt[4] = {};        // >=1 MiB, 64 KiB..1 MiB, 4..64 KiB, <4 KiB
+    void* sample[6] = {};                               // block addresses of the two classes that grow, for a stack
+    int n_sample = 0;
     if (HANDLE h = GetProcessHeap(); h && HeapLock(h)) {
         PROCESS_HEAP_ENTRY e{};
         while (HeapWalk(h, &e)) {
@@ -1399,13 +1401,19 @@ void mem_probe(const char* where) {
             cls[c] += cb;
             ++cnt[c];
             ++blocks;
+            if (n_sample < 6 && ((cb >= 192 && cb <= 216) || (cb >= 24 && cb <= 32)))
+                sample[n_sample++] = e.lpData;
         }
         HeapUnlock(h);
     }
+    char samples[160] = "";
+    for (int i = 0, off = 0; i < n_sample; ++i)
+        off += std::snprintf(samples + off, sizeof samples - (size_t) off, " %p", sample[i]);
     std::fprintf(stderr, "strata mem: %-12s commit %llu MiB  rss %llu MiB  heap %llu MiB in %llu blocks"
-                         "  | >=1MiB %llu/%llu  64K-1M %llu/%llu  4-64K %llu/%llu  <4K %llu/%llu (MiB/blocks)\n",
+                         "  | >=1MiB %llu/%llu  64K-1M %llu/%llu  4-64K %llu/%llu  <4K %llu/%llu (MiB/blocks)"
+                         "  samples%s\n",
                  where, m.commit_mib, m.rss_mib, used >> 20, blocks,
-                 cls[0] >> 20, cnt[0], cls[1] >> 20, cnt[1], cls[2] >> 20, cnt[2], cls[3] >> 20, cnt[3]);
+                 cls[0] >> 20, cnt[0], cls[1] >> 20, cnt[1], cls[2] >> 20, cnt[2], cls[3] >> 20, cnt[3], samples);
 #else
     std::fprintf(stderr, "strata mem: %-12s commit %llu MiB  rss %llu MiB\n", where, m.commit_mib, m.rss_mib);
 #endif
