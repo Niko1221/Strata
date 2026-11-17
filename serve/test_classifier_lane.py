@@ -4,8 +4,10 @@ import threading
 import time
 import unittest
 import urllib.request
+from unittest import mock
 
 from serve import test_parallel as parallel_fixtures
+from serve import server
 from serve.test_parallel import FakeEngineCase
 
 
@@ -145,3 +147,40 @@ class ClassifierCacheIsolation(unittest.TestCase):
                 self.assertEqual(engine.pick_slot(classifier_prompt, classifier=True), 2)
                 engine.slot_held[2] = classifier_prompt + [60, 61]
                 self.assertEqual(engine.pick_slot(followup + [52]), owner)
+
+
+class ClassifierShortFirst(FakeEngineCase):
+    def test_classifier_can_enter_when_a_shorter_request_waits_first(self):
+        self.start(3)
+        self.engine.classifier_reserved = True
+        errors, completed = [], []
+
+        def generate(name, length, classifier):
+            cancel = threading.Event()
+            cancel._strata_classifier = classifier
+            cancel._strata_queue_deadline = time.monotonic() + 3
+            try:
+                list(self.engine.generate_batched([1] * length, 2, {}, cancel))
+                completed.append(name)
+            except Exception as error:
+                errors.append(repr(error))
+
+        with mock.patch.object(server, 'ADMIT_SHORT_FIRST', 128):
+            self.engine.ctl.acquire()
+            normal = threading.Thread(target=generate, args=('normal', 8, False))
+            classifier = threading.Thread(target=generate, args=('classifier', 32, True))
+            normal.start()
+            deadline = time.monotonic() + 1
+            while self.engine.waiting < 1 and time.monotonic() < deadline:
+                time.sleep(.01)
+            classifier.start()
+            deadline = time.monotonic() + 1
+            while self.engine.waiting < 2 and time.monotonic() < deadline:
+                time.sleep(.01)
+            self.engine.ctl.release()
+            normal.join(5)
+            classifier.join(5)
+        self.assertFalse(normal.is_alive() or classifier.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(completed, ['classifier', 'normal'])
+        self.assertFalse(self.engine.classifier_pending)

@@ -2136,6 +2136,10 @@ class StrataEngine:
         Off (unset or 0): whoever gets the lock first, as before.  Only the order changes, never what is read."""
         now = time.monotonic()
         ordered = [e for e in self.wait_lens if len(e) > 2 and e[2]]
+        if getattr(self, "classifier_reserved", False):
+            classifiers = [e for e in ordered if getattr(e[4], "_strata_classifier", False)]
+            if classifiers:
+                return min(classifiers, key=lambda e: e[1])
         if not ordered:
             return None
         return min(ordered, key=lambda e: (0 if e[0] <= ADMIT_SHORT_FIRST or now - e[1] >= ADMIT_MAX_WAIT_S else 1,
