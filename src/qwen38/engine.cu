@@ -85,7 +85,7 @@ struct Engine {
         // Exact owned activation/score/logit buffers, weight-transform scratch,
         // batched prefill GEMM workspace + activations, embedding row and retained signs.
         const uint64_t prefill_batch_bytes=reference?0:(
-            kPrefillTileBytes*2 + uint64_t(kPrefillChunk)*17408*2 +
+            Q::PrefillGemmWorkspace::estimate_bytes(kPrefillChunk,17408,kPrefillTileBytes) +
             uint64_t(kPrefillChunk)*(5120ull*3+10240+6144*5+48*2+12288+1024*2+17408*3)*4);
         scratch_bytes=(5120ull*3+10240*2+6144*5+48*2+12288+1024*2+17408*2+24ull*ctx+248320)*4+4+17408*4+emb_stride+prefill_batch_bytes;
         for(const auto& entry:admission.signs)scratch_bytes+=entry.second.size()*4;
@@ -340,19 +340,15 @@ struct Engine {
                 mm_batch(n("ssm_alpha.weight"),L.w_ssm_alpha,bh.as(),bal.as(),n_tokens);
                 mm_batch(n("ssm_beta.weight"),L.w_ssm_beta,bh.as(),bbe.as(),n_tokens);
                 Q::gdn_gates_batch(bal.as(),bbe.as(),static_cast<const float*>(L.w_ssm_dt_bias.d_data),static_cast<const float*>(L.w_ssm_a.d_data),n_tokens,48,stream.s);
-                for(int t=0;t<n_tokens;++t){
-                    K::fused_gdn_conv_l2(st.conv.as(),bqkv.as()+size_t(t)*10240,static_cast<const float*>(L.w_ssm_conv1d.d_data),hc.as(),10240,32,admission.eps,stream.s);
-                    K::fused_gdn_step_norm_silu(st.gdn.as(),hc.as(),hc.as()+2048,hc.as()+4096,bal.as()+size_t(t)*48,bbe.as()+size_t(t)*48,bz.as()+size_t(t)*6144,static_cast<const float*>(L.w_ssm_norm.d_data),admission.eps,bgdn.as()+size_t(t)*6144,16,48,stream.s);
-                }
+                K::fused_gdn_conv_l2_batch(st.conv.as(),bqkv.as(),static_cast<const float*>(L.w_ssm_conv1d.d_data),bqkv.as(),10240,32,admission.eps,n_tokens,stream.s);
+                K::fused_gdn_step_norm_silu_batch(st.gdn.as(),bqkv.as(),10240,bal.as(),bbe.as(),bz.as(),static_cast<const float*>(L.w_ssm_norm.d_data),admission.eps,bgdn.as(),16,48,n_tokens,stream.s);
                 Q::finite(st.gdn.as(),48*128*128,error.as<int>(),stream.s);
                 mm_batch(n("ssm_out.weight"),L.w_out_proj,bgdn.as(),by.as(),n_tokens);
             }else{
                 mm_batch(n("attn_q.weight"),L.w_q,bh.as(),bqg.as(),n_tokens);
                 mm_batch(n("attn_k.weight"),L.w_k,bh.as(),bk.as(),n_tokens);
                 mm_batch(n("attn_v.weight"),L.w_v,bh.as(),bv.as(),n_tokens);
-                for(int t=0;t<n_tokens;++t){
-                    Q::attention_normalize(bqg.as()+size_t(t)*12288,bk.as()+size_t(t)*1024,static_cast<const float*>(L.w_q_norm.d_data),static_cast<const float*>(L.w_k_norm.d_data),bq.as()+size_t(t)*6144,bgate.as()+size_t(t)*6144,bk.as()+size_t(t)*1024,position+t,admission.eps,admission.rope_base,stream.s);
-                }
+                Q::attention_normalize_batch(bqg.as(),bk.as(),static_cast<const float*>(L.w_q_norm.d_data),static_cast<const float*>(L.w_k_norm.d_data),bq.as(),bgate.as(),bk.as(),position,n_tokens,admission.eps,admission.rope_base,stream.s);
                 kv->enqueue_batch(i/4,position,n_tokens,bq.as(),bk.as(),bv.as(),bgate.as(),batt.as(),scores.as());
                 mm_batch(n("attn_output.weight"),L.w_out_proj,batt.as(),by.as(),n_tokens);
             }
@@ -404,7 +400,9 @@ static void run(Engine& e,const std::vector<int32_t>& prompt,int count,Sampling 
     Q::require(!prompt.empty()&&prompt.size()<=size_t(e.ctx)&&size_t(count)<=size_t(e.ctx)-prompt.size(),"request exceeds explicit context capacity");
     Q::require(force.empty()||force.size()+1==size_t(count),"force requires one more logits row than forced tokens");
     if(e.orthography)e.orthography->reset(e.japanese,exceptions);
-    e.reset();auto start=Clock::now(),prefill=start;int produced=0;size_t read=0;const char* finish="length";
+    e.reset();e.prefill_ws.reset_stats();
+    auto start=Clock::now(),prefill=start;int produced=0;size_t read=0;const char* finish="length";
+    int decode_steps=0;double decode_forward_ms=0.0,sampling_ms=0.0,reset_ms=0.0;
     std::ofstream out;if(!dump.empty()){out.open(dump,std::ios::binary|std::ios::trunc);Q::require(bool(out),"cannot open logits output");}
     std::mt19937_64 rng(sampling.seed);auto hist=strata::qwen35::penalty_history_start(prompt,false);
     try{
@@ -429,8 +427,9 @@ static void run(Engine& e,const std::vector<int32_t>& prompt,int count,Sampling 
             return true;
         };
         if(e.mtp_ready&&e.spec_draft_n_max>0&&force.empty()&&!out.is_open()&&count>0){
-            auto lg0=e.read_logits();
+            auto ts0=Clock::now();auto lg0=e.read_logits();
             int tok0=Q::sample(lg0,sampling,hist,rng,e.orthography.get());
+            sampling_ms+=std::chrono::duration<double,std::milli>(Clock::now()-ts0).count();
             if(emit(tok0)&&produced<count){
                 const float* h_last=(!e.conservative&&prompt.size()>=8)
                     ?(e.bx.as()+size_t((prompt.size()-1)%Engine::kPrefillChunk)*5120)
@@ -439,20 +438,28 @@ static void run(Engine& e,const std::vector<int32_t>& prompt,int count,Sampling 
                 int mtp_pos=0;
                 while(produced<count&&!stop.load()){
                     const int k=std::min(e.spec_draft_n_max,count-produced);
-                    if(k<=0||e.position+k+1>e.ctx||mtp_pos+k>e.ctx){e.step(tok0,stop,true);auto lg=e.read_logits();tok0=Q::sample(lg,sampling,hist,rng,e.orthography.get());if(!emit(tok0))break;continue;}
+                    if(k<=0||e.position+k+1>e.ctx||mtp_pos+k>e.ctx){
+                        auto td0=Clock::now();e.step(tok0,stop,true);decode_forward_ms+=std::chrono::duration<double,std::milli>(Clock::now()-td0).count();++decode_steps;
+                        auto ts1=Clock::now();auto lg=e.read_logits();tok0=Q::sample(lg,sampling,hist,rng,e.orthography.get());sampling_ms+=std::chrono::duration<double,std::milli>(Clock::now()-ts1).count();
+                        if(!emit(tok0))break;continue;
+                    }
                     std::vector<int32_t> batch(1+k);
                     batch[0]=tok0;
                     const int mtp_pos_before=mtp_pos;
+                    auto td_draft=Clock::now();
                     for(int j=0;j<k;++j){batch[1+j]=e.mtp_draft_step(batch[j],mtp_pos+j);}
                     const int pos_before=e.position;
                     e.snapshot_gdn();
                     e.prefill_chunk_all_logits(batch.data(),1+k,stop);
+                    decode_forward_ms+=std::chrono::duration<double,std::milli>(Clock::now()-td_draft).count();
+                    decode_steps+=1+k;
                     int accepted=0;
                     int next_tok=0;
                     bool ended=false;
                     for(int j=0;j<k;++j){
-                        auto row_lg=e.read_mtp_logits(j);
+                        auto ts1=Clock::now();auto row_lg=e.read_mtp_logits(j);
                         int target=Q::sample(row_lg,sampling,hist,rng,e.orthography.get());
+                        sampling_ms+=std::chrono::duration<double,std::milli>(Clock::now()-ts1).count();
                         if(!emit(target)){ended=true;break;}
                         if(target==batch[1+j]&&produced<count){
                             ++accepted;
@@ -463,17 +470,20 @@ static void run(Engine& e,const std::vector<int32_t>& prompt,int count,Sampling 
                     }
                     if(ended)break;
                     if(accepted==k&&produced<count){
-                        auto row_lg=e.read_mtp_logits(k);
+                        auto ts1=Clock::now();auto row_lg=e.read_mtp_logits(k);
                         next_tok=Q::sample(row_lg,sampling,hist,rng,e.orthography.get());
+                        sampling_ms+=std::chrono::duration<double,std::milli>(Clock::now()-ts1).count();
                         if(!emit(next_tok))break;
                         mtp_pos+=k;
                         Q::ck(cudaMemcpyAsync(e.mtp_hidden.data,e.bx.as()+size_t(k)*5120,5120*4,cudaMemcpyDeviceToDevice,e.stream.s));
                     }else if(accepted<k){
+                        auto td_rb=Clock::now();
                         e.restore_gdn();
                         e.kv->rewind(pos_before);
                         e.mtp_kv->rewind(mtp_pos_before+accepted);
                         e.position=pos_before;
-                        for(int j=0;j<=accepted;++j)e.step(batch[j],stop,j==accepted);
+                        for(int j=0;j<=accepted;++j){e.step(batch[j],stop,j==accepted);++decode_steps;}
+                        decode_forward_ms+=std::chrono::duration<double,std::milli>(Clock::now()-td_rb).count();
                         Q::ck(cudaMemcpyAsync(e.mtp_hidden.data,e.x.data,5120*4,cudaMemcpyDeviceToDevice,e.stream.s));
                         mtp_pos=mtp_pos_before+accepted;
                     }
@@ -481,18 +491,37 @@ static void run(Engine& e,const std::vector<int32_t>& prompt,int count,Sampling 
                 }
             }
         }else{
-            for(int i=0;i<count;++i){if(stop.load())throw Cancelled{};auto lg=e.read_logits();if(out.is_open()){out.write(reinterpret_cast<const char*>(lg.data()),lg.size()*4);Q::require(bool(out),"logits write failed");}
-                int token=size_t(i)<force.size()?force[i]:Q::sample(lg,sampling,hist,rng,e.orthography.get());if(e.orthography)e.orthography->accept(token);++produced;hist.push_back(token);
+            for(int i=0;i<count;++i){if(stop.load())throw Cancelled{};
+                auto ts0=Clock::now();
+                auto lg=e.read_logits();if(out.is_open()){out.write(reinterpret_cast<const char*>(lg.data()),lg.size()*4);Q::require(bool(out),"logits write failed");}
+                int token=size_t(i)<force.size()?force[i]:Q::sample(lg,sampling,hist,rng,e.orthography.get());
+                sampling_ms+=std::chrono::duration<double,std::milli>(Clock::now()-ts0).count();
+                if(e.orthography)e.orthography->accept(token);++produced;hist.push_back(token);
                 if(protocol)std::printf("T %d\n",token);else std::printf("%s%d",i?",":"",token);std::fflush(stdout);
                 if(force.empty()&&(token==e.admission.eos||token==248044)){finish="eos";break;}
-                if(i+1<count)e.step(token,stop,true);
+                if(i+1<count){auto td0=Clock::now();e.step(token,stop,true);decode_forward_ms+=std::chrono::duration<double,std::milli>(Clock::now()-td0).count();++decode_steps;}
             }
         }
     }catch(const Cancelled&){finish="cancel";if(read<prompt.size())prefill=Clock::now();}
     catch(...){if(e.orthography)e.orthography->reset(false);e.reset();throw;}
     if(e.orthography)e.orthography->reset(false);
-    e.reset();auto end=Clock::now();double pp=std::chrono::duration<double,std::milli>(prefill-start).count(),tg=std::chrono::duration<double,std::milli>(end-prefill).count();
-    auto publish=[&](bool cancelled){if(cancelled)finish="cancel";if(protocol){auto line=q38_format_done(produced,prompt.size(),pp,tg,finish,read);std::fwrite(line.data(),1,line.size(),stdout);}else std::puts("");std::fflush(stdout);};
+    auto gen_end=Clock::now();
+    e.reset();auto end=Clock::now();
+    reset_ms=std::chrono::duration<double,std::milli>(end-gen_end).count();
+    double pp=std::chrono::duration<double,std::milli>(prefill-start).count(),tg=std::chrono::duration<double,std::milli>(gen_end-prefill).count(),e2e_ms=std::chrono::duration<double,std::milli>(end-start).count();
+    const auto gs=e.prefill_ws.stats();
+    auto publish=[&](bool cancelled){if(cancelled)finish="cancel";
+        if(protocol){
+            std::printf("TIMING prefill_forward_ms=%.3f decode_forward_ms=%.3f decode_steps=%d sampling_ms=%.3f reset_ms=%.3f e2e_ms=%.3f\n",pp,decode_forward_ms,decode_steps,sampling_ms,reset_ms,e2e_ms);
+            std::printf("GEMM_STATS fp16=%llu fp8=%llu fp8_fb_shape=%llu fp8_fb_algo=%llu mv_fb=%llu\n",(unsigned long long)gs.fp16_gemm_calls,(unsigned long long)gs.fp8_gemm_calls,(unsigned long long)gs.fp8_fallback_shape,(unsigned long long)gs.fp8_fallback_no_algo,(unsigned long long)gs.matvec_fallback_calls);
+            auto line=q38_format_done(produced,prompt.size(),pp,tg,finish,read);std::fwrite(line.data(),1,line.size(),stdout);
+        }else{
+            std::puts("");
+            std::fprintf(stderr,"TIMING prefill_forward_ms=%.3f decode_forward_ms=%.3f decode_steps=%d sampling_ms=%.3f reset_ms=%.3f e2e_ms=%.3f\n",pp,decode_forward_ms,decode_steps,sampling_ms,reset_ms,e2e_ms);
+            std::fprintf(stderr,"GEMM_STATS fp16=%llu fp8=%llu fp8_fb_shape=%llu fp8_fb_algo=%llu mv_fb=%llu\n",(unsigned long long)gs.fp16_gemm_calls,(unsigned long long)gs.fp8_gemm_calls,(unsigned long long)gs.fp8_fallback_shape,(unsigned long long)gs.fp8_fallback_no_algo,(unsigned long long)gs.matvec_fallback_calls);
+        }
+        std::fflush(stdout);
+    };
     if(protocol)protocol->finish(publish);else publish(stop.load());
 }
 static void serve(Engine& e){
@@ -524,7 +553,7 @@ int main(int argc,char** argv){try{
     std::string model,tokens,forced,dump,kv_mode="auto",spin_view,spin_profile,language="model-default";int ctx=4096,count=32,draft_n_max=0;bool resident=false,inspection=false,conservative=false;Sampling sampling;
     for(int i=1;i<argc;++i){std::string a=argv[i];auto value=[&](){Q::require(i+1<argc,"missing option value");return std::string(argv[++i]);};
         if(a=="--help"||a=="-h"){std::puts("strata-q38 own-native CUDA SM120\n--model FILE --ctx-size N (4096) --serve\n--tokens IDS --n N [--force IDS] [--dump-full-logits FILE]\n--kv auto|f16|k8v4|spin8_k8v4|f16_turbo2|f16_turbo3|f16_turbo4 (auto default)\nAuto order: f16, f16_turbo4, spin8_k8v4; context and weights unchanged.\n--spin8-view vector|plus|minus --spin8-profile FILE (compiled reference default)\n--output-language ja|model-default (standalone default: model-default)\n--spec-draft-n-max N (0..3, MTP draft cap when blk.64.nextn.* is present)\n--conservative-sync (diagnostic reference execution)\n--inspect (CPU only) --version");return 0;}
-        if(a=="--version"){std::puts("strata-q38 own-native 0.6.1 CUDA13 SM120");return 0;}
+        if(a=="--version"){std::printf("strata-q38 own-native 0.6.1 CUDA13 SM120 cudart=%d cublas=%d\n",CUDART_VERSION,Q::PrefillGemmWorkspace::cublas_version());return 0;}
         if(a=="--model")model=value();else if(a=="--ctx-size")ctx=integer(value(),1,262144);else if(a=="--tokens")tokens=value();else if(a=="--n")count=integer(value(),0,262144);
         else if(a=="--force")forced=value();else if(a=="--dump-full-logits")dump=value();else if(a=="--serve")resident=true;else if(a=="--inspect")inspection=true;
         else if(a=="--kv")kv_mode=value();else if(a=="--spin8-view")spin_view=value();else if(a=="--spin8-profile")spin_profile=value();

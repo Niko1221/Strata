@@ -114,6 +114,52 @@ int main() {
             return 1;
         }
     }
-    std::puts("prefill_gemm_test: ALL 11 TYPES PASSED");
+    if (ws.allocated_bytes() != Q::PrefillGemmWorkspace::estimate_bytes(T, K, 1024 * 1024)) {
+        std::fprintf(stderr, "estimate_bytes mismatch\n");
+        return 1;
+    }
+    const auto st0 = ws.stats();
+    std::printf("small_shapes: fp16=%llu fp8=%llu fb_shape=%llu fb_algo=%llu\n",
+                (unsigned long long)st0.fp16_gemm_calls, (unsigned long long)st0.fp8_gemm_calls,
+                (unsigned long long)st0.fp8_fallback_shape, (unsigned long long)st0.fp8_fallback_no_algo);
+    ws.release();
+
+    // Real Qwen3.8-27B shapes with multi-tile 16 MiB buffer (checks 16-multiple tile alignment & tail).
+    struct ShapeCase { int k; int n; int t; int type_id; };
+    const ShapeCase real_cases[] = {
+        {5120, 5120, 64, 12},
+        {6144, 5120, 64, 14},
+        {17408, 5120, 64, 22},
+        {5120, 5120, 12, 12},
+    };
+    Q::PrefillGemmWorkspace rws;
+    rws.init(64, 17408, 16ull * 1024 * 1024);
+    if (rws.allocated_bytes() != Q::PrefillGemmWorkspace::estimate_bytes(64, 17408, 16ull * 1024 * 1024)) {
+        std::fprintf(stderr, "real workspace estimate_bytes mismatch\n");
+        return 1;
+    }
+    for (const auto& sc : real_cases) {
+        rws.reset_stats();
+        const auto t = static_cast<Q::GgmlType>(sc.type_id);
+        const size_t rb = (sc.k / Q::StrataQuantTensor::block_elements(t)) * Q::StrataQuantTensor::block_bytes(t);
+        std::vector<uint8_t> h_rw(static_cast<size_t>(sc.n) * rb, 0x11);
+        std::vector<float> h_rx(static_cast<size_t>(sc.t) * sc.k, 0.01f);
+        Q::Buffer d_rw(h_rw.size()), d_rx(h_rx.size() * sizeof(float)), d_ry(static_cast<size_t>(sc.t) * sc.n * sizeof(float));
+        Q::ck(cudaMemcpy(d_rw.data, h_rw.data(), d_rw.bytes, cudaMemcpyHostToDevice));
+        Q::ck(cudaMemcpy(d_rx.data, h_rx.data(), d_rx.bytes, cudaMemcpyHostToDevice));
+        const auto rqt = Q::make_quant_tensor(d_rw.data, sc.type_id, sc.k, sc.n);
+        rws.matmul_batch(rqt, d_rx.as<float>(), d_ry.as<float>(), sc.t, nullptr);
+        Q::ck(cudaDeviceSynchronize());
+        const auto rst = rws.stats();
+        std::printf("real K=%d N=%d T=%d type=%d -> fp16=%llu fp8=%llu fb_shape=%llu fb_algo=%llu\n",
+                    sc.k, sc.n, sc.t, sc.type_id,
+                    (unsigned long long)rst.fp16_gemm_calls, (unsigned long long)rst.fp8_gemm_calls,
+                    (unsigned long long)rst.fp8_fallback_shape, (unsigned long long)rst.fp8_fallback_no_algo);
+        if (rst.fp16_gemm_calls + rst.fp8_gemm_calls == 0) {
+            std::fprintf(stderr, "no GEMM calls recorded for K=%d N=%d T=%d\n", sc.k, sc.n, sc.t);
+            return 1;
+        }
+    }
+    std::puts("prefill_gemm_test: ALL 11 TYPES + REAL SHAPES PASSED");
     return 0;
 }

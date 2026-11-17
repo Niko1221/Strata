@@ -97,6 +97,46 @@ __global__ void spin8_store_q_batch_kernel(const float* in,uint8_t* cache,const 
     if(q8)for(int i=0;i<32;++i)p[2+i]=uint8_t(int8_t(roundf(rot[i]*inv)));
     else for(int i=0;i<16;++i){int lo=min(15,int(rot[i]*inv+8.5f)),hi=min(15,int(rot[i+16]*inv+8.5f));p[2+i]=uint8_t(lo|(hi<<4));}
 }
+__global__ void __launch_bounds__(256) spin8_attend_batch_kernel(
+    const float* __restrict__ q_batch,const float* __restrict__ gate_batch,
+    const uint8_t* __restrict__ key_cache,const uint8_t* __restrict__ val_cache,
+    const float* __restrict__ r,float* __restrict__ out_batch,
+    int pos_start,int ctx,int key_stride,int val_stride,int mode,const int* status){
+    if(*status)return;
+    __shared__ float sq[256],sr[64],wsum[8];
+    const int head=blockIdx.x,tok=blockIdx.y,i=threadIdx.x;
+    const int pos=pos_start+tok,kh=head/6,lane=i&31,warp=i>>5;
+    const int b=(i>>3)<<3,row=i&7;
+    if(i<64)sr[i]=r[i];
+    const size_t qoff=size_t(tok)*6144+size_t(head)*256;
+    sq[i]=q_batch[qoff+i];
+    __syncthreads();
+    float q_rot=0.f;
+    #pragma unroll
+    for(int j=0;j<8;++j)q_rot=fmaf(sr[row*8+j],sq[b+j],q_rot);
+    const uint8_t* k_base=key_cache+size_t(kh)*ctx*key_stride;
+    const uint8_t* v_base=val_cache+size_t(kh)*ctx*val_stride;
+    float mx=-INFINITY,denom=0.f,acc=0.f;
+    for(int kp=0;kp<=pos;++kp){
+        float p=q_rot*load_key(k_base+size_t(kp)*key_stride,i,true);
+        for(int d=16;d;d>>=1)p+=__shfl_xor_sync(0xffffffffu,p,d);
+        if(lane==0)wsum[warp]=p;
+        __syncthreads();
+        const float sc=(wsum[0]+wsum[1]+wsum[2]+wsum[3]+wsum[4]+wsum[5]+wsum[6]+wsum[7])*(1.f/16.f);
+        const float new_mx=fmaxf(mx,sc);
+        const float alpha=(kp==0)?0.f:expf(mx-new_mx);
+        const float w=expf(sc-new_mx);
+        denom=fmaf(denom,alpha,w);
+        mx=new_mx;
+        acc=fmaf(acc,alpha,w*load_value(v_base+size_t(kp)*val_stride,i,mode));
+    }
+    sq[i]=acc/denom;
+    __syncthreads();
+    float out_val=0.f;
+    #pragma unroll
+    for(int j=0;j<8;++j)out_val=fmaf(sr[j*8+row],sq[b+j],out_val);
+    out_batch[qoff+i]=out_val/(1.f+expf(-gate_batch[qoff+i]));
+}
 void demand(bool b,const char* message){if(!b)throw std::runtime_error(message);}
 }
 void preload_kv(){
@@ -154,20 +194,11 @@ void KvCache::enqueue_batch(int index,int pos_start,int n_tokens,const float* q_
         finite(gate_batch,size_t(n_tokens)*6144,status_.as<int>(),stream_);
         spin8_store_q_batch_kernel<<<n_tokens,32,0,stream_>>>(k_batch,l.key.as<uint8_t>(),matrix_.as(),pos_start,n_tokens,capacity_,true,status_.as<int>());
         spin8_store_q_batch_kernel<<<n_tokens,32,0,stream_>>>(v_batch,l.value.as<uint8_t>(),matrix_.as(),pos_start,n_tokens,capacity_,false,status_.as<int>());
+        spin8_attend_batch_kernel<<<dim3(24,unsigned(n_tokens)),256,0,stream_>>>(
+            q_batch,gate_batch,l.key.as<uint8_t>(),l.value.as<uint8_t>(),matrix_.as(),output_batch,
+            pos_start,capacity_,int(config_.key_row_bytes()),int(config_.value_row_bytes()),int(config_.mode),status_.as<int>());
         ck(cudaGetLastError());
-        for(int t=0;t<n_tokens;++t){
-            const int pos=pos_start+t;
-            float* out=output_batch+size_t(t)*6144;
-            const float* gate=gate_batch+size_t(t)*6144;
-            ck(cudaMemsetAsync(out,0,6144*4,stream_));
-            if(aggregate_.data)aggregate_.zero(stream_);
-            kv_spin_transform(q_batch+size_t(t)*6144,q_.as(),matrix_.as(),24,false,stream_);
-            scores_kernel<<<dim3((pos+8)/8,24),256,0,stream_>>>(q_.as(),l.key.as<uint8_t>(),scores,pos,capacity_,int(config_.key_row_bytes()),true,status_.as<int>());
-            aggregate_kernel<<<24,256,0,stream_>>>(scores,l.value.as<uint8_t>(),aggregate_.as(),pos,capacity_,int(config_.value_row_bytes()),int(config_.mode),status_.as<int>());
-            kv_spin_transform(aggregate_.as(),out,matrix_.as(),24,true,stream_);
-            apply_gate<<<24,256,0,stream_>>>(out,gate);
-            ++l.length;
-        }
+        l.length+=n_tokens;
         return;
     }
     for(int t=0;t<n_tokens;++t){

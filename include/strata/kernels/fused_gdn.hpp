@@ -38,4 +38,12 @@ void fused_gdn_step_norm_silu(float* state, const float* q, const float* k, cons
                               const float* beta, const float* z, const float* gamma, float eps, float* y, int h_k,
                               int h_v, void* stream);
 
+/// Batched multi-token versions (exact sequential recurrence kept in registers across n_tokens).
+void fused_gdn_conv_l2_batch(float* history, const float* qkv_batch, const float* conv_w, float* h_batch,
+                             int channels, int qk_heads, float eps, int n_tokens, void* stream);
+
+void fused_gdn_step_norm_silu_batch(float* state, const float* qkv_batch, int qkv_stride, const float* gate,
+                                    const float* beta, const float* z, const float* gamma, float eps, float* y,
+                                    int h_k, int h_v, int n_tokens, void* stream);
+
 }  // namespace strata::kernels

@@ -32,4 +32,8 @@ Built, benchmarked, packaged, published (`v0.6.1` / `latest`), and overwrite-ins
 - **CI/CD (`zapabob/Strata`)**:
   - `Docs` (`44078374127`, `44078126433`), `Deploy GitHub Pages` (`44078126229`), `Config snapshot` (`44077224799`), `Backend compile checks` (`44077224644`), `Native preview CPU checks` (`44077224658`, `44080689298`), `Portable monitor client` (`44080689328`): **success**.
   - `Checks` (`44077224929`) and `Minimal serving runtime` (`44080689284`): `in_progress` at log write time.
+  - **140-token Prefill + 8/32-token Decode Stage 1–5 Progression (CUDA 13.5, `qwen3.8-27b-abliterated-3.69bpw-12GB-MTP.gguf`, `--kv spin8_k8v4 --ctx-size 4096`)**:
+    - Stage 1 (separated `TIMING` + `GEMM_STATS` + 16-aligned FP8 tiling + `cublasLt` plan cache + `estimate_bytes` accounting): CUDA 13.3 cold `pp = 11,220.474 ms` vs CUDA 13.5 cold `pp = 11,209.687 ms`, warm `pp = 2,734.626 ms`.
+    - Stage 2 (packed-block GEMV `mv_q8_0`, `mv_qk45`, `mv_q6_k`, `mv_iq2_s`, `mv_iq3_s`): `GEN 8` `decode_forward_ms` `1,445.019 ms` (`206.4 ms/step`) -> `636.682 ms` (`90.95 ms/step`, **2.27x** faster); `GEN 32` steady-state `3,204.240 ms` (`103.36 ms/step`).
+    - Stage 3–5 (`fused_gdn_conv_l2_batch` + `fused_gdn_step_norm_silu_batch` + `attention_normalize_batch` + 2-stream GEMM overlap + `spin8_attend_batch_kernel`): warm `140`-token `prefill_forward_ms` improved to **`1,558.299 ms` (`89.8 tok/s`, 23.6x faster than `36,760.7 ms` sequential baseline)** with exact token parity (`198,206,207,208,209,210,211,212`).
 - **Limits**: `releaseQualified=false`; component/feed signing was skipped for `0.6.1` per user instruction (`署名関係はいいよ`).

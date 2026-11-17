@@ -45,10 +45,98 @@ void shape(int type,int n,int rows){int block=type==142?128:type==8?32:(type==12
     if(n<=0||rows<=0||n%block)throw std::runtime_error("invalid packed matrix dimensions");(void)row_bytes(type,n);}
 __global__ void deq(int type,const uint8_t* p,float* y,int n){int i=blockIdx.x*blockDim.x+threadIdx.x;if(i<n)y[i]=value(type,p,i);}
 __device__ float sum(float v){for(int i=16;i;i/=2)v+=__shfl_down_sync(0xffffffffu,v,i);return v;}
-__global__ void mv(int type,const uint8_t* w,const float* x,float* y,int n,int rows,size_t stride){
+__global__ void __launch_bounds__(256) mv(int type,const uint8_t* __restrict__ w,const float* __restrict__ x,float* __restrict__ y,int n,int rows,size_t stride){
     int row=blockIdx.x*8+threadIdx.x/32,lane=threadIdx.x%32;if(row>=rows)return;
     float s=0;w+=size_t(row)*stride;
-    for(int j=lane;j<n;j+=32)s=fmaf(value(type,w,j),x[j],s);
+    for(int j=lane;j<n;j+=32)s=fmaf(value(type,w,j),__ldg(x+j),s);
+    s=sum(s);if(!lane)y[row]=s;
+}
+__global__ void __launch_bounds__(256) mv_q8_0(const uint8_t* __restrict__ w,const float* __restrict__ x,float* __restrict__ y,int n,int rows,size_t stride){
+    const int row=blockIdx.x*8+threadIdx.x/32,lane=threadIdx.x%32;if(row>=rows)return;
+    const uint8_t* wp=w+size_t(row)*stride;const int nb=n/32;float s=0;
+    for(int b=0;b<nb;++b){
+        const uint8_t* blk=wp+size_t(b)*34;
+        const float d=h(blk);
+        s=fmaf(d*float(reinterpret_cast<const int8_t*>(blk+2)[lane]),__ldg(x+b*32+lane),s);
+    }
+    s=sum(s);if(!lane)y[row]=s;
+}
+template <bool FIVE>
+__global__ void __launch_bounds__(256) mv_qk45(const uint8_t* __restrict__ w,const float* __restrict__ x,float* __restrict__ y,int n,int rows,size_t stride){
+    const int row=blockIdx.x*8+threadIdx.x/32,lane=threadIdx.x%32;if(row>=rows)return;
+    const uint8_t* wp=w+size_t(row)*stride;const int nb=n/256;constexpr size_t bb=FIVE?176:144;
+    float s=0;
+    for(int blk_i=0;blk_i<nb;++blk_i){
+        const uint8_t* p=wp+size_t(blk_i)*bb;
+        const float d0=h(p),dmin0=h(p+2);
+        const uint8_t* sc=p+4;const uint8_t* qs=p+(FIVE?48:16);
+        const float* xb=x+blk_i*256;
+        #pragma unroll
+        for(int b=0;b<8;++b){
+            int d,m;
+            if(b<4){d=sc[b]&63;m=sc[b+4]&63;}
+            else{d=(sc[b+4]&15)|((sc[b-4]>>6)<<4);m=(sc[b+4]>>4)|((sc[b]>>6)<<4);}
+            int code=(qs[(b/2)*32+lane]>>(4*(b%2)))&15;
+            if(FIVE)code|=((p[16+lane]>>b)&1)<<4;
+            s=fmaf(d0*float(d*code)-dmin0*float(m),__ldg(xb+b*32+lane),s);
+        }
+    }
+    s=sum(s);if(!lane)y[row]=s;
+}
+__global__ void __launch_bounds__(256) mv_q6_k(const uint8_t* __restrict__ w,const float* __restrict__ x,float* __restrict__ y,int n,int rows,size_t stride){
+    const int row=blockIdx.x*8+threadIdx.x/32,lane=threadIdx.x%32;if(row>=rows)return;
+    const uint8_t* wp=w+size_t(row)*stride;const int nb=n/256;float s=0;
+    for(int blk_i=0;blk_i<nb;++blk_i){
+        const uint8_t* p=wp+size_t(blk_i)*210;
+        const float d=h(p+208);const float* xb=x+blk_i*256;
+        #pragma unroll
+        for(int ip=0;ip<2;++ip){
+            #pragma unroll
+            for(int group=0;group<4;++group){
+                const int lo=(p[ip*64+(group%2)*32+lane]>>(group>=2?4:0))&15;
+                const int hi=(p[128+ip*32+lane]>>(2*group))&3;
+                const int scale=reinterpret_cast<const int8_t*>(p+192)[ip*8+group*2+lane/16];
+                s=fmaf(d*float(scale)*float((lo|(hi<<4))-32),__ldg(xb+ip*128+group*32+lane),s);
+            }
+        }
+    }
+    s=sum(s);if(!lane)y[row]=s;
+}
+__global__ void __launch_bounds__(256) mv_iq2_s(const uint8_t* __restrict__ w,const float* __restrict__ x,float* __restrict__ y,int n,int rows,size_t stride){
+    const int row=blockIdx.x*8+threadIdx.x/32,lane=threadIdx.x%32;if(row>=rows)return;
+    const uint8_t* wp=w+size_t(row)*stride;const int nb=n/256;
+    const int group=lane/8,g_lane=lane%8;float s=0;
+    for(int blk_i=0;blk_i<nb;++blk_i){
+        const uint8_t* p=wp+size_t(blk_i)*82;
+        const float d=h(p);const float* xb=x+blk_i*256;
+        #pragma unroll
+        for(int sub=0;sub<8;++sub){
+            const int index=p[2+sub*4+group]|(((p[66+sub]>>(2*group))&3)<<8);
+            const int mag=int((q38_iq2s_grid[index]>>(8*g_lane))&255);
+            const int scale=(p[74+sub]>>(4*(group/2)))&15;
+            const float factor=d*(0.5f+scale)*0.25f;
+            const float wt=factor*float(mag)*((p[34+sub*4+group]&(1<<g_lane))?-1.f:1.f);
+            s=fmaf(wt,__ldg(xb+sub*32+lane),s);
+        }
+    }
+    s=sum(s);if(!lane)y[row]=s;
+}
+__global__ void __launch_bounds__(256) mv_iq3_s(const uint8_t* __restrict__ w,const float* __restrict__ x,float* __restrict__ y,int n,int rows,size_t stride){
+    const int row=blockIdx.x*8+threadIdx.x/32,lane=threadIdx.x%32;if(row>=rows)return;
+    const uint8_t* wp=w+size_t(row)*stride;const int nb=n/256;
+    const int group=lane/8,g_lane=lane%8,idx=lane/4,idx_lane=lane%4;float s=0;
+    for(int blk_i=0;blk_i<nb;++blk_i){
+        const uint8_t* p=wp+size_t(blk_i)*110;
+        const float d=h(p);const float* xb=x+blk_i*256;
+        #pragma unroll
+        for(int sub=0;sub<8;++sub){
+            const int index=p[2+sub*8+idx]|(((p[66+sub]>>idx)&1)<<8);
+            const int mag=int((q38_iq3s_grid[index]>>(8*idx_lane))&255);
+            const int scale=(p[106+sub/2]>>(4*(sub%2)))&15;
+            const float wt=(d*(1+2*scale))*float(mag)*((p[74+sub*4+group]&(1<<g_lane))?-1.f:1.f);
+            s=fmaf(wt,__ldg(xb+sub*32+lane),s);
+        }
+    }
     s=sum(s);if(!lane)y[row]=s;
 }
 __global__ void norm(const float* x,const float* w,float* y,int n,float eps){
@@ -78,14 +166,14 @@ __global__ void had(const float* x,const float* signs,float* y,bool inverse,bool
 // Based on Strata q36 k_attn_prep: Q and output gates interleave per head.
 __global__ void prep(const float* qg,const float* k,const float* v,const float* qw,const float* kw,float* q,float* gate,
                      half* kc,half* vc,int pos,int ctx,float eps,float base,float* normalized_k=nullptr){
-    __shared__ float buf[256],part[8];int head=blockIdx.x,i=threadIdx.x;bool isq=head<24;
-    const float* x=isq?qg+head*512:k+(head-24)*256;float z=x[i];float s=sum(z*z);
+    __shared__ float buf[256],part[8];int head=blockIdx.x,t=blockIdx.y,i=threadIdx.x;bool isq=head<24;
+    const float* x=isq?(qg+size_t(t)*12288+head*512):(k+size_t(t)*1024+(head-24)*256);float z=x[i];float s=sum(z*z);
     if(!(i%32))part[i/32]=s;__syncthreads();s=0;for(int j=0;j<8;++j)s+=part[j];
     buf[i]=z*rsqrtf(s/256+eps)*(isq?qw[i]:kw[i]);__syncthreads();z=buf[i];
-    if(i<64){int p=i%32;float angle=pos*powf(base,-float(p)/32),sn,cs;sincosf(angle,&sn,&cs);z=i<32?buf[i]*cs-buf[i+32]*sn:buf[i-32]*sn+buf[i]*cs;}
-    if(isq){q[head*256+i]=z;gate[head*256+i]=qg[head*512+256+i];}
-    else{int kh=head-24;if(normalized_k)normalized_k[kh*256+i]=z;
-        else{kc[(size_t(kh)*ctx+pos)*256+i]=__float2half(z);vc[(size_t(kh)*ctx+pos)*256+i]=__float2half(v[kh*256+i]);}}
+    if(i<64){int p=i%32;float angle=(pos+t)*powf(base,-float(p)/32),sn,cs;sincosf(angle,&sn,&cs);z=i<32?buf[i]*cs-buf[i+32]*sn:buf[i-32]*sn+buf[i]*cs;}
+    if(isq){q[size_t(t)*6144+head*256+i]=z;gate[size_t(t)*6144+head*256+i]=qg[size_t(t)*12288+head*512+256+i];}
+    else{int kh=head-24;if(normalized_k)normalized_k[size_t(t)*1024+kh*256+i]=z;
+        else{kc[(size_t(kh)*ctx+pos+t)*256+i]=__float2half(z);vc[(size_t(kh)*ctx+pos+t)*256+i]=__float2half(v[size_t(t)*1024+kh*256+i]);}}
 }
 __global__ void score(const float* q,const half* k,float* s,int pos,int ctx,const int* status){
     if(status&&*status)return;
@@ -112,7 +200,20 @@ void preload_ops(){
     ck(cudaFuncGetAttributes(&a,had));ck(cudaFuncGetAttributes(&a,prep));ck(cudaFuncGetAttributes(&a,score));ck(cudaFuncGetAttributes(&a,attend));
 }
 void decode(int type,const void* p,float* y,int n,cudaStream_t s){shape(type,n,1);if(!p||!y)throw std::runtime_error("null decoder input");deq<<<(n+255)/256,256,0,s>>>(type,(const uint8_t*)p,y,n);ck(cudaGetLastError());}
-void matvec(int type,const void* w,const float* x,float* y,int n,int rows,cudaStream_t s){shape(type,n,rows);if(!w||!x||!y)throw std::runtime_error("null matrix input");mv<<<(rows+7)/8,256,0,s>>>(type,(const uint8_t*)w,x,y,n,rows,row_bytes(type,n));ck(cudaGetLastError());}
+void matvec(int type,const void* w,const float* x,float* y,int n,int rows,cudaStream_t s){
+    shape(type,n,rows);if(!w||!x||!y)throw std::runtime_error("null matrix input");
+    const dim3 grid((rows+7)/8);const size_t rb=row_bytes(type,n);const auto* wp=(const uint8_t*)w;
+    switch(type){
+        case 8:  mv_q8_0<<<grid,256,0,s>>>(wp,x,y,n,rows,rb); break;
+        case 12: mv_qk45<false><<<grid,256,0,s>>>(wp,x,y,n,rows,rb); break;
+        case 13: mv_qk45<true><<<grid,256,0,s>>>(wp,x,y,n,rows,rb); break;
+        case 14: mv_q6_k<<<grid,256,0,s>>>(wp,x,y,n,rows,rb); break;
+        case 21: mv_iq3_s<<<grid,256,0,s>>>(wp,x,y,n,rows,rb); break;
+        case 22: mv_iq2_s<<<grid,256,0,s>>>(wp,x,y,n,rows,rb); break;
+        default: mv<<<grid,256,0,s>>>(type,wp,x,y,n,rows,rb); break;
+    }
+    ck(cudaGetLastError());
+}
 void rms(const float* x,const float* w,float* y,int n,float eps,cudaStream_t s){norm<<<1,256,0,s>>>(x,w,y,n,eps);ck(cudaGetLastError());}
 void rms_batch(const float* x,const float* w,float* y,int rows,int n,float eps,cudaStream_t s){if(rows<=0)return;norm<<<rows,256,0,s>>>(x,w,y,n,eps);ck(cudaGetLastError());}
 void add(float* x,const float* y,int n,cudaStream_t s){elt<<<(n+255)/256,256,0,s>>>(x,y,n,false);ck(cudaGetLastError());}
@@ -130,4 +231,8 @@ void attention_apply(const float* q,const float* gate,const half* kc,const half*
 void attention_normalize(const float* qg,const float* k,const float* qw,const float* kw,float* q,float* gate,float* nk,int pos,float eps,float base,cudaStream_t s){
     if(pos<0||!qg||!k||!qw||!kw||!q||!gate||!nk)throw std::runtime_error("invalid attention normalization");
     prep<<<28,256,0,s>>>(qg,k,nullptr,qw,kw,q,gate,nullptr,nullptr,pos,0,eps,base,nk);ck(cudaGetLastError());}
+void attention_normalize_batch(const float* qg,const float* k,const float* qw,const float* kw,float* q,float* gate,float* nk,int pos0,int n_tokens,float eps,float base,cudaStream_t s){
+    if(n_tokens<=0)return;
+    if(pos0<0||!qg||!k||!qw||!kw||!q||!gate||!nk)throw std::runtime_error("invalid attention normalization batch");
+    prep<<<dim3(28,unsigned(n_tokens)),256,0,s>>>(qg,k,nullptr,qw,kw,q,gate,nullptr,nullptr,pos0,0,eps,base,nk);ck(cudaGetLastError());}
 }

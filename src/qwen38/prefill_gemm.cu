@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace strata::qwen38 {
 namespace {
@@ -122,6 +123,19 @@ void launch_dequant_tile(int type, const uint8_t* src, half* dst, int tile_rows,
 
 } // namespace
 
+struct LtPlanEntry {
+    int tile_rows = 0;
+    int n_tokens = 0;
+    int K = 0;
+    int N = 0;
+    cublasLtMatmulDesc_t desc = nullptr;
+    cublasLtMatrixLayout_t a_desc = nullptr;
+    cublasLtMatrixLayout_t b_desc = nullptr;
+    cublasLtMatrixLayout_t c_desc = nullptr;
+    cublasLtMatmulHeuristicResult_t heur{};
+    bool valid = false;
+};
+
 struct PrefillGemmWorkspace::Impl {
     cublasHandle_t cublas = nullptr;
     cublasLtHandle_t cublas_lt = nullptr;
@@ -136,6 +150,12 @@ struct PrefillGemmWorkspace::Impl {
     void* lt_workspace = nullptr;
     size_t lt_workspace_bytes = 4ull * 1024 * 1024;
     bool use_fp8 = false;
+    cudaStream_t dequant_stream = nullptr;
+    cudaEvent_t tile_ready[2] = {nullptr, nullptr};
+    cudaEvent_t tile_done[2] = {nullptr, nullptr};
+    cudaEvent_t act_ready = nullptr;
+    PrefillGemmStats stats{};
+    std::vector<LtPlanEntry> lt_plans;
 };
 
 __global__ void __launch_bounds__(256)
@@ -149,6 +169,36 @@ scale_fp8_rows_kernel(float* __restrict__ y, const float* __restrict__ x_sc,
 
 PrefillGemmWorkspace::~PrefillGemmWorkspace() {
     release();
+}
+
+size_t PrefillGemmWorkspace::estimate_bytes(int max_tokens, int max_k, size_t tile_buf_bytes) {
+    if (max_tokens <= 0 || max_k <= 0 || tile_buf_bytes < static_cast<size_t>(max_k) * sizeof(half)) {
+        return 0;
+    }
+    const size_t act_elems = static_cast<size_t>(max_tokens) * static_cast<size_t>(max_k);
+    const size_t max_tile_rows_est = (tile_buf_bytes / 2) / 512 + 1024;
+    constexpr size_t lt_workspace_bytes = 4ull * 1024 * 1024;
+    return tile_buf_bytes * 2 + act_elems * (sizeof(half) + sizeof(__nv_fp8_e4m3))
+         + tile_buf_bytes / 2 + lt_workspace_bytes
+         + (static_cast<size_t>(max_tokens) + max_tile_rows_est) * sizeof(float);
+}
+
+int PrefillGemmWorkspace::cublas_version() {
+    cublasHandle_t h = nullptr;
+    int ver = 0;
+    if (cublasCreate(&h) == CUBLAS_STATUS_SUCCESS) {
+        cublasGetVersion(h, &ver);
+        cublasDestroy(h);
+    }
+    return ver;
+}
+
+PrefillGemmStats PrefillGemmWorkspace::stats() const {
+    return impl_ ? impl_->stats : PrefillGemmStats{};
+}
+
+void PrefillGemmWorkspace::reset_stats() {
+    if (impl_) impl_->stats = PrefillGemmStats{};
 }
 
 void PrefillGemmWorkspace::init(int max_tokens, int max_k, size_t tile_buf_bytes) {
@@ -174,11 +224,15 @@ void PrefillGemmWorkspace::init(int max_tokens, int max_k, size_t tile_buf_bytes
         const size_t max_tile_rows_est = (tile_buf_bytes / 2) / 512 + 1024;
         ck(cudaMalloc(&impl_->w_scales, max_tile_rows_est * sizeof(float)));
         ck(cudaMalloc(&impl_->lt_workspace, impl_->lt_workspace_bytes));
+        ck(cudaStreamCreateWithFlags(&impl_->dequant_stream, cudaStreamNonBlocking));
+        for (int i = 0; i < 2; ++i) {
+            ck(cudaEventCreateWithFlags(&impl_->tile_ready[i], cudaEventDisableTiming));
+            ck(cudaEventCreateWithFlags(&impl_->tile_done[i], cudaEventDisableTiming));
+        }
+        ck(cudaEventCreateWithFlags(&impl_->act_ready, cudaEventDisableTiming));
         const char* fp8_env = std::getenv("STRATA_FP8_PREFILL");
         impl_->use_fp8 = (fp8_env && fp8_env[0] == '1');
-        total_bytes_ = tile_buf_bytes * 2 + impl_->act_elems * (sizeof(half) + sizeof(__nv_fp8_e4m3))
-                     + tile_buf_bytes / 2 + impl_->lt_workspace_bytes
-                     + (static_cast<size_t>(max_tokens) + max_tile_rows_est) * sizeof(float);
+        total_bytes_ = estimate_bytes(max_tokens, max_k, tile_buf_bytes);
     } catch (...) {
         release();
         throw;
@@ -187,6 +241,19 @@ void PrefillGemmWorkspace::init(int max_tokens, int max_k, size_t tile_buf_bytes
 
 void PrefillGemmWorkspace::release() {
     if (!impl_) return;
+    for (auto& plan : impl_->lt_plans) {
+        if (plan.c_desc) cublasLtMatrixLayoutDestroy(plan.c_desc);
+        if (plan.b_desc) cublasLtMatrixLayoutDestroy(plan.b_desc);
+        if (plan.a_desc) cublasLtMatrixLayoutDestroy(plan.a_desc);
+        if (plan.desc) cublasLtMatmulDescDestroy(plan.desc);
+    }
+    impl_->lt_plans.clear();
+    if (impl_->act_ready) cudaEventDestroy(impl_->act_ready);
+    for (int i = 0; i < 2; ++i) {
+        if (impl_->tile_done[i]) cudaEventDestroy(impl_->tile_done[i]);
+        if (impl_->tile_ready[i]) cudaEventDestroy(impl_->tile_ready[i]);
+    }
+    if (impl_->dequant_stream) cudaStreamDestroy(impl_->dequant_stream);
     if (impl_->lt_workspace) cudaFree(impl_->lt_workspace);
     if (impl_->w_scales) cudaFree(impl_->w_scales);
     if (impl_->act_scales) cudaFree(impl_->act_scales);
@@ -220,6 +287,7 @@ void PrefillGemmWorkspace::matmul_batch(const StrataQuantTensor& weight, const f
     const int K = weight.ne0;
     const int N = weight.ne1;
     if (n_tokens < 4 || !impl_) {
+        if (impl_) impl_->stats.matvec_fallback_calls += static_cast<uint64_t>(n_tokens);
         for (int t = 0; t < n_tokens; ++t) {
             matvec(static_cast<int>(weight.type), weight.d_data,
                    x_fp32 + static_cast<size_t>(t) * K,
@@ -242,57 +310,99 @@ void PrefillGemmWorkspace::matmul_batch(const StrataQuantTensor& weight, const f
     }
 
     ck_cublas(cublasSetStream(impl_->cublas, stream));
-    const int max_tile_rows = static_cast<int>(impl_->tile_buf_bytes / (static_cast<size_t>(K) * sizeof(half)));
+    int max_tile_rows = static_cast<int>(impl_->tile_buf_bytes / (static_cast<size_t>(K) * sizeof(half)));
     if (max_tile_rows <= 0) {
         throw std::runtime_error("PrefillGemmWorkspace tile buffer smaller than one row");
     }
+    if (fp8_eligible && max_tile_rows >= 16) {
+        max_tile_rows = (max_tile_rows / 16) * 16;
+    }
+
+    auto get_lt_plan = [&](int tile_rows) -> const LtPlanEntry* {
+        for (const auto& entry : impl_->lt_plans) {
+            if (entry.tile_rows == tile_rows && entry.n_tokens == n_tokens && entry.K == K && entry.N == N) {
+                return &entry;
+            }
+        }
+        LtPlanEntry entry{};
+        entry.tile_rows = tile_rows;
+        entry.n_tokens = n_tokens;
+        entry.K = K;
+        entry.N = N;
+        cublasOperation_t op_a = CUBLAS_OP_T, op_b = CUBLAS_OP_N;
+        ck_cublas(cublasLtMatmulDescCreate(&entry.desc, CUBLAS_COMPUTE_32F, CUDA_R_32F));
+        ck_cublas(cublasLtMatmulDescSetAttribute(entry.desc, CUBLASLT_MATMUL_DESC_TRANSA, &op_a, sizeof(op_a)));
+        ck_cublas(cublasLtMatmulDescSetAttribute(entry.desc, CUBLASLT_MATMUL_DESC_TRANSB, &op_b, sizeof(op_b)));
+        ck_cublas(cublasLtMatrixLayoutCreate(&entry.a_desc, CUDA_R_8F_E4M3, K, tile_rows, K));
+        ck_cublas(cublasLtMatrixLayoutCreate(&entry.b_desc, CUDA_R_8F_E4M3, K, n_tokens, K));
+        ck_cublas(cublasLtMatrixLayoutCreate(&entry.c_desc, CUDA_R_32F, tile_rows, n_tokens, N));
+        cublasLtMatmulPreference_t pref = nullptr;
+        int found = 0;
+        ck_cublas(cublasLtMatmulPreferenceCreate(&pref));
+        ck_cublas(cublasLtMatmulPreferenceSetAttribute(pref, CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES,
+                                                        &impl_->lt_workspace_bytes, sizeof(impl_->lt_workspace_bytes)));
+        ck_cublas(cublasLtMatmulAlgoGetHeuristic(impl_->cublas_lt, entry.desc, entry.a_desc, entry.b_desc,
+                                                entry.c_desc, entry.c_desc, pref, 1, &entry.heur, &found));
+        cublasLtMatmulPreferenceDestroy(pref);
+        entry.valid = (found > 0);
+        if (!entry.valid) {
+            cublasLtMatrixLayoutDestroy(entry.c_desc); entry.c_desc = nullptr;
+            cublasLtMatrixLayoutDestroy(entry.b_desc); entry.b_desc = nullptr;
+            cublasLtMatrixLayoutDestroy(entry.a_desc); entry.a_desc = nullptr;
+            cublasLtMatmulDescDestroy(entry.desc); entry.desc = nullptr;
+        }
+        impl_->lt_plans.push_back(entry);
+        return &impl_->lt_plans.back();
+    };
 
     const float alpha = 1.0f;
     const float beta = 0.0f;
+    const int n_tiles = (N + max_tile_rows - 1) / max_tile_rows;
+    if (n_tiles > 1) {
+        ck(cudaEventRecord(impl_->act_ready, stream));
+        ck(cudaStreamWaitEvent(impl_->dequant_stream, impl_->act_ready, 0));
+    }
     int slot = 0;
-    for (int row0 = 0; row0 < N; row0 += max_tile_rows) {
+    for (int ti = 0; ti < n_tiles; ++ti) {
+        const int row0 = ti * max_tile_rows;
         const int tile_rows = std::min(max_tile_rows, N - row0);
         half* w_fp16 = impl_->tile_buf[slot];
-        dequant_rows_fp16(weight, row0, tile_rows, w_fp16, stream);
+        if (n_tiles > 1) {
+            if (ti >= 2) {
+                ck(cudaStreamWaitEvent(impl_->dequant_stream, impl_->tile_done[slot], 0));
+            }
+            dequant_rows_fp16(weight, row0, tile_rows, w_fp16, impl_->dequant_stream);
+            ck(cudaEventRecord(impl_->tile_ready[slot], impl_->dequant_stream));
+            ck(cudaStreamWaitEvent(stream, impl_->tile_ready[slot], 0));
+        } else {
+            dequant_rows_fp16(weight, row0, tile_rows, w_fp16, stream);
+        }
         if (fp8_eligible && (tile_rows % 16 == 0)) {
-            spin8_fp8_hadamard_quant_kernel<<<tile_rows, 256, 0, stream>>>(
-                w_fp16, impl_->w_fp8, impl_->w_scales, tile_rows, K);
-            ck(cudaGetLastError());
-            cublasLtMatmulDesc_t desc = nullptr;
-            cublasLtMatrixLayout_t a_desc = nullptr, b_desc = nullptr, c_desc = nullptr;
-            cublasOperation_t op_a = CUBLAS_OP_T, op_b = CUBLAS_OP_N;
-            ck_cublas(cublasLtMatmulDescCreate(&desc, CUBLAS_COMPUTE_32F, CUDA_R_32F));
-            ck_cublas(cublasLtMatmulDescSetAttribute(desc, CUBLASLT_MATMUL_DESC_TRANSA, &op_a, sizeof(op_a)));
-            ck_cublas(cublasLtMatmulDescSetAttribute(desc, CUBLASLT_MATMUL_DESC_TRANSB, &op_b, sizeof(op_b)));
-            ck_cublas(cublasLtMatrixLayoutCreate(&a_desc, CUDA_R_8F_E4M3, K, tile_rows, K));
-            ck_cublas(cublasLtMatrixLayoutCreate(&b_desc, CUDA_R_8F_E4M3, K, n_tokens, K));
-            ck_cublas(cublasLtMatrixLayoutCreate(&c_desc, CUDA_R_32F, tile_rows, n_tokens, N));
-            cublasLtMatmulPreference_t pref = nullptr;
-            cublasLtMatmulHeuristicResult_t heur{};
-            int found = 0;
-            ck_cublas(cublasLtMatmulPreferenceCreate(&pref));
-            ck_cublas(cublasLtMatmulPreferenceSetAttribute(pref, CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES,
-                                                            &impl_->lt_workspace_bytes, sizeof(impl_->lt_workspace_bytes)));
-            ck_cublas(cublasLtMatmulAlgoGetHeuristic(impl_->cublas_lt, desc, a_desc, b_desc, c_desc, c_desc, pref, 1, &heur, &found));
-            if (found > 0) {
-                ck_cublas(cublasLtMatmul(impl_->cublas_lt, desc, &alpha, impl_->w_fp8, a_desc, impl_->act_fp8, b_desc,
-                                         &beta, y_fp32 + row0, c_desc, y_fp32 + row0, c_desc, &heur.algo,
+            const LtPlanEntry* plan = get_lt_plan(tile_rows);
+            if (plan->valid) {
+                spin8_fp8_hadamard_quant_kernel<<<tile_rows, 256, 0, stream>>>(
+                    w_fp16, impl_->w_fp8, impl_->w_scales, tile_rows, K);
+                ck(cudaGetLastError());
+                ck_cublas(cublasLtMatmul(impl_->cublas_lt, plan->desc, &alpha, impl_->w_fp8, plan->a_desc,
+                                         impl_->act_fp8, plan->b_desc, &beta, y_fp32 + row0, plan->c_desc,
+                                         y_fp32 + row0, plan->c_desc, &plan->heur.algo,
                                          impl_->lt_workspace, impl_->lt_workspace_bytes, stream));
                 scale_fp8_rows_kernel<<<dim3((tile_rows + 255) / 256, n_tokens), 256, 0, stream>>>(
                     y_fp32, impl_->act_scales, impl_->w_scales, n_tokens, N, row0, tile_rows);
                 ck(cudaGetLastError());
+                ++impl_->stats.fp8_gemm_calls;
             } else {
                 ck_cublas(cublasGemmEx(
                     impl_->cublas, CUBLAS_OP_T, CUBLAS_OP_N, tile_rows, n_tokens, K, &alpha,
                     w_fp16, CUDA_R_16F, K, impl_->act_fp16, CUDA_R_16F, K, &beta,
                     y_fp32 + row0, CUDA_R_32F, N, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP));
+                ++impl_->stats.fp8_fallback_no_algo;
+                ++impl_->stats.fp16_gemm_calls;
             }
-            cublasLtMatmulPreferenceDestroy(pref);
-            cublasLtMatrixLayoutDestroy(c_desc);
-            cublasLtMatrixLayoutDestroy(b_desc);
-            cublasLtMatrixLayoutDestroy(a_desc);
-            cublasLtMatmulDescDestroy(desc);
         } else {
+            if (fp8_eligible && (tile_rows % 16 != 0)) {
+                ++impl_->stats.fp8_fallback_shape;
+            }
             // Row-major Y[n_tokens, N] = X[n_tokens, K] * W_tile[tile_rows, K]^T
             // In column-major: C[tile_rows, n_tokens] = W_tile^T * X, ldc = N.
             ck_cublas(cublasGemmEx(
@@ -305,6 +415,10 @@ void PrefillGemmWorkspace::matmul_batch(const StrataQuantTensor& weight, const f
                 &beta,
                 y_fp32 + row0, CUDA_R_32F, N,
                 CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP));
+            ++impl_->stats.fp16_gemm_calls;
+        }
+        if (n_tiles > 1) {
+            ck(cudaEventRecord(impl_->tile_done[slot], stream));
         }
         slot ^= 1;
     }
