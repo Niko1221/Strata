@@ -58,6 +58,7 @@
 #include "strata/core/uma_cache.hpp"
 #include "strata/core/remote_experts.hpp"
 #include "strata/core/on_device.hpp"
+#include "strata/core/local_expert_relay.hpp"
 #include "strata/core/peer_experts.hpp"
 #include "strata/core/layer.hpp"
 #include "strata/core/kv_grow_rules.hpp"
@@ -8465,6 +8466,15 @@ int main(int argc, char** argv) {
     // sees the memory this process actually has left rather than the card's idle figure - and refuses with both
     // numbers if the slots do not fit, instead of handing back a cache smaller than it was asked for.
     mem_mark("the weights, the session and the drafter");
+#if defined(STRATA_LOCAL_CUDA_RELAY)
+    // Reserve the two donor slots before either expert cache is sized; default off.
+    strata::core::LocalExpertRelay prefill_relay;
+    if (const cudaError_t relay_rc = prefill_relay.open(); relay_rc != cudaSuccess) {
+        std::fprintf(stderr, "strata local: PREFILL_RELAY initialization failed: %s\n", cudaGetErrorString(relay_rc));
+        return 1;
+    }
+    strata::core::local_prefill_relay = prefill_relay.active() ? &prefill_relay : nullptr;
+#endif
     strata::core::ExpertCache xcache;
     // THE HEAD BEFORE THE CACHE: the native head and the logits are allocated above, before the expert arena (#620)
     const bool auto_cache = o.expert_cache < 0;
