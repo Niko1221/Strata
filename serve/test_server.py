@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import contextlib
+from concurrent.futures import ThreadPoolExecutor
 import io
 import json
 import os
@@ -30,6 +31,8 @@ from serve.server import (ANSWER_RESERVE_MIN, CTX_SLACK, ByteTokenizer, EngineDi
 from types import SimpleNamespace  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
 CTX = 4096
 ANSWER = "xy" * 1000                             # longer than the old 1024 fallback: one token per byte (#606: not
 #                                                one token repeated, which the server ends at 256)
@@ -6717,3 +6720,135 @@ class PrepareCancelled(unittest.TestCase):
             self.assertEqual(ids.count(ByteTokenizer().encode("<|image_pad|>", parse_special=True)[0]), 6)
             svc.embeddings.path.unlink(missing_ok=True)
 
+
+
+class ContinuousUsage(unittest.TestCase):
+    """stream_options.continuous_usage_stats: vLLM 风格的累计 usage 随数据 chunk 上报，
+    供 omp 等客户端在流式生成中实时计算 tok/s。默认路径（未显式开启）必须完全不变。"""
+    THINK = "<think>\n" + "ab" * 60 + "\n</think>\n\n" + "xy" * 40
+
+    @classmethod
+    def setUpClass(cls):
+        tok = ByteTokenizer()
+        cls.tok = tok
+        cls.engine = MockEngine(tok, cls.THINK, max_context=CTX)
+        cls.svc = Service(cls.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        cls.httpd = serve(cls.svc, port=0)
+        cls.base = f"http://127.0.0.1:{cls.httpd.server_address[1]}"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+
+    def stream(self, **extra):
+        body = {"model": "m", "messages": [{"role": "user", "content": "hi"}],
+                "stream": True, "reasoning_effort": "low", "max_tokens": 300, **extra}
+        req = urllib.request.Request(self.base + "/v1/chat/completions",
+                                     data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            text = r.read().decode()
+        return [json.loads(line[6:]) for line in text.splitlines() if line.startswith("data: {")]
+
+    @staticmethod
+    def mid_chunks(chunks):
+        return chunks[1:-1]                      # without the role chunk and the finish chunk
+
+    def test_default_unchanged(self):
+        # 未传 stream_options：中间 chunk 没有 usage，最终 usage 与修复前一致（仍然带 usage）
+        chunks = self.stream()
+        self.assertTrue(all("usage" not in c for c in self.mid_chunks(chunks)), self.mid_chunks(chunks)[:2])
+        last = chunks[-1]
+        self.assertEqual(last["choices"][0]["finish_reason"], "stop")
+        self.assertGreater(last["usage"]["completion_tokens"], 0)
+        self.assertIn("prompt_tokens_details", last["usage"])
+
+    def test_include_usage_only_is_not_continuous(self):
+        # 仅 include_usage：保持当前行为，只有最终 usage
+        chunks = self.stream(stream_options={"include_usage": True})
+        self.assertTrue(all("usage" not in c for c in self.mid_chunks(chunks)))
+        self.assertGreater(chunks[-1]["usage"]["completion_tokens"], 0)
+
+    def test_continuous_usage_on_every_data_chunk(self):
+        # 两个选项都开：role chunk 的 completion_tokens == 0；thinking 中途有累计 usage 且单调不减
+        chunks = self.stream(stream_options={"include_usage": True, "continuous_usage_stats": True})
+        self.assertEqual(chunks[0]["choices"][0]["delta"].get("role"), "assistant")
+        self.assertEqual(chunks[0]["usage"], {"prompt_tokens": chunks[0]["usage"]["prompt_tokens"],
+                                              "completion_tokens": 0,
+                                              "total_tokens": chunks[0]["usage"]["prompt_tokens"]})
+        reasoning = [c for c in self.mid_chunks(chunks)
+                     if c["choices"][0]["delta"].get("reasoning_content")]
+        self.assertGreaterEqual(len(reasoning), 2)
+        self.assertTrue(all("usage" in c for c in reasoning))
+        seen = [c["usage"]["completion_tokens"] for c in reasoning]
+        self.assertGreater(max(seen), 0, "至少一个 thinking chunk 的 completion_tokens > 0")
+        self.assertEqual(seen, sorted(seen), "同一请求内 completion_tokens 单调不减")
+        for c in chunks[:-1]:     # 每个数据 chunk（含 role）：total = prompt + completion，值单调
+            if "usage" not in c:
+                continue
+            u = c["usage"]
+            self.assertEqual(u["total_tokens"], u["prompt_tokens"] + u["completion_tokens"])
+            self.assertEqual(u["prompt_tokens"], chunks[0]["usage"]["prompt_tokens"])
+        self.assertGreaterEqual(chunks[-1]["usage"]["completion_tokens"], seen[-1])
+
+    def test_final_usage_still_authoritative(self):
+        # 最终 chunk：权威统计覆盖中间快照，prompt_tokens_details 仍准确
+        off = self.stream()
+        on = self.stream(stream_options={"include_usage": True, "continuous_usage_stats": True})
+        self.assertEqual(off[-1]["usage"], on[-1]["usage"])
+        self.assertIn("prompt_tokens_details", on[-1]["usage"])
+        self.assertNotIn("prompt_tokens_details", on[len(on) // 2].get("usage", {}))
+
+    def test_content_identical_with_and_without(self):
+        # 开关不改变响应内容：reasoning/content delta 序列与最终 usage 完全一致
+        def deltas(chunks):
+            return [c["choices"][0]["delta"] for c in chunks[:-1]]
+        off = self.stream()
+        on = self.stream(stream_options={"include_usage": True, "continuous_usage_stats": True})
+        self.assertEqual(deltas(off), deltas(on))
+        self.assertEqual(off[-1]["choices"][0]["finish_reason"], on[-1]["choices"][0]["finish_reason"])
+        self.assertEqual(off[-1]["usage"], on[-1]["usage"])
+
+    def test_two_concurrent_requests_do_not_cross(self):
+        # 两个同时的请求各持自己的 progress 对象：各自的 usage 单调且不超过自己的最终值，
+        # 不会出现另一个请求的 token 数（cycle 引擎给两个请求不同长度的脚本，可检测串数据）
+        tok = ByteTokenizer()
+        short, long = "</think>\n\n" + "s" * 30, "</think>\n\n" + "L" * 120
+        engine = MockEngine(tok, [short, long], max_context=CTX, delay_s=0.003, cycle=True)
+        svc = Service(engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        httpd = serve(svc, port=0)
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        try:
+            def one():
+                body = {"model": "m", "messages": [{"role": "user", "content": "hi"}], "stream": True,
+                        "max_tokens": 300,
+                        "stream_options": {"include_usage": True, "continuous_usage_stats": True}}
+                req = urllib.request.Request(base + "/v1/chat/completions",
+                                             data=json.dumps(body).encode(),
+                                             headers={"Content-Type": "application/json"})
+                with urllib.request.urlopen(req, timeout=60) as r:
+                    text = r.read().decode()
+                return [json.loads(line[6:]) for line in text.splitlines() if line.startswith("data: {")]
+            with ThreadPoolExecutor(2) as pool:
+                a, b = list(pool.map(lambda _: one(), range(2)))
+            for chunks in (a, b):
+                seen = [c["usage"]["completion_tokens"] for c in chunks[:-1] if "usage" in c]
+                final = chunks[-1]["usage"]["completion_tokens"]
+                self.assertEqual(seen, sorted(seen), "每个请求内部单调不减")
+                self.assertLessEqual(max(seen or [0]), final, "中途计数不超过自己的最终值")
+            self.assertEqual({a[-1]["usage"]["completion_tokens"], b[-1]["usage"]["completion_tokens"]},
+                             {len(engine.scripts[0]), len(engine.scripts[1])}, "两个请求各自拿到自己的脚本")
+            self.assertFalse(svc.live_reqs, "结束后 live_reqs 清空")
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
+    def test_continuous_usage_monotonic_when_truncated(self):
+        # max_tokens 在 thinking 中截断：中途 usage 仍单调，最终 usage 与现有截断口径一致
+        chunks = self.stream(max_tokens=10, stream_options={"include_usage": True, "continuous_usage_stats": True})
+        self.assertEqual(chunks[-1]["choices"][0]["finish_reason"], "length")
+        seen = [c["usage"]["completion_tokens"] for c in chunks[:-1] if "usage" in c]
+        self.assertEqual(seen, sorted(seen))
+        self.assertEqual(seen[-1], chunks[-1]["usage"]["completion_tokens"], "最终 usage 承接最后一个中间值")
+        self.assertLessEqual(chunks[-1]["usage"]["completion_tokens"], 10)

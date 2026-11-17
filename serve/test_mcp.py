@@ -298,6 +298,46 @@ class ToolLoop(unittest.TestCase):
         self.assertIn("<tool_response>\nhello from the tool\n</tool_response>", second)
         self.assertEqual(cs[-1]["usage"]["prompt_tokens"], len(self.engine.prompts[1]))
 
+    def test_continuous_usage_across_mcp_rounds(self):
+        # stream_options.continuous_usage_stats：两轮 MCP 之间计数不重置；工具运行期间的 mcp chunk 携带
+        # 第一轮累计；最终 prompt 是第二轮的、completion 是两轮之和
+        self.start(call_script("fake__echo", text="hello from the tool"), "</think>\n\nThe tool said hello.")
+        code, text = self.post({"strata_mcp": True,
+                                "stream_options": {"include_usage": True, "continuous_usage_stats": True}})
+        self.assertEqual(code, 200, text)
+        cs = self.chunks(text)
+        round1 = len(self.engine.scripts[0])
+        round2 = len(self.engine.scripts[1])
+        with_usage = [(c, c["usage"]) for c in cs if "usage" in c]
+        self.assertTrue(with_usage, "数据 chunk 都带累计 usage")
+        cts = [u["completion_tokens"] for _, u in with_usage]
+        self.assertEqual(cts[0], 0, "role chunk 从 0 开始")
+        self.assertEqual(cts, sorted(cts), "两轮之间 completion_tokens 单调不减")
+        # 第一轮内开始的工具（start 事件在 run 内产生）计数小于第一轮总量；call/result 事件在
+        # 第一轮结束后产生，携带恰好等于第一轮总量的累计
+        start_ct = next(u["completion_tokens"] for c, u in with_usage if c.get("strata_mcp", {}).get("event") == "start")
+        call_ct = next(u["completion_tokens"] for c, u in with_usage if c.get("strata_mcp", {}).get("event") == "call")
+        self.assertLess(start_ct, round1)
+        self.assertEqual(call_ct, round1)
+        # 第二轮不从 0 开始：工具 result 事件之后的第一个 content chunk 的累计 >= 第一轮总量
+        after_result = [u["completion_tokens"] for c, u in with_usage
+                        if c.get("strata_mcp", {}).get("event") == "result"]
+        idx = next(i for i, (c, _) in enumerate(with_usage) if c.get("strata_mcp", {}).get("event") == "result")
+        second_ct = next(u["completion_tokens"] for c, u in with_usage[idx:]
+                         if c["choices"][0]["delta"].get("content") and u["completion_tokens"] > 0)
+        self.assertGreaterEqual(second_ct, round1)
+        # prompt_tokens 随轮次更新：早期 chunk 是第一轮 prompt，晚期 chunk 是第二轮 prompt
+        first_pt = with_usage[0][1]["prompt_tokens"]
+        self.assertEqual(first_pt, len(self.engine.prompts[0]))
+        final = cs[-1]["usage"]
+        self.assertEqual(final["prompt_tokens"], len(self.engine.prompts[1]))
+        self.assertEqual(final["completion_tokens"], round1 + round2)
+        # MCP 事件和客户端可见文本保持原样
+        mcp = [c["strata_mcp"] for c in cs if "strata_mcp" in c]
+        self.assertEqual([m["event"] for m in mcp], ["start", "call", "result"])
+        content = "".join((c["choices"][0]["delta"].get("content") or "") for c in cs)
+        self.assertEqual(content, "Let me check.The tool said hello.")
+
     def test_a_call_the_output_ends_inside_is_not_run(self):
         """#211: the model's turn ends inside an MCP call: nothing runs (it used to run with no arguments)."""
         script = call_script("fake__echo", text="hello from the tool")
