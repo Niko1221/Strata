@@ -34,7 +34,7 @@ SHA-256), so a PC that has one of them can link those two shards instead of down
 
 | Format (role) | CUDA decode (grouped experts) | CUDA prompt | CPU pool | AMD (HIP) decode | AMD prompt | Intel (SYCL) decode | Intel prompt |
 |---|---|---|---|---|---|---|---|
-| Q4_K (gate/up) | yes | FP16 path; MMQ with `STRATA_MMQ_KQ=1` | ggml AVX2 dot; multi-token AVX2 (`STRATA_KQ256=1`) | yes (CUDA layout; `STRATA_EXPERT_V2K=1` bitwise) | FP16 path; MMQ with `STRATA_MMQ_KQ=1`; gfx11 fused (`STRATA_PF_FUSED_KQ=1`) | kernels built, not run with these files | FP16 path |
+| Q4_K (gate/up) | yes | FP16 path; MMQ with `STRATA_MMQ_KQ=1`; UD-Q4_K_XL's experts (a Q4_K or Q5_K gate/up with a Q5_1 or Q8_0 down) are read by Strata's own kernels on RTX A6000, RTX 3090 and RTX PRO 5000 class cards, and on RTX A4000 and RTX 5070 class cards for the launches Strata stages, and on the DGX Spark (its defaults table sets the switch); `STRATA_PF_FUSED_KQ=0` gives MMQ back | ggml AVX2 dot; multi-token AVX2 (`STRATA_KQ256=1`) | yes (CUDA layout; `STRATA_EXPERT_V2K=1` bitwise) | FP16 path; MMQ with `STRATA_MMQ_KQ=1`; gfx11 fused (`STRATA_PF_FUSED_KQ=1`) | kernels built, not run with these files | FP16 path |
 | Q5_K (gate/up) | yes | as Q4_K | ggml AVX2 dot | as Q4_K | as Q4_K | kernels built, not run with these files | FP16 path |
 | Q6_K (gate/up) | yes (since this change; was `-DSTRATA_Q6K_EXPERTS=ON`) | FP16 path; MMQ with `STRATA_MMQ_KQ=1` | ggml AVX2 dot | yes (CUDA layout) | FP16 path; MMQ with `STRATA_MMQ_KQ=1` | kernels built, not run with these files | FP16 path |
 | Q5_1 (down) | yes | as Q4_K | ggml AVX2 dot; multi-token AVX2 (`STRATA_KQ256=1`) | yes (CUDA layout; V2K) | as Q4_K | kernels built, not run with these files | FP16 path |
@@ -162,9 +162,9 @@ budget mode (A4000, 1,500 GPU slots), for +4-10% decode in RAM and +26-67% in th
 `STRATA_ROUTE_TAIL_SKIP=0` in a config's `"env"` turns it off.
 
 **The hyper-connections on NVIDIA:** the pack's `--compat-bf16` copy of the Q8_0 HC projections rounds them to BF16
-(and doubles their bytes). `STRATA_HC_Q8=1` reads the file's own Q8_0 instead (on AMD gfx12 it is the default): on the
+(and doubles their bytes). On NVIDIA the engine reads the file's own Q8_0 by default for files that carry them as Q8_0 (the Unsloth UD files); `STRATA_HC_Q8=0` restores the BF16 read. On the
 A4000 UD-Q4_K_XL then comes closer to Q8_0 (yardstick KL 0.0562 -> 0.0526, p99 0.925 -> 0.716) and to the same file on
-AMD (KL 0.038 -> 0.033). Opt-in until decided.
+AMD (KL 0.038 -> 0.033).
 
 ## Images
 
