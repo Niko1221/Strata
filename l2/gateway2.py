@@ -147,17 +147,23 @@ HEALTH_POLL_S = 5
 # 交叉点: C>D 需复用>~700tok; B>D 需复用>12%N; A 永远最优
 # 2026-11-12 标定: 冷 prefill 实测 2224-2650 tok/s (0.38-0.45ms/tok), 0.46 略保守保留;
 # decode 实测 gen_tps p50=77.3 => 12.9ms/tok (原 20ms 低估长生成 1.5x)
-PREFILL_MS_PER_TOK = 0.46
-RAM_MS_PER_TOK = 0.009
-L2_MS_PER_TOK = 0.020
+# Cost-model coefficients — calibrate per box (defaults measured on our
+# production host: cold prefill ~2.2-2.6K tok/s, parked borrow and L2 read
+# from NVMe). Every factor is overridable; see docs/l2-gateway-role.md.
+PREFILL_MS_PER_TOK = float(os.environ.get("STRATA_COST_PREFILL_MS_PER_TOK", "0.46"))
+RAM_MS_PER_TOK = float(os.environ.get("STRATA_COST_RAM_MS_PER_TOK", "0.009"))
+L2_MS_PER_TOK = float(os.environ.get("STRATA_COST_L2_MS_PER_TOK", "0.020"))
+RAM_FIXED_MS = float(os.environ.get("STRATA_COST_RAM_FIXED_MS", "50"))
+L2_FIXED_MS = float(os.environ.get("STRATA_COST_L2_FIXED_MS", "300"))
 L2_FIXED_MS = 300
 DECODE_MS_PER_TOKEN = float(os.environ.get("STRATA_SCHED_DECODE_MS_PER_TOKEN", "13"))
-SAVE_MARGIN = 0.20        # restorep 只在省 ≥20% 时触发
+SAVE_MARGIN = float(os.environ.get("STRATA_COST_SAVE_MARGIN", "0.20"))   # restore only when it saves >= 20%
+MIN_REUSE_FRAC = float(os.environ.get("STRATA_COST_MIN_REUSE_FRAC", "0.5"))  # expected reusable prefix floor
 
 def layer_costs(n, live_lcp, pool_best, l2_est, l2_read=None):
     """A/B/C/D(ms)：l2_est=真实可复用前缀；l2_read=实际读取量，默认整档模式下可大于复用量。"""
     a = (n - live_lcp) * PREFILL_MS_PER_TOK
-    b = 50 + pool_best * RAM_MS_PER_TOK + (n - pool_best) * PREFILL_MS_PER_TOK
+    b = RAM_FIXED_MS + pool_best * RAM_MS_PER_TOK + (n - pool_best) * PREFILL_MS_PER_TOK
     read = l2_est if l2_read is None else l2_read
     c = L2_FIXED_MS + read * L2_MS_PER_TOK + (n - l2_est) * PREFILL_MS_PER_TOK
     d = n * PREFILL_MS_PER_TOK
@@ -568,7 +574,7 @@ def engine_main_metrics() -> dict:
 def restore_cost_policy(costs: dict, pool_best_eff: int, n: int, legacy_costs: dict = None):
     """Old gate+costs versus P1 min(A,B,D) with read/reuse-separated costs."""
     legacy = legacy_costs or costs
-    old = pool_best_eff < n * 0.5 and legacy["C"] < legacy["D"] * (1 - SAVE_MARGIN)
+    old = pool_best_eff < n * MIN_REUSE_FRAC and legacy["C"] < legacy["D"] * (1 - SAVE_MARGIN)
     best_without_l2 = min(costs["A"], costs["B"], costs["D"])
     new = costs["C"] < best_without_l2 * (1 - SAVE_MARGIN)
     return old, new, best_without_l2
