@@ -16,6 +16,7 @@ import * as supervisor from './supervisor.mjs';
 import { get as getStore } from './store.mjs';
 import { which } from './util.mjs';
 import { inferenceFetch } from './inference-fetch.mjs';
+import { samplingForPolicy } from './request-sampling.mjs';
 
 /** Where Strata's own API worker listens by default (`serve/server.py`, `--port 8095`). */
 const STRATA_DEFAULT_URL = 'http://127.0.0.1:8095/v1';
@@ -238,7 +239,7 @@ export async function streamChat({ message, history = [], systemPrompt = '', mod
 
 /* --------------------------------------------------------- real engine path --- */
 
-export async function proxyCompletion({ baseUrl, message, history = [], systemPrompt = '', onFrame, signal, supervised = false, engine,modelId='local',authorization,images=[],extra={} }) {
+export async function proxyCompletion({ baseUrl, message, history = [], systemPrompt = '', onFrame, signal, supervised = false, engine,modelId='local',authorization,images=[],extra={},servingPolicy=null }) {
   const started = Date.now();
   engine?.beginReading(0, engine.variantId);
   const messages = [
@@ -257,7 +258,7 @@ export async function proxyCompletion({ baseUrl, message, history = [], systemPr
       model: modelId,
       stream: true,
       stream_options: { include_usage: true },
-      ...sampling,
+      ...samplingForPolicy(sampling, servingPolicy),
       ...extra,
       messages,
     }),

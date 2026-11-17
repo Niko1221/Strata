@@ -864,6 +864,7 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
   writeFileSync(configPath,JSON.stringify(cfg,null,2),{mode:0o600});
   if(memoryAccess)desktopMemoryAccess.set(id,memoryAccess);
   const instance={id,apiModelId,fingerprint,context:entry.context??0,aliases:cfg.aliases??[],vision:!!cfg.vision,resourceProfile:cfg.ui_resource_profile??null,model:args.model,label:friendlyModelName(snapshot.catalog,args.model)??entry.model_name??args.model,port:cfg.port,gpus:Array.isArray(cfg.gpu)?cfg.gpu:cfg.gpu===undefined?[]:[cfg.gpu],status:'loading',phase:'loading',parallel:cfg.parallel??1,mcpServers:cfg.mcp_servers??cfg.mcpServers??{},key,configPath,ownerJob:job.id,loadedAt:new Date().toISOString(),metrics:null,error:null,...(picturesNote?{picturesNote}:{})};
+  instance.servingPolicy=policyFor(args.model,cfg).id;
   instance.refusalProjection={vectorVerified:projectionRequested(cfg,packaged?control.control.dir:repo()),requested:projectionRequested(config,packaged?control.control.dir:repo())};
   const capture=(args.runObservation===true||observationEnabled())?beginObservation(id,job,cfg,{executable:trustedEngineExe??undefined}):null;
   /* Another model on the same graphics card: the engine takes the card's free memory, so a second one usually finds none. Loading goes on (recommend, never force); if it fails, the reason is said. */

@@ -12,6 +12,7 @@
 
 import http from 'node:http';
 import https from 'node:https';
+import { samplingForPolicy } from '../request-sampling.mjs';
 
 /** The thinking budgets the composer offers (0 = no limit is not a budget). */
 export const BUDGETS = Object.freeze([2048, 8192, 32768]);
@@ -82,7 +83,7 @@ const HOP = new Set(['host', 'connection', 'content-length', 'transfer-encoding'
  * The forwarding endpoint. `targetOf(key)` gives the real base address of a shaped route (or null), `samplingNow()` the Expert fields that
  * differ from the defaults right now. Called for `/api/internal/agent-llm/<key>/<path>`; this computer's own address only.
  */
-export function createLlmProxy({ targetOf, samplingNow }) {
+export function createLlmProxy({ targetOf, samplingNow, policyOf = () => null }) {
   return function handle(req, res, key, rest) {
     const remote = req.socket?.remoteAddress ?? '';
     if (!/^(::1|127\.|::ffff:127\.)/.test(remote)) { res.writeHead(403, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: 'This endpoint is for the assistant on this computer only.' })); return; }
@@ -95,7 +96,7 @@ export function createLlmProxy({ targetOf, samplingNow }) {
       let body = Buffer.concat(chunks);
       const budget = nearestBudget(req.headers['x-strata-budget']);
       if (req.method === 'POST' && /\/chat\/completions\/?$/.test(rest) && body.length) {
-        try { body = Buffer.from(JSON.stringify(shapeBody(JSON.parse(body.toString('utf8')), { sampling: samplingNow(), budget }))); } catch { /* not JSON: pass it on untouched */ }
+        try { body = Buffer.from(JSON.stringify(shapeBody(JSON.parse(body.toString('utf8')), { sampling: samplingForPolicy(samplingNow(), policyOf(base)), budget }))); } catch { /* not JSON: pass it on untouched */ }
       }
       // The route's address is the model's own base (it ends in /v1): the assistant's /v1 is that same prefix.
       const target = new URL(base.replace(/\/+$/, '') + rest.replace(/^\/v1(?=\/|$|\?)/, ''));

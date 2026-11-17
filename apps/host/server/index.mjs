@@ -186,7 +186,8 @@ const native=createNativeControl({control,ready:bundledEngine,appUpdater,hardwar
    pinned component (STRATA_HARNESS_DIR), not part of this host, so its absence is a visible capability
    state and the chat falls back to the direct path with a notice, never silently to another model. */
 // What the person chose in Settings -> Tools (tool groups, web search service and key, the browser, their own tools).
-const llmProxy = createLlmProxy({ targetOf: key => agent.llmTarget(key), samplingNow: () => samplingFromExpert(store.get().expert) });
+const llmProxy = createLlmProxy({ targetOf: key => agent.llmTarget(key), samplingNow: () => samplingFromExpert(store.get().expert),
+  policyOf: base => native.readyInstances().find(i => base === `http://127.0.0.1:${i.port}/v1`)?.servingPolicy });
 const agentTools = createAgentTools({ read: () => store.get().agentTools, write: value => store.update({ agentTools: value }, { durable: true }), dataDir: store.DATA_DIR, browser: () => ({ ...findBrowser(), cli: findPlaywrightMcp(agent.harnessDir()) }) });
 const rustxng = createRustxngRuntime();
 const rustxngSearch = createRustxngSearch({ endpoint: () => rustxng.start() });
@@ -232,7 +233,7 @@ function agentLocalRows() {
     slots: i.metrics?.live?.slots?.length || i.parallel || 1,
     privateConversationCache: i.metrics?.engine?.q36_private_cache === 2,
     mcpServers: i.mcpServers,
-    source: 'native',
+    source: 'native', servingPolicy: i.servingPolicy,
   }));
   return mergeAgentLocalInstances(nativeRows, supervisorAgentRow());
 }
@@ -512,7 +513,7 @@ skillLearning = createSkillLearning({
         if (!row) throw new Error('review-model-unavailable');
         entry = serving.open({ client: 'Workflow skill review', endpoint: '/skill-learning', model: row.modelId, instanceId: row.id, cancel: () => controller.abort() });
         serving.mark(entry.id, { state: 'generating' });
-        result = await proxyCompletion({ baseUrl: row.baseUrl, modelId: row.modelId, authorization: row.key,
+        result = await proxyCompletion({ baseUrl: row.baseUrl, modelId: row.modelId, servingPolicy: row.servingPolicy, authorization: row.key,
           message, history: [], systemPrompt, signal: requestSignal, onFrame,
           extra: { strata_mcp: false, max_tokens: 1536, reasoning_effort: 'none', chat_template_kwargs: { enable_thinking: false }, strata_cache_session: createHash('sha256').update('learning-' + uid()).digest('hex') } });
       }
@@ -770,7 +771,7 @@ async function runTurn({ message, history = [], onFrame, signal, client, workspa
   if(native.hasLive()||nativeModelId){
     let instance;try{instance=native.resolveInstance(nativeModelId??native.state().defaultId);}catch(e){const message=plainNoModel(e.message);onFrame({type:'error',message});return {error:message};}const started=Date.now(),cancel=new AbortController();
     const entry=serving.open({client:client??'Strata chat',endpoint:'/chat/completions',model:instance.apiModelId,instanceId:instance.id,gpuIds:instance.gpus.map(String),cancel:()=>cancel.abort()});
-    try{serving.mark(entry.id,{state:'generating'});const applied=selectSkills(skillState,message,workspaceId);const result=await proxyCompletion({baseUrl:`http://127.0.0.1:${instance.port}/v1`,modelId:instance.apiModelId,authorization:instance.key,message,history:referenceHistory(history,webReferences),images,extra:{...(sessionId?{strata_cache_session:createHash('sha256').update(String(sessionId)).digest('hex')}:{}),strata_mcp:!webReferences&&useTools===true,...(thinkingBudget>0&&String(thinking).toLowerCase()!=='off'?{reasoning_budget_tokens:thinkingBudget}:{}),reasoning_effort:({off:'none',max:'high'}[String(thinking).toLowerCase()]??String(thinking).toLowerCase())},systemPrompt:getEffectiveSystemPrompt(applied),signal:signal?AbortSignal.any([signal,cancel.signal]):cancel.signal,onFrame:frame=>onFrame({...frame,requestId:entry.id,model:instance.label,contextMax:instance.metrics?.engine?.max_context??instance.context,skills:applied.map(s=>s.name)})});serving.mark(entry.id,{...result,usageSource:result.usageSource});serving.finish(entry.id,{tokensOut:result.tokensOut,durationMs:Date.now()-started});return result;}catch(e){serving.finish(entry.id,{durationMs:Date.now()-started,error:e.message});onFrame({type:'error',message:e.message,requestId:entry.id});return {error:e.message};}
+    try{serving.mark(entry.id,{state:'generating'});const applied=selectSkills(skillState,message,workspaceId);const result=await proxyCompletion({baseUrl:`http://127.0.0.1:${instance.port}/v1`,modelId:instance.apiModelId,servingPolicy:instance.servingPolicy,authorization:instance.key,message,history:referenceHistory(history,webReferences),images,extra:{...(sessionId?{strata_cache_session:createHash('sha256').update(String(sessionId)).digest('hex')}:{}),strata_mcp:!webReferences&&useTools===true,...(thinkingBudget>0&&String(thinking).toLowerCase()!=='off'?{reasoning_budget_tokens:thinkingBudget}:{}),reasoning_effort:({off:'none',max:'high'}[String(thinking).toLowerCase()]??String(thinking).toLowerCase())},systemPrompt:getEffectiveSystemPrompt(applied),signal:signal?AbortSignal.any([signal,cancel.signal]):cancel.signal,onFrame:frame=>onFrame({...frame,requestId:entry.id,model:instance.label,contextMax:instance.metrics?.engine?.max_context??instance.context,skills:applied.map(s=>s.name)})});serving.mark(entry.id,{...result,usageSource:result.usageSource});serving.finish(entry.id,{tokensOut:result.tokensOut,durationMs:Date.now()-started});return result;}catch(e){serving.finish(entry.id,{durationMs:Date.now()-started,error:e.message});onFrame({type:'error',message:e.message,requestId:entry.id});return {error:e.message};}
   }
   runtimeState();
   let instance;
