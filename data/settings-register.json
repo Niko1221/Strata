@@ -2466,7 +2466,7 @@
     },
     {
      "file": "serve/server.py",
-     "line": 4282
+     "line": 4360
     }
    ],
    "doc_mentions": [
@@ -2620,7 +2620,7 @@
    "launch_reads": [
     {
      "file": "strata_cli/cli.py",
-     "line": 770
+     "line": 782
     }
    ],
    "doc_mentions": [],
@@ -7427,7 +7427,7 @@
    "launch_sets": [
     {
      "file": "serve/server.py",
-     "line": 4983,
+     "line": 5061,
      "value": "str(Path(log).parent / \"ds4-slots\")"
     }
    ],
@@ -7468,7 +7468,7 @@
    "launch_sets": [
     {
      "file": "serve/server.py",
-     "line": 4980,
+     "line": 5058,
      "value": "DS41_SLOT_GB_DEFAULT"
     }
    ],
@@ -7515,7 +7515,7 @@
    "launch_sets": [
     {
      "file": "serve/server.py",
-     "line": 4979,
+     "line": 5057,
      "value": "DS41_SLOT_KEEP_DEFAULT"
     }
    ],
@@ -9482,6 +9482,36 @@
    "status": "research",
    "owner": "kernels/cpu",
    "note": "[auto] not documented for users; code default not readable from the call",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_FP8_PREFILL",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "src/qwen38/prefill_gemm.cu",
+     "line": 177,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "README.md:27"
+   ],
+   "status": "",
+   "owner": "",
+   "note": "",
    "retire_after": "",
    "retired_in": ""
   },
@@ -20677,7 +20707,7 @@
     },
     {
      "file": "setup.py",
-     "line": 10523,
+     "line": 10527,
      "value": "\"1\" if stream else \"0\""
     }
    ],
@@ -28846,17 +28876,17 @@
     },
     {
      "file": "strata_cli/launch/screens.py",
-     "line": 1415,
+     "line": 1440,
      "value": "1"
     },
     {
      "file": "strata_cli/launch/settings.py",
-     "line": 273,
+     "line": 274,
      "value": "1"
     },
     {
      "file": "strata_cli/launch/settings.py",
-     "line": 283,
+     "line": 284,
      "value": "1."
     }
    ],
@@ -34049,7 +34079,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/HAKUA_RELEASE.md:597",
+    "docs/HAKUA_RELEASE.md:607",
     "docs/Q36_BOUNDED_EXPERTS.md:29"
    ],
    "status": "unsure",
@@ -34117,7 +34147,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/HAKUA_RELEASE.md:713"
+    "docs/HAKUA_RELEASE.md:723"
    ],
    "status": "unsure",
    "owner": "Hakua fork",
@@ -34354,8 +34384,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/HAKUA_INSTALL.md:196",
-    "docs/HAKUA_RELEASE.md:507",
+    "docs/HAKUA_INSTALL.md:202",
+    "docs/HAKUA_RELEASE.md:517",
     "docs/Q36_BOUNDED_EXPERTS.md:27"
    ],
    "status": "unsure",
@@ -34495,7 +34525,7 @@
     },
     {
      "file": "serve/server.py",
-     "line": 5022,
+     "line": 5100,
      "value": "None"
     }
    ],
@@ -34562,8 +34592,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/HAKUA_INSTALL.md:197",
-    "docs/HAKUA_RELEASE.md:508",
+    "docs/HAKUA_INSTALL.md:203",
+    "docs/HAKUA_RELEASE.md:518",
     "docs/Q36_BOUNDED_EXPERTS.md:28"
    ],
    "status": "unsure",
@@ -34662,7 +34692,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/HAKUA_RELEASE.md:219"
+    "docs/HAKUA_RELEASE.md:229"
    ],
    "status": "unsure",
    "owner": "Hakua fork",
@@ -38530,19 +38560,19 @@
     },
     {
      "file": "serve/server.py",
-     "line": 5078,
+     "line": 5156,
      "value": "1"
     },
     {
      "file": "serve/server.py",
-     "line": 5086,
+     "line": 5164,
      "value": "1"
     }
    ],
    "launch_reads": [
     {
      "file": "serve/server.py",
-     "line": 5081
+     "line": 5159
     }
    ],
    "doc_mentions": [

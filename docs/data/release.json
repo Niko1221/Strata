@@ -1,15 +1,15 @@
 {
   "_about": "Current Hakua Windows fork source release. Upstream references and immutable historical installers are declared independently; the checker never rewrites their URLs.",
-  "tag": "v0.6.0",
-  "product_version": "0.6.0",
+  "tag": "v0.6.1",
+  "product_version": "0.6.1",
   "control_version": "0.6.0",
   "engine_version": "0.6.0",
   "installer_names": [
     "Strata-{v}-windows-x64-setup.exe"
   ],
   "assets": [
-    "Strata-0.6.0-windows-x64-setup.exe",
-    "Strata-0.6.0-windows-x64.tar.7z"
+    "Strata-0.6.1-windows-x64-setup.exe",
+    "Strata-0.6.1-windows-x64.tar.7z"
   ],
   "upstream": {
     "_about": "The release the current docs describe. tools/release_manifest.py --write puts these values into the version lines and installer file names of the current pages; --check fails when a page or a version source disagrees. Historical pages (release notes, measurements, history/) keep their own versions.",
@@ -100,6 +100,13 @@
       "product_version": "0.5.9",
       "assets": [
         "Strata-0.5.9-windows-x64-setup.exe"
+      ]
+    },
+    {
+      "tag": "v0.6.0",
+      "product_version": "0.6.0",
+      "assets": [
+        "Strata-0.6.0-windows-x64-setup.exe"
       ]
     }
   ],
