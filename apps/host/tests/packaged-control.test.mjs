@@ -90,7 +90,7 @@ test('runCli passes the arguments untouched (no shell) and reads JSON', async ()
 
 // ---------------------------------------------------------------------------------- native-control in packaged mode
 
-function packagedFixture({ engineUsable = true, updater = null, repair = false, ids = ['iq2_xs', 'iq3_s'], controlVersion = '0.1.45', extraSizes = [], cliStartWait = 'old' } = {}) {
+function packagedFixture({ engineUsable = true, updater = null, repair = false, ids = ['iq2_xs', 'iq3_s'], controlVersion = '0.1.45', extraSizes = [], cliStartWait = 'old', installPoll = null } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'strata-packaged-test-'));
   const install = join(root, 'install'), data = join(root, 'data');
   mkdirSync(install, { recursive: true });
@@ -125,7 +125,7 @@ function packagedFixture({ engineUsable = true, updater = null, repair = false, 
   let statusAnswer = { state: 'ready' }, metricsDown = false, healthDown = false;
   const control = {
     control: { dir: join(root, 'control'), python: join(root, 'control', 'python', 'python.exe') }, version: controlVersion,
-    async installedModels(options) { calls.push(['installedModels', options?.installDir ?? null]); return { install_dir: install, models: configs.map(c => ({ id: c.id, name: `Qwen ${c.id}`, source_config: c.path, component_status: 'present', context_tokens: 32768, backend: 'cuda' })) }; },
+    async installedModels(options) { calls.push(['installedModels', options?.installDir ?? null]); return { install_dir: install, models: configs.map(c => ({ id: c.id, name: `Qwen ${c.id}`, source_config: c.path, component_status: 'present', context_tokens: 32768, backend: 'cuda', ...(/^deepseek/.test(c.id) ? { component_status: 'retired', retired: 'deepseek', name: 'DeepSeek-V4.1-Flash ISTA-DAS 2.00 bpw', retired_line: 'DeepSeek - no longer supported.', refusal: 'DeepSeek-V4.1-Flash ISTA-DAS 2.00 bpw is a DeepSeek model. This version of Strata no longer runs DeepSeek models, so it was not started. Choose a Qwen model to run instead. If you no longer need the DeepSeek files, you can delete that folder to free the space.' } : {}) })) }; },
     async engine() {
       calls.push(['engine']);
       return engineUsable
@@ -170,7 +170,7 @@ function packagedFixture({ engineUsable = true, updater = null, repair = false, 
       else if (message.params.name === 'strata_remove') result = { structuredContent: { summary: 'Deleted', plan: { gb: 1.2 }, failed: [] } };
       else if (message.params.name === 'strata_status') result = { structuredContent: { hardware, recommendation: catalog.recommendation, install: installJob, running: [], summary: 'x' } };
       else if (message.params.arguments?.confirm) { installJob = { running: false, exit_code: 0 }; result = { structuredContent: { summary: 'Install started', plan: { download_gb: 66.4 }, install: { running: true, step: 'downloading' } } }; }
-      else if (message.params.arguments?.cancel === undefined && message.params.arguments?.confirm === undefined) result = { structuredContent: { summary: 'Install finished', install: { running: false, exit_code: 0 } } };
+      else if (message.params.arguments?.cancel === undefined && message.params.arguments?.confirm === undefined) result = { structuredContent: installPoll ?? { summary: 'Install finished', install: { running: false, exit_code: 0 } } };
       else result = { structuredContent: { summary: 'Plan', plan: { title: 'Qwen3.8-Flash-Next Q2_0', download_gb: 66.4, disk_short: null } } };
       queueMicrotask(() => child.stdout.emit('data', Buffer.from(JSON.stringify({ jsonrpc: '2.0', id: message.id, result }) + String.fromCharCode(10))));
     } };
@@ -229,57 +229,24 @@ test('packaged: load = saved profile + runtime start under Control; unload = run
   } finally { await f.native.close(); f.cleanup(); }
 });
 
-test('packaged: a model id with dots (DeepSeek) is listed, loaded from its run config, and unloaded', async () => {
+test('packaged: a DeepSeek model of an earlier Strata (an id with dots) is listed with its one line; its load is refused with Control\'s words and starts nothing', async () => {
   const id = 'deepseek-v4.1-flash-ist-das-2.00bpw';
   const f = packagedFixture({ ids: [id] });
   try {
-    writeFileSync(join(f.install, `strata-${id}.json`), JSON.stringify({ exe: join(f.install, 'engine-dsv41', 'strata-dsv41'), arch: 'deepseek41', tokenizer: join(f.install, 'tok'), args: ['--pack', join(f.install, 'pack'), '--max-context', '8192', '--eos', '1'], model_name: 'deepseek-v4.1-flash', port: 8080, engine_ready_s: 3600 }));
+    const path = join(f.install, `strata-${id}.json`);
+    writeFileSync(path, JSON.stringify({ exe: join(f.install, 'engine-dsv41', 'strata-dsv41'), arch: 'deepseek41', tokenizer: join(f.install, 'tok'), args: ['--pack', join(f.install, 'pack'), '--max-context', '8192', '--eos', '1'], model_name: 'deepseek-v4.1-flash', port: 8080, engine_ready_s: 3600 }));
+    const before = readFileSync(path, 'utf8');
     const state = await f.native.refresh(true);
-    assert.deepEqual(state.installed.models.map(m => m.model), [id], 'listed (the install finished but the app used to show nothing)');
-    assert.equal(state.installed.models[0].ready, true);
+    assert.deepEqual(state.installed.models.map(m => m.model), [id], 'listed');
+    assert.equal(state.installed.models[0].ready, false);
+    assert.equal(state.installed.models[0].retired.line, 'DeepSeek - no longer supported.');
     const job = await finish(f.native, f.native.operation('load', { model: id }).id);
-    assert.equal(job.state, 'done', job.error);                    // used to end with "The model configuration is outside the Strata installation."
-    assert.deepEqual(f.calls.filter(c => ['saveProfile', 'start'].includes(c[0])).map(c => c.slice(0, 2)), [['saveProfile', 'app-1'], ['start', 'app-1']]);
-    const flags = f.saved[0].args.filter(a => a.startsWith('--'));
-    assert.deepEqual(flags, ['--pack', '--max-context', '--eos'], 'The own engine of DeepSeek gets none of the Flash-Next options (it ended with "unknown option --batch")');
-    assert.equal(f.calls.find(c => c[0] === 'start')[2], 600, 'it waits longer than the usual 300 s, up to the 600 s Control allows');
-    const instance = f.native.state().instances[0];
-    assert.equal(instance.model, id);
-    assert.equal(instance.status, 'ready');
-    await f.native.unload(instance.id);
-    assert.deepEqual(f.calls.filter(c => c[0] === 'stop').at(-1), ['stop', 'app-1']);
-    assert.equal(f.native.state().instances.length, 0);
+    assert.equal(job.state, 'error');
+    assert.match(String(job.error), /^DeepSeek-V4\.1-Flash ISTA-DAS 2\.00 bpw is a DeepSeek model\. This version of Strata no longer runs DeepSeek models, so it was not started\./);
+    assert.deepEqual(f.calls.filter(c => ['saveProfile', 'start'].includes(c[0])), [], 'nothing is saved or started');
+    assert.equal(readFileSync(path, 'utf8'), before, 'its settings file is not written');
     for (const odd of ['a..b', '../x', 'x/y', '.hidden']) assert.equal((await finish(f.native, f.native.operation('load', { model: odd }).id)).state, 'error', odd);
   } finally { await f.native.close(); f.cleanup(); }
-});
-
-test('packaged: the Speed choice of DeepSeek passes --experts 5 or 6 only when chosen and only for an engine that knows it (0.1.50 or newer)', async () => {
-  const id = 'deepseek-v4.1-flash-ist-das-2.00bpw';
-  const run = async (values, extraArgs = [], engine = '0.1.50-windows-x86_64-cuda-cuda13') => {
-    const f = packagedFixture({ ids: [id] });
-    try {
-      writeFileSync(join(f.install, `strata-${id}.json`), JSON.stringify({ exe: join(f.install, 'engine-dsv41', engine, 'strata-dsv41'), arch: 'deepseek41', tokenizer: join(f.install, 'tok'), args: ['--pack', join(f.install, 'pack'), '--max-context', '8192', ...extraArgs], model_name: 'deepseek-v4.1-flash', port: 8080 }));
-      await f.native.refresh(true);
-      const capability = f.native.settings(id).capabilities.dsExperts;
-      const job = await finish(f.native, f.native.operation('load', { model: id, ...(values ? { values } : {}) }).id);
-      assert.equal(job.state, 'done', job.error);
-      return { cfg: f.saved[0], capability };
-    } finally { await f.native.close(); f.cleanup(); }
-  };
-  const flag = cfg => { const i = cfg.args.indexOf('--experts'); return i < 0 ? null : cfg.args[i + 1]; };
-  const none = await run(null);
-  assert.equal(flag(none.cfg), null, 'nothing chosen: the engine decides (--experts auto)');
-  assert.equal(none.capability, true);
-  assert.equal(flag((await run({ ds_experts: '5' })).cfg), '5');
-  assert.equal(flag((await run({ ds_experts: '6' }, ['--experts', '5'])).cfg), '6', 'the choice replaces an older flag');
-  assert.equal(flag((await run({ ds_experts: null }, ['--experts', '5'])).cfg), null, 'Default clears an older flag');
-  assert.equal('ds_experts' in (await run({ ds_experts: '5' })).cfg, false, 'the app-only key is not handed to the engine');
-  assert.equal(flag((await run({ ds_experts: '5' }, [], '0.1.60-windows-x86_64-cuda-cuda13')).cfg), '5', 'a newer engine knows it');
-  for (const old of ['0.1.49.2-windows-x86_64-cuda-cuda13', '0.1.49-linux-x86_64-cuda-cuda13']) {
-    const r = await run({ ds_experts: '5' }, [], old);
-    assert.equal(r.capability, false, `${old}: the choice is hidden`);
-    assert.equal(flag(r.cfg), null, `${old}: nothing is passed (it would end the start with "unknown option --experts")`);
-  }
 });
 
 test('packaged: no engine for this PC is the notice, and nothing is started', async () => {
@@ -581,6 +548,80 @@ test('packaged: the install job also fetches the engine through Control (merge o
   } finally { await g.native.close(); g.cleanup(); }
 });
 
+test('packaged: a model install that fails does not cancel the engine download it started (DL99: a retry would fail the same way again)', async () => {
+  const report = { engine: { status: 'install', offered: { version: '0.1.46' }, download_bytes: 5e8 } };
+  const seen = { finished: false, aborted: null };
+  const f = packagedFixture({ engineUsable: false,
+    installPoll: { summary: 'failed', install: { running: false, exit_code: 1, error: 'this engine (99.0.0) does not run Qwen3.6-35B-A3B yet - update Strata' } },
+    updater: { report, async update(options) {
+      options.onEvent({ event: 'progress', phase: 'download', percent: 40, done: 2e8, total: 5e8 });
+      await new Promise(r => setTimeout(r, 2500));          // longer than the install job's first poll (1.5 s), which reads the failure
+      seen.aborted = options.signal?.aborted === true; seen.finished = true;
+      return { ok: true, results: [{ component: 'engine', status: 'updated', installed_after: { version: '0.1.46' } }] };
+    } } });
+  try {
+    await f.native.refresh(true);
+    const job = await finish(f.native, f.native.operation('install', { family: 'qwen', model: 'Q2_0' }).id);
+    assert.equal(job.state, 'error');
+    assert.match(job.error, /does not run Qwen3\.6-35B-A3B yet/);
+    assert.equal(seen.finished, true, 'the engine download ran to its end before the job ended');
+    assert.equal(seen.aborted, false, 'the engine download was not cancelled');
+    assert.equal(job.result.install.engine.state, 'done');
+  } finally { await f.native.close(); f.cleanup(); }
+});
+
+test('packaged: with no engine on the PC yet, the engine is installed before setup starts (setup takes the picture reader from it; Qwen3.6 came up text-only)', async () => {
+  const report = { engine: { status: 'install', offered: { version: '0.1.60' }, download_bytes: 7e8 } };
+  const seen = { installsWhenEngineDone: null };
+  let f;
+  f = packagedFixture({ engineUsable: false, updater: { report, async update(options) {
+    options.onEvent({ event: 'progress', phase: 'download', percent: 50, done: 3.5e8, total: 7e8 });
+    await new Promise(r => setTimeout(r, 300));
+    seen.installsWhenEngineDone = f.rpc.filter(c => c.name === 'strata_install' && c.arguments.confirm).length;
+    return { ok: true, results: [{ component: 'engine', status: 'updated', installed_after: { version: '0.1.60' } }] };
+  } } });
+  try {
+    await f.native.refresh(true);
+    const job = await finish(f.native, f.native.operation('install', { family: 'qwen', model: 'Q2_0' }).id);
+    assert.equal(job.state, 'done', job.error);
+    assert.equal(seen.installsWhenEngineDone, 0, 'setup was not started before the engine was in');
+    assert.equal(f.rpc.filter(c => c.name === 'strata_install' && c.arguments.confirm).length, 1);
+    assert.deepEqual(f.calls.filter(c => c[0] === 'update'), [['update', true, false]], 'the engine is fetched once');
+    assert.equal(job.result.install.engine.state, 'done');
+  } finally { await f.native.close(); f.cleanup(); }
+  // an engine that is there already: setup starts at once and the engine step runs beside it, as before
+  const g = packagedFixture({ engineUsable: true, updater: { report: { engine: { status: 'current', installed: { version: '0.1.60' } } }, async update() { throw new Error('not called'); } } });
+  try {
+    await g.native.refresh(true);
+    const job = await finish(g.native, g.native.operation('install', { family: 'qwen', model: 'Q2_0' }).id);
+    assert.equal(job.state, 'done', job.error);
+    assert.equal(g.calls.filter(c => c[0] === 'update').length, 0, 'a current engine is not fetched');
+  } finally { await g.native.close(); g.cleanup(); }
+});
+
+test('packaged: Stop still cancels the engine download of an install', async () => {
+  const report = { engine: { status: 'install', offered: { version: '0.1.46' }, download_bytes: 5e8 } };
+  const seen = { aborted: null };
+  const f = packagedFixture({ engineUsable: false,
+    installPoll: { summary: 'running', install: { running: true, step: '5/7: downloading' } },
+    updater: { report, async update(options) {
+      await new Promise(resolve => { if (options.signal?.aborted) resolve(); else options.signal?.addEventListener('abort', resolve, { once: true }); });
+      seen.aborted = true;
+      throw new Error('stopped');
+    } } });
+  try {
+    await f.native.refresh(true);
+    const id = f.native.operation('install', { family: 'qwen', model: 'Q2_0' }).id;
+    await new Promise(r => setTimeout(r, 300));
+    await f.native.cancel(id);
+    const job = await finish(f.native, id);
+    assert.equal(job.state, 'cancelled');
+    for (let i = 0; i < 100 && seen.aborted === null; i++) await new Promise(r => setTimeout(r, 10));
+    assert.equal(seen.aborted, true);
+    await new Promise(r => setTimeout(r, 2000));             // the install loop's 1.5 s wait ends and it returns before the folder goes
+  } finally { await f.native.close(); f.cleanup(); }
+});
+
 test('packaged: the app default of several requests at once and the memory retry share ONE second try, never two', async () => {
   const f = packagedFixture(); f.hardware.gpus[0].vram_gb = 48;
   try {
@@ -722,11 +763,11 @@ test('packaged: a big model is waited for by its size, inside the ceiling of the
 });
 
 test('packaged: a run config that names a longer engine wait is honoured, and never shortened by the app', async () => {
-  const f = packagedFixture({ ids: ['deepseek-v4.1-flash-ist-das-2.00bpw'], cliStartWait: 'runtime' });
+  const f = packagedFixture({ ids: ['qwen3.6-35b-a3b-ud-q4_k_xl'], cliStartWait: 'runtime' });
   try {
-    writeFileSync(join(f.install, 'strata-deepseek-v4.1-flash-ist-das-2.00bpw.json'), JSON.stringify({ exe: join(f.install, 'engine-dsv41', 'strata-dsv41'), arch: 'deepseek41', tokenizer: join(f.install, 'tok'), args: ['--pack', join(f.install, 'pack')], model_name: 'deepseek-v4.1-flash', port: 8080, engine_ready_s: 3600 }));
+    writeFileSync(join(f.install, 'strata-qwen3.6-35b-a3b-ud-q4_k_xl.json'), JSON.stringify({ exe: 'component:strata-engine', tokenizer: join(f.install, 'tok'), args: ['--max-context', '32768'], model_name: 'Qwen qwen3.6-35b-a3b-ud-q4_k_xl', port: 8080, engine_ready_s: 3600 }));
     await f.native.refresh(true);
-    const job = await finish(f.native, f.native.operation('load', { model: 'deepseek-v4.1-flash-ist-das-2.00bpw' }).id);
+    const job = await finish(f.native, f.native.operation('load', { model: 'qwen3.6-35b-a3b-ud-q4_k_xl' }).id);
     assert.equal(job.state, 'done', job.error);
     assert.equal(f.calls.find(c => c[0] === 'start')[2], 1800, 'the wait of the newest Control, which is what the ceiling allows');
     assert.equal(f.saved[0].engine_ready_s, 3600, 'setup’s own longer wait stays as it is');
