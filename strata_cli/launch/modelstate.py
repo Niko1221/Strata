@@ -82,20 +82,22 @@ class ModelState:
 HELPER_FAMILIES = ("qwen", "swift", "coder", "unsloth", "gyro")
 
 
-def resolved_drafting(drafting: str | None, family: str | None) -> str:
+def resolved_drafting(drafting: str | None, family: str | None, *, model_name: str | None = None, args: list | None = None,
+                      vram_mib: float | None = None) -> str:
     """The drafter a choice means for this family on this computer: ``dflash2`` | ``mtp`` | ``off`` (strata_control/drafting.py: Auto is DFlash2 where the engine
-    has it). Never raises; an unknown computer is the MTP."""
+    has it). ``model_name`` / ``args`` / ``vram_mib``: the model's set and the card signals the start's decision reads (runner.auto_signals; the 12 GB card with
+    IQ3_S is the MTP). Never raises; an unknown computer is the MTP."""
     try:
         from strata_control import drafting as _d
         backend, archs = _d.detect_hardware()
-        return _d.choice_of(drafting, family=family, backend=backend, archs=archs)
+        return _d.choice_of(drafting, family=family, backend=backend, archs=archs, model_name=model_name, args=args, vram_mib=vram_mib)
     except Exception:                                        # noqa: BLE001
         return "mtp"
 
 
 def drafting_for_family(choice: str | None, family: str | None) -> str | None:
-    """The Drafting choice to keep when the model changes to `family`: DFlash2/MTP/Off belong to Qwen3.8-Flash-Next (qwen, gyro, unsloth); any other model (DeepSeek, which has its
-    own DSpark and no MTP or DFlash2; Coder; Swift; NVFP4) goes back to Auto (None), so a choice made for one model never rides along to another. An unknown family keeps it."""
+    """The Drafting choice to keep when the model changes to `family`: DFlash2/MTP/Off belong to Qwen3.8-Flash-Next (qwen, gyro, unsloth); any other model (Coder;
+    Swift; NVFP4) goes back to Auto (None), so a choice made for one model never rides along to another. An unknown family keeps it."""
     from strata_control import drafting as _d
     return choice if (not family or family in _d.SUPPORTED_FAMILIES) else None
 
@@ -108,6 +110,12 @@ def drafting_to_save(key: str, saved: object) -> str | None:
         return key
     from strata_control import drafting as _d
     return "auto" if saved is not None and _d.normalize(saved) != "auto" else None
+
+
+def layer_off_without_choice(base: dict | None) -> bool:
+    """The model's installed config has its draft layer off ("mtp": false: setup's --mtp off from a Drafting Off launch, or the app's Draft layer switch) and holds
+    no Drafting choice: the engine starts without a drafter, so the Drafting step shows Off; a drafter picked there is saved (runner.layer_back)."""
+    return isinstance(base, dict) and base.get("drafting") is None and base.get("mtp") is False
 
 
 def mtp_choice(mtp: str | None, drafting: str | None = None) -> str | None:
@@ -141,10 +149,7 @@ def assess(catalog, family: str | None, model: str | None, *, vision: str = "off
     mtp = mtp_choice(mtp, drafting)
     row = next((r for r in (rows if rows is not None else catalog.rows()) if r.family == family and r.model == model), None) if (family and model) else None
     st.total_gb = float(row.download_gb) if row else 0.0
-    # DeepSeek reads pictures with its own engine's tower: nothing separate to fetch or to start (the tower's file is part of its setup)
-    multi = getattr(getattr(catalog, "strata", None), "multi_family", None)
-    own_tower = bool(family) and multi is not None and bool(multi(family))
-    wants_pictures = vision != "off" and (row is None or row.images) and not own_tower
+    wants_pictures = vision != "off" and (row is None or row.images)
     data = Path(data_dir) if data_dir else None
     if model_path:
         st.own_files = True
