@@ -770,3 +770,31 @@ On top of `GEN` / `GENI`:
 
 `tools/batch_test.py` drives the engine directly: the same prompts alone, then together, compared token by token,
 and the aggregate rate.
+
+## Adaptive slots (`--parallel-recycle`)
+
+`--serve`, one NVIDIA GPU, `--batch N` (2..8), no `--batch-mtp`/slot DFlash2/`--batch-groups`/`--kv-grow`/
+`--peer-device`. `--parallel-recycle` turns the feature on; the elastic cache it needs is implied:
+`--vram-elastic` on with 512 MiB segments (`--vram-segment-mib` changes them); a start where that cannot work
+(layer split, helper caches, HIP, segment < 64 MiB, no driver VMM) refuses the feature and says why.
+(`--expert-cache 0` is auto only with `--expert-profile`; without a profile it means no cache, and the feature
+is refused.)
+
+With it, `--batch N` is only a cap: the engine starts with **no batch slot session** (the VRAM the slots would take
+stays in the expert cache), grows the reserve on demand for a `BGEN` above it (one resize per burst, covering
+queued `BGEN`s and waiting `BCO` co-reads; a failed resize rolls back, a rollback that cannot rebuild the layout
+stops the engine), and recycles every session once the burst is over: it waits the **min grace** with no request in
+flight or queued, then frees them (a solo request needs none, so the whole VRAM returns to the expert cache).
+
+`STRATA_PARALLEL_RECYCLE_MAX` (default 600 s) is the upper bound of that idle window; `STRATA_PARALLEL_RECYCLE_MIN`
+(default 2 s) is the grace it starts at and the value a quiet reset returns to.  A batch request that follows a
+recycle within the maximum doubles the grace, once per recycle cycle, up to the maximum. The grace decays only
+when the engine stays idle for longer than twice the observed gap between batch requests: it then halves (floored
+at the minimum) on every further such stretch, so a burst cluster keeps its window while a real pause returns to
+the minimum quickly; `4*max` with no batch activity resets it straight to the minimum.  Setting the minimum equal to the maximum gives the fixed-window behaviour.
+
+A queued `BCO` whose slot was freed is dropped; its `BGEN` grows for it again. A slot that survives a resize keeps
+its sampling, penalties and `logit_bias`. A single request uses the solo path, so an idle engine has the cache and
+the speed of a static one-request start. The policy lives in the engine: no server or command change. `INFO` carries
+`parallel_recycle=1 recycle_max= recycle_min= recycle_grace_initial=` (with `batch_slots=` the cap and `slot_sessions=` the
+live count) when it is on; a start whose canary cannot carve two sessions falls back to a normal start.

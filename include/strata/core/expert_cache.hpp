@@ -135,6 +135,11 @@ public:
     /// A sized slot's arena bytes: the blob plus the guard, 256-byte aligned.
     static int64_t slot_stride(int64_t blob, int64_t guard = 0) { return (blob + guard + 255) / 256 * 256; }
     bool segmented() const { return !segs_.empty(); }
+    /// Whether this build, driver and GPU can back the cache with physical segments (`--vram-elastic`).  False on
+    /// HIP/Metal and where the driver offers no virtual memory management.  `--parallel-recycle` asks this
+    /// before it commits, because a start that cannot segment falls back to one block in `open` (a warning) and the
+    /// adaptive tier would then answer ERR to every BGEN.
+    static bool segmented_supported();
     int64_t segment_bytes() const { return seg_; }
     /// Bytes of the arena backed by VRAM now (a whole number of segments; the arena when not segmented).
     int64_t mapped_bytes() const;
@@ -158,6 +163,18 @@ public:
     /// full - **it never evicts**, because eviction policy is a measured question (`R4.1`'s LFU-decay vs LRU
     /// sweep) and a placeholder policy would set the hit rate that everything downstream is then sized against.
     int32_t admit(int64_t layer, int64_t expert);
+
+    /// #parallel-recycle: the slot `(layer, expert)` pointed at was unmapped by a shrink (`shrink` only moves
+    /// `slots()`), so the table must not keep naming it: a later `admit` would hand out a zero page.  The caller
+    /// forgets an entry when it evicts it, and marks it again after a grow/refill copied the expert back.
+    void forget_resident(int64_t layer, int64_t expert) {
+        if (layer < 0 || layer >= n_layers_ || expert < 0 || expert >= n_expert_) return;
+        residency_[(size_t) (layer * n_expert_ + expert)] = kNotResident;
+    }
+    void mark_resident(int64_t layer, int64_t expert, int32_t slot) {
+        if (layer < 0 || layer >= n_layers_ || expert < 0 || expert >= n_expert_) return;
+        residency_[(size_t) (layer * n_expert_ + expert)] = slot;
+    }
 
     /// Publish a same-layer replacement after its slot copy has completed.
     void replace(int64_t layer, int32_t old_expert, int32_t new_expert) {

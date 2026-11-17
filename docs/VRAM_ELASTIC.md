@@ -10,8 +10,11 @@ The measurements are in [DETAILS.md](DETAILS.md) (RTX 5070, Q2_0).
 The expert cache is normally one big `cudaMalloc`. With `"vram_elastic": true` in the config (engine flag
 `--vram-elastic`, segment size `"vram_segment_mib"`, default 512, at least 64) it is allocated in segments instead.
 `POST /v1/vram` then keeps a number of MiB of VRAM free for another program by unmapping the last segments, or maps
-them again when more is free. Nothing resizes on its own. Only the expert cache moves: the dense weights, the K/V, the
-MTP head, the CUDA context and the prompt buffers stay, so Strata never gives back "everything".
+them again when more is free. On its own the cache never resizes: only `POST /v1/vram` moves it, with one opt-in
+exception, `--parallel-recycle` (adaptive batch slots), which implies `--vram-elastic`, gives the slot sessions'
+VRAM back to the cache when it shrinks, and lets the cache yield VRAM to a `BGEN` grow. Only the expert cache moves:
+the dense weights, the K/V, the MTP head, the CUDA context and the prompt buffers stay, so Strata never gives back
+"everything".
 
 The engine switches the feature off at start, with one line in its log (`--vram-elastic is off: ...`), when it is not
 a `--serve` engine, with a layer split, with helper caches on other GPUs, with a segment below 64 MiB, and on HIP

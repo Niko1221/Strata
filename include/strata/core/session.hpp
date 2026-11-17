@@ -103,6 +103,14 @@ uint64_t session_init(const ModelGeometry& g, int64_t max_cells, int64_t k, void
 /// Before the memory `session_init` carved is freed: forgets what points into it from outside the session (the
 /// rope kernels' registered angle table, #280), so a later session never rotates by freed memory.
 void session_release(SessionState& s);
+/// Frees what `session_release` leaves behind and the session's own allocations: the QSA pinned staging,
+/// a streamed KV's pinned host copy, the `qsa_states` array, and `base` (the DEVICE arena `session_init`
+/// carved). The SessionState must not be used afterwards (`base` is freed and its pointers go with it).
+void session_free(const ModelGeometry& g, SessionState& s, void* base);
+/// #280: register this session's RoPE table for the kernels that read it (STRATA_ROPE_TABLE=1).  A batch slot's
+/// session registers its own table at init; freeing that slot clears the registry, so a resize puts the main
+/// session's table back instead of leaving the registry empty.
+void session_register_rope(const ModelGeometry& g, const SessionState& s);
 /// Zeroes every layer's state - the residual to `R_init`, everything else to zero, so a fresh sequence starts
 /// from the reference's own `zeros()`.
 void session_zero(SessionState& s, const ModelGeometry& g, const float* R_init, void* stream);
