@@ -210,6 +210,29 @@ fn handle(mut stream: TcpStream, app: &AppHandle, token: &str, progress: &Arc<Mu
             respond(&mut stream, "202 Accepted", &progress.lock().unwrap().json());
         }
         ("GET", "/app-update/status") => respond(&mut stream, "200 OK", &progress.lock().unwrap().json()),
+        #[cfg(windows)]
+        ("POST", p) if p.starts_with("/shell/folder?") => {
+            use tauri::Manager;
+            use tauri_plugin_dialog::DialogExt;
+            // Only one folder window at a time. This runs on a bridge worker, never the UI thread.
+            static PICKER: Mutex<()> = Mutex::new(());
+            let Ok(_guard) = PICKER.try_lock() else {
+                return respond(&mut stream, "409 Conflict", &serde_json::json!({ "error": "A folder window is already open." }));
+            };
+            let Some(window) = app.get_webview_window("main") else {
+                return respond(&mut stream, "503 Service Unavailable", &serde_json::json!({ "error": "The Strata window is not available." }));
+            };
+            let title = crate::shell::clean_text(&crate::shell::query_value(p, "title").unwrap_or_default(), 200);
+            let picked = app.dialog().file().set_parent(&window).set_title(title).blocking_pick_folder();
+            let value = match picked {
+                Some(path) => match path.into_path() {
+                    Ok(path) => serde_json::json!({ "path": path.to_string_lossy() }),
+                    Err(e) => return respond(&mut stream, "502 Bad Gateway", &serde_json::json!({ "error": e.to_string() })),
+                },
+                None => serde_json::json!({ "cancelled": true }),
+            };
+            respond(&mut stream, "200 OK", &value);
+        }
         // The host asks for a desktop notification (an approval is waiting): title and body are in the query, bounded and cleaned here.
         ("POST", p) if p.starts_with("/shell/notify") => {
             let title = crate::shell::clean_text(&crate::shell::query_value(p, "title").unwrap_or_default(), 120);
@@ -234,6 +257,13 @@ pub fn start(app: &AppHandle, token: String) -> Option<Bridge> {
     let secret = token.clone();
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten() {
+            // A folder window can stay open while notifications and update status still need the bridge.
+            #[cfg(windows)]
+            {
+                let (app, secret, progress) = (app.clone(), secret.clone(), progress.clone());
+                std::thread::spawn(move || handle(stream, &app, &secret, &progress));
+            }
+            #[cfg(not(windows))]
             handle(stream, &app, &secret, &progress);
         }
     });

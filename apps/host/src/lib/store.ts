@@ -748,7 +748,7 @@ export const CONTENT_FONT_RANGE = { min: CONTENT_FS_MIN, max: CONTENT_FS_MAX };
 
 /** Opens the system folder chooser. Returns null when it is dismissed. */
 export async function pickWorkspace(): Promise<string | null> {
-  const res = await postWithFolderFallback<{ path?: string; cancelled?: boolean }>('/api/workspaces/pick') as { path?: string };
+  const res = await postWithFolderFallback<{ path?: string; cancelled?: boolean }>('/api/workspaces/pick', true) as { path?: string };
   return res.path ?? null;
 }
 

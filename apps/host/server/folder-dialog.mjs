@@ -1,7 +1,7 @@
 /**
  * The host's native "choose a folder" dialog, one per platform:
  *   macOS    osascript (choose folder)            -- unchanged
- *   Windows  PowerShell FolderBrowserDialog (STA, topmost owner so it never opens behind the app)
+ *   Windows  native Tauri dialog in the desktop app; PowerShell only for a standalone host
  *   Linux    zenity, then kdialog, then the desktop portal (gdbus), all with the environment the AppImage was started from
  * Where no dialog works the caller gets { unavailable: true } and the app shows a plain message and a field for the path.
  */
@@ -79,7 +79,23 @@ export function watchedWindowsDialog(shell, args, { readyMs = 30_000, openMs = 2
  * `run` is injectable for tests: (command, args) => Promise<{ stdout }>.
  */
 export async function chooseFolder(prompt, options = {}) {
-  const { platform = process.platform, run = exec, portal = portalFolder, windowsDialog = options.run ? null : watchedWindowsDialog } = options;
+  const { platform = process.platform, run = exec, portal = portalFolder, windowsDialog = options.run ? null : watchedWindowsDialog,
+    env = process.env, fetcher = fetch } = options;
+  if (platform === 'win32' && env.STRATA_SHELL_BRIDGE && env.STRATA_SHELL_TOKEN) {
+    // The shell owns the native dialog. Never fall back to PowerShell when the desktop bridge fails (#3831).
+    try {
+      const response = await fetcher(`${env.STRATA_SHELL_BRIDGE}/shell/folder?${new URLSearchParams({ title: prompt })}`, {
+        method: 'POST', headers: { authorization: `Bearer ${env.STRATA_SHELL_TOKEN}` },
+      });
+      if (!response.ok) throw new Error(`exit ${response.status}`);
+      const picked = await response.json();
+      if (picked.cancelled === true) return { cancelled: true };
+      if (typeof picked.path !== 'string' || !picked.path.trim()) throw new Error('No folder path returned');
+      return { path: cleanChosenPath(picked.path) };
+    } catch {
+      return { unavailable: true, failed: true, reason: 'The folder window could not open. Type the folder path instead.' };
+    }
+  }
   if (platform === 'darwin') {
     try {
       const { stdout } = await run('osascript', ['-e', MAC_SCRIPT(prompt)]);

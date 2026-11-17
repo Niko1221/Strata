@@ -38,7 +38,7 @@ export function SkillsScreen() {
         const result = await postWithFolderFallback<{
             cancelled?: boolean;
             added?: string;
-        }>('/api/skills/add') as {
+        }>('/api/skills/add', true) as {
             cancelled?: boolean;
             added?: string;
         };
