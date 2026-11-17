@@ -89,7 +89,13 @@ inline void arm_device_lost_exit(const std::string& why, int seconds = -1) {
         std::lock_guard<std::mutex> g(st.m);
         if (st.why.empty()) st.why = why;
     }
-    st.at_ms.store(device_lost_now_ms() + (int64_t) s * 1000, std::memory_order_release);
+    const int64_t at = device_lost_now_ms() + (int64_t) s * 1000;
+    int64_t previous = st.at_ms.load(std::memory_order_relaxed);
+    // #5990: a second error may shorten the grace period, but must never postpone it.  `release_gpu_waits` can run
+    // again from the stall watchdog and from teardown, and a re-arming storm would otherwise keep the process alive
+    // for ever - the one thing this exists to prevent (found by mercant1982, PR #6137).
+    while ((previous == 0 || at < previous) &&
+           !st.at_ms.compare_exchange_weak(previous, at, std::memory_order_release, std::memory_order_relaxed)) {}
     device_lost_watchdog();
 }
 
