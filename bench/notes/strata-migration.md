@@ -104,9 +104,9 @@ benchmark result files in `~/git/llm-benchmark/results/` (named per experiment b
 
 ### 2.4 The four generations of the daily driver (all defined)
 
-┌──────────────────────┬───────────┬──────────────────────────────────────────────────────────────────────────────────┬──────────────────────────────────────────────────┐
+┌────────────────────────┬─────────────┬────────────────────────────────────────────────────────────────────────────────────┬────────────────────────────────────────────────────┐
 │ Name                   │ Date        │ What it actually is                                                                │ Where it lives                                     │
-├──────────────────────┼───────────┼──────────────────────────────────────────────────────────────────────────────────┼──────────────────────────────────────────────────┤
+├────────────────────────┼─────────────┼────────────────────────────────────────────────────────────────────────────────────┼────────────────────────────────────────────────────┤
 │ Generation 1           │ 2026-10-25  │ Strata 0.1.48.1 + the F-2 change (skip-widen). The reference build for all A/Bs    │ ~/engines/backup/strata-0.1.48.1-f2 (binary)       │
 │                        │             │ since.                                                                             │                                                    │
 │ Generation 2           │ 2026-11-03  │ Newer base: Strata 0.1.55 + F-2 (promoted 11-02 after a two-round A/B), plus two   │ ~/git/wt-0155, commit ff9d98b0; the env flags live │
@@ -115,7 +115,7 @@ benchmark result files in `~/git/llm-benchmark/results/` (named per experiment b
 │                        │             │ llama.cpp).                                                                        │ fork)                                              │
 │ Generation 4 (current) │ 2026-11-05  │ Strata 0.2.10 + F-2 (clean cherry-pick, commit 434dfe91) + the patched expert      │ ~/git/wt-stack, branch v620-stack-0210-f2-mmq (on  │
 │                        │             │ kernels.                                                                           │ the fork)                                          │
-└──────────────────────┴───────────┴──────────────────────────────────────────────────────────────────────────────────┴──────────────────────────────────────────────────┘
+└────────────────────────┴─────────────┴────────────────────────────────────────────────────────────────────────────────────┴────────────────────────────────────────────────────┘
 
 The patched-kernels part: 3 commits on the engine's exact llama.cpp pin (`3cf03257f`) — packed-FP16
 dot chains for the q8_0 and IQ2-family kernels, plus a helper (`56ccab041`). The engine builds them in
@@ -211,9 +211,9 @@ Numbers are med-of-3 tier results. Full detail: the matching entry in §6, or gi
 
 ### 4.1 Adopted — all of these are in the current daily setup
 
-┌──────────────────────────────────┬──────────────────┬────────────────────────────────────────────────────┬────────────────────────────────────────────────────────────┐
+┌────────────────────────────────────┬────────────────────┬──────────────────────────────────────────────────────┬──────────────────────────────────────────────────────────────┐
 │ What                               │ When               │ Result                                               │ Where it lives now                                           │
-├──────────────────────────────────┼──────────────────┼────────────────────────────────────────────────────┼────────────────────────────────────────────────────────────┤
+├────────────────────────────────────┼────────────────────┼──────────────────────────────────────────────────────┼──────────────────────────────────────────────────────────────┤
 │ ROCm tuning table (upstream PR     │ 10-14              │ Reading +1.2-2.7% on every tier, writing unchanged   │ env `STRATA_ROCBLAS_TUNING` (absolute path) + `lib_dirs:     │
 │ #1167)                             │                    │                                                      │ [/opt/rocm/lib]` in config                                   │
 │ SIMT1 scorer (upstream PR #1151)   │ 10-14              │ 64k +2.7%, 128k +8.6% reading speed (bigger than the │ env `STRATA_SELECT_SIMT=1`                                   │
@@ -234,13 +234,13 @@ Numbers are med-of-3 tier results. Full detail: the matching entry in §6, or gi
 │ Patched expert kernels (MMQ/VOP3P) │ 11-04              │ Reading +0.9-1.4% every tier, writing a wash         │ llama.cpp branch `v620-mmq-vop3p` on the fork                │
 │ Strata 0.2.10 base                 │ 11-05              │ Reading +0.4% vs generation 3 (8/8 interleaved       │ worktree `wt-stack`                                          │
 │                                    │                    │ pairs); +4.7% vs generation 1                        │                                                              │
-└──────────────────────────────────┴──────────────────┴────────────────────────────────────────────────────┴────────────────────────────────────────────────────────────┘
+└────────────────────────────────────┴────────────────────┴──────────────────────────────────────────────────────┴──────────────────────────────────────────────────────────────┘
 
 ### 4.2 Measured and rejected — do not re-test without new evidence
 
-┌──────────────────────────────────────────────┬────────────────────────┬──────────────────────────────────────────────────────────────────────────────────────────────────┐
+┌────────────────────────────────────────────────┬──────────────────────────┬────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │ What                                           │ Verdict (when)           │ Why, in one line                                                                                   │
-├──────────────────────────────────────────────┼────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────┤
+├────────────────────────────────────────────────┼──────────────────────────┼────────────────────────────────────────────────────────────────────────────────────────────────────┤
 │ SIMT2 scorer (`STRATA_SELECT_SIMT=2`)          │ retired 11-03            │ loses reading speed on every tier, -9.9% at 128k, the loss grows with context                      │
 │ rocBLAS self-tune on this card                 │ retired 10-14 / re-      │ 56/112 kernel shapes pick differently than the shipped table, but tier deltas +/-0.2% = noise      │
 │                                                │ checked 11-03            │                                                                                                    │
@@ -266,7 +266,7 @@ Numbers are med-of-3 tier results. Full detail: the matching entry in §6, or gi
 │ DFlash2 drafter                                │ not adopted 11-05        │ MTP wins the upstream head-to-heads; DFlash2 is a separate 1.2 GB draft model and Qwen-only        │
 │ INT8 compute conversions                       │ dead end 10-14 (ISA      │ on this chip INT8 runs at quarter rate = same as FP32; packed FP16 is the only 2x path             │
 │                                                │ survey)                  │                                                                                                    │
-└──────────────────────────────────────────────┴────────────────────────┴──────────────────────────────────────────────────────────────────────────────────────────────────┘
+└────────────────────────────────────────────────┴──────────────────────────┴────────────────────────────────────────────────────────────────────────────────────────────────────┘
 
 ---
 
@@ -285,9 +285,9 @@ flipped it off (`STRATA_PLE_BATCH=1`) and reading speed jumped 12–14% from tha
 pre-10-19 rows are not directly comparable to the later ones — the jump you see across that line is
 mostly the batch flip, not the other changes listed.
 
-┌──────┬────────────────────────────────────────────────────────────┬─────────────┬─────────────┬─────────────┬─────────────┐
+┌────────┬──────────────────────────────────────────────────────────────┬───────────────┬───────────────┬───────────────┬───────────────┐
 │ Date   │ What this row is, in words                                   │ 16K           │ 32K           │ 64K           │ 128K          │
-├──────┼────────────────────────────────────────────────────────────┼─────────────┼─────────────┼─────────────┼─────────────┤
+├────────┼──────────────────────────────────────────────────────────────┼───────────────┼───────────────┼───────────────┼───────────────┤
 │ 10-12  │ Ollama 0.34.2, Q4_K_M weights (the starting point)           │ 168.3/15.3    │ 171.3/14.8    │ 160.5/14.1    │ 140.4/11.4    │
 │ 10-13  │ Ollama 0.40.3, same weights                                  │ 188.4/16.2    │ 185.5/17.1    │ 172.6/15.9    │ 149.8/15.2    │
 │ 10-13  │ First Strata build (the upstream fork), same weights - 2-4x  │ 290.7/45.3    │ 288.8/47.4    │ 286.0/48.9    │ 280.3/46.4    │
@@ -308,16 +308,16 @@ mostly the batch flip, not the other changes listed.
 │ 11-04  │ Generation 3: same + patched expert kernels                  │ 956.8/92.6    │ 973.3/95.6    │ 973.5/92.9    │ 960.2/89.2    │
 │ 11-05  │ Generation 4 - current daily: Strata 0.2.10 + F-2 + patched  │ 966.2/90.4    │ 986.0/90.7    │ 982.3/94.0    │ 965.8/89.4    │
 │        │ kernels                                                      │               │               │               │               │
-└──────┴────────────────────────────────────────────────────────────┴─────────────┴─────────────┴─────────────┴─────────────┘
+└────────┴──────────────────────────────────────────────────────────────┴───────────────┴───────────────┴───────────────┴───────────────┘
 
 ### 5.3 The three quantizations compared (2026-11-06, same generation-4 binary, benchmark parking)
 
 On this GPU, writing speed tracks how many expert bytes each token touches — the 1-bit set wins
 monotonically. The 1-bit lane was the first time this box broke 1,000 reading and 100 writing.
 
-┌────────────────────────────────────────────┬─────────────┬─────────────┬─────────────┬─────────────┬──────────────────────────┐
+┌──────────────────────────────────────────────┬───────────────┬───────────────┬───────────────┬───────────────┬────────────────────────────┐
 │ Lane (disk size, bits/weight)                │ 16K           │ 32K           │ 64K           │ 128K          │ Status                     │
-├────────────────────────────────────────────┼─────────────┼─────────────┼─────────────┼─────────────┼──────────────────────────┤
+├──────────────────────────────────────────────┼───────────────┼───────────────┼───────────────┼───────────────┼────────────────────────────┤
 │ IQ3_S - the usual daily weights (78 GB, ~3.1 │ 966.2/90.4    │ 986.0/90.7    │ 982.3/94.0    │ 965.8/89.4    │ daily                      │
 │ bits/weight)                                 │               │               │               │               │                            │
 │ UD-IQ2_XS - Unsloth 2.5-bit (78 GB)          │ 979.7/96.0    │ 984.5/96.6    │ 980.6/94.3    │ 964.6/93.0    │ parked                     │
@@ -325,7 +325,7 @@ monotonically. The 1-bit lane was the first time this box broke 1,000 reading an
 │                                              │               │               │               │               │ fastest lane measured      │
 │ DeepSeek-V4.1-Flash 2.5-bit (deleted 11-06)  │ 209.4/19.2    │ 231.7/19.2    │ -             │ -             │ 64k+ context needs more    │
 │                                              │               │               │               │               │ VRAM than one card         │
-└────────────────────────────────────────────┴─────────────┴─────────────┴─────────────┴─────────────┴──────────────────────────┘
+└──────────────────────────────────────────────┴───────────────┴───────────────┴───────────────┴───────────────┴────────────────────────────┘
 
 Accuracy side (Unsloth's published ladder, not our measurement): the 1-bit set recovers ~79.7% of
 full-precision top-1 answers (KLD 0.315); the 2.5-bit set has **no** published number; 3-bit-class
