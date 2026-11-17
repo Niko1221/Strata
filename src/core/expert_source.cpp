@@ -982,8 +982,8 @@ bool file_tier_unbuffered(const std::vector<std::string>& paths, uint64_t arena_
 
 FileExpertSource::~FileExpertSource() {
 #if defined(_WIN32)
-    for (void* h : verify_handles_)
-        if (h != nullptr) CloseHandle((HANDLE) h);
+    // The per-thread verify handles close with their threads; nothing to close here on purpose
+    // (a destructor that touches many handles ran into an unrelated end-of-run crash once).
     if (verify_on_.load(std::memory_order_relaxed))
         std::fprintf(stderr, "strata nan879-verify: total blobs compared %llu, mismatches %llu, unstable channel reads %llu, mmap arbitrations %llu\n",
                      (unsigned long long) verify_blob_n_.load(), (unsigned long long) verify_bad_n_.load(),
@@ -1857,17 +1857,9 @@ void FileExpertSource::open_verify_handles() {
     const char* d = std::getenv("STRATA_BLOB_VERIFY_DELAY_SEC");
     if (d != nullptr && *d != '\0') verify_delay_ms_ = (int64_t) atoi(d) * 1000;
     verify_t0_ = std::chrono::steady_clock::now();
-    for (const std::string& p : paths_) {
-        const int wide = MultiByteToWideChar(CP_UTF8, 0, p.c_str(), -1, nullptr, 0);
-        std::vector<wchar_t> wpath((size_t) (wide > 0 ? wide : 1));
-        if (wide > 0) MultiByteToWideChar(CP_UTF8, 0, p.c_str(), -1, wpath.data(), wide);
-        HANDLE h = CreateFileW(wpath.data(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
-                               FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED, nullptr);
-        verify_handles_.push_back(h != INVALID_HANDLE_VALUE ? (void*) h : nullptr);
-    }
     std::fprintf(stderr,
-                 "strata nan879-verify: ON (STRATA_BLOB_VERIFY=1): %zu buffered handle(s); every read_direct blob is re-read and compared%s\n",
-                 verify_handles_.size(),
+                 "strata nan879-verify: ON (STRATA_BLOB_VERIFY=1): %zu shard file(s), per-thread synchronous handles; every read_direct blob is re-read and compared%s\n",
+                 paths_.size(),
                  verify_delay_ms_ > 0 ? "; verification holds off for the startup fill (STRATA_BLOB_VERIFY_DELAY_SEC)" : "");
 #endif
 }
@@ -1891,26 +1883,54 @@ void FileExpertSource::verify_blob(int64_t layer, int64_t expert, const uint8_t*
     for (int r = 0; r < 3; ++r) {
         const size_t i = (size_t) (3 * layer + r);
         const size_t fi = (size_t) role_file_[i];
-        if (fi >= verify_handles_.size() || verify_handles_[fi] == nullptr) return;   // not a mapped-GGUF pack
+        if (fi >= paths_.size()) return;   // not a mapped-GGUF pack
         const uint64_t per = role_bytes_[i];
         const uint64_t off = (uint64_t) (role_ptr_[i] - maps_[fi].base) + (uint64_t) expert * per;
         if (tmp.size() < (size_t) per) { tmp.resize((size_t) per); tmp2.resize((size_t) per); }
         std::memset(tmp.data(), 0, (size_t) per);
         std::memset(tmp2.data(), 0, (size_t) per);
-        HANDLE h = (HANDLE) verify_handles_[fi];
-        auto read_span = [h, off, per](std::vector<uint8_t>& buf) {
+        // One synchronous, thread-owned handle per shard file: no shared file pointer between the
+        // pool workers, no overlapped state, nothing another thread could move underneath us.
+        // The handles live for the thread's lifetime; the OS closes them at process exit.
+        thread_local std::vector<HANDLE> tls;
+        if (tls.size() < paths_.size()) tls.resize(paths_.size(), nullptr);
+        HANDLE h = tls[fi];
+        if (h == nullptr) {
+            const int wwide = MultiByteToWideChar(CP_UTF8, 0, paths_[fi].c_str(), -1, nullptr, 0);
+            std::vector<wchar_t> wpath((size_t) (wwide > 0 ? wwide : 1));
+            if (wwide > 0) MultiByteToWideChar(CP_UTF8, 0, paths_[fi].c_str(), -1, wpath.data(), wwide);
+            h = CreateFileW(wpath.data(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (h == INVALID_HANDLE_VALUE) h = nullptr;
+            tls[fi] = h;
+        }
+        if (h == nullptr) return;   // could not open this shard on this thread
+        const auto read_fail = [layer, expert, r, off, per](const char* what, DWORD err, DWORD got, DWORD want) {
+            std::fprintf(stderr,
+                         "strata nan879-verify: BUFFERED READ FAILED (%s, error %lu, got %lu of %lu) layer %lld expert %lld role %d off %llu per %llu\n",
+                         what, (unsigned long) err, (unsigned long) got, (unsigned long) want,
+                         (long long) layer, (long long) expert, r, (unsigned long long) off,
+                         (unsigned long long) per);
+        };
+        auto read_span = [h, off, per, layer, expert, r, &read_fail](std::vector<uint8_t>& buf) {
+            LARGE_INTEGER pos;
+            pos.QuadPart = (LONGLONG) off;
+            if (SetFilePointerEx(h, pos, nullptr, FILE_BEGIN) == 0) {
+                read_fail("seek", GetLastError(), 0, 0);
+                return false;
+            }
             uint64_t done = 0;
             while (done < per) {
                 const DWORD chunk = (DWORD) std::min<uint64_t>(per - done, 4ull << 20);
-                OVERLAPPED o{};
-                o.Offset = (DWORD) (off + done);
-                o.OffsetHigh = (DWORD) ((off + done) >> 32);
-                const BOOL r_ok = ReadFile(h, buf.data() + done, chunk, nullptr, &o);
                 DWORD got = 0;
-                if ((r_ok || GetLastError() == ERROR_IO_PENDING) && GetOverlappedResult(h, &o, &got, TRUE) && got == chunk)
-                    done += chunk;
-                else
+                if (!ReadFile(h, buf.data() + done, chunk, &got, nullptr)) {
+                    read_fail("read", GetLastError(), got, chunk);
                     return false;
+                }
+                if (got != chunk) {
+                    read_fail("short", 0, got, chunk);
+                    return false;
+                }
+                done += got;
             }
             return true;
         };

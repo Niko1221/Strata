@@ -1078,7 +1078,6 @@ private:
     void verify_blob(int64_t layer, int64_t expert, const uint8_t* dst) const;
     void open_verify_handles();
     std::atomic<bool> verify_on_{false};
-    std::vector<void*> verify_handles_;       ///< per file: a plain buffered overlapped handle
     mutable std::atomic<uint64_t> verify_blob_n_{0};
     mutable std::atomic<uint64_t> verify_bad_n_{0};
     mutable std::atomic<uint64_t> verify_bad_logged_{0};
