@@ -6,10 +6,10 @@ Local AI for Windows, with chat, agent work, research and a choice of compatible
 
 ## Version and downloads
 
-<!-- release-061-stable -->
-Current release: [0.6.1](https://github.com/zapabob/Strata/releases/tag/v0.6.1) (App `0.6.1`, Native Q38 `0.6.1` SM120, Control `0.6.0`). `releaseQualified=false` remains explicit; full-window inference and general model quality remain unqualified.
+<!-- release-062-stable -->
+Current release: [0.6.2](https://github.com/zapabob/Strata/releases/tag/v0.6.2) (App `0.6.2`, Native Q38 `0.6.2` CUDA 13.5 SM120, Control `0.6.2`). `releaseQualified=false` remains explicit; full-window inference and general model quality remain unqualified.
 
-[0.6.1](https://github.com/zapabob/Strata/releases/tag/v0.6.1) · [Strata-0.6.1-windows-x64-setup.exe](https://github.com/zapabob/Strata/releases/download/v0.6.1/Strata-0.6.1-windows-x64-setup.exe) · [tar.7z](https://github.com/zapabob/Strata/releases/download/v0.6.1/Strata-0.6.1-windows-x64.tar.7z) · [SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.6.1/SHA256SUMS.txt)
+[0.6.2](https://github.com/zapabob/Strata/releases/tag/v0.6.2) · [Strata-0.6.2-windows-x64-setup.exe](https://github.com/zapabob/Strata/releases/download/v0.6.2/Strata-0.6.2-windows-x64-setup.exe) · [tar.7z](https://github.com/zapabob/Strata/releases/download/v0.6.2/Strata-0.6.2-windows-x64.tar.7z) · [SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.6.2/SHA256SUMS.txt)
 
 ![Hakua / Strata real-model Japanese chat on Qwen3.8-27B](docs/media/native-qwen38-japanese-chat.png)
 *Hakua / Strata desktop running `qwen3.8-27b-abliterated-3.69bpw-12GB-MTP.gguf` via `strata-q38.exe` (CUDA 13 / RTX 5060 Ti 16 GB).*
@@ -22,9 +22,12 @@ Finish requests, unload models, back up app data, then quit the app including it
 
 ## Features kept in this fork
 
-0.6.1 upgrades the [local Qwen3.8-27B-family dense GGUF runner (`strata-q38.exe`)](docs/QWEN38_DENSE_NATIVE.md) on Windows CUDA 13 / Blackwell (SM120):
+0.6.2 upgrades the [local Qwen3.8-27B-family dense GGUF runner (`strata-q38.exe`)](docs/QWEN38_DENSE_NATIVE.md) on Windows CUDA 13.5 / Blackwell (SM120):
 - **Per-tensor mixed-quantization polymorphism (`StrataQuantTensor`)**: supports 11 GGML/Strata types (`F32`, `F16`, `BF16`, `Q8_0`, `Q4_K`, `Q5_K`, `Q6_K`, `IQ3_S`, `IQ2_S`, `IQ4_XS`, and PrismML `PQ2_0=142`) on a per-tensor basis.
-- **Tensor Core batched prefill + `spin8_triality.cuh` batch KV (`KvCache::enqueue_batch`)**: replaces per-token prefill GEMV with ping-pong double-buffered `cublasGemmEx` (`prefill_gemm=cublas_tensor_op`, plus opt-in `STRATA_FP8_PREFILL=1`). In a 140-token prefill + 8-token decode benchmark (`--kv spin8_k8v4 --ctx-size 4096`) on RTX 5060 Ti SM120, prefill improved from `36,760.7 ms` (`3.81 tok/s`, `--conservative-sync`) to `11,387.4 ms` (`12.29 tok/s`, **3.23x** speedup).
+- **Tensor Core batched prefill + `spin8_triality.cuh` / fused Spin8 Attention + Multi-token GDN + CUDA Graph Decode (CUDA 13.5 SM120)**:
+  - `140`-token prefill (`--kv spin8_k8v4 --ctx-size 4096`): improved from `36,760.7 ms` (`3.81 tok/s`, `--conservative-sync`) to **`1,558.3 ms` (`89.8 tok/s` warm, 23.6x speedup)**.
+  - Steady-state decode (`GEN 32`, 31 steps, packed GEMV + 8-layer-fence CUDA Graph): improved from `206.4 ms/step` to **`85.13 ms/step` (`11.75 step/s`, 2.42x speedup)**.
+  - **Long-context real-device measurements (`--kv spin8_k8v4`, RTX 5060 Ti 16 GB)**: **65K (`65,536`)** passed (`1,024`-token prefill `10,813.5–11,220.7 ms`, `91.3–94.7 tok/s`; decode `670.4 ms` / 7 steps); **96K (`98,304`)** passed (`required_with_reserve=15.09 GB`, `140`-token prefill `1,968.7 ms`); **131K (`131,072`)** is guarded by the 768 MiB GPU reserve (`required=15.97 GB > available=15.91 GB`).
 - **Real MTP `K=3` draft/verify (`blk.64.nextn.*`)**: supports `--spec-draft-n-max 0..3` with `KvCache::rewind` and GDN state snapshot/restore.
 - **KV cache & Japanese profile**: supports `F16`, `Spin8 K8V4`, and `F16-K / Turbo2/3/4-V` cache modes (`auto` order: `f16` → `f16_turbo4` → `spin8_k8v4`), plus optional Japanese output profile (`model-default` disables constraints).
 

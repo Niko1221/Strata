@@ -6,10 +6,10 @@ Windows でローカル AI のチャット、エージェント作業、出典�
 
 ## バージョンと配布物
 
-<!-- release-061-stable -->
-最新リリース: [0.6.1](https://github.com/zapabob/Strata/releases/tag/v0.6.1)（アプリ `0.6.1`、ネイティブ Q38 `0.6.1` SM120、Control `0.6.0`）。最大長の推論や一般的なモデル品質は未認定のため、`releaseQualified=false` を明示しています。
+<!-- release-062-stable -->
+最新リリース: [0.6.2](https://github.com/zapabob/Strata/releases/tag/v0.6.2)（アプリ `0.6.2`、ネイティブ Q38 `0.6.2` SM120、Control `0.6.2`）。最大長の推論や一般的なモデル品質は未認定のため、`releaseQualified=false` を明示しています。
 
-[0.6.1](https://github.com/zapabob/Strata/releases/tag/v0.6.1) · [Strata-0.6.1-windows-x64-setup.exe](https://github.com/zapabob/Strata/releases/download/v0.6.1/Strata-0.6.1-windows-x64-setup.exe) · [tar.7z](https://github.com/zapabob/Strata/releases/download/v0.6.1/Strata-0.6.1-windows-x64.tar.7z) · [SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.6.1/SHA256SUMS.txt)
+[0.6.2](https://github.com/zapabob/Strata/releases/tag/v0.6.2) · [Strata-0.6.2-windows-x64-setup.exe](https://github.com/zapabob/Strata/releases/download/v0.6.2/Strata-0.6.2-windows-x64-setup.exe) · [tar.7z](https://github.com/zapabob/Strata/releases/download/v0.6.2/Strata-0.6.2-windows-x64.tar.7z) · [SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.6.2/SHA256SUMS.txt)
 
 ![Hakua / Strata real-model Japanese chat on Qwen3.8-27B](docs/media/native-qwen38-japanese-chat.png)
 *`strata-q38.exe` で `qwen3.8-27b-abliterated-3.69bpw-12GB-MTP.gguf` を実行している実環境スクリーンショット（CUDA 13 / RTX 5060 Ti 16 GB）。*
@@ -20,11 +20,14 @@ Windows でローカル AI のチャット、エージェント作業、出典�
 
 実行中の依頼を終え、モデルをアンロードし、アプリデータをバックアップしてから、トレイを含めてアプリを終了してください。既存の導入先へそのまま上書きインストールすると、モデル・会話・メモリー・ツール・API キー・承認設定を保持したまま更新できます。圧縮した CUDA コンポーネントはアプリの「手元のファイルを使う」操作から取り込み、対応モデルまたはローカル GGUF を選んで読み込んでください。モデル名だけではエンジン互換性を判断できません。詳しくは [導入と戻し方](docs/HAKUA_INSTALL.md) を参照してください。
 
-## 0.6.1 の主な特徴と独自機能
+## 0.6.2 の主な特徴と独自機能
 
-0.6.1 では Windows CUDA 13 / Blackwell（SM120）向けの [ローカル Qwen3.8-27B 系 Dense GGUF ランナー（`strata-q38.exe`）](docs/QWEN38_DENSE_NATIVE.md) を大幅に強化しました：
+0.6.2 では Windows CUDA 13 / Blackwell（SM120）向けの [ローカル Qwen3.8-27B 系 Dense GGUF ランナー（`strata-q38.exe`）](docs/QWEN38_DENSE_NATIVE.md) を大幅に強化しました：
 - **テンソル単位の混合量子化ポリモーフィズム（`StrataQuantTensor`）**: `F32`, `F16`, `BF16`, `Q8_0`, `Q4_K`, `Q5_K`, `Q6_K`, `IQ3_S`, `IQ2_S`, `IQ4_XS` に加え、PrismML `PQ2_0`（type 142）を含む全11種をテンソル単位で動的ディスパッチ。
-- **Tensor Core バッチ Prefill ＋ `spin8_triality.cuh` バッチ KV（`KvCache::enqueue_batch`）**: 従来の1トークンずつの Prefill GEMV を、ダブルバッファリング付き `cublasGemmEx`（`prefill_gemm=cublas_tensor_op`、オプトインで `STRATA_FP8_PREFILL=1`）に置き換えました。RTX 5060 Ti SM120 上の 140 トークン Prefill + 8 トークン Decode 計測（`--kv spin8_k8v4 --ctx-size 4096`）で、Prefill が `36,760.7 ms`（`3.81 tok/s`, `--conservative-sync`）から `11,387.4 ms`（`12.29 tok/s`, **3.23倍高速化**）へ短縮されました。
+- **Tensor Core バッチ Prefill ＋ マルチトークン GDN ＋ 融合 Spin8 Attention ＋ CUDA Graph Decode（CUDA 13.5 SM120）**:
+  - 140トークン Prefill（`--kv spin8_k8v4 --ctx-size 4096`）: `36,760.7 ms`（`3.81 tok/s`, `--conservative-sync`）→ **`1,558.3 ms`（ウォーム `89.8 tok/s`、23.6倍高速化）**。
+  - 定常 Decode（`GEN 32`、31 steps、パック単位 GEMV ＋ 8層フェンス CUDA Graph）: `206.4 ms/step` → **`85.13 ms/step`（`11.75 step/s`、2.42倍高速化）**。
+  - **長文脈実測（`--kv spin8_k8v4`, RTX 5060 Ti 16 GB）**: **65K (`65,536`)** 通過（1,024tok Prefill `10,813.5〜11,220.7 ms`, `91.3〜94.7 tok/s`、Decode `670.4 ms` / 7 steps）、**96K (`98,304`)** 通過（`required_with_reserve=15.09 GB`, 140tok Prefill `1,968.7 ms`）、**131K (`131,072`)** は 768 MiB GPU 予約保護によりガード拒否（`required=15.97 GB > available=15.91 GB`）。
 - **実 MTP `K=3` ドラフト検証ループ（`blk.64.nextn.*`）**: `--spec-draft-n-max 0..3`、`KvCache::rewind`、GDN 状態スナップショット／ロールバックに対応。
 - **KV キャッシュと日本語プロファイル**: `F16` / `Spin8 K8V4` / `F16-K・Turbo2/3/4-V`（`auto` 順: `f16` → `f16_turbo4` → `spin8_k8v4`）と、任意の日本語出力プロファイル（`model-default` で制約オフ）を選択可能。
 

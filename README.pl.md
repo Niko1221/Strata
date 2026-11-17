@@ -6,10 +6,10 @@ Lokalne AI dla systemu Windows z czatem, pracą agentów, wyszukiwaniem źróde�
 
 ## Wersja i pobieranie
 
-<!-- release-061-stable -->
-Aktualne wydanie: [0.6.1](https://github.com/zapabob/Strata/releases/tag/v0.6.1) (Aplikacja `0.6.1`, Native Q38 `0.6.1` SM120, Control `0.6.0`). Status `releaseQualified=false` pozostaje jawny; pełne okno kontekstu i ogólna jakość modeli nie są certyfikowane.
+<!-- release-062-stable -->
+Aktualne wydanie: [0.6.2](https://github.com/zapabob/Strata/releases/tag/v0.6.2) (Aplikacja `0.6.2`, Native Q38 `0.6.2` SM120, Control `0.6.2`). Status `releaseQualified=false` pozostaje jawny; pełne okno kontekstu i ogólna jakość modeli nie są certyfikowane.
 
-[0.6.1](https://github.com/zapabob/Strata/releases/tag/v0.6.1) · [Strata-0.6.1-windows-x64-setup.exe](https://github.com/zapabob/Strata/releases/download/v0.6.1/Strata-0.6.1-windows-x64-setup.exe) · [tar.7z](https://github.com/zapabob/Strata/releases/download/v0.6.1/Strata-0.6.1-windows-x64.tar.7z) · [SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.6.1/SHA256SUMS.txt)
+[0.6.2](https://github.com/zapabob/Strata/releases/tag/v0.6.2) · [Strata-0.6.2-windows-x64-setup.exe](https://github.com/zapabob/Strata/releases/download/v0.6.2/Strata-0.6.2-windows-x64-setup.exe) · [tar.7z](https://github.com/zapabob/Strata/releases/download/v0.6.2/Strata-0.6.2-windows-x64.tar.7z) · [SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.6.2/SHA256SUMS.txt)
 
 ![Hakua / Strata real-model Japanese chat on Qwen3.8-27B](docs/media/native-qwen38-japanese-chat.png)
 *Zainstalowana aplikacja Hakua / Strata uruchamiająca `qwen3.8-27b-abliterated-3.69bpw-12GB-MTP.gguf` przez `strata-q38.exe` (CUDA 13 / RTX 5060 Ti 16 GB).*
@@ -20,11 +20,14 @@ Użyj instalatora NSIS Windows x64 dla tego forka. Instaluje się na użytkownik
 
 Zakończ bieżące żądania, odładuj modele, wykonaj kopię zapasową danych i zamknij aplikację wraz z ikoną w zasobniku. Uruchom instalator w istniejącym folderze instalacji, aby nadpisać pliki z zachowaniem modeli, czatów, pamięci, narzędzi, kluczy i ustawień uprawnień. Zaimportuj skompresowany komponent CUDA przez opcję *Mam już plik*, wybierz zgodny model lub lokalny plik GGUF i załaduj go. Zobacz [instalacja i wycofanie zmian](docs/HAKUA_INSTALL.md).
 
-## Nowości w 0.6.1 i funkcje forka
+## Nowości w 0.6.2 i funkcje forka
 
-Wersja 0.6.1 rozbudowuje [lokalny runner GGUF dla rodziny Qwen3.8-27B (`strata-q38.exe`)](docs/QWEN38_DENSE_NATIVE.md) na Windows CUDA 13 / Blackwell (SM120):
+Wersja 0.6.2 rozbudowuje [lokalny runner GGUF dla rodziny Qwen3.8-27B (`strata-q38.exe`)](docs/QWEN38_DENSE_NATIVE.md) na Windows CUDA 13 / Blackwell (SM120):
 - **Polimorfizm kwantyzacji na poziomie tensora (`StrataQuantTensor`)**: obsługuje 11 typów GGML/Strata (`F32`, `F16`, `BF16`, `Q8_0`, `Q4_K`, `Q5_K`, `Q6_K`, `IQ3_S`, `IQ2_S`, `IQ4_XS` oraz PrismML `PQ2_0=142`) osobno dla każdego tensora.
-- **Wsadowy prefill Tensor Core + wsadowe KV `spin8_triality.cuh` (`KvCache::enqueue_batch`)**: zastępuje sekwencyjne GEMV podwójnie buforowanym `cublasGemmEx` (`prefill_gemm=cublas_tensor_op`, opcjonalnie `STRATA_FP8_PREFILL=1`). W teście 140 tokenów prefill + 8 tokenów dekodowania (`--kv spin8_k8v4 --ctx-size 4096`) na RTX 5060 Ti SM120 czas prefill spadł z `36 760,7 ms` (`3,81 tok/s`, `--conservative-sync`) do `11 387,4 ms` (`12,29 tok/s`, **przyspieszenie 3,23x**).
+- **Wsadowy prefill Tensor Core + wielotokenowy GDN + połączona uwaga Spin8 + dekodowanie CUDA Graph (CUDA 13.5 SM120)**:
+  - Prefill 140 tokenów (`--kv spin8_k8v4 --ctx-size 4096`): z `36 760,7 ms` (`3,81 tok/s`, `--conservative-sync`) do **`1 558,3 ms` (`89,8 tok/s` na ciepło, przyspieszenie 23,6x)**.
+  - Stabilne dekodowanie (`GEN 32`, 31 kroków, pakowane GEMV + CUDA Graph z barierą co 8 warstw): z `206,4 ms/krok` do **`85,13 ms/krok` (`11,75 kroków/s`, przyspieszenie 2,42x)**.
+  - **Pomiary długiego kontekstu (`--kv spin8_k8v4`, RTX 5060 Ti 16 GB)**: **65K (`65 536`)** zaliczone (prefill 1 024 tokenów `10 813,5–11 220,7 ms`, `91,3–94,7 tok/s`; dekodowanie `670,4 ms` / 7 kroków); **96K (`98 304`)** zaliczone (`required_with_reserve=15,09 GB`, prefill 140 tokenów `1 968,7 ms`); **131K (`131 072`)** zablokowane przez rezerwę 768 MiB GPU (`required=15,97 GB > available=15,91 GB`).
 - **Rzeczywista weryfikacja szkiców MTP `K=3` (`blk.64.nextn.*`)**: obsługuje `--spec-draft-n-max 0..3` z `KvCache::rewind` i przywracaniem stanu GDN.
 - **Pamięć podręczna KV i profil japoński**: tryby `F16`, `Spin8 K8V4` i `F16-K / Turbo2/3/4-V` (kolejność `auto`: `f16` → `f16_turbo4` → `spin8_k8v4`) oraz opcjonalny profil wyjścia japońskiego.
 
