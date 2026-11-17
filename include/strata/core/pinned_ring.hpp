@@ -13,6 +13,13 @@
 // STRATA_TEST_PAGEABLE=1) the copy is made from the caller's memory and the stream is waited for, so the source is
 // free on return all the same.  A ring belongs to ONE device (the one current when it is first used) and is used by one
 // thread at a time.
+//
+// Small uploads (up to kMinCap, 64 KiB) take their own deeper ring of fixed-size slots.  The prompt path sends one or
+// more small tables per expert group (the int8 group record is 224 bytes, the MMQ bounds a few hundred), and with only
+// the four slots each such upload waited on the copy four uploads back: the host could run at most four groups ahead
+// of the device, and in a layer-pipelined read that wait is GPU idle time.  The small slots never grow (a small upload
+// fits by definition), so the extra pinned memory is fixed at kSmallSlots x 64 KiB per ring; larger uploads (picture
+// rows, routing tables of a big chunk, pageable PLE rows) keep the four growing slots exactly as before.
 #pragma once
 
 #include <cuda_runtime.h>
@@ -26,7 +33,8 @@ namespace strata::core {
 
 class PinnedRing {
 public:
-    static constexpr int kSlots = 4;
+    static constexpr int kSlots = 4;          // slots for any size: each grows to the largest upload it carries
+    static constexpr int kSmallSlots = 60;    // fixed kMinCap slots for uploads of at most kMinCap bytes
 
     PinnedRing() = default;
     PinnedRing(const PinnedRing&) = delete;
@@ -51,8 +59,10 @@ public:
         if (cudaGetDevice(&cur) != cudaSuccess) { cudaGetLastError(); return nullptr; }
         if (dev_ < 0) dev_ = cur;
         if (cur != dev_) return nullptr;   // a ring is for one device
-        Slot& sl = slots_[next_];
-        next_ = (next_ + 1) % kSlots;
+        const bool small = bytes <= kMinCap;
+        Slot& sl = small ? small_[next_small_] : slots_[next_];
+        if (small) next_small_ = (next_small_ + 1) % kSmallSlots;
+        else next_ = (next_ + 1) % kSlots;
         if (sl.pending) {                  // the copy that last read this slot is done before it is refilled
             sl.pending = false;
             if (cudaEventSynchronize(sl.ev) != cudaSuccess) { cudaGetLastError(); return nullptr; }
@@ -145,20 +155,25 @@ public:
                 return false;
             }
         }
+        for (Slot& sl : small_)                 // the small slots, always: a later small upload must not allocate either
+            if (!prepare(sl, kMinCap)) return false;
         return true;
     }
 
     void release() {
-        for (Slot& sl : slots_) {
+        auto drop = [](Slot& sl) {
             if (sl.pending && sl.ev) cudaEventSynchronize(sl.ev);
             if (sl.ev) cudaEventDestroy(sl.ev);
             if (sl.p) cudaFreeHost(sl.p);
             sl = Slot{};
-        }
+        };
+        for (Slot& sl : slots_) drop(sl);
+        for (Slot& sl : small_) drop(sl);
         cudaGetLastError();
         acquired_ = nullptr;
         dev_ = -1;
         next_ = 0;
+        next_small_ = 0;
     }
 
 private:
@@ -173,9 +188,33 @@ private:
         static const bool v = [] { const char* e = std::getenv("STRATA_TEST_PAGEABLE"); return e != nullptr && e[0] == '1'; }();
         return v;
     }
+    // a small slot ready for reuse: its last copy waited for, kMinCap pinned bytes and an event (false: none could be had)
+    static bool prepare(Slot& sl, size_t cap) {
+        if (sl.pending) {
+            sl.pending = false;
+            if (cudaEventSynchronize(sl.ev) != cudaSuccess) { cudaGetLastError(); return false; }
+        }
+        if (sl.cap < cap) {
+            if (sl.p) { cudaFreeHost(sl.p); sl.p = nullptr; sl.cap = 0; }
+            if (cudaHostAlloc(&sl.p, cap, cudaHostAllocPortable) != cudaSuccess) {
+                cudaGetLastError();
+                sl.p = nullptr;
+                return false;
+            }
+            sl.cap = cap;
+        }
+        if (sl.ev == nullptr && cudaEventCreateWithFlags(&sl.ev, cudaEventDisableTiming) != cudaSuccess) {
+            cudaGetLastError();
+            sl.ev = nullptr;
+            return false;
+        }
+        return true;
+    }
     Slot slots_[kSlots];
+    Slot small_[kSmallSlots];
     Slot* acquired_ = nullptr;
     int next_ = 0;
+    int next_small_ = 0;
     int dev_ = -1;
 };
 
