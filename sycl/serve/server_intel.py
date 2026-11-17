@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import collections
 import json
+import os
 import sys
 import time
 import urllib.parse
@@ -42,7 +43,9 @@ def install_xe_reader():
 
     def gpu_reader(index=0, amd=False):
         xe = _XeGpu(index)
-        return xe if xe.ok() else orig(index, amd)
+        # Windows has no xe sysfs, so the xe reader is never ok there; NVML would then answer for a GeForce beside the
+        # Arc.  The empty reader makes telemetry name the Intel card from the registry instead.
+        return xe if xe.ok() or os.name == "nt" else orig(index, amd)
 
     T.gpu_reader = gpu_reader
 

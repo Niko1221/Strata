@@ -102,6 +102,9 @@ namespace strata::prefill { void set_nonresident_share(double share); }   // SYC
 #include <windows.h>
 #include <psapi.h>
 #include <io.h>
+#ifdef small
+#undef small
+#endif
 #else
 #include <unistd.h>
 #include <cerrno>
@@ -114,6 +117,7 @@ namespace strata::prefill { void set_nonresident_share(double share); }   // SYC
 #include <algorithm>
 #include <memory>
 #include <iostream>
+#include <iomanip>
 #include <functional>
 #include <future>
 #include <thread>
@@ -136,6 +140,181 @@ namespace strata::prefill { void set_nonresident_share(double share); }   // SYC
 #include <string>
 #include <set>
 #include <vector>
+
+// ---------------------------------------------------------------------------------------------------------------
+// STRATA_ALLOC_TRACE=1 (diagnosis, Windows): who HOLDS the host allocations of the prompt path. Every allocation keeps
+// a 32-byte header just before the returned pointer (its size and the return addresses that asked for it), and a small
+// fixed table sums the bytes still OUTSTANDING per caller - added on new, removed on delete - so the report names the
+// functions that keep memory rather than the ones that merely allocate and free. The caller recorded is the first
+// return address inside this executable, which with inlining is the code that grew a vector, not the allocator inside
+// the standard library. Callers print as "strata.exe+0xRVA": the /MAP build writes those RVAs to strata.map, where the
+// function names are. Unset, the table is not touched; the operators still carry the header (a few bytes per block) so
+// that free() always finds its base.
+#if defined(STRATA_ALLOC_TRACE_BUILD) && defined(_WIN32)
+#include <intrin.h>
+namespace alloc_trace {
+struct Header { void* base; size_t size; void* caller; unsigned long long magic; };   // 32 bytes, before the pointer
+constexpr unsigned long long kMagic = 0x5354524154413031ull;                          // "STRATA01"
+struct Bucket { void* caller; long long bytes; long long count; };
+constexpr size_t kBuckets = 8192;
+Bucket g_buckets[kBuckets];
+SRWLOCK g_lock = SRWLOCK_INIT;
+
+inline bool on() {
+    static const bool v = [] {
+        const char* e = std::getenv("STRATA_ALLOC_TRACE");
+        return e != nullptr && e[0] != 0 && e[0] != '0';
+    }();
+    return v;
+}
+
+// this executable's range, so a frame can be attributed to it (the standard library's code is a header's, inlined)
+inline bool in_exe(void* p) {
+    static uintptr_t lo = 0, hi = 0;
+    if (lo == 0) {
+        HMODULE m = GetModuleHandleA(nullptr);
+        const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(m);
+        const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(reinterpret_cast<const char*>(m) + dos->e_lfanew);
+        lo = reinterpret_cast<uintptr_t>(m);
+        hi = lo + nt->OptionalHeader.SizeOfImage;
+    }
+    const uintptr_t a = reinterpret_cast<uintptr_t>(p);
+    return a >= lo && a < hi;
+}
+
+void* caller_of_allocation() {
+    void* frames[6] = {};
+    const unsigned short n = RtlCaptureStackBackTrace(1, 6, frames, nullptr);
+    for (unsigned short i = 0; i < n; ++i)
+        if (in_exe(frames[i])) return frames[i];
+    return n > 0 ? frames[0] : nullptr;
+}
+
+void note(void* caller, long long bytes, long long count) {
+    if (!on()) return;
+    AcquireSRWLockExclusive(&g_lock);
+    size_t i = (reinterpret_cast<uintptr_t>(caller) >> 4) & (kBuckets - 1);
+    for (size_t n = 0; n < kBuckets; ++n, i = (i + 1) & (kBuckets - 1)) {
+        if (g_buckets[i].caller == caller || g_buckets[i].caller == nullptr) {
+            if (g_buckets[i].caller == nullptr) g_buckets[i].caller = caller;
+            g_buckets[i].bytes += bytes;
+            g_buckets[i].count += count;
+            break;
+        }
+    }
+    ReleaseSRWLockExclusive(&g_lock);
+}
+
+inline void* allocate(size_t n, size_t align) {
+    const size_t want = n != 0 ? n : 1;
+    const size_t a = align > 16 ? align : 16;
+    void* raw = std::malloc(want + sizeof(Header) + a);
+    if (raw == nullptr) throw std::bad_alloc();
+    const uintptr_t p = (reinterpret_cast<uintptr_t>(raw) + sizeof(Header) + (a - 1)) & ~reinterpret_cast<uintptr_t>(a - 1);
+    auto* h = reinterpret_cast<Header*>(p - sizeof(Header));
+    h->base = raw;
+    h->size = want;
+    h->caller = on() ? caller_of_allocation() : nullptr;
+    h->magic = kMagic;
+    note(h->caller, (long long) want, 1);
+    return reinterpret_cast<void*>(p);
+}
+
+inline void release(void* p) {
+    if (p == nullptr) return;
+    auto* h = reinterpret_cast<Header*>(reinterpret_cast<uintptr_t>(p) - sizeof(Header));
+    if (h->magic != kMagic) { std::free(p); return; }   // not ours: leave it to the CRT
+    note(h->caller, -(long long) h->size, -1);
+    std::free(h->base);
+}
+
+void report(const char* where) {
+    if (!on()) return;
+    AcquireSRWLockExclusive(&g_lock);
+    int top[12];
+    for (int k = 0; k < 12; ++k) top[k] = -1;
+    long long total = 0;
+    size_t live = 0;
+    for (size_t i = 0; i < kBuckets; ++i) {
+        if (g_buckets[i].caller == nullptr || g_buckets[i].bytes <= 0) continue;
+        total += g_buckets[i].bytes;
+        ++live;
+        for (int k = 0; k < 12; ++k) {
+            if (top[k] < 0 || g_buckets[i].bytes > g_buckets[top[k]].bytes) {
+                for (int j = 11; j > k; --j) top[j] = top[j - 1];
+                top[k] = (int) i;
+                break;
+            }
+        }
+    }
+    std::fprintf(stderr, "strata alloc: %-12s outstanding %.1f MiB in %zu callers\n", where, total / 1048576.0, live);
+    for (int k = 0; k < 12 && top[k] >= 0; ++k) {
+        const Bucket& b = g_buckets[top[k]];
+        HMODULE mod = nullptr;
+        char name[MAX_PATH] = "";
+        uintptr_t base = 0;
+        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                               static_cast<LPCSTR>(b.caller), &mod) && mod) {
+            base = reinterpret_cast<uintptr_t>(mod);
+            GetModuleFileNameA(mod, name, sizeof name);
+            if (char* slash = std::strrchr(name, '\\')) std::memmove(name, slash + 1, std::strlen(slash + 1) + 1);
+        }
+        std::fprintf(stderr, "strata alloc:   %7.2f MiB in %7lld blocks  %s+0x%llx\n", b.bytes / 1048576.0, b.count,
+                     name[0] ? name : "?", static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(b.caller) - base));
+    }
+    // ... and the same, by BLOCK COUNT: a leak of many small blocks is invisible in the list above
+    int topc[12];
+    for (int k = 0; k < 12; ++k) topc[k] = -1;
+    for (size_t i = 0; i < kBuckets; ++i) {
+        if (g_buckets[i].caller == nullptr || g_buckets[i].count <= 0) continue;
+        for (int k = 0; k < 12; ++k) {
+            if (topc[k] < 0 || g_buckets[i].count > g_buckets[topc[k]].count) {
+                for (int j = 11; j > k; --j) topc[j] = topc[j - 1];
+                topc[k] = (int) i;
+                break;
+            }
+        }
+    }
+    for (int k = 0; k < 12 && topc[k] >= 0; ++k) {
+        const Bucket& b = g_buckets[topc[k]];
+        HMODULE mod = nullptr;
+        char name[MAX_PATH] = "";
+        uintptr_t base = 0;
+        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                               static_cast<LPCSTR>(b.caller), &mod) && mod) {
+            base = reinterpret_cast<uintptr_t>(mod);
+            GetModuleFileNameA(mod, name, sizeof name);
+            if (char* slash = std::strrchr(name, '\\')) std::memmove(name, slash + 1, std::strlen(slash + 1) + 1);
+        }
+        std::fprintf(stderr, "strata alloc:   by count: %7lld blocks, %7.2f MiB  %s+0x%llx\n", b.count,
+                     b.bytes / 1048576.0, name[0] ? name : "?",
+                     static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(b.caller) - base));
+    }
+    ReleaseSRWLockExclusive(&g_lock);
+    std::fflush(stderr);
+}
+}  // namespace alloc_trace
+
+// the program's C++ allocation functions: every container, string and new in the engine goes through them
+void* operator new(std::size_t n) { return alloc_trace::allocate(n, 0); }
+void* operator new[](std::size_t n) { return alloc_trace::allocate(n, 0); }
+void* operator new(std::size_t n, const std::nothrow_t&) noexcept { try { return alloc_trace::allocate(n, 0); } catch (...) { return nullptr; } }
+void* operator new[](std::size_t n, const std::nothrow_t&) noexcept { try { return alloc_trace::allocate(n, 0); } catch (...) { return nullptr; } }
+void* operator new(std::size_t n, std::align_val_t a) { return alloc_trace::allocate(n, (size_t) a); }
+void* operator new[](std::size_t n, std::align_val_t a) { return alloc_trace::allocate(n, (size_t) a); }
+void* operator new(std::size_t n, std::align_val_t a, const std::nothrow_t&) noexcept { try { return alloc_trace::allocate(n, (size_t) a); } catch (...) { return nullptr; } }
+void* operator new[](std::size_t n, std::align_val_t a, const std::nothrow_t&) noexcept { try { return alloc_trace::allocate(n, (size_t) a); } catch (...) { return nullptr; } }
+void operator delete(void* p) noexcept { alloc_trace::release(p); }
+void operator delete[](void* p) noexcept { alloc_trace::release(p); }
+void operator delete(void* p, std::size_t) noexcept { alloc_trace::release(p); }
+void operator delete[](void* p, std::size_t) noexcept { alloc_trace::release(p); }
+void operator delete(void* p, std::align_val_t) noexcept { alloc_trace::release(p); }
+void operator delete[](void* p, std::align_val_t) noexcept { alloc_trace::release(p); }
+void operator delete(void* p, std::size_t, std::align_val_t) noexcept { alloc_trace::release(p); }
+void operator delete[](void* p, std::size_t, std::align_val_t) noexcept { alloc_trace::release(p); }
+void operator delete(void* p, const std::nothrow_t&) noexcept { alloc_trace::release(p); }
+void operator delete[](void* p, const std::nothrow_t&) noexcept { alloc_trace::release(p); }
+#endif  // STRATA_ALLOC_TRACE_BUILD && _WIN32
 
 namespace {
 bool sycl_mirror_adapt() {
@@ -1199,6 +1378,71 @@ MemSample mem_sample() {
     return m;
 }
 
+// STRATA_MEM_TRACE=1 (diagnosis): this process's commit at a phase of a request, so a per-request host growth can be
+// attributed to the prompt read or to the generation instead of guessed (the A770 report on PR #3607).  On Windows it
+// also walks the process heap (HeapLock/HeapWalk, no hooks and no allocator changes) and reports the bytes in use and
+// the largest blocks, so a heap growth says whether it is many small allocations or a few big ones.
+void mem_probe(const char* where) {
+    static const bool on = std::getenv("STRATA_MEM_TRACE") != nullptr;
+    if (!on) return;
+    const MemSample m = mem_sample();
+#if defined(_WIN32)
+    unsigned long long used = 0, blocks = 0;
+    unsigned long long cls[4] = {}, cnt[4] = {};        // >=1 MiB, 64 KiB..1 MiB, 4..64 KiB, <4 KiB
+    void* sample[6] = {};                               // block addresses of the two classes that grow, for a stack
+    int n_sample = 0;
+    if (HANDLE h = GetProcessHeap(); h && HeapLock(h)) {
+        PROCESS_HEAP_ENTRY e{};
+        while (HeapWalk(h, &e)) {
+            if (!(e.wFlags & PROCESS_HEAP_ENTRY_BUSY)) continue;
+            const SIZE_T cb = e.cbData;
+            const int c = cb >= (1u << 20) ? 0 : (cb >= (64u << 10) ? 1 : (cb >= (4u << 10) ? 2 : 3));
+            used += cb;
+            cls[c] += cb;
+            ++cnt[c];
+            ++blocks;
+            if (n_sample < 6 && ((cb >= 192 && cb <= 216) || (cb >= 24 && cb <= 32)))
+                sample[n_sample++] = e.lpData;
+        }
+        HeapUnlock(h);
+    }
+    char samples[160] = "";
+    for (int i = 0, off = 0; i < n_sample; ++i)
+        off += std::snprintf(samples + off, sizeof samples - (size_t) off, " %p", sample[i]);
+    // the eight user sizes that hold the most blocks: the class a leak grows will be visible here between phases
+    std::map<SIZE_T, unsigned long long> by_size;
+    if (HANDLE h2 = GetProcessHeap(); h2 && HeapLock(h2)) {
+        PROCESS_HEAP_ENTRY e2{};
+        while (HeapWalk(h2, &e2)) {
+            if (!(e2.wFlags & PROCESS_HEAP_ENTRY_BUSY) || e2.cbData > 4096) continue;
+            ++by_size[e2.cbData];
+        }
+        HeapUnlock(h2);
+    }
+    char hist[200] = "";
+    for (int k = 0; k < 8; ++k) {
+        auto best = by_size.end();
+        for (auto it = by_size.begin(); it != by_size.end(); ++it)
+            if (it->second != 0 && (best == by_size.end() || it->second > best->second)) best = it;
+        if (best == by_size.end()) break;
+        const int off = (int) std::strlen(hist);
+        std::snprintf(hist + off, sizeof hist - (size_t) off, " %lluB=%llu", (unsigned long long) best->first, best->second);
+        best->second = 0;
+    }
+    std::fprintf(stderr, "strata mem: %-12s commit %llu MiB  rss %llu MiB  heap %llu MiB in %llu blocks"
+                         "  | >=1MiB %llu/%llu  64K-1M %llu/%llu  4-64K %llu/%llu  <4K %llu/%llu (MiB/blocks)"
+                         "  top sizes:%s  samples%s\n",
+                 where, m.commit_mib, m.rss_mib, used >> 20, blocks,
+                 cls[0] >> 20, cnt[0], cls[1] >> 20, cnt[1], cls[2] >> 20, cnt[2], cls[3] >> 20, cnt[3], hist, samples);
+#else
+    std::fprintf(stderr, "strata mem: %-12s commit %llu MiB  rss %llu MiB\n", where, m.commit_mib, m.rss_mib);
+#endif
+#if defined(STRATA_ALLOC_TRACE_BUILD) && defined(_WIN32)
+    alloc_trace::report(where);
+#endif
+    std::fflush(stderr);
+}
+
 // the stage the watchdog names: "<where> <detail>", and the prompt chunk a batched read is in (#251)
 std::string stage_text() {
     const strata::core::Progress& p = strata::core::progress();
@@ -1777,6 +2021,33 @@ static double ple_direct_rows_per_s(strata::kernels::PleTable& t) {
 }
 
 int main(int argc, char **argv) try {
+#ifdef _WIN32
+    if (argc == 2 && std::string(argv[1]) == "--list-devices") {
+        std::cout << '[';
+        bool first = true;
+        for (unsigned i = 0; i < dpct::device_count(); ++i) {
+            const auto& d = dpct::get_device(i);
+            if (!d.is_gpu() || d.get_info<sycl::info::device::vendor_id>() != 0x8086) continue;
+            if (!first) std::cout << ',';
+            first = false;
+            std::cout << "{\"index\":" << i << ",\"name\":" << std::quoted(d.get_info<sycl::info::device::name>())
+                      << ",\"vram_gb\":" << static_cast<double>(d.get_info<sycl::info::device::global_mem_size>()) / (1ull << 30)
+                      << ",\"arch\":\"sycl\",\"driver\":"
+                      << std::quoted(d.get_backend() == sycl::backend::ext_oneapi_level_zero ? "level_zero"
+                                     : d.get_backend() == sycl::backend::opencl ? "opencl" : "unknown")
+                      << ",\"free_memory_supported\":" << (d.has(sycl::aspect::ext_intel_free_memory) ? "true" : "false")
+                      << ",\"command_graph_supported\":" << (d.has(sycl::aspect::ext_oneapi_graph) ? "true" : "false");
+#if defined(SYCL_EXT_INTEL_DEVICE_INFO) && SYCL_EXT_INTEL_DEVICE_INFO >= 6
+            if (d.has(sycl::aspect::ext_intel_device_id))
+                std::cout << ",\"devid\":\"" << std::hex << d.get_info<sycl::ext::intel::info::device::device_id>()
+                          << std::dec << '"';
+#endif
+            std::cout << '}';
+        }
+        std::cout << "]\n";
+        return first ? 1 : 0;
+    }
+#endif
     // **UNBUFFERED, BECAUSE THE INTERESTING OUTPUT IS THE OUTPUT BEFORE A CRASH.**  `stdout` redirected to a
     // pipe or a file is block-buffered, so a program that dies loses every line it had already printed - which
     // turns "it crashed at step 7" into "it crashed somewhere", and the difference is a debugging session.
@@ -2157,6 +2428,30 @@ int main(int argc, char **argv) try {
         }
         }
     }
+#ifdef _WIN32
+    {
+        const auto& d = dpct::get_current_device();
+        if (!d.is_gpu() || d.get_backend() != sycl::backend::ext_oneapi_level_zero) {
+            std::fprintf(stderr, "strata generate: native Windows inference requires a Level Zero GPU; set ONEAPI_DEVICE_SELECTOR=level_zero:gpu\n");
+            return 2;
+        }
+        if (!d.has(sycl::aspect::ext_intel_free_memory)) {
+            std::fprintf(stderr, "strata generate: free VRAM query is unavailable (ext_intel_free_memory); check the Intel GPU driver and oneAPI runtime\n");
+            return 2;
+        }
+        if (!d.has(sycl::aspect::ext_oneapi_graph)) {
+            // An Alchemist does not advertise ext_oneapi_graph but does run command graphs, so the aspect is a false
+            // negative there.  The refusal stays the default; setup opts an Alchemist on Windows in.
+            const char* allow = std::getenv("STRATA_SYCL_ALLOW_NO_GRAPH_ASPECT");
+            if (!allow || std::string(allow) != "1") {
+                std::fprintf(stderr, "strata generate: command graphs are unavailable (ext_oneapi_graph); check the Intel GPU driver and oneAPI runtime\n");
+                return 2;
+            }
+            std::fprintf(stderr, "strata generate: ext_oneapi_graph is not advertised; going on because "
+                                 "STRATA_SYCL_ALLOW_NO_GRAPH_ASPECT=1\n");
+        }
+    }
+#endif
 #if defined(STRATA_USE_HIP)
     {   // gfx1151 (Strix Halo): the switches that are exact there are on by default (strata/core/arch_defaults.hpp); before
         // any engine code reads its switches (they are read at first use), and the user's own settings are kept
@@ -5038,11 +5333,14 @@ int main(int argc, char **argv) try {
                 // cache then tries three quarters of the size, a few times, instead of stopping the engine.
                 char commit[96] = "";
 #if defined(_WIN32)
+                bool commit_low = false;
                 MEMORYSTATUSEX ms{};
                 ms.dwLength = sizeof ms;
-                if (GlobalMemoryStatusEx(&ms))
-                    std::snprintf(commit, sizeof commit, " (Windows has %.1f GiB of commit left: RAM + page file)",
-                                  (double) ms.ullAvailPageFile / 1073741824.0);
+                if (GlobalMemoryStatusEx(&ms)) {
+                    const double left = (double) ms.ullAvailPageFile / 1073741824.0;
+                    std::snprintf(commit, sizeof commit, " (Windows has %.1f GiB of commit left: RAM + page file)", left);
+                    commit_low = left < (double) cache_bytes() / 1073741824.0 + 2.0;   // the request, plus a margin
+                }
 #endif
                 if (auto_cache && failed < 8 && shrink_to(cache_bytes() / 4 * 3)) {
                     ++failed;
@@ -5052,9 +5350,15 @@ int main(int argc, char **argv) try {
                 }
                 std::fprintf(stderr, "strata generate: %s\n", err.c_str());
 #if defined(_WIN32)
-                std::fprintf(stderr, "strata generate: on Windows the graphics card's memory also needs room in the page "
-                                     "file: set it to \"System managed\" (System > About > Advanced system settings > "
-                                     "Performance > Advanced > Virtual memory), or lower --expert-cache\n");
+                // On an Alchemist the commit figure above is a red herring: the cause is the adapter's 4 GiB
+                // per-allocation limit.  Name it when the request is above that, the page file only when it is short.
+                if (cache_bytes() > (int64_t) (4ull << 30))
+                    std::fprintf(stderr, "strata generate: some Arc cards refuse one allocation above 4 GiB; set "
+                                         "UR_L0_ENABLE_RELAXED_ALLOCATION_LIMITS=1 to lift the adapter's limit\n");
+                if (commit_low)
+                    std::fprintf(stderr, "strata generate: on Windows the graphics card's memory also needs room in the page "
+                                         "file: set it to \"System managed\" (System > About > Advanced system settings > "
+                                         "Performance > Advanced > Virtual memory), or lower --expert-cache\n");
 #endif
                 return 1;
             }
@@ -5207,7 +5511,12 @@ int main(int argc, char **argv) try {
                                     const Fill& g2 = (*fl)[j];
                                     if (!gguf_src.read_into(g2.l, g2.e, other.data(), blob_cap)) continue;
                                     const size_t nb2 = (size_t) lay.blob_bytes(g2.l);
+#ifdef _WIN32
+                                    const uint8_t* found = std::search(other.data(), other.data() + nb2, probe, probe + 64);
+                                    const void* hit = found == other.data() + nb2 ? nullptr : found;
+#else
                                     const void* hit = memmem(other.data(), nb2, probe, 64);
+#endif
                                     if (hit != nullptr)
                                         std::fprintf(stderr, "    the wrong data at byte %zu is expert (layer %d, expert %d), slot %d (fill %zu), byte %zu of its blob\n",
                                                      fd + 4096, (int) g2.l, (int) g2.e, (int) g2.slot, j, (size_t) ((const uint8_t*) hit - other.data()));
@@ -5321,12 +5630,18 @@ int main(int argc, char **argv) try {
             }
         }
         uint64_t avail = 0;
+#ifdef _WIN32
+        MEMORYSTATUSEX mem{};
+        mem.dwLength = sizeof mem;
+        if (GlobalMemoryStatusEx(&mem)) avail = mem.ullAvailPhys;
+#else
         if (FILE* f = std::fopen("/proc/meminfo", "r")) {
             char key[64]; unsigned long long kb = 0;
             while (std::fscanf(f, "%63s %llu kB", key, &kb) == 2)
                 if (std::strcmp(key, "MemAvailable:") == 0) { avail = kb << 10; break; }
             std::fclose(f);
         }
+#endif
         const char* mv = std::getenv("STRATA_MIRROR_MIB");
         const uint64_t cap = mv ? (uint64_t) std::atoll(mv) << 20 : (avail > (4ull << 30) ? avail - (4ull << 30) : 0);
         if (!miss.empty() && cap > 0) {
@@ -11190,6 +11505,7 @@ int main(int argc, char **argv) try {
             if (pipe) ver_b.set_history(hist_n > 0 ? d_hist : nullptr, hist_n);
             bool cancelled = false;
             tr("prompt start", n - 1);
+            mem_probe("start");
             strata::workload_trace::Scope prompt_trace("request.prefill", nullptr, n - 1);
             // The prompt is read in two parts when it has a turn boundary past `resume`: up to the last <|im_start|>
             // (the conversation so far), a checkpoint there, then the new turn's header.  The next request of the same
@@ -11296,6 +11612,7 @@ int main(int argc, char **argv) try {
                                      "them\n", (long long) il_parts + 1, il_ms);
             prompt_trace.finish();
             const double prompt_ms = std::chrono::duration<double, std::milli>(Clock::now() - r0).count();
+            mem_probe("after prompt");
             std::printf("REUSED %lld\n", (long long) resume);   // the prompt is read; the first window comes next
             std::fflush(stdout);
             // the verify windows: the first holds the last prompt token alone
@@ -12783,6 +13100,7 @@ int main(int argc, char **argv) try {
             if (drive.routing != nullptr) std::fflush(drive.routing);   // the routing trace survives a crash and is watchable mid-session
             request_trace.finish();
             strata::workload_trace::flush();
+            mem_probe("end");
             // "12288 of 98179" when cancelled mid-read (#471), the rate from what was read
             char read_txt[64];
             if (cancelled)

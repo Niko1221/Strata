@@ -137,6 +137,17 @@ def chunk_of(prefill) -> int:
         return AUTO_CHUNK
 
 
+def experts_fit_mib(model: str, vram_gb: float, ctx: int, kv: str = "int8", reserve_mib: int = 300,
+                    prefill="auto", vendor: str = "intel", kv_in_vram: int | None = None) -> float:
+    """MiB the estimate leaves for the experts, counting only the KV that stays in VRAM (`kv_in_vram`; the whole context
+    when not given - a streamed KV keeps 32K of it on the card).  This fork's Windows SYCL fit check (sycl/setup_intel.py)."""
+    gap = GAP_MIB.get(str(vendor or "").lower(), GAP_OTHER_MIB)
+    prompt = PROMPT_BASE_MIB + PROMPT_PER_TOKEN_MIB * chunk_of(prefill)
+    tokens = ctx if kv_in_vram is None else max(0, int(kv_in_vram))
+    return (vram_gb * 1024 - gap - base_mib(model) - session_mib(tokens, kv) - HEAD_MIB
+            - max(int(reserve_mib), 0) - prompt)
+
+
 def measured(model: str, slots: int, vendor: str, drafter: str = "mtp") -> bool:
     """Is this start priced from a measured Flash-Next base?  Request slots on any measured vendor; a single request only where the engine's single start was
     measured too (CUDA: DF2-MEM, the 8 GB mimic).  Elsewhere nothing is claimed and the engine decides."""

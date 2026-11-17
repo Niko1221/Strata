@@ -28,6 +28,7 @@ WINDOWS_OS = (
     "ntdll.dll", "msvcrt.dll", "ucrtbase.dll", "rpcrt4.dll", "shlwapi.dll", "setupapi.dll", "cfgmgr32.dll", "version.dll",
     "winmm.dll", "imm32.dll", "comctl32.dll", "comdlg32.dll", "dbghelp.dll", "psapi.dll", "pdh.dll", "powrprof.dll",
     "userenv.dll", "netapi32.dll", "wininet.dll", "winhttp.dll", "dxgi.dll", "d3d11.dll", "d3d12.dll", "dwmapi.dll",
+    "wintrust.dll",
     "dxcore.dll", "wtsapi32.dll", "ncrypt.dll", "normaliz.dll", "api-ms-win-*.dll", "ext-ms-win-*.dll", "hid.dll",
     "opengl32.dll", "glu32.dll", "wldap32.dll", "authz.dll", "msi.dll", "propsys.dll", "uxtheme.dll", "dnsapi.dll",
 )

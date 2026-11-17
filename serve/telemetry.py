@@ -555,27 +555,41 @@ class Telemetry:
         self.fallback = _CpuRamFallback()
         gpu_name = " + ".join(g.name() or "?" for _, g in self.gpus) if self.gpu.ok() else None
         win_amd = None
+        win_intel = None
         if gpu_name is None and amd and os.name == "nt":
             # #1587: no readings for an AMD card on Windows yet, but its name (and VRAM size) are in the registry, so the
             # dashboard and strata_bench do not call the run "CPU only".  The class order is taken as HIP's order.
             cards = windows_amd_cards()
             win_amd = [cards[i] for i in idx if 0 <= i < len(cards)] or cards[:1]
             gpu_name = " + ".join(c["name"] for c in win_amd) if win_amd else None
+        if gpu_name is None and not amd and os.name == "nt":
+            # the SYCL port's card on Windows: the same registry, and the same point - a name rather than "CPU only".
+            # A desktop also lists its processor's integrated adapter, so the dedicated ones (2 GiB or more) win.
+            cards = windows_display_adapters("intel")
+            dedicated = [c for c in cards if (c["vram_bytes"] or 0) >= 2 << 30]
+            win_intel = dedicated or cards[:1]
+            gpu_name = " + ".join(c["name"] for c in win_intel) if win_intel else None
+        win_cards = win_amd or win_intel
         # the macOS reader knows the device's working set (the VRAM budget of the unified memory); None elsewhere
         vram_total = None
-        if win_amd is None and isinstance(self.gpu, _Metal) and self.gpu.ok():
+        if win_cards is None and isinstance(self.gpu, _Metal) and self.gpu.ok():
             ws = metal_working_set()
             vram_total = ws >> 20 if ws else None
+        if win_intel is not None and not self.gpu.ok():
+            note = "no GPU load or VRAM readings for Intel cards on Windows yet; the engine's own figures are in its log"
+        elif amd and not self.gpu.ok():
+            note = ("no GPU load or VRAM readings for AMD cards on Windows yet (Linux reads them from the amdgpu "
+                    "driver); the engine's own VRAM figures are in its log")
+        else:
+            note = getattr(self.gpu, "note", None)
         self.static = {
             "gpu_name": gpu_name,
-            "gpu_vram_total_mib": (sum(c["vram_bytes"] for c in win_amd) >> 20
-                                   if win_amd and all(c["vram_bytes"] for c in win_amd) else vram_total),
+            "gpu_vram_total_mib": (sum(c["vram_bytes"] for c in win_cards) >> 20
+                                   if win_cards and all(c["vram_bytes"] for c in win_cards) else vram_total),
             "gpu_count": len(self.gpus),
             # #1380: the AMD readings are the amdgpu driver's Linux sysfs files; a Windows AMD card has none yet, and the
             # dashboard said "not readable (NVML)" or showed empty tiles with no word why
-            "gpu_note": ("no GPU load or VRAM readings for AMD cards on Windows yet (Linux reads them from the amdgpu "
-                         "driver); the engine's own VRAM figures are in its log" if amd and not self.gpu.ok()
-                         else getattr(self.gpu, "note", None)),
+            "gpu_note": note,
             "cpu_name": _cpu_name(),
             "cores": (self.ps.cpu_count(logical=False) if self.ps else None) or None,
             "threads": os.cpu_count(),
