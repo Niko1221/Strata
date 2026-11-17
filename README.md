@@ -65,3 +65,16 @@ irm -TimeoutSec 120 https://github.com/Niko1221/Strata/releases/latest/download/
 ```
 
 [Niko1221/Strata](https://github.com/Niko1221/Strata) · [Hermes Agent](https://github.com/NousResearch/hermes-agent) · [Third-party sources and notices](third_party/)
+
+## Acknowledgements & Gratitude
+
+We extend our most sincere and heartfelt gratitude to all upstream authors, open-source maintainers, researchers, and technology providers whose licence grants, foundational engineering, and generous stewardship make Hakua / Strata possible:
+
+- **Niko1221/Strata** — We are deeply indebted to the upstream Strata project and its contributors for establishing the core architecture, engine, and terminal ecosystem upon which this independent fork is built.
+- **ggml & llama.cpp** — Our warmest thanks for the enduring MIT-licensed tensor primitives, quantisation formats, and numerical foundations that underpin local inference.
+- **NousResearch (Hermes Agent)** — With genuine appreciation for the agentic design patterns and memory-stack inspirations shared with the community.
+- **Qwen Team (Alibaba Cloud)** — We gratefully acknowledge the Qwen model family and the Qwen Community License 1.0, enabling high-capability local multilingual reasoning.
+- **NVIDIA Corporation** — Thank you for CUDA, cuBLAS, cuBLASLt, and the Blackwell (SM120) Tensor Core ecosystem, without which hardware-accelerated local inference would not be possible.
+- **RustXNG, libstrix, Node.js, Python & Tauri** — Our profound thanks to every maintainer and contributor of these essential open-source runtimes, search tools, and cross-platform frameworks.
+- **Microsoft Corporation** — With appreciation for the Windows Build Tools, Visual C++ Redistributable runtime, and WebView2 platform support.
+- **Quantisation & Research Pioneers (ISTA-DASLab, PrismML, TurboQuant, Spin(8), and community GGUF authors)** — We express our deepest respect and thanks for advancing extreme low-bit quantisation, orthogonal rotation, and memory-efficient inference for consumer GPUs.
