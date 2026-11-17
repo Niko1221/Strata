@@ -7423,6 +7423,10 @@ int main(int argc, char** argv) {
         }
         const bool last = i + 1 == stages.size();
         const strata::core::WeightRef* wo_s = st.wt.find("output.weight");
+        // The alias reloads the head every request while captured verify graphs read its VA, so a layer split's
+        // head (never the global native_head here) needs the fixed per-device VMM backing.  Must be requested on
+        // this stage before load() - under OnDevice(st.dev) it maps on exactly the card that holds it.
+        if (last && o.prefill_head_alias) st.head.request_stable_va();
         if (wo_s == nullptr ||
             (last && !o.native_head_gguf.empty() && !st.head.load(o.native_head_shards, g.n_embd, wo_s->ne1, err))) {
             std::fprintf(stderr, "strata generate: layer split, CUDA%d head: %s%s\n", st.dev,
@@ -7930,6 +7934,10 @@ int main(int argc, char** argv) {
     if (wo == nullptr) { std::fprintf(stderr, "strata generate: output.weight is missing\n"); return 1; }
     const int64_t n_vocab = wo->ne1;
     strata::core::NativeHead native_head;
+    if (o.prefill_head_alias) native_head.request_stable_va();   // the alias reloads the head every request: a fixed VA keeps the captured verify graphs valid instead of hoping cudaMalloc reuses one address
+    // The head the alias lends its VRAM to.  Single-GPU it is the global native_head; a layer split never loads that
+    // (line above) and holds the projection on its last stage's head, which now also carries a fixed per-device VA.
+    strata::core::NativeHead& alias_head = multi_gpu && last_st != nullptr ? last_st->head : native_head;
     if (!o.native_head_gguf.empty() && !multi_gpu) {   // a layer split's head is on its last stage
         const auto head_t0 = std::chrono::steady_clock::now();
         if (!native_head.load(o.native_head_shards, g.n_embd, n_vocab, err)) {
@@ -7982,26 +7990,31 @@ int main(int argc, char** argv) {
     const void* prefill_head_alias_at = nullptr;   // where the head came back the first time
     if (o.prefill_head_alias) {
         const char* why = !o.serve ? "it needs --serve"
-                        : multi_gpu || !stages.empty() ? "it supports one GPU only"
                         : o.batch > 0 ? "it does not support --batch"
                         : o.pipeline_windows > 0 ? "it does not support --pipeline-windows"
                         : o.short_read > 0 ? "it needs --short-read 0"
                         : o.expert_cache != 1 && o.expert_cache >= 0 ? "it needs --expert-cache 1 or auto"
                         : o.mtp.empty() ? "it needs --mtp"
-                        : !native_head.loaded() ? "it needs the native output head"
+                        : !alias_head.loaded() ? "it needs the native output head"
                         : nullptr;
         if (why != nullptr) {
             std::fprintf(stderr, "strata generate: --prefill-head-alias is unavailable: %s\n", why);
             return 2;
         }
-        if (!mtp.bind(wt, &native_head, nullptr, err)) {
+        // A layer split holds the projection on its last stage's card and MTP gathers from there.
+        const strata::core::OnDevice alias_dev(multi_gpu && last_st != nullptr ? last_st->dev : -1);
+        if (!mtp.bind(multi_gpu && last_st != nullptr ? last_st->wt : wt, &alias_head, nullptr, err)) {
             std::fprintf(stderr, "strata generate: --prefill-head-alias: %s\n", err.c_str());
             return 1;
         }
-        native_head.unload();
+        // On one GPU the freed head becomes prompt workspace.  On a layer split keep it resident instead: every verifier
+        // window must capture with the native path (a window captured while the head is unmapped bakes the canonical
+        // lm_head on an output.weight the native loader skipped -> planes add up to 0), and there is no slack to free.
+        // prefill_head_alias_bound stays true so ver.init still projects logits through last_st->head at its stable VA.
+        if (!multi_gpu) alias_head.unload();
         prefill_head_alias_bound = true;
         std::fprintf(stderr, "strata generate: --prefill-head-alias: the %llu-byte output head is prompt workspace\n",
-                     (unsigned long long) native_head.weight_bytes());
+                     (unsigned long long) alias_head.weight_bytes());
     }
     // Create the additional contexts after MTP has secured CUDA0 memory, but
     // before the host arena maps its expert pages into their address spaces.
@@ -12024,7 +12037,9 @@ int main(int argc, char** argv) {
         } else if (o.prefill_auto && d_res == nullptr) {
             o.prefill_chunk = 1024;       // #85: no expert cache at all (a full 8 GB card): small buffers of its own
         }
-        if (o.prefill_head_alias) {
+        // The alias prompt workspace (borrow almost every cache slot, freed head room) is a single-GPU strategy: on a layer
+        // split the head stays resident and each stage already sizes its own prompt path through the normal split search.
+        if (o.prefill_head_alias && !multi_gpu) {
             for (PfPart& p : pf_parts) {
                 p.first = p.cache->slots() > 1 ? 1 : -1;
                 p.first_now = p.first;
@@ -12033,7 +12048,10 @@ int main(int argc, char** argv) {
             borrow = lend_first >= 0 ? xcache.device_slot(lend_first) : nullptr;
             borrow_bytes = lend_first >= 0 ? part_bytes(pf_parts[0], lend_first) : 0;
             size_t free_b = 0, total_b = 0;
-            cudaMemGetInfo(&free_b, &total_b);
+            {   // the alias returns its VRAM on the head's card; ask that card, not whichever is current here (a split serves on its last stage)
+                const strata::core::OnDevice on_head_dev(multi_gpu && last_st != nullptr ? last_st->dev : -1);
+                cudaMemGetInfo(&free_b, &total_b);
+            }
             static constexpr int64_t candidates[] = {2048, 1536, 1024, 512};
             for (const int64_t candidate : candidates)
                 if (strata::prefill::Prefill::bytes_needed(g, ss, candidate) + (512ull << 20) <=
@@ -12663,7 +12681,7 @@ int main(int argc, char** argv) {
         if (use_df2) ver.set_taps(df2.tap_layers());
         if (batch_df2) ver.set_batch_taps(true);
 #endif
-        if (!ver.init(wt, g, ss, vh, native_head.loaded() || prefill_head_alias_bound ? &native_head : nullptr,
+        if (!ver.init(wt, g, ss, vh, native_head.loaded() || prefill_head_alias_bound ? &alias_head : nullptr,
                       batch_max_t(), err) ||
             (use_mtp && !prefill_head_alias_bound && !mtp.bind(last_st && !mtp_first ? last_st->wt : wt, last_st ? &last_st->head : &native_head,
                                   pipe ? pl_mtp_R : ver.final_R_all(), err))) {
@@ -17425,16 +17443,17 @@ int main(int argc, char** argv) {
             // first window.  A room left open by an earlier request (a cancelled prompt) is closed first.
             bool mtp_room_open = mtp_room_slots > 0 && room_path != nullptr && !mtp.experts_resident();
             auto head_restore = [&]() -> int {
-                if (!o.prefill_head_alias || native_head.loaded()) return 0;
+                if (!o.prefill_head_alias || alias_head.loaded()) return 0;
+                const strata::core::OnDevice on_alias_dev(multi_gpu && last_st != nullptr ? last_st->dev : -1);
                 sp.reset();
                 const auto head_t0 = Clock::now();
-                if (!native_head.load(o.native_head_shards, g.n_embd, n_vocab, err)) {
+                if (!alias_head.load(o.native_head_shards, g.n_embd, n_vocab, err)) {
                     std::printf("ERR restoring the native output head failed: %s\n", err.c_str());
                     return 1;
                 }
                 // the verify windows' captured graphs read the head at the address of their capture
-                if (prefill_head_alias_at == nullptr) prefill_head_alias_at = native_head.weights();
-                if (native_head.weights() != prefill_head_alias_at) {
+                if (prefill_head_alias_at == nullptr) prefill_head_alias_at = alias_head.weights();
+                if (alias_head.weights() != prefill_head_alias_at) {
                     std::printf("ERR --prefill-head-alias: the output head was reloaded at another address, so the "
                                 "captured verify graphs would read freed memory\n");
                     return 1;
@@ -17459,9 +17478,12 @@ int main(int argc, char** argv) {
                 return 0;
             };
             if (mtp_room_open && room_close("left open") != 0) return 1;
-            if (o.prefill_head_alias && native_head.loaded()) {
+            // On a layer split the head stays resident for the whole session (see startup): freeing it here would make a
+            // verifier window capture while it is unmapped.  Only the single-GPU path lends its VRAM per request.
+            if (o.prefill_head_alias && !multi_gpu && alias_head.loaded()) {
+                const strata::core::OnDevice on_alias_dev(multi_gpu && last_st != nullptr ? last_st->dev : -1);
                 const auto head_t0 = Clock::now();
-                native_head.unload();
+                alias_head.unload();
                 sp.reset();
                 if (init_prompt_paths() != 0) {
                     std::printf("ERR rebuilding the head-alias prompt path failed: %s\n", err.c_str());

@@ -20,6 +20,10 @@ public:
     NativeHead& operator=(const NativeHead&) = delete;
 
     bool load(const std::vector<std::string>& shards, int64_t n_in, int64_t n_out, std::string& err);
+    /// Route the VRAM weights through a fixed virtual address kept across unload()/load() (prefill-head-alias).  Set once
+    /// before the first load; without it the head keeps its plain cudaMalloc behaviour.
+    void request_stable_va() { stable_va_ = true; }
+
     void unload();
     /// Moves the loaded weights from VRAM to mapped pinned host memory (a card too short for it: every logits row then reads them over PCIe).  False: not loaded, already
     /// on the host, or a repacked layout that stays in VRAM.
@@ -37,13 +41,24 @@ public:
     size_t row_bytes() const { return n_out_ > 0 ? (size_t) (bytes_ / (uint64_t) n_out_) : 0; }
 
 private:
-    void* weights_ = nullptr;
-    void* host_ = nullptr;   // the pinned host buffer weights_ aliases when the head did not fit in VRAM
+    /// Map the physical backing for `bytes` into a fixed VA on `dev`, reserving that VA once; keeps it across unload().  False: VMM unavailable or out of memory.
+    bool map_stable_weights(int dev, uint64_t bytes);
+
+    void* weights_ = nullptr;    void* host_ = nullptr;   // the pinned host buffer weights_ aliases when the head did not fit in VRAM
     void* scratch_ = nullptr;
     uint64_t bytes_ = 0;
     int n_in_ = 0, n_out_ = 0;
     int type_ = -1;
     int device_ = -1;
+
+    // VMM backing for the VRAM weights (prefill-head-alias): one address range reserved once on `device_` and kept across
+    // unload()/load() cycles, so every captured verify graph keeps reading the same pointer.  Physically mapped while
+    // loaded, unmapped+released during a prompt; base stays fixed either way.  (The shared strata::core VmmRange binds one
+    // device process-wide, so the head owns its own per-device mapping instead.)
+    unsigned long long va_ = 0;      // stable reserved VA; weights_ aliases it while mapped (0 before the first reserve)
+    uint64_t vmm_size_ = 0;          // granularity-rounded size of that reservation
+    unsigned long long phys_ = 0;    // current physical handle over [va_, va_+vmm_size_), 0 when unmapped
+    bool stable_va_ = false;         // set once before the first load: VMM-back the VRAM weights at a fixed VA
 };
 
 /// Plan v0.3 P6: `token_embd.weight` in its GGUF form (the IQ model files), in mapped pinned host memory: a row
