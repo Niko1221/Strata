@@ -1,0 +1,33 @@
+The saved run settings strata-iq3_xxs.json name /opt/strata/components/engine/0.1.59-linux-x86_64-cuda-cuda13/strata-vision, which this image does not have (made by an image for another card or engine version): making them again. The model files are kept.
+Starting Strata: IQ3_XXS from /models/IQ3_XXS (preset 'docker').
+    Checking the engine for this computer…
+    Engine 0.1.60 (cuda) is installed.
+    Preparing Qwen3.8-Flash-Next IQ3_XXS from your model files…
+    Getting your model ready
+    Checking your computer
+    Getting the helper packages ready
+    Checking the engine for this PC
+    Getting the model files
+    The model files are on this computer; checking them
+    Saving the model's settings
+    Qwen3.8-Flash-Next IQ3_XXS is ready.
+    Writing this launch's settings…
+    Settings are saved.
+    A server of this preset stopped earlier and was never cleared; clearing it before the start…
+    Starting the engine and loading the model. The first start can take a few minutes.
+    Loading the model… 15 s
+    Loading the model… 30 s
+    Loading the model… 45 s
+    The model is loaded and answering.
+    Ready: http://127.0.0.1:8080, http://<private-address>:8080
+    Strata is serving.
+
+Strata is serving.
+  This computer  http://127.0.0.1:8080/v1
+  Network        http://<private-address>:8080/v1
+  Anthropic apps http://127.0.0.1:8080   (Claude Code: ANTHROPIC_BASE_URL, no /v1 at the end)
+  API key        [REDACTED]
+  Engine log     /data/state/strata/launch/docker.engine.log   (follow it: strata logs --follow)
+  Watch it:    STRATA_API_KEY=$(strata launch --show-key) strata monitor --url http://127.0.0.1:8080 --credential-env STRATA_API_KEY
+  Connect an app:  strata connect opencode      Stop:  strata launch --stop --preset "docker"
+Serving on port 8080. Watch it: docker exec -it <container> strata monitor    Stop: docker stop <container>

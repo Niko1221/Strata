@@ -1,0 +1,7 @@
+FROM sha256:255171696992feae970f2ee178e3edb9561c7422ca37e3d09d6c9abf24b8aa3e
+USER root
+RUN rm -rf /opt/strata/terminal /opt/strata/components/engine
+COPY terminal/ /opt/strata/terminal/
+COPY engine/ /opt/strata/components/engine/
+LABEL org.opencontainers.image.version="0.2.15" com.strata.engine="engine" com.strata.build="official-release-packages-local-container"
+RUN /opt/strata/terminal/bin/strata --version

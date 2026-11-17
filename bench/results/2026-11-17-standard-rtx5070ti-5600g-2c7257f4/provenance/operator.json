@@ -1,0 +1,23 @@
+{
+  "original_results_sha256_before_publication_redaction": "d0195262fb3d967e0e66a46a5a0a2bd8f558ba9c5e293c871c100b98aced674b",
+  "publication_edits": [
+    "run.command --out argument replaced by neutral run ID path",
+    "added hashed container startup log and provenance artifacts; all measurements, outputs and original artifact hashes retained"
+  ],
+  "cpu": "AMD Ryzen 5 5600G with Radeon Graphics",
+  "logical_cpu_allocation": 10,
+  "lxc_memory_gib": 54,
+  "docker_memory_limit": "none; outer LXC allocation retained",
+  "cpu_swap_platform_comparison": true,
+  "os_visible_ram_gib": 58.75273132324219,
+  "api_inference_requests_before": 3,
+  "api_inference_requests_after": 25,
+  "api_inference_request_delta": 22,
+  "expected_official_requests": 22,
+  "prior_requests_at_runner_baseline": 3,
+  "other_inference_detected_during_official_run": false,
+  "packaging": "Unmodified official Control 0.1.61 and official feed-selected CUDA13 engine 0.1.60 in a local image inheriting the 0.2.13 CUDA13 entrypoint and runtime base. No engine compilation or runtime-source patch.",
+  "resolved_drafting": "DFlash2 spec6 confidence0.7; authoritative effective config.json. The original operator track notes name requested spec4/min-p0.5, not the effective DFlash2 settings.",
+  "cold_state": "Same loaded production service, warm OS/expert cache, no OS cache flush; zero cached KV tokens in performance requests. Not a cold-start protocol replication.",
+  "source_of_startup_log": "Docker stdout captured after benchmark execution; sanitized; no separate backend engine log was retained for these runs. Per-request engine timers are in outputs.jsonl."
+}

@@ -1,0 +1,50 @@
+{
+  ".gitattributes": {
+    "bytes": 8,
+    "sha256": "705fd4d6451a31d36b3df7de96f83f30ac976c9b4a6d1e51671d8e2f33e2d0da"
+  },
+  "config.json": {
+    "bytes": 1083,
+    "sha256": "998c316164dbf2e105324e4437627fe3a5c0b7cf4a60e8cba09c1fc1d85e370f"
+  },
+  "container-startup.log": {
+    "bytes": 1888,
+    "sha256": "bc1f76d975e10645edf1647a7e4da817fc9a0c66623bbba641925edb1825cca7"
+  },
+  "outputs.jsonl": {
+    "bytes": 531058,
+    "sha256": "e3a0dcf137831f975a8a04e86313ffba47816780e9da0b5b0fd7210be90fa565"
+  },
+  "provenance/chat_template.jinja": {
+    "bytes": 9993,
+    "sha256": "12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce"
+  },
+  "provenance/corpus-build.json": {
+    "bytes": 5160,
+    "sha256": "bc6c1f81d86863c3dc36a31f58010701d8ab05180f69f86c6978214409e43af2"
+  },
+  "provenance/corpus-manifest.sha256": {
+    "bytes": 3356,
+    "sha256": "e75eff8b9feea04f745520b392c4c17d97aefc1ba185e222aa6740efa8f68407"
+  },
+  "provenance/operator.json": {
+    "bytes": 1651,
+    "sha256": "eea39cfb5ba7b4b3a1bb743681ea1a20eb8961bcb8e346feecbf6c6ff45470dd"
+  },
+  "provenance/packages.json": {
+    "bytes": 1021,
+    "sha256": "8bcb1111354025abeee6c3697f4fbeb12e3a7e409bc5bd07b1e3152bd8c10e69"
+  },
+  "README.md": {
+    "bytes": 7186,
+    "sha256": "b0b5eab26045cc521331ecf22b11a4b1a0b05a34b8812c72ceb2298fa6defc36"
+  },
+  "results.json": {
+    "bytes": 58854,
+    "sha256": "88174ff63e34958a1f32613fe1a0a0b82247ec998a909b12afab9c4cd9c8568a"
+  },
+  "runner-report.md": {
+    "bytes": 4877,
+    "sha256": "90a1d9d8eff6c12c0a94951b90ca394cbb98058de8c6ba1f9864bac7ed238711"
+  }
+}

@@ -1,0 +1,66 @@
+{
+  ".gitattributes": {
+    "bytes": 8,
+    "sha256": "705fd4d6451a31d36b3df7de96f83f30ac976c9b4a6d1e51671d8e2f33e2d0da"
+  },
+  "config.json": {
+    "bytes": 1083,
+    "sha256": "998c316164dbf2e105324e4437627fe3a5c0b7cf4a60e8cba09c1fc1d85e370f"
+  },
+  "container-recipe.md": {
+    "bytes": 3102,
+    "sha256": "4bdec51f81fdfc4a28406684918baf7a72229d4642289f4dc9f4bc5933264db2"
+  },
+  "container-startup.log": {
+    "bytes": 1533,
+    "sha256": "fa24abd7014025428c26f6181ff5ac7c6a3a5ebe1deb5844c440340709b24c3e"
+  },
+  "Dockerfile.used": {
+    "bytes": 412,
+    "sha256": "5085c05de1d75a66b2f22474f1bd5046a097ee4083ad88170185dc4bb0166178"
+  },
+  "outputs.jsonl": {
+    "bytes": 515743,
+    "sha256": "03f1e30999c31706f38089386b7f9561cc5d94664f16818ac79d9e5fc8470028"
+  },
+  "pcie-followup-diagnostic.json": {
+    "bytes": 1987,
+    "sha256": "a0c7dc5665c835ec0ffad600c22b3b51de5f909bc0f1a24840db7de534d3c174"
+  },
+  "provenance/chat_template.jinja": {
+    "bytes": 9993,
+    "sha256": "12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce"
+  },
+  "provenance/corpus-build.json": {
+    "bytes": 5160,
+    "sha256": "bc6c1f81d86863c3dc36a31f58010701d8ab05180f69f86c6978214409e43af2"
+  },
+  "provenance/corpus-manifest.sha256": {
+    "bytes": 3356,
+    "sha256": "e75eff8b9feea04f745520b392c4c17d97aefc1ba185e222aa6740efa8f68407"
+  },
+  "provenance/operator.json": {
+    "bytes": 1647,
+    "sha256": "34d13a6711d0acb6f9ecb034dda2106d111111ae077f5d74d81034590b709e57"
+  },
+  "provenance/packages.json": {
+    "bytes": 1021,
+    "sha256": "8bcb1111354025abeee6c3697f4fbeb12e3a7e409bc5bd07b1e3152bd8c10e69"
+  },
+  "README.md": {
+    "bytes": 9944,
+    "sha256": "4f99746160228aafe39595253b6618dd007d22a45f17504714ce95965cc13bb7"
+  },
+  "results.json": {
+    "bytes": 59186,
+    "sha256": "f51b603f8a01a44cd240ff5756790acced2960ab25c901a97840512c24c8322e"
+  },
+  "runner-report.md": {
+    "bytes": 5041,
+    "sha256": "85502376dc6465848e68c21fb13738e9f7959b5ae09d04ec2ca89a37317b0b93"
+  },
+  "verify.py": {
+    "bytes": 4576,
+    "sha256": "25ab69f816121a02d9446c8bbded4a836daa6355e240800158d6d2346885c284"
+  }
+}

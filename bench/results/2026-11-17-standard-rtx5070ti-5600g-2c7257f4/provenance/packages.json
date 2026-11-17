@@ -1,0 +1,36 @@
+[
+  {
+    "entry": "strata.py",
+    "format": "tar.gz",
+    "installed_bytes": 331190398,
+    "platform": "linux-x86_64",
+    "sha256": "e780b9748bcd9e8427e4cf93f6ef79535173898c83ffbff8833f0ad9385bb36d",
+    "size": 97550582,
+    "url": "strata-control-0.1.61-linux-x86_64.tar.gz"
+  },
+  {
+    "archs": [
+      "sm_75",
+      "sm_86",
+      "sm_89",
+      "sm_120",
+      "compute_120"
+    ],
+    "backend": "cuda",
+    "build_id": "09b603886925+cuda13.0",
+    "format": "tar.gz",
+    "installed_bytes": 1021936994,
+    "manifest_sha256": "7ccffb928f8a1a7da281099cf34927b1cbc8f33d653567f4042e5ce611a1f8cf",
+    "min_driver": {
+      "nvidia": "580.65"
+    },
+    "min_runtime": null,
+    "notes": "",
+    "platform": "linux-x86_64",
+    "sha256": "a72c194c8f6de96629ed53079b5e344ab81223d45667a53f6a6d79398895aa50",
+    "size": 672845287,
+    "url": "https://github.com/Niko1221/Strata/releases/download/v0.2.14/strata-engine-0.1.60-linux-x86_64-cuda-cuda13.tar.gz",
+    "variant": "cuda13",
+    "version": "0.1.60"
+  }
+]
