@@ -1,0 +1,185 @@
+{
+  "prompts": [
+    "Write a Python function that merges two sorted lists into one sorted list, with a docstring and two tests. Explain the implementation and complexity in detail.",
+    "Explain in detail how a refrigerator moves heat from inside to outside. Discuss all four main components, thermodynamics, and efficiency in at least six paragraphs.",
+    "List twenty European capitals with three sentences about each, covering history, geography, and culture."
+  ],
+  "settings": {
+    "max_tokens": 256,
+    "temperature": 0,
+    "thinking": false,
+    "rounds": 2
+  },
+  "rows": [
+    {
+      "round": 1,
+      "prompt": 1,
+      "elapsed_seconds": 6.240114400000493,
+      "usage": {
+        "prompt_tokens": 42,
+        "completion_tokens": 256,
+        "total_tokens": 298,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 42,
+        "prompt_ms": 1152.2,
+        "prompt_per_token_ms": 27.433,
+        "prompt_per_second": 36.5,
+        "predicted_n": 256,
+        "predicted_ms": 5034.2,
+        "predicted_per_token_ms": 19.665,
+        "predicted_per_second": 50.9,
+        "draft_n": 211,
+        "draft_n_accepted": 183
+      },
+      "finish_reason": "length",
+      "answer": "```python\ndef merge_sorted_lists(list1: list, list2: list) -> list:\n    \"\"\"\n    Merge two sorted lists into a single sorted list.\n\n    This function uses the classic two-pointer technique to efficiently merge\n    two already-sorted lists in linear time. It traverses both lists simultaneously,\n    comparing elements at each step and appending the smaller element to the result.\n\n    Args:\n        list1 (list): A sorted list of comparable elements.\n        list2 (list): A sorted list of comparable elements.\n\n    Returns:\n        list: A new sorted list containing all elements from both input lists.\n\n    Examples:\n        >>> merge_sorted_lists([1, 3, 5], [2, 4, 6])\n        [1, 2, 3, 4, 5, 6]\n        >>> merge_sorted_lists([], [1, 2, 3])\n        [1, 2, 3]\n    \"\"\"\n    merged = []\n    i = 0  # Pointer for list1\n    j = 0  # Pointer for list2\n\n    # Traverse both lists while there are elements remaining in either list\n"
+    },
+    {
+      "round": 1,
+      "prompt": 2,
+      "elapsed_seconds": 6.525187499999447,
+      "usage": {
+        "prompt_tokens": 43,
+        "completion_tokens": 256,
+        "total_tokens": 299,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 43,
+        "prompt_ms": 791.1,
+        "prompt_per_token_ms": 18.398,
+        "prompt_per_second": 54.4,
+        "predicted_n": 256,
+        "predicted_ms": 5728.9,
+        "predicted_per_token_ms": 22.379,
+        "predicted_per_second": 44.7,
+        "draft_n": 138,
+        "draft_n_accepted": 121
+      },
+      "finish_reason": "length",
+      "answer": "A refrigerator operates on the principle of a vapor-compression refrigeration cycle, which is essentially a heat pump that moves thermal energy from a cold reservoir (the interior of the fridge) to a hot reservoir (the surrounding room). This process does not violate the laws of thermodynamics; rather, it requires external work—typically in the form of electricity—to drive the transfer of heat against its natural gradient. The system relies on a working fluid, known as a refrigerant, which undergoes phase changes between liquid and gas to absorb and release latent heat efficiently. This cycle is continuous and consists of four distinct components: the compressor, the condenser, the expansion valve, and the evaporator, each playing a critical role in maintaining the temperature differential necessary for cooling.\n\nThe first component, the **compressor**, acts as the heart of the system by providing the energy required to move the heat. It draws low-pressure, low-temperature vapor from the evaporator and compresses it into a high-pressure, high-temperature gas. According to the ideal gas law ($PV = nRT$), increasing the pressure of a gas while keeping its volume relatively constant results in an increase in temperature. This step is crucial because it raises the temperature of the refrigerant above that of the ambient"
+    },
+    {
+      "round": 1,
+      "prompt": 3,
+      "elapsed_seconds": 6.576859499999955,
+      "usage": {
+        "prompt_tokens": 30,
+        "completion_tokens": 256,
+        "total_tokens": 286,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 30,
+        "prompt_ms": 662.2,
+        "prompt_per_token_ms": 22.073,
+        "prompt_per_second": 45.3,
+        "predicted_n": 256,
+        "predicted_ms": 5910.4,
+        "predicted_per_token_ms": 23.087,
+        "predicted_per_second": 43.3,
+        "draft_n": 160,
+        "draft_n_accepted": 125
+      },
+      "finish_reason": "length",
+      "answer": "Here are twenty European capitals, each described with three sentences covering history, geography, and culture.\n\n1. **Paris, France**\n   Paris has been a major center of Western civilization since the Middle Ages, serving as the capital of the Kingdom of France and later the French Republic. Geographically, it is situated on the Seine River in the heart of the Île-de-France region, characterized by its iconic landmarks like the Eiffel Tower and Notre-Dame Cathedral. Culturally, Paris is renowned for its art museums, such as the Louvre, and its culinary traditions, including fine dining and café culture that define its global reputation.\n\n2. **London, United Kingdom**\n   London’s history dates back to Roman times when it was founded as Londinium, becoming a key trading hub and later the capital of the British Empire. Geographically, it lies on the River Thames in southeastern England, with a diverse landscape ranging from urban centers to green spaces like Hyde Park. Culturally, London is a global melting pot known for its theater scene, particularly the West End, and its influence on music, fashion, and literature.\n\n3. **Berlin, Germany**\n   Berlin has served as the capital of Prussia, the German Empire, and modern"
+    },
+    {
+      "round": 2,
+      "prompt": 1,
+      "elapsed_seconds": 5.4047334999995655,
+      "usage": {
+        "prompt_tokens": 42,
+        "completion_tokens": 256,
+        "total_tokens": 298,
+        "prompt_tokens_details": {
+          "cached_tokens": 35
+        }
+      },
+      "timings": {
+        "cache_n": 35,
+        "prompt_n": 7,
+        "prompt_ms": 244.1,
+        "prompt_per_token_ms": 34.871,
+        "prompt_per_second": 28.7,
+        "predicted_n": 256,
+        "predicted_ms": 5147.1,
+        "predicted_per_token_ms": 20.106,
+        "predicted_per_second": 49.7,
+        "draft_n": 200,
+        "draft_n_accepted": 177
+      },
+      "finish_reason": "length",
+      "answer": "```python\ndef merge_sorted_lists(list1: list, list2: list) -> list:\n    \"\"\"\n    Merge two sorted lists into a single sorted list.\n\n    This function uses the classic two-pointer technique to efficiently merge\n    two already-sorted lists in linear time. It traverses both lists simultaneously,\n    comparing elements at each pointer and appending the smaller element to the\n    result list. Once one list is exhausted, the remaining elements of the other\n    list are appended directly since they are already sorted.\n\n    Args:\n        list1 (list): The first sorted list.\n        list2 (list): The second sorted list.\n\n    Returns:\n        list: A new list containing all elements from both input lists, sorted in ascending order.\n\n    Examples:\n        >>> merge_sorted_lists([1, 3, 5], [2, 4, 6])\n        [1, 2, 3, 4, 5, 6]\n        >>> merge_sorted_lists([], [1, 2, 3])\n        [1, 2, 3]\n    \"\"\"\n    merged = []\n    i = 0  # Pointer for list1"
+    },
+    {
+      "round": 2,
+      "prompt": 2,
+      "elapsed_seconds": 5.852416300000186,
+      "usage": {
+        "prompt_tokens": 43,
+        "completion_tokens": 256,
+        "total_tokens": 299,
+        "prompt_tokens_details": {
+          "cached_tokens": 36
+        }
+      },
+      "timings": {
+        "cache_n": 36,
+        "prompt_n": 7,
+        "prompt_ms": 201.4,
+        "prompt_per_token_ms": 28.771,
+        "prompt_per_second": 34.8,
+        "predicted_n": 256,
+        "predicted_ms": 5646.7,
+        "predicted_per_token_ms": 22.057,
+        "predicted_per_second": 45.3,
+        "draft_n": 139,
+        "draft_n_accepted": 123
+      },
+      "finish_reason": "length",
+      "answer": "A refrigerator operates on the principle of a vapor-compression refrigeration cycle, which is essentially a heat pump that moves thermal energy from a low-temperature reservoir (the interior of the fridge) to a high-temperature reservoir (the surrounding room). This process does not violate the Second Law of Thermodynamics because it requires external work input—typically electrical energy—to drive the transfer of heat against its natural gradient. The system relies on a working fluid, known as a refrigerant, which undergoes phase changes between liquid and gas states to absorb and release latent heat efficiently. Understanding this mechanism requires examining four key components: the compressor, the condenser, the expansion valve, and the evaporator, each playing a distinct role in the thermodynamic cycle.\n\nThe first critical component is the **compressor**, often referred to as the heart of the system. It acts as the primary source of energy input for the cycle. The compressor draws low-pressure, low-temperature vapor from the evaporator and compresses it into a high-pressure, high-temperature gas. According to the ideal gas law ($PV = nRT$), increasing the pressure of a gas while reducing its volume significantly increases its temperature. This step is crucial because it raises the temperature of the refrigerant above that of the"
+    },
+    {
+      "round": 2,
+      "prompt": 3,
+      "elapsed_seconds": 6.109170800000356,
+      "usage": {
+        "prompt_tokens": 30,
+        "completion_tokens": 256,
+        "total_tokens": 286,
+        "prompt_tokens_details": {
+          "cached_tokens": 23
+        }
+      },
+      "timings": {
+        "cache_n": 23,
+        "prompt_n": 7,
+        "prompt_ms": 191.0,
+        "prompt_per_token_ms": 27.286,
+        "prompt_per_second": 36.6,
+        "predicted_n": 256,
+        "predicted_ms": 5897.7,
+        "predicted_per_token_ms": 23.038,
+        "predicted_per_second": 43.4,
+        "draft_n": 157,
+        "draft_n_accepted": 124
+      },
+      "finish_reason": "length",
+      "answer": "Here are twenty European capitals, each described with three sentences covering history, geography, and culture.\n\n1. **Paris, France**\n   Paris has been a major center of Western civilization since the Middle Ages, serving as the capital of France for centuries. Geographically, it is situated on the Seine River in the heart of the Île-de-France region, characterized by its iconic landmarks like the Eiffel Tower and Notre-Dame Cathedral. Culturally, the city is renowned worldwide for its art museums, such as the Louvre, and its influence on fashion, cuisine, and intellectual thought.\n\n2. **London, United Kingdom**\n   London’s history dates back to Roman times when it was founded as Londinium, later becoming a key hub of the British Empire. Geographically, it lies along the River Thames in southeastern England, featuring diverse neighborhoods from historic Westminster to modern financial districts like Canary Wharf. Culturally, London is a global melting pot known for its theater scene, including Shakespeare’s Globe Theatre, and its vibrant multicultural food and music scenes.\n\n3. **Berlin, Germany**\n   Berlin has served as the capital of Prussia, the German Empire, and later reunified Germany, playing a pivotal role in 20th-century"
+    }
+  ],
+  "median_decode_tokens_per_second": 45.0,
+  "weighted_decode_tokens_per_second": 46.036265547729656
+}

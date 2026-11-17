@@ -1,0 +1,185 @@
+{
+  "prompts": [
+    "Write a Python function that merges two sorted lists into one sorted list, with a docstring and two tests. Explain the implementation and complexity in detail.",
+    "Explain in detail how a refrigerator moves heat from inside to outside. Discuss all four main components, thermodynamics, and efficiency in at least six paragraphs.",
+    "List twenty European capitals with three sentences about each, covering history, geography, and culture."
+  ],
+  "settings": {
+    "max_tokens": 256,
+    "temperature": 0,
+    "thinking": false,
+    "rounds": 2
+  },
+  "rows": [
+    {
+      "round": 1,
+      "prompt": 1,
+      "elapsed_seconds": 5.81745839999985,
+      "usage": {
+        "prompt_tokens": 42,
+        "completion_tokens": 256,
+        "total_tokens": 298,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 42,
+        "prompt_ms": 753.5,
+        "prompt_per_token_ms": 17.94,
+        "prompt_per_second": 55.7,
+        "predicted_n": 256,
+        "predicted_ms": 4999.5,
+        "predicted_per_token_ms": 19.529,
+        "predicted_per_second": 51.2,
+        "draft_n": 206,
+        "draft_n_accepted": 181
+      },
+      "finish_reason": "length",
+      "answer": "```python\ndef merge_sorted_lists(list1: list, list2: list) -> list:\n    \"\"\"\n    Merge two sorted lists into a single sorted list.\n\n    This function uses the classic two-pointer technique to efficiently merge\n    two already-sorted lists in linear time. It traverses both lists simultaneously,\n    comparing elements at each pointer and appending the smaller element to the\n    result list. Once one list is exhausted, the remaining elements of the other\n    list are appended directly since they are already sorted.\n\n    Args:\n        list1 (list): A sorted list of comparable elements.\n        list2 (list): A sorted list of comparable elements.\n\n    Returns:\n        list: A new sorted list containing all elements from both input lists.\n\n    Examples:\n        >>> merge_sorted_lists([1, 3, 5], [2, 4, 6])\n        [1, 2, 3, 4, 5, 6]\n        >>> merge_sorted_lists([], [1, 2, 3])\n        [1, 2, 3]\n    \"\"\"\n    merged = []\n    i = 0  # Pointer for list1"
+    },
+    {
+      "round": 1,
+      "prompt": 2,
+      "elapsed_seconds": 6.491574099999525,
+      "usage": {
+        "prompt_tokens": 43,
+        "completion_tokens": 256,
+        "total_tokens": 299,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 43,
+        "prompt_ms": 735.9,
+        "prompt_per_token_ms": 17.114,
+        "prompt_per_second": 58.4,
+        "predicted_n": 256,
+        "predicted_ms": 5727.3,
+        "predicted_per_token_ms": 22.372,
+        "predicted_per_second": 44.7,
+        "draft_n": 133,
+        "draft_n_accepted": 113
+      },
+      "finish_reason": "length",
+      "answer": "A refrigerator operates on the principle of a vapor-compression refrigeration cycle, which is essentially a heat pump that moves thermal energy from a low-temperature reservoir (the interior of the fridge) to a high-temperature reservoir (the surrounding room). This process does not violate the Second Law of Thermodynamics because it requires external work input—typically electrical energy—to drive the transfer of heat against its natural gradient. The system relies on a working fluid, known as a refrigerant, which undergoes phase changes between liquid and gas states to absorb and release latent heat efficiently.\n\nThe first critical component is the **compressor**, often referred to as the heart of the refrigerator. It is located at the back or bottom of the unit and functions by drawing in low-pressure, low-temperature vapor from the evaporator coils. The compressor then mechanically compresses this vapor, significantly increasing its pressure and temperature. According to the ideal gas law ($PV = nRT$), when volume decreases and pressure increases, the temperature of the gas rises. This high-energy state is crucial because it allows the refrigerant to release heat to the environment at a temperature higher than the ambient room temperature, which is necessary for effective heat rejection.\n\nAfter compression, the hot, high-pressure vapor enters the **cond"
+    },
+    {
+      "round": 1,
+      "prompt": 3,
+      "elapsed_seconds": 6.389526800000567,
+      "usage": {
+        "prompt_tokens": 30,
+        "completion_tokens": 256,
+        "total_tokens": 286,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 30,
+        "prompt_ms": 545.6,
+        "prompt_per_token_ms": 18.187,
+        "prompt_per_second": 55.0,
+        "predicted_n": 256,
+        "predicted_ms": 5839.9,
+        "predicted_per_token_ms": 22.812,
+        "predicted_per_second": 43.8,
+        "draft_n": 150,
+        "draft_n_accepted": 120
+      },
+      "finish_reason": "length",
+      "answer": "Here are twenty European capitals, each described with three sentences covering history, geography, and culture.\n\n1. **Paris, France**\n   Paris has been a major center of learning and commerce since the Middle Ages, serving as the capital of the French monarchy for centuries before becoming the heart of modern France. Geographically, it is situated on the Seine River in the Île-de-France region, characterized by its iconic landmarks like the Eiffel Tower and Notre-Dame Cathedral. Culturally, Paris is renowned worldwide for its art museums, haute cuisine, fashion industry, and vibrant café culture that defines its romantic atmosphere.\n\n2. **London, United Kingdom**\n   London’s history dates back to Roman times when it was founded as Londinium, later becoming the political center of the British Empire and a global financial hub. Geographically, it lies on the River Thames in southeastern England, featuring a mix of historic districts like Westminster and modern areas such as Canary Wharf. Culturally, London is known for its diverse population, world-class museums like the British Museum, and iconic traditions including royal ceremonies and pub culture.\n\n3. **Berlin, Germany**\n   Berlin was first mentioned in historical records in 1244 and served as the capital of Pr"
+    },
+    {
+      "round": 2,
+      "prompt": 1,
+      "elapsed_seconds": 5.332342400000016,
+      "usage": {
+        "prompt_tokens": 42,
+        "completion_tokens": 256,
+        "total_tokens": 298,
+        "prompt_tokens_details": {
+          "cached_tokens": 35
+        }
+      },
+      "timings": {
+        "cache_n": 35,
+        "prompt_n": 7,
+        "prompt_ms": 216.6,
+        "prompt_per_token_ms": 30.943,
+        "prompt_per_second": 32.3,
+        "predicted_n": 256,
+        "predicted_ms": 5097.1,
+        "predicted_per_token_ms": 19.911,
+        "predicted_per_second": 50.2,
+        "draft_n": 213,
+        "draft_n_accepted": 182
+      },
+      "finish_reason": "length",
+      "answer": "```python\ndef merge_sorted_lists(list1: list, list2: list) -> list:\n    \"\"\"\n    Merge two sorted lists into a single sorted list.\n\n    This function uses the classic two-pointer technique to efficiently merge\n    two already-sorted lists in linear time. It traverses both lists simultaneously,\n    comparing elements at each step and appending the smaller element to the result.\n\n    Args:\n        list1 (list): A sorted list of comparable elements.\n        list2 (list): A sorted list of comparable elements.\n\n    Returns:\n        list: A new sorted list containing all elements from both input lists.\n\n    Examples:\n        >>> merge_sorted_lists([1, 3, 5], [2, 4, 6])\n        [1, 2, 3, 4, 5, 6]\n        >>> merge_sorted_lists([], [1, 2, 3])\n        [1, 2, 3]\n    \"\"\"\n    merged = []\n    i = 0  # Pointer for list1\n    j = 0  # Pointer for list2\n\n    # Traverse both lists while there are elements remaining in either list\n"
+    },
+    {
+      "round": 2,
+      "prompt": 2,
+      "elapsed_seconds": 6.4033457000005,
+      "usage": {
+        "prompt_tokens": 43,
+        "completion_tokens": 256,
+        "total_tokens": 299,
+        "prompt_tokens_details": {
+          "cached_tokens": 36
+        }
+      },
+      "timings": {
+        "cache_n": 36,
+        "prompt_n": 7,
+        "prompt_ms": 212.6,
+        "prompt_per_token_ms": 30.371,
+        "prompt_per_second": 32.9,
+        "predicted_n": 256,
+        "predicted_ms": 6170.5,
+        "predicted_per_token_ms": 24.104,
+        "predicted_per_second": 41.5,
+        "draft_n": 125,
+        "draft_n_accepted": 107
+      },
+      "finish_reason": "length",
+      "answer": "A refrigerator operates on the principle of a vapor-compression refrigeration cycle, which is essentially a heat pump that moves thermal energy from a cold reservoir (the interior of the fridge) to a hot reservoir (the surrounding room). This process defies the natural tendency of heat to flow from hot to cold by utilizing external work input. The fundamental mechanism relies on the phase changes of a refrigerant fluid, which absorbs and releases latent heat as it transitions between liquid and gas states. By cycling this fluid through four distinct components, the refrigerator effectively \"pumps\" heat out of its interior, maintaining a low temperature inside while expelling that energy into the environment.\n\nThe first critical component is the **compressor**, often referred to as the heart of the system. The compressor takes in low-pressure, low-temperature vapor from the evaporator and compresses it mechanically. According to the laws of thermodynamics, specifically the ideal gas law ($PV = nRT$), increasing the pressure of a gas while reducing its volume significantly increases its temperature. This compression process converts electrical energy into internal energy within the refrigerant, raising its temperature well above that of the surrounding room air. Without this step, the heat absorbed inside the fridge would not be hot enough to transfer efficiently to the warmer exterior"
+    },
+    {
+      "round": 2,
+      "prompt": 3,
+      "elapsed_seconds": 6.144546799999262,
+      "usage": {
+        "prompt_tokens": 30,
+        "completion_tokens": 256,
+        "total_tokens": 286,
+        "prompt_tokens_details": {
+          "cached_tokens": 23
+        }
+      },
+      "timings": {
+        "cache_n": 23,
+        "prompt_n": 7,
+        "prompt_ms": 205.5,
+        "prompt_per_token_ms": 29.357,
+        "prompt_per_second": 34.1,
+        "predicted_n": 256,
+        "predicted_ms": 5922.1,
+        "predicted_per_token_ms": 23.133,
+        "predicted_per_second": 43.2,
+        "draft_n": 161,
+        "draft_n_accepted": 123
+      },
+      "finish_reason": "length",
+      "answer": "Here are twenty European capitals, each described with three sentences covering history, geography, and culture.\n\n1. **Paris, France**\n   Paris has served as the capital of France since the 10th century, evolving from a Roman settlement into a global center for art and philosophy. Geographically, it is situated on the Seine River in the heart of the Île-de-France region, characterized by its iconic boulevards and historic bridges. Culturally, the city is renowned for its world-class museums like the Louvre, its haute cuisine, and its enduring reputation as a hub for fashion and intellectual discourse.\n\n2. **London, United Kingdom**\n   London’s history dates back to Roman times when it was founded as Londinium, later becoming the political center of the British Empire. Geographically, it lies on the River Thames in southeastern England, featuring a mix of modern skyscrapers and historic districts like Westminster. Culturally, London is celebrated for its diverse heritage, including Shakespearean theater, royal traditions, and a vibrant multicultural music scene.\n\n3. **Berlin, Germany**\n   Berlin was established in the 12th century and became the capital of Prussia before serving as the capital of unified Germany in 187"
+    }
+  ],
+  "median_decode_tokens_per_second": 44.25,
+  "weighted_decode_tokens_per_second": 45.502482492208884
+}

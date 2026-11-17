@@ -1,0 +1,39 @@
+{
+  "prepared_on": "2026-11-17",
+  "measurement_dates": [
+    "2026-11-16",
+    "2026-11-17"
+  ],
+  "contributor": "TJ-WANG-OK",
+  "control_version": "0.1.61",
+  "installed_terminal_commit_collected_on_2026_11_17": "c77572806996349b49995e4f98d41b5294d36a21",
+  "engine_build_collected_on_2026_11_17": {
+    "version": "0.1.60",
+    "source": "packaging/build_cuda_windows.py",
+    "commit": "09b603886925",
+    "archs": [
+      75,
+      86,
+      89,
+      120
+    ],
+    "ptx": true,
+    "cuda": "13.0",
+    "vision": "gpu-cuda13",
+    "portable": true,
+    "vision_archs": "75;86;89;120"
+  },
+  "historical_engine_sha256_from_calibration": "b4a49b4c7a94e1e90e1a91ba284b3e286d2d25edae2a696c29e264f41450540b",
+  "hardware_source": "Historical calibration identity: RTX 3070|8GB|Intel Core i9-10850K|64GB; engine log: 10 physical cores, 20 logical processors, AVX2.",
+  "driver_source": "Historical deployment-doctor.json: 610.60, RTX 3070, 8192 MiB. UUID intentionally omitted.",
+  "os": "Windows; historical edition and build not recorded",
+  "model_revisions": null,
+  "model_revision_reason": "Exact upstream model revisions were not saved with these runs.",
+  "scope": "Existing custom measurements and deployment checks; no new inference was performed while preparing this report.",
+  "redactions": [
+    "Local paths replaced by <DATA>, <STRATA_LOCAL>, <WORKSPACE>",
+    "GPU UUID omitted",
+    "Unrelated conversations omitted from engine logs"
+  ],
+  "calibration_integrity_note": "Sanitization changes paths and report bytes. Embedded calibration identity/body hashes belong to the original report and must not be used to apply this sanitized copy."
+}

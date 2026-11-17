@@ -1,0 +1,26 @@
+{
+  "flash": {
+    "baseline": {
+      "median_decode_tok_s": 45.0,
+      "decode_range_tok_s": [
+        43.3,
+        50.9
+      ],
+      "weighted_decode_tok_s": 46.036265547729656
+    },
+    "restored": {
+      "median_decode_tok_s": 44.25,
+      "decode_range_tok_s": [
+        41.5,
+        51.2
+      ],
+      "weighted_decode_tok_s": 45.502482492208884
+    }
+  },
+  "calibration_confirm": {
+    "default_median": 41.958958893332465,
+    "candidate_median": 42.876762804408266,
+    "difference_percent": 2.18738485244363,
+    "retained_settings": {}
+  }
+}

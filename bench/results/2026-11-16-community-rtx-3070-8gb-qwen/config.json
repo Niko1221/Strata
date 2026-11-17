@@ -1,0 +1,51 @@
+{
+  "flash": {
+    "model_name": "qwen3.8-flash-next-q2_0",
+    "args": [
+      "--pack",
+      "<DATA>\\packs\\q2_0",
+      "--native",
+      "<DATA>\\models\\Q2_0\\Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf",
+      "--ple-gguf",
+      "<DATA>\\models\\Q2_0\\Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00002-of-00002.gguf",
+      "--expert-profile",
+      "<DATA>\\terminal\\0.1.61\\data\\expert-profile.bin",
+      "--expert-cache",
+      "auto",
+      "--spec",
+      "4",
+      "--spec-min-p",
+      "0.5",
+      "--mtp",
+      "<DATA>\\mtp\\rt",
+      "--max-context",
+      "32768",
+      "--kv",
+      "int8",
+      "--vram-reserve-mib",
+      "1600",
+      "--prefill",
+      "512"
+    ],
+    "gpu": 0
+  },
+  "qwen36": {
+    "model_name": "qwen3.6-35b-a3b-ud-q4_k_xl",
+    "args": [
+      "--native",
+      "<DATA>\\models\\qwen36-UD-Q4_K_XL\\Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
+      "--max-context",
+      "8192",
+      "--mtp",
+      "2",
+      "--prefill",
+      "128"
+    ],
+    "gpu": 0,
+    "env": {
+      "STRATA_Q8_PACKED": "0",
+      "CUDA_MODULE_LOADING": "LAZY"
+    }
+  },
+  "note": "Saved launch inputs; Flash drafting flags are rewritten by the launcher. The engine excerpt records the effective DFlash2 command."
+}
