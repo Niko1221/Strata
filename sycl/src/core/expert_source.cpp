@@ -3310,7 +3310,9 @@ ArenaExpertSource::~ArenaExpertSource() { close(); }
 
 bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int64_t n_expert, int threads,
                              std::string& err, uint64_t max_pinned_bytes,
-                             const std::string& shared_arena_file) {
+                             const std::string& shared_arena_file,
+                             const std::vector<int>* /*split_devs*/) {   // signature parity with the shared header;
+    // the SYCL port has no STRATA_NUMA_ARENA_SPLIT arm, so the stage-device list goes unused here.
     close();
     const std::string path = pack_dir + "/experts.bin";
     // plan v0.3 P6: the layout (canonical, or a native pack's per-layer blobs) was loaded by the driver
