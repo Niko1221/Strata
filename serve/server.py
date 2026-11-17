@@ -4911,7 +4911,7 @@ class Service:
         self.literals = literal_tags(getattr(tokenizer, "control_tokens", ()))   # texts that stay text inside a message
         self.fit_max_tokens = fit_max_tokens          # default: clamp the output cap to the room left; False (--no-fit-max-tokens) = 400
         self.aliases: list[str] = []                  # #297: other names of the model (the config's `aliases`)
-        self.classifier_model = None
+        self.messages_classifier_alias = None
         self.answer_room = True                       # 0.1.45: see ANSWER_ROOM_MIN_CAP (the config's "answer_room": false turns it off)
         self.reasoning_close_retry = False            # #1053 (opt-in): close the thinking once when a reply ends inside it
         self.codex_compaction_cache = False           # #924 (opt-in): a Codex compaction is rendered with its conversation's tools
@@ -8959,11 +8959,8 @@ def make_handler(svc: Service):
         def _anthropic(self, req):
             svc.load()
             req = svc.with_shared(req, "anthropic")
-            classifier = bool(svc.classifier_model and req.get("model") == svc.classifier_model)
-            if classifier and getattr(svc.engine, "batch", 0) < 2:
-                return self._json(503, {"type": "error", "error": {
-                    "type": "api_error", "code": "classifier_slot_unavailable",
-                    "message": "The engine needs at least two batch slots for classifier_model"}})
+            classifier = (getattr(svc.engine, "batch", 0) >= 2 and bool(svc.messages_classifier_alias)
+                          and req.get("model") == svc.messages_classifier_alias)
             messages, tools, kw = anthropic_to_messages(req, svc.anthropic_think_unasked)
             self._no_local_images(messages)
             callable_tools, deferred = anthropic_tools(req)     # #4663: the deferred tools are callable, unlisted
@@ -10222,12 +10219,12 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
             blocked = []
         if blocked:
             ap.error("--offline cannot be strict for this profile: " + "; ".join(blocked))
-    classifier_model = cfg.get("classifier_model")
-    if classifier_model is not None:
-        if not isinstance(classifier_model, str) or not classifier_model.strip():
-            raise SystemExit("classifier_model must be a non-empty model ID")
-        if classifier_model == default_model_name(cfg):
-            raise SystemExit("classifier_model must differ from the primary model ID")
+    messages_classifier_alias = cfg.get("messages_classifier_alias")
+    if messages_classifier_alias is not None:
+        if not isinstance(messages_classifier_alias, str) or not messages_classifier_alias.strip():
+            raise SystemExit("messages_classifier_alias must be a non-empty model ID")
+        if messages_classifier_alias == default_model_name(cfg):
+            raise SystemExit("messages_classifier_alias must differ from the primary model ID")
     lazy = False
     if a.engine == "strata":
         if not cfg:
@@ -10354,10 +10351,10 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
                         pass
         per_replica = requested if isinstance(requested, int) and not isinstance(requested, bool) and requested > 0 else 1
         svc.requested_slots = per_replica * len(groups) if groups else per_replica
-    if classifier_model is not None:
+    if messages_classifier_alias is not None:
         if not isinstance(engine, StrataEngine) or svc.requested_slots < 2 or COALESCE_PREFILL > 1:
-            raise SystemExit("classifier_model requires one batched Strata engine with at least two slots, without coalescing")
-        svc.classifier_model = classifier_model
+            raise SystemExit("messages_classifier_alias requires one batched Strata engine with at least two slots, without coalescing")
+        svc.messages_classifier_alias = messages_classifier_alias
         engine.classifier_reserved = True
     svc.answer_room = cfg.get("answer_room") is not False
     svc.reasoning_close_retry = cfg.get("reasoning_close_retry") is True    # #1053: opt-in, off by default

@@ -1,11 +1,20 @@
 # Reserve a lane for a permission classifier
 
-The optional `classifier_model` run setting names a request model ID that uses
-the last batch lane. For example, with `parallel: 4` and
-`classifier_model: "local-classifier"`, ordinary requests use three lanes and
-Anthropic Messages requests naming `local-classifier` use the fourth. They use the same loaded
-weights. A gateway must preserve this request model ID rather than rewrite it.
-Choose an alias distinct from the primary model ID.
+`messages_classifier_alias` reserves the last batch lane for requests to
+`POST /v1/messages` whose `model` exactly matches the configured alias. Add
+these keys to the [model run config](DETAILS.md):
+
+```json
+{
+  "parallel": 3,
+  "aliases": ["local-classifier"],
+  "messages_classifier_alias": "local-classifier"
+}
+```
+
+Choose an alias distinct from the primary model ID. A gateway must preserve
+the `model` value. The same loaded weights serve all requests. Chat
+Completions and Responses requests use ordinary scheduling.
 
 With three lanes, two ordinary conversations can keep their prefixes while the
 third lane serves classifier requests. Two lanes support one ordinary request
@@ -26,11 +35,10 @@ Continuous classifier traffic can delay ordinary prompt reads.
 
 The option requires one batched Strata engine with at least two supported lanes.
 It cannot be combined with replica engines or coalesced prefills. If the engine
-reports fewer than two batch slots, Messages requests to the classifier alias
-receive HTTP 503 with `classifier_slot_unavailable`. Ordinary requests use the
-available engine capacity. The reservation takes effect again when the engine
-starts with two or more slots. Without the option, requests keep the existing
-slot selection and scheduling behavior.
+reports fewer than two batch slots, all requests use the ordinary queue. The
+reservation takes effect again when the engine starts with two or more slots.
+Without the option, requests keep the existing slot selection and scheduling
+behavior.
 
 CPU regression checks from the repository root:
 

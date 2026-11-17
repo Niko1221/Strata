@@ -6,7 +6,6 @@ import threading
 import time
 import unittest
 import urllib.request
-import urllib.error
 from unittest import mock
 
 from serve import test_parallel as parallel_fixtures
@@ -19,7 +18,7 @@ class ClassifierLane(FakeEngineCase):
 
     def enable(self):
         self.engine.classifier_reserved = True
-        self.svc.classifier_model = "local-classifier"
+        self.svc.messages_classifier_alias = "local-classifier"
 
     def test_last_slot_is_reserved_for_classifier(self):
         self.start(self.lanes)
@@ -96,7 +95,7 @@ class ClassifierReload(FakeEngineCase):
     def enable_and_unload(self):
         self.start(3)
         self.engine.classifier_reserved = True
-        self.svc.classifier_model = "local-classifier"
+        self.svc.messages_classifier_alias = "local-classifier"
         self.engine.unload()
 
     def classifier_request(self):
@@ -123,21 +122,16 @@ class ClassifierReload(FakeEngineCase):
     def check_fewer_slots(self, fit):
         self.enable_and_unload()
         with self.restart_with(fit):
-            with self.assertRaises(urllib.error.HTTPError) as raised:
-                urllib.request.urlopen(self.classifier_request(), timeout=10)
-            with raised.exception as response:
-                self.assertEqual(response.code, 503)
-                body = json.load(response)
-                self.assertEqual(body["type"], "error")
-                self.assertEqual(body["error"]["type"], "api_error")
-                self.assertEqual(body["error"]["code"], "classifier_slot_unavailable")
+            with urllib.request.urlopen(self.classifier_request(), timeout=10) as response:
+                self.assertEqual(response.status, 200)
+                self.assertTrue(json.load(response)["content"])
         self.assertEqual(self.engine.batch, fit)
         self.assertTrue(self.message("ordinary request")["content"])
 
-    def test_classifier_returns_503_when_no_batch_slots_fit(self):
+    def test_classifier_uses_ordinary_queue_when_no_batch_slots_fit(self):
         self.check_fewer_slots(0)
 
-    def test_classifier_returns_503_when_one_batch_slot_fits(self):
+    def test_classifier_uses_ordinary_queue_when_one_batch_slot_fits(self):
         self.check_fewer_slots(1)
 
 
