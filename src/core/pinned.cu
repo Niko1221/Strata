@@ -7,6 +7,8 @@
 #if defined(STRATA_USE_HIP) && defined(__linux__)   // kfd_quiet NOREG scope: Linux HIP only, every other build keeps its old text
 #include "strata/core/kfd_quiet.hpp"   // NOREG: the arena's mode and its lock (the Radeon 780M class, Linux HIP)
 #endif
+#include "strata/platform/numa_os.hpp"
+#include "strata/platform/numa_probe.hpp"
 #include <cstddef>
 
 #include <cuda_runtime.h>
@@ -144,7 +146,9 @@ uint64_t free_huge_bytes() {
 // are the resident arena.  This shared-file layout is intended for tmpfs (/dev/shm); hugetlbfs would need
 // hugepage-aligned file size and arena offset rather than the 4 KiB header layout used here.
 void* reserve(uint64_t bytes, PageBacking& got, std::string& note, const std::string& shared_file,
-              uint64_t shared_pack_hash, void*& mapping_base, uint64_t& mapping_bytes) {
+              uint64_t shared_pack_hash, void*& mapping_base, uint64_t& mapping_bytes,
+              const std::vector<std::pair<uint64_t, int>>* numa_plan,
+              std::vector<std::pair<uint64_t, uint64_t>>& va_regions) {
     mapping_base = nullptr;
     mapping_bytes = 0;
 
@@ -264,6 +268,65 @@ void* reserve(uint64_t bytes, PageBacking& got, std::string& note, const std::st
             CloseHandle(tok);
         }
     }
+    // STRATA_NUMA_ARENA=<node> / STRATA_NUMA_ARENA_SPLIT=<layer bounds> (the decisions live in
+    // strata/platform/numa.hpp): NUMA placement of the arena.  The node preference goes into the
+    // reservation's VAD so the physical frames land there no matter which thread faults them in during
+    // the fill; plain VirtualAlloc leaves the choice to the faulting CPU's node - measured: the whole
+    // arena lands on whichever node the process's processor group runs on.
+    static const int arena_node = [] {
+        const char* v = std::getenv("STRATA_NUMA_ARENA");
+        return v != nullptr && *v >= '0' && *v <= '9' ? std::atoi(v) : -1;
+    }();
+    auto valloc = [&](SIZE_T n, DWORD flags) -> void* {
+        return arena_node >= 0 && strata::platform::numa_va_supported()
+                   ? strata::platform::numa_virtual_alloc(nullptr, (uint64_t) n,
+                                                          (flags & MEM_LARGE_PAGES) != 0, arena_node)
+                   : VirtualAlloc(nullptr, n, flags, PAGE_READWRITE);
+    };
+    std::string split_note;
+    // STRATA_NUMA_ARENA_SPLIT domains: each {offset, node} region becomes its own VAD with its own node
+    // preference, so the pages of a stage's layers land on the node of the GPU that streams them.  The
+    // preference lives on the reservation, not on a later commit (measured: MEM_COMMIT on a sub-range
+    // keeps the whole reservation's VAD and the pages follow the faulting thread's node), so the domains
+    // are reserved+committed separately at their exact addresses inside a released placeholder span.  Any
+    // failure drops to the single-domain paths below - never worse than the pre-switch behaviour.
+    if (numa_plan != nullptr && numa_plan->size() >= 2 && strata::platform::numa_va_supported()) {
+        constexpr uint64_t kAllocGrain = 65536;   // the granularity lpAddress must be aligned to
+        bool aligned = (*numa_plan)[0].first == 0;
+        for (const auto& r : *numa_plan) aligned = aligned && (r.first % kAllocGrain) == 0;
+        if (aligned) {
+            void* hold = VirtualAlloc(nullptr, (SIZE_T) bytes, MEM_RESERVE, PAGE_READWRITE);
+            if (hold != nullptr) {
+                (void) VirtualFree(hold, 0, MEM_RELEASE);
+                std::vector<std::pair<uint64_t, uint64_t>> regs;
+                bool contiguous = true;
+                for (size_t i = 0; i < numa_plan->size() && contiguous; ++i) {
+                    const uint64_t off = (*numa_plan)[i].first;
+                    const uint64_t end = i + 1 < numa_plan->size() ? (*numa_plan)[i + 1].first : bytes;
+                    void* q = strata::platform::numa_virtual_alloc((char*) hold + off, end - off,
+                                                                   false, (*numa_plan)[i].second);
+                    contiguous = q == (char*) hold + off;
+                    if (contiguous) regs.push_back({off, end - off});
+                }
+                if (contiguous) {
+                    va_regions = regs;
+                    got = PageBacking::NormalPages;
+                    note = "NUMA domains";
+                    for (const auto& r : *numa_plan)
+                        note += " n" + std::to_string(r.second) + "@" +
+                                std::to_string((unsigned long long) (r.first >> 30)) + "GiB";
+                    note += " (STRATA_NUMA_ARENA_SPLIT)";
+                    return hold;
+                }
+                for (const auto& r : regs) (void) VirtualFree((char*) hold + r.first, 0, MEM_RELEASE);
+                split_note = "; NUMA split's regions did not reclaim contiguously - one domain";
+            } else {
+                split_note = "; NUMA split's placeholder reserve failed - one domain";
+            }
+        } else {
+            split_note = "; NUMA split boundary not on a 64 KiB grain - one domain";
+        }
+    }
     // MEM_LARGE_PAGES needs SeLockMemoryPrivilege; a normal account does not have it and VirtualAlloc then
     // fails with ERROR_PRIVILEGE_NOT_HELD.  That is the EXPECTED outcome on a desktop, not an error.
     SIZE_T large = GetLargePageMinimum();
@@ -273,11 +336,12 @@ void* reserve(uint64_t bytes, PageBacking& got, std::string& note, const std::st
         // anything else is ERROR_INVALID_PARAMETER (87), which reads like a privilege problem but is not.
         // Round up: the slack is under 2 MB and the tail stays unused.
         const SIZE_T lbytes = (SIZE_T) (((SIZE_T) bytes + large - 1) / large * large);
-        void* p = VirtualAlloc(nullptr, lbytes, MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES,
-                               PAGE_READWRITE);
+        void* p = valloc(lbytes, MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES);
         if (p) {
             got = PageBacking::LargePages;
             note = "large pages (" + std::to_string((unsigned long long) large) + " B)";
+            if (arena_node >= 0 && strata::platform::numa_va_supported())
+                note += "; NUMA node " + std::to_string(arena_node) + " (STRATA_NUMA_ARENA)";
             return p;
         }
         // 1450 (ERROR_NO_SYSTEM_RESOURCES) is the large-page pool saying no, 87 is a size that is not a
@@ -290,7 +354,15 @@ void* reserve(uint64_t bytes, PageBacking& got, std::string& note, const std::st
     } else {
         note = "this system has no large-page minimum; using 4 KB pages";
     }
-    void* p = VirtualAlloc(nullptr, (SIZE_T) bytes, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    void* p = valloc((SIZE_T) bytes, MEM_RESERVE | MEM_COMMIT);
+    if (p == nullptr && arena_node >= 0 && strata::platform::numa_va_supported()) {
+        note += "; NUMA node " + std::to_string(arena_node) + " refused the reservation (error " +
+                std::to_string((unsigned long long) GetLastError()) + "), unrestrained";
+        p = VirtualAlloc(nullptr, (SIZE_T) bytes, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    } else if (p != nullptr && arena_node >= 0 && strata::platform::numa_va_supported()) {
+        note += "; NUMA node " + std::to_string(arena_node) + " (STRATA_NUMA_ARENA)";
+    }
+    note += split_note;
     got = PageBacking::NormalPages;
     return p;
 #else
@@ -781,9 +853,11 @@ PinnedArena::PinnedArena(uint64_t bytes, uint64_t slice) : PinnedArena(bytes, un
 
 PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds,
                          uint64_t max_pinned_bytes, const std::string& shared_file,
-                         uint64_t shared_pack_hash) : capacity(bytes) {
+                         uint64_t shared_pack_hash, const std::vector<std::pair<uint64_t, int>>* numa_plan)
+        : capacity(bytes) {
     if (bytes == 0) return;
-    base = reserve(bytes, backing, note, shared_file, shared_pack_hash, mapping_base, mapping_bytes);
+    base = reserve(bytes, backing, note, shared_file, shared_pack_hash, mapping_base, mapping_bytes,
+                   numa_plan, va_regions);
     if (!shared_file.empty() && base != nullptr && mapping_base != nullptr)
         shared_state = reinterpret_cast<std::atomic<uint64_t>*>(static_cast<char*>(mapping_base) +
                                                                 offsetof(SharedArenaHeader, reserved));
@@ -913,6 +987,19 @@ PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds,
             }
         }
     }
+    // diag:numa-audit (STRATA_NUMA_AUDIT): which nodes the arena's pages actually landed on - placement
+    // is verified, not assumed.  One census per NUMA domain when the split committed, else one overall.
+    if (base && strata::platform::numa_audit_on()) {
+        int dev = -1;
+        (void) cudaGetDevice(&dev);
+        if (va_regions.empty()) {
+            strata::platform::numa_audit("arena", dev, base, bytes);
+        } else {
+            for (size_t i = 0; i < va_regions.size(); ++i)
+                strata::platform::numa_audit((std::string("arena[") + std::to_string(i) + "]").c_str(),
+                                             dev, (char*) base + va_regions[i].first, va_regions[i].second);
+        }
+    }
 }
 
 PinnedArena::PinnedArena(uint64_t bytes, ByNeed, const std::vector<std::pair<uint64_t, uint64_t>>& ranges,
@@ -920,7 +1007,8 @@ PinnedArena::PinnedArena(uint64_t bytes, ByNeed, const std::vector<std::pair<uin
                          uint64_t shared_pack_hash) : capacity(bytes) {
     by_need = true;
     if (bytes == 0) return;
-    base = reserve(bytes, backing, note, shared_file, shared_pack_hash, mapping_base, mapping_bytes);
+    base = reserve(bytes, backing, note, shared_file, shared_pack_hash, mapping_base, mapping_bytes,
+                   nullptr, va_regions);
     if (!shared_file.empty() && base != nullptr && mapping_base != nullptr)
         shared_state = reinterpret_cast<std::atomic<uint64_t>*>(static_cast<char*>(mapping_base) +
                                                                 offsetof(SharedArenaHeader, reserved));
@@ -1008,12 +1096,18 @@ PinnedArena::PinnedArena(uint64_t bytes, ByNeed, const std::vector<std::pair<uin
         // a partial lock is unlocked region by region in the destructor; what it did not reach was never locked
         // (VirtualUnlock/munlock of an unlocked page is harmless), so the list is kept whole
     }
+    if (base && strata::platform::numa_audit_on()) {   // STRATA_NUMA_AUDIT: where the pages landed
+        int dev = -1;
+        (void) cudaGetDevice(&dev);
+        strata::platform::numa_audit("arena-byneed", dev, base, bytes);
+    }
 }
 
 PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds, Deferred)
     : capacity(bytes), bounds_(bounds) {
     if (bytes == 0 || bounds.size() < 2) return;
-    base = reserve(bytes, backing, note, std::string{}, 0, mapping_base, mapping_bytes);
+    base = reserve(bytes, backing, note, std::string{}, 0, mapping_base, mapping_bytes,
+                   nullptr, va_regions);
     if (base != nullptr && mapping_base == nullptr) {
         mapping_base = base;
         mapping_bytes = bytes;

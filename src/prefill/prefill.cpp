@@ -40,6 +40,8 @@
 #include "strata/core/on_device.hpp"
 #include "strata/core/stream_watch.hpp"
 #include "strata/platform/aux_cpus.hpp"
+#include "strata/platform/numa.hpp"
+#include "strata/platform/numa_os.hpp"
 
 #include "strata/core/layout.hpp"
 #include "strata/kernels/cpu/expert.hpp"
@@ -135,6 +137,16 @@ bool ple_batch_enabled() {
 #include <thread>
 #include <utility>
 #include <vector>
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <psapi.h>
+#endif
 
 #if !defined(STRATA_PREFILL_MMQ) && !defined(STRATA_PREFILL_FUSED)
 // A build without the llama.cpp sources (no STRATA_NATIVE_EXPERTS): no MMQ, the FP16 expert path everywhere.  (P4-SPLIT: a build with
@@ -1069,6 +1081,10 @@ struct Alloc {
 
 }  // namespace
 
+// --- STRATA_NUMA_GPU_STAGING: the OS answers live in strata/platform/numa_os.hpp (the decisions in
+// strata/platform/numa.hpp).  Windows only; other platforms' answers are "unknown" and the staging takes
+// the legacy path, which is what the pre-switch code did anyway. ---------------------------------------
+
 // Step 4 of the prompt-speed plan: the experts the arena could not pin (a third of the streamed ones on IQ3_S) are
 // copied into pinned buffers by these threads, ahead of the launches.  Copied in line by the launching thread they
 // left the GPU without queued work while each ~2 MB memcpy ran (~15 s of a 32K prompt on IQ3_S).  Job j - a layer's
@@ -1103,6 +1119,10 @@ struct Stager {
     std::condition_variable cv;
     std::vector<std::thread> threads;
     int device = 0;
+    std::atomic<int> numa_placed{0}, numa_bound{0};   // stager-thread placement accounting (NUMA_GPU_STAGING)
+    // STRATA_NUMA_GPU_STAGING: the node this device's staging lives on (ring pages and copy threads);
+    // -1 = the legacy "wherever the allocator put it" path
+    int numa_node = -1;
 
     bool init(size_t blob_bytes, int nthreads) {
         if (const char* v = std::getenv("STRATA_STAGER_RING")) kRing = std::clamp(std::atoi(v), 2, 256);
@@ -1110,8 +1130,35 @@ struct Stager {
         pinned.assign((size_t) kRing, 0);
         dma_done.assign((size_t) kRing, nullptr);
         pageable.resize(kRing);
+        // STRATA_NUMA_GPU_STAGING (decision: strata/platform/numa.hpp): this device's staging - the pinned
+        // ring below and the copy threads at the end of init - lives on the NUMA node the device hangs off.
+        // On a multi-socket box the allocator's default put the whole ring on the wrong socket's node (the
+        // WDDM default here: copy p50 0.61 ms / feed 2.6 GB/s, node-local 0.16 ms / 6.7 GB/s).  Unset or
+        // off: the same code path as before the switch existed.
+        cudaGetDevice(&device);
+        {
+            const char* nv = std::getenv("STRATA_NUMA_GPU_STAGING");
+            const bool asked = nv != nullptr && *nv != '\0';
+            const auto pick = strata::platform::decide_numa_gpu(
+                nv, asked ? strata::platform::device_numa_node(device) : -1,
+                asked ? strata::platform::numa_node_count_os() : 1);
+            numa_node = pick.node;
+            if (!pick.log.empty()) std::fprintf(stderr, "stager: device %d %s\n", device, pick.log.c_str());
+        }
         for (int i = 0; i < kRing; ++i) {
-            pinned[i] = !force_pageable() && cudaHostAlloc((void**) &buf[i], blob_bytes, cudaHostAllocDefault) == cudaSuccess;
+#if defined(_WIN32)
+            if (!pinned[i] && !force_pageable() && numa_node >= 0 &&
+                strata::platform::numa_va_supported()) {
+                void* p = strata::platform::numa_virtual_alloc(nullptr, blob_bytes, false, numa_node);
+                if (p) {
+                    std::memset(p, 0, blob_bytes);   // first-touch lands the frames on the named node
+                    if (cudaHostRegister(p, blob_bytes, cudaHostRegisterDefault) == cudaSuccess) { pinned[i] = 2; buf[i] = (uint8_t*) p; }
+                    else { cudaGetLastError(); VirtualFree(p, 0, MEM_RELEASE); }
+                }
+            }
+#endif
+            if (!pinned[i])
+                pinned[i] = !force_pageable() && cudaHostAlloc((void**) &buf[i], blob_bytes, cudaHostAllocDefault) == cudaSuccess ? 1 : 0;
             if (!pinned[i]) {
                 cudaGetLastError();
                 pageable[(size_t) i].resize(blob_bytes);
@@ -1120,17 +1167,49 @@ struct Stager {
             if (cudaEventCreateWithFlags(&dma_done[i], stager_sleep() ? (cudaEventDisableTiming | cudaEventBlockingSync)
                                                                       : cudaEventDisableTiming) != cudaSuccess) return false;
         }
-        cudaGetDevice(&device);
+#if defined(_WIN32)
+        if (numa_node >= 0) {   // epoch forensics: which NUMA node the driver put the pinned ring on
+            static const auto qwse = [] {
+                HMODULE ps = LoadLibraryExW(L"psapi.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+                return ps ? (BOOL(WINAPI*)(HANDLE, PVOID, DWORD)) GetProcAddress(ps, "QueryWorkingSetEx") : nullptr;
+            }();
+            if (qwse) {
+                int nodes[256] = {0}, bad = 0;
+                const int nq = kRing < 256 ? kRing : 256;
+                for (int i = 0; i < nq; ++i) {
+                    PSAPI_WORKING_SET_EX_INFORMATION w{};
+                    w.VirtualAddress = buf[i];
+                    if (qwse(GetCurrentProcess(), &w, sizeof(w)) && w.VirtualAttributes.Valid)
+                        nodes[i] = (int) w.VirtualAttributes.Node;
+                    else { ++bad; nodes[i] = -1; }
+                }
+                std::fprintf(stderr, "stager: %d pinned bufs, phys nodes:", kRing);
+                for (int i = 0; i < nq; ++i) std::fprintf(stderr, " %d", nodes[i]);
+                std::fprintf(stderr, "%s\n", bad ? " (some unqueryable)" : "");
+            }
+        }
+#endif
         for (int t = 0; t < nthreads; ++t)
             threads.emplace_back([this] {
                 // --aux-cpus: the copy threads go to the spare CPUs with the other helpers; STRATA_AUX_STAGER=0 leaves them where
-                // they were created (a small spare set would then hold all of them: it limits the copy rate of a long read)
+                // they were created (a small spare set would then hold all of them: it limits the copy rate of a long read).
+                // STRATA_NUMA_GPU_STAGING wins over both when it named a node: the threads then write the ring
+                // on the node's own memory controller instead of through the socket link.  A failed bind
+                // takes the aux path it would have taken anyway.
                 strata::platform::name_this_thread("strata-stage");
                 static const bool keep = [] { const char* v = std::getenv("STRATA_AUX_STAGER"); return v != nullptr && std::atoi(v) == 0; }();
-                if (keep) strata::aux_cpus::note_owned_thread();
-                else strata::aux_cpus::pin_current_thread();
+                if (numa_node < 0 || !strata::platform::bind_thread_to_node(numa_node)) {
+                    if (keep) strata::aux_cpus::note_owned_thread();
+                    else strata::aux_cpus::pin_current_thread();
+                } else numa_bound.fetch_add(1, std::memory_order_relaxed);
+                numa_placed.fetch_add(1, std::memory_order_relaxed);
                 work();
             });
+        if (numa_node >= 0) {   // placement happens inside the workers: give them a moment, then account for it
+            for (int i = 0; i < 200 && numa_placed.load() < nthreads; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            std::fprintf(stderr, "stager: %d/%d copy threads bound to node %d\n",
+                         numa_bound.load(), nthreads, numa_node);
+        }
         return true;
     }
     ~Stager() {
@@ -1140,6 +1219,9 @@ struct Stager {
         for (auto& t : threads) t.join();
         for (int i = 0; i < kRing; ++i) {
             if (dma_done[i]) cudaEventDestroy(dma_done[i]);
+#if defined(_WIN32)
+            if (buf[i] && pinned[i] == 2) { cudaHostUnregister(buf[i]); VirtualFree(buf[i], 0, MEM_RELEASE); continue; }
+#endif
             if (buf[i] && pinned[i]) cudaFreeHost(buf[i]);
         }
     }
