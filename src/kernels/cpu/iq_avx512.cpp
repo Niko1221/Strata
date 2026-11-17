@@ -855,4 +855,229 @@ void q50_512_down_rows(const uint8_t* w, size_t row_bytes, int n, const void* co
     qd_rows_nt(nt, w, row_bytes, n, hq, out, r0, r1);
 }
 
+
+// ---- IQ2_S x Q8_K, one token (STRATA_IQ2S_1T=1, opt-in): the gate/up rows of an IQ2_S expert that one token reaches.
+// ggml-cpu's IQ2_S dot (x86: its AVX2 path) reads the 8 KB grid with one scalar load per 8 weights, ~6 GB/s per core.
+// Every grid byte is 0x08, 0x19 or 0x2b, so an entry is 8 two-bit codes (16 bits); the codes are kept as two 1 KB byte
+// planes and looked up 64 at a time (a gate row's and an up row's 32 groups of a superblock) with vpermt2b over eight
+// 128-byte tables, then expanded with vpmultishiftqb + vpshufb.  The rest is ggml's arithmetic: the same 8 int32 lanes
+// per superblock (exact integer sums), fma(d, lane, accumf) in superblock order, hsum_float_8, x 0.125 - bit for bit.
+namespace {
+struct Iq2sPlanes {
+    alignas(64) uint8_t lo[1024];   // codes of bytes 0-3 of entry e (2 bits each)
+    alignas(64) uint8_t hi[1024];   // codes of bytes 4-7
+};
+const Iq2sPlanes& iq2s_planes() {
+    static const Iq2sPlanes P = [] {
+        Iq2sPlanes p;
+        for (int e = 0; e < 1024; ++e) {
+            const uint64_t v = iq2s_grid[e];
+            uint8_t lo = 0, hi = 0;
+            for (int k = 0; k < 8; ++k) {
+                const uint8_t b = (uint8_t) (v >> (8 * k));
+                const int c = b == 0x08 ? 0 : b == 0x19 ? 1 : 2;   // 0x2b
+                if (k < 4) lo |= (uint8_t) ((c & 3) << (2 * k));
+                else hi |= (uint8_t) ((c & 3) << (2 * (k - 4)));
+            }
+            p.lo[e] = lo;
+            p.hi[e] = hi;
+        }
+        return p;
+    }();
+    return P;
+}
+
+// 32 group indices of one superblock as 16-bit lanes: qs[g] | ((qh[g/4] >> 2*(g%4)) & 3) << 8
+inline __m512i iq2s_idx(const block_iq2_s& x) {
+    alignas(64) static const uint16_t qh_sel_b[32] = {0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3,
+                                                      4, 4, 4, 4, 5, 5, 5, 5, 6, 6, 6, 6, 7, 7, 7, 7};
+    alignas(64) static const uint16_t qh_sh_b[32] = {0, 2, 4, 6, 0, 2, 4, 6, 0, 2, 4, 6, 0, 2, 4, 6,
+                                                     0, 2, 4, 6, 0, 2, 4, 6, 0, 2, 4, 6, 0, 2, 4, 6};
+    const __m512i qsw = _mm512_cvtepu8_epi16(_mm256_loadu_si256((const __m256i*) x.qs));
+    const __m512i qhw = _mm512_permutexvar_epi16(_mm512_load_si512(qh_sel_b),
+                                                 _mm512_castsi256_si512(_mm256_cvtepu8_epi16(_mm_loadl_epi64((const __m128i*) x.qh))));
+    return _mm512_or_si512(qsw, _mm512_slli_epi16(_mm512_and_si512(_mm512_srlv_epi16(qhw, _mm512_load_si512(qh_sh_b)),
+                                                                   _mm512_set1_epi16(3)), 8));
+}
+
+// the 16 scales (2 * nibble + 1) of a superblock as int16 lanes 0..15
+inline __m512i iq2s_scales(const block_iq2_s& x) {
+    uint64_t sc8;
+    std::memcpy(&sc8, x.scales, 8);
+    const __m128i sb = _mm_cvtsi64_si128((long long) sc8);
+    const __m128i lo = _mm_and_si128(sb, _mm_set1_epi8(0xf)), hi = _mm_and_si128(_mm_srli_epi16(sb, 4), _mm_set1_epi8(0xf));
+    return _mm512_castsi256_si512(_mm256_add_epi16(_mm256_slli_epi16(_mm256_cvtepu8_epi16(_mm_unpacklo_epi8(lo, hi)), 1),
+                                                   _mm256_set1_epi16(1)));
+}
+
+// gate . a and up . a of one row pair, ggml's order
+inline void iq2s_pair_1t(const uint8_t* grow, const uint8_t* urow, int nb, const block_q8_K* y, float& go, float& uo) {
+    const Iq2sPlanes& P = iq2s_planes();
+    alignas(64) static const uint16_t sc_idx_b[4][32] = {
+        {0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3},
+        {4, 4, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 5, 5, 5, 5, 6, 6, 6, 6, 6, 6, 6, 6, 7, 7, 7, 7, 7, 7, 7, 7},
+        {8, 8, 8, 8, 8, 8, 8, 8, 9, 9, 9, 9, 9, 9, 9, 9, 10, 10, 10, 10, 10, 10, 10, 10, 11, 11, 11, 11, 11, 11, 11, 11},
+        {12, 12, 12, 12, 12, 12, 12, 12, 13, 13, 13, 13, 13, 13, 13, 13, 14, 14, 14, 14, 14, 14, 14, 14, 15, 15, 15, 15, 15, 15, 15, 15}};
+    // expansion control: output qword q of group-block b takes lookup b+q's lo code byte (table 1) and hi (table 2)
+    alignas(64) static uint8_t ex_b[8][64];
+    alignas(64) static const uint8_t lut_b[16] = {0x08, 0x19, 0x2b, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    static const bool ex_init = [] {
+        for (int b = 0; b < 8; ++b)
+            for (int q = 0; q < 8; ++q)
+                for (int k = 0; k < 8; ++k) ex_b[b][8 * q + k] = k == 0 ? (uint8_t) (8 * b + q) : k == 1 ? (uint8_t) (64 + 8 * b + q) : 0;
+        return true;
+    }();
+    (void) ex_init;
+    const __m512i shifts = _mm512_set1_epi64(0x0e0c0a0806040200LL);
+    const __m512i m3 = _mm512_set1_epi8(3), m7f = _mm512_set1_epi16(0x7f);
+    const __m512i lut = _mm512_broadcast_i32x4(_mm_load_si128((const __m128i*) lut_b));
+    const block_iq2_s* xg = (const block_iq2_s*) grow;
+    const block_iq2_s* xu = (const block_iq2_s*) urow;
+    __m256 accg = _mm256_setzero_ps(), accu = _mm256_setzero_ps();
+#if defined(_MSC_VER)
+    // two superblocks per pass of the tables with named registers (L0/H0, L1/H1), no lambda and no register
+    // arrays: MSVC kept those in memory (Zen 5, MSVC 19.44: 186-201 us per expert, ggml 143-163; this form 102-103 -
+    // MozgiDev's rewrite on Niko1221/Strata#6085).  clang-cl defines _MSC_VER and is slow on the lambda form too
+    // (Zen 5, clang-cl 23.1.5: 173-175 us, this form 95-97, ggml 111-115 - MozgiDev on #6158).  The per-superblock
+    // arithmetic is unchanged, so the bits are.
+    const __m512i zero = _mm512_setzero_si512();
+#define STRATA_IQ2S_SPLIT(i_, i7_, h3_) \
+    { \
+        const __m512i ig = iq2s_idx(xg[i_]), iu = iq2s_idx(xu[i_]); \
+        i7_ = _mm512_inserti64x4(_mm512_castsi256_si512(_mm512_cvtepi16_epi8(_mm512_and_si512(ig, m7f))), \
+                                 _mm512_cvtepi16_epi8(_mm512_and_si512(iu, m7f)), 1); \
+        h3_ = _mm512_inserti64x4(_mm512_castsi256_si512(_mm512_cvtepi16_epi8(_mm512_srli_epi16(ig, 7))), \
+                                 _mm512_cvtepi16_epi8(_mm512_srli_epi16(iu, 7)), 1); \
+    }
+#define STRATA_IQ2S_BLOCK(i_, L_, H_) \
+    { \
+        const int i = i_; \
+        const __m512i L = L_, H = H_; \
+        const float dg = h2f(xg[i].d) * y[i].d; \
+        const float du = h2f(xu[i].d) * y[i].d; \
+        const __m512i scg = iq2s_scales(xg[i]), scu = iq2s_scales(xu[i]); \
+        const uint8_t* sgn_g = xg[i].qs + QK_K / 8; \
+        const uint8_t* sgn_u = xu[i].qs + QK_K / 8; \
+        __m512i ag = _mm512_setzero_si512(), au = _mm512_setzero_si512(); \
+        for (int p = 0; p < 4; ++p) { \
+            const __m512i q8 = _mm512_loadu_si512((const void*) (y[i].qs + 64 * p)); \
+            const __m512i sidx = _mm512_load_si512(sc_idx_b[p]); \
+            uint64_t sg, su; \
+            std::memcpy(&sg, sgn_g + 8 * p, 8); \
+            std::memcpy(&su, sgn_u + 8 * p, 8); \
+            const __m512i wg = _mm512_shuffle_epi8(lut, _mm512_and_si512(_mm512_multishift_epi64_epi8(shifts, \
+                                   _mm512_permutex2var_epi8(L, _mm512_load_si512(ex_b[p]), H)), m3)); \
+            const __m512i wu = _mm512_shuffle_epi8(lut, _mm512_and_si512(_mm512_multishift_epi64_epi8(shifts, \
+                                   _mm512_permutex2var_epi8(L, _mm512_load_si512(ex_b[4 + p]), H)), m3)); \
+            const __m512i dg8 = _mm512_maddubs_epi16(wg, _mm512_mask_sub_epi8(q8, (__mmask64) sg, _mm512_setzero_si512(), q8)); \
+            const __m512i du8 = _mm512_maddubs_epi16(wu, _mm512_mask_sub_epi8(q8, (__mmask64) su, _mm512_setzero_si512(), q8)); \
+            ag = _mm512_add_epi32(ag, _mm512_madd_epi16(dg8, _mm512_permutexvar_epi16(sidx, scg))); \
+            au = _mm512_add_epi32(au, _mm512_madd_epi16(du8, _mm512_permutexvar_epi16(sidx, scu))); \
+        } \
+        accg = _mm256_fmadd_ps(_mm256_set1_ps(dg), _mm256_cvtepi32_ps(_mm256_add_epi32(_mm512_castsi512_si256(ag), _mm512_extracti64x4_epi64(ag, 1))), accg); \
+        accu = _mm256_fmadd_ps(_mm256_set1_ps(du), _mm256_cvtepi32_ps(_mm256_add_epi32(_mm512_castsi512_si256(au), _mm512_extracti64x4_epi64(au, 1))), accu); \
+    }
+    for (int i2 = 0; i2 < nb; i2 += 2) {
+        const bool two = i2 + 1 < nb;
+        __m512i i7a, h3a, i7b = zero, h3b = zero;
+        STRATA_IQ2S_SPLIT(i2, i7a, h3a)
+        if (two) STRATA_IQ2S_SPLIT(i2 + 1, i7b, h3b)
+        __m512i L0 = i7a, H0 = i7a, L1 = i7b, H1 = i7b;
+        for (int k = 0; k < 8; ++k) {
+            const __m512i la = _mm512_load_si512(P.lo + 128 * k), lb = _mm512_load_si512(P.lo + 128 * k + 64);
+            const __m512i ha = _mm512_load_si512(P.hi + 128 * k), hb = _mm512_load_si512(P.hi + 128 * k + 64);
+            const __m512i kk = _mm512_set1_epi8((char) k);
+            const __mmask64 m0 = _mm512_cmpeq_epi8_mask(h3a, kk), m1 = _mm512_cmpeq_epi8_mask(h3b, kk);
+            L0 = _mm512_mask2_permutex2var_epi8(la, L0, m0, lb);
+            H0 = _mm512_mask2_permutex2var_epi8(ha, H0, m0, hb);
+            L1 = _mm512_mask2_permutex2var_epi8(la, L1, m1, lb);
+            H1 = _mm512_mask2_permutex2var_epi8(ha, H1, m1, hb);
+        }
+        STRATA_IQ2S_BLOCK(i2, L0, H0)
+        if (two) STRATA_IQ2S_BLOCK(i2 + 1, L1, H1)
+    }
+#undef STRATA_IQ2S_SPLIT
+#undef STRATA_IQ2S_BLOCK
+#else
+    // GCC / Clang: the same two-superblock pass with the lookups in a lambda over register arrays (Zen 4, GCC 15.2: this
+    // form 147 us per expert against 152 for the MSVC form, pool -1.5..2.5%; both give the same bits)
+    // the code lookup of superblocks i and i + 1 (both rows) in one pass over the eight tables: 128 lookups, the
+    // tables loaded once; vpermt2b merged into the index register (lanes of other tables keep their index)
+    __m512i Ls[2], Hs[2];
+    auto lookup = [&](int i0, int cnt) {
+        __m512i i7[2], h3[2];
+        for (int j = 0; j < cnt; ++j) {
+            const __m512i ig = iq2s_idx(xg[i0 + j]), iu = iq2s_idx(xu[i0 + j]);
+            i7[j] = _mm512_inserti64x4(_mm512_castsi256_si512(_mm512_cvtepi16_epi8(_mm512_and_si512(ig, m7f))),
+                                       _mm512_cvtepi16_epi8(_mm512_and_si512(iu, m7f)), 1);
+            h3[j] = _mm512_inserti64x4(_mm512_castsi256_si512(_mm512_cvtepi16_epi8(_mm512_srli_epi16(ig, 7))),
+                                       _mm512_cvtepi16_epi8(_mm512_srli_epi16(iu, 7)), 1);
+            Ls[j] = i7[j];
+            Hs[j] = i7[j];
+        }
+        for (int k = 0; k < 8; ++k) {
+            const __m512i la = _mm512_load_si512(P.lo + 128 * k), lb = _mm512_load_si512(P.lo + 128 * k + 64);
+            const __m512i ha = _mm512_load_si512(P.hi + 128 * k), hb = _mm512_load_si512(P.hi + 128 * k + 64);
+            const __m512i kk = _mm512_set1_epi8((char) k);
+            for (int j = 0; j < cnt; ++j) {
+                const __mmask64 m = _mm512_cmpeq_epi8_mask(h3[j], kk);
+                Ls[j] = _mm512_mask2_permutex2var_epi8(la, Ls[j], m, lb);
+                Hs[j] = _mm512_mask2_permutex2var_epi8(ha, Hs[j], m, hb);
+            }
+        }
+    };
+    for (int i = 0; i < nb; ++i) {
+        const int j = i & 1;
+        if (j == 0) lookup(i, i + 1 < nb ? 2 : 1);
+        const __m512i L = Ls[j], H = Hs[j];
+        const float dg = h2f(xg[i].d) * y[i].d;
+        const float du = h2f(xu[i].d) * y[i].d;
+        const __m512i scg = iq2s_scales(xg[i]), scu = iq2s_scales(xu[i]);
+        const uint8_t* sgn_g = xg[i].qs + QK_K / 8;
+        const uint8_t* sgn_u = xu[i].qs + QK_K / 8;
+        __m512i ag = _mm512_setzero_si512(), au = _mm512_setzero_si512();
+        for (int p = 0; p < 4; ++p) {
+            const __m512i q8 = _mm512_loadu_si512((const void*) (y[i].qs + 64 * p));
+            const __m512i sidx = _mm512_load_si512(sc_idx_b[p]);
+            uint64_t sg, su;
+            std::memcpy(&sg, sgn_g + 8 * p, 8);
+            std::memcpy(&su, sgn_u + 8 * p, 8);
+            const __m512i wg = _mm512_shuffle_epi8(lut, _mm512_and_si512(_mm512_multishift_epi64_epi8(shifts,
+                                   _mm512_permutex2var_epi8(L, _mm512_load_si512(ex_b[p]), H)), m3));
+            const __m512i wu = _mm512_shuffle_epi8(lut, _mm512_and_si512(_mm512_multishift_epi64_epi8(shifts,
+                                   _mm512_permutex2var_epi8(L, _mm512_load_si512(ex_b[4 + p]), H)), m3));
+            const __m512i dg8 = _mm512_maddubs_epi16(wg, _mm512_mask_sub_epi8(q8, (__mmask64) sg, _mm512_setzero_si512(), q8));
+            const __m512i du8 = _mm512_maddubs_epi16(wu, _mm512_mask_sub_epi8(q8, (__mmask64) su, _mm512_setzero_si512(), q8));
+            ag = _mm512_add_epi32(ag, _mm512_madd_epi16(dg8, _mm512_permutexvar_epi16(sidx, scg)));
+            au = _mm512_add_epi32(au, _mm512_madd_epi16(du8, _mm512_permutexvar_epi16(sidx, scu)));
+        }
+        accg = _mm256_fmadd_ps(_mm256_set1_ps(dg), _mm256_cvtepi32_ps(_mm256_add_epi32(_mm512_castsi512_si256(ag), _mm512_extracti64x4_epi64(ag, 1))), accg);
+        accu = _mm256_fmadd_ps(_mm256_set1_ps(du), _mm256_cvtepi32_ps(_mm256_add_epi32(_mm512_castsi512_si256(au), _mm512_extracti64x4_epi64(au, 1))), accu);
+    }
+#endif
+    go = 0.125f * hsum8_ggml(accg);
+    uo = 0.125f * hsum8_ggml(accu);
+}
+}  // namespace
+
+void iq2s_gu_rows_1t(const uint8_t* blob, size_t gu_row, size_t up_off, int n, const void* act, float* ff, int r0,
+                     int r1) {
+    const block_q8_K* y = (const block_q8_K*) act;
+    const int nb = n / QK_K;
+    for (int r = r0; r < r1; ++r) {
+        float g, u;
+        iq2s_pair_1t(blob + (size_t) r * gu_row, blob + up_off + (size_t) r * gu_row, nb, y, g, u);
+        ff[r] = (g / (1.f + std::exp(-g))) * u;
+    }
+}
+
+void iq2s_pair_rows_1t(const uint8_t* blob, size_t gu_row, size_t up_off, int n, const void* act, float* g_out,
+                       float* u_out, int r0, int r1) {
+    const block_q8_K* y = (const block_q8_K*) act;
+    const int nb = n / QK_K;
+    for (int r = r0; r < r1; ++r)
+        iq2s_pair_1t(blob + (size_t) r * gu_row, blob + up_off + (size_t) r * gu_row, nb, y, g_out[r], u_out[r]);
+}
+
+
 }  // namespace strata::kernels::cpu

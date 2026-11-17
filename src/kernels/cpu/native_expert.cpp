@@ -152,6 +152,43 @@ bool x512_one_ok(int type) {
     return ok;
 }
 
+// STRATA_IQ2S_1T=1: the IQ2_S one-token gate/up rows (iq2s_gu_rows_1t) only if, on synthetic blocks (an even and an odd superblock
+// count), they give the bits of this build's ggml-cpu dot, SwiGLU included: checked once.
+bool iq2s_1t_ok() {
+    static const bool ok = [] {
+        const Tr tr = traits(22);
+        const Tr t8 = traits(kTQ8_K);
+        if (!tr.has_dot() || !t8.has_from_float()) return false;
+        uint32_t seed = 24680u;
+        auto rnd = [&seed] { seed = seed * 1664525u + 1013904223u; return seed >> 8; };
+        for (const int n : {2560, 2304}) {
+            constexpr int rows = 24;
+            const size_t rb = row_size_of(22, n), nb = (size_t) n / 256, bb = rb / nb;
+            std::vector<uint8_t> w((size_t) 2 * rows * rb), act(row_size_of(kTQ8_K, n));
+            for (auto& b : w) b = (uint8_t) rnd();
+            for (int r = 0; r < 2 * rows; ++r)
+                for (size_t k = 0; k < nb; ++k) { uint8_t* d = &w[(size_t) r * rb + k * bb]; d[0] = 0x66; d[1] = 0x2e; }   // d = ~0.1 (f16)
+            std::vector<float> x(n);
+            for (auto& v : x) v = ((float) (rnd() % 2001) - 1000.f) * 0.001f;
+            t8.from_float(x.data(), act.data(), n);
+            std::vector<float> got((size_t) rows), want((size_t) rows);
+            iq2s_gu_rows_1t(w.data(), rb, (size_t) rows * rb, n, act.data(), got.data(), 0, rows);
+            for (int r = 0; r < rows; ++r) {
+                float g = 0.f, u = 0.f;
+                tr.dot(n, &g, w.data() + (size_t) r * rb, act.data());
+                tr.dot(n, &u, w.data() + (size_t) rows * rb + (size_t) r * rb, act.data());
+                want[(size_t) r] = (g / (1.f + std::exp(-g))) * u;
+            }
+            if (std::memcmp(got.data(), want.data(), got.size() * sizeof(float)) != 0) {
+                std::fprintf(stderr, "strata: the IQ2_S one-token rows differ from this ggml-cpu's dot: STRATA_IQ2S_1T not used\n");
+                return false;
+            }
+        }
+        return true;
+    }();
+    return ok;
+}
+
 // 0.2.12: the 512-bit Q5_0 down rows (q50_512_down_rows) take the type only if, on synthetic blocks (even and odd block counts, three tokens), they
 // give the bits of ggml-cpu's dot on this build.
 // The same check for the fused gate/up rows (iq512_fused_gu_rows) of an i-quant type: ggml-cpu's dot, SwiGLU included, bit for bit.
@@ -463,7 +500,8 @@ void native_gu_rows_impl(const NativeFmt& f, const uint8_t* blob, const void* co
     // first, then the AVX-2 one (Zen 2/3, Intel 12th-14th gen).  STRATA_NO_IQ512 drops an AVX-512 CPU to the
     // AVX-2 kernel, STRATA_NO_IQ256 drops the AVX-2 kernel; ggml-cpu's single-token vec_dot is reached only with
     // both set (and on a CPU without AVX-512, STRATA_NO_IQ512 changes nothing).
-    // 0.2.12 (PR 5120): AVX-512 F/DQ/BW/VL + VNNI is what iq_avx512.cpp runs on (its object holds no VBMI instruction); VBMI is not required.
+    // 0.2.12 (PR 5120): AVX-512 F/DQ/BW/VL + VNNI is what iq_avx512.cpp runs on (its object holds no VBMI instruction outside
+    // iq2s_gu_rows_1t, which is called only behind cpu_vbmi_ok() below); VBMI is not required.
     static const bool avx512 = cpu_vnni_ok() && std::getenv("STRATA_NO_IQ512") == nullptr;
     // STRATA_NO_IQ256 drops the AVX-2 kernel.  cpu_avx2_ok() is ALSO required: iq_avx2.cpp and kq_avx2.cpp
     // are compiled /arch:AVX2 and use AVX2 and FMA3, so calling them on a CPU without either is an
@@ -514,6 +552,16 @@ void native_gu_rows_impl(const NativeFmt& f, const uint8_t* blob, const void* co
             iq512x_rows(f.gu_type, blob + f.up_off + (size_t) c0 * f.gu_row, f.gu_row, n1, act, 1, up, 0, c1 - c0);
             for (int r = c0; r < c1; ++r) ff[0][r] = (g[r - c0] / (1.f + std::exp(-g[r - c0]))) * u[r - c0];
         }
+        return;
+    }
+    // OPT-IN: STRATA_IQ2S_1T=1 sends ONE token of an IQ2_S expert (where ggml-cpu's dot runs it today, below the #152 rule) to
+    // iq2s_gu_rows_1t: the IQ2_S grid holds only 0x08 / 0x19 / 0x2b, so it is read as 2-bit code planes, 64 lookups per vpermt2b,
+    // with ggml's integer lanes and float order (the same bits, checked once against this ggml).  Ryzen 7 8700G (Zen 4, GCC 15.2):
+    // one core 170.5 -> 146.8 us per expert (pool_rows_bench), 8 threads from DRAM 46.1 -> 55.5 GB/s (kq_cpu_bench); Zen 5 (9600X,
+    // GCC 13.5, a kernel bench): 1.27x ggml's dot.  Needs AVX-512 VBMI.
+    static const bool iq2s_1t = avx512 && cpu_vbmi_ok() && [] { const char* v = std::getenv("STRATA_IQ2S_1T"); return v != nullptr && std::atoi(v) != 0; }();
+    if (iq2s_1t && f.gu_type == 22 && nt == 1 && nt < native_gu_mt_min(f.gu_type) && f.tail_off == 0 && iq2s_1t_ok()) {
+        iq2s_gu_rows_1t(blob, f.gu_row, f.up_off, (int) f.n_embd, act[0], ff[0], r0, r1);
         return;
     }
     // 0.2.12: IQ4_XS on an AVX-512 CPU used to run on ggml-cpu's dot for every token (the 256-bit kernel below is AVX2-only).  The 512-bit rows sum
