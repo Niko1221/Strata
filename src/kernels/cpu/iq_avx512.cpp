@@ -934,10 +934,12 @@ inline void iq2s_pair_1t(const uint8_t* grow, const uint8_t* urow, int nb, const
     const block_iq2_s* xg = (const block_iq2_s*) grow;
     const block_iq2_s* xu = (const block_iq2_s*) urow;
     __m256 accg = _mm256_setzero_ps(), accu = _mm256_setzero_ps();
-#if defined(_MSC_VER) && !defined(__clang__)
+#if defined(_MSC_VER)
     // two superblocks per pass of the tables with named registers (L0/H0, L1/H1), no lambda and no register
     // arrays: MSVC kept those in memory (Zen 5, MSVC 19.44: 186-201 us per expert, ggml 143-163; this form 102-103 -
-    // MozgiDev's rewrite on Niko1221/Strata#6085).  The per-superblock arithmetic is unchanged, so the bits are.
+    // MozgiDev's rewrite on Niko1221/Strata#6085).  clang-cl defines _MSC_VER and is slow on the lambda form too
+    // (Zen 5, clang-cl 23.1.5: 173-175 us, this form 95-97, ggml 111-115 - MozgiDev on #6158).  The per-superblock
+    // arithmetic is unchanged, so the bits are.
     const __m512i zero = _mm512_setzero_si512();
 #define STRATA_IQ2S_SPLIT(i_, i7_, h3_) \
     { \
@@ -981,13 +983,19 @@ inline void iq2s_pair_1t(const uint8_t* grow, const uint8_t* urow, int nb, const
         STRATA_IQ2S_SPLIT(i2, i7a, h3a)
         if (two) STRATA_IQ2S_SPLIT(i2 + 1, i7b, h3b)
         __m512i L0 = i7a, H0 = i7a, L1 = i7b, H1 = i7b;
+        for (int k = 0; k < 8; ++k) {
+            const __m512i la = _mm512_load_si512(P.lo + 128 * k), lb = _mm512_load_si512(P.lo + 128 * k + 64);
+            const __m512i ha = _mm512_load_si512(P.hi + 128 * k), hb = _mm512_load_si512(P.hi + 128 * k + 64);
+            const __m512i kk = _mm512_set1_epi8((char) k);
             const __mmask64 m0 = _mm512_cmpeq_epi8_mask(h3a, kk), m1 = _mm512_cmpeq_epi8_mask(h3b, kk);
             L0 = _mm512_mask2_permutex2var_epi8(la, L0, m0, lb);
             H0 = _mm512_mask2_permutex2var_epi8(ha, H0, m0, hb);
             L1 = _mm512_mask2_permutex2var_epi8(la, L1, m1, lb);
             H1 = _mm512_mask2_permutex2var_epi8(ha, H1, m1, hb);
+        }
         STRATA_IQ2S_BLOCK(i2, L0, H0)
         if (two) STRATA_IQ2S_BLOCK(i2 + 1, L1, H1)
+    }
 #undef STRATA_IQ2S_SPLIT
 #undef STRATA_IQ2S_BLOCK
 #else
