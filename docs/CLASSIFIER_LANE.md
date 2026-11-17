@@ -33,7 +33,7 @@ Multiple classifier requests share one lane and can still exceed their client
 deadlines. An already running engine operation is not interrupted mid-kernel.
 Continuous classifier traffic can delay ordinary prompt reads.
 
-The option requires one batched Strata engine with at least two supported lanes.
+The option requires one batched Strata engine with at least two requested slots.
 It cannot be combined with replica engines or coalesced prefills. If the engine
 reports fewer than two batch slots, all requests use the ordinary queue. The
 reservation takes effect again when the engine starts with two or more slots.
