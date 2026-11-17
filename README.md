@@ -1,107 +1,179 @@
-# Strata NVLink Prefill Relay · NVLink 预填充中转
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="apps/host/public/brand/strata-lockup-dark.svg">
+    <img src="apps/host/public/brand/strata-lockup-light.svg" alt="Strata" width="340">
+  </picture>
+</p>
 
-[English](#english) · [简体中文](#简体中文) · [Try the relay](#try-the-nvlink-prefill-relay) · [构建与试用](#构建与试用) · [Feature branch / 功能分支](https://github.com/tubsGreatVictory/Strata/tree/nvlink-full-prefill-relay) · [Upstream PR #6131 / 上游 PR](https://github.com/Niko1221/Strata/pull/6131)
+<h3 align="center">Run powerful AI on your own computer.</h3>
+<p align="center">Chat, code and work with images, locally.</p>
 
-## English
+<p align="center">
+  <a href="#models">Models</a> · <a href="#install"><b>Install</b></a> ·
+  <a href="#hardware">Hardware</a> · <a href="#tools">Tools</a> ·
+  <a href="#help">Help</a> · <a href="#support-strata">Support</a>
+</p>
 
-### 128K benchmark
+<p align="center">
+  <a href="https://github.com/Niko1221/Strata/releases/latest"><img src="https://img.shields.io/github/v/release/Niko1221/Strata?label=download&color=0ab887" alt="Download Strata"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/Niko1221/Strata" alt="MIT license"></a>
+  <a href="https://github.com/sponsors/Niko1221"><img src="https://img.shields.io/badge/Sponsor-EA4AAA?logo=githubsponsors&logoColor=fff" alt="Sponsor Strata on GitHub Sponsors"></a>
+  <a href="https://buymeacoffee.com/strataengine"><img src="https://img.shields.io/badge/Buy_me_a_coffee-FFDD00?logo=buymeacoffee&logoColor=000" alt="Support Strata on Buy Me a Coffee"></a>
+</p>
 
-On Linux with two RTX 2080 Ti GPUs connected by NVLink, the relay increased median prefill throughput by **71.15%** and reduced median time to first token by **41.53%**.
+<p align="center"><sub><b>English</b> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ja.md">日本語</a> · <a href="README.de.md">Deutsch</a> · <a href="README.fr.md">Français</a> · <a href="README.es.md">Español</a> · <a href="README.pt-BR.md">Português</a> · <a href="README.pl.md">Polski</a></sub></p>
 
-| Median metric | Direct upload | NVLink relay | Change |
-| --- | ---: | ---: | ---: |
-| Prefill throughput | 1,103.5 tok/s | 1,888.6 tok/s | +71.15% |
-| Time to first token | 118.90 s | 69.51 s | −41.53% |
+**Free, open source, and yours to run.** Use Strata on your desktop or with your favorite coding tools. No account needed.
 
-The paired A/B benchmark used UD-Q4_K_XL + Q8 Engram, 131,086 uncached prompt tokens, 128 generated tokens, and three runs per configuration. CUDA0 used PCIe Gen3 x4 and CUDA1 used PCIe Gen3 x16. The Release build used CUDA 13.5, SM75, MMQ, and MMQ K-quants. All eight expert-bearing prefill chunks used the relay in every enabled run, with matching planned and submitted byte counts. These results apply to the tested layout and workload.
+## Models
 
-### How the relay works
+We recommend **ISTA-DASLab first**, then **Unsloth** and other providers, where a compatible model fits.
 
-- **Direct path:** host RAM → PCIe Gen3 x4 → CUDA0.
-- **Relay path:** host RAM → PCIe Gen3 x16 → CUDA1 staging buffers → NVLink → CUDA0.
-- CUDA1 alternates between two 4 MiB staging slots for eligible streamed expert weights. CUDA events coordinate slot reuse and receiver-stream ordering, and `cudaMemcpyPeerAsync` copies the staged data to CUDA0. The 8 MiB total is reusable staging space. Large transfers are split across slot-sized copies.
-- `expert_relay_test` verified 20 payloads totaling 41,944,896 bytes, including slot reuse and receiver-stream ordering.
+<details>
+<summary><img src="docs/media/models/qwen.svg" width="22" alt="" align="middle"> &nbsp;<b>Qwen3.8-Flash-Next</b></summary>
 
-### Try the NVLink prefill relay
+| Provider | Choices |
+| --- | --- |
+| **ISTA-DASLab · recommended** | Q2\_0, IQ2\_XS, IQ3\_XXS, IQ3\_S. [Coder: IQ1\_M](docs/MODELS.md#coder) for coding. |
+| **Unsloth** | UD-IQ4\_XS, UD-Q4\_K\_XL, UD-Q5\_K\_XL, UD-Q6\_K\_XL, Q8\_0 |
+| **Gyro · agentionai** | [Gyro-S, Gyro-M](https://huggingface.co/agentionai/Qwen3.8-Flash-Next-Gyro-GGUF). Lower memory use but slower. |
+| **Other options** | [Swift 1.5](docs/MODELS.md#swift-15), [NVFP4](docs/NVFP4.md), [OrcaRouter](docs/ORCA.md) |
 
-Use Linux with the CUDA Toolkit, exactly two visible RTX 2080 Ti GPUs (SM75), CUDA peer access, and active bidirectional NVLink. Identify the x4 receiver and x16 staging GPU by PCI bus ID and negotiated link width at load, then record their UUIDs. Check that the two cards are connected via NVLink.
+[Compare sizes, memory needs and compatibility](docs/MODELS.md).
 
-```bash
-nvidia-smi --query-gpu=index,pci.bus_id,uuid,pcie.link.width.current,pcie.link.width.max --format=csv
-nvidia-smi topo -m
+</details>
+
+<details>
+<summary><img src="docs/media/models/qwen.svg" width="22" alt="" align="middle"> &nbsp;<b>Qwen3.6-35B-A3B</b></summary>
+
+**Unsloth:** UD-Q4_K_XL, UD-Q6_K_XL, Q8_0. These are the currently documented packs for this model.
+
+[Model guide and compatibility](docs/QWEN36.md).
+
+</details>
+
+<a id="the-other-sizes"></a>
+
+Not sure what fits? [Choose a model for your computer](docs/MODELS.md#pick-by-memory).
+
+## Install
+
+<a id="option-a-the-strata-app"></a>
+
+### Desktop app
+
+**[Download Strata for Windows, Linux or Mac →](https://github.com/Niko1221/Strata/releases/latest)**
+
+Install the app, choose a model, and start chatting. There is one installer for each system. On first start the app
+downloads the engine for your graphics card. [Help with the installer](docs/INSTALL.md#the-app).
+
+<sub>Files: `Strata-0.2.15-windows-x64-setup.exe` · `Strata-0.2.15-linux-x86_64.AppImage` · `Strata-0.2.15-macos-arm64.dmg`</sub>
+
+<p align="center">
+  <img src="docs/media/app-chat.png" width="900" alt="Strata desktop app with a chat and live code preview side by side">
+  <br><sub>Chat, files and a live preview in one window.</sub>
+</p>
+
+<a id="option-b-the-terminal-one-line"></a>
+
+### Terminal app
+
+Prefer the terminal? Install Strata, then run **`strata launch`**.
+
+<details open>
+<summary><b>Install commands</b></summary>
+
+**Linux / Mac**
+
+```sh
+curl -fsSL --connect-timeout 15 --max-time 120 https://github.com/Niko1221/Strata/releases/latest/download/install.sh -o install.sh && sh install.sh
 ```
 
-```bash
-git clone --branch nvlink-full-prefill-relay --single-branch \
-  https://github.com/tubsGreatVictory/Strata.git Strata-NVLink
-cd Strata-NVLink
-./setup.sh --build --no-start --gpus 0,1
+**Windows PowerShell**
+
+```powershell
+irm -TimeoutSec 120 https://github.com/Niko1221/Strata/releases/latest/download/install.ps1 | iex
 ```
 
-Setup may download model files. Use the newly compiled engine and keep both GPUs selected. Replace `0,1` if the two RTX 2080 Ti cards have different `nvidia-smi` indices.
+On Windows, open a new terminal afterwards. Then:
 
-Strata builds the engine's `CUDA_VISIBLE_DEVICES` from the run configuration's GPU selection, so a shell export of that variable can be overridden. To pin the physical order, merge this entry into the `env` object of the generated model run config. Replace the placeholders with the full UUIDs from the query above. CUDA enumerates the first UUID as CUDA0 and the second as CUDA1.
-
-```json
-{"env": {"CUDA_VISIBLE_DEVICES": "GPU-<x4-receiver-uuid>,GPU-<x16-staging-uuid>"}}
+```sh
+strata launch
 ```
 
-The relay is off by default. Export the switch and launch the Strata CLI or the generated `run-<model>.sh` from that same shell. A desktop app opened from the system launcher does not inherit this shell export. If the run config already defines the switch in `env`, set it to `"1"` there as well.
+Follow the prompts to download and start a model. [Terminal guide](docs/TERMINAL_LAUNCH.md).
 
-```bash
-export STRATA_LOCAL_PREFILL_RELAY=1
-```
+</details>
 
-Confirm activation in engine stderr or the engine log with `strata local: STRATA_LOCAL_PREFILL_RELAY active: RAM -> CUDA1 ... -> CUDA0 ...`. Check the logged PCI bus IDs against the two physical cards. Without that line, activation is unconfirmed. Check the effective environment, engine build, and initialization errors. During a long prefill, `route=enabled (full relay, solo threaded issuer)` confirms that a chunk actually used the relay. For an A/B check, restart with the variable unset, then set, and use the same model and uncached prompt in both runs. [Linux source build guide](https://github.com/tubsGreatVictory/Strata/blob/nvlink-full-prefill-relay/docs/SOURCE_INSTALL.md#build-from-git-on-linux-to-try-a-pull-request-or-change-the-code)
+<p align="center">
+  <img src="docs/media/terminal-monitor.png" width="900" alt="Strata terminal app showing model activity, speed, memory and recent requests">
+  <br><sub>Watch your model and hardware while it runs.</sub>
+</p>
 
-## 简体中文
+<a id="build-from-source"></a>
 
-### 128K 跑分
+[Build from source](docs/SOURCE_INSTALL.md) · [Docker](docs/DOCKER.md) · [Full install guide](docs/INSTALL.md)
 
-在 Linux 双 RTX 2080 Ti + NVLink 环境中，启用中转后，预填充吞吐中位数提升 **71.15%**，首 token 时间中位数缩短 **41.53%**。
+<a id="what-you-need"></a>
 
-| 中位数指标 | PCIe 直传 | NVLink 中转 | 变化 |
-| --- | ---: | ---: | ---: |
-| 预填充吞吐 | 1,103.5 tok/s | 1,888.6 tok/s | +71.15% |
-| 首 token 时间 | 118.90 秒 | 69.51 秒 | −41.53% |
+## Hardware
 
-A/B 使用 UD-Q4_K_XL + Q8 Engram，输入 131,086 个未命中缓存的 token，生成 128 个 token，每组跑 3 次。CUDA0 为 PCIe Gen3 x4，CUDA1 为 PCIe Gen3 x16。Release 构建使用 CUDA 13.5、SM75，并启用 MMQ 和 MMQ K-quants。开启中转的每轮测试中，8 个包含专家权重传输的预填充块均走中转，计划与实际提交的字节数一致。以上结果对应这套拓扑和测试负载。
+| Supported hardware | Guide |
+| --- | --- |
+| **NVIDIA GeForce RTX 20 / 30 / 40 / 50 series** | [NVIDIA setup](docs/INSTALL.md#what-you-need) |
+| **AMD Radeon RX 7700 / 7800 / 7900, RX 9060 / 9070, AI PRO R9700** | [AMD setup](docs/AMD_HIP.md) |
+| **AMD Radeon RX 6800 / 6900 · experimental** | [RX 6000 setup](docs/AMD_HIP.md#rdna2-gfx1030) |
+| **Intel Arc · Linux** | [Intel setup](docs/INTEL_ARC.md) |
+| **Apple Silicon · M1 or newer** | [Mac setup](docs/MAC.md) |
+| **AMD Ryzen AI Max · Strix Halo** | [Strix Halo setup](docs/STRIX_HALO.md) |
+| **NVIDIA DGX Spark · Linux** | [DGX Spark setup](docs/DGX_SPARK_LINUX.md) |
 
-### 技术路线
+<a id="using-it"></a>
 
-- **直传路径**：系统内存 → PCIe Gen3 x4 → CUDA0。
-- **中转路径**：系统内存 → PCIe Gen3 x16 → CUDA1 暂存缓冲区 → NVLink → CUDA0。
-- CUDA1 用两个 4 MiB 暂存槽交替处理符合条件的专家权重传输。CUDA 事件协调槽位复用与接收流顺序，`cudaMemcpyPeerAsync` 将暂存权重复制到 CUDA0。合计 8 MiB 的暂存空间可反复复用，较大的传输按槽位容量拆分。
-- `expert_relay_test` 验证了 20 份数据，共 41,944,896 字节，覆盖槽位复用和接收流顺序。
+## Tools
 
-### 构建与试用
+**Claude Code · Codex CLI · OpenCode · oh-my-pi · pi.dev · Hermes Agent · OpenClaw**, and more through the OpenAI- and Anthropic-compatible APIs.
 
-需要 Linux、CUDA Toolkit、恰好两张 CUDA 可见的 RTX 2080 Ti（SM75）、CUDA peer access，以及已激活的双向 NVLink。用 PCI Bus ID 和负载下实际协商的链路宽度识别 x4 接收卡和 x16 中转卡，记下各自的 UUID，并确认两卡之间存在 NVLink 连接。
+Run **`strata connect`** to see setup instructions for your tool. [Connection guide](docs/TERMINAL_LAUNCH.md#connect-your-apps-strata-connect).
 
-```bash
-nvidia-smi --query-gpu=index,pci.bus_id,uuid,pcie.link.width.current,pcie.link.width.max --format=csv
-nvidia-smi topo -m
-```
+<a id="guides"></a>
+<a id="how-fast-is-it"></a>
+<a id="how-does-it-work"></a>
+<a id="something-went-wrong"></a>
 
-```bash
-git clone --branch nvlink-full-prefill-relay --single-branch \
-  https://github.com/tubsGreatVictory/Strata.git Strata-NVLink
-cd Strata-NVLink
-./setup.sh --build --no-start --gpus 0,1
-```
+## Help
 
-安装过程可能下载模型文件。将模型配置指向本次编译的引擎，并保留双卡选择。若两张 RTX 2080 Ti 在 `nvidia-smi` 中的编号不同，请替换 `0,1`。
+[All guides](docs) · [Troubleshooting](docs/TROUBLESHOOTING.md) · [Report a bug](https://github.com/Niko1221/Strata/issues/new/choose) ·
+[Benchmarks](docs/COMMUNITY_BENCHMARKS.md) · [How it works](docs/HOW_IT_WORKS.md) · [Contribute](CONTRIBUTING.md)
 
-Strata 会根据运行配置里的 GPU 选择设置引擎的 `CUDA_VISIBLE_DEVICES`，因此 shell 中同名的变量可能被覆盖。要固定物理顺序，请把以下条目合并到生成的模型运行配置的 `env` 对象。把占位符替换为上面查到的完整 UUID。CUDA 会把排在前面的 x4 卡枚举为 CUDA0，把排在后面的 x16 卡枚举为 CUDA1。
+## Support Strata
 
-```json
-{"env": {"CUDA_VISIBLE_DEVICES": "GPU-<x4-receiver-uuid>,GPU-<x16-staging-uuid>"}}
-```
+**Help keep local AI open to everyone.** A GitHub sponsorship or a coffee helps fund development and testing on more hardware.
 
-功能默认关闭。执行下面的命令后，从同一个 shell 启动 Strata CLI 或生成的 `run-<model>.sh`。从系统菜单或桌面图标启动的 App 不会继承这个 shell 的变量。如果运行配置的 `env` 已定义此开关，也要在那里设为 `"1"`。
+<a href="https://github.com/sponsors/Niko1221"><img src="https://img.shields.io/badge/Sponsor_on_GitHub-EA4AAA?style=for-the-badge&logo=githubsponsors&logoColor=white" alt="GitHub Sponsors: sponsor Strata" height="48"></a>
+<a href="https://buymeacoffee.com/strataengine"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me a Coffee: support Strata" height="48"></a>
 
-```bash
-export STRATA_LOCAL_PREFILL_RELAY=1
-```
+### Loyal supporters
 
-以引擎 stderr 或日志里的 `strata local: STRATA_LOCAL_PREFILL_RELAY active: RAM -> CUDA1 ... -> CUDA0 ...` 为激活判据，并用日志中的 PCI Bus ID 核对两张物理卡。没有这行就需要检查引擎收到的环境变量、构建版本和初始化报错。长提示词预填充时，`route=enabled (full relay, solo threaded issuer)` 表示对应的块实际走了中转。做 A/B 对照时，在关闭和开启两种设置下分别重启 Strata，使用相同模型和相同的未缓存提示词。 [Linux 源码构建说明](https://github.com/tubsGreatVictory/Strata/blob/nvlink-full-prefill-relay/docs/SOURCE_INSTALL.md#build-from-git-on-linux-to-try-a-pull-request-or-change-the-code)
+Thank you to everyone who supports Strata.
+
+<!-- supporters:start (one line per public supporter, newest last; copy a line and change the GitHub name in all four places) -->
+<a href="https://github.com/ryan4yin"><img src="https://github.com/ryan4yin.png?size=96" width="48" height="48" alt="ryan4yin" title="ryan4yin"></a>
+<a href="https://github.com/themactep"><img src="https://github.com/themactep.png?size=96" width="48" height="48" alt="themactep" title="themactep"></a>
+<a href="https://github.com/macintog"><img src="https://github.com/macintog.png?size=96" width="48" height="48" alt="macintog" title="macintog"></a>
+<a href="https://github.com/bisonbet"><img src="https://github.com/bisonbet.png?size=96" width="48" height="48" alt="bisonbet" title="bisonbet"></a>
+<a href="https://github.com/vizv"><img src="https://github.com/vizv.png?size=96" width="48" height="48" alt="vizv" title="vizv"></a>
+<a href="https://github.com/kod88vn"><img src="https://github.com/kod88vn.png?size=96" width="48" height="48" alt="kod88vn" title="kod88vn"></a>
+<a href="https://github.com/seoulworker"><img src="https://github.com/seoulworker.png?size=96" width="48" height="48" alt="seoulworker" title="seoulworker"></a>
+<a href="https://github.com/jackyini"><img src="https://github.com/jackyini.png?size=96" width="48" height="48" alt="jackyini" title="jackyini"></a>
+<a href="https://github.com/router0mail"><img src="https://github.com/router0mail.png?size=96" width="48" height="48" alt="router0mail" title="router0mail"></a>
+<!-- supporters:end -->
+
+[MIT license](LICENSE) · [Credits and model licenses](docs/HOW_IT_WORKS.md#credits) · [Privacy](docs/SAFETY.md)
+
+<a id="option-c-let-your-ai-set-it-up"></a>
+
+<sub>For AI tools and automated readers: <a href="AGENTS.md">technical reference</a> · <a href="docs/AI_SETUP.md">setup instructions</a>.</sub>
+
+**Sponsorships, hardware partnerships or collaborations:** [niko.veit@outlook.com](mailto:niko.veit@outlook.com).
+
