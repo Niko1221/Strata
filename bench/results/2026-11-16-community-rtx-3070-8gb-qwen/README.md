@@ -6,7 +6,15 @@ Flash-Next Q2_0 short-prompt decode medians were **45.00 tok/s before calibratio
 3% retention threshold.
 
 These are custom historical measurements under the community guide, not a run of
-the draft standard protocol or an approved result. No new inference was performed while preparing the submission.
+the draft standard protocol or an approved result. The historical measurements below are separate from the new standard-protocol run linked below.
+
+## Additional standard-protocol measurements
+
+A separate [17 November draft-standard run](../2026-11-17-standard-rtx-3070-7c6e2e69/README.md) now supplies
+three repetitions each for short, 4K and 16K performance prompts, twelve sanity
+checks, and the optional four-client stage against the one-slot server. See that
+report for status, scores, raw evidence and limitations. The historical results
+below are not mixed with those thinking-on protocol measurements.
 
 ## Hardware and software
 
@@ -105,7 +113,7 @@ Failed: no failed API requests are present in these twelve saved measurements.
 Calibration found no candidate that met the 3% retention threshold. The engine
 excerpt retains its low-VRAM warning; startup allocations are not measured peaks.
 
-Not run: draft standard protocol, 4K/16K or full-context benchmark sweep,
+Not run in this historical series: draft standard protocol, 4K/16K or full-context benchmark sweep,
 long-context recall, concurrency, soak tests, peak RAM/VRAM sampling, independent
 reproduction, model quality evaluation, or engine builds.
 No source code or runtime defaults are changed by this results-only submission.
@@ -115,7 +123,7 @@ No source code or runtime defaults are changed by this results-only submission.
 Run `python benchmark.py results.json` only against a running Flash-Next Q2_0
 server at `http://127.0.0.1:8080` with the configuration above. It writes new
 measurements and does not reproduce the historical cache or background state.
-These are reproduction instructions, not additional runs performed for this PR.
+These instructions describe the historical custom workload; the new protocol run uses its own frozen fixtures.
 
 `rows[].usage` uses token counts, `rows[].timings` uses milliseconds and tok/s,
 and `elapsed_seconds` is client wall time. `round` and `prompt` are one-based.

@@ -1,0 +1,21 @@
+{
+  "validated": true,
+  "requests": 34,
+  "status": "complete",
+  "independent_sanity": {
+    "I1": true,
+    "I2": true,
+    "I3": true,
+    "I4": true,
+    "R1": true,
+    "R2": true,
+    "R3": true,
+    "R4": true,
+    "T1": true,
+    "T2": true,
+    "T3": false,
+    "T4": true
+  },
+  "passed": 11,
+  "artifact_hashes": 6
+}
