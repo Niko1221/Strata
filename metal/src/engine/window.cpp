@@ -65,6 +65,13 @@ std::string engine_msl_dir() { return strata_metal::resource("STRATA_METAL_ENGIN
 
 namespace strata::metal_engine {
 
+// conversation memory (K/V) format: int8 rows (256 bytes + 4 fp16 scales a cell and kv head) or, with --kv q4_0
+// (strata::core::qsa_kv_q4, set while the options are read, before the window exists), q4_0 rows (128 bytes + 8 fp16
+// scales, llama.cpp's q4_0 block per 32 values); the qsa kernels read the matching layout (msl_libs.h lib_qsa)
+static bool kv4_on() { return strata::core::qsa_kv_q4(); }
+static size_t kv_row() { return kv4_on() ? (size_t) strata_metal::geo::QD / 2 : (size_t) strata_metal::geo::QD; }   // bytes a (cell, kv head) row
+static size_t kv_nsc() { return kv4_on() ? (size_t) strata_metal::geo::QD / 32 : (size_t) strata_metal::geo::QD / 64; }   // fp16 scales a row
+
 // The prompt GDN scan kernel, chosen by chip and prompt length (gdn_prompt.metal, gdn_scan_r<IB, TB>; every choice is
 // bit-identical to gdn_scanr_4: the token order and the arithmetic are the same, only the staged block size TB changes, which
 // changes the threadgroup memory a core can hold at once).  Measured by metal/tests/gdn_chunk_bench:
@@ -758,7 +765,7 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
         auto cc = [&](const MslLib& L) { return cx_->compile(L.files, L.prelude); };
         lib_ = cc(lib_core(metal_f16(), kq_down_prelude(f_)));
         lgdn_ = cc(lib_gdn());
-        lqsa_ = cc(lib_qsa());
+        lqsa_ = cc(lib_qsa(kv4_on()));
         lsmp_ = cc(lib_sample());
         lple_ = cc(lib_ple(engine_msl_dir()));
     }
@@ -785,8 +792,8 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
     bigs_ok_ = g_slot_cap > 0;
     const size_t NSET = 1 + (size_t) std::max(0, g_slot_cap);
     auto R256 = [](size_t b) { return (b + 255) / 256 * 256; };
-    st_gst_ = R256(GST_B); st_hist_ = R256(HIST_B); st_kq_ = R256((size_t) MAXC * G_QKV * G_QD);
-    st_sc_ = R256(2 * (size_t) MAXC * G_QKV * 4); st_tail_ = R256(TAIL_B); st_dead_ = R256(DEAD_B);
+    st_gst_ = R256(GST_B); st_hist_ = R256(HIST_B); st_kq_ = R256((size_t) MAXC * G_QKV * kv_row());
+    st_sc_ = R256(2 * (size_t) MAXC * G_QKV * kv_nsc()); st_tail_ = R256(TAIL_B); st_dead_ = R256(DEAD_B);
     st_pooled_ = R256(4 * (size_t) MB * G_ID); st_ple_ = R256(PLEH_B);
     // the set-0 view of a new buffer of `bytes` per set (or a plain buffer when there are no batch slots)
     auto SV = [&](std::vector<mtl::Buffer>& bigs, size_t bytes, size_t stride, size_t per = 1, size_t which = 0) {
@@ -842,10 +849,10 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
             ghist_[0].push_back(SV(hbBig_, HIST_B, st_hist_, 2, 0));   // [set][parity]: the two parities side by side
             ghist_[1].push_back(SV(hbBig_, HIST_B, st_hist_, 2, 1));
         } else {
-            kq_.push_back(SV(kqBig_, (size_t) MAXC * G_QKV * G_QD, st_kq_));
-            vq_.push_back(SV(vqBig_, (size_t) MAXC * G_QKV * G_QD, st_kq_));
-            ksc_.push_back(SV(kscBig_, 2 * (size_t) MAXC * G_QKV * 4, st_sc_));
-            vsc_.push_back(SV(vscBig_, 2 * (size_t) MAXC * G_QKV * 4, st_sc_));
+            kq_.push_back(SV(kqBig_, (size_t) MAXC * G_QKV * kv_row(), st_kq_));
+            vq_.push_back(SV(vqBig_, (size_t) MAXC * G_QKV * kv_row(), st_kq_));
+            ksc_.push_back(SV(kscBig_, 2 * (size_t) MAXC * G_QKV * kv_nsc(), st_sc_));
+            vsc_.push_back(SV(vscBig_, 2 * (size_t) MAXC * G_QKV * kv_nsc(), st_sc_));
             tail_.push_back(SV(tailBig_, TAIL_B, st_tail_));
             dead_.push_back(SV(deadBig_, DEAD_B, st_dead_));
             pooled_.push_back(SV(pooledBig_, 4 * (size_t) MB * G_ID, st_pooled_));
@@ -2086,10 +2093,10 @@ void Window::alloc_set(SeqSet& o, bool real, int idx) {
             o.gh1.push_back(view_of(hbBig_[i], ((size_t) idx * 2 + 1) * st_hist_, HIST_B));
         }
         for (size_t j = 0; j < kq_.size(); ++j) {
-            o.kq.push_back(view_of(kqBig_[j], (size_t) idx * st_kq_, MAXC * G_QKV * G_QD));
-            o.vq.push_back(view_of(vqBig_[j], (size_t) idx * st_kq_, MAXC * G_QKV * G_QD));
-            o.ksc.push_back(view_of(kscBig_[j], (size_t) idx * st_sc_, 2 * MAXC * G_QKV * 4));
-            o.vsc.push_back(view_of(vscBig_[j], (size_t) idx * st_sc_, 2 * MAXC * G_QKV * 4));
+            o.kq.push_back(view_of(kqBig_[j], (size_t) idx * st_kq_, (size_t) MAXC * G_QKV * kv_row()));
+            o.vq.push_back(view_of(vqBig_[j], (size_t) idx * st_kq_, (size_t) MAXC * G_QKV * kv_row()));
+            o.ksc.push_back(view_of(kscBig_[j], (size_t) idx * st_sc_, 2 * (size_t) MAXC * G_QKV * kv_nsc()));
+            o.vsc.push_back(view_of(vscBig_[j], (size_t) idx * st_sc_, 2 * (size_t) MAXC * G_QKV * kv_nsc()));
             o.tail.push_back(view_of(tailBig_[j], (size_t) idx * st_tail_, TAIL_B));
             o.dead.push_back(view_of(deadBig_[j], (size_t) idx * st_dead_, DEAD_B));
             o.pooled.push_back(view_of(pooledBig_[j], (size_t) idx * st_pooled_, 4 * MB * G_ID));
@@ -2105,10 +2112,10 @@ void Window::alloc_set(SeqSet& o, bool real, int idx) {
         o.gh1.push_back(A(HIST_B));
     }
     for (size_t j = 0; j < kq_.size(); ++j) {
-        o.kq.push_back(A(MAXC * G_QKV * G_QD));
-        o.vq.push_back(A(MAXC * G_QKV * G_QD));
-        o.ksc.push_back(A(2 * MAXC * 2 * 4));
-        o.vsc.push_back(A(2 * MAXC * 2 * 4));
+        o.kq.push_back(A((size_t) MAXC * G_QKV * kv_row()));
+        o.vq.push_back(A((size_t) MAXC * G_QKV * kv_row()));
+        o.ksc.push_back(A(2 * (size_t) MAXC * G_QKV * kv_nsc()));
+        o.vsc.push_back(A(2 * (size_t) MAXC * G_QKV * kv_nsc()));
         o.tail.push_back(A(TAIL_B));
         o.dead.push_back(A(DEAD_B));
         o.pooled.push_back(A(4 * MB * G_ID));
@@ -2194,10 +2201,10 @@ bool Window::slot_copy(bool into_slot, int b, int64_t upto, bool kv_only, std::s
     }
     }
     for (size_t j = 0; j < kq_.size(); ++j) {
-        cp(kq_[j], o.kq[j], cells * G_QKV * G_QD);
-        cp(vq_[j], o.vq[j], cells * G_QKV * G_QD);
-        cp(ksc_[j], o.ksc[j], cells * G_QKV * 8);
-        cp(vsc_[j], o.vsc[j], cells * G_QKV * 8);
+        cp(kq_[j], o.kq[j], cells * G_QKV * kv_row());
+        cp(vq_[j], o.vq[j], cells * G_QKV * kv_row());
+        cp(ksc_[j], o.ksc[j], cells * G_QKV * kv_nsc() * 2);
+        cp(vsc_[j], o.vsc[j], cells * G_QKV * kv_nsc() * 2);
         cp(pooled_[j], o.pooled[j], ((cells + 3) / 4 + 2) * G_ID * 4);
         if (kv_only) continue;
         cp(tail_[j], o.tail[j], tail_[j].bytes);
@@ -2423,8 +2430,8 @@ bool Window::mtp_load(const std::string& gguf_path, int max_t, std::string& err)
         return x;
     };
     XEn_ = act(N); XHn_ = act(N);
-    mkq_.push_back(A((size_t) MAXC * G_QKV * G_QD)); mvq_.push_back(A((size_t) MAXC * G_QKV * G_QD));
-    mksc_.push_back(A(2 * (size_t) MAXC * G_QKV * 4)); mvsc_.push_back(A(2 * (size_t) MAXC * G_QKV * 4));
+    mkq_.push_back(A((size_t) MAXC * G_QKV * kv_row())); mvq_.push_back(A((size_t) MAXC * G_QKV * kv_row()));
+    mksc_.push_back(A(2 * (size_t) MAXC * G_QKV * kv_nsc())); mvsc_.push_back(A(2 * (size_t) MAXC * G_QKV * kv_nsc()));
     mtail_.push_back(A(TAIL_B)); mdead_.push_back(A(DEAD_B)); mpooled_.push_back(A(4 * (size_t) MB * G_ID));
     {
         std::string vp;
@@ -2927,7 +2934,7 @@ bool Window::prompt_gemm_init(std::string& err) {
         auto cc = [&](const MslLib& L) { return cx_->compile(L.files, L.prelude); };
         p.lib = cc(lib_prompt(kq_down_prelude(f_)));
         p.lgdn = cc(lib_prompt_gdn());
-        p.lqsa = cc(lib_prompt_qsa());
+        p.lqsa = cc(lib_prompt_qsa(kv4_on()));
     }
     p.k4 = ::coop_k4(*cx_);
     const char* eg = std::getenv("STRATA_METAL_PROMPT_EXPERTS");   // v2 | v3 (default: v3 with the M5's layout)

@@ -55,7 +55,7 @@ bool Window::pc_setup(int C) {
         auto cc = [&](const MslLib& L) { return cx_->compile(L.files, L.prelude); };
         b.lib = cc(lib_prompt(kq_down_prelude(f_)));
         b.lgdn = cc(lib_prompt_gdn());
-        b.lqsa = cc(lib_prompt_qsa());
+        b.lqsa = cc(lib_prompt_qsa(kv4_on()));
         b.k4 = coop_k4();
     }
     b = PromptBufs{b.lib, b.lgdn, b.lqsa, b.k4};   // (re)allocated below for the larger chunk

@@ -31,7 +31,7 @@ kernel void qsa_attn_mm(device const half* qh [[buffer(0)]], device const char* 
     threadgroup float s[16 * QCH];
     threadgroup half p[16 * QCH];
     threadgroup int cid[QCH];
-    threadgroup half vs[QCH][4];
+    threadgroup half vs[QCH][KVNS];
     const int chunk = int(tg.x), g = int(tg.y), t = int(tg.z);
     const uint n_kv = a.pos0 + uint(t) + 1, width = min(n_kv, uint(QBUDGET));
     const int c0 = chunk * QCH;
@@ -44,7 +44,7 @@ kernel void qsa_attn_mm(device const half* qh [[buffer(0)]], device const char* 
     for (int c = lane; c < QCH; c += 32) {
         const int id = c < nc ? ids[t * QBUDGET + c0 + c] : -1;
         cid[c] = id;
-        for (int j = 0; j < 4; ++j) vs[c][j] = id >= 0 ? vsc[(uint(id) * QKV + g) * 4 + j] : half(0.0f);
+        for (int j = 0; j < KVNS; ++j) vs[c][j] = id >= 0 ? vsc[(uint(id) * QKV + g) * KVNS + j] : half(0.0f);
     }
     simdgroup_barrier(mem_flags::mem_threadgroup);
     if (qsa_stop == 1) { if (lane < HPG) { pp[lane * (QD + 2) + QD] = 1.0f; pp[lane * (QD + 2) + QD + 1] = 1.0f; } return; }
@@ -67,7 +67,7 @@ kernel void qsa_attn_mm(device const half* qh [[buffer(0)]], device const char* 
                     // the row is clamped and the select is on the value: a select with the device load in the arm
                     // loses the threadgroup on the M1 (macOS 26, measured); the discarded value cannot matter
                     const uint row = uint(max(id, 0)) * QKV + g;
-                    const float v = float(kq[row * QD + k]) * float(ksc[row * 4 + (k >> 6)]);
+                    const float v = kv_q(kq, row, k) * kv_s(ksc, row, k);
                     rk[i] = id >= 0 ? half(v) : half(0.0f);
                 }
             } else
@@ -78,8 +78,7 @@ kernel void qsa_attn_mm(device const half* qh [[buffer(0)]], device const char* 
                 half4 w = half4(0.0h);
                 if (id >= 0) {
                     const uint row = uint(id) * QKV + g;
-                    const char4 q4 = *(device const char4*)(kq + row * QD + k);
-                    w = half4(float4(q4) * float(ksc[row * 4 + (k >> 6)]));
+                    w = half4(kv_q4(kq, row, k) * kv_s(ksc, row, k));
                 }
                 rk[i] = w.x; rk[i + 1] = w.y; rk[i + 2] = w.z; rk[i + 3] = w.w;
             }
@@ -124,7 +123,7 @@ kernel void qsa_attn_mm(device const half* qh [[buffer(0)]], device const char* 
                     const auto ix = rv.get_multidimensional_index(i);   // (cell, dim)
                     const int c = c0 + ix[0], d = d0 + ix[1], id = cid[c];
                     const uint row = uint(max(id, 0)) * QKV + g;   // clamped, as in the S fill above
-                    const float v = float(vq[row * QD + d]) * float(vs[c][d >> 6]);
+                    const float v = kv_q(vq, row, d) * float(vs[c][d / KVGS]);
                     rv[i] = id >= 0 ? half(v) : half(0.0f);
                 }
                 tPh = tP.template slice<32, 16>(c0, 0);
@@ -277,7 +276,7 @@ kernel void qsa_flash(device const half* qh [[buffer(0)]], device const char* kq
         if (tid < QCH) {
             const int id = tid < nc ? ids[t * QBUDGET + c0 + tid] : -1;
             cid[tid] = id;
-            vs[tid] = id >= 0 ? float(vsc[(uint(id) * QKV + g) * 4 + sg * 0]) : 0.0f;   // (per-simdgroup scale below)
+            vs[tid] = id >= 0 ? float(vsc[(uint(id) * QKV + g) * KVNS + sg * 0]) : 0.0f;   // (per-simdgroup scale below)
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
         // S partial over this simdgroup's 64 dims
@@ -294,7 +293,7 @@ kernel void qsa_flash(device const half* qh [[buffer(0)]], device const char* kq
                         const auto ix = rk.get_multidimensional_index(i);
                         const int k = k0 + ix[0], id = cid[ix[1]];
                         const uint row = uint(max(id, 0)) * QKV + g;   // clamped, as in qsa_attn_mm
-                        const float v = float(kq[row * QD + k]) * float(ksc[row * 4 + (k >> 6)]);
+                        const float v = kv_q(kq, row, k) * kv_s(ksc, row, k);
                         rk[i] = id >= 0 ? half(v) : half(0.0f);
                     }
                 } else
@@ -305,8 +304,7 @@ kernel void qsa_flash(device const half* qh [[buffer(0)]], device const char* kq
                     half4 w = half4(0.0h);
                     if (id >= 0) {
                         const uint row = uint(id) * QKV + g;
-                        const char4 q4 = *(device const char4*)(kq + row * QD + k);
-                        w = half4(float4(q4) * float(ksc[row * 4 + (k >> 6)]));
+                        w = half4(kv_q4(kq, row, k) * kv_s(ksc, row, k));
                     }
                     rk[i] = w.x; rk[i + 1] = w.y; rk[i + 2] = w.z; rk[i + 3] = w.w;
                 }
@@ -351,7 +349,7 @@ kernel void qsa_flash(device const half* qh [[buffer(0)]], device const char* kq
                 const auto ix = rv.get_multidimensional_index(i);   // (cell, dim)
                 const int c = c0 + ix[0], d = d0 + ix[1], id = cid[c];
                 const uint row = uint(max(id, 0)) * QKV + g;   // clamped, as in qsa_attn_mm
-                const float v = float(vq[row * QD + d]) * float(vsc[row * 4 + sg]);
+                const float v = kv_q(vq, row, d) * kv_s(vsc, row, d);
                 rv[i] = id >= 0 ? half(v) : half(0.0f);
             }
             tPh = tP.template slice<32, 16>(c0, 0);

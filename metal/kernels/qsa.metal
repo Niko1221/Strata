@@ -48,6 +48,36 @@
 #endif
 #define QCH 64
 
+// conversation-memory row format (QSA_KV4 from the window's prelude, --kv q4_0)
+#ifdef QSA_KV4
+#define KVRB (QD / 2)   // bytes a (cell, kv head) row: QD values as nibbles
+#define KVNS (QD / 32)   // fp16 scales a row
+#define KVGS 32    // values a scale
+#else
+#define KVRB QD
+#define KVNS (QD / 64)
+#define KVGS 64
+#endif
+// the stored integer of element k of row `row` (before its scale)
+static inline float kv_q(device const char* q, uint row, int k) {
+#ifdef QSA_KV4
+    const uint b = uint(((device const uchar*) q)[row * KVRB + uint(k >> 1)]);
+    return float(int((k & 1) ? (b >> 4) : (b & 15u)) - 8);
+#else
+    return float(q[row * KVRB + uint(k)]);
+#endif
+}
+// elements k .. k + 3 (k a multiple of 4)
+static inline float4 kv_q4(device const char* q, uint row, int k) {
+#ifdef QSA_KV4
+    const uint w = uint(*(device const ushort*) (q + row * KVRB + uint(k >> 1)));
+    return float4(float(w & 15u), float((w >> 4) & 15u), float((w >> 8) & 15u), float(w >> 12)) - 8.0f;
+#else
+    return float4(*(device const char4*) (q + row * KVRB + uint(k)));
+#endif
+}
+static inline float kv_s(device const half* sc, uint row, int k) { return float(sc[row * KVNS + uint(k / KVGS)]); }
+
 #ifndef STRATA_XH16_DECL
 #define STRATA_XH16_DECL
 // STRATA_METAL_F16 (function constant 25): the window's x also as half planes, after the float planes and S16:
@@ -186,6 +216,20 @@ kernel void qsa_prep(device const float* qfull [[buffer(0)]], device const float
         const int h = r - QH - (isv ? QKV : 0);
         float x = (isv ? vcur : kcur)[(t * QKV + h) * QD + tid];
         if (!isv) x = norm_rope(x, 0.0f, kn, row, part, tid, sg, lane, QD, a.eps, cs, absp, true, mtab);
+#ifdef QSA_KV4
+        // q4_0 per 32 values (a simdgroup): d = the signed value of largest magnitude / -8, nibble = x / d + 8.5
+        const float mx = simd_max(x), mn = simd_min(x);
+        const float vmax = fabs(mn) > mx ? mn : mx;
+        const half sh = half(vmax / -8.0f);
+        const float sf = float(sh);
+        const float id = sf != 0.0f ? 1.0f / sf : 0.0f;
+        const uint q = uint(clamp(int(x * id + 8.5f), 0, 15));
+        const uint qn = simd_shuffle_down(q, ushort(1));
+        const uint rowi = cell * QKV + uint(h);
+        if ((tid & 1) == 0) ((device uchar*) (isv ? vqr : kqr))[rowi * KVRB + uint(tid >> 1)] = uchar(q | (qn << 4));
+        if (lane == 0) (isv ? vscr : kscr)[rowi * KVNS + uint(sg)] = sh;
+        (void) amax;
+#else
         // int8 with an fp16 scale per 64 values: groups = simdgroup pairs (64 threads)
         float m = simd_max(fabs(x));
         if (lane == 0) amax[sg] = m;
@@ -199,6 +243,7 @@ kernel void qsa_prep(device const float* qfull [[buffer(0)]], device const float
         const uint rowi = cell * QKV + uint(h);
         (isv ? vqr : kqr)[rowi * QD + tid] = char(q);
         if ((tid & 63) == 0) (isv ? vscr : kscr)[rowi * 4 + g] = sh;
+#endif
     } else {
         const int h = r - QH - 2 * QKV;
         const float x = tid < ID ? iqraw[(t * IH + h) * ID + tid] : 0.0f;
@@ -358,10 +403,10 @@ kernel void qsa_attn(device const float* qcur [[buffer(0)]], device const char* 
     // scores: 12 x 64 dots of 256; simdgroup sg takes cells sg, sg + 8, ...; lanes split the 256 dims (8 each)
     for (int c = sg; c < nc; c += 8) {
         const uint rowi = uint(cid[c]) * QKV + uint(g);
-        device const char* kr = kq + rowi * QD;
         float kv[8];
-        const float scl = float(ksc[rowi * 4 + (lane >> 3)]);
-        for (int i = 0; i < 8; ++i) kv[i] = float(kr[lane * 8 + i]) * scl;
+        const float scl = kv_s(ksc, rowi, lane * 8);
+        const float4 ka = kv_q4(kq, rowi, lane * 8), kb = kv_q4(kq, rowi, lane * 8 + 4);
+        for (int i = 0; i < 4; ++i) { kv[i] = ka[i] * scl; kv[4 + i] = kb[i] * scl; }
         for (int h = 0; h < HPG; ++h) {
             float d = 0.0f;
             for (int i = 0; i < 8; ++i) d = fma(qs[h][lane * 8 + i], kv[i], d);
@@ -391,7 +436,7 @@ kernel void qsa_attn(device const float* qcur [[buffer(0)]], device const char* 
     for (int h = 0; h < HPG; ++h) acc[h] = 0.0f;
     for (int c = 0; c < nc; ++c) {
         const uint rowi = uint(cid[c]) * QKV + uint(g);
-        const float v = float(vq[rowi * QD + tid]) * float(vsc[rowi * 4 + (tid >> 6)]);
+        const float v = kv_q(vq, rowi, tid) * kv_s(vsc, rowi, tid);
         for (int h = 0; h < HPG; ++h) acc[h] = fma(s[h][c], v, acc[h]);
     }
     for (int h = 0; h < HPG; ++h) {

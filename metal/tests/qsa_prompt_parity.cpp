@@ -2,6 +2,7 @@
 // (fp32, itself checked by qsa_parity), both followed by qsa_merge: the attention output of T query tokens on random
 // int8 caches, within the budget (all cells, causal) and past it (2051 selected cells per token); then the speed.
 //   qsa_prompt_parity [--bench]
+//   QSA_KV4=1   random q4_0 caches (--kv q4_0, QSA_KV4 in the prelude) instead of int8
 #include "coop_probe.h"
 #include "mtl_rt.h"
 #include "ref_quant.h"
@@ -25,18 +26,22 @@ int main(int argc, char** argv) {
     const bool bench = argc > 1 && std::string(argv[1]) == "--bench";
     std::setvbuf(stdout, nullptr, _IOLBF, 0);
     const bool noflash = std::getenv("QSA_NOFLASH") != nullptr;
+    // the K/V row of a (cell, kv head): int8 (QD bytes, an fp16 scale per 64) or q4_0 (QD / 2 bytes, an fp16 scale per 32)
+    const bool kv4 = std::getenv("QSA_KV4") != nullptr;
+    const int KVRB = kv4 ? QD / 2 : QD, KVNS = kv4 ? QD / 32 : QD / 64;
     mtl::Context cx;
-    const int lib = cx.compile({"qsa.metal", "qsa_prompt.metal"}, strata_metal::geo::prelude() + "#define NO_GGML_COMMON 1\n");
+    const int lib = cx.compile({"qsa.metal", "qsa_prompt.metal"},
+                               strata_metal::geo::prelude() + "#define NO_GGML_COMMON 1\n" + (kv4 ? "#define QSA_KV4 1\n" : ""));
     std::printf("device %s\n", cx.device_name().c_str());
     const int T = bench ? 2048 : 96, MAXC = 40000;
-    mtl::Buffer kq = cx.alloc((size_t)MAXC * QKV * QD), vq = cx.alloc((size_t)MAXC * QKV * QD), ksc = cx.alloc(2 * (size_t)MAXC * QKV * 4),
-                vsc = cx.alloc(2 * (size_t)MAXC * QKV * 4), qcur = cx.alloc(4 * (size_t)T * QH * QD), qh = cx.alloc(2 * (size_t)T * QH * QD),
+    mtl::Buffer kq = cx.alloc((size_t)MAXC * QKV * KVRB), vq = cx.alloc((size_t)MAXC * QKV * KVRB),
+                ksc = cx.alloc(2 * (size_t)MAXC * QKV * KVNS), vsc = cx.alloc(2 * (size_t)MAXC * QKV * KVNS), qcur = cx.alloc(4 * (size_t)T * QH * QD), qh = cx.alloc(2 * (size_t)T * QH * QD),
                 qfull = cx.alloc(4 * (size_t)T * QH * 2 * QD), ids = cx.alloc(4 * (size_t)T * QB),
                 part = cx.alloc(4 * (size_t)T * NCH * QH * (QD + 2)), xa = cx.alloc(4 * ((size_t)4 * T * QH * QD + (size_t)T * QH * QD / 16)),
                 xb = cx.alloc(4 * ((size_t)4 * T * QH * QD + (size_t)T * QH * QD / 16));
     ref::Rng r(5);
     for (size_t i = 0; i < kq.bytes; ++i) { kq.as<int8_t>()[i] = (int8_t)((int)(r.next() % 255) - 127); vq.as<int8_t>()[i] = (int8_t)((int)(r.next() % 255) - 127); }
-    for (size_t i = 0; i < ksc.bytes / 2; ++i) { ksc.as<uint16_t>()[i] = ref::f32_to_f16(0.004f + 0.004f * r.uni()); vsc.as<uint16_t>()[i] = ref::f32_to_f16(0.004f + 0.004f * r.uni()); }
+    for (size_t i = 0; i < ksc.bytes / 2; ++i) { ksc.as<uint16_t>()[i] = ref::f32_to_f16((kv4 ? 16 : 1) * (0.004f + 0.004f * r.uni())); vsc.as<uint16_t>()[i] = ref::f32_to_f16((kv4 ? 16 : 1) * (0.004f + 0.004f * r.uni())); }
     for (size_t i = 0; i < (size_t)T * QH * QD; ++i) qcur.as<float>()[i] = r.sym() * 3.0f;
     for (size_t i = 0; i < (size_t)T * QH * 2 * QD; ++i) qfull.as<float>()[i] = r.sym();
     mtl::Pipeline pa = cx.pipeline(lib, "qsa_attn"), pm = cx.pipeline(lib, "qsa_merge"), pmm = cx.pipeline(lib, "qsa_attn_mm", mtl::Constants().b(7, coop_k4(cx)).i(8, std::getenv("QSA_STOP") ? std::atoi(std::getenv("QSA_STOP")) : 0)),
