@@ -1146,9 +1146,9 @@ struct Stager {
             if (!pick.log.empty()) std::fprintf(stderr, "stager: device %d %s\n", device, pick.log.c_str());
         }
         for (int i = 0; i < kRing; ++i) {
-#if defined(_WIN32)
-            if (!pinned[i] && !force_pageable() && numa_node >= 0 &&
-                strata::platform::numa_va_supported()) {
+#if defined(_WIN32) && !defined(STRATA_USE_HIP)   // Windows HIP: a registered range's GPU alias is unreserved
+            if (!pinned[i] && !force_pageable() && numa_node >= 0 &&   // address space - the arena's claim_alias
+                strata::platform::numa_va_supported()) {               // protects it, this path has no equivalent
                 void* p = strata::platform::numa_virtual_alloc(nullptr, blob_bytes, false, numa_node);
                 if (p) {
                     std::memset(p, 0, blob_bytes);   // first-touch lands the frames on the named node

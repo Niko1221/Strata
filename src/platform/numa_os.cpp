@@ -105,9 +105,15 @@ bool bind_thread_to_node(int node) {
         const auto* info = reinterpret_cast<const SYSTEM_CPU_SET_INFORMATION*>(buf.data() + off);
         if (info->Size < header_size || info->Size > bytes - off) break;
         if (info->Type == CpuSetInformation && info->Size >= sizeof(SYSTEM_CPU_SET_INFORMATION) &&
-            (int) info->CpuSet.NumaNodeIndex == node &&
-            (!info->CpuSet.Allocated || info->CpuSet.AllocatedToTargetProcess))
-            ids.push_back(info->CpuSet.Id);
+            (!info->CpuSet.Allocated || info->CpuSet.AllocatedToTargetProcess)) {
+            // NumaNodeIndex cannot be trusted: on firmware where every set reports 0 a node-0 request would
+            // select ALL sockets and report success.  Resolve each set's real node from its processor group
+            // + index instead; if that fails for every set, ids stays empty and the group-mask fallback runs.
+            PROCESSOR_NUMBER pn{ (WORD) info->CpuSet.Group, (BYTE) info->CpuSet.LogicalProcessorIndex, 0 };
+            USHORT real_node = 0xFFFF;
+            if (GetNumaProcessorNodeEx(&pn, &real_node) && (int) real_node == node)
+                ids.push_back(info->CpuSet.Id);
+        }
         off += info->Size;
     }
     if (!ids.empty())

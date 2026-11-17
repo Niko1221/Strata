@@ -1164,6 +1164,11 @@ PinnedArena::~PinnedArena() {
             pin_unregister(base);
         }
         release_alias_claims(alias_claims);
+#ifdef _WIN32
+        if (!va_regions.empty()) {   // a split arena is several reservations: MEM_RELEASE releases the one at
+            for (const auto& r : va_regions) VirtualFree((char*) base + r.first, 0, MEM_RELEASE);   // the address,
+        } else                                                                                     // not its neighbours
+#endif
         release(mapping_base ? mapping_base : base, mapping_bytes ? mapping_bytes : capacity);
         base = nullptr;
         mapping_base = nullptr;

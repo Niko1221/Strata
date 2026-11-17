@@ -8290,7 +8290,7 @@ int main(int argc, char** argv) {
                          (double) o.ram_keep / 1073741824.0, (double) o.ram_keep / 1073741824.0, (double) ram_fallback_headroom / 1073741824.0,
                          (double) strata::core::fallback_safety_headroom(kWindowsHost) / 1073741824.0);
         const bool arena_ok = arena_src.open(o.pack, g.n_layers, g.n_expert, /*threads=*/6, err, pin_limit,
-                                             o.shared_expert_arena);
+                                             o.shared_expert_arena, &split_devs);
         strata::core::pin_note_arena(arena_src.pinned_arena_bytes());
         strata::core::pin_sim_report("after the expert arena");
         strata::core::pin_reserve_release_soft();
