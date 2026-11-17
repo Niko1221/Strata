@@ -1409,11 +1409,31 @@ void mem_probe(const char* where) {
     char samples[160] = "";
     for (int i = 0, off = 0; i < n_sample; ++i)
         off += std::snprintf(samples + off, sizeof samples - (size_t) off, " %p", sample[i]);
+    // the eight user sizes that hold the most blocks: the class a leak grows will be visible here between phases
+    std::map<SIZE_T, unsigned long long> by_size;
+    if (HANDLE h2 = GetProcessHeap(); h2 && HeapLock(h2)) {
+        PROCESS_HEAP_ENTRY e2{};
+        while (HeapWalk(h2, &e2)) {
+            if (!(e2.wFlags & PROCESS_HEAP_ENTRY_BUSY) || e2.cbData > 4096) continue;
+            ++by_size[e2.cbData];
+        }
+        HeapUnlock(h2);
+    }
+    char hist[200] = "";
+    for (int k = 0; k < 8; ++k) {
+        auto best = by_size.end();
+        for (auto it = by_size.begin(); it != by_size.end(); ++it)
+            if (it->second != 0 && (best == by_size.end() || it->second > best->second)) best = it;
+        if (best == by_size.end()) break;
+        const int off = (int) std::strlen(hist);
+        std::snprintf(hist + off, sizeof hist - (size_t) off, " %lluB=%llu", (unsigned long long) best->first, best->second);
+        best->second = 0;
+    }
     std::fprintf(stderr, "strata mem: %-12s commit %llu MiB  rss %llu MiB  heap %llu MiB in %llu blocks"
                          "  | >=1MiB %llu/%llu  64K-1M %llu/%llu  4-64K %llu/%llu  <4K %llu/%llu (MiB/blocks)"
-                         "  samples%s\n",
+                         "  top sizes:%s  samples%s\n",
                  where, m.commit_mib, m.rss_mib, used >> 20, blocks,
-                 cls[0] >> 20, cnt[0], cls[1] >> 20, cnt[1], cls[2] >> 20, cnt[2], cls[3] >> 20, cnt[3], samples);
+                 cls[0] >> 20, cnt[0], cls[1] >> 20, cnt[1], cls[2] >> 20, cnt[2], cls[3] >> 20, cnt[3], hist, samples);
 #else
     std::fprintf(stderr, "strata mem: %-12s commit %llu MiB  rss %llu MiB\n", where, m.commit_mib, m.rss_mib);
 #endif
