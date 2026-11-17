@@ -145,15 +145,13 @@ STRATA_PROGRAMS = {
     "serve/server.py": 7,              # the engine, the picture reader (env from child_env / vision_env), the strata-device probe, before_load commands
     "serve/images.py": 1,              # sd-cli (image_env)
     "serve/lifeline.py": 4,            # the wrapper every child goes through (ps, a watcher); no program of ours of its own
+    "serve/winjob.py": 2,              # lifeline.popen's Windows start inside the job (suspended, then resumed) + the plain Popen off Windows: the caller's env as given
     "strata_control/runtime.py": 4,    # the runtime host (inherits) and the server (quiet_crash_env on its environment); taskkill
     "strata_control/tune_api.py": 1,   # tuning worker (wrapped)
     "strata_control/tune_engine.py": 2,  # tuning engine (wrapped) + ps
     "strata_control/tune_session.py": 1,  # tuning worker (quiet_crash_env)
     "strata_control/tuning.py": 1,     # engine --help (engine_env)
     "strata_control/shape_engine.py": 2,  # engine --version / --geometry (inherit)
-    "strata_control/dsv41_engine.py": 1,  # --version (inherits)
-    "strata_control/dsv41_flags.py": 1,   # --help (inherits)
-    "strata_control/dsv41_paths.py": 1,   # --version (inherits)
     "strata_control/updater.py": 3,       # --version probes (inherit)
     "strata_cli/bench_standard.py": 2,    # `strata.py serve` (inherits: cli.main sets it) + taskkill
     "strata_cli/launch/runner.py": 2,     # setup.py and the other children (_env)

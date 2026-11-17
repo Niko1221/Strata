@@ -24,6 +24,11 @@ public:
     /// split's stage holds its own layers' projections, not the whole model's); the others keep data == nullptr.
     bool load(const std::vector<std::string>& shards, WeightTable& table, std::string& err,
               bool include_ple_key = false, int64_t layer_lo = 0, int64_t layer_hi = -1);
+    /// Frees the uploaded matrices and the scratch, so `load` can run again.  The WeightRefs that pointed at them
+    /// must not be used afterwards (the caller reloads their table too).
+    void release();
+    /// The uploaded bytes of layers [lo, hi).
+    uint64_t bytes_in(int64_t lo, int64_t hi) const;
     /// Plan v0.3 P1: the canonical tensor names `load` would serve natively from these shards (eligible name,
     /// supported type, 2-D), read from the GGUF headers only - so the canonical arena can skip them.
     static bool served_names(const std::vector<std::string>& shards, bool include_ple_key,
@@ -32,7 +37,8 @@ public:
     /// PLE tensors are loaded everywhere).  Process-wide, read by the next `load`; (-1, -1) = all layers.
     static void set_layer_range(int lb, int le);
     /// Layer split: the device bytes `load` would allocate for the matrices of layers [lb, le) - the same walk and
-    /// filters, each matrix rounded up to the granule cudaMalloc backs it with - reading the GGUF headers and `table`
+    /// filters, each matrix rounded up to the granule cudaMalloc backs it with (with STRATA_HC_Q8 the Q8_0
+    /// hyper-connection rows `load` copies too) - reading the GGUF headers and `table`
     /// only, so it allocates nothing and needs no device (#1238).  `table` must hold every tensor the shards carry.
     static bool weight_bytes_for(const std::vector<std::string>& shards, WeightTable& table, bool include_ple_key,
                                  int64_t lb, int64_t le, uint64_t& out, std::string& err);
@@ -45,6 +51,9 @@ public:
     /// Whether the GGUF shards carry the hyper-connection down / up projections as Q8_0 (an Unsloth UD-* file; the GSQ-RCO packs keep them
     /// BF16).  Reads the tensor directories only.  generate.cpp turns STRATA_HC_Q8 on by default on CUDA when this is true (owner yes 2026-11-07).
     static bool gguf_carries_q8_hc(const std::vector<std::string>& shards);
+    /// The default rule itself: when STRATA_HC_Q8 is not set at all and the shards carry the projections as Q8_0, sets it to 1 (a value the
+    /// user set, also 0, is kept).  Returns whether it set it.  Must run before the first read of the switch (`hc_q8_requested`).
+    static bool apply_hc_q8_default(const std::vector<std::string>& shards);
     static bool hc_q8_requested();
     static bool add_hc_skip(const std::string& pack_dir, std::set<std::string>& skip);
     /// A projection's bf16 values for a path that has no Q8 kernel (the prompt path's GEMMs, the single-token read): the
@@ -66,5 +75,6 @@ private:
     void* scratch_ = nullptr;
     uint64_t bytes_ = 0;
     uint64_t allocated_ = 0;
+    std::vector<uint64_t> layer_bytes_;   ///< uploaded bytes per layer
 };
 } // namespace strata::core

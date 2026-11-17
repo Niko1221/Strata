@@ -9,7 +9,7 @@ reads that file and fails when the two disagree, so the Terminal and the app can
   off switch of an earlier 0.2.7 test build) reads as off, which is what it is now.
 - "Faster answers on 12 GB NVIDIA cards" (residency-biased routing) is OFF by default since 0.2.8 (owner decision, 29 October; #4402: it can repeat itself
   and give weaker results in long agent sessions): ``STRATA_ROUTE_PRIOR=1.5`` turns it on.  The ``STRATA_ROUTE_PRIOR=0`` that 0.2.7's Off wrote is the default state now.
-- "Faster answers on Radeon RX 9000 / AI PRO R9700" and "DeepSeek speed-ups" are ON by default; turning them off writes their entries.
+- "Faster answers on Radeon RX 9000 / AI PRO R9700" is ON by default; turning it off writes its entry.
 
 The Terminal shows the switches as rows of its Advanced table (strata_cli/launch/params.py), only where they apply: ``strata launch --set STRATA_KVA=1``
 turns "Faster long prompts" on, ``--set STRATA_KVA=off`` puts the default back (the same as removing the row).
@@ -28,10 +28,13 @@ class Switch:
     label: str                    # the words the app shows
     effect: str                   # one plain sentence: what it does and what the other choice does
     env: tuple[tuple[str, str], ...]   # the environment entries written when the switch is NOT in its default state
-    only: str                     # "qwen-gpu" | "qwen-cuda-12gb" | "qwen-radeon-9000" | "deepseek" | "qwen-any": where it applies
+    only: str                     # "qwen-gpu" | "qwen-cuda-12gb" | "qwen-radeon-9000" | "qwen-any": where it applies
     default: str = "on"           # "on" | "off": what a launch without the entries does
     legacy: tuple[tuple[str, str], ...] = ()    # entries an earlier 0.2.7 test build wrote for the same state: they read as the switch being set, and are removed with it
     terminal_only: bool = False   # shown in the Terminal's Advanced table only, never in the app
+    group: str = "Speed"          # the app's group of Expert settings the row is shown in
+    words: tuple[tuple[str, str], ...] = ()   # ("on", ...), ("off", ...): the app's two option names instead of On / Off (the default one says "(recommended)")
+    terminal_default: str = ""    # the Terminal's Default cell for the row, when "on" / "off" would not say it
 
 
 SWITCHES: tuple[Switch, ...] = (
@@ -45,14 +48,15 @@ SWITCHES: tuple[Switch, ...] = (
            "Shares the work between the graphics card and the processor in a way that makes answers faster on these cards. "
            "Turn off to go back to the previous setting, which is slower.",
            (("STRATA_PCIE_FRAC_DEFAULT", "old"),), "qwen-radeon-9000"),
-    Switch("deepseek_speedups", "DeepSeek speed-ups",
-           "Reads long prompts faster and loads the parts of the model it needs faster. "
-           "Turn off if DeepSeek stops working or its answers look wrong; it then runs as in version 0.2.6.",
-           # DS4_DEFAULTS=026: the engine's master switch back to the 0.2.6 defaults; the six are what older engines (and the test builds) read
-           (("DS4_DEFAULTS", "026"), ("DS4_FAST_ATTN", "0"), ("DS4_ATTN_SLAB", "0"), ("DS4_COPY_PIN", "0"), ("DS4_COPY_HUGETLB", "0"),
-            ("DS4_STORE_SPARE", "0"), ("DS4_STORE_PUT", "0")), "deepseek",
-           legacy=(("DS4_FAST_ATTN", "0"), ("DS4_ATTN_SLAB", "0"), ("DS4_COPY_PIN", "0"), ("DS4_COPY_HUGETLB", "0"),
-                   ("DS4_STORE_SPARE", "0"), ("DS4_STORE_PUT", "0"))),
+    # The picture reader (owner 11-11: "Our tower, the other selectable"): Strata's own by default (strata-vision's `auto`: ours where it was measured no slower
+    # and correct, llama.cpp's by itself where it was measured slower or does not start); STRATA_VISION_TOWER=mtmd picks llama.cpp's mtmd reader.  The server
+    # hands the run config's env to the reader, and an older strata-vision ignores the name.  Label, options and help line approved by the owner 11-11 morning
+    # (par/OWNER-WORDING-1111.md); the Terminal row's frame (env_words) is still [DRAFT].
+    Switch("picture_reader", "Picture reader",
+           "Which program turns pictures into something the model can read. Strata's own is faster on most computers and reads very large pictures correctly; "
+           "on a few graphics cards where it is still slower, Strata uses llama.cpp's by itself. Choose llama.cpp's if pictures look misread.",
+           (("STRATA_VISION_TOWER", "mtmd"),), "qwen-pictures", group="Image reading",
+           words=(("on", "Strata's own (recommended)"), ("off", "llama.cpp's")), terminal_default="auto"),
     # Troubleshooting only, in the Terminal's Advanced table and nowhere else: every Qwen 0.2.7 default back to its 0.2.6 behaviour.
     Switch("qwen_defaults_026", "Qwen: 0.2.6 behaviour",
            "Starts every Qwen speed setting new in 0.2.7 the way 0.2.6 did, for troubleshooting. Use it if something that worked before no longer does.",
@@ -79,11 +83,6 @@ def _small_nvidia(gpus: Iterable[Mapping[str, Any]] | None) -> bool:
     return False
 
 
-def is_deepseek(cfg: Mapping[str, Any] | None) -> bool:
-    cfg = cfg or {}
-    return cfg.get("arch") == "deepseek41" or bool(re.search(r"strata-dsv41", str(cfg.get("exe") or ""), re.IGNORECASE))
-
-
 def _radeon_9000(gpus: Iterable[Mapping[str, Any]] | None) -> bool:
     for g in gpus or []:
         if g.get("vendor") not in (None, "", "amd"):
@@ -98,12 +97,14 @@ def applies(switch: Switch | str, cfg: Mapping[str, Any] | None, gpus: Iterable[
     """Does the switch make sense for this model on this PC? ``backend`` is the engine's (cuda, hip, sycl, metal, cpu); the run config's own wins.
     "Faster long prompts" is for Qwen3.8-Flash-Next models only (a config without an "arch")."""
     sw = BY_ID[switch] if isinstance(switch, str) else switch
-    if sw.only == "deepseek":
-        return is_deepseek(cfg)
-    if is_deepseek(cfg):
+    from strata_control import retired
+    if retired.config_reason(cfg):                   # a DeepSeek config (strata_control/retired.py): this Strata does not run it
         return False
     if sw.only == "qwen-any":
         return True
+    if sw.only == "qwen-pictures":
+        # a Qwen run config that reads pictures (its "vision" section starts strata-vision)
+        return bool((cfg or {}).get("vision"))
     backend = (cfg or {}).get("backend") or backend
     if sw.only == "qwen-gpu":
         # KVA was measured on the Qwen3.8-Flash-Next shape (48 layers, 512 experts); the engine declines any other.  Setup writes "arch" only for the
@@ -167,6 +168,10 @@ def env_words(name: str) -> str:
     sw = env_names()[name]
     value = dict(sw.env)[name]
     together = f"; all {len(sw.env)} speed-up rows go together" if len(sw.env) > 1 else ""
+    if sw.words:
+        names = {state: word.replace(" (recommended)", "") for state, word in sw.words}
+        other = "off" if sw.default == "on" else "on"
+        return f"{sw.label} ({names[sw.default]} by default; set {value} to use {names[other]}). {sw.effect}"   # [DRAFT] frame, not yet seen by the owner
     if sw.default == "off":
         return f"{sw.label} (off by default; set {value} to turn on{together}). {sw.effect}"
     return f"{sw.label} (on by default; set {value} to turn off{together}). {sw.effect}"
