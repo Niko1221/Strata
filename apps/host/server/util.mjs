@@ -100,9 +100,16 @@ export async function which(binary, { env = process.env, platform = process.plat
 
 /** Minimal SSE hub. */
 export class EventHub {
-  #clients = new Set();
+  #clients = new Map();
+  #closed = false;
+  #closing = null;
 
   add(res) {
+    // An EventSource reconnect during shutdown must not open another stream.
+    if (this.#closed) {
+      res.writeHead(204, { connection: 'close', 'cache-control': 'no-store' });
+      return res.end();
+    }
     res.writeHead(200, {
       'content-type': 'text/event-stream; charset=utf-8',
       'cache-control': 'no-cache, no-transform',
@@ -110,23 +117,60 @@ export class EventHub {
       'x-accel-buffering': 'no',
     });
     res.write(': connected\n\n');
-    this.#clients.add(res);
     const ping = setInterval(() => res.write(': ping\n\n'), 15000);
-    res.on('close', () => {
+    const cleanup = () => {
       clearInterval(ping);
       this.#clients.delete(res);
-    });
+      res.off('close', cleanup);
+      res.off('error', cleanup);
+    };
+    this.#clients.set(res, cleanup);
+    res.once('close', cleanup);
+    res.once('error', cleanup);
   }
 
   send(event, payload) {
     const frame = `event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`;
-    for (const res of this.#clients) {
+    for (const [res, cleanup] of this.#clients) {
       try {
         res.write(frame);
       } catch {
-        this.#clients.delete(res);
+        cleanup();
       }
     }
+  }
+
+  /** Finish HTTP chunk framing before socket cleanup; a slow reader gets at most one second. */
+  close() {
+    if (this.#closing) return this.#closing;
+    this.#closed = true;
+    const listeners = [];
+    const drains = [...this.#clients].map(([res, cleanup]) => {
+      cleanup();
+      if (res.destroyed || res.writableFinished) return Promise.resolve();
+      return new Promise(resolve => {
+        const settled = () => {
+          res.off('finish', settled);
+          res.off('close', settled);
+          res.off('error', settled);
+          resolve();
+        };
+        listeners.push(settled);
+        res.once('finish', settled);
+        res.once('close', settled);
+        res.once('error', settled);
+        try { res.end(); } catch { settled(); }
+      });
+    });
+    let timer;
+    this.#closing = Promise.race([
+      Promise.all(drains),
+      new Promise(resolve => { timer = setTimeout(resolve, 1000); }),
+    ]).finally(() => {
+      clearTimeout(timer);
+      for (const settled of listeners) settled();
+    });
+    return this.#closing;
   }
 
   get size() {

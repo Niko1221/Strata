@@ -2602,7 +2602,10 @@ const shutdown = async () => {
   skillLearning.close();
   clearInterval(taskTimer);tasks.close();
   const timeout=setTimeout(()=>process.exit(0),control?45000:10000);timeout.unref();   // stopping an engine through Control: drained (15 s), then ended; the shell's deadline is longer
-  server.close();server.closeAllConnections?.();
+  server.close();
+  // SSE responses need their terminating HTTP chunk before remaining sockets are forced closed.
+  await hub.close();
+  server.closeAllConnections?.();
   await Promise.allSettled([localShare.stop(),cloudflare.stop(),native.close(),agent.close(),supervisor.stop(),rustxng.close()]);
   process.exit(0);
 };
