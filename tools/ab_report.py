@@ -10,6 +10,7 @@ import statistics
 import subprocess
 import sys
 import tempfile
+import time
 from html import escape
 from pathlib import Path
 
@@ -192,14 +193,20 @@ def find_browser() -> str | None:
 
 def render_png(browser: str, html: Path, png: Path) -> bool:
     # A private profile, so a running Edge/Chrome cannot take over the URL and exit without the screenshot.
-    with tempfile.TemporaryDirectory(prefix="strata-ab-browser-", ignore_cleanup_errors=True) as profile:
-        cmd = [browser, "--headless=new", "--disable-gpu", "--hide-scrollbars", "--window-size=1600,900",
-               f"--user-data-dir={profile}", f"--screenshot={png}", html.resolve().as_uri() + "#card"]
-        try:
-            done = subprocess.run(cmd, capture_output=True, timeout=120)
-        except (OSError, subprocess.SubprocessError):
-            return False
-    return done.returncode == 0 and png.is_file()
+    # Edge on Windows sometimes exits before the file is written, or not at all on the first try: wait a moment, try twice.
+    for _attempt in range(2):
+        with tempfile.TemporaryDirectory(prefix="strata-ab-browser-", ignore_cleanup_errors=True) as profile:
+            cmd = [browser, "--headless=new", "--disable-gpu", "--hide-scrollbars", "--window-size=1600,900",
+                   f"--user-data-dir={profile}", f"--screenshot={png}", html.resolve().as_uri() + "#card"]
+            try:
+                subprocess.run(cmd, capture_output=True, timeout=120)
+            except (OSError, subprocess.SubprocessError):
+                continue
+            for _ in range(20):
+                if png.is_file():
+                    return True
+                time.sleep(0.5)
+    return False
 
 
 def write_report(results: dict, out_dir: Path) -> tuple[Path, Path | None]:
