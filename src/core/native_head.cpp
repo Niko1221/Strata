@@ -13,16 +13,139 @@
 #include <cstring>
 #include <exception>
 
+// The head's own per-device virtual memory (prefill-head-alias): the shared strata::core VmmRange binds one device for the
+// whole process, so the output head reserves its address range directly through the driver entry points instead.  CUDA only;
+// elsewhere (HIP/Metal) request_stable_va() is simply not honoured and load() keeps its plain cudaMalloc path.
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_GPU_METAL)
+#include <cuda.h>
+#define STRATA_HEAD_VMM 1
+
+namespace {
+struct HeadVmm {
+    bool ok = false;
+    decltype(&cuMemAddressReserve) reserve = nullptr;
+    decltype(&cuMemAddressFree) free_va = nullptr;
+    decltype(&cuMemCreate) create = nullptr;
+    decltype(&cuMemRelease) release = nullptr;
+    decltype(&cuMemMap) map = nullptr;
+    decltype(&cuMemUnmap) unmap = nullptr;
+    decltype(&cuMemSetAccess) access = nullptr;
+    decltype(&cuMemGetAllocationGranularity) granularity = nullptr;
+};
+
+template <class F> bool hv_resolve(const char* name, F& f) {
+    cudaDriverEntryPointQueryResult q{};
+    void* p = nullptr;
+#if CUDART_VERSION >= 12050
+    const cudaError_t e = cudaGetDriverEntryPointByVersion(name, &p, 12000, cudaEnableDefault, &q);
+#else
+    const cudaError_t e = cudaGetDriverEntryPoint(name, &p, cudaEnableDefault, &q);
+#endif
+    if (e != cudaSuccess || q != cudaDriverEntryPointSuccess || p == nullptr) {
+        (void) cudaGetLastError();
+        return false;
+    }
+    f = (F) p;
+    return true;
+}
+
+const HeadVmm& hv() {   // never destroyed: a head may release its chunks from a destructor at exit
+    static HeadVmm* v = new HeadVmm{[] {
+        HeadVmm x{};
+        x.ok = hv_resolve("cuMemAddressReserve", x.reserve) && hv_resolve("cuMemAddressFree", x.free_va) &&
+               hv_resolve("cuMemCreate", x.create) && hv_resolve("cuMemRelease", x.release) &&
+               hv_resolve("cuMemMap", x.map) && hv_resolve("cuMemUnmap", x.unmap) &&
+               hv_resolve("cuMemSetAccess", x.access) && hv_resolve("cuMemGetAllocationGranularity", x.granularity);
+        return x; }()};
+    return *v;
+}
+
+uint64_t head_vmm_gran(int dev) {   // the device's minimum allocation granularity (0: unavailable)
+    const HeadVmm& v = hv();
+    if (!v.ok) return 0;
+    CUmemAllocationProp p{};
+    p.type = CU_MEM_ALLOCATION_TYPE_PINNED;
+    p.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+    p.location.id = dev;
+    size_t g = 0;
+    if (v.granularity(&g, &p, CU_MEM_ALLOC_GRANULARITY_MINIMUM) != CUDA_SUCCESS || !g) return 0;
+    return (uint64_t) g;
+}
+}  // namespace
+
+#endif  // STRATA_HEAD_VMM
+
 namespace strata::core {
 
 NativeHead::~NativeHead() {
     unload();
+#ifdef STRATA_HEAD_VMM
+    if (va_ != 0) {   // the address range outlives every map; free it only when the head itself goes away
+        const HeadVmm& v = hv();
+        if (v.ok) v.free_va((CUdeviceptr) va_, (size_t) vmm_size_);
+        va_ = 0;
+        vmm_size_ = 0;
+    }
+#endif
+}
+
+bool NativeHead::map_stable_weights(int dev, uint64_t bytes) {
+#ifdef STRATA_HEAD_VMM
+    const HeadVmm& v = hv();
+    if (!v.ok || phys_ != 0) return phys_ != 0;   // already mapped this cycle: nothing to do (load() checked loaded())
+    const uint64_t gran = head_vmm_gran(dev);
+    if (gran == 0) return false;
+    const uint64_t sz = ((bytes + gran - 1) / gran) * gran;
+    if (va_ == 0) {   // reserve the address range once, on this device; it is never given back while the head exists
+        CUdeviceptr p = 0;
+        if (v.reserve(&p, (size_t) sz, 0, 0, 0) != CUDA_SUCCESS) return false;
+        va_ = (unsigned long long) p;
+        vmm_size_ = sz;
+    }
+    CUmemAllocationProp prop{};   // a fresh physical allocation for this device, mapped at the fixed base each load
+    prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
+    prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+    prop.location.id = dev;
+    CUmemGenericAllocationHandle h = 0;
+    if (v.create(&h, (size_t) vmm_size_, &prop, 0) != CUDA_SUCCESS) return false;
+    if (v.map((CUdeviceptr) va_, (size_t) vmm_size_, 0, h, 0) != CUDA_SUCCESS) {
+        v.release(h);
+        return false;
+    }
+    CUmemAccessDesc acc{};   // readable and writable by the owning device before any kernel touches it
+    acc.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+    acc.location.id = dev;
+    acc.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
+    if (v.access((CUdeviceptr) va_, (size_t) vmm_size_, &acc, 1) != CUDA_SUCCESS) {
+        v.unmap((CUdeviceptr) va_, (size_t) vmm_size_);
+        v.release(h);
+        return false;
+    }
+    phys_ = (unsigned long long) h;
+    weights_ = (void*) (uintptr_t) va_;   // the same address on every remap: captured graphs stay valid
+    device_ = dev;
+    return true;
+#else
+    (void) dev;
+    (void) bytes;
+    return false;
+#endif
 }
 
 void NativeHead::unload() {
-    if (weights_) strata::kernels::native_q6_k_unpack(weights_);
+    if (weights_) strata::kernels::native_q6_k_unpack(weights_);   // repacked layouts rewrite the bytes in place: undo while still mapped
     if (weights_) strata::kernels::native_q8_0_sm60_release(weights_);
     if (scratch_) cudaFree(scratch_);
+#ifdef STRATA_HEAD_VMM
+    if (phys_ != 0) {   // VMM-backed alias: quiesce the device so no stream reads the range, then release physical and keep the VA for a stable remap
+        const HeadVmm& v = hv();
+        cudaDeviceSynchronize();   // caller runs this under OnDevice(device_), so it waits that card's work
+        if (v.ok && v.unmap((CUdeviceptr) va_, (size_t) vmm_size_) == CUDA_SUCCESS) {
+            v.release((CUmemGenericAllocationHandle) phys_);
+            phys_ = 0;
+        }   // a failed unmap leaves the mapping in place rather than release it under a live reader
+    } else
+#endif
     if (host_) cudaFreeHost(host_);   // the mapped-host fallback (weights_ is its device alias)
     else if (weights_) cudaFree(weights_);
     scratch_ = nullptr;
@@ -64,7 +187,15 @@ bool NativeHead::load(const std::vector<std::string>& shards, int64_t n_in, int6
         // allocation in VRAM fails (or STRATA_HEAD_HOST=1 asks for it); the GEMV kernels read the same pointer either way.  Q5_K and the plain MMVQ types: the
         // repacked Q6_K / SM60 layouts rewrite the weights in place and stay in VRAM.
         const bool ask_host = std::getenv("STRATA_HEAD_HOST") != nullptr;
-        cudaError_t status = ask_host ? cudaErrorMemoryAllocation : cudaMalloc(&weights, bytes);
+        cudaError_t status;
+        if (ask_host) {   // an explicit request for the host placement skips any VRAM attempt
+            status = cudaErrorMemoryAllocation;
+        } else if (stable_va_ && map_stable_weights([] { int d = -1; cudaGetDevice(&d); return d; } (), bytes)) {
+            weights = weights_;   // the fixed VA base: every remap lands here, so captured graphs stay valid
+            status = cudaSuccess;
+        } else {
+            status = cudaMalloc(&weights, bytes);
+        }
         bool discrete = false;
         { int d = 0; cudaDeviceProp pr{}; if (cudaGetDevice(&d) == cudaSuccess && cudaGetDeviceProperties(&pr, d) == cudaSuccess) discrete = strata::spill_allowed(strata::kSpillMetalBuild, pr.integrated != 0); else (void) cudaGetLastError(); }
         if (status != cudaSuccess && discrete && std::getenv("STRATA_HEAD_HOST_OFF") == nullptr && !strata::kernels::native_q6_k_packed_enabled()) {
