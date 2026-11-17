@@ -1,0 +1,59 @@
+/* SMI2000: the Monitor's "Memory and experts" card (components/SmiMemoryPanel.tsx). */
+.smi-memory { display: flex; flex-direction: column; gap: 12px; }
+.smi-memory h2 { margin: 0; }
+.smi-memory__grid { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1.6fr); gap: 16px 32px; }
+.smi-memory__ram, .smi-memory__experts { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.smi-memory__ram .monitor-spark { margin-top: 8px; }
+.smi-memory__facts { display: flex; flex-wrap: wrap; gap: 4px 16px; }
+.smi-memory__experts p { margin: 0; }
+.smi-stack { display: flex; height: 12px; border-radius: var(--st-r-pill); overflow: hidden; background: var(--st-surface-2); border: 1px solid var(--st-line-soft); }
+.smi-stack > span { height: 100%; transition: width var(--st-dur) var(--st-ease); }
+.smi-memory [data-tier='vram'] { --smi-tier: var(--st-accent); }
+.smi-memory [data-tier='ram'] { --smi-tier: var(--st-info); }
+.smi-memory [data-tier='disk'] { --smi-tier: var(--st-warn); }
+.smi-stack > span { background: var(--smi-tier); }
+.smi-memory__tiers { margin: 0; display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 8px 16px; }
+.smi-memory__tiers > div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.smi-memory__tiers dt { display: flex; align-items: center; gap: 6px; color: var(--st-ink-muted); font-size: 12px; }
+.smi-memory__tiers dt i { width: 10px; height: 10px; border-radius: 3px; background: var(--smi-tier); flex: none; }
+.smi-memory__tiers dd { margin: 0; font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+@media (max-width: 950px) { .smi-memory__grid { grid-template-columns: 1fr; } }
+@media (max-width: 640px) { .smi-memory__tiers { grid-template-columns: 1fr; } }
+
+/* SMI2000: the sampling card beside "Memory and experts" (the same columns as "Context fill" and "Recent requests"). */
+.smi-row { display: grid; grid-template-columns: minmax(250px,1fr) minmax(0,2.4fr); gap: 16px; align-items: stretch; }
+.smi-row[data-single='true'] { grid-template-columns: 1fr; }
+.smi-sampling { display: flex; flex-direction: column; gap: 10px; }
+.smi-sampling h2, .smi-sampling p { margin: 0; }
+.smi-sampling__table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.smi-sampling__table th { font-size: 10px; font-weight: 500; color: var(--st-ink-muted); text-align: left; padding: 4px 0; }
+.smi-sampling__table td { padding: 5px 0; border-top: 1px solid var(--st-line-soft); }
+.smi-sampling__table .num { text-align: right; font-variant-numeric: tabular-nums; }
+.smi-sampling__mark { margin-left: 6px; font-size: 8px; color: var(--st-accent); vertical-align: middle; }
+@media (max-width: 950px) { .smi-row { grid-template-columns: 1fr; } }
+
+/* SMI2000: the KV format under "Context fill". */
+.smi-kv p { margin: 4px 0 0; line-height: 1.45; }
+
+/* SMI2000: Recent requests - the Clear button, and room for the prefill column. */
+.smi-toolbar-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+.smi-clear { display: inline-flex; align-items: center; gap: 8px; }
+.monitor-request-table .st-table { min-width: 700px; }
+
+/* SMI2000: the VRAM card's bar of what fills the card. */
+.smi-vram { display: flex; flex-direction: column; gap: 6px; }
+.smi-stack--thin { height: 8px; }
+.smi-vram [data-part='weights'] { --smi-tier: #8b5cf6; }
+.smi-vram [data-part='draft'] { --smi-tier: #ec4899; }
+.smi-vram [data-part='experts'] { --smi-tier: var(--st-accent); }
+.smi-vram [data-part='kv'] { --smi-tier: var(--st-info); }
+.smi-vram [data-part='buffers'] { --smi-tier: #14b8a6; }
+.smi-vram [data-part='other'] { --smi-tier: var(--st-warn); }
+.smi-vram [data-part='free'] { --smi-tier: transparent; }
+.smi-vram .smi-stack > span { background: var(--smi-tier); }
+.smi-vram__legend { margin: 0; display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 2px 10px; font-size: 10px; }
+.smi-vram__legend > div { display: flex; justify-content: space-between; gap: 6px; min-width: 0; }
+.smi-vram__legend dt { display: flex; align-items: center; gap: 4px; color: var(--st-ink-muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.smi-vram__legend dt i { width: 8px; height: 8px; border-radius: 2px; background: var(--smi-tier); flex: none; }
+.smi-vram [data-part='free'] dt i { border: 1px solid var(--st-line-soft); }
+.smi-vram__legend dd { margin: 0; white-space: nowrap; }

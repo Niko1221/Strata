@@ -33,6 +33,7 @@ void translationsReady().then(() => {
 
 import './styles/annotation-fixes.css';
 import './styles/monitor.css';
+import './styles/smi-monitor.css';
 import './styles/time-skip.css';
 
 import './styles/model-run.css';

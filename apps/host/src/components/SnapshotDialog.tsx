@@ -23,6 +23,18 @@ export function downloadSnapshot(data: string) {
     link.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
+/** SMI2000: puts the picture on the clipboard (a PNG), and says so. */
+export async function copySnapshotWithNotice(data: string) {
+    try {
+        const encoded = data.slice(data.indexOf(',') + 1);
+        const bytes = Uint8Array.from(atob(encoded), character => character.charCodeAt(0));
+        await navigator.clipboard.write([new ClipboardItem({ 'image/png': new Blob([bytes], { type: 'image/png' }) })]);
+        pushToast('success', tr('Image copied'), tr('Paste it where you want with Ctrl+V.'));
+    }
+    catch {
+        pushToast('error', tr('The image was not copied'), tr('Use Download instead.'));
+    }
+}
 export function SnapshotDialog({ open, data, pending, error, onClose, onRetry }: {
     open: boolean;
     data: string;
@@ -33,7 +45,7 @@ export function SnapshotDialog({ open, data, pending, error, onClose, onRetry }:
 }) {
     const caption = 'My local AI performance with Strata';
     const project = 'https://github.com/Niko1221/Strata';
-    return <Dialog open={open} title={tr("Monitor screenshot")} onClose={onClose} actions={<><Btn onClick={onClose}>{tr("Close")}</Btn><Btn icon="download" variant="primary" disabled={!data || pending} onClick={() => saveSnapshotWithNotice(data)}>{tr("Download")}</Btn></>}>
+    return <Dialog open={open} title={tr("Monitor screenshot")} onClose={onClose} actions={<><Btn onClick={onClose}>{tr("Close")}</Btn><Btn icon="copy" disabled={!data || pending} onClick={() => void copySnapshotWithNotice(data)}>{tr("Copy to clipboard")}</Btn><Btn icon="download" variant="primary" disabled={!data || pending} onClick={() => saveSnapshotWithNotice(data)}>{tr("Download")}</Btn></>}>
     <div className="snapshot-preview" aria-busy={pending}>
       {tr(pending ? <p className="small muted" role="status">{tr("Preparing your screenshot\u2026")}</p> : data ? <img src={data} alt={tr("Captured Strata Monitor readings")}/> : <div><p className="inline-error" role="alert">{tr(error || 'Screenshot could not be prepared.')}</p><Btn onClick={onRetry}>{tr("Try again")}</Btn></div>)}
     </div>
