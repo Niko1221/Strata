@@ -3347,6 +3347,11 @@ def l2_boot_scan():
     index.json 是可重建缓存: 扫描结果与索引不一致时以盘为准."""
     repaired = {"orphan": 0, "dead_idx": 0, "missing_tok": 0, "half_roll": 0, "tmp_mini": 0}
     try:
+        if not os.path.isdir(ENGINE_SNAP_DIR):
+            # A fresh deployment (or a shadow one) has no engine slot dir yet:
+            # nothing to scan, an empty index is the correct starting state.
+            print(f"[gw] boot scan: engine slot dir absent; starting with an empty index", flush=True)
+            return repaired
         on_disk = {f for f in os.listdir(ENGINE_SNAP_DIR)
                    if archive_exists(os.path.join(ENGINE_SNAP_DIR, f))}
         indexed = set()
