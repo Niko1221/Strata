@@ -1,5 +1,7 @@
 # coder-st agentic coding replay trial (2026-11-16)
 
+**The question is suitability for coding work:** can the model reliably turn tickets into reviewable PRs, and could it replace or add to the local qwen3.8-27b? Speed and energy are secondary and are reported for context.
+
 ## How this was tested
 
 ### The test harness: a Jira-driven dev orchestrator on Hermes
@@ -87,6 +89,8 @@ Times are for the implementer stage only. Calls are model API calls, which count
 The local proxy logs every request to a time-series store. Each record has prompt and generation token counts, prompt-processing and generation time, prefix-cache reuse, and GPU power. The figures below come from the requests made during each job's implementer or follow-up window. Throughput is token-weighted: total tokens divided by total time.
 
 **Hardware caveat:** the two local models ran on **different machines**, so throughput and energy compare the two setups as deployed, not the models on equal hardware. The hosted models (gpt-5.6-sol, Claude Opus 5.5) have no comparable data.
+
+**Memory speed:** the machine running coder-st had RAM running below its rated speed, at **2133 MT/s**, for every run in this report. It was later raised to 3000 MT/s, about 40% more bandwidth, and the engine reads uncached experts from system RAM. coder-st's figures here are therefore probably lower than that machine gives now.
 
 ### Overall
 
@@ -206,10 +210,10 @@ The first review of coder-st's T3 PR found the **same defect** that the opus55 o
 - **Speed:** qwen3.8-27b's implementer stages took about 13 minutes. coder-st took 10–22 minutes when it passed and 26–37 minutes when it failed. Because each local model runs one ticket at a time, those failed runs also block the queue.
 - **Fewer review rounds don't make up for it.** coder-st's one round per passing PR, against two for the originals, is a real result but a small sample. It does not offset failing half the tickets.
 
-On these results, coder-st is unlikely to stay as an implementer model for this orchestrator. The one remaining question is whether the full (non-coder) qwen3.8-flash-next Strata build does better; that trial has not been run yet.
+On these results, coder-st is unlikely to stay as an implementer model for this orchestrator. The one remaining question was whether the full (non-coder) qwen3.8-flash-next Strata build does better. The follow-up [qflash-st replay trial](../2026-11-16-community-rtx-4070-qwen3-8-flash-next-iq3-s/QFLASH_ST_REPLAY_REPORT.md) re-ran the three failed tickets on it at IQ3_S, and it passed all three.
 
 ## Next steps
 
 - coder-st at this quantization can handle small to medium UI or controller tickets with plain unit tests. It is not reliable on tickets whose tests need real infrastructure: databases, HTTP pipelines, or containerised SQL Server.
 - The clearest failure modes are token-level (T5, T6), which suggests a higher-bit quantization may help.
-- **Next trial:** re-run the three failed tickets (T4, T5, T6) on the Strata build of the full qwen3.8-flash-next, not the reduced coder variant, to see whether the general model copes better.
+- **Next trial (done):** re-run the three failed tickets (T4, T5, T6) on the Strata build of the full qwen3.8-flash-next, not the reduced coder variant. See the [qflash-st replay trial](../2026-11-16-community-rtx-4070-qwen3-8-flash-next-iq3-s/QFLASH_ST_REPLAY_REPORT.md).

@@ -59,3 +59,9 @@ Per-request data: `results.json`. Engine log lines from the start: `engine-log-e
 ## Correctness and limitations
 
 Not measured: this is a speed suite. The memory ran at 2133 MT/s, below its 3200 MT/s rating; most of the model is read from system RAM, so these numbers are likely lower than the same machine with the memory profile on (not measured). The conversation uses the model's own replies, so token counts differ a little between runs. Machine details come from the server, `nvidia-smi`/`rocm-smi` and the OS; background load is not recorded. Total time of the suite: 133 s.
+
+## Agentic coding trial
+
+The same model was also tested on real coding work. It was run through an agent pipeline built on Hermes, with thinking on, on the three Jira tickets that the [coder IQ1_M variant](../2026-11-15-community-rtx-4070-qwen3-8-flash-next-coder-iq1-m/README.md) had failed. All three need tests against real infrastructure. It passed all three, at API-call counts close to the models that originally completed them: qwen3.8-27b, gpt-5.6-sol and Claude Opus 5.5. Its PRs needed one or two review rounds. That trial ran at 3000 MT/s, after the memory speed was raised, not at the 2133 MT/s of the benchmark above. The report also covers per-request throughput and energy measured during the runs.
+
+See [QFLASH_ST_REPLAY_REPORT.md](QFLASH_ST_REPLAY_REPORT.md).
