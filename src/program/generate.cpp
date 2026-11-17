@@ -23,6 +23,7 @@
 #include "strata/core/residency_trim.hpp"
 #include "strata/core/kfd_settle.hpp"
 #include "strata/core/kfd_quiet.hpp"
+#include "strata/core/device_lost_exit.hpp"
 #if defined(STRATA_USE_HIP) && defined(__linux__)
 #include "strata/kernels/fused_gr.hpp"   // fused_gr_check, called early on an integrated gfx11 (kfd_quiet.hpp, LOAD)
 #endif
@@ -3562,6 +3563,10 @@ int main(int argc, char** argv) {
         }
     }
 #endif
+    // #5990 test hook: arm the CUDA-free device-lost exit as if the runtime had answered an error, so the path can be
+    // exercised without a card falling off the bus (STRATA_LOST_EXIT_S sets the grace, default 10 s).  Unset: nothing.
+    if (const char* hook = std::getenv("STRATA_TEST_LOST_GPU"); hook != nullptr && *hook != '0')
+        strata::core::arm_device_lost_exit("test hook (STRATA_TEST_LOST_GPU): an injected device loss");
     // `strata --version` / `-V` (also `strata generate --version`): the version and nothing else, before any GPU is touched
     for (int i = 1; i < argc && i < 3; ++i) {
         if (std::strcmp(argv[i], "--version") == 0 || std::strcmp(argv[i], "-V") == 0) {
@@ -15136,7 +15141,20 @@ int main(int argc, char** argv) {
                                      launch_blocking() ? "; CUDA_LAUNCH_BLOCKING=1 is set, and no verify window can "
                                                          "finish with it (#1341)" : "");
                         stall_report(stderr, p.ticks.load() - ticks_at);
-                        strata::core::release_gpu_waits(stderr);   // #267: no spin kernel outlives the process
+                        // #267: no spin kernel outlives the process.  #5990: the release is a driver call, and on a
+                        // device that stopped answering it blocks with the device context held - every other thread's
+                        // CUDA call blocks behind it, and this watchdog would never reach its abort().  Give the
+                        // release a bounded chance and end the process either way.
+                        auto released = std::make_shared<std::atomic<bool>>(false);
+                        std::thread([released] {
+                            strata::core::release_gpu_waits(stderr);
+                            released->store(true, std::memory_order_release);
+                        }).detach();
+                        for (int i = 0; i < 50 && !released->load(std::memory_order_acquire); ++i)
+                            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                        if (!released->load(std::memory_order_acquire))
+                            std::fprintf(stderr, "strata serve: the GPU waits were not released within 5 s (the device "
+                                                 "stopped answering): ending the process without the release (#5990)\n");
                         std::fflush(stderr);
                         std::abort();
                     }

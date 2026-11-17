@@ -10,6 +10,7 @@
 #include "strata/core/defaults_026.hpp"
 #include "strata/kernels/gfx_arch.hpp"
 #include "strata/core/verify.hpp"
+#include "strata/core/device_lost_exit.hpp"
 #include "strata/core/window_evict.hpp"
 #include "strata/core/expert_nibble.hpp"
 #include "strata/core/pin_budget.hpp"
@@ -662,6 +663,13 @@ bool Verifier::release_gpu_waits(int timeout_ms) {
             }
             break;
         }
+    }
+    if (release_err_ != cudaSuccess) {
+        // #5990: the device answered an error instead of finishing.  From here on a teardown call (a free of mapped
+        // memory, a stream sync) can block indefinitely with the device context held, taking every other thread's
+        // CUDA call with it, so nothing on this path is guaranteed to run.  Arm the CUDA-free exit; the window's own
+        // error text still reaches the caller and the request, this only guarantees that the process ends.
+        arm_device_lost_exit(std::string("the GPU stopped answering: ") + cudaGetErrorString(release_err_));
     }
     if (release_err_ == cudaSuccess)
         trace_ev("RELEASE-DRAINED", -1, -1, (int64_t) ms_since(t0));   // aux: ms the GPU took to finish once released
