@@ -246,7 +246,7 @@ Not applicable: GTT 104→112 GiB + `amd_iommu=off` (UMA-only; we are discrete H
 ## Validated findings (do not re-litigate)
 - **Rejected**: `OLLAMA_KV_CACHE_TYPE=q8_0` (−27% TG @128K on CPU-heavy split — dequant-bound, not bandwidth-bound); `use_mmap=false` (+53 GB RAM, −1 GPU layer, no gain); STRATA_PREFILL_MMQ=1 (no gain); `--spec 6` (warm-equal, worse cold); MMQ/ring/io-threads (community: +0.1%).
 - **Kept**: int8 KV + kv-resident 32768 (frees VRAM→expert cache); `ple-io ram` (cold-start immunity, no SSD reads); **STRATA_HIP_PROMPT_F16=1 on 0.1.43 (required)**; spec 4 in v043 configs (fork used spec 3, warm-equal); expert-cache auto; **STRATA_ROCBLAS_TUNING on PR #1167 build (validated 2026-10-14, see results section)**.
-- **Noise floors**: warm PP ±0.3%, TG ±3% (16K). **After any engine restart, discard ≥3 soak passes** (thermal clock/power ramp: cold→settled PP −5% @16K, −2% @64/128K; see thermal findings 2026-10-14). Never compare across sessions/thermal epochs without soak-equalization — cool-start medians read ~2–3% above settled-state.
+- **Noise floors**: warm PP ±0.3%, TG ±3% (16K). **Soak after any engine restart** per the current protocol (revised 2026-10-15: 1 soak pass discarded + 3 counted, median; the rocBLAS A/B used the older ≥3-soak rule — see thermal findings 2026-10-14; cold→settled PP −5% @16K, −2% @64/128K). Never compare across sessions/thermal epochs without soak-equalization — cool-start medians read ~2–3% above settled-state.
 - llama.cpp `-ot experts=CPU` split: 96 PCIe round-trips/token at decode → TG 8.8 (vs 16.2 Ollama). Whole-layer split (-ngl 14) never completed.
 - Speed ladder: quant/engine levers exhausted → next step-change is hardware (2nd V620 **on order** — expert cache per card 62% of Q4_K experts; Coder-class models get ~full cache on ONE card).
 
@@ -260,18 +260,18 @@ Not applicable: GTT 104→112 GiB + `amd_iommu=off` (UMA-only; we are discrete H
 7. Second V620 arrival → `--gpus 0,1` layer-split test (docs/MULTI_GPU.md; config `"gpu": [0,1]`, `layer_split auto`).
 8. If user wants: delete local bench report folders in `Strata-main/bench/results/` (user declined community submission).
 9. **PR #1167 adoption — DONE (2026-10-14):** merged db64983 into `f-gfx103x-sh-stream` (`8759a414`); only conflict was `setup.py` SETUP_ENV (kept 0.1.44's unsloth keys + added `STRATA_ROCBLAS_TUNING`); `docs/AMD_HIP.md` auto-merged. Rebuilt `build-hip/strata`; added `STRATA_ROCBLAS_TUNING` to `strata-iq3_s-v043.json` env. Retest pass: **839.4/68.5, 840.8/75.7, 815.7/74.8, 759.2/74.5** — PP +0.7–1.9% and TG +4.9–9.5% over the PR-worktree pass; the TG jump is from 0.1.44's own changes (gfx103x shared-expert stream default, `dcc6ed9f`), NOT the PR (decode untouched, PR-worktree A/B proved TG-neutral). Attribution caveat: no 0.1.44-no-table arm was run — if strict split needed, toggle the env var and re-run.
-10. Optional: second warm pass per arm (A and B) to tighten the +1.2–2.7% tier deltas to the ±0.3% floor; optional Coder/Q4_K_M lanes with the PR build.
 10. ~~Optional: second warm pass per arm; optional Coder/Q4_K_M lanes with the PR build~~ **MOOT (2026-10-16)** — both lanes dropped in the keep/drop matrix. The PRs' gains were quant-independent A/B'd on IQ3_S/IQ4_XS; no re-verification owed.
-12. Optional: comment on both PRs with our V620 numbers (per docs/COMMUNITY_BENCHMARKS.md: same-day same-build comparisons — #1167 A/B was interleaved; #1151 was sequential passes). For #1167 the portability result is also worth posting: 56/112 shapes pick different solutions on a V620 vs the author's 6900 XT, yet tier medians differ by only +0.1–0.2% (sub-noise) — the table is portable.
-13. Optional: Coder/Q4_K_M lanes on the merged build (both PRs are quant-independent, expect similar relative gains).
-13. ~~Optional: Coder/Q4_K_M lanes on the merged build~~ **MOOT (2026-10-16)** — see #10; both lanes were dropped after the final matrix.
-15. **Wave-reduce adopted — DONE (2026-10-14):** `48d6aa11` (wave_reduce.cuh + native_mmvq/router_top10/native_flash_attn), full tier A/B +1.0/+0.9/+0.7/+0.3% PP, TG neutral; details + JSONs in results section.
-16. **Wave-reduce extension (fused_gr.cu, gr.cu, gdn.cu, sampler.cu) — TESTED AND ABANDONED (2026-10-14).** gdn (double accumulators) and sampler (pair reductions) never had a convertible site; in gr + fused_gr every site except two ternary ones converts bit-identically, and the two exceptions would have to keep the shfl loop with the root cause unpinned (full bisect + theory in the results section). 17/19 sites is not worth carrying — abandoned, working tree reverted to `48d6aa11` and rebuilt. Revisit only with a hot-path profile AND an ISA diff of the ternary kernels (see Decision paragraph in the results section).
-17. **rocBLAS V620 self-tune — DONE, NEUTRAL (2026-10-14):** kept the shipped table; see the A/B section. Thermal soak protocol adopted record-wide (≥3 discarded passes per restart).
+11. Optional: comment on both PRs with our V620 numbers (per docs/COMMUNITY_BENCHMARKS.md: same-day same-build comparisons — #1167 A/B was interleaved; #1151 was sequential passes). For #1167 the portability result is also worth posting: 56/112 shapes pick different solutions on a V620 vs the author's 6900 XT, yet tier medians differ by only +0.1–0.2% (sub-noise) — the table is portable.
+12. ~~Optional: Coder/Q4_K_M lanes on the merged build~~ **MOOT (2026-10-16)** — see #10; both lanes were dropped after the final matrix.
+13. **Wave-reduce adopted — DONE (2026-10-14):** `48d6aa11` (wave_reduce.cuh + native_mmvq/router_top10/native_flash_attn), full tier A/B +1.0/+0.9/+0.7/+0.3% PP, TG neutral; details + JSONs in results section.
+14. **Wave-reduce extension (fused_gr.cu, gr.cu, gdn.cu, sampler.cu) — TESTED AND ABANDONED (2026-10-14).** gdn (double accumulators) and sampler (pair reductions) never had a convertible site; in gr + fused_gr every site except two ternary ones converts bit-identically, and the two exceptions would have to keep the shfl loop with the root cause unpinned (full bisect + theory in the results section). 17/19 sites is not worth carrying — abandoned, working tree reverted to `48d6aa11` and rebuilt. Revisit only with a hot-path profile AND an ISA diff of the ternary kernels (see Decision paragraph in the results section).
+15. **rocBLAS V620 self-tune — DONE, NEUTRAL (2026-10-14):** kept the shipped table; see the A/B section. Thermal soak protocol adopted record-wide (≥3 discarded passes per restart).
 
 ## Environment/infra notes
 - pi settings: `compaction.modelOverrides["openrouter/z-ai/glm-5.3-flash"] = {reserveTokens: 917503}` added (~128K compaction floor). Session model: z-ai/glm-5.3-flash.
 - Azure box quirks: `pkill -f "pattern"` self-matches the calling shell — use bracketed patterns (`server[.]py`) or `pkill -x`. AND: never put the pkill and the server restart in the SAME shell command — the restart gets SIGTERM'd with the process group (hit twice 2026-10-14, even bracketed); kill first, then `setsid nohup … &` in a separate call.
+- Canonical benchmark-build flag set (root cause: the 2026-10-18 missing-PP finding): `-DSTRATA_ENABLE_HIP=ON -DSTRATA_PREFILL_MMQ=ON -DSTRATA_MMQ_KQUANTS=OFF -DSTRATA_Q6K_EXPERTS=OFF -DCMAKE_HIP_ARCHITECTURES=gfx1030` + Release. Gotcha: the option is `STRATA_ENABLE_HIP`, not `STRATA_HIP` — configure rejects `STRATA_PREFILL_MMQ` without it.
+- Standing A/B convention (S-series, 2026-10-19 onward): each bench session ran with the server stopped and restarted after (verified healthy); sections below note only deviations from this. Engine lane untouched except explicitly named opt-in flags.
 - User prefers: editing root files themselves via sudoedit; being asked before big config changes; tables with time columns (actual/elapsed/projected) and quant-labeled lanes.
 - Result JSONs are stamped per-run; environment blocks pinned (ollama_version, quant, engine) — keep doing that for comparability.
 - pi model routing as of 2026-10-16: provider `flayer-strata` on :8080 (UD-IQ4_XS / IQ3_XXS / IQ3_S-abl); ollama provider on :11434 unchanged. The abliterated lane's pi id is `qwen3.8-flash-next-iq3_s-abl`; its matrix row was measured with the spec-5 config (`strata-iq3_s-abl-v043-spec5.json`).
@@ -535,8 +535,7 @@ qsa_rows_bench + tier sweep. Second knob if the phase-level win disappoints: the
 of the ~256 per-lane-per-cell instructions — the gfx906 reduce12 lane-specialization (16 shuffles for 12
 heads instead of 12×(5 shfl+add)) is currently gfx906-gated and could be evaluated separately.
 
-VRAM note: bench needs ~30 MB; server was stopped for the run and restarted after (verified healthy,
-loaded=true). Engine lane untouched; measurement-only.
+VRAM note: the standalone bench needs ~30 MB; measurement-only.
 
 ## 2026-10-19 — S24 experiment #4 follow-through: DOT2 integrated into the engine, parity OK, runtime regression — verdict: abandon DOT2
 
@@ -587,8 +586,6 @@ the warp_sum reduce is ~120 of the ~256 per-lane-per-cell instructions; the gfx9
 `reduce12` lane specialization (16 shuffles for 12 heads instead of 12x(5 shfl+add)) does not change
 numerics or add per-block setup, so its bench projection should transfer more faithfully than DOT2's did.
 
-Server: stopped during the bench runs, restarted after (verified healthy, loaded=true). Engine lane
-untouched except the opt-in flag plumbing; measurement-only otherwise.
 
 ## 2026-10-19 — S25 experiment #5: reduce12 lane specialization (gfx906 port) — verdict: 1.71x SLOWER on gfx1030, abandon
 
@@ -613,7 +610,6 @@ reduce holds scores in fewer lanes for longer.
 Verdict: abandon reduce12 for the engine. The `STRATA_ATTN_REDUCE12=1` opt-in stays in the tree (off by
 default, harmless, parity-verified). Default path is unchanged.
 
-Server: stopped for the timing A/B, restarted after (verified healthy).
 
 ## 2026-10-19 (evening) — S26: full tier sweep, default path, after DOT2/REDUCE12 integration
 
@@ -909,9 +905,8 @@ Summary:
 - **Target phases (hc up+inj+mix)**: 3217 → 2004 ms, saving **1213 ms (-37.7%)**. Adding hc read
   (-1235 ms, reduced too), the gross hc-chain saving is **2448 ms**.
 - **But the measured GPU timeline only improved by 1042 ms (-3.2%)**, not the full 2448 ms.
-  Two reasons: secondary phases drifted slightly slower in the F-2 run (gdn +83, gemm gate/up +46,
-  router+shared +38, qsa proj +26, gemm down +18 ≈ +200 ms net), and ~1200 ms of the hc savings
-  was overlapped/hidden time — see the reconciliation section below.
+  Two reasons — secondary-phase drift and overlapped/hidden time — are quantified in the
+  reconciliation section below.
 - `hc down` is essentially unchanged (+3 ms, expected — it wasn't an F-2 target).
 - Parity held throughout: rel RMS 0.000e+00, max |diff| 0.000e+00 for all three hc phases.
 - Note on the baseline: an earlier draft of this table used the b1 first pass (32550 ms) as the
@@ -1017,10 +1012,10 @@ medians). Gated behind STRATA_HC_MIX_H16=1; promotion decision unchanged.
 
 ### Decision needed: promote F-2 to default?
 - **Question:** turn `STRATA_HC_MIX_H16=1` on in the production config (`strata-iq3_s-*.json` env)
+**RESOLVED 2026-10-24:** promoted — first `0.1.47+F-2` (`f2-0147`), re-pointed to `main+F-2` (`f2-0148`) the same day, then superseded by `wt-0155` on 2026-11-02; see the 2026-10-23/24 and 2026-11-01 sections.
+
   now, or first bound the secondary-phase drift?
-- **Evidence for promoting now:** med-of-3 -1042 ms / -3.2% GPU timeline (and wall), bitwise-identical
-  output, default path byte-identical (flag-gated), parity held in all passes. Corrected deltas show
-  no real secondary regression (gdn +83, gemm gate/up +46, qsa attn -6 — all within run noise).
+- **Evidence:** the F-2 server A/B + reconciliation above — med-of-3 −1042 ms / −3.2% GPU timeline (and wall), bitwise-identical output, no real secondary regression.
 - **Option A (promote now):** flip the env in the production config; keep the flag in the engine so
   the stock default stays byte-identical for upstream.
 - **Option B (bracket first):** one re-run F-2 → baseline → F-2 (same protocol) to bound drift and
@@ -1028,7 +1023,7 @@ medians). Gated behind STRATA_HC_MIX_H16=1; promotion decision unchanged.
   quoted in a PR or community report.
 
 ### Pending tasks
-- [ ] **Recover the gfx1030 performance lost in the 0.1.48.1 → new-main jump (2026-10-29 A/B)** — find where it went, then recover it. Cheapest first: (1) parking-equalized re-run of the arm binaries, (2) `STRATA_PREFILL_TIMING=1` attribution of the mid-tier TG gap (arm-b −3.5/−3.7 % vs the 10-25 baseline), (3) interleaved-pairs bisect only if the gap survives, (4) F-2×new-main re-base check (F-2's TG cost is new on main). Details: "2026-10-29" entry at the end.
+- [x] ~~**Recover the gfx1030 performance lost in the 0.1.48.1 → new-main jump**~~ **DONE 2026-11-01** — parking-equalized med-of-6: F-2 wins at every tier, new main + F-2 promoted as `wt-0155` (lead list and caveats live in the 2026-10-29 entry).
 - [ ] **PR organization** (see branch inventory below): decide the commit split for the F-2 PR —
   `f-hc-skip-widen-f2` carries `09819e4c` (WIP hc sub-phase timing groundwork, S23) as a parent.
   Either submit the timing groundwork as its own small PR first, or rebase F-2 onto
@@ -1190,7 +1185,7 @@ measured truth on its target base; decode gate variant loses the win. Commit mes
 7. **Clean F-2 builds prepared this session**: `f2-0147` = `011c9e60` + F-2 cherry-pick (`c5b648f0`), `f2-0148` = `7ddc17a3` + F-2 cherry-pick (`ad634880`). Cherry-pick resolution: both conflicts in `src/prefill/prefill.cpp` resolved to F-2's side with the two `pt.mark(kPfHcUp/kPfHcInj, cs)` sub-phase lines dropped (those marks come from the separate timing-groundwork commit `3d34786f`, which upstream lacks — upstream defines only `kPfHc`/`kPfHcWrite`). `git cherry` confirms all six commits on `f2-on-main-2026-10-21` are absent from 0.1.47, so building that branch as-is would have confounded the A/B with the SH-default flip and DPP wave reductions.
 numbers are stale. Next: decode-focused med-of-5 A/B on `011c9e60` base, or park the PR.
 
-**2026-10-24 — F-2 promoted (steps 0-3 executed).** Clean F-2-only builds: `f2-0147` = `011c9e60`+F-2 (`c5b648f0`, worktree `/home/drewster/git/wt-f2-0147`), `f2-0148` = `7ddc17a3`+F-2 (`ad634880`, `/home/drewster/git/wt-f2-0148`). Both Release/gfx1030 with the setup flags (`STRATA_PREFILL_MMQ=ON`, `STRATA_MMQ_KQUANTS=OFF`, `STRATA_Q6K_EXPERTS=OFF`, tests ON). Cherry-picks resolved to F-2's side with the two `pt.mark(kPfHcUp/kPfHcInj)` sub-phase lines dropped (they belong to `3d34786f`, the separate timing groundwork; upstream defines only `kPfHc`/`kPfHcWrite`).
+**2026-10-24 — F-2 promoted (steps 0-3 executed).** Built the clean F-2-only builds prepared in the config-audit section above (`wt-f2-0147`, `wt-f2-0148`; both Release/gfx1030 with setup's flags — canonical list in Environment/infra notes — tests ON). Cherry-pick resolution as recorded there.
 
 Parity (`STRATA_HC_UPMIX_CHECK=2` + `STRATA_HC_UPMIX=1`, 16k prompt, both checks): `mixed rel RMS 0.000e+00, max |diff| 0.000e+00 (f16-skip)` on BOTH builds — matches the Oct-20 verification. Note: the check block only runs when `hc_upmix()` is true; on gfx1030 `STRATA_HC_UPMIX` is NOT an arch default (it is for gfx1103 iGPU only), so a parity run without `STRATA_HC_UPMIX=1` silently checks nothing. With `=1`, `gr_upmix` returns false on gfx1030 (gfx11-only kernel) and the flow falls into F-2's f16-skip path — which is exactly the path the check labels. F-2 is active without `STRATA_HC_UPMIX` too; the env only gates the check.
 
@@ -1229,7 +1224,7 @@ Upstream-worthy: (a) the eviction cost after a big conversation could be made as
 
 Session evidence: logs in `~/engines/logs/` (probe-rev, probe-nopark, agent-loop), scripts `/tmp/probe-rev.sh`, `/tmp/probe-nopark.sh`, `/tmp/agent-loop.py`, `/tmp/agent-loop-test.sh` (recreate in `bench/` if needed), JSONs in `~/git/llm-benchmark/results/`.
 
-**2026-10-29 — new-main A/B (arms a/b), IQ3_S lane: old+F-2 stays the daily driver.** Fresh `origin/main` pulled (HEAD `46c152a1`, 1071 commits past the daily driver's 0.1.48.1 base). Two clean HIP builds with setup's flags (`-DSTRATA_ENABLE_HIP=ON -DSTRATA_PREFILL_MMQ=ON -DSTRATA_MMQ_KQUANTS=OFF -DSTRATA_Q6K_EXPERTS=OFF -DCMAKE_HIP_ARCHITECTURES=gfx1030`; note the option is `STRATA_ENABLE_HIP`, not `STRATA_HIP` — configure rejects `STRATA_PREFILL_MMQ` without it), fresh build dirs (clean-build rule respected): (a) new main as-is (`/tmp/strata-arm-a/build-hip/strata`), (b) new main + F-2 (`ad634880` cherry-picked clean onto `46c152a1` → `fd7a356e`, 6 files, `/tmp/strata-arm-b/build-hip/strata`). Both built in ~5 min. Lane: `packs/iq3_s` spec-5 draftvocab recipe, server configs `/tmp/iq3s-arm-{a,b}.json` (copies of the daily `strata-v620-iq3_s-T9-draftvocab.json`; only exe + model_name + log changed), 12,467 expert slots, bench = 1 soak (discarded) + 3 counted, med-of-3. Result JSONs: arm (a) `strata_tier_pass_20261029_{035708,040214,040723}.json`, arm (b) `…_{042009,042507,043005}.json`.
+**2026-10-29 — new-main A/B (arms a/b), IQ3_S lane: old+F-2 stays the daily driver.** Fresh `origin/main` pulled (HEAD `46c152a1`, 1071 commits past the daily driver's 0.1.48.1 base). Two clean HIP builds with setup's flags (canonical list + `STRATA_ENABLE_HIP` gotcha in Environment/infra notes), fresh build dirs (clean-build rule respected): (a) new main as-is (`/tmp/strata-arm-a/build-hip/strata`), (b) new main + F-2 (`ad634880` cherry-picked clean onto `46c152a1` → `fd7a356e`, 6 files, `/tmp/strata-arm-b/build-hip/strata`). Both built in ~5 min. Lane: `packs/iq3_s` spec-5 draftvocab recipe, server configs `/tmp/iq3s-arm-{a,b}.json` (copies of the daily `strata-v620-iq3_s-T9-draftvocab.json`; only exe + model_name + log changed), 12,467 expert slots, bench = 1 soak (discarded) + 3 counted, med-of-3. Result JSONs: arm (a) `strata_tier_pass_20261029_{035708,040214,040723}.json`, arm (b) `…_{042009,042507,043005}.json`.
 
 | Tier | (a) new main PP/TG | (b) new main + F-2 PP/TG | F-2 Δ | 10-25 baseline (0.1.48.1+F-2) PP/TG |
 |---|---|---|---|---|
@@ -1255,7 +1250,7 @@ Side note (unconfirmed, not tested): new main carries upstream k-quant expert-ke
 
 ## 2026-11-01 — new-main round 2 (0.1.55): F-2 wins on med-of-6, promoted to `wt-0155`
 
-Setup. Target `c62d5e3a` (v0.2.7.1-239, 0.1.55-era) pulled to `/tmp/strata-arm-{c,d}` from `origin/main` (the CWD worktree `/home/drewster/git/Strata-main` is parked at `c62d5e3a` via `parked/pr-a-gfx103x-default`). Two clean HIP builds, setup flags (`-DSTRATA_ENABLE_HIP=ON -DSTRATA_PREFILL_MMQ=ON -DSTRATA_MMQ_KQUANTS=OFF -DSTRATA_Q6K_EXPERTS=OFF -DCMAKE_HIP_ARCHITECTURES=gfx1030`), clean build dirs (10-25 rule). Arm-c = new main as-is; arm-d = new main + F-2 (`ad634880` re-cherry-picked → `4bb6990e`; same prefill.cpp conflict as the 10-29 pick, resolved the same way: F-2's `if (!upmixed)` block with upstream's `pt.mark(kPfHcInj, cs)` after it, before the `if (checked)` debug block; `git cherry` clean).
+Setup. Target `c62d5e3a` (v0.2.7.1-239, 0.1.55-era) pulled to `/tmp/strata-arm-{c,d}` from `origin/main` (the CWD worktree `/home/drewster/git/Strata-main` is parked at `c62d5e3a` via `parked/pr-a-gfx103x-default`). Two clean HIP builds, setup flags (canonical list in Environment/infra notes), clean build dirs (10-25 rule). Arm-c = new main as-is; arm-d = new main + F-2 (`ad634880` re-cherry-picked → `4bb6990e`; same prefill.cpp conflict as the 10-29 pick, resolved the same way: F-2's `if (!upmixed)` block with upstream's `pt.mark(kPfHcInj, cs)` after it, before the `if (checked)` debug block; `git cherry` clean).
 
 **The 10-31 "server.py spawns a broken engine" mystery was my own bug.** Symptom had been: engine boots in seconds with no model loaded (`READY 32768`, no engine log, dies on first request). Actual cause: the server.py invocations omitted `--engine strata`, so 0.1.55's server.py starts a bare, argument-less engine. With the flag the boot is correct: full calibrated args, engine log written, rocBLAS tuning table loaded (`gfx1030-rocblas-5.6.0.8d1ae90e.txt`, absolute path already in the config env), `READY 262144`, **12,333 expert slots** (the cfa197e2 auto-cache shrink from 12,467, as predicted on 10-31). rocBLAS resolution: server.py does not touch the env value; the loader (`src/prefill/rocblas_tuning.hpp`) opens the env path verbatim — the daily config carries an absolute path, so arm configs (cloned) are fine. Boot ~100+ s (VRAM wait), engine=0.1.55.
 
