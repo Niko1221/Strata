@@ -322,6 +322,19 @@ endif()
 strata_resolve(_main src/program/generate.cpp)
 add_executable(strata ${_main})
 target_link_libraries(strata PRIVATE strata_engine strata_prefill strata_spec)
+if(WIN32)
+    # Diagnosis only, off by default: STRATA_ALLOC_TRACE=1 then names the code that holds host memory, through a
+    # /MAP build (strata.map). It adds a 32-byte header to every allocation, so the default engine must not carry it.
+    option(STRATA_ALLOC_TRACE "Build the host-allocation tracker behind STRATA_ALLOC_TRACE=1 (diagnosis)" OFF)
+    if(STRATA_ALLOC_TRACE)
+        target_compile_definitions(strata PRIVATE STRATA_ALLOC_TRACE_BUILD=1)
+        if(CMAKE_CXX_COMPILER_ID STREQUAL "IntelLLVM")
+            target_link_options(strata PRIVATE "/Qoption,link,/MAP")
+        else()
+            target_link_options(strata PRIVATE /MAP)
+        endif()
+    endif()
+endif()
 
 # --- the kernel parity self-tests (each runs on the card and compares against a CPU reference) ---------------------
 option(STRATA_SYCL_PARITY "Build the kernel parity tests" ON)

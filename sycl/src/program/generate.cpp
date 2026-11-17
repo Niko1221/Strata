@@ -141,6 +141,181 @@ namespace strata::prefill { void set_nonresident_share(double share); }   // SYC
 #include <set>
 #include <vector>
 
+// ---------------------------------------------------------------------------------------------------------------
+// STRATA_ALLOC_TRACE=1 (diagnosis, Windows): who HOLDS the host allocations of the prompt path. Every allocation keeps
+// a 32-byte header just before the returned pointer (its size and the return addresses that asked for it), and a small
+// fixed table sums the bytes still OUTSTANDING per caller - added on new, removed on delete - so the report names the
+// functions that keep memory rather than the ones that merely allocate and free. The caller recorded is the first
+// return address inside this executable, which with inlining is the code that grew a vector, not the allocator inside
+// the standard library. Callers print as "strata.exe+0xRVA": the /MAP build writes those RVAs to strata.map, where the
+// function names are. Unset, the table is not touched; the operators still carry the header (a few bytes per block) so
+// that free() always finds its base.
+#if defined(STRATA_ALLOC_TRACE_BUILD) && defined(_WIN32)
+#include <intrin.h>
+namespace alloc_trace {
+struct Header { void* base; size_t size; void* caller; unsigned long long magic; };   // 32 bytes, before the pointer
+constexpr unsigned long long kMagic = 0x5354524154413031ull;                          // "STRATA01"
+struct Bucket { void* caller; long long bytes; long long count; };
+constexpr size_t kBuckets = 8192;
+Bucket g_buckets[kBuckets];
+SRWLOCK g_lock = SRWLOCK_INIT;
+
+inline bool on() {
+    static const bool v = [] {
+        const char* e = std::getenv("STRATA_ALLOC_TRACE");
+        return e != nullptr && e[0] != 0 && e[0] != '0';
+    }();
+    return v;
+}
+
+// this executable's range, so a frame can be attributed to it (the standard library's code is a header's, inlined)
+inline bool in_exe(void* p) {
+    static uintptr_t lo = 0, hi = 0;
+    if (lo == 0) {
+        HMODULE m = GetModuleHandleA(nullptr);
+        const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(m);
+        const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(reinterpret_cast<const char*>(m) + dos->e_lfanew);
+        lo = reinterpret_cast<uintptr_t>(m);
+        hi = lo + nt->OptionalHeader.SizeOfImage;
+    }
+    const uintptr_t a = reinterpret_cast<uintptr_t>(p);
+    return a >= lo && a < hi;
+}
+
+void* caller_of_allocation() {
+    void* frames[6] = {};
+    const unsigned short n = RtlCaptureStackBackTrace(1, 6, frames, nullptr);
+    for (unsigned short i = 0; i < n; ++i)
+        if (in_exe(frames[i])) return frames[i];
+    return n > 0 ? frames[0] : nullptr;
+}
+
+void note(void* caller, long long bytes, long long count) {
+    if (!on()) return;
+    AcquireSRWLockExclusive(&g_lock);
+    size_t i = (reinterpret_cast<uintptr_t>(caller) >> 4) & (kBuckets - 1);
+    for (size_t n = 0; n < kBuckets; ++n, i = (i + 1) & (kBuckets - 1)) {
+        if (g_buckets[i].caller == caller || g_buckets[i].caller == nullptr) {
+            if (g_buckets[i].caller == nullptr) g_buckets[i].caller = caller;
+            g_buckets[i].bytes += bytes;
+            g_buckets[i].count += count;
+            break;
+        }
+    }
+    ReleaseSRWLockExclusive(&g_lock);
+}
+
+inline void* allocate(size_t n, size_t align) {
+    const size_t want = n != 0 ? n : 1;
+    const size_t a = align > 16 ? align : 16;
+    void* raw = std::malloc(want + sizeof(Header) + a);
+    if (raw == nullptr) throw std::bad_alloc();
+    const uintptr_t p = (reinterpret_cast<uintptr_t>(raw) + sizeof(Header) + (a - 1)) & ~reinterpret_cast<uintptr_t>(a - 1);
+    auto* h = reinterpret_cast<Header*>(p - sizeof(Header));
+    h->base = raw;
+    h->size = want;
+    h->caller = on() ? caller_of_allocation() : nullptr;
+    h->magic = kMagic;
+    note(h->caller, (long long) want, 1);
+    return reinterpret_cast<void*>(p);
+}
+
+inline void release(void* p) {
+    if (p == nullptr) return;
+    auto* h = reinterpret_cast<Header*>(reinterpret_cast<uintptr_t>(p) - sizeof(Header));
+    if (h->magic != kMagic) { std::free(p); return; }   // not ours: leave it to the CRT
+    note(h->caller, -(long long) h->size, -1);
+    std::free(h->base);
+}
+
+void report(const char* where) {
+    if (!on()) return;
+    AcquireSRWLockExclusive(&g_lock);
+    int top[12];
+    for (int k = 0; k < 12; ++k) top[k] = -1;
+    long long total = 0;
+    size_t live = 0;
+    for (size_t i = 0; i < kBuckets; ++i) {
+        if (g_buckets[i].caller == nullptr || g_buckets[i].bytes <= 0) continue;
+        total += g_buckets[i].bytes;
+        ++live;
+        for (int k = 0; k < 12; ++k) {
+            if (top[k] < 0 || g_buckets[i].bytes > g_buckets[top[k]].bytes) {
+                for (int j = 11; j > k; --j) top[j] = top[j - 1];
+                top[k] = (int) i;
+                break;
+            }
+        }
+    }
+    std::fprintf(stderr, "strata alloc: %-12s outstanding %.1f MiB in %zu callers\n", where, total / 1048576.0, live);
+    for (int k = 0; k < 12 && top[k] >= 0; ++k) {
+        const Bucket& b = g_buckets[top[k]];
+        HMODULE mod = nullptr;
+        char name[MAX_PATH] = "";
+        uintptr_t base = 0;
+        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                               static_cast<LPCSTR>(b.caller), &mod) && mod) {
+            base = reinterpret_cast<uintptr_t>(mod);
+            GetModuleFileNameA(mod, name, sizeof name);
+            if (char* slash = std::strrchr(name, '\\')) std::memmove(name, slash + 1, std::strlen(slash + 1) + 1);
+        }
+        std::fprintf(stderr, "strata alloc:   %7.2f MiB in %7lld blocks  %s+0x%llx\n", b.bytes / 1048576.0, b.count,
+                     name[0] ? name : "?", static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(b.caller) - base));
+    }
+    // ... and the same, by BLOCK COUNT: a leak of many small blocks is invisible in the list above
+    int topc[12];
+    for (int k = 0; k < 12; ++k) topc[k] = -1;
+    for (size_t i = 0; i < kBuckets; ++i) {
+        if (g_buckets[i].caller == nullptr || g_buckets[i].count <= 0) continue;
+        for (int k = 0; k < 12; ++k) {
+            if (topc[k] < 0 || g_buckets[i].count > g_buckets[topc[k]].count) {
+                for (int j = 11; j > k; --j) topc[j] = topc[j - 1];
+                topc[k] = (int) i;
+                break;
+            }
+        }
+    }
+    for (int k = 0; k < 12 && topc[k] >= 0; ++k) {
+        const Bucket& b = g_buckets[topc[k]];
+        HMODULE mod = nullptr;
+        char name[MAX_PATH] = "";
+        uintptr_t base = 0;
+        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                               static_cast<LPCSTR>(b.caller), &mod) && mod) {
+            base = reinterpret_cast<uintptr_t>(mod);
+            GetModuleFileNameA(mod, name, sizeof name);
+            if (char* slash = std::strrchr(name, '\\')) std::memmove(name, slash + 1, std::strlen(slash + 1) + 1);
+        }
+        std::fprintf(stderr, "strata alloc:   by count: %7lld blocks, %7.2f MiB  %s+0x%llx\n", b.count,
+                     b.bytes / 1048576.0, name[0] ? name : "?",
+                     static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(b.caller) - base));
+    }
+    ReleaseSRWLockExclusive(&g_lock);
+    std::fflush(stderr);
+}
+}  // namespace alloc_trace
+
+// the program's C++ allocation functions: every container, string and new in the engine goes through them
+void* operator new(std::size_t n) { return alloc_trace::allocate(n, 0); }
+void* operator new[](std::size_t n) { return alloc_trace::allocate(n, 0); }
+void* operator new(std::size_t n, const std::nothrow_t&) noexcept { try { return alloc_trace::allocate(n, 0); } catch (...) { return nullptr; } }
+void* operator new[](std::size_t n, const std::nothrow_t&) noexcept { try { return alloc_trace::allocate(n, 0); } catch (...) { return nullptr; } }
+void* operator new(std::size_t n, std::align_val_t a) { return alloc_trace::allocate(n, (size_t) a); }
+void* operator new[](std::size_t n, std::align_val_t a) { return alloc_trace::allocate(n, (size_t) a); }
+void* operator new(std::size_t n, std::align_val_t a, const std::nothrow_t&) noexcept { try { return alloc_trace::allocate(n, (size_t) a); } catch (...) { return nullptr; } }
+void* operator new[](std::size_t n, std::align_val_t a, const std::nothrow_t&) noexcept { try { return alloc_trace::allocate(n, (size_t) a); } catch (...) { return nullptr; } }
+void operator delete(void* p) noexcept { alloc_trace::release(p); }
+void operator delete[](void* p) noexcept { alloc_trace::release(p); }
+void operator delete(void* p, std::size_t) noexcept { alloc_trace::release(p); }
+void operator delete[](void* p, std::size_t) noexcept { alloc_trace::release(p); }
+void operator delete(void* p, std::align_val_t) noexcept { alloc_trace::release(p); }
+void operator delete[](void* p, std::align_val_t) noexcept { alloc_trace::release(p); }
+void operator delete(void* p, std::size_t, std::align_val_t) noexcept { alloc_trace::release(p); }
+void operator delete[](void* p, std::size_t, std::align_val_t) noexcept { alloc_trace::release(p); }
+void operator delete(void* p, const std::nothrow_t&) noexcept { alloc_trace::release(p); }
+void operator delete[](void* p, const std::nothrow_t&) noexcept { alloc_trace::release(p); }
+#endif  // STRATA_ALLOC_TRACE_BUILD && _WIN32
+
 namespace {
 bool sycl_mirror_adapt() {
     static const bool enabled = [] {
@@ -1233,6 +1408,9 @@ void mem_probe(const char* where) {
                  cls[0] >> 20, cnt[0], cls[1] >> 20, cnt[1], cls[2] >> 20, cnt[2], cls[3] >> 20, cnt[3]);
 #else
     std::fprintf(stderr, "strata mem: %-12s commit %llu MiB  rss %llu MiB\n", where, m.commit_mib, m.rss_mib);
+#endif
+#if defined(STRATA_ALLOC_TRACE_BUILD) && defined(_WIN32)
+    alloc_trace::report(where);
 #endif
     std::fflush(stderr);
 }
