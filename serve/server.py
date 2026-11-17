@@ -1099,7 +1099,8 @@ class StrataEngine:
         # retry_vram_args: the same start with no drafter (nodraft_retry_args), used instead when the engine ended because a card ran out of memory: swapping DFlash2 for
         # the MTP takes MORE memory from a card that is already short, so that direction is never taken then
         self.spawn = (exe, list(args), cwd, log, env, False, cpus)   # to start it again after it died (issue #27)
-        self.classifier_reserved = False
+        # restart() calls __init__ on the same engine. Keep the configured reservation.
+        self.classifier_reserved = getattr(self, "classifier_reserved", False)
         self.classifier_pending = set()
         # the all-cards split engine (sFNX, strata-split-N[-arch]): its GEN parser accepts fewer keys than Strata's engine (tests/split/test_split_gen_keys.py pins them)
         self.split_engine = os.path.basename(str(exe)).startswith("strata-split")
@@ -2169,11 +2170,9 @@ class StrataEngine:
             return any(e[0] * 2 <= plen for e in self.wait_lens)
 
     def generate_batched(self, ids, max_new, sampling, cancel, embeddings=None):
-        if not getattr(self, "classifier_reserved", False):
+        if not getattr(self, "classifier_reserved", False) or self.batch < 2:
             yield from self._generate_batched(ids, max_new, sampling, cancel, embeddings)
             return
-        if self.batch < 2:
-            raise ValueError("classifier_model requires at least two engine slots")
         classifier = getattr(cancel, "_strata_classifier", False)
         if classifier:
             with self.slot_cv:
@@ -2620,7 +2619,7 @@ class StrataEngine:
         prompt (the engine then reads only the rest), else an empty one, else the one used longest ago - so the
         conversations other slots hold stay for their next turns.  None: every slot is busy."""
         free = [b for b in self.slot_order if not self.slot_busy[b]]
-        if getattr(self, "classifier_reserved", False):
+        if getattr(self, "classifier_reserved", False) and len(self.slot_busy) >= 2:
             reserved = len(self.slot_busy) - 1
             free = [b for b in free if (b == reserved) == classifier]
         if not free:
@@ -8960,6 +8959,11 @@ def make_handler(svc: Service):
         def _anthropic(self, req):
             svc.load()
             req = svc.with_shared(req, "anthropic")
+            classifier = bool(svc.classifier_model and req.get("model") == svc.classifier_model)
+            if classifier and getattr(svc.engine, "batch", 0) < 2:
+                return self._json(503, {"type": "error", "error": {
+                    "type": "api_error", "code": "classifier_slot_unavailable",
+                    "message": "The engine needs at least two batch slots for classifier_model"}})
             messages, tools, kw = anthropic_to_messages(req, svc.anthropic_think_unasked)
             self._no_local_images(messages)
             callable_tools, deferred = anthropic_tools(req)     # #4663: the deferred tools are callable, unlisted
@@ -8971,7 +8975,7 @@ def make_handler(svc: Service):
             stop_strings(req)                                 # ... and so is a bad stop / stop_sequences
             check_request_sampling(req)                       # ... and a sampling field of the wrong type
             cancel = threading.Event()
-            cancel._strata_classifier = bool(svc.classifier_model and req.get("model") == svc.classifier_model)
+            cancel._strata_classifier = classifier
             self._watch_client(cancel)                       # #430 #431 (#1999: before prepare, which can take long)
             try:
                 ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new, force=force, req=req, cancel=cancel)
@@ -10218,6 +10222,12 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
             blocked = []
         if blocked:
             ap.error("--offline cannot be strict for this profile: " + "; ".join(blocked))
+    classifier_model = cfg.get("classifier_model")
+    if classifier_model is not None:
+        if not isinstance(classifier_model, str) or not classifier_model.strip():
+            raise SystemExit("classifier_model must be a non-empty model ID")
+        if classifier_model == default_model_name(cfg):
+            raise SystemExit("classifier_model must differ from the primary model ID")
     lazy = False
     if a.engine == "strata":
         if not cfg:
@@ -10344,10 +10354,7 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
                         pass
         per_replica = requested if isinstance(requested, int) and not isinstance(requested, bool) and requested > 0 else 1
         svc.requested_slots = per_replica * len(groups) if groups else per_replica
-    classifier_model = cfg.get("classifier_model")
     if classifier_model is not None:
-        if not isinstance(classifier_model, str) or not classifier_model.strip():
-            raise SystemExit("classifier_model must be a non-empty model ID")
         if not isinstance(engine, StrataEngine) or svc.requested_slots < 2 or COALESCE_PREFILL > 1:
             raise SystemExit("classifier_model requires one batched Strata engine with at least two slots, without coalescing")
         svc.classifier_model = classifier_model

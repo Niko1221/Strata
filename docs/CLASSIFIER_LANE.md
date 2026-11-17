@@ -5,6 +5,7 @@ the last batch lane. For example, with `parallel: 4` and
 `classifier_model: "local-classifier"`, ordinary requests use three lanes and
 Anthropic Messages requests naming `local-classifier` use the fourth. They use the same loaded
 weights. A gateway must preserve this request model ID rather than rewrite it.
+Choose an alias distinct from the primary model ID.
 
 With three lanes, two ordinary conversations can keep their prefixes while the
 third lane serves classifier requests. Two lanes support one ordinary request
@@ -21,10 +22,15 @@ permission verdicts itself, alter classifier replies, shorten their policies,
 or approve failed checks. The client still evaluates the actual model response.
 Multiple classifier requests share one lane and can still exceed their client
 deadlines. An already running engine operation is not interrupted mid-kernel.
+Continuous classifier traffic can delay ordinary prompt reads.
 
 The option requires one batched Strata engine with at least two supported lanes.
-It cannot be combined with replica engines or coalesced prefills. Without the
-option, requests keep the existing slot selection and scheduling behavior.
+It cannot be combined with replica engines or coalesced prefills. If the engine
+reports fewer than two batch slots, Messages requests to the classifier alias
+receive HTTP 503 with `classifier_slot_unavailable`. Ordinary requests use the
+available engine capacity. The reservation takes effect again when the engine
+starts with two or more slots. Without the option, requests keep the existing
+slot selection and scheduling behavior.
 
 CPU regression checks from the repository root:
 
