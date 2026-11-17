@@ -9768,6 +9768,10 @@ _ON_DEMAND_NOT_WITH = ("--kv-grow", "--batch", "--slots", "--peer-device", "--ex
                        "--expert-cache-device3")
 
 
+def _has_helper_cache_arg(args: list[str]) -> bool:
+    return any(re.fullmatch(r"--expert-cache-device[1-9][0-9]*", arg.split("=", 1)[0]) for arg in args)
+
+
 def vision_on_demand_by_default(cfg: dict) -> bool:
     """True when this config's GPU reader should start on demand without the config saying so: a GPU reader (vision.gpu) of the NVIDIA
     kind (or AMD's, with its CPU reader) on one GPU, no batch slots, no --kv-grow, no helper caches, and nothing in the vision section that says otherwise.  Not Intel or a Mac (not measured there), not a reader pinned to another card (vision.cuda_device)."""
@@ -9780,7 +9784,7 @@ def vision_on_demand_by_default(cfg: dict) -> bool:
     if backend not in (None, "cuda", "hip"):
         return False
     args = [str(a) for a in (cfg.get("args") or [])]
-    if len(gpu_list(cfg)) > 1 or parallel_slots(cfg) or any(a in args for a in _ON_DEMAND_NOT_WITH):
+    if len(gpu_list(cfg)) > 1 or parallel_slots(cfg) or any(a in args for a in _ON_DEMAND_NOT_WITH) or _has_helper_cache_arg(args):
         return False
     name = re.split(r"[\\/:]", str(vis.get("exe") or ""))[-1].lower()      # a path or a "component:..." reference
     if backend == "hip":       # AMD: the HIP reader, with the CPU reader setup wrote beside it to read when the card has no room

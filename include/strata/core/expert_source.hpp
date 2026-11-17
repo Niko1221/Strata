@@ -502,7 +502,7 @@ struct ExpertDispatch {
     strata::kernels::cpu::ExpertPool* pool = nullptr;
     ExpertSource* src = nullptr;
     RouterLookahead* lookahead = nullptr;   ///< CS-T: warms the next layer's predicted file-tier experts
-    RemoteExperts* remote[3] = {}; ///< optional CUDA1..3 tiers for otherwise CPU-served rows
+    std::vector<RemoteExperts*> remote; ///< optional helper tiers for otherwise CPU-served rows
     int remote_count = 0;
     int64_t n_expert = strata::kernels::cpu::NE;
 
