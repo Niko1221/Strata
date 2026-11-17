@@ -1,0 +1,47 @@
+{"tag": "A1-alone/c1", "start": 1794582182.5, "prompt": 78, "cached": 0, "out": 400, "ttft": 8.06, "tps": 36.7, "wall": 18.9, "finish": "length", "logged": 1794582201.4}
+{"tag": "A1-alone/TOTAL", "tokens": 400, "wall": 18.9, "tps_total": 21.1, "logged": 1794582201.4}
+{"tag": "A1-two/c2", "start": 1794582201.4, "prompt": 79, "cached": 0, "out": 400, "ttft": 1.38, "tps": 45.5, "wall": 10.2, "finish": "length", "logged": 1794582211.6}
+{"tag": "A1-two/c1", "start": 1794582201.4, "prompt": 79, "cached": 0, "out": 400, "ttft": 11.27, "tps": 52.6, "wall": 18.9, "finish": "length", "logged": 1794582220.3}
+{"tag": "A1-two/TOTAL", "tokens": 800, "wall": 18.9, "tps_total": 42.4, "logged": 1794582220.3}
+{"tag": "A1-four/c2", "start": 1794582220.3, "prompt": 79, "cached": 0, "out": 400, "ttft": 1.07, "tps": 46.6, "wall": 9.7, "finish": "length", "logged": 1794582230.0}
+{"tag": "A1-four/c1", "start": 1794582220.3, "prompt": 79, "cached": 0, "out": 393, "ttft": 10.62, "tps": 52.0, "wall": 18.2, "finish": "stop", "logged": 1794582238.5}
+{"tag": "A1-four/c4", "start": 1794582220.3, "prompt": 79, "cached": 0, "out": 400, "ttft": 19.17, "tps": 47.9, "wall": 27.5, "finish": "length", "logged": 1794582247.8}
+{"tag": "A1-four/c3", "start": 1794582220.3, "prompt": 79, "cached": 0, "out": 400, "ttft": 28.61, "tps": 50.8, "wall": 36.5, "finish": "length", "logged": 1794582256.8}
+{"tag": "A1-four/TOTAL", "tokens": 1593, "wall": 36.5, "tps_total": 43.7, "logged": 1794582256.8}
+{"tag": "A2-alone/c1", "start": 1794582256.8, "prompt": 78, "cached": 0, "out": 400, "ttft": 1.04, "tps": 49.7, "wall": 9.1, "finish": "length", "logged": 1794582265.9}
+{"tag": "A2-alone/TOTAL", "tokens": 400, "wall": 9.1, "tps_total": 44.0, "logged": 1794582265.9}
+{"tag": "A2-two/c1", "start": 1794582265.9, "prompt": 79, "cached": 0, "out": 400, "ttft": 0.88, "tps": 48.9, "wall": 9.1, "finish": "length", "logged": 1794582274.9}
+{"tag": "A2-two/c2", "start": 1794582265.9, "prompt": 79, "cached": 0, "out": 400, "ttft": 10.02, "tps": 46.4, "wall": 18.6, "finish": "length", "logged": 1794582284.5}
+{"tag": "A2-two/TOTAL", "tokens": 800, "wall": 18.6, "tps_total": 42.9, "logged": 1794582284.5}
+{"tag": "A2-four/c1", "start": 1794582284.5, "prompt": 79, "cached": 0, "out": 400, "ttft": 0.96, "tps": 54.2, "wall": 8.3, "finish": "length", "logged": 1794582292.9}
+{"tag": "A2-four/c2", "start": 1794582284.5, "prompt": 79, "cached": 0, "out": 400, "ttft": 9.28, "tps": 52.5, "wall": 16.9, "finish": "length", "logged": 1794582301.4}
+{"tag": "A2-four/c4", "start": 1794582284.5, "prompt": 79, "cached": 0, "out": 400, "ttft": 17.8, "tps": 51.0, "wall": 25.6, "finish": "length", "logged": 1794582310.2}
+{"tag": "A2-four/c3", "start": 1794582284.5, "prompt": 79, "cached": 0, "out": 400, "ttft": 26.53, "tps": 51.2, "wall": 34.3, "finish": "length", "logged": 1794582318.9}
+{"tag": "A2-four/TOTAL", "tokens": 1600, "wall": 34.3, "tps_total": 46.6, "logged": 1794582318.9}
+{"tag": "A3-alone/c1", "start": 1794582318.9, "prompt": 78, "cached": 0, "out": 400, "ttft": 0.86, "tps": 56.0, "wall": 8.0, "finish": "length", "logged": 1794582326.9}
+{"tag": "A3-alone/TOTAL", "tokens": 400, "wall": 8.0, "tps_total": 50.0, "logged": 1794582326.9}
+{"tag": "A3-two/c1", "start": 1794582326.9, "prompt": 79, "cached": 0, "out": 400, "ttft": 0.93, "tps": 49.2, "wall": 9.1, "finish": "length", "logged": 1794582335.9}
+{"tag": "A3-two/c2", "start": 1794582326.9, "prompt": 79, "cached": 0, "out": 400, "ttft": 9.9, "tps": 50.6, "wall": 17.8, "finish": "length", "logged": 1794582344.7}
+{"tag": "A3-two/TOTAL", "tokens": 800, "wall": 17.8, "tps_total": 44.9, "logged": 1794582344.7}
+{"tag": "A3-four/c2", "start": 1794582344.7, "prompt": 79, "cached": 0, "out": 400, "ttft": 0.91, "tps": 51.2, "wall": 8.7, "finish": "length", "logged": 1794582353.4}
+{"tag": "A3-four/c3", "start": 1794582344.7, "prompt": 79, "cached": 0, "out": 400, "ttft": 9.59, "tps": 56.4, "wall": 16.7, "finish": "length", "logged": 1794582361.4}
+{"tag": "A3-four/c4", "start": 1794582344.7, "prompt": 79, "cached": 0, "out": 378, "ttft": 17.56, "tps": 52.1, "wall": 24.8, "finish": "stop", "logged": 1794582369.5}
+{"tag": "A3-four/c1", "start": 1794582344.7, "prompt": 79, "cached": 0, "out": 400, "ttft": 25.87, "tps": 51.4, "wall": 33.6, "finish": "length", "logged": 1794582378.3}
+{"tag": "A3-four/TOTAL", "tokens": 1578, "wall": 33.6, "tps_total": 46.9, "logged": 1794582378.3}
+{"tag": "B1/long", "start": 1794582378.3, "prompt": 76, "cached": 0, "out": 2000, "ttft": 1.1, "tps": 38.3, "wall": 53.3, "finish": "length", "logged": 1794582431.6}
+{"tag": "B1/small", "start": 1794582381.3, "prompt": 67, "cached": 0, "out": 60, "ttft": 51.38, "tps": 38.8, "wall": 52.9, "finish": "stop", "logged": 1794582434.2}
+{"tag": "B1/TOTAL", "tokens": 2060, "wall": 55.9, "tps_total": 36.8, "logged": 1794582434.2}
+{"tag": "B2/long", "start": 1794582434.2, "prompt": 76, "cached": 0, "out": 2000, "ttft": 1.0, "tps": 47.4, "wall": 43.2, "finish": "length", "logged": 1794582477.4}
+{"tag": "B2/small", "start": 1794582437.2, "prompt": 67, "cached": 0, "out": 51, "ttft": 41.2, "tps": 32.0, "wall": 42.8, "finish": "stop", "logged": 1794582480.0}
+{"tag": "B2/TOTAL", "tokens": 2051, "wall": 45.8, "tps_total": 44.8, "logged": 1794582480.0}
+{"tag": "B3/long", "start": 1794582480.0, "prompt": 76, "cached": 0, "out": 2000, "ttft": 1.03, "tps": 50.1, "wall": 40.9, "finish": "length", "logged": 1794582521.0}
+{"tag": "B3/small", "start": 1794582483.0, "prompt": 67, "cached": 0, "out": 56, "ttft": 39.05, "tps": 39.8, "wall": 40.5, "finish": "stop", "logged": 1794582523.5}
+{"tag": "B3/TOTAL", "tokens": 2056, "wall": 43.5, "tps_total": 47.3, "logged": 1794582523.5}
+{"tag": "C/X-first", "prompt": 30420, "cached": 0, "out": 54, "ttft": 32.25, "tps": 43.3, "wall": 33.5, "finish": "stop", "logged": 1794582557.0}
+{"tag": "C/X-followup", "note": "right away", "prompt": 30452, "cached": 30415, "out": 47, "ttft": 0.46, "tps": 24.5, "wall": 2.4, "finish": "stop", "logged": 1794582559.4}
+{"tag": "C/X-followup", "note": "after 1 unrelated short request", "prompt": 30452, "cached": 0, "out": 40, "ttft": 22.48, "tps": 41.2, "wall": 23.5, "finish": "stop", "logged": 1794582592.0}
+{"tag": "C/X-followup", "note": "after 3 more unrelated short requests", "prompt": 30452, "cached": 0, "out": 44, "ttft": 31.58, "tps": 33.5, "wall": 32.9, "finish": "stop", "logged": 1794582653.0}
+{"tag": "C/Y-first", "prompt": 30438, "cached": 0, "out": 90, "ttft": 21.82, "tps": 47.6, "wall": 23.7, "finish": "stop", "logged": 1794582676.7}
+{"tag": "C/Y-followup", "note": "right away", "prompt": 30470, "cached": 30433, "out": 30, "ttft": 0.48, "tps": 52.0, "wall": 1.1, "finish": "stop", "logged": 1794582677.7}
+{"tag": "C/X-followup", "note": "after another 30K conversation (Y) was served", "prompt": 30452, "cached": 0, "out": 49, "ttft": 21.3, "tps": 62.8, "wall": 22.1, "finish": "stop", "logged": 1794582699.8}
+{"tag": "C/Y-followup", "note": "after going back to X", "prompt": 30470, "cached": 0, "out": 54, "ttft": 21.36, "tps": 70.2, "wall": 22.1, "finish": "stop", "logged": 1794582721.9}

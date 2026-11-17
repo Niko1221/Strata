@@ -1,0 +1,114 @@
+=== LONG default 09:38:53 free RAM before start: 26.7 GB
+ready=True after 35 s
+fresh1: prompt=74 cached=0 out=600 ttft=4.39s tps=36.4 wall=20.9s reasoning_chars=331
+fresh2: prompt=74 cached=0 out=600 ttft=0.96s tps=47.3 wall=13.7s reasoning_chars=559
+fresh3: prompt=74 cached=0 out=600 ttft=0.97s tps=45.0 wall=14.3s reasoning_chars=754
+calib: prompt=11220 cached=0 out=30 ttft=10.44s tps=33.2 wall=11.3s reasoning_chars=99
+tokens/line 22.44 read tok/s 1075
+long30K: prompt=30553 cached=0 out=2587 ttft=22.73s tps=48.8 wall=75.7s reasoning_chars=8416
+  facts found (start, middle): (True, True) | read tok/s: 1344
+  followup30K: prompt=30901 cached=30548 out=600 ttft=1.53s tps=45.8 wall=14.6s reasoning_chars=1800
+long60K: prompt=62184 cached=0 out=2674 ttft=45.08s tps=56.3 wall=92.6s reasoning_chars=6409
+  facts found (start, middle): (True, True) | read tok/s: 1379
+  followup60K: prompt=62619 cached=62179 out=600 ttft=1.81s tps=41.7 wall=16.2s reasoning_chars=2041
+free RAM under load: 0.4 GB; VRAM: 10618 MiB
+   strata generate: resident RAM mode: 20.21 GiB of experts in RAM (locked), 4503 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)
+   strata serve: conversation cache off: not enough free RAM to park conversations (--conversation-cache-mib N asks for one anyway)
+   strata serve: adaptive overlap: off: not in the resident RAM mode unless STRATA_ADAPT_OVERLAP_RESIDENT=1
+   strata serve: prompt 74 tokens = 0 reused + 74 read in 3956 ms (18.7 tok/s), 600 generated in 16631 ms (36.1 tok/s), drafts accepted 280 of 548, 1 checkpoints
+   strata serve: prompt 74 tokens = 0 reused + 74 read in 916 ms (80.8 tok/s), 600 generated in 12738 ms (47.1 tok/s), drafts accepted 286 of 493, 1 checkpoints
+   strata serve: prompt 74 tokens = 0 reused + 74 read in 920 ms (80.5 tok/s), 600 generated in 13363 ms (44.9 tok/s), drafts accepted 281 of 480, 1 checkpoints
+   strata serve: prompt 11220 tokens = 0 reused + 11220 read in 10374 ms (1081.6 tok/s), 30 generated in 945 ms (31.7 tok/s), drafts accepted 18 of 27, 1 checkpoints
+   strata serve: prompt 30553 tokens = 0 reused + 30553 read in 22671 ms (1347.7 tok/s), 2252 generated in 43504 ms (51.8 tok/s), drafts accepted 1421 of 1763, 2 checkpoints
+   strata serve: prompt 32821 tokens = 30548 reused + 2273 read in 3350 ms (678.4 tok/s), 319 generated in 6176 ms (51.7 tok/s), drafts accepted 240 of 273, 2 checkpoints
+   strata serve: prompt 30901 tokens = 30548 reused + 353 read in 1468 ms (240.5 tok/s), 600 generated in 13131 ms (45.7 tok/s), drafts accepted 334 of 465, 3 checkpoints
+   strata serve: prompt 62184 tokens = 0 reused + 62184 read in 44992 ms (1382.1 tok/s), 2251 generated in 39935 ms (56.4 tok/s), drafts accepted 1496 of 1721, 4 checkpoints
+   strata serve: prompt 64452 tokens = 64434 reused + 18 read in 401 ms (44.9 tok/s), 406 generated in 7158 ms (56.7 tok/s), drafts accepted 327 of 353, 4 checkpoints
+   strata serve: prompt 62619 tokens = 62179 reused + 440 read in 1732 ms (254.0 tok/s), 600 generated in 14434 ms (41.6 tok/s), drafts accepted 308 of 450, 5 checkpoints
+=== LONG headroom12 09:44:02 free RAM before start: 26.8 GB
+ready=True after 25 s
+fresh1: prompt=74 cached=0 out=600 ttft=2.79s tps=31.7 wall=21.7s reasoning_chars=443
+fresh2: prompt=74 cached=0 out=600 ttft=1.88s tps=43.4 wall=15.7s reasoning_chars=768
+fresh3: prompt=74 cached=0 out=600 ttft=1.44s tps=45.0 wall=14.8s reasoning_chars=565
+calib: prompt=11220 cached=0 out=19 ttft=13.74s tps=29.4 wall=14.4s reasoning_chars=66
+tokens/line 22.44 read tok/s 817
+long30K: prompt=30553 cached=0 out=2571 ttft=21.84s tps=43.4 wall=81.0s reasoning_chars=8612
+  facts found (start, middle): (True, True) | read tok/s: 1399
+  followup30K: prompt=30885 cached=30548 out=600 ttft=3.6s tps=44.5 wall=17.1s reasoning_chars=1930
+long60K: prompt=62184 cached=0 out=2624 ttft=61.9s tps=38.9 wall=129.3s reasoning_chars=8215
+  facts found (start, middle): (True, True) | read tok/s: 1005
+  followup60K: prompt=62569 cached=62179 out=600 ttft=1.8s tps=50.5 wall=13.7s reasoning_chars=1865
+free RAM under load: 0.2 GB; VRAM: 10616 MiB
+   FileExpertSource: RAM budget 12.13 GiB: 12409 of the 19.62 GiB of experts the GPU cache does not hold, by profile rank; the rest are read from the files
+   strata generate: WARNING: the whole resident RAM mode does not fit (FileExpertSource: resident complement 19.62 GiB exceeds available RAM (24.38 GiB) minus the 12 GiB safety headroom); 12.13 GiB of the experts the GPU does not hol
+   strata generate: resident RAM mode: 12.13 GiB of experts in RAM (page-locked), 4503 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)
+   strata serve: conversation cache sized from the free RAM: 3328 MiB for up to 4 parked conversations, so an agent's next turn reuses its prompt (--conversation-cache-mib N sets it, 0 turns it off)
+   strata serve: adaptive overlap: off: not in the resident RAM mode unless STRATA_ADAPT_OVERLAP_RESIDENT=1
+   strata serve: prompt 74 tokens = 0 reused + 74 read in 2696 ms (27.5 tok/s), 600 generated in 18987 ms (31.6 tok/s), drafts accepted 268 of 521, 1 checkpoints
+   strata serve: prompt 74 tokens = 0 reused + 74 read in 1825 ms (40.5 tok/s), 600 generated in 13868 ms (43.3 tok/s), drafts accepted 266 of 481, 1 checkpoints
+   strata serve: prompt 74 tokens = 0 reused + 74 read in 1397 ms (53.0 tok/s), 600 generated in 13371 ms (44.9 tok/s), drafts accepted 260 of 465, 1 checkpoints
+   strata serve: prompt 11220 tokens = 0 reused + 11220 read in 13681 ms (820.1 tok/s), 19 generated in 684 ms (27.8 tok/s), drafts accepted 13 of 20, 1 checkpoints
+   strata serve: prompt 30553 tokens = 0 reused + 30553 read in 21762 ms (1404.0 tok/s), 2251 generated in 49821 ms (45.2 tok/s), drafts accepted 1391 of 1797, 2 checkpoints
+   strata serve: prompt 32821 tokens = 32803 reused + 18 read in 571 ms (31.5 tok/s), 303 generated in 8807 ms (34.4 tok/s), drafts accepted 218 of 248, 2 checkpoints
+   strata serve: prompt 30885 tokens = 30548 reused + 337 read in 3254 ms (103.6 tok/s), 600 generated in 13529 ms (44.3 tok/s), drafts accepted 302 of 464, 3 checkpoints
+   strata serve: prompt 62184 tokens = 0 reused + 62184 read in 61787 ms (1006.4 tok/s), 2253 generated in 54902 ms (41.0 tok/s), drafts accepted 1406 of 1754, 4 checkpoints
+   strata serve: prompt 64452 tokens = 62179 reused + 2273 read in 6196 ms (366.9 tok/s), 356 generated in 6334 ms (56.2 tok/s), drafts accepted 262 of 277, 4 checkpoints
+   strata serve: prompt 62569 tokens = 62179 reused + 390 read in 1675 ms (232.8 tok/s), 600 generated in 11918 ms (50.3 tok/s), drafts accepted 338 of 438, 5 checkpoints
+=== LONG default-b 09:49:48 free RAM before start: 25.8 GB
+ready=True after 45 s
+fresh1: prompt=74 cached=0 out=600 ttft=5.83s tps=21.2 wall=34.1s reasoning_chars=431
+fresh2: prompt=74 cached=0 out=600 ttft=2.18s tps=21.8 wall=29.7s reasoning_chars=739
+fresh3: prompt=74 cached=0 out=600 ttft=3.58s tps=24.1 wall=28.5s reasoning_chars=728
+calib: prompt=11220 cached=0 out=52 ttft=27.26s tps=12.0 wall=31.6s reasoning_chars=235
+tokens/line 22.44 read tok/s 412
+long30K: prompt=30553 cached=0 out=2564 ttft=24.75s tps=44.6 wall=82.2s reasoning_chars=8504
+  facts found (start, middle): (True, True) | read tok/s: 1234
+  followup30K: prompt=30878 cached=30548 out=600 ttft=2.97s tps=48.2 wall=15.4s reasoning_chars=1818
+long60K: prompt=62184 cached=0 out=2649 ttft=56.17s tps=53.7 wall=105.5s reasoning_chars=9661
+  facts found (start, middle): (True, True) | read tok/s: 1107
+  followup60K: prompt=62594 cached=62179 out=600 ttft=1.98s tps=47.6 wall=14.6s reasoning_chars=2053
+free RAM under load: 0.3 GB; VRAM: 10616 MiB
+   FileExpertSource: RAM budget 19.12 GiB: 19558 of the 19.62 GiB of experts the GPU cache does not hold, by profile rank; the rest are read from the files
+   strata generate: WARNING: the whole resident RAM mode does not fit (FileExpertSource: resident complement 19.62 GiB exceeds available RAM (23.37 GiB) minus the 4 GiB safety headroom); 19.12 GiB of the experts the GPU does not hold
+   strata generate: resident RAM mode: 19.12 GiB of experts in RAM (locked), 4503 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)
+   strata serve: conversation cache off: not enough free RAM to park conversations (--conversation-cache-mib N asks for one anyway)
+   strata serve: adaptive overlap: off: not in the resident RAM mode unless STRATA_ADAPT_OVERLAP_RESIDENT=1
+   strata serve: prompt 74 tokens = 0 reused + 74 read in 5269 ms (14.0 tok/s), 600 generated in 28358 ms (21.2 tok/s), drafts accepted 275 of 479, 1 checkpoints
+   strata serve: prompt 74 tokens = 0 reused + 74 read in 2056 ms (36.0 tok/s), 600 generated in 27639 ms (21.7 tok/s), drafts accepted 266 of 505, 1 checkpoints
+   strata serve: prompt 74 tokens = 0 reused + 74 read in 3453 ms (21.4 tok/s), 600 generated in 25010 ms (24.0 tok/s), drafts accepted 281 of 486, 1 checkpoints
+   strata serve: prompt 11220 tokens = 0 reused + 11220 read in 27071 ms (414.5 tok/s), 52 generated in 4477 ms (11.6 tok/s), drafts accepted 28 of 51, 1 checkpoints
+   strata serve: prompt 30553 tokens = 0 reused + 30553 read in 24681 ms (1237.9 tok/s), 2253 generated in 44711 ms (50.4 tok/s), drafts accepted 1340 of 1731, 2 checkpoints
+   strata serve: prompt 32821 tokens = 30548 reused + 2273 read in 7514 ms (302.5 tok/s), 296 generated in 5179 ms (57.2 tok/s), drafts accepted 215 of 234, 2 checkpoints
+   strata serve: prompt 30878 tokens = 30548 reused + 330 read in 2738 ms (120.5 tok/s), 600 generated in 12498 ms (48.0 tok/s), drafts accepted 334 of 455, 3 checkpoints
+   strata serve: prompt 62184 tokens = 0 reused + 62184 read in 56068 ms (1109.1 tok/s), 2252 generated in 39201 ms (57.4 tok/s), drafts accepted 1410 of 1700, 4 checkpoints
+   strata serve: prompt 64452 tokens = 62179 reused + 2273 read in 3758 ms (604.9 tok/s), 381 generated in 6372 ms (59.8 tok/s), drafts accepted 278 of 288, 4 checkpoints
+   strata serve: prompt 62594 tokens = 62179 reused + 415 read in 1914 ms (216.8 tok/s), 600 generated in 12626 ms (47.5 tok/s), drafts accepted 300 of 440, 5 checkpoints
+=== LONG headroom12-b 09:56:29 free RAM before start: 26.2 GB
+ready=True after 30 s
+fresh1: prompt=74 cached=0 out=600 ttft=9.27s tps=26.9 wall=31.6s reasoning_chars=334
+fresh2: prompt=74 cached=0 out=600 ttft=1.35s tps=48.1 wall=13.8s reasoning_chars=417
+fresh3: prompt=74 cached=0 out=600 ttft=1.25s tps=47.5 wall=13.9s reasoning_chars=819
+calib: prompt=11220 cached=0 out=26 ttft=15.94s tps=37.0 wall=16.6s reasoning_chars=89
+tokens/line 22.44 read tok/s 704
+long30K: prompt=30553 cached=0 out=2803 ttft=21.37s tps=47.3 wall=80.7s reasoning_chars=7683
+  facts found (start, middle): (True, True) | read tok/s: 1430
+  followup30K: prompt=31117 cached=30548 out=600 ttft=1.74s tps=50.8 wall=13.6s reasoning_chars=1880
+long60K: prompt=62184 cached=0 out=2610 ttft=43.29s tps=58.0 wall=88.3s reasoning_chars=8139
+  facts found (start, middle): (True, True) | read tok/s: 1436
+  followup60K: prompt=62555 cached=62179 out=600 ttft=2.07s tps=51.1 wall=13.8s reasoning_chars=1986
+free RAM under load: 0.3 GB; VRAM: 10610 MiB
+   FileExpertSource: RAM budget 11.54 GiB: 11802 of the 19.62 GiB of experts the GPU cache does not hold, by profile rank; the rest are read from the files
+   strata generate: WARNING: the whole resident RAM mode does not fit (FileExpertSource: resident complement 19.62 GiB exceeds available RAM (23.79 GiB) minus the 12 GiB safety headroom); 11.54 GiB of the experts the GPU does not hol
+   strata generate: resident RAM mode: 11.54 GiB of experts in RAM (page-locked), 4503 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)
+   strata serve: conversation cache sized from the free RAM: 3328 MiB for up to 4 parked conversations, so an agent's next turn reuses its prompt (--conversation-cache-mib N sets it, 0 turns it off)
+   strata serve: adaptive overlap: off: not in the resident RAM mode unless STRATA_ADAPT_OVERLAP_RESIDENT=1
+   strata serve: prompt 74 tokens = 0 reused + 74 read in 9032 ms (8.2 tok/s), 600 generated in 22550 ms (26.6 tok/s), drafts accepted 266 of 537, 1 checkpoints
+   strata serve: prompt 74 tokens = 0 reused + 74 read in 1314 ms (56.3 tok/s), 600 generated in 12506 ms (48.0 tok/s), drafts accepted 273 of 495, 1 checkpoints
+   strata serve: prompt 74 tokens = 0 reused + 74 read in 1190 ms (62.2 tok/s), 600 generated in 12654 ms (47.4 tok/s), drafts accepted 266 of 477, 1 checkpoints
+   strata serve: prompt 11220 tokens = 0 reused + 11220 read in 15873 ms (706.9 tok/s), 26 generated in 738 ms (35.2 tok/s), drafts accepted 18 of 24, 1 checkpoints
+   strata serve: prompt 30553 tokens = 0 reused + 30553 read in 21314 ms (1433.5 tok/s), 2252 generated in 44993 ms (50.1 tok/s), drafts accepted 1337 of 1720, 2 checkpoints
+   strata serve: prompt 32821 tokens = 30548 reused + 2273 read in 3310 ms (686.7 tok/s), 535 generated in 10994 ms (48.7 tok/s), drafts accepted 259 of 404, 2 checkpoints
+   strata serve: prompt 31117 tokens = 30548 reused + 569 read in 1690 ms (336.7 tok/s), 600 generated in 11840 ms (50.7 tok/s), drafts accepted 310 of 435, 3 checkpoints
+   strata serve: prompt 62184 tokens = 0 reused + 62184 read in 43199 ms (1439.5 tok/s), 2250 generated in 39002 ms (57.7 tok/s), drafts accepted 1411 of 1704, 4 checkpoints
+   strata serve: prompt 64452 tokens = 64433 reused + 19 read in 399 ms (47.6 tok/s), 342 generated in 5587 ms (61.2 tok/s), drafts accepted 252 of 263, 4 checkpoints
+   strata serve: prompt 62555 tokens = 62179 reused + 376 read in 2019 ms (186.3 tok/s), 600 generated in 11768 ms (51.0 tok/s), drafts accepted 326 of 442, 5 checkpoints

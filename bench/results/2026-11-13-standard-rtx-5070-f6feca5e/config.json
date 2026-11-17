@@ -1,0 +1,33 @@
+{
+  "engine_options": {
+    "--pack": "gyro-gyro-s",
+    "--native": "Qwen3.8-Flash-Next-Gyro-S-TQ1_0.gguf",
+    "--ple-gguf": "Qwen3.8-Flash-Next-Gyro-S-TQ1_0.gguf",
+    "--expert-profile": "expert-profile.bin",
+    "--expert-cache": "auto",
+    "--prefill": "auto",
+    "--spec": "4",
+    "--spec-min-p": "0.5",
+    "--mtp": "rt",
+    "--max-context": "65536",
+    "--kv": "int8",
+    "--resident-experts": true,
+    "--kv-resident": "32768"
+  },
+  "other_engine_options": {
+    "--pack": "gyro-gyro-s",
+    "--native": "Qwen3.8-Flash-Next-Gyro-S-TQ1_0.gguf",
+    "--ple-gguf": "Qwen3.8-Flash-Next-Gyro-S-TQ1_0.gguf",
+    "--max-context": "65536",
+    "--resident-experts": true
+  },
+  "server_defaults": {
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "top_k": 20,
+    "n_predict": -1
+  },
+  "total_slots": 1,
+  "context": 65536,
+  "source": "effective engine arguments of the profile"
+}
