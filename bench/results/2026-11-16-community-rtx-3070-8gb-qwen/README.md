@@ -1,14 +1,12 @@
-# Community measurements on RTX 3070 8 GiB
+# Community Flash-Next Q2_0 measurements on RTX 3070 8 GiB
 
-Measured locally on 16–17 November 2026; prepared by TJ-WANG-OK from saved records.
+Measured locally on 16 November 2026; prepared by TJ-WANG-OK from saved records.
 Flash-Next Q2_0 short-prompt decode medians were **45.00 tok/s before calibration and
 44.25 tok/s after restoring the same settings**. No calibration candidate met the
-3% retention threshold. Supplementary Qwen3.6 Q4 deployment checks show that it
-can answer short requests on this card with a reduced-memory configuration.
+3% retention threshold.
 
 These are custom historical measurements under the community guide, not a run of
-the draft standard protocol, an approved result, or a controlled comparison of
-the two models. No new inference was performed while preparing the submission.
+the draft standard protocol or an approved result. No new inference was performed while preparing the submission.
 
 ## Hardware and software
 
@@ -27,7 +25,7 @@ the two models. No new inference was performed while preparing the submission.
 
 ## Model and configuration
 
-### Flash-Next Q2_0 (main measurement, 16 November)
+### Flash-Next Q2_0 (16 November)
 
 ISTA-DASLab Qwen3.8-Flash-Next GSQ-RCO Q2_0, downloaded through ModelScope.
 Exact model repository revision was not saved. Native files:
@@ -48,25 +46,7 @@ Saved launch invocation (replace placeholders with local paths):
 strata launch --family qwen --model q2_0 --context 32k --parallel 1 --vision off --access local --data-dir "<DATA>" --set vram-reserve-mib=1600 --set prefill=512 --save-preset Qwen38-Q2-32K --restart --yes --no-tui
 ```
 
-### Qwen3.6 Q4 (supplementary deployment checks, 17 November)
-
-Unsloth Qwen3.6-35B-A3B UD-Q4_K_XL, native
-`Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf`, configured context 8192, one slot, vision off.
-Exact repository revision was not recorded. Effective engine arguments:
-
-```text
-strata.exe --serve --native <DATA>/models/qwen36-UD-Q4_K_XL/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf --max-context 8192 --mtp 2 --prefill 128
-STRATA_Q8_PACKED=0
-CUDA_MODULE_LOADING=LAZY
-```
-
-The log reports 16/256 experts per layer in VRAM (1.17 GiB), 18.75 GiB pinned host
-memory, 10 CPU threads and 1.10 GiB staging. These are startup allocations, not
-measured peaks. Although MTP was configured, all three saved responses report
-`draft_n=0`; they provide no evidence of an MTP speedup. KV format was not
-explicitly set in the saved Qwen3.6 command.
-
-[config.json](config.json) preserves sanitized launch inputs for both models.
+[config.json](config.json) preserves sanitized Flash-Next launch inputs.
 
 ## Method
 
@@ -94,11 +74,6 @@ took 908 s, and retained `{}`. Its complete measurements are in
 [calibration.log](calibration.log). The exact top-level shell command was not
 saved; no reconstructed command is presented as having been executed.
 
-Qwen3.6 used [verify-qwen36.py](verify-qwen36.py): three distinct short Chinese
-prompts, one request each, `max_tokens=384`, temperature 0, thinking off,
-non-streaming, no seed. See [qwen36-verification.json](qwen36-verification.json).
-No distribution or median over repeated Qwen3.6 workloads is claimed.
-
 ## Results
 
 Flash-Next aggregate medians and min–max ranges combine three different prompts;
@@ -120,37 +95,19 @@ Calibration's confirmation stage compared default PCIe share / draft floor
 and expert-adaptation sweeps are retained in the JSON, including slower results;
 they are not recommendations to change upstream defaults.
 
-Qwen3.6 one-off deployment checks:
-
-| Prompt | Prompt / reused tokens | Output tokens | Prompt tok/s | Decode tok/s | Whole request s | Runs |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Chinese self-introduction | 18 / 0 | 141 | 38.5 | 30.1 | 5.176 | 1 |
-| 17 × 23 | 27 / 0 | 4 | 79.9 | 36.7 | 0.452 | 1 |
-| Eight planets, one sentence each | 26 / 0 | 202 | 80.4 | 27.2 | 7.747 | 1 |
-
-The four-token arithmetic answer is too short for a useful throughput comparison.
-Do not compare these single checks against the Flash-Next aggregate as a model
-ranking: workloads, dates, sampling and cache conditions differ.
-
 ## Correctness, failures and limitations
 
-Passed: both saved API suites returned nonempty text. Qwen3.6 health and model
-listing succeeded; the arithmetic check contains the expected `391`. Planet and
-self-introduction outputs are available for inspection; no general quality score
-was computed. The Flash-Next generated code was not executed or tested.
+Passed: all twelve saved API requests returned nonempty text and reached the
+256-token output cap. No general quality score was computed. The generated code
+was not executed or tested, so task completion and code correctness are unverified.
 
-Failed: the saved Qwen3.6 engine log records two 8K startup attempts failing to
-allocate hybrid expert buffers: automatic prefill needed 1159 MiB with 314 MiB
-free, and prefill 128 needed 1135 MiB with 214 MiB free. The later reduced-memory
-configuration started successfully. The log does not record the environment of
-each failed attempt, so it does not isolate which setting caused recovery.
-See [qwen36-engine-excerpt.txt](qwen36-engine-excerpt.txt). A local deployment note
-also mentions a 32K startup failure, but its original detailed log is not included
-and it is not treated as a measured configuration here.
+Failed: no failed API requests are present in these twelve saved measurements.
+Calibration found no candidate that met the 3% retention threshold. The engine
+excerpt retains its low-VRAM warning; startup allocations are not measured peaks.
 
 Not run: draft standard protocol, 4K/16K or full-context benchmark sweep,
 long-context recall, concurrency, soak tests, peak RAM/VRAM sampling, independent
-reproduction, matched model comparison, model quality evaluation, or engine builds.
+reproduction, model quality evaluation, or engine builds.
 No source code or runtime defaults are changed by this results-only submission.
 
 ## Evidence and reproduction
@@ -158,8 +115,6 @@ No source code or runtime defaults are changed by this results-only submission.
 Run `python benchmark.py results.json` only against a running Flash-Next Q2_0
 server at `http://127.0.0.1:8080` with the configuration above. It writes new
 measurements and does not reproduce the historical cache or background state.
-Run `python verify-qwen36.py` against a running Qwen3.6 server for the supplementary
-checks; it writes `qwen36-deployment-verification.json` next to the script.
 These are reproduction instructions, not additional runs performed for this PR.
 
 `rows[].usage` uses token counts, `rows[].timings` uses milliseconds and tok/s,

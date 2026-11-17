@@ -1,8 +1,7 @@
 {
   "prepared_on": "2026-11-17",
   "measurement_dates": [
-    "2026-11-16",
-    "2026-11-17"
+    "2026-11-16"
   ],
   "contributor": "TJ-WANG-OK",
   "control_version": "0.1.61",
@@ -29,7 +28,7 @@
   "os": "Windows; historical edition and build not recorded",
   "model_revisions": null,
   "model_revision_reason": "Exact upstream model revisions were not saved with these runs.",
-  "scope": "Existing custom measurements and deployment checks; no new inference was performed while preparing this report.",
+  "scope": "Existing Flash-Next custom measurements and calibration; no new inference was performed while preparing this report.",
   "redactions": [
     "Local paths replaced by <DATA>, <STRATA_LOCAL>, <WORKSPACE>",
     "GPU UUID omitted",
