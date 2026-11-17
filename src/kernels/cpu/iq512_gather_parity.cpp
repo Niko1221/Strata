@@ -1,7 +1,9 @@
 // iq512_gather_parity: the 512-bit i-quant rows (iq_avx512.cpp) against ggml-cpu's own dot.
 //  (a) iq512x_rows, for 1..4 tokens, is ggml-cpu's single-token vec_dot bit for bit (IQ3_XXS, IQ3_S, IQ2_S), whatever the
 //      grid lookup is (scalar loads or gathers: STRATA_IQ_GATHER=0 / 1, ctest runs both);
-//  (b) iq512_rows (the engine's multi-token rows) agrees with it to float rounding (another summation order).
+//  (b) iq512_rows (the engine's multi-token rows) agrees with it to float rounding (another summation order);
+//  (c) iq2s_pair_rows_1t / iq2s_gu_rows_1t (STRATA_IQ2S_1T, one token) are ggml-cpu's dot and SwiGLU bit for bit (needs VBMI),
+//      at an even and an odd superblock count.
 // Synthetic blocks (random bytes, a fixed f16 scale), so no quantizer and no imatrix are needed.  SKIP without AVX-512.
 #include "strata/kernels/cpu/expert_layout.hpp"
 #include "strata/kernels/cpu/iq_avx512.hpp"
@@ -70,6 +72,37 @@ int main() {
                 }
         }
         std::printf("  type %d: ok\n", type);
+    }
+    if (cpu::cpu_vbmi_ok()) {
+        const ggml_type_traits_cpu* tr = ggml_get_type_traits_cpu(GGML_TYPE_IQ2_S);
+        for (const int n2 : {2560, 2304}) {
+            const size_t rb = ggml_row_size(GGML_TYPE_IQ2_S, n2), nb = (size_t) n2 / 256, bb = rb / nb;
+            const size_t ab2 = ggml_row_size(GGML_TYPE_Q8_K, n2);
+            std::vector<uint8_t> w((size_t) 2 * rows * rb), a2(ab2);
+            for (auto& b : w) b = (uint8_t) rnd();
+            for (int r = 0; r < 2 * rows; ++r)
+                for (size_t k = 0; k < nb; ++k) { uint8_t* d = &w[(size_t) r * rb + k * bb]; d[0] = 0x66; d[1] = 0x2e; }
+            for (int t = 0; t < ntmax; ++t) {
+                std::vector<float> x(n2);
+                for (auto& v : x) v = ((float) (rnd() % 2001) - 1000.f) * 0.001f * (1.f + (float) t);
+                t8->from_float(x.data(), a2.data(), n2);
+                std::vector<float> g((size_t) rows), u((size_t) rows), ff((size_t) rows);
+                cpu::iq2s_pair_rows_1t(w.data(), rb, (size_t) rows * rb, n2, a2.data(), g.data(), u.data(), 0, rows);
+                cpu::iq2s_gu_rows_1t(w.data(), rb, (size_t) rows * rb, n2, a2.data(), ff.data(), 0, rows);
+                for (int r = 0; r < rows; ++r) {
+                    float wg = 0.f, wu = 0.f;
+                    tr->vec_dot(n2, &wg, 0, w.data() + (size_t) r * rb, 0, a2.data(), 0, 1);
+                    tr->vec_dot(n2, &wu, 0, w.data() + (size_t) (rows + r) * rb, 0, a2.data(), 0, 1);
+                    const float wf = (wg / (1.f + std::exp(-wg))) * wu;
+                    CHECK(std::memcmp(&g[(size_t) r], &wg, 4) == 0);   // (c) bit for bit
+                    CHECK(std::memcmp(&u[(size_t) r], &wu, 4) == 0);
+                    CHECK(std::memcmp(&ff[(size_t) r], &wf, 4) == 0);
+                }
+            }
+        }
+        std::printf("  IQ2_S one token: ok\n");
+    } else {
+        std::printf("  IQ2_S one token: SKIP (no VBMI)\n");
     }
     if (g_fail == 0) std::printf("iq512_gather_parity: OK\n");
     return g_fail == 0 ? 0 : 1;

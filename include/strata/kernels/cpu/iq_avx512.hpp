@@ -38,4 +38,12 @@ void iq512_fused_gu_rows(int type, const uint8_t* blob, size_t gu_row, size_t up
 // Q5_0 down rows, 512-bit, ggml-cpu's dot bit for bit (see iq_avx512.cpp)
 void q50_512_down_rows(const uint8_t* w, size_t row_bytes, int n, const void* const* hq, int nt, float* const* out, int r0, int r1);
 
+/// IQ2_S gate/up rows for ONE token (STRATA_IQ2S_1T=1): ggml-cpu's AVX2 vec_dot bit for bit, the grid read as 2-bit code
+/// planes through vpermt2b.  ff[r] = silu(gate_r . a) * (up_r . a), rows [r0, r1).  The caller checks cpu_vnni_ok() and
+/// cpu_vbmi_ok().
+void iq2s_gu_rows_1t(const uint8_t* blob, size_t gu_row, size_t up_off, int n, const void* act, float* ff, int r0, int r1);
+/// The gate and up dots themselves (iq512_gather_parity): g_out[r] = gate_r . a, u_out[r] = up_r . a.
+void iq2s_pair_rows_1t(const uint8_t* blob, size_t gu_row, size_t up_off, int n, const void* act, float* g_out,
+                       float* u_out, int r0, int r1);
+
 }  // namespace strata::kernels::cpu
