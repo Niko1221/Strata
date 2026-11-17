@@ -74,6 +74,11 @@ Source setup does not make an unsupported model or backend compatible. Strata's 
 - Tests: the Terminal and Control tests are in `tests/terminal` (`python -m pytest tests/terminal`). The app's UI
   tests run with `npm test` in `apps/host`. Setup's own tests run without a GPU or downloads:
   `python tools/test_setup_<name>.py` (for example `tools/test_setup_amd.py`, `tools/test_setup_choices.py`).
+- Scripts you write to test something go in `.test_tool/`, which git does not track. That is where a reproduction, a
+  probe or a one-off measurement harness lives: they are how you checked a claim, not part of the product. A test
+  the project keeps belongs beside the code it tests (`serve/test_<name>.py`, `tools/test_<name>.py`,
+  `tests/terminal/`), so write it there and not in `.test_tool/`. Keep `.test_tool/` to yourself as well - it is
+  ignored, so anything in it is lost on a clean clone.
 - Keep the docs' style: plain words, short sentences, written for non-technical users first. Give measured numbers
   with what they were measured on. Make no claim without a measurement.
 

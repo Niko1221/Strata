@@ -3612,7 +3612,10 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
         return next_ == nullptr || next_->run(T, tokens, pos0, pool, next_user_, out, err);
     }
     const bool sampled = !sampling_.greedy && sampling_.temperature > 0.0f;
-    if (head_sampling_ && (sampled || hist_d_ != nullptr || sampling_.logit_bias != nullptr)) {
+    // a grammar request re-samples even greedy: the captured graph's argmax read no mask (the mask
+    // rows are request state, not part of the capture), and the greedy kernel applies one per row.
+    if (head_sampling_ && (sampled || hist_d_ != nullptr || sampling_.logit_bias != nullptr ||
+                           sampling_.grammar_mask != nullptr)) {
         SamplerParams sp = sampling_;
         sp.counter = (uint64_t) pos0;
         // STRATA_SPEC_PROB: the drafter's q lists for this window, judged by rejection sampling (spec_prob.hpp)
@@ -4717,7 +4720,17 @@ bool Verifier::run_slot_rows(const int* rows, int S, const int32_t* tokens, cons
             int hlen = 0;
             const int r = slot_row_draw(S, t, sp, hist, hlen, hrows, err);
             if (r < 0) return false;
-            if (r == 0) continue;
+            // #3862: the draft rows' chain masks, one per window row (nullptr keeps the slot's own row)
+            const uint32_t* gmask = t < (int) row_gmask_.size() ? row_gmask_[(size_t) t] : nullptr;
+            if (r == 0) {
+                // a plain greedy slot keeps the window's argmax token; one under a mask has to re-sample
+                // (a mask rejects the argmax token itself).  The slot's own mask counts too:
+                // slot_row_draw's skip looks at penalties and the logit bias, not at the grammar.
+                if (gmask == nullptr && sp.grammar_mask == nullptr) continue;
+                sp.counter = (uint64_t) last_pos_b_[t];   // slot_row_draw returns before setting it here
+                sp.penalty_last_n = 0;
+            }
+            if (gmask != nullptr) sp.grammar_mask = gmask;
             if (!strata::metal_engine::window_sample_slot_row(metal_, t, sp, hist, hlen, &out[t], err)) return false;
         }
     }
@@ -4951,7 +4964,18 @@ bool Verifier::sample_rows(int S, std::string& err) {
         int hlen = 0;
         const int r = slot_row_draw(S, t, sp, hist, hlen, hrows, err);
         if (r < 0) return false;
-        if (r == 0) continue;
+        // #3862: the draft rows' chain masks, one per window row (nullptr keeps the slot's own row)
+        const uint32_t* gmask = t < (int) row_gmask_.size() ? row_gmask_[(size_t) t] : nullptr;
+        if (r == 0) {
+            // a plain greedy slot keeps the graph's argmax token untouched; one under a mask has to
+            // re-sample, because the kernel applies the mask (a mask rejects the argmax token itself).
+            // The slot's own mask counts too: slot_row_draw's skip looks at penalties and the logit
+            // bias, not at the grammar.
+            if (gmask == nullptr && sp.grammar_mask == nullptr) continue;
+            sp.counter = (uint64_t) last_pos_b_[t];   // Philox(seed, position): slot_row_draw returns before setting it here
+            sp.penalty_last_n = 0;
+        }
+        if (gmask != nullptr) sp.grammar_mask = gmask;
         strata::kernels::sample_tokens(head_logits_ + (size_t) t * (size_t) n_vocab_, 1, (int) n_vocab_, hist, hlen, sp, m_out_ + t, cs_);
         any = true;
     }
@@ -5418,7 +5442,9 @@ bool Verifier::pl_finish(int32_t* out, std::string& err) {
     if (le_ < g.n_layers) return true;   // an earlier stage: the hand-off is written
     const int T = fl_T_;
     const bool sampled = !sampling_.greedy && sampling_.temperature > 0.0f;
-    if (head_sampling_ && (sampled || hist_d_ != nullptr || sampling_.logit_bias != nullptr)) {   // run()'s host-side sampling, Philox(seed, pos0 + t)
+    if (head_sampling_ && (sampled || hist_d_ != nullptr || sampling_.logit_bias != nullptr ||
+                           sampling_.grammar_mask != nullptr)) {   // run()'s host-side sampling, Philox(seed, pos0 + t);
+                                                                    // a grammar request re-samples greedy too (run())
         SamplerParams sp = sampling_;
         sp.counter = (uint64_t) last_pos0_;
         sample_tokens(head_logits_, T, (int) n_vocab_, hist_d_, hist_len_, sp, m_out_, cs_);

@@ -18,6 +18,9 @@ strata launch --stop
 
 `strata launch --help` lists every flag with examples. An unknown model or flag gets a plain message with the closest match.
 
+Constrained decoding (grammar-constrained JSON and tool calls) needs no launch setting: it is per-request, and the engine announces the capability when it starts.
+See [DETAILS.md](DETAILS.md).
+
 ## Install (one line)
 
 Linux and Mac:

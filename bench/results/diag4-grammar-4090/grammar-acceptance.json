@@ -1,0 +1,105 @@
+{
+  "stamp": "diag4",
+  "rig": "RTX 4090 48GiB, 96GiB RAM",
+  "model": "swift-qwen3.8-flash-next-iq3-s",
+  "exe": "F:\\Strata-dev\\build\\strata.exe",
+  "engine_args": [
+    "--pack",
+    "F:/Strata-data/packs/swift-iq3_s",
+    "--native",
+    "F:/Strata-data/models/swift-IQ3_S/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+    "--resident-budget-gib",
+    "40",
+    "--expert-profile",
+    "F:/Strata/data/expert-profile.bin",
+    "--expert-cache",
+    "auto",
+    "--prefill",
+    "auto",
+    "--spec",
+    "2",
+    "--max-context",
+    "16384",
+    "--kv",
+    "int8"
+  ],
+  "protocol_smoke": {
+    "ok": true,
+    "checks": {
+      "info_grammar": true,
+      "register_ok": true,
+      "register_err": true,
+      "gen_with_grammar": true,
+      "not_registered": true,
+      "spec_refused": true
+    },
+    "info": "INFO logit_bias=1 grammar=1 context=8192 kv=int8 kv_resident=0 expert_slots=15518 expert_cache_mib=30169 expert_slots_primary=15518 expert_cache_primary_mib=30169 spec=4 mtp_max=2 lookup=3 vram_free_mib=12560 cvec=0 arena_mib=18023 pool_workers=13 pcie_frac=0.55 spec_min_p=0.00 conversation_cache_mib=0 conversation_cache_slots=4 conversation_cache_min_free_mib=2560 conversation_cache_min_tokens=0 tail_role_token=-1 vram_elastic=0 prefill_cap=8192 prefill_stages=1 stream_all_min=1024 prefill_pipe=0 engine=0.1.47",
+    "tokens": [
+      64,
+      65,
+      248046
+    ]
+  },
+  "capability": {
+    "formats": [
+      "json_object",
+      "json_schema"
+    ],
+    "method": "grammar",
+    "constrained_decoding": true,
+    "stream_buffered": false
+  },
+  "json_suite": {
+    "n": 10,
+    "passed": 10,
+    "canary_502": 0,
+    "other_failures": 0,
+    "fails": []
+  },
+  "tools_suite": {
+    "n": 6,
+    "parsed": 6,
+    "parse_failures": 0,
+    "rescued_from_reasoning_delta": 0,
+    "fails": []
+  },
+  "perf": {
+    "runs": 1,
+    "plain_med_tok_s": 83.31,
+    "constrained_med_tok_s": 52.66,
+    "constrained_cost_pct": 36.8,
+    "plain_all": [
+      83.31
+    ],
+    "constrained_all": [
+      52.66
+    ]
+  },
+  "probe": {
+    "slots": 6,
+    "rounds": 1,
+    "plain": [
+      {
+        "tok_s": 165.0,
+        "cpu_s": 0.0,
+        "cpu_ms_per_tok": 0.0,
+        "tokens": 1103,
+        "slot_errors": []
+      }
+    ],
+    "constrained": [
+      {
+        "tok_s": 143.2,
+        "cpu_s": 0.0,
+        "cpu_ms_per_tok": 0.0,
+        "tokens": 744,
+        "slot_errors": []
+      }
+    ],
+    "plain_med_cpu_ms_per_tok": 0.0,
+    "constrained_med_cpu_ms_per_tok": 0.0,
+    "plain_med_tok_s": 165.0,
+    "constrained_med_tok_s": 143.2
+  },
+  "acceptance_ok": true
+}

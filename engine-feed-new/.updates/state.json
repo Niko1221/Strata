@@ -1,0 +1,11 @@
+{
+ "engine": {},
+ "feed": {
+  "channel": "stable",
+  "checked_at": "2026-10-23T11:20:22.989234+00:00",
+  "key_id": "5d1bc23abbeffd0d",
+  "sequence": 108,
+  "source": "https://github.com/Niko1221/Strata/releases/latest/download/strata-feed.json"
+ },
+ "schema_version": 1
+}

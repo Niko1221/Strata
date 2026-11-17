@@ -10,6 +10,8 @@
 //      end unpadded (unsloth's UD-Q5_K_XL shard 1 ends 6 bytes before its aligned data start; llama.cpp's
 //      gguf-py reads it); nothing is ever read from its data section.
 //   4. one tensor, and the file ends at its header: still refused at open ("data section starts past EOF").
+//   5. an array of 100 strings: the default read caps items at 64; full_arrays=true reads all 100 in order
+//      (the grammar vocab needs every token, not the first 64).
 //
 // The fixture is a minimal GGUF v3 written here (header, no metadata, two F32[8] tensors, 32-byte
 // alignment), so the test needs neither gguf-py nor a shard.  The file is closed before it is removed:
@@ -58,6 +60,22 @@ std::filesystem::path write_gguf(const std::vector<std::string>& names, bool hea
     }
     if (!header_only) b.resize((b.size() + 31) / 32 * 32 + 32 * names.size(), 0);
     const auto path = std::filesystem::temp_directory_path() / "strata_gguf_reader_test.gguf";
+    std::ofstream(path, std::ios::binary).write(reinterpret_cast<const char*>(b.data()), (std::streamsize)b.size());
+    return path;
+}
+// A GGUF v3 with no tensors and one kv: an ARRAY[100] of STRING ("t0".."t99") under `key`.
+std::filesystem::path write_string_array_gguf(const std::string& key) {
+    std::vector<uint8_t> b;
+    put<uint32_t>(b, 0x46554747u);   // "GGUF"
+    put<uint32_t>(b, 3);
+    put<uint64_t>(b, 0);             // n_tensors
+    put<uint64_t>(b, 1);             // n_kv
+    put_str(b, key);
+    put<uint32_t>(b, 9);             // ARRAY
+    put<uint32_t>(b, 8);             // of STRING
+    put<uint64_t>(b, 100);
+    for (int i = 0; i < 100; ++i) put_str(b, "t" + std::to_string(i));
+    const auto path = std::filesystem::temp_directory_path() / "strata_gguf_array_test.gguf";
     std::ofstream(path, std::ios::binary).write(reinterpret_cast<const char*>(b.data()), (std::streamsize)b.size());
     return path;
 }
@@ -123,6 +141,25 @@ int main() {
         std::filesystem::remove(path);
         check(err.find("data section starts past EOF") != std::string::npos,
               "one tensor, ends before the aligned data start: refused at open");
+    }
+    {
+        // The grammar vocab needs every one of ~150k tokens; the default reader caps arrays at 64.
+        const auto path = write_string_array_gguf("tokenizer.ggml.tokens");
+        size_t capped = 0, full = 0;
+        std::string last;
+        try {
+            strata::GgufFile g(path.string());
+            capped = g.get("tokenizer.ggml.tokens")->items.size();
+            strata::GgufFile g_full(path.string(), true);
+            const auto* v = g_full.get("tokenizer.ggml.tokens");
+            full = v->items.size();
+            last = v->items[99].s;
+        } catch (const std::exception& e) {
+            std::printf("  (%s)\n", e.what());
+        }
+        std::filesystem::remove(path);
+        check(capped == 64, "array of 100 strings: the default reader keeps the first 64");
+        check(full == 100 && last == "t99", "full_arrays=true: all 100 arrive, in order");
     }
     std::printf(g_fail ? "gguf_reader_test: %d FAILED\n" : "gguf_reader_test: all passed\n", g_fail);
     return g_fail ? 1 : 0;

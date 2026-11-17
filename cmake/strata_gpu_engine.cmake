@@ -510,7 +510,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   add_executable(strata src/program/generate.cpp)
   strata_utf8_manifest(strata)
   target_include_directories(strata PRIVATE ${_strata_gpu_include_directories})
-  target_link_libraries(strata PRIVATE strata_engine strata_prefill strata_spec ${_strata_gpu_runtime_target})
+  target_link_libraries(strata PRIVATE strata_engine strata_prefill strata_spec strata_grammar ${_strata_gpu_runtime_target})
   if(WIN32 AND STRATA_ENABLE_HIP)
     # 0.2.1.2: the ROCm math libraries live in <package>\rocm\bin, which is on PATH only when the launcher starts the engine; load them on first
     # use (main() adds that folder to the DLL search first) so `strata.exe --version` works from the package folder.  amdhip64_7.dll and the
@@ -1021,6 +1021,13 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   set_tests_properties(sampler_parity_one_block PROPERTIES ENVIRONMENT "STRATA_OLD_SAMPLER=0;STRATA_SAMPLER_ONE_BLOCK=1")
   add_test(NAME sampler_parity_old COMMAND sampler_parity --selftest)
   set_tests_properties(sampler_parity_old PROPERTIES ENVIRONMENT "STRATA_OLD_SAMPLER=1;STRATA_SAMPLER_ONE_BLOCK=0")
+  # Task 6's closed loop: accept -> mask -> sample, 100x200 random walks through an alternating grammar
+  # (GPU memory only, no model; skips with 77 on a box without CUDA)
+  add_executable(grammar_decode_test tests/program/grammar_decode_test.cpp)
+  target_include_directories(grammar_decode_test PRIVATE ${_strata_gpu_include_directories})
+  target_link_libraries(grammar_decode_test PRIVATE strata_grammar strata_kernels ${_strata_gpu_runtime_target})
+  add_test(NAME grammar_decode_test COMMAND grammar_decode_test)
+  set_tests_properties(grammar_decode_test PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
   # S19: the decode QSA top-k and the greedy argmax on thread-block clusters (sm_90+) vs the one-CTA kernels, bitwise,
   # captured in a graph too (GPU, synthetic, no model; skips below sm_90); --bench: per-call times
   if(STRATA_ENABLE_CUDA)

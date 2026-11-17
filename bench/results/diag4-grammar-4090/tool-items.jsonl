@@ -1,0 +1,6 @@
+{"i": 0, "s": 2.9, "finish": "tool_calls", "reasoning_len": 278, "calls": ["get_weather"], "verdict": "OK"}
+{"i": 1, "s": 1.2, "finish": "tool_calls", "reasoning_len": 156, "calls": ["get_weather"], "verdict": "OK"}
+{"i": 2, "s": 1.5, "finish": "tool_calls", "reasoning_len": 244, "calls": ["get_weather"], "verdict": "OK"}
+{"i": 3, "s": 1.6, "finish": "tool_calls", "reasoning_len": 253, "calls": ["get_weather"], "verdict": "OK"}
+{"i": 4, "s": 1.3, "finish": "tool_calls", "reasoning_len": 163, "calls": ["get_weather"], "verdict": "OK"}
+{"i": 5, "s": 1.3, "finish": "tool_calls", "reasoning_len": 189, "calls": ["get_weather"], "verdict": "OK"}

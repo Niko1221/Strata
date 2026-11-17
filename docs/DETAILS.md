@@ -547,8 +547,8 @@ applies at the next start. Network, key, MCP and program keys are not editable t
   there a call for an undeclared name is returned as a `tool_use`: Claude Code runs it, where text ended the turn.
 - JSON output: `response_format: {"type":"json_object"}` or `{"type":"json_schema", ...}` on `/v1/chat/completions`. The schema
   must accept only JSON objects at its root (`"type":"object"`, or `anyOf`/`oneOf` of object schemas). Local `#` references
-  work and remote ones are refused. This is schema prompting followed by server validation, not grammar-constrained
-  decoding, with one generation per request. `jsonschema` is used when installed (`python -m pip install "jsonschema>=4.23,<5"`);
+  work and remote ones are refused. On a grammar-capable engine (0.2.3+) this route is constrained decoding (see [Constrained decoding](#constrained-decoding-gbnf-grammars)
+  below); otherwise it is schema prompting followed by server validation, one generation per request. `jsonschema` is used when installed (`python -m pip install "jsonschema>=4.23,<5"`);
   without it the answer is only checked to be one JSON object. Malformed output returns **502** with
   `error.code: structured_output_failed`, an invalid schema **400**. JSON formats combined with tools or MCP are refused.
   Streaming buffers the answer and emits content only after validation. Math answers often hold LaTeX such as `\alpha`, which is
@@ -726,6 +726,7 @@ system prompt with a billing header that changes on every request; the server pi
 | `--prompt-cache-every N`, `--prompt-cache-root N`, `--turn-token ID` | Checkpoint interval, the system-prompt checkpoint (`0` = none) and the turn token. The interval is not a piece-size setting: [what it does](PROMPT_CACHE_TAIL.md#--prompt-cache-every-does-not-set-the-size-of-the-pieces-a-prompt-is-read-in). |
 | `--prompt-cache-spread` (opt-in) | The checkpoint that leaves is the one whose removal leaves the smallest gap, so the kept points thin out geometrically back from the end. An agent that rewrites its history a few thousand tokens back then resumes near the edit instead of at the system prompt. Same RAM. |
 | `"strata_checkpoint": false` (per request) | A one-shot request that no later request continues saves no checkpoints and keeps no session. |
+| `"strata_grammar": false` (per request) | Turns constrained decoding off for this one request: `response_format` and `tools` ride the prompt-directive path instead of the sampler's grammar. The default (absent, or `true`) constrains whenever the engine can. Use it to A/B the two paths on an identical request, or to escape a schema the converter's grammar does not fit. Only the `response_format`/`tools` constraint is affected — a bare `"grammar"` GBNF is always honoured. |
 | `"strata_prefix": {"messages": 1}` (per request, opt-in) | One long document, many questions. Marks where the document ends: `{"messages": 1}`, `{"message": 0, "chars": 210000}` or `{"tokens": 12345}`. The checkpoint at the boundary is pinned, so 20 questions cost one read of the document. One pinned prefix at a time per engine; needs `--prompt-cache 3` or more; a malformed field is a 400. See [RESEARCH_RUNS.md](RESEARCH_RUNS.md). |
 | `--conversation-cache-mib N`, `--conversation-cache-slots N` | Park conversations in a bounded host-RAM cache so alternating requests (controller and worker histories, sub-agents) reuse their prompts. Without `--conversation-cache-mib` the budget is 40% of the RAM left above `--conversation-cache-min-free-mib` once the model is loaded, at most 8192 MiB in steps of 256, off when under 1024; the engine log says which. `0` turns it off. It preserves histories; it does not run requests at once. |
 | `--conversation-cache-min-tokens N` | Park only conversations of at least N tokens, so short side requests do not evict a long conversation. Default `0` (park all). |
@@ -810,6 +811,263 @@ curl -X POST "http://127.0.0.1:8080/slots/0?action=restore" -H "Content-Type: ap
 - Not supported with `--layer-split`, `--peer-device`, `--batch` or `--prompt-cache 0`. The engine has been run on Linux and CUDA
   only for this feature. Exact token replay across restarts is not guaranteed: expert residency and CPU/GPU rounding can
   change later output.
+
+### Constrained decoding (GBNF grammars)
+
+The engine can restrict generation, token by token, to the text a GBNF grammar accepts. Grammars are
+per-request and opt-in; a request that names no grammar runs exactly as before (the sampler mask is a null
+pointer: no allocation, no upload, byte-identical sampling).
+
+- `response_format` (above) is the schema path: `json_object` runs under the vendored `json.gbnf`,
+  `json_schema` is converted through `grammar_schema`.
+- A bare `grammar` parameter on `POST /v1/chat/completions` is the client's own GBNF text (up to 1 MiB). It
+  requires a grammar-capable engine (400 without one) and refuses to combine with tools/MCP.
+- Tool calls (OpenAI, Responses and Anthropic routes) ride the grammar when the engine is capable and MCP is
+  off: the grammar spells the chat template's exact call serialization - the call wrapper, the tool names a
+  request declares, the parameter names each schema declares, and a typed value for every parameter. A tool
+  the request does not declare cannot be called, a parameter the schema does not declare cannot be written,
+  a required one cannot be dropped, and a value's type is the schema's (`line` bound as an integer arrives as
+  `42`, never `"42"`). `tool_choice` "required" and a named function allow only calls; "auto" adds a prose
+  branch whose grammar refuses the literal call opener `\n<tool_call>`: the opening `\n` is the template's, so
+  prose may start a call only to finish it. Parallel calls and the `\n</think>` prologue are carried. The forced-prefix
+  mechanism is skipped on this path: the grammar opens the call. MCP requests stay on the prompt path (the
+  hosted tools' schemas are not validated here) and the reply declares the method under
+  `strata.structured_output.method`.
+- A request can turn the constraint off with `strata_grammar: false` (chat, Responses and Anthropic routes):
+  the request then runs the prompt path, exactly as it did before this branch. The bare `grammar` parameter is
+  always honoured.
+
+**Strict tool schemas.** A tool parameter's schema is converted by `grammar_schema` in a strict mode whose line
+is drawn at what the guarantee needs: anything whose grammar can provably never spell `</parameter>` is
+supported, because the closer is the only thing this mode has to keep out of a value. A constraint the converter
+cannot spell is dropped with a warning rather than refused - see the paragraph on the two gates below, which also
+says which schemas still fail with `400`. Supported per property: `type` (`string`, `integer`, `number`,
+`boolean`, `null`, `object`, `array`), a union (`anyOf` or `oneOf`, or `type: ["a","b"]`, which is how a nullable
+field is written - one production per branch), `allOf` of object branches (merged into one object; a property
+declared by two branches is refused, and so is a branch carrying `additionalProperties: false`, because either
+would make the merge produce a grammar that rejects a legal value), `enum`, `const`, a nested
+`properties`/`required`/`additionalProperties: false` object, a dictionary (typed `additionalProperties`, `true`
+for any value, or `{}` for a free-form one, with or without declared properties beside it), a free-form value or
+array at any position including a parameter's root (an empty or annotation-only schema is "anything", which is
+what a generator writes for `z.unknown()`), `prefixItems` or `items: [...]` tuples (spelled item by item,
+exactly), `pattern` (anchored with `^`/`$`, including the `\d`/`\w`/`\s` shorthands and their negations, which
+are expanded to the code points they stand for), `format` (`date`, `time`, `date-time`, `uuid`, including at a
+parameter's root), `items` with `minItems`/`maxItems`, `minLength`/`maxLength`, and `minimum`/`maximum` (or the
+`exclusive` pair) on integers, and a local `$ref` into `$defs`/`definitions` (the target is validated in place, so
+the reference is exactly as strict as what it names; a self-referential definition is admitted, because the
+grammar shares one rule for it and terminates). Dropped with a warning when the converter has no spelling for
+them: `minimum`/`maximum`/`exclusiveMinimum`/`exclusiveMaximum`/`multipleOf` on a `number` (its grammar form has no
+bounds), `multipleOf` on an integer, property-count bounds, `uniqueItems`, `contentEncoding`/`contentMediaType`,
+`not`, `if`/`then`/`else`, `patternProperties`, `contains`, a `propertyNames` that constrains names, `required`
+naming a property no branch declares, `minimum` beside `exclusiveMinimum` (the inclusive one wins and is the
+wider), an integer bound pair that admits no value, an unknown `format`, an `enum` value outside the declared
+type (dropping it is exact - the intersection is unsatisfiable), and a keyword sitting beside
+`anyOf`/`oneOf`/`allOf`/`$ref`/`enum` (the converter reads the combinator first). An unanchored or uncompilable
+`pattern` also drops with a warning: the value falls back to the guarded string, which still cannot spell the
+closer. Refused, because the request could not be served at all: `minLength` greater than `maxLength` and
+`minItems` greater than `maxItems` (the converter emits `{3,2}`, and this engine's grammar parser does not
+terminate on a repetition whose lower bound exceeds its upper - measured as a hang, so the request cannot be
+answered with any grammar), an `allOf` branch that repeats another branch's property or carries
+`additionalProperties: false`, an `enum` whose every value falls outside the declared type, a `$ref` that does not
+resolve inside the document (remote URLs and missing definitions), and malformed keyword values (`format` that is
+not a string, `minimum` that is not a number, an empty `enum`). A reference is resolved against the tool's whole
+`parameters` document, not against the single parameter being spelled: a JSON Pointer is rooted at the document,
+and the builder compiles one parameter at a time, so `#/properties/func/properties/vpc` names a sibling and has
+to reach it (`--with-document` carries the document to the converter). A keyword that constrains a type the branch
+does not hold is dropped before validation without a note, because
+JSON Schema says `minimum` next to `"null"` means nothing: Zod writes exactly that for
+`z.number().min(1).nullable()`. `propertyNames` is accepted as a no-op when it only says `{"type": "string"}`:
+every JSON member name is a string, so it restricts nothing, and schema generators emit exactly that for a
+free-form map.
+
+
+Two of these need a word on why they are safe rather than merely convenient. A `pattern` compiles to character
+classes, so wherever a class could match `<` the class is rebuilt to exclude it (and a negated class gets `<`
+added when it was missing): that NARROWS what the grammar accepts, which is the safe direction - a value can
+come out outside the pattern, never a call cut short. A pattern that cannot be compiled or is not anchored is
+dropped and replaced by the guarded string, so the constraint is lost but no derivation can spell the closer;
+the answer accounts for `<` spelled directly or through `\x3c`/`\u003c`. A free-form value is safe because it is
+spelled by the `value`/`object`/`array` primitives, whose every string goes through the protected `char` (which
+refuses a raw `<` and admits the JSON escape). That holds at a parameter's root as well: the root holds the JSON
+spelling of the value, so a free-form root is `root ::= value` and its strings are `char` strings like any other.
+
+Two gates stand between a schema and its grammar, and they check different things because they can see different
+things. The preflight above reads the schema's words and can therefore see what is missing from it; the AST
+builder (`vendor/json_schema_to_grammar/json-schema.cpp`) is what decides whether a keyword survives, and it used
+to drop one silently - `{"type":"number","minimum":1}` converted to an unbounded number, a tuple lost its
+`minItems`/`maxItems`, and `{"type":"string","format":"hostname"}` became a free string. So strict mode audits
+each built node against the keywords its kind actually expresses, next to the code that reads them, so a branch
+that starts honouring a keyword adds it in the same function.
+
+That audit REPORTS rather than refuses, and this is the one place where strict mode deliberately does what
+llama.cpp's own conversion does. The guarantee is about the envelope, not about the value: no derivation of the
+grammar can spell `</parameter>`, and no tool or parameter name can be read back as a different one. Every other
+keyword constrains the value alone, so dropping one widens the language and cannot cut a call short - while
+refusing it fails the whole request over a constraint the client wrote by habit. Zod writes `maximum` for every
+`.max()` number and `minProperties`/`uniqueItems` elsewhere, so a harness hit this on ordinary turns; the measured
+difference was a 400 on a schema llama.cpp converts without complaint. A dropped keyword is therefore logged on
+stderr as `WARNING: JSON schema conversion was incomplete: ...` naming the keyword and its path, and the request
+succeeds. What still refuses is a schema the converter cannot serve at all or one whose grammar would reject a
+value the schema allows - a repetition whose lower bound exceeds its upper (the engine's parser hangs on it), an
+`allOf` merge that would demand the same property twice or forbid another branch's, a `$ref` that does not
+resolve, an `enum` with no value inside the declared type, a malformed keyword value. Those are broken schemas,
+not dropped constraints.
+
+The exclusion of `</parameter>` is the vendored `common_aho_corasick` (`trie.h`, already compiled in for the
+JSON-string conversion) driving the grammar emission `gbnf_excluding_grammar`, ported from llama.cpp's
+`common/peg-parser.cpp`. Its safety is structural rather than argued: every state is accepting and the characters
+that complete the forbidden string get no alternative, so no derivation can spell it. That replaced two
+hand-written Python state machines, which is where the overlap bug lived - a per-character chain that restarts at
+zero after a mismatch lets `safe <</parameter>` through, because the second `<` reopens the closer while the chain
+is still mid-prefix. One automaton now serves the envelope, the reasoning region and every parameter value.
+
+Rule names are another place the grammar has to agree with the engine: a property name reaches them as written,
+and `_` is not a GBNF word character, so every generated name is sanitized - a snake_case tool
+(`old_string`, `new_string`, which is what Zod emits) otherwise produced a grammar the engine refused to parse
+at all.
+
+The envelope's markers are a third place, and it is the one where a grammar can be exactly obeyed and still
+deliver the wrong action. `serve/frontend.py` reads a call back by cutting the name and each parameter key at the
+first `>`, so a tool named `ev>il` is written as `<function=ev>il>` and read as `ev`, and a parameter key `a>b` is
+read as `a` (both measured). Instead of blacklisting characters, the builder spells the exact text its grammar
+demands and runs it through that same parser, refusing a tool whose call would not come back as the tool that was
+offered. Any later change to the framing is then covered by construction rather than by a list kept in step by
+hand.
+
+`oneOf` is read as a union, exactly like `anyOf`: a grammar can say "one of these" but not "exactly one of
+these", and for the disjoint branches a tagged union emits the two readings coincide. Each branch is validated on
+its own, so a branch carrying a broken schema still fails while a droppable constraint inside it is only warned
+about. `allOf` is an intersection and is only
+supported where merging is exact - object branches, no property named twice, no branch closing the object with
+`additionalProperties: false` (that would forbid the other branches' properties). Each branch keeps its own
+`required` set, since an intersection requires a property when any branch does.
+
+Length bounds follow llama.cpp's rule for the same problem
+(`src/llama-grammar.cpp`, `MAX_REPETITION_THRESHOLD` 2000, which this engine's own GBNF parser carries too): a
+`maxLength` above the threshold is treated as unbounded - client schemas write 65535 or 1000000 to mean "a lot",
+and the delimiter guarantee holds in every state of the chain - while a `minLength` above it is refused, because
+dropping a lower bound would let a value come out shorter than the schema says. The `400` names the property and
+the bound.
+
+Two clause shapes keep the constrained text and the reply parser in agreement, and both exist because the parser
+is a separate implementation from the grammar (llama.cpp gets this for free: one PEG definition spells both):
+a parameter **value** refuses the whole `</parameter>` string, and the same refusal reaches inside a non-string
+parameter's JSON strings. `serve/frontend.py`'s `param_end` ends a value at any `</parameter>` that is followed
+by `<parameter=`, `</function>` or `</tool_call>`, so a value that could spell one let the parse cut the call
+there and drop every parameter after it (measured: a nested object argument arrived as a string and the
+parameter following it disappeared, 8 of 12 closer-inviting requests). llama.cpp caps the same hole with
+`until(param_closer)`; here the exclusion is the same construction llama.cpp uses - the complement of an
+Aho-Corasick automaton (`common/peg-parser.cpp`'s `gbnf_excluding_grammar`, which this converter now emits) -
+rather than a per-character chain, because a chain that restarts at zero after a mismatch lets `safe
+<</parameter>` through (the second `<` reopens the closer while the chain is still mid-prefix). A raw string
+parameter's grammar is
+the raw template text, so the same automaton counts its characters directly. Inside a serialized JSON string no
+raw `<` is admitted at all; a literal `<` is written as the JSON escape `\u003c`, which decodes to the same text
+for the client while never spelling the closer in the protocol stream, and fixed literals, property keys and
+constant values are emitted the same way. Each escape branch spells exactly one decoded character (a surrogate
+pair is not admitted), so `minLength`/`maxLength` inside a nested schema count characters rather than bytes.
+The reasoning region refuses `<tool_call>` too - a call written
+there has no schema to constrain it, yet the parser rescued it as a real action. The answer region admits no
+` ```json ` fence (a fenced answer fails every client's `json.loads`, while the canary's `extract_json` strips
+it and called it conforming), and the whitespace after `</think>` is bounded (`{0,24}`): unbounded, a masked
+backtick left the model walking whitespace until the budget ran out (76,096 characters measured).
+
+Rule names generated on either side are checked for collisions before a grammar is registered (a duplicate head
+would let one rule silently overwrite another), and the converter's own names are prefixed per parameter, so two
+parameters of the same shape cannot shadow each other.
+
+Registration: the server sends each grammar text once per engine generation (`GRAMMAR <sha16> <len> <text>`),
+keyed by the SHA-256 of the text; the engine keeps at most 64 parsed grammars and a mask cache per grammar.
+A restart clears both sides. The grammar vocabulary is read from the model GGUF itself; a server that cannot
+read it says so at start and keeps the prompt paths.
+
+Limits: constrained requests draft with the model drafters and stay token-for-token grammatical. The MTP
+drafter (`--mtp`) and `--batch-mtp` ride the masked windows: each window row samples from the mask of the
+state its draft prefix leaves (the engine builds that chain into the mask rows before the window; a draft the
+grammar refuses truncates the chain, the acceptance breaks at or before its row, and the tail rows are
+discarded - they never emit). The drafter itself draws unmasked. A request that raises the draft floor
+(`spec_min_p`) is still refused with a grammar, and suffix/n-gram drafting (`--spec`'s prompt lookup) is
+silently off for a constrained request (its proposals do not come from a model the chain can score). On a
+layer split the pipelined windows decode a constrained request serially (the chain rides the serial windows,
+as penalties do). DFlash2 (`--draft dflash2`) drafts only in the CLI run in this build, so serving never
+meets it. The mask lives in the CUDA/HIP sampler kernels (the SYCL tree mirrors the per-row reads; its
+program side has no grammar wiring); Metal/CPU engines report no capability and keep the old paths. A bare
+`grammar` and a `json_object`/`json_schema` `response_format` convert with the vendored llama.cpp converter's
+original behaviour (commit `3cf03257`), including its warning-and-widen fallback for an unsupported `pattern`;
+only tool schemas use the strict mode described above, because only there does a widened constraint silently
+reintroduce the broken-call failure the branch exists to remove.
+
+A continuation pass (a thinking wrap-up, a close retry, a forced call, a batch slot handed back to solo) resends
+the prompt with what it generated and names the tail with `gseed=<n>`: the engine replays those tokens through
+the grammar so the state (and mask) continue where the last pass left off - without the seed the wrap-up's
+`</think>` would never reach it, and the rest of the reply would sample from the open reasoning mask. A tail
+that does not fit the grammar is refused (400), never silently unconstrained.
+
+Measured cost, RTX 4090, Qwen3.8-Flash-Next with the MTP drafter on (`--spec 4`, temperature 0, three turns, taking
+the median, every speed read from the engine's own log line rather than computed on the client). The cost splits
+into two parts that an earlier revision of this section reported as one:
+
+- **The machinery.** A grammar that never refuses what the model wanted to write costs **-0.9%** (247.1 tok/s
+  against a plain 249.4). That is measured with the plain answer's own text spelled as a literal grammar
+  (`root ::= "<that text>"`), so every draft is legal and nothing can be lost to a refusal; a digits grammar that
+  permits the spaces the model writes measures the same -0.9% (247.1). The mask build, the stack walk and the
+  upload are inside that number. A second run of the same four shapes put both at -0.8%.
+- **The constraint doing its job.** The same digits grammar with spaces forbidden costs **-6.3%** (233.8 tok/s in
+  the final run, 236.5 in the one before), and the cause is visible in draft acceptance: 89.2% plain against
+  81.2% constrained. The drafter keeps proposing tokens the grammar bans and each of those is a rejected draft,
+  so the window keeps fewer tokens. No implementation speed-up recovers that; only masking the drafter's
+  distribution would, which is why it stays unbuilt: its value is bounded by how often the model's own preference
+  differs from the schema, and on a real tool request that difference is small (below).
+
+A real tool request is the first kind. Five tools, `tool_choice: auto`, thinking on (the shape a client such as
+Cherry Studio sends): **197.7 tok/s constrained against 202.3 without the grammar, -2.3%**, acceptance 77.1%
+against 74.8%; an earlier run of the same script measured -1.7% (195.9 against 199.2). The same shape with
+thinking off: 234.7 against 236.9, -0.9%.
+
+That is where the per-token work went. Three changes removed duplicated work instead of weakening the constraint:
+
+- a clone shares the grammar's immutable rules vector, so it copies only its mutable stacks - previously it
+  copied the whole rules vector and then relinked every stack element by scanning, once per speculative window;
+- the mask cache indexes every grammar element once at construction, so a lookup costs one hash per stack element
+  instead of a walk over all rules, a walk it used to run even on a cache hit;
+- the vocabulary is decoded once into shared code-point arrays and shared by every grammar the registry serves,
+  so a mask miss folds the stacks over prepared candidates instead of decoding all ~150k pieces again. A miss
+  happens for every grammar state the cache has not seen, and inside a JSON string that is nearly every token.
+
+One state is not the prepared arrays' to answer. A byte-fallback vocabulary splits a character across tokens: this
+model writes `鹈` as one piece holding `e9 b9` and a second holding `88`, and every emoji as three pieces. Halfway
+through such a character the grammar is a different state, and only a piece that starts with a UTF-8 continuation
+byte may ride - a lead byte there is an invalid sequence, which `decode_utf8` reports as `n_remain = -1` and every
+stack then refuses. llama.cpp's `apply_impl` decodes each candidate from the grammar's live `partial_utf8` for
+exactly this reason (pinned `3cf03257`, `llama-grammar.cpp:1387`). The cached mask is built from a character
+boundary instead, so it banned every finishing piece while allowing the lead piece that opens the character: the
+model could start a character and never close it, and the reply showed U+FFFD where the character should be
+(`��骑自行车` for `鹈鹕骑自行车`, `�` before an emoji). Constrained requests only - plain ones never consult a mask -
+and the tool-call grammar is where it showed, because that is where a server-constrained request writes free text.
+The state is part of the cache key and of the build: on a boundary the prepared code points answer as before, and
+mid-character the few candidates whose piece starts with a continuation byte are decoded from that state (163 of
+this vocabulary's 248,320 pieces). `grammar_test.cpp`'s `test_mask_partial_utf8` pins both halves.
+
+On the tools-plus-thinking workload above, the engine measured 175.6 tok/s before these changes and 201.0 after,
+same script, same prompts.
+
+Two earlier numbers in this section deserve a correction rather than a footnote. The -2.6% / -18.6% figures and
+the "50/50 JSON-schema, 30/30 tool calls" validation came from a build in which `grammar_schema.exe` was never
+built or packaged, so `response_format` and tool schemas had been **silently falling back to the prompt path
+plus post-hoc validation**; those runs measured the mask cost of the paths that did constrain (bare `grammar`,
+`json_object`), and the "conforming" replies there were produced by prompting, not by a grammar. A packaged
+engine now carries `grammar_schema` (it is on the packaging whitelist). When measuring this feature, prove the
+constraint is live before trusting any number: a request with a literal-forcing grammar such as
+`root ::= "ZZZ-CONSTRAINED-OK"` must produce exactly that text. The -6.8% that replaced those figures was a
+different thing again: draft acceptance under the grammar was *higher* in that run (91.8% against 90.5%), so no
+draft was lost - it was the machinery of that build doing work three times over (a clone copying every rule per
+window, a cache lookup walking the whole rule set before it looked, a full vocabulary decode on every mask miss),
+and those are the three changes listed above.
+
+With the MTP drafter on (`--mtp <rt>`), a constrained window records its chain into the mask rows before the
+window samples, so a request keeps drafting at full depth - the acceptances above are that path. With
+`--batch 2 --batch-mtp` two slots decoded together, a constrained slot's window drafts accepted 52 of 70, and
+6/6 concurrent replies (constrained and plain mixed) validated.
 
 ### The web page (Chat, Images, Monitor, About)
 

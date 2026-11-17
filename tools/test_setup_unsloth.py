@@ -22,6 +22,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+os.environ.pop("HF_ENDPOINT", None)   # these tests expect the original endpoint; a user's mirror must not skew them
 import setup  # noqa: E402
 
 M = "UD-Q4_K_XL"

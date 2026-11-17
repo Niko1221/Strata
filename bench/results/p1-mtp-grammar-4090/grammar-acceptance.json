@@ -1,0 +1,127 @@
+{
+  "stamp": "p1-mtp",
+  "rig": "RTX 4090 48GiB, 96GiB RAM",
+  "model": "swift-qwen3.8-flash-next-iq3-s",
+  "exe": "F:\\Strata-dev\\build\\strata.exe",
+  "engine_args": [
+    "--pack",
+    "F:/Strata-data/packs/swift-iq3_s",
+    "--native",
+    "F:/Strata-data/models/swift-IQ3_S/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+    "--resident-budget-gib",
+    "40",
+    "--expert-profile",
+    "F:/Strata/data/expert-profile.bin",
+    "--expert-cache",
+    "auto",
+    "--prefill",
+    "auto",
+    "--spec",
+    "2",
+    "--max-context",
+    "16384",
+    "--kv",
+    "int8",
+    "--mtp",
+    "F:/Strata-data/mtp/rt"
+  ],
+  "protocol_smoke": {
+    "ok": true,
+    "checks": {
+      "info_grammar": true,
+      "register_ok": true,
+      "register_err": true,
+      "gen_with_grammar": true,
+      "not_registered": true,
+      "spec_refused": true
+    },
+    "info": "INFO logit_bias=1 grammar=1 context=8192 kv=int8 kv_resident=0 expert_slots=21059 expert_cache_mib=41099 expert_slots_primary=21059 expert_cache_primary_mib=41099 spec=4 mtp_max=2 lookup=3 vram_free_mib=296 cvec=0 arena_mib=10349 pool_workers=13 pcie_frac=0.55 spec_min_p=0.00 conversation_cache_mib=8192 conversation_cache_slots=4 conversation_cache_min_free_mib=2560 conversation_cache_min_tokens=0 tail_role_token=-1 vram_elastic=0 prefill_cap=8192 prefill_stages=1 stream_all_min=1024 prefill_pipe=0 engine=0.1.49.1",
+    "tokens": [
+      64,
+      65,
+      248046
+    ]
+  },
+  "capability": {
+    "formats": [
+      "json_object",
+      "json_schema"
+    ],
+    "method": "grammar",
+    "constrained_decoding": true,
+    "stream_buffered": false
+  },
+  "json_suite": {
+    "n": 50,
+    "passed": 50,
+    "canary_502": 0,
+    "other_failures": 0,
+    "fails": []
+  },
+  "tools_suite": {
+    "n": 30,
+    "parsed": 30,
+    "parse_failures": 0,
+    "rescued_from_reasoning_delta": 0,
+    "fails": []
+  },
+  "perf": {
+    "runs": 3,
+    "plain_med_tok_s": 121.92,
+    "constrained_med_tok_s": 123.06,
+    "constrained_cost_pct": -0.9,
+    "plain_all": [
+      101.19,
+      130.27,
+      121.92
+    ],
+    "constrained_all": [
+      30.17,
+      129.02,
+      123.06
+    ]
+  },
+  "probe": {
+    "slots": 6,
+    "rounds": 2,
+    "plain": [
+      {
+        "tok_s": 162.2,
+        "cpu_s": 0.0,
+        "cpu_ms_per_tok": 0.0,
+        "tokens": 1211,
+        "slot_errors": []
+      },
+      {
+        "tok_s": 166.6,
+        "cpu_s": 0.0,
+        "cpu_ms_per_tok": 0.0,
+        "tokens": 1073,
+        "slot_errors": []
+      }
+    ],
+    "constrained": [
+      {
+        "tok_s": 94.6,
+        "cpu_s": 0.0,
+        "cpu_ms_per_tok": 0.0,
+        "tokens": 770,
+        "slot_errors": []
+      },
+      {
+        "tok_s": 153.3,
+        "cpu_s": 0.0,
+        "cpu_ms_per_tok": 0.0,
+        "tokens": 641,
+        "slot_errors": [
+          "RuntimeError('http 502: {\"error\": {\"type\": \"structured_output_failed\", \"code\": \"structured_output_failed\", \"message\": \"the constrained answer did not fit the output budget: structured output was incomplete (finish_reason=len')"
+        ]
+      }
+    ],
+    "plain_med_cpu_ms_per_tok": 0.0,
+    "constrained_med_cpu_ms_per_tok": 0.0,
+    "plain_med_tok_s": 164.39999999999998,
+    "constrained_med_tok_s": 123.95
+  },
+  "acceptance_ok": true
+}
