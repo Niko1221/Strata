@@ -1099,6 +1099,8 @@ class StrataEngine:
         # retry_vram_args: the same start with no drafter (nodraft_retry_args), used instead when the engine ended because a card ran out of memory: swapping DFlash2 for
         # the MTP takes MORE memory from a card that is already short, so that direction is never taken then
         self.spawn = (exe, list(args), cwd, log, env, False, cpus)   # to start it again after it died (issue #27)
+        self.classifier_reserved = False
+        self.classifier_pending = set()
         # the all-cards split engine (sFNX, strata-split-N[-arch]): its GEN parser accepts fewer keys than Strata's engine (tests/split/test_split_gen_keys.py pins them)
         self.split_engine = os.path.basename(str(exe)).startswith("strata-split")
         self.session_save_reclaim = '--session-save-reclaim' in args
@@ -1991,6 +1993,10 @@ class StrataEngine:
 
     YIELDS_MAX = 2   # #656: how often one request's prompt read gives way to a shorter waiting one
 
+    def _classifier_blocks(self, cancel):
+        return (getattr(self, "classifier_reserved", False) and self.classifier_pending and
+                not getattr(cancel, "_strata_classifier", False))
+
     def _take_control(self, cancel, plen: int, after_epoch: int | None = None, new: bool = False, prompt=None):
         """Waits for the control lines (one prompt read at a time), yielding None heartbeats; False when cancelled.
         `after_epoch`: a request whose read gave way lets the requests waiting then go first.
@@ -2013,10 +2019,15 @@ class StrataEngine:
                     raise EngineDied("the engine stopped while this request waited; it was not sent")
                 with self.slot_cv:
                     turn = after_epoch is None or self.ctl_epoch > after_epoch or self.waiting <= 1
+                    if self._classifier_blocks(cancel):
+                        turn = False
                     if turn and new and ADMIT_SHORT_FIRST > 0:
                         turn = self._admit_next() is entry
                 left = deadline - time.monotonic() if deadline is not None else 0.5
                 if turn and left > 0 and self.ctl.acquire(timeout=min(0.5, left)):
+                    if self._classifier_blocks(cancel):
+                        self.ctl.release()
+                        continue
                     if new and ADMIT_SHORT_FIRST > 0:
                         with self.slot_cv:              # a shorter one came while this one waited in acquire()
                             first = self._admit_next() is entry
@@ -2038,6 +2049,8 @@ class StrataEngine:
                         # notification sent in between is gone.  Read it again under the lock and only wait when this
                         # request still has to.
                         eligible = after_epoch is None or self.ctl_epoch > after_epoch or self.waiting <= 1
+                        if self._classifier_blocks(cancel):
+                            eligible = False
                         if eligible and new and ADMIT_SHORT_FIRST > 0:
                             eligible = self._admit_next() is entry
                         if not eligible or not self.alive():
@@ -2141,12 +2154,36 @@ class StrataEngine:
         with self.slot_cv:
             return sum(1 for b in self.slot_busy if b) == 1 and self.waiting == 0
 
-    def _shorter_waiting(self, plen: int) -> bool:
+    def _shorter_waiting(self, plen: int, cancel=None) -> bool:
         """#656: someone waits for the control lines with a prompt under half this one's: worth giving way to."""
         with self.slot_cv:
+            if getattr(self, "classifier_reserved", False):
+                if getattr(cancel, "_strata_classifier", False):
+                    return False
+                if self.classifier_pending:
+                    return True
             return any(e[0] * 2 <= plen for e in self.wait_lens)
 
     def generate_batched(self, ids, max_new, sampling, cancel, embeddings=None):
+        if not getattr(self, "classifier_reserved", False):
+            yield from self._generate_batched(ids, max_new, sampling, cancel, embeddings)
+            return
+        if self.batch < 2:
+            raise ValueError("classifier_model requires at least two engine slots")
+        classifier = getattr(cancel, "_strata_classifier", False)
+        if classifier:
+            with self.slot_cv:
+                self.classifier_pending.add(cancel)
+                self.slot_cv.notify_all()
+        try:
+            yield from self._generate_batched(ids, max_new, sampling, cancel, embeddings)
+        finally:
+            if classifier:
+                with self.slot_cv:
+                    self.classifier_pending.discard(cancel)
+                    self.slot_cv.notify_all()
+
+    def _generate_batched(self, ids, max_new, sampling, cancel, embeddings=None):
         """--batch.  Alone (no slot busy, nobody waiting): the solo path (GEN, with drafts: the fastest stream)
         - and when another request arrives meanwhile, this one is STOPped and continues in a batch slot (BGEN with
         its prompt + what it generated: the engine reuses that prefix).  Otherwise: BGEN into a free slot, then the
@@ -2208,7 +2245,8 @@ class StrataEngine:
                     holding, born = True, self.gen                  # (the engine it now has the control lines of)
                     lines_q, sq = self.lines, self.slot_q           # (it holds no slot of the engine before: nothing to lose)
                 with self.slot_cv:
-                    alone = not any(self.slot_busy) and self.waiting == 0
+                    alone = (not any(self.slot_busy) and self.waiting == 0 and
+                             not getattr(cancel, "_strata_classifier", False))
                 if alone and left > 1:
                     pf = self.pen_from_key(orig_len, len(prompt))
                     head = f"GENI {left}{leg_keys()}{pf} {embeddings}" if embeddings else f"GEN {left}{leg_keys()}{pf}"
@@ -2231,10 +2269,10 @@ class StrataEngine:
 
                     def give_way():   # at a PP line, and between two far apart (the engine takes it at its next boundary)
                         nonlocal reserved
-                        if (reserved is None and not out and not embeddings and yields < self.YIELDS_MAX and
-                                self._shorter_waiting(len(prompt))):
+                        if (reserved is None and not out and not embeddings and (yields < self.YIELDS_MAX or self._classifier_blocks(cancel)) and
+                                self._shorter_waiting(len(prompt), cancel)):
                             with self.slot_cv:          # the slot the part read will wait in
-                                reserved = self.pick_slot(prompt)
+                                reserved = self.pick_slot(prompt, classifier=getattr(cancel, "_strata_classifier", False))
                                 if reserved is not None:
                                     self.slot_busy[reserved] = True
                                     self.slot_claims.add(reserved)
@@ -2287,7 +2325,7 @@ class StrataEngine:
                             if deadline is not None and time.monotonic() >= deadline:
                                 raise QueueWaitExpired("the inference queue wait deadline expired; retry later")
                             with self.slot_cv:
-                                slot = self.pick_slot(prompt)
+                                slot = self.pick_slot(prompt, classifier=getattr(cancel, "_strata_classifier", False))
                                 if slot is not None:
                                     self.slot_busy[slot] = True
                                     self.slot_claims.add(slot)
@@ -2305,7 +2343,7 @@ class StrataEngine:
                                 self.ctl.release()
                                 holding = False
                             with self.slot_cv:
-                                if self.pick_slot(prompt) is None:
+                                if self.pick_slot(prompt, classifier=getattr(cancel, "_strata_classifier", False)) is None:
                                     if (ENGINE_STALL_S or 0) > 0 and time.monotonic() - admit_since >= ENGINE_STALL_S:
                                         # the stall check of #1317 only watches a request on the control lines; one
                                         # waiting here is covered by looking for a slot nobody owns, and by saying so
@@ -2316,7 +2354,7 @@ class StrataEngine:
                                                   f"for a free slot (busy: {busy}, in use: {sorted(self.slot_claims)}, "
                                                   f"ending: {sorted(self.slot_releasing)}) (issue #1603)", flush=True)
                                     self._reap_orphan_slots()
-                                if self.pick_slot(prompt) is None:
+                                if self.pick_slot(prompt, classifier=getattr(cancel, "_strata_classifier", False)) is None:
                                     wait_remaining = deadline - time.monotonic() if deadline is not None else 1.0
                                     self.slot_cv.wait(timeout=min(1.0, max(0, wait_remaining)))
                             if cancel.is_set():
@@ -2371,8 +2409,8 @@ class StrataEngine:
 
                     def ask():        # as give_way above, for the slot this admission reads into
                         nonlocal asked
-                        if (not asked and not embeddings and yields < self.YIELDS_MAX and
-                                self._shorter_waiting(len(prompt))):
+                        if (not asked and not embeddings and (yields < self.YIELDS_MAX or self._classifier_blocks(cancel)) and
+                                self._shorter_waiting(len(prompt), cancel)):
                             self._send_for(born, f"BYIELD {slot}")
                             asked = True
 
@@ -2455,8 +2493,8 @@ class StrataEngine:
                                 stop_sent = True
                             continue
                         yield t
-                        if not going_solo and not stop_sent and self._may_go_solo(int(max_new) - len(out), solo_again,
-                                                                                  embeddings):
+                        if (not going_solo and not stop_sent and not getattr(cancel, "_strata_classifier", False)
+                                and self._may_go_solo(int(max_new) - len(out), solo_again, embeddings)):
                             self._send_for(born, f"BSTOP {slot}")   # alone now: on with the drafts (below)
                             going_solo = True
                     elif line.startswith("BDONE "):
@@ -2573,11 +2611,14 @@ class StrataEngine:
     BRANCH_BOUNDARY_MIN = 8192   # the engine's message-boundary checkpoint (STRATA_CACHE_MESSAGE_BOUNDARY) starts at this many tokens
     TURN_ID = 248045        # <|im_start|>: the engine's default --turn-token (its turn checkpoint sits at the last one)
 
-    def pick_slot(self, prompt: list[int]) -> int | None:
+    def pick_slot(self, prompt: list[int], classifier=False) -> int | None:
         """A free slot for `prompt` (the caller holds slot_cv): the one whose held tokens are the longest start of the
         prompt (the engine then reads only the rest), else an empty one, else the one used longest ago - so the
         conversations other slots hold stay for their next turns.  None: every slot is busy."""
         free = [b for b in self.slot_order if not self.slot_busy[b]]
+        if getattr(self, "classifier_reserved", False):
+            reserved = len(self.slot_busy) - 1
+            free = [b for b in free if (b == reserved) == classifier]
         if not free:
             return None
         gs = getattr(self, "slot_gs", 0)
@@ -4867,6 +4908,7 @@ class Service:
         self.literals = literal_tags(getattr(tokenizer, "control_tokens", ()))   # texts that stay text inside a message
         self.fit_max_tokens = fit_max_tokens          # default: clamp the output cap to the room left; False (--no-fit-max-tokens) = 400
         self.aliases: list[str] = []                  # #297: other names of the model (the config's `aliases`)
+        self.classifier_model = None
         self.answer_room = True                       # 0.1.45: see ANSWER_ROOM_MIN_CAP (the config's "answer_room": false turns it off)
         self.reasoning_close_retry = False            # #1053 (opt-in): close the thinking once when a reply ends inside it
         self.codex_compaction_cache = False           # #924 (opt-in): a Codex compaction is rendered with its conversation's tools
@@ -8925,6 +8967,7 @@ def make_handler(svc: Service):
             stop_strings(req)                                 # ... and so is a bad stop / stop_sequences
             check_request_sampling(req)                       # ... and a sampling field of the wrong type
             cancel = threading.Event()
+            cancel._strata_classifier = bool(svc.classifier_model and req.get("model") == svc.classifier_model)
             self._watch_client(cancel)                       # #430 #431 (#1999: before prepare, which can take long)
             try:
                 ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new, force=force, req=req, cancel=cancel)
@@ -10297,6 +10340,14 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
                         pass
         per_replica = requested if isinstance(requested, int) and not isinstance(requested, bool) and requested > 0 else 1
         svc.requested_slots = per_replica * len(groups) if groups else per_replica
+    classifier_model = cfg.get("classifier_model")
+    if classifier_model is not None:
+        if not isinstance(classifier_model, str) or not classifier_model.strip():
+            raise SystemExit("classifier_model must be a non-empty model ID")
+        if not isinstance(engine, StrataEngine) or svc.requested_slots < 2 or COALESCE_PREFILL > 1:
+            raise SystemExit("classifier_model requires one batched Strata engine with at least two slots, without coalescing")
+        svc.classifier_model = classifier_model
+        engine.classifier_reserved = True
     svc.answer_room = cfg.get("answer_room") is not False
     svc.reasoning_close_retry = cfg.get("reasoning_close_retry") is True    # #1053: opt-in, off by default
     if cfg.get("images"):                               # image generation (serve/images.py), set up by setup --images
