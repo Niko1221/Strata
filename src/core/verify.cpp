@@ -555,10 +555,16 @@ void release_live_verifiers(std::FILE* f) {
         if (Verifier* v = slot.load()) {
             const Clock::time_point t0 = Clock::now();
             const bool done = v->release_gpu_waits(5000);
-            if (f != nullptr)
-                std::fprintf(f, "strata: released the verify window's GPU waits (#267): the GPU %s\n",
-                             done ? ("finished in " + std::to_string((long long) ms_since(t0)) + " ms").c_str()
-                                  : "did not finish within 5 s");
+            if (f != nullptr) {
+                // #5990: a drain that saw an error is not "the GPU finished" - name what the card answered.
+                if (v->release_error() != cudaSuccess)
+                    std::fprintf(f, "strata: released the verify window's GPU waits (#267): the GPU stopped answering (%s)\n",
+                                 cudaGetErrorString(v->release_error()));
+                else
+                    std::fprintf(f, "strata: released the verify window's GPU waits (#267): the GPU %s\n",
+                                 done ? ("finished in " + std::to_string((long long) ms_since(t0)) + " ms").c_str()
+                                      : "did not finish within 5 s");
+            }
         }
     if (f != nullptr) std::fflush(f);
 }
@@ -587,10 +593,6 @@ std::atomic<uint64_t> g_trace_next{0};
 int64_t trace_now_ns() {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch()).count();
 }
-std::string released_note(bool drained) {
-    return drained ? "; its GPU waits were released and the GPU finished (#267)"
-                   : "; its GPU waits were released but the GPU did not finish within 5 s (#267)";
-}
 // #267 test hook: STRATA_TEST_VERIFY_STALL=N withholds the last layer's flag in the N-th window (1-based), so the
 // GPU spins on a flag nobody raises - the bounded window wait and the release are then what ends it.  Unset: never.
 const int64_t g_test_stall = [] {
@@ -612,6 +614,20 @@ const int64_t g_test_drop = [] {
 }();
 }  // namespace
 
+// #5990: after a release, say what the drain actually saw.  `cudaStreamQuery` answers an error - not
+// `cudaErrorNotReady` - when the device stopped answering (a card that left the bus answers
+// `cudaErrorDevicesUnavailable` after Xid 79) or the context is unusable.  The drain used to read every such answer as
+// "the stream finished", so this text claimed "the GPU finished" for a card that had gone, and the server filed the
+// request under "Unrecoverable native verification failure" - a verifier bug that never existed (#5990).  The phrase
+// `the GPU stopped answering` is also what serve/server.py keys on (DEVICE_LOST_MARK there): keep the two in step.
+std::string Verifier::release_note(bool drained) const {
+    if (release_err_ != cudaSuccess)
+        return std::string("; its GPU waits were released, and the GPU stopped answering: ") + cudaGetErrorString(release_err_) +
+               " (#5990: check dmesg for an Xid - a card that left the bus needs a power cycle)";
+    return drained ? "; its GPU waits were released and the GPU finished (#267)"
+                   : "; its GPU waits were released but the GPU did not finish within 5 s (#267)";
+}
+
 bool Verifier::release_gpu_waits(int timeout_ms) {
     released_.store(true);
     trace_ev("RELEASE", -1, -1, timeout_ms);
@@ -626,15 +642,29 @@ bool Verifier::release_gpu_waits(int timeout_ms) {
     const Clock::time_point t0 = Clock::now();
     for (cudaStream_t s : {cs_, copy_}) {
         if (s == nullptr) continue;
-        while (cudaStreamQuery(s) == cudaErrorNotReady) {
-            if (ms_since(t0) > timeout_ms) {
-                trace_ev("RELEASE-NOT-DRAINED", -1, -1, (int64_t) ms_since(t0));
-                return false;
+        for (;;) {
+            const cudaError_t q = cudaStreamQuery(s);
+            if (q == cudaErrorNotReady) {
+                if (ms_since(t0) > timeout_ms) {
+                    trace_ev("RELEASE-NOT-DRAINED", -1, -1, (int64_t) ms_since(t0));
+                    return false;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                continue;
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            // #5990: anything but `cudaSuccess` here is the stream ending in an error, not finishing: a device that left
+            // the bus answers `cudaErrorDevicesUnavailable`, a dead context an illegal-access error.  This used to fall
+            // through to RELEASE-DRAINED, i.e. a card that had gone was logged as "the GPU finished (#267)".  Keep the
+            // first one (a context error is sticky, and the release can run again from the watchdog and the teardown).
+            if (q != cudaSuccess && release_err_ == cudaSuccess) {
+                release_err_ = q;
+                trace_ev("RELEASE-ERROR", -1, -1, (int64_t) q);
+            }
+            break;
         }
     }
-    trace_ev("RELEASE-DRAINED", -1, -1, (int64_t) ms_since(t0));   // aux: ms the GPU took to finish once released
+    if (release_err_ == cudaSuccess)
+        trace_ev("RELEASE-DRAINED", -1, -1, (int64_t) ms_since(t0));   // aux: ms the GPU took to finish once released
     return true;
 }
 
@@ -3185,7 +3215,7 @@ bool Verifier::adapt_gate_wait(int32_t layer, std::string& err) {
                          (long long) ms_since(t0), (int) layer, (int) reach, (int) land, (int) hl);
             if (g_trace) trace_dump(stderr);
             err = "verify: the adaptive tier's copies for layer " + std::to_string(layer) + " never landed" +
-                  released_note(release_gpu_waits(5000)) +
+                  release_note(release_gpu_waits(5000)) +
                   " (the copy stream itself is not drained: reached " + std::to_string(reach) + " of " +
                   std::to_string(layer) + ", STRATA_VERIFY_TRACE=1 prints where the stream stopped)";
             std::fflush(stderr);
@@ -3480,10 +3510,10 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
                     diag(stderr);   // the words and the breadcrumbs before the release ...
                     const bool drained = release_gpu_waits(5000);
                     trace_dump(stderr);   // ... and after it: did the GPU move once its waits were raised?
-                    err = "verify: timed out at layer " + std::to_string(l) + released_note(drained);
+                    err = "verify: timed out at layer " + std::to_string(l) + release_note(drained);
                     return false;
                 }
-                err = "verify: timed out at layer " + std::to_string(l) + released_note(release_gpu_waits(5000));
+                err = "verify: timed out at layer " + std::to_string(l) + release_note(release_gpu_waits(5000));
                 return false;
             }
         }
@@ -4782,7 +4812,7 @@ bool Verifier::run_slot_rows(const int* rows, int S, const int32_t* tokens, cons
                 }
             }
             if (now - a > std::chrono::seconds(20)) {
-                err = "verify batch: timed out at layer " + std::to_string(l) + released_note(release_gpu_waits(5000));
+                err = "verify batch: timed out at layer " + std::to_string(l) + release_note(release_gpu_waits(5000));
                 return false;
             }
         }
@@ -5055,7 +5085,7 @@ int Verifier::batch_poll(PoolMultiFn pool, void* user, std::string& err) {
             }
             if (now - last_ring() > std::chrono::seconds(20)) {
                 err = "verify batch: timed out at layer " + std::to_string(lb_ + k) +
-                      released_note(release_gpu_waits(5000));
+                      release_note(release_gpu_waits(5000));
                 b_running_ = false;
                 return -1;
             }
@@ -5078,7 +5108,7 @@ int Verifier::batch_poll(PoolMultiFn pool, void* user, std::string& err) {
             }
             if (now - last_ring() > std::chrono::seconds(20)) {
                 err = "verify batch: timed out at layer " + std::to_string(lb_ + b_k_) +
-                      released_note(release_gpu_waits(5000));
+                      release_note(release_gpu_waits(5000));
                 b_running_ = false;
                 return -1;
             }
@@ -5348,7 +5378,7 @@ int Verifier::service(PoolMultiFn pool, void* user, std::string& err) {
             }
             if (now - fl_since_ms_ > 20000.0) {   // #267: no spin kernel may outlive the engine
                 trace_ev("TIMEOUT", fl_k_, l, 0);
-                err = "verify: timed out at layer " + std::to_string(l) + released_note(release_gpu_waits(5000));
+                err = "verify: timed out at layer " + std::to_string(l) + release_note(release_gpu_waits(5000));
                 return -1;
             }
             return 0;
@@ -5395,7 +5425,7 @@ bool Verifier::done(std::string& err) {
         const double now = now_ms();
         if (now - fl_flush_ms_ > 2.0) { fl_flush_ms_ = now; (void) cudaStreamQuery(cs_); }
         if (now - fl_since_ms_ > 20000.0) {   // every layer served, and the graph still runs: #267 as above
-            err = "verify: the window never finished" + released_note(release_gpu_waits(5000));
+            err = "verify: the window never finished" + release_note(release_gpu_waits(5000));
         }
         return false;
     }

@@ -927,6 +927,11 @@ EOS_IDS = {248044, 248046}   # <|endoftext|>, <|im_end|>: the engine's default -
 # finished, #267): the process may stay alive and even print DONE, but it must not take another request.
 FATAL_PREFIXES = ("ERR verify: timed out at layer ", "ERR verify batch: timed out at layer ",
                   "ERR verify: an earlier window never finished", "ERR verify batch: an earlier window never finished")
+# #5990: the engine adds this to a fatal verify line when its drain found the card answering errors instead of finishing
+# (src/core/verify.cpp, `Verifier::release_note` - keep the two phrases in step).  It is the same fatal family above, but
+# it is not a verifier bug: the GPU stopped answering, and after an Xid 79 it needs a power cycle, not a retry.  Filing
+# it under "Unrecoverable native verification failure" has already sent two issue threads after a bug that never existed.
+DEVICE_LOST_MARK = "the GPU stopped answering"
 
 
 def parse_engine_stage_line(line: str) -> list[dict] | None:
@@ -1346,7 +1351,12 @@ class StrataEngine:
                 # release_gpu_waits invalidates the verifier, even if the native
                 # process stays alive and prints DONE afterwards.
                 if self.proc is proc:
-                    self.silent_note = "Unrecoverable native verification failure: " + line[4:].strip()
+                    # #5990: name what happened.  A drain that saw the device answering errors is a lost card, not a
+                    # verifier bug (the text is the engine's; the phrase below is DEVICE_LOST_MARK).
+                    note = line[4:].strip()
+                    self.silent_note = ("The GPU stopped answering (device lost): " + note
+                                        if DEVICE_LOST_MARK in line else
+                                        "Unrecoverable native verification failure: " + note)
                     self.ended = True
                 try:
                     proc.terminate()

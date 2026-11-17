@@ -3522,7 +3522,12 @@ static void exit_if_gpu_fatal(const std::string& err) {
         const std::string text = cudaGetErrorString(sticky);
         static const char* const gone[] = {"illegal memory access", "illegal address", "unspecified launch failure", "launch failure",
                                            "hardware exception", "illegal instruction", "misaligned address", "uncorrectable", "launch timed out",
-                                           "device-side assert"};
+                                           "device-side assert",
+                                           // #5990: the card left the bus (Xid 79) and the driver says so instead.  CUDA answers
+                                           // cudaErrorDevicesUnavailable ("all CUDA-capable devices are busy or unavailable") or
+                                           // cudaErrorNoDevice; HIP answers hipErrorDeviceLost ("device lost") or hipErrorNoDevice.
+                                           // The runtime's text is the only portable handle on that class, so the list carries words.
+                                           "busy or unavailable", "device lost", "no CUDA-capable device", "no ROCm-capable device"};
         bool context_gone = false;
         for (const char* w : gone)
             if (text.find(w) != std::string::npos) context_gone = true;
