@@ -137,6 +137,13 @@ JSON +9.3%, agent turn +12.5%; the other sets are not measured),
 and the Q8_0 hyper-connection read. `STRATA_HC_Q8=0` in the config's `env` gives the exact BF16 read. The Mac engine is
 deterministic: two runs give identical numbers.
 
+### 4-bit conversation memory (`--kv q4_0`)
+
+`--kv q4_0` stores the attention's keys and values as q4_0 blocks (32 values and an fp16 scale each, llama.cpp's layout): 576
+bytes a cell and attention layer against the default int8's 1,056. Unlike the PC engine's q4_0 there is no Hadamard rotation.
+On an M6 with 32 GB, Flash-Next IQ3_XXS with DFlash2 runs with 512K of context this way (with `--rope-scaling yarn
+--rope-scale 2`) and found 3 of 3 facts placed through a 434K-token prompt; with int8 it ran at 241K. The default stays int8.
+
 ### Gyro-S and Gyro-M (agentionai's trellis experts)
 
 The Mac engine runs [Gyro](GYRO.md). The routed experts are trellis-coded blocks (ggml types TQ2_T, TQK6, TQK7) in a

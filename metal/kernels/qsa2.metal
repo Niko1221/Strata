@@ -34,11 +34,10 @@ kernel void qsa_attn2(device const float* qcur [[buffer(0)]], device const char*
     threadgroup_barrier(mem_flags::mem_threadgroup);
     for (int c = sg; c < nc; c += 8) {
         const uint rowi = uint(cid[c]) * QKV + uint(g);
-        device const char4* kr = (device const char4*)(kq + rowi * QD + lane * 8);
-        const char4 k0 = kr[0], k1 = kr[1];
-        const float scl = float(ksc[rowi * 4 + (lane >> 3)]);
-        const float kv[8] = {float(k0.x) * scl, float(k0.y) * scl, float(k0.z) * scl, float(k0.w) * scl,
-                             float(k1.x) * scl, float(k1.y) * scl, float(k1.z) * scl, float(k1.w) * scl};
+        const float4 k0 = kv_q4(kq, rowi, lane * 8), k1 = kv_q4(kq, rowi, lane * 8 + 4);
+        const float scl = kv_s(ksc, rowi, lane * 8);
+        const float kv[8] = {k0.x * scl, k0.y * scl, k0.z * scl, k0.w * scl,
+                             k1.x * scl, k1.y * scl, k1.z * scl, k1.w * scl};
         for (int h = 0; h < HPG; ++h) {
             float d = 0.0f;
             for (int i = 0; i < 8; ++i) d = fma(qs[h][lane * 8 + i], kv[i], d);
@@ -66,7 +65,7 @@ kernel void qsa_attn2(device const float* qcur [[buffer(0)]], device const char*
             v[c] = 0.0f;
             if (c < m) {
                 const uint rowi = uint(cid[cb + c]) * QKV + uint(g);
-                v[c] = float(vq[rowi * QD + tid]) * float(vsc[rowi * 4 + (tid >> 6)]);
+                v[c] = kv_q(vq, rowi, tid) * kv_s(vsc, rowi, tid);
             }
         }
         for (int c = 0; c < m; ++c)
@@ -228,15 +227,14 @@ kernel void qsa_attn3(device const float* qcur [[buffer(0)]], device const char*
         const int c = 32 * half_ + lane;
         if (c < nc) {
             const uint rowi = uint(cid[c]) * QKV + uint(g);
-            device const char4* kr = (device const char4*)(kq + rowi * QD);
             float d0 = 0.0f, d1 = 0.0f, d2 = 0.0f;
-            for (int gq = 0; gq < 4; ++gq) {
-                const float scl = float(ksc[rowi * 4 + gq]);
+            for (int gq = 0; gq < KVNS; ++gq) {
+                const float scl = float(ksc[rowi * KVNS + uint(gq)]);
                 float e0 = 0.0f, e1 = 0.0f, e2 = 0.0f;
-                for (int i = 0; i < 16; ++i) {
-                    const char4 k4 = kr[gq * 16 + i];
-                    const int base = gq * 64 + 4 * i;
-                    const float kv[4] = {float(k4.x), float(k4.y), float(k4.z), float(k4.w)};
+                for (int i = 0; i < KVGS / 4; ++i) {
+                    const int base = gq * KVGS + 4 * i;
+                    const float4 k4 = kv_q4(kq, rowi, base);
+                    const float kv[4] = {k4.x, k4.y, k4.z, k4.w};
                     for (int e = 0; e < 4; ++e) {
                         e0 = fma(qs[3 * hgrp][base + e], kv[e], e0);
                         e1 = fma(qs[3 * hgrp + 1][base + e], kv[e], e1);
@@ -276,7 +274,7 @@ kernel void qsa_attn3(device const float* qcur [[buffer(0)]], device const char*
             v[c] = 0.0f;
             if (c < m) {
                 const uint rowi = uint(cid[cb + c]) * QKV + uint(g);
-                v[c] = float(vq[rowi * QD + tid]) * float(vsc[rowi * 4 + (tid >> 6)]);
+                v[c] = kv_q(vq, rowi, tid) * kv_s(vsc, rowi, tid);
             }
         }
         for (int c = 0; c < m; ++c)

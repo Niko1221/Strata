@@ -4,6 +4,7 @@
 //                           2051), then a window of 3 tokens: prep, score, top-k, attention, merge.  Each stage is
 //                           checked against the CPU fed with the GPU's inputs to that stage; the ids exactly.
 //   qsa_parity --bench [P]  GPU time of the window's kernels at context P, 1 and 3 tokens
+//   QSA_KV4=1               the conversation memory as q4_0 rows (--kv q4_0, QSA_KV4 in the prelude) instead of int8
 #include "mtl_rt.h"
 #include "ref_quant.h"
 #include "engine/geo.h"
@@ -38,8 +39,13 @@ int main(int argc, char** argv) {
         else P = std::atoi(argv[i]);
     }
     const int MAXT = 8, MAXC = std::max(4096, (P + 64) / 4 * 4 + 64);
+    // the K/V row of a (cell, kv head): int8 (QD bytes, an fp16 scale per 64) or q4_0 (QD / 2 bytes, low nibble first,
+    // stored as nibble - 8, an fp16 scale per 32)
+    const bool kv4 = std::getenv("QSA_KV4") != nullptr;
+    const int KVRB = kv4 ? QD / 2 : QD, KVNS = kv4 ? QD / 32 : QD / 64;
     mtl::Context cx;
-    const int lib = cx.compile({"qsa.metal", "qsa2.metal"}, strata_metal::geo::prelude() + "#define NO_GGML_COMMON 1\n");
+    const int lib = cx.compile({"qsa.metal", "qsa2.metal"},
+                               strata_metal::geo::prelude() + "#define NO_GGML_COMMON 1\n" + (kv4 ? "#define QSA_KV4 1\n" : ""));
     // QSA_TOPK=1: the v1 top-k; QSA_ATTN=1|2|3 (default 3): which attention (2 has its own chunking and merge)
     const int av = std::getenv("QSA_ATTN") ? std::atoi(std::getenv("QSA_ATTN")) : 1;
     const bool v2 = av == 2;
@@ -54,11 +60,22 @@ int main(int argc, char** argv) {
                 vc = cx.alloc(4 * (size_t)NC * QKV * QD), iq = cx.alloc(4 * (size_t)NC * IH * ID),
                 ik = cx.alloc(4 * (size_t)NC * ID), qn = cx.alloc(4 * QD), kn = cx.alloc(4 * QD), iqn = cx.alloc(4 * ID),
                 ikn = cx.alloc(4 * ID), cs = cx.alloc(8 * (size_t)(MAXC + 16) * 32), qcur = cx.alloc(4 * MAXT * QH * QD),
-                qidx = cx.alloc(4 * MAXT * IH * ID), kq = cx.alloc((size_t)MAXC * QKV * QD), vq = cx.alloc((size_t)MAXC * QKV * QD),
-                ksc = cx.alloc(2 * (size_t)MAXC * QKV * 4), vsc = cx.alloc(2 * (size_t)MAXC * QKV * 4), tail = cx.alloc(4 * 4 * ID),
+                qidx = cx.alloc(4 * MAXT * IH * ID), kq = cx.alloc((size_t)MAXC * QKV * KVRB), vq = cx.alloc((size_t)MAXC * QKV * KVRB),
+                ksc = cx.alloc(2 * (size_t)MAXC * QKV * KVNS), vsc = cx.alloc(2 * (size_t)MAXC * QKV * KVNS), tail = cx.alloc(4 * 4 * ID),
                 dead = cx.alloc(4 * ID), pooled = cx.alloc(4 * (size_t)MB * ID), scores = cx.alloc(4 * (size_t)MAXT * MB),
                 ids = cx.alloc(4 * MAXT * BUDGET), part = cx.alloc(4 * (size_t)MAXT * 2 * NCH * QH * (QD + 2)),
                 xp = cx.alloc(4 * (4 * MAXT * QH * QD + MAXT * QH * QD / 16));
+    // element i of K/V row `row`, dequantized
+    auto kvdeq = [&](const mtl::Buffer& q, const mtl::Buffer& sc, size_t row, int i) {
+        double v;
+        if (kv4) {
+            const uint8_t b = q.as<uint8_t>()[row * KVRB + i / 2];
+            v = (double)((int)((i & 1) ? b >> 4 : b & 15) - 8);
+        } else {
+            v = (double)q.as<int8_t>()[row * KVRB + i];
+        }
+        return v * h2f(sc.as<uint16_t>()[row * KVNS + i / (QD / KVNS)]);
+    };
     ref::Rng r(23);
     for (size_t i = 0; i < qfull.bytes / 4; ++i) qfull.as<float>()[i] = r.sym() * 2.0f;
     for (size_t i = 0; i < kc.bytes / 4; ++i) kc.as<float>()[i] = r.sym() * 2.0f;
@@ -200,8 +217,7 @@ int main(int argc, char** argv) {
                 normrope(kc.as<float>() + ((size_t)cell * QKV + h) * QD, kn.as<float>(), QD, cell, true, o);
                 for (int i = 0; i < QD; ++i) {
                     const size_t row = (size_t)cell * QKV + h;
-                    const double deq = (double)(int8_t)kq.as<int8_t>()[row * QD + i] * h2f(ksc.as<uint16_t>()[row * 4 + i / 64]);
-                    ekv.add(deq, o[i]);
+                    ekv.add(kvdeq(kq, ksc, row, i), o[i]);
                 }
             }
         }
@@ -215,11 +231,12 @@ int main(int argc, char** argv) {
             normrope(m.data(), ikn.as<float>(), ID, 4 * b, true, o);
             for (int i = 0; i < ID; ++i) ep.add(pooled.as<float>()[b * ID + i], o[i]);
         }
-        // int8 quantization error is ~1/254 of max|x| per group: the KV check is a quantization tolerance
-        const bool ok = eq.l2() < 1e-5 && ei.l2() < 1e-5 && ep.l2() < 1e-5 && ekv.l2() < 6e-3;
+        // the quantization error is ~1/254 (int8) or ~1/16 (q4_0) of max|x| per group: the KV check is a quantization
+        // tolerance
+        const bool ok = eq.l2() < 1e-5 && ei.l2() < 1e-5 && ep.l2() < 1e-5 && ekv.l2() < (kv4 ? 1e-1 : 6e-3);
         fails += !ok;
-        std::printf("prep: q rel L2 %.2e, indexer q %.2e, pooled keys %.2e, K int8 (vs float) %.2e  %s\n", eq.l2(),
-                    ei.l2(), ep.l2(), ekv.l2(), ok ? "PASS" : "FAIL");
+        std::printf("prep: q rel L2 %.2e, indexer q %.2e, pooled keys %.2e, K %s (vs float) %.2e  %s\n", eq.l2(),
+                    ei.l2(), ep.l2(), kv4 ? "q4_0" : "int8", ekv.l2(), ok ? "PASS" : "FAIL");
     }
     // ---- score
     cx.run({ds[1]});
@@ -282,8 +299,7 @@ int main(int argc, char** argv) {
                     const size_t row = (size_t)ids.as<int>()[t * BUDGET + c] * QKV + g;
                     double d = 0;
                     for (int i = 0; i < QD; ++i)
-                        d += (double)qcur.as<float>()[(t * QH + h) * QD + i] * (int8_t)kq.as<int8_t>()[row * QD + i] *
-                             h2f(ksc.as<uint16_t>()[row * 4 + i / 64]);
+                        d += (double)qcur.as<float>()[(t * QH + h) * QD + i] * kvdeq(kq, ksc, row, i);
                     s[c] = d / 16.0;
                     mx = std::max(mx, s[c]);
                 }
@@ -293,7 +309,7 @@ int main(int argc, char** argv) {
                     double o = 0;
                     for (int c = 0; c < width; ++c) {
                         const size_t row = (size_t)ids.as<int>()[t * BUDGET + c] * QKV + g;
-                        o += s[c] * (int8_t)vq.as<int8_t>()[row * QD + i] * h2f(vsc.as<uint16_t>()[row * 4 + i / 64]);
+                        o += s[c] * kvdeq(vq, vsc, row, i);
                     }
                     o /= l;
                     const double gate = qfull.as<float>()[((size_t)(P + t) * QH + h) * 2 * QD + QD + i];

@@ -28,7 +28,9 @@ inline MslLib lib_core(bool f16, const std::string& kq) {
             geo::prelude() + (f16 ? std::string("#define STRATA_METAL_F16 1\n") : std::string()) + kq};
 }
 inline MslLib lib_gdn() { return {{"gdn.metal"}, kNoGgmlCommon}; }
-inline MslLib lib_qsa() { return {{"qsa.metal", "qsa2.metal"}, geo::prelude() + kNoGgmlCommon}; }
+// kv4 (--kv q4_0): the conversation memory (K/V) as q4_0 rows (qsa.metal QSA_KV4); the window sizes it to match (window.cpp kv_row)
+inline std::string kv4_prelude(bool kv4) { return kv4 ? "#define QSA_KV4 1\n" : ""; }
+inline MslLib lib_qsa(bool kv4 = false) { return {{"qsa.metal", "qsa2.metal"}, geo::prelude() + kv4_prelude(kv4) + kNoGgmlCommon}; }
 inline MslLib lib_sample() { return {{"sample.metal"}, kNoGgmlCommon}; }
 inline MslLib lib_ple(const std::string& engine_dir) { return {{engine_dir + "/ple.metal"}, kNoGgmlCommon}; }
 // the MTP draft layer
@@ -41,7 +43,7 @@ inline MslLib lib_prompt(const std::string& kq) {
     return {{"quant.metal", "units.metal", "mma.metal", "dense_mm.metal", "moe_mm.metal", "gr.metal", "gemv.metal", "prompt.metal"}, geo::prelude() + kq};
 }
 inline MslLib lib_prompt_gdn() { return {{"gdn.metal", "gdn_prompt.metal"}, kNoGgmlCommon}; }
-inline MslLib lib_prompt_qsa() { return {{"qsa.metal", "qsa_prompt.metal"}, geo::prelude() + kNoGgmlCommon}; }
+inline MslLib lib_prompt_qsa(bool kv4 = false) { return {{"qsa.metal", "qsa_prompt.metal"}, geo::prelude() + kv4_prelude(kv4) + kNoGgmlCommon}; }
 inline MslLib lib_coop_probe() { return {{"mm_bench.metal"}, kNoGgmlCommon}; }
 
 }  // namespace strata_metal
