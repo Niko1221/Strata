@@ -66,6 +66,14 @@ struct Engine {
     int spec_draft_n_max=0;
     bool mtp_present=false;
     bool mtp_ready=false;
+    cudaGraphExec_t gdn_graphs[16]={};
+    cudaGraphExec_t ffn_graphs[16]={};
+    cudaGraphExec_t head_graph=nullptr;
+    bool graphs_ready=false;
+    ~Engine(){
+        for(int g=0;g<16;++g){if(gdn_graphs[g])cudaGraphExecDestroy(gdn_graphs[g]);if(ffn_graphs[g])cudaGraphExecDestroy(ffn_graphs[g]);}
+        if(head_graph)cudaGraphExecDestroy(head_graph);
+    }
     Engine(const std::string& path,int context,const Q::KvConfig& config,bool reference=false,bool ja=false,int draft_n_max=0):file(path,Q::retained_metadata(),true,65536,64*1024*1024),admission(Q::inspect(file)),ctx(context),conservative(reference),spec_draft_n_max(draft_n_max){
         japanese=ja;
         if(ja){strata::GgufFile vocabulary(path,{"tokenizer.ggml.tokens","tokenizer.ggml.token_type"},true,248320);
@@ -219,7 +227,7 @@ struct Engine {
                 mtp_ready=true;
             }
         }
-        reset();gpu_resources();Q::host_resources();
+        reset();if(!conservative)ensure_decode_graphs();gpu_resources();Q::host_resources();
         std::fprintf(stderr,"native_execution=%s layer_fence_interval=%d prefill_gemm=%s mtp_present=%d mtp_ready=%d spec_draft_n_max=%d\n",conservative?"conservative":"grouped",conservative?1:8,conservative?"off":"cublas_tensor_op",mtp_present?1:0,mtp_ready?1:0,spec_draft_n_max);
     }
     const float* f(const std::string& name){return weights.at(name).b.as();}
@@ -276,8 +284,47 @@ struct Engine {
         auto lg=read_logits();
         return int(std::max_element(lg.begin(),lg.end())-lg.begin());
     }
+    void emit_gdn_layer(int i){
+        auto n=[i](const char* r){return Q::layer_name(i,r);};auto& st=states[i];
+        Q::rms(x.as(),f(n("attn_norm.weight")),h.as(),5120,admission.eps,stream.s);
+        mm(n("attn_qkv.weight"),h,qkv);mm(n("attn_gate.weight"),h,z);mm(n("ssm_alpha.weight"),h,al);mm(n("ssm_beta.weight"),h,be);
+        Q::gdn_gates(al.as(),be.as(),f(n("ssm_dt.bias")),f(n("ssm_a")),48,stream.s);
+        K::fused_gdn_conv_l2(st.conv.as(),qkv.as(),f(n("ssm_conv1d.weight")),hc.as(),10240,32,admission.eps,stream.s);
+        K::fused_gdn_step_norm_silu(st.gdn.as(),hc.as(),hc.as()+2048,hc.as()+4096,al.as(),be.as(),z.as(),f(n("ssm_norm.weight")),admission.eps,gdn.as(),16,48,stream.s);
+        Q::finite(st.gdn.as(),48*128*128,error.as<int>(),stream.s);mm(n("ssm_out.weight"),gdn,y);
+        Q::add(x.as(),y.as(),5120,stream.s);Q::rms(x.as(),f(n("post_attention_norm.weight")),h.as(),5120,admission.eps,stream.s);
+        mm(n("ffn_gate.weight"),h,fg);mm(n("ffn_up.weight"),h,fu);Q::swiglu(fg.as(),fu.as(),17408,stream.s);mm(n("ffn_down.weight"),fg,y);
+        Q::add(x.as(),y.as(),5120,stream.s);Q::finite(x.as(),5120,error.as<int>(),stream.s);
+    }
+    void emit_attn_post_ffn(int i){
+        auto n=[i](const char* r){return Q::layer_name(i,r);};
+        mm(n("attn_output.weight"),att,y);
+        Q::add(x.as(),y.as(),5120,stream.s);Q::rms(x.as(),f(n("post_attention_norm.weight")),h.as(),5120,admission.eps,stream.s);
+        mm(n("ffn_gate.weight"),h,fg);mm(n("ffn_up.weight"),h,fu);Q::swiglu(fg.as(),fu.as(),17408,stream.s);mm(n("ffn_down.weight"),fg,y);
+        Q::add(x.as(),y.as(),5120,stream.s);Q::finite(x.as(),5120,error.as<int>(),stream.s);
+    }
+    template<class Fn> cudaGraphExec_t capture_graph(Fn&& fn){
+        cudaGraph_t graph=nullptr;cudaGraphExec_t exec=nullptr;
+        Q::ck(cudaStreamBeginCapture(stream.s,cudaStreamCaptureModeThreadLocal));
+        fn();
+        Q::ck(cudaStreamEndCapture(stream.s,&graph));
+        Q::ck(cudaGraphInstantiate(&exec,graph,nullptr,nullptr,0));
+        cudaGraphDestroy(graph);
+        return exec;
+    }
+    void ensure_decode_graphs(){
+        if(graphs_ready||conservative)return;
+        Q::ck(cudaStreamSynchronize(stream.s));
+        for(int g=0;g<16;++g){
+            gdn_graphs[g]=capture_graph([&]{emit_gdn_layer(4*g);emit_gdn_layer(4*g+1);emit_gdn_layer(4*g+2);});
+            ffn_graphs[g]=capture_graph([&]{emit_attn_post_ffn(4*g+3);});
+        }
+        head_graph=capture_graph([&]{Q::rms(x.as(),f("output_norm.weight"),h.as(),5120,admission.eps,stream.s);mm("output.weight",h,logits);Q::finite(logits.as(),248320,error.as<int>(),stream.s);});
+        graphs_ready=true;
+    }
     void step(int token,std::atomic<bool>& stop,bool head){
         Q::require(token>=0&&token<248320&&position<ctx,"token or context out of range");
+        if(!conservative&&!graphs_ready)ensure_decode_graphs();
         Q::host_resources();gpu_resources();error.zero(stream.s);
         Q::ck(cudaMemcpyAsync(embrow.data,file.tensor_data(*embedding)+size_t(token)*emb_stride,emb_stride,cudaMemcpyHostToDevice,stream.s));
         Q::decode(embedding->type,embrow.data,x.as(),5120,stream.s);
@@ -287,29 +334,37 @@ struct Engine {
             int bad=0;Q::ck(cudaMemcpyAsync(&bad,error.data,4,cudaMemcpyDeviceToHost,stream.s));
             kv->check();Q::require(!bad,"non-finite activation/state/logit");Q::host_resources();gpu_resources();
         };
-        for(int i=0;i<64;++i){
-            fences.before(stop);
-            auto n=[i](const char* r){return Q::layer_name(i,r);};auto& st=states[i];
-            Q::rms(x.as(),f(n("attn_norm.weight")),h.as(),5120,admission.eps,stream.s);
-            if((i+1)%4){
-                mm(n("attn_qkv.weight"),h,qkv);mm(n("attn_gate.weight"),h,z);mm(n("ssm_alpha.weight"),h,al);mm(n("ssm_beta.weight"),h,be);
-                Q::gdn_gates(al.as(),be.as(),f(n("ssm_dt.bias")),f(n("ssm_a")),48,stream.s);
-                K::fused_gdn_conv_l2(st.conv.as(),qkv.as(),f(n("ssm_conv1d.weight")),hc.as(),10240,32,admission.eps,stream.s);
-                K::fused_gdn_step_norm_silu(st.gdn.as(),hc.as(),hc.as()+2048,hc.as()+4096,al.as(),be.as(),z.as(),f(n("ssm_norm.weight")),admission.eps,gdn.as(),16,48,stream.s);
-                Q::finite(st.gdn.as(),48*128*128,error.as<int>(),stream.s);mm(n("ssm_out.weight"),gdn,y);
-            }else{
+        if(!conservative&&graphs_ready){
+            for(int g=0;g<16;++g){
+                fences.before(stop);
+                Q::ck(cudaGraphLaunch(gdn_graphs[g],stream.s));
+                const int i=4*g+3;auto n=[i](const char* r){return Q::layer_name(i,r);};
+                Q::rms(x.as(),f(n("attn_norm.weight")),h.as(),5120,admission.eps,stream.s);
                 mm(n("attn_q.weight"),h,qg);mm(n("attn_k.weight"),h,k);mm(n("attn_v.weight"),h,v);
                 Q::attention_normalize(qg.as(),k.as(),f(n("attn_q_norm.weight")),f(n("attn_k_norm.weight")),q.as(),gate.as(),k.as(),position,admission.eps,admission.rope_base,stream.s);
                 kv->enqueue(i/4,position,q.as(),k.as(),v.as(),gate.as(),att.as(),scores.as());
-                mm(n("attn_output.weight"),att,y);
+                Q::ck(cudaGraphLaunch(ffn_graphs[g],stream.s));
+                fences.after(i,stop,check);
             }
-            Q::add(x.as(),y.as(),5120,stream.s);Q::rms(x.as(),f(n("post_attention_norm.weight")),h.as(),5120,admission.eps,stream.s);
-            mm(n("ffn_gate.weight"),h,fg);mm(n("ffn_up.weight"),h,fu);Q::swiglu(fg.as(),fu.as(),17408,stream.s);mm(n("ffn_down.weight"),fg,y);
-            Q::add(x.as(),y.as(),5120,stream.s);Q::finite(x.as(),5120,error.as<int>(),stream.s);
-            // Bounded synchronization makes STOP/resource checks effective during a long token.
-            fences.after(i,stop,check);
+            if(head)Q::ck(cudaGraphLaunch(head_graph,stream.s));
+        }else{
+            for(int i=0;i<64;++i){
+                fences.before(stop);
+                auto n=[i](const char* r){return Q::layer_name(i,r);};
+                if((i+1)%4){
+                    emit_gdn_layer(i);
+                }else{
+                    Q::rms(x.as(),f(n("attn_norm.weight")),h.as(),5120,admission.eps,stream.s);
+                    mm(n("attn_q.weight"),h,qg);mm(n("attn_k.weight"),h,k);mm(n("attn_v.weight"),h,v);
+                    Q::attention_normalize(qg.as(),k.as(),f(n("attn_q_norm.weight")),f(n("attn_k_norm.weight")),q.as(),gate.as(),k.as(),position,admission.eps,admission.rope_base,stream.s);
+                    kv->enqueue(i/4,position,q.as(),k.as(),v.as(),gate.as(),att.as(),scores.as());
+                    emit_attn_post_ffn(i);
+                }
+                // Bounded synchronization makes STOP/resource checks effective during a long token.
+                fences.after(i,stop,check);
+            }
+            if(head){Q::rms(x.as(),f("output_norm.weight"),h.as(),5120,admission.eps,stream.s);mm("output.weight",h,logits);Q::finite(logits.as(),248320,error.as<int>(),stream.s);}
         }
-        if(head){Q::rms(x.as(),f("output_norm.weight"),h.as(),5120,admission.eps,stream.s);mm("output.weight",h,logits);Q::finite(logits.as(),248320,error.as<int>(),stream.s);}
         int bad=0;Q::ck(cudaMemcpyAsync(&bad,error.data,4,cudaMemcpyDeviceToHost,stream.s));Q::ck(cudaStreamSynchronize(stream.s));
         Q::require(!bad,"non-finite activation/state/logit");fences.before(stop);++position;
     }
