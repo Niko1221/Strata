@@ -1,6 +1,11 @@
 # AGENTS.md
 
-Current stable release: Hakua product version 0.6.0; app, Terminal, Control and native engine 0.6.0.
+Current release: Hakua product version 0.6.1; app, Terminal, Control and native engine 0.6.1.
+Formal v0.6.1 is published as GitHub Latest. See `_docs/2026-11-17_stable-061-release_Antigravity.md` for 0.6.1 details.
+
+## Historical 0.6.0 records
+
+Previous stable release: Hakua product version 0.6.0; app, Terminal, Control and native engine 0.6.0.
 Formal v0.6.0, GitHub Latest and the refs/tags/latest alias are published. All seventeen
 public assets were downloaded anonymously from v0.6.0 and matched frozen SHA-256 values
 (`READBACK_SHA256: 1ce2c6f16130eeefca54d1c0363a13d718cd14c8f9ac545c7d7f34595d563547`).

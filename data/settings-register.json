@@ -9509,9 +9509,9 @@
    "doc_mentions": [
     "README.md:27"
    ],
-   "status": "",
-   "owner": "",
-   "note": "",
+   "status": "opt-in",
+   "owner": "qwen38",
+   "note": "Opt-in SM120 FP8 cublasLtMatmul prefill GEMM in strata-q38",
    "retire_after": "",
    "retired_in": ""
   },

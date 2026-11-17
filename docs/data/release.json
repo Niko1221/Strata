@@ -2,8 +2,8 @@
   "_about": "Current Hakua Windows fork source release. Upstream references and immutable historical installers are declared independently; the checker never rewrites their URLs.",
   "tag": "v0.6.1",
   "product_version": "0.6.1",
-  "control_version": "0.6.0",
-  "engine_version": "0.6.0",
+  "control_version": "0.6.1",
+  "engine_version": "0.6.1",
   "installer_names": [
     "Strata-{v}-windows-x64-setup.exe"
   ],
