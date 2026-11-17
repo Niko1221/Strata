@@ -364,7 +364,7 @@ version made it the default.
 | `STRATA_SPLIT_CHUNK16K` | number | NVIDIA and AMD | v0.1.44 | [MULTI_GPU.md](MULTI_GPU.md) |
 | `STRATA_SPLIT_OWN` | on / off | NVIDIA and AMD, Intel Arc | v0.1.32 | [MULTI_GPU.md](MULTI_GPU.md) |
 | `STRATA_SWITCH_POINT` | on / off | NVIDIA and AMD | - | - |
-| `STRATA_SYCL_BF16_DET` | number | Intel Arc | v0.2.13 | - |
+| `STRATA_SYCL_BF16_DET` | number | Intel Arc | v0.2.13 | [INTEL_ARC.md](INTEL_ARC.md) |
 | `STRATA_SYCL_IQ4_LOOKUP` | number | Intel Arc | - | - |
 | `STRATA_SYCL_IQ4_PAIR_REUSE` | on / off | Intel Arc | - | - |
 | `STRATA_SYCL_IQ4_Q8_SPLIT` | on / off | Intel Arc | - | - |

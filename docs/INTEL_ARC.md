@@ -334,6 +334,22 @@ Two fixes came out of the merge and are in the branch: `sycl/serve/server_intel.
 
 Serving was not re-measured on 0.1.59.1; the 0.1.56 numbers stand, and the 256K server answered over the LAN on this build.
 
+**Batched expert staging copies, and where the Windows host leak actually is (2026-11-17, engine 0.1.60.1).** oneAPI
+2026.2's `queue::memcpy` keeps about 1.4 KiB of host heap per call on this adapter and never frees it (#6162): the
+prompt path's 200/516/680 B heap classes grow in lockstep, so the number of copies can be read directly from
+`STRATA_MEM_TRACE=1`. `STRATA_PF_BATCH_COPY=N` (default **0**, off, the single-copy path unchanged) folds up to `N`
+consecutive experts of one layer into one `ext_oneapi_memcpy2d`, taking the source pitch and the ring's slot pitch apart
+(the ring borrows expert-cache slots, so its stride is `max_blob + 256`, not `max_blob`), and the stager allocates its 16
+host buffers in one block so its rows are contiguous too. It folds **566 of 618** and **658 of 715** staging copies per
+chunk (92%) into **160** and **157** 2D copies, with greedy answers byte-identical on four fixed prompts and ctest
+unchanged at 84 of 86. **It does not reduce the leak**: three cold 5,250-token prompts grew private bytes by
++0.330/+0.129/+0.111 GiB against +0.324/+0.131/+0.113 with the switch off, and the heap's 200/516/680 B counts after
+the same prompts changed by under 2%. The staging ring is about 2% of the prompt path's copies. Phase probes
+(`STRATA_MEM_TRACE` now also samples each of the first three layers and the chunk's end) put the growth at **~100
+blocks per layer** at a 1.5K-token chunk - far more than the ~13 staging copies a layer makes - so the leak is per
+**queue command**, dominated by kernel launches, not per expert copy. Batching copies cannot fix it; the runtime is
+where it has to be fixed.
+
 **Two Windows traps after an OS or driver update (2026-11-11).** Windows updates KB5132061/KB5132688 left `C:\Windows\System32\ze_loader.dll` at **v1.2.3 (2021-06-18)** while the installed Arc driver ships **v1.32.0** in its driver store. That file is owned by `NT SERVICE\TrustedInstaller`, so an administrator cannot overwrite it with a plain copy (the copy is refused; take ownership first, or leave it alone). The engine died with `0xC0000005` inside `sycl9.dll` on the first device call, and `strata --list-devices` printed nothing. Two mechanical facts made it confusing: the registry value this port relies on, `HKLM\SOFTWARE\Intel\oneAPI\LevelZero\1\LevelZeroLoaderPath`, named System32, and a per-user copy of the value is ignored, so only the machine-wide one counts. Pointing that value at a folder holding the driver's own loader (`C:\ProgramData\Strata\levelzero`) fixed the crash.
 
 With the loader fixed, the oneAPI 2026.2 runtime then switched to its **Level Zero V2** adapter, where this engine fails at startup with `UR_RESULT_ERROR_UNKNOWN` - although a plain SYCL program of the same toolkit enumerates the card on that platform. `SYCL_UR_USE_LEVEL_ZERO_V2=0` and `UR_LOADER_USE_LEVEL_ZERO_V2=0` in the run config's `env` put it back on the legacy adapter, after which the 256K server served normally (first request 5.8 s on a cold cache). **ctest needs the same two variables**: without them 65 of 85 tests fail on this machine, with them 82 of 85 (the two known, plus one below). Both settings are in the serving config now. Whether the engine should work on the V2 adapter is open (#5914).

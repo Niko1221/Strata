@@ -1378,10 +1378,13 @@ MemSample mem_sample() {
     return m;
 }
 
+}  // namespace
+
 // STRATA_MEM_TRACE=1 (diagnosis): this process's commit at a phase of a request, so a per-request host growth can be
 // attributed to the prompt read or to the generation instead of guessed (the A770 report on PR #3607).  On Windows it
 // also walks the process heap (HeapLock/HeapWalk, no hooks and no allocator changes) and reports the bytes in use and
 // the largest blocks, so a heap growth says whether it is many small allocations or a few big ones.
+// Not in the anonymous namespace below: the prompt path (prefill.cpp) calls it at its own phase boundaries.
 void mem_probe(const char* where) {
     static const bool on = std::getenv("STRATA_MEM_TRACE") != nullptr;
     if (!on) return;
@@ -1442,6 +1445,8 @@ void mem_probe(const char* where) {
 #endif
     std::fflush(stderr);
 }
+
+namespace {
 
 // the stage the watchdog names: "<where> <detail>", and the prompt chunk a batched read is in (#251)
 std::string stage_text() {

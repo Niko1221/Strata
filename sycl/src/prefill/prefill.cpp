@@ -55,6 +55,8 @@
 #include "strata/core/peer_experts.hpp"
 #include "strata/prefill/kernels.hpp"
 #include <oneapi/mkl.hpp>   // SYCL port: the QSA block scores as GEMM tiles
+// STRATA_MEM_TRACE: the host-memory probe in generate.cpp, called at this path's phase boundaries (no-op unless set).
+void mem_probe(const char* where);
 namespace strata::kernels {   // SYCL port, kept out of the shared headers: qsa_select.dp.cpp, qsa_decode_attn.dp.cpp
 void qsa_block_scores_reduce(const float* S, int64_t ld, int64_t b0, int64_t nb, const float* dead, const float* q_idx,
                              const int32_t* steps, int64_t nq, int64_t max_blocks, float* scores, void* stream);
@@ -187,6 +189,16 @@ inline uint64_t pf_hash_fnv(const void* p, size_t bytes) {
 }
 // plan v0.3 P6: staging holds the largest blob of the pack (a native pack's blobs differ per layer)
 inline int64_t MAXBLOB() { return (int64_t) strata::kernels::cpu::expert_layout().max_blob; }
+
+// STRATA_PF_BATCH_COPY=N: fold up to N consecutive experts of one layer into one 2D staging copy (0 = default: off,
+// one copy per expert).  #6162: oneAPI 2026.2's queue::memcpy keeps host heap per call and never frees it.
+inline int pf_batch_copy() {
+    static const int v = [] {
+        const char* e = std::getenv("STRATA_PF_BATCH_COPY");
+        return e != nullptr ? std::atoi(e) : 0;
+    }();
+    return v;
+}
 constexpr int STAGE = 8;           // host->device expert staging ring (chunks below stream_all_min())
 constexpr int kSplitHelpRing = 48;  // layer split help: the helper stage's ring slots it streams through (at most)
 // Step 3: from this chunk size on, every non-resident expert of every layer streams in a fixed order through a
@@ -470,6 +482,8 @@ struct Stager {
     };
     std::vector<uint8_t*> buf;
     std::vector<char> pinned;
+    unsigned char* block = nullptr;          // STRATA_PF_BATCH_COPY: buf[i] = block + i * stride (one host allocation)
+    size_t stride = 0;
     std::vector<std::vector<uint8_t>> pageable;   // the fallback when no more RAM can be pinned
     std::vector<dpct::event_ptr> dma_done;
     uint64_t* done_seq = nullptr;            // page-locked: the copy queue's last finished DMA per buffer
@@ -495,6 +509,13 @@ struct Stager {
         buf.assign((size_t) kRing, nullptr);
         pinned.assign((size_t) kRing, 0);
         dma_done.assign((size_t) kRing, nullptr);
+        // STRATA_PF_BATCH_COPY: the kRing buffers in ONE host block, so jobs j and j+1 are rows of one 2D copy (they are
+        // kRing separate malloc_host calls otherwise, and no two of those are contiguous).  Off by default: the
+        // allocation below is then exactly what it was.
+        if (pf_batch_copy() >= 2 && !force_pageable()) {
+            stride = (blob_bytes + 255) & ~(size_t) 255;
+            block = (unsigned char *) sycl::malloc_host(stride * (size_t) kRing, dpct::get_in_order_queue());
+        }
         want.assign((size_t) kRing, 0);
         done_seq = sycl::malloc_host<uint64_t>((size_t) kRing, dpct::get_in_order_queue());
         if (done_seq == nullptr) return false;
@@ -504,6 +525,10 @@ struct Stager {
         for (int i = 0; i < 4 * kRing; ++i) src_seq[i] = 0;
         pageable.resize(kRing);
         for (int i = 0; i < kRing; ++i) {
+            if (block != nullptr) {          // STRATA_PF_BATCH_COPY: one block, one slice per job
+                buf[i] = block + (size_t) i * stride;
+                pinned[i] = 1;
+            } else {
             /*
             DPCT1048: The original value cudaHostAllocDefault is not
             meaningful in the migrated code and was removed or replaced with 0.
@@ -521,6 +546,7 @@ struct Stager {
                 pageable[(size_t)i].resize(blob_bytes);
                 buf[i] = pageable[(size_t) i].data();
             }
+            }
             if (DPCT_CHECK_ERROR(dma_done[i] = new sycl::event()) !=
                 0) return false;
         }
@@ -537,8 +563,12 @@ struct Stager {
         if (src_seq) sycl::free(src_seq, dpct::get_in_order_queue());
         for (int i = 0; i < kRing; ++i) {
             if (dma_done[i]) dpct::destroy_event(dma_done[i]);
-            if (buf[i] && pinned[i])
+            if (buf[i] && pinned[i] && block == nullptr)
                 sycl::free(buf[i], dpct::get_in_order_queue());
+        }
+        if (block) {
+            sycl::free(block, dpct::get_in_order_queue());
+            block = nullptr;
         }
     }
     void work() {
@@ -2911,6 +2941,7 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
         std::vector<StreamEntry> seq;
         std::vector<size_t> seq_start;
         size_t issued = 0, consumed = 0;
+        int64_t batch_entries = 0, batch_cmds = 0;   // STRATA_PF_BATCH_COPY: what the batched path folded (diagnostic)
         static const bool plan_reads = [] { const char* v = std::getenv("STRATA_GGUF_PLAN_READ"); return v && v[0] == '1'; }();
         const core::GgufExpertSource* gsrc = plan_reads ? nullptr : dynamic_cast<const core::GgufExpertSource*>(m.src);
         if (stream_all) {
@@ -2967,6 +2998,75 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
             Stager* st;
             ~StagerDone() { if (st) st->finish(); }
         } chunk_stager_done{stream_all ? m.stager.get() : nullptr};
+        // Windows SYCL: oneAPI 2026.2's queue::memcpy keeps ~1.4 KiB of host heap per call and never frees it (issue
+        // #6162), and this path issues ~5.8 staging copies per prompt token: a cold 5k prompt grows the engine's
+        // private bytes by ~0.1 GiB, without bound.  STRATA_PF_BATCH_COPY=N folds a run of up to N consecutive experts
+        // of one layer into a single 2D copy when the source rows and the ring slots are both evenly spaced.
+        // 0 (default): off, the single-copy path below runs byte-identically.  Shared by issue_until and the issuer
+        // thread: the threaded issuer is the live path, so a change here must not go into one of them only.
+        //
+        // Two sources, two spellings of "evenly spaced": an expert served from the pinned mirror is DMA'd straight from
+        // its own blob (en.job < 0, rows packed at blob_bytes), while a GGUF/streamed expert is first copied by the
+        // stager into one of its kRing hosts buffers (en.job >= 0, rows `pitch` apart -- see Stager::init's one-block
+        // arm).  The streamed arm is the live one under --stream-experts: "no host arena" means every expert is a job.
+        auto batch_copy = [&](size_t start, size_t limit) -> size_t {
+            if (pf_batch_copy() < 2 || start + 1 >= limit || start + 1 >= seq.size()) return 0;
+            const StreamEntry& en = seq[start];
+            const size_t bytes = (size_t) lay0.blob_bytes(en.l);
+            if (bytes == 0) return 0;
+            const bool staged = en.job >= 0;
+            if (!staged && en.blob == nullptr) return 0;
+            // A layer's experts are packed in the source (stride = its blob_bytes) but the ring's own slots are further
+            // apart, and on this pack (Coder IQ1_M) only 1 of 48 layers has the maximum blob, so a plain memcpy of
+            // bytes * k would write into the padding.  The 2D copy takes the two pitches apart: k rows of `bytes`,
+            // packed at the source and `pitch` apart in the ring, in one command.  `pitch` is MEASURED, not assumed:
+            // the ring is usually borrowed from the expert cache, where Alloc::take pads every slot (MAXBLOB + 256),
+            // and in that case a MAXBLOB() stride would hide the padding between the rows.
+            const size_t ring = (size_t) m.ring;
+            const size_t sl = start % ring;
+            if (ring - sl < 2) return 0;                       // no run can fit before the ring wraps
+            const size_t pitch = (size_t) (m.stage_dev[sl + 1] - m.stage_dev[sl]);
+            if (pitch < bytes) return 0;
+            const uint8_t* src0 = staged ? m.stager->wait(en.job) : en.blob;
+            if (src0 == nullptr) return 0;
+            size_t src_pitch = bytes;                          // the pinned mirror's rows are packed
+            size_t k = 1;
+            size_t n = std::min({(size_t) pf_batch_copy(), ring - sl, limit - start, seq.size() - start});
+            // A staged run may not pass the stager's own ring: its thread can only fill job j once issued > j - kRing,
+            // and those releases happen after we submit this run's copy, so a longer run would wait for itself.
+            if (staged) n = std::min(n, (size_t) m.stager->kRing);
+            for (; k < n; ++k) {
+                const StreamEntry& nx = seq[start + k];
+                if (nx.l != en.l) break;                                         // bytes/pitch are this layer's
+                if (m.stage_dev[sl + k] != m.stage_dev[sl] + k * pitch) break;   // slots not evenly spaced: not this run
+                if (staged) {
+                    // the rows are the stager's buffers, so the experts need not be consecutive: the seq is the
+                    // non-resident subset and skips every expert the VRAM cache serves.  Only even spacing counts.
+                    if (nx.job < 0) break;
+                    const uint8_t* hb = m.stager->wait(nx.job);
+                    if (k == 1) src_pitch = (size_t) (hb - src0);   // the stager's own row spacing, also measured
+                    if (k == 1 && src_pitch < bytes) break;
+                    if (hb != src0 + k * src_pitch) break;
+                } else if (nx.job >= 0 || nx.blob != src0 + k * bytes) break;
+            }
+            if (k < 2) return 0;
+            // every slot's dependency before the one copy that fills them all; the single path submits these per entry
+            for (size_t j = 0; j < k; ++j)
+                if (m.stage_live[sl + j]) (m.copy)->ext_oneapi_submit_barrier({*m.used[m.used_of[sl + j]]});
+            (m.copy)->ext_oneapi_memcpy2d(m.stage_dev[sl], pitch, src0, src_pitch, bytes, k);
+            if (staged)   // the stager frees each job's buffer once its DMA is queued, as in the single path
+                for (size_t j = 0; j < k; ++j) m.stager->issued_one(seq[start + j].job, m.copy);
+            // one barrier releases the whole run: each consumer waits on its own slot's `copied` event.  Not
+            // dpct::sync_barrier per slot: that is a no-op single_task each, which puts back the commands saved.
+            const sycl::event done = (m.copy)->ext_oneapi_submit_barrier();
+            for (size_t j = 0; j < k; ++j) {
+                *m.copied[sl + j] = done;
+                m.stage_live[sl + j] = true;
+            }
+            batch_entries += (int64_t) k;
+            ++batch_cmds;
+            return k;
+        };
         auto issue_until = [&](size_t limit) {
             try {
         limit = std::min(limit, seq.size());
@@ -2975,6 +3075,14 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                 const int sl = (int) (issued % (size_t) m.ring);
                 const auto th = Clock::now();
                 const size_t bytes = (size_t) lay0.blob_bytes(en.l);
+                const size_t batch = batch_copy(issued, limit);
+                if (batch != 0) {
+                    stats_.experts_dma += (int64_t) batch;
+                    stats_.experts_streamed += (int64_t) batch;
+                    stats_.ms_experts_host += ms_since(th);
+                    issued += batch;
+                    continue;
+                }
                 if (m.stage_live[sl])(m.copy)->ext_oneapi_submit_barrier(
                     {*m.used[m.used_of[sl]]});
                 if (en.job < 0) {
@@ -3034,7 +3142,7 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
         if (threaded_issue) {
             issuer = std::thread([&] {
                 const core::OnDevice od(m.device);
-                for (size_t idx = 0; idx < seq.size(); ++idx) {
+                for (size_t idx = 0; idx < seq.size(); ) {
                     while (idx >= a_consumed.load(std::memory_order_acquire) + (size_t) m.ring) {
                         if (a_stop.load(std::memory_order_acquire)) return;
                         std::this_thread::yield();
@@ -3043,6 +3151,17 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                     const int sl = (int) (idx % (size_t) m.ring);
                     const auto th = Clock::now();
                     const size_t bytes = (size_t) lay0.blob_bytes(en.l);
+                    // the run stays inside the free window the loop above waits for: start + k <= a_consumed + ring
+                    const size_t window = std::min(seq.size(), a_consumed.load(std::memory_order_acquire) + (size_t) m.ring);
+                    const size_t batch = batch_copy(idx, window);
+                    if (batch != 0) {
+                        iss_dma += (int64_t) batch;
+                        iss_streamed += (int64_t) batch;
+                        iss_ms += ms_since(th);
+                        idx += batch;
+                        a_issued.store(idx, std::memory_order_release);
+                        continue;
+                    }
                     if (m.stage_live[sl])(m.copy)->ext_oneapi_submit_barrier(
                         {*m.used[m.used_of[sl]]});
                     if (en.job < 0) {
@@ -3072,6 +3191,7 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                     iss_ms += ms_since(th);
                     ++iss_streamed;
                     a_issued.store(idx + 1, std::memory_order_release);
+                    ++idx;
                 }
             });
         } else if (stream_all) {
@@ -3138,6 +3258,12 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
         };
         for (int64_t l = LB; l < LE; ++l) {
             core::progress_beat();   // the serve watchdog: a prompt chunk of 8192 tokens is still moving
+            // STRATA_MEM_TRACE: the growth per layer, so a per-layer copy (expert ring, PLE upload, K/V) can be told
+            // from a per-token one at the chunk's ends
+            if ((l < LB + 3 || l == LE - 1) && std::getenv("STRATA_MEM_TRACE") != nullptr) {
+                const std::string w = "layer " + std::to_string((long long) l);
+                mem_probe(w.c_str());
+            }
             workload_trace::ContextGuard layer_context(p0, T, l);
             workload_trace::Scope layer_trace("prefill.layer", cs, T);
             if (l > LB) pf_step("reading the prompt (batched, step sync): the experts and the rest of layer", l - 1);
@@ -5055,7 +5181,11 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
             stats_.experts_streamed += iss_streamed;
             stats_.experts_dma += iss_dma;
         }
+        if (pf_batch_copy() >= 2 && batch_cmds != 0)
+            std::fprintf(stderr, "strata: STRATA_PF_BATCH_COPY=%d: %lld of %zu staging copies folded into %lld 2D copies\n",
+                         pf_batch_copy(), (long long) batch_entries, seq.size(), (long long) batch_cmds);
         stats_.tokens += T;
+        if (std::getenv("STRATA_MEM_TRACE") != nullptr) mem_probe("chunk end");
         core::progress_at("reading the prompt (batched): finishing the chunk from token", p0);
         pt.mark(kPfStart, cs);
         if (next_ != nullptr) {
