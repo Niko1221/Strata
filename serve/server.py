@@ -3800,7 +3800,38 @@ def apply_ready_timeout(cfg: dict) -> None:
 def layer_split_of(cfg: dict) -> bool:
     """Several GPUs in the config are a layer split, unless the args put the later card(s) to another use: with
     --peer-device the second card is an expert-cache tier, and the engine refuses that beside --layer-split (#665)."""
-    return len(gpu_list(cfg)) > 1 and "--peer-device" not in cfg["args"]
+    return len(gpu_list(cfg)) > 1 and not helper_cache_of(cfg)
+
+
+# Explicit helper/expert-cache placement args (docs/SECOND_GPU.md): each says the later GPU(s) are cache tiers,
+# NOT layer-split stages.  Placement precedence: 1) explicit layer split requested in the config, 2) explicit
+# peer/helper-cache args (they suppress the automatic split), 3) single GPU, 4) automatic placement.  Helper mode
+# is never silently converted into a split; mutually exclusive combinations fail clearly at config check.
+_HELPER_CACHE_ARGS = ("--peer-device", "--expert-cache-device1", "--expert-cache-device2", "--expert-cache-device3")
+
+
+def helper_cache_of(cfg: dict) -> bool:
+    return any(a in cfg.get("args", []) for a in _HELPER_CACHE_ARGS)
+
+
+def check_placement(cfg: dict) -> None:
+    args = cfg.get("args", [])
+    gpus = gpu_list(cfg)
+    explicit_split = "--layer-split" in args or (cfg.get("layer_split") not in (None, "", "auto"))
+    if helper_cache_of(cfg) and explicit_split:
+        raise SystemExit("[strata] config: helper expert cache (--peer-device / --expert-cache-deviceN) and an "
+                         'explicit "layer_split" are mutually exclusive; pick one placement')
+    if any(a in args for a in _HELPER_CACHE_ARGS[1:]) and len(gpus) < 2:
+        raise SystemExit("[strata] config: --expert-cache-deviceN needs helper GPU(s) in the config's \"gpu\" "
+                         f"list after the primary; got {gpus}")
+    if "--peer-device" in args:
+        try:
+            idx = int(args[args.index("--peer-device") + 1])
+        except (IndexError, ValueError):
+            raise SystemExit("[strata] config: --peer-device needs a visible device index as its value")
+        if idx < 1 or idx >= len(gpus):
+            raise SystemExit(f"[strata] config: --peer-device {idx} is not a helper in the visible set {gpus} "
+                             "(the primary is the first entry)")
 
 
 _CARD_CLASS: list = []
@@ -3950,6 +3981,7 @@ def engine_args(cfg: dict, exe: str | None = None, *, announce: bool = True) -> 
             note += " and --vram-reserve-mib 700"
         print(f'[strata] the config has a "vision" section but no --vision in its args: {note} (run setup again with '
               "--vision to write them)", flush=True)
+    check_placement(cfg)
     if layer_split_of(cfg) and "--layer-split" not in args:
         args += ["--layer-split", layer_split_value(cfg)]
     # opt-in: an auto split runs on the first card alone when it holds every profiled expert and the KV
@@ -4284,8 +4316,8 @@ def ordered_gpus(cfg: dict, scores=None, vrams=None, archs=None) -> list[int]:
     if len(gl) < 2 or cfg.get("gpu_order") == "as_given" or gpu_roles_active(cfg):
         return gl
     args = cfg.get("args") or []
-    if "--peer-device" in args or "--layer-split" in args or layer_split_value(cfg) != "auto":
-        return gl
+    if helper_cache_of(cfg) or "--layer-split" in args or layer_split_value(cfg) != "auto":
+        return gl   # helper tiers are not split stages: the config's visible order is the placement (primary first)
     hip = cfg.get("backend") == "hip"
     if hip:
         # An integrated Radeon (Strix Halo beside an R9700) is never the LAST stage: that stage runs the head, the draft layer and the
@@ -10226,8 +10258,12 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
                 raise SystemExit(f"[strata] config {e}")
             print(f"[strata] layer split across GPUs {gpu_list(cfg)} ({split})", flush=True)
         elif len(gpu_list(cfg)) > 1:
-            print(f"[strata] GPUs {gpu_list(cfg)}: the later card(s) serve as the peer expert tier (--peer-device)",
-                  flush=True)
+            if "--peer-device" in cfg.get("args", []):
+                print(f"[strata] GPUs {gpu_list(cfg)}: the later card(s) serve as the peer expert tier (--peer-device)",
+                      flush=True)
+            else:
+                print(f"[strata] GPUs {gpu_list(cfg)}: the later card(s) serve as helper expert caches "
+                      "(--expert-cache-deviceN); no layer split", flush=True)
         # a relative "exe" is the config's cwd's: Windows' CreateProcess resolves "engine/strata.exe" against nothing
         # it is told about (WinError 2), so it is made absolute here
         if engine_component.is_reference(cfg["exe"]):      # "component:strata-engine": the engine package for this PC
