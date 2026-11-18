@@ -14,6 +14,8 @@ class DownloadSize(unittest.TestCase):
     def setUp(self):
         self.home = Home().__enter__()
         self.addCleanup(self.home.__exit__, None, None, None)
+        from tests.terminal.launch_support import not_intel
+        not_intel(self)
 
     def runner(self, **kw):
         values = dict(family="gyro", model="Gyro-S", context=32768, vision="cpu")

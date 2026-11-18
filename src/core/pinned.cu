@@ -2,6 +2,11 @@
 #include "strata/core/pinned.hpp"
 #include "strata/platform/memory.hpp"
 #include "strata/core/pin_budget.hpp"
+#include "strata/core/arch_defaults.hpp"   // arena_skip_thp_request
+#include "strata/core/page_cache_drop.hpp"   // drop_range (the drop behind the arena read, Linux)
+#if defined(STRATA_USE_HIP) && defined(__linux__)   // kfd_quiet NOREG scope: Linux HIP only, every other build keeps its old text
+#include "strata/core/kfd_quiet.hpp"   // NOREG: the arena's mode and its lock (the Radeon 780M class, Linux HIP)
+#endif
 #include <cstddef>
 
 #include <cuda_runtime.h>
@@ -482,14 +487,22 @@ void* reserve(uint64_t bytes, PageBacking& got, std::string& note, const std::st
         }
         std::fclose(f);
     }
-    const bool skip_thp_request = std::getenv("STRATA_NO_ARENA_THP") != nullptr || thp_mode == "always";
+    // STRATA_NO_ARENA_THP unset = the engine decides: an integrated gfx11 GPU under Linux asks for none (arena_no_thp_flag, set
+    // from the device before the arena is made; a huge-page move inside the registered arena resets that GPU in a prompt), every other
+    // device as before.  =0 asks for them there too (the user's choice; #2126's free-block check below still applies); any other value
+    // skips the request on any device (as before).
+    const char* no_thp = std::getenv("STRATA_NO_ARENA_THP");
+    const bool user_no_thp = no_thp != nullptr && no_thp[0] != '0';
+    const bool skip_thp_request = arena_skip_thp_request(no_thp, thp_mode == "always", arena_no_thp_flag().load(std::memory_order_relaxed));
     if (std::getenv("STRATA_NO_LARGEPAGES") == nullptr && skip_thp_request) {
         const std::string four_k = "; using 4 KB pages";
         if (note.size() >= four_k.size() && note.compare(note.size() - four_k.size(), four_k.size(), four_k) == 0)
             note.resize(note.size() - four_k.size());
-        note += std::getenv("STRATA_NO_ARENA_THP") != nullptr
+        note += user_no_thp
                     ? "; transparent huge pages skipped (STRATA_NO_ARENA_THP)"
-                    : "; transparent huge pages are on for every mapping (THP always): MADV_HUGEPAGE not requested";
+                    : thp_mode == "always"
+                    ? "; transparent huge pages are on for every mapping (THP always): MADV_HUGEPAGE not requested"
+                    : "; huge pages not requested on this graphics chip";
     } else if (std::getenv("STRATA_NO_LARGEPAGES") == nullptr && std::getenv("STRATA_ARENA_THP") == nullptr &&
                free_huge_bytes() < bytes / 2) {
         // #2126: THP "madvise" + defrag "madvise" makes every fault of a MADV_HUGEPAGE mapping reclaim and compact
@@ -552,10 +565,31 @@ namespace {
 bool clear_error() { (void) cudaGetLastError(); return true; }
 }  // namespace
 
+namespace {
+std::atomic<uint64_t> g_idle_stack_lo{0}, g_idle_stack_hi{0};
+std::vector<uint64_t> g_held;   // sorted; set once by main() before any thread that pins exists
+}  // namespace
+
+void set_idle_thread_stack(uint64_t lo, uint64_t hi) {
+    g_idle_stack_lo.store(lo);
+    g_idle_stack_hi.store(hi);
+}
+
+void set_held_address_space(std::vector<uint64_t> bases) {
+    std::sort(bases.begin(), bases.end());
+    g_held = std::move(bases);
+}
+
 bool arena_no_register() {
+#if defined(STRATA_USE_HIP) && defined(__linux__)   // kfd_quiet NOREG scope: Linux HIP only, every other build keeps its old text
+    // an explicit setting wins over the engine's flag (kfd_quiet.hpp arena_unregistered: the same rule as before, testable)
+    return strata::core::kfd_quiet::arena_unregistered(std::getenv("STRATA_ARENA_PIN_GIB"),
+                                                       arena_uma_no_register_flag().load(std::memory_order_relaxed));
+#else
     const char* e = std::getenv("STRATA_ARENA_PIN_GIB");
     if (e != nullptr && *e != '\0') return std::string(e) == "none";   // an explicit setting wins over the engine's flag
     return arena_uma_no_register_flag().load(std::memory_order_relaxed);
+#endif
 }
 
 int arena_pin_cap_gib() {
@@ -608,7 +642,138 @@ std::vector<uint64_t> uniform_bounds(uint64_t bytes, uint64_t slice) {
     if (!b.empty()) b.push_back(b.back() + slice);
     return b;
 }
+
+#if defined(_WIN32) && defined(STRATA_USE_HIP)
+// #3431.  On Windows the HIP runtime gives every cudaHostRegister'ed range a second address for the GPU (its alias), and it
+// takes any host pointer inside that alias for the registered memory.  Unlike the addresses of cudaMalloc, the alias is not
+// reserved in the process's own address space, so a thread stack, a heap block or a mapping can be placed there.  In about one
+// engine start in ten one was (the stack of the thread that pins the arena): a cudaMemcpy from a local variable then read the
+// arena, a copy back into one wrote the arena, and every long prompt was read wrong until the process ended, with no error.
+// So the alias range is reserved here (address space only, nothing committed), and a range whose alias already covers memory
+// in use is not kept: true when the alias is clear (or there is none), with its reservations added to `claims`.  A runtime that
+// reserves the alias itself would have every range refused here, and logged.
+bool claim_alias(void* host, uint64_t n, std::vector<void*>& claims, std::string& why) {
+    void* d = nullptr;
+    if (cudaHostGetDevicePointer(&d, host, 0) != cudaSuccess || d == nullptr || d == host) {
+        (void) cudaGetLastError();
+        return true;
+    }
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    const uint64_t gran = si.dwAllocationGranularity;                 // where VirtualAlloc can start a reservation
+    const uint64_t top = (uint64_t) si.lpMaximumApplicationAddress;  // nothing of the process lies above
+    const uint64_t a = (uint64_t) d, end = std::min<uint64_t>(a + n, top);
+    std::vector<void*> got;
+    MEMORY_BASIC_INFORMATION mbi;
+    char msg[256] = "";
+    // the granule the alias starts in: when it is free in front of the alias too, the reservation starts at its boundary, or a
+    // small allocation could still be placed there and reach into the alias
+    uint64_t at = a;
+    const uint64_t a0 = a & ~(gran - 1);
+    if (a0 < a && a0 < end && VirtualQuery((void*) a0, &mbi, sizeof mbi) == sizeof mbi && mbi.State == MEM_FREE &&
+        (uint64_t) mbi.BaseAddress + mbi.RegionSize > a)
+        at = a0;
+    while (at < end) {
+        if (VirtualQuery((void*) at, &mbi, sizeof mbi) != sizeof mbi) {
+            std::snprintf(msg, sizeof msg, "VirtualQuery failed at %#llx", (unsigned long long) at);
+            break;
+        }
+        const uint64_t re = std::min<uint64_t>((uint64_t) mbi.BaseAddress + mbi.RegionSize, end);
+        const uint64_t idle_lo = g_idle_stack_lo.load(), idle_hi = g_idle_stack_hi.load();
+        const bool held = mbi.State == MEM_RESERVE && std::binary_search(g_held.begin(), g_held.end(), (uint64_t) mbi.AllocationBase);
+        const bool idle = mbi.State != MEM_FREE && idle_lo < idle_hi && (uint64_t) mbi.AllocationBase == idle_lo && re <= idle_hi;
+        if (held || idle) {
+            // held: main()'s reservation, kept for the life of the process.  idle: the first thread's stack, which only waits
+            at = (uint64_t) mbi.BaseAddress + mbi.RegionSize;
+            continue;
+        }
+        if (mbi.State != MEM_FREE) {
+            ULONG_PTR lo = 0, hi = 0;
+            GetCurrentThreadStackLimits(&lo, &hi);
+            const bool own_stack = at < (uint64_t) hi && (uint64_t) lo < re;
+            const char* kind = own_stack ? "this thread's stack" : mbi.Type == MEM_IMAGE ? "a module" :
+                               mbi.Type == MEM_MAPPED ? "a mapped view" : "private memory";
+            std::snprintf(msg, sizeof msg, "the GPU alias [%#llx, +%llu MiB) of the range at %p covers memory in use at %#llx (%s, from %p)",
+                          (unsigned long long) a, (unsigned long long) (n >> 20), host, (unsigned long long) at, kind,
+                          mbi.AllocationBase);
+            break;
+        }
+        // a free piece that starts inside a granule shares it with an allocation: nothing new can start there
+        const uint64_t b = (at + gran - 1) & ~(gran - 1);
+        if (b < re) {
+            void* r = VirtualAlloc((void*) b, (SIZE_T) (re - b), MEM_RESERVE, PAGE_NOACCESS);
+            if (r == nullptr) {
+                std::snprintf(msg, sizeof msg, "could not reserve the GPU alias [%#llx, +%llu MiB) of the range at %p (error %lu)",
+                              (unsigned long long) a, (unsigned long long) (n >> 20), host, GetLastError());
+                break;
+            }
+            got.push_back(r);
+        }
+        at = (uint64_t) mbi.BaseAddress + mbi.RegionSize;
+    }
+    if (msg[0] != '\0') {
+        for (void* g : got) VirtualFree(g, 0, MEM_RELEASE);
+        why = msg;
+        return false;
+    }
+    claims.insert(claims.end(), got.begin(), got.end());
+    return true;
+}
+#endif
+
+// after the ranges are unregistered
+void release_alias_claims(std::vector<void*>& claims) {
+#ifdef _WIN32
+    for (void* c : claims) VirtualFree(c, 0, MEM_RELEASE);
+#endif
+    claims.clear();
+}
+
+// pin_register for the arena's ranges.  Windows HIP: a range whose GPU alias covers memory in use is unregistered again and
+// reported as refused, so the caller's "the driver refused it" path applies to it (#3431).
+#if defined(__linux__)
+// every range start registered here, for unregister_arena_ranges (kfd_quiet.hpp, EXIT); bookkeeping only
+std::mutex g_reg_mu;
+std::vector<void*> g_reg_starts;
+#endif
+
+cudaError_t register_range(PinnedArena& arena, void* p, uint64_t n) {
+    const cudaError_t e = pin_register(p, (size_t) n, cudaHostRegisterPortable | cudaHostRegisterMapped);
+#if defined(__linux__)
+    if (e == cudaSuccess) {
+        std::lock_guard<std::mutex> lk(g_reg_mu);
+        g_reg_starts.push_back(p);
+    }
+#endif
+#if defined(_WIN32) && defined(STRATA_USE_HIP)
+    std::string why;
+    if (e == cudaSuccess && !claim_alias(p, n, arena.alias_claims, why)) {
+        (void) pin_unregister(p);
+        (void) cudaGetLastError();
+        std::fprintf(stderr, "strata pin: %s; that range stays unregistered (#3431)\n", why.c_str());
+        arena.note = "left unregistered: " + why + " (#3431); " + arena.note;
+        return cudaErrorMemoryAllocation;
+    }
+#else
+    (void) arena;
+#endif
+    return e;
+}
 }  // namespace
+
+int unregister_arena_ranges() {
+#if defined(__linux__)
+    std::lock_guard<std::mutex> lk(g_reg_mu);
+    int n = 0;
+    for (void* p : g_reg_starts)
+        if (pin_unregister(p) == cudaSuccess) ++n;
+    (void) cudaGetLastError();
+    g_reg_starts.clear();
+    return n;
+#else
+    return 0;
+#endif
+}
 
 PinnedArena::PinnedArena(uint64_t bytes, uint64_t slice) : PinnedArena(bytes, uniform_bounds(bytes, slice)) {
     if (slice_bytes) slice_bytes = slice;   // sliced registration: record the uniform size
@@ -633,6 +798,20 @@ PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds,
         // 153-igpu (UMA mode): nothing is registered; the whole arena stays resident through the working-set lock instead
         slice_bytes = 1;   // "sliced" with no slice registered: the destructor unlocks from offset registered_bytes (0)
         const char* env = std::getenv("STRATA_ARENA_LOCK");
+#if defined(STRATA_USE_HIP) && defined(__linux__)   // kfd_quiet NOREG scope: Linux HIP only, every other build keeps its old text
+        // (kfd_quiet.hpp NOREG, the Radeon 780M class under Linux: when the engine chose this mode, no mlock is tried and nothing is said
+        // about it; a STRATA_ARENA_LOCK the user set decides as before)
+        const bool noreg = strata::core::kfd_quiet::noreg_flag().load(std::memory_order_relaxed);
+        if (backing == PageBacking::LargePages) {
+            note = "large pages are resident without a lock; " + note;
+        } else if (strata::core::kfd_quiet::arena_lock_wanted(noreg, env)) {
+            const strata::platform::LockResult lr = strata::platform::lock_resident((uint8_t*) base, bytes);
+            locked_bytes = lr.locked_bytes;
+            note = lr.note + "; " + note;
+        } else if (!noreg || env != nullptr) {
+            note = "arena lock disabled (STRATA_ARENA_LOCK=0); " + note;
+        }
+#else
         if (backing == PageBacking::LargePages) {
             note = "large pages are resident without a lock; " + note;
         } else if (env == nullptr || std::string(env) != "0") {
@@ -642,6 +821,7 @@ PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds,
         } else {
             note = "arena lock disabled (STRATA_ARENA_LOCK=0); " + note;
         }
+#endif
         note = "NOT registered with the GPU driver (integrated GPU, UMA mode; STRATA_ARENA_PIN_GIB=0 registers it); " + note;
         return;
     }
@@ -656,7 +836,7 @@ PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds,
         }
         const bool capped = cap > 0 && cap < bytes && bounds.size() >= 2;
         const cudaError_t e = capped ? cudaSuccess :
-            pin_register(base, (size_t) bytes, cudaHostRegisterPortable | cudaHostRegisterMapped);
+            register_range(*this, base, bytes);
         if (!capped && e == cudaSuccess) {
             note = "cudaHostRegister PORTABLE ok; " + note;
             registered_bytes = bytes;
@@ -676,7 +856,7 @@ PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds,
             for (size_t i = 0; i + 1 < bounds.size(); ++i) {
                 const uint64_t off = bounds[i], n = bounds[i + 1] - bounds[i];
                 if (limited && (off > limit || n > limit - off)) break;
-                if (pin_register((uint8_t*) base + off, (size_t) n, cudaHostRegisterPortable | cudaHostRegisterMapped) != cudaSuccess) {
+                if (register_range(*this, (uint8_t*) base + off, n) != cudaSuccess) {
                     (void) cudaGetLastError();
                     break;
                 }
@@ -787,8 +967,7 @@ PinnedArena::PinnedArena(uint64_t bytes, ByNeed, const std::vector<std::pair<uin
         if (it != done.end() && it->first < b) b = it->first;
         if (a >= b) continue;
         if (cap > 0 && total + (b - a) > cap) { capped = true; break; }
-        if (pin_register((uint8_t*) base + a, (size_t) (b - a), cudaHostRegisterPortable | cudaHostRegisterMapped) !=
-            cudaSuccess) {
+        if (register_range(*this, (uint8_t*) base + a, b - a) != cudaSuccess) {
             (void) cudaGetLastError();
             refused = 1;
             break;
@@ -817,6 +996,10 @@ PinnedArena::PinnedArena(uint64_t bytes, ByNeed, const std::vector<std::pair<uin
     } else if (env != nullptr && std::string(env) == "0") {
         note = "arena lock disabled (STRATA_ARENA_LOCK=0); " + note;
         locked_ranges.clear();
+#if defined(STRATA_USE_HIP) && defined(__linux__)   // kfd_quiet NOREG scope: Linux HIP only, every other build keeps its old text
+    } else if (none && !strata::core::kfd_quiet::arena_lock_wanted(strata::core::kfd_quiet::noreg_flag().load(std::memory_order_relaxed), env)) {
+        locked_ranges.clear();   // kfd_quiet.hpp NOREG chose the unregistered arena: no mlock tried, nothing said (as in the constructor above)
+#endif
     } else {
         for (const auto& r : locked_ranges) holes.emplace_back((uint8_t*) base + r.first, r.second);
         const strata::platform::LockResult lr = strata::platform::lock_resident_ranges(holes);
@@ -843,8 +1026,7 @@ void PinnedArena::register_slices(std::atomic<int>& ready) {
     int i = 0;
     for (; base != nullptr && i < n; ++i) {
         const uint64_t off = bounds_[(size_t) i], len = bounds_[(size_t) i + 1] - off;
-        if (pin_register((uint8_t*) base + off, (size_t) len, cudaHostRegisterPortable | cudaHostRegisterMapped) !=
-            cudaSuccess) {
+        if (register_range(*this, (uint8_t*) base + off, len) != cudaSuccess) {
             (void) cudaGetLastError();
             break;
         }
@@ -873,6 +1055,7 @@ PinnedArena::~PinnedArena() {
     if (base && by_need) {
         for (const auto& r : locked_ranges) strata::platform::unlock_resident((uint8_t*) base + r.first, r.second);
         for (const auto& r : pin_ranges) pin_unregister((uint8_t*) base + r.first);
+        release_alias_claims(alias_claims);
         release(mapping_base ? mapping_base : base, mapping_bytes ? mapping_bytes : capacity);
         base = nullptr;
         mapping_base = nullptr;
@@ -886,6 +1069,7 @@ PinnedArena::~PinnedArena() {
         } else {
             pin_unregister(base);
         }
+        release_alias_claims(alias_claims);
         release(mapping_base ? mapping_base : base, mapping_bytes ? mapping_bytes : capacity);
         base = nullptr;
         mapping_base = nullptr;
@@ -1052,7 +1236,7 @@ LoadStats load_experts_ranges(const std::string& path, uint8_t* dst, const std::
 
 LoadStats load_experts_ranges(const std::string& path, uint8_t* dst, const std::vector<uint64_t>& layer_off,
                               const std::vector<uint64_t>& layer_bytes, int threads, uint64_t chunk,
-                              const std::atomic<int>* ready, const PadMap* pad) {
+                              const std::atomic<int>* ready, const PadMap* pad, bool drop_behind) {
     LoadStats st;
     const uint64_t layers = (uint64_t) layer_off.size();
     st.layers = layers;
@@ -1135,6 +1319,10 @@ LoadStats load_experts_ranges(const std::string& path, uint8_t* dst, const std::
                 h = fnv1a64(buf.data(), n, h);
                 copy_ns += (uint64_t) std::chrono::duration_cast<std::chrono::nanoseconds>(
                                std::chrono::steady_clock::now() - t_copy).count();
+#if defined(__linux__)
+                // this chunk is in the arena now: its file-cache pages are only a second copy.  Advice; a failure is ignored.
+                if (drop_behind) (void) strata::core::page_cache_drop::drop_range(::fileno(f), off + pos, n);
+#endif
                 pos += n;
                 remaining -= n;
             }

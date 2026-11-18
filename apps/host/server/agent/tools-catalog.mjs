@@ -16,6 +16,7 @@ export const TOOL_GROUPS = [
   { id: 'search', area: 'web', name: 'Search the web', about: 'Lets the assistant search the web when it needs fresh information.', asks: true, web: 'search' },
   { id: 'helpers', area: 'together', name: 'Helper assistants', about: 'Lets the assistant start helpers that work on parts of a task at the same time.', asks: false, plugins: ['delegation'] },
   { id: 'goals', area: 'together', name: 'Goals', about: 'Lets you give a goal with /goal. The assistant keeps working until it is done.', asks: false, plugins: ['command-goal', 'tool-goal'] },
+  { id: 'questions', area: 'together', name: 'Questions for you', about: 'Lets the assistant stop and ask you a question, with answers to pick from, when it needs your decision.', asks: false, plugins: ['tool-ask-user'] },
   { id: 'todo', area: 'together', name: 'To-do list', about: 'Lets the assistant keep a checklist while it works on a big task.', asks: false, plugins: ['tool-todo'] },
   { id: 'skills', area: 'together', name: 'Skills', about: 'Lets the assistant use your saved skills when they fit the task.', asks: false, plugins: ['skill-filesystem', 'tool-skill'] },
   { id: 'present', area: 'together', name: 'Show results', about: 'Lets the assistant show a page or file in the preview next to the chat.', asks: false, plugins: ['present'] },

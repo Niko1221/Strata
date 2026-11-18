@@ -35,6 +35,7 @@ struct MoeArgs {
 struct GdnArgs { uint32_t h_k, h_v, channels, commit; float eps; uint32_t plane; };
 struct QsaArgs { uint32_t pos0, pos_base, max_cells, n_tok; float eps; };
 struct GlueArgs { uint32_t n, n_tok, n_embd, topk; };
+struct HcfArgs { uint32_t n_embd, hc; float eps; uint32_t pad; };
 struct ArgArgs { uint32_t n_vocab, parts; };
 
 int xkind(int t) {
@@ -53,6 +54,18 @@ struct Act {
     int n = 0;
     size_t plane_bytes() const { return (size_t)4 * MAXT * n; }
 };
+
+// CHAIN_DEFS=A,B: a "#define A 1" line for each name ahead of the kernels (probe switches)
+std::string defs_prelude() {
+    std::string out, w;
+    const char* e = std::getenv("CHAIN_DEFS");
+    if (!e) return out;
+    for (const char* p = e;; ++p) {
+        if (*p == ',' || *p == 0) { if (!w.empty()) out += "#define " + w + " 1" + char(10); w.clear(); if (!*p) break; }
+        else w += *p;
+    }
+    return out;
+}
 
 }  // namespace
 
@@ -103,9 +116,10 @@ int main(int argc, char** argv) {
     };
 
     const int lib = cx.compile({"quant.metal", "units.metal", "moe.metal", "gemv.metal", "gr.metal", "gr2.metal", "glue.metal",
-                                "router.metal"});
+                                "router.metal", "hcf.metal", "gemvu.metal", "moeu.metal"},
+                               defs_prelude());
     const int lgdn = cx.compile({"gdn.metal"}, "#define NO_GGML_COMMON 1\n");
-    const int lqsa = cx.compile({"qsa.metal", "qsa2.metal"}, "#define NO_GGML_COMMON 1\n");
+    const int lqsa = cx.compile({"qsa.metal", "qsa2.metal", "qsab.metal"},"#define NO_GGML_COMMON 1\n");
     const int lsmp = cx.compile({"sample.metal"}, "#define NO_GGML_COMMON 1\n");
     std::map<std::string, mtl::Pipeline> pcache;
 
@@ -159,11 +173,16 @@ int main(int argc, char** argv) {
     std::vector<std::string> cls;   // class of each dispatch (for --only)
     std::map<std::string, double> bytes_by;
     bool nb = false;   // the next push is independent of the previous dispatch (no barrier before it)
+    std::map<const mtl::Pipeline*, std::string> pname;
     auto push = [&](const mtl::Dispatch& d0, const std::string& c, double bytes = 0) {
         mtl::Dispatch d = d0;
         d.barrier = !nb;
         nb = false;
         if (!only.empty() && c != only) return;
+        if (const char* sk = std::getenv("CHAIN_SKIPK")) {   // marginal cost of a kernel: drop every dispatch whose pipeline key contains sk
+            auto it = pname.find(d.p);
+            if (it != pname.end() && it->second.find(sk) != std::string::npos) return;
+        }
         if (!skip.empty() && c == skip) return;
         ds.push_back(d);
         cls.push_back(c);
@@ -173,6 +192,7 @@ int main(int argc, char** argv) {
     auto Pn = [&](int l, const std::string& fn, const std::string& key, const mtl::Constants& c) -> const mtl::Pipeline* {
         auto it = pcache.find(key);
         if (it == pcache.end()) it = pcache.emplace(key, cx.pipeline(l, fn, c)).first;
+        pname[&it->second] = key;
         return &it->second;
     };
     // ---- SLC prefetch (--prefetch): the next HC read's weights touched concurrently with the first projection GEMV
@@ -213,8 +233,9 @@ int main(int argc, char** argv) {
         if (n_in >= 6144) { L = 32; Rr = 1; S = 8; K = 2; }
         else if (n_in == 640) { L = 8; Rr = 1; S = 4; K = 1; }
         else if (n_out <= 640 || ty == ref::Q2_0 || ty == ref::BF16) { L = 32; Rr = 1; S = 4; K = 1; }
-        const std::string fn = "gemv_" + std::to_string(ty) + "_" + std::to_string(L) + "_" + std::to_string(Rr) + "_" +
-                               std::to_string(S) + "_" + std::to_string(K);
+        const char* gu = std::getenv("CHAIN_GEMVU");
+        const std::string fn = std::string(gu ? "gemvu_" : "gemv_") + std::to_string(ty) + "_" + std::to_string(L) + "_" + std::to_string(Rr) + "_" +
+                               std::to_string(S) + "_" + std::to_string(K) + (gu ? std::string("_") + gu : std::string());
         const mtl::Pipeline* p = Pn(lib, fn, fn + "#" + std::to_string(ntok), mtl::Constants().i(0, ntok));
         GemvArgs a{(uint32_t)n_in, (uint32_t)n_out, (uint32_t)ntok, (uint32_t)ref::row_bytes(t.type, n_in), (uint32_t)n_in,
                    (uint32_t)y_stride};
@@ -228,7 +249,7 @@ int main(int argc, char** argv) {
         push(d, c, (double)t.bytes);
         if (!pending.empty()) push_prefetch();
     };
-    const mtl::Pipeline* pnorm = Pn(lib, "gr_norm", "gr_norm", {});
+    const mtl::Pipeline* pnorm = Pn(lib, std::getenv("CHAIN_NORM2") ? "gr_norm2" : "gr_norm", std::getenv("CHAIN_NORM2") ? "gr_norm2" : "gr_norm", {});
     const mtl::Pipeline* pnormc = Pn(lib, "gr_norm_comb", "gr_norm_comb", {});
     ptouch = Pn(lib, "slc_touch", "slc_touch", {});
     const mtl::Pipeline* pdown = Pn(lib, "gr_down_8_8", "gr_down_8_8", mtl::Constants().i(1, ntok));
@@ -238,14 +259,14 @@ int main(int argc, char** argv) {
     const mtl::Pipeline* pprep = Pn(lib, "xprep", "xprep", {});
     const mtl::Pipeline* proute = Pn(lib, "moe_route", "moe_route", {});
     const mtl::Pipeline* pswi = Pn(lib, "swiglu_prep", "swiglu_prep", {});
-    const mtl::Pipeline* pcomb = Pn(lib, "moe_combine_sh", "moe_combine_sh", {});
+    const mtl::Pipeline* pcomb = Pn(lib, std::getenv("CHAIN_COMB2") ? "moe_combine_sh2" : "moe_combine_sh", std::getenv("CHAIN_COMB2") ? "moe_combine_sh2" : "moe_combine_sh", {});
     const mtl::Pipeline* pgdn = Pn(lgdn, "gdn_step", "gdn_step", mtl::Constants().i(2, ntok));
     const mtl::Pipeline* qprep = Pn(lqsa, "qsa_prep", "qsa_prep", {});
     const mtl::Pipeline* qscore = Pn(lqsa, "qsa_score", "qsa_score", {});
     const int qav = std::getenv("QSA_ATTN") ? std::atoi(std::getenv("QSA_ATTN")) : 1;
     const bool qv2 = qav == 2;
     const mtl::Pipeline* qtopk = Pn(lqsa, std::getenv("QSA_TOPK") ? "qsa_topk" : "qsa_topk2", "qsa_topk", {});
-    const mtl::Pipeline* qattn = Pn(lqsa, qav == 1 ? "qsa_attn" : qv2 ? "qsa_attn2" : "qsa_attn3", "qsa_attn", {});
+    const mtl::Pipeline* qattn = Pn(lqsa, qav == 1 ? (std::getenv("CHAIN_QB") ? "qsa_attn_b" : "qsa_attn") : qv2 ? "qsa_attn2" : "qsa_attn3", "qsa_attn", {});
     const mtl::Pipeline* qmerge = Pn(lqsa, qv2 ? "qsa_merge2" : "qsa_merge", "qsa_merge", {});
     const mtl::Pipeline* pam1 = Pn(lsmp, "argmax_part", "argmax_part", {});
     const mtl::Pipeline* pam2 = Pn(lsmp, "argmax_final", "argmax_final", {});
@@ -280,6 +301,37 @@ int main(int argc, char** argv) {
         std::printf("HC Q8_0 copies: %zu tensors, %.1f MB, quantized in %.1f s\n", q8off.size(), tot / 1e6, mtl::now_s() - t0);
     }
     int cur_inj = 0;
+    // CHAIN_HCF: gr_norm folded into the producer of bo (hcf.metal): the mixer's output GEMV and the MoE combine apply bo to R
+    // and the last threadgroup forms xn; the next read has no gr_norm dispatch
+    const bool hcf = std::getenv("CHAIN_HCF") != nullptr && (hc_mode == "q8_3" || hc_mode == "3");
+    const bool hcf_keep = std::getenv("CHAIN_KEEPNORM") != nullptr;   // timing probe: swap the producers, keep gr_norm
+    const std::string hcf_only = std::getenv("CHAIN_HCF_ONLY") ? std::getenv("CHAIN_HCF_ONLY") : "";   // gemv | comb
+    bool hcf_pend = false;
+    mtl::Buffer hcnt = cx.alloc(16), sink2 = cx.alloc(256);
+    auto hcf_args = [&](const std::string& nextpre) {
+        HcfArgs h{N, HC, 1e-6f, 0};
+        return std::vector<mtl::Arg>{mtl::Arg::B(R), mtl::Arg::B(inj[cur_inj]), mtl::Arg::B(W, T(nextpre + "_norm.weight").offset),
+                                     mtl::Arg::B(xn), mtl::Arg::B(hcnt), mtl::Arg::V(h)};
+    };
+    // a producer GEMV of bo (n_in >= 6144: the 32,1,8,2 tile): gemv2, or with CHAIN_HCF gemvh (R updated, xn formed by the last threadgroup)
+    auto gemv_p = [&](const gguf::Tensor& t, const Act& x, const mtl::Buffer& y, size_t y_stride, const std::string& c,
+                      const std::string& nextpre) {
+        const int n_in = (int)t.shape[0], n_out = (int)t.shape[1];
+        if (!hcf || n_in < 6144 || hcf_only == "comb") { gemv2(t, x, y, y_stride, c); return; }
+        const std::string fn = "gemvh_" + std::to_string(t.type);
+        const mtl::Pipeline* p = Pn(lib, fn, fn + "#" + std::to_string(ntok), mtl::Constants().i(0, ntok));
+        GemvArgs a{(uint32_t)n_in, (uint32_t)n_out, (uint32_t)ntok, (uint32_t)ref::row_bytes(t.type, n_in), (uint32_t)n_in,
+                   (uint32_t)y_stride};
+        mtl::Dispatch d;
+        d.p = p;
+        d.args = {mtl::Arg::B(W, t.offset), mtl::Arg::B(x.b, x.plane_bytes() * xkind(t.type)), mtl::Arg::B(x.b, x.plane_bytes() * 4),
+                  mtl::Arg::B(y), mtl::Arg::V(a)};
+        for (auto& g : hcf_args(nextpre)) d.args.push_back(g);
+        d.grid[0] = (n_out + 3) / 4;   // rpt = (S / K) * (32 / L) * Rr = 4
+        d.tg[0] = 256;
+        push(d, c, (double)t.bytes);
+        hcf_pend = !hcf_keep;
+    };
     auto gr_read = [&](const std::string& pre, bool apply, const Act& out, bool final_) {
         if (hc_mode != "3" && hc_mode != "q8_3") {
             const bool q8 = hc_mode == "q8";
@@ -342,7 +394,18 @@ int main(int argc, char** argv) {
         d1.grid[0] = HC;
         d1.grid[1] = ntok;
         d1.tg[0] = 256;
-        push(d1, "hc", 0);
+        if (!std::getenv("CHAIN_NONORM") && !(hcf_pend && apply)) push(d1, "hc", 0);
+        if (const char* e = std::getenv("CHAIN_NOOPS")) {
+            for (int k = 0; k < std::atoi(e); ++k) {
+                mtl::Dispatch z;
+                z.p = Pn(lib, "noop_k", "noop_k", {});
+                z.args = {mtl::Arg::B(sink2)};
+                z.grid[0] = 1;
+                z.tg[0] = 32;
+                push(z, "hc", 0);
+            }
+        }
+        hcf_pend = false;   // CHAIN_NONORM: marginal cost of the norm dispatch (timing only)
         mtl::Dispatch d2;
         d2.p = q83 ? pdownq : pdown;
         d2.args = {mtl::Arg::B(WB, od), mtl::Arg::B(WB, oi), mtl::Arg::B(xn), mtl::Arg::B(lo),
@@ -428,11 +491,11 @@ int main(int argc, char** argv) {
                       mtl::Arg::B(z), mtl::Arg::B(W, T(b + "ssm_conv1d.weight").offset), mtl::Arg::B(W, T(b + "ssm_dt.bias").offset),
                       mtl::Arg::B(W, T(b + "ssm_a").offset), mtl::Arg::B(W, T(b + "ssm_norm.weight").offset), mtl::Arg::B(fuse ? XY.b : yg),
                       mtl::Arg::V(a), mtl::Arg::B(ghist2[gi])};
-            d.grid[0] = 48;
+            d.grid[0] = std::getenv("CHAIN_GDNGRID") ? std::atoi(std::getenv("CHAIN_GDNGRID")) : 48;   // timing probe (wrong values)
             d.tg[0] = 512;
             push(d, "gdn step", 2.0 * 4 * 128 * 48 * 128);
             if (!fuse) xprep(yg, XY, 6144, "gdn proj");
-            gemv2(T(b + "ssm_out.weight"), XY, bo, N, "gdn proj");
+            gemv_p(T(b + "ssm_out.weight"), XY, bo, N, "gdn proj", b + "hc_ffn");
             ++gi;
         } else if (!skip_qsa) {
             gemv2(T(b + "attn_q.weight"), XA, qfull, 12288, "qsa proj");
@@ -489,7 +552,7 @@ int main(int argc, char** argv) {
             m.grid[1] = ntok;
             m.tg[0] = 256;
             push(m, "qsa attn", 0);
-            gemv2(T(b + "attn_output.weight"), XQ, bo, N, "qsa proj");
+            gemv_p(T(b + "attn_output.weight"), XQ, bo, N, "qsa proj", b + "hc_ffn");
             ++qi;
         }
         // ---- MoE
@@ -576,10 +639,11 @@ int main(int argc, char** argv) {
                 if (!pair) push(d, "shared", 0);
                 nb = false;
             }
-            const std::string gun = "moe_gu_" + std::to_string(tg_.type) + "_" + std::to_string(gl) + "_" +
-                                    std::to_string(gr) + "_" + std::to_string(gs);
-            const std::string dnn = "moe_down_" + std::to_string(dq2 ? 142 : td.type) + "_" + std::to_string(dl) + "_" +
-                                    std::to_string(dr) + "_" + std::to_string(ds_);
+            const char* mu = std::getenv("CHAIN_MOEU");
+            const std::string gun = std::string(mu ? "moe_guu_" : "moe_gu_") + std::to_string(tg_.type) + "_" + std::to_string(gl) + "_" +
+                                    std::to_string(gr) + "_" + std::to_string(gs) + (mu ? std::string("_") + mu : std::string());
+            const std::string dnn = std::string(mu ? "moe_dnu_" : "moe_down_") + std::to_string(dq2 ? 142 : td.type) + "_" + std::to_string(dl) + "_" +
+                                    std::to_string(dr) + "_" + std::to_string(ds_) + (mu ? std::string("_") + mu : std::string());
             mtl::Dispatch g;
             g.p = Pn(lib, gun, gun + (ctabf ? "#ct" : ""), mtl::Constants().b(23, ctabf));
             g.args = {mtl::Arg::B(W), mtl::Arg::B(XF.b, XF.plane_bytes() * xkind(tg_.type)), mtl::Arg::B(h), mtl::Arg::B(plan),
@@ -609,7 +673,15 @@ int main(int argc, char** argv) {
             d.args = {mtl::Arg::B(ye), mtl::Arg::B(plan), mtl::Arg::B(ysh), mtl::Arg::B(sg), mtl::Arg::B(bo), mtl::Arg::V(a)};
             d.grid[0] = (ntok * N + 255) / 256;
             d.tg[0] = 256;
-            if (combf && (hc_mode == "3" || hc_mode == "q8_3")) comb_pending = true;   // folded into the next gr_norm
+            if (hcf && hcf_only != "gemv") {
+                // the combine applies bo to R and the last threadgroup forms xn for the next read
+                d.p = Pn(lib, "moe_combine_hcf", "moe_combine_hcf", {});
+                d.args = {mtl::Arg::B(ye), mtl::Arg::B(plan), mtl::Arg::B(ysh), mtl::Arg::B(sg), mtl::Arg::B(bo), mtl::Arg::V(a)};
+                for (auto& g : hcf_args(l == 47 ? std::string("output_hc") : "blk." + std::to_string(l + 1) + ".hc_attn")) d.args.push_back(g);
+                push(d, "shared", 0);
+                hcf_pend = !hcf_keep;
+            }
+            else if (combf && (hc_mode == "3" || hc_mode == "q8_3")) comb_pending = true;   // folded into the next gr_norm
             else if (!(fold_comb && hc_mode != "3")) push(d, "shared", 0);   // else folded into the next HC read
         }
     }

@@ -45,7 +45,9 @@ class FindOnPath(unittest.TestCase):
     def test_the_local_bin_folder_is_searched_when_path_misses_it(self):
         (self.dir / ".local" / "bin").mkdir(parents=True)
         exe = fake_cloudflared(self.dir / ".local" / "bin")
-        with self.env(PATH=str(self.dir / "empty")), mock.patch.object(Path, "home", return_value=self.dir):
+        places = access._cloudflared_places
+        with self.env(PATH=str(self.dir / "empty")), mock.patch.object(Path, "home", return_value=self.dir),                 mock.patch.object(access, "_cloudflared_places",     # a box with its own system cloudflared (/usr/bin) must not answer first
+                                  lambda: [p for p in places() if not p.replace("\\", "/").startswith(("/usr/", "/opt/", "/bin/"))]):
             self.assertEqual(access.find_cloudflared(), str(exe))
 
     def test_a_too_old_copy_is_passed_over(self):

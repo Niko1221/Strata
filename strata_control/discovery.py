@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -381,9 +382,81 @@ def data_dir_of(fp: Footprint) -> Path | None:
     return None
 
 
-def prepared_beside(gguf: Path) -> dict:
+def remembered_data_dirs(*, environ=None, windows: bool | None = None, home: Path | None = None) -> list[Path]:
+    """The data folders the Terminal's settings and the desktop app name (best first), read only: for a look at what is prepared where setup would put new files.
+    Unlike ``data_dir`` this writes nothing (no settings sync)."""
+    try:
+        return [p for p, source in data_dir_choices(environ=environ, windows=windows, home=home) if source in ("settings", "app") and p.is_dir()]
+    except OSError:
+        return []
+
+
+def mtp_layer_in(*folders: "str | os.PathLike[str] | None") -> Path | None:
+    """The ``mtp/rt`` folder of the first data folder that holds the draft layer (``<data>/mtp/rt/experts.bin``), the place setup writes it to. None when none does."""
+    for folder in folders:
+        if not folder:
+            continue
+        try:
+            rt = Path(folder) / "mtp" / "rt"
+            if (rt / "experts.bin").is_file():
+                return rt
+        except OSError:
+            continue
+    return None
+
+
+def in_hf_cache(path: str | os.PathLike[str], environ=None) -> bool:
+    """Whether `path` is inside a Hugging Face cache (a `models--<org>--<name>` folder with its snapshots/ and blobs/, or the cache folder
+    itself: HF_HUB_CACHE, HF_HOME/hub, ~/.cache/huggingface). Strata never writes there: the cache is the hub library's, and a
+    file added beside a snapshot's links confuses it."""
+    environ = os.environ if environ is None else environ
+    p = Path(path).expanduser()
+    try:
+        p = p.resolve()
+    except OSError:
+        pass
+    if any(part.lower().startswith("models--") for part in p.parts):
+        return True
+    roots = [environ.get("HF_HUB_CACHE"), environ.get("HUGGINGFACE_HUB_CACHE"), environ.get("HF_HOME"),
+             str(Path("~/.cache/huggingface").expanduser())]
+    for r in roots:
+        if not r:
+            continue
+        try:
+            root = Path(r).expanduser().resolve()
+        except OSError:
+            continue
+        if p == root or root in p.parents:
+            return True
+    try:
+        return p.is_dir() and any(c.name.lower().startswith("models--") for c in p.iterdir())     # a cache folder of another name
+    except OSError:
+        return False
+
+
+def writable_beside(gguf: Path | None) -> Path | None:
+    """The data folder guessed from where the person's own model file sits (`prepared_beside`'s "data_dir": the folder above a `models`
+    folder), only when Strata may keep its own files there: it can write to it and neither it nor its models/ is inside a Hugging Face
+    cache. None: use the data folder every command agrees on instead (the model files are still used where they are)."""
+    if gguf is None:
+        return None
+    found = prepared_beside(gguf)["data_dir"]
+    if found is None:
+        return None
+    found = Path(found)
+    if in_hf_cache(found) or in_hf_cache(found / "models"):
+        return None
+    from strata_control import folders
+    return None if folders.problem(str(found)) else found
+
+
+def prepared_beside(gguf: Path, data_dirs: Iterable[str | os.PathLike[str] | None] = ()) -> dict:
     """What was already prepared for a model file that sits in ``<data>/Models/<tag>/`` (or ``<data>/models/<tag>/``): its pack, the draft
-    layer and the picture reader, found by the layout setup and the desktop app both use. Reads only; absent items are None."""
+    layer and the picture reader, found by the layout setup and the desktop app both use. Reads only; absent items are None.
+
+    ``data_dirs`` are the data folders the launch names besides that layout (``--data-dir``, the remembered one): setup writes the draft layer to
+    ``<data-dir>/mtp/rt`` and the pack to ``<data-dir>/packs/<tag>``, and a model folder outside the data folder must not hide them (a second 5.2 GB fetch).
+    The folder next to the model is looked at first."""
     gguf = Path(gguf)
     folder = gguf.parent
     out: dict = {"data_dir": None, "pack": None, "mtp": None, "mmproj": None}
@@ -400,6 +473,27 @@ def prepared_beside(gguf: Path) -> dict:
                 out["mmproj"] = cand
                 break
             break
+    others = [Path(d) for d in data_dirs if d]
+    if out["mtp"] is None:
+        out["mtp"] = mtp_layer_in(*others)
+    if out["pack"] is None and folder.name:
+        tag = folder.name.lower()
+        for d in others:
+            try:
+                if (d / "packs" / tag).is_dir():
+                    out["pack"] = d / "packs" / tag
+                    break
+            except OSError:
+                continue
+    if out["mmproj"] is None:
+        for d in others:                                         # setup keeps the picture reader in <data>/models
+            try:
+                found = next(iter(sorted(p for sub in ("models", "Models") for p in (d / sub).glob("mmproj*.gguf"))), None)
+            except OSError:
+                found = None
+            if found is not None:
+                out["mmproj"] = found
+                break
     return out
 
 

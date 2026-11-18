@@ -393,3 +393,58 @@ class ByteCache(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PreTokenizerType(unittest.TestCase):
+    """P4 (Qwen4 prep): an unknown tokenizer.ggml.pre is refused, never split with another model's rule.  The types that were
+    accepted before (qwen35, an empty one, anything starting with deepseek) still build and split exactly as they did."""
+
+    def test_known_types(self):
+        self.assertEqual(ST.pre_tokenizer_kind("qwen35"), "qwen35")
+        self.assertEqual(ST.pre_tokenizer_kind(None), "qwen35")
+        self.assertEqual(ST.pre_tokenizer_kind(""), "qwen35")
+        for p in ("deepseek3", "deepseek-v3", "deepseek-llm", "deepseek41"):
+            self.assertEqual(ST.pre_tokenizer_kind(p), "deepseek3", p)
+
+    def test_unknown_types_are_refused_with_the_name(self):
+        for p in ("qwen2", "qwen3", "qwen4", "default", "gpt2", "llama-bpe", "joyai-llm", "Qwen35", " qwen35"):
+            with self.subTest(p):
+                self.assertIsNone(ST.pre_tokenizer_kind(p))
+                with self.assertRaises(ST.UnknownPreTokenizer) as cm:
+                    ST.Tokenizer([chr(i) for i in range(4)], [], None, p)
+                self.assertIn(repr(p), str(cm.exception))
+                self.assertIsInstance(cm.exception, ValueError)       # callers that catch ValueError keep working
+
+    def test_from_gguf_refuses_an_unknown_type(self):
+        import tempfile
+        import struct
+        from gguf_reader import GGUF_MAGIC
+        from gguf_writer import GGUFWriter
+        w = GGUFWriter()
+        w.add("tokenizer.ggml.model", "gpt2")
+        w.add("tokenizer.ggml.pre", "qwen4")
+        w.add("tokenizer.ggml.tokens", ["a", "b"], "array:string")
+        w.add("tokenizer.ggml.merges", ["a b"], "array:string")
+        with tempfile.TemporaryDirectory() as d:
+            p = w.write(Path(d) / "x.gguf")
+            with self.assertRaises(ST.UnknownPreTokenizer):
+                ST.Tokenizer.from_gguf(p)
+            w.add("tokenizer.ggml.pre", "qwen35")
+            w.add("tokenizer.ggml.tokens", ["a", "b", "ab"], "array:string")
+            w.add("tokenizer.ggml.merges", ["a b"], "array:string")
+            ok = ST.Tokenizer.from_gguf(w.write(Path(d) / "y.gguf"))
+            self.assertEqual(ok.pre, "qwen35")
+            self.assertEqual(ok.encode("ab"), [2])
+
+    def test_accepted_types_split_as_before(self):
+        rnd = random.Random(7)
+        toks = [chr(i) for i in range(32, 127)] + ["\n", "\t", "你", "好"]
+        text = "".join(rnd.choice(toks) for _ in range(400)) + "Hello, World 123 你好\n\n  x_y"
+        a = ST.Tokenizer(toks, [], None, "qwen35")
+        self.assertEqual(a._split(text), ST.regex.compile(ST.QWEN35_PATTERN).findall(text))
+        self.assertEqual(ST.Tokenizer(toks, [], None, None)._split(text), a._split(text))
+        self.assertEqual(ST.Tokenizer(toks, [], None, "")._split(text), a._split(text))
+        d = ST.Tokenizer(toks, [], None, "deepseek3")
+        seq = [ST.regex.compile(x) for x in ST.DEEPSEEK3_PATTERNS]
+        self.assertEqual(d._split(text), ST._sequence_findall(seq, text))
+        self.assertEqual(ST.Tokenizer(toks, [], None, "deepseek-v3")._split(text), d._split(text))

@@ -5,8 +5,6 @@
 .navsession__dot--warn { background: var(--st-warn); }
 
 .board-wrap { container-type: inline-size; min-width: 0; }
-.board-note { display: flex; align-items: center; gap: 8px; margin: 0 0 14px; font-size: var(--st-fs-sm); color: var(--st-ink-muted); }
-.board-note svg { flex: none; }
 .board { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; align-items: start; }
 @container (max-width: 1080px) { .board { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @container (max-width: 560px) { .board { grid-template-columns: minmax(0, 1fr); } }

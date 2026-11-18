@@ -11,6 +11,7 @@
  *   timeoutSec the time allowed, 1 to 3600 (default 120). A command that runs over is ended together with the programs it started.
  */
 import { spawn, spawnSync } from 'node:child_process';
+import { endTree as endTreeNow, ownGroup } from '../process-tree.mjs';
 import { existsSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 
@@ -67,10 +68,7 @@ export const clampTimeoutSec = value => {
 };
 
 function endTree(child) {
-  try {
-    if (process.platform === 'win32' && child.pid) spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, timeout: 10000 });
-    else child.kill('SIGKILL');
-  } catch { /* gone */ }
+  endTreeNow(child, 'SIGKILL');    // the command's whole process group on Linux and macOS (it is started as its own group below), taskkill /T on Windows
 }
 
 /**
@@ -85,7 +83,7 @@ export function runCommand({ command, input = '', cwd, callCwd, shell = 'auto', 
     const limit = clampTimeoutSec(timeoutSec);
     let child;
     try {
-      child = spawn(plan.file, plan.args, { shell: plan.shell, windowsHide: true, cwd: where.cwd, env: { ...process.env, STRATA_INPUT: String(input ?? '') }, stdio: ['ignore', 'pipe', 'pipe'] });
+      child = spawn(plan.file, plan.args, { shell: plan.shell, windowsHide: true, detached: ownGroup(), cwd: where.cwd, env: { ...process.env, STRATA_INPUT: String(input ?? '') }, stdio: ['ignore', 'pipe', 'pipe'] });
     } catch (e) { return resolve({ ok: false, text: `The command could not start in ${plan.name}: ${e.message}` }); }
     let text = '', cut = false, timedOut = false;
     const take = chunk => { if (text.length < OUT_MAX + 1) text += chunk.toString(); else cut = true; };

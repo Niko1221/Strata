@@ -22,6 +22,6 @@ inline constexpr int kVerifyNarrowT = 8;
 /// The most rows one window can hold in this build (8 or 16).
 inline constexpr int kWindowMaxT = STRATA_VERIFY_MAX_T;
 
-static_assert(kWindowMaxT == 8 || kWindowMaxT == 16, "STRATA_VERIFY_MAX_T is 8 or 16 (the wide kernels are built for 16)");
+static_assert(kWindowMaxT == 8 || kWindowMaxT == 12 || kWindowMaxT == 16, "STRATA_VERIFY_MAX_T is 8, 12 or 16");
 
 }  // namespace strata::kernels

@@ -8,6 +8,7 @@ Runs the real script in a temporary tree with a stub for the `strata` command (P
 from __future__ import annotations
 
 import os
+import sys
 import shutil
 import signal
 import subprocess
@@ -37,7 +38,7 @@ exit 0
 """
 
 
-@unittest.skipIf(os.name == "nt" or SH is None, "needs POSIX sh")
+@unittest.skipUnless(sys.platform.startswith("linux") and SH is not None, "the container entry point runs in a Linux image (POSIX sh with GNU tools)")
 class Entrypoint(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
@@ -111,6 +112,7 @@ class Entrypoint(unittest.TestCase):
         self.log.unlink()
         p = self.start(STUB_PRESET="1", STUB_TUNED="tuned x", TUNE="quick", RETUNE="1")
         self.assertIn("--tune quick", self.launch_line(self.wait_for("--show-key")))
+        self.assertIn("--retune", self.launch_line(self.wait_for("--show-key")))      # #4779: the launcher needs the flag itself
         self.stop(p)
 
     def test_no_settings_asks_for_the_recommended_model_and_warns(self):
@@ -198,11 +200,26 @@ class Entrypoint(unittest.TestCase):
         (data / "models" / "t" / "f.gguf").write_text("old")
         (data / "Strata-data" / "models" / "t").mkdir(parents=True)
         (data / "Strata-data" / "models" / "t" / "f.gguf").write_text("new")
-        p = self.start(MODEL="IQ3_XXS")
+        # the older copy stays where it is, so the guard for model files left in the older place (#3421) would stop the start
+        # ("Nothing was downloaded."); ALLOW_DOWNLOAD=1 goes on with a warning, which is what this test is about
+        p = self.start(MODEL="IQ3_XXS", ALLOW_DOWNLOAD="1")
         self.wait_for("--show-key")
         self.stop(p)
         self.assertEqual((data / "Strata-data" / "models" / "t" / "f.gguf").read_text(), "new")   # never overwritten
         self.assertEqual((data / "models" / "t" / "f.gguf").read_text(), "old")
+
+    def test_older_model_files_that_were_not_moved_stop_the_start_unless_downloading_is_allowed(self):
+        data = self.tmp / "data"
+        (data / "models" / "t").mkdir(parents=True)
+        (data / "models" / "t" / "f.gguf").write_text("old")
+        (data / "Strata-data" / "models" / "t").mkdir(parents=True)
+        (data / "Strata-data" / "models" / "t" / "f.gguf").write_text("new")
+        p = self.start(MODEL="IQ3_XXS")
+        out, err = p.communicate(timeout=30)
+        code = p.returncode
+        self.assertEqual(code, 2, err)
+        self.assertIn("Nothing was downloaded.", out + err)
+        self.assertNotIn("launch --no-tui", self.log.read_text() if self.log.exists() else "")
 
     def test_run_settings_that_name_another_images_engine_folder_are_made_again(self):
         install = self.tmp / "data" / "install"

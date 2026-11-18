@@ -39,8 +39,8 @@ namespace {
 // THE BLOB'S OWN GEOMETRY, from `include/strata/kernels/cpu/expert.hpp`.  Restated as literals because that
 // header is the CPU path's and this file must not silently follow it if the two ever disagree: the sizes below
 // are what the CPU kernel's indexing computes, and `moe_hit_parity` compares the two end to end.
-constexpr int H = 2560;
-constexpr int FF = 640;
+constexpr int H = strata::core::kCompiledGeometry.n_embd;
+constexpr int FF = strata::core::kCompiledGeometry.n_ff;
 static_assert(H == strata::core::kCompiledGeometry.n_embd && FF == strata::core::kCompiledGeometry.n_ff, "s2_expert_grouped is compiled for core/geometry.hpp");
 constexpr int QK = 64;                       // Q2_0's group: one fp16 scale per 64 weights
 constexpr int ROW_GU = H / 4;                // 640 B of codes per gate/up row (2 bits per element)
@@ -1351,6 +1351,7 @@ __dpct_inline__ void gu_grouped_t_kernel(
     const int32_t *__restrict__ ent_tok, const uint8_t *__restrict__ x_q8_0,
     const float *__restrict__ x_scales, float *__restrict__ gate_up,
     int cap_entries) {
+    #pragma clang fp contract(off)   // SYCL port: round as the previous kernels do (see tools/fixups.py)
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
     constexpr int NC = H / 32;
     auto &xs_w = *sycl::ext::oneapi::group_local_memory_for_overwrite<
@@ -1432,6 +1433,7 @@ __dpct_inline__ void down_grouped_t_kernel(
     const int32_t *__restrict__ grp_start, const int32_t *__restrict__ n_groups,
     const int32_t *__restrict__ ent_dst, const uint8_t *__restrict__ h_q8_0,
     const float *__restrict__ h_scales, float *__restrict__ out) {
+    #pragma clang fp contract(off)   // SYCL port: round as the previous kernels do (see tools/fixups.py)
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
     constexpr int NC = FF / 32;
     auto &hs_w = *sycl::ext::oneapi::group_local_memory_for_overwrite<

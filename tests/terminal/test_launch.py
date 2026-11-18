@@ -109,9 +109,6 @@ class CatalogRules(unittest.TestCase):
             models, families, contexts, source = cat.tables()
             self.assertEqual(source, "setup.py")                       # the same tables setup.py and the app read
             for r in rows:
-                if r.family == "deepseek41":                           # its sizes are in MULTI_FILE_FAMILIES (shards + shared files), not in MODELS
-                    self.assertAlmostEqual(r.download_gb, {"UD-Q8_K_XL": 508.4, "IST-DAS-2.00bpw": 256.8, "IST-DAS-2.25bpw": 273.8, "IST-DAS-1.75bpw": 239.3, "UD-IQ1_S": 241.0, "UD-IQ1_M": 258.4}[r.model], delta=0.1)
-                    continue
                 self.assertAlmostEqual(r.download_gb, models[r.model]["download_gb"])
             rec = [r for r in rows if r.recommended]
             self.assertEqual([(r.family, r.model) for r in rec], [("qwen", "IQ3_S")])      # 64 + 12 GB: the 64 GB tier
@@ -139,20 +136,16 @@ class CatalogRules(unittest.TestCase):
         self.assertEqual(gyro["memoryGb"], 27.6)
 
     def test_a_mac_is_judged_by_unified_memory_and_the_words_follow(self):
-        hw = {"ram_gb": 32.0, "os": "Darwin", "cpu": {"avx2": None, "name": "Apple M4"}, "mac": {"chip": "Apple M4", "macos": "27.2", "unified_gb": 32.0},
+        hw = {"ram_gb": 32.0, "disk_free_gb": 5000.0, "os": "Darwin", "cpu": {"avx2": None, "name": "Apple M4"}, "mac": {"chip": "Apple M4", "macos": "27.2", "unified_gb": 32.0},
               "gpus": [{"index": 0, "name": "Apple M4", "vendor": "apple", "vram_gb": 0.0, "unified_gb": 32.0, "usable": True}]}
         with Home():
             cat = catalog(hw)
             rows = {r.model: r for r in cat.rows()}
-            self.assertEqual(set(rows), {"Q2_0", "IQ3_XXS", "IQ3_S", "Gyro-S", "Gyro-M", "IST-DAS-2.00bpw", "IST-DAS-2.25bpw", "UD-IQ1_S", "UD-IQ1_M"})   # DeepSeek (0.2.7.1): the two IST-DAS sets run on a Mac, UD-IQ1_S since f-039
+            self.assertEqual(set(rows), {"Q2_0", "IQ3_XXS", "IQ3_S", "Gyro-S", "Gyro-M", "UD-IQ1_M",
+                                "UD-Q2_0", "UD-IQ2_XS", "UD-Q2_K_XL", "UD-IQ3_XXS", "UD-Q3_K_XL", "UD-IQ4_XS-v31", "UD-Q4_K_XL", "UD-Q5_K_XL", "UD-Q6_K_XL"})   # Unsloth's sets (round 0214: the Mac app repacks them)
             self.assertEqual([r.model for r in rows.values() if r.recommended], ["Q2_0"])
-            for name in ("IST-DAS-2.00bpw", "IST-DAS-2.25bpw"):            # a 32 GB Mac: said plainly (mostly read from the SSD), never refused
-                self.assertEqual(rows[name].family, "deepseek41")
-                self.assertEqual(rows[name].verdict, "tight")
-                self.assertFalse(rows[name].images)
-                self.assertGreater(rows[name].spill_gb, 100)
-            self.assertEqual((rows["Q2_0"].verdict, rows["Q2_0"].words), ("fits", "fits, part read from SSD"))
-            self.assertEqual(rows["IQ3_S"].verdict, "tight")
+            self.assertEqual((rows["Q2_0"].verdict, rows["Q2_0"].words), ("slower", "may run slower"))
+            self.assertEqual(rows["IQ3_S"].verdict, "slower")
             self.assertGreater(rows["IQ3_S"].spill_gb, 10)
             self.assertEqual(cat.max_context("qwen", "Q2_0", hw), 32768)
             self.assertEqual(cat.computer().line(), "Apple M4 · 32 GB unified memory · " + cat.computer().line().split(" · ")[-1])
@@ -161,10 +154,10 @@ class CatalogRules(unittest.TestCase):
 
     def test_verdict_words_never_block(self):
         self.assertEqual(verdict("fits")[0], "fits")
-        self.assertEqual(verdict("does not fit")[0], "no")
-        self.assertIn("can still try", verdict("does not fit")[1])
+        self.assertEqual(verdict("does not fit"), ("slower", "may run slower"))              # an older Control's words, read as the one label
         self.assertEqual(verdict("tight")[0], "tight")
-        self.assertEqual(verdict("fits in the low-RAM mode (slower)")[0], "fits")
+        self.assertEqual(verdict("fits"), ("fits", "fits"))
+        self.assertEqual(verdict("may run slower"), ("slower", "may run slower"))
 
     def test_resolve_names_and_closest(self):
         with Home():
@@ -186,14 +179,14 @@ class CatalogRules(unittest.TestCase):
         with Home():
             rows = catalog({**HW_12, "ram_gb": 32.0}).rows()
             big = [r for r in rows if r.model == "IQ3_S" and r.family == "qwen"][0]
-            self.assertIn(big.verdict, ("no", "tight"))
+            self.assertEqual((big.verdict, big.words), ("slower", "may run slower"))          # 51 GB of weights against 32 GB of RAM + a 12 GB card
 
     def test_kv_figures(self):
         with Home():
             cat = catalog()
             self.assertAlmostEqual(cat.kv_gb(131072, "int8"), 1.799, places=2)
             self.assertLess(cat.kv_gb(131072, "q4_0"), cat.kv_gb(131072, "int8"))
-            self.assertEqual(cat.max_context("qwen", "IQ3_XXS", HW_12), 32768)
+            self.assertEqual(cat.max_context("qwen", "IQ3_XXS", HW_12), 131072)      # 128K on every card (owner, 2026-11-01)
             self.assertEqual(cat.max_context("qwen", "IQ3_XXS", HW_24), 131072)
 
     def test_missing_installer_files_are_said_in_words(self):
@@ -205,7 +198,9 @@ class CatalogRules(unittest.TestCase):
 
 class PresetStore(unittest.TestCase):
     def test_save_load_list_delete(self):
-        with Home():
+        # Windows' clock moves in ~15.6 ms ticks: on a fast PC (a CI runner) the save and touch_used can read the same time, a tie in the order
+        ticks = iter(f"2026-01-01 00:00:{s:02d}.000000" for s in range(60))
+        with Home(), mock.patch.object(store, "now_text", lambda: next(ticks)):
             s = S.LaunchSettings(name="IQ3_XXS 128K", family="qwen", model="IQ3_XXS", context=131072, api_key="sk-secret")
             store.save(s)
             store.save(S.LaunchSettings(name="Coder 64K", family="coder", model="IQ1_M", context=65536))
@@ -457,6 +452,21 @@ class SetupArgs(unittest.TestCase):
             s, _ = apply_defaults(S.LaunchSettings(family="qwen", model="IQ3_XXS", vision="off"), cat)
             self.assertEqual(s.vision, "off")
 
+    def test_a_disk_warning_is_not_shown_for_files_used_where_they_are_and_reads_once(self):
+        import dataclasses
+        from strata_cli.launch.cmd import apply_defaults
+        with Home():
+            cat = catalog(HW_12)
+            real = cat.rows()
+            rows = [dataclasses.replace(r, verdict="tight", words="tight: needs more disk space") for r in real]
+            with mock.patch.object(type(cat), "rows", lambda self, *a, **k: rows):
+                _, notes = apply_defaults(S.LaunchSettings(family="qwen", model="IQ3_XXS", model_path="/x"), cat)
+                self.assertFalse([n for n in notes if "tight" in n.text], notes)
+                _, notes = apply_defaults(S.LaunchSettings(family="qwen", model="IQ3_XXS"), cat)
+                text = " ".join(n.text for n in notes)
+                self.assertIn("is a tight fit: needs more disk space.", text)
+                self.assertNotIn("tight: tight", text)
+
     def test_the_apps_own_installer_arguments(self):
         import tempfile
         own = tempfile.mkdtemp()
@@ -477,6 +487,10 @@ class SetupArgs(unittest.TestCase):
 
 
 class AdoptRules(unittest.TestCase):
+    def setUp(self):
+        from tests.terminal.launch_support import not_intel
+        not_intel(self)
+
     def files(self, root: Path, shards=2, pack=True, tokenizer=True, mtp=True):
         d = root / "Strata-data"
         m = d / "models" / "IQ3_XXS"
@@ -553,9 +567,9 @@ class AdoptRules(unittest.TestCase):
             hw["gpus"] = cards
             cat = catalog(hw)
             self.assertEqual(cat.computer().line().split(" 8 GB")[0], "Arc A750".replace("Arc", "Intel Arc"))
-            self.assertEqual(cat.max_context("qwen", "IQ3_XXS", hw), 8192)
+            self.assertEqual(cat.max_context("qwen", "IQ3_XXS", hw), 131072)      # an 8 GB Arc too: warned about, never lowered
             hw["gpus"] = [{"vendor": "intel", "name": "Intel Arc Pro B70", "vram_gb": 32.0, "usable": True}]
-            self.assertEqual(cat.max_context("qwen", "IQ3_XXS", hw), 32768)
+            self.assertEqual(cat.max_context("qwen", "IQ3_XXS", hw), 131072)
 
     def test_plan_names_what_is_missing(self):
         from strata_cli.launch import adopt
@@ -566,7 +580,7 @@ class AdoptRules(unittest.TestCase):
             self.assertIsNone(cfg)
             self.assertTrue(any("prepared pack" in p for p in problems))
             self.assertTrue(any("tokenizer" in p for p in problems))
-            cfg, problems = adopt.plan(family="unsloth", model="UD-Q4_K_XL", model_dir=m, data_dir=d, src=Path("."), context=8192, kv=None, model_name="x",
+            cfg, problems = adopt.plan(family="nvfp4", model="NVFP4", model_dir=m, data_dir=d, src=Path("."), context=8192, kv=None, model_name="x",
                                        family_def={}, log=h.base / "x.log", backend=None)
             self.assertIn("only for the Qwen3.8-Flash-Next", problems[0])
             self.assertNotIn("..", problems[0] + ".")                           # round 8, N11: the caller adds the full stop
@@ -717,7 +731,9 @@ class AdoptRules(unittest.TestCase):
             self.assertTrue(store.summary(store.load("Fastest"))["tuned"])
 
     def test_runner_adopts_when_setup_cannot_handle_the_card(self):
-        with Home() as h:
+        # the engine make is read from the machine (adopt_prepared_files asks engine_component.detect_backend); on a box with an Intel Arc the
+        # second launch below would be refused as an Intel one. This case is the "no NVIDIA driver" one.
+        with Home() as h, mock.patch("strata_control.engine_component.detect_backend", lambda environ=None: ("cuda", "test")):
             d, m = self.files(h.base)
             cat = catalog(HW_12)
             s = S.LaunchSettings(family="qwen", model="IQ3_XXS", context=32768, data_dir=str(d))
@@ -789,6 +805,10 @@ class AccessRules(unittest.TestCase):
                          "https://calm-river-1234.trycloudflare.com")
 
 
+# a person at Git Bash: no CI variable (a CI runner sets one, and strata launch then never asks) and no STRATA_NO_PROMPT
+GIT_BASH_ENV = {"MSYSTEM": "MINGW64", "CI": "", "STRATA_NO_PROMPT": ""}
+
+
 class FlagsCommand(unittest.TestCase):
     """Every `strata launch` flag, run through the real parser with the computer faked and nothing installed."""
 
@@ -844,7 +864,7 @@ class FlagsCommand(unittest.TestCase):
     def test_defaults_come_from_the_recommendation(self):
         p = self.plan()
         s = p["settings"]
-        self.assertEqual((s["family"], s["model"], s["context"], s["access"], s["tune"]), ("qwen", "IQ3_S", 32768, "local", "skip"))
+        self.assertEqual((s["family"], s["model"], s["context"], s["access"], s["tune"]), ("qwen", "IQ3_S", 131072, "local", "skip"))
         self.assertTrue(any("picked" in w for w in p["warnings"]))
 
     def test_family_and_kv_and_gpu_and_data_dir_and_set(self):
@@ -868,37 +888,6 @@ class FlagsCommand(unittest.TestCase):
         p = self.plan("--model", "q2_0", "--pool-cores", "two,four")        # a list that cannot be read: a warning, never a refusal
         self.assertNotIn("--pool-cores", p["settings"]["extra"])
         self.assertTrue(any("pool-cores" in w for w in p["warnings"]))
-
-    def test_dspark_on_a_mac_is_warned_about_and_not_refused(self):
-        # the drafter has no Metal kernels yet: --dspark on is passed on as asked, with a plain warning (recommend, never force)
-        import sys
-        from unittest import mock
-        with mock.patch.object(sys, "platform", "darwin"):
-            p = self.plan("--model", "q2_0", "--dspark", "on")
-        self.assertEqual(p["settings"]["extra"].get("--dspark"), "on")
-        self.assertTrue(any("DSpark" in w and "Mac" in w for w in p["warnings"]), p["warnings"])
-        p = self.plan("--model", "q2_0", "--dspark", "auto")
-        self.assertFalse(any("DSpark" in w and "Mac" in w for w in p["warnings"]))
-
-    def test_dspark_takes_a_word_and_the_word_reaches_the_engine_line(self):
-        # --set dspark=on used to start strata-dsv41 with a lone "--dspark" ("--dspark needs a value", #3959)
-        from strata_cli.launch import settings as S
-        from strata_control import tune_knobs
-        base = ["--pack", "p", "--max-context", "262144"]
-        for word in ("on", "off", "auto", "none"):
-            a, _ = S.as_argv_changes({"--dspark": word}, tune_knobs.BOOL_FLAGS)
-            self.assertEqual(a, {"--dspark": word})
-            out = tune_knobs.apply_to_argv(base + ["--dspark", "auto"], a)
-            self.assertEqual(out[out.index("--dspark") + 1], word, word)
-            self.assertEqual(out.count("--dspark"), 1)
-        a, _ = S.as_argv_changes({"--dspark": "ON", "--dspark-conf": "0.7"}, tune_knobs.BOOL_FLAGS)
-        self.assertEqual(a, {"--dspark": "on", "--dspark-conf": "0.7"})
-        self.assertEqual(S.as_argv_changes({"--dspark": ""}, tune_knobs.BOOL_FLAGS)[0], {})
-        code, out, _err = run_cli(["launch", "--help"])
-        self.assertIn("--dspark", out)
-        p = self.plan("--model", "q2_0", "--dspark", "on")
-        self.assertEqual(p["settings"]["extra"], {"--dspark": "on"})
-        self.assertIn("--set dspark=on", p["flags"])
 
     def test_api_key_flags(self):
         p = self.plan("--model", "q2_0", "--access", "lan", "--api-key", "sk-mine")
@@ -925,7 +914,7 @@ class FlagsCommand(unittest.TestCase):
         # scripts that name LAN without a key flag keep getting a key, as before
         p = self.plan("--model", "q2_0", "--access", "lan", "--yes")
         self.assertEqual(p["settings"]["api_key"], "set")
-        self.assertTrue(any("new API key was made" in w for w in p["warnings"]))
+        self.assertFalse(any("new API key was made" in w for w in p["warnings"]))      # the plan writes nothing: the launch says it when the key is on disk (QATUI, 11-04)
         # a key given as well wins over --no-api-key, with a note
         p = self.plan("--model", "q2_0", "--access", "lan", "--api-key", "sk-a", "--no-api-key")
         self.assertEqual(p["settings"]["api_key"], "set")
@@ -951,7 +940,7 @@ class FlagsCommand(unittest.TestCase):
 
     def test_git_bash_without_a_tty_goes_on_in_plain_questions(self):
         fake = Result("launch-x", ["http://127.0.0.1:8080"], None, None, [], "/x")
-        with mock.patch.dict(os.environ, {"MSYSTEM": "MINGW64"}), mock.patch("builtins.input", return_value="y"),                 mock.patch.object(Runner, "run", return_value=fake) as run:
+        with mock.patch.dict(os.environ, GIT_BASH_ENV), mock.patch("builtins.input", return_value="y"),                 mock.patch.object(Runner, "run", return_value=fake) as run:
             code, out, err = run_cli(["launch"])
         self.assertEqual(code, 0, err)
         run.assert_called_once()
@@ -959,13 +948,13 @@ class FlagsCommand(unittest.TestCase):
         self.assertIn("winpty strata launch", out + err)
 
     def test_git_bash_answering_no_changes_nothing(self):
-        with mock.patch.dict(os.environ, {"MSYSTEM": "MINGW64"}), mock.patch("builtins.input", return_value="n"),                 mock.patch.object(Runner, "run", side_effect=AssertionError("must not run")):
+        with mock.patch.dict(os.environ, GIT_BASH_ENV), mock.patch("builtins.input", return_value="n"),                 mock.patch.object(Runner, "run", side_effect=AssertionError("must not run")):
             code, out, err = run_cli(["launch"])
         self.assertEqual(code, 0, err)
         self.assertIn("Nothing was changed", out + err)
 
     def test_a_pipe_with_nobody_to_answer_still_says_what_to_name(self):
-        with mock.patch.dict(os.environ, {"MSYSTEM": "MINGW64"}), mock.patch("builtins.input", side_effect=EOFError),                 mock.patch.object(Runner, "run", side_effect=AssertionError("must not run")):
+        with mock.patch.dict(os.environ, GIT_BASH_ENV), mock.patch("builtins.input", side_effect=EOFError),                 mock.patch.object(Runner, "run", side_effect=AssertionError("must not run")):
             code, out, err = run_cli(["launch"])
         self.assertEqual(code, 2)
         self.assertIn("--preset NAME", err)
@@ -1011,8 +1000,10 @@ class FlagsCommand(unittest.TestCase):
         self.assertTrue(any("cannot read pictures" in w for w in p["warnings"]))
 
     def test_does_not_fit_is_a_warning_with_the_reason(self):
-        p = self.plan("--model", "nvfp4")
-        self.assertTrue(any("does not fit" in w for w in p["warnings"]))
+        p = self.plan("--model", "q8_0")                                  # 129 GB of weights against 64 GB of RAM + a 12 GB card
+        self.assertTrue(any(w.endswith(": may run slower.") for w in p["warnings"]), p["warnings"])
+        p = self.plan("--model", "iq3_s")                                 # 54.8 GB: fits
+        self.assertFalse(any("may run slower" in w for w in p["warnings"]))
 
     def test_human_plan_changes_nothing(self):
         code, out, err = run_cli(["launch", "--plan", "--model", "q2_0", "--save-preset", "X"])
@@ -1355,13 +1346,13 @@ class GpuRolesFlag(unittest.TestCase):
         self.assertIsNone(s["gpus"])
         code, out, err = run_cli(["launch", "--plan", "--model", "iq3_xxs", "--gpu-roles", "1=main,0=helper"])
         self.assertEqual(code, 0, err or out)
-        self.assertIn("cards     Main: GPU 2 RTX A4000. Helper: GPU 1 RTX A4000.", out)
+        self.assertIn("cards     Main: GPU 2 (--gpu 1) RTX A4000. Helper: GPU 1 (--gpu 0) RTX A4000.", out)      # counted from 1 like the screens, and the number --gpu takes
         self.assertIn("--gpu-roles 0=helper,1=main", out)                 # the copyable line says the same
 
     def test_one_card_named_leaves_the_other_off(self):
         code, out, err = run_cli(["launch", "--plan", "--model", "iq3_xxs", "--gpu-roles", "1=main"])
         self.assertEqual(code, 0, err or out)
-        self.assertIn("Main: GPU 2 RTX A4000. Off: GPU 1 RTX A4000.", out)
+        self.assertIn("Main: GPU 2 (--gpu 1) RTX A4000. Off: GPU 1 (--gpu 0) RTX A4000.", out)
 
     def test_bad_roles_are_plain_sentences(self):
         for argv, word in ((["--gpu-roles", "1=boss"], "main, helper, off"), (["--gpu-roles", "0=main,1=main"], "only one card can be Main"),

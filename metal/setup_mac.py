@@ -7,7 +7,7 @@ What it does, each step skipped when it is already done:
   1. checks the Mac: Apple Silicon, the chip, unified memory, macOS version, the Command Line Tools, free disk
   2. recommends a model by memory (recommend, never force: an explicit --model is kept, with what it risks)
   3. installs the Python packages into .venv (cmake and ninja come from pip, just before step 4: no Homebrew, no sudo)
-  4. builds the Metal engine from source: metal-cpp (Apple's headers) and llama.cpp's ggml at the pinned commit
+  4. builds the Metal engine from source: metal-cpp (Apple's headers) and the vendored ggml (third_party/strata-ggml)
   5. downloads the model (setup.py's downloader: resumable, the pinned revision)
   6. prepares the model: the native pack (tools/iq_pack.py) and the MTP draft layer (tools/mtp_fetch.py, mtp_pack.py)
   7. writes strata-<model>.json and run-<model>.sh with the Metal defaults (--spec 2, the Q8_0 hyper-connection
@@ -68,13 +68,15 @@ def model_shard_names(model: str) -> list[str]:
     n = MAC_MODELS[model].get("shards", 2)
     if MAC_MODELS[model].get("family") == "gyro":          # agentionai's one file (the n-gram table is inside it)
         return [S.model_file(S.FAMILIES["gyro"], model, 1)]
-    if MAC_MODELS[model].get("family") == "unsloth":
-        return [f"Qwen3.8-Flash-Next-{model}-{i:05d}-of-{n:05d}.gguf" for i in range(1, n + 1)]
+    if S.FAMILIES.get(MAC_MODELS[model].get("family", "qwen"), {}).get("feed"):     # a model of the signed feed: its files as the feed names them
+        return [S.model_file(S.FAMILIES[MAC_MODELS[model]["family"]], model, i) for i in range(1, n + 1)]
+    if MAC_MODELS[model].get("family") == "unsloth":      # (setup.py's model_file: the v3.1 UD-IQ4_XS is named UD-IQ4_XS on the Hub)
+        return [S.model_file(S.FAMILIES["unsloth"], model, i) for i in range(1, n + 1)]
     return [S.model_file(S.FAMILIES["qwen"], model, i) for i in range(1, n + 1)]
 
 
 def shard_sha(name: str):
-    return UD_SHARDS.get(name) or getattr(S, "UNSLOTH_SHARDS", {}).get(name)
+    return UD_SHARDS.get(name) or getattr(S, "UNSLOTH_SHARDS", {}).get(name) or getattr(S, "UNSLOTH_V31_SHARDS", {}).get(name)
 
 
 # ------------------------------------------------------------------------------------------------ the Mac
@@ -113,9 +115,9 @@ def engine_current() -> bool:
 
 def source_digest() -> str:
     """What the engine is built from: every source file's path, size and modification time (src/, include/, metal/,
-    third_party/ggml).  A git pull, an unzipped update or a local edit changes it; nothing else does."""
+    third_party/ggml, third_party/strata-ggml).  A git pull, an unzipped update or a local edit changes it; nothing else does."""
     h = hashlib.sha256()
-    for d in ("src", "include", "metal", "third_party/ggml"):
+    for d in ("src", "include", "metal", "third_party/ggml", "third_party/strata-ggml"):
         for f in sorted((ROOT / d).rglob("*")):
             if f.is_file() and f.suffix in (".cpp", ".cu", ".h", ".hpp", ".mm", ".metal", ".inc", ".txt", ".cuh"):
                 st = f.stat()
@@ -135,7 +137,7 @@ def build_engine(llama: Path, jobs: int | None = None) -> Path:
     log = BUILD_DIR / "build.log"
     env = dict(os.environ, PATH=str(Path(sys.executable).parent) + os.pathsep + os.environ.get("PATH", ""))
     cfg = [tool("cmake"), "-S", str(ROOT / "metal"), "-B", str(BUILD_DIR), "-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release",
-           f"-DCMAKE_MAKE_PROGRAM={tool('ninja')}", f"-DMETAL_CPP_DIR={mcpp}", f"-DSTRATA_GGML_DIR={llama}"]
+           f"-DCMAKE_MAKE_PROGRAM={tool('ninja')}", f"-DMETAL_CPP_DIR={mcpp}", *S.ggml_defs(llama)]
     build = [tool("ninja"), "-C", str(BUILD_DIR), "strata"] + (["-j", str(jobs)] if jobs else [])
     with open(log, "w", encoding="utf-8") as f:
         for cmd in (cfg, build):
@@ -151,9 +153,10 @@ def build_engine(llama: Path, jobs: int | None = None) -> Path:
 
 
 # ------------------------------------------------------------------------------------------------ the config
-def engine_args(pack: Path, shards: list, rt: Path, ctx: int, stream: bool = False, ram_gb: float = 0.0) -> list[str]:
+def engine_args(pack: Path, shards: list, rt: Path, ctx: int, stream: bool = False, ram_gb: float = 0.0,
+                model: str = "") -> list[str]:
     """The Metal defaults (strata_control/mac_fit.py), with this checkout's expert profile."""
-    return _fit.engine_args(pack, shards, rt, ctx, stream, ram_gb, ROOT / "data" / "expert-profile.bin")
+    return _fit.engine_args(pack, shards, rt, ctx, stream, ram_gb, ROOT / "data" / "expert-profile.bin", model)
 
 
 # the image encoder's projector (setup.py's pinned revision): name -> (bytes, SHA-256)
@@ -179,7 +182,7 @@ def build_vision(llama: Path) -> Path:
     log = ROOT / "build-vision.log"
     with open(log, "w", encoding="utf-8") as f:
         for cmd in ([tool("cmake"), "-S", str(ROOT / "tools" / "vision"), "-B", str(ROOT / "build-vision"), "-G", "Ninja",
-                     "-DCMAKE_BUILD_TYPE=Release", f"-DCMAKE_MAKE_PROGRAM={tool('ninja')}", f"-DLLAMA_DIR={llama}",
+                     "-DCMAKE_BUILD_TYPE=Release", f"-DCMAKE_MAKE_PROGRAM={tool('ninja')}", f"-DLLAMA_DIR={S.vision_llama(llama)}",
                      "-DSTRATA_VISION_CUDA=OFF", "-DSTRATA_VISION_METAL=ON", "-DSTRATA_PORTABLE=OFF"],
                     [tool("ninja"), "-C", str(ROOT / "build-vision"), "strata-vision"]):
             if subprocess.call(cmd, stdout=f, stderr=subprocess.STDOUT, env=env) != 0:
@@ -291,9 +294,14 @@ def repack_running(folder: Path) -> list[int]:
 
 
 def engine_pids(run=subprocess.run) -> list[int]:
-    """Pids of the running Metal engines (`strata`, the executable setup builds)."""
+    """Pids of the running Metal engines (`strata`, the executable setup builds) that belong to THIS user.  On a shared Mac
+    another person's engine is theirs to stop: `pgrep -x strata` alone saw it and sent setup away with "stop the server" for a
+    window the person could not close (M5 Max, 2026-10-31)."""
+    cmd = ["pgrep", "-x", "strata"]
+    if hasattr(os, "getuid"):
+        cmd[1:1] = ["-u", str(os.getuid())]
     try:
-        out = run(["pgrep", "-x", "strata"], capture_output=True, text=True, timeout=10).stdout
+        out = run(cmd, capture_output=True, text=True, timeout=10).stdout
     except (OSError, subprocess.SubprocessError):
         return []
     return [int(x) for x in out.split() if x.isdigit() and int(x) != os.getpid()]
@@ -323,10 +331,48 @@ def start(cfg_path: Path, port: int | None, open_browser: bool = True) -> int:
     return subprocess.call(cmd)
 
 
+# ------------------------------------------------------------------------------------------------ the DFlash2 drafter
+def fetch_drafter(model_name: str, data: Path) -> Path | None:
+    """The DFlash2 drafter of a set whose Mac default is DFlash2 (strata_control/drafting.py SET_DEFAULTS: UD-Q4_K_XL and UD-IQ4_XS-v31): the tuned one (0.34 GB), else the stock one
+    (1.2 GB), through the normal download path (resumable, the pinned size and SHA-256). Offline, or an address that does not answer: nothing is said and the model keeps the MTP
+    (owner, strata-offline-users). A fault that is the person's to know (a file that failed its safety check) is one plain line. Never stops the setup. None when it is not here."""
+    from strata_control import acquisition, drafting, drafting_fetch
+    if drafting.choice_of("auto", model_name=model_name, backend="metal") != "dflash2":
+        return None
+    said = []
+
+    def show(step: str, done: int, total: int) -> None:
+        if not said:                                       # the line appears when the download starts: a computer with no internet sees nothing
+            said.append(True)
+            gb = drafting.TUNED_GB if "tuned" in step else drafting.DOWNLOAD_GB
+            S.say(f"  Downloading the DFlash2 drafter ({gb:g} GB, once) ...")
+    try:
+        got = drafting_fetch.ensure_for(data, model_name=model_name, backend="metal", progress=show)
+    except (drafting_fetch.DraftingError, acquisition.AcquisitionRefused, OSError) as exc:
+        S.warn(f"{exc} This model keeps using the MTP.")
+        return None
+    if got is not None:
+        S.ok(f"DFlash2 drafter: {got}")
+    return got
+
+
 # ------------------------------------------------------------------------------------------------ main
+def _feed_models(argv, interactive: bool) -> None:
+    """The signed feed's models (setup.py feed_models_setup: the feed, else the last verified list) join MAC_MODELS / FAMILIES / MODELS. Read when a name the built-in
+    tables do not know is given, or when the size menu is going to be shown; nothing happens when the feed has no models."""
+    args = list(argv or sys.argv[1:])
+    peek = lambda flag: next((v.split("=", 1)[1] if v.startswith(flag + "=") else args[i + 1] if i + 1 < len(args) else None   # noqa: E731
+                              for i, v in enumerate(args) if v == flag or v.startswith(flag + "=")), None)
+    family, model = peek("--family"), peek("--model")
+    if (family and family not in ("qwen", "unsloth", "gyro")) or (model and model not in MAC_MODELS) or interactive:
+        S.feed_models_setup(peek("--feed"))
+
+
 def main(argv=None) -> int:
+    given = argv if argv is not None else sys.argv[1:]
+    _feed_models(argv, not any(x in given for x in ("--yes", "--model", "--check", "--family")) and ("--setup" in given or not mac_configs()))   # (a plain start of an installed model reads nothing)
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--family", choices=["qwen", "unsloth", "gyro"], default=None,
+    ap.add_argument("--family", choices=["qwen", "unsloth", "gyro", *_fit.FEED_FAMILIES], default=None,
                     help="qwen = Qwen3.8-Flash-Next (GSQ-RCO), unsloth = Unsloth's UD-*_K_XL, gyro = agentionai's Gyro-S / Gyro-M "
                          "(follows --model)")
     ap.add_argument("--model", choices=list(MAC_MODELS))
@@ -427,7 +473,7 @@ def main(argv=None) -> int:
 
     # ---- 4. the engine
     S.step(4, "the Strata engine (Metal)")
-    llama = S.get_llama_cpp()
+    llama = S.llama_override()                         # None: ggml is the vendored third_party/strata-ggml (STRATA_GGML_DIR overrides)
     S.ok(f"llama.cpp {S.LLAMA_CPP_COMMIT[:7]} (ggml, gguf-py)")
     if a.build:
         (BUILD_DIR / "BUILD.json").unlink(missing_ok=True)
@@ -456,10 +502,12 @@ def main(argv=None) -> int:
         if s.exists() and S.done(s):
             S.ok(f"{s.name} already downloaded")
             continue
-        S.download(fam["hf"].format(q=model) + s.name, s)
+        S.download(S.model_hf(fam, model) + s.name, s)
     S.check_shards(files)
     for s in files:                                    # the Unsloth files: pinned sizes and SHA-256
-        if shard_sha(s.name):
+        if (family == "unsloth" or fam.get("feed")) and s.name in fam.get("sha256", {}):       # the family's pins, and UD-Q4_K_XL's second layout by the size on the disk
+            S.verify_sha256(s, *S.fam_pin(fam, s), own=bool(a.gguf_dir))
+        elif shard_sha(s.name):
             S.verify_sha256(s, *shard_sha(s.name))
     S.ok("model files present")
 
@@ -476,7 +524,7 @@ def main(argv=None) -> int:
     # ---- 6. the pack and the MTP draft layer
     S.step(6, "preparing the model for Strata")
     pack = S.find_in(roots, f"packs/{tag.lower()}") or data / "packs" / tag.lower()
-    env = dict(os.environ, STRATA_GGUF_PY=str(llama / "gguf-py"))
+    env = dict(os.environ, **S.gguf_py_env())
     # The repack and the pack move 100+ GB through the disk and the pack's python holds up to 20 GB: no engine may run beside
     # them (an engine of 70-90 GB with a repack froze the 128 GB M5 Max twice).  A lock beside the GPU's file tells the engine
     # and start() to wait; a running engine stops setup here.
@@ -539,11 +587,13 @@ def main(argv=None) -> int:
         S.refresh_draft_vocab(rt, a.draft_vocab or "cjk")
         S.ok(f"MTP draft layer: {mtp / 'mtp-q2_0.gguf'}")
 
+    fetch_drafter(f"{fam['name']}-{model.lower()}", pack.parent.parent)       # DFlash2 is this set's default drafter (the MTP above stays as the fallback); the folder a start looks in
+
     # ---- 7. the config, the start script
     S.step(7, "writing the start script")
     port = a.port or 8080
-    cfg = mac_config(exe, engine_args(pack, shards, rt, ctx, stream, info["ram_gb"]), pack, f"{fam['name']}-{model.lower()}", tag, port)
-    cfg["env"] = {"STRATA_METAL_STREAM": "1" if stream else "0"}   # the engine follows setup's measured choice
+    cfg = mac_config(exe, engine_args(pack, shards, rt, ctx, stream, info["ram_gb"], model), pack, f"{fam['name']}-{model.lower()}", tag, port)
+    cfg["env"] = {"STRATA_METAL_STREAM": "1" if stream else "0"}   # the engine follows setup's measured choice (STRATA_METAL_F16 is the engine's own default)
     if vision == "yes":
         cfg["args"] += ["--vision"]
         cfg["vision"] = {"exe": str(vexe), "mmproj": str(mmproj), "model": str(files[0]), "gpu": vision_gpu,

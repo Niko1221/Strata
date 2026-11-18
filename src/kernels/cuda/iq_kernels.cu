@@ -5,10 +5,13 @@
 // MIT license, third_party/ggml/LICENSE).  The block structs and codebook grids come from its ggml-common.h,
 // included unchanged.
 #include "strata/kernels/iq_kernels.hpp"
+#include "strata/core/defaults_026.hpp"
 #include "strata/core/expert_nibble.hpp"
 #include "strata/core/sm75_series.hpp"
 #include "strata/core/sm120_series.hpp"
+#include "strata/core/dispatch_stats.hpp"
 #include "strata/kernels/gfx_arch.hpp"
+#include "strata/kernels/i8_expert_rule.hpp"
 #include "strata/kernels/dp4a.hpp"
 #include "strata/kernels/q8_1_finite.hpp"
 #include "s26_tsum.cuh"
@@ -23,6 +26,7 @@
 #include "tq_lut_i8.cuh"       // int8 copy of the trellis codebook (one global scale) for the dp4a dot
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <utility>
@@ -433,13 +437,16 @@ __device__ __forceinline__ float vec_dot_q5_K_q8_1(const void* __restrict__ vbq,
 // of the ORIGINAL activations.  That is ggml-cpu's convention (its q8_1 `s` is d * sum(q)) and the one the K-quant
 // mins above use; the scaled and the min term then see the same activation (eddoursul/Strata measured 1.1-1.2%
 // against 1.9% relative error per expert).  Result: sumi * (d5 * d8) + sumu * (m5 * d8).
-// Q5_0: llama.cpp's integer chain verbatim (vecdotq.cuh vec_dot_q5_0_q8_1_impl) -- symmetric (one delta, no
-// learned min), so unlike Q5_1 there is no min-term rounding choice to make: the constant -16 per-weight offset
-// is accounted for via the q8_1 block's `ds.y` (sum of the ORIGINAL activations), exactly as upstream.
+// Q5_0: llama.cpp's integer chain (vecdotq.cuh vec_dot_q5_0_q8_1_impl), but the constant -16 per-weight offset multiplies
+// the sum of the QUANTIZED activations (dp4a with 0x01010101, times d8), like the Q5_1 and Q4_0 paths and ggml-cpu's q8_0
+// dot, instead of the q8_1 block's `ds.y` (the sum of the ORIGINAL activations, upstream CUDA).  Round 0214 (owner's yes,
+// 11-05): the original sum does not see the activations' rounding, which the experts' SwiGLU outputs (not zero-mean)
+// make large: the whole-expert error with Q5_0 down was 2.1e-2 .. 3.1e-2 against 1.2e-2 for every other down type, and the
+// GPU now agrees with the CPU path (UD-IQ4_XS, UD-Q3_K_XL).  Result: d5 * d8 * (sumi - 16 * sumu).
 __device__ __forceinline__ float vec_dot_q5_0_q8_1(const void* __restrict__ vbq, const block_q8_1* __restrict__ bq8_1,
                                                    const int& kbx, const int& iqs) {
     const block_q5_0* bq5_0 = (const block_q5_0*) vbq + kbx;
-    int sumi = 0;
+    int sumi = 0, sumu = 0;
 #pragma unroll
     for (int i = 0; i < VDR_Q5_0; ++i) {
         const int vl = get_int_b2(bq5_0->qs, iqs + i);
@@ -457,11 +464,11 @@ __device__ __forceinline__ float vec_dot_q5_0_q8_1(const void* __restrict__ vbq,
         vi1 |= (vh << 2) & 0x00100000;
         vi1 |= (vh << 9) & 0x10000000;
         sumi = ggml_cuda_dp4a(vi1, u1, sumi);
+        sumu = ggml_cuda_dp4a(0x01010101, u1, ggml_cuda_dp4a(0x01010101, u0, sumu));
     }
     const float d5 = __half2float(bq5_0->d);
     const float d8 = __low2float(bq8_1->ds);
-    const float s8 = __high2float(bq8_1->ds);
-    return d5 * (sumi * d8 - (16.0f * VDR_Q5_0 / QI5_0) * s8);
+    return d5 * d8 * (float) (sumi - 16 * sumu);
 }
 // Q4_0 (plain llama-quantize Q4_0 files, e.g. bartowski's: gate/up and most down projections): the codes are centred
 // (q - 8 as signed bytes) before the dot, the exact integer form ggml-cpu's q4_0 x q8_0 dot uses, rather than
@@ -909,6 +916,16 @@ template<int TY> inline bool split_off() { return kq_type<TY> && !g_kq_split; }
 template<int TY> inline constexpr bool kTqType = (TY == 144 || TY == 145 || TY == 146);
 // the trellis types stage their int8 codebook (4 KB) too, but only where it pays: tq_stage_on() below (compute capability 6.0)
 template<int TY> inline constexpr bool kStageIqGrid = (TY == 16 || TY == 17 || TY == 18 || TY == 21 || TY == 22 || TY == 29 || kTqType<TY>);
+
+// LDS-only barrier (#3259, bsorensen110): the staging barriers of the grid / activation tables need the shared-memory stores to be
+// visible, not a global-memory fence; on gfx12 __syncthreads() is s_wait_loadcnt_dscnt 0; s_barrier; global_inv scope:SCOPE_SE.
+__device__ __forceinline__ void iq_sync_lds() {
+#if defined(__gfx1200__) || defined(__gfx1201__)
+    asm volatile("s_wait_dscnt 0x0\n\ts_barrier_signal -1\n\ts_barrier_wait -1" ::: "memory");
+#else
+    __syncthreads();   // every other target keeps the full barrier (the other HIP targets were not run for this change)
+#endif
+}
 
 template<> inline constexpr bool kSplit<16> = true;
 template<> struct Split<16> {   // IQ2_XXS
@@ -1809,25 +1826,25 @@ __device__ __forceinline__ const uint32_t* stage_iq_grid(uint32_t* s_buf, int ti
         uint2* dst = (uint2*) s_buf;
         const uint2* src = (const uint2*) iq2xxs_grid;
         for (int i = tid; i < 256; i += nthreads) dst[i] = src[i];
-        __syncthreads();
+        iq_sync_lds();
         return s_buf;
     } else if constexpr (TY == 17) {
         uint2* dst = (uint2*) s_buf;
         const uint2* src = (const uint2*) iq2xs_grid;
         for (int i = tid; i < 512; i += nthreads) dst[i] = src[i];
-        __syncthreads();
+        iq_sync_lds();
         return s_buf;
     } else if constexpr (TY == 22) {
         uint2* dst = (uint2*) s_buf;
         const uint2* src = (const uint2*) iq2s_grid;
         for (int i = tid; i < 1024; i += nthreads) dst[i] = src[i];
-        __syncthreads();
+        iq_sync_lds();
         return s_buf;
     } else if constexpr (TY == 29) {
         uint2* dst = (uint2*) s_buf;
         const uint2* src = (const uint2*) iq1s_grid_gpu;
         for (int i = tid; i < 1024; i += nthreads) dst[i] = src[i];
-        __syncthreads();
+        iq_sync_lds();
         return s_buf;
     } else if constexpr (TY == 18) {
         // 256 codebook words, then two 128-word tables of the per-byte sign masks (signs 0-3, signs 4-7).  A
@@ -1838,7 +1855,7 @@ __device__ __forceinline__ const uint32_t* stage_iq_grid(uint32_t* s_buf, int ti
         // `mmvq-ksigns-smem`, measured there on a Tesla P100 (sm_60).
         for (int i = tid; i < 256; i += nthreads) s_buf[i] = iq3xxs_grid[i];
         stage_iq3xxs_masks(s_buf, tid, nthreads);
-        __syncthreads();
+        iq_sync_lds();
         return s_buf;
     } else if constexpr (kTqType<TY>) {
         // the trellis types' int8 codebook: 2048 u16 (4 KB), read by 8 random lookups per 16 weights
@@ -1852,7 +1869,7 @@ __device__ __forceinline__ const uint32_t* stage_iq_grid(uint32_t* s_buf, int ti
         // per-lookup __vcmpne4 / __vsub4 chain, and the codebook reads leave global memory.
         for (int i = tid; i < 512; i += nthreads) s_buf[i] = iq3s_grid[i];
         stage_iq3s_masks(s_buf, tid, nthreads);
-        __syncthreads();
+        iq_sync_lds();
         return s_buf;
     } else {
         return nullptr;
@@ -2297,9 +2314,9 @@ __global__ void __launch_bounds__(256) native_down_multi_kernel(const unsigned l
                     const int n = min(GRP_NC, e1 - e);
                     const uint32_t* src = reinterpret_cast<const uint32_t*>(hq + (size_t) e * 20);
                     const int words = n * (20 * 9);
-                    __syncthreads();
+                    if (g > (int) blockIdx.y || e > e0) iq_sync_lds();
                     for (int i = threadIdx.x; i < words; i += 256) s_hq_buf[i] = src[i];
-                    __syncthreads();
+                    iq_sync_lds();
                     if (valid_r) {
                         if (n == 1) {
                             const int off1[1] = { 0 };
@@ -2342,9 +2359,9 @@ __global__ void __launch_bounds__(256) native_down_multi_kernel(const unsigned l
                     const int n = min(GRP_NC, e1 - e);
                     const uint32_t* src = reinterpret_cast<const uint32_t*>(hq + (size_t) e * 20);
                     const int words = n * (20 * 9);
-                    __syncthreads();
+                    if (g > (int) blockIdx.y || e > e0) iq_sync_lds();
                     for (int i = threadIdx.x; i < words; i += 256) s_hq_buf[i] = src[i];
-                    __syncthreads();
+                    iq_sync_lds();
                     if (valid_r) {
                         if (n == 1) {
                             const int off1[1] = { 0 };
@@ -2387,9 +2404,9 @@ __global__ void __launch_bounds__(256) native_down_multi_kernel(const unsigned l
                 const int n = min(GRP_NC, e1 - e);
                 const uint32_t* src = reinterpret_cast<const uint32_t*>(hq + (size_t) e * 20);
                 const int words = n * (20 * 9);
-                __syncthreads();
+                if (g > (int) blockIdx.y || e > e0) iq_sync_lds();
                 for (int i = threadIdx.x; i < words; i += 256) s_hq_buf[i] = src[i];
-                __syncthreads();
+                iq_sync_lds();
                 if (valid_r) {
                     if (n == 1) {
                         const int off1[1] = { 0 };
@@ -2479,19 +2496,19 @@ template<> struct EdGrid<21> { static constexpr int words = 1024;
 template<int XB, bool HALVES>
 __device__ __forceinline__ void ed_stage_entry(int4* __restrict__ s_u, float* __restrict__ s_ds, int c,
                                                const block_q8_1* __restrict__ src, int tid) {
-    int* su = (int*) s_u;
+    static_assert(XB <= 128, "XB must fit in 128 thread-pairs");
     const int* w32 = (const int*) src;
-    for (int w = tid; w < XB * 9; w += 256) {
-        const int k = w / 9, j = w - k * 9;
-        const int v = w32[w];
-        if (j == 0) {
-            const half2 h = *reinterpret_cast<const half2*>(&v);
-            s_ds[c * XB + k] = __low2float(h);
-        } else {
-            const int q = j - 1;
-            if constexpr (HALVES) su[((c * 2 + (q >> 2)) * XB + k) * 4 + (q & 3)] = v;
-            else su[(c * XB + k) * 8 + q] = v;
-        }
+    const int k = tid >> 1, h = tid & 1;
+    if (k < XB) {
+        const int* p = w32 + k * 9 + 1 + 4 * h;
+        const int4 v = make_int4(p[0], p[1], p[2], p[3]);
+        if constexpr (HALVES) s_u[(c * 2 + h) * XB + k] = v;
+        else s_u[(c * XB + k) * 2 + h] = v;
+    }
+    if (tid < XB) {
+        const int v = w32[tid * 9];
+        const half2 h2 = *reinterpret_cast<const half2*>(&v);
+        s_ds[c * XB + tid] = __low2float(h2);
     }
 }
 template<int XB>
@@ -2560,7 +2577,12 @@ __device__ __forceinline__ void ed_gu_rows(const uint8_t* const* wr, const int4*
 // gate/up: 16 sub-warps of 16 lanes, R rows each = 16 R rows per pass, `rb` rows per block (a multiple of 16 R; 2 n_ff
 // is one too, so a pass is whole or absent for the entire block).  Group stride as native_gu_multi_kernel.
 template<int TG, int R, int MINB>
-__global__ void __launch_bounds__(256, MINB) expdec_gu_kernel(const unsigned long long* __restrict__ grp_ptr,
+#if defined(__HIPCC__)
+__global__ void __launch_bounds__(256, MINB * 2) expdec_gu_kernel(
+#else
+__global__ void __launch_bounds__(256, MINB) expdec_gu_kernel(
+#endif
+                                                                            const unsigned long long* __restrict__ grp_ptr,
                                                                             const int32_t* __restrict__ grp_start,
                                                                             const int32_t* __restrict__ n_groups,
                                                                             const int32_t* __restrict__ ent_tok,
@@ -2572,7 +2594,7 @@ __global__ void __launch_bounds__(256, MINB) expdec_gu_kernel(const unsigned lon
     __shared__ float s_ds[ED_NC * ED_XB];
     STRATA_SHARED_ALIGN16_U32(s_grid_buf, EdGrid<TG>::words);
     const int tid = threadIdx.x;
-    EdGrid<TG>::copy(s_grid_buf, tid);   // visible after the staging's __syncthreads
+    EdGrid<TG>::copy(s_grid_buf, tid);   // visible after the staging's iq_sync_lds
     const int sw = tid >> 4, t = tid & 15;
     const int nrow = 2 * (int) L.n_ff, n_ff = (int) L.n_ff;
     const int row_base = blockIdx.x * rb;
@@ -2581,9 +2603,9 @@ __global__ void __launch_bounds__(256, MINB) expdec_gu_kernel(const unsigned lon
         const int e0 = grp_start[g], e1 = grp_start[g + 1];
         for (int e = e0; e < e1; e += ED_NC) {
             const int n = min(ED_NC, e1 - e);
-            __syncthreads();
+            if (g > (int) blockIdx.y || e > e0) iq_sync_lds();
             for (int c = 0; c < n; ++c) ed_stage_entry<ED_XB, true>(s_u, s_ds, c, xq + (size_t) ent_tok[e + c] * ED_XB, tid);
-            __syncthreads();
+            iq_sync_lds();
             for (int p = 0; p * 16 * R < rb; ++p) {
                 const int row0 = row_base + p * 16 * R + sw * R;
                 if (row0 >= nrow) break;   // uniform over the block
@@ -2766,9 +2788,9 @@ __global__ void __launch_bounds__(256, STRATA_EXPDEC_MINB) expdec_down_kernel(co
         const int e0 = grp_start[g], e1 = grp_start[g + 1];
         for (int e = e0; e < e1; e += ED_NC) {
             const int n = min(ED_NC, e1 - e);
-            __syncthreads();
+            if (g > (int) blockIdx.y || e > e0) iq_sync_lds();
             for (int c = 0; c < n; ++c) ed_stage_entry<ED_HB, TD == 42>(s_u, s_ds, c, hq + (size_t) (e + c) * ED_HB, tid);
-            __syncthreads();
+            iq_sync_lds();
             for (int p = 0; p * RPP < rb; ++p) {
                 const int row0 = row_base + p * RPP + sw * R;
                 if (row0 >= nrow) break;   // uniform over the block
@@ -4064,10 +4086,11 @@ int g_expdec_r = env_int_or("STRATA_EXPDEC_R", 1);          // gate/up rows per 
 int g_expdec_dr = env_int_or("STRATA_EXPDEC_DR", 4);        // down rows per lane: 1, 2, 4 (Q2_0: R=4 wins on both cards)
 int g_expdec_minb = env_int_or("STRATA_EXPDEC_MINB", STRATA_EXPDEC_MINB);   // gate/up __launch_bounds__ min blocks: 2 (<= 128 regs) or 4 (<= 64)
 int g_expdec_d20 = env_int_or("STRATA_EXPDEC_D20", 0);      // 1: EXPDEC also for the IQ4_NL down (bench: no gain, default kernel)
-// 1: EXPDEC for the down too (Q2_0; IQ4_NL with _D20).  Default 0: in the engine (nsys of a 131k decode) the Q2_0 down
-// with EXPDEC was ~10% slower than the default kernel although the bench alone had it at 0.78, so by default EXPDEC
-// takes the gate/up only (-20/-23% at T >= 2 on an RTX 2080 Ti in the engine).
-int g_expdec_down = env_int_or("STRATA_EXPDEC_DOWN", 0);
+// 1: EXPDEC for the down too (Q2_0; IQ4_NL with _D20).  Default 0: in the engine (nsys of a 131k decode on a 2080 Ti) the Q2_0 down
+// with EXPDEC was ~10% slower than the default kernel although the bench alone had it at 0.78.  Read at first use, so a per-architecture
+// default set at start (arch_defaults.cpp: gfx12) is seen; native_expert_set_expdec_params overrides.
+int g_expdec_down = -1;
+int expdec_down_on() { if (g_expdec_down < 0) g_expdec_down = env_int_or("STRATA_EXPDEC_DOWN", 0) != 0 ? 1 : 0; return g_expdec_down; }
 int g_expdec_rb = env_int_or("STRATA_EXPDEC_RB", 0);        // gate/up rows per block (0 = auto)
 int g_expdec_drb = env_int_or("STRATA_EXPDEC_DRB", 0);      // down rows per block (0 = auto)
 int g_expdec_minblk = env_int_or("STRATA_EXPDEC_MINBLK", 800);   // auto: the most rows per block that keep this many blocks
@@ -4079,7 +4102,7 @@ bool expdec_gu_ok(const NativeExpertLayout& L) {
     return fmt && L.n_embd == 32 * ED_XB && L.n_ff % 64 == 0 && L.n_ff > 0;
 }
 bool expdec_down_ok(const NativeExpertLayout& L) {
-    return g_expdec_down && ((L.d_type == 20 && g_expdec_d20) || L.d_type == 42) && L.n_ff == 32 * ED_HB && L.n_embd % 128 == 0 &&
+    return expdec_down_on() && ((L.d_type == 20 && g_expdec_d20) || L.d_type == 42) && L.n_ff == 32 * ED_HB && L.n_embd % 128 == 0 &&
            L.n_embd > 0;
 }
 // rows per block: `knob` rounded up to the rows per pass, or (0) doubled from one pass while ceil(nrow / rb) x
@@ -4126,9 +4149,9 @@ void expdec_note(const NativeExpertLayout& L, bool gu, bool taken, cudaStream_t 
     if (ty < 0 || ty >= 64 || seen[gu ? 0 : 1][ty][taken ? 1 : 0]) return;
     seen[gu ? 0 : 1][ty][taken ? 1 : 0] = true;
     cudaStreamCaptureStatus cs = cudaStreamCaptureStatusNone;
-    cudaStreamIsCapturing(s, &cs);
+    (void) cudaStreamIsCapturing(s, &cs);
     int dev = -1;
-    cudaGetDevice(&dev);
+    (void) cudaGetDevice(&dev);
     if (!taken) {
         std::fprintf(stderr, "strata expdec: CUDA%d %s type %d (n_embd %lld, n_ff %lld) not covered: the default kernel runs\n", dev,
                      gu ? "gate/up" : "down", ty, (long long) L.n_embd, (long long) L.n_ff);
@@ -6151,8 +6174,9 @@ int exp_mode() {
 #if defined(STRATA_HIP_GFX906)
     return kExpModeDefault;
 #else
-    // Volta (sm_70): mode 8, the grid and the group's activations in shared memory with SwiGLU + q8_1 fused
-    // (V100-SXM2, a verify window's VRAM call: 227 -> 159 us); every other CUDA card keeps the CUDA layout
+    // Mode 8 keeps the grid and the group's activations in shared memory with SwiGLU + q8_1 fused.  Volta can opt in;
+    // GB10 takes it with the sm_121 defaults (IQ3_S, fixed 512-token MTP workload, 8 balanced pairs: decode +11.7%
+    // paired median, 6/8 wins, identical output).  Every other CUDA card keeps the CUDA layout.
     static int per_dev[64];   // 0 unknown, else mode + 1
     int dev = 0;
     if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) return kExpModeDefault;
@@ -6171,12 +6195,15 @@ int exp_mode() {
         // IQ4_XS 328 -> 261 us, bitwise equal); STRATA_SM61_TABLE=0 keeps the CUDA layout
         const char* sm61 = std::getenv("STRATA_SM61_TABLE");
         const bool p40 = major == 6 && minor == 1 && (sm61 == nullptr || std::atoi(sm61) != 0);
+        const char* sm121 = std::getenv("STRATA_SM121_PERF");
+        const bool gb10 = major == 12 && minor == 1 && !strata::qwen_defaults_026() &&
+                          (sm121 == nullptr || std::atoi(sm121) != 0);
         // Turing (sm_75): mode 4 (native_expert_bench, real Q2_0 rows of Flash-Next, bitwise equal to mode 0 on an RTX
         // 2080 Ti: 10 experts x 1 entry 47.3 -> 41.4 us, 30 x 1 120.2 -> 100.2 us); the down projection keeps the CUDA
         // layout in windows of 4+ tokens (sm75_down_em below).  STRATA_SM75_EXP=0 keeps the CUDA layout.
         // (off unless STRATA_SM75_PERF=1; STRATA_SM75_EXP=0 / 1 forces it off / on)
         const bool turing = strata::sm75_switch("STRATA_SM75_EXP", major, minor);
-        per_dev[dev] = 1 + ((major == 7 && minor == 0 && sm70 != nullptr && std::atoi(sm70) != 0) || p100 || p40 ? 8 : turing ? 4 : kExpModeDefault);
+        per_dev[dev] = 1 + ((major == 7 && minor == 0 && sm70 != nullptr && std::atoi(sm70) != 0) || p100 || p40 || gb10 ? 8 : turing ? 4 : kExpModeDefault);
     }
     return per_dev[dev] - 1;
 #endif
@@ -6209,11 +6236,167 @@ void native_expert_set_mode(int mode, int phase) {
 
 namespace {
 bool g_grouped_v1 = env_on("STRATA_GROUPED_V1");
+#include "i8_expert.cuh"   // OWN-I8: our own int8 dot-product kernels (native_expert_i8 below)
+// OWN-I8: STRATA_EXPERT_I8, read once: 1 = on, 0 = off, -1 = not set (then the card class decides: i8_expert_rule.hpp)
+std::atomic<bool> g_i8_mmq_free{false};   // set before main by a build without MMQ (native_expert_i8_set_mmq_free)
+int i8_switch_raw() {
+    static const int s = strata::kernels::i8_switch_parse(std::getenv("STRATA_EXPERT_I8"));
+    return s;
+}
+int i8_switch_state() { return strata::kernels::i8_switch_effective(i8_switch_raw(), g_i8_mmq_free.load(std::memory_order_relaxed)); }
+// the current device's gcnArchName, read once per device (a HIP card; "" on a CUDA card)
+const char* i8_device_gcn() {
+#if defined(__HIPCC__)
+    static std::mutex mu;
+    static char names[16][64];
+    static bool done[16];
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 16) return "";
+    std::lock_guard<std::mutex> lk(mu);
+    if (!done[dev]) {
+        cudaDeviceProp p{};
+        if (cudaGetDeviceProperties(&p, dev) == cudaSuccess) std::snprintf(names[dev], sizeof(names[dev]), "%s", p.gcnArchName);
+        done[dev] = true;
+    }
+    return names[dev];
+#else
+    return "";
+#endif
+}
 }  // namespace
 
 void native_grouped_set_v1(bool v1) { g_grouped_v1 = v1; }
 
-void native_expert_set_expdec(int on) { g_expdec = on ? 1 : 0; }
+size_t native_expert_i8_smem_limit() noexcept { return i8_smem_limit(); }
+
+NativeExpertI8Launch native_expert_i8_last_launch() noexcept {
+    return {g_i8_last.tile, g_i8_last.gu_bytes, g_i8_last.down_bytes, g_i8_last.gu_err, g_i8_last.down_err};
+}
+
+int native_expert_i8_probe_launch(size_t bytes) noexcept {
+#if !defined(__HIPCC__)
+    return i8_smem_launches(bytes) ? 1 : 0;
+#else
+    (void) bytes;
+    return -1;
+#endif
+}
+
+bool native_expert_i8_prompt(const NativeExpertLayout& L, int64_t group_entries) noexcept {
+    const int st = i8_switch_state();
+    if (st == 0 || group_entries < kI8MinGroupEntries) return false;   // before any device query
+    return i8_expert_takes(st, i8_device_gcn(), group_entries, native_expert_i8_supported(L));
+}
+
+bool native_expert_i8_by_default() noexcept { return i8_expert_class_default(i8_switch_raw(), i8_device_gcn(), g_i8_mmq_free.load(std::memory_order_relaxed)); }
+void native_expert_i8_set_mmq_free() noexcept { g_i8_mmq_free.store(true, std::memory_order_relaxed); }
+// The P100 class rule (i8_expert_rule.hpp, i8_chunk_default_allows; declared in prefill.cpp, the one caller): is the int8 DEFAULT of this process the one that gives way to the FP16
+// path from the stream floor up?  True only on a Tesla P100 (compute capability 6.0) in a build without MMQ with STRATA_EXPERT_I8 not set; a set value, a build with MMQ, any other
+// card and a HIP card: false (no size limit).
+bool native_expert_i8_floor_gated() noexcept {
+    if (i8_switch_raw() != -1 || !g_i8_mmq_free.load(std::memory_order_relaxed)) return false;   // before any device query
+#if !defined(__HIPCC__)
+    int dev = 0, major = 0, minor = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess) return false;
+    cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev);
+    cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev);
+    return major == 6 && minor == 0;
+#else
+    return false;
+#endif
+}
+
+// OWN-I8 few-rows route: STRATA_I8_FEWROWS read once (not set = the card's class default, 0 = off, N = a limit of N rows per expert); the class default asks the
+// current device's compute capability (a HIP card has none that matters: the CUDA rule's 10)
+int native_expert_i8_few_rows_limit() noexcept {
+    static const char* const text = std::getenv("STRATA_I8_FEWROWS");
+    if (i8_switch_state() == 0) return 0;
+    int major = 0, minor = 0;
+#if !defined(__HIPCC__)
+    int dev = 0;
+    if (cudaGetDevice(&dev) == cudaSuccess) {
+        cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev);
+        cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev);
+    }
+#endif
+    return i8_fewrows_limit(text, i8_fewrows_class_default(major, minor));
+}
+
+size_t native_expert_i8_scratch_bytes(int64_t cap_entries, int64_t cap_groups, int64_t n_ff) {
+    const size_t hqb = ((size_t) cap_entries * (size_t) (n_ff / 32) * sizeof(block_q8_1) + 255) & ~(size_t) 255;   // as native_expert_i8 carves it
+    return hqb + (size_t) (cap_groups + 1) * sizeof(int32_t);
+}
+
+bool native_expert_i8_supported(const NativeExpertLayout& L) noexcept {
+    return i8_gu_type(L.gu_type) && i8_d_type(L.d_type) && !L.gu_nib && L.tail_off == 0 && L.had_block == 0 && L.n_embd % 256 == 0 &&
+           L.n_ff % 128 == 0 && ((L.d_type != 13 && L.d_type != 14) || L.n_ff % 256 == 0) && L.n_embd % 64 == 0 && L.bytes < ((size_t) 1 << 32) &&   // 32-bit byte offsets inside one expert's blob
+           i8_smem_bytes(L.gu_type, L.d_type, 2) <= i8_smem_limit();                  // the smallest tile fits the device's shared memory per block
+}
+
+void native_expert_i8_quantize(const float* x, int64_t n_rows, int64_t n_cols, void* y, void* stream) {
+    const long long n = (long long) n_rows * n_cols;
+    if (n <= 0) return;
+    if (n_cols % 32 != 0) { std::fprintf(stderr, "native_expert_i8_quantize: %lld columns\n", (long long) n_cols); std::exit(1); }
+    i8_quantize_kernel<<<(unsigned) ((n + 255) / 256), 256, 0, (cudaStream_t) stream>>>(x, (block_q8_1*) y, n);
+    check("native_expert_i8_quantize");
+}
+
+void native_expert_i8(const NativeExpertLayout& L, const unsigned long long* grp_ptr, const int32_t* grp_start, const int32_t* n_groups,
+                      const int32_t* ent_dst, const int32_t* ent_tok, int64_t cap_groups, int64_t cap_entries, const void* x_q8_1,
+                      void* scratch, float* out, void* stream) {
+    if (cap_groups <= 0 || cap_entries <= 0) return;
+    if (!native_expert_i8_supported(L)) {
+        std::fprintf(stderr, "native_expert_i8: gate/up type %d, down type %d at %lld x %lld is not covered\n", L.gu_type, L.d_type,
+                     (long long) L.n_embd, (long long) L.n_ff);
+        std::exit(1);
+    }
+    if ((size_t) cap_entries * (size_t) (std::max(L.n_embd, L.n_ff) / 32 * 36) >= ((size_t) 1 << 32)) {   // 32-bit byte offsets of the activation rows
+        std::fprintf(stderr, "native_expert_i8: %lld entries at %lld x %lld exceed 4 GiB of activation rows\n", (long long) cap_entries,
+                     (long long) L.n_embd, (long long) L.n_ff);
+        std::exit(1);
+    }
+    cudaStream_t s = (cudaStream_t) stream;
+    // scratch: the H blocks (q8_1, one per 32 features and entry), then the tile table (cap_groups + 1 ints)
+    block_q8_1* hq = (block_q8_1*) scratch;
+    const size_t hqb = ((size_t) cap_entries * (size_t) (L.n_ff / 32) * sizeof(block_q8_1) + 255) & ~(size_t) 255;
+    int32_t* tile_off = (int32_t*) ((uint8_t*) scratch + hqb);
+    int tm = i8_env_int("STRATA_I8_TM", 0);   // research: the tile code (2, 3 or 4 rows of 16 entries per thread -> 32, 48 or 64 entries; 8 = variant B, 128 entries)
+    const int64_t avg = cap_entries / cap_groups;
+    const bool b_ok = L.n_embd % 128 == 0 && L.n_ff % 64 == 0;
+    if (tm <= 0) tm = (avg >= 96 && b_ok) ? 8 : (int) std::max<int64_t>(2, std::min<int64_t>(4, (avg + 8) / 16));
+    tm = tm <= 2 ? 2 : tm == 3 ? 3 : tm >= 8 && b_ok && i8_tile8_type(L.gu_type) && i8_tile8_type(L.d_type) ? 8 : 4;   // (the K-quants and Q5_1 have no tile 8)
+    const size_t smem_limit = i8_smem_limit();   // a tile that does not fit the device's shared memory per block falls to the next smaller one
+    while (tm > 2 && i8_smem_bytes(L.gu_type, L.d_type, tm) > smem_limit) tm = tm == 8 ? 4 : tm - 1;
+    const int bm = tm == 8 ? 128 : 16 * tm;
+    i8_tiles_kernel<<<1, 256, 0, s>>>(grp_start, n_groups, bm, tile_off);
+    I8Args a{grp_ptr, grp_start, n_groups, tile_off, ent_tok, ent_dst, (const block_q8_1*) x_q8_1, hq, out, L,
+             cap_entries / bm + cap_groups, i8_env_int("STRATA_I8_BISECT", 0), i8_n8_takes(i8_switch_parse(std::getenv("STRATA_I8_N8")), tm)};   // 8-entry slices: tile 2 by default, 2-4 with STRATA_I8_N8=1, none with 0
+    switch (L.gu_type) {
+        case 16: i8_launch<16, true>(tm, a, s); break;
+        case 17: i8_launch<17, true>(tm, a, s); break;
+        case 18: i8_launch<18, true>(tm, a, s); break;
+        case 21: i8_launch<21, true>(tm, a, s); break;
+        case 23: i8_launch<23, true>(tm, a, s); break;
+        case 29: i8_launch<29, true>(tm, a, s); break;
+        case 42: i8_launch<42, true>(tm, a, s); break;
+        case 12: i8_launch<12, true>(tm, a, s); break;
+        case 13: i8_launch<13, true>(tm, a, s); break;
+        case 14: i8_launch<14, true>(tm, a, s); break;
+        case 8: i8_launch<8, true>(tm, a, s); break;
+        default: i8_launch<22, true>(tm, a, s); break;
+    }
+    check("native_expert_i8/gu");
+    if (L.d_type == 20) i8_launch<20, false>(tm, a, s);
+    else if (L.d_type == 6) i8_launch<6, false>(tm, a, s);
+    else if (L.d_type == 8) i8_launch<8, false>(tm, a, s);
+    else if (L.d_type == 7) i8_launch<7, false>(tm, a, s);
+    else if (L.d_type == 13) i8_launch<13, false>(tm, a, s);
+    else if (L.d_type == 14) i8_launch<14, false>(tm, a, s);
+    else i8_launch<42, false>(tm, a, s);
+    check("native_expert_i8/down");
+}
+
+void native_expert_set_expdec(int on) { g_expdec = on < 0 ? -1 : (on ? 1 : 0); }
 int native_expert_expdec() { return expdec_mode(); }
 void native_expert_set_expdec_params(const NativeExpertExpdecParams& p) {
     if (p.gu_rows_per_lane > 0) g_expdec_r = p.gu_rows_per_lane;
@@ -6231,7 +6414,7 @@ NativeExpertExpdecParams native_expert_expdec_params() {
     p.down_rows_per_lane = expdec_dr();
     p.gu_min_blocks_per_sm = g_expdec_minb >= 4 ? 4 : 2;
     p.down_iq4_nl = g_expdec_d20 ? 1 : 0;
-    p.down = g_expdec_down ? 1 : 0;
+    p.down = expdec_down_on() ? 1 : 0;
     p.gu_rows_per_block = g_expdec_rb;
     p.down_rows_per_block = g_expdec_drb;
     p.min_blocks = g_expdec_minblk;
@@ -6248,7 +6431,10 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
                            int64_t cap_entries, const void* x_q8_1, void* scratch, float* out, void* stream,
                            int64_t grid_groups) {
     if (cap_groups <= 0 || cap_entries <= 0) return;
+    strata::dispatch::kernel(strata::dispatch::kExpert, 0, L.gu_type, (int) L.n_embd, (int) L.n_ff, L.d_type);   // BW-MEASURE: one grouped expert call
     if (L.n_ff % 32 != 0) { std::fprintf(stderr, "native_expert_grouped: n_ff %lld\n", (long long) L.n_ff); std::exit(1); }
+    // (OWN-I8: this fallback no longer hands its calls to native_expert_i8: that kernel reads its own activation image, native_expert_i8_quantize's, and this call's rows are q8_1
+    //  blocks.  The prompt path's MMQ groups, where the kernel was measured, quantize the image themselves.)
     cudaStream_t s = (cudaStream_t) stream;
     const size_t f = (size_t) cap_entries * (size_t) L.n_ff * sizeof(float), fa = (f + 255) & ~(size_t) 255;
     float* gate = (float*) scratch;
@@ -6279,18 +6465,25 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
     }
     // stream B: UD-Q4_K_XL's Q4_K / Q5_K gate/up and Q5_1 / Q8_0 down (see S27 above)
     // MODEL-UPDATE: on by default on gfx12 (every output the old kernels' bits; R9700, UD-Q4_K_XL decode, 5 interleaved
-    // pairs: story +1.2% 5/5, code +0.8% 5/5, after 6K +0.2% 4/5); STRATA_EXPERT_V2K=0 turns it off, =1 turns it on
-    // elsewhere (not measured on other cards)
+    // pairs: story +1.2% 5/5, code +0.8% 5/5, after 6K +0.2% 4/5) and, since round 0215, on Windows gfx1151 (below);
+    // STRATA_EXPERT_V2K=0 turns it off, =1 turns it on elsewhere (not measured on other cards)
     static const bool v2k = [] {
         const char* v = std::getenv("STRATA_EXPERT_V2K");
         if (v != nullptr && v[0] != '\0') return v[0] == '1';
 #if defined(__HIPCC__) && !defined(STRATA_HIP_GFX906)
         int dev = 0;
         cudaDeviceProp p;
-        const bool g12 = cudaGetDevice(&dev) == cudaSuccess && cudaGetDeviceProperties(&p, dev) == cudaSuccess &&
-                         strata::kernels::gfx_arch_is_gfx12(p.gcnArchName);
+        const bool ok = cudaGetDevice(&dev) == cudaSuccess && cudaGetDeviceProperties(&p, dev) == cudaSuccess;
+        const bool g12 = ok && strata::kernels::gfx_arch_is_gfx12(p.gcnArchName);
+#if defined(_WIN32)
+        // round 0215 (Strix Halo, Windows gfx1151, UD-Q4_K_XL, DFlash2 serve, 16 request pairs): window time -4.0 % (16 of 16 pairs faster,
+        // mean x1.040, range x1.020-1.056, the same window and token count in every pair); STRATA_EXPERT_V2K=0 turns it off
+        const bool strix = ok && strata::kernels::gfx_arch_is_gfx1151(p.gcnArchName);
+#else
+        const bool strix = false;
+#endif
         (void) cudaGetLastError();
-        return g12;
+        return g12 || strix;
 #else
         return false;
 #endif
@@ -6365,6 +6558,14 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
             default: break;
         }
         if (gs_done) check("native_expert_grouped/gu+swiglu");
+    }
+    {   // BW-MEASURE: which gate/up form ran: 1 = fused gate/up/SwiGLU/q8_1 (em 8), 2 = GU_SWIGLU one launch, 3 = separate gate/up + SwiGLU launches
+#if STRATA_EXP_LAYOUTS
+        const int gu_form = fused_gu ? 1 : (gs_done ? 2 : 3);
+#else
+        const int gu_form = gs_done ? 2 : 3;
+#endif
+        strata::dispatch::kernel(strata::dispatch::kExpert, gu_form, L.gu_type, (int) L.n_embd, (int) L.n_ff, L.d_type);
     }
 #if STRATA_EXP_LAYOUTS
     if (g_exp_phase != 2 && !fused_gu && !gs_done) {

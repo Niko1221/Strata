@@ -5,7 +5,7 @@ several cards. NVIDIA is described here; AMD limits and measurements are in [AMD
 
 > **On this page:** [Using it](#using-it) · [Main, Helper, Off](#main-helper-off) · [How the split works](#how-the-split-works) ·
 > [Tuning options](#tuning-options) · [Pipeline windows](#pipeline-windows) · [Two models on two cards](#two-models-on-two-cards) ·
-> [DeepSeek](#deepseek-v41-flash) · [Limits](#limits) · [History](#history--older-measurements)
+> [Limits](#limits) · [History](#history--older-measurements)
 
 ## Using it
 
@@ -147,7 +147,6 @@ restart. Defaults are off unless the table says otherwise.
 | `STRATA_SPLIT_OWN=1` or `auto` | Gives every card its own prompt buffers. `auto` does it only where the buffers are at most 12% of each card's VRAM. | Output differs from the default's (stable and coherent). |
 | `STRATA_PREFILL_HELP=1` | The idle card computes a share of the streamed experts of a one-chunk prompt. `STRATA_PREFILL_HELP_FRAC=f` fixes the share. | Helps prompts up to about 3.3K tokens on slow links only; not bit-identical; native packs on the MMQ prompt path only. |
 | `STRATA_SPLIT_MTP_BATCH=1` | The last card fills the draft layer's prompt K/V in batches, as on one card. | Needs a `--native` pack and a paged or ring draft K/V; says why once if it declines. |
-| `STRATA_STAGE_TRIM=1` | Each card loads only its own layers' dense weights (needs explicit `--layer-split K`, not `auto`). The freed VRAM goes to that card's expert cache. | Output can differ slightly. |
 | `--vram-reserve-later-mib N` | A separate VRAM reserve for the later cards (default: `--vram-reserve-mib`). Use it when the display sits on the last card. | `--vram-reserve-mib 300 --vram-reserve-later-mib 1800` gives the first card that VRAM. |
 | `--prefill-pipe R` (or `STRATA_PREFILL_PIPE=R`) | Reads each prompt in the chunk count with the least pipeline time for b/a = R tokens. `1` evens out today's chunk count. | Opt-in. `./setup.sh --calibrate` measures it per PC and writes it to the config. |
 | `STRATA_SPLIT_RING=N` | Sets the prompt path's streamed ring to N slots (`0`: the pinned-share rule). A split uses 96 when at least 75% of the (layer, expert) pairs sit in some card's cache. | The startup line `lend sizing: ...` shows the result. |
@@ -162,6 +161,12 @@ split's greedy output is the same in either mode.
 
 **Under WDDM (Windows and WSL2)** only 8 GiB of the expert arena is pinned on a multi-GPU run; the rest streams through the
 pinned staging ring. Linux pins the whole arena. `STRATA_ARENA_PIN_GIB=N` pins at most N GiB, `0` the whole arena, on any OS.
+
+### Turning a default off
+
+| Setting | What it does | Notes |
+| --- | --- | --- |
+| `STRATA_STAGE_TRIM=0` (or `--no-trim-stage-weights`) | Every card of a layer split keeps the dense weights of all the layers, as before. By default each card, explicit split or `auto`, loads only its own layers' dense weights and the freed VRAM goes to its expert cache. | Output can differ slightly from the default, which caches more experts. |
 
 ### Overlapped hand-off
 
@@ -206,11 +211,28 @@ for the next model, and explains a failed start on a card that is taken. Two mod
 Both loaded (33 s and 59 s with the files cached, 114 s the first time) and answered chats at about 60 tokens/s each. Unloading
 one left the other answering. The same app code drives NVIDIA cards, but two models on two NVIDIA cards were not run.
 
-## DeepSeek V4.1-Flash
+## Small cards: what a split gives up when it is short of memory
 
-DeepSeek V4.1-Flash runs in the app and the Terminal and spreads its experts and its dense weights over several cards. It does not use
-the Qwen layer split described above. On four Radeon AI PRO R9700 cards it reaches about 31 tokens/s. Hardware, sets and speeds:
-[MODELS.md](MODELS.md#deepseek-v41-flash).
+Two 8 GB cards used to stop at the start ("expert cache: no room", "the GPU has too little free VRAM for the prompt path"): every card loads a copy of the
+dense weights (3.5 GiB for IQ3_S) beside its session, its share of the head and the draft layer, a working expert cache and the prompt path's buffers. A split now
+walks the same steps a single card does, per card, mildest first, and says each one in one line (`short of GPU memory: ...`). The context you asked for and the
+number of requests are never changed; the cost is speed. A card with room never takes a step. Cards that hold every expert of their layers (two 96 GB cards) give the same
+greedy answers as before (5 of 5 hashes); a card that holds only part of them has a cache 256 MiB smaller (the last paragraph), which can change the last bits.
+
+1. **Trim**: a card that is too short for a full copy of the dense weights loads only the weights of its own layers (`--trim-stage-weights`, bit-exact in itself). Under `auto`
+   the split is then chosen from what each card has free, so every card gets the same cache bytes per layer. `STRATA_STAGE_TRIM=0` keeps the copies.
+2. **KV window**: when no placement can start the prompt path, the search runs again with 20480, 8192, then 4096 cells of the KV window in VRAM (the rest streams from RAM).
+3. **Drafter**: the draft layer (or DFlash2) is dropped on the card that holds it when that card cannot hold it and a working cache. `STRATA_MTP_KEEP=1` keeps it.
+4. **Prompt buffers**: a stage whose cache cannot lend the prompt path a 256-token chunk keeps 16 slots behind the loan instead of 128; CUDA0 reads prompts with its own small buffers.
+5. **Head**: the output head moves to pinned host memory on the card that holds it (about 3x slower logits), only when the cache would otherwise have no room.
+6. **Fewer cards**: under `auto`, a card with under 3 GiB free is left out of the split, and so is the card with the least room when even the whole walk cannot pay for every
+   layer on the cards that are left; with none left, the start is the single card's, with the rest of the experts in RAM.
+
+A later stage also keeps 256 MiB free for what it allocates after its cache (cuBLAS, the MMQ pool, as the single card has done since 0.2.7): two 16 GB cards used to start and then
+run out of memory in the first long prompt. `STRATA_SPILL_OFF=1` turns every step off; `STRATA_DEFAULTS=026` keeps the 0.2.6 reserve.
+
+When a start still ends because a card ran out of memory, `strata launch` and the server repeat it once without a drafter (never with the MTP in place of DFlash2, which takes more
+memory), and the last line shown is the engine's own reason.
 
 ## Limits
 

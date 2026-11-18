@@ -25,6 +25,6 @@ void gate_up(const Batch& b, const NativeGeom& g, const int32_t* ts, const int2*
 bool covers_down(int d_type);
 /// Down for the same experts and tiles: H (int8, `h`) to the routed rows' FP32 outputs in `dm`.
 void down(const Batch& b, const NativeGeom& g, const int32_t* ts, const int2* tiles, const int32_t* off, int64_t n, int n_expert,
-          int64_t work_bound, const uint8_t* h, float* dm, cudaStream_t s);
+          int64_t work_bound, const uint8_t* h, float* dm, cudaStream_t s, bool d16 = false);
 
 }  // namespace strata::prefill::fused::f16kq

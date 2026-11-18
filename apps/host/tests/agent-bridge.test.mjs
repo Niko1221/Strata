@@ -286,14 +286,32 @@ test('a leftover agent from a host that died is stopped at the next start, and a
   assert.equal(bystander.exitCode, null, 'an unrelated process is left alone');
 });
 
-test('a question the agent asks the person does not hang the turn: it is declared unanswerable and the model carries on', { skip }, async t => {
+const until = async (fn, ms = 30_000) => { const t0 = Date.now(); for (;;) { const v = fn(); if (v) return v; if (Date.now() - t0 > ms) return null; await new Promise(x => setTimeout(x, 50)); } };
+
+test('a question the agent asks the person waits for the person (#4244); a skip lets the model carry on and the turn does not hang', { skip }, async t => {
   const r = await rig(t);
   const { frames, promise } = r.run('chat-ask', 'SCRIPT:ask');
+  const asked = await until(() => frames.find(f => f.type === 'agent-question'));
+  assert.ok(asked, 'the question reaches the page as a frame');
+  assert.equal(asked.questions[0].id, 'q1'); assert.deepEqual(asked.questions[0].options.map(o => o.label), ['Red', 'Blue']);
+  await r.bridge.answerQuestion({ chatId: 'chat-ask', callId: asked.callId, skip: true });
   const result = await Promise.race([promise, new Promise(x => setTimeout(() => x('hung'), 30_000))]);
-  assert.notEqual(result, 'hung', 'the turn must not wait forever for an answerer that does not exist');
+  assert.notEqual(result, 'hung', 'the turn must not wait forever once the question is skipped');
   assert.equal(frames.at(-1).type, 'done');
-  const card = frames.filter(f => f.type === 'agent-tool').at(-1).tool;
-  assert.equal(card.name, 'ask_user_question');
-  assert.equal(card.state, 'error', 'the tool reports that no one could answer');
+  assert.equal(frames.filter(f => f.type === 'agent-tool').at(-1).tool.name, 'ask_user_question');
   assert.match(text(frames), /Tool finished/, 'the model got the result back and finished');
+});
+
+test('an answer to the question of the agent reaches the model as the tool result (#4244)', { skip }, async t => {
+  const r = await rig(t);
+  const { frames, promise } = r.run('chat-ask2', 'SCRIPT:ask');
+  const asked = await until(() => frames.find(f => f.type === 'agent-question'));
+  assert.ok(asked);
+  await assert.rejects(r.bridge.answerQuestion({ chatId: 'chat-ask2', callId: asked.callId, answers: [{ id: 'q1', selected: ['Green'] }] }), /Answer every question/, 'a label that was not offered is not an answer');
+  await r.bridge.answerQuestion({ chatId: 'chat-ask2', callId: asked.callId, answers: [{ id: 'q1', selected: ['Blue'] }] });
+  await promise;
+  const tool = frames.filter(f => f.type === 'agent-tool').at(-1).tool;
+  assert.notEqual(tool.state, 'error', 'the tool was answered, not declared unanswerable');
+  assert.match(JSON.stringify([...r.worker.requests].at(-1).raw), /Blue/, 'the model was told what the person chose');
+  await assert.rejects(r.bridge.answerQuestion({ chatId: 'chat-ask2', callId: asked.callId, skip: true }), /already answered/, 'an answer is final');
 });

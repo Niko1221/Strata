@@ -1,7 +1,7 @@
 """q36_solo_gate.py --exe E --args "..." --out F.json [--n 128] [--prompts F] [--keys K] : greedy tokens of the 10 parity
 prompts, one request each through the serve protocol; the JSON is what two builds are compared on (cmp_gate.py)."""
 from pathlib import Path
-import argparse, json, shlex, sys, time
+import argparse, json, shlex, sys
 sys.path.insert(0, __file__.rsplit("/", 1)[0] if "/" in __file__ else ".")
 from q36_harness import Eng, load_prompts
 

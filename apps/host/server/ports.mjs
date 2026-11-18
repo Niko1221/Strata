@@ -2,9 +2,10 @@
 import net from 'node:net';
 
 /** Why a listen failed, in words a person can act on (Windows keeps whole ranges for Hyper-V, WSL and Docker). */
-export function listenProblem(error, port, host = '127.0.0.1') {
+export function listenProblem(error, port, host = '127.0.0.1', platform = process.platform) {
   const code = error?.code;
   if (code === 'EADDRINUSE') return `Port ${port} is already in use. Strata may already be running; close it or the other program, or start Strata with another port (STRATA_PORT).`;
+  if (code === 'EACCES' && platform !== 'win32') return `This system does not let Strata use port ${port}. On Linux and macOS, ports below 1024 need administrator rights. Start Strata with another port (STRATA_PORT), for example 8801.`;
   if (code === 'EACCES') return `Windows or a firewall does not let Strata use port ${port}. Hyper-V, WSL and Docker keep ranges of ports for themselves (see "netsh int ipv4 show excludedportrange protocol=tcp"). Start Strata with another port (STRATA_PORT), for example 8801.`;
   if (code === 'EADDRNOTAVAIL') return `${host} is not an address of this computer, so Strata cannot listen on it. Check STRATA_BIND.`;
   return `Strata cannot listen on ${host}:${port} (${error?.message ?? code}).`;

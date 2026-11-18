@@ -67,10 +67,10 @@ int main() {
     }
     // ---- router_route
     {
-        for (int rty : {ref::BF16, ref::F32}) {
-        const int NE = 512;
+        for (int rty : {ref::BF16, ref::F32})
+        for (const int NE : {512, 256}) {   // (256: the expert-pruned Coder; the logits rows keep their 512-float stride)
         const size_t rbr = ref::row_bytes(rty, N);
-        mtl::Buffer Wr = cx.alloc(rbr * NE), lg1 = cx.alloc(4 * MAXT * NE), lg2 = cx.alloc(4 * MAXT * NE),
+        mtl::Buffer Wr = cx.alloc(rbr * NE), lg1 = cx.alloc(4 * MAXT * 512), lg2 = cx.alloc(4 * MAXT * 512),
                     id1 = cx.alloc(4 * MAXT * 10), id2 = cx.alloc(4 * MAXT * 10), w1 = cx.alloc(4 * MAXT * 10),
                     w2 = cx.alloc(4 * MAXT * 10), pl1 = cx.alloc(4 * P_INTS), pl2 = cx.alloc(4 * P_INTS), cnt = cx.alloc(16);
         ref::random_blocks(rty, Wr.as<uint8_t>(), NE, N, 9, 0.05f);
@@ -79,7 +79,7 @@ int main() {
             mtl::Pipeline pg = cx.pipeline(lib, "gemv_" + std::to_string(rty) + "_32_1_4_1", mtl::Constants().i(0, nt)),
                           pf = cx.pipeline(lib, "router_route_" + std::to_string(rty), mtl::Constants().i(0, nt));
             const size_t s16 = (size_t)4 * 4 * MAXT * N;
-            GemvArgs ga{(uint32_t)N, (uint32_t)NE, (uint32_t)nt, (uint32_t)rbr, (uint32_t)N, (uint32_t)NE};
+            GemvArgs ga{(uint32_t)N, (uint32_t)NE, (uint32_t)nt, (uint32_t)rbr, (uint32_t)N, 512u};
             MoeArgs ma{};
             ma.n_tok = nt;
             ma.topk = 10;
@@ -107,7 +107,7 @@ int main() {
                 f.grid[0] = NE / 16;
                 f.tg[0] = 512;
                 cx.run({f});
-                ok = ok && std::memcmp(lg1.ptr, lg2.ptr, 4 * nt * NE) == 0 && std::memcmp(id1.ptr, id2.ptr, 4 * nt * 10) == 0 &&
+                ok = ok && std::memcmp(lg1.ptr, lg2.ptr, 4 * nt * 512) == 0 && std::memcmp(id1.ptr, id2.ptr, 4 * nt * 10) == 0 &&
                      std::memcmp(w1.ptr, w2.ptr, 4 * nt * 10) == 0 && std::memcmp(pl1.ptr, pl2.ptr, 4 * P_INTS) == 0 &&
                      cnt.as<uint32_t>()[0] == 0;
             }

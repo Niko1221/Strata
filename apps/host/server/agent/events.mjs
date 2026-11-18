@@ -11,6 +11,7 @@ import { toolUpdate, TokenCount, fmtTokens } from './status.mjs';
 import { askFor } from './ask.mjs';
 import { FIT_TEXT, fill } from './context-fit.mjs';
 import { isContextOverflow } from './context-budget.mjs';
+import { ToolDraft, cutCalls } from './reply-cut.mjs';
 
 const SHELL = new Set(['pwsh', 'bash', 'job_kill', 'job_output', 'job_list']);
 const WRITE = new Set(['write', 'edit']);
@@ -222,7 +223,8 @@ export class TurnProjector {
     this.asked = new Map();          // approval id -> callId
     this.onStatus = null;            // (update) => void: what the assistant is doing now (status.mjs); set by the bridge
     this.reasoning = new TokenCount();
-    this.composing = new Map();      // callId -> { name, head, bytes }: a tool call the model is still writing
+    this.composing = new Map();      // callId -> ToolDraft: a tool call the model is still writing (still here at a cut reply = it was lost)
+    this.lastOutput = 0;             // tokens the LAST model request produced
     this.running = [];               // callIds of tools that are running, oldest first
   }
 
@@ -289,19 +291,20 @@ export class TurnProjector {
           out.push({ type: 'reasoning', text: c.text });
         } else if (c.type === 'tool-call-delta' && c.id) {
           // The model is writing a tool call. For a big file this is the long silent part: nothing else arrives until it is finished.
-          const call = this.composing.get(c.id) ?? { name: c.name ?? '', head: '', bytes: 0 };
+          const call = this.composing.get(c.id) ?? new ToolDraft(c.id, c.name ?? '');
           if (c.name) call.name = c.name;
           const piece = String(c.argumentsDelta ?? '');
           // Writing a tool call (a whole file, say) is decoding too: its tokens are in the engine's output count, so its time belongs in the speed.
           this.#produced(f.attemptId, piece, out);
-          call.bytes += piece.length;
-          if (call.head.length < 4000) call.head += piece;
+          call.add(piece);
           this.composing.set(c.id, call);
           if (call.name && !NO_CARD.has(call.name)) {
-            const raw = (/"(?:file_path|path|filePath)"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(call.head) ?? /"url"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(call.head))?.[1];
-            let target = raw; try { if (raw !== undefined) target = JSON.parse('"' + raw + '"'); } catch { /* a half-written escape: show it as it is */ }
+            const target = call.target;
             const args = target ? { file_path: target, url: target } : {};
             this.#status(toolUpdate('preparing', 'preparing-tool', call.name, args, { bytes: call.bytes }, { args: { tool: call.name, verb: toolVerb(call.name, 'running'), target: target ?? '', bytes: call.bytes } }));
+            // The live data path of a file being written (AGENT-LOST): the name, a growing size and the tail of the text, at most five times a second.
+            const now = Date.now();
+            if (now - call.at >= 200) { call.at = now; out.push(call.frame({ scope: toolScope(call.name), verb: toolVerb(call.name, 'running') })); }
           }
         } else if (c.type === 'usage' && c.usage) {
           this.usageSeen = true;
@@ -310,6 +313,7 @@ export class TurnProjector {
           const prompt = (Number(c.usage.inputTokens) || 0) + (Number(c.usage.cacheReadTokens) || 0) + (Number(c.usage.cacheWriteTokens) || 0);
           this.tokensIn += prompt;
           this.tokensOut += Number(c.usage.outputTokens) || 0;
+          this.lastOutput = Number(c.usage.outputTokens) || 0;
           this.contextTokens = prompt + (Number(c.usage.outputTokens) || 0);
           out.push({ type: 'context', contextTokens: this.contextTokens, contextMax: this.window || undefined });
         }
@@ -333,7 +337,9 @@ export class TurnProjector {
         const args = parseArguments(d.arguments);
         const card = { ...presentTool({ callId: d.callId, name: d.name, args }), state: 'running' };
         this.tools.set(d.callId, { card, calledAt: e.time });
+        const draft = this.composing.get(d.callId);
         this.composing.delete(d.callId);
+        if (draft && draft.bytes > 0 && !NO_CARD.has(d.name)) out.push(draft.frame({ done: true }));
         this.running.push(d.callId);
         this.#status(toolUpdate('tool', 'tool', d.name, args, {}, { args: { tool: d.name, verb: card.verb, target: card.target } }));
         out.push({ type: 'agent-tool', tool: card });
@@ -419,8 +425,29 @@ export class TurnProjector {
     return this.#card(callId, { state: 'denied', result: outcome === 'rejected' ? 'Denied. Nothing ran.' : outcome === 'cancelled' ? 'Cancelled. Nothing ran.' : 'No one could answer this request, so nothing ran.' });
   }
 
+  /** A reply the model could not finish (the turn ended on the length limit): what it was writing, so nothing is lost without a word. */
+  cut() {
+    return { tokens: this.lastOutput, calls: cutCalls(this.composing.values()) };
+  }
+
+  /** The agent was asked to carry on: the calls it lost are not pending any more. */
+  clearCut() { const frames = this.#dropDrafts(); this.ended = null; return frames; }
+
+  /** Frames that take the writing cards of calls that will never be whole off the page (the reply was cut, or the turn ended). */
+  #dropDrafts() {
+    const frames = [...this.composing.values()].filter(d => d.bytes > 0 && !NO_CARD.has(d.name)).map(d => d.frame({ done: true, lost: true }));
+    this.composing.clear();
+    return frames;
+  }
+
   /** The terminal frames for a finished turn. */
-  finish({ model, contextMax, engine = null } = {}) {
+  finish(options = {}) {
+    const cutInfo = this.ended?.kind === 'max-tokens' ? this.cut() : null;
+    const dropped = this.#dropDrafts();
+    return [...dropped, ...this.#finished(options, cutInfo)];
+  }
+
+  #finished({ model, contextMax, engine = null } = {}, cutInfo = null) {
     const reason = this.ended ?? { kind: 'interrupted' };
     const durationMs = Date.now() - this.startedAt;
     const usage = this.usageSeen
@@ -441,7 +468,7 @@ export class TurnProjector {
       case 'completed':
         return [{ type: 'done', ...base, ...usage, finishReason: 'stop' }];
       case 'max-tokens':
-        return [{ type: 'done', ...base, ...usage, finishReason: 'length' }];
+        return [{ type: 'done', ...base, ...usage, finishReason: 'length', cut: cutInfo }];
       case 'aborted':
         return [{ type: 'done', ...base, ...usage, finishReason: 'aborted', cancelled: true }];
       case 'error':

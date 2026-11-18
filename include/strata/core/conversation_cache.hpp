@@ -13,7 +13,24 @@
 #include <utility>
 #include <vector>
 
+#if defined(__GLIBC__)
+#include <malloc.h>
+#endif
+
 namespace strata::core {
+
+/// #5697: hands the memory this process freed back to the system where the C library keeps it in its heap (glibc:
+/// malloc_trim, every arena; freed pages inside the heap are released, not only its top).  MemAvailable, which the
+/// RAM gates read, counts only what was handed back.  False where there is no such call (Windows, macOS, musl: their
+/// allocators return large blocks on free).  Costs a walk over the heap's free chunks: call it when RAM is short.
+inline bool release_free_heap() {
+#if defined(__GLIBC__)
+    ::malloc_trim(0);
+    return true;
+#else
+    return false;
+#endif
+}
 
 struct ConversationImageKey {
     int64_t start = 0;
@@ -256,6 +273,14 @@ public:
     /// exactly the reuse it wanted.  0 parks every conversation, whatever its size.
     bool wants(int64_t tokens) const { return min_tokens_ <= 0 || tokens >= min_tokens_; }
     size_t bytes() const { return bytes_ + reuse_.bytes(); }
+    /// STRATA_PARK_SEGPOOL_MIB: the segment pool whose idle (resident, unused) bytes count against this cache's budget
+    /// beside the images: make_room() gives them back BEFORE the budget could push an image out, so the pool never causes
+    /// an eviction, a refused park or a failed RAM check that the cache would not have had without it.  Not owned; the
+    /// pool outlives the cache.  bytes() stays the images' (what the logs and every caller have always meant).
+    void set_pool(SegmentPoolBudget* pool) { pool_ = pool; }
+    size_t pool_idle_bytes() const { return pool_ != nullptr ? pool_->idle_bytes() : 0; }
+    /// What the cache holds in RAM: its images, the retained K/V and the pool's idle bytes
+    size_t resident_bytes() const { return bytes() + pool_idle_bytes(); }
     size_t size() const { return entries_.size(); }
     size_t evictions() const { return evictions_; }
     // the longest parked conversation, in tokens (--kv-grow keeps the K/V that long while it could be restored)
@@ -393,31 +418,31 @@ public:
                 if (stays(i)) { ++kept; kept_bytes += entries_[i].bytes(); }
             if (kept >= slots_ || kept_bytes > budget_ - held - incoming) { guard_blocked_ = true; return false; }
         }
+        // the pool's idle bytes go first (never an image for them); the decisions below read the images only, so they are
+        // the ones the cache makes with no pool
+        trim_pool(held + incoming);
         if (bytes() > budget_ - held - incoming) reuse_ = {};
         while (!entries_.empty() && (entries_.size() >= slots_ || bytes_ > budget_ - held - incoming)) {
             // the oldest entry that does not hold a pinned shared prefix leaves; with only pinned ones left the new
             // image does not fit (the caller skips parking it - the pinned prefix is what the queries come back to)
-            if (!evict_oldest()) return false;
+            if (!drop_oldest()) return false;
         }
+        trim_pool(held + incoming);   // (an evicted image that lived in the pool left its bytes idle)
         return true;
     }
 
-    // The parked conversation that has gone unused the longest.  This is make_room()'s loop body, so
-    // the parking path can also free RAM one entry at a time on demand (see the physical-RAM admission
-    // gate in generate.cpp).  A ConversationBuffer is a list of 16 MiB segments and each segment is its
-    // own allocation, far above glibc's mmap threshold, so dropping an entry returns the whole footprint
-    // to the kernel at once - the next admission check reads it back from /proc/meminfo.
+    // The parked conversation that has gone unused the longest, for the callers that free RAM one entry at a time
+    // and read MemAvailable after each (the physical-RAM admission gate in generate.cpp, session_save_reclaim).
+    // #5697: a ConversationBuffer's segments are plain allocations of up to 16 MiB; once glibc's dynamic mmap
+    // threshold has risen (the first freed segment raises it), they come from the heap, and free() hands back only
+    // the heap's top - an entry below a newer one stayed resident and the gate read no change.  So the freed memory
+    // is handed back here (release_free_heap).  make_room() drops entries without it: its room is for the image
+    // that is allocated right after, which reuses that memory.
     // False when none can go (empty, or only entries that hold a pinned shared prefix are left).
     bool evict_oldest() {
-        // the oldest entry that holds no pinned shared prefix and is not the guarded (borrowed) donor
-        for (size_t i = 0; i < entries_.size(); ++i) {
-            if (entries_[i].pinned() || (guarded_ != 0 && serials_[i] == guarded_)) continue;
-            bytes_ -= entries_[i].bytes();
-            erase(i);
-            ++evictions_;
-            return true;
-        }
-        return false;
+        if (!drop_oldest()) return false;
+        release_free_heap();
+        return true;
     }
 
     // #879: every parked conversation (pinned ones too) and the retained K/V go - after non-finite logits any of them
@@ -529,6 +554,25 @@ public:
     }
 
 private:
+    // gives the pool's idle bytes back as far as images + idle + `incoming` would pass the budget (images alone never
+    // need more than the loop in make_room leaves them)
+    void trim_pool(size_t incoming_and_held) {
+        if (pool_ == nullptr) return;
+        const size_t total = bytes() + pool_->idle_bytes();
+        if (incoming_and_held > budget_ || total > budget_ - incoming_and_held) pool_->shrink(total - (budget_ - std::min(budget_, incoming_and_held)));
+    }
+    // evict_oldest() without handing the memory back (make_room's loop)
+    bool drop_oldest() {
+        // the oldest entry that holds no pinned shared prefix and is not the guarded (borrowed) donor
+        for (size_t i = 0; i < entries_.size(); ++i) {
+            if (entries_[i].pinned() || (guarded_ != 0 && serials_[i] == guarded_)) continue;
+            bytes_ -= entries_[i].bytes();
+            erase(i);
+            ++evictions_;
+            return true;
+        }
+        return false;
+    }
     void erase(size_t index) {
         entries_.erase(entries_.begin() + (std::ptrdiff_t) index);
         serials_.erase(serials_.begin() + (std::ptrdiff_t) index);
@@ -540,6 +584,7 @@ private:
     uint64_t next_serial_ = 1, guarded_ = 0;
     bool guard_blocked_ = false;
     ConversationKvReuse reuse_;
+    SegmentPoolBudget* pool_ = nullptr;   // STRATA_PARK_SEGPOOL_MIB (not owned)
 };
 
 } // namespace strata::core

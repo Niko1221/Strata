@@ -9,34 +9,39 @@
 //   swiglu_h       h = half(silu(g) * u)
 //   moe_out        bo = y_routed + sigmoid(sg) * y_shared
 
-kernel void route_topk(device const float* logits [[buffer(0)]], device int* ids [[buffer(1)]],
-                       device float* w [[buffer(2)]], constant uint& n_tok [[buffer(3)]],
-                       uint3 tg [[threadgroup_position_in_grid]], ushort sg [[simdgroup_index_in_threadgroup]],
-                       ushort lane [[thread_index_in_simdgroup]]) {
-    const uint t = tg.x * 8 + sg;
-    if (t >= n_tok) return;
-    device const float* l = logits + ulong(t) * 512;
-    float v[16];
-    for (int i = 0; i < 16; ++i) v[i] = l[lane + 32 * i];
+// one token by one simdgroup over NL * 32 logits (512 experts: NL 16; the 256-expert Coder: NL 8) - moe.metal's route_tok
+// experts per token (Flash-Next 10); the host prelude (engine/geo.h) defines GEO_TOPK for another shape
+#ifndef ROUTE_K
+#ifdef GEO_TOPK
+#define ROUTE_K GEO_TOPK
+#else
+#define ROUTE_K 10
+#endif
+#endif
+
+template <int NL>
+static inline void route_tok_p(device const float* l, device int* ids, device float* w, ushort lane) {
+    float v[NL];
+    for (int i = 0; i < NL; ++i) v[i] = l[lane + 32 * i];
     float mx = -INFINITY;
-    for (int i = 0; i < 16; ++i) mx = max(mx, v[i]);
+    for (int i = 0; i < NL; ++i) mx = max(mx, v[i]);
     for (ushort m = 16; m > 0; m >>= 1) mx = max(mx, simd_shuffle_xor(mx, m));
     float sum = 0.0f;
-    for (int i = 0; i < 16; ++i) {
+    for (int i = 0; i < NL; ++i) {
         v[i] = exp(v[i] - mx);
         sum += v[i];
     }
     for (ushort m = 16; m > 0; m >>= 1) sum += simd_shuffle_xor(sum, m);
     const float rcp = 1.0f / sum;
-    for (int i = 0; i < 16; ++i) {
+    for (int i = 0; i < NL; ++i) {
         v[i] *= rcp;
         if (isnan(v[i])) v[i] = -FLT_MAX;
     }
     float selected = 0.0f, ssum = 0.0f;
-    for (int rank = 0; rank < 10; ++rank) {
+    for (int rank = 0; rank < ROUTE_K; ++rank) {
         float best = v[0];
         int ex = lane;
-        for (int i = 1; i < 16; ++i)
+        for (int i = 1; i < NL; ++i)
             if (v[i] > best) { best = v[i]; ex = lane + 32 * i; }
         for (ushort m = 16; m > 0; m >>= 1) {
             const float ob = simd_shuffle_xor(best, m);
@@ -45,14 +50,25 @@ kernel void route_topk(device const float* logits [[buffer(0)]], device int* ids
         }
         if ((ex & 31) == lane) {
             v[ex / 32] = -INFINITY;
-            ids[t * 10 + rank] = ex;
+            ids[rank] = ex;
             ssum += best;
         }
         if (rank == lane) selected = best;
     }
     for (ushort m = 16; m > 0; m >>= 1) ssum += simd_shuffle_xor(ssum, m);
     ssum = max(ssum, 6.103515625e-5f);
-    if (lane < 10) w[t * 10 + lane] = selected * (1.0f / ssum);
+    if (lane < ROUTE_K) w[lane] = selected * (1.0f / ssum);
+}
+
+kernel void route_topk(device const float* logits [[buffer(0)]], device int* ids [[buffer(1)]],
+                       device float* w [[buffer(2)]], constant uint& n_tok [[buffer(3)]], constant uint& n_exp [[buffer(4)]],
+                       uint3 tg [[threadgroup_position_in_grid]], ushort sg [[simdgroup_index_in_threadgroup]],
+                       ushort lane [[thread_index_in_simdgroup]]) {
+    const uint t = tg.x * 8 + sg;
+    if (t >= n_tok) return;
+    device const float* l = logits + ulong(t) * n_exp;
+    if (n_exp == 256) route_tok_p<8>(l, ids + t * ROUTE_K, w + t * ROUTE_K, lane);
+    else route_tok_p<16>(l, ids + t * ROUTE_K, w + t * ROUTE_K, lane);
 }
 
 struct EpiArgs {

@@ -56,7 +56,7 @@ test('items 6, 7, 8: Bypass permissions everywhere, no deleted-tasks list or sug
   assert.match(lib, /mode:'bypass'/, 'a new task starts as Bypass permissions');
   assert.ok(!/Deleted tasks|task-templates|Restore/.test(tasks), 'no deleted list, suggestions or restore on the Tasks screen');
   assert.match(tasks, /IconBtn name="plus"/);
-  assert.ok(!/back=\{|titleDetail=/.test(tasks), 'nothing on the left of the navbar of an opened task');
+  assert.ok(!/back=\{/.test(tasks) && /titleDetail=\{currentTask \? undefined/.test(tasks), 'nothing on the left of the navbar of an opened task (the help lines show only on the list views)');
   assert.ok(!/modelName|"Model"/.test(detail), 'no Model section');
   assert.match(tree, /pushToast\('success', 'Task removed'\)/); assert.match(tasks, /pushToast\('success', 'Task removed'\)/);
 });

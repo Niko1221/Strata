@@ -159,6 +159,11 @@ class LinkedShards(Base):
 class PlanWords(Base):
     """Findings 1 and 7: --plan shows the real model, the picture setting, a copyable line, and what would be downloaded."""
 
+    def setUp(self):
+        super().setUp()
+        from tests.terminal.launch_support import not_intel
+        not_intel(self)
+
     def plan_text(self, *args):
         code, out, err = run_cli(["launch", "--plan", *args])
         self.assertEqual(code, 0, err or out)

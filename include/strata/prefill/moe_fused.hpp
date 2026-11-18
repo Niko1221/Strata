@@ -15,6 +15,8 @@
 // rounding of the activations and of H) by about as much as MMQ differs from FP32 (tests/cuda/prefill_fused_moe_test).
 #pragma once
 
+#include "strata/core/geometry.hpp"
+
 #include <cstddef>
 #include <cstdint>
 
@@ -22,6 +24,18 @@ namespace strata::prefill::fused {
 
 /// Routed rows (token, k pairs of one expert) per tile.
 constexpr int kTileRows = 64;
+/// The compiled geometry's widths the expert kernels are written for: the hidden width (the K of gate/up, the rows of
+/// down), the expert width (the K of down, half the rows of gate/up) and the gate/up rows.  Flash-Next: 2560, 640, 1280.
+#if defined(STRATA_FUSED_GEO_N_EMBD) && defined(STRATA_FUSED_GEO_N_FF)
+// a second copy of the kernels for another model family's shape in the same binary (src/prefill/moe_fused_iq_q36.cu
+// compiles moe_fused_iq.cu again for Qwen3.6, 2048 / 512, in its own namespace); every other file takes the compiled geometry
+constexpr int kMoeEmbd = STRATA_FUSED_GEO_N_EMBD;
+constexpr int kMoeFF = STRATA_FUSED_GEO_N_FF;
+#else
+constexpr int kMoeEmbd = (int) strata::core::kCompiledGeometry.n_embd;
+constexpr int kMoeFF = (int) strata::core::kCompiledGeometry.n_ff;
+#endif
+constexpr int kMoeGuRows = 2 * kMoeFF;
 /// Experts per launch: their blob pointers travel in the launch's parameters (1 KB).
 constexpr int kMaxBatch = 128;
 /// The room of WideBatch::blob (below): a whole layer of 512 experts, which STRATA_PF_BATCH=512 (opt-in) launches at
@@ -58,6 +72,11 @@ void quantize_act(const float* x, int64_t rows, int64_t cols, void* xa, void* st
 /// `src[row]` = its token (i / k).  The order of the rows within an expert is not fixed; no output depends on it.
 void group(const int32_t* ids, int64_t n, int k, int n_expert, void* scratch, int32_t* slot, int32_t* src,
            void* stream);
+/// The tables of one GATHERED group (the layer-major walk's): its experts get the local indices 0..n_expert-1, expert e
+/// the rows [bounds[e], bounds[e + 1]) of the group (`bounds` on the device, n_expert + 1 ints, bounds[0] = 0, rows
+/// sorted by expert).  The row's token is the caller's (`src` of experts_native); the outputs go to the group's rows.
+/// `scratch`: group_bytes(bounds[n_expert], n_expert).
+void group_bounds(const int32_t* bounds, int n_expert, void* scratch, void* stream);
 
 /// Experts [e0, e1) of one layer (e1 - e0 <= kMaxBatch); blob[e - e0]: the Strata Q2_0 blob of expert e on the
 /// device (16-byte aligned), read only for an expert with rows.
@@ -72,8 +91,8 @@ struct WideBatch {
     int e0 = 0, e1 = 0;
     const uint8_t* blob[kBatchRoom] = {};
 };
-/// The batch's products: gate/up from `xa` (quantize_act of the layer's input, [tokens][2560]) through the rows
-/// `src` of `group`, SwiGLU, H as int8 into `ha` (act_bytes(n, 640)), down into `dm` [n][2560] FP32 at the rows of
+/// The batch's products: gate/up from `xa` (quantize_act of the layer's input, [tokens][n_embd]) through the rows
+/// `src` of `group`, SwiGLU, H as int8 into `ha` (act_bytes(n, n_ff)), down into `dm` [n][n_embd] FP32 at the rows of
 /// `group`.  `n`: the layer's routed rows (tokens * k), which bounds the launch grid.
 void experts(const Batch& b, int n_expert, int64_t n, const void* scratch, const void* xa, const int32_t* src, void* ha,
              float* dm, void* stream);

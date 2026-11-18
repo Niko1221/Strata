@@ -56,10 +56,6 @@ if [ "$#" -gt 0 ] && [ "$1" != "run" ] && [ "$1" != "serve" ]; then
 fi
 
 mkdir -p /data/state /data/home /data/install /data/Strata-data /run 2>/dev/null || die "/data is not writable. Mount a volume there: -v strata-data:/data"
-# llama.cpp at the pinned commit is part of the image: link it into the install folder, so the first start fetches nothing from GitHub
-if [ -d /opt/strata/seed/third_party/llama.cpp ] && [ ! -e /data/install/third_party/llama.cpp ]; then
-  mkdir -p /data/install/third_party && ln -s /opt/strata/seed/third_party/llama.cpp /data/install/third_party/llama.cpp
-fi
 if ! grep -q " /data " /proc/self/mountinfo 2>/dev/null; then
   warn "/data is not a volume, so the model and your settings are lost when this container is removed. Add: -v strata-data:/data"
 fi
@@ -234,6 +230,7 @@ if [ -n "$tune_mode" ] && [ "$tune_mode" != "skip" ]; then
     say "This preset is already tuned; keeping the tuned settings (set RETUNE=1 to tune again)."
   else
     set -- "$@" --tune "$tune_mode"; have=1
+    [ "${RETUNE:-0}" = "1" ] && set -- "$@" --retune     # without it the launcher sees a tuned preset and measures nothing (#4779)
     say "Tuning is on (TUNE=$tune_mode): the first start takes longer (up to about $([ "$tune_mode" = quick ] && echo 20 || echo 120) minutes), once."
   fi
 fi

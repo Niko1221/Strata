@@ -1,5 +1,8 @@
 import { validMcpName, MCP_NAME_HELP } from './mcp-names.mjs';
+import { SPEED_SWITCH_TABLE, DRAFTING_FAMILIES as GENERATED_DRAFTING_FAMILIES, DFLASH2_MODEL_PATTERN } from './policy-generated.mjs';
 /** Editable native keys. Unknown config keys and program paths stay intact. */
+/* The Drafting hint, word for word, with the size of the drafter this model would really fetch (the tuned one is 0.34 GB, 0.52 on an Arc card; the stock one 1.2). */
+export function draftingHint(gb=1.2){const size=Number.isFinite(Number(gb))&&Number(gb)>0?Number(gb):1.2;return `Which drafter guesses words ahead to make answers faster, one at a time. Auto (recommended) is DFlash2 for Qwen3.8-Flash-Next where the engine has it, the MTP otherwise; on two or more identical graphics cards that the all-cards split engine takes, it is that engine with the MTP draft layer. DFlash2 downloads a ${size} GB drafter once, the MTP its draft layer once. With Auto, several requests at once use the MTP. If you choose DFlash2 yourself, it runs with the number of requests you set. If DFlash2 cannot run, the MTP is used alone and Details says why. Off turns the drafter off.`;}
 export const NATIVE_FIELDS=[
  {id:'reasoning_budget_tokens',label:'Thinking token budget',group:'Responses',type:'number',min:0,max:1048576,hint:'Leave blank for the model default.'},
  {id:'fit_max_tokens',label:'Fit output to remaining context',group:'Responses',type:'boolean',hint:'Shortens the requested output cap when the prompt leaves less room.'},
@@ -9,9 +12,8 @@ export const NATIVE_FIELDS=[
  {id:'idle_unload_s',label:'Unload after idle seconds',group:'Serving',type:'number',min:0,max:86400,hint:'Zero keeps the model loaded.'},
  {id:'lazy_load',label:'Load on first request',group:'Serving',type:'boolean'},
  {id:'mtp',label:'Draft layer (MTP)',group:'Serving',type:'boolean',hint:'The draft layer guesses several words ahead, which makes answers faster, and costs about 1 GB of graphics memory and some RAM. Turn it off if the model stops while it starts, or the card is small: the expert cache gets that memory back and answers are slower. Default is on.'},
- {id:'drafting',label:'Drafting',group:'Serving',type:'enum',choices:['auto','mtp','dflash2','off'],hint:'Which drafter guesses words ahead to make answers faster. Auto (recommended) lets Strata pick from what it measured on cards like yours; today that is the MTP. DFlash2 is for Qwen3.8-Flash-Next only and downloads a 1.2 GB drafter once. If DFlash2 cannot run, the MTP is used and Details says why. Off turns the draft layer off.'},
+ {id:'drafting',label:'Drafting',group:'Serving',type:'enum',choices:['auto','mtp','dflash2','off'],hint:draftingHint(1.2)},
  {id:'batchMtp',label:'MTP per request',group:'Serving',type:'boolean',hint:'Each concurrent request uses the draft layer. Left alone, Strata turns it on for one graphics card with 24 GB or more and several requests at once, and off otherwise; choose on or off here to decide yourself.'},
- {id:'ds_experts',label:'Speed (DeepSeek)',group:'Serving',type:'enum',choices:['5','6'],forModel:'deepseek',hint:'Faster uses 5 of 6 experts per word: a small quality change, usually not noticeable. Full quality uses all 6. Left alone, the engine picks Faster on a PC whose graphics cards total 16 GB or less.'},
  {id:'parallel',label:'Concurrent requests',group:'Serving',type:'number',min:1,max:8,hint:'More slots need more memory and can slow each response.'},
  {id:'engine_silence_s',label:'Engine stall timeout (seconds)',group:'Recovery',type:'number',min:10,max:3600},
  {id:'api_monitor',label:'Keep API request metadata',group:'Recovery',type:'boolean'},
@@ -26,8 +28,8 @@ export const NATIVE_FIELDS=[
  {id:'mcp_max_rounds',label:'Maximum tool rounds',group:'Tools',type:'number',min:1,max:100},
  {id:'mcp_max_result_chars',label:'Maximum tool result characters',group:'Tools',type:'number',min:100,max:1000000},
 ];
-/** Engine environment names the app shows and edits: STRATA_* and the DeepSeek engine's DS4_*. Any other name in a model's file is kept untouched and not shown. */
-export const ENV_FLAG=/^(?:STRATA|DS4)_[A-Z0-9_]+$/;
+/** Engine environment names the app shows and edits: STRATA_*. Any other name in a model's file is kept untouched and not shown. */
+export const ENV_FLAG=/^STRATA_[A-Z0-9_]+$/;
 /**
  * The speed features of 0.2.7 that have a switch in Expert settings. A switch has a default ('on' or 'off'); outside it, it writes exactly the
  * environment entries `env` into the model's settings file ("env"); back in its default it removes them, so a default launch carries none of them.
@@ -36,26 +38,12 @@ export const ENV_FLAG=/^(?:STRATA|DS4)_[A-Z0-9_]+$/;
  * turns it on, and the STRATA_ROUTE_PRIOR=0 that 0.2.7's Off wrote is the default state now. The other two are on by default. The names are the engine switch contract (phaseA-tests/notes-027-plan.md); strata_control/speed_switches.py says the
  * same for the Terminal (tests/terminal/test_speed_switches.py compares the two).
  */
-export const SPEED_SWITCHES=[
- {id:'faster_long_prompts',label:'Faster long prompts',group:'Speed',
-  hint:'Reads very long prompts faster by approximating part of the work. Off by default: answers about long documents can miss or mix up details.',
-  default:'off',env:{STRATA_KVA:'1'}},
- {id:'faster_12gb_nvidia',label:'Faster answers on 12 GB NVIDIA cards',group:'Speed',
-  hint:'Prefers the parts of the model already on the graphics card, which makes answers faster on 12 GB cards. Off by default: in long agent sessions it can repeat itself and give weaker results. Turn on if you mostly chat and want the speed.',
-  default:'off',env:{STRATA_ROUTE_PRIOR:'1.5'}},
- {id:'faster_radeon_9000',label:'Faster answers on Radeon RX 9000 / AI PRO R9700',group:'Speed',
-  hint:'Shares the work between the graphics card and the processor in a way that makes answers faster on these cards. Turn off to go back to the previous setting, which is slower.',
-  default:'on',env:{STRATA_PCIE_FRAC_DEFAULT:'old'}},
- {id:'deepseek_speedups',label:'DeepSeek speed-ups',group:'Speed',
-  hint:'Reads long prompts faster and loads the parts of the model it needs faster. Turn off if DeepSeek stops working or its answers look wrong; it then runs as in version 0.2.6.',
-  default:'on',env:{DS4_DEFAULTS:'026',DS4_FAST_ATTN:'0',DS4_ATTN_SLAB:'0',DS4_COPY_PIN:'0',DS4_COPY_HUGETLB:'0',DS4_STORE_SPARE:'0',DS4_STORE_PUT:'0'},
-  /* an earlier test build wrote only these six for the same state: they read as the switch being set, and go with it */
-  legacy:{DS4_FAST_ATTN:'0',DS4_ATTN_SLAB:'0',DS4_COPY_PIN:'0',DS4_COPY_HUGETLB:'0',DS4_STORE_SPARE:'0',DS4_STORE_PUT:'0'}},
-];
+/* The table (ids, words, defaults, environment entries) is generated from strata_control/speed_switches.py into policy-generated.mjs; this file only adds the group the screen lists them under and the rules for where a switch applies (below), which tests/speed-switches.test.mjs and tests/terminal/test_speed_switches.py run against the same cases. */
+export const SPEED_SWITCHES=SPEED_SWITCH_TABLE.map(s=>({id:s.id,label:s.label,group:s.group??'Speed',hint:s.hint,default:s.default,env:s.env,...(s.legacy?{legacy:s.legacy}:{}),...(s.words?{words:s.words}:{})}));
 const GFX12=/^gfx120[01]$/i, RADEON_9000=/\b(?:RX\s*9\d{3}|AI\s*PRO\s*R97\d{2}|R97\d{2})\b/i;
 /**
  * Which switches make sense for this model on this PC: only those are shown. `backend` is the engine's (cuda, hip, sycl, metal, cpu). `arch` is the "arch"
- * of the model's run config: setup writes it only for the families with an engine path of their own (Qwen3.6-35B-A3B "qwen35moe", DeepSeek "deepseek41");
+ * of the model's run config: setup writes it only for the families with an engine path of their own (Qwen3.6-35B-A3B "qwen35moe");
  * the Qwen3.8-Flash-Next files (the original, Swift, Coder, Unsloth, Gyro, NVFP4) have none. KVA was measured on the Flash-Next shape (48 layers, 512
  * experts) and the engine declines it on any other, so "Faster long prompts" is shown for a model without an "arch" only.
  */
@@ -66,9 +54,9 @@ const smallNvidia=gpus=>(gpus??[]).some(g=>{
  if(vendor!=='nvidia'&&!(vendor===''&&/nvidia|geforce|\brtx\b|\bgtx\b|quadro|tesla/i.test(String(g.name??''))))return false;
  return g.vram_gb>0&&g.vram_gb<=13;
 });
-export function speedSwitchApplies(id,{deepseek=false,backend=null,gpus=[],arch=null}={}){
- if(id==='deepseek_speedups')return !!deepseek;
- if(deepseek)return false;                                              // the Qwen engine's switches
+export function speedSwitchApplies(id,{deepseek=false,backend=null,gpus=[],arch=null,vision=false}={}){
+ if(deepseek)return false;                                              // a DeepSeek settings file (no longer run): no switch
+ if(id==='picture_reader')return !!vision;                              // a Qwen model that reads pictures (its run config has a "vision" section)
  if(id==='faster_long_prompts')return !arch&&(backend==='cuda'||backend==='hip');
  if(id==='faster_12gb_nvidia')return !arch&&backend==='cuda'&&smallNvidia(gpus);   // the engine's routing needs the Flash-Next shape (512 experts, top-10) and a CUDA build
  if(id==='faster_radeon_9000')return backend==='hip'&&(gpus??[]).some(g=>(!g.vendor||g.vendor==='amd')&&(GFX12.test(String(g.arch??''))||(!g.arch&&RADEON_9000.test(String(g.name??'')))));
@@ -86,7 +74,17 @@ export function setSpeedSwitch(env,id,on){
 /** What the settings answer carries: each switch that applies, with its words, its default, the entries it writes outside the default, and whether the feature is on. */
 export function speedSwitchRows(env,context){return SPEED_SWITCHES.filter(s=>speedSwitchApplies(s.id,context)).map(s=>({...s,on:speedSwitchIsOn(env,s.id)}));}
 /** Settings the app itself applies when it starts a model (they are not read from the engine's source, so the engine's text never says it supports them). */
-export const APP_OWNED_FIELDS=['mtp','batchMtp','drafting','ds_experts'];
+export const APP_OWNED_FIELDS=['mtp','batchMtp','drafting'];
+/** The families that have a Drafting choice and the model names the DFlash2 drafter was made for (strata_control/drafting.py SUPPORTED_FAMILIES, _SUPPORTED_NAME): Qwen3.8-Flash-Next, Gyro and Unsloth's quantizations of the same weights; not Swift, Coder or NVFP4. */
+export const DRAFTING_FAMILIES=GENERATED_DRAFTING_FAMILIES;
+const DFLASH2_MODEL=new RegExp(DFLASH2_MODEL_PATTERN,'i');
+/** The drafter a choice means (one per run; strata_control/drafting.py choice_of): Auto is DFlash2 where the engine has it (`served`, Control's word) and the model is one it was made for, else the MTP; off and mtp are what they say. `model` is a run config's model name or a family. */
+/** `split` (Control's plan: the all-cards split engine will take this start) makes Auto the MTP, the draft layer that engine runs; a DFlash2 the person chose by name stays. */
+export function resolveDrafter(choice,model,served,split){
+ const c=String(choice??'auto').toLowerCase();if(c==='off'||c==='mtp')return c;
+ const name=String(model??'');if(!(served===true&&(DRAFTING_FAMILIES.includes(name.toLowerCase())||DFLASH2_MODEL.test(name))))return 'mtp';
+ return split===true&&c!=='dflash2'?'mtp':'dflash2';
+}
 /** The engine arguments without the draft layer: --mtp <folder or count>, --spec-min-p <p> (its confidence threshold) and --batch-mtp. --spec stays: prompt lookup still uses its windows. Same rule as strata_control/draft_layer.py. */
 export function withoutDraftLayer(args){
  const out=[];const list=(args??[]).map(String);

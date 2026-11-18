@@ -23,13 +23,13 @@ strata launch --stop
 Linux and Mac:
 
 ```sh
-curl -fsSL https://github.com/Niko1221/Strata/releases/latest/download/install.sh -o install.sh && sh install.sh
+curl -fsSL --connect-timeout 15 --max-time 120 https://github.com/Niko1221/Strata/releases/latest/download/install.sh -o install.sh && sh install.sh
 ```
 
 Windows PowerShell (then open a new terminal):
 
 ```powershell
-irm https://github.com/Niko1221/Strata/releases/latest/download/install.ps1 | iex
+irm -TimeoutSec 120 https://github.com/Niko1221/Strata/releases/latest/download/install.ps1 | iex
 ```
 
 More in [INSTALL.md](INSTALL.md#the-terminal). The installer needs no administrator rights and puts `strata` on your PATH.
@@ -95,7 +95,7 @@ strata launch --show-key
 | `--vision off\|on\|gpu\|cpu` | Picture reading. Default: on when the model and the engine can. |
 | `--parallel N` | Requests answered at the same time, 1 to 8. Default: fit to your card. |
 | `--mtp on\|off` | The draft layer. `off` saves about 1 GB of graphics memory and is slower. Default: on. |
-| `--drafting auto\|mtp\|dflash2\|off` | Which drafter guesses ahead. `dflash2` is for Qwen3.8-Flash-Next only and downloads a 1.2 GB drafter once. If it cannot run, MTP is used and the start says why. |
+| `--drafting auto\|mtp\|dflash2\|off` | Which drafter guesses ahead. `dflash2` is for Qwen3.8-Flash-Next only and downloads its drafter once (0.34 GB for the models that have a tuned drafter, 0.52 GB on Intel Arc, else 1.2 GB). If it cannot run, MTP is used and the start says why. |
 | `--gpu LIST`, `--gpu-roles LIST` | Which cards to use, and a role per card. |
 | `--tune quick\|thorough\|skip`, `--tune-allow-small`, `--retune` | Tuning. `--retune` measures again; a model tuned before for the same choices on this computer reuses the stored result. |
 | `--set KEY=VALUE` | An advanced engine setting or `STRATA_*` variable (repeatable). Unknown names get a warning. |
@@ -115,34 +115,22 @@ strata launch --show-key
 Presets are small files in `launch-presets/` beside the profiles folder. A run uses the shared profile `launch-<name>` and the shared
 tuning presets (`strata presets`), so the app sees them too.
 
+**Which value an engine option has.** The run config of a launch (`launch/<name>.json` in the state folder) is built again at every launch. For each
+option the first of these four that has it wins, and the file, `strata status` and the engine's command line show the same value:
+
+1. **Explicit launch values:** what this command line says (`--set draft-conf=0.35`, `--context`, ...). They hold for this launch and any launch given the same flags
+   (a saved preset keeps its `--set` values). Leave a flag out next time and it is gone. `--set KEY=off` removes the option.
+2. **Persisted overrides:** the options you set by hand: `user_args` in the model's run config and changes you made to `args` in the launch's file since it was written.
+3. **Calibrated values:** what `strata engine calibrate --apply-result` measured for this model and context (`calibrated` in the file). A different model or context drops them.
+4. **Auto:** what setup and the policies generate (drafter confidence from the card, cards, memory fit).
+
+The Auto drafter policy rebuilds its options at every start and keeps only layers 1 and 2, so `--set draft-conf=0.35` and `--set spec=3` reach the engine as given.
+`--set draft-conf=off` cannot remove an option the DFlash2 drafter needs: use `--drafting off` or `--drafting mtp` instead.
+
 **Launching while a model is serving.** The same choices restart nothing and print the running addresses. Different choices
 (another context, pictures, access, or another model on the same port) make the screens ask once, "Restart the model with these
 settings? Answers in progress stop." With `--no-tui` the command refuses with one line naming the running model, its port and settings. Add
 `--restart` or run `strata launch --stop` first. A different `--port` runs beside the first server; two big models may not fit in graphics memory together, and the launch says so.
-
-## DeepSeek V4.1-Flash
-
-DeepSeek V4.1-Flash runs in the Terminal and in the app, on NVIDIA RTX 30, 40 and 50 (Windows and Linux) and on the Radeon AI PRO R9700 (Linux). Hardware, sizes and speeds are in [MODELS.md](MODELS.md#deepseek-v41-flash).
-
-```sh
-strata launch --plan --family deepseek41 --model ist-das-2.00bpw
-strata launch --family deepseek41 --model ist-das-2.00bpw
-```
-
-| Model name | Download |
-| --- | ---: |
-| `ist-das-1.75bpw` | 239 GB |
-| `ist-das-2.00bpw` | 257 GB |
-| `ist-das-2.25bpw` | 274 GB |
-| `ud-q8_k_xl` | 508 GB |
-
-- The context is 8192 tokens (8K), the size the engine was checked at.
-- `--speed faster|full` picks how many of the model's 6 experts it uses per word. Faster uses 5 (a small quality change, usually not noticeable) and is the default on a PC with 16 GB of graphics memory or less and on PCs whose graphics share the computer's memory. Full uses all 6. `--full-quality` is the same as `--speed full`. Both need DeepSeek engine 0.1.50 or newer, which `strata launch` fetches. The engine's own flag is `--experts N`.
-- It answers one request at a time. `--parallel` above 1 is ignored with a note.
-- It reads pictures (on by default) with the engine's own vision tower, loaded with the model; `--vision off` turns them off. Setup fetches the tower's weights (mmproj-BF16.gguf, 1 GB) with the other shared files and packs them with the model.
-- `--tune` runs DeepSeek's own short tuner (drafter on or off, CPU threads), not the Qwen tuner.
-- `--model-path DIR` starts from the shards you already have.
-- `--plan` shows where the model goes on your cards and how much is held in RAM.
 
 ## After the start: the monitor
 

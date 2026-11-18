@@ -1,0 +1,19 @@
+{
+ "upd01": "Pour mettre à jour le moteur, Strata doit arrêter le modèle chargé : {0}.",
+ "upd02": "Le nouveau moteur est d’abord téléchargé pendant que le modèle continue de répondre. Ensuite le modèle s’arrête (les réponses en cours se terminent d’abord), le moteur est mis à jour, et vous pouvez redémarrer le modèle avec les mêmes réglages. Vos modèles et réglages sont conservés.",
+ "upd03": "Arrêter et mettre à jour",
+ "upd04": "Préparation du nouveau moteur. {0} continue de fonctionner jusqu’à ce qu’il soit prêt.",
+ "upd05": "Arrêt de {0}. Les réponses en cours se terminent d’abord.",
+ "upd06": "{0} est arrêté. Mise à jour du moteur…",
+ "upd07": "Mise à jour du moteur",
+ "upd08": "Le moteur est à jour",
+ "upd09": "Le moteur n’a pas été mis à jour",
+ "upd10": "Le moteur est à jour. Redémarrer {0} avec les mêmes réglages ?",
+ "upd11": "La mise à jour ne s’est pas terminée. Votre ancien moteur est inchangé et fonctionne toujours. Redémarrer {0} avec lui ?",
+ "upd12": "Pas maintenant",
+ "upd13": "Démarrage de {0}. Le chargement peut prendre quelques minutes.",
+ "upd14": "Redémarrage de {0}",
+ "upd15": "Le modèle n’a pas redémarré",
+ "upd16": "Vous pouvez le recharger depuis Modèles.",
+ "upd17": "Un modèle qui n’a pas été démarré depuis cette application est en cours d’exécution, rien n’a donc été modifié. Arrêtez-le, puis mettez à nouveau le moteur à jour."
+}

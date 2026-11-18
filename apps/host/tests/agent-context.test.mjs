@@ -10,7 +10,7 @@ import { startScriptedWorker } from './helpers/scripted-worker.mjs';
 import { createAgentBridge } from '../server/agent/agent-bridge.mjs';
 import { resolveHarness } from '../server/agent/harness-runtime.mjs';
 import { buildProfile } from '../server/agent/profile.mjs';
-import { clipMessage, densityOf, estimateMessage, isContextOverflow, pressureNow, promptTokensOf, splitMessages, summaryBudget, usageOfEvent } from '../server/agent/context-budget.mjs';
+import { clipMessage, densityOf, estimateMessage, isContextOverflow, pressureNow, promptTokensOf, splitMessages, summaryBudget, usageOfEvent, SUMMARY_LANGUAGE_RULE, withSummaryLanguage } from '../server/agent/context-budget.mjs';
 
 const HARNESS = process.env.STRATA_HARNESS_DIR;
 const skip = !HARNESS || !resolveHarness({ env: process.env }).ok ? 'STRATA_HARNESS_DIR is not set to a built Harness' : false;
@@ -283,4 +283,15 @@ test('/compact summarises the older messages with the real figures, and says so 
   assert.ok(worker.requests.some(r => r.summary));
   const again = await run('/compact');
   assert.ok([FIT_TEXT.nothingToSummarize, FIT_TEXT.nothingFull, FIT_TEXT.summarized].includes(again.find(f => f.type === 'delta').key), 'a second /compact is answered in plain words');
+});
+
+test('the summary request asks for the language of the conversation and leaves the original messages alone (#4750)', () => {
+  const asked = [{ role: 'user', content: 'hi' }, { role: 'user', content: [{ type: 'text', text: 'Summarise. Write concise English engineering prose.' }] }];
+  const out = withSummaryLanguage(asked);
+  assert.equal(out[1].content.length, 2);
+  assert.equal(out[1].content[1].text, SUMMARY_LANGUAGE_RULE);
+  assert.equal(asked[1].content.length, 1, 'the input is not changed');
+  assert.match(withSummaryLanguage([{ role: 'user', content: 'x' }])[0].content, /language the person used/);
+  assert.deepEqual(withSummaryLanguage([{ role: 'assistant', content: 'x' }]), [{ role: 'assistant', content: 'x' }]);
+  assert.deepEqual(withSummaryLanguage([]), []);
 });

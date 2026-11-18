@@ -45,6 +45,25 @@ export function ComposerControls({ session, onPreview, onAttach, onError, onSlas
     const remote = useStore(s => s.remoteModel), providers = useStore(s => s.providers);
     const apiModel = providers?.connections.find(c => c.id === remote?.connectionId)?.models.find(m => m.id === remote?.modelId);
     const [menu, setMenu] = useState(false), [preferences, setPreferences] = useState<'mode' | 'thinking' | null>(null), [reading, setReading] = useState(false);
+
+    // The mode menu prints 1–3 beside its rows. They were decoration: make those
+    // keys pick the mode while the menu is open, and leave modified keys to the app.
+    useEffect(() => {
+        if (preferences !== 'mode')
+            return;
+        const onKey = (event: KeyboardEvent) => {
+            if (event.metaKey || event.ctrlKey || event.altKey)
+                return;
+            const option = modes[Number(event.key) - 1];
+            if (!option)
+                return;
+            event.preventDefault();
+            setChatPreferences(session?.id, { mode: option.value });
+            setPreferences(null);
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, [preferences, session?.id]);
     const [urlOpen, setUrlOpen] = useState(false), [url, setUrl] = useState(''), [error, setError] = useState('');
     const files = useRef<HTMLInputElement>(null), folder = useRef<HTMLInputElement>(null), previewFile = useRef<HTMLInputElement>(null);
     const trigger = useRef<HTMLButtonElement>(null), modeTrigger = useRef<HTMLButtonElement>(null), thinkingTrigger = useRef<HTMLButtonElement>(null);

@@ -25,6 +25,7 @@ import { chromium } from 'playwright-core';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import { requireChromium } from './browser.mjs';
 
 const BASE = process.env.STRATA_URL ?? 'http://localhost:5199';
 /** Anything at or above this projected area is "large". Roughly a 64×64 block. */
@@ -43,10 +44,7 @@ const MIN_THICKNESS = 32;
 /** Ceiling for the relative luminance of a large surface, in dark mode. */
 const CEILING = 0.15;
 
-const executablePath = [
-  join(homedir(), 'Library/Caches/ms-playwright/chromium-1234/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing'),
-  join(homedir(), 'Library/Caches/ms-playwright/chromium_headless_shell-1234/chrome-headless-shell-mac-arm64/chrome-headless-shell'),
-].find((p) => existsSync(p));
+const executablePath = requireChromium();
 
 if (!executablePath) {
   console.error('No cached Chromium found.');

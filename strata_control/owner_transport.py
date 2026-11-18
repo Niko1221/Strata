@@ -25,7 +25,7 @@ they have the token. That is a weaker guarantee than a pipe ACL, and it is recor
 Windows the security of the owner channel rests on the token, exactly as it does for a Jupyter
 server or any other loopback-authenticated service. A native ``CreateNamedPipe`` implementation with
 ``SDDL`` restricting the pipe to the owner is a scoped improvement, not a prerequisite, and
-``docs/work/IMPLEMENTATION_STATUS.md`` tracks it as the honest difference between the platforms.
+``history/docs/work/IMPLEMENTATION_STATUS.md`` tracks it as the honest difference between the platforms.
 
 This module is deliberately small: it provides the two operations the runtime needs (listen,
 connect), plus the addressing helpers. It owns no policy, no identity and no lifecycle.

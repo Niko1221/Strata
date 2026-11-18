@@ -86,6 +86,53 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
                            const int32_t* n_groups, const int32_t* ent_dst, const int32_t* ent_tok, int64_t cap_groups,
                            int64_t cap_entries, const void* x_q8_1, void* scratch, float* out, void* stream,
                            int64_t grid_groups = 0);
+/// OWN-I8 (research, off by default): the same call as `native_expert_grouped` on our own int8 dot-product kernels - a tile of
+/// 64 weight rows x 32..64 entries per block, each weight sub-block decoded once per tile into int8 in shared memory, `dp4a`
+/// products, SwiGLU and the q8_1 quantization of H in the gate/up epilogue (gate/up never go to memory).  For cards with no
+/// matrix cores the fused prompt kernels can use.  `scratch` as for native_expert_grouped (native_expert_scratch_bytes).
+/// Covered: gate/up IQ2_XXS / IQ2_XS / IQ3_XXS / IQ3_S / IQ2_S with a down of IQ4_NL / Q2_0 (`native_expert_i8_supported`);
+/// no NVFP4 tail, no APR Hadamard, no 4-bit slots.  STRATA_EXPERT_I8=1 makes `native_expert_grouped` itself take it for a call of
+/// 256 entries or more (the prompt chunk of a Qwen3.6 engine without MMQ); STRATA_I8_TM = 2 | 3 | 4 forces the tile.
+bool native_expert_i8_supported(const NativeExpertLayout& L) noexcept;
+/// OWN-I8, the prompt path's question (once per layer, src/prefill/prefill.cpp): do the expert groups of this layer take `native_expert_i8`
+/// on this device, for groups of about `group_entries` entries (rows of one launch)?  STRATA_EXPERT_I8=1 asks for it on any card, =0 never; unset:
+/// the HIP cards gfx1030 / gfx1031 / gfx1032 take it, every other card keeps MMQ (include/strata/kernels/i8_expert_rule.hpp).  The formats and the
+/// device's shared memory still have to allow it (`native_expert_i8_supported`); groups under 256 entries keep the other path.
+/// Shared prompt code, no device work: a Metal build answers false.
+bool native_expert_i8_prompt(const NativeExpertLayout& L, int64_t group_entries) noexcept;
+/// OWN-I8: true when the answer above is "yes" because of the card class or the build (STRATA_EXPERT_I8 not set), not because the variable names it; the engine's
+/// start line differs.  A Metal build answers false.
+bool native_expert_i8_by_default() noexcept;
+/// OWN-I8: called once, before main, by a build without llama.cpp's MMQ (prefill.cpp, STRATA_PF_OWN_ONLY): an unset STRATA_EXPERT_I8 then reads as 1 (i8_expert_rule.hpp,
+/// i8_switch_effective); a build with MMQ never calls it.  A Metal build ignores it.
+void native_expert_i8_set_mmq_free() noexcept;
+/// OWN-I8, the few-rows route (include/strata/kernels/i8_expert_rule.hpp): the average routed rows per expert under which a prompt layer that takes the int8 kernels
+/// runs on the grouped kernels instead; 0 = no route (STRATA_I8_FEWROWS=0, or the int8 kernels are off).  The class default: 6 on a Tesla P100, 7 elsewhere.
+/// Shared prompt code, no device work for a build that has none: a Metal build answers 0.
+int native_expert_i8_few_rows_limit() noexcept;
+/// OWN-I8 (tests, logs; CUDA / HIP builds only, no Metal definition: nothing shared calls these three): the dynamic shared memory per block the current device
+/// lets `native_expert_i8` use, in bytes (the device's opt-in attribute, 48 KB where it reports less; STRATA_I8_SMEM_LIMIT can lower it).
+size_t native_expert_i8_smem_limit() noexcept;
+/// What the last `native_expert_i8` call asked its two launches for: the tile code, the dynamic shared memory passed as each launch's third argument, and each
+/// launch's own status (cudaPeekAtLastError right after it, 0 = accepted).
+struct NativeExpertI8Launch {
+    int tile;
+    size_t gu_bytes, down_bytes;
+    int gu_err, down_err;
+};
+NativeExpertI8Launch native_expert_i8_last_launch() noexcept;
+/// Does a launch of an empty kernel with this much dynamic shared memory run on the current device?  1 yes, 0 refused, -1 not available (a HIP build).  A
+/// diagnostic for native_i8_parity; the attribute call is tried and its refusal ignored, the launch decides; the context is left clean.
+int native_expert_i8_probe_launch(size_t bytes) noexcept;
+/// Bytes of scratch `native_expert_i8` needs (it is smaller than native_expert_scratch_bytes: H goes out as q8_1 blocks only): `cap_entries`
+/// entries, at most `cap_groups` groups, `n_ff` features.
+size_t native_expert_i8_scratch_bytes(int64_t cap_entries, int64_t cap_groups, int64_t n_ff);
+/// The activation image `native_expert_i8` reads (its `x_q8_1` argument): `n_rows` x `n_cols` floats as blocks of 32 values {float d; int8 q[32]} (36 bytes), MMQ's numbers
+/// (d_inv = 127 / amax, q = round(x * d_inv), d = 1 / d_inv, the scale in FP32).  NOT the q8_1 block of the other kernels (half2 ds); `n_cols` a multiple of 32.
+void native_expert_i8_quantize(const float* x, int64_t n_rows, int64_t n_cols, void* y, void* stream);
+void native_expert_i8(const NativeExpertLayout& L, const unsigned long long* grp_ptr, const int32_t* grp_start, const int32_t* n_groups,
+                      const int32_t* ent_dst, const int32_t* ent_tok, int64_t cap_groups, int64_t cap_entries, const void* x_q8_1,
+                      void* scratch, float* out, void* stream);
 /// true: `native_expert_grouped`'s launches before the group stride (STRATA_GROUPED_V1=1 at startup) - a block row
 /// per possible group, SwiGLU and the q8_1 quantization as two kernels over all cap_entries.  Bitwise the same results
 /// (native_grouped_parity checks it); kept for A/B timing.  Set before graph capture; captured graphs keep theirs.
@@ -110,10 +157,11 @@ void hadamard_rows_f16(uint16_t* x, int64_t rows, int64_t width, int block, cons
 /// kept for the process.  Call it at setup, not inside a CUDA graph capture.  nullptr for a nullptr `host`.
 const float* hadamard_device_signs(const float* host, int width);
 
-/// EXPDEC (STRATA_EXPDEC=1, docs/EXPERTDEC.md): `native_expert_grouped` stages the group's q8_1 activations in shared
+/// EXPDEC (STRATA_EXPDEC, docs/EXPERTDEC.md): `native_expert_grouped` stages the group's q8_1 activations in shared
 /// memory and computes several rows per lane, the same sums per (row, entry) as the default kernels (bitwise), for
 /// gate/up IQ2_XXS / IQ2_XS / IQ3_XXS / IQ3_S / IQ2_S at n_embd 2560 and down IQ4_NL / Q2_0 at n_ff 640; other layouts
-/// keep the default kernels.  Set before graph capture; captured graphs keep the kernels they captured.
+/// keep the default kernels.  Enabled by default on gfx12 (STRATA_EXPDEC=0 disables it) and opt-in elsewhere
+/// (STRATA_EXPDEC=1).  Set before graph capture; captured graphs keep the kernels they captured.
 void native_expert_set_expdec(int on);
 int native_expert_expdec();
 /// Its knobs, read from the environment at startup (STRATA_EXPDEC_R 1 | 2, _DR 1 | 2 | 4, _MINB 2 | 4, _D20 0 | 1,
@@ -121,8 +169,8 @@ int native_expert_expdec();
 /// (2 = up to 128 registers, 4 = up to 64), EXPDEC for the IQ4_NL down too, gate/up and down rows per block (0 = auto
 /// from the launch's groups), the auto rule's minimum blocks.  In the setter a field <= 0 (< 0 for the two rows per
 /// block and down_iq4_nl) keeps the current value.
-/// `down` (STRATA_EXPDEC_DOWN, default 0): EXPDEC for the down too; by default only the gate/up (in the engine the
-/// Q2_0 down was ~10% slower with EXPDEC, docs/EXPERTDEC.md par. 7).
+/// `down` (STRATA_EXPDEC_DOWN, default 1 on gfx12 for Q2_0 down and 0 elsewhere; STRATA_EXPDEC_DOWN=0/1 overrides):
+/// EXPDEC for the down too; `down_iq4_nl` (STRATA_EXPDEC_D20, default 0) remains opt-in everywhere.
 struct NativeExpertExpdecParams {
     int gu_rows_per_lane = 0, down_rows_per_lane = 0, gu_min_blocks_per_sm = 0, down_iq4_nl = -1, down = -1;
     int gu_rows_per_block = -1, down_rows_per_block = -1, min_blocks = 0;

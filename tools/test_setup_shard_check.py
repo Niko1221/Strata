@@ -54,7 +54,7 @@ class ShardCheck(unittest.TestCase):
             setup.check_shards([p])
 
     def test_a_complete_gguf_with_integer_tensors_is_whole(self):
-        # The IST-DAS DeepSeek-V4.1 first shard keeps the Engram's hash parameters as I32/I64 tensors
+        # The ISTA-DAS DeepSeek-V4.1 first shard keeps the Engram's hash parameters as I32/I64 tensors
         # (tools/dsv41/pack_gguf.py), so a complete file of that set must not be turned away as cut short.
         p = self.d / "i-00001-of-00004.gguf"
         gguf(p, tensors=[("engram_primes", 3, 27)], pad_data=24)       # exactly its 24 bytes

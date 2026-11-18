@@ -33,14 +33,19 @@ class Home:
             "STRATA_RUNTIME_DIR": str(base / "runtime"),
             "XDG_STATE_HOME": str(base / "state"),
             "LOCALAPPDATA": str(base / "local"),
+            "APPDATA": str(base / "roaming"),            # Windows: %APPDATA%\Strata\settings.json (remembered Strata folders), profiles, connections
+            "XDG_CONFIG_HOME": str(base / "xdg-config"),  # Linux/macOS: ~/.config/strata/settings.json
             "HOME": str(base / "home"),
             "USERPROFILE": str(base / "home"),
         }
+        self.env_clear = ("STRATA_SETTINGS_FILE", "STRATA_CONNECTION_DIR", "CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES")   # a developer's own variables must not leak into a test either
         (base / "home").mkdir(parents=True, exist_ok=True)
         self.patch = mock.patch.dict(os.environ, self.env)
 
     def __enter__(self) -> "Home":
         self.patch.start()
+        for k in self.env_clear:                       # (patch.dict puts the original environment back on exit)
+            os.environ.pop(k, None)
         return self
 
     def __exit__(self, *exc) -> None:
@@ -68,3 +73,12 @@ def run_cli(argv: list[str]) -> tuple[int, str, str]:
         except SystemExit as e:
             code = int(e.code or 0)
     return code, out.getvalue(), err.getvalue()
+
+
+def not_intel(testcase) -> None:
+    """These fixtures describe an NVIDIA PC (catalog(HW_12)). Runner.intel_chosen asks the machine that runs the test, so on a box with an
+    Intel Arc (p1006) the launch became an Intel one and the plan words changed. Patched for the length of the test."""
+    from strata_cli.launch.runner import Runner
+    p = mock.patch.object(Runner, "intel_chosen", lambda self: False)
+    p.start()
+    testcase.addCleanup(p.stop)

@@ -38,9 +38,22 @@ inline std::atomic<bool>& arena_uma_no_register_flag() {
     static std::atomic<bool> f{false};
     return f;
 }
+/// the engine sets this on an integrated gfx11 GPU under Linux (arch_defaults.hpp, igpu_arena_no_thp_default): the arena
+/// then asks for no transparent huge pages (as STRATA_NO_ARENA_THP=1), unless STRATA_NO_ARENA_THP=0 asks for them.
+inline std::atomic<bool>& arena_no_thp_flag() {
+    static std::atomic<bool> f{false};
+    return f;
+}
 /// True when the arena is to stay unregistered: STRATA_ARENA_PIN_GIB=none always, otherwise the flag above unless the user set
 /// STRATA_ARENA_PIN_GIB to a number (STRATA_ARENA_PIN_GIB=0 registers the whole arena as before).
 bool arena_no_register();
+
+/// #3431 (Windows, HIP): the stack [lo, hi) of a thread that only waits while the arena is registered (the process's first thread
+/// when the engine runs on its own one); a GPU alias may cover it.  0, 0: none.
+void set_idle_thread_stack(uint64_t lo, uint64_t hi);
+/// #3431 (Windows, HIP): the start addresses of the address-space reservations main() keeps for the life of the process; a GPU
+/// alias inside one is clear, nothing can be placed there.
+void set_held_address_space(std::vector<uint64_t> bases);
 
 struct PinnedArena {
     void* base = nullptr;
@@ -88,6 +101,8 @@ struct PinnedArena {
     void register_slices(std::atomic<int>& ready);
     std::vector<uint64_t> bounds_;
     std::vector<uint64_t> slice_starts;
+    /// #3431 (Windows, HIP): the address-space reservations under the GPU aliases of the registered ranges, released after them
+    std::vector<void*> alias_claims;
     void* mapping_base = nullptr;     ///< actual mapping start; differs from base when a shared-file header exists
     uint64_t mapping_bytes = 0;       ///< bytes to release from mapping_base
     /// shared-file arena only: the load state word in the file's header (0: nobody has loaded it, a pid: that engine is
@@ -100,6 +115,11 @@ struct PinnedArena {
     bool valid() const { return base != nullptr; }
     uint8_t* data() const { return (uint8_t*) base; }
 };
+
+/// Linux: drops the GPU driver's registration of every arena range registered so far, for a process that ends right after
+/// (kfd_quiet.hpp, EXIT: then the kernel's exit has no userptr of ours to evict the queues for).  The arenas stay mapped; their
+/// destructors must not run after it.  Returns the ranges unregistered; 0 elsewhere.
+int unregister_arena_ranges();
 
 struct LoadStats {
     double seconds = 0.0;
@@ -160,7 +180,9 @@ LoadStats load_experts_ranges(const std::string& path, uint8_t* dst, const std::
 /// (an overload, not a default argument: the SYCL build has its own pinned.dp.cpp that defines the signature above only)
 LoadStats load_experts_ranges(const std::string& path, uint8_t* dst, const std::vector<uint64_t>& layer_off,
                               const std::vector<uint64_t>& layer_bytes, int threads, uint64_t chunk,
-                              const std::atomic<int>* ready, const PadMap* pad);
+                              const std::atomic<int>* ready, const PadMap* pad, bool drop_behind = false);
+/// `drop_behind` (Linux only; page_cache_drop.hpp): right after each chunk is copied into the arena, the file cache of that chunk is
+/// given back (posix_fadvise DONTNEED, advice only: a failure is ignored), so the cache of the file never grows to the arena's size.
 
 /// The same ranges read UNBUFFERED straight into `dst` (Windows): no staging buffer and no file-cache copy - the
 /// drive's DMA lands where the experts live. Every range, `dst` and `chunk` must be 4 KiB aligned; returns ok =

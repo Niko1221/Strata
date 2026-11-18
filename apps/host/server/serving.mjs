@@ -2,7 +2,7 @@
 import { randomBytes } from 'node:crypto';
 import os from 'node:os';
 import { get as getStore, update } from './store.mjs';
-import { nowIso, round, uid } from './util.mjs';
+import { nowIso, round, sameSecret, uid } from './util.mjs';
 
 const requests = [];
 const MAX_REQUESTS = 60;
@@ -39,6 +39,8 @@ export function state() {
     revision,
     running,
     baseUrl: sharing.active ? sharing.url : baseUrl(),
+    // The address on this computer, the one the app's own port serves, kept apart from the sharing address (#4798).
+    localUrl: baseUrl(),
     sharing,
     tunnel,
     port,
@@ -83,10 +85,13 @@ export function patch(body) {
 export function authorized(req) {
   const key = getStore().serving?.apiKey;
   if (!key) return true;
-  const header = req.headers.authorization ?? '';
-  const bearer = header.startsWith('Bearer ') ? header.slice(7) : '';
-  const alt = req.headers['x-api-key'];
-  return bearer === key || alt === key;
+  const header = req.headers?.authorization;
+  const bearer = typeof header === 'string' && header.startsWith('Bearer ') ? header.slice(7) : '';
+  const alt = req.headers?.['x-api-key'];
+  // #4535: constant time over fixed-length digests, and both headers are always compared so the time does not show which one was sent.
+  const viaBearer = sameSecret(bearer, key);
+  const viaHeader = sameSecret(alt, key);
+  return viaBearer || viaHeader;
 }
 
 export function open({ client, endpoint, tokensIn = null, model, instanceId, gpuIds, cancel }) {
