@@ -3063,6 +3063,22 @@ class CancelledRead(unittest.TestCase):
         self.assertEqual((stats["chunk"], stats["experts_streamed"], stats["prompt_ms"]), (1536, 105, 12.0))
         self.assertNotIn("chunk", request_stats([{"prompt_ms": 1.0}, {"prompt_ms": 1.0, "chunk": 64}]))
 
+    def test_phase_b_stage_ledger(self):
+        e = SimpleNamespace()
+        StrataEngine._parse_done(
+            e, "DONE 5 12000 900.0 80.0 stop 3 4 0 7 9 0 0 0.0 12000 2 "
+               "moe_gate_up_ms=123.456 wait_copy_ms=45.5 prefill_gpu_timeline_ms=500.0 "
+               "prefill_ledger_runs=2 stage_ledger_version=1")
+        self.assertEqual(e.last["moe_gate_up_ms"], 123.456)
+        self.assertEqual(e.last["wait_copy_ms"], 45.5)
+        timings = request_timings(12000, 5, e.last)
+        self.assertEqual(timings["stage_ledger"]["moe_gate_up_ms"], 123.456)
+        self.assertEqual(timings["stage_ledger"]["prefill_ledger_runs"], 2)
+        total = request_stats([{"prompt_ms": 1.0, "moe_gate_up_ms": 20.0},
+                               {"prompt_ms": 2.0, "moe_gate_up_ms": 30.0}])
+        self.assertEqual(total["moe_gate_up_ms"], 50.0)
+        self.assertNotIn("stage_ledger", request_timings(10, 1, {"prompt_ms": 1.0, "decode_ms": 1.0}))
+
     def test_prompt_tokens_seen(self):
         last = {"finish": "cancel", "reused": 1000, "prompt_read": 2000}
         self.assertEqual(prompt_tokens_seen(98179, last), 3000)
@@ -3787,7 +3803,7 @@ class WebApp(unittest.TestCase):
                 code, _, body = self.get("/slots")
                 self.assertEqual(code, 200)
                 self.assertEqual(json.loads(body), [{"id": 0, "n_ctx": CTX, "is_processing": busy,
-                                                     "n_prompt_tokens": 0}])
+                                                     "n_prompt_tokens": 0, "l2_writer_pending": 0, "l2_commits": []}])
         finally:
             with self.svc.status_lock:
                 self.svc.status["busy"] = False

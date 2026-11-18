@@ -1449,7 +1449,6 @@ struct PrefillWarmer {
     std::condition_variable cv;
     std::thread thread;
     std::atomic<int64_t> warmed{0}, dropped{0};
-
     explicit PrefillWarmer(core::ExpertSource* s) : src(s) {
         thread = std::thread([this] {
             strata::aux_cpus::pin_current_thread();
@@ -1464,6 +1463,12 @@ struct PrefillWarmer {
                 }
                 src->warm(j.layer, j.experts.data(), (int64_t) j.experts.size());
                 warmed.fetch_add((int64_t) j.experts.size(), std::memory_order_relaxed);
+                // [giphoo] G7 (issue #1): warmer 死计数器激活 — 每 ~64K warmed experts 低频汇总一行
+                if ((warmed.load(std::memory_order_relaxed) & 0xFFFF) < (int64_t) j.experts.size()) {
+                    std::fprintf(stderr, "strata prefill warmer: %lld experts warmed, %lld dropped (queue overflow) so far\n",
+                                 (long long) warmed.load(std::memory_order_relaxed),
+                                 (long long) dropped.load(std::memory_order_relaxed));
+                }
             }
         });
     }
@@ -3525,6 +3530,13 @@ int64_t Prefill::chain_experts_streamed() const {
     return sum;
 }
 
+// [giphoo] L2 观测：整条 chain 的 stage ledger 聚合（gateway stage_ledger 字段来源）
+PrefillStageLedger Prefill::chain_stage_ledger() const {
+    PrefillStageLedger out;
+    for (const Prefill* p = this; p != nullptr; p = p->next_) out.add(p->stats_.stage);
+    return out;
+}
+
 uint64_t Prefill::bytes_needed(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk, bool src, int64_t tail) {
     return bytes_needed_impl(g, ss, chunk, false, src, tail);
 }
@@ -3778,6 +3790,10 @@ enum PfPhase { kPfStart, kPfHc, kPfGdn, kPfQsa, kPfQsaIdx, kPfQsaSel, kPfQsaAttn
                kPfWaitCopy, kPfDequant, kPfGemmGU, kPfGemmD, kPfCombine, kPfPle, kPfKvStage, kPfGdnConv, kPfGdnRec, kPfGdnOut, kPfHcWrite,
                kPfHcDown, kPfHcUp, kPfHcInj, kPfHcMix, kPfQsaIdxG, kPfQsaPrep,
                kPfCount };
+static_assert(kPfCount == kPrefillStageCount, "Phase-B stage enum must match the GPU timer phases");
+static_assert(kPfGdn == kPrefillGdn && kPfWaitCopy == kPrefillWaitCopy &&
+              kPfGemmGU == kPrefillMoeGateUp && kPfGemmD == kPrefillMoeDown,
+              "Phase-B public stage indices must match the GPU timer phase order");
 const char* const kPfNames[kPfCount] = {"embed+steps", "hc read", "gdn", "qsa proj", "qsa indexer", "qsa select",
                                         "qsa attn", "router+shared", "host grouping", "gather", "wait copy", "dequant",
                                         "gemm gate/up", "gemm down", "combine", "ple", "kv stage", "gdn conv+gates",
@@ -3820,6 +3836,19 @@ struct PfTimer {
         for (cudaEvent_t e : ev) cudaEventDestroy(e);
     }
 };
+
+void record_stage_ledger(PrefillStats& stats, const PfTimer& pt, double wall_ms,
+                         double host_staging_ms, double host_setup_ms, double host_sync_ms,
+                         double host_chunk_ms, double host_ple_ms) {
+    for (size_t i = 0; i < stats.stage.gpu_ms.size(); ++i) stats.stage.gpu_ms[i] += pt.ms[i];
+    ++stats.stage.runs;
+    stats.stage.wall_ms += wall_ms;
+    stats.stage.host_staging_ms += host_staging_ms;
+    stats.stage.host_setup_ms += host_setup_ms;
+    stats.stage.host_sync_ms += host_sync_ms;
+    stats.stage.host_chunk_ms += host_chunk_ms;
+    stats.stage.host_ple_ms += host_ple_ms;
+}
 // multi-GPU: the peer's own timeline (STRATA_PREFILL_TIMING): marks on the peer stream, folded with the primary's
 enum PePhase { kPeIdle, kPeMoeIn, kPeMoeGemm, kPeMoeOut, kPeCount };
 const char* const kPeNames[kPeCount] = {"idle", "moe in", "moe gemm", "moe out"};
@@ -3992,6 +4021,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
     const core::ModelGeometry& g = *m.g;
     core::SessionState& ss = *m.ss;
     const auto t_start = Clock::now();
+    const double stage_host0 = stats_.ms_experts_host, stage_ple0 = stats_.ms_ple;
     const int64_t LB = stage_lb_, LE = stage_le_;
     // STRATA_KVA: the approximate-prefix plan of this run, if it qualifies (a cold read of one long prompt, one
     // stage, no capture).  Positions [0, kva_frontier) are approximated in the layers at and after the split.
@@ -7402,6 +7432,8 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
     }
     if (pt.on) {
         pt.fold();
+        record_stage_ledger(stats_, pt, ms_since(t_start), stats_.ms_experts_host - stage_host0,
+                            host_setup_ms, host_sync_ms, host_chunk_ms, stats_.ms_ple - stage_ple0);
         double total = 0.0;
         for (double v : pt.ms) total += v;
         std::string line;
@@ -8908,6 +8940,7 @@ bool Prefill::lm_run(const std::vector<Seg>& segs, int depth, const std::vector<
                  (long long) lm_groups_f16, (long long) lm_groups_fz, ms_since(t_start), ms_attn, ms_experts, ms_wait_a, ms_host_tables);
     if (pt.on) {
         pt.fold();
+        record_stage_ledger(stats_, pt, ms_since(t_start), 0, 0, 0, 0, 0);
         double total = 0.0;
         for (double x : pt.ms) total += x;
         std::string line;

@@ -64,6 +64,9 @@ sys.path.insert(0, str(ROOT))   # run as a script (run-<model>.bat) as well as a
 from serve.frontend import (THINK_END, ChatTemplate, Event, OutputParser, parser_for_template, anthropic_to_messages, anthropic_tools,  # noqa: E402
                             forced_call, images_of, literal_tags, mark_think_literals, openai_to_messages, require_messages,
                             tool_choice_of, unmark_think_literals)
+from l2.cache_control import extend_fields as l2_extend_fields  # [giphoo] L2 RAM control-plane parser
+from l2.cache_control import handle_cache_get as l2_cache_get
+from l2.cache_control import handle_cache_post as l2_cache_post
 from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
 from serve import runconfig  # noqa: E402
 from serve.webfiles import subtree_file as web_subtree_file  # noqa: E402
@@ -93,6 +96,17 @@ from serve import images as images_api  # noqa: E402
 
 IM_END = "<|im_end|>"
 IMAGE_PAD = "<|image_pad|>"
+
+STAGE_LEDGER_KEYS = (
+    "embed_steps_ms", "hc_read_ms", "gdn_ms", "qsa_projection_ms", "qsa_indexer_ms", "qsa_select_ms",
+    "qsa_attention_ms", "router_shared_ms", "host_grouping_ms", "gather_ms", "wait_copy_ms", "dequant_ms",
+    "moe_gate_up_ms", "moe_down_ms", "combine_ms", "ple_gpu_ms", "kv_stage_ms", "gdn_conv_gates_ms",
+    "gdn_recurrence_ms", "gdn_output_projection_ms", "hc_write_ms", "hc_down_silu_ms", "hc_up_ms",
+    "hc_inject_ms", "hc_mix_ms", "qsa_indexer_gemms_ms", "qsa_prepare_ms",
+    "prefill_gpu_timeline_ms", "prefill_wall_ms", "prefill_host_staging_ms", "prefill_host_setup_ms",
+    "prefill_host_sync_ms", "prefill_host_chunk_ms", "prefill_host_ple_ms",
+)
+STAGE_LEDGER_INT_KEYS = ("prefill_ledger_runs", "stage_ledger_version")
 
 
 def popen(what: str, args: list, role: str = "engine", **kw):
@@ -784,13 +798,47 @@ def narrate_start(log_path: str, offset: int, args: list, done: threading.Event,
     loading = experts_loading_words(args, size)
     t0 = last = time.time()
     said = set()
+    cache_fill = None
 
     def say(key, text):
-        nonlocal last
+        nonlocal last, cache_fill
         if key not in said:
             said.add(key)
             last = time.time()
             print(text, flush=True)
+            if key == "cache":
+                cache_fill = {"at": time.time(), "description": text,
+                              "log_path": log_path, "log_offset": offset, "args_sha256": hashlib.sha256(
+                                  "\0".join(args).encode("utf-8", "replace")).hexdigest()}
+                cache_fill_event("start")
+
+    def cache_fill_event(state: str):
+        if cache_fill is None:
+            return
+        out_dir = os.environ.get("STRATA_PERF_ATTR_LOG_DIR")
+        if not out_dir:
+            return
+        try:
+            os.makedirs(out_dir, exist_ok=True)
+            path = Path(out_dir) / f"expert-cache-fill-{time.strftime('%Y%m%d')}.jsonl"
+            now = time.time()
+            fields = {"experts_total": None, "vram_gib": None}
+            m = re.search(r"\(([\d,]+) experts?, ([\d.]+) GiB", cache_fill["description"])
+            if m:
+                fields = {"experts_total": int(m.group(1).replace(",", "")),
+                          "vram_gib": float(m.group(2))}
+            event = {
+                "schema_version": 1, "event": state, "trigger": "engine_start",
+                "event_id": uuid.uuid4().hex, "pid": os.getpid(),
+                "process_key": f"{os.getpid()}-{offset}",
+                "time": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(now)),
+                "time_ns": time.time_ns(), "duration_ms": round((now - cache_fill["at"]) * 1000, 3),
+                **fields, **{k: v for k, v in cache_fill.items() if k != "at"},
+            }
+            with path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(event, ensure_ascii=False) + "\n")
+        except OSError:
+            pass
 
     say("weights", "[strata] starting the engine: reading the model's weights ...")
     pos = offset
@@ -821,6 +869,7 @@ def narrate_start(log_path: str, offset: int, args: list, done: threading.Event,
         if time.time() - last > heartbeat:
             last = time.time()
             print(f"[strata] still starting ({time.time() - t0:.0f} s) - please wait ...", flush=True)
+    cache_fill_event("end")
 
 
 class ConvCacheLog:
@@ -1277,6 +1326,8 @@ class StrataEngine:
         except Exception:                               # noqa: BLE001 - a note must never stop a start
             pass
         self.ended = False                              # READY: alive from here (restart() set it True, #344)
+        self.l2_writer_pending = 0                      # [giphoo] v3: L2W 协议行 (pump 层)
+        self.l2_commits = {}                            # [giphoo] issue#4-A: L2C 协议行 (pump 层, StrataEngine)
         # the engine's stdout on a thread, so a request can wait with a timeout (heartbeats, cancel checks)
         self.gen = self.__dict__.get("gen", 0) + 1      # which engine process this is (a request notes its own); first, so
         #                                                 a request that sees the new number sees the new queues (#4451)
@@ -1363,6 +1414,29 @@ class StrataEngine:
                 if sample is not None and self.proc is proc:
                     self.terminal_stage_sample = {**sample, "observed_monotonic": time.monotonic()}
                 continue
+            # [giphoo] issue#4-A: L2C/L2W 协议行在 pump 层直接消费 (不等请求 — 后台 writer 完成时无请求在飞)
+            if line.startswith("L2W ") and self.proc is proc:
+                f2 = line.split()
+                if len(f2) >= 3 and f2[1] == "q":
+                    self.l2_writer_pending = int(f2[2])
+                continue
+            if line.startswith("L2C ") and self.proc is proc:
+                f2 = line.split()
+                if len(f2) >= 5:
+                    if not hasattr(self, "l2_commits"): self.l2_commits = {}
+                    rec = {"status": int(f2[3]), "tokens": int(f2[4]), "ts": time.time()}
+                    for item in f2[5:]:
+                        key, sep, value = item.partition("=")
+                        if sep and key in ("copy_bytes", "copy_ms", "saveinc_ms", "writer_ms", "growth_bytes", "copy_used", "inplace"):
+                            try: rec[key] = int(value)
+                            except ValueError: pass
+                    self.l2_commits[(f2[1], int(f2[2]))] = rec
+                    if len(self.l2_commits) > 256:
+                        oldest = min(self.l2_commits, key=lambda k: self.l2_commits[k]["ts"])
+                        del self.l2_commits[oldest]
+                continue
+            # [giphoo] v0.2.15 合并：DeepSeek --parallel 的 multi/rid_q/STAT 分支随上游移除（上游已删 rid_q 定义，
+            # 本 fork 不用该引擎形态）；L2C/L2W 协议消费保留在上方。
             if line.startswith(("BT ", "BDONE ")) and slot_q:   # --batch: a batch slot's own lines
                 try:
                     b = int(line.split()[1])
@@ -1510,10 +1584,15 @@ class StrataEngine:
         if len(f) >= 16:                                  # #588 (engine 0.1.39+): routed experts read over PCIe
             self.last.update(offloaded=int(f[15]))
         for tok in f[16:]:                                # key=value fields after the positional ones (the prompt's
-            key, eq, value = tok.partition("=")           # first chunk and its streamed expert blobs)
-            if eq and key in ("chunk", "experts_streamed"):
+            key, eq, value = tok.partition("=")           # first chunk, streamed experts and Phase-B stage ledger)
+            if eq and key in ("chunk", "experts_streamed", *STAGE_LEDGER_INT_KEYS):
                 try:
                     self.last[key] = int(value)
+                except ValueError:
+                    pass
+            elif eq and key in STAGE_LEDGER_KEYS:
+                try:
+                    self.last[key] = float(value)
                 except ValueError:
                     pass
 
@@ -2744,7 +2823,23 @@ class StrataEngine:
                 beat = heard
                 if stall_state:
                     stall_state.clear()
+                # [giphoo] prefill->首token 黑盒段(观测): 记录首个 T 之前引擎还在做什么。
+                # 背景: 实测 4 条高缓存 live 请求 prepare_done->first_token 比 prefill_wall 多 2.2-9.6s,
+                # 该段没有任何计时覆盖, 需要知道首个 T 之前最后一类引擎输出是什么。
+                if not line.startswith("T ") and getattr(cancel, "_strata_first_token_ts", None) is None:
+                    _now = time.time()
+                    if line.startswith("PP"):
+                        if getattr(cancel, "_strata_pp_first_ts", None) is None:
+                            cancel._strata_pp_first_ts = _now
+                        cancel._strata_pp_last_ts = _now
+                        cancel._strata_pp_count = getattr(cancel, "_strata_pp_count", 0) + 1
+                    cancel._strata_pre_token_last_kind = line.split(" ", 1)[0][:24]
                 if line.startswith("T "):
+                    if getattr(cancel, "_strata_first_token_ts", None) is None:
+                        cancel._strata_first_token_ts = time.time()   # [giphoo] prefill完成后首个decode token(观测)
+                        _pp_last = getattr(cancel, "_strata_pp_last_ts", None)
+                        if _pp_last is not None:
+                            cancel._strata_post_pp_gap_ms = round((cancel._strata_first_token_ts - _pp_last) * 1000, 1)
                     allow = silence
                     if cancel.is_set():
                         return
@@ -2921,16 +3016,29 @@ class StrataEngine:
         a step that blocks in one call (a flush, the device transfer): until the next line the wait is that step's
         explicit allowance (at most SESSION_WAIT_MAX_S) when it is longer than engine_silence_s - no more, so a step
         that never ends is still ended."""
-        if action not in ("save", "restore") or any(c in path for c in "\r\n\0"):
+        # [giphoo] l2-exp: restorep (盘→池停靠副本)
+        # [giphoo] l2-exp: saveinc + restorepp actions
+        if action not in ("save", "restore", "restorep", "restorepp", "saveinc", "verify") or any(c in path for c in "\r\n\0"):
             raise ValueError("invalid session command")
         try:
-            self.proc.stdin.write(f"{'SAVE' if action == 'save' else 'RESTORE'} {path}\n")
+            cmd = ("SAVEINC" if action == "saveinc" else
+                   "RESTOREPP" if action == "restorepp" else
+                   "RESTOREP" if action == "restorep" else
+                   "VERIFY" if action == "verify" else
+                   "SAVE" if action == "save" else "RESTORE")
+            line = cmd + " " + path
+            if action == "restorepp":
+                ids = getattr(self, '_restorepp_ids', [])
+                line += " " + ",".join(str(i) for i in ids)
+            self.proc.stdin.write(line + "\n")
             self.proc.stdin.flush()
         except OSError:
             raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})") from None
         silence = float(self.silence_s or 0)
         heard = time.monotonic()
-        want = "SAVED" if action == "save" else "RESTORED"
+        want = {"saveinc": "SAVEINC'D", "save": "SAVED", "restorep": "RESTOREDP",
+                "restorepp": "RESTOREDP", "verify": "VERIFIED"}.get(action, "RESTORED")
+        alt = "SAVED" if action == "saveinc" else None
 
         def out_of_step(line: str) -> EngineDied:
             self.ended = True                               # not alive from now: the next request restarts it
@@ -2993,8 +3101,47 @@ class StrataEngine:
                 if len(parts) != 4 or parts[1] not in SessionRefused.STATUS or parts[2] not in ("0", "1"):
                     raise out_of_step(line)
                 raise SessionRefused(parts[1], parts[3].strip(), parts[2] == "1")
-            if head == want:
+            if head == want or (alt and head == alt):
                 try:
+                    if head == "VERIFIED":
+                        return {"ok": True}
+                    if head == "RESTOREDP" and len(f) >= 5:
+                        tokens, size = count(f[1]), count(f[2])
+                        ms = float(f[3])
+                        if not math.isfinite(ms) or ms < 0:
+                            raise ValueError
+                        # [giphoo] L2 control-plane serial, old five-field form still accepted.
+                        return l2_extend_fields(f, {"tokens": tokens, "bytes": size, "ms": ms,
+                                                    "partial": f[4] == "1"})
+                    if head == "L2W" and len(f) >= 3 and f[1] == "q":
+                        self.l2_writer_pending = int(f[2])
+                    if head == "L2C" and len(f) >= 5:
+                        rec = {"status": int(f[3]), "tokens": int(f[4]), "ts": time.time()}
+                        for item in f[5:]:
+                            key, sep, value = item.partition("=")
+                            if sep and key in ("copy_bytes", "copy_ms", "saveinc_ms", "writer_ms", "growth_bytes", "copy_used", "inplace"):
+                                try: rec[key] = int(value)
+                                except ValueError: pass
+                        self.l2_commits[(f[1], int(f[2]))] = rec
+                        if len(self.l2_commits) > 256:
+                            oldest = min(self.l2_commits, key=lambda k: self.l2_commits[k]["ts"])
+                            del self.l2_commits[oldest]
+                    if head == "SAVEINC'D":
+                        # [giphoo] L2 v3 + issue#4-A: 兼容 6/7/8 字段同步/异步应答
+                        if len(f) not in (6, 7, 8):
+                            raise ValueError
+                        tokens, reuse, keep, size = count(f[1]), count(f[2]), count(f[3]), count(f[4])
+                        ms = float(f[5])
+                        if not math.isfinite(ms) or ms < 0:
+                            raise ValueError
+                        async_mode = len(f) >= 7
+                        return {"tokens": tokens, "bytes": size, "ms": ms, "incremental": True,
+                                "reused": reuse, "kept": keep,
+                                # queue depth is instantaneous and may be 0 after the writer
+                                # has popped this job; async_mode alone defines ownership.
+                                "async_mode": async_mode,
+                                "async_pending": int(f[6]) if async_mode else 0,
+                                "gen": int(f[7]) if len(f) == 8 else 0}
                     if len(f) != 4:
                         raise ValueError
                     tokens, size, ms = count(f[1]), count(f[2]), float(f[3])
@@ -4879,6 +5026,8 @@ class Service:
         self.keep_awake = None                        # #1727 (opt-in): serve.keepawake.KeepAwake, the config's "prevent_sleep"
         self.fifo = threading.Lock()
         self.slot_save_path = None                    # --slot-save-path: /slots/0?action=save|restore (off when None)
+        self.l2_writer_pending = 0                    # [giphoo] L2 状态字段
+        self.l2_commits = {}                          # [giphoo] issue#4-A
         self.embeddings = threading.local()           # the current request's image embeddings file (GENI)
         self.api_key = ""                              # when set, /v1/* needs it (Bearer or x-api-key)
         # #458 (opt-in, the config's "effort_position": "end"): a non-default reasoning effort goes in a short system
@@ -4921,6 +5070,8 @@ class Service:
         self.api_monitor = False
         self.api_requests = collections.deque(maxlen=100)  # bounded I/O in memory; no headers or API keys
         self.request_trace = threading.local()
+        self.restore_events = {}                        # [giphoo] P0: rid -> this request's own restore
+        self.last_restore = None                        # legacy fallback for callers without a gateway rid
         self.history = collections.deque(maxlen=500)    # the last finished requests, newest last (GET /metrics)
         # since the server started (the Monitor's totals, issue #35)
         self.totals = {"since": time.time(), "requests": 0, "prompt_tokens": 0, "reused": 0, "output_tokens": 0,
@@ -5090,7 +5241,40 @@ class Service:
             cancel.set()
         return len(active)
 
-    def slot_action(self, slot: str, action: str, filename) -> tuple[int, dict]:
+    def remember_restore(self, rid, *, ms, tokens, partial, filename, bytes=None, action=None):
+        """Keep a restore under its gateway rid; the global last value remains only a legacy fallback."""
+        event = {"ts": time.time(), "rid": rid or "", "ms": ms, "tokens": tokens,
+                 "partial": bool(partial), "filename": filename, "bytes": bytes, "action": action}
+        with self.status_lock:
+            self.last_restore = event
+            if rid:
+                self.restore_events[rid] = event
+                for key, old in list(self.restore_events.items()):
+                    if event["ts"] - old.get("ts", 0) > 900:
+                        self.restore_events.pop(key, None)
+                while len(self.restore_events) > 128:
+                    self.restore_events.pop(next(iter(self.restore_events)))
+        return event
+
+    def restore_for_request(self, rid, started, finished, consume=False, locked=False):
+        """A rid never falls back to another request's restore; no-rid callers retain the old time-window behavior."""
+        def lookup():
+            if rid:
+                restore = self.restore_events.get(rid)
+                if consume:
+                    self.restore_events.pop(rid, None)
+                return restore
+            return self.last_restore
+        if locked:
+            restore = lookup()
+        else:
+            with self.status_lock:
+                restore = lookup()
+        if not isinstance(restore, dict) or not (started - 300 <= restore.get("ts", 0) <= finished + 1):
+            return None
+        return restore
+
+    def slot_action(self, slot: str, action: str, filename, rid: str = "") -> tuple[int, dict]:
         """llama-server's POST /slots/{id}?action=save|restore {"filename": ...}: the conversation the engine holds,
         to or from a file in slot_save_path.  -> (HTTP status, body)."""
         def error(code, message):
@@ -5104,13 +5288,15 @@ class Service:
             return error(501, "slot save/restore is not available with parallel requests (\"parallel\" / --batch)")
         if slot != "0":
             return error(400, "this server has one slot: 0")
-        if action not in ("save", "restore"):
-            return error(400, "action must be save or restore")
+        if action not in ("save", "restore", "restorep", "restorepp", "saveinc", "verify", "probe"):
+            return error(400, "action must be save, restore, restorep, restorepp, saveinc, verify or probe")
+        pp_ids = getattr(self, '_restorepp_ids', [])
+        self.engine._restorepp_ids = pp_ids
         why = slot_filename_problem(filename)
         if why:
             return error(400, f"filename {why}")
         path = os.path.join(self.slot_save_path, filename)
-        if action == "restore":
+        if action in ("restore", "restorep", "restorepp", "verify"):
             try:
                 os.lstat(path)                              # the engine opens it without following a link
             except OSError:
@@ -5127,11 +5313,11 @@ class Service:
                 if not self.loaded():
                     return error(503, "the model is not loaded")
                 with self.status_lock:
-                    self.status.update(busy=True, phase="saving the session" if action == "save"
+                    self.status.update(busy=True, phase="saving the session" if action in ("save", "saveinc")
                                        else "restoring a session", started=time.time(), first_token=None,
                                        prompt_tokens=None, generated=None, max_tokens=None)
                 try:
-                    if action == 'save' and getattr(self.engine, 'session_save_reclaim', False):
+                    if action in ('save', 'saveinc') and getattr(self.engine, 'session_save_reclaim', False):
                         from serve.session_save_retry import session_file
                         r = session_file(self, action, path, SessionRefused)
                     else:
@@ -5152,11 +5338,37 @@ class Service:
             if waiting:                                     # never reached the FIFO (an exception while waiting)
                 with self.status_lock:
                     self.status["queued"] -= 1
-        if action == "save":
-            return 200, {"id_slot": 0, "filename": filename, "n_saved": r["tokens"], "n_written": r["bytes"],
-                         "timings": {"save_ms": r["ms"]}}
-        return 200, {"id_slot": 0, "filename": filename, "n_restored": r["tokens"], "n_read": r["bytes"],
-                     "timings": {"restore_ms": r["ms"]}}
+        if action == "verify":
+            return 200, {"ok": True, "filename": filename}
+        if action in ("save", "saveinc"):
+            body = {"id_slot": 0, "filename": filename, "n_saved": r["tokens"], "n_written": r["bytes"],
+                    "timings": {"save_ms": r["ms"]}}
+            if r.get("incremental"):
+                body["incremental"] = True
+                body["n_reused"] = r["reused"]
+                body["n_kept"] = r["kept"]
+                if r.get("async_mode"):
+                    body["async_mode"] = True
+                    body["async_pending"] = int(r.get("async_pending") or 0)
+                elif r.get("async_pending"):
+                    body["async_pending"] = r["async_pending"]
+                if r.get("gen"):
+                    body["gen"] = r["gen"]
+            return 200, body
+        body = {"id_slot": 0, "filename": filename, "n_restored": r["tokens"], "n_read": r["bytes"],
+                "timings": {"restore_ms": r["ms"]}}
+        if "partial" in r:
+            body["partial"] = r["partial"]
+        if "serial" in r:
+            body["serial"] = r["serial"]
+        for key in ("prefix_checkpoint_tokens", "prefix_image_bytes", "prefix_payload_read_bytes",
+                    "prefix_block_read_bytes", "archive_format", "prefix_fallback"):
+            if key in r:
+                body[key] = r[key]
+        # [giphoo] P0: exact request correlation when the gateway supplies rid; legacy remains for old callers.
+        self.remember_restore(rid, ms=r["ms"], tokens=r["tokens"],
+                              partial=r.get("partial"), filename=filename, bytes=r.get("bytes"), action=action)
+        return 200, body
 
     def set_aliases(self, aliases) -> None:
         """#297: the config's `aliases` - a list of names (or one comma-separated string), like llama-server's --alias.
@@ -5698,12 +5910,13 @@ class Service:
             reading = self.status.get("busy") and self.status.get("first_token") is None
         return getattr(self.engine, "prefill_tok_s_mean", None) if reading else 0.0
 
-    def begin_request(self, path, req):
+    def begin_request(self, path, req, rid=None, l2_trace=None):
         """#332: a monitor record for this request, or None when the monitor is off (nothing is kept then)."""
         if not self.api_monitor:
             return None
         raw = json.dumps(req, ensure_ascii=False, indent=2)
-        record = {"id": uuid.uuid4().hex[:12], "path": path, "model": req.get("model") or self.model,
+        record_id = uuid.uuid4().hex[:12]
+        record = {"id": record_id, "rid": rid or record_id, "path": path, "model": req.get("model") or self.model,
                   "started_at": time.time(), "state": "queued", "stream": bool(req.get("stream")),
                   "response_format": (req.get("response_format") or {}).get("type")
                   if isinstance(req.get("response_format"), dict) else None,
@@ -5711,6 +5924,8 @@ class Service:
                   "output": "", "reasoning": "", "output_truncated": False, "reasoning_truncated": False,
                   "queue_s": 0.0, "load_s": 0.0, "first_token_s": None,
                   "_clock": time.perf_counter()}
+        if isinstance(l2_trace, dict):
+            record["l2"] = l2_trace
         with self.status_lock:
             self.api_requests.append(record)
         self.request_trace.record = record
@@ -5907,6 +6122,23 @@ class Service:
             return self.prompts.encode(prompt, plain, store)
         return self.tok.encode(prompt, parse_special=True, plain=plain) if plain else \
             self.tok.encode(prompt, parse_special=True)
+
+    def verified_prompt_prefixes(self, messages, tools, kwargs, full_ids, counts):
+        """Exact token watermarks for selected message boundaries, accepted only as full prompt ID prefixes."""
+        verified, rejected = {}, []
+        unique = sorted({k for k in counts if isinstance(k, int) and not isinstance(k, bool) and 0 < k <= len(messages)})
+        for k in unique[:8]:
+            if k == len(messages):
+                ids = full_ids   # the whole incoming request is a prefix of the longer snapshot
+            else:
+                prefix_kwargs = dict(kwargs)
+                prefix_kwargs["add_generation_prompt"] = False
+                ids = self.encode_prompt(messages[:k], tools, prefix_kwargs, store=False)
+            if ids == full_ids[:len(ids)]:
+                verified[str(k)] = len(ids)
+            else:
+                rejected.append(k)
+        return verified, rejected
 
     @contextlib.contextmanager
     def _turn(self, cancel=None):
@@ -6672,12 +6904,26 @@ class Service:
                             pcie_share = round(last["offloaded"] / routed, 3) \
                                 if last.get("offloaded") is not None and routed else None
                             seen = 0 if admission_rejected else prompt_tokens_seen(len(ids), last)   # #471: < len(ids) when cancelled mid-read; #3040
+                            # [giphoo] v2.4.4: the request's cache decision - reused vs the prompt whole
+                            ru_n, tot_n = last.get("reused") or 0, last.get("prompt_tokens") or 0
+                            cache = ("warm" if ru_n >= tot_n and tot_n else f"partial {round(100 * ru_n / tot_n)}%"
+                                     if ru_n else "cold") if tot_n else None
+                            # Exact rid correlation; only legacy requests without rid use the time-window fallback.
+                            rid = getattr(self.request_trace, "rid", None)
+                            l2_trace = getattr(self.request_trace, "l2_trace", None)
+                            lr = self.restore_for_request(rid, started, time.time(), locked=True)
+                            restore = {k: lr[k] for k in ("ms", "tokens", "partial", "bytes", "action")} if lr else None
                             self.history.append({
-                                "id": request_id,
+                                "id": request_id, "rid": rid or request_id,
+                                **({"l2": l2_trace} if l2_trace else {}),
                                 "projection": (sampling or {}).get("experimental_speed_projection") is not False
                                 if loaded else None,
                                 "time": started, "duration_s": round(time.time() - started, 1), "finish": finish,
                                 "prompt_tokens": seen, "reused": last.get("reused"), "output_tokens": n,
+                                "cache": cache,
+                                **({"restore_ms": round(restore["ms"], 1), "restore_tokens": restore["tokens"],
+                                    "restore_partial": restore["partial"], "restore_bytes": restore["bytes"],
+                                    "restore_action": restore["action"]} if restore else {}),
                                 "first_engine_token_s": first_engine_token_s,
                                 # the request's whole prompt, and the tokens read of it (None: an older engine)
                                 "prompt_total": len(ids), "prompt_read": last.get("prompt_read"),
@@ -6708,6 +6954,18 @@ class Service:
                                 fresh = getattr(self.engine, "last", None)
                                 if fresh is not None and fresh is not before:      # the engine's clock for THIS request
                                     timings = request_timings(seen, n, last)
+                                    if timings:   # [giphoo] 并入引擎侧延迟时间戳(观测)
+                                        for _k in ("req_received_ts", "prepare_done_ts", "first_token_ts", "first_sse_sent_ts", "first_model_sse_sent_ts", "pp_first_ts", "pp_last_ts"):
+                                            _v = getattr(cancel, f"_strata_{_k}", None)
+                                            if _v is not None:
+                                                timings[_k] = _v
+                                        for _k in ("pp_count", "post_pp_gap_ms"):
+                                            _v = getattr(cancel, f"_strata_{_k}", None)
+                                            if _v is not None:
+                                                timings[_k] = _v
+                                        _kind = getattr(cancel, "_strata_pre_token_last_kind", None)
+                                        if _kind:
+                                            timings["pre_token_last_kind"] = _kind
                                     self.last_timings = dict(timings, at=int(time.time())) if timings else None
                             self.last_request_at = time.time()
                             now = time.time()
@@ -6859,15 +7117,19 @@ def request_timings(prompt_tokens: int, generated: int, last: dict) -> dict | No
         cache_n = max(cache_n, max(0, prompt_tokens - int(last["prompt_read"])))
     prompt_n, prompt_ms, decode_ms = max(0, prompt_tokens - cache_n), float(last["prompt_ms"]), last.get("decode_ms")
     decoded = last.get("generated")          # explicit zero and missing native work are not the API's output count
-    return {"cache_n": cache_n, "prompt_n": prompt_n, "prompt_ms": round(prompt_ms, 1),
-            "prompt_per_token_ms": round(prompt_ms / prompt_n, 3) if prompt_n else None,
-            "prompt_per_second": round(prompt_n / (prompt_ms / 1000), 1) if prompt_n and prompt_ms > 0 else None,
-            "predicted_n": generated, "predicted_ms": round(decode_ms, 1) if decode_ms is not None else None,
-            "predicted_per_token_ms": round(decode_ms / decoded, 3) if decoded and decode_ms is not None else None,
-            "predicted_per_second": round(decoded / (decode_ms / 1000), 1) if decoded and decode_ms and decode_ms > 0 else None,
-            # the speculative drafts, as llama.cpp names them (from PR #83, @mikicvi): only when the engine reported them
-            **({"draft_n": int(last["drafts_offered"]), "draft_n_accepted": int(last["drafts_accepted"])}
-               if last.get("drafts_offered") is not None else {})}
+    result = {"cache_n": cache_n, "prompt_n": prompt_n, "prompt_ms": round(prompt_ms, 1),
+              "prompt_per_token_ms": round(prompt_ms / prompt_n, 3) if prompt_n else None,
+              "prompt_per_second": round(prompt_n / (prompt_ms / 1000), 1) if prompt_n and prompt_ms > 0 else None,
+              "predicted_n": generated, "predicted_ms": round(decode_ms, 1) if decode_ms is not None else None,
+              "predicted_per_token_ms": round(decode_ms / decoded, 3) if decoded and decode_ms is not None else None,
+              "predicted_per_second": round(decoded / (decode_ms / 1000), 1) if decoded and decode_ms and decode_ms > 0 else None,
+              # the speculative drafts, as llama.cpp names them (from PR #83, @mikicvi): only when the engine reported them
+              **({"draft_n": int(last["drafts_offered"]), "draft_n_accepted": int(last["drafts_accepted"])}
+                 if last.get("drafts_offered") is not None else {})}
+    ledger = {key: last[key] for key in (*STAGE_LEDGER_KEYS, *STAGE_LEDGER_INT_KEYS) if last.get(key) is not None}
+    if ledger:
+        result["stage_ledger"] = ledger
+    return result
 
 
 def request_stats(segments: list[dict]) -> dict:
@@ -6881,7 +7143,8 @@ def request_stats(segments: list[dict]) -> dict:
         else:
             result.pop(key, None)
     for key in ("prompt_ms", "decode_ms", "generated", "drafts_offered", "drafts_accepted",
-                "hits", "lookups", "offloaded", "ram_blobs", "file_blobs", "file_mb", "experts_streamed"):
+                "hits", "lookups", "offloaded", "ram_blobs", "file_blobs", "file_mb", "experts_streamed",
+                *STAGE_LEDGER_KEYS, "prefill_ledger_runs"):
         if key in ("decode_ms", "generated") and any(segment.get(key) is None for segment in segments):
             result[key] = None
         elif any(segment.get(key) is not None for segment in segments):
@@ -7557,6 +7820,20 @@ class BadBody(Exception):
         self.status = status
 
 
+def gateway_correlation_id(value):
+    return value if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,64}", value) else None
+
+
+def gateway_l2_trace(value):
+    if not isinstance(value, str) or not value or len(value) > 32768:
+        return None
+    try:
+        trace = json.loads(value)
+        return trace if isinstance(trace, dict) else None
+    except (TypeError, ValueError):
+        return None
+
+
 def make_handler(svc: Service):
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.0"                       # SSE ends by closing the connection
@@ -8184,6 +8461,10 @@ def make_handler(svc: Service):
                         data.append({"id": svc.images.model, "object": "model", "status": {"value": "loaded"},
                                      "architecture": {"input_modalities": ["text"], "output_modalities": ["image"]}})
                     self._json(200, {"object": "list", "data": data})
+            elif path in ("/v1/cache/stats", "/v1/cache/list"):
+                if not self._authorized():
+                    return
+                l2_cache_get(self, svc, path)   # [giphoo] RAM PARKED inventory
             elif path == "/props":
                 if self._authorized():
                     self._props()
@@ -8203,8 +8484,11 @@ def make_handler(svc: Service):
                                   "n_prompt_tokens": int(s.get("prompt_tokens") or s.get("held_tokens") or 0)}
                                  for s in svc.engine.slots_view()]
                     else:
-                        slots = [{"id": 0, "n_ctx": svc.reported_ctx(), "is_processing": busy,
-                                  "n_prompt_tokens": in_use}]
+                        slots = [{"l2_writer_pending": getattr(svc.engine, "l2_writer_pending", 0),
+                                  "id": 0, "n_ctx": svc.reported_ctx(), "is_processing": busy,
+                                  "n_prompt_tokens": in_use,
+                                  "l2_commits": [{"path": k[0], "gen": k[1], **v}
+                                                 for k, v in getattr(svc.engine, "l2_commits", {}).items()]}]
                     self._json(200, slots if loaded else [])
             elif path == "/v1/status":
                 if self._authorized():
@@ -8223,7 +8507,12 @@ def make_handler(svc: Service):
                 return
             path = self.path.split("?")[0].rstrip("/")   # issue #55: Claude Code posts /v1/messages?beta=true
             path = V1_V1_ALIASES.get(path, path)         # an Anthropic client given ".../v1" as its base posts /v1/v1/messages
+            request_rid = gateway_correlation_id(self.headers.get("X-Strata-Request-Id"))
             if path.startswith("/v1/") and self._foreign_page():
+                return
+            # [giphoo] l2-exp: 探针端点
+            if path == "/v1/cache/probe":
+                self._cache_probe()
                 return
             if path == "/settings":
                 self._settings()
@@ -8279,6 +8568,10 @@ def make_handler(svc: Service):
                 req = json.loads(self._body() or b"{}")
                 if not isinstance(req, dict):
                     raise ValueError("send a JSON object")
+                # [giphoo] L2 RAM PARKED lifecycle: pin/drop/preload (never moves KV out of the engine)
+                if path.startswith("/v1/cache/"):
+                    if l2_cache_post(self, svc, path, req, openai_to_messages, request_rid):
+                        return
                 if path.startswith("/v1/responses/"):        # retrieve/delete/cancel/compact: nothing is stored
                     self._json(404, responses_error_body("this server keeps no responses (stateless); send the "
                                                          "whole conversation to POST /v1/responses", code="not_found"))
@@ -8321,14 +8614,16 @@ def make_handler(svc: Service):
                         self._json(503, {"error": {"type": "server_error", "message": str(e)}})
                     return
                 if path in ("/v1/chat/completions", "/v1/messages", "/v1/responses"):
-                    self.record = svc.begin_request(path, req)
+                    svc.request_trace.rid = request_rid
+                    svc.request_trace.l2_trace = gateway_l2_trace(self.headers.get("X-Strata-L2-Trace"))
+                    self.record = svc.begin_request(path, req, rid=request_rid, l2_trace=svc.request_trace.l2_trace)
                 if path == "/v1/responses":
                     self._responses(req)
                 elif path.startswith("/slots/"):
                     query = parse_qs(self.path.partition("?")[2])
                     try:
                         code, body = svc.slot_action(path[len("/slots/"):], (query.get("action") or [""])[0],
-                                                     req.get("filename"))
+                                                     req.get("filename"), rid=request_rid or "")
                     except EngineDied as e:                  # EngineSilent included: the engine was ended
                         code, body = 500, {"error": {"code": 500, "message": str(e) + "; the next request starts "
                                                      "the engine again", "type": "server_error"}}
@@ -8404,7 +8699,29 @@ def make_handler(svc: Service):
                         record["wallclock_s"] = round(time.perf_counter() - record["_clock"], 3)
                         record["finished_at"] = time.time()
                         record["state"] = "error" if record.get("error") else record.get("outcome", "completed")
+                        # [giphoo] v2.4.4: the request's cache story for the api-monitor - the engine's
+                        # last figures (single-flight true; under parallel slots they are the freshest
+                        # leg's, an acceptable approximation for the monitor) and the restore that
+                        # served this request, when one ran just before it.
+                        eng = getattr(svc, "engine", None)
+                        last = getattr(eng, "last", None)
+                        if isinstance(last, dict):
+                            pt, ru = int(last.get("prompt_tokens") or 0), int(last.get("reused") or 0)
+                            if pt:
+                                record["prompt_reused"] = ru
+                                record["cache"] = ("warm" if ru >= pt else f"partial {round(100 * ru / pt)}%"
+                                                   if ru else "cold")
+                        lr = svc.restore_for_request(record.get("rid"), record["started_at"],
+                                                     record["finished_at"], consume=True, locked=True)
+                        if lr:
+                            record["restore_ms"] = lr.get("ms")
+                            record["restore_tokens"] = lr.get("tokens")
+                            record["restore_partial"] = lr.get("partial")
+                            record["restore_bytes"] = lr.get("bytes")
+                            record["restore_action"] = lr.get("action")
                     svc.request_trace.record = None
+                svc.request_trace.rid = None
+                svc.request_trace.l2_trace = None
 
         def _images(self, req):
             """POST /v1/images/generations (serve/images.py): one sd-cli job in the GPU's turn."""
@@ -8565,6 +8882,48 @@ def make_handler(svc: Service):
                                  "image: send it as a data: URL (or add the page's origin to the config's "
                                  "trusted_origins)")
 
+        def _cache_probe(self):
+            """[giphoo] l2-exp E5: how much of this request would the cache give back? {messages, tools?} ->
+            {prompt_tokens, reusable_tokens, live_lcp, pool_entries} without running it."""
+            body = json.loads(self._body() or b'{}')
+            svc = self.server.svc
+            try:
+                # [giphoo] l2-exp: 与真实请求同一准备管线 (tool_calls参数解析/内容规范化/kwargs推导)
+                messages, tools, kwargs = openai_to_messages(body)
+                ids = svc.encode_prompt(messages, tools, kwargs, store=False)
+                counts = body.get("prefix_messages") if isinstance(body.get("prefix_messages"), list) else []
+                prefix_tokens, prefix_rejected = svc.verified_prompt_prefixes(messages, tools, kwargs, ids, counts)
+            except Exception as e:
+                self._json(400, {"error": {"message": f"probe render failed: {e}"}})
+                return
+            eng = svc.engine
+            if not hasattr(eng, "proc") or eng.proc is None:
+                self._json(503, {"error": {"message": "the engine is not running"}})
+                return
+            with svc.fifo:
+                try:
+                    eng.proc.stdin.write("PROBE " + ",".join(str(i) for i in ids) + "\n")
+                    eng.proc.stdin.flush()
+                except OSError as e:
+                    self._json(503, {"error": {"message": f"probe engine error: {e}"}})
+                    return
+                try:
+                    ans = eng.lines.get(timeout=30)
+                except queue.Empty:
+                    self._json(504, {"error": {"message": "probe timed out"}})
+                    return
+            if ans is None:
+                self._json(503, {"error": {"message": "the engine stopped"}})
+                return
+            parts = ans.split()
+            if len(parts) >= 5 and parts[0] == "PROBED":
+                rec = {"reusable_tokens": int(parts[1]), "pool_entries": int(parts[2]),
+                       "live_lcp": int(parts[3]), "prompt_tokens": len(ids),
+                       "prefix_tokens": prefix_tokens, "prefix_rejected": prefix_rejected}
+                self._json(200, l2_extend_fields(parts, rec))   # [giphoo] parked_best/serial
+            else:
+                self._json(502, {"error": {"message": f"unexpected probe answer: {ans[:80]}"}})
+
         def _settings(self):
             # They change what every client gets, so only the app's own page may set them
             body = self._body()
@@ -8688,8 +9047,10 @@ def make_handler(svc: Service):
             stop_strings(req)                                 # ... and so is a bad stop / stop_sequences
             check_request_sampling(req)                       # ... and a sampling field of the wrong type
             cancel = threading.Event()
+            cancel._strata_req_received_ts = time.time()   # [giphoo] 引擎收到请求(观测)
             self._watch_client(cancel)                       # #430 #431 (#1999: before prepare, which can take long)
             ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new, force=force, req=req, cancel=cancel)
+            cancel._strata_prepare_done_ts = time.time()   # [giphoo] svc.prepare 完成(含restore/会话加载, 黑盒候选)
             _debug_req("openai", req, messages, tools, max_new, thinking, len(ids))
             run = run_with_mcp(svc, svc.mcp, messages, tools, kw, ids, thinking, max_new, max_req, req, cancel,
                                {t["name"] for t in extra}) if use_mcp else None
@@ -8707,6 +9068,17 @@ def make_handler(svc: Service):
                     else:
                         self.wfile.write(b"data: " + json.dumps(c, ensure_ascii=False).encode() + b"\n\n")
                     self.wfile.flush()
+                    # [giphoo] 首个SSE帧 + 首个模型内容帧时间戳(观测)
+                    if c is not None:
+                        if getattr(cancel, "_strata_first_sse_sent_ts", None) is None:
+                            cancel._strata_first_sse_sent_ts = time.time()
+                        if getattr(cancel, "_strata_first_model_sse_sent_ts", None) is None:
+                            try:
+                                _d = (c.get("choices") or [{}])[0].get("delta") or {}
+                                if any(_d.get(k) for k in ("content", "reasoning_content", "tool_calls")):
+                                    cancel._strata_first_model_sse_sent_ts = time.time()
+                            except Exception:
+                                pass
                 self.wfile.write(b"data: [DONE]\n\n")
             except OSError:
                 self._note(outcome="disconnected")
