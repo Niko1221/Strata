@@ -14,18 +14,25 @@ has actually been run:
   - Linux, 2 to 4 cards of ONE make (NVIDIA, or AMD RDNA4 gfx1201: the R9700 and RX 9070), all the same model of card and memory size;
   - a card architecture and card count that have been run (TESTED, per make): NVIDIA sm_86 on 2 cards, AMD gfx1201 on 4 cards. Others build
     but stay off unless the caller says allow_untested (testers); the Decision says which part is untested in plain words;
-  - NVIDIA sm_70 (V100) is an explicit-on path: `--split-engine on` accepts it (the architecture and a longer
-    context are marked untested) and, when the experts do not fit in the cards, keeps the arena and moves the
-    overflow to host RAM (FNX_EXPERT_RAM_GIB).  Auto keeps the layer split on sm_70;
+  - NVIDIA sm_70 (V100) and sm_75 (Turing: RTX 2080 Ti) are explicit-on paths: `--split-engine on` accepts them (the architecture
+    and a longer context are marked untested) and, when the experts do not fit in the cards, keeps the arena and moves the
+    overflow to host RAM (FNX_EXPERT_RAM_GIB).  Auto keeps the layer split there;
+  - the APR trellis types (Gyro-S, Gyro-M) have run only on 2 x RTX 2080 Ti: a file with them starts the split engine only on an
+    explicit `--split-engine on` (Auto keeps the layer split), never on AMD (the HIP build of those kernels was never built or run), and
+    on another NVIDIA card the line says they are not tested there;
   - AMD gfx1201 is automatic like NVIDIA (the owner's decision: default on for two or more cards, off with `--split-engine off`); AUTO_SPLIT_AMD_ARCHS is the
     one constant that says which AMD architectures start it by themselves, every other AMD architecture keeps the layer split silently;
   - the GGUF is a set the engine reads (checked from the file's tensor types, not its name), the Qwen3.8-Flash-Next shapes (48 layers,
     512 experts): routed experts Q4_K/Q5_K/Q5_1/Q8_0/Q4_0 (UD-Q4_K_XL, Q8_0) or the i-quants IQ2_S/IQ3_XXS/IQ3_S/IQ4_XS/IQ4_NL and Strata's
-    Q2_0 (UD-IQ4_XS, the IQ3_S set); token embeddings, shared expert, output head Q8_0, or, in a set with i-quant or Q2_0 experts,
+    Q2_0 (UD-IQ4_XS, the IQ3_S set), or the APR trellis types TQ2_T/TQK6/TQK7 with their Hadamard rotation (Gyro-M, Gyro-S);
+    token embeddings, shared expert, output head Q8_0, or, in a set with i-quant, Q2_0 or trellis experts,
     any type the loader converts to Q8_0/F32 when it reads the file (src/split/src/tensor_convert.hpp);
-  - ALL routed experts fit in the cards' memory for the automatic path (the expert cache is off: with it the engine keeps a
-    74 GiB pinned copy of the experts in RAM).  An explicit sm_70 opt-in may keep the overflow in the arena's host cache
-    instead; the RAM check then includes it;
+  - ALL routed experts fit in the cards' memory for the automatic path (the expert cache is off).  An explicit sm_70 or sm_75 opt-in
+    may keep the overflow in the arena's host cache instead; the engine then holds a page-locked copy of EVERY routed expert in RAM
+    (the overflow points back into it), so the RAM check counts the whole copy, cover included: 2 x RTX 2080 Ti with Gyro-S
+    measured 26.8 GiB of it beside the 51.3 GiB of locked embedding tables (docs/SPLIT_TURING_TRELLIS.md). This holds on sm_70 too:
+    2 x V100 with UD-Q4_K_XL at 393216 context asks for 106.2 GiB plus the spare (60.2 when only the overflow counted);
+  - the RAM check also counts the Q8_0/F32 copies the loader makes of a converted file's dense tensors (heap_bytes; Gyro-S 4.2 GiB);
   - context at most TESTED_CONTEXT (128K), unless an explicit opt-in marks a longer one untested (sm_70 was run at 393216).
 Anything else: use_split False and one plain line saying why. The server also falls back to the normal layer split if the split
 engine refuses or fails to start (serve/server.py, "split_fallback").
@@ -43,7 +50,7 @@ import re
 TESTED = {"nvidia": {"sm_86": (2,), "sm_120": (2,)}, "amd": {"gfx1201": (2, 3, 4)}}
 # the engine package's kernels (one binary per card count with a code object for each AMD architecture): any other card is refused. AMD beyond gfx1201 is EXPERIMENTAL: only an explicit
 # `--split-engine on` starts it there (never auto), and the engine runs its kernel self-test on the card before it loads the model (src/split/src/hip/selftest_policy.hpp)
-BUILT_ARCHS = {"nvidia": ("sm_70", "sm_86", "sm_120"), "amd": ("gfx1100", "gfx1101", "gfx1102", "gfx1103", "gfx1200", "gfx1201")}
+BUILT_ARCHS = {"nvidia": ("sm_70", "sm_75", "sm_86", "sm_120"), "amd": ("gfx1100", "gfx1101", "gfx1102", "gfx1103", "gfx1200", "gfx1201")}
 TESTED_CARD_COUNTS = (2,)          # run with the host exchange: 2 cards (boston, 2x RTX A6000; srv118, 2x RTX PRO 6000)
 TESTED_ARCHS = (86, 120)           # compute capability: sm_86 (the 61-task suite, pictures, hashes) and sm_120 (decode, prompts, parallel, hashes,
                                    # pictures; no suite there)
@@ -65,21 +72,43 @@ MAX_CARDS = 4
 LAYERS, EXPERTS = 48, 512          # Qwen3.8-Flash-Next
 EXPERT_TYPES = {"Q4_K", "Q5_K", "Q5_1", "Q8_0", "Q4_0",           # the routed-expert kernels (decode and prompt)
                 "IQ2_S", "IQ3_XXS", "IQ3_S", "IQ4_XS", "IQ4_NL",  # ggml's i-quant vec_dots; prompt tiles in src/moe_mma_iq.cuh
-                "Q2_0"}                                           # Strata's 2-bit type: the loader repacks it to Q4_0 blocks (twice the bytes)
+                "Q2_0",                                           # Strata's 2-bit type: the loader repacks it to Q4_0 blocks (twice the bytes)
+                "TQ2_T", "TQK6", "TQK7"}                          # the APR trellis types (Gyro-M, Gyro-S): src/split/src/trellis.cuh
+TRELLIS_TYPES = {"TQ2_T", "TQK6", "TQK7"}
 # the loader (Gguf::convert_small_tensors) converts the dense tensors to Q8_0/F32 only when the file has one of these routed types
-CONVERT_TRIGGERS = {"IQ2_S", "IQ3_XXS", "IQ3_S", "Q2_0"}
+CONVERT_TRIGGERS = {"IQ2_S", "IQ3_XXS", "IQ3_S", "Q2_0"} | TRELLIS_TYPES
 # and can read these types to do it
 CONVERTED_FROM = {"Q8_0", "Q4_K", "Q5_K", "Q6_K", "IQ4_XS", "IQ4_NL", "BF16", "F16", "F32"}
+# what it converts them to (tensor_convert.hpp wanted_type); the converted copies stay on the engine's heap for the whole run
+CONVERT_TO_Q8_SUFFIXES = (".attn_gate.weight", ".attn_k.weight", ".attn_output.weight", ".attn_q.weight", ".attn_qkv.weight", ".attn_v.weight",
+                          ".ffn_gate_shexp.weight", ".ffn_up_shexp.weight", ".ffn_down_shexp.weight", ".hc_attn_down.weight", ".hc_attn_up.weight",
+                          ".hc_ffn_down.weight", ".hc_ffn_up.weight", ".ple_key.weight", ".ple_value.weight", ".ssm_out.weight")
+CONVERT_TO_Q8_NAMES = ("output.weight", "output_hc_down.weight", "output_hc_up.weight", "token_embd.weight")
+CONVERT_TO_F32_SUFFIXES = (".ffn_gate_inp.weight", ".ffn_gate_inp_shexp.weight", ".hc_attn_inject.weight", ".hc_ffn_inject.weight",
+                           ".ssm_alpha.weight", ".ssm_beta.weight", ".ple_conv1d.weight")
 PLE_TYPES = {"IQ4_NL", "Q8_0"}     # per_layer_token_embd.weight as the host's row reader takes it
 # measured on 2x RTX A6000 48 GB at 128K context, 6 lanes (phaseA-tests/sfnx/RESULTS.md section 8): a card held half the experts plus
 # 8.4 GiB of dense weights, buffers and the K/V pool, with 3.6 GiB left free. 9 GiB per card is that plus a little.
 CARD_OVERHEAD_GIB = 9.0
+#: NVIDIA architectures (compute capability) whose explicit `--split-engine on` may keep the experts the cards cannot hold in host RAM (the arena's cache)
+HOST_CACHE_CCS = (70, 75)
+FF = 640                           # an expert's width (src/split/src/card_split.hpp splits it between the cards)
+
+
+def cover_columns(n: int, block: int = 128) -> int:
+    """The down columns n cards hold together when the down matrix is in `block`-value blocks: each card keeps the whole blocks around its FF slice
+    (card_split.hpp cover_lo / cover_hi), so a block two cards share is held twice. 640 for 32-value blocks; 768 for the trellis types on 2 cards."""
+    lo = [32 * (c * (FF // 32 // n) + min(c, FF // 32 % n)) for c in range(n + 1)]
+    return sum((lo[c + 1] + block - 1) // block * block - lo[c] // block * block for c in range(n))
 # What a card must have FREE, not just own: other programs on a shared box or a desktop hold part of it (srv118, 2 x RTX PRO 6000 held to 8 GB free: the plan still
 # said "all-cards split" and would have fetched the 5.2 GB draft layer). The fit counts free memory minus the engine's own default reserve (--vram-reserve-mib 700,
 # strata_control.drafting.SLOT_RESERVE_MIB); a card whose free memory is not known is counted by its size, as before.
 FREE_RESERVE_MIB = 700
 RAM_SPARE_GIB = 8.0                # left over beside the engine's own RAM
-RAM_PINNED_BUFFERS_GIB = 3.0       # the exchange buffers and heap (smaps: 1.7 GiB pinned + 0.9 heap)
+# the exchange buffers and the heap besides the converted tensors (ModelFacts.heap_bytes): 1.7 GiB pinned + 0.9 heap on 2 x A6000 (smaps);
+# 1.0 + 0.9 on 2 x RTX 2080 Ti with Gyro-S and Gyro-M (docs/SPLIT_TURING_TRELLIS.md). The server and picture-reader processes started beside it
+# took 1.8 GiB more there (AnonPages); this constant covers part of that and RAM_SPARE_GIB the rest
+RAM_PINNED_BUFFERS_GIB = 3.0
 CONVERSATION_CACHE_MIB = 4096      # parked conversations (host RAM); the engine's own default is 32-128 GiB
 DEFAULT_LANES = 6
 # AMD (4 x R9700, 32 GB): the K/V pool and buffers of 8 lanes at 128K context leave 7.2 GiB free on each card (phaseA-tests/round0211/RESULTS-R9700SPLIT.md), and 8 users
@@ -121,6 +150,8 @@ class ModelFacts:
     experts: int
     ple_type: str | None = "IQ4_NL"     # per_layer_token_embd.weight
     output_type: str | None = "Q8_0"    # output.weight
+    trellis_down_bytes: int = 0         # routed down matrices in a trellis type (in routed_bytes too): the cards hold a little more of them (cover_columns)
+    heap_bytes: int = 0                 # the dense tensors the loader converts to Q8_0/F32 (CONVERT_TRIGGERS): their copies stay in RAM (token_embd: only its growth)
 
 
 @dataclasses.dataclass
@@ -159,6 +190,7 @@ def scan_model(first_shard: str | pathlib.Path) -> ModelFacts:
         shards = [first.with_name(f"{m.group(1)}-{i:05d}-of-{m.group(3)}.gguf") for i in range(1, total + 1)]
     routed_types: dict[str, int] = {}
     routed_bytes = 0
+    trellis_down = 0
     shexp: dict[str, int] = {}
     embd_type = None
     ple_type = None
@@ -166,14 +198,21 @@ def scan_model(first_shard: str | pathlib.Path) -> ModelFacts:
     embd_ram = 0
     layers = 0
     experts = 0
+    every: list[tuple[str, str, int, int]] = []         # (name, type, elements, file bytes) of every tensor, for heap_bytes
     for shard in shards:
         g = GGUFFile(shard)
         for t in g.tensors:
             n = t.name
             b = t.expected_bytes() or 0
+            count = 1
+            for d in t.shape:
+                count *= int(d)
+            every.append((n, t.type_name, count, b))
             if "_exps" in n and n.endswith(".weight") and "shexp" not in n:
                 routed_types[t.type_name] = routed_types.get(t.type_name, 0) + 1
                 routed_bytes += b * 2 if t.type_name == "Q2_0" else b     # the loader repacks Q2_0 to Q4_0: twice the bytes in the cards
+                if t.type_name in TRELLIS_TYPES and "ffn_down_exps" in n:
+                    trellis_down += b
                 if len(t.shape) >= 3:
                     experts = max(experts, t.shape[-1])
                 mm = re.search(r"blk\.(\d+)\.", n)
@@ -189,7 +228,16 @@ def scan_model(first_shard: str | pathlib.Path) -> ModelFacts:
                 embd_ram += b
             elif n == "output.weight":
                 output_type = t.type_name
-    return ModelFacts(routed_types, routed_bytes, embd_type, shexp, embd_ram, layers, experts, ple_type, output_type)
+    heap = 0
+    if CONVERT_TRIGGERS & set(routed_types):            # Gguf::convert_small_tensors: these files get Q8_0/F32 copies of their dense tensors
+        for n, type_name, count, b in every:
+            want = ("Q8_0" if n.endswith(CONVERT_TO_Q8_SUFFIXES) or n in CONVERT_TO_Q8_NAMES else
+                    "F32" if n.endswith(CONVERT_TO_F32_SUFFIXES) else None)
+            if want is None or want == type_name:
+                continue
+            size = count // 32 * 34 if want == "Q8_0" else count * 4
+            heap += size - b if n == "token_embd.weight" else size   # the table's file bytes are in embd_ram already
+    return ModelFacts(routed_types, routed_bytes, embd_type, shexp, embd_ram, layers, experts, ple_type, output_type, trellis_down, heap)
 
 
 def decide(*, enabled: bool, system: str, cards: list[Card], ram_total_gib: float, ram_available_gib: float, model: ModelFacts,
@@ -241,6 +289,11 @@ def decide(*, enabled: bool, system: str, cards: list[Card], ram_total_gib: floa
         why.append("this is not a model it knows (no routed experts)")
     elif bad:
         why.append("the model's routed experts use " + "/".join(bad) + ", which it does not read")
+    trellis = "/".join(sorted(set(model.routed_types) & TRELLIS_TYPES))
+    if trellis and cards and make == "amd":            # the HIP build of the trellis kernels was never built or run, and the AMD self-test has none
+        why.append(f"this model's routed experts ({trellis}) have never been built or run in the AMD engine")
+    elif trellis and cards and not all(c.arch_name == "sm_75" for c in cards):   # run only on 2 x RTX 2080 Ti
+        untested.append(f"{trellis} experts on {cards[0].arch_name}")
     converts = bool(CONVERT_TRIGGERS & set(model.routed_types))       # the loader then converts the dense tensors it does not read
     readable = CONVERTED_FROM if converts else {"Q8_0"}
     if model.embd_type not in readable:
@@ -254,17 +307,19 @@ def decide(*, enabled: bool, system: str, cards: list[Card], ram_total_gib: floa
         why.append(f"the per-layer embedding table is {model.ple_type}, it needs IQ4_NL or Q8_0")
     if (model.layers, model.experts) != (LAYERS, EXPERTS):
         why.append("it only knows Qwen3.8-Flash-Next (48 layers, 512 experts)")
-    need_vram = model.routed_bytes / GIB / max(n, 1) + CARD_OVERHEAD_GIB
+    routed = model.routed_bytes + (model.trellis_down_bytes * (cover_columns(n) - FF) // FF if n >= 2 else 0)
+    need_vram = routed / GIB / max(n, 1) + CARD_OVERHEAD_GIB
     per_card = min(c.room_mib for c in cards) / 1024 if cards else 0.0
     host_cache = 0.0
-    sm70 = bool(cards) and cards[0].vendor == "nvidia" and all(c.cc == 70 for c in cards)
     if cards and n >= 2 and per_card < need_vram:
-        if allow_untested and sm70:              # explicit --split-engine on for V100: the arena keeps the overflow in RAM
+        if allow_untested and _host_cache_ok(cards):   # explicit --split-engine on for V100 / Turing: the arena keeps the overflow in RAM
             host_cache = (need_vram - per_card) * n
         else:
             has = f"{per_card:.0f} GiB" + (" free" if any(c.free_mib is not None for c in cards) else "")   # free memory when it was read, else the size
             why.append(f"all the experts do not fit in the cards' memory (each card needs about {need_vram:.0f} GiB, has {has})")
-    need_ram = model.embd_ram_bytes / GIB + RAM_PINNED_BUFFERS_GIB + cache_mib / 1024 + host_cache
+    # with the expert cache the engine keeps a page-locked copy of every routed expert (cover included) in RAM, not only the overflow
+    pinned_experts = routed / GIB if host_cache > 0 else 0.0
+    need_ram = (model.embd_ram_bytes + model.heap_bytes) / GIB + RAM_PINNED_BUFFERS_GIB + cache_mib / 1024 + pinned_experts
     if ram_available_gib < need_ram + RAM_SPARE_GIB:
         why.append(f"there is not enough free RAM (about {need_ram + RAM_SPARE_GIB:.0f} GiB needed, {ram_available_gib:.0f} GiB free)")
     facts = dict(arch="/".join(archs), routed_types=tuple(sorted(model.routed_types)))
@@ -291,17 +346,21 @@ def split_config(base: dict, decision: Decision, *, exe: str, native: str, mtp_d
         cfg["args"] += ["--rope-scale", rope]
     if vision:
         cfg["args"].append("--vision")
+    extra_env = {}
+    ple = _flag([str(x) for x in base.get("args") or []], "--ple-gguf")
+    if ple and not _same_file(ple, native):  # the per-layer embedding table in a file of its own (Gyro-S noPLE): the engine adds its tensors
+        extra_env["FNX_PLE_GGUF"] = ple
     if decision.host_cache_gib > 0:
         # The cards cannot hold every expert: the arena keeps the overflow in page-locked RAM (FNX_EXPERT_RAM_GIB).
         # v0.2.11's new prompt path (the hyper-connection split, 8192-row passes) needs pass buffers that push more
         # experts out of VRAM: on 2x V100 it cost about 26% of a 247K-token prompt.  The unsplit 4096-row path is the
         # behaviour the sm_70 split was measured with and is the one to keep on this host-cache path.
-        cfg["env"] = {**(base.get("env") or {}), "FNX_ARENA": "1",
+        cfg["env"] = {**(base.get("env") or {}), **extra_env, "FNX_ARENA": "1",
                       "FNX_EXPERT_RAM_GIB": str(int(decision.host_cache_gib + 0.999)),
                       "FNX_PF_HCSPLIT": "0", "FNX_PF_ROWS": "4096"}
     else:
         # every expert in the cards' memory, no expert cache, no arena: the engine reads these two at start
-        cfg["env"] = {**(base.get("env") or {}), "FNX_ARENA": "0", "FNX_EXPERT_RAM_GIB": "off"}
+        cfg["env"] = {**(base.get("env") or {}), **extra_env, "FNX_ARENA": "0", "FNX_EXPERT_RAM_GIB": "off"}
     cfg["split_fallback"] = {k: base[k] for k in ("exe", "args", "env", "layer_split", "replicas", "user_args", "drafting", "cwd") if k in base}
     # The split engine runs the model's own draft layer (the MTP) and nothing else. Saying so in the config ("drafting": "mtp") keeps serve/server.py's
     # drafter step, which resolves Auto to DFlash2 where the engine has it, from adding DFlash2 flags to the split engine's arguments (it would refuse them
@@ -432,9 +491,43 @@ def wanted(cfg: dict, environ: dict | None = None) -> bool:
     return mode(cfg, environ) != "off"
 
 
+def _same_file(a: str, b: str) -> bool:
+    """Two paths name the same file (another spelling, a symlinked folder, a relative path)."""
+    import os
+
+    return os.path.realpath(a) == os.path.realpath(b)
+
+
+def _host_cache_ok(cards: list[Card]) -> bool:
+    """NVIDIA cards whose explicit `--split-engine on` may keep the experts they cannot hold in host RAM (HOST_CACHE_CCS)."""
+    return bool(cards) and cards[0].vendor == "nvidia" and all(c.cc in HOST_CACHE_CCS for c in cards)
+
+
+def _experimental_ok(mode_: str, cards: list[Card]) -> bool:
+    """An explicit "on" may run a setup nobody has run: any AMD architecture it is built for (the engine's self-test guards it) and the NVIDIA
+    host-cache cards (sm_70, sm_75)."""
+    return mode_ == "on" and bool(cards) and (cards[0].vendor == "amd" or _host_cache_ok(cards))
+
+
+def _with_ple(model: ModelFacts, args: list[str], native: str, scan, *, missing_ok: bool = False) -> ModelFacts:
+    """The model's facts with the per-layer embedding table of `--ple-gguf` when that is a file of its own: its type, and its RAM added.
+    missing_ok: a table not on the computer yet is left out (expected(), asked before the download)."""
+    import os
+
+    ple = _flag(args, "--ple-gguf")
+    if not ple or _same_file(ple, native) or (missing_ok and not os.path.isfile(ple)):
+        return model
+    pf = scan(ple)
+    return dataclasses.replace(model, ple_type=pf.ple_type, embd_ram_bytes=model.embd_ram_bytes + pf.embd_ram_bytes)
+
+
 def _auto_gates(d: Decision, cards: list[Card], model: ModelFacts, chosen: str, mode_: str) -> Decision | None:
     """The rules that apply to Auto after the general rule said yes (AMD: expert types, card counts, architectures; NVIDIA: the split must beat DFlash2 on the card).
     None: they pass."""
+    trellis = sorted(set(model.routed_types) & TRELLIS_TYPES)
+    if trellis and mode_ != "on":
+        return Decision(False, ["this model's routed experts (" + "/".join(trellis) + ") have run on the all-cards split engine only on RTX 2080 Ti; "
+                                "it starts for them only with --split-engine on"], d.cards)
     amd = cards[0].vendor == "amd"
     if amd and mode_ != "on" and not set(model.routed_types) <= AUTO_SPLIT_AMD_EXPERT_TYPES:
         return Decision(False, ["this model's experts (" + "/".join(sorted(set(model.routed_types) - AUTO_SPLIT_AMD_EXPERT_TYPES)) + ") run faster on the layer split on AMD today; the all-cards split engine starts for them only with --split-engine on"], d.cards)
@@ -477,11 +570,9 @@ def expected(cfg: dict, *, indexes: list[int] | None = None, native: str | None 
         total, avail = (ram or ram_gib)()
         model = ASSUMED_MODEL
         if native and os.path.isfile(native):
-            model = (scan or scan_model)(native)
-        experimental_ok = m == "on" and bool(cards) and (cards[0].vendor == "amd" or
-                                                          (cards[0].vendor == "nvidia" and all(c.cc == 70 for c in cards)))
+            model = _with_ple((scan or scan_model)(native), [str(a) for a in cfg.get("args") or []], native, scan or scan_model, missing_ok=True)
         d = decide(enabled=True, system=system, cards=cards, ram_total_gib=total, ram_available_gib=avail, model=model, context=context,
-                   allow_untested=allow_untested or experimental_ok)
+                   allow_untested=allow_untested or _experimental_ok(m, cards))
         if not d.use_split or _auto_gates(d, cards, model, chosen, m) is not None:
             return False
         if exe_for_cards is not None:
@@ -574,15 +665,13 @@ def _apply(cfg: dict, *, exe_for_cards, system, allow_untested, probe, ram, scan
     cards = (probe or probe_cards)(indexes) if system == "linux" else []
     total, avail = (ram or ram_gib)()
     try:
-        model = (scan or scan_model)(native)
+        model = _with_ple((scan or scan_model)(native), args, native, scan or scan_model)
     except Exception as e:                                   # noqa: BLE001 - a file it cannot read is a reason, not a failed start
         return Decision(False, [f"the model file could not be read ({type(e).__name__})"])
     context = int(_flag(args, "--max-context") or 8192)
     # an AMD architecture nobody has run (gfx1100..1103, gfx1200) starts only on the person's explicit "on", with the engine's own self-test as the guard
-    nvidia_sm70 = bool(cards) and cards[0].vendor == "nvidia" and all(c.cc == 70 for c in cards)
-    experimental_ok = mode_ == "on" and bool(cards) and (cards[0].vendor == "amd" or nvidia_sm70)
     d = decide(enabled=True, system=system, cards=cards, ram_total_gib=total, ram_available_gib=avail, model=model, context=context,
-               allow_untested=allow_untested or experimental_ok)
+               allow_untested=allow_untested or _experimental_ok(mode_, cards))
     if not d.use_split:
         return d
     gate = _auto_gates(d, cards, model, chosen, mode_)

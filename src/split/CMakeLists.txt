@@ -81,9 +81,9 @@ set_source_files_properties(${_sp}/src/gguf.cpp ${_sp}/src/model.cpp ${_sp}/src/
 if(_fnx_hip)
   set_source_files_properties(${_sp}/src/moe_mma.cu ${_sp}/src/engine.cu ${_sp}/src/engine_common.cu ${_sp}/src/prefill.cu ${_sp}/src/selftest.cu PROPERTIES LANGUAGE HIP)
 endif()
-# kernels.cu is compiled in nine parts (FNX_KPART), each with its share of the launchers, so the build runs in parallel
+# kernels.cu is compiled in ten parts (FNX_KPART), each with its share of the launchers, so the build runs in parallel
 set(_sp_kparts "")
-foreach(_p RANGE 0 8)
+foreach(_p RANGE 0 9)
   set(_f ${CMAKE_CURRENT_BINARY_DIR}/kernels_p${_p}.cu)
   file(GENERATE OUTPUT ${_f} CONTENT "#define FNX_KPART ${_p}\n#include \"${_sp}/src/kernels.cu\"\n")
   if(_fnx_hip)
@@ -173,6 +173,14 @@ if(STRATA_BUILD_TESTS)
     target_link_libraries(split_${_tt} PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
     add_test(NAME split_${_tt} COMMAND split_${_tt})
   endforeach()
+  # the GGUF reader: malformed headers refused, metadata and rotary keys, and the separate PLE file (FNX_PLE_GGUF) adding only that table
+  add_executable(split_gguf_test ${_sp}/tools/gguf_test.cpp ${_sp}/src/gguf.cpp)
+  target_include_directories(split_gguf_test PRIVATE ${_sp}/src ${_sp}/tools)
+  target_compile_definitions(split_gguf_test PRIVATE FNX_NCARD=${_n0} FNX_27B=0)
+  target_compile_features(split_gguf_test PRIVATE cxx_std_17)
+  set_target_properties(split_gguf_test PROPERTIES CUDA_ARCHITECTURES OFF)
+  target_link_libraries(split_gguf_test PRIVATE Threads::Threads)
+  add_test(NAME split_gguf_test COMMAND split_gguf_test)
   # the load-time conversion's oracle tool (tests/split/convert_check.py compares its output with gguf-py on a real file; not a ctest)
   add_executable(split_convert_dump ${_sp}/tools/convert_dump.cpp ${_sp}/src/gguf.cpp)
   target_include_directories(split_convert_dump PRIVATE ${_sp}/src ${_sp}/tools)
@@ -218,6 +226,19 @@ if(STRATA_BUILD_TESTS)
     target_compile_options(split_gdn_tc_test PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--use_fast_math --expt-relaxed-constexpr -Wno-deprecated-gpu-targets>)
     set_target_properties(split_gdn_tc_test PROPERTIES CUDA_ARCHITECTURES "${STRATA_SPLIT_ARCH}-real" CUDA_STANDARD 17 CXX_STANDARD 17)
     target_link_libraries(split_gdn_tc_test PRIVATE m stdc++)
+  endif()
+  # the APR trellis experts (TQ2_T, TQK6, TQK7) and their Hadamard rotation against the main engine's CUDA kernels (strata_kernels) on a real
+  # Gyro file (not a ctest: needs a GPU and the model; docs/SPLIT_TURING_TRELLIS.md):  split_trellis_test Gyro-S.gguf Gyro-M.gguf
+  if(NOT _fnx_hip AND TARGET strata_kernels)
+    add_executable(split_trellis_test ${_sp}/tools/trellis_test.cu ${_sp}/src/gguf.cpp ${_sp}/src/moe_mma.cu ${_sp_kparts})
+    target_include_directories(split_trellis_test PRIVATE ${_sp}/src ${_sp}/tools ${_sp_quant} ${CMAKE_SOURCE_DIR}/include)
+    target_compile_definitions(split_trellis_test PRIVATE FNX_NCARD=${_n0} FNX_ARCH=${STRATA_SPLIT_ARCH} FNX_27B=0 FNX_HOSTRING=1
+                               FNX_PF_JOB=${STRATA_SPLIT_PF_JOB} FNX_DIR="${_sp}")
+    target_compile_options(split_trellis_test PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--use_fast_math --expt-relaxed-constexpr -Wno-deprecated-gpu-targets>)
+    set_target_properties(split_trellis_test PROPERTIES CUDA_ARCHITECTURES "${STRATA_SPLIT_ARCH}-real" CUDA_STANDARD 17 CUDA_STANDARD_REQUIRED ON
+                          CXX_STANDARD 17 CUDA_RUNTIME_LIBRARY Shared)
+    find_package(CUDAToolkit REQUIRED)
+    target_link_libraries(split_trellis_test PRIVATE strata_kernels CUDA::cublas CUDA::cublasLt CUDA::cuda_driver Threads::Threads m stdc++)
   endif()
   # fnx_run: sFNX's test driver (teacher-forced logits to an .lgr file, prompt/decode checks), the same engine objects with its own main
   set(_sp_run_src ${_sp_engine})

@@ -54,8 +54,9 @@ def _split_expected(cfg: dict, args: list, unloading: bool = False) -> bool:
         if unloading:                                        # memory the app's own engines hold is given back before the new start: the cards count by their size (as Runner.card_probe does)
             import dataclasses
             probe = lambda idx: [dataclasses.replace(c, free_mib=None) for c in SE.probe_cards(idx)]   # noqa: E731
+        # "args": the engine arguments, so a separate --ple-gguf table counts here as it does at the launch
         return SE.expected({"split_engine": cfg.get("split_engine"), "drafting": cfg.get("drafting"), "user_args": cfg.get("user_args"),
-                            "replicas": cfg.get("replicas")}, indexes=cards, native=flag("--native"),
+                            "replicas": cfg.get("replicas"), "args": flags}, indexes=cards, native=flag("--native"),
                            context=int(flag("--max-context") or SE.TESTED_CONTEXT), kv=flag("--kv"), probe=probe)
     except Exception:                                        # noqa: BLE001 - an early question is never a reason to stop
         return False

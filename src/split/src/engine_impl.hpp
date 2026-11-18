@@ -33,6 +33,7 @@ struct CardBuf {
     cudaEvent_t fork, join;
     float *R, *mixed, *bo_a, *bo_f, *inj_a, *inj_f, *hcs;
     void* xq;   // q8_1 rows
+    void* xq_had = nullptr;           // rotated routed experts (DW::had): mixed rotated per 128, as q8_1 rows for their gate|up
     float *qkvz, *ab;
     float* gdn_scratch;
     float *qg, *k, *v, *att;

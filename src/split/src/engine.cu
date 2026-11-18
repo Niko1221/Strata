@@ -185,6 +185,8 @@ Engine::Engine(Model& m, int max_ctx, int lanes) : m_(m), max_ctx_(max_ctx) {
             hc_preset_barrier(b->hcs, (unsigned) n);
         }
         b->xq = dalloc<uint8_t>((size_t) P * q8_1_bytes(N));
+        for (const LayerW& lw : w.L)
+            if (lw.gu_e.had && !b->xq_had) b->xq_had = dalloc<uint8_t>((size_t) MAXT * q8_1_bytes(N));
         b->qkvz = dalloc<float>((size_t) MAXT * (w.conv_ch() + w.nv() * HS));
         b->ab = dalloc<float>((size_t) MAXT * 2 * w.nv());
         b->gdn_scratch = dalloc<float>(gdn_scratch_floats(w.nv()));
@@ -967,8 +969,14 @@ void Engine::ffn_half(int T, int call, CardBuf& b, const CardW& w, const LayerW&
         // the planned experts copied into their slots before the MoE kernels read the layer's tables
         if (live) moe_cache(l, L.gu_e_stride, L.down_e_stride, w.ec, b.cache_list, b.st, plan_in_router ? nullptr : b.jobs_gu, b.njobs);
     }
-    if (sh_in) moe_gate_up(L.gu_e, L.gu_e_stride, b.jobs_gu, b.njobs, P, b.xq, b.gu, b.st, &L.sh_down.s, ffs, b.sh_gu, b.part + (size_t) P * N);
-    else moe_gate_up(L.gu_e, L.gu_e_stride, b.jobs_gu, b.njobs, P, b.xq, b.gu, b.st);
+    // rotated experts (APR files) read mixed rotated as the file stored them; xq stays the shared expert's
+    const void* xg = b.xq;
+    if (L.gu_e.had) {
+        had_quantize_q8_1(b.mixed, b.xq_had, N, T, L.gu_e.had, b.st);
+        xg = b.xq_had;
+    }
+    if (sh_in) moe_gate_up(L.gu_e, L.gu_e_stride, b.jobs_gu, b.njobs, P, xg, b.gu, b.st, &L.sh_down.s, ffs, b.sh_gu, b.part + (size_t) P * N);
+    else moe_gate_up(L.gu_e, L.gu_e_stride, b.jobs_gu, b.njobs, P, xg, b.gu, b.st);
     moe_down(L.down_e, L.down_e_stride, b.jobs_dn, b.njobs, P, b.gu, b.part, b.st);
     if (!sh_in) ck(cudaStreamWaitEvent(b.st, b.join, 0), "join wait");
     RingMoe m;

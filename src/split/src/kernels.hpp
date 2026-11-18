@@ -303,6 +303,14 @@ void moe_down_big(const DW& A, size_t sa, const BigJob* jobs, const int* njobs, 
 void moe_gate_up_mma(const DW& A, size_t sa, const BigJob* jobs, const int* njobs, int njobs_cap, const uint16_t* xh, float* gu, void* st);
 void swiglu_h16(const float* gu, int ffs, int P, uint16_t* h16, void* st);
 void moe_down_mma(const DW& A, size_t sa, const BigJob* jobs, const int* njobs, int njobs_cap, const uint16_t* h16, float* part, void* st);
+// APR (prism.hadamard): the rotated experts' activations. x rows of n (a multiple of 128) as y = H_128 (signs * x) / sqrt(128) per
+// 128 columns, the butterflies of the main engine's hadamard_rows (the same floats), then as q8_1 rows (quantize_q8_1's rounding)
+// or f16 rows. signs: n device floats
+void had_quantize_q8_1(const float* x, void* q, int n, int rows, const float* signs, void* st);
+void had_rows_f16(const float* x, uint16_t* y, int n, int rows, const float* signs, void* st);
+// swiglu_h16 for a rotated down matrix (down.had set): the P pairs' h of gu's rows ([gate (ffs) | up (ffs)]) at columns
+// [down.had_off, + ffs) of down's input (down.n_in, its cover), zero in the rest, rotated, as f16 rows of down.n_in
+void swiglu_h16_had(const float* gu, int ffs, int P, uint16_t* h16, const DW& down, void* st);
 // a decode window's layer with an ExpertCache (model.hpp): the experts router_route's plan listed copied in from RAM to
 // their new slots by a grid of the SMs (wide 16-byte reads; the MoE kernels' own reads over the link are latency-bound).
 // With jobs, the plan runs here first, a launch of its own (when router_route did not plan)

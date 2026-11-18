@@ -65,6 +65,8 @@ static_assert(ncard_ok(NCARD), "FNX_NCARD: 2, 3, 4, 6 or 8 cards (card_split.hpp
 constexpr int FF_CARD_MAX = (FF + 32 * NCARD - 1) / (32 * NCARD) * 32;
 // the shared expert's FF slice on a card, at most, for its fused path inside the routed launches (dense.cuh)
 constexpr int SH_MAXF = FF_CARD_MAX > 256 ? FF_CARD_MAX : 256;
+// the widest down input a card reads for 128-value blocks (cover_lo / cover_hi): 384 on two and three cards
+constexpr int FF_COVER_MAX = cover_max(NCARD, 128) > FF_CARD_MAX ? cover_max(NCARD, 128) : FF_CARD_MAX;
 static_assert(NQH % NCARD == 0, "the attention's query heads split evenly over the cards");
 
 inline bool is_attn(int l) { return (l + 1) % 4 == 0; }
@@ -85,6 +87,11 @@ struct DW {
     // routed experts with some kept in RAM: a device table of where each expert's matrix is now, a VRAM slot of the
     // card's ExpertCache or its copy in mapped page-locked host memory; null: expert e at p + e * stride
     const char* const* ep = nullptr;
+    // APR (prism.hadamard, hadamard_meta.hpp): the matrix was stored with its input columns rotated per 128. had: the device signs of
+    // its first input column on (null: not rotated). gate|up: the caller rotates the activations it passes. down: the kernels rotate h,
+    // which a card makes for columns [had_off, had_off + had_ffs) of the matrix's n_in (its cover, card_split.hpp), zero elsewhere
+    const float* had = nullptr;
+    int had_off = 0, had_ffs = 0;
 };
 
 // The routed experts when VRAM holds only some (FNX_EXPERT_RAM_GIB): every expert has a copy in mapped page-locked

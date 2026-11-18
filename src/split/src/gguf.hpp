@@ -24,7 +24,10 @@ enum GgmlType : uint32_t {
     T_F32 = 0, T_F16 = 1, T_Q4_0 = 2, T_Q4_1 = 3, T_Q5_0 = 6, T_Q5_1 = 7, T_Q8_0 = 8, T_Q8_1 = 9, T_Q2_K = 10,
     T_Q3_K = 11, T_Q4_K = 12, T_Q5_K = 13, T_Q6_K = 14, T_Q8_K = 15, T_IQ3_XXS = 18, T_IQ4_NL = 20, T_IQ3_S = 21, T_IQ2_S = 22,
     T_IQ4_XS = 23, T_BF16 = 30, T_Q2_0 = 42,   // 42: Strata's 64-value 2-bit blocks (not in llama.cpp)
+    // Agention's APR trellis types (third_party/ggml/ggml-common-tq.h; Gyro-M TQ2_T, Gyro-S TQK6 / TQK7): 128-value blocks
+    T_TQ2_T = 144, T_TQK6 = 145, T_TQK7 = 146,
 };
+constexpr bool is_trellis(uint32_t t) { return t == T_TQ2_T || t == T_TQK6 || t == T_TQK7; }
 
 struct TypeInfo {
     int block;   // elements per block
@@ -47,7 +50,10 @@ struct Tensor {
 
 class Gguf {
 public:
-    explicit Gguf(const std::string& first_shard);   // finds the other "-0000N-of-0000M" shards beside it
+    // finds the other "-0000N-of-0000M" shards beside it. extra: one more file whose tensors are added (its metadata is not read): the
+    // standalone PLE table (per_layer_token_embd.weight) a file made without one is run with. It must hold that table and nothing else,
+    // and the model must not have it (both refused)
+    explicit Gguf(const std::string& first_shard, const std::string& extra = "");
     ~Gguf();
     const Tensor& t(const std::string& name) const;          // throws when missing
     const Tensor* find(const std::string& name) const;
@@ -61,12 +67,14 @@ public:
     // a number key, integer or float, as GGUF writers differ on which
     double num(const std::string& key) const { return ints_.count(key) ? (double) i(key) : f(key); }
     std::vector<int64_t> ia(const std::string& key) const;
+    const std::vector<std::string>& sa(const std::string& key) const;   // a string array key (prism.*: hadamard_meta.hpp); throws when missing
 #if FNX_27B
     const std::vector<std::string>& tokens() const;   // tokenizer.ggml.tokens (throws when missing)
 #endif
     const std::map<std::string, Tensor>& tensors() const { return tensors_; }
     int shards() const { return (int) maps_.size(); }
     bool iq_experts() const { return iq_experts_; }   // routed experts in the IQ types or Strata's 2-bit type (the ISTA IQ3_S set)
+    bool trellis_experts() const { return trellis_experts_; }   // routed experts in the APR trellis types (Gyro-S, Gyro-M)
     int converted() const { return converted_; }   // tensors re-quantized at load (0 for every file the engine reads as it is)
     const std::string& shard_path(int s) const { return maps_[(size_t) s].path; }
     size_t shard_size(int s) const { return maps_[(size_t) s].size; }
@@ -80,13 +88,11 @@ private:
     std::map<std::string, double> floats_;
     std::map<std::string, std::vector<int64_t>> int_arrays_;
     std::map<std::string, std::string> strs_;
-#if FNX_27B
-    std::map<std::string, std::vector<std::string>> str_arrays_;
-#endif
+    std::map<std::string, std::vector<std::string>> str_arrays_;   // the 27B's tokens; prism.* (the rotated tensors' names)
     std::set<std::string> keys_;
     std::deque<std::vector<uint8_t>> owned_;   // tensors converted at load (tensor_convert.hpp): their bytes live here, not in a file
     int converted_ = 0;
-    bool iq_experts_ = false;
+    bool iq_experts_ = false, trellis_experts_ = false;
     void load_shard(const std::string& path, bool meta);
     void convert_small_tensors();
 };

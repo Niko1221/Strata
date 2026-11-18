@@ -24,6 +24,16 @@ constexpr int khead_count(int n, int c) { return ((c + 1) * (NVH / n) - 1) / VPK
 // slice [ff_lo, ff_hi). Three cards: 224, 224, 192
 constexpr int ff_lo(int n, int c) { return 32 * (c * (FF / 32 / n) + (c < FF / 32 % n ? c : FF / 32 % n)); }
 constexpr int ff_hi(int n, int c) { return ff_lo(n, c + 1); }
+// A routed down matrix whose blocks are wider than 32 values (the trellis types: 128) is sliced at its own blocks: card c holds the blocks
+// its FF slice touches, columns [cover_lo, cover_hi), and its h is zero in the columns another card makes. The blocks two cards share
+// are on both (two cards: block [256, 384) of 640; the partial products still sum to the whole dot, the rotation being linear)
+constexpr int cover_lo(int n, int c, int b) { return ff_lo(n, c) / b * b; }
+constexpr int cover_hi(int n, int c, int b) { return (ff_hi(n, c) + b - 1) / b * b; }
+constexpr int cover_max(int n, int b) {
+    int m = 0;
+    for (int c = 0; c < n; ++c) m = cover_hi(n, c, b) - cover_lo(n, c, b) > m ? cover_hi(n, c, b) - cover_lo(n, c, b) : m;
+    return m;
+}
 
 namespace split_check {
 // the two- and three-card splits the lab's bases (and prod's logits) are made with, written out: the rule above must
@@ -83,6 +93,8 @@ constexpr bool all_sound() {
 static_assert(split_check::matches(split_check::K3, split_check::V3, split_check::F3), "the split rule moves three cards' split");
 static_assert(split_check::matches(split_check::K2, split_check::V2, split_check::F2), "the split rule moves two cards' split");
 static_assert(split_check::all_sound(), "the split rule breaks for a supported count");
+static_assert(cover_lo(2, 1, 128) == 256 && cover_hi(2, 0, 128) == 384 && cover_max(2, 128) == 384 && cover_max(3, 128) == 384,
+              "two cards share the 128-value down block [256, 384)");
 static_assert(ncard_ok(2) && ncard_ok(3) && ncard_ok(4) && ncard_ok(6) && ncard_ok(8) && !ncard_ok(5) && !ncard_ok(7) && !ncard_ok(9),
               "the supported counts are 2, 3, 4, 6 and 8 (the Makefile's list)");
 
