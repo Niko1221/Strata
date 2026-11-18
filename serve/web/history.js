@@ -25,7 +25,8 @@
 
   // pictures and files are kept as their names only: a data URL would fill the browser's storage
   const cleanMessages = (list) => list.map((m) => ({...m, images: (m.images || []).map((i) => ({name: i.name})),
-                                                    files: (m.files || []).map((f) => ({name: f.name}))}));
+                                                    files: (m.files || []).map((f) => ({name: f.name})),
+                                                    ...(m.sources ? {sources: m.sources.map((s) => (s && s.content ? {...s, content: undefined} : s))} : {})}));
   const cleanChat = (c) => ({...c, messages: cleanMessages(c.messages)});
 
   // "today" | "yesterday" | "week" | "month" | "older", by calendar days back from now

@@ -13,7 +13,9 @@
 (function (root) {
   // [code, the language's own name].  A new language is a locales/<code>.json file plus one line here.
   const LANGUAGES = [["en", "English"], ["de", "Deutsch"], ["fr", "Français"], ["es", "Español"], ["ja", "日本語"], ["ko", "한국어"],
-                     ["pt", "Português"], ["ru", "Русский"], ["zh", "中文"]];
+                     ["pt", "Português"], ["ru", "Русский"], ["zh", "中文"], ["hi", "हिन्दी"], ["ar", "العربية"], ["tr", "Türkçe"],
+                     ["it", "Italiano"], ["pl", "Polski"]];
+  const RTL = new Set(["ar"]);   // right-to-left scripts: flip the document direction with the language
   let lang = "en", catalog = null, rules = null;
 
   const fill = (s, vars) => String(s).replace(/\{(\w+)\}/g, (m, k) => (vars && k in vars ? String(vars[k]) : m));
@@ -49,6 +51,7 @@
       }
     }
     if (root.document && root.document.documentElement) root.document.documentElement.lang = lang;
+    if (root.document && root.document.documentElement) root.document.documentElement.dir = RTL.has(lang) ? "rtl" : "ltr";
   }
 
   const known = (code) => LANGUAGES.some((l) => l[0] === code);
