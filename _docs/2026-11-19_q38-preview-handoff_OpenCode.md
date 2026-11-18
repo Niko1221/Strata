@@ -51,3 +51,18 @@ checksum list. Verify draft asset sizes and SHA-256 digests before
 making the prerelease public. Keep stable Latest and the old tag intact.
 Check the exact remote `main` and `gh-pages` refs and published Pages
 content; do not claim publication from a local commit alone.
+
+## Publication readback
+
+Published `v0.6.4-preview.1` as a GitHub prerelease. Before publishing,
+`gh release view` confirmed all four uploaded asset sizes and SHA-256
+digests match their local counterparts. After publication, anonymous
+HTTP HEAD returned 200 on all four asset URLs. This was not a second
+full anonymous download. GitHub Latest remained `v0.6.3`.
+
+The README translations and Pages source were pushed through `main`
+commits `7d74a66c5` and `f1b0a046c`. The live Pages branch was pushed
+at `050900239`; the deployed page returned HTTP 200 and contained the
+new preview link. Only documentation was committed on `main` for this
+delivery. The separate tag target and rejected experiments remain
+as described above.
