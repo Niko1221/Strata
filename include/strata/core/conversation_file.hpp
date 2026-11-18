@@ -146,6 +146,7 @@ struct SessionWriteOptions {
     // write starts.  Not a reservation: other writers can take the space afterwards.
     uint64_t min_free_bytes = 0;
     bool durable = true;            // flush the file before the rename and (POSIX) the folder after it
+    bool use_v3 = true;             // L2 mini/state sidecars can force the single-file V2 writer
     SessionProgress progress;
     // "flush" (the file's flush, `bytes` = the file) and "publish" (rename and folder flush), before each starts
     SessionPhase phase;
@@ -179,6 +180,43 @@ bool session_file_write(const std::string& path, const SavedConversation& meta, 
                         const SessionFileIdentity& id, size_t& bytes, std::string& error,
                         const SessionWriteOptions& options = {}, SessionStatus* status = nullptr);
 
+// [giphoo] l2-exp v2.2: the incremental save.  A v2.1 file at `path` whose checkpoints are still in the
+// engine's keep set keeps its blocks: only the counts block, the live tail, the missing checkpoints, the
+// K/V part tails and the directory are appended, in place.  `keep` is the NEW file's checkpoint order;
+// slot i either reuses the old file's checkpoint segment `reuse` (matched by ids hash) or takes
+// meta.checkpoints[fresh].  `meta` carries the live state and exactly the fresh checkpoints.
+// Declines (false, `error` starting "saveinc:") when the file is absent, v1, another identity, the live
+// ids diverge, or a K/V part shrank; the caller then falls back to a full save.
+struct SessionSaveIncSlot {
+    int32_t reuse = -1;   // the old file's checkpoint keep index, or -1
+    int32_t fresh = -1;   // the index into meta.checkpoints, or -1; exactly one of the two is set
+};
+bool session_file_saveinc(const std::string& path, const SavedConversation& meta, const std::vector<SessionKvSource>& kv,
+                          const SessionFileIdentity& id, const std::vector<SessionSaveIncSlot>& keep,
+                          size_t& bytes, std::string& error, const SessionWriteOptions& options = {},
+                          SessionStatus* status = nullptr);
+// What the engine needs to plan an incremental save: the old file's live ids length and hash, the kept
+// checkpoints' ids hashes (keep order), and the per-(layer, part) byte sizes.  False when the file
+// cannot be extended (absent, v1, another identity, a bad directory); `error` says why.
+struct SessionSaveIncPeek {
+    uint64_t live_ids = 0, live_ids_hash = 0;
+    std::vector<uint64_t> ckpt_hashes;
+    std::vector<std::array<uint64_t, 5>> part_bytes;
+    // V3 only: the next save folds the delta chain back to the immutable base.
+    // The async job must copy K/V from these base watermarks, not the current tail.
+    bool consolidate_tail = false;
+    std::vector<std::array<uint64_t, 5>> base_part_bytes;
+};
+// [giphoo] v2.4.2: structural sweep of an existing archive (the post-write verifier, on demand)
+bool session_file_verify(const std::string& path, std::string& error);
+bool session_file_saveinc_peek(const std::string& path, const SessionFileIdentity& id, SessionSaveIncPeek& peek,
+                               std::string& error);
+// Lightweight physical/logical growth check before capture or WriterPool submission.
+// True means the caller should rebuild the current image with a full save instead
+// of appending another generation. Unreadable/non-V2 files return false and follow
+// the ordinary saveinc decline path.
+bool session_file_saveinc_needs_compaction(const std::string& path, std::string& reason);
+
 // The checkpoints worth a disk write: the deepest one (the next turn's resume point when the live tail was
 // rewritten).  Earlier checkpoints only serve edits further back and cost ~118 MB each at this geometry.
 std::vector<ConversationCheckpoint> session_checkpoints_to_save(const std::vector<ConversationCheckpoint>& chain);
@@ -198,6 +236,9 @@ uint64_t session_save_peak_bytes(const ConversationCheckpoint* deepest, const Se
 // The SAVE's RAM PREFLIGHT, BEFORE anything is copied: `admit` is asked for session_save_peak_bytes; only when it
 // agrees is the deepest checkpoint copied into `out`.  On a refusal nothing was allocated, `out` is empty, `chain`
 // and the live state are untouched and no file was opened.  Not a reservation.
+// [giphoo] l2-exp v2.2: the keep-set choice alone (deepest + pinned + HEAD anchors + depth fill), no
+// capture - the incremental save plans against this list before it copies anything.
+std::vector<const ConversationCheckpoint*> session_pick_checkpoints(const std::vector<ConversationCheckpoint>& chain);
 bool session_save_checkpoints(const std::vector<ConversationCheckpoint>& chain, const SessionSaveLive& live,
                               const std::function<bool(uint64_t need_bytes, std::string& why)>& admit,
                               std::vector<ConversationCheckpoint>& out, std::string& why);
@@ -228,6 +269,35 @@ uint64_t session_read_max_file_bytes(const SessionReadLimits& limits);
 // What the RAM preflight is asked for a file of `file_bytes`: the parsed image (about the payload), the 16 MiB read
 // buffer, and the per-allocation overhead of its arrays (a page per 16 MiB segment plus the small vectors).
 uint64_t session_read_peak_bytes(uint64_t file_bytes);
+// [giphoo] l2-exp v2.3 (M3): the parked read - v2 only.  Every size is known after the counts
+// block, so `fits` (the pool's budget ask) runs before any payload byte moves and the physical RAM
+// gate sees only streaming transients instead of the whole image.  A v1 file is refused with
+// `error` saying so; the caller falls back to the ordinary read.
+bool session_file_read_parked(const std::string& path, const SessionFileIdentity& id, SavedConversation& image,
+                              size_t& bytes, std::string& error, const SessionReadLimits& limits,
+                              const std::function<bool(uint64_t image_bytes, std::string& why)>& fits,
+                              SessionStatus* status = nullptr);
+// [giphoo] l2-exp M3.1: partial restore by checkpoint - the deepest file checkpoint whose ids
+// hash-match `prompt`'s prefix becomes the image, kv cut to its page-aligned position. Reads
+// proportional to the matched prefix, not the file. `live_would_match` says the file's live is
+// itself a prefix (the caller then prefers a full restore); no match -> false with the reason.
+struct SessionPrefixStats {
+    uint64_t archive_bytes = 0;        // selected composite/file size (the legacy bytes field)
+    uint64_t checkpoint_tokens = 0;    // selected checkpoint watermark, also on a miss
+    uint64_t image_bytes = 0;          // planned/materialized uncompressed prefix image
+    uint64_t payload_read_bytes = 0;   // uncompressed payload bytes served from blocks
+    uint64_t block_read_bytes = 0;     // compressed payload bytes plus block headers fetched
+    bool checkpoint_hit = false;
+    bool live_would_match = false;
+    bool v3_archive = false;
+};
+bool session_file_read_prefix(const std::string& path, const SessionFileIdentity& id,
+                              const std::vector<int32_t>& prompt, SavedConversation& image,
+                              size_t& bytes, std::string& error, const SessionReadLimits& limits,
+                              const std::function<bool(uint64_t image_bytes, std::string& why)>& fits,
+                              SessionStatus* status = nullptr, bool* live_would_match = nullptr,
+                              SessionPrefixStats* prefix_stats = nullptr);
+
 // Full validation (a regular file with one link, size, header, identity, bounded parse, payload hash) before `image`
 // is replaced.  The file is opened without following a symbolic link (or a reparse point) at its name, and the checks
 // are made on the opened handle.  On failure `image` is unchanged and `status->error` says what kind of failure.

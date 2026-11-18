@@ -6,6 +6,8 @@
 #include <array>
 #include <cerrno>
 #include <chrono>
+#include <thread>
+#include "core/conversation_file_l2.inc"   // v3 WriterPool
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -102,6 +104,9 @@ bool same_checkpoint(const ConversationCheckpoint& a, const ConversationCheckpoi
            a.dead == b.dead && a.block_pos == b.block_pos && a.used == b.used && b.stage_parts.empty();
 }
 
+bool same_ids(const ConversationCheckpoint& a, const ConversationCheckpoint& b) {
+    return a.ids == b.ids;
+}
 bool same(const SavedConversation& a, const SavedConversation& b) {
     if (a.geometry != b.geometry || a.layer_lo != b.layer_lo || a.layer_hi != b.layer_hi || a.cvec != b.cvec ||
         !same_checkpoint(a.live, b.live) || a.checkpoints.size() != b.checkpoints.size() || a.kv.size() != b.kv.size())
@@ -156,6 +161,33 @@ int main() {
     fs::create_directories(dir);
     const SessionFileIdentity id{0x1111222233334444ull, 0x5555666677778888ull};
     const SavedConversation original = sample();
+            auto kv_src = [](const SavedConversation& img) {
+                std::vector<SessionKvSource> out;
+                for (const auto& k : img.kv) {
+                    SessionKvSource s;
+                    s.format = k.format; s.cells = k.cells; s.heads = k.heads; s.head_dim = k.head_dim;
+                    s.page_size = k.page_size; s.pooled_rows = k.pooled_rows; s.idx_dim = k.idx_dim;
+                    s.sizes = {k.k.size(), k.v.size(), k.k_scale.size(), k.v_scale.size(), k.pooled.size()};
+                    const ConversationKv* pk = &k;
+                    s.read = [pk](size_t part, size_t off, void* dst, size_t n) {
+                        uint8_t* d = (uint8_t*) dst;
+                        const ConversationBuffer& b = part == 0 ? pk->k : part == 1 ? pk->v :
+                            part == 2 ? pk->k_scale : part == 3 ? pk->v_scale : pk->pooled;
+                        return b.visit(off, n, [&](const uint8_t* p, size_t c, size_t) { std::memcpy(d, p, c); d += c; return true; });
+                    };
+                    out.push_back(std::move(s));
+                }
+                return out;
+            };
+
+            auto grow = [&](ConversationCheckpoint& c, size_t add) {
+                const size_t n = c.ids.size();
+                c.ids.resize(n + add);
+                for (size_t i = 0; i < add; ++i) c.ids[n + i] = int32_t(900000 + i);
+                c.gdn.insert(c.gdn.end(), add * 13, uint8_t(7));
+                c.ple.insert(c.ple.end(), add * 3, uint8_t(9));
+                c.tails.insert(c.tails.end(), add, uint8_t(3));
+            };
     const fs::path good = dir / "good.bin";
 
     // round trip
@@ -182,6 +214,457 @@ int main() {
         check(g.size() == kGoldenSize && h == kGoldenHash, "golden: the fixed sample's file bytes are unchanged");
     }
     check(written == fs::file_size(good), "write reports the file size");
+
+    // [giphoo] l2-exp v2 (M1): the block-compressed format round trips; v1 stays the default write
+    {
+        set_env("STRATA_SESSION_V2", "1");
+        set_env("STRATA_SESSION_BLK", "65536");
+        const fs::path v2p = dir / "v2.bin";
+        size_t w2 = 0;
+        check(session_file_write(v2p.string(), original, id, w2, error), "v2: write succeeds");
+        {
+            const std::vector<char> g = slurp(v2p);
+            check(g.size() >= 96 && std::memcmp(g.data(), "STRSESS\x02", 8) == 0, "v2: magic");
+            check(std::memcmp(g.data() + g.size() - 16, "STRSESS\x02", 8) == 0, "v2: footer");
+            check((long long) fs::file_size(v2p) == (long long) w2, "v2: write reports the file size");
+        }
+        SavedConversation back;
+        size_t r2 = 0;
+        check(session_file_read(v2p.string(), id, back, r2, error), "v2: read succeeds");
+        check(r2 == w2, "v2: read reports the file size");
+        check(same(back, original), "v2: round trip equals the original");
+        // determinism: the parsed image re-serializes to the same v2 bytes (v2.1 reorders fields,
+        // so the v1-writer byte identity of M1 no longer holds; same() plus this covers it)
+        const fs::path again = dir / "v2-again.bin";
+        size_t w3 = 0;
+        check(session_file_write(again.string(), back, id, w3, error), "v2: image re-writes as v2");
+        check(slurp(again) == slurp(v2p), "v2: re-serialization is byte-identical");
+        check(w3 == w2, "v2: re-serialization is the same size");
+        {
+            const SessionFileIdentity other{1, 2};
+            SavedConversation no;
+            size_t rn = 0;
+            std::string e2;
+            check(!session_file_read(v2p.string(), other, no, rn, e2), "v2: another model is refused");
+        }
+        {   // corruption inside the first block's payload is caught by the per-block hash
+            std::vector<char> g = slurp(v2p);
+            g[100] = char(uint8_t(g[100]) ^ 0x40u);
+            const fs::path bad = dir / "v2-bad.bin";
+            std::ofstream(bad, std::ios::binary) << std::string(g.data(), g.size());
+            SavedConversation no;
+            size_t rn = 0;
+            std::string e2;
+            check(!session_file_read(bad.string(), id, no, rn, e2), "v2: a corrupted block is refused");
+            check(!e2.empty(), "v2: the corruption says why");
+        }
+        // [giphoo] l2-exp v2.2 (M2): the incremental save.  Grow the sample in place: the kv parts
+        // regrow through the same position-wise pattern, so the old file's bytes are the prefix.
+        {
+            size_t wfresh = 0;
+            check(session_file_write(v2p.string(), original, id, wfresh, error), "saveinc: a fresh base file");
+            const std::vector<char> before = slurp(v2p);
+            SavedConversation grown = original;
+
+            grow(grown.live, 64);
+            grown.kv[0].k = pattern(original.kv[0].k.size() + (1u << 16), uint8_t(0));   // same seed: prefix stable
+            grown.kv[0].v = pattern(original.kv[0].v.size() + 8, uint8_t(10));
+            grown.kv[1].v = pattern(original.kv[1].v.size() + 120, uint8_t(11));
+            const size_t pooled_row = (size_t) original.kv[0].idx_dim * 4;
+            grown.kv[0].pooled = pattern(original.kv[0].pooled.size() + pooled_row, uint8_t(40));   // +1 row, last re-sent
+            // the same image as K/V sources
+            std::vector<SessionKvSource> kvs;
+            for (const auto& k : grown.kv) {
+                SessionKvSource s;
+                s.format = k.format; s.cells = k.cells; s.heads = k.heads; s.head_dim = k.head_dim;
+                s.page_size = k.page_size; s.pooled_rows = k.pooled_rows; s.idx_dim = k.idx_dim;
+                s.sizes = {k.k.size(), k.v.size(), k.k_scale.size(), k.v_scale.size(), k.pooled.size()};
+                const ConversationKv* pk = &k;
+                s.read = [pk](size_t part, size_t off, void* dst, size_t n) {
+                    uint8_t* d = (uint8_t*) dst;
+                    const ConversationBuffer& b = part == 0 ? pk->k : part == 1 ? pk->v :
+                        part == 2 ? pk->k_scale : part == 3 ? pk->v_scale : pk->pooled;
+                    return b.visit(off, n, [&](const uint8_t* p, size_t c, size_t) { std::memcpy(d, p, c); d += c; return true; });
+                };
+                kvs.push_back(std::move(s));
+            }
+            // peek: the old file's live ids and checkpoint hashes
+            SessionSaveIncPeek peek;
+            check(session_file_saveinc_peek(v2p.string(), id, peek, error), "saveinc: peek succeeds");
+            check(peek.live_ids == original.live.ids.size(), "saveinc: peek reports the old live ids");
+            check(peek.ckpt_hashes.size() == 2, "saveinc: peek reports both checkpoints");
+            // the plan: keep both old checkpoints (they are unchanged), no fresh ones
+            const std::vector<SessionSaveIncSlot> keep{{0, -1}, {1, -1}};
+            size_t wi = 0;
+            SavedConversation gm = grown;
+            gm.kv.clear();          // meta carries no K/V
+            gm.checkpoints.clear(); // and only the fresh checkpoints (here: none, both reused)
+            const bool grew_ok = session_file_saveinc(v2p.string(), gm, kvs, id, keep, wi, error);
+            check(grew_ok, "saveinc: grows the file");
+            SavedConversation backi;
+            size_t ri = 0;
+            check(session_file_read(v2p.string(), id, backi, ri, error), "saveinc: the grown file reads");
+            check(same(backi, grown), "saveinc: round trip equals a full save of the grown state");
+            // a fresh full save must agree byte-wise on the model (read back and compare through same())
+            const fs::path full = dir / "v2-full-grown.bin";
+            size_t wf = 0;
+            check(session_file_write(full.string(), grown, id, wf, error), "saveinc: full save of the grown state");
+            SavedConversation backf;
+            size_t rf = 0;
+            check(session_file_read(full.string(), id, backf, rf, error), "saveinc: the full save reads");
+            check(same(backi, backf), "saveinc: incremental and full saves hold the same state");
+            check(slurp(v2p).size() > before.size(), "saveinc: the file grew");
+            // V2 read limits bind the CURRENT logical payload, not unreferenced
+            // physical bytes retained by append-only generations.
+            {
+                const std::vector<char> valid = slurp(v2p);
+                uint64_t payload = 0, dir_off = 0;
+                std::memcpy(&payload, valid.data() + 32, 8);
+                std::memcpy(&dir_off, valid.data() + valid.size() - 8, 8);
+                const size_t slack = 1u << 20;
+                std::vector<char> bloated;
+                bloated.insert(bloated.end(), valid.begin(), valid.begin() + dir_off);
+                bloated.insert(bloated.end(), slack, 'x');
+                bloated.insert(bloated.end(), valid.begin() + dir_off, valid.end());
+                const uint64_t new_dir_off = dir_off + slack;
+                std::memcpy(bloated.data() + bloated.size() - 8, &new_dir_off, 8);
+                const fs::path bp = dir / "v2-physical-slack.bin";
+                spit(bp, bloated);
+                SessionReadLimits logical_limit;
+                logical_limit.max_file_bytes = payload;
+                SavedConversation logical_back;
+                size_t logical_n = 0;
+                check(session_file_read(bp.string(), id, logical_back, logical_n, error, logical_limit) &&
+                      same(logical_back, grown), "v2: physical slack does not reject a valid logical image");
+                logical_limit.max_file_bytes = payload - 1;
+                check(!session_file_read(bp.string(), id, logical_back, logical_n, error, logical_limit),
+                      "v2: the logical payload limit is still enforced");
+            }
+            // Append-only slack above the compaction threshold declines saveinc so the
+            // caller rebuilds the current image with a full save.
+            {
+                std::string reason;
+                check(!session_file_saveinc_needs_compaction(v2p.string(), reason),
+                      "saveinc compaction: a normal file needs no compaction");
+                set_env("STRATA_SAVEINC_COMPACT_FILE_BYTES", "1");
+                check(session_file_saveinc_needs_compaction(v2p.string(), reason) &&
+                      reason.find("compaction required") != std::string::npos,
+                      "saveinc compaction: the physical threshold is reported");
+                size_t blocked = 0;
+                SavedConversation same_meta = grown;
+                same_meta.kv.clear();
+                same_meta.checkpoints.clear();
+                const bool declined = session_file_saveinc(v2p.string(), same_meta, kvs, id, keep,
+                                                           blocked, error);
+                check(!declined && error.find("saveinc: compaction required") == 0,
+                      "saveinc compaction: the synchronous backstop declines append");
+                set_env("STRATA_SAVEINC_COMPACT_FILE_BYTES", nullptr);
+            }
+            // [giphoo] v2.4 repro: SECOND extension of an already-extended file must still read
+            {
+                const fs::path rp2p = dir / "v2-repro2.bin";
+                size_t wb0 = 0;
+                check(session_file_write(rp2p.string(), grown, id, wb0, error), "saveinc2: the fresh base writes");
+                const std::vector<SessionSaveIncSlot> keepA{{0, -1}, {1, -1}};
+                SavedConversation gmA = grown;
+                gmA.kv.clear();
+                gmA.checkpoints.clear();
+                size_t wa = 0;
+                check(session_file_saveinc(rp2p.string(), gmA, kvs, id, keepA, wa, error), "saveinc2: the first extension writes");
+                SavedConversation grown2 = grown;
+                grow(grown2.live, 96);
+                grown2.kv[0].k = pattern(original.kv[0].k.size() + (2u << 16), uint8_t(0));
+                grown2.kv[0].v = pattern(original.kv[0].v.size() + 40, uint8_t(10));
+                grown2.kv[1].v = pattern(original.kv[1].v.size() + 300, uint8_t(11));
+                grown2.kv[0].pooled = pattern(original.kv[0].pooled.size() + 2 * pooled_row, uint8_t(40));
+                std::vector<SessionKvSource> kvs2;
+                for (const auto& k : grown2.kv) {
+                    SessionKvSource s2;
+                    s2.format = k.format; s2.cells = k.cells; s2.heads = k.heads; s2.head_dim = k.head_dim;
+                    s2.page_size = k.page_size; s2.pooled_rows = k.pooled_rows; s2.idx_dim = k.idx_dim;
+                    s2.sizes = {k.k.size(), k.v.size(), k.k_scale.size(), k.v_scale.size(), k.pooled.size()};
+                    const ConversationKv* pk = &k;
+                    s2.read = [pk](size_t part, size_t off, void* dst, size_t n) {
+                        uint8_t* d = (uint8_t*) dst;
+                        const ConversationBuffer& b = part == 0 ? pk->k : part == 1 ? pk->v :
+                            part == 2 ? pk->k_scale : part == 3 ? pk->v_scale : pk->pooled;
+                        return b.visit(off, n, [&](const uint8_t* p, size_t c, size_t) { std::memcpy(d, p, c); d += c; return true; });
+                    };
+                    kvs2.push_back(std::move(s2));
+                }
+                const std::vector<SessionSaveIncSlot> keep2{{0, -1}, {1, -1}};
+                SavedConversation gm2 = grown2;
+                gm2.kv.clear();
+                gm2.checkpoints.clear();
+                size_t wi2 = 0;
+                const bool w2ok = session_file_saveinc(rp2p.string(), gm2, kvs2, id, keep2, wi2, error);
+                if (!w2ok) std::fprintf(stderr, "[repro] saveinc2 write error: %s\n", error.c_str());
+                check(w2ok, "saveinc2: the second extension writes");
+                SavedConversation back2;
+                size_t ri2 = 0;
+                const bool r2ok = w2ok && session_file_read(rp2p.string(), id, back2, ri2, error);
+                if (w2ok && !r2ok) std::fprintf(stderr, "[repro] saveinc2 read error: %s\n", error.c_str());
+                check(r2ok, "saveinc2: the twice-extended file reads");
+
+                check(r2ok && same(back2, grown2), "saveinc2: round trip equals the grown2 state");
+                // [giphoo] v2.4.1 repro C: ????? ? keep ?? ? ??? (???? + fresh ??)?
+                // ???: continue_segment ??? layer ? ???? ? "checkpoint N field 0 payload order
+                // disagrees" (08:40 ????????????, ???????????)?
+                {
+                    const fs::path rp3 = dir / "v2-repro3.bin";
+                    size_t wb3 = 0;
+                    check(session_file_write(rp3.string(), grown, id, wb3, error), "rotate: the base writes");
+                    // ?? keep: ?? 0 ???? #1 (? #0 ???), ?? 1 ? fresh (?? live ??)
+                    ConversationCheckpoint fresh_ck = grown2.live;
+                    SavedConversation gmr = grown2;
+                    gmr.kv.clear();
+                    gmr.checkpoints = {fresh_ck};
+                    const std::vector<SessionSaveIncSlot> keep_rot{{1, -1}, {-1, 0}};
+                    // grown2 ? kv ?
+                    size_t wr3 = 0;
+                    const bool w3 = session_file_saveinc(rp3.string(), gmr, kvs2, id, keep_rot, wr3, error);
+                    if (!w3) std::fprintf(stderr, "[repro] rotate write error: %s\n", error.c_str());
+                    check(w3, "rotate: the shifted-reuse extension writes");
+                    SavedConversation back3;
+                    size_t rr3 = 0;
+                    const bool r3 = w3 && session_file_read(rp3.string(), id, back3, rr3, error);
+                    if (w3 && !r3) std::fprintf(stderr, "[repro] rotate read error: %s\n", error.c_str());
+                    check(r3, "rotate: the rotated file reads");
+                    check(r3 && back3.checkpoints.size() == 2, "rotate: two checkpoints survived");
+                    if (r3 && back3.checkpoints.size() == 2) {
+                        check(same_ids(back3.checkpoints[0], original.checkpoints[1]), "rotate: slot 0 holds old #1");
+                    }
+                }
+                // ???? B: ??????????????? (??? + ??)
+                if (r2ok) {
+                    size_t wfb = 0;
+                    check(session_file_write(rp2p.string(), grown2, id, wfb, error), "fallback: the full save over the extended path writes");
+                    std::vector<int32_t> probe_ids = grown2.live.ids;
+                    if (!probe_ids.empty()) probe_ids.resize(probe_ids.size() / 2);
+                    SessionReadLimits rl2;
+                    SavedConversation pref;
+                    size_t rpx = 0;
+                    std::string perr2;
+                    const bool pok = session_file_read_prefix(rp2p.string(), id, probe_ids, pref, rpx, perr2, rl2, nullptr);
+                    if (!pok) std::fprintf(stderr, "[repro] fallback partial read error: %s\n", perr2.c_str());
+                    check(pok, "fallback: the partial read of the overwritten file");
+                    SavedConversation backfull;
+                    size_t rf2 = 0;
+                    const bool fok = session_file_read(rp2p.string(), id, backfull, rf2, error);
+                    if (!fok) std::fprintf(stderr, "[repro] fallback full read error: %s\n", error.c_str());
+                    check(fok, "fallback: the full read of the overwritten file");
+                    check(fok && same(backfull, grown2), "fallback: the round trip holds");
+                }
+            }
+        // [giphoo] l2-exp v2.3 (M3): the parked read - the pool's budget gates the image, the
+        // physical gate only the streaming transients
+        {
+            SessionSaveIncPeek peek2;
+            check(session_file_saveinc_peek(v2p.string(), id, peek2, error), "parked: peek of the grown file");
+            SavedConversation parked;
+            size_t rp = 0;
+            uint64_t asked = 0;
+            auto fits = [&](uint64_t image_bytes, std::string& why) {
+                asked = image_bytes;
+                if (image_bytes > (1u << 20)) {
+                    why = "too big for this pretend pool";
+                    return false;
+                }
+                return true;
+            };
+            check(!session_file_read_parked(v2p.string(), id, parked, rp, error, SessionReadLimits{}, fits), "parked: the budget ask refuses");
+            check(asked > (1u << 20), "parked: the ask carries the image size");
+            check(!error.empty(), "parked: the refusal says why");
+            auto fits_all = [](uint64_t, std::string&) { return true; };
+            check(session_file_read_parked(v2p.string(), id, parked, rp, error, SessionReadLimits{}, fits_all), "parked: reads with budget free");
+            check(same(parked, grown), "parked: the image equals the grown state");
+            // a v1 file is refused with a pointer to the ordinary read
+            const fs::path v1f = dir / "parked-v1.bin";
+            size_t wv = 0;
+            set_env("STRATA_SESSION_V2", "0");
+            check(session_file_write(v1f.string(), original, id, wv, error), "parked: v1 base write");
+            set_env("STRATA_SESSION_V2", "1");
+            SavedConversation no;
+            size_t rn2 = 0;
+            std::string e10;
+            check(!session_file_read_parked(v1f.string(), id, no, rn2, e10, SessionReadLimits{}, fits_all), "parked: v1 is refused");
+            check(e10.find("v2 format") != std::string::npos, "parked: the refusal names the format");
+        }
+
+            // decline: a shrunken K/V part
+            {
+                SavedConversation sh = grown;
+                sh.kv[0].k = pattern(4096, uint8_t(0));
+                std::vector<SessionKvSource> sv;
+                for (const auto& k : sh.kv) {
+                    SessionKvSource s;
+                    s.format = k.format; s.cells = k.cells; s.heads = k.heads; s.head_dim = k.head_dim;
+                    s.page_size = k.page_size; s.pooled_rows = k.pooled_rows; s.idx_dim = k.idx_dim;
+                    s.sizes = {k.k.size(), k.v.size(), k.k_scale.size(), k.v_scale.size(), k.pooled.size()};
+                    sv.push_back(std::move(s));
+                }
+                sh.kv.clear();
+                size_t w9 = 0;
+                std::string e9;
+                check(!session_file_saveinc(full.string(), sh, sv, id, keep, w9, e9), "saveinc: a shrunken part declines");
+                check(e9.rfind("saveinc:", 0) == 0, "saveinc: the refusal says why");
+            }
+            // decline: diverging live ids (same length, other bytes)
+            {
+                SavedConversation dv = grown;
+                dv.live.ids[3] ^= 1;
+                std::vector<SessionKvSource> sv2;
+                for (const auto& k : grown.kv) {
+                    SessionKvSource s;
+                    s.format = k.format; s.cells = k.cells; s.heads = k.heads; s.head_dim = k.head_dim;
+                    s.page_size = k.page_size; s.pooled_rows = k.pooled_rows; s.idx_dim = k.idx_dim;
+                    s.sizes = {k.k.size(), k.v.size(), k.k_scale.size(), k.v_scale.size(), k.pooled.size()};
+                    sv2.push_back(std::move(s));
+                }
+                dv.kv.clear();
+                size_t w9 = 0;
+                std::string e9;
+                check(!session_file_saveinc(v2p.string(), dv, sv2, id, keep, w9, e9), "saveinc: diverging ids decline");
+                // the declined attempt left the file usable
+                SavedConversation still;
+                size_t rs = 0;
+                check(session_file_read(v2p.string(), id, still, rs, error), "saveinc: the file survives a refusal");
+                check(same(still, grown), "saveinc: the file is unchanged after a refusal");
+            }
+        }
+        // [giphoo] l2-exp M3.1: partial restore by checkpoint
+        {
+            SavedConversation big;
+            for (size_t i = 0; i < big.geometry.size(); ++i) big.geometry[i] = int64_t(200 + i);
+            big.layer_lo = 0; big.layer_hi = 8; big.cvec = false;
+            big.live.ids.resize(2000);
+            for (size_t i = 0; i < 2000; ++i) big.live.ids[i] = int32_t(700000 + i);
+            big.live.gdn = bytes_of(2000, 5);
+            big.live.ple = bytes_of(2000, 6);
+            big.live.used = 2000;
+            // checkpoints hold PREFIX semantics: ids/state are the live's own head
+            ConversationCheckpoint c1, c2;
+            c1.ids.assign(big.live.ids.begin(), big.live.ids.begin() + 600);
+            c1.gdn = bytes_of(600, 5); c1.ple = bytes_of(600, 6); c1.used = 600;
+            c2.ids.assign(big.live.ids.begin(), big.live.ids.begin() + 1200);
+            c2.gdn = bytes_of(1200, 5); c2.ple = bytes_of(1200, 6); c2.used = 1200;
+            big.checkpoints = {c1, c2};
+            // one kv layer, parts sized exactly by the layout formula (cells=2048, page=64)
+            ConversationKv kv;
+            kv.format = 2; kv.cells = 2048; kv.heads = 2; kv.head_dim = 256;
+            kv.page_size = 64; kv.pooled_rows = 9; kv.idx_dim = 128;
+            kv.k = pattern(2048 * 512, 1); kv.v = pattern(2048 * 512, 2);
+            kv.k_scale = pattern(2048 * 16, 3); kv.v_scale = pattern(2048 * 16, 4);
+            kv.pooled = pattern(9 * 512, 5);
+            big.kv.push_back(std::move(kv));
+            const fs::path pf = dir / "v2-prefix.bin";
+            size_t wpf = 0;
+            check(session_file_write(pf.string(), big, id, wpf, error), "prefix: full write");
+            // a FORK: shares the head up to 1500, diverges after - the live (2000) is NOT a
+            // prefix any more, so the partial path owns it and the deepest checkpoint (1200) wins
+            std::vector<int32_t> prompt(big.live.ids.begin(), big.live.ids.begin() + 1500);
+            for (int i = 0; i < 200; ++i) prompt.push_back(int32_t(900000 + i));
+            {
+                SavedConversation part;
+                size_t rp = 0;
+                bool live_hits = false;
+                auto fits_all = [](uint64_t, std::string&) { return true; };
+                check(session_file_read_prefix(pf.string(), id, prompt, part, rp, error,
+                                               SessionReadLimits{}, fits_all, nullptr, &live_hits),
+                      "prefix: partial read succeeds");
+                check(!live_hits, "prefix: a divergent prompt does not flag live");
+                check(part.live.ids == c2.ids, "prefix: the deepest checkpoint becomes live");
+                check(part.kv[0].cells == 1216, "prefix: kv cells page-align to the checkpoint");
+                check(part.kv[0].k.size() == 1216 * 512, "prefix: k cut to the prefix bytes");
+                check(part.kv[0].pooled.size() == 5 * 512, "prefix: pooled rows re-derived");
+                check(part.kv[0].k.visit(0, 1200 * 512, [&](const uint8_t* q, size_t n, size_t) {
+                          const uint8_t* full = nullptr;
+                          bool same = true;
+                          big.kv[0].k.visit(0, n, [&](const uint8_t* fq, size_t fn, size_t) {
+                              same = std::memcmp(q, fq, std::min(n, fn)) == 0;
+                              return true;
+                          });
+                          return same;
+                      }), "prefix: kv bytes are the file's own prefix");
+                check(part.live.gdn.size() == 1200 && part.live.used == 1200, "prefix: state arrays at position");
+            }
+            // a budget refusal names the image size
+            {
+                SavedConversation part;
+                size_t rp = 0;
+                auto fits_none = [](uint64_t n, std::string& why) {
+                    why = "pretend pool full (" + std::to_string(n >> 10) + " KiB)";
+                    return false;
+                };
+                check(!session_file_read_prefix(pf.string(), id, prompt, part, rp, error,
+                                                SessionReadLimits{}, fits_none),
+                      "prefix: the budget ask can refuse");
+            }
+            // a prompt the file cannot serve: no checkpoint is its prefix
+            {
+                std::vector<int32_t> other{1, 2, 3, 4, 5};
+                SavedConversation part;
+                size_t rp = 0;
+                auto fits_all = [](uint64_t, std::string&) { return true; };
+                check(!session_file_read_prefix(pf.string(), id, other, part, rp, error,
+                                                SessionReadLimits{}, fits_all),
+                      "prefix: an unrelated prompt is refused");
+                check(error.find("no checkpoint") != std::string::npos, "prefix: the refusal names the reason");
+            }
+            // the prompt exactly the live: full restore is the better call (live_would_match)
+            {
+                SavedConversation part;
+                size_t rp = 0;
+                bool live_hits = false;
+                auto fits_all = [](uint64_t, std::string&) { return true; };
+                check(session_file_read_prefix(pf.string(), id, big.live.ids, part, rp, error,
+                                               SessionReadLimits{}, fits_all, nullptr, &live_hits),
+                      "prefix: the live prompt reads");
+                check(live_hits, "prefix: live_would_match flags the full-restore preference");
+            }
+            // policy order is not depth order: the deeper matching checkpoint must still win
+            {
+                SavedConversation unsorted = big;
+                unsorted.checkpoints = {c2, c1};
+                const fs::path pfu = dir / "v2-prefix-unsorted.bin";
+                size_t wpu = 0;
+                check(session_file_write(pfu.string(), unsorted, id, wpu, error),
+                      "prefix: unsorted keep write");
+                SavedConversation part;
+                size_t rp = 0;
+                SessionPrefixStats stats;
+                auto fits_all = [](uint64_t, std::string&) { return true; };
+                check(session_file_read_prefix(pfu.string(), id, prompt, part, rp, error,
+                                               SessionReadLimits{}, fits_all, nullptr, nullptr, &stats),
+                      "prefix: unsorted keep partial read");
+                check(part.live.ids == c2.ids, "prefix: token depth beats keep index");
+                check(stats.checkpoint_hit && stats.checkpoint_tokens == 1200 &&
+                          stats.image_bytes > 0 && stats.archive_bytes == wpu &&
+                          stats.block_read_bytes < wpu,
+                      "prefix: stats describe the selected prefix");
+                SessionPrefixStats refused;
+                SavedConversation refused_image;
+                size_t refused_bytes = 0;
+                auto fits_none = [](uint64_t, std::string&) { return false; };
+                check(!session_file_read_prefix(pfu.string(), id, prompt, refused_image, refused_bytes,
+                                                error, SessionReadLimits{}, fits_none, nullptr, nullptr, &refused),
+                      "prefix: early pool fit can refuse");
+                check(!refused.checkpoint_hit && refused.checkpoint_tokens == 1200 &&
+                          refused.image_bytes == stats.image_bytes &&
+                          refused.block_read_bytes < stats.block_read_bytes,
+                      "prefix: a pool refusal reads only metadata");
+            }
+        }
+        set_env("STRATA_SESSION_BLK", nullptr);
+        set_env("STRATA_SESSION_V2", nullptr);   // the default write stays v1
+        const fs::path defw = dir / "default.bin";
+        size_t wd = 0;
+        check(session_file_write(defw.string(), original, id, wd, error), "v2: default write succeeds");
+        {
+            const std::vector<char> g = slurp(defw);
+            check(std::memcmp(g.data(), "STRSESS\x01", 8) == 0, "v2: the default write is v1");
+        }
+    }
     check(no_temp(dir), "no temporary left behind");
     {
         SavedConversation back;
@@ -769,7 +1252,438 @@ int main() {
     }
 #endif
 
+    // [giphoo] L2 2.0 W1: split ?? ? state ??? + L2-1 ??? + ???? (???)
+    {
+        set_env("STRATA_SESSION_V2", "1");
+        const fs::path sdir = dir / "l2-state";
+        fs::create_directories(sdir);
+        const fs::path sp2 = dir / "v2-split.bin";
+        // ?? + ???? (???????????)
+        size_t wb = 0;
+        check(session_file_write(sp2.string(), original, id, wb, error), "split: base full save");
+        SavedConversation gmA = original;
+        gmA.kv.clear(); gmA.checkpoints.clear();
+        const std::vector<SessionSaveIncSlot> keepA{{0, -1}, {1, -1}};
+        size_t wa = 0;
+        check(session_file_saveinc(sp2.string(), gmA, kv_src(original), id, keepA, wa, error), "split: aligned extension");
+        // split ?: STATE_DIR ? + ???(???)
+        set_env("STRATA_L2_STATE_DIR", sdir.string().c_str());
+        set_env("STRATA_L2_STATE_SINK_TOKENS", "1000000");
+        SavedConversation grownS = original;
+        grow(grownS.live, 96);
+        SavedConversation gmS = grownS;
+        gmS.kv.clear(); gmS.checkpoints.clear();
+        size_t ws = 0;
+        check(session_file_saveinc(sp2.string(), gmS, kv_src(grownS), id, keepA, ws, error), "split: the split saveinc writes");
+        {
+            SavedConversation backS; size_t rr = 0;
+            { const bool ok_r = session_file_read(sp2.string(), id, backS, rr, error);
+                if (!ok_r) std::fprintf(stderr, "[split-repro] read err: %s\n", error.c_str());
+                check(ok_r, "split: the lagging file reads"); }
+            check(backS.live.ids.size() == original.live.ids.size(), "split: state lags at the sink point");
+        }
+        const fs::path mini = sdir / (sp2.filename().string() + ".state");
+        check(fs::exists(mini), "split: the L2-1 mini state exists");
+        {
+            SavedConversation sm; size_t rm = 0;
+            check(session_file_read(mini.string(), id, sm, rm, error), "split: the mini file reads");
+            check(sm.live.ids.size() == grownS.live.ids.size(), "split: mini state is current");
+        }
+        // ???: ??? 1 ? ??? saveinc ???
+        set_env("STRATA_L2_STATE_SINK_TOKENS", "1");
+        SavedConversation grownT = grownS;
+        grow(grownT.live, 7);
+        SavedConversation gmT = grownT;
+        gmT.kv.clear(); gmT.checkpoints.clear();
+        size_t wt = 0;
+        check(session_file_saveinc(sp2.string(), gmT, kv_src(grownT), id, keepA, wt, error), "sink: the aligned saveinc writes");
+        {
+            SavedConversation backT; size_t rt = 0;
+            check(session_file_read(sp2.string(), id, backT, rt, error), "sink: the aligned file reads");
+                check(backT.live.ids.size() == grownT.live.ids.size(), "sink: state caught up");
+            }
+            // An older mini must never move an aligned main file backwards.
+            SavedConversation stale = grownS;
+            stale.kv.clear(); stale.checkpoints.clear();
+            size_t stale_bytes = 0;
+            check(session_file_write(mini.string(), stale, id, stale_bytes, error), "sink: write stale mini");
+            {
+                SavedConversation back_stale; size_t rs = 0;
+                check(session_file_read(sp2.string(), id, back_stale, rs, error), "sink: stale mini still reads");
+                check(back_stale.live.ids.size() == grownT.live.ids.size(), "sink: stale mini is ignored");
+            }
+            set_env("STRATA_L2_STATE_DIR", nullptr);
+        set_env("STRATA_L2_STATE_SINK_TOKENS", nullptr);
+
+        // [giphoo] L2 v3 WriterPool: ????? ? submit????????????? (A8)
+        {
+            set_env("STRATA_L2_WRITER_BUDGET_MIB", "512");
+            strata::core::l2two::conversation_file_l2_writer_start();
+            const fs::path sp5 = dir / "v2-writer-async.bin";
+            size_t wb5 = 0;
+            check(session_file_write(sp5.string(), original, id, wb5, error), "wasync: base full save");
+            set_env("STRATA_L2_STATE_DIR", sdir.string().c_str());
+            set_env("STRATA_L2_STATE_SINK_TOKENS", "1000000");
+            // ????: make_job (?????) ? submit (????) ? ? writer ??
+            strata::core::SessionSaveIncPeek peek5;
+            check(session_file_saveinc_peek(sp5.string(), id, peek5, error), "wasync: peek");
+            SavedConversation gm5 = grownS;
+            gm5.kv.clear(); gm5.checkpoints.clear();
+            SavedConversation cap5;
+            std::vector<SessionKvSource> job_kv;
+            auto job_bytes = std::make_shared<std::vector<std::vector<uint8_t>>>();
+            bool split5 = false;
+            const bool made = strata::core::l2two::conversation_file_l2_make_job(
+                sp5.string(), id, keepA, SessionWriteOptions{}, gm5, kv_src(grownS), peek5,
+                cap5, job_kv, job_bytes, split5);
+            check(made, "wasync: make_job deep-copies");
+            check(split5, "wasync: split hint (gap below sink)");
+            const uint64_t gen5 = strata::core::l2two::next_gen(sp5.string());
+            check(strata::core::l2two::WriterPool_submit_alias(
+                      sp5.string(), id, std::move(cap5), std::move(job_kv), job_bytes,
+                      keepA, SessionWriteOptions{}, split5, gen5),
+                  "wasync: submit accepted");
+            // wait for this exact (path, generation) commit
+            bool landed = false;
+            for (int i = 0; i < 200 && !landed; ++i) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                int64_t committed = 0; std::string werr;
+                if (strata::core::l2two::WriterPool::instance().commit_status(
+                        sp5.string(), gen5, &committed, &werr) == 1 &&
+                    committed >= (int64_t) grownS.live.ids.size())
+                    landed = true;
+            }
+            check(landed, "wasync: writer landed the increment");
+            {
+                SavedConversation back5; size_t r5 = 0;
+                check(session_file_read(sp5.string(), id, back5, r5, error), "wasync: the main file reads");
+                check(back5.live.ids.size() == original.live.ids.size(),
+                      "wasync: split main state stays at the previous sink");
+            }
+            const fs::path mini5 = sdir / (sp5.filename().string() + ".state");
+            check(fs::exists(mini5), "wasync: exactly one official mini is published");
+            {
+                SavedConversation mini5_data; size_t rm5 = 0;
+                check(session_file_read(mini5.string(), id, mini5_data, rm5, error),
+                      "wasync: the official mini reads");
+                check(mini5_data.live.ids.size() == grownS.live.ids.size(),
+                      "wasync: the official mini carries the current state");
+            }
+            check(!fs::exists(sp5.string() + ".l2tmp"), "wasync: no copied main temp");
+            check(!fs::exists(sdir / (sp5.filename().string() + ".l2tmp.state")),
+                  "wasync: no duplicate tmp mini");
+            set_env("STRATA_L2_WRITER_BUDGET_MIB", nullptr);
+            set_env("STRATA_L2_STATE_DIR", nullptr);
+            set_env("STRATA_L2_STATE_SINK_TOKENS", nullptr);
+        }
+
+        // [giphoo] L2 2.0 R1: ?? ? B3 (???? ? ????) / B4 (???? ? ??? state)
+        {
+            // ?? split ?: ?? + split ? (STATE_DIR ?)
+            const fs::path sp3 = dir / "v2-assemble.bin";
+            size_t wb3 = 0;
+            check(session_file_write(sp3.string(), original, id, wb3, error), "asm: base writes");
+            SavedConversation gmB = original;
+            gmB.kv.clear(); gmB.checkpoints.clear();
+            const std::vector<SessionSaveIncSlot> keepB{{0, -1}, {1, -1}};
+            size_t wB = 0;
+            check(session_file_saveinc(sp3.string(), gmB, kv_src(original), id, keepB, wB, error), "asm: aligned base");
+            set_env("STRATA_L2_STATE_DIR", sdir.string().c_str());
+            set_env("STRATA_L2_STATE_SINK_TOKENS", "1000000");
+            SavedConversation grownA = original;
+            grow(grownA.live, 96);
+            grownA.kv[0].v = pattern(original.kv[0].v.size() + 96 * 8, uint8_t(21));   // K/V ?? ids ??
+            grownA.kv[1].v = pattern(original.kv[1].v.size() + 96 * 8, uint8_t(22));
+            grownA.kv[2].v = pattern(original.kv[2].v.size() + 96 * 8, uint8_t(23));
+            for (auto& k : grownA.kv) k.cells = original.kv[0].cells + 96;   // ?????? (cells ?????)
+            SavedConversation gmA2 = grownA;
+            gmA2.kv.clear(); gmA2.checkpoints.clear();
+            size_t wA2 = 0;
+            check(session_file_saveinc(sp3.string(), gmA2, kv_src(grownA), id, keepB, wA2, error), "asm: the split saveinc writes");
+            // B3: ???? ? ?? live ???? (?????)
+            {
+                SavedConversation back3; size_t r3 = 0;
+                const bool r3ok = session_file_read(sp3.string(), id, back3, r3, error);
+                if (r3ok) std::fprintf(stderr, "[asm-repro] back=%zu grown=%zu mini_exists=%d cover_dbg: kv_layers=%zu cells0=%lld\n",
+                    back3.live.ids.size(), grownA.live.ids.size(),
+                    (int) std::filesystem::exists(sdir / (sp3.filename().string() + ".state")),
+                    back3.kv.size(), back3.kv.empty() ? -1LL : (long long) back3.kv[0].cells);
+                check(r3ok, "asm B3: reads");
+                check(back3.live.ids.size() == grownA.live.ids.size(),
+                      "asm B3: assembled to the newest state (mini replaced the lagging one)");
+            }
+            // B4: ????? ? ????? state (???)
+            const fs::path mini3 = sdir / (sp3.filename().string() + ".state");
+            fs::remove(mini3);
+            {
+                SavedConversation back4; size_t r4 = 0;
+                check(session_file_read(sp3.string(), id, back4, r4, error), "asm B4: reads without mini");
+                check(back4.live.ids.size() == original.live.ids.size(),
+                      "asm B4: falls back to the lagging state (sink point)");
+            }
+            // A forged/divergent mini must be rejected without destroying the
+            // main file's embedded live state or failing the whole restore.
+            SavedConversation bad_mini = grownA;
+            bad_mini.kv.clear(); bad_mini.checkpoints.clear();
+            bad_mini.live.ids.assign(bad_mini.live.ids.size(), 987654321);
+            size_t bad_bytes = 0;
+            check(session_file_write(mini3.string(), bad_mini, id, bad_bytes, error), "asm B5: write divergent mini");
+            {
+                SavedConversation back5; size_t r5 = 0;
+                const bool ok5 = session_file_read(sp3.string(), id, back5, r5, error);
+                if (!ok5) std::fprintf(stderr, "[asm-B5] %s\n", error.c_str());
+                check(ok5, "asm B5: divergent mini does not fail restore");
+                check(back5.live.ids.size() == original.live.ids.size(),
+                      "asm B5: main embedded live is the fallback");
+            }
+            set_env("STRATA_L2_STATE_DIR", nullptr);
+            set_env("STRATA_L2_STATE_SINK_TOKENS", nullptr);
+        }
+
+        // V3 coarse generations: base + ordered deltas + independent checkpoints + atomic manifest.
+        {
+            set_env("STRATA_SESSION_V3", "1");
+            set_env("STRATA_SESSION_V2", "1");
+            set_env("STRATA_SESSION_BLK", "65536");
+            const fs::path v3 = dir / "v3-archive";
+            size_t wv3 = 0;
+            check(session_file_write(v3.string(), original, id, wv3, error), "v3: full write creates an archive");
+            check(fs::is_directory(v3) && fs::is_regular_file(v3 / "manifest"), "v3: directory and manifest exist");
+            check(session_file_verify(v3.string(), error), "v3: structural verify");
+            SavedConversation v3back;
+            size_t rv3 = 0;
+            check(session_file_read(v3.string(), id, v3back, rv3, error) && same(v3back, original),
+                  "v3: full round trip");
+
+            {
+                SavedConversation unsorted3 = original;
+                unsorted3.checkpoints = {original.checkpoints[1], original.checkpoints[0]};
+                const fs::path v3u = dir / "v3-archive-unsorted";
+                size_t wv3u = 0;
+                check(session_file_write(v3u.string(), unsorted3, id, wv3u, error),
+                      "v3: unsorted checkpoint archive write");
+                SavedConversation part3;
+                SessionPrefixStats stats3;
+                std::vector<int32_t> unsorted_prompt(original.live.ids.begin(),
+                                                     original.live.ids.begin() + 750);
+                unsorted_prompt.push_back(77777777);
+                auto fits_unsorted3 = [](uint64_t, std::string&) { return true; };
+                check(session_file_read_prefix(v3u.string(), id, unsorted_prompt, part3, rv3, error,
+                                               SessionReadLimits{}, fits_unsorted3, nullptr, nullptr, &stats3),
+                      "v3: unsorted checkpoint partial read");
+                check(part3.live.ids.size() == 500 && stats3.v3_archive &&
+                          stats3.checkpoint_tokens == 500 && stats3.checkpoint_hit,
+                      "v3: token depth also wins through the composite reader");
+            }
+
+            SavedConversation grown3 = original;
+            grow(grown3.live, 64);
+            for (auto& k : grown3.kv) k.cells += 64;
+            grown3.kv[0].k = pattern(original.kv[0].k.size() + 65536, 0);
+            grown3.kv[0].v = pattern(original.kv[0].v.size() + 64, 10);
+            grown3.kv[1].v = pattern(original.kv[1].v.size() + 120, 11);
+            const size_t pooled_row3 = (size_t) original.kv[0].idx_dim * 4;
+            grown3.kv[0].pooled = pattern(original.kv[0].pooled.size() + pooled_row3, 40);
+            grown3.kv[0].pooled_rows += 1;
+            SavedConversation meta3 = grown3;
+            meta3.kv.clear();
+            meta3.checkpoints.clear();
+            const std::vector<SessionSaveIncSlot> keep3{{0, -1}, {1, -1}};
+            size_t wi3 = 0;
+            const bool first_v3_delta = session_file_saveinc(v3.string(), meta3, kv_src(grown3), id, keep3, wi3, error);
+            if (!first_v3_delta) std::fprintf(stderr, "[v3-first-delta] %s\n", error.c_str());
+            check(first_v3_delta, "v3: first delta saveinc");
+            check(session_file_read(v3.string(), id, v3back, rv3, error) && same(v3back, grown3),
+                  "v3: first delta round trip including pooled replacement");
+            SessionSaveIncPeek peek3;
+            check(session_file_saveinc_peek(v3.string(), id, peek3, error) &&
+                  peek3.live_ids == grown3.live.ids.size() && peek3.ckpt_hashes.size() == 2,
+                  "v3: composite peek");
+            auto fits_all3 = [](uint64_t, std::string&) { return true; };
+            check(session_file_read_parked(v3.string(), id, v3back, rv3, error, SessionReadLimits{}, fits_all3) &&
+                  same(v3back, grown3), "v3: parked composite read");
+
+            std::vector<int32_t> prompt3(grown3.live.ids.begin(), grown3.live.ids.begin() + 750);
+            prompt3.push_back(77777777);
+            SavedConversation prefix3;
+            bool live_hit3 = false;
+            check(session_file_read_prefix(v3.string(), id, prompt3, prefix3, rv3, error,
+                                           SessionReadLimits{}, fits_all3, nullptr, &live_hit3),
+                  "v3: partial restore by checkpoint");
+            check(!live_hit3 && prefix3.live.ids.size() == 500 && prefix3.kv[0].cells == 512,
+                  "v3: prefix picks the deepest matching checkpoint and aligned KV");
+
+            SavedConversation grown4 = grown3;
+            grow(grown4.live, 96);
+            for (auto& k : grown4.kv) k.cells += 96;
+            grown4.kv[0].k = pattern(grown3.kv[0].k.size() + 32768, 0);
+            grown4.kv[1].v = pattern(grown3.kv[1].v.size() + 64, 11);
+            SavedConversation expected4 = grown4;
+            expected4.checkpoints = {original.checkpoints[1], grown4.live};
+            SavedConversation meta4 = grown4;
+            meta4.kv.clear();
+            meta4.checkpoints = {grown4.live};
+            const std::vector<SessionSaveIncSlot> keep4{{1, -1}, {-1, 0}};
+            check(session_file_saveinc(v3.string(), meta4, kv_src(grown4), id, keep4, wi3, error),
+                  "v3: second delta and checkpoint rotation");
+            check(session_file_read(v3.string(), id, v3back, rv3, error) && same(v3back, expected4),
+                  "v3: rotated composite round trip");
+            auto count_prefix = [&](const char* prefix) {
+                size_t n = 0;
+                for (const auto& entry : fs::directory_iterator(v3 / "segments"))
+                    if (entry.path().filename().string().rfind(prefix, 0) == 0) ++n;
+                return n;
+            };
+            check(count_prefix("counts-") == 1, "v3: only the committed counts file remains");
+
+            set_env("STRATA_V3_MAX_DELTAS", "1");
+            std::string compact_reason;
+            check(!session_file_saveinc_needs_compaction(v3.string(), compact_reason),
+                  "v3: tail consolidation stays inside saveinc, not a full-save precheck");
+            SavedConversation consolidate_meta = expected4;
+            consolidate_meta.kv.clear();
+            consolidate_meta.checkpoints.clear();
+            const bool consolidated_v3 = session_file_saveinc(
+                v3.string(), consolidate_meta, kv_src(expected4), id,
+                std::vector<SessionSaveIncSlot>{{0, -1}, {1, -1}}, wi3, error);
+            if (!consolidated_v3) std::fprintf(stderr, "[v3-consolidate] %s\n", error.c_str());
+            check(consolidated_v3, "v3: saveinc consolidates the delta chain");
+            check(session_file_read(v3.string(), id, v3back, rv3, error) && same(v3back, expected4),
+                  "v3: consolidated archive round trip");
+            check(count_prefix("delta-") == 1, "v3: consolidation keeps one base-relative delta");
+            check(count_prefix("counts-") == 1, "v3: consolidation removes superseded counts");
+            size_t compacted_bytes = 0;
+            check(session_file_write(v3.string(), expected4, id, compacted_bytes, error),
+                  "v3: full save rebuilds the base");
+            check(session_file_read(v3.string(), id, v3back, rv3, error) && same(v3back, expected4),
+                  "v3: rebuilt base round trip");
+            check(count_prefix("delta-") == 0, "v3: full save removes deltas");
+            check(count_prefix("counts-") == 1, "v3: full save removes superseded counts");
+            set_env("STRATA_V3_MAX_DELTAS", nullptr);
+
+            SavedConversation grown5 = expected4;
+            grow(grown5.live, 16);
+            for (auto& k : grown5.kv) k.cells += 16;
+            SavedConversation meta5 = grown5;
+            meta5.kv.clear();
+            meta5.checkpoints.clear();
+            SessionWriteOptions fail_manifest;
+            fail_manifest.fault = [](const char* step) { return std::strcmp(step, "manifest_rename") == 0 ? EIO : 0; };
+            check(!session_file_saveinc(v3.string(), meta5, kv_src(grown5), id,
+                                        std::vector<SessionSaveIncSlot>{{0, -1}, {1, -1}}, wi3, error,
+                                        fail_manifest), "v3: injected manifest failure is reported");
+            check(session_file_read(v3.string(), id, v3back, rv3, error) && same(v3back, expected4),
+                  "v3: failed manifest commit preserves the old generation");
+
+            const fs::path bad3 = dir / "v3-corrupt";
+            fs::copy(v3, bad3, fs::copy_options::recursive);
+            for (const auto& entry : fs::directory_iterator(bad3 / "segments")) {
+                if (entry.path().filename().string().find("base-") != 0) continue;
+                std::fstream file(entry.path(), std::ios::in | std::ios::out | std::ios::binary);
+                file.seekp(100);
+                const char byte = '\x5a';
+                file.write(&byte, 1);
+            }
+            check(!session_file_read(bad3.string(), id, v3back, rv3, error),
+                  "v3: corrupted segment payload is refused");
+            check(!error.empty(), "v3: corruption has a diagnostic");
+
+            // The rotation path uses WriterPool; V3's exact tail copy and latest-pooled
+            // replacement must work through the same asynchronous job builder.
+            {
+                const fs::path async_path = dir / "v3-writer-async";
+                size_t wa0 = 0;
+                check(session_file_write(async_path.string(), grown3, id, wa0, error), "v3 async: base write");
+                SavedConversation async_grown = grown3;
+                grow(async_grown.live, 32);
+                for (auto& k : async_grown.kv) k.cells += 32;
+                async_grown.kv[0].k = pattern(grown3.kv[0].k.size() + 65536, 0);
+                async_grown.kv[0].v = pattern(grown3.kv[0].v.size() + 32, 10);
+                async_grown.kv[0].pooled = pattern(grown3.kv[0].pooled.size() + pooled_row3, 40);
+                SavedConversation async_meta = async_grown;
+                async_meta.kv.clear();
+                async_meta.checkpoints.clear();
+                set_env("STRATA_L2_STATE_DIR", nullptr);
+                set_env("STRATA_L2_STATE_SINK_TOKENS", "0");
+                set_env("STRATA_L2_WRITER_BUDGET_MIB", "512");
+                strata::core::l2two::conversation_file_l2_writer_start();
+                SessionSaveIncPeek async_peek;
+                check(session_file_saveinc_peek(async_path.string(), id, async_peek, error), "v3 async: peek");
+                SavedConversation captured;
+                std::vector<SessionKvSource> job_kv;
+                auto job_bytes = std::make_shared<std::vector<std::vector<uint8_t>>>();
+                bool async_split = true;
+                check(strata::core::l2two::conversation_file_l2_make_job(
+                          async_path.string(), id, keep3, SessionWriteOptions{}, async_meta,
+                          kv_src(async_grown), async_peek, captured, job_kv, job_bytes, async_split),
+                      "v3 async: make_job");
+                check(!async_split, "v3 async: aligned state is not split");
+                const uint64_t async_gen = strata::core::l2two::next_gen(async_path.string());
+                check(strata::core::l2two::WriterPool_submit_alias(
+                          async_path.string(), id, std::move(captured), std::move(job_kv), job_bytes,
+                          keep3, SessionWriteOptions{}, async_split, async_gen),
+                      "v3 async: submit");
+                bool landed = false;
+                for (int i = 0; i < 200 && !landed; ++i) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                    int64_t committed = 0;
+                    std::string werr;
+                    landed = strata::core::l2two::WriterPool::instance().commit_status(
+                                 async_path.string(), async_gen, &committed, &werr) == 1 &&
+                             committed >= (int64_t) async_grown.live.ids.size();
+                }
+                check(landed, "v3 async: writer committed");
+                check(session_file_read(async_path.string(), id, v3back, rv3, error) &&
+                      same(v3back, async_grown), "v3 async: round trip through WriterPool");
+
+                SavedConversation async_grown2 = async_grown;
+                grow(async_grown2.live, 16);
+                for (auto& k : async_grown2.kv) k.cells += 16;
+                async_grown2.kv[0].k = pattern(async_grown.kv[0].k.size() + 32768, 0);
+                async_grown2.kv[0].pooled = pattern(async_grown.kv[0].pooled.size() + pooled_row3, 40);
+                SavedConversation async_meta2 = async_grown2;
+                async_meta2.kv.clear();
+                async_meta2.checkpoints.clear();
+                set_env("STRATA_V3_MAX_DELTAS", "1");
+                SessionSaveIncPeek async_peek2;
+                check(session_file_saveinc_peek(async_path.string(), id, async_peek2, error),
+                      "v3 async: consolidation peek");
+                check(async_peek2.consolidate_tail && !async_peek2.base_part_bytes.empty(),
+                      "v3 async: peek exposes the base watermark");
+                SavedConversation captured2;
+                std::vector<SessionKvSource> job_kv2;
+                auto job_bytes2 = std::make_shared<std::vector<std::vector<uint8_t>>>();
+                bool async_split2 = true;
+                check(strata::core::l2two::conversation_file_l2_make_job(
+                          async_path.string(), id, keep3, SessionWriteOptions{}, async_meta2,
+                          kv_src(async_grown2), async_peek2, captured2, job_kv2, job_bytes2, async_split2),
+                      "v3 async: consolidation job copies from the base");
+                const uint64_t async_gen2 = strata::core::l2two::next_gen(async_path.string());
+                check(strata::core::l2two::WriterPool_submit_alias(
+                          async_path.string(), id, std::move(captured2), std::move(job_kv2), job_bytes2,
+                          keep3, SessionWriteOptions{}, async_split2, async_gen2),
+                      "v3 async: consolidation submit");
+                bool landed2 = false;
+                for (int i = 0; i < 200 && !landed2; ++i) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                    int64_t committed = 0;
+                    std::string werr;
+                    landed2 = strata::core::l2two::WriterPool::instance().commit_status(
+                                  async_path.string(), async_gen2, &committed, &werr) == 1 &&
+                              committed >= (int64_t) async_grown2.live.ids.size();
+                }
+                check(landed2, "v3 async: consolidated writer committed");
+                check(session_file_read(async_path.string(), id, v3back, rv3, error) &&
+                      same(v3back, async_grown2), "v3 async: consolidated WriterPool round trip");
+                set_env("STRATA_V3_MAX_DELTAS", nullptr);
+                set_env("STRATA_L2_WRITER_BUDGET_MIB", nullptr);
+            }
+            set_env("STRATA_SESSION_V3", nullptr);
+        }
+
     fs::remove_all(dir);
     std::printf("conversation_file_test: %d checks passed\n", checks);
     return 0;
+    }
+
 }

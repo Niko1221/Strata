@@ -139,6 +139,48 @@ class Monitor(unittest.TestCase):
         detail = self.request("/api/requests?id=" + summary["id"], headers=auth)[1]
         self.assertNotIn("secret", json.dumps(detail))
 
+    def test_gateway_trace_and_restore_use_exact_rid(self):
+        trace = {"rid": "rid-a", "action": "restorep@cost", "costs": {"A": 1, "B": 2, "C": 3, "D": 4},
+                 "scheduler": {"est_prompt": 100, "decode_est": 20}}
+        self.svc.remember_restore("rid-a", ms=12.5, tokens=100, partial=False, filename="snapshot",
+                                  bytes=4096, action="restore")
+        code, _ = self.request("/v1/chat/completions",
+                               {"messages": [{"role": "user", "content": "hi"}], "max_tokens": 16},
+                               {"X-Strata-Request-Id": "rid-a", "X-Strata-L2-Trace": json.dumps(trace)})
+        self.assertEqual(code, 200)
+        record = self.latest()
+        self.assertEqual(record["rid"], "rid-a")
+        self.assertEqual(record["l2"]["action"], "restorep@cost")
+        self.assertEqual(record["l2"]["scheduler"]["est_prompt"], 100)
+        self.assertEqual(record["restore_ms"], 12.5)
+        self.assertEqual(record["restore_tokens"], 100)
+        self.assertEqual(record["restore_bytes"], 4096)
+        self.assertEqual(record["restore_action"], "restore")
+        metrics = self.request("/metrics")[1]
+        history = next(r for r in metrics["requests"] if r.get("rid") == "rid-a")
+        self.assertEqual(history["l2"]["costs"]["C"], 3)
+        self.svc.remember_restore("some-other-rid", ms=99, tokens=9, partial=True, filename="other")
+        code, _ = self.request("/v1/chat/completions",
+                               {"messages": [{"role": "user", "content": "hi"}], "max_tokens": 16},
+                               {"X-Strata-Request-Id": "rid-b"})
+        self.assertEqual(code, 200)
+        record = self.latest()
+        self.assertEqual(record["rid"], "rid-b")
+        self.assertNotIn("restore_ms", record, "a different rid must not inherit the global last restore")
+
+    def test_verified_prompt_prefix_token_watermarks(self):
+        messages = [{"role": "system", "content": "stable"}, {"role": "user", "content": "one"},
+                    {"role": "assistant", "content": "answer"}, {"role": "user", "content": "two"}]
+        full = self.svc.encode_prompt(messages, None, {}, store=False)
+        verified, rejected = self.svc.verified_prompt_prefixes(messages, None, {}, full, [1, 2, 4, 0, 999, True])
+        self.assertEqual(set(verified), {"1", "2", "4"})
+        self.assertEqual(rejected, [])
+        self.assertEqual(verified["4"], len(full), "a whole request can prefix a longer snapshot")
+        for count in (1, 2):
+            prefix = self.svc.encode_prompt(messages[:count], None, {"add_generation_prompt": False}, store=False)
+            self.assertEqual(verified[str(count)], len(prefix))
+            self.assertEqual(prefix, full[:len(prefix)])
+
     def test_capture_is_bounded_and_eviction_returns_404(self):
         huge = "x" * 262200
         first = self.svc.begin_request("/v1/chat/completions", {"messages": [{"content": huge}]})

@@ -165,6 +165,9 @@ Value read_value(const fs::path& path) {
 // The reclaimable file cache of one group, from its memory.stat, in the two forms the guard uses
 // (cache_credit_from_stat in the header has the rules).  A memory.stat that is missing gives no credit - not an
 // unknown sample.
+// [giphoo] v0.2.15 合并：本地 v2.4.5 的 active_file credit 定制退役 —— 上游 cache_credit_from_stat 已覆盖同一
+// 语义（容器限额下 active_file+inactive_file 全计、shmem 与 unevictable 不计、dirty/writeback 扣减），并多出
+// 容器/非容器分流与 STRATA_MEM_CREDIT_INACTIVE 开关。原实测背景见 incidents（25G clean cache 被误判 0 credit）。
 CacheCredit reclaimable_cache(const fs::path& dir, uint64_t current, bool v1) {
     std::ifstream stat(dir / "memory.stat");
     if (!stat) return {};

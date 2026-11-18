@@ -11,6 +11,7 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 
 #include "strata/core/expert_cache.hpp"
 #include "strata/core/expert_source.hpp"
@@ -29,6 +30,39 @@ namespace strata::kernels::cpu { class ExpertPool; }
 
 namespace strata::prefill {
 
+enum PrefillStage : std::size_t {
+    kPrefillEmbedSteps = 0, kPrefillHcRead, kPrefillGdn, kPrefillQsaProjection, kPrefillQsaIndexer,
+    kPrefillQsaSelect, kPrefillQsaAttention, kPrefillRouterShared, kPrefillHostGrouping, kPrefillGather,
+    kPrefillWaitCopy, kPrefillDequant, kPrefillMoeGateUp, kPrefillMoeDown, kPrefillCombine, kPrefillPle,
+    kPrefillKvStage, kPrefillGdnConvGates, kPrefillGdnRecurrence, kPrefillGdnOutputProjection,
+    kPrefillHcWrite, kPrefillHcDownSilu, kPrefillHcUp, kPrefillHcInject, kPrefillHcMix,
+    kPrefillQsaIndexerGemms, kPrefillQsaPrepare, kPrefillStageCount
+};
+
+inline constexpr std::array<const char*, kPrefillStageCount> kPrefillStageKeys = {
+    "embed_steps_ms", "hc_read_ms", "gdn_ms", "qsa_projection_ms", "qsa_indexer_ms", "qsa_select_ms",
+    "qsa_attention_ms", "router_shared_ms", "host_grouping_ms", "gather_ms", "wait_copy_ms", "dequant_ms",
+    "moe_gate_up_ms", "moe_down_ms", "combine_ms", "ple_gpu_ms", "kv_stage_ms", "gdn_conv_gates_ms",
+    "gdn_recurrence_ms", "gdn_output_projection_ms", "hc_write_ms", "hc_down_silu_ms", "hc_up_ms",
+    "hc_inject_ms", "hc_mix_ms", "qsa_indexer_gemms_ms", "qsa_prepare_ms"
+};
+
+struct PrefillStageLedger {
+    std::array<double, kPrefillStageCount> gpu_ms{};
+    int64_t runs = 0;
+    double wall_ms = 0, host_staging_ms = 0, host_setup_ms = 0, host_sync_ms = 0, host_chunk_ms = 0, host_ple_ms = 0;
+    void add(const PrefillStageLedger& other) {
+        for (size_t i = 0; i < gpu_ms.size(); ++i) gpu_ms[i] += other.gpu_ms[i];
+        runs += other.runs;
+        wall_ms += other.wall_ms;
+        host_staging_ms += other.host_staging_ms;
+        host_setup_ms += other.host_setup_ms;
+        host_sync_ms += other.host_sync_ms;
+        host_chunk_ms += other.host_chunk_ms;
+        host_ple_ms += other.host_ple_ms;
+    }
+};
+
 struct PrefillStats {
     int64_t tokens = 0;
     int64_t chunks = 0;
@@ -43,6 +77,7 @@ struct PrefillStats {
     double cpu_share_balanced = 0;  ///< the balanced share as last measured (the default share's EMA of CPU / GPU ms per expert)
     int64_t cpu_share_readings = 0; ///< how many measurements that balance has taken since the start
     double ms_ple = 0;
+    PrefillStageLedger stage;
 };
 
 }  // namespace strata::prefill
@@ -142,6 +177,8 @@ public:
     static void log_plan(int64_t n, int64_t chunk, int stages);
     /// The expert blobs this stage and the later ones copied host -> device so far (PrefillStats::experts_streamed).
     int64_t chain_experts_streamed() const;
+    /// Cumulative Phase-B GPU/host stage ledger across this stage chain. DONE exports request deltas.
+    PrefillStageLedger chain_stage_ledger() const;
     /// #340: the streamed ring's slot count for chunks that stream every expert, instead of the pinned-share rule
     /// (0 = that rule). Set before any `bytes_needed`/`init` (both count the ring); STRATA_PREFILL_RING still wins.
     static void set_ring_override(int slots);

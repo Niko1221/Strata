@@ -59,6 +59,12 @@ int main() {
     check(auto_conversation_cache_mib(GiB(40), 2560) == 8192, "capped at 8 GiB");
     check(auto_conversation_cache_mib(GiB(1000), 0) == 8192, "a big server: still the cap");
     check(auto_conversation_cache_mib(GiB(40), 1000000) == 0, "a floor above the RAM: off, no underflow");
+    check(conversation_cache_after_save_reserve(32768, 4096) == 28672,
+          "the independent session-save reserve is carved out of the parked-cache budget");
+    check(conversation_cache_after_save_reserve(2048, 4096) == 0,
+          "a reserve larger than the cache leaves no parked budget");
+    check(conversation_cache_after_save_reserve(32768, 0) == 32768,
+          "zero reserve leaves the cache unchanged");
     // Test the real provider without assuming any particular amount of free RAM.
     const auto available = available_host_bytes();
     check(!available || conversation_memory_admit(available, 0, 0), "provider returns bytes or unknown");
