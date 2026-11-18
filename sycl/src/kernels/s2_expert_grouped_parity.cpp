@@ -28,6 +28,7 @@
 #include <dpct/dpct.hpp>
 #include "strata/kernels/f16_bits.hpp"
 #include "strata/kernels/s2_expert_grouped.hpp"
+#include "strata/core/geometry.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -45,13 +46,13 @@ namespace k = strata::kernels;
 
 namespace {
 // The blob geometry, `cpu/expert.hpp`'s (restated as in the kernel).
-constexpr int H = 2560, FF = 640, NCH_GU = H / 32, NCH_D = FF / 32;
+constexpr int H = strata::core::kCompiledGeometry.n_embd, FF = strata::core::kCompiledGeometry.n_ff, NCH_GU = H / 32, NCH_D = FF / 32;   // the compiled shape (Q4-SYCL; Flash-Next 2560 x 640)
 constexpr size_t ROW_GU = H / 4, ROW_D = FF / 4, SC_GU = H / 64, SC_D = FF / 64;
 constexpr size_t O_D_CODES = 2ull * FF * ROW_GU;
 constexpr size_t O_GU_SCALES = O_D_CODES + (size_t) H * ROW_D;
 constexpr size_t O_D_SCALES = O_GU_SCALES + 2ull * FF * SC_GU * 2;
 constexpr size_t BLOB = O_D_SCALES + (size_t) H * SC_D * 2;
-static_assert(BLOB == 1382400, "the Q2_0 expert blob is 1,382,400 bytes");
+static_assert(H != 2560 || FF != 640 || BLOB == 1382400, "the Q2_0 expert blob of Flash-Next's 2560 x 640 is 1,382,400 bytes");
 constexpr size_t XROW = (size_t) NCH_GU * 34;   // one token's activation row of block_q8_0
 
 int g_fail = 0;

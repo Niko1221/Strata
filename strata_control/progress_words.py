@@ -18,6 +18,12 @@ from dataclasses import dataclass
 STEP_RE = re.compile(r"=== Step (\d+): (.+?) ===")
 CHECKING_RE = re.compile(r"^\s*checking\b.*\bSHA-256\b", re.I)
 PROGRESS_RE = re.compile(r"\s*(\S.*?): +([\d.]+) / ([\d.]+) GB \((\d+)%\)")
+try:                                                     # the network rule's own line and words (one place for them)
+    from strata_control.netpolicy import WAITING_RE, WORDS as _NET_WORDS
+    WAITING_WORDS = _NET_WORDS["waiting"]
+except ImportError:                                      # an older strata_control beside a newer reader: never waiting
+    WAITING_RE = re.compile(r"(?!)")
+    WAITING_WORDS = ""
 
 
 @dataclass(frozen=True)
@@ -51,6 +57,10 @@ def describe(step: int | None, lines: list[str], download: dict | None = None) -
     download figure in them (`{"file": ..., "percent": ...}` or None)."""
     recent = _after_last_step(lines)
     dl_file = str((download or {}).get("file", "")).lower()
+    last_line = next((ln for ln in reversed(recent) if ln.strip()), "")
+    waiting = WAITING_RE.match(last_line)
+    if waiting:                                          # a server has not answered yet (strata_control/netpolicy.py prints this line)
+        return Words("waiting", WAITING_WORDS.format(host=waiting.group("host"), seconds=waiting.group("seconds")))
     if step is None:
         return Words("working", "Getting your model ready")
     if step <= 2:
@@ -90,8 +100,10 @@ def describe(step: int | None, lines: list[str], download: dict | None = None) -
             return Words("draft", "Preparing the draft layer")
         if "mtp_fetch.py" in low or "mtp draft layer:" in low or "of mtp tensors" in low:
             return Words("draft_download", "Downloading the draft layer (about 5 GB; it makes answers about twice as fast)")
-        if "mtp_rt.py" in low or "mtp_pack.py" in low or "[ok] model prepared" in low:
+        if "mtp_rt.py" in low or "mtp_pack.py" in low:
             return Words("draft", "Preparing the draft layer")
+        if "[ok] model prepared" in low or not marker:      # nothing is being prepared (the model is prepared, or step 6 has only begun) and no draft-layer step runs:
+            return Words("verify", "The model files are on this computer; checking them")    # words that claim no preparation (0.2.14.1 check: no "(one time)" on every launch)
         if "strata_pack.py" in low or "converting the q2_0 experts" in low:
             return Words("pack", "Packing the model's experts for your processor (one time, a few minutes)")
         if "pack_index.py" in low:

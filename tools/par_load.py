@@ -23,7 +23,7 @@ Labelling for the paired analysis (tools/par_analyze.py): --arm A|B --pair N --l
 `blocks` list holds one entry per (workload, level) with the headline metrics.  See Desktop 30thOctober results/par/HARNESS.md.
 Prompts are deterministic from --seed and carry a unique nonce, so the prompt cache cannot help unless W6 asks for a shared prefix.
 """
-import argparse, http.client, json, math, os, platform, random, statistics, sys, threading, time, urllib.parse, urllib.request
+import argparse, http.client, json, os, platform, random, statistics, sys, threading, time, urllib.parse, urllib.request
 
 HARNESS_VERSION = "1.0"
 WORDS = ("time year people way day man thing woman life child world school state family student group country problem hand "

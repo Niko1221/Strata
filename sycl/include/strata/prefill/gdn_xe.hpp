@@ -8,8 +8,15 @@
 #include <sycl/ext/intel/experimental/grf_size_properties.hpp>
 #include <cstdint>
 
+#include "strata/core/geometry.hpp"
+
 namespace strata::prefill::detail {
-constexpr int GDN_XE_S = 128, GDN_XE_HK = 16, GDN_XE_HV = 48, GDN_XE_C = 10240;
+// the GDN shape the engine is compiled for (core/geometry.hpp): 128 / 16 / 48 / 10240 for Flash-Next.  The kernel is written for the
+// state width 128 and 16 key heads (geometry_checks.hpp holds both fixed); the value heads (any multiple of 16) and the conv channels follow.
+constexpr int GDN_XE_S = strata::core::kCompiledGeometry.ssm_state_size, GDN_XE_HK = strata::core::kCompiledGeometry.ssm_k_heads,
+              GDN_XE_HV = strata::core::kCompiledGeometry.ssm_v_heads, GDN_XE_C = strata::core::kCompiledGeometry.ssm_conv_channels;
+static_assert(GDN_XE_S == 128 && GDN_XE_HK == 16 && GDN_XE_HV % GDN_XE_HK == 0 && GDN_XE_C == 2 * GDN_XE_S * GDN_XE_HK + GDN_XE_S * GDN_XE_HV,
+              "gdn_xe: the Xe GDN recurrence is written for state width 128 and 16 key heads");
 constexpr int GDN_XE_CB = 16, GDN_XE_NCB = GDN_XE_S / GDN_XE_CB;
 constexpr int GDN_XE_NT = GDN_XE_CB * 4;
 

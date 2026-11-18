@@ -11,7 +11,7 @@
 #   3. A Python 3.10+ found on PATH          — a developer convenience, never a requirement
 #
 # The private runtime is a *relocatable* CPython plus this distribution's dependencies, staged into
-# `python/` beside this script. `docs/work/QUALIFICATION-KIT.md` gives the staging command. When it
+# `python/` beside this script. `history/docs/work/QUALIFICATION-KIT.md` gives the staging command. When it
 # is absent the launcher still works anywhere a 3.10+ interpreter exists, and says so clearly rather
 # than failing obscurely.
 set -eu

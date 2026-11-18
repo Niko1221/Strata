@@ -11,6 +11,7 @@
 #include "strata/core/sm120_series.hpp"
 #include "strata/core/dispatch_stats.hpp"
 #include "strata/kernels/gfx_arch.hpp"
+#include "strata/kernels/i8_expert_rule.hpp"
 #include "strata/kernels/dp4a.hpp"
 #include "strata/kernels/q8_1_finite.hpp"
 #include "s26_tsum.cuh"
@@ -25,6 +26,7 @@
 #include "tq_lut_i8.cuh"       // int8 copy of the trellis codebook (one global scale) for the dp4a dot
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <utility>
@@ -435,13 +437,16 @@ __device__ __forceinline__ float vec_dot_q5_K_q8_1(const void* __restrict__ vbq,
 // of the ORIGINAL activations.  That is ggml-cpu's convention (its q8_1 `s` is d * sum(q)) and the one the K-quant
 // mins above use; the scaled and the min term then see the same activation (eddoursul/Strata measured 1.1-1.2%
 // against 1.9% relative error per expert).  Result: sumi * (d5 * d8) + sumu * (m5 * d8).
-// Q5_0: llama.cpp's integer chain verbatim (vecdotq.cuh vec_dot_q5_0_q8_1_impl) -- symmetric (one delta, no
-// learned min), so unlike Q5_1 there is no min-term rounding choice to make: the constant -16 per-weight offset
-// is accounted for via the q8_1 block's `ds.y` (sum of the ORIGINAL activations), exactly as upstream.
+// Q5_0: llama.cpp's integer chain (vecdotq.cuh vec_dot_q5_0_q8_1_impl), but the constant -16 per-weight offset multiplies
+// the sum of the QUANTIZED activations (dp4a with 0x01010101, times d8), like the Q5_1 and Q4_0 paths and ggml-cpu's q8_0
+// dot, instead of the q8_1 block's `ds.y` (the sum of the ORIGINAL activations, upstream CUDA).  Round 0214 (owner's yes,
+// 11-05): the original sum does not see the activations' rounding, which the experts' SwiGLU outputs (not zero-mean)
+// make large: the whole-expert error with Q5_0 down was 2.1e-2 .. 3.1e-2 against 1.2e-2 for every other down type, and the
+// GPU now agrees with the CPU path (UD-IQ4_XS, UD-Q3_K_XL).  Result: d5 * d8 * (sumi - 16 * sumu).
 __device__ __forceinline__ float vec_dot_q5_0_q8_1(const void* __restrict__ vbq, const block_q8_1* __restrict__ bq8_1,
                                                    const int& kbx, const int& iqs) {
     const block_q5_0* bq5_0 = (const block_q5_0*) vbq + kbx;
-    int sumi = 0;
+    int sumi = 0, sumu = 0;
 #pragma unroll
     for (int i = 0; i < VDR_Q5_0; ++i) {
         const int vl = get_int_b2(bq5_0->qs, iqs + i);
@@ -459,11 +464,11 @@ __device__ __forceinline__ float vec_dot_q5_0_q8_1(const void* __restrict__ vbq,
         vi1 |= (vh << 2) & 0x00100000;
         vi1 |= (vh << 9) & 0x10000000;
         sumi = ggml_cuda_dp4a(vi1, u1, sumi);
+        sumu = ggml_cuda_dp4a(0x01010101, u1, ggml_cuda_dp4a(0x01010101, u0, sumu));
     }
     const float d5 = __half2float(bq5_0->d);
     const float d8 = __low2float(bq8_1->ds);
-    const float s8 = __high2float(bq8_1->ds);
-    return d5 * (sumi * d8 - (16.0f * VDR_Q5_0 / QI5_0) * s8);
+    return d5 * d8 * (float) (sumi - 16 * sumu);
 }
 // Q4_0 (plain llama-quantize Q4_0 files, e.g. bartowski's: gate/up and most down projections): the codes are centred
 // (q - 8 as signed bytes) before the dot, the exact integer form ggml-cpu's q4_0 x q8_0 dot uses, rather than
@@ -6231,9 +6236,165 @@ void native_expert_set_mode(int mode, int phase) {
 
 namespace {
 bool g_grouped_v1 = env_on("STRATA_GROUPED_V1");
+#include "i8_expert.cuh"   // OWN-I8: our own int8 dot-product kernels (native_expert_i8 below)
+// OWN-I8: STRATA_EXPERT_I8, read once: 1 = on, 0 = off, -1 = not set (then the card class decides: i8_expert_rule.hpp)
+std::atomic<bool> g_i8_mmq_free{false};   // set before main by a build without MMQ (native_expert_i8_set_mmq_free)
+int i8_switch_raw() {
+    static const int s = strata::kernels::i8_switch_parse(std::getenv("STRATA_EXPERT_I8"));
+    return s;
+}
+int i8_switch_state() { return strata::kernels::i8_switch_effective(i8_switch_raw(), g_i8_mmq_free.load(std::memory_order_relaxed)); }
+// the current device's gcnArchName, read once per device (a HIP card; "" on a CUDA card)
+const char* i8_device_gcn() {
+#if defined(__HIPCC__)
+    static std::mutex mu;
+    static char names[16][64];
+    static bool done[16];
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 16) return "";
+    std::lock_guard<std::mutex> lk(mu);
+    if (!done[dev]) {
+        cudaDeviceProp p{};
+        if (cudaGetDeviceProperties(&p, dev) == cudaSuccess) std::snprintf(names[dev], sizeof(names[dev]), "%s", p.gcnArchName);
+        done[dev] = true;
+    }
+    return names[dev];
+#else
+    return "";
+#endif
+}
 }  // namespace
 
 void native_grouped_set_v1(bool v1) { g_grouped_v1 = v1; }
+
+size_t native_expert_i8_smem_limit() noexcept { return i8_smem_limit(); }
+
+NativeExpertI8Launch native_expert_i8_last_launch() noexcept {
+    return {g_i8_last.tile, g_i8_last.gu_bytes, g_i8_last.down_bytes, g_i8_last.gu_err, g_i8_last.down_err};
+}
+
+int native_expert_i8_probe_launch(size_t bytes) noexcept {
+#if !defined(__HIPCC__)
+    return i8_smem_launches(bytes) ? 1 : 0;
+#else
+    (void) bytes;
+    return -1;
+#endif
+}
+
+bool native_expert_i8_prompt(const NativeExpertLayout& L, int64_t group_entries) noexcept {
+    const int st = i8_switch_state();
+    if (st == 0 || group_entries < kI8MinGroupEntries) return false;   // before any device query
+    return i8_expert_takes(st, i8_device_gcn(), group_entries, native_expert_i8_supported(L));
+}
+
+bool native_expert_i8_by_default() noexcept { return i8_expert_class_default(i8_switch_raw(), i8_device_gcn(), g_i8_mmq_free.load(std::memory_order_relaxed)); }
+void native_expert_i8_set_mmq_free() noexcept { g_i8_mmq_free.store(true, std::memory_order_relaxed); }
+// The P100 class rule (i8_expert_rule.hpp, i8_chunk_default_allows; declared in prefill.cpp, the one caller): is the int8 DEFAULT of this process the one that gives way to the FP16
+// path from the stream floor up?  True only on a Tesla P100 (compute capability 6.0) in a build without MMQ with STRATA_EXPERT_I8 not set; a set value, a build with MMQ, any other
+// card and a HIP card: false (no size limit).
+bool native_expert_i8_floor_gated() noexcept {
+    if (i8_switch_raw() != -1 || !g_i8_mmq_free.load(std::memory_order_relaxed)) return false;   // before any device query
+#if !defined(__HIPCC__)
+    int dev = 0, major = 0, minor = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess) return false;
+    cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev);
+    cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev);
+    return major == 6 && minor == 0;
+#else
+    return false;
+#endif
+}
+
+// OWN-I8 few-rows route: STRATA_I8_FEWROWS read once (not set = the card's class default, 0 = off, N = a limit of N rows per expert); the class default asks the
+// current device's compute capability (a HIP card has none that matters: the CUDA rule's 10)
+int native_expert_i8_few_rows_limit() noexcept {
+    static const char* const text = std::getenv("STRATA_I8_FEWROWS");
+    if (i8_switch_state() == 0) return 0;
+    int major = 0, minor = 0;
+#if !defined(__HIPCC__)
+    int dev = 0;
+    if (cudaGetDevice(&dev) == cudaSuccess) {
+        cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev);
+        cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev);
+    }
+#endif
+    return i8_fewrows_limit(text, i8_fewrows_class_default(major, minor));
+}
+
+size_t native_expert_i8_scratch_bytes(int64_t cap_entries, int64_t cap_groups, int64_t n_ff) {
+    const size_t hqb = ((size_t) cap_entries * (size_t) (n_ff / 32) * sizeof(block_q8_1) + 255) & ~(size_t) 255;   // as native_expert_i8 carves it
+    return hqb + (size_t) (cap_groups + 1) * sizeof(int32_t);
+}
+
+bool native_expert_i8_supported(const NativeExpertLayout& L) noexcept {
+    return i8_gu_type(L.gu_type) && i8_d_type(L.d_type) && !L.gu_nib && L.tail_off == 0 && L.had_block == 0 && L.n_embd % 256 == 0 &&
+           L.n_ff % 128 == 0 && ((L.d_type != 13 && L.d_type != 14) || L.n_ff % 256 == 0) && L.n_embd % 64 == 0 && L.bytes < ((size_t) 1 << 32) &&   // 32-bit byte offsets inside one expert's blob
+           i8_smem_bytes(L.gu_type, L.d_type, 2) <= i8_smem_limit();                  // the smallest tile fits the device's shared memory per block
+}
+
+void native_expert_i8_quantize(const float* x, int64_t n_rows, int64_t n_cols, void* y, void* stream) {
+    const long long n = (long long) n_rows * n_cols;
+    if (n <= 0) return;
+    if (n_cols % 32 != 0) { std::fprintf(stderr, "native_expert_i8_quantize: %lld columns\n", (long long) n_cols); std::exit(1); }
+    i8_quantize_kernel<<<(unsigned) ((n + 255) / 256), 256, 0, (cudaStream_t) stream>>>(x, (block_q8_1*) y, n);
+    check("native_expert_i8_quantize");
+}
+
+void native_expert_i8(const NativeExpertLayout& L, const unsigned long long* grp_ptr, const int32_t* grp_start, const int32_t* n_groups,
+                      const int32_t* ent_dst, const int32_t* ent_tok, int64_t cap_groups, int64_t cap_entries, const void* x_q8_1,
+                      void* scratch, float* out, void* stream) {
+    if (cap_groups <= 0 || cap_entries <= 0) return;
+    if (!native_expert_i8_supported(L)) {
+        std::fprintf(stderr, "native_expert_i8: gate/up type %d, down type %d at %lld x %lld is not covered\n", L.gu_type, L.d_type,
+                     (long long) L.n_embd, (long long) L.n_ff);
+        std::exit(1);
+    }
+    if ((size_t) cap_entries * (size_t) (std::max(L.n_embd, L.n_ff) / 32 * 36) >= ((size_t) 1 << 32)) {   // 32-bit byte offsets of the activation rows
+        std::fprintf(stderr, "native_expert_i8: %lld entries at %lld x %lld exceed 4 GiB of activation rows\n", (long long) cap_entries,
+                     (long long) L.n_embd, (long long) L.n_ff);
+        std::exit(1);
+    }
+    cudaStream_t s = (cudaStream_t) stream;
+    // scratch: the H blocks (q8_1, one per 32 features and entry), then the tile table (cap_groups + 1 ints)
+    block_q8_1* hq = (block_q8_1*) scratch;
+    const size_t hqb = ((size_t) cap_entries * (size_t) (L.n_ff / 32) * sizeof(block_q8_1) + 255) & ~(size_t) 255;
+    int32_t* tile_off = (int32_t*) ((uint8_t*) scratch + hqb);
+    int tm = i8_env_int("STRATA_I8_TM", 0);   // research: the tile code (2, 3 or 4 rows of 16 entries per thread -> 32, 48 or 64 entries; 8 = variant B, 128 entries)
+    const int64_t avg = cap_entries / cap_groups;
+    const bool b_ok = L.n_embd % 128 == 0 && L.n_ff % 64 == 0;
+    if (tm <= 0) tm = (avg >= 96 && b_ok) ? 8 : (int) std::max<int64_t>(2, std::min<int64_t>(4, (avg + 8) / 16));
+    tm = tm <= 2 ? 2 : tm == 3 ? 3 : tm >= 8 && b_ok && i8_tile8_type(L.gu_type) && i8_tile8_type(L.d_type) ? 8 : 4;   // (the K-quants and Q5_1 have no tile 8)
+    const size_t smem_limit = i8_smem_limit();   // a tile that does not fit the device's shared memory per block falls to the next smaller one
+    while (tm > 2 && i8_smem_bytes(L.gu_type, L.d_type, tm) > smem_limit) tm = tm == 8 ? 4 : tm - 1;
+    const int bm = tm == 8 ? 128 : 16 * tm;
+    i8_tiles_kernel<<<1, 256, 0, s>>>(grp_start, n_groups, bm, tile_off);
+    I8Args a{grp_ptr, grp_start, n_groups, tile_off, ent_tok, ent_dst, (const block_q8_1*) x_q8_1, hq, out, L,
+             cap_entries / bm + cap_groups, i8_env_int("STRATA_I8_BISECT", 0), i8_n8_takes(i8_switch_parse(std::getenv("STRATA_I8_N8")), tm)};   // 8-entry slices: tile 2 by default, 2-4 with STRATA_I8_N8=1, none with 0
+    switch (L.gu_type) {
+        case 16: i8_launch<16, true>(tm, a, s); break;
+        case 17: i8_launch<17, true>(tm, a, s); break;
+        case 18: i8_launch<18, true>(tm, a, s); break;
+        case 21: i8_launch<21, true>(tm, a, s); break;
+        case 23: i8_launch<23, true>(tm, a, s); break;
+        case 29: i8_launch<29, true>(tm, a, s); break;
+        case 42: i8_launch<42, true>(tm, a, s); break;
+        case 12: i8_launch<12, true>(tm, a, s); break;
+        case 13: i8_launch<13, true>(tm, a, s); break;
+        case 14: i8_launch<14, true>(tm, a, s); break;
+        case 8: i8_launch<8, true>(tm, a, s); break;
+        default: i8_launch<22, true>(tm, a, s); break;
+    }
+    check("native_expert_i8/gu");
+    if (L.d_type == 20) i8_launch<20, false>(tm, a, s);
+    else if (L.d_type == 6) i8_launch<6, false>(tm, a, s);
+    else if (L.d_type == 8) i8_launch<8, false>(tm, a, s);
+    else if (L.d_type == 7) i8_launch<7, false>(tm, a, s);
+    else if (L.d_type == 13) i8_launch<13, false>(tm, a, s);
+    else if (L.d_type == 14) i8_launch<14, false>(tm, a, s);
+    else i8_launch<42, false>(tm, a, s);
+    check("native_expert_i8/down");
+}
 
 void native_expert_set_expdec(int on) { g_expdec = on < 0 ? -1 : (on ? 1 : 0); }
 int native_expert_expdec() { return expdec_mode(); }
@@ -6272,6 +6433,8 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
     if (cap_groups <= 0 || cap_entries <= 0) return;
     strata::dispatch::kernel(strata::dispatch::kExpert, 0, L.gu_type, (int) L.n_embd, (int) L.n_ff, L.d_type);   // BW-MEASURE: one grouped expert call
     if (L.n_ff % 32 != 0) { std::fprintf(stderr, "native_expert_grouped: n_ff %lld\n", (long long) L.n_ff); std::exit(1); }
+    // (OWN-I8: this fallback no longer hands its calls to native_expert_i8: that kernel reads its own activation image, native_expert_i8_quantize's, and this call's rows are q8_1
+    //  blocks.  The prompt path's MMQ groups, where the kernel was measured, quantize the image themselves.)
     cudaStream_t s = (cudaStream_t) stream;
     const size_t f = (size_t) cap_entries * (size_t) L.n_ff * sizeof(float), fa = (f + 255) & ~(size_t) 255;
     float* gate = (float*) scratch;
@@ -6302,18 +6465,25 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
     }
     // stream B: UD-Q4_K_XL's Q4_K / Q5_K gate/up and Q5_1 / Q8_0 down (see S27 above)
     // MODEL-UPDATE: on by default on gfx12 (every output the old kernels' bits; R9700, UD-Q4_K_XL decode, 5 interleaved
-    // pairs: story +1.2% 5/5, code +0.8% 5/5, after 6K +0.2% 4/5); STRATA_EXPERT_V2K=0 turns it off, =1 turns it on
-    // elsewhere (not measured on other cards)
+    // pairs: story +1.2% 5/5, code +0.8% 5/5, after 6K +0.2% 4/5) and, since round 0215, on Windows gfx1151 (below);
+    // STRATA_EXPERT_V2K=0 turns it off, =1 turns it on elsewhere (not measured on other cards)
     static const bool v2k = [] {
         const char* v = std::getenv("STRATA_EXPERT_V2K");
         if (v != nullptr && v[0] != '\0') return v[0] == '1';
 #if defined(__HIPCC__) && !defined(STRATA_HIP_GFX906)
         int dev = 0;
         cudaDeviceProp p;
-        const bool g12 = cudaGetDevice(&dev) == cudaSuccess && cudaGetDeviceProperties(&p, dev) == cudaSuccess &&
-                         strata::kernels::gfx_arch_is_gfx12(p.gcnArchName);
+        const bool ok = cudaGetDevice(&dev) == cudaSuccess && cudaGetDeviceProperties(&p, dev) == cudaSuccess;
+        const bool g12 = ok && strata::kernels::gfx_arch_is_gfx12(p.gcnArchName);
+#if defined(_WIN32)
+        // round 0215 (Strix Halo, Windows gfx1151, UD-Q4_K_XL, DFlash2 serve, 16 request pairs): window time -4.0 % (16 of 16 pairs faster,
+        // mean x1.040, range x1.020-1.056, the same window and token count in every pair); STRATA_EXPERT_V2K=0 turns it off
+        const bool strix = ok && strata::kernels::gfx_arch_is_gfx1151(p.gcnArchName);
+#else
+        const bool strix = false;
+#endif
         (void) cudaGetLastError();
-        return g12;
+        return g12 || strix;
 #else
         return false;
 #endif

@@ -36,7 +36,6 @@ import json
 import os
 import platform
 import re
-import shutil
 import socket
 import statistics
 import subprocess
@@ -65,17 +64,25 @@ BURST_MAX_TOKENS = 128
 
 
 # --------------------------------------------------------------------------------------------------------- redaction
+def usable_key(value) -> str:
+    """An API key as a client may send it: "" for nothing, blanks, or "none" in any case (the server's word for no key, #4483)."""
+    if isinstance(value, (list, tuple)):                # a config may list several keys: the first one is the client's
+        value = value[0] if value else None
+    text = "" if value is None else str(value).strip()
+    return "" if text.lower() == "none" else text
+
+
 def redactor(extra: list[str] = (), key: str = ""):
     """-> f(text) -> text with this machine's home folders, user and host names, the Strata folder, IP addresses and the
     API key replaced.  Applied to everything that is written or printed from the server's or the machine's own text."""
     subs: list[tuple[re.Pattern, str, int]] = []
 
-    def add(value, label, word=False):
+    def add(value, label, word=False, exact=False):
         if value and len(str(value)) >= 4:
             v = str(value)
             for form in sorted({v, v.replace("\\", "/"), v.replace("/", "\\")}, key=len, reverse=True):
                 pat = re.escape(form)
-                subs.append((re.compile(r"(?<![\w-])" + pat + r"(?![\w-])" if word else pat, re.I), label, len(form)))
+                subs.append((re.compile(r"(?<![\w-])" + pat + r"(?![\w-])" if word else pat, 0 if exact else re.I), label, len(form)))
 
     add(ROOT, "<strata>")
     add(Path.home(), "<home>")
@@ -88,7 +95,7 @@ def redactor(extra: list[str] = (), key: str = ""):
     add(platform.node(), "<host>", True)
     for x in extra:
         add(x, "<private>", True)
-    add(key, "<key>")
+    add(usable_key(key), "<key>", word=True, exact=True)
     subs.sort(key=lambda s: -s[2])      # by the text that is replaced: the word wrappers would make a short user name outrank the folder holding it
     path_user = re.compile(r"(?i)([A-Za-z]:)?([\\/])(Users|home)([\\/])(?!<)[^\\/\s\"':;,]+")
     ip4 = re.compile(r"\b(?:192\.168|10\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])|100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])|169\.254)\.\d{1,3}\.\d{1,3}\b")
@@ -1059,7 +1066,7 @@ def main(argv=None) -> int:
                   "or give --url of a running server.", file=sys.stderr)
             return 2
         cfg = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
-    key = a.api_key or ((cfg or {}).get("api_key") or "")
+    key = usable_key(a.api_key) or usable_key((cfg or {}).get("api_key"))
     if a.url:
         base = a.url.rstrip("/")
     else:

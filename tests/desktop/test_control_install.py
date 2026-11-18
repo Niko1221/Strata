@@ -73,6 +73,27 @@ class ControlModeTests(unittest.TestCase):
             S.run([sys.executable, str(tool), "--help"], check=False)
         runner.assert_called_once()
 
+    def test_the_mac_preparation_tools_in_metal_tools_may_run_and_nothing_else_beside_them(self):
+        # mac_repack() and mac_stream run metal/tools/metal_repack.py and stream_experts.py (mac_tools_dir() = ROOT/metal/tools): the bundled Mac tools, like tools/*.py
+        S = self.S
+        done = subprocess.CompletedProcess([], 0)
+        for tool in ("metal_repack.py", "stream_experts.py"):
+            with self.subTest(allowed=tool), mock.patch.object(S.subprocess, "run", return_value=done) as runner:
+                S.run([sys.executable, str(ROOT / "metal" / "tools" / tool), "--help"], check=False)
+                runner.assert_called_once()
+        for refused in (
+            [sys.executable, "-m", "metal.tools.metal_repack"],                      # -m is never allowed
+            ["python3", str(ROOT / "metal" / "tools" / "metal_repack.py")],          # another interpreter
+            [sys.executable, str(ROOT / "metal" / "kernels" / "evil.py")],           # another folder of the bundle
+            [sys.executable, str(ROOT / "metal" / "evil.py")],                       # metal/ itself
+            [sys.executable, str(self.home / "metal" / "tools" / "metal_repack.py")],  # a copy in the install folder
+            [sys.executable, str(ROOT / "metal" / "tools" / ".." / ".." / "setup.py")],
+            [sys.executable],
+        ):
+            with self.subTest(refused=refused), mock.patch.object(S.subprocess, "run", side_effect=AssertionError("ran")):
+                with self.assertRaises(S.acquisition.AcquisitionRefused):
+                    S.run(refused)
+
     def test_no_package_is_installed(self):
         S = self.S
         with mock.patch.object(S, "run", side_effect=AssertionError("pip")), \
@@ -84,10 +105,6 @@ class ControlModeTests(unittest.TestCase):
 
     def test_the_engine_is_the_component_and_a_missing_one_does_not_stop_the_download(self):
         S = self.S
-        llama = self.home / "third_party" / "llama.cpp"
-        (llama / "ggml").mkdir(parents=True)
-        (llama / "ggml" / "CMakeLists.txt").write_text("", encoding="utf-8")
-        (llama / "gguf-py").mkdir()
         empty = Path(self.tmp.name) / "components"
         empty.mkdir()
         gpu = {"index": 0, "vram_gb": 12.0}
@@ -96,7 +113,8 @@ class ControlModeTests(unittest.TestCase):
                 mock.patch.object(S, "build_engine", side_effect=AssertionError("built")), \
                 mock.patch.object(S, "get_prebuilt", side_effect=AssertionError("fetched an engine")):
             found, eng, meta, libs, chosen, vision = S.engine_step(mock.Mock(build=False, prebuilt=None), gpu, False, [], 13, "gpu")
-        self.assertEqual(found.resolve(), llama.resolve())
+        self.assertIsNone(found, "no llama.cpp tree: the engine is the component, gguf-py is vendored")
+        self.assertFalse((self.home / "third_party" / "llama.cpp").exists(), "nothing is fetched into the install folder")
         self.assertEqual(libs, [])
         self.assertEqual(vision, "none")                                   # images are not in the first app release
         self.assertEqual(meta["source"], "local")
@@ -154,7 +172,8 @@ class ControlModeTests(unittest.TestCase):
         finally:
             sys.path.pop(0)
         tools = stage.local_imports(ROOT, stage.INSTALLER_TOOLS)
-        for need in ("strata_mcp", "iq_pack", "strata_pack", "canonical_xcheck", "pack_layer", "gguf_reader", "gguf_writer", "_paths"):
+        for need in ("strata_mcp", "iq_pack", "strata_pack", "canonical_xcheck", "pack_layer", "gguf_reader", "gguf_writer", "_paths",
+                     "strata_gguf", "strata_quants", "strata_quant_tables"):
             self.assertIn(need, tools)
         out = Path(self.tmp.name) / "control"
         out.mkdir()

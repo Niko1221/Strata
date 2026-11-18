@@ -17,6 +17,9 @@
 #endif
 
 #include <cublas_v2.h>
+#if !FNX_HIP
+#include <cublasLt.h>
+#endif
 #include <cuda.h>
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
@@ -27,7 +30,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <set>
+#include <vector>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -345,6 +350,15 @@ struct Engine::Pf {
     std::vector<std::function<void()>> post;
     int dev = 0;
     unsigned seq = 0;
+#if FNX_HIP
+    // FNX_PF_PEER small-chunk sum (pf_common.cuh k_pfa_*): this card's mailbox [2 sets][NCARD senders][a2a_rows * N] f32 and flags [NCARD], the peers' pointers, the push kernel's counter
+    int a2a_rows = 0;
+    float4* a2a_box = nullptr;
+    unsigned* a2a_flag = nullptr;
+    unsigned* a2a_cnt = nullptr;
+    float4** a2a_peer_box_d = nullptr;     // device arrays of the peers' pointers (kernel arguments)
+    unsigned** a2a_peer_flag_d = nullptr;
+#endif
     // attention partials (attn_prompt's blocks per owner card) and those received from the other cards; each card's
     // receive slots and flags (slot k: from card + k + 1). FNX_PF_ATTN_DEC=1: the decode attention
     bool attn_dec = false;
@@ -386,6 +400,45 @@ struct Engine::Pf {
     bool overlap = false;
     cudaStream_t ring_st = nullptr;
     cudaEvent_t ev_go[Engine::PF_PASS], ev_ra[Engine::PF_PASS], ev_rf[Engine::PF_PASS];
+    // FNX_PF_HCSPLIT: the hyper-connection read of a chunk is done on one card's part of the rows each (the part its ring sum finishes),
+    // and the cards swap the resulting `mixed` rows (f32) through host memory on the copy engines, in hg_pieces pieces. A chunk keeps its own
+    // `mixed` (mixedk): the reads of the pass's chunks come before their heavy halves. hg_in: the landing place of the other card's rows (two
+    // sets by the swap's number), hg_flags[set][piece] set by the other card's stream (the swap's number); rg_*: the same for the residual
+    // streams R at the end of the pass (the draft layer reads every row of R).
+    bool down_lt = false;                // the cublasLt algorithm was found (NVIDIA only; HIP never sets it, but the hyper-connection checks read it)
+#if !FNX_HIP
+    // the hyper-connection down GEMM (320 x 10240, K = 10240) through cublasLt with ONE algorithm whose rows do not depend on the number of rows
+    // (found at start by pf_lt_calibrate: equal to cublasGemmEx's choice at 4096 rows, and the same rows at 2048); FNX_PF_HCSPLIT only. cublasGemmEx
+    // picks split-K 5 at 4096 rows and a k16 kernel at 2048, which rounds differently
+    struct LtShape {
+        int n = 0;
+        cublasLtMatmulDesc_t desc = nullptr;
+        cublasLtMatrixLayout_t a = nullptr, b = nullptr, c = nullptr;
+        bool ok = false;
+    };
+    cublasLtHandle_t lt = nullptr;
+    cublasLtMatmulAlgo_t down_algo;
+    void* lt_ws = nullptr;
+    size_t lt_ws_bytes = 0;
+    std::vector<LtShape> lt_shapes;
+#endif
+    bool hcs = false;
+    int hcs_mode = 0;                    // FNX_PF_HCSPLIT=1: only passes of whole 4096-row chunks are split (bit-identical to the unsplit path when the calibration found an algorithm); 2: any chunk of 512 rows or more (the last bits differ)
+    int hg_pieces = 4;
+    float* mixedk[Engine::PF_PASS] = {};
+    float* hg_in[2] = {};
+    unsigned* hg_flags[2] = {};
+    float* nhg_in[2] = {};
+    unsigned* nhg_flags[2] = {};
+    float* rg_in[2] = {};
+    unsigned* rg_flags = nullptr;   // [set][8]
+    float* nrg_in[2] = {};
+    unsigned* nrg_flags = nullptr;
+    unsigned hg_seq = 0, rg_seq = 0;
+    cudaEvent_t ev_hc[Engine::PF_PASS] = {}, ev_ag[Engine::PF_PASS] = {}, ev_rg[Engine::PF_PASS] = {};
+    cudaStream_t ag_st = nullptr;        // the swaps' stream (not ring_st: a swap must not queue behind a sum that waits for the other card)
+    bool hf16 = false;                   // FNX_PF_HCSPLIT_F16=1: the rows go as f16 (half the bytes); both cards then use f16-rounded `mixed` for every row
+    __half* mixhk[Engine::PF_PASS] = {};
     // with an ExpertCache: a pass's expert tables (device, [NL][NEXP]; pinned copies to build them in) and the copies
     // into stage[l & 1] (on cs) of layer l's experts not in a slot, as many as fit; the rest are read in place
     char* stage[2] = {};
@@ -447,12 +500,135 @@ void pf_sgemm(Engine::Pf& p, const float* W, int rows, int cols, const float* x,
     const float one = 1.0f, zero = 0.0f;
     ckb(cublasSgemm(p.blas, CUBLAS_OP_T, CUBLAS_OP_N, rows, C, cols, &one, W, cols, x, cols, &zero, out, ldo), "sgemm");
 }
+#if !FNX_HIP
+// the Lt problem for n rows of the down GEMM (cached): out[t][r] = W[r] . X[t], W f16 [LR][D], X f16 [n][D], out f32 [n][LR]
+Engine::Pf::LtShape& pf_lt_shape(Engine::Pf& p, int n) {
+    for (Engine::Pf::LtShape& s : p.lt_shapes)
+        if (s.n == n) return s;
+    p.lt_shapes.emplace_back();
+    Engine::Pf::LtShape& s = p.lt_shapes.back();
+    s.n = n;
+    cublasLtMatmulDescCreate(&s.desc, CUBLAS_COMPUTE_32F, CUDA_R_32F);
+    const cublasOperation_t t = CUBLAS_OP_T, nn = CUBLAS_OP_N;
+    cublasLtMatmulDescSetAttribute(s.desc, CUBLASLT_MATMUL_DESC_TRANSA, &t, sizeof t);
+    cublasLtMatmulDescSetAttribute(s.desc, CUBLASLT_MATMUL_DESC_TRANSB, &nn, sizeof nn);
+    cublasLtMatrixLayoutCreate(&s.a, CUDA_R_16F, D, LR, D);
+    cublasLtMatrixLayoutCreate(&s.b, CUDA_R_16F, D, n, D);
+    cublasLtMatrixLayoutCreate(&s.c, CUDA_R_32F, LR, n, LR);
+    cublasLtMatmulHeuristicResult_t chk;
+    s.ok = cublasLtMatmulAlgoCheck(p.lt, s.desc, s.a, s.b, s.c, s.c, &p.down_algo, &chk) == CUBLAS_STATUS_SUCCESS && chk.workspaceSize <= p.lt_ws_bytes;
+    return s;
+}
+// the down GEMM with the chosen algorithm (the caller checked p.down_lt); false: this shape does not take it (the plain call is made instead)
+bool pf_down_lt(Engine::Pf& p, const __half* W, const __half* X, int n, float* out, cudaStream_t s) {
+    if (n != 4096 && n != 2048) return false;   // the sizes the algorithm was calibrated at (the plain call picks its own for any other)
+    Engine::Pf::LtShape& sh = pf_lt_shape(p, n);
+    if (!sh.ok) return false;
+    const float one = 1.0f, zero = 0.0f;
+    ckb(cublasLtMatmul(p.lt, sh.desc, &one, W, sh.a, X, sh.b, &zero, out, sh.c, out, sh.c, &p.down_algo, p.lt_ws, p.lt_ws_bytes, s), "lt gemm");
+    return true;
+}
+// at start: the algorithm for the down GEMM. Candidates come from cublasLt's heuristic at 4096 rows; one is taken when its rows equal cublasGemmEx's at 4096
+// rows bit for bit, and its first and second half of the rows at 2048 equal its own at 4096. None: down_lt stays false (the split's results then differ in
+// the last bits from the unsplit path's)
+void pf_lt_calibrate(Engine::Pf& p, cudaStream_t s) {
+    const int rows = LR, cols = D, C0 = 4096;
+    p.lt_ws_bytes = 4 << 20;
+    ckc(cudaMalloc(&p.lt_ws, p.lt_ws_bytes), "lt workspace");
+    own_dev(p.lt_ws);
+    ckb(cublasLtCreate(&p.lt), "lt create");
+    {
+        cublasLtHandle_t h = p.lt;
+        const int d = current_card();
+        own([d, h] { cudaSetDevice(d); cublasLtDestroy(h); });
+    }
+    std::vector<__half> hw((size_t) rows * cols), hx((size_t) C0 * cols);
+    uint32_t st = 12345u;
+    auto rnd = [&] { st = st * 1664525u + 1013904223u; return (float) ((st >> 9) & 0xFFFF) / 65536.f - 0.5f; };
+    for (__half& v : hw) v = __float2half(rnd() * 0.2f);
+    for (__half& v : hx) v = __float2half(rnd() * 6.f);
+    __half *dw = nullptr, *dx = nullptr;
+    float* dy = nullptr;
+    ckc(cudaMalloc(&dw, hw.size() * 2), "calibrate");
+    ckc(cudaMalloc(&dx, hx.size() * 2), "calibrate");
+    ckc(cudaMalloc(&dy, (size_t) C0 * rows * 4), "calibrate");
+    ckc(cudaMemcpy(dw, hw.data(), hw.size() * 2, cudaMemcpyHostToDevice), "calibrate");
+    ckc(cudaMemcpy(dx, hx.data(), hx.size() * 2, cudaMemcpyHostToDevice), "calibrate");
+    auto fetch = [&](size_t n) {
+        std::vector<float> v(n);
+        ckc(cudaMemcpy(v.data(), dy, n * 4, cudaMemcpyDeviceToHost), "calibrate");
+        return v;
+    };
+    const float one = 1.0f, zero = 0.0f;
+    ckc(cudaMemset(dy, 0xFF, (size_t) C0 * rows * 4), "calibrate");
+    ckb(cublasGemmEx(p.blas, CUBLAS_OP_T, CUBLAS_OP_N, rows, C0, cols, &one, dw, CUDA_R_16F, cols, dx, CUDA_R_16F, cols, &zero, dy, CUDA_R_32F, rows,
+                     CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP), "calibrate gemm");
+    ckc(cudaStreamSynchronize(s), "calibrate");
+    const std::vector<float> ref = fetch((size_t) C0 * rows);
+    Engine::Pf::LtShape sh4, sh2;
+    auto mk = [&](Engine::Pf::LtShape& sh, int n) {
+        sh.n = n;
+        cublasLtMatmulDescCreate(&sh.desc, CUBLAS_COMPUTE_32F, CUDA_R_32F);
+        const cublasOperation_t t = CUBLAS_OP_T, nn = CUBLAS_OP_N;
+        cublasLtMatmulDescSetAttribute(sh.desc, CUBLASLT_MATMUL_DESC_TRANSA, &t, sizeof t);
+        cublasLtMatmulDescSetAttribute(sh.desc, CUBLASLT_MATMUL_DESC_TRANSB, &nn, sizeof nn);
+        cublasLtMatrixLayoutCreate(&sh.a, CUDA_R_16F, cols, rows, cols);
+        cublasLtMatrixLayoutCreate(&sh.b, CUDA_R_16F, cols, n, cols);
+        cublasLtMatrixLayoutCreate(&sh.c, CUDA_R_32F, rows, n, rows);
+    };
+    mk(sh4, C0), mk(sh2, C0 / 2);
+    cublasLtMatmulPreference_t pref = nullptr;
+    cublasLtMatmulPreferenceCreate(&pref);
+    cublasLtMatmulPreferenceSetAttribute(pref, CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, &p.lt_ws_bytes, sizeof p.lt_ws_bytes);
+    std::vector<cublasLtMatmulHeuristicResult_t> cand(32);
+    int nc = 0;
+    if (cublasLtMatmulAlgoGetHeuristic(p.lt, sh4.desc, sh4.a, sh4.b, sh4.c, sh4.c, pref, 32, cand.data(), &nc) != CUBLAS_STATUS_SUCCESS) nc = 0;
+    for (int i = 0; i < nc && !p.down_lt; ++i) {
+        cublasLtMatmulAlgo_t al = cand[(size_t) i].algo;
+        cublasLtMatmulHeuristicResult_t chk;
+        if (cand[(size_t) i].workspaceSize > p.lt_ws_bytes) continue;
+        if (cublasLtMatmulAlgoCheck(p.lt, sh2.desc, sh2.a, sh2.b, sh2.c, sh2.c, &al, &chk) != CUBLAS_STATUS_SUCCESS || chk.workspaceSize > p.lt_ws_bytes) continue;
+        ckc(cudaMemset(dy, 0xFF, (size_t) C0 * rows * 4), "calibrate");
+        if (cublasLtMatmul(p.lt, sh4.desc, &one, dw, sh4.a, dx, sh4.b, &zero, dy, sh4.c, dy, sh4.c, &al, p.lt_ws, p.lt_ws_bytes, s) != CUBLAS_STATUS_SUCCESS) continue;
+        ckc(cudaStreamSynchronize(s), "calibrate");
+        const std::vector<float> o4 = fetch((size_t) C0 * rows);
+        if (std::memcmp(o4.data(), ref.data(), o4.size() * 4) != 0) continue;
+        bool halves = true;
+        for (int h = 0; h < 2 && halves; ++h) {
+            ckc(cudaMemset(dy, 0xFF, (size_t) C0 * rows * 4), "calibrate");
+            if (cublasLtMatmul(p.lt, sh2.desc, &one, dw, sh2.a, dx + (size_t) h * (C0 / 2) * cols, sh2.b, &zero, dy + (size_t) h * (C0 / 2) * rows, sh2.c,
+                               dy + (size_t) h * (C0 / 2) * rows, sh2.c, &al, p.lt_ws, p.lt_ws_bytes, s) != CUBLAS_STATUS_SUCCESS) {
+                halves = false;
+                break;
+            }
+            ckc(cudaStreamSynchronize(s), "calibrate");
+            const std::vector<float> o2 = fetch((size_t) C0 * rows);
+            if (std::memcmp(o2.data() + (size_t) h * (C0 / 2) * rows, o4.data() + (size_t) h * (C0 / 2) * rows, (size_t) (C0 / 2) * rows * 4) != 0) halves = false;
+        }
+        if (!halves) continue;
+        p.down_algo = al;
+        p.down_lt = true;
+    }
+    cublasLtMatmulPreferenceDestroy(pref);
+    for (Engine::Pf::LtShape* sh : {&sh4, &sh2}) {
+        cublasLtMatmulDescDestroy(sh->desc), cublasLtMatrixLayoutDestroy(sh->a), cublasLtMatrixLayoutDestroy(sh->b), cublasLtMatrixLayoutDestroy(sh->c);
+    }
+    cudaFree(dw), cudaFree(dx), cudaFree(dy);
+    std::fprintf(stderr, "fnx: prompt path card %d: hyper-connection down GEMM %s\n", p.dev,
+                 p.down_lt ? "through cublasLt with an algorithm that gives the same rows at 2048 and 4096 rows (and cublasGemmEx's at 4096)"
+                           : "has no row-count-independent algorithm: the split's results differ in the last bits from the unsplit path's");
+}
+#endif
+
 // the hyper-connection read for C rows (see hc.cuh for what it computes)
 void pf_hc_read(Engine::Pf& p, float* R, const float* bo, const float* inj_prev, const float* w_norm, const Q8S& w_down, const Q8S& w_up,
-                const uint16_t* w_inj, float eps, float* mixed, float* inject, int C, cudaStream_t s) {
+                const uint16_t* w_inj, float eps, float* mixed, float* inject, int C, cudaStream_t s, __half* mixh = nullptr) {
     k_hcb_prep<<<C, HCB_THREADS, 0, s>>>(R, bo, inj_prev, w_norm, p.rs, p.xh, eps, w_inj, inject);   // the inject rows here
     k_q8s_f16<<<grid_for((size_t) LR * D), 256, 0, s>>>(w_down.q, w_down.d, (size_t) LR * D, p.wh);
-    pf_gemm(p, p.wh, LR, D, p.xh, C, p.lo32, LR, s);
+#if !FNX_HIP
+    if (!(p.down_lt && !p.f16acc && pf_down_lt(p, p.wh, p.xh, C, p.lo32, s)))
+#endif
+        pf_gemm(p, p.wh, LR, D, p.xh, C, p.lo32, LR, s);
     k_hcb_lo<<<grid_for((size_t) C * LR), 256, 0, s>>>(p.lo32, C * LR, p.lo16);
     k_q8s_f16<<<grid_for((size_t) D * LR), 256, 0, s>>>(w_up.q, w_up.d, (size_t) D * LR, p.wh);
     if (p.f16acc) {
@@ -466,7 +642,7 @@ void pf_hc_read(Engine::Pf& p, float* R, const float* bo, const float* inj_prev,
         ckb(cublasGemmEx(p.blas, CUBLAS_OP_T, CUBLAS_OP_N, D, C, LR, &one, p.wh, CUDA_R_16F, LR, p.lo16, CUDA_R_16F, LR, &zero, p.up32,
                          CUDA_R_32F, D, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP), "gemm (hc up)");
     }
-    k_hcb_mixinj<<<C, HCM_THREADS, 0, s>>>(R, w_norm, p.rs, p.up32, mixed, p.xh, nullptr, nullptr);   // prep made the inject rows
+    k_hcb_mixinj<<<C, HCM_THREADS, 0, s>>>(R, w_norm, p.rs, p.up32, mixed, mixh ? mixh : p.xh, nullptr, nullptr);   // prep made the inject rows
     // FNX_PF_HC_CHECK=1 (debugging): the inject rows the way k_hcb_mixinj made them, against prep's
     static const bool check = std::getenv("FNX_PF_HC_CHECK") != nullptr;
     if (check && w_inj) {
@@ -485,6 +661,41 @@ void pf_hc_read(Engine::Pf& p, float* R, const float* bo, const float* inj_prev,
         cudaFree(ref), cudaFree(scratch);
     }
     ckc(cudaGetLastError(), "hc read");
+}
+
+// FNX_PF_HCSPLIT: pf_hc_read on rows [r0, r0 + nr) of a chunk: every per-row pointer moved to the rows, the scratch (xh, rs, lo, up) used from its start
+void pf_hc_read_rows(Engine::Pf& p, float* R, const float* bo, const float* inj_prev, const float* w_norm, const Q8S& w_down, const Q8S& w_up,
+                     const uint16_t* w_inj, float eps, float* mixed, float* inject, int r0, int nr, cudaStream_t s, __half* mixh = nullptr) {
+    pf_hc_read(p, R + (size_t) r0 * D, bo ? bo + (size_t) r0 * N : nullptr, inj_prev ? inj_prev + (size_t) r0 * HC : nullptr, w_norm, w_down, w_up, w_inj,
+               eps, mixed + (size_t) r0 * N, inject ? inject + (size_t) r0 * HC : nullptr, nr, s, mixh ? mixh + (size_t) r0 * N : nullptr);
+}
+
+// FNX_PF_HCSPLIT: the cards swap the rows they own of M (C rows of row_elems f32; the part card g finishes, (g + 1) % NCARD, is its own) through host
+// memory, in `pieces` pieces on stream s: this card's piece i to the other card's landing place `nin` (flag nflags[i] = seq after it), then the other card's
+// piece i from `in` into M once flags[i] reaches seq. Two cards only. A piece's copy is queued behind the stream's earlier work, so s must have waited for
+// the event that says M's own rows are final.
+void pf_swap_rows(void* Mv, size_t row_bytes, int C, int g, int pieces, const void* inv, const unsigned* flags, void* ninv, unsigned* nflags, unsigned seq,
+                  cudaStream_t s) {
+    char* M = (char*) Mv;
+    const char* in = (const char*) inv;
+    char* nin = (char*) ninv;
+    const int own = (g + 1) % NCARD, peer = (g + NCARD - 1) % NCARD, peer_part = (peer + 1) % NCARD;
+    auto b0 = [&](int part) { return part * C / NCARD; };
+    const int ob = b0(own), oe = b0(own + 1), pb = b0(peer_part), pe = b0(peer_part + 1);
+    for (int i = 0; i < pieces; ++i) {
+        const int a = ob + (int) ((long) (oe - ob) * i / pieces), e = ob + (int) ((long) (oe - ob) * (i + 1) / pieces);
+        if (e > a)
+            ckc(cudaMemcpyAsync(nin + (size_t) (a - ob) * row_bytes, M + (size_t) a * row_bytes, (size_t) (e - a) * row_bytes, cudaMemcpyDefault, s),
+                "swap send");
+        cud(cuStreamWriteValue32((CUstream) s, (CUdeviceptr) (nflags + i), seq, 0), "swap flag");
+    }
+    for (int i = 0; i < pieces; ++i) {
+        const int a = pb + (int) ((long) (pe - pb) * i / pieces), e = pb + (int) ((long) (pe - pb) * (i + 1) / pieces);
+        cud(cuStreamWaitValue32((CUstream) s, (CUdeviceptr) (flags + i), seq, CU_STREAM_WAIT_VALUE_GEQ), "swap wait");
+        if (e > a)
+            ckc(cudaMemcpyAsync(M + (size_t) a * row_bytes, in + (size_t) (a - pb) * row_bytes, (size_t) (e - a) * row_bytes, cudaMemcpyDefault, s),
+                "swap recv");
+    }
 }
 
 // R = the embedding row in every stream
@@ -509,7 +720,7 @@ __global__ void k_pfr_addend(float* __restrict__ x, const float* __restrict__ pa
 
 // the sum of x (C rows of N) over the cards on card g, one way round (each card's link is busy both ways already: it
 // sends to g + 1 while it takes from g - 1; measured, the other direction at once halves both)
-void pf_ring(Engine::Pf& p, int g, float* x, int C, const RingMoe* m, unsigned* err, cudaStream_t s) {
+void pf_ring(Engine::Pf& p, int g, float* x, int C, const RingMoe* m, unsigned* err, cudaStream_t s, bool own_out = false) {
     const unsigned seq = ++p.seq;
     if (m) k_pfr_addend<<<grid_for((size_t) C * N), 256, 0, s>>>(x, m->part, m->topw, m->logits, C);
 #if FNX_HIP
@@ -530,7 +741,17 @@ void pf_ring(Engine::Pf& p, int g, float* x, int C, const RingMoe* m, unsigned* 
         return;
     }
 #endif
-    pf_ring_run(p.ring_ce, p.dev, g, x, C, seq, err, s);
+#if FNX_HIP
+    if (p.a2a_rows > 0 && C <= p.a2a_rows && !own_out) {   // a small chunk: all-to-all and a local sum, one cross-card latency (bit-identical to the ring)
+        const size_t slot4 = (size_t) p.a2a_rows * N / 4, set_off4 = (size_t) (seq & 1u) * NCARD * slot4;
+        const int n4 = C * N / 4;
+        k_pfa_push<<<grid_for((size_t) n4), 256, 0, s>>>((const float4*) x, n4, p.a2a_peer_box_d, p.a2a_peer_flag_d, p.a2a_cnt, g, seq, set_off4, slot4);
+        k_pfa_sum<<<grid_for((size_t) n4), 256, 0, s>>>(x, C, p.a2a_box, p.a2a_flag, g, seq, set_off4, slot4, err);
+        ckc(cudaGetLastError(), "ring (small chunk)");
+        return;
+    }
+#endif
+    pf_ring_run(p.ring_ce, p.dev, g, x, C, seq, err, s, own_out);
     ckc(cudaGetLastError(), "ring");
 }
 
@@ -616,7 +837,15 @@ void Engine::pf_seq_reset(unsigned start) {
         if (p.att_pend >= 0) throw std::runtime_error("prefill: sequence numbers restarted with an attention merge pending");
         ckc(cudaSetDevice(p.dev), "set");
         ckc(cudaMemset(p.ring_ce.flags, 0, 2 * PF_RING_STEPS * sizeof(unsigned)), "prompt ring flags");
+#if FNX_HIP
+        if (p.a2a_flag) ckc(cudaMemset(p.a2a_flag, 0, NCARD * sizeof(unsigned)), "small-chunk sum flags");
+#endif
         for (unsigned* f : p.aflags) ckc(cudaMemset(f, 0, ATT_FLAG_ROWS * ATT_PIECES_MAX * sizeof(unsigned)), "attention exchange flags");
+        if (p.hcs) {
+            for (unsigned* f : p.hg_flags) std::memset(f, 0, 8 * sizeof(unsigned));
+            std::memset(p.rg_flags, 0, 16 * sizeof(unsigned));
+            p.hg_seq = p.rg_seq = 0;
+        }
         p.seq = p.att_seq[0] = p.att_seq[1] = start;
     }
     for (CardBuf* b : cb_) { ckc(cudaSetDevice(b->dev), "set"); ckc(cudaDeviceSynchronize(), "prompt sequence reset sync"); }
@@ -749,12 +978,37 @@ void Engine::prefill_alloc() {
             const size_t share = (size_t) (pf_c_ + NCARD - 1) / NCARD * N;   // a card's share of the rows
             r.send = palloc<__half>(share);
             for (int k = 0; k < 2; ++k) {
-                for (int h = 0; h < NCARD - 1; ++h) r.in[h][k] = hpalloc<__half>(share);   // a slot per reduce hop
-                r.ag[k] = hpalloc<__half>((size_t) pf_c_ * N);
+#if FNX_HIP
+                if (pf_peer_) {   // device memory on this card: the previous card's kernels store into it
+                    for (int h = 0; h < NCARD - 1; ++h) r.in[h][k] = ppalloc<__half>(share);
+                    r.ag[k] = ppalloc<__half>((size_t) pf_c_ * N);
+                } else
+#endif
+                {
+                    for (int h = 0; h < NCARD - 1; ++h) r.in[h][k] = hpalloc<__half>(share);   // a slot per reduce hop
+                    r.ag[k] = hpalloc<__half>((size_t) pf_c_ * N);
+                }
                 for (int h = 0; h < NCARD - 1; ++h) r.din[h][k] = palloc<__half>(share);
                 r.dag[k] = palloc<__half>((size_t) pf_c_ * N);
             }
+#if FNX_HIP
+            if (pf_peer_) r.flags = ppalloc<unsigned>(2 * PF_RING_STEPS);
+            else
+#endif
             r.flags = hpalloc<unsigned>(2 * PF_RING_STEPS);
+#if FNX_HIP
+            if (pf_peer_) {   // the small-chunk sum: FNX_PF_A2A_ROWS rows at most (0: always the ring)
+                const long long ar = env_int("FNX_PF_A2A_ROWS", 256);
+                p->a2a_rows = (int) std::min<long long>(std::max<long long>(ar, 0), pf_c_);
+                if (p->a2a_rows > 0) {
+                    p->a2a_box = ppalloc<float4>((size_t) 2 * NCARD * p->a2a_rows * N / 4);
+                    p->a2a_flag = ppalloc<unsigned>(NCARD);
+                    p->a2a_cnt = palloc<unsigned>(1);
+                    p->a2a_peer_box_d = palloc<float4*>(NCARD);
+                    p->a2a_peer_flag_d = palloc<unsigned*>(NCARD);
+                }
+            }
+#endif
         }
         p->dev = b.dev;
 #if FNX_HIP
@@ -807,7 +1061,12 @@ void Engine::prefill_alloc() {
         p->Rk[0] = p->R, p->bofk[0] = p->bo_f, p->injfk[0] = p->inj_f, p->ctlk[0] = p->ctl, p->boak[0] = p->bo_a,
         p->injak[0] = p->inj_a;
         {
-            const long long pass = env_int("FNX_PF_PASS", w.ec.n_slots ? 4 : 2);   // with an ExpertCache, staging amortizes over more
+            // the hyper-connection split (below) wants 4 chunks to a pass: a chunk's swap and sum then hide behind the other chunks' work (2: no gain)
+            bool hcs_wanted = false;
+#if !FNX_HIP
+            hcs_wanted = NCARD == 2 && !p->ring_sm && env_int("FNX_PF_OVERLAP", 1) != 0 && env_int("FNX_PF_HCSPLIT", 1) != 0;
+#endif
+            const long long pass = env_int("FNX_PF_PASS", pf_pass_pick_ > 0 ? pf_pass_pick_ : (w.ec.n_slots || hcs_wanted ? 4 : 2));   // with an ExpertCache, staging amortizes over more
             if (pass < 1 || pass > PF_PASS) throw std::runtime_error("FNX_PF_PASS: 1 to " + std::to_string(PF_PASS) + ", got " + std::to_string(pass));
             p->pass = (int) pass;
             for (int k = 1; k < p->pass; ++k) {
@@ -824,6 +1083,38 @@ void Engine::prefill_alloc() {
                 own_stream(p->ring_st);
                 for (int k = 0; k < PF_PASS; ++k)
                     for (cudaEvent_t* e : {&p->ev_go[k], &p->ev_ra[k], &p->ev_rf[k]}) {
+                        ckc(cudaEventCreateWithFlags(e, cudaEventDisableTiming), "event");
+                        own_event(*e);
+                    }
+            }
+            // FNX_PF_HCSPLIT (NVIDIA, two cards, the copy-engine ring): see Pf
+#if !FNX_HIP
+            p->hcs_mode = (int) env_int("FNX_PF_HCSPLIT", 2);   // on by default (mode 2 since owner 11-03; mode 1 is bit-identical to the unsplit path): used only if the calibration finds the algorithm
+            p->hcs = NCARD == 2 && p->overlap && !p->ring_sm && p->hcs_mode != 0;
+#endif
+            if (p->hcs) {
+                const long long np = env_int("FNX_PF_HCSPLIT_PIECES", 4);
+                if (np < 1 || np > 8) throw std::runtime_error("FNX_PF_HCSPLIT_PIECES: 1 to 8, got " + std::to_string(np));
+                p->hg_pieces = (int) np;
+                p->hf16 = env_int("FNX_PF_HCSPLIT_F16", 0) != 0;
+#if !FNX_HIP
+                if (env_int("FNX_PF_HCSPLIT_LT", 1) != 0) pf_lt_calibrate(*p, b.st);
+#endif
+                ckc(cudaStreamCreateWithFlags(&p->ag_st, cudaStreamNonBlocking), "swap stream");
+                own_stream(p->ag_st);
+                if (p->hf16)
+                    for (int k = 0; k < p->pass; ++k) p->mixhk[k] = palloc<__half>((size_t) pf_c_ * N);
+                const size_t share = (size_t) (pf_c_ + NCARD - 1) / NCARD;
+                p->mixedk[0] = p->mixed;
+                for (int k = 1; k < p->pass; ++k) p->mixedk[k] = palloc<float>((size_t) pf_c_ * N);
+                for (int k = 0; k < 2; ++k) {
+                    p->hg_in[k] = hpalloc<float>(share * N);
+                    p->hg_flags[k] = hpalloc<unsigned>(8);
+                }
+                for (int k = 0; k < 2; ++k) p->rg_in[k] = hpalloc<float>(share * D);
+                p->rg_flags = hpalloc<unsigned>(16);
+                for (int k = 0; k < PF_PASS; ++k)
+                    for (cudaEvent_t* e : {&p->ev_hc[k], &p->ev_ag[k], &p->ev_rg[k]}) {
                         ckc(cudaEventCreateWithFlags(e, cudaEventDisableTiming), "event");
                         own_event(*e);
                     }
@@ -855,6 +1146,18 @@ void Engine::prefill_alloc() {
         if (env_flag("FNX_PF_TIMING"))
             std::fprintf(stderr, "prefill buffers on card %d: %zu MiB (%zu MiB free before)\n", c, pf_card_bytes >> 20, free0 >> 20);
     }
+    {   // the hyper-connection split runs on every card or on none; mode 1 needs the calibrated algorithm on every card
+        bool all = true, asked = false;
+        for (int c = 0; c < NCARD; ++c) {
+            asked = asked || pf_[c]->hcs;
+            all = all && pf_[c]->hcs && pf_[c]->down_lt;
+        }
+        for (int c = 0; c < NCARD; ++c) pf_[c]->hcs = all;
+        if (asked && !all)
+            std::fprintf(stderr, "fnx: prompt path: the hyper-connection read stays on both cards (no cublasLt algorithm that gives the same rows at 2048 and 4096 rows on this card)\n");
+        else if (all)
+            std::fprintf(stderr, "fnx: prompt path: the hyper-connection read is split between the cards (%s)\n", pf_[0]->hcs_mode == 1 ? "same results as the unsplit read" : "results differ in the last bits");
+    }
     for (int c = 0; c < NCARD; ++c)
         for (int k = 0; k < NCARD; ++k) {
             for (int s = 0; s < 2; ++s) {
@@ -876,6 +1179,21 @@ void Engine::prefill_alloc() {
         }
         r.nflags = n.ring_ce.flags;
         r.next_dev = n.dev;
+#if FNX_HIP
+        if (p.a2a_rows > 0) {
+            ckc(cudaSetDevice(p.dev), "set");
+            float4* boxes[NCARD];
+            unsigned* flags[NCARD];
+            for (int d = 0; d < NCARD; ++d) boxes[d] = pf_[d]->a2a_box, flags[d] = pf_[d]->a2a_flag;
+            ckc(cudaMemcpy(p.a2a_peer_box_d, boxes, sizeof boxes, cudaMemcpyHostToDevice), "a2a boxes");
+            ckc(cudaMemcpy(p.a2a_peer_flag_d, flags, sizeof flags, cudaMemcpyHostToDevice), "a2a flags");
+        }
+#endif
+        if (p.hcs) {
+            for (int k = 0; k < 2; ++k) p.nhg_in[k] = n.hg_in[k], p.nhg_flags[k] = n.hg_flags[k];
+            for (int k = 0; k < 2; ++k) p.nrg_in[k] = n.rg_in[k];
+            p.nrg_flags = n.rg_flags;
+        }
         for (int d = 0; d < NCARD; ++d) {
             r.pflags[d] = pf_[d]->ring_ce.flags;
             for (int k = 0; k < 2; ++k) r.pag[d][k] = pf_[d]->ring_ce.ag[k];
@@ -990,6 +1308,7 @@ void Engine::prefill(const std::vector<int>& tokens, int after) {
     const bool staging = pf_[0]->stage[0] && (int) tokens.size() >= pf_[0]->stage_rows;
     int K = PF_PASS;
     for (const Pf* p : pf_) K = std::min(K, p->pass);
+    if (pass_rows_ > 0) K = std::max(1, std::min(K, pass_rows_ / pf_c_));
     for (int k = 0; k < 2 * K; ++k)
         if (!pf_emb_[k]) {
             ckc(cudaMallocHost(&pf_emb_[k], (size_t) pf_c_ * N * sizeof(float)), "pinned emb");
@@ -1005,11 +1324,26 @@ void Engine::prefill(const std::vector<int>& tokens, int after) {
     // halves of the sets
     const int h0 = (int) history_.size();
     const auto tok_at = [&](int q) -> int { return q < h0 ? history_[q] : tokens[q - h0]; };
-    const size_t nt = tokens.size(), per = (size_t) K * pf_c_;
+    const size_t nt = tokens.size();
+#if FNX_DF2
+    if (df2_) {   // DFlash2: this read's last kRing positions are tapped into the lane's host ring (the drafter takes them at its first round)
+        Df2Lane& L = df2_lane_[(size_t) cur_];
+        if (!L.ring) {
+            ckc(cudaHostAlloc((void**) &L.ring, (size_t) df2::kRing * df2::kTaps * df2::kNEmbd * sizeof(float), cudaHostAllocPortable | cudaHostAllocMapped), "df2 tap ring");
+            own_pinned(L.ring);
+        }
+        df2_seg_end_ = h0 + (int) nt;
+    }
+#endif
+    // a pass takes K chunks; with the hyper-connection split a short last chunk (not a whole pf_c_ rows) is a pass of its own, so it does not keep the whole chunks
+    // before it from being split
+    const bool lone_tail = pf_[0]->hcs;
+    const int lone_min = (int) env_int("FNX_PF_HCSPLIT_MIN", 3);   // fewer whole chunks than this: the tail stays with them (one pass, the chunks hide each other's sums)
     auto chunks_of = [&](size_t i0, int half) {
         std::vector<PfChunk> ch;
-        for (size_t i = i0; i < std::min(nt, i0 + per); i += pf_c_) {
+        for (size_t i = i0; i < nt && (int) ch.size() < K; i += pf_c_) {
             const size_t e = std::min(nt, i + pf_c_);
+            if (lone_tail && (int) ch.size() >= lone_min && e - i != (size_t) pf_c_) break;
             ch.push_back({std::vector<int>(tokens.begin() + i, tokens.begin() + e), e < nt ? tokens[e] : after, half * K + (int) ch.size()});
         }
         return ch;
@@ -1023,17 +1357,36 @@ void Engine::prefill(const std::vector<int>& tokens, int after) {
     };
     std::vector<PfChunk> ch = chunks_of(0, 0);
     embed(0, ch);
-    for (size_t i = 0, k = 0; i < nt; i += per, ++k) {
-        std::vector<PfChunk> next = chunks_of(i + per, (int) ((k + 1) & 1));
-        prefill_pass(ch, staging, [&] { embed(i + per, next); });
+    for (size_t i = 0, k = 0; i < nt; ++k) {
+        size_t cov = 0;
+        for (const PfChunk& c : ch) cov += c.tokens.size();
+        std::vector<PfChunk> next = chunks_of(i + cov, (int) ((k + 1) & 1));
+        prefill_pass(ch, staging, [&] { embed(i + cov, next); });
         size_t e = i;
         for (const PfChunk& c : ch) {
             e += c.tokens.size();
             if (on_prefill_chunk) on_prefill_chunk((int) e);
         }
+        i += cov;
         ch = std::move(next);
     }
 }
+
+#if FNX_DF2
+// DFlash2: rows [row, row + n) of a chunk (absolute position pos_first for the first) on card b: R's streams with the pending FFN write folded in, their mean, into
+// the lane's host ring slots (position % kRing; a run that wraps is two launches)
+void Engine::df2_prompt_tap(int slot, int pos_first, int row, int n, CardBuf& b, const float* R, const float* bo, const float* inj) {
+    Df2Lane& L = df2_lane_[(size_t) cur_];
+    constexpr int64_t rowf = (int64_t) df2::kTaps * df2::kNEmbd;
+    for (int done = 0; done < n;) {
+        const int pos = pos_first + done, at = pos % df2::kRing, k = std::min(n - done, df2::kRing - at);
+        df2::Bridge::tap(R + (size_t) (row + done) * D, bo + (size_t) (row + done) * N, inj + (size_t) (row + done) * HC, k, slot, L.ring + (size_t) at * rowf, rowf, b.st);
+        done += k;
+    }
+}
+#else
+void Engine::df2_prompt_tap(int, int, int, int, CardBuf&, const float*, const float*, const float*) {}
+#endif
 
 void Engine::prefill_pass(const std::vector<PfChunk>& chunks, bool staging, const std::function<void()>& between) {
     const auto t_pass = std::chrono::steady_clock::now();
@@ -1080,10 +1433,21 @@ void Engine::prefill_pass(const std::vector<PfChunk>& chunks, bool staging, cons
     };
     // the chunk that runs: its rows, groups and buffers
     int C = 0, ng = 0, set = 0;
+    // FNX_PF_HCSPLIT: this pass's hyper-connection reads are split between the cards (every chunk of the pass long enough to be worth it)
+    bool hs = pf_[0]->hcs;
+    static const int hs_full = (int) env_int("FNX_PF_HCSPLIT_FULL", 0);   // 1: every card reads all rows in one call; 2: all rows in two halves (the split's GEMM shapes)
+      // debugging: every card reads all the rows (the swap still runs): the answers must equal the unsplit path's
+    // fewer than hcs_min chunks in the pass (default 3): the swap and the sum have nothing to hide behind, and the split read is slower than the plain one (6.4K prompt: 1.8 -> 2.3 s)
+    static const int hcs_min = (int) env_int("FNX_PF_HCSPLIT_MIN", 3);
+    if ((int) chunks.size() < hcs_min) hs = false;
+    for (const PfChunk& ck : chunks)
+        if ((int) ck.tokens.size() < 512 || (pf_[0]->hcs_mode == 1 && (!pf_[0]->down_lt || (int) ck.tokens.size() != 4096))) hs = false;
     auto use = [&](int j) {
         C = (int) chunks[(size_t) j].tokens.size(), ng = (C + MAXT - 1) / MAXT, set = chunks[(size_t) j].set;
-        for (Pf* p : pf_) p->R = p->Rk[j], p->bo_f = p->bofk[j], p->inj_f = p->injfk[j], p->ctl = p->ctlk[j], p->bo_a = p->boak[j],
-                          p->inj_a = p->injak[j];
+        for (Pf* p : pf_) {
+            p->R = p->Rk[j], p->bo_f = p->bofk[j], p->inj_f = p->injfk[j], p->ctl = p->ctlk[j], p->bo_a = p->boak[j], p->inj_a = p->injak[j];
+            if (p->hcs) p->mixed = p->mixedk[hs ? j : 0];
+        }
     };
     // with an ExpertCache: the pass's expert tables, each layer's experts not in a slot at stage[l & 1] (as many as
     // fit, in expert order; the rest in place), the others in their slots
@@ -1152,11 +1516,11 @@ void Engine::prefill_pass(const std::vector<PfChunk>& chunks, bool staging, cons
     // made here: the next chunk's experts reuse their buffers), while the pass's next chunk computes; `done` marks it
     // finished, and the chunk's next half waits for that alone. A layer runs every chunk's attention half, then every
     // chunk's FFN half, so there is a next chunk to compute meanwhile
-    auto ring_async = [&](int c, CardBuf& b, Pf& p, float* x, const RingMoe* m, int j, cudaEvent_t done, int rows) {
+    auto ring_async = [&](int c, CardBuf& b, Pf& p, float* x, const RingMoe* m, int j, cudaEvent_t done, int rows, bool own = false) {
         if (m) k_pfr_addend<<<grid_for((size_t) rows * N), 256, 0, b.st>>>(x, m->part, m->topw, m->logits, rows);
         ckc(cudaEventRecord(p.ev_go[j], b.st), "ring go");
         ckc(cudaStreamWaitEvent(p.ring_st, p.ev_go[j], 0), "ring go");
-        pf_ring(p, c, x, rows, nullptr, b.ring.err, p.ring_st);
+        pf_ring(p, c, x, rows, nullptr, b.ring.err, p.ring_st, own);
         if (p.rccl) p.post.push_back([&p, done] { ckc(cudaEventRecord(done, p.ring_st), "ring done"); });   // after the sum's conversion, once the group is closed
         else ckc(cudaEventRecord(done, p.ring_st), "ring done");
     };
@@ -1168,20 +1532,107 @@ void Engine::prefill_pass(const std::vector<PfChunk>& chunks, bool staging, cons
         p.att_pend = -1;
         pf_attn_finish(p, c, rows, j & 1, b.st);
         pf_dense(p, w.L[l].wo.s, N, w.nq * HD, p.att, rows, p.boak[j], N, b.st);
-        if (l < NL - 1 || mtp_) ring_async(c, b, p, p.boak[j], nullptr, j, p.ev_ra[j], rows);   // the last layer's sum: unused
+        if (l < NL - 1 || mtp_) ring_async(c, b, p, p.boak[j], nullptr, j, p.ev_ra[j], rows, hs && l >= PLE_LAYER);   // the last layer's sum: unused
+    };
+    // FNX_PF_HCSPLIT: layer l's attention half (half 0) or FFN half (1) reads its hyper-connection on this card's rows of chunk j (use(j) done) and starts the
+    // swap of the resulting `mixed` rows; the half's heavy part waits for the swap (ev_ag). The sum that feeds a split read is a reduce-scatter only (ring_async's
+    // `own`): the attention half's output from layer PLE_LAYER on, the FFN half's from layer PLE_LAYER on (it feeds the next layer's read, which is split from
+    // PLE_LAYER + 1 on: the PLE layer's own attention half writes every row of R first)
+    auto hc_phase = [&](int l, int half, int j) {
+        each([&](int c, CardBuf& b, const CardW& w, Pf& p) {
+            const LayerW& L = w.L[l];
+            cudaStream_t s = b.st;
+            const int own = (c + 1) % NCARD, r0 = hs_full ? 0 : own * C / NCARD, nr = hs_full ? C : (own + 1) * C / NCARD - r0;
+            const int nq = hs_full == 2 ? 2 : 1;
+            auto Q0 = [&](int q) { return hs_full == 2 ? q * (C / 2) : r0; };
+            auto QN = [&](int q) { return hs_full == 2 ? (q == 0 ? C / 2 : C - C / 2) : nr; };
+            __half* mh = p.hf16 ? p.mixhk[j] : nullptr;
+            if (half == 0) {
+                ckc(cudaStreamWaitEvent(s, p.ev_rf[j], 0), "ffn sum");
+                for (int q = 0; q < nq; ++q) pf_hc_read_rows(p, p.R, p.bo_f, p.inj_f, L.hc_norm[0], L.hc_down[0], L.hc_up[0], L.hc_inj[0], eps, p.mixed, p.inj_a, Q0(q), QN(q), s, mh);
+            } else {
+                ckc(cudaStreamWaitEvent(s, p.ev_ra[j], 0), "attention sum");
+                for (int q = 0; q < nq; ++q) pf_hc_read_rows(p, p.R, p.bo_a, p.inj_a, L.hc_norm[1], L.hc_down[1], L.hc_up[1], L.hc_inj[1], eps, p.mixed, p.inj_f, Q0(q), QN(q), s, mh);
+            }
+            ckc(cudaEventRecord(p.ev_hc[j], s), "hc event");
+            ckc(cudaStreamWaitEvent(p.ag_st, p.ev_hc[j], 0), "hc wait");
+            const unsigned sq = ++p.hg_seq;
+            const int hset = (int) (sq & 1u);
+            if (p.hf16) pf_swap_rows(p.mixhk[j], N * sizeof(__half), C, c, p.hg_pieces, p.hg_in[hset], p.hg_flags[hset], p.nhg_in[hset], p.nhg_flags[hset], sq, p.ag_st);
+            else pf_swap_rows(p.mixed, N * sizeof(float), C, c, p.hg_pieces, p.hg_in[hset], p.hg_flags[hset], p.nhg_in[hset], p.nhg_flags[hset], sq, p.ag_st);
+            ckc(cudaEventRecord(p.ev_ag[j], p.ag_st), "swap done");
+        });
+    };
+    // the heavy part's start after a split read: the swapped rows are here, and xh = f16 of mixed as the read leaves it (k_f32_f16 rounds as the read's
+    // k_hcb_mixinj does)
+    // the pass's last read, the draft layer's source: the attention sum folded into R on this card's rows, then the rows of R swapped (the draft layer reads all)
+    auto draft_r_phase = [&](int l, int j) {
+        each([&](int c, CardBuf& b, const CardW& w, Pf& p) {
+            const LayerW& L = w.L[l];
+            cudaStream_t s = b.st;
+            const int own = (c + 1) % NCARD, r0 = hs_full ? 0 : own * C / NCARD, nr = hs_full ? C : (own + 1) * C / NCARD - r0;
+            const int nq = hs_full == 2 ? 2 : 1;
+            auto Q0 = [&](int q) { return hs_full == 2 ? q * (C / 2) : r0; };
+            auto QN = [&](int q) { return hs_full == 2 ? (q == 0 ? C / 2 : C - C / 2) : nr; };
+            ckc(cudaStreamWaitEvent(s, p.ev_ra[j], 0), "attention sum");
+            for (int q = 0; q < nq; ++q) pf_hc_read_rows(p, p.R, p.bo_a, p.inj_a, L.hc_norm[1], L.hc_down[1], L.hc_up[1], L.hc_inj[1], eps, p.mixed, p.inj_f, Q0(q), QN(q), s);
+            ckc(cudaEventRecord(p.ev_hc[j], s), "hc event");
+            ckc(cudaStreamWaitEvent(p.ag_st, p.ev_hc[j], 0), "hc wait");
+            const unsigned sq = ++p.rg_seq;
+            const int rset = (int) (sq & 1u);
+            pf_swap_rows(p.R, D * sizeof(float), C, c, p.hg_pieces, p.rg_in[rset], p.rg_flags + rset * 8, p.nrg_in[rset], p.nrg_flags + rset * 8, sq, p.ag_st);
+            ckc(cudaEventRecord(p.ev_rg[j], p.ag_st), "swap done");
+        });
+    };
+    auto swap_join = [&](CardBuf& b, Pf& p, int j) {
+        ckc(cudaStreamWaitEvent(b.st, p.ev_ag[j], 0), "swap join");
+        if (p.hf16) {   // every row from the f16 values (own rows too: both cards must hold the same numbers)
+            k_f16_f32<<<grid_for((size_t) C * N), 256, 0, b.st>>>(p.mixhk[j], C, N, p.mixed, N);
+            ckc(cudaMemcpyAsync(p.xh, p.mixhk[j], (size_t) C * N * sizeof(__half), cudaMemcpyDeviceToDevice, b.st), "mixh");
+        } else k_f32_f16<<<grid_for((size_t) C * N), 256, 0, b.st>>>(p.mixed, (size_t) C * N, p.xh);
     };
     for (int l = 0; l < NL; ++l) {
         if (staging && l + 1 < NL - 1) stage_in(l + 1);   // the last layer runs no experts
+#if FNX_DF2
+        // DFlash2: layer l - 1's completed output (its FFN half's sum folded into R as the next read would) is the tap of the rows of the last kRing positions of
+        // this read. Before this layer's reads fold the sum into R; in the split read (HCSPLIT) a card holds the sums of its own rows only and taps those
+        if (df2_ && l > 0 && df2_slot_[(size_t) (l - 1)] >= 0) {
+            const int slot = df2_slot_[(size_t) (l - 1)];
+            for (int j2 = 0; j2 < nk; ++j2) {
+                use(j2);
+                const int lo = std::max(0, df2_seg_end_ - df2::kRing - pos0[(size_t) j2]);
+                if (lo >= C) continue;
+                const bool own_rows = hs && l - 1 >= PLE_LAYER;
+                each([&](int c, CardBuf& b, const CardW&, Pf& p) {
+                    int a = lo, z = C;
+                    if (own_rows) {
+                        const int own = (c + 1) % NCARD, r0 = hs_full ? 0 : own * C / NCARD, nr = hs_full ? C : (own + 1) * C / NCARD - r0;
+                        a = std::max(a, r0), z = std::min(z, r0 + nr);
+                    } else if (c != 0) {
+                        return;   // every card holds all the sums: the first taps
+                    }
+                    if (a >= z) return;
+                    if (p.overlap) ckc(cudaStreamWaitEvent(b.st, p.ev_rf[j2], 0), "ffn sum");
+                    df2_prompt_tap(slot, pos0[(size_t) j2] + a, a, z - a, b, p.R, p.bo_f, p.inj_f);
+                });
+            }
+        }
+#endif
         for (int j = 0; j < nk; ++j) {
             use(j);
             // ---- attention half: the last layer's FFN sum (pending in bo_f) first
             const bool pending = l > 0;
+            const bool sa = hs && l > PLE_LAYER;   // this half's read is split (the PLE layer's own attention half is not: it writes every row of R)
+            if (sa && j == 0)
+                for (int j2 = 0; j2 < nk; ++j2) use(j2), hc_phase(l, 0, j2);
+            if (sa) use(j);
             each([&](int c, CardBuf& b, const CardW& w, Pf& p) {
                 const LayerW& L = w.L[l];
                 cudaStream_t s = b.st;
-                if (pending && p.overlap) ckc(cudaStreamWaitEvent(s, p.ev_rf[j], 0), "ffn sum");
+                if (sa) swap_join(b, p, j);
+                else if (pending && p.overlap) ckc(cudaStreamWaitEvent(s, p.ev_rf[j], 0), "ffn sum");
                 bool apply = pending;
-                if (l == PLE_LAYER) {
+                if (!sa && l == PLE_LAYER) {
                     ckc(cudaMemcpyAsync(p.ple_emb, pf_ple_[set], (size_t) C * N * 4, cudaMemcpyHostToDevice, s), "ple");
                     hc_write(p.R, p.bo_f, p.inj_f, C, s);
                     apply = false;
@@ -1194,8 +1645,9 @@ void Engine::prefill_pass(const std::vector<PfChunk>& chunks, bool staging, cons
                                  w.ple_norm_query, w.ple_norm_conv, w.ple_conv, b.ple_hist, b.ple_hsnap, Tg, eps, s, p.ple_tmp);
                     }
                 }
-                pf_hc_read(p, p.R, apply ? p.bo_f : nullptr, p.inj_f, L.hc_norm[0], L.hc_down[0], L.hc_up[0], L.hc_inj[0], eps, p.mixed,
-                           p.inj_a, C, s);
+                if (!sa)
+                    pf_hc_read(p, p.R, apply ? p.bo_f : nullptr, p.inj_f, L.hc_norm[0], L.hc_down[0], L.hc_up[0], L.hc_inj[0], eps, p.mixed,
+                               p.inj_a, C, s);
                 if (!is_attn(l)) {
                     const int nv = w.nv(), ch = w.conv_ch(), rs_qkvz = ch + nv * HS;
                     pf_dense_xh(p, L.qkvz.s, rs_qkvz, N, C, p.qkvz, rs_qkvz, s);   // xh: the hc read's f16 of mixed
@@ -1242,7 +1694,7 @@ void Engine::prefill_pass(const std::vector<PfChunk>& chunks, bool staging, cons
             each([&](int c, CardBuf& b, const CardW&, Pf& p) {
                 if (p.ring_sm) ring_sum(p.ring, p.bo_a, C, (const unsigned*) (p.ctl + 1), 2 * l, b.st);
                 else if (p.overlap) {
-                    if (!is_attn(l) || p.attn_dec) ring_async(c, b, p, p.bo_a, nullptr, j, p.ev_ra[j], C);   // else finish_att's
+                    if (!is_attn(l) || p.attn_dec) ring_async(c, b, p, p.bo_a, nullptr, j, p.ev_ra[j], C, hs && l >= PLE_LAYER);   // else finish_att's
                 } else pf_ring(p, c, p.bo_a, C, nullptr, b.ring.err, b.st);
             });
         }
@@ -1253,6 +1705,16 @@ void Engine::prefill_pass(const std::vector<PfChunk>& chunks, bool staging, cons
             each([&](int, CardBuf& b, const CardW&, Pf& p) {
                 if (p.overlap) ckc(cudaStreamWaitEvent(b.st, p.ev_ra[j], 0), "attention sum");
             });
+            const bool sf = hs && l >= PLE_LAYER;   // this half's read is split
+            if (sf && j == 0) {
+                for (int j2 = 0; j2 < nk; ++j2) {
+                    use(j2);
+                    if (l == NL - 1) draft_r_phase(l, j2);
+                    else hc_phase(l, 1, j2);
+                }
+                use(j);
+            }
+            if (l == NL - 1 && sf) continue;   // read and swap issued above
             if (l == NL - 1) {
                 // the draft layer's source: R with the last attention write folded in, as a window's FFN-half read leaves it
                 each([&](int, CardBuf& b, const CardW& w, Pf& p) {
@@ -1271,7 +1733,8 @@ void Engine::prefill_pass(const std::vector<PfChunk>& chunks, bool staging, cons
                     gu_e.ep = p.ep_gu + (size_t) l * NEXP, down_e.ep = p.ep_dn + (size_t) l * NEXP;
                     if (j == 0) ckc(cudaStreamWaitEvent(s, p.ev_ready[l & 1], 0), "stage in");
                 }
-                pf_hc_read(p, p.R, p.bo_a, p.inj_a, L.hc_norm[1], L.hc_down[1], L.hc_up[1], L.hc_inj[1], eps, p.mixed, p.inj_f, C, s);
+                if (sf) swap_join(b, p, j);
+                else pf_hc_read(p, p.R, p.bo_a, p.inj_a, L.hc_norm[1], L.hc_down[1], L.hc_up[1], L.hc_inj[1], eps, p.mixed, p.inj_f, C, s);
                 if (p.moe_q8) quantize_q8_1(p.mixed, p.xq, N, C, s);   // else xh holds the hc read's f16 of mixed
                 pf_sgemm(p, L.router, NEXP + 1, N, p.mixed, C, p.logits, NEXP + 1);
                 k_pf_top10<<<(C + 7) / 8, 256, 0, s>>>(p.logits, C, p.topi, p.topw);
@@ -1302,7 +1765,7 @@ void Engine::prefill_pass(const std::vector<PfChunk>& chunks, bool staging, cons
                 m.topw = p.topw;
                 m.logits = p.logits;
                 if (p.ring_sm) ring_sum(p.ring, p.bo_f, C, (const unsigned*) (p.ctl + 1), 2 * l + 1, b.st, m);
-                else if (p.overlap) ring_async(c, b, p, p.bo_f, &m, j, p.ev_rf[j], C);
+                else if (p.overlap) ring_async(c, b, p, p.bo_f, &m, j, p.ev_rf[j], C, hs && l >= PLE_LAYER);
                 else pf_ring(p, c, p.bo_f, C, &m, b.ring.err, b.st);
             });
         }
@@ -1312,8 +1775,13 @@ void Engine::prefill_pass(const std::vector<PfChunk>& chunks, bool staging, cons
         for (int j = 0; j < nk; ++j) {
             use(j);
             embed_token(chunks[(size_t) j].after, pos0[(size_t) j] + C, pf_after_[set]);
+            if (hs)
+                each([&](int, CardBuf& b, const CardW&, Pf& p) { ckc(cudaStreamWaitEvent(b.st, p.ev_rg[j], 0), "R swap"); });
             prefill_draft(C, set);
         }
+    if (hs && mtp_ && draft8)
+        for (int j = 0; j < nk; ++j)
+            each([&](int, CardBuf& b, const CardW&, Pf& p) { ckc(cudaStreamWaitEvent(b.st, p.ev_rg[j], 0), "R swap"); });
     const auto t_enq = std::chrono::steady_clock::now();
     between();
     unsigned err = 0;
@@ -1350,6 +1818,16 @@ void Engine::prefill_pass(const std::vector<PfChunk>& chunks, bool staging, cons
     use(0);
     for (const PfChunk& c : chunks) history_.insert(history_.end(), c.tokens.begin(), c.tokens.end());
     pos_ += rows;
+#if FNX_DF2
+    if (df2_) {   // the positions this pass tapped: [a, pos_) with a the later of the pass's start and the read's last kRing positions
+        Df2Lane& L = df2_lane_[(size_t) cur_];
+        const long a = std::max<long>(pos_ - rows, (long) df2_seg_end_ - df2::kRing), e = pos_;
+        if (a < e) {
+            if (L.hi == a && L.hi > L.lo) L.hi = e, L.lo = std::max<long>(L.lo, e - df2::kRing);
+            else L.lo = a, L.hi = e;
+        }
+    }
+#endif
     static const bool timing = env_flag("FNX_PF_TIMING");
     if (timing) {
         std::fprintf(stderr, "prefill pass at %d: %d chunks, %d rows in %.1f ms (embed + upload %.1f ms, enqueued in %.1f ms, draft layer %.1f ms)",

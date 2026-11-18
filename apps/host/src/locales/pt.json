@@ -1779,7 +1779,7 @@
   "s1761": "O Strata não está conectado ao mecanismo.",
   "s1762": "Modelos otimizados do Strata",
   "s1763": "O Strata prepara todas as partes, a camada de rascunho e os arquivos compartilhados. Downloads concluídos são reutilizados.",
-  "s1764": "O Strata não envia telemetria de uso. As conversas ficam no armazenamento do navegador. Quando você escolhe um modelo de API, a conversa e as instruções das habilidades ativadas são enviadas ao provedor. O log de solicitações da interface mantém metadados de cliente, tempo e tokens na memória. O monitoramento da API nativa pode reter o conteúdo das solicitações na memória quando ativado. Ferramentas conectadas acessam os recursos que você configura.",
+  "s1764": "O Strata não envia telemetria de uso. As conversas ficam neste computador, na pasta de dados do Strata. Quando você escolhe um modelo de API, a conversa e as instruções das habilidades ativadas são enviadas ao provedor. O log de solicitações da interface mantém metadados de cliente, tempo e tokens na memória. O monitoramento da API nativa pode reter o conteúdo das solicitações na memória quando ativado. Ferramentas conectadas acessam os recursos que você configura.",
   "s1765": "O Strata usa estes arquivos onde estão. Você pode carregar o modelo depois de adicioná-lo.",
   "s1766": "Strata — abrir chat",
   "s1767": "Limite de recursos do Strata",
@@ -3056,7 +3056,7 @@
   "s3042": "Ver registros",
   "s3043": "Registros do mecanismo",
   "s3044": "O Strata não envia telemetria de uso.",
-  "s3045": "As conversas ficam no armazenamento do navegador.",
+  "s3045": "As conversas ficam neste computador, na pasta de dados do Strata.",
   "s3046": "Ao escolher um modelo de API, essa conversa e as instruções das habilidades ativadas são enviadas ao provedor.",
   "s3047": "O registro de solicitações da interface guarda na memória metadados de cliente, tempo e tokens.",
   "s3048": "Quando ativado, o monitoramento da API nativa pode manter o conteúdo das solicitações na memória.",
@@ -3526,5 +3526,6 @@
   "s9034": "Carregando o modelo…",
   "s9035": "Estes arquivos do modelo estão faltando: {0}.",
   "s9036": "Pressione Baixar e carregar de novo para buscá-los. Os arquivos que já estão aí são mantidos. Se os mesmos arquivos aparecerem de novo, abra os Detalhes e compartilhe-os ao pedir ajuda.",
-  "s9037": "Esta atualização foi interrompida quando o aplicativo reiniciou. Uma atualização posterior terminou, então não há nada a fazer."
+  "s9037": "Esta atualização foi interrompida quando o aplicativo reiniciou. Uma atualização posterior terminou, então não há nada a fazer.",
+  "s9038": "Este sistema não deixa o Strata usar a porta {0}. No Linux e no macOS, as portas abaixo de 1024 precisam de direitos de administrador. Inicie o Strata com outra porta (STRATA_PORT), por exemplo 8801."
 }

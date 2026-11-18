@@ -100,7 +100,8 @@ def family_of(cfg: dict, gguf: Path | None, asked: str | None = None) -> str | N
         return asked.lower() if asked.lower() in PROJECTOR_BY_FAMILY else None
     arch = str(cfg.get("arch") or "").lower()
     names = [str(cfg.get("model_name") or "").lower(), (gguf.name.lower() if gguf else "")]
-    if arch == "deepseek41" or any("deepseek" in n for n in names) or "strata-dsv41" in str(cfg.get("exe") or "").lower():
+    from strata_control import retired
+    if retired.config_reason(cfg) or any("deepseek" in n for n in names):      # never a DeepSeek config (retired.py)
         return None
     if any(n.startswith("qwen3.6") or "qwen3.6-35b" in n for n in names):
         return None
@@ -336,7 +337,7 @@ def fetch(config_path: str | Path, *, engine_dir: str | Path, asked: str = "yes"
         out.parent.mkdir(parents=True, exist_ok=True)
         partial = out.with_name(out.name + ".part")
         try:
-            transfer.download(url, partial, size=projector.size, sha256=projector.sha256, cancel=cancel,
+            transfer.download(url, partial, size=projector.size, sha256=projector.sha256, cancel=cancel, what="the picture reader",
                               progress=lambda d, s: report("Downloading the picture files…", d, s))
         except transfer.ChecksumMismatch:
             raise PicturesError("checksum", f"{WORDS['checksum']} Try again.") from None

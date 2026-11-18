@@ -1,10 +1,14 @@
 # cmake/strata_ggml_tq_overlay.cmake - MMQ prompt kernels for the Gyro trellis types (TQ2_T, TQK6, TQK7) on an UPSTREAM llama.cpp.
 #
+# ONLY FOR -DSTRATA_GGML_DIR=<llama.cpp checkout> BUILDS (the override kept for two releases).  The default build uses the ggml vendored in
+# third_party/strata-ggml, which holds this script's output as plain files in ggml/src/ggml-cuda-tq (third_party/strata-ggml/UPSTREAM.md);
+# this script is not run for it.
+#
 # The agentionai llama.cpp fork has these types in its ggml (ggml.h enum, ggml-cuda/tq.cuh, a tile loader, MMQ configs and
 # routing, three template instances).  Upstream does not.  This script writes, at configure time, a small OVERLAY of the
 # pinned ggml-cuda headers into the build tree: copies of ggml.h, mmq.cuh, mmq-load-tiles.cuh and the mmq-config-*.cuh with
 # the trellis types added the way IQ2_XS is handled (same Q8_0_16 tile layout, same dot kernels, same configs - the fork's
-# own numbers for them are copies of IQ2_XS's), plus tq.cuh / tq-mmq-tiles.cuh from third_party/ggml-tq and three template
+# own numbers for them are copies of IQ2_XS's), plus tq.cuh / tq-mmq-tiles.cuh from third_party/strata-ggml/ggml/src/ggml-cuda-tq and the template
 # instances.  Only the strata_mmq target sees the overlay (it comes first on its include path); every other type's
 # instances are compiled from the untouched pinned files, and the additions are additive (identity gate: Q2_0, IQ3_XXS).
 #
@@ -17,7 +21,7 @@ function(strata_ggml_tq_overlay LLAMA OUT)
   set(STRATA_TQ_OVERLAY_OK OFF PARENT_SCOPE)
   set(_cu "${LLAMA}/ggml/src/ggml-cuda")
   set(_inc "${LLAMA}/ggml/include")
-  set(_tq "${CMAKE_SOURCE_DIR}/third_party/ggml-tq")
+  set(_tq "${CMAKE_SOURCE_DIR}/third_party/strata-ggml/ggml/src/ggml-cuda-tq")
   foreach(_f "${_inc}/ggml.h" "${_cu}/mmq.cuh" "${_cu}/mmq-load-tiles.cuh" "${_cu}/common.cuh")
     if(NOT EXISTS "${_f}")
       message(STATUS "trellis MMQ overlay: ${_f} is missing: off")
@@ -116,7 +120,12 @@ function(strata_ggml_tq_overlay LLAMA OUT)
   # ---- mmq-load-tiles.cuh: the loader, at the end -------------------------------------------------------------------
   _tq_read(_l "${_cu}/mmq-load-tiles.cuh")
   file(WRITE "${OUT}/mmq-load-tiles.cuh" "${_l}\n#include \"tq-mmq-tiles.cuh\"\n")
-  configure_file("${_tq}/tq.cuh" "${OUT}/tq.cuh" COPYONLY)
+  # the vendored tq.cuh names its two Strata headers by path from its own folder; here they sit beside it (the caller copies them): plain names
+  file(READ "${_tq}/tq.cuh" _tqh)
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_tq}/tq.cuh")
+  string(REPLACE "#include \"../../../../ggml/ggml-common-tq.h\"" "#include \"ggml-common-tq.h\"" _tqh "${_tqh}")
+  string(REPLACE "#include \"../../../../../src/kernels/cuda/tq_lut_i8.cuh\"" "#include \"tq_lut_i8.cuh\"" _tqh "${_tqh}")
+  file(WRITE "${OUT}/tq.cuh" "${_tqh}")
   file(READ "${_tq}/tq-mmq-tiles.cuh" _tiles)
   set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_tq}/tq-mmq-tiles.cuh")
   foreach(_fn get_nthreads get_I get_sram_stride)

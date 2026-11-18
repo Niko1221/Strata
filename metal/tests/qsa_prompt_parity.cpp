@@ -5,6 +5,7 @@
 #include "coop_probe.h"
 #include "mtl_rt.h"
 #include "ref_quant.h"
+#include "engine/geo.h"
 
 #include <algorithm>
 #include <cmath>
@@ -15,7 +16,7 @@
 #include <vector>
 
 namespace {
-constexpr int QH = 24, QKV = 2, QD = 256, QB = 2051, NCH = 33;
+constexpr int QH = strata_metal::geo::QH, QKV = strata_metal::geo::QKV, QD = strata_metal::geo::QD, QB = strata_metal::geo::BUD, NCH = strata_metal::geo::QCHUNKS;
 struct QsaArgs { uint32_t pos0, pos_base, max_cells, n_tok; float eps; };
 double median(std::vector<double> v) { std::sort(v.begin(), v.end()); return v[v.size() / 2]; }
 }  // namespace
@@ -25,7 +26,7 @@ int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IOLBF, 0);
     const bool noflash = std::getenv("QSA_NOFLASH") != nullptr;
     mtl::Context cx;
-    const int lib = cx.compile({"qsa.metal", "qsa_prompt.metal"}, "#define NO_GGML_COMMON 1\n");
+    const int lib = cx.compile({"qsa.metal", "qsa_prompt.metal"}, strata_metal::geo::prelude() + "#define NO_GGML_COMMON 1\n");
     std::printf("device %s\n", cx.device_name().c_str());
     const int T = bench ? 2048 : 96, MAXC = 40000;
     mtl::Buffer kq = cx.alloc((size_t)MAXC * QKV * QD), vq = cx.alloc((size_t)MAXC * QKV * QD), ksc = cx.alloc(2 * (size_t)MAXC * QKV * 4),

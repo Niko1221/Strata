@@ -22,7 +22,13 @@ import package_terminal  # noqa: E402
 
 
 def host(system: str, machine: str) -> str:
-    with mock.patch.object(targets.platform, "system", return_value=system), mock.patch.object(targets.platform, "machine", return_value=machine):
+    # the name and the architecture come from strata_control.sysinfo: on Windows from sys.platform and the environment (no WMI, #4975),
+    # elsewhere from the platform module
+    win = system == "Windows"
+    env = {"PROCESSOR_ARCHITECTURE": machine, "PROCESSOR_ARCHITEW6432": ""} if win else {}
+    with mock.patch.object(targets.platform, "system", return_value=system), mock.patch.object(targets.platform, "machine", return_value=machine), \
+            mock.patch.object(sys, "platform", "win32" if win else ("darwin" if system == "Darwin" else "linux")), \
+            mock.patch.dict("os.environ", env):
         return targets.host_platform()
 
 
@@ -109,28 +115,6 @@ class ReleaseTools(unittest.TestCase):
         self.assertIn(b"-DSTRATA_PORTABLE=ON", raw)
 
 
-class GB10DeepSeekPlan(unittest.TestCase):
-    def test_the_plan_for_a_gb10_speaks_of_one_pool_and_the_system_not_windows_and_a_bios(self):
-        from strata_control import dsv41_fit
-        card = {"index": 0, "name": "NVIDIA GB10", "vram_gb": 115.6, "shared_gb": 115.6, "dedicated_gb": 0.0, "uma": True}
-        plan = dsv41_fit.plan([card], 121.6, 400, 8192, model="IST-DAS-2.00bpw")
-        text = " ".join(plan["lines"])
-        self.assertNotIn("Windows", text)
-        self.assertNotIn("BIOS", text)
-        self.assertIn("DGX Spark", plan["measured"])
-        self.assertIn("one pool of 122 GB", text)
-        self.assertGreater(plan["experts_in_vram"], 11000)          # the engine placed 12,163 of 15,744 on the Spark itself
-
-    def test_the_windows_strix_halo_plan_is_unchanged(self):
-        from strata_control import dsv41_fit
-        card = {"index": 0, "name": "AMD Radeon(TM) 8060S Graphics", "vram_gb": 96.0, "shared_gb": 32.0, "dedicated_gb": 64.0, "uma": True}
-        plan = dsv41_fit.plan([card], 64.0, 400, 8192, model="IST-DAS-2.00bpw")
-        text = " ".join(plan["lines"])
-        self.assertIn("BIOS carve-out", text)
-        self.assertIn("kept for Windows", text)
-        self.assertEqual(plan["measured"], dsv41_fit.UMA_MEASURED)
-
-
 class GB10Probes(unittest.TestCase):
     """nvidia-smi gives a GB10's memory.total as [N/A]: the probes the Terminal reads must neither drop the card nor invent a size."""
     LINE = "0, NVIDIA GB10, GPU-0a1b2c3d-0000-1111-2222-333344445555, [N/A], 580.173.02\n"
@@ -140,7 +124,7 @@ class GB10Probes(unittest.TestCase):
         done = mock.Mock(returncode=0, stdout=self.LINE)
         with mock.patch.object(doctor.shutil, "which", return_value="/usr/bin/nvidia-smi"), \
                 mock.patch.object(doctor.subprocess, "run", return_value=done), \
-                mock.patch.object(doctor.platform, "machine", return_value=machine):
+                mock.patch.object(doctor.platform, "machine", return_value=machine),                 mock.patch.object(sys, "platform", "linux"):          # (sysinfo answers from the platform module only off Windows)
             return doctor._nvidia_cards()
 
     def test_doctor_lists_a_gb10_with_no_memory_figure(self):

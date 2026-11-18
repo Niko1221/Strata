@@ -5,6 +5,7 @@
 //   gdn_prompt_parity [--bench]
 #include "mtl_rt.h"
 #include "ref_quant.h"
+#include "engine/geo.h"
 
 #include <algorithm>
 #include <cmath>
@@ -14,7 +15,7 @@
 #include <vector>
 
 namespace {
-constexpr int HK = 16, HV = 48, CH = 10240, S = 128;
+constexpr int HK = strata_metal::geo::HK, HV = strata_metal::geo::HV, CH = strata_metal::geo::CONV, S = strata_metal::geo::SS;
 struct GdnArgs { uint32_t h_k, h_v, channels, commit; float eps; uint32_t plane; };
 struct GdnPArgs { uint32_t n_tok, h_k, h_v, channels; float eps; uint32_t f32; };
 double median(std::vector<double> v) { std::sort(v.begin(), v.end()); return v[v.size() / 2]; }

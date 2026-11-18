@@ -13,12 +13,12 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))   # runnable from the repo root too
 
-from _paths import add_gguf_py
-import iq_pack                         # needs numpy + gguf_reader only, not gguf-py: import it unguarded
+from _paths import gguf_lib
+import iq_pack                         # needs numpy + gguf_reader only: import it unguarded
 
 try:
-    add_gguf_py()                       # llama.cpp's gguf-py: setup.py clones it; gguf_py() exits when absent
-    from gguf import GGUFWriter, GGMLQuantizationType as Q, quants
+    _gguf = gguf_lib()                  # tools/strata_gguf.py (STRATA_GGUF_PY selects llama.cpp's gguf-py; it exits when that is not a gguf-py folder)
+    GGUFWriter, Q, quants = _gguf.GGUFWriter, _gguf.GGMLQuantizationType, _gguf.quants
 except SystemExit:
     GGUF_PY = None
 else:
@@ -30,8 +30,7 @@ def require_gguf_py(test):
     @classmethod
     def setUpClass(cls):
         if GGUF_PY is None:
-            raise unittest.SkipTest("llama.cpp's gguf-py not found: run setup.py (it clones llama.cpp into "
-                                    "third_party/) or set STRATA_GGUF_PY")
+            raise unittest.SkipTest("STRATA_GGUF_PY does not name a gguf-py folder")
     return setUpClass
 
 
@@ -39,7 +38,7 @@ def write_gguf(path, tensors, split=None, arch=True):
     """`split` = (no, count, tensors): llama.cpp's gguf-split keys (0-based split.no)."""
     writer = GGUFWriter(path, "qwen4exp")
     if not arch:                                   # a later shard of a split: no model metadata
-        writer.kv_data[0].pop("general.architecture", None)
+        writer.remove_key("general.architecture")
     if split is not None:
         writer.add_uint16("split.no", split[0])
         writer.add_uint16("split.count", split[1])
@@ -706,6 +705,51 @@ class HadamardTests(unittest.TestCase):
                 self.assertFalse(got.startswith("# strata hadamard"))
         got = iq_pack.hadamard_spec(self.meta(), self.layout(gu=42), self.N_EMBD, self.N_FF)
         self.assertIn("Q2_0", got)
+
+
+class V31HeaderOnlyLayoutTests(unittest.TestCase):
+    """Round 0214: the pack's expert table (iq_pack.expert_layout) read from the REAL tensor directories of Unsloth's v3.1 sets (tests/fixtures/unsloth_v31,
+    header-only: no weights), so the gate == up rule and the Q5_0 downs are checked without a download."""
+
+    @staticmethod
+    def layout(set_name):
+        import unsloth_v31_fixture as FX
+        import gguf_reader as G
+
+        class Map:
+            size = 1 << 62
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as t:
+            m = iq_pack.Model.__new__(iq_pack.Model)
+            m.where = {}
+            first = None
+            for s in FX.load()["sets"][set_name]["shards"]:
+                if not s["header"]:
+                    continue
+                p = FX.materialize(s, Path(t) / s["name"])
+                g = G.GGUFFile(p)
+                first = first or p
+                for ti in g.tensors:
+                    m.where[ti.name] = (g, ti, Map, p)
+            return iq_pack.expert_layout(m, first)
+
+    def test_gate_and_up_must_agree_ud_iq1_s_is_refused(self):
+        self.assertEqual(self.layout("UD-IQ1_S"), "layer 18: gate and up differ in type")
+
+    def test_q5_0_downs_are_packed_with_their_type_id(self):
+        for set_name, n_q5 in (("UD-IQ4_XS", 33), ("UD-Q3_K_XL", 20), ("UD-IQ2_XS", 1), ("UD-Q2_K_XL", 1), ("UD-IQ3_XXS", 0), ("UD-IQ1_M", 0)):
+            with self.subTest(set=set_name):
+                layout, text, n_expert, total = self.layout(set_name)
+                self.assertEqual(n_expert, 512)
+                self.assertEqual(len(layout), 48)
+                self.assertEqual(sum(1 for row in layout if row[5][2].type_name == "Q5_0"), n_q5)
+                rows = [ln.split() for ln in text.splitlines()[1:]]
+                self.assertEqual(sum(1 for r in rows if r[2] == "6"), n_q5)         # d_type 6 = Q5_0
+                self.assertEqual(total, sum(r[4] * 512 for r in layout))
+
+    def test_a_layer_across_shards_makes_a_v4_table(self):
+        layout, text, _n, _t = self.layout("UD-IQ3_XXS")
+        self.assertTrue(text.startswith("# strata native experts v4:"))
+        self.assertEqual(sum(1 for ln in text.splitlines()[1:] if "," in ln.split()[-1]), 1)
 
 
 class NativeExpertsV5Tests(unittest.TestCase):

@@ -1779,7 +1779,7 @@
   "s1761": "Strata ist nicht mit seiner Engine verbunden.",
   "s1762": "Strata-optimierte Modelle",
   "s1763": "Strata bereitet alle Teildateien, die Entwurfsschicht und gemeinsame Dateien vor. Abgeschlossene Downloads werden wiederverwendet.",
-  "s1764": "Strata sendet keine Nutzungstelemetrie. Gespräche bleiben im Browserspeicher. Wenn du ein API-Modell auswählst, werden das Gespräch und die Anweisungen aktivierter Skills an dessen Anbieter gesendet. Das UI-Anfrageprotokoll hält Client-, Zeit- und Token-Metadaten im Arbeitsspeicher. Die native API-Überwachung kann bei Aktivierung Anfrageinhalte im Arbeitsspeicher behalten. Verbundene Tools greifen auf die von dir eingerichteten Ressourcen zu.",
+  "s1764": "Strata sendet keine Nutzungstelemetrie. Gespräche bleiben auf diesem Computer, im Datenordner von Strata. Wenn du ein API-Modell auswählst, werden das Gespräch und die Anweisungen aktivierter Skills an dessen Anbieter gesendet. Das UI-Anfrageprotokoll hält Client-, Zeit- und Token-Metadaten im Arbeitsspeicher. Die native API-Überwachung kann bei Aktivierung Anfrageinhalte im Arbeitsspeicher behalten. Verbundene Tools greifen auf die von dir eingerichteten Ressourcen zu.",
   "s1765": "Strata verwendet diese Dateien an ihrem Speicherort. Nach dem Hinzufügen kannst du das Modell laden.",
   "s1766": "Strata — Chat öffnen",
   "s1767": "Stratas Budget",
@@ -3056,7 +3056,7 @@
   "s3042": "Protokolle anzeigen",
   "s3043": "Engine-Protokolle",
   "s3044": "Strata sendet keine Nutzungstelemetrie.",
-  "s3045": "Unterhaltungen bleiben im Browser-Speicher.",
+  "s3045": "Unterhaltungen bleiben auf diesem Computer, im Datenordner von Strata.",
   "s3046": "Wenn Sie ein API-Modell wählen, werden diese Unterhaltung und die aktivierten Skill-Anweisungen an den Anbieter gesendet.",
   "s3047": "Das UI-Anfrageprotokoll behält Client-, Zeit- und Token-Metadaten nur im Arbeitsspeicher.",
   "s3048": "Die native API-Überwachung kann bei Aktivierung Anfrageinhalte im Arbeitsspeicher behalten.",
@@ -3526,5 +3526,6 @@
   "s9034": "Das Modell wird geladen …",
   "s9035": "Diese Modelldateien fehlen: {0}.",
   "s9036": "Drücken Sie noch einmal auf „Herunterladen und laden“, um sie zu holen. Vorhandene Dateien bleiben erhalten. Werden dieselben Dateien wieder aufgelistet, öffnen Sie die Details und teilen Sie sie mit, wenn Sie um Hilfe bitten.",
-  "s9037": "Dieses Update wurde beim Neustart der App unterbrochen. Ein späteres Update ist abgeschlossen, Sie müssen nichts tun."
+  "s9037": "Dieses Update wurde beim Neustart der App unterbrochen. Ein späteres Update ist abgeschlossen, Sie müssen nichts tun.",
+  "s9038": "Dieses System erlaubt Strata nicht, Port {0} zu verwenden. Unter Linux und macOS brauchen Ports unter 1024 Administratorrechte. Starten Sie Strata mit einem anderen Port (STRATA_PORT), zum Beispiel 8801."
 }

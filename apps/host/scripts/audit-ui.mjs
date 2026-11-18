@@ -17,7 +17,6 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const STYLE_DIR = join(ROOT, 'src/styles');
-const KIT_SRC = join(ROOT, '..', 'ui');
 const KIT_COPY = join(ROOT, 'src/styles/kit');
 
 /** The app's own stylesheets, in cascade order: the last one wins. */
@@ -264,24 +263,8 @@ const allAppCss = APP_SHEETS.map((sheet) => sheet.css).join('\n');
 /* ------------------------------------------------- kit sync + motion scale -- */
 
 for (const file of ['tokens.css', 'components.css']) {
-  const a = join(KIT_SRC, file);
-  const b = join(KIT_COPY, file);
-  // Some checkouts of this branch do not carry the design-kit source (apps/ui),
-  // only the synced copy. There is nothing to compare against then, so the check
-  // reports that instead of failing every run with a condition no one can fix.
-  if (!existsSync(a)) {
-    notes.push(`kit copy: ${file} has no source in this checkout — drift check skipped`);
-    continue;
-  }
-  if (!existsSync(b)) {
-    fail('kit', 0, `${file} missing from src/styles/kit — run npm run sync:kit`);
-    continue;
-  }
-  // The sync rewrites @font-face URLs to absolute; everything else must match.
-  const norm = (t) => t.replace(/url\((["']?)\/fonts\//g, 'url($1fonts/').trim();
-  if (norm(readFileSync(a, 'utf8')) !== norm(readFileSync(b, 'utf8'))) {
-    fail('kit', 0, `${file} has drifted from ../ui — run npm run sync:kit`);
-  }
+  // The checked-in files in src/styles/kit are the source of the kit styles; there is no generator.
+  if (!existsSync(join(KIT_COPY, file))) fail('kit', 0, `${file} is missing from src/styles/kit (restore it from git)`);
 }
 
 // Which selectors have been given the capsule radius. Checked across the whole
@@ -328,7 +311,7 @@ for (const file of [...readdirSync(join(ROOT, 'src'), { recursive: true })].filt
   for (const m of readFileSync(full, 'utf8').matchAll(/<(?:Icon|IconBtn)\s[^>]*?\bname="([a-z-]+)"/g)) referenced.add(m[1]);
 }
 for (const name of referenced) {
-  if (!symbols.has(name)) fail('src', 0, `icon "${name}" is referenced but not in the sprite — run npm run sync:kit`);
+  if (!symbols.has(name)) fail('src', 0, `icon "${name}" is referenced but not in the sprite: add a <symbol id="i-NAME"> to public/icons/sprite.svg`);
 }
 
 /* ---------------------------------------------------------- undefined classes -- */

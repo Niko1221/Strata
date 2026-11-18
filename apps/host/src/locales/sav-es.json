@@ -1,0 +1,5 @@
+{
+ "sav01": "No se pudieron guardar algunos chats",
+ "sav02": "El almacenamiento de chats de Strata está lleno, así que los cambios más recientes de {0} chat(s) solo están en esta ventana. Elimina chats antiguos para liberar espacio; después se guardarán solos.",
+ "sav03": "Copiar chats sin guardar"
+}

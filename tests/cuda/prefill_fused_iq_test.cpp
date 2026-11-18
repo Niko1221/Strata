@@ -13,10 +13,12 @@
 // different expert ranges.  Part 2 (timing): one layer at the engine's chunks (2048, 3584, 8192 tokens; 512 experts,
 // top 10) on both paths and on MMQ's products alone (no gathers), for the IQ2_XS, IQ3_XXS and IQ3_S packs' most
 // common layers, with the grouping checked and a sample of rows against the reference.  --no-ref, --no-timing,
-// --only=NAME, --chunks=A,B, --unset-pf-fused (STRATA_PF_FUSED left unset instead of set to 1: the engine's default, for the
+// --only=NAME, --edge, --chunks=A,B, --blob-shift=N, --host-blobs=N [--expect-fallback | --expect-no-fallback] (the first N experts' blobs in host memory: the weight-staging
+// check fails for the launches that hold one and they take the unstaged kernel, same output bits), --unset-pf-fused (STRATA_PF_FUSED left unset instead of set to 1: the engine's default, for the
 // STRATA_PF_FUSED_Q2N=1 ctest entry).  Exit 77 without a CUDA device of sm_80 or newer.
 #include "strata/core/emulate.hpp"
 #include "strata/prefill/moe_fused_iq.hpp"
+#include "strata/prefill/mmq_ids_margin.hpp"
 #include "strata/prefill/moe_mmq.hpp"
 
 #include "ggml.h"
@@ -36,11 +38,21 @@
 #include <thread>
 #include <vector>
 
+// the trellis types' codebooks (CUDA STRATA_PF_FUSED_TQ=1 pairs): the fp16 one (the format definition, ggml-common-tq.h, host data in a C++ file)
+// for the reference, and the int8 one the kernels read (tq_lut_i8.cuh, a __device__ table there: read here as host data) for the int8 model
+#pragma push_macro("__device__")
+#undef __device__
+#define __device__
+#include "../../third_party/ggml/ggml-common-tq.h"   // (a HIP build compiles this file as HIP: the empty __device__ keeps both tables host data)
+#include "../../src/kernels/cuda/tq_lut_i8.cuh"
+#pragma pop_macro("__device__")
+
 namespace {
 namespace mmq = strata::prefill::mmq;
 namespace fused = strata::prefill::fused;
 
-constexpr int N = 2560, FF = 640, K = 10, GROUP = 16;
+// The compiled geometry's widths (Flash-Next: 2560 x 640, 512 experts, top 10): build with -DSTRATA_GEOMETRY=<name> to test another shape.
+constexpr int N = fused::kMoeEmbd, FF = fused::kMoeFF, FF2 = fused::kMoeGuRows, K = (int) strata::core::kCompiledGeometry.n_expert_used, GROUP = 16;
 
 void ck(cudaError_t e, const char* what) {
     if (e != cudaSuccess) throw std::runtime_error(std::string(what) + ": " + cudaGetErrorString(e));
@@ -49,7 +61,7 @@ void ck(cudaError_t e, const char* what) {
 struct Dev {
     void* p = nullptr;
     explicit Dev(size_t n) { ck(cudaMalloc(&p, n), "cudaMalloc"); }
-    ~Dev() { cudaFree(p); }
+    ~Dev() { (void)cudaFree(p); }
     Dev(const Dev&) = delete;
     Dev& operator=(const Dev&) = delete;
     template <typename T> T* as() const { return (T*) p; }
@@ -60,16 +72,102 @@ struct Pair {
     const char* name;
 };
 // MMQ covers this pair (the HIP build has no Q4_K / Q5_K / Q5_1 MMQ: those pairs are checked against the reference only)
-bool mmq_ok(const Pair& p) { return mmq::supported((int) p.gu) && mmq::supported((int) p.d); }
+// (the NVFP4 pair is judged against the reference alone: MMQ's NVFP4 products have no per-expert scales - the engine applies the blob's tail around them - and run_mmq below does not)
+bool nvfp4_pair(const Pair& p) { return p.gu == GGML_TYPE_NVFP4 && p.d == GGML_TYPE_NVFP4; }
+bool mmq_ok(const Pair& p) { return !nvfp4_pair(p) && mmq::supported((int) p.gu) && mmq::supported((int) p.d); }
+
+// The trellis types (Gyro: TQ2_T 144, TQK6 145, TQK7 146; agentionai's ids) are outside the pinned ggml's type table: their sizes and their
+// dequantization here, from the format definition (third_party/ggml/ggml-common-tq.h's header comment), not from the kernels' code.
+bool tq_type(ggml_type t) { return (int) t >= 144 && (int) t <= 146; }
+size_t type_size(ggml_type t) { return (int) t == 144 ? 34 : (int) t == 145 ? 26 : (int) t == 146 ? 30 : ggml_type_size(t); }
+int64_t blck_size(ggml_type t) { return tq_type(t) ? 128 : ggml_blck_size(t); }
+size_t row_size(ggml_type t, int64_t n) { return (size_t) (n / blck_size(t)) * type_size(t); }
+float fp16_bits(uint16_t h) {   // IEEE half -> float
+    const uint32_t s = (uint32_t) (h >> 15) << 31, e = (h >> 10) & 31, m = h & 1023;
+    uint32_t f;
+    if (e == 0) return (h >> 15 ? -1.0f : 1.0f) * std::ldexp((float) m, -24);   // zero and subnormals
+    if (e == 31) f = s | 0x7f800000u | (m << 13);
+    else f = s | ((e + 112) << 23) | (m << 13);
+    float v;
+    std::memcpy(&v, &f, 4);
+    return v;
+}
+// one 128-weight trellis block: step t (32 steps, 4 weights each) has a 15-bit state; TQ2_T: qs[(t + 31) % 32] << 8 | qs[t]; TQK (K = 6 / 7):
+// the 16 stream bits from bit (31 - t) K of the circular stream of 32 K bits, LSB first.  x = state * 0x9e3779b1, points x >> 21 and
+// (x >> 10) & 2047, two weights each.  int8cb: the int8 codebook times TQ_LUT_I8_SCALE (what the kernels and MMQ read) instead of the fp16 one.
+void tq_block(int t, const uint8_t* b, float* out, bool int8cb) {
+    uint16_t dh;
+    std::memcpy(&dh, b, 2);
+    const float d = fp16_bits(dh);
+    const uint8_t* qs = b + 2;
+    const int K = t == 145 ? 6 : t == 146 ? 7 : 8, nbits = 32 * K;
+    auto bit = [&](int i) { i %= nbits; return (qs[i >> 3] >> (i & 7)) & 1; };
+    for (int st = 0; st < 32; ++st) {
+        uint32_t s = 0;
+        if (t == 144) s = ((uint32_t) qs[(st + 31) % 32] << 8) | qs[st];
+        else for (int k = 0; k < 16; ++k) s |= (uint32_t) bit((31 - st) * K + k) << k;
+        const uint32_t x = (s & 0x7fffu) * 0x9e3779b1u;
+        const uint32_t pt[2] = {x >> 21, (x >> 10) & 2047u};
+        for (int h = 0; h < 2; ++h)
+            for (int c = 0; c < 2; ++c)
+                out[4 * st + 2 * h + c] = int8cb ? d * TQ_LUT_I8_SCALE * (float) (int8_t) (tq_lut_i8[pt[h]] >> (8 * c))
+                                                 : d * fp16_bits(tq_lut_f16[2 * pt[h] + c]);
+    }
+}
+
+// --folded (trellis pairs): the Gyro packs' Hadamard-folded experts (include/strata/kernels/cpu/hadamard.hpp): the weights are taken as stored
+// (W' = W diag(s) H^T), so every activation entering them is rotated first, y = H_128 (s * x) / sqrt(128) per 128 values, with random signs.
+// The reference rotates on the host (this function, from the definition); the fused path's H rotation is set_down_rotation, MMQ's is
+// hadamard128_rows (the same device code: the reference is the independent side); the gate/up input is rotated on the host for every path.
+int g_blob_shift = 0;   // --blob-shift=N (even, 0-14; the timing part): every expert blob starts N bytes past its 16-byte aligned place, as in the engine's cache slots (stage-ring and slot offsets are only 2-byte aligned); use it with S20_NOMMQ=1 (MMQ wants aligned blobs)
+bool g_folded = false;
+int g_host_blobs = 0;       // --host-blobs=N (the timing part): the first N experts' blobs in pinned host memory, see timing_part; use with --no-ref (the reference part is not affected)
+int g_expect_fallback = 0;  // --expect-fallback (+1) / --expect-no-fallback (-1): with --host-blobs, require that some / no launch took the unstaged kernel
+void rot128(float* x, int n, const float* signs) {
+    for (int b = 0; b < n; b += 128) {
+        double v[128];
+        for (int i = 0; i < 128; ++i) v[i] = (double) x[b + i] * (signs ? signs[b + i] : 1.0f);
+        for (int st = 1; st < 128; st <<= 1)
+            for (int i = 0; i < 128; ++i)
+                if (!(i & st)) { const double a = v[i], c = v[i + st]; v[i] = a + c; v[i + st] = a - c; }
+        for (int i = 0; i < 128; ++i) x[b + i] = (float) (v[i] / std::sqrt(128.0));
+    }
+}
+const float* g_rot_signs_dev = nullptr;   // the down input's signs on the device while a folded pair runs
+bool g_rot_on = false;
+struct Folded {   // a folded trellis pair's signs (host and device); inactive for every other pair
+    bool on = false;
+    std::vector<float> sx, sh;
+    std::unique_ptr<struct Dev> dsh;
+    Folded(bool tq, int64_t rows) {
+        (void) rows;
+        if (!g_folded || !tq) return;
+        on = true;
+        std::mt19937 rs(20261111);   // (its own generator: every other draw of the test is unchanged)
+        sx.resize((size_t) N);
+        sh.resize((size_t) FF);
+        for (float& v : sx) v = (rs() & 1) ? 1.0f : -1.0f;
+        for (float& v : sh) v = (rs() & 1) ? 1.0f : -1.0f;
+        dsh = std::make_unique<Dev>(sh.size() * 4);
+        ck(cudaMemcpy(dsh->p, sh.data(), sh.size() * 4, cudaMemcpyHostToDevice), "signs");
+        g_rot_signs_dev = dsh->as<float>();
+        g_rot_on = true;
+    }
+    ~Folded() { g_rot_signs_dev = nullptr; g_rot_on = false; }
+    void rotate_x(std::vector<float>& x) const {   // the gate/up input, every token, on the host (all paths read the rotated rows)
+        if (on) for (size_t t = 0; t < x.size() / N; ++t) rot128(x.data() + t * N, N, sx.data());
+    }
+};
 
 struct Geo {
     size_t gu_row, d_row, up_off, down_off, bytes;
     explicit Geo(const Pair& p) {
-        gu_row = ggml_row_size(p.gu, N);
-        d_row = ggml_row_size(p.d, FF);
+        gu_row = row_size(p.gu, N);
+        d_row = row_size(p.d, FF);
         up_off = gu_row * FF;
         down_off = 2 * up_off;
         bytes = down_off + d_row * N;
+        if (nvfp4_pair(p)) bytes += 16;   // the blob's tail {s_gate, s_up, s_down, 0} (cpu::NativeFmt::tail_off = down_off + d_row n_embd)
     }
     fused::NativeGeom native(const Pair& p) const {
         fused::NativeGeom g;
@@ -91,16 +189,23 @@ bool f16_on() {
 
 // that the weights' typical size is that of a 2-3 bit expert (a few hundredths)
 void fill_matrix(uint8_t* m, ggml_type t, int64_t rows, int64_t cols, std::mt19937& rng) {
-    const size_t bs = ggml_type_size(t), nb = (size_t) rows * (size_t) (cols / ggml_blck_size(t));
+    const size_t bs = type_size(t), nb = (size_t) rows * (size_t) (cols / blck_size(t));
     std::uniform_int_distribution<int> byte(0, 255);
     const float lo = t == GGML_TYPE_Q4_K || t == GGML_TYPE_Q5_K ? 0.00004f : t == GGML_TYPE_Q5_1 ? 0.0006f
                    : t == GGML_TYPE_Q8_0 ? 0.0001f : t == GGML_TYPE_IQ3_S ? 0.0004f : t == GGML_TYPE_IQ4_XS ? 0.00005f
-                   : t == GGML_TYPE_IQ4_NL ? 0.0002f : t == GGML_TYPE_Q2_0 ? 0.004f : 0.0008f;
+                   : t == GGML_TYPE_IQ4_NL ? 0.0002f : t == GGML_TYPE_Q2_0 ? 0.004f : t == GGML_TYPE_Q6_K ? 0.000005f
+                   : tq_type(t) ? 0.003f : 0.0008f;
     std::uniform_real_distribution<float> sc(lo, 6.0f * lo);
     for (size_t i = 0; i < nb * bs; ++i) m[i] = (uint8_t) byte(rng);
+    if (t == GGML_TYPE_NVFP4) {   // four UE4M3 scale bytes then 32 bytes of codes: scales 0x28..0x58 (2^-2 .. 2^4 raw, finite, bit 7 clear), the codes as drawn
+        std::uniform_int_distribution<int> ub(0x28, 0x58);
+        for (size_t b = 0; b < nb; ++b)
+            for (int k = 0; k < 4; ++k) m[b * bs + (size_t) k] = (uint8_t) ub(rng);
+        return;
+    }
     for (size_t b = 0; b < nb; ++b) {
         const ggml_fp16_t h = ggml_fp32_to_fp16(sc(rng));
-        std::memcpy(m + b * bs, &h, 2);
+        std::memcpy(m + b * bs + (t == GGML_TYPE_Q6_K ? 208 : 0), &h, 2);   // (Q6_K keeps d at its end; its 16 int8 scales stay random bytes)
         if (t == GGML_TYPE_Q4_K || t == GGML_TYPE_Q5_K || t == GGML_TYPE_Q5_1) {   // the minimum's scale, either sign
             const ggml_fp16_t h2 = ggml_fp32_to_fp16(sc(rng) * ((rng() & 1) ? 1.0f : -1.0f) * (t == GGML_TYPE_Q5_1 ? 4.0f : 1.0f));
             std::memcpy(m + b * bs + 2, &h2, 2);
@@ -111,17 +216,38 @@ std::vector<uint8_t> make_blob(const Pair& p, const Geo& g, std::mt19937& rng) {
     std::vector<uint8_t> b(g.bytes);
     fill_matrix(b.data(), p.gu, 2 * FF, N, rng);
     fill_matrix(b.data() + g.down_off, p.d, N, FF, rng);
+    if (nvfp4_pair(p)) {   // the per-expert scales, about 1e-4 (a ModelOpt weight_scale_2): three of them, then a zero word
+        std::uniform_real_distribution<float> ss(2e-4f, 2e-3f);
+        const float t[4] = {ss(rng), ss(rng), ss(rng), 0.0f};
+        std::memcpy(b.data() + g.bytes - 16, t, 16);
+    }
     return b;
 }
 
-// ggml's dequantized weights: gate [640][2560], up [640][2560], down [2560][640]
-void dequant(const Pair& p, const Geo& g, const std::vector<uint8_t>& b, std::vector<float>& gu, std::vector<float>& dn) {
-    const auto* tg = ggml_get_type_traits(p.gu);
-    const auto* td = ggml_get_type_traits(p.d);
+// ggml's dequantized weights: gate [FF][N], up [FF][N], down [N][FF]
+// (the trellis types: tq_block above; int8cb = the int8 codebook the kernels read, for the int8 model)
+void dequant(const Pair& p, const Geo& g, const std::vector<uint8_t>& b, std::vector<float>& gu, std::vector<float>& dn, bool int8cb = false) {
     gu.resize((size_t) 2 * FF * N);
     dn.resize((size_t) N * FF);
+    if (tq_type(p.gu) || tq_type(p.d)) {
+        if (!tq_type(p.gu) || !tq_type(p.d)) throw std::runtime_error("a trellis pair needs both formats trellis");
+        for (int r = 0; r < 2 * FF; ++r)
+            for (int k = 0; k < N; k += 128) tq_block((int) p.gu, b.data() + (size_t) r * g.gu_row + (size_t) (k / 128) * type_size(p.gu), gu.data() + (size_t) r * N + k, int8cb);
+        for (int r = 0; r < N; ++r)
+            for (int k = 0; k < FF; k += 128) tq_block((int) p.d, b.data() + g.down_off + (size_t) r * g.d_row + (size_t) (k / 128) * type_size(p.d), dn.data() + (size_t) r * FF + k, int8cb);
+        return;
+    }
+    const auto* tg = ggml_get_type_traits(p.gu);
+    const auto* td = ggml_get_type_traits(p.d);
     for (int r = 0; r < 2 * FF; ++r) tg->to_float(b.data() + (size_t) r * g.gu_row, gu.data() + (size_t) r * N, N);
     for (int r = 0; r < N; ++r) td->to_float(b.data() + g.down_off + (size_t) r * g.d_row, dn.data() + (size_t) r * FF, FF);
+    if (nvfp4_pair(p)) {   // NVFP4: each projection times its own per-expert scale (the blob's tail), as llama.cpp applies .scale
+        float t[4];
+        std::memcpy(t, b.data() + g.bytes - 16, 16);
+        for (int r = 0; r < FF; ++r) for (int k = 0; k < N; ++k) gu[(size_t) r * N + k] *= t[0];
+        for (int r = FF; r < 2 * FF; ++r) for (int k = 0; k < N; ++k) gu[(size_t) r * N + k] *= t[1];
+        for (size_t i = 0; i < dn.size(); ++i) dn[i] *= t[2];
+    }
 }
 
 // activations: N(0, 1) with a few large values (the hidden state has outliers); token `zero` all zero
@@ -175,12 +301,15 @@ Routing sort_rows(const std::vector<int32_t>& ids, int E) {
 
 // MMQ, as prefill.cpp runs a native layer: per group of 16 routed experts a gather, gate/up, SwiGLU (gate rows, then
 // up rows), q8_1 of H, down.  Returns Dm [rows][N] in sorted-row order.
+// llama.cpp's mul_mat_q and its stream-k fixup read the row-id table up to a J-column tile (J <= 128) past the last row, up to roundup(max_rows, J) from an
+// expert's first row: the table takes mmq_ids_table_rows(rows, max_rows) entries (mmq_ids_margin.hpp), the identity written over all of them.
+size_t ids_table_rows(int64_t rows) { return (size_t) mmq::mmq_ids_table_rows((uint64_t) rows, (uint64_t) (rows / K)); }
 struct MmqBufs {
     Dev xq, gu, h, hq, dm, ident, bounds, grp_gu, grp_d;
     MmqBufs(const Pair& p, int64_t rows, int E)
-        : xq(mmq::q8_bytes(rows, N)), gu((size_t) rows * 1280 * 4), h((size_t) rows * FF * 4),
-          hq(mmq::q8_bytes(rows, FF)), dm((size_t) rows * N * 4), ident((size_t) rows * 4),
-          bounds((size_t) (2 * (E + E / GROUP + 2)) * 4), grp_gu(GROUP * mmq::matrix_bytes(p.gu, 1280, N) + 4096),
+        : xq(mmq::q8_bytes(rows, N)), gu((size_t) rows * FF2 * 4), h((size_t) rows * FF * 4),
+          hq(mmq::q8_bytes(rows, FF)), dm((size_t) rows * N * 4), ident(ids_table_rows(rows) * 4),
+          bounds((size_t) (2 * (E + E / GROUP + 2)) * 4), grp_gu(GROUP * mmq::matrix_bytes(p.gu, FF2, N) + 4096),
           grp_d(GROUP * mmq::matrix_bytes(p.d, N, FF) + 4096) {}
 };
 // `direct`: no gathers - the products read the blobs where they are (they must lie at a fixed stride, every expert
@@ -188,7 +317,7 @@ struct MmqBufs {
 void run_mmq(const Pair& p, const Geo& geo, mmq::Context& ctx, MmqBufs& b, const Routing& r, const float* x_dev,
              const int32_t* src_dev, const std::vector<const uint8_t*>& blob, int64_t rows, cudaStream_t s,
              bool direct = false, size_t stride = 0) {
-    const size_t gub = mmq::matrix_bytes(p.gu, 1280, N), db = mmq::matrix_bytes(p.d, N, FF);
+    const size_t gub = mmq::matrix_bytes(p.gu, FF2, N), db = mmq::matrix_bytes(p.d, N, FF);
     const int E = (int) r.cnt.size();
     std::vector<int32_t> order;
     for (int e = 0; e < E; ++e) if (r.cnt[(size_t) e] > 0) order.push_back(e);
@@ -200,7 +329,7 @@ void run_mmq(const Pair& p, const Geo& geo, mmq::Context& ctx, MmqBufs& b, const
         for (size_t i = 0; i <= GROUP; ++i)
             bh[n + 1 + g * (GROUP + 1) + i] = bh[std::min(n, g * GROUP + i)] - bh[g * GROUP];
     ck(cudaMemcpyAsync(b.bounds.p, bh.data(), bh.size() * 4, cudaMemcpyHostToDevice, s), "bounds");
-    mmq::iota(b.ident.as<int32_t>(), rows, s);
+    mmq::iota(b.ident.as<int32_t>(), (int64_t) ids_table_rows(rows), s);
     mmq::quantize(x_dev, src_dev, b.xq.p, (int) p.gu, N, N, rows, s);
     for (size_t j = 0; j < n; ++j) {
         const size_t q = j % GROUP;
@@ -220,12 +349,13 @@ void run_mmq(const Pair& p, const Geo& geo, mmq::Context& ctx, MmqBufs& b, const
         }
         const uint8_t* b0 = blob[(size_t) order[j0]];
         mmq::Product gu;
-        gu.w = direct ? (const void*) b0 : b.grp_gu.p; gu.type = (int) p.gu; gu.w_rows = 1280; gu.w_cols = N;
+        gu.w = direct ? (const void*) b0 : b.grp_gu.p; gu.type = (int) p.gu; gu.w_rows = FF2; gu.w_cols = N;
         gu.expert_bytes = direct ? stride : gub;
         gu.n = ngx; gu.xq = b.xq.p; gu.bounds = b.bounds.as<int32_t>() + j0; gu.ids = b.ident.as<int32_t>();
-        gu.total_rows = rows; gu.max_rows = maxr; gu.dst = b.gu.as<float>(); gu.ld_dst = 1280;
+        gu.total_rows = rows; gu.max_rows = maxr; gu.dst = b.gu.as<float>(); gu.ld_dst = FF2;
         ctx.run(gu, s);
-        mmq::swiglu(b.gu.as<float>() + r0 * 1280, b.h.as<float>() + r0 * FF, nr, FF, false, s);
+        mmq::swiglu(b.gu.as<float>() + r0 * FF2, b.h.as<float>() + r0 * FF, nr, FF, false, s);
+        if (g_rot_on) fused::hadamard128_rows(b.h.as<float>() + r0 * FF, nr, FF, g_rot_signs_dev, s);   // (--folded: the down input rotated)
         mmq::quantize(b.h.as<float>() + r0 * FF, nullptr, b.hq.p, (int) p.d, FF, FF, nr, s);
         mmq::Product dn;
         dn.w = direct ? (const void*) (b0 + geo.down_off) : b.grp_d.p; dn.type = (int) p.d; dn.w_rows = N; dn.w_cols = FF;
@@ -251,6 +381,8 @@ void run_fused(const Pair& p, const Geo& geo, FusedBufs& b, const float* x_dev, 
     const fused::NativeGeom ng = geo.native(p);
     fused::quantize_act_native(x_dev, T, N, b.xa.p, s);
     fused::group(b.ids.as<int32_t>(), rows, K, E, b.scratch.p, b.slot.as<int32_t>(), b.src.as<int32_t>(), s);
+    fused::set_down_rotation(g_rot_on, g_rot_signs_dev);   // (--folded trellis pairs; off for every other pair)
+    struct Off { ~Off() { fused::set_down_rotation(false, nullptr); } } off_at_end;
     for (size_t c = 0; c + 1 < cuts.size(); ++c) {
         for (int e0 = cuts[c]; e0 < cuts[c + 1]; e0 += fused::kMaxBatch) {
             fused::Batch bt;
@@ -310,9 +442,53 @@ std::vector<int32_t> download_i(const Dev& d, size_t n) {
     return h;
 }
 
+// K-quant gate/up pairs (Q4_K / Q5_K: a minimum per 32 values) are not judged against MMQ.  MMQ takes the minimum term from its own
+// activation sums (q8_1 / DS4 per 32 values, stored as half2) and so departs from the int8 model by 3-5e-3 rel RMS behind a Q8_0 down
+// (CUDA, RTX A6000 / PRO 5000 / PRO 6000: Q4_K / Q8_0 3.9-4.8e-3, Q5_K / Q8_0 2.8-3.5e-3; gfx1201 (lane OWN-4A): Q4_K / Q8_0 3.9-4.8e-3),
+// while MMQ and the int8 model are the same distance from FP32 in every shape (within 1%; 1.07-1.10x at the 1-token shape's 10 rows).
+// Rule: the int8 model as for every pair (rel RMS 2e-3, worst row 3e-2) AND FP32 no further than MMQ's own distance times
+// kKqRms (RMS) / kKqWorst (worst row); fused against MMQ is printed as information.  The i-quant pairs keep their rule.
+constexpr double kKqRms = 1.15, kKqWorst = 1.5;
+bool kq_gu(const Pair& p) { return p.gu == GGML_TYPE_Q4_K || p.gu == GGML_TYPE_Q5_K; }
+
+// A build WITHOUT MMQ (mmq::built() false) has no MMQ distance to measure against.  Its rule, for every pair:
+//   (a) the fused path against the int8-rounded model: as above (2e-3 rel RMS, 3e-2 worst row; 5e-3 RMS with STRATA_PF_F16=1);
+//   (b) the int8-rounded model's own distance to FP32 stays under the ceiling of the pair's class (a broken model cannot pass relative to itself);
+//   (c) the fused path's distance to FP32 is at most kOwnRel (RMS) / kOwnRelWorst (worst row) times the model's, plus kOwnAbs.
+// (MMQ and the model are the same distance from FP32 within 1% on every shape; the fused path equals the model to 1.001 x.)  Builds with MMQ keep
+// the rules above and below, unchanged.  The inputs come from the standard library's distributions, so the numbers differ between platforms
+// (libstdc++ on Linux, MSVC on Windows); the ceilings are the larger of the two plus a margin of about 1.5 to 1.75.
+// The model's distance to FP32, rel RMS / worst row, the largest over the shapes of the ctest entries (11-11, P4-SPLIT; RTX PRO 5000 sm_120 and
+// RTX A4000 sm_86 give the same numbers on Linux, RTX 5070 sm_120 on Windows):
+//   i-quant gate/up (base, nt256, f16, q50, q8d entries), Q6_K, Q8_0 / Q8_0:  Linux 1.60e-2 / 2.97e-2, Windows 1.60e-2 / 2.96e-2   -> kCeilDense
+//   Q2_0 / Q2_0, reference part: Linux 1.09e-2 / 4.69e-2, Windows 1.14e-2 / 4.50e-2                                        -> kCeilQ2
+//   Q2_0 / Q2_0, the 96-pair timing sample: Linux 2.71e-2 / 1.09e-1, Windows 2.42e-2 / 2.41e-1                            -> kCeilQ2Sample
+//   Q4_K / Q5_K gate/up (kq entry): Linux 1.49e-2 / 1.70e-1, Windows 3.68e-2 / 2.13e-1 (MMQ itself 3.70e-2 / 2.19e-1)    -> kCeilKq
+//   trellis (tq, tqh entries): Linux 2.20e-2 / 4.02e-2, Windows 2.19e-2 / 4.61e-2                                         -> kCeilTq
+// Against MMQ (kq entry, MMQ build): fused / MMQ at most 1.097 (RMS) and 1.23 (worst row) on Linux, 1.037 and 1.17 on Windows.
+constexpr double kOwnRel = 1.15, kOwnRelWorst = 1.5, kOwnAbs = 1e-3;
+struct Ceiling {
+    double rms, worst;
+};
+constexpr Ceiling kCeilDense{2.5e-2, 5.0e-2}, kCeilQ2{2.0e-2, 8.0e-2}, kCeilQ2Sample{4.5e-2, 3.6e-1}, kCeilKq{6.0e-2, 3.5e-1}, kCeilTq{3.5e-2, 7.5e-2};
+Ceiling model_ceiling(const Pair& p, bool sample) {
+    if (tq_type(p.gu)) return kCeilTq;
+    if (kq_gu(p)) return kCeilKq;
+    if (p.gu == GGML_TYPE_Q2_0 && p.d == GGML_TYPE_Q2_0) return sample ? kCeilQ2Sample : kCeilQ2;
+    return kCeilDense;
+}
+// ev: the int8-rounded model against FP32, ef: the fused path against FP32 (the same rows)
+void own_only_check(const Pair& p, const Err& ev, const Err& ef, bool sample) {
+    const std::string where = sample ? " (timing)" : "";
+    const Ceiling c = model_ceiling(p, sample);
+    if (ev.rms > c.rms || ev.worst > c.worst)
+        throw std::runtime_error(std::string(p.name) + ": the int8-rounded model is further from FP32 than the ceiling of its class (no-MMQ rule)" + where);
+    if (ef.rms > kOwnRel * ev.rms + kOwnAbs || ef.worst > kOwnRelWorst * ev.worst + kOwnAbs)
+        throw std::runtime_error(std::string(p.name) + ": the fused path is further from FP32 than the int8-rounded model (no-MMQ rule)" + where);
+}
+
 // part 1: against the double-precision reference
-void reference_part(const Pair& p, cudaStream_t s) {
-    constexpr int T = 256, E = 64, ZERO = 77;
+void reference_part(const Pair& p, cudaStream_t s, int T = 256, int E = 64, int ZERO = 77) {
     const Geo geo(p);
     std::mt19937 rng(136 + (unsigned) p.gu * 7 + (unsigned) p.d);
     std::vector<std::vector<uint8_t>> host((size_t) E);
@@ -325,10 +501,13 @@ void reference_part(const Pair& p, cudaStream_t s) {
         ck(cudaMemcpy(q, host[(size_t) e].data(), geo.bytes, cudaMemcpyHostToDevice), "blob");
         blob[(size_t) e] = q;
     }
-    const std::vector<float> x = make_x(T, rng, ZERO);
-    const std::vector<int32_t> ids = make_ids(T, E, rng, 2, 4);   // experts 0, 1 hot (several tiles), 60-63 unused
+    std::vector<float> x = make_x(T, rng, ZERO);
+    const std::vector<int32_t> ids = make_ids(T, E, rng, 2, E >= 64 ? 4 : 4);   // experts 0, 1 hot (several tiles), the last 4 unused
     const int64_t rows = (int64_t) T * K;
     const Routing r = sort_rows(ids, E);
+    const Folded fo(tq_type(p.gu), rows);   // (--folded trellis pairs: the signs, the H scratch; x rotated for every path and the reference)
+    fo.rotate_x(x);
+    if (fo.on) std::printf("%s - folded: the gate/up input and H rotated per 128 values with random signs\n", p.name);
     std::printf("%s - reference part: %d tokens, %d experts, rows per expert: max %d, experts without rows %d\n", p.name,
                 T, E, *std::max_element(r.cnt.begin(), r.cnt.end()), (int) std::count(r.cnt.begin(), r.cnt.end(), 0));
 
@@ -346,7 +525,7 @@ void reference_part(const Pair& p, cudaStream_t s) {
     ck(cudaMemcpy(fb.ids.p, ids.data(), ids.size() * 4, cudaMemcpyHostToDevice), "ids");
     ck(cudaMemset(fb.dm.p, 0xff, (size_t) rows * N * 4), "sentinel");   // an unwritten row is NaN
     ck(cudaDeviceSynchronize(), "uploads");
-    run_fused(p, geo, fb, x_dev.as<float>(), T, E, {0, 1, 20, E}, blob, s);
+    run_fused(p, geo, fb, x_dev.as<float>(), T, E, {0, 1, std::min(20, E - 1), E}, blob, s);
     ck(cudaStreamSynchronize(s), "sync");
     const std::vector<float> y_mmq = mq ? download(mbp->dm, (size_t) rows * N) : std::vector<float>((size_t) rows * N, 0.0f),
                              y_f = download(fb.dm, (size_t) rows * N);
@@ -361,10 +540,14 @@ void reference_part(const Pair& p, cudaStream_t s) {
     const int nth = std::max(1, std::min(16, (int) std::thread::hardware_concurrency()));
     for (int w = 0; w < nth; ++w)
         th.emplace_back([&, w] {
-            std::vector<float> gu, dn, h(FF), h2(FF), hq(FF), xq(N);
+            std::vector<float> gu, dn, gu8, dn8, h(FF), h2(FF), hq(FF), xq(N);
+            const bool tq = tq_type(p.gu);
             for (int e = w; e < E; e += nth) {
                 if (r.cnt[(size_t) e] == 0) continue;
                 dequant(p, geo, host[(size_t) e], gu, dn);
+                if (tq) dequant(p, geo, host[(size_t) e], gu8, dn8, true);   // (trellis: the int8 model reads the int8 codebook, as the kernels do)
+                const std::vector<float>& gm = tq ? gu8 : gu;
+                const std::vector<float>& dmw = tq ? dn8 : dn;
                 for (int64_t i = 0; i < rows; ++i) {
                     if (ids[(size_t) i] != e) continue;
                     const float* xr = x.data() + (size_t) (i / K) * N;
@@ -374,6 +557,7 @@ void reference_part(const Pair& p, cudaStream_t s) {
                         for (int k = 0; k < N; ++k) { gt += (double) wg[k] * xr[k]; up += (double) wu[k] * xr[k]; }
                         h[(size_t) f] = (float) (gt / (1.0 + std::exp(-gt)) * up);
                     }
+                    if (fo.on) rot128(h.data(), FF, fo.sh.data());   // (--folded: the down input rotated)
                     for (int o = 0; o < N; ++o) {
                         double a = 0;
                         const float* wd = dn.data() + (size_t) o * FF;
@@ -383,14 +567,15 @@ void reference_part(const Pair& p, cudaStream_t s) {
                     quant32(xr, xq.data(), N);
                     for (int f = 0; f < FF; ++f) {
                         double gt = 0, up = 0;
-                        const float *wg = gu.data() + (size_t) f * N, *wu = gu.data() + (size_t) (FF + f) * N;
+                        const float *wg = gm.data() + (size_t) f * N, *wu = gm.data() + (size_t) (FF + f) * N;
                         for (int k = 0; k < N; ++k) { gt += (double) wg[k] * xq[(size_t) k]; up += (double) wu[k] * xq[(size_t) k]; }
                         h2[(size_t) f] = (float) (gt / (1.0 + std::exp(-gt)) * up);
                     }
+                    if (fo.on) rot128(h2.data(), FF, fo.sh.data());
                     quant32(h2.data(), hq.data(), FF);
                     for (int o = 0; o < N; ++o) {
                         double a = 0;
-                        const float* wd = dn.data() + (size_t) o * FF;
+                        const float* wd = dmw.data() + (size_t) o * FF;
                         for (int f = 0; f < FF; ++f) a += (double) wd[f] * hq[(size_t) f];
                         ref2[(size_t) i * N + o] = (float) a;
                     }
@@ -416,13 +601,24 @@ void reference_part(const Pair& p, cudaStream_t s) {
     std::printf("  fused vs FP32 reference: rel RMS %.3e  worst row max rel %.3e\n", ef.rms, ef.worst);
     if (mq) std::printf("  fused vs MMQ           : rel RMS %.3e  worst row max rel %.3e\n", efm.rms, efm.worst);
     double zmax = 0;
-    for (int k = 0; k < K; ++k)
+    for (int k = 0; k < K && ZERO >= 0; ++k)
         for (int o = 0; o < N; ++o)
             zmax = std::max(zmax, (double) std::fabs(y_f[(size_t) slot[(size_t) (ZERO * K + k)] * N + o]));
     if (zmax != 0) throw std::runtime_error(std::string(p.name) + ": the all-zero token's outputs are not zero");
     if (!mq) {   // no MMQ here: the int8 activations' own error (the IQ pairs' fused path sits at ~1e-2 rel RMS)
+        if (!mmq::built()) {   // a build without MMQ at all: the rule of kOwnRel (the int8 model's own distance, with a ceiling per class)
+            const Err ev = compare(ref2, pair, ref, pair, (size_t) rows);
+            std::printf("  int8-rounded model vs FP32 reference: rel RMS %.3e  worst row max rel %.3e\n", ev.rms, ev.worst);
+            own_only_check(p, ev, ef, false);
+            return;
+        }
         if (ef.rms > 0.03 || ef.worst > 0.25)
             throw std::runtime_error(std::string(p.name) + ": the fused path's error against the reference is too large");
+        return;
+    }
+    if (kq_gu(p)) {   // the K-quant rule (kq_gu): the int8 model above, and FP32 no further than MMQ's own distance + the margin
+        if (ef.rms > kKqRms * em.rms || ef.worst > kKqWorst * em.worst)
+            throw std::runtime_error(std::string(p.name) + ": the fused path is further from the reference than MMQ (K-quant rule)");
         return;
     }
     if (ef.rms > 1.5 * em.rms || ef.worst > 2.0 * em.worst)
@@ -431,14 +627,14 @@ void reference_part(const Pair& p, cudaStream_t s) {
 
 // part 2: one layer at a real chunk, timed
 void timing_part(const Pair& p, int T, cudaStream_t s) {
-    static const int E = [] { const char* v = std::getenv("S20_E"); return v != nullptr && std::atoi(v) > 0 ? std::atoi(v) : 512; }();   // S20_E=256: the Coder pack
+    static const int E = [] { const char* v = std::getenv("S20_E"); return v != nullptr && std::atoi(v) > 0 ? std::atoi(v) : (int) strata::core::kCompiledGeometry.n_expert; }();   // S20_E=256: the Coder pack
     const Geo geo(p);
     std::mt19937 rng(1360);
     const int64_t rows = (int64_t) T * K;
     // 512 distinct blobs - the products read each once per tile, as the engine does
     // at a stride of whole blocks of both formats (MMQ's expert stride counts blocks), + MMQ's read past the end
-    size_t unit = ggml_type_size(p.gu);
-    while (unit % ggml_type_size(p.d) != 0 || unit % 16 != 0) unit += ggml_type_size(p.gu);
+    size_t unit = type_size(p.gu);
+    while (unit % type_size(p.d) != 0 || unit % 16 != 0) unit += type_size(p.gu);
     const size_t stride = (geo.bytes + unit - 1) / unit * unit;
     Dev blobs((size_t) E * stride + 4096);
     ck(cudaMemset(blobs.p, 0, (size_t) E * stride + 4096), "zero");
@@ -446,13 +642,31 @@ void timing_part(const Pair& p, int T, cudaStream_t s) {
         std::vector<uint8_t> b = make_blob(p, geo, rng);
         for (int e = 0; e < E; ++e) {
             b[4 + (size_t) (e % 16)] ^= (uint8_t) e;   // not all equal (inside the first block, not its scale)
-            ck(cudaMemcpy(blobs.as<uint8_t>() + (size_t) e * stride, b.data(), geo.bytes, cudaMemcpyHostToDevice),
+            ck(cudaMemcpy(blobs.as<uint8_t>() + (size_t) e * stride + g_blob_shift, b.data(), geo.bytes, cudaMemcpyHostToDevice),
                "blob");
         }
     }
     std::vector<const uint8_t*> blob((size_t) E);
-    for (int e = 0; e < E; ++e) blob[(size_t) e] = blobs.as<uint8_t>() + (size_t) e * stride;
-    const std::vector<float> x = make_x(T, rng, -1);
+    for (int e = 0; e < E; ++e) blob[(size_t) e] = blobs.as<uint8_t>() + (size_t) e * stride + g_blob_shift;
+    // --host-blobs=N: the first N experts' blobs live in pinned, mapped HOST memory (the kernels can still read them through the host pointer), not device memory: the weight-staging
+    // check of experts_native fails for the launches that hold one, which then take the unstaged kernel (no process exit); the output bits must equal the all-device run's
+    struct HostBlobs {
+        void* p = nullptr;
+        ~HostBlobs() { if (p) (void)cudaFreeHost(p); }
+    } host_blobs;
+    if (g_host_blobs > 0) {
+        const int nh = std::min(g_host_blobs, E);
+        ck(cudaHostAlloc(&host_blobs.p, (size_t) nh * stride + 4096, cudaHostAllocMapped), "cudaHostAlloc");
+        std::memset(host_blobs.p, 0, (size_t) nh * stride + 4096);
+        for (int e = 0; e < nh; ++e) {
+            uint8_t* dst = (uint8_t*) host_blobs.p + (size_t) e * stride + g_blob_shift;
+            ck(cudaMemcpy(dst, blob[(size_t) e], geo.bytes, cudaMemcpyDeviceToHost), "blob to host");
+            blob[(size_t) e] = dst;
+        }
+    }
+    std::vector<float> x = make_x(T, rng, -1);
+    const Folded fo(tq_type(p.gu), rows);   // (--folded trellis pairs: rotated input, the H rotation on both paths, inside their times)
+    fo.rotate_x(x);
     const std::vector<int32_t> ids = make_ids(T, E, rng, 0, 0);
     const Routing r = sort_rows(ids, E);
     Dev x_dev(x.size() * 4), src_dev((size_t) rows * 4);
@@ -505,7 +719,7 @@ void timing_part(const Pair& p, int T, cudaStream_t s) {
         }
     }
     // ~1 s of both first (the clocks ramp up), then alternating rounds; the medians
-    const bool no_mmq = !mq || std::getenv("S20_NOMMQ") != nullptr;   // (debug: the fused runs alone)
+    const bool no_mmq = !mq || std::getenv("S20_NOMMQ") != nullptr || g_host_blobs > 0;   // (debug: the fused runs alone; MMQ does not read host blobs)
     for (float spent = 0; spent < 1000.0f;) spent += (no_mmq ? 0.0f : once(mmq_run)) + once(fused_run);
     std::vector<float> tm, tf, td;
     for (int rep = 0; rep < 8; ++rep) {
@@ -540,6 +754,27 @@ void timing_part(const Pair& p, int T, cudaStream_t s) {
     std::printf("%s - timing part: %d tokens x top %d over %d experts, one layer: MMQ path %.3f ms, fused %.3f ms "
                 "(%.2fx); fused vs MMQ rel RMS %.3e worst row %.3e\n",
                 p.name, T, K, E, t_mmq, t_f, t_mmq / t_f, efm.rms, efm.worst);
+    // fused against MMQ pair by pair (information): the share of pairs that differ by more than 1e-5 of the pair's largest MMQ value, and the largest two.  Two int8 paths that round the
+    // activations differently disagree on a few pairs by up to a few 1e-3, and the largest of those over all pairs grows with their number (Q2_0 / Q2_0 on an RTX A4000, measured 11-13,
+    // 3,000 sampled pairs at 8,192 / 16,384 / 20,000 tokens: 15 .. 23 pairs above 1e-5, largest 4.5e-3 .. 5.8e-3, median 2.2e-7; the same two kernels sit at the same distance from FP32 as MMQ)
+    if (mq && !no_mmq) {
+        std::vector<double> rel((size_t) rows);
+        for (size_t i = 0; i < (size_t) rows; ++i) {
+            const float* a = y_f.data() + (size_t) slot[i] * N;
+            const float* m = y_mmq.data() + (size_t) r.row_of[i] * N;
+            double me = 0, mr = 0;
+            for (int o = 0; o < N; ++o) { me = std::max(me, (double) std::fabs(a[o] - m[o])); mr = std::max(mr, (double) std::fabs(m[o])); }
+            rel[i] = mr > 0 ? me / mr : (me > 0 ? 1e30 : 0.0);
+        }
+        size_t above = 0;
+        for (double v : rel) above += v > 1e-5;
+        std::vector<double> top(rel);
+        std::nth_element(top.begin(), top.begin() + (ptrdiff_t) (top.size() / 2), top.end());
+        const double med = top[top.size() / 2];
+        std::sort(rel.rbegin(), rel.rend());
+        std::printf("%s - fused vs MMQ per pair (information): %zu of %lld pairs above 1e-5, largest %.3e, second %.3e, median %.3e\n", p.name, above, (long long) rows,
+                    rel.size() > 0 ? rel[0] : 0.0, rel.size() > 1 ? rel[1] : 0.0, med);
+    }
     {   // the grouping: every pair in its expert's rows (the near-identical blobs here would hide a wrong expert)
         const std::vector<int32_t> fsrc = download_i(fb.src, (size_t) rows);
         int64_t bad = 0, bad_src = 0;
@@ -605,13 +840,14 @@ void timing_part(const Pair& p, int T, cudaStream_t s) {
     {
         std::vector<size_t> pick;
         for (size_t i = 0; i < 96; ++i) pick.push_back((i * 2654435761u) % (size_t) rows);
-        std::vector<float> ref(pick.size() * N), ym(pick.size() * N), yf(pick.size() * N);
+        std::vector<float> ref(pick.size() * N), ref2(pick.size() * N), ym(pick.size() * N), yf(pick.size() * N);
         std::vector<uint8_t> hb(geo.bytes);
-        std::vector<float> gu, dn, h(FF);
+        std::vector<float> gu, dn, h(FF), xq(N), h2(FF), hq(FF);
+        const bool own_model = !mmq::built() && !tq_type(p.gu);   // (the sample's int8 model reads the plain weights: not the trellis codebook)
         for (size_t j = 0; j < pick.size(); ++j) {
             const size_t i = pick[j];
             const int e = ids[i];
-            ck(cudaMemcpy(hb.data(), blob[(size_t) e], geo.bytes, cudaMemcpyDeviceToHost), "blob back");
+            ck(cudaMemcpy(hb.data(), blob[(size_t) e], geo.bytes, cudaMemcpyDefault), "blob back");   // (default kind: a --host-blobs blob is host memory)
             dequant(p, geo, hb, gu, dn);
             const float* xr = x.data() + (i / K) * N;
             for (int f = 0; f < FF; ++f) {
@@ -620,11 +856,28 @@ void timing_part(const Pair& p, int T, cudaStream_t s) {
                 for (int k = 0; k < N; ++k) { gt += (double) wg[k] * xr[k]; up += (double) wu[k] * xr[k]; }
                 h[(size_t) f] = (float) (gt / (1.0 + std::exp(-gt)) * up);
             }
+            if (fo.on) rot128(h.data(), FF, fo.sh.data());   // (--folded)
             for (int o = 0; o < N; ++o) {
                 double a = 0;
                 const float* wd = dn.data() + (size_t) o * FF;
                 for (int f = 0; f < FF; ++f) a += (double) wd[f] * h[(size_t) f];
                 ref[j * N + o] = (float) a;
+            }
+            if (kq_gu(p) || own_model) {   // the int8-rounded model on the sample (the K-quant rule, see kq_gu; a build without MMQ: every pair but the trellis ones)
+                quant32(xr, xq.data(), N);
+                for (int f = 0; f < FF; ++f) {
+                    double gt = 0, up = 0;
+                    const float *wg = gu.data() + (size_t) f * N, *wu = gu.data() + (size_t) (FF + f) * N;
+                    for (int k = 0; k < N; ++k) { gt += (double) wg[k] * xq[(size_t) k]; up += (double) wu[k] * xq[(size_t) k]; }
+                    h2[(size_t) f] = (float) (gt / (1.0 + std::exp(-gt)) * up);
+                }
+                quant32(h2.data(), hq.data(), FF);
+                for (int o = 0; o < N; ++o) {
+                    double a = 0;
+                    const float* wd = dn.data() + (size_t) o * FF;
+                    for (int f = 0; f < FF; ++f) a += (double) wd[f] * hq[(size_t) f];
+                    ref2[j * N + o] = (float) a;
+                }
             }
             if (mq) std::copy_n(y_mmq.begin() + (ptrdiff_t) ((size_t) r.row_of[i] * N), N, ym.begin() + (ptrdiff_t) (j * N));
             std::copy_n(y_f.begin() + (ptrdiff_t) ((size_t) slot[i] * N), N, yf.begin() + (ptrdiff_t) (j * N));
@@ -633,16 +886,126 @@ void timing_part(const Pair& p, int T, cudaStream_t s) {
         const Err em = mq ? compare(ym, id, ref, id, pick.size()) : Err{}, ef = compare(yf, id, ref, id, pick.size());
         std::printf("  sample of %zu pairs vs FP32 reference: MMQ rel RMS %.3e worst %.3e, fused rel RMS %.3e worst "
                     "%.3e\n", pick.size(), em.rms, em.worst, ef.rms, ef.worst);
+        if (own_model) {   // a build without MMQ: the rule of kOwnRel on the sample
+            const Err e2 = compare(yf, id, ref2, id, pick.size()), ev = compare(ref2, id, ref, id, pick.size());
+            std::printf("  sample of %zu pairs, fused vs the int8-rounded model: rel RMS %.3e worst %.3e; the model vs FP32: rel RMS %.3e worst %.3e\n",
+                        pick.size(), e2.rms, e2.worst, ev.rms, ev.worst);
+            if (e2.rms > (f16_on() ? 5e-3 : 2e-3) || e2.worst > 3e-2)
+                throw std::runtime_error(std::string(p.name) + ": the fused path differs from its own arithmetic's model (timing)");
+            own_only_check(p, ev, ef, true);
+        } else
+        if (kq_gu(p)) {
+            const Err e2 = compare(yf, id, ref2, id, pick.size());
+            std::printf("  sample of %zu pairs, fused vs the int8-rounded model: rel RMS %.3e worst %.3e\n", pick.size(), e2.rms, e2.worst);
+            if (e2.rms > (f16_on() ? 5e-3 : 2e-3) || e2.worst > 3e-2)
+                throw std::runtime_error(std::string(p.name) + ": the fused path differs from its own arithmetic's model (timing)");
+            if (mq && (ef.rms > kKqRms * em.rms || ef.worst > kKqWorst * em.worst))
+                throw std::runtime_error(std::string(p.name) + ": the fused path is further from the reference than MMQ (K-quant rule, timing)");
+        } else
         if (!mq ? (ef.rms > 0.03 || ef.worst > 0.25) : (ef.rms > 1.5 * em.rms || ef.worst > 2.0 * em.worst))
             throw std::runtime_error(std::string(p.name) + ": the fused path's error is not comparable to MMQ's (timing)");
     }
-    cudaEventDestroy(a);
-    cudaEventDestroy(b);
+    (void)cudaEventDestroy(a);
+    (void)cudaEventDestroy(b);
     delete mbp;
+    if (g_host_blobs > 0) {
+        const int fbk = fused::staged_blob_fallbacks();
+        std::printf("  host blobs (first %d experts): %d launches took the unstaged kernel (the staging check failed; no process exit)\n", g_host_blobs, fbk);
+        if (g_expect_fallback > 0 && fbk == 0) throw std::runtime_error(std::string(p.name) + ": --expect-fallback: no launch took the unstaged kernel");
+        if (g_expect_fallback < 0 && fbk != 0) throw std::runtime_error(std::string(p.name) + ": --expect-no-fallback: a launch took the unstaged kernel");
+    }
     // the two int8 paths at the real shape, every tile of the layer: R9700 rel RMS 1.3-1.9e-4, worst row 2.9e-3-8.3e-3
     // (STRATA_PF_F16=1: F16 products against MMQ's int8, gfx1151 rel RMS 2.5-2.7e-3, worst row 6.4e-3-8.8e-3)
-    if (mq && !no_mmq && (efm.rms > (f16_on() ? 5e-3 : 1e-3) || efm.worst > 2e-2))
+    // (K-quant gate/up pairs: fused against MMQ is information only, see kq_gu)
+    // Fused against MMQ is a comparison of two noisy paths with each other, not against the truth: its worst row is the largest of many tail values and grows with the row count (Q2_0 / Q2_0,
+    // RTX A4000: 1.0e-2 at 8,192 tokens, 2.6e-2 at 20,000 and 32,768 with rel RMS 2e-5, while both paths stand at the same distance from the FP32 reference).  So the worst row here is only a
+    // backstop against a wrong row (a few 1e-1 and up), and the pair statistics above are information; the check that a fused path is not further from FP32 than MMQ is the sample's
+    // (ef against em, 1.5x RMS and 2x worst row, or the K-quant and own-model rules), which does not grow with the row count.
+    if (mq && !no_mmq && !kq_gu(p) && (efm.rms > (f16_on() ? 5e-3 : 1e-3) || efm.worst > 1e-1))
         throw std::runtime_error(std::string(p.name) + ": the paths disagree at the real shape");
+}
+// --bits-staged: byte identity of the weight-staging kernels against the unstaged kernel of the same formats.  The same experts, input and routing run twice per size:
+// first with every blob in device memory (the staged 128-row instances where the pair has them, at blobs 2-byte aligned at eight different offsets modulo 16), then with every
+// blob in pinned, mapped HOST memory, where the staging check of experts_native fails and the launch takes the unstaged 64-row instances (sticky for the process, so all the
+// staged runs come first).  Every output float of every routed row must be the same bits.  Needs --only=NAME.
+struct BitsRun {
+    std::vector<float> y;
+    std::vector<int32_t> slot;
+    uint64_t hash = 0;
+};
+BitsRun bits_run(const Pair& p, int T, int E, bool host, cudaStream_t s) {
+    const Geo geo(p);
+    std::mt19937 rng(5100 + (unsigned) p.gu * 7 + (unsigned) p.d + (unsigned) T);
+    const int64_t rows = (int64_t) T * K;
+    const size_t stride = (geo.bytes + 64 + 15) / 16 * 16;
+    constexpr int kDistinct = 8;   // eight different blobs, repeated over the experts with a byte changed in each
+    std::vector<std::vector<uint8_t>> base;
+    for (int i = 0; i < kDistinct; ++i) base.push_back(make_blob(p, geo, rng));
+    Dev blobs((size_t) E * stride + 4096);
+    ck(cudaMemset(blobs.p, 0, (size_t) E * stride + 4096), "zero");
+    struct HostMem {
+        void* p = nullptr;
+        ~HostMem() { if (p) (void)cudaFreeHost(p); }
+    } hm;
+    if (host) {
+        ck(cudaHostAlloc(&hm.p, (size_t) E * stride + 4096, cudaHostAllocMapped), "cudaHostAlloc");
+        std::memset(hm.p, 0, (size_t) E * stride + 4096);
+    }
+    std::vector<const uint8_t*> blob((size_t) E);
+    for (int e = 0; e < E; ++e) {
+        std::vector<uint8_t> b = base[(size_t) (e % kDistinct)];
+        b[4 + (size_t) (e % 16)] ^= (uint8_t) e;
+        const size_t off = (size_t) e * stride + 2 * (size_t) (e % 8);   // 2-byte aligned, eight positions inside a 16-byte window
+        if (host) {
+            std::memcpy((uint8_t*) hm.p + off, b.data(), geo.bytes);
+            blob[(size_t) e] = (const uint8_t*) hm.p + off;
+        } else {
+            ck(cudaMemcpy(blobs.as<uint8_t>() + off, b.data(), geo.bytes, cudaMemcpyHostToDevice), "blob");
+            blob[(size_t) e] = blobs.as<uint8_t>() + off;
+        }
+    }
+    const std::vector<float> x = make_x(T, rng, T > 3 ? 1 : -1);
+    const std::vector<int32_t> ids = make_ids(T, E, rng, 2, 4);   // experts 0 and 1 hot (several tiles), the last 4 unused
+    Dev x_dev(x.size() * 4);
+    ck(cudaMemcpy(x_dev.p, x.data(), x.size() * 4, cudaMemcpyHostToDevice), "x");
+    FusedBufs fb(T, rows, E);
+    ck(cudaMemcpy(fb.ids.p, ids.data(), ids.size() * 4, cudaMemcpyHostToDevice), "ids");
+    ck(cudaMemset(fb.dm.p, 0xff, (size_t) rows * N * 4), "sentinel");   // an unwritten row is NaN
+    ck(cudaDeviceSynchronize(), "uploads");
+    run_fused(p, geo, fb, x_dev.as<float>(), T, E, {0, 1, std::min(20, E - 1), E}, blob, s);
+    ck(cudaStreamSynchronize(s), "sync");
+    BitsRun r;
+    r.y = download(fb.dm, (size_t) rows * N);
+    r.slot = download_i(fb.slot, (size_t) rows);
+    r.hash = 1469598103934665603ull;
+    for (size_t i = 0; i < (size_t) rows; ++i)
+        for (size_t c = 0; c < (size_t) N; ++c) { uint32_t u; std::memcpy(&u, &r.y[(size_t) r.slot[i] * N + c], 4); r.hash = (r.hash ^ u) * 1099511628211ull; }
+    return r;
+}
+// every pair's staged runs first (the fallback is sticky for the process), then every pair's unstaged runs
+void bits_staged(const std::vector<Pair>& ps, const std::vector<int>& sizes, int E, cudaStream_t s) {
+    std::vector<BitsRun> staged;
+    for (const Pair& p : ps)
+        for (int T : sizes) staged.push_back(bits_run(p, T, E, false, s));
+    if (fused::staged_blob_fallbacks() != 0) throw std::runtime_error("--bits-staged: a device-blob launch took the unstaged kernel");
+    size_t idx = 0;
+    for (const Pair& p : ps)
+        for (int T : sizes) {
+        const BitsRun u = bits_run(p, T, E, true, s);
+        if (fused::staged_blob_fallbacks() == 0) throw std::runtime_error(std::string(p.name) + ": --bits-staged: the host-blob run did not take the unstaged kernel");
+        const BitsRun& a = staged[idx++];
+        int64_t diff = 0, bad = 0, nz = 0;
+        for (size_t q = 0; q < (size_t) T * K; ++q) {
+            const float* ya = a.y.data() + (size_t) a.slot[q] * N;
+            const float* yb = u.y.data() + (size_t) u.slot[q] * N;
+            if (std::memcmp(ya, yb, (size_t) N * 4) != 0) ++diff;
+            for (int c = 0; c < N; ++c) { bad += !std::isfinite(ya[c]); nz += ya[c] != 0.0f; }
+        }
+        std::printf("%s - bits-staged: %d tokens x top %d over %d experts: staged vs unstaged %lld of %d rows differ, hash %016llx / %016llx, %lld non-finite, %lld nonzero values\n",
+                    p.name, T, K, E, (long long) diff, T * K, (unsigned long long) a.hash, (unsigned long long) u.hash, (long long) bad, (long long) nz);
+        if (diff != 0 || a.hash != u.hash) throw std::runtime_error(std::string(p.name) + ": --bits-staged: the staged and unstaged outputs differ");
+        if (bad != 0 || nz == 0) throw std::runtime_error(std::string(p.name) + ": --bits-staged: a non-finite or an all-zero output");
+    }
 }
 }  // namespace
 
@@ -650,14 +1013,29 @@ int main(int argc, char** argv) {
     try {
         // --unset-pf-fused: STRATA_PF_FUSED unset, as the engine's default (the ctest entry for the opt-in STRATA_PF_FUSED_Q2N=1,
         // whose Q2_0 / Q2_0 pair the engine takes with the old variable unset or at 1)
-        bool unset_pf = false;
-        for (int i = 1; i < argc; ++i)
+        // --no-kq: STRATA_PF_FUSED_KQ left as it is (HIP: the ctest entry for STRATA_PF_FUSED_Q8D=1 on gfx12, which must cover the i-quant / Q8_0
+        // pairs without the K-quant switch that also covers them there)
+        // --turing: the Turing set only (STRATA_PF_FUSED_SM75=1; the ctest entry prefill_fused_iq_test_sm75): skipped (77) unless the card is a compute capability 7.5 one or emulates it (STRATA_EMULATE_CC=75)
+        bool unset_pf = false, no_kq = false, turing_only = false;
+        for (int i = 1; i < argc; ++i) {
             if (std::strcmp(argv[i], "--unset-pf-fused") == 0) unset_pf = true;
+            if (std::strcmp(argv[i], "--no-kq") == 0) no_kq = true;
+            if (std::strcmp(argv[i], "--turing") == 0) turing_only = true;
+        }
+        if (turing_only) {
+            int cmaj = 0, cmin = 0;
+            if (cudaGetDeviceCount(&cmaj) != cudaSuccess || cmaj == 0) { std::printf("no CUDA device: skipped\n"); return 77; }
+            (void)cudaDeviceGetAttribute(&cmaj, cudaDevAttrComputeCapabilityMajor, 0);
+            (void)cudaDeviceGetAttribute(&cmin, cudaDevAttrComputeCapabilityMinor, 0);
+            if (strata::cc_major_of(cmaj) != 7 || strata::cc_minor_of(cmin) != 5) { std::printf("--turing: not a compute capability 7.5 card (and no STRATA_EMULATE_CC=75): skipped\n"); return 77; }
+        }
 #ifdef _WIN32
         if (unset_pf) _putenv_s("STRATA_PF_FUSED", ""); else _putenv_s("STRATA_PF_FUSED", "1");   // (an empty value removes it)
+        (void) no_kq;   // (Windows: the K-quant switch is not set here)
 #else
         if (unset_pf) unsetenv("STRATA_PF_FUSED"); else setenv("STRATA_PF_FUSED", "1", 1);
-        setenv("STRATA_PF_FUSED_KQ", "1", 1);   // (the HIP build's Q4_K / Q5_K / Q5_1 / Q8_0 pairs)
+        if (!no_kq) setenv("STRATA_PF_FUSED_KQ", "1", 1);   // (the HIP build's Q4_K / Q5_K / Q5_1 / Q8_0 pairs)
+        setenv("STRATA_PF_FUSED_Q50", "1", 1);  // (gfx12's Q5_0 down pairs)
 #endif
         int n = 0;
         if (cudaGetDeviceCount(&n) != cudaSuccess || n == 0) { std::printf("no CUDA device: skipped\n"); return 77; }
@@ -666,10 +1044,33 @@ int main(int argc, char** argv) {
             std::printf("the fused kernels need sm_80 or newer (or gfx11 / gfx12 matrix cores): skipped\n");
             return 77;
         }
+        // --no-kq (the STRATA_PF_FUSED_Q8D entry): a device or build where the i-quant / Q8_0 pairs are not covered without the K-quant switch
+        // (gfx11, or the switch unset) skips instead of failing
+        // (with STRATA_PF_FUSED_Q8GU=1 the probe is the Q8_0 / Q8_0 pair: the Q8GU entry asks the same of its own switch)
+        const char* q8gu_env = std::getenv("STRATA_PF_FUSED_Q8GU");
+        const bool probe_q8gu = q8gu_env != nullptr && q8gu_env[0] == '1';
+        if (no_kq && !fused::native_supported(probe_q8gu ? GGML_TYPE_Q8_0 : GGML_TYPE_IQ3_S, GGML_TYPE_Q8_0)) {
+            std::printf("--no-kq: the %s pairs are not covered here without STRATA_PF_FUSED_KQ (skipped)\n", probe_q8gu ? "Q8_0 / Q8_0" : "i-quant / Q8_0");
+            return 77;
+        }
+#if defined(__HIPCC__)
+        // the trellis pairs on HIP are gfx12's (STRATA_PF_FUSED_TQ=1): another AMD card skips the _tq / _tqh entries instead of failing; on gfx12
+        // the pairs must be covered (a host rule that does not take them fails below)
+        const char* only_tq = nullptr;
+        for (int i = 1; i < argc; ++i)
+            if (std::strncmp(argv[i], "--only=", 7) == 0) only_tq = argv[i] + 7;
+        if (only_tq != nullptr && std::strstr("TQK6 + TQK7 TQ2_T + TQ2_T Q6_K + Q8_0", only_tq) != nullptr) {   // (and the Q6_K pair: STRATA_PF_FUSED_Q6K=1 is gfx12's too)
+            cudaDeviceProp prop{};
+            if (cudaGetDeviceProperties(&prop, 0) == cudaSuccess && std::strncmp(prop.gcnArchName, "gfx12", 5) != 0) {
+                std::printf("the trellis / Q6_K pairs: gfx12 only on HIP (%s: skipped)\n", prop.gcnArchName);
+                return 77;
+            }
+        }
+#endif
         // with STRATA_PF_FUSED unset nothing is set up below sm_80 (Turing's pair is STRATA_PF_FUSED=1 STRATA_PF_FUSED_SM75=1's)
         if (unset_pf) {
             int major = 0;
-            cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, 0);
+            (void)cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, 0);
             if (strata::cc_major_of(major) < 8) { std::printf("STRATA_PF_FUSED unset: nothing is set up below sm_80 (skipped)\n"); return 77; }
         }
         // the opt-in kernel sets (STRATA_PF_FUSED_NT=256, _F16=1, _WS=1): a card that cannot set them up (shared memory,
@@ -684,7 +1085,7 @@ int main(int argc, char** argv) {
                 return 77;
             }
         }
-        if (!mmq::built()) { std::printf("no MMQ in this build\n"); return 1; }
+        if (!mmq::built()) std::printf("no MMQ in this build: the fused path against the references alone\n");
         const std::vector<Pair> pairs = {
             {GGML_TYPE_IQ2_S, GGML_TYPE_Q2_0, "IQ2_S / Q2_0"},       {GGML_TYPE_IQ2_XXS, GGML_TYPE_Q2_0, "IQ2_XXS / Q2_0"},
             {GGML_TYPE_IQ2_XS, GGML_TYPE_IQ4_NL, "IQ2_XS / IQ4_NL"}, {GGML_TYPE_IQ3_XXS, GGML_TYPE_IQ4_NL, "IQ3_XXS / IQ4_NL"},
@@ -695,16 +1096,37 @@ int main(int argc, char** argv) {
             // the Coder IQ1_M pack's other pairs (appended: the default timing set takes pairs 0, 1, 4, 3 by index)
             {GGML_TYPE_IQ2_S, GGML_TYPE_IQ4_NL, "IQ2_S / IQ4_NL"},   {GGML_TYPE_IQ3_XXS, GGML_TYPE_Q2_0, "IQ3_XXS / Q2_0"},
             {GGML_TYPE_IQ3_S, GGML_TYPE_Q2_0, "IQ3_S / Q2_0"},       {GGML_TYPE_IQ4_XS, GGML_TYPE_IQ4_NL, "IQ4_XS / IQ4_NL"},
+            // UD-IQ4_XS-v31's Q5_0 down layers (STRATA_PF_FUSED_Q50=1: HIP gfx12, and CUDA sm_80+ since phase 4 step 1; checked against the reference, the build has no Q5_0 MMQ)
+            {GGML_TYPE_IQ3_XXS, GGML_TYPE_Q5_0, "IQ3_XXS / Q5_0"},   {GGML_TYPE_IQ4_XS, GGML_TYPE_Q5_0, "IQ4_XS / Q5_0"},
             // the canonical Q2_0 pack (gate/up and down Q2_0; CUDA)
-            {GGML_TYPE_Q2_0, GGML_TYPE_Q2_0, "Q2_0 / Q2_0"}};
+            {GGML_TYPE_Q2_0, GGML_TYPE_Q2_0, "Q2_0 / Q2_0"},
+            // the pinned UD-IQ4_XS's Q8_0 down layers (IQ3_S / Q8_0 4, IQ4_XS / Q8_0 1): STRATA_PF_FUSED_Q8D=1 on CUDA sm_80+ (opt-in)
+            {GGML_TYPE_IQ3_S, GGML_TYPE_Q8_0, "IQ3_S / Q8_0"},       {GGML_TYPE_IQ4_XS, GGML_TYPE_Q8_0, "IQ4_XS / Q8_0"},
+            // the Q8_0 set's layers (and UD-Q6_K_XL's one Q8_0 layer): STRATA_PF_FUSED_Q8GU=1 on CUDA sm_80+ (opt-in)
+            {GGML_TYPE_Q8_0, GGML_TYPE_Q8_0, "Q8_0 / Q8_0"},
+            // UD-Q6_K_XL's layers (and UD-Q5_K_XL's one Q6_K layer): STRATA_PF_FUSED_Q6K=1 on CUDA sm_80+ (opt-in); MMQ = the K-quant library.
+            // Named with "+" so the _kq entry's --only="K / Q" does not take it
+            {GGML_TYPE_Q6_K, GGML_TYPE_Q8_0, "Q6_K + Q8_0"},
+            // Gyro-S (TQK6 gate/up, TQK7 down) and Gyro-M (TQ2_T both): STRATA_PF_FUSED_TQ=1 on CUDA sm_80+ (opt-in); MMQ = the overlay's trellis
+            // instances; the ids are agentionai's (the pinned ggml.h has no enumerators for them)
+            {(ggml_type) 145, (ggml_type) 146, "TQK6 + TQK7"},       {(ggml_type) 144, (ggml_type) 144, "TQ2_T + TQ2_T"},
+            // NVFP4 (ModelOpt packs: gate/up and down NVFP4, the blob's tail = the per-expert scales); STRATA_PF_FUSED=1 as the test sets it; CUDA sm_80+; against the reference alone
+            {GGML_TYPE_NVFP4, GGML_TYPE_NVFP4, "NVFP4 / NVFP4"}};
         const char* only = nullptr;   // --only=NAME: the pairs whose name contains NAME
         for (int i = 1; i < argc; ++i)
             if (std::strncmp(argv[i], "--only=", 7) == 0) only = argv[i] + 7;
         bool timing = true, ref = true;   // --no-timing, --no-ref: skip a part
+        bool edge = false;                // --edge: the tails and tile boundaries (a handful of tokens, one token, 130 / 517 / 640) of the Q5_0 pairs, for every pair
         std::vector<int> chunks = {2048, 3584, 8192};   // --chunks=A,B: the timing part's chunk sizes
         for (int i = 1; i < argc; ++i) {
             if (std::strcmp(argv[i], "--no-timing") == 0) timing = false;
             if (std::strcmp(argv[i], "--no-ref") == 0) ref = false;
+            if (std::strcmp(argv[i], "--edge") == 0) edge = true;
+            if (std::strncmp(argv[i], "--blob-shift=", 13) == 0) g_blob_shift = std::atoi(argv[i] + 13);
+            if (std::strncmp(argv[i], "--host-blobs=", 13) == 0) g_host_blobs = std::atoi(argv[i] + 13);
+            if (std::strcmp(argv[i], "--expect-fallback") == 0) g_expect_fallback = 1;
+            if (std::strcmp(argv[i], "--expect-no-fallback") == 0) g_expect_fallback = -1;
+            if (std::strcmp(argv[i], "--folded") == 0) g_folded = true;   // (the trellis pairs as Hadamard-folded experts: see g_folded)
             if (std::strncmp(argv[i], "--chunks=", 9) == 0) {
                 chunks.clear();
                 for (const char* c = argv[i] + 9; *c;) {
@@ -714,26 +1136,59 @@ int main(int argc, char** argv) {
                 }
             }
         }
+        int pairs_run = 0;   // (the pairs whose kernels this device has; --turing insists on at least one)
         cudaStream_t s = nullptr;
         ck(cudaStreamCreateWithFlags(&s, cudaStreamNonBlocking), "stream");
+        bool bits = false;
+        for (int i = 1; i < argc; ++i)
+            if (std::strcmp(argv[i], "--bits-staged") == 0) bits = true;
+        if (bits) {   // see bits_staged: tails (1, 33, 130, 517 tokens), a tile boundary and a real chunk
+            if (!only) throw std::runtime_error("--bits-staged needs --only=NAME");
+            std::vector<Pair> sel;
+            for (const Pair& p : pairs) {
+                if (std::string(p.name).find(only) == std::string::npos) continue;
+                if (!fused::native_supported((int) p.gu, (int) p.d)) throw std::runtime_error(std::string(p.name) + ": not covered by the native kernels");
+                sel.push_back(p);
+            }
+            if (sel.empty()) throw std::runtime_error("--bits-staged: no pair matches --only");
+            bits_staged(sel, {1, 33, 130, 517, 640, 2048}, 64, s);
+            ck(cudaStreamDestroy(s), "destroy");
+            std::printf("prefill fused MoE (native formats) staged-vs-unstaged bit identity passed\n");
+            return 0;
+        }
         for (const Pair& p : pairs) {
             if (only ? std::string(p.name).find(only) == std::string::npos : p.gu == GGML_TYPE_Q4_K || p.gu == GGML_TYPE_Q5_K) continue;
+            // the i-quant / Q8_0 and Q8_0 / Q8_0 pairs run only when --only names them (ctest prefill_fused_iq_test_q8d / _q8gu), so every
+            // other entry runs what it ran
+            if (!only && ((p.d == GGML_TYPE_Q8_0 && !kq_gu(p)) || tq_type(p.gu) || nvfp4_pair(p))) continue;   // (and the trellis pairs: _tq; the NVFP4 pair: _nvfp4)
             if (!fused::native_supported((int) p.gu, (int) p.d)) {
                 // the Q2_0 / Q2_0 pair is the Turing opt-in's (STRATA_PF_FUSED_SM75=1; the only pair set up there) or, on sm_80+,
                 // STRATA_PF_FUSED_Q2N=1's: skip what this device does not take (--only=NAME still insists)
                 const bool turing_pair = p.gu == GGML_TYPE_Q2_0 && p.d == GGML_TYPE_Q2_0;
+                const bool q50_pair = p.d == GGML_TYPE_Q5_0;   // (STRATA_PF_FUSED_Q50=1 only: off by default on CUDA and gfx12)
                 int major = 0;
-                cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, 0);
-                if ((major < 8 || turing_pair) && !only) { std::printf("%s: not set up on this device (skipped)\n", p.name); continue; }
+                (void)cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, 0);
+                major = strata::cc_major_of(major);   // (STRATA_EMULATE_CC=75 on a bigger card: the pairs Turing has no kernels for are skipped as on the real card)
+                if ((major < 8 || turing_pair || q50_pair) && (!only || turing_only)) { std::printf("%s: not set up on this device (skipped)\n", p.name); continue; }
                 throw std::runtime_error(std::string(p.name) + ": not covered by the native kernels");
             }
+            ++pairs_run;
             if (ref) reference_part(p, s);
+            // Q5_0 down (round 0217): tails and boundaries - a handful of tokens, one token, a tile's edge (63, 65 rows an expert is not controlled, the counts follow the routing)
+            if (ref && (p.d == GGML_TYPE_Q5_0 || edge)) {
+                reference_part(p, s, 33, 16, 5);
+                reference_part(p, s, 1, 16, -1);
+                reference_part(p, s, 130, 32, 77);
+                reference_part(p, s, 517, 32, 300);
+                if (edge) reference_part(p, s, 640, 16, 300);   // five 64-row tiles an expert: the paired-tile (128-row) kernels
+            }
         }
+        if (turing_only && pairs_run == 0) throw std::runtime_error("--turing: no pair has kernels on this device (the Turing set was not set up)");
         if (timing) {
             // the IQ2_XS pack's layers (34 of 48 IQ2_S / Q2_0, 11 IQ2_XXS / Q2_0), the IQ3_S pack's most common, IQ3_XXS's
             for (const Pair& p : only ? pairs : std::vector<Pair>{pairs[0], pairs[1], pairs[4], pairs[3]}) {
                 if (only && std::string(p.name).find(only) == std::string::npos) continue;
-                if (!fused::native_supported((int) p.gu, (int) p.d)) continue;   // (Turing: the Q2_0 pair only)
+                if (!fused::native_supported((int) p.gu, (int) p.d)) continue;   // (Turing: the Q2_0 pair and the i-quant pairs the Turing set takes)
                 for (int T : chunks) timing_part(p, T, s);
             }
         }

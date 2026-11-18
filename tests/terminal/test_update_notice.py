@@ -43,7 +43,7 @@ class Cached(UpdaterCase):
     def remember(self, **offers):
         state = self.components / ".updates" / "state.json"
         state.parent.mkdir(parents=True, exist_ok=True)
-        last = {"at": dt.datetime.now(dt.timezone.utc).isoformat(), "engine": None, "app": None, "dsv41": None,
+        last = {"at": dt.datetime.now(dt.timezone.utc).isoformat(), "engine": None, "app": None,
                 "control": ec.runtime_version(), "engine_installed": ec.newest_installed_version(self.components), **offers}
         state.write_text(json.dumps({"schema_version": 1, "last_check": last}))
 
@@ -163,8 +163,9 @@ class Offline(UpdaterCase):
     def run_check(self, feed, join=60.0, env=None):
         out, err = io.StringIO(), io.StringIO()
         before = time.monotonic()
+        from tests.terminal import net_dead
         with mock.patch.dict(os.environ, env or {}), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), \
-                self.assertNoLogs(level=logging.INFO):
+                self.assertNoLogs(level=logging.INFO), net_dead.no_name_resolution():          # (no real name service: the offline PC is faked)
             thread = engine_update.start_daily_check(root=self.components, feed=feed)
             started_in = time.monotonic() - before
             thread.join(join)
@@ -350,7 +351,9 @@ class Monitor(unittest.TestCase):
 @contextlib.contextmanager
 def tempfile_home():
     import tempfile
-    with tempfile.TemporaryDirectory(prefix="strata-notice-") as d:
+    # A check the app started in the background may still hold .updates/update.lock when the case ends (a file in use cannot be deleted on
+    # Windows); the folder is scratch, so a leftover is not a failure of the case.
+    with tempfile.TemporaryDirectory(prefix="strata-notice-", ignore_cleanup_errors=True) as d:
         yield d
 
 

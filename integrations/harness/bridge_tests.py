@@ -11,7 +11,7 @@ and they run without model weights:
 
 What they do NOT prove: inference quality, tokens-per-second, or tool correctness against a real
 model. The worker runs its built-in `MockEngine` because no Strata pack fits this development Mac
-(docs/work/IMPLEMENTATION_STATUS.md section 3.2). Every assertion here is about the *path*.
+(history/docs/work/IMPLEMENTATION_STATUS.md section 3.2). Every assertion here is about the *path*.
 
 The reusable helpers live in `_bridge.py`; `bridge_e2e.py` is the single-behaviour convenience
 wrapper around the `default` case.

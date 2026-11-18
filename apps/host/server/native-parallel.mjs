@@ -101,7 +101,7 @@ export function engineFacts(config = {}) {
  * @param {object} [input.values]          what the person set for this load (Expert mode's "Concurrent requests")
  * @param {object} [input.hardware]        the host's hardware read (`gpus[{index, vram_gb}]`)
  * @param {number} [input.requested]       the default to aim for
- * @param {string} [input.drafter]         the drafter this load runs (resolveDrafter): dflash2 answers one request at a time
+ * @param {string} [input.drafter]         the drafter this load runs (resolveDrafter): with dflash2 the app fills in one request at a time unless the person chose a number
  * @returns {{slots:number, batchMtp:boolean, explicit:boolean, requested:number, note:string|null, slotGb:number}}
  */
 export function chooseParallel({ config = {}, values = {}, hardware = null, requested = DEFAULT_SLOTS, drafter = null }) {
@@ -112,10 +112,14 @@ export function chooseParallel({ config = {}, values = {}, hardware = null, requ
   // A number someone chose (including 1) is the person's decision, and so is an explicit --batch in the engine arguments.
   if (facts.explicitBatch || (chosen !== null && Number.isFinite(chosen))) {
     const slots = facts.explicitBatch ? null : Math.max(1, Math.min(1024, Math.trunc(chosen)));
+    // DFlash2 chosen by name with a number of requests (owner, 2026-11-03: the person's own choice wins) runs DFlash2 with that many requests, a drafter per request
+    // (strata_control/drafting.py blocked_by `named`). Expert mode's batch-mtp wish is still added here as in 0.2.10: the server knows the backend and the engine, takes
+    // --batch-mtp out when DFlash2 runs, and keeps it when the MTP runs instead (Metal, which has no per-request drafters).
     const wantMtp = (values.batchMtp ?? config.batchMtp) === true && !facts.batchMtp && facts.mtp && facts.gpus.length === 1 && (slots ?? 0) > 1;
     return { slots: slots ?? 0, batchMtp: wantMtp, explicit: true, requested, note: null, slotGb: slot };
   }
-  // DFlash2 chosen on purpose: it answers one request at a time, and request slots would keep the MTP (the engine says "not --batch"). Nobody chose a number here, so one.
+  // DFlash2 (named, or Auto where the engine has it) and nobody chose a number of requests: one at a time, the app does not fill in slots beside it. (A number the person chose is kept
+  // above: DFlash2 named runs it with that many requests; Auto keeps the MTP for several.)
   if ((drafter ?? ((values.drafting ?? config.drafting) === 'dflash2' ? 'dflash2' : null)) === 'dflash2') return { slots: 1, batchMtp: false, explicit: false, requested, note: DFLASH2_NOTE, slotGb: slot };
   const cards = (hardware?.gpus ?? []).filter(g => facts.gpus.includes(g.index)).map(g => Number(g.vram_gb)).filter(n => Number.isFinite(n) && n > 0);
   // Without a hardware read nothing can be sized: one at a time is the safe default (a number can still be chosen).

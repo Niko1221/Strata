@@ -108,11 +108,17 @@ void copy_i32(int32_t* dst, const int32_t* src, int64_t n, void* stream);
 /// dst[0, n) = src[0, n) in 16-byte loads (both 16-byte aligned; src may be mapped host memory: read over PCIe by
 /// the kernel, not queued on a copy engine).
 void copy_f32_wide(float* dst, const float* src, int64_t n, void* stream);
+/// Few-row experts (fewrows.hpp): writes one expert's native_expert_grouped plan on the device, so no host buffer is
+/// involved: rec = {u64 blob, i32 start[2] = {0, ne}, i32 n_groups = 1, i32 pad, i32 dst[ne] = o0 + i}.  1 <= ne <= 32.
+void fewrows_record(void* rec, const void* blob, int ne, int o0, void* stream);
 /// Gather rows: dst16[i, :] = x16[src[i], :] (n rows of `width` BF16).
 void gather_rows16(const uint16_t* x16, const int32_t* src, uint16_t* dst16, int64_t n, int64_t width, void* stream);
 /// bo[t, :] = shared[t, :] * sigmoid(sg[t]) + sum_k w[t, k] * D[slot[t, k], :]
 void moe_combine(const float* D, const int32_t* slot, const float* w, const float* shared, const float* sg, float* bo,
                  int64_t T, void* stream, const float* row_sd = nullptr);
+/// moe_combine with the expert rows as FP16 (2,560 halves a row, fused::dm_f16_used()); shared and bo 16-byte aligned.
+void moe_combine16(const uint16_t* Dm16, const int32_t* slot, const float* w, const float* shared, const float* sg, float* bo, int64_t T,
+                   void* stream);
 /// Layer-major prefill (STRATA_PREFILL_LAYER_MAJOR=1): acc[t, :] = shared[t, :] * sigmoid(sg[t]) - the shared expert's
 /// part of moe_combine, written before the routed experts are known.
 void moe_shared_init(const float* shared, const float* sg, float* acc, int64_t T, void* stream);

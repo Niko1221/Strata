@@ -1,8 +1,11 @@
 // The chat's own folder and opening its files by path.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, symlinkSync, existsSync, readFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, symlinkSync, existsSync, readFileSync, realpathSync } from 'node:fs';
+import { tmpdir as osTmpdir } from 'node:os';
+// the canonical scratch root: on a Mac the temp folder is /var/folders/..., which the folder policy refuses as a system folder and which
+// is /private/var/... once resolved; the tests make their folders under the resolved name (the policy itself is unchanged)
+const tmpdir = () => realpathSync(osTmpdir());
 import { join } from 'node:path';
 import { createChatFolders, openFile, openCommand, resolveChatFile, refusedFolder } from '../server/chat-files.mjs';
 import { startScriptedWorker } from './helpers/scripted-worker.mjs';
@@ -30,6 +33,11 @@ test('a chat folder is remembered per chat, must exist, and is never a system fo
     rmSync(mine, { recursive: true }); assert.equal(a.get('c1'), null, 'a deleted folder falls back to the default'); assert.equal(a.info('c1').exists, false);
     a.clear('c1'); assert.equal(a.info('c1'), null);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a drive the desktop mounted (/run/media/<user>/<drive>) is a fine chat folder; the rest of /run is still system', { skip: process.platform === 'win32' && 'POSIX paths' }, () => {
+  for (const p of ['/run/media/ann/Backup', '/run/media/ann/Backup/projects/pagoda', '/media/ann/Backup/x', '/mnt/data/x']) assert.equal(refusedFolder(p), null, p);
+  for (const p of ['/run', '/run/media', '/run/media/ann', '/run/user/1000/x', '/run/systemd', '/usr/share', '/etc', '/var/lib/x']) assert.match(refusedFolder(p), /system folder/, p);
 });
 
 test('files open by path from inside the folder only; the browser gets a file:// address', () => {

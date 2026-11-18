@@ -31,7 +31,7 @@ def tree(root: Path) -> dict:
     for p in sorted(root.rglob("*")):
         if p.is_file():
             st = p.stat()
-            out[str(p.relative_to(root))] = (st.st_size, st.st_mtime_ns)
+            out[p.relative_to(root).as_posix()] = (st.st_size, st.st_mtime_ns)
     return out
 
 

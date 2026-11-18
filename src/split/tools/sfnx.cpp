@@ -64,6 +64,7 @@ void say(const std::string& line) {
 
 struct Args {
     std::string gguf, mtp_dir, draft_vocab;
+    std::string draft = "mtp", draft_model;   // --draft mtp|dflash2 (FNX_DRAFT), --draft-model PACK: DFlash2's runtime pack (tools/dflash2_pack.py)
     int max_ctx = 262144, K = 6, lookup = 15, batch = 1;
     long cache_mib = 0;   // checkpoints and parked conversations in host memory (0: none)
     bool vision = false;  // GENI / BGENI: prompts with images (embeddings from sfnx-vision)
@@ -82,6 +83,8 @@ Args parse_args(int argc, char** argv) {
         else if (k == "--native") a.gguf = val();
         else if (k == "--mtp") a.mtp_dir = val();
         else if (k == "--draft-vocab") a.draft_vocab = val();
+        else if (k == "--draft") a.draft = val();
+        else if (k == "--draft-model") a.draft_model = val();
         else if (k == "--max-context") a.max_ctx = std::stoi(val());
         else if (k == "--spec") a.K = std::stoi(val());
         else if (k == "--lookup") a.lookup = std::stoi(val());
@@ -98,7 +101,13 @@ Args parse_args(int argc, char** argv) {
         else throw std::runtime_error("unknown argument " + k);
     }
     if (!serve) throw std::runtime_error("sfnx runs as --serve");
-    if (a.gguf.empty() || a.mtp_dir.empty()) throw std::runtime_error("--native and --mtp are required");
+    if (const char* e = std::getenv("FNX_DRAFT"); e && e[0]) a.draft = e;
+    if (a.draft != "mtp" && a.draft != "dflash2") throw std::runtime_error("--draft takes mtp or dflash2");
+    if (a.draft == "dflash2") {
+        if (a.gguf.empty() || a.draft_model.empty() || (a.draft_vocab.empty() && a.mtp_dir.empty()))
+            throw std::runtime_error("--draft dflash2 needs --native, --draft-model PACK and --draft-vocab FILE (or --mtp DIR for DIR/draft_vocab.bin)");
+        if (a.draft_vocab.empty()) a.draft_vocab = a.mtp_dir + "/draft_vocab.bin";
+    } else if (a.gguf.empty() || a.mtp_dir.empty()) throw std::runtime_error("--native and --mtp are required");
     if (a.batch < 1 || a.batch > MAX_SLOTS) throw std::runtime_error("--batch must be 1.." + std::to_string(MAX_SLOTS));
     fnx::rope_scale();   // a bad scale stops here, not after the minute of loading (the context's limit needs the model)
     return a;
@@ -812,6 +821,7 @@ struct Server {
         fnx::GenStats st;
         try {
             reading = slot;
+            e.set_pass_rows(any_decoding() ? 8192 : 0);   // other requests decode: they run between passes, so a pass stays at most 8192 rows (what 2 chunks of 4096 were)
             s.read(r.ids, st, progress(-1, r.seq), r.hints);
             reading = -1;
         } catch (const Interrupted& it) {
@@ -898,6 +908,7 @@ struct Server {
         fnx::GenStats st;
         try {
             reading = i;
+            e.set_pass_rows(any_decoding() ? 8192 : 0);
             s.read(r.ids, st, progress(i, r.seq), r.hints);
             reading = -1;
         } catch (const Interrupted& it) {
@@ -1024,6 +1035,58 @@ void check_test_prompt() {
     std::fprintf(stderr, "sfnx: SFNX_TEST_PROMPT: every text request reads %s instead of its own tokens\n", tp);
 }
 
+float half_bits_to_float(uint16_t h) {
+    const uint32_t sign = (uint32_t) (h & 0x8000u) << 16;
+    uint32_t e = (h >> 10) & 0x1f, mant = h & 0x3ffu, bits;
+    if (e == 0) {
+        if (mant == 0) bits = sign;
+        else {   // subnormal
+            e = 127 - 15 + 1;
+            while (!(mant & 0x400u)) mant <<= 1, --e;
+            bits = sign | (e << 23) | ((mant & 0x3ffu) << 13);
+        }
+    } else if (e == 31) bits = sign | 0x7f800000u | (mant << 13);
+    else bits = sign | ((e + 127 - 15) << 23) | (mant << 13);
+    float f;
+    std::memcpy(&f, &bits, 4);
+    return f;
+}
+
+// DFlash2 (src/df2_bridge.hpp): the pack, the draft vocabulary's rows of output.weight and the embedding of a token (the model's Q8_0 rows, dequantized as
+// Engine::embed_token does) handed to the bridge, which puts them on the first card
+void load_dflash2(fnx::df2::Bridge& br, const fnx::Model& m, const Args& a) {
+    std::vector<int32_t> vocab;
+    {
+        std::FILE* f = std::fopen(a.draft_vocab.c_str(), "rb");
+        if (!f) throw std::runtime_error("dflash2: cannot open the draft vocabulary " + a.draft_vocab);
+        int32_t id;
+        while (std::fread(&id, 4, 1, f) == 1) vocab.push_back(id);
+        std::fclose(f);
+        if (vocab.empty()) throw std::runtime_error("dflash2: " + a.draft_vocab + " is empty");
+        for (int32_t t : vocab)
+            if (t < 0 || t >= m.vocab) throw std::runtime_error("dflash2: " + a.draft_vocab + " holds a token outside the vocabulary");
+    }
+    const fnx::Tensor* out = m.g.find("output.weight");
+    if (!out || out->type != fnx::T_Q8_0) throw std::runtime_error("dflash2: output.weight is not Q8_0");
+    const size_t rb = out->row_bytes();
+    std::vector<uint8_t> rows(vocab.size() * rb);
+    for (size_t i = 0; i < vocab.size(); ++i) std::memcpy(rows.data() + i * rb, out->data + (size_t) vocab[i] * rb, rb);
+    const fnx::Tensor* te = m.tok_embd;
+    auto embed = [te, &m](int tok, float* o) {
+        if (tok < 0 || tok >= m.vocab) throw std::runtime_error("dflash2: embedding of token " + std::to_string(tok));
+        const uint8_t* row = te->data + (size_t) tok * te->row_bytes();
+        for (int b = 0; b < fnx::N / 32; ++b) {
+            uint16_t dh;
+            std::memcpy(&dh, row + b * 34, 2);
+            const float d = half_bits_to_float(dh);
+            for (int j = 0; j < 32; ++j) o[b * 32 + j] = d * (float) (int8_t) row[b * 34 + 2 + j];
+        }
+    };
+    std::string err;
+    if (!br.load(a.draft_model, m.cards[0].dev, a.batch, vocab, rows.data(), rb, 8, embed, err)) throw std::runtime_error(err);
+    std::fprintf(stderr, "sfnx: DFlash2 on card 0: %zu draft tokens, %d drafter(s), %.0f MiB of VRAM\n", vocab.size(), br.lanes(), (double) br.vram_bytes() / 1048576.0);
+}
+
 // the engine state after a failure part way is unknown: say why and _exit at once (the front end starts it again). No
 // destructors: freeing the conversation cache's pinned memory takes minutes, and the stdin reader thread keeps the
 // process up, while the front end waits for the ERR line or EOF
@@ -1051,12 +1114,19 @@ int main(int argc, char** argv) {
     // made in place and failed like the rest, so a card or link refused at load ends with its reason too
     std::optional<fnx::Model> m;
     std::optional<fnx::Mtp> mtp;
+    std::optional<fnx::df2::Bridge> df2;
     std::optional<fnx::Engine> e;
     try {
         m.emplace(a.gguf.c_str());
-        mtp.emplace(*m, a.mtp_dir, a.draft_vocab);
+        if (a.draft == "dflash2") {
+            df2.emplace();
+            load_dflash2(*df2, *m, a);   // before the Engine: it sizes its K/V pool from what is left on the cards
+        } else {
+            mtp.emplace(*m, a.mtp_dir, a.draft_vocab);
+        }
         e.emplace(*m, a.max_ctx, a.batch);
-        e->mtp_attach(*mtp);
+        if (mtp) e->mtp_attach(*mtp);
+        else e->df2_attach(*df2);
     } catch (const std::exception& ex) {
         fail(ex);
     }
