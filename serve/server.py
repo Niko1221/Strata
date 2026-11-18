@@ -4568,7 +4568,10 @@ def engine_arch_note(cfg: dict, cards: dict[int, int] | None = None, built: dict
             if not isinstance(exe, str) or engine_component.is_reference(exe):
                 return None
             built = json.loads((Path(exe).parent / "BUILD.json").read_text(encoding="utf-8-sig"))
-        archs = sorted({int(re.sub(r"\D", "", str(a))) for a in built.get("archs") or [] if re.sub(r"\D", "", str(a))})
+        raw = built.get("archs")
+        if isinstance(raw, str):                      # BUILD.json "archs" / "vision_archs" can be one "86;89;120" string: split it, do not walk its characters (#3810, as setup.arch_numbers does)
+            raw = re.split(r"[;,\s]+", raw)
+        archs = sorted({int(re.sub(r"\D", "", str(a))) for a in (raw or []) if re.sub(r"\D", "", str(a))})
         if not archs:
             return None
         if cards is None:
