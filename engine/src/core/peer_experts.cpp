@@ -90,7 +90,7 @@ void disable_peer_access_if_owned(int from, int to, bool enabled_here) {
     if (!enabled_here) return;
     On on(from);
     const cudaError_t rc = cudaDeviceDisablePeerAccess(to);
-    if (rc != cudaSuccess && rc != cudaErrorPeerAccessNotEnabled) cudaGetLastError();
+    if (rc != cudaSuccess) cudaGetLastError();
 }
 
 bool ck(cudaError_t e, const char* what, std::string& err) {
