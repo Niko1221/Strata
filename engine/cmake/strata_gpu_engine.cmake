@@ -1222,7 +1222,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_include_directories(cvec_parity PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(cvec_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   add_test(NAME cvec_parity COMMAND cvec_parity)
-  # the LoRA adapter's kernels vs double precision, the request switch through a captured graph (GPU, synthetic)
+  # LoRA kernels versus double precision and the request switch through a captured graph.
   add_executable(lora_parity src/kernels/lora_parity.cpp)
   target_include_directories(lora_parity PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(lora_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
