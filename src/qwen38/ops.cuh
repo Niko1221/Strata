@@ -27,8 +27,17 @@ struct alignas(8) BlockQ8_1 {
     int32_t qs[8];
 };
 void quantize_q8_1(const float* input, BlockQ8_1* output, int n, cudaStream_t stream);
+void rms_quantize_q8_1(const float* x, const float* weight, float* out_f32, BlockQ8_1* out_q8, int n, float eps, cudaStream_t s);
+void swiglu_quantize_q8_1(float* gate, const float* up, BlockQ8_1* out_q8, int n, cudaStream_t s);
 void matvec_q8_1(int type, const void* weights, const BlockQ8_1* input_q8, const float* input_f32,
                  float* output, int n, int rows, cudaStream_t stream);
+void matvec_q8_1_dual(int type, const void* w0, float* y0, int rows0,
+                      const void* w1, float* y1, int rows1,
+                      const BlockQ8_1* x_q8, const float* x_f32, int n, cudaStream_t s);
+void matvec_q8_1_triple(int type, const void* w0, float* y0, int rows0,
+                        const void* w1, float* y1, int rows1,
+                        const void* w2, float* y2, int rows2,
+                        const BlockQ8_1* x_q8, const float* x_f32, int n, cudaStream_t s);
 void rms(const float* x,const float* weight,float* out,int n,float eps,cudaStream_t s);
 void rms_batch(const float* x,const float* weight,float* out,int rows,int n,float eps,cudaStream_t s);
 void add(float* x,const float* y,int n,cudaStream_t s);

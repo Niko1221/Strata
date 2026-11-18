@@ -1,6 +1,9 @@
 // Independent FP64 host references for the production CUDA operations.
 // Tolerances are fixed before running: see check_close() call sites and README.md.
+#define Q38_IQ_HOST_TABLE
 #include "ops.cuh"
+#include "iq_tables.hpp"
+#include "iq_decode.hpp"
 #include "resources.hpp"
 #include "strata/kernels/fused_gdn.hpp"
 #include <vector>
@@ -96,5 +99,274 @@ static void attention(cudaStream_t s){admission();constexpr int ctx=9,H=24,KV=4,
     }
     bool rejected=false;try{Q::attention_apply(q.as(),gate.as(),kc.as<half>(),vc.as<half>(),out.as(),scores.as(),ctx,ctx,s);}catch(...){rejected=true;}demand(rejected,"context overrun accepted");kc.zero(s);vc.zero(s);Q::ck(cudaStreamSynchronize(s));std::puts("PASS attention capacity/reset");
 }
+static std::vector<double> reference_ext(int ty, const std::vector<uint8_t>& bytes, int n) {
+    if (ty == 21 || ty == 22) {
+        std::vector<double> y(n);
+        const int sz = (ty == 21) ? 110 : 82;
+        for (int b = 0; b < n / 256; ++b) {
+            const uint8_t* p = bytes.data() + size_t(b) * sz;
+            const float d = float(loadh(p));
+            for (int j = 0; j < 256; ++j) {
+                y[size_t(b) * 256 + j] = Q::iq_value(ty, p, j, d, q38_iq2s_grid, q38_iq3s_grid);
+            }
+        }
+        return y;
+    }
+    return reference(ty, bytes, n);
+}
+
+static std::vector<Q::BlockQ8_1> read_q8(const Q::Buffer& b) {
+    std::vector<Q::BlockQ8_1> v(b.bytes / sizeof(Q::BlockQ8_1));
+    Q::ck(cudaMemcpy(v.data(), b.data, b.bytes, cudaMemcpyDeviceToHost));
+    return v;
+}
+
+static void check_q8_blocks_equal(const std::vector<Q::BlockQ8_1>& got, const std::vector<Q::BlockQ8_1>& want, const char* name) {
+    demand(got.size() == want.size(), "q8 block count mismatch");
+    for (size_t i = 0; i < got.size(); ++i) {
+        demand(got[i].d == want[i].d && got[i].s == want[i].s, name);
+        for (int k = 0; k < 8; ++k) demand(got[i].qs[k] == want[i].qs[k], name);
+    }
+}
+
+static std::vector<double> dequant_q8_1_host(const std::vector<Q::BlockQ8_1>& blks) {
+    std::vector<double> out(blks.size() * 32);
+    for (size_t b = 0; b < blks.size(); ++b) {
+        const double d = blks[b].d;
+        for (int k = 0; k < 8; ++k) {
+            const uint32_t w = uint32_t(blks[b].qs[k]);
+            for (int j = 0; j < 4; ++j) {
+                out[b * 32 + k * 4 + j] = d * double(int8_t((w >> (8 * j)) & 0xFFu));
+            }
+        }
+    }
+    return out;
+}
+
+static std::vector<uint8_t> make_packed_weights(int ty, int n, int rows, uint32_t seed_add) {
+    const int block = (ty == 142) ? 128 : (ty == 8) ? 32 : 256;
+    const int size = (ty == 142 || ty == 8) ? 34 : (ty == 12) ? 144 : (ty == 13) ? 176 : (ty == 14) ? 210 : (ty == 21) ? 110 : 82;
+    std::vector<uint8_t> bytes(size_t(n) * rows / block * size);
+    uint32_t st = 0x5A17C3u + seed_add;
+    for (size_t i = 0; i < bytes.size(); ++i) {
+        st = 1664525u * st + 1013904223u;
+        bytes[i] = uint8_t(st >> 24);
+    }
+    auto seth = [&](size_t offset, float x) {
+        uint16_t h = bits(x);
+        bytes[offset] = uint8_t(h);
+        bytes[offset + 1] = uint8_t(h >> 8);
+    };
+    const size_t nblk = size_t(n) * rows / block;
+    for (size_t b = 0; b < nblk; ++b) {
+        const float sc = (b % 5 == 0) ? 0.f : (b % 2 == 0) ? 0.015625f : -0.03125f;
+        seth(b * size + (ty == 14 ? 208 : 0), sc);
+        if (ty == 12 || ty == 13) seth(b * size + 2, 0.0078125f);
+    }
+    return bytes;
+}
+
+static void q8_1_ops(cudaStream_t s) {
+    admission();
+    // 1. rms_quantize_q8_1
+    for (int n : {512, 5120, 17408}) {
+        std::vector<float> x(n), w(n);
+        for (int i = 0; i < n; ++i) {
+            x[i] = float(std::sin(i * 0.13 + 0.2) * 0.8);
+            w[i] = float(0.85 + 0.25 * std::cos(i * 0.07));
+        }
+        auto dx = upload(x), dw = upload(w);
+        Q::Buffer out_f32(size_t(n) * 4), ref_f32(size_t(n) * 4);
+        Q::Buffer out_q8(size_t(n / 32) * sizeof(Q::BlockQ8_1)), ref_q8(size_t(n / 32) * sizeof(Q::BlockQ8_1));
+        Q::rms_quantize_q8_1(dx.as(), dw.as(), out_f32.as(), out_q8.as<Q::BlockQ8_1>(), n, 1e-6f, s);
+        Q::rms(dx.as(), dw.as(), ref_f32.as(), n, 1e-6f, s);
+        Q::quantize_q8_1(ref_f32.as(), ref_q8.as<Q::BlockQ8_1>(), n, s);
+        Q::ck(cudaStreamSynchronize(s));
+        double ss = 0;
+        for (int i = 0; i < n; ++i) ss += double(x[i]) * x[i];
+        const double inv = 1.0 / std::sqrt(ss / n + 1e-6);
+        std::vector<double> want(n);
+        for (int i = 0; i < n; ++i) want[i] = x[i] * inv * w[i];
+        check_close(read(out_f32), want, 1e-6, 1e-5, ("rms_quantize_f32_" + std::to_string(n)).c_str());
+        auto ref_host = read(ref_f32);
+        std::vector<double> ref_d(ref_host.begin(), ref_host.end());
+        check_close(read(out_f32), ref_d, 0, 0, ("rms_quantize_exact_rms_" + std::to_string(n)).c_str());
+        check_q8_blocks_equal(read_q8(out_q8), read_q8(ref_q8), "rms_quantize_q8_blocks");
+    }
+    // 2. swiglu_quantize_q8_1
+    for (int n : {512, 17408}) {
+        std::vector<float> gate(n), up(n);
+        for (int i = 0; i < n; ++i) {
+            gate[i] = float(std::sin(i * 0.19 - 0.4) * 1.3);
+            up[i] = float(std::cos(i * 0.11 + 0.1) * 0.9);
+        }
+        auto dg = upload(gate), dg_ref = upload(gate), du = upload(up);
+        Q::Buffer out_q8(size_t(n / 32) * sizeof(Q::BlockQ8_1)), ref_q8(size_t(n / 32) * sizeof(Q::BlockQ8_1));
+        Q::swiglu_quantize_q8_1(dg.as(), du.as(), out_q8.as<Q::BlockQ8_1>(), n, s);
+        Q::swiglu(dg_ref.as(), du.as(), n, s);
+        Q::quantize_q8_1(dg_ref.as(), ref_q8.as<Q::BlockQ8_1>(), n, s);
+        Q::ck(cudaStreamSynchronize(s));
+        std::vector<double> want(n);
+        for (int i = 0; i < n; ++i) want[i] = (double(gate[i]) * sig(gate[i])) * double(up[i]);
+        check_close(read(dg), want, 1e-6, 1e-5, ("swiglu_quantize_f32_" + std::to_string(n)).c_str());
+        check_q8_blocks_equal(read_q8(out_q8), read_q8(ref_q8), "swiglu_quantize_q8_blocks");
+    }
+    // 3. matvec_q8_1 across types {8, 12, 13, 14, 21, 22, 142}, 4-block remainders (K=256,512,768),
+    // real widths (K=5120,6144,17408), small/odd rows (1,7,17,48,257,520,521), and exact allocation end bounds
+    struct ShapeCase { int n; int rows; };
+    const ShapeCase shapes[] = {
+        {256, 1}, {512, 7}, {768, 17}, {512, 48},
+        {256, 521}, {512, 520}, {768, 257}, {1024, 521},
+        {5120, 17}, {5120, 257}, {6144, 7}, {17408, 1}
+    };
+    for (ShapeCase sc : shapes) {
+        std::vector<float> x(sc.n);
+        for (int i = 0; i < sc.n; ++i) x[i] = float(std::sin(i * 0.09 + 0.3) * 0.25);
+        auto dx = upload(x);
+        Q::Buffer dx_q8(size_t(sc.n / 32) * sizeof(Q::BlockQ8_1));
+        Q::quantize_q8_1(dx.as(), dx_q8.as<Q::BlockQ8_1>(), sc.n, s);
+        Q::ck(cudaStreamSynchronize(s));
+        auto x_q8_deq = dequant_q8_1_host(read_q8(dx_q8));
+
+        for (int ty : {8, 12, 13, 14, 21, 22, 142}) {
+            auto bytes = make_packed_weights(ty, sc.n, sc.rows, uint32_t(ty * 31 + sc.rows + sc.n));
+            auto ref_w = reference_ext(ty, bytes, sc.n * sc.rows);
+            auto dw = upload(bytes); // exact byte size allocation to verify zero out-of-bounds reads
+            Q::Buffer dy_q8(size_t(sc.rows) * 4), dy_f32(size_t(sc.rows) * 4);
+            Q::matvec_q8_1(ty, dw.data, dx_q8.as<Q::BlockQ8_1>(), dx.as(), dy_q8.as(), sc.n, sc.rows, s);
+            Q::matvec(ty, dw.data, dx.as(), dy_f32.as(), sc.n, sc.rows, s);
+            Q::ck(cudaStreamSynchronize(s));
+            std::vector<double> want_q8(sc.rows), want_f32(sc.rows);
+            for (int r = 0; r < sc.rows; ++r) {
+                for (int i = 0; i < sc.n; ++i) {
+                    const double wv = ref_w[size_t(r) * sc.n + i];
+                    want_q8[r] += wv * x_q8_deq[i];
+                    want_f32[r] += wv * x[i];
+                }
+            }
+            const std::string tag = "matvec_q8_1_t" + std::to_string(ty) + "_n" + std::to_string(sc.n) + "_r" + std::to_string(sc.rows);
+            if (ty != 142) check_close(read(dy_q8), want_q8, 2e-4, 5e-5, (tag + "_exact_q8").c_str());
+            check_close(read(dy_q8), want_f32, 6e-3, 6e-3, (tag + "_vs_fp64").c_str());
+            auto f32_out = read(dy_f32);
+            std::vector<double> f32_d(f32_out.begin(), f32_out.end());
+            check_close(read(dy_q8), f32_d, 6e-3, 6e-3, (tag + "_vs_matvec").c_str());
+        }
+    }
+    // Q8_0 1..3 block remainders (K=32, 64, 96 -> nb=1, 2, 3) at both 1row (r=17) and 8rows (r=257)
+    for (int n_q8 : {32, 64, 96}) {
+        for (int rows_q8 : {17, 257}) {
+            std::vector<float> x(n_q8);
+            for (int i = 0; i < n_q8; ++i) x[i] = float(std::sin(i * 0.17 - 0.1) * 0.25);
+            auto dx = upload(x);
+            Q::Buffer dx_q8(size_t(n_q8 / 32) * sizeof(Q::BlockQ8_1));
+            Q::quantize_q8_1(dx.as(), dx_q8.as<Q::BlockQ8_1>(), n_q8, s);
+            Q::ck(cudaStreamSynchronize(s));
+            auto x_q8_deq = dequant_q8_1_host(read_q8(dx_q8));
+            auto bytes = make_packed_weights(8, n_q8, rows_q8, uint32_t(n_q8 * 13 + rows_q8));
+            auto ref_w = reference_ext(8, bytes, n_q8 * rows_q8);
+            auto dw = upload(bytes);
+            Q::Buffer dy(size_t(rows_q8) * 4);
+            Q::matvec_q8_1(8, dw.data, dx_q8.as<Q::BlockQ8_1>(), dx.as(), dy.as(), n_q8, rows_q8, s);
+            Q::ck(cudaStreamSynchronize(s));
+            std::vector<double> want_q8(rows_q8);
+            for (int r = 0; r < rows_q8; ++r)
+                for (int i = 0; i < n_q8; ++i) want_q8[r] += ref_w[size_t(r) * n_q8 + i] * x_q8_deq[i];
+            check_close(read(dy), want_q8, 2e-4, 5e-5, ("matvec_q8_0_tail_n" + std::to_string(n_q8) + "_r" + std::to_string(rows_q8)).c_str());
+        }
+    }
+    // Unaligned 2B-offset and 1B-offset fallback tests across packed types
+    for (int off_b : {2, 1}) {
+        for (int ty : {8, 12, 13, 14, 21, 22}) {
+            constexpr int n = 512, rows = 257;
+            std::vector<float> x(n);
+            for (int i = 0; i < n; ++i) x[i] = float(std::cos(i * 0.07) * 0.2);
+            auto dx = upload(x);
+            Q::Buffer dx_q8(size_t(n / 32) * sizeof(Q::BlockQ8_1));
+            Q::quantize_q8_1(dx.as(), dx_q8.as<Q::BlockQ8_1>(), n, s);
+            Q::ck(cudaStreamSynchronize(s));
+            auto x_q8_deq = dequant_q8_1_host(read_q8(dx_q8));
+            auto bytes = make_packed_weights(ty, n, rows, uint32_t(ty * 97 + off_b));
+            auto ref_w = reference_ext(ty, bytes, n * rows);
+            std::vector<uint8_t> padded(bytes.size() + size_t(off_b), 0);
+            std::memcpy(padded.data() + off_b, bytes.data(), bytes.size());
+            auto dw_pad = upload(padded);
+            Q::Buffer dy(size_t(rows) * 4);
+            Q::matvec_q8_1(ty, dw_pad.as<uint8_t>() + off_b, dx_q8.as<Q::BlockQ8_1>(), dx.as(), dy.as(), n, rows, s);
+            Q::ck(cudaStreamSynchronize(s));
+            std::vector<double> want(rows);
+            for (int r = 0; r < rows; ++r)
+                for (int i = 0; i < n; ++i) want[r] += ref_w[size_t(r) * n + i] * (off_b == 1 ? double(x[i]) : x_q8_deq[i]);
+            check_close(read(dy), want, 2e-4, 5e-5, ("matvec_q8_1_off" + std::to_string(off_b) + "_t" + std::to_string(ty)).c_str());
+        }
+    }
+    // 4. matvec_q8_1_dual & matvec_q8_1_triple (small + odd boundary splits)
+    for (int ty : {8, 12, 13, 14, 21, 22, 142}) {
+        for (int small_case : {1, 0}) {
+            const int n = small_case ? 512 : 1024;
+            const int r0 = small_case ? 48 : 259;
+            const int r1 = small_case ? 48 : 263;
+            std::vector<float> x(n);
+            for (int i = 0; i < n; ++i) x[i] = float(std::sin(i * 0.05 + 0.1) * 0.2);
+            auto dx = upload(x);
+            Q::Buffer dx_q8(size_t(n / 32) * sizeof(Q::BlockQ8_1));
+            Q::quantize_q8_1(dx.as(), dx_q8.as<Q::BlockQ8_1>(), n, s);
+            Q::ck(cudaStreamSynchronize(s));
+            auto x_q8_deq = dequant_q8_1_host(read_q8(dx_q8));
+            auto b0 = make_packed_weights(ty, n, r0, uint32_t(ty * 11 + 1));
+            auto b1 = make_packed_weights(ty, n, r1, uint32_t(ty * 11 + 2));
+            auto rw0 = reference_ext(ty, b0, n * r0), rw1 = reference_ext(ty, b1, n * r1);
+            auto dw0 = upload(b0), dw1 = upload(b1);
+            Q::Buffer dy0(size_t(r0) * 4), dy1(size_t(r1) * 4);
+            Q::matvec_q8_1_dual(ty, dw0.data, dy0.as(), r0, dw1.data, dy1.as(), r1, dx_q8.as<Q::BlockQ8_1>(), dx.as(), n, s);
+            Q::ck(cudaStreamSynchronize(s));
+            std::vector<double> w0_ref(r0), w1_ref(r1);
+            for (int r = 0; r < r0; ++r) for (int i = 0; i < n; ++i) w0_ref[r] += rw0[size_t(r) * n + i] * (ty == 142 ? double(x[i]) : x_q8_deq[i]);
+            for (int r = 0; r < r1; ++r) for (int i = 0; i < n; ++i) w1_ref[r] += rw1[size_t(r) * n + i] * (ty == 142 ? double(x[i]) : x_q8_deq[i]);
+            check_close(read(dy0), w0_ref, 2e-4, 5e-5, ("dual_y0_t" + std::to_string(ty) + "_r" + std::to_string(r0)).c_str());
+            check_close(read(dy1), w1_ref, 2e-4, 5e-5, ("dual_y1_t" + std::to_string(ty) + "_r" + std::to_string(r1)).c_str());
+        }
+        {
+            constexpr int n = 1024, r0 = 257, r1 = 131, r2 = 135;
+            std::vector<float> x(n);
+            for (int i = 0; i < n; ++i) x[i] = float(std::cos(i * 0.06 - 0.2) * 0.2);
+            auto dx = upload(x);
+            Q::Buffer dx_q8(size_t(n / 32) * sizeof(Q::BlockQ8_1));
+            Q::quantize_q8_1(dx.as(), dx_q8.as<Q::BlockQ8_1>(), n, s);
+            Q::ck(cudaStreamSynchronize(s));
+            auto x_q8_deq = dequant_q8_1_host(read_q8(dx_q8));
+            auto b0 = make_packed_weights(ty, n, r0, uint32_t(ty * 17 + 1));
+            auto b1 = make_packed_weights(ty, n, r1, uint32_t(ty * 17 + 2));
+            auto b2 = make_packed_weights(ty, n, r2, uint32_t(ty * 17 + 3));
+            auto rw0 = reference_ext(ty, b0, n * r0), rw1 = reference_ext(ty, b1, n * r1), rw2 = reference_ext(ty, b2, n * r2);
+            auto dw0 = upload(b0), dw1 = upload(b1), dw2 = upload(b2);
+            Q::Buffer dy0(size_t(r0) * 4), dy1(size_t(r1) * 4), dy2(size_t(r2) * 4);
+            Q::matvec_q8_1_triple(ty, dw0.data, dy0.as(), r0, dw1.data, dy1.as(), r1, dw2.data, dy2.as(), r2,
+                                  dx_q8.as<Q::BlockQ8_1>(), dx.as(), n, s);
+            Q::ck(cudaStreamSynchronize(s));
+            std::vector<double> w0_ref(r0), w1_ref(r1), w2_ref(r2);
+            for (int r = 0; r < r0; ++r) for (int i = 0; i < n; ++i) w0_ref[r] += rw0[size_t(r) * n + i] * (ty == 142 ? double(x[i]) : x_q8_deq[i]);
+            for (int r = 0; r < r1; ++r) for (int i = 0; i < n; ++i) w1_ref[r] += rw1[size_t(r) * n + i] * (ty == 142 ? double(x[i]) : x_q8_deq[i]);
+            for (int r = 0; r < r2; ++r) for (int i = 0; i < n; ++i) w2_ref[r] += rw2[size_t(r) * n + i] * (ty == 142 ? double(x[i]) : x_q8_deq[i]);
+            check_close(read(dy0), w0_ref, 2e-4, 5e-5, ("triple_y0_t" + std::to_string(ty)).c_str());
+            check_close(read(dy1), w1_ref, 2e-4, 5e-5, ("triple_y1_t" + std::to_string(ty)).c_str());
+            check_close(read(dy2), w2_ref, 2e-4, 5e-5, ("triple_y2_t" + std::to_string(ty)).c_str());
+        }
+    }
+    // 5. Validation boundary checks
+    Q::Buffer buf(4096);
+    auto expect_throw = [&](auto&& fn, const char* msg) {
+        bool threw = false;
+        try { fn(); } catch (const std::exception&) { threw = true; }
+        demand(threw, msg);
+    };
+    expect_throw([&]{ Q::rms_quantize_q8_1(buf.as(), buf.as(), buf.as(), buf.as<Q::BlockQ8_1>(), 0, 1e-6f, s); }, "rms_quantize n=0");
+    expect_throw([&]{ Q::rms_quantize_q8_1(buf.as(), buf.as(), buf.as(), buf.as<Q::BlockQ8_1>(), 33, 1e-6f, s); }, "rms_quantize n%32");
+    expect_throw([&]{ Q::rms_quantize_q8_1(buf.as(), buf.as(), buf.as(), buf.as<Q::BlockQ8_1>(), 17440, 1e-6f, s); }, "rms_quantize n>17408");
+    expect_throw([&]{ Q::swiglu_quantize_q8_1(buf.as(), buf.as(), buf.as<Q::BlockQ8_1>(), 0, s); }, "swiglu_quantize n=0");
+    expect_throw([&]{ Q::swiglu_quantize_q8_1(buf.as(), buf.as(), buf.as<Q::BlockQ8_1>(), 33, s); }, "swiglu_quantize n%32");
+    expect_throw([&]{ Q::matvec_q8_1_dual(12, buf.data, buf.as(), 0, buf.data, buf.as(), 16, buf.as<Q::BlockQ8_1>(), buf.as(), 256, s); }, "dual rows0=0");
+    expect_throw([&]{ Q::matvec_q8_1_triple(12, buf.data, buf.as(), 16, nullptr, buf.as(), 16, buf.data, buf.as(), 16, buf.as<Q::BlockQ8_1>(), buf.as(), 256, s); }, "triple null w1");
+    std::puts("PASS q8_1_ops fused quantizers and single/dual/triple matvec");
+}
 static void failures(cudaStream_t s){admission();std::vector<float> x={0,INFINITY,NAN,-INFINITY};auto b=upload(x);Q::Buffer e(4);e.zero(s);Q::finite(b.as(),x.size(),e.as<int>(),s);int flag=0;Q::ck(cudaMemcpy(&flag,e.data,4,cudaMemcpyDeviceToHost));demand(flag==1,"nonfinite not caught");std::puts("PASS nonfinite failure detection");}
-int main(){try{Q::host_resources();Q::ck(cudaSetDevice(0));cudaStream_t s;Q::ck(cudaStreamCreate(&s));try{packed(s);hadamard(s);gdn(s);attention(s);failures(s);}catch(...){cudaStreamDestroy(s);throw;}Q::ck(cudaStreamDestroy(s));std::puts("PASS production CUDA numerical fixtures");return 0;}catch(const std::exception& e){std::fprintf(stderr,"FAIL %s\n",e.what());return 1;}}
+int main(){try{Q::host_resources();Q::ck(cudaSetDevice(0));cudaStream_t s;Q::ck(cudaStreamCreate(&s));try{packed(s);q8_1_ops(s);hadamard(s);gdn(s);attention(s);failures(s);}catch(...){cudaStreamDestroy(s);throw;}Q::ck(cudaStreamDestroy(s));std::puts("PASS production CUDA numerical fixtures");return 0;}catch(const std::exception& e){std::fprintf(stderr,"FAIL %s\n",e.what());return 1;}}

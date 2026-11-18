@@ -17,11 +17,11 @@ struct PrefillGemmStats {
     uint64_t fused_wmma_calls = 0;
 };
 
-/// Bounded double-buffered workspace for polymorphic dequantization + cuBLAS Tensor Core GEMM.
+/// Bounded L2-persisting workspace for polymorphic dequantization + cuBLAS Tensor Core GEMM.
 class PrefillGemmWorkspace {
 public:
-    /// Default 2 x 32 MiB = 64 MiB dequant weight ping-pong buffer + activation FP16 staging.
-    static constexpr size_t kDefaultTileBufBytes = 32ull * 1024 * 1024;
+    /// Default 20 MiB L2-persisting dequant weight tile buffer + token-scaled FP16 staging.
+    static constexpr size_t kDefaultTileBufBytes = 20ull * 1024 * 1024;
 
     PrefillGemmWorkspace() = default;
     ~PrefillGemmWorkspace();
@@ -34,15 +34,25 @@ public:
     /// Query runtime cuBLAS library version (e.g. 130000+).
     static int cublas_version();
 
-    /// Allocate ping-pong weight buffers and FP16/FP8 activation staging (in bytes).
+    /// Allocate weight tile buffer(s) and FP16/FP8 activation/output staging (in bytes).
     void init(int max_tokens, int max_k, size_t tile_buf_bytes = kDefaultTileBufBytes);
     void release();
+
+    /// Clear active L2 persisting access policy window on stream and reset persisting L2 lines to normal.
+    void reset_l2_window(cudaStream_t stream);
 
     /// Total GPU bytes allocated by this workspace.
     size_t allocated_bytes() const { return total_bytes_; }
 
     PrefillGemmStats stats() const;
     void reset_stats();
+
+    /// Normalize and stage shared input activations X[n_tokens, K] once across projections.
+    void prepare_activation(const float* x_fp32, int n_tokens, int K, cudaStream_t stream);
+
+    /// Multiply prepared activations against weight[rows, K]: Y[n_tokens, rows] = X * W^T.
+    void matmul_batch_prepared(const StrataQuantTensor& weight, float* y_fp32,
+                               int n_tokens, cudaStream_t stream);
 
     /// Polymorphic batched matrix multiply: Y[n_tokens, rows] = X[n_tokens, n] * W[rows, n]^T.
     /// Automatically dispatches to cuBLAS Tensor Core GEMM for n_tokens >= 4 (and matvec for smaller).

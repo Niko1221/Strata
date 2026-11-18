@@ -1,6 +1,7 @@
 #include "kv_reference.hpp"
 #include "resources.hpp"
 #include "session_state.hpp"
+#include "strata/kernels/fused_gdn.hpp"
 #include <cstdio>
 #include <set>
 #include <limits>
@@ -60,9 +61,11 @@ static void sequence(const Q::KvConfig& c,cudaStream_t s){
     std::printf("PASS KV mode=%s view=%s positions=257 boundaries=10 exact_packed_bytes=all max_attention=%g atol=3e-5 rtol=4e-5 reset/error/reuse=pass\n",c.name(),c.view_name(),worst);
 }
 static void spin8_batch_and_split(const Q::KvConfig& c,cudaStream_t s){
-    reserve();constexpr int ctx=600;Q::KvCache cache(c,ctx,2,s);
+    reserve();constexpr int ctx=1200;Q::KvCache cache(c,ctx,2,s);
     std::vector<std::vector<double>> keys,values;double worst=0;int pos0=0;
-    for(int n_tok:{1,2,3,4,5,63,64,65,127}){
+    // Covers BT=8 boundaries (7,8,9), BK=16 boundaries (15,16,17) from non-zero
+    // prefix (after 1+2+3+4=10, n_tok=7 spans causal KV lengths 11..17), and multi-CTA chunks.
+    for(int n_tok:{1,2,3,4,7,8,9,15,16,17,63,64,65,127}){
         Q::Buffer qb(size_t(n_tok)*6144*4),kb(size_t(n_tok)*1024*4),vb(size_t(n_tok)*1024*4),gb(size_t(n_tok)*6144*4),ob(size_t(n_tok)*6144*4),scores(24*ctx*4);
         std::vector<float> hq(size_t(n_tok)*6144),hk(size_t(n_tok)*1024),hv(size_t(n_tok)*1024),hg(size_t(n_tok)*6144);
         for(int t=0;t<n_tok;++t){
@@ -82,7 +85,7 @@ static void spin8_batch_and_split(const Q::KvConfig& c,cudaStream_t s){
             byte_compare(cache.layer(0).key,kp,pos0+t,ctx,c.key_row_bytes());
             byte_compare(cache.layer(0).value,vp,pos0+t,ctx,c.value_row_bytes());
             keys.push_back(R::unpack(kp,c,true));values.push_back(R::unpack(vp,c,false));
-            if(n_tok<=5 || t<4 || t>=n_tok-2){
+            if(n_tok<=17 || t<8 || t>=n_tok-4){
                 std::vector<float> tq(hq.begin()+size_t(t)*6144,hq.begin()+size_t(t+1)*6144);
                 std::vector<float> tg(hg.begin()+size_t(t)*6144,hg.begin()+size_t(t+1)*6144);
                 std::vector<float> got(got_all.begin()+size_t(t)*6144,got_all.begin()+size_t(t+1)*6144);
@@ -91,7 +94,7 @@ static void spin8_batch_and_split(const Q::KvConfig& c,cudaStream_t s){
         }
         pos0+=n_tok;
     }
-    // Exercise Split-KV decode (pos0 == 334 >= 128, ctx == 600 -> n_splits == 2)
+    // Exercise Split-KV decode (pos0 == 401 >= 128, ctx == 1200 -> n_splits == 4)
     {
         Q::Buffer q(6144*4),k(1024*4),v(1024*4),gate(6144*4),out(6144*4),scores(24*ctx*4);
         std::vector<float> hq(6144),hk(1024),hv(1024),hg(6144);
@@ -104,6 +107,39 @@ static void spin8_batch_and_split(const Q::KvConfig& c,cudaStream_t s){
         byte_compare(cache.layer(0).value,vp,pos0,ctx,c.value_row_bytes());
         keys.push_back(R::unpack(kp,c,true));values.push_back(R::unpack(vp,c,false));
         worst=std::max(worst,compare(get<float>(out),R::attention(R::spin_f32(hq,c),hg,keys,values,c),3e-5,4e-5));
+    }
+    // Explicitly exercise non-zero prefix (len=9) + query counts {7, 8, 9} crossing KV lengths {15, 16, 17}.
+    for(int q_cnt:{7,8,9}){
+        cache.reset();
+        std::vector<std::vector<double>> pkeys,pvals;
+        constexpr int pref=9;
+        for(int pass=0;pass<2;++pass){
+            const int p0=(pass==0)?0:pref;
+            const int nt=(pass==0)?pref:q_cnt;
+            Q::Buffer qb(size_t(nt)*6144*4),kb(size_t(nt)*1024*4),vb(size_t(nt)*1024*4),gb(size_t(nt)*6144*4),ob(size_t(nt)*6144*4),scores(24*ctx*4);
+            std::vector<float> hq(size_t(nt)*6144),hk(size_t(nt)*1024),hv(size_t(nt)*1024),hg(size_t(nt)*6144);
+            for(int t=0;t<nt;++t){
+                const int pos=p0+t;
+                for(int i=0;i<6144;++i){hq[size_t(t)*6144+i]=float(std::sin(i*.041+pos*.31)*.85);hg[size_t(t)*6144+i]=float(std::cos(i*.11-pos*.19)*2.7);}
+                for(int i=0;i<1024;++i){hk[size_t(t)*1024+i]=float(std::cos(i*.089+pos*.23)*.75);hv[size_t(t)*1024+i]=float(std::sin(i*.067-pos*.29)*1.2);}
+            }
+            put(qb,hq);put(kb,hk);put(vb,hv);put(gb,hg);
+            cache.enqueue_batch(0,p0,nt,qb.as(),kb.as(),vb.as(),gb.as(),ob.as(),scores.as());
+            cache.check();
+            auto got_all=get<float>(ob);
+            for(int t=0;t<nt;++t){
+                std::vector<float> tk(hk.begin()+size_t(t)*1024,hk.begin()+size_t(t+1)*1024);
+                std::vector<float> tv(hv.begin()+size_t(t)*1024,hv.begin()+size_t(t+1)*1024);
+                auto kp=R::pack(R::spin_f32(tk,c),c,true),vp=R::pack(R::spin_f32(tv,c),c,false);
+                pkeys.push_back(R::unpack(kp,c,true));pvals.push_back(R::unpack(vp,c,false));
+                if(pass==1){
+                    std::vector<float> tq(hq.begin()+size_t(t)*6144,hq.begin()+size_t(t+1)*6144);
+                    std::vector<float> tg(hg.begin()+size_t(t)*6144,hg.begin()+size_t(t+1)*6144);
+                    std::vector<float> got(got_all.begin()+size_t(t)*6144,got_all.begin()+size_t(t+1)*6144);
+                    worst=std::max(worst,compare(got,R::attention(R::spin_f32(tq,c),tg,pkeys,pvals,c),3e-5,4e-5));
+                }
+            }
+        }
     }
     // Verify NaN rejection in batch path (q, k, v, gate) and reset reuse.
     for(int bad_kind=0;bad_kind<4;++bad_kind){
@@ -121,7 +157,7 @@ static void spin8_batch_and_split(const Q::KvConfig& c,cudaStream_t s){
     put(qb,hq);put(kb,hk);put(vb,hv);put(gb,hg);
     cache.enqueue_batch(0,0,3,qb.as(),kb.as(),vb.as(),gb.as(),ob.as(),scores.as());
     cache.check();
-    std::printf("PASS Spin8 batch(1,2,3,4,5,63,64,65,127)+split_decode view=%s max_attention=%g reset/nan=pass\n",c.view_name(),worst);
+    std::printf("PASS Spin8 batch(1..127,BT=7/8/9,BK=15/16/17)+split_decode view=%s max_attention=%g reset/nan=pass\n",c.view_name(),worst);
 }
 static void allocations(const Q::KvConfig& c,cudaStream_t s){
     reserve();size_t previous_scratch=0;for(int capacity:{513,4096}){
@@ -145,8 +181,50 @@ static void normalization(cudaStream_t s){
         auto old=get<float>(oldout);compare(get<float>(out),std::vector<double>(old.begin(),old.end()),0,0);
     }std::puts("PASS F16 normalize/in-place-K/RoPE/cache exact legacy output");
 }
+static void fused_gdn_finite_check(cudaStream_t s){
+    reserve();
+    constexpr int HK=2,HV=4,D=128,C=(HK*2+HV)*D,T=3;
+    Q::Buffer state(size_t(HV)*D*D*4),qkv(size_t(T)*C*4),gate(size_t(T)*HV*4),beta(size_t(T)*HV*4),
+              z(size_t(T)*HV*D*4),gamma(D*4),y(size_t(T)*HV*D*4),err(4);
+    auto fill_finite=[&]{
+        state.zero(s);
+        std::vector<float> hqkv(size_t(T)*C,0.05f),hg(size_t(T)*HV,-0.1f),hb(size_t(T)*HV,0.5f),
+                           hz(size_t(T)*HV*D,0.2f),hgam(D,1.0f);
+        put(qkv,hqkv);put(gate,hg);put(beta,hb);put(z,hz);put(gamma,hgam);
+        err.zero(s);
+    };
+    fill_finite();
+    strata::kernels::fused_gdn_step_norm_silu(state.as(),qkv.as(),qkv.as()+HK*D,qkv.as()+2*HK*D,
+        gate.as(),beta.as(),z.as(),gamma.as(),1e-6f,y.as(),HK,HV,s,err.as<int>());
+    Q::ck(cudaStreamSynchronize(s));R::demand(get<int>(err)[0]==0,"GDN step false positive");
+    fill_finite();
+    {float nan_v=NAN;Q::ck(cudaMemcpy(state.as()+19,&nan_v,4,cudaMemcpyHostToDevice));}
+    strata::kernels::fused_gdn_step_norm_silu(state.as(),qkv.as(),qkv.as()+HK*D,qkv.as()+2*HK*D,
+        gate.as(),beta.as(),z.as(),gamma.as(),1e-6f,y.as(),HK,HV,s,err.as<int>());
+    Q::ck(cudaStreamSynchronize(s));R::demand(get<int>(err)[0]==1,"GDN step missed state NaN");
+    fill_finite();
+    {float nan_v=NAN;Q::ck(cudaMemcpy(z.as()+7,&nan_v,4,cudaMemcpyHostToDevice));}
+    strata::kernels::fused_gdn_step_norm_silu(state.as(),qkv.as(),qkv.as()+HK*D,qkv.as()+2*HK*D,
+        gate.as(),beta.as(),z.as(),gamma.as(),1e-6f,y.as(),HK,HV,s,err.as<int>());
+    Q::ck(cudaStreamSynchronize(s));R::demand(get<int>(err)[0]==1,"GDN step missed output NaN");
+    fill_finite();
+    strata::kernels::fused_gdn_step_norm_silu_batch(state.as(),qkv.as(),C,gate.as(),beta.as(),z.as(),
+        gamma.as(),1e-6f,y.as(),HK,HV,T,s,err.as<int>());
+    Q::ck(cudaStreamSynchronize(s));R::demand(get<int>(err)[0]==0,"GDN batch false positive");
+    fill_finite();
+    {float nan_v=NAN;Q::ck(cudaMemcpy(state.as()+37,&nan_v,4,cudaMemcpyHostToDevice));}
+    strata::kernels::fused_gdn_step_norm_silu_batch(state.as(),qkv.as(),C,gate.as(),beta.as(),z.as(),
+        gamma.as(),1e-6f,y.as(),HK,HV,T,s,err.as<int>());
+    Q::ck(cudaStreamSynchronize(s));R::demand(get<int>(err)[0]==1,"GDN batch missed state NaN");
+    fill_finite();
+    {float nan_v=NAN;Q::ck(cudaMemcpy(z.as()+HV*D+11,&nan_v,4,cudaMemcpyHostToDevice));}
+    strata::kernels::fused_gdn_step_norm_silu_batch(state.as(),qkv.as(),C,gate.as(),beta.as(),z.as(),
+        gamma.as(),1e-6f,y.as(),HK,HV,T,s,err.as<int>());
+    Q::ck(cudaStreamSynchronize(s));R::demand(get<int>(err)[0]==1,"GDN batch missed output NaN");
+    std::puts("PASS fused GDN step+batch state/output finite fence detection");
+}
 int main(){try{Q::host_resources();Q::ck(cudaSetDevice(0));Stream stream;
-    normalization(stream.s);
+    normalization(stream.s);fused_gdn_finite_check(stream.s);
     for(const char* name:{"f16","k8v4","spin8_k8v4","f16_turbo2","f16_turbo3","f16_turbo4"}){
         for(const char* view:{"vector","plus","minus"}){bool spin=std::string(name)=="spin8_k8v4";if(!spin&&std::string(view)!="vector")continue;
             auto c=Q::KvConfig::admit(name,spin?view:"");if(spin){spin_identity(c,stream.s);spin8_batch_and_split(c,stream.s);}sequence(c,stream.s);if(std::string(view)=="vector")allocations(c,stream.s);

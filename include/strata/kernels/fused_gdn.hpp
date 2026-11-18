@@ -36,7 +36,7 @@ void fused_gdn_step_norm(float* state, const float* q, const float* k, const flo
 /// (CUDA / HIP; the SYCL port has no qwen35moe path).
 void fused_gdn_step_norm_silu(float* state, const float* q, const float* k, const float* v, const float* gate,
                               const float* beta, const float* z, const float* gamma, float eps, float* y, int h_k,
-                              int h_v, void* stream);
+                              int h_v, void* stream, int* error = nullptr);
 
 /// Batched multi-token versions (exact sequential recurrence kept in registers across n_tokens).
 void fused_gdn_conv_l2_batch(float* history, const float* qkv_batch, const float* conv_w, float* h_batch,
@@ -44,6 +44,6 @@ void fused_gdn_conv_l2_batch(float* history, const float* qkv_batch, const float
 
 void fused_gdn_step_norm_silu_batch(float* state, const float* qkv_batch, int qkv_stride, const float* gate,
                                     const float* beta, const float* z, const float* gamma, float eps, float* y,
-                                    int h_k, int h_v, int n_tokens, void* stream);
+                                    int h_k, int h_v, int n_tokens, void* stream, int* error = nullptr);
 
 }  // namespace strata::kernels

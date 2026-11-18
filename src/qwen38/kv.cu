@@ -79,21 +79,29 @@ __global__ void inverse_turbo(const float* in,float* out){
     for(int i=0;i<128;++i)out[block*128+i]=x[i];
 }
 __global__ void apply_gate(float* out,const float* gate){int i=blockIdx.x*256+threadIdx.x;if(i<6144)out[i]/=1+expf(-gate[i]);}
+__device__ __forceinline__ int smem_swiz(int elem){return elem^((elem&32)>>3);}
 __global__ void spin8_store_q_batch_kernel(const float* in,uint8_t* cache,const float* r,int pos_start,int n_tokens,int ctx,bool q8,int* status){
-    if(atomicAdd(status,0))return;
+    __shared__ int early_stop;
+    __shared__ float sr[64];
     const int tok=blockIdx.x;
     const int b=threadIdx.x; // 32 blocks of 32 elems = 1024 elems (4 KV heads * 256)
-    if(tok>=n_tokens||b>=32)return;
+    if(b==0)early_stop=atomicAdd(status,0);
+    if(b<32){sr[b]=r[b];sr[b+32]=r[b+32];}
+    __syncthreads();
+    if(early_stop||tok>=n_tokens||b>=32)return;
     const float* src=in+size_t(tok)*1024+b*32;
     float rot[32];
     for(int g=0;g<4;++g){
+        float sv[8];
+        #pragma unroll
+        for(int j=0;j<8;++j){
+            sv[j]=src[g*8+j];
+            if(!isfinite(sv[j])){atomicExch(status,1);return;}
+        }
         for(int row=0;row<8;++row){
             float v=0.f;
-            for(int j=0;j<8;++j){
-                const float sv=src[g*8+j];
-                if(!isfinite(sv)){atomicExch(status,1);return;}
-                v=fmaf(r[row*8+j],sv,v);
-            }
+            #pragma unroll
+            for(int j=0;j<8;++j)v=fmaf(sr[row*8+j],sv[j],v);
             rot[g*8+row]=v;
         }
     }
@@ -113,187 +121,198 @@ __global__ void __launch_bounds__(256) spin8_attend_batch_kernel(
     const uint8_t* __restrict__ key_cache,const uint8_t* __restrict__ val_cache,
     const float* __restrict__ r,float* __restrict__ out_batch,
     int pos_start,int n_tokens,int ctx,int key_stride,int val_stride,int mode,int* status){
+    constexpr int BK=16,BT=8,HG=6;
     __shared__ int early_stop;
-    if(threadIdx.x==0)early_stop=*status;
-    __syncthreads();
-    if(early_stop)return;
-    constexpr int BK=8,BT=4,HG=3;
-    __shared__ float sq[BT][HG][256];
-    __shared__ float sk[BK][256];
-    __shared__ float sv[BK][256];
     __shared__ float sr[64];
-    __shared__ float wsum[BK][BT][HG][8];
-    const int kh=blockIdx.x>>1,h_base=(blockIdx.x&1)*HG,tok_base=blockIdx.y*BT,i=threadIdx.x;
+    __shared__ alignas(16) float sk[BK][256];
+    __shared__ alignas(16) float sv[BK][256];
+    const int kh=blockIdx.x,tok_base=blockIdx.y*BT,i=threadIdx.x;
     const int t_cnt=(n_tokens-tok_base<BT)?(n_tokens-tok_base):BT;
-    if(t_cnt<=0)return;
-    const int lane=i&31,warp=i>>5,b=(i>>3)<<3,row=i&7;
+    if(i==0)early_stop=atomicAdd(status,0);
     if(i<64)sr[i]=r[i];
-    for(int t=0;t<t_cnt;++t){
-        #pragma unroll
-        for(int h=0;h<HG;++h){
-            const size_t qoff=size_t(tok_base+t)*6144+size_t(kh*6+h_base+h)*256;
-            const float qv=q_batch[qoff+i];
-            if(!isfinite(qv))atomicExch(status,1);
-            sq[t][h][i]=qv;
-        }
-    }
     __syncthreads();
-    float q_rot[BT][HG],mx[BT][HG],denom[BT][HG],acc[BT][HG];
-    for(int t=0;t<t_cnt;++t){
+    if(early_stop||t_cnt<=0)return;
+    const int lane=i&31,warp=i>>5,b=lane*8;
+    float q_rot[HG][8],acc[HG][8],mx[HG],denom[HG];
+    #pragma unroll
+    for(int s=0;s<HG;++s){
+        mx[s]=-INFINITY;denom[s]=0.f;
         #pragma unroll
-        for(int h=0;h<HG;++h){
-            float qr=0.f;
+        for(int c=0;c<8;++c){q_rot[s][c]=0.f;acc[s][c]=0.f;}
+        const int q_idx=warp+s*8;
+        const int t=q_idx/6,h=q_idx%6;
+        if(t<t_cnt){
+            const size_t qoff=size_t(tok_base+t)*6144+size_t(kh*6+h)*256+b;
+            const float4 q0=*reinterpret_cast<const float4*>(q_batch+qoff);
+            const float4 q1=*reinterpret_cast<const float4*>(q_batch+qoff+4);
+            const float qv[8]={q0.x,q0.y,q0.z,q0.w,q1.x,q1.y,q1.z,q1.w};
             #pragma unroll
-            for(int j=0;j<8;++j)qr=fmaf(sr[row*8+j],sq[t][h][b+j],qr);
-            q_rot[t][h]=qr;mx[t][h]=-INFINITY;denom[t][h]=0.f;acc[t][h]=0.f;
+            for(int j=0;j<8;++j){if(!isfinite(qv[j]))atomicExch(status,1);}
+            #pragma unroll
+            for(int row=0;row<8;++row){
+                float qr=0.f;
+                #pragma unroll
+                for(int j=0;j<8;++j)qr=fmaf(sr[row*8+j],qv[j],qr);
+                q_rot[s][row]=qr;
+            }
         }
     }
     const int kp_max=pos_start+tok_base+t_cnt-1;
     const uint8_t* k_base=key_cache+size_t(kh)*ctx*key_stride;
     const uint8_t* v_base=val_cache+size_t(kh)*ctx*val_stride;
+    const int sw_i=smem_swiz(i);
+    const int sb0=smem_swiz(b),sb1=smem_swiz(b+4);
     for(int kp_base=0;kp_base<=kp_max;kp_base+=BK){
         const int kp_cnt=(kp_max+1-kp_base<BK)?(kp_max+1-kp_base):BK;
         for(int k=0;k<kp_cnt;++k){
             const int kp=kp_base+k;
-            sk[k][i]=load_key(k_base+size_t(kp)*key_stride,i,true);
-            sv[k][i]=load_value(v_base+size_t(kp)*val_stride,i,mode);
+            sk[k][sw_i]=load_key(k_base+size_t(kp)*key_stride,i,true);
+            sv[k][sw_i]=load_value(v_base+size_t(kp)*val_stride,i,mode);
         }
         __syncthreads();
         for(int k=0;k<kp_cnt;++k){
             const int kp=kp_base+k;
-            for(int t=0;t<t_cnt;++t){
-                if(kp>pos_start+tok_base+t)continue;
-                #pragma unroll
-                for(int h=0;h<HG;++h){
-                    float p=q_rot[t][h]*sk[k][i];
-                    for(int d=16;d;d>>=1)p+=__shfl_xor_sync(0xffffffffu,p,d);
-                    if(lane==0)wsum[k][t][h][warp]=p;
-                }
-            }
-        }
-        __syncthreads();
-        for(int k=0;k<kp_cnt;++k){
-            const int kp=kp_base+k;
-            const float vv=sv[k][i];
-            for(int t=0;t<t_cnt;++t){
-                if(kp>pos_start+tok_base+t)continue;
-                #pragma unroll
-                for(int h=0;h<HG;++h){
-                    const float sc=(wsum[k][t][h][0]+wsum[k][t][h][1]+wsum[k][t][h][2]+wsum[k][t][h][3]+
-                                    wsum[k][t][h][4]+wsum[k][t][h][5]+wsum[k][t][h][6]+wsum[k][t][h][7])*(1.f/16.f);
-                    const float new_mx=fmaxf(mx[t][h],sc);
-                    const float alpha=(kp==0)?0.f:expf(mx[t][h]-new_mx);
-                    const float w=expf(sc-new_mx);
-                    denom[t][h]=fmaf(denom[t][h],alpha,w);
-                    mx[t][h]=new_mx;
-                    acc[t][h]=fmaf(acc[t][h],alpha,w*vv);
-                }
-            }
-        }
-        __syncthreads();
-    }
-    for(int t=0;t<t_cnt;++t){
-        #pragma unroll
-        for(int h=0;h<HG;++h)sq[t][h][i]=acc[t][h]/denom[t][h];
-    }
-    __syncthreads();
-    for(int t=0;t<t_cnt;++t){
-        #pragma unroll
-        for(int h=0;h<HG;++h){
-            float out_val=0.f;
+            const float4 kv0=*reinterpret_cast<const float4*>(&sk[k][sb0]);
+            const float4 kv1=*reinterpret_cast<const float4*>(&sk[k][sb1]);
+            const float4 vv0=*reinterpret_cast<const float4*>(&sv[k][sb0]);
+            const float4 vv1=*reinterpret_cast<const float4*>(&sv[k][sb1]);
             #pragma unroll
-            for(int j=0;j<8;++j)out_val=fmaf(sr[j*8+row],sq[t][h][b+j],out_val);
-            const size_t qoff=size_t(tok_base+t)*6144+size_t(kh*6+h_base+h)*256;
-            const float gv=gate_batch[qoff+i];
-            const float res=out_val/(1.f+expf(-gv));
-            if(!isfinite(gv)||!isfinite(res))atomicExch(status,1);
-            out_batch[qoff+i]=res;
+            for(int s=0;s<HG;++s){
+                const int t=(warp+s*8)/6;
+                if(t<t_cnt&&kp<=pos_start+tok_base+t){
+                    float p=0.f;
+                    p=fmaf(q_rot[s][0],kv0.x,p);p=fmaf(q_rot[s][1],kv0.y,p);
+                    p=fmaf(q_rot[s][2],kv0.z,p);p=fmaf(q_rot[s][3],kv0.w,p);
+                    p=fmaf(q_rot[s][4],kv1.x,p);p=fmaf(q_rot[s][5],kv1.y,p);
+                    p=fmaf(q_rot[s][6],kv1.z,p);p=fmaf(q_rot[s][7],kv1.w,p);
+                    #pragma unroll
+                    for(int d=16;d>0;d>>=1)p+=__shfl_xor_sync(0xffffffffu,p,d);
+                    const float sc=p*(1.f/16.f);
+                    const float new_mx=fmaxf(mx[s],sc);
+                    const float alpha=(kp==0)?0.f:expf(mx[s]-new_mx);
+                    const float w=expf(sc-new_mx);
+                    denom[s]=fmaf(denom[s],alpha,w);
+                    mx[s]=new_mx;
+                    acc[s][0]=fmaf(acc[s][0],alpha,w*vv0.x);acc[s][1]=fmaf(acc[s][1],alpha,w*vv0.y);
+                    acc[s][2]=fmaf(acc[s][2],alpha,w*vv0.z);acc[s][3]=fmaf(acc[s][3],alpha,w*vv0.w);
+                    acc[s][4]=fmaf(acc[s][4],alpha,w*vv1.x);acc[s][5]=fmaf(acc[s][5],alpha,w*vv1.y);
+                    acc[s][6]=fmaf(acc[s][6],alpha,w*vv1.z);acc[s][7]=fmaf(acc[s][7],alpha,w*vv1.w);
+                }
+            }
+        }
+        __syncthreads();
+    }
+    #pragma unroll
+    for(int s=0;s<HG;++s){
+        const int q_idx=warp+s*8;
+        const int t=q_idx/6,h=q_idx%6;
+        if(t<t_cnt){
+            float norm_acc[8];
+            #pragma unroll
+            for(int j=0;j<8;++j)norm_acc[j]=acc[s][j]/denom[s];
+            const size_t qoff=size_t(tok_base+t)*6144+size_t(kh*6+h)*256+b;
+            const float4 g0=*reinterpret_cast<const float4*>(gate_batch+qoff);
+            const float4 g1=*reinterpret_cast<const float4*>(gate_batch+qoff+4);
+            const float gv[8]={g0.x,g0.y,g0.z,g0.w,g1.x,g1.y,g1.z,g1.w};
+            float out_v[8];
+            #pragma unroll
+            for(int row=0;row<8;++row){
+                float out_val=0.f;
+                #pragma unroll
+                for(int j=0;j<8;++j)out_val=fmaf(sr[j*8+row],norm_acc[j],out_val);
+                const float res=out_val/(1.f+expf(-gv[row]));
+                if(!isfinite(gv[row])||!isfinite(res))atomicExch(status,1);
+                out_v[row]=res;
+            }
+            *reinterpret_cast<float4*>(out_batch+qoff)=make_float4(out_v[0],out_v[1],out_v[2],out_v[3]);
+            *reinterpret_cast<float4*>(out_batch+qoff+4)=make_float4(out_v[4],out_v[5],out_v[6],out_v[7]);
         }
     }
 }
-__global__ void __launch_bounds__(256) spin8_attend_decode_split_kernel(
+__global__ void __launch_bounds__(192) spin8_attend_decode_split_kernel(
     const float* __restrict__ q_vec,const uint8_t* __restrict__ key_cache,const uint8_t* __restrict__ val_cache,
     const float* __restrict__ r,float* __restrict__ partial,int pos,int ctx,int key_stride,int val_stride,int mode,int n_splits,int* status){
+    constexpr int BK=16;
     __shared__ int early_stop;
-    if(threadIdx.x==0)early_stop=*status;
+    __shared__ float sr[64];
+    __shared__ alignas(16) float sk[BK][256];
+    __shared__ alignas(16) float sv[BK][256];
+    const int kh=blockIdx.x,sp=blockIdx.y,tid=threadIdx.x;
+    if(tid==0)early_stop=atomicAdd(status,0);
+    if(tid<64)sr[tid]=r[tid];
     __syncthreads();
     if(early_stop)return;
-    constexpr int BK=8;
-    __shared__ float sq[6][256];
-    __shared__ float sk[BK][256];
-    __shared__ float sv[BK][256];
-    __shared__ float sr[64];
-    __shared__ float wsum[BK][6][8];
-    const int kh=blockIdx.x,sp=blockIdx.y,i=threadIdx.x;
-    const int lane=i&31,warp=i>>5,b=(i>>3)<<3,row=i&7;
-    if(i<64)sr[i]=r[i];
-    #pragma unroll
-    for(int h=0;h<6;++h){
-        const float qv=q_vec[size_t(kh*6+h)*256+i];
-        if(sp==0&&!isfinite(qv))atomicExch(status,1);
-        sq[h][i]=qv;
+    const int lane=tid&31,h=tid>>5,b=lane*8;
+    const size_t qoff=size_t(kh*6+h)*256+b;
+    const float4 q0=*reinterpret_cast<const float4*>(q_vec+qoff);
+    const float4 q1=*reinterpret_cast<const float4*>(q_vec+qoff+4);
+    const float qv[8]={q0.x,q0.y,q0.z,q0.w,q1.x,q1.y,q1.z,q1.w};
+    if(sp==0){
+        #pragma unroll
+        for(int j=0;j<8;++j){if(!isfinite(qv[j]))atomicExch(status,1);}
     }
-    __syncthreads();
-    float q_rot[6],mx[6],denom[6],acc[6];
+    float q_rot[8],acc[8];
     #pragma unroll
-    for(int h=0;h<6;++h){
+    for(int row=0;row<8;++row){
         float qr=0.f;
         #pragma unroll
-        for(int j=0;j<8;++j)qr=fmaf(sr[row*8+j],sq[h][b+j],qr);
-        q_rot[h]=qr;mx[h]=-INFINITY;denom[h]=0.f;acc[h]=0.f;
+        for(int j=0;j<8;++j)qr=fmaf(sr[row*8+j],qv[j],qr);
+        q_rot[row]=qr;acc[row]=0.f;
     }
+    float mx=-INFINITY,denom=0.f;
     const int total=pos+1;
     const int chunk=(total+n_splits-1)/n_splits;
     const int kp_start=sp*chunk;
     const int kp_end=(kp_start+chunk<total)?(kp_start+chunk):total;
     const uint8_t* k_base=key_cache+size_t(kh)*ctx*key_stride;
     const uint8_t* v_base=val_cache+size_t(kh)*ctx*val_stride;
+    const int sb0=smem_swiz(b),sb1=smem_swiz(b+4);
     for(int kp_base=kp_start;kp_base<kp_end;kp_base+=BK){
         const int kp_cnt=(kp_end-kp_base<BK)?(kp_end-kp_base):BK;
-        for(int k=0;k<kp_cnt;++k){
-            const int kp=kp_base+k;
-            sk[k][i]=load_key(k_base+size_t(kp)*key_stride,i,true);
-            sv[k][i]=load_value(v_base+size_t(kp)*val_stride,i,mode);
+        const int total_elems=kp_cnt*256;
+        for(int idx=tid;idx<total_elems;idx+=192){
+            const int k=idx>>8,elem=idx&255;
+            const int kp=kp_base+k,sw=smem_swiz(elem);
+            sk[k][sw]=load_key(k_base+size_t(kp)*key_stride,elem,true);
+            sv[k][sw]=load_value(v_base+size_t(kp)*val_stride,elem,mode);
         }
         __syncthreads();
         for(int k=0;k<kp_cnt;++k){
+            const float4 kv0=*reinterpret_cast<const float4*>(&sk[k][sb0]);
+            const float4 kv1=*reinterpret_cast<const float4*>(&sk[k][sb1]);
+            const float4 vv0=*reinterpret_cast<const float4*>(&sv[k][sb0]);
+            const float4 vv1=*reinterpret_cast<const float4*>(&sv[k][sb1]);
+            float p=0.f;
+            p=fmaf(q_rot[0],kv0.x,p);p=fmaf(q_rot[1],kv0.y,p);
+            p=fmaf(q_rot[2],kv0.z,p);p=fmaf(q_rot[3],kv0.w,p);
+            p=fmaf(q_rot[4],kv1.x,p);p=fmaf(q_rot[5],kv1.y,p);
+            p=fmaf(q_rot[6],kv1.z,p);p=fmaf(q_rot[7],kv1.w,p);
             #pragma unroll
-            for(int h=0;h<6;++h){
-                float p=q_rot[h]*sk[k][i];
-                for(int d=16;d;d>>=1)p+=__shfl_xor_sync(0xffffffffu,p,d);
-                if(lane==0)wsum[k][h][warp]=p;
-            }
-        }
-        __syncthreads();
-        for(int k=0;k<kp_cnt;++k){
-            const float vv=sv[k][i];
-            #pragma unroll
-            for(int h=0;h<6;++h){
-                const float sc=(wsum[k][h][0]+wsum[k][h][1]+wsum[k][h][2]+wsum[k][h][3]+
-                                wsum[k][h][4]+wsum[k][h][5]+wsum[k][h][6]+wsum[k][h][7])*(1.f/16.f);
-                const float new_mx=fmaxf(mx[h],sc);
-                const float alpha=(kp_base==kp_start&&k==0)?0.f:expf(mx[h]-new_mx);
-                const float w=expf(sc-new_mx);
-                denom[h]=fmaf(denom[h],alpha,w);
-                mx[h]=new_mx;
-                acc[h]=fmaf(acc[h],alpha,w*vv);
-            }
+            for(int d=16;d>0;d>>=1)p+=__shfl_xor_sync(0xffffffffu,p,d);
+            const float sc=p*(1.f/16.f);
+            const float new_mx=fmaxf(mx,sc);
+            const float alpha=(kp_base==kp_start&&k==0)?0.f:expf(mx-new_mx);
+            const float w=expf(sc-new_mx);
+            denom=fmaf(denom,alpha,w);
+            mx=new_mx;
+            acc[0]=fmaf(acc[0],alpha,w*vv0.x);acc[1]=fmaf(acc[1],alpha,w*vv0.y);
+            acc[2]=fmaf(acc[2],alpha,w*vv0.z);acc[3]=fmaf(acc[3],alpha,w*vv0.w);
+            acc[4]=fmaf(acc[4],alpha,w*vv1.x);acc[5]=fmaf(acc[5],alpha,w*vv1.y);
+            acc[6]=fmaf(acc[6],alpha,w*vv1.z);acc[7]=fmaf(acc[7],alpha,w*vv1.w);
         }
         __syncthreads();
     }
+    const int head=kh*6+h;
+    float* dst=partial+(size_t(sp)*24+head)*258;
     #pragma unroll
-    for(int h=0;h<6;++h){
-        const int head=kh*6+h;
-        float* dst=partial+(size_t(sp)*24+head)*258;
-        dst[i]=acc[h];
-        if(i==0){dst[256]=mx[h];dst[257]=denom[h];}
-    }
+    for(int c=0;c<8;++c)dst[b+c]=acc[c];
+    if(lane==0){dst[256]=mx;dst[257]=denom;}
 }
 __global__ void __launch_bounds__(256) spin8_attend_decode_reduce_kernel(
     const float* __restrict__ partial,const float* __restrict__ r,const float* __restrict__ gate,
     float* __restrict__ output,int n_splits,int* status){
     __shared__ int early_stop;
-    if(threadIdx.x==0)early_stop=*status;
+    if(threadIdx.x==0)early_stop=atomicAdd(status,0);
     __syncthreads();
     if(early_stop)return;
     __shared__ float sacc[256],sr[64];
@@ -332,6 +351,8 @@ void preload_kv(){
     ck(cudaFuncGetAttributes(&a,spin));ck(cudaFuncGetAttributes(&a,store_f16));ck(cudaFuncGetAttributes(&a,store_q));
     ck(cudaFuncGetAttributes(&a,store_turbo));ck(cudaFuncGetAttributes(&a,scores_kernel));ck(cudaFuncGetAttributes(&a,aggregate_kernel));
     ck(cudaFuncGetAttributes(&a,inverse_turbo));ck(cudaFuncGetAttributes(&a,apply_gate));
+    ck(cudaFuncGetAttributes(&a,spin8_store_q_batch_kernel));ck(cudaFuncGetAttributes(&a,spin8_attend_batch_kernel));
+    ck(cudaFuncGetAttributes(&a,spin8_attend_decode_split_kernel));ck(cudaFuncGetAttributes(&a,spin8_attend_decode_reduce_kernel));
 }
 void KvCache::check(){
     demand(!poisoned_,"KV session requires reset after error");
@@ -376,17 +397,16 @@ void KvCache::enqueue_batch(int index,int pos_start,int n_tokens,const float* q_
         demand(index>=0&&index<int(layers_.size()),"invalid attention layer");
         auto& l=layers_[index];
         demand(pos_start==l.length&&pos_start>=0&&pos_start+n_tokens<=capacity_,"KV batch position out of range");
-        finite(q_batch,size_t(n_tokens)*6144,status_.as<int>(),stream_);
-        finite(k_batch,size_t(n_tokens)*1024,status_.as<int>(),stream_);
-        finite(v_batch,size_t(n_tokens)*1024,status_.as<int>(),stream_);
-        finite(gate_batch,size_t(n_tokens)*6144,status_.as<int>(),stream_);
-        spin8_store_q_batch_kernel<<<n_tokens,32,0,stream_>>>(k_batch,l.key.as<uint8_t>(),matrix_.as(),pos_start,n_tokens,capacity_,true,status_.as<int>());
-        spin8_store_q_batch_kernel<<<n_tokens,32,0,stream_>>>(v_batch,l.value.as<uint8_t>(),matrix_.as(),pos_start,n_tokens,capacity_,false,status_.as<int>());
-        spin8_attend_batch_kernel<<<dim3(8,unsigned((n_tokens+3)/4)),256,0,stream_>>>(
-            q_batch,gate_batch,l.key.as<uint8_t>(),l.value.as<uint8_t>(),matrix_.as(),output_batch,
-            pos_start,n_tokens,capacity_,int(config_.key_row_bytes()),int(config_.value_row_bytes()),int(config_.mode),status_.as<int>());
-        ck(cudaGetLastError());
-        l.length+=n_tokens;
+        demand(q_batch&&k_batch&&v_batch&&gate_batch&&output_batch,"null KV operand");
+        try{
+            spin8_store_q_batch_kernel<<<n_tokens,32,0,stream_>>>(k_batch,l.key.as<uint8_t>(),matrix_.as(),pos_start,n_tokens,capacity_,true,status_.as<int>());
+            spin8_store_q_batch_kernel<<<n_tokens,32,0,stream_>>>(v_batch,l.value.as<uint8_t>(),matrix_.as(),pos_start,n_tokens,capacity_,false,status_.as<int>());
+            spin8_attend_batch_kernel<<<dim3(4,unsigned((n_tokens+7)/8)),256,0,stream_>>>(
+                q_batch,gate_batch,l.key.as<uint8_t>(),l.value.as<uint8_t>(),matrix_.as(),output_batch,
+                pos_start,n_tokens,capacity_,int(config_.key_row_bytes()),int(config_.value_row_bytes()),int(config_.mode),status_.as<int>());
+            ck(cudaGetLastError());
+            l.length+=n_tokens;
+        }catch(...){poisoned_=true;throw;}
         return;
     }
     for(int t=0;t<n_tokens;++t){
@@ -403,16 +423,16 @@ void KvCache::enqueue(int index,int pos,const float* q,const float* k,const floa
             spin8_store_q_batch_kernel<<<1,32,0,stream_>>>(k,l.key.as<uint8_t>(),matrix_.as(),pos,1,capacity_,true,status_.as<int>());
             spin8_store_q_batch_kernel<<<1,32,0,stream_>>>(v,l.value.as<uint8_t>(),matrix_.as(),pos,1,capacity_,false,status_.as<int>());
             ck(cudaGetLastError());if(conservative_)check();
-            const int max_splits=capacity_/258;
+            const int max_splits=std::min(16,capacity_/258);
             const int want_splits=(pos>=128)?std::min(16,(pos+127)/128):1;
             const int n_splits=std::min(max_splits,want_splits);
             if(n_splits>=2){
-                spin8_attend_decode_split_kernel<<<dim3(4,unsigned(n_splits)),256,0,stream_>>>(
+                spin8_attend_decode_split_kernel<<<dim3(4,unsigned(n_splits)),192,0,stream_>>>(
                     q,l.key.as<uint8_t>(),l.value.as<uint8_t>(),matrix_.as(),scores,pos,capacity_,
                     int(config_.key_row_bytes()),int(config_.value_row_bytes()),int(config_.mode),n_splits,status_.as<int>());
                 spin8_attend_decode_reduce_kernel<<<24,256,0,stream_>>>(scores,matrix_.as(),gate,output,n_splits,status_.as<int>());
             }else{
-                spin8_attend_batch_kernel<<<dim3(8,1),256,0,stream_>>>(
+                spin8_attend_batch_kernel<<<dim3(4,1),256,0,stream_>>>(
                     q,gate,l.key.as<uint8_t>(),l.value.as<uint8_t>(),matrix_.as(),output,pos,1,capacity_,
                     int(config_.key_row_bytes()),int(config_.value_row_bytes()),int(config_.mode),status_.as<int>());
             }

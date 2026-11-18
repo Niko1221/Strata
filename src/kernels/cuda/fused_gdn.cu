@@ -4,6 +4,7 @@
 
 #include <cuda_runtime.h>
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 
@@ -17,14 +18,15 @@ constexpr int RPG = S / RG;     // 32 rows per thread
 
 // SILU: the output gate is SiLU(z) (Qwen3.6, qwen35moe) instead of sigmoid(z) (Flash-Next); a compile-time flag, so
 // the sigmoid instantiation is the kernel it was.
-template <bool SILU>
+template <bool SILU, bool CHECK_FINITE = false>
 __global__ void __launch_bounds__(S * RG) gdn_step_norm_kernel(float* __restrict__ state, const float* __restrict__ q,
                                                                const float* __restrict__ k, const float* __restrict__ v,
                                                                const float* __restrict__ gate,
                                                                const float* __restrict__ beta,
                                                                const float* __restrict__ z,
                                                                const float* __restrict__ gamma, float eps,
-                                                               float* __restrict__ y, int h_k, int h_v) {
+                                                               float* __restrict__ y, int h_k, int h_v,
+                                                               int* __restrict__ error = nullptr) {
     __shared__ float sk[S], sq[S];
     __shared__ float red_kv[RG][S];
     __shared__ float red_o[RG][S];
@@ -50,11 +52,15 @@ __global__ void __launch_bounds__(S * RG) gdn_step_norm_kernel(float* __restrict
     const float kv_col = red_kv[0][col] + red_kv[1][col] + red_kv[2][col] + red_kv[3][col];
     const float delta = (v[head * S + col] - g * kv_col) * beta[head];
     float o = 0.0f;
+    [[maybe_unused]] bool nonfinite = false;
 #pragma unroll
     for (int r = 0; r < RPG; ++r) {
         s[r] = fmaf(g, s[r], sk[rg * RPG + r] * delta);
         o = fmaf(s[r], sq[rg * RPG + r], o);
         base[r * row_stride] = s[r];
+        if constexpr (CHECK_FINITE) {
+            if (!isfinite(s[r])) nonfinite = true;
+        }
     }
     red_o[rg][col] = o;
     __syncthreads();
@@ -71,8 +77,16 @@ __global__ void __launch_bounds__(S * RG) gdn_step_norm_kernel(float* __restrict
         const float ss = wsum[0] + wsum[1] + wsum[2] + wsum[3];
         const float scale = rsqrtf(ss / (float) S + eps);
         const float zz = z[head * S + col];
-        if constexpr (SILU) y[head * S + col] = oc * scale * gamma[col] * (zz / (1.0f + __expf(-zz)));
-        else y[head * S + col] = oc * scale * gamma[col] * (1.0f / (1.0f + __expf(-zz)));
+        float out_y;
+        if constexpr (SILU) out_y = oc * scale * gamma[col] * (zz / (1.0f + __expf(-zz)));
+        else out_y = oc * scale * gamma[col] * (1.0f / (1.0f + __expf(-zz)));
+        y[head * S + col] = out_y;
+        if constexpr (CHECK_FINITE) {
+            if (!isfinite(out_y)) nonfinite = true;
+        }
+    }
+    if constexpr (CHECK_FINITE) {
+        if (nonfinite) atomicExch(error, 1);
     }
 }
 
@@ -98,11 +112,12 @@ __global__ void __launch_bounds__(S) gdn_conv_l2_kernel(float* __restrict__ hist
     h[c] = y;
 }
 
-template <bool SILU>
+template <bool SILU, bool CHECK_FINITE = false>
 __global__ void __launch_bounds__(S * RG) gdn_step_norm_batch_kernel(
     float* __restrict__ state, const float* __restrict__ qkv_batch, int qkv_stride,
     const float* __restrict__ gate, const float* __restrict__ beta, const float* __restrict__ z,
-    const float* __restrict__ gamma, float eps, float* __restrict__ y, int h_k, int h_v, int n_tokens) {
+    const float* __restrict__ gamma, float eps, float* __restrict__ y, int h_k, int h_v, int n_tokens,
+    int* __restrict__ error = nullptr) {
     __shared__ float sk[S], sq[S];
     __shared__ float red_kv[RG][S];
     __shared__ float red_o[RG][S];
@@ -118,6 +133,7 @@ __global__ void __launch_bounds__(S * RG) gdn_step_norm_batch_kernel(
 #pragma unroll
     for (int r = 0; r < RPG; ++r) s[r] = base[r * row_stride];
     const float gam = (rg == 0) ? gamma[col] : 0.0f;
+    [[maybe_unused]] bool nonfinite = false;
 
     for (int t = 0; t < n_tokens; ++t) {
         const float* qt = qkv_batch + (size_t)t * qkv_stride;
@@ -157,13 +173,26 @@ __global__ void __launch_bounds__(S * RG) gdn_step_norm_batch_kernel(
             const float scale = rsqrtf(ss / (float)S + eps);
             const size_t yoff = ((size_t)t * h_v + head) * S + col;
             const float zz = z[yoff];
-            if constexpr (SILU) y[yoff] = oc * scale * gam * (zz / (1.0f + __expf(-zz)));
-            else y[yoff] = oc * scale * gam * (1.0f / (1.0f + __expf(-zz)));
+            float out_y;
+            if constexpr (SILU) out_y = oc * scale * gam * (zz / (1.0f + __expf(-zz)));
+            else out_y = oc * scale * gam * (1.0f / (1.0f + __expf(-zz)));
+            y[yoff] = out_y;
+            if constexpr (CHECK_FINITE) {
+                if (!isfinite(out_y)) nonfinite = true;
+            }
         }
         __syncthreads();
     }
 #pragma unroll
-    for (int r = 0; r < RPG; ++r) base[r * row_stride] = s[r];
+    for (int r = 0; r < RPG; ++r) {
+        base[r * row_stride] = s[r];
+        if constexpr (CHECK_FINITE) {
+            if (!isfinite(s[r])) nonfinite = true;
+        }
+    }
+    if constexpr (CHECK_FINITE) {
+        if (nonfinite) atomicExch(error, 1);
+    }
 }
 
 __global__ void __launch_bounds__(S) gdn_conv_l2_batch_kernel(
@@ -252,13 +281,19 @@ void fused_gdn_ab(const float* x, const uint16_t* w_alpha, const uint16_t* w_bet
 namespace {
 template <bool SILU>
 void step_norm(float* state, const float* q, const float* k, const float* v, const float* gate, const float* beta,
-               const float* z, const float* gamma, float eps, float* y, int h_k, int h_v, void* stream) {
+               const float* z, const float* gamma, float eps, float* y, int h_k, int h_v, void* stream,
+               int* error = nullptr) {
     if (!state || !q || !k || !v || !gate || !beta || !z || !gamma || !y || h_k <= 0 || h_v <= 0 || h_v % h_k) {
         std::fprintf(stderr, "fused_gdn_step_norm: invalid arguments\n");
         std::exit(1);
     }
-    gdn_step_norm_kernel<SILU><<<(unsigned) h_v, dim3(S, RG), 0, (cudaStream_t) stream>>>(state, q, k, v, gate, beta,
-                                                                                         z, gamma, eps, y, h_k, h_v);
+    if (error) {
+        gdn_step_norm_kernel<SILU, true><<<(unsigned) h_v, dim3(S, RG), 0, (cudaStream_t) stream>>>(
+            state, q, k, v, gate, beta, z, gamma, eps, y, h_k, h_v, error);
+    } else {
+        gdn_step_norm_kernel<SILU, false><<<(unsigned) h_v, dim3(S, RG), 0, (cudaStream_t) stream>>>(
+            state, q, k, v, gate, beta, z, gamma, eps, y, h_k, h_v, nullptr);
+    }
     const cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) {
         std::fprintf(stderr, "fused_gdn_step_norm: %s\n", cudaGetErrorString(e));
@@ -270,13 +305,13 @@ void step_norm(float* state, const float* q, const float* k, const float* v, con
 void fused_gdn_step_norm(float* state, const float* q, const float* k, const float* v, const float* gate,
                          const float* beta, const float* z, const float* gamma, float eps, float* y, int h_k, int h_v,
                          void* stream) {
-    step_norm<false>(state, q, k, v, gate, beta, z, gamma, eps, y, h_k, h_v, stream);
+    step_norm<false>(state, q, k, v, gate, beta, z, gamma, eps, y, h_k, h_v, stream, nullptr);
 }
 
 void fused_gdn_step_norm_silu(float* state, const float* q, const float* k, const float* v, const float* gate,
                               const float* beta, const float* z, const float* gamma, float eps, float* y, int h_k,
-                              int h_v, void* stream) {
-    step_norm<true>(state, q, k, v, gate, beta, z, gamma, eps, y, h_k, h_v, stream);
+                              int h_v, void* stream, int* error) {
+    step_norm<true>(state, q, k, v, gate, beta, z, gamma, eps, y, h_k, h_v, stream, error);
 }
 
 void fused_gdn_conv_l2_batch(float* history, const float* qkv_batch, const float* conv_w, float* h_batch,
@@ -294,14 +329,19 @@ void fused_gdn_conv_l2_batch(float* history, const float* qkv_batch, const float
 
 void fused_gdn_step_norm_silu_batch(float* state, const float* qkv_batch, int qkv_stride, const float* gate,
                                     const float* beta, const float* z, const float* gamma, float eps, float* y,
-                                    int h_k, int h_v, int n_tokens, void* stream) {
+                                    int h_k, int h_v, int n_tokens, void* stream, int* error) {
     if (n_tokens <= 0) return;
     if (!state || !qkv_batch || !gate || !beta || !z || !gamma || !y || h_k <= 0 || h_v <= 0 || h_v % h_k) {
         std::fprintf(stderr, "fused_gdn_step_norm_silu_batch: invalid arguments\n");
         std::exit(1);
     }
-    gdn_step_norm_batch_kernel<true><<<(unsigned)h_v, dim3(S, RG), 0, (cudaStream_t)stream>>>(
-        state, qkv_batch, qkv_stride, gate, beta, z, gamma, eps, y, h_k, h_v, n_tokens);
+    if (error) {
+        gdn_step_norm_batch_kernel<true, true><<<(unsigned)h_v, dim3(S, RG), 0, (cudaStream_t)stream>>>(
+            state, qkv_batch, qkv_stride, gate, beta, z, gamma, eps, y, h_k, h_v, n_tokens, error);
+    } else {
+        gdn_step_norm_batch_kernel<true, false><<<(unsigned)h_v, dim3(S, RG), 0, (cudaStream_t)stream>>>(
+            state, qkv_batch, qkv_stride, gate, beta, z, gamma, eps, y, h_k, h_v, n_tokens, nullptr);
+    }
     const cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) { std::fprintf(stderr, "fused_gdn_step_norm_silu_batch: %s\n", cudaGetErrorString(e)); std::exit(1); }
 }
