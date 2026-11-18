@@ -208,7 +208,7 @@ Methodology rules (the parts that matter for comparing numbers):
 
 One full arm (1 soak + 3 counted sweeps, 4 tiers each) takes about 25 minutes.
 
-## 6. My hardware / software / OS / config
+## 6. Test hardware / software / OS / config
 
 Recorded here because every number in section 4 was measured on this box.
 
@@ -222,7 +222,7 @@ Hardware:
 
 Software:
 
-- OS: Linux (Ubuntu, 64-bit)
+- OS: Linux (Ubuntu, 64-bit), running as a VM on Proxmox 9.2.11
 - ROCm 10.0
 - Python venv for the server, upstream `serve/server.py`
 - rocBLAS tuning table `gfx1030-rocblas-5.6.0.8d1ae90e.txt` (in
