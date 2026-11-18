@@ -126,4 +126,12 @@ inline bool conversation_memory_admit(std::optional<uint64_t> available,
     return available && *available >= floor && allocation <= *available - floor;
 }
 
+/// A dedicated save/saveinc reserve is carved out of the parked-conversation
+/// budget.  The engine's RAM guard still checks physical room at save time;
+/// this separation stops parked conversations from consuming the reserve first.
+inline int64_t conversation_cache_after_save_reserve(int64_t cache_mib, int64_t save_reserve_mib) {
+    if (cache_mib <= 0 || save_reserve_mib <= 0) return cache_mib > 0 ? cache_mib : 0;
+    return cache_mib > save_reserve_mib ? cache_mib - save_reserve_mib : 0;
+}
+
 } // namespace strata::core

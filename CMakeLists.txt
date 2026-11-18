@@ -201,6 +201,12 @@ function(strata_add_pack_test name needs)
   endif()
 endfunction()
 option(STRATA_BUILD_CONVERSATION_TESTS "Build standalone conversation cache tests" OFF)
+# [giphoo] l2-exp v2: the block-compressed session format links lz4 when present (the v2 code
+# compiles out without the header; a missing library on Linux is a build error we want to see)
+find_library(STRATA_LZ4_LIBRARY NAMES lz4)
+if(NOT STRATA_LZ4_LIBRARY)
+    message(WARNING "liblz4 not found: session files stay on format v1 (l2-exp v2 disabled)")
+endif()
 option(STRATA_WERROR "Treat compiler warnings as errors" OFF)
 # #2027: defined here, before the GPU section reads it to register the native-expert tests (it was defined at the
 # native-experts section far below, so a first configure registered four tests fewer than the second)
@@ -241,11 +247,17 @@ if(STRATA_BUILD_CONVERSATION_TESTS)
   target_include_directories(conversation_memory_test PRIVATE include)
   add_test(NAME conversation_memory_test COMMAND conversation_memory_test)
   add_executable(conversation_file_test src/core/conversation_file_test.cpp src/core/conversation_file.cpp)
-  target_include_directories(conversation_file_test PRIVATE include)
+  target_include_directories(conversation_file_test PRIVATE include src)   # [giphoo] l2 v2/v3 .inc lives under src/core
+  target_link_libraries(conversation_file_test PRIVATE ${STRATA_LZ4_LIBRARY})
   add_test(NAME conversation_file_test COMMAND conversation_file_test)
   add_executable(session_save_reclaim_test src/core/session_save_reclaim_test.cpp src/core/conversation_file.cpp)
   target_include_directories(session_save_reclaim_test PRIVATE include)
+  target_link_libraries(session_save_reclaim_test PRIVATE ${STRATA_LZ4_LIBRARY})
   add_test(NAME session_save_reclaim_test COMMAND session_save_reclaim_test)
+  # [giphoo] L2 PARKED control-plane contracts
+  add_executable(conversation_cache_l2_test src/core/conversation_cache_l2_test.cpp)
+  target_include_directories(conversation_cache_l2_test PRIVATE include)
+  add_test(NAME conversation_cache_l2_test COMMAND conversation_cache_l2_test)
 endif()
 
 if(STRATA_HIP_GFX906)
@@ -582,6 +594,12 @@ target_link_libraries(strata-plan PRIVATE strata_plan)
 # ---- strata_core (GPU runtime) ---------------------------------------------
 # Only built when a GPU backend is on, so the Phase 1 targets keep working without a toolkit.
 strata_gpu_engine()
+# [giphoo] l2-exp v2: the engine itself must link lz4, else the block-compressed session format
+# compiles out and every save silently falls back to v1 (v0.2.15: strata_engine is built inside
+# strata_gpu_engine(), so the link is appended here rather than in the upstream module).
+if(STRATA_LZ4_LIBRARY)
+  target_link_libraries(strata_engine PUBLIC ${STRATA_LZ4_LIBRARY})
+endif()
 
 strata_cpu_kernels()
 
@@ -626,6 +644,14 @@ if(STRATA_NATIVE_EXPERTS)
     # Optional real-model diagnostic: pass the GGUF shard containing the native PLE key.
     add_executable(hip_ple_iq4 tests/hip/ple_iq4.cpp)
     target_link_libraries(hip_ple_iq4 PRIVATE strata_kernels strata_hip_runtime ggml-base)
+    # [giphoo] MMQ expert micro-bench (HIP): kept behind STRATA_BUILD_TESTS so a production build
+    # (-DSTRATA_BUILD_TESTS=OFF) does not pay for it; strata_mmq only exists on the MMQ path.
+    if(STRATA_BUILD_TESTS AND STRATA_PREFILL_MMQ AND STRATA_MMQ)
+      add_executable(mmq_expert_bench src/prefill/mmq_expert_bench.cpp)
+      set_source_files_properties(src/prefill/mmq_expert_bench.cpp PROPERTIES LANGUAGE HIP
+                                  INCLUDE_DIRECTORIES "${STRATA_HIP_COMPAT_INCLUDE_DIR}")
+      target_link_libraries(mmq_expert_bench PRIVATE strata_mmq ggml-base hip::host roc::hipblas)
+    endif()
   endif()
   # the NVFP4 AVX-512 and AVX2 rows vs ggml-cpu's vec_dot, and their speed (CPU only; optional arg: a pack's experts.bin)
   add_executable(nvfp4_avx512_parity src/kernels/cpu/nvfp4_avx512_parity.cpp)
