@@ -8,6 +8,8 @@
 #include "strata/core/ple_residency.hpp"
 #include "strata/core/resident_ram_copy.hpp"
 #include "strata/platform/aux_cpus.hpp"
+#include "strata/platform/numa.hpp"
+#include "strata/platform/numa_os.hpp"
 #include "strata/core/remote_experts.hpp"
 #include "strata/core/peer_experts.hpp"
 #include "strata/kernels/cpu/expert_layout.hpp"
@@ -5929,7 +5931,7 @@ ArenaExpertSource::~ArenaExpertSource() { close(); }
 
 bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int64_t n_expert, int threads,
                              std::string& err, uint64_t max_pinned_bytes,
-                             const std::string& shared_arena_file) {
+                             const std::string& shared_arena_file, const std::vector<int>* split_devs) {
     close();
     const std::string path = pack_dir + "/experts.bin";
     // plan v0.3 P6: the layout (canonical, or a native pack's per-layer blobs) was loaded by the driver
@@ -6237,11 +6239,38 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
 #else
     const bool deferred = false;
 #endif
+    // STRATA_NUMA_ARENA_SPLIT=<layer boundaries>: each pipeline stage's layers live in a NUMA domain on
+    // the node of the CUDA device that streams them (Windows; the arena stays one contiguous VA range,
+    // the domains are separate VADs - see reserve()).  Layer -> byte through the pack layout, domain ->
+    // node through the stage's device: stage 0 is device 0, later stages take the caller's --split-device
+    // list (split_devs[r-1]), defaulting to device r when the list is absent or short; any unanswerable
+    // half drops the whole plan back to the single-domain path.  Only the plain-arena arm takes a plan: by_need/deferred/
+    // shared/mmap keep one domain (their own placement semantics apply).
+    std::vector<std::pair<uint64_t, int>> numa_plan;
+    if (!by_need && !deferred && shared_arena_file.empty() && !arena_mmap) {
+        const strata::platform::NumaArenaSplit sp = strata::platform::decide_numa_arena_split(
+            std::getenv("STRATA_NUMA_ARENA_SPLIT"), n_layers, strata::platform::numa_node_count_os());
+        if (!sp.log.empty()) std::fprintf(stderr, "strata: %s\n", sp.log.c_str());
+        if (!sp.bounds.empty()) {
+            numa_plan.push_back({0, strata::platform::device_numa_node(0)});
+            for (int64_t b : sp.bounds) {
+                const uint64_t off = lay.blob_offset(b, 0) & ~(uint64_t) 65535;   // the 64 KiB alloc grain
+                if (off <= numa_plan.back().first) break;   // bounds collapsed onto one grain - refuse the plan
+                const size_t r = numa_plan.size();   // domain r == stage r: device 0 for stage 0, else split_devs[r-1]
+                const int dev = split_devs != nullptr && r - 1 < split_devs->size() ? (*split_devs)[r - 1] : (int) r;
+                numa_plan.push_back({off, strata::platform::device_numa_node(dev)});
+            }
+            bool usable = numa_plan.size() == sp.bounds.size() + 1;
+            for (const auto& r : numa_plan) usable = usable && r.second >= 0;
+            if (!usable) numa_plan.clear();
+        }
+    }
     PinnedArena* a = by_need ? new PinnedArena(arena_bytes + (uint64_t) blob, PinnedArena::ByNeed{}, need_ranges,
                                                max_pinned_bytes, shared_arena_file, pack_hash)
                    : deferred ? new PinnedArena(want + (uint64_t) blob, bounds, PinnedArena::Deferred{})
                               : new PinnedArena(want + (uint64_t) blob, bounds, max_pinned_bytes,
-                                                shared_arena_file, pack_hash);
+                                                shared_arena_file, pack_hash,
+                                                numa_plan.empty() ? nullptr : &numa_plan);
     if (!a->valid()) {
         const std::string why = a->note;
         delete a;

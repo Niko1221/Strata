@@ -363,7 +363,9 @@ PinnedArena::PinnedArena(uint64_t bytes, uint64_t slice) : PinnedArena(bytes, un
 PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t> &bounds,
                          uint64_t max_pinned_bytes,
                          const std::string &shared_file,
-                         uint64_t shared_pack_hash) try
+                         uint64_t shared_pack_hash,
+                         const std::vector<std::pair<uint64_t, int>>* /*numa_plan*/) try   // signature parity with the
+    // shared header; the SYCL port has no split-domain arm.
     : capacity(bytes) {
     if (bytes == 0) return;
     base = reserve(bytes, backing, note, shared_file, shared_pack_hash, mapping_base, mapping_bytes);
