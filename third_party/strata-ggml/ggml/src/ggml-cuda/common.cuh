@@ -757,6 +757,19 @@ static __device__ __forceinline__ int ggml_cuda_dp4a(const int a, const int b, i
 #endif // defined(GGML_USE_HIP)
 }
 
+// ggml_cuda_dp4a whose chain head (a compile-time c == 0) is the VOP3P encoding with a literal src2 on RDNA2, saving
+// the v_mov_b32 0 the compiler emits for v_dot4c's accumulator. The inline asm hides the latency from the scheduler,
+// so it is used only where measured faster (E378: q6_K MMQ +4.6%; q4_K/q5_K -10%, those stay on ggml_cuda_dp4a).
+static __device__ __forceinline__ int ggml_cuda_dp4a_z(const int a, const int b, int c) {
+#if defined(GGML_USE_HIP) && defined(RDNA2)
+    if (__builtin_constant_p(c) && c == 0) {
+        asm("v_dot4_i32_i8 %0, %1, %2, 0" : "=v"(c) : "v"(a), "v"(b));
+        return c;
+    }
+#endif // defined(GGML_USE_HIP) && defined(RDNA2)
+    return ggml_cuda_dp4a(a, b, c);
+}
+
 static __device__ __forceinline__ void ggml_cuda_mad(float & acc, const float v, const float u) {
     acc += v*u;
 }

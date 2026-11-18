@@ -250,8 +250,8 @@ template <typename T, int vdr> static __device__ __forceinline__ T vec_dot_q8_0_
 
 #pragma unroll
     for (int i = 0; i < vdr; ++i) {
-        // SIMD dot product of quantized values
-        sumi = ggml_cuda_dp4a(v[i], u[i], sumi);
+        // SIMD dot product of quantized values; dp4a_z: the chain head as a VOP3P dot product on RDNA2 (E378 b8)
+        sumi = ggml_cuda_dp4a_z(v[i], u[i], sumi);
     }
 
     return d8_0*d8_1 * ((T) sumi);
@@ -294,8 +294,8 @@ template <int vdr> static __device__ __forceinline__ float vec_dot_q8_0_16_q8_1_
 
 #pragma unroll
         for (int i = i0; i < i0 + QI8_0/2; ++i) {
-            // SIMD dot product of quantized values
-            sumi = ggml_cuda_dp4a(v[i], u[i], sumi);
+            // SIMD dot product of quantized values; on RDNA2 the first link starts as VOP3P (see vec_dot_q8_0_q8_1_impl)
+            sumi = ggml_cuda_dp4a_z(v[i], u[i], sumi);
         }
 
         sumf += d8_0[i0/(QI8_0/2)]*sumi;
