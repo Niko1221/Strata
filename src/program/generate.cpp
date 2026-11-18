@@ -39,6 +39,7 @@
 #include "strata/core/remote_expert_opt.hpp"
 #include "strata/core/expert_cache.hpp"
 #include "strata/core/expert_nibble.hpp"
+#include "strata/core/expert_profile_memory.hpp"
 #include "strata/core/conversation_snapshot.hpp"
 #include "strata/core/lookup_default.hpp"
 #include "strata/core/serve_stop_bound.hpp"
@@ -918,6 +919,9 @@ struct Options {
     /// with today's adaptive policy and writes it once the stretch is long enough (strata/spec/draft_policy.hpp, CostLearner).
     /// --draft-costs-key TEXT: more of the key from the server (the engine file's identity, say).
     std::string draft_costs, draft_costs_key;
+    std::string expert_profile_memory;
+    double expert_profile_memory_hours = 12.0;
+    double expert_profile_memory_mix = 0.65;
     /// R4.2d: **ON by default**, because the measurement is unambiguous and the alternative is known-broken.
     /// Without it, 17 of 10,562 layers had the hit work done when the pool returned; with it, 9,190.  The
     /// A/B arm is `--no-hit-poke`.
@@ -1360,6 +1364,9 @@ void usage() {
                  "                       VRAM, then the routing counted since the start) as a profile at P, on\n"
                  "                       QUIT and every --expert-profile-save-every MIN minutes (default 10;\n"
                  "                       0 = on QUIT only) between requests; start from it with --expert-profile P\n"
+                 "  --expert-profile-memory P  --serve (experimental): consolidate new routing into a long-term profile at P;\n"
+                 "                       --expert-profile-memory-hours H sets its half-life (default 12), and\n"
+                 "                       --expert-profile-memory-mix F its output weight (default 0.65)\n"
                  "  --no-hit-poke        R4.2d's A/B arm.  The hit path pokes the driver once right after its\n"
                  "                       launch so the GPU starts while the CPU pool runs; without it the work\n"
                  "                       waits for the next driver entry and does not overlap at all.\n"
@@ -4014,6 +4021,11 @@ int main(int argc, char** argv) {
         else if (a == "--draft-costs-key") o.draft_costs_key = next("--draft-costs-key");
         else if (a == "--expert-profile-save-every")
             o.expert_profile_save_min = std::atof(next("--expert-profile-save-every"));
+        else if (a == "--expert-profile-memory") o.expert_profile_memory = next("--expert-profile-memory");
+        else if (a == "--expert-profile-memory-hours")
+            o.expert_profile_memory_hours = std::atof(next("--expert-profile-memory-hours"));
+        else if (a == "--expert-profile-memory-mix")
+            o.expert_profile_memory_mix = std::atof(next("--expert-profile-memory-mix"));
         else if (a == "--gpu-stages") o.gpu_stages = true;
         else if (a == "--mmap-experts") o.mmap_experts = true;
         else if (a == "--shared-expert-arena") o.shared_expert_arena = next("--shared-expert-arena");
@@ -13952,6 +13964,29 @@ int main(int argc, char** argv) {
             else
                 heat.assign(drive.d.usage.size(), 0.0);
         }
+        strata::core::ExpertProfileMemory profile_memory;
+        bool profile_memory_on = !o.expert_profile_memory.empty();
+        if (profile_memory_on) {
+            if (heat.empty() || !(o.expert_profile_memory_hours > 0.0) ||
+                !(o.expert_profile_memory_mix >= 0.0 && o.expert_profile_memory_mix <= 1.0)) {
+                std::fprintf(stderr, "strata serve: --expert-profile-memory needs working --expert-profile-save, "
+                                     "a positive half-life, and an output weight from 0 to 1\n");
+                return 1;
+            }
+            const double now = std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
+            std::string memory_err;
+            std::error_code memory_ec;
+            const bool memory_exists = std::filesystem::exists(o.expert_profile_memory, memory_ec);
+            if (memory_ec || (memory_exists && !profile_memory.load(o.expert_profile_memory, g.n_layers, g.n_expert,
+                                                                   memory_err))) {
+                std::fprintf(stderr, "strata serve: %s\n",
+                             memory_ec ? "cannot inspect --expert-profile-memory" : memory_err.c_str());
+                return 1;
+            }
+            if (!memory_exists) profile_memory.reset(g.n_layers, g.n_expert, now);
+            std::fprintf(stderr, "strata serve: long-term expert profile memory: %s (half-life %.3g hours, weight %.3g)\n",
+                         o.expert_profile_memory.c_str(), o.expert_profile_memory_hours, o.expert_profile_memory_mix);
+        }
         Clock::time_point profile_saved_at = Clock::now();
         cudaStream_t adapt_stream = nullptr;
         if (cudaStreamCreateWithFlags(&adapt_stream, cudaStreamNonBlocking) != cudaSuccess) {
@@ -14813,13 +14848,29 @@ int main(int argc, char** argv) {
             if (astate == AState::SwapIn)   // --adapt-async: the same for a round past its step 2
                 for (const ASwap& w : aswaps) resident[(size_t) w.layer * g.n_expert + w.in] = 1;
             std::string e;
-            const auto ranked = strata::core::rank_learned_profile(g.n_layers, g.n_expert, resident, heat,
-                                                                   profile_loaded);
-            if (strata::core::write_expert_profile(o.expert_profile_save, g.n_layers, g.n_expert, ranked, e))
+            const auto previous_memory = profile_memory;
+            if (profile_memory_on) {
+                const double now = std::chrono::duration<double>(
+                    std::chrono::system_clock::now().time_since_epoch()).count();
+                if (!profile_memory.consolidate(heat, now, o.expert_profile_memory_hours,
+                                                o.expert_profile_memory_mix, e)) {
+                    std::fprintf(stderr, "strata serve: the expert profile was not saved: %s\n", e.c_str());
+                    return;
+                }
+            }
+            const auto ranked = profile_memory_on
+                ? strata::core::rank_learned_profile(g.n_layers, g.n_expert, {}, profile_memory.scores(), profile_loaded)
+                : strata::core::rank_learned_profile(g.n_layers, g.n_expert, resident, heat, profile_loaded);
+            if (!strata::core::write_expert_profile(o.expert_profile_save, g.n_layers, g.n_expert, ranked, e)) {
+                if (profile_memory_on) profile_memory = previous_memory;
+                std::fprintf(stderr, "strata serve: the expert profile was not saved: %s\n", e.c_str());
+            } else if (profile_memory_on && !profile_memory.save(o.expert_profile_memory, e)) {
+                profile_memory = previous_memory;
+                std::fprintf(stderr, "strata serve: the long-term expert profile memory was not saved: %s\n", e.c_str());
+            } else {
                 std::fprintf(stderr, "strata serve: expert profile saved to %s (%s)\n", o.expert_profile_save.c_str(),
                              why);
-            else
-                std::fprintf(stderr, "strata serve: the expert profile was not saved: %s\n", e.c_str());
+            }
             profile_saved_at = Clock::now();
         };
         // stdin is read on its own thread, so a STOP line reaches a request that is still running (the client went

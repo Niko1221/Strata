@@ -286,7 +286,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   # about arithmetic, and this one knows the ORDER the arithmetic happens in.
   add_library(strata_engine STATIC src/core/layer.cpp src/core/session.cpp src/core/expert_source.cpp src/core/remote_experts.cpp
     src/core/remote_expert_opt.cu
-    src/core/expert_cache.cpp src/core/native_head.cpp src/core/native_dense.cpp src/core/verify.cpp src/core/mtp.cpp src/core/dflash2.cpp
+    src/core/expert_cache.cpp src/core/expert_profile_memory.cpp src/core/native_head.cpp src/core/native_dense.cpp src/core/verify.cpp src/core/mtp.cpp src/core/dflash2.cpp
     src/core/conversation_snapshot.cpp src/core/conversation_state.cpp src/core/conversation_memory.cpp src/core/peer_experts.cpp
     src/core/arch_defaults.cpp src/core/nv_defaults.cpp src/core/vmm.cpp src/core/conversation_file.cpp)
   target_include_directories(strata_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -354,6 +354,14 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_link_libraries(expert_profile_save_test PRIVATE strata_engine)
     add_test(NAME expert_profile_save_test COMMAND expert_profile_save_test)
     set_tests_properties(expert_profile_save_test PROPERTIES TIMEOUT 60)
+  endif()
+  # gated long-term routing statistics and their versioned state file (CPU only, no device is touched)
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/expert_profile_memory_test.cpp")
+    enable_testing()
+    add_executable(expert_profile_memory_test tests/core/expert_profile_memory_test.cpp src/core/expert_profile_memory.cpp)
+    target_include_directories(expert_profile_memory_test PRIVATE include)
+    add_test(NAME expert_profile_memory_test COMMAND expert_profile_memory_test)
+    set_tests_properties(expert_profile_memory_test PROPERTIES TIMEOUT 60)
   endif()
   # the profile header's version is enforced: a version other than 1 is refused by its number (CPU only)
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/expert_profile_version_test.cpp")
