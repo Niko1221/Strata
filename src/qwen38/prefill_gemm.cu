@@ -633,7 +633,9 @@ size_t PrefillGemmWorkspace::estimate_bytes(int max_tokens, int max_k, size_t ti
     const size_t act_fp16_bytes = act_elems * sizeof(half);
     const size_t act_scales_bytes = static_cast<size_t>(max_tokens) * sizeof(float);
     if (!use_fp8) {
-        const size_t max_tile_rows = std::max<size_t>(16, tile_buf_bytes / 512);
+        // The FP16 output tile needs at most tile_buf_bytes/(min_K*sizeof(half)) rows;
+        // every admitted projection has K >= 5120. Using 512 here overallocates 20x.
+        const size_t max_tile_rows = std::max<size_t>(16, tile_buf_bytes / (5120u * sizeof(half)));
         return tile_buf_bytes + act_fp16_bytes + static_cast<size_t>(max_tokens) * max_tile_rows * sizeof(half) + act_scales_bytes;
     }
     const size_t max_tile_rows_est = (tile_buf_bytes / 2) / 512 + 1024;
@@ -672,7 +674,7 @@ void PrefillGemmWorkspace::init(int max_tokens, int max_k, size_t tile_buf_bytes
         alloc_dev(&impl_->act_fp16, impl_->act_elems * sizeof(half));
         alloc_dev(&impl_->act_scales, static_cast<size_t>(max_tokens) * sizeof(float));
         if (!impl_->use_fp8) {
-            impl_->max_tile_rows_alloc = std::max<size_t>(16, tile_buf_bytes / 512);
+            impl_->max_tile_rows_alloc = std::max<size_t>(16, tile_buf_bytes / (5120u * sizeof(half)));
             alloc_dev(&impl_->y_tile_fp16, static_cast<size_t>(max_tokens) * impl_->max_tile_rows_alloc * sizeof(half));
             int dev = 0, persisting_max = 0, window_max = 0;
             ck(cudaGetDevice(&dev));

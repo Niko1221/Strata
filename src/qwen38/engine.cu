@@ -133,7 +133,7 @@ struct Engine {
                 const uint64_t bs_b=uint64_t(ch)*bscratch_floats_per_tok*4;
                 const uint64_t q8_b=(17408/32)*sizeof(Q::BlockQ8_1);
                 const uint64_t act16_b=uint64_t(ch)*17408*2;
-                const uint64_t y16_b=uint64_t(ch)*std::max<uint64_t>(16,tb/512)*2;
+                const uint64_t y16_b=uint64_t(ch)*std::max<uint64_t>(16,tb/(5120ull*2))*2;
                 out_scratch=base_scratch+ws_b+bs_b+q8_b;
                 out_allow=base_allowance+large_slack(bs_b)+large_slack(tb)+large_slack(act16_b)+large_slack(y16_b);
                 return {layout.bytes(),recurrent_bytes,out_scratch,conversion_peak,out_allow};

@@ -40,3 +40,18 @@
 - `STRATA_Q38_PROFILE=1` のコールド計測では `gdn_mm` が 490/737 ms を占め、
   GDN 入力射影の結合が残る最適化候補。FP8 prefill 経路は 1737 ms で大幅に遅い。
 - すべての計測で `qualified=false`（同一モデルの数列一致・full-window・GPU 並行は未検証）。
+
+## y_tile_fp16 workspace の適正化 (2026-11-18)
+
+- `PrefillGemmWorkspace::estimate_bytes` / `init` の `max_tile_rows_alloc` を
+  `tile_buf_bytes/512` から `tile_buf_bytes/(5120*sizeof(half))` に変更。
+  受け入れられる射影はすべて K>=5120 なので、20 MiB タイルで
+  40,960 行 (80 MiB) ではなく 2,048 行 (4 MiB) で十分。admission 側
+  (`engine.cu` の `eval_cand`) も同じ計算に統一した。
+- 実測: `scratch_bytes` 347,979,500 → 268,290,796 (約 76 MB 削減)。
+- 検証: ctest 17/17 PASS。p=140 prefill 517〜540 tok/s (旧 514)、
+  p=1024 936 tok/s (旧 915)、decode 31.9〜32.4 ms/step (旧 32.9)。
+  効果は小さいが後退せず、長文脈・小容量 VRAM で chunk を維持する余地が増える。
+- 却下した実験: IQ2_S/IQ3_S の K 方向 4 ブロック展開 (511.78 vs 514.17 tok/s で
+  改善なし)、Spin8 split を 64 トークン単位に変更 (503 vs 514 tok/s で
+  改善なし、engine が正常終了しなかった)。いずれも revert 済み。
