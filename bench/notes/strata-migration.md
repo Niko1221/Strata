@@ -63,7 +63,7 @@ benchmark result files in `~/git/llm-benchmark/results/` (named per experiment b
   18–100 s of re-reading), OFF for benchmarks (a benchmark never revisits a conversation, so parking
   would only charge it a small eviction tax and muddy the comparison).
 - **Worktree** — a second checkout of the same git repo in another directory, so each build keeps
-  its own folder. `~/git/v620-updates` is where the current daily build lives.
+  its own folder. `~/git/v620-gfx1030-tuned` is where the current daily build lives.
 - **Fork** — our copy of a repo on GitHub (`andrewprock/Strata`, `andrewprock/llama.cpp`) where
   branches are pushed for safekeeping.
 - **E483 rule** — if a setting changes *which* computation paths run, measure it on real text, never
@@ -103,7 +103,7 @@ benchmark result files in `~/git/llm-benchmark/results/` (named per experiment b
 - Restoring = stop the current server and start one with the wanted config instead (§3.4).
 - Older binaries for instant fallback: `~/engines/backup/strata-0.1.48.1-f2` (generation 1) and
   `~/engines/backup/strata-0.1.47-base`. The daily build lives at
-  `~/git/v620-updates/build-hip/strata` (branch `v620-updates`).
+  `~/git/v620-gfx1030-tuned/build-hip/strata` (branch `v620-gfx1030-tuned`).
 
 ### 2.4 The five generations of the daily driver (all defined)
 
@@ -122,8 +122,8 @@ benchmark result files in `~/git/llm-benchmark/results/` (named per experiment b
 │ Generation 4           │ 2026-11-05  │ Strata 0.2.10 + F-2 (clean cherry-pick, commit 434dfe91) + the patched expert      │ ~/git/wt-stack, branch v620-stack-0210-f2-mmq (on  │
 │                        │             │ kernels.                                                                           │ the fork)                                          │
 ├────────────────────────┼─────────────┼────────────────────────────────────────────────────────────────────────────────────┼────────────────────────────────────────────────────┤
-│ Generation 5 (current) │ 2026-11-18  │ New upstream main (0.2.15-dev, commit c77572806) + F-2 (cherry-pick                │ ~/git/v620-updates, branch v620-updates (on the    │
-│                        │             │ 749cfbb18) + our MMQ patches, now commits inside the vendored ggml.                │ fork); config ~/strata-v620-iq3_s-T9-v5.json       │
+│ Generation 5 (current) │ 2026-11-18  │ New upstream main (0.2.15-dev, commit c77572806) + F-2 (cherry-pick                │ ~/git/v620-gfx1030-tuned, same-named branch (on    │
+│                        │             │ 749cfbb18) + our MMQ patches, now commits inside the vendored ggml.                │ the fork); config ~/strata-v620-iq3_s-T9-v5.json   │
 └────────────────────────┴─────────────┴────────────────────────────────────────────────────────────────────────────────────┴────────────────────────────────────────────────────┘
 
 The patched-kernels part: 3 commits on the engine's exact llama.cpp pin (`3cf03257f`) — packed-FP16
@@ -211,7 +211,7 @@ checkout also lives at `~/git/llamacpp-mmq` (branch `v620-mmq-vop3p` on the fork
 ### 3.4 Stop / start of the daily server (exact commands)
 
 Stop: `~/bin/strata-serve stop` (or `pkill -x strata`). Start from the build's worktree, e.g.
-`cd ~/git/v620-updates && setsid nohup .venv/bin/python serve/server.py --engine strata --config
+`cd ~/git/v620-gfx1030-tuned && setsid nohup .venv/bin/python serve/server.py --engine strata --config
 ~/strata-v620-iq3_s-T9-draftvocab.json --port 8080 > ~/engines/logs/daily.log 2>&1 < /dev/null & disown`.
 Wait for `^ready:` in the log before sending traffic.
 
@@ -507,7 +507,7 @@ pre-rewrite original in git (`c8d3f3b2`) which has the full logs and tables.
     `FETCHCONTENT_SOURCE_DIR_STRATA_LLAMACPP` pointing at it.
 29. **Strata 0.2.10 stack (generation 4)** (11-05). 0.2.10 + F-2 (clean cherry-pick `434dfe91`) +
     patched kernels: reading +0.4% vs generation 3 across 8/8 interleaved pairs; captures upstream's
-    own +2–3% improvements. Adopted. Redo: branch `v620-updates` at commit `434dfe91` + the build
+    own +2–3% improvements. Adopted. Redo: branch `v620-gfx1030-tuned` at commit `434dfe91` + the build
     flags (§3.1.1).
 30. **DFlash2 vs MTP drafter** (11-05). DFlash2 is a separate 1.2 GB drafter, Qwen-only; upstream
     head-to-heads favor MTP. Kept MTP. Redo: `--draft dflash2 --draft-model PACK` on 0.1.55+.
@@ -581,14 +581,15 @@ issue #3930 (2×2080 Ti) shows writing 35.2→51.0 with the decode-timing window
 
 ## 9. Where everything lives
 
-- **Worktrees**: `~/git/Strata` (main checkout, 0.2.15-dev, commit `c77572806`) and `~/git/v620-updates`
-  (the daily build and this document's home; branch `v620-updates`). The experiment worktrees
+- **Worktrees**: `~/git/Strata` (main checkout, 0.2.15-dev, commit `c77572806`) and `~/git/v620-gfx1030-tuned`
+  (the daily build and this document's home; branch `v620-gfx1030-tuned`). The experiment worktrees
   (`Strata-main`, `wt-0155`, `wt-0215`, `wt-bisect`, `wt-f2-0147`, `wt-f2-0148`, `wt-mmq`) were
   removed on 11-18 (branches kept, on the fork); `wt-0215-f2` followed the same day, after generation
-  5 was merged into `v620-updates` and rebuilt there. The branch used to be called
-  `v620-stack-0210-f2-mmq` — renamed to `v620-updates` on 11-18.
+  5 was merged into `v620-gfx1030-tuned` and rebuilt there. The branch used to be called
+  `v620-stack-0210-f2-mmq` — renamed twice on 11-18 (to `v620-gfx1030-tuned`, then to
+  `v620-gfx1030-tuned`).
 - **GitHub forks** (backup copies): `andrewprock/Strata` — branches `v620-daily-0155-f2` (generation 3),
-  `v620-updates` (generations 4 and 5 plus this record), `v620-0215-f2` (generation 5 pre-merge), plus
+  `v620-gfx1030-tuned` (generations 4 and 5 plus this record), `v620-0215-f2` (generation 5 pre-merge), plus
   the experiment branches
   `f2-0147`, `f2-0148` and `parked/pr-a-gfx103x-default`; `andrewprock/llama.cpp` —
   branch `v620-mmq-vop3p` (the patched kernels, for the pre-vendored bases). The `gh` CLI is
@@ -603,8 +604,8 @@ issue #3930 (2×2080 Ti) shows writing 35.2→51.0 with the decode-timing window
   filename is the run time).
 - **Binary backups**: `~/engines/backup/{strata-0.1.47-base, strata-0.1.48.1-f2, strata-0.1.55-f2,`
   `strata-0.1.55-f2-mmq}` (generations 1-3). Generation 4's binary was not kept when `wt-stack` was
-  rebuilt for generation 5; rebuild it from `v620-updates` commit `434dfe91` with the §3.1.1 flags if
-  ever needed. The daily generation-5 build lives in `~/git/v620-updates/build-hip`.
+  rebuilt for generation 5; rebuild it from `v620-gfx1030-tuned` commit `434dfe91` with the §3.1.1 flags if
+  ever needed. The daily generation-5 build lives in `~/git/v620-gfx1030-tuned/build-hip`.
   This document's earlier versions: `~/strata-migration.md.bak-20261117-pre-rewrite` and
   `~/strata-migration.md.bak-20261117-post-redundancy`, plus git history (`c8d3f3b2` original →
   `ba97795e` dedup → `08de0232` first rewrite → this one).
