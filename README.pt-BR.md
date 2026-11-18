@@ -7,9 +7,9 @@ IA local para Windows com chat, trabalho de agente, pesquisa com fontes e escolh
 ## Versão e downloads
 
 <!-- release-062-stable -->
-Versão atual: [0.6.2](https://github.com/zapabob/Strata/releases/tag/v0.6.2) (App `0.6.2`, Native Q38 `0.6.2` SM120, Control `0.6.2`). `releaseQualified=false` permanece explícito; inferência em janela completa e qualidade geral de modelos seguem não qualificadas.
+Versão atual: [0.6.3](https://github.com/zapabob/Strata/releases/tag/v0.6.3) (App `0.6.3`, Native Q38 `0.6.3` SM120, Control `0.6.3`). `releaseQualified=false` permanece explícito; inferência em janela completa e qualidade geral de modelos seguem não qualificadas.
 
-[0.6.2](https://github.com/zapabob/Strata/releases/tag/v0.6.2) · [Strata-0.6.2-windows-x64-setup.exe](https://github.com/zapabob/Strata/releases/download/v0.6.2/Strata-0.6.2-windows-x64-setup.exe) · [tar.7z](https://github.com/zapabob/Strata/releases/download/v0.6.2/Strata-0.6.2-windows-x64.tar.7z) · [SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.6.2/SHA256SUMS.txt)
+[0.6.3](https://github.com/zapabob/Strata/releases/tag/v0.6.3) · [Strata-0.6.3-windows-x64-setup.exe](https://github.com/zapabob/Strata/releases/download/v0.6.3/Strata-0.6.3-windows-x64-setup.exe) · [tar.7z](https://github.com/zapabob/Strata/releases/download/v0.6.3/Strata-0.6.3-windows-x64.tar.7z) · [SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.6.3/SHA256SUMS.txt)
 
 ![Hakua / Strata real-model Japanese chat on Qwen3.8-27B](docs/media/native-qwen38-japanese-chat.png)
 *Hakua / Strata Desktop executando `qwen3.8-27b-abliterated-3.69bpw-12GB-MTP.gguf` via `strata-q38.exe` (CUDA 13 / RTX 5060 Ti 16 GB).*

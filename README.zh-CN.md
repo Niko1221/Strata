@@ -7,9 +7,9 @@
 ## 版本与下载
 
 <!-- release-062-stable -->
-当前版本：[0.6.2](https://github.com/zapabob/Strata/releases/tag/v0.6.2)（应用 `0.6.2`、原生 Q38 `0.6.2` SM120、Control `0.6.2`）。仍明确标注 `releaseQualified=false`；满上下文窗口推理与通用模型质量尚未经过认证。
+当前版本：[0.6.3](https://github.com/zapabob/Strata/releases/tag/v0.6.3)（应用 `0.6.3`、原生 Q38 `0.6.3` SM120、Control `0.6.3`）。仍明确标注 `releaseQualified=false`；满上下文窗口推理与通用模型质量尚未经过认证。
 
-[0.6.2](https://github.com/zapabob/Strata/releases/tag/v0.6.2) · [Strata-0.6.2-windows-x64-setup.exe](https://github.com/zapabob/Strata/releases/download/v0.6.2/Strata-0.6.2-windows-x64-setup.exe) · [tar.7z](https://github.com/zapabob/Strata/releases/download/v0.6.2/Strata-0.6.2-windows-x64.tar.7z) · [SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.6.2/SHA256SUMS.txt)
+[0.6.3](https://github.com/zapabob/Strata/releases/tag/v0.6.3) · [Strata-0.6.3-windows-x64-setup.exe](https://github.com/zapabob/Strata/releases/download/v0.6.3/Strata-0.6.3-windows-x64-setup.exe) · [tar.7z](https://github.com/zapabob/Strata/releases/download/v0.6.3/Strata-0.6.3-windows-x64.tar.7z) · [SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.6.3/SHA256SUMS.txt)
 
 ![Hakua / Strata real-model Japanese chat on Qwen3.8-27B](docs/media/native-qwen38-japanese-chat.png)
 *Hakua / Strata 桌面端通过 `strata-q38.exe` 运行 `qwen3.8-27b-abliterated-3.69bpw-12GB-MTP.gguf`（CUDA 13 / RTX 5060 Ti 16 GB）。*

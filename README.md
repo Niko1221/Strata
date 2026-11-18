@@ -7,9 +7,9 @@ Local AI for Windows, with chat, agent work, research and a choice of compatible
 ## Version and downloads
 
 <!-- release-062-stable -->
-Current release: [0.6.2](https://github.com/zapabob/Strata/releases/tag/v0.6.2) (App `0.6.2`, Native Q38 `0.6.2` CUDA 13.5 SM120, Control `0.6.2`). `releaseQualified=false` remains explicit; full-window inference and general model quality remain unqualified.
+Current release: [0.6.3](https://github.com/zapabob/Strata/releases/tag/v0.6.3) (App `0.6.3`, Native Q38 `0.6.3` CUDA 13.5 SM120, Control `0.6.3`). `releaseQualified=false` remains explicit; full-window inference and general model quality remain unqualified.
 
-[0.6.2](https://github.com/zapabob/Strata/releases/tag/v0.6.2) · [Strata-0.6.2-windows-x64-setup.exe](https://github.com/zapabob/Strata/releases/download/v0.6.2/Strata-0.6.2-windows-x64-setup.exe) · [tar.7z](https://github.com/zapabob/Strata/releases/download/v0.6.2/Strata-0.6.2-windows-x64.tar.7z) · [SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.6.2/SHA256SUMS.txt)
+[0.6.3](https://github.com/zapabob/Strata/releases/tag/v0.6.3) · [Strata-0.6.3-windows-x64-setup.exe](https://github.com/zapabob/Strata/releases/download/v0.6.3/Strata-0.6.3-windows-x64-setup.exe) · [tar.7z](https://github.com/zapabob/Strata/releases/download/v0.6.3/Strata-0.6.3-windows-x64.tar.7z) · [SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.6.3/SHA256SUMS.txt)
 
 ![Hakua / Strata real-model Japanese chat on Qwen3.8-27B](docs/media/native-qwen38-japanese-chat.png)
 *Hakua / Strata desktop running `qwen3.8-27b-abliterated-3.69bpw-12GB-MTP.gguf` via `strata-q38.exe` (CUDA 13 / RTX 5060 Ti 16 GB).*
@@ -22,7 +22,7 @@ Finish requests, unload models, back up app data, then quit the app including it
 
 ## Features kept in this fork
 
-0.6.2 upgrades the [local Qwen3.8-27B-family dense GGUF runner (`strata-q38.exe`)](docs/QWEN38_DENSE_NATIVE.md) on Windows CUDA 13.5 / Blackwell (SM120):
+0.6.3 upgrades the [local Qwen3.8-27B-family dense GGUF runner (`strata-q38.exe`)](docs/QWEN38_DENSE_NATIVE.md) on Windows CUDA 13.5 / Blackwell (SM120):
 - **Per-tensor mixed-quantization polymorphism (`StrataQuantTensor`)**: supports 11 GGML/Strata types (`F32`, `F16`, `BF16`, `Q8_0`, `Q4_K`, `Q5_K`, `Q6_K`, `IQ3_S`, `IQ2_S`, `IQ4_XS`, and PrismML `PQ2_0=142`) on a per-tensor basis.
 - **Tensor Core batched prefill + `spin8_triality.cuh` / fused Spin8 Attention + Multi-token GDN + CUDA Graph Decode (CUDA 13.5 SM120)**:
   - `140`-token prefill (`--kv spin8_k8v4 --ctx-size 4096`): improved from `36,760.7 ms` (`3.81 tok/s`, `--conservative-sync`) to **`1,558.3 ms` (`89.8 tok/s` warm, 23.6x speedup)**.
