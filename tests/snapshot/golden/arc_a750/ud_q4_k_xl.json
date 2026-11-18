@@ -104,9 +104,12 @@
      "--draft-conf",
      "0.6"
     ],
-    "env_set": {},
+    "env_set": {
+     "GGML_NO_BACKTRACE": "1"
+    },
     "notes": [
-     "[strata] drafting: DFlash2 alone (--draft dflash2, --draft-conf 0.6)"
+     "[strata] drafting: DFlash2 alone (--draft dflash2, --draft-conf 0.6)",
+     "[strata] drafting: draft vocabulary: draft_vocab.bin (the default)"
     ]
    }
   },
@@ -240,9 +243,12 @@
      "--draft-conf",
      "0.6"
     ],
-    "env_set": {},
+    "env_set": {
+     "GGML_NO_BACKTRACE": "1"
+    },
     "notes": [
-     "[strata] drafting: DFlash2 alone (--draft dflash2, --draft-conf 0.6)"
+     "[strata] drafting: DFlash2 alone (--draft dflash2, --draft-conf 0.6)",
+     "[strata] drafting: draft vocabulary: draft_vocab.bin (the default)"
     ]
    }
   },
@@ -361,9 +367,12 @@
      "--draft-conf",
      "0.6"
     ],
-    "env_set": {},
+    "env_set": {
+     "GGML_NO_BACKTRACE": "1"
+    },
     "notes": [
-     "[strata] drafting: DFlash2 alone (--draft dflash2, --draft-conf 0.6)"
+     "[strata] drafting: DFlash2 alone (--draft dflash2, --draft-conf 0.6)",
+     "[strata] drafting: draft vocabulary: draft_vocab.bin (the default)"
     ]
    }
   }

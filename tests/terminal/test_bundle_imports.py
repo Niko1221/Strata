@@ -52,6 +52,19 @@ class BundleImports(unittest.TestCase):
     def tearDownClass(cls):
         cls.temp.cleanup()
 
+    def test_gguf_py_and_the_converter_are_in_the_bundle(self):
+        """OWN-1B: the Terminal and Control packages carry third_party/strata-gguf-py (the preparation tools' gguf-py and llama.cpp's converter), so
+        preparing a model downloads no llama.cpp; the bundled copy is byte-identical to the source tree's."""
+        here = self.root / "third_party" / "strata-gguf-py"
+        for rel in ("gguf/__init__.py", "gguf/quants.py", "converter/convert_hf_to_gguf.py", "converter/conversion/qwen4exp.py", "LICENSE", "UPSTREAM.md"):
+            self.assertTrue((here / rel).is_file(), rel)
+            self.assertEqual((here / rel).read_bytes(), (ROOT / "third_party" / "strata-gguf-py" / rel).read_bytes(), rel)
+        self.assertIn("third_party/strata-gguf-py/", self.installer["files"])
+        probe = subprocess.run([sys.executable, "-I", "-c", f"import sys; sys.path.insert(0, {str(self.root / 'tools')!r}); import _paths; print(_paths.gguf_py())"],
+                               capture_output=True, text=True, timeout=60, env={k: v for k, v in os.environ.items() if k != "STRATA_GGUF_PY"})
+        self.assertEqual(probe.returncode, 0, probe.stderr[-500:])
+        self.assertEqual(Path(probe.stdout.strip()).resolve(), here.resolve(), "a bundled tool finds the bundled copy")
+
     def test_calibrate_is_in_the_bundle(self):
         # the exact file #3613 and #3467 lacked
         self.assertTrue((self.root / "tools" / "calibrate.py").is_file())
@@ -99,6 +112,51 @@ class BundleImports(unittest.TestCase):
         without = tuple(x for x in pt.INSTALLER_TOOLS if x != "calibrate")
         self.assertNotIn("calibrate", pt.local_imports(ROOT, without))      # the old list really lacked it
         self.assertIn("calibrate", pt.setup_tool_imports(ROOT))             # and the scan finds it anyway
+
+
+class ProbeLeavesNoBytecode(unittest.TestCase):
+    """The import probe of package_terminal.py must not write compiled files into the bundle, whoever runs the build."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="strata-probe-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name) / "bundle"
+        self.root.mkdir()
+        (self.root / "probe_mod.py").write_text("VALUE = 7\n", encoding="utf-8")
+        self.code = "import probe_mod; print('probe ok', probe_mod.VALUE)"
+        self.saved = {k: os.environ.pop(k, None) for k in ("PYTHONDONTWRITEBYTECODE", "PYTHONPYCACHEPREFIX")}
+        self.addCleanup(self.restore)
+
+    def restore(self):
+        for key, value in self.saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    def leftovers(self, folder: Path):
+        return sorted(str(p.relative_to(folder)) for p in list(folder.rglob("__pycache__")) + list(folder.rglob("*.pyc")))
+
+    def test_the_check_itself_can_see_bytecode(self):
+        # without the protection the same import does leave a compiled file, so the test below proves something
+        plain = Path(self.temp.name) / "plain"
+        plain.mkdir()
+        (plain / "probe_mod.py").write_text("VALUE = 7\n", encoding="utf-8")
+        done = subprocess.run([sys.executable, "-c", self.code], cwd=str(plain), capture_output=True, text=True, timeout=60)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertTrue(self.leftovers(plain))
+
+    def test_the_probe_writes_no_bytecode_when_the_caller_did_not_ask_for_that(self):
+        done = pt.run_probe(Path(sys.executable), self.root, code=self.code)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("probe ok 7", done.stdout)
+        self.assertEqual(self.leftovers(self.root), [])
+
+    def test_the_probe_writes_no_bytecode_when_the_caller_asked_for_it(self):
+        os.environ["PYTHONDONTWRITEBYTECODE"] = ""        # an empty value means "write"
+        done = pt.run_probe(Path(sys.executable), self.root, code=self.code)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.leftovers(self.root), [])
 
 
 if __name__ == "__main__":

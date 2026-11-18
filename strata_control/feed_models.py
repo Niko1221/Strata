@@ -107,7 +107,8 @@ class Loaded:
     notes: list = field(default_factory=list)
 
 
-def load(source: str | None = None, *, fetch: bool = True, root=None, trusted: dict | None = None, timeout: float = FETCH_TIMEOUT) -> Loaded:
+def load(source: str | None = None, *, fetch: bool = True, root=None, trusted: dict | None = None, timeout: float = FETCH_TIMEOUT,
+         say=None) -> Loaded:
     """The feed's models: the feed itself when it can be read now (and verifies, and is not older than the cached one), else the cache. Silent either way:
     nothing is printed and no error is raised. ``fetch=False`` reads the cache only (the Terminal and app lists)."""
     if os.environ.get(ENV_OFF, "").strip() == "0":
@@ -122,7 +123,8 @@ def load(source: str | None = None, *, fetch: bool = True, root=None, trusted: d
     cached = _read_cache(root, trusted)
     if fetch and source:
         try:
-            got = feedmod.fetch(source, trusted, timeout=timeout, channel="stable", last_sequence=cached.sequence if cached else None)
+            got = feedmod.fetch(source, trusted, timeout=timeout, channel="stable", last_sequence=cached.sequence if cached else None,
+                                say=say)
         except feedmod.FeedError as exc:                 # offline, expired, a downgrade, a bad signature: the last verified list stays
             _log.info("the update feed's model list could not be refreshed: %s", exc)
         except Exception as exc:                         # noqa: BLE001
@@ -195,7 +197,7 @@ def _skip(result: Applied, model, why: str) -> None:
 
 
 def _taken_tags(setup) -> list[str]:
-    tags = [d.get("tag", "") for d in (*setup.FAMILIES.values(), *setup.OWN_PATH_FAMILIES.values(), *setup.MULTI_FILE_FAMILIES.values())]
+    tags = [d.get("tag", "") for d in (*setup.FAMILIES.values(), *setup.OWN_PATH_FAMILIES.values())]
     return [t for t in tags if t]
 
 
@@ -215,7 +217,7 @@ def apply(setup, models, engine_families=None) -> Applied:
             if model.id not in setup.FEED_UNAVAILABLE:
                 result.registered.append(model.id)
             continue
-        if model.id in setup.FAMILIES or model.id in setup.OWN_PATH_FAMILIES or model.id in setup.MULTI_FILE_FAMILIES:
+        if model.id in setup.FAMILIES or model.id in setup.OWN_PATH_FAMILIES:
             _skip(result, model, "its id is the name of a built-in model")
             continue
         tag = model.id + "-"

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -125,7 +126,13 @@ class MetalPerSet(Base):
         self.put_tuned()
         self.assertTrue(drafting.tuned_ok(self.data))
         self.assertTrue((self.data / "dflash2" / (drafting.TUNED_NAME + ".ok")).is_file())
+        path = self.data / "dflash2" / drafting.TUNED_NAME
+        before = path.stat()
         self.put_tuned(b"y" * len(TUNED_BYTES))
+        # the marker is keyed on size and mtime: a rewrite in the same tick of the file clock (about 16 ms on Windows, ~4 ms on Linux) keeps the
+        # time, which a real change of the file (a download, a corruption) never does that soon after the check; let the clock move on, as
+        # test_drafting_selector_q4 does for the converted pack
+        os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000))
         self.assertFalse(drafting.tuned_ok(self.data))
 
     def test_the_users_own_draft_conf_and_spec_are_respected(self):
@@ -222,6 +229,7 @@ class Fetch(Base):
         self.url = (self.host / drafting.TUNED_NAME).as_uri()
         env = {k: v for k, v in __import__("os").environ.items() if k not in (drafting.TUNED_URL_ENV, "STRATA_UPDATE_FEED", "STRATA_UPDATE_TRUSTED_KEYS")}
         env["STRATA_UPDATE_FEED"] = str(self.root / "no-feed-here")       # nothing in these tests reaches the network
+        env["STRATA_COMPONENTS_DIR"] = str(self.root / "components")      # the feed sequence this computer accepted is the test's, not the PC's own
         patcher = mock.patch.dict("os.environ", env, clear=True)
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -230,7 +238,7 @@ class Fetch(Base):
         (self.root / "trust.json").write_text((self.keys / "feed-key.pub.json").read_text(encoding="utf-8"), encoding="utf-8")
         __import__("os").environ["STRATA_UPDATE_TRUSTED_KEYS"] = str(self.root / "trust.json")
 
-    def make_feed(self, sub="feed", listed=True, backends=("metal",), pin_sha=None):
+    def make_feed(self, sub="feed", listed=True, backends=("metal",), pin_sha=None, sequence=1):
         """A local, test-signed release folder: the feed and the drafter beside it as a flat asset (what the GitHub release would hold)."""
         out = self.root / sub
         entries = self.root / (sub + "-entries")
@@ -242,8 +250,45 @@ class Fetch(Base):
         out.mkdir(parents=True, exist_ok=True)
         if listed:
             (out / drafting.TUNED_NAME).write_bytes(TUNED_BYTES)
-        ft.build_feed(out, key=ft._load_key(self.keys / "feed-key.json"), sequence=1, drafters_dir=entries if listed else None)
+        ft.build_feed(out, key=ft._load_key(self.keys / "feed-key.json"), sequence=sequence, drafters_dir=entries if listed else None)
         return out
+
+    def accept(self, sequence):
+        """What `strata update` leaves after it accepted a feed: <components>/.updates/state.json feed.sequence."""
+        from strata_control import updater
+        state = updater.State(self.root / "components")
+        state.section("feed").update({"sequence": sequence, "key_id": "k", "source": "x", "channel": "stable"})
+        state.save()
+        return state.path
+
+    def test_a_feed_older_than_the_one_the_update_accepted_is_refused_like_the_update_refuses_it(self):
+        # l620 C2, 11-15: the update accepted feed 126, then the drafter came from a copy of feed 125 without a word
+        old = self.make_feed(sub="old", sequence=125)
+        state_file = self.accept(126)
+        with self.assertRaises(drafting_fetch.DraftingError) as caught:
+            drafting_fetch.ensure_tuned(self.data, feed=str(old))
+        text = str(caught.exception)
+        self.assertIn("older than the one already accepted on this computer (its sequence is 125, the accepted one is 126", text)
+        self.assertIn(str(state_file), text)
+        self.assertFalse(drafting.tuned_path(self.data).exists())
+        with mock.patch.object(drafting_fetch, "ensure", return_value=Path("/stock")):
+            self.assertEqual(drafting_fetch.ensure_for(self.data, model_name=Q4, backend="metal", feed=str(old)), Path("/stock"), "the stock drafter takes over")
+
+    def test_the_accepted_feed_and_newer_ones_give_the_drafter_and_the_lookup_never_moves_the_sequence(self):
+        state_file = self.accept(126)
+        same = self.make_feed(sub="same", sequence=126)
+        self.assertEqual(drafting_fetch.tuned_from_feed(feed=str(same))[1:], (len(TUNED_BYTES), hashlib.sha256(TUNED_BYTES).hexdigest()))
+        newer = self.make_feed(sub="newer", sequence=127)
+        self.assertEqual(drafting_fetch.ensure_tuned(self.data, feed=str(newer)), drafting.tuned_path(self.data))
+        self.assertEqual(json.loads(state_file.read_text(encoding="utf-8"))["feed"]["sequence"], 126, "only `strata update` accepts a feed")
+
+    def test_nothing_accepted_yet_takes_any_sequence_and_offline_stays_silent_with_one_accepted(self):
+        self.assertIsNotNone(drafting_fetch.tuned_from_feed(feed=str(self.make_feed(sub="first", sequence=5))))
+        self.accept(126)
+        from tests.terminal import net_dead
+        for kind in net_dead.KINDS:
+            with net_dead.dead_feed(kind) as dead:
+                self.assertIsNone(drafting_fetch.tuned_from_feed(feed=dead), kind)
 
     def test_a_fetch_from_a_file_address_checks_places_and_marks_the_file_and_copies_the_licence(self):
         seen = []
@@ -323,6 +368,14 @@ class Fetch(Base):
         with mock.patch.dict("os.environ", {"STRATA_UPDATE_TRUSTED_KEYS": ""}), mock.patch("strata_control.signing.load_trusted_keys", return_value={}):
             self.assertIsNone(drafting_fetch.ensure_tuned(self.data, feed=str(feed)))
 
+    def test_a_feed_nobody_answers_for_is_silent_offline_refused_or_never_answering(self):
+        from tests.terminal import net_dead
+        for kind in net_dead.KINDS:                                   # no network at all / a refused port / a server that never answers
+            with net_dead.dead_feed(kind) as dead:
+                self.assertIsNone(drafting_fetch.ensure_tuned(self.data, feed=dead), kind)
+                self.assertIsNone(drafting_fetch.tuned_from_feed(feed=dead), kind)
+            self.assertFalse(drafting.tuned_path(self.data).exists(), kind)
+
     def test_a_launch_that_got_nothing_does_not_ask_again_for_twelve_hours_but_setup_always_asks(self):
         nofeed = str(self.root / "no-feed-here")
         self.assertIsNone(drafting_fetch.ensure_tuned(self.data, feed=nofeed, throttle=True))
@@ -370,9 +423,9 @@ class Fetch(Base):
         calls = []
         real = transfer._transfer
 
-        def spy(location, part, have, size, progress, cancel, timeout):
+        def spy(location, part, have, size, progress, cancel, timeout, **more):
             calls.append(have)
-            return real(location, part, have, size, progress, cancel, timeout)
+            return real(location, part, have, size, progress, cancel, timeout, **more)
         with mock.patch.object(transfer, "_transfer", spy):
             drafting_fetch.ensure_tuned(self.data, url=self.url)
         self.assertEqual(calls, [99], "it continued at byte 99, not from the start")
@@ -853,7 +906,8 @@ class SetupOnAMac(Base):
         self.assertIn("Downloading the DFlash2 drafter (0.34 GB, once)", self.said[0][1])
 
     def test_offline_it_says_nothing(self):
-        with mock.patch.object(drafting_fetch, "online", return_value=False):
+        from tests.terminal import net_dead
+        with mock.patch.object(drafting_fetch, "online", return_value=False), net_dead.no_name_resolution():     # (the feed lookup is offline too)
             self.assertIsNone(self.mac.fetch_drafter(Q4, self.data))
         self.assertEqual(self.said, [])
 

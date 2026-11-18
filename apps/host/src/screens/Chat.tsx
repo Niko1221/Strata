@@ -3,6 +3,7 @@ import { tr } from '../lib/i18n';
 import { UsageDashboard } from '../components/UsageDashboard';
 import { FloatingMenu } from '../components/FloatingMenu';
 import { lazyScreen } from '../lib/lazy-screen';
+import { measureFrame } from '../lib/overlay-place';
 import { timeSkipPrompt, timeSkipTabId, type TimeSkipRun } from '../lib/time-skip';
 import { ChatToolbar } from '../components/ChatToolbar';
 import { ChatTelemetry } from '../components/TelemetryPopover';
@@ -36,7 +37,7 @@ import { useLiveStatus } from '../lib/live-status';
 import { ApprovalDock, SCOPE } from '../components/ApprovalCard';
 import { artifactFromUrl, type PreviewArtifact } from '../lib/artifacts';
 import { openExternal } from '../lib/open-external';
-import { busyPlan } from '../lib/while-busy';
+import { busyPlan, parkedReady } from '../lib/while-busy';
 import { composeQuoted, parseQuoted, type Quote } from '../lib/quotes';
 /** Chat — talk to the one loaded model. */
 import { memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -92,19 +93,22 @@ export function ChatScreen() {
             const text = sel.toString().trim();
             if (!host || !el.contains(host) || text.length < 2) { setSelection(null); return; }
             const rect = range.getBoundingClientRect();
-            setSelection({ text, messageId: host.getAttribute('data-message-id') ?? '', role: host.classList.contains('st-msg--user') ? 'user' : 'assistant', x: Math.min(window.innerWidth - 96, Math.max(8, rect.left)), y: Math.max(8, rect.top - 40) });
+            // screen units of this engine, written back in the page's own pixels (lib/overlay-place.ts: Interface size zooms the page)
+            const { scale, viewport } = measureFrame();
+            setSelection({ text, messageId: host.getAttribute('data-message-id') ?? '', role: host.classList.contains('st-msg--user') ? 'user' : 'assistant', x: Math.min(viewport.width - 96 * scale, Math.max(8, rect.left)) / scale, y: Math.max(8, rect.top - 40 * scale) / scale });
         };
         document.addEventListener('selectionchange', read);
         return () => document.removeEventListener('selectionchange', read);
     }, [session?.id]);
-    // Messages parked while an answer was written (Send after, Interrupt) go one by one, each when the chat is quiet again.
+    // Messages parked while an answer was written (Send after, Interrupt) go one by one, each when the chat is quiet again,
+    // and only from the chat that is also the active one: sendMessage sends to that one (#5806, parkedReady).
     useEffect(() => {
-        if (!session || streaming || !parked?.length)
+        if (!session || !parkedReady(session.id, activeId, streaming, parked?.length ?? 0))
             return;
         const next = takeParked(session.id);
         if (next !== undefined)
             void sendMessage(next);
-    }, [streaming, parked?.length, session?.id]);
+    }, [streaming, parked?.length, session?.id, activeId]);
     const [draft, setDraft] = useState('');
     const draftKey = `strata.chat-draft.${session?.id ?? 'new'}`;
     useEffect(() => {

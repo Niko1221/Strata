@@ -215,7 +215,6 @@ class Feed(Base):
         loaded = feedmod.fetch(self.url, signing.load_trusted_keys())
         self.assertEqual([(p.shape, p.version) for p in loaded.shape_engines], [(SHAPE, "0.1.59")])
         self.assertEqual(loaded.engine, ())
-        self.assertEqual(loaded.dsv41, ())
         self.assertTrue(loaded.shape_engines[0].url.startswith("shapes/strata-q4-lite-0.1.59-"))
         self.assertEqual(loaded.shape_engines[0].to_dict()["shape"], SHAPE)
 
@@ -348,8 +347,9 @@ class Install(Base):
         self.server.cut[next((self.release / "shapes").glob("*.tar.gz")).name] = 800_000
         lines = []
         with mock.patch.object(shape_engine, "_test_start", return_value=(True, "x")):
-            self.assertIsNone(self.ensure(lines))
-            self.assertIsNotNone(self.ensure(lines), lines)
+            self.assertIsNotNone(self.ensure(lines), lines)           # cut part-way: the same run continues from the byte it reached
+        ranges = [r[2] for r in self.server.requests if r[1].endswith(".tar.gz")]
+        self.assertEqual(ranges, [None, "bytes=800000-"], "exactly one more request, from the byte the cut reached: no byte twice")
         self.assertEqual(self.strata_before, tree(self.comp / "engine"))
 
     def test_the_feed_has_no_engine_for_the_shape(self):
@@ -427,10 +427,33 @@ class Install(Base):
         if os.name == "nt":
             self.skipTest("a script is not a Windows program")
         self.assertEqual(shape_engine._test_start(self._program("q4_lite"), shape="q4_lite"), (True, "strata 0.2.13"))
-        self.assertEqual(shape_engine._test_start(self._program(None), shape="q4_lite"), (True, "strata 0.2.13"), "an engine from before the flag is accepted")
+        self.assertEqual(shape_engine._test_start(self._program(None), shape="q4_lite"), (False, "it does not say which model shape it was built for"),
+                         "a shape engine that cannot answer --geometry is refused (owner, 11-09)")
         ok, why = shape_engine._test_start(self._program("flash_next"), shape="q4_lite")
         self.assertEqual((ok, why), (False, "it was built for a different model shape (flash_next)"))
         self.assertEqual(shape_engine._test_start(self._program("flash_next")), (True, "strata 0.2.13"), "no shape asked for: the flag is not read")
+
+    def test_the_plain_strata_engine_is_never_asked_for_its_shape(self):
+        if os.name == "nt":
+            self.skipTest("a script is not a Windows program")
+        self.assertEqual(shape_engine._test_start(self._program(None)), (True, "strata 0.2.13"), "an engine with no --geometry still installs as the Strata engine")
+        with mock.patch.object(shape_engine, "check_geometry", side_effect=AssertionError("asked")):
+            self.assertEqual(shape_engine._test_start(self._program("flash_next")), (True, "strata 0.2.13"))
+
+    def test_a_shape_engine_with_no_answer_is_refused_at_install_with_the_owners_reason(self):
+        if os.name == "nt":
+            self.skipTest("a script is not a Windows program")
+        self.publish("0.1.59")
+        with mock.patch.object(shape_engine, "_test_start", return_value=(False, shape_engine.NO_SHAPE_ANSWER)):
+            lines = []
+            self.assertIsNone(self.ensure(lines, title="Q4 Lite Shape"))
+        self.assertIn("The engine for Q4 Lite Shape 0.1.59 was not installed because it did not start correctly (it does not say which model shape it was built for). "
+                      "The Strata engine is unchanged.", " ".join(lines))
+        self.assertEqual(shape_engine.installed(SHAPE, self.comp), [])
+        self.assertEqual(self.strata_before, tree(self.comp / "engine"))
+
+    def test_the_owners_reason_for_no_answer(self):
+        self.assertEqual(shape_engine.NO_SHAPE_ANSWER, "it does not say which model shape it was built for")      # owner, 11-09
 
     def test_a_package_built_for_another_shape_is_refused_at_install_with_the_approved_line(self):
         if os.name == "nt":
@@ -478,7 +501,7 @@ class Update(Base):
         self.assertIn("updated from 0.1.59 to 0.1.60", " ".join(lines))
         self.assertEqual(Path(ec.expand("component:strata-q4-lite", {"backend": "cuda"})), exe)
         self.publish("0.1.59", "0.1.60", "0.1.61", sequence=3)
-        with mock.patch.object(shape_engine, "_test_start", return_value=(True, "x")), mock.patch("strata_control.dsv41_paths.in_use", return_value=False):
+        with mock.patch.object(shape_engine, "_test_start", return_value=(True, "x")), mock.patch("strata_control.folder_use.in_use", return_value=False):
             self.ensure()
         self.assertEqual(self.folders(), ["0.1.60", "0.1.61"])
         self.assertEqual(self.strata_before, tree(self.comp / "engine"))
@@ -511,14 +534,56 @@ class Update(Base):
         self.assertEqual(lines, [])
 
     def test_an_unreachable_feed_leaves_an_installed_engine_alone_and_says_nothing(self):
+        from tests.terminal import net_dead
         self.installed("0.1.59")
-        lines = []
-        exe = shape_engine.ensure(SHAPE, "http://127.0.0.1:9/strata-feed.json", components=self.comp, hardware=self.hw, emit=lines.append)
-        self.assertTrue(exe.is_file())
-        self.assertEqual(lines, [])
-        lines = []
-        self.assertIsNone(shape_engine.ensure("q4_mid", "http://127.0.0.1:9/strata-feed.json", components=self.comp, hardware=self.hw, emit=lines.append))
-        self.assertTrue(any("could not be downloaded" in line for line in lines), lines)
+        for kind in net_dead.KINDS:                                   # no network at all / a refused port / a server that never answers
+            with net_dead.dead_feed(kind) as dead:
+                lines = []
+                exe = shape_engine.ensure(SHAPE, dead, components=self.comp, hardware=self.hw, emit=lines.append)
+                self.assertTrue(exe.is_file(), kind)
+                self.assertEqual(lines, [], kind)
+        with net_dead.dead_feed("refused") as dead:                   # a shape with no engine yet has nothing to fall back on: that one is said
+            lines = []
+            self.assertIsNone(shape_engine.ensure("q4_mid", dead, components=self.comp, hardware=self.hw, emit=lines.append))
+            self.assertTrue(any("could not be downloaded" in line for line in lines), lines)
+
+    def test_a_refused_feed_is_asked_once_by_the_launch_check_then_not_for_six_hours(self):
+        """netpolicy rule 4b: `strata launch` (automatic=True) with an engine installed reads the refusal note; setup (no flag) and a shape
+        with no engine yet always read the feed."""
+        from strata_control import netpolicy, transfer
+        from tests.terminal.test_netpolicy import refused_port
+        self.installed("0.1.59")
+        # the product's own windows (5 s with an engine installed), not net_dead's scaled 0.3 s: Windows reports a refusal only after about 2 s,
+        # so a scaled window would see a timeout there, not a refusal
+        dead = f"http://127.0.0.1:{refused_port()}/strata-feed.json"
+        note = netpolicy.RefusalNote(path=self.root / "state" / "net" / netpolicy.REFUSED_NOTE_NAME)
+        calls = []
+        real = transfer._open_small
+
+        def counting(request, timeout, limit):
+            calls.append(request.full_url)
+            return real(request, timeout, limit)
+        with mock.patch.object(netpolicy, "REFUSALS", note), mock.patch.object(transfer, "_open_small", counting):
+            lines = []
+            self.assertTrue(shape_engine.ensure(SHAPE, dead, components=self.comp, hardware=self.hw, emit=lines.append, automatic=True).is_file())
+            self.assertEqual(lines, [])
+            self.assertEqual(len(calls), 1, "one try: a refusal is clear at once")
+            port = dead.split("/")[2]
+            self.assertEqual(list(json.loads(note.path().read_text(encoding="utf-8"))), [port], "host:port only")
+            self.assertTrue(shape_engine.ensure(SHAPE, dead, components=self.comp, hardware=self.hw, emit=lines.append, automatic=True).is_file())
+            self.assertEqual((len(calls), lines), (1, []), "the next launch check does not connect and says nothing")
+            self.assertTrue(shape_engine.ensure(SHAPE, dead, components=self.comp, hardware=self.hw, emit=lines.append).is_file())
+            self.assertEqual(len(calls), 2, "setup's call (no flag) reads the feed")
+            self.assertIsNone(shape_engine.ensure("q4_mid", dead, components=self.comp, hardware=self.hw, emit=lines.append, automatic=True))
+            self.assertEqual(len(calls), 3, "no engine installed: the feed is always read")
+
+    def test_the_launch_asks_as_an_automatic_check_and_setup_does_not(self):
+        runner_src = (ROOT / "strata_cli" / "launch" / "runner.py").read_text(encoding="utf-8")
+        call = runner_src[runner_src.index("exe = shape_engine.ensure("):]
+        self.assertIn("automatic=True", call[:call.index("\n\n")])
+        setup_src = (ROOT / "setup.py").read_text(encoding="utf-8")
+        call = setup_src[setup_src.index("exe = shape_engine.ensure("):]
+        self.assertNotIn("automatic", call[:call.index("\n")])
 
     def test_the_explicit_update_has_a_step_only_for_an_installed_shape(self):
         self.publish("0.1.59")
@@ -543,8 +608,7 @@ class Update(Base):
         self.publish("0.1.59", "0.1.60", sequence=2)
         ctx = updater.Context(components=self.comp, source=self.url, trusted=signing.load_trusted_keys(), hardware=self.hw)
         with mock.patch.object(shape_engine, "_test_start", return_value=(True, "x")), \
-                mock.patch.object(updater, "update_engine", return_value={"component": "engine", "status": "current", "changed": False}), \
-                mock.patch.object(updater, "update_dsv41", return_value={"component": "dsv41", "status": "none-installed", "changed": False}):
+                mock.patch.object(updater, "update_engine", return_value={"component": "engine", "status": "current", "changed": False}):
             out = updater.run_update(ctx, control=False)
         row = next(r for r in out["results"] if r.get("component") == COMP)
         self.assertEqual((row["status"], row["installed_after"]), ("updated", "0.1.60"))
@@ -748,6 +812,34 @@ class OlderControls(Base):
         shape_folder = next((self.comp / "shapes" / SHAPE / "engine").iterdir())
         with self.assertRaises(ec.ComponentProblem):
             ec.read_manifest(shape_folder)
+
+
+class EveryEngineProgramAnswersTheShapeFlags(unittest.TestCase):
+    """`strata --geometry` and `strata --families` are answered by every engine program before any device is touched: the CUDA/HIP/Metal
+    program (src/program/generate.cpp) and the Intel one (sycl/src/program/generate.cpp, its own program). Without them a SYCL shape engine
+    was installed with no geometry check (an engine that does not know the flag is accepted as one from before it)."""
+
+    PROGRAMS = ("src/program/generate.cpp", "sycl/src/program/generate.cpp")
+
+    def _early_block(self, rel):
+        src = (ROOT / rel).read_text(encoding="utf-8")
+        start = src.index('std::strcmp(argv[i], "--version") == 0')
+        end = src.index("\n    }\n", start)            # the end of the early `for (int i = 1; i < argc && i < 3; ++i)` loop
+        return src[start:end]
+
+    def test_both_flags_are_in_the_early_loop_of_every_program(self):
+        for rel in self.PROGRAMS:
+            with self.subTest(program=rel):
+                block = self._early_block(rel)
+                self.assertIn('std::strcmp(argv[i], "--geometry") == 0', block)
+                self.assertIn('std::printf("%s\\n", strata::core::kGeometryName);', block)
+                self.assertIn('std::strcmp(argv[i], "--families") == 0', block)
+                self.assertIn('std::printf("qwen4exp\\n");', block)
+
+    def test_the_intel_program_names_no_qwen35_family(self):
+        block = self._early_block("sycl/src/program/generate.cpp")
+        printed = [ln for ln in block.splitlines() if "std::printf(" in ln]
+        self.assertFalse([ln for ln in printed if "qwen35moe" in ln], "the Intel engine has no qwen35moe path")
 
 
 if __name__ == "__main__":
