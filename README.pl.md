@@ -66,3 +66,11 @@ irm -TimeoutSec 120 https://github.com/Niko1221/Strata/releases/latest/download/
 ```
 
 [Niko1221/Strata](https://github.com/Niko1221/Strata) · [Hermes Agent](https://github.com/NousResearch/hermes-agent) · [Źródła i noty stron trzecich](third_party/)
+
+## Zmiany w wersji 0.6.3
+
+- Natywne prefill Q38 wykorzystuje GEMM Tensor Core cuBLAS z aktywacjami FP16 skalowanymi dla każdego tokena oraz 20 MiB trwałym blokiem wag w L2. Dekodowanie używa wyrównanego GEMV dp4a Q8_1 zależnego od formatu oraz CUDA Graph z LayerFence(8).
+- Przyjmowanie długiego kontekstu wybiera rozmiar fragmentu prefill na podstawie zmierzonej drabiny VRAM. Rezerwa GPU 768 MiB oraz progi 3 GiB RAM i 4 GiB commit pozostają niezmienione.
+- Fixtures numeryczne normalizują syntetyczne spakowane wagi do realistycznej amplitudy bez osłabiania ścisłych tolerancji `_exact_q8`. Niewyrównany GEMV przełącza się na jądro skalarne ładujące bajty.
+- Weryfikacja: 17/17 testów natywnych przechodzi, a compute-sanitizer raportuje 0 błędów i 0 zagrożeń dla memcheck/synccheck/racecheck. Ogólna jakość modelu, inferencja w pełnym oknie i współbieżność GPU pozostają niekwalifikowane (`releaseQualified=false`).
+- Podstawa badawcza: informacje o wydaniu NVIDIA CUDA 13.5 (poprawka algorytmu 66 cuBLASLt przy Tensor Memory) oraz raport architektury Qwen3.8-Next (hybryda GDN/uwaga globalna 3:1, QSA z kompresją r=4 i budżetem K=2048, gated residual, osadzanie n-gramów wczytywane z hosta).

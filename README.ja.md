@@ -68,3 +68,11 @@ irm -TimeoutSec 120 https://github.com/Niko1221/Strata/releases/latest/download/
 ```
 
 [Niko1221/Strata](https://github.com/Niko1221/Strata) · [Hermes Agent](https://github.com/NousResearch/hermes-agent) · [サードパーティ表記](third_party/)
+
+## 0.6.3 の変更点
+
+- ネイティブ Q38 の prefill は、トークン単位でスケールした FP16 活性値と 20 MiB の L2 常駐重みタイルを用いる cuBLAS Tensor Core GEMM に移行しました。decode は形式別の整列 Q8_1 dp4a GEMV と LayerFence(8) の CUDA Graph を使用します。
+- 長文脈の受け入れ判定は実測 VRAM に基づく段階的リストから prefill チャンクを選択します。768 MiB の GPU 予約、3 GiB の RAM 下限、4 GiB のコミット下限は変更していません。
+- 数値テストの合成重みを実モデル相当の振幅へ正規化しました。厳密な `_exact_q8` 許容値は緩めておらず、非整列の GEMV はバイトロードのスカラーカーネルへフォールバックします。
+- 検証: ネイティブテスト 17/17 が成功し、compute-sanitizer の memcheck/synccheck/racecheck は 0 errors / 0 hazards です。一般モデルの品質・全ウィンドウ推論・GPU 並行実行は未検証のままです (`releaseQualified=false`)。
+- 調査根拠: NVIDIA CUDA 13.5 リリースノート (cuBLASLt アルゴリズム 66 の Tensor Memory 並行時訂正) と Qwen3.8-Next アーキテクチャ報告 (GDN と全体注意の 3:1 ハイブリッド、r=4 圧縮と K=2048 トークン予算の QSA、ゲート付き残差、ホスト先読み n-gram 埋め込み)。

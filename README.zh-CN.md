@@ -66,3 +66,11 @@ irm -TimeoutSec 120 https://github.com/Niko1221/Strata/releases/latest/download/
 ```
 
 [Niko1221/Strata](https://github.com/Niko1221/Strata) · [Hermes Agent](https://github.com/NousResearch/hermes-agent) · [第三方源码与声明](third_party/)
+
+## 0.6.3 的变更
+
+- 原生 Q38 预填充改用 cuBLAS Tensor Core GEMM，激活值按 token 缩放为 FP16，并使用 20 MiB 的 L2 常驻权重块；解码使用按格式对齐的 Q8_1 dp4a GEMV 和 LayerFence(8) CUDA Graph。
+- 长上下文准入根据实测 VRAM 阶梯选择预填充块大小；768 MiB GPU 预留、3 GiB 内存下限和 4 GiB 提交下限保持不变。
+- 数值测试夹具将合成打包权重归一化到真实模型的振幅，不放宽严格的 `_exact_q8` 容差；非对齐 GEMV 回退到按字节加载的标量内核。
+- 验证：原生测试 17/17 通过，compute-sanitizer 的 memcheck/synccheck/racecheck 均为 0 errors / 0 hazards。通用模型质量、全窗口推理和 GPU 并发仍未通过认证（`releaseQualified=false`）。
+- 研究依据：NVIDIA CUDA 13.5 发布说明（cuBLASLt 算法 66 在 Tensor Memory 并发下的正确性修复）与 Qwen3.8-Next 架构报告（GDN 与全局注意力 3:1 混合、r=4 压缩且 K=2048 token 预算的 QSA、门控残差、主机预取的 n-gram 嵌入）。

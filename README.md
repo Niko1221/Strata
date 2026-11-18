@@ -81,3 +81,11 @@ We extend our most sincere and heartfelt gratitude to all upstream authors, open
 - **RustXNG, libstrix, Node.js, Python & Tauri** — Our profound thanks to every maintainer and contributor of these essential open-source runtimes, search tools, and cross-platform frameworks.
 - **Microsoft Corporation** — With appreciation for the Windows Build Tools, Visual C++ Redistributable runtime, and WebView2 platform support.
 - **Quantisation & Research Pioneers (ISTA-DASLab, PrismML, TurboQuant, Spin(8), and community GGUF authors)** — We express our deepest respect and thanks for advancing extreme low-bit quantisation, orthogonal rotation, and memory-efficient inference for consumer GPUs.
+
+## What changed in 0.6.3
+
+- Native Q38 prefill uses cuBLAS Tensor Core GEMM with token-scaled FP16 activations and a 20 MiB L2-persisting weight tile; decode uses format-specific aligned Q8_1 dp4a GEMV and a LayerFence(8) CUDA Graph.
+- Long-context admission selects the prefill chunk from a measured VRAM ladder; the 768 MiB GPU reserve, 3 GiB RAM floor and 4 GiB commit floor are unchanged.
+- Numerical fixtures normalise synthetic packed weights to real-model amplitude without weakening the strict `_exact_q8` tolerances; unaligned packed GEMV falls back to a byte-load scalar kernel.
+- Verification: 17/17 native tests pass, and compute-sanitizer memcheck/synccheck/racecheck report 0 errors and 0 hazards. General model quality, full-window inference and GPU concurrency remain unqualified (`releaseQualified=false`).
+- Research basis: NVIDIA CUDA 13.5 release notes (cuBLASLt algorithm-66 Tensor Memory correctness fix) and the Qwen3.8-Next architecture report (3:1 GDN/global-attention hybrid, QSA with r=4 compression and K=2048 token budget, gated residual, host-prefetched n-gram embedding).
