@@ -88,6 +88,34 @@ static void gdn(cudaStream_t s){admission();constexpr int C=10240,HV=48,HK=16,D=
     }
     ds.zero(s);dh.zero(s);Q::ck(cudaStreamSynchronize(s));for(float v:read(ds))demand(v==0,"GDN reset");std::puts("PASS GDN reset");
 }
+
+// Exercise the multi-token shared-memory path of the fused GDN conv/L2 kernel.
+static void gdn_batch(cudaStream_t s){
+    admission();
+    constexpr int C=10240, QK2=32, T=6;
+    std::vector<float> conv(C*4), qkv(size_t(C)*T);
+    for(size_t i=0;i<conv.size();++i)conv[i]=float(std::sin(i*.17)*.35);
+    for(size_t i=0;i<qkv.size();++i)qkv[i]=float(std::sin(i*.13)*.7);
+    auto dcw=upload(conv), dq=upload(qkv);
+    Q::Buffer hb_seq(size_t(C)*T*4), hb_bat(size_t(C)*T*4);
+    Q::Buffer hst_seq(C*3*4), hst_bat(C*3*4);
+    hst_seq.zero(s); hst_bat.zero(s);
+    // Sequential reference: one single-token kernel per token.
+    for(int t=0;t<T;++t)
+        K::fused_gdn_conv_l2(hst_seq.as(), dq.as()+size_t(t)*C, dcw.as(),
+                             hb_seq.as()+size_t(t)*C, C, QK2, 1e-6f, s);
+    // Batch path under test: one kernel, shared part[] reused across tokens.
+    K::fused_gdn_conv_l2_batch(hst_bat.as(), dq.as(), dcw.as(), hb_bat.as(),
+                               C, QK2, 1e-6f, T, s);
+    Q::ck(cudaStreamSynchronize(s));
+    const auto seq_out = read(hb_seq);
+    const auto seq_hist = read(hst_seq);
+    check_close(read(hb_bat), std::vector<double>(seq_out.begin(), seq_out.end()),
+                3e-5, 3e-4, "GDN_conv_l2_batch_output_T6");
+    check_close(read(hst_bat), std::vector<double>(seq_hist.begin(), seq_hist.end()),
+                0, 0, "GDN_conv_l2_batch_history_T6");
+}
+
 static void attention(cudaStream_t s){admission();constexpr int ctx=9,H=24,KV=4,D=256;std::vector<float> qw(D),kw(D);for(int i=0;i<D;++i){qw[i]=float(.9+.1*std::cos(i));kw[i]=float(1.1+.1*std::sin(i));}auto dqw=upload(qw),dkw=upload(kw);Q::Buffer kc(KV*ctx*D*2),vc(KV*ctx*D*2),q(H*D*4),gate(H*D*4),out(H*D*4),scores(H*ctx*4);kc.zero(s);vc.zero(s);std::vector<double> keys(KV*ctx*D),vals(KV*ctx*D);
     for(int pos=0;pos<ctx;++pos){std::vector<float> qg(H*D*2),k(KV*D),v(KV*D);for(size_t i=0;i<qg.size();++i)qg[i]=float(std::sin(i*.07+pos*.6));for(int i=0;i<KV*D;++i){k[i]=float(std::cos(i*.13+pos));v[i]=float(std::sin(i*.17-pos*.9));}auto dqg=upload(qg),dk=upload(k),dv=upload(v);Q::attention_prepare(dqg.as(),dk.as(),dv.as(),dqw.as(),dkw.as(),q.as(),gate.as(),kc.as<half>(),vc.as<half>(),pos,ctx,1e-6f,1e7f,s);Q::attention_apply(q.as(),gate.as(),kc.as<half>(),vc.as<half>(),out.as(),scores.as(),pos,ctx,s);
         std::vector<double> query(H*D),want(H*D);
@@ -379,4 +407,4 @@ static void q8_1_ops(cudaStream_t s) {
     std::puts("PASS q8_1_ops fused quantizers and single/dual/triple matvec");
 }
 static void failures(cudaStream_t s){admission();std::vector<float> x={0,INFINITY,NAN,-INFINITY};auto b=upload(x);Q::Buffer e(4);e.zero(s);Q::finite(b.as(),x.size(),e.as<int>(),s);int flag=0;Q::ck(cudaMemcpy(&flag,e.data,4,cudaMemcpyDeviceToHost));demand(flag==1,"nonfinite not caught");std::puts("PASS nonfinite failure detection");}
-int main(){try{Q::host_resources();Q::ck(cudaSetDevice(0));cudaStream_t s;Q::ck(cudaStreamCreate(&s));try{packed(s);q8_1_ops(s);hadamard(s);gdn(s);attention(s);failures(s);}catch(...){cudaStreamDestroy(s);throw;}Q::ck(cudaStreamDestroy(s));std::puts("PASS production CUDA numerical fixtures");return 0;}catch(const std::exception& e){std::fprintf(stderr,"FAIL %s\n",e.what());return 1;}}
+int main(){try{Q::host_resources();Q::ck(cudaSetDevice(0));cudaStream_t s;Q::ck(cudaStreamCreate(&s));try{packed(s);q8_1_ops(s);hadamard(s);gdn(s);gdn_batch(s);attention(s);failures(s);}catch(...){cudaStreamDestroy(s);throw;}Q::ck(cudaStreamDestroy(s));std::puts("PASS production CUDA numerical fixtures");return 0;}catch(const std::exception& e){std::fprintf(stderr,"FAIL %s\n",e.what());return 1;}}

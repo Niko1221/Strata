@@ -215,6 +215,9 @@ __global__ void __launch_bounds__(S) gdn_conv_l2_batch_kernel(
             __syncthreads();
             const float ss = part[0] + part[1] + part[2] + part[3];
             y *= rsqrtf(ss + eps);
+            // Keep the next token from overwriting part[] while another warp
+            // is still reading it. blockIdx.x < qk_heads is block-uniform.
+            __syncthreads();
         }
         h_batch[off] = y;
     }
