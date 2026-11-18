@@ -958,6 +958,14 @@ void matvec_q8_1_triple(int type, const void* w0, float* y0, int rows0,
 void matvec(int type,const void* w,const float* x,float* y,int n,int rows,cudaStream_t s){
     shape(type,n,rows);if(!w||!x||!y)throw std::runtime_error("null matrix input");
     const dim3 grid((rows+7)/8);const size_t rb=row_bytes(type,n);const auto* wp=(const uint8_t*)w;
+    // The vectorised packed GEMV kernels require 16 B-aligned rows.  Fall back
+    // to the byte-load scalar kernel for deliberately misaligned inputs.
+    if ((type==12||type==13||type==14||type==21||type==22) &&
+        (((uintptr_t(wp) & 15) != 0) || ((rb & 15) != 0))) {
+        mv<<<grid,256,0,s>>>(type,wp,x,y,n,rows,rb);
+        ck(cudaGetLastError());
+        return;
+    }
     switch(type){
         case 8:  mv_q8_0<<<grid,256,0,s>>>(wp,x,y,n,rows,rb); break;
         case 12: launch_mv_256<MvKind::Q4_K, 144>(wp,x,y,n,rows,rb,s); break;
