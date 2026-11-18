@@ -1,0 +1,11 @@
+# round 6: microbench ceilings + CTAB knob A/B (all-safe modes)
+name|binary|extra-env|tokens|maxnew|ctx|extra-args
+BENCH|/tmp/benchall.sh||t357.txt|1|40960|
+D_A|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1|t357.txt|128|40960|
+D_ct|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1 STRATA_METAL_CTAB=1|t357.txt|128|40960|
+D_ct2|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1 STRATA_METAL_CTAB=1|t357.txt|128|40960|
+D_A2|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1|t357.txt|128|40960|
+P_A|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1|t2048.txt|2|40960|
+P_ct|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1 STRATA_METAL_CTAB=1|t2048.txt|2|40960|
+P_ct2|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1 STRATA_METAL_CTAB=1 STRATA_METAL_PROMPT_GU2_TILE=32_64_32_4|t2048.txt|2|40960|
+P_A2|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1 STRATA_METAL_PROMPT_GU2_TILE=32_64_32_4|t2048.txt|2|40960|

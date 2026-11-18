@@ -1,0 +1,6 @@
+# next round: prefill mpp + per-window class split (KPROF=1 T=1, T=2) + adaptive overlap probe
+P_mpp_pp2048|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROMPT_MOE=mpp|t2048.txt|2|40960|
+P_mpp_pp16k|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROMPT_MOE=mpp|t16384.txt|2|262144|
+P_kp1_tg|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_KPROF=1|t357.txt|64|40960|
+P_kp2_tg|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_KPROF=2|t357.txt|128|40960|
+P_overlap_tg|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1|t357.txt|128|40960|

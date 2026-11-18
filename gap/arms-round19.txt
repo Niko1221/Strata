@@ -1,0 +1,18 @@
+# round 19: attack the per-miss wait at the cuts. Round 18 fixed law (15 arms, 2 rounds):
+#   window GPU ms ~= 49 (all-hit kernel floor, STREAM=0) + ~0.55 ms per decode miss + read-ahead ~free
+#   (misses 8.5 -> 82.6; 13.5 -> 88.9; 33.4 -> 105-115). IO_THREADS=12 did nothing (NAND, not queueing).
+#   Contig .experts already one-request-per-expert. PREFETCH=12 halves misses, read-aheads cost little
+#   (they overlap; dropped ones never read). READ_SPLIT=N reads each miss in N concurrent pieces, so a
+#   layer's wait is one piece's latency, not the whole blob's (stream.cpp:269 comment says exactly this
+#   was the M4 finding; default is 1 now). Depth is capped at 32 in ahead().
+# Run: cd /Users/pc/src/Strata-fork && ./gap/gap.sh gap/arms-round19.txt 2>&1 | tee /tmp/round19.log
+name|binary|extra-env|tokens|maxnew|ctx|extra-args
+D_p|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1|t357.txt|128|40960|
+P12_p|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1 STRATA_METAL_PREFETCH=12|t357.txt|128|40960|
+D_p2|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1|t357.txt|128|40960|
+S4_p|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1 STRATA_METAL_READ_SPLIT=4|t357.txt|128|40960|
+D_p3|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1|t357.txt|128|40960|
+PS_p|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1 STRATA_METAL_PREFETCH=12 STRATA_METAL_READ_SPLIT=4|t357.txt|128|40960|
+D_p4|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1|t357.txt|128|40960|
+P24_p|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1 STRATA_METAL_PREFETCH=24|t357.txt|128|40960|
+D_p5|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1|t357.txt|128|40960|

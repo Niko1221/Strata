@@ -1,0 +1,2 @@
+# per-kernel decode attribution (stream windows): KPROF=2 fires at the 20th T=2 window
+K2_tg|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_KPROF=2|t357.txt|128|40960|

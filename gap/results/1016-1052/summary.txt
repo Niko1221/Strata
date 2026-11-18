@@ -1,0 +1,27 @@
+=== R_f_anchor 10:52:28
+strata generate: prefill 2047 tokens in 1 chunks, 13701.4 ms (149.4 tok/s); experts streamed 0 (0 by DMA, host 0.0 ms), resident 0, on the CPU 0 (share 0.00); PLE 0.0 ms
+=== R_f_tm32 10:52:47
+strata generate: prefill 2047 tokens in 1 chunks, 12902.6 ms (158.7 tok/s); experts streamed 0 (0 by DMA, host 0.0 ms), resident 0, on the CPU 0 (share 0.00); PLE 0.0 ms
+=== R_f_tm32s4 10:53:02
+strata generate: prefill 2047 tokens in 1 chunks, 11597.2 ms (176.5 tok/s); experts streamed 0 (0 by DMA, host 0.0 ms), resident 0, on the CPU 0 (share 0.00); PLE 0.0 ms
+=== R_f_v3 10:53:16
+=== B_anchor262 10:53:43
+strata generate: prefill 2047 tokens in 1 chunks, 10276.1 ms (199.2 tok/s); experts streamed 0 (0 by DMA, host 0.0 ms), resident 0, on the CPU 0 (share 0.00); PLE 0.0 ms
+decode                   2 tokens in 381.9 ms  ->  5.24 tok/s
+prefill                  2047 tokens in 10276.1 ms  ->  199.20 tok/s  (time to first token 11507.4 ms)
+=== B_tm32_262 10:53:57
+strata generate: prefill 2047 tokens in 1 chunks, 11331.7 ms (180.6 tok/s); experts streamed 0 (0 by DMA, host 0.0 ms), resident 0, on the CPU 0 (share 0.00); PLE 0.0 ms
+decode                   2 tokens in 355.0 ms  ->  5.63 tok/s
+prefill                  2047 tokens in 11331.7 ms  ->  180.64 tok/s  (time to first token 12528.6 ms)
+=== D_ov 10:54:12
+strata generate: prefill 356 tokens in 1 chunks, 6975.9 ms (51.0 tok/s); experts streamed 0 (0 by DMA, host 0.0 ms), resident 0, on the CPU 0 (share 0.00); PLE 0.0 ms
+decode                   128 tokens in 6473.1 ms  ->  19.77 tok/s
+prefill                  356 tokens in 6975.9 ms  ->  51.03 tok/s  (time to first token 7798.8 ms)
+=== D_ov_nr2 10:54:28
+strata generate: prefill 356 tokens in 1 chunks, 6945.1 ms (51.3 tok/s); experts streamed 0 (0 by DMA, host 0.0 ms), resident 0, on the CPU 0 (share 0.00); PLE 0.0 ms
+decode                   128 tokens in 6687.0 ms  ->  19.14 tok/s
+prefill                  356 tokens in 6945.1 ms  ->  51.26 tok/s  (time to first token 7740.9 ms)
+=== D_ov_nr4 10:54:44
+strata generate: prefill 356 tokens in 1 chunks, 6986.9 ms (51.0 tok/s); experts streamed 0 (0 by DMA, host 0.0 ms), resident 0, on the CPU 0 (share 0.00); PLE 0.0 ms
+decode                   128 tokens in 6656.7 ms  ->  19.23 tok/s
+prefill                  356 tokens in 6986.9 ms  ->  50.95 tok/s  (time to first token 7780.5 ms)

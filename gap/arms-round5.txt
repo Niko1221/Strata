@@ -1,0 +1,14 @@
+# round 5: all-real, no fake/kprof/v3 (driver-crash modes banned). Interleaved prefill tiles + decode class marginals.
+name|binary|extra-env|tokens|maxnew|ctx|extra-args
+P16_A|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1|t2048.txt|2|40960|
+P16_B|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1 STRATA_METAL_PROMPT_GU2_TILE=32_64_32_4|t2048.txt|2|40960|
+P16_A2|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1|t2048.txt|2|40960|
+P16_B2|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1 STRATA_METAL_PROMPT_GU2_TILE=32_64_32_4|t2048.txt|2|40960|
+P16_C|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1 STRATA_METAL_PROMPT_GU2_TILE=32_64_16_4|t2048.txt|2|40960|
+D_A|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1|t357.txt|128|40960|
+D_moe|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1 STRATA_METAL_SKIP=moe_gu,moe_down|t357.txt|128|40960|
+D_gemv|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1 STRATA_METAL_SKIP=gemv|t357.txt|128|40960|
+D_gr|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1 STRATA_METAL_SKIP=gr_|t357.txt|128|40960|
+D_gdn|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1 STRATA_METAL_SKIP=gdn|t357.txt|128|40960|
+D_qsa|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1 STRATA_METAL_SKIP=qsa|t357.txt|128|40960|
+D_A2|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1|t357.txt|128|40960|
