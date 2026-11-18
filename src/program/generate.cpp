@@ -13966,6 +13966,12 @@ int main(int argc, char** argv) {
         }
         strata::core::ExpertProfileMemory profile_memory;
         bool profile_memory_on = !o.expert_profile_memory.empty();
+#if defined(STRATA_GPU_METAL)
+        if (profile_memory_on) {
+            std::fprintf(stderr, "strata serve: --expert-profile-memory is not implemented on Metal\n");
+            return 1;
+        }
+#else
         if (profile_memory_on) {
             if (heat.empty() || !(o.expert_profile_memory_hours > 0.0) ||
                 !(o.expert_profile_memory_mix >= 0.0 && o.expert_profile_memory_mix <= 1.0)) {
@@ -13987,6 +13993,7 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata serve: long-term expert profile memory: %s (half-life %.3g hours, weight %.3g)\n",
                          o.expert_profile_memory.c_str(), o.expert_profile_memory_hours, o.expert_profile_memory_mix);
         }
+#endif
         Clock::time_point profile_saved_at = Clock::now();
         cudaStream_t adapt_stream = nullptr;
         if (cudaStreamCreateWithFlags(&adapt_stream, cudaStreamNonBlocking) != cudaSuccess) {
@@ -14848,6 +14855,15 @@ int main(int argc, char** argv) {
             if (astate == AState::SwapIn)   // --adapt-async: the same for a round past its step 2
                 for (const ASwap& w : aswaps) resident[(size_t) w.layer * g.n_expert + w.in] = 1;
             std::string e;
+#if defined(STRATA_GPU_METAL)
+            const auto ranked = strata::core::rank_learned_profile(g.n_layers, g.n_expert, resident, heat,
+                                                                   profile_loaded);
+            if (strata::core::write_expert_profile(o.expert_profile_save, g.n_layers, g.n_expert, ranked, e))
+                std::fprintf(stderr, "strata serve: expert profile saved to %s (%s)\n", o.expert_profile_save.c_str(),
+                             why);
+            else
+                std::fprintf(stderr, "strata serve: the expert profile was not saved: %s\n", e.c_str());
+#else
             const auto previous_memory = profile_memory;
             if (profile_memory_on) {
                 const double now = std::chrono::duration<double>(
@@ -14871,6 +14887,7 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "strata serve: expert profile saved to %s (%s)\n", o.expert_profile_save.c_str(),
                              why);
             }
+#endif
             profile_saved_at = Clock::now();
         };
         // stdin is read on its own thread, so a STOP line reaches a request that is still running (the client went
