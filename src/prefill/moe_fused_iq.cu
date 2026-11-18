@@ -2616,7 +2616,19 @@ bool q8d_f16_default(const DevInfo& d) {
 // The switch means the same everywhere: 1 on, 0 off, unset = the platform's default.
 bool q50_on(const DevInfo& d) {
 #if defined(__HIPCC__)
-    if (!d.w12 && !d.g1151) return false;
+    if (!d.w12 && !d.g1151) {
+        // gfx1100 (W7900, RDNA3): opt-in Q5_0 fused via F16 WMMA path (same as gfx1151)
+        int dev = 0;
+        if (cudaGetDevice(&dev) == cudaSuccess) {
+            cudaDeviceProp prop;
+            if (cudaGetDeviceProperties(&prop, dev) == cudaSuccess &&
+                strata::kernels::gfx_arch_is(prop.gcnArchName, "gfx1100")) {
+                static const int env1100 = [] { const char* v = std::getenv("STRATA_PF_FUSED_Q50"); return v != nullptr && v[0] == '1' ? 1 : 0; }();
+                return env1100 == 1;
+            }
+        }
+        return false;
+    }
     static const int env = [] { const char* v = std::getenv("STRATA_PF_FUSED_Q50"); return v == nullptr || v[0] == '\0' ? -1 : (v[0] == '1' ? 1 : 0); }();
     if (env >= 0) return env == 1;
     if (d.w12) return strata::core::kGfx12PromptDefaultsOn;   // gfx12: on by default under Linux, opt-in under Windows
