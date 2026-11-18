@@ -85,6 +85,15 @@ Whether the two cards can really exchange data is tested once at start with a co
 says so and the prompt path uses the host route (activations and rows through mapped host memory). `STRATA_PEER_NO_P2P=1` asks
 for that route by hand.
 
+At startup, the engine reports the selected prefill transport and probe status, for example
+`transport=direct_cuda_peer_copy probe=bidirectional_peer_copy_verified` or
+`transport=mapped_host_fallback probe=copy_probe_unavailable`. An unavailable probe is not reported as verified and selects
+the host route. A verified CUDA peer copy proves that the tested CUDA P2P operation moved the test payload in both directions;
+it does **not** identify whether the physical path was NVLink or PCIe. The link topology and NVLink traffic counters are
+separate hardware evidence. If the driver reports a counter as `N/A`, Strata leaves physical NVLink traffic unknown.
+The peer-expert decode path has its own mapped, pinned host buffers; do not infer its per-token transport from the prefill
+route line.
+
 Through the server, list both cards in the config's `"gpu"` (for example `[0, 1]`, numbered as `nvidia-smi` numbers them) and add
 `--peer-device 1` to `"args"`. The number is the card's position in that list (with `"gpu": [2, 0]`, `--peer-device 1` is
 `nvidia-smi`'s card 0). Several GPUs in `"gpu"` are otherwise a layer split; the server adds `--layer-split` only when

@@ -49,8 +49,10 @@ struct On {
 /// (2x RTX A4000, "PHB" in nvidia-smi topo) `cudaMemcpyPeerAsync` then returned success having moved nothing: the peer's input rows
 /// were zeros and the rows it sent back never arrived, so the first prompt's MoE output was garbage and the logits NaN.  Without
 /// peer access enabled the same copies are right (the driver stages them).  So the pair is asked once, with a small copy each way,
-/// whether the direct path really carries data.  true = both ways exact (or nothing could be tested: the old trust is kept).
-bool p2p_copies_data(int device) {
+/// whether the direct path really carries data. A failed setup is not a successful probe.
+enum class CopyProbeResult { verified, mismatch, unavailable };
+
+CopyProbeResult p2p_copies_data(int device) {
     constexpr size_t kN = 1 << 14;   // floats
     std::vector<float> h(kN), back(kN);
     for (size_t i = 0; i < kN; ++i) h[i] = 1.0f + (float) ((i * 2654435761u) % 4093u);
@@ -80,8 +82,15 @@ bool p2p_copies_data(int device) {
     }
     for (int k = 0; k < 2; ++k)
         if (d[k] != nullptr) { On on(dev[k]); cudaFree(d[k]); }
-    if (!tested) { cudaGetLastError(); return true; }
-    return ok;
+    if (!tested) { cudaGetLastError(); return CopyProbeResult::unavailable; }
+    return ok ? CopyProbeResult::verified : CopyProbeResult::mismatch;
+}
+
+void disable_peer_access_if_owned(int from, int to, bool enabled_here) {
+    if (!enabled_here) return;
+    On on(from);
+    const cudaError_t rc = cudaDeviceDisablePeerAccess(to);
+    if (rc != cudaSuccess && rc != cudaErrorPeerAccessNotEnabled) cudaGetLastError();
 }
 
 bool ck(cudaError_t e, const char* what, std::string& err) {
@@ -142,31 +151,60 @@ bool PeerExperts::open(int device, const std::vector<std::pair<int32_t, int32_t>
     n_expert_ = n_expert;
     src_ = &src;
     res_.assign((size_t) (n_layers * n_expert), kNotResident);
-    {   // direct access both ways (NVLink or another P2P path): the prompt path copies activations and results over it
-        int a = 0, b = 0;
-        cudaDeviceCanAccessPeer(&a, primary_device(), device);
-        cudaDeviceCanAccessPeer(&b, device, primary_device());
-        if (const char* np = std::getenv("STRATA_PEER_NO_P2P"); np != nullptr && std::atoi(np) != 0) a = 0;   // test knob: pretend the pair has no P2P
-        p2p_ = a && b;
-        if (p2p_) {
-            On on0(primary_device());
-            cudaError_t e0 = cudaDeviceEnablePeerAccess(device, 0);
-            if (e0 == cudaErrorPeerAccessAlreadyEnabled) { cudaGetLastError(); e0 = cudaSuccess; }
-            On on1(device);
-            cudaError_t e1 = cudaDeviceEnablePeerAccess(primary_device(), 0);
-            if (e1 == cudaErrorPeerAccessAlreadyEnabled) { cudaGetLastError(); e1 = cudaSuccess; }
-            p2p_ = e0 == cudaSuccess && e1 == cudaSuccess;
-            // recommend, never force: the direct path is used only if a test copy each way arrives exact (#2666)
-            if (p2p_ && !p2p_copies_data(device)) {
-                std::fprintf(stderr, "strata: peer GPU %d: peer access is enabled but a test copy between the two GPUs arrived wrong "
-                                     "(a host bridge between them, no real P2P): the prompt path takes the host route instead "
-                                     "(STRATA_PEER_NO_P2P=1 does that by hand)\n", device);
-                { On q0(0); cudaDeviceDisablePeerAccess(device); cudaGetLastError(); }
-                { On q1(device); cudaDeviceDisablePeerAccess(0); cudaGetLastError(); }
-                p2p_ = false;
+    {   // Direct CUDA peer copies may use NVLink or another P2P path; CUDA does not identify the physical link here.
+        const int primary = primary_device();
+        const char* no_p2p = std::getenv("STRATA_PEER_NO_P2P");
+        if (no_p2p != nullptr && std::atoi(no_p2p) != 0) {
+            route_status_ = PeerRouteStatus::forced_host;
+        } else {
+            int can_primary_to_peer = 0, can_peer_to_primary = 0;
+            const cudaError_t can_a = cudaDeviceCanAccessPeer(&can_primary_to_peer, primary, device);
+            const cudaError_t can_b = cudaDeviceCanAccessPeer(&can_peer_to_primary, device, primary);
+            if (can_a != cudaSuccess || can_b != cudaSuccess) {
+                cudaGetLastError();
+                route_status_ = PeerRouteStatus::probe_unavailable;
+            } else if (!can_primary_to_peer || !can_peer_to_primary) {
+                route_status_ = PeerRouteStatus::peer_unsupported;
+            } else {
+                bool enabled_primary_here = false, enabled_peer_here = false;
+                cudaError_t e0;
+                {
+                    On on_primary(primary);
+                    e0 = cudaDeviceEnablePeerAccess(device, 0);
+                    enabled_primary_here = e0 == cudaSuccess;
+                    if (e0 == cudaErrorPeerAccessAlreadyEnabled) { cudaGetLastError(); e0 = cudaSuccess; }
+                }
+                cudaError_t e1;
+                {
+                    On on_peer(device);
+                    e1 = cudaDeviceEnablePeerAccess(primary, 0);
+                    enabled_peer_here = e1 == cudaSuccess;
+                    if (e1 == cudaErrorPeerAccessAlreadyEnabled) { cudaGetLastError(); e1 = cudaSuccess; }
+                }
+                if (e0 != cudaSuccess || e1 != cudaSuccess) {
+                    disable_peer_access_if_owned(primary, device, enabled_primary_here);
+                    disable_peer_access_if_owned(device, primary, enabled_peer_here);
+                    cudaGetLastError();
+                    route_status_ = PeerRouteStatus::peer_enable_failed;
+                } else {
+                    const CopyProbeResult probe = p2p_copies_data(device);
+                    if (probe == CopyProbeResult::verified) {
+                        route_status_ = PeerRouteStatus::peer_verified;
+                    } else {
+                        disable_peer_access_if_owned(primary, device, enabled_primary_here);
+                        disable_peer_access_if_owned(device, primary, enabled_peer_here);
+                        route_status_ = probe == CopyProbeResult::mismatch
+                            ? PeerRouteStatus::probe_mismatch : PeerRouteStatus::probe_unavailable;
+                    }
+                }
             }
         }
     }
+    p2p_ = peer_route_uses_direct_copy(route_status_);
+    std::fprintf(stderr,
+                 "strata: peer GPU %d transport=%s probe=%s (physical path not identified; CUDA P2P may use NVLink or PCIe)\n",
+                 device, p2p_ ? "direct_cuda_peer_copy" : "mapped_host_fallback",
+                 peer_route_status_name(route_status_));
     On on(device);
     device_ = device;
     // scratch first, so the slots take what is really left
