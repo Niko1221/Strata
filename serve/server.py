@@ -372,6 +372,7 @@ ADMIT_MAX_WAIT_S = _timeout_env("STRATA_ADMIT_MAX_WAIT_S", 30.0) or 0.0
 # it reserves for them); the engine reads all the prompts in ONE layer-major pass, so the experts a layer streams are
 # read once for all of them, and each waiting request then finds its prompt in its slot.  0 / unset: off.
 COALESCE_PREFILL = max(0, int(os.environ.get("STRATA_COALESCE_PREFILL") or 0))
+REQUEST_PRIORITY = os.environ.get("STRATA_REQUEST_PRIORITY") == "1"
 COALESCE_TOKENS = max(256, int(os.environ.get("STRATA_COALESCE_TOKENS") or 16384))   # prompt tokens read together at most
 COALESCE_WAIT_MS = max(0, int(os.environ.get("STRATA_COALESCE_WAIT_MS") or 0))       # a burst's later requests register within this long
 # Adaptive: a read is shared (and the leader waits for its followers) only when this engine has seen at least
@@ -1099,9 +1100,6 @@ class StrataEngine:
         # retry_vram_args: the same start with no drafter (nodraft_retry_args), used instead when the engine ended because a card ran out of memory: swapping DFlash2 for
         # the MTP takes MORE memory from a card that is already short, so that direction is never taken then
         self.spawn = (exe, list(args), cwd, log, env, False, cpus)   # to start it again after it died (issue #27)
-        # restart() calls __init__ on the same engine. Keep the configured reservation.
-        self.classifier_reserved = getattr(self, "classifier_reserved", False)
-        self.classifier_pending = set()
         # the all-cards split engine (sFNX, strata-split-N[-arch]): its GEN parser accepts fewer keys than Strata's engine (tests/split/test_split_gen_keys.py pins them)
         self.split_engine = os.path.basename(str(exe)).startswith("strata-split")
         self.session_save_reclaim = '--session-save-reclaim' in args
@@ -1994,22 +1992,31 @@ class StrataEngine:
 
     YIELDS_MAX = 2   # #656: how often one request's prompt read gives way to a shorter waiting one
 
-    def _classifier_blocks(self, cancel):
-        return (getattr(self, "classifier_reserved", False) and self.classifier_pending and
-                not getattr(cancel, "_strata_classifier", False))
-
     def _take_control(self, cancel, plen: int, after_epoch: int | None = None, new: bool = False, prompt=None):
         """Waits for the control lines (one prompt read at a time), yielding None heartbeats; False when cancelled.
         `after_epoch`: a request whose read gave way lets the requests waiting then go first.
         `new`: the request's first admission (STRATA_ADMIT_SHORT_FIRST orders only these)."""
-        entry = [plen, time.monotonic(), new, prompt, cancel]           # (length, arrival, ordered: STRATA_ADMIT_SHORT_FIRST; the prompt and request, for STRATA_COALESCE_PREFILL)
+        entry = [plen, time.monotonic(), new, prompt, cancel, after_epoch]           # (length, arrival, ordered: STRATA_ADMIT_SHORT_FIRST; the prompt and request, for STRATA_COALESCE_PREFILL)
         with self.slot_cv:
             self.waiting += 1
             self.wait_lens.append(entry)
             self.arrivals.append(entry[1])
+            if REQUEST_PRIORITY:
+                self.slot_cv.notify_all()
+
+        def has_turn():
+            if REQUEST_PRIORITY:
+                if new and all(self.slot_busy):
+                    self._reap_orphan_slots()
+                return self._priority_next() is entry
+            turn = after_epoch is None or self.ctl_epoch > after_epoch or self.waiting <= 1
+            return turn and (not new or ADMIT_SHORT_FIRST <= 0 or self._admit_next() is entry)
+
         beat = time.monotonic()
         try:
             while True:
+                if REQUEST_PRIORITY and cancel.is_set():
+                    return False
                 deadline = getattr(cancel, "_strata_queue_deadline", None)
                 if deadline is not None and time.monotonic() >= deadline:
                     raise QueueWaitExpired("the inference queue wait deadline expired; retry later")
@@ -2019,19 +2026,12 @@ class StrataEngine:
                     # restart is under way it keeps waiting and goes on with the new engine.
                     raise EngineDied("the engine stopped while this request waited; it was not sent")
                 with self.slot_cv:
-                    turn = after_epoch is None or self.ctl_epoch > after_epoch or self.waiting <= 1
-                    if self._classifier_blocks(cancel):
-                        turn = False
-                    if turn and new and ADMIT_SHORT_FIRST > 0:
-                        turn = self._admit_next() is entry
+                    turn = has_turn()
                 left = deadline - time.monotonic() if deadline is not None else 0.5
                 if turn and left > 0 and self.ctl.acquire(timeout=min(0.5, left)):
-                    if self._classifier_blocks(cancel):
-                        self.ctl.release()
-                        continue
-                    if new and ADMIT_SHORT_FIRST > 0:
-                        with self.slot_cv:              # a shorter one came while this one waited in acquire()
-                            first = self._admit_next() is entry
+                    if REQUEST_PRIORITY or (new and ADMIT_SHORT_FIRST > 0):
+                        with self.slot_cv:              # a request may have arrived while we waited in acquire()
+                            first = has_turn()
                         if not first:
                             self.ctl.release()
                             with self.slot_cv:
@@ -2049,12 +2049,7 @@ class StrataEngine:
                         # #4738 (PR #4738's approach): the turn was read, and the lock given up, before this wait: a
                         # notification sent in between is gone.  Read it again under the lock and only wait when this
                         # request still has to.
-                        eligible = after_epoch is None or self.ctl_epoch > after_epoch or self.waiting <= 1
-                        if self._classifier_blocks(cancel):
-                            eligible = False
-                        if eligible and new and ADMIT_SHORT_FIRST > 0:
-                            eligible = self._admit_next() is entry
-                        if not eligible or not self.alive():
+                        if not has_turn() or not self.alive():
                             self.slot_cv.wait(timeout=min(0.5, max(0, left)))
                 if cancel.is_set():
                     return False
@@ -2067,7 +2062,7 @@ class StrataEngine:
                 self.waiting = max(0, self.waiting - 1)
                 if entry in self.wait_lens:
                     self.wait_lens.remove(entry)
-                if (previous_waiting > 1 and self.waiting <= 1) or (new and ADMIT_SHORT_FIRST > 0):
+                if REQUEST_PRIORITY or (previous_waiting > 1 and self.waiting <= 1) or (new and ADMIT_SHORT_FIRST > 0):
                     # a waiter that leaves (cancelled, closed) can make another one the next in turn: tell it
                     self.slot_cv.notify_all()
         with self.slot_cv:
@@ -2137,14 +2132,33 @@ class StrataEngine:
         Off (unset or 0): whoever gets the lock first, as before.  Only the order changes, never what is read."""
         now = time.monotonic()
         ordered = [e for e in self.wait_lens if len(e) > 2 and e[2]]
-        if getattr(self, "classifier_reserved", False):
-            classifiers = [e for e in ordered if getattr(e[4], "_strata_classifier", False)]
-            if classifiers:
-                return min(classifiers, key=lambda e: e[1])
         if not ordered:
             return None
         return min(ordered, key=lambda e: (0 if e[0] <= ADMIT_SHORT_FIRST or now - e[1] >= ADMIT_MAX_WAIT_S else 1,
                                            e[1]))
+
+    @staticmethod
+    def _priority_waiting(cancel, now):
+        deadline = getattr(cancel, "_strata_queue_deadline", None)
+        return not cancel.is_set() and (deadline is None or now < deadline)
+
+    def _priority_next(self):
+        """Choose the next waiter that can use the control lines (under slot_cv)."""
+        has_slot = not all(self.slot_busy)
+        now = time.monotonic()
+        ready, suspended = [], []
+        for entry in self.wait_lens:
+            plen, arrival, new, _, cancel, epoch = entry
+            if not self._priority_waiting(cancel, now):
+                continue
+            if new and not has_slot:
+                continue
+            short = not new or not ADMIT_SHORT_FIRST or plen <= ADMIT_SHORT_FIRST or now - arrival >= ADMIT_MAX_WAIT_S
+            order = (getattr(cancel, "_strata_priority", 0), not short, arrival)
+            # A suspended prefill gives another waiter a turn, unless nobody else can proceed.
+            queue = suspended if epoch is not None and self.ctl_epoch <= epoch else ready
+            queue.append((order, entry))
+        return min(ready or suspended, key=lambda item: item[0], default=(None, None))[1]
 
     SOLO_AGAIN_MAX = 2      # how often a request left alone in a slot goes back to the solo path
     SOLO_AGAIN_MIN_LEFT = 32  # ... only with at least this many tokens still allowed (max_tokens)
@@ -2159,34 +2173,27 @@ class StrataEngine:
         with self.slot_cv:
             return sum(1 for b in self.slot_busy if b) == 1 and self.waiting == 0
 
-    def _shorter_waiting(self, plen: int, cancel=None) -> bool:
+    def _shorter_waiting(self, plen: int) -> bool:
         """#656: someone waits for the control lines with a prompt under half this one's: worth giving way to."""
         with self.slot_cv:
-            if getattr(self, "classifier_reserved", False):
-                if getattr(cancel, "_strata_classifier", False):
-                    return False
-                if self.classifier_pending:
-                    return True
             return any(e[0] * 2 <= plen for e in self.wait_lens)
 
-    def generate_batched(self, ids, max_new, sampling, cancel, embeddings=None):
-        if not getattr(self, "classifier_reserved", False) or self.batch < 2:
-            yield from self._generate_batched(ids, max_new, sampling, cancel, embeddings)
-            return
-        classifier = getattr(cancel, "_strata_classifier", False)
-        if classifier:
-            with self.slot_cv:
-                self.classifier_pending.add(cancel)
-                self.slot_cv.notify_all()
-        try:
-            yield from self._generate_batched(ids, max_new, sampling, cancel, embeddings)
-        finally:
-            if classifier:
-                with self.slot_cv:
-                    self.classifier_pending.discard(cancel)
-                    self.slot_cv.notify_all()
+    def _should_yield(self, plen: int, cancel, *, solo: bool = False) -> bool:
+        if not REQUEST_PRIORITY:
+            return self._shorter_waiting(plen)
+        current = getattr(cancel, "_strata_priority", 0)
+        with self.slot_cv:
+            if self.slot_busy.count(False) < (2 if solo else 1):
+                return False
+            now = time.monotonic()
+            return any(
+                self._priority_waiting(waiting, now) and (
+                    getattr(waiting, "_strata_priority", 0) < current or
+                    (getattr(waiting, "_strata_priority", 0) == current and length * 2 <= plen))
+                for length, _, _, _, waiting, _ in self.wait_lens
+            )
 
-    def _generate_batched(self, ids, max_new, sampling, cancel, embeddings=None):
+    def generate_batched(self, ids, max_new, sampling, cancel, embeddings=None):
         """--batch.  Alone (no slot busy, nobody waiting): the solo path (GEN, with drafts: the fastest stream)
         - and when another request arrives meanwhile, this one is STOPped and continues in a batch slot (BGEN with
         its prompt + what it generated: the engine reuses that prefix).  Otherwise: BGEN into a free slot, then the
@@ -2222,7 +2229,7 @@ class StrataEngine:
         carry = {}          # #1869: the figures of the legs that ended in a hand-back to the solo path (the final DONE adds to them)
         yielded_legs = []    # prompt reads that gave way before producing output
         ok = yield from self._take_control(cancel, len(prompt), new=True,
-                                           prompt=prompt if (COALESCE_PREFILL > 1 and not embeddings) else None)
+                                           prompt=prompt if (COALESCE_PREFILL > 1 and not REQUEST_PRIORITY and not embeddings) else None)
         if not ok:
             self._release_preslot(cancel)
             return
@@ -2242,14 +2249,13 @@ class StrataEngine:
         try:
             while True:   # a request in a slot that is left alone goes back to the solo path
                 if not holding:
-                    ok = yield from self._take_control(cancel, len(prompt))
+                    ok = yield from self._take_control(cancel, len(prompt), new=REQUEST_PRIORITY)
                     if not ok:
                         return
                     holding, born = True, self.gen                  # (the engine it now has the control lines of)
                     lines_q, sq = self.lines, self.slot_q           # (it holds no slot of the engine before: nothing to lose)
                 with self.slot_cv:
-                    alone = (not any(self.slot_busy) and self.waiting == 0 and
-                             not getattr(cancel, "_strata_classifier", False))
+                    alone = not any(self.slot_busy) and self.waiting == 0
                 if alone and left > 1:
                     pf = self.pen_from_key(orig_len, len(prompt))
                     head = f"GENI {left}{leg_keys()}{pf} {embeddings}" if embeddings else f"GEN {left}{leg_keys()}{pf}"
@@ -2272,10 +2278,10 @@ class StrataEngine:
 
                     def give_way():   # at a PP line, and between two far apart (the engine takes it at its next boundary)
                         nonlocal reserved
-                        if (reserved is None and not out and not embeddings and (yields < self.YIELDS_MAX or self._classifier_blocks(cancel)) and
-                                self._shorter_waiting(len(prompt), cancel)):
+                        if (reserved is None and not out and not embeddings and yields < self.YIELDS_MAX and
+                                self._should_yield(len(prompt), cancel, solo=True)):
                             with self.slot_cv:          # the slot the part read will wait in
-                                reserved = self.pick_slot(prompt, classifier=getattr(cancel, "_strata_classifier", False))
+                                reserved = self.pick_slot(prompt)
                                 if reserved is not None:
                                     self.slot_busy[reserved] = True
                                     self.slot_claims.add(reserved)
@@ -2328,7 +2334,7 @@ class StrataEngine:
                             if deadline is not None and time.monotonic() >= deadline:
                                 raise QueueWaitExpired("the inference queue wait deadline expired; retry later")
                             with self.slot_cv:
-                                slot = self.pick_slot(prompt, classifier=getattr(cancel, "_strata_classifier", False))
+                                slot = self.pick_slot(prompt)
                                 if slot is not None:
                                     self.slot_busy[slot] = True
                                     self.slot_claims.add(slot)
@@ -2346,7 +2352,7 @@ class StrataEngine:
                                 self.ctl.release()
                                 holding = False
                             with self.slot_cv:
-                                if self.pick_slot(prompt, classifier=getattr(cancel, "_strata_classifier", False)) is None:
+                                if self.pick_slot(prompt) is None:
                                     if (ENGINE_STALL_S or 0) > 0 and time.monotonic() - admit_since >= ENGINE_STALL_S:
                                         # the stall check of #1317 only watches a request on the control lines; one
                                         # waiting here is covered by looking for a slot nobody owns, and by saying so
@@ -2357,13 +2363,13 @@ class StrataEngine:
                                                   f"for a free slot (busy: {busy}, in use: {sorted(self.slot_claims)}, "
                                                   f"ending: {sorted(self.slot_releasing)}) (issue #1603)", flush=True)
                                     self._reap_orphan_slots()
-                                if self.pick_slot(prompt, classifier=getattr(cancel, "_strata_classifier", False)) is None:
+                                if self.pick_slot(prompt) is None:
                                     wait_remaining = deadline - time.monotonic() if deadline is not None else 1.0
                                     self.slot_cv.wait(timeout=min(1.0, max(0, wait_remaining)))
                             if cancel.is_set():
                                 return
                             if not holding:
-                                ok = yield from self._take_control(cancel, len(prompt))
+                                ok = yield from self._take_control(cancel, len(prompt), new=REQUEST_PRIORITY)
                                 if not ok:
                                     return
                                 holding, born = True, self.gen
@@ -2372,10 +2378,10 @@ class StrataEngine:
                         self.slot_held[slot] = list(prompt[:self._yielded[1]])
                         self._yielded = None
                         yields += 1
-                        self.ctl.release()
-                        holding = False
                         with self.slot_cv:
                             epoch = self.ctl_epoch
+                            self.ctl.release()
+                        holding = False
                         ok = yield from self._take_control(cancel, len(prompt), after_epoch=epoch)
                         if not ok:
                             return
@@ -2395,7 +2401,7 @@ class StrataEngine:
                         raise QueueWaitExpired("the inference queue wait deadline expired; retry later")
                     self.slot_live[slot] = live
                     self._last_done = None                  # (#879: this admission's DONE decides below)
-                    if COALESCE_PREFILL > 1 and not embeddings:
+                    if COALESCE_PREFILL > 1 and not REQUEST_PRIORITY and not embeddings:
                         self._coalesce(cancel, prompt)
                     self._send(f"{head} {','.join(str(int(t)) for t in prompt)}")
                     if deadline is not None:
@@ -2412,8 +2418,8 @@ class StrataEngine:
 
                     def ask():        # as give_way above, for the slot this admission reads into
                         nonlocal asked
-                        if (not asked and not embeddings and (yields < self.YIELDS_MAX or self._classifier_blocks(cancel)) and
-                                self._shorter_waiting(len(prompt), cancel)):
+                        if (not asked and not embeddings and yields < self.YIELDS_MAX and
+                                self._should_yield(len(prompt), cancel)):
                             self._send_for(born, f"BYIELD {slot}")
                             asked = True
 
@@ -2496,8 +2502,8 @@ class StrataEngine:
                                 stop_sent = True
                             continue
                         yield t
-                        if (not going_solo and not stop_sent and not getattr(cancel, "_strata_classifier", False)
-                                and self._may_go_solo(int(max_new) - len(out), solo_again, embeddings)):
+                        if not going_solo and not stop_sent and self._may_go_solo(int(max_new) - len(out), solo_again,
+                                                                                  embeddings):
                             self._send_for(born, f"BSTOP {slot}")   # alone now: on with the drafts (below)
                             going_solo = True
                     elif line.startswith("BDONE "):
@@ -2614,14 +2620,11 @@ class StrataEngine:
     BRANCH_BOUNDARY_MIN = 8192   # the engine's message-boundary checkpoint (STRATA_CACHE_MESSAGE_BOUNDARY) starts at this many tokens
     TURN_ID = 248045        # <|im_start|>: the engine's default --turn-token (its turn checkpoint sits at the last one)
 
-    def pick_slot(self, prompt: list[int], classifier=False) -> int | None:
+    def pick_slot(self, prompt: list[int]) -> int | None:
         """A free slot for `prompt` (the caller holds slot_cv): the one whose held tokens are the longest start of the
         prompt (the engine then reads only the rest), else an empty one, else the one used longest ago - so the
         conversations other slots hold stay for their next turns.  None: every slot is busy."""
         free = [b for b in self.slot_order if not self.slot_busy[b]]
-        if getattr(self, "classifier_reserved", False) and len(self.slot_busy) >= 2:
-            reserved = len(self.slot_busy) - 1
-            free = [b for b in free if (b == reserved) == classifier]
         if not free:
             return None
         gs = getattr(self, "slot_gs", 0)
@@ -4911,7 +4914,6 @@ class Service:
         self.literals = literal_tags(getattr(tokenizer, "control_tokens", ()))   # texts that stay text inside a message
         self.fit_max_tokens = fit_max_tokens          # default: clamp the output cap to the room left; False (--no-fit-max-tokens) = 400
         self.aliases: list[str] = []                  # #297: other names of the model (the config's `aliases`)
-        self.messages_classifier_alias = None
         self.answer_room = True                       # 0.1.45: see ANSWER_ROOM_MIN_CAP (the config's "answer_room": false turns it off)
         self.reasoning_close_retry = False            # #1053 (opt-in): close the thinking once when a reply ends inside it
         self.codex_compaction_cache = False           # #924 (opt-in): a Codex compaction is rendered with its conversation's tools
@@ -8366,6 +8368,16 @@ def make_handler(svc: Service):
                         self._json(503, {"error": {"type": "server_error", "message": str(e)}})
                     return
                 if path in ("/v1/chat/completions", "/v1/messages", "/v1/responses"):
+                    self.priority = 0
+                    if REQUEST_PRIORITY:
+                        values = self.headers.get_all("X-Strata-Priority", [])
+                        if values:
+                            value = values[0].strip()
+                            if len(values) != 1 or not re.fullmatch(r"-?[0-9]{1,10}", value):
+                                raise ValueError("X-Strata-Priority must be one signed 32-bit integer")
+                            self.priority = int(value)
+                            if not -(2**31) <= self.priority < 2**31:
+                                raise ValueError("X-Strata-Priority must be one signed 32-bit integer")
                     self.record = svc.begin_request(path, req)
                 if path == "/v1/responses":
                     self._responses(req)
@@ -8450,6 +8462,12 @@ def make_handler(svc: Service):
                         record["finished_at"] = time.time()
                         record["state"] = "error" if record.get("error") else record.get("outcome", "completed")
                     svc.request_trace.record = None
+
+        def _inference_cancel(self):
+            cancel = threading.Event()
+            if REQUEST_PRIORITY:
+                cancel._strata_priority = self.priority
+            return cancel
 
         def _images(self, req):
             """POST /v1/images/generations (serve/images.py): one sd-cli job in the GPU's turn."""
@@ -8732,7 +8750,7 @@ def make_handler(svc: Service):
             svc.reasoning_budget(req)                         # a bad value is a 400 before anything is sent
             stop_strings(req)                                 # ... and so is a bad stop / stop_sequences
             check_request_sampling(req)                       # ... and a sampling field of the wrong type
-            cancel = threading.Event()
+            cancel = self._inference_cancel()
             self._watch_client(cancel)                       # #430 #431 (#1999: before prepare, which can take long)
             ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new, force=force, req=req, cancel=cancel)
             _debug_req("openai", req, messages, tools, max_new, thinking, len(ids))
@@ -8797,7 +8815,7 @@ def make_handler(svc: Service):
                 return self._json(e.status, e.body())
             if title is not None:
                 return self._responses_ready(req, title)
-            cancel = threading.Event()
+            cancel = self._inference_cancel()
             self._watch_client(cancel)                       # #430 #431 (#1999: before prepare, which can take long)
             try:
                 ids, thinking, tools, max_new, asm, validator, req = self._responses_prepare(req, cancel)
@@ -8959,8 +8977,6 @@ def make_handler(svc: Service):
         def _anthropic(self, req):
             svc.load()
             req = svc.with_shared(req, "anthropic")
-            classifier = (getattr(svc.engine, "batch", 0) >= 2 and bool(svc.messages_classifier_alias)
-                          and req.get("model") == svc.messages_classifier_alias)
             messages, tools, kw = anthropic_to_messages(req, svc.anthropic_think_unasked)
             self._no_local_images(messages)
             callable_tools, deferred = anthropic_tools(req)     # #4663: the deferred tools are callable, unlisted
@@ -8971,8 +8987,7 @@ def make_handler(svc: Service):
             svc.reasoning_budget(req)                         # a bad value is a 400 before anything is sent
             stop_strings(req)                                 # ... and so is a bad stop / stop_sequences
             check_request_sampling(req)                       # ... and a sampling field of the wrong type
-            cancel = threading.Event()
-            cancel._strata_classifier = classifier
+            cancel = self._inference_cancel()
             self._watch_client(cancel)                       # #430 #431 (#1999: before prepare, which can take long)
             try:
                 ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new, force=force, req=req, cancel=cancel)
@@ -10219,12 +10234,6 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
             blocked = []
         if blocked:
             ap.error("--offline cannot be strict for this profile: " + "; ".join(blocked))
-    messages_classifier_alias = cfg.get("messages_classifier_alias")
-    if messages_classifier_alias is not None:
-        if not isinstance(messages_classifier_alias, str) or not messages_classifier_alias.strip():
-            raise SystemExit("messages_classifier_alias must be a non-empty model ID")
-        if messages_classifier_alias == default_model_name(cfg):
-            raise SystemExit("messages_classifier_alias must differ from the primary model ID")
     lazy = False
     if a.engine == "strata":
         if not cfg:
@@ -10351,11 +10360,6 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
                         pass
         per_replica = requested if isinstance(requested, int) and not isinstance(requested, bool) and requested > 0 else 1
         svc.requested_slots = per_replica * len(groups) if groups else per_replica
-    if messages_classifier_alias is not None:
-        if not isinstance(engine, StrataEngine) or svc.requested_slots < 2 or COALESCE_PREFILL > 1:
-            raise SystemExit("messages_classifier_alias requires one batched Strata engine with at least two slots, without coalescing")
-        svc.messages_classifier_alias = messages_classifier_alias
-        engine.classifier_reserved = True
     svc.answer_room = cfg.get("answer_room") is not False
     svc.reasoning_close_retry = cfg.get("reasoning_close_retry") is True    # #1053: opt-in, off by default
     if cfg.get("images"):                               # image generation (serve/images.py), set up by setup --images
