@@ -236,7 +236,7 @@ public:
         std::filesystem::path file;
         uint64_t bytes = 0;
         bool cvec = false;
-        bool lora = true;   // the LoRA adapter's setting the image was made under (not in the file: kept here)
+        bool lora = true;   // the LoRA adapter's setting the image was made under (kept here so best() skips other settings before any read)
         ConversationCheckpoint live;                     // ids and images only
         std::vector<ConversationCheckpoint> checkpoints;   // ids and images only
     };

@@ -18643,7 +18643,6 @@ int main(int argc, char** argv) {
                                              "(this prompt starts with %lld of them); on SSD %zu, %llu MiB\n", sp_tokens,
                                      std::chrono::duration<double, std::milli>(Clock::now() - t0).count(), (long long) sp.tokens,
                                      spill.size(), (unsigned long long) (spill.bytes() >> 20));
-                        image.lora = want_lora;   // (the file does not carry it: the entry matched this request's setting)
                         incoming.emplace(std::move(image));
                         taken = sp;   // (the restore below resumes at the SSD entry's prefix, not at the RAM tier's)
                     } else {
