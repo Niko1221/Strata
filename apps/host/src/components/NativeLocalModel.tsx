@@ -38,16 +38,15 @@ export function NativeLocalModel({ onBack }: { onBack: () => void }) {
     const family = selection ? nativeCatalogModels(native?.catalog?.families ?? []).find(f => f.sizes.some(s => s.sourceFamily === selection.family && s.model === selection.model)) : undefined;
     async function check(path: string) {
         setPending(true);
-        setError('');
-        setChecked(null);
         try {
             const result = await api.post<Preview & { cancelled?: boolean }>('/api/native/local/preview', { path });
             if (!result.cancelled) {
+                setError('');
                 setChecked(result);
                 setTyped(result.path);
             }
         }
-        catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+        catch (e) { setChecked(null); setError(e instanceof Error ? e.message : String(e)); }
         finally { setPending(false); }
     }
     /* The first-run page hands over the folder the person chose (#3507): it is checked at once, as if they had pressed Check files. */

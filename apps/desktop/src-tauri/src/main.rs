@@ -919,6 +919,8 @@ fn run_embedded() {
             if std::env::var_os("STRATA_DESKTOP_TEST_PANIC").is_some() {
                 panic!("STRATA_DESKTOP_TEST_PANIC is set: the app panics on purpose");
             }
+            #[cfg(windows)]
+            app.handle().plugin(tauri_plugin_dialog::init())?;
             let handle = app.handle().clone();
             // A setup error would become a panic inside Tauri ("Failed to setup app"), and with panic = "abort" a crash with no message.
             // A failed start is reported (log, crash file, message box) and ends the app here instead.

@@ -15,6 +15,7 @@ webkit2gtk = "2.0"
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.39"
 windows-core = "0.62"
+tauri-plugin-dialog = "2"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
