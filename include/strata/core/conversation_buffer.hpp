@@ -5,7 +5,10 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
+#include <mutex>
+#include <thread>
 #include <initializer_list>
 #include <memory>
 #include <utility>
@@ -131,10 +134,64 @@ public:
 
 private:
     // value-initializes only when asked (resize's explicit fill value): resize_for_overwrite leaves the bytes alone
+    // STRATA_PARK_RECYCLE_MIB=N (tuning, opt-in): up to N MiB of freed full 16 MiB segments are kept (already faulted
+    // in) for the next park instead of going back to the OS, so a park of a long conversation does not fault in and
+    // zero ~2 GB of fresh pages.  Unset/0: off.
+    struct Recycler {
+        std::mutex mu;
+        std::vector<void*> free;
+        size_t cap = 0;
+        Recycler() {
+            const char* v = std::getenv("STRATA_PARK_RECYCLE_MIB");
+            const long long mib = v != nullptr ? std::atoll(v) : 0;
+            cap = mib > 0 ? (size_t) (mib / 16) : 0;
+            // STRATA_PARK_RECYCLE_WARM=1: a background thread fills the pool with faulted-in segments at the first use
+            const char* w = std::getenv("STRATA_PARK_RECYCLE_WARM");
+            if (cap > 0 && w != nullptr && w[0] == '1')
+                std::thread([this] {
+                    for (size_t k = 0; k < cap; ++k) {
+                        void* p = std::allocator<uint8_t>().allocate(segment_bytes);
+                        std::memset(p, 0, segment_bytes);
+                        std::lock_guard<std::mutex> lk(mu);
+                        if (free.size() >= cap) { std::allocator<uint8_t>().deallocate(static_cast<uint8_t*>(p), segment_bytes); break; }
+                        free.push_back(p);
+                    }
+                }).detach();
+        }
+    };
+    static Recycler& recycler() { static Recycler r; return r; }
+    static void* recycle_take() {
+        Recycler& r = recycler();
+        if (r.cap == 0) return nullptr;
+        std::lock_guard<std::mutex> lk(r.mu);
+        if (r.free.empty()) return nullptr;
+        void* p = r.free.back();
+        r.free.pop_back();
+        return p;
+    }
+    static bool recycle_give(void* p) {
+        Recycler& r = recycler();
+        if (r.cap == 0) return false;
+        std::lock_guard<std::mutex> lk(r.mu);
+        if (r.free.size() >= r.cap) return false;
+        r.free.push_back(p);
+        return true;
+    }
     template<class T> struct DefaultInit : std::allocator<T> {
         template<class U> struct rebind { using other = DefaultInit<U>; };
         DefaultInit() = default;
         template<class U> DefaultInit(const DefaultInit<U>&) noexcept {}
+        T* allocate(size_t n) {
+            if constexpr (sizeof(T) == 1)
+                if (n == segment_bytes)
+                    if (void* p = recycle_take()) return static_cast<T*>(p);
+            return std::allocator<T>::allocate(n);
+        }
+        void deallocate(T* p, size_t n) {
+            if constexpr (sizeof(T) == 1)
+                if (n == segment_bytes && recycle_give(p)) return;
+            std::allocator<T>::deallocate(p, n);
+        }
         template<class U> void construct(U* p) { ::new ((void*) p) U; }
         template<class U, class... A> void construct(U* p, A&&... a) { ::new ((void*) p) U(std::forward<A>(a)...); }
     };

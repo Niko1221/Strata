@@ -302,6 +302,22 @@ public:
                entries_.size() < slots_ && bytes() <= budget_ - held - incoming;
     }
 
+    // The longest token prefix `prompt` shares with any parked conversation (its whole live ids), whatever its
+    // checkpoints: where this prompt leaves a conversation the cache has already seen (STRATA_CACHE_DIVERGE).
+    template<class Token>
+    int64_t longest_shared(const std::vector<Token>& prompt, bool cvec) const {
+        int64_t best_n = 0;
+        for (const auto& e : entries_) {
+            if (e.cvec != cvec) continue;
+            const auto& v = e.live.ids;
+            const int64_t n = std::min<int64_t>((int64_t) v.size(), (int64_t) prompt.size());
+            int64_t k = 0;
+            while (k < n && (int64_t) v[(size_t) k] == (int64_t) prompt[(size_t) k]) ++k;
+            best_n = std::max(best_n, k);
+        }
+        return best_n;
+    }
+
     template<class Token>
     Match best(const std::vector<Token>& prompt, const std::vector<ConversationImageKey>& images, bool cvec) const {
         Match best;

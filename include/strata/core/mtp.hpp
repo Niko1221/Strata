@@ -27,6 +27,7 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -108,6 +109,9 @@ public:
     /// One round: catch-up over T cells from `p` (rows = the window's final residuals, `tokens` = the window's
     /// argmaxes: row t pairs R_{p+t} with the token at p+t+1), then the draft chain from row `a` (the last
     /// accepted row) for T-1 drafts at cells p+a+1 ...  `drafts` gets T-1 tokens.
+    /// draft() without min_p in two halves (STRATA_BATCH_DRAFT_OVERLAP): queue the round, then wait and read the picks.
+    bool draft_launch(int T, const int32_t* tokens, int64_t p, int a, std::string& err);
+    bool draft_collect(int32_t* drafts, std::string& err);
     bool draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* drafts, std::string& err,
                float* probs = nullptr, float min_p = 0.0f, int* n_drafts = nullptr, DraftResult* result = nullptr);
 
@@ -253,6 +257,10 @@ private:
     // --pipeline-windows 2 (chain_launch)
     bool stage_source_R(int T, std::string& err);   ///< set_source_R's rows into the bound buffer
     bool force_on_ = false, chain_live_ = false;
+    bool pend_live_ = false;
+    int pend_steps_ = 0;
+    int32_t pend_tok_a_ = -1;
+    std::chrono::steady_clock::time_point pend_t0_{};
     const float* src_R_ = nullptr;
     int32_t *h_force_ = nullptr, *m_force_ = nullptr;   ///< the forced tokens (mapped), -1 = the step's own pick
     cudaEvent_t ev_chain_ = nullptr;

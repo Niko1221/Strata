@@ -297,7 +297,8 @@ bool dequant_wide_on() {
         if (cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) != cudaSuccess ||
             cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev) != cudaSuccess) { (void) cudaGetLastError(); return false; }
         // sm_80 is the 0.2.7 addition (#3779): STRATA_DEFAULTS=026 gives it the per-group kernels again, as 0.2.6 had
-        per_dev[dev] = (major == 6 && minor == 1) || (major == 8 && minor == 6) ||
+        // sm_89 (tune/rel 2026-11-09, RTX 4090): 39K prompt 7.32 -> 6.97 s of GPU time, 4K 1273 -> 1141 ms, the same tokens
+        per_dev[dev] = (major == 6 && minor == 1) || (major == 8 && minor == 6) || (major == 8 && minor == 9) ||
                        (major == 8 && minor == 0 && strata::sm80_default_on(nullptr, strata::qwen_defaults_026())) ? 2 : 1;
     }
     return per_dev[dev] == 2;

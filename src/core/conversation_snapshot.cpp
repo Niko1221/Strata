@@ -255,9 +255,68 @@ bool park_trace_on() {
     return on;
 }
 
+// STRATA_PARK_BOUNCE=1 (tuning, opt-in, same bytes): a device -> pageable-host copy goes through two pinned 4 MiB
+// buffers - the DMA of one chunk runs while the CPU copies the one before into the pageable target - instead of the
+// driver's pageable path with a sync per segment (measured ~2.8 GB/s on a park).  false: not taken (use the plain copy).
+bool transfer_bounce(void* dst, const void* src, size_t n, std::string& error, bool& taken) {
+    taken = false;
+    static const bool on = [] { const char* v = std::getenv("STRATA_PARK_BOUNCE"); return v != nullptr && v[0] == '1'; }();
+    if (!on || n < ((size_t) 1 << 20)) return true;
+    cudaPointerAttributes as{}, ad{};
+    if (cudaPointerGetAttributes(&as, src) != cudaSuccess || cudaPointerGetAttributes(&ad, dst) != cudaSuccess) {
+        (void) cudaGetLastError();
+        return true;
+    }
+    if (as.type != cudaMemoryTypeDevice || ad.type != cudaMemoryTypeUnregistered) return true;
+    constexpr size_t C = (size_t) 4 << 20;
+    static std::mutex mu;
+    static uint8_t* buf = nullptr;
+    std::lock_guard<std::mutex> lk(mu);
+    if (buf == nullptr && cudaHostAlloc((void**) &buf, 2 * C, cudaHostAllocPortable) != cudaSuccess) {
+        (void) cudaGetLastError();
+        buf = nullptr;
+        return true;
+    }
+    cudaStream_t s = nullptr;
+    if (conversation_detail::private_stream(s) != cudaSuccess) { (void) cudaGetLastError(); return true; }
+    cudaEvent_t ev[2] = {nullptr, nullptr};
+    if (cudaEventCreateWithFlags(&ev[0], cudaEventDisableTiming) != cudaSuccess ||
+        cudaEventCreateWithFlags(&ev[1], cudaEventDisableTiming) != cudaSuccess) {
+        if (ev[0]) cudaEventDestroy(ev[0]);
+        (void) cudaGetLastError();
+        return true;
+    }
+    taken = true;
+    const uint8_t* sp = static_cast<const uint8_t*>(src);
+    uint8_t* dp = static_cast<uint8_t*>(dst);
+    const size_t nch = (n + C - 1) / C;
+    auto len = [&](size_t k) { return std::min(C, n - k * C); };
+    auto launch = [&](size_t k) {
+        cudaError_t e = cudaMemcpyAsync(buf + (k & 1) * C, sp + k * C, len(k), cudaMemcpyDeviceToHost, s);
+        if (e == cudaSuccess) e = cudaEventRecord(ev[k & 1], s);
+        return e;
+    };
+    cudaError_t e = launch(0);
+    for (size_t k = 0; k < nch && e == cudaSuccess; ++k) {
+        if (k + 1 < nch) e = launch(k + 1);
+        if (e == cudaSuccess) e = cudaEventSynchronize(ev[k & 1]);
+        if (e == cudaSuccess) std::memcpy(dp + k * C, buf + (k & 1) * C, len(k));
+        core::progress_beat();
+    }
+    if (e != cudaSuccess) (void) cudaStreamSynchronize(s);   // nothing left in flight into the buffers
+    cudaEventDestroy(ev[0]);
+    cudaEventDestroy(ev[1]);
+    if (e == cudaSuccess) return true;
+    error = std::string("conversation snapshot bounce copy: ") + cudaGetErrorString(e);
+    return false;
+}
+
 bool transfer(void* dst, const void* src, size_t n, std::string& error) {
     if (!n) return true;
     if (!src || !dst) { error = "conversation snapshot: missing state buffer"; return false; }
+    bool taken = false;
+    if (!transfer_bounce(dst, src, n, error, taken)) return false;
+    if (taken) return true;
     // Default handles both device allocations and device-mapped host pool aliases.
     const cudaError_t e = conversation_detail::copy_nonblocking(dst, src, n);
     if (e == cudaSuccess) return true;
@@ -357,7 +416,10 @@ bool conversation_kv_save(ConversationKv& image, const QsaState& st, const Model
         const bool staged = a.active && src[i] != nullptr && sizes[i] > keep && a.used + (sizes[i] - keep) <= a.cap &&
                             (st.kv_mode == 0 || on_device(src[i]));
         const auto t1 = tick();
-        if (staged) dst[i]->resize_for_overwrite(sizes[i]);
+        // STRATA_PARK_BOUNCE: the copy below writes every byte past `keep` (or fails, and the image is dropped), so the
+        // zero fill is skipped as on the staged path
+        static const bool no_fill = [] { const char* v = std::getenv("STRATA_PARK_BOUNCE"); return v != nullptr && v[0] == '1'; }();
+        if (staged || (no_fill && src[i] != nullptr)) dst[i]->resize_for_overwrite(sizes[i]);
         else dst[i]->resize(sizes[i]);
         const auto t2 = tick();
         const bool copied = dst[i]->visit(keep, sizes[i] - keep, [&](uint8_t* p, size_t n, size_t at) {
