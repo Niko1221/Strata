@@ -36,7 +36,7 @@ lines. There are two functional changes and one test:
 - How to turn it on: environment variable `STRATA_HC_MIX_H16=1`.
   Without the variable the code path is identical to upstream.
 - Measured effect: +1.5 to +2.5% prompt processing on this card, at every
-  context tier (see section 6).
+  context tier (see section 4).
 
 ### MMQ VOP3P patches (vendored ggml, prefill path)
 
@@ -49,7 +49,7 @@ lines. There are two functional changes and one test:
 - How to turn it on: build flag `STRATA_PREFILL_MMQ=ON` (requires
   `STRATA_MMQ=ON`, the new split on current main).
 - Measured effect: +0.5 to +1.0% prompt processing on top of F-2 at the
-  lower tiers, neutral at the top tier (see section 6).
+  lower tiers, neutral at the top tier (see section 4).
 
 ### Test
 
@@ -63,7 +63,7 @@ the serving stack are all upstream.
 
 ### What you need
 
-- The IQ3_S model file, split into 2 GGUF shards (see section 4 for where this
+- The IQ3_S model file, split into 2 GGUF shards (see section 6 for where this
   machine keeps them). Get it the same way as any Strata model - the standard
   install docs cover it.
 - A Python virtual environment for the server (`serve/server.py`). If you have
@@ -112,7 +112,7 @@ This machine wraps that in `~/bin/strata-serve` (foreground start, plus `stop`,
 
 A config JSON tells the server which engine binary to run, which model files to
 load, and which environment variables to set. The working config for this
-machine is `~/strata-v620-iq3_s-T9-v5.json`; its full contents are in section 4.
+machine is `~/strata-v620-iq3_s-T9-v5.json`; its full contents are in section 6.
 The deviations from a default config, and why each one is there:
 
 | Setting | Value | Why |
@@ -136,38 +136,38 @@ The deviations from a default config, and why each one is there:
 For benchmarking, add `--conversation-cache-mib 0` to the args (parking off -
 see section 5) and remove `kv-resident`. For daily use, keep them as shown.
 
-## 4. My hardware / software / OS / config
+## 4. Current results
 
-Recorded here because every number in section 6 was measured on this box.
+Model: **Qwen3.8-Flash-Next, IQ3_S**, on this V620. Med-of-3, same-day,
+interleaved boots, parking off, 2026-11-18. PP / TG in tokens per second.
 
-Hardware:
+| Build | 16k | 32k | 64k | 128k |
+|---|---|---|---|---|
+| A: previous daily (0.2.10 + F-2 + MMQ) | 964.3 / 95.4 | 977.8 / 94.4 | 982.0 / 91.2 | 971.1 / 90.9 |
+| B: vanilla upstream main (0.2.15-dev) | 976.8 / 96.9 | 989.6 / 93.2 | 994.1 / 91.0 | 983.8 / 91.9 |
+| **C: this branch** (0.2.15-dev + F-2 + MMQ) | **995.7 / 96.9** | **1008.7 / 94.1** | **1013.5 / 94.0** | **1002.9 / 90.9** |
 
-- GPU: AMD Radeon PRO V620 - gfx1030, 40 compute units, 32 GB GDDR6
-- CPU: AMD Threadripper PRO 3975WX, 32 cores / 64 threads
-- RAM: 207 GB
-- Storage: Azure NVv5 (local NVMe)
-- Power limit: about 180 W on the card (stock)
+Reading the table:
 
-Software:
+- **This branch vs the previous daily build: +3.2 to +3.3% reading speed at
+  every tier.** That is the five weeks of upstream work (+1.2-1.3%) plus the
+  branch's own changes (+1.9-2.0%) on top.
+- **The branch's changes still matter on current main.** C beats B by
+  +1.9 to +2.0% PP at every tier, so neither F-2 nor the MMQ patches has been
+  absorbed upstream.
+- **1000+ PP at 32k, 64k and 128k is a first for this card.** The previous
+  IQ3_S bests were 986.0 / 982.3 / 965.8.
+- Writing speed (TG) is statistically unchanged across all three builds - the
+  changes are prefill-side, and TG noise on this box is about +/-4%.
 
-- OS: Linux (Ubuntu, 64-bit)
-- ROCm 10.0
-- Python venv for the server, upstream `serve/server.py`
-- rocBLAS tuning table `gfx1030-rocblas-5.6.0.8d1ae90e.txt` (in
-  `tools/hip/`, path set via `STRATA_ROCBLAS_TUNING`, absolute path required)
+For context, the same box on other quant lanes (med-of-3, earlier dates):
 
-Model and files (IQ3_S lane):
+- UD-IQ1_M (2026-11-06): 1000.6 / 100.9, 1004.4 / 98.1, 999.7 / 97.6, 982.2 / 92.1
+- UD-IQ2_XS (2026-11-06): 979.7 / 96.0, 984.5 / 96.6, 980.6 / 94.3, 964.6 / 93.0
 
-- Model: Qwen3.8-Flash-Next, GGUF quant IQ3_S, split in 2 shards
-  (`/var/lib/ollama/gguf/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-0000{1,2}-of-00002.gguf`)
-- PLE pack: `/home/drewster/git/Strata-data/packs/iq3_s` (loads in 0.3 s)
-- Expert profile: `/home/drewster/git/Strata/data/expert-profile.bin`
-- T9 draft vocab: `/home/drewster/git/Strata/data/draft_vocab_en.bin`
-- MTP draft: `/home/drewster/git/Strata-data/mtp/rt`
-
-Serving posture: `host 0.0.0.0`, port 8080, API key required, model id
-`qwen3.8-flash-next-iq3_s-draftvocab-en`, context 262144 tokens, logs in
-`~/engines/logs/daily.log`.
+The IQ3_S lane is the daily reference; the other lanes were one-off
+evaluations. Full history and the reasoning behind every adopted and rejected
+change are in `bench/notes/strata-migration.md`.
 
 ## 5. The full tier test and methodology
 
@@ -208,35 +208,35 @@ Methodology rules (the parts that matter for comparing numbers):
 
 One full arm (1 soak + 3 counted sweeps, 4 tiers each) takes about 25 minutes.
 
-## 6. Current results
+## 6. My hardware / software / OS / config
 
-Model: **Qwen3.8-Flash-Next, IQ3_S**, on this V620. Med-of-3, same-day,
-interleaved boots, parking off, 2026-11-18. PP / TG in tokens per second.
+Recorded here because every number in section 4 was measured on this box.
 
-| Build | 16k | 32k | 64k | 128k |
-|---|---|---|---|---|
-| A: previous daily (0.2.10 + F-2 + MMQ) | 964.3 / 95.4 | 977.8 / 94.4 | 982.0 / 91.2 | 971.1 / 90.9 |
-| B: vanilla upstream main (0.2.15-dev) | 976.8 / 96.9 | 989.6 / 93.2 | 994.1 / 91.0 | 983.8 / 91.9 |
-| **C: this branch** (0.2.15-dev + F-2 + MMQ) | **995.7 / 96.9** | **1008.7 / 94.1** | **1013.5 / 94.0** | **1002.9 / 90.9** |
+Hardware:
 
-Reading the table:
+- GPU: AMD Radeon PRO V620 - gfx1030, 40 compute units, 32 GB GDDR6
+- CPU: AMD Threadripper PRO 3975WX, 32 cores / 64 threads
+- RAM: 207 GB
+- Storage: Azure NVv5 (local NVMe)
+- Power limit: about 180 W on the card (stock)
 
-- **This branch vs the previous daily build: +3.2 to +3.3% reading speed at
-  every tier.** That is the five weeks of upstream work (+1.2-1.3%) plus the
-  branch's own changes (+1.9-2.0%) on top.
-- **The branch's changes still matter on current main.** C beats B by
-  +1.9 to +2.0% PP at every tier, so neither F-2 nor the MMQ patches has been
-  absorbed upstream.
-- **1000+ PP at 32k, 64k and 128k is a first for this card.** The previous
-  IQ3_S bests were 986.0 / 982.3 / 965.8.
-- Writing speed (TG) is statistically unchanged across all three builds - the
-  changes are prefill-side, and TG noise on this box is about +/-4%.
+Software:
 
-For context, the same box on other quant lanes (med-of-3, earlier dates):
+- OS: Linux (Ubuntu, 64-bit)
+- ROCm 10.0
+- Python venv for the server, upstream `serve/server.py`
+- rocBLAS tuning table `gfx1030-rocblas-5.6.0.8d1ae90e.txt` (in
+  `tools/hip/`, path set via `STRATA_ROCBLAS_TUNING`, absolute path required)
 
-- UD-IQ1_M (2026-11-06): 1000.6 / 100.9, 1004.4 / 98.1, 999.7 / 97.6, 982.2 / 92.1
-- UD-IQ2_XS (2026-11-06): 979.7 / 96.0, 984.5 / 96.6, 980.6 / 94.3, 964.6 / 93.0
+Model and files (IQ3_S lane):
 
-The IQ3_S lane is the daily reference; the other lanes were one-off
-evaluations. Full history and the reasoning behind every adopted and rejected
-change are in `bench/notes/strata-migration.md`.
+- Model: Qwen3.8-Flash-Next, GGUF quant IQ3_S, split in 2 shards
+  (`/var/lib/ollama/gguf/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-0000{1,2}-of-00002.gguf`)
+- PLE pack: `/home/drewster/git/Strata-data/packs/iq3_s` (loads in 0.3 s)
+- Expert profile: `/home/drewster/git/Strata/data/expert-profile.bin`
+- T9 draft vocab: `/home/drewster/git/Strata/data/draft_vocab_en.bin`
+- MTP draft: `/home/drewster/git/Strata-data/mtp/rt`
+
+Serving posture: `host 0.0.0.0`, port 8080, API key required, model id
+`qwen3.8-flash-next-iq3_s-draftvocab-en`, context 262144 tokens, logs in
+`~/engines/logs/daily.log`.
