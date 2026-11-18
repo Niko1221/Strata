@@ -100,31 +100,41 @@ bool bind_thread_to_node(int node) {
     if (bytes && !GetSystemCpuSetInformation(reinterpret_cast<PSYSTEM_CPU_SET_INFORMATION>(buf.data()),
                                             bytes, &bytes, GetCurrentProcess(), 0)) return false;
     constexpr size_t header_size = offsetof(SYSTEM_CPU_SET_INFORMATION, CpuSet);
-    std::vector<ULONG> ids;
+    // NumaNodeIndex is group-relative: on a multi-group machine the same local index names
+    // different global nodes, so a local-index match can pick CPU Sets on the wrong socket.
+    // Resolve each set's global node from (Group, LogicalProcessorIndex) instead; keep the
+    // local index only as the fallback when resolution fails for every set.
+    std::vector<ULONG> ids, legacy;
     unsigned char seen[256] = {};
     int distinct = 0;
+    bool resolved = false;
     for (size_t off = 0; off + header_size <= bytes;) {
         const auto* info = reinterpret_cast<const SYSTEM_CPU_SET_INFORMATION*>(buf.data() + off);
         if (info->Size < header_size || info->Size > bytes - off) break;
         if (info->Type == CpuSetInformation && info->Size >= sizeof(SYSTEM_CPU_SET_INFORMATION)) {
             const BYTE nn = info->CpuSet.NumaNodeIndex;
             if (!seen[nn]) { seen[nn] = 1; ++distinct; }
-            if ((int) nn == node &&
-                (!info->CpuSet.Allocated || info->CpuSet.AllocatedToTargetProcess))
-                ids.push_back(info->CpuSet.Id);
+            if (!info->CpuSet.Allocated || info->CpuSet.AllocatedToTargetProcess) {
+                PROCESSOR_NUMBER pn{ info->CpuSet.Group, info->CpuSet.LogicalProcessorIndex, 0 };
+                USHORT gn = 0xFFFF;
+                if (GetNumaProcessorNodeEx(&pn, &gn)) {
+                    resolved = true;
+                    if ((int) gn == node) ids.push_back(info->CpuSet.Id);
+                } else if ((int) nn == node)
+                    legacy.push_back(info->CpuSet.Id);
+            }
         }
         off += info->Size;
     }
-    // CPU Sets carry no NUMA mapping on some firmware (every entry reports NumaNodeIndex 0 even on a
-    // real multi-node box): a node-0 match there selects EVERY socket and reports success.  When the
-    // metadata cannot tell the machine's nodes apart, skip the sets and take the group-mask fallback
-    // for every node instead.
-    if (!ids.empty() && (distinct >= 2 || numa_node_count_os() <= 1))
+    if (!ids.empty())
         return SetThreadSelectedCpuSets(GetCurrentThread(), ids.data(), (ULONG) ids.size()) != FALSE;
     // CPU Sets carry no NUMA mapping on some firmware (every entry reports NumaNodeIndex 0 even on a
-    // real multi-node box): fall back to the node's processor-group mask.  A node whose CPUs span
-    // several groups (>64 threads) gets only the first group here - still better than an unbound
-    // thread.
+    // real multi-node box): a node-0 match there selects EVERY socket and reports success.  The raw
+    // index may only be trusted when it can actually tell the machine's nodes apart.
+    if (!resolved && !legacy.empty() && (distinct >= 2 || numa_node_count_os() <= 1))
+        return SetThreadSelectedCpuSets(GetCurrentThread(), legacy.data(), (ULONG) legacy.size()) != FALSE;
+    // Fall back to the node's processor-group mask.  A node whose CPUs span several groups
+    // (>64 threads) gets only the first group here - still better than an unbound thread.
     GROUP_AFFINITY ga;
     return GetNumaNodeProcessorMaskEx((UCHAR) node, &ga) && ga.Mask &&
            SetThreadGroupAffinity(GetCurrentThread(), &ga, nullptr) != FALSE;
