@@ -580,12 +580,14 @@ issue #3930 (2×2080 Ti) shows writing 35.2→51.0 with the decode-timing window
 
 ## 9. Where everything lives
 
-- **Worktrees**: `~/git/Strata` (main checkout, now at 0.2.15-dev, commit `c77572806`),
-  `~/git/Strata-main` (parked on branch `parked/pr-a-gfx103x-default`), `~/git/wt-0155` (generation 2
-  binary), `~/git/wt-mmq` (generation 3), `~/git/wt-stack` (generation 4 — this document's home),
-  `~/git/wt-0215` (the vanilla 0.2.15-dev bench arm), `~/git/wt-0215-f2` (generation 5).
+- **Worktrees**: `~/git/Strata` (main checkout, 0.2.15-dev, commit `c77572806`), `~/git/wt-0215-f2`
+  (generation 5 — the daily build), `~/git/wt-stack` (generation 4 — this document's home). The
+  experiment worktrees (`Strata-main`, `wt-0155`, `wt-0215`, `wt-bisect`, `wt-f2-0147`, `wt-f2-0148`,
+  `wt-mmq`) were removed on 11-18; the generation 2/3 binaries went to the backup folder and every
+  branch involved is on the fork.
 - **GitHub forks** (backup copies): `andrewprock/Strata` — branches `v620-daily-0155-f2` (generation 3),
-  `v620-stack-0210-f2-mmq` (generation 4), `v620-0215-f2` (generation 5); `andrewprock/llama.cpp` —
+  `v620-stack-0210-f2-mmq` (generation 4), `v620-0215-f2` (generation 5), plus the experiment branches
+  `f2-0147`, `f2-0148` and `parked/pr-a-gfx103x-default`; `andrewprock/llama.cpp` —
   branch `v620-mmq-vop3p` (the patched kernels, for the pre-vendored bases). The `gh` CLI is
   authenticated (https).
 - **Configs**: daily `~/strata-v620-iq3_s-T9-v5.json`; previous daily
@@ -596,9 +598,9 @@ issue #3930 (2×2080 Ti) shows writing 35.2→51.0 with the decode-timing window
   `~/git/Strata-data/mtp/rt`.
 - **Benchmark results**: `~/git/llm-benchmark/results/strata_tier_pass_*.json` (the timestamp in the
   filename is the run time).
-- **Binary backups**: `~/engines/backup/{strata-0.1.47-base,strata-0.1.48.1-f2}`; generations 3-5
-  stay built in place in their worktrees (`wt-mmq`, `wt-stack`, `wt-0215-f2`). This document's
-  earlier versions: `~/strata-migration.md.bak-20261117-pre-rewrite` and
+- **Binary backups**: `~/engines/backup/{strata-0.1.47-base, strata-0.1.48.1-f2, strata-0.1.55-f2,`
+  `strata-0.1.55-f2-mmq}`; generation 4 stays built in `wt-stack`, generation 5 in `wt-0215-f2`.
+  This document's earlier versions: `~/strata-migration.md.bak-20261117-pre-rewrite` and
   `~/strata-migration.md.bak-20261117-post-redundancy`, plus git history (`c8d3f3b2` original →
   `ba97795e` dedup → `08de0232` first rewrite → this one).
 - **The 9 environment variables that every lane config carries** (what each does):
