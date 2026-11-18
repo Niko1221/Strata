@@ -223,7 +223,7 @@ Hardware:
 
 Software:
 
-- OS: Linux (Ubuntu, 64-bit), running as a VM on Proxmox 9.2.11
+- OS: Ubuntu 26.04.1 LTS (64-bit), running as a VM on Proxmox 9.2.11
 - ROCm 10.0
 - Python venv for the server, upstream `serve/server.py`
 - rocBLAS tuning table `gfx1030-rocblas-5.6.0.8d1ae90e.txt` (in
