@@ -34,8 +34,8 @@ benchmark result files in `~/git/llm-benchmark/results/` (named per experiment b
   Lower = smaller and faster to read, but less accurate. **UD-** means Unsloth's "Dynamic" brand of
   mixed-precision compression.
 - **Daily driver** — the setup used for real work (as opposed to test lanes).
-- **Generation 1–4** — the four daily-driver setups over time, in order. (Older notes called them
-  v1–v4.) All four are defined with dates and contents in §2.4.
+- **Generation 1–5** — the five daily-driver setups over time, in order. (Older notes called them
+  v1–v5.) All five are defined with dates and contents in §2.4.
 - **MTP / draft head / 5-token drafting** — the model ships with a small extra head that guesses the
   next 5 tokens while the main model writes one; correct guesses are free speed. Strata calls the
   feature "spec" (speculative decoding); the knob `--spec 5` turns on 5-token drafting.
@@ -62,8 +62,8 @@ benchmark result files in `~/git/llm-benchmark/results/` (named per experiment b
   flag `--conversation-cache-mib`). ON for real use (switching conversations costs 1 s instead of
   18–100 s of re-reading), OFF for benchmarks (a benchmark never revisits a conversation, so parking
   would only charge it a small eviction tax and muddy the comparison).
-- **Worktree (`wt-stack`, `wt-0155`, `wt-mmq`)** — a second checkout of the same git repo in another
-  directory, so each build keeps its own folder. `wt-stack` is where the current daily build lives.
+- **Worktree (`wt-stack`, `wt-0215-f2`, …)** — a second checkout of the same git repo in another
+  directory, so each build keeps its own folder. `wt-0215-f2` is where the current daily build lives.
 - **Fork** — our copy of a repo on GitHub (`andrewprock/Strata`, `andrewprock/llama.cpp`) where
   branches are pushed for safekeeping.
 - **E483 rule** — if a setting changes *which* computation paths run, measure it on real text, never
@@ -71,7 +71,7 @@ benchmark result files in `~/git/llm-benchmark/results/` (named per experiment b
 
 ---
 
-## 2. What is running right now (as of 2026-11-17)
+## 2. What is running right now (as of 2026-11-18)
 
 ### 2.1 The computer
 
@@ -85,24 +85,27 @@ benchmark result files in `~/git/llm-benchmark/results/` (named per experiment b
 
 ### 2.2 What is being served at this moment
 
-- **The Unsloth 1-bit lane (UD-IQ1_M)** — a 1.6-bit compressed copy of Qwen3.8-Flash-Next, 68 GB on
-  disk — serving on port 8080 since 2026-11-09 for a real-work trial. Model id
-  `qwen3.8-flash-next-ud-iq1m`. Config file `/tmp/ud-iq1m-serve.json` (same knobs as the daily config,
-  pointed at the 1-bit weights). It is the fastest lane ever measured on this box (§5.3); the accepted
-  trade is accuracy (Unsloth's own ladder says ~79.7% of full-precision top-1 answers recovered).
+- **The generation-5 stack (IQ3_S)** — 0.2.15-dev + our F-2 and MMQ changes (§2.4), serving on port
+  8080 since 2026-11-18. Model id `qwen3.8-flash-next-iq3_s-draftvocab-en`, config
+  `~/strata-v620-iq3_s-T9-v5.json`. The 11-09 UD-IQ1_M real-work trial ended here (its /tmp configs
+  were wiped on reboot; §6.32 has the recipe to recreate the lane). It remains the fastest lane ever
+  measured at 16k (§5.4), but generation 5 took the 32k/64k/128k records (§5.2).
 - The wrapper `~/bin/strata-serve` manages it: `stop`, `logs`, `status`, or bare to run in foreground.
-  Logs: `~/engines/logs/daily.log`, plus the per-config `"log"` file from the config's `log` key.
+  It now starts the generation-5 config. Logs: `~/engines/logs/daily.log` (wrapper tee) and
+  `~/engines/logs/daily-engine.log` (the config's `log` key).
 
 ### 2.3 How to get back to the usual daily setup
 
-- The daily config file is untouched: `~/strata-v620-iq3_s-T9-draftvocab.json` (the 3.1-bit IQ3_S
-  weights with the draft-vocabulary recipe). Backups of older versions sit next to it:
-  `.bak-pre-v2`, `.bak-pre-mmq`, `.bak-pre-v4` (those suffixes mean "before generation 2/3/4").
-- Restoring = stop the current server and start one with that config instead (§3.4 has the exact command).
+- The daily config file is `~/strata-v620-iq3_s-T9-v5.json` (generation 5: the same knobs as before,
+  pointed at the new binary and at durable file paths). The previous daily configs stay next to it
+  untouched: `~/strata-v620-iq3_s-T9-draftvocab.json` (generations 2-4; backups `.bak-pre-v2`,
+  `.bak-pre-mmq`, `.bak-pre-v4` mean "before generation 2/3/4").
+- Restoring = stop the current server and start one with the wanted config instead (§3.4).
 - Older binaries for instant fallback: `~/engines/backup/strata-0.1.48.1-f2` (generation 1) and
-  `~/engines/backup/strata-0.1.47-base`.
+  `~/engines/backup/strata-0.1.47-base`. Generation 4's binary stays built in place:
+  `~/git/wt-stack/build-hip/strata` (branch `v620-stack-0210-f2-mmq`).
 
-### 2.4 The four generations of the daily driver (all defined)
+### 2.4 The five generations of the daily driver (all defined)
 
 ┌────────────────────────┬─────────────┬────────────────────────────────────────────────────────────────────────────────────┬────────────────────────────────────────────────────┐
 │ Name                   │ Date        │ What it actually is                                                                │ Where it lives                                     │
@@ -116,14 +119,20 @@ benchmark result files in `~/git/llm-benchmark/results/` (named per experiment b
 │ Generation 3           │ 2026-11-04  │ Generation-2 base + our patched expert kernels (the MMQ/VOP3P work on the bundled  │ ~/git/wt-mmq, branch v620-daily-0155-f2 (on the    │
 │                        │             │ llama.cpp).                                                                        │ fork)                                              │
 ├────────────────────────┼─────────────┼────────────────────────────────────────────────────────────────────────────────────┼────────────────────────────────────────────────────┤
-│ Generation 4 (current) │ 2026-11-05  │ Strata 0.2.10 + F-2 (clean cherry-pick, commit 434dfe91) + the patched expert      │ ~/git/wt-stack, branch v620-stack-0210-f2-mmq (on  │
+│ Generation 4           │ 2026-11-05  │ Strata 0.2.10 + F-2 (clean cherry-pick, commit 434dfe91) + the patched expert      │ ~/git/wt-stack, branch v620-stack-0210-f2-mmq (on  │
 │                        │             │ kernels.                                                                           │ the fork)                                          │
+├────────────────────────┼─────────────┼────────────────────────────────────────────────────────────────────────────────────┼────────────────────────────────────────────────────┤
+│ Generation 5 (current) │ 2026-11-18  │ New upstream main (0.2.15-dev, commit c77572806) + F-2 (cherry-pick                │ ~/git/wt-0215-f2, branch v620-0215-f2 (on the      │
+│                        │             │ 749cfbb18) + our MMQ patches, now commits inside the vendored ggml.                │ fork); config ~/strata-v620-iq3_s-T9-v5.json       │
 └────────────────────────┴─────────────┴────────────────────────────────────────────────────────────────────────────────────┴────────────────────────────────────────────────────┘
 
 The patched-kernels part: 3 commits on the engine's exact llama.cpp pin (`3cf03257f`) — packed-FP16
-dot chains for the q8_0 and IQ2-family kernels, plus a helper (`56ccab041`). The engine builds them in
-via `FETCHCONTENT_SOURCE_DIR_STRATA_LLAMACPP` pointing at that checkout (0.1.55 has no `STRATA_GGML_DIR`
-option; 0.2.10 pins the same llama.cpp commit at CMakeLists line 2110, so the patches drop in unchanged).
+dot chains for the q8_0 and IQ2-family kernels, plus a helper (`56ccab041`). For generations 2-4 the
+engine builds them in via `FETCHCONTENT_SOURCE_DIR_STRATA_LLAMACPP` pointing at that checkout (0.1.55
+has no `STRATA_GGML_DIR` option; 0.2.10 pins the same llama.cpp commit at CMakeLists line 2110, so the
+patches drop in unchanged). Since 0.2.15-dev the ggml is vendored at `third_party/strata-ggml`, and
+generation 5 carries the same 3 patches as commits in the worktree itself. The patched llama.cpp
+checkout also lives at `~/git/llamacpp-mmq` (branch `v620-mmq-vop3p` on the fork) for the older bases.
 
 ### 2.5 Models on the disk (as of 11-17)
 
@@ -247,6 +256,9 @@ Numbers are med-of-3 tier results. Full detail: the matching entry in §6, or gi
 ├────────────────────────────────────┼────────────────────┼──────────────────────────────────────────────────────┼──────────────────────────────────────────────────────────────┤
 │ Strata 0.2.10 base                 │ 11-05              │ Reading +0.4% vs generation 3 (8/8 interleaved       │ worktree `wt-stack`                                          │
 │                                    │                    │ pairs); +4.7% vs generation 1                        │                                                              │
+├────────────────────────────────────┼────────────────────┼──────────────────────────────────────────────────────┼──────────────────────────────────────────────────────────────┤
+│ Strata 0.2.15-dev base             │ 11-18              │ Reading +3.2-3.3% vs generation 4 at every tier      │ worktree wt-0215-f2; wrapper + config updated                │
+│ (generation 5)                     │                    │ (three-arm A/B, med-of-3 per arm)                    │                                                              │
 └────────────────────────────────────┴────────────────────┴──────────────────────────────────────────────────────┴──────────────────────────────────────────────────────────────┘
 
 ### 4.2 Measured and rejected — do not re-test without new evidence
@@ -349,6 +361,9 @@ mostly the batch flip, not the other changes listed.
 ├────────┼──────────────────────────────────────────────────────────────┼───────────────┼───────────────┼───────────────┼───────────────┤
 │ 11-05  │ Generation 4 - current daily: Strata 0.2.10 + F-2 + patched  │ 966.2/90.4    │ 986.0/90.7    │ 982.3/94.0    │ 965.8/89.4    │
 │        │ kernels                                                      │               │               │               │               │
+├────────┼──────────────────────────────────────────────────────────────┼───────────────┼───────────────┼───────────────┼───────────────┤
+│ 11-18  │ Generation 5 - current daily: 0.2.15-dev + F-2 +             │ 995.7/96.9    │ 1008.7/94.1   │ 1013.5/94.0   │ 1002.9/90.9   │
+│        │ patched kernels (three-arm A/B, med-of-3)                    │               │               │               │               │
 └────────┴──────────────────────────────────────────────────────────────┴───────────────┴───────────────┴───────────────┴───────────────┘
 
 ### 5.3 The three quantizations compared (2026-11-06, same generation-4 binary, benchmark parking)
@@ -364,8 +379,8 @@ monotonically. The 1-bit lane was the first time this box broke 1,000 reading an
 ├──────────────────────────────────────────────┼───────────────┼───────────────┼───────────────┼───────────────┼────────────────────────────┤
 │ UD-IQ2_XS - Unsloth 2.5-bit (78 GB)          │ 979.7/96.0    │ 984.5/96.6    │ 980.6/94.3    │ 964.6/93.0    │ parked                     │
 ├──────────────────────────────────────────────┼───────────────┼───────────────┼───────────────┼───────────────┼────────────────────────────┤
-│ UD-IQ1_M - Unsloth 1-bit (68 GB)             │ 1000.6/100.9  │ 1004.4/98.1   │ 999.7/97.6    │ 982.2/92.1    │ serving since 11-09 -      │
-│                                              │               │               │               │               │ fastest lane measured      │
+│ UD-IQ1_M - Unsloth 1-bit (68 GB)             │ 1000.6/100.9  │ 1004.4/98.1   │ 999.7/97.6    │ 982.2/92.1    │ trial ended 11-18 -        │
+│                                              │               │               │               │               │ back on IQ3_S (gen 5)      │
 ├──────────────────────────────────────────────┼───────────────┼───────────────┼───────────────┼───────────────┼────────────────────────────┤
 │ DeepSeek-V4.1-Flash 2.5-bit (deleted 11-06)  │ 209.4/19.2    │ 231.7/19.2    │ -             │ -             │ 64k+ context needs more    │
 │                                              │               │               │               │               │ VRAM than one card         │
@@ -379,7 +394,8 @@ such layer.
 
 ### 5.4 Best numbers ever, and things worth remembering
 
-- Best reading speed per tier: 1000.6 / 1004.4 / 999.7 / 982.2 (the 1-bit lane, 11-06). Best writing: 100.9 / 98.1 / 97.6 / 93.0.
+- Best reading speed per tier: 1000.6 (the 1-bit lane, 11-06) / 1008.7 / 1013.5 / 1002.9 (the last
+  three from generation 5, 11-18). Best writing: 100.9 / 98.1 / 97.6 / 93.0 (the 1-bit lane, 11-06).
 - The "0.1.48 lost 16k" scare (10-24/25) was the conversation cache being evicted between tiers, not a
   code regression. The attempted bisect died of single-boot noise (±1.3% > the effect) — always interleave.
 - 0.1.48.1's prefill regression vs 0.1.47 was bounded to ≤16k context, −2.4% calibrated (10-24); never
@@ -506,6 +522,20 @@ pre-rewrite original in git (`c8d3f3b2`) which has the full logs and tables.
     clean; server.py fixes worth having (streamed tool-args, branch races, 60 s no-progress disconnect).
     Also noted: the Unsloth sets were re-uploaded (v3.1) and 0.2.11 fixes the Q5_0 dot error (§5.3
     caveat). Rebase decision still open (§8.2).
+34. **New main pulled: three-arm A/B (generation 5)** (11-18). Pulled upstream: 1,261 commits to
+    0.2.15-dev (`c77572806`, engine 0.1.60). Structure change: the ggml is now vendored
+    (`third_party/strata-ggml`, commit `745819efc`), overridable with `-DSTRATA_GGML_DIR` — the
+    FETCHCONTENT pin is gone, and the MMQ options split (`STRATA_MMQ` is new and default off;
+    `STRATA_PREFILL_MMQ` now requires it). Arms, one boot each, soak + 3 counted passes, order A,B,C:
+    A = generation 4's binary, B = vanilla new main (`wt-0215`), C = new main + F-2 cherry-pick
+    (`749cfbb18`) + the 3 MMQ patches committed into the vendored tree (`b638c7ac2`). Reading speed,
+    med-of-3: B beat A by +1.2-1.3% at every tier (upstream's own gain); C beat B by +1.9-2.0% (our
+    changes still add on top); C beat A by +3.2-3.3%. Writing speed a wash (noise band). C promoted
+    (generation 5); new IQ3_S-lane records at 32k/64k/128k. Limits: one boot cycle, no reversed
+    round - but C ran last and warmest, so any thermal bias would understate C, not inflate it.
+    Redo: clone the daily config per arm (exe -> that arm's binary, add `--conversation-cache-mib 0`),
+    boot each, soak + 3 passes. Arm C build flags: `-DSTRATA_MMQ=ON -DSTRATA_PREFILL_MMQ=ON
+    -DSTRATA_MMQ_KQUANTS=OFF -DSTRATA_Q6K_EXPERTS=OFF -DSTRATA_MMQ_TQ_OVERLAY=OFF`.
 
 ---
 
@@ -533,17 +563,16 @@ issue #3930 (2×2080 Ti) shows writing 35.2→51.0 with the decode-timing window
 ## 8. Things still open
 
 1. **Second V620** — runbook above (§7); this TODO closes when the card arrives.
-2. **0.2.11 rebase** — F-2 is verified to apply cleanly; expected reading-speed delta ~0 on one card;
-   the win would be the server.py fixes. Decision: build `0.2.11 + F-2 + patched kernels` and A/B vs
-   generation 4, or hold.
+2. **0.2.11 rebase** — closed 11-18: superseded. We jumped straight to 0.2.15-dev and promoted it
+   (generation 5, §6.34).
 3. **#3381 RDNA2 prompt-attention port** — the diff at `~/strata-upstream/pr-3381-prompt-attn-rdna2.diff`
    (373 lines) does NOT apply to 0.1.55 or 0.2.10 (drift at `prefill.cpp:3435`); needs a manual port.
    Author claims the QSA prompt chunk gets 29% faster.
 4. **Memory-lock (memlock) raise** — needs interactive sudo; the PLE table mlock fails at 8 MiB (§2.1).
 5. **Upstream write-ups** — two drafts sit in `~/strata-upstream/` (rocBLAS-retune-neutral,
    simt2-vs-simt1); PR descriptions pending for the three pushed fork branches.
-6. **1-bit trial verdict** — keep serving UD-IQ1_M (current) or revert to the IQ3_S daily config,
-   based on how the real-work trial feels (§2.2, §2.3).
+6. **1-bit trial verdict** — closed 11-18: the trial ended when generation 5 was promoted; the box is
+   back on IQ3_S. The lane can be recreated from §6.32 if wanted (its /tmp configs are gone).
 7. **Decode-timing boot** — one benchmark boot with `STRATA_DECODE_TIMING=1` is still the candidate
    way to attribute split-config writing speed (see §7 and GitHub issue #3930).
 
@@ -551,20 +580,24 @@ issue #3930 (2×2080 Ti) shows writing 35.2→51.0 with the decode-timing window
 
 ## 9. Where everything lives
 
-- **Worktrees**: `~/git/Strata` (main checkout, now at 0.2.11, commit `9f7d977d`), `~/git/Strata-main`
-  (parked on branch `parked/pr-a-gfx103x-default`), `~/git/wt-0155` (generation 2 binary), `~/git/wt-mmq`
-  (generation 3), `~/git/wt-stack` (generation 4 — this document's home).
-- **GitHub forks** (backup copies): `andrewprock/Strata` — branches `v620-daily-0155-f2` (generation 3)
-  and `v620-stack-0210-f2-mmq` (generation 4); `andrewprock/llama.cpp` — branch `v620-mmq-vop3p`
-  (the patched kernels). The `gh` CLI is authenticated (https).
-- **Configs**: daily `~/strata-v620-iq3_s-T9-draftvocab.json` (+ the three backups next to it); the
-  Unsloth lanes `/tmp/ud-iq{1m,2xs}.json` (plus `-serve` variants); bench arms `/tmp/ab-*.json`,
-  `/tmp/iq3s-*.json`.
+- **Worktrees**: `~/git/Strata` (main checkout, now at 0.2.15-dev, commit `c77572806`),
+  `~/git/Strata-main` (parked on branch `parked/pr-a-gfx103x-default`), `~/git/wt-0155` (generation 2
+  binary), `~/git/wt-mmq` (generation 3), `~/git/wt-stack` (generation 4 — this document's home),
+  `~/git/wt-0215` (the vanilla 0.2.15-dev bench arm), `~/git/wt-0215-f2` (generation 5).
+- **GitHub forks** (backup copies): `andrewprock/Strata` — branches `v620-daily-0155-f2` (generation 3),
+  `v620-stack-0210-f2-mmq` (generation 4), `v620-0215-f2` (generation 5); `andrewprock/llama.cpp` —
+  branch `v620-mmq-vop3p` (the patched kernels, for the pre-vendored bases). The `gh` CLI is
+  authenticated (https).
+- **Configs**: daily `~/strata-v620-iq3_s-T9-v5.json`; previous daily
+  `~/strata-v620-iq3_s-T9-draftvocab.json` (+ the three backups next to it). Warning: /tmp configs
+  (Unsloth lanes, bench arms) are wiped on reboot — 11-18 lost all of them; recreate from the §6
+  recipes when needed.
 - **Model packs**: `~/git/Strata-data/packs/{iq3_s,iq1m,iq2xs,iq3_s-abl}`; the MTP draft head at
   `~/git/Strata-data/mtp/rt`.
 - **Benchmark results**: `~/git/llm-benchmark/results/strata_tier_pass_*.json` (the timestamp in the
   filename is the run time).
-- **Binary backups**: `~/engines/backup/{strata-0.1.47-base,strata-0.1.48.1-f2}`. This document's
+- **Binary backups**: `~/engines/backup/{strata-0.1.47-base,strata-0.1.48.1-f2}`; generations 3-5
+  stay built in place in their worktrees (`wt-mmq`, `wt-stack`, `wt-0215-f2`). This document's
   earlier versions: `~/strata-migration.md.bak-20261117-pre-rewrite` and
   `~/strata-migration.md.bak-20261117-post-redundancy`, plus git history (`c8d3f3b2` original →
   `ba97795e` dedup → `08de0232` first rewrite → this one).
