@@ -171,8 +171,9 @@ change are in `bench/notes/strata-migration.md`.
 
 ## 5. The full tier test and methodology
 
-The benchmark is `bench_strata_tiers.py` (in `~/git/llm-benchmark` on this
-machine). It sweeps the four context tiers used for all comparisons here:
+The benchmark is `bench_strata_tiers.py`, from
+github.com/vedmichv/llm-benchmark. It sweeps the four context tiers used for
+all comparisons here:
 **16k, 32k, 64k, 128k** - that is, the same prompt is sent at four different
 context sizes so the reading-speed curve can be seen across the whole range.
 
