@@ -160,7 +160,7 @@ static std::vector<uint8_t> make_packed_weights(int ty, int n, int rows, uint32_
     const size_t nblk = size_t(n) * rows / block;
     for (size_t b = 0; b < nblk; ++b) {
         const float sc = (b % 5 == 0) ? 0.f : (b % 2 == 0) ? 0.015625f : -0.03125f;
-        seth(b * size + (ty == 14 ? 208 : 0), sc);
+        seth(b * size + (ty == 14 ? 208 : 0), (ty == 8 ? sc * 0.125f : sc));
         if (ty == 12 || ty == 13) seth(b * size + 2, 0.0078125f);
     }
     return bytes;

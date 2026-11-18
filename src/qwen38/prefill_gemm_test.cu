@@ -336,21 +336,21 @@ int main() {
             return 1;
         }
 
-        // Spot-check first and last token against Q::matvec reference
-        Q::Buffer d_ref0(sc.n * sizeof(float)), d_ref1(sc.n * sizeof(float));
-        Q::matvec(sc.type_id, d_rw.data, d_rx.as<float>(), d_ref0.as<float>(), sc.k, sc.n, test_stream);
-        Q::matvec(sc.type_id, d_rw.data, d_rx.as<float>() + static_cast<size_t>(sc.t - 1) * sc.k,
-                  d_ref1.as<float>(), sc.k, sc.n, test_stream);
+        // Verify every token against Q::matvec.  A first/last-only spot check
+        // cannot catch a zeroed tail token or a misaligned split boundary.
+        Q::Buffer d_ref(static_cast<size_t>(sc.t) * sc.n * sizeof(float));
+        for (int tok = 0; tok < sc.t; ++tok) {
+            Q::matvec(sc.type_id, d_rw.data, d_rx.as<float>() + static_cast<size_t>(tok) * sc.k,
+                      d_ref.as<float>() + static_cast<size_t>(tok) * sc.n, sc.k, sc.n, test_stream);
+        }
         Q::ck(cudaStreamSynchronize(test_stream));
-        std::vector<float> got0(sc.n), got1(sc.n), ref0(sc.n), ref1(sc.n);
-        Q::ck(cudaMemcpy(got0.data(), d_ry.as<float>(), sc.n * 4, cudaMemcpyDeviceToHost));
-        Q::ck(cudaMemcpy(got1.data(), d_ry.as<float>() + static_cast<size_t>(sc.t - 1) * sc.n, sc.n * 4, cudaMemcpyDeviceToHost));
-        Q::ck(cudaMemcpy(ref0.data(), d_ref0.data, sc.n * 4, cudaMemcpyDeviceToHost));
-        Q::ck(cudaMemcpy(ref1.data(), d_ref1.data, sc.n * 4, cudaMemcpyDeviceToHost));
+        std::vector<float> got(static_cast<size_t>(sc.t) * sc.n), ref(got.size());
+        Q::ck(cudaMemcpy(ref.data(), d_ref.data, ref.size() * 4, cudaMemcpyDeviceToHost));
+        Q::ck(cudaMemcpy(got.data(), d_ry.data, got.size() * 4, cudaMemcpyDeviceToHost));
         double max_e = 0.0, max_r = 1e-6;
-        for (int c = 0; c < sc.n; ++c) {
-            max_r = std::fmax(max_r, std::fmax(std::abs(ref0[c]), std::abs(ref1[c])));
-            max_e = std::fmax(max_e, std::fmax(std::abs(ref0[c] - got0[c]), std::abs(ref1[c] - got1[c])));
+        for (size_t i = 0; i < got.size(); ++i) {
+            max_r = std::fmax(max_r, std::abs(ref[i]));
+            max_e = std::fmax(max_e, std::abs(ref[i] - got[i]));
         }
         if (max_e > 0.05 && (max_e / max_r) > 0.02) {
             std::fprintf(stderr, "real shape parity failure K=%d N=%d T=%d max_e=%g rel=%g\n",
