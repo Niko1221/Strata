@@ -40,6 +40,9 @@ TypeInfo type_info(uint32_t t) {
         case T_IQ2_S: return {256, 82};
         case T_IQ4_XS: return {256, 136};
         case T_Q2_0: return {64, 18};
+        case T_TQ2_T: return {128, 34};
+        case T_TQK6: return {128, 26};
+        case T_TQK7: return {128, 30};
     }
     throw std::runtime_error("gguf: unknown ggml type " + std::to_string(t));
 }
@@ -95,7 +98,7 @@ int64_t read_int(Cur& c, uint32_t t) {
 }
 }  // namespace
 
-Gguf::Gguf(const std::string& first) {
+Gguf::Gguf(const std::string& first, const std::string& extra) {
     std::smatch m;
     static const std::regex split(R"((.*-)(\d{5})(-of-)(\d{5})(\.gguf)$)");
     if (std::regex_match(first, m, split)) {
@@ -108,6 +111,22 @@ Gguf::Gguf(const std::string& first) {
     } else {
         load_shard(first, true);
     }
+    if (!extra.empty()) {
+        // the PLE table and nothing else: a full model file here would replace the model's tensors with its own, silently
+        static const std::string PLE = "per_layer_token_embd.weight";
+        std::set<std::string> model;
+        for (const auto& kv : tensors_) model.insert(kv.first);
+        load_shard(extra, false);
+        const int sh = (int) maps_.size() - 1;
+        bool has_ple = false;   // the extra file itself must bring the table (the model's own does not count)
+        for (const auto& kv : tensors_) {
+            if (kv.second.shard != sh) continue;
+            if (model.count(kv.first)) throw std::runtime_error("gguf: " + extra + " repeats " + kv.first + ", which the model already has");
+            if (kv.first != PLE) throw std::runtime_error("gguf: " + extra + " holds " + kv.first + "; a separate PLE file may hold only " + PLE);
+            has_ple = true;
+        }
+        if (!has_ple) throw std::runtime_error("gguf: " + extra + " has no " + PLE);
+    }
     convert_small_tensors();
 }
 
@@ -116,11 +135,15 @@ Gguf::Gguf(const std::string& first) {
 // again as Q8_0 (F32 for the small ones), once, here; the routed experts are left as they are. A file without such experts
 // (UD-Q4_K_XL, Q8_0) is not touched at all: the check below is the only difference for it.
 void Gguf::convert_small_tensors() {
-    bool mixed = false;
-    for (const auto& kv : tensors_)
+    bool mixed = false, trellis = false;
+    for (const auto& kv : tensors_) {
         mixed |= kv.second.type == T_IQ2_S || kv.second.type == T_IQ3_XXS || kv.second.type == T_IQ3_S || kv.second.type == T_Q2_0;
+        trellis |= kv.second.type == T_TQ2_T || kv.second.type == T_TQK6 || kv.second.type == T_TQK7;
+    }
     iq_experts_ = mixed;
-    if (!mixed) return;
+    trellis_experts_ = trellis;
+    // the trellis files (Gyro-S: Q6_K embeddings and head, Q5_K projections, a BF16 router) are converted the same way
+    if (!mixed && !trellis) return;
     for (auto& kv : tensors_) {
         Tensor& t = kv.second;
         if (t.type == T_Q2_0) {   // the routed down experts of some layers: the same values as Q4_0 blocks
@@ -172,13 +195,13 @@ void Gguf::load_shard(const std::string& path, bool meta) {
             const uint32_t et = c.get<uint32_t>();
             const uint64_t n = c.get<uint64_t>();
             if (et == 8) {
-#if FNX_27B   // the tokenizer's tokens: the 27B finds its image-pad token there (Flash-Next's GGUF names it)
-                if (meta && key == "tokenizer.ggml.tokens") {
+                // the tokenizer's tokens: the 27B finds its image-pad token there (Flash-Next's GGUF names it); prism.*: the names of the
+                // tensors stored rotated (hadamard_meta.hpp)
+                if (meta && ((FNX_27B && key == "tokenizer.ggml.tokens") || key.rfind("prism.", 0) == 0)) {
                     std::vector<std::string> v(n);
                     for (uint64_t k = 0; k < n; ++k) v[k] = c.str();
                     str_arrays_[key] = std::move(v);
                 } else
-#endif
                 for (uint64_t k = 0; k < n; ++k) c.str();
             } else {
                 const int sz = scalar_size(et);
@@ -279,6 +302,12 @@ const std::vector<std::string>& Gguf::tokens() const {
     return it->second;
 }
 #endif
+
+const std::vector<std::string>& Gguf::sa(const std::string& key) const {
+    auto it = str_arrays_.find(key);
+    if (it == str_arrays_.end()) throw std::runtime_error("gguf: no string array " + key);
+    return it->second;
+}
 
 std::vector<int64_t> Gguf::ia(const std::string& key) const {
     auto it = int_arrays_.find(key);

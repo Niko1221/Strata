@@ -1,7 +1,8 @@
 // Host-only test of the GGUF reader's header checks: writes tiny GGUF files, one valid and several malformed, and
 // expects the valid one to load and each malformed one to be refused with a message naming the tensor; and the rotary
-// scaling a model's keys come to (model_rope), each llama.cpp reading of them followed or refused.
-// make bin/gguf_test && bin/gguf_test [DIR [MODEL.gguf ...]]   (DIR for the files, default /tmp; each MODEL, a real
+// scaling a model's keys come to (model_rope), each llama.cpp reading of them followed or refused; and the separate PLE file
+// (Gguf's extra, FNX_PLE_GGUF): it loads with that table alone, and is refused with any other tensor, one the model has, or none.
+// split_gguf_test [DIR [MODEL.gguf ...]]   (DIR for the files, default /tmp; each MODEL, a real
 // model's first shard, must load too, with a rotary sFNX follows: only its headers are read)
 #include "../src/gguf.hpp"
 #include "../src/rope_gguf.hpp"
@@ -36,8 +37,9 @@ struct Kv {
     void f32(const std::string& k, float v) { key(k, 6); put(&v, 4); }
 };
 
-// one F32 tensor "w" with the given n_dims and sizes, its data at offset 0 of the data section, data_bytes of data
-std::vector<uint8_t> make(uint32_t n_dims, const std::vector<uint64_t>& ne, uint64_t data_bytes, uint64_t offset = 0, const Kv& kv = {}) {
+// one F32 tensor (default "w") with the given n_dims and sizes, its data at offset 0 of the data section, data_bytes of data
+std::vector<uint8_t> make(uint32_t n_dims, const std::vector<uint64_t>& ne, uint64_t data_bytes, uint64_t offset = 0, const Kv& kv = {},
+                          const std::string& name = "w") {
     std::vector<uint8_t> b;
     auto put = [&](const void* p, size_t n) { b.insert(b.end(), (const uint8_t*) p, (const uint8_t*) p + n); };
     auto u32 = [&](uint32_t v) { put(&v, 4); };
@@ -47,7 +49,6 @@ std::vector<uint8_t> make(uint32_t n_dims, const std::vector<uint64_t>& ne, uint
     u64(1);             // tensors
     u64(kv.n);          // metadata keys
     put(kv.b.data(), kv.b.size());
-    const std::string name = "w";
     u64(name.size());
     put(name.data(), name.size());
     u32(n_dims);
@@ -56,6 +57,16 @@ std::vector<uint8_t> make(uint32_t n_dims, const std::vector<uint64_t>& ne, uint
     u64(offset);
     while (b.size() % 32) b.push_back(0);
     b.resize(b.size() + data_bytes, 0);
+    return b;
+}
+
+// a GGUF file with no tensors and no metadata keys
+std::vector<uint8_t> make_empty() {
+    std::vector<uint8_t> b(24, 0);
+    const uint32_t magic = 0x46554747u, version = 3;
+    std::memcpy(b.data(), &magic, 4);
+    std::memcpy(b.data() + 4, &version, 4);   // then 0 tensors, 0 keys
+    b.resize(32, 0);
     return b;
 }
 
@@ -184,6 +195,44 @@ int main(int argc, char** argv) {
     expect_refused(dir, "bytes_overflow", make(1, {1ull << 62}, 64), "runs past the end");
     expect_refused(dir, "past_end", make(2, {8, 3}, 95), "runs past the end");
     expect_refused(dir, "offset_wraps", make(1, {8}, 64, ~0ull - 8), "runs past the end");
+
+    {   // the extra file (FNX_PLE_GGUF) may add the PLE table and nothing else, and may not replace a tensor of the model
+        const char* PLE = "per_layer_token_embd.weight";
+        const std::string model = write(dir, "model", make(2, {8, 3}, 96));
+        const std::string model_ple = write(dir, "model_ple", make(2, {8, 3}, 96, 0, {}, PLE));
+        const std::string ple = write(dir, "ple", make(2, {8, 3}, 96, 0, {}, PLE));
+        const std::string other = write(dir, "other", make(2, {8, 3}, 96, 0, {}, "x"));
+        const std::string same = write(dir, "same", make(2, {8, 3}, 96));
+        const std::string empty = write(dir, "empty", make_empty());
+        struct Case {
+            const char* tag;
+            const std::string &m, &e;
+            const char* refused;   // nullptr: loads, with the table from the extra file
+        };
+        const Case cases[] = {
+            {"extra_ple", model, ple, nullptr},
+            {"extra_not_ple", model, other, "holds x"},
+            {"extra_repeats_model_tensor", model, same, "repeats w"},
+            {"extra_repeats_ple", model_ple, ple, "repeats per_layer_token_embd.weight"},
+            {"extra_empty", model_ple, empty, "has no per_layer_token_embd.weight"},   // the model's own table does not count
+        };
+        for (const Case& c : cases) {
+            std::string got;
+            bool ok;
+            try {
+                fnx::Gguf g(c.m, c.e);
+                const fnx::Tensor* t = g.find(PLE);
+                ok = !c.refused && t && g.shard_path(t->shard) == c.e && g.find("w");
+                got = "loads";
+            } catch (const std::runtime_error& e) {
+                got = e.what();
+                ok = c.refused && std::strstr(e.what(), c.refused);
+            }
+            std::printf("%s %s: %s\n", ok ? "ok  " : "FAIL", c.tag, got.c_str());
+            failures += !ok;
+        }
+        for (const std::string* p : {&model, &model_ple, &ple, &other, &same, &empty}) std::remove(p->c_str());
+    }
 
     for (int a = 2; a < argc; ++a) {
         try {

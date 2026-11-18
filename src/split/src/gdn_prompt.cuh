@@ -163,9 +163,9 @@ __global__ void __launch_bounds__(GDN_PF_THREADS) k_gdn_pf_rec(const float* __re
 // k_gdn_ch_prep makes what does not depend on the state for every sub-chunk and head at once (T, P, G, the decays to the
 // end, b); k_gdn_ch_rec walks the sub-chunks in order per (value head, GCB columns), the state's columns in shared
 // memory. The sums come in another order than k_gdn_core's, row by row (fp32 either way).
-#if FNX_HIP
-// gfx12 has 64 KB of LDS a block: k_gdn_ch_rec takes 16 state columns (58 KB) in 128 threads, twice the blocks a head; every output's sum
-// runs in the same order as with 32 columns, so the results are bit-identical to the CUDA build's layout
+#if FNX_HIP || FNX_ARCH == 75
+// gfx12 and Turing (sm_75) have 64 KB of shared memory a block: k_gdn_ch_rec takes 16 state columns (58 KB) in 128 threads, twice the
+// blocks a head; every output's sum runs in the same order as with 32 columns, so the results are bit-identical to the 32-column layout
 constexpr int GCH = 32, GCB = 16, GCH_THREADS = 256, GCR_THREADS = 128, GCH_REC_BLOCKS_PER_HEAD = HS / GCB;
 #else
 constexpr int GCH = 32, GCB = 32, GCH_THREADS = 256, GCR_THREADS = 256, GCH_REC_BLOCKS_PER_HEAD = HS / GCB;

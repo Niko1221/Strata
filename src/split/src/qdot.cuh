@@ -104,10 +104,14 @@ template <> struct qtraits<T_IQ4_XS>  { static constexpr int qk = QK_K;   static
 template <> struct qtraits<T_IQ3_S>   { static constexpr int qk = QK_K;   static constexpr int qi = QI3_S; };
 template <> struct qtraits<T_IQ3_XXS> { static constexpr int qk = QK_K;   static constexpr int qi = QI3_XXS; };
 template <> struct qtraits<T_IQ2_S>   { static constexpr int qk = QK_K;   static constexpr int qi = QI2_S; };
+// the APR trellis types (trellis.cuh): 128 values, 32 ints of q8_1 activations, a call takes one 16-value lane (4 ints)
+template <> struct qtraits<T_TQ2_T>   { static constexpr int qk = 128;    static constexpr int qi = 32; };
+template <> struct qtraits<T_TQK6>    { static constexpr int qk = 128;    static constexpr int qi = 32; };
+template <> struct qtraits<T_TQK7>    { static constexpr int qk = 128;    static constexpr int qi = 32; };
 
 // VDR = vec dot ratio: contiguous ints one thread handles per call in the decode (MMVQ) kernels
 constexpr int VDR_Q4_0 = 2, VDR_Q5_1 = 2, VDR_Q8_0 = 2, VDR_Q4_K = 2, VDR_Q5_K = 2, VDR_Q6_K = 1, VDR_IQ4_NL = 2, VDR_IQ4_XS = 4,
-              VDR_IQ3_S = 2, VDR_IQ3_XXS = 2, VDR_IQ2_S = 2;
+              VDR_IQ3_S = 2, VDR_IQ3_XXS = 2, VDR_IQ2_S = 2, VDR_TQ = 4;
 
 // ---------------------------------------------------------------- helpers (vecdotq.cuh)
 static __device__ __forceinline__ int get_int_b2(const void * x, const int & i32) {
@@ -663,3 +667,5 @@ static __device__ __forceinline__ float vec_dot_iq4_xs_q8_1(
 }
 
 }  // namespace fnx
+
+#include "trellis.cuh"   // the APR trellis types' dots (Gyro-S, Gyro-M): the main engine's arithmetic

@@ -5,6 +5,9 @@ struct MoeW {
     size_t row_a;        // row bytes
     int nrows, ncols;
     const char* const* ep;   // or each expert's matrix (VRAM or mapped host memory): DW::ep
+    // a rotated down matrix (DW::had): its signs from the first input column, and where the card's h lies in its ncols
+    const float* had = nullptr;
+    int had_off = 0, had_ffs = 0;
 };
 __device__ __forceinline__ const char* moe_expert(const MoeW& w, int e) { return w.ep ? w.ep[e] : w.wa + (size_t) e * w.sa; }
 

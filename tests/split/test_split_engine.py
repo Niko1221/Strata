@@ -27,6 +27,28 @@ def udq4(**kw):
     return S.ModelFacts(**f)
 
 
+RTX2080TI = dict(name="NVIDIA GeForce RTX 2080 Ti", vram_mib=22528, cc=75, free_mib=22527)     # the 22 GB board, idle
+
+
+def gyro_s(**kw):
+    """Gyro-S (TQ1_0-noPLE) as scan_model reads it: TQK6 gate/up, TQK7 down, Q6_K embeddings and head (converted to Q8_0 at load: 4.21 GiB on the
+    engine's heap); its PLE table (50.66 GiB) in a file of its own."""
+    f = dict(routed_types={"TQK6": 96, "TQK7": 48}, routed_bytes=int(24.02 * GIB), embd_type="Q6_K", shexp_types={"Q8_0": 48, "F32": 48, "Q5_K": 96},
+             embd_ram_bytes=int(0.49 * GIB), layers=48, experts=512, ple_type=None, output_type="Q6_K", trellis_down_bytes=int(8.79 * GIB),
+             heap_bytes=int(4.21 * GIB))
+    f.update(kw)
+    return S.ModelFacts(**f)
+
+
+def gyro_m(**kw):
+    """Gyro-M (TQ2_0) as scan_model reads it: TQ2_T experts, Q8_0 everything else, its own Q8_0 PLE table."""
+    f = dict(routed_types={"TQ2_T": 144}, routed_bytes=int(29.88 * GIB), embd_type="Q8_0", shexp_types={"Q8_0": 144, "F32": 48},
+             embd_ram_bytes=int(51.29 * GIB), layers=48, experts=512, ple_type="Q8_0", output_type="Q8_0", trellis_down_bytes=int(9.96 * GIB),
+             heap_bytes=int(0.05 * GIB))
+    f.update(kw)
+    return S.ModelFacts(**f)
+
+
 def decide(**kw):
     a = dict(enabled=True, system="linux", cards=cards(), ram_total_gib=125, ram_available_gib=80, model=udq4())
     a.update(kw)
@@ -76,6 +98,80 @@ class Rule(unittest.TestCase):
         self.assertIn("do not fit", d.line)
         self.assertFalse(decide(cards=cards(2, vram_mib=40960)).use_split)    # 71.7 / 2 + 9 = 44.9 GiB needed
         self.assertTrue(decide(cards=cards(2, vram_mib=46000)).use_split)
+
+    def test_sm70_is_opt_in_and_keeps_the_overflow_in_host_ram(self):
+        v100 = cards(2, name="Tesla V100-PCIE-32GB", vram_mib=32768, cc=70)
+        self.assertFalse(decide(cards=v100).use_split)                       # auto keeps the layer split
+        d = decide(cards=v100, allow_untested=True, context=393216, ram_available_gib=450)
+        self.assertTrue(d.use_split, d.reasons)
+        self.assertGreater(d.host_cache_gib, 24)
+        self.assertIn("sm_70", d.line)
+        self.assertIn("context 393216", d.line)
+        self.assertFalse(decide(cards=v100, allow_untested=True, ram_available_gib=50).use_split)   # the host cache needs RAM
+
+    def test_sm70_with_the_host_cache_counts_the_pinned_copy_of_every_expert(self):
+        # the engine pins every routed expert on sm_70 too: 2 x V100 32 GB with UD-Q4_K_XL at 393216 context asks for 27.5 + 3 + 4 + 71.7 = 106.2 GiB
+        # plus the spare (114.2); when only the overflow (25.7 GiB) counted it asked for 60.2 + 8
+        v100 = cards(2, name="Tesla V100-PCIE-32GB", vram_mib=32768, cc=70)
+        d = decide(cards=v100, allow_untested=True, context=393216, ram_available_gib=450)
+        self.assertAlmostEqual(d.host_cache_gib, 25.7, places=1)
+        self.assertAlmostEqual(d.need_ram_gib, 106.2, places=1)
+        self.assertFalse(decide(cards=v100, allow_untested=True, context=393216, ram_available_gib=110).use_split)
+        self.assertTrue(decide(cards=v100, allow_untested=True, context=393216, ram_available_gib=115).use_split)
+
+    def test_sm75_is_opt_in_and_reads_the_gyro_trellis_sets(self):
+        t = cards(2, **RTX2080TI)
+        small = gyro_s(routed_bytes=int(20 * GIB), trellis_down_bytes=int(6 * GIB))    # fits: 2 x (20 + 1.2) / 2 + 9 = 19.6 GiB a card
+        d = decide(cards=t, model=small, ram_available_gib=110)                         # auto keeps the layer split, for this reason only
+        self.assertEqual(d.reasons, ["it has only been run on sm_86/sm_120 cards, not sm_75"])
+        # a trellis down matrix is held over whole 128-column blocks: 2 cards hold 768 of its 640 columns, 3 cards 896
+        self.assertEqual((S.cover_columns(2, 32), S.cover_columns(2), S.cover_columns(3)), (640, 768, 896))
+        for model in (gyro_s(), gyro_m()):
+            d = decide(cards=t, model=model, allow_untested=True, context=262144, ram_available_gib=110)
+            self.assertTrue(d.use_split, d.reasons)
+            self.assertIn("sm_75", d.line)
+            down = model.trellis_down_bytes / GIB
+            self.assertAlmostEqual(d.need_vram_gib, (model.routed_bytes / GIB + 0.2 * down) / 2 + S.CARD_OVERHEAD_GIB, places=2)
+            self.assertAlmostEqual(d.host_cache_gib, 2 * (d.need_vram_gib - (22527 - S.FREE_RESERVE_MIB) / 1024), places=2)   # the overflow goes to RAM
+            # with the expert cache the engine pins a copy of every routed expert, cover included (Gyro-S on 2 x 2080 Ti: 26.8 GiB measured)
+            # and the loader's converted copies of the dense tensors (heap_bytes)
+            self.assertAlmostEqual(d.need_ram_gib, (model.embd_ram_bytes + model.heap_bytes) / GIB + S.RAM_PINNED_BUFFERS_GIB +
+                                   S.CONVERSATION_CACHE_MIB / 1024 + model.routed_bytes / GIB + 0.2 * down, places=2)
+        # the copy decides: Gyro-S with its 50.66 GiB table needs 51.15 + 4.21 + 3 + 4 + 25.8 + 8 spare = 96.1 GiB; 95 GiB is not enough
+        self.assertFalse(decide(cards=t, model=gyro_s(embd_ram_bytes=int(51.15 * GIB)), allow_untested=True, ram_available_gib=95).use_split)
+        self.assertTrue(decide(cards=t, model=gyro_s(embd_ram_bytes=int(51.15 * GIB)), allow_untested=True, ram_available_gib=97).use_split)
+
+    def test_trellis_experts_are_refused_on_amd_and_marked_untested_on_other_nvidia_cards(self):
+        r9700 = [S.Card(index=i, name="AMD Radeon AI PRO R9700", vram_mib=32624, cc=0, vendor="amd", arch="gfx1201") for i in range(4)]
+        for model in (gyro_s(), gyro_m()):
+            kinds = "/".join(sorted(model.routed_types))
+            # AMD, even with an explicit on (allow_untested): the HIP build of the trellis kernels was never built or run, and its self-test has none
+            d = decide(cards=r9700, model=model, allow_untested=True, ram_available_gib=200)
+            self.assertFalse(d.use_split)
+            self.assertEqual(len(d.reasons), 1, d.reasons)
+            self.assertIn("AMD", d.line)
+            self.assertIn(kinds, d.line)
+            # NVIDIA sm_86 with on: it runs, and the line says the trellis experts are not tested there
+            d = decide(cards=cards(), model=model, ram_available_gib=200)
+            self.assertTrue(d.use_split, d.reasons)
+            self.assertEqual(d.untested, [f"{kinds} experts on sm_86"])
+            self.assertIn(f"({kinds} experts on sm_86: not tested)", d.line)
+            # sm_75 (RTX 2080 Ti), where they were run: no such note
+            d = decide(cards=cards(2, **RTX2080TI), model=model, allow_untested=True, ram_available_gib=200)
+            self.assertTrue(d.use_split, d.reasons)
+            self.assertEqual([u for u in d.untested if "experts" in u], [])
+
+    def test_the_ram_rule_covers_what_the_engine_took_on_two_2080_ti(self):
+        # MemAvailable fell by this much from before the start to "sfnx: loaded" (docs/SPLIT_TURING_TRELLIS.md); the conversation cache fills later
+        t = cards(2, **RTX2080TI)
+        for model, drops in ((gyro_s(embd_ram_bytes=int(51.15 * GIB)), (85.70, 86.91)), (gyro_m(), (85.99,))):
+            d = decide(cards=t, model=model, allow_untested=True, ram_available_gib=200)
+            at_load = d.need_ram_gib - S.CONVERSATION_CACHE_MIB / 1024
+            # a host with exactly what the rule asks for keeps at least 5 GiB once the engine has loaded
+            self.assertGreaterEqual(at_load + S.RAM_SPARE_GIB - max(drops), 5.0, (model.routed_types, at_load))
+        self.assertEqual(sorted(decide(cards=t, model=gyro_s(), allow_untested=True).routed_types), ["TQK6", "TQK7"])
+        # an untested NVIDIA card with no host-cache path (sm_89) and experts that do not fit is still refused
+        self.assertFalse(decide(cards=cards(2, name="NVIDIA L4", vram_mib=22528, cc=89, free_mib=22527), model=gyro_s(), allow_untested=True).use_split)
 
     def test_ram_that_stays_must_be_free(self):
         self.assertTrue(decide(ram_available_gib=52).use_split)          # 27.5 + 3 + 4 + 8 spare = 42.5
@@ -136,6 +232,9 @@ class Rule(unittest.TestCase):
         self.assertEqual(m.routed_bytes, 2 * 1000 + 5000)
         self.assertEqual((m.embd_type, m.ple_type, m.output_type), ("IQ4_XS", "IQ4_NL", "Q6_K"))
         self.assertEqual(m.embd_ram_bytes, 30)
+        # the IQ3_S set is converted at load: Q8_0 copies of token_embd (only its growth counts here: its file bytes are in embd_ram) and the head
+        q8 = 2560 * 248320 // 32 * 34
+        self.assertEqual(m.heap_bytes, (q8 - 10) + q8)
 
     def test_the_reasons_are_all_reported(self):
         d = decide(system="windows", cards=cards(1), model=udq4(embd_type="Q6_K"))
@@ -199,6 +298,154 @@ class Apply(unittest.TestCase):
             self.assertEqual(cfg["args"][cfg["args"].index("--max-context") + 1], "131072")
             self.assertEqual(cfg["split_fallback"]["exe"], "component:strata-engine")
             self.assertEqual(cfg["tokenizer"], "tok")
+
+    def test_sm70_explicit_on_writes_the_arena_and_rope(self):
+        import copy
+        import tempfile
+
+        v100 = cards(2, name="Tesla V100-PCIE-32GB", vram_mib=32768, cc=70)
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self.cfg(tmp)
+            cfg["split_engine"] = "on"
+            cfg["args"][cfg["args"].index("--max-context") + 1] = "393216"
+            cfg["args"] += ["--rope-scale", "1.5"]
+            seen = []
+            d = S.apply_to_config(cfg, exe_for_cards=lambda n, cc: seen.append((n, cc)) or "/e/strata-split-2-sm70",
+                                  system="linux", probe=lambda i: v100, ram=lambda: (503.0, 450.0), scan=lambda path: udq4())
+            self.assertTrue(d.use_split, d.reasons)
+            self.assertEqual(seen, [(2, 70)])
+            self.assertGreater(d.host_cache_gib, 24)
+            self.assertEqual(cfg["exe"], "/e/strata-split-2-sm70")
+            self.assertEqual(cfg["env"]["FNX_ARENA"], "1")
+            self.assertGreaterEqual(int(cfg["env"]["FNX_EXPERT_RAM_GIB"]), 26)
+            self.assertEqual(cfg["env"]["FNX_PF_HCSPLIT"], "0")     # v0.2.11's HC split costs on the 2x V100 host-cache path
+            self.assertEqual(cfg["env"]["FNX_PF_ROWS"], "4096")
+            self.assertEqual(cfg["args"][cfg["args"].index("--rope-scale") + 1], "1.5")
+            self.assertIn("sm_70", d.line)
+            # Auto stays off and changes nothing
+            cfg2 = self.cfg(tmp)
+            cfg2["split_engine"] = None
+            before = copy.deepcopy(cfg2)
+            d2 = S.apply_to_config(cfg2, exe_for_cards=lambda n, cc: "/e/x", system="linux", probe=lambda i: v100,
+                                   ram=lambda: (503.0, 450.0), scan=lambda path: udq4())
+            self.assertFalse(d2.use_split)
+            self.assertTrue(d2.quiet)
+            self.assertEqual(cfg2, before)
+
+    def test_sm75_explicit_on_with_a_separate_ple_file(self):
+        import tempfile
+
+        t = cards(2, **RTX2080TI)
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self.cfg(tmp)
+            cfg["split_engine"] = "on"
+            cfg["args"] += ["--ple-gguf", "/m/ple.gguf"]
+            scanned = []
+            ple = S.ModelFacts(routed_types={}, routed_bytes=0, embd_type=None, shexp_types={}, embd_ram_bytes=int(50.66 * GIB), layers=0, experts=0,
+                               ple_type="Q8_0", output_type=None)
+            d = S.apply_to_config(cfg, exe_for_cards=lambda n, cc: "/e/strata-split-2", system="linux", probe=lambda i: t, ram=lambda: (123.0, 110.0),
+                                  scan=lambda path: scanned.append(path) or (ple if path == "/m/ple.gguf" else gyro_s()))
+            self.assertTrue(d.use_split, d.reasons)
+            self.assertEqual(scanned, ["/m/a-00001-of-00004.gguf", "/m/ple.gguf"])
+            self.assertGreater(d.need_ram_gib, 50.66 + 0.49)                    # the table's RAM is counted
+            self.assertEqual(cfg["env"]["FNX_PLE_GGUF"], "/m/ple.gguf")
+            self.assertEqual(cfg["env"]["FNX_ARENA"], "1")
+            self.assertGreaterEqual(int(cfg["env"]["FNX_EXPERT_RAM_GIB"]), 1)
+            # the same file as the model (Gyro-M carries its table): nothing extra
+            cfg2 = self.cfg(tmp)
+            cfg2["split_engine"] = "on"
+            cfg2["args"] += ["--ple-gguf", "/m/a-00001-of-00004.gguf"]
+            d2 = S.apply_to_config(cfg2, exe_for_cards=lambda n, cc: "/e/strata-split-2", system="linux", probe=lambda i: t, ram=lambda: (123.0, 110.0),
+                                   scan=lambda path: gyro_m())
+            self.assertTrue(d2.use_split, d2.reasons)
+            self.assertNotIn("FNX_PLE_GGUF", cfg2["env"])
+            self.assertGreaterEqual(int(cfg2["env"]["FNX_EXPERT_RAM_GIB"]), 7)
+            # the model's own file by another spelling: not scanned or counted twice, no FNX_PLE_GGUF
+            cfg3 = self.cfg(tmp)
+            cfg3["split_engine"] = "on"
+            cfg3["args"] += ["--ple-gguf", "/m/sub/../a-00001-of-00004.gguf"]
+            scanned = []
+            d3 = S.apply_to_config(cfg3, exe_for_cards=lambda n, cc: "/e/strata-split-2", system="linux", probe=lambda i: t, ram=lambda: (123.0, 110.0),
+                                   scan=lambda path: scanned.append(path) or gyro_m())
+            self.assertTrue(d3.use_split, d3.reasons)
+            self.assertEqual(scanned, ["/m/a-00001-of-00004.gguf"])
+            self.assertNotIn("FNX_PLE_GGUF", cfg3["env"])
+            self.assertAlmostEqual(d3.need_ram_gib, d2.need_ram_gib, places=6)
+
+    def test_expected_answers_as_apply_does_on_sm75_with_a_separate_ple_file(self):
+        import tempfile
+
+        t = cards(2, **RTX2080TI)
+        with tempfile.TemporaryDirectory() as tmp:
+            native, ple_path = str(Path(tmp) / "gyro-s.gguf"), str(Path(tmp) / "ple.gguf")
+            Path(native).write_bytes(b"x")
+            Path(ple_path).write_bytes(b"x")
+            ple = S.ModelFacts(routed_types={}, routed_bytes=0, embd_type=None, shexp_types={}, embd_ram_bytes=int(50.66 * GIB), layers=0, experts=0,
+                               ple_type="Q8_0", output_type=None)
+            scan = lambda path: ple if path == ple_path else gyro_s()                  # noqa: E731
+            # 110 GiB free: both start it; 60 GiB free: the table does not fit, both keep the layer split
+            for avail, want in ((110.0, True), (60.0, False)):
+                cfg = self.cfg(tmp)
+                cfg["split_engine"] = "on"
+                cfg["args"][cfg["args"].index("--native") + 1] = native
+                cfg["args"] += ["--ple-gguf", ple_path]
+                early = S.expected(cfg, indexes=[0, 1], native=native, probe=lambda idx: t, ram=lambda: (123.0, avail), system="linux", scan=scan)
+                d = S.apply_to_config(cfg, exe_for_cards=lambda n, cc: "/e/strata-split-2", system="linux", probe=lambda i: t, ram=lambda: (123.0, avail),
+                                      scan=scan)
+                self.assertEqual(d.use_split, want, d.reasons)
+                self.assertEqual(early, d.use_split, avail)
+
+    def test_the_drafting_plan_counts_a_separate_ple_file_as_the_launch_does(self):
+        """`strata drafting plan|fetch` asks expected() through drafting_cmd._split_expected, with the run config's engine arguments."""
+        import copy
+        import sys
+        import tempfile
+        from unittest import mock
+
+        from strata_cli import drafting_cmd
+
+        t = cards(2, **RTX2080TI)
+        with tempfile.TemporaryDirectory() as tmp:
+            native, ple_path = str(Path(tmp) / "gyro-s.gguf"), str(Path(tmp) / "ple.gguf")
+            Path(native).write_bytes(b"x")
+            Path(ple_path).write_bytes(b"x")
+            ple = S.ModelFacts(routed_types={}, routed_bytes=0, embd_type=None, shexp_types={}, embd_ram_bytes=int(50.66 * GIB), layers=0, experts=0,
+                               ple_type="Q8_0", output_type=None)
+            scan = lambda path: ple if path == ple_path else gyro_s()                  # noqa: E731
+            # 80 GiB free: the table and the pinned experts do not fit, the launch keeps the layer split, so the plan must not expect the split
+            for avail, want in ((80.0, False), (110.0, True)):
+                cfg = self.cfg(tmp)
+                cfg["split_engine"] = "on"
+                cfg["args"][cfg["args"].index("--native") + 1] = native
+                cfg["args"] += ["--ple-gguf", ple_path]
+                with mock.patch.object(S, "probe_cards", lambda idx: t), mock.patch.object(S, "ram_gib", lambda: (123.0, avail)), \
+                        mock.patch.object(S, "scan_model", scan), mock.patch.object(sys, "platform", "linux"):
+                    early = drafting_cmd._split_expected(cfg, cfg["args"])
+                d = S.apply_to_config(copy.deepcopy(cfg), exe_for_cards=lambda n, cc: "/e/strata-split-2", system="linux", probe=lambda i: t,
+                                      ram=lambda: (123.0, avail), scan=scan)
+                self.assertEqual(d.use_split, want, d.reasons)
+                self.assertEqual(early, want, avail)
+
+    def test_trellis_experts_start_the_split_only_on_an_explicit_on(self):
+        import tempfile
+
+        for model in (gyro_s(embd_ram_bytes=int(51.15 * GIB)), gyro_m()):
+            with tempfile.TemporaryDirectory() as tmp:
+                native = str(Path(tmp) / "gyro.gguf")
+                Path(native).write_bytes(b"x")
+                cfg = self.cfg(tmp)
+                cfg["split_engine"] = None                                             # Auto, on the tested 2 x A6000 (sm_86)
+                cfg["args"][cfg["args"].index("--native") + 1] = native
+                d = self.run_apply(cfg, avail=110.0, model=model)
+                self.assertFalse(d.use_split)
+                self.assertIn("/".join(sorted(model.routed_types)), d.line)
+                self.assertIn("--split-engine on", d.line)
+                self.assertFalse(S.expected({"split_engine": None, "args": cfg["args"]}, indexes=[0, 1], native=native, probe=lambda idx: cards(),
+                                            ram=lambda: (125.0, 110.0), system="linux", scan=lambda path: model))
+                cfg = self.cfg(tmp)
+                cfg["split_engine"] = "on"
+                d = self.run_apply(cfg, avail=110.0, model=model)
+                self.assertTrue(d.use_split, d.reasons)
 
     def test_every_refusal_leaves_the_config_alone(self):
         import copy

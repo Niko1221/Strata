@@ -214,9 +214,16 @@ __device__ __forceinline__ void job_rows(const char* wr, bool live, int ncols, i
 #pragma unroll 8
         for (int kbx = gl / per_block; kbx < bpr; kbx += bpi) {
             const int kby = kbx * (qk / QK8_1), kqs = vdr * (gl % per_block);
+            if constexpr (is_trellis(type)) {   // the lane decoded once for the job's rows (the main engine's tq_load / tq_apply)
+                const TqLane ln = tq_load<(int) type>(wr, kbx, kqs);
 #pragma unroll
-            for (int j = 0; j < TT; ++j)
-                if (j < n) tmp[j] += vdot<type>(wr, y + (size_t) ys[j] * y_stride + kby, kbx, kqs);
+                for (int j = 0; j < TT; ++j)
+                    if (j < n) tmp[j] += tq_apply(ln, y + (size_t) ys[j] * y_stride + kby, kqs);
+            } else {
+#pragma unroll
+                for (int j = 0; j < TT; ++j)
+                    if (j < n) tmp[j] += vdot<type>(wr, y + (size_t) ys[j] * y_stride + kby, kbx, kqs);
+            }
         }
 }
 
@@ -274,7 +281,7 @@ __global__ void __launch_bounds__(MMVQ_THREADS) k_moe_gu(MoeW w, const Job* __re
 // down: one block per (job, rows_per_block rows). The block first makes its tokens' h = silu(gate) * up (gu rows
 // jb.y[j] of [gate (ffs) | up (ffs)]) as q8_1 in shared memory; thread (row, u) then dots its 32-column unit u of the
 // row with each token's h, and the block sums a row's units into out row jb.out[j]
-constexpr int DN_THREADS = 256, DN_U = 32, DN_MAXB = FF_CARD_MAX / 32 > 8 ? FF_CARD_MAX / 32 : 8;   // DN_MAXB: ffs / 32 on any card
+constexpr int DN_THREADS = 256, DN_U = 32, DN_MAXB = FF_COVER_MAX / 32 > 8 ? FF_COVER_MAX / 32 : 8;   // DN_MAXB: the q8_1 blocks of a card's down input
 
 // every pair's h for k_moe_down, made once by k_moe_h (each of the ~70 down blocks of a job made its own). One MoE runs at
 // a time on a card (its window's stream), so one buffer per card
@@ -333,6 +340,71 @@ __global__ void __launch_bounds__(DN_THREADS) k_moe_down(MoeW w, const Job* __re
     if (live) {
         const char* wr = moe_expert(w, jb.w) + (size_t) row * w.row_a;
         for (int j = 0; j < n; ++j) part[j][threadIdx.x] = unit_dot<TA, DN_U>(wr, u, hq[j]);
+    }
+    __syncthreads();
+    for (int e = threadIdx.x; e < n * rpb; e += DN_THREADS) {
+        const int j = e / rpb, rr = e % rpb, orow = blockIdx.x * rpb + rr;
+        if (orow >= w.nrows) continue;
+        float s = 0.f;
+        for (int k = 0; k < nb; ++k) s += part[j][rr * nb + k];
+        out[(size_t) jb.out[j] * w.nrows + orow] = s;
+    }
+}
+
+// h for a trellis down matrix (moe_w.cuh MoeW::had): silu(gate) * up of pair e at columns [had_off, + ffs) of the card's cover (ncols,
+// zero elsewhere), rotated per 128 when the matrix is (had128), as q8_1 into g_moe_hq: a block of 128 threads per (pair, 128 columns)
+__global__ void __launch_bounds__(128) k_moe_h_had(const float* __restrict__ gu, int ffs, int ncols, int off, const float* __restrict__ signs,
+                                                  float scale) {
+    __shared__ float hb[128];
+    const int nb = ncols / 128, e = blockIdx.x / nb, col = (blockIdx.x % nb) * 128 + threadIdx.x, k = col - off, lane = threadIdx.x & 31;
+    float v = 0.f;
+    if (k >= 0 && k < ffs) {
+        const float* g = gu + (size_t) e * 2 * ffs;
+        v = silu_(g[k]) * g[ffs + k];
+    }
+    if (signs) v = had128(v, signs[col], scale, hb);
+    const float amax = wmax(fabsf(v)), sm = wsum(v);
+    const float d = amax / 127.0f;
+    block_q8_1& h = g_moe_hq[e][col / 32];
+    h.qs[lane] = amax == 0.0f ? 0 : (int8_t) roundf(v / d);
+    if (lane == 0) h.ds = make_half2(__float2half(d), __float2half(sm));
+}
+
+// down for the trellis types: the pairs' h from k_moe_h_had; thread (row, u) takes 128-column block u of the row, each of its 8 lanes
+// decoded once for the job's rows; the block sums a row's blocks into out row jb.out[j]
+template <GgmlType TA>
+__global__ void __launch_bounds__(DN_THREADS) k_moe_down_tq(MoeW w, const Job* __restrict__ jobs, const int* __restrict__ njobs,
+                                                           float* __restrict__ out) {
+    const int ji = blockIdx.y;
+    if (ji >= *njobs) return;
+    __shared__ Job jb;
+    __shared__ block_q8_1 hq[MAXT][DN_MAXB];
+    extern __shared__ float dn_part[];   // [the window's T][DN_THREADS]
+    float(*part)[DN_THREADS] = reinterpret_cast<float(*)[DN_THREADS]>(dn_part);
+    if (threadIdx.x == 0) jb = jobs[ji];
+    __syncthreads();
+    const int nq = w.ncols / 32, nb = w.ncols / 128, n = jb.n;
+    for (int q = threadIdx.x; q < n * nq * 9; q += DN_THREADS) {
+        const int jb9 = q / 9, j = jb9 / nq, b = jb9 % nq;
+        reinterpret_cast<int*>(&hq[j][b])[q % 9] = reinterpret_cast<const int*>(&g_moe_hq[jb.y[j]][b])[q % 9];
+    }
+    __syncthreads();
+    const int rpb = DN_THREADS / nb, r = threadIdx.x / nb, u = threadIdx.x % nb;
+    const int row = blockIdx.x * rpb + r;
+    const bool live = r < rpb && row < w.nrows;
+    if (live) {
+        const char* wr = moe_expert(w, jb.w) + (size_t) row * w.row_a;
+        float acc[MAXT] = {};
+#pragma unroll
+        for (int l = 0; l < 8; ++l) {
+            const TqLane ln = tq_load<(int) TA>(wr, u, 4 * l);
+#pragma unroll
+            for (int j = 0; j < MAXT; ++j)
+                if (j < n) acc[j] += tq_apply(ln, hq[j] + 4 * u, 4 * l);
+        }
+#pragma unroll
+        for (int j = 0; j < MAXT; ++j)
+            if (j < n) part[j][threadIdx.x] = acc[j];
     }
     __syncthreads();
     for (int e = threadIdx.x; e < n * rpb; e += DN_THREADS) {
@@ -506,6 +578,19 @@ void gu_sd_launch(int T, const MoeW& w, const Job* jobs, const int* njobs, int n
 template <GgmlType TA>
 void moe_launch(bool down, const MoeW& w, const Job* jobs, const int* njobs, int njobs_max, const void* in, float* out,
                 cudaStream_t s, int T) {
+    if constexpr (is_trellis(TA)) {
+        if (down) {
+            if (w.ncols % 128 || w.ncols / 32 > DN_MAXB || w.had_ffs <= 0 || w.had_off < 0 || w.had_off + w.had_ffs > w.ncols)
+                throw std::runtime_error("moe_down (trellis): the cover does not fit the units");
+            if (njobs_max > MAXT * TOPK) throw std::runtime_error("moe_down: more pairs than g_moe_hq holds");
+            k_moe_h_had<<<njobs_max * (w.ncols / 128), 128, 0, s>>>((const float*) in, w.had_ffs, w.ncols, w.had_off, w.had,
+                                                                   1.0f / std::sqrt((float) HAD_BLOCK));
+            const int rpb = DN_THREADS / (w.ncols / 128);
+            k_moe_down_tq<TA><<<dim3((w.nrows + rpb - 1) / rpb, njobs_max), DN_THREADS, sizeof(float) * T * DN_THREADS, s>>>(w, jobs, njobs,
+                                                                                                                      out);
+            return;
+        }
+    }
     if (down) {
         if (!unit_ok<TA>(DN_U) || w.ncols / DN_U > DN_MAXB)
             throw std::runtime_error("moe_down: shape or type does not fit the units");

@@ -18,11 +18,13 @@
 
 #include "qdot.cuh"        // the quantized decode dots (ggml vecdotq.cuh's arithmetic, MIT; see the file)
 #include "iqdot_hip.cuh"   // HIP: the i-quant dots with a cheaper sign expansion (same integers as ggml's)
+#include "hadamard_meta.hpp"   // HAD_BLOCK: the APR rotation's block
+#include "hadamard.cuh"        // had128
 
 // compiled in parts (Makefile: build/kernels_pN.o with -DFNX_KPART=N), each with its share of the launchers below and
 // so only the template kernels they instantiate: one file's ~700 kernels took ~7 minutes on one core
 #ifndef FNX_KPART
-#error "kernels.cu: compile with -DFNX_KPART=0..8 (one object per part)"
+#error "kernels.cu: compile with -DFNX_KPART=0..9 (one object per part)"
 #endif
 
 namespace fnx {
@@ -138,6 +140,7 @@ template <GgmlType type> __device__ __forceinline__ float vdot(const void* v, co
 #else
     else if constexpr (type == T_IQ2_S) return vec_dot_iq2_s_q8_1(v, y, kbx, iqs);
 #endif
+    else if constexpr (is_trellis(type)) return vec_dot_tq_q8_1<(int) type>(v, y, kbx, iqs);
     else return 0.0f;
 }
 template <GgmlType type> constexpr int vdr_of() {
@@ -151,6 +154,7 @@ template <GgmlType type> constexpr int vdr_of() {
     else if constexpr (type == T_IQ4_XS) return VDR_IQ4_XS;
     else if constexpr (type == T_IQ3_S) return VDR_IQ3_S;
     else if constexpr (type == T_IQ3_XXS) return VDR_IQ3_XXS;
+    else if constexpr (is_trellis(type)) return VDR_TQ;
     else return VDR_IQ2_S;
 }
 
@@ -2155,12 +2159,14 @@ void router_route(const float* W, const float* x, float* logits, int T, int* top
 }
 
 #endif
+// the trellis types' routed experts (part 9: its kernels compile beside part 2's instead of after them)
+void moe_mm_trellis(bool down, const DW& A, size_t sa, const Job* jobs, const int* njobs, int njobs_max, const void* in, void* out, void* st, int T);
 #if FNX_KPART == 2
 namespace {
 void moe_mm(bool down, const DW& A, size_t sa, const Job* jobs, const int* njobs, int njobs_max, const void* in, void* out,
             void* st, int tt = 0) {
     const int T = tt ? tt : njobs_max / TOPK;   // the most rows a job has
-    const MoeW w{(const char*) A.p, sa, A.row_bytes, A.n_out, A.n_in, A.ep};
+    const MoeW w{(const char*) A.p, sa, A.row_bytes, A.n_out, A.n_in, A.ep, A.had, A.had_off, A.had_ffs};
     cudaStream_t s = (cudaStream_t) st;
     switch (A.type) {
         case T_Q4_K:
@@ -2176,10 +2182,12 @@ void moe_mm(bool down, const DW& A, size_t sa, const Job* jobs, const int* njobs
         case T_IQ3_S: moe_launch<T_IQ3_S>(down, w, jobs, njobs, njobs_max, in, (float*) out, s, T); break;
         case T_IQ3_XXS: moe_launch<T_IQ3_XXS>(down, w, jobs, njobs, njobs_max, in, (float*) out, s, T); break;
         case T_IQ2_S: moe_launch<T_IQ2_S>(down, w, jobs, njobs, njobs_max, in, (float*) out, s, T); break;
+        case T_TQ2_T: case T_TQK6: case T_TQK7: moe_mm_trellis(down, A, sa, jobs, njobs, njobs_max, in, out, st, T); break;
         default: throw std::runtime_error("moe: expert type " + std::to_string(A.type) + " not handled");
     }
     ck_launch(down ? "moe_down" : "moe_gate_up");
 }
+
 
 __global__ void k_swiglu_stacked(const float* gu, block_q8_1* hq, int ffs, int8_t* tq, float* td) {
     const int t = blockIdx.y, b = blockIdx.x * (blockDim.x / 32) + (threadIdx.x >> 5), lane = threadIdx.x & 31;
@@ -2481,3 +2489,51 @@ void add_streams(const float* h, const float* e, float* R, int T, void* st) {
 }
 }  // namespace fnx
 #endif
+
+namespace fnx {
+#if FNX_KPART == 9
+// ---------------------------------------------------------------- the APR trellis experts (Gyro-S, Gyro-M) and their rotation
+namespace {
+// APR: rows of n rotated per 128 columns (had128), then q8_1 (k_quantize's rounding) or f16; a block of 128 threads per (128 columns, row)
+template <bool Q8>
+__global__ void __launch_bounds__(128) k_had_rows(const float* __restrict__ x, void* __restrict__ y, int n, const float* __restrict__ signs,
+                                                 float scale) {
+    __shared__ float hb[128];
+    const int row = blockIdx.y, col = blockIdx.x * 128 + threadIdx.x, lane = threadIdx.x & 31;
+    const float v = had128(x[(size_t) row * n + col], signs[col], scale, hb);
+    if constexpr (Q8) {
+        const float amax = wmax(fabsf(v)), sum = wsum(v);
+        const float d = amax / 127.0f;
+        block_q8_1& q = reinterpret_cast<block_q8_1*>(y)[(size_t) row * (n / 32) + col / 32];
+        q.qs[lane] = amax == 0.0f ? 0 : (int8_t) roundf(v / d);
+        if (lane == 0) q.ds = make_half2(__float2half(d), __float2half(sum));
+    } else {
+        reinterpret_cast<__half*>(y)[(size_t) row * n + col] = __float2half(v);
+    }
+}
+}  // namespace
+
+void moe_mm_trellis(bool down, const DW& A, size_t sa, const Job* jobs, const int* njobs, int njobs_max, const void* in, void* out, void* st, int T) {
+    const MoeW w{(const char*) A.p, sa, A.row_bytes, A.n_out, A.n_in, A.ep, A.had, A.had_off, A.had_ffs};
+    cudaStream_t s = (cudaStream_t) st;
+    switch (A.type) {
+        case T_TQ2_T: moe_launch<T_TQ2_T>(down, w, jobs, njobs, njobs_max, in, (float*) out, s, T); break;
+        case T_TQK6: moe_launch<T_TQK6>(down, w, jobs, njobs, njobs_max, in, (float*) out, s, T); break;
+        case T_TQK7: moe_launch<T_TQK7>(down, w, jobs, njobs, njobs_max, in, (float*) out, s, T); break;
+        default: throw std::runtime_error("moe_mm_trellis: expert type " + std::to_string(A.type));
+    }
+}
+void had_quantize_q8_1(const float* x, void* q, int n, int rows, const float* signs, void* st) {
+    if (n % HAD_BLOCK || !signs) throw std::runtime_error("had_quantize_q8_1: rows of whole 128-column blocks and a sign vector");
+    if (rows <= 0) return;
+    k_had_rows<true><<<dim3(n / 128, rows), 128, 0, (cudaStream_t) st>>>(x, q, n, signs, 1.0f / std::sqrt((float) HAD_BLOCK));
+    ck_launch("had_quantize_q8_1");
+}
+void had_rows_f16(const float* x, uint16_t* y, int n, int rows, const float* signs, void* st) {
+    if (n % HAD_BLOCK || !signs) throw std::runtime_error("had_rows_f16: rows of whole 128-column blocks and a sign vector");
+    if (rows <= 0) return;
+    k_had_rows<false><<<dim3(n / 128, rows), 128, 0, (cudaStream_t) st>>>(x, y, n, signs, 1.0f / std::sqrt((float) HAD_BLOCK));
+    ck_launch("had_rows_f16");
+}
+#endif
+}  // namespace fnx

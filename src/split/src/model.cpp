@@ -1,4 +1,5 @@
 #include "model.hpp"
+#include "hadamard_meta.hpp"
 #include "card_check.hpp"
 #include "env.hpp"
 #include "expert_residency.hpp"
@@ -624,11 +625,19 @@ struct Up {
         h.insert(h.end(), (const float*) t2.data, (const float*) t2.data + t2.ne[0] * t2.ne[1]);
         return put<float>(h.data(), h.size() * 4);
     }
-    // per expert: every row, input blocks [b0, b1) (down), expert-major
-    DW expert_cols(const Tensor& t, int b0, int b1, size_t& stride, const char** host_of = nullptr) {
-        const TypeInfo ti = block32(t);
+    // per expert: every row, input columns [c0, c1) (down), expert-major. A type with blocks wider than the slice's ends (the trellis
+    // types' 128) keeps the whole blocks around it, its cover (card_split.hpp): DW had_off, had_ffs say where [c0, c1) lies in it
+    DW expert_cols(const Tensor& t, int c0, int c1, size_t& stride, const char** host_of = nullptr) {
+        const TypeInfo ti = type_info(t.type);
+        const int b0 = c0 / ti.block, b1 = (c1 + ti.block - 1) / ti.block;
+        if (c0 < 0 || c1 <= c0) throw std::runtime_error(t.name + ": columns [" + std::to_string(c0) + ", " + std::to_string(c1) + ") asked for");
+        if ((c0 % ti.block || c1 % ti.block) && !is_trellis(t.type))
+            throw std::runtime_error(t.name + ": columns [" + std::to_string(c0) + ", " + std::to_string(c1) + ") cut its " +
+                                     std::to_string(ti.block) + "-value blocks (only the trellis kernels read a cover)");
         DW w;
         w.type = t.type;
+        w.had_off = c0 - b0 * ti.block;
+        w.had_ffs = c1 - c0;
         w.n_in = (b1 - b0) * ti.block;
         w.n_out = (int) t.ne[1];
         w.row_bytes = (size_t) (b1 - b0) * ti.bytes;
@@ -745,8 +754,9 @@ void load_layers_27b(Stager& st, CardW& c, Up& up, const std::vector<int>& conv_
 // The tensors come from st: group l is layer l's, group NL the output head's (stage_groups); each group is given back
 // once this card is through with it.
 // host_experts: every routed expert to a host copy (an ExpertCache, or the lab's holder); store: the holder's shared memory
+// had: the file's APR rotation (hadamard_meta.hpp; block 0: none)
 void load_card(Stager& st, CardW& c, const std::vector<std::vector<char>>& resident, const std::vector<double>* arena_score,
-               Store* store, bool host_experts) {
+               Store* store, bool host_experts, const HadSpec& had) {
     ck(cudaSetDevice(c.dev), "cudaSetDevice");
     Up up{c, store};
     auto L = [&](int l, const char* s) -> const Tensor& { return st.t(l, "blk." + std::to_string(l) + "." + s); };
@@ -784,7 +794,7 @@ void load_card(Stager& st, CardW& c, const std::vector<std::vector<char>>& resid
     for (int h = c.kv0; h < c.kv0 + c.nkv; ++h)
         for (int i = 0; i < HD; ++i) kvrows.push_back(h * HD + i);
 #if FNX_27B
-    (void) resident, (void) arena_score, (void) host_experts;
+    (void) resident, (void) arena_score, (void) host_experts, (void) had;
     load_layers_27b(st, c, up, conv_rows, zrows, vblocks, qrows, kvrows, woblocks);
     return;
 #endif
@@ -793,6 +803,10 @@ void load_card(Stager& st, CardW& c, const std::vector<std::vector<char>>& resid
     for (int i = 0; i < NQH * 2 * HD; ++i) qrows_all.push_back(i);
     for (int i = 0; i < NKVH * HD; ++i) kvrows_all.push_back(i);
     c.L.resize(NL);
+    // the rotated experts' signs on this card: gate|up's N-wide input, down's cover of the card's ff slice (set at the first rotated down)
+    const float* had_n = had.signs_n.empty() ? nullptr : up.put<float>(had.signs_n.data(), had.signs_n.size() * 4);
+    const float* had_ff = nullptr;
+    int had_ff_lo = -1;
     std::vector<const char*> hgu(host_experts ? (size_t) NL * NEXP : 0), hdn(hgu.size());   // the experts' host copies
     for (int l = 0; l < NL; ++l) {
         LayerW& w = c.L[l];
@@ -845,7 +859,19 @@ void load_card(Stager& st, CardW& c, const std::vector<std::vector<char>>& resid
             w.idx_kn = up.f32(L(l, "indexer.k_norm.weight"), QSA_KEY);
         }
         w.gu_e = up.expert_rows2(L(l, "ffn_gate_exps.weight"), L(l, "ffn_up_exps.weight"), c.ff0, c.ff1, w.gu_e_stride, hg);
-        w.down_e = up.expert_cols(L(l, "ffn_down_exps.weight"), c.ff0 / 32, c.ff1 / 32, w.down_e_stride, hd);
+        w.down_e = up.expert_cols(L(l, "ffn_down_exps.weight"), c.ff0, c.ff1, w.down_e_stride, hd);
+        if (had.rotated(L(l, "ffn_gate_exps.weight").name)) w.gu_e.had = had_n;
+        if (had.rotated(L(l, "ffn_down_exps.weight").name)) {
+            if (!is_trellis(w.down_e.type))
+                throw std::runtime_error("fnx: layer " + std::to_string(l) + "'s down experts are rotated but not in a trellis type (only those kernels rotate h)");
+            const int lo = c.ff0 - w.down_e.had_off;
+            if (!had_ff) {
+                had_ff = up.put<float>(had.signs_ff.data() + lo, (size_t) w.down_e.n_in * 4);
+                had_ff_lo = lo;
+            }
+            if (lo != had_ff_lo) throw std::runtime_error("fnx: the rotated down experts' covers differ between layers");
+            w.down_e.had = had_ff;
+        }
         w.sh_gu = up.dense(up.rows2(L(l, "ffn_gate_shexp.weight"), range(c.ff0, c.ff1), L(l, "ffn_up_shexp.weight"), range(c.ff0, c.ff1)));
         w.sh_down = up.dense(up.cols(L(l, "ffn_down_shexp.weight"), range(c.ff0 / 32, c.ff1 / 32)));
         if (!w.sh_gu.s.q || !w.sh_down.s.q) throw std::runtime_error("fnx: the shared expert is not Q8_0");
@@ -1104,7 +1130,7 @@ void load_mtp_card(const Model& m, const MtpFiles& f, const CardW& c, const std:
     w.idx_qn = up.f32(f["self_attn.indexer.q_layernorm.weight"], QSA_KEY);
     w.idx_kn = up.f32(f["self_attn.indexer.k_layernorm.weight"], QSA_KEY);
     w.gu_e = up.expert_rows2(f.gate, f.up, c.ff0, c.ff1, w.gu_e_stride);
-    w.down_e = up.expert_cols(f.down, c.ff0 / 32, c.ff1 / 32, w.down_e_stride);
+    w.down_e = up.expert_cols(f.down, c.ff0, c.ff1, w.down_e_stride);
     w.sh_gu = up.dense(up.rows2(f["mlp.shared_expert.gate_proj.weight"], range(c.ff0, c.ff1), f["mlp.shared_expert.up_proj.weight"],
                                 range(c.ff0, c.ff1)));
     w.sh_down = up.dense(up.cols(f["mlp.shared_expert.down_proj.weight"], range(c.ff0 / 32, c.ff1 / 32)));
@@ -1224,7 +1250,11 @@ Mtp::~Mtp() { free_mtp_cards(cards); }
 // the cards (the app's rule, strata_control/split_engine.py, refuses it earlier; this is the same check for a start that skipped the rule). The
 // server then starts the normal layer split. Q2_0 is not listed: the Gguf has already repacked it to Q4_0.
 static void check_supported(const Gguf& g) {
-    const uint32_t ok[] = {T_Q4_K, T_Q5_K, T_Q5_1, T_Q8_0, T_Q4_0, T_IQ4_NL, T_IQ4_XS, T_IQ3_S, T_IQ3_XXS, T_IQ2_S};
+    const uint32_t ok[] = {T_Q4_K, T_Q5_K, T_Q5_1, T_Q8_0, T_Q4_0, T_IQ4_NL, T_IQ4_XS, T_IQ3_S, T_IQ3_XXS, T_IQ2_S, T_TQ2_T, T_TQK6, T_TQK7};
+    // the big-job kernels (prefill.cu, moe_q8) take the unrotated activations and do not read the trellis types
+    if (env_flag("FNX_PF_MOE_Q8") && (g.trellis_experts() || had_spec(g, FF, N).block))
+        throw std::runtime_error("FNX_PF_MOE_Q8: the prompt's big-job expert kernels read neither rotated experts (prism.hadamard) nor the "
+                                 "trellis types (Gyro-S, Gyro-M); unset it");
     for (const auto& kv : g.tensors()) {
         const std::string& n = kv.first;
         if (n.find("_exps.weight") == std::string::npos || n.find("shexp") != std::string::npos) continue;
@@ -1234,7 +1264,13 @@ static void check_supported(const Gguf& g) {
     }
 }
 
-Model::Model(const std::string& path, Load how, Store* store, const std::string* image) : g(path) {
+// FNX_PLE_GGUF: a GGUF with the per-layer embedding table (per_layer_token_embd.weight) for a model file without it (Gyro-S noPLE)
+static std::string ple_gguf() {
+    const char* p = std::getenv("FNX_PLE_GGUF");
+    return p ? p : "";
+}
+
+Model::Model(const std::string& path, Load how, Store* store, const std::string* image) : g(path, ple_gguf()) {
     // the cards first: reading the embeddings into RAM below takes seconds on a cold cache
     {
         int ndev = 0;
@@ -1430,13 +1466,15 @@ Model::Model(const std::string& path, Load how, Store* store, const std::string*
 #endif
     const auto t0 = std::chrono::steady_clock::now();
     Stager st(g, stage_groups(g), NCARD);
+    const HadSpec had = had_spec(g, FF, N);
+    if (had.block) std::fprintf(stderr, "fnx: %zu routed-expert matrices stored rotated (prism.hadamard, blocks of %d)\n", had.names.size(), had.block);
     std::vector<std::thread> th;
     std::vector<std::string> errs(NCARD);
     for (int c = 0; c < NCARD; ++c)
         th.emplace_back([&, c] {
             try {
                 load_card(st, cards[c], resident, arena ? &score : nullptr, how == Load::HOLD ? store : nullptr,
-                          how == Load::HOLD || !resident.empty());
+                          how == Load::HOLD || !resident.empty(), had);
             } catch (const std::exception& e) {
                 errs[c] = e.what();
                 st.abort("card " + std::to_string(c) + " failed");   // the other cards wait on groups no one gives back
@@ -1493,8 +1531,14 @@ void Model::choose_residency() {
         score.assign((size_t) NL * NEXP, 0.0);
         for (int l = 0; l < NL; ++l) {
             const std::string b = "blk." + std::to_string(l) + ".";
-            sizes[(size_t) l] = {(g.t(b + "ffn_gate_exps.weight").nbytes + g.t(b + "ffn_up_exps.weight").nbytes) / NEXP,
-                                g.t(b + "ffn_down_exps.weight").nbytes / NEXP};
+            const Tensor& dn = g.t(b + "ffn_down_exps.weight");
+            size_t dn_bytes = dn.nbytes / NEXP;
+            if (is_trellis(dn.type)) {   // the cards' covers (expert_cols) overlap: their down slices add up to more than the matrix
+                int cols = 0;
+                for (int c = 0; c < NCARD; ++c) cols += cover_hi(NCARD, c, type_info(dn.type).block) - cover_lo(NCARD, c, type_info(dn.type).block);
+                dn_bytes = dn_bytes * (size_t) cols / FF;
+            }
+            sizes[(size_t) l] = {(g.t(b + "ffn_gate_exps.weight").nbytes + g.t(b + "ffn_up_exps.weight").nbytes) / NEXP, dn_bytes};
             bytes[(size_t) l] = (double) sizes[(size_t) l].first + sizes[(size_t) l].second;
             for (int e = 0; e < NEXP; ++e) {
                 const size_t i = (size_t) l * NEXP + e;
@@ -1595,13 +1639,13 @@ void card_fields(CardW& c, F f) {
         f(c.ple_norm_query), f(c.ple_norm_conv), f(c.ple_conv), f(c.bytes), f(c.host_bytes);
 }
 #if !FNX_27B   // the 27B has no holder (plain loads only)
-static_assert(sizeof(CardW) == 896, "CardW changed: put what load_card stores in card_fields, then update this size");
+static_assert(sizeof(CardW) == 944, "CardW changed: put what load_card stores in card_fields, then update this size");
 #endif
 // every address load_card stores, in a card and in a layer: a worker moves them to where it mapped the holder's memory
 template <typename F>
 void card_ptrs(CardW& c, F f) {
     auto q8 = [&](Q8S& s) { f(s.q), f(s.d); };
-    auto dw = [&](DW& d) { f(d.p), q8(d.s), f(d.ep); };
+    auto dw = [&](DW& d) { f(d.p), q8(d.s), f(d.ep), f(d.had); };
     f(c.vmap), f(c.head_norm), q8(c.head_down), q8(c.head_up), dw(c.out), dw(c.ple_key), dw(c.ple_value), f(c.ple_norm_key),
         f(c.ple_norm_query), f(c.ple_norm_conv), f(c.ple_conv);
     for (LayerW& w : c.L) {
@@ -1616,7 +1660,7 @@ void card_ptrs(CardW& c, F f) {
     for (const char*& p : c.ec_host_dn) f(p);
 }
 #if !FNX_27B
-static_assert(sizeof(LayerW) == 952, "LayerW changed: put its new addresses in card_ptrs, then update this size");
+static_assert(sizeof(LayerW) == 1160, "LayerW changed: put its new addresses in card_ptrs, then update this size");
 #endif
 }  // namespace
 

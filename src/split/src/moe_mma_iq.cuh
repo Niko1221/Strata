@@ -62,6 +62,69 @@ struct MmTile4 {
     }
 };
 template <> struct MmTile<T_Q4_0> : MmTile4<false> {};
+
+// The APR trellis types (TQ2_T, TQK6, TQK7; trellis.cuh): a thread's 32 values are steps 8 s .. 8 s + 7 of a 128-value block (s: its
+// sub-block), the block's lanes 2 s and 2 s + 1. Each value is f16(d * point) with the f16 codebook, the main engine's dq_tq (and ggml's
+// to_float, rounded to f16). fetch() reads the scale and the bits of the 8 steps: TQK, each lane's four u16 words from the main engine's
+// tq_states4 rule; TQ2_T, its 8 state bytes and the byte before them (the first step's previous byte, circular)
+template <int TY>
+struct MmTileTq {
+    uint32_t d;
+    uint64_t w[2];
+    int sh[2];
+    bool live, item;
+    __device__ __forceinline__ void fetch(const char* we, size_t row_a, int nrows, int row0, int k0, int kc) {
+        const int r = threadIdx.x / MM_TPR, u = threadIdx.x % MM_TPR, row = row0 + r;
+        item = u * 32 < kc;
+        live = item && row < nrows;
+        if (live) {
+            const int col = k0 + 32 * u, s = (col % 128) / 32;
+            const uint8_t* b = (const uint8_t*) we + (size_t) row * row_a + (size_t) (col / 128) * TqInfo<TY>::bytes;
+            const uint8_t* qs = b + 2;
+            d = mq_ld16(b);
+            if constexpr (TY == 144) {
+                w[0] = (uint64_t) mq_ld16(qs + 8 * s) | ((uint64_t) mq_ld16(qs + 8 * s + 2) << 16) | ((uint64_t) mq_ld16(qs + 8 * s + 4) << 32) |
+                       ((uint64_t) mq_ld16(qs + 8 * s + 6) << 48);
+                w[1] = qs[(8 * s + 31) & 31];
+            } else {
+                constexpr int K = TqInfo<TY>::K, nw = 2 * K;
+#pragma unroll
+                for (int h = 0; h < 2; ++h) {
+                    const int off3 = (28 - 4 * (2 * s + h)) * K, wb = off3 >> 4;
+                    sh[h] = off3 & 15;
+                    w[h] = (uint64_t) mq_ld16(qs + 2 * wb) | ((uint64_t) mq_ld16(qs + 2 * ((wb + 1) % nw)) << 16) |
+                           ((uint64_t) mq_ld16(qs + 2 * ((wb + 2) % nw)) << 32) | ((uint64_t) mq_ld16(qs + 2 * ((wb + 3) % nw)) << 48);
+                }
+            }
+        }
+    }
+    __device__ __forceinline__ void put(int, int, __half* sw) const {
+        if (!item) return;
+        const int r = threadIdx.x / MM_TPR, u = threadIdx.x % MM_TPR;
+        if (!live) {
+            mq_zero32(sw + r * MM_LD + u * 32);
+            return;
+        }
+        const float dd = mq_half(d);
+        float f[32];
+#pragma unroll
+        for (int i = 0; i < 8; ++i) {
+            uint32_t st;
+            if constexpr (TY == 144) {
+                const uint32_t cur = (uint32_t) (w[0] >> (8 * i)) & 0xFF, prev = i ? (uint32_t) (w[0] >> (8 * (i - 1))) & 0xFF : (uint32_t) w[1];
+                st = prev << 8 | cur;
+            } else {
+                constexpr int K = TqInfo<TY>::K;
+                st = (uint32_t) (w[i / 4] >> (sh[i / 4] + (3 - i % 4) * K)) & 0xFFFF;
+            }
+            tq_step_f<TY>(st, dd, f + 4 * i);
+        }
+        mq_put32(sw + r * MM_LD + u * 32, f);
+    }
+};
+template <> struct MmTile<T_TQ2_T> : MmTileTq<144> {};
+template <> struct MmTile<T_TQK6> : MmTileTq<145> {};
+template <> struct MmTile<T_TQK7> : MmTileTq<146> {};
 template <> struct MmTile<T_IQ4_NL> : MmTile4<true> {};
 
 // IQ4_XS: 136 bytes = d (f16), scales_h (u16), scales_l[4], qs[128]; sub-block ib has 16 qs bytes at 8 + 16 ib and a 6-bit scale

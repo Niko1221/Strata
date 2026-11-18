@@ -328,7 +328,8 @@ struct Engine::Pf {
     float *R, *xf, *rs, *lo32, *up32, *mixed, *bo_a, *bo_f, *inj_a, *inj_f;
     __half* lo16;
     void* xq;                         // mixed as q8_1 (with a twin), for the experts through the decode kernels
-    uint16_t* h16;                    // the experts' swiglu rows as f16, for the tensor-core down product
+    uint16_t* h16;                    // the experts' swiglu rows as f16, for the tensor-core down product (a trellis down: its cover wide)
+    __half* xhr = nullptr;            // rotated routed experts (DW::had): mixed rotated per 128 as f16, their gate|up's input
     bool moe_q8 = false;              // FNX_PF_MOE_Q8=1: the experts through the decode kernels' q8_1 arithmetic
     float *logits, *topw, *gu, *part, *shg;
     __half* shh;
@@ -873,6 +874,12 @@ void Engine::prefill_alloc() {
         ckb(cublasSetMathMode(p->blas, CUBLAS_TENSOR_OP_MATH), "math mode");
         p->f16acc = env_flag("FNX_PF_F16ACC");
         const int ffs = w.ff1 - w.ff0, rs_qkvz = w.conv_ch() + w.nv() * HS;
+        int hcols = ffs;   // h16's row: a trellis down reads the card's cover (model.cpp expert_cols)
+        bool rot = false;
+        for (const LayerW& lw : w.L) {
+            if (is_trellis(lw.down_e.type)) hcols = std::max(hcols, lw.down_e.n_in);
+            rot |= lw.gu_e.had != nullptr;
+        }
         // the borrowed block (the recurrent snapshots): the phase region, then whole-chunk scratch; the rest on its own
         Arena big{(char*) b.snap_block, b.snap_block_bytes};
         // one region for the buffers of each phase of a layer: they never live at once (the FFN half's are read last
@@ -882,7 +889,8 @@ void Engine::prefill_alloc() {
             p->part = a.take<float>((size_t) (pf_c_ * TOPK + pf_c_) * N);
             p->shg = a.take<float>((size_t) pf_c_ * 2 * ffs);
             p->shh = a.take<__half>((size_t) pf_c_ * ffs);
-            p->h16 = a.take<uint16_t>((size_t) pf_c_ * TOPK * ffs);
+            p->h16 = a.take<uint16_t>((size_t) pf_c_ * TOPK * hcols);
+            if (rot) p->xhr = a.take<__half>((size_t) pf_c_ * N);
         };
         auto attn_set = [&](Arena& a) {
             p->qg = a.take<float>((size_t) pf_c_ * NQH * 2 * HD);
@@ -1747,8 +1755,14 @@ void Engine::prefill_pass(const std::vector<PfChunk>& chunks, bool staging, cons
                     moe_gate_up_big(gu_e, L.gu_e_stride, p.jobs_gu, p.njobs, pf_jobs_, p.xq, p.gu, s);
                     moe_down_big(down_e, L.down_e_stride, p.jobs_dn, p.njobs, pf_jobs_, p.gu, p.part, s);
                 } else {
-                    moe_gate_up_mma(gu_e, L.gu_e_stride, p.jobs_gu, p.njobs, pf_jobs_, reinterpret_cast<const uint16_t*>(p.xh), p.gu, s);
-                    swiglu_h16(p.gu, ffs, P, p.h16, s);
+                    const __half* xg = p.xh;   // rotated experts (APR files) read mixed rotated as the file stored them; xh stays the shared expert's
+                    if (gu_e.had) {
+                        had_rows_f16(p.mixed, reinterpret_cast<uint16_t*>(p.xhr), N, C, gu_e.had, s);
+                        xg = p.xhr;
+                    }
+                    moe_gate_up_mma(gu_e, L.gu_e_stride, p.jobs_gu, p.njobs, pf_jobs_, reinterpret_cast<const uint16_t*>(xg), p.gu, s);
+                    if (is_trellis(down_e.type)) swiglu_h16_had(p.gu, ffs, P, p.h16, down_e, s);
+                    else swiglu_h16(p.gu, ffs, P, p.h16, s);
                     moe_down_mma(down_e, L.down_e_stride, p.jobs_dn, p.njobs, pf_jobs_, p.h16, p.part, s);
                 }
                 if (staging && j == nk - 1) ckc(cudaEventRecord(p.ev_done[l & 1], s), "stage done");
