@@ -85,3 +85,38 @@ Antigravity セッションの `implementation_plan.md` に基づき、Qwen3.8-2
 - `compute-sanitizer --tool memcheck`: 0 errors (計測下では PASS)。`--tool racecheck`: 1 hazard を検出するが詳細出力なし。
 - 活性 `act_scales` / `act_fp16` は全トークンで有限かつ非ゼロ (直接ダンプで確認)。
 - 結論: cuBLAS/アンスケール経路の timing 依存 race であり、現状の証拠では原因を確定できない。`releaseQualified=false` を維持し、リリース操作は行わない。
+
+## prefill_gemm race の根本原因と修正 (2026-11-18)
+
+### 根本原因
+`prefill_gemm_test.cu` の実モデル形状テストが、入力を **default stream** の同期
+`cudaMemcpy` で転送しながら、その後のカーネルを `cudaStreamNonBlocking` で
+作成した `test_stream` で実行していた。legacy default stream は blocking stream
+とは暗黙同期するが **non-blocking stream とは同期しない** ため、H2D コピーと
+`prepare_activation` が競合した。
+
+直接ダンプによる証拠:
+- 失敗時は `act_scales` の末尾トークンが 0、`act_fp16` の当該行が連続した
+  末尾ゼロ (例: tok=58 は 4736/5120、tok=59..63 は 0/5120) になる。
+- H2D コピーの直後に同期 D2H を挟むと 6/6 PASS に変化。
+- これは入力コピーの完了待ちが原因であることを示す。
+
+### 修正
+H2D コピーを `cudaMemcpyAsync(..., test_stream)` に変更し、同じ stream 上で
+順序づけた。カーネル側 (prefill_gemm.cu / .cuh) は変更していない。
+
+### 検証
+- `q38-prefill-gemm-test.exe` を 10 回連続実行: **pass=10 / fail=0**。
+- `ctest` を 3 回連続実行: **100% tests passed out of 17** を 3 回とも記録。
+- fused-WMMA ビルド (50/50 ビルド成功) でも同じ race が再現したため、
+  GEMM 実装 (cuBLAS / WMMA) ではなくテストの stream 順序が原因と確定。
+
+### Deep research (一次資料)
+- NVIDIA CUDA 13.5 Release Notes: cuBLASLt の Tensor Memory 並行実行時の
+  誤結果修正 (algo config ID 66、Compute Capability 10.x)、FP32 GEMM の
+  Blackwell 向けヒューリスティック改善を記載。
+- Qwen Team, "On the Design of Qwen3.8-Next Architecture" (arXiv:2608.30320v1):
+  GDN と global attention を 3:1 で hybrid、QSA は compression ratio r=4 /
+  token budget K=2048 (512 blocks)、Gated Residual 4 ブランチ、
+  n-gram embedding を host メモリへオフロード。FlashQLA で GDN forward 2-3x。
+  ネイティブエンジンの GDN/Spin8 KV 経路と整合する設計方針。

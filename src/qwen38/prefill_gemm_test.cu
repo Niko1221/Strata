@@ -320,8 +320,11 @@ int main() {
             h_rx[i] = 0.08f * std::sin(0.017f * static_cast<float>(i));
         }
         Q::Buffer d_rw(h_rw.size()), d_rx(h_rx.size() * sizeof(float)), d_ry(static_cast<size_t>(sc.t) * sc.n * sizeof(float));
-        Q::ck(cudaMemcpy(d_rw.data, h_rw.data(), d_rw.bytes, cudaMemcpyHostToDevice));
-        Q::ck(cudaMemcpy(d_rx.data, h_rx.data(), d_rx.bytes, cudaMemcpyHostToDevice));
+        // H2D copies must be ordered before the kernel on test_stream.  A
+        // synchronous default-stream copy does NOT synchronise with a
+        // cudaStreamNonBlocking stream, so use async copies on that stream.
+        Q::ck(cudaMemcpyAsync(d_rw.data, h_rw.data(), d_rw.bytes, cudaMemcpyHostToDevice, test_stream));
+        Q::ck(cudaMemcpyAsync(d_rx.data, h_rx.data(), d_rx.bytes, cudaMemcpyHostToDevice, test_stream));
         const auto rqt = Q::make_quant_tensor(d_rw.data, sc.type_id, sc.k, sc.n);
         rws.matmul_batch(rqt, d_rx.as<float>(), d_ry.as<float>(), sc.t, test_stream);
         Q::ck(cudaStreamSynchronize(test_stream));
