@@ -33,6 +33,12 @@ lines. There are two functional changes and one test:
 - What it does: in prefill, the hyper-connection up-projection consumer is fed
   packed fp16 halves straight to the GEMM instead of first widening them to
   fp32. The widen pass is skipped; the math result is unchanged.
+- Why: the prefill hot loop runs the hyper-connection up-projection millions of
+  times per prompt, and upstream widens its input fp16 to fp32 first, every
+  time. Widening loses no information, so the GEMM sees the same numbers
+  either way and the pass is pure overhead in the card's busiest loop. F-2
+  removes that overhead. It fixes no correctness bug - it stops paying for
+  work the math cannot see.
 - How to turn it on: environment variable `STRATA_HC_MIX_H16=1`.
   Without the variable the code path is identical to upstream.
 - Measured effect: +1.5 to +2.5% prompt processing on this card, at every
@@ -46,6 +52,13 @@ lines. There are two functional changes and one test:
   inner loops to use VOP3P packed-math instructions instead of unpacked
   V_DOT4 chains, and adds a `dp4a_z` helper for zero-extended accumulation.
   Applies to the q8_0 and IQ2_XS/IQ2_S dot chains.
+- Why: upstream's MMQ inner loop uses the unpacked `V_DOT4` int8 dot
+  instruction, which is slower than the packed `VOP3P` math the same card
+  offers. On gfx1030 that leaves quantized-prefill speed unused in the hottest
+  loop of the kernel. The patches swap in the packed instructions and cut the
+  instruction count. What they fix is an ISA-level inefficiency, not a bug -
+  and because it sits inside quantized prefill, it matters most at the lower
+  tiers, where that path is a bigger share of the work.
 - How to turn it on: build flag `STRATA_PREFILL_MMQ=ON` (requires
   `STRATA_MMQ=ON`, the new split on current main).
 - Measured effect: +0.5 to +1.0% prompt processing on top of F-2 at the
