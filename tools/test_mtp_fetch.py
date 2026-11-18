@@ -357,13 +357,14 @@ class OneAtATime(unittest.TestCase):
         python.exe on Windows is a launcher that spawns the interpreter, so the id Popen reports is not the
         id of the process that runs the code.  Returns (child pid, whether a launcher sits between us).
         """
+        interp = getattr(sys, "_base_executable", None) or sys.executable
         child_code = ("import sys,time,os; sys.path.insert(0, %r); import mtp_fetch as M; M.exit_with_parent(); "
                       "print('pid', os.getpid(), flush=True); print('up', flush=True); time.sleep(60)" % str(ROOT / "tools"))
         parent_code = ("import subprocess,sys,os,time; env=dict(os.environ, STRATA_EXIT_WITH_PARENT=str(%s)); "
-                       "p=subprocess.Popen([sys.executable,'-c',%r], env=env, stdout=subprocess.PIPE, text=True); "
+                       "p=subprocess.Popen([%r,'-c',%r], env=env, stdout=subprocess.PIPE, text=True); "
                        "print('spawned', p.pid, flush=True); print(p.stdout.readline().strip(), flush=True); "
                        "print(p.stdout.readline().strip(), flush=True); sys.stdout.flush(); time.sleep(1); os._exit(0)"
-                       % (flag_expr, child_code))
+                       % (flag_expr, interp, child_code))
         r = subprocess.Popen([sys.executable, "-c", parent_code], stdout=subprocess.PIPE, text=True)
         spawned = int(r.stdout.readline().split()[1])
         child_pid = int(r.stdout.readline().split()[1])
@@ -405,14 +406,12 @@ class OneAtATime(unittest.TestCase):
                          "the download kept running after the process that started it ended")
 
     def test_the_shell_style_flag_still_follows_a_direct_parent(self):
-        """STRATA_EXIT_WITH_PARENT=1 means "whoever started me" and stays correct where nothing is in between;
-        where a venv launcher is in between it cannot be, and that is why setup.py names its own id."""
-        import unittest
+        """STRATA_EXIT_WITH_PARENT=1 means "whoever started me" and is what the desktop app hands down; it has to
+        keep arming a watch.  The child is started with the base interpreter so nothing sits between the two
+        processes here, which is the case where "1" is the correct thing to pass.  Guards the order of the checks
+        in exit_with_parent: "1".isdigit() is true, so reading digits first turns "1" into pid 1 and arms nothing."""
         child_pid, stub = self._spawn_parent_that_exits("1")
-        if stub:
-            raise unittest.SkipTest("a launcher process sits between the spawner and the interpreter on this box, "
-                                    "so '1' resolves to the launcher; test_a_download_ends_with_the_process_that_started_it "
-                                    "covers the id setup.py actually passes")
+        self.assertFalse(stub, "the base interpreter was expected to start with no launcher in between")
         self.assertFalse(self._wait_for_exit(child_pid),
                          "the download kept running after its direct parent ended")
 

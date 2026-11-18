@@ -102,6 +102,10 @@ class RunEndsWithSetup(unittest.TestCase):
             setup.run([sys.executable, "x.py"], env={"B": "2", "STRATA_EXIT_WITH_PARENT": "0"})
             self.assertEqual(seen["env"]["STRATA_EXIT_WITH_PARENT"], "0", "a value the caller set is kept")
             self.assertEqual(seen["env"]["B"], "2")
+            setup.run([sys.executable, "x.py"], env={"STRATA_EXIT_WITH_PARENT": "1"})
+            self.assertEqual(seen["env"]["STRATA_EXIT_WITH_PARENT"], str(os.getpid()),
+                             "the desktop app hands setup the legacy \"1\", and passing it on would make the tool watch its "
+                             "launcher instead of setup; setup is the one that knows its own id")
 
 
 class GyroLowRam(U.Base):

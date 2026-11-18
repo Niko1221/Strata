@@ -239,10 +239,10 @@ def exit_with_parent():
     interpreter as its own child, so there getppid() names a stub that lives exactly as long as we do, and a spawner that wants to be
     followed has to say which id it is."""
     raw = (os.environ.get("STRATA_EXIT_WITH_PARENT") or "").strip()
-    if raw.isdigit():
+    if raw == "1":                                          # "whoever started me": read the sentinel before the digits,
+        parent = os.getppid()                               # else "1" parses as pid 1 and the watch never arms at all
+    elif raw.isdigit():
         parent = int(raw)
-    elif raw == "1":
-        parent = os.getppid()
     else:
         return
     if parent <= 1 or parent == os.getpid():                 # watching our own id would never end, and never fire
