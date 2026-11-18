@@ -32,6 +32,7 @@ fail = "--fail-window" in args
 groups = int(args[args.index("--says-groups") + 1]) if "--says-groups" in args else 0   # INFO batch_groups=G (--batch-groups auto)        # #997: the first window over two slots fails
 STEP = 0.02
 CH = 32
+BDONE_MS = " 0.0" if "--zero-bdone-ms" in args else " 1.0"
 lines, stop = queue.Queue(), threading.Event()
 def reader():
     for l in sys.stdin:
@@ -72,7 +73,7 @@ def window():        # one batch window: every active slot one token
         left, max_new, produced = active[b]
         if b in nf_slots and produced >= 2:
             nf_slots.discard(b)
-            print(f"BDONE {b} {produced} nonfinite 1.0", flush=True)
+            print(f"BDONE {b} {produced} nonfinite{BDONE_MS}", flush=True)
             del active[b]
             continue
         t = left.pop(0) if left else 257
@@ -81,7 +82,7 @@ def window():        # one batch window: every active slot one token
         if t == 257 or produced >= max_new:
             fin = 'stop' if t == 257 else 'cancel' if b in stopped else 'length'
             stopped.discard(b)
-            print(f"BDONE {b} {produced} {fin} 1.0", flush=True)
+            print(f"BDONE {b} {produced} {fin}{BDONE_MS}", flush=True)
             del active[b]
         else:
             active[b] = [left, max_new, produced]
@@ -583,6 +584,102 @@ class FakeEngineCase(unittest.TestCase):
         return res
 
 
+class BatchLegAccounting(FakeEngineCase):
+    """The admission's DONE times one token; BDONE counts that token but times only the slot."""
+
+    def queued_chats(self, texts=("first", "second"), max_tokens=10, stop=None):
+        replies, errors = {}, []
+
+        def request(text):
+            body = {"messages": [{"role": "user", "content": text}], "max_tokens": max_tokens,
+                    "reasoning_effort": "none", **({"stop": [stop]} if stop else {})}
+            req = urllib.request.Request(self.base + "/v1/chat/completions", data=json.dumps(body).encode(),
+                                         headers={"Content-Type": "application/json"})
+            try:
+                with urllib.request.urlopen(req, timeout=15) as response:
+                    replies[text] = json.loads(response.read())
+            except Exception as error:
+                errors.append(repr(error))
+
+        workers = [threading.Thread(target=request, args=(text,)) for text in texts]
+        # Both requests must be waiting before either takes control: the first cannot take the solo shortcut.
+        with self.engine.ctl:
+            for worker in workers:
+                worker.start()
+            deadline = time.monotonic() + 3
+            while self.engine.waiting < 2 and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertEqual(self.engine.waiting, 2)
+        for worker in workers:
+            worker.join(15)
+            self.assertFalse(worker.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(len(replies), 2)
+        self.assertEqual([line.split()[0] for line in self.log.read_text().splitlines()][:2], ["BGEN", "BGEN"])
+        return replies
+
+    def test_eos_adds_admission_time_without_counting_its_token_twice(self):
+        self.start(2)
+        with mock.patch.object(server, "EOS_IDS", {257}):
+            replies = self.queued_chats()
+        for reply in replies.values():
+            timings = reply["timings"]
+            self.assertEqual((timings["predicted_n"], timings["predicted_ms"]), (10, 21.0))
+            self.assertEqual(timings["predicted_per_second"], 476.2)
+        metrics = self.get("/metrics")
+        self.assertEqual([(row["engine_generated"], row["decode_ms"]) for row in metrics["requests"]],
+                         [(10, 21.0), (10, 21.0)])
+        self.assertEqual(metrics["totals"]["decode_ms"], 42.0)
+
+    def test_length_finish_also_adds_admission_time(self):
+        self.start(2)
+        for reply in self.queued_chats(max_tokens=8).values():
+            self.assertEqual((reply["timings"]["predicted_n"], reply["timings"]["predicted_ms"]), (8, 21.0))
+
+    def test_zero_slot_time_is_known_and_still_includes_admission(self):
+        self.start(2, more=("--zero-bdone-ms",))
+        with mock.patch.object(server, "EOS_IDS", {257}):
+            replies = self.queued_chats()
+        for reply in replies.values():
+            self.assertEqual(reply["timings"]["predicted_ms"], 20.0)
+
+    def assert_incomplete_after_stop(self, stop):
+        self.start(2)
+        replies = self.queued_chats(stop=stop)
+        for reply in replies.values():
+            self.assertIsNone(reply["timings"]["predicted_ms"])
+            self.assertIsNone(reply["timings"]["predicted_per_second"])
+        for row in self.get("/metrics")["requests"]:
+            self.assertIsNone(row["engine_generated"])
+            self.assertIsNone(row["decode_ms"])
+            self.assertIsNone(row["decode_tok_s"])
+        self.assertEqual(self.get("/metrics")["totals"]["decode_ms"], 0.0)
+
+    def test_close_at_admission_token_does_not_publish_partial_totals(self):
+        self.assert_incomplete_after_stop("o")
+
+    def test_close_in_slot_does_not_publish_partial_totals(self):
+        self.assert_incomplete_after_stop("k, ")
+
+    def test_slot_to_solo_carry_includes_admission_once(self):
+        self.start(2, slot_cache=True)
+        with mock.patch.object(server, "EOS_IDS", {257}):
+            replies = self.queued_chats(("short", "LONGREPLY"), max_tokens=200)
+        lines = [line.split() for line in self.log.read_text().splitlines()]
+        solos = [line for line in lines if line[0] == "GEN"]
+        self.assertEqual(len(solos), 1, lines)
+        prompt_lengths = [int(line[2]) for line in lines if line[0] == "BGEN"]
+        slot_tokens = int(solos[0][2]) - max(prompt_lengths)
+        self.assertGreaterEqual(slot_tokens, 2)
+        self.assertLess(slot_tokens, 55)
+        # "ok, " + 15 * "la " + "done." + EOS: 55 total tokens. The solo leg times its remaining tokens at 20 ms each.
+        expected_ms = 21.0 + (55 - slot_tokens) * 20.0
+        reply = replies["LONGREPLY"]
+        self.assertEqual((reply["timings"]["predicted_n"], reply["timings"]["predicted_ms"]), (55, expected_ms))
+        row = max(self.get("/metrics")["requests"], key=lambda item: item["output_tokens"])
+        self.assertEqual((row["engine_generated"], row["decode_ms"]), (55, expected_ms))
+
+
 class ParallelService(FakeEngineCase):
     """The real StrataEngine and Service over HTTP, the fake engine behind them: slots, queues, benchmarks, telemetry.
     The yielding, restart and failure tests are in serve/test_parallel_yield.py (this file alone ran past 100 s)."""
@@ -997,92 +1094,33 @@ class ParallelService(FakeEngineCase):
 
 
 
-class ParallelStackDefaults(unittest.TestCase):
-    """The exact parallel stack is the default with batch slots; an explicit value wins."""
-    def env_for(self, cfg, base=None, linux=True):
+class EngineOwnedDefaults(unittest.TestCase):
+    """The parallel stack, the GDN speedups, the Q8_0 hyper-connection read and the Metal fp16 windows are the engine's own defaults
+    (src/core/arch_defaults.cpp, generate.cpp): the server adds none of them, and a value the config or the shell sets still reaches the engine."""
+    NAMES = ("STRATA_CKPT_POOL", "STRATA_CKPT_POOL_READY", "STRATA_SLOT_CKPT_MOVE", "STRATA_SLOT_COPY_DIRECT", "STRATA_SLOT_COPY_BATCHSYNC",
+             "STRATA_BATCH_GDN_GROUPS", "STRATA_BATCH_ATTN_ROWS", "STRATA_BATCH_SELF_COMMIT", "STRATA_QSA_SLOTS",
+             "STRATA_GDN_TC", "STRATA_GDN_CONVL2", "STRATA_GDN_CHUNKED", "STRATA_HC_Q8", "STRATA_METAL_F16")
+
+    def env_for(self, cfg, base=None):
         import os
         from unittest import mock
-        with mock.patch.dict(os.environ, base or {}, clear=False), mock.patch.object(server, "parallel_stack_platform", return_value=linux):
-            for k in list(os.environ):
-                if k in server.PARALLEL_STACK_ENV and not (base and k in base):
-                    del os.environ[k]
+        with mock.patch.dict(os.environ, base or {}, clear=False):
+            for k in self.NAMES:
+                if not (base and k in base):
+                    os.environ.pop(k, None)
             return server.child_env(cfg)
 
-    def test_on_with_parallel(self):
-        env = self.env_for({"parallel": 8, "args": []})
-        hip = self.env_for({"parallel": 8, "args": [], "backend": "hip"})
-        for k, v in server.PARALLEL_STACK_ENV.items():
-            self.assertEqual(env.get(k), v, k)
-            self.assertNotIn(k, hip)           # HIP: nothing (no measurement without replicas)
-        self.assertEqual(self.env_for({"args": ["--batch", "4"]}).get("STRATA_BATCH_SELF_COMMIT"), "1")
+    def test_server_adds_none(self):
+        for cfg in ({"parallel": 8, "args": []}, {"args": ["--batch", "4"]}, {"parallel": 8, "args": [], "backend": "hip"}, {}):
+            env = self.env_for(cfg)
+            for k in self.NAMES:
+                self.assertNotIn(k, env, (k, cfg))
 
-    def test_off_on_windows_and_mac(self):
-        self.assertNotIn("STRATA_CKPT_POOL", self.env_for({"parallel": 8, "args": []}, linux=False))
-        self.assertTrue(server.parallel_stack_platform.__doc__)
-
-    def test_off_without_slots(self):
-        self.assertNotIn("STRATA_CKPT_POOL", self.env_for({"args": []}))
-        self.assertNotIn("STRATA_CKPT_POOL", self.env_for({"parallel": 1, "args": []}))
-
-    def test_explicit_wins(self):
+    def test_explicit_values_reach_the_engine(self):
         env = self.env_for({"parallel": 8, "args": [], "env": {"STRATA_BATCH_GDN_GROUPS": "0"}}, {"STRATA_CKPT_POOL": "0"})
         self.assertEqual(env["STRATA_BATCH_GDN_GROUPS"], "0")
         self.assertEqual(env["STRATA_CKPT_POOL"], "0")
-        self.assertEqual(env["STRATA_QSA_SLOTS"], "1")
 
-    def test_other_engines_untouched(self):
-        self.assertNotIn("STRATA_CKPT_POOL", self.env_for({"parallel": 8, "args": [], "arch": "deepseek41"}))
-        self.assertNotIn("STRATA_CKPT_POOL", self.env_for({"parallel": 8, "args": [], "backend": "sycl"}))
-
-
-class GdnStackDefaults(unittest.TestCase):
-    """The qualified GDN speedups are on from the server (Linux CUDA; Linux HIP gfx12 only); an explicit value wins."""
-    def env_for(self, cfg, archs=None, linux=True, base=None):
-        import os
-        from unittest import mock
-        env = {k: v for k, v in (base or {}).items()}
-        with mock.patch.object(server, "parallel_stack_platform", return_value=linux):
-            server.gdn_stack_env(env, cfg, archs)
-        return env
-
-    def test_cuda_on(self):
-        for cfg in ({"backend": "cuda"}, {}, {"arch": "qwen4exp"}):
-            env = self.env_for(cfg)
-            self.assertEqual(env.get("STRATA_GDN_TC"), "1")
-            self.assertEqual(env.get("STRATA_GDN_CONVL2"), "2")
-            self.assertNotIn("STRATA_GDN_CHUNKED", env)
-
-    def test_explicit_wins(self):
-        env = self.env_for({}, base={"STRATA_GDN_TC": "0"})
-        self.assertEqual(env["STRATA_GDN_TC"], "0")
-        self.assertEqual(env["STRATA_GDN_CONVL2"], "2")
-
-    def test_other_models_and_backends_off(self):
-        for cfg in ({"arch": "qwen35moe"}, {"arch": "deepseek41"}, {"backend": "sycl"}, {"backend": "metal"}, {"backend": "vulkan"}):
-            self.assertEqual(self.env_for(cfg), {}, cfg)
-
-    def test_windows_and_mac_off(self):
-        self.assertEqual(self.env_for({}, linux=False), {})
-        self.assertEqual(self.env_for({"backend": "hip"}, archs={0: "gfx1201"}, linux=False), {})
-
-    def test_hip_gfx12_only(self):
-        hip = {"backend": "hip", "gpu": [0, 1]}
-        env = self.env_for(hip, archs={0: "gfx1201", 1: "gfx1200"})
-        self.assertEqual(env, {"STRATA_GDN_CHUNKED": "1"})            # and nothing of the CUDA pair
-        for archs in ({0: "gfx1100", 1: "gfx1100"}, {0: "gfx1151"}, {0: "gfx1030", 1: "gfx1030"}, {0: "gfx1201", 1: "gfx1151"}, {}, None):
-            self.assertEqual(self.env_for(hip, archs=archs), {}, archs)
-
-    def test_hip_selected_cards_decide(self):
-        cfg = {"backend": "hip", "gpu": [1]}
-        self.assertEqual(self.env_for(cfg, archs={0: "gfx1151", 1: "gfx1201"}), {"STRATA_GDN_CHUNKED": "1"})
-        cfg = {"backend": "hip", "gpu": [0]}
-        self.assertEqual(self.env_for(cfg, archs={0: "gfx1151", 1: "gfx1201"}), {})
-
-    def test_child_env_wiring(self):
-        from unittest import mock
-        with mock.patch.object(server, "parallel_stack_platform", return_value=True):
-            env = server.child_env({"args": []})
-        self.assertEqual(env.get("STRATA_GDN_TC"), "1")
 
 if __name__ == "__main__":
     unittest.main()

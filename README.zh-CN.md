@@ -52,36 +52,6 @@
 
 </details>
 
-<details>
-<summary><img src="docs/media/models/deepseek.svg" width="22" alt="" align="middle"> &nbsp;<b>DeepSeekV4.1-Flash-1017</b></summary>
-
-可在**桌面应用**和**终端**中使用。内存放不下的部分会从 SSD 读取，所以需要大量空闲磁盘空间。
-
-| 版本（ISTA-DAS） | 下载大小 | 所需空闲磁盘 |
-| --- | ---: | ---: |
-| 1.75 bpw | 239 GB | 约245 GB |
-| 2.00 bpw | 257 GB | 约265 GB |
-| 2.25 bpw | 274 GB | 约280 GB |
-
-支持 NVIDIA RTX 30、40 和 50 系列（Windows 和 Linux），以及 AMD Radeon AI PRO R9700（Linux）。安装程序会下载模型文件和 DeepSeek 引擎，然后启动模型。
-
-```sh
-strata launch --family deepseek41 --model ist-das-2.00bpw --plan
-```
-
-以下为 Strata 0.2.5 上 2.00 bpw 版本的实测结果。“输出”是回答的速度，“提示词”是 Strata 读取你输入内容的速度。
-
-| 硬件 | 输出 | 提示词 |
-| --- | ---: | ---: |
-| RTX 5070 12 GB, 64 GB 内存 | 4 到 6 tokens/s | 约 110 tokens/s（4K） |
-| RTX 3060 12 GB, 46 GB 内存 | 9 到 11 tokens/s | 约 155 tokens/s（4K） |
-| 1x Radeon AI PRO R9700, 251 GB 内存 | 21 到 25 tokens/s | 320 到 360 tokens/s (8K) |
-| 4x Radeon AI PRO R9700 | 74 到 77 tokens/s | 400 到 450 tokens/s (8K) |
-
-[内存、磁盘和详细信息](docs/DEEPSEEK41.md) · [发行说明](https://github.com/Niko1221/Strata/releases)
-
-</details>
-
 <a id="the-other-sizes"></a>
 
 不确定哪个放得下？[为你的电脑选择模型](docs/MODELS.md#pick-by-memory)。
@@ -96,7 +66,7 @@ strata launch --family deepseek41 --model ist-das-2.00bpw --plan
 
 安装应用，选择模型，就可以开始聊天。每个系统只有一个安装程序。首次启动时，应用会下载适合你显卡的引擎。[安装程序帮助](docs/INSTALL.md#the-app)。
 
-<sub>文件: `Strata-0.2.9-windows-x64-setup.exe` · `Strata-0.2.9-linux-x86_64.AppImage` · `Strata-0.2.9-macos-arm64.dmg`</sub>
+<sub>文件: `Strata-0.2.15-windows-x64-setup.exe` · `Strata-0.2.15-linux-x86_64.AppImage` · `Strata-0.2.15-macos-arm64.dmg`</sub>
 
 <p align="center">
   <img src="docs/media/app-chat.png" width="900" alt="Strata 桌面应用，聊天和实时代码预览并排显示">
@@ -115,13 +85,13 @@ strata launch --family deepseek41 --model ist-das-2.00bpw --plan
 **Linux / Mac**
 
 ```sh
-curl -fsSL https://github.com/Niko1221/Strata/releases/latest/download/install.sh -o install.sh && sh install.sh
+curl -fsSL --connect-timeout 15 --max-time 120 https://github.com/Niko1221/Strata/releases/latest/download/install.sh -o install.sh && sh install.sh
 ```
 
 **Windows PowerShell**
 
 ```powershell
-irm https://github.com/Niko1221/Strata/releases/latest/download/install.ps1 | iex
+irm -TimeoutSec 120 https://github.com/Niko1221/Strata/releases/latest/download/install.ps1 | iex
 ```
 
 在 Windows 上，安装后请打开一个新的终端。然后运行：
@@ -187,6 +157,14 @@ strata launch
 
 <!-- supporters:start (one line per public supporter, newest last; copy a line and change the GitHub name in all four places) -->
 <a href="https://github.com/ryan4yin"><img src="https://github.com/ryan4yin.png?size=96" width="48" height="48" alt="ryan4yin" title="ryan4yin"></a>
+<a href="https://github.com/themactep"><img src="https://github.com/themactep.png?size=96" width="48" height="48" alt="themactep" title="themactep"></a>
+<a href="https://github.com/macintog"><img src="https://github.com/macintog.png?size=96" width="48" height="48" alt="macintog" title="macintog"></a>
+<a href="https://github.com/bisonbet"><img src="https://github.com/bisonbet.png?size=96" width="48" height="48" alt="bisonbet" title="bisonbet"></a>
+<a href="https://github.com/vizv"><img src="https://github.com/vizv.png?size=96" width="48" height="48" alt="vizv" title="vizv"></a>
+<a href="https://github.com/kod88vn"><img src="https://github.com/kod88vn.png?size=96" width="48" height="48" alt="kod88vn" title="kod88vn"></a>
+<a href="https://github.com/seoulworker"><img src="https://github.com/seoulworker.png?size=96" width="48" height="48" alt="seoulworker" title="seoulworker"></a>
+<a href="https://github.com/jackyini"><img src="https://github.com/jackyini.png?size=96" width="48" height="48" alt="jackyini" title="jackyini"></a>
+<a href="https://github.com/router0mail"><img src="https://github.com/router0mail.png?size=96" width="48" height="48" alt="router0mail" title="router0mail"></a>
 <!-- supporters:end -->
 
 [MIT 许可证](LICENSE) · [致谢和模型许可证](docs/HOW_IT_WORKS.md#credits) · [隐私](docs/SAFETY.md)

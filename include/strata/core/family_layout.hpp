@@ -97,7 +97,7 @@ inline bool geometry_from_gguf(const strata::GgufFile& meta, ModelGeometry& g, i
 /// defaults, Flash-Next's), as "<what> is <got>, this engine's kernels are built for <want>"; empty when none.
 /// n_expert and top-k are run-time sizes (the Coder ships 256 experts) and n_vocab is the embedding's business.
 inline std::string compiled_geometry_mismatch(const ModelGeometry& g) {
-    const ModelGeometry c;
+    const ModelGeometry& c = kCompiledGeometry;
     if (g.family != c.family)
         return std::string("the model is ") + strata::model_family_title(g.family) + ", this engine's kernels are built "
                "for " + strata::model_family_title(c.family);

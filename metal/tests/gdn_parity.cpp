@@ -6,6 +6,7 @@
 //   gdn_parity --bench    GPU time per layer: 36 distinct layer states rotated (113 MB, beyond the SLC)
 #include "mtl_rt.h"
 #include "ref_quant.h"
+#include "engine/geo.h"
 
 #include <algorithm>
 #include <cmath>
@@ -16,7 +17,7 @@
 #include <vector>
 
 namespace {
-constexpr int S = 128, HK = 16, HV = 48, C = (2 * HK + HV) * S, MAXT = 8;
+constexpr int S = strata_metal::geo::SS, HK = strata_metal::geo::HK, HV = strata_metal::geo::HV, C = (2 * HK + HV) * S, MAXT = 8;
 struct GdnArgs { uint32_t h_k, h_v, channels, commit; float eps; uint32_t plane; };
 double median(std::vector<double> v) { std::sort(v.begin(), v.end()); return v[v.size() / 2]; }
 struct Err {
@@ -112,6 +113,7 @@ int main(int argc, char** argv) {
             d.args = {mtl::Arg::B(state), mtl::Arg::B(hist), mtl::Arg::B(qkv), mtl::Arg::B(al), mtl::Arg::B(be),
                       mtl::Arg::B(z), mtl::Arg::B(cw), mtl::Arg::B(dt), mtl::Arg::B(sa), mtl::Arg::B(gm),
                       mtl::Arg::B(xyb, 4 * n * row), mtl::Arg::V(a), mtl::Arg::B(hist2),
+                      mtl::Arg::B(hist2),   // the gdn_rows table slot (inactive here): ysums lives at 14
                       mtl::Arg::B(xyb, 4 * sums_off + 4 * nsums * row)};
             d.grid[0] = HV;
             d.tg[0] = 512;

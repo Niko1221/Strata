@@ -132,6 +132,7 @@ class EngineComponent:
     variant: str = ""                                     # optional tag when one backend has several builds (cuda13, cuda12)
     signature: dict | None = None                         # S6: {"alg", "key_id", "value"} over signing_payload()
     raw: dict = field(default_factory=dict, repr=False)   # the manifest as read, for the signature check
+    shape: str = ""                                       # the engine of one model shape (strata_control/shape_engine.py): its compiled geometry's name; "" for the Strata engine
 
     @property
     def exe(self) -> Path:
@@ -149,7 +150,8 @@ class EngineComponent:
         return {"id": self.id, "version": self.version, "platform": self.platform, "backend": self.backend,
                 "entrypoint": self.entrypoint, "exe": str(self.exe), "root": str(self.root),
                 "min_runtime": self.min_runtime, "archs": list(self.archs), "min_driver": dict(self.min_driver),
-                "build_id": self.build_id, "variant": self.variant, "signed": bool(self.signature), "file_count": len(self.files), "bytes": sum(item[2] for item in self.files)}
+                "build_id": self.build_id, "variant": self.variant, "signed": bool(self.signature), "file_count": len(self.files), "bytes": sum(item[2] for item in self.files),
+                **({"shape": self.shape} if self.shape else {})}
 
 
 def package_lib_dirs(folder) -> list[str]:
@@ -206,29 +208,16 @@ def cached_notice(root: Path | None = None) -> str | None:
     The notice belongs to the versions the check was made for: it is dropped when Control or the installed engine is not the one
     recorded then (an app install, an update, a rollback), and an engine that is not newer than the installed one is never offered."""
     offers = cached_offers(root)
-    parts = ([f"engine {offers['engine']}"] if offers.get("engine") else []) + ([f"DeepSeek engine {offers['dsv41']}"] if offers.get("dsv41") else []) \
-        + ([f"app {offers['app']}"] if offers.get("app") else [])
+    parts = ([f"engine {offers['engine']}"] if offers.get("engine") else []) + ([f"app {offers['app']}"] if offers.get("app") else [])
     return f"update available ({', '.join(parts)}): run `strata update`" if parts else None
 
 
-def _installed_dsv41_version(profile_configs=None) -> str | None:
-    """The newest DeepSeek engine package the saved profiles name (a local read), or None."""
-    from strata_control import dsv41_paths
-    newest = None
-    for r in dsv41_paths.roots_of(profile_configs if profile_configs is not None else dsv41_paths.saved_configs()):
-        for exe in dsv41_paths.installed(r):
-            v = exe.parent.name.split("-")[0]
-            if newest is None or _version_key(v) > _version_key(newest):
-                newest = v
-    return newest
-
-
 def cached_offers(root: Path | None = None) -> dict:
-    """What the last explicit check found newer, as {"engine": version|None, "dsv41": version|None, "app": version|None}; local reads only (the cached
+    """What the last explicit check found newer, as {"engine": version|None, "app": version|None}; local reads only (the cached
     check, the installed packages), never the network.  The same rules as `cached_notice`: it belongs to the Control and the packages it was made for,
     and a package that is not newer than the installed one is never offered."""
     base = root or components_dir()
-    none = {"engine": None, "dsv41": None, "app": None}
+    none = {"engine": None, "app": None}
     try:
         last = (json.loads((base / UPDATE_STATE).read_text(encoding="utf-8-sig")).get("last_check") or {})
     except (OSError, ValueError, AttributeError):
@@ -238,17 +227,13 @@ def cached_offers(root: Path | None = None) -> dict:
     control = runtime_version()
     if "control" in last and last["control"] != control:
         return none
-    engine, app, dsv41 = last.get("engine"), last.get("app"), last.get("dsv41")
+    engine, app = last.get("engine"), last.get("app")
     installed = newest_installed_version(base)
     if "engine_installed" in last and last["engine_installed"] != installed:
         engine = None
     if engine and installed and _version_key(str(engine)) <= _version_key(installed):
         engine = None
-    if dsv41:
-        have = _installed_dsv41_version()
-        if have is None or "dsv41_installed" in last and last["dsv41_installed"] != have or _version_key(str(dsv41)) <= _version_key(have):
-            dsv41 = None
-    return {"engine": engine or None, "dsv41": dsv41 or None, "app": app or None}
+    return {"engine": engine or None, "app": app or None}
 
 
 def previous_folder(root: Path | None = None) -> str | None:
@@ -290,7 +275,10 @@ def _plain_relative(path: str) -> str:
     return path.replace("\\", "/")
 
 
-def read_manifest(folder: Path) -> EngineComponent:
+def read_manifest(folder: Path, component_id: str = COMPONENT_ID) -> EngineComponent:
+    """The manifest of the package in `folder`. `component_id` is the component the caller expects: the Strata engine (``strata-engine``) or the engine of
+    one model shape (``strata-q4-lite``, strata_control/shape_engine.py). A package of one kind is never read as the other: the id and the ``shape`` member
+    must agree with it, so an older Control (which only knows ``strata-engine``) refuses a shape engine that was put into its engine folder by hand."""
     path = folder / MANIFEST
     try:
         data = json.loads(path.read_text(encoding="utf-8-sig"))
@@ -301,8 +289,17 @@ def read_manifest(folder: Path) -> EngineComponent:
     if not isinstance(data, dict) or data.get("schema_version") not in READABLE_SCHEMAS:
         raise ComponentProblem(f"{MANIFEST} has an unsupported schema_version")
     schema = data["schema_version"]
-    if data.get("id") != COMPONENT_ID or data.get("name", COMPONENT_ID) != COMPONENT_ID:
+    if data.get("id") != component_id or data.get("name", component_id) != component_id:
         raise ComponentProblem(f"{MANIFEST} is not an engine component (id {data.get('id')!r})")
+    shape = ""
+    if component_id == COMPONENT_ID:
+        if data.get("shape"):
+            raise ComponentProblem(f"{MANIFEST} is the engine of a model shape, not the Strata engine")
+    else:
+        from strata_control import shape_engine
+        shape = str(data.get("shape") or "")
+        if not shape or shape_engine.component_id(shape) != component_id:
+            raise ComponentProblem(f"{MANIFEST} names the shape {shape!r}, which is not the one of {component_id}")
     for key in ("version", "platform", "backend", "entrypoint"):
         if not isinstance(data.get(key), str) or not data[key]:
             raise ComponentProblem(f"{MANIFEST} has no {key}")
@@ -347,7 +344,21 @@ def read_manifest(folder: Path) -> EngineComponent:
         entrypoint=entry, files=tuple(parsed), root=folder, min_runtime=data.get("min_runtime"),
         archs=tuple(archs), notes=str(data.get("notes") or ""), min_driver=dict(driver),
         build_id=str(data.get("build_id") or ""), variant=str(data.get("variant") or ""), signature=signature,
-        raw=data)
+        raw=data, shape=shape)
+
+
+def read_manifest_any(folder: Path) -> EngineComponent:
+    """The manifest of a package of either kind: the Strata engine, or the engine of a model shape (its id names the shape's component). For the release tools, which
+    handle both; the start path asks for the one it wants (read_manifest with the component's id)."""
+    try:
+        raw_id = json.loads((folder / MANIFEST).read_text(encoding="utf-8-sig")).get("id")
+    except (OSError, ValueError, AttributeError):
+        raw_id = None
+    if isinstance(raw_id, str) and raw_id != COMPONENT_ID:
+        from strata_control import shape_engine
+        if shape_engine.shape_of_component(raw_id):
+            return read_manifest(folder, raw_id)
+    return read_manifest(folder)
 
 
 # ----------------------------------------------------------------------------------------------- signature (S6)
@@ -464,10 +475,13 @@ def runtime_version() -> str | None:
 
 def split_backend(value) -> tuple[str, str]:
     """(backend, variant) for a name the person typed: "hip-rdna2" is the hip family and its rdna2 package (the way the feed labels an AMD
-    package, #4013), "hip" is the family alone, any other name is returned as it is with no variant."""
+    package, #4013), "hip" is the family alone, a make's own name is its family ("amd" -> hip, "nvidia" -> cuda, "intel" -> sycl: the words
+    `strata launch --backend` takes, so `strata update --backend amd` means the same), any other name is returned as it is with no variant."""
     name = str(value or "").strip().lower()
     if name not in BACKEND_MATRIX and name.startswith("hip-") and len(name) > 4:
         return "hip", name[4:]
+    if name not in BACKEND_MATRIX and name in BACKEND_ALIASES:
+        return BACKEND_ALIASES[name], ""
     return name, ""
 
 
@@ -985,8 +999,8 @@ def arch_native(archs, present: list[str]) -> bool:
 
 # ----------------------------------------------------------------------------------------------- resolve
 
-def scan(root: Path | None = None) -> tuple[list[EngineComponent], list[dict]]:
-    """Every readable engine package in the folder, and the ones that were not (with the reason)."""
+def scan(root: Path | None = None, component_id: str = COMPONENT_ID) -> tuple[list[EngineComponent], list[dict]]:
+    """Every readable engine package in the folder, and the ones that were not (with the reason). `component_id`: see read_manifest."""
     folder = engine_dir(root)
     found, problems = [], []
     try:
@@ -995,7 +1009,7 @@ def scan(root: Path | None = None) -> tuple[list[EngineComponent], list[dict]]:
         return [], []
     for entry in entries[:64]:
         try:
-            found.append(read_manifest(entry))
+            found.append(read_manifest(entry, component_id))
         except ComponentProblem as exc:
             problems.append({"folder": str(entry), "problem": str(exc)})
     return found, problems
@@ -1065,15 +1079,15 @@ def wrong_make_notice(built: str, archs: tuple[str, ...], here: str) -> str:
 
 
 def resolve(root: Path | None = None, *, backend: str | None = None, target: str | None = None,
-            full: bool = False, runtime: str | None = None) -> EngineComponent:
+            full: bool = False, runtime: str | None = None, component_id: str = COMPONENT_ID) -> EngineComponent:
     """The engine to start on this machine, or `EngineMissing` / `EngineIntegrityError`. Never downloads, never creates
     the folder. `full=True` hashes every file (a start does); the default is the quick check the listings use."""
     base = root or components_dir()
     target = target or host_platform()
-    found, problems = scan(base)
+    found, problems = scan(base, component_id)
     if not found and not problems:
         raise EngineMissing("the component folder holds no engine package", base)
-    wanted = backend
+    wanted = split_backend(backend)[0] or None if backend else backend     # "amd" / "hip-rx6000" name the hip family
     how = "requested"
     if wanted is None:
         wanted, how = detect_backend()
@@ -1168,9 +1182,18 @@ def expand(value: str, cfg: dict | None = None, *, root: Path | None = None, ful
     if not is_reference(value):
         return value
     name = value[len(REFERENCE_PREFIX):]
-    if name not in ("", COMPONENT_ID):
-        raise EngineMissing(f"the run config names an unknown component {name!r}", root or components_dir())
     backend = (cfg or {}).get("backend")
+    if name not in ("", COMPONENT_ID):
+        from strata_control import shape_engine
+        shape = shape_engine.shape_of_component(name)
+        if shape is None:
+            raise EngineMissing(f"the run config names an unknown component {name!r}", root or components_dir())
+        try:                                              # the engine of a model shape: its own folder, never the Strata engine's
+            return str(resolve(shape_engine.root(shape, root), backend=backend if backend in BACKEND_MATRIX else None, full=full, component_id=name).exe)
+        except EngineIntegrityError:
+            raise
+        except EngineMissing as exc:
+            raise shape_engine.ShapeEngineMissing(shape, exc.reason, shape_engine.root(shape, root), problems=exc.problems, title=(cfg or {}).get("shape_title")) from None
     return str(resolve(root, backend=backend if backend in BACKEND_MATRIX else None, full=full).exe)
 
 
@@ -1178,6 +1201,7 @@ def status(root: Path | None = None, *, backend: str | None = None, full: bool =
     """What `strata components engine` and the app's host report. Always answers; never raises for a missing engine."""
     base = root or components_dir()
     found, problems = scan(base)
+    backend = split_backend(backend)[0] or None if backend else backend    # `components engine --backend amd` = the hip family
     try:
         detected, how = detect_backend()
     except ComponentProblem as exc:
@@ -1194,4 +1218,11 @@ def status(root: Path | None = None, *, backend: str | None = None, full: bool =
         report["usable"] = True
     except EngineMissing as exc:
         report["notice"] = getattr(exc, "driver_notice", None) or getattr(exc, "plain_notice", None) or str(exc)
+    try:                                              # the engines of model shapes (strata_control/shape_engine.py): reported only when this PC has one
+        from strata_control import shape_engine
+        shapes = shape_engine.status(root)
+        if shapes:
+            report["shapes"] = shapes
+    except Exception:                                 # noqa: BLE001 - informational only
+        pass
     return report

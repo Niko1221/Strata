@@ -257,30 +257,8 @@ function runtimeState(){
   return runtimeModels.state();
 }
 
-const startupModelId = process.env.STRATA_REAL_ENGINE === '1' ? (store.get().loaded ?? store.get().current) : null;
-if (startupModelId) {
-  monitor.setModel(startupModelId);
-  const lastId = startupModelId;
-  setTimeout(() => {
-    const v = variant(lastId);
-    if (!v || !models.isOnDisk(lastId)) return;
-    console.log(`autostart    ·  loading ${v.label}`);
-    void models
-      .load(lastId, {
-        hardware: boot,
-        config: { beginner: store.get().beginner, expert: engine.params(), serving: store.get().serving },
-        onPhase: async (phase, id) => {
-          if (phase === 'loading') await monitor.beginLoading(id);
-          if (phase === 'ready') {
-            await monitor.setModel(id);
-            engine.markRunning(boot.accelerator.backend);
-            hub.send('engine', await engine.config());
-          }
-        },
-      })
-      .catch((err) => console.error('autostart failed:', err.message));
-  }, 700);
-}
+/* No start-up load: the remembered model of the real-engine mode was loaded through a llama.cpp llama-server (0.2.14, also for an imported
+   GGUF nobody had loaded). Models run on the Strata engine, whose own start does not come through here. */
 const backend = await detectBackend({ force: true });
 
 console.log(`strata host  ·  http://${HOST}:${PORT}`);
@@ -1098,7 +1076,7 @@ async function api(req, res, path, method, url) {
   if(nativeInstance&&method==='POST')return json(res,200,nativeInstance[2]==='unload'?await native.unload(nativeInstance[1]):native.setDefault(nativeInstance[1]));
   const nativeSettings=/^\/api\/native\/models\/([a-z0-9_.-]+)\/settings$/.exec(path);
   /* Expert mode shows what will actually run: the saved tuning's values come with the settings (null when none applies or unreadable). */
-  if(nativeSettings&&method==='GET'){const settings=native.settings(nativeSettings[1]);let tuned=null;try{const t=await native.tuneEffective({model:nativeSettings[1],resourceProfile:url.searchParams.get('resourceProfile')||undefined,vision:url.searchParams.get('vision')||undefined});tuned=t.applied?t:null;}catch{tuned=null;}return json(res,200,{...settings,tuned});}
+  if(nativeSettings&&method==='GET'){const settings=native.settings(nativeSettings[1]);let tuned=null;try{const t=await native.tuneEffective({model:nativeSettings[1],resourceProfile:url.searchParams.get('resourceProfile')||undefined,vision:url.searchParams.get('vision')||undefined});tuned=t.applied?t:null;}catch{tuned=null;}return json(res,200,{...settings,tuned,hints:await native.settingsHints?.(nativeSettings[1])});}
   if(nativeSettings&&method==='PATCH')return json(res,200,native.save(nativeSettings[1],await readBody(req)));
   const nativeSettingsFile=/^\/api\/native\/models\/([a-z0-9_.-]+)\/settings-file$/.exec(path);
   if(nativeSettingsFile&&method==='GET')return json(res,200,native.settingsFile(nativeSettingsFile[1]));
@@ -1149,11 +1127,10 @@ async function api(req, res, path, method, url) {
     // The plan is only meaningful for a real engine binary, so the panel asks rather than guessing.
     // `available` is false when nothing is installed, which is a state the panel must show honestly
     // instead of offering a plan that cannot be computed.
-    const binary = supervisor.findBinary();
     const status = supervisor.status();
     return json(res, 200, {
-      available: Boolean(binary?.path),
-      path: binary?.path ?? null,
+      available: false,   // the host starts no engine binary of its own (no llama-server)
+      path: null,
       backend: status?.backend ?? null,
       running: Boolean(status?.running),
     });
@@ -1346,7 +1323,7 @@ async function api(req, res, path, method, url) {
     if (engine && !engine.usable && !bundledEngineSettled) engine.notice = 'The engine that came with the app is being set up. This takes a minute the first time.';
     return json(res, 200, {
       packaged: process.env.STRATA_PACKAGED === '1',
-      control: CONTROL ? { dir: CONTROL.dir, python: CONTROL.python, version: control.version, bundle: CONTROL.bundle } : null,
+      control: control ? { dir: control.control.dir, python: control.control.python, version: control.version, bundle: control.control.bundle } : null,   // control.control: the Control in use now (a first-run update can switch it)
       engine,
       engineSetup: !bundledEngineSettled,
       componentsDir: componentsDirectory(),
@@ -1562,22 +1539,8 @@ async function api(req, res, path, method, url) {
         await monitor.setModel(id);engine.markRunning(hw.accelerator.backend);hub.send('engine',await engine.config());
         return json(res,200,runtimeModels.libraryState(models.library()));
       }
-      if(!supervisor.findBinary())return error(res,409,'Install a compatible llama-server engine before switching from native Strata.');const candidate=models.library().variants.find(v=>v.id===id);if(!candidate||!['installed','loaded'].includes(candidate.state))return error(res,409,'Download this model before loading it.');for(const instance of native.state().instances)await native.unload(instance.id);
-      const lib = await models.load(id, {
-        hardware: hw,
-        config: { beginner: store.get().beginner, expert: engine.params(), serving: store.get().serving },
-        onPhase: async (phase, variantId) => {
-          if (phase === 'loading') await monitor.beginLoading(variantId);
-          if (phase === 'ready') {
-            await monitor.setModel(variantId);
-            monitor.idle('Model loaded — waiting for a request');
-            monitor.setContextMax(CONTEXT_TOKENS[store.get().beginner.contextLength] ?? 32768);
-            engine.markRunning(hw.accelerator.backend);
-            hub.send('engine', await engine.config());
-          }
-        },
-      });
-      return json(res, 200, runtimeModels.libraryState(lib));
+      // Strata's own engine only: 0.2.14 started a llama.cpp llama-server here (an imported GGUF, the starter list) in the real-engine mode
+      return error(res,409,'Strata runs models only on its own engine, so this model can\'t load here. Open Models and choose a model there, or use "Use a local GGUF…" for a file you already have.');
     }
   }
 

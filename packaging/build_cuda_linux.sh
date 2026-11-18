@@ -3,9 +3,11 @@
 #
 #   VARIANT=cuda12 packaging/build_cuda_linux.sh     # CUDA 12.9: GTX 10 (Pascal), Tesla P100, V100, and the newer cards up to sm_89
 #   VARIANT=cuda13 packaging/build_cuda_linux.sh     # CUDA 13: RTX 20 and newer (sm_75 .. sm_120)
+#   SHAPE=q4_lite packaging/build_cuda_linux.sh      # the engine of a model shape, its own component (packaging/shape_build.sh)
 #
-# Run it on a Linux x86_64 box with the CUDA toolkit of that variant on PATH (nvcc), a Python 3 venv with requirements.txt and
-# requirements-build.txt, and the pinned llama.cpp in third_party/llama.cpp (python -c "import setup; setup.get_llama_cpp()").
+# Run it on a Linux x86_64 box with the CUDA toolkit of that variant on PATH (nvcc) and a Python 3 venv with requirements.txt and
+# requirements-build.txt. ggml comes from the vendored third_party/strata-ggml: nothing is downloaded. STRATA_GGML_DIR=<llama.cpp checkout>
+# builds from that checkout instead (an override, kept for two releases).
 # The package lands in $OUT (default ./out-engine-<variant>). Nothing is uploaded.
 #
 # The cuda12 package is the one the feed and docs/DOCKER.md offer to Pascal and Volta cards, so it needs machine code for sm_60,
@@ -31,16 +33,29 @@ esac
 real=""; for a in $(echo "$archs" | tr ';,' '  '); do real="$real;${a}-real"; done; real=${real#;}
 last=$(echo "$archs" | tr ';,' '  ' | awk '{print $NF}')
 cd "$repo"
+ggml=""; [ -z "${STRATA_GGML_DIR:-}" ] || ggml="-DSTRATA_GGML_DIR=$STRATA_GGML_DIR"
+. "$repo/packaging/shape_build.sh"; shape_setup "$repo"
+# STRATA_CMAKE_EXTRA: more configure arguments for the engine build, e.g. the model shape of a new family:
+#   STRATA_CMAKE_EXTRA="-DSTRATA_GEOMETRY_FILE=/abs/path/geometry.hpp"   (or -DSTRATA_GEOMETRY=<name>)
+# shellcheck disable=SC2086
 cmake -G Ninja -S . -B "$build" -DCMAKE_BUILD_TYPE=Release -DSTRATA_ENABLE_CUDA=ON -DSTRATA_BUILD_TESTS=OFF \
     -DSTRATA_EXPERIMENTAL_SM60=$sm60 -DSTRATA_NATIVE_EXPERTS=ON -DSTRATA_PORTABLE=ON -DSTRATA_Q6K_EXPERTS=ON -DSTRATA_MMQ_KQUANTS=ON \
-    "-DCMAKE_CUDA_ARCHITECTURES=${real};${last}-virtual" -DSTRATA_GGML_DIR="$repo/third_party/llama.cpp"
-cmake --build "$build" --target strata strata_kq -j "$(nproc)"
+    -DSTRATA_MMQ=OFF "-DCMAKE_CUDA_ARCHITECTURES=${real};${last}-virtual" $ggml ${STRATA_CMAKE_EXTRA:-} $shape_cmake
+# without llama.cpp's MMQ (named here: a build folder configured before keeps ON in its cache); strata_kq (libstrata_kq.so) exists only
+# in a build with it: STRATA_CMAKE_EXTRA=-DSTRATA_MMQ=ON packages the old path (A/B)
+. "$repo/packaging/engine_targets.sh"
+targets=$(engine_targets cmake "$build")
+# shellcheck disable=SC2086
+cmake --build "$build" --target $targets -j "$(nproc)"
 
 # The picture reader is built for the SAME architectures as the engine (#3669: a reader reused from an older build had no sm_60, and on
 # a Pascal card the engine ran while the reader died with "device kernel image is invalid"). BUILD_VISION=0 ships a text-only package.
 vision_dir=${BUILD_VISION_DIR:-$repo/build-vision-$variant}
 if [ "${BUILD_VISION:-1}" = 1 ]; then
-  cmake -G Ninja -S tools/vision -B "$vision_dir" -DCMAKE_BUILD_TYPE=Release -DLLAMA_DIR="$repo/third_party/llama.cpp" \
+  # strata-vision builds from the vendored third_party/strata-llama (llama, mtmd, ggml at the pin); STRATA_GGML_DIR=<llama.cpp checkout> overrides it
+  vision_llama=""; [ -z "${STRATA_GGML_DIR:-}" ] || vision_llama="-DLLAMA_DIR=$STRATA_GGML_DIR"
+  # shellcheck disable=SC2086
+  cmake -G Ninja -S tools/vision -B "$vision_dir" -DCMAKE_BUILD_TYPE=Release $vision_llama \
       -DSTRATA_VISION_CUDA=ON -DSTRATA_PORTABLE=ON -DGGML_CUDA_NCCL=OFF "-DCMAKE_CUDA_ARCHITECTURES=${real};${last}-virtual"
   cmake --build "$vision_dir" --target strata-vision -j "$(nproc)"
 fi
@@ -57,11 +72,12 @@ if [ -f "$vision_dir/bin/strata-vision" ]; then
 fi
 echo "{\"version\": \"$ver\", \"source\": \"packaging/build_cuda_linux.sh\", \"archs\": \"$archs\", \"cuda\": \"$cudafull\", \"portable\": true$vision_json}" > "$stage/BUILD.json"
 "$py" packaging/collect_libs.py --binary "$build/strata" --search /usr/local/cuda/lib64 --out "$stage" --also 'libcublasLt.so*'
+shape_check env LD_LIBRARY_PATH="$stage" "$stage/strata"
 arch_args=""; for a in $(echo "$archs" | tr ';,' '  '); do arch_args="$arch_args --arch sm_$a"; done
 mkdir -p "$out"
 # shellcheck disable=SC2086
 "$py" packaging/package_engine.py --src "$stage" --backend cuda --version "$ver" --out "$out" $arch_args --arch "compute_$last" \
     --min-driver nvidia=$mindriver --variant "$variant" --platform linux-x86_64 --build-id "release-${ver}-${variant}-${cudafull}" \
-    --include SYSTEM-LIBS.txt --include 'libstrata_kq*'
+    --include SYSTEM-LIBS.txt --include 'libstrata_kq*' $shape_pkg
 for d in "$out"/*/; do "$py" packaging/package_engine.py --verify "$d"; "$py" packaging/binary_deps.py "$d"; done
 echo "built: $out"

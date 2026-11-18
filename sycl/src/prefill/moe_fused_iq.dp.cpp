@@ -25,6 +25,7 @@
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
 #include "strata/prefill/moe_fused_iq.hpp"
+#include "strata/core/geometry.hpp"
 
 #include "ggml.h"
 
@@ -1364,6 +1365,8 @@ bool native_supported(int gu_type, int d_type) {
         const char* v = std::getenv("STRATA_PF_FUSED_NATIVE");
         return v != nullptr && v[0] == '0';
     }();
+    // GU_ROWS_K / D_ROWS_K, the 1280 / 2560 weight-row counts and the 2560-wide output rows are Flash-Next's: another compiled shape keeps MMQ
+    if (strata::core::kCompiledGeometry.n_embd != GU_ROWS_K || strata::core::kCompiledGeometry.n_ff != D_ROWS_K) return false;
     return !off && requested() && gu_covered(gu_type) && d_covered(d_type) && dev_info().ok;   // opt-in (=1)
 }
 

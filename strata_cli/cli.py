@@ -39,7 +39,6 @@ class _VersionAction(argparse.Action):
 
 def parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="strata", description="Strata serving and terminal clients")
-    import strata_cli
     ap.add_argument("--version", action=_VersionAction, nargs=0,
                     help="print the version and the interpreter this terminal runs on")
     sp = ap.add_subparsers(dest="command", required=True)
@@ -2043,6 +2042,8 @@ def _components_engine(a: argparse.Namespace) -> int:
         print(f"engine            {report['engine']['exe']}  (version {report['engine']['version']})")
     else:
         print(report["notice"], file=sys.stderr)
+    for row in report.get("shapes") or []:             # the engines of model shapes, only on a PC that has one (strata_control/shape_engine.py)
+        print(f"engine for {row['shape']}  " + (f"{row['engine']['exe']}  (version {row['engine']['version']})" if row["usable"] else str(row.get("notice"))))
     notice = engine_component.cached_notice(root)
     if notice:
         print(notice)
@@ -2242,6 +2243,11 @@ def _install_argv(argv: list[str]) -> list[str]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    try:
+        from strata_control.childenv import quiet_crash_env
+        quiet_crash_env()                        # every program Strata starts inherits it: ggml never starts gdb on a user's machine
+    except ImportError:                          # a thin bundle ships without strata_control
+        pass
     try:
         from strata_control import private_files
         private_files.adopt_user_defaults()      # what this process creates belongs to the user even when it runs as administrator

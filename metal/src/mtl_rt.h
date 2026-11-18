@@ -84,14 +84,9 @@ public:
     uint64_t recommended_working_set() const;
     uint64_t max_buffer_length() const;
     uint64_t max_threadgroup_memory() const;
-    // Keeps the GPU out of its low-clock idle state while dispatches keep coming (a lone kernel in a quiet GPU runs 2-3x slower:
-    // measured 205 vs 69 us for the same matvec): a spin kernel of one threadgroup on a second queue, stopped 50 ms after the
-    // last dispatch.  DS4_NO_KEEPALIVE=1: off.
-    void start_keepalive();
     // Zero-copy weights: the GPU address of host memory [p, p + bytes) (file-backed pages of the model, RAM slots) through a
     // no-copy buffer over the pages it spans, made resident.  0: not mappable (the cap on buffers is reached, or the pages are not
     // ours).  The first dispatch that reads cold pages waits for them (the buffer is wired on use).
-    uint64_t zc_map(const void* p, size_t bytes);
     Pipeline pipeline_uncached(int lib, const std::string& fn, const Constants& c);
     size_t zc_count() const;
     uint64_t allocated() const { return allocated_; }   // bytes of alloc() + wrap() buffers so far
@@ -130,7 +125,7 @@ public:
     double run(const std::vector<Dispatch>& ds, int reps = 1, bool concurrent = false, bool barrier_between = false);
     // A dependency graph in ONE concurrent encoder: a memory barrier only before dispatches with `barrier` set, so
     // the dispatches between two barriers may overlap.  Returns the GPU time in seconds.
-    double run_graph(const std::vector<Dispatch>& ds);
+    double run_graph(const std::vector<Dispatch>& ds, size_t count = (size_t) -1);   // count: only the first `count` dispatches (the step profile's prefixes)
     // run_graph on a SECOND queue, committed without waiting: the GPU may overlap it with work on the main queue (the two must touch
     // different buffers).  Returns a token; wait_async(token) blocks until it has completed (returns its GPU time in seconds).
     void* run_graph_async(const std::vector<Dispatch>& ds);
@@ -157,7 +152,7 @@ public:
     // Runs `ds` repeatedly for about `seconds` of wall time: lifts the GPU out of its idle clocks before a timing.
     void warm(const std::vector<Dispatch>& ds, double seconds = 0.3);
 
-    std::string ggml_common_path;                // where ggml-common.h is read from
+    std::string ggml_common_path;                // where strata-quant-common.h (formerly ggml-common.h) is read from
     std::string kernel_dir;                      // where relative kernel paths resolve
 
 private:

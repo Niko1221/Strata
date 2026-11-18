@@ -380,7 +380,7 @@ Engine::Engine(Model& m, int max_ctx, int lanes) : m_(m), max_ctx_(max_ctx) {
         arena_cap_ = INT32_MAX;
         for (int c = 0; c < NCARD; ++c) {
             const ExpertCache& ec = m.cards[c].ec;
-            const int p = ec.arena_pool, keep = 2 * MAXT * TOPK;
+            const int p = ec.arena_pool, keep = EXPERT_WINDOW_SLOTS;
             const size_t page = kvp_page(c) * sizeof(uint16_t);
             const size_t room = (size_t) (ec.n[p] - keep) * ec.slot_bytes[p] + (arena_slot_off(c) - (size_t) n_pages * page);
             arena_cap_ = std::min(arena_cap_, n_pages + (int) (room / page));
@@ -599,7 +599,7 @@ void Engine::arena_set(int w) {
         ck(cudaSetDevice(b.dev), "set");
         ck(cudaDeviceSynchronize(), "arena: cards idle");
         const int from = arena_slots_for(c, arena_w_), to = arena_slots_for(c, w);
-        if (to > ec.n[ec.arena_pool] - 2 * MAXT * TOPK) throw std::runtime_error("arena: card " + std::to_string(c) + " would keep too few slots");
+        if (to > ec.n[ec.arena_pool] - EXPERT_WINDOW_SLOTS) throw std::runtime_error("arena: card " + std::to_string(c) + " would keep too few slots");
         arena_slots(ec, from, to, b.st);
         ck(cudaStreamSynchronize(b.st), "arena: slots");
         if (to < from) arena_refill(c, from, to);

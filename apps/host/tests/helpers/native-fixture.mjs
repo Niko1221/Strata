@@ -1,7 +1,9 @@
 import {EventEmitter} from 'node:events';
-import {mkdtempSync,mkdirSync,writeFileSync,rmSync} from 'node:fs';
+import {mkdtempSync,mkdirSync,writeFileSync,rmSync,realpathSync} from 'node:fs';
 import {join} from 'node:path';
-import {tmpdir} from 'node:os';
+import {tmpdir as osTmpdir} from 'node:os';
+// the canonical scratch root: on a Mac the temp folder is /var/folders/..., which resolves to /private/var/...; the paths the host reports are the resolved ones
+const tmpdir=()=>realpathSync(osTmpdir());
 import {NATIVE_FIELDS} from '../../server/native-settings.mjs';
 import {createNativeControl} from '../../server/native-control.mjs';
 export function nativeFixture({modelsDirectory,tuneHandler,engineStatus}={}){

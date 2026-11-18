@@ -26,15 +26,14 @@ from __future__ import annotations
 import json
 import re
 import subprocess
-import sys
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from strata_control import loopback
+from strata_control.childenv import quiet_crash_env
 from strata_control.tune_engine import EngineMeasurement, MeasurementError, process_tree_peak_mib
 
 
@@ -83,7 +82,8 @@ class ApiHarness:
                                                 delete=False)
         try:
             from serve import lifeline       # the worker (and the engine under it) end with this process
-            self._proc = lifeline.popen(self._argv(), "worker", cwd=str(self.serve_dir), env=self.env,
+            self._proc = lifeline.popen(self._argv(), "worker", cwd=str(self.serve_dir),
+                                        env=None if self.env is None else quiet_crash_env(dict(self.env)),
                                         stdout=self._log, stderr=subprocess.STDOUT)
         except OSError as e:
             raise MeasurementError(f"the worker could not be started: {e}") from e

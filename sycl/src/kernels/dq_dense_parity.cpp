@@ -193,9 +193,9 @@ void run_mmvq(const Ty& ty, bool quick) {
     Tally& t = g_res[std::string(ty.name) + " mmvq"];
     std::mt19937_64 xr(5);
     std::normal_distribution<float> nd(0.f, 1.f);
-    for (int n_in : {256, 1024, 2560, 4096}) {
+    for (int n_in : {256, 1024, 2048, 2560, 3072, 4096}) {   // Q4-SYCL: and the Qwen4 test shapes' hidden widths 2048 and 3072
         if (n_in % ty.be) continue;
-        if (quick && n_in != 1024 && n_in != 2560) continue;
+        if (quick && n_in != 1024 && n_in != 2048 && n_in != 2560 && n_in != 3072 && n_in != 4096) continue;
         for (int n_out : {1, 7, 8, 33, 130}) {
             if (quick && n_out != 33) continue;
             for (int nc : {1, 2, 4, 5, 8}) {

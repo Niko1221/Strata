@@ -15,7 +15,6 @@ from __future__ import annotations
 import collections
 import ctypes
 import os
-import platform
 from strata_control import sysinfo
 import re
 import subprocess

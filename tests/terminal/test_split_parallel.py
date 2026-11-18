@@ -23,6 +23,7 @@ from strata_cli.launch import settings as S
 from strata_cli.launch.runner import Runner
 from strata_control import profiles, split_engine as SE
 from tests.terminal.launch_support import HW_12, Home, catalog
+import serve.server  # noqa: F401  imported before any test patches sys.platform: serve/lifeline.py runs Linux-only libc code when it is imported as Linux
 
 A6000 = {"name": "NVIDIA RTX A6000", "vram_gb": 48.0, "usable": True, "vendor": "nvidia"}
 HW_2XA6000 = {**HW_12, "ram_gb": 125.0, "disk_free_gb": 900.0, "engine_vendor": "nvidia", "gpus": [{**A6000, "index": i} for i in range(2)]}
@@ -51,6 +52,14 @@ class Base(unittest.TestCase):
     def setUp(self):
         self.home = Home().__enter__()
         self.addCleanup(self.home.__exit__, None, None, None)
+        # the all-cards split rule asks the host OS and is Linux only (strata_control/split_engine.expected): these fake cards are a Linux PC
+        plat = mock.patch("sys.platform", "linux")
+        plat.start()
+        self.addCleanup(plat.stop)
+        # and NVIDIA: an Intel Arc in the box that runs the test would make the launch an Intel one (Runner.intel_chosen reads the real machine)
+        intel = mock.patch.object(Runner, "intel_chosen", lambda self: False)
+        intel.start()
+        self.addCleanup(intel.stop)
 
     def profile_for(self, cfg: dict, *, parallel=None, hw=None, four_card=None) -> dict:
         """What Runner.ensure_profile saves as the launch profile's overrides for this written run config."""

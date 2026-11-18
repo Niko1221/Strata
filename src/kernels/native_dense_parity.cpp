@@ -185,7 +185,7 @@ int main(int argc, char** argv) {
     int fails = 0, seed = 0;
     for (const T& t : kTypes) {
         if (only && std::strcmp(only, t.name) != 0) continue;
-        for (int n_in : {2560, 640, 4096}) {
+        for (int n_in : {2560, 640, 4096, 512, 1024, 2048, 3072}) {
             if (n_in == 640 && ggml_blck_size(t.type) > 64) continue;   // (K-quants and IQ4_XS: 256-value blocks; 640 is not a multiple)
             if (n_in == 640 && ggml_blck_size(t.type) == 256) continue;
             fails += run_case(t, n_in, 512, seed++);

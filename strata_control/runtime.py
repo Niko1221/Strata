@@ -16,6 +16,7 @@ child is still there.
 from __future__ import annotations
 
 from strata_control.private_files import private_mkdir as _private_mkdir
+from strata_control.childenv import quiet_crash_env
 import argparse
 import errno
 import hashlib
@@ -84,7 +85,7 @@ def _supported() -> None:
     POSIX uses an owner-private ``AF_UNIX`` socket. Windows uses a loopback-only TCP listener whose
     authority rests on the 256-bit control token plus a ``0700`` state directory, because the Python
     standard library cannot create a named pipe with a security descriptor; the difference is
-    recorded in ``owner_transport`` and in ``docs/work/IMPLEMENTATION_STATUS.md`` rather than being
+    recorded in ``owner_transport`` and in ``history/docs/work/IMPLEMENTATION_STATUS.md`` rather than being
     presented as equivalent. Anything else is refused.
     """
     if os.name == "nt" or (os.name == "posix" and hasattr(socket, "AF_UNIX")):
@@ -212,11 +213,16 @@ def _paths(name: str) -> tuple[Path, Path, Path]:
     return directory / f"{name}.json", address, directory / f"{name}.host.log"
 
 
-def _read_state(name: str) -> dict | None:
+def _read_state(name: str, pending_ok: bool = False) -> dict | None:
+    """The owner's state file, or None when there is none. `pending_ok` (a start waiting for the owner it just launched): an empty or half-written
+    file is that owner still writing its state (it creates the file as its lease, then writes it), so it reads as not there yet instead of
+    unreadable (#5601: the test start of an update failed on a 0-byte read that was 191 bytes 100 ms later)."""
     path, socket_path, _ = _paths(_name(name))
     try:
         details = path.lstat()
     except FileNotFoundError:
+        return None
+    if pending_ok and stat.S_ISREG(details.st_mode) and details.st_size == 0:
         return None
     if not stat.S_ISREG(details.st_mode) or not _is_private(details, path) or details.st_size > 16 * 1024:
         raise ProfileError("runtime state file is not private or is invalid", 5)
@@ -225,6 +231,8 @@ def _read_state(name: str) -> dict | None:
     except FileNotFoundError:
         return None                 # the owner left between the look and the read: there is no state any more
     except (OSError, UnicodeError, ValueError):
+        if pending_ok:
+            return None
         raise ProfileError("runtime state file is unreadable", 5) from None
     # POSIX: the address is the one derived from the profile. Windows: the port is chosen when the owner binds, so
     # the state file carries it, and the only address a client may be sent to is a loopback port.
@@ -529,16 +537,16 @@ def _check_start_candidate(name: str, expected_profile_revision: str | None,
 
 def _repair_config_paths(name: str) -> tuple[str | None, str | None]:
     """Before a start: every path of the saved run configs that names a version folder of Strata's own that an update removed (the Control bundle
-    that ran setup: cwd, --expert-profile; an engine package: the picture reader, library folders; the DeepSeek package) is pointed at the current
+    that ran setup: cwd, --expert-profile; an engine package: the picture reader, library folders) is pointed at the current
     version and written once (strata_control/cfg_paths.py; the same resolver the config reader applies in memory).  One line of what it did goes to
     the profile's host log.  Returns (the profile's own run config digest before, after) when it changed that file, for a caller that planned the
     start on the old digest.  A path that exists in no current version stops the start with the file named."""
     try:
-        from strata_control import cfg_paths, dsv41_paths
+        from strata_control import cfg_paths
         profile, _ = profiles.load(name)
         own = Path(profile["source_config"])
         before = hashlib.sha256(own.read_bytes()).hexdigest()
-        configs = [own, *[c for c in dsv41_paths.saved_configs() if c != own]]
+        configs = [own, *[c for c in cfg_paths.saved_configs() if c != own]]
         notes, problems = cfg_paths.repair(configs)
         if notes:
             _, _, log_path = _paths(name)
@@ -557,31 +565,25 @@ def _repair_config_paths(name: str) -> tuple[str | None, str | None]:
         return None, None
 
 
-def _repair_dsv41_paths(name: str) -> None:
-    """Before a start: a saved profile that runs the DeepSeek engine from an engine-dsv41/ folder an update has replaced is pointed at the newest
-    installed package of its own kind (every saved profile's run config, so the next start of another one is repaired too).  Local only: it never
-    looks at the feed and fetches nothing - engine updates are the explicit `strata update` / the app's "Update engine".  Never fails a start;
-    one line of what it did goes to the profile's host log."""
+def _refuse_deepseek(name: str) -> None:
+    """Before a start: a saved profile whose run config is a DeepSeek one stops here with the plain refusal (the model's folder and size
+    when they can be read; strata_control/retired.py).  Nothing is written, no process is started; a local, bounded check."""
+    from strata_control import retired
     try:
-        from strata_control import dsv41_paths
         profile, _ = profiles.load(name)
-        configs = [Path(profile["source_config"]), *[c for c in dsv41_paths.saved_configs() if c != Path(profile["source_config"])]]
-        notes = dsv41_paths.repair_missing(configs)
-        if notes:
-            _, _, log_path = _paths(name)
-            if log_path.parent.is_dir():
-                with open(log_path, "ab") as stream:
-                    for note in notes:
-                        stream.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S')} engine: {note}\n".encode("utf-8"))
-    except Exception:                                    # noqa: BLE001 - a start never fails because of this
-        pass
+        source = profile.get("source_config")
+    except Exception:                                    # noqa: BLE001 - the usual checks below say what is wrong with the profile
+        return
+    cfg = retired.read_config(source)
+    if retired.config_reason(cfg) or retired.config_file_reason(source):
+        raise ProfileError(retired.refusal(cfg, retired.title(cfg, source)), 6)
 
 
 CHILD_EXIT_GRACE = 10.0     # seconds a host whose server ended on its own keeps answering "failed" (a waiting client reads why), then leaves (#4574 #4824)
 DIE_WITH_MISSES = 3         # consecutive looks, a second apart, at a process that cannot be found before the owner calls it gone (#4973)
 STATUS_RPC_TIMEOUT = 10.0   # seconds one status question may take; a busy owner is asked again until the start's wait is over (#5177)
 VERIFY_BUDGET = 180.0       # seconds an engine that says it is up may take to answer its first token, whatever is left of the load wait (#5177 #5059)
-MAX_START_WAIT = 1800     # seconds a start may wait for the model: a 250 GB DeepSeek set on a slow disk needs more than 10 minutes (#3949)
+MAX_START_WAIT = 1800     # seconds a start may wait for the model: a 250 GB set on a slow disk needs more than 10 minutes (#3949)
 
 
 def start(name: str, *, wait: float = 300, shutdown_timeout: float = 30,
@@ -612,10 +614,10 @@ def start(name: str, *, wait: float = 300, shutdown_timeout: float = 30,
     if expected_source_sha256 is not None and (not isinstance(expected_source_sha256, str) or
             not re.fullmatch(r"[0-9a-f]{64}", expected_source_sha256)):
         raise ProfileError("expected source digest must be 64 lowercase hex characters")
+    _refuse_deepseek(name)                             # before anything is written or started (strata_control/retired.py)
     changed_from, changed_to = _repair_config_paths(name)
     if changed_from is not None and expected_source_sha256 == changed_from:
         expected_source_sha256 = changed_to              # (the caller planned on the file as it was; Strata rewrote it, the caller did not)
-    _repair_dsv41_paths(name)
     plan, _ = _check_start_candidate(name, expected_profile_revision, expected_source_sha256)
     on_status = _progress(on_status, {"ok": True, "profile": name, "state": "starting", "phase": "checking_engine"})
     _engine_preflight(plan)                # hashes every engine file (1.4 GB or more): minutes on a slow disk, no owner exists yet
@@ -648,9 +650,9 @@ def start(name: str, *, wait: float = 300, shutdown_timeout: float = 30,
                                     stderr=subprocess.STDOUT, close_fds=True, **detach)
         _STARTED_HOSTS[name] = proc
         deadline = time.monotonic() + max(5.0, wait)
-        while _read_state(name) is None and proc.poll() is None and time.monotonic() < deadline:
+        while _read_state(name, pending_ok=True) is None and proc.poll() is None and time.monotonic() < deadline:
             time.sleep(0.05)
-        if _read_state(name) is None:
+        if _read_state(name, pending_ok=True) is None:
             if proc.poll() is not None:
                 _STARTED_HOSTS.pop(name, None)
             raise ProfileError("runtime host failed to start; inspect " + str(log_path), 6)
@@ -974,7 +976,7 @@ class Host:
                        "--owner-fd", "0" if WINDOWS else str(reader)]
         attestation_key = secrets.token_bytes(32)
         expected_attestation = launch_identity.attestation(attestation_key, source_bytes, server_args)
-        child_env = os.environ.copy()
+        child_env = quiet_crash_env(os.environ.copy())   # the server's engine and reader start no debugger on a user's machine
         child_env["STRATA_OWNER_ATTEST_KEY"] = attestation_key.hex()
         child_env["STRATA_NO_ACQUIRE"] = "1"      # a managed server never installs or downloads (acquisition.py)
         child_env["STRATA_RUNTIME_PROFILE"] = self.name   # the records of its engine say which profile they belong to
@@ -1558,6 +1560,7 @@ class Host:
 
 
 def main(argv: list[str] | None = None) -> int:
+    quiet_crash_env()                                   # the host's children inherit it (strata_control/childenv.py)
     parser = argparse.ArgumentParser(prog="strata-runtime-host")
     parser.add_argument("--host", required=True)
     parser.add_argument("--shutdown-timeout", type=float, default=30)

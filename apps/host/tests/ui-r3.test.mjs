@@ -33,8 +33,8 @@ test('2: pictures are on by default; a missing reader says nothing wordy and sav
   assert.match(host, /const noReader=args\.visionUnavailable===true;/);
   assert.match(host, /const visionPreferences=args\.vision!==undefined&&!noReader\?/, 'nothing is saved when the reader is missing');
   assert.match(host, /runtimeVision\(config,noReader\?'no':args\.vision\)/);
-  // An "off" that sits on a model without the picture files is not a choice of the person: it starts on.
-  assert.match(readFileSync(new URL('../src/lib/pictures-choice.ts', import.meta.url), 'utf8'), /installed\.visionEnabled === false && installed\.visionPrepared !== false\) return 'no'/);
+  // An old "off" (no marker) that sits on a model without the picture files is not a choice of the person: it starts on.
+  assert.match(readFileSync(new URL('../src/lib/pictures-choice.ts', import.meta.url), 'utf8'), /installed\.visionEnabled === false && \(installed\.visionPrepared !== false \|\| installed\.visionChosen === true\)\) return 'no'/);   // since 0.2.14 an off with the marker (ui_vision_chosen) holds too: tests/pictures-hold.test.mjs
 });
 
 test('6: the conversation context opens at 128K for every configuration, or the model largest size when that is smaller; a warning, never a refusal', async () => {
@@ -58,14 +58,14 @@ test('6: the conversation context opens at 128K for every configuration, or the 
   // The page opens with the default, ignores the engine recommended context, warns inline and never lowers by itself.
   assert.match(models, /useKept\('models\.context', DEFAULT_CONTEXT\)/);
   assert.ok(!/rec\.context/.test(models), 'the engine recommendation is not what the page opens with');
-  assert.match(models, /setContext\(defaultContext\(first\?\.multi_file \? deepseekContexts\(\) : native\.catalog\.contexts\)\)/, 'DeepSeek too, from its own list');
-  assert.match(models, /contextIsTight\(fitHardware\.vram_gb, context, kv\) \? <p className="small muted native-spill-note"><Icon name="warning"/);
+  assert.match(models, /setContext\(defaultContext\(native\.catalog\.contexts\)\)/, 'from the catalog list');
+  assert.match(models, /contextIsTight\(fitHardware\.vram_gb, context, kv, selectedSize\?\.context_fit\) \? <p className="small muted native-spill-note"><Icon name="warning"/);
   assert.ok(!/setContext\([^)]*contextIsTight/.test(models), 'the warning never changes the context');
   assert.match(models, /cache=\{\{ context, kv, drafter: fitDrafter \}\}/, 'the version list follows the chosen context, as the card does');
   const guided = read('src/components/GuidedSetup.tsx');
   assert.match(guided, /const context = pickedContext \?\? defaultContext\(contextList\)/, 'first-run opens at 128K on every card too');
   assert.ok(!/OLD_DEFAULT_CONTEXT|contextIsTight\(topCardGb, DEFAULT_CONTEXT/.test(guided), 'no fallback to 32K on a tight card');
-  assert.match(guided, /contextIsTight\(topCardGb, context\) \? <p className="small muted native-spill-note">/, 'the same inline warning, nothing lowered');
+  assert.match(guided, /contextIsTight\(topCardGb, context, 'int8', version\?\.context_fit\) \? <p className="small muted native-spill-note">/, 'the same inline warning, nothing lowered');
 });
 
 test('7 and 8: Model files has no explanatory sentence and holds "Other local models..." beside Storage settings', () => {
@@ -104,9 +104,9 @@ test('13: Load model has no pop-up: the size and the warnings are in the page, a
   assert.match(models, /\{tr\(plan\?\.plan\?\.disk_short \? <ErrorNotice message=\{plan\.plan\.disk_short\}\/> : null\)\}/, 'the disk message is in the page');
   assert.match(models, /active && drafterGb \? <p className="small muted native-spill-note"><Icon name="info" size=\{16\}\/>\{tr\(nowDrafter === 'mtp' \? \(splitCards && drafting === 'auto' \? "Auto uses the all-cards split engine with the MTP draft layer: about \{0\} GB to download, once\." : "Choosing MTP downloads its drafter: about \{0\} GB, once\."\) : "Choosing DFlash2 downloads its drafter/, 'the extra download is said in the page while it runs');
   assert.match(models, /className="native-download-size small muted">\{tr\("\{0\} download", \[sizeGb\(selectedSize\.download_gb\)\]\)\}/, 'the download size sits beside the button');
-  // The warnings for a version that does not fit stay inline (item 5): SSD streaming and Doesn't fit under the version list.
+  // The warnings for a version that does not fit stay inline (item 5): may run slower under the version list.
   assert.match(models, /fitState === 'ssd' \? <p className="small muted native-spill-note"><Icon name="disk" size=\{16\}\/>/);
-  assert.match(models, /fitState === 'no' \? <p className="small muted native-spill-note"><Icon name="warning" size=\{16\}\/>/);
+  assert.ok(!/fitState === 'no'|Doesn't fit/.test(models), "no Doesn't fit under the version list any more");
 });
 
 test('9: a chat that is working shows it on its sidebar row, and the model chip says which chat when it is elsewhere', () => {
@@ -177,7 +177,7 @@ test('a context picked after this update sticks, 32K included; only an old saved
   assert.match(host, /\.\.\.\(args\.contextChosen===true\?\{ui_context_chosen:true\}:\{\}\)/, 'a load saves the marker');
   assert.match(host, /rememberSetting\(record\(id\)\.path,'ui_context_chosen',true\)/, 'an install saves it too');
   assert.match(host, /contextChosen:cfg\.ui_context_chosen===true/, 'and it is read back');
-  assert.match(models, /openingContext\(installed\.context, contextList, installed\.contextChosen === true, selectedSize\.multi_file \? \[OLD_DEEPSEEK_CONTEXT\] : undefined\)/);
+  assert.match(models, /openingContext\(installed\.context, contextList, installed\.contextChosen === true\)/);
   assert.match(models, /\.\.\.\(contextPicked \? \{ contextChosen: true \} : \{\}\)/, 'a pick is sent with the install');
   assert.match(models, /\.\.\.\(contextPicked && !installed\.contextChosen \? \{ contextChosen: true \} : \{\}\)/, 'and with a direct load, so a picked 32K that equals the saved one is marked too');
   assert.match(read('src/components/GuidedSetup.tsx'), /contextTouched \? \{ contextChosen: true \}/);
@@ -191,17 +191,13 @@ test('the tune dialog also runs without pictures and saves nothing when the engi
   assert.match(host, /args\.contextChosen===true\|\|JSON\.stringify\(cfg\[USER_KEY\]/, 'a load that carries the context marker writes it to the saved settings');
 });
 
-test('owner 11-01 (second decision): 128K on every card, in first-run setup, and for DeepSeek where its pack allows it', async () => {
-  const { defaultContext, openingContext, OLD_DEEPSEEK_CONTEXT } = await lib('src/lib/default-context.ts');
-  const { deepseekContexts } = await lib('src/lib/deepseek-context.ts');
-  assert.equal(defaultContext(deepseekContexts()), 131072, 'DeepSeek without a pack limit: 128K');
-  assert.equal(defaultContext(deepseekContexts(65536)), 65536, 'a pack that stops at 64K opens at its largest');
-  assert.equal(defaultContext(deepseekContexts(1048576)), 131072, 'a pack that reads 1M still opens at 128K');
-  assert.equal(openingContext(8192, deepseekContexts(), false, [OLD_DEEPSEEK_CONTEXT]), 131072, 'an unmarked saved 8K is the old DeepSeek default');
-  assert.equal(openingContext(8192, deepseekContexts(), true, [OLD_DEEPSEEK_CONTEXT]), 8192, 'an 8K that was picked stays');
-  assert.equal(openingContext(8192, [8192, 32768, 131072]), 8192, 'for any other model an 8K is a choice (Terminal setups for small cards write it)');
+test('owner 11-01 (second decision): 128K on every card and in first-run setup', async () => {
+  const { defaultContext, openingContext } = await lib('src/lib/default-context.ts');
+  assert.equal(defaultContext([8192, 32768, 65536, 131072, 262144]), 131072, '128K');
+  assert.equal(defaultContext([8192, 32768, 65536]), 65536, 'a model that stops at 64K opens at its largest');
+  assert.equal(openingContext(8192, [8192, 32768, 131072]), 8192, 'an 8K is a choice (Terminal setups for small cards write it)');
   const guided = read('src/components/GuidedSetup.tsx');
-  assert.ok(!/fixedContext/.test(guided) && !/\[8192\]/.test(guided), 'DeepSeek is no longer fixed at 8K in first-run setup');
+  assert.ok(!/fixedContext/.test(guided) && !/\[8192\]/.test(guided), 'no model is fixed at 8K in first-run setup');
   assert.match(guided, /options=\{contextList\.map\(n =>/);
 });
 

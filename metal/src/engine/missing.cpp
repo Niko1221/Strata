@@ -55,6 +55,9 @@ bool fused_gr_read_persist(const FusedGrArgs*, int, void*) { return false; }
 #include <exception>
 #include <sys/ucontext.h>
 #include <unistd.h>
+#include <dirent.h>
+#include <sys/resource.h>
+#include <mach/mach.h>
 namespace {
 [[noreturn]] void metal_terminate() {
     void* fr[64];
@@ -82,6 +85,23 @@ void metal_crash(int sig, siginfo_t* si, void* uc) {
                                 ss ? (void*) ss->__x[25] : nullptr, ss ? (void*) ss->__x[26] : nullptr);
     (void) !write(2, msg, (size_t) m);
     backtrace_symbols_fd(fr, n, 2);
+    {   // what the process held when it crashed (a crash inside the system's Metal compiler has no other clue): descriptors against the limit, memory
+        struct rlimit rl {};
+        getrlimit(RLIMIT_NOFILE, &rl);
+        int fds = 0;
+        if (DIR* d = opendir("/dev/fd")) {
+            while (readdir(d) != nullptr) ++fds;
+            closedir(d);
+        }
+        task_vm_info_data_t ti;
+        mach_msg_type_number_t cnt = TASK_VM_INFO_COUNT;
+        const bool ok = task_info(mach_task_self(), TASK_VM_INFO, (task_info_t) &ti, &cnt) == KERN_SUCCESS;
+        char m2[256];
+        const int k = std::snprintf(m2, sizeof m2, "strata metal: open descriptors %d (limit %llu / %llu), virtual %.1f GB, footprint %.2f GB, resident %.2f GB\n", fds,
+                                    (unsigned long long) rl.rlim_cur, (unsigned long long) rl.rlim_max, ok ? ti.virtual_size / 1e9 : -1.0,
+                                    ok ? ti.phys_footprint / 1e9 : -1.0, ok ? ti.resident_size / 1e9 : -1.0);
+        (void) !write(2, m2, (size_t) k);
+    }
     signal(sig, SIG_DFL);
     raise(sig);
 }

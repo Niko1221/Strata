@@ -6,8 +6,8 @@
 //
 // #3702: on an unequal pair (RTX 3060 + RTX 5060 Ti) the last card was left with 68 MiB after loading although
 // 700 + 96 MiB were reserved for it, and the verify windows' graphs (captured on first use, 4-6 MiB each and once 42 MiB)
-// then ran it out of memory. `proposed_window_mib` below is a PROPOSAL for a larger window term; nothing calls it
-// (it needs the model gate in phaseA-tests/gh027/gates/3702-later-reserve.sh before it can become the default).
+// then ran it out of memory. A larger window term was proposed for it; the proposal is not part of the default placement
+// and lives in research/stage-reserve-proposal/ (nothing in the engine calls it).
 #pragma once
 
 #include <algorithm>
@@ -36,26 +36,6 @@ inline int64_t reserve_mib(const Inputs& in) {
 /// The room the cache may use: the free bytes less the reserve, never below 0.
 inline int64_t room_bytes(int64_t free_bytes, const Inputs& in) {
     return std::max<int64_t>(free_bytes - (reserve_mib(in) << 20), 0);
-}
-
-// ---------------------------------------------------------------------------------------------------- the proposal
-constexpr int64_t kGraphMib = 6;            ///< one window graph, captured on first use (log of #3702: 4, 6, 6)
-constexpr int64_t kInstantiateBurstMib = 48; ///< the largest single step seen (42 MiB in #3702): room kept for one more
-
-/// PROPOSAL, unused: the window term of a later stage when the windows of every size 1..max_window_t can still be
-/// captured after loading: the first window's arena (kWindowMib already holds it), a graph for each further size, and
-/// one burst.
-inline int64_t proposed_window_mib(int max_window_t) {
-    const int64_t sizes = std::max<int64_t>(max_window_t, 1);
-    return kWindowMib + (sizes - 1) * kGraphMib + kInstantiateBurstMib;
-}
-
-/// PROPOSAL, unused: reserve_mib with the proposed window term on a later stage.
-inline int64_t proposed_reserve_mib(const Inputs& in, int max_window_t) {
-    Inputs p = in;
-    int64_t r = reserve_mib(p);
-    if (in.later) r += proposed_window_mib(max_window_t) - kWindowMib;
-    return r;
 }
 
 }  // namespace strata::program::stage_reserve

@@ -20,11 +20,16 @@
 #include <cstring>
 #include <stdexcept>
 
+#include "strata/core/geometry.hpp"
+
 namespace strata::prefill {
 namespace {
 
-constexpr int N = 2560, HC = 4, D = N * HC, LR = 320;
-constexpr int S = 128, HK = 16, HV = 48, C = 10240;
+constexpr int N = strata::core::kCompiledGeometry.n_embd, HC = strata::core::kCompiledGeometry.hc, D = N * HC, LR = strata::core::kCompiledGeometry.hc_lr;
+constexpr int KU = strata::core::kCompiledGeometry.n_expert_used;   // routed experts per token (10 for Flash-Next)
+constexpr int NHQ = strata::core::kCompiledGeometry.n_head, NKVH = strata::core::kCompiledGeometry.n_head_kv;   // query heads (24) and KV heads (2), head width 256
+constexpr int64_t FFC = strata::core::kCompiledGeometry.n_ff;   // the routed (and shared) expert width: 640 for Flash-Next
+constexpr int S = strata::core::kCompiledGeometry.ssm_state_size, HK = strata::core::kCompiledGeometry.ssm_k_heads, HV = strata::core::kCompiledGeometry.ssm_v_heads, C = strata::core::kCompiledGeometry.ssm_conv_channels;
 
 __dpct_inline__ float warp_sum(float v) {
 #pragma unroll
@@ -992,6 +997,40 @@ __dpct_inline__ void gdn_rec_cols_pipe_kernel(float *__restrict__ state,
 #pragma unroll
     for (int r = 0; r < RPG; ++r) base[r * rs] = s[r];
 }
+
+__dpct_inline__ void gdn_rec_cols_pipe_local_kernel(float* state,const float* h,const float* gate,const float* beta,float* oc_out,int64_t T){
+    auto it=sycl::ext::oneapi::this_work_item::get_nd_item<3>();auto sg=it.get_sub_group();
+    const int head=it.get_group(2)/NCB,cb=it.get_group(2)%NCB;
+    const int c=it.get_local_id(2),rg=it.get_local_id(1),lane=c&15,col=cb*CB+c,qh=head%HK;
+    auto& kvred=*sycl::ext::oneapi::group_local_memory_for_overwrite<float[RG][CB]>(it.get_group());
+    auto& ored=*sycl::ext::oneapi::group_local_memory_for_overwrite<float[RG][CB]>(it.get_group());
+    float st[RPG];float* base=state+((size_t(rg*RPG)*HV+head)*S+col);const size_t stride=size_t(HV)*S;
+#pragma unroll
+    for(int r=0;r<RPG;++r)st[r]=base[r*stride];
+    for(int64_t t=0;t<T;++t){
+        const float* row=h+t*C;
+        const float* qp=row+qh*S+rg*RPG;const float* kp=row+HK*S+qh*S+rg*RPG;
+        const float q0=qp[lane],q1=qp[lane+16],k0=kp[lane],k1=kp[lane+16];
+        const float cv=row[2*HK*S+head*S+col],cg=gate[t*HV+head],cbt=beta[t*HV+head];
+        const float g=sycl::native::exp(cg);float kv=0.f;
+#pragma unroll
+        for(int r=0;r<RPG;++r){const float k=sycl::group_broadcast(sg,r<16?k0:k1,r&15);kv=sycl::fma(st[r],k,kv);}
+        kvred[rg][c]=kv;it.barrier(sycl::access::fence_space::local_space);
+        const float kvcol=kvred[0][c]+kvred[1][c]+kvred[2][c]+kvred[3][c];
+        const float delta=(cv-g*kvcol)*cbt;float o=0.f;
+#pragma unroll
+        for(int r=0;r<RPG;++r){
+            const float k=sycl::group_broadcast(sg,r<16?k0:k1,r&15);
+            const float q=sycl::group_broadcast(sg,r<16?q0:q1,r&15);
+            st[r]=sycl::fma(g,st[r],k*delta);o=sycl::fma(st[r],q,o);
+        }
+        ored[rg][c]=o;it.barrier(sycl::access::fence_space::local_space);
+        if(rg==0)oc_out[(size_t(t)*HV+head)*S+col]=(ored[0][c]+ored[1][c]+ored[2][c]+ored[3][c])*sycl::rsqrt(float(S));
+    }
+#pragma unroll
+    for(int r=0;r<RPG;++r)base[r*stride]=st[r];
+}
+
 #if !defined(__HIPCC__)
 // The recurrence with one thread for the three value heads that share a key head (head % HK): column c of heads
 // qh, qh + 16 and qh + 32, row group rg.  gdn_rec_cols_pipe_kernel spends its time in shared memory, not in
@@ -1700,7 +1739,7 @@ __dpct_inline__ void route_kernel(const float *__restrict__ logits,
         v[i] *= rcp; if (sycl::isnan(v[i])) v[i] = -FLT_MAX;
     }
     float selected = 0.0f, selected_sum = 0.0f;
-    for (int rank = 0; rank < 10; ++rank) {
+    for (int rank = 0; rank < KU; ++rank) {
         float best = v[0];
         int ex = lane;
 #pragma unroll
@@ -1726,11 +1765,11 @@ __dpct_inline__ void route_kernel(const float *__restrict__ logits,
             if (ob > best || (ob == best && oi < ex)) { best = ob; ex = oi; }
         }
         if ((ex & 31) == lane) { v[ex / 32] = -INFINITY; selected_sum += best; }
-        if (lane == 0) ids[t * 10 + rank] = ex;
+        if (lane == 0) ids[t * KU + rank] = ex;
         if (rank == lane) selected = best;
     }
     selected_sum = sycl::fmax(warp_sum(selected_sum), 6.103515625e-5f);
-    if (lane < 10) wout[t * 10 + lane] = selected / selected_sum;
+    if (lane < KU) wout[t * KU + lane] = selected / selected_sum;
 }
 // Strata blob: gate/up codes [1280][640 B], down codes [2560][160 B], gate/up scales [1280][40] f16, down scales [2560][10] f16
 template <bool HALF>
@@ -1781,9 +1820,9 @@ __dpct_inline__ void swiglu_il_kernel(const float *__restrict__ gu,
     const int64_t i =
         (int64_t)item_ct1.get_group(2) * item_ct1.get_local_range(2) +
         item_ct1.get_local_id(2);
-    if (i >= n * 640) return;
-    const int64_t r = i / 640, k = i % 640;
-    const float g = gu[r * 1280 + 2 * k], u = gu[r * 1280 + 2 * k + 1];
+    if (i >= n * FFC) return;
+    const int64_t r = i / FFC, k = i % FFC;
+    const float g = gu[r * (2 * FFC) + 2 * k], u = gu[r * (2 * FFC) + 2 * k + 1];
     h16[i] = hf_sat(g / (1.0f + sycl::native::exp(-g)) * u);
 }
 __dpct_inline__ void swiglu_pair_kernel(const float *__restrict__ g,
@@ -1793,7 +1832,7 @@ __dpct_inline__ void swiglu_pair_kernel(const float *__restrict__ g,
     const int64_t i =
         (int64_t)item_ct1.get_group(2) * item_ct1.get_local_range(2) +
         item_ct1.get_local_id(2);
-    if (i >= n * 640) return;
+    if (i >= n * FFC) return;
     const float a = g[i];
     h16[i] = hf_sat(a / (1.0f + sycl::native::exp(-a)) * u[i]);
 }
@@ -1825,9 +1864,9 @@ __dpct_inline__ void moe_combine_kernel(const float *__restrict__ Dm,
     const int64_t t = i / N, d = i % N;
     float s = 0.0f;
 #pragma unroll
-    for (int k = 0; k < 10; ++k)
-        s = sycl::fma((float)(w[t * 10 + k]),
-                      (float)(Dm[(int64_t)slot[t * 10 + k] * N + d]), s);
+    for (int k = 0; k < KU; ++k)
+        s = sycl::fma((float)(w[t * KU + k]),
+                      (float)(Dm[(int64_t)slot[t * KU + k] * N + d]), s);
     bo[i] = s + shared[i] * sigm(sg[t]);
 }
 
@@ -1850,16 +1889,16 @@ __dpct_inline__ void moe_combine4_kernel(
     if (i >= T * (N / 4)) return;
     const int64_t t = i / (N / 4), d = (i % (N / 4)) * 4;
     sycl::float4 s = sycl::float4(0.0f, 0.0f, 0.0f, 0.0f);
-    sycl::float4 v[10];
-    float ww[10];
+    sycl::float4 v[KU];
+    float ww[KU];
 #pragma unroll
-    for (int k = 0; k < 10; ++k) {
-        ww[k] = w[t * 10 + k];
+    for (int k = 0; k < KU; ++k) {
+        ww[k] = w[t * KU + k];
         v[k] = *reinterpret_cast<const sycl::float4 *>(
-            Dm + (int64_t)slot[t * 10 + k] * N + d);
+            Dm + (int64_t)slot[t * KU + k] * N + d);
     }
 #pragma unroll
-    for (int k = 0; k < 10; ++k) {
+    for (int k = 0; k < KU; ++k) {
         s.x() = sycl::fma(ww[k], v[k].x(), s.x());
             s.y() = sycl::fma(ww[k], v[k].y(), s.y());
         s.z() = sycl::fma(ww[k], v[k].z(), s.z());
@@ -1927,9 +1966,9 @@ __dpct_inline__ void split_q_kernel(const float *__restrict__ qf,
     const int64_t i =
         (int64_t)item_ct1.get_group(2) * item_ct1.get_local_range(2) +
         item_ct1.get_local_id(2);
-    if (i >= T * 24 * 256) return;
-    const int64_t t = i / (24 * 256), h = (i / 256) % 24, d = i % 256;
-    q[i] = qf[t * 24 * 512 + h * 512 + d];
+    if (i >= T * NHQ * 256) return;
+    const int64_t t = i / (NHQ * 256), h = (i / 256) % NHQ, d = i % 256;
+    q[i] = qf[t * NHQ * 512 + h * 512 + d];
 }
 __dpct_inline__ void gate_attn_kernel(const float *__restrict__ a,
                                       const float *__restrict__ qf,
@@ -1939,11 +1978,11 @@ __dpct_inline__ void gate_attn_kernel(const float *__restrict__ a,
     const int64_t i =
         (int64_t)item_ct1.get_group(2) * item_ct1.get_local_range(2) +
         item_ct1.get_local_id(2);
-    if (i >= T * 24 * 256) return;
-    const int64_t t = i / (24 * 256), h = (i / 256) % 24, d = i % 256;
+    if (i >= T * NHQ * 256) return;
+    const int64_t t = i / (NHQ * 256), h = (i / 256) % NHQ, d = i % 256;
     o16[t * ld16 + h * 256 + d] =
         hf(a[i] * (1.0f / (1.0f + sycl::native::exp(
-                                      -qf[t * 24 * 512 + h * 512 + 256 + d]))));
+                                      -qf[t * NHQ * 512 + h * 512 + 256 + d]))));
 }
 
 // one block per (token, kv head, 64-value group); 64 threads. KV streaming: the pool page only if the block is
@@ -1960,7 +1999,7 @@ kv_append_kernel(const float *__restrict__ K, const float *__restrict__ V,
     const int kvh = item_ct1.get_group(1), g = item_ct1.get_group(0) >> 1;
     const bool is_v = (item_ct1.get_group(0) & 1) != 0;
     const int d = g * 64 + item_ct1.get_local_id(2);
-    const float x = (is_v ? V : K)[t * 512 + kvh * 256 + d];
+    const float x = (is_v ? V : K)[t * (NKVH * 256) + kvh * 256 + d];
     const int64_t pos = pos0 + t;
     const int64_t page = table[pos / page_size];
     const int64_t row = (page * 2 + kvh) * page_size + pos % page_size;
@@ -2720,6 +2759,11 @@ void gdn_recurrence_variant(int variant, float* state, const float* h, const flo
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
 
+            if([]{const char* e=std::getenv("STRATA_SYCL_GDN_PREFILL_REG_QK");return e&&e[0]=='1';}()){
+                strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class gdn_rec_cols_pipe_local_probe>>(
+                    sycl::nd_range<3>(sycl::range(1,1,HV*NCB)*sycl::range(1,RG,CB),sycl::range(1,RG,CB)),exp_props,
+                    [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(16)]] {gdn_rec_cols_pipe_local_kernel(state,h,gate,beta,y,T);});
+            }else
             strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
                 ->template parallel_for<
                     dpct_kernel_name<class gdn_rec_cols_pipe_kernel_c6cea3>>(
@@ -2806,7 +2850,7 @@ void route(const float* logits, int32_t* ids, float* weights, int64_t T, int64_t
                         route_kernel<8>(logits, ids, weights, T);
                     });
     } else
-        strata::kernels::router_top10(logits, (int) T, (int) n_expert, 10, ids, weights, stream);
+        strata::kernels::router_top10(logits, (int) T, (int) n_expert, KU, ids, weights, stream);
     check("route");
 }
 void blob_dequant(const uint8_t* blob, uint16_t* gu16, uint16_t* down16, void* stream) {
@@ -2853,7 +2897,7 @@ void swiglu_interleaved(const float* gu, uint16_t* h16, int64_t n, void* stream)
 
         strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
             ->template parallel_for<dpct_kernel_name<class swiglu_il_kernel_98d495>>(
-                sycl::nd_range<3>(sycl::range(1, 1, blocks_for(n * 640)) *
+                sycl::nd_range<3>(sycl::range(1, 1, blocks_for(n * FFC)) *
                                       sycl::range(1, 1, 256),
                                   sycl::range(1, 1, 256)),
                 exp_props, [=](sycl::nd_item<3> item_ct1) {
@@ -2869,7 +2913,7 @@ void swiglu_pair(const float* g, const float* u, uint16_t* h16, int64_t n, void*
 
         strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
             ->template parallel_for<dpct_kernel_name<class swiglu_pair_kernel_ab28da>>(
-                sycl::nd_range<3>(sycl::range(1, 1, blocks_for(n * 640)) *
+                sycl::nd_range<3>(sycl::range(1, 1, blocks_for(n * FFC)) *
                                       sycl::range(1, 1, 256),
                                   sycl::range(1, 1, 256)),
                 exp_props, [=](sycl::nd_item<3> item_ct1) {
@@ -3088,7 +3132,7 @@ void split_q(const float* q_full, float* q, int64_t T, void* stream) {
 
         strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
             ->template parallel_for<dpct_kernel_name<class split_q_kernel_83c16c>>(
-                sycl::nd_range<3>(sycl::range(1, 1, blocks_for(T * 24 * 256)) *
+                sycl::nd_range<3>(sycl::range(1, 1, blocks_for(T * NHQ * 256)) *
                                       sycl::range(1, 1, 256),
                                   sycl::range(1, 1, 256)),
                 exp_props, [=](sycl::nd_item<3> item_ct1) {
@@ -3104,12 +3148,12 @@ void gate_attn(const float* attn, const float* q_full, uint16_t* out16, int64_t 
 
         strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
             ->submit([&](sycl::handler &cgh) {
-                auto ld16_ld16_ct4 = ld16 > 0 ? ld16 : 24 * 256;
+                auto ld16_ld16_ct4 = ld16 > 0 ? ld16 : NHQ * 256;
 
                 cgh.parallel_for<
                     dpct_kernel_name<class gate_attn_kernel_3fc329>>(
                     sycl::nd_range<3>(
-                        sycl::range(1, 1, blocks_for(T * 24 * 256)) *
+                        sycl::range(1, 1, blocks_for(T * NHQ * 256)) *
                             sycl::range(1, 1, 256),
                         sycl::range(1, 1, 256)),
                     exp_props, [=](sycl::nd_item<3> item_ct1) {

@@ -146,15 +146,10 @@ class Config(unittest.TestCase):
         self.assertEqual(big[big.index("--spec") + 1], "3")
         self.assertNotIn("--spec-min-p", big)
 
-    def test_fp16_decode_is_set_for_a_resident_iq3_s_or_q2_0_only(self):
-        # the 61-task suite (phaseA-tests/mac-q/RESULTS.md section 30) passed the same tasks with STRATA_METAL_F16=1 as with =0
-        self.assertEqual(M._fit.engine_env("IQ3_S", False), {"STRATA_METAL_F16": "1"})
-        self.assertEqual(M._fit.engine_env("Q2_0", False), {"STRATA_METAL_F16": "1"})
-        self.assertEqual(M._fit.engine_env("iq3_s", False), {"STRATA_METAL_F16": "1"})
-        self.assertEqual(M._fit.engine_env("IQ3_S", True), {})            # streaming: the windows are not fp16
-        self.assertEqual(M._fit.engine_env("UD-Q4_K_XL", False), {})      # not measured
-        self.assertEqual(M._fit.engine_env("IQ3_XXS", False), {})
-        self.assertEqual(M._fit.engine_env("", False), {})
+    def test_fp16_decode_is_the_engines_own_default(self):
+        # STRATA_METAL_F16 for a resident IQ3_S / Q2_0 pack is decided by the engine (metal window.cpp f16_auto_for); setup writes nothing for it
+        self.assertFalse(hasattr(M._fit, "engine_env"))
+        self.assertFalse(hasattr(M._fit, "F16_MODELS"))
 
     def test_config_is_a_model_config_with_the_metal_backend(self):
         cfg = M.mac_config(Path("/r/build-metal/strata"), ["--pack", "x"], Path("/p"), "qwen3.8-flash-next-q2_0",
@@ -380,7 +375,8 @@ class ControlMode(unittest.TestCase):
             mock.patch.object(setup, "get_llama_cpp", lambda: Path(self.tmp.name) / "llama"),
             mock.patch.object(setup, "whole_shard", lambda s: True), mock.patch.object(setup, "check_shards", lambda s: None),
             mock.patch.object(setup, "run", tool or fake_tool), mock.patch.object(setup, "free_gb", lambda p: free),
-            mock.patch.object(setup, "say", lambda *a, **k: None), mock.patch.object(setup, "ok", lambda *a, **k: None),
+            mock.patch.object(setup, "say", lambda *a, **k: self.said.append(" ".join(str(x) for x in a))),
+            mock.patch.object(setup, "ok", lambda *a, **k: None),
             mock.patch.object(setup, "step", lambda *a, **k: None),
             mock.patch.object(setup, "warn", lambda *a, **k: self.warnings.append(" ".join(str(x) for x in a))),
             mock.patch.object(mac_fit.platform, "machine", return_value="arm64"),
@@ -388,7 +384,7 @@ class ControlMode(unittest.TestCase):
             mock.patch.object(setup, "mac_setup", side_effect=AssertionError("setup_mac.py must not run in Control mode")),
             mock.patch.object(setup.subprocess, "call", side_effect=AssertionError("nothing is started or built")),
         ]
-        self.warnings = []
+        self.warnings, self.said = [], []
         for p in patches:
             p.start()
             self.addCleanup(p.stop)
@@ -419,6 +415,18 @@ class ControlMode(unittest.TestCase):
         self.assertTrue(ran[0][1].endswith("iq_pack.py"))
         self.assertFalse((ROOT / "build-metal").exists() and any((ROOT / "build-metal").glob("*.stamp")))
 
+    def test_a_model_without_a_draft_layer_is_said_on_a_streaming_mac_too(self):
+        # a feed model whose entry says "drafter: none" (mac_fit's no_mtp) on a Mac that streams (no draft layer there anyway): the model
+        # list's line is said as on Windows and Linux (tools/feed_model_install_gate.py; GitHub's macOS runner did not get it)
+        from strata_control import mac_fit
+        with mock.patch.dict(mac_fit.MAC_MODELS["Q2_0"], {"no_mtp": True}):
+            rc, _ = self.run_setup()
+        self.assertEqual(rc, 0)
+        self.assertIn("  The model list says this model has no draft layer (MTP), so none is fetched or used.", self.said)
+        self.assertNotIn("--mtp", self.config()["args"])
+        rc, _ = self.run_setup()                                  # the Flash-Next size itself says nothing of the kind
+        self.assertFalse([s for s in self.said if "model list says" in s])
+
     def test_a_big_mac_keeps_the_pack_in_memory_and_adds_the_draft_layer(self):
         rc, ran = self.run_setup(hw=M5, argv=("--yes", "--no-start", "--model", "IQ3_XXS"))
         self.assertEqual(rc, 0)
@@ -430,7 +438,8 @@ class ControlMode(unittest.TestCase):
     def test_no_command_line_tools_needed_and_ud_iq1_s_is_not_offered(self):
         rc, _ = self.run_setup(clt_rc=2)
         self.assertEqual(rc, 0)
-        with self.assertRaises(SystemExit):                # UD-IQ1_S: never offered
+        # UD-IQ1_S: never offered.  A name the built-in tables do not know is looked up in the signed feed first (a feed model): no feed here
+        with self.assertRaises(SystemExit), mock.patch.object(setup, "feed_models_setup", lambda *a, **k: None):
             self.run_setup(argv=("--yes", "--no-start", "--model", "UD-IQ1_S"))
 
     def test_gyro_is_offered_on_a_mac_as_one_file_with_a_compat_bf16_pack(self):
@@ -553,7 +562,7 @@ class MacAppUnsloth(unittest.TestCase):
         setup.mark(native)
         rc, ran = self.install(model)
         self.assertEqual(rc, 0)
-        self.assertEqual([r[1].rsplit("/", 1)[-1] for r in ran], ["iq_pack.py"])
+        self.assertEqual([str(r[1]).replace("\\", "/").rsplit("/", 1)[-1] for r in ran], ["iq_pack.py"])      # (the path is C:\...\iq_pack.py on Windows)
 
     def test_a_running_engine_stops_the_repack_before_anything_is_written(self):
         self.shards("UD-IQ1_M")

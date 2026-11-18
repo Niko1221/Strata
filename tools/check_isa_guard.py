@@ -30,14 +30,14 @@ import sys
 # Public functions of the wide-ISA files that are wide on purpose: every caller tests the CPU first
 # (cpu_avx512_ok / cpu_avxvnni_ok), or reaches them only after cpu_require_expert_support().
 WIDE_PUBLIC = {
-    "nvfp4_512_gu_rows", "nvfp4_512_rows",   # NVFP4 (native_expert.cpp: both behind cpu_avx512_ok())
+    "nvfp4_512_gu_rows", "nvfp4_512_rows",   # NVFP4 (native_expert.cpp: both behind cpu_avx512_ok())
     "act_quant_q8_1", "q2_0_gguf_rows_multi", "s2_expert_vnni", "s2_expert_vnni_q", "s2_expert_gu_rows",
     "s2_expert_down_rows", "s2_expert_gu_rows_multi", "s2_expert_down_rows_multi", "s2_expert_vnni_multi",
     "s2_expert_scalar", "iq512_gu_rows", "iq512_rows", "iq256_gu_rows", "iq256_rows", "iq256_gu_rows_v",
     "iq256_rows_v", "iq4nl256_down_rows", "iq4nl256_down_rows_v", "q2_0_gguf_rows_multi_avx2",
     "q2_0_gguf_rows_multi_avx2_v", "q2_0_gguf_rows_multi_avx2_legacy", "q2_0_gguf_rows_multi_avx2_bitplane",
     "act_quant_q8_1_avx2", "q8k_quant_avx2", "kq256_gu_rows", "kq256_rows", "bf16_rows_dot_multi",
-    "tq_rows_avx512",                        # trellis rows (tq_cpu.cpp: behind cpu_avx512_ok())
+    "tq_rows_avx512", "q50_512_down_rows", "iq512_fused_gu_rows", "iq512_reference_gu_rows", "iq512x_rows",                        # trellis rows (tq_cpu.cpp: behind cpu_avx512_ok())
 }
 WIDE_OBJECTS = ("expert.cpp", "iq_avx512.cpp", "iq_avx2.cpp", "q2_avx2.cpp", "kq_avx2.cpp", "nvfp4_avx512.cpp", "tq_avx512.cpp")
 # Also compiled above the baseline (AVX2/FMA for nvfp4_avx2, AVX for the older CPUs' rows) and reached only behind a CPU

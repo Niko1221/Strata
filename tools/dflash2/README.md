@@ -27,4 +27,4 @@ Both are off unless set.
 | `dflash2_ref.py` | Plain-torch port of z-lab's `DFlash2DraftModel`, with the target's embedding and head dequantized from the GGUF. `test_port.py` checks it against the original. |
 | `run_eval.py` | Walks the tap file with a few block sizes. |
 | `run_all2.py` | Evaluates every position, resumable: per-anchor correctness and the selector's confidences. |
-| `analyze2.py`, `final_tables.py` | Policies, and speed estimates from the measured window costs. |
+| `analyze2.py`, `final_tables.py` | Moved to [history/tools/dflash2](../../history/tools/README.md): policies, and speed estimates from the measured window costs. They read result files that only exist in `C:\dflash2-work` on the original PC. |

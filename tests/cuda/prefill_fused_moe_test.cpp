@@ -10,6 +10,7 @@
 // Part 2 (timing): one layer at a real chunk (2048 tokens, 512 experts, top 10) on both paths, with their agreement.
 // Exit 77 without a CUDA device of sm_80 or newer.
 #include "strata/prefill/moe_fused.hpp"
+#include "strata/prefill/mmq_ids_margin.hpp"
 #include "strata/prefill/moe_mmq.hpp"
 
 #include "ggml.h"
@@ -32,9 +33,12 @@ namespace {
 namespace mmq = strata::prefill::mmq;
 namespace fused = strata::prefill::fused;
 
-constexpr int N = 2560, FF = 640, K = 10, GROUP = 16, Q2 = 42;   // GGML_TYPE_Q2_0
-constexpr size_t BLOB = 1382400, O_D_CODES = (size_t) 1280 * 640, O_GU_SC = O_D_CODES + (size_t) 2560 * 160,
-                 O_D_SC = O_GU_SC + (size_t) 1280 * 40 * 2;
+// The compiled geometry's widths and top-k (Flash-Next: 2560 x 640, top 10); the blob is the Strata Q2 layout at that shape
+// (Flash-Next: 1,382,400 B): gate/up codes [2 FF][N / 4 B], down codes [N][FF / 4 B], gate/up scales [2 FF][N / 64] f16, down scales [N][FF / 64] f16.
+constexpr int N = fused::kMoeEmbd, FF = fused::kMoeFF, FF2 = fused::kMoeGuRows, K = (int) strata::core::kCompiledGeometry.n_expert_used, GROUP = 16, Q2 = 42;   // GGML_TYPE_Q2_0
+constexpr int ROW_GU = N / 4, ROW_D = FF / 4, SC_GU = N / 64, SC_D = FF / 64;
+constexpr size_t O_D_CODES = (size_t) FF2 * ROW_GU, O_GU_SC = O_D_CODES + (size_t) N * ROW_D, O_D_SC = O_GU_SC + (size_t) FF2 * SC_GU * 2,
+                 BLOB = O_D_SC + (size_t) N * SC_D * 2;
 
 void ck(cudaError_t e, const char* what) {
     if (e != cudaSuccess) throw std::runtime_error(std::string(what) + ": " + cudaGetErrorString(e));
@@ -62,7 +66,7 @@ std::vector<uint8_t> make_blob(std::mt19937& rng) {
     return b;
 }
 
-// the blob's weights as floats: gate/up [1280][2560] (interleaved rows), down [2560][640]
+// the blob's weights as floats: gate/up [2 FF][N] (interleaved rows), down [N][FF]
 void dequant(const std::vector<uint8_t>& b, std::vector<float>& gu, std::vector<float>& dn) {
     auto row = [&](size_t codes, size_t ld, size_t scales, int nb, int r, float* out) {
         for (int k = 0; k < nb * 64; ++k) {
@@ -72,10 +76,10 @@ void dequant(const std::vector<uint8_t>& b, std::vector<float>& gu, std::vector<
             out[k] = ggml_fp16_to_fp32(h) * (float) (q - 1);
         }
     };
-    gu.resize((size_t) 1280 * N);
+    gu.resize((size_t) FF2 * N);
     dn.resize((size_t) N * FF);
-    for (int r = 0; r < 1280; ++r) row(0, 640, O_GU_SC, 40, r, gu.data() + (size_t) r * N);
-    for (int r = 0; r < N; ++r) row(O_D_CODES, 160, O_D_SC, 10, r, dn.data() + (size_t) r * FF);
+    for (int r = 0; r < FF2; ++r) row(0, ROW_GU, O_GU_SC, SC_GU, r, gu.data() + (size_t) r * N);
+    for (int r = 0; r < N; ++r) row(O_D_CODES, ROW_D, O_D_SC, SC_D, r, dn.data() + (size_t) r * FF);
 }
 
 // activations: N(0, 1) with a few large values (the hidden state has outliers); token `zero` all zero
@@ -129,17 +133,20 @@ Routing sort_rows(const std::vector<int32_t>& ids, int E) {
 
 // MMQ, as prefill.cpp runs it: per group of 16 routed experts a gather, gate/up, SwiGLU, q8_1 of H, down.  Returns
 // Dm [rows][N] in sorted-row order.
+// llama.cpp's mul_mat_q and its stream-k fixup read the row-id table up to a J-column tile (J <= 128) past the last row, up to roundup(max_rows, J) from an
+// expert's first row: the table takes mmq_ids_table_rows(rows, max_rows) entries (mmq_ids_margin.hpp), the identity written over all of them.
+size_t ids_table_rows(int64_t rows) { return (size_t) mmq::mmq_ids_table_rows((uint64_t) rows, (uint64_t) (rows / K)); }
 struct MmqBufs {
     Dev xq, gu, h, hq, dm, ident, bounds, grp_gu, grp_d;
     MmqBufs(int64_t rows, int E)
-        : xq(mmq::q8_bytes(rows, N)), gu((size_t) rows * 1280 * 4), h((size_t) rows * FF * 4),
+        : xq(mmq::q8_bytes(rows, N)), gu((size_t) rows * FF2 * 4), h((size_t) rows * FF * 4),
           hq(mmq::q8_bytes(rows, FF)),
-          dm((size_t) rows * N * 4), ident((size_t) rows * 4), bounds((size_t) (2 * (E + E / GROUP + 2)) * 4),
-          grp_gu(GROUP * mmq::matrix_bytes(Q2, 1280, N) + 4096), grp_d(GROUP * mmq::matrix_bytes(Q2, N, FF) + 4096) {}
+          dm((size_t) rows * N * 4), ident(ids_table_rows(rows) * 4), bounds((size_t) (2 * (E + E / GROUP + 2)) * 4),
+          grp_gu(GROUP * mmq::matrix_bytes(Q2, FF2, N) + 4096), grp_d(GROUP * mmq::matrix_bytes(Q2, N, FF) + 4096) {}
 };
 void run_mmq(mmq::Context& ctx, MmqBufs& b, const Routing& r, const float* x_dev, const int32_t* src_dev,
              const std::vector<const uint8_t*>& blob, int64_t rows, cudaStream_t s) {
-    const size_t gub = mmq::matrix_bytes(Q2, 1280, N), db = mmq::matrix_bytes(Q2, N, FF);
+    const size_t gub = mmq::matrix_bytes(Q2, FF2, N), db = mmq::matrix_bytes(Q2, N, FF);
     const int E = (int) r.cnt.size();
     std::vector<int32_t> order;
     for (int e = 0; e < E; ++e) if (r.cnt[(size_t) e] > 0) order.push_back(e);
@@ -151,7 +158,7 @@ void run_mmq(mmq::Context& ctx, MmqBufs& b, const Routing& r, const float* x_dev
         for (size_t i = 0; i <= GROUP; ++i)
             bh[n + 1 + g * (GROUP + 1) + i] = bh[std::min(n, g * GROUP + i)] - bh[g * GROUP];
     ck(cudaMemcpyAsync(b.bounds.p, bh.data(), bh.size() * 4, cudaMemcpyHostToDevice, s), "bounds");
-    mmq::iota(b.ident.as<int32_t>(), rows, s);
+    mmq::iota(b.ident.as<int32_t>(), (int64_t) ids_table_rows(rows), s);
     mmq::quantize(x_dev, src_dev, b.xq.p, Q2, N, N, rows, s);
     for (size_t j = 0; j < n; ++j) {
         const size_t q = j % GROUP;
@@ -166,11 +173,11 @@ void run_mmq(mmq::Context& ctx, MmqBufs& b, const Routing& r, const float* x_dev
         ck(cudaMemsetAsync(b.grp_gu.as<uint8_t>() + (size_t) ngx * gub, 0, 4096, s), "tail");
         ck(cudaMemsetAsync(b.grp_d.as<uint8_t>() + (size_t) ngx * db, 0, 4096, s), "tail");
         mmq::Product gu;
-        gu.w = b.grp_gu.p; gu.type = Q2; gu.w_rows = 1280; gu.w_cols = N; gu.expert_bytes = gub;
+        gu.w = b.grp_gu.p; gu.type = Q2; gu.w_rows = FF2; gu.w_cols = N; gu.expert_bytes = gub;
         gu.n = ngx; gu.xq = b.xq.p; gu.bounds = b.bounds.as<int32_t>() + j0; gu.ids = b.ident.as<int32_t>();
-        gu.total_rows = rows; gu.max_rows = maxr; gu.dst = b.gu.as<float>(); gu.ld_dst = 1280;
+        gu.total_rows = rows; gu.max_rows = maxr; gu.dst = b.gu.as<float>(); gu.ld_dst = FF2;
         ctx.run(gu, s);
-        mmq::swiglu(b.gu.as<float>() + r0 * 1280, b.h.as<float>() + r0 * FF, nr, FF, true, s);
+        mmq::swiglu(b.gu.as<float>() + r0 * FF2, b.h.as<float>() + r0 * FF, nr, FF, true, s);
         mmq::quantize(b.h.as<float>() + r0 * FF, nullptr, b.hq.p, Q2, FF, FF, nr, s);
         mmq::Product dn;
         dn.w = b.grp_d.p; dn.type = Q2; dn.w_rows = N; dn.w_cols = FF; dn.expert_bytes = db;
@@ -272,7 +279,8 @@ void reference_part(cudaStream_t s) {
     // the uploads (legacy stream) must land before the non-blocking stream reads them (S20 found the kernels could run
     // on all-zero routing otherwise - every pair on one expert: fast and wrong)
     ck(cudaDeviceSynchronize(), "uploads");
-    run_mmq(ctx, mb, r, x_dev.as<float>(), src_dev.as<int32_t>(), blob, rows, s);
+    const bool mq = mmq::built();   // (P4-SPLIT: a build without MMQ checks the fused path against the reference alone)
+    if (mq) run_mmq(ctx, mb, r, x_dev.as<float>(), src_dev.as<int32_t>(), blob, rows, s);
     FusedBufs fb(T, rows, E);
     ck(cudaMemcpy(fb.ids.p, ids.data(), ids.size() * 4, cudaMemcpyHostToDevice), "ids");
     ck(cudaMemset(fb.dm.p, 0xff, (size_t) rows * N * 4), "sentinel");   // an unwritten row is NaN
@@ -317,17 +325,21 @@ void reference_part(cudaStream_t s) {
     auto pair = [](size_t i) { return (int64_t) i; };
     auto mrow = [&](size_t i) { return (int64_t) r.row_of[i]; };
     auto frow = [&](size_t i) { return (int64_t) slot[i]; };
-    const Err em = compare(y_mmq, mrow, ref, pair, (size_t) rows);
+    const Err em = mq ? compare(y_mmq, mrow, ref, pair, (size_t) rows) : Err{};
     const Err ef = compare(y_f, frow, ref, pair, (size_t) rows);
-    const Err efm = compare(y_f, frow, y_mmq, mrow, (size_t) rows);
-    std::printf("  MMQ   vs FP32 reference: rel RMS %.3e  worst row max rel %.3e\n", em.rms, em.worst);
+    const Err efm = mq ? compare(y_f, frow, y_mmq, mrow, (size_t) rows) : Err{};
+    if (mq) std::printf("  MMQ   vs FP32 reference: rel RMS %.3e  worst row max rel %.3e\n", em.rms, em.worst);
     std::printf("  fused vs FP32 reference: rel RMS %.3e  worst row max rel %.3e\n", ef.rms, ef.worst);
-    std::printf("  fused vs MMQ           : rel RMS %.3e  worst row max rel %.3e\n", efm.rms, efm.worst);
+    if (mq) std::printf("  fused vs MMQ           : rel RMS %.3e  worst row max rel %.3e\n", efm.rms, efm.worst);
     double zmax = 0;
     for (int k = 0; k < K; ++k)
         for (int o = 0; o < N; ++o)
             zmax = std::max(zmax, (double) std::fabs(y_f[(size_t) slot[(size_t) (ZERO * K + k)] * N + o]));
     if (zmax != 0) throw std::runtime_error("the all-zero token's outputs are not zero");
+    if (!mq) {   // no MMQ here: the int8 activations' own error, prefill_fused_iq_test's bound for the same case
+        if (ef.rms > 0.03 || ef.worst > 0.25) throw std::runtime_error("the fused path's error against the reference is too large");
+        return;
+    }
     if (ef.rms > 1.5 * em.rms || ef.worst > 2.0 * em.worst)
         throw std::runtime_error("the fused path's error is not comparable to MMQ's");
 }
@@ -377,7 +389,8 @@ void timing_part(cudaStream_t s) {
         return ms[ms.size() / 2];
     };
     // the engine's batches: up to 128 experts per launch (the streamed ring decides; 4 launches here)
-    const float t_mmq = time([&] { run_mmq(ctx, mb, r, x_dev.as<float>(), src_dev.as<int32_t>(), blob, rows, s); });
+    const bool mq = mmq::built();   // (P4-SPLIT: without MMQ the fused times alone)
+    const float t_mmq = mq ? time([&] { run_mmq(ctx, mb, r, x_dev.as<float>(), src_dev.as<int32_t>(), blob, rows, s); }) : 0.0f;
     const float t_f = time([&] { run_fused(fb, x_dev.as<float>(), T, E, {0, E}, blob, s); });
     const float t_f1 = time([&] {   // one launch per 16 experts, MMQ's group size
         std::vector<int> cuts;
@@ -396,7 +409,7 @@ void timing_part(cudaStream_t s) {
     std::printf("  fused vs MMQ: rel RMS %.3e  worst row max rel %.3e\n", efm.rms, efm.worst);
     cudaEventDestroy(a);
     cudaEventDestroy(b);
-    if (efm.rms > 0.05) throw std::runtime_error("the paths disagree at the real shape");
+    if (mq && efm.rms > 0.05) throw std::runtime_error("the paths disagree at the real shape");
 }
 }  // namespace
 
@@ -405,7 +418,7 @@ int main(int argc, char** argv) {
         int n = 0;
         if (cudaGetDeviceCount(&n) != cudaSuccess || n == 0) { std::printf("no CUDA device: skipped\n"); return 77; }
         if (!fused::available()) { std::printf("the fused kernels need sm_80 or newer: skipped\n"); return 77; }
-        if (!mmq::built()) { std::printf("no MMQ in this build\n"); return 1; }
+        if (!mmq::built()) std::printf("no MMQ in this build: the fused path against the FP32 reference alone\n");
         cudaStream_t s = nullptr;
         ck(cudaStreamCreateWithFlags(&s, cudaStreamNonBlocking), "stream");
         reference_part(s);

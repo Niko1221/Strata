@@ -8,7 +8,7 @@ The choice is the person's, and it is saved in the model's run config as ``"draf
 strata_control/draft_layer.py), so a setup run that rewrites the engine arguments cannot undo it. An older config that names both drafters (``--mtp`` and
 ``--draft dflash2``) starts with the one chosen.
 
-  dflash2  ``--draft dflash2 --draft-model <pack> --draft-fallback none --mtp-draft-vocab <file> --spec 6 --draft-conf 0.35`` and no ``--mtp``: the DFlash2
+  dflash2  ``--draft dflash2 --draft-model <pack> --draft-fallback none --mtp-draft-vocab <file> --spec 6 --draft-conf 0.35`` (``--spec 8`` on Strix Halo and on Blackwell cc 12.0 with >= 48 GB, whose conf is 0.55: window_for / big_blackwell) and no ``--mtp``: the DFlash2
            block drafter (incoai/Qwen3.8-Flash-Next-DFlash2, Q4_0 pack) for Qwen3.8-Flash-Next, Gyro and Unsloth's quantizations, with the window and confidence that measured best
            (RESULTS-DRAFT.md section 4); a ``--spec`` or ``--draft-conf`` the person set by hand (``user_args``) stays
   mtp      the model's own draft layer (``--mtp <folder>``) and none of the DFlash2 flags
@@ -27,6 +27,9 @@ import json
 import mmap
 import os
 import re
+import struct
+import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -84,6 +87,8 @@ EXPLAIN_LIMITS = "It downloads about 1.2 GB once, works with one graphics card a
 LINE_TESTED = "On graphics cards like yours, DFlash2 was faster than MTP on some kinds of text and slower on others in our tests."
 LINE_SLOWER = "On graphics cards like yours, DFlash2 was slower than MTP in our tests."
 LINE_UNTESTED = "DFlash2 has not been tested on your graphics card yet."
+LINE_AUTO_MTP = "DFlash2 is off by default on this graphics card for now; choose it in Drafting to use it."      # a card in AUTO_MTP: Auto starts the MTP
+LINE_METAL = "On your Mac, DFlash2 was faster than MTP on this model in our tests."      # a Mac and a set in SET_DEFAULTS whose default is DFlash2 (replaces "not tested" there)
 
 
 @dataclass(frozen=True)
@@ -166,16 +171,25 @@ def detect_hardware() -> tuple[str | None, list[str]]:
     return _HARDWARE[0]
 
 
-def hardware_support(backend: str | None, archs: Any = None) -> Support:
+def hardware_support(backend: str | None, archs: Any = None, model_name: str | None = None) -> Support:
     """Can the engine for this backend and card run DFlash2, and what was measured on it. ``backend`` is the engine family (cuda | hip | sycl | metal);
-    ``archs`` the cards' architectures (``sm_120``, ``gfx1151``...), the first one counts like card_class does."""
+    ``archs`` the cards' architectures (``sm_120``, ``gfx1151``...), the first one counts like card_class does. ``model_name``: on Metal the answer is
+    per set (SET_DEFAULTS): a set whose default is DFlash2 was measured; the others keep "not tested"."""
     make = str(backend or "").strip().lower()
     if make not in DFLASH2_BACKENDS:
         return Support(False, "none", "")
     first = ([archs] if isinstance(archs, str) else list(archs or []))
     arch = str(first[0]).strip().lower() if first else ""
+    if (make, arch) in AUTO_MTP:
+        return Support(True, "tested", LINE_AUTO_MTP)
+    if make == "metal":
+        entry = default_for(make, model_name)
+        if entry is not None and entry.drafter == "dflash2":
+            return Support(True, "tested", LINE_METAL)
     if (make, arch) in _TESTED:
         return Support(True, "tested", LINE_TESTED)
+    if (make, arch) in _SLOWER and any(k[0] == make and k[1] == set_of(model_name) and v.drafter == "dflash2" for k, v in CLASS_DEFAULTS.items()):
+        return Support(True, "tested", LINE_TESTED)               # a set whose default on this class of card is DFlash2 (CLASS_DEFAULTS): faster on some kinds of text, slower on others
     if (make, arch) in _SLOWER:
         return Support(True, "slower", LINE_SLOWER)
     return Support(True, "untested", LINE_UNTESTED)
@@ -211,10 +225,36 @@ CONVERTED_NAME = "qwen3.8-flash-next-dflash2.q4_0-selq4.pack"
 CONVERTED_BYTES = 339694592
 CONVERTED_SHA256 = "4a42b98220ea7880664002c8edda1563aecbae754b762a2e2f31b2b91ee93ecd"
 _MARK_SELQ4 = b"selector codebooks: Q4_0 rows"      # text of an engine that reads such a pack (src/core/dflash2.cpp)
+# The tuned drafter (round 0216, DF-SHIP; phaseA-tests/round0215/RESULTS-DF2WS.md sections 15-20): the published weights, fine-tuned by Strata on the 4-bit targets' own
+# outputs and packed as the Q4_0 + Q4_0-selector pack (the same format and size as CONVERTED_NAME, so no engine change). +11.4% accepted drafts on UD-Q4_K_XL and UD-IQ4_XS-v31;
+# on Metal +4.5% / +3.4% output tokens per second against the stock pack at 0.5, greedy identity 120 of 120 per set, WITH --draft-conf 0.7 (at 0.5 it is a wash, and the
+# stock pack is 5% worse at 0.7: the setting belongs to the pack). It is a file Strata hosts (the repository publishes only the bf16 file).
+# Apache-2.0, modified by Strata: data/dflash2-tuned/ (LICENSE, NOTICE.md) ships with Strata and is copied beside the file when it is fetched.
+TUNED_NAME = "qwen3.8-flash-next-dflash2.strata1.q4_0-selq4.pack"
+TUNED_BYTES = 339694592
+TUNED_SHA256 = "4df2e5ab2b47c064afbe662e16e4f06569877125c2d0e2123a4ac755266c664c"
+TUNED_GB = 0.34
+# The same tuned weights for an engine that reads only the bf16 selector codebooks (the SYCL 0.2.11 engine refuses the Q4_0-selector pack above): the Q4_0 pack of tools/dflash2_pack.py
+# --q4_0 (the tool reproduces the stock Arc pack cda40d62... exactly from the stock weights). Its own name, size and SHA-256; the feed lists it for ["sycl"] only.
+TUNED_BF16_NAME = "qwen3.8-flash-next-dflash2.strata1.q4_0-bf16sel.pack"
+TUNED_BF16_BYTES = 522458112
+TUNED_BF16_SHA256 = "34ca17fee701ff088b6069acc35a26661d237953f5d114be0a3f7dae3ec5cda9"
+TUNED_BF16_GB = 0.52
+#: Where it is hosted (owner 11-06, recommendation of the coordinator): a GitHub release asset of Niko1221/Strata, listed in the signed feed (strata-feed.json, feed key 5d1bc23a) as a
+#: `drafters` entry (packaging/feed_tool.py pack-drafter, build-feed --drafters), so the app gets the feed's signature, offline handling and updates the same way as engine packages.
+#: The entry's url is relative to the feed (flat release assets); the size and SHA-256 above are pinned in the code as well, so the feed can move the file but never swap its bytes.
+#: Written alternative, not implemented: a Hugging Face repository under the owner's account (a resolve address of the pinned commit), fetched with the
+#: same pins; it would need the one address below and loses the feed's signature.
+TUNED_FEED_MEMBER = "drafters"
+TUNED_BACKEND = "metal"                          # the engine family the feed entry must list
+TUNED_URL_ENV = "STRATA_DFLASH2_TUNED_URL"       # tests and mirrors: a direct address (https, file:) of the same pinned bytes, instead of the feed
+TUNED_LICENCE_FOLDER = "data/dflash2-tuned"        # LICENSE (Apache-2.0) and NOTICE.md, shipped in data/ with the draft vocabularies
+TUNED_BASE = "incoai/Qwen3.8-Flash-Next-DFlash2 revision a22a1744e85c17364dcc54a6a420af7135d4c7f6"
 LEGACY_PACK_NAME = "qwen3.8-flash-next-dflash2.q8.pack"      # what Strata 0.2.9 test builds packed: still used when it is the one on disk
 VRAM_GB = DRAFTER_GB["dflash2"]   # graphics memory with the MTP layer not loaded and the bf16-selector pack: 890 MiB (RESULTS-DF2MEM.md); vram_gb() has the true figure for this computer
 FOLDER = "dflash2"           # under the model data folder, next to ``mtp``
 SPEC_WINDOW = 6              # --spec with DFlash2: the widest window of drafted words per round (measured best on Blackwell; the engine caps it per card)
+WIDE_WINDOW = 8              # --spec on the two card classes whose engine cap (include/strata/core/draft_cap.hpp dflash2_auto_cap) is 8: Strix Halo and Blackwell cc 12.0 with >= 48 GB (window_for). The engine only ever lowers --spec to its cap, so every other card keeps SPEC_WINDOW
 MTP_WINDOW = 4               # the MTP's usual --spec: the window it runs when DFlash2 falls back to it, unless the config names another
 DRAFT_CONF = 0.35            # --draft-conf with DFlash2: the window ends where the chance that every draft so far holds falls below this (the card holds most experts)
 
@@ -234,7 +274,176 @@ MAX_SLOTS = 24576            # every (layer, expert) pair of Qwen3.8-Flash-Next
 # A backend whose card class was measured on its own has ONE value that replaces the slot steps (they were calibrated on CUDA cards with 300 to 9,300 slots):
 # Intel Arc (SYCL, A750 with 298 expert slots, IQ3_XXS, serve sweeps with suffix drafting on): 0.6 was the best of 0.35 / 0.6 / 0.8 and the other two lost 4 to 10%
 # (RESULTS-DF2SYCL.md sections 6-8).
-BACKEND_CONF = {"sycl": 0.6}
+# Metal (M5 Max 128 GB, UD-Q4_K_XL, all experts mapped: the expert-cache slot count the CUDA steps read means nothing there), greedy 300 tokens, serve path, fresh engine per run,
+# DFlash2 --spec 6 against MTP --spec 2, 3 interleaved rounds x 2 reps, six request kinds (phaseA-tests/round0215/RESULTS-MAC-OUT.md): conf 0.35 / 0.5 / 0.6 = +10.0 / +14.3 / +12.4% over all
+# six kinds (0.5 faster than MTP on every kind in 3 of 3 rounds; the slot rule would have written 0.8 for the Mac's --expert-cache 64).
+BACKEND_CONF = {"sycl": 0.6, "metal": 0.5}
+# Large-VRAM Blackwell (cc 12.0 = sm_120, at least 48 GB: l620's RTX PRO 5000 72 GB; NOT the DGX Spark, sm_121, and not a consumer card under 48 GB, which were not measured): a window of 8 for every
+# set (the engine cap is 8 there too, set-independent: window 8 alone at conf 0.35 was +0.5% on IQ3_S) and, for IQ3_S only (SetDefault.big_blackwell_conf in SET_DEFAULTS, owner/coordinator 11-08),
+# conf 0.55. 11-08 sweep (phaseA-tests/df2r2/RESULTS-CONF.md), IQ3_S, 36 requests, 300 greedy tokens, 5 interleaved pairs against conf 0.35 / window 6: +2.4%, 5 of 5 pairs faster, output identical
+# (conf 0.55 alone +1.1%). Only where every expert is resident (the first CONF_STEPS step), the case that was measured; the other sets on that card were not measured and keep 0.35.
+BIG_CARD_BYTES = 48_000_000_000     # "48 GB" the way cards are sold (a 48 GB card reports about 47.5 GiB); the engine's kDflash2BigCardBytes is the same number
+
+
+@dataclass(frozen=True)
+class TunedPack:
+    """One tuned file: ``key`` is what SetDefault.pack names (``selq4`` = Q4_0 selector codebooks, the CUDA / HIP / Metal engines; ``bf16sel`` = bf16 selector codebooks, the SYCL engine)."""
+    key: str
+    name: str
+    size: int
+    sha256: str
+    gb: float
+    selector_q4: bool
+
+
+def tuned_pack(variant: str | None = None) -> TunedPack:
+    """The pin of a tuned file, read from the module's constants at call time."""
+    if variant == "bf16sel":
+        return TunedPack("bf16sel", TUNED_BF16_NAME, TUNED_BF16_BYTES, TUNED_BF16_SHA256, TUNED_BF16_GB, False)
+    return TunedPack("selq4", TUNED_NAME, TUNED_BYTES, TUNED_SHA256, TUNED_GB, True)
+
+
+@dataclass(frozen=True)
+class SetDefault:
+    """What Auto does for one model set on one engine family. ``drafter``: ``dflash2`` or ``mtp``. ``tuned``: DFlash2 starts with Strata's tuned pack (TUNED_NAME) where the pack is here and
+    ``where`` holds. ``tuned_conf``: the ``--draft-conf`` that goes with the tuned pack, or None = the backend's OWN conf stays (CONF_STEPS / BACKEND_CONF: only the pack changes). ``where``:
+    "" always (Metal); "resident" CUDA with every expert resident = the card the first CONF_STEPS step (conf 0.35) is for, or a shared-memory chip (sm_121, the Spark class); "gfx1151" Strix Halo;
+    "arc_a" Intel Arc A-series (the class the A750 stands for). ``pack``: which tuned file (tuned_pack): ``selq4`` or, for the SYCL engine, ``bf16sel``."""
+    drafter: str
+    tuned: bool = False
+    tuned_conf: float | None = None
+    where: str = ""
+    pack: str = "selq4"
+    big_blackwell_conf: float | None = None     # the ``--draft-conf`` on the large-VRAM Blackwell class (big_blackwell: cc 12.0, >= 48 GB) with the tuned pack, for the sets measured there; None = the backend's own conf
+
+
+#: Per (engine family, set) defaults, measured. THE ONE TABLE to switch a set either way. The set is the model_name without its "qwen3.8-flash-next-" prefix.
+#: METAL (M5 Max, RESULTS-MAC-OUT.md / RESULTS-MAC-INT.md / RESULTS-DF2WS.md): DFlash2 --spec 6 over MTP --spec 2 is +12.7% on UD-Q4_K_XL and +9.2% on UD-IQ4_XS-v31 (5 interleaved pairs);
+#: the tuned pack at conf 0.7 adds +4.5% / +3.4% over the stock pack at 0.5 (6 pairs per set, greedy identity 120/120). IQ3_S stays on the MTP until the owner says otherwise; to switch it:
+#: ("metal", "iq3_s"): SetDefault("dflash2") (the stock pack at conf 0.5; the Mac setup then fetches the drafter for it too).
+#: CUDA / HIP (owner 11-06 ~10:00; RESULTS-DFVAL.md, tuned pack at the box's CURRENT conf against the stock pack, 3 interleaved rounds, 24 requests an arm and round; DFlash2 is already their
+#: Auto drafter, so only the pack changes and the conf stays what CONF_STEPS / the card class give): ONLY the cells that were measured are enabled:
+#:   cuda "resident" (conf 0.35): IQ3_S l620 (RTX PRO 5000) x1.021 (3/3 rounds) and DGX Spark x1.032 / x1.048 (3/3, two runs); UD-IQ4_XS-v31 DGX Spark x1.050 (3/3). CUDA ids identical.
+#:   hip gfx1151 (Strix Halo, conf 0.35): IQ3_S x1.037, UD-Q4_K_XL x1.043, UD-IQ4_XS x1.045 (3/3 each; the text differs by window length on HIP, as with any conf change); UD-IQ4_XS-v31 x1.046 (setup's config, budget 38, 3 rounds, 3/3: agent 1.075, chat 1.013, code 1.073, creative 1.030, json 1.066, tool 1.055).
+#: SYCL / Intel Arc (owner 11-06 ~11:30 "Yes for Arc"; DF-VAL, A750 8 GB on p1006, SYCL 0.2.11, IQ3_XXS, 3 rounds, against the stock pack at Arc's 0.6 = 18.8 tok/s): the bf16-selector tuned pack
+#: at 0.6 x1.054 (3/3 rounds), at 0.5 x1.063; MTP x0.995; the stock pack against itself x1.011. The SYCL engine refuses the selq4 pack, so Arc has its OWN file (``pack`` "bf16sel", TUNED_BF16_*)
+#: and keeps BACKEND_CONF["sycl"] = 0.6. ONLY IQ3_XXS, the measured set; every other Arc set stays on the stock pack until it is measured.
+#: NOT enabled: a 12 GB / streaming card (the CONF_STEPS 0.8 step: P2003 is still being measured), gfx1201 / R9700 (the DFlash2 prompt stall is open), SYCL / Arc (untested), several cards (not measured),
+#: and the sets nobody measured on that platform (CUDA UD-Q4_K_XL, CUDA UD-IQ4_XS): each is one more line here once DF-VAL has the cell.
+SET_DEFAULTS = {
+    ("metal", "unsloth-ud-q4_k_xl"): SetDefault("dflash2", True, 0.7),
+    ("metal", "unsloth-ud-iq4_xs-v31"): SetDefault("dflash2", True, 0.7),
+    ("metal", "iq3_s"): SetDefault("mtp"),
+    ("cuda", "iq3_s"): SetDefault("dflash2", True, None, "resident", big_blackwell_conf=0.55),
+    ("cuda", "unsloth-ud-iq4_xs-v31"): SetDefault("dflash2", True, None, "resident"),
+    ("hip", "iq3_s"): SetDefault("dflash2", True, None, "gfx1151"),
+    ("hip", "unsloth-ud-q4_k_xl"): SetDefault("dflash2", True, None, "gfx1151"),
+    ("hip", "unsloth-ud-iq4_xs"): SetDefault("dflash2", True, None, "gfx1151"),
+    ("hip", "unsloth-ud-iq4_xs-v31"): SetDefault("dflash2", True, None, "gfx1151"),
+    ("sycl", "iq3_xxs"): SetDefault("dflash2", True, None, "arc_a", "bf16sel"),
+}
+#: Per (engine family, set, card class) defaults for a class of CARD, read from the same slot count the confidence reads (owner 11-06 ~15:30 "1 yes"). Today one class: "streaming" = a CUDA card whose
+#: engine slots are under the last-but-one CONF_STEPS step (3000), i.e. the step that gives conf 0.8: the 12 GB class (P2003, RTX 3060), where the experts stream and IQ3_S runs from the file cache.
+#: A class entry beats the (backend, set) entry above for the cards of its class and changes nothing for any other card; ONE REMOVABLE ENTRY PER SET:
+#:   IQ3_S -> Auto is the MTP: on the 12 GB card with the file cache the MTP beats DFlash2 by 12-44% (RTX2 t4b), DF-VAL saw up to 3.1x.
+#:   UD-IQ4_XS-v31 -> Auto is DFlash2 with the tuned selq4 pack at the class's CURRENT conf (0.8, unchanged): with RTX2's file-tier fix (unbuffered reads) DFlash2 beats the MTP by about 6.5% (t8, 3 starts:
+#:   agent +14.2%, code +12.9%, chat +7.3%, tool +2.1%, json -3.5%); DF-VAL, forced-fast: tuned at 0.8 x1.037 against the stock pack. THIS ENTRY DEPENDS ON RTX2's FILE-TIER FIX BEING IN THE SAME RELEASE.
+#: Other sets on that class: unchanged (the general rule). Anything chosen by name (a saved "drafting", `--drafting`, the app's dropdown) wins over both.
+CLASS_DEFAULTS = {
+    ("cuda", "iq3_s", "streaming"): SetDefault("mtp", where="streaming"),
+    ("cuda", "unsloth-ud-iq4_xs-v31", "streaming"): SetDefault("dflash2", True, None, "streaming"),
+}
+MODEL_PREFIX = "qwen3.8-flash-next-"
+
+#: Cards where Auto starts the MTP instead of DFlash2 (owner 11-06 ~10:30), keyed (engine family, first architecture); the value is why. ONE ENTRY, delete it to put Auto back.
+#: gfx1201 (RX 9070 / R9700 class): the open DFlash2 PROMPT STALL, 11 of 50 engines on 0.2.11 never got past the prompt, until PE-RDNA4's fix lands. Only Auto is affected: DFlash2 chosen
+#: by name (the Drafting step, the app's dropdown, `--drafting dflash2`, a saved "drafting": "dflash2") still starts DFlash2, and every other card and platform is unchanged.
+AUTO_MTP = {("hip", "gfx1201"): "the DFlash2 prompt stall (11 of 50 engines on 0.2.11); PE-RDNA4's fix is pending"}
+
+
+def set_of(model_name: str | None) -> str:
+    """The set a run config's model_name names: ``qwen3.8-flash-next-unsloth-ud-q4_k_xl`` is ``unsloth-ud-q4_k_xl``."""
+    name = str(model_name or "").strip().lower()
+    return name[len(MODEL_PREFIX):] if name.startswith(MODEL_PREFIX) else name
+
+
+def default_for(backend: str | None, model_name: str | None) -> SetDefault | None:
+    """The measured default of this set on this engine family (SET_DEFAULTS), or None when it was not decided (the general rule applies)."""
+    return SET_DEFAULTS.get((str(backend or "").strip().lower(), set_of(model_name)))
+
+
+def tuned_entry(backend: str | None, model_name: str | None) -> SetDefault | None:
+    """The table entry when this set on this engine family uses the tuned pack at all (whether THIS card qualifies is tuned_applies)."""
+    entry = default_for(backend, model_name)
+    return entry if entry is not None and entry.drafter == "dflash2" and entry.tuned else None
+
+
+def tuned_variant(backend: str | None, model_name: str | None) -> str | None:
+    """Which tuned file this set on this engine family uses (``selq4`` / ``bf16sel``), or None: no tuned entry."""
+    entry = tuned_entry(backend, model_name)
+    return entry.pack if entry is not None else None
+
+
+def tuned_conf_for(backend: str | None, model_name: str | None) -> float | None:
+    """The ``--draft-conf`` the tuned pack runs at for this set (Metal 0.7), or None: no tuned entry, or the entry keeps the backend's own conf."""
+    entry = tuned_entry(backend, model_name)
+    return entry.tuned_conf if entry is not None else None
+
+
+def first_arch(archs: Any) -> str:
+    first = [archs] if isinstance(archs, str) else list(archs or [])
+    return str(first[0]).strip().lower() if first else ""
+
+
+def streaming_class(backend: str | None, archs: Any = None, *, args: list[Any] | None = None, vram_mib: float | None = None) -> bool:
+    """Is this a CUDA card of the 12 GB / streaming class: the one card's memory is known (or the person gave an --expert-cache) and slots_of() is under the last-but-one CONF_STEPS step, so the
+    confidence is the last step's (0.8)? The Spark (one memory pool) and several cards are not."""
+    if str(backend or "").strip().lower() != "cuda" or first_arch(archs) == "sm_121":
+        return False
+    slots = slots_of(list(args or []), vram_mib)
+    return slots is not None and slots < CONF_STEPS[-2][0]
+
+
+def class_entry(backend: str | None, model_name: str | None, archs: Any = None, *, args: list[Any] | None = None, vram_mib: float | None = None) -> SetDefault | None:
+    """The CLASS_DEFAULTS entry that holds for this start (the set on this engine family and the card's class), or None."""
+    key = (str(backend or "").strip().lower(), set_of(model_name), "streaming")
+    entry = CLASS_DEFAULTS.get(key)
+    if entry is not None and streaming_class(backend, archs, args=args, vram_mib=vram_mib):
+        return entry
+    return None
+
+
+def auto_mtp_only(backend: str | None, archs: Any = None) -> bool:
+    """Is this card one where Auto starts the MTP (AUTO_MTP)? Auto only: a DFlash2 asked for by name is not looked at here."""
+    return (str(backend or "").strip().lower(), first_arch(archs)) in AUTO_MTP
+
+
+def tuned_applies(backend: str | None, model_name: str | None, archs: Any = None, *, args: list[Any] | None = None, vram_mib: float | None = None) -> bool:
+    """Does THIS start use the tuned pack? The set has a tuned entry and the entry's ``where`` holds, read from the signals the confidence already reads: CUDA "resident" = the engine slots of
+    slots_of() (the person's --expert-cache, else the one card's memory ``vram_mib``) reach the first CONF_STEPS step (the step that gives 0.35), or the chip is the Spark (sm_121: one
+    pool of memory, vram_mib is None by design); "gfx1151" = the first architecture is Strix Halo. A card whose memory is not known (several cards, a driver that does not answer) is not
+    resident. Nothing here looks at the disk or the network."""
+    klass = class_entry(backend, model_name, archs, args=args, vram_mib=vram_mib)
+    if klass is not None:
+        return klass.drafter == "dflash2" and klass.tuned          # the card class has its own rule for this set
+    entry = tuned_entry(backend, model_name)
+    if entry is None:
+        return False
+    if entry.where == "":
+        return True
+    arch = first_arch(archs)
+    if entry.where == "gfx1151":
+        return arch == "gfx1151"
+    if entry.where == "arc_a":
+        return arch == "arc_a"
+    if entry.where == "resident":
+        if arch == "sm_121":
+            return True
+        slots = slots_of(list(args or []), vram_mib)
+        return slots is not None and slots >= CONF_STEPS[0][0]
+    return False
+
+
 SLOT_MIB = 1.95              # one expert slot of Qwen3.8-Flash-Next IQ3_S: the engine's "46.84 GiB for 24576 slots" (l620) and 23.87 GiB for 12570 (R9700)
 SLOT_BASE_MIB = 3800         # dense weights and the engine's fixed buffers beyond vram_fit's own terms, from the R9700 start (128K context, 12570 slots on 32 GiB); it holds the draft layer's
                              # allowance, which is the DFlash2's own now that it is the only drafter (expected_slots takes nothing more off)
@@ -258,6 +467,149 @@ def supported_model(model_name: str | None = None, family: str | None = None) ->
     return bool(model_name and _SUPPORTED_NAME.match(str(model_name)))
 
 
+# --------------------------------------------------------------------------------------------------- the model file itself
+#
+# A run config whose model_name does not match _SUPPORTED_NAME (a renamed file, a hand-written config, a feed model under its own name, no name at all) used to start the MTP with
+# no word said, also when the file is Qwen3.8-Flash-Next and DFlash2 was the default for it. What decides now is what the file is: the architecture, the layer count, the hidden
+# size and the vocabulary size in its GGUF header against what the drafter pack records (its ``cfg hidden / vocab / taps`` lines, tools/dflash2_pack.py).
+
+TARGET_ARCH = "qwen4exp"                                    # general.architecture of the Qwen3.8-Flash-Next GGUFs (tools/gguf_writer.py)
+#: What the drafter pack was made for, used when no pack is on this computer yet to read it from: ``cfg hidden 2560``, ``cfg vocab 248320``, ``cfg taps 5,15,25,35,45``
+#: (the layers of the target it reads; the model needs more layers than the last tap).
+PACK_TARGET = {"hidden": 2560, "vocab": 248320, "taps": (5, 15, 25, 35, 45)}
+#: The model name a file that fits is treated as (the plain family name: no quantization, so no per-quantization table entry applies).
+FILE_FITS_AS = "qwen3.8-flash-next"
+#: Names the DFlash2 exclusions above stand for (Coder, NVFP4, Swift): a file under such a name stays out whatever its header says.
+_EXCLUDED_NAME = re.compile(r"coder|nvfp4|swift", re.IGNORECASE)
+_GGUF_HEAD = 1 << 20                                        # bytes of a GGUF read for its header (the keys are in the first few KB; the vocabulary's words are never read)
+_PACK_HEAD = 1 << 16
+_GGUF_SCALAR = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}
+
+
+def gguf_facts(path: Any) -> dict[str, Any] | None:
+    """What a GGUF file says about itself, from its first megabyte: ``arch`` (general.architecture), ``layers`` (<arch>.block_count), ``hidden`` (<arch>.embedding_length) and
+    ``vocab`` (the number of tokenizer.ggml.tokens, read from the array's header: the words are not read). A part that is not there is None; None when the file is not a GGUF
+    or cannot be read."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(_GGUF_HEAD)
+    except (OSError, TypeError, ValueError):
+        return None
+    if len(head) < 24 or head[:4] != b"GGUF":
+        return None
+    facts: dict[str, Any] = {"arch": None, "layers": None, "hidden": None, "vocab": None}
+    try:
+        pos = 16
+        (n_kv,) = struct.unpack_from("<Q", head, pos)
+        pos += 8
+        for _ in range(min(n_kv, 4096)):
+            (klen,) = struct.unpack_from("<Q", head, pos)
+            pos += 8
+            key = head[pos:pos + klen].decode("utf-8", "replace")
+            pos += klen
+            (vtype,) = struct.unpack_from("<I", head, pos)
+            pos += 4
+            if vtype == 8:                                  # a string
+                (slen,) = struct.unpack_from("<Q", head, pos)
+                pos += 8
+                if key == "general.architecture":
+                    facts["arch"] = head[pos:pos + slen].decode("utf-8", "replace")
+                pos += slen
+            elif vtype in (4, 5) and (key.endswith(".block_count") or key.endswith(".embedding_length")):
+                (value,) = struct.unpack_from("<I" if vtype == 4 else "<i", head, pos)
+                facts["layers" if key.endswith(".block_count") else "hidden"] = value
+                pos += 4
+            elif vtype in _GGUF_SCALAR:
+                pos += _GGUF_SCALAR[vtype]
+            elif vtype == 9:                                # an array: element type, count
+                etype, count = struct.unpack_from("<IQ", head, pos)
+                pos += 12
+                if key == "tokenizer.ggml.tokens":
+                    facts["vocab"] = count
+                    break                                   # the words follow: everything wanted comes before them
+                if etype in _GGUF_SCALAR:
+                    pos += count * _GGUF_SCALAR[etype]
+                else:
+                    break                                   # an array of words before the tokens: not looked into
+            else:
+                break
+            if pos > len(head):
+                break
+    except (struct.error, ValueError, OverflowError, MemoryError):        # a damaged header: no answer
+        return None
+    return facts if facts["arch"] else None
+
+
+#: The model_name setup writes for a set of each family (setup.py's family names): f"{name}-{model.lower()}". Coder, Swift and NVFP4 are left out on purpose (no DFlash2 numbers).
+_SET_NAME_PREFIX = {"qwen": "qwen3.8-flash-next", "unsloth": "qwen3.8-flash-next-unsloth", "gyro": "qwen3.8-flash-next-gyro"}
+_known_names: dict[tuple[str, int, int], str | None] = {}
+
+
+def known_name_of_file(args: list[Any]) -> str | None:
+    """The model_name setup would have written for the file in --native when its header is EXACTLY one set of data/gguf_fingerprints.json (strata_control/models.py known_set_by_header: tensor count,
+    payload bytes and expert formats over all shards; never the layout guess), so a renamed copy gets that set's table entry (tuned pack, confidence) as under its own name; None otherwise.
+    Read once per file, size and time (the tensor directory of every shard is read: about a second)."""
+    path = _flag_value(args, "--native")
+    if not path:
+        return None
+    try:
+        stat = Path(path).stat()
+        key = (str(path), stat.st_size, stat.st_mtime_ns)
+        if key not in _known_names:
+            from strata_control import models
+            found = models.known_set_by_header(path)
+            prefix = _SET_NAME_PREFIX.get(found.split("/", 1)[0]) if found else None
+            name = f"{prefix}-{found.split('/', 1)[1].lower()}" if prefix and found else None
+            _known_names[key] = name if name and supported_model(name) else None
+        return _known_names[key]
+    except Exception:                                  # noqa: BLE001 - not known is the general defaults
+        return None
+
+
+def pack_target(data_dir: str | Path | None = None) -> dict[str, Any]:
+    """What the drafter pack on this computer says it was made for (``hidden``, ``vocab``, ``taps`` from its ``cfg`` lines), else PACK_TARGET."""
+    want = dict(PACK_TARGET)
+    if data_dir:
+        base = Path(data_dir) / FOLDER
+        for name in (TUNED_NAME, TUNED_BF16_NAME, CONVERTED_NAME, PACK_NAME):
+            try:
+                with open(base / name, "rb") as f:
+                    head = f.read(_PACK_HEAD)
+            except OSError:
+                continue
+            if len(head) < 12 or head[:4] != b"DF2P":
+                continue
+            (n,) = struct.unpack_from("<I", head, 8)
+            for ln in head[12:12 + n].decode("utf-8", "replace").splitlines():
+                parts = ln.split()
+                if len(parts) >= 3 and parts[0] == "cfg":
+                    try:
+                        if parts[1] in ("hidden", "vocab"):
+                            want[parts[1]] = int(parts[2])
+                        elif parts[1] == "taps":
+                            want["taps"] = tuple(int(x) for x in parts[2].split(","))
+                    except ValueError:
+                        pass
+            break
+    return want
+
+
+def file_fit(args: list[Any], data_dir: str | Path | None = None) -> str:
+    """Is the model file in the engine arguments (``--native``) the one the drafter pack was made for? ``fits`` (Qwen3.8-Flash-Next's architecture, the pack's hidden size and
+    vocabulary, more layers than the last tap), ``family`` (the same architecture, other sizes: a different model of that family), ``other`` (another architecture) or
+    ``unknown`` (no file in the arguments, not a GGUF, or not readable)."""
+    path = _flag_value(args, "--native")
+    facts = gguf_facts(path) if path else None
+    if not facts:
+        return "unknown"
+    if facts["arch"] != TARGET_ARCH:
+        return "other"
+    want = pack_target(data_dir)
+    if facts["hidden"] == want["hidden"] and (facts["layers"] or 0) > max(want["taps"]) and facts["vocab"] in (None, want["vocab"]):
+        return "fits"
+    return "family"
+
+
 def _here(path: Path) -> bool:
     try:
         return path.is_file() and path.stat().st_size > (1 << 20)
@@ -273,6 +625,11 @@ def target_path(data_dir: str | Path) -> Path:
 def converted_path(data_dir: str | Path) -> Path:
     """Where setup / Load writes the pack with the Q4_0 selector (beside the Q4_0 pack it was made from)."""
     return Path(data_dir) / FOLDER / CONVERTED_NAME
+
+
+def tuned_path(data_dir: str | Path, variant: str | None = None) -> Path:
+    """Where the tuned drafter lives (next to the stock packs); ``variant``: selq4 (default) or bf16sel."""
+    return Path(data_dir) / FOLDER / tuned_pack(variant).name
 
 
 def sha256_of(path: Path) -> str:
@@ -312,6 +669,18 @@ def converted_ok(data_dir: str | Path | None, *, size: int | None = None, sha256
         return True
     except OSError:
         return False
+
+
+def tuned_ok(data_dir: str | Path | None, variant: str | None = None) -> bool:
+    """Is the tuned drafter here and exactly the pinned bytes (size, then SHA-256 once; the answer is kept in a marker beside it, as for the converted pack)? A short,
+    changed or corrupt file is simply "no": the stock pack (or the MTP) is used. ``variant``: selq4 (default) or bf16sel."""
+    pin = tuned_pack(variant)
+    return converted_ok(data_dir, size=pin.size, sha256=pin.sha256, name=pin.name)
+
+
+def uses_tuned(backend: str | None, model_name: str | None) -> bool:
+    """Does this set on this engine family have a tuned-drafter entry (SET_DEFAULTS)? Entry level: whether this card qualifies is tuned_applies()."""
+    return tuned_entry(backend, model_name) is not None
 
 
 _selq4: dict[tuple[str, int, int], bool] = {}
@@ -372,9 +741,17 @@ def installed_engine_exe() -> Path | None:
         return None
 
 
-def pack_path(data_dir: str | Path, engine: str | os.PathLike[str] | None = None) -> Path:
+def pack_path(data_dir: str | Path, engine: str | os.PathLike[str] | None = None, *, model_name: str | None = None, backend: str | None = None, tuned: bool | None = None) -> Path:
     """The pack the engine is started with: the converted pack (Q4_0 selector) when it is here, verified, and `engine` is a program that reads it; else the Q4_0 pack, else
-    a Q8 pack an earlier Strata made (no download for it), else where the Q4_0 pack will be."""
+    a Q8 pack an earlier Strata made (no download for it), else where the Q4_0 pack will be. The tuned pack comes first where this set has one (SET_DEFAULTS), it is here and
+    verified, and `engine` reads the Q4_0 selector (it is that format): the stock pack stays the fallback. `tuned`: whether this card qualifies (tuned_applies; None = the entry alone)."""
+    if tuned is None:
+        tuned = uses_tuned(backend, model_name)
+    variant = tuned_variant(backend, model_name) or "selq4"
+    if tuned and variant == "bf16sel" and tuned_ok(data_dir, variant):
+        return tuned_path(data_dir, variant)                       # the bf16-selector file: any engine that runs DFlash2 reads it
+    if engine is not None and tuned and variant == "selq4" and tuned_ok(data_dir) and engine_reads_selector_q4(engine):
+        return tuned_path(data_dir)
     if engine is not None and converted_ok(data_dir) and engine_reads_selector_q4(engine):
         return converted_path(data_dir)
     for name in (PACK_NAME, LEGACY_PACK_NAME):
@@ -390,6 +767,42 @@ def pack_ready(data_dir: str | Path | None) -> bool:
         return False
 
 
+#: AMD chips that share the system memory (serve/server.py HIP_IGPU_ARCHS: the same list): no card memory to read.
+IGPU_ARCHS = ("gfx1035", "gfx1036", "gfx1037", "gfx1103", "gfx1150", "gfx1151", "gfx1152", "gfx90c")
+
+
+def card_vram_mib(cfg: dict[str, Any], backend: str | None, archs: Any = None) -> float | None:
+    """Memory in MiB of the ONE card a start of this run config would use (NVML / amdgpu sysfs), for tuned_applies at fetch time (setup, Load, the app's plan): the same answer as serve/server.py
+    drafting_vram_mib gives the start. None for several cards, a shared-memory chip (sm_121, Strix Halo and the other APUs) or a card that does not answer. Never raises."""
+    try:
+        arch = first_arch(archs)
+        if arch == "sm_121" or arch in IGPU_ARCHS:
+            return None
+        from strata_control import gpu_roles
+        roles, _ = gpu_roles.saved_roles(cfg)
+        raw = cfg.get("gpu")
+        numbers = [int(str(x).strip()) for x in (raw if isinstance(raw, (list, tuple)) else str(raw).split(",")) if raw not in (None, "") and str(x).strip() != ""]
+        indices = numbers if (roles is None or numbers) else list(gpu_roles.engine_order(roles))
+        if len(indices) > 1:
+            return None
+        from serve.telemetry import gpu_reader
+        reader = gpu_reader((indices or [0])[0], amd=(backend == "hip"))
+        if not reader.ok():
+            return None
+        total = reader.read().get("mem_total")
+        return float(int(total) >> 20) if total else None
+    except Exception:                                    # noqa: BLE001 - an unreadable card means "not known to be resident"
+        return None
+
+
+def drafter_ready(data_dir: str | Path | None, model_name: str | None = None, backend: str | None = None) -> bool:
+    """Is a drafter file for this start on the computer: a stock pack (pack_ready), or, where the set has a tuned entry, the verified tuned pack."""
+    try:
+        return pack_ready(data_dir) or (bool(data_dir) and uses_tuned(backend, model_name) and tuned_ok(data_dir, tuned_variant(backend, model_name)))
+    except OSError:
+        return False
+
+
 # --------------------------------------------------------------------------------------------------- a decision
 
 
@@ -399,6 +812,7 @@ class Decision:
     drafter: str                 # what the engine is started with: mtp | dflash2 | off
     note: str = ""               # plain words when the choice could not be applied; "" otherwise
     flags: tuple[str, ...] = ()  # engine flags added
+    vocab: str = ""              # log line (not shown to the person): which draft vocabulary file a DFlash2 start uses and why; "" for the other drafters
 
 
 def normalize(value: Any) -> str:
@@ -420,16 +834,52 @@ NOT_DOWNLOADED = "the DFlash2 drafter isn't downloaded yet"
 NOT_THIS_CARD = "DFlash2 isn't available on this graphics card"
 NO_MTP = "the MTP drafter isn't downloaded yet"
 NONE_HERE = "no drafter is downloaded yet"
+FETCH_HINT = "Run strata drafting fetch to get the DFlash2 drafter now."
 DIDNT_START = "DFlash2 didn't start"          # Auto picked DFlash2, the engine ended before it was ready, and the start was repeated once with the MTP (serve/server.py)
 NOT_SERVED = NOT_HERE
 SHORT_OF_VRAM = "the cards were short of memory"   # the engine ended before it was ready for lack of graphics memory: the start was repeated once with no drafter (serve/server.py), never with the MTP
-REASONS = (DIDNT_FIT, NOT_HERE, NOT_SUPPORTED, NOT_DOWNLOADED, NOT_THIS_CARD, NO_MTP, NONE_HERE, DIDNT_START, SHORT_OF_VRAM)
+#: Request slots (2 or more requests at once) with the MTP layer loaded but no ``--batch-mtp``: the slots draft nothing and only a single request drafts. This reason is the whole line after
+#: "Drafting: " (``line`` prints it as it is, not inside "MTP (...)"); ``slots_draft_nothing`` says when it is true.
+NONE_IN_SLOTS = "none in parallel slots (one token per request and step); a single request still drafts"
+REASONS = (DIDNT_FIT, NOT_HERE, NOT_SUPPORTED, NOT_DOWNLOADED, NOT_THIS_CARD, NO_MTP, NONE_HERE, DIDNT_START, SHORT_OF_VRAM, NONE_IN_SLOTS)
+#: The server's line for a DFlash2 start whose request slots draft too (a drafter per request slot, guesses only in the rows the slots leave spare); ``slot_drafts_run`` says when.
+SLOT_DRAFTS_LINE = "Drafting: DFlash2, one guess window per request slot (spare rows only)"
 
 
 def line(drafter: str, reason: str = "") -> str:
-    """``Drafting: DFlash2``, ``Drafting: MTP (DFlash2 isn't available in this mode)``, ``Drafting: off (no drafter is downloaded yet)``."""
+    """``Drafting: DFlash2``, ``Drafting: MTP (DFlash2 isn't available in this mode)``, ``Drafting: off (no drafter is downloaded yet)``, ``Drafting: none in parallel slots (...)``."""
+    if reason == NONE_IN_SLOTS:
+        return f"Drafting: {NONE_IN_SLOTS}"
     word = {"mtp": "MTP", "dflash2": "DFlash2", "off": "off"}.get(drafter, drafter)
     return f"Drafting: {word} ({reason})" if reason else f"Drafting: {word}"
+
+
+def merged_args(cfg: dict[str, Any]) -> list[str]:
+    """The config's engine arguments with the person's own ``user_args`` over them, as the server merges them at a start (what slots_draft_nothing reads)."""
+    args = [str(a) for a in cfg.get("args") or []]
+    if cfg.get("user_args"):
+        from strata_control import user_args
+        args = user_args.merge(args, cfg["user_args"])
+    return args
+
+
+def slots_draft_nothing(args: list[Any], slots: int | float | None = 0) -> bool:
+    """Do this start's request slots draft nothing? Yes for 2 or more requests at once with no ``--batch-mtp`` (and no ``STRATA_BATCH_MTP``, no ``--pipeline-windows``) in the arguments:
+    the engine runs the slots with one token per request and step, and only a single request drafts. (Called for a start that runs the MTP layer: the slots' own DFlash2 drafts are
+    ``slot_drafts_run``; with ``--batch-mtp`` the slots carry MTP drafts and the usual line stays.)"""
+    items = [str(a) for a in args or []]
+    if request_count(items, slots) < 2 or "--batch-mtp" in items or "--pipeline-windows" in items:
+        return False
+    return os.environ.get("STRATA_BATCH_MTP", "0") in ("", "0")
+
+
+def slot_drafts_run(args: list[Any], slots: int | float | None = 0, split: bool = False) -> bool:
+    """Does a DFlash2 start draft in its request slots too (``--draft dflash2 --batch N``, a drafter per slot)? Yes for 2 or more requests at once, unless ``STRATA_BATCH_DF2=0`` (the way back,
+    as the engine reads it), a layer split (``split`` or ``--layer-split``: its slots draft only where they run as one group, not decided here) or ``--pipeline-windows``."""
+    items = [str(a) for a in args or []]
+    if split or request_count(items, slots) < 2 or "--layer-split" in items or "--pipeline-windows" in items:
+        return False
+    return os.environ.get("STRATA_BATCH_DF2", "") != "0"
 
 
 def mtp_line(reason: str) -> str:
@@ -487,6 +937,28 @@ def engine_flags(pack: str | Path, vocab: str | Path | None = None, form: str | 
     return ("--draft", "dflash2", "--draft-model", str(pack), "--draft-fallback", "none", *where, "--spec", str(SPEC_WINDOW), "--draft-conf", f"{DRAFT_CONF:g}")
 
 
+def big_blackwell(backend: str | None, archs: Any = None, vram_mib: float | None = None, slots: int | float | None = None) -> bool:
+    """Is this start on the large-VRAM Blackwell class (the window of 8, and the sets' big_blackwell_conf): CUDA, the first card's architecture sm_120 (cc 12.0; the Spark is sm_121), the one card's memory ``vram_mib``
+    at least BIG_CARD_BYTES (None = several cards or unknown: no), and ``slots`` in the all-resident step (None counts as unknown: no)? Mirrors the engine's dflash2_big_blackwell."""
+    if str(backend or "").strip().lower() != "cuda" or first_arch(archs) != "sm_120" or not vram_mib or slots is None:
+        return False
+    return vram_mib * 1048576 >= BIG_CARD_BYTES and slots >= CONF_STEPS[0][0]
+
+
+def big_blackwell_conf_for(backend: str | None, model_name: str | None, archs: Any = None, vram_mib: float | None = None, slots: int | float | None = None) -> float | None:
+    """The ``--draft-conf`` this set has on the large-VRAM Blackwell class (SetDefault.big_blackwell_conf), or None: not that class, or a set nobody measured there (it keeps the slot rule's 0.35)."""
+    entry = tuned_entry(backend, model_name)
+    return entry.big_blackwell_conf if entry is not None and big_blackwell(backend, archs, vram_mib, slots) else None
+
+
+def window_for(backend: str | None, archs: Any = None, vram_mib: float | None = None, slots: int | float | None = None) -> int:
+    """The ``--spec`` of a DFlash2 start: WIDE_WINDOW (8) on Strix Halo (HIP gfx1151, engine cap 8) and on the large-VRAM Blackwell class (big_blackwell), SPEC_WINDOW (6) everywhere else, so no other
+    card's effective window changes (the engine caps 6 on the Spark and the smaller Blackwell cards, and does not cap the rest)."""
+    if str(backend or "").strip().lower() == "hip" and first_arch(archs) == "gfx1151":
+        return WIDE_WINDOW
+    return WIDE_WINDOW if big_blackwell(backend, archs, vram_mib, slots) else SPEC_WINDOW
+
+
 def conf_for(backend: str | None, slots: int | float | None) -> float:
     """The ``--draft-conf`` for this engine family and a card that holds ``slots`` experts: the backend's own value (BACKEND_CONF) when it has one, else the slot steps."""
     own = BACKEND_CONF.get(str(backend or "").strip().lower())
@@ -532,7 +1004,45 @@ def slots_of(args: list[Any], vram_mib: float | None = None) -> int | None:
     return None
 
 
-def blocked_by(args: list[Any], *, split: bool = False, slots: int = 0, named: bool = False, backend: str | None = None) -> bool:
+#: How many requests at once get DFlash2 slot drafts by default (see slot_drafts_by_default). l620, RTX PRO 5000 72 GB, IQ3_S, every expert resident, 32 requests x 3 passes a start
+#: (phaseA-tests/par/RESULTS-PAR-DRAFT.md, blocks 4 and 5), requests per minute: 2 clients: queued on one stream 65.4, slots with no drafts 60.0, MTP slot drafts 68.4, DFlash2 slot drafts 69.1;
+#: 3 clients (two starts each): queued 64.3, slots with no drafts 74.1 / 73.3, DFlash2 slot drafts 73.5 / 74.5 (level, so 3 is not in the list);
+#: 4 clients: queued 64.5, slots with no drafts 82.9, MTP slot drafts 80.6, DFlash2 slot drafts 78.8. From 3 requests on, plain slots stay what a start gets.
+SLOT_DRAFT_REQUESTS = (2,)
+
+
+def request_count(args: list[Any], slots: int | float | None = 0) -> int:
+    """How many requests at once this start serves: ``slots`` (the config's ``parallel``) or the number after ``--batch`` / ``--slots`` / ``--parallel``, whichever is larger; 0 = one at a time."""
+    n = int(slots) if isinstance(slots, (int, float)) and not isinstance(slots, bool) else 0
+    for flag in ("--batch", "--slots", "--parallel"):
+        value = _flag_value(args, flag)
+        if value is not None and value.isdigit():
+            n = max(n, int(value))
+    return n
+
+
+def slot_drafts_by_default(mode: Any, *, backend: str | None, archs: Any = None, vram_mib: float | None = None, args: list[Any] | None = None, slots: int | float | None = 0,
+                           split: bool = False, drafter_here: bool = True) -> bool:
+    """Does Auto start the request slots with DFlash2 slot drafts (``--draft dflash2 --draft-model <pack> --batch N``, one drafter per slot, no MTP layer loaded) instead of the MTP
+    and slots with no drafts? Yes when ALL of these hold, the class that was measured and nothing else: the choice is Auto; the start serves 2 requests at once (SLOT_DRAFT_REQUESTS);
+    one CUDA card of the large-VRAM Blackwell class holding every expert (big_blackwell: sm_120, at least 48 GB, the first CONF_STEPS step; None for several cards and for the Spark's
+    shared memory); no layer split; the DFlash2 drafter is on this computer (``drafter_here``); and the person has not chosen otherwise: no ``--batch-mtp`` or ``--pipeline-windows`` in
+    the arguments, ``STRATA_BATCH_MTP`` not set, ``STRATA_BATCH_DF2=0`` not set (the way back, as the engine reads it). Every other class (AMD, the Spark, Strix, Metal, Arc, several
+    cards, a streaming card) and every other request count keep their rule as it was: the MTP loaded and slots with no drafts, or what the person named. A start that serves one request
+    at a time never comes here."""
+    if normalize(mode) != "auto" or split or not drafter_here:
+        return False
+    items = [str(a) for a in args or []]
+    if any(a in items for a in ("--layer-split", "--batch-mtp", "--pipeline-windows")):
+        return False
+    if os.environ.get("STRATA_BATCH_MTP", "0") not in ("", "0") or os.environ.get("STRATA_BATCH_DF2", "") == "0":
+        return False
+    if request_count(items, slots) not in SLOT_DRAFT_REQUESTS:
+        return False
+    return big_blackwell(backend, archs, vram_mib, slots_of(strip_mtp_flags(strip_draft_flags(items)), vram_mib))
+
+
+def blocked_by(args: list[Any], *, split: bool = False, slots: int = 0, named: bool = False, backend: str | None = None, slot_drafts: bool = False) -> bool:
     """Does this start have something DFlash2 does not run beside: several requests at once (``--batch``, ``--slots``, ``--parallel``; per-slot DFlash2 drafts are on by
     default only for a layer split whose slots run as one group and are opt-in on one card, so the MTP's ``--batch-mtp`` is the measured choice there) or
     ``--pipeline-windows``. A layer split over several cards is NOT in the list any more (owner, 2026-11-02: the 0.1.56 engine runs ``--draft dflash2
@@ -543,9 +1053,11 @@ def blocked_by(args: list[Any], *, split: bool = False, slots: int = 0, named: b
     too, and the engine serves them with a drafter per request (``--draft dflash2 --batch N``, the slot drafts); only ``--pipeline-windows`` (the MTP's speculative next window,
     which DFlash2 has no counterpart for) still blocks. Auto never passes ``named``: it keeps the MTP for several requests.
     The Metal engine has no per-request drafters (generate.cpp batch_df2_wanted), so DFlash2 beside request slots there would draft nothing and the person would not know: on
-    Metal (``backend``) the old rule stays and a DFlash2 chosen with several requests is the MTP with the usual reason."""
+    Metal (``backend``) the old rule stays and a DFlash2 chosen with several requests is the MTP with the usual reason.
+
+    ``slot_drafts``: Auto on the class whose slot drafts are the default (slot_drafts_by_default says so; the caller asks it): the same as ``named`` for the request slots."""
     items = [str(a) for a in args or []]
-    if named and str(backend or "").lower() != "metal":
+    if (named or slot_drafts) and str(backend or "").lower() != "metal":
         return "--pipeline-windows" in items
     return bool(slots > 1 or any(a in items for a in ("--batch", "--slots", "--pipeline-windows", "--parallel")))
 
@@ -571,7 +1083,7 @@ VOCAB_NAME = "draft_vocab.bin"
 
 
 #: The subsets a person can choose in setup (``--draft-vocab``), by name: the files Strata ships in data/ (setup.DRAFT_VOCABS names the same ones).
-VOCAB_FILES = {"cjk": VOCAB_NAME, "en": "draft_vocab_en.bin", "cyrillic": "draft_vocab_cyrillic.bin", "fr": "draft_vocab_fr.bin"}
+VOCAB_FILES = {"cjk": VOCAB_NAME, "en": "draft_vocab_en.bin", "cyrillic": "draft_vocab_cyrillic.bin", "fr": "draft_vocab_fr.bin", "latin": "draft_vocab_latin.bin"}
 #: The sha256 of the 27-Han-token subset up to 0.1.26 (setup.OLD_DRAFT_VOCABS): a copy that is any shipped subset may be replaced by the person's later choice, a made-by-hand one never.
 OLD_VOCAB_SHA256 = {"369151522226a5edaa5f12cfd1e2ae7db8f4fbdbd222f3dcf327dced9597fb25"}
 
@@ -579,6 +1091,201 @@ OLD_VOCAB_SHA256 = {"369151522226a5edaa5f12cfd1e2ae7db8f4fbdbd222f3dcf327dced959
 def shipped_vocab(choice: str | None = None) -> Path:
     """The draft vocabulary Strata ships with (``data/draft_vocab.bin``, also in the packaged Control), or the shipped subset named ``choice`` (cjk, en, cyrillic, fr)."""
     return Path(__file__).resolve().parents[1] / "data" / VOCAB_FILES.get(choice or "cjk", VOCAB_NAME)
+
+
+# --------------------------------------------------------------------------------------------------- the vocabulary by the computer's language
+#
+# DFlash2 proposes tokens only from the draft vocabulary. The default one (cjk) holds English, code and every Chinese / Japanese / Korean token and misses 46% of the tokens of a Russian answer
+# and 20-26% of German, Spanish, French and Polish ones. Measured on l620 (RESULTS-DRAFT-VOCAB.md): `cyrillic` gives Russian +26%, `latin` (English + the tokens of de / es / fr / pl text) +8 to +12%
+# on those four, both within 0.3% of the default on English and code; either file costs 12-16% on Chinese and Japanese. So with no choice saved, the file follows the computer's languages, and
+# anything that could mean Chinese, Japanese or Korean keeps the default (the costs are lopsided: the wrong file on CJK text costs far more than the right one gains elsewhere).
+
+#: Language codes by the script their text is written in (the ones the vocabulary files cover: Cyrillic, and the Latin script beyond English). Anything else (English, Arabic, Hebrew, Hindi, Thai,
+#: Greek...) says nothing.
+_CJK_LANGS = frozenset("zh ja ko yue cmn wuu hak nan gan lzh".split())
+_CYRILLIC_LANGS = frozenset("ru uk be bg mk sr kk ky tg mn tt ba cv ce os sah ab av kv udm".split())
+_LATIN_LANGS = frozenset(("de fr es pt it nl pl cs sk sl hr bs ro hu sv da nb nn no fi et lv lt tr vi id ms ca gl eu af sq is ga cy mt fil tl sw "
+                          "lb fo gd br oc rm eo la uz az tk hsb dsb ast an co fy sc se smn nds wa ln zu xh st tn yo ig ha so mg haw mi sm to").split())
+_CJK_SCRIPTS = frozenset("hans hant hani jpan kore hang hira kana bopo".split())
+
+
+def script_of_language(tag: Any) -> str:
+    """The script group a language tag (``ru-RU``, ``sr-Latn-RS``, ``de_DE.UTF-8``, ``sr_RS@latin``, ``zh-Hans``) says: ``cjk``, ``cyrillic``, ``latin`` (a Latin-script language other than English) or ``""`` (English, another
+    script, ``C`` / ``POSIX``, nothing readable)."""
+    text = str(tag or "").strip()
+    if not text:
+        return ""
+    low = text.lower()
+    if low in ("c", "posix") or low.startswith(("c.", "posix.")):
+        return ""
+    modifier = ""
+    if "@" in low:
+        low, modifier = low.split("@", 1)
+    low = low.split(".", 1)[0]
+    parts = [p for p in low.replace("_", "-").split("-") if p]
+    if not parts:
+        return ""
+    lang, scripts = parts[0], parts[1:]
+    if any(p in _CJK_SCRIPTS for p in scripts) or lang in _CJK_LANGS:
+        return "cjk"
+    if "cyrl" in scripts or modifier == "cyrillic":
+        return "cyrillic"
+    if "latn" in scripts or modifier == "latin":
+        return "" if lang == "en" else "latin"
+    if lang in _CYRILLIC_LANGS:
+        return "cyrillic"
+    if lang in _LATIN_LANGS:
+        return "latin"
+    return ""
+
+
+def vocab_for_languages(ui: Any = (), region: Any = (), keyboards: Any = ()) -> tuple[str, str]:
+    """(choice, language): the draft vocabulary for the computer's language signals, ``cjk`` (the default file) or ``cyrillic`` or ``latin``, and the language that decided ("" for the default). Each argument is a list of
+    language tags: ``ui`` the display / interface languages, ``region`` the regional format (user locale), ``keyboards`` the installed keyboard-layout languages.
+      any Chinese, Japanese or Korean signal anywhere -> the default;
+      else a Cyrillic signal, or a Latin-script non-English signal, picks that file; when both kinds are present the first one in the UI languages wins, then the regional format, then the keyboards;
+      no signal at all, English only, ``C`` / ``POSIX``, other scripts -> the default."""
+    groups = [[(script_of_language(t), str(t)) for t in (g or ())] for g in (ui, region, keyboards)]
+    seen = {s for g in groups for s, _ in g if s}
+    if not seen or "cjk" in seen:
+        return "cjk", ""
+    for g in groups:
+        for script, tag in g:
+            if script:
+                return script, tag.replace("_", "-").split(".", 1)[0].split("@", 1)[0].split("-", 1)[0].lower()
+    return "cjk", ""
+
+
+def _windows_names(call) -> list[str]:
+    try:
+        return [x for x in call() if x]
+    except Exception:                        # noqa: BLE001 - a signal that cannot be read says nothing
+        return []
+
+
+def os_language_signals(env: Any = None, system: str | None = None) -> dict[str, list[str]]:
+    """Every language signal this computer gives cheaply and locally: ``ui``, ``region``, ``keyboards`` (lists of tags). Linux and anywhere an environment is set: LANGUAGE, LC_ALL, LC_MESSAGES, LANG (display) and
+    LC_CTYPE, LC_TIME, LC_NUMERIC, LC_MONETARY (regional); Windows: the preferred UI languages, the user locale and the installed keyboard layouts (kernel32 / user32 through ctypes); the Mac: the preferred
+    languages and the locale from the user's global preferences file. A read that fails gives nothing for that signal; there is no waiting and no network."""
+    from strata_control import sysinfo         # (the platform module's own call asks WMI with no timeout on Windows)
+    env = os.environ if env is None else env
+    system = system or sysinfo.system()
+    ui: list[str] = []
+    region: list[str] = []
+    keyboards: list[str] = []
+    try:
+        ui += [x for x in str(env.get("LANGUAGE", "")).split(":") if x]
+        ui += [str(env.get(k, "")) for k in ("LC_ALL", "LC_MESSAGES", "LANG") if env.get(k)]
+        region += [str(env.get(k, "")) for k in ("LC_CTYPE", "LC_TIME", "LC_NUMERIC", "LC_MONETARY") if env.get(k)]
+    except Exception:                        # noqa: BLE001
+        pass
+    if system == "Windows":
+        ui_w, region_w, kb_w = _windows_languages()
+        ui, region, keyboards = ui_w + ui, region_w + region, kb_w
+    elif system == "Darwin":
+        try:
+            import plistlib
+            with open(Path.home() / "Library" / "Preferences" / ".GlobalPreferences.plist", "rb") as fh:
+                prefs = plistlib.load(fh)
+            ui = [str(x) for x in prefs.get("AppleLanguages") or []] + ui
+            if prefs.get("AppleLocale"):
+                region = [str(prefs["AppleLocale"])] + region
+        except Exception:                    # noqa: BLE001
+            pass
+    return {"ui": ui, "region": region, "keyboards": keyboards}
+
+
+def computer_language_signals() -> dict[str, list[str]]:
+    """The signals of THIS computer (os_language_signals with its own environment); the one name the tests replace so that no result depends on the language of the box that runs them."""
+    return os_language_signals()
+
+
+def _windows_languages() -> tuple[list[str], list[str], list[str]]:
+    """(UI languages, user locale, keyboard-layout languages) as locale names on Windows, each read on its own so one failure leaves the others."""
+    ui: list[str] = []
+    region: list[str] = []
+    keyboards: list[str] = []
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k32 = ctypes.windll.kernel32
+    except Exception:                        # noqa: BLE001
+        return ui, region, keyboards
+
+    def locale_name(langid: int) -> str:
+        buf = ctypes.create_unicode_buffer(85)
+        return buf.value if k32.LCIDToLocaleName(langid & 0xFFFF, buf, 85, 0) > 0 else ""
+
+    try:
+        count = wintypes.ULONG(0)
+        size = wintypes.ULONG(0)
+        if k32.GetUserPreferredUILanguages(0x8, ctypes.byref(count), None, ctypes.byref(size)) and size.value:
+            raw = ctypes.create_unicode_buffer(size.value)
+            if k32.GetUserPreferredUILanguages(0x8, ctypes.byref(count), raw, ctypes.byref(size)):
+                ui = [x for x in ctypes.wstring_at(ctypes.addressof(raw), size.value).split("\x00") if x]
+    except Exception:                        # noqa: BLE001
+        pass
+    if not ui:
+        try:
+            ui = [x for x in (locale_name(k32.GetUserDefaultUILanguage()),) if x]
+        except Exception:                    # noqa: BLE001
+            pass
+    try:
+        buf = ctypes.create_unicode_buffer(85)
+        if k32.GetUserDefaultLocaleName(buf, 85) > 0 and buf.value:
+            region = [buf.value]
+    except Exception:                        # noqa: BLE001
+        pass
+    try:
+        u32 = ctypes.windll.user32
+        u32.GetKeyboardLayoutList.restype = ctypes.c_int
+        n = u32.GetKeyboardLayoutList(0, None)
+        if 0 < n <= 64:
+            layouts = (ctypes.c_void_p * n)()
+            got = u32.GetKeyboardLayoutList(n, layouts)
+            keyboards = [x for x in (locale_name(int(layouts[i] or 0) & 0xFFFF) for i in range(max(0, got))) if x]
+    except Exception:                        # noqa: BLE001
+        pass
+    return ui, region, keyboards
+
+
+def vocab_ids_fit(path: Path, n_vocab: int | None = None) -> bool:
+    """Is this file a draft vocabulary of the model's tokenizer: whole int32 ids, none below zero or past the vocabulary (the drafter pack's own vocabulary size, 248,320 for Qwen3.8-Flash-Next)?"""
+    import array
+    try:
+        data = Path(path).read_bytes()
+    except OSError:
+        return False
+    if not data or len(data) % 4:
+        return False
+    ids = array.array("i")
+    ids.frombytes(data)
+    if sys.byteorder == "big":
+        ids.byteswap()
+    return min(ids) >= 0 and max(ids) < (n_vocab or PACK_TARGET["vocab"])
+
+
+def auto_vocab(cfg: dict, args: list[str], current: Path | None, form: str | None, data_dir: str | Path | None = None,
+               signals: dict[str, list[str]] | None = None) -> tuple[Path | None, str]:
+    """(file, line) for a DFlash2 start: the draft vocabulary file and one log line saying which and why. The person's own choice always wins and is kept as it was: ``draft_vocab`` saved in the run config (setup
+    ``--draft-vocab``, also when it is the default one) or ``--mtp-draft-vocab`` in the arguments. Otherwise the file follows the computer's languages (vocab_for_languages) when the engine takes the file by name
+    (FORM_FILE, or an engine nobody can tell: the usual form), the shipped file is here and fits this model's vocabulary; anything else is today's default, said nothing about. Nothing is written to the config: it is worked out at every start."""
+    name = lambda p: Path(p).name if p else "none"       # noqa: E731
+    saved = cfg.get("draft_vocab")
+    if saved or _flag_value(args, "--mtp-draft-vocab") or _flag_value(cfg.get("user_args") or [], "--mtp-draft-vocab"):
+        return current, f"draft vocabulary: {name(current)} (set by you)"
+    if form not in (None, FORM_FILE) or current is None:           # (None: the engine program is not known: the usual form, the file by name)
+        return current, f"draft vocabulary: {name(current)} (the default)"
+    try:
+        sig = signals if signals is not None else computer_language_signals()
+        choice, language = vocab_for_languages(sig.get("ui"), sig.get("region"), sig.get("keyboards"))
+    except Exception:                        # noqa: BLE001 - no answer means the default
+        choice, language = "cjk", ""
+    if choice != "cjk":
+        picked = shipped_vocab(choice)
+        if picked.is_file() and vocab_ids_fit(picked, pack_target(data_dir)["vocab"]):
+            return picked, f"draft vocabulary: {picked.name} (by this computer's language: {language})"
+    return current, f"draft vocabulary: {name(current)} (the default)"
 
 
 def _sha256(path: Path) -> str:
@@ -659,32 +1366,50 @@ def can_run_dflash2(model_name: str | None, family: str | None, backend: str | N
     return bool(supported_model(model_name, family) and ENGINE_SERVES_DFLASH2 and backend is not None and hardware_support(backend, archs).can_run)
 
 
-def choice_of(mode: Any, *, model_name: str | None = None, family: str | None = None, backend: str | None = None, archs: Any = None) -> str:
+def choice_of(mode: Any, *, model_name: str | None = None, family: str | None = None, backend: str | None = None, archs: Any = None,
+              args: list[Any] | None = None, vram_mib: float | None = None) -> str:
     """The drafter the choice means for this model on this computer, before anything is looked up on disk: ``dflash2``, ``mtp`` or ``off``. Auto is DFlash2 wherever
-    the engine has it (DFLASH2_BACKENDS) and the model is one it was made for, the MTP everywhere else; DFlash2 asked for by name where it cannot run is MTP."""
+    the engine has it (DFLASH2_BACKENDS) and the model is one it was made for, the MTP everywhere else and for a set whose entry in SET_DEFAULTS says MTP; DFlash2 asked for by name
+    where it cannot run is MTP."""
     asked = normalize(mode)
     if asked == "off":
         return "off"
     if asked == "mtp":
         return "mtp"
+    entry = default_for(backend, model_name)
+    if asked == "auto" and entry is not None and entry.drafter == "mtp":
+        return "mtp"                                          # a set whose measured default on this engine family is the MTP (SET_DEFAULTS)
+    if asked == "auto" and auto_mtp_only(backend, archs):
+        return "mtp"                                          # a card where Auto keeps the MTP for now (AUTO_MTP)
+    klass = class_entry(backend, model_name, archs, args=args, vram_mib=vram_mib)
+    if asked == "auto" and klass is not None and klass.drafter == "mtp":
+        return "mtp"                                          # this set on this class of card (CLASS_DEFAULTS)
     return "dflash2" if can_run_dflash2(model_name, family, backend, archs) else "mtp"
 
 
 def decide(mode: Any, *, klass: str = "other", model_name: str | None = None, family: str | None = None, data_dir: str | Path | None = None,
-           backend: str | None = None, archs: Any = None, mtp_here: bool | None = None, blocked: bool = False, vocab_here: bool = True) -> Decision:
-    """The drafter a start uses. Never raises. One drafter, never two. A choice that cannot be applied becomes the other drafter when that one is on this computer,
+           backend: str | None = None, archs: Any = None, mtp_here: bool | None = None, blocked: bool = False, vocab_here: bool = True,
+           args: list[Any] | None = None, vram_mib: float | None = None, slots_none: bool = False) -> Decision:
+    """The drafter a start uses. Never raises. ``slots_none`` (slots_draft_nothing of the start's arguments and request count; False when the caller cannot know it): the reason for a
+    DFlash2 that is not available here is NONE_IN_SLOTS instead of NOT_HERE, so the plan says what the server says. One drafter, never two. A choice that cannot be applied becomes the other drafter when that one is on this computer,
     else none, with a note in plain words. ``mtp_here`` says whether the MTP layer is on disk (None: not known, taken as there), ``blocked`` that this start is a layer
     split or has several requests at once (see blocked_by), ``vocab_here`` that the draft vocabulary DFlash2 needs is there. ``klass`` is not used any more (Auto
     does not depend on the kind of card) and stays only so the callers keep working."""
     asked = normalize(mode)
     if asked == "off":
         return Decision(asked, "off")
-    want = choice_of(asked, model_name=model_name, family=family, backend=backend, archs=archs)
+    want = choice_of(asked, model_name=model_name, family=family, backend=backend, archs=archs, args=args, vram_mib=vram_mib)
     have_mtp = mtp_here is not False
-    runnable = can_run_dflash2(model_name, family, backend, archs)
+    # DFlash2 stands in for a missing MTP layer wherever it may run on this card: also where Auto picks the MTP for the card class (the 12 GB card with IQ3_S), so a
+    # start never goes without a drafter while one is on disk; not where Auto keeps the MTP because DFlash2 stalls there (AUTO_MTP, gfx1201)
+    # (and never as the stand-in for a chosen MTP either: owner 11-15, a chosen drafter stays chosen and its fallback must be safe on the card; DFlash2 named by
+    # itself is the person's own choice and is not looked at here)
+    runnable = can_run_dflash2(model_name, family, backend, archs) and not (asked != "dflash2" and auto_mtp_only(backend, archs))
 
     if want == "dflash2":
-        reason = NOT_HERE if (blocked or not vocab_here) else NOT_DOWNLOADED if not pack_ready(data_dir) else ""
+        reason = NOT_HERE if (blocked or not vocab_here) else NOT_DOWNLOADED if not drafter_ready(data_dir, model_name, backend) else ""
+        if reason == NOT_HERE and slots_none:
+            reason = NONE_IN_SLOTS
         if not reason:
             return Decision(asked, "dflash2", flags=engine_flags(pack_path(data_dir)))
         return Decision(asked, "mtp", reason) if have_mtp else Decision(asked, "off", NONE_HERE)
@@ -695,40 +1420,51 @@ def decide(mode: Any, *, klass: str = "other", model_name: str | None = None, fa
             why = NOT_SUPPORTED if not supported_model(model_name, family) else NOT_SERVED if not ENGINE_SERVES_DFLASH2 else NOT_THIS_CARD
         return Decision(asked, "mtp", why)
     # the layer is not on this computer: DFlash2 instead when it can run and its pack is here (said), else none (said)
-    if runnable and not blocked and vocab_here and pack_ready(data_dir):
+    if runnable and not blocked and vocab_here and drafter_ready(data_dir, model_name, backend):
         return Decision(asked, "dflash2", NO_MTP, engine_flags(pack_path(data_dir)))
     return Decision(asked, "off", NONE_HERE)
 
 
 ONE_REQUEST_NOTE = "DFlash2 answers one request at a time, so Strata set this model to one request at a time."
+#: setup could not fetch the MTP layer because the computer is offline (tools/mtp_fetch.py OFFLINE) and the start has no other drafter (owner, 11-15).
+#: The app shows the same words (apps/host/server/native-control.mjs installMtpLayer).
+MTP_OFFLINE_NOTE = "There is no internet connection, so the draft layer can't be downloaded now. The model starts without a drafter."
 
 
 def wants_one_request(mode: Any, *, klass: str = "other", model_name: str | None = None, family: str | None = None, backend: str | None = None,
-                      archs: Any = None, **_ignored: Any) -> bool:
+                      archs: Any = None, args: list[Any] | None = None, vram_mib: float | None = None, **_ignored: Any) -> bool:
     """The choice means DFlash2 on this model and computer (named, or Auto where the engine has it): the model then starts with one request at a time, because the
     engine's request slots (``--batch``, which Strata fills in by itself on a card with room) are not filled in beside it. A number of requests the person chose stays as
     they chose it: with DFlash2 named the start runs DFlash2 with that many (a drafter per request), with Auto it loads the MTP and says so; the callers check that."""
-    return choice_of(mode, model_name=model_name, family=family, backend=backend, archs=archs) == "dflash2"
+    return choice_of(mode, model_name=model_name, family=family, backend=backend, archs=archs, args=args, vram_mib=vram_mib) == "dflash2"
 
 
 def needs_conversion(mode: Any, *, klass: str = "other", model_name: str | None = None, family: str | None = None, data_dir: str | Path | None = None,
-                     backend: str | None = None, archs: Any = None, **_ignored: Any) -> bool:
+                     backend: str | None = None, archs: Any = None, args: list[Any] | None = None, vram_mib: float | None = None, **_ignored: Any) -> bool:
     """Would this choice use DFlash2, is the Q4_0 pack here, and is the converted pack (Q4_0 selector) not made yet? (Then setup / Load makes it, locally, once.)"""
-    return (choice_of(mode, model_name=model_name, family=family, backend=backend, archs=archs) == "dflash2" and bool(data_dir)
+    return (choice_of(mode, model_name=model_name, family=family, backend=backend, archs=archs, args=args, vram_mib=vram_mib) == "dflash2" and bool(data_dir)
             and _here(Path(data_dir) / FOLDER / PACK_NAME) and not converted_ok(data_dir))
 
 
 def needs_pack(mode: Any, *, klass: str = "other", model_name: str | None = None, family: str | None = None, data_dir: str | Path | None = None,
-               backend: str | None = None, archs: Any = None, **_ignored: Any) -> bool:
+               backend: str | None = None, archs: Any = None, args: list[Any] | None = None, vram_mib: float | None = None, **_ignored: Any) -> bool:
     """Would this choice use the DFlash2 drafter if its file were here, and is it not here yet? (Then it is fetched before the start, once.)"""
-    return choice_of(mode, model_name=model_name, family=family, backend=backend, archs=archs) == "dflash2" and not pack_ready(data_dir)
+    return choice_of(mode, model_name=model_name, family=family, backend=backend, archs=archs, args=args, vram_mib=vram_mib) == "dflash2" and not drafter_ready(data_dir, model_name, backend)
+
+
+def needs_tuned(mode: Any, *, klass: str = "other", model_name: str | None = None, family: str | None = None, data_dir: str | Path | None = None,
+                backend: str | None = None, archs: Any = None, args: list[Any] | None = None, vram_mib: float | None = None, **_ignored: Any) -> bool:
+    """Would this choice use DFlash2 with the tuned drafter (this set has an entry in SET_DEFAULTS) and is that file not here yet? (Setup, Load and `strata drafting fetch`
+    fetch it, once; offline they skip it and the stock pack or the MTP runs.)"""
+    return (choice_of(mode, model_name=model_name, family=family, backend=backend, archs=archs, args=args, vram_mib=vram_mib) == "dflash2"
+            and tuned_applies(backend, model_name, archs, args=args, vram_mib=vram_mib) and bool(data_dir) and not tuned_ok(data_dir, tuned_variant(backend, model_name)))
 
 
 def needs_mtp(mode: Any, *, klass: str = "other", model_name: str | None = None, family: str | None = None, backend: str | None = None,
-              archs: Any = None, mtp_here: bool | None = None, **_ignored: Any) -> bool:
+              archs: Any = None, mtp_here: bool | None = None, args: list[Any] | None = None, vram_mib: float | None = None, **_ignored: Any) -> bool:
     """Would this choice use the MTP layer, and is it not on this computer yet? (A new install fetches only the drafter it will use; this is what a later switch
     to the MTP fetches, once.)"""
-    return choice_of(mode, model_name=model_name, family=family, backend=backend, archs=archs) == "mtp" and mtp_here is False
+    return choice_of(mode, model_name=model_name, family=family, backend=backend, archs=archs, args=args, vram_mib=vram_mib) == "mtp" and mtp_here is False
 
 
 #: The engine options of the DFlash2 drafter; none of them goes with the MTP.
@@ -794,20 +1530,35 @@ def apply(cfg: dict[str, Any], *, klass: str = "other", data_dir: str | Path | N
           backend: str | None = None, archs: Any = None, vram_mib: float | None = None, split: bool = False, slots: int = 0,
           engine: str | os.PathLike[str] | None = None) -> Decision:
     """Put the config's ``"drafting"`` choice on its engine arguments (in place): ONE drafter's options and none of the other's. DFlash2: no ``--mtp``, no MTP option,
-    ``--draft dflash2 --draft-model <pack> --draft-fallback none --mtp-draft-vocab <file> --spec 6 --draft-conf C``; the person's own ``--spec`` or ``--draft-conf``
+    ``--draft dflash2 --draft-model <pack> --draft-fallback none --mtp-draft-vocab <file> --spec W --draft-conf C`` (W = window_for: 8 on Strix Halo and on cc 12.0 with >= 48 GB, else 6); the person's own ``--spec`` or ``--draft-conf``
     in ``user_args`` stays. C is 0.35 where the card holds most experts and higher where fewer slots fit (conf_for_slots): from the person's own ``--expert-cache N``,
     else from ``vram_mib``, the memory of the one card (None: several cards, a shared-memory chip, unknown: 0.35). MTP: the arguments without any DFlash2 option.
     ``off``: neither (the draft layer's own switch, ``"mtp": false``). ``slots`` says that this start serves several requests at
-    once: with Auto that is the MTP, said in one line; with DFlash2 chosen by name it is DFlash2 with a drafter per request (blocked_by ``named``; ``split``, a layer
+    once: with Auto that is the MTP, said in one line (except the one class of slot_drafts_by_default: 2 requests on one large Blackwell card holding every expert, where it is
+    DFlash2 with a drafter per request); with DFlash2 chosen by name it is DFlash2 with a drafter per request (blocked_by ``named``; ``split``, a layer
     split over several cards, is ignored: DFlash2 runs on it). A config from before this rule that names both drafters starts with the one chosen.
     `engine` is the engine program that will start (None: not known, the usual flags): an engine that only takes `--mtp DIR` for the vocabulary gets that
     (still without the MTP layer), and an engine without `--draft-fallback` gets no DFlash2 flag at all (the MTP, said in one line)."""
     args = [str(a) for a in cfg.get("args") or []]
     if cfg.get("split_engine_note") and _flag_value(args, "--draft") == "dflash2":   # the all-cards split engine started with DFlash2 as its drafter (split_engine.split_config): its flags are its own, nothing is added or taken out
         return Decision("dflash2", "dflash2")
-    if not supported_model(cfg.get("model_name"), family):    # another model: its drafting is not this choice's business (DeepSeek, Swift, Coder, NVFP4, Qwen3.6...)
+    name = cfg.get("model_name")
+    fit = ""
+    if not supported_model(name, family):
+        # the name is not one setup writes: what the FILE is decides (a renamed Flash-Next file, a hand-written config, a feed model under its own name); Coder, NVFP4 and Swift stay out by name
+        fit = file_fit(args, data_dir) if family is None and not _EXCLUDED_NAME.search(str(name or "")) else ""
+        if fit == "fits":
+            name = known_name_of_file(args) or FILE_FITS_AS        # a file that is exactly a known set gets that set's table entry; any other the general defaults
+    if not supported_model(name, family):                     # another model: its drafting is not this choice's business (Swift, Coder, NVFP4, Qwen3.6...)
         asked = normalize(cfg.get("drafting"))
+        if asked == "off" or cfg.get("mtp") is False:            # no drafter for this model (its draft layer is off, or a feed model whose entry says drafter: none): say so, start none
+            # "mtp": false: the server's own draft-layer step takes the layer out (and says so); "drafting": "off" alone: taken out here
+            cfg["args"] = strip_draft_flags(args) if cfg.get("mtp") is False else strip_mtp_flags(strip_draft_flags(args))
+            return Decision(asked, "off")
         if asked == "dflash2":
+            cfg["args"] = strip_draft_flags(args)
+            return Decision(asked, "mtp", NOT_SUPPORTED)
+        if fit == "family":                                       # a Qwen3.8-Flash-Next-family file the drafter was not made for (other sizes): the MTP, and the person is told
             cfg["args"] = strip_draft_flags(args)
             return Decision(asked, "mtp", NOT_SUPPORTED)
         return Decision(asked, "mtp")
@@ -819,9 +1570,19 @@ def apply(cfg: dict[str, Any], *, klass: str = "other", data_dir: str | Path | N
     mode = cfg.get("drafting")
     if cfg.get("mtp") is False and normalize(mode) == "auto":
         mode = "off"                                          # "Draft layer (MTP)" turned off by the person, and no drafter chosen since: no drafter
-    decision = decide(mode, model_name=cfg.get("model_name"), family=family, data_dir=data_dir, backend=backend, archs=archs,
-                      mtp_here=mtp_here, blocked=blocked_by(strip_draft_flags(args), split=split, slots=slots, named=normalize(mode) == "dflash2", backend=backend) or form == FORM_NONE, vocab_here=vocab is not None)
+    slot_drafts = slot_drafts_by_default(mode, backend=backend, archs=archs, vram_mib=vram_mib, args=args, slots=slots, split=split,
+                                         drafter_here=vocab is not None and form != FORM_NONE and drafter_ready(data_dir, name, backend))
+    decision = decide(mode, model_name=name, family=family, data_dir=data_dir, backend=backend, archs=archs,
+                      mtp_here=mtp_here, blocked=blocked_by(strip_draft_flags(args), split=split, slots=slots, named=normalize(mode) == "dflash2", backend=backend, slot_drafts=slot_drafts) or form == FORM_NONE,
+                      vocab_here=vocab is not None, args=strip_mtp_flags(strip_draft_flags(args)), vram_mib=vram_mib,
+                      slots_none=slots_draft_nothing(args, slots))     # request slots with no --batch-mtp draft nothing: say that, not "DFlash2 isn't available in this mode" (MTP slot drafts keep that line)
     mine = cfg.get("user_args") or []
+    pack = None
+    if decision.drafter == "dflash2":
+        qualifies = tuned_applies(backend, name, archs, args=strip_mtp_flags(strip_draft_flags(args)), vram_mib=vram_mib)
+        pack = pack_path(data_dir, engine, model_name=name, backend=backend, tuned=qualifies)
+        if Path(pack) != tuned_path(data_dir, tuned_variant(backend, name)) and not pack_ready(data_dir):         # (only the tuned pack is here and this engine cannot read it: no drafter file for it)
+            decision = Decision(decision.asked, "mtp", NOT_DOWNLOADED) if mtp_here is not False else Decision(decision.asked, "off", NONE_HERE)
     if decision.drafter == "off":
         cfg["args"] = strip_mtp_flags(strip_draft_flags(args))
         cfg["mtp"] = False
@@ -831,9 +1592,16 @@ def apply(cfg: dict[str, Any], *, klass: str = "other", data_dir: str | Path | N
             cfg["mtp"] = True                                 # an explicit drafter choice overrides an older "mtp": false
     else:
         base = strip_mtp_flags(strip_draft_flags(args))
-        flags = list(engine_flags(pack_path(data_dir, engine), vocab, form))
+        vocab, vocab_line = auto_vocab(cfg, args, vocab, form, data_dir)         # the person's own choice, else the computer's language, else the default
+        decision.vocab = vocab_line
+        flags = list(engine_flags(pack, vocab, form))
         kept_conf = _flag_value(mine, "--draft-conf")
-        flags[flags.index("--draft-conf") + 1] = kept_conf if kept_conf is not None else f"{conf_for(backend, slots_of(base, vram_mib)):g}"
+        tuned_conf = tuned_conf_for(backend, name) if Path(pack) == tuned_path(data_dir, tuned_variant(backend, name)) else None     # Metal: the conf the tuned pack was measured with; CUDA / HIP: None, the backend's own conf stays
+        held = slots_of(base, vram_mib)
+        tuned_here = Path(pack) == tuned_path(data_dir, tuned_variant(backend, name))
+        card_conf = big_blackwell_conf_for(backend, name, archs, vram_mib, held) if tuned_here else None      # large-VRAM Blackwell, IQ3_S, tuned pack: the measured 0.55; Strix keeps 0.35 and only widens the window
+        flags[flags.index("--draft-conf") + 1] = kept_conf if kept_conf is not None else f"{tuned_conf if tuned_conf is not None else card_conf if card_conf is not None else conf_for(backend, held):g}"
+        flags[flags.index("--spec") + 1] = str(window_for(backend, archs, vram_mib, held))
         if _flag_value(mine, "--spec") is None:
             base = _without_flag(base, "--spec")              # the DFlash2 window; the person's own --spec stays
         else:
@@ -862,6 +1630,30 @@ def fallback_note(log_text: str) -> str:
     else:
         reason = DIDNT_FIT
     return mtp_line(reason)
+
+
+#: A load that is not the person's own asks the signed feed for the tuned drafter at most this often when the answer was "nothing" (strata_control/drafting_fetch.py keeps the mark).
+RETRY_AFTER_S = 12 * 3600
+MISS_MARK = ".tuned-feed-miss"
+
+
+def recent_miss(data_dir: str | Path) -> bool:
+    """Did the feed have nothing for the tuned drafter within the last RETRY_AFTER_S seconds (the mark `drafting_fetch` leaves)?"""
+    try:
+        return time.time() - (Path(data_dir) / FOLDER / MISS_MARK).stat().st_mtime < RETRY_AFTER_S
+    except OSError:
+        return False
+
+
+def fetch_hint(decision: Decision, *, model_name: str | None, backend: str | None, archs: Any = None, data_dir: str | Path | None, args: list[Any] | None = None,
+               vram_mib: float | None = None) -> str:
+    """The line after "Drafting: off (no drafter is downloaded yet)": only when the choice is DFlash2 or Auto on a set with a tuned drafter and a load has just
+    found the feed empty (a recent miss mark), so the person knows `strata drafting fetch` asks again now. "" in every other case."""
+    if decision.drafter != "off" or decision.note != NONE_HERE or normalize(decision.asked) not in ("auto", "dflash2") or not data_dir:
+        return ""
+    if not tuned_applies(backend, model_name, archs, args=args, vram_mib=vram_mib) or not recent_miss(data_dir):
+        return ""
+    return FETCH_HINT
 
 
 def summary_line(decision: Decision, engine_note: str = "") -> str:

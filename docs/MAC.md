@@ -3,10 +3,17 @@
 Strata runs on Apple Silicon Macs through its own engine on Metal. This is the same engine as on a PC. The NVIDIA
 kernels are replaced by Metal ones (`metal/`), and the host code and the server are the PC's. There are two ways in:
 
-- **The Strata app (`.dmg`) and the Terminal (`strata launch`).** The Metal engine comes ready-made: the `.dmg` has it
-  inside, and the Terminal fetches it as an engine component. Nothing is built on your Mac and you need no Command Line
-  Tools ([below](#the-desktop-app-and-strata-launch-on-a-mac)). macOS 15 or newer, as for the source build. If macOS says the
-  app is "damaged", see [Troubleshooting](TROUBLESHOOTING.md#the-desktop-app-and-the-terminal); how the builds are signed:
+> **On this page:** [What you need](#what-you-need) · [Install](#install) · [Defaults](#defaults-and-options) ·
+> [Gyro](#gyro-s-and-gyro-m-agentionais-trellis-experts) · [Measured](#measured-m5-max-128-gb) · [Limits](#limits-this-version) ·
+> [Switches](#switches) · [How it works](#how-it-works) · [History](#history--older-measurements)
+
+## Quick start
+
+There are two ways in:
+
+- **The Strata app (`.dmg`) and the Terminal (`strata launch`).** The Metal engine comes ready-made: the `.dmg` has it inside and
+  the Terminal fetches it as an engine component. Nothing is built on your Mac and you need no Command Line Tools. If macOS says
+  the app is "damaged", see [Troubleshooting](TROUBLESHOOTING.md#the-desktop-app-and-the-terminal). How the builds are signed:
   [packaging/mac/README.md](../packaging/mac/README.md).
 - **From source: `./setup.sh`.** It sets things up the way `START-HERE.bat` does on Windows and builds the engine on your Mac
   (about 1-15 minutes).
@@ -62,7 +69,12 @@ What the first run does (each step is skipped when it is already done):
 3. **Python packages** into `.venv`. CMake and Ninja come from pip too, installed just before the build in step 4.
 4. **Builds the engine** (`build-metal/strata`). It uses Apple's metal-cpp headers (pinned by SHA-256) and llama.cpp's ggml at the commit the PC build pins.
 5. **Downloads the model.** The download resumes if interrupted. `--gguf-dir` uses files you already have.
-6. **Prepares the model:** the pack (seconds), and the MTP draft layer (about 5 GB of the original checkpoint). On a Mac that streams: the experts' copy instead of the draft layer (about 3 minutes on the M4, checked byte for byte against the model file).
+6. **Prepares the model:** the pack (seconds) and the MTP draft layer (about 5 GB of the original checkpoint). On a Mac that
+   streams, the experts' copy takes the draft layer's place (about 3 minutes on the M4).
+   For UD-Q4_K_XL and UD-IQ4_XS-v31 it also downloads the DFlash2 drafter (0.34 GB, from Strata's signed update feed): the server then drafts
+   with DFlash2 instead of the MTP layer (`--spec 6`, `--draft-conf 0.7`; Apache-2.0, a copy of incoai/Qwen3.8-Flash-Next-DFlash2 that Strata
+   tuned, notice in `data/dflash2-tuned/`). With no internet the download is skipped without a word and the MTP runs as before;
+   `./setup.sh --setup` fetches it later. IQ3_S and the other sets keep the MTP.
 7. **Writes `strata-<model>.json` and `run-<model>.sh`, then starts the server.**
 
 The config uses the Mac defaults: `--spec 2` with MTP, or `--spec 3 --spec-min-p 0.5` for the IQ3_S, Q2_0 and Coder sets (M5 Max, 5 interleaved pairs, same tokens, over `--spec 2`: IQ3_S story -0.9%, code +2.5%, JSON +16.7%, agent turn +4.9%; Q2_0 story +0.4%, code +11.5%, JSON +6.3%, agent turn +1.9%; Coder story -2.5%, code +7.1%, JSON +9.3%, agent turn +12.5%; the other sets are not measured),, and the Q8_0 hyper-connection read (below). After that, `./setup.sh` or `./run-q2_0.sh` starts the model directly. The server is the same as on a PC:
@@ -163,8 +175,70 @@ The arena was 11.5-14.7 GB. Tokens per second, one token per step (no MTP), medi
 
 **Why `--spec 2`:** measured with MTP on the same two prompts.
 
-| Window | Q2_0 (prompt1 / story) | IQ3_XXS (prompt1 / story) |
-|---|---|---|
+  | Picture | GPU reader | CPU reader |
+  | --- | --- | --- |
+  | 260 tokens (640x400) | 0.45 s | 50.7 s |
+  | 972 tokens (1600x1200) | 2.4 s | 194 s |
+
+- **Context:** measured up to 32K (needles, KL). Setup recommends 32K below 96 GB and 64K from 96 GB. Up to the model's 262K can
+  be set, but it is not measured.
+- **Several requests at once.** `--parallel N` keeps N sequences side by side in the engine, each with its own running state and K/V (0.65 GB each at a 36,864-token context). Measured on an M5 Max with IQ3_S, the MTP draft layer and `--spec 2`, N requests of 150 tokens sent at the same time, tokens a second over all of them: 1 request 85, 2 requests 95 to 102, 3 requests 115, 4 requests 119 to 125. One request alone decodes at 96 to 100; with 2, 3 and 4 at once each decodes at 53 to 61, 41 to 48 and 32 to 40. The engine uses 8.3, 12.0, 14.0 and 16.0 GB for 1 to 4.
+- **Not ported:** the control vector (`--control-vector-scaled`) and the PC tuning (`--calibrate`).
+- **Streaming** is measured at 32 GB only.
+- **Families:** the original Qwen3.8-Flash-Next, Unsloth's UD-Q4/Q5/Q6_K_XL and agentionai's Gyro-S are measured. Setup repacks
+  Unsloth's shards into one file for the GPU; a Gyro file is used as it is. The Swift and Coder releases are not set up on Mac
+  yet, and Qwen3.6 does not run on the Mac engine.
+
+### Quality
+
+- **The Q8_0 hyper-connection read** is the default. Teacher-forced over 28 prompts (code, reasoning, chat, six languages,
+  documents), about 6,000 positions per set, BF16 reference: mean KL 0.0007 and top-1 agreement 98.9% on the model's own text,
+  99.1% on another model's text, perplexity unchanged. For scale, IQ3_XXS against Q2_0 is a KL of 0.094.
+- **The fast prompt path** against reading the prompt through decode windows: mean KL 0.0004, top-1 99.4 to 99.6%.
+- **Needles:** a code word hidden in 8K, 16K and 32K tokens at 10/50/90% depth was found 9 of 9 with Q2_0 and with IQ3_XXS.
+- **Same answers as on a PC:** against the CUDA engine on a Tesla P100 (IQ3_XXS and IQ3_S) the first 200 tokens of a reply on the
+  short question are identical; against the HIP engine on a Radeon AI PRO R9700 (Q2_0), 36 of 39 first tokens are identical. The
+  differences are near-ties between the two best tokens, from a different floating-point order.
+
+## Switches
+
+For testing. All are off unless set; the defaults are described above.
+
+| Variable | Effect |
+| --- | --- |
+| `STRATA_HC_Q8=0` | The BF16 hyper-connection read (exact) instead of Q8_0 |
+| `STRATA_METAL_PROMPT=window` | Read the prompt through decode windows (slow, exact fallback; about 190 tok/s) |
+| `STRATA_METAL_PROMPT_CHUNK=N` | Prompt chunk size (default 2048 resident; see streaming above) |
+| `STRATA_METAL_MTP_Q8=0` | The draft layer's matrices in BF16 instead of Q8_0 |
+| `STRATA_METAL_MTP_CHAIN=0` | One GPU submission per draft step instead of one per round |
+| `STRATA_METAL_FUSE=0`, `STRATA_METAL_LAZY_FOLD=0` | Turn off two decode fusions (same tokens, slower) |
+| `STRATA_METAL_PROMPT_EXPERTS=v3` | The M5 layout for the prompt's expert GEMMs. Fails on an M1 Max, so it is off there (default v2) |
+| `STRATA_METAL_STREAM=1` / `=0` | Stream the experts from the SSD even when the pack fits / never (the default decides by size) |
+| `STRATA_METAL_CONTIG=0` | Streaming: read the model file even when the experts' copy is there |
+| `STRATA_METAL_ARENA_GB=N`, `STRATA_METAL_KEEP_FREE_GB=N` | Streaming: the arena's size, or the memory left to macOS |
+| `STRATA_METAL_LEAVE_SHARE=0.4` | Streaming, 64 GB or more: the share of the RAM left to macOS when the footprint cap is set |
+| `STRATA_METAL_WIRE_ARENA=0` | Streaming, 64 GB or more: leave the filled arena pageable (default: wired) |
+| `STRATA_METAL_IGNORE_REPACK=1` | Start although a model repack or setup's preparation is running (the engine refuses by default) |
+| `STRATA_METAL_KEEP_HOST_WEIGHTS=1` | Streaming: keep the host code's own copies of the weights (2 to 3 GB) |
+| `STRATA_METAL_F16=1` / `=0` | Decode windows of a resident model: the GEMVs of Q2_0, Q3_K-Q6_K and IQ4_XS and the Q2_0 routed experts in fp16. On in the config setup writes for a resident IQ3_S or Q2_0 pack (M5 Max: decode +9 to +15%, top-1 96-97% and mean KL 0.009-0.016 against fp32; the 61-task quality suite passes the same tasks as with it off); `=0` in the config's `env` turns it off. Other sets: off unless set. M1 Max: a 2-token window's GPU time 56-60 -> 40-41 ms, mean KL 0.009 against fp32 |
+| `STRATA_METAL_TRACE=1`, `STRATA_METAL_PROFILE=1`, `STRATA_METAL_KPROF=T` | Per-window traces, a time breakdown, per-kernel GPU times |
+
+## How it works
+
+The code is in `metal/` (the engine's side in `metal/src/engine`, the kernels in `metal/kernels`).
+
+- **Host code:** the PC host code compiles unchanged for macOS. `metal/include/metal_compat` maps the CUDA runtime calls it makes
+  onto a small Metal runtime (`metal/src/gpu`).
+- **Decode and prompt work** run in Metal kernels: one command buffer per verify window, experts read in place from the mapped
+  model file, hyper-connections, GDN state and QSA attention on the GPU, and a whole MTP draft round in one command buffer.
+- **The PC builds are byte-identical** with this code present. Every shared file's change is behind `STRATA_GPU_METAL` or `__APPLE__`.
+
+## History / older measurements
+
+**Why `--spec 2`.** Measured on: Apple M5 Max, 128 GB, decode tok/s with MTP on the two prompts (prompt1 / story).
+
+| Window | Q2_0 | IQ3_XXS |
+| --- | --- | --- |
 | `--spec 2` | 111 / 106 | 102 / 95 |
 | `--spec 3` | 116 / 92 | 108 / 95 |
 | `--spec 4` | 111 / 81 | 108 / 83 |

@@ -22,7 +22,7 @@ export function refusedFolder(dir) {
     const win = (process.env.SystemRoot ?? 'C:\\Windows').toLowerCase();
     const q = p.toLowerCase();
     if (q === win || q.startsWith(win + sep) || /^[a-z]:\\(program files( \(x86\))?|programdata)(\\|$)/.test(q)) return 'That is a system folder. Choose one of your own folders.';
-  } else if (/^\/(bin|boot|dev|etc|lib|lib64|proc|root|run|sbin|sys|usr|var)(\/|$)/.test(p)) return 'That is a system folder. Choose one of your own folders.';
+  } else if (/^\/(bin|boot|dev|etc|lib|lib64|proc|root|run|sbin|sys|usr|var)(\/|$)/.test(p) && !/^\/run\/media\/[^/]+\/./.test(p)) return 'That is a system folder. Choose one of your own folders.';
   return null;
 }
 

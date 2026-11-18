@@ -69,7 +69,8 @@ struct GtcScratch {
 constexpr size_t kTcTiBytes = (size_t) GTC_NB * HV * 2 * GCH * GCH * 2, kTcTeBytes = (size_t) GTC_NB * HV * 4,
                  kTcScBytes = (size_t) GTC_NB * HV * GCH * 16, kTcKqBytes = (size_t) GTC_NB * HK * 4 * GCH * S * 2,
                  kTcPiBytes = (size_t) GTC_NB * HV * 2 * GCH * GCH * 2;
-static_assert(kTcTiBytes + kTcTeBytes + kTcScBytes + kTcKqBytes + kTcPiBytes == 60305408, "gdn_tc.cuh: the scratch plan");
+// the frozen total is Flash-Next's (HK 16, HV 48); any other shape is sized by the formulas above
+static_assert(HV != 48 || HK != 16 || kTcTiBytes + kTcTeBytes + kTcScBytes + kTcKqBytes + kTcPiBytes == 60305408, "gdn_tc.cuh: the scratch plan");
 // allocated on first use and kept, as gdn_chunk_scratch (kernels.cu); ti == nullptr when the card had no room
 GtcScratch gdn_tc_scratch() {
     static unsigned char* bufs[64] = {};

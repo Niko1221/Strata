@@ -69,6 +69,12 @@ class EveryChoiceOnEveryBackend(Base):
                     cfg = self.cfg(family, **({} if mode is None else {"drafting": mode}))
                     d, args = self.apply(cfg, family, backend, archs)
                     where = (backend, archs, family, mode)
+                    if archs == ["gfx1201"] and mode != "dflash2":                         # Auto on gfx1201 is the MTP until PE-RDNA4's fix (drafting.AUTO_MTP)
+                        self.assertEqual((d.drafter, loaded(args)), ("mtp", {"mtp"}), where)
+                        continue
+                    if (backend, family) == ("metal", "qwen") and mode != "dflash2":       # IQ3_S on a Mac: the MTP until the owner says otherwise (drafting.SET_DEFAULTS)
+                        self.assertEqual((d.drafter, loaded(args)), ("mtp", {"mtp"}), where)
+                        continue
                     self.assertEqual(d.drafter, "dflash2", where)
                     self.assertEqual(loaded(args), {"dflash2"}, where)
                     self.assertEqual(flag(args, "--draft-fallback"), "none", where)
@@ -134,7 +140,7 @@ class EveryChoiceOnEveryBackend(Base):
 
     def test_a_layer_split_runs_dflash2_alone_like_one_card(self):
         """Owner 2026-11-02: Auto is DFlash2 on a layer split over several cards too (the 0.1.56 engine runs it; paired decode 1.014 against the MTP)."""
-        for backend, archs in (("cuda", ["sm_120"]), ("cuda", ["sm_86"]), ("hip", ["gfx1201"]), ("hip", ["gfx1100"])):
+        for backend, archs in (("cuda", ["sm_120"]), ("cuda", ["sm_86"]), ("hip", ["gfx1151"]), ("hip", ["gfx1100"])):      # (gfx1201: Auto is the MTP for now, drafting.AUTO_MTP; test_drafting_auto_mtp.py)
             for mode in (None, "auto", "dflash2"):
                 cfg = self.cfg(**({} if mode is None else {"drafting": mode}))
                 one, args_one = self.apply(dict(cfg, args=list(cfg["args"])), "qwen", backend, archs)
@@ -211,6 +217,10 @@ class TheServerAndTheTerminalEndAtTheSameArguments(Base):
         for backend, archs in HARDWARE:
             for mode, want in ((None, {"dflash2"}), ("auto", {"dflash2"}), ("dflash2", {"dflash2"}), ("mtp", {"mtp"}), ("off", set())):
                 args = self.server_args(self.cfg(**({} if mode is None else {"drafting": mode})), backend, archs)
+                if backend == "metal" and mode in (None, "auto"):          # NAMES["qwen"] is IQ3_S: the MTP on a Mac (drafting.SET_DEFAULTS)
+                    want = {"mtp"}
+                if archs == ["gfx1201"] and mode in (None, "auto"):        # Auto on gfx1201 is the MTP until PE-RDNA4's fix (drafting.AUTO_MTP)
+                    want = {"mtp"}
                 self.assertEqual(loaded(args), want, (backend, archs, mode))
                 if want == {"dflash2"}:
                     self.assertNotIn("--mtp", args)
@@ -218,7 +228,7 @@ class TheServerAndTheTerminalEndAtTheSameArguments(Base):
                     self.assertFalse([a for a in args if a.startswith("--draft")])
 
     def test_a_layer_split_through_the_server(self):
-        for backend, archs in (("cuda", ["sm_120"]), ("cuda", ["sm_86"]), ("hip", ["gfx1201"])):
+        for backend, archs in (("cuda", ["sm_120"]), ("cuda", ["sm_86"]), ("hip", ["gfx1100"])):
             for mode, want in ((None, {"dflash2"}), ("auto", {"dflash2"}), ("dflash2", {"dflash2"}), ("mtp", {"mtp"}), ("off", set())):
                 cfg = self.cfg(gpu=[0, 1], **({} if mode is None else {"drafting": mode}))
                 args = self.server_args(cfg, backend, archs)

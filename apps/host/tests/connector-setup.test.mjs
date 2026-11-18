@@ -22,10 +22,22 @@ test('corrupt or unverified downloads cannot become executable', () => {
   assert.throws(()=>verifyConnector(bytes,null),/could not be verified/);
 });
 
-test('failed concurrent setup shares one download, cleans up and can be retried', async () => {
+/** Waits until the fake download service has been asked; fails (instead of spinning for ever) when it never is. */
+async function untilAsked(isAsked){
+  const deadline=Date.now()+10000;
+  while(!isAsked()){
+    if(Date.now()>deadline)throw new Error('the installer never asked the download service (it found a connector, or stopped before the request)');
+    await new Promise(resolve=>setTimeout(resolve,5));
+  }
+}
+
+// The installer first looks for a connector that is already on the computer. The look is pinned to Strata's own empty folder
+// (search:false, an empty environment): a cloudflared installed on the machine that runs the test (PATH, /usr/local/bin, ~/.local/bin)
+// would otherwise be used, nothing would be downloaded, and the test would wait for ever for a request that never comes.
+test('failed concurrent setup shares one download, cleans up and can be retried', {timeout:30000}, async () => {
   const directory=await mkdtemp(join(tmpdir(),'strata-connector-test-'));
   let requests=0, release;
-  const installer=createConnectorInstaller({directory,platform:'linux',arch:'x64',fetchImpl:async()=>{
+  const installer=createConnectorInstaller({directory,platform:'linux',arch:'x64',env:{},home:directory,search:false,fetchImpl:async()=>{
     requests++;
     await new Promise(resolve=>{release=resolve;});
     return {ok:false};
@@ -33,7 +45,7 @@ test('failed concurrent setup shares one download, cleans up and can be retried'
   try {
     const first=installer.ensure(),second=installer.ensure();
     assert.equal(first,second);
-    while(!release)await new Promise(resolve=>setImmediate(resolve));
+    await untilAsked(()=>release);
     release();
     const results=await Promise.allSettled([first,second]);
     assert.ok(results.every(result=>result.status==='rejected'));
@@ -41,7 +53,7 @@ test('failed concurrent setup shares one download, cleans up and can be retried'
     assert.deepEqual(await readdir(directory),[]);
     release=null;
     const retry=installer.ensure();
-    while(!release)await new Promise(resolve=>setImmediate(resolve));
+    await untilAsked(()=>release);
     release();
     await assert.rejects(retry,/download service/);
     assert.equal(requests,2);

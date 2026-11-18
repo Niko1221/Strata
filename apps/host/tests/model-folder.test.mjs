@@ -66,7 +66,7 @@ test('choosing a folder that is gone or cannot be written says so in words', asy
   assert.throws(() => f.control.setDownloadDirectory(join(f.repo, 'setup.py')), /Choose a folder, not a file\./);
 });
 
-test('Windows: a drive picked as D:\\ becomes D:\\Strata, and the person is not asked for a different folder', { skip: process.platform !== 'win32' }, async t => {
+test('Windows: a drive picked as D:\\ becomes D:\\Strata, and the person is not asked for a different folder', { skip: process.platform !== 'win32' && 'drive-letter paths: Windows only' }, async t => {
   const dir = scratch(t);
   const letter = 'QRSTUVWXYZ'.split('').find(l => !existsSync(`${l}:\\`));
   assert.ok(letter, 'a free drive letter');
@@ -84,7 +84,7 @@ test('Windows: a drive picked as D:\\ becomes D:\\Strata, and the person is not 
 
 function readdirNames(dir) { return execFileSync('cmd', ['/c', 'dir', '/b', dir]).toString().split(/\r?\n/).filter(Boolean); }
 
-test('Windows: the model library on a whole drive goes to X:\\Strata\\Models', { skip: process.platform !== 'win32' }, t => {
+test('Windows: the model library on a whole drive goes to X:\\Strata\\Models', { skip: process.platform !== 'win32' && 'drive-letter paths: Windows only' }, t => {
   const dir = scratch(t), home = scratch(t);
   const letter = 'QRSTUVWXYZ'.split('').find(l => !existsSync(`${l}:\\`));
   execFileSync('subst', [`${letter}:`, dir]);

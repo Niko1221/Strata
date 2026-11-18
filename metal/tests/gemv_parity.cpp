@@ -1,7 +1,7 @@
 // metal/tests/gemv_parity.cpp - the dense GEMV (gemv.metal) per format: parity against double, and speed per tile
 // shape on the model's projection shapes.
 //
-//   gemv_parity                         parity: every format, 1..8 tokens, and gemv_wide.metal
+//   gemv_parity [--nin A,B,C]           parity: every format, n_in 2560/640/10240 (or --nin), 1..8 tokens, and gemv_wide.metal
 //   gemv_parity --bench [--pack Q2_0|IQ3_XXS] [--ntok N] [--all]   speed on the pack's shapes (best tile per shape)
 //   gemv_parity --one TYPE NIN NOUT [--ntok N]                      sweep one shape
 //   gemv_parity --sweep [--ntok N] [--only NAME] [-v]   every tile vs today's, bitwise and timed
@@ -98,6 +98,7 @@ int main(int argc, char** argv) {
     std::string only;
     int ntok = 1;
     std::string gguf_path;
+    std::vector<int> nins = {2560, 640, 10240};   // --nin A,B,C: the parity run's row lengths (the model's: hidden, expert width, value dim, ...)
     std::string pack = "Q2_0";
     std::vector<Shape> one;
     for (int i = 1; i < argc; ++i) {
@@ -108,6 +109,10 @@ int main(int argc, char** argv) {
         else if (a == "-v") verbose = true;
         else if (a == "--only") only = argv[++i];
         else if (a == "--ntok") ntok = std::atoi(argv[++i]), ntok_set = true;
+        else if (a == "--nin") {
+            nins.clear();
+            for (const char* q = argv[++i]; *q;) { nins.push_back(std::atoi(q)); while (*q && *q != ',') ++q; if (*q) ++q; }
+        }
         else if (a == "--pack") pack = argv[++i];
         else if (a == "--gguf") gguf_path = argv[++i];
         else if (a == "--one") {
@@ -296,7 +301,7 @@ int main(int argc, char** argv) {
         int fails = 0;
         for (int t : {ref::F32, ref::BF16, ref::Q8_0, ref::Q4_0, ref::Q5_0, ref::IQ4_NL, ref::IQ4_XS, ref::Q2_0, ref::IQ3_S,
                       ref::Q3_K, ref::Q4_K, ref::Q5_K, ref::Q6_K}) {
-            for (int n_in : {2560, 640, 10240}) {
+            for (int n_in : nins) {
                 if (n_in % ref::block_elems(t)) continue;
                 const int n_out = 100;   // not a multiple of the rows per threadgroup on purpose
                 const size_t rb = ref::row_bytes(t, n_in);

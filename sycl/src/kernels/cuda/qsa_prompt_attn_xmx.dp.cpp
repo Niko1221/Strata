@@ -30,7 +30,8 @@
 namespace strata::kernels {
 namespace {
 namespace jm = sycl::ext::oneapi::experimental::matrix;
-constexpr int HD = 256, G = 12, SG = 16, NSG = 8, THREADS = SG * NSG, QS = HD + 8;
+constexpr int HD = 256, G = strata::core::kCompiledGeometry.n_head / strata::core::kCompiledGeometry.n_head_kv, SG = 16, NSG = 8, THREADS = SG * NSG, QS = HD + 8;
+static_assert(G >= 1 && G <= 16, "qsa_prompt_attn_xmx: query heads per KV head must be 1..16 (one 16-row tile)");
 static_assert(HD == strata::core::kCompiledGeometry.head_dim && G == strata::core::kCompiledGeometry.n_head / strata::core::kCompiledGeometry.n_head_kv,
               "qsa_prompt_attn_xmx is compiled for core/geometry.hpp");
 constexpr int QK4_0 = 32;
