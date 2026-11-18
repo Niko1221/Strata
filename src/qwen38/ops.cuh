@@ -21,6 +21,14 @@ struct Buffer {
 void decode(int type,const void* input,float* output,int n,cudaStream_t stream);
 void preload_ops();
 void matvec(int type,const void* weights,const float* input,float* output,int n,int rows,cudaStream_t stream);
+struct alignas(8) BlockQ8_1 {
+    float d;
+    float s;
+    int32_t qs[8];
+};
+void quantize_q8_1(const float* input, BlockQ8_1* output, int n, cudaStream_t stream);
+void matvec_q8_1(int type, const void* weights, const BlockQ8_1* input_q8, const float* input_f32,
+                 float* output, int n, int rows, cudaStream_t stream);
 void rms(const float* x,const float* weight,float* out,int n,float eps,cudaStream_t s);
 void rms_batch(const float* x,const float* weight,float* out,int rows,int n,float eps,cudaStream_t s);
 void add(float* x,const float* y,int n,cudaStream_t s);

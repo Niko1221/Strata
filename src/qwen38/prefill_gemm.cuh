@@ -14,6 +14,7 @@ struct PrefillGemmStats {
     uint64_t fp8_fallback_shape = 0;
     uint64_t fp8_fallback_no_algo = 0;
     uint64_t matvec_fallback_calls = 0;
+    uint64_t fused_wmma_calls = 0;
 };
 
 /// Bounded double-buffered workspace for polymorphic dequantization + cuBLAS Tensor Core GEMM.
@@ -53,6 +54,10 @@ private:
     Impl* impl_ = nullptr;
     size_t total_bytes_ = 0;
 };
+
+/// Experimental packed-weight WMMA. x is FP16 [tokens,K], y is FP32 [tokens,N].
+void matmul_fused_wmma_fp16(const StrataQuantTensor& weight, const half* x_fp16, float* y_fp32,
+                           int n_tokens, cudaStream_t stream);
 
 /// Expose tiled FP16 dequantization for direct unit testing.
 void dequant_rows_fp16(const StrataQuantTensor& weight, int row_start, int tile_rows,

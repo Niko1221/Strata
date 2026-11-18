@@ -42,8 +42,8 @@ struct Weight {
     Q::StrataQuantTensor quant()const{return Q::make_quant_tensor(b.data,type,n,rows);}
 };
 struct Engine {
-    static constexpr int kPrefillChunk=64;
-    static constexpr size_t kPrefillTileBytes=16ull*1024*1024;
+    static constexpr int kPrefillChunk=512;
+    static constexpr size_t kPrefillTileBytes=64ull*1024*1024;
     std::unique_ptr<Q::Orthography> orthography;
     bool japanese=false;
     strata::GgufFile file;Q::Admission admission;int ctx;Stream stream;
@@ -57,7 +57,7 @@ struct Engine {
     std::unique_ptr<Q::KvCache> mtp_kv;
     Q::KvSelection kv_selection;
     std::map<int,Q::Buffer> signs;Q::Buffer rotated;
-    Q::Buffer x,h,y,qkv,z,al,be,hc,gdn,qg,k,v,q,gate,att,fg,fu,scores,logits,embrow,error;
+    Q::Buffer x,h,y,qkv,z,al,be,hc,gdn,qg,k,v,q,gate,att,fg,fu,scores,logits,embrow,error,xq8;
     Q::Buffer bx,bh,by,bqkv,bz,bal,bbe,bgdn,bqg,bk,bv,bq,bgate,batt,bfg,bfu,brot;
     Q::Buffer mtp_hidden,mtp_eh,mtp_logits;
     uint64_t cache_bytes=0,scratch_bytes=0;size_t emb_stride=0;const strata::TensorInfo* embedding=nullptr;
@@ -70,6 +70,7 @@ struct Engine {
     cudaGraphExec_t ffn_graphs[16]={};
     cudaGraphExec_t head_graph=nullptr;
     bool graphs_ready=false;
+    bool h_q8_valid=false;
     ~Engine(){
         for(int g=0;g<16;++g){if(gdn_graphs[g])cudaGraphExecDestroy(gdn_graphs[g]);if(ffn_graphs[g])cudaGraphExecDestroy(ffn_graphs[g]);}
         if(head_graph)cudaGraphExecDestroy(head_graph);
@@ -161,6 +162,7 @@ struct Engine {
             a(bq,size_t(kPrefillChunk)*6144);a(bgate,size_t(kPrefillChunk)*6144);
             a(batt,size_t(kPrefillChunk)*6144);a(bfg,size_t(kPrefillChunk)*17408);a(bfu,size_t(kPrefillChunk)*17408);
             a(brot,size_t(kPrefillChunk)*17408);
+            xq8.allocate((17408/32)*sizeof(Q::BlockQ8_1));
         }
         layers.resize(64);
         for(int i=0;i<64;++i){
@@ -231,9 +233,19 @@ struct Engine {
         std::fprintf(stderr,"native_execution=%s layer_fence_interval=%d prefill_gemm=%s mtp_present=%d mtp_ready=%d spec_draft_n_max=%d\n",conservative?"conservative":"grouped",conservative?1:8,conservative?"off":"cublas_tensor_op",mtp_present?1:0,mtp_ready?1:0,spec_draft_n_max);
     }
     const float* f(const std::string& name){return weights.at(name).b.as();}
+    void rms_h(const float* src,const std::string& wname){Q::rms(src,f(wname),h.as(),5120,admission.eps,stream.s);h_q8_valid=false;}
     void mm(const std::string& name,const Q::Buffer& in,Q::Buffer& out){const auto& w=weights.at(name);const float* input=in.as();
-        if(admission.folded.count(name)){Q::hadamard(input,signs.at(w.n).as(),rotated.as(),w.n,false,admission.grouped_gdn&&name.find(".ssm_out.")!=std::string::npos,stream.s);input=rotated.as();}
-        Q::matvec(w.type,w.b.data,input,out.as(),w.n,w.rows,stream.s);}
+        const bool folded=admission.folded.count(name)>0;
+        if(folded){Q::hadamard(input,signs.at(w.n).as(),rotated.as(),w.n,false,admission.grouped_gdn&&name.find(".ssm_out.")!=std::string::npos,stream.s);input=rotated.as();h_q8_valid=false;}
+        if(!conservative&&(w.type==12||w.type==13||w.type==14||w.type==21||w.type==22)){
+            if(folded||in.data!=h.data||!h_q8_valid){
+                Q::quantize_q8_1(input,xq8.as<Q::BlockQ8_1>(),w.n,stream.s);
+                if(!folded&&in.data==h.data)h_q8_valid=true;
+            }
+            Q::matvec_q8_1(w.type,w.b.data,xq8.as<Q::BlockQ8_1>(),input,out.as(),w.n,w.rows,stream.s);
+        }else{
+            Q::matvec(w.type,w.b.data,input,out.as(),w.n,w.rows,stream.s);
+        }}
     void mm_batch(const std::string& name,const Q::StrataQuantTensor& qt,const float* in,float* out,int n_tokens){
         const float* input=in;
         if(admission.folded.count(name)){
@@ -269,37 +281,37 @@ struct Engine {
         Q::rms(x.as(),f("blk.64.nextn.enorm.weight"),mtp_eh.as(),5120,admission.eps,stream.s);
         Q::rms(mtp_hidden.as(),f("blk.64.nextn.hnorm.weight"),mtp_eh.as()+5120,5120,admission.eps,stream.s);
         mm("blk.64.nextn.eh_proj.weight",mtp_eh,x);
-        Q::rms(x.as(),f("blk.64.attn_norm.weight"),h.as(),5120,admission.eps,stream.s);
+        rms_h(x.as(),"blk.64.attn_norm.weight");
         mm("blk.64.attn_q.weight",h,qg);mm("blk.64.attn_k.weight",h,k);mm("blk.64.attn_v.weight",h,v);
         Q::attention_normalize(qg.as(),k.as(),f("blk.64.attn_q_norm.weight"),f("blk.64.attn_k_norm.weight"),q.as(),gate.as(),k.as(),mtp_pos,admission.eps,admission.rope_base,stream.s);
         mtp_kv->enqueue(0,mtp_pos,q.as(),k.as(),v.as(),gate.as(),att.as(),scores.as());
         mm("blk.64.attn_output.weight",att,y);
         Q::add(x.as(),y.as(),5120,stream.s);
-        Q::rms(x.as(),f("blk.64.post_attention_norm.weight"),h.as(),5120,admission.eps,stream.s);
+        rms_h(x.as(),"blk.64.post_attention_norm.weight");
         mm("blk.64.ffn_gate.weight",h,fg);mm("blk.64.ffn_up.weight",h,fu);Q::swiglu(fg.as(),fu.as(),17408,stream.s);mm("blk.64.ffn_down.weight",fg,y);
         Q::add(x.as(),y.as(),5120,stream.s);
         Q::ck(cudaMemcpyAsync(mtp_hidden.data,x.data,5120*4,cudaMemcpyDeviceToDevice,stream.s));
-        Q::rms(x.as(),f("blk.64.nextn.shared_head_norm.weight"),h.as(),5120,admission.eps,stream.s);
+        rms_h(x.as(),"blk.64.nextn.shared_head_norm.weight");
         mm("output.weight",h,logits);
         auto lg=read_logits();
         return int(std::max_element(lg.begin(),lg.end())-lg.begin());
     }
     void emit_gdn_layer(int i){
         auto n=[i](const char* r){return Q::layer_name(i,r);};auto& st=states[i];
-        Q::rms(x.as(),f(n("attn_norm.weight")),h.as(),5120,admission.eps,stream.s);
+        rms_h(x.as(),n("attn_norm.weight"));
         mm(n("attn_qkv.weight"),h,qkv);mm(n("attn_gate.weight"),h,z);mm(n("ssm_alpha.weight"),h,al);mm(n("ssm_beta.weight"),h,be);
         Q::gdn_gates(al.as(),be.as(),f(n("ssm_dt.bias")),f(n("ssm_a")),48,stream.s);
         K::fused_gdn_conv_l2(st.conv.as(),qkv.as(),f(n("ssm_conv1d.weight")),hc.as(),10240,32,admission.eps,stream.s);
         K::fused_gdn_step_norm_silu(st.gdn.as(),hc.as(),hc.as()+2048,hc.as()+4096,al.as(),be.as(),z.as(),f(n("ssm_norm.weight")),admission.eps,gdn.as(),16,48,stream.s);
         Q::finite(st.gdn.as(),48*128*128,error.as<int>(),stream.s);mm(n("ssm_out.weight"),gdn,y);
-        Q::add(x.as(),y.as(),5120,stream.s);Q::rms(x.as(),f(n("post_attention_norm.weight")),h.as(),5120,admission.eps,stream.s);
+        Q::add(x.as(),y.as(),5120,stream.s);rms_h(x.as(),n("post_attention_norm.weight"));
         mm(n("ffn_gate.weight"),h,fg);mm(n("ffn_up.weight"),h,fu);Q::swiglu(fg.as(),fu.as(),17408,stream.s);mm(n("ffn_down.weight"),fg,y);
         Q::add(x.as(),y.as(),5120,stream.s);Q::finite(x.as(),5120,error.as<int>(),stream.s);
     }
     void emit_attn_post_ffn(int i){
         auto n=[i](const char* r){return Q::layer_name(i,r);};
         mm(n("attn_output.weight"),att,y);
-        Q::add(x.as(),y.as(),5120,stream.s);Q::rms(x.as(),f(n("post_attention_norm.weight")),h.as(),5120,admission.eps,stream.s);
+        Q::add(x.as(),y.as(),5120,stream.s);rms_h(x.as(),n("post_attention_norm.weight"));
         mm(n("ffn_gate.weight"),h,fg);mm(n("ffn_up.weight"),h,fu);Q::swiglu(fg.as(),fu.as(),17408,stream.s);mm(n("ffn_down.weight"),fg,y);
         Q::add(x.as(),y.as(),5120,stream.s);Q::finite(x.as(),5120,error.as<int>(),stream.s);
     }
@@ -319,7 +331,7 @@ struct Engine {
             gdn_graphs[g]=capture_graph([&]{emit_gdn_layer(4*g);emit_gdn_layer(4*g+1);emit_gdn_layer(4*g+2);});
             ffn_graphs[g]=capture_graph([&]{emit_attn_post_ffn(4*g+3);});
         }
-        head_graph=capture_graph([&]{Q::rms(x.as(),f("output_norm.weight"),h.as(),5120,admission.eps,stream.s);mm("output.weight",h,logits);Q::finite(logits.as(),248320,error.as<int>(),stream.s);});
+        head_graph=capture_graph([&]{rms_h(x.as(),"output_norm.weight");mm("output.weight",h,logits);Q::finite(logits.as(),248320,error.as<int>(),stream.s);});
         graphs_ready=true;
     }
     void step(int token,std::atomic<bool>& stop,bool head){
@@ -329,24 +341,39 @@ struct Engine {
         Q::ck(cudaMemcpyAsync(embrow.data,file.tensor_data(*embedding)+size_t(token)*emb_stride,emb_stride,cudaMemcpyHostToDevice,stream.s));
         Q::decode(embedding->type,embrow.data,x.as(),5120,stream.s);
         if(admission.inverse_embedding){Q::hadamard(x.as(),signs.at(5120).as(),rotated.as(),5120,true,false,stream.s);Q::ck(cudaMemcpyAsync(x.data,rotated.data,5120*4,cudaMemcpyDeviceToDevice,stream.s));}
+        const bool prof=(std::getenv("STRATA_Q38_PROFILE")!=nullptr);
+        double prof_fence_ms=0,prof_gdn_ms=0,prof_attn_mm_ms=0,prof_kv_ms=0,prof_ffn_ms=0,prof_head_ms=0;
+        auto mark=[&](double& acc){if(!prof)return;Q::ck(cudaStreamSynchronize(stream.s));};
         const Q::LayerFence fences(conservative?1:8);
         auto check=[&]{
+            auto t0=prof?Clock::now():Clock::time_point{};
             int bad=0;Q::ck(cudaMemcpyAsync(&bad,error.data,4,cudaMemcpyDeviceToHost,stream.s));
             kv->check();Q::require(!bad,"non-finite activation/state/logit");Q::host_resources();gpu_resources();
+            if(prof)prof_fence_ms+=std::chrono::duration<double,std::milli>(Clock::now()-t0).count();
         };
         if(!conservative&&graphs_ready){
             for(int g=0;g<16;++g){
                 fences.before(stop);
+                auto t0=prof?Clock::now():Clock::time_point{};
                 Q::ck(cudaGraphLaunch(gdn_graphs[g],stream.s));
+                if(prof){Q::ck(cudaStreamSynchronize(stream.s));prof_gdn_ms+=std::chrono::duration<double,std::milli>(Clock::now()-t0).count();t0=Clock::now();}
                 const int i=4*g+3;auto n=[i](const char* r){return Q::layer_name(i,r);};
-                Q::rms(x.as(),f(n("attn_norm.weight")),h.as(),5120,admission.eps,stream.s);
+                rms_h(x.as(),n("attn_norm.weight"));
                 mm(n("attn_q.weight"),h,qg);mm(n("attn_k.weight"),h,k);mm(n("attn_v.weight"),h,v);
                 Q::attention_normalize(qg.as(),k.as(),f(n("attn_q_norm.weight")),f(n("attn_k_norm.weight")),q.as(),gate.as(),k.as(),position,admission.eps,admission.rope_base,stream.s);
+                if(prof){Q::ck(cudaStreamSynchronize(stream.s));prof_attn_mm_ms+=std::chrono::duration<double,std::milli>(Clock::now()-t0).count();t0=Clock::now();}
                 kv->enqueue(i/4,position,q.as(),k.as(),v.as(),gate.as(),att.as(),scores.as());
+                if(prof){Q::ck(cudaStreamSynchronize(stream.s));prof_kv_ms+=std::chrono::duration<double,std::milli>(Clock::now()-t0).count();t0=Clock::now();}
                 Q::ck(cudaGraphLaunch(ffn_graphs[g],stream.s));
+                if(prof){Q::ck(cudaStreamSynchronize(stream.s));prof_ffn_ms+=std::chrono::duration<double,std::milli>(Clock::now()-t0).count();}
                 fences.after(i,stop,check);
             }
-            if(head)Q::ck(cudaGraphLaunch(head_graph,stream.s));
+            if(head){
+                auto t0=prof?Clock::now():Clock::time_point{};
+                Q::ck(cudaGraphLaunch(head_graph,stream.s));
+                if(prof){Q::ck(cudaStreamSynchronize(stream.s));prof_head_ms+=std::chrono::duration<double,std::milli>(Clock::now()-t0).count();}
+            }
+            (void)mark;
         }else{
             for(int i=0;i<64;++i){
                 fences.before(stop);
@@ -354,7 +381,7 @@ struct Engine {
                 if((i+1)%4){
                     emit_gdn_layer(i);
                 }else{
-                    Q::rms(x.as(),f(n("attn_norm.weight")),h.as(),5120,admission.eps,stream.s);
+                    rms_h(x.as(),n("attn_norm.weight"));
                     mm(n("attn_q.weight"),h,qg);mm(n("attn_k.weight"),h,k);mm(n("attn_v.weight"),h,v);
                     Q::attention_normalize(qg.as(),k.as(),f(n("attn_q_norm.weight")),f(n("attn_k_norm.weight")),q.as(),gate.as(),k.as(),position,admission.eps,admission.rope_base,stream.s);
                     kv->enqueue(i/4,position,q.as(),k.as(),v.as(),gate.as(),att.as(),scores.as());
@@ -363,9 +390,10 @@ struct Engine {
                 // Bounded synchronization makes STOP/resource checks effective during a long token.
                 fences.after(i,stop,check);
             }
-            if(head){Q::rms(x.as(),f("output_norm.weight"),h.as(),5120,admission.eps,stream.s);mm("output.weight",h,logits);Q::finite(logits.as(),248320,error.as<int>(),stream.s);}
+            if(head){rms_h(x.as(),"output_norm.weight");mm("output.weight",h,logits);Q::finite(logits.as(),248320,error.as<int>(),stream.s);}
         }
         int bad=0;Q::ck(cudaMemcpyAsync(&bad,error.data,4,cudaMemcpyDeviceToHost,stream.s));Q::ck(cudaStreamSynchronize(stream.s));
+        if(prof)std::fprintf(stderr,"PROF_STEP pos=%d gdn=%.2f attn_mm=%.2f kv=%.2f ffn=%.2f head=%.2f fence=%.2f\n",position,prof_gdn_ms,prof_attn_mm_ms,prof_kv_ms,prof_ffn_ms,prof_head_ms,prof_fence_ms);
         Q::require(!bad,"non-finite activation/state/logit");fences.before(stop);++position;
     }
     void prefill_chunk(const int32_t* tokens,int n_tokens,std::atomic<bool>& stop,bool head){
@@ -380,33 +408,45 @@ struct Engine {
                 Q::ck(cudaMemcpyAsync(bx.as()+size_t(t)*5120,rotated.data,5120*4,cudaMemcpyDeviceToDevice,stream.s));
             }
         }
+        const bool prof=(std::getenv("STRATA_Q38_PROFILE")!=nullptr);
+        double prof_fence=0,prof_gdn_mm=0,prof_gdn_core=0,prof_attn_mm=0,prof_attn_kv=0,prof_ffn_mm=0;
         const Q::LayerFence fences(8);
         auto check=[&]{
+            auto t0=prof?Clock::now():Clock::time_point{};
             int bad=0;Q::ck(cudaMemcpyAsync(&bad,error.data,4,cudaMemcpyDeviceToHost,stream.s));
             kv->check();Q::require(!bad,"non-finite activation/state/logit");Q::host_resources();gpu_resources();
+            if(prof)prof_fence+=std::chrono::duration<double,std::milli>(Clock::now()-t0).count();
         };
         for(int i=0;i<64;++i){
             fences.before(stop);
             const auto& L=layers[i];auto n=[i](const char* r){return Q::layer_name(i,r);};auto& st=states[i];
+            auto tp=prof?Clock::now():Clock::time_point{};
             Q::rms_batch(bx.as(),static_cast<const float*>(L.attn_norm.d_data),bh.as(),n_tokens,5120,admission.eps,stream.s);
             if(L.mixer_type==Q::SequenceMixerType::GATED_DELTANET_GROUPED){
                 mm_batch(n("attn_qkv.weight"),L.w_qkv,bh.as(),bqkv.as(),n_tokens);
                 mm_batch(n("attn_gate.weight"),L.w_out_gate,bh.as(),bz.as(),n_tokens);
                 mm_batch(n("ssm_alpha.weight"),L.w_ssm_alpha,bh.as(),bal.as(),n_tokens);
                 mm_batch(n("ssm_beta.weight"),L.w_ssm_beta,bh.as(),bbe.as(),n_tokens);
+                if(prof){Q::ck(cudaStreamSynchronize(stream.s));prof_gdn_mm+=std::chrono::duration<double,std::milli>(Clock::now()-tp).count();tp=Clock::now();}
                 Q::gdn_gates_batch(bal.as(),bbe.as(),static_cast<const float*>(L.w_ssm_dt_bias.d_data),static_cast<const float*>(L.w_ssm_a.d_data),n_tokens,48,stream.s);
                 K::fused_gdn_conv_l2_batch(st.conv.as(),bqkv.as(),static_cast<const float*>(L.w_ssm_conv1d.d_data),bqkv.as(),10240,32,admission.eps,n_tokens,stream.s);
                 K::fused_gdn_step_norm_silu_batch(st.gdn.as(),bqkv.as(),10240,bal.as(),bbe.as(),bz.as(),static_cast<const float*>(L.w_ssm_norm.d_data),admission.eps,bgdn.as(),16,48,n_tokens,stream.s);
                 Q::finite(st.gdn.as(),48*128*128,error.as<int>(),stream.s);
+                if(prof){Q::ck(cudaStreamSynchronize(stream.s));prof_gdn_core+=std::chrono::duration<double,std::milli>(Clock::now()-tp).count();tp=Clock::now();}
                 mm_batch(n("ssm_out.weight"),L.w_out_proj,bgdn.as(),by.as(),n_tokens);
+                if(prof){Q::ck(cudaStreamSynchronize(stream.s));prof_gdn_mm+=std::chrono::duration<double,std::milli>(Clock::now()-tp).count();}
             }else{
                 mm_batch(n("attn_q.weight"),L.w_q,bh.as(),bqg.as(),n_tokens);
                 mm_batch(n("attn_k.weight"),L.w_k,bh.as(),bk.as(),n_tokens);
                 mm_batch(n("attn_v.weight"),L.w_v,bh.as(),bv.as(),n_tokens);
                 Q::attention_normalize_batch(bqg.as(),bk.as(),static_cast<const float*>(L.w_q_norm.d_data),static_cast<const float*>(L.w_k_norm.d_data),bq.as(),bgate.as(),bk.as(),position,n_tokens,admission.eps,admission.rope_base,stream.s);
+                if(prof){Q::ck(cudaStreamSynchronize(stream.s));prof_attn_mm+=std::chrono::duration<double,std::milli>(Clock::now()-tp).count();tp=Clock::now();}
                 kv->enqueue_batch(i/4,position,n_tokens,bq.as(),bk.as(),bv.as(),bgate.as(),batt.as(),scores.as());
+                if(prof){Q::ck(cudaStreamSynchronize(stream.s));prof_attn_kv+=std::chrono::duration<double,std::milli>(Clock::now()-tp).count();tp=Clock::now();}
                 mm_batch(n("attn_output.weight"),L.w_out_proj,batt.as(),by.as(),n_tokens);
+                if(prof){Q::ck(cudaStreamSynchronize(stream.s));prof_attn_mm+=std::chrono::duration<double,std::milli>(Clock::now()-tp).count();}
             }
+            if(prof)tp=Clock::now();
             Q::add(bx.as(),by.as(),n_tokens*5120,stream.s);
             Q::rms_batch(bx.as(),static_cast<const float*>(L.post_attn_norm.d_data),bh.as(),n_tokens,5120,admission.eps,stream.s);
             mm_batch(n("ffn_gate.weight"),L.w_ffn_gate,bh.as(),bfg.as(),n_tokens);
@@ -415,14 +455,16 @@ struct Engine {
             mm_batch(n("ffn_down.weight"),L.w_ffn_down,bfg.as(),by.as(),n_tokens);
             Q::add(bx.as(),by.as(),n_tokens*5120,stream.s);
             Q::finite(bx.as(),size_t(n_tokens)*5120,error.as<int>(),stream.s);
+            if(prof){Q::ck(cudaStreamSynchronize(stream.s));prof_ffn_mm+=std::chrono::duration<double,std::milli>(Clock::now()-tp).count();}
             fences.after(i,stop,check);
         }
         if(head){
-            Q::rms(bx.as()+size_t(n_tokens-1)*5120,f("output_norm.weight"),h.as(),5120,admission.eps,stream.s);
+            rms_h(bx.as()+size_t(n_tokens-1)*5120,"output_norm.weight");
             mm("output.weight",h,logits);
             Q::finite(logits.as(),248320,error.as<int>(),stream.s);
         }
         int bad=0;Q::ck(cudaMemcpyAsync(&bad,error.data,4,cudaMemcpyDeviceToHost,stream.s));Q::ck(cudaStreamSynchronize(stream.s));
+        if(prof)std::fprintf(stderr,"PROF_PREFILL n=%d gdn_mm=%.2f gdn_core=%.2f attn_mm=%.2f attn_kv=%.2f ffn=%.2f fence=%.2f\n",n_tokens,prof_gdn_mm,prof_gdn_core,prof_attn_mm,prof_attn_kv,prof_ffn_mm,prof_fence);
         Q::require(!bad,"non-finite activation/state/logit");fences.before(stop);position+=n_tokens;
     }
     void prefill_chunk_all_logits(const int32_t* tokens,int n_tokens,std::atomic<bool>& stop){
@@ -565,6 +607,7 @@ static void run(Engine& e,const std::vector<int32_t>& prompt,int count,Sampling 
     reset_ms=std::chrono::duration<double,std::milli>(end-gen_end).count();
     double pp=std::chrono::duration<double,std::milli>(prefill-start).count(),tg=std::chrono::duration<double,std::milli>(gen_end-prefill).count(),e2e_ms=std::chrono::duration<double,std::milli>(end-start).count();
     const auto gs=e.prefill_ws.stats();
+    std::fprintf(stderr,"PREFILL_CANDIDATE fused_wmma_calls=%llu\n",(unsigned long long)gs.fused_wmma_calls);
     auto publish=[&](bool cancelled){if(cancelled)finish="cancel";
         if(protocol){
             std::printf("TIMING prefill_forward_ms=%.3f decode_forward_ms=%.3f decode_steps=%d sampling_ms=%.3f reset_ms=%.3f e2e_ms=%.3f\n",pp,decode_forward_ms,decode_steps,sampling_ms,reset_ms,e2e_ms);

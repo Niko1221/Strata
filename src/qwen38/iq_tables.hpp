@@ -3,7 +3,7 @@
 #pragma once
 #include <cstdint>
 #if defined(__CUDACC__) && !defined(Q38_IQ_HOST_TABLE)
-#define Q38_IQ_TABLE __device__ __constant__
+#define Q38_IQ_TABLE __device__ const
 #else
 #define Q38_IQ_TABLE static constexpr
 #endif

@@ -1,6 +1,7 @@
 // Polymorphic dequantization + cuBLAS Tensor Core prefill for strata-q38.
 #include "prefill_gemm.cuh"
 #include "spin8_triality.cuh"
+#include "prefill_wmma.cuh"
 #include "ops.cuh"
 #include "iq_tables.hpp"
 #include "iq_decode.hpp"
@@ -88,10 +89,33 @@ __global__ void __launch_bounds__(256)
 dequant_tile_kernel(const uint8_t* __restrict__ src, half* __restrict__ dst,
                     int tile_rows, int K, size_t row_stride) {
     const int row = blockIdx.y;
-    const int col = blockIdx.x * blockDim.x + threadIdx.x;
-    if (row >= tile_rows || col >= K) return;
+    const int col = blockIdx.x * 256 + threadIdx.x;
+    if (row >= tile_rows) return;
     const uint8_t* row_ptr = src + static_cast<size_t>(row) * row_stride;
-    dst[static_cast<size_t>(row) * K + col] = __float2half(dequant_elem(TYPE, row_ptr, col));
+    if constexpr (TYPE == 12 || TYPE == 13 || TYPE == 14 || TYPE == 21 || TYPE == 22) {
+        constexpr int kBlkBytes = (TYPE == 12) ? 144 : (TYPE == 13) ? 176 : (TYPE == 14) ? 210 : (TYPE == 21) ? 110 : 82;
+        constexpr int kU16 = kBlkBytes / 2;
+        __shared__ uint16_t sb[kU16];
+        const uint16_t* s16 = reinterpret_cast<const uint16_t*>(row_ptr + static_cast<size_t>(blockIdx.x) * kBlkBytes);
+        if (threadIdx.x < kU16) {
+            sb[threadIdx.x] = __ldg(s16 + threadIdx.x);
+        }
+        __syncthreads();
+        if (col < K) {
+            const uint8_t* p = reinterpret_cast<const uint8_t*>(sb);
+            float val = 0.0f;
+            if constexpr (TYPE == 21 || TYPE == 22) {
+                val = iq_value(TYPE, p, threadIdx.x, load_fp16_le(p), q38_iq2s_grid, q38_iq3s_grid);
+            } else {
+                val = dequant_elem(TYPE, p, threadIdx.x);
+            }
+            dst[static_cast<size_t>(row) * K + col] = __float2half(val);
+        }
+    } else {
+        if (col < K) {
+            dst[static_cast<size_t>(row) * K + col] = __float2half(dequant_elem(TYPE, row_ptr, col));
+        }
+    }
 }
 
 __global__ void __launch_bounds__(256)
@@ -122,6 +146,42 @@ void launch_dequant_tile(int type, const uint8_t* src, half* dst, int tile_rows,
 }
 
 } // namespace
+
+template<int TYPE> struct Q38WmmaDecoder {
+    __device__ __forceinline__ float operator()(const uint8_t* row,int k) const {
+        return dequant_elem(TYPE,row,k);
+    }
+};
+template<int TYPE>
+static void launch_fused_wmma_type(const StrataQuantTensor& weight,const half* x,float* y,int T,cudaStream_t stream) {
+    const dim3 grid(wmma_layout::tiles(weight.ne1,wmma_layout::rows),wmma_layout::tiles(T,wmma_layout::tokens));
+    detail::packed_wmma_kernel<<<grid,wmma_layout::threads,0,stream>>>(
+        static_cast<const uint8_t*>(weight.d_data),x,y,weight.ne0,weight.ne1,T,weight.row_bytes,Q38WmmaDecoder<TYPE>{});
+}
+void matmul_fused_wmma_fp16(const StrataQuantTensor& weight,const half* x,float* y,int n_tokens,cudaStream_t stream) {
+    if(!weight.d_data||!x||!y||weight.ne0<=0||weight.ne1<=0||n_tokens<=0||n_tokens>65535*32)
+        throw std::runtime_error("invalid fused WMMA operands or grid size");
+    const auto type=weight.type;
+    const int block=StrataQuantTensor::block_elements(type);
+    if(block<=0||weight.ne0%block)throw std::runtime_error("invalid fused WMMA packed width");
+    const size_t minimum_row=size_t(weight.ne0/block)*StrataQuantTensor::block_bytes(type);
+    if(weight.row_bytes<minimum_row)throw std::runtime_error("invalid fused WMMA row stride");
+    switch(static_cast<int>(type)) {
+        case 0: launch_fused_wmma_type<0>(weight,x,y,n_tokens,stream); break;
+        case 1: launch_fused_wmma_type<1>(weight,x,y,n_tokens,stream); break;
+        case 8: launch_fused_wmma_type<8>(weight,x,y,n_tokens,stream); break;
+        case 12: launch_fused_wmma_type<12>(weight,x,y,n_tokens,stream); break;
+        case 13: launch_fused_wmma_type<13>(weight,x,y,n_tokens,stream); break;
+        case 14: launch_fused_wmma_type<14>(weight,x,y,n_tokens,stream); break;
+        case 21: launch_fused_wmma_type<21>(weight,x,y,n_tokens,stream); break;
+        case 22: launch_fused_wmma_type<22>(weight,x,y,n_tokens,stream); break;
+        case 23: launch_fused_wmma_type<23>(weight,x,y,n_tokens,stream); break;
+        case 30: launch_fused_wmma_type<30>(weight,x,y,n_tokens,stream); break;
+        case 142: launch_fused_wmma_type<142>(weight,x,y,n_tokens,stream); break;
+        default: throw std::runtime_error("unsupported fused WMMA GGUF type");
+    }
+    ck(cudaGetLastError());
+}
 
 struct LtPlanEntry {
     int tile_rows = 0;
@@ -301,6 +361,14 @@ void PrefillGemmWorkspace::matmul_batch(const StrataQuantTensor& weight, const f
     }
     f32_to_fp16_kernel<<<static_cast<unsigned>((x_elems + 255) / 256), 256, 0, stream>>>(x_fp32, impl_->act_fp16, x_elems);
     ck(cudaGetLastError());
+
+#if defined(STRATA_Q38_FUSED_WMMA) && STRATA_Q38_FUSED_WMMA
+    if (wmma_layout::eligible(K,N,n_tokens,impl_->use_fp8)) {
+        matmul_fused_wmma_fp16(weight,impl_->act_fp16,y_fp32,n_tokens,stream);
+        ++impl_->stats.fused_wmma_calls;
+        return;
+    }
+#endif
 
     const bool fp8_eligible = impl_->use_fp8 && n_tokens >= 16 && (n_tokens % 16 == 0) && (K % 16 == 0);
     if (fp8_eligible) {

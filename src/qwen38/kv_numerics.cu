@@ -59,6 +59,70 @@ static void sequence(const Q::KvConfig& c,cudaStream_t s){
     Q::reset_session(states,cache,error,position,s);put(v,saved);cache.step(0,0,q.as(),k.as(),v.as(),gate.as(),output.as(),scores.as());
     std::printf("PASS KV mode=%s view=%s positions=257 boundaries=10 exact_packed_bytes=all max_attention=%g atol=3e-5 rtol=4e-5 reset/error/reuse=pass\n",c.name(),c.view_name(),worst);
 }
+static void spin8_batch_and_split(const Q::KvConfig& c,cudaStream_t s){
+    reserve();constexpr int ctx=600;Q::KvCache cache(c,ctx,2,s);
+    std::vector<std::vector<double>> keys,values;double worst=0;int pos0=0;
+    for(int n_tok:{1,2,3,4,5,63,64,65,127}){
+        Q::Buffer qb(size_t(n_tok)*6144*4),kb(size_t(n_tok)*1024*4),vb(size_t(n_tok)*1024*4),gb(size_t(n_tok)*6144*4),ob(size_t(n_tok)*6144*4),scores(24*ctx*4);
+        std::vector<float> hq(size_t(n_tok)*6144),hk(size_t(n_tok)*1024),hv(size_t(n_tok)*1024),hg(size_t(n_tok)*6144);
+        for(int t=0;t<n_tok;++t){
+            const int pos=pos0+t;
+            for(int i=0;i<6144;++i){hq[size_t(t)*6144+i]=float(std::sin(i*.037+pos*.29)*.8);hg[size_t(t)*6144+i]=float(std::cos(i*.13-pos*.17)*3);}
+            for(int i=0;i<1024;++i){hk[size_t(t)*1024+i]=float(std::cos(i*.093+pos*.17)*.7);hv[size_t(t)*1024+i]=float(std::sin(i*.071-pos*.31)*1.3);}
+        }
+        put(qb,hq);put(kb,hk);put(vb,hv);put(gb,hg);
+        cache.enqueue_batch(0,pos0,n_tok,qb.as(),kb.as(),vb.as(),gb.as(),ob.as(),scores.as());
+        cache.check();
+        auto got_all=get<float>(ob);
+        for(int t=0;t<n_tok;++t){
+            std::vector<float> tk(hk.begin()+size_t(t)*1024,hk.begin()+size_t(t+1)*1024);
+            std::vector<float> tv(hv.begin()+size_t(t)*1024,hv.begin()+size_t(t+1)*1024);
+            auto sk=R::spin_f32(tk,c),sv=R::spin_f32(tv,c);
+            auto kp=R::pack(sk,c,true),vp=R::pack(sv,c,false);
+            byte_compare(cache.layer(0).key,kp,pos0+t,ctx,c.key_row_bytes());
+            byte_compare(cache.layer(0).value,vp,pos0+t,ctx,c.value_row_bytes());
+            keys.push_back(R::unpack(kp,c,true));values.push_back(R::unpack(vp,c,false));
+            if(n_tok<=5 || t<4 || t>=n_tok-2){
+                std::vector<float> tq(hq.begin()+size_t(t)*6144,hq.begin()+size_t(t+1)*6144);
+                std::vector<float> tg(hg.begin()+size_t(t)*6144,hg.begin()+size_t(t+1)*6144);
+                std::vector<float> got(got_all.begin()+size_t(t)*6144,got_all.begin()+size_t(t+1)*6144);
+                worst=std::max(worst,compare(got,R::attention(R::spin_f32(tq,c),tg,keys,values,c),3e-5,4e-5));
+            }
+        }
+        pos0+=n_tok;
+    }
+    // Exercise Split-KV decode (pos0 == 334 >= 128, ctx == 600 -> n_splits == 2)
+    {
+        Q::Buffer q(6144*4),k(1024*4),v(1024*4),gate(6144*4),out(6144*4),scores(24*ctx*4);
+        std::vector<float> hq(6144),hk(1024),hv(1024),hg(6144);
+        for(int i=0;i<6144;++i){hq[i]=float(std::sin(i*.037+pos0*.29)*.8);hg[i]=float(std::cos(i*.13-pos0*.17)*3);}
+        for(int i=0;i<1024;++i){hk[i]=float(std::cos(i*.093+pos0*.17)*.7);hv[i]=float(std::sin(i*.071-pos0*.31)*1.3);}
+        put(q,hq);put(k,hk);put(v,hv);put(gate,hg);
+        cache.step(0,pos0,q.as(),k.as(),v.as(),gate.as(),out.as(),scores.as());
+        auto kp=R::pack(R::spin_f32(hk,c),c,true),vp=R::pack(R::spin_f32(hv,c),c,false);
+        byte_compare(cache.layer(0).key,kp,pos0,ctx,c.key_row_bytes());
+        byte_compare(cache.layer(0).value,vp,pos0,ctx,c.value_row_bytes());
+        keys.push_back(R::unpack(kp,c,true));values.push_back(R::unpack(vp,c,false));
+        worst=std::max(worst,compare(get<float>(out),R::attention(R::spin_f32(hq,c),hg,keys,values,c),3e-5,4e-5));
+    }
+    // Verify NaN rejection in batch path (q, k, v, gate) and reset reuse.
+    for(int bad_kind=0;bad_kind<4;++bad_kind){
+        cache.reset();
+        Q::Buffer qb(3*6144*4),kb(3*1024*4),vb(3*1024*4),gb(3*6144*4),ob(3*6144*4),scores(24*ctx*4);
+        std::vector<float> hq(3*6144,0.1f),hk(3*1024,0.1f),hv(3*1024,0.1f),hg(3*6144,0.1f);
+        if(bad_kind==0)hq[6144+7]=NAN; else if(bad_kind==1)hk[1024+7]=NAN; else if(bad_kind==2)hv[1024+7]=NAN; else hg[6144+7]=NAN;
+        put(qb,hq);put(kb,hk);put(vb,hv);put(gb,hg);
+        cache.enqueue_batch(0,0,3,qb.as(),kb.as(),vb.as(),gb.as(),ob.as(),scores.as());
+        rejects([&]{cache.check();});
+    }
+    cache.reset();
+    Q::Buffer qb(3*6144*4),kb(3*1024*4),vb(3*1024*4),gb(3*6144*4),ob(3*6144*4),scores(24*ctx*4);
+    std::vector<float> hq(3*6144,0.1f),hk(3*1024,0.1f),hv(3*1024,0.1f),hg(3*6144,0.1f);
+    put(qb,hq);put(kb,hk);put(vb,hv);put(gb,hg);
+    cache.enqueue_batch(0,0,3,qb.as(),kb.as(),vb.as(),gb.as(),ob.as(),scores.as());
+    cache.check();
+    std::printf("PASS Spin8 batch(1,2,3,4,5,63,64,65,127)+split_decode view=%s max_attention=%g reset/nan=pass\n",c.view_name(),worst);
+}
 static void allocations(const Q::KvConfig& c,cudaStream_t s){
     reserve();size_t previous_scratch=0;for(int capacity:{513,4096}){
         size_t before,total,after;Q::ck(cudaMemGetInfo(&before,&total));Q::KvCache cache(c,capacity,16,s);Q::ck(cudaMemGetInfo(&after,&total));
@@ -85,7 +149,7 @@ int main(){try{Q::host_resources();Q::ck(cudaSetDevice(0));Stream stream;
     normalization(stream.s);
     for(const char* name:{"f16","k8v4","spin8_k8v4","f16_turbo2","f16_turbo3","f16_turbo4"}){
         for(const char* view:{"vector","plus","minus"}){bool spin=std::string(name)=="spin8_k8v4";if(!spin&&std::string(view)!="vector")continue;
-            auto c=Q::KvConfig::admit(name,spin?view:"");if(spin)spin_identity(c,stream.s);sequence(c,stream.s);if(std::string(view)=="vector")allocations(c,stream.s);
+            auto c=Q::KvConfig::admit(name,spin?view:"");if(spin){spin_identity(c,stream.s);spin8_batch_and_split(c,stream.s);}sequence(c,stream.s);if(std::string(view)=="vector")allocations(c,stream.s);
         }
     }std::puts("PASS owned packed KV production CUDA suite");return 0;
 }catch(const std::exception& e){std::fprintf(stderr,"FAIL %s\n",e.what());return 1;}}
