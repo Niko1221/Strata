@@ -11,6 +11,8 @@
 // A switch the user set (to anything) is never overridden; STRATA_GFX1151_DEFAULTS=0 turns the whole table off.
 #pragma once
 
+#include "strata/kernels/gfx_arch.hpp"
+
 #include <string>
 #include <utility>
 #include <vector>
@@ -54,6 +56,41 @@ bool igpu_prompt_set_enabled(const char* gcn_arch, bool windows);
 /// registers the arena as before; STRATA_ARENA_PIN_GIB=none selects UMA mode per run.
 inline constexpr bool kIgpuUmaArenaDefaultOn = false;
 bool igpu_uma_arena_default(const char* gcn_arch, bool integrated, bool windows, bool on = kIgpuUmaArenaDefaultOn);
+
+/// the registered expert arena asks for no transparent huge pages on an integrated gfx11 GPU under Linux (gfx1103 Radeon
+/// 780M, gfx1150 880M / 890M, gfx1151 Strix Halo; detected from the device: `integrated` and the arch name).  MADV_HUGEPAGE on a registered
+/// range adds direct compaction and khugepaged collapse in it; each move invalidates the range, KFD evicts the process's queues, and the
+/// gc 11 MES firmware resets the GPU when a dispatch sits in a barrier (notes-minipc.md).  Radeon 780M, Q2_0 pack, registered 31.6 GiB arena,
+/// one engine at a time: huge pages requested 9 starts, 8 ended in "unspecified launch failure" in the first prompt; not requested 3 of 3 ran.
+/// Setup already wrote STRATA_NO_ARENA_THP=1 for its 780M opt-in; this makes it the engine's own rule.
+/// STRATA_NO_ARENA_THP=0 asks for them (unset = this rule; =1 = never, as before).  Windows and discrete cards: unchanged.
+bool igpu_arena_no_thp_default(const char* gcn_arch, bool integrated, bool windows);
+/// the wait before READY (strata/core/kfd_settle.hpp) applies to the same class: an integrated gfx11 GPU under Linux (gfx1103,
+/// gfx1150, gfx1151), where the registered expert arena is a KFD userptr and the kernel's page moves right after the load evict the
+/// process's queues.  Never Windows, never a discrete card.  STRATA_NO_KFD_SETTLE=1 turns the wait off.
+bool igpu_kfd_settle_default(const char* gcn_arch, bool integrated, bool windows);
+/// the file-cache give-back during and after the expert load (strata/core/page_cache_drop.hpp) applies to the same class: an integrated
+/// gfx11 GPU under Linux (gfx1103, gfx1150, gfx1151).  Never Windows, never a discrete card.  STRATA_NO_ARENA_CACHE_DROP=1 turns it off.
+bool igpu_cache_drop_default(const char* gcn_arch, bool integrated, bool windows);
+/// the prompt experts on Strata's own fused int8 kernels (STRATA_PF_FUSED=1) instead of llama.cpp's MMQ, for the same class: an integrated gfx11 GPU
+/// under Linux (gfx1103, gfx1150, gfx1151).  Never Windows (gfx1151 there has it in igpu_default_env), never a discrete card.  apply_arch_defaults sets
+/// STRATA_PF_FUSED=1 where the user has not set the variable; STRATA_PF_FUSED=0 is the way back to MMQ.
+bool igpu_fused_prompt_default(const char* gcn_arch, bool integrated, bool windows);
+/// The 16-bit prompt GEMMs FP16 in and out (STRATA_HIP_PROMPT_F16, gemm.cu prompt_f16()): `env` is the variable's text (nullptr = unset).  "1" = on, any other set
+/// value = off (as before); unset = the device rule: on for a Radeon 780M (gfx1103, integrated, Linux), off everywhere else (every other gfx11, gfx12, gfx103x,
+/// Windows and discrete cards are unchanged).  Inline: src/prefill/gemm.cu uses it without linking arch_defaults.cpp.
+inline bool prompt_f16_resolve(const char* env, const char* gcn_arch, bool integrated, bool windows) {
+    if (env != nullptr) return env[0] == '1';
+    return integrated && !windows && strata::kernels::gfx_arch_is(gcn_arch, "gfx1103");
+}
+/// Whether the expert arena skips its MADV_HUGEPAGE request: `no_arena_thp` is STRATA_NO_ARENA_THP (nullptr when unset): "0" asks for the huge
+/// pages, any other value skips the request; unset leaves it to `igpu_rule` (igpu_arena_no_thp_default for this device).  `thp_always`: the
+/// kernel's THP mode is "always" (the request would add nothing, #771).  Inline: src/core/pinned.cu (strata_core) uses it without
+/// linking arch_defaults.cpp.
+inline bool arena_skip_thp_request(const char* no_arena_thp, bool thp_always, bool igpu_rule) {
+    if (no_arena_thp != nullptr) return no_arena_thp[0] != '0' || thp_always;   // the user's own value: 0 = ask for them, else skip
+    return thp_always || igpu_rule;
+}
 
 /// The matrix-core prompt set an integrated GPU takes when `igpu_prompt_set_enabled()`: STRATA_HIP_WMMA, STRATA_PF_GEMM, STRATA_PA_FAST,
 /// STRATA_SELECT_WMMA, STRATA_HC_UPMIX, all "1".  Empty unless `integrated` (hipDeviceProp_t::integrated: the device
@@ -103,7 +140,8 @@ std::vector<std::pair<std::string, std::string>> launch_default_env(const char* 
 /// Sets `arch_default_env(gcn_arch)` and, when `integrated`, `igpu_default_env(gcn_arch, true)` in this process's
 /// environment where the user has not set the variable, prints one line to stderr per table when it set anything, and
 /// returns the names it set.  `integrated` is true when every visible GPU is an integrated one.  Call once, before any
-/// engine code reads its switches (they are read lazily, at first use).
-std::vector<std::string> apply_arch_defaults(const char* gcn_arch, bool integrated = false, int batch_slots = 0);
+/// engine code reads its switches (they are read lazily, at first use).  `mmq_built`: llama.cpp's MMQ prompt kernels are in the build (the caller knows:
+/// STRATA_PREFILL_MMQ is defined on strata_prefill only); the gfx12 K-quant line names them only then.
+std::vector<std::string> apply_arch_defaults(const char* gcn_arch, bool integrated = false, int batch_slots = 0, bool mmq_built = true);
 
 }  // namespace strata::core

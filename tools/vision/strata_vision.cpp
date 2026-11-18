@@ -8,7 +8,7 @@
 //                 [--max-tokens N] [--min-tokens N] [--flash-attn on|off|auto]
 // Flash attention defaults to auto, and to off on the CPU when ggml is built with AVX-512 (see main).
 //
-// Resident: prints "READY <n_embd>", then per stdin line
+// Resident: prints "READY <n_embd> <reader>" (reader: own or mtmd; older builds print two words), then per stdin line
 //   ENC <image path> <output path>   ->  "OK <n_tokens> <nx> <ny> <ms>"  or  "ERR <message>"
 //   QUIT
 // The output file is  int32 {0x31455653 'SVE1', n_tokens, nx, ny, n_embd}  then float32 [n_tokens][n_embd],
@@ -21,6 +21,7 @@
 #include "llama.h"
 #include "mtmd.h"
 #include "mtmd-helper.h"
+#include "own_reader.h"
 
 #include <algorithm>
 #if !defined(_WIN32)
@@ -90,6 +91,13 @@ int main(int argc, char** argv) {
     int threads = 0, max_tokens = 0, min_tokens = 0;
     llama_flash_attn_type fa = LLAMA_FLASH_ATTN_TYPE_AUTO;
     bool fa_given = false;
+    // --tower mtmd|own|auto: whose picture reader runs (own-stack phase 3).  The default is auto (owner 11-11: our tower the default, mtmd selectable): ours
+    // where it was measured no slower and correct, mtmd's by itself where it was measured slower (own_reader_supported).  Without --tower the environment's
+    // STRATA_VISION_TOWER decides (the model's run config carries STRATA_VISION_TOWER=mtmd when someone picks llama.cpp's reader in the settings; an older
+    // strata-vision ignores it).  An explicit --tower wins.
+    std::string tower_note;
+    std::string tower = strata_vit::vision_tower_default(std::getenv("STRATA_VISION_TOWER"), tower_note);
+    if (!tower_note.empty()) std::fprintf(stderr, "strata-vision: %s\n", tower_note.c_str());
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         auto next = [&]() -> std::string {
@@ -99,6 +107,10 @@ int main(int argc, char** argv) {
         if (a == "--mmproj") mmproj = next();
         else if (a == "--model") model = next();
         else if (a == "--gpu") gpu = true;
+        else if (a == "--tower") {
+            tower = next();
+            if (tower != "mtmd" && tower != "own" && tower != "auto") { std::fprintf(stderr, "--tower takes mtmd, own or auto\n"); return 2; }
+        }
         else if (a == "--version") {
 #ifdef STRATA_VISION_HIP
             std::printf("strata-vision hip (GPU architectures: %s)\n", STRATA_VISION_HIP_ARCHS);
@@ -122,7 +134,15 @@ int main(int argc, char** argv) {
         }
         else { std::fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
     }
-    if (mmproj.empty() || model.empty()) {
+    // auto: our tower where it can read this file on this backend, else mtmd; when ours then fails before READY, mtmd's reader starts in its place
+    bool own_may_fall_back = false, own_fell_back = false;
+    if (tower == "auto") {
+        std::string why;
+        tower = strata_vit::vision_tower_resolve(tower, !mmproj.empty() && strata_vit::own_reader_supported(mmproj, gpu, max_tokens, why));
+        own_may_fall_back = tower == "own" && !model.empty();   // mtmd needs the text model's header
+        if (tower == "mtmd" && !why.empty()) std::fprintf(stderr, "strata-vision: llama.cpp's reader (%s)\n", why.c_str());
+    }
+    if (mmproj.empty() || (model.empty() && tower != "own")) {   // our tower needs no text model: it never tokenizes
         std::fprintf(stderr, "usage: strata-vision --mmproj <mmproj.gguf> --model <model.gguf> [--gpu] [--threads N] "
                              "[--max-tokens N] [--min-tokens N] [--flash-attn on|off|auto]\n");
         return 2;
@@ -137,6 +157,22 @@ int main(int argc, char** argv) {
         setenv("CUDA_VISIBLE_DEVICES", "-1", 1);
         setenv("HIP_VISIBLE_DEVICES", "-1", 1);
 #endif
+    }
+    if (tower == "own") {
+        strata_vit::OwnReaderOptions o;
+        o.mmproj = mmproj;
+        o.gpu = gpu;
+        o.threads = threads;
+        o.max_tokens = max_tokens;
+        o.min_tokens = min_tokens;
+        std::string start_error;
+        if (own_may_fall_back) o.start_error = &start_error;
+        const int rc = strata_vit::own_reader_run(o);
+        if (rc != strata_vit::kOwnStartFailed) return rc;
+        // nothing was written to stdout yet: the server still waits for READY, which mtmd's reader below gives (with "mtmd" as its third word)
+        std::fprintf(stderr, "strata-vision: Strata's picture reader did not start (%s); reading pictures with llama.cpp's reader\n", start_error.c_str());
+        std::fflush(stderr);
+        own_fell_back = true;
     }
     llama_log_set(quiet_log, nullptr);
     mtmd_helper_log_set(quiet_log, nullptr);
@@ -280,7 +316,8 @@ int main(int argc, char** argv) {
         mtmd_input_chunks_free(chunks);
         if (bm) mtmd_bitmap_free(bm);
     }
-    std::printf("READY %d\n", n_embd);
+    // the third word names the reader; a fourth, "fallback", says our tower failed before READY (a server reads only the start: "READY")
+    std::printf("READY %d mtmd%s\n", n_embd, own_fell_back ? " fallback" : "");
     std::fflush(stdout);
 
     std::string line;

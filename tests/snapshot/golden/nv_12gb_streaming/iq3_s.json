@@ -98,7 +98,9 @@
      "32768",
      "--vision"
     ],
-    "env_set": {},
+    "env_set": {
+     "GGML_NO_BACKTRACE": "1"
+    },
     "notes": []
    },
    "setup_says": [
@@ -122,8 +124,6 @@
     "cpu",
     "--experimental-speed-projection",
     "off",
-    "--drafter",
-    "dflash2",
     "--data-dir",
     "<ROOT>/data"
    ],
@@ -195,7 +195,9 @@
      "--kv-resident",
      "32768"
     ],
-    "env_set": {},
+    "env_set": {
+     "GGML_NO_BACKTRACE": "1"
+    },
     "notes": []
    }
   },
@@ -299,7 +301,9 @@
      "--kv-resident",
      "32768"
     ],
-    "env_set": {},
+    "env_set": {
+     "GGML_NO_BACKTRACE": "1"
+    },
     "notes": []
    }
   },
@@ -404,7 +408,9 @@
      "--kv-resident",
      "32768"
     ],
-    "env_set": {},
+    "env_set": {
+     "GGML_NO_BACKTRACE": "1"
+    },
     "notes": []
    }
   }
