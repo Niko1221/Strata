@@ -326,11 +326,12 @@ int main() {
         rws.matmul_batch(rqt, d_rx.as<float>(), d_ry.as<float>(), sc.t, test_stream);
         Q::ck(cudaStreamSynchronize(test_stream));
         const auto rst = rws.stats();
-        std::printf("real K=%d N=%d T=%d type=%d -> fp16=%llu fp8=%llu fb_shape=%llu fb_algo=%llu\n",
+        std::printf("real K=%d N=%d T=%d type=%d -> fp16=%llu fp8=%llu wmma=%llu fb_shape=%llu fb_algo=%llu\n",
                     sc.k, sc.n, sc.t, sc.type_id,
                     (unsigned long long)rst.fp16_gemm_calls, (unsigned long long)rst.fp8_gemm_calls,
+                    (unsigned long long)rst.fused_wmma_calls,
                     (unsigned long long)rst.fp8_fallback_shape, (unsigned long long)rst.fp8_fallback_no_algo);
-        if (rst.fp16_gemm_calls + rst.fp8_gemm_calls == 0) {
+        if (rst.fp16_gemm_calls + rst.fp8_gemm_calls + rst.fused_wmma_calls == 0) {
             std::fprintf(stderr, "no GEMM calls recorded for K=%d N=%d T=%d\n", sc.k, sc.n, sc.t);
             return 1;
         }
