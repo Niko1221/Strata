@@ -11,6 +11,9 @@ How to read the table:
 
 | Folder | Hardware | Model | Prompt tok/s | Output tok/s | Strata | PR |
 |---|---|---|---|---|---|---|
+| [2026-11-18-community-rtx-4080-super-7950x3d-iq3_xxs-256k](2026-11-18-community-rtx-4080-super-7950x3d-iq3_xxs-256k/) | RTX 4080 SUPER | IQ3_XXS, 256K | 2326/3873 prompt_tps; needles 6/6 at 256K | short chat 101; agent follow-up 128 | 0.1.60 | this PR |
+| [2026-11-18-community-rtx-4080-super-7950x3d-iq3_s-128k](2026-11-18-community-rtx-4080-super-7950x3d-iq3_s-128k/) | RTX 4080 SUPER | IQ3_S, 128K | 2049/3806 prompt_tps; needles 6/6 at 128K | short chat 90; agent follow-up 108 | 0.1.60 | this PR |
+| [2026-11-18-community-rtx-4080-super-7950x3d-swift-256k](2026-11-18-community-rtx-4080-super-7950x3d-swift-256k/) | RTX 4080 SUPER | Swift IQ3_XXS, 256K | 2309/3789 prompt_tps; needles 6/6 at 256K | short chat 103; agent follow-up 122 | 0.1.60 | this PR |
 | [2026-10-01-0.1.31-release](2026-10-01-0.1.31-release/) | RX 7900 XTX 24 GB, Ryzen 7 7700X | Coder IQ1_M | 545 to 900 median (0.1.30 to 0.1.31) | 16-34 to 17-65 | 0.1.30 / 0.1.31 | #404 |
 | [2026-10-01-community-2x-rtx-pro-4500](2026-10-01-community-2x-rtx-pro-4500/) | 2x RTX PRO 4500 32 GB, Threadripper 7960X | Swift IQ3_XXS | 1,428 / 2,454 / 2,785 | 115 / 120 / 93 | 0.1.30 | #418 |
 | [2026-10-02-community-2x-rtx-pro-4500-engine-0.1.36](2026-10-02-community-2x-rtx-pro-4500-engine-0.1.36/) | 2x RTX PRO 4500 32 GB, Threadripper 7960X | Swift IQ3_XXS | 2,960 / 5,065 / 5,762 | 127 / 130 / 105 | 0.1.36 | #418 |
