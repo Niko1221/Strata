@@ -1,0 +1,30 @@
+saving the conversation as pre-mtp-ab ...
+{"id_slot": 0, "filename": "pre-mtp-ab", "n_saved": 96149, "n_written": 1603033020, "timings": {"save_ms": 1487.5}}
+server stopped
+=== F_base 21:57:30
+speculation              186 rounds of 4, drafts accepted 6 of 188 (0.032), 1.03 tokens per round
+suffix drafts            9 windows, drafts accepted 6 of 12
+=== F_mtp2 21:58:04
+strata metal: MTP draft round in one command buffer (embedding type 8 on the GPU: max |GPU - host| 0 over 8 rows)
+strata metal: MTP draft layer from /Users/pc/src/Strata-data/mtp/mtp-q2_0.gguf (0.89 GB, 9 norms folded), draft head over 106299 tokens
+speculation              119 rounds of 4, drafts accepted 74 of 119 (0.622), 1.62 tokens per round
+suffix drafts            1 windows, drafts accepted 1 of 2
+mtp                      3.049 ms/round drafting (118 rounds), MTP prompt 0.0 ms, 0 MiB of VRAM
+=== F_mtp3 21:58:31
+strata metal: MTP draft round in one command buffer (embedding type 8 on the GPU: max |GPU - host| 0 over 8 rows)
+strata metal: MTP draft layer from /Users/pc/src/Strata-data/mtp/mtp-q2_0.gguf (0.89 GB, 9 norms folded), draft head over 106299 tokens
+speculation              101 rounds of 5, drafts accepted 91 of 200 (0.455), 1.90 tokens per round
+suffix drafts            2 windows, drafts accepted 2 of 4
+mtp                      4.239 ms/round drafting (100 rounds), MTP prompt 0.0 ms, 0 MiB of VRAM
+=== F_mtp4 21:58:57
+strata metal: MTP draft round in one command buffer (embedding type 8 on the GPU: max |GPU - host| 0 over 8 rows)
+strata metal: MTP draft layer from /Users/pc/src/Strata-data/mtp/mtp-q2_0.gguf (0.89 GB, 9 norms folded), draft head over 106299 tokens
+speculation              91 rounds of 6, drafts accepted 101 of 267 (0.378), 2.11 tokens per round
+suffix drafts            2 windows, drafts accepted 2 of 3
+mtp                      6.045 ms/round drafting (90 rounds), MTP prompt 0.0 ms, 0 MiB of VRAM
+=== F_base2 21:59:25
+speculation              186 rounds of 4, drafts accepted 6 of 188 (0.032), 1.03 tokens per round
+suffix drafts            9 windows, drafts accepted 6 of 12
+restoring pre-mtp-ab ...
+{"id_slot": 0, "filename": "pre-mtp-ab", "n_restored": 96149, "n_read": 1603033020, "timings": {"restore_ms": 625.2}}
+done 21:59:58

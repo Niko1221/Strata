@@ -198,8 +198,11 @@ Error encode_copy(StreamImpl* s, void* dst, const void* src, size_t n) {
     size_t od = 0, os = 0;
     const Alloc* ad = find(dst, &od);
     const Alloc* as = find(src, &os);
-    check_purged(ad, "copy");
-    check_purged(as, "copy");
+    check_purged(as, "copy");   // reading given-back memory yields garbage: still fatal
+    // 2026-10-21: writing to it is the shared host code's lazy upload of a weight copy the Metal window never
+    // reads; the startup purge gave the buffer back, so the upload's bytes have nowhere to go. Drop the write
+    // (aborting killed a serving engine mid-request: the state fingerprint read one such buffer).
+    if (ad && ad->purged) return kSuccess;
     if (ad && as) {   // buffer to buffer: a blit, in stream order
         end_encoder(s);
         MTL::BlitCommandEncoder* b = open_cb(s)->blitCommandEncoder();
@@ -222,7 +225,7 @@ Error encode_fill(StreamImpl* s, void* p, int value, size_t n) {
     size_t off = 0;
     const Alloc* a = find(p, &off);
     if (!a) return fail(kErrorInvalidValue);
-    check_purged(a, "fill");
+    if (a->purged) return kSuccess;   // fill of a given-back weight copy: dropped (see encode_copy)
     end_encoder(s);
     MTL::BlitCommandEncoder* b = open_cb(s)->blitCommandEncoder();
     b->fillBuffer(a->buf, NS::Range::Make(off, n), (uint8_t) value);
@@ -320,6 +323,13 @@ void* host_view(const void* p) {
     return a ? a->cpu + off : nullptr;
 }
 
+// runtime.hpp: does p lie in a buffer purge_device_allocations() gave back?
+bool is_purged(const void* p) {
+    size_t off = 0;
+    const Alloc* a = find(p, &off);
+    return a && a->purged;
+}
+
 // The Metal decode window reads the model itself; the device copies of the weights the shared host code uploads for
 // the CUDA-shaped kernels (the pack's dense pool, the native head, ...) are never read on Metal.  On a small Mac their
 // memory is worth more as expert arena: every device (not host) allocation of min_bytes or more is made purgeable-empty
@@ -379,6 +389,7 @@ Error device_clock_khz(int* v, int) { *v = 0; return fail(kErrorUnsupported); }
 Error runtime_version(int* v) { *v = 0; return kSuccess; }
 Error device_can_access_peer(int* v, int, int) { *v = 0; return kSuccess; }
 Error device_enable_peer_access(int, unsigned) { return fail(kErrorUnsupported); }
+Error device_disable_peer_access(int) { return kSuccess; }   // one GPU: peer access was never enabled, so nothing to disable
 Error get_device_properties(DeviceProp* p, int dev) {
     if (dev != 0) return fail(kErrorInvalidValue);
     *p = DeviceProp{};
@@ -462,6 +473,10 @@ Error memcpy_2d_async(void* dst, size_t dpitch, const void* src, size_t spitch, 
 Error memcpy_peer_async(void* dst, int dst_dev, const void* src, int src_dev, size_t bytes, Stream st) {
     if (dst_dev != 0 || src_dev != 0) return fail(kErrorInvalidValue);   // one GPU
     return memcpy_async(dst, src, bytes, kDeviceToDevice, st);
+}
+Error memcpy_peer(void* dst, int dst_dev, const void* src, int src_dev, size_t bytes) {
+    if (dst_dev != 0 || src_dev != 0) return fail(kErrorInvalidValue);   // one GPU
+    return memcpy_sync(dst, src, bytes, kDeviceToDevice);
 }
 Error memcpy_async(void* dst, const void* src, size_t bytes, CopyKind, Stream st) {
     StreamImpl* s = S(st);

@@ -1,0 +1,15 @@
+# round 9: decode tile A/B (gemv/moe) + prefill GDN scan variants; mpp prompt path throughout
+name|binary|extra-env|tokens|maxnew|ctx|extra-args
+F_0|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1 STRATA_METAL_CTAB=1|t357.txt|128|40960|
+F_GU16|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1 STRATA_METAL_CTAB=1 STRATA_METAL_MOE_TILE=16,1,4,4|t357.txt|128|40960|
+F_GU8|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1 STRATA_METAL_CTAB=1 STRATA_METAL_MOE_TILE=8,1,4,4|t357.txt|128|40960|
+F_GU328|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1 STRATA_METAL_CTAB=1 STRATA_METAL_MOE_TILE=32,1,8,4|t357.txt|128|40960|
+F_D32|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1 STRATA_METAL_CTAB=1 STRATA_METAL_GEMV_TILE=2560,2560,32,1,4,1|t357.txt|128|40960|
+F_B164|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1 STRATA_METAL_CTAB=1 STRATA_METAL_GEMV_TILE=6144,-1,16,1,8,4|t357.txt|128|40960|
+F_nr2|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1 STRATA_METAL_CTAB=1 STRATA_METAL_GEMV_NR=2|t357.txt|128|40960|
+F_0b|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1 STRATA_METAL_CTAB=1|t357.txt|128|40960|
+Y_0|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1 STRATA_METAL_CTAB=1 STRATA_METAL_PROMPT_MOE=mpp|t2048.txt|2|262144|
+Y_r8|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1 STRATA_METAL_CTAB=1 STRATA_METAL_PROMPT_MOE=mpp STRATA_METAL_GDN_SCAN=scanr_8|t2048.txt|2|262144|
+Y_s1|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1 STRATA_METAL_CTAB=1 STRATA_METAL_PROMPT_MOE=mpp STRATA_METAL_GDN_SCAN=scan_1|t2048.txt|2|262144|
+Y_v|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1 STRATA_METAL_CTAB=1 STRATA_METAL_PROMPT_MOE=mpp STRATA_METAL_GDN_SCAN=scan_v|t2048.txt|2|262144|
+Y_0b|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1 STRATA_METAL_CTAB=1 STRATA_METAL_PROMPT_MOE=mpp|t2048.txt|2|262144|

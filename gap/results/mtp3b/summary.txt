@@ -1,0 +1,19 @@
+round-3 start 02:41:24; slot pre-mtp-ab3 saved
+N0: prefill 30.9 tok/s | decode 132 tok 6.4s 20.6 tok/s | drafts 0/0 (0%)
+S2: prefill 28.0 tok/s | decode 132 tok 6.3s 20.9 tok/s | drafts 53/79 (67%)
+S3: prefill 32.6 tok/s | decode 132 tok 6.9s 19.3 tok/s | drafts 67/130 (52%)
+Q8: PING failed: HTTP Error 503: Service Unavailable
+DF2: prefill 32.0 tok/s | decode 132 tok 6.6s 20.0 tok/s | drafts 50/81 (62%)
+pass 1 done 03:07:25
+DF2: prefill 30.8 tok/s | decode 132 tok 6.0s 22.0 tok/s | drafts 58/73 (79%)
+S3: prefill 31.1 tok/s | decode 132 tok 6.8s 19.4 tok/s | drafts 69/126 (55%)
+S2: prefill 28.3 tok/s | decode 132 tok 6.0s 21.8 tok/s | drafts 56/75 (75%)
+N0: prefill 30.6 tok/s | decode 132 tok 6.2s 21.2 tok/s | drafts 0/0 (0%)
+pass 2 done 03:11:45
+final: config restored, host UP, slot restored 03:11:54
+== decode tok/s by arm ==
+N0: 20.6, 21.2 | best 21.2
+S2: 20.9, 21.8 | best 21.8
+S3: 19.3, 19.4 | best 19.4
+Q8: no data
+DF2: 20.0, 22.0 | best 22.0

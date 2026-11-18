@@ -1,0 +1,15 @@
+# round 8: spec-depth ladder (decode), GDN scan variants (bench), mpp batch size (prefill)
+name|binary|extra-env|tokens|maxnew|ctx|extra-args
+E_sp2|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1 STRATA_METAL_CTAB=1|t357.txt|128|40960|--spec 2
+E_sp4|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1 STRATA_METAL_CTAB=1|t357.txt|128|40960|--spec 4
+E_sp6|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1 STRATA_METAL_CTAB=1|t357.txt|128|40960|--spec 6
+E_sp8|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1 STRATA_METAL_CTAB=1|t357.txt|128|40960|--spec 8
+E_sp4b|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1 STRATA_METAL_CTAB=1|t357.txt|128|40960|--spec 4
+E_sp2b|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1 STRATA_METAL_CTAB=1|t357.txt|128|40960|--spec 2
+G_4|/tmp/gdn.sh|PC_GDN=scanr_4|t357.txt|1|40960|
+G_8|/tmp/gdn.sh|PC_GDN=scanr_8|t357.txt|1|40960|
+G_48|/tmp/gdn.sh|PC_GDN=scanr_4_8|t357.txt|1|40960|
+G_v|/tmp/gdn.sh|PC_GDN=scan_v|t357.txt|1|40960|
+X_e64|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1 STRATA_METAL_CTAB=1 STRATA_METAL_PROMPT_MOE=mpp|t2048.txt|2|262144|
+X_e128|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1 STRATA_METAL_CTAB=1 STRATA_METAL_PROMPT_MOE=mpp STRATA_METAL_PROMPT_MOE_BATCH=128|t2048.txt|2|262144|
+X_e64b|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1 STRATA_METAL_CTAB=1 STRATA_METAL_PROMPT_MOE=mpp|t2048.txt|2|262144|

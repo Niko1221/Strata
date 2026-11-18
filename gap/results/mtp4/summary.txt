@@ -1,0 +1,16 @@
+round-3 start 10:29:35; slot pre-mtp-ab3 saved
+N0: prefill 31.0 tok/s | decode 232 tok 10.1s 22.9 tok/s | drafts 0/0 (0%)
+S1: START FAILED: never listed the model (7 min)
+S2: prefill 28.7 tok/s | decode 232 tok 9.9s 23.5 tok/s | drafts 102/129 (79%)
+pass 1 done 10:44:05
+S2: prefill 28.1 tok/s | decode 232 tok 9.5s 24.3 tok/s | drafts 105/127 (83%)
+N0: prefill 30.4 tok/s | decode 232 tok 10.2s 22.8 tok/s | drafts 0/0 (0%)
+pass 2 done 10:46:30
+S2: prefill 29.7 tok/s | decode 232 tok 9.8s 23.6 tok/s | drafts 99/132 (75%)
+N0: prefill 28.3 tok/s | decode 232 tok 10.8s 21.4 tok/s | drafts 0/5 (0%)
+pass 3 done 10:48:58
+final: config restored, host UP, slot restored 10:49:09
+== decode tok/s by arm ==
+N0: 22.9, 22.8, 21.4 | best 22.9
+S1: no data
+S2: 23.5, 24.3, 23.6 | best 24.3

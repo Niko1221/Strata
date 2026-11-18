@@ -2811,7 +2811,17 @@ bool Prefill::carve(size_t T, void* alloc) {
 
 bool Prefill::relayout(int64_t chunk, void* borrow, uint64_t borrow_bytes, std::string& err, int64_t tail) {
     Impl& m = *impl_;
+#if defined(STRATA_GPU_METAL)
+    // The Metal window keeps the prompt's buffers in its own arena (window_ensure) and runs its fixed chunk size
+    // inside whatever the host hands over: there is no borrowed region to re-layout, and nothing to carve.  Keep
+    // the larger chunk count (the buffers never shrink) and succeed.
+    (void) borrow;
+    (void) borrow_bytes;
+    m.T = std::max(m.T, chunk > 0 ? chunk : 1);
+    return true;
+#else
     m.tail_req = tail;   // read by carve (a failure leaves the layout unusable as before; the caller ends the request)
+
     if (m.borrow_spill) {
         err = "prefill: a hybrid borrowed/owned layout cannot be changed between requests";
         return false;
@@ -2846,6 +2856,7 @@ bool Prefill::relayout(int64_t chunk, void* borrow, uint64_t borrow_bytes, std::
         return false;
     }
     return true;
+#endif
 }
 
 int64_t Prefill::chunk() const { return impl_->T; }
