@@ -7,7 +7,7 @@ Written by `strata bench run`. The machine-readable result is [results.json](res
 ## Hardware and software
 
 - GPU: NVIDIA GeForce RTX 3090 (24.0 GiB dedicated)
-- CPU: AMD EPYC 7452 32-Core Processor; RAM: 512 GiB installed (8 × 64 GiB), 503.6 GiB reported by Linux
+- CPU: AMD EPYC 7452 32-Core Processor; RAM: 512 GiB installed (one 64 GiB DDR4 DIMM per channel across all eight channels, each configured at 2666 MT/s), 503.6 GiB reported by Linux
 - Storage of the model files: nvme Samsung SSD 970 EVO Plus 2TB (nvme)
 - OS: Arch Linux 6.18.63-3-lts; drivers: gpu-driver 620.70.06; runtime: cuda 13.5
 - Strata commit: `c77572806996349b49995e4f98d41b5294d36a21`; engine 0.1.60; release build
