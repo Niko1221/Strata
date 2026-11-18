@@ -14,6 +14,12 @@ Windows でローカル AI のチャット、エージェント作業、出典�
 ![Hakua / Strata real-model Japanese chat on Qwen3.8-27B](docs/media/native-qwen38-japanese-chat.png)
 *`strata-q38.exe` で `qwen3.8-27b-abliterated-3.69bpw-12GB-MTP.gguf` を実行している実環境スクリーンショット（CUDA 13 / RTX 5060 Ti 16 GB）。*
 
+## Qwen3.8 試作版の推奨 GGUF
+
+RTX 5060 Ti（VRAM 16 GB）でローカルのテキスト会話を試すなら、実機検証に使った [soyaakinohara さんの混合量子化 GGUF（3.69 bpw）](https://huggingface.co/soyaakinohara/qwen3.8-27b-abliterated-3.69bpw-12GB-MTP.gguf) をおすすめします。量子化と公開を行った **soyaakinohara さん**、元の重みを公開した **AEON-7** に感謝します。モデルは別途ダウンロードし、まず4,096トークンのコンテキストでお試しください。ファイル名の「12GB」は VRAM 12 GB での動作保証ではありません。
+
+[署名済みネイティブ CUDA 13.5 プレビュー](https://github.com/zapabob/Strata/releases/tag/v0.6.4-preview.1) は、インストール済み 0.6.3 アプリで日本語の2ターン生成・応答途中の停止・アンロードに合格しました。初回リクエスト2組で短文 F16 プリフィルを従来ネイティブ経路より35〜43%短縮しました。同条件のデコードは Prism（llama.cpp）が速い結果でした。[導入・公開鍵・制限](docs/Q38_NATIVE_PREFILL_PREVIEW.md)
+
 ## インストールと更新
 
 このフォーク用の Windows x64 NSIS インストーラーを使います。ユーザー単位で導入され、専用の Node・Python・Control を同梱しているため、システム側の開発環境は不要です。ネイティブ CUDA エンジンは別コンポーネントです。`tar.7z` にはインストーラー、CUDA エンジンパッケージ、Control パッケージ、説明書、チェックサムを収めており、モデル重みと個人データは含みません。

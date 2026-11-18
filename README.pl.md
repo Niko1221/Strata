@@ -14,6 +14,12 @@ Aktualne wydanie: [0.6.3](https://github.com/zapabob/Strata/releases/tag/v0.6.3)
 ![Hakua / Strata real-model Japanese chat on Qwen3.8-27B](docs/media/native-qwen38-japanese-chat.png)
 *Zainstalowana aplikacja Hakua / Strata uruchamiająca `qwen3.8-27b-abliterated-3.69bpw-12GB-MTP.gguf` przez `strata-q38.exe` (CUDA 13 / RTX 5060 Ti 16 GB).*
 
+## Zalecany GGUF dla prototypu Qwen3.8
+
+Do lokalnego czatu tekstowego na RTX 5060 Ti z 16 GB VRAM polecamy przetestowany [GGUF o mieszanej kwantyzacji 3,69 bpw od soyaakinohara](https://huggingface.co/soyaakinohara/qwen3.8-27b-abliterated-3.69bpw-12GB-MTP.gguf). Dziękujemy **soyaakinohara** za kwantyzację i publikację, a **AEON-7** za wagi źródłowe. Model należy pobrać osobno. Zacznij od kontekstu 4096 tokenów; nazwa pliku nie gwarantuje działania z 12 GB VRAM.
+
+[Podpisana wersja demonstracyjna natywnego silnika CUDA 13.5](https://github.com/zapabob/Strata/releases/tag/v0.6.4-preview.1) przeszła w aplikacji 0.6.3 dwie tury po japońsku, zatrzymanie odpowiedzi i zwolnienie modelu z pamięci. W dwóch próbach pierwszego żądania czas krótkiego prefill F16 spadł o 35–43% względem dotychczasowej ścieżki natywnej. Prism (llama.cpp) nadal dekodował szybciej. [Konfiguracja, klucz publiczny i ograniczenia](docs/Q38_NATIVE_PREFILL_PREVIEW.md).
+
 ## Instalacja i aktualizacja
 
 Użyj instalatora NSIS Windows x64 dla tego forka. Instaluje się na użytkownika i zawiera prywatne Node, Python oraz Control; systemowe narzędzia deweloperskie nie są wymagane. Natywny silnik CUDA jest osobnym komponentem. Archiwum `tar.7z` zawiera instalator, pakiet silnika CUDA, pakiet Control, instrukcje i sumy kontrolne, bez wag modeli i danych osobowych.

@@ -14,6 +14,12 @@
 ![Hakua / Strata real-model Japanese chat on Qwen3.8-27B](docs/media/native-qwen38-japanese-chat.png)
 *Hakua / Strata 桌面端通过 `strata-q38.exe` 运行 `qwen3.8-27b-abliterated-3.69bpw-12GB-MTP.gguf`（CUDA 13 / RTX 5060 Ti 16 GB）。*
 
+## Qwen3.8 原型的推荐 GGUF
+
+如果想在 16 GB 显存的 RTX 5060 Ti 上试用本地文本对话，推荐我们实测使用的 [soyaakinohara 发布的 3.69 bpw 混合量化 GGUF](https://huggingface.co/soyaakinohara/qwen3.8-27b-abliterated-3.69bpw-12GB-MTP.gguf)。感谢 **soyaakinohara** 制作并发布量化模型，也感谢 **AEON-7** 提供源权重。请单独下载模型，先从 4,096 token 的上下文开始。文件名中的 12GB 不代表可以在 12 GB 显存上运行。
+
+[已签名的 CUDA 13.5 原生预览版](https://github.com/zapabob/Strata/releases/tag/v0.6.4-preview.1)在 0.6.3 应用中通过了两轮日语对话、生成途中停止和卸载测试。两组首次请求测试中，短提示的 F16 预填充耗时比原生旧路径减少了 35–43%；Prism（llama.cpp）的解码仍更快。[配置、公钥与限制](docs/Q38_NATIVE_PREFILL_PREVIEW.md)。
+
 ## 安装与更新
 
 请使用本分支的 Windows x64 NSIS 安装程序。它按当前用户安装并内置独立的 Node、Python 与 Control，无需系统级开发工具。原生 CUDA 引擎为独立组件。`tar.7z` 包含安装程序、CUDA 引擎包、Control 包、说明文档与校验和，不包含模型权重或个人数据。

@@ -14,6 +14,12 @@ Versión actual: [0.6.3](https://github.com/zapabob/Strata/releases/tag/v0.6.3) 
 ![Hakua / Strata real-model Japanese chat on Qwen3.8-27B](docs/media/native-qwen38-japanese-chat.png)
 *Hakua / Strata Desktop ejecutando `qwen3.8-27b-abliterated-3.69bpw-12GB-MTP.gguf` mediante `strata-q38.exe` (CUDA 13 / RTX 5060 Ti 16 GB).*
 
+## GGUF recomendado para el prototipo Qwen3.8
+
+Para probar el chat de texto local en una RTX 5060 Ti con 16 GB de VRAM, recomendamos el [GGUF de cuantización mixta de 3,69 bpw de soyaakinohara](https://huggingface.co/soyaakinohara/qwen3.8-27b-abliterated-3.69bpw-12GB-MTP.gguf) que usamos en las pruebas. Gracias a **soyaakinohara** por cuantizarlo y publicarlo, y a **AEON-7** por los pesos de origen. Descarga el modelo por separado y empieza con un contexto de 4096 tokens. El nombre del archivo no garantiza que funcione con 12 GB de VRAM.
+
+La [versión preliminar nativa firmada para CUDA 13.5](https://github.com/zapabob/Strata/releases/tag/v0.6.4-preview.1) superó dos turnos en japonés, la interrupción de una respuesta y la descarga del modelo de memoria en la aplicación 0.6.3. En dos pruebas de primera solicitud redujo un 35–43 % el tiempo de prefill F16 corto frente a la ruta nativa anterior; Prism (llama.cpp) siguió decodificando más rápido. [Configuración, clave pública y límites](docs/Q38_NATIVE_PREFILL_PREVIEW.md).
+
 ## Instalación y actualización
 
 Utilice el instalador NSIS de Windows x64 de este fork. Se instala por usuario e incluye Node, Python y Control privados; no requiere herramientas de desarrollo del sistema. El motor CUDA nativo es un componente separado. El archivo `tar.7z` incluye el instalador, el paquete CUDA, el paquete Control, instrucciones y sumas de verificación, sin pesos de modelos ni datos personales.

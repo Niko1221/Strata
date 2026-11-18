@@ -36,6 +36,15 @@
 
   <!-- Hero Section -->
   <main>
+    <section class="container" aria-labelledby="q38-preview-title" style="padding:1rem;border:2px solid #1f7a4c;border-radius:12px;margin:1rem auto;">
+      <h2 id="q38-preview-title">Qwen3.8-27B native CUDA 13.5 preview</h2>
+      <p>Optional engine for Strata desktop 0.6.3 on Windows. The signed preview passed two Japanese chat turns, mid-response Stop, and explicit unload on an RTX 5060 Ti with 16 GB VRAM.</p>
+      <p>Short F16 prefill took 35–43% less time than the native control in two initial-request pairs. Prism llama.cpp still decoded faster in the matched first-request comparison. This is not a warm-parity or full-context claim.</p>
+      <p><a href="https://github.com/zapabob/Strata/releases/tag/v0.6.4-preview.1">Download and setup instructions</a> ·
+        <a href="https://huggingface.co/soyaakinohara/qwen3.8-27b-abliterated-3.69bpw-12GB-MTP.gguf">Recommended GGUF</a>.
+        Thanks to soyaakinohara for the quantization and to AEON-7 for the source weights. Add the preview public key and enable short F16 prefill in the launch session as documented; the existing installer and stable release are unchanged.</p>
+    </section>
+
     <section class="container" aria-labelledby="preview131k-title" style="padding:1rem;border:2px solid #1f7a4c;border-radius:12px;margin:1rem auto;">
       <h2 id="preview131k-title">Hakua / Strata 0.6.0 — Windows x64 Release &amp; Real-Model Verification</h2>
       <p><strong>Product 0.6.0 (App <code>21013e19b</code> · Component/Control <code>b1cabf926</code> · Native Q38 <code>8b0b3c745</code>) — synced with upstream 0.2.15 (<code>c775728069</code>).</strong>
