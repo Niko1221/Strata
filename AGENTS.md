@@ -1,7 +1,7 @@
 # AGENTS.md
 
-Current release: Hakua product version 0.6.2; app, Terminal, Control and native engine 0.6.2.
-Formal v0.6.2 is published as GitHub Latest. See `_docs/2026-11-17_stable-062-release_Antigravity.md` for 0.6.2 details.
+Current release: Hakua product version 0.6.3; app, Terminal, Control and native engine 0.6.3.
+Formal v0.6.3 is published as GitHub Latest (unsigned local candidate; see the release notes). See `_docs/2026-11-17_stable-062-release_Antigravity.md` for 0.6.2 details.
 
 ## Historical 0.6.1 records
 
