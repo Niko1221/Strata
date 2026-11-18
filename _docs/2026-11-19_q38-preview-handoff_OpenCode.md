@@ -37,6 +37,9 @@ nine tokens, explicit unload and clean native/shell exit with this exact
 payload, supplemental trust, and F16 KV. Both completed turns used 16
 fast calls with no fallback. The two process-first-request comparisons
 do not establish warm parity; decode took 3.24–11.87% longer than Prism.
+The separate repeat-enabled warm build likewise lost in both orders:
+native prefill 311.604/387.518 ms versus Prism 210.827/207.996 ms;
+native decode 27.33/27.10 versus Prism 30.52/30.91 steps/s.
 Full-window inference, general model quality, and GPU concurrency
 remain unqualified. A new installer with built-in trust or a change of
 default would require separate qualification.

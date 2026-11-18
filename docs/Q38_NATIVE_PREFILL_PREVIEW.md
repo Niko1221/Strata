@@ -51,9 +51,12 @@ The exact payload shortened initial native prefill by 35–43% when
 enabled versus disabled in the fixed-token test. In two initial-request
 comparisons to Prism llama.cpp with the same GGUF and F16 KV, native
 prefill took 743–755 ms versus 756–822 ms. Native decode took 3–12%
-longer. These limited runs do not establish warm parity, full-window
-performance or general model quality. The shipped desktop installer
-does not have a Windows Authenticode signature.
+longer. A separate warm benchmark build, with the same prefill
+implementation and a repeat-only CLI loop, remained behind Prism in
+both orders: native prefill 312–388 ms versus 208–211 ms, and native
+decode 27.10–27.33 versus 30.52–30.91 steps/s. These tests do not
+establish full-window performance or general model quality. The shipped
+desktop installer does not have a Windows Authenticode signature.
 
 | Asset | SHA-256 |
 |---|---|
