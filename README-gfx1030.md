@@ -10,12 +10,12 @@ the best instruction form for this ISA.
 
 This branch carries a small set of measured local changes on top of upstream
 main, tuned for exactly one box: one V620 on a Threadripper PRO workstation. It
-is not a general gfx1030 port. It is the daily-driver build for this machine,
-with the reasoning behind every change recorded in `bench/notes/strata-migration.md`.
+is not a general gfx1030 port. The reasoning behind every change is recorded
+in `bench/notes/strata-migration.md`.
 
-Goal, in one line: **the fastest reading speed (prompt processing) this card can
-give for the Qwen3.8-Flash-Next IQ3_S model, without giving up writing speed
-(token generation) or stability.**
+Goal, in one line: **the fastest reading speed (prompt processing) this card
+can give for the Qwen3.8-Flash-Next IQ3_S model, without giving up writing
+speed (token generation) or stability.**
 
 The branch follows upstream main. When upstream moves, the local commits are
 re-based onto the new base, re-benchmarked against the old build, and promoted
