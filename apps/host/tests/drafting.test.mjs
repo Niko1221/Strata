@@ -86,7 +86,7 @@ test('every sentence of the Drafting choice is in the catalog in all nine langua
   const catalogs = Object.fromEntries(langs.map(l => [l, { ...JSON.parse(read(`../src/locales/${l}.json`)), ...JSON.parse(read(`../src/locales/df2-${l}.json`)) }]));
   const idOf = text => Object.entries(catalogs.en).find(([, v]) => v === text)?.[0];
   const sentences = ['Drafting', 'Auto (recommended)', 'MTP', 'DFlash2',
-    "Drafting: MTP (DFlash2 didn't fit)", "Drafting: MTP (DFlash2 isn't available in this mode)", 'Drafting: MTP (DFlash2 is for Qwen3.8-Flash-Next only)',
+    "Drafting: MTP (DFlash2 didn't fit)", "Drafting: MTP (DFlash2 isn't available in this mode)", 'Drafting: none in parallel slots (one token per request and step); a single request still drafts', 'Drafting: MTP (DFlash2 is for Qwen3.8-Flash-Next only)',
     "Drafting: MTP (the DFlash2 drafter isn't downloaded yet)",
     'Choosing DFlash2 downloads its drafter: about {0} GB, once.', 'Choosing MTP downloads its drafter: about {0} GB, once.', 'Drafting: off (no drafter is downloaded yet)', "Drafting: DFlash2 (the MTP drafter isn't downloaded yet)",
     'The DFlash2 drafter could not be downloaded, so the model starts without a drafter. Loading the model…', 'Downloading the MTP drafter…', 'The MTP drafter could not be downloaded.',
@@ -115,16 +115,16 @@ test('the Drafting dropdown exists only where there is something to choose: Qwen
   const { draftingChoices } = await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
   const all = ['auto', 'mtp', 'dflash2', 'off'];
   // the engine here cannot run it (Metal, Intel, no card), or Control has not answered yet: no dropdown for anyone
-  for (const family of ['qwen', 'gyro', 'unsloth', 'coder', 'swift', 'deepseek41', undefined]) {
+  for (const family of ['qwen', 'gyro', 'unsloth', 'coder', 'swift', undefined]) {
     assert.equal(draftingChoices(family, false), null, `${family}, not served`);
     assert.equal(draftingChoices(family, undefined), null, `${family}, Control has not answered`);
     assert.equal(draftingChoices(family, null), null);
   }
-  // it can: only the models it is for. DeepSeek has no MTP (its DSpark drafter is chosen by the engine); the other families have the MTP and nothing to pick against it.
+  // it can: only the models it is for; the other families have the MTP and nothing to pick against it.
   assert.deepEqual(draftingChoices('qwen', true), all);
   assert.deepEqual(draftingChoices('gyro', true), all);
   assert.deepEqual(draftingChoices('unsloth', true), all, "Unsloth's quantizations are the same weights (DFlash2 measured on UD-Q4_K_XL)");
-  for (const family of ['coder', 'swift', 'nvfp4', 'qwen36', 'deepseek41', undefined]) assert.equal(draftingChoices(family, true), null, `${family}, served`);
+  for (const family of ['coder', 'swift', 'nvfp4', 'qwen36', undefined]) assert.equal(draftingChoices(family, true), null, `${family}, served`);
   // the app learns it from Control, once, and false until Control answers
   const host = read('../server/native-control.mjs');
   assert.match(host, /dflash2:dflash2Served===true,dflash2Support,dflash2Selq4,dflash2Split\}/);
@@ -134,12 +134,11 @@ test('the Drafting dropdown exists only where there is something to choose: Qwen
   assert.match(screen, /\{tr\(draftingChoices \? <div className="native-choice__col">/, 'no choices: no column');
 });
 
-test('Settings > Native engine settings hides the MTP and Drafting rows for DeepSeek and the Drafting row where it has no choice', () => {
-  const byId = Object.fromEntries(NATIVE_FIELDS.map(f => [f.id, f]));
-  for (const id of ['mtp', 'drafting', 'batchMtp']) assert.equal(byId[id].notForModel, 'deepseek', id);
-  assert.equal(byId.ds_experts.forModel, 'deepseek');
+test('Settings > Native engine settings hides the Drafting row where it has no choice; no row is kept for one model only', () => {
+  for (const f of NATIVE_FIELDS) assert.ok(!('notForModel' in f) && !('forModel' in f), f.id);
+  assert.ok(!NATIVE_FIELDS.some(f => f.id === 'ds_experts'), 'the DeepSeek Speed row is gone');
   const settings = read('../src/components/NativeSettings.tsx');
-  assert.match(settings, /\(!f\.notForModel \|\| !model\.toLowerCase\(\)\.includes\(f\.notForModel\)\) && \(f\.id !== 'drafting' \|\| draftingOffered\)/);
+  assert.match(settings, /\(native\?\.fields \?\? \[\]\)\.filter\(f => \(f\.id !== 'drafting' \|\| draftingOffered\)/);
 });
 
 test('the DFlash2 drafter is fetched only by the Models screen own Load: a restart, a tuning run or any other load never downloads', () => {
@@ -179,7 +178,7 @@ test('one drafter per run: Auto is DFlash2 where the engine has it, the same wor
 
 test('a new install fetches only the drafter it will use; the fit and the slot estimates use the drafter chosen', async () => {
   const source = read('../server/native-control.mjs');
-  assert.match(source, /'gguf_dir','drafter'\]/);
+  assert.match(source, /'gguf_dir','drafter','mtp'\]/);
   assert.match(source, /resolveDrafter\(args\.drafting,args\.family,dflash2Served,dflash2Split\);if\(d==='dflash2'\)args=\{\.\.\.args,drafter:'dflash2'\}/, 'DFlash2: the installer leaves the MTP layer out');
   const { chooseParallel, MTP_VRAM_GB, DFLASH2_VRAM_GB } = await import('../server/native-parallel.mjs');
   assert.deepEqual([MTP_VRAM_GB, DFLASH2_VRAM_GB], [1.08, 0.89]);

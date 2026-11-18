@@ -23,10 +23,12 @@ import numpy as np
 import torch
 from safetensors import safe_open
 
-LLAMA = pathlib.Path(__file__).resolve().parents[1] / "third_party" / "llama.cpp"
-sys.path.insert(0, str(LLAMA / "gguf-py"))
-sys.path.insert(0, str(LLAMA))
-from gguf import GGMLQuantizationType as Q, quants  # noqa: E402
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from _paths import add_gguf_py, converter_dir, gguf_lib  # noqa: E402  (the vendored converter, third_party/strata-gguf-py)
+add_gguf_py()                                           # llama.cpp's converter imports gguf-py itself
+sys.path.insert(0, converter_dir())
+_gguf = gguf_lib()                                      # the dequantizer under test: tools/strata_quants.py (STRATA_GGUF_PY: gguf-py's)
+Q, quants = _gguf.GGMLQuantizationType, _gguf.quants
 from conversion.base import ModelBase  # noqa: E402
 
 E2M1 = torch.tensor([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0])
