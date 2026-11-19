@@ -28,6 +28,22 @@ class ReloadableEngine(MockEngine):
         self.running, self.unloaded = True, False
 
 
+class ClockedMonitorEngine(ReloadableEngine):
+    """ReloadableEngine with StrataEngine's clock (serve/test_server.py's ClockedEngine): closing a
+    generation writes `last` the way reading its DONE line does."""
+    REUSED = 5
+
+    def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+        n = 0
+        try:
+            for t in super().generate(ids, max_new, sampling, cancel, embeddings):
+                n += 1
+                yield t
+        finally:
+            self.last = {"generated": n, "prompt_tokens": len(ids), "prompt_ms": 40.0, "decode_ms": 20.0 * n,
+                         "finish": "stop", "reused": min(self.REUSED, len(ids)), "hits": 9, "lookups": 10}
+
+
 class MonitorOff(unittest.TestCase):
     """#332 is opt-in: by default no prompt or answer is kept, and the monitor's endpoints do not exist."""
 
@@ -225,6 +241,72 @@ class Monitor(unittest.TestCase):
         self.assertIn("textContent", script)
         self.assertNotIn("innerHTML", script)
         self.assertEqual(self.request("/web/../server.py")[0], 404)
+
+
+class TimingsInEveryDialectsRecord(unittest.TestCase):
+    """The page's speed card and each request's Decode speed read the record's `timings`. All three dialects put
+    them on the answer (the Responses API since #107); the capture only followed the Chat Completions one, so an
+    Anthropic-dialect client (Claude Code) left the page without a single speed figure."""
+
+    def setUp(self):
+        self.tok = ByteTokenizer()
+        self.engine = ClockedMonitorEngine(self.tok, "Thought.</think>\nHello <script>alert(1)</script>.",
+                                           max_context=16384)
+        self.svc = Service(self.engine, self.tok, ChatTemplate(Path(__file__).parent / "chat_template.jinja"))
+        self.svc.api_monitor = True
+        self.httpd = serve(self.svc, port=0)
+        self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+
+    def tearDown(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+    def request(self, path, body=None):
+        req = urllib.request.Request(self.base + path, data=json.dumps(body).encode() if body is not None else None,
+                                     headers={"Content-Type": "application/json"})
+        try:
+            response = urllib.request.urlopen(req, timeout=10)
+        except urllib.error.HTTPError as error:
+            response = error
+        with response:
+            raw = response.read().decode()
+            return response.status, json.loads(raw) if "application/json" in response.headers.get("Content-Type", "") else raw
+
+    def settled(self):
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            records = list(self.svc.api_requests)
+            if records and all(r["state"] == "completed" for r in records[-1:]):
+                return
+            time.sleep(0.005)
+
+    def latest(self):
+        summary = self.request("/api/requests")[1]["requests"][0]
+        return self.request("/api/requests?id=" + summary["id"])[1]
+
+    def ask(self, api, stream):
+        if api == "anthropic":
+            return self.request("/v1/messages", {"messages": [{"role": "user", "content": "Say hello."}],
+                                                 "max_tokens": 256, "stream": stream,
+                                                 "thinking": {"type": "enabled", "budget_tokens": 1024}})
+        if api == "responses":
+            return self.request("/v1/responses", {"model": "m", "input": "Say hello.", "max_output_tokens": 256,
+                                                  "stream": stream})
+        return self.request("/v1/chat/completions", {"messages": [{"role": "user", "content": "Say hello."}],
+                                                     "max_tokens": 256, "reasoning_effort": "low", "stream": stream})
+
+    def test_records_have_timings_for_every_dialect_and_stream_mode(self):
+        for api in ("openai", "anthropic", "responses"):
+            for stream in (False, True):
+                with self.subTest(api=api, stream=stream):
+                    self.assertEqual(self.ask(api, stream)[0], 200)
+                    self.settled()
+                    record = self.latest()
+                    self.assertEqual(record["state"], "completed")
+                    self.assertIn("timings", record)
+                    # 20 ms a token: the clock ClockedMonitorEngine writes when a generation closes
+                    self.assertAlmostEqual(record["timings"]["predicted_per_second"], 50.0, delta=0.1)
+                    self.assertGreater(record["timings"]["predicted_n"], 0)
 
 
 class ConversationCacheCard(unittest.TestCase):

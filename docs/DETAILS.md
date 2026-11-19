@@ -905,7 +905,9 @@ Off by default, because it keeps prompts and answers in memory. Turn it on with 
 controls, active and queued requests, request bodies, output, separate reasoning and response bodies, with load, queue,
 first-token and decode timings. `GET /api/requests` returns summaries and `GET /api/requests?id=<id>` one request. The
 monitor keeps the newest 100 requests in memory until restart, 262,144 characters per field, with visible truncation flags.
-Headers are not recorded. Treat the history as sensitive when Strata is reachable from a network, and set an API key.
+Headers are not recorded. A completed request carries its `timings` in llama.cpp's names, the same top-level object the three
+dialects' answers carry (their `usage` too), whenever the engine reports them. Treat the history as sensitive when Strata is
+reachable from a network, and set an API key.
 
 ---
 
