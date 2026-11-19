@@ -99,7 +99,8 @@ constexpr int64_t opt_in_chunk(int64_t tokens, int64_t max_chunk, int64_t floor)
 /// RTX 4080 SUPER 16 GB (RTX 4060 Ti as --expert-cache-device1), UD-Q4_K_XL, engine 0.1.60, serve path, one round: auto
 /// chunk 17,152; a 17,075-token part 4,342 ms, a 17,225-token part (2 x 8,613) 7,239 ms.  With STRATA_PREFILL_EQUAL=0 (auto
 /// chunk 16,384) the 17,225-token part (16,384 + 841) took 5,982 ms.  The RTX 4090 IQ3_S rows above (8,192 + 87 against
-/// 2 x 4,140) point the same way.  The scan does not count the tail, so today's loan can be larger than the scan's:
+/// 2 x 4,140) point the same way.  With the switch (N = 3,072) against the same source built without it, auto chunk 16,128,
+/// three rounds, prompt ms (median): 16,194 tokens 7,193 -> 4,801, 17,594 7,276 -> 6,450, 19,094 7,374 -> 7,096.  The scan does not count the tail, so today's loan can be larger than the scan's:
 /// declined_equal() reports the equal chunk this rule turned down, and the request path keeps the equal cut when today's
 /// loan does not fit (keep_equal).
 constexpr int64_t tail_keep(const char* env) {
