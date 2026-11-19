@@ -2033,6 +2033,13 @@ async function api(req, res, path, method, url) {
     try { return json(res, 200, agent.planControl({ chatId: String(body.sessionId ?? body.chatId ?? ''), planId: typeof body.planId === 'string' ? body.planId : null, action: planAct[1], steps: body.steps, title: body.title })); }
     catch (e) { return error(res, e.code === 'plan-gone' || e.code === 'plan-used' ? 409 : 400, e.message); }
   }
+  // A follow-up for the live parent on the same Harness session.
+  if (path === '/api/chat/steer' && method === 'POST') {
+    const { sessionId, message } = await readBody(req);
+    if (!validChatId(sessionId)) return error(res, 400, 'That is not a chat id.');
+    try { return json(res, 200, await agent.steerMessage({ chatId: sessionId, text: message })); }
+    catch (e) { return error(res, e.code === 'steer-idle' ? 409 : e.code === 'steer-empty' ? 400 : 502, e.message); }
+  }
   // Messages typed while a goal runs: queued (shown as queued), taken back, or listed.
   if (path === '/api/chat/queue' && method === 'GET') return json(res, 200, agent.takeQueue(url.searchParams.get('sessionId') ?? '', { release: url.searchParams.get('release') === '1' }));
   if (path === '/api/chat/queue' && method === 'POST') {

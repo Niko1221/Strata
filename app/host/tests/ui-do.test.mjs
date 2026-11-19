@@ -337,14 +337,17 @@ test('#4783 the three choices while an answer is written, as the web chat page h
   assert.deepEqual([...WHILE_BUSY], ['wait', 'queue', 'interject']);
   assert.equal(busyPlan('wait'), 'refuse');
   assert.equal(busyPlan('queue'), 'goal', 'a running goal has its own queue in the host; with none, the message is parked');
-  assert.equal(busyPlan('interject'), 'interrupt');
+  assert.equal(busyPlan('interject'), 'steer', 'the saved Interrupt preference now sends to the active assistant');
   assert.equal(validWhileBusy('queue'), true);
   for (const bad of ['', 'steer', 'QUEUE', null, undefined, 3]) assert.equal(validWhileBusy(bad), false, String(bad));
 });
 
 test('#4783 the composer acts on the choice, the default keeps today\'s behaviour, and the parked message is sent when the chat is quiet', () => {
   const chat = src('screens/Chat.tsx');
-  assert.match(chat, /if \(plan === 'interrupt'\) \{\s*updateDraft\(''\);\s*clearQuotes\(session\.id\);\s*parkMessage\(session\.id, out\);\s*stopStreaming\(\);\s*return;\s*\}/);
+  const steer = chat.slice(chat.indexOf("if (plan === 'steer')"), chat.indexOf("void queueMessage(session.id"));
+  assert.match(steer, /steerMessage\(id, out\)/);
+  assert.match(steer, /if \(!delivered\) parkMessage\(id, out\)/);
+  assert.doesNotMatch(steer, /stopStreaming\(/);
   assert.match(chat, /if \(plan === 'goal'\) \{ clearQuotes\(session\.id\); parkMessage\(session\.id, out\); return; \}/);
   assert.match(chat, /pushToast\('info', tr\('The assistant is still answering'\)/, 'Wait still says so');
   assert.match(chat, /if \(!session \|\| !parkedReady\(session\.id, activeId, streaming, parked\?\.length \?\? 0\)\)\s*return;\s*const next = takeParked\(session\.id\);/);
@@ -356,7 +359,7 @@ test('#4783 the composer acts on the choice, the default keeps today\'s behaviou
 
 test('#4783 the new sentences are translated', async () => {
   const { tr, setTranslationLanguage } = await withI18n('approvals.ts');
-  const lines = ['While an answer is being written', 'What Enter does when you send a message while the assistant is still answering.', 'Wait for the answer', 'Send after the answer', 'Interrupt the answer', 'Enter sends it when the answer is done.', 'Enter stops the answer here and sends it now.', 'Waiting to send', 'Take back'];
+  const lines = ['While an answer is being written', 'What Enter does when you send a message while the assistant is still answering.', 'Wait for the answer', 'Send after the answer', 'Send a live message', 'Enter sends it when the answer is done.', 'Enter sends it at the next step, or after the answer if needed.', 'Waiting to send', 'Take back'];
   for (const l of languages.slice(1)) { setTranslationLanguage(l); for (const text of lines) assert.notEqual(tr(text), text, `${l}: ${text}`); }
   setTranslationLanguage('en');
 });

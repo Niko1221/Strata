@@ -140,6 +140,35 @@ test('the packaged Harness accepts a browser message addressed to a single worki
   assert.ok(receipt.messageId);
 });
 
+test('a live message reaches the parent while both helpers finish on their original sessions', { skip, timeout: 40_000 }, async t => {
+  const r = await rig(t);
+  const chatId = 'live-parent-follow-up';
+  const message = 'SCRIPT:echo Parent follow-up received';
+  const working = new Set();
+  let sent;
+  const { frames } = await r.run(chatId, 'SCRIPT:spawn 2 slow 110', { onFrame: frame => {
+    if (frame.type !== 'agent' || frame.agent.status !== 'working') return;
+    working.add(frame.agent.id);
+    if (working.size === 2 && !sent) sent = r.bridge.steerMessage({ chatId, text: message }).catch(error => error);
+  } });
+  assert.ok(sent, 'both helpers were working when the follow-up was sent');
+  assert.equal((await sent).ok, true);
+  const updates = frames.filter(f => f.type === 'agent-follow-up');
+  assert.equal(updates.length, 1);
+  assert.equal(updates[0].message.text, message);
+  const firstDone = frames.findIndex(f => f.type === 'agent' && f.agent.status === 'completed');
+  const responseAt = frames.findIndex(f => f.type === 'delta' && f.text.includes('Parent follow-up received'));
+  assert.ok(responseAt >= 0 && responseAt < firstDone, 'the parent answered before the helpers finished');
+  assert.deepEqual([...rows(frames).keys()].sort(), [...working].sort());
+  assert.deepEqual([...rows(frames).values()].map(history => history.at(-1).status), ['completed', 'completed']);
+  assert.equal(r.worker.requests.filter(q => q.directive === 'slow').length, 2, 'neither helper was restarted');
+  assert.equal(r.worker.aborted, 0);
+  const replay = [];
+  const requestId = frames.find(f => f.type === 'start').requestId;
+  assert.ok(r.bridge.attach({ chatId, requestId, onFrame: f => replay.push(f) }));
+  assert.deepEqual(replay.filter(f => f.type === 'agent-follow-up').map(f => f.message), updates.map(f => f.message));
+});
+
 test('helpers are limited to the Harness cap (4, or the slot count if larger); the fifth is refused with a message the model reads', { skip }, async (t) => {
   const r = await rig(t, { slots: 2 });
   const { frames } = await r.run('few', 'SCRIPT:spawn 5 slow 30');

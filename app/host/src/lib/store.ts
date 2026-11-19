@@ -734,11 +734,22 @@ export function setWhileBusy(whileBusy: WhileBusy) {
   savePrefs();
 }
 
-/** A message sent while an answer is being written waits here; the chat sends it when the answer is done (it is also where Interrupt leaves it). */
+/** A message sent while an answer is being written waits here until the answer is done. */
 export function parkMessage(sessionId: string, text: string) {
   const clean = text.trim();
   if (!clean) return;
   set({ parked: { ...state.parked, [sessionId]: [...(state.parked[sessionId] ?? []), clean] } });
+}
+
+/** Tell the parent in its own live session. A plain chat or a turn that just ended can accept it as a regular follow-up instead. */
+export async function steerMessage(sessionId: string, message: string): Promise<boolean> {
+  try {
+    await api.post('/api/chat/steer', { sessionId, message });
+    return true;
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 409) return false;
+    throw error;
+  }
 }
 function setAsks(sessionId: string, list: AgentAsk[]) {
   const next = { ...state.agentAsks };
@@ -2267,6 +2278,19 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
           // A proposed plan is shown as the plan card in place of this turn's closing text (that text is the plan in prose).
           const planned = frame.plan as { id?: unknown } | null;
           if (frame.event === 'proposed' && planned && typeof planned.id === 'string') { const pid = planned.id; patchAssistant(m => ({ ...m, planId: pid })); }
+        } else if (type === 'agent-follow-up') {
+          const { id, text, at } = (frame.message ?? {}) as { id?: unknown; text?: unknown; at?: unknown };
+          if (typeof id === 'string' && typeof text === 'string' && typeof at === 'string') {
+            patchSession(sessionId, sess => {
+              if (sess.messages.some(m => m.id === id)) return sess;
+              const replyIndex = sess.messages.findIndex(m => m.id === assistantId);
+              if (replyIndex < 0) return sess;
+              const quotes = takeQuoteSources(text);
+              const message: ChatMessage = { id, role: 'user', content: text, at, ...(quotes ? { quotes } : {}) };
+              // Keep the active reply and its tools, logs and helper results together, including on reattach.
+              return { ...sess, messages: [...sess.messages.slice(0, replyIndex), message, ...sess.messages.slice(replyIndex)] };
+            });
+          }
         } else if (type === 'queued-message') {
           applyQueueFrame(sessionId, frame.queue);
           const sent = frame.message as { text?: unknown } | undefined;

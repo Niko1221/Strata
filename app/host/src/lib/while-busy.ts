@@ -7,12 +7,11 @@ export const validWhileBusy = (value: unknown): value is WhileBusy => WHILE_BUSY
  * What to do with the message, as one word:
  *  - 'refuse'    Wait: nothing is sent until the answer is done (the message stays in the box, as always);
  *  - 'goal'      Send after, while a goal runs: the host's own queue delivers it between steps (it asks the host first, so this is only a try);
- *  - 'park'      Send after: the message waits here and goes when the answer is done;
- *  - 'interrupt' Interrupt: the answer stops where it is (what is written stays) and the message goes as soon as it has stopped.
+ *  - 'steer'     Send a live message at the assistant's next step, or when the answer is done if there is no live agent.
  */
-export type BusyPlan = 'refuse' | 'goal' | 'park' | 'interrupt';
+export type BusyPlan = 'refuse' | 'goal' | 'steer';
 export function busyPlan(mode: WhileBusy): BusyPlan {
-  return mode === 'queue' ? 'goal' : mode === 'interject' ? 'interrupt' : 'refuse';
+  return mode === 'queue' ? 'goal' : mode === 'interject' ? 'steer' : 'refuse';
 }
 
 /**

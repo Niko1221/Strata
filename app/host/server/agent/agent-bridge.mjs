@@ -601,10 +601,17 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       abortFromRuntime: reason => finishTurn(reason), finish: failure => finishTurn(failure),
       // Helper agents (subagents) the Harness started for this chat, and the state of the run around them.
       children: new Map(), subagentCalls: new Map(), parentOpen: false, stopping: false, settleTimer: null, mode: appliedMode,
+      pendingSteers: new Map(), steerAdmissions: new Set(), followUps: [],
       plan: null, advancing: false, goalRun: false, lastActivity: Date.now(), heard: Date.now(), engineMark: null, watchdog: null,
       research: researchTopic ? { phase: 'gather', nudged: false, waitingStart: false } : null, wake: !!adopt, fix,
     };
     c.turn = turn; c.holding = false;
+    function showFollowUp(entry) {
+      if (entry.shown) return;
+      entry.shown = true;
+      turn.followUps.push(entry.message);
+      emit({ type: 'agent-follow-up', message: entry.message });
+    }
     if (adopt) { log(`agent · ${chatId}: the agent started a turn by itself (a background job finished); following it as ${requestId}`); onWake(chatId, requestId); }
     if (workspacePath) folderClaims.begin(workspacePath, chatId);
     /**
@@ -618,6 +625,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       const newcomer = frame => { if (!alive) return; try { onFrame(frame); } catch { alive = false; } };
       newcomer({ type: 'start', model: route.name, contextMax: route.contextWindow, demo: false, remoteModel: route.kind === 'api', agent: true, mode: appliedMode, sessionId, requestId, skills: [], resumed: true, ...(planTask ? { planning: true } : {}) });
       newcomer({ type: 'resync', content: hideDeltas ? '' : written.all, reasoning: written.reasoning });
+      for (const message of turn.followUps) newcomer({ type: 'agent-follow-up', message });
       for (const t of projector.tools.values()) if (t.card) newcomer({ type: 'agent-tool', tool: t.card });
       for (const child of turn.children.values()) {
         newcomer(rowFrame(child));
@@ -726,7 +734,7 @@ ${note.text}`, key: note.key, values: note.values, noteReason: 'cut' });
       for (const f of frames.slice(-1)) emit(f);
       c.turn = null;
       // What a page that was away needs to show the end of this turn (attach, below).
-      c.last = { wake: !!adopt, taken: isAttached(), requestId, sessionId, mode: appliedMode, model: route.name, contextMax: route.contextWindow, remoteModel: route.kind === 'api', content: hideDeltas ? '' : written.all.slice(0, 4_000_000), reasoning: written.reasoning, cards: [...projector.tools.values()].filter(t => t.card).map(t => t.card), agents: [...turn.children.values()].map(child => child.cp.agent()), terminal };
+      c.last = { wake: !!adopt, taken: isAttached(), requestId, sessionId, mode: appliedMode, model: route.name, contextMax: route.contextWindow, remoteModel: route.kind === 'api', content: hideDeltas ? '' : written.all.slice(0, 4_000_000), reasoning: written.reasoning, cards: [...projector.tools.values()].filter(t => t.card).map(t => t.card), agents: [...turn.children.values()].map(child => child.cp.agent()), followUps: turn.followUps, terminal };
       // every reply the agent started by itself that no page took is kept, not only the last one: two background commands that finish while the app is closed both reach the chat
       if (c.last.wake && !c.last.taken) c.woken = [...(c.woken ?? []).filter(w => !w.taken), c.last].slice(-WOKEN_KEPT);
       turn.ended.resolve({ reason: projector.ended, failure: failure ?? null });
@@ -920,8 +928,18 @@ ${note.text}`, key: note.key, values: note.values, noteReason: 'cut' });
           if (call && child) { child.cp.task = String(call.prompt ?? call.description ?? '').replace(/\s+/g, ' ').trim().slice(0, 140); emitRow(child, true); }
           break;
         }
-        case 'user/message':
+        case 'user/message': {
+          const id = d.source?.rpcId;
+          const followUp = turn.pendingSteers.get(id);
+          if (followUp) {
+            turn.pendingSteers.delete(id);
+            fix.texts.add(followUp.message.text);
+            fix.since = Date.now();
+            showFollowUp(followUp);
+            if (!turn.parentOpen) armSettle();
+          }
           if (d.source?.kind === 'goal' && Number.isInteger(d.source.round)) { turn.goalRound = d.source.round; void announceGoal(); }
+        }
         // falls through
         case 'agent/inbox/spliced': {
           // a notice the Harness put into the conversation (a helper's report): a marker from before it is not about the parent's next reply
@@ -1040,6 +1058,7 @@ ${note.text}`, key: note.key, values: note.values, noteReason: 'cut' });
       if (turn.finished) return;
       turn.settleTimer = after(turn.stopping ? 1200 : turn.children.size ? 600 : 0, async () => {
         if (turn.finished || turn.parentOpen || turn.advancing) return;
+        if (turn.steerAdmissions.size || turn.pendingSteers.size) { armSettle(); return; }
         const open = [...turn.children.values()];
         if (open.some(c => !c.done)) return;
         if (!turn.stopping) {
@@ -1047,6 +1066,7 @@ ${note.text}`, key: note.key, values: note.values, noteReason: 'cut' });
           // An armed goal starts its next round as soon as the agent is idle: the run is not over until the goal stops.
           const current = await goalGet();
           if (turn.finished || turn.parentOpen || [...turn.children.values()].some(c => !c.done)) return;
+          if (turn.pendingSteers.size) { armSettle(); return; }
           if (current && current.phase === 'active' && current.activation === 'armed') { turn.settleTimer = after(700, armSettle); return; }
           // TOOLCALL-B: the reply that ended the turn carried a tool call that could not run (an undeclared name, or markup cut off). The model
           // gets a tool error and goes on, twice in a row at most; the third time the turn ends with one plain sentence. Nothing guessed runs.
@@ -1140,6 +1160,27 @@ ${note.text}
     turn.announceGoal = announceGoal;
     turn.announceQueue = frame => emit(frame);
     turn.announceQuestion = frame => emit(frame);
+    turn.steer = async text => {
+      const id = `steer-${randomUUID()}`;
+      const entry = { message: { id, text, at: new Date().toISOString() }, shown: false };
+      turn.pendingSteers.set(id, entry);
+      const admission = boundedRpc(runtime, 'session/prompt', {
+        request: { requestId: id, sessionId, mode: 'steer', content: [{ type: 'text', text }] },
+      });
+      turn.steerAdmissions.add(admission);
+      try {
+        await admission;
+        showFollowUp(entry);
+      } catch (error) {
+        // The session event can confirm delivery even if the HTTP acknowledgement was lost.
+        if (!turn.pendingSteers.delete(id)) return { ok: true };
+        throw error;
+      } finally {
+        turn.steerAdmissions.delete(admission);
+        if (!turn.parentOpen) armSettle();
+      }
+      return { ok: true };
+    };
 
     const snapshotTimer = {};
     await Promise.race([turn.snapshot.promise, new Promise((_, rej) => { snapshotTimer.t = after(20_000, () => rej(new Error('the session stream did not open'))); })])
@@ -1500,6 +1541,17 @@ ${note.text}
 
   // -- messages typed while a goal runs ----------------------------------------------------------------------
 
+  /** Add input to the parent at its next step while the current chat and helpers keep running. */
+  async function steerMessage({ chatId, text }) {
+    const turn = chats.get(chatId)?.turn;
+    if (!turn?.live || turn.finished || turn.stopping || turn.advancing || typeof turn.steer !== 'function') {
+      throw new AgentUnavailable('No running assistant can take this message right now.', 'steer-idle');
+    }
+    const clean = typeof text === 'string' ? text.trim() : '';
+    if (!clean) throw new AgentUnavailable('Enter a message first.', 'steer-empty');
+    return turn.steer(clean);
+  }
+
   /** Queue a message for the running goal. It is delivered between steps, or handed back to the page when the goal ends or pauses. */
   function queueMessage({ chatId, text }) {
     const turn = chats.get(chatId)?.turn;
@@ -1716,7 +1768,8 @@ ${note.text}
         await turn.finish(null);
       } else {
         const runtime = rt;
-        const cancel = () => boundedRpc(runtime, 'session/cancel', { request: { sessionId: turn.sessionId } }).catch(() => {});
+        const cancel = () => boundedRpc(runtime, 'session/cancel', { request: { sessionId: turn.sessionId } })
+          .then(() => { turn.pendingSteers.clear(); }).catch(() => {});
         turn.stopDeadline = after(waitMs, () => {
           retireSession(c, turn.sessionId);
           void cancel();
@@ -1728,9 +1781,11 @@ ${note.text}
           if (turn.finished) return;
           // Interrupt helpers before cancelling the parent, so their reports do not wake it again.
           await Promise.allSettled([...turn.children.values()].filter(h => !h.done).map(h => turn.stopChild(h)));
+          // A simultaneous send must reach the inbox before Stop clears it.
+          await Promise.allSettled(turn.steerAdmissions);
           if (turn.finished) return;
           await cancel();
-          if (!turn.finished && !turn.parentOpen && turn.live && [...turn.children.values()].every(h => h.done)) {
+          if (!turn.finished && !turn.parentOpen && !turn.pendingSteers.size && turn.live && [...turn.children.values()].every(h => h.done)) {
             clearTimeout(turn.settleTimer);
             turn.settleTimer = after(300, () => {
               if (!turn.finished && !turn.parentOpen && [...turn.children.values()].every(h => h.done)) void turn.finish(null);
@@ -1772,6 +1827,7 @@ ${note.text}
     if (c.woken) c.woken = c.woken.filter(w => !w.taken);
     onFrame({ type: 'start', model: last.model, contextMax: last.contextMax, demo: false, remoteModel: last.remoteModel, agent: true, mode: last.mode, sessionId: last.sessionId, requestId: last.requestId, skills: [], resumed: true });
     onFrame({ type: 'resync', content: last.content, reasoning: last.reasoning });
+    for (const message of last.followUps ?? []) onFrame({ type: 'agent-follow-up', message });
     for (const card of last.cards) onFrame({ type: 'agent-tool', tool: card });
     for (const agent of last.agents ?? []) onFrame({ type: 'agent', agent });
     if (last.terminal) onFrame(last.terminal);
@@ -1804,7 +1860,7 @@ ${note.text}
     return c?.turn?.children.get(helperId)?.cp.agent() ?? c?.last?.agents?.find(a => a.id === helperId) ?? null;
   }
 
-  return { compactCommand, messageHelper, stopHelper, helperState, answerQuestion, goalState, goalControl, harnessDir, status, turnOf, runningTurns, wokenTurns, attach, runTurn, goalCommand, planCommand, researchCommand, llmTarget, noteToolMarker, setPlanBriefing, resetSession, reopenPlan, skipStep, planGoal, planControl, planState, queueMessage, cancelQueued, takeQueue, forget, approve, setMode, stop, pendingFor, pendingAll, close, sessionOf: chatId => sessionMap[chatId]?.sessionId ?? null, workingFolder: chatId => sessionMap[chatId]?.cwd ?? null, isRunning: chatId => !!chats.get(chatId)?.turn, _debug: () => ({ rt, sessionMap }) };
+  return { compactCommand, messageHelper, stopHelper, helperState, answerQuestion, goalState, goalControl, harnessDir, status, turnOf, runningTurns, wokenTurns, attach, runTurn, goalCommand, planCommand, researchCommand, llmTarget, noteToolMarker, setPlanBriefing, resetSession, reopenPlan, skipStep, planGoal, planControl, planState, steerMessage, queueMessage, cancelQueued, takeQueue, forget, approve, setMode, stop, pendingFor, pendingAll, close, sessionOf: chatId => sessionMap[chatId]?.sessionId ?? null, workingFolder: chatId => sessionMap[chatId]?.cwd ?? null, isRunning: chatId => !!chats.get(chatId)?.turn, _debug: () => ({ rt, sessionMap }) };
 }
 
 /** A goal that stopped by itself, in words. */
