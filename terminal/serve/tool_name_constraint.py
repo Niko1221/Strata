@@ -24,7 +24,8 @@ ids, records joined by `|`.
 Two forms are sent: `<function=NAME>` and `<invoke name="NAME">`.  The `<function=` form also
 admits the reserved name `function_calls`, the wrapper some models write before an `<invoke>`
 (`<tool_call><function=function_calls><invoke name="bash">`); the invoke form then constrains the
-real name.
+real name.  When a BPE trigger stops at `<function` (Qwen merges `=` into the name), the
+`<function_calls>` tag shares it, so it is admitted as a tail too.
 
 `build()` returns `None` (and nothing is sent) when a request declares no tools, or the model's
 vocabulary lacks the markers.  A request without the key pays nothing in the engine.
@@ -72,8 +73,9 @@ def _common_prefix(seqs: list[list[int]]) -> list[int]:
     return first[:n]
 
 
-def _form(tok, opener: str, closer: str, names: list[str]) -> str | None:
-    """One `#<trigger>|<tail>|...` group, or None when the form cannot be split into trigger + names."""
+def _form(tok, opener: str, closer: str, names: list[str], extra: tuple[str, ...] = ()) -> str | None:
+    """One `#<trigger>|<tail>|...` group, or None when the form cannot be split into trigger + names.  `extra` are whole
+    tags that stay allowed when they share the trigger (`<function_calls>` starts with `<function` in a BPE vocabulary)."""
     full = [_ids(tok, opener + name + closer, False) for name in names]
     bare = _ids(tok, opener, False)
     if not bare or any(not s for s in full):
@@ -81,6 +83,10 @@ def _form(tok, opener: str, closer: str, names: list[str]) -> str | None:
     # The bare opener bounds the trigger: with one name (or names sharing a prefix) the trigger
     # must still stop before the name, or a hallucinated name would never be masked.
     trigger = _common_prefix(full + [bare])
+    for tag in extra:                        # a tag the trigger also fires on must stay writable
+        ids = _ids(tok, tag, False)
+        if len(ids) > len(trigger) and ids[:len(trigger)] == trigger:
+            full.append(ids)
     tails = [s[len(trigger):] for s in full]
     if not trigger or any(not t for t in tails):
         return None
@@ -108,7 +114,7 @@ def build(tok, declared_names, thinking: bool) -> str | None:
     groups = []
     for opener, closer in FORMS:
         form_names = names + [WRAPPER_NAME] if opener == _TRIGGER and WRAPPER_NAME not in names else names
-        g = _form(tok, opener, closer, form_names)
+        g = _form(tok, opener, closer, form_names, ("<" + WRAPPER_NAME + ">",) if opener == _TRIGGER else ())
         if g:
             groups.append(g)
     if not groups:

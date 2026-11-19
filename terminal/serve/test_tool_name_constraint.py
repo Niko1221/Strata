@@ -102,6 +102,17 @@ class Build(unittest.TestCase):
         self.assertEqual(fn_trigger, _chars("<function"))   # `=b` / `=r` are one id each: the trigger stops before them
         self.assertEqual(fn_tails[0], [1000 + ord("b")] + _chars("ash>"))
 
+    def test_a_wrapper_tag_the_trigger_fires_on_stays_writable(self):
+        # Qwen's BPE: the <function= trigger is `<` `function`, so `<function_calls>` arms it too
+        record = tnc.build(_MergedEq(), ["bash"], thinking=False)
+        (fn_trigger, fn_tails), _ = _parse(record)[6]
+        self.assertEqual(fn_trigger, _chars("<function"))
+        self.assertIn(_chars("_calls>"), fn_tails)
+        # with the char tokenizer the trigger is `<function=`, which `<function_calls>` never completes
+        (fn_trigger, fn_tails), _ = _parse(tnc.build(_Tok(), ["bash"], thinking=False))[6]
+        self.assertEqual(fn_trigger, _chars("<function="))
+        self.assertNotIn(_chars("_calls>"), fn_tails)
+
     def test_the_wrapper_name_is_not_doubled(self):
         record = tnc.build(_Tok(), ["function_calls", "bash"], thinking=False)
         (_, fn_tails), _ = _parse(record)[6]
