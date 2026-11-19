@@ -87,4 +87,31 @@ export async function nativeAction<T=unknown>(path:string,body:unknown={}){const
  if(state&&job&&typeof job.id==='string'&&path==='operations'&&!state.jobs.some(j=>j.id===job.id)){state={...state,jobs:[...state.jobs,job]};listeners.forEach(fn=>fn());}
  await refreshNative(true);return result;}
 
+/** Wait for the specific load job, not a similarly named model or an older ready instance. */
+export async function loadNativeChatModel(model:string):Promise<string>{
+ const job=await api.post<NativeJob>('/api/native/operations',{kind:'load',args:{model}});
+ if(state&&!state.jobs.some(j=>j.id===job.id))put({...state,jobs:[...state.jobs,job]});
+ const deadline=Date.now()+600000;
+ while(Date.now()<deadline){
+  const status=nativeState();
+  const update=status?.jobs.find(j=>j.id===job.id);
+  if(update?.state==='error'||update?.state==='cancelled')throw new Error(update.error??update.summary);
+  if(update?.state==='done'){
+   const id=update.result?.instanceId;
+   if(typeof id!=='string'||!status?.instances.some(i=>i.id===id&&i.model===model&&i.status==='ready'))
+    throw new Error('The selected native model is not ready.');
+   return id;
+  }
+  await new Promise<void>(resolve=>setTimeout(resolve,500));
+ }
+ throw new Error('The model is still loading. Check progress in Models.');
+}
+
+export async function selectNativeChatInstance(id:string){
+ const result=await api.post<NativeState>(`/api/native/instances/${encodeURIComponent(id)}/default`,{});
+ if(result.defaultId!==id||!result.instances.some(i=>i.id===id&&i.status==='ready'))
+  throw new Error('The selected native model is not ready.');
+ put(result);
+}
+
 export {nativeVersionLabel} from './native-catalog';

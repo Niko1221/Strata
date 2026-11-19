@@ -77,7 +77,21 @@ if(process.platform==='win32') {
   const probe=spawnSync(binary.path,['--version'],{encoding:'utf8',timeout:30000,windowsHide:true,env:{...process.env,PATH:join(process.env.SystemRoot??'C:/Windows','System32')}});
   if(probe.error||probe.status!==0||!((probe.stdout+probe.stderr).match(/\b[0-9a-f]{7,40}\b/gi)??[]).some(value=>manifest.source.commit.startsWith(value.toLowerCase())))throw new Error(`Bundled ${choice} executable does not match its source revision`);
  }
- const manifests=files(join(resources,'engine-bundle')).filter(path=>path.endsWith('engine-component.json'));
+  // The Windows installer does not bundle the GPU engine. For the reviewed
+  // portable Q38 preview, verify the exact signed companion rather than
+  // treating its distinct legacy and Q38 source receipts as one build.
+  const preview=process.env.STRATA_Q38_PREVIEW_COMPONENT_DIR;
+  if(preview&&product==='0.6.4') {
+   const folder=resolve(preview), manifestPath=join(folder,'engine-component.json');
+   if(sha256(manifestPath)!=='1408136b87a77149b598c08320a7e0a4ec32c3088d9addafa93fd85471f67f3a')throw new Error('Wrong Q38 preview manifest');
+   const verify="import sys; from pathlib import Path; sys.path.insert(0,sys.argv[1]); from strata_control import engine_component as e, signing; c=e.read_manifest_any(Path(sys.argv[2])); signing.install_component_verifier(signing.load_trusted_keys(environ={})); assert c.signature['key_id']=='9c835e4839a4c6f3' and e.verify_signature(c)=='verified'; e.verify(c,full=True); print(len(c.files))";
+   const checked=spawnSync(py,['-I','-B','-c',verify,control,folder],{encoding:'utf8',timeout:180000,windowsHide:true});
+   if(checked.error||checked.status!==0||checked.stdout.trim()!=='152')throw new Error(`Q38 preview signature or payload verification failed: ${checked.error??checked.stderr}`);
+   const run=spawnSync(join(folder,'strata-q38.exe'),['--version'],{encoding:'utf8',timeout:15000,windowsHide:true});
+   if(run.error||run.status!==0||!run.stdout.includes('SM120 cudart=13050 cublas=131000'))throw new Error('Q38 preview version probe failed');
+   console.log('Verified the signed Q38 preview companion (152 files)');
+  } else {
+  const manifests=files(join(resources,'engine-bundle')).filter(path=>path.endsWith('engine-component.json'));
  if(manifests.length!==1) throw new Error('Stage exactly one current Windows engine package');
  const path=manifests[0],folder=resolve(path,'..');
  const manifest=verifyEngine(folder,engine);
@@ -94,6 +108,7 @@ if(process.platform==='win32') {
   console.log('Verified separate native source: '+JSON.stringify(nativeSource));
  }
  const run=spawnSync(join(folder,manifest.entrypoint),['--version'],{encoding:'utf8',timeout:15000,windowsHide:true});
- if(run.error || run.status!==0 || !run.stdout.includes(engine)) throw new Error('Bundled executable version does not match engine manifest');
+  if(run.error || run.status!==0 || !run.stdout.includes(engine)) throw new Error('Bundled executable version does not match engine manifest');
+  }
 }
 console.log(`Release payload verified: Hakua ${product}, engine ${engine}, Control ${controlVersion}`);

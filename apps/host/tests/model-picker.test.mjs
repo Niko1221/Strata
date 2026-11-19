@@ -38,7 +38,7 @@ test('downloaded files stay visible during load transitions and recoverable fail
 
 test('downloaded optimized models that are not loaded still appear in the chat picker (#3814)', () => {
   const installed = [{ model: 'swift', model_name: 'Swift IQ3_XXS', ready: true }, { model: 'half', model_name: 'Half', ready: false }, { model: 'run', model_name: 'Running one', ready: true }];
-  const out = pickerNativeModels(installed, [{ label: 'Running one' }]);
+  const out = pickerNativeModels(installed, [{ model: 'run', status: 'ready', label: 'Renamed label' }, { model: 'swift', status: 'error' }]);
   assert.deepEqual(out.map(m => m.model), ['swift']);
   assert.deepEqual(pickerNativeModels(undefined, null), []);
 });
