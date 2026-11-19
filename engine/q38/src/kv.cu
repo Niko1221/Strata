@@ -17,6 +17,17 @@ __global__ void store_f16(const float* x,uint8_t* cache,int pos,int ctx,int* sta
     int i=blockIdx.x*256+threadIdx.x;if(i<1024){half value=__float2half_rn(x[i]);if(!isfinite(__half2float(value))){atomicExch(status,1);return;}
         reinterpret_cast<half*>(cache)[(size_t(i/256)*ctx+pos)*256+i%256]=value;}
 }
+// Batched F16 K/V write: one launch for all tokens of a row instead of one
+// launch per token.  x_batch is [n_tokens, 1024] (K or V contiguous per token).
+// Cache layout is unchanged: [i/256, pos+t, i%256].
+__global__ void store_f16_batch(const float* x_batch,uint8_t* cache,int pos_start,int n_tokens,int ctx,int* status){
+    if(atomicAdd(status,0))return;
+    int t=blockIdx.y, i=blockIdx.x*256+threadIdx.x;
+    if(t>=n_tokens||i>=1024)return;
+    half value=__float2half_rn(x_batch[size_t(t)*1024+i]);
+    if(!isfinite(__half2float(value))){atomicExch(status,1);return;}
+    reinterpret_cast<half*>(cache)[(size_t(i/256)*ctx+(pos_start+t))*256+i%256]=value;
+}
 // GGML reference Q8_0: positive amax/127, roundf (ties away from zero).
 // Q4_0: signed first absolute maximum / -8, low first16/high second16.
 // Scale is rounded to FP16 for storage AFTER codes use the original FP32 scale.
@@ -409,11 +420,25 @@ void KvCache::enqueue_batch(int index,int pos_start,int n_tokens,const float* q_
         }catch(...){poisoned_=true;throw;}
         return;
     }
+    // F16 batched K/V store: replace n_tokens separate store_f16 launches with
+    // one launch for K and one for V (grid.y = n_tokens). Attention still runs
+    // per token below (each token has a distinct causal position).
+    if(config_.mode==KvMode::f16){
+        demand(!poisoned_,"KV session requires reset after error");
+        demand(index>=0&&index<int(layers_.size()),"invalid attention layer");
+        auto& l=layers_[index];
+        demand(pos_start==l.length&&pos_start>=0&&pos_start+n_tokens<=capacity_,"KV batch position out of range");
+        store_f16_batch<<<dim3(4,unsigned(n_tokens)),256,0,stream_>>>(k_batch,l.key.as<uint8_t>(),pos_start,n_tokens,capacity_,status_.as<int>());
+        store_f16_batch<<<dim3(4,unsigned(n_tokens)),256,0,stream_>>>(v_batch,l.value.as<uint8_t>(),pos_start,n_tokens,capacity_,status_.as<int>());
+        ck(cudaGetLastError());
+    }
+    const bool batched_store=(config_.mode==KvMode::f16);
     for(int t=0;t<n_tokens;++t){
-        enqueue(index,pos_start+t,q_batch+size_t(t)*6144,k_batch+size_t(t)*1024,v_batch+size_t(t)*1024,gate_batch+size_t(t)*6144,output_batch+size_t(t)*6144,scores);
+        enqueue(index,pos_start+t,q_batch+size_t(t)*6144,k_batch+size_t(t)*1024,v_batch+size_t(t)*1024,gate_batch+size_t(t)*6144,output_batch+size_t(t)*6144,scores,batched_store);
     }
 }
-void KvCache::enqueue(int index,int pos,const float* q,const float* k,const float* v,const float* gate,float* output,float* scores){
+void KvCache::enqueue(int index,int pos,const float* q,const float* k,const float* v,const float* gate,float* output,float* scores,bool skip_store){
+(void)skip_store;
     demand(!poisoned_,"KV session requires reset after error");demand(index>=0&&index<int(layers_.size()),"invalid attention layer");auto& l=layers_[index];
     // Admission does not mutate cache; unsupported rewinds/restore/shift fail here.
     demand(pos==l.length&&pos>=0&&pos<capacity_,"KV position is not the next causal cell");
@@ -444,8 +469,10 @@ void KvCache::enqueue(int index,int pos,const float* q,const float* k,const floa
         finite(q,6144,status_.as<int>(),stream_);finite(k,1024,status_.as<int>(),stream_);finite(v,1024,status_.as<int>(),stream_);finite(gate,6144,status_.as<int>(),stream_);
         if(conservative_)check();
         if(config_.mode==KvMode::f16){
-            store_f16<<<4,256,0,stream_>>>(k,l.key.as<uint8_t>(),pos,capacity_,status_.as<int>());store_f16<<<4,256,0,stream_>>>(v,l.value.as<uint8_t>(),pos,capacity_,status_.as<int>());
-            ck(cudaGetLastError());if(conservative_)check();
+            if(!skip_store){
+                store_f16<<<4,256,0,stream_>>>(k,l.key.as<uint8_t>(),pos,capacity_,status_.as<int>());store_f16<<<4,256,0,stream_>>>(v,l.value.as<uint8_t>(),pos,capacity_,status_.as<int>());
+                ck(cudaGetLastError());if(conservative_)check();
+            }
             attention_apply(q,gate,l.key.as<half>(),l.value.as<half>(),output,scores,pos,capacity_,stream_,status_.as<int>());
         }else{
             if(config_.mode==KvMode::spin8_k8v4){
