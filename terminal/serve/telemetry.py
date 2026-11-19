@@ -1344,7 +1344,7 @@ class _Intel:
         if self.hwmon:
             if out["temp"] is None:
                 files = os.listdir(self.hwmon)
-                src = next((lab[:-6] for lab in files if lab.endswith("_label") and self._rd(f"{self.hwmon}/{lab}") == "pkg"), None)
+                src = next((lab[:-6] for lab in files if lab.startswith("temp") and lab.endswith("_label") and self._rd(f"{self.hwmon}/{lab}") == "pkg"), None)
                 v = self._rd(f"{self.hwmon}/{src or 'temp1'}_input")
                 out["temp"] = int(v) / 1000 if v and v.lstrip("-").isdigit() else None
             if out["power"] is None:
