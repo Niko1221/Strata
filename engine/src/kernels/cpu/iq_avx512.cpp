@@ -774,7 +774,8 @@ void iq512_fused_gu_rows(int type, const uint8_t* blob, size_t gu_row, size_t up
 // every token.  The arithmetic is ggml-cpu's AVX2 dot, order for order: per block the 8 integer lanes (values 4l .. 4l+3 of the
 // block, one vpdpbusd lane each), converted, scaled by f16(dx) * f16(dy) and fused into ONE eight-lane float accumulator in block order,
 // hsum last: a token's row is ggml-cpu's dot bit for bit.  An odd block count ends on a 256-bit block.  (An IQ4_NL version of the same
-// shape measured 5-11% SLOWER than iq4nl256_down_rows on Zen 4 at 2-4 tokens and was dropped.)
+// shape measured 5-11% SLOWER than iq4nl256_down_rows on Zen 4 at 2-4 tokens and was dropped; iq4nl512_down_rows at the end of this
+// file keeps that shape's bits with fewer operations a block.)
 namespace {
 
 inline __m512i pair_q8_0(const block_q8_0* a, const block_q8_0* b) {
@@ -854,5 +855,272 @@ void qd_rows_nt(int nt, const uint8_t* w, size_t row_bytes, int n, const void* c
 void q50_512_down_rows(const uint8_t* w, size_t row_bytes, int n, const void* const* hq, int nt, float* const* out, int r0, int r1) {
     qd_rows_nt(nt, w, row_bytes, n, hq, out, r0, r1);
 }
+
+// ---- IQ4_NL down rows (type 20) in 512-bit lanes, against Q8_0 activations.
+// One token: bit for bit ggml-cpu's ggml_vec_dot_iq4_nl_q8_0 (its x86 AVX2 path): block 2k in lanes 0-7 (ggml's
+// accum1), block 2k+1 in lanes 8-15 (accum2), fma(d_y * d_x, float(lane)), then hsum_float_8(accum1 + accum2).
+// Several tokens: bit for bit iq4nl256_down_rows (iq_avx2_rows.inl iq4nl_rows): two rows per register (row r in lanes
+// 0-7, row r+1 in 8-15), each row one 8-lane accumulator over its blocks in order, then iq_avx2's hsum8.
+// Each int32 lane is the same integer as ggml's (sum of 4 products w*y): the codebook is looked up as w + 128 (u8)
+// and vpdpbusd starts from -128 * (the lane's 4 y), computed once per call - Zen 4 runs a zmm op as two 256-bit
+// halves (and loads one zmm a cycle), so what pays is fewer vector operations and fewer 64-byte loads a block, not the
+// width: no abs/sign per block, unmasked loads inside a quad of 4 blocks (72 bytes), one vpermb (vpermi2b for two
+// rows) for a block pair's nibbles and one more for the codebook, several blocks' scales converted and multiplied by
+// d_y at once, the y side read once for two rows, both rows' horizontal sums in one register.
+#if defined(_MSC_VER) && !defined(__clang__)
+#define STRATA_IQ512_FORCEINLINE __forceinline   // MSVC leaves it a call otherwise, with the accumulators spilled around it
+#else
+#define STRATA_IQ512_FORCEINLINE inline __attribute__((always_inline))
+#endif
+namespace {
+// ggml-cpu's hsum_float_8(accum1 + accum2) of two rows at once (a, b = their 16-lane accumulators): element 0 = row
+// a's sum, element 8 = row b's.  The same additions in the same order, lane-parallel.
+STRATA_IQ512_FORCEINLINE __m512 iq4nl_ggml_hsum8x2(__m512 a, __m512 b) {
+    __m512 s = _mm512_add_ps(_mm512_shuffle_f32x4(a, b, _MM_SHUFFLE(1, 0, 1, 0)), _mm512_shuffle_f32x4(a, b, _MM_SHUFFLE(3, 2, 3, 2)));
+    s = _mm512_add_ps(_mm512_shuffle_f32x4(s, s, _MM_SHUFFLE(2, 3, 0, 1)), s);
+    s = _mm512_add_ps(s, _mm512_castpd_ps(_mm512_unpackhi_pd(_mm512_castps_pd(s), _mm512_castps_pd(s))));
+    return _mm512_add_ps(s, _mm512_movehdup_ps(s));
+}
+// iq_avx2.cpp's hsum8 of lanes 0-7 (-> element 0) and of lanes 8-15 (-> element 8); its two hadds as movehdup / unpackhi
+STRATA_IQ512_FORCEINLINE __m512 iq4nl_avx2_hsum8x2(__m512 v) {
+    __m512 s = _mm512_add_ps(v, _mm512_shuffle_f32x4(v, v, _MM_SHUFFLE(2, 3, 0, 1)));
+    s = _mm512_add_ps(s, _mm512_movehdup_ps(s));
+    return _mm512_add_ps(s, _mm512_castpd_ps(_mm512_unpackhi_pd(_mm512_castps_pd(s), _mm512_castps_pd(s))));
+}
+inline void iq4nl_rows_ahead(const uint8_t* p, size_t bytes) {
+    if (prefetch_ahead <= 0) return;
+    for (size_t o = 0; o < bytes; o += 64) _mm_prefetch((const char*) p + prefetch_ahead + o, _MM_HINT_T0);
+}
+inline __m512i iq4nl_tbl128() {   // kvalues_iq4nl + 128 as u8, in every 128-bit lane
+    return _mm512_xor_si512(_mm512_broadcast_i32x4(_mm_loadu_si128((const __m128i*) kvalues_iq4nl)), _mm512_set1_epi8((char) 0x80));
+}
+// vpermb index for 64 nibble bytes [a 0-15, a 0-15, b 0-15, b 0-15]: block a's 16 qs bytes start at source byte `a`,
+// block b's at `b` (vpermi2b: 64 + the byte in the second source)
+inline __m512i iq4nl_idx2(int a, int b) {
+    alignas(64) uint8_t v[64];
+    for (int i = 0; i < 16; ++i) v[i] = v[16 + i] = (uint8_t) (a + i), v[32 + i] = v[48 + i] = (uint8_t) (b + i);
+    return _mm512_load_si512(v);
+}
+inline __m512i iq4nl_idx_ps(int a, int b) {   // vpermps index [a x 8, b x 8]
+    return _mm512_inserti64x4(_mm512_set1_epi32(a), _mm256_set1_epi32(b), 1);
+}
+// 64 nibble bytes (the high-nibble halves still unshifted) -> 64 codebook values + 128
+STRATA_IQ512_FORCEINLINE __m512i iq4nl_lookup(__m512i n, __m512i tbl) {
+    n = _mm512_mask_srli_epi16(n, 0xFF00FF00u, n, 4);   // bytes 16-31 and 48-63: the high nibbles
+    return _mm512_permutexvar_epi8(n, tbl);   // vpermb reads index bits 0-5 and the table repeats every 16: no mask
+}
+STRATA_IQ512_FORCEINLINE __m512i iq4nl_corr(__m512i yy) {   // -128 * (4 y a lane)
+    return _mm512_sub_epi32(_mm512_setzero_si512(), _mm512_dpbusd_epi32(_mm512_setzero_si512(), _mm512_set1_epi8((char) 0x80), yy));
+}
+constexpr int kIq4nlMaxPairs = 64;   // one token: n_ff up to 4096 (larger: ggml / AVX-2 paths)
+constexpr int kIq4nlMtStack = 32;    // several tokens: n_ff up to 1024 keeps its y side on the stack
+
+struct Iq4nl1tK {
+    __m512i tbl, n0, n1, w8, ip[4];
+};
+// one block pair of one row: n = its 64 nibble bytes, d = [d_a x 8, d_b x 8] (d_x * d_y)
+STRATA_IQ512_FORCEINLINE __m512 iq4nl512_1t_pair(__m512 acc, __m512i n, __m512i tbl, __m512i cr, __m512i yy, __m512 d) {
+    return _mm512_fmadd_ps(d, _mm512_cvtepi32_ps(_mm512_dpbusd_epi32(cr, iq4nl_lookup(n, tbl), yy)), acc);
+}
+// R rows at once (each its own accumulator, the row's order kept; the y side is loaded once for them).  An octet =
+// 8 blocks = 144 bytes a step, as two quads of 72: a quad's first pair is read at its byte 0, the second at byte 8 (its
+// blocks at 28 and 46), so every 64-byte load stays inside the row and needs no mask.  The octet's eight scales (words
+// 0, 9, 18, 27 of bytes 0-63 and 4, 13, 22, 31 of bytes 64-127) are converted and multiplied by d_y as one ymm, then a
+// vpermps a pair puts [d_a x 8, d_b x 8] in place.  Then a quad, then a masked pair, if the row has them.
+template <int R>
+STRATA_IQ512_FORCEINLINE void iq4nl512_1t_group(const uint8_t* row, size_t row_bytes, int np, const __m512i* yy,
+                                                const __m512i* cr, const float* dyf, const Iq4nl1tK& c, float* out) {
+    __m512 acc[R];
+    for (int i = 0; i < R; ++i) acc[i] = _mm512_setzero_ps();
+    int k = 0;
+    for (; k + 4 <= np; k += 4) {
+        __m512i c0 = cr[k], c1 = cr[k + 1], c2 = cr[k + 2], c3 = cr[k + 3];
+        __m512i y0 = yy[k], y1 = yy[k + 1], y2 = yy[k + 2], y3 = yy[k + 3];
+        const __m256 dy = _mm256_loadu_ps(dyf + 2 * k);
+        for (int i = 0; i < R; ++i) {
+            const uint8_t* p = row + (size_t) i * row_bytes + (size_t) k * 2 * sizeof(block_iq4_nl);
+            __m512i s0 = _mm512_loadu_si512(p);
+            const __m512 d = _mm512_castps256_ps512(_mm256_mul_ps(
+                dy, _mm256_cvtph_ps(_mm512_castsi512_si128(_mm512_permutex2var_epi16(s0, c.w8, _mm512_loadu_si512(p + 64))))));
+            acc[i] = iq4nl512_1t_pair(acc[i], _mm512_permutexvar_epi8(c.n0, s0), c.tbl, c0, y0, _mm512_permutexvar_ps(c.ip[0], d));
+            acc[i] = iq4nl512_1t_pair(acc[i], _mm512_permutexvar_epi8(c.n1, _mm512_loadu_si512(p + 8)), c.tbl, c1, y1,
+                                      _mm512_permutexvar_ps(c.ip[1], d));
+            acc[i] = iq4nl512_1t_pair(acc[i], _mm512_permutexvar_epi8(c.n0, _mm512_loadu_si512(p + 72)), c.tbl, c2, y2,
+                                      _mm512_permutexvar_ps(c.ip[2], d));
+            acc[i] = iq4nl512_1t_pair(acc[i], _mm512_permutexvar_epi8(c.n1, _mm512_loadu_si512(p + 80)), c.tbl, c3, y3,
+                                      _mm512_permutexvar_ps(c.ip[3], d));
+        }
+    }
+    if (k + 2 <= np) {
+        __m512i c0 = cr[k], c1 = cr[k + 1], y0 = yy[k], y1 = yy[k + 1];
+        const __m128 dy = _mm_loadu_ps(dyf + 2 * k);
+        for (int i = 0; i < R; ++i) {
+            const uint8_t* p = row + (size_t) i * row_bytes + (size_t) k * 2 * sizeof(block_iq4_nl);
+            __m512i s0 = _mm512_loadu_si512(p);
+            const __m512 d = _mm512_castps128_ps512(
+                _mm_mul_ps(dy, _mm_cvtph_ps(_mm512_castsi512_si128(_mm512_permutexvar_epi16(c.w8, s0)))));
+            acc[i] = iq4nl512_1t_pair(acc[i], _mm512_permutexvar_epi8(c.n0, s0), c.tbl, c0, y0, _mm512_permutexvar_ps(c.ip[0], d));
+            acc[i] = iq4nl512_1t_pair(acc[i], _mm512_permutexvar_epi8(c.n1, _mm512_loadu_si512(p + 8)), c.tbl, c1, y1,
+                                      _mm512_permutexvar_ps(c.ip[1], d));
+        }
+        k += 2;
+    }
+    if (k < np) {   // an odd pair count: the row's last 36 bytes, masked
+        const __m128 dy = _mm_loadu_ps(dyf + 2 * k);
+        for (int i = 0; i < R; ++i) {
+            const uint8_t* p = row + (size_t) i * row_bytes + (size_t) k * 2 * sizeof(block_iq4_nl);
+            const __m512i s0 = _mm512_maskz_loadu_epi8((1ull << 36) - 1, p);
+            const __m512 d = _mm512_castps128_ps512(
+                _mm_mul_ps(dy, _mm_cvtph_ps(_mm512_castsi512_si128(_mm512_permutexvar_epi16(c.w8, s0)))));
+            acc[i] = iq4nl512_1t_pair(acc[i], _mm512_permutexvar_epi8(c.n0, s0), c.tbl, cr[k], yy[k], _mm512_permutexvar_ps(c.ip[0], d));
+        }
+    }
+    for (int i = 0; i + 1 < R; i += 2) {
+        const __m512 h = iq4nl_ggml_hsum8x2(acc[i], acc[i + 1]);
+        _mm_store_ss(out + i, _mm512_castps512_ps128(h));
+        _mm_store_ss(out + i + 1, _mm512_extractf32x4_ps(h, 2));
+    }
+    if (R & 1) out[R - 1] = hsum8_ggml(_mm256_add_ps(_mm512_castps512_ps256(acc[R - 1]), _mm512_extractf32x8_ps(acc[R - 1], 1)));
+}
+
+STRATA_IQ512_FORCEINLINE void iq4nl512_rows_1t_any(const uint8_t* w, size_t row_bytes, int nb, const block_q8_0* y, float* out,
+                                                   int r0, int r1) {
+    const int np = nb / 2;
+    const Iq4nl1tK c = {iq4nl_tbl128(), iq4nl_idx2(2, 20), iq4nl_idx2(30, 48),
+                        _mm512_zextsi128_si512(_mm_setr_epi16(0, 9, 18, 27, 32 + 4, 32 + 13, 32 + 22, 32 + 31)),
+                        {iq4nl_idx_ps(0, 1), iq4nl_idx_ps(2, 3), iq4nl_idx_ps(4, 5), iq4nl_idx_ps(6, 7)}};
+    __m512i yy[kIq4nlMaxPairs], cr[kIq4nlMaxPairs];
+    float dyf[2 * kIq4nlMaxPairs + 8];   // d_y a block, zeros behind the last
+    for (int k = 0; k < np; ++k) {
+        yy[k] = _mm512_inserti64x4(_mm512_castsi256_si512(_mm256_loadu_si256((const __m256i*) y[2 * k].qs)),
+                                   _mm256_loadu_si256((const __m256i*) y[2 * k + 1].qs), 1);
+        cr[k] = iq4nl_corr(yy[k]);
+    }
+    for (int ib = 0; ib < nb + 8; ++ib) dyf[ib] = ib < nb ? h2f(y[ib].d) : 0.0f;
+    int r = r0;
+    for (; r + 2 <= r1; r += 2) {
+        const uint8_t* row = w + (size_t) r * row_bytes;
+        iq4nl_rows_ahead(row, 2 * row_bytes);
+        iq4nl512_1t_group<2>(row, row_bytes, np, yy, cr, dyf, c, out + r);
+    }
+    if (r < r1) {
+        const uint8_t* row = w + (size_t) r * row_bytes;
+        iq4nl_rows_ahead(row, row_bytes);
+        iq4nl512_1t_group<1>(row, row_bytes, np, yy, cr, dyf, c, out + r);
+    }
+}
+
+void iq4nl512_rows_1t(const uint8_t* w, size_t row_bytes, int nb, const block_q8_0* y, float* out, int r0, int r1) {
+    // n_ff 640 in packed rows (Flash-Next's down projection): the loop counts as constants
+    if (nb == 20 && row_bytes == 20 * sizeof(block_iq4_nl)) iq4nl512_rows_1t_any(w, 20 * sizeof(block_iq4_nl), 20, y, out, r0, r1);
+    else iq4nl512_rows_1t_any(w, row_bytes, nb, y, out, r0, r1);
+}
+
+// one block of two rows for NT tokens: n = its 64 nibble bytes, d[t] = [d_x * d_y of the quad's 4 blocks: row a | row b]
+template <int NT>
+STRATA_IQ512_FORCEINLINE void iq4nl512_mt_block(__m512* acc, __m512i n, __m512i tbl, const __m512* d, __m512i pi,
+                                                const __m512i* v, size_t vstep) {
+    const __m512i q = iq4nl_lookup(n, tbl);
+    for (int t = 0; t < NT; ++t, v += vstep)
+        acc[t] = _mm512_fmadd_ps(_mm512_permutexvar_ps(pi, d[t]), _mm512_cvtepi32_ps(_mm512_dpbusd_epi32(v[1], q, v[0])), acc[t]);
+}
+
+// Two rows a register, a quad = 4 blocks = 72 bytes a step: one 64-byte load a row holds the quad's blocks 0-2 and its
+// four scales, a second one at byte 8 the block 3; vpermi2b places a block of both rows, vpermi2w their eight scales.
+template <int NT>
+void iq4nl512_rows_mt(const uint8_t* w, size_t row_bytes, int nb, const block_q8_0* const* y, float* const* out,
+                      int r0, int r1) {
+    const int nq = (nb + 3) / 4;
+    // per token and block: y broadcast to both halves, its correction (yv); per token and quad: d_y of its four blocks,
+    // twice (dyv).  No allocation a call (the pool's tasks are row ranges): the stack, a thread_local buffer above it.
+    __m512i ys[NT * kIq4nlMtStack * 2];
+    __m256 ds[NT * ((kIq4nlMtStack + 3) / 4)];
+    __m512i* yv = ys;
+    __m256* dyv = ds;
+    if (nb > kIq4nlMtStack) {
+        static thread_local std::vector<uint8_t> buf;
+        buf.resize((size_t) NT * nb * 2 * sizeof(__m512i) + (size_t) NT * nq * sizeof(__m256) + 64);
+        yv = (__m512i*) (((uintptr_t) buf.data() + 63) & ~(uintptr_t) 63);
+        dyv = (__m256*) (yv + (size_t) NT * nb * 2);
+    }
+    for (int t = 0; t < NT; ++t) {
+        for (int ib = 0; ib < nb; ++ib) {
+            const __m512i v = _mm512_broadcast_i64x4(_mm256_loadu_si256((const __m256i*) y[t][ib].qs));
+            yv[((size_t) t * nb + ib) * 2] = v;
+            yv[((size_t) t * nb + ib) * 2 + 1] = iq4nl_corr(v);
+        }
+        for (int iq = 0; iq < nq; ++iq) {
+            float d[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+            for (int i = 0; i < 4 && iq * 4 + i < nb; ++i) d[i] = h2f(y[t][iq * 4 + i].d);
+            dyv[(size_t) t * nq + iq] = _mm256_broadcast_ps((const __m128*) d);
+        }
+    }
+    const size_t vstep = (size_t) nb * 2;
+    const __m512i tbl = iq4nl_tbl128();   // the constants after the allocations: gcc keeps them in registers
+    const __m512i n0 = iq4nl_idx2(2, 66), n1 = iq4nl_idx2(20, 84), n2 = iq4nl_idx2(38, 102), n3 = iq4nl_idx2(48, 112);
+    const __m512i p0 = iq4nl_idx_ps(0, 4), p1 = iq4nl_idx_ps(1, 5), p2 = iq4nl_idx_ps(2, 6), p3 = iq4nl_idx_ps(3, 7);
+    const __m512i wi = _mm512_zextsi128_si512(_mm_setr_epi16(0, 9, 18, 27, 32, 41, 50, 59));
+    for (int r = r0; r < r1; r += 2) {
+        const bool two = r + 1 < r1;
+        const uint8_t* ra = w + (size_t) r * row_bytes;
+        const uint8_t* rb = two ? ra + row_bytes : ra;   // a lone last row: computed twice, the copy dropped
+        iq4nl_rows_ahead(ra, two ? 2 * row_bytes : row_bytes);
+        __m512 acc[NT], d[NT];
+        for (int t = 0; t < NT; ++t) acc[t] = _mm512_setzero_ps();
+        const __m512i* v = yv;
+        const __m256* dy = dyv;
+        const uint8_t *pa = ra, *pb = rb;
+        for (int iq = 0; iq < nb / 4; ++iq, v += 8, ++dy, pa += 4 * sizeof(block_iq4_nl), pb += 4 * sizeof(block_iq4_nl)) {
+            const __m512i la = _mm512_loadu_si512(pa), lb = _mm512_loadu_si512(pb);
+            const __m256 dx = _mm256_cvtph_ps(_mm512_castsi512_si128(_mm512_permutex2var_epi16(la, wi, lb)));
+            for (int t = 0; t < NT; ++t) d[t] = _mm512_castps256_ps512(_mm256_mul_ps(dx, dy[(size_t) t * nq]));
+            iq4nl512_mt_block<NT>(acc, _mm512_permutex2var_epi8(la, n0, lb), tbl, d, p0, v, vstep);
+            iq4nl512_mt_block<NT>(acc, _mm512_permutex2var_epi8(la, n1, lb), tbl, d, p1, v + 2, vstep);
+            iq4nl512_mt_block<NT>(acc, _mm512_permutex2var_epi8(la, n2, lb), tbl, d, p2, v + 4, vstep);
+            iq4nl512_mt_block<NT>(acc, _mm512_permutex2var_epi8(_mm512_loadu_si512(pa + 8), n3, _mm512_loadu_si512(pb + 8)), tbl,
+                                  d, p3, v + 6, vstep);
+        }
+        if (const int m = nb % 4) {   // 1-3 blocks left: one masked load a row holds them
+            const __mmask64 k = (1ull << (m * sizeof(block_iq4_nl))) - 1;
+            const __m512i la = _mm512_maskz_loadu_epi8(k, pa), lb = _mm512_maskz_loadu_epi8(k, pb);
+            const __m256 dx = _mm256_cvtph_ps(_mm512_castsi512_si128(_mm512_permutex2var_epi16(la, wi, lb)));
+            for (int t = 0; t < NT; ++t) d[t] = _mm512_castps256_ps512(_mm256_mul_ps(dx, dy[(size_t) t * nq]));
+            iq4nl512_mt_block<NT>(acc, _mm512_permutex2var_epi8(la, n0, lb), tbl, d, p0, v, vstep);
+            if (m > 1) iq4nl512_mt_block<NT>(acc, _mm512_permutex2var_epi8(la, n1, lb), tbl, d, p1, v + 2, vstep);
+            if (m > 2) iq4nl512_mt_block<NT>(acc, _mm512_permutex2var_epi8(la, n2, lb), tbl, d, p2, v + 4, vstep);
+        }
+        for (int t = 0; t < NT; ++t) {
+            const __m512 h = iq4nl_avx2_hsum8x2(acc[t]);
+            _mm_store_ss(out[t] + r, _mm512_castps512_ps128(h));
+            if (two) _mm_store_ss(out[t] + r + 1, _mm512_extractf32x4_ps(h, 2));
+        }
+    }
+}
+}  // namespace
+
+bool iq4nl512_down_rows(const uint8_t* w, size_t row_bytes, int n, const void* const* hq, int nt, bool multi,
+                        float* const* out, int r0, int r1) {
+    const int nb = n / QK4_NL;
+    if (n % QK4_NL != 0 || (!multi && (nb % 2 != 0 || nb / 2 > kIq4nlMaxPairs))) return false;   // ggml's odd last block: a scalar tail
+    const block_q8_0* const* y = (const block_q8_0* const*) hq;
+    if (!multi) {
+        for (int t = 0; t < nt; ++t) iq4nl512_rows_1t(w, row_bytes, nb, y[t], out[t], r0, r1);
+        return true;
+    }
+    for (int t0 = 0; t0 < nt; t0 += 8) {   // the weights are decoded once for up to 8 tokens (the pool's MAXT)
+        switch (nt - t0 < 8 ? nt - t0 : 8) {
+            case 1: iq4nl512_rows_mt<1>(w, row_bytes, nb, y + t0, out + t0, r0, r1); break;
+            case 2: iq4nl512_rows_mt<2>(w, row_bytes, nb, y + t0, out + t0, r0, r1); break;
+            case 3: iq4nl512_rows_mt<3>(w, row_bytes, nb, y + t0, out + t0, r0, r1); break;
+            case 4: iq4nl512_rows_mt<4>(w, row_bytes, nb, y + t0, out + t0, r0, r1); break;
+            case 5: iq4nl512_rows_mt<5>(w, row_bytes, nb, y + t0, out + t0, r0, r1); break;
+            case 6: iq4nl512_rows_mt<6>(w, row_bytes, nb, y + t0, out + t0, r0, r1); break;
+            case 7: iq4nl512_rows_mt<7>(w, row_bytes, nb, y + t0, out + t0, r0, r1); break;
+            default: iq4nl512_rows_mt<8>(w, row_bytes, nb, y + t0, out + t0, r0, r1); break;
+        }
+    }
+    return true;
+}
+
 
 }  // namespace strata::kernels::cpu

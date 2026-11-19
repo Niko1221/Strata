@@ -236,6 +236,56 @@ bool q50_512_ok() {
     return ok;
 }
 
+// The same check for the 512-bit IQ4_NL down rows, each form against the code it replaces: one token against ggml-cpu's dot, several
+// against iq4nl256_down_rows (odd row counts, groups of five and eight tokens, an odd pair count after whole octets and n_ff
+// above 1024 included).  A mismatch keeps both of those paths.
+bool iq4nl512_ok() {
+    static const bool ok = [] {
+        const Tr tr = traits(kTIq4nl);
+        const Tr t8 = traits(kTQ8_0);
+        if (!tr.has_dot() || !t8.has_from_float()) return false;
+        uint32_t seed = 27182u;
+        auto rnd = [&seed] { seed = seed * 1664525u + 1013904223u; return seed >> 8; };
+        for (const int n : {64, 96, 160, 320, 448, 640, 1088}) {
+            constexpr int rows = 17, max_t = 8;
+            const int nt = n % 64 == 0 ? max_t : 5;
+            const size_t rb = row_size_of(kTIq4nl, (int64_t) n), nb = (size_t) n / 32, bb = rb / nb;
+            std::vector<uint8_t> w((size_t) rows * rb);
+            for (auto& b : w) b = (uint8_t) rnd();
+            for (int r = 0; r < rows; ++r)
+                for (size_t k = 0; k < nb; ++k) { uint8_t* d = &w[(size_t) r * rb + k * bb]; d[0] = 0x66; d[1] = 0x2e; }
+            std::vector<std::vector<uint8_t>> act(nt, std::vector<uint8_t>(row_size_of(kTQ8_0, n)));
+            const void* hp[max_t];
+            for (int t = 0; t < nt; ++t) {
+                std::vector<float> x((size_t) n);
+                for (auto& v : x) v = ((float) (rnd() % 2001) - 1000.f) * 0.001f;
+                t8.from_float(x.data(), act[(size_t) t].data(), n);
+                hp[t] = act[(size_t) t].data();
+            }
+            std::vector<float> got((size_t) nt * rows), want((size_t) nt * rows);
+            float* gp[max_t];
+            float* wp[max_t];
+            for (int t = 0; t < nt; ++t) { gp[t] = &got[(size_t) t * rows]; wp[t] = &want[(size_t) t * rows]; }
+            if (iq4nl512_down_rows(w.data(), rb, n, hp, nt, false, gp, 0, rows)) {
+                for (int r = 0; r < rows; ++r)
+                    for (int t = 0; t < nt; ++t) tr.dot(n, &wp[t][r], w.data() + (size_t) r * rb, hp[t]);
+                if (std::memcmp(got.data(), want.data(), got.size() * sizeof(float)) != 0) {
+                    std::fprintf(stderr, "strata: the 512-bit IQ4_NL down rows differ from this ggml-cpu's dot (n=%d): STRATA_IQ4NL512 not used\n", n);
+                    return false;
+                }
+            }
+            iq4nl512_down_rows(w.data(), rb, n, hp, nt, true, gp, 0, rows);
+            iq4nl256_down_rows(w.data(), rb, n, hp, nt, wp, 0, rows);
+            if (std::memcmp(got.data(), want.data(), got.size() * sizeof(float)) != 0) {
+                std::fprintf(stderr, "strata: the 512-bit IQ4_NL down rows differ from iq4nl256_down_rows (n=%d): STRATA_IQ4NL512 not used\n", n);
+                return false;
+            }
+        }
+        return true;
+    }();
+    return ok;
+}
+
 void init_once() {
     static std::once_flag once;
     std::call_once(once, [] { layer_init(); });
@@ -668,6 +718,16 @@ void native_down_rows_impl(const NativeFmt& f, const uint8_t* blob, const void* 
     if (q50_512 && f.d_type == 6 && nt >= q50_min && f.tail_off == 0 && q50_512_ok()) {
         q50_512_down_rows(blob + f.down_off, f.d_row, (int) f.n_ff, hq, nt, out, r0, r1);
         return;
+    }
+    // OPT-IN: STRATA_IQ4NL512=1 sends IQ4_NL down rows to 512-bit rows with the same bits as the path each call would take below
+    // (iq4nl512_ok checks that on first use): iq4nl256_down_rows' order where that runs, ggml-cpu's dot (or iq4nl_reference_rows,
+    // the same bits) everywhere else.
+    static const bool iq4nl512 = cpu_avx512_ok() && cpu_vnni_ok() &&
+                                 [] { const char* v = std::getenv("STRATA_IQ4NL512"); return v != nullptr && std::atoi(v) != 0; }();
+    if (iq4nl512 && f.d_type == 20 && f.tail_off == 0 && iq4nl512_ok()) {
+        const bool multi = nt >= mt_min && iq4nl_mt && (Arithmetic == NativeArithmetic::Default || mt_min <= 1);
+        if ((multi || flavour_avx2()) && iq4nl512_down_rows(blob + f.down_off, f.d_row, (int) f.n_ff, hq, nt, multi, out, r0, r1))
+            return;
     }
     if (cpu_avx2_ok() && nt >= mt_min && f.d_type == 20 && iq4nl_mt) {   // #152: the same rule as the gate/up rows
         if (Arithmetic == NativeArithmetic::Default || mt_min <= 1) {
