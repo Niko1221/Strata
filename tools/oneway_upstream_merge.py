@@ -158,6 +158,15 @@ ADOPT, RETAIN, MERGE, BINARY, DELETE, DIVERGE = (
     "binary_conflict", "delete", "add_delete_conflict",
 )
 
+# Build-system foundations of the NEW upstream layout.  When both sides
+# changed these, the official version must win or the hybrid tree cannot be
+# built; the fork version is preserved as a review copy instead of discarded.
+FOUNDATION_TARGETS: Tuple[str, ...] = (
+    "engine/CMakeLists.txt",
+    "engine/CMakePresets.json",
+    "engine/cmake/",
+)
+
 
 @dataclass
 class Record:
@@ -424,6 +433,13 @@ def decide(repo: Path, rec: Record, *, base: str, fork: str, upstream: str,
     review.parent.mkdir(parents=True, exist_ok=True)
     merged, conflicts = three_way(repo, f, b or b"", u, evidence / "tmp")
     review.write_bytes(merged)
+    if conflicts and any(target == t or target.startswith(t) for t in FOUNDATION_TARGETS):
+        fork_review = evidence / "review" / (rec.new.replace("/", "__") + ".fork-retained")
+        fork_review.write_bytes(f)
+        return Decision(rec.old, target, ADOPT, upstream,
+                        note="official build foundation adopted; fork version saved as review copy",
+                        review_copy=str(fork_review),
+                        sha256=hashlib.sha256(u).hexdigest(), data=u)
     working = f if conflicts else merged
     return Decision(
         rec.old, target, MERGE, fork if conflicts else "three-way",
