@@ -191,6 +191,7 @@ OTHER_PROGRAMS = {
     "strata_control/procs.py": 3,              # ps, taskkill
     "strata_control/model_memory.py": 1,   # read-only nvidia-smi memory probe; no Strata child
     "strata_control/profiles.py": 1,           # the person's editor
+    "strata_control/ram_fit.py": 2,            # powershell probes of the machine (memory, processes); no Strata child
     "strata_control/recipes.py": 1,            # the person's editor
     "strata_control/split_engine.py": 1,       # nvidia-smi
     "strata_control/time_skip.py": 3,          # the person's check commands

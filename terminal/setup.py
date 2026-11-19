@@ -72,6 +72,7 @@ from strata_control import draft_layer
 from strata_control import dsv41_context
 from strata_control import engine_component
 from strata_control import sysinfo
+from strata_control import ram_fit
 from strata_control.discovery import in_trash
 from strata_control import user_args
 
@@ -11243,6 +11244,8 @@ def main() -> int:
             q4_split = bool(multi) and not resident_split()   # #498: on several GPUs without the RAM budget (#642: kept)
             if not q4_split:
                 ok(f"RAM budget: {budget:g} GiB of {model}'s experts in RAM, the rest read from the model files on the SSD")
+                for line in ram_fit.commit_cut_notes(budget):    # the Windows commit limit may cut what the engine grants
+                    warn(line)
         else:
             ok(f"all {MODELS[model]['arena_gb']:.0f} GB of {model}'s experts in RAM (they and "
                f"{UNSLOTH_RESIDENT_BESIDE_GB} GiB more fit this PC's {ram:.0f} GB; --resident-budget-gib N keeps only "

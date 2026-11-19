@@ -81,6 +81,7 @@ from serve.ds_pictures import PICTURE_FORMATS, DsPictures  # noqa: E402
 from strata_control import draft_layer  # noqa: E402
 from strata_control import drafting  # noqa: E402
 from strata_control import vram_fit  # noqa: E402
+from strata_control import ram_fit  # noqa: E402
 from strata_control import user_args  # noqa: E402
 from strata_control import gpu_roles  # noqa: E402
 from serve import ready as ready_file  # noqa: E402
@@ -9907,15 +9908,24 @@ def warn_budget_over_ram(args) -> str | None:
         import psutil
         vm = psutil.virtual_memory()
         total, free = vm.total / 2**30, vm.available / 2**30
-    except Exception:  # noqa: BLE001 - psutil is optional here
+    except Exception:  # noqa: BLE001 - psutil is optional here; the ctypes / /proc read takes over
+        mem = ram_fit.mem_gib()
+        if not mem:
+            return None
+        total, free = mem["total_gib"], mem["avail_gib"]
+    printed = []
+    if budget > free or budget > total - 6:
+        printed.append(f"WARNING: the RAM budget for experts is {budget:g} GiB (--resident-budget-gib), but this PC has "
+                       f"{free:.0f} GiB free of {total:.0f} GiB: what does not fit goes to swap or is read from disk, "
+                       "which can make decoding very slow. Lower it (setup sizes it for this PC) or remove the argument "
+                       "to let the engine choose.")
+    for line in ram_fit.commit_cut_notes(budget):       # the commit limit (RAM + page file) cuts what the engine grants
+        printed.append(line)
+    if not printed:
         return None
-    if budget <= free and budget <= total - 6:
-        return None
-    msg = (f"WARNING: the RAM budget for experts is {budget:g} GiB (--resident-budget-gib), but this PC has "
-           f"{free:.0f} GiB free of {total:.0f} GiB: what does not fit goes to swap or is read from disk, which can make "
-           "decoding very slow. Lower it (setup sizes it for this PC) or remove the argument to let the engine choose.")
-    print("[strata] " + msg, flush=True)
-    return msg
+    for line in printed:
+        print("[strata] " + line, flush=True)
+    return "\n".join(printed)
 
 
 DESKTOP_FREE_MIB = 2048          # #560 #516: below this, an AMD card that also drives a Linux desktop can run out
@@ -11150,9 +11160,13 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
                       "encoder's GPU, or the first picture may not get it", flush=True)
             vision = Vision(vcfg, log=open(cfg["log"], "a", encoding="utf-8") if cfg.get("log") else None,
                             env=vision_env(cfg, env), lazy=lazy)
+        budget_args = engine_args(cfg, announce=False) if "args" in cfg else []
+        sq = ram_fit.squeeze(budget_gib=ram_fit.budget_from_args(budget_args))
+        if sq.get("detail"):
+            print(f"[strata] {sq['detail']}", flush=True)
         print("model unloaded; the first request loads it ..." if lazy else
               "loading the model (the first start takes a minute or two) ...", flush=True)
-        warn_budget_over_ram(engine_args(cfg, announce=False) if "args" in cfg else [])      # #1080
+        warn_budget_over_ram(budget_args)      # #1080
         note = card_note(cfg, env)
         if note:
             print(note, flush=True)
