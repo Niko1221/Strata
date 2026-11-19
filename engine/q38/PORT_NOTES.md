@@ -49,19 +49,28 @@ generated, and the official `ENGINE_REQUEST` completion line
 `H:/Strata/evidence/upstream-oneway-20261119-build/serve_e2e_verified.json`.
 This is a protocol E2E, not a quality/parity measurement.
 
-## Remaining before shipping (NOT done)
-1. Signed component packaging: private key is not available in this session
-   (user does not know it); manifest can be prepared but not signed.
-2. `family_layout.hpp` qwen35-dense geometry/layout table — **intentionally
-   NOT added**. Q38 uses its own reader (`admission.hpp`) and is dispatched in
-   `generate.cpp`'s family switch *before* the shared geometry/layout path runs,
-   so inference never touches this table. Adding a dense branch would also
-   require weakening `family_layout.hpp:84` (`n_expert <= 0`), which validates
-   every official MoE model — risk > benefit. Documented as not required.
-3. Signed engine-component packaging: fill `files` digests in
-   `engine-component.json` and sign with the fork key (private key outside repo).
-4. Resolve the 133 retained conflict copies (fork bytes kept), prioritising
-   host server and workflow files.
+## Accepted constraints (will NOT be done — no key / not required)
+
+- **Signing: not applicable.** The user confirmed the fork's ed25519 private
+  key does not exist at all (not just "unavailable this session"). Only public
+  keys are in the repo (`strata_control/update_keys.json`). Therefore
+  `engine-component.json` stays `signature: null` and Windows Authenticode is
+  absent. No key was generated or faked. This is a final, accepted constraint —
+  not a pending task. `STRATA_REQUIRE_SIGNED_COMPONENTS=1` will refuse this
+  component; that is the expected state.
+- **`family_layout.hpp` qwen35-dense table: intentionally NOT added.** Q38 uses
+  its own reader (`admission.hpp`) and is dispatched in `generate.cpp`'s family
+  switch *before* the shared geometry/layout path runs, so inference never
+  touches this table. Adding a dense branch would require weakening
+  `family_layout.hpp:84` (`n_expert <= 0`), which validates every official MoE
+  model — risk > benefit.
+
+## Known issue (not fixed in 0.6.6)
+- Normal-profile picker: `/api/native` returns `models:4` but all `ready:false`,
+  so the menu reports "no local models downloaded" (v0.6.4 had
+  `q38-dense-20acacc6c8778c27` ready). Cause: staged Control 0.6.3 ready-detection
+  vs 0.6.6 native model registry. Fixing needs a signed Control rebuild — which
+  is impossible without the key, so it stays as a documented regression.
 
 Performance parity vs Prism llama.cpp was not achieved and was accepted by the
-user under policy A; no performance claim is made for this port.
+user under policy A (`releaseQualified=false`); no performance claim is made.
