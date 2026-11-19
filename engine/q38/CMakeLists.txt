@@ -4,6 +4,13 @@
 set(Q38_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 set(Q38_SRC ${Q38_DIR}/src)
 set(Q38_ENGINE ${Q38_DIR}/..)
+# Q38 uses C++17 nested namespaces (`namespace strata::qwen38`) in CUDA and
+# host sources; the stock engine build leaves the standard unset, so set it
+# explicitly here (this is what the fork's standalone Q38 CMake did).
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CUDA_STANDARD 17)
+set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 
 # The official cuda.cmake creates CUDA::* imported targets inside a function
 # scope, so they are not visible here; import them in this directory as well.
