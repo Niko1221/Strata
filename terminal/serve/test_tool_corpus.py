@@ -196,6 +196,39 @@ add("drift-batch-in-one-wrapper", f"<tool_call>\n<function=write>\n{PW}\n<functi
     tools=WRITE_TOOLS, source="corpus 0912870b / 51b155c9")
 
 
+# ---- the arguments a call wrote in a shape its schema does not declare (#6285) -------------------------------------
+RUN_COMMANDS = {"name": "run_commands", "parameters": {"type": "object",
+                "properties": {"commands": {"type": "array", "items": {"type": "string"}}}, "required": ["commands"]}}
+SEARCH_QUERIES = {"name": "search", "parameters": {"type": "object",
+                   "properties": {"queries": {"type": "array", "items": {"type": "string"}}}, "required": ["queries"]}}
+COMMAND_AND_TIMEOUT = {"name": "job", "parameters": {"type": "object",
+                       "properties": {"command": {"type": "string"}, "timeout": {"type": "integer"}},
+                       "required": ["command", "timeout"]}}
+DECLARED_ARGUMENTS = {"name": "note", "parameters": {"type": "object",
+                       "properties": {"arguments": {"type": "object"}}, "required": ["arguments"]}}
+
+add("6285-command-without-its-plural", "<tool_call><function=run_commands><parameter=command>ls -la</parameter>"
+    "</function></tool_call>", [("run_commands", {"commands": ["ls -la"]})], tools=[RUN_COMMANDS], notes=1,
+    source="#6285 row 1 (erycsonero): `command` for a declared, required array of strings `commands`")
+add("6285-arguments-object", '<tool_call><function=run_commands><parameter=arguments>{"commands": ["ls"]}</parameter>'
+    "</function></tool_call>", [("run_commands", {"commands": ["ls"]})], tools=[RUN_COMMANDS], notes=1,
+    source="#6285 row 2: the call's parameters inside one `arguments` object")
+add("6285-array-of-objects-one-string", '<tool_call><function=run_commands><parameter=commands>[{"cmd":"ls",'
+    '"is_background":false}]</parameter></function></tool_call>', [("run_commands", {"commands": ["ls"]})],
+    tools=[RUN_COMMANDS], notes=1, source="#6285 row 3: an array of strings written as an array of objects")
+add("6285-array-of-objects-singular", '<tool_call><function=search><parameter=queries>[{"query":"x","path":"y"}]'
+    "</parameter></function></tool_call>", [("search", {"queries": ["x"]})], tools=[SEARCH_QUERIES], notes=1,
+    source="#6285 row 4: each object's field named the parameter's singular")
+add("6285-two-required-parameters-kept", "<tool_call><function=job><parameter=command>ls</parameter></function></tool_call>",
+    [("job", {"command": "ls"})], tools=[COMMAND_AND_TIMEOUT], source="#6285: a declared `command` is not a slip")
+add("6285-declared-arguments-kept", '<tool_call><function=note><parameter=arguments>{"a": "b"}</parameter>'
+    "</function></tool_call>", [("note", {"arguments": {"a": "b"}})], tools=[DECLARED_ARGUMENTS],
+    source="#6285: a tool that really declares `arguments` keeps it")
+add("6285-ambiguous-object-kept", '<tool_call><function=search><parameter=queries>[{"first":"x","second":"y"}]'
+    "</parameter></function></tool_call>", [("search", {"queries": [{"first": "x", "second": "y"}]})],
+    tools=[SEARCH_QUERIES], source="#6285: two strings and no singular field leave the reading open")
+
+
 def run(spec, pieces, stream_tools):
     cls = OutputParser
     p = cls(thinking=spec["thinking"], tools=spec["tools"], stream_tools=stream_tools, recover=spec["recover"],
