@@ -1,4 +1,8 @@
 {
+  "agentProgress4": "The assistant kept repeating the same reasoning, so Strata stopped this run. Say “continue” with the next step.",
+  "agentProgress1": "The assistant stopped without a final answer. Its tool results are in the work log. Say “continue” to pick up from there.",
+  "agentProgress2": "The assistant kept getting the same tool result, so Strata stopped this run. The work is kept. Say “continue” with the next step.",
+  "agentProgress3": "The assistant went several steps without a new result, so Strata stopped this run. The work is kept. Say “continue” with the next step.",
   "s0001": "% PCIe",
   "s7331": "Results come from DuckDuckGo, or from Bing when DuckDuckGo is busy. You do not need an account or a key.",
   "s7321": "Web search is limited right now, so I stopped searching and went on with what I have. Try again in a minute, or add a search key in Settings → Tools → Web search.",

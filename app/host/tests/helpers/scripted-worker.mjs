@@ -139,6 +139,26 @@ export async function startScriptedWorker({ port = 0, chunkDelayMs = 40, model =
       if (/biggest lever/.test(t) && !answered && last.role !== 'tool') return say(['{"step": 2, "why": "The layout decided in step 1 shapes everything after it."}']);
       if (/IMPROVEMENT PLAN/.test(t) && !answered && last.role !== 'tool') return say(['## Better path\n\n', '1. Improve the first attempt SCRIPT:goalstep\n', '2. Polish and check SCRIPT:goalstep\n']);
     }
+    const guardCase = directive?.[1] === 'mixedguard'
+      ? (directive[2].includes('#1') ? 'repeatread' : 'distinctreads')
+      : directive?.[1];
+    if (['repeatread', 'distinctreads', 'emptyafterread'].includes(guardCase)) {
+      if (!(body.tools ?? []).length) return say(['Scripted title']);
+      const n = toolMessages.length;
+      if (guardCase === 'emptyafterread' && n) return finish('stop', 1);
+      if (n >= 14) return say(['Checked all fixtures.']);
+      return toolCall('read', { file_path: `fixture-${guardCase === 'distinctreads' ? n : 0}.txt` });
+    }
+    if (guardCase === 'repeatthinking') {
+      if (!(body.tools ?? []).length) return say(['Scripted title']);
+      const thought = 'I will look again at the same option and retrace the same checks before deciding what to do. ';
+      for (let i = 0; i < 80 && !closed; i++) {
+        send({ role: 'assistant', reasoning_content: thought });
+        await delay(chunkDelayMs);
+      }
+      if (!closed) return finish('stop', 1800);
+      return;
+    }
     if (directive?.[1] === 'searchloop') {
       const n = requests.filter(r => r.directive === 'searchloop').length;
       send({ role: 'assistant', content: `Plan, version ${n}:

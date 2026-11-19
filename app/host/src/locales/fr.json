@@ -1,4 +1,8 @@
 {
+  "agentProgress4": "L’assistant a répété le même raisonnement. Strata a arrêté l’exécution. Dites « continuer » et indiquez la prochaine étape.",
+  "agentProgress1": "L’assistant s’est arrêté sans réponse finale. Les résultats des outils figurent dans le journal de travail. Dites « continuer » pour reprendre.",
+  "agentProgress2": "L’assistant obtenait toujours le même résultat. Strata a arrêté l’exécution et conservé le travail. Dites « continuer » et indiquez la prochaine étape.",
+  "agentProgress3": "L’assistant a effectué plusieurs étapes sans nouveau résultat. Strata a arrêté l’exécution et conservé le travail. Dites « continuer » et indiquez la prochaine étape.",
   "s0001": "% PCIe",
   "s7331": "Les résultats viennent de DuckDuckGo, ou de Bing quand DuckDuckGo est saturé. Vous n’avez besoin ni de compte ni de clé.",
   "s7321": "La recherche web est limitée en ce moment, j’ai donc arrêté de chercher et poursuivi avec ce que j’ai. Réessayez dans une minute, ou ajoutez une clé de recherche dans Paramètres → Outils → Recherche web.",

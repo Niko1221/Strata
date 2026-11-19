@@ -274,6 +274,9 @@ function storeCompat(baseURL) {
   return host === 'api.openai.com' ? {} : { supportsStore: false };
 }
 const THINKING_COMPAT = { supportsStore: false, thinkingFormat: 'chat-template', chatTemplateKwargs: { enable_thinking: { $var: 'thinking.enabled' }, reasoning_effort: { $var: 'thinking.effort', omitWhenOff: true } } };
+// Keep the Harness's transient failures and backoff. Repeating an empty completion with
+// the same request hides the missing answer and can take six model calls to report it.
+const AGENT_RETRY_POLICY = { mode: 'normal', retryableCodes: ['RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPORT'], backoff: {} };
 
 export function buildProfile({ local = [], connections = [], gate = true, tools = NO_TOOLS_SETTINGS, skillsDir = null, proxyBase = null, searchMock = null, defaultLocalId = null }) {
   const providers = {};
@@ -311,6 +314,7 @@ export function buildProfile({ local = [], connections = [], gate = true, tools 
       api: 'openai-completions',
       baseURL: inst.baseUrl,
       apiKeyEnv: keyEnv,
+      retryPolicy: AGENT_RETRY_POLICY,
       // A long prompt read sends only SSE comments, which pi-ai's OpenAI client drops, so its 300 s stream-idle timer would cut the
       // request five minutes in (#3623). 60 minutes is a backstop: serve ends a hung engine and the bridge's watchdog ends a lost turn.
       streamIdleTimeoutMs: 60 * 60_000,
@@ -352,6 +356,7 @@ export function buildProfile({ local = [], connections = [], gate = true, tools 
       displayName: conn.name,
       api: protocol,
       baseURL,
+      retryPolicy: AGENT_RETRY_POLICY,
       ...(conn.apiKey || keyless ? { apiKeyEnv: keyEnv } : {}),
       ...(ownServer ? { compat: THINKING_COMPAT } : openRouter ? { compat: { thinkingFormat: 'openrouter', ...storeCompat(baseURL) } } : protocol === 'openai-completions' ? { compat: storeCompat(baseURL) } : {}),
       models: conn.models.map(m => ({

@@ -30,6 +30,7 @@ import { DeliverableTracker, ActivityGroups, FolderClaims } from './deliverables
 import { SkillsUsed, skillInfoFrom } from './skills-used.mjs';
 import { turnEngineSpeed } from './engine-speed.mjs';
 import { TurnGuard, GoalGuard, guardNote, GUARD_NOTES } from './turn-guard.mjs';
+import { ProgressGuard } from './progress-guard.mjs';
 import { cutNotice, cutNudge } from './reply-cut.mjs';
 import { MarkerStore, MAX_TOOL_FIXES, FIXING_STATUS, correctionText, endNote } from './tool-fix.mjs';
 import { watchForWake } from './wake-watch.mjs';
@@ -490,6 +491,8 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     signal?.addEventListener('abort', () => { subscribers.delete(onFrame); }, { once: true });
     // What the assistant itself wrote in this run (not our own step lines): a plan turn reads its plan from it, a step reads its summary.
     const written = { all: '', step: '', reasoning: '' };
+    const progress = new ProgressGuard();
+    let finalAnswer = false;
     // TOOLCALL-B: the texts this turn sent the assistant (a marker whose request carries one is this turn's), the time of its newest own event
     // (a marker from before it is not about the reply that just ended), and the corrections asked for in a row.
     const fix = { texts: new Set(), since: Date.now(), count: 0, total: 0, waiting: false, ended: false };
@@ -609,6 +612,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     function showFollowUp(entry) {
       if (entry.shown) return;
       entry.shown = true;
+      progress.newInstruction();
       turn.followUps.push(entry.message);
       emit({ type: 'agent-follow-up', message: entry.message });
     }
@@ -717,14 +721,20 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
 
 ${note.text}`, key: note.key, values: note.values, noteReason: 'cut' });
       }
-      if (!noteReason && !cutEnd && guard && !failure && !turn.stopping && !turn.goalRun) {
-        noteReason = guard.silent({ ended: projector.ended, wrote: projector.emittedAny === true, acted: projector.tools.size > 0, contextTokens: projector.contextTokens });
+      const emptyCompletion = projector.ended?.kind === 'error' && projector.ended.error?.code === 'EMPTY_RESPONSE';
+      if (!noteReason && !cutEnd && guard && !failure && !turn.stopping && !turn.goalRun && !emptyCompletion) {
+        noteReason = guard.silent({ ended: projector.ended, wrote: finalAnswer, acted: projector.tools.size > 0, contextTokens: projector.contextTokens });
       }
       if (noteReason && !extra.some(f => f.type === 'plan' && f.event === 'proposed')) { const note = guardNote(noteReason); if (note) extra.push(note); }
       for (const f of extra) emit(f);
       // The answer speed of a turn on this computer is the engine's own (tokens it produced over its decode time, as the Monitor shows it).
       const engine = !failure && route.kind === 'local' ? await engineSpeedOf(route, projector) : null;
       const frames = failure ? [{ type: 'error', message: plainAgentFailure(failure), details: failure, code: 'AGENT_STOPPED' }] : projector.finish({ model: route.name, contextMax: route.contextWindow, engine });
+      if (!failure && emptyCompletion && !turn.stopping) {
+        const key = GUARD_NOTES[projector.tools.size > 0 ? 'work-only' : 'empty'];
+        Object.assign(frames.at(-1), { message: key, key, details: projector.ended.error.message });
+      }
+      if (noteReason && frames.at(-1)?.type === 'done') frames.at(-1).noteReason = noteReason;
       for (const f of frames.slice(0, -1)) emit(f);
       // Messages typed while the goal ran and not delivered between steps go back to the page now, to be sent as ordinary messages.
       if (turn.goalRun && isAttached()) {
@@ -734,7 +744,7 @@ ${note.text}`, key: note.key, values: note.values, noteReason: 'cut' });
       for (const f of frames.slice(-1)) emit(f);
       c.turn = null;
       // What a page that was away needs to show the end of this turn (attach, below).
-      c.last = { wake: !!adopt, taken: isAttached(), requestId, sessionId, mode: appliedMode, model: route.name, contextMax: route.contextWindow, remoteModel: route.kind === 'api', content: hideDeltas ? '' : written.all.slice(0, 4_000_000), reasoning: written.reasoning, cards: [...projector.tools.values()].filter(t => t.card).map(t => t.card), agents: [...turn.children.values()].map(child => child.cp.agent()), followUps: turn.followUps, terminal };
+      c.last = { wake: !!adopt, taken: isAttached(), requestId, sessionId, mode: appliedMode, model: route.name, contextMax: route.contextWindow, remoteModel: route.kind === 'api', content: hideDeltas ? '' : written.all.slice(0, 4_000_000), reasoning: written.reasoning, cards: [...projector.tools.values()].filter(t => t.card).map(t => t.card), agents: [...turn.children.values()].map(child => child.cp.agent()), followUps: turn.followUps, closingNotes: extra.filter(f => f.type === 'delta' && f.own).map(({ own, ...frame }) => frame), terminal };
       // every reply the agent started by itself that no page took is kept, not only the last one: two background commands that finish while the app is closed both reach the chat
       if (c.last.wake && !c.last.taken) c.woken = [...(c.woken ?? []).filter(w => !w.taken), c.last].slice(-WOKEN_KEPT);
       turn.ended.resolve({ reason: projector.ended, failure: failure ?? null });
@@ -799,7 +809,20 @@ ${note.text}`, key: note.key, values: note.values, noteReason: 'cut' });
       turn.heard = turn.lastActivity;
       for (const f of projector.consume(item)) emit(f);
       if (guard && projector.contextTokens != null) trip(guard.context(projector.contextTokens));
-      if (item.type === 'event') watchParent(item.event);
+      if (item.type === 'event') {
+        const event = item.event;
+        if (event.type === 'assistant/message') {
+          const blocks = event.data?.message?.content ?? [];
+          finalAnswer = !hideDeltas && !blocks.some(block => block.type === 'tool-call')
+            && blocks.some(block => block.type === 'text' && block.text?.trim());
+        } else if (event.type === 'turn/start') finalAnswer = false;
+        watchParent(event);
+        const stalled = progress.observe(event);
+        // Waiting for a helper to report is legitimate work. Its own guard is independent.
+        if (stalled && ![...turn.children.values()].some(child => !child.done)) trip(stalled);
+      } else if (item.type === 'assistant-stream' && ![...turn.children.values()].some(child => !child.done)) {
+        trip(progress.observeStream(item.frame));
+      }
     }
 
     // -- helper agents ---------------------------------------------------------------------------------------
@@ -856,10 +879,10 @@ ${note.text}`, key: note.key, values: note.values, noteReason: 'cut' });
       const id = d.childId;
       if (!id || turn.children.has(id)) return;
       const cp = new ChildProjector({ id, name: d.label || 'Helper' });
-      const child = { id, cp, follow: null, noticed: false, done: false, lastRow: 0, rowPending: false, endedAt: 0, lastSeq: -1 };
+      const child = { id, cp, guard: new ProgressGuard(), follow: null, noticed: false, done: false, lastRow: 0, rowPending: false, endedAt: 0, lastSeq: -1 };
       turn.children.set(id, child);
       emitRow(child, true);
-      const fold = item => {
+      const fold = (item, replay = false) => {
         if (turn.finished) return;
         if (item.type === 'event' && Number.isInteger(item.event.seq)) {
           if (item.event.seq <= child.lastSeq) return;
@@ -875,7 +898,17 @@ ${note.text}`, key: note.key, values: note.values, noteReason: 'cut' });
           child.done = false;
           child.noticed = false;
           child.limitHit = false;
+          child.guard = new ProgressGuard();
           clearTimeout(turn.settleTimer);
+        }
+        if (!replay && !child.done && !child.stopTask && !turn.stopping) {
+          const reason = item.type === 'event' ? child.guard.observe(item.event)
+            : item.type === 'assistant-stream' ? child.guard.observeStream(item.frame) : null;
+          if (reason) {
+            cp.progressStop = GUARD_NOTES[reason];
+            log(`agent · helper guard: ${reason}`);
+            void turn.stopChild(child).catch(e => loseChild(child, e.message));
+          }
         }
         if (row) emitRow(child);
       };
@@ -883,7 +916,7 @@ ${note.text}`, key: note.key, values: note.values, noteReason: 'cut' });
         request: { address: { kind: 'subagent', parentSessionId: sessionId, childSessionId: id, mode: d.mode ?? 'unknown' }, assistantStream: true },
       }, {
         onItem: item => {
-          if (item.type === 'snapshot') { for (const r of item.records ?? []) if (r.type === 'event') fold({ type: 'event', event: r.event }); return; }
+          if (item.type === 'snapshot') { for (const r of item.records ?? []) if (r.type === 'event') fold({ type: 'event', event: r.event }, true); return; }
           fold(item);
         },
         onEnd: () => loseChild(child, 'Lost contact with this helper.'),
@@ -1524,6 +1557,7 @@ ${note.text}
     if (!parent || !rt?.hp.running) throw new AgentUnavailable('The assistant is not running in this chat, so it cannot pass a message on. Send a message in the chat first.', 'helper-idle');
     try {
       const receipt = await rt.gw.rpc('subagents/prompt', { request: { requestId: `helper-${randomUUID()}`, parentSessionId: parent, childSessionId: String(helperId), mode: 'continuable', delivery: delivery === 'steer' ? 'steer' : 'queue', content: [{ type: 'text', text: clean }] } });
+      chats.get(chatId)?.turn?.children.get(String(helperId))?.guard.newInstruction();
       return { ok: true, messageId: receipt?.messageId ?? null, delivery: delivery === 'steer' ? 'steer' : 'queue' };
     } catch (e) {
       log(`agent · message for a helper refused: ${String(e?.message ?? e).slice(0, 200)}`);
@@ -1830,6 +1864,7 @@ ${note.text}
     for (const message of last.followUps ?? []) onFrame({ type: 'agent-follow-up', message });
     for (const card of last.cards) onFrame({ type: 'agent-tool', tool: card });
     for (const agent of last.agents ?? []) onFrame({ type: 'agent', agent });
+    for (const frame of last.closingNotes ?? []) onFrame(frame);
     if (last.terminal) onFrame(last.terminal);
     return { ended: Promise.resolve(), live: false };
   }

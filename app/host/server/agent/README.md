@@ -97,8 +97,8 @@ The Harness staging script (`apps/desktop/scripts/stage-harness.mjs`) applies St
 (`harness-budget.mjs`, #3684): below 64K the context safety room is at most `min(4096, floor(contextWindow / 16))` and never more
 than half the estimated remaining room, so an 8K window keeps output room after a tool result instead of ending with a one-token
 cap. The caller's output cap and the one-token floor remain; windows of 64K or more keep the previous calculation. `BUNDLE.json.patches`
-records the patch identity, the dependency version and the before/after SHA-256. Unknown dependency bytes stop staging for review.
-Source and already-installed Harness copies are not changed.
+records the patch identity, the dependency version and the before/after SHA-256. The desktop build checks those bytes again and
+patches a reused stage that contains the known original. Unknown dependency bytes stop the build. The installed Harness is separate.
 
 - A local route is reasoning-capable (`reasoning: true`) with `compat.thinkingFormat: 'chat-template'`: the request carries `chat_template_kwargs {enable_thinking, reasoning_effort}`, which the Strata server reads (a top-level `enable_thinking` is ignored by it, which is why pi-ai's `qwen` format left the model thinking). The chat's Reasoning menu travels as `thinking` in the stream body; the bridge sends it with `session/selectModel` (`reasoningEffort`) whenever the model or the level changed; a level a route does not have is dropped (never an error). API routes keep the provider default (the menu is disabled for them in the UI).
 - `localOutputBudget(context)` is 30 percent of the window, at least 4096 and at most 32768 (9,830 tokens at 32K, 19,660 at 64K). The Harness's automatic compaction reads it as the room a reply reserves (the request header), and it is NOT the ceiling of a request: `plugins/strata-context.mjs` raises what the adapter sends to half the window, at most 64K tokens (`reply-cut.mjs` `replyCap`; pi-ai clamps it to the window minus the prompt), because a thinking model that writes a whole file in one call was cut inside the call at 19,660 and lost it (AGENT-LOST). A reply that is cut anyway is announced in the chat, the agent is asked to go on in smaller pieces (twice at most), and the file being written is streamed to the page as `agent-tool-draft` frames (name, size, lines, tail of the text). App-loaded models get `fit_max_tokens: true` so the engine clamps instead of answering 400. Sampling is not set here: the Harness sends none, so the server's own defaults apply.
@@ -136,6 +136,14 @@ A model on OpenRouter whose model list names `reasoning` in `supported_parameter
 Pictures are on by default for every model that can read them: an API model reads them unless the person switched it off (Settings > Models > "Read pictures with this model") or its server says it cannot; a local model reads them when it was loaded with Read pictures (on by default). `src/lib/pictures.ts` is the one answer used by the composer and by Send; the agent route declares image input from the same flag.
 
 ## Turn guard (`turn-guard.mjs`)
+
+`progress-guard.mjs` follows the parent and each helper separately. Four copies of the same tool call and result, or twelve steps
+without a new successful result, stop the run. New results reset the step budget. A repeated passage can also stop a live reasoning
+stream. While helpers are still working, the parent progress guard defers to their own guards. A helper's stop leaves its siblings
+running. The stop reason is shown in the work log or chat and replayed when the chat reconnects.
+
+An empty provider completion is reported immediately. Provider retries are reserved for transient failures. When the assistant
+finishes without a final answer, the chat tells the person where to find the work already done.
 
 A turn that keeps failing the same way is stopped by the app, never left to the model.
 

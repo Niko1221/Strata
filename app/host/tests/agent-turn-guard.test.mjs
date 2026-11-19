@@ -3,10 +3,11 @@
 // run the real search code on a pretend web that refuses (no network).
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { TurnGuard, GUARD_LIMITS, GUARD_NOTES, guardNote } from '../server/agent/turn-guard.mjs';
+import { ProgressGuard } from '../server/agent/progress-guard.mjs';
 import { startScriptedWorker } from './helpers/scripted-worker.mjs';
 import { createAgentBridge } from '../server/agent/agent-bridge.mjs';
 import { resolveHarness } from '../server/agent/harness-runtime.mjs';
@@ -67,7 +68,7 @@ test('a turn that ends with no words always gets a plain message: out of room, o
   assert.equal(g.silent({ ended: done, wrote: false, contextTokens: 9700 }), 'context');
   assert.equal(g.silent({ ended: { kind: 'max-tokens' }, wrote: false, contextTokens: 9000 }), 'context');
   assert.equal(g.silent({ ended: done, wrote: false, contextTokens: 3000 }), 'empty');
-  assert.equal(g.silent({ ended: done, wrote: false, acted: true, contextTokens: 3000 }), null, 'cards of finished work are an answer of a kind');
+  assert.equal(g.silent({ ended: done, wrote: false, acted: true, contextTokens: 3000 }), 'work-only', 'tool cards alone do not finish the answer');
   assert.equal(g.silent({ ended: done, wrote: false, acted: true, contextTokens: 9700 }), 'context', 'but a full context is never silent');
   assert.equal(g.silent({ ended: done, wrote: true, contextTokens: 9700 }), null, 'there are words: nothing to add');
   assert.equal(g.silent({ ended: { kind: 'error', error: { message: 'x' } }, wrote: false, contextTokens: 9700 }), null, 'an error says why by itself');
@@ -105,6 +106,92 @@ async function rig(t, options = {}) {
   return { worker, bridge, ws, logs, base: (chatId, onFrame) => ({ chatId, workspacePath: ws, mode: 'manual', onFrame }) };
 }
 const words = frames => frames.filter(f => f.type === 'delta').map(f => f.text).join('');
+
+test('progress follows changed results and recognizes reordered arguments and repeated outcomes', () => {
+  const guard = new ProgressGuard();
+  const step = (id, args, result, isError) => {
+    guard.observe({ type: 'tool/call', data: { callId: id, name: 'read', arguments: args } });
+    guard.observe({ type: 'tool/result', data: { message: { toolCallId: id, content: [{ type: 'text', text: result }], isError } } });
+    return guard.observe({ type: 'step/end' });
+  };
+  for (let i = 0; i < 30; i++) assert.equal(step(i + 1, { path: 'x' }, String(i)), null);
+  assert.equal(step(31, '{"path":"x","offset":0}', 'same'), null);
+  for (let i = 32; i < 34; i++) assert.equal(step(i, '{"offset":0,"path":"x"}', 'same'), null);
+  assert.equal(step(34, { path: 'x', offset: 0 }, 'same'), 'repeated-work');
+});
+
+test('changing errors do not let a run retry indefinitely', () => {
+  const guard = new ProgressGuard();
+  for (let id = 1; id <= 12; id++) {
+    guard.observe({ type: 'tool/call', data: { callId: id, name: 'read', arguments: { path: String(id) } } });
+    guard.observe({ type: 'tool/result', data: { message: { toolCallId: id, content: [{ type: 'text', text: 'missing' }], isError: true } } });
+    assert.equal(guard.observe({ type: 'step/end' }), id === 12 ? 'no-progress' : null);
+  }
+});
+
+test('the real Harness stops repeated reads, while 14 distinct reads finish and report', { skip }, async t => {
+  const r = await rig(t);
+  for (let i = 0; i < 14; i++) writeFileSync(join(r.ws, `fixture-${i}.txt`), `fixture ${i}\n`);
+  const repeat = [];
+  const run = { ...r.base('repeat', f => repeat.push(f)), mode: 'plan', requestId: 'repeat-case', message: 'SCRIPT:repeatread' };
+  await r.bridge.runTurn(run);
+  assert.equal(repeat.at(-1).noteReason, 'repeated-work');
+  const requests = directive => r.worker.requests.filter(q => q.directive === directive && q.toolNames.length);
+  assert.ok(requests('repeatread').length >= 4 && requests('repeatread').length <= 5);
+  const attached = [];
+  const replay = r.bridge.attach({ chatId: 'repeat', requestId: 'repeat-case', onFrame: f => attached.push(f) });
+  assert.equal(replay.live, false);
+  assert.equal(attached.filter(f => f.type === 'delta' && f.noteReason === 'repeated-work').length, 1);
+  assert.equal(attached.at(-1).noteReason, 'repeated-work');
+
+  const work = [];
+  await r.bridge.runTurn({ ...r.base('work', f => work.push(f)), mode: 'plan', message: 'SCRIPT:distinctreads' });
+  assert.equal(requests('distinctreads').length, 15);
+  assert.match(words(work), /Checked all fixtures/);
+  assert.equal(work.at(-1).noteReason, undefined);
+});
+
+test('an empty completion after a real tool result is reported without repeating the empty request', { skip }, async t => {
+  const r = await rig(t);
+  writeFileSync(join(r.ws, 'fixture-0.txt'), 'completed step\n');
+  const out = [];
+  await r.bridge.runTurn({ ...r.base('empty-after-read', f => out.push(f)), mode: 'plan', message: 'SCRIPT:emptyafterread' });
+  assert.equal(r.worker.requests.filter(q => q.directive === 'emptyafterread' && q.toolNames.length).length, 2);
+  assert.ok(out.some(f => f.type === 'agent-tool' && f.tool.state === 'done'));
+  assert.equal(out.at(-1).key, GUARD_NOTES['work-only']);
+  assert.equal(out.at(-1).code, 'EMPTY_RESPONSE');
+});
+
+test('periodic reasoning stops during the stream; distinct reasoning and new attempts do not trip the guard', () => {
+  const guard = new ProgressGuard();
+  const frame = (text, attemptId) => ({ type: 'chunk', attemptId, chunk: { type: 'reasoning-delta', text } });
+  for (let i = 0; i < 20; i++) assert.equal(guard.observeStream(frame(`${i}.`.repeat(30), i)), null);
+  const distinct = Array.from({ length: 800 }, (_, i) => String(i)).join(' ');
+  assert.equal(guard.observeStream(frame(distinct, 21)), null);
+  const repeated = 'I will look again at the same option and retrace the same checks before deciding what to do. ';
+  assert.equal(guard.observeStream(frame(repeated.repeat(24), 22)), 'repeated-thinking');
+});
+
+test('the real Harness aborts a repeated reasoning stream and reports why', { skip }, async t => {
+  const r = await rig(t);
+  const out = [];
+  await r.bridge.runTurn({ ...r.base('repeat-thinking', f => out.push(f)), mode: 'plan', message: 'SCRIPT:repeatthinking' });
+  assert.equal(out.at(-1).noteReason, 'repeated-thinking');
+  assert.ok(r.worker.aborted > 0, 'the model stream was interrupted');
+});
+
+test('a looping helper stops while an independent helper finishes its work', { skip }, async t => {
+  const r = await rig(t);
+  for (let i = 0; i < 14; i++) writeFileSync(join(r.ws, `fixture-${i}.txt`), `fixture ${i}\n`);
+  const frames = [];
+  await r.bridge.runTurn({ ...r.base('two-helpers', f => frames.push(f)), mode: 'bypass', message: 'SCRIPT:spawn 2 mixedguard' });
+  const rows = new Map(frames.filter(f => f.type === 'agent').map(f => [f.agent.name, f.agent]));
+  assert.equal(rows.get('Helper 1')?.status, 'cancelled');
+  assert.equal(rows.get('Helper 1')?.description, GUARD_NOTES['repeated-work']);
+  assert.equal(rows.get('Helper 2')?.status, 'completed');
+  assert.match(rows.get('Helper 2')?.description ?? '', /Checked all fixtures/);
+  assert.equal(frames.at(-1).type, 'done');
+});
 
 test('a search-heavy /plan on a web that keeps refusing stops after 3 failed searches, proposes the plan it has, and says why', { skip }, async (t) => {
   const r = await rig(t);

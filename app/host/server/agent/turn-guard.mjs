@@ -37,6 +37,10 @@ const NOTES = {
   rewrites: 'I kept rewriting the plan, so I stopped here with the latest version. Tell me what to change, or approve it.',
   context: 'I ran out of room in this chat, so I stopped. Strata is summarising the older messages to make space. Say “continue” to go on, or start a new chat.',
   empty: 'I stopped without writing an answer. Send your message again, or say “continue”.',
+  'work-only': 'The assistant stopped without a final answer. Its tool results are in the work log. Say “continue” to pick up from there.',
+  'repeated-work': 'The assistant kept getting the same tool result, so Strata stopped this run. The work is kept. Say “continue” with the next step.',
+  'no-progress': 'The assistant went several steps without a new result, so Strata stopped this run. The work is kept. Say “continue” with the next step.',
+  'repeated-thinking': 'The assistant kept repeating the same reasoning, so Strata stopped this run. Say “continue” with the next step.',
   'goal-failures': 'This goal kept running into the same errors, so I paused it. Look at the last steps, fix what is in the way, then resume the goal.',
 };
 export const GUARD_NOTES = Object.freeze({ ...NOTES });
@@ -104,7 +108,7 @@ export class TurnGuard {
     const kind = ended?.kind;
     if (kind !== 'completed' && kind !== 'max-tokens') return null;       // an error says why by itself; Stop is the person's own
     if (this.contextMax && Number(contextTokens) / this.contextMax >= this.limits.contextEmptyFraction) return 'context';
-    return acted ? null : 'empty';                                         // cards of work done are an answer of a kind; no cards and no words is not
+    return acted ? 'work-only' : 'empty';
   }
 }
 

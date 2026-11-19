@@ -1,4 +1,8 @@
 {
+  "agentProgress4": "El asistente repitió el mismo razonamiento. Strata detuvo la ejecución. Escribe «continuar» e indica el siguiente paso.",
+  "agentProgress1": "El asistente se detuvo sin una respuesta final. Los resultados de las herramientas están en el registro de trabajo. Escribe «continuar» para seguir.",
+  "agentProgress2": "El asistente recibió repetidamente el mismo resultado. Strata detuvo la ejecución y conservó el trabajo. Escribe «continuar» e indica el siguiente paso.",
+  "agentProgress3": "El asistente dio varios pasos sin obtener un resultado nuevo. Strata detuvo la ejecución y conservó el trabajo. Escribe «continuar» e indica el siguiente paso.",
   "s0001": "% PCIe",
   "s7331": "Los resultados vienen de DuckDuckGo, o de Bing cuando DuckDuckGo está ocupado. No necesitas cuenta ni clave.",
   "s7321": "La búsqueda web está limitada ahora mismo, así que dejé de buscar y seguí con lo que tengo. Inténtalo de nuevo en un minuto o añade una clave de búsqueda en Ajustes → Herramientas → Búsqueda web.",
