@@ -56,7 +56,8 @@ def b70_tree(root):
     write(h / "name", "xe\n")
     write(h / "temp1_label", "vram\n"); write(h / "temp1_input", "60000\n")
     write(h / "temp2_label", "pkg\n"); write(h / "temp2_input", "52000\n")
-    write(h / "energy1_input", "1000000\n")
+    write(h / "energy1_label", "card\n"); write(h / "energy1_input", "1000000\n")
+    write(h / "energy2_label", "pkg\n"); write(h / "energy2_input", "4634399946594\n")   # xe labels an energy counter "pkg" too (uJ)
     write(h / "power1_cap", "230000000\n")
     link_card(root, 1, b70)
     return h
@@ -94,6 +95,17 @@ class IntelSysfsReader(unittest.TestCase):
             second = r.read()
             self.assertAlmostEqual(second["power"], 50.0, delta=5.0)
             self.assertFalse(telemetry._Intel(1, sysfs=str(root), zes=NoZes()).ok(), "only one discrete Intel card here")
+
+    def test_the_pkg_temperature_is_not_the_pkg_energy_counter(self):
+        # A B70 lists energy2_label=pkg beside temp2_label=pkg; whichever os.listdir gives first must not matter.
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            h = b70_tree(root)
+            r = telemetry._Intel(0, sysfs=str(root), stat=str(root / "no-gpustat.json"), proc=str(root / "proc"), zes=NoZes())
+            names = sorted(os.listdir(h))
+            for order in (names, names[::-1]):
+                with mock.patch.object(telemetry.os, "listdir", return_value=order):
+                    self.assertEqual(r.read()["temp"], 52.0)
 
     def test_a750_on_i915_is_found_and_read(self):
         with tempfile.TemporaryDirectory() as d:
