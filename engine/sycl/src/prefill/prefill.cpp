@@ -56,7 +56,8 @@
 #include "strata/prefill/kernels.hpp"
 #include <oneapi/mkl.hpp>   // SYCL port: the QSA block scores as GEMM tiles
 // STRATA_MEM_TRACE: the host-memory probe in generate.cpp, called at this path's phase boundaries (no-op unless set).
-void mem_probe(const char* where);
+// A hook rather than a call: strata_prefill also links into test binaries that have no program TU to define it.
+namespace strata::prefill { void (*mem_probe_hook)(const char*) = nullptr; }
 namespace strata::kernels {   // SYCL port, kept out of the shared headers: qsa_select.dp.cpp, qsa_decode_attn.dp.cpp
 void qsa_block_scores_reduce(const float* S, int64_t ld, int64_t b0, int64_t nb, const float* dead, const float* q_idx,
                              const int32_t* steps, int64_t nq, int64_t max_blocks, float* scores, void* stream);
@@ -3279,9 +3280,9 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
             core::progress_beat();   // the serve watchdog: a prompt chunk of 8192 tokens is still moving
             // STRATA_MEM_TRACE: the growth per layer, so a per-layer copy (expert ring, PLE upload, K/V) can be told
             // from a per-token one at the chunk's ends
-            if ((l < LB + 3 || l == LE - 1) && std::getenv("STRATA_MEM_TRACE") != nullptr) {
+            if (mem_probe_hook != nullptr && (l < LB + 3 || l == LE - 1) && std::getenv("STRATA_MEM_TRACE") != nullptr) {
                 const std::string w = "layer " + std::to_string((long long) l);
-                mem_probe(w.c_str());
+                mem_probe_hook(w.c_str());
             }
             workload_trace::ContextGuard layer_context(p0, T, l);
             workload_trace::Scope layer_trace("prefill.layer", cs, T);
@@ -5204,7 +5205,7 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
             std::fprintf(stderr, "strata: STRATA_PF_BATCH_COPY=%d: %lld of %zu staging copies folded into %lld 2D copies\n",
                          pf_batch_copy(), (long long) batch_entries, seq.size(), (long long) batch_cmds);
         stats_.tokens += T;
-        if (std::getenv("STRATA_MEM_TRACE") != nullptr) mem_probe("chunk end");
+        if (mem_probe_hook != nullptr && std::getenv("STRATA_MEM_TRACE") != nullptr) mem_probe_hook("chunk end");
         core::progress_at("reading the prompt (batched): finishing the chunk from token", p0);
         pt.mark(kPfStart, cs);
         if (next_ != nullptr) {

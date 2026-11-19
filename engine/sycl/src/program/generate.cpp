@@ -45,6 +45,9 @@
 #include "strata/core/expert_source.hpp"
 #include "strata/core/gguf_expert_source.hpp"
 namespace strata::prefill { void set_nonresident_share(double share); }   // SYCL port: prefill.cpp
+// STRATA_MEM_TRACE's phase probe, defined here and installed below: prefill.cpp links into test binaries that have no
+// main, so it calls through this pointer rather than binding to mem_probe directly.
+namespace strata::prefill { extern void (*mem_probe_hook)(const char*); }
 #include "strata/kernels/resident_plan_mirror.hpp"
 #include "strata/core/pinned.hpp"
 #include "strata/core/remote_experts.hpp"
@@ -1384,8 +1387,6 @@ MemSample mem_sample() {
     return m;
 }
 
-}  // namespace
-
 // STRATA_MEM_TRACE=1 (diagnosis): this process's commit at a phase of a request, so a per-request host growth can be
 // attributed to the prompt read or to the generation instead of guessed (the A770 report on PR #3607).  On Windows it
 // also walks the process heap (HeapLock/HeapWalk, no hooks and no allocator changes) and reports the bytes in use and
@@ -1451,8 +1452,6 @@ void mem_probe(const char* where) {
 #endif
     std::fflush(stderr);
 }
-
-namespace {
 
 // the stage the watchdog names: "<where> <detail>", and the prompt chunk a batched read is in (#251)
 std::string stage_text() {
@@ -2032,6 +2031,7 @@ static double ple_direct_rows_per_s(strata::kernels::PleTable& t) {
 }
 
 int main(int argc, char **argv) try {
+    strata::prefill::mem_probe_hook = mem_probe;   // STRATA_MEM_TRACE: the prompt path's phase samples (no-op unset)
 #ifdef _WIN32
     if (argc == 2 && std::string(argv[1]) == "--list-devices") {
         std::cout << '[';
