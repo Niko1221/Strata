@@ -66,6 +66,7 @@ struct Engine {
     bool conservative=false;
     bool fp32_decode=false;
     bool fp32_prefill=false;
+    bool fp16_gemv=false;  // policy-B opt-in: FP16 dequant + cuBLAS GEMM for decode-sized batches
     int spec_draft_n_max=0;
     bool mtp_present=false;
     bool mtp_ready=false;
@@ -83,7 +84,7 @@ struct Engine {
         for(int g=0;g<16;++g){if(gdn_graphs[g])cudaGraphExecDestroy(gdn_graphs[g]);if(ffn_graphs[g])cudaGraphExecDestroy(ffn_graphs[g]);}
         if(head_graph)cudaGraphExecDestroy(head_graph);
     }
-    Engine(const std::string& path,int context,const Q::KvConfig& config,bool reference=false,bool ja=false,int draft_n_max=0):file(path,Q::retained_metadata(),true,65536,64*1024*1024),admission(Q::inspect(file)),ctx(context),conservative(reference),fp32_decode(reference||std::getenv("STRATA_Q38_FP32_DECODE")!=nullptr),fp32_prefill(reference||std::getenv("STRATA_Q38_FP32_PREFILL")!=nullptr),spec_draft_n_max(draft_n_max){
+    Engine(const std::string& path,int context,const Q::KvConfig& config,bool reference=false,bool ja=false,int draft_n_max=0):file(path,Q::retained_metadata(),true,65536,64*1024*1024),admission(Q::inspect(file)),ctx(context),conservative(reference),fp32_decode(reference||std::getenv("STRATA_Q38_FP32_DECODE")!=nullptr),fp32_prefill(reference||std::getenv("STRATA_Q38_FP32_PREFILL")!=nullptr),fp16_gemv(std::getenv("STRATA_Q38_FP16_GEMV")!=nullptr&&std::getenv("STRATA_Q38_FP16_GEMV")[0]=='1'),spec_draft_n_max(draft_n_max){
         japanese=ja;
         if(ja){strata::GgufFile vocabulary(path,{"tokenizer.ggml.tokens","tokenizer.ggml.token_type"},true,248320);
             const auto* ts=vocabulary.get("tokenizer.ggml.tokens");const auto* ty=vocabulary.get("tokenizer.ggml.token_type");
@@ -265,7 +266,7 @@ struct Engine {
             }
         }
         reset();if(!conservative)ensure_decode_graphs();gpu_resources();Q::host_resources();
-        std::fprintf(stderr,"native_execution=%s layer_fence_interval=%d prefill_gemm=%s prefill_chunk=%d prefill_tile_bytes=%zu mtp_present=%d mtp_ready=%d spec_draft_n_max=%d\n",conservative?"conservative":"grouped",conservative?1:8,conservative?"off":"cublas_tensor_op",conservative?1:prefill_chunk,conservative?size_t(0):prefill_tile_bytes,mtp_present?1:0,mtp_ready?1:0,spec_draft_n_max);
+        std::fprintf(stderr,"native_execution=%s layer_fence_interval=%d prefill_gemm=%s prefill_chunk=%d prefill_tile_bytes=%zu mtp_present=%d mtp_ready=%d spec_draft_n_max=%d fp16_gemv=%d\n",conservative?"conservative":"grouped",conservative?1:8,conservative?"off":"cublas_tensor_op",conservative?1:prefill_chunk,conservative?size_t(0):prefill_tile_bytes,mtp_present?1:0,mtp_ready?1:0,spec_draft_n_max,fp16_gemv?1:0);
     }
     const float* f(const std::string& name){return weights.at(name).b.as();}
     void rms_h(const float* src,const std::string& wname){
@@ -308,6 +309,18 @@ struct Engine {
         }
     }
     void emit_ffn_sublayer(const std::string& gate_name,const std::string& up_name,const std::string& down_name){
+        if(fp16_gemv&&!conservative){
+            // Policy-B opt-in: reuse the shipped tiled FP16 dequant + cuBLAS GEMM
+            // path for decode-sized (n=1) batches. Reduction order differs from
+            // the packed DP4A matvec; this is deliberately not byte-identical.
+            prefill_ws.prepare_activation(h.as(),1,weights.at(gate_name).n,stream.s);
+            prefill_ws.matmul_batch_prepared(weights.at(gate_name).quant(),fg.as(),1,stream.s);
+            prefill_ws.matmul_batch_prepared(weights.at(up_name).quant(),fu.as(),1,stream.s);
+            Q::swiglu(fg.as(),fu.as(),17408,stream.s);
+            prefill_ws.prepare_activation(fg.as(),1,weights.at(down_name).n,stream.s);
+            prefill_ws.matmul_batch_prepared(weights.at(down_name).quant(),y.as(),1,stream.s);
+            return;
+        }
         mm_dual_h(gate_name,fg,up_name,fu);
         const auto& wd=weights.at(down_name);
         if(!fp32_decode&&!admission.folded.count(down_name)&&is_q8_matvec_type(wd.type)){
@@ -333,6 +346,7 @@ struct Engine {
     }
     void reset(){
         fp32_decode=conservative||(std::getenv("STRATA_Q38_FP32_DECODE")!=nullptr);
+        fp16_gemv=std::getenv("STRATA_Q38_FP16_GEMV")!=nullptr&&std::getenv("STRATA_Q38_FP16_GEMV")[0]=='1';
         if(!conservative)prefill_ws.reset_l2_window(stream.s);
         Q::reset_session(states,*kv,error,position,stream.s);
         if(mtp_kv)mtp_kv->reset();

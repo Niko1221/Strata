@@ -33,6 +33,16 @@ inline bool fp32_prefill_requested() {
     return (env && env[0] == '1');
 }
 
+// Policy-B opt-in: use the tiled FP16 dequant + cuBLAS GEMM path even for
+// decode-sized batches (n_tokens < 4). This changes FP32 reduction order vs
+// the packed DP4A matvec, so it is off by default and only enabled for the
+// performance-first comparison. The dequant tiles and GEMM below are the
+// same already-shipped prefill implementation.
+inline bool fp16_gemv_requested() {
+    const char* env = std::getenv("STRATA_Q38_FP16_GEMV");
+    return (env && env[0] == '1');
+}
+
 __device__ __forceinline__ float load_fp16_le(const uint8_t* p) {
     return __half2float(__ushort_as_half(static_cast<uint16_t>(p[0]) | (static_cast<uint16_t>(p[1]) << 8)));
 }
@@ -807,7 +817,7 @@ void PrefillGemmWorkspace::matmul_batch_prepared(const StrataQuantTensor& weight
         throw std::runtime_error("matmul_batch_prepared shape mismatch with prepare_activation");
     }
 
-    if (n_tokens < 4 || impl_->force_fp32_matvec) {
+    if ((n_tokens < 4 || impl_->force_fp32_matvec) && !fp16_gemv_requested()) {
         impl_->stats.matvec_fallback_calls += static_cast<uint64_t>(n_tokens);
         for (int t = 0; t < n_tokens; ++t) {
             matvec(static_cast<int>(weight.type), weight.d_data,
