@@ -93,8 +93,8 @@ node_modules/
 /app/desktop/src-tauri/resources/control/*
 !/app/desktop/src-tauri/resources/control/.gitignore
 # the pruned DeepSeek Harness (MIT) is built by apps/desktop/scripts/stage-harness.mjs
-/apps/desktop/src-tauri/resources/harness/*
-!/apps/desktop/src-tauri/resources/harness/.gitignore
+/app/desktop/src-tauri/resources/harness/*
+!/app/desktop/src-tauri/resources/harness/.gitignore
 # third-party notice files staged into the Windows installer resources; not source
 /apps/desktop/src-tauri/resources/notices/*
 !/apps/desktop/src-tauri/resources/notices/.gitignore
