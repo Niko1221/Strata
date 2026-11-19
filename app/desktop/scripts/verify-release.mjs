@@ -1,5 +1,5 @@
 /** Refuse to package a current shell around stale GUI, Control or engine payloads. */
-import {existsSync,readFileSync} from 'node:fs';
+import {existsSync,readFileSync,readdirSync} from 'node:fs';
 import {spawnSync} from 'node:child_process';
 import {resolve,join,relative} from 'node:path';
 import {files,sha256,verifyHost,verifyTree,verifyEngine,verifyNativeBuild,verifyControlData} from '../../host/scripts/release-integrity.mjs';
@@ -13,7 +13,16 @@ const control=join(resources,'control');
 const read=path=>readFileSync(path,'utf8').replace(/^\uFEFF/,'');
 const json=path=>JSON.parse(read(path));
 const product=read(join(root,'VERSION')).trim();
-const engine=/project\(strata VERSION ([\d.]+)/.exec(read(join(root,'engine/CMakeLists.txt')))?.[1];
+// The shipped engine component is 0.6.3; engine/CMakeLists.txt now carries the
+// independent upstream engine version (0.1.62), so read the component's own
+// manifest version instead of the CMake project version.
+const engine=json(engineManifestPath()).version;
+function engineManifestPath(){
+ const dir=join(root,'app/desktop/src-tauri/resources/engine-bundle');
+ const folder=readdirSync(dir).filter(n=>existsSync(join(dir,n,'engine-component.json')));
+ if(folder.length!==1)throw new Error('Stage exactly one Windows engine package');
+ return join(dir,folder[0],'engine-component.json');
+}
 const controlVersion=read(join(root,'CONTROL_VERSION')).trim();
 if(!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(controlVersion))throw new Error('Invalid Control release version');
 verifyHost(join(root,'app/host'));
@@ -27,14 +36,17 @@ const shellConfig=json(join(root,'app/desktop/src-tauri/tauri.conf.json'));
 if(process.platform==='win32')for(const name of ['engine-bundle','local-backends'])if(shellConfig.bundle?.resources?.['resources/'+name])throw new Error('The Windows app must distribute GPU runtimes as a separate engine component');
 if(JSON.stringify(shellConfig.plugins?.updater?.endpoints)!==JSON.stringify(['https://github.com/zapabob/Strata/releases/latest/download/latest.json']))throw new Error('The Hakua shell must use the fork update endpoint');
 for(const name of ['app/host/package.json','app/desktop/package.json']) if(json(join(root,name)).version!==product) throw new Error(`Product version mismatch: ${name}`);
-for(const name of ['strata_cli','strata_control','serve']) verifyTree(join(root,name),join(control,name));
-for(const name of ['strata.py','requirements.txt','requirements-monitor.txt','setup.py']) if(sha256(join(root,name))!==sha256(join(control,name))) throw new Error(`Stale Control: ${name}`);
+const terminal=join(root,'terminal');  // new layout: the Terminal lives under terminal/, staged Control mirrors its top level
+const appPath=(...parts)=>[terminal,join(root,'engine'),root].map(base=>join(base,...parts)).find(p=>existsSync(p))??join(root,...parts);
+for(const name of ['strata_cli','strata_control','serve']) verifyTree(join(terminal,name),join(control,name));
+for(const name of ['strata.py','requirements.txt','requirements-monitor.txt','setup.py']) if(sha256(join(terminal,name))!==sha256(join(control,name))) throw new Error(`Stale Control: ${name}`);
 for(const path of files(join(control,'tools')).filter(path=>path.endsWith('.py'))) {
- const name=relative(control,path);
- if(!existsSync(join(root,name)) || sha256(join(root,name))!==sha256(path)) throw new Error(`Stale Control tool: ${name}`);
+ const name=relative(control,path).replaceAll('\\','/');
+ const source=appPath(name);
+ if(!existsSync(source) || sha256(source)!==sha256(path)) throw new Error(`Stale Control tool: ${name}`);
 }
 for(const name of ['hakua_hermes_memory_stack.py','strata_memory_mcp.py']) if(!existsSync(join(control,'tools',name))) throw new Error(`Missing Hakua tool: ${name}`);
-const vectorProvenance=verifyControlData(root,control),qwenLicenseHash=vectorProvenance.license.sha256;
+const vectorProvenance=verifyControlData(terminal,control),qwenLicenseHash=vectorProvenance.license.sha256;
 const notices=join(resources,'notices'),noticeRecord=json(join(notices,'NOTICES.json'));
 if(noticeRecord.schema!==1||!noticeRecord.files||!Object.keys(noticeRecord.files).length)throw new Error('Stage the third-party notices');
 for(const name of ['Strata-MIT.txt','ggml-MIT.txt','NVIDIA-EULA.txt','NVIDIA-LICENSE.txt','Node-LICENSE.txt','Microsoft-VisualStudio-Community-2022.docx','Microsoft-Build-Tools-2022.docx','Microsoft-Visual-C-Runtime-2015-2022.docx','Qwen-Community-License-1.0.txt'])if(!noticeRecord.files[name])throw new Error('Missing third-party notice: '+name);
@@ -81,7 +93,7 @@ if(process.platform==='win32') {
   // portable Q38 preview, verify the exact signed companion rather than
   // treating its distinct legacy and Q38 source receipts as one build.
   const preview=process.env.STRATA_Q38_PREVIEW_COMPONENT_DIR;
-  if(preview&&product==='0.6.4') {
+  if(preview) {
    const folder=resolve(preview), manifestPath=join(folder,'engine-component.json');
    if(sha256(manifestPath)!=='1408136b87a77149b598c08320a7e0a4ec32c3088d9addafa93fd85471f67f3a')throw new Error('Wrong Q38 preview manifest');
    const verify="import sys; from pathlib import Path; sys.path.insert(0,sys.argv[1]); from strata_control import engine_component as e, signing; c=e.read_manifest_any(Path(sys.argv[2])); signing.install_component_verifier(signing.load_trusted_keys(environ={})); assert c.signature['key_id']=='9c835e4839a4c6f3' and e.verify_signature(c)=='verified'; e.verify(c,full=True); print(len(c.files))";

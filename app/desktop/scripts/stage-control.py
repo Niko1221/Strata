@@ -81,7 +81,7 @@ local_imports = pt.local_imports
 
 def add_installer(folder: Path) -> dict:
     """Copy the installer's files from the source tree into the staged Control (after the Terminal bundle is in place)."""
-    return pt.add_installer(folder, pt.ROOT)
+    return pt.add_installer(folder, pt.APP_ROOT)
 
 
 #: What the other names of the interpreter become: Tauri copies a symlink as a full copy of its target, so `python`, `python3` and

@@ -56,8 +56,24 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-LOCKS = ROOT / "packaging" / "locks"
+#: New layout: this script moved from packaging/ to tools/packaging/, so the
+#: repository root is parents[2] (was parents[1] in the old layout).
+ROOT = Path(__file__).resolve().parents[2]
+#: The Terminal application lives under terminal/, while shared packaging
+#: inputs (locks, vendor, docs, packaging, CONTROL_VERSION) stay at the root.
+#: Resolve an application path from terminal/ first and fall back to the root.
+APP_ROOT = ROOT / "terminal"
+def app_path(*parts: str) -> Path:
+    # Application files moved under terminal/; engine-side helper tools moved
+    # under engine/. Try terminal/, then engine/, then the legacy root path.
+    for base in (APP_ROOT, ROOT / "engine", ROOT):
+        candidate = base.joinpath(*parts)
+        if candidate.exists():
+            return candidate
+    return ROOT.joinpath(*parts)
+#: Shared packaging inputs also moved under tools/ in the new layout.
+PKG = ROOT / "tools" / "packaging"
+LOCKS = PKG / "locks"
 
 PBS_RELEASE = "20261009"
 PYTHON_VERSION = "3.12.15"
@@ -226,7 +242,7 @@ def install_locked(py: Path, lock: Path, root: Path, wheelhouse: Path | None = N
     source = ["--no-index", "--find-links", str(wheelhouse)] if wheelhouse else []
     # Select the reviewed repository wheel explicitly: PyPI may have another
     # build of the same version. --find-links alone does not prefer local bytes.
-    vendor = ROOT / "packaging/vendor/hakua-memory/hakua_memory-0.3.5-py3-none-any.whl"
+    vendor = PKG / "vendor/hakua-memory/hakua_memory-0.3.5-py3-none-any.whl"
     resolved = re.sub(r"^hakua-memory==0[.]3[.]5(?=\s)",
                       lambda _match: f"hakua-memory @ {vendor.resolve().as_uri()}",
                       lock.read_text(encoding="utf-8"), flags=re.M)
@@ -296,7 +312,7 @@ def local_imports(folder: Path, entry: tuple[str, ...]) -> list[str]:
         if name in seen:
             continue
         seen.add(name)
-        source = folder / "tools" / f"{name}.py"
+        source = app_path("tools", f"{name}.py")
         if not source.exists():
             raise SystemExit(f"installer tool missing: tools/{name}.py")
         sub = name.rsplit("/", 1)[0] + "/" if "/" in name else ""     # (a nested tool imports its neighbours first)
@@ -304,14 +320,14 @@ def local_imports(folder: Path, entry: tuple[str, ...]) -> list[str]:
             names = [a.name.split(".")[0] for a in node.names] if isinstance(node, ast.Import) else                 [node.module.split(".")[0]] if isinstance(node, ast.ImportFrom) and node.module and node.level == 0 else []
             for m in names:
                 for rel in ((sub + m,) if sub else ()) + (m,):
-                    if (folder / "tools" / f"{rel}.py").exists():
+                    if app_path("tools", f"{rel}.py").exists():
                         if rel not in seen:
                             todo.append(rel)
                         break
     return sorted(seen)
 
 
-def setup_tool_imports(source: Path = ROOT) -> list[str]:
+def setup_tool_imports(source: Path = APP_ROOT) -> list[str]:
     """The `tools/<name>.py` modules that the installer files import (any import statement, at any depth: setup.py imports most of them
     inside functions after putting tools/ on sys.path). tools/hip and tools/image hold engine-install code that Control's mode never runs."""
     import ast
@@ -320,34 +336,34 @@ def setup_tool_imports(source: Path = ROOT) -> list[str]:
         for node in ast.walk(ast.parse((source / name).read_text(encoding="utf-8-sig"))):
             names = [a.name.split(".")[0] for a in node.names] if isinstance(node, ast.Import) else \
                 [node.module.split(".")[0]] if isinstance(node, ast.ImportFrom) and node.module and node.level == 0 else []
-            found.update(m for m in names if (source / "tools" / f"{m}.py").exists())
+            found.update(m for m in names if (APP_ROOT / "tools" / f"{m}.py").exists() or (ROOT / "tools" / f"{m}.py").exists())
     return sorted(found)
 
 
-def add_installer(folder: Path, source: Path = ROOT) -> dict:
+def add_installer(folder: Path, source: Path = APP_ROOT) -> dict:
     """Copy the installer's files from the source tree into a staged terminal folder (after the terminal payload is in place)."""
     tools = local_imports(source, tuple(sorted(set(INSTALLER_TOOLS) | set(INSTALLER_SCRIPTS) | set(setup_tool_imports(source)))))
     copied = []
     for name in INSTALLER_FILES:
         (folder / name).parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source / name, folder / name)
+        shutil.copy2(app_path(name), folder / name)
         copied.append(name)
     (folder / "tools").mkdir(exist_ok=True)
     for name in tools:
         (folder / "tools" / f"{name}.py").parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source / "tools" / f"{name}.py", folder / "tools" / f"{name}.py")
+        shutil.copy2(app_path("tools", f"{name}.py"), folder / "tools" / f"{name}.py")
         copied.append(f"tools/{name}.py")
     (folder / "metal" / "tools").mkdir(parents=True, exist_ok=True)
     for name in INSTALLER_METAL_TOOLS:
-        shutil.copy2(source / "metal" / "tools" / f"{name}.py", folder / "metal" / "tools" / f"{name}.py")
+        shutil.copy2(app_path("metal", "tools", f"{name}.py"), folder / "metal" / "tools" / f"{name}.py")
         copied.append(f"metal/tools/{name}.py")
     if (folder / INSTALLER_DATA).exists():
         shutil.rmtree(folder / INSTALLER_DATA)
-    shutil.copytree(source / INSTALLER_DATA, folder / INSTALLER_DATA, ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copytree(app_path(INSTALLER_DATA), folder / INSTALLER_DATA, ignore=shutil.ignore_patterns("__pycache__"))
     for name in INSTALLER_THIRD_PARTY:
         if (folder / name).exists():
             shutil.rmtree(folder / name)
-        shutil.copytree(source / name, folder / name, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        shutil.copytree(app_path(*name.split("/")), folder / name, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
         copied.append(name + "/")
     return {"files": copied, "data": INSTALLER_DATA, "setup_sha256": sha256(folder / "setup.py"),
             "mode": "STRATA_CONTROL_INSTALL=1: downloads the chosen model, prepares it, installs no package and no engine"}
@@ -442,7 +458,7 @@ def main() -> int:
 
         print("copying the application")
         for item in PAYLOAD:
-            src = ROOT / item
+            src = app_path(item)
             dst = root / item
             if not src.exists():
                 raise SystemExit(f"missing payload item: {item}")
@@ -454,7 +470,7 @@ def main() -> int:
         tools_dir = root / "tools"
         tools_dir.mkdir(exist_ok=True)
         for item in TOOLS_SUBSET:
-            src = ROOT / "tools" / item
+            src = app_path("tools", item)
             if not src.exists():
                 raise SystemExit(f"missing tools module: {item}")
             shutil.copy2(src, tools_dir / item)
@@ -468,7 +484,7 @@ def main() -> int:
         bin_dir.mkdir(exist_ok=True)
         launchers = ["strata.cmd", "strata.ps1"] if target.startswith("windows") else ["strata"]
         for launcher in launchers:
-            shutil.copy2(ROOT / "bin" / launcher, bin_dir / launcher)
+            shutil.copy2(app_path("bin", launcher), bin_dir / launcher)
             if launcher == "strata":
                 (bin_dir / launcher).chmod(0o755)
 
@@ -533,7 +549,10 @@ def _source_version() -> str:
         if not re.fullmatch(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)", version):
             raise ValueError("CONTROL_VERSION must be a three-part release version")
         return version
-    text = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8", errors="replace")
+    cmake = ROOT / "CMakeLists.txt"
+    if not cmake.is_file():
+        cmake = ROOT / "engine" / "CMakeLists.txt"   # new layout
+    text = cmake.read_text(encoding="utf-8", errors="replace")
     # `project(strata VERSION 0.1.44.1 LANGUAGES C CXX ...)` - the version is a dotted run of numbers and must be
     # read as one. Taking "everything after VERSION" yields "0.1.44.1.LANGUAGES.CXX".
     m = re.search(r"^\s*project\([^)]*?VERSION\s+([0-9]+(?:\.[0-9]+)+)", text, re.MULTILINE)
