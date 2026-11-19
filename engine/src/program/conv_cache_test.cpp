@@ -19,7 +19,9 @@
 #include <cstdio>
 #include <vector>
 
+using strata::program::conv_cache::checkpoint_gap_skip;
 using strata::program::conv_cache::eviction_victim;
+using strata::program::conv_cache::gap_marker_keep;
 using strata::program::conv_cache::restore_fits;
 using strata::program::conv_cache::rewind_keep;
 using strata::program::conv_cache::spread_victim;
@@ -183,6 +185,41 @@ int main() {
         check(!rewind_keep(slot_live.data(), 5000, slot_prompt.data(), 4500, 4096), "the slot's tokens differ below the resume: parks");
         check(!rewind_keep(live.data(), 200, prompt.data(), 200, 4096), "resume at the end: parked (strict bound)");
         check(!rewind_keep(live.data(), 0, prompt.data(), 0, 4096), "empty live session: never skips");
+    }
+    {   // --prompt-cache-min-gap: an automatic checkpoint too close to the deepest one kept is skipped
+        check(!checkpoint_gap_skip(10525, 9525, 0, false), "gap 0: every checkpoint is kept (the default)");
+        check(!checkpoint_gap_skip(10525, 9525, 4000, true), "exempt (the root, a pin, the periodic grid): kept however close");
+        check(!checkpoint_gap_skip(1000, -1, 4000, false), "nothing kept yet: the first checkpoint is made");
+        check(checkpoint_gap_skip(10525, 9525, 4000, false), "a turn of 1,000 tokens with gap 4,000: skipped");
+        check(!checkpoint_gap_skip(13525, 9525, 4000, false), "exactly 4,000 past the deepest kept: kept");
+        check(!checkpoint_gap_skip(14525, 9525, 4000, false), "5,000 past the deepest kept: kept");
+        check(checkpoint_gap_skip(9525, 9525, 4000, false), "distance 0: skipped");
+        check(checkpoint_gap_skip(9000, 9525, 4000, false), "525 before the deepest kept (an edit back): skipped");
+        check(!checkpoint_gap_skip(5525, 9525, 4000, false), "exactly 4,000 before the deepest kept: kept");
+        check(!checkpoint_gap_skip(10525, 9525, -4000, false), "a negative gap is off");
+        check(checkpoint_gap_skip(460000, 459000, 4000, false), "a 1,000-token turn at 460K: skipped");
+        check(!checkpoint_gap_skip(463000, 459000, 4000, false), "4,000 past the deepest kept at 460K: kept");
+        // ten turns of 1,000 tokens after the root: with gap 4,000 a checkpoint lands every fourth turn
+        std::vector<int64_t> kept = {9525};
+        for (int t = 1; t <= 10; ++t) {
+            const int64_t L = 9525 + t * 1000;
+            if (!checkpoint_gap_skip(L, kept.back(), 4000, false)) kept.push_back(L);   // the chain is ascending
+        }
+        check(kept.size() == 3 && kept[1] == 13525 && kept[2] == 17525,
+              "ten 1,000-token turns, gap 4,000: the root and every fourth turn are kept");
+    }
+    {   // --prompt-cache-min-gap: the skipped turn boundary is kept only by a whole-live reuse that runs past it
+        // the thinking-budget continuation: the next pass's prompt is the previous one plus what was generated plus the
+        // wrap-up, so the whole live session is reused (resume = its length) and no new turn boundary is found
+        check(gap_marker_keep(true, 10525, 9525), "the whole live session reused past the boundary: kept");
+        check(gap_marker_keep(true, 460000, 459000), "the same at 460K: kept");
+        check(!gap_marker_keep(true, 9525, 9525), "the live session ends AT the boundary: no reply past it, dropped");
+        check(!gap_marker_keep(true, 9000, 9525), "the reused range stops before the boundary: dropped");
+        check(!gap_marker_keep(false, 10525, 9525), "a checkpoint restore, not the live session: dropped");
+        check(!gap_marker_keep(false, 600, 9525), "a rewind to a shallow checkpoint: dropped");
+        check(!gap_marker_keep(false, 0, 9525), "a read from token 0: dropped");
+        check(!gap_marker_keep(true, 10525, -1), "no boundary was skipped: nothing to keep");
+        check(!gap_marker_keep(false, 0, -1), "gap 0 (the default): the marker is never set, so never kept");
     }
     std::printf(g_fail ? "FAIL\n" : "PASS\n");
     return g_fail ? 1 : 0;
