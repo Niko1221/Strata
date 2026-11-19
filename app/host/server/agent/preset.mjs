@@ -22,6 +22,8 @@
 
 import { withoutDisabled } from './tools-catalog.mjs';
 
+const COMPACTION_PLUGIN = new URL('./plugins/strata-compaction.mjs', import.meta.url).href;
+
 /** Plugin ids of the pinned Harness `standard` preset, in its order (the drift check). */
 export const STANDARD_PLUGIN_IDS = [
   'persona', 'agent-instructions', 'time-context', 'tool-bash', 'tool-pwsh', 'tool-fs', 'tool-fs-search', 'tool-jobs',
@@ -94,6 +96,7 @@ export function standardPreset({ platform = process.platform, search = false, of
       id: 'compaction', name: 'cordis:group', group: true, isolate: { compaction: true, toolResultPruner: true },
       config: [
         { id: 'compaction-basic', name: '@deepseek-ai/dsh-compaction-basic', ...(compaction.length ? { config: { modelPolicies: compaction } } : {}) },
+        { id: 'strata-compaction', name: COMPACTION_PLUGIN, config: {} },
         { id: 'command-compact', name: '@deepseek-ai/dsh-command-compact' },
         { id: 'tool-result-pruner', name: '@deepseek-ai/dsh-compaction-tool-result-pruner', config: { thresholdChars: 8192, headChars: 4096, tailChars: 1024 } },
       ],

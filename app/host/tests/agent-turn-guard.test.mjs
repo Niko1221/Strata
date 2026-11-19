@@ -1,5 +1,5 @@
 // The turn guard: a search-heavy /plan that keeps failing searches and rewriting its plan is stopped by the app and ends with a plain message;
-// a context at 100% never ends silently. The pure counting always runs; the end-to-end ones need a built Harness (STRATA_HARNESS_DIR) and
+// a turn with no answer never ends silently. The pure counting always runs; the end-to-end ones need a built Harness (STRATA_HARNESS_DIR) and
 // run the real search code on a pretend web that refuses (no network).
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -19,7 +19,7 @@ const search = (id, state, result = '') => ({ id, name: 'web_search', state, res
 const LIMITED = 'Web search is limited right now. Try again in a minute, or add a search key (Exa, Perplexity or DeepSeek) in Settings → Tools → Web search. Do not retry this search';
 
 test('three failed searches in a row stop the turn; a search that worked starts the count again', () => {
-  const g = new TurnGuard({ plan: true, contextMax: 32768 });
+  const g = new TurnGuard({ plan: true });
   assert.equal(g.card(search('a', 'running')), null, 'a running search is not counted yet');
   assert.equal(g.card(search('a', 'error', LIMITED)), null);
   assert.equal(g.card(search('a', 'error', LIMITED)), null, 'the same card twice is one search');
@@ -54,25 +54,14 @@ test('a plan turn that writes its numbered plan from 1. again and again is stopp
   for (let i = 0; i < 10; i++) assert.equal(ordinary.text(plan), null, 'only a plan turn counts rewrites');
 });
 
-test('a nearly full context stops the turn; a normal one does not', () => {
-  const g = new TurnGuard({ contextMax: 10000 });
-  assert.equal(g.context(5000), null);
-  assert.equal(g.context(9200), null);
-  assert.equal(g.context(9300), 'context');
-  assert.equal(new TurnGuard({ contextMax: 0 }).context(1e9), null, 'an unknown window is never guessed');
-});
-
-test('a turn that ends with no words always gets a plain message: out of room, or nothing written', () => {
-  const g = new TurnGuard({ contextMax: 10000 });
+test('a turn that ends with no words reports whether any tool work was done', () => {
+  const g = new TurnGuard();
   const done = { kind: 'completed' };
-  assert.equal(g.silent({ ended: done, wrote: false, contextTokens: 9700 }), 'context');
-  assert.equal(g.silent({ ended: { kind: 'max-tokens' }, wrote: false, contextTokens: 9000 }), 'context');
-  assert.equal(g.silent({ ended: done, wrote: false, contextTokens: 3000 }), 'empty');
-  assert.equal(g.silent({ ended: done, wrote: false, acted: true, contextTokens: 3000 }), 'work-only', 'tool cards alone do not finish the answer');
-  assert.equal(g.silent({ ended: done, wrote: false, acted: true, contextTokens: 9700 }), 'context', 'but a full context is never silent');
-  assert.equal(g.silent({ ended: done, wrote: true, contextTokens: 9700 }), null, 'there are words: nothing to add');
-  assert.equal(g.silent({ ended: { kind: 'error', error: { message: 'x' } }, wrote: false, contextTokens: 9700 }), null, 'an error says why by itself');
-  assert.equal(g.silent({ ended: done, wrote: false, contextTokens: 9700, stoppedByPerson: true }), null, 'Stop is the person\'s own');
+  assert.equal(g.silent({ ended: done, wrote: false }), 'empty');
+  assert.equal(g.silent({ ended: done, wrote: false, acted: true }), 'work-only', 'tool cards alone do not finish the answer');
+  assert.equal(g.silent({ ended: done, wrote: true }), null, 'there are words: nothing to add');
+  assert.equal(g.silent({ ended: { kind: 'error', error: { message: 'x' } }, wrote: false }), null, 'an error says why by itself');
+  assert.equal(g.silent({ ended: done, wrote: false, stoppedByPerson: true }), null, 'Stop is the person\'s own');
 });
 
 test('every message is a plain sentence with a next step, carries its interface key, and is in the catalog in all nine languages', () => {
@@ -88,7 +77,6 @@ test('every message is a plain sentence with a next step, carries its interface 
     assert.ok(id, `${reason} is in the English catalog`);
     for (const l of langs) assert.ok(catalogs[l][id]?.trim(), `${reason} in ${l}`);
   }
-  assert.match(GUARD_NOTES.context, /ran out of room/);
 });
 
 // ------------------------------------------------------------------------------------------------ with the real Harness
@@ -224,18 +212,16 @@ test('an ordinary turn whose searches keep failing ends with the plain sentence 
   assert.ok(out.findIndex(f => f.key) < out.findIndex(f => f.type === 'done'), 'the sentence comes before the end of the turn');
 });
 
-test('a context at 100% with no answer is never silent: the plain message comes, and the older messages are summarised', { skip }, async (t) => {
+test('large reported usage preserves a completed reply and does not start post-turn compaction', { skip }, async (t) => {
   const r = await rig(t, { context: 32768 });
   const out = [];
-  await r.bridge.runTurn({ ...r.base('f1', f => out.push(f)), message: 'SCRIPT:bloat 32000' });
-  assert.equal(out.filter(f => f.type === 'error').length, 0);
-  assert.ok(out.find(f => f.type === 'done'));
-  assert.equal(out.filter(f => f.type === 'delta' && f.key).at(-1)?.key, GUARD_NOTES.context);
-  assert.match(words(out), /ran out of room/);
-  await new Promise(res => setTimeout(res, 1500));
-  const compacted = r.logs.find(l => /compact after a stopped turn/.test(l));
-  assert.match(compacted ?? '', /compact after a stopped turn: \w+/, `compaction was asked for and the Harness answered (${compacted})`);
+  await r.bridge.runTurn({ ...r.base('f1', f => out.push(f)), message: 'SCRIPT:bloat 32000 Verified final answer.' });
+  assert.equal(words(out), 'Verified final answer.');
+  assert.equal(out.find(f => f.type === 'done')?.finishReason, 'stop');
+  assert.equal(out.some(f => f.noteReason), false);
   const out2 = [];
-  await r.bridge.runTurn({ ...r.base('f2', f => out2.push(f)), message: 'SCRIPT:bloat 3000' });
-  assert.equal(out2.filter(f => f.type === 'delta' && f.key).at(-1)?.key, GUARD_NOTES.empty, 'no words at all, plenty of room: still a message');
+  await r.bridge.runTurn({ ...r.base('f2', f => out2.push(f)), message: 'SCRIPT:bloat 32000' });
+  assert.equal(out2.filter(f => f.type === 'delta' && f.key).at(-1)?.key, GUARD_NOTES.empty);
+  assert.equal(r.worker.requests.length, 2, 'only the two requested replies use the model');
+  assert.ok(r.logs.every(line => !line.includes('compact after a stopped turn')));
 });

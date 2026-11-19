@@ -28,7 +28,7 @@
  *   SCRIPT:call <tool> <json>       one call to any tool with the given JSON arguments
  *   SCRIPT:multi <json>             {"calls":[[tool,args],...],"say":"final text"}: all the calls in one reply, then the text once their results are in
  *   SCRIPT:searchloop               a model that never stops: every reply rewrites a numbered plan and calls web_search again with a new query
- *   SCRIPT:bloat <prompt tokens>    a reply that is only thinking (no answer text), with usage reporting that many prompt tokens (a context at 100%)
+ *   SCRIPT:bloat <prompt tokens> [answer]   report the specified prompt usage and emit an answer or thinking only
  *   SCRIPT:badseq <steps> <file>    tool calls the Strata server could not run, as it marks them (strata_rejected_tool_calls /
  *                                   strata_unread_tool_markup), then a proper call: steps rej:NAME[>HINT], cut, junk, read, say (see below)
  *
@@ -221,7 +221,9 @@ export async function startScriptedWorker({ port = 0, chunkDelayMs = 40, model =
       return finish('length', 19660);
     }
     if (directive?.[1] === 'bloat') {
-      promptTokens = parseInt((directive[2] ?? '').trim(), 10) || 100;
+      const [, count, answer] = /^(\d+)(?:\s+(.+))?$/.exec((directive[2] ?? '').trim()) ?? [];
+      promptTokens = Number(count) || 100;
+      if (answer) return say([answer]);
       send({ role: 'assistant', content: '', reasoning_content: 'Thinking about it for a long time and never getting to the answer.' });
       return finish('stop', 20);
     }

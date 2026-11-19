@@ -597,7 +597,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     setupSignal.throwIfAborted();
     const projector = new TurnProjector({ policy: MODE_PRESETS[appliedMode].approval, window: route.contextWindow, catchUp: true });
     // #4981: a goal gets its own guard (failing calls pause it); the per-turn search and rewrite limits would stop a long goal
-    guard = goal ? new GoalGuard() : new TurnGuard({ plan: !!planTask, contextMax: route.kind === 'local' ? route.contextWindow : 0 });   // a saved connection's window is often only assumed: never judged by a guess
+    guard = goal ? new GoalGuard() : new TurnGuard({ plan: !!planTask });
     projector.onStatus = update => { if (!turn?.parentOpen && turn?.children.size && [...turn.children.values()].some(h => !h.done) && update.phase === 'waiting') return; reporter.set(update); };
     const turn = {
       sessionId, projector, route, runtime, requestId, live: !!adopt, lastSeq: adopt ? adopt.seq - 1 : -1,
@@ -727,7 +727,7 @@ ${note.text}`, key: note.key, values: note.values, noteReason: 'cut' });
       }
       const emptyCompletion = projector.ended?.kind === 'error' && projector.ended.error?.code === 'EMPTY_RESPONSE';
       if (!noteReason && !cutEnd && guard && !failure && !turn.stopping && !turn.goalRun && !emptyCompletion) {
-        noteReason = guard.silent({ ended: projector.ended, wrote: finalAnswer, acted: projector.tools.size > 0, contextTokens: projector.contextTokens });
+        noteReason = guard.silent({ ended: projector.ended, wrote: finalAnswer, acted: projector.tools.size > 0 });
       }
       if (noteReason && !extra.some(f => f.type === 'plan' && f.event === 'proposed')) { const note = guardNote(noteReason); if (note) extra.push(note); }
       for (const f of extra) emit(f);
@@ -754,8 +754,9 @@ ${note.text}`, key: note.key, values: note.values, noteReason: 'cut' });
       turn.ended.resolve({ reason: projector.ended, failure: failure ?? null });
       notifyIdle();
       if (!failure && !turn.stopping && !goal && !planTask && !researchTopic && rt === runtime) armWake(c, runtime, sessionId, turn.lastSeq);
-      // A turn that filled the context, or that the guard stopped, leaves a long history behind: summarise the older part now so the next message has room.
-      if (noteReason === 'context' || noteReason === 'searches' || noteReason === 'searches-failed' || noteReason === 'rewrites' || /context window|too long|exceeds/i.test(String(projector.ended?.error?.message ?? ''))) void compactSession(runtime, sessionId);
+      // The Harness recovers from actual context refusal, and the next prompt
+      // checks fit before it is sent. Avoid a second, unsolicited summary here.
+      if (noteReason === 'searches' || noteReason === 'searches-failed' || noteReason === 'rewrites') void compactSession(runtime, sessionId);
     }
 
     emit({ type: 'start', model: route.name, contextMax: route.contextWindow, demo: false, remoteModel: route.kind === 'api', agent: true, mode: appliedMode, sessionId, requestId, skills: [], ...(planTask ? { planning: true } : {}) });
@@ -812,7 +813,6 @@ ${note.text}`, key: note.key, values: note.values, noteReason: 'cut' });
       turn.lastActivity = Date.now();
       turn.heard = turn.lastActivity;
       for (const f of projector.consume(item)) emit(f);
-      if (guard && projector.contextTokens != null) trip(guard.context(projector.contextTokens));
       if (item.type === 'event') {
         const event = item.event;
         if (event.type === 'assistant/message') {

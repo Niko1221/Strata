@@ -10,11 +10,49 @@ import { startScriptedWorker } from './helpers/scripted-worker.mjs';
 import { createAgentBridge } from '../server/agent/agent-bridge.mjs';
 import { resolveHarness } from '../server/agent/harness-runtime.mjs';
 import { buildProfile } from '../server/agent/profile.mjs';
+import { guardPressureCompaction } from '../server/agent/plugins/strata-compaction.mjs';
 import { apply as applyContextPlugin, projectForeignReasoning } from '../server/agent/plugins/strata-context.mjs';
 import { clipMessage, densityOf, estimateMessage, isContextOverflow, pressureNow, promptTokensOf, splitMessages, summaryBudget, usageOfEvent, SUMMARY_LANGUAGE_RULE, withSummaryLanguage } from '../server/agent/context-budget.mjs';
 
 const HARNESS = process.env.STRATA_HARNESS_DIR;
 const skip = !HARNESS || !resolveHarness({ env: process.env }).ok ? 'STRATA_HARNESS_DIR is not set to a built Harness' : false;
+
+test('pressure compaction skips a tiny range and backs off only from unchanged non-shrinking work', async () => {
+  const agent = { session: {} };
+  const meter = { measure: () => ({ nodes: [{ seq: 1, tokens: 38 }, { seq: 2, tokens: 900 }, { seq: 3, tokens: 300 }] }) };
+  const attempts = [];
+  let end = 1;
+  let failure = null;
+  const compaction = {
+    async compactIfNeeded(owner, trigger, signal) {
+      return this.compactRegion(1, end, owner, signal);
+    },
+    async compactRegion(_start, last) {
+      attempts.push(last);
+      if (failure) throw failure;
+      return 'checkpoint';
+    },
+  };
+  guardPressureCompaction(compaction, meter, () => {});
+  const compact = (trigger = 'pressure') => compaction.compactIfNeeded(agent, trigger, new AbortController().signal);
+  assert.equal(await compact(), null);
+  assert.deepEqual(attempts, [], 'a 38-token prefix does not reach the summarizer');
+  assert.equal(await compact('context-overflow'), 'checkpoint', 'an actual provider refusal keeps its recovery path');
+
+  end = 2;
+  failure = new Error('summary is not smaller than the shadowed content (1000 estimated framed tokens >= 938)');
+  assert.equal(await compact(), null);
+  assert.equal(await compact(), null);
+  assert.deepEqual(attempts, [1, 2], 'only the first attempt at the unchanged range used the model');
+
+  end = 3;
+  const transient = new Error('temporary disconnect');
+  failure = transient;
+  await assert.rejects(compact(), transient);
+  failure = null;
+  assert.equal(await compact(), 'checkpoint', 'a transient failure does not blacklist the new range');
+  assert.deepEqual(attempts, [1, 2, 3, 3]);
+});
 
 test('a model switch removes only foreign reasoning and replay state from the request', () => {
   const source = { provider: 'old-route', model: 'a', replayState: { signature: 'opaque' } };
@@ -185,6 +223,17 @@ test('the plugin loads in the real Harness (a plugin that fails to import would 
   const frames = await send('SCRIPT:echo hello');
   assert.equal(frames.at(-1).type, 'done');
   assert.doesNotMatch(harnessLog(), /did not activate|failed to import|strata-context/, harnessLog());
+});
+
+test('the packaged Harness skips a tiny compaction source between tool steps at 512K', { skip }, async (t) => {
+  const { worker, send, ws } = await rig(t, { window: 524288 });
+  writeFileSync(join(ws, 'proof.txt'), 'EVIDENCE_512K');
+  const frames = await send('SCRIPT:call read {"file_path":"proof.txt"}\n' + dense.repeat(137000));
+  assert.match(answerOf(frames), /Tool finished/);
+  assert.ok(frames.some(frame => frame.type === 'agent-tool' && frame.tool?.name === 'read' && frame.tool.state === 'done'));
+  assert.equal(frames.at(-1).finishReason, 'stop');
+  assert.equal(worker.requests.length, 2, 'one tool call and its answer use the model');
+  assert.ok(worker.requests.every(request => request.promptChars / 3 > 419430), 'both requests exceed the default pressure threshold');
 });
 
 test('dense text compacts in time: no request is refused, and every message is answered', { skip }, async (t) => {
