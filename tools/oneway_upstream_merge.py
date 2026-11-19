@@ -401,7 +401,11 @@ def decide(repo: Path, rec: Record, *, base: str, fork: str, upstream: str,
 
     if f == b:
         if u is None:
-            return Decision(rec.old, target, DELETE, "none", note="upstream deleted; fork untouched")
+            # A deletion must act on the path that actually exists in the
+            # fork worktree, not on a relocated destination that was never
+            # written.
+            return Decision(rec.old, rec.old, DELETE, "none",
+                            note="upstream deleted; fork untouched")
         return Decision(rec.old, target, ADOPT, upstream,
                         sha256=hashlib.sha256(u).hexdigest(), data=u)
 
@@ -492,17 +496,37 @@ def run(args: argparse.Namespace) -> MergeReport:
     ]
 
     if args.mode == "apply":
+        # De-duplicate by target.  A DELETE for a relocated source must not
+        # remove a file another decision has written to the same target.
+        by_target: Dict[str, Decision] = {}
         for decision in report.decisions:
             if decision.kind == DELETE:
-                victim = repo / safe_target(decision.target)
+                continue
+            current = by_target.get(decision.target)
+            if current is None or (decision.path == decision.target and current.path != current.target):
+                by_target[decision.target] = decision
+        write_targets = set(by_target)
+        for target, decision in by_target.items():
+            path = repo / safe_target(target)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(decision.data)  # empty files must be created too
+        removed = 0
+        for decision in report.decisions:
+            if decision.kind == DELETE and decision.path not in write_targets:
+                victim = repo / safe_target(decision.path)
                 if victim.exists():
                     victim.unlink()
-                continue
-            if decision.data:
-                target = repo / safe_target(decision.target)
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes(decision.data)
-        LOG.info("applied %d file writes into %s", len(report.decisions), repo)
+                    removed += 1
+        # Relocation cleanup: remove the old path once its content has been
+        # written to the new path and nothing else targets the old path.
+        for decision in by_target.values():
+            if decision.target != decision.path and decision.path not in write_targets:
+                old = repo / safe_target(decision.path)
+                if old.exists():
+                    old.unlink()
+                    removed += 1
+        LOG.info("applied %d file writes, removed %d stale paths into %s",
+                 len(by_target), removed, repo)
     else:
         LOG.info("dry-run: %d decisions staged in memory only", len(report.decisions))
 
