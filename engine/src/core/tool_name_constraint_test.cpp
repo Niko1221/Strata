@@ -42,7 +42,7 @@ struct Sim {
 };
 
 int main() {
-    auto check = [](bool ok) { if (!ok) { std::fprintf(stderr, "tool_name_constraint regression\n"); std::exit(1); } };
+#define check(ok) do { if (!(ok)) { std::fprintf(stderr, "tool_name_constraint regression at line %d\n", __LINE__); std::exit(1); } } while (0)
     // Token ids: <function= = 1, <think> = 2, </think> = 3, <tool_call> = 4, </tool_call> = 5,
     // names [10,100] and [11,100] and [12,101] (name token + ">" terminator).
     const char* CFG = "v2|1|2|3|4|5|#1|10,100|11,100|12,101";
@@ -218,6 +218,55 @@ int main() {
         check(mask_allows(m[3], {102}));                            // after the name: its "\"> terminator
         check(m[4].empty() && m[5].empty());                        // released: the parameters are free
         check(c.st.at == nullptr && c.st.buf.back() == 4);          // the canonical state was not touched
+    }
+
+    // ---- a --batch slot: ids hold the prompt and the tokens its windows fed (never the head x), each window calls update() +
+    // window_masks() over ids[from..) with its own state; a rejected draft leaves the state at what was kept ----
+    {
+        strata::core::ToolNameConstraint c;
+        std::string e;
+        check(strata::core::parse_tool_name_constraint("v2|0|2|3|4|5|#1|10,100|11,100|12,101", 103, c, e));   // thinking off
+        std::vector<int32_t> ids = {50, 51};                        // the prompt (thinking off here: no <think> token), the reply starts at 2
+        const int64_t from = 2;
+        auto window = [&](std::vector<int32_t> w) {                 // w[0] = the slot's x, the rest its drafts
+            auto head = c.update(ids.data() + from, (int64_t) ids.size() - from, w[0], 103);
+            return c.window_masks(w.data(), (int) w.size(), 103, head);
+        };
+        // window 1: x = <tool_call>, nothing drafted; kept
+        auto m1 = window({4});
+        check(m1.size() == 1 && m1[0].empty());
+        ids.push_back(4);
+        // window 2: x = <function=, drafts 77 (a name no tool has) and ">"; the target picks 10 under row 0's mask, so only x is kept
+        auto m2 = window({1, 77, 100});
+        check(m2.size() == 3 && mask_allows(m2[0], {10, 11, 12}));
+        check(m2[1].empty());                                       // 77 is off the trie: the trie releases, later rows are free
+        ids.push_back(1);                                           // kept: x only
+        // window 3: x = 10 (the target's pick), drafts ">" (100): the head is inside the name, only ">" follows
+        auto m3 = window({10, 100});
+        check(m3.size() == 2 && mask_allows(m3[0], {100}));
+        check(m3[1].empty());
+        ids.push_back(10);
+        ids.push_back(100);                                         // both kept
+        // window 4: x = the next token after the name: released, nothing masked
+        auto m4 = window({60});
+        check(m4.size() == 1 && m4[0].empty());
+        ids.push_back(60);
+        // a second call in the same reply arms again
+        auto m5 = window({4});
+        check(m5[0].empty());
+        ids.push_back(4);
+        auto m6 = window({1});
+        check(mask_allows(m6[0], {10, 11, 12}));
+    }
+    {
+        // a slot that reads its prompt first (ids shorter than from): nothing is fed, nothing is masked
+        strata::core::ToolNameConstraint c;
+        std::string e;
+        check(strata::core::parse_tool_name_constraint(CFG, 103, c, e));
+        std::vector<int32_t> ids = {50};
+        const int64_t from = std::min<int64_t>(5, (int64_t) ids.size());   // as batch_tnc clamps it
+        auto head = c.update(ids.data() + from, (int64_t) ids.size() - from, 4, 103);
+        check(head.empty());
     }
 
     std::puts("tool_name_constraint_test: passed");

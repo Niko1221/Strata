@@ -158,6 +158,7 @@ class EngineSupports(unittest.TestCase):
     def test_only_an_engine_reporting_the_format(self):
         self.assertTrue(tnc.engine_supports(self.Eng({"tool_name_constraint": 2})))
         self.assertFalse(tnc.engine_supports(self.Eng({"tool_name_constraint": 1})))   # an older format
+        self.assertFalse(tnc.engine_supports(self.Eng({"tool_name_constraint": 0})))   # --batch: its windows take no mask
         self.assertFalse(tnc.engine_supports(self.Eng({"logit_bias": 1})))             # SYCL / Metal / an old engine
         self.assertFalse(tnc.engine_supports(self.Eng({"tool_name_constraint": 2}, split=True)))
         self.assertFalse(tnc.engine_supports(None))

@@ -317,7 +317,14 @@ public:
         if (next_) next_->set_slot_sampling(slot, sp);
     }
     /// A slot's logit bias (n_vocab floats; empty = none), added before the penalties and filters of its row, as a solo request's.  Reaches the last stage.
+    /// (A new bias also ends the slot's row masks below: it is called when a request takes the slot.)
     bool set_slot_logit_bias(int slot, const std::vector<float>& bias, std::string& err);
+    /// Per-row logit biases for the slot's NEXT window (the tool-name constraint): masks[j] is the dense n_vocab bias of the j-th row of the slot's
+    /// run in the window (empty: that row takes the slot's own bias, as before).  Replaces what was set; an empty vector (or all-empty masks) clears.
+    /// Keyed by slot and the row's place in the slot's run, not by the window's row index, so windows of different pipelined groups do not meet.
+    /// Set before the window is launched; reaches the last stage, which holds them on the host and uploads a row's mask when the row is drawn
+    /// (no device call at launch, like set_slot_history).
+    bool set_slot_row_masks(int slot, const std::vector<std::vector<float>>& masks, std::string& err);
     /// The slot's reply tail for its penalty window: the `n` tokens its session consumed since the reply began (the last penalty_last_n are used), the
     /// fed-back head not included.  Set before every batch window that holds the slot while it has a penalty; reaches the last stage.
     void set_slot_history(int slot, const int32_t* tail, int64_t n) {
@@ -507,6 +514,8 @@ private:
     int32_t b_out_[strata::kernels::kWindowMaxT] = {};
     std::vector<strata::kernels::SamplerParams> slot_sp_;
     std::vector<float*> slot_bias_dev_;                  ///< per slot: its logit bias on the device (null = none)
+    std::vector<std::vector<std::vector<float>>> slot_row_mask_host_;   ///< per slot, per row of its run: the next window's mask (set_slot_row_masks; empty = none)
+    std::vector<std::vector<float*>> slot_row_bias_dev_;                ///< the same on the device: uploaded when the row is drawn, the array kept for the next window
     std::vector<std::vector<int32_t>> slot_tail_;        ///< per slot: its reply tail for the penalty window (set_slot_history)
     int32_t* slot_hist_d_ = nullptr;                     ///< the penalty-history rows of the current batch window (device)
     size_t slot_hist_cap_ = 0;
