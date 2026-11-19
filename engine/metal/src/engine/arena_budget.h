@@ -37,7 +37,7 @@ struct ArenaMem {
     double phys = 0;          // bytes of RAM
     double working_set = 0;   // the Metal device's recommended working set
     double allocated = 0;     // already allocated by the engine (Metal buffers)
-    double available = 0;     // what macOS can give now without paging anything out (arena_avail)
+    double available = 0;     // estimated reclaimable bytes from mac_available_pages and the Mach page size
     double ple_mapped = 0;    // the n-gram table's bytes when it is mapped whole in RAM, else 0
     double proc_footprint = 0;   // what the process holds right now, whatever it is (task_info phys_footprint); 0: unknown
     double filecache_min = 0;    // sysctl vm.vm_page_filecache_min in bytes: the file cache macOS keeps before it compresses (0: unknown)
