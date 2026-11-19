@@ -85,13 +85,13 @@ dist-hip/
 node_modules/
 *.dmg
 /release/artifacts/
-/apps/host/dist/
+/app/host/dist/
 /apps/desktop/src-tauri/target/
-/apps/desktop/src-tauri/resources/node/*
-!/apps/desktop/src-tauri/resources/node/.gitignore
+/app/desktop/src-tauri/resources/node/*
+!/app/desktop/src-tauri/resources/node/.gitignore
 # the Control component (bundled CPython + wheels + strata_control) is built by apps/desktop/scripts/stage-control.py
-/apps/desktop/src-tauri/resources/control/*
-!/apps/desktop/src-tauri/resources/control/.gitignore
+/app/desktop/src-tauri/resources/control/*
+!/app/desktop/src-tauri/resources/control/.gitignore
 # the pruned DeepSeek Harness (MIT) is built by apps/desktop/scripts/stage-harness.mjs
 /apps/desktop/src-tauri/resources/harness/*
 !/apps/desktop/src-tauri/resources/harness/.gitignore
@@ -107,3 +107,4 @@ node_modules/
 /build-spark/
 /build-vision-spark/
 /.venv-build/
+

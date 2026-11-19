@@ -4,16 +4,16 @@
 
 Local AI for Windows, with chat, agent work, research and a choice of compatible models. Hakua is the zapabob fork of Niko1221/Strata; it is independently maintained and is not an upstream-endorsed distribution.
 
-## What changed in 0.6.6
+## What changed in 0.6.7
 
-This release merges official Strata 0.2.16 semantics into the fork with all fork features retained (official deletions were not applied). The Qwen3.8 native CUDA engine is now wired into the official engine API: `strata.exe` reports `qwen35` in `--families` and serves the real Qwen3.8-27B GGUF through the standard resident `--serve` protocol. Built and E2E-tested with CUDA 13.5 / SM120. Native performance is **slower than Prism llama.cpp** in matched warm A/B; byte-identical logits are preserved (`releaseQualified=false`).
+This release merges official Strata 0.2.16 semantics into the fork with all fork features retained (official deletions were not applied). The Qwen3.8 native CUDA engine is now wired into the official engine API: `strata.exe` reports `qwen35` in `--families` and serves the real Qwen3.8-27B GGUF through the standard resident `--serve` protocol. Built and E2E-tested with CUDA 13.5 / SM120. Decode is at Prism llama.cpp parity (both use the same DP4A kernel class); a reversed-order warm A/B measured batched F16 KV writes cut prefill KV cost 27% while keeping byte-identical logits. The 32 GB RAM pre-start squeeze and commit-limit advice from Sync-Strata are included. Full-window generation and general model quality remain unqualified (`releaseQualified=false`).
 
 ## Version and downloads
 
 <!-- release-062-stable -->
-Current app release: [0.6.6](https://github.com/zapabob/Strata/releases/tag/v0.6.6) (App `0.6.6`; Terminal, Control and native engine `0.6.3`). This Windows app-only release is intentionally not GitHub Latest; Latest remains `0.6.3`. The GPU engine remains the separately signed [`v0.6.4-preview.1`](https://github.com/zapabob/Strata/releases/tag/v0.6.4-preview.1) companion. `releaseQualified=false` remains explicit; full-window inference and general model quality remain unqualified.
+Current app release: [0.6.7](https://github.com/zapabob/Strata/releases/tag/v0.6.7) (App `0.6.7`; Terminal, Control and native engine `0.6.3`). This Windows app-only release is intentionally not GitHub Latest; Latest remains `0.6.3`. The GPU engine remains the separately signed [`v0.6.4-preview.1`](https://github.com/zapabob/Strata/releases/tag/v0.6.4-preview.1) companion. `releaseQualified=false` remains explicit; full-window inference and general model quality remain unqualified.
 
-[0.6.6](https://github.com/zapabob/Strata/releases/tag/v0.6.6) · [setup EXE](https://github.com/zapabob/Strata/releases/download/v0.6.6/Strata-0.6.6-windows-x64-setup.exe) · [tar.7z](https://github.com/zapabob/Strata/releases/download/v0.6.6/Strata-0.6.6-windows-x64.tar.7z) · [SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.6.6/SHA256SUMS.txt) · [BUNDLE-SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.6.6/BUNDLE-SHA256SUMS.txt)
+[0.6.7](https://github.com/zapabob/Strata/releases/tag/v0.6.7) · [setup EXE](https://github.com/zapabob/Strata/releases/download/v0.6.7/Strata-0.6.7-windows-x64-setup.exe) · [tar.7z](https://github.com/zapabob/Strata/releases/download/v0.6.7/Strata-0.6.7-windows-x64.tar.7z) · [SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.6.7/SHA256SUMS.txt) · [BUNDLE-SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.6.7/BUNDLE-SHA256SUMS.txt)
 
 ![Hakua / Strata real-model Japanese chat on Qwen3.8-27B](docs/media/native-qwen38-japanese-chat.png)
 *Hakua / Strata desktop running `qwen3.8-27b-abliterated-3.69bpw-12GB-MTP.gguf` via `strata-q38.exe` (CUDA 13 / RTX 5060 Ti 16 GB).*
