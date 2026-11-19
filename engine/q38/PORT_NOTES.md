@@ -35,9 +35,12 @@ Toolkit source files were NOT modified. MSBuild was invoked directly with
 ## Remaining before shipping (NOT done)
 1. Link `strata_q38` into the full `strata` executable and run a resident
    `--serve` E2E with the Qwen3.8 GGUF through the official Terminal/app.
-2. `family_layout.hpp` qwen35-dense geometry/layout table. The Q38 engine
-   uses its own reader (`admission.hpp`), so inference does not need this;
-   it is for official tooling/validation parity only.
+2. `family_layout.hpp` qwen35-dense geometry/layout table — **intentionally
+   NOT added**. Q38 uses its own reader (`admission.hpp`) and is dispatched in
+   `generate.cpp`'s family switch *before* the shared geometry/layout path runs,
+   so inference never touches this table. Adding a dense branch would also
+   require weakening `family_layout.hpp:84` (`n_expert <= 0`), which validates
+   every official MoE model — risk > benefit. Documented as not required.
 3. Signed engine-component packaging: fill `files` digests in
    `engine-component.json` and sign with the fork key (private key outside repo).
 4. Resolve the 133 retained conflict copies (fork bytes kept), prioritising
