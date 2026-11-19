@@ -29929,6 +29929,41 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_PREFILL_EQUAL_TAIL",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "src/program/generate.cpp",
+     "line": 10610,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "string",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/DETAILS.md:1139"
+   ],
+   "first_commit": "",
+   "first_date": "",
+   "since": "",
+   "last_commit": "",
+   "last_date": "",
+   "status": "opt-in",
+   "owner": "program",
+   "note": "keeps a full chunk and a short last chunk under N tokens in place of the equal cut (equal_cut_rule.hpp tail_keep)",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_PREFILL_FIRST",
    "backends": [
     "sycl"

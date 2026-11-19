@@ -188,6 +188,28 @@ int main() {
     static_assert(ec::equal_chunk(32000, 10240, 1536) == 8000, "constexpr equal cut");
     static_assert(ec::pick("0", true) == ec::Cut::today, "constexpr switch");
 
+    // ---- STRATA_PREFILL_EQUAL_TAIL (tail_keep): off unless set to a positive number
+    CHECK(ec::tail_keep(nullptr) == 0 && ec::tail_keep("") == 0 && ec::tail_keep("0") == 0);
+    CHECK(ec::tail_keep("2048") == 2048 && ec::tail_keep("x") == 0 && ec::tail_keep("-5") == 0 && ec::tail_keep("12a") == 0);
+    // off: every result is the one without the argument (the default path is unchanged)
+    for (int64_t t = 1; t <= 80000; t += 37)
+        for (int64_t c : {8192, 10240, 17152}) {
+            CHECK(ec::equal_chunk(t, c, 3072, 0) == ec::equal_chunk(t, c, 3072));
+            CHECK(ec::declined_equal(t, c, 3072, 0) == ec::declined_equal(t, c, 3072));
+        }
+    // on (2048) at the 17,152 auto chunk with the CPU share's 3,072 floor (RTX 4080 SUPER, UD-Q4_K_XL):
+    CHECK(ec::equal_chunk(17225, 17152, 3072) == 8613);                                                   // default: 2 x 8,613
+    CHECK(ec::equal_chunk(17225, 17152, 3072, 2048) == 17152 && ec::declined_equal(17225, 17152, 3072, 2048) == 8613);  // 17,152 + 73
+    CHECK(ec::equal_chunk(19199, 17152, 3072, 2048) == 17152);                                            // + 2,047
+    CHECK(ec::equal_chunk(19200, 17152, 3072, 2048) == 9600 && ec::declined_equal(19200, 17152, 3072, 2048) == 0);  // + 2,048: equal
+    CHECK(ec::equal_chunk(17000, 17152, 3072, 2048) == ec::today_chunk(17000, 17152));                    // one chunk: unchanged
+    CHECK(ec::equal_chunk(34400, 17152, 3072, 2048) == 17152);                                            // 2 x 17,152 + 96
+    // a value above the floor stops at the floor: a last chunk of 3,072 or more streams and takes the equal cut
+    CHECK(ec::equal_chunk(20223, 17152, 3072, 100000) == 17152 && ec::equal_chunk(20224, 17152, 3072, 100000) == 10112);
+    CHECK(ec::chunk(ec::Cut::equal, 17225, 17152, 3072, 2048) == 17152);
+    CHECK(ec::chunk(ec::Cut::today, 17225, 17152, 3072, 2048) == 17152 && ec::chunk(ec::Cut::opt_in, 17225, 17152, 3072, 2048) == 17152);
+    static_assert(ec::equal_chunk(17225, 17152, 3072, 2048) == 17152, "constexpr tail rule");
+
     if (failed) {
         std::fprintf(stderr, "equal_cut_rule_test: %d check(s) failed\n", failed);
         return 1;

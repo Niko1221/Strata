@@ -93,6 +93,32 @@ constexpr int64_t opt_in_chunk(int64_t tokens, int64_t max_chunk, int64_t floor)
     return rounded < max_chunk ? rounded : max_chunk;
 }
 
+/// STRATA_PREFILL_EQUAL_TAIL=N (opt-in; unset, 0 or not a number: off).  A segment whose today's last chunk is under N tokens
+/// and under the floor keeps today's cut at the scan's chunk: one full chunk on the streamed walk, then the short tail on the
+/// staged walk.  On a native pack with the CPU share that tail costs less than the second streamed pass of the equal cut.
+/// RTX 4080 SUPER 16 GB (RTX 4060 Ti as --expert-cache-device1), UD-Q4_K_XL, engine 0.1.60, serve path, one round: auto
+/// chunk 17,152; a 17,075-token part 4,342 ms, a 17,225-token part (2 x 8,613) 7,239 ms.  With STRATA_PREFILL_EQUAL=0 (auto
+/// chunk 16,384) the 17,225-token part (16,384 + 841) took 5,982 ms.  The RTX 4090 IQ3_S rows above (8,192 + 87 against
+/// 2 x 4,140) point the same way.  With the switch (N = 3,072) against the same source built without it, auto chunk 16,128,
+/// three rounds, prompt ms (median): 16,194 tokens 7,193 -> 4,801, 17,594 7,276 -> 6,450, 19,094 7,374 -> 7,096.  The scan does not count the tail, so today's loan can be larger than the scan's:
+/// declined_equal() reports the equal chunk this rule turned down, and the request path keeps the equal cut when today's
+/// loan does not fit (keep_equal).
+constexpr int64_t tail_keep(const char* env) {
+    int64_t v = 0;
+    if (env == nullptr) return 0;
+    for (const char* p = env; *p != '\0'; ++p) {
+        if (*p < '0' || *p > '9' || v > 100000000) return 0;
+        v = v * 10 + (*p - '0');
+    }
+    return v;
+}
+/// `keep_tail` (tail_keep()): today's cut of `tokens` at `max_chunk` ends in a chunk under both `keep_tail` and `floor`.
+constexpr bool keeps_tail(int64_t tokens, int64_t max_chunk, int64_t floor, int64_t keep_tail) {
+    if (keep_tail <= 0 || tokens <= max_chunk || max_chunk <= 0) return false;
+    const int64_t today_last = tokens - (chunk_count(tokens, max_chunk) - 1) * max_chunk;
+    return today_last < keep_tail && today_last < floor;
+}
+
 /// The equal cut: a segment longer than `max_chunk` is read in n = ceil(tokens / max_chunk) chunks of E = ceil(tokens / n)
 /// tokens.  The reading loop takes E at a time, so the first n - 1 chunks hold E tokens and the last one tokens - (n - 1) * E,
 /// between E - (n - 1) and E: the remainder of the division is taken off the last chunk, at most n - 1 tokens.  E is not
@@ -100,9 +126,10 @@ constexpr int64_t opt_in_chunk(int64_t tokens, int64_t max_chunk, int64_t floor)
 /// buffer stays within the size laid out for max_chunk, and exactly n chunks are read (never more than today's cut).  A
 /// segment that fits one chunk keeps today's chunk; so does a cut whose last chunk would fall under `floor` (every chunk of the
 /// equal cut takes the streamed walk, as today's full chunks do).
-constexpr int64_t equal_chunk(int64_t tokens, int64_t max_chunk, int64_t floor) {
+constexpr int64_t equal_chunk(int64_t tokens, int64_t max_chunk, int64_t floor, int64_t keep_tail = 0) {
     const int64_t plain = today_chunk(tokens, max_chunk);
     if (tokens <= max_chunk || max_chunk <= 0) return plain;
+    if (keeps_tail(tokens, max_chunk, floor, keep_tail)) return plain;
     const int64_t n = chunk_count(tokens, max_chunk);
     const int64_t per = tokens / n + (tokens % n != 0);
     const int64_t last = tokens - (n - 1) * per;
@@ -111,14 +138,15 @@ constexpr int64_t equal_chunk(int64_t tokens, int64_t max_chunk, int64_t floor) 
     return per;
 }
 
-/// The equal chunk that only the kEqualMinChunk / kEqualMinChunk2 condition turned down (today's cut was handed back for it), 0 otherwise.
-constexpr int64_t declined_equal(int64_t tokens, int64_t max_chunk, int64_t floor) {
+/// The equal chunk that the kEqualMinChunk / kEqualMinChunk2 condition or `keep_tail` turned down (today's cut was handed back
+/// for it), 0 otherwise.
+constexpr int64_t declined_equal(int64_t tokens, int64_t max_chunk, int64_t floor, int64_t keep_tail = 0) {
     if (tokens <= max_chunk || max_chunk <= 0) return 0;
     const int64_t n = chunk_count(tokens, max_chunk);
     const int64_t per = tokens / n + (tokens % n != 0);
     const int64_t last = tokens - (n - 1) * per;
     if (per > max_chunk || last < floor || last <= 0) return 0;
-    return short_equal(per, n, max_chunk) ? per : 0;
+    return short_equal(per, n, max_chunk) || keeps_tail(tokens, max_chunk, floor, keep_tail) ? per : 0;
 }
 
 /// Today's cut was handed back for a short equal chunk (declined_equal() > 0), but its loan does not fit while the equal
@@ -131,8 +159,8 @@ constexpr bool keep_equal(int64_t today_need, int64_t equal_need, int64_t room) 
 }
 
 /// The chunk a segment of `tokens` is read in under `cut`, at most `max_chunk`; `floor`: stream_all_min_tokens().
-constexpr int64_t chunk(Cut cut, int64_t tokens, int64_t max_chunk, int64_t floor) {
-    return cut == Cut::equal ? equal_chunk(tokens, max_chunk, floor)
+constexpr int64_t chunk(Cut cut, int64_t tokens, int64_t max_chunk, int64_t floor, int64_t keep_tail = 0) {
+    return cut == Cut::equal ? equal_chunk(tokens, max_chunk, floor, keep_tail)
          : cut == Cut::opt_in ? opt_in_chunk(tokens, max_chunk, floor)
                               : today_chunk(tokens, max_chunk);
 }
