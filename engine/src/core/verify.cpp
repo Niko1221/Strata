@@ -522,7 +522,9 @@ bool fuse_hits_on() {
     }
     return per_dev[dev] == 2;
 #else
-    return false;
+    static const int env = [] { const char* v = std::getenv("STRATA_FUSE_HITS"); return v != nullptr ? (std::atoi(v) != 0 ? 1 : 0) : -1; }();
+    if (env >= 0) return env != 0;
+    return true;
 #endif
 }
 

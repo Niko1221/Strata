@@ -6538,9 +6538,9 @@ int main(int argc, char** argv) {
         // STRATA_PEER_HOT_AT (default 8700, ~ the primary's slots) ranks, every pair with floor((r+1)f) > floor(rf)
         // moves to just after that point: the primary fills past them, the peer (which takes what the primary does
         // not hold, in order) gets them first.
-        if (o.peer_device >= 1) {   // default 0.45 (measured: 0.3-0.6 all better than 0; 0 = off, e.g. for the gate)
+        if (o.peer_device >= 1) {   // default 0.0 for asymmetric / autonomous rigs (STRATA_PEER_HOT overrides)
             const char* ph = std::getenv("STRATA_PEER_HOT");
-            const double f = o.peer_hot >= 0.0 ? o.peer_hot : (ph ? std::atof(ph) : 0.45);
+            const double f = o.peer_hot >= 0.0 ? o.peer_hot : (ph ? std::atof(ph) : 0.0);
             const char* pa = std::getenv("STRATA_PEER_HOT_AT");
             const size_t at = std::min(profile.size(), (size_t) (o.peer_hot_at > 0 ? o.peer_hot_at : (pa ? std::atoll(pa) : 8700)));
             if (f > 0.0 && f < 1.0 && at > 0) {
