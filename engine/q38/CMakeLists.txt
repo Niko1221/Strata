@@ -32,6 +32,7 @@ add_library(q38_spin8 STATIC
   ${Q38_SRC}/spin8/third_party/sha256/sha256.c)
 target_include_directories(q38_spin8 PUBLIC
   ${Q38_SRC}/spin8/include ${Q38_SRC}/spin8/third_party/sha256)
+target_compile_options(q38_spin8 PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/std:c++17>)
 
 add_library(strata_q38_ops STATIC
   ${Q38_SRC}/ops.cu
@@ -42,6 +43,11 @@ target_include_directories(strata_q38_ops PUBLIC
 target_compile_definitions(strata_q38_ops PUBLIC NOMINMAX)
 target_link_libraries(strata_q38_ops PUBLIC ${Q38_CUDA_LIBS})
 set_target_properties(strata_q38_ops PROPERTIES CUDA_ARCHITECTURES 120)
+# MSVC host + nvcc: CMake's CUDA_STANDARD does not emit -std; pass it
+# explicitly so C++17 nested namespaces (strata::qwen38) compile.
+target_compile_options(strata_q38_ops PRIVATE
+  $<$<COMPILE_LANGUAGE:CUDA>:-std=c++17>
+  $<$<COMPILE_LANGUAGE:CXX>:/std:c++17>)
 
 add_library(strata_q38_kv STATIC
   ${Q38_SRC}/kv.cu
@@ -51,10 +57,14 @@ target_include_directories(strata_q38_kv PRIVATE
 target_link_libraries(strata_q38_kv PUBLIC strata_q38_ops q38_spin8)
 set_target_properties(strata_q38_kv PROPERTIES CUDA_ARCHITECTURES 120)
 target_compile_options(strata_q38_kv PRIVATE
-  $<$<COMPILE_LANGUAGE:CUDA>:--fmad=false;--ftz=false;--prec-div=true;--prec-sqrt=true>)
+  $<$<COMPILE_LANGUAGE:CUDA>:-std=c++17;--fmad=false;--ftz=false;--prec-div=true;--prec-sqrt=true>
+  $<$<COMPILE_LANGUAGE:CXX>:/std:c++17>)
 
 # The entry point itself: strata::qwen38::run(int,char**).
 add_library(strata_q38 STATIC ${Q38_SRC}/engine.cu)
 target_link_libraries(strata_q38 PUBLIC strata_q38_kv psapi)
 set_target_properties(strata_q38 PROPERTIES CUDA_ARCHITECTURES 120)
 target_compile_definitions(strata_q38 PUBLIC STRATA_ENABLE_Q38=1)
+target_compile_options(strata_q38 PRIVATE
+  $<$<COMPILE_LANGUAGE:CUDA>:-std=c++17>
+  $<$<COMPILE_LANGUAGE:CXX>:/std:c++17>)
