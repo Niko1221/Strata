@@ -18,6 +18,7 @@
 #include "ref_quant.h"
 #include "arena_budget.h"
 #include "ple_conv_kw.h"
+#include "prompt_chunk.h"
 #include "stream.h"
 #include "geo.h"
 #include "msl_libs.h"
@@ -106,6 +107,7 @@ static bool gdn_fused_inputs(const std::string& device) {
 namespace {
 
 int g_slot_cap = 0;   // --batch N: the window keeps N + 1 sequences' running states side by side (set_batch_slots)
+int g_prompt_chunk_auto = 0;   // --prefill auto: Window::prompt's row chunk (prompt_chunk_for_auto); 0 = its 2048 default
 
 // Q4-KQ: the kernel sources define STRATA_KQ_DOWN to instantiate the K-quant / IQ4_XS / IQ3_S down experts (moe.metal, moe_mm.metal).
 // The host asks for them only when a layer's down tensor has one of those types, so a Flash-Next set (Q5_1 / Q5_0 / Q8_0 / IQ4_NL / Q2_0
@@ -3553,6 +3555,21 @@ void window_register(void* w);
 bool mtp_load_pending(Window* w, std::string& err);
 void set_model_shard(const char* shard1) { g_shard1 = shard1 ? shard1 : ""; }
 void set_batch_slots(int n) { g_slot_cap = n > 0 ? std::min(n, 8) : 0; }
+// Metal lends none of the prompt path's buffers (the window's own arena holds them), so no loan sizes the auto chunk:
+// Window::prompt's row chunk (STRATA_METAL_PROMPT_CHUNK, else kAutoPromptChunkRows) times four, still under the
+// auto:N ceiling.  g_prompt_chunk_auto carries that row chunk to Window::prompt.
+int64_t prompt_chunk_for_auto(int64_t auto_max) {
+    const char* e = std::getenv("STRATA_METAL_PROMPT_CHUNK");
+    g_prompt_chunk_auto = std::max(64, std::min(8192, e ? std::atoi(e) : kAutoPromptChunkRows));
+    const int64_t call = auto_prompt_call_rows(g_prompt_chunk_auto, auto_max);
+    static bool reported = false;   // one startup line: every later resolve repeats this call
+    if (!reported) {
+        reported = true;
+        std::fprintf(stderr, "strata metal: --prefill auto: %lld-token calls of %d-row prompt chunks\n",
+                     (long long) call, g_prompt_chunk_auto);
+    }
+    return call;
+}
 
 // The draft vocabulary the build ships (data/draft_vocab.bin beside the build, else the compiled-in data folder): what a DFlash2-alone start without <mtp>/draft_vocab.bin
 // uses (generate.cpp), and what Window::df2_bind falls back to.  STRATA_METAL_DRAFT_VOCAB names another file, or "full" for the whole head.

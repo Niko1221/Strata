@@ -18748,28 +18748,34 @@
    "reads": [
     {
      "file": "metal/src/engine/prompt_chain.inc",
-     "line": 569,
+     "line": 585,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 2911,
+     "line": 3006,
+     "backend": "metal",
+     "fn": "getenv"
+    },
+    {
+     "file": "metal/src/engine/window.cpp",
+     "line": 3562,
      "backend": "metal",
      "fn": "getenv"
     }
    ],
    "parse": "int",
    "default_state": null,
-   "code_default": "2048",
+   "code_default": "2048 (1024 under --prefill auto)",
    "engine_sets": [],
    "engine_defaults": [],
    "launch_files": [],
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/MAC.md:72",
-    "docs/MAC.md:255"
+    "docs/MAC.md:74",
+    "docs/MAC.md:259"
    ],
    "first_commit": "41ffe3eef6",
    "first_date": "2026-10-12",
@@ -18778,7 +18784,7 @@
    "last_date": "2026-10-12",
    "status": "opt-in",
    "owner": "metal/engine",
-   "note": "[auto] documented for users (docs/MAC.md:75), 1 more",
+   "note": "[auto] documented for users (docs/MAC.md:74), 1 more",
    "retire_after": "",
    "retired_in": ""
   },

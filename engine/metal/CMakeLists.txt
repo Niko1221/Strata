@@ -47,10 +47,13 @@ foreach(src ${STRATA_METAL_TESTS})
   get_filename_component(t ${src} NAME_WE)
   add_executable(${t} ${src})
   target_link_libraries(${t} PRIVATE mtl_rt)
-  # moe_tile_grid_test is a host test: no device, no model, nothing to load, so it is the one the others cannot be -
-  # registered with ctest, and it runs on a configured tree whether or not there is a Metal device to run on
+  # moe_tile_grid_test and prompt_chunk_test are host tests: no device, no model, nothing to load, so they are the ones
+  # the others cannot be - registered with ctest, and they run on a configured tree whether or not there is a Metal
+  # device to run on
   if(t STREQUAL "moe_tile_grid_test")
     add_test(NAME moe_tile_grid COMMAND moe_tile_grid_test)
+  elseif(t STREQUAL "prompt_chunk_test")
+    add_test(NAME prompt_chunk COMMAND prompt_chunk_test)
   endif()
 endforeach()
 

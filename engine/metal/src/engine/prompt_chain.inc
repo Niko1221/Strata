@@ -6,7 +6,8 @@
 // window's history parity, RoPE table and pending fold.  No head: the last prompt token runs as a decode window.
 //
 // The 8-row-window prompt path stays as the fallback: STRATA_METAL_PROMPT=window, and prompts shorter than
-// STRATA_METAL_PROMPT_MIN rows (default 32).  STRATA_METAL_PROMPT_CHUNK = C (default 2048).  The kernel variants
+// STRATA_METAL_PROMPT_MIN rows (default 32).  STRATA_METAL_PROMPT_CHUNK = C (default 2048, kAutoPromptChunkRows under
+// --prefill auto, whose prompt call is four of these row chunks).  The kernel variants
 // follow prompt_chain's defaults: matrix-unit register operands where the GPU has the M5's right-input layout
 // (COOP_K4, function constant 7), else the older expert and attention kernels (the M4).
 
@@ -580,9 +581,9 @@ bool Window::pc_chunk(const int64_t* tokens, int nT, int64_t pos0, std::string& 
 
 bool Window::prompt(const int64_t* tokens, int64_t n, int64_t pos0,
                     const std::function<bool(const float*, int64_t, int64_t, std::string&)>& on_chunk, std::string& err) {
-    static const int C = [] {
+    const int C = [] {
         const char* e = std::getenv("STRATA_METAL_PROMPT_CHUNK");
-        return std::max(64, std::min(8192, e ? std::atoi(e) : 2048));
+        return std::max(64, std::min(8192, e ? std::atoi(e) : (g_prompt_chunk_auto > 0 ? g_prompt_chunk_auto : 2048)));
     }();
     if (!pc_setup((int) std::min<int64_t>(C, std::max<int64_t>(n, 64)))) { err = "metal prompt: setup failed"; return false; }
     const double t0 = now_ms();

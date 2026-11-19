@@ -189,6 +189,7 @@
 namespace strata::metal_engine {
 void set_model_shard(const char* shard1);   // metal/src/engine/window.cpp
 void set_batch_slots(int n);   // metal/src/engine/window.cpp: how many --batch slots the window keeps state for
+int64_t prompt_chunk_for_auto(int64_t auto_max);   // metal/src/engine/window.cpp: four of Window::prompt's row chunks, under the auto ceiling
 // batch slot b <-> the main sequence: the running state (unless kv_only) and the first `upto` cells of K/V
 bool window_slot_copy_main(bool into_slot, int slot, int64_t upto, bool kv_only, std::string& err);
 std::string draft_vocab_default();   // metal/src/engine/window.cpp: the packaged default draft subset (data/draft_vocab.bin)
@@ -959,7 +960,9 @@ struct Options {
     /// `--prefill auto`: the largest chunk (up to 8192) whose buffers the expert cache can lend.  A chunk of
     /// stream_all_min tokens or more (1024 by default) streams every expert the GPU does not hold once, routed or not
     /// (a smaller one only the experts it routes to), so a bigger chunk streams fewer bytes per token (the "ubatch"
-    /// effect).
+    /// effect).  On Metal nothing is lent: auto asks for four of Window::prompt's row chunks (prompt_chunk_for_auto),
+    /// 4096 rows with the default 1024-row chunk and still under this ceiling.  That is the resident prompt path;
+    /// streaming prompts keep their own row chunk (1024 rows, 4096 on a Mac with 96 GB or more).
     bool prefill_auto = false;
     /// #282, opt-in: the largest chunk `--prefill auto` may take - 8192 by default; `--prefill auto:16384` or
     /// `auto:32768` (or STRATA_PREFILL_AUTO_MAX) lets it go further, never past the context
@@ -1350,7 +1353,10 @@ void usage() {
                  "  --no-token-graph     A/B: two graphs per layer (the host launches each) instead of one per token\n"
                  "  --no-fused-gr        A/B: the six-kernel hyper-connection read and a separate write (native)\n"
                  "  --prefill CHUNK      batched prompt processing in chunks of CHUNK tokens (needs --native); auto =\n"
-                 "                       the largest chunk up to 8192 whose buffers the expert cache can lend;\n"
+                 "                       the largest chunk up to 8192 whose buffers the expert cache can lend (on\n"
+                 "                       Metal, four of the window's prompt row chunks, 4096 rows by default for\n"
+                 "                       resident prompts; streaming keeps its own row chunk: 4096 rows on a\n"
+                 "                       Mac with 96 GB or more, else 1024);\n"
                  "                       auto:16384 / auto:32768 (or STRATA_PREFILL_AUTO_MAX) allow bigger ones\n"
                  "  --prefill-pipe R     opt-in, a layer split: prompt chunks sized so the stages read at once - R is\n"
                  "                       this PC's b/a in tokens (setup's --calibrate measures it); 1 only evens out\n"
@@ -4752,9 +4758,15 @@ int main(int argc, char** argv) {
 #endif
     if (o.prefill_auto && (o.no_prefill_borrow || o.expert_profile.empty())) {
         o.prefill_auto = false;       // nothing to lend from: the buffers are reserved for the session, so keep them small
+#if defined(STRATA_GPU_METAL)
+        // Metal reserves nothing to lend in the first place (the window's own arena holds the prompt buffers), so the
+        // fallback still sizes the call from the window: four of Window::prompt's row chunks, under the auto ceiling.
+        o.prefill_chunk = strata::metal_engine::prompt_chunk_for_auto(o.prefill_auto_max);
+#else
         // 0.2.8 Strix Halo: the gfx1151 rule above chose a chunk that fits this box; the "keep them small" 2048 would throw
         // the whole 8K prompt back into 4 chunks (measured: 2048 against 8192 costs ~26% of an 8K prompt on this box).
         o.prefill_chunk = o.prefill_own_keep_chunk ? o.prefill_chunk : 2048;
+#endif
     }
     if (!have_tokens && o.serve) {   // plan v0.3 P8: requests bring their own tokens
         o.tokens = {248045};
@@ -12032,6 +12044,15 @@ int main(int argc, char** argv) {
                                  dev == 1 ? "--expert-cache-device1 N" : "--expert-cache-device1..3 N, in order");
                 }
             }
+#if defined(STRATA_GPU_METAL)
+            // Metal lends none of the prompt path's buffers (the window's own arena holds them, and the loan is dropped
+            // below), so neither a lendable chunk nor its host-aware plan may size an auto call: the auto branch below
+            // asks the window for its row chunk and hands the engine four of them.
+            if (o.prefill_auto) {
+                chunk = 0;
+                pf_plan_chunk = 0;
+            }
+#endif
             if (chunk > 0) {
                 if (o.prefill_auto)
                     // the RESOLVED ring, not the room offered: ring_slots() clamps to [16, RING_MAX] and a chunk
@@ -12083,7 +12104,11 @@ int main(int argc, char** argv) {
                 borrow = lend_first >= 0 ? xcache.device_slot(lend_first) : nullptr;
                 borrow_bytes = lend_first >= 0 ? part_bytes(pf_parts[0], lend_first) : 0;
             } else if (o.prefill_auto) {
+#if defined(STRATA_GPU_METAL)
+                o.prefill_chunk = strata::metal_engine::prompt_chunk_for_auto(o.prefill_auto_max);
+#else
                 o.prefill_chunk = 1024;   // nothing lendable: small buffers of its own
+#endif
             } else if (pf_parts.size() > 1) {
                 // An explicit chunk no stage can lend in full.  main falls back to the prompt path's own buffers
                 // here and so do we, rather than refusing to start - but say what every stage has, because a split
@@ -12098,7 +12123,11 @@ int main(int argc, char** argv) {
                                  (long long) part_slots(p, o.prefill_chunk));
             }
         } else if (o.prefill_auto && d_res == nullptr) {
+#if defined(STRATA_GPU_METAL)
+            o.prefill_chunk = strata::metal_engine::prompt_chunk_for_auto(o.prefill_auto_max);
+#else
             o.prefill_chunk = 1024;       // #85: no expert cache at all (a full 8 GB card): small buffers of its own
+#endif
         }
         // pf_parts is empty when there is no VRAM expert tier (no --expert-profile, or no VRAM left for it): the alias has
         // nothing to borrow then, and the verifier below stops the start with its own "--expert-profile" error.  It read
@@ -22833,7 +22862,12 @@ int main(int argc, char** argv) {
                 if (!o.prefill_auto) o.prefill_chunk = chunk;
             }
             if (o.prefill_auto) {
+#if defined(STRATA_GPU_METAL)
+                // Metal lends nothing, so k and chunk do not size the auto call: Window::prompt's row chunk does, four of them.
+                o.prefill_chunk = strata::metal_engine::prompt_chunk_for_auto(o.prefill_auto_max);
+#else
                 o.prefill_chunk = k > 0 ? chunk : request_chunk(n_batched, 1024);
+#endif
                 std::fprintf(stderr, "strata generate: prompt chunk auto: %lld tokens\n", (long long) o.prefill_chunk);
             } else if (chunk != o.prefill_chunk) {
                 k = 0;                                 // a fixed chunk that does not fit: its own buffers, as before
