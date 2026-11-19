@@ -463,11 +463,17 @@ print(r.choices[0].message.content)
 
 - **Prometheus.** With `Accept: text/plain` the metrics use vLLM's names (`vllm:num_requests_running`, `vllm:kv_cache_usage_perc`,
   token and request counters, `vllm:prefix_cache_queries_total` and `_hits_total`, `vllm:spec_decode_num_draft_tokens_total`
-  and `_accepted_tokens_total`, and the time-to-first-token, inter-token and end-to-end histograms), so dashboards written
-  for vLLM read this server. Strata's own facts come under `strata:` and are named after their JSON key (for example
-  `strata:live_tok_s`, `strata:last_hit_rate`, `strata:gpu_util`, `strata:ram_used_bytes`). A value the server does not have
-  has no sample. With an API key, the scraper sends it as a bearer token. Ready-made files are in `docs/monitoring/`:
-  `prometheus.yml`, `servicemonitor.yaml` and `grafana-strata.json`.
+  and `_accepted_tokens_total`, the time-to-first-token, inter-token and end-to-end histograms, the per-request
+  `vllm:request_prompt_tokens`, `vllm:request_generation_tokens` and `vllm:request_prefill_kv_computed_tokens` token
+  histograms, the `vllm:request_prefill_time_seconds`, `vllm:request_decode_time_seconds` and
+  `vllm:request_time_per_output_token_seconds` stage histograms, and `vllm:request_success_total` labelled by
+  `finished_reason`), so dashboards written for vLLM read this server. Strata's own facts come under `strata:` and are
+  named after their JSON key (for example `strata:live_tok_s`, `strata:last_hit_rate`, `strata:gpu_util`,
+  `strata:ram_used_bytes`, and - when the conversation cache is on - `strata:conversation_cache_budget_bytes`, `_used_bytes`,
+  `_slots`, `_parked`, `_evictions_total`, `_parks_total`, `_restores_total` and `_reused_tokens_total`). A value the
+  server does not have has no sample. The scraper sends its key as a bearer token - the inference API key or the read-only
+  `telemetry_read_key` (`STRATA_TELEMETRY_KEY`), which reads `/metrics` and `/v1/telemetry` but cannot run inference.
+  Ready-made files are in `docs/monitoring/`: `prometheus.yml`, `servicemonitor.yaml` and `grafana-strata.json`.
 - **Metadata.** `/models` and `/v1/models` list only the loaded model, with its context limit and input modalities. `/props` exposes
   the chat template, context limit, configured generation defaults, model path and engine version. `n_predict: -1` means no
   fixed output cap. `/slots` uses llama.cpp's names (`n_ctx`, `n_prompt_tokens`). `total_slots` is the number of `--batch` slots
@@ -522,7 +528,7 @@ applies at the next start. Network, key, MCP and program keys are not editable t
 | `api_monitor` | off | Records requests for `/api-monitor`. |
 | `lazy_load` | off | Start without loading the model. |
 | `slot_save_path` | none | Enables session files. |
-| `host`, `api_key`, `cors_origins`, `trusted_origins`, `allowed_hosts` | local only | See [Network access](#network-access). |
+| `host`, `api_key`, `telemetry_read_key`, `cors_origins`, `trusted_origins`, `allowed_hosts` | local only | See [Network access](#network-access). |
 | `codex_thread_titles`, `codex_compaction_cache` | off | See [Codex CLI](#the-responses-api-and-codex-cli). |
 | `mcp_servers`, `mcp` | none | See [Tools from MCP servers](#tools-from-mcp-servers). |
 
@@ -688,6 +694,10 @@ tables per token). The scaling is fixed for the whole run, because the KV cache 
   Several keys (one per client, so one can be withdrawn): `--api-key key1,key2`, `"api_key": "key1,key2"` or
   `"api_key": ["key1", "key2"]`. `STRATA_API_KEY` sets one too. Streamed answers carry `X-Accel-Buffering: no`. When you
   open the web page through a proxy or tunnel whose address differs, add it: `"trusted_origins": ["https://strata.example.com"]`.
+- **Read-only telemetry key:** `telemetry_read_key` (or `STRATA_TELEMETRY_KEY`) is a second, separate key that reads
+  `/metrics` (JSON and Prometheus) and `/v1/telemetry` but cannot run inference or manage the server. Give a monitoring
+  scraper this key instead of the inference API key, so a leaked monitoring config cannot run the model. It must differ
+  from every inference API key.
 - **Browser pages (CORS):** off by default. `"cors_origins": ["https://chat.example.com"]` lets those origins call `/v1/*`;
   `["*"]` lets any page and is only sensible with an API key. It never opens `/settings`, `/unload` or the MCP tools. It
   belongs to the engine's own server; the desktop app answers browser pages on its own API address and already allows

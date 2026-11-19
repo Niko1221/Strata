@@ -303,11 +303,11 @@ class OverHttp(unittest.TestCase):
         self.assertEqual(body["schema_version"], 1)
         self.assertNotIn("input", json.dumps(body))
 
-    def test_read_only_telemetry_key_does_not_authorize_inference_or_management(self):
+    def test_read_only_telemetry_key_opens_metrics_but_not_inference(self):
         self.start(api_key="inference-secret", telemetry_key="read-secret")
         header = {"Authorization": "Bearer read-secret"}
         self.assertEqual(self.req("GET", "/v1/telemetry", headers=header)[0], 200)
-        self.assertEqual(self.req("GET", "/metrics", headers=header)[0], 401)
+        self.assertEqual(self.req("GET", "/metrics", headers=header)[0], 200)   # #6062: read-only monitoring
         self.assertEqual(self.req("GET", "/v1/models", headers=header)[0], 401)
         self.assertEqual(self.req("POST", "/v1/chat/completions", self.chat_body(),
                                   {**header, "Content-Type": "application/json"})[0], 401)
