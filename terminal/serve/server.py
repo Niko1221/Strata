@@ -7792,9 +7792,9 @@ def make_handler(svc: Service):
                 if tool_choice_of(req.get("tool_choice"))[0] == "none":
                     tools = None
                 force = svc.force_text(forced_call(req.get("tool_choice"), tools))
-                messages, validator = prepare_format(req.get("response_format"), messages)   # its schema is written into the prompt
-                if validator is not None and (tools or req.get("strata_mcp")):
-                    raise ValueError("structured response_format with tools/MCP is not supported")
+                messages, validator = prepare_format(req.get("response_format"), messages, with_tools=bool(tools))   # its schema is written into the prompt
+                if validator is not None and req.get("strata_mcp"):
+                    raise ValueError("structured response_format with MCP is not supported")   # as the chat route says it
                 kw["add_generation_prompt"] = bool(req.get("add_generation_prompt", True))
                 ids = svc.encode_prompt(messages, tools, kw, store=False)
                 if force and kw.get("enable_thinking", True) is False:

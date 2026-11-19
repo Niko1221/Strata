@@ -871,11 +871,20 @@ class TokenizeEndpoint(unittest.TestCase):
         finally:
             self.svc.engine = previous
 
-    def test_response_format_with_tools_is_refused_as_chat_refuses_it(self):
-        body = {"model": "m", "messages": self.MSGS, "tools": [self.TOOL], "response_format": {"type": "json_object"}}
-        self.assertEqual(self.post("/tokenize", body)[0], 400)
-        self.assertEqual(self.post("/v1/chat/completions", {**body, "max_tokens": 8})[0], 400)
-        self.assertEqual(self.post("/tokenize", {**body, "tool_choice": "none"})[0], 200)   # no tools are offered then
+    def test_response_format_with_tools_is_counted_as_chat_reads_it(self):
+        # chat accepts a response_format beside tools (the directive then adds "this applies only to your final answer"),
+        # so /tokenize counts it, and counts more than the same request without the format
+        body = {"model": "m", "messages": self.MSGS, "tools": [self.TOOL]}
+        plain = self.post("/tokenize", body)
+        s, b = self.post("/tokenize", {**body, "response_format": {"type": "json_object"}})
+        self.assertEqual(s, 200, b)
+        self.assertGreater(b["count"], plain[1]["count"])
+        self.assertEqual(self.post("/tokenize", {**body, "response_format": {"type": "json_object"}, "tool_choice": "none"})[0], 200)
+
+    def test_response_format_with_mcp_is_refused_as_chat_refuses_it(self):
+        s, b = self.post("/tokenize", {"model": "m", "messages": self.MSGS, "strata_mcp": True,
+                                       "response_format": {"type": "json_object"}})
+        self.assertEqual(s, 400, b)
 
     def test_a_bad_response_format_is_a_400(self):
         s, b = self.post("/tokenize", {"model": "m", "messages": self.MSGS, "response_format": {"type": "bogus"}})
