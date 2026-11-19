@@ -73,11 +73,11 @@ Windows). Hugging Face snapshot symlinks work if you pass the snapshot's file na
 
 ## The pack (by hand)
 
-Build Strata, then from the repository root, with gguf-py from the pinned llama.cpp (setup installs it;
-`STRATA_GGUF_PY` can point to its `gguf-py` folder):
+Build Strata, then from the repository root (the pack tools carry their own gguf-py;
+`STRATA_GGUF_PY` can point to another `gguf-py` folder):
 
 ```sh
-.venv/bin/python tools/iq_pack.py \
+terminal/.venv/bin/python terminal/tools/iq_pack.py \
   --gguf /path/to/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf \
   --out packs/ud-q4_k_xl --compat-bf16
 ```
@@ -107,8 +107,8 @@ the same file ([Quality](#quality-against-llamacpp-on-the-same-file)).
 ## The MTP draft layer
 
 The draft layer is the base model's, the same one the other packs use. If setup installed Strata, you have it (`mtp/rt`
-in `Strata-data`). Otherwise build it as [ORCA.md](ORCA.md#preparation) shows (`tools/mtp_fetch.py`,
-`tools/mtp_pack.py`, `tools/mtp_rt.py`, then copy `data/draft_vocab.bin` to `mtp/rt/`).
+in `Strata-data`). Otherwise build it as [ORCA.md](ORCA.md#preparation) shows (`terminal/tools/mtp_fetch.py`,
+`terminal/tools/mtp_pack.py`, `terminal/tools/mtp_rt.py`, then copy `terminal/data/draft_vocab.bin` to `mtp/rt/`).
 
 ## The server
 
@@ -124,7 +124,7 @@ implies `--mmap-experts`).
     "--pack", "packs/ud-q4_k_xl",
     "--native", "/path/to/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf",
     "--resident-budget-gib", "40",
-    "--expert-profile", "data/expert-profile.bin", "--expert-cache", "auto",
+    "--expert-profile", "terminal/data/expert-profile.bin", "--expert-cache", "auto",
     "--prefill", "auto", "--spec", "4", "--spec-min-p", "0.5",
     "--mtp", "mtp/rt", "--max-context", "8192"
   ],
@@ -138,11 +138,11 @@ implies `--mmap-experts`).
 ```
 
 ```sh
-.venv/bin/python -m serve.server --engine strata --config strata-ud-q4_k_xl.json --port 8080
+terminal/.venv/bin/python terminal/serve/server.py --engine strata --config strata-ud-q4_k_xl.json --port 8080
 ```
 
 `engine/strata.exe` is setup's engine on Windows; a self-built one is `build/strata`. The expert profile is the base
-model's (`data/expert-profile.bin`). It ranks the same 48 x 512 experts and decides which ones the GPU cache and the RAM
+model's (`terminal/data/expert-profile.bin`). It ranks the same 48 x 512 experts and decides which ones the GPU cache and the RAM
 budget take first.
 
 **Choosing the RAM budget N.** Use your RAM minus 20 to 24 GB (the OS, the engine itself, the 126 MB router copy, and
@@ -200,7 +200,6 @@ same top 20 per position.
 | Variable | Effect |
 | --- | --- |
 | `STRATA_LOOKAHEAD=0` | Turns off the routing-aware prefetch (on by default in this mode). While the CPU works on a layer, a thread applies the next layer's router to this layer's input and asks the OS to read the predicted experts' pages. Pages only; the answers are the same. `STRATA_LOOKAHEAD_K` sets the experts per token (default 10). |
-| `STRATA_MMQ_KQ=1` | Multiplies the Q4_K / Q5_K / Q5_1 experts of a prompt with llama.cpp's MMQ kernels instead of dequantizing them to FP16. It rounds differently from the FP16 path, so it is opt-in for this file. On CUDA the kernels are a library next to the engine (`libstrata_kq.so` / `strata_kq.dll`), opened only then, so they take no VRAM from other models ([QUANTS.md](QUANTS.md)). |
 | `STRATA_KQ256=1` | Multi-token AVX2 kernels for the Q4_K / Q5_1 / Q8_0 experts. Bit-exact with ggml's, but measured no faster, so off. |
 | `STRATA_PARTIAL_PIN=1` | Registers the hottest part of the RAM budget (up to `STRATA_PARTIAL_PIN_GIB`, default 24) with the GPU driver, so the GPU computes a share of the misses over PCIe (`--pcie-frac`). Measured no faster, and it changes the numerics of those experts, so off. |
 | `STRATA_FETCH_THREADS=N` | Threads that read the experts from the GGUF while it answers (default 8). The prompt path has its own: `STRATA_STAGER_THREADS` (default 32 here) and `STRATA_STAGER_RING` (128). |
@@ -272,10 +271,9 @@ bartowski's Swift-1.5 Q4_0, whose header shows the same formats.
   engine may not have kernels for. The engine checks every layer's formats at start and refuses an unsupported one by
   name.
 - Tests: the packer's synthetic 4-shard and conversion tests
-  (`.venv/bin/python -m unittest discover -s tools -p test_iq_pack.py`) and the CTests `gguf_split_test`,
+  (`terminal/.venv/bin/python -m unittest discover -s tools -p test_iq_pack.py`) and the CTests `gguf_split_test`,
   `expert_layout_test`, `native_expert_parity_*` (the three real expert format pairs against ggml-cpu, the Q5_1 min term,
-  Q8_0 rows, Q4_0/Q4_0 and Q4_0/Q4_1). With `-DSTRATA_MMQ_KQUANTS=ON`, `prefill_mmq_kquant_test` checks the prompt path's
-  MMQ products for Q4_K / Q5_K / Q5_1 / Q8_0 against ggml's dequantized weights.
+  Q8_0 rows, Q4_0/Q4_0 and Q4_0/Q4_1).
 - Not validated: sampled decoding and long conversations. Please report what you see.
 
 ## Credits
