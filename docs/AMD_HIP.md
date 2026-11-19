@@ -46,7 +46,7 @@ Strix Point (890M / 880M, gfx1150) and Krackan (860M / 840M, gfx1152) are named 
 ## Ready-made packages
 
 The Terminal one-liner and `strata update` pick the package whose GPU code covers the card. The app installer
-(`Strata-0.2.15-windows-x64-setup.exe`, `Strata-0.2.15-linux-x86_64.AppImage`) has no engine inside: on its first start the app
+(`Strata-0.2.16-windows-x64-setup.exe`, `Strata-0.2.16-linux-x86_64.AppImage`) has no engine inside: on its first start the app
 downloads the matching package for the card. You can also press **Update engine** in Settings (or run `strata update`).
 
 | Package (variant) | OS | GPU code inside | ROCm |
@@ -68,7 +68,7 @@ matrix cores, and hipBLASLt ships no gfx1030 kernels, so there is no tuning tabl
 `strata-device --list-devices` and skips cards the package has no code for and integrated chips, while a card of its own can
 run. `HIP_VISIBLE_DEVICES`, a `"gpu"` in the settings file or `hip_ordinal` is never overridden.
 
-**Tuning tables.** Each package carries the hipBLASLt tuning tables of `tools/hip` that match the hipBLASLt it bundles, as
+**Tuning tables.** Each package carries the hipBLASLt tuning tables of `terminal/tools/hip` that match the hipBLASLt it bundles, as
 `tuning/<arch>-hipblaslt-<version>.txt`:
 
 | Package | Table |
@@ -128,7 +128,7 @@ reused. The Monitor shows the card's load, VRAM, temperature and power from Linu
 
 ## Windows
 
-Install the [app](INSTALL.md) (`Strata-0.2.15-windows-x64-setup.exe` from the
+Install the [app](INSTALL.md) (`Strata-0.2.16-windows-x64-setup.exe` from the
 [release page](https://github.com/Niko1221/Strata/releases/latest); it downloads the engine for the card), or
 install the [Terminal](INSTALL.md#the-terminal) and run `strata launch`. You need Windows 10 or 11 (64-bit), a supported card
 and a current AMD driver. No ROCm or HIP SDK, no compiler, no admin rights. `START-HERE.bat --backend hip` is a
@@ -167,10 +167,10 @@ engine\strata-device.exe --list-devices
 engine\strata-device.exe --selftest
 ```
 
-**Building it yourself.** `tools\hip\build_windows.bat` (Visual Studio 2022 Build Tools with the C++ workload, Python, git; no
+**Building it yourself.** `terminal\tools\hip\build_windows.bat` (Visual Studio 2022 Build Tools with the C++ workload, Python, git; no
 admin, no AMD GPU) installs ROCm from AMD's TheRock wheels into `.rocm-win`, builds, and packages
 `dist\strata-windows-x64-hip.zip`. `START-HERE.bat --backend hip --prebuilt dist\` installs that one.
-`tools\hip\build_windows.bat tests` also builds the HIP tests. `STRATA_HIP_ARCHS` picks other architectures; for the RX 6000
+`terminal\tools\hip\build_windows.bat tests` also builds the HIP tests. `STRATA_HIP_ARCHS` picks other architectures; for the RX 6000
 package use `STRATA_HIP_ARCHS="gfx1030;gfx1031"` and `package_engine.py --variant rdna2`.
 
 ## Build
@@ -180,7 +180,7 @@ hipBLASLt development files, CMake 3.24+, a C++20 host compiler, and Git. The mo
 SSD for its PLE table.
 
 ```sh
-cmake -S . -B build-hip \
+cmake -S engine -B build-hip \
   -DCMAKE_BUILD_TYPE=Release \
   -DSTRATA_ENABLE_HIP=ON -DSTRATA_ENABLE_CUDA=OFF \
   -DCMAKE_HIP_ARCHITECTURES=gfx1100
@@ -195,12 +195,10 @@ the card's name, its architecture and the build's list.
 - If CMake cannot find the HIP compiler, add `-DCMAKE_HIP_COMPILER=/path/to/rocm/llvm/bin/clang++`. Use the compiler and
   libraries from the same ROCm installation.
 - Do not enable both GPU backends in one build.
-- CMake fetches the pinned llama.cpp revision. For an offline build, point `STRATA_GGML_DIR` at a checkout of that exact
-  revision.
-- Linux engine packages: `VARIANT=rx6000 packaging/build_hip_linux.sh`.
+- Linux engine packages: `VARIANT=rx6000 tools/packaging/build_hip_linux.sh`.
 - **A hand-built engine has no tuning table.** The packaged engines carry `tuning/<arch>-hipblaslt-<version>.txt` beside the binary
   ([Ready-made packages](#ready-made-packages) lists which); a build made with plain `cmake` and started
-  through `serve/server.py` has none, and the prompt GEMMs fall back to plain hipBLAS. On Strix Halo (gfx1151) that read prompts
+  through `terminal/serve/server.py` has none, and the prompt GEMMs fall back to plain hipBLAS. On Strix Halo (gfx1151) that read prompts
   20-25% slower in one report (1,043 against 826 tok/s at 8K, hipBLASLt 1.4.1, a single run per arm, not a paired A/B). Point
   `STRATA_HIPBLASLT_TUNING` at the file in `tools/hip/` (`gfx1151-hipblaslt-100401.txt` for hipBLASLt 1.4.1), or copy it into a
   `tuning/` folder next to the `strata` binary. The start log then has the line `prefill gemm: hipBLASLt tuning enabled (N rows,
@@ -218,7 +216,7 @@ ctest --test-dir build-hip --output-on-failure --timeout 60 -E '^(ple_parity|pla
 ## Model and serving configuration
 
 Prepare a supported model pack and its MTP runtime with the existing tools. For OrcaRouter IQ3_XXS, follow the
-[compatibility conversion](ORCA.md). Add `--experts-bin` to the `tools/iq_pack.py` command: mmap requires the pack's
+[compatibility conversion](ORCA.md). Add `--experts-bin` to the `terminal/tools/iq_pack.py` command: mmap requires the pack's
 `experts.bin`, which the default native packing does not emit and which uses more disk. Keep each model's pack and tokenizer
 together.
 
@@ -229,7 +227,7 @@ build-hip/strata --serve \
   --pack packs/iq3xxs \
   --native /path/to/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf \
   --ple-gguf /path/to/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf \
-  --mmap-experts --expert-profile data/expert-profile.bin --expert-cache auto \
+  --mmap-experts --expert-profile terminal/data/expert-profile.bin --expert-cache auto \
   --prefill 512 --spec 4 --spec-min-p 0.5 --mtp mtp/rt \
   --max-context 4096 --kv int8 --pool-workers 15 \
   --adapt-every 0 --pcie-frac 0 --vram-reserve-mib 1024
@@ -240,7 +238,7 @@ build-hip/strata --serve \
 directory:
 
 ```sh
-.venv/bin/python -m serve.server --engine strata --config strata-hip.json --port 8080
+terminal/.venv/bin/python terminal/serve/server.py --engine strata --config strata-hip.json --port 8080
 ```
 
 - Select the AMD device with `ROCR_VISIBLE_DEVICES` or `HIP_VISIBLE_DEVICES` if needed.
@@ -270,7 +268,7 @@ machine then swaps or stalls, raise it. Re-check after a ROCm update.
 | `STRATA_HIP_ADAPT_KERNEL_COPY=1` | Off | Adaptive-tier swaps copied by a kernel instead of the SDMA engine; a workaround for a gfx1030 hang with MMQ prompts and adaptive swaps (untested by the reporter) |
 
 **Why `STRATA_SH_STREAM` goes both ways.** The fork has to hide something. With experts on the CPU in the window, the shared expert forks
-off only after the doorbell is published (`STRATA_SH_FORK_LATE`, `src/core/verify.cpp`), so it runs while the GPU would otherwise wait for the
+off only after the doorbell is published (`STRATA_SH_FORK_LATE`, `engine/src/core/verify.cpp`), so it runs while the GPU would otherwise wait for the
 CPU pool. On a 16 GB card whose cache holds only part of the experts that wait is about half of a verify window (one RX 6900 XT under Linux,
 4,859 slots, `STRATA_DECODE_TIMING=1`: GPU-reach wait 20.7 of 39.1 ms per window), which is where #1272's gain comes from. When every routed
 expert is on the GPU there is no wait to fill, and the fork is two cross-stream event dependencies per layer and nothing else: 7fd67dd measured
@@ -359,7 +357,7 @@ is bitwise equal to the warp scorer. The default, short-prompt and decode paths 
 
 On one RX 7900 XTX the gain was 10-13% at about 131K tokens and 22% at 240K. Cached follow-ups and a two-task coding pilot
 showed no repeatable gain, so this is opt-in on gfx1100, not a coding-speed recommendation. Data and limits:
-[bench/results/2026-10-11-gfx1100-qsa-scores](../bench/results/2026-10-11-gfx1100-qsa-scores/README.md).
+[docs/bench-results/2026-10-11-gfx1100-qsa-scores](bench-results/2026-10-11-gfx1100-qsa-scores/README.md).
 
 ### Deep contexts: the prompt's top-k selection
 
@@ -388,12 +386,12 @@ engine, and remove it to go back. If the engine runs in a systemd unit, limit it
 The RX 9070 / 9070 XT and the Radeon AI PRO R9700 run the same kernels as gfx1100: wave32, 64 KiB of LDS per workgroup, the
 signed dot4 instruction and a 100 MHz wall clock. Switch defaults for gfx12 are in [Speed switches](#speed-switches).
 
-- **Build and tests:** `-DCMAKE_HIP_ARCHITECTURES=gfx1201 -DSTRATA_BUILD_TESTS=ON -DSTRATA_PREFILL_MMQ=ON`. On an R9700,
+- **Build and tests:** `-DCMAKE_HIP_ARCHITECTURES=gfx1201 -DSTRATA_BUILD_TESTS=ON`. On an R9700,
   `ple_parity` (needs the Q2_0 fixture) and `expert_multi_test` (needs AVX-512) fail for reasons outside the GPU.
 - **Architecture check:** a gfx1100-only build stops on a gfx1201 card at startup with a plain message.
 - **hipBLASLt:** the gfx120X wheel's hipBLASLt is 1.2.0 and no table ships for it, so Linux `rx9070` uses plain hipBLAS. A
   table calibrated for it measured within noise end to end. Tables for 1.2.2 (system ROCm 7.2.4), 1.4.1 and 1.5.0 exist in
-  `tools/hip` ([Tuning table](#tuning-table)). With ROCm 7.2.4's hipBLASLt 1.2.2 the plain path is far off, and its table
+  `terminal/tools/hip` ([Tuning table](#tuning-table)). With ROCm 7.2.4's hipBLASLt 1.2.2 the plain path is far off, and its table
   roughly doubled prompt speed.
 - **Two cards in one run (layer split):** `"backend": "hip", "gpu": [1, 0]` in the config (setup writes it with `--gpus 1,0`).
   With every expert on the GPUs the split gives the same tokens as the R9700 alone. On an R9700 plus a 9070 XT the split
@@ -418,7 +416,7 @@ signed dot4 instruction and a 100 MHz wall clock. Switch defaults for gfx12 are 
   expert rows are fetched over PCIe and how many are computed by the CPU pool. The x16 share (0.55) was measured on
   a machine where the link was the cheap side; on an R9700 with idle CPU cores it is the pool: IQ3_S, 3 rotated
   pairs, PLE direct, **8K decode 86.1 -> 94.6 tok/s at 0.15 (+9.9%), 32K 67.2 -> 84.4 (+25.6%)**, 64K 69.1 -> 72.3
-  (+4.7%), prompt speed unchanged. Under `serve/server.py` a short chat decodes 84.4 -> 93.2 (+10.4%). The CPU lane
+  (+4.7%), prompt speed unchanged. Under `terminal/serve/server.py` a short chat decodes 84.4 -> 93.2 (+10.4%). The CPU lane
   rounds a missing expert's FP32 rows differently from the GPU lane, so this changes bits: the first-token KL of 0.0
   against 0.55 is **0.0013 mean** (median 0.0011, max 0.0047, same top-1 in 12 of 12 prompts), below the engine's own
   implementation-noise scale. gfx12 native packs therefore **start** at 0.15 (`STRATA_PCIE_FRAC_DEFAULT=old` restores
@@ -509,12 +507,30 @@ kernels for FP16-in / FP16-out GEMMs only; the prompt path's FP16-in / FP32-out 
 
 | Switch | Effect |
 | --- | --- |
-| `STRATA_HIP_PROMPT_F16=1` | Runs the 16-bit prompt GEMMs FP16 in and out (the engine prints a tip on gfx103x). On by default on a Radeon 780M (gfx1103) under Linux; `=0` turns it off there; every other card needs `=1`. Radeon 780M, Q2_0, prompt x1.11 / x1.15 / x1.19 / x1.25 at 300 / 1,000 / 2,048 / 8,192 tokens (x1.11 / x1.15 / x1.63 / x1.45 beside `STRATA_PF_FUSED=1`); forced-token KL against the FP16 path 0.00593 against 0.00543 for MMQ (24 prompts, 64 tokens each, ratio 1.09, 95% CI 0.97 to 1.23). On a Radeon AI PRO R9700 (gfx1201) the dense GEMMs are slower with it (x0.70 to x0.72), so it stays opt-in there. `STRATA_F16_RANGE=1` prints, per prompt, the largest value that entered or left FP16 (FP16 ends at 65504); `STRATA_DBG_NAN=1` counts non-finite FP16 outputs. Checks: [2026-10-04-rdna2-fp16-prompt](../bench/results/2026-10-04-rdna2-fp16-prompt/README.md). |
+| `STRATA_HIP_PROMPT_F16=1` | Runs the 16-bit prompt GEMMs FP16 in and out. On by default on a Radeon 780M (gfx1103) under Linux and on the RX 6000 cards (gfx1030 / gfx1031 / gfx1032, from 0.2.16); `=0` turns it off there; every other card needs `=1`. RX 6700 XT, IQ2_XS, 16 prompts of 2K, against the exact FP32 products: KL 0.00549 against 0.00621 for the old route, prompts 11-14 % faster; 8K prompts not measured. Windows not measured by us (community runs on RX 6800 / 6900 XT used `=1`). Radeon 780M, Q2_0, prompt x1.11 / x1.15 / x1.19 / x1.25 at 300 / 1,000 / 2,048 / 8,192 tokens (x1.11 / x1.15 / x1.63 / x1.45 beside `STRATA_PF_FUSED=1`); forced-token KL against the FP16 path 0.00593 against 0.00543 for MMQ (24 prompts, 64 tokens each, ratio 1.09, 95% CI 0.97 to 1.23). On a Radeon AI PRO R9700 (gfx1201) the dense GEMMs are slower with it (x0.70 to x0.72), so it stays opt-in there. `STRATA_F16_RANGE=1` prints, per prompt, the largest value that entered or left FP16 (FP16 ends at 65504); `STRATA_DBG_NAN=1` counts non-finite FP16 outputs. Checks: [2026-10-04-rdna2-fp16-prompt](bench-results/2026-10-04-rdna2-fp16-prompt/README.md). |
 | `STRATA_RDNA2_SGEMM=1` | Widens both GEMM inputs to FP32 (exact) and runs SGEMM, no 65504 limit. `=all` forces it on any AMD card. With `STRATA_HIP_PROMPT_F16=1` the FP16 route runs first and SGEMM takes the products it leaves. Slower than the FP16 route. |
 | `STRATA_ROCBLAS_TUNING=<file or dir>` | A rocBLAS solution table for the FP16 route; setup points the engine at the directory when a table for the architecture exists. The log says `rocBLAS tuning enabled (... rows ...)` or why not. See [rocBLAS table](#rocblas-table-gfx103x). |
-| `STRATA_SELECT_SIMT=1` | QSA block scores on the FP32 tiled scorer instead of the warp kernel; helps long prompts (128K: +7.4%). Not bitwise the warp kernel. [Data](../bench/results/2026-10-07-rdna2-qsa-select-simt/README.md). |
-| `STRATA_HC_PERSIST=1` | The verifier's hyper-connection read as one persistent kernel (HIP, wave32). Measured on 2x RX 6900 XT: -2.8% to -4.2% ms per verify window. Not offered on gfx11 and gfx12. Opt-in for measurement on gfx103x. [Data](../bench/results/2026-10-12-hc-persist-gfx1030/README.md). |
+| `STRATA_SELECT_SIMT=1` | QSA block scores on the FP32 tiled scorer instead of the warp kernel; helps long prompts (128K: +7.4%). Not bitwise the warp kernel. [Data](bench-results/2026-10-07-rdna2-qsa-select-simt/README.md). |
+| `STRATA_HC_PERSIST=1` | The verifier's hyper-connection read as one persistent kernel (HIP, wave32). Measured on 2x RX 6900 XT: -2.8% to -4.2% ms per verify window. Not offered on gfx11 and gfx12. Opt-in for measurement on gfx103x. [Data](bench-results/2026-10-12-hc-persist-gfx1030/README.md). |
 | `STRATA_FILE_CACHE_OLD_RULE` | gfx906 keeps the old file-tier cache rule; `=1` forces it on any Linux build, `=0` the current one |
+
+**Decode: the miss split follows the CPU pool (PcieAuto) by default (#4007).** The start-up share only looks at the link
+(0.35-0.39 on a x8 PCIe 4 card, 0.55 on x16), which is too high when the CPU pool is fast. On a discrete gfx103x card the
+share is now refined in the first decode windows from the pool's time per missed expert, as on gfx12 and CUDA. Engine 0.1.59
+(release 0.2.13), unset against `STRATA_PCIE_FRAC_DEFAULT=auto`, ten interleaved pairs each, prompt speed unchanged in every run:
+
+| Machine | Share | 4K decode | 32K decode |
+| --- | --- | ---: | ---: |
+| RX 6900 XT, Windows 11, i9-10900K, PCIe 4.0 x8 probe 12.6 GB/s | 0.35 -> 0.20 (one start 0.25) | 38.0 -> 43.8 (**+15.1%**, 10/10) | 39.0 -> 44.1 (**+13.3%**, 10/10) |
+| RX 6900 XT, Linux, Ryzen 5 5600X, PCIe 4.0 x8 probe 14.1 GB/s | 0.39 -> 0.25 | 45.0 -> 47.1 (**+4.9%**, 10/10) | 47.7 -> 48.1 (**+1.0%**, 10/10) |
+| RX 6700 XT (gfx1031), Linux, Ryzen 7 5800X, x16 probe 28.1 GB/s ([#4007](https://github.com/Niko1221/Strata/issues/4007#issuecomment-6879926995)) | 0.55 -> 0.35 | 41.6 -> 44.0 (**+4.9%**, 9/10) | 42.7 -> 44.0 (**+3.4%**, 10/10) |
+| RX 6700 XT (gfx1031), Linux, probe 2.8 GB/s (maintainers, engine 0.1.61, 3 pairs, [details](bench-results/2026-11-14-rdna2-pcie-auto/README.md#maintainers-check-on-an-rx-6700-xt-2026-11-16)) | 0.08, no change | 19.44 -> 19.41 (-0.2%, 1/3) | not run |
+
+Windows gains the most because each GPU submission costs more there, so moving missed experts to the CPU pool pays more.
+`STRATA_PCIE_FRAC_DEFAULT=old` keeps the start-up share, an explicit `--pcie-frac` always wins, and integrated gfx103x
+(gfx1035 / gfx1036) and `STRATA_DEFAULTS=026` keep the old behaviour. Like on gfx12, the CPU lane rounds a missing expert's
+rows differently from the GPU lane, so output changes in the last bits. Data:
+[2026-11-14-rdna2-pcie-auto](bench-results/2026-11-14-rdna2-pcie-auto/README.md).
 
 On a 16 GB card keep the defaults for `--pcie-frac` and `--adapt-every`; the 7900 XTX values in
 [AMD_HIP_PERFORMANCE.md](AMD_HIP_PERFORMANCE.md) cost 8.6 and 13.6 tok/s on an RX 6900 XT.
@@ -538,8 +554,8 @@ Other gfx103x and RDNA2-adjacent cards (community reports):
 | --- | --- |
 | gfx1031, RX 6700 XT 12 GB (#524, #1027) | Setup knows it (`gfx103X-all` wheels, unvalidated). IQ2_XS on ROCm 7.2.4: decode 30-32 tok/s, prompt about 300 tok/s, 6 of 6 needles. The default list of `build_windows.bat` includes it. |
 | RX 6800M 12 GB, Windows, self-built (#915, #1078) | Q2_0: decode 9-27 tok/s, prompt 50-114 tok/s; experts stream from disk with 31 GB RAM |
-| gfx1032, RX 6600 / 6600 XT | Unvalidated. Ran under Windows as the helper expert GPU of an RX 6800 ([SECOND_GPU.md](SECOND_GPU.md)): +8-18% decode over the 6800 alone. No report as a primary card. |
-| gfx1150, Radeon 890M (#1217) | Builds and runs as an unvalidated target. MINISFORUM N5 PRO, 96 GB, TheRock ROCm 7.14.1, IQ3_XXS: decode 15-19 tok/s, prompts 125-130 tok/s on plain hipBLAS and 1.5-1.7x faster with `gfx1150-hipblaslt-100401.txt`. Setup does not install for it: build with `-DCMAKE_HIP_ARCHITECTURES=gfx1150` and point `STRATA_HIPBLASLT_TUNING` at the table. [Report](../bench/results/2026-10-07-community-gfx1150/README.md). |
+| gfx1032, RX 6600 / 6600 XT / 6650 XT (#1375) | Unvalidated. In the ready-made RX 6000 engine from 0.2.16 (built, not tested on a real RX 6600). One RX 6650 XT 8 GB (Fedora, ROCm 7.1.1) built the engine for gfx1032 and served a model end to end; no parity or KL run. Ran under Windows as the helper expert GPU of an RX 6800 ([SECOND_GPU.md](SECOND_GPU.md)): +8-18% decode over the 6800 alone. |
+| gfx1150, Radeon 890M (#1217) | Builds and runs as an unvalidated target. MINISFORUM N5 PRO, 96 GB, TheRock ROCm 7.14.1, IQ3_XXS: decode 15-19 tok/s, prompts 125-130 tok/s on plain hipBLAS and 1.5-1.7x faster with `gfx1150-hipblaslt-100401.txt`. Setup does not install for it: build with `-DCMAKE_HIP_ARCHITECTURES=gfx1150` and point `STRATA_HIPBLASLT_TUNING` at the table. [Report](bench-results/2026-10-07-community-gfx1150/README.md). |
 | gfx1152, Radeon 860M / 840M (#1625) | Builds with a warning; portable kernels; no report; setup does not install for it |
 
 On Windows, setup's ready-made engine runs an RX 6800 beside a 780M iGPU (HIP numbers the RX 6800 as 1).
@@ -548,7 +564,7 @@ On Windows, setup's ready-made engine runs an RX 6800 beside a 780M iGPU (HIP nu
 
 gfx906 is wave64 and has no WMMA and no packed byte arithmetic, so the wave32 backend refuses it. A separate opt-in build
 compiles the CUDA sources as HIP through a small compat layer (`include/strata/platform/hip_compat/`), with a CUDA warp mapped
-to a logical half of the 64-lane wavefront. Setup does not build it: build by hand and run `serve/server.py` with a config as
+to a logical half of the 64-lane wavefront. Setup does not build it: build by hand and run `terminal/serve/server.py` with a config as
 on any other card.
 
 The gfx906 build is community-tested: the maintainers have no gfx906 card, and the engine here is checked to compile for
@@ -561,10 +577,9 @@ is not part of this build; `strata --families` lists what the binary runs. Pleas
 on the kernel's amdgpu driver. hipBLASLt is not used.
 
 ```sh
-# inside the image, with this checkout at /src and llama.cpp at the pinned commit in third_party/llama.cpp
+# inside the image, with this checkout at /src
 apt-get update && apt-get install -y cmake ninja-build git python3 build-essential
-cmake -S . -B build-906 -G Ninja -DSTRATA_HIP_GFX906=ON -DCMAKE_HIP_ARCHITECTURES=gfx906 \
-  -DSTRATA_GGML_DIR=/src/third_party/llama.cpp \
+cmake -S engine -B build-906 -G Ninja -DSTRATA_HIP_GFX906=ON -DCMAKE_HIP_ARCHITECTURES=gfx906 \
   -DCMAKE_C_COMPILER=/opt/rocm/llvm/bin/clang -DCMAKE_CXX_COMPILER=/opt/rocm/llvm/bin/clang++
 ninja -C build-906 strata
 ```
@@ -612,18 +627,18 @@ few minutes):
 
 ```sh
 cmake --build build-hip --target tune_hipblaslt
-CASES=$(awk 'NR>2 {printf " --case %s,%s,%s,%s,%s", $1, $5, $2, $3, $4}' tools/hip/gfx1100-hipblaslt-100200.txt)
+CASES=$(awk 'NR>2 {printf " --case %s,%s,%s,%s,%s", $1, $5, $2, $3, $4}' terminal/tools/hip/gfx1100-hipblaslt-100200.txt)
 ./build-hip/tune_hipblaslt $CASES --tuning-out table.txt
 ```
 
 The file's second line names the architecture and version (`STRATA_HIPBLASLT_TUNING_V1 gfx1201 100401`). Save it as
 `tools/hip/<arch>-hipblaslt-<version>.txt` for setup, or point `STRATA_HIPBLASLT_TUNING` at it. Compare the prompt speed with and
-without it before keeping it. For an engine package, `packaging/stage_tuning.py` (Linux) and `tools/hip/package_windows.py`
+without it before keeping it. For an engine package, `tools/packaging/stage_tuning.py` (Linux) and `terminal/tools/hip/package_windows.py`
 copy the tables that match the bundled hipBLASLt into the package's `tuning/` folder. `STRATA_HIPBLASLT_VERBOSE=1` reports
 fallbacks; look for `fallbacks=0`. The test `hip_prefill_hipblaslt_gemm` is a smoke test (it checks 2 rows), and it does not
 prove that every solution id is valid.
 
-Tables in `tools/hip`:
+Tables in `terminal/tools/hip`:
 
 | File | Card, calibrated with | Notes |
 | --- | --- | --- |
@@ -635,7 +650,7 @@ Tables in `tools/hip`:
 | `gfx1200-hipblaslt-100202.txt` | RX 9060 XT | See [Community-validated cards](#community-validated-cards) |
 | `gfx1151-hipblaslt-100400.txt`, `-100401.txt`, `-100500.txt` | Radeon 8060S (Strix Halo) | 100400 is for the 7.14.0a wheels setup installs; 90 rows. Used by default on Strix Halo. |
 | `gfx1150-hipblaslt-100401.txt`, `-100500.txt` | Radeon 890M | Setup does not use it; point `STRATA_HIPBLASLT_TUNING` at it |
-| `gfx1103-hipblaslt-100401.txt` | Radeon 780M | 143 rows. Setup installs for gfx1103 only with `STRATA_EXPERIMENTAL_GFX1103=1`. [Report](../bench/results/2026-10-12-community-gfx1103/README.md). |
+| `gfx1103-hipblaslt-100401.txt` | Radeon 780M | 143 rows. Setup installs for gfx1103 only with `STRATA_EXPERIMENTAL_GFX1103=1`. [Report](bench-results/2026-10-12-community-gfx1103/README.md). |
 
 > **Measured on:** the card in each row, fresh prompts, decode unchanged unless stated; plain hipBLAS against the table.
 
@@ -679,7 +694,7 @@ solution rocBLAS refuses at run time falls back to the default kernel for that c
 
 Shipped: `gfx1030-rocblas-5.6.0.8d1ae90e.txt` (ROCm 10.0.0, the `/opt/rocm` setup installs on Ubuntu), measured on an RX 6900 XT.
 Other gfx1030 cards run it too, but a table calibrated for them may pick differently; `tune_rocblas` makes one in about 5
-minutes. Data: [2026-10-05-rdna2-rocblas-table](../bench/results/2026-10-05-rdna2-rocblas-table/README.md).
+minutes. Data: [2026-10-05-rdna2-rocblas-table](bench-results/2026-10-05-rdna2-rocblas-table/README.md).
 
 ### Community-made AMD changes (`STRATA_AMD_COMMUNITY_TUNING`, on by default)
 
@@ -697,7 +712,7 @@ tell us. The numbers below are the contributors', not ours.
 What the exact-build rule leaves out: a table loads only when the architecture and the full rocBLAS version string of the running library match the table's header.
 So these two tables do nothing on a gfx1031 / gfx1032 / other card, on AMD's own Ubuntu ROCm 7.2.4 packages (they report `5.2.0.dabb6df2b9`), on a later TheRock nightly, on
 Windows, or on any other rocBLAS build; the engine then logs that the table was refused and rocBLAS's default kernels run. Different GEMM solutions round FP16 differently, so answers can differ in the last bits. The tables need
-`STRATA_HIP_PROMPT_F16=1` and `STRATA_ROCBLAS_TUNING` (setup sets the latter to `tools/hip` on gfx103x); an engine package that does not carry `tools/hip` has no table to load.
+`STRATA_HIP_PROMPT_F16=1` and `STRATA_ROCBLAS_TUNING` (setup sets the latter to `terminal/tools/hip` on gfx103x); an engine package that does not carry `terminal/tools/hip` has no table to load.
 
 The dot product change is device code, so the environment variable cannot undo it on a build that has it: build with `-DSTRATA_AMD_COMMUNITY_TUNING=OFF` to compile the portable loop for gfx1010
 again (`-DSTRATA_GFX1012_PORTABLE_DOT=ON` does the same, for gfx1010 and gfx1012). Other architectures compile the same code either way.
@@ -785,8 +800,8 @@ STRATA_PF_SWITCH_MIN_T=4096` 925 -> 1,092 tok/s; `--resident-experts` 1,092 -> 2
 **Package checks (0.2.1 to 0.2.3).** Initial package checks (build, link, `package_engine.py --verify`, GPU code listing,
 `strata --version` in a clean environment, feed selection by architecture) passed without an RX 7000 or Strix Halo card.
 Later evidence: [release 0.2.3](release-notes-0.2.3.md) records Windows Strix Halo inference with engine 0.1.48. An RX 7900 XTX
-on Windows 11 ran the 0.1.40 Windows engine ([report #1173](../bench/results/2026-10-06-community-rx-7900-xtx/README.md));
-other RX 7900 owners ran Linux builds ([COMMUNITY.md](../bench/results/COMMUNITY.md)).
+on Windows 11 ran the 0.1.40 Windows engine ([report #1173](bench-results/2026-10-06-community-rx-7900-xtx/README.md));
+other RX 7900 owners ran Linux builds ([COMMUNITY.md](bench-results/COMMUNITY.md)).
 
 **Original backend validation (PR #94, engine 0.1.20, RX 7900 XTX, Ryzen 9 7950X3D, 64 GiB, ROCm 7.1).** 25 registered tests
 passed on 2026-09-29. A real GSQ-RCO IQ3_XXS server smoke with mmap, expert profile, automatic cache and MTP passed four

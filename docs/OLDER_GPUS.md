@@ -36,6 +36,7 @@ too and cannot hold any of the model.
 | --- | --- | --- |
 | RX 6800 / 6900 series | gfx1030 | setup (`--backend hip`), unvalidated. The #540 attention kernel is the default there (`STRATA_ATTN_PRE75=0` runs the standard kernel). See [AMD_HIP.md](AMD_HIP.md#rdna2-gfx1030) |
 | RX 6700 XT | gfx1031 | setup (`--backend hip`), unvalidated; used daily by its reporter on one card |
+| RX 6600 / 6600 XT / 6650 XT | gfx1032 | the ready-made RX 6000 engine (from 0.2.16), unvalidated: built, not tested on a real RX 6600. One RX 6650 XT 8 GB ran a model on a self-built engine (#1375). See [AMD_HIP.md](AMD_HIP.md#rdna2-gfx1030) |
 | RX 5500 XT (RDNA1) | gfx1012 | built by hand: `-DCMAKE_HIP_ARCHITECTURES=gfx1012` (HIP 5.7 or 7) |
 | RX 5700 XT (RDNA1) | gfx1010 | built by hand: `-DCMAKE_HIP_ARCHITECTURES=gfx1010` on ROCm 7.14's `gfx101X-dgpu` wheels; needs `ROCR_VISIBLE_DEVICES=0` on a PC that also has an AMD iGPU |
 | RX 5700, 6 GB RX 5600 (RDNA1) | gfx1010 | as above; a 6 GB card leaves about 50 expert slots |
@@ -50,7 +51,7 @@ so treat it as a test. The ready-made CUDA 12 engine holds no sm_52 code; build 
 cannot compile for Maxwell):
 
 ```
-cmake -B build -G Ninja -DSTRATA_EXPERIMENTAL_SM60=ON -DCMAKE_CUDA_ARCHITECTURES=52
+cmake -S engine -B build -G Ninja -DSTRATA_EXPERIMENTAL_SM60=ON -DCMAKE_CUDA_ARCHITECTURES=52
 cmake --build build -j
 ```
 
@@ -108,7 +109,7 @@ other card or toolkit changes. Use CUDA 13.0 or newer for an RTX 50 card.
 
 ```sh
 # Linux (Windows: the same with the toolkit's nvcc.exe)
-cmake -S . -B build-cuda12 -DSTRATA_ENABLE_CUDA=ON -DSTRATA_BUILD_TESTS=OFF -DSTRATA_EXPERIMENTAL_SM60=ON \
+cmake -S engine -B build-cuda12 -DSTRATA_ENABLE_CUDA=ON -DSTRATA_BUILD_TESTS=OFF -DSTRATA_EXPERIMENTAL_SM60=ON \
       -DCMAKE_CUDA_ARCHITECTURES="61;70" -DCMAKE_CUDA_COMPILER=/usr/local/cuda-12.9/bin/nvcc
 cmake --build build-cuda12 --target strata -j
 ```
@@ -157,11 +158,11 @@ GP100 (P100, PH402) is the one Pascal chip without `__dp4a`. Its dense projectio
 730, decoding K- and i-quant blocks one int at a time. Six opt-in changes, all measured on a PH402 only:
 
 - **`STRATA_Q8_SM60=1`** packs every Q8_0 dense matrix and the head into the planes of `STRATA_Q8_PACKED` and runs them on
-  `src/kernels/cuda/q8_sm60.cuh`: a warp per row, 16-byte weight loads, activations copied once per workgroup into shared memory,
+  `engine/src/kernels/cuda/q8_sm60.cuh`: a warp per row, 16-byte weight loads, activations copied once per workgroup into shared memory,
   the dot on `STRATA_DP4A`, no barrier per row. Shapes it declines keep the usual kernel. It is not bitwise the exact kernels.
   The packed copies cost their size in VRAM (Flash-Next: 2.9 GiB of dense projections over the stages and 0.6 GiB for the head).
 - The GSQ-RCO packs have no Q8_0 dense matrices, so the kernel needs a copy whose dense projections and head are Q8_0:
-  `python tools/q8_dense_gguf.py <model>-00001-of-00002.gguf <new folder>` writes one (+3.5 GiB; experts keep their offsets,
+  `python terminal/tools/q8_dense_gguf.py <model>-00001-of-00002.gguf <new folder>` writes one (+3.5 GiB; experts keep their offsets,
   so the native pack is reused). Point `--native` and `--ple-gguf` at the new folder.
 - **`STRATA_IQ_STAGE_TABLES=1`** stages IQ3_XXS and IQ3_S codebooks in shared memory in the grouped expert kernels. Bitwise the
   same output. Interleaved A/Bs on a Tesla P100 showed no end-to-end change, so it is off by default. On an RTX 3090 Ti, forced on,
@@ -175,7 +176,7 @@ GP100 (P100, PH402) is the one Pascal chip without `__dp4a`. Its dense projectio
 - **`STRATA_PATTN_SM60=1`** (prompt reading with int8 K/V, CUDA build with `STRATA_EXPERIMENTAL_SM60`, compute capability 6.x): below
   sm_70 the prompt reads each QSA layer's attention through the decode kernels, 32 queries a call, with 817 KB of partial results a
   query and a merge kernel. The switch runs a score kernel and a value kernel that merges as it folds
-  (`src/kernels/cuda/qsa_pattn.cu`), in the same scratch and with the same arithmetic in the same order, so the output matches the
+  (`engine/src/kernels/cuda/qsa_pattn.cu`), in the same scratch and with the same arithmetic in the same order, so the output matches the
   decode kernels bit for bit. If a launch fails or the shape does not fit, the usual loop runs. The author measured a 1,536-query
   chunk's attention at 43.3 -> 30.8 ms per QSA layer at 26K context on one GP100 die, and 2-3% less time on 8K-150K token prompts
   on four dies; we have not measured it here, and nobody has measured compute capability 6.1. `qsa_pattn_parity` (built with the
@@ -188,24 +189,13 @@ GP100 (P100, PH402) is the one Pascal chip without `__dp4a`. Its dense projectio
   the threshold. `STRATA_TOPK_MULTI=0` and `STRATA_SCORES_DX=0` turn one half off. The author measured, on four GP100 dies with
   every expert resident and `--pipeline-windows 3`, 51.0 -> 52.5 tok/s (+2.9%) decoding 400 tokens at 115K context, and no change
   below 64K; we have not measured it. A build without the sm_6x kernels ignores the switch with a warning.
-- **`STRATA_MMQ_WS=1`** (prompt reading, CUDA build with `STRATA_EXPERIMENTAL_SM60`, every visible card compute capability 6.0): a
-  layer whose routed experts are all resident in VRAM, on this GPU alone (no peer, CPU or streamed share), runs its gate/up as one
-  weight-stationary launch over all its experts, one `swiglu_quant` over all its rows and its down as one launch, in place of a
-  gate/up, swiglu and down MMQ launch per 16-expert group. A CTA holds 128 or 256 weight rows of one expert and runs them against
-  up to 64 of that expert's rows, so each weight block is decoded once per pass. Gate/up for IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS and
-  IQ3_S, down for Q2_0 and IQ4_NL; the products keep MMQ's int8 values, scales and per-32-value epilogue order, so the results are
-  MMQ's bits. Every other layer keeps its path. `STRATA_WS_FAST=1` adds a down kernel for the IQ4_NL 32-token tier with fewer
-  instructions per pass (the same bits). The author measured, on four GP100 dies with every expert resident, prompt reads 31-37%
-  shorter (240 tokens 2,156 -> 1,364 ms; a fresh 26K read 41,231 -> 28,555 ms; one run per arm) and decode unchanged; we have not
-  measured it. A single 16 GB card that keeps experts in RAM takes the per-group path. `prefill_ws_parity_test` compares the
-  products with MMQ on random experts; its verdict needs a GP100.
 
 None of these changes is measured on compute capability 6.1, which has `__dp4a`. Two practical notes for GP100 cards: the default
 application clock is 759 MHz and a layer split leaves each die idle most of a window, so lock the clocks
 (`nvidia-smi -i <dies> -ac 715,1050` as administrator). And a second engine pinned to the same logical CPUs halves this one's
 decode; keep two engines on different logical CPUs.
 
-`tools/q8_sm60_check.cu` checks the kernel against a CPU reference on these shapes (1-8 columns).
+`terminal/tools/q8_sm60_check.cu` checks the kernel against a CPU reference on these shapes (1-8 columns).
 
 ### Pascal GP100: 4-bit gate/up expert slots (opt-in, `STRATA_EXPERT_NIBBLE=1`)
 
@@ -305,11 +295,11 @@ existing config; this is not a complete run config:
 
 `STRATA_BF16_TC=1` improved prompt throughput by 20-34% on one Quadro RTX 8000 and changed replies in 3 of 9 paired requests, so
 use it only if different rounding is acceptable. It did not improve decode. Numbers are in the history section. These switches are
-existing code ([gemm.cu](../src/prefill/gemm.cu), [qsa_select.cu](../src/kernels/cuda/qsa_select.cu)), not new kernels.
+existing code ([gemm.cu](../engine/src/prefill/gemm.cu), [qsa_select.cu](../engine/src/kernels/cuda/qsa_select.cu)), not new kernels.
 
 ## AMD: building gfx906 and gfx1012
 
-Setup does not build these. Build by hand and run `serve/server.py` with a config, as on any other card.
+Setup does not build these. Build by hand and run `terminal/serve/server.py` with a config, as on any other card.
 
 - **gfx906** (MI50 / MI60 / Radeon VII, wave64): a separate opt-in build, `-DSTRATA_HIP_GFX906=ON
   -DCMAKE_HIP_ARCHITECTURES=gfx906` (not `STRATA_ENABLE_HIP`). Current ROCm no longer ships gfx906 libraries; the reporter used a
@@ -332,14 +322,14 @@ Dated numbers. Each row is one machine and one engine version, as labelled. They
 
 | Card | Measured on | Result |
 | --- | --- | --- |
-| 2x Tesla P100 | IQ3_S, engine 0.1.39 ([report](../bench/results/2026-10-06-community-2x-p100/README.md), #1157) | prompt 526-532 tok/s; decode 28-32 tok/s at 128K prompt tokens; 3 of 3 needle checks at 122K |
+| 2x Tesla P100 | IQ3_S, engine 0.1.39 ([report](bench-results/2026-10-06-community-2x-p100/README.md), #1157) | prompt 526-532 tok/s; decode 28-32 tok/s at 128K prompt tokens; 3 of 3 needle checks at 122K |
 | PH402 (4 GP100 dies) | IQ3_XXS, engine 0.1.40.2 | decode 28.3 -> 38.9 tok/s with `STRATA_Q8_SM60=1` and a Q8_0 dense shard |
 | Tesla P40 | IQ3_S, engine 0.1.30 (#395) | prompt 217-374 tok/s; decode 30-33 tok/s |
 | Tesla P40 | IQ3_S, engine 0.1.43.1 with the sm_61 changes | prompt 255 tok/s at 565 tokens (was 205); decode 37-38 tok/s (was 34-35); with `STRATA_DENSE_F32=1` 464-474 tok/s at 7K tokens (was 360-432) |
 | V100-PCIE-32GB | UD-IQ4_XS (#600) | prompt 1,123-1,251 tok/s |
 | V100 32GB | IQ2_XS (#540) | prompt +22% |
 | RTX 2080 Ti | Q2_0 (#655) | prompt +15-18% with `STRATA_BF16_TC=1` |
-| RX 6900 XT | IQ3_S ([report](../bench/results/2026-10-04-rdna2-pre75-attention/README.md)) | prompts +4-6% alone, +7-12% with #835 |
+| RX 6900 XT | IQ3_S ([report](bench-results/2026-10-04-rdna2-pre75-attention/README.md)) | prompts +4-6% alone, +7-12% with #835 |
 | RX 5500 XT, 8 GB | IQ3_S, 8K prompt (#442) | decode 15.3 tok/s |
 | RX 5700 XT, 8 GB | Coder IQ1_M, 32K context | prompt 115 / 144 / 149 tok/s and decode 18.0 / 20.3 / 23.3 tok/s at 4K / 16K / 30K; 6 of 6 needle checks; 607 of 12,288 experts in VRAM |
 | 2x MI50 | Coder IQ1_M, 128K context (#677) | decode 50.1 / 47.8 / 45.7 tok/s at 4K / 32K / 128K; prompt about 520 tok/s |
@@ -362,7 +352,7 @@ GPU time per verify window: dense projections 19.2 -> 11.2 ms, head 4.25 -> 2.1 
 10.7K). Locking clocks at 1050 MHz took one case from 25.0 to 29.1 tok/s at 10.7K context.
 
 **Tesla P40 sm_61 kernels.** Measured on: one Tesla P40 24 GB in a 20-vCPU VM (Xeon E5-2695 v4, 98 GB RAM), CUDA 12.4 (cuBLAS
-12.4.5.8), IQ3_S with MTP (`--spec 4`), int8 KV, `--max-context 262144`, engine 0.1.43.1 ([report](../bench/results/2026-10-12-p40-sm61-kernels/README.md)).
+12.4.5.8), IQ3_S with MTP (`--spec 4`), int8 KV, `--max-context 262144`, engine 0.1.43.1 ([report](bench-results/2026-10-12-p40-sm61-kernels/README.md)).
 
 | Change | Result on the P40 |
 | --- | --- |
