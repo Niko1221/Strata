@@ -111,6 +111,12 @@ bool wait_for_ram(uint64_t need, double max_wait_s, double step_s, double note_s
 /// Pass UINT64_MAX for commit when the platform does not report it.
 uint64_t clamp_resident_budget(uint64_t requested, uint64_t physical, uint64_t commit, uint64_t headroom);
 
+/// #3725, Windows: clamp the requested complement budget against the WDDM shared (non-local) memory segment room.
+uint64_t clamp_wddm_shared_budget(uint64_t requested, uint64_t wddm_shared_room, uint64_t wddm_reserve);
+
+/// The smallest WDDM shared (non-local) memory room across the system's CUDA GPUs, or false if not applicable/unknown.
+bool wddm_shared_room_bytes(uint64_t& room);
+
 /// #1250: one cudaHostAlloc of the whole page-locked complement has no way back when the kernel does not give the
 /// pages as fast as the driver takes them (the process is OOM-killed, even with MemAvailable high: clean file cache
 /// that cannot be reclaimed at that moment).  `free_now` is MemFree (pages that are really free), `bytes` the

@@ -513,6 +513,24 @@ void test_resident_memory_budget() {
         require(clamp_resident_budget(24 * GiB, phys, strata::platform::commit_available(left, 24 * GiB), headroom) == 24 * GiB,
                 "a budget the page file's room to grow covers was clamped");
     }
+
+    // #3725: WDDM shared-segment clamping
+    using strata::core::detail::clamp_wddm_shared_budget;
+    require(clamp_wddm_shared_budget(14 * GiB, 12 * GiB, 2 * GiB) == 10 * GiB,
+            "WDDM shared segment failed to clamp requested budget");
+    require(clamp_wddm_shared_budget(8 * GiB, 12 * GiB, 2 * GiB) == 8 * GiB,
+            "smaller budget was altered by WDDM shared segment clamp");
+    require(clamp_wddm_shared_budget(14 * GiB, 1 * GiB, 2 * GiB) == 0,
+            "WDDM shared segment reserve underflow produced non-zero budget");
+    require(clamp_wddm_shared_budget(14 * GiB, unlimited, 2 * GiB) == 14 * GiB,
+            "unlimited WDDM shared segment clamped budget");
+
+#if defined(_WIN32)
+    uint64_t wddm_room = 0;
+    if (strata::core::detail::wddm_shared_room_bytes(wddm_room)) {
+        require(wddm_room > 0, "WDDM shared room reported 0 bytes on Windows");
+    }
+#endif
 }
 
 void test_cgroup_memory_budget() {

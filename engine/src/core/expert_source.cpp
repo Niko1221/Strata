@@ -133,6 +133,45 @@ uint64_t clamp_resident_budget(uint64_t requested, uint64_t physical, uint64_t c
     return room > margin ? room - margin : 0;
 }
 
+uint64_t clamp_wddm_shared_budget(uint64_t requested, uint64_t room, uint64_t reserve) {
+    if (room == (std::numeric_limits<uint64_t>::max)()) return requested;
+    const uint64_t cap = room > reserve ? room - reserve : 0;
+    return (std::min)(requested, cap);
+}
+
+bool wddm_shared_room_bytes(uint64_t& room) {
+#if defined(_WIN32)
+    int count = 0;
+    if (cudaGetDeviceCount(&count) == cudaSuccess && count > 0) {
+        bool found = false;
+        uint64_t min_room = (std::numeric_limits<uint64_t>::max)();
+        for (int dev = 0; dev < count; ++dev) {
+            cudaDeviceProp prop{};
+            if (cudaGetDeviceProperties(&prop, dev) == cudaSuccess) {
+                uint64_t budget = 0, usage = 0;
+                std::string why;
+                if (strata::platform::gpu_shared_memory_budget(prop.luid, budget, usage, why) && budget > 0) {
+                    const uint64_t left = budget > usage ? budget - usage : 0;
+                    min_room = (std::min)(min_room, left);
+                    found = true;
+                }
+            } else {
+                (void) cudaGetLastError();
+            }
+        }
+        if (found) {
+            room = min_room;
+            return true;
+        }
+    } else {
+        (void) cudaGetLastError();
+    }
+#else
+    (void) room;
+#endif
+    return false;
+}
+
 bool pin_depends_on_reclaim(uint64_t free_now, uint64_t bytes, uint64_t reserve) {
     return bytes > 0 && free_now < bytes + reserve;
 }
@@ -3662,6 +3701,27 @@ bool FileExpertSource::pin_cache_complement(
             std::fputs(resident_clamp_line(from, budget_bytes, limit, available, headroom_bytes, clamped).c_str(), stderr);
             budget_bytes = clamped;
         }
+#if defined(_WIN32)
+        if (pin) {
+            // #3725: the WDDM shared segment (wddm_shared_room_bytes); what the engine maps after the complement (the lend
+            // ring, the hand-off and staging buffers: ~1.5 GiB on a two-card layer split) needs room in it too
+            uint64_t room = 0;
+            const char* r = std::getenv("STRATA_WDDM_SHARED_RESERVE_MIB");
+            const uint64_t reserve = (uint64_t) (r != nullptr ? std::strtoull(r, nullptr, 10) : 2048) << 20;
+            if (detail::wddm_shared_room_bytes(room)) {
+                const uint64_t cap = detail::clamp_wddm_shared_budget(budget_bytes, room, reserve);
+                std::fprintf(stderr, "FileExpertSource: WDDM shared segment: %.2f GiB left on the tightest NVIDIA GPU, "
+                                     "%.2f GiB kept for the engine's later mapped buffers\n",
+                             (double) room / 1073741824.0, (double) reserve / 1073741824.0);
+                if (budget_bytes > cap) {
+                    std::fprintf(stderr, "FileExpertSource: the complement is limited by the WDDM shared segment: "
+                                         "%.2f -> %.2f GiB\n", (double) budget_bytes / 1073741824.0,
+                                 (double) cap / 1073741824.0);
+                    budget_bytes = cap;
+                }
+            }
+        }
+#endif
         std::vector<uint64_t> ranked(offsets.size(), kNoComplement);
         uint64_t at = 0;
         int64_t held = 0;
