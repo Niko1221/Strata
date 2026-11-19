@@ -9164,14 +9164,19 @@ int main(int argc, char** argv) {
             free_b = strata::core::device_free_bytes(); (void) total_b;
             const int64_t want = ((int64_t) o.vram_reserve_mib << 20) + pipe_first;
             if ((int64_t) free_b >= want - (64ll << 20)) break;
-            // short by (want - free); a figure of 0 only says "at least": the first two such reads give back 1 GiB
-            // each (under WDDM the free figure read before the allocation runs ~0.7 GiB high), later ones a quarter
+            // short by (want - free); a figure of 0 only says "at least": the first reads give back 256 MiB
+            // each to avoid over-shrinking on cards where every slot counts (under WDDM the free figure read before
+            // the allocation runs ~0.7 GiB high), later ones a quarter.
             int64_t give = want - (int64_t) free_b + (64ll << 20);
-            if (free_b < ((size_t) 16 << 20))
-                give = std::max<int64_t>(give, ++zero_reads <= 2 ? 1ll << 30 : xcache.bytes() / 4);
+            if (free_b < ((size_t) 16 << 20)) {
+                give = ++zero_reads <= 4 ? (256ll << 20) : xcache.bytes() / 4;
+            } else {
+                give = std::min<int64_t>(give, 256ll << 20);
+            }
             const int64_t keep_bytes = xcache.bytes() - give;
             std::fprintf(stderr, "strata generate: only %lld MiB free once the slots are written (reserve %d MiB); "
-                                 "shrinking the expert cache\n", (long long) (free_b >> 20), o.vram_reserve_mib);
+                                 "shrinking the expert cache by %lld MiB\n", (long long) (free_b >> 20), o.vram_reserve_mib,
+                                 (long long) (give >> 20));
             xcache.close();
             if (!shrink_to(keep_bytes)) break;
         }
