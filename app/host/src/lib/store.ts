@@ -1605,6 +1605,10 @@ function patchSession(id: string, fn: (s: Session) => Session) {
   set({ sessions });
 }
 
+export function dismissAgent(sessionId: string, agentId: string) {
+  patchSession(sessionId, s => ({ ...s, agents: (s.agents ?? []).filter(a => a.id !== agentId), dismissedAgentIds: [...new Set([...(s.dismissedAgentIds ?? []), agentId])].slice(-200) }));
+}
+
 // The demo clock belongs to the session, so hiding the sidebar or navigating
 // away never pauses it. Only start and completion are written to storage.
 const timeSkipTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -2242,6 +2246,14 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
           });
         } else if (type === 'status') {
           applyStatusFrame(sessionId, frame as Record<string, unknown>);
+          // The banner is only the current state. Keep each meaningful change on
+          // the reply too, so a quiet non-thinking turn is still inspectable.
+          const text = typeof frame.text === 'string' ? frame.text.trim() : '';
+          if (text) patchAssistant(m => {
+            const activity = [...(m.activity ?? [])];
+            if (activity.at(-1)?.text !== text) activity.push({ text, at: Date.now() });
+            return { ...m, activity: activity.slice(-80) };
+          });
           // Manual mode waits for the person: a notification when they have opted in and Strata is in the background (#3477), once per question.
           if (frame.code === 'waiting-approval' && lastApprovalNotice !== `${sessionId}:${String(frame.seq)}`) {
             lastApprovalNotice = `${sessionId}:${String(frame.seq)}`;
@@ -2298,7 +2310,8 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
             return { ...m, tools: existing ? m.tools!.map(t => t.id === tool.id ? next : t) : [...(m.tools ?? []), next] };
           });
         } else if (type === 'agent') {
-          patchSession(sessionId, s => ({ ...s, agents: updateAgent(s.agents ?? [], frame.agent) }));
+          const id = typeof (frame.agent as { id?: unknown } | undefined)?.id === 'string' ? (frame.agent as { id: string }).id : '';
+          patchSession(sessionId, s => id && s.dismissedAgentIds?.includes(id) ? s : ({ ...s, agents: updateAgent(s.agents ?? [], frame.agent) }));
         } else if (type === 'delta') {
           /* applied through queueText above */
         } else if (type === 'deliverable') {

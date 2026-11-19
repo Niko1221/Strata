@@ -15,6 +15,7 @@ import { useMedia } from '../lib/responsive';
 import { Btn, Dialog, IconBtn, Toasts } from '../components/ui';
 import { Brand } from '../components/Brand';
 import { ChatScreen } from '../screens/Chat';
+import { SubagentRow } from '../components/SubagentRow';
 import { lazyScreen, useLoadedModule } from '../lib/lazy-screen';
 // The start screen is Chat. Every other screen loads the first time it is opened (7.1), so the first start reads and runs less code.
 const loadSetup = () => import('../screens/Setup');
@@ -216,4 +217,23 @@ class AppBoundary extends Component<{
         return <div className="app-recovery"><h1 className="h2">{tr("Strata couldn\u2019t show this screen")}</h1><p>{tr("Your saved conversations and settings are still available.")}</p><Btn variant="primary" onClick={() => { void bootstrap().then(() => this.setState({ failed: false })); }}>{tr("Retry")}</Btn></div>;
     }
 }
-export function App() { return <AppBoundary><AppShell /></AppBoundary>; }
+
+/** A native helper window is the same trusted app, but without navigation or the
+ * parent chat. Its query is written only by the desktop shell. */
+function HelperWindow() {
+    const query = new URLSearchParams(window.location.search);
+    const sessionId = query.get('sessionId') ?? '';
+    const helperId = query.get('helperId') ?? '';
+    const ready = useStore(s => s.ready);
+    const session = useStore(s => s.sessions.find(x => x.id === sessionId));
+    useEffect(() => { bootOnce(); }, []);
+    const agent = session?.agents?.find(x => x.id === helperId);
+    return <main className="main"><div className="main__body"><div className="wrap stack">
+      <header className="main__head"><h1>{tr(agent?.name ?? 'Subagent')}</h1></header>
+      {!ready ? <BootSkeleton /> : agent ? <SubagentRow agent={agent} sessionId={sessionId} /> : <p className="muted">{tr('This helper is no longer available in this chat.')}</p>}
+    </div></div></main>;
+}
+export function App() {
+    const helper = new URLSearchParams(window.location.search).get('helperWindow') === '1';
+    return <AppBoundary>{helper ? <HelperWindow /> : <AppShell />}</AppBoundary>;
+}

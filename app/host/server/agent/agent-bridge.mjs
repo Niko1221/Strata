@@ -1364,6 +1364,14 @@ ${note.text}
     }
   }
 
+  async function stopHelper({ chatId, helperId }) {
+    const turn = chats.get(chatId)?.turn;
+    const child = turn?.children.get(String(helperId ?? ''));
+    if (!turn || !child || child.done || !rt?.hp.running) throw new AgentUnavailable('This helper has already finished or is no longer running.', 'helper-gone');
+    await rt.gw.rpc('subagents/interruptByParent', { childSessionId: child.id, parentSessionId: turn.sessionId, mode: 'continuable' });
+    return { ok: true };
+  }
+
   // -- messages typed while a goal runs ----------------------------------------------------------------------
 
   /** Queue a message for the running goal. It is delivered between steps, or handed back to the page when the goal ends or pauses. */
@@ -1642,7 +1650,7 @@ ${note.text}
   /** Let go of a chat's Harness session mapping (a task starts every run in a session of its own). */
   function forget(chatId) { if (chats.get(chatId)?.turn) return; chats.get(chatId)?.wake?.close(); delete sessionMap[chatId]; chats.delete(chatId); persist(); }
 
-  return { compactCommand, messageHelper, answerQuestion, goalState, goalControl, harnessDir, status, turnOf, runningTurns, wokenTurns, attach, runTurn, goalCommand, planCommand, researchCommand, llmTarget, noteToolMarker, setPlanBriefing, resetSession, reopenPlan, skipStep, planGoal, planControl, planState, queueMessage, cancelQueued, takeQueue, forget, approve, setMode, stop, pendingFor, pendingAll, close, sessionOf: chatId => sessionMap[chatId]?.sessionId ?? null, workingFolder: chatId => sessionMap[chatId]?.cwd ?? null, isRunning: chatId => !!chats.get(chatId)?.turn, _debug: () => ({ rt, sessionMap }) };
+  return { compactCommand, messageHelper, stopHelper, answerQuestion, goalState, goalControl, harnessDir, status, turnOf, runningTurns, wokenTurns, attach, runTurn, goalCommand, planCommand, researchCommand, llmTarget, noteToolMarker, setPlanBriefing, resetSession, reopenPlan, skipStep, planGoal, planControl, planState, queueMessage, cancelQueued, takeQueue, forget, approve, setMode, stop, pendingFor, pendingAll, close, sessionOf: chatId => sessionMap[chatId]?.sessionId ?? null, workingFolder: chatId => sessionMap[chatId]?.cwd ?? null, isRunning: chatId => !!chats.get(chatId)?.turn, _debug: () => ({ rt, sessionMap }) };
 }
 
 /** A goal that stopped by itself, in words. */

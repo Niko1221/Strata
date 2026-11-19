@@ -786,9 +786,10 @@ function MessageView({ message: m, isLast, onEditPrompt, onPreview, onClosePrevi
           card stays only for what needs the person: a question waiting, a denied or failed call. A card that came and went above the text moved the whole reply. */}
       {tr((m.tools ?? []).filter(t => !grouped || t.state === 'proposed' || t.state === 'denied' || t.state === 'error').map((t) => (<ToolCard key={t.id} tool={t}/>)))}
 
-      {tr(!(m.timeSkipId && timeSkipReal && !timeSkipDone) && (m.content || m.error || !m.streaming || !liveStatus || !!m.drafts?.length) ? <div className="st-bubble">
+      {tr(!(m.timeSkipId && timeSkipReal && !timeSkipDone) && (m.content || m.error || m.activity?.length || !m.streaming || !liveStatus || !!m.drafts?.length) ? <div className="st-bubble">
         {tr(planCard ? <PlanCard chatId={activeSession} planId={m.planId!}/> : null)}
         {tr(m.error ? (<ErrorNotice message={m.error} detail={m.errorDetail} {...contextRecovery(m.errorCode)}/>) : null)}
+        {tr(m.activity?.length ? <details className="activity-history" open={m.streaming}><summary>{tr('Work log')} · {tr(m.activity.length)}</summary><ol>{tr(m.activity.map((entry, i) => <li key={`${entry.at}-${i}`}>{tr(entry.text)}</li>))}</ol></details> : null)}
         {tr(grouped && !planCard && !m.timeSkipId ? m.blocks!.map((b, i) => b.kind === 'group' ? <ActivityLine key={b.id} group={b} sessionId={activeSession ?? ''} onPreview={onPreview}/> : <Markdown key={i} text={b.text} onOpenLink={onOpenLink} imageSession={activeSession} previewId={`${m.id}-b${i}`} onPreview={onPreview} onClosePreview={onClosePreview}/>) : null)}
         {tr(m.content && !planCard && !grouped ? (<Markdown text={m.timeSkipId && !timeSkipReal ? hostLive ? tr('This was a sample run made while the app could not reach its host.') : timeSkipDone ? tr('The result is ready. Switch between Original and Updated, or compare them side by side. This example uses sample outputs and simulated checks.') : tr('Revising the saved draft. Follow the result in the sidebar. This example uses sample outputs and simulated checks.') : m.content} onOpenLink={onOpenLink} imageSession={activeSession} previewId={m.id} onPreview={onPreview} onClosePreview={onClosePreview}/>) : !m.error && m.streaming && !liveStatus ? (<span className="typing" aria-label={tr("Generating")}>
             <i />
