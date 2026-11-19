@@ -10606,9 +10606,11 @@ int main(int argc, char** argv) {
     // everywhere.  `request_chunk` is unchanged (STRATA_SPLIT_SMALL_OWN uses it too).
     static const strata::prefill::equal_cut::Cut equal_cut_one = strata::prefill::equal_cut::pick(std::getenv("STRATA_PREFILL_EQUAL"), true);
     static const strata::prefill::equal_cut::Cut equal_cut_split = strata::prefill::equal_cut::pick(std::getenv("STRATA_PREFILL_EQUAL"), false);
+    // STRATA_PREFILL_EQUAL_TAIL=N (opt-in, equal_cut_rule.hpp tail_keep): one GPU keeps today's cut when its last chunk is under N tokens and the floor
+    static const int64_t equal_keep_tail = strata::prefill::equal_cut::tail_keep(std::getenv("STRATA_PREFILL_EQUAL_TAIL"));
     auto equal_chunk = [&](int64_t tokens, int64_t max_chunk, bool one_gpu) -> int64_t {
         return strata::prefill::equal_cut::chunk(one_gpu ? equal_cut_one : equal_cut_split, tokens, max_chunk,
-                                                 strata::prefill::Prefill::stream_all_min_tokens());
+                                                 strata::prefill::Prefill::stream_all_min_tokens(), one_gpu ? equal_keep_tail : 0);
     };
     // #2824: as below; a prompt with no host plan takes the cut above
     auto planned_chunk = [&](int64_t tokens, int64_t cap, int64_t plan, bool one_gpu) -> int64_t {
@@ -19381,7 +19383,8 @@ int main(int argc, char** argv) {
                 if (eq_one_gpu && equal_cut_one == strata::prefill::equal_cut::Cut::equal &&
                     (pf_plan_chunk <= 0 || pf_plan_chunk >= o.prefill_chunk))
                     pf_declined_eq = strata::prefill::equal_cut::declined_equal(tokens, o.prefill_chunk,
-                                                                                strata::prefill::Prefill::stream_all_min_tokens());
+                                                                                strata::prefill::Prefill::stream_all_min_tokens(),
+                                                                                equal_keep_tail);
                 if (eq_one_gpu) {
                     const int64_t want_today = loan_chunk(tokens, planned_chunk(tokens, o.prefill_chunk, pf_plan_chunk, false));
                     if (want_full != want_today && pf_parts[0].first >= 0) {
@@ -22811,7 +22814,8 @@ int main(int argc, char** argv) {
                 // fit while the equal cut's does: keep the equal cut (keep_equal)
                 const int64_t declined = equal_cut_one == strata::prefill::equal_cut::Cut::equal
                                              ? strata::prefill::equal_cut::declined_equal(n_batched, chunk,
-                                                                                          strata::prefill::Prefill::stream_all_min_tokens())
+                                                                                          strata::prefill::Prefill::stream_all_min_tokens(),
+                                                                                          equal_keep_tail)
                                              : 0;
                 if (declined > 0) {
                     const int64_t eq_sized = loan_chunk(n_batched, declined);
