@@ -79,3 +79,18 @@ official engine API.
 1. Resolve the 133 review copies, prioritising host server and workflow files.
 2. Complete the four PORT_NOTES items and build with `-DSTRATA_ENABLE_Q38=ON`.
 3. Run the official Terminal/app suites before considering a merge to main.
+
+## Addendum 2026-11-19 (port continuation)
+- Q38 entry point added: `strata::qwen38::run`, family switch in
+  `engine/src/program/generate.cpp`, official `ENGINE_REQUEST` completion line.
+- `engine/q38/CMakeLists.txt` + GPU-engine link wiring added; CMake configure
+  with `-DSTRATA_ENABLE_CUDA=ON -DSTRATA_ENABLE_Q38=ON` now succeeds (exit 0).
+- Two merge defects found and fixed during the configure:
+  - fork-added `tests/core|prefill|hip|quant|program|cuda|platform|gdn|ngram`
+    files had landed in `terminal/tests/`; 127 files were moved to
+    `engine/tests/` and the relocation table in the merge script was updated.
+  - the fork's stale `.gitignore` rule `/engine/` made all official engine
+    source untracked; it was removed and `engine/` is now tracked (2714 files).
+- `strata` Release compile with five jobs was started; its result is recorded
+  in `engine/q38/PORT_NOTES.md` and is not claimed here.
+
