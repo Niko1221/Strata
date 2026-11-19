@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { LANGUAGES as SHELL } from '../server/shell-prefs.mjs';
 
-const read = rel => readFileSync(new URL(rel, import.meta.url), 'utf8');
+const read = rel => readFileSync(new URL(rel, import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 const app = [...read('../src/lib/i18n.ts').match(/export const LANGUAGES=\[(.*?)\] as const;/s)[1].matchAll(/value:'([a-z]{2})'/g)].map(m => m[1]);
 const rs = read('../../desktop/src-tauri/src/shell.rs');
 const rsLanguages = [...rs.match(/pub const LANGUAGES: \[&str; \d+\] = \[(.*?)\];/s)[1].matchAll(/"([a-z]{2})"/g)].map(m => m[1]);

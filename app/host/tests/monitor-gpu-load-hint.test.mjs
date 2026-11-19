@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
 const TEXT = 'Share of the time the GPU had work to do. It does not say how much of its compute is in use.';
-const read = (p) => readFile(new URL(p, import.meta.url), 'utf8');
+const read = async (p) => (await readFile(new URL(p, import.meta.url), 'utf8')).replace(/\r\n/g, '\n');
 
 test('the app Monitor gives the GPU load label its tooltip, translated', async () => {
   const src = await read('../src/screens/Monitor.tsx');
