@@ -5,6 +5,7 @@ import { api } from '../lib/client';
 import { plainFailureText } from '../lib/plain-errors';
 import { compactTokens, elapsed } from '../lib/chat-metrics';
 import type { Session } from '../lib/types';
+import { helperRanLong } from '../lib/helper-limit';
 import { dismissAgent } from '../lib/store';
 
 type Agent = NonNullable<Session['agents']>[number];
@@ -79,7 +80,9 @@ export function SubagentRow({ agent: a, now = Date.now(), sessionId }: {
     <span className="subagent-row__dot" aria-label={tr(state.label)}/>
     <div className="subagent-row__copy">
       <div className="subagent-row__title"><strong title={a.name}>{a.name}</strong><span className="subagent-row__status">{tr(state.label)}</span></div>
+      <p title={a.description}>{tr(a.description)}</p>
       <div className="subagent-row__actions" title={a.description}>
+        {tr(a.status === 'failed' || a.steps?.length ? <button className="text-action" onClick={() => setLog(true)}>{tr('View log')}</button> : null)}
         {tr(<button className="text-action" onClick={() => void openNativeWindow()}>{tr('Open window')}</button>)}
         {tr(sessionId && canStop ? <button className="text-action" disabled={stopping} onClick={() => void stop()}>{tr(stopping ? 'Stopping…' : 'Stop helper')}</button> : null)}
         {tr(sessionId && canRemove ? <button className="text-action" onClick={() => dismissAgent(sessionId, a.id)}>{tr('Remove')}</button> : null)}
@@ -90,6 +93,7 @@ export function SubagentRow({ agent: a, now = Date.now(), sessionId }: {
             </form>
           : <button className="text-action" onClick={() => setWriting(true)}>{tr('Message this helper')}</button>) : null)}
       </div>
+      {tr(helperRanLong(a.status, duration) ? <p className="small subagent-row__note" role="status">{tr("This helper has been working for over 30 minutes.")}</p> : null)}
       {tr(sent ? <p className="small subagent-row__note" role="status">{tr('Sent to {0}.', [a.name])}</p> : null)}
       {tr(problem ? <p className="small inline-error subagent-row__note" role="alert">{problem}</p> : null)}
     </div>
