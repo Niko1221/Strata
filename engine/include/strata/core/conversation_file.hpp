@@ -108,6 +108,9 @@ struct SessionInputs {
 };
 // The fingerprint's list: every role with its file, none merged (a path in two roles is two entries).
 std::vector<SessionModelFile> session_model_inputs(const SessionInputs& inputs);
+// The drafter's other files, beyond the one session_model_inputs lists: for an MTP pack folder dense.txt, experts.bin and
+// the optional draft_vocab.bin; for a GGUF drafter (--mtp names a regular file) none, only the explicit draft vocab if given.
+std::vector<SessionModelFile> session_mtp_pack_files(const std::string& mtp, const std::string& draft_vocab = {});
 
 // Why a session file operation failed, for the caller's answer (the server maps it to an HTTP status):
 //   invalid   refused: not a session file, corrupt, another model or configuration, over this engine's limits, a

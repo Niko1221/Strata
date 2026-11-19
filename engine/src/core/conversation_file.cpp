@@ -934,9 +934,27 @@ std::vector<SessionModelFile> session_model_inputs(const SessionInputs& in) {
     for (size_t i = 0; i < in.native_head.size(); ++i) f.push_back({"native head " + std::to_string(i), in.native_head[i]});
     if (!in.embedding.empty()) f.push_back({"embedding", in.embedding});
     if (!in.ple.empty()) f.push_back({"ple", in.ple});
-    if (!in.mtp.empty()) f.push_back({"mtp", in.mtp});
+    if (!in.mtp.empty()) {
+        // --mtp is a pack folder (its dense.bin) or one GGUF file; a GGUF is the file itself
+        std::error_code ec;
+        const bool gguf = std::filesystem::is_regular_file(in.mtp, ec);
+        f.push_back({gguf ? "mtp gguf" : "mtp", gguf ? in.mtp : in.mtp + "/dense.bin"});
+    }
     if (!in.pack.empty()) f.push_back({"pack native_experts.txt", in.pack + "/native_experts.txt", true});
     for (const auto& [role, path] : in.experts) f.push_back({role, path});
+    return f;
+}
+
+std::vector<SessionModelFile> session_mtp_pack_files(const std::string& mtp, const std::string& draft_vocab) {
+    std::vector<SessionModelFile> f;
+    if (mtp.empty()) return f;
+    std::error_code ec;
+    if (std::filesystem::is_regular_file(mtp, ec)) {   // a GGUF drafter: the file itself is the whole drafter
+        if (!draft_vocab.empty()) f.push_back({"mtp draft_vocab", draft_vocab});
+        return f;
+    }
+    for (const char* n : {"dense.txt", "experts.bin"}) f.push_back({std::string("mtp ") + n, mtp + "/" + n});
+    f.push_back({"mtp draft_vocab.bin", mtp + "/draft_vocab.bin", true});
     return f;
 }
 
