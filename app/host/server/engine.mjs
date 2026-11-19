@@ -266,6 +266,7 @@ export async function validate(draft = {}) {
     else if (p.type === 'text' && typeof value !== 'string') addError(p.id, 'enter text.');
   }
   if (!CONTEXT_TOKENS[String(values['ctx.length']).toLowerCase()] || String(values['ctx.length']).toLowerCase() === 'recommended') addError('ctx.length', 'enter a whole context size from 1K to 1024K.');
+  const kv = values['ctx.kvMode'];
   let kvFactor = 1;
   try {
     const cacheParams = Object.entries(values).map(([id, value]) => ({ id, value }));

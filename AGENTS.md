@@ -1,15 +1,13 @@
 # AGENTS.md
 
+Version 0.2.16, engine 0.1.62. The public model families are
+Qwen3.8-Flash-Next and Qwen3.6-35B-A3B. Read **[docs/AI_REFERENCE.md](docs/AI_REFERENCE.md)** for model availability, APIs, hardware limits and
 Current release: Hakua product version 0.6.3; app, Terminal, Control and native engine 0.6.3.
 Formal v0.6.3 is published as GitHub Latest (unsigned local candidate; see the release notes). See `_docs/2026-11-17_stable-062-release_Antigravity.md` for 0.6.2 details.
-
 ## Historical 0.6.1 records
-
 Previous stable release: Hakua product version 0.6.1; app, Terminal, Control and native engine 0.6.1.
 Formal v0.6.1 is published. See `_docs/2026-11-17_stable-061-release_Antigravity.md` for 0.6.1 details.
-
 ## Historical 0.6.0 records
-
 Previous stable release: Hakua product version 0.6.0; app, Terminal, Control and native engine 0.6.0.
 Formal v0.6.0, GitHub Latest and the refs/tags/latest alias are published. All seventeen
 public assets were downloaded anonymously from v0.6.0 and matched frozen SHA-256 values
@@ -30,13 +28,10 @@ is absent; component/feed signatures were verified with bundled production publi
 Old engines `0.5.1` through `0.5.8` were removed from `AppData/Local/Strata/components/engine`;
 `0.5.9` and `0.6.0` remain installed.
 See `_docs/2026-11-17_stable-060-release_Antigravity.md` for exact scope and evidence.
-
 Keep upstream Niko1221 0.2.15 at
 `c77572806996349b49995e4f98d41b5294d36a21` (upstream engine 0.1.60;
 fork versions remain independent).
-
 ## Historical 0.5.9 records
-
 Previous stable release: Hakua product version 0.5.9; app, Terminal, Control and native engine 0.5.9.
 Formal v0.5.9, GitHub Latest and the latest alias were published. All seventeen
 public assets were downloaded anonymously and matched frozen SHA-256 values.
@@ -56,17 +51,13 @@ component/feed signatures were verified with bundled production public keys.
 The original user profile was normally running with its settings and prior skills
 preserved, learning and auto-application enabled, RustXNG Full and no loaded model.
 See _docs/2026-11-13_stable-059-workflow-safety_Codex.md for exact scope and evidence.
-
 ## Historical 0.5.8 records
-
 Hakua app, Terminal, Control and native engine 0.5.8 were installed and formally
 published. The components were freshly built, signed and tested; Windows
 Authenticode signing of the app installer remains absent. Publication and installation
 are recorded in _docs/2026-11-11_stable-058-context-ci_Codex.md. Historical
 measurements below retain their original product versions.
-
 ## Historical local app update (2026-11-12)
-
 Stable 0.5.8 was installed from `H:/Strata/releases/stable-058-20261111-codex`.
 Actual app source: `91107e48367d934a02644bc7c61d5cb923d7f700`;
 Control source: `42ca8ebd70328788001695b4a7ffe67b444f10db`;
@@ -76,7 +67,6 @@ All eight exact-source CI workflows and all thirteen Checks jobs passed at
 Later changes before that CI head affect only unshipped tests, CI and verified
 GitHub display metadata; the recorded validator binds all distributed sources
 and the exact installer to their actual build commits.
-
 Standard per-user NSIS overwrite verified 29,555 managed files and preserved
 3,727 backed-up user files. Model weights were not copied; selected original
 model hashes were separately checked. Actual installed WebView2 passed sixteen
@@ -88,7 +78,6 @@ model requests at 4096 capacity, including bounded/legacy comparison and restart
 Full-window generation, general model quality and GPU concurrency remain
 unqualified; `releaseQualified=false`. Metal CI cross-compiles both genuine
 arm64 targets on standard Intel macOS 26; it does not test Mac inference.
-
 Five-job builds and unchanged RAM/commit/disk floors remain required. RustXNG
 0.31.1 Full, existing tool/key/approval choices and enabled local workflow
 learning/application were preserved. Fresh profiles keep both skill options off.
@@ -98,15 +87,12 @@ was used. Eight inactive clean worktrees, eight obsolete build caches and eight
 old cached installers were removed only after exact-target/source or byte backup
 verification. Useful incremental caches, dirty work, models and older public
 assets remain preserved.
-
 Formal v0.5.8, GitHub Latest and the lease-guarded mutable latest alias are
 published. All seventeen public assets were downloaded anonymously and matched
 their frozen sizes and SHA-256 values. See the 0.5.8 delivery record and linked
 LOCAL_VERIFICATION.json / PUBLIC_VERIFICATION.json. Earlier records below retain
 their original versions and measurements.
-
 ## Historical 0.5.7 local update (2026-11-11)
-
 Stable app 0.5.7 was installed from the five-job formal build in
 `H:/Strata/releases/stable-057-20261111-codex`; exact app build source is
 `427f77ca225595b68cee750c5a367d8e6cee49f4`. It includes real tool-free `/btw`
@@ -120,7 +106,6 @@ The model API in those workflow checks is scripted; RustXNG searches are real.
 They do not qualify general model quality, full-window generation or GPU
 concurrency. Existing broader-suite failures and absent exact-SHA cloud CI remain
 documented; `releaseQualified=false` is unchanged.
-
 This PC has learning and automatic application enabled; fresh profiles keep both
 off. RustXNG Full, other tools, keys and approval choices are preserved. Normal
 startup passed without debug arguments. After two resource-stopped uploads, the
@@ -131,9 +116,7 @@ commit and disk floors unchanged. Formal `v0.5.7`, GitHub Latest and the mutable
 preserved. See `_docs/2026-11-11_stable-057-release_Codex.md` and its linked
 verification receipts for exact publication/readback status. The 0.5.6/0.5.5
 records and installation measurements below remain historical evidence.
-
 ## Local working location and build concurrency
-
 The user's primary working checkout is `C:/Users/downl/Documents/ChatGPT/Strata`
 on `main`. Use it for ongoing edits and parent build commands. Keep large build
 outputs, caches and the separately frozen native source under `H:/Strata`.
@@ -141,11 +124,9 @@ For subsequent local candidate builds, request five compiler jobs (`CARGO_BUILD_
 `CMAKE_BUILD_PARALLEL_LEVEL=5`, or the native build helper's explicit parallelism `5`).
 Keep existing resource floors and frozen evidence intact. The completed native
 0.5.3 build used four jobs; record that result with its actual parallelism.
-
 The historical 0.5.5 local build retained sidebar file CRUD and confirmed folder chat-history cleanup.
 Its original app output was `H:/Strata/releases/repair-055-20261110-opencode/app-native055-ui-search`;
 earlier0.5.4/0.5.3 outputs and all failed/passing evidence remain preserved.
-
 Hakua product version 0.5.5-local.1, engine 0.5.5 (Metal source 0.5.0-metal), Control 0.5.6.
 Final native sourceb995af139cc823537489b886bc1e8602cf10301c is frozen under
 H:/Strata/worktrees/native-055-source-20261110. App/Control source is
@@ -186,9 +167,9 @@ The OS-wide installation recipes below are upstream reference. They are not this
 
 Strata has three parts:
 
-- **The app** (`apps/desktop`, the Tauri shell; `apps/host`, the Node host and the web UI). It is for people who do
+- **The app** (`app/desktop`, the Tauri shell; `app/host`, the Node host and the web UI). It is for people who do
   not want a terminal. One installer per system ([latest release](https://github.com/Niko1221/Strata/releases/latest)):
-  `Strata-0.2.15-windows-x64-setup.exe`, `Strata-0.2.15-linux-x86_64.AppImage`, `Strata-0.2.15-macos-arm64.dmg`.
+  `Strata-0.2.16-windows-x64-setup.exe`, `Strata-0.2.16-linux-x86_64.AppImage`, `Strata-0.2.16-macos-arm64.dmg`.
   The Windows and Linux installers carry no engine: the app downloads the engine for the graphics card on first
   start, or installs a file the user already has. The Mac dmg keeps its small Metal engine inside.
 - **The Terminal** (`strata.py`, `strata_cli/`, `strata_control/`): the `strata` command. It sets up a model, serves
@@ -243,18 +224,18 @@ Source setup does not make an unsupported model or backend compatible. Strata's 
 - How the engine works, every measured number, the API and all settings: [docs/DETAILS.md](docs/DETAILS.md) and
   the [paper](docs/paper/Strata-Paper.pdf).
 - The Terminal: [docs/TERMINAL.md](docs/TERMINAL.md) and [docs/TERMINAL_LAUNCH.md](docs/TERMINAL_LAUNCH.md). The app,
-  the packages and the update feed: [packaging/README.md](packaging/README.md) and [packaging/UPDATES.md](packaging/UPDATES.md).
+  the packages and the update feed: [packaging/README.md](tools/packaging/README.md) and [packaging/UPDATES.md](tools/packaging/UPDATES.md).
 - AMD (HIP) build and validation: [docs/AMD_HIP.md](docs/AMD_HIP.md); multi-GPU: [docs/MULTI_GPU.md](docs/MULTI_GPU.md);
   Mac (Metal): [docs/MAC.md](docs/MAC.md).
-- Tests: the Terminal and Control tests are in `tests/terminal` (`python -m pytest tests/terminal`). The app's UI
-  tests run with `npm test` in `apps/host`. Setup's own tests run without a GPU or downloads:
-  `python tools/test_setup_<name>.py` (for example `tools/test_setup_amd.py`, `tools/test_setup_choices.py`).
+- Tests: the Terminal and Control tests are in `terminal/tests/terminal` (`python -m pytest terminal/tests/terminal`). The app's UI
+  tests run with `npm test` in `app/host`. Setup's own tests run without a GPU or downloads:
+  `python tools/test_setup_<name>.py` (for example `terminal/tools/test_setup_amd.py`, `terminal/tools/test_setup_choices.py`).
 - Keep the docs' style: plain words, short sentences, written for non-technical users first. Give measured numbers
   with what they were measured on. Make no claim without a measurement.
 
 ## Contributing a change or report
 
-The rules are in **[CONTRIBUTING.md](CONTRIBUTING.md)**. Read it before you open an issue or a pull request, and
+The rules are in **[CONTRIBUTING.md](.github/CONTRIBUTING.md)**. Read it before you open an issue or a pull request, and
 follow it whether a person or an agent writes the text. The short version:
 
 - Start every issue and pull request title with its area: `[Engine]`, `[GUI]`, `[TUI]`, `[Benchmark]`, `[Docs]` or

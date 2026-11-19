@@ -5,12 +5,19 @@ import {spawn} from 'node:child_process';
 import {resolve} from 'node:path';
 import {isolatedTestEnvironment} from './test-environment.mjs';
 const root=resolve(import.meta.dirname,'..');
-const files=readdirSync(resolve(root,'tests')).filter(name=>name.endsWith('.test.mjs')).sort().map(name=>resolve(root,'tests',name));
+/* Relative to the host folder, where node runs (cwd below): the command line must not grow with the length of the checkout's own path. 337 absolute paths in a worktree
+   with a long name were 34,272 characters against Windows' 32,767 and the spawn failed with ENAMETOOLONG; relative, the line is about 12,000 wherever the checkout is. */
+const files=readdirSync(resolve(root,'tests')).filter(name=>name.endsWith('.test.mjs')).sort().map(name=>`tests/${name}`);
 /* Every test file runs against scratch copies of the per-user places the host writes to (the owner's real profile is never touched). */
+import {mkdirSync,mkdtempSync} from 'node:fs';
 import {mkdtempSync,mkdirSync} from 'node:fs';
 import {pathToFileURL} from 'node:url';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+const scratch=mkdtempSync(join(tmpdir(),'strata-host-suite-profile-'));
+// Harness discovers personal skills through the home directory, independently of APPDATA/XDG.
+const home=join(scratch,'home');mkdirSync(home);
+const env={...process.env,HOME:home,USERPROFILE:home,STRATA_HOME:home,STRATA_SETTINGS_FILE:join(scratch,'app-settings.json'),STRATA_COMPONENTS_DIR:join(scratch,'components'),LOCALAPPDATA:join(scratch,'Local'),APPDATA:join(scratch,'Roaming'),XDG_DATA_HOME:join(scratch,'xdg-data'),XDG_STATE_HOME:join(scratch,'xdg-state'),XDG_CONFIG_HOME:join(scratch,'xdg-config')};
 // Chrome's POSIX singleton socket has a small path limit. CI's nested TMPDIR
 // leaves too little space for even a fresh browser profile; keep our private
 // suite root short while retaining the same filesystem isolation guard.

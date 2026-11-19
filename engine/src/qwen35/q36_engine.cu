@@ -27,6 +27,7 @@
 #include "strata/prefill/gemm.hpp"
 #include "strata/prefill/moe_fused.hpp"
 #include "strata/prefill/fused_tile_rule.hpp"
+#include "strata/prefill/own_only_switches.hpp"
 #include "strata/prefill/moe_fused_q36.hpp"
 #include "strata/prefill/mmq_ids_margin.hpp"
 #include "strata/prefill/moe_mmq.hpp"
@@ -34,6 +35,7 @@
 #include "strata/qwen35/engine.hpp"
 #include "strata/qwen35/kv_layout.hpp"
 #include "strata/qwen35/sampling.hpp"
+#include "strata/qwen35/expert_info.hpp"
 #include "strata/qwen35/expert_store.hpp"
 #include "strata/qwen35/bounded_experts.hpp"
 #include "strata/qwen35/hotspot_trace.hpp"
@@ -1244,6 +1246,8 @@ struct Engine {
     uint64_t startup_expert_host_bytes = 0, startup_expert_device_bytes = 0;
     uint64_t startup_hybrid_host_bytes = 0, startup_hybrid_device_bytes = 0;
     bool main_hybrid = false;   // some main layer is hybrid (else only the MTP block is: the decode graph stays)
+    // #5012: the expert placement, for the INFO line (the Monitor's "expert cache: slots / experts"; strata/qwen35/expert_info.hpp)
+    strata::qwen35::ExpertInfo expert_info;
     bool mtp_graph = true;      // the MTP draft step may be a graph (not when its layer is hybrid)
     /// state index li's layer runs hybrid (its experts not all in VRAM)
     bool lhy(size_t li) const {
@@ -4435,6 +4439,7 @@ struct Serve {
         std::printf("INFO kv_cache_k=%s kv_cache_v=%s kv_accumulation=f32\n", E.kv_k_f16 ? "f16" : "f32", E.kv_v_f16 ? "f16" : "f32");
         if (E.private_cache) std::printf("INFO q36_private_cache=%d prompt_cache=0 conversation_cache_mib=0\n", E.scoped_cache ? 2 : 1);
         if (E.n_sess > 1) std::printf("INFO batch_slots=%d slot_cache=1\n", E.n_sess);
+        if (E.expert_info.experts > 0) std::fputs(strata::qwen35::expert_info_line(E.expert_info).c_str(), stdout);   // #5012
         std::puts(E.memory_info().c_str());
         std::printf("READY %d stop\n", E.ctx);
         std::fflush(stdout);
@@ -4657,8 +4662,9 @@ int strata::qwen35::run(int argc, char** argv) {
     if (std::getenv("CUDA_MODULE_LOADING") == nullptr) _putenv_s("CUDA_MODULE_LOADING", "EAGER");
 #endif
     // Strata's fused prompt kernels for this family's formats (moe_fused_iq_q36.cu): the K-quant, Q6_K and Q8_0 gate/up
-    // instances are opt-in for Flash-Next's packs; this engine sets them up by default (=0 keeps a format on MMQ)
-    for (const char* v : {"STRATA_PF_FUSED_KQ", "STRATA_PF_FUSED_Q6K", "STRATA_PF_FUSED_Q8GU"}) {
+    // instances are opt-in for Flash-Next's packs; this engine sets them up by default (=0 keeps a format on MMQ), and in a build without MMQ the Turing set-up too
+    // (own_only_switches.hpp, q36_entry_switches: the same switches on both entries, strata --model and the standalone strata-q36)
+    for (const char* v : strata::prefill::q36_entry_switches(MMQ::built())) {
 #if !defined(_WIN32)
         setenv(v, "1", 0);
 #else
@@ -4751,6 +4757,7 @@ int strata::qwen35::run(int argc, char** argv) {
         std::fprintf(stderr, "strata-q36: %s\n", err.c_str());
         return 1;
     }
+    E.expert_info = strata::qwen35::expert_info(m.layers, m.g.n_expert);   // #5012: what the placement left in VRAM
     if (m.expert_pack) {
         // Dense weights are on the GPU; every CPU expert now belongs to the
         // verified pack. Drop the original GGUF mapping instead of retaining

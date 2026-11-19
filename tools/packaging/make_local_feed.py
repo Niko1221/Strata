@@ -28,6 +28,10 @@ import tempfile
 import zipfile
 from pathlib import Path
 
+REPO = Path(__file__).resolve().parents[2]
+ROOT = REPO / "terminal"          # the Terminal's source tree: the same layout as the archive
+RELEASE_FEED = "https://github.com/Niko1221/Strata/releases/latest/download"      # the address built into install.sh / install.ps1; a local feed bakes its own in its place
+sys.path.insert(0, str(REPO / "tools" / "packaging"))
 ROOT = Path(__file__).resolve().parents[1]
 RELEASE_FEED = "https://github.com/zapabob/Strata/releases/latest/download"      # the address built into install.sh / install.ps1; a local feed bakes its own in its place
 sys.path.insert(0, str(ROOT / "packaging"))
@@ -105,7 +109,7 @@ def main(argv=None) -> int:
             shutil.copy2(out / ("strata-feed.json" + suffix), out / ("strata-feed-linux-aarch64.json" + suffix))
     base = a.url.rstrip("/")
     for name in ("install.sh", "install.ps1"):
-        text = (ROOT / "packaging" / name).read_text(encoding="utf-8").replace(RELEASE_FEED, base)
+        text = (REPO / "tools" / "packaging" / name).read_text(encoding="utf-8").replace(RELEASE_FEED, base)
         (out / name).write_text(text, encoding="utf-8", newline="\n" if name.endswith(".sh") else None)
     (out / "test-trust.json").write_text((keys / "feed-key.pub.json").read_text(encoding="utf-8"), encoding="utf-8")
     print(f"feed written to {out}\n  serve it:  python -m http.server {base.rsplit(':', 1)[-1]} --bind 127.0.0.1 --directory {out}\n"

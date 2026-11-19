@@ -6,7 +6,8 @@ import { hasReading } from '../lib/monitor-hardware';
 import { Component, Suspense, useDeferredValue, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useSurfaceFocus } from '../lib/focus';
 import { closeSettings, useLocation } from '../lib/router';
-import { bootOnce, bootstrap, setNavOpen, setFocus, useStore, } from '../lib/store';
+import { bootOnce, bootstrap, getState, setNavOpen, setFocus, useStore, } from '../lib/store';
+import { failedRetriesAfter, hostSeemsStopped } from '../lib/connection-retry';
 import { Sidebar } from './Sidebar';
 import { CommandPalette } from './CommandPalette';
 import { ShortcutsDialog } from './Shortcuts';
@@ -91,6 +92,8 @@ function AppShell() {
 function ConnectionBar() {
     const connection = useStore((s) => s.connection);
     const [retrying, setRetrying] = useState(false);
+    const [failedRetries, setFailedRetries] = useState(0);
+    useEffect(() => { if (connection === 'live') setFailedRetries(0); }, [connection]);
     if (connection === 'live')
         return null;
     const offline = connection === 'offline';
@@ -102,10 +105,12 @@ function ConnectionBar() {
       </span>
       {tr(offline ? (<Btn variant="secondary" size="sm" icon="refresh" disabled={retrying} onClick={() => {
                 setRetrying(true);
-                void bootstrap().finally(() => setRetrying(false));
+                void bootstrap().finally(() => { setRetrying(false); setFailedRetries(n => failedRetriesAfter(n, getState().connection)); });
             }}>
           {tr(retrying ? 'Retrying…' : 'Retry')}
         </Btn>) : null)}
+      {tr(offline && hostSeemsStopped(failedRetries) ? <p className="connbar__stopped" role="alert">{tr("Strata’s background part has stopped. Close Strata and open it again.")}</p> : null)}
+      {tr(offline ? <details className="connection-details"><summary>{tr("Connection details")}</summary><p className="xs">{tr("App host: ")}{tr(window.location.origin)}{tr(". Retained readings may be stale. Start the configured engine host, then retry.")}</p></details> : null)}
       {tr(offline ? <details className="connection-details"><summary>{tr("Connection details")}</summary><p className="xs">{tr("App host: ")}{tr(window.location.origin)}{tr(". Retained readings may be stale. This connection carries app data and live updates.")}</p></details> : null)}
     </div>);
 }

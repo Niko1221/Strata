@@ -68,9 +68,9 @@ test('bounded reader gets real metadata and rejects fake extensions, partial ten
  ggufFixture(file,{arch:'future_text_model',omit:['future_text_model.context_length']});
  const noContext=inspectLocalModel(file);assert.equal(noContext.variant.contextMax,4096);assert.ok(noContext.warnings.some(w=>w.includes('Context length is not declared')));
  ggufFixture(file,{tensorCount:0});assert.throws(()=>inspectLocalModel(file),/missing tensors/);
+ ggufFixture(file,{context:512});assert.throws(()=>inspectLocalModel(file),/context_length/);
  ggufFixture(file,{context:2048,extra:[['qwen3next.attention.key_length',4,8],['qwen3next.attention.value_length',4,8]]});
  const narrow=inspectLocalModel(file);assert.equal(narrow.variant.contextMax,2048);assert.deepEqual(narrow.variant.kvModes,['FP16']);assert.ok(narrow.warnings.some(w=>w.includes('Choose FP16')));
- ggufFixture(file,{context:512});assert.throws(()=>inspectLocalModel(file),/context_length/);
  const oversized=Buffer.alloc(24);oversized.write('GGUF');oversized.writeUInt32LE(3,4);oversized.writeBigUInt64LE(2n**63n,8);writeFileSync(file,oversized);assert.throws(()=>readGGUF(file),/unsupported integer/);
 });
 

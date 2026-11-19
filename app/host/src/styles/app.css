@@ -951,8 +951,21 @@ button {
   font-family: inherit;
 }
 
+/* Selected text (#5073): the accent tint it used was 1.01 to 1.05:1 against the page, so a selection could not be seen. A mid-tone fill with its own
+   ink keeps the text readable on top of it, in code blocks too.
+     light  #04281b on #3fbf95 = 6.87:1 text, fill 2.31:1 against white, 2.21:1 against the page
+     dark   #ffffff on #1f7a59 = 5.27:1 text, fill 3.32:1 against #161a1d */
+:root {
+  --st-select-bg: #3fbf95;
+  --st-select-ink: #04281b;
+}
+[data-theme='dark'] {
+  --st-select-bg: #1f7a59;
+  --st-select-ink: #ffffff;
+}
 ::selection {
-  background: var(--st-accent-tint);
+  background: var(--st-select-bg);
+  color: var(--st-select-ink);
 }
 
 * {
@@ -2485,6 +2498,44 @@ textarea.st-input {
   border: 1px solid var(--st-line);
 }
 
+/* A tool call the model wrote as text that nothing ran: one quiet line that opens to the raw text. */
+.md-failedcall {
+  margin: 8px 0;
+  border: 1px solid var(--st-line-soft);
+  border-radius: 8px;
+  background: var(--st-surface-2);
+}
+.md-failedcall > summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 6px 12px;
+  font-size: var(--st-fs-xs);
+  color: var(--st-ink-muted);
+}
+.md-failedcall > summary::-webkit-details-marker { display: none; }
+/* The sign that the line opens: a small chevron that points right and turns down when it is open (no words, the colour of the line). */
+.md-failedcall > summary::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin: 0 9px 2px 1px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform var(--st-t-control) var(--st-ease-standard);
+}
+.md-failedcall[open] > summary::before { transform: rotate(45deg); }.md-failedcall__raw {
+  margin: 0;
+  padding: 8px 12px;
+  border-top: 1px solid var(--st-line-soft);
+  font-family: var(--st-font-mono);
+  font-size: var(--st-fs-xs);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--st-ink-muted);
+}
+
 .md-image {
   max-width: 100%;
   height: auto;
@@ -3653,8 +3704,13 @@ textarea.st-input {
   background: currentColor;
 }
 .connbar__text {
-  flex: 1;
+  flex: 1 1 220px;
   min-width: 0;
+}
+.connbar__stopped {
+  flex-basis: 100%;
+  margin: 0 0 0 18px;
+  font-weight: 600;
 }
 
 /* The recommended model carries one step more weight than the rest.
@@ -4858,6 +4914,7 @@ textarea.config-editor.st-input {
   flex-basis: 100%;
   margin-inline-start: 24px;
 }
+.connectionbar,
 .connbar {
   flex-wrap: wrap;
 }
@@ -7084,8 +7141,13 @@ textarea {
 .askcard__details summary { list-style: none; cursor: pointer; padding: 6px 14px; font-size: var(--st-fs-xs); font-weight: 500; color: var(--st-ink-muted); display: flex; align-items: center; gap: 6px; }
 .askcard__details summary::-webkit-details-marker { display: none; }
 .askcard__details[open] summary svg { transform: rotate(180deg); }
-.askcard__details pre { margin: 0 14px 10px; padding: 8px 10px; background: var(--st-code-bg); color: var(--st-code-ink); border-radius: var(--st-r-sm); font: 12px/1.5 var(--st-font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.askcard__details pre { margin: 0 14px 10px; padding: 8px 10px; background: var(--st-code-bg); color: var(--st-code-ink); border-radius: var(--st-r-sm); font: 12px/1.5 var(--st-font-mono); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 40vh; overflow: auto; }   /* the whole command, scrolled when long (#5856); focusable for the keyboard */
 @media (max-width: 560px) { .askcard__top { flex-wrap: wrap; } .askcard__acts { margin-left: 32px; } }
+/* Deny and Approve are one pair (#5077): the same box on one line, and only the fill says which one is the main action. The
+   primary button's card shadow falls below its box, so beside Deny, Approve read as bigger and lower. The focus ring (a
+   box-shadow on button:focus-visible) is left alone. */
+.askcard__acts { align-items: center; flex-wrap: wrap; }
+.askcard__acts > .st-btn--primary:not(:focus-visible), .toolcard__quick-actions > .st-btn--primary:not(:focus-visible) { box-shadow: inset 0 1px 0 var(--st-specular); }
 
 /* ---- an opened task ---- */
 .main__back { display: inline-flex; align-items: center; gap: 2px; margin-right: 10px; padding: 0; border: 0; background: transparent; color: var(--st-ink-muted); font: inherit; font-size: var(--st-fs-sm); font-weight: 500; cursor: pointer; }
@@ -7594,6 +7656,11 @@ html[data-motion='reduced'] .native-progress__bar[data-indeterminate] > i { anim
 .sent-quotes { display: flex; flex-direction: column; gap: 6px; margin: 0 0 8px; }
 .sent-quote { display: flex; flex-direction: column; gap: 2px; padding: 6px 10px; border: 0; border-left: 3px solid var(--st-accent); border-radius: var(--st-r-sm); background: var(--st-surface-2); color: var(--st-ink-soft); font: inherit; text-align: left; cursor: pointer; }
 .sent-quotes[data-open] .sent-quote__text { -webkit-line-clamp: unset; line-clamp: unset; display: block; }
+/* #5993: a numbered quote has its own label (a jump to the source while that message is there) and the text that opens it */
+.sent-quote--numbered { cursor: default; }
+.sent-quote--numbered .sent-quote__text { padding: 0; border: 0; background: none; color: inherit; font: inherit; font-size: var(--st-fs-sm); text-align: left; cursor: pointer; }
+.sent-quote__label { padding: 0; border: 0; background: none; font-size: var(--st-fs-xs); color: var(--st-ink-muted); text-align: left; }
+button.sent-quote__label { text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
 .quote-selection { position: fixed; z-index: var(--layer-popover, 100); padding: 6px 12px; border: 1px solid var(--st-line); border-radius: var(--st-r-pill); background: var(--st-surface); color: var(--st-ink); box-shadow: var(--st-sh-pop); font: 600 var(--st-fs-sm) var(--st-font); cursor: pointer; }
 
 /* ---- the agent's own question: the approval card with options (#4244) ---- */
@@ -7612,6 +7679,25 @@ html[data-motion='reduced'] .native-progress__bar[data-indeterminate] > i { anim
 .askq__acts { display: flex; gap: 8px; justify-content: flex-end; position: sticky; bottom: 0; margin: 0; padding: 8px 14px 0 44px; background: var(--st-surface); }
 .approvaldock:has(.askq) { max-height: 56vh; }
 @media (max-width: 560px) { .askq__opts, .askq__own, .askq__problem { margin-left: 0; } .askq__acts { padding-left: 14px; } .askq__own { width: 100%; } .askq__item { padding-right: 0; } }
+/* #6060: in a right-to-left language the send arrow points the way the text runs */
+[dir="rtl"] .st-icon:has(> use[href$="#i-send"]) { transform: scaleX(-1); }
+
+/* A helper's log (View log, #5254): what it did, oldest first, in a list that scrolls inside the dialog. */
+.subagent-log { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; max-height: 46vh; overflow-y: auto; }
+.subagent-log li { font-size: var(--st-fs-sm); line-height: 1.45; overflow-wrap: anywhere; }
+.subagent-log__step { color: var(--st-ink-soft); }
+.subagent-log__step strong { color: var(--st-ink); font-weight: 600; }
+.subagent-log__said { padding: 6px 10px; border-radius: var(--st-r-md); background: var(--st-surface-2); color: var(--st-ink); }
+
+/* Reply width (#5066, Settings > Reading & focus): the one token that caps the text of an answer, and the column Focus reading builds from it. Comfortable
+   (the default) is the 56ch above and needs no rule. */
+:root[data-measure='wide'] { --st-measure: 72ch; }
+:root[data-measure='full'] { --st-measure: 400ch; }
+
+/* The model card's notice that the engine says the Windows commit limit is close (#1607): the sentence with its warning sign, and the numbers under it. */
+.native-commit-note { display: flex; flex-direction: column; gap: 2px; margin: 6px 0; }
+.native-commit-note p { margin: 0; display: flex; gap: 6px; align-items: flex-start; }
+.native-commit-note .st-icon { flex: none; margin-top: 2px; }
 /* Explicit search controls wrap with the composer; public source URLs never widen it. */
 .chat-reference-controls { flex-wrap: wrap; }
 .web-reference-sources { min-width: 0; overflow-wrap: anywhere; }

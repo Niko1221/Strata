@@ -73,10 +73,13 @@ matchMedia("(prefers-color-scheme: dark)").addEventListener("change", (e) => {
 });
 
 let tab = "chat";
+const bootHash = location.hash;                       // the tab asked for in the address, kept for a tab that shows later (Experts)
 function showTab(name) {
-  tab = ["chat", "images", "monitor", "about"].includes(name) ? name : "chat";
+  tab = ["chat", "images", "monitor", "experts", "about"].includes(name) ? name : "chat";
+  if (tab === "experts" && $("tab-btn-experts").hidden) tab = "chat";          // only when the model saves its expert profile (#5723)
   for (const b of document.querySelectorAll(".st-tab")) b.setAttribute("aria-selected", String(b.dataset.tab === tab));
-  for (const v of ["chat", "images", "monitor", "about"]) $(`view-${v}`).hidden = v !== tab;
+  for (const v of ["chat", "images", "monitor", "experts", "about"]) $(`view-${v}`).hidden = v !== tab;
+  if (tab === "experts") StrataExperts.start($("view-experts")); else StrataExperts.stop();
   if (tab === "images") $("img-prompt").focus();
   if (location.hash.slice(1) !== tab) history.replaceState(null, "", tab === "chat" ? location.pathname : `#${tab}`);
   if (tab === "chat") $("input").focus();
@@ -111,7 +114,7 @@ let health = {model: "strata", images: false, max_context: 0};
 // the texts that depend on what this server offers: the empty chat's line and the attach button's hint
 function renderEmptyChat() {
   $("attach-btn").title = health.images ? tr("composer.attachPictures", "Attach a text file or a picture (or drop it here)")
-                                        : tr("composer.attach", "Attach a text file (or drop it here)");
+                                        : tr("composer.attach", "Attach a text file (or drop it here). Pictures are not available with this model.");
   $("chat-empty-sub").textContent = tr("chat.emptyModel", "{model} runs on this PC. Nothing leaves it.", {model: health.model});
 }
 async function loadHealth() {
@@ -120,6 +123,8 @@ async function loadHealth() {
     renderEmptyChat();
     $("tab-btn-images").hidden = !health.image_generation;
     if (location.hash === "#images" && health.image_generation) showTab("images");
+    StrataExperts.init({headers, timeStr});
+    StrataExperts.probe().then((on) => { $("tab-btn-experts").hidden = !on; if (on && bootHash === "#experts" && tab === "chat") showTab("experts"); fitHeader(); });
   } catch (e) {
     setTimeout(loadHealth, 2000);
   }
@@ -127,8 +132,11 @@ async function loadHealth() {
 
 // ------------------------------------------------------------------ Monitor
 const METRICS = [
+  {key: "model", label: "Model", icon: "info", unit: ""},
   {key: "speed", label: "Speed", icon: "gauge", unit: "t/s", series: "tok_s"},
-  {key: "gpu", label: "GPU load", icon: "gpu", unit: "%", series: "gpu_util", max: 100},
+  // #5484: what the load is (NVML, amdgpu and the Mac report time busy, not compute in use)
+  {key: "gpu", label: "GPU load", icon: "gpu", unit: "%", series: "gpu_util", max: 100,
+   hint: "Share of the time the GPU had work to do. It does not say how much of its compute is in use."},
   {key: "vram", label: "VRAM", icon: "layers", unit: "GB", series: "gpu_mem_used"},
   {key: "temp", label: "GPU temp", icon: "thermometer", unit: "°C", series: "gpu_temp", tone: "warn"},
   {key: "power", label: "Power", icon: "bolt", unit: "W", series: "gpu_power"},
@@ -137,20 +145,20 @@ const METRICS = [
   {key: "disk", label: "Disk read", icon: "disk", unit: "MB/s", series: "disk_read_mb", tone: "info"},
 ];
 $("metrics").innerHTML = METRICS.map((m) => `
-  <div class="st-card metric-card"><div class="st-metric">
-    <span class="st-metric__label">${icon(m.icon, "st-icon st-icon--sm")}${esc(m.label)}</span>
+  <div class="st-card metric-card${m.key === "model" ? " model-card" : ""}"><div class="st-metric">
+    <span class="st-metric__label" id="ml-${m.key}"${m.hint ? ` title="${esc(m.hint)}"` : ""}>${icon(m.icon, "st-icon st-icon--sm")}${esc(m.label)}</span>
     ${m.key === "speed" ? `<div class="speed-values">
-      <div><span class="st-metric__value" id="mv-speed">-</span><span class="st-metric__sub" id="ms-speed">Decode</span></div>
-      <div class="speed-prefill"><span class="st-metric__value" id="mv-prefill">-</span><span class="st-metric__sub" id="ms-prefill">Prefill</span></div>
-    </div>` : `<span class="st-metric__value" id="mv-${m.key}">–</span>
-    <span class="st-metric__sub" id="ms-${m.key}"></span>`}
-    <svg class="st-metric__spark" id="sp-${m.key}" viewBox="0 0 100 32" preserveAspectRatio="none"${m.tone ? ` data-tone="${m.tone}"` : ""}>
+      <div><span class="st-metric__value" id="mv-speed">-</span><span class="st-metric__sub" id="ms-speed">Decode</span><span class="st-metric__sub speed-range" id="sr-speed"></span></div>
+      <div class="speed-prefill"><span class="st-metric__value" id="mv-prefill">-</span><span class="st-metric__sub" id="ms-prefill">Prefill</span><span class="st-metric__sub speed-range" id="sr-prefill"></span></div>
+    </div>` : m.key === "model" ? `<span class="st-metric__value model-card__name" id="mv-model">–</span>
+    <span class="st-metric__sub" id="ms-model"></span>` : `<span class="st-metric__value" id="mv-${m.key}">–</span>
+    <span class="st-metric__sub" id="ms-${m.key}"></span>${m.key === "temp" || m.key === "power" ? `<span class="st-metric__sub speed-range" id="sr-${m.key}"></span>` : ""}`}
+    ${m.key === "model" ? `<div class="model-card__facts" id="model-facts"></div>` : `<svg class="st-metric__spark" id="sp-${m.key}" viewBox="0 0 100 32" preserveAspectRatio="none"${m.tone ? ` data-tone="${m.tone}"` : ""}>
       <path class="area" fill="currentColor" opacity=".12"/><path class="line" fill="none" stroke="currentColor"
       stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
       ${m.key === "speed" ? `<g id="sp-prefill" class="speed-prefill"><path class="area" fill="currentColor" opacity=".12"/>
-        <path class="line" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"
-        stroke-linecap="round" vector-effect="non-scaling-stroke"/></g>` : ""}</svg>
-  </div></div>`).join("");
+      <path class="line" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"
+      stroke-linecap="round" vector-effect="non-scaling-stroke"/></g>` : ""}</svg>`}</div></div>`).join("");
 
 function spark(id, values, max) {
   const svg = $(id);
@@ -162,9 +170,11 @@ function spark(id, values, max) {
   svg.querySelector(".line").setAttribute("d", line);
   svg.querySelector(".area").setAttribute("d", `${line}L100,32L0,32Z`);
 }
-function setMetric(key, value, unit, sub) {
+function setMetric(key, value, unit, sub, why) {
   $(`mv-${key}`).innerHTML = value == null ? "–" : `${esc(value)}${unit ? `<small>${esc(unit)}</small>` : ""}`;
   $(`ms-${key}`).textContent = sub || "";
+  // why a card has no reading (the server's gpu_note), on its line and as its tooltip (#5457)
+  $(`ms-${key}`).title = why || "";
 }
 
 let lastMetrics = null, metricsFailures = 0, keyWarned = false, mcpTick = 0;
@@ -413,6 +423,141 @@ function renderTotals(t) {
   return `Since ${since}: ${fmt(t.requests)} requests · ${fmt(read)} prompt tokens read${pSpeed} (${fmt(t.reused)} reused) · ` +
          `${fmt(t.output_tokens)} written${oSpeed}`;
 }
+/* The machine's PCIe link for the PCIe card: with several cards the one with the slowest link (gpu_pcie_bottleneck, which the server names
+   from ONE card: its generation, width and the generation it can reach), else the top-level fields (one card, or a server from before it).
+   gen is the generation the link can reach (NVML reports a lower one while a card is idle), cur the one it runs at now. */
+function pcieLink(hw) {
+  const b = hw && hw.gpu_pcie_bottleneck;
+  if (b && (b.gen || b.gen_max) && b.width) return { gen: b.gen_max || b.gen, cur: b.gen || null, width: b.width, card: b.card };
+  if (!hw) return { gen: null, cur: null, width: null, card: null };
+  return { gen: hw.gpu_pcie_gen_max || hw.gpu_pcie_gen || null, cur: hw.gpu_pcie_gen || null, width: hw.gpu_pcie_width || null, card: null };
+}
+
+// The Speed card's min and max (#4968, from PR #4968 by noahark): the slowest and the fastest of the newest SPEED_KEPT requests, the same
+// window the server keeps (GET /metrics?requests=all, newest last in its deque of 500). The page adds every polled request to its own
+// map and drops the oldest past SPEED_KEPT, so an extreme the server has let go of is gone here too. A new totals window (a server
+// restart) starts the map afresh from one full pull.
+const SPEED_KEPT = 500;
+let speedWin = new Map(), speedWinSince = null;
+function keepNewest(map, cap) {
+  if (map.size <= cap) return map;
+  const rows = [...map.values()].sort((a, b) => (a.time || 0) - (b.time || 0));
+  return new Map(rows.slice(-cap).map((r) => [r.id, r]));
+}
+const prefillOf = (r) => (r.prompt_ms > 0 && r.prompt_tokens != null && r.prompt_tokens - (r.reused || 0) > 0
+                          ? (r.prompt_tokens - (r.reused || 0)) / (r.prompt_ms / 1000) : null);
+function speedRange(rows) {
+  const out = {};
+  for (const [key, get] of [["decode", (r) => r.decode_tok_s], ["prefill", prefillOf]]) {
+    const v = rows.map(get).filter((x) => x != null && x > 0);
+    out[key] = v.length ? {min: Math.min(...v), max: Math.max(...v), n: v.length} : null;
+  }
+  return out;
+}
+async function pullSpeedWindow() {
+  try {
+    const r = await fetch("metrics?requests=all", {headers: headers()});
+    if (r.ok) for (const q of ((await r.json()).requests || [])) if (q.id != null) speedWin.set(q.id, q);
+    speedWin = keepNewest(speedWin, SPEED_KEPT);
+    fillSpeedRange();
+  } catch { /* the window stays as it is; the next polls add to it */ }
+}
+function fillSpeedRange() {
+  const range = speedRange([...speedWin.values()]);
+  for (const [id, key, d] of [["sr-speed", "decode", 1], ["sr-prefill", "prefill", 0]]) {
+    const r = range[key], el = $(id);
+    el.textContent = r ? `min ${fmt(r.min, d)} · max ${fmt(r.max, d)}` : "";
+    el.title = r ? `The slowest and the fastest of the last ${fmt(r.n)} requests. The server keeps up to 500.` : "";
+  }
+}
+// Power and temperature averages (#4968): a sample is taken at each poll while the server is working (queued, reading or generating;
+// idle time is left out) and weighs the seconds since the poll before it, at most HW_GAP_S, so a page that polled less often (a
+// background tab, another tab of this page) neither drops that time nor lets one sample stand for minutes. A new totals window or
+// another model starts the averages afresh. They cover what this page has watched, and their tooltip says how long that was.
+const HW_GAP_S = 2;
+let hwWin = [], hwKey = null, hwLast = null;
+function hwAverages(samples) {
+  let secs = 0, pw = 0, ps = 0;
+  const cols = samples.reduce((n, s) => Math.max(n, s.t.length), 0), tw = Array(cols).fill(0), ts = Array(cols).fill(0);
+  for (const s of samples) {
+    secs += s.w;
+    if (s.p != null) { pw += s.w; ps += s.w * s.p; }
+    s.t.forEach((x, c) => { if (x != null) { tw[c] += s.w; ts[c] += s.w * x; } });
+  }
+  return {seconds: secs, power: pw ? ps / pw : null, temps: tw.map((w, c) => (w ? ts[c] / w : null))};
+}
+function hwSample(win, last, now, hw, working) {
+  const w = last == null ? 1 : Math.min(Math.max(now - last, 0), HW_GAP_S);
+  if (!working || !w) return win;
+  const g = [...(hw.gpus || [])].sort((a, b) => (a.index || 0) - (b.index || 0));
+  if (!g.length && hw.gpu_power == null) return win;
+  win.push({w, t: g.map((x) => x.temp), p: hw.gpu_power, names: g.map((x) => x.name)});
+  return win.length > 21600 ? win.slice(-18000) : win;
+}
+const spanText = (s) => (s < 90 ? `${fmt(s)} s` : s < 5400 ? `${fmt(s / 60)} min` : `${fmt(s / 3600, 1)} h`);
+function sampleHw(hw, working, key) {
+  const now = Date.now() / 1000;
+  if (hwKey !== key) { hwWin = []; hwKey = key; hwLast = null; }
+  hwWin = hwSample(hwWin, hwLast, now, hw, working);
+  hwLast = now;
+  const avg = hwAverages(hwWin), span = spanText(avg.seconds);
+  const pe = $("sr-power");
+  if (pe) {
+    pe.textContent = avg.power != null ? `avg ${fmt(avg.power)} W` : "";
+    pe.title = avg.power != null ? `Average power while the server was working, over the ${span} this page has watched. Idle time is left out.` : "";
+  }
+  const te = $("sr-temp");
+  if (te) {
+    const any = avg.temps.some((x) => x != null);
+    te.textContent = any ? `avg ${avg.temps.map((x) => (x == null ? "–" : fmt(x))).join(" / ")}` : "";
+    const names = hwWin.length ? hwWin[hwWin.length - 1].names : [];
+    const detail = avg.temps.map((x, i) => (x == null || !names[i] ? null : `${names[i]}: ${fmt(x)} °C`)).filter(Boolean).join(" · ");
+    te.title = any ? `${detail ? detail + "\n" : ""}Average temperature of each card while the server was working, over the ${span} this page has watched. Idle time is left out.` : "";
+  }
+}
+
+// The Context fill gauge (#4636, from PR #4636 by thisisspartan): the window split into what the engine already had cached, what is
+// being read, the answer so far and what is free. While a request runs it reads the live row (reused is the RESUME prefix; prompt_read
+// counts the reused part too); idle, the last request's prompt and answer show as cached, but only while that request's engine
+// process is the one running now (after a restart the cache is gone). A request larger than the window scales the parts down and turns
+// the percent red; 85 % and above is amber. `on` is the Model-state key: reading and generating light their row, a queued request says so.
+function contextParts(live, eng, last, on) {
+  const ctx = eng.max_context || 0;
+  let cached = 0, read = 0, answer = 0;
+  if (live.state === "reading" || live.state === "generating") {
+    const p = live.prompt_tokens || 0;
+    cached = Math.min(live.reused || 0, p);
+    read = live.state === "generating" ? p - cached
+         : Math.min(Math.max(0, (live.prompt_read || 0) - cached), p - cached);
+    answer = live.state === "generating" ? Math.max(0, live.generated || 0) : 0;
+  } else if (live.state === "idle" && last && !(eng.gen != null && last.gen != null && last.gen !== eng.gen)) {
+    cached = (last.prompt_tokens || 0) + (last.output_tokens || 0);
+  }
+  const used = cached + read + answer, scale = ctx > 0 && used > ctx ? ctx / used : 1;
+  const pct = ctx ? Math.round(Math.min(1, used / ctx) * 100) : null;
+  return {ctx, cached, read, answer, used, free: Math.max(0, ctx - used), scale, pct,
+          tone: ctx > 0 && used > ctx ? "danger" : pct != null && pct >= 85 ? "warn" : "",
+          now: on === "reading" ? "read" : on === "generating" ? "answer" : null, queued: on === "queued"};
+}
+function renderContext(live, eng, last, on) {
+  const c = contextParts(live, eng, last, on), ARC = 235.6;
+  let at = 0;
+  for (const k of ["cached", "read", "answer"]) {
+    const len = c.ctx ? ARC * c[k] * c.scale / c.ctx : 0, el = $(`ctx-seg-${k}`);
+    el.setAttribute("stroke-dasharray", `${len.toFixed(1)} 314.2`);
+    el.setAttribute("stroke-dashoffset", `${(-at).toFixed(1)}`);
+    el.style.opacity = len >= 1 ? "1" : "0";
+    at += len;
+  }
+  $("ctx-pct").textContent = c.pct == null ? "–" : `${c.pct}%`;
+  $("ctx-pct").dataset.tone = c.tone;
+  $("ctx-sub").textContent = c.ctx ? `${kfmt(c.used)} / ${ctxfmt(c.ctx)}` : "–";
+  for (const k of ["cached", "read", "answer", "free"]) {
+    $(`ctx-leg-${k}`).textContent = c.ctx || k !== "free" ? kfmt(c[k]) : "–";
+    $(`ctx-row-${k}`).classList.toggle("is-now", c.now === k);
+  }
+  $("ctx-note").hidden = !c.queued;
+}
 function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   // model state
   // A local turn keeps metrics on "unloaded" for the whole engine start.
@@ -478,6 +623,10 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
             live.state === "reading" ? "Prefill now" : live.state === "generating" ? "Prefill this request" : avgPrefill != null ? "Prefill · run average" : last ? "Prefill last request" : "Prefill");
   spark("sp-speed", h.tok_s);
   spark("sp-prefill", h.prefill_tok_s_mean);
+  if (speedWinSince !== (totals && totals.since)) { speedWin = new Map(); speedWinSince = totals && totals.since; pullSpeedWindow(); }
+  for (const r of requests) if (r.id != null) speedWin.set(r.id, r);
+  speedWin = keepNewest(speedWin, SPEED_KEPT);
+  fillSpeedRange();
   // a model split across several cards (issue #112): the cards show their total / mean / hottest, and each card's own
   const per = (f) => (hw.gpus || []).map((g) => `GPU ${g.index} ${f(g)}`).join(" · ");
   const multi = (hw.gpus || []).length > 1;
@@ -488,15 +637,40 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
             multi ? per((g) => (g.mem_used == null ? "–" : `${gb(g.mem_used)} GB`))
                   : eng.expert_slots ? `${fmt(eng.expert_slots)} experts cached` : (st.gpu_note ? "not available on Windows AMD yet" : ""));
   spark("sp-vram", h.gpu_mem_used, hw.gpu_mem_total);
+  // #5457: a card the server cannot read (a Mac has no temperature or power without root and no PCIe link; a Windows AMD card)
+  // says so, with the server's own reason, whether or not the GPU has a name
+  const unread = (v) => v == null && !multi && !!st.gpu_note;
   setMetric("temp", hw.gpu_temp == null ? null : fmt(hw.gpu_temp), "°C",
-            multi ? per((g) => (g.temp == null ? "–" : `${fmt(g.temp)}°`)) : "");
+            multi ? per((g) => (g.temp == null ? "–" : `${fmt(g.temp)}°`)) : unread(hw.gpu_temp) ? "not available" : "",
+            unread(hw.gpu_temp) ? st.gpu_note : "");
   spark("sp-temp", h.gpu_temp, 90);
-  setMetric("power", hw.gpu_power == null ? null : fmt(hw.gpu_power), "W", hw.gpu_power_limit ? `of ${fmt(hw.gpu_power_limit)} W limit` : "");
+  setMetric("power", hw.gpu_power == null ? null : fmt(hw.gpu_power), "W",
+            multi ? per((g) => (g.power == null ? "–" : `${fmt(g.power)} W` +
+                                             (g.power_limit ? ` of ${fmt(g.power_limit)} W limit` : "")))
+                  : hw.gpu_power_limit ? `of ${fmt(hw.gpu_power_limit)} W limit` : unread(hw.gpu_power) ? "not available" : "",
+            unread(hw.gpu_power) ? st.gpu_note : "");
   spark("sp-power", h.gpu_power, hw.gpu_power_limit);
-  const gen = hw.gpu_pcie_gen_max || hw.gpu_pcie_gen;
-  setMetric("pcie", gen ? `Gen${gen}` : null, hw.gpu_pcie_width ? `x${hw.gpu_pcie_width}` : "",
-            hw.gpu_pcie_rx_mb == null ? "" : `to GPU ${fmt(hw.gpu_pcie_rx_mb, hw.gpu_pcie_rx_mb < 10 ? 1 : 0)} MB/s` +
-            (hw.gpu_pcie_gen && gen && hw.gpu_pcie_gen < gen ? ` · idle Gen${hw.gpu_pcie_gen}` : ""));
+  // each card trains its own link: with several cards the big number is the weakest card's and the line under it
+  // names every card, because one card's "Gen5 x8" said nothing about a second card trained down to x4
+  // (the per-card words follow the big number's rule: the link the card trained, not the lower one it idles at)
+  // a card that runs narrower than it could - capped to x8 in a x16 slot, or trained down by the board - says both,
+  // because the narrow number alone reads as a link someone chose
+  const link = (g) => { const v = g.pcie_gen_max || g.pcie_gen;
+                        return v ? `Gen${v}${g.pcie_width ? ` x${g.pcie_width}` +
+                               (g.pcie_width_max > g.pcie_width ? ` of x${g.pcie_width_max}` : "") : ""}` : "–"; };
+  // the big number with several cards: the one card whose link carries the least (gpu_pcie_bottleneck); the top-level fields are card 0's
+  const slow = multi && hw.gpu_pcie_bottleneck ? hw.gpu_pcie_bottleneck : null;
+  const one = slow ? { gen: slow.gen, gen_max: slow.gen_max, width: slow.width, width_max: slow.width_max }
+                   : { gen: hw.gpu_pcie_gen, gen_max: hw.gpu_pcie_gen_max, width: hw.gpu_pcie_width, width_max: hw.gpu_pcie_width_max };
+  const gen = one.gen_max || one.gen;
+  const width = one.width ? `x${one.width}` + (one.width_max > one.width ? ` of x${one.width_max}` : "") : "";
+  const rx = hw.gpu_pcie_rx_mb == null ? ""
+           : `${fmt(hw.gpu_pcie_rx_mb, hw.gpu_pcie_rx_mb < 10 ? 1 : 0)} MB/s`;
+  setMetric("pcie", gen ? `Gen${gen}` : null, width,
+            multi ? `${per(link)}${rx ? ` · ${rx} total` : ""}`
+                  : rx === "" ? (unread(gen || null) ? "not available" : "") : `to GPU ${rx}` +
+                  (hw.gpu_pcie_gen && gen && hw.gpu_pcie_gen < gen ? ` · idle Gen${hw.gpu_pcie_gen}` : ""),
+            unread(gen || null) ? st.gpu_note : "");
   spark("sp-pcie", h.gpu_pcie_rx_mb);
   setMetric("cpu", hw.cpu == null ? null : fmt(hw.cpu), "%", st.threads ? `${st.cores ? `${st.cores} cores · ` : ""}${st.threads} threads` : "");
   spark("sp-cpu", h.cpu, 100);
@@ -508,17 +682,38 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
               hw.disk_write_mb == null ? "" : `write ${fmt(hw.disk_write_mb, 1)} MB/s`);
   }
   spark("sp-disk", h.disk_read_mb);
+  // power and temperature averages (#4968); after the cards block above so that block stays self-contained
+  sampleHw(hw, !!live.state && live.state !== "idle" && live.state !== "unloaded", `${totals && totals.since}|${eng.model || ""}`);
 
-  // context fill: the running request, else the last one
-  const ctx = eng.max_context || 0;
-  let used = 0;
-  if (live.state !== "idle") used = (live.prompt_tokens || 0) + (live.generated || 0);
-  else if (last) used = (last.prompt_tokens || 0) + (last.output_tokens || 0);
-  const frac = ctx ? Math.min(1, used / ctx) : 0;
-  $("ctx-fill").setAttribute("stroke-dasharray", `${(235.6 * frac).toFixed(1)} 314.2`);
-  $("ctx-fill").style.opacity = 235.6 * frac >= 3 ? "1" : "0";         // a near-zero arc would draw just its round cap
-  $("ctx-pct").textContent = `${Math.round(frac * 100)}%`;
-  $("ctx-sub").textContent = ctx ? `${kfmt(used)} / ${ctxfmt(ctx)}` : "–";
+  // the model card (#4968, from PR #4968 by noahark): which model this is (the name appears nowhere else on this tab) and the averages of
+  // the server's own totals since it started. Tooltips are plain title= text, like the rest of this tab.
+  $("ml-model").title = "Which model this server runs. Apps ask for it by this exact name.";
+  $("mv-model").textContent = eng.model || "–";
+  $("mv-model").title = eng.model || "";
+  $("ms-model").textContent = [eng.max_context ? `${ctxfmt(eng.max_context)} context` : null,
+                               eng.version ? `engine v${eng.version}` : null].filter(Boolean).join(" · ");
+  $("ms-model").title = "The context window this model runs with, and the engine's version.";
+  const avg = [];
+  if (totals && totals.requests) {
+    const read = totals.prompt_tokens - totals.reused;
+    avg.push(["Decode avg", totals.decode_ms > 0 && totals.output_tokens ? `${fmt(totals.output_tokens / (totals.decode_ms / 1000), 1)} t/s` : "–",
+              "Average answer speed since the server started: answer tokens divided by the time spent writing them. Waiting in the queue and reading the prompt are not counted."]);
+    avg.push(["Prefill avg", totals.prompt_ms > 0 && read > 0 ? `${fmt(read / (totals.prompt_ms / 1000))} t/s` : "–",
+              "Average prompt speed since the server started, counting only the tokens that were really read. What came from the cache is left out."]);
+    avg.push(["Per request", `${fmt(totals.prompt_tokens / totals.requests)} in · ${fmt(totals.output_tokens / totals.requests, 1)} out`,
+              "The average prompt and answer length of one request."]);
+    avg.push(["Prompt reused", totals.prompt_tokens ? `${fmt((100 * totals.reused) / totals.prompt_tokens)}%` : "–",
+              "How much of each prompt came from the engine's cache instead of being read again. High means follow-ups are fast."]);
+    const t0 = new Date(totals.since * 1000).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
+    avg.push(["Since", `${t0} · ${fmt(totals.requests)} requests`,
+              "When this server began counting, and how many requests it has served. Loading or unloading the model does not reset it."]);
+  }
+  $("model-facts").innerHTML = avg.length
+    ? avg.map(([k, v, tip]) => `<span class="mf-k" title="${esc(tip)}">${esc(k)}</span><span class="mf-v">${esc(v)}</span>`).join("")
+    : `<span class="mf-k mf-k--wide">Averages start with the first request.</span>`;
+
+  // context fill (#4636): the running request in its parts, else the last one
+  renderContext(live, eng, last, on);
   const cacheBytes = (eng.expert_cache_mib || 0) * 1048576;
   $("slots-text").textContent = eng.expert_slots ? `${fmt(eng.expert_slots)} · ${gb(cacheBytes)} GB` : "–";
   $("slots-bar").style.width = hw.gpu_mem_total ? `${Math.min(100, (100 * cacheBytes) / hw.gpu_mem_total)}%` : "0%";
@@ -531,8 +726,11 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
 
   // recent requests
   const body = $("req-body");
+  // #5484: the VRAM hit rate column only when a request has one (a Mac and a model wholly in VRAM have no expert cache to hit)
+  const anyHit = requests.some((r) => r.hit_rate != null);
+  $("req-hit").hidden = !anyHit;
   if (!requests.length) {
-    body.innerHTML = `<tr><td colspan="9" class="muted">No requests yet</td></tr>`;
+    body.innerHTML = `<tr><td colspan="${anyHit ? 9 : 8}" class="muted">No requests yet</td></tr>`;
   } else {
     const badge = {stop: ["", "Done"], length: ["", "Max tokens"], cancel: ["st-badge--queued", "Stopped"],
                    disconnect: ["st-badge--queued", "Closed"], error: ["st-badge--error", "Error"],
@@ -549,7 +747,7 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
       const prefillRate = fresh > 0 && r.prompt_ms > 0 ? fresh / (r.prompt_ms / 1000) : null;
       return `<tr><td>${esc(t)}</td><td><span class="st-badge ${cls}">${esc(text)}</span>${proj}</td><td class="num">${fmt(r.prompt_tokens)}</td>
         <td class="num">${fmt(r.reused)}</td><td class="num">${fmt(r.output_tokens)}</td><td class="num">${fmt(prefillRate)}</td><td class="num">${fmt(r.decode_tok_s, 1)}</td>
-        <td class="num">${hit}</td><td class="num">${fmt(r.duration_s, 1)} s</td></tr>`;
+        ${anyHit ? `<td class="num">${hit}</td>` : ""}<td class="num">${fmt(r.duration_s, 1)} s</td></tr>`;
     }).join("");
   }
   const all = $("req-all");
@@ -587,7 +785,8 @@ function renderAbout(eng, hw, st) {
     ["Experimental speed projection", projectionText(eng.cvec)],
   ]);
   facts($("facts-hw"), [
-    ["GPU", st.gpu_name ? `${st.gpu_name}${hw.gpu_mem_total ? `, ${gb(hw.gpu_mem_total, 0)} GB` : ""}` : (st.gpu_note || "not readable (NVML)")],
+    // #5457: the server's reason for the readings it lacks is shown beside a named GPU too (a Mac always has a name)
+    ["GPU", st.gpu_name ? `${st.gpu_name}${hw.gpu_mem_total ? `, ${gb(hw.gpu_mem_total, 0)} GB` : ""}${st.gpu_note ? ` · ${st.gpu_note}` : ""}` : (st.gpu_note || "not readable (NVML)")],
     ["CPU", st.cpu_name ? `${st.cpu_name}${st.threads ? `, ${st.threads} threads` : ""}` : null],
     ["RAM", hw.ram_total ? `${gb(hw.ram_total, 0)} GB` : null],
   ]);
@@ -873,7 +1072,8 @@ function msgEl(m, i) {
       const wrap = document.createElement("div");
       wrap.className = "msg-images";
       for (const im of m.images) {
-        if (im.url) { const img = document.createElement("img"); img.src = im.url; img.alt = im.name || tr("chat.image", "image"); wrap.appendChild(img); }
+        const shownSrc = im.url || (StrataHistory.validThumb(im.thumb) ? im.thumb : "");   // a stored preview only when it is one this page makes
+        if (shownSrc) { const img = document.createElement("img"); img.src = shownSrc; img.alt = im.name || tr("chat.image", "image"); wrap.appendChild(img); }  // the session keeps the original, a reloaded chat shows the small preview
         else { const c = document.createElement("span"); c.className = "chip"; c.innerHTML = icon("image", "st-icon st-icon--sm"); c.append(im.name || tr("chat.image", "image")); wrap.appendChild(c); }
       }
       el.appendChild(wrap);
@@ -890,6 +1090,9 @@ function msgEl(m, i) {
     el.innerHTML = `<details class="st-collapse think" hidden><summary>${icon("thinking", "st-icon st-icon--sm")}<span class="think-title"></span>` +
       `${icon("chevron", "st-icon st-icon--sm st-chev")}</summary><div class="st-collapse__body thinking"></div></details>` +
       `<div class="st-bubble"></div><div class="st-msg__meta"><span class="meta-text"></span>` +
+      `<button class="st-btn st-btn--secondary msg-finish" type="button" data-msg-finish hidden ` +
+      `title="${esc(tr("chat.finishFromThinkingTitle", "Write an answer from what the model worked out before you stopped it. It doesn't think any further."))}">` +
+      `${esc(tr("chat.finishFromThinking", "Answer from this thinking"))}</button>` +
       `<button class="st-btn st-btn--icon" data-msg-copy aria-label="${esc(tr("chat.copyAnswer", "Copy the answer"))}" title="${esc(tr("chat.copy", "Copy"))}">${icon("copy")}</button></div>`;
     updateAssistant(el, m, false);
   }
@@ -987,7 +1190,7 @@ function updateAssistant(el, m, streaming) {
   const det = el.querySelector("details.think");
   if (m.reasoning) {
     det.hidden = false;
-    const thinkingNow = streaming && !m.text;
+    const thinkingNow = streaming && !m.text && !m.fromThinking;   // finishing a stopped reply thinks no further (#5508)
     el.querySelector(".think-title").textContent = thinkingNow ? tr("think.now", "Thinking…") :
       m.thinkSecs != null ? tr("think.for", "Thought for {s} s", {s: fmt(m.thinkSecs, 1)}) : tr("think.done", "Thoughts");
     const body = el.querySelector(".thinking");
@@ -1011,6 +1214,8 @@ function updateAssistant(el, m, streaming) {
   }
   el.querySelector(".meta-text").textContent = m.meta || (streaming ? "" : m.stopped ? tr("chat.stopped", "Stopped") : "");
   el.querySelector("[data-msg-copy]").hidden = streaming || !m.text;
+  const finish = el.querySelector("[data-msg-finish]");
+  if (finish) finish.hidden = streaming || !canFinishFromThinking(m);
 }
 function renderChat() {
   const chat = $("chat");
@@ -1079,6 +1284,8 @@ $("chat").addEventListener("click", (e) => {
   }
   const mc = e.target.closest("[data-msg-copy]");
   if (mc) { const i = +mc.closest(".st-msg").dataset.i; copyText(messages[i].text, mc); return; }
+  const mf = e.target.closest("[data-msg-finish]");
+  if (mf) { const m = messages[+mf.closest(".st-msg").dataset.i]; if (m) finishFromThinking(m); return; }
   // a tool block: its open state lives in the message (the answer is rebuilt while it streams), so the click sets it
   const sum = e.target.closest(".tool-call > summary");
   if (sum) {
@@ -1264,10 +1471,21 @@ async function send(payload) {
   }
   return generateReply();
 }
-// an answer for the messages as they are: the last one is a user turn
-async function generateReply() {
-  const m = {role: "assistant", text: "", reasoning: "", time: Date.now()};
-  messages.push(m);
+// #5508: Stop stays a plain stop. When it left thinking but no answer, the reply offers "Answer from this thinking": one new request,
+// with thinking off, that hands the model what it worked out and asks for the answer only (history.js finishTurn).
+const canFinishFromThinking = (m) => StrataHistory.canFinishFromThinking(messages, m, !!busy);
+const finishMessages = (m) => [...apiMessages(), StrataHistory.finishTurn(m.reasoning)];
+function finishFromThinking(m) {
+  if (!canFinishFromThinking(m)) return;
+  clearUndo();
+  return generateReply({into: m});
+}
+// an answer for the messages as they are: the last one is a user turn (opts.into: the stopped reply to finish, see finishFromThinking)
+async function generateReply(opts = {}) {
+  const finishing = !!opts.into;
+  const m = opts.into || {role: "assistant", text: "", reasoning: "", time: Date.now()};
+  if (finishing) { delete m.stopped; delete m.meta; m.fromThinking = true; }
+  else messages.push(m);
   renderChat();
   const el = $("chat").lastElementChild;
   const controller = new AbortController();
@@ -1275,6 +1493,8 @@ async function generateReply() {
   setBusy(true);
   paintLive();
 
+  const body = {model: health.model, messages: finishing ? finishMessages(m) : apiMessages(), stream: true,
+                reasoning_effort: finishing ? "none" : settings.thinking};
   const body = {model: health.model, messages: apiMessages(), stream: true,
                 reasoning_effort: settings.thinking};
   if (transcripts.cacheSession?.()) body.strata_cache_session = transcripts.cacheSession();
@@ -1285,6 +1505,10 @@ async function generateReply() {
   }
   if (settings.seed) body.seed = +settings.seed;
   if (settings.max) body.max_tokens = +settings.max;
+  if (finishing) {                                     // low and fixed: the answer is read off what was worked out (#5508)
+    body.temperature = 0.2;
+    delete body.top_p; delete body.top_k;
+  }
   if (projectionLoaded()) body.experimental_speed_projection = !!settings.esp;
   if (settings.mcp !== false && mcpInfo.tools > 0) body.strata_mcp = true;   // this server may run MCP tools for it
   if (memoryMode && memoryConsent) body.strata_memory = memoryConsent;
@@ -1352,7 +1576,7 @@ async function generateReply() {
   const ended = cut ? tr("chat.interruptedLower", "interrupted") : tr("chat.stoppedLower", "stopped");
   if (n && firstAt) {
     const secs = (performance.now() - firstAt) / 1000;
-    m.meta = tr("chat.tokens", "{n} tokens", {n: fmt(n)}) + (secs > 0.25 ? ` · ${fmt(n / secs, 1)} tok/s` : "") + (m.stopped ? ` · ${ended}` : "") +
+    m.meta = tr("chat.tokens", {one: "{n} token", other: "{n} tokens"}, {n: fmt(n), count: n}) + (secs > 0.25 ? ` · ${fmt(n / secs, 1)} tok/s` : "") + (m.stopped ? ` · ${ended}` : "") +
              (projectionLoaded() ? (settings.esp ? ` · ${tr("chat.projectionOn", "projection on")}` : ` · ${tr("chat.projectionOff", "projection off")}`) : "");
   } else if (m.stopped) {
     m.meta = cut ? tr("chat.interrupted", "Interrupted") : tr("chat.stopped", "Stopped");
@@ -1361,6 +1585,7 @@ async function generateReply() {
   const ran = (m.tools || []).filter((t) => t.state === "done" || t.state === "error").length;
   if (ran) m.meta = `${m.meta ? `${m.meta} · ` : ""}${tr("chat.toolCalls", {one: "{n} tool call", other: "{n} tool calls"}, {n: ran})}`;
   if (m.limit) m.meta = `${m.meta || ""} · ${tr("chat.toolLimit", "stopped at the limit of {n} tool rounds (mcp.max_rounds)", {n: m.limit})}`;
+  if (m.fromThinking) m.meta = `${m.meta ? `${m.meta} · ` : ""}${tr("chat.fromStoppedThinking", "answer from the stopped thinking")}`;
   busy = null;
   setBusy(false);
   paintLive();
@@ -1373,8 +1598,10 @@ async function generateReply() {
 
 $("composer").onsubmit = (e) => { e.preventDefault(); send(); };
 $("stop-btn").onclick = () => { if (busy) busy.controller.abort(); };
+const composerIme = StrataIme.watch($("input"));    // the Enter that commits an IME conversion does not send (#5071; Safari)
 $("input").addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
+  if (composerIme(e)) return;
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
 });
 function autosize() { const t = $("input"); t.style.height = "auto"; t.style.height = `${Math.min(t.scrollHeight, innerHeight * 0.4)}px`; }
 $("input").addEventListener("input", autosize);
@@ -1418,13 +1645,24 @@ function isTextFile(f) {
   return f.type.startsWith("text/") || /json|xml|javascript|yaml|toml|x-sh|x-python/.test(f.type) ||
          TEXT_EXT.test(f.name) || /(^|[\\/])(makefile|dockerfile|readme|license)$/i.test(f.name);
 }
+// a small preview kept next to the name: the full data URL would fill the browser's store, the thumbnail does not. The rule is in
+// history.js (StrataHistory.makeThumb, #5998 review): it never rejects and nothing waits for it, so a picture the browser cannot draw keeps its original.
+const thumbDeps = {makeImage: () => new Image(), makeCanvas: () => document.createElement("canvas")};
+
 function addFiles(files) {
   for (const f of files) {
     if (f.type.startsWith("image/")) {
-      if (!health.images) { toast("warn", tr("file.picturesOff", "Pictures are off"), tr("file.picturesOffText", "This model was set up for text only.")); continue; }
+      if (!health.images) { toast("warn", tr("file.picturesOff", "Pictures are off"), tr("file.picturesOffText", "This model can't read pictures. You can still attach text files.")); continue; }
       if (f.size > 20e6) { toast("warn", tr("file.pictureBig", "Picture too large"), tr("file.pictureBigText", "{name} is over 20 MB.", {name: f.name})); continue; }
       const r = new FileReader();
-      r.onload = () => { attachments.push({kind: "image", name: f.name || tr("file.pasted", "pasted image"), url: r.result}); renderAttachments(); };
+      r.onload = () => {
+        const url = r.result;
+        // the original goes in at once; the preview is added to the same entry when it is ready (a message sent before that keeps none)
+        const entry = {kind: "image", name: f.name || tr("file.pasted", "pasted image"), url};
+        attachments.push(entry);
+        renderAttachments();
+        StrataHistory.makeThumb(url, thumbDeps).then((thumb) => { if (thumb) entry.thumb = thumb; });
+      };
       r.readAsDataURL(f);
       continue;
     }

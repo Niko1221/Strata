@@ -11,6 +11,7 @@
 # the worst of both outcomes.
 cmake_minimum_required(VERSION 3.24)
 project(strata VERSION 0.1.62 LANGUAGES CXX)
+project(strata VERSION 0.6.3 LANGUAGES CXX)
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/strata_geometry.cmake)   # -DSTRATA_GEOMETRY=<name>: the model shape the kernels are compiled for (default flash_next, no flag added)
 # The build is cut by backend (cleanup 5.4): each file below only DEFINES macros (strata_<part>()), which run here, in this scope, at the place their
 # block used to be - so this file reads in the order the old single CMakeLists.txt evaluated.
@@ -19,13 +20,6 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/backends/cpu.cmake)         # strata_k
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/backends/quant.cmake)       # strata_quant: the Strata quant layer (no ggml) and its oracle tests
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/backends/cuda.cmake)        # NVIDIA: toolchain, Strata's prompt kernels (strata_pf_own)
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/backends/hip.cmake)         # AMD: gfx906 compat, Strata's prompt kernels on HIP
-# Fork-only dense Q38 CUDA engine (hybrid layout).  Opt-in so stock builds
-# stay byte-identical; declared before the GPU engine so `strata_q38` exists
-# when the family switch links it.
-option(STRATA_ENABLE_Q38 "Build the fork's dense Q38 CUDA engine" OFF)
-if(STRATA_ENABLE_Q38 AND STRATA_ENABLE_CUDA)
-  add_subdirectory(q38)
-endif()
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/strata_gpu_engine.cmake)    # the GPU engine both of them build
 # EXPERIMENTAL: the Intel Arc engine, the SYCL port in sycl/ (PR #423; icpx + oneMKL, docs/INTEL_ARC.md). It is its
 # own project that takes the unported sources from src/; with this on, nothing below is configured.
@@ -289,6 +283,30 @@ if(STRATA_BUILD_TESTS)
   add_executable(batch_telemetry_test src/core/batch_telemetry_test.cpp)
   target_include_directories(batch_telemetry_test PRIVATE include)
   add_test(NAME batch_telemetry_test COMMAND batch_telemetry_test)
+  # Qwen3.6 mapped expert pack: byte identity, checksum, partial publish. No GPU and no full arena.
+  add_executable(q36_kv_layout_test tests/qwen35/q36_kv_layout_test.cpp)
+  target_include_directories(q36_kv_layout_test PRIVATE include)
+  add_test(NAME q36_kv_layout_test COMMAND q36_kv_layout_test)
+    add_executable(q36_phase_trace_test tests/qwen35/q36_phase_trace_test.cpp)
+    target_include_directories(q36_phase_trace_test PRIVATE include)
+    target_link_libraries(q36_phase_trace_test PRIVATE Threads::Threads)
+    add_test(NAME q36_phase_trace_test COMMAND q36_phase_trace_test)
+  add_executable(q36_expert_store_test tests/qwen35/q36_expert_store_test.cpp src/qwen35/expert_store.cpp)
+  target_include_directories(q36_expert_store_test PRIVATE include)
+  target_link_libraries(q36_expert_store_test PRIVATE Threads::Threads)
+  add_test(NAME q36_expert_store_test COMMAND q36_expert_store_test)
+  # T05-B host pin-pool lifetime only. No CUDA, no engine wire-up, no speed claim.
+  add_executable(q36_transfer_lifetime_test tests/qwen35/q36_transfer_lifetime_test.cpp src/qwen35/expert_store.cpp)
+  target_include_directories(q36_transfer_lifetime_test PRIVATE include)
+  if(WIN32)
+    target_link_libraries(q36_expert_store_test PRIVATE bcrypt crypt32)
+    target_link_libraries(q36_transfer_lifetime_test PRIVATE bcrypt crypt32)
+  endif()
+  add_test(NAME q36_transfer_lifetime_test COMMAND q36_transfer_lifetime_test)
+  add_executable(q36_bounded_experts_test tests/qwen35/q36_bounded_experts_test.cpp)
+  target_include_directories(q36_bounded_experts_test PRIVATE include)
+  target_link_libraries(q36_bounded_experts_test PRIVATE Threads::Threads)
+  add_test(NAME q36_bounded_experts_test COMMAND q36_bounded_experts_test)
   # #5697: an evicted parked conversation gives its RAM back to the system (glibc's heap; RSS before and after)
   add_executable(conversation_heap_test src/core/conversation_heap_test.cpp)
   target_include_directories(conversation_heap_test PRIVATE include)
@@ -518,7 +536,7 @@ if(STRATA_BUILD_TESTS)
   target_include_directories(qsa_two_pass_status_test PRIVATE include)
   add_test(NAME qsa_two_pass_status_test COMMAND qsa_two_pass_status_test
            "${CMAKE_CURRENT_BINARY_DIR}/qsa_two_pass_status_test.log")
-           
+
   # STRATA_PREFILL_ROUTED_STREAM: the prompt stream's issuer walk and route gate, on a simulated link and consumer
   # (header-only, no GPU)
   add_executable(routed_stream_test tests/prefill/routed_stream_test.cpp)
@@ -768,6 +786,7 @@ if(STRATA_ENABLE_CUDA AND STRATA_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_
 endif()
 
 strata_cpu_tests()
+strata_cpu_dsv41_host_bench() # retained fork extension; inactive unless explicitly requested
 
 # CUDA release kernels must not spill or keep a per-thread array in local memory: every access there is a round trip
 # to device memory in the hottest loops the engine has, and nothing on the build machine says so without -Xptxas -v

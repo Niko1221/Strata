@@ -132,6 +132,11 @@ test('a chat the model server refused once is not stuck: the next message compac
   // could go through, because the summary request carried the same history and was refused for its size too.
   const { worker, send } = await rig(t, { noCount: true });
   assert.equal((await send(`SCRIPT:echo one ${dense.repeat(300)}`)).at(-1).type, 'done');
+  // 6,600 repetitions: refused (about 700 tokens over the window) and, after the summary, sent again with about 1,300 tokens to spare. The message
+  // itself must leave room: at 7,000 the system prompt, the tools and this one message are 32,722 tokens by the server's count against the 32,704 it
+  // accepts, so the retry is refused whatever the summary holds (nothing older is left to shorten). That size sat on the edge, and the 0.2.16 tool
+  // list (the agent's own questions) moved it 18 tokens over.
+  const huge = await send(`SCRIPT:echo two ${dense.repeat(6600)}`);
   // Leave room for the tool schema and the replacement summary. 70,000 characters
   // alone no longer fit this fixture's 32K window with the current Harness tools.
   const huge = await send(`SCRIPT:echo two ${dense.repeat(6800)}`);
@@ -141,6 +146,7 @@ test('a chat the model server refused once is not stuck: the next message compac
     toolChars: JSON.stringify(JSON.parse(r.raw).tools ?? []).length,
   }))));
   assert.equal(huge.at(-1).type, 'done', 'the Harness compacted after the refusal and asked again: ' + JSON.stringify(huge.at(-1)).slice(0, 200));
+  assert.match(answerOf(huge), /^two/, 'the retry answers the original message');   // PR #5777
   const small = await send('SCRIPT:echo three please');
   assert.equal(small.at(-1).type, 'done', JSON.stringify(small.at(-1)).slice(0, 300));
   assert.match(answerOf(small), /three/);
@@ -148,7 +154,26 @@ test('a chat the model server refused once is not stuck: the next message compac
   assert.equal(again.at(-1).type, 'done');
   const refused = worker.requests.filter(r => r.refused);
   assert.equal(refused.length, 1, `only the first, too large, prompt was refused: ${refused.map(r => r.refused).join(', ')}`);
+  assert.ok(worker.requests.some(r => r.summary), 'the refused request was recovered through compaction');   // PR #5777
   assert.ok(worker.requests.filter(r => r.summary).every(r => Math.round(r.promptChars / 3) < 32768 - 64), 'every summary request fitted the window');
+});
+
+test('a message that cannot fit even after the summary ends in a plain sentence, no loop, and the chat takes the next message', { skip }, async (t) => {
+  // The engine cannot count ahead (noCount) and the one message, with the system prompt and the tools, leaves less than the server's floor: no summary helps.
+  const { worker, send } = await rig(t, { noCount: true });
+  assert.equal((await send(`SCRIPT:echo one ${dense.repeat(300)}`)).at(-1).type, 'done');
+  const before = worker.requests.length;
+  // 8,000 repetitions, clearly past the edge: about 3.3 tokens a repetition (6,600 leave about 1,300 tokens to spare, 7,000 are 18 over the 32,704 the server
+  // accepts: GUI-D's numbers), so this is about 3,300 tokens over it. At 7,000 the test sat on the edge and flipped with the length of the paths in the request
+  // (the host test runner's scratch profile, the checkout's own path), passing run alone and failing under the runner; tens of tokens of path can no longer matter.
+  const huge = await send(`SCRIPT:echo two ${dense.repeat(8000)}`);
+  const end = huge.at(-1);
+  assert.equal(end.type, 'error');
+  assert.equal(end.code, 'CONTEXT_WINDOW_EXCEEDED');
+  assert.equal(end.key, FIT_TEXT.full, 'the person is told in plain words: ' + end.message);
+  assert.ok(worker.requests.length - before <= 6, `no retry loop: ${worker.requests.length - before} requests for the one message`);
+  const small = await send('SCRIPT:echo three please');
+  assert.equal(small.at(-1).type, 'done', 'the chat takes the next message: ' + JSON.stringify(small.at(-1)).slice(0, 300));
 });
 
 // ------------------------------------------------------------------------------------------------ the message is checked before it is sent
@@ -291,6 +316,24 @@ test('/compact summarises the older messages with the real figures, and says so 
   assert.ok(worker.requests.some(r => r.summary));
   const again = await run('/compact');
   assert.ok([FIT_TEXT.nothingToSummarize, FIT_TEXT.nothingFull, FIT_TEXT.summarized].includes(again.find(f => f.type === 'delta').key), 'a second /compact is answered in plain words');
+});
+
+test('/compact leaves the chat free: the next message goes through at once, and a /compact right after another is answered, not "still working"', { skip }, async (t) => {
+  // The Harness runs /compact as turn events on an idle session; the idle watch (#6070) took them for a turn the agent started by itself, followed it,
+  // and the chat stayed "still working" (over 80 s in a test run): the person's next message was refused and a second /compact answered "still working".
+  const { worker, bridge, ws, send } = await rig(t);
+  const run = async (line) => { const frames = []; await bridge.compactCommand({ chatId: 'c', message: line, workspacePath: ws, mode: 'bypass', choice: null, onFrame: f => frames.push(f) }); return frames; };
+  for (let i = 0; i < 3; i++) assert.equal((await send(`SCRIPT:echo r${i} ${dense.repeat(700)}`)).at(-1).type, 'done');
+  const first = await run('/compact');
+  assert.equal(first.find(f => f.type === 'delta').key, FIT_TEXT.summarized);
+  const second = await run('/compact');
+  assert.notEqual(second.find(f => f.type === 'delta').key, FIT_TEXT.compactBusy, 'a second /compact straight after the first is not told the chat is still working');
+  const before = worker.requests.length;
+  const next = await send('SCRIPT:echo after please');
+  assert.equal(next.at(-1).type, 'done', 'the next message goes through: ' + JSON.stringify(next.at(-1)).slice(0, 300));
+  assert.match(answerOf(next), /after/);
+  assert.ok(worker.requests.length > before, 'the model was asked');
+  assert.equal(bridge.turnOf('c'), null, 'nothing is left running');
 });
 
 test('the summary request asks for the language of the conversation and leaves the original messages alone (#4750)', () => {
