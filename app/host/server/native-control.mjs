@@ -18,7 +18,7 @@ import { markPictures, runtimeVision } from './native-vision.mjs';
 import { componentsDirectory, installerEnvironment, controlEnvironment, sourceServerEnvironment, UPDATE_LOCK_HELD } from './control-runtime.mjs';
 import { createEngineStep } from './engine-step.mjs';
 import { dataFolderFromPick, isDriveRoot, makeFolder, rememberDataFolder, syncDataFolder, terminalSettingsFile } from './model-folder.mjs';
-import { createAutoTune, writeTuneConfig } from './native-autotune.mjs';
+import { createAutoTune, withTuneConfig } from './native-autotune.mjs';
 import { plainError, PHASE_TEXT, UPDATE_WAITING_FOR_LOCK, APP_UPDATER_NOT_READY, APP_CHECK_FAILED } from './update-messages.mjs';
 import { checkAndParseRunConfig, checkRunConfig, describeIssues } from './run-config-check.mjs';
 import { openTextFile } from './open-text-file.mjs';
@@ -789,14 +789,14 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
   return {...loaded,...measured,summary:'Your model is tuned and ready.',profile:args.profile};
  }
  /* What the tuner measures is what a load would start: the saved model config with the user's choices and the resource profile. */
- function tuneConfig(args){const {config,entry}=record(args.model);if(!entry.ready)throw new Error('Prepare the model before tuning it.');const {cfg}=buildConfig({model:args.model,vision:args.vision,resourceProfile:args.resourceProfile,gpus:args.gpus,values:args.values},config);return {path:writeTuneConfig(directory,args.model,cfg),entry};}
- async function tuneStatus(args){await refresh();const {path}=tuneConfig(args);return autotuner.status(path);}
- async function tuneEffective(args){await refresh();const {path}=tuneConfig(args);return autotuner.effective(path);}
- async function tuneOff(args){await refresh();const {path}=tuneConfig(args);return autotuner.off(path);}
+ function tuneConfig(args){const {config,entry}=record(args.model);if(!entry.ready)throw new Error('Prepare the model before tuning it.');const {cfg}=buildConfig({model:args.model,vision:args.vision,resourceProfile:args.resourceProfile,gpus:args.gpus,values:args.values},config);return cfg;}
+ async function tuneStatus(args){await refresh();return withTuneConfig(directory,tuneConfig(args),path=>autotuner.status(path));}
+ async function tuneEffective(args){await refresh();return withTuneConfig(directory,tuneConfig(args),path=>autotuner.effective(path));}
+ async function tuneOff(args){await refresh();return withTuneConfig(directory,tuneConfig(args),path=>autotuner.off(path));}
  async function autotune(job,args){
   await refresh(true);if(job.state!=='running')return;
   if(packaged){const engine=await control.engine();if(!engine.usable)throw new Error(ENGINE_NOT_RECOGNISED+(engine.notice?` ${engine.notice}`:''));}
-  const {path}=tuneConfig(args);
+  const cfg=tuneConfig(args);
   if(externalRunning().length)throw new Error('Stop the native server running outside this UI before tuning.');
   if(busy(requests().filter(r=>instances.has(r.instanceId))))throw new Error('Finish requests before tuning.');
   await autoDrafterFor(job,args.model,'Finding the fastest settings for your PC…');if(job.state!=='running')return;
@@ -804,7 +804,7 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
   if(job.state!=='running')return;
   job.summary='Finding the fastest settings for your PC…';emit();
   const room=args.resourceProfile==='work';
-  return autotuner.start(job,job.kind==='recheck'?'recheck':'tune',{configPath:path,presetId:args.presetId,mode:args.mode,use:args.use,goal:room?'room':'speed',leaveRam:room?20:0,allowSmallDifferences:args.allowSmallDifferences===true,name:args.name},{onProgress:p=>{job.summary=p.text??job.summary;emit();}});
+  return withTuneConfig(directory,cfg,path=>autotuner.start(job,job.kind==='recheck'?'recheck':'tune',{configPath:path,presetId:args.presetId,mode:args.mode,use:args.use,goal:room?'room':'speed',leaveRam:room?20:0,allowSmallDifferences:args.allowSmallDifferences===true,name:args.name},{onProgress:p=>{job.summary=p.text??job.summary;emit();}}));
  }
  function operation(kind,args={}){if(!['install','load','pictures','benchmark','tune','autotune','recheck','calibrate','update-engine','update-strata','rollback','install-engine-file','remove','restart-models'].includes(kind))throw new Error('Choose a supported native operation.');if(kind==='restart-models'&&!packaged)throw new Error('Choose a supported native operation.');if(!snapshot.available&&!(packaged&&(COMPONENT_KINDS.includes(kind)||kind==='restart-models')))throw new Error(snapshot.error??'Connect the native Strata installation first.');if(kind==='install'||kind==='load'){const refusal=engineRefusal(snapshot.catalog,args.model,snapshot.engineInfo);if(refusal)throw new Error(refusal);}return begin(kind,job=>kind==='install'?install(job,args):kind==='load'?loadEngine(job,args):kind==='pictures'?picturesOnly(job,args):kind==='benchmark'?benchmark(job,args):kind==='tune'?tune(job,args):kind==='autotune'||kind==='recheck'?autotune(job,args):kind==='remove'?removeModel(job,args):kind==='restart-models'?restartStopped(job):program(job,args),{guided:args.guided===true,model:args.model,...(args.family?{family:args.family}:{})});}
  /* ---- The models folder card (0.2.2): what a picked folder means, and the three choices. The copying is Control's (strata models move). ---- */
@@ -928,5 +928,5 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
  // Remove nonserializable process references from public jobs.
  const publicState=()=>{const value=state();value.jobs=value.jobs.map(({process,engineAbort,rawResult,...job})=>job);return value;};
  async function localPreview(path){if(!packaged)throw new Error('Checking local model files is part of the Strata app.');if(typeof path!=='string'||!path.trim()||[...path].some(c=>c.charCodeAt(0)<32))throw new Error('Choose a folder.');return control.importPlan(path.trim());}
- return {state:publicState,settingsHints,tuneStatus,tuneEffective,tuneOff,tunePresets:{list:()=>autotuner.list(),action:(kind,id,extra)=>autotuner.action(kind,id,extra),undoFor:async args=>autotuner.undoFor(tuneConfig(args).path)},refresh,localPreview,configure,setDownloadDirectory,planModelsFolder,startModelsFolder,interruptedMove,finishInterruptedMove,leaveInterruptedMove,plan,settings,save,settingsFile,openSettingsFile,operation,dismissRestart,cancel,unload,resolveInstance,poll,logs:()=>logs.slice(),benchmarkReport:()=>readJson(join(directory,'native-benchmark.json'),null),setDefault(id){defaultId=resolveInstance(id).id;emit();return publicState();},hasLive:()=>[...instances.values()].some(i=>i.status==='ready'),readyInstances:()=>[...instances.values()].filter(i=>i.status==='ready'),defaultInstanceId:()=>defaultId,close};
+ return {state:publicState,settingsHints,tuneStatus,tuneEffective,tuneOff,tunePresets:{list:()=>autotuner.list(),action:(kind,id,extra)=>autotuner.action(kind,id,extra),undoFor:async args=>withTuneConfig(directory,tuneConfig(args),path=>autotuner.undoFor(path))},refresh,localPreview,configure,setDownloadDirectory,planModelsFolder,startModelsFolder,interruptedMove,finishInterruptedMove,leaveInterruptedMove,plan,settings,save,settingsFile,openSettingsFile,operation,dismissRestart,cancel,unload,resolveInstance,poll,logs:()=>logs.slice(),benchmarkReport:()=>readJson(join(directory,'native-benchmark.json'),null),setDefault(id){defaultId=resolveInstance(id).id;emit();return publicState();},hasLive:()=>[...instances.values()].some(i=>i.status==='ready'),readyInstances:()=>[...instances.values()].filter(i=>i.status==='ready'),defaultInstanceId:()=>defaultId,close};
 }
