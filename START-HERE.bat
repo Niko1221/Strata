@@ -6,8 +6,13 @@ rem Python reads and writes text as UTF-8, not in the Windows code page (cp1251,
 set "PYTHONUTF8=1"
 title Strata
 cd /d "%~dp0"
+rem the Terminal's sources and everything setup writes live in terminal\ (0.2.16 layout); an older clone's .venv moves there once
+if exist "terminal\setup.py" (
+  if not exist "terminal\.venv" if exist ".venv\Scripts\python.exe" move ".venv" "terminal\.venv" >nul
+  cd /d "%~dp0terminal"
+)
 rem A bundled Python runtime (the python\ folder of the terminal archive) is used when it is there: nothing to find,
-rem install or download. SETUP.bat and UPDATE.bat run this file, so they use it too.
+rem install or download. (START-HERE.bat --setup, --update)
 if exist "python\python.exe" goto bundled
 if exist ".venv\Scripts\python.exe" goto run
 
@@ -45,14 +50,20 @@ exit /b 1
 set "PYTHONNOUSERSITE=1"
 set "PYTHONHOME="
 set "PYTHONPATH="
-"python\python.exe" setup.py %*
-if errorlevel 1 pause
-exit /b
+rem one block, read before it runs: setup.py --update pulls the newest code, which can change this very file
+(
+  "python\python.exe" setup.py %*
+  if errorlevel 1 pause
+  exit /b
+)
 
 :run
-".venv\Scripts\python.exe" setup.py %*
-if errorlevel 1 pause
-exit /b
+rem one block, read before it runs: setup.py --update pulls the newest code, which can change this very file
+(
+  ".venv\Scripts\python.exe" setup.py %*
+  if errorlevel 1 pause
+  exit /b
+)
 
 :findpy
 rem the py launcher first, then python on PATH (not the Microsoft Store stub), then the usual per-user folders

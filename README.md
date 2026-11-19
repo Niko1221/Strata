@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="apps/host/public/brand/strata-lockup-dark.svg">
-    <img src="apps/host/public/brand/strata-lockup-light.svg" alt="Strata" width="340">
+    <img src="app/host/public/brand/strata-lockup-light.svg" alt="Strata" width="340">
   </picture>
 </p>
 
@@ -21,7 +21,7 @@
   <a href="https://buymeacoffee.com/strataengine"><img src="https://img.shields.io/badge/Buy_me_a_coffee-FFDD00?logo=buymeacoffee&logoColor=000" alt="Support Strata on Buy Me a Coffee"></a>
 </p>
 
-<p align="center"><sub><b>English</b> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ja.md">日本語</a> · <a href="README.de.md">Deutsch</a> · <a href="README.fr.md">Français</a> · <a href="README.es.md">Español</a> · <a href="README.pt-BR.md">Português</a> · <a href="README.pl.md">Polski</a></sub></p>
+<p align="center"><sub><b>English</b> · <a href="docs/lang/README.zh-CN.md">简体中文</a> · <a href="docs/lang/README.ja.md">日本語</a> · <a href="docs/lang/README.de.md">Deutsch</a> · <a href="docs/lang/README.fr.md">Français</a> · <a href="docs/lang/README.es.md">Español</a> · <a href="docs/lang/README.pt-BR.md">Português</a> · <a href="docs/lang/README.pl.md">Polski</a></sub></p>
 
 **Free, open source, and yours to run.** Use Strata on your desktop or with your favorite coding tools. No account needed.
 
@@ -67,7 +67,7 @@ Not sure what fits? [Choose a model for your computer](docs/MODELS.md#pick-by-me
 Install the app, choose a model, and start chatting. There is one installer for each system. On first start the app
 downloads the engine for your graphics card. [Help with the installer](docs/INSTALL.md#the-app).
 
-<sub>Files: `Strata-0.2.14-windows-x64-setup.exe` · `Strata-0.2.14-linux-x86_64.AppImage` · `Strata-0.2.14-macos-arm64.dmg`</sub>
+<sub>Files: `Strata-0.2.16-windows-x64-setup.exe` · `Strata-0.2.16-linux-x86_64.AppImage` · `Strata-0.2.16-macos-arm64.dmg`</sub>
 
 <p align="center">
   <img src="docs/media/app-chat.png" width="900" alt="Strata desktop app with a chat and live code preview side by side">
@@ -144,7 +144,7 @@ Run **`strata connect`** to see setup instructions for your tool. [Connection gu
 ## Help
 
 [All guides](docs) · [Troubleshooting](docs/TROUBLESHOOTING.md) · [Report a bug](https://github.com/Niko1221/Strata/issues/new/choose) ·
-[Benchmarks](docs/COMMUNITY_BENCHMARKS.md) · [How it works](docs/HOW_IT_WORKS.md) · [Contribute](CONTRIBUTING.md)
+[Benchmarks](docs/COMMUNITY_BENCHMARKS.md) · [How it works](docs/HOW_IT_WORKS.md) · [Contribute](.github/CONTRIBUTING.md)
 
 ## Support Strata
 
@@ -168,6 +168,8 @@ Thank you to everyone who supports Strata.
 <a href="https://github.com/jackyini"><img src="https://github.com/jackyini.png?size=96" width="48" height="48" alt="jackyini" title="jackyini"></a>
 <a href="https://github.com/router0mail"><img src="https://github.com/router0mail.png?size=96" width="48" height="48" alt="router0mail" title="router0mail"></a>
 <!-- supporters:end -->
+
+All supporters and how to support Strata: [SUPPORTERS.md](SUPPORTERS.md)
 
 [MIT license](LICENSE) · [Credits and model licenses](docs/HOW_IT_WORKS.md#credits) · [Privacy](docs/SAFETY.md)
 
