@@ -484,16 +484,19 @@ void native_gu_rows_impl(const NativeFmt& f, const uint8_t* blob, const void* co
     // The exact rows are ggml-cpu's AVX2 single-token dot bit for bit, so they need ggml-cpu itself built for AVX2 and
     // not AVX-512 (ggml_cpu_has_*): a STRATA_ISA_FLOOR build runs ggml's AVX1/SSE dots, a native build on an AVX-512 CPU
     // run with STRATA_FORCE_AVX2=1 runs its AVX-512 one, and both round differently (#2215's guard).
+    static const char* exact_one_env = std::getenv("STRATA_CPU_IQ_ALL_EXACT1");
     static const bool exact_one = [] {
         const char* v = std::getenv("STRATA_CPU_IQ_ALL_EXACT1");
-        return v && v[0] == '1' && v[1] == 0 && flavour_avx2() && !flavour_avx512();
+        return (v == nullptr || v[0] == '\0' || v[0] != '0') && flavour_avx2() && !flavour_avx512();
     }();
     // only where ggml's dot runs today (below the #152 multi-token rule): with STRATA_IQ_MT_MIN=1 a lone token keeps the
     // multi-token kernel, so a token's rows still do not depend on how many tokens share its expert
     if (exact_one && nt == 1 && nt < native_gu_mt_min(f.gu_type) && avx2 && !cpu_avx512_ok() &&
         (f.gu_type == 16 || f.gu_type == 17 || f.gu_type == 18 || f.gu_type == 21 || f.gu_type == 22)) {
-        static std::once_flag announced;
-        std::call_once(announced, [] { std::fprintf(stderr, "strata ab: GATE=STRATA_CPU_IQ_ALL_EXACT1 active=1\n"); });
+        if (exact_one_env != nullptr && exact_one_env[0] == '1') {
+            static std::once_flag announced;
+            std::call_once(announced, [] { std::fprintf(stderr, "strata ab: GATE=STRATA_CPU_IQ_ALL_EXACT1 active=1\n"); });
+        }
         iq256_gu_rows_exact_one(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act[0], ff[0], r0, r1);
         return;
     }
@@ -669,8 +672,8 @@ void native_down_rows_impl(const NativeFmt& f, const uint8_t* blob, const void* 
         q50_512_down_rows(blob + f.down_off, f.d_row, (int) f.n_ff, hq, nt, out, r0, r1);
         return;
     }
-    if (cpu_avx2_ok() && nt >= mt_min && f.d_type == 20 && iq4nl_mt) {   // #152: the same rule as the gate/up rows
-        if (Arithmetic == NativeArithmetic::Default || mt_min <= 1) {
+    if (cpu_avx2_ok() && f.d_type == 20 && iq4nl_mt) {   // #152: the same rule as the gate/up rows
+        if (nt >= mt_min && (Arithmetic == NativeArithmetic::Default || mt_min <= 1)) {
             iq4nl256_down_rows(blob + f.down_off, f.d_row, (int) f.n_ff, hq, nt, out, r0, r1);
             return;
         }
