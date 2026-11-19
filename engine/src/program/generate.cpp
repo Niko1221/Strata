@@ -1078,6 +1078,15 @@ struct Options {
     /// conversation_cache_slots whatever its length, so without it a client that interleaves short side requests
     /// with one long conversation evicts the long one (oldest first).  0 = park every conversation.
     int64_t conversation_cache_min_tokens = 0;
+    /// --serve: the READ half of --conversation-cache-min-tokens WRITE[,READ]: search the parked conversations (the RAM
+    /// tier, what the background SSD writer still holds, and the SSD tier) only for a complete prompt of at least this
+    /// many tokens, cached history included.  Below it the request uses the active session, its checkpoints and the
+    /// batch slots only.  0 = search for every prompt, as before.
+    int64_t conversation_cache_min_read_tokens = 0;
+    /// --conversation-cache-max-tokens: park only conversations of at most this many tokens (0 = no maximum), so one
+    /// very long history does not take a slot and its whole snapshot's RAM from the shorter ones.  The park admission
+    /// only: what is already parked is still reused, and an explicit session save/restore is not limited by it.
+    int64_t conversation_cache_max_tokens = 0;
     /// --serve: park only after the conversation has advanced this many tokens past the copy it would supersede.
     /// A conversation that moved a few hundred tokens writes a full snapshot again, and the turn after that drops it
     /// (drop_superseded) after writing the same bytes once more, so on a long single conversation every turn pays a
@@ -1276,11 +1285,20 @@ void usage() {
                  "  --memory-limit-mib N  --serve: the total RAM (MiB) this engine's container or cgroup may use, when\n"
                  "                       the container cannot see its real limit (also STRATA_MEMORY_LIMIT_MIB; the flag\n"
                  "                       wins; 0 = none). Parking and session save/restore keep their floor under it\n"
-                 "  --conversation-cache-min-tokens N  --serve: park only conversations of at least N tokens, so\n"
-                 "                       short side requests do not take the slots a long one needs (default 0 = park any)\n"
+                 "  --conversation-cache-min-tokens WRITE[,READ]  --serve: WRITE is the minimum outgoing conversation\n"
+                 "                       length to park, so short side requests do not take the slots a long one needs;\n"
+                 "                       READ is the minimum complete prompt length, cached history included, for the\n"
+                 "                       automatic search of parked conversations (RAM, the SSD writer's takeback and the\n"
+                 "                       SSD tier). A single WRITE value leaves READ at 0 (default 0,0 = no minimum).\n"
+                 "                       Active-session, checkpoint and batch-slot reuse and eligible parks are not\n"
+                 "                       limited by READ\n"
                  "  --conversation-cache-park-gain N  --serve: park only after the conversation advanced N tokens past\n"
                  "                       the copy it would supersede, so a turn that grew by a few hundred tokens does not\n"
                  "                       write a whole snapshot that the next turn drops (default 0 = park every turn)\n"
+                 "  --conversation-cache-max-tokens N  --serve: park only conversations of at most N tokens, so one very\n"
+                 "                       long history does not take a slot and its whole snapshot's RAM from the shorter\n"
+                 "                       ones (default 0 = no maximum). The park admission only: what is already parked\n"
+                 "                       is still reused, and session save/restore is unchanged\n"
                  "  --conversation-cache-rewind-keep N  --serve: when a request resumes this conversation and at most N\n"
                  "                       of its live tokens are past that point (the answer a client that strips reasoning\n"
                  "                       did not send back), skip parking it (default 0 = park; the suffix is re-read only\n"
@@ -3941,15 +3959,24 @@ int main(int argc, char** argv) {
         else if (a == "--vision") o.vision = true;
         else if (a == "--session-save-reclaim") o.session_save_reclaim = true;
         else if (a == "--prompt-cache") o.prompt_cache = std::max(0, std::atoi(next("--prompt-cache")));
+        else if (a == "--conversation-cache-min-tokens") {   // WRITE[,READ]: not a plain number, so not in the block below
+            strata::core::ConversationCacheTokenLimits limits;
+            if (!strata::core::parse_conversation_cache_min_tokens(next(a.c_str()), limits)) {
+                std::fprintf(stderr, "%s needs a decimal N or WRITE,READ with each value in [0, 2147483647]\n", a.c_str());
+                return 2;
+            }
+            o.conversation_cache_min_tokens = limits.write_min_tokens;
+            o.conversation_cache_min_read_tokens = limits.read_min_tokens;
+        }
         else if (a == "--conversation-cache-mib" || a == "--conversation-cache-slots" ||
-                 a == "--conversation-cache-min-free-mib" || a == "--conversation-cache-min-tokens" ||
+                 a == "--conversation-cache-min-free-mib" || a == "--conversation-cache-max-tokens" ||
                  a == "--conversation-cache-park-gain" || a == "--conversation-spill-mib" ||
                  a == "--conversation-cache-rewind-keep" ||
                  a == "--session-min-free-mib" || a == "--memory-limit-mib") {
             const std::string value = next(a.c_str());
             int64_t number = 0;
             const auto result = std::from_chars(value.data(), value.data() + value.size(), number);
-            const int64_t limit = (a == "--conversation-cache-slots" || a == "--conversation-cache-min-tokens" ||
+            const int64_t limit = (a == "--conversation-cache-slots" || a == "--conversation-cache-max-tokens" ||
                                    a == "--conversation-cache-park-gain" || a == "--conversation-cache-rewind-keep")
                                       ? INT32_MAX : INT64_MAX / (1024 * 1024);
             if (result.ec != std::errc{} || result.ptr != value.data() + value.size() || number < 0 || number > limit) {
@@ -3958,7 +3985,7 @@ int main(int argc, char** argv) {
             }
             if (a == "--conversation-cache-mib") o.conversation_cache_mib = number;
             else if (a == "--conversation-cache-min-free-mib") o.conversation_cache_min_free_mib = number;
-            else if (a == "--conversation-cache-min-tokens") o.conversation_cache_min_tokens = number;
+            else if (a == "--conversation-cache-max-tokens") o.conversation_cache_max_tokens = number;
             else if (a == "--conversation-cache-park-gain") o.conversation_cache_park_gain = number;
             else if (a == "--conversation-cache-rewind-keep") o.conversation_cache_rewind_keep = number;
             else if (a == "--session-min-free-mib") o.session_min_free_mib = number;
@@ -13129,7 +13156,7 @@ int main(int argc, char** argv) {
         }
         strata::core::ConversationCache conversations(
             o.prompt_cache > 0 ? (size_t) o.conversation_cache_mib * 1024 * 1024 : 0,
-            (size_t) o.conversation_cache_slots, o.conversation_cache_min_tokens);
+            (size_t) o.conversation_cache_slots, o.conversation_cache_min_tokens, o.conversation_cache_max_tokens);
         // The park pools (park_pool_policy.hpp): memory held idle between parks so a park does not pay the first touch of fresh pages.
         //   * the segment pool: one arena for the K/V buffers of parked conversations (STRATA_PARK_SEGPOOL_MIB=N sets its size, 0 turns it
         //     off; unset: min(2 GiB, a quarter of the cache); Linux only, the OS layer of Windows and macOS is not written yet: inert there);
@@ -13493,14 +13520,22 @@ int main(int argc, char** argv) {
                 ParkStage() { strata::core::progress_at("request: parking the previous conversation"); }
                 ~ParkStage() { strata::core::progress_at("request"); strata::core::progress_beat(); }
             } park_stage;
-            // --conversation-cache-min-tokens: a short conversation is not worth one of the slots.  Parking is a
-            // switch-time decision, so a client's small side requests would otherwise park themselves and, once the
-            // cache is full, evict the long conversation they were interleaved with (oldest first) - the reuse it
-            // wanted.  Returning true is the same non-error skip the byte-budget and RAM-floor paths below take.
+            // --conversation-cache-min-tokens WRITE / --conversation-cache-max-tokens: a conversation outside that
+            // window is not worth one of the slots.  Parking is a switch-time decision, so a client's small side
+            // requests would otherwise park themselves and, once the cache is full, evict the long conversation they
+            // were interleaved with (oldest first) - the reuse it wanted; one very long history would take a slot and
+            // its whole snapshot's RAM from the shorter ones.  Returning true is the same non-error skip the
+            // byte-budget and RAM-floor paths below take.  This is the only place either bound applies: the SSD tier
+            // writes what the RAM tier already admitted and then evicted, and a restore never asks wants().
             if (!conversations.wants((int64_t) src.ids.size())) {
-                std::fprintf(stderr, "strata serve: conversation cache: skip parking (%zu tokens, below the %lld "
-                                     "minimum; parked=%zu)\n",
-                             src.ids.size(), (long long) o.conversation_cache_min_tokens, conversations.size());
+                if (o.conversation_cache_max_tokens > 0 && (int64_t) src.ids.size() > o.conversation_cache_max_tokens)
+                    std::fprintf(stderr, "strata serve: conversation cache: skip parking (%zu tokens, above the %lld "
+                                         "maximum; parked=%zu)\n",
+                                 src.ids.size(), (long long) o.conversation_cache_max_tokens, conversations.size());
+                else
+                    std::fprintf(stderr, "strata serve: conversation cache: skip parking (%zu tokens, below the %lld "
+                                         "minimum; parked=%zu)\n",
+                                 src.ids.size(), (long long) o.conversation_cache_min_tokens, conversations.size());
                 return true;
             }
             // With a park pool, no pool memory is given back (shrink, eviction) while device work could still be pending: the GPU is
@@ -15369,12 +15404,19 @@ int main(int argc, char** argv) {
                     slots_all += remote_experts[(size_t) r].resident();
                     mib_all += (int64_t) (remote_experts[(size_t) r].gib() * 1024.0);
                 }
+            // the READ and maximum thresholds are printed only when set: the default line stays the one it always was
+            const std::string cache_read_note = o.conversation_cache_min_read_tokens > 0
+                ? " conversation_cache_min_read_tokens=" + std::to_string(o.conversation_cache_min_read_tokens)
+                : std::string();
+            const std::string cache_max_note = o.conversation_cache_max_tokens > 0
+                ? " conversation_cache_max_tokens=" + std::to_string(o.conversation_cache_max_tokens)
+                : std::string();
             // (#5012: experts = every routed (layer, expert) pair, so the Monitor shows "slots / experts" as a share)
             std::printf("INFO logit_bias=1 context=%lld kv=%s kv_resident=%lld expert_slots=%lld experts=%lld expert_cache_mib=%lld "
                         "expert_slots_primary=%lld expert_cache_primary_mib=%lld spec=%d "
                         "mtp_max=%d lookup=%d vram_free_mib=%lld cvec=%s arena_mib=%lld pool_workers=%d pcie_frac=%.2f "
                         "spec_min_p=%.2f conversation_cache_mib=%lld conversation_cache_slots=%d "
-                        "conversation_cache_min_free_mib=%lld conversation_cache_min_tokens=%lld "
+                        "conversation_cache_min_free_mib=%lld conversation_cache_min_tokens=%lld%s%s "
                         "tail_role_token=%lld vram_elastic=%d "
                         "prefill_cap=%lld prefill_stages=%d stream_all_min=%lld prefill_pipe=%g%s engine=" STRATA_VERSION "\n",
                         (long long) o.max_context, o.kv.c_str(),
@@ -15388,6 +15430,7 @@ int main(int argc, char** argv) {
                         pool.workers(), o.pcie_frac,
                         o.spec_min_p, (long long) o.conversation_cache_mib, o.conversation_cache_slots,
                         (long long) o.conversation_cache_min_free_mib, (long long) o.conversation_cache_min_tokens,
+                        cache_read_note.c_str(), cache_max_note.c_str(),
                         (long long) o.tail_role_token, xcache.segmented() ? 1 : 0,
                         // the prompt path: its chunk cap (the VRAM command's relend can lower it later), the stages a
                         // prompt flows through, the chunk size from which a chunk streams every expert, --prefill-pipe
@@ -18256,7 +18299,13 @@ int main(int argc, char** argv) {
                                  k + 1, (long long) (k < now.size() ? now[k].start : -1));
                 }
             }
-            const auto parked = conversations.best(ids, req_imgs, want_cvec);
+            // --conversation-cache-min-tokens READ: below it nothing parked is searched - not the RAM tier, not what
+            // the SSD writer still holds, not the SSD tier.  The complete prompt counts (n carries the cached history).
+            // The active session, its checkpoints and the batch slots are matched as before, and an explicit session
+            // RESTORE does not come through here.
+            const bool search_parked = strata::core::conversation_cache_should_read_parked(n, o.conversation_cache_min_read_tokens);
+            strata::core::ConversationCache::Match parked;   // tokens=0 when not searched: no borrow, no take, no slot read
+            if (search_parked) parked = conversations.best(ids, req_imgs, want_cvec);
             // STRATA_SLOT_READ (opt-in: =1, with STRATA_PIPED_MTP; asked for by the server with slot_read=1, which then
             // takes DONE and BADM without a token): the next turn of the conversation an idle slot holds is read IN
             // that slot - its new tokens as rows of the slot's own windows in the pipelined groups, all kept - instead
@@ -18403,7 +18452,8 @@ int main(int argc, char** argv) {
             strata::core::ConversationCache::Match taken = parked;   // the match whose image is restored: RAM's, or the SSD tier's
             // 2c: a conversation the background writer still holds is still in RAM: when it serves this prompt best it is taken
             // back as it is (waiting for the one write in flight, if it is that one) and its SSD copy dropped - no read.
-            if (spill_writer && stages.empty()) {
+            // (a search of parked state, so READ gates it too; spill_reclaim below is housekeeping and stays unconditional)
+            if (search_parked && spill_writer && stages.empty()) {
                 const int64_t floor_tokens = std::max({resume, slot_tokens, parked.tokens});
                 int64_t held = 0;
                 spill_writer->for_each_held([&](const strata::core::SavedConversation& s) {
@@ -18432,7 +18482,7 @@ int main(int argc, char** argv) {
                 }   // (the other written ones are freed here: they are on the SSD tier)
             }
             spill_reclaim();   // what the writer finished meanwhile is on the SSD tier: its RAM goes back before this request parks
-            if (!from_ssd && spill.enabled() && spill.size() > 0 && stages.empty()) {
+            if (search_parked && !from_ssd && spill.enabled() && spill.size() > 0 && stages.empty()) {
                 const auto sp = spill.best(ids, req_imgs, want_cvec);
                 const auto sp_entry = sp.tokens > 0 ? spill.find(sp.serial) : std::nullopt;
                 if (sp_entry && sp.tokens > std::max({resume, slot_tokens, parked.tokens}) && spill_id) {

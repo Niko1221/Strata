@@ -6,11 +6,15 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <limits>
 #include <memory>
+#include <string_view>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -255,6 +259,48 @@ int64_t conversation_prefix(const ConversationCheckpoint& c, const std::vector<T
     return (int64_t) n;
 }
 
+/// `--conversation-cache-min-tokens WRITE[,READ]`: the two automatic thresholds.  WRITE is the shortest outgoing
+/// conversation worth one of the cache's slots (ConversationCache::wants); READ is the shortest complete prompt worth
+/// searching the parked conversations for (conversation_cache_should_read_parked).  A single value is WRITE,0 - the
+/// meaning the flag has always had.
+struct ConversationCacheTokenLimits {
+    int64_t write_min_tokens = 0;
+    int64_t read_min_tokens = 0;
+};
+
+// Parse the legacy single WRITE value or WRITE,READ. A single value leaves READ at zero.
+// Decimal digits only: no sign, no spaces, no trailing text, each value in [0, INT32_MAX].  False leaves `limits` as it was.
+inline bool parse_conversation_cache_min_tokens(std::string_view text, ConversationCacheTokenLimits& limits) {
+    auto parse_number = [](std::string_view value, int64_t& parsed_value) {
+        if (value.empty()) return false;
+        for (char digit : value)
+            if (digit < '0' || digit > '9') return false;
+        int64_t number = 0;
+        const auto result = std::from_chars(value.data(), value.data() + value.size(), number);
+        if (result.ec != std::errc{} || result.ptr != value.data() + value.size() ||
+            number > std::numeric_limits<int32_t>::max()) return false;
+        parsed_value = number;
+        return true;
+    };
+
+    ConversationCacheTokenLimits parsed;
+    const size_t comma = text.find(',');
+    if (comma == std::string_view::npos) {
+        if (!parse_number(text, parsed.write_min_tokens)) return false;
+    } else {
+        if (text.find(',', comma + 1) != std::string_view::npos ||
+            !parse_number(text.substr(0, comma), parsed.write_min_tokens) ||
+            !parse_number(text.substr(comma + 1), parsed.read_min_tokens)) return false;
+    }
+    limits = parsed;
+    return true;
+}
+
+// READ gates only automatic parked-candidate lookup and uses the complete prompt length.
+inline bool conversation_cache_should_read_parked(int64_t prompt_tokens, int64_t read_min_tokens) {
+    return read_min_tokens <= 0 || prompt_tokens >= read_min_tokens;
+}
+
 class ConversationCache {
 public:
     struct Match {
@@ -264,14 +310,20 @@ public:
         uint64_t serial = 0;   // the entry's identity; its index shifts when entries before it go
     };
 
-    ConversationCache(size_t budget, size_t slots, int64_t min_tokens = 0)
-        : budget_(budget), slots_(slots), min_tokens_(min_tokens) {}
+    ConversationCache(size_t budget, size_t slots, int64_t min_tokens = 0, int64_t max_tokens = 0)
+        : budget_(budget), slots_(slots), min_tokens_(min_tokens), max_tokens_(max_tokens) {}
     bool enabled() const { return budget_ != 0 && slots_ != 0; }
-    /// `--conversation-cache-min-tokens`: whether a conversation of this length is worth one of `slots`.  Every
+    /// `--conversation-cache-min-tokens WRITE`: whether a conversation of this length is worth one of `slots`.  Every
     /// parked conversation costs a whole slot whatever its length, so a client that interleaves short side requests
     /// with one long conversation spends the cache on the side requests and evicts the long one (oldest first) -
     /// exactly the reuse it wanted.  0 parks every conversation, whatever its size.
-    bool wants(int64_t tokens) const { return min_tokens_ <= 0 || tokens >= min_tokens_; }
+    /// `--conversation-cache-max-tokens` is the other end of the same admission: a longer conversation is not parked
+    /// either, so one very long history does not take a slot and its whole snapshot's RAM from the shorter ones
+    /// (0 = no maximum).  Both ends keep their own value.  This is the park admission only - what is already parked is
+    /// still matched and restored, and an explicit session save/restore never asks it.
+    bool wants(int64_t tokens) const {
+        return (min_tokens_ <= 0 || tokens >= min_tokens_) && (max_tokens_ <= 0 || tokens <= max_tokens_);
+    }
     size_t bytes() const { return bytes_ + reuse_.bytes(); }
     /// STRATA_PARK_SEGPOOL_MIB: the segment pool whose idle (resident, unused) bytes count against this cache's budget
     /// beside the images: make_room() gives them back BEFORE the budget could push an image out, so the pool never causes
@@ -607,6 +659,7 @@ private:
     }
     size_t budget_ = 0, slots_ = 0, bytes_ = 0, evictions_ = 0, superseded_ = 0, borrowed_ = 0;
     int64_t min_tokens_ = 0;   // --conversation-cache-min-tokens: 0 parks every conversation, whatever its size
+    int64_t max_tokens_ = 0;   // --conversation-cache-max-tokens: 0 sets no maximum, whatever the size
     std::deque<SavedConversation> entries_; // least recently active first
     std::deque<uint64_t> serials_;          // entries_[i]'s identity, never reused
     uint64_t next_serial_ = 1, guarded_ = 0;

@@ -555,6 +555,87 @@ int main() {
         check(!disabled_min.enabled() && disabled_min.wants(1 << 20), "a disabled cache still answers for length");
     }
     {
+        // --conversation-cache-max-tokens: the other end of the same admission - one very long history must not take a
+        // slot and its whole snapshot's RAM from the shorter ones.  0 sets no maximum, as before the flag.
+        ConversationCache any(1024, 4, 0, 0), cap(1024, 4, 0, 12288);
+        check(any.enabled() && cap.enabled(), "the maximum does not disable the cache");
+        check(any.wants(0) && any.wants(1) && any.wants(1 << 20), "0 sets no maximum, as before the flag");
+        check(cap.wants(0) && cap.wants(12287) && cap.wants(12288), "the maximum itself and below are parked");
+        check(!cap.wants(12289) && !cap.wants(1 << 20), "above the maximum is not parked");
+        // the CLI rejects a negative, but the predicate must not invert for one that reaches it another way
+        ConversationCache negative_max(1024, 4, 0, -1);
+        check(negative_max.wants(0) && negative_max.wants(1 << 20), "a negative maximum sets no maximum, like 0");
+        ConversationCache window(1024, 4, 6000, 12288);
+        check(!window.wants(5999) && window.wants(6000) && window.wants(12288) && !window.wants(12289),
+              "both ends apply, each keeping its own value: only [WRITE,MAX] is parked");
+        ConversationCache inverted(1024, 4, 12288, 6000);
+        check(!inverted.wants(6000) && !inverted.wants(12288) && !inverted.wants(9000),
+              "a maximum below the minimum parks nothing");
+        ConversationCache disabled_max(0, 4, 0, 12288);
+        check(!disabled_max.enabled() && disabled_max.wants(1024), "a disabled cache still answers for length");
+        // the bound is the park admission in generate.cpp, not a rule inside the cache: what is already parked is
+        // still matched and restored whatever its length, and an explicit session save/restore never asks wants()
+        ConversationCache held(1 << 20, 4, 0, 4);
+        check(!held.wants(8) && held.put(image({1, 2, 3, 4, 5, 6, 7, 8})), "put does not apply the maximum itself");
+        check(held.best(std::vector<int64_t>{1, 2, 3, 4, 5, 6, 7, 8, 9}, {}, true).tokens == 8,
+              "a conversation already parked is still matched whatever its length");
+    }
+    {
+        // --conversation-cache-min-tokens WRITE[,READ]: a single value keeps the meaning it always had.
+        ConversationCacheTokenLimits legacy, explicit_zero, pair, defaults;
+        check(parse_conversation_cache_min_tokens("6000", legacy), "a single WRITE threshold parses");
+        check(parse_conversation_cache_min_tokens("6000,0", explicit_zero), "an explicit READ=0 parses");
+        check(parse_conversation_cache_min_tokens("6000,5000", pair), "a WRITE,READ pair parses");
+        check(legacy.write_min_tokens == 6000 && legacy.read_min_tokens == 0 &&
+              legacy.write_min_tokens == explicit_zero.write_min_tokens &&
+              legacy.read_min_tokens == explicit_zero.read_min_tokens,
+              "a legacy single value means WRITE,0");
+        check(pair.write_min_tokens == 6000 && pair.read_min_tokens == 5000, "the pair is ordered WRITE,READ");
+        check(defaults.write_min_tokens == 0 && defaults.read_min_tokens == 0, "default thresholds allow all lengths");
+        ConversationCacheTokenLimits maximum;
+        check(parse_conversation_cache_min_tokens("2147483647,2147483647", maximum) &&
+              maximum.write_min_tokens == 2147483647 && maximum.read_min_tokens == 2147483647,
+              "both thresholds accept the existing integer maximum");
+        ConversationCacheTokenLimits zero;
+        check(parse_conversation_cache_min_tokens("0,0", zero) && zero.write_min_tokens == 0 && zero.read_min_tokens == 0,
+              "the default pair parses to no minimum on either side");
+
+        const char* invalid[] = {"", "-1,2", "1,-2", ",2", "1,", "1,2,3", "6000x", "6000,5000x",
+                                 "6000, 5000", " 6000", "+6000", "2147483648", "9223372036854775808"};
+        for (const char* value : invalid) {
+            ConversationCacheTokenLimits rejected;
+            rejected.write_min_tokens = 7;
+            rejected.read_min_tokens = 9;
+            check(!parse_conversation_cache_min_tokens(value, rejected), "invalid or overflowing thresholds are refused");
+            check(rejected.write_min_tokens == 7 && rejected.read_min_tokens == 9, "a refused value leaves the limits as they were");
+        }
+
+        // READ: the shortest complete prompt worth searching the parked conversations for.
+        check(!conversation_cache_should_read_parked(4999, 5000), "4999 is below a READ threshold of 5000");
+        check(conversation_cache_should_read_parked(5000, 5000), "5000 meets a READ threshold of 5000");
+        check(conversation_cache_should_read_parked(4999, 0), "READ=0 permits automatic candidate lookup");
+        check(conversation_cache_should_read_parked(0, -1), "a negative READ permits lookup, like 0");
+        const int64_t cached_history_tokens = 25967;
+        const int64_t new_message_tokens = 33;
+        check(conversation_cache_should_read_parked(cached_history_tokens + new_message_tokens, 26000) &&
+              !conversation_cache_should_read_parked(new_message_tokens, 26000),
+              "READ counts cached history in the complete 26000-token prompt, not just the 33-token new message");
+
+        ConversationCache writable(1024, 4, 6000);
+        check(!conversation_cache_should_read_parked(33, 5000) && writable.wants(6000),
+              "a short incoming prompt skips reads without blocking an eligible outgoing save");
+        ConversationCheckpoint active;
+        active.ids = {1, 2, 3, 4};
+        const std::vector<int64_t> active_prompt{1, 2, 3, 4, 5};
+        const std::vector<ConversationImageKey> no_images;
+        check(!conversation_cache_should_read_parked(4, 5000) &&
+              conversation_prefix(active, active_prompt, no_images) == 4,
+              "active-session prefix reuse remains available below the READ threshold");
+        // a skipped search is a Match with no tokens: neither a borrow nor a take can follow from it
+        ConversationCache::Match skipped;
+        check(skipped.tokens == 0 && !writable.borrows(skipped), "an unsearched cache offers no match to borrow or take");
+    }
+    {
         // layer-split parking: checkpoints moved apart into stage parts and put back, no running state copied
         auto running = [](std::initializer_list<int32_t> ids, uint8_t salt, size_t parts) {
             ConversationCheckpoint c;

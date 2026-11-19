@@ -267,6 +267,8 @@ class ConversationCacheCard(unittest.TestCase):
         "strata serve: conversation cache: allocation failed; skip parking slot 2\n",
         "strata serve: conversation cache: skip parking (stage CUDA1: invalid session running-state targets)\n",
         "strata serve: conversation cache: skip parking (conversation snapshot: invalid live token/image metadata)\n",
+        # --conversation-cache-max-tokens: the park admission's other end (the engine's "above the N maximum" line)
+        "strata serve: conversation cache: skip parking (40000 tokens, above the 32768 maximum; parked=1)\n",
         "strata serve: conversation cache: skipped 5000 tokens in 3.0 ms; parked=0 bytes=0 evictions=2 snapshot_bytes=1 "
         "reused_kv_bytes=0\n",
     ]
@@ -284,12 +286,12 @@ class ConversationCacheCard(unittest.TestCase):
             with open(log, "a", encoding="utf-8") as f:
                 f.write("".join(self.SKIPS) + self.PARK)
             st = c.poll(str(log), 0)
-            self.assertEqual(st["refused"], {"short": 1, "budget": 1, "ram_floor": 1, "ram_no_progress": 1,
+            self.assertEqual(st["refused"], {"short": 1, "long": 1, "budget": 1, "ram_floor": 1, "ram_no_progress": 1,
                                              "ram_after_capture": 1, "alloc": 2, "estimate": 2, "put": 1})
-            self.assertEqual((st["refused_total"], st["parks"], st["last_refused"]), (10, 1, "put"))
+            self.assertEqual((st["refused_total"], st["parks"], st["last_refused"]), (11, 1, "put"))
             st["refused"]["budget"] = 99                    # the caller's copy
             again = c.poll(str(log), 0)
-            self.assertEqual((again["refused"]["budget"], again["refused_total"]), (1, 10))   # nothing new: nothing counted
+            self.assertEqual((again["refused"]["budget"], again["refused_total"]), (1, 11))   # nothing new: nothing counted
             start = log.stat().st_size
             with open(log, "a", encoding="utf-8") as f:
                 f.write(self.SKIPS[1])
