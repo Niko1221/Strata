@@ -319,7 +319,7 @@ test('#4749 the bridge uses the Harness own subagents/prompt with the documented
   const row = src('components/SubagentRow.tsx');
   assert.match(row, /delivery: a\.status === 'working' \? 'steer' : 'queue'/);
   assert.match(row, /sessionId && a\.status !== 'queued' && a\.status !== 'cancelled'/);
-  assert.match(src('components/ChatToolbar.tsx'), /sessionId=\{session && !session\.showcase \? session\.id : undefined\}/, 'the example chat has no real helpers to write to');
+  assert.match(src('components/ChatToolbar.tsx'), /sessionId=\{!session\.showcase \? session\.id : undefined\}/, 'the example chat has no real helpers to write to');
 });
 
 test('#4749 the helper strings are translated', async () => {
@@ -450,7 +450,7 @@ test('#4244 the tool is offered again, as the group "Questions for you", and the
   assert.match(catalog, /id: 'questions'[^\n]*plugins: \['tool-ask-user'\]/);
   const bridge = readFileSync(new URL('../server/agent/agent-bridge.mjs', import.meta.url), 'utf8');
   assert.match(bridge, /await rt\.gw\.answerEvent\(\{ clientId: entry\.clientId \?\? rt\.clientId, eventId: entry\.eventId, outcome \}\);/);
-  assert.match(bridge, /if \(!turn \|\| turn\.finished \|\| turn\.stopping \|\| turn\.goalRun \|\| turn\.plan \|\| !turn\.announceQuestion \|\| !items\.length\) \{\s*void runtime\.gw\.answerEvent\(\{ clientId: runtime\.clientId, eventId: value\.eventId, outcome: 'next' \}\)/, 'a helper question, a stopping chat or an empty request is still declared unanswerable');
+  assert.match(bridge, /if \(!turn \|\| turn\.finished \|\| turn\.stopping \|\| turn\.goalRun \|\| turn\.plan \|\| !turn\.announceQuestion \|\| !items\.length\) \{\s*void runtime\.gw\.answerEvent\(\{ clientId: runtime\.clientId, eventId: value\.eventId, outcome: 'next' \}\)/, 'a stopping or unattended chat or an empty request is still declared unanswerable');
   const gateway = readFileSync(new URL('../server/agent/gateway-client.mjs', import.meta.url), 'utf8');
   assert.match(gateway, /const wire = outcome === 'next' \? \{ kind: 'next' \} : \{ kind: 'result', value: outcome \};/, 'a structured answer travels as the result value');
   assert.match(src('components/ApprovalCard.tsx'), /asks\.map\(a => <QuestionCard key=\{a\.callId\} sessionId=\{sessionId!\} ask=\{a\}\/>\)/);

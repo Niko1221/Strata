@@ -746,7 +746,7 @@ function setAsks(sessionId: string, list: AgentAsk[]) {
   set({ agentAsks: next });
 }
 /** The agent asked the person something (a frame of the host), or the question ended without an answer. */
-export function addAgentAsk(sessionId: string, frame: { callId?: unknown; questions?: unknown }) {
+export function addAgentAsk(sessionId: string, frame: { callId?: unknown; questions?: unknown; agentName?: unknown }) {
   const ask = readAsk(frame);
   // A /loop runs without anyone there: the question is skipped at once, so the loop never waits for an answer.
   if (ask && loopScheduler.isRunning(sessionId)) { void answerAgentAsk(sessionId, ask.callId, null).catch(() => {}); return; }
@@ -1820,9 +1820,9 @@ export function stopStreaming() {
   const turn = id ? liveTurns.get(id) : undefined;
   if (!id || !turn) return;
   const abort = () => { turn.abort.abort(); };
-  void api.post<{ stopped: boolean }>('/api/chat/stop', { sessionId: id }).then(
+  void api.post<{ stopped: boolean; ended?: string }>('/api/chat/stop', { sessionId: id }).then(
     result => {
-      if (!result.stopped) abort();
+      if (!result.stopped && result.ended !== 'unconfirmed') abort();
       // An agent turn that was told to stop but is slow to end must not leave the chat stuck.
       else setTimeout(() => { if (liveTurns.get(id) === turn) abort(); }, 30000);
     },
@@ -2025,8 +2025,8 @@ export function stopChat(id: string) {
   const turn = liveTurns.get(id);
   if (!turn) return;
   const abort = () => { turn.abort.abort(); };
-  void api.post<{ stopped: boolean }>('/api/chat/stop', { sessionId: id }).then(
-    result => { if (!result.stopped) abort(); else setTimeout(() => { if (liveTurns.get(id) === turn) abort(); }, 30000); },
+  void api.post<{ stopped: boolean; ended?: string }>('/api/chat/stop', { sessionId: id }).then(
+    result => { if (!result.stopped && result.ended !== 'unconfirmed') abort(); else setTimeout(() => { if (liveTurns.get(id) === turn) abort(); }, 30000); },
     abort,
   );
 }
@@ -2289,7 +2289,7 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
           const code = String(frame.code ?? 'notice');
           if (!noticed.has(code)) { noticed.add(code); pushToast('info', 'Agent', plainFailureText(String(frame.message ?? '')).message); }
         } else if (type === 'agent-question') {
-          addAgentAsk(sessionId, frame as { callId?: unknown; questions?: unknown });
+          addAgentAsk(sessionId, frame);
         } else if (type === 'agent-question-end') {
           removeAgentAsk(sessionId, String(frame.callId ?? ''));
         } else if (type === 'agent-tool-draft') {

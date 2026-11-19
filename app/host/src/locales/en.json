@@ -3571,5 +3571,13 @@
   "s9136": "Max",
   "s9137": "2K",
   "s9138": "8K",
-  "s9139": "32K"
+  "s9139": "32K",
+  "s9140": "Open window",
+  "s9141": "Work log",
+  "s9142": "This helper is no longer available in this chat.",
+  "s9143": "Reconnecting…",
+  "s9144": "Stop helper",
+  "s9145": "This helper is no longer running.",
+  "s9146": "The helper did not confirm that it stopped.",
+  "s9147": "The assistant did not confirm that it stopped. Your partial answer is kept. You can send another message."
 }

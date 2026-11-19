@@ -655,7 +655,7 @@ async function runAgentTurn({ res, controller, chatId, body, message, workspaceI
       : researchLine ? await agent.researchCommand({ ...turnOptions, line: researchLine[1] ?? '' })
       : planLine ? await agent.planCommand({ ...turnOptions, line: planLine[1] ?? '' })
       : goalLine ? await agent.goalCommand({ ...turnOptions, line: goalLine[1] ?? '' }) : await agent.runTurn(turnOptions);
-    if (result?.detached) void result.ended.then(r => settle(r?.tokensOut ?? null), () => settle(null));
+    if (result?.detached) void result.ended.then(r => settle(r?.tokensOut ?? null, r?.failure ? 'The agent turn failed.' : undefined), () => settle(null));
     else settle(result?.tokensOut ?? null, result?.error ? 'The agent turn failed.' : undefined);
   } catch (err) {
     const plain = plainTurnFailure(err);
@@ -2038,6 +2038,28 @@ async function api(req, res, path, method, url) {
     const body = await readBody(req);
     try { return json(res, 200, await agent.stopHelper({ chatId: String(body.sessionId ?? ''), helperId: body.helperId })); }
     catch (e) { return error(res, e.code === 'helper-gone' ? 409 : 400, e.message); }
+  }
+  if (path === '/api/chat/helper/window' && method === 'POST') {
+    const { sessionId, helperId, name } = await readBody(req);
+    if (typeof sessionId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(sessionId) || typeof helperId !== 'string' || !/^[\w.:@-]{1,160}$/.test(helperId)) return error(res, 400, 'That helper is not known.');
+    try { return json(res, 200, await appUi.openHelper(sessionId, helperId, String(name ?? '').slice(0, 80))); }
+    catch (e) { return error(res, 502, e.message); }
+  }
+  if (path === '/api/chat/helper/state' && method === 'GET') {
+    const sessionId = url.searchParams.get('sessionId') ?? '';
+    const helperId = url.searchParams.get('helperId') ?? '';
+    if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(sessionId) || !/^[\w.:@-]{1,160}$/.test(helperId)) return error(res, 400, 'That helper is not known.');
+    const recent = agent.helperState(sessionId, helperId);
+    const active = agent.isRunning(sessionId);
+    if (recent && active) return json(res, 200, { agent: recent, active });
+    const saved = await chatStore.read(sessionId);
+    const session = saved ? JSON.parse(saved).session : null;
+    const removed = Array.isArray(session?.dismissedAgentIds) && session.dismissedAgentIds.includes(helperId);
+    const savedAgents = Array.isArray(session?.agents) ? session.agents : [];
+    const row = removed ? null : recent ?? savedAgents.find(a => a?.id === helperId) ?? null;
+    // Rows from previous processes have no live owner to receive a Stop.
+    const orphan = !recent && (row?.status === 'queued' || row?.status === 'working');
+    return json(res, 200, { agent: orphan ? { ...row, status: 'failed', description: 'This helper is no longer running.' } : row, active });
   }
   if (path === '/api/chat/queue/cancel' && method === 'POST') {
     const body = await readBody(req);

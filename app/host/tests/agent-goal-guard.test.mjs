@@ -56,5 +56,6 @@ test('the bridge gives a goal turn the goal guard; a trip stops the turn, and st
   const src = readFileSync(new URL('../server/agent/agent-bridge.mjs', import.meta.url), 'utf8');
   assert.match(src, /guard = goal \? new GoalGuard\(\) : new TurnGuard\(\{ plan: !!planTask,/);
   assert.match(src, /function trip\(reason\) \{[\s\S]{0,400}void stop\(chatId\)/);
-  assert.match(src, /async function stop\(chatId[\s\S]{0,1200}await pauseGoal\(rt, turn\.sessionId, chatId\);/);
+  const stop = src.slice(src.indexOf('async function stop(chatId'), src.indexOf('function turnOf(chatId'));
+  assert.match(stop, /await beforeAbort\(\(\) => pauseGoal\(runtime, turn\.sessionId, chatId, pauseSignal\), pauseSignal\)/);
 });

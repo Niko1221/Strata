@@ -6031,6 +6031,8 @@ button.menu__item:disabled { opacity: .5; cursor: default; }
 .artifact-tab__close:hover { color: var(--st-ink); background: var(--st-line-soft); }
 .subagent-row { display: flex; gap: 9px; align-items: flex-start; padding: 11px 0; }
 .subagent-row + .subagent-row { border-top: 1px solid var(--st-line-soft); }
+.subagent-row[data-panel] { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; }
+.subagent-row[data-panel] .subagent-log { grid-column: 1 / -1; max-height: none; overflow: visible; }
 .subagent-row__icon { display: flex; flex: none; margin-top: 2px; color: var(--st-ink-muted); }
 .subagent-row__copy { min-width: 0; flex: 1; }
 .subagent-row__title { display: flex; align-items: center; gap: 8px; }

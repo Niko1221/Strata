@@ -171,7 +171,7 @@ fn same(a: &str, b: &str) -> bool {
     a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
-fn handle(mut stream: TcpStream, app: &AppHandle, token: &str, progress: &Arc<Mutex<Progress>>) {
+fn handle(mut stream: TcpStream, app: &AppHandle, token: &str, host_port: u16, progress: &Arc<Mutex<Progress>>) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
     let mut buf = Vec::new();
     let mut chunk = [0u8; 1024];
@@ -210,6 +210,16 @@ fn handle(mut stream: TcpStream, app: &AppHandle, token: &str, progress: &Arc<Mu
             respond(&mut stream, "202 Accepted", &progress.lock().unwrap().json());
         }
         ("GET", "/app-update/status") => respond(&mut stream, "200 OK", &progress.lock().unwrap().json()),
+        ("POST", p) if p.starts_with("/shell/helper?") => {
+            let session = crate::shell::query_value(p, "sessionId").unwrap_or_default();
+            let helper = crate::shell::query_value(p, "helperId").unwrap_or_default();
+            let name = crate::shell::clean_text(&crate::shell::query_value(p, "name").unwrap_or_default(), 80);
+            // The listener runs on its own thread, so WebView2 can create the window on the UI thread.
+            match crate::open_helper_window(app, host_port, &session, &helper, &name) {
+                Ok(()) => respond(&mut stream, "200 OK", &serde_json::json!({ "opened": true })),
+                Err(e) => respond(&mut stream, "400 Bad Request", &serde_json::json!({ "error": e })),
+            }
+        }
         // The host asks for a desktop notification (an approval is waiting): title and body are in the query, bounded and cleaned here.
         ("POST", p) if p.starts_with("/shell/notify") => {
             let title = crate::shell::clean_text(&crate::shell::query_value(p, "title").unwrap_or_default(), 120);
@@ -226,7 +236,7 @@ fn handle(mut stream: TcpStream, app: &AppHandle, token: &str, progress: &Arc<Mu
 
 /// Open the bridge on a free loopback port. Returns None if the listener cannot be bound (the app then simply has no
 /// in-app update; the Terminal's `strata update --app` still works).
-pub fn start(app: &AppHandle, token: String) -> Option<Bridge> {
+pub fn start(app: &AppHandle, token: String, host_port: u16) -> Option<Bridge> {
     let listener = TcpListener::bind(("127.0.0.1", 0)).ok()?;
     let port = listener.local_addr().ok()?.port();
     let progress = Arc::new(Mutex::new(Progress::default()));
@@ -234,7 +244,7 @@ pub fn start(app: &AppHandle, token: String) -> Option<Bridge> {
     let secret = token.clone();
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten() {
-            handle(stream, &app, &secret, &progress);
+            handle(stream, &app, &secret, host_port, &progress);
         }
     });
     Some(Bridge { url: format!("http://127.0.0.1:{port}"), token })

@@ -6,7 +6,6 @@ import { plainFailureText } from '../lib/plain-errors';
 import { compactTokens, elapsed } from '../lib/chat-metrics';
 import type { Session } from '../lib/types';
 import { helperRanLong } from '../lib/helper-limit';
-import { dismissAgent } from '../lib/store';
 
 type Agent = NonNullable<Session['agents']>[number];
 
@@ -18,11 +17,13 @@ const states: Record<Agent['status'], { label: string; icon: IconName }> = {
   cancelled: { label: 'Cancelled', icon: 'x' },
 };
 
-export function SubagentRow({ agent: a, now = Date.now(), sessionId }: {
+export function SubagentRow({ agent: a, now = Date.now(), sessionId, onRemove, panel = false }: {
   agent: Agent;
   now?: number;
   /** The chat the helper belongs to: with it the row can take a message for the helper (#4749). */
   sessionId?: string;
+  onRemove?: () => void;
+  panel?: boolean;
 }) {
   const [log, setLog] = useState(false);
   const [writing, setWriting] = useState(false);
@@ -59,11 +60,10 @@ export function SubagentRow({ agent: a, now = Date.now(), sessionId }: {
   }
 
   async function openNativeWindow() {
-    const invoke = (window as unknown as { __TAURI_INTERNALS__?: { invoke?: (command: string, args: unknown) => Promise<unknown> } }).__TAURI_INTERNALS__?.invoke;
-    // The browser version still offers its complete log dialog; only the desktop shell makes an OS window.
-    if (!invoke || !sessionId) { setLog(true); return; }
+    if (!sessionId) { setLog(true); return; }
     try {
-      await invoke('open_helper_window', { sessionId, helperId: a.id, name: a.name });
+      const { opened } = await api.post<{ opened: boolean }>('/api/chat/helper/window', { sessionId, helperId: a.id, name: a.name });
+      if (!opened) setLog(true);
     } catch (e) {
       setProblem(plainFailureText(e instanceof Error ? e.message : String(e)).message);
     }
@@ -75,17 +75,22 @@ export function SubagentRow({ agent: a, now = Date.now(), sessionId }: {
   const canStop = a.status === 'working' || a.status === 'queued';
   const canRemove = ['completed', 'failed', 'cancelled'].includes(a.status);
   const canMessage = !!sessionId && a.status !== 'queued' && a.status !== 'cancelled';
+  const logEntries = a.steps?.length ? <ol className="subagent-log" aria-label={tr('{0} · log', [a.name])}>
+    {a.steps.map((step, i) => <li key={i} className={step.said ? 'subagent-log__said' : 'subagent-log__step'}>{step.said
+      ? <span>{step.said}</span>
+      : <><strong>{tr(step.verb ?? '')}</strong> <span>{step.target ?? ''}</span></>}</li>)}
+  </ol> : null;
 
-  return <div className="subagent-row" data-status={a.status}>
+  return <div className="subagent-row" data-status={a.status} data-panel={panel || undefined}>
     <span className="subagent-row__dot" aria-label={tr(state.label)}/>
     <div className="subagent-row__copy">
       <div className="subagent-row__title"><strong title={a.name}>{a.name}</strong><span className="subagent-row__status">{tr(state.label)}</span></div>
       <p title={a.description}>{tr(a.description)}</p>
       <div className="subagent-row__actions" title={a.description}>
-        {tr(a.status === 'failed' || a.steps?.length ? <button className="text-action" onClick={() => setLog(true)}>{tr('View log')}</button> : null)}
-        {tr(<button className="text-action" onClick={() => void openNativeWindow()}>{tr('Open window')}</button>)}
+        {!panel && <>{tr(a.status === 'failed' || a.steps?.length ? <button className="text-action" onClick={() => setLog(true)}>{tr('View log')}</button> : null)}
+          <button className="text-action" onClick={() => void openNativeWindow()}>{tr('Open window')}</button></>}
         {tr(sessionId && canStop ? <button className="text-action" disabled={stopping} onClick={() => void stop()}>{tr(stopping ? 'Stopping…' : 'Stop helper')}</button> : null)}
-        {tr(sessionId && canRemove ? <button className="text-action" onClick={() => dismissAgent(sessionId, a.id)}>{tr('Remove')}</button> : null)}
+        {tr(onRemove && canRemove ? <button className="text-action" onClick={onRemove}>{tr('Remove')}</button> : null)}
         {tr(canMessage ? (writing
           ? <form className="subagent-row__reply" onSubmit={e => { e.preventDefault(); void send(); }}>
               <input className="st-input" value={draft} maxLength={8000} aria-label={tr('Message to {0}', [a.name])} placeholder={tr('Write to {0}…', [a.name])} disabled={busy} onChange={e => { setDraft(e.target.value); setSent(false); }}/>
@@ -98,10 +103,10 @@ export function SubagentRow({ agent: a, now = Date.now(), sessionId }: {
       {tr(problem ? <p className="small inline-error subagent-row__note" role="alert">{problem}</p> : null)}
     </div>
     <div className="subagent-row__metrics"><span>{tr(compactTokens(a.tokens))}{tr(' tok')}</span><span>{tr(elapsed(duration))}</span></div>
-    <Dialog open={log} title={tr('{0} · log', [a.name])} onClose={() => setLog(false)} actions={<Btn onClick={() => setLog(false)}>{tr('Done')}</Btn>}>
+    {panel ? logEntries : <Dialog open={log} title={tr('{0} · log', [a.name])} onClose={() => setLog(false)} actions={<Btn onClick={() => setLog(false)}>{tr('Done')}</Btn>}>
       <p>{a.description}</p>
       <p className="small muted">{tr('Status: ')}{tr(state.label)} · {tr(elapsed(a.durationMs))} · {tr(compactTokens(a.tokens))}{tr(' tokens')}</p>
-      {tr(a.steps?.length ? <ol className="subagent-log" aria-label={tr('{0} · log', [a.name])}>{tr(a.steps.map((step, i) => <li key={i} className={step.said ? 'subagent-log__said' : 'subagent-log__step'}>{tr(step.said ? <span>{step.said}</span> : <><strong>{tr(step.verb ?? '')}</strong> <span>{step.target ?? ''}</span></>)}</li>))}</ol> : null)}
-    </Dialog>
+      {logEntries}
+    </Dialog>}
   </div>;
 }

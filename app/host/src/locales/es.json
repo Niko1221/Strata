@@ -3571,5 +3571,13 @@
   "s9136": "Máximo",
   "s9137": "2K",
   "s9138": "8K",
-  "s9139": "32K"
+  "s9139": "32K",
+  "s9140": "Abrir ventana",
+  "s9141": "Registro de trabajo",
+  "s9142": "Este ayudante ya no está disponible en este chat.",
+  "s9143": "Reconectando…",
+  "s9144": "Detener ayudante",
+  "s9145": "Este ayudante ya no está en ejecución.",
+  "s9146": "El ayudante no confirmó que se detuvo.",
+  "s9147": "El asistente no confirmó que se detuvo. Se conserva la respuesta parcial. Puede enviar otro mensaje."
 }
