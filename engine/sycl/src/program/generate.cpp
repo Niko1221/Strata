@@ -8048,7 +8048,11 @@ int main(int argc, char **argv) try {
                         files.push_back({std::string("pack ") + n, o.pack + "/" + n, true});
                     if (srcp == nullptr) files.push_back({"pack experts.bin", o.pack + "/experts.bin", true});
                 }
-                for (auto& m : strata::core::session_mtp_pack_files(o.mtp, o.mtp_draft_vocab)) files.push_back(std::move(m));
+                // resolved like the Metal loader (window.cpp): STRATA_METAL_MTP_GGUF overrides the GGUF beside an rt dir
+                const char* mtp_gguf_env = std::getenv("STRATA_METAL_MTP_GGUF");
+                for (auto& m : strata::core::session_mtp_pack_files(o.mtp, o.mtp_draft_vocab,
+                                                                    mtp_gguf_env ? mtp_gguf_env : ""))
+                    files.push_back(std::move(m));
                 uint64_t fp = 0;
                 // each file is one blocking read of at most 2 MiB (head and tail): announced before it starts
                 if (next_file) next_file();
