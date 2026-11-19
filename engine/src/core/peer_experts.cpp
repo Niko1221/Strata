@@ -140,6 +140,9 @@ void PeerExperts::close() {
     h_done_seq_ = nullptr;
     d_done_seq_ = nullptr;
     d_blocks_finished_ = nullptr;
+    h_target_flag_ = nullptr;
+    d_target_flag_ = nullptr;
+    signaled_target_flag_ = false;
     seq_ = 0;
     stream_ = refill_ = nullptr;
     refill_ev_ = nullptr;
@@ -284,8 +287,26 @@ bool PeerExperts::direct_mode() {
     return v;
 }
 
+void PeerExperts::set_target_flag(volatile uint32_t* h_flag) {
+    h_target_flag_ = h_flag;
+    d_target_flag_ = nullptr;
+    if (h_flag != nullptr && device_ >= 0) {
+        On on(device_);
+        cudaError_t e = cudaHostGetDevicePointer((void**) &d_target_flag_, (void*) h_flag, 0);
+        if (e != cudaSuccess) {
+            std::fprintf(stderr, "strata peer: cudaHostGetDevicePointer failed for target flag: %s\n",
+                         cudaGetErrorString(e));
+            (void) cudaGetLastError();
+            d_target_flag_ = nullptr;
+        } else {
+            std::fprintf(stderr, "strata peer: direct hardware flag handoff enabled (d_target_flag_=%p)\n",
+                         (void*) d_target_flag_);
+        }
+    }
+}
+
 bool PeerExperts::launch(int64_t layer, const float* x, const int32_t* ids, int64_t n_tok, int64_t k,
-                         const int32_t* kind, std::string& err, float* out) {
+                         const int32_t* kind, std::string& err, float* out, uint32_t want_flag) {
     const bool direct = direct_mode() && out != nullptr;
     struct Timer {
         double& acc;
@@ -293,6 +314,7 @@ bool PeerExperts::launch(int64_t layer, const float* x, const int32_t* ids, int6
         ~Timer() { acc += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(); }
     } timer{ms_launch};
     launched_direct_ = false;
+    signaled_target_flag_ = false;
     launched_rows_ = 0;
     row_of_.clear();
     const int64_t n = n_tok * k;
@@ -349,12 +371,19 @@ bool PeerExperts::launch(int64_t layer, const float* x, const int32_t* ids, int6
         return false;
     }
     ++seq_;
+    static const bool direct_signal_env = [] {
+        const char* e = std::getenv("STRATA_PEER_DIRECT_SIGNAL");
+        return e == nullptr || std::atoi(e) != 0;
+    }();
+    uint32_t* const flag_target = (direct_signal_env && want_flag > 0) ? d_target_flag_ : nullptr;
     if (direct) {   // the rows straight into the host `out` (zero-copy, coalesced float4 writes)
         try {
-            if (d_done_seq_ != nullptr && d_blocks_finished_ != nullptr) {
-                strata::kernels::scatter_rows_and_signal_f32(d_out_, out, dm->out_row, rows, H, d_done_seq_, seq_, d_blocks_finished_, s);
+            if (d_blocks_finished_ != nullptr) {
+                strata::kernels::scatter_rows_and_signal_f32(d_out_, out, dm->out_row, rows, H, d_done_seq_, seq_, d_blocks_finished_, s,
+                                                             flag_target, want_flag);
             } else {
                 strata::kernels::scatter_rows_f32(d_out_, out, dm->out_row, rows, H, s);
+                if (flag_target != nullptr) strata::kernels::signal_stream_done(flag_target, want_flag, s);
                 if (d_done_seq_ != nullptr) strata::kernels::signal_stream_done(d_done_seq_, seq_, s);
             }
         } catch (const std::exception& e) { err = std::string("peer experts: scatter: ") + e.what(); return false; }
@@ -362,7 +391,11 @@ bool PeerExperts::launch(int64_t layer, const float* x, const int32_t* ids, int6
     } else {
         if (!ck(cudaMemcpyAsync(h_out_, d_out_, (size_t) rows * H * sizeof(float), cudaMemcpyDeviceToHost, s), "results", err))
             return false;
+        if (flag_target != nullptr) strata::kernels::signal_stream_done(flag_target, want_flag, s);
         if (d_done_seq_ != nullptr) strata::kernels::signal_stream_done(d_done_seq_, seq_, s);
+    }
+    if (flag_target != nullptr) {
+        signaled_target_flag_ = true;
     }
     return true;
 }
@@ -372,6 +405,10 @@ static uint64_t total_spins = 0;
 bool PeerExperts::finish(float* out, std::string& err) {
     if (launched_rows_ == 0) return true;
     ++launches;
+    if (signaled_target_flag_) {
+        signaled_target_flag_ = false;
+        return true;
+    }
     const auto t0 = std::chrono::steady_clock::now();
     if (d_done_seq_ != nullptr) {
         const uint32_t target = seq_;

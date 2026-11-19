@@ -64,7 +64,7 @@ public:
     /// multi-GPU: with `out` (pinned, portable host rows) the peer writes its rows straight into
     /// out[entry] with a scatter kernel (no D2H copy + host memcpy in finish); STRATA_PEER_DIRECT=0: the old way.
     bool launch(int64_t layer, const float* x, const int32_t* ids, int64_t n_tok, int64_t k, const int32_t* kind,
-                std::string& err, float* out = nullptr);
+                std::string& err, float* out = nullptr, uint32_t want_flag = 0);
     /// Waits for the launched share and writes its rows into `out` (row i = entry i, n_embd floats).
     bool finish(float* out, std::string& err);
 
@@ -92,6 +92,8 @@ public:
     /// whether a launch given host rows writes them itself (STRATA_PEER_DIRECT, default on): then the caller need not
     /// zero a peer row at all, whether the launch has happened yet or not
     static bool direct_mode();
+    void set_target_flag(volatile uint32_t* h_flag);
+    bool signaled_target_flag() const { return signaled_target_flag_; }
     double gib() const { return cache_.gib(); }
     int64_t entries() const { return entries_; }      ///< routed entries the peer computed
     int64_t experts() const { return experts_; }      ///< distinct (layer, expert) the peer computed
@@ -131,6 +133,9 @@ private:
     volatile uint32_t* h_done_seq_ = nullptr;
     uint32_t* d_done_seq_ = nullptr;
     int* d_blocks_finished_ = nullptr;
+    volatile uint32_t* h_target_flag_ = nullptr;
+    uint32_t* d_target_flag_ = nullptr;
+    bool signaled_target_flag_ = false;
     uint32_t seq_ = 0;
 };
 

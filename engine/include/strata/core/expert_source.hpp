@@ -415,6 +415,8 @@ struct GpuPlanSink {
     int pcie_mode = 0;
     int32_t cpu_jobs = 0;   ///< host only: the distinct experts the pool computes for the layer just published
     float* hit_out_dev = nullptr;   ///< device address of this group's hit_out buffer on the primary GPU (P2P peer scatter)
+    uint32_t want_flag = 0; ///< direct GPU-to-GPU: flag value to signal upon peer completion
+    bool peer_signals_flag = false; ///< direct GPU-to-GPU: set when peer GPU directly signals the flag over PCIe
 };
 
 /// Verifier::set_pcie_balance: a verify window's costs, fitted to each layer's measured times (ms, least squares with

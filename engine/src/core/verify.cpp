@@ -3737,6 +3737,8 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
             !adapt_gate_wait((int32_t) l, err)) return false;
         cur_layer_ = want - 1;
         set_plan_slot(grp);
+        sink_.want_flag = want;
+        sink_.peer_signals_flag = false;
         const int tb = gtb[grp], n = gte[grp] - gtb[grp];
         progress_at("verify window: the CPU experts of layer", l);
         if (remote_opt_) remote_opt_->begin(h_w_ + (size_t) tb * ss.k, tb, n);
@@ -3778,7 +3780,9 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
             strata_store_fence();
             ms_host += ms_since(tp);
         }
-        if (!(test_stall && k + 1 == steps)) *flag = want;
+        if (!(test_stall && k + 1 == steps)) {
+            if (!sink_.peer_signals_flag) *flag = want;
+        }
         if (h_bal_ != nullptr) bal_p_[(size_t) ((k / G) * 2 + grp)] = ms_since(b);
         ms_wait += std::chrono::duration<double, std::milli>(b - a).count();
         ms_pool += ms_since(b);
@@ -5662,6 +5666,8 @@ int Verifier::service(PoolMultiFn pool, void* user, std::string& err) {
         const int grp = (int) (fl_k_ % G);
         cur_layer_ = want - 1;
         set_plan_slot(grp);
+        sink_.want_flag = want;
+        sink_.peer_signals_flag = false;
         const int tb = gtb[grp], n = gte[grp] - gtb[grp];
         progress_at("verify window (pipelined): the CPU experts of layer", l);
         if (pool != nullptr)
@@ -5683,7 +5689,7 @@ int Verifier::service(PoolMultiFn pool, void* user, std::string& err) {
             raise_flag_b_ordered(want);   // behind any copy still queued from an earlier layer
         }
         if (fl_k_ == 0 && !gather_ple()) return -1;
-        *(volatile uint32_t*) h_flag_ = want;
+        if (!sink_.peer_signals_flag) *(volatile uint32_t*) h_flag_ = want;
         ++fl_k_;
         ms_pool += ms_since(b);
         fl_since_ms_ = fl_flush_ms_ = now_ms();
