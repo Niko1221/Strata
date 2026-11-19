@@ -91,6 +91,12 @@ official engine API.
     `engine/tests/` and the relocation table in the merge script was updated.
   - the fork's stale `.gitignore` rule `/engine/` made all official engine
     source untracked; it was removed and `engine/` is now tracked (2714 files).
-- `strata` Release compile with five jobs was started; its result is recorded
-  in `engine/q38/PORT_NOTES.md` and is not claimed here.
+- `strata_q38` (and its three dependencies) **built successfully** with CUDA
+  13.5.37 / sm_120 under UAC elevation (`BUILD_EXIT=0`). `strata_q38.lib`
+  (2.97 MB), `strata_q38_ops.lib` (1.77 MB), `strata_q38_kv.lib` (825 KB) and
+  `q38_spin8.lib` (227 KB) are in `H:/Strata/builds/q38-vs-135h/q38/Release/`.
+  Evidence: `H:/Strata/evidence/upstream-oneway-20261119-build/verification.json`.
+  See `engine/q38/PORT_NOTES.md` for the build-environment notes and the
+  remaining items (full `strata` link + --serve E2E, family_layout, signed
+  component, 133 conflict reviews).
 
