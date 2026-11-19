@@ -82,6 +82,21 @@ test('runCli streams JSON lines as events and returns the last record; `acquire`
   assert.equal(seen[1].options.env.STRATA_NO_ACQUIRE, '1', 'everything else keeps the switch on');
 });
 
+test('a slow installed-model scan is allowed to finish before the picker is told there are no models', async () => {
+  const seen = [];
+  const control = createControl({
+    control: { dir: '/c', python: '/p', cli: '/c/strata.py' }, env: {},
+    run: async (args, options) => {
+      seen.push({ args, timeoutMs: options.timeoutMs });
+      return { code: 0, json: { ok: true, models: [{ model: 'q38-dense-x' }] }, text: '{}', stderr: '' };
+    },
+  });
+  const result = await control.installedModels({ installDir: '/models' });
+  assert.deepEqual(result.models, [{ model: 'q38-dense-x' }]);
+  assert.deepEqual(seen[0].args.slice(0, 3), ['models', 'list', '--installed']);
+  assert.equal(seen[0].timeoutMs, 180_000);
+});
+
 test('createControl: the update calls ask the explicit commands; a failed step carries its message and exit code', async () => {
   const seen = [];
   const reply = { ok: true, results: [{ component: 'engine', status: 'updated' }] };

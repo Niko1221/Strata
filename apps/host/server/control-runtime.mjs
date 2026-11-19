@@ -252,7 +252,11 @@ export function createControl({ control = findControl(), env = process.env, run 
       throw failure(result, 'The engine check failed.');
     },
     async installedModels({ installDir = null } = {}) {
-      const result = await call(['models', 'list', '--installed', ...(installDir ? ['--install-dir', installDir] : []), '--output', 'json'], { timeoutMs: 60_000 });
+      // On hosts with many installed engines or slow disks, Control's model
+      // directory scan can exceed a minute. A stale "no models" from a timeout
+      // hides installed native models from the chat picker, so let the scan
+      // finish rather than reporting an empty list.
+      const result = await call(['models', 'list', '--installed', ...(installDir ? ['--install-dir', installDir] : []), '--output', 'json'], { timeoutMs: 180_000 });
       if (result.code !== 0 || !result.json) throw failure(result, 'The installed models could not be read.');
       return result.json;
     },
