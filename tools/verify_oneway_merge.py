@@ -87,7 +87,9 @@ def main(argv: List[str] | None = None) -> int:
     mismatches: List[str] = []
     checked = 0
     for row in manifest.get("decisions", []):
-        if row["kind"] == "delete" or not row.get("sha256"):
+        # Only decisions that actually won their target are written.  Two
+        # source paths can legitimately map to one target (rename + copy).
+        if not row.get("applied", False) or not row.get("sha256"):
             continue
         target = repo / row["target"]
         if not target.exists():

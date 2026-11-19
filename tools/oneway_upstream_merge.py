@@ -186,6 +186,7 @@ class Decision:
     note: str = ""
     review_copy: Optional[str] = None
     sha256: str = ""
+    applied: bool = False
     data: bytes = field(default=b"", repr=False, compare=False)
 
     def public(self) -> Dict[str, Any]:
@@ -507,6 +508,7 @@ def run(args: argparse.Namespace) -> MergeReport:
                 by_target[decision.target] = decision
         write_targets = set(by_target)
         for target, decision in by_target.items():
+            decision.applied = True
             path = repo / safe_target(target)
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(decision.data)  # empty files must be created too
