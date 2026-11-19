@@ -90,11 +90,11 @@ GGUF files, so the GGUF folder should be on a fast SSD.
 
 ## Docker Compose
 
-Ready-made files are in [docker/compose/](../docker/compose): `docker-compose.nvidia.yml`, `docker-compose.amd.yml`,
+Ready-made files are in [docker/compose/](../tools/docker/compose): `docker-compose.nvidia.yml`, `docker-compose.amd.yml`,
 `docker-compose.intel.yml` and `.env.example`. Copy the one for your card and its `.env.example`, edit, start:
 
 ```sh
-cd docker/compose
+cd tools/docker/compose
 cp .env.example .env              # set FAMILY=qwen, MODEL=..., API_KEY=...
 docker compose -f docker-compose.nvidia.yml up -d
 docker compose -f docker-compose.nvidia.yml logs -f
@@ -117,9 +117,11 @@ screens; leave out what you do not care about.
 | `MODEL_PATH` | GGUF files you already have: a folder or one `.gguf`, **inside the container** (mount it with `-v`, `:ro` is fine) | download |
 | `ALLOW_DOWNLOAD` | `1`: go on and download the model although model files of the older layout were left unread in `/data/models` (see [From the older image](#from-the-older-image)) | stop |
 | `CONTEXT` | how much text it remembers at once: `32k`, `64k`, `128k`, `256k` or a number | the largest that fits |
-| `PARALLEL` | requests answered at the same time, 1 to 8 | fitted to the card (DeepSeek: one at a time) |
+| `PARALLEL` | requests answered at the same time, 1 to 8 | fitted to the card |
 | `VISION` | `off`, `on` (the model reads pictures), `gpu`, `cpu`; the picture-reader file (about 0.9 GB) is downloaded with the model | `off` |
 | `KV` | conversation memory format: `int8`, `q4_0` (half the memory), `k8v4`, `fp16` | `int8` |
+| `DRAFTING` | which drafter guesses ahead: `auto`, `mtp`, `dflash2` or `off` | `auto` |
+| `DRAFT_VOCAB` | which tokens the drafter may guess: `cjk` (with Chinese, Japanese and Korean), `en`, `cyrillic`, `fr` or `latin` (each with English and code) | picked from the container's languages, else `cjk` |
 | `GPU` / `GPUS` | card numbers as the monitor lists them, `0` or `0,1`; empty or `all` = the engine's choice. Changing it later makes the model's run settings again (the files stay) | all that fit |
 | `GPU_ROLES` | a role for each card, `1=main,0=helper` (`main`, `helper`, `off`; cards you do not name are off; not together with `GPU` / `GPUS`). Passed to `launch --gpu-roles`; see [MULTI_GPU.md](MULTI_GPU.md) | none |
 | `TUNE` | `quick` (runtime depends on hardware and workload), `thorough`, `skip`; done once and kept in the preset (`RETUNE=1` tunes again) | `skip` |
@@ -285,20 +287,20 @@ The container name, the volume and the port can stay as they were.
 ## Build it yourself
 
 This is the way to get an image for a computer without registry access or after changing Strata. You need an engine package
-folder (made by `packaging/package_engine.py`, or fetched by `strata update` into a components folder) and Docker on Linux:
+folder (made by `tools/packaging/package_engine.py`, or fetched by `strata update` into a components folder) and Docker on Linux:
 
 ```sh
-docker/build.sh --flavor cuda --engine ~/components/engine/<cuda13-package-folder> --tag strata:0.2.7-cuda13
-docker/build.sh --flavor hip  --engine ~/components/engine/<hip-rx9070-package-folder> --tag strata:0.2.7-rocm-gfx120x
-docker/build.sh --flavor sycl --engine ~/components/engine/<sycl-package-folder> --tag strata:0.2.7-sycl
+tools/docker/build.sh --flavor cuda --engine ~/components/engine/<cuda13-package-folder> --tag strata:0.2.7-cuda13
+tools/docker/build.sh --flavor hip  --engine ~/components/engine/<hip-rx9070-package-folder> --tag strata:0.2.7-rocm-gfx120x
+tools/docker/build.sh --flavor sycl --engine ~/components/engine/<sycl-package-folder> --tag strata:0.2.7-sycl
 ```
 
 `build.sh` assembles the build context (the Terminal's files and the package) and runs `docker build`. The build makes the
 Terminal exactly as the release archive (Python 3.12 and the locked packages, fetched at build time only), then checks the
 engine package before it may enter the image: every file's SHA-256, and that every library it imports is bundled or belongs
-to the system or the graphics driver (`packaging/binary_deps.py`); finally it checks that the dynamic linker resolves every
+to the system or the graphics driver (`tools/packaging/binary_deps.py`); finally it checks that the dynamic linker resolves every
 library inside the finished image. A package that fails any of these stops the build. Nothing is pushed anywhere.
-`docker/smoke-test.sh` runs the checks we ran on real cards (serves, key, chat, tool call, monitor, clean stop, memory freed, restart); see its first lines for the variables.
+`tools/docker/smoke-test.sh` runs the checks we ran on real cards (serves, key, chat, tool call, monitor, clean stop, memory freed, restart); see its first lines for the variables.
 
 **From source.** `docker build -t strata:src --build-arg STRATA_COMMIT=$(git rev-parse HEAD) .` in the repository compiles the CUDA 13
 engine inside Docker, makes the package and puts it in the same kind of image (`--build-arg CUDA_ARCHITECTURES=89` for one card only,
@@ -307,7 +309,7 @@ For a GTX 10, P100 or V100 build the CUDA 12 variant: `docker build -t strata:sr
 --build-arg CUDA_IMAGE=nvidia/cuda:12.9.1-devel-ubuntu24.04 --build-arg CUDA_ARCHITECTURES="60;61;70;75;80;86;89" --build-arg BUILD_VISION=0 .`
 (the build turns on the Pascal / Volta code by itself when an architecture below 75 is listed, and names the package `cuda12` with
 driver 575.51). For AMD and Intel builds from source see [AMD_HIP.md](AMD_HIP.md) and [INTEL.md](INTEL.md); then package the result
-with `packaging/package_engine.py` and use `docker/build.sh`.
+with `tools/packaging/package_engine.py` and use `tools/docker/build.sh`.
 
 ## Publishing the images (for maintainers)
 
@@ -324,10 +326,10 @@ files the signed update feed names. Nothing publishes by itself: a maintainer st
    visibility, Public**, and check it is linked to the repository (the image carries the `org.opencontainers.image.source` label).
 5. Check one pull from a computer that is not logged in: `docker pull ghcr.io/niko1221/strata:0.2.7-cuda13`.
 
-For each flavor the job runs [docker/fetch-engines.py](../docker/fetch-engines.py), which reads the release's signed feed (the
-Ed25519 key in `strata_control/update_keys.json`), downloads the package, and checks the archive's size and SHA-256, the manifest
+For each flavor the job runs [docker/fetch-engines.py](../tools/docker/fetch-engines.py), which reads the release's signed feed (the
+Ed25519 key in `terminal/strata_control/update_keys.json`), downloads the package, and checks the archive's size and SHA-256, the manifest
 hash, the package signature and every file's hash, exactly as `strata update` does; a package that fails stops the job before
-anything is built. [docker/build.sh](../docker/build.sh) then builds the image (and checks the package again inside the build), and
+anything is built. [docker/build.sh](../tools/docker/build.sh) then builds the image (and checks the package again inside the build), and
 the job starts the image once to see that the Terminal inside it runs.
 
 | Flavor (tag suffix) | Engine package in the release feed |
@@ -340,8 +342,8 @@ the job starts the image once to see that the Terminal inside it runs.
 | `sycl` | `linux-x86_64`, sycl; only when the feed lists one |
 
 A flavor the feed has no package for is left out, with a line in the log. The same steps run from a Linux computer with Docker:
-`docker/publish.sh --release-tag v0.2.7` builds everything and pushes nothing; add `--push` (after `docker login ghcr.io`) to publish.
-The images run on the runner without a graphics card, so the card checks (`docker/smoke-test.sh`) stay a manual step on a computer with the card.
+`tools/docker/publish.sh --release-tag v0.2.7` builds everything and pushes nothing; add `--push` (after `docker login ghcr.io`) to publish.
+The images run on the runner without a graphics card, so the card checks (`tools/docker/smoke-test.sh`) stay a manual step on a computer with the card.
 
 ## Known limits
 
@@ -354,7 +356,7 @@ The images run on the runner without a graphics card, so the card checks (`docke
 
 ## History / older measurements
 
-**Tested on real cards.** Checks (`docker/smoke-test.sh`): the container serves, `GET /v1/models` answers (and refuses a request
+**Tested on real cards.** Checks (`tools/docker/smoke-test.sh`): the container serves, `GET /v1/models` answers (and refuses a request
 without the key), a one-word chat and a tool call work, `docker exec strata monitor --once` works, `docker stop` ends it with exit
 code 0 and the graphics memory is free again, and a second start reuses the saved preset.
 

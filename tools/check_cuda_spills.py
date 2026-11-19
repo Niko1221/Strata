@@ -21,17 +21,32 @@ sits in `strata::` or in an anonymous namespace.  The report line counts what wa
   check_cuda_spills.py --list LIB ...   the full table (library, object, sm, REG, STACK, LOCAL, SHARED, kernel,
                                         gated) as CSV, every kernel on every sm_ - the vendored ones too, gated 0 -
                                         nothing judged: this is how the numbers in ALLOWED were produced
-  --cuobjdump PATH                      the toolkit's cuobjdump when bin/ is not on PATH (CMake passes it)
+  --cuobjdump PATH                      the toolkit's cuobjdump when terminal/bin/ is not on PATH (CMake passes it)
 
-Exit 0 = clean, 1 = a violation, 77 = cannot run here (cuobjdump missing, a library missing; ctest SKIP_RETURN_CODE).
+Known violations (tools/cuda_spill_baseline.json): some kernels are over their allowance on the base and have not been fixed
+yet.  Raising ALLOWED for them would hide any later growth, so they are listed per architecture by exact instance name (the
+demangled name with its template arguments, without the parameter list) with the bytes measured, each with the reason
+"inherited, not yet fixed".  A violation that is such an instance, at or below its listed bytes, is counted as known and does not
+fail the check; a violation that is not listed (a new instance), and a listed instance above its bytes, fail.  The report line
+prints the known count.  An architecture with no baseline (sm_60: about 400 violations, nothing measured per instance) prints
+"no baseline for <sm>" and its violations fail as before.  --baseline FILE reads another baseline; --print-baseline prints the
+file's entries for the violations found (how the baseline was made).
+
+Exit 0 = clean (or only known violations), 1 = a new or grown violation, 2 = the baseline file cannot be read, 77 = cannot run
+here (cuobjdump missing, a library missing; ctest SKIP_RETURN_CODE).
 """
 import argparse
 import csv
+import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+
+# the known violations (see the docstring): per architecture, each inherited instance by exact name with its measured bytes
+BASELINE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cuda_spill_baseline.json")
+KNOWN_REASON = "inherited, not yet fixed"
 
 # 0.2.7 (f-027-gh-eng): re-measured on f-027-int with CUDA 13.0 for sm_120 (Windows, MSVC) and sm_86 (Linux, cuobjdump 12.9
 # reading the CUDA 13.0 objects); an allowance is only ever raised here, never lowered, and the entries that now read 0 with
@@ -161,6 +176,11 @@ ALLOWED = {
     # spill 36 / 52 (sm_86), 32 / 32 (sm_120) at the 128-register cap of __launch_bounds__(THREADS = 512, 1); its q[8]
     # / raw[5] / bq[4] / a[4] / d[4] stay in registers
     "strata::prefill::fused::{anonymous}::native_kernel": {"sm_120": (32, 0), "sm_86": (32, 0)},
+    # the Qwen3.6 copy of the same kernels (moe_fused_iq_q36.cu includes moe_fused_iq.cu with the shape override and its namespace renamed): same source and
+    # instance parameters, so the same spill under the same register cap, no per-thread array found (an instance has the same STACK as its fused:: twin in 24 of 25 cases on
+    # sm_86 and 7 of 10 on sm_120, never more than 8 B apart).  Measured on f-p4-q36 7bc09fadf, CUDA 13.2 sm_120 (l620) and CUDA 12.9
+    # cuobjdump on CUDA 13.0 objects for sm_86 (z440): the maximum over 62 instances, which include the K-quant down instances <13 / 14, false, 2 / 4, 512>
+    "strata::prefill::fused_q36::{anonymous}::native_kernel": {"sm_120": (16, 0), "sm_86": (80, 0)},
     # float x[GRW_PER] (GRW_PER = 10): the thread's rows for the norm (no spill)
     "strata::prefill::{anonymous}::gr_write_cvec_norm_rs_kernel": {"sm_86": (40, 0)},
     # float v[GRW_PER] (GRW_PER = 10): the thread's rows for the norm (no spill)
@@ -257,10 +277,86 @@ _INT3_ALLOWED = {
     "{anonymous}::k_attn_prep": {"sm_121": (32, 0)},
     # rc1 (measured on l620, CUDA 13.2 sm_120): the HC down kernel's register-blocked instance <1,6,true,2,0,true> (df2-more, STRATA_GR_V3_PF bit 7, default 133 on sm_120) keeps 8 bytes
     "strata::kernels::{anonymous}::gr_down_v3_kernel": {"sm_120": (8, 0)},
-    # rc1 (l620 sm_120): DFlash2's rope table builder copies its parameter struct to the stack (src/kernels/cuda/dflash2.cu, from the ring / multi-card DFlash2 line); avoidable
+    # rc1 (l620 sm_120): DFlash2's rope table builder copies its parameter struct to the stack (engine/src/kernels/cuda/dflash2.cu, from the ring / multi-card DFlash2 line); avoidable
     "strata::kernels::{anonymous}::rope_table_inv_kernel": {"sm_120": (32, 0)},
 }
 for _key, _per_sm in _INT3_ALLOWED.items():
+    _merged = ALLOWED.setdefault(_key, {})
+    for _sm, (_stack, _local) in _per_sm.items():
+        _old = _merged.get(_sm, (0, 0))
+        _merged[_sm] = (max(_stack, _old[0]), max(_local, _old[1]))
+
+# sm_89 (Ada: the RTX 40 cards), measured 11-13 on a CUDA 13.2 build of d6f9f68f9 (batch 15, sm_89-real; cuobjdump 13.2 reading libstrata_kernels.a):
+# 432 instances in these 40 kernels use stack, none uses .local.  36 of the keys equal the sm_86 allowance above to the byte, or are below it; gemm4_rows_kernel,
+# gemm_rows_kernel, i8_kernel and rope_table_inv_kernel have no sm_86 entry (their stack is the same size on sm_86).  The kernels are the same device code on
+# every architecture (there is no per-architecture variant of them); the sm_89 keys were only missing.  Same shape and rule as the entries above: the
+# measured maximum, so any growth fails.
+_SM89_ALLOWED = {
+    "strata::kernels::native_gu_lds_kernel": {"sm_89": (8, 0)},
+    "strata::kernels::route_resident_k": {"sm_89": (40, 0)},
+    "strata::kernels::{anonymous}::attn_chunk_kernel": {"sm_89": (384, 0)},
+    "strata::kernels::{anonymous}::attn_chunk_kernel_pre75": {"sm_89": (8, 0)},
+    "strata::kernels::{anonymous}::attn_chunk_slots_kernel": {"sm_89": (384, 0)},
+    "strata::kernels::{anonymous}::block_scores_simt_kernel": {"sm_89": (8, 0)},
+    "strata::kernels::{anonymous}::block_topk_reg_kernel": {"sm_89": (96, 0)},
+    "strata::kernels::{anonymous}::copy_kernel": {"sm_89": (88, 0)},
+    "strata::kernels::{anonymous}::dequant_gu_kernel": {"sm_89": (32, 0)},
+    "strata::kernels::{anonymous}::dequant_kernel": {"sm_89": (64, 0)},
+    "strata::kernels::{anonymous}::expdec_down_kernel": {"sm_89": (288, 0)},
+    "strata::kernels::{anonymous}::expdec_gu_kernel": {"sm_89": (56, 0)},
+    "strata::kernels::{anonymous}::gdn_step_commit_kernel": {"sm_89": (8, 0)},
+    "strata::kernels::{anonymous}::gemm4_rows_kernel": {"sm_89": (8, 0)},
+    "strata::kernels::{anonymous}::gemm_iq_f16_grouped_kernel": {"sm_89": (32, 0)},
+    "strata::kernels::{anonymous}::gemm_rows_kernel": {"sm_89": (40, 0)},
+    "strata::kernels::{anonymous}::gr_down_multi_kernel": {"sm_89": (8, 0)},
+    "strata::kernels::{anonymous}::gr_down_q8_fast_kernel": {"sm_89": (8, 0)},
+    "strata::kernels::{anonymous}::gr_down_q8_kernel": {"sm_89": (16, 0)},
+    "strata::kernels::{anonymous}::gr_down_staged_kernel": {"sm_89": (16, 0)},
+    "strata::kernels::{anonymous}::gr_down_v3_kernel": {"sm_89": (8, 0)},
+    "strata::kernels::{anonymous}::gr_up_q8_fast_kernel": {"sm_89": (8, 0)},
+    "strata::kernels::{anonymous}::hcp::persist_kernel": {"sm_89": (16, 0)},
+    "strata::kernels::{anonymous}::i8_kernel": {"sm_89": (8, 0)},
+    "strata::kernels::{anonymous}::native_down_kernel": {"sm_89": (8, 0)},
+    "strata::kernels::{anonymous}::native_down_multi_kernel": {"sm_89": (64, 0)},
+    "strata::kernels::{anonymous}::native_gu_kernel": {"sm_89": (8, 0)},
+    "strata::kernels::{anonymous}::native_gu_multi_kernel": {"sm_89": (144, 0)},
+    "strata::kernels::{anonymous}::native_mmvq_il_pf_kernel": {"sm_89": (1336, 0)},
+    "strata::kernels::{anonymous}::pair_kernel": {"sm_89": (16, 0)},
+    "strata::kernels::{anonymous}::prompt_attn_kernel": {"sm_89": (8, 0)},
+    "strata::kernels::{anonymous}::rope_table_inv_kernel": {"sm_89": (32, 0)},
+    "strata::kernels::{anonymous}::rope_table_kernel": {"sm_89": (32, 0)},
+    "strata::kernels::{anonymous}::route": {"sm_89": (64, 0)},
+    "strata::kernels::{anonymous}::route_multi": {"sm_89": (64, 0)},
+    "strata::kernels::{anonymous}::route_prior_k": {"sm_89": (64, 0)},
+    "strata::kernels::{anonymous}::route_topk": {"sm_89": (32, 0)},
+    "strata::kernels::{anonymous}::s26_gu_l_kernel": {"sm_89": (32, 0)},
+    "strata::kernels::{anonymous}::s27_down_kernel": {"sm_89": (16, 0)},
+    "strata::kernels::{anonymous}::s27_gu_kernel": {"sm_89": (32, 0)},
+}
+for _key, _per_sm in _SM89_ALLOWED.items():
+    _merged = ALLOWED.setdefault(_key, {})
+    for _sm, (_stack, _local) in _per_sm.items():
+        _old = _merged.get(_sm, (0, 0))
+        _merged[_sm] = (max(_stack, _old[0]), max(_local, _old[1]))
+
+# sm_89, the other libraries (libstrata_prefill.a, libstrata_qwen35.a, libstrata_mmq.a, libstrata_pf_own.a), from the CTest output of a CUDA 13.2 build
+# of af6226a3c on an RTX 4090 (the pod's cuda_spill_guard run, with MMQ and without): 75 and 68 kernel instances use stack, none uses .local; the 12 keys
+# below cover all of them, each at the measured maximum of its instances.  Same rule as above: any growth fails.
+_SM89_OTHER_LIBS_ALLOWED = {
+    "q36k::k_route_group": {"sm_89": (32, 0)},
+    "strata::prefill::fused::{anonymous}::native_kernel": {"sm_89": (80, 0)},
+    "strata::prefill::fused_q36::{anonymous}::native_kernel": {"sm_89": (80, 0)},
+    "strata::prefill::mmq::{anonymous}::iq4_w4a8_kernel": {"sm_89": (40, 0)},
+    "strata::prefill::{anonymous}::gdn_conv_w_kernel": {"sm_89": (24, 0)},
+    "strata::prefill::{anonymous}::gdn_tc_scan_kernel": {"sm_89": (128, 0)},
+    "strata::prefill::{anonymous}::gr_write_cvec_norm_rs_kernel": {"sm_89": (40, 0)},
+    "strata::prefill::{anonymous}::gr_write_norm_rs_kernel": {"sm_89": (40, 0)},
+    "strata::prefill::{anonymous}::rms_rope_rows_kernel": {"sm_89": (32, 0)},
+    "strata::prefill::{anonymous}::rope_kernel": {"sm_89": (32, 0)},
+    "strata::prefill::{anonymous}::route_kernel": {"sm_89": (64, 0)},
+    "{anonymous}::k_attn_prep": {"sm_89": (32, 0)},
+}
+for _key, _per_sm in _SM89_OTHER_LIBS_ALLOWED.items():
     _merged = ALLOWED.setdefault(_key, {})
     for _sm, (_stack, _local) in _per_sm.items():
         _old = _merged.get(_sm, (0, 0))
@@ -379,10 +475,80 @@ def demangle(demangler, names):
     return dict(zip(names, out))
 
 
-def check(path, rows, names):
-    archs = sorted({sm for _, sm, _, _ in rows})
+def instance_key(demangled):
+    """The exact instance name: the demangled name with its template arguments, without return type and parameter list, spelled the
+    same whichever demangler printed it (cu++filt: <unnamed>, (bool)1, (int)96; binutils' c++filt: (anonymous namespace), true, 96,
+    96u, "> >").  The baseline's key."""
+    s = demangled.replace("(anonymous namespace)", "{anonymous}").replace("<unnamed>", "{anonymous}")
+    s = s.replace("(bool)1", "true").replace("(bool)0", "false")
+    s = re.sub(r"\((?:unsigned )?(?:long long|long|int|short|char)\)(-?\d+)", r"\1", s)      # cu++filt's cast before a literal
+    s = re.sub(r"(?<=\d)[ul]+(?![\w])", "", s)                                                # c++filt's 96u / 96ul suffixes
+    while re.search(r">\s+>", s):
+        s = re.sub(r">\s+>", ">>", s)
+    depth, cut = 0, len(s)
+    for i, c in enumerate(s):                       # the parameter list starts at the first '(' outside <...>
+        if c == "<":
+            depth += 1
+        elif c == ">":
+            depth -= 1
+        elif c == "(" and depth == 0:
+            cut = i
+            break
+    s = s[:cut].strip()
+    depth, start = 0, 0
+    for i, c in enumerate(s):                       # a template kernel is printed with its return type: "void ns::k<1, 2>"
+        if c == "<":
+            depth += 1
+        elif c == ">":
+            depth -= 1
+        elif c == " " and depth == 0:
+            start = i + 1
+    return s[start:] or demangled
+
+
+def load_baseline(path):
+    """{sm: {instance name: (stack, local, reason)}} from the baseline file; an architecture that is not in the file has no
+    baseline.  A file that cannot be read, or an entry that is incomplete, is an error (ValueError), never an empty baseline."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            raw = json.load(f)
+    except (OSError, ValueError) as e:
+        raise ValueError("cannot read the baseline %s: %s" % (path, e))
+    if not isinstance(raw, dict):
+        raise ValueError("the baseline %s is not a JSON object" % path)
+    out = {}
+    for sm, block in raw.items():
+        if sm.startswith("_") or block is None:     # "_about" and the like; null = stated as having no baseline
+            continue
+        entries = block.get("instances") if isinstance(block, dict) else None
+        if not isinstance(entries, list):
+            raise ValueError("the baseline %s: %s has no \"instances\" list" % (path, sm))
+        per = {}
+        for e in entries:
+            ok = (isinstance(e, dict) and isinstance(e.get("name"), str) and e["name"]
+                  and all(isinstance(e.get(k), int) and not isinstance(e.get(k), bool) and e[k] >= 0 for k in ("stack", "local"))
+                  and isinstance(e.get("reason"), str) and e["reason"].strip())
+            if not ok:
+                raise ValueError("the baseline %s: %s has an entry without name, stack, local and reason: %r" % (path, sm, e))
+            if e["name"] in per:
+                raise ValueError("the baseline %s: %s lists %s twice" % (path, sm, e["name"]))
+            per[e["name"]] = (e["stack"], e["local"], e["reason"])
+        out[sm] = per
+    return out
+
+
+def default_baseline():
+    """The baseline beside this script; a missing file is an empty baseline (every architecture reports "no baseline")."""
+    if not os.path.exists(BASELINE_FILE):
+        return {}
+    return load_baseline(BASELINE_FILE)
+
+
+def find_violations(rows, names):
+    """(gated entries, entries that use stack or local memory, [violation]) for the rows of one library: a violation is an entry over
+    ALLOWED (or not in it), as (demangled name, instance key, sm, stack, local, why, object)."""
     gated = [(obj, sm, func, cols) for obj, sm, func, cols in rows if not vendored(kernel_key(names[func]))]
-    held, bad = 0, []
+    held, viols = 0, []
     for obj, sm, func, cols in gated:
         stack, local = cols.get("STACK", 0), cols.get("LOCAL", 0)
         if stack == 0 and local == 0:
@@ -395,13 +561,54 @@ def check(path, rows, names):
             why = "over its allowance STACK %d LOCAL %d" % allow
         else:
             continue
-        bad.append((names[func], sm, stack, local, why, obj))
+        viols.append((names[func], instance_key(names[func]), sm, stack, local, why, obj))
+    return gated, held, viols
+
+
+def check(path, rows, names, baseline=None, seen=None, verbose=False):
+    """Judge one library.  `baseline` is load_baseline's result (default: the file beside this script); `seen`, when given, collects
+    {sm: {instance names}} of the known instances found, for the caller's count over several libraries."""
+    if baseline is None:
+        baseline = default_baseline()
+    archs = sorted({sm for _, sm, _, _ in rows})
+    gated, held, viols = find_violations(rows, names)
+    known, bad, no_base = [], [], {}
+    for name, inst, sm, stack, local, why, obj in viols:
+        base = baseline.get(sm)
+        if base is None:
+            no_base[sm] = no_base.get(sm, 0) + 1
+        elif inst in base:
+            b_stack, b_local, _ = base[inst]
+            if stack <= b_stack and local <= b_local:
+                known.append((name, sm, stack, local, obj))
+                if seen is not None:
+                    seen.setdefault(sm, set()).add(inst)
+                continue
+            why = "known instance grew: over its baseline STACK %d LOCAL %d" % (b_stack, b_local)
+        bad.append((name, sm, stack, local, why, obj))
     print("check_cuda_spills: %s: %d kernels on %s (%d entries; %d vendored ggml entries skipped), %d use stack / "
-          "local memory, %d not allowed" % (path, len({f for _, _, f, _ in gated}), ", ".join(archs), len(gated),
-                                           len(rows) - len(gated), held, len(bad)))
+          "local memory, %d of them known from the baseline, %d not allowed" % (
+              path, len({f for _, _, f, _ in gated}), ", ".join(archs), len(gated), len(rows) - len(gated), held, len(known),
+              len(bad)))
+    for sm in sorted(no_base):
+        print("check_cuda_spills: no baseline for %s: its %d violations cannot be told from new ones (baselines: %s)" % (
+            sm, no_base[sm], ", ".join(sorted(baseline)) or "none"))
+    if verbose:
+        for name, sm, stack, local, obj in known:
+            print("  known %s %s: STACK %d LOCAL %d [%s]" % (name[:160], sm, stack, local, obj))
     for name, sm, stack, local, why, obj in bad:
         print("  VIOLATION %s %s: STACK %d LOCAL %d (%s) [%s]" % (name[:160], sm, stack, local, why, obj))
     return 1 if bad else 0
+
+
+def toolkit_line(cuobjdump):
+    """The last line of `cuobjdump --version` (the toolkit release), for the baseline's "measured_with"."""
+    try:
+        run = subprocess.run([cuobjdump, "--version"], capture_output=True, text=True, timeout=30)
+        lines = [l.strip() for l in run.stdout.splitlines() if l.strip()]
+        return lines[-1] if lines else "unknown"
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
 
 
 def main():
@@ -409,10 +616,14 @@ def main():
     ap.add_argument("library", nargs="+", help="a static library, object, shared library or executable with SASS")
     ap.add_argument("--list", action="store_true", help="print every kernel on every sm_ as CSV, judge nothing")
     ap.add_argument("--cuobjdump", help="the toolkit's cuobjdump (default: on PATH)")
+    ap.add_argument("--baseline", help="the known-violations file (default: cuda_spill_baseline.json beside this script)")
+    ap.add_argument("--print-baseline", action="store_true",
+                    help="print the baseline entries (JSON) for the violations found, judge nothing: how the baseline was made")
+    ap.add_argument("-v", "--verbose", action="store_true", help="also print every known violation")
     a = ap.parse_args()
     cuobjdump, demangler = find_tools(a.cuobjdump)
     if cuobjdump is None:
-        print("check_cuda_spills: cuobjdump not found (put the CUDA toolkit's bin/ on PATH, or pass --cuobjdump)")
+        print("check_cuda_spills: cuobjdump not found (put the CUDA toolkit's terminal/bin/ on PATH, or pass --cuobjdump)")
         return 77
     if demangler is None:
         # without a demangler every Strata kernel would read as a no-namespace (vendored) one and be skipped: the
@@ -423,10 +634,18 @@ def main():
         if not os.path.exists(lib):
             print("check_cuda_spills: %s does not exist" % lib)
             return 77
+    baseline = {}
+    if not a.list and not a.print_baseline:
+        try:
+            baseline = load_baseline(a.baseline) if a.baseline else default_baseline()
+        except ValueError as e:        # a baseline that cannot be read is never an empty one: that would pass nothing known and hide it
+            print("check_cuda_spills: %s" % e)
+            return 2
     out = csv.writer(sys.stdout, lineterminator="\n") if a.list else None
     if out:
         out.writerow(["library", "object", "sm", "reg", "stack", "local", "shared", "kernel", "mangled", "gated"])
     rc = 0
+    seen, archs_seen, found = {}, set(), {}
     for lib in a.library:
         rows = resource_usage(cuobjdump, lib)
         if rows is None:
@@ -445,8 +664,21 @@ def main():
                 out.writerow([os.path.basename(lib), obj, sm, cols.get("REG", 0), cols.get("STACK", 0),
                               cols.get("LOCAL", 0), cols.get("SHARED", 0), names[func], func,
                               0 if vendored(kernel_key(names[func])) else 1])
+        elif a.print_baseline:
+            for _, inst, sm, stack, local, _, _ in find_violations(rows, names)[2]:
+                old = found.setdefault(sm, {}).get(inst, (0, 0))
+                found[sm][inst] = (max(stack, old[0]), max(local, old[1]))
         else:
-            rc = max(rc, check(lib, rows, names))
+            archs_seen.update(sm for _, sm, _, _ in rows)
+            rc = max(rc, check(lib, rows, names, baseline, seen, a.verbose))
+    if a.print_baseline:
+        print(json.dumps({sm: {"measured_with": toolkit_line(cuobjdump),
+                               "instances": [{"name": n, "stack": s, "local": l, "reason": KNOWN_REASON}
+                                             for n, (s, l) in sorted(per.items())]}
+                          for sm, per in sorted(found.items())}, indent=2))
+    elif not a.list:
+        for sm in sorted(archs_seen & set(baseline)):     # the known count over all the libraries given
+            print("check_cuda_spills: baseline %s: %d known violations seen, %d listed" % (sm, len(seen.get(sm, ())), len(baseline[sm])))
     return rc
 
 
