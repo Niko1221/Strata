@@ -113,9 +113,17 @@ def add_parsers(sp: argparse._SubParsersAction) -> list[argparse.ArgumentParser]
     g.add_argument("--full-quality", action="store_true", help=argparse.SUPPRESS)    # DeepSeek (no longer run): accepted, answered in plain words
     g.add_argument("--gpu", metavar="LIST", help="graphics card numbers to use, e.g. 0 or 0,1 (default: the engine's choice). "
                    "With more than one card the engine decides which is the Main card; --gpu-roles (instead of --gpu) sets the roles yourself.")
-    g.add_argument("--backend", metavar="nvidia|amd|intel|auto",
+    g.add_argument("--backend", metavar="nvidia|amd|intel|vulkan|auto",
                    help="which make of graphics card the engine uses on a PC that has cards of more than one make (default: auto = NVIDIA first, "
-                        "then AMD, then Intel). Your choice is remembered for the next launch, update and app; 'auto' forgets it")
+                        "then AMD, then Intel). 'vulkan' is experimental: it serves one .gguf (--model-path) through Strata's server on a Vulkan "
+                        "card without oneAPI. It uses the native engine, which streams the model's experts; add --vulkan-impl bridge for the faster "
+                        "llama.cpp-Vulkan bridge. The other choices are remembered for the next launch, update and app; 'auto' forgets it")
+    g.add_argument("--vulkan-impl", choices=("native", "bridge"), default="native", help=argparse.SUPPRESS)
+    g.add_argument("--vulkan-slots", type=int, default=2048, metavar="N",
+                   help="native Vulkan engine: expert cache slots (default 2048, about 1.8 GiB; "
+                        "on an Arc B390 with Qwen3.8-35B-A3B-Q4_K_M this measured about 5.5 tok/s versus "
+                        "about 1 tok/s with the earlier 64-slot cache, with other kernel fixes in the same "
+                        "period — see docs/VULKAN.md). Use a smaller number on a machine with less shared memory")
     g.add_argument("--gpu-roles", metavar="LIST", help="a role for each graphics card: main, helper or off, e.g. 1=main,0=helper (cards you do not name are off). "
                    "Main does the last steps of every answer; a helper holds part of the model")
     g.add_argument("--tune", type=_choice("a tuning mode", S.TUNE_MODES), metavar="quick|thorough|skip", help="find the fastest settings first (default: skip)")
@@ -755,7 +763,10 @@ def run_launch(a: argparse.Namespace) -> int:
         return code
 
     try:
-        if a.list_presets:
+        # Management flags answer before any backend branch: `strata launch
+        # --backend vulkan --status/--stop/--show-key` must never start a server.
+        # getattr keeps small hand-built test Namespaces and old callers working.
+        if getattr(a, "list_presets", False):
             items = store.list_presets()
             if machine:
                 print(json.dumps({"schema_version": 1, "ok": True, "presets": [i.to_dict(with_key=False) for i in items]}))
@@ -768,13 +779,13 @@ def run_launch(a: argparse.Namespace) -> int:
                          f"{(str(i.parallel) + ' request' + ('s' if i.parallel != 1 else '')) if i.parallel else 'fit to card':<14} "
                          f"{('tuned ' + (i.tuned_at or '')) if i.is_tuned else 'not tuned':<16} {i.last_used or ''}")
             return 0
-        if a.delete_preset:
+        if getattr(a, "delete_preset", None):
             store.delete(a.delete_preset)
             _say(f"Deleted the preset '{a.delete_preset}'. Models and tuning results were not touched.")
             return 0
-        if a.stop:
+        if getattr(a, "stop", False):
             return _stop_all("launch-" + S.slug(a.preset) if a.preset else None)
-        if a.status:
+        if getattr(a, "status", False):
             rows = running_launches()
             if machine:
                 print(json.dumps({"schema_version": 1, "ok": True, "running": rows}))
@@ -783,7 +794,7 @@ def run_launch(a: argparse.Namespace) -> int:
             for r in rows:
                 _say(f"{r['name']}: {r['state']} at {r['url']}")
             return 0
-        if a.show_key:
+        if getattr(a, "show_key", False):
             info = launch_info(a.preset)
             if info and info.get("key"):
                 _say(info["key"])
@@ -801,6 +812,47 @@ def run_launch(a: argparse.Namespace) -> int:
                 if getattr(a, "model", None):
                     return fail(f"No model set up by setup.py matches '{a.model}' and has an API key, and no launch is running.", 5)
             return fail("There is no API key for that launch." + ("" if a.preset else " Name a preset with --preset NAME, or a model set up by setup.py with --model NAME."), 5)
+
+        # A saved Vulkan preset carries the backend in its `extra`, the same
+        # place Runner applies --set key=value. Honour it when someone starts
+        # the preset by name, so a restart does not need the original flags.
+        if getattr(a, "preset", None) and not getattr(a, "backend", None):
+            try:
+                _preset = store.load(a.preset, missing_ok=True)
+                if _preset and _preset.extra.get("backend") == "vulkan":
+                    a.backend = "vulkan"
+                    if _preset.extra.get("vulkan_impl"):
+                        a.vulkan_impl = _preset.extra["vulkan_impl"]
+                    if not getattr(a, "model_path", None) and _preset.model_path:
+                        a.model_path = _preset.model_path
+                    if not getattr(a, "context", None) and _preset.context:
+                        a.context = _preset.context
+                    if not getattr(a, "port", None):
+                        a.port = _preset.port
+            except Exception:                                  # noqa: BLE001 - the normal flow reports a damaged preset
+                pass
+
+        # Vulkan research path. `strata launch --backend vulkan` starts Strata's
+        # own server with the native Vulkan engine (streamed MoE experts, no
+        # llama.cpp in inference). `--vulkan-impl bridge` keeps the llama.cpp
+        # fallback. It now goes through the same profile/runtime lifecycle as
+        # every other backend, so --status/--stop/--show-key and connect work.
+        if str(getattr(a, "backend", "") or "").strip().lower() == "vulkan":
+            from strata_cli.launch import vulkan_bridge, vulkan_native
+            impl = str(getattr(a, "vulkan_impl", "native") or "native").strip().lower()
+            if impl not in ("native", "bridge"):
+                impl = "native"
+            mod = (vulkan_bridge if impl == "bridge" else vulkan_native)
+            if a.plan:
+                p = mod.plan(a)
+                if machine:
+                    print(json.dumps({"schema_version": 1, "ok": True, "backend": "vulkan", "plan": p,
+                                      "impl": impl}))
+                else:
+                    _say(f"With --backend vulkan Strata would serve {p['gguf']} at {p['url']} "
+                         f"through the {impl} Vulkan engine (no oneAPI). Nothing changes with --plan.")
+                return 0
+            return mod.launch(a)
 
         backend_note = None
         if getattr(a, "backend", None):

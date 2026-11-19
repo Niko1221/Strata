@@ -1,0 +1,24 @@
+// GDN causal depthwise conv4 + SiLU, with the 3-tap state shifted by one.
+// state layout: [K-1][C], tap layout: [C][K].
+#version 450 core
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+layout(std430, binding = 0) readonly buffer Qkv { float qkv[]; };
+layout(std430, binding = 1) buffer State { float st[]; };
+layout(std430, binding = 2) readonly buffer Taps { float w[]; };
+layout(std430, binding = 3) writeonly buffer Out { float outv[]; };
+layout(push_constant) uniform Params { uint p0; uint p1; uint p2; uint p3; uint p4; uint p5; };
+// p0 = C, p1 = K
+
+void main() {
+    const uint C = p0, K = p1;
+    const uint c = gl_GlobalInvocationID.x;
+    if (c >= C) return;
+    float acc = 0.0;
+    for (uint k = 0u; k < K - 1u; ++k) acc += st[k * C + c] * w[c * K + k];
+    acc += qkv[c] * w[c * K + (K - 1u)];
+    for (uint k = 0u; k < K - 2u; ++k) st[k * C + c] = st[(k + 1u) * C + c];
+    st[(K - 2u) * C + c] = qkv[c];
+    const float v = acc;
+    outv[c] = v / (1.0 + exp(-v));
+}

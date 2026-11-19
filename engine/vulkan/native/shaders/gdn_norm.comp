@@ -1,0 +1,32 @@
+// o = rms(o) * w * silu(z), per V head (matches q36ref.cu k_gated_norm).
+#version 450 core
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+layout(std430, binding = 0) buffer O { float o[]; };
+layout(std430, binding = 1) readonly buffer W { float w[]; };
+layout(std430, binding = 2) readonly buffer Z { float z[]; };
+layout(push_constant) uniform Params { uint p0; uint p1; uint p2; uint p3; uint p4; uint p5; };
+// p0 = D, p1 = eps bits
+
+shared float red[8];
+
+void main() {
+    const uint D = p0;
+    const float eps = uintBitsToFloat(p1);
+    const uint h = gl_WorkGroupID.x, lane = gl_LocalInvocationID.x;
+    const uint base = h * D;
+    const float v = o[base + lane];
+    if (lane < 8u) red[lane] = 0.0;
+    barrier();
+    const float sub = subgroupAdd(v * v);
+    if (gl_SubgroupID < 8u && gl_SubgroupInvocationID == 0u) red[gl_SubgroupID] = sub;
+    barrier();
+    float total = 0.0;
+    if (lane == 0u) { for (uint i = 0u; i < 8u; ++i) total += red[i]; red[0] = total; }
+    barrier();
+    total = red[0];
+    const float r = 1.0 / sqrt(total / float(D) + eps);
+    const float zv = z[base + lane];
+    o[base + lane] = v * r * w[lane] * (zv / (1.0 + exp(-zv)));
+}

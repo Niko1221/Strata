@@ -1,0 +1,42 @@
+// Dequantize one row of a Q4_K weight matrix into F32 (token embedding lookup).
+// block_q4_K = 144 bytes per 256 elements; row stride = (k / 256) * 144.
+#version 450 core
+
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+layout(std430, binding = 0) readonly buffer Weights { uint words[]; };
+layout(std430, binding = 2) writeonly buffer Output { float y[]; };
+layout(push_constant) uniform Params { uint p0; uint p1; uint p2; uint p3; uint p4; uint p5; };
+// p0 = row, p1 = k
+
+uint byte_at(uint i) { return (words[i >> 2u] >> ((i & 3u) * 8u)) & 255u; }
+float half_to_float(uint bits) { return unpackHalf2x16(bits).x; }
+void get_scale_min_k4(uint j, uint base, out uint sc, out uint m) {
+    // ggml-quants.c: for j >= 4 the high 2 bits live in q[j-4] / q[j].
+    if (j < 4u) { sc = byte_at(base + j) & 63u; m = byte_at(base + 4u + j) & 63u; }
+    else {
+        sc = (byte_at(base + 4u + j) & 15u) | ((byte_at(base + j - 4u) >> 6u) << 4u);
+        m  = (byte_at(base + 4u + j) >> 4u) | ((byte_at(base + j) >> 6u) << 4u);
+    }
+}
+
+void main() {
+    const uint row = p0, k = p1;
+    const uint row_base = row * (k / 256u) * 144u;
+    // one invocation dequantizes one 32-element chunk
+    for (uint chunk = gl_GlobalInvocationID.x; chunk < k / 32u; chunk += 128u) {
+        const uint blk = chunk / 8u;   // 256-element super-block
+        const uint sub = chunk % 8u;   // 32-element chunk inside it
+        const uint boff = row_base + blk * 144u;
+        const float d = half_to_float(byte_at(boff) | (byte_at(boff + 1u) << 8u));
+        const float dmin = half_to_float(byte_at(boff + 2u) | (byte_at(boff + 3u) << 8u));
+        uint sc, m;
+        get_scale_min_k4(sub, boff + 4u, sc, m);
+        const float d1 = d * float(sc), m1 = dmin * float(m);
+        const uint qb = boff + 16u + (sub / 2u) * 32u;
+        for (uint l = 0u; l < 32u; ++l) {
+            const uint byte = byte_at(qb + l);
+            const uint q = ((sub & 1u) != 0u) ? (byte >> 4u) : (byte & 15u);
+            y[blk * 256u + sub * 32u + l] = d1 * float(q) - m1;
+        }
+    }
+}

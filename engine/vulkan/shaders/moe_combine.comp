@@ -1,0 +1,28 @@
+// Routed + shared MoE combine, pinned by SYCL's shared_expert_parity.cpp:
+//   out[j] = sum_e weights[e] * parts[e*dim + j] + (has_shared ? shared[j] : 0)
+// The routed terms ARE weighted; the shared expert is added UNWEIGHTED.
+// A null `shared` means "no shared expert", not "add an undefined vector".
+#version 450 core
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, binding = 0) readonly buffer Parts { float parts[]; };
+layout(std430, binding = 1) readonly buffer Weights { float weights[]; };
+layout(std430, binding = 2) readonly buffer SharedExpert { float shared_vals[]; };
+layout(std430, binding = 3) writeonly buffer Result { float dst[]; };
+
+layout(push_constant) uniform Params {
+    uint dim;
+    uint n_experts;
+    uint has_shared;
+};
+
+void main() {
+    const uint j = gl_GlobalInvocationID.x;
+    if (j >= dim) return;
+    float sum = 0.0;
+    for (uint e = 0u; e < n_experts; ++e)
+        sum += weights[e] * parts[e * dim + j];
+    if (has_shared != 0u) sum += shared_vals[j];
+    dst[j] = sum;
+}

@@ -1,0 +1,85 @@
+// Wide (k up to 4096) Q6_K GEMV for dense projections.
+// One workgroup computes one output row of a [n_rows x k] expert weight matrix.
+// This is the shader for ffn_down_exps when ggml stores them as Q6_K (type 14).
+// It mirrors expert_q4_k_gemv.comp: weights come through a dynamic storage-buffer
+// offset, so any cache slot can be addressed without rebinding descriptors.
+#version 450 core
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, binding = 0) readonly buffer Weights { uint words[]; };
+layout(std430, binding = 1) readonly buffer Activations { float x[]; };
+layout(std430, binding = 2) writeonly buffer Output { float y[]; };
+
+layout(push_constant) uniform Params {
+    uint n_rows;   // output rows of this expert (2048 for ffn_down_exps here)
+    uint k;        // input width (512 for ffn_down_exps here, multiple of 256)
+};
+
+// 8-bit storage is avoided on purpose: byte extraction from uint words works on
+// every Vulkan 1.1+ implementation, including the B390's Mesa ANV driver.
+uint byte_at(uint i) { return (words[i >> 2u] >> ((i & 3u) * 8u)) & 255u; }
+
+shared float partial[8];
+
+float half_to_float(uint bits) { return unpackHalf2x16(bits).x; }
+
+void main() {
+    const uint row = gl_WorkGroupID.x;
+    if (row >= n_rows) return;
+
+    const uint lane = gl_LocalInvocationID.x;
+    const uint e0 = lane * 32u;   // one 32-element Q6_K slice per lane
+    // block_q6_K = 210 bytes per 256 elements (ggml-common.h).
+    const uint row_base = row * (k / 256u) * 210u;
+    float acc = 0.0;
+
+    // The slice index g and the block's d are constant across a lane's 32
+    // elements, so unpack them once. Lanes beyond k still reach the barrier
+    // below with acc == 0.
+    if (e0 < k) {
+        const uint blk    = e0 / 256u;     // Q6_K super-block
+        const uint within = e0 % 256u;
+        const uint hblk   = within / 128u; // Q6_K dequant walks two 128-wide halves
+        const uint g      = (within % 128u) / 32u;  // 0..3, constant for this lane
+
+        const uint boff = row_base + blk * 210u;
+
+        // ggml block_q6_K layout: ql[128], qh[64], scales[16] (int8), d (half).
+        const uint ql_base = boff + hblk * 64u + (((g & 1u) != 0u) ? 32u : 0u);
+        const uint qh_base = boff + 128u + hblk * 32u;
+        const uint sc_base = boff + 192u + hblk * 8u + g * 2u;
+        const uint d_off   = boff + 208u;
+        const bool high_nibble = g >= 2u;
+        const uint shift = 2u * g;
+        const float d = half_to_float(byte_at(d_off) | (byte_at(d_off + 1u) << 8u));
+
+        for (uint i = 0; i < 32u; ++i) {
+            const uint e = e0 + i;
+            if (e >= k) break;
+            const uint l = i;  // (e0 % 32) == 0
+            const uint ql_byte = byte_at(ql_base + l);
+            const uint nib = high_nibble ? (ql_byte >> 4u) : (ql_byte & 15u);
+            const uint hi  = (byte_at(qh_base + l) >> shift) & 3u;
+            // ggml: (int8_t)(nib | hi<<4) - 32, a signed 6-bit value in [-32, 31].
+            const int q = int(nib | (hi << 4u)) - 32;
+            const int sc_raw = int(byte_at(sc_base + l / 16u));
+            const int sc = (sc_raw >= 128) ? (sc_raw - 256) : sc_raw; // int8 sign extension
+            acc += d * float(sc) * float(q) * x[e];
+        }
+    }
+
+    // Reduce across the workgroup (any subgroup width works here).
+    // Zero the shared slots first: unused subgroups must contribute 0, not junk.
+    if (gl_LocalInvocationID.x < 8u) partial[gl_LocalInvocationID.x] = 0.0;
+    barrier();
+    const float s = subgroupAdd(acc);
+    if (gl_SubgroupID < 8u && gl_SubgroupInvocationID == 0u) partial[gl_SubgroupID] = s;
+    barrier();
+    if (gl_LocalInvocationID.x == 0u) {
+        float total = 0.0;
+        for (uint i = 0; i < 8u; ++i) total += partial[i];
+        y[row] = total;
+    }
+}

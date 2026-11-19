@@ -1,0 +1,91 @@
+// Wide (k up to 4096) Q4_K GEMV for dense projections.
+// One workgroup computes one output row of a [n_rows x k] expert weight matrix.
+// Weights are read through a dynamic storage-buffer offset, so the same binding
+// addresses any slot of the expert cache pool without rebinding descriptors.
+#version 450 core
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, binding = 0) readonly buffer Weights { uint words[]; };
+layout(std430, binding = 1) readonly buffer Activations { float x[]; };
+layout(std430, binding = 2) writeonly buffer Output { float y[]; };
+
+layout(push_constant) uniform Params {
+    uint n_rows;   // rows in this expert (e.g. 2048 for ffn_gate_exps)
+    uint k;        // columns / activation length (multiple of 256)
+};
+
+// 8-bit storage is avoided on purpose: byte extraction from uint words works on
+// every Vulkan 1.1+ implementation, including the B390's Mesa ANV driver.
+uint byte_at(uint i) { return (words[i >> 2u] >> ((i & 3u) * 8u)) & 255u; }
+
+shared float partial[8];
+
+float half_to_float(uint bits) { return unpackHalf2x16(bits).x; }
+
+// ggml's get_scale_min_k4: packed scales/mins, 6-bit for groups 0..3,
+// 4-bit for groups 4..7. `base` points at the block's scales[] array.
+void get_scale_min_k4(uint j, uint base, out uint sc, out uint m) {
+    // ggml-quants.c get_scale_min_k4: for j >= 4 the high 2 bits of the 6-bit
+    // scale/min live in the top bits of q[j-4] / q[j]. The old shortcut
+    // (sc = q[j] & 15, m = q[j] >> 4) silently mis-dequantized half the block.
+    if (j < 4u) {
+        sc = byte_at(base + j) & 63u;
+        m  = byte_at(base + 4u + j) & 63u;
+    } else {
+        sc = (byte_at(base + 4u + j) & 15u) | ((byte_at(base + j - 4u) >> 6u) << 4u);
+        m  = (byte_at(base + 4u + j) >> 4u) | ((byte_at(base + j) >> 6u) << 4u);
+    }
+}
+
+void main() {
+    const uint row = gl_WorkGroupID.x;
+    if (row >= n_rows) return;
+
+    const uint lane = gl_LocalInvocationID.x;
+    const uint e0 = lane * 32u;   // one 32-element Q4_K sub-block per lane
+    const uint row_base = row * (k / 256u) * 144u;   // Q4_K row stride
+    float acc = 0.0;
+
+    // A lane's 32 elements always share one super-block, group and scale/min
+    // pair. Load and unpack them once instead of once per element; the math per
+    // element and the accumulation order are unchanged. Lanes beyond k still
+    // reach the barrier below with acc == 0.
+    if (e0 < k) {
+        const uint blk    = e0 / 256u;
+        const uint boff   = row_base + blk * 144u; // sizeof(block_q4_K)
+        const uint within = e0 % 256u;
+        const uint group  = within / 64u;         // 4 groups of 64 per block
+        const uint sub    = (within % 64u) / 32u; // two scale/min pairs
+
+        const float d    = half_to_float(byte_at(boff)      | (byte_at(boff + 1u) << 8u));
+        const float dmin = half_to_float(byte_at(boff + 2u) | (byte_at(boff + 3u) << 8u));
+
+        uint sc, m;
+        get_scale_min_k4(group * 2u + sub, boff + 4u, sc, m);
+
+        const uint qb_base = boff + 16u + group * 32u;
+        const bool high_nibble = (within % 64u) >= 32u;
+        for (uint i = 0; i < 32u; ++i) {
+            const uint e = e0 + i;
+            if (e >= k) break;
+            const uint qb = qb_base + i;   // (e0 % 32) == 0
+            const uint nib = high_nibble ? (byte_at(qb) >> 4u) : (byte_at(qb) & 15u);
+            acc += (d * float(sc) * float(nib) - dmin * float(m)) * x[e];
+        }
+    }
+
+    // Reduce across the workgroup (any subgroup width works here).
+    // Zero the shared slots first: unused subgroups must contribute 0, not junk.
+    if (gl_LocalInvocationID.x < 8u) partial[gl_LocalInvocationID.x] = 0.0;
+    barrier();
+    const float s = subgroupAdd(acc);
+    if (gl_SubgroupID < 8u && gl_SubgroupInvocationID == 0u) partial[gl_SubgroupID] = s;
+    barrier();
+    if (gl_LocalInvocationID.x == 0u) {
+        float total = 0.0;
+        for (uint i = 0; i < 8u; ++i) total += partial[i];
+        y[row] = total;
+    }
+}

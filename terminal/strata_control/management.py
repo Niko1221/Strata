@@ -486,8 +486,9 @@ def dispatch(request: object) -> dict:
                   outcome["application" if action == "calibration.apply" else "rollback"]}
     elif action == "components.inspect":
         live = _boolean(params["live"], "live")
+        want_vulkan = _boolean(params["vulkan"], "vulkan") if "vulkan" in params else False
         source, _, _ = profiles.resolve(profile)
-        result = {"ok": True, "report": doctor.inspect(source, profile_id=profile, live=live)}
+        result = {"ok": True, "report": doctor.inspect(source, profile_id=profile, live=live, vulkan=want_vulkan)}
     elif action == "models.installed":
         profiles.load(profile)
         result = {"ok": True, "inventory": models.list_installed()}

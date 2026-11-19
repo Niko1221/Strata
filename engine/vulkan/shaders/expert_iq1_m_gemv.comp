@@ -1,0 +1,83 @@
+// IQ1_M expert matvec for Strata's Vulkan expert-streaming tier.
+// F32 activations, ggml dequantization of the 56-byte-per-256 block.
+//
+// block_iq1_m (ggml-common.h): qs[32] at 0, qh[16] at 32, scales[8] at 48
+// = 56 B / 256 elements. The block scale is a half reconstructed from the top
+// 4 bits of each of the four uint16 words in scales[].
+#version 450 core
+#extension GL_GOOGLE_include_directive : enable
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+#include "iq_tables.glsl"
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, binding = 0) readonly buffer Weights { uint words[]; };
+layout(std430, binding = 1) readonly buffer Activations { float x[]; };
+layout(std430, binding = 2) writeonly buffer Output { float y[]; };
+
+layout(push_constant) uniform Params {
+    uint n_rows;
+    uint k;
+};
+
+uint byte_at(uint i) { return (words[i >> 2u] >> ((i & 3u) * 8u)) & 255u; }
+uint word16_at(uint i) { return byte_at(i) | (byte_at(i + 1u) << 8u); }
+float half_to_float(uint bits) { return unpackHalf2x16(bits).x; }
+
+shared float partial[8];
+
+void main() {
+    const uint row = gl_WorkGroupID.x;
+    if (row >= n_rows) return;
+    const uint row_base = row * (k / 256u) * 56u;
+    const uint lane = gl_LocalInvocationID.x;
+    float acc = 0.0;
+
+    for (uint e = lane; e < k; e += 64u) {
+        const uint blk_base = row_base + (e / 256u) * 56u;
+        const uint within = e % 256u;
+        const uint ib = within / 32u;            // 0..7
+        const uint l = (within % 32u) / 8u;      // 0..3 (which 8-element grid)
+        const uint j = within % 8u;              // 0..7
+
+        // scale.u16 = (sc[0]>>12) | ((sc[1]>>8)&0xf0) | ((sc[2]>>4)&0xf00) | (sc[3]&0xf000)
+        const uint s0 = word16_at(blk_base + 48u);
+        const uint s1 = word16_at(blk_base + 50u);
+        const uint s2 = word16_at(blk_base + 52u);
+        const uint s3 = word16_at(blk_base + 54u);
+        const uint scale_bits = (s0 >> 12u) | ((s1 >> 8u) & 0x00f0u)
+                              | ((s2 >> 4u) & 0x0f00u) | (s3 & 0xf000u);
+        const float d = half_to_float(scale_bits);
+        // dl1/dl2 use sc[ib/2], i.e. the uint16 at scales[2*(ib/2)] (offset 48).
+        const uint sc = word16_at(blk_base + 48u + 2u * (ib >> 1u));
+        const uint shift = 6u * (ib % 2u);
+        const float dl = (l < 2u)
+            ? d * (2.0f * float((sc >> (shift + 0u)) & 7u) + 1.0f)
+            : d * (2.0f * float((sc >> (shift + 3u)) & 7u) + 1.0f);
+
+        // qh[16] starts at 32, qs[32] at 0.
+        const uint qh0 = byte_at(blk_base + 32u + 2u * ib);
+        const uint qh1 = byte_at(blk_base + 32u + 2u * ib + 1u);
+        const uint q = byte_at(blk_base + 4u * ib + l);
+        const uint idx = l < 2u ? (q | ((qh0 << (l == 0u ? 8u : 4u)) & 0x700u))
+                                : (q | ((qh1 << (l == 2u ? 8u : 4u)) & 0x700u));
+        const uint delta_bit = l < 2u ? ((l == 0u) ? 0x08u : 0x80u)
+                                      : ((l == 2u) ? 0x08u : 0x80u);
+        const bool neg = ((l < 2u ? qh0 : qh1) & delta_bit) != 0u;
+        const float delta = neg ? -0.125f : 0.125f;
+        const uint grid_byte = idx * 8u + j;
+        const int grid = iq_sbyte(IQ1S_GRID_U32[grid_byte >> 2u], grid_byte & 3u);
+        acc += dl * (float(grid) + delta) * x[e];
+    }
+
+    if (gl_LocalInvocationID.x < 8u) partial[gl_LocalInvocationID.x] = 0.0;
+    barrier();
+    const float sum = subgroupAdd(acc);
+    if (gl_SubgroupID < 8u && gl_SubgroupInvocationID == 0u) partial[gl_SubgroupID] = sum;
+    barrier();
+    if (gl_LocalInvocationID.x == 0u) {
+        float total = 0.0;
+        for (uint i = 0u; i < 8u; ++i) total += partial[i];
+        y[row] = total;
+    }
+}

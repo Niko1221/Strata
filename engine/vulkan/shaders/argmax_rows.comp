@@ -1,0 +1,48 @@
+// Greedy argmax over many vocabulary rows. The rule pinned by
+// verify_parity.cpp: strict `>` so ties go to the LOWEST index, NaN is never
+// selected, and a row with no value above -inf yields 0.
+#version 450 core
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, binding = 0) readonly buffer Logits { float logits[]; };
+layout(std430, binding = 1) writeonly buffer Ids { int ids[]; };
+
+layout(push_constant) uniform Params {
+    uint n;
+    uint rows;
+};
+
+shared float best_val[256];
+shared uint best_idx[256];
+
+void main() {
+    const uint r = gl_WorkGroupID.x;
+    if (r >= rows) return;
+    const uint lane = gl_LocalInvocationID.x;
+    const uint base = r * n;
+
+    float bv = -1.0 / 0.0;  // -inf
+    uint bi = 0u;
+    for (uint i = lane; i < n; i += 256u) {
+        const float v = logits[base + i];
+        // v > bv is false for NaN, so NaNs are skipped; strict > keeps the
+        // lower index on ties.
+        if (v > bv) { bv = v; bi = i; }
+    }
+    best_val[lane] = bv;
+    best_idx[lane] = bi;
+    barrier();
+    for (uint stride = 128u; stride > 0u; stride >>= 1u) {
+        if (lane < stride) {
+            const float a = best_val[lane], b = best_val[lane + stride];
+            const uint ia = best_idx[lane], ib = best_idx[lane + stride];
+            if (b > a || (b == a && ib < ia)) {
+                best_val[lane] = b;
+                best_idx[lane] = ib;
+            }
+        }
+        barrier();
+    }
+    if (lane == 0u) ids[r] = int(best_idx[0]);
+}

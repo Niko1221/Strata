@@ -1,0 +1,13 @@
+// In-place residual add: x[i] += y[i].
+#version 450 core
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+layout(std430, binding = 0) buffer X { float x[]; };
+layout(std430, binding = 1) readonly buffer Y { float y[]; };
+layout(push_constant) uniform Params { uint p0; uint p1; uint p2; uint p3; uint p4; uint p5; };
+// p0 = n
+
+void main() {
+    const uint i = gl_GlobalInvocationID.x;
+    if (i < p0) x[i] += y[i];
+}

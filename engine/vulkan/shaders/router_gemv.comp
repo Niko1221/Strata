@@ -1,0 +1,35 @@
+// MoE router GEMV: logits[e] = sum_h W[e,k+h] * x[h].
+// W is a plain F32 tensor (blk.N.ffn_gate_inp.weight, [2048,256] in Qwen3.8).
+// One workgroup per expert; a workgroup reduction avoids relying on subgroup size.
+#version 450 core
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, binding = 0) readonly buffer Weights { float w[]; };
+layout(std430, binding = 1) readonly buffer Activations { float x[]; };
+layout(std430, binding = 2) writeonly buffer Logits { float y[]; };
+
+layout(push_constant) uniform Params {
+    uint n_experts;
+    uint k;
+};
+
+shared float partial[64];
+
+void main() {
+    const uint e = gl_WorkGroupID.x;
+    if (e >= n_experts) return;
+    const uint lane = gl_LocalInvocationID.x;
+
+    float sum = 0.0;
+    for (uint h = lane; h < k; h += 64u)
+        sum += w[e * k + h] * x[h];
+
+    partial[lane] = sum;
+    barrier();
+    for (uint stride = 32u; stride > 0u; stride >>= 1u) {
+        if (lane < stride) partial[lane] += partial[lane + stride];
+        barrier();
+    }
+    if (lane == 0u) y[e] = partial[0];
+}

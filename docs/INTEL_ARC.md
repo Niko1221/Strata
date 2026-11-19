@@ -174,9 +174,15 @@ Things that matter on an Arc (details in [INTEL.md](INTEL.md)):
 Two cards on `xe` (2x Arc Pro B70, IQ3_S, 0.1.44): `--layer-split auto` picked a split at about 11 tok/s where
 `--layer-split 30` ran about 54. The auto choice now prefers the split with the most VRAM headroom (above).
 
-**Not tested by anyone:** Windows (no native build path), Arc on WSL2 with the current engine, integrated Arc GPUs (the B390 /
-Panther Lake in #515; shared-memory planning does not exist), and pictures on a Battlemage card with a GPU reader. Pictures work
-on the A750 (on by default, read on the CPU). See [INTEL.md](INTEL.md#pictures-on-an-arc).
+**Not tested by anyone:** Windows (no native build path), Arc on WSL2 with the current engine, and pictures on a Battlemage card
+with a GPU reader. Pictures work on the A750 (on by default, read on the CPU). See [INTEL.md](INTEL.md#pictures-on-an-arc).
+
+**Integrated Arc GPUs (B390 / Panther Lake):** the SYCL port above has no shared-memory-aware planner, so it is not validated on
+an iGPU (issue #515). A separate **Vulkan research path** does run on the B390 with Vulkan and C++17 only, without oneAPI or
+Level Zero. It streams experts from the GGUF and serves Qwen3.8-35B-A3B through `strata launch --backend vulkan`, but it is a
+research preview: about 5.5 tokens/s in the native engine on the B390 (the llama.cpp bridge is faster but does not stream
+experts), no prompt batching, and no released engine package. See
+[Vulkan expert streaming](VULKAN.md). The measurements below do not include this path.
 
 ## Windows
 

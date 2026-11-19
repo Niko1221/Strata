@@ -1,0 +1,23 @@
+// SiLU(x) * up elementwise activation for the MoE expert forward.
+// First kernel of the native port that moves off the CPU: the test previously
+// computed `silu(gate[i]) * up[i]` in a C++ loop; this shader does it on the
+// Vulkan compute queue. Each invocation handles one element of down->k.
+#version 450 core
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, binding = 0) readonly buffer Gate { float g[]; };
+layout(std430, binding = 1) readonly buffer Up   { float u[]; };
+layout(std430, binding = 2) writeonly buffer Out { float y[]; };
+
+layout(push_constant) uniform Params {
+    uint n;        // number of elements (down->k, e.g. 2048)
+    uint pad;      // keeps the 8-byte push-constant layout of the matvec shaders
+};
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= n) return;
+    float v = g[i];
+    y[i] = (v / (1.0 + exp(-v))) * u[i];
+}

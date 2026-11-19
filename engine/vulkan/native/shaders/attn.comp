@@ -1,0 +1,81 @@
+// Dense GQA attention with an output gate (q36ref.cu k_attn), two passes over
+// the positions so no shared score array is needed (works for any context).
+#version 450 core
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+layout(std430, binding = 0) readonly buffer Q { float q[]; };
+layout(std430, binding = 1) readonly buffer Kc { float kc[]; };
+layout(std430, binding = 2) readonly buffer Vc { float vc[]; };
+layout(std430, binding = 3) readonly buffer Gate { float gate[]; };
+layout(std430, binding = 4) writeonly buffer Out { float outv[]; };
+layout(push_constant) uniform Params { uint p0; uint p1; uint p2; uint p3; uint p4; uint p5; uint p6; };
+// p0 = H, p1 = HKV, p2 = D, p3 = n_pos, p4 = ctx, p5 = scale bits
+
+shared float red[8];
+
+float reduce_add(float v) {
+    const uint lane = gl_LocalInvocationID.x;
+    if (lane < 8u) red[lane] = 0.0;
+    barrier();
+    const float sub = subgroupAdd(v);
+    if (gl_SubgroupID < 8u && gl_SubgroupInvocationID == 0u) red[gl_SubgroupID] = sub;
+    barrier();
+    float total = 0.0;
+    if (lane == 0u) { for (uint i = 0u; i < 8u; ++i) total += red[i]; red[0] = total; }
+    barrier();
+    const float result = red[0];
+    barrier();
+    return result;
+}
+float reduce_max(float v) {
+    const uint lane = gl_LocalInvocationID.x;
+    if (lane < 8u) red[lane] = -1e30;
+    barrier();
+    const float sub = subgroupMax(v);
+    if (gl_SubgroupID < 8u && gl_SubgroupInvocationID == 0u) red[gl_SubgroupID] = sub;
+    barrier();
+    float total = -1e30;
+    if (lane == 0u) { for (uint i = 0u; i < 8u; ++i) total = max(total, red[i]); red[0] = total; }
+    barrier();
+    const float result = red[0];
+    barrier();
+    return result;
+}
+
+void main() {
+    const uint H = p0, HKV = p1, D = p2, n_pos = p3, ctx = p4;
+    const float scale = uintBitsToFloat(p5);
+    const uint h = gl_WorkGroupID.x, kvh = h / (H / HKV), lane = gl_LocalInvocationID.x;
+    const uint qb = h * D;
+
+    float mx = -1e30;
+    for (uint p = lane; p < n_pos; p += 128u) {
+        const uint kb = (kvh * ctx + p) * D;
+        float s = 0.0;
+        for (uint i = 0u; i < D; ++i) s += q[qb + i] * kc[kb + i];
+        mx = max(mx, s * scale);
+    }
+    mx = reduce_max(mx);
+
+    float sum = 0.0;
+    for (uint p = lane; p < n_pos; p += 128u) {
+        const uint kb = (kvh * ctx + p) * D;
+        float s = 0.0;
+        for (uint i = 0u; i < D; ++i) s += q[qb + i] * kc[kb + i];
+        sum += exp(s * scale - mx);
+    }
+    sum = reduce_add(sum);
+
+    for (uint i = lane; i < D; i += 128u) {
+        float acc = 0.0;
+        for (uint p = 0u; p < n_pos; ++p) {
+            const uint kb = (kvh * ctx + p) * D;
+            float s = 0.0;
+            for (uint j = 0u; j < D; ++j) s += q[qb + j] * kc[kb + j];
+            acc += exp(s * scale - mx) * vc[kb + i];
+        }
+        const float gv = gate[qb + i];
+        outv[qb + i] = acc / sum * (1.0 / (1.0 + exp(-gv)));
+    }
+}

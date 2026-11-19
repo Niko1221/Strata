@@ -1,0 +1,40 @@
+// BF16 GEMV: y[o] = sum_i bf16(x[i]) * bf16(w[o*n_in + i]).
+// Weights and activations arrive as the high 16 bits of an f32, zero-extended
+// to uint32 by the host (std430 has no portable 16-bit integer arrays).
+// bf16 -> f32 is exact: shift the bits left by 16 and reinterpret.
+// One workgroup per output row; a 64-lane workgroup reduction avoids relying
+// on the subgroup size (Intel defaults to 16).
+#version 450 core
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, binding = 0) readonly buffer Activations { uint x[]; };
+layout(std430, binding = 1) readonly buffer Weights { uint w[]; };
+layout(std430, binding = 2) writeonly buffer Result { float y[]; };
+
+layout(push_constant) uniform Params {
+    uint n_in;
+    uint n_out;
+};
+
+shared float partial[64];
+
+void main() {
+    const uint o = gl_WorkGroupID.x;
+    if (o >= n_out) return;
+    const uint lane = gl_LocalInvocationID.x;
+
+    float sum = 0.0;
+    for (uint i = lane; i < n_in; i += 64u) {
+        const float xv = uintBitsToFloat(x[i] << 16u);
+        const float wv = uintBitsToFloat(w[o * n_in + i] << 16u);
+        sum += xv * wv;
+    }
+    partial[lane] = sum;
+    barrier();
+    for (uint stride = 32u; stride > 0u; stride >>= 1u) {
+        if (lane < stride) partial[lane] += partial[lane + stride];
+        barrier();
+    }
+    if (lane == 0u) y[o] = partial[0];
+}

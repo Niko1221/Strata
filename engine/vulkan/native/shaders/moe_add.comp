@@ -1,0 +1,21 @@
+// x += sum_s w[s] * parts[s*n + i] + shared[i].
+// `shared` is the output of ExpertStream::shared_forward(), which already
+// applies the scalar sigmoid gate. Fuses q36ref.cu k_moe_sum into the add.
+#version 450 core
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+layout(std430, binding = 0) buffer X { float x[]; };
+layout(std430, binding = 1) readonly buffer Parts { float parts[]; };
+layout(std430, binding = 2) readonly buffer Wts { float wts[]; };
+layout(std430, binding = 3) readonly buffer Shared { float sh[]; };
+layout(push_constant) uniform Params { uint p0; uint p1; uint p2; uint p3; uint p4; uint p5; };
+// p0 = n, p1 = k
+
+void main() {
+    const uint n = p0, k = p1;
+    const uint i = gl_GlobalInvocationID.x;
+    if (i >= n) return;
+    float acc = 0.0;
+    for (uint s = 0u; s < k; ++s) acc += wts[s] * parts[s * n + i];
+    x[i] += acc + sh[i];
+}

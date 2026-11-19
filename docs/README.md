@@ -24,6 +24,7 @@ Use the guide for your GPU and operating system. Model and feature support can d
 | AMD Radeon (RX and AI PRO R9700) | [AMD / HIP](AMD_HIP.md) |
 | AMD Ryzen AI Max / Strix Halo | [Strix Halo](STRIX_HALO.md), [on Windows](STRIX_HALO_WINDOWS.md) |
 | Intel Arc on Linux | [Intel Arc](INTEL_ARC.md) |
+| Intel Arc B390 iGPU — Vulkan research preview | [Vulkan expert streaming](VULKAN.md) |
 | Apple Silicon | [Mac / Metal](MAC.md) |
 | More than one GPU | [Multiple GPUs](MULTI_GPU.md) |
 | Two cards: one reads the prompt, one makes the answer (opt-in) | [Split serving](SPLIT_SERVE.md) |

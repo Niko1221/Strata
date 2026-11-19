@@ -1,0 +1,70 @@
+// IQ3_XXS expert matvec for Strata's Vulkan expert-streaming tier.
+// F32 activations, ggml dequantization of the 98-byte-per-256 block.
+//
+// block_iq3_xxs (ggml-common.h): ggml_half d (2 B) + qs[64] (2 B per 8 elems)
+// + scales_and_signs[32] (4 B per 32 elems) = 98 B / 256 elements.
+// The grid tables are generated from ggml-common.h into iq_tables.glsl.
+#version 450 core
+#extension GL_GOOGLE_include_directive : enable
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+#include "iq_tables.glsl"
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, binding = 0) readonly buffer Weights { uint words[]; };
+layout(std430, binding = 1) readonly buffer Activations { float x[]; };
+layout(std430, binding = 2) writeonly buffer Output { float y[]; };
+
+layout(push_constant) uniform Params {
+    uint n_rows;
+    uint k;
+};
+
+uint byte_at(uint i) { return (words[i >> 2u] >> ((i & 3u) * 8u)) & 255u; }
+float half_to_float(uint bits) { return unpackHalf2x16(bits).x; }
+
+shared float partial[8];
+
+void main() {
+    const uint row = gl_WorkGroupID.x;
+    if (row >= n_rows) return;
+    const uint row_base = row * (k / 256u) * 98u;
+    const uint lane = gl_LocalInvocationID.x;
+    float acc = 0.0;
+
+    for (uint e = lane; e < k; e += 64u) {
+        const uint blk_base = row_base + (e / 256u) * 98u;
+        const uint within = e % 256u;
+        const uint ib32 = within / 32u;          // 0..7
+        const uint l = (within % 32u) / 8u;      // 0..3
+        const uint j = within % 8u;              // 0..7
+
+        const uint d_bits = byte_at(blk_base) | (byte_at(blk_base + 1u) << 8u);
+        const float d = half_to_float(d_bits);
+        // ggml's scales_and_signs = qs + QK_K/4, i.e. block byte 2 + 64 = 66.
+        // It memcpy's 4 bytes at scales_and_signs + 4*ib32 into aux32.
+        const uint aux = byte_at(blk_base + 66u + 4u * ib32)
+                       | (byte_at(blk_base + 67u + 4u * ib32) << 8u)
+                       | (byte_at(blk_base + 68u + 4u * ib32) << 16u)
+                       | (byte_at(blk_base + 69u + 4u * ib32) << 24u);
+        const float db = d * (0.5f + float(aux >> 28u)) * 0.5f;
+        const uint sign_index = (aux >> (7u * l)) & 127u;
+        const uint signs = iq_byte(KSIGNS_IQ2XS_U32[sign_index >> 2u], sign_index & 3u);
+        const uint grid_entry = byte_at(blk_base + 2u + 8u * ib32 + 2u * l + (j >= 4u ? 1u : 0u));
+        const uint grid_byte = grid_entry * 4u + (j >= 4u ? j - 4u : j);
+        const float g = float(iq_byte(IQ3XXS_GRID_U32[grid_byte >> 2u], grid_byte & 3u));
+        const float s = (signs & (1u << j)) != 0u ? -1.0f : 1.0f;
+        acc += db * g * s * x[e];
+    }
+
+    if (gl_LocalInvocationID.x < 8u) partial[gl_LocalInvocationID.x] = 0.0;
+    barrier();
+    const float sum = subgroupAdd(acc);
+    if (gl_SubgroupID < 8u && gl_SubgroupInvocationID == 0u) partial[gl_SubgroupID] = sum;
+    barrier();
+    if (gl_LocalInvocationID.x == 0u) {
+        float total = 0.0;
+        for (uint i = 0u; i < 8u; ++i) total += partial[i];
+        y[row] = total;
+    }
+}
