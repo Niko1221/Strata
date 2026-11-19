@@ -139,12 +139,16 @@ def memory_policy(cfg: dict[str, Any]) -> dict[str, Any]:
     flags = {}
     for flag, value in zip(args, args[1:]):
         if (flag.startswith(("--conversation-cache-", "--conversation-spill-", "--prompt-cache-"))
-                or flag in ("--ram-keep-gib", "--prompt-cache")) and not value.startswith("--"):
+                or flag in ("--ram-keep-gib", "--resident-budget-gib", "--prompt-cache")) and not value.startswith("--"):
             flags[flag] = value
-    flags.update({flag: True for flag in ("--prompt-cache-tail", "--prompt-cache-spread") if flag in args})
-    env = cfg.get("env") or {}
-    return {"args": flags, "env": {key: str(env[key]) for key in
-            ("STRATA_RAM_KEEP_GIB", "STRATA_RESIDENT_HEADROOM_GIB") if key in env}}
+    switches = ("--prompt-cache-tail", "--prompt-cache-spread", "--resident-experts",
+                "--resident-cpu-experts", "--mmap-experts")
+    flags.update({flag: True for flag in switches if flag in args})
+    configured = cfg.get("env") or {}
+    reserve_names = ("STRATA_RAM_KEEP_GIB", "STRATA_RESIDENT_HEADROOM_GIB")
+    env = {key: str(configured[key]) if key in configured else os.environ[key]
+           for key in reserve_names if key in configured or key in os.environ}
+    return {"args": flags, "env": env}
 
 
 def engine_changed(old: dict[str, Any], new: dict[str, Any]) -> bool:
