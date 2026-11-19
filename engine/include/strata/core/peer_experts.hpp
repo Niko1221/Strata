@@ -109,6 +109,9 @@ public:
     bool autonomous() const { return autonomous_; }
     void set_autonomous(bool on) { autonomous_ = on; }
     double gib() const { return cache_.gib(); }
+    int64_t slots() const { return cache_.slots(); }
+    int64_t bytes() const { return cache_.bytes(); }
+    const ExpertCache& cache() const { return cache_; }
     int64_t entries() const { return entries_; }      ///< routed entries the peer computed
     int64_t experts() const { return experts_; }      ///< distinct (layer, expert) the peer computed
     int64_t swaps() const { return swaps_; }
