@@ -1,0 +1,40 @@
+================ arm pipe ================
+--- fixed bench (4 requests) ---
+ab-pipe run 1: prompt_n 80 prompt_tps 33.2 gen_tps 44.8 drafts 73 / 105
+ab-pipe run 2: prompt_n 5 prompt_tps 83.2 gen_tps 60.0 drafts 71 / 108
+ab-pipe run 3: prompt_n 5 prompt_tps 92.8 gen_tps 74.5 drafts 73 / 104
+ab-pipe run 4: prompt_n 5 prompt_tps 94.9 gen_tps 85.1 drafts 73 / 102
+--- 400-token decode + card busy ---
+  drm card0 (HIP 1): busy avg 24.0% max 81% | power avg 51 W max 178 W
+  drm card1 (HIP 0): busy avg 38.4% max 100% | power avg 59 W max 152 W
+  long 400: prompt_n 76 gen_tps 59.8 tokens 400
+--- 128-token output capture (the bench prompt) ---
+  128: gen_tps 78.1 len 597
+strata verify: capturing the 1-token window (2932 MiB of VRAM free)
+strata verify: capturing the 2-token window (2930 MiB of VRAM free)
+strata verify: capturing the 3-token window (2928 MiB of VRAM free)
+strata verify: capturing the 4-token window (2926 MiB of VRAM free)
+strata verify: capturing the 5-token window (2924 MiB of VRAM free)
+strata verify: capturing the 6-token window (2922 MiB of VRAM free)
+================ arm ep ================
+--- fixed bench (4 requests) ---
+ab-ep run 1: prompt_n 80 prompt_tps 28.3 gen_tps 84.8 drafts 74 / 97
+ab-ep run 2: prompt_n 5 prompt_tps 132.6 gen_tps 90.3 drafts 74 / 98
+ab-ep run 3: prompt_n 5 prompt_tps 132.6 gen_tps 90.3 drafts 74 / 98
+ab-ep run 4: prompt_n 5 prompt_tps 133.0 gen_tps 90.4 drafts 74 / 98
+--- 400-token decode + card busy ---
+  drm card0 (HIP 1): busy avg 20.0% max 89% | power avg 24 W max 63 W
+  drm card1 (HIP 0): busy avg 31.9% max 100% | power avg 59 W max 160 W
+  long 400: prompt_n 76 gen_tps 80.4 tokens 400
+--- 128-token output capture (the bench prompt) ---
+  128: gen_tps 89.8 len 586
+strata verify: expert parallel with card 1: the peer computes the experts this card does not hold (inbox 17.2 KiB per group, spin bound 2000000)
+strata serve: 3032 MiB of VRAM free with everything loaded
+strata verify: capturing the 4-token window (3012 MiB of VRAM free)
+strata verify: capturing the 1-token window (2974 MiB of VRAM free)
+strata verify: capturing the 3-token window (2956 MiB of VRAM free)
+strata verify: capturing the 2-token window (2950 MiB of VRAM free)
+================ output comparison ================
+  outputs differ; first difference:
+/tmp/opencode/ab-pipe-128.txt /tmp/opencode/ab-ep-128.txt differ: byte 138, line 1
+done
