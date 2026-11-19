@@ -68,6 +68,9 @@ void Runtime::run(Engine& local) {
 void Runtime::initialize() {
     if (impl_->control.size() != FNX_NCARD) throw std::runtime_error("MPI world size differs from the compiled card count");
     impl_->control.agree("strata-split-distributed-v1;cards=" + std::to_string(FNX_NCARD));
+    const bool first_on_host = impl_->control.local_rank() == 0;
+    if (!impl_->control.minimum(first_on_host))
+        throw std::runtime_error("distributed split requires exactly one MPI process per host");
     strata::tp::Packet config;
     std::vector<std::string> keys;
     std::vector<std::pair<std::string, std::string>> settings;

@@ -16,7 +16,7 @@ Install the CUDA toolkit, an MPI C++ development environment, and NCCL headers
 and library. Both hosts need compatible runtimes and the same model files.
 
 ```sh
-cmake -S . -B build-cluster \
+cmake -S engine -B build-cluster \
   -DSTRATA_ENABLE_CUDA=ON \
   -DSTRATA_BUILD_SPLIT=ON \
   -DSTRATA_SPLIT_DISTRIBUTED=ON \
@@ -37,7 +37,7 @@ built; a successful build does not establish correctness on that many hosts.
 
 ## Run
 
-Use one process per host. Each process must see exactly one CUDA device. Keep the
+The distributed engine requires one process per host. Each process must see exactly one CUDA device. Keep the
 executable, GGUF shards and drafter at the same paths on every host. Compare
 their SHA256 checksums before a run. Passwordless SSH between the participating
 hosts must already work.
@@ -102,7 +102,7 @@ families the split engine cannot load.
 CPU transport and command-frame checks can run without a GPU:
 
 ```sh
-cmake -S src/tp -B build-runtime
+cmake -S engine/src/tp -B build-runtime
 cmake --build build-runtime -j4
 ctest --test-dir build-runtime --output-on-failure
 ```
@@ -112,9 +112,9 @@ strided peer exchanges, including CUDA graph replay. Build the standalone runtim
 with `STRATA_TP_CUDA=ON` and the NCCL paths, then run it with one and two ranks.
 
 `strata-split-mpi-tile-test` is a separate, explicitly built GPU check for the
-prompt kernel's weight decoding. `tests/split/tile_check.py` compares its dumps
+prompt kernel's weight decoding. `terminal/tests/split/tile_check.py` compares its dumps
 with CPU dequantization of the original GGUF, including Q5_0 routed weights.
-`tests/split/distributed_engine_test.cpp` exercises the complete engine's logits,
+`engine/tests/split/distributed_engine_test.cpp` exercises the complete engine's logits,
 snapshot restore, lane isolation, batched rows, penalties and image payloads
 larger than a command frame. It needs real model files.
 
