@@ -158,8 +158,7 @@ export function turnStallLimit({ local, toolRunning, stallMs, localStallMs, stal
  * @param {string} [options.nodePath]                   the Node runtime that runs the Harness
  * @param {(line:string)=>void} [options.log]
  */
-export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = null, gate = true, localInstances, connections, tools = () => undefined, defaultLocalId = () => null, skillsDir = () => null, onGoal = () => {}, onPlan = () => {}, onQueue = () => {}, onWake = () => {}, proxyBase = null, searchMock = null, expertSampling = () => null, engineProgress = () => null, engineGraceMs = 30 * 60_000, helperLimitMs = () => 0, stallMs = 4 * 60_000, stallToolMs = 20 * 60_000, env = process.env, nodePath = process.execPath, log = () => {}, liveMs = 90_000, startRuntimeImpl = null, startTimeoutMs = 120_000, sessionReadyMs = 60_000, sessionRetryMs = 1_500, restartWaitMs = 120_000 }) {
-export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = null, gate = true, localInstances, connections, tools = () => undefined, defaultLocalId = () => null, skillsDir = () => null, selectSkillsForTurn = () => [], onTurnBegin = () => null, onGoal = () => {}, onPlan = () => {}, onQueue = () => {}, proxyBase = null, searchMock = null, expertSampling = () => null, engineProgress = () => null, engineGraceMs = 30 * 60_000, stallMs = 4 * 60_000, localStallMs = 30 * 60_000, stallToolMs = 20 * 60_000, env = process.env, nodePath = process.execPath, log = () => {}, startTimeoutMs = 120_000, sessionReadyMs = 60_000, sessionRetryMs = 1_500 }) {
+export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = null, gate = true, localInstances, connections, tools = () => undefined, defaultLocalId = () => null, skillsDir = () => null, selectSkillsForTurn = () => [], onTurnBegin = () => null, onGoal = () => {}, onPlan = () => {}, onQueue = () => {}, onWake = () => {}, proxyBase = null, searchMock = null, expertSampling = () => null, engineProgress = () => null, engineGraceMs = 30 * 60_000, helperLimitMs = () => 0, stallMs = 4 * 60_000, localStallMs = 30 * 60_000, stallToolMs = 20 * 60_000, env = process.env, nodePath = process.execPath, log = () => {}, liveMs = 90_000, startRuntimeImpl = null, startTimeoutMs = 120_000, sessionReadyMs = 60_000, sessionRetryMs = 1_500, restartWaitMs = 120_000 }) {
   localStallMs = localSilenceLimit(env.STRATA_LOCAL_STALL_MS, localStallMs);
   const root = join(dataDir, 'agent');
   const home = join(root, 'home');
@@ -211,10 +210,10 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
   const idleWaiters = new Set();
 
   const chat = id => { let c = chats.get(id); if (!c) { c = { id, turn: null, route: null, routeGeneration: -1 }; chats.set(id, c); } return c; };
-  const activeTurns = () => [...chats.values()].filter(c => c.turn).length;
-  // A restart of the Harness waits for every chat that works on the running one: a turn, and also a chat that already holds the running Harness
+  const activeTurns = () => [...chats.values()].filter(c => c.turn).length + sideRuns.size;
+  // A restart of the Harness waits for every chat that works on the running one: a turn, a background side run, and also a chat that already holds the running Harness
   // (c.holding: from the moment ensureRuntime handed it over until the chat's turn exists) but is not a turn yet, which a restart would close under it.
-  const busyChats = () => [...chats.values()].filter(c => c.turn || c.holding).length;
+  const busyChats = () => Math.max(activeTurns(), [...chats.values()].filter(c => c.turn || c.holding).length);
   const notifyIdle = () => { if (busyChats() === 0) { for (const w of idleWaiters) w(); idleWaiters.clear(); } };
   /** FIX-APP A5: what the person is told when the restart of the Harness cannot start because another chat is working. A change in Settings -> Tools is not "the list of models". */
   const BUSY_WORDS = {
@@ -224,11 +223,6 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
   const waitIdle = (signal, ms, why = 'models') => new Promise((resolve, reject) => {
     if (busyChats() === 0) return resolve();
     const timer = setTimeout(() => { idleWaiters.delete(done); reject(new AgentUnavailable(BUSY_WORDS[why] ?? BUSY_WORDS.models, 'agent-busy')); }, ms);
-  const activeTurns = () => [...chats.values()].filter(c => c.turn).length + sideRuns.size;
-  const notifyIdle = () => { if (activeTurns() === 0) { for (const w of idleWaiters) w(); idleWaiters.clear(); } };
-  const waitIdle = (signal, ms) => new Promise((resolve, reject) => {
-    if (activeTurns() === 0) return resolve();
-    const timer = setTimeout(() => { idleWaiters.delete(done); reject(new AgentUnavailable('Another chat is still working and the list of models changed. Try again when it finishes.', 'agent-busy')); }, ms);
     const done = () => { clearTimeout(timer); resolve(); };
     idleWaiters.add(done);
     signal?.addEventListener('abort', () => { clearTimeout(timer); idleWaiters.delete(done); reject(signal.reason ?? new Error('aborted')); }, { once: true });
@@ -472,17 +466,15 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     c.wake = watchForWake({ gw: runtime.gw, sessionId, after, onWake: seq => { c.wake = null; void startWakeTurn(c, seq); } });
   }
 
-  async function runTurnInner(c, { chatId, message, workspacePath, choice = null, mode = null, history = [], onFrame, requestId = `req-${randomUUID()}`, signal, goal = null, thinking = null, thinkingBudget = 0, images = [], planTask = null, planRun = null, researchTopic = null, adopt = null }) {
+  async function runTurnInner(c, { chatId, message, workspacePath, choice = null, mode = null, history = [], onFrame, requestId = `req-${randomUUID()}`, signal, goal = null, thinking = null, thinkingBudget = 0, images = [], planTask = null, planRun = null, researchTopic = null, deepResearch = false, adopt = null }) {
     // FIX-APP A6: every page that follows this turn is a subscriber: the one that started it and each one that takes it over (a second window on the same chat, a page that reloaded).
     // They all get every frame from the moment they joined; a page that leaves (its connection closed) drops out alone. Before, a page that took the turn over replaced the one
     // that had it, so the other window got nothing but the heartbeat until the turn ended (soak 11-18: the "stuck chats" whose frames had gone to the driver's page check).
     // A turn the agent started by itself (adopt) has nobody to begin with.
     const subscribers = new Set(); if (!adopt) subscribers.add(onFrame);
     const isAttached = () => subscribers.size > 0;
-  async function runTurnInner(c, { chatId, message, workspacePath, choice = null, mode = null, history = [], onFrame, requestId = `req-${randomUUID()}`, signal, goal = null, thinking = null, thinkingBudget = 0, images = [], planTask = null, planRun = null, researchTopic = null, deepResearch = false }) {
     let learning = null;
     try { learning = onTurnBegin({ chatId, message, choice: choice ?? { instanceId: defaultLocalId() }, mode: planTask ? 'plan' : modeOf(mode) }); } catch { /* optional learning cannot block the person's task */ }
-    let send = onFrame; let attached = true;
     // A research run gathers first; what the assistant writes while gathering is notes, not the answer, so it is not shown.
     let hideDeltas = !!researchTopic;
     signal?.addEventListener('abort', () => { subscribers.delete(onFrame); }, { once: true });
@@ -531,8 +523,8 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     emit({ type: 'queued', requestId });
     reporter.set({ phase: 'starting', code: 'starting', text: 'Starting…' });
     const { rt: runtime, route } = await ensureRuntime(choice, signal);
-    c.holding = true;   // this chat now works on `runtime`: a restart of the Harness waits for it (busyChats); cleared when its turn exists or the start ends (runTurn)
     try { learning?.selectChoice(route.kind === 'api' ? { connectionId: route.connectionId, modelId: route.modelId } : { instanceId: route.instanceId }); } catch { /* optional observer */ }
+    c.holding = true;   // this chat now works on `runtime`: a restart of the Harness waits for it (busyChats); cleared when its turn exists or the start ends (runTurn)
     const made = await sessionFor(c, workspacePath, runtime, { onWait: () => reporter.set({ phase: 'starting', code: 'assistant-starting', text: 'Starting the assistant…' }) });
     const { sessionId, fresh } = made ?? {};
     const prepareSkills = text => {
@@ -581,8 +573,6 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     // that fits once the older messages are a summary is sent after a summary; one that can never fit is not sent, and the person is told
     // plainly and offered the two ways out. Whatever cannot be counted goes through: the Harness recovers from a refusal by itself.
     if (!goal && !adopt && route.kind === 'local') {
-      const fit = await fitCheck({ runtime, route, sessionId, fresh, history, message }).catch(() => null);
-    if (!goal && route.kind === 'local') {
       const fit = await fitCheck({ runtime, route, sessionId, fresh, history, message: automaticSkills.wrap(message) }).catch(() => null);
       if (fit?.action === 'too-large') {
         reporter.clear();
@@ -612,14 +602,13 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       plan: null, advancing: false, goalRun: false, lastActivity: Date.now(), heard: Date.now(), engineMark: null, watchdog: null,
       research: researchTopic ? { phase: 'gather', nudged: false, waitingStart: false } : null, wake: !!adopt, fix,
     };
-    c.turn = turn; c.holding = false;
-    if (adopt) { log(`agent · ${chatId}: the agent started a turn by itself (a background job finished); following it as ${requestId}`); onWake(chatId, requestId); }
     async function researchPhase(phase) {
       const result = await runtime.gw.rpc('commands/execute', { agentId: sessionId, line: `/strata-research ${phase}`, submittedAttachments: [] });
       if (result?.result?.kind !== 'success' || result.result.text !== `research ${phase}`)
         throw new AgentUnavailable('Research could not establish its tool restrictions, so it did not continue.', 'research-policy-unavailable');
     }
-    c.turn = turn;
+    c.turn = turn; c.holding = false;
+    if (adopt) { log(`agent · ${chatId}: the agent started a turn by itself (a background job finished); following it as ${requestId}`); onWake(chatId, requestId); }
     if (workspacePath) folderClaims.begin(workspacePath, chatId);
     /**
      * A page that comes back (a reload, a new window) takes the running turn over again. Everything that was said while no page was there is
@@ -633,17 +622,11 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       newcomer({ type: 'start', model: route.name, contextMax: route.contextWindow, demo: false, remoteModel: route.kind === 'api', agent: true, mode: appliedMode, sessionId, requestId, skills: [], resumed: true, ...(planTask ? { planning: true } : {}) });
       newcomer({ type: 'resync', content: hideDeltas ? '' : written.all, reasoning: written.reasoning });
       for (const t of projector.tools.values()) if (t.card) newcomer({ type: 'agent-tool', tool: t.card });
+      if (skills.used.size) newcomer({ type: 'skills-used', skills: [...skills.used.values()] });
       for (const q of questions.values()) if (q.sessionId === sessionId) newcomer({ type: 'agent-question', callId: q.callId, questions: q.items });
       if (!alive) return;
       subscribers.add(onFrame);
       again?.addEventListener('abort', () => { subscribers.delete(onFrame); }, { once: true });
-      send = onFrame; attached = true;
-      again?.addEventListener('abort', () => { send = () => {}; attached = false; }, { once: true });
-      raw({ type: 'start', model: route.name, contextMax: route.contextWindow, demo: false, remoteModel: route.kind === 'api', agent: true, mode: appliedMode, sessionId, requestId, skills: [], resumed: true, ...(planTask ? { planning: true } : {}) });
-      raw({ type: 'resync', content: hideDeltas ? '' : written.all, reasoning: written.reasoning });
-      for (const t of projector.tools.values()) if (t.card) raw({ type: 'agent-tool', tool: t.card });
-      if (skills.used.size) raw({ type: 'skills-used', skills: [...skills.used.values()] });
-      for (const q of questions.values()) if (q.sessionId === sessionId) raw({ type: 'agent-question', callId: q.callId, questions: q.items });
     };
     /**
      * A turn must always end. If the Harness sends nothing at all for a while (a tool that never returns, a model server that went
@@ -662,22 +645,6 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
         }
       }
       const toolRunning = [...projector.tools.values()].some(x => x.card?.state === 'running' || x.card?.state === 'proposed') || pending.size > 0 && pendingFor(chatId).length > 0;
-      const limit = toolRunning ? stallToolMs : stallMs;
-      const endStalled = sinceMs => {
-        turn.stalledFor = Math.round(sinceMs / 1000);
-        turn.stopping = true;
-        void runtime.gw.rpc('session/cancel', { request: { sessionId } }).catch(() => {});
-        for (const h of turn.children.values()) if (!h.done) void runtime.gw.rpc('subagents/interruptByParent', { childSessionId: h.id, parentSessionId: sessionId, mode: 'continuable' }).catch(() => {});
-        const mins = Math.max(1, Math.round(turn.stalledFor / 60));
-        turn.finish(`The assistant stopped answering for ${mins > 1 ? mins + ' minutes' : 'a minute'}, so I ended this turn. Anything it already finished is kept. Send your message again to go on.`);
-      };
-      // A turn whose own message never showed up in the session's events (it never became "live") within liveMs of the Harness accepting it cannot reach the page,
-      // whatever the engine does for other chats: it ends with the plain message instead of waiting, and the engine's progress does not count here.
-      if (!turn.live && turn.promptedAt && Date.now() - turn.promptedAt >= liveMs) {
-        log(`agent · ${chatId}: this turn never became live ${Math.round((Date.now() - turn.promptedAt) / 1000)} s after the prompt was accepted (session ${sessionId}); ending it`);
-        endStalled(Date.now() - turn.promptedAt);
-        return;
-      }
       const limit = turnStallLimit({ local: turn.route?.kind === 'local', toolRunning, stallMs, localStallMs, stallToolMs });
       // A local engine reading a long prompt sends the Harness nothing for minutes (#3623). Its /metrics progress counts as activity,
       // for at most engineGraceMs after the Harness last spoke: progress for another chat cannot keep a lost turn alive forever.
@@ -750,10 +717,9 @@ ${note.text}`, key: note.key, values: note.values, noteReason: 'cut' });
       c.turn = null;
       try { learning?.finish(!failure && !turn.guard && !turn.stopping && projector.ended?.kind === 'completed'); } catch { /* never holds up the main reply */ }
       // What a page that was away needs to show the end of this turn (attach, below).
-      c.last = { wake: !!adopt, taken: isAttached(), requestId, sessionId, mode: appliedMode, model: route.name, contextMax: route.contextWindow, remoteModel: route.kind === 'api', content: hideDeltas ? '' : written.all.slice(0, 4_000_000), reasoning: written.reasoning, cards: [...projector.tools.values()].filter(t => t.card).map(t => t.card), terminal };
+      c.last = { wake: !!adopt, taken: isAttached(), requestId, sessionId, mode: appliedMode, model: route.name, contextMax: route.contextWindow, remoteModel: route.kind === 'api', content: hideDeltas ? '' : written.all.slice(0, 4_000_000), reasoning: written.reasoning, cards: [...projector.tools.values()].filter(t => t.card).map(t => t.card), skills: [...skills.used.values()], terminal };
       // every reply the agent started by itself that no page took is kept, not only the last one: two background commands that finish while the app is closed both reach the chat
       if (c.last.wake && !c.last.taken) c.woken = [...(c.woken ?? []).filter(w => !w.taken), c.last].slice(-WOKEN_KEPT);
-      c.last = { requestId, sessionId, mode: appliedMode, model: route.name, contextMax: route.contextWindow, remoteModel: route.kind === 'api', content: hideDeltas ? '' : written.all.slice(0, 4_000_000), reasoning: written.reasoning, cards: [...projector.tools.values()].filter(t => t.card).map(t => t.card), skills: [...skills.used.values()], terminal };
       turn.ended.resolve({ reason: projector.ended, failure: failure ?? null });
       notifyIdle();
       if (!failure && !turn.stopping && !goal && !planTask && !researchTopic && rt === runtime) armWake(c, runtime, sessionId, turn.lastSeq);
@@ -1080,8 +1046,6 @@ ${note.text}
               if (r.phase === 'write' && evidence && !evidence.complete) emit({ type:'delta', own:true, text:'This is a limited investigation: the minimum of three distinct searches and four page reads was not reached.\n\n' });
               r.waitingStart = true;
               fix.texts.add(prompt); fix.since = Date.now();
-              try { await runtime.gw.rpc('session/prompt', { request: { requestId: `research-${randomUUID()}`, sessionId, mode: 'queue', content: [{ type: 'text', text: prompt }] } }); }
-              catch { r.waitingStart = false; hideDeltas = false; finishTurn(null); return; }
               try {
                 if (r.phase === 'write') await researchPhase('write');
                 await runtime.gw.rpc('session/prompt', { request: { requestId: `research-${randomUUID()}`, sessionId, mode: 'queue', content: [{ type: 'text', text: prompt }] } });
@@ -1153,11 +1117,9 @@ ${note.text}
     } else if (adopt) {
       // Nothing to send: the Harness already started this turn, and its events are replayed from the one that opened it.
     } else {
-      let prompt = message;
-      if (fresh && history.length) prompt = withEarlierConversation(history, message);
-      fix.texts.add(prompt); fix.since = Date.now();
       let prompt = automaticSkills.wrap(message);
       if (fresh && history.length) prompt = withEarlierConversation(history, prompt);
+      fix.texts.add(prompt); fix.since = Date.now();
       try {
         if (turn.research) await researchPhase('gather');
         await runtime.gw.rpc('session/prompt', { request: { requestId, sessionId, mode: 'queue', content: [{ type: 'text', text: prompt }, ...imageParts(images)] } });
@@ -1811,8 +1773,6 @@ ${note.text}
 
   async function close() {
     for (const c of chats.values()) { c.wake?.close(); c.wake = null; }
-    const r = rt; rt = null;
-    if (r) { r.events?.close(); r.gw.close(); await r.hp.stop(); }
     closed=true;
     const boot=starting, pending=pendingRuntime, r=rt; rt=null;
     r?.events?.close(); r?.gw.close(); pending?.gw?.close();
@@ -1825,8 +1785,7 @@ ${note.text}
   /** Let go of a chat's Harness session mapping (a task starts every run in a session of its own). */
   function forget(chatId) { if (chats.get(chatId)?.turn) return; chats.get(chatId)?.wake?.close(); delete sessionMap[chatId]; chats.delete(chatId); persist(); }
 
-  return { compactCommand, messageHelper, answerQuestion, goalState, goalControl, harnessDir, status, turnOf, runningTurns, wokenTurns, attach, runTurn, goalCommand, planCommand, researchCommand, llmTarget, noteToolMarker, setPlanBriefing, resetSession, reopenPlan, skipStep, planGoal, planControl, planState, queueMessage, cancelQueued, takeQueue, forget, approve, setMode, stop, pendingFor, pendingAll, close, sessionOf: chatId => sessionMap[chatId]?.sessionId ?? null, workingFolder: chatId => sessionMap[chatId]?.cwd ?? null, isRunning: chatId => !!chats.get(chatId)?.turn, _debug: () => ({ rt, sessionMap }) };
-  return { btw, compactCommand, messageHelper, answerQuestion, goalState, goalControl, harnessDir, status, turnOf, runningTurns, attach, runTurn, goalCommand, planCommand, researchCommand, llmTarget, setPlanBriefing, resetSession, reopenPlan, skipStep, planGoal, planControl, planState, queueMessage, cancelQueued, takeQueue, forget, approve, setMode, stop, pendingFor, pendingAll, close, sessionOf: chatId => sessionMap[chatId]?.sessionId ?? null, workingFolder: chatId => sessionMap[chatId]?.cwd ?? null, isRunning: chatId => !!chats.get(chatId)?.turn, _debug: () => ({ rt, sessionMap, startingPid:pendingRuntime?.hp.pid??null, closed }) };
+  return { btw, compactCommand, messageHelper, answerQuestion, goalState, goalControl, harnessDir, status, turnOf, runningTurns, wokenTurns, attach, runTurn, goalCommand, planCommand, researchCommand, llmTarget, noteToolMarker, setPlanBriefing, resetSession, reopenPlan, skipStep, planGoal, planControl, planState, queueMessage, cancelQueued, takeQueue, forget, approve, setMode, stop, pendingFor, pendingAll, close, sessionOf: chatId => sessionMap[chatId]?.sessionId ?? null, workingFolder: chatId => sessionMap[chatId]?.cwd ?? null, isRunning: chatId => !!chats.get(chatId)?.turn, _debug: () => ({ rt, sessionMap, startingPid:pendingRuntime?.hp.pid??null, closed }) };
 }
 
 /** A goal that stopped by itself, in words. */

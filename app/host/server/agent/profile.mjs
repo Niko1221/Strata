@@ -392,12 +392,10 @@ export function buildProfile({ local = [], connections = [], gate = true, tools 
   // results to the default text-only local model or pretend it can read pixels.
   const browserImages = defaultInstance ? defaultInstance.vision === true : Object.values(providers).some(p => p.models.some(m => m.input.includes('image')));
   const browserRows = tools.browserEnabled && tools.browserPath && tools.browserCli
-    ? [{ id: 'mcp-browser', name: '@deepseek-ai/dsh-mcp-client', config: { serverName: 'browser', transport: 'stdio', command: process.execPath, args: [tools.browserCli, '--browser', 'chromium', '--isolated', ...(process.env.STRATA_BROWSER_HEADLESS === '1' ? ['--headless'] : []), '--executable-path', tools.browserPath] } }] : [];
+    ? [{ id: 'mcp-browser', name: '@deepseek-ai/dsh-mcp-client', config: { serverName: 'browser', transport: 'stdio', command: process.execPath, args: [tools.browserCli, '--browser', 'chromium', '--isolated', '--caps', 'vision', '--snapshot-boxes', '--image-responses', browserImages ? 'allow' : 'omit', ...(process.env.STRATA_BROWSER_HEADLESS === '1' ? ['--headless'] : []), '--executable-path', tools.browserPath] } }] : [];
   // Run as administrator (#5968): only when the person turned it on, on Windows. Manual asks first; Windows asks for every call.
   const adminRows = tools.runAsAdminEnabled ? [{ id: 'mcp-strata-admin', name: '@deepseek-ai/dsh-mcp-client', config: { serverName: 'strata-admin', transport: 'stdio', command: process.execPath, args: [ADMIN_TOOL_SCRIPT] } }] : [];
   const ownRows = [...own('instructions', tools.hasInstructionTools), ...own('commands', tools.hasCommandTools), ...browserRows, ...adminRows];
-    ? [{ id: 'mcp-browser', name: '@deepseek-ai/dsh-mcp-client', config: { serverName: 'browser', transport: 'stdio', command: process.execPath, args: [tools.browserCli, '--browser', 'chromium', '--isolated', '--caps', 'vision', '--snapshot-boxes', '--image-responses', browserImages ? 'allow' : 'omit', ...(process.env.STRATA_BROWSER_HEADLESS === '1' ? ['--headless'] : []), '--executable-path', tools.browserPath] } }] : [];
-  const ownRows = [...own('instructions', tools.hasInstructionTools), ...own('commands', tools.hasCommandTools), ...browserRows];
   // Web search: DuckDuckGo with no key unless the person chose a keyed service AND saved its key (then that one; never a half-set-up one).
   const searchOn = !tools.off.has('search');
   const keyed = ['exa', 'perplexity', 'deepseek'].includes(tools.search.provider) && tools.search.key ? tools.search.provider : null;

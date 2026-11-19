@@ -100,7 +100,6 @@ import { apiPath } from './api-paths.mjs';
 import { findFreePort, listenProblem } from './ports.mjs';
 import { validateChatImages } from './chat-images.mjs';
 import { createTimeSkip, measureFolder, timeskipRevisionMessage, imageTypeOf, forgetTrial } from './timeskip.mjs';
-import { createTimeSkip, measureFolder, timeskipRevisionMessage, imageTypeOf } from './timeskip.mjs';
 import { listWorkspaceFiles, listWorkspaceTrash, readWorkspaceFile, createWorkspaceFile, updateWorkspaceFile, renameWorkspaceFile, trashWorkspaceFile, restoreWorkspaceFile, openWorkspaceFile, workspaceFileError } from './workspace-files.mjs';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
@@ -144,7 +143,6 @@ const imageModels = createImageModels({ dataDir: store.DATA_DIR, modelsDir: () =
 /* The installed app ships Strata Control (python + strata_control) next to the host; a source checkout has none and keeps its older paths. */
 const CONTROL = findControl();
 const control = createControl({ control: CONTROL, log: line => console.log(line) });
-const control = createControl({ control: CONTROL });
 const llamaMemory=createLlamaMemory({directory:store.DATA_DIR,control:CONTROL,enable:()=>supervisor.enableMemory(),target:()=>supervisor.memoryTarget(),onBeforeStop:supervisor.onBeforeStop});
 // Files a run as administrator made in Strata's own folders (owner Administrators) are given back to the user at every start; best effort, never blocks.
 if (control && process.platform === 'win32' && !process.env.STRATA_NO_REPAIR_ACCESS) void control.repairAccess().catch(() => {});
@@ -190,8 +188,6 @@ const native=createNativeControl({control,ready:bundledEngine,appUpdater,hardwar
    pinned component (STRATA_HARNESS_DIR), not part of this host, so its absence is a visible capability
    state and the chat falls back to the direct path with a notice, never silently to another model. */
 // What the person chose in Settings -> Tools (tool groups, web search service and key, the browser, their own tools).
-const llmProxy = createLlmProxy({ targetOf: key => agent.llmTarget(key), samplingNow: () => samplingFromExpert(store.get().expert), onMarker: marker => agent.noteToolMarker(marker) });
-const agentTools = createAgentTools({ read: () => store.get().agentTools, write: value => store.update({ agentTools: value }), dataDir: store.DATA_DIR, browser: () => ({ ...findBrowser(), cli: findPlaywrightMcp(agent.harnessDir()) }) });
 const llmProxy = createLlmProxy({ targetOf: key => agent.llmTarget(key), samplingNow: () => samplingFromExpert(store.get().expert),
   policyOf: base => native.readyInstances().find(i => base === `http://127.0.0.1:${i.port}/v1`)?.servingPolicy });
 const agentTools = createAgentTools({ read: () => store.get().agentTools, write: value => store.update({ agentTools: value }, { durable: true }), dataDir: store.DATA_DIR, browser: () => ({ ...findBrowser(), cli: findPlaywrightMcp(agent.harnessDir()) }) });
@@ -745,7 +741,6 @@ async function runRemoteTurn({ selection, message, history, images = [], thinkin
     const appliedSkills = selectSkills(skillState, message, workspaceId);
     entry = serving.open({ client: 'Strata chat', endpoint: connection.protocol === 'anthropic' ? '/messages' : connection.protocol === 'openai-responses' ? '/responses' : '/chat/completions', model: `${connection.name} · ${model.name}`, cancel: () => controller.abort(new DOMException('Cancelled by the user', 'AbortError')) });
     serving.mark(entry.id, { state: 'generating' });
-    const result = await modelProviders.stream({ selection, message, history, images, thinking, signal: requestSignal, systemPrompt: ['You are Strata, a helpful assistant. Answer clearly. Do not claim to have read files or performed actions unless their results are included in the conversation.', userRules.promptBlock(), skillInstructions(appliedSkills)].filter(Boolean).join('\n\n'), onFrame: frame => {
     const result = await modelProviders.stream({ selection, message, history: referenceHistory(history, webReferences), images, thinking, signal: requestSignal, systemPrompt: ['You are Strata, a helpful assistant. Answer clearly. Do not claim to have read files or performed actions unless their results are included in the conversation.', skillInstructions(appliedSkills)].filter(Boolean).join('\n\n'), onFrame: frame => {
       if (frame.type === 'start') noteSkillUse(appliedSkills);
       if (frame.type === 'done') serving.mark(entry.id, { tokensIn: frame.tokensIn, tokensOut: frame.tokensOut, usageSource: frame.usageSource });
@@ -851,7 +846,6 @@ async function runTurn({ message, history = [], onFrame, signal, client, workspa
       // Scope is resolved again at dispatch: a disabled skill never stays active
       // merely because the request waited in the queue.
       const appliedSkills = selectSkills(skillState, message, workspaceId);
-      const systemPrompt = [SYSTEM_PROMPT, userRules.promptBlock(), skillInstructions(appliedSkills)].filter(Boolean).join('\n\n');
       const systemPrompt = getEffectiveSystemPrompt(appliedSkills);
       serving.mark(entry.id, { state: 'generating' });
       const contextMax = instance.memory.context;
