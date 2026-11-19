@@ -545,8 +545,36 @@ def _models_member(raw) -> tuple[list[FeedModel], list[str]]:
     return out, dropped
 
 
+def _valid_feed_result(value: object) -> bool:
+    return isinstance(value, dict) and set(value) == {"valid"} and value["valid"] is True
+
+
+def _native_validate_feed(payload: bytes) -> None:
+    import os
+    import tempfile
+    from pathlib import Path
+    from strata_control import native_helpers
+    if not native_helpers.enabled("feed"):
+        return
+    fd, tmp_name = tempfile.mkstemp(prefix="strata-feed-", suffix=".json")
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(payload)
+        native_helpers.call("feed", "validate", [tmp_name], validate=_valid_feed_result)
+    except native_helpers.Rejected as exc:
+        raise FeedError(exc.message, exc.code) from None
+    except native_helpers.Unavailable:
+        return
+    finally:
+        try:
+            Path(tmp_name).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def parse(payload: bytes, *, source: str, key_id: str) -> Feed:
     """The feed document, strictly. Unknown members are ignored; missing or mistyped ones are errors."""
+    _native_validate_feed(payload)
     try:
         data = json.loads(payload.decode("utf-8-sig"))
     except (ValueError, UnicodeError):
