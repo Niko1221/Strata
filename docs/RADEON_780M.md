@@ -16,7 +16,7 @@ GSQ-RCO Q2_0 with the MTP draft layer, 32K context, Int8 KV.
   prompt GEMMs and prompt experts, so those fell back to hipBLAS / portable kernels. It is now in the list and
   the parity tests run on it (`hip_prefill_wmma_gemm_parity`, `hip_prompt_attn_wmma`, `hip_prefill_fused_moe`,
   `hip_prefill_fused_iq`, `qsa_*`, `hip_gemm_f16_io_parity`, `hip_prefill_mmq_parity`).
-- **A hipBLASLt table** for gfx1103 + hipBLASLt `100401`: `tools/hip/gfx1103-hipblaslt-100401.txt` (section 3).
+- **A hipBLASLt table** for gfx1103 + hipBLASLt `100401`: `terminal/tools/hip/gfx1103-hipblaslt-100401.txt` (section 3).
 - **The gfx1103 exact speed switches** (section 4), written into the config's `env` by setup for the opt-in install
   (the engine keeps gfx1103 out of its exact-switch arch defaults (the prompt set of section 5 is separate), as it does for gfx1150). Whether the chip leaves the
   `STRATA_EXPERIMENTAL_GFX1103=1` opt-in is the maintainers' call; the numbers here are what they need to make it.
@@ -31,8 +31,8 @@ the wheel route was not exercised by the numbers below - they come from a hand b
 By hand, the steps of [STRIX_HALO.md](STRIX_HALO.md) with the architecture and the paths changed:
 
 ```sh
-cmake -S . -B build-780m -G Ninja -DCMAKE_BUILD_TYPE=Release \
-  -DSTRATA_ENABLE_HIP=ON -DSTRATA_ENABLE_CUDA=OFF -DSTRATA_PREFILL_MMQ=ON \
+cmake -S engine -B build-780m -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DSTRATA_ENABLE_HIP=ON -DSTRATA_ENABLE_CUDA=OFF \
   -DCMAKE_HIP_ARCHITECTURES=gfx1103 \
   -DCMAKE_HIP_COMPILER=/opt/rocm/lib/llvm/bin/clang++ -DCMAKE_HIP_COMPILER_ROCM_ROOT=/opt/rocm \
   -DCMAKE_PREFIX_PATH=/opt/rocm \
@@ -42,12 +42,12 @@ ctest --test-dir build-780m
 ```
 
 `ctest` on this machine: 57 passed, 2 skipped (`hip_prefill_hcd_exact_parity`, `hip_prefill_hipblaslt_gemm` -
-they run and pass with the table set), 2 environmental failures (`ple_parity` needs the `bench/micro` fixtures,
+they run and pass with the table set), 2 environmental failures (`ple_parity` needs the `engine/bench/micro` fixtures,
 `platform_memory_test` needs a memlock limit above 8 MiB; this host's hard limit is 8 MiB).
 
-The model: a GSQ-RCO Q2_0 pack (`tools/iq_pack.py`, the experts read from the GGUF in place), the PLE table on
+The model: a GSQ-RCO Q2_0 pack (`terminal/tools/iq_pack.py`, the experts read from the GGUF in place), the PLE table on
 the SSD (`--ple-io direct`), `--mmap-experts --expert-cache 24576`, `--prefill auto`, MTP from
-`tools/mtp_fetch.py` + `mtp_pack.py` + `mtp_rt.py`. GTT must be raised for this model (`ttm.pages_limit`; setup
+`terminal/tools/mtp_fetch.py` + `mtp_pack.py` + `mtp_rt.py`. GTT must be raised for this model (`ttm.pages_limit`; setup
 changes no host setting).
 
 ## 3. The hipBLASLt table
@@ -83,10 +83,12 @@ greedy tokens, 3 of 3 pairs), with the greedy token ids unchanged. They are the 
 
 On by default on the Radeon 780M (`gfx1103`, integrated, Linux; AMD_HIP.md, "Integrated GPUs"): the engine sets `STRATA_HIP_WMMA`, `STRATA_PF_GEMM`,
 `STRATA_PA_FAST`, `STRATA_SELECT_WMMA` and `STRATA_HC_UPMIX` itself. `STRATA_IGPU_PROMPT_SET=0` turns the whole set off, `NAME=0` one switch. The 880M / 890M
-(`gfx1150`) and Windows keep it off (no hardware / not tested); `STRATA_IGPU_PROMPT_SET=1` turns it on there. `STRATA_PF_FUSED` stays opt-in.
+(`gfx1150`) and Windows keep it off (no hardware / not tested); `STRATA_IGPU_PROMPT_SET=1` turns it on there. `STRATA_PF_FUSED` (the prompt experts on Strata's own int8 kernels instead of llama.cpp's MMQ) is on by itself on the 780M under Linux; `STRATA_PF_FUSED=0` keeps MMQ. Q2_0, 3 interleaved rounds: prompt x1.30 at 2K tokens and x1.13 at 8K, no change at 300 and 1,000 tokens; forced-token KL against the FP16 path 0.0060 against 0.0054 for MMQ (24 prompts, 64 tokens each, ratio 1.10, 95% CI 0.93 to 1.37).
 
 Measured (021-minipc, P2006, Q2_0, fresh engine per run, 10 interleaved rounds, 6 complete pairs): prompt 1K 98.5 -> 157.3 tok/s (x1.60, 6/6 pairs faster),
 4K 115.1 -> 233.3 (x2.03, 6/6), decode 22.02 -> 21.99 (code) and 15.09 -> 15.05 (story) (x0.999), greedy token ids identical in 6 of 6 pairs.
+
+The 16-bit prompt GEMMs run FP16 in and out by themselves on the 780M under Linux (`STRATA_HIP_PROMPT_F16`; AMD_HIP.md has the numbers and the check against the FP16 path); `STRATA_HIP_PROMPT_F16=0` keeps the BF16 route.
 
 **GPU resets.** The 780M's current Ubuntu firmware (gc 11.0.1 MES) can still reset the GPU now and then, with or without this set: when the kernel moves memory that the
 GPU has registered, the process's queues are evicted, and a kernel that sits in a barrier at that moment never answers. The engine recovers
@@ -100,7 +102,7 @@ export STRATA_HIP_WMMA=1      # prompt attention on matrix cores
 export STRATA_PF_GEMM=1       # the prompt's FP16 projections on the WMMA GEMM
 export STRATA_PA_FAST=1       # prompt attention with single FP16 q and p
 export STRATA_SELECT_WMMA=1   # the block scorer on matrix cores
-export STRATA_PF_FUSED=1      # the prompt experts on matrix cores (neutral at 4K here: 246 vs 248)
+export STRATA_PF_FUSED=1      # the prompt experts on the fused int8 kernels (on by default; =0 keeps MMQ)
 export STRATA_HC_UPMIX=1      # the hyper-connection up projection with its epilogue
 ```
 
@@ -130,14 +132,14 @@ this checkout's own documentation, 128 greedy tokens each: prefill holds ~310 to
 the average over the full read, and the last ~14K tokens at 128K depth read at ~206 tok/s with the prefix cached.
 Decode holds ~16 tok/s to 32K, then 12.1 at 64K and 9.8-9.9 at 96-128K (draft acceptance stays ~70%, so it is
 context cost, not the drafter). Memory stays flat: 38.1 of 50 GiB GTT at 131K. Raw:
-[bench/results/2026-10-12-community-gfx1103](../bench/results/2026-10-12-community-gfx1103/README.md).
+[docs/bench-results/2026-10-12-community-gfx1103](bench-results/2026-10-12-community-gfx1103/README.md).
 
 ## 8. Not tested
 
 - The TheRock-wheel install for gfx1103 (the hand build above is what was measured).
 - The opt-in set beyond one round; KL of any bit-changing switch; other models; contexts past 131K.
 - CUDA and SYCL were not built here (no toolchains on this box); the added gfx1103 macros are undefined for them.
-- Reset stability looks good but is one machine: a 2 h 07 m soak (`tools/serve_load.py`, 924 requests) and the
+- Reset stability looks good but is one machine: a 2 h 07 m soak (`terminal/tools/serve_load.py`, 924 requests) and the
   reset-prone combination from 7.10 (partial expert cache + `STRATA_IO_PREFETCH=1` + the adaptive tier) both ran
   with zero `amdgpu` resets in the kernel log. The known 780M issue ([DETAILS.md](DETAILS.md)) was seen on ROCm
   7.10; with `cwsr_enable=0` and this stack it did not reproduce.

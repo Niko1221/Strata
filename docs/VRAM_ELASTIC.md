@@ -1,7 +1,7 @@
 # POST /v1/vram: what it does and what it answers (opt-in, one NVIDIA GPU, #533, #1034)
 
-This page is written from `serve/server.py` and the engine's `VRAM` command (`src/program/generate.cpp`,
-`src/core/expert_cache.cpp`), and the cases the unit tests in `serve/test_vram.py` pin. A line marked **(code)** is
+This page is written from `terminal/serve/server.py` and the engine's `VRAM` command (`engine/src/program/generate.cpp`,
+`engine/src/core/expert_cache.cpp`), and the cases the unit tests in `terminal/serve/test_vram.py` pin. A line marked **(code)** is
 read from the code and has no test of its own; treat it as a statement of intent, not a promise from a measurement.
 The measurements are in [DETAILS.md](DETAILS.md) (RTX 5070, Q2_0).
 
@@ -123,7 +123,7 @@ in 4.9 s, 1,480 MiB). It releases its VRAM when idle (30,585 to 32,098 MiB while
 With `"vram_elastic": true` as well (opt-in) the expert cache gives the room instead of the reserve:
 
 - **A picture's turn** (the same FIFO turn an encode always takes): if the encoder is not running, the engine's
-  `VRAM` command first keeps `"elastic_mib"` (default 2048) free on top of the reserve - the last `POST /v1/vram`, or 0
+  `VRAM` command first keeps `"elastic_mib"` free (when it is not set: 2,048 MiB at the default picture limit of 1,024 tokens; from a limit of about 4,700 tokens up, what the reader is estimated to need at that limit, for example 3,674 MiB at 16,384 or with no limit (0)) on top of the reserve - the last `POST /v1/vram`, or 0
   when none was made - and then the encoder starts. If the cache cannot shrink (the resident low-RAM mode, an engine
   without `--vram-elastic`, a layer split) the encoder starts in the VRAM that is free, if that is 1,536 MiB or more, and the CPU reader reads
   the picture if it is not; the log says why. On a layer split the server says at start that the encoder's VRAM has to be kept free
@@ -135,7 +135,7 @@ With `"vram_elastic": true` as well (opt-in) the expert cache gives the room ins
 - **`POST /v1/vram` while the encoder runs** keeps the asked reserve on top of the encoder's share; the encoder's stop
   then goes back to the asked reserve.
 - An unload of the model stops the encoder too. A picture that was encoded before (a conversation sends its pictures with every turn)
-  starts no reader. The log lines start with `[strata] images:` **(code; the unit tests in `serve/test_vision_elastic.py` pin each case)**.
+  starts no reader. The log lines start with `[strata] images:` **(code; the unit tests in `terminal/serve/test_vision_elastic.py` pin each case)**.
 
 `--vram-elastic` turns `--kv-grow` off (the engine says so at start): with both asked, the whole K/V is in VRAM.
 
