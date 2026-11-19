@@ -275,6 +275,15 @@ from 100 to 14 tok/s with only a few hundred slots too many. Use `--expert-cache
 The budget is pinned (locked) in RAM, which leaves the OS and the CPU workers little room. `STRATA_RESIDENT_PIN=0` keeps
 it pageable (also the RAM copy the engine makes on its own when the expert arena does not fit); a smaller budget works too.
 
+**On a 32 GB PC the Windows commit limit (RAM plus the page file) cuts the RAM budget, and the start says so.**
+The engine keeps `min(physical RAM, commit limit)` less a 4 GiB headroom for the expert copy, so a small page file cuts
+a budget that fits the free RAM alone. When setup or the start sees that, it says what the engine will grant and what
+gives the room back: a page file set to "system managed", or closing the programs that hold the most commit (they are
+named). Before it loads a model that asks for a RAM budget, the start can also free RAM first: it asks the other
+programs of this session to move their pages to the page file (nothing is closed; every page comes back when its
+program uses it). `STRATA_RAM_SQUEEZE=off` turns that off, `=on` frees RAM before every model load (the default,
+`auto`, frees it only for a start with `--resident-budget-gib`).
+
 **Decode got slower in 0.1.40 on a 32 GB PC with `--resident-budget-gib N`, and the drive is read hard (#1194, #1116, #1085).**
 The start line "the file tier reads unbuffered" means the experts outside the RAM copy are read straight from the drive.
 0.1.40 chose that whenever the free RAM could not hold all of them; but the same few come back token after token, and

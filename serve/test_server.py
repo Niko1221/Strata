@@ -6259,13 +6259,20 @@ class VisionCacheEviction(unittest.TestCase):
 
 
 class BudgetOverRam(unittest.TestCase):
-    """#1080: a RAM budget above what the PC has free is a warning at start, not silence and not a refusal."""
+    """#1080: a RAM budget above what the PC has free is a warning at start, not silence and not a refusal.
+    strata_control/ram_fit.py adds the commit-limit lines (the engine clamps min(physical, commit), so a budget that
+    fits the free RAM alone can still be cut) - on a fake psutil and a fake machine read so the numbers do not
+    depend on the box the tests run on."""
 
-    def run_with(self, budget, total, free):
+    def run_with(self, budget, total, free, commit_free=60.0):
         import serve.server as S
         vm = SimpleNamespace(total=total * 2**30, available=free * 2**30)
         fake = SimpleNamespace(virtual_memory=lambda: vm)
-        with mock.patch.dict(sys.modules, {"psutil": fake}), contextlib.redirect_stdout(io.StringIO()):
+        mem = {"total_gib": total, "avail_gib": free, "commit_free_gib": commit_free}
+        with mock.patch.dict(sys.modules, {"psutil": fake}), \
+             mock.patch("strata_control.ram_fit.mem_gib", return_value=mem), \
+             mock.patch("strata_control.ram_fit.top_commit_apps", return_value=[]), \
+             contextlib.redirect_stdout(io.StringIO()):
             return S.warn_budget_over_ram(["--native", "x", "--resident-budget-gib", str(budget)])
 
     def test_over_free_ram_warns(self):
@@ -6277,7 +6284,37 @@ class BudgetOverRam(unittest.TestCase):
         self.assertIsNotNone(self.run_with(60, 64, 60))
 
     def test_a_budget_that_fits_is_quiet(self):
+        """Fits the free RAM and the commit limit (60 - 2 - 4 - 0.25 = 53.75 >= 40): nothing said."""
         self.assertIsNone(self.run_with(40, 64, 50))
+
+    def test_a_budget_the_commit_limit_cuts_is_said_with_what_gives_the_room_back(self):
+        msg = self.run_with(40, 64, 50, commit_free=12.0)
+        self.assertIn("commit limit", msg)
+        self.assertIn("5.75", msg)                      # 12 - 2 own commit - 4 headroom - 0.25 margin
+        self.assertIn("system managed", msg)
+
+    def test_the_commit_apps_are_named_when_there_are_some(self):
+        import serve.server as S
+        vm = SimpleNamespace(total=64 * 2**30, available=50 * 2**30)
+        fake = SimpleNamespace(virtual_memory=lambda: vm)
+        mem = {"total_gib": 64.0, "avail_gib": 50.0, "commit_free_gib": 12.0}
+        with mock.patch.dict(sys.modules, {"psutil": fake}), \
+             mock.patch("strata_control.ram_fit.mem_gib", return_value=mem), \
+             mock.patch("strata_control.ram_fit.top_commit_apps", return_value=[("chrome", 4.2)]), \
+             contextlib.redirect_stdout(io.StringIO()):
+            msg = S.warn_budget_over_ram(["--native", "x", "--resident-budget-gib", "40"])
+        self.assertIn("chrome 4.2 GiB", msg)
+
+    def test_a_missing_psutil_still_warns_from_the_ctypes_read(self):
+        """psutil is optional: the ctypes / /proc read takes its place (the same warning, not silence)."""
+        import serve.server as S
+        mem = {"total_gib": 32.0, "avail_gib": 3.0, "commit_free_gib": 60.0}
+        with mock.patch.dict(sys.modules, {"psutil": None}), \
+             mock.patch("strata_control.ram_fit.mem_gib", return_value=mem), \
+             mock.patch("strata_control.ram_fit.top_commit_apps", return_value=[]), \
+             contextlib.redirect_stdout(io.StringIO()):
+            msg = S.warn_budget_over_ram(["--native", "x", "--resident-budget-gib", "38"])
+        self.assertIn("3 GiB free of 32 GiB", msg)
 
     def test_no_budget_argument_is_quiet(self):
         import serve.server as S

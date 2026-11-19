@@ -17285,7 +17285,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/TROUBLESHOOTING.md:340"
+    "docs/TROUBLESHOOTING.md:349"
    ],
    "first_commit": "c3c034745b",
    "first_date": "2026-10-03",
@@ -28468,7 +28468,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/TROUBLESHOOTING.md:337"
+    "docs/TROUBLESHOOTING.md:346"
    ],
    "first_commit": "c3c034745b",
    "first_date": "2026-10-03",
@@ -28963,7 +28963,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/TROUBLESHOOTING.md:293"
+    "docs/TROUBLESHOOTING.md:302"
    ],
    "first_commit": "5738d38d50",
    "first_date": "2026-10-07",
@@ -28998,7 +28998,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/TROUBLESHOOTING.md:293"
+    "docs/TROUBLESHOOTING.md:302"
    ],
    "first_commit": "5738d38d50",
    "first_date": "2026-10-07",
@@ -36602,12 +36602,17 @@
      "value": "6"
     }
    ],
-   "launch_reads": [],
+   "launch_reads": [
+    {
+     "file": "strata_control/ram_fit.py",
+     "line": 93
+    }
+   ],
    "doc_mentions": [
     "docs/AMD_HIP.md:260",
     "docs/DETAILS.md:253",
     "docs/DETAILS.md:761",
-    "docs/TROUBLESHOOTING.md:294"
+    "docs/TROUBLESHOOTING.md:303"
    ],
    "first_commit": "5ac6d37e59",
    "first_date": "2026-09-30",
@@ -44418,7 +44423,7 @@
    "launch_reads": [],
    "doc_mentions": [
     "docs/QUANTS.md:141",
-    "docs/TROUBLESHOOTING.md:283"
+    "docs/TROUBLESHOOTING.md:292"
    ],
    "first_commit": "9aae61f76d",
    "first_date": "2026-10-02",
