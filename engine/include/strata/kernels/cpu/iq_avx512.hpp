@@ -38,4 +38,9 @@ void iq512_fused_gu_rows(int type, const uint8_t* blob, size_t gu_row, size_t up
 // Q5_0 down rows, 512-bit, ggml-cpu's dot bit for bit (see iq_avx512.cpp)
 void q50_512_down_rows(const uint8_t* w, size_t row_bytes, int n, const void* const* hq, int nt, float* const* out, int r0, int r1);
 
+// IQ4_NL down rows, 512-bit: ggml-cpu's dot bit for bit (multi = false), iq4nl256_down_rows bit for bit (multi = true).
+// False (nothing written) for a shape it does not take: n not a multiple of 32, or one token with an odd block count or n > 4096.
+bool iq4nl512_down_rows(const uint8_t* w, size_t row_bytes, int n, const void* const* hq, int nt, bool multi,
+                        float* const* out, int r0, int r1);
+
 }  // namespace strata::kernels::cpu
