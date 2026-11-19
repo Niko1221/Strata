@@ -40,9 +40,18 @@ Toolkit source files were NOT modified. MSBuild was invoked directly with
 `--families` fix on main `05c22664b`). Evidence:
 `H:/Strata/evidence/upstream-oneway-20261119-build/full-strata-verification.json`.
 
+## Resident --serve E2E — DONE
+Real Qwen3.8-27B GGUF (11.73 GB) on RTX 5060 Ti, resident `--serve`:
+`READY 1024 stop` with `engine=qwen38_dense`, `PP`/`T` streaming, 8 tokens
+generated, and the official `ENGINE_REQUEST` completion line
+(`prompt 4 tokens = 0 reused + 4 read in 211.200 ms ..., 8 generated in
+240.358 ms ...`), clean `QUIT` with exit 0. Evidence:
+`H:/Strata/evidence/upstream-oneway-20261119-build/serve_e2e_verified.json`.
+This is a protocol E2E, not a quality/parity measurement.
+
 ## Remaining before shipping (NOT done)
-1. Run a resident `--serve` E2E with the Qwen3.8 GGUF through the official
-   Terminal/app (the full link itself is DONE above).
+1. Signed component packaging: private key is not available in this session
+   (user does not know it); manifest can be prepared but not signed.
 2. `family_layout.hpp` qwen35-dense geometry/layout table — **intentionally
    NOT added**. Q38 uses its own reader (`admission.hpp`) and is dispatched in
    `generate.cpp`'s family switch *before* the shared geometry/layout path runs,
