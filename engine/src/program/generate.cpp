@@ -13465,7 +13465,7 @@ int main(int argc, char** argv) {
             return true;
         };
         // The conversation cache's SSD tier (P2 of the cache admission design; conversation_spill.hpp).  A parked conversation the
-        // RAM tier evicts (its byte budget, its slot count, the RAM gate) or a captured one the RAM floor refuses is written as a
+        // RAM tier evicts (its byte budget, its slot count, the RAM gate) or a capture it cannot keep is written as a
         // session file into this process's own folder under the data folder, instead of being dropped; a later request whose
         // prompt it serves best reads it back.  Only on pressure: a park that fits in RAM never touches the disk.  A single-stage
         // serve only (a layer split's stage images are not written).  The file format, its identity and its read limits are the
@@ -13509,12 +13509,9 @@ int main(int argc, char** argv) {
             }
         }
         std::mutex spill_cost_mu;   // (the background writer measures writes while the serve loop asks the rule)
-        // On the serve thread: whether `img` goes to the SSD tier at all - the tier is on, one stage, the cost rule says it pays -
-        // and the model's identity is known (it is fingerprinted once, here, never on the writer thread).
-        auto spill_ready = [&](const strata::core::SavedConversation& img, const char* why) -> bool {
-            if (!spill.enabled() || !img.stage_images.empty()) return false;
-            const int64_t tokens = (int64_t) img.live.ids.size();
-            const uint64_t bytes = (uint64_t) img.bytes();
+        // Check the tier and the measured cost before capturing an oversized snapshot. The writer checks its actual size.
+        auto spill_ready = [&](int64_t tokens, uint64_t bytes, const char* why) -> bool {
+            if (!spill.admits_size(bytes)) return false;
             {
                 std::lock_guard<std::mutex> lk(spill_cost_mu);
                 if (!spill_cost.worth(tokens, bytes)) {
@@ -13549,6 +13546,9 @@ int main(int argc, char** argv) {
                 std::string e;
                 uint64_t serial = 0;
                 const auto t0 = Clock::now();
+                // The disk writer reads host buffers even when the GPU can restore from its staging copy.
+                if (img.live_pending) strata::core::conversation_checkpoint_join(img.live.gdn.data());
+                if (img.pending) strata::core::conversation_park_join();
                 const bool ok = spill_id && spill.put(img, *spill_id, e, &serial);
                 const double ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
                 if (ok) {
@@ -13569,9 +13569,10 @@ int main(int argc, char** argv) {
                 return 0;
             }
         };
-        // writes it now, on this thread (the RAM floor after a capture needs the memory back at once)
+        // Write it on this thread when it must leave RAM as soon as possible.
         auto spill_put = [&](const strata::core::SavedConversation& img, const char* why) -> bool {
-            return spill_ready(img, why) && spill_write(img, why) != 0;
+            return img.stage_images.empty() && spill_ready((int64_t) img.live.ids.size(), img.bytes(), why) &&
+                   spill_write(img, why) != 0;
         };
         // P2 step 2c: an evicted conversation is written by a background writer, so the request that evicted it does not wait
         // for the disk.  It stays in RAM (and the physical-RAM gate sees it) until this thread takes it back from the writer:
@@ -13582,7 +13583,8 @@ int main(int argc, char** argv) {
             spill_writer.emplace([&](const strata::core::SavedConversation& s) { return spill_write(s, "evicted from RAM, written in the background"); },
                                  [] { strata::core::spill_detail::lower_thread_priority(); });   // (it gives way to the serve loop)
             conversations.set_evict_sink([&](strata::core::SavedConversation&& v) {
-                if (spill_ready(v, "evicted from RAM")) spill_writer->push(std::move(v));
+                if (v.stage_images.empty() && spill_ready((int64_t) v.live.ids.size(), v.bytes(), "evicted from RAM"))
+                    spill_writer->push(std::move(v));
             });
         }
         // the writer's written images, freed here (they are on the SSD tier); the bytes freed
@@ -13602,6 +13604,15 @@ int main(int argc, char** argv) {
                 for (auto& d : spill_writer->take_done()) n += d.serial == 0 ? 1 : 0;   // (a written one is counted below)
             }
             return n + spill.clear();
+        };
+        // Mapped GGUF pages on Windows can fill the working set without being counted as available RAM.
+        // Ask Windows to trim pageable pages only before giving up a disk spill, then read the RAM gate again.
+        auto trim_spill_working_set = [&] {
+#if defined(_WIN32)
+            return drive.d.fs && SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T) -1, (SIZE_T) -1);
+#else
+            return false;
+#endif
         };
         // What a park captures: the main session's conversation (park_current) or an idle batch slot's (park_slot:
         // the reply it decoded, before an admission overwrites it).  One budget / admission / snapshot path for both.
@@ -13769,7 +13780,12 @@ int main(int argc, char** argv) {
             // estimate must stay uncapped: it counts the retained buffers'
             // capacity and directories, and put() charges that same true size -
             // a capped figure would under-evict and overfill the budget.
-            if (!conversations.make_room(estimate, held)) {
+            // The automatic cache budget can be smaller than the RAM currently available. Capture only if the
+            // physical-memory gate below also passes, and do not evict RAM-cache entries for a disk-only snapshot.
+            const char* oversize_reason = "snapshot exceeds the RAM cache budget";
+            const bool oversized = estimate > (uint64_t) o.conversation_cache_mib * 1024 * 1024;
+            const bool disk_only = oversized && n_st == 0 && spill_ready((int64_t) src.ids.size(), estimate, oversize_reason);
+            if (!disk_only && !conversations.make_room(estimate, held)) {
                 std::fprintf(stderr, "strata serve: conversation cache: skip parking (snapshot %zu MiB exceeds available budget)\n",
                              estimate >> 20);
                 return true;
@@ -13802,13 +13818,14 @@ int main(int argc, char** argv) {
                 bool fits = admit();
                 if (!fits && pools_budget.idle_bytes() > 0) { pools_budget.shrink((size_t) -1); fits = admit(); }
                 fits = fits || (strata::core::release_free_heap() && admit());
+                if (!fits && disk_only && trim_spill_working_set()) fits = admit();
                 // #5697: oldest first until it fits, and no further than the memory that comes back: an eviction whose
                 // bytes the reading does not show (the C library kept them) stops the loop, and the rest stay parked.
                 // An evicted image's segments go back to the segment pool as idle (resident) memory: given back to the
                 // OS at once, or the reading could never show them.
                 bool no_progress = false;
                 std::string cannot_help_note;   // #2253: the refusal line's note when no eviction could have made room
-                if (!fits) {
+                if (!fits && !disk_only) {
                     const strata::core::EvictForRam r = strata::core::evict_for_ram(
                         admit, [&] { return mem ? std::optional<uint64_t>(mem->available) : std::nullopt; },
                         [&]() -> size_t {
@@ -13885,6 +13902,10 @@ int main(int argc, char** argv) {
                             std::move(stage_reuse[k]), &reused_bytes))
                         return false;
                     image.stage_images.push_back(std::move(part));
+                }
+                if (disk_only) {
+                    spill_put(image, oversize_reason);
+                    return true;
                 }
                 auto mem_after = strata::core::sample_host_memory();
                 // (the park pools' idle memory is the first RAM to go back here too: a park the check refuses with the pools held would pass without them)
@@ -18727,10 +18748,17 @@ int main(int argc, char** argv) {
                         strata::core::SessionReadLimits limits;
                         const uint64_t floor = (uint64_t) o.conversation_cache_min_free_mib << 20;
                         pools_budget.shrink((size_t) -1);
-                        limits.admit = [floor, &o](uint64_t need, std::string& w) {
-                            const auto mem = strata::core::sample_host_memory();
-                            if (strata::core::conversation_memory_admit(mem ? std::optional<uint64_t>(mem->available) : std::nullopt,
-                                                                        need, floor)) return true;
+                        limits.admit = [&, floor](uint64_t need, std::string& w) {
+                            auto mem = strata::core::sample_host_memory();
+                            auto fits = [&] {
+                                return strata::core::conversation_memory_admit(
+                                    mem ? std::optional<uint64_t>(mem->available) : std::nullopt, need, floor);
+                            };
+                            if (fits()) return true;
+                            if (sp_bytes > (uint64_t) o.conversation_cache_mib * 1024 * 1024 && trim_spill_working_set()) {
+                                mem = strata::core::sample_host_memory();
+                                if (fits()) return true;
+                            }
                             w = "not enough RAM to read it (" + std::to_string(need >> 20) + " MiB plus a floor of " +
                                 std::to_string((long long) o.conversation_cache_min_free_mib) + " MiB needed, " + ram_note(mem) + ")";
                             return false;
