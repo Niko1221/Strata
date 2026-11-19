@@ -76,16 +76,24 @@ in the main worktree.
   worktrees (45 lines, same set). Pre-existing drift only; this port adds no
   new drift.
 - `git diff --check`: clean. No BOM in the new files.
+- **Real squeeze measured on this 32 GB PC** (`ram_fit.squeeze(mode="on",
+  budget_gib=20)`, no model load, resource floors monitored):
+  `before_avail=7.80 -> after_avail=12.13 GiB (+4.33 GiB) in 16.56 s`,
+  `floor_ok=True` (3 GiB floor kept), detail: trimmed 276 programs' working
+  sets and locked 11.2 GiB to push pages out, stopped when RAM was enough,
+  nothing closed. Real commit advice: "about 28 GiB free, engine will keep
+  about 22 GiB of the 40 GiB budget"; "system managed page file gives that
+  room back, as does closing msedge 4.3 / 7z 3.0 / ChatGPT 1.9 GiB".
+  This resolves the handover's "real squeeze unmeasured" residual risk.
 - Reference evidence (old layout, from the implementation log): full
   `serve/test_server.py` 387 passed/3 skipped, rest of `serve` 1346 passed/
   24 skipped, RAM32 suites 7 passed/3 skipped, full `tests/terminal`
   3514 passed/16 failed/115 skipped (all 16 triaged, 1 fixed here).
 
 ## Residual risks
-- The real two-stage squeeze is still not re-measured on this PC (only the
-  test fake ran; the code is Sync-Strata's working implementation with this
-  fork's names). A real `strata launch` with a RAM-budget model should confirm
-  freed RAM and elapsed time.
+- The real two-stage squeeze is now measured directly (see above), but not
+  yet through a full `strata launch` with a model load; that end-to-end path
+  remains as a pre-release check.
 - Squeeze runs only through `serve/server.py`; an app-host start that spawns
   the engine directly is out of scope.
 - Not ported: per-start budget recompute, RAM-tiered pack choice,
