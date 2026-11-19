@@ -54,8 +54,9 @@ build-vision*/
 build-vision.bat
 build-vision-cuda12.bat
 
-# setup.py outputs (engine, downloads) and release builds
-/engine/
+# setup.py outputs (engine, downloads) and release builds.
+# `/engine/` was a build-output rule in the old fork layout; in the 0.2.16
+# layout `engine/` is official source, so it must be tracked.
 /engine-sycl/
 /engine-cuda12/
 /build-release*/

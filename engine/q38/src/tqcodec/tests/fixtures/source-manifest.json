@@ -1,0 +1,43 @@
+{
+  "sources": {
+    "thetom": {
+      "revision": "643956891dfdf51aecdbd05ca508dd21e21e8195",
+      "sha256": {
+        "ggml\\src\\ggml-turbo-quant.c": "4e378d49003a5b548c625880780002df379c3387decb79763c79565c9444455d",
+        "ggml\\src\\ggml-common.h": "ff0dffc35e1d01a67e6f776ffa67d9c1f2f6d3cb667decb994a9c4344174eafe",
+        "ggml\\src\\ggml-impl.h": "165258ef041cae44c3848f783402634717d3c97f6c3b112dd543cb1bde5c561a",
+        "ggml\\src\\ggml-quants.h": "4a6254b57371dc02fe91d0a726b82eb2b09ffa47aed9cb70eaefead9f8d65959",
+        "ggml\\include\\ggml.h": "3c2dffd7657be752b55a00d52b79e6c49d04608416679332969aaf4c55c8eb8d",
+        "LICENSE": "bcd8ec749126d45cb06737d0690295d73df4b6e7e194205bcf91190368f27285"
+      }
+    },
+    "prism": {
+      "revision": "73bfe6cc485554822f80c473a3c0c4f25e80f41b",
+      "sha256": {
+        "ggml\\src\\ggml-quants.c": "636ce056d71f454dedc2d86b02ca696e4d83f58b0be7db20a0ca1bd9207f5dcf",
+        "ggml\\src\\ggml-common.h": "42e29ea187d19a32a11b58843708385501ef7d23556d73a1c0a6a59e14bd5ace",
+        "ggml\\src\\ggml-impl.h": "165258ef041cae44c3848f783402634717d3c97f6c3b112dd543cb1bde5c561a",
+        "ggml\\src\\ggml-quants.h": "dd3cfa2ea7ccdde228c9017001f5a43e7be8773e103c6e7e15b02c2b4d406829",
+        "ggml\\include\\ggml.h": "49935c2b9d65e9b7ee61d0b417915e1e0fd7e3f0b53e40682d2c7d7b574862ef",
+        "LICENSE": "bcd8ec749126d45cb06737d0690295d73df4b6e7e194205bcf91190368f27285"
+      }
+    },
+    "native": {
+      "revision": "3cf03257f219afbe7334045ff7c6a06ac68c627d",
+      "sha256": {
+        "ggml\\src\\ggml-quants.c": "c5829ed1b4ced3970964464eaf2c985af38008fa76c91af15f4f63ef4447ab1f",
+        "ggml\\src\\ggml-common.h": "3ac6eed12695ceea1acd18f556845023a45f92f6ce0530c18c70bb10450207ea",
+        "ggml\\src\\ggml-impl.h": "aed6398b8efd0bc1167ced34037abe14620b54374d067333f50952cd65ada2f2",
+        "ggml\\src\\ggml-quants.h": "f7676dc8160f940034cf092c6a0b27577e3677c6153cb476bb2bc78fb5f85762",
+        "ggml\\include\\ggml.h": "62e4d28730f96924bfc3ec46771b38c30a8d4397584769fd636d6327354d5430",
+        "LICENSE": "bcd8ec749126d45cb06737d0690295d73df4b6e7e194205bcf91190368f27285"
+      }
+    }
+  },
+  "equality": "encoder bytes and decoded F32 bits, including signed zero",
+  "generated_sha256": {
+    "native.c": "e8b2a76453c7e7b04b099119da06052fffe77d88b79759604c96fdac62476148",
+    "prism.c": "b15b63ec0f6835f0082509f41eb336caa4420be01ec92bb3780585bd0d764bb3",
+    "thetom.c": "8b4b1ee513a62f1cbe13c661b6c933de33fb9fe0dd5f17b3876232c8483f150a"
+  }
+}

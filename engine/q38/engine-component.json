@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "id": "strata-engine-q38",
+  "name": "strata-engine-q38-dense",
+  "version": "0.6.5",
+  "platform": "windows-x86_64",
+  "backend": "cuda",
+  "archs": [
+    "sm_120"
+  ],
+  "min_driver": "565.0",
+  "entrypoint": "strata-q38.exe",
+  "files": [],
+  "signature": null
+}

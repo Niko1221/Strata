@@ -99,6 +99,17 @@ RELOCATE_PREFIXES: Tuple[Tuple[str, str], ...] = (
     ("serve/", "terminal/serve/"),
     ("strata_cli/", "terminal/strata_cli/"),
     ("strata_control/", "terminal/strata_control/"),
+    # Upstream 0.2.16 splits tests/ between terminal/tests and engine/tests;
+    # these engine-side subdirs are referenced by engine/CMakeLists.txt.
+    ("tests/core/", "engine/tests/core/"),
+    ("tests/prefill/", "engine/tests/prefill/"),
+    ("tests/hip/", "engine/tests/hip/"),
+    ("tests/quant/", "engine/tests/quant/"),
+    ("tests/program/", "engine/tests/program/"),
+    ("tests/cuda/", "engine/tests/cuda/"),
+    ("tests/platform/", "engine/tests/platform/"),
+    ("tests/gdn/", "engine/tests/gdn/"),
+    ("tests/ngram/", "engine/tests/ngram/"),
     ("tests/terminal/", "terminal/tests/"),
     ("tests/snapshot/", "terminal/tests/snapshot/"),
     ("tests/data/", "terminal/tests/data/"),

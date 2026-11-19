@@ -1,0 +1,52 @@
+// include/strata/prefill/stream_floor_rule.hpp - from which chunk size a prompt chunk takes the long-prompt path (src/prefill/prefill.cpp stream_all_min()).
+//
+// A chunk of the floor's size or more is read by the streamed walk: every non-resident expert of every layer comes through the ring in layer order and the
+// layers' experts run on the fused kernels where those cover the layer.  A shorter chunk takes the staged walk: only the routed experts are staged, and a
+// layer with no MMQ tile for its formats (UD-Q4_K_XL's Q4_K / Q5_K gate/up and Q5_1 / Q8_0 down, without STRATA_MMQ_KQ) runs each routed expert on the dequantize-to-FP16
+// path: a dequantize and two FP16 GEMMs per expert, a fixed cost of about 1.6 s a prompt on Windows gfx1151 whatever the length (128 tokens 1,754 ms, 1,000 tokens 3,629 ms,
+// against 1,110 ms for 1,100 tokens on the streamed walk: par/RESULTS-STRIX-SHORT.md).  The streamed walk reads 128 to 1,000 tokens 3.6 to 4.4 times sooner there.
+//
+// The rule: the default floor is 1,024 (kStreamAllMinDefault in prefill.cpp, measured on a discrete card).  For a layer set in which EVERY layer has no MMQ tile and takes the
+// fused kernels, on a class of device where that was measured (today: Windows gfx1151 only), the staged walk has a fused entry for such layers (staged_fo_rule.hpp, on by default on
+// that class: pieces below 1,024 tokens 5x faster than the FP16 path, 1.03 to 1.23x faster than the long path from 96 to 1,000 tokens) and the floor stays 1,024; with the entry off
+// (STRATA_PF_STAGED_FO=0) the floor is kFusedOnlyFloor, which sends pieces of 64 tokens and more to the streamed walk.  STRATA_PREFILL_STREAM_MIN, set to any value,
+// replaces the floor (1024 restores the old rule); the CPU share's own limit (g_stream_min_share) keeps precedence where it applies.  Pure: no GPU, no environment read here.
+#pragma once
+
+#include <cstdint>
+
+namespace strata::prefill {
+
+inline constexpr int64_t kStreamFloorDefault = 1024;
+inline constexpr int64_t kFusedOnlyFloor = 64;   // the streamed walk is faster than the FP16 path at every size measured from 96 up (par/RESULTS-STRIX-SHORT.md); the server reads pieces of up to --short-read tokens through the verify windows and longer ones batched
+
+inline constexpr int64_t kTrellisCudaFloor = 64;   // sweep on an RTX A6000 (sm_86, Gyro-S, floors 64 / 128 / 256 / 512 / 1,024 at 128 to 1,000 tokens, two rounds, par/RESULTS-MMQ-TAIL.md): 64 is the fastest at every size (a prompt of N tokens streams from a floor of N - 1 down, so 128 / 256 / 512 token prompts need 64 / 128 / 256 or lower)
+
+/// `class_measured`: the device class this default was measured on (Windows gfx1151).  `all_layers_fused_only`: the layer set has no MMQ tile and the fused kernels take every layer.
+/// `staged_entry`: the staged walk takes such layers on its fused group entry (staged_fo_rule.hpp), so the old FP16 path below the floor is gone and the floor needs no lowering.
+///
+/// `plain_pack_fused`: a build without llama.cpp's MMQ (prefill.cpp STRATA_PF_OWN_ONLY) loading a pack that is not a native one (the AVX-512 Q2_0 pack: no native_experts.txt) whose layers the plan marks
+/// fused (fused::enabled()).  The staged entry and the int8 kernels read the native layout only, so below the floor such a layer would run each routed expert on the dequantize + FP16 path
+/// (Radeon 780M, Q2_0 pack: 367-token prompts 7,435 ms against 3,222 ms with MMQ); the floor is kFusedOnlyFloor there, on every card class.  A build with MMQ passes false.
+///
+/// `trellis_gfx12_fused`: a build without MMQ on a gfx12 card (Radeon AI PRO R9700 / RX 9070) loading a native pack whose every layer is a trellis pair (Gyro-S TQK6 / TQK7) on the fused kernels.  The staged
+/// fused entry reads such layers about twice as slowly as MMQ does below the floor, the streamed walk 1.5 to 1.7 times faster than MMQ from 128 tokens up (R9700, Gyro-S: 128 tokens 252 ms with MMQ, 542 ms on the staged
+/// entry, 167 ms on the streamed walk; par/RESULTS-MMQ-TAIL.md), so the floor is kFusedOnlyFloor there whatever the staged entry says.  A build with MMQ passes false.
+///
+/// `trellis_cuda_fused`: the same layer set (a native pack whose every layer is a trellis pair on the fused kernels) in a build without MMQ on a CUDA card on which those kernels run (prefill.cpp
+/// trellis_cuda_all_fused(): layers_all_fused_only() is true only where fused::native_supported takes every layer, which for the trellis pair on CUDA means the sm_86 class with 80 or more SMs by
+/// default, or any sm_80+ card with STRATA_PF_FUSED_TQ=1; every other CUDA card keeps the layers off the fused kernels and this flag is false).  Below the floor such a layer runs each routed expert on
+/// the dequantize + FP16 path (RTX A6000, Gyro-S: 128 / 512 / 1,000 tokens 550 / 1,026 / 1,322 ms against 204 / 456 / 674 ms with MMQ, par/RESULTS-MMQ-TAIL.md); the floor is kTrellisCudaFloor.
+///
+/// `trellis_g1151_fused`: the gfx12 rule on Windows gfx1151 (one card): a build without MMQ loading a native pack whose every layer is a trellis pair that the fused kernels take (prefill.cpp
+/// trellis_g1151_all_fused(): on gfx1151 layers_all_fused_only() holds for such a set only when STRATA_PF_TQ_G1151 lets the fused kernels take the trellis pair, fused_tq_hip.hpp device_on).  The staged
+/// fused entry does not take Gyro-S's Hadamard-folded layers, so with the 1,024 floor every chunk below it ran on the FP16 path (Strix Halo, Gyro-S, 256 tokens 1,914 ms against 726 ms in 0.2.13);
+/// the floor is kFusedOnlyFloor there whatever the staged entry says.  Linux gfx1151, the other gfx11 chips, a build with MMQ and CUDA pass false.
+constexpr int64_t stream_floor_default(bool class_measured, bool all_layers_fused_only, bool staged_entry, bool plain_pack_fused = false, bool trellis_gfx12_fused = false,
+                                       bool trellis_cuda_fused = false, bool trellis_g1151_fused = false) {
+    return (class_measured && all_layers_fused_only && !staged_entry) || plain_pack_fused || trellis_gfx12_fused || trellis_g1151_fused ? kFusedOnlyFloor
+           : trellis_cuda_fused                                                                              ? kTrellisCudaFloor
+                                                                                                              : kStreamFloorDefault;
+}
+
+}  // namespace strata::prefill

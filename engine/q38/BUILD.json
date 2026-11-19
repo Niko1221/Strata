@@ -1,0 +1,8 @@
+{
+  "version": "0.6.5",
+  "source": "engine/q38/src",
+  "engine_api": "strata-0.2.16 (engine 0.1.62)",
+  "built_at": "2026-11-19T07:38:40.787460+00:00",
+  "built": false,
+  "note": "Template; populate from a real -DSTRATA_ENABLE_Q38=ON CUDA build."
+}

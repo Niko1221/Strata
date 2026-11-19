@@ -1,0 +1,23 @@
+{
+  "seed": 1234,
+  "files": {
+    "thetom": {
+      "records": 3084,
+      "input_sha256": "633a0203d4ab63aaa76a0866c2e7754ac823ce706f9e18a1af9d20261e973408",
+      "output_sha256": "c27a1864c0a2038164adadb5187063591010a14dac2c4ef774e7e8809e730b44",
+      "executable_sha256": "a968728a29a6bff389da90d3e783f175748db896a54a6951738debf6ac8385bd"
+    },
+    "prism": {
+      "records": 931,
+      "input_sha256": "541ebb491dc33059b416001b3558ed75e6036c347e355cf8f130753e0a8f5306",
+      "output_sha256": "adcf0689358b07b1fc0cfcabf2235039c3d57c6743b328b79b12329988f97878",
+      "executable_sha256": "9fb76ecd36817b27d8e7216f4484f11db2d2f0b43a3282dbcc8eeee353e512f9"
+    },
+    "native": {
+      "records": 225,
+      "input_sha256": "85982f485deb789eef11a305a35b08ad4511f5afda1c70b67ca5c745358aa8e1",
+      "output_sha256": "400018be72b695f3e5d0a1bd85e5ef84a8bfc4fea6e926866ef158fb593b7b25",
+      "executable_sha256": "a7624ccd7a11737693ed31325a6f2cf799812e8568523d673086fb88a56fd06c"
+    }
+  }
+}
