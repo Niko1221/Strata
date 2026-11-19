@@ -4787,7 +4787,8 @@ bool FileExpertSource::pcie_layer(int64_t layer) const {
 // ================================ THE ADAPTER ================================
 
 bool ExpertDispatch::fetch_can(int64_t layer) const {
-    return fetch_admit > 0 && res_mut != nullptr && !usage.empty() && plan != nullptr && plan->pcie_mode == 2 &&
+    return fetch_admit > 0 && !fetch_paused && res_mut != nullptr && !usage.empty() && plan != nullptr &&
+           (plan->pcie_mode == 2 || (plan->pcie_mode == 0 && plan->dma_cache_admission)) &&
            plan->dst2 != nullptr && peer == nullptr && remote_count == 0 && fs == nullptr && pcie_num > 0 &&
            src != nullptr && src->pcie_layer(layer);
 }
@@ -4998,6 +4999,7 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
     int32_t kind[kMaxWindowEntries];       // per entry: -1 CPU, 0 VRAM, 1 PCIe
     if (d.plan != nullptr && n <= kMaxWindowEntries && n <= d.plan->cap) {
         int64_t distinct[kMaxWindowEntries], first_of[kMaxWindowEntries];
+        int q_of[kMaxWindowEntries], rows_q[kMaxWindowEntries];
         int nd = 0, nmiss = 0;
         // a helper GPU (RemoteExperts) holding the expert computes it in its own VRAM once begin() claims the row: like
         // the peer tier's, such an expert is no miss of this plan and never part of the PCIe share, which would read it
@@ -5010,14 +5012,19 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
         };
         for (int64_t i = 0; i < n; ++i) {
             first_of[i] = i;
+            int found_q = -1;
             for (int64_t j = 0; j < i; ++j)
-                if (ids[j] == ids[i]) { first_of[i] = first_of[j]; break; }
+                if (ids[j] == ids[i]) { first_of[i] = first_of[j]; found_q = q_of[first_of[j]]; break; }
             if (first_of[i] == i) {
+                found_q = nd;
+                rows_q[nd] = 0;
                 distinct[nd++] = i;
                 const int32_t e = ids[i];
                 if (e >= 0 && e < d.n_expert && d.host_res[(size_t) d.layers * (size_t) d.n_expert + (size_t) e] < 0 &&
                     !(d.peer != nullptr && d.peer->has(d.layers, e)) && !helper_holds(e)) ++nmiss;
             }
+            q_of[i] = found_q;
+            ++rows_q[found_q];
         }
         // STRATA_ROUTE_TAIL_SKIP=R (default 7 on CUDA serve, =0 off; changes the output): a missed expert that EVERY token of the window routes
         // only at rank >= R (the smallest weights of the top-10) is neither copied nor computed; its contribution is
@@ -5059,7 +5066,7 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
         }
         // STRATA_PCIE_BALANCE (opt-in, #1548): the count comes from the measured CPU and GPU costs instead of the share
         const bool pcie_ok = (d.pcie_num > 0 || d.pcie_model.on) && d.src->pcie_layer(d.layers);
-        int m = pcie_ok ? d.pcie_model.pick(nmiss, (nmiss * d.pcie_num) >> 8) : 0;
+        int m = pcie_ok ? d.pcie_model.pick(nmiss, (nmiss * d.pcie_num) >> 8, (int) d.plan->staging_cap) : 0;
         // STRATA_PCIE_MIN1 (opt-in): the share rounds to 0 for 1-2 misses per layer, so the PCIe lane idles on the typical
         // decode step; with >= 2 misses give it at least one (the last in routing order).  It only flies if its blob is
         // pinned (the fetch below checks), else it stays a CPU miss exactly as before.  Read once.
@@ -5072,19 +5079,26 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
         // STRATA_ADAPT_FETCH: the share is the layer's most-routed misses, and the ones the tier would swap in are copied
         // into a slot as they are fetched (ExpertDispatch::fetch_admit)
         const bool fetch_on = m > 0 && d.fetch_can(d.layers);
+        const bool nt_prioritize = pcie_ok && m > 0 && (n_tok > 2 || P.dma_cache_admission);
         const float* use = d.usage.empty() ? nullptr : d.usage.data() + (size_t) d.layers * (size_t) d.n_expert;
         bool pick[kMaxWindowEntries];
-        if (fetch_on) {
+        if (fetch_on || nt_prioritize) {
             int mq[kMaxWindowEntries], nm = 0;
             for (int q = 0; q < nd; ++q) {
                 pick[q] = false;
                 const int32_t e = ids[distinct[q]];   // a tail-skipped miss is not fetched
                 // (an unpinned blob cannot be fetched: under STRATA_PIN_BY_NEED a PCIe layer is pinned in part)
                 if (!skip_d[q] && e >= 0 && e < d.n_expert && d.host_res[(size_t) d.layers * (size_t) d.n_expert + (size_t) e] < 0 &&
+                    !(d.peer != nullptr && d.peer->has(d.layers, e)) && !helper_holds(e) &&
                     d.src->pinned(d.layers, e))
                     mq[nm++] = q;
             }
-            std::stable_sort(mq, mq + nm, [&](int a, int b) { return use[ids[distinct[a]]] > use[ids[distinct[b]]]; });
+            // Transferring one multi-token miss (rows_q >= 2) over PCIe eliminates multiple CPU expert runs at once.
+            std::stable_sort(mq, mq + nm, [&](int a, int b) {
+                if ((n_tok > 2 || P.dma_cache_admission) && rows_q[a] != rows_q[b]) return rows_q[a] > rows_q[b];
+                if (use != nullptr) return use[ids[distinct[a]]] > use[ids[distinct[b]]];
+                return false;
+            });
             for (int j = 0; j < m && j < nm; ++j) pick[mq[j]] = true;
         }
         for (int q = 0; q < nd; ++q) {
@@ -5111,7 +5125,7 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
                     kd = 0;                        // Foresight: a landed swap-space slot holds it - a GPU group like a hit
                 } else {
                     if (d.fs != nullptr) d.fs->note_miss(d.src, d.layers, e);
-                    if ((fetch_on ? pick[q] : miss_rank >= nmiss - m) && fetches < P.staging_cap && fetches < 64) {
+                    if (((fetch_on || nt_prioritize) ? pick[q] : miss_rank >= nmiss - m) && fetches < P.staging_cap && fetches < 64) {
                         const uint8_t* src = d.src->pinned(d.layers, e) ? d.src->blob(d.layers, e) : nullptr;
                         if (src != nullptr) {
                             kd = 1;
@@ -5161,28 +5175,39 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
             if (d.fetch_mark.size() != (size_t) d.n_expert) d.fetch_mark.assign((size_t) d.n_expert, 0);
             for (int64_t i = 0; i < n; ++i)
                 if (ids[i] >= 0 && ids[i] < d.n_expert) d.fetch_mark[(size_t) ids[i]] = 1;
+            // In batch windows, prevent 1-hit cold misses from overwriting warm resident experts.
+            const bool verify_fallback = d.fetch_log_on && d.fetch_log.empty() && d.layers >= 40;
+            const bool anti_thrash = (n_tok > 2 || P.dma_cache_admission) && !verify_fallback;
+            const float eff_min = anti_thrash ? std::max(d.fetch_min, 2.0f) : d.fetch_min;
+            const float eff_margin = anti_thrash ? std::max(d.fetch_margin, 1.0f) : d.fetch_margin;
             int cq[64], nc = 0;
             for (int q = 0; q < fetches; ++q) {
                 const int32_t e = ids[pcie_i0[q]];
-                if (use[e] >= d.fetch_min && (d.in_flight.empty() || d.in_flight[lb + (size_t) e] == 0)) cq[nc++] = q;
+                if (use[e] >= eff_min && (d.in_flight.empty() || d.in_flight[lb + (size_t) e] == 0)) cq[nc++] = q;
             }
-            std::stable_sort(cq, cq + nc, [&](int a, int b) { return use[ids[pcie_i0[a]]] > use[ids[pcie_i0[b]]]; });
+            std::stable_sort(cq, cq + nc, [&](int a, int b) {
+                if (rows_q[q_of[pcie_i0[a]]] != rows_q[q_of[pcie_i0[b]]])
+                    return rows_q[q_of[pcie_i0[a]]] > rows_q[q_of[pcie_i0[b]]];
+                return use[ids[pcie_i0[a]]] > use[ids[pcie_i0[b]]];
+            });
+            const int max_admit = anti_thrash ? std::min(nc, 2) : nc;
             int32_t vic[64];
             int nv = 0;
-            for (int32_t e = 0; e < (int32_t) d.n_expert && nc > 0; ++e) {
+            for (int32_t e = 0; e < (int32_t) d.n_expert && max_admit > 0; ++e) {
                 if (d.res_mut[lb + (size_t) e] < 0 || d.fetch_mark[(size_t) e] != 0) continue;
-                if (nv < nc) vic[nv++] = e;
+                if (nv < max_admit) vic[nv++] = e;
                 else if (use[e] < use[vic[nv - 1]]) vic[nv - 1] = e;
                 else continue;
                 for (int j = nv - 1; j > 0 && use[vic[j]] < use[vic[j - 1]]; --j) std::swap(vic[j], vic[j - 1]);
             }
-            for (int j = 0; j < nc && j < nv; ++j) {
+            for (int j = 0; j < max_admit && j < nv; ++j) {
                 const int q = cq[j];
                 const int32_t e = ids[pcie_i0[q]], v = vic[j];
-                if (use[e] < use[v] + d.fetch_margin) break;
+                if (use[e] < use[v] + eff_margin) break;
                 const int32_t slot = d.res_mut[lb + (size_t) v];
                 P.dst2[q] = (unsigned long long) (d.cache_base + (d.cache_slot_off ? (size_t) d.cache_slot_off[slot]
                                                                                    : (size_t) slot * (size_t) d.cache_blob));
+                if (P.pcie_mode == 0) P.ptr2[q] = P.dst2[q];  // both the DMA and its consumer use the final slot
                 d.res_mut[lb + (size_t) v] = -1;   // kNotResident
                 d.res_mut[lb + (size_t) e] = slot;
                 ++d.fetch_admitted;

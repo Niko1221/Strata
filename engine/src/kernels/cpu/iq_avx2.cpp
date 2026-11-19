@@ -591,7 +591,73 @@ void rows(const uint8_t* w, size_t row_bytes, int n, const void* const* hq, floa
     const __m128i values = _mm_loadu_si128((const __m128i*)kvalues_iq4nl), mask = _mm_set1_epi8(15);
     const __m256i ones = _mm256_set1_epi16(1);
     const int nb = n / QK4_NL;
-    for (int r = r0; r < r1; ++r) {
+    int r = r0;
+    if constexpr (NT == 1) {
+        const auto* y = (const block_q8_0*) hq[0];
+        float* const o0 = out[0];
+        for (; r + 2 <= r1; r += 2) {
+            const auto* x0 = (const block_iq4_nl*) (w + (size_t) r * row_bytes);
+            const auto* x1 = (const block_iq4_nl*) (w + (size_t) (r + 1) * row_bytes);
+            __m256 even0 = _mm256_setzero_ps(), odd0 = _mm256_setzero_ps();
+            __m256 even1 = _mm256_setzero_ps(), odd1 = _mm256_setzero_ps();
+            int ib = 0;
+            for (; ib + 1 < nb; ib += 2) {
+                _mm_prefetch((const char*) &x0[ib + 4], _MM_HINT_T0);
+                _mm_prefetch((const char*) &x1[ib + 4], _MM_HINT_T0);
+                const __m256i q8_0 = _mm256_loadu_si256((const __m256i*) y[ib].qs);
+                const __m256i q8_1 = _mm256_loadu_si256((const __m256i*) y[ib + 1].qs);
+                const float dy0 = h2f(y[ib].d), dy1 = h2f(y[ib + 1].d);
+                const __m128i b00 = _mm_loadu_si128((const __m128i*) x0[ib].qs),
+                              b01 = _mm_loadu_si128((const __m128i*) x0[ib + 1].qs);
+                const __m256i w00 = _mm256_inserti128_si256(
+                    _mm256_castsi128_si256(_mm_shuffle_epi8(values, _mm_and_si128(b00, mask))),
+                    _mm_shuffle_epi8(values, _mm_and_si128(_mm_srli_epi16(b00, 4), mask)), 1);
+                const __m256i w01 = _mm256_inserti128_si256(
+                    _mm256_castsi128_si256(_mm_shuffle_epi8(values, _mm_and_si128(b01, mask))),
+                    _mm_shuffle_epi8(values, _mm_and_si128(_mm_srli_epi16(b01, 4), mask)), 1);
+                const __m256i a00 = _mm256_sign_epi8(w00, w00), a01 = _mm256_sign_epi8(w01, w01);
+                const auto p00 = _mm256_madd_epi16(_mm256_maddubs_epi16(a00, _mm256_sign_epi8(q8_0, w00)), ones);
+                const auto p01 = _mm256_madd_epi16(_mm256_maddubs_epi16(a01, _mm256_sign_epi8(q8_1, w01)), ones);
+                even0 = _mm256_fmadd_ps(_mm256_set1_ps(dy0 * h2f(x0[ib].d)), _mm256_cvtepi32_ps(p00), even0);
+                odd0 = _mm256_fmadd_ps(_mm256_set1_ps(dy1 * h2f(x0[ib + 1].d)), _mm256_cvtepi32_ps(p01), odd0);
+                const __m128i b10 = _mm_loadu_si128((const __m128i*) x1[ib].qs),
+                              b11 = _mm_loadu_si128((const __m128i*) x1[ib + 1].qs);
+                const __m256i w10 = _mm256_inserti128_si256(
+                    _mm256_castsi128_si256(_mm_shuffle_epi8(values, _mm_and_si128(b10, mask))),
+                    _mm_shuffle_epi8(values, _mm_and_si128(_mm_srli_epi16(b10, 4), mask)), 1);
+                const __m256i w11 = _mm256_inserti128_si256(
+                    _mm256_castsi128_si256(_mm_shuffle_epi8(values, _mm_and_si128(b11, mask))),
+                    _mm_shuffle_epi8(values, _mm_and_si128(_mm_srli_epi16(b11, 4), mask)), 1);
+                const __m256i a10 = _mm256_sign_epi8(w10, w10), a11 = _mm256_sign_epi8(w11, w11);
+                const auto p10 = _mm256_madd_epi16(_mm256_maddubs_epi16(a10, _mm256_sign_epi8(q8_0, w10)), ones);
+                const auto p11 = _mm256_madd_epi16(_mm256_maddubs_epi16(a11, _mm256_sign_epi8(q8_1, w11)), ones);
+                even1 = _mm256_fmadd_ps(_mm256_set1_ps(dy0 * h2f(x1[ib].d)), _mm256_cvtepi32_ps(p10), even1);
+                odd1 = _mm256_fmadd_ps(_mm256_set1_ps(dy1 * h2f(x1[ib + 1].d)), _mm256_cvtepi32_ps(p11), odd1);
+            }
+            float s0 = hsum(_mm256_add_ps(even0, odd0));
+            float s1 = hsum(_mm256_add_ps(even1, odd1));
+            if (ib < nb) {
+                int a0t = 0, b0t = 0, a1t = 0, b1t = 0;
+                for (int j = 0; j < QK4_NL / 2; ++j) {
+                    a0t += kvalues_iq4nl[x0[ib].qs[j] & 15] * y[ib].qs[j];
+                    b0t += kvalues_iq4nl[x0[ib].qs[j] >> 4] * y[ib].qs[j + QK4_NL / 2];
+                    a1t += kvalues_iq4nl[x1[ib].qs[j] & 15] * y[ib].qs[j];
+                    b1t += kvalues_iq4nl[x1[ib].qs[j] >> 4] * y[ib].qs[j + QK4_NL / 2];
+                }
+                float tail0 = (h2f(y[ib].d) * h2f(x0[ib].d)) * (float) (a0t + b0t);
+                float tail1 = (h2f(y[ib].d) * h2f(x1[ib].d)) * (float) (a1t + b1t);
+#if defined(__GNUC__) || defined(__clang__)
+                __asm__("" : "+x"(tail0));
+                __asm__("" : "+x"(tail1));
+#endif
+                s0 += tail0;
+                s1 += tail1;
+            }
+            o0[r] = s0;
+            o0[r + 1] = s1;
+        }
+    }
+    for (; r < r1; ++r) {
         auto* x = (const block_iq4_nl*)(w + r * row_bytes);
         __m256 even[NT], odd[NT];
         for (int t = 0; t < NT; ++t) {
@@ -600,6 +666,7 @@ void rows(const uint8_t* w, size_t row_bytes, int n, const void* const* hq, floa
         }
         int ib = 0;
         for (; ib + 1 < nb; ib += 2) {
+            _mm_prefetch((const char*) &x[ib + 4], _MM_HINT_T0);
             const __m128i b0 = _mm_loadu_si128((const __m128i*)x[ib].qs),
                           b1 = _mm_loadu_si128((const __m128i*)x[ib + 1].qs);
             const __m256i w0 =
@@ -631,7 +698,11 @@ void rows(const uint8_t* w, size_t row_bytes, int n, const void* const* hq, floa
                     b += kvalues_iq4nl[x[ib].qs[j] >> 4] * y[ib].qs[j + QK4_NL / 2];
                 }
                 const float d = h2f(y[ib].d) * h2f(x[ib].d);
-                s += d * (a + b);
+                float tail_t = d * (float) (a + b);
+#if defined(__GNUC__) || defined(__clang__)
+                __asm__("" : "+x"(tail_t));
+#endif
+                s += tail_t;
             }
             out[t][r] = s;
         }

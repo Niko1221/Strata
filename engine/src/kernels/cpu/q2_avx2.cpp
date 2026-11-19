@@ -36,16 +36,16 @@ inline float h2f(const uint8_t* p) {
 
 // 16 bytes of 2-bit codes (value i in byte i/4, bits 2*(i%4)) -> 64 codes in value order, two 32-byte vectors
 inline void unpack64(const uint8_t* codes, __m256i& lo, __m256i& hi) {
-    const __m128i b = _mm_loadu_si128((const __m128i*) codes);
-    const __m128i m3 = _mm_set1_epi8(3);
-    const __m128i c0 = _mm_and_si128(b, m3);
-    const __m128i c1 = _mm_and_si128(_mm_srli_epi16(b, 2), m3);
-    const __m128i c2 = _mm_and_si128(_mm_srli_epi16(b, 4), m3);
-    const __m128i c3 = _mm_and_si128(_mm_srli_epi16(b, 6), m3);
-    const __m128i a0 = _mm_unpacklo_epi8(c0, c1), a1 = _mm_unpacklo_epi8(c2, c3);   // bytes 0..7
-    const __m128i b0 = _mm_unpackhi_epi8(c0, c1), b1 = _mm_unpackhi_epi8(c2, c3);   // bytes 8..15
-    lo = _mm256_set_m128i(_mm_unpackhi_epi16(a0, a1), _mm_unpacklo_epi16(a0, a1));  // values 0..31
-    hi = _mm256_set_m128i(_mm_unpackhi_epi16(b0, b1), _mm_unpacklo_epi16(b0, b1));  // values 32..63
+    const __m256i raw = _mm256_castsi128_si256(_mm_loadu_si128((const __m128i*) codes));
+    const __m256i shifts = _mm256_setr_epi32(0, 2, 4, 6, 0, 2, 4, 6);
+    const __m256i m3 = _mm256_set1_epi8(3);
+    const __m256i tr = _mm256_setr_epi8(
+        0, 4, 8, 12, 1, 5, 9, 13, 2, 6, 10, 14, 3, 7, 11, 15,
+        0, 4, 8, 12, 1, 5, 9, 13, 2, 6, 10, 14, 3, 7, 11, 15);
+    const __m256i d01 = _mm256_permutevar8x32_epi32(raw, _mm256_setr_epi32(0, 0, 0, 0, 1, 1, 1, 1));
+    const __m256i d23 = _mm256_permutevar8x32_epi32(raw, _mm256_setr_epi32(2, 2, 2, 2, 3, 3, 3, 3));
+    lo = _mm256_shuffle_epi8(_mm256_and_si256(_mm256_srlv_epi32(d01, shifts), m3), tr);
+    hi = _mm256_shuffle_epi8(_mm256_and_si256(_mm256_srlv_epi32(d23, shifts), m3), tr);
 }
 
 // ---- the row kernel, twice: the AVX2 form and the AVX-VNNI one (q2_avx2_rows.inl)

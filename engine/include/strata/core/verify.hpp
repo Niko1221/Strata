@@ -21,6 +21,7 @@
 // selection, native indexer) and a profile-filled VRAM expert tier with its residency table on the device.
 #pragma once
 
+#include <chrono>
 #include <cstdio>
 
 #include "strata/core/expert_source.hpp"
@@ -438,9 +439,10 @@ public:
 
     /// The PCIe count of each layer from measured costs (PcieModel) instead of a fixed share: the spin kernels stamp
     /// each step's GPU work (the plan's arrival, the PCIe part's start, the wait for the CPU's rows; GPU clock), the host
-    /// times its pool, and after each window *model (the dispatch's) takes the costs. One GPU, no batch slots. Set
+    /// times its pool, and after each window *model (the dispatch's) takes the costs. Single GPU, serial windows. Set
     /// before `init` (the stamps are captured). `paused`: a request's own --pcie-frac holds meanwhile.
     void set_pcie_balance(PcieModel* model) { bal_ = model; }
+    void set_batch_dma_wide() { staging_blobs_ = kWideStagingBlobs; }
     void pause_pcie_balance(bool paused) {
         bal_paused_ = paused;
         if (bal_ != nullptr && m_bal_ != nullptr) bal_->on = !paused;
@@ -730,6 +732,8 @@ private:
     std::vector<char> bal_ok_;
     PcieModel* bal_ = nullptr;
     bool bal_paused_ = false;
+    bool sample_batch_balance_ = false;
+    std::chrono::steady_clock::time_point batch_plan_sent_{};
     void pcie_balance_window(int64_t steps, int G);
     cudaEvent_t commit_done_ = nullptr;   // recorded after an async commit (set_commit_async); see wait_commit
     bool commit_pending_ = false;
@@ -772,6 +776,8 @@ private:
     int32_t* plan_ = nullptr;                                     // device copy of the plan block
     uint8_t* staging_ = nullptr;                                  // VRAM slots for the PCIe share of the misses
     static constexpr int64_t kStagingBlobs = 16;
+    static constexpr int64_t kWideStagingBlobs = 32;
+    int64_t staging_blobs_ = kStagingBlobs;
     static constexpr int64_t kPcieGroupRows = 4;                  // the PCIe call's groups side by side (of <= 16)
     uint8_t* hit_xq_ = nullptr;
     uint8_t* nat_xq_ = nullptr;   // plan v0.3 P6: q8_1 activations for a native pack's grouped experts

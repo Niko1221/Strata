@@ -396,7 +396,9 @@ struct GpuPlanSink {
     int64_t staging_cap = 0;
     int64_t cap = 0;
     void (*publish)(void* ctx) = nullptr;
-    /// Starts the DMA copies of `n` host blobs (pinned) into staging slots 0..n-1 and signals the GPU when they land.
+    /// In serial batch, let the copy stream use the final cache addresses in ptr2 for admitted experts.
+    bool dma_cache_admission = false;
+    /// Starts the DMA copies of `n` pinned host blobs and signals the GPU when they land.
     void (*fetch)(void* ctx, const uint8_t* const* src, int n, size_t bytes) = nullptr;
     void* ctx = nullptr;
     /// Plan v0.3 P6: how a PCIe group reaches the GPU.  0 = the copy engine stages it (DMA, `fetch`); 1 = the grouped
@@ -481,17 +483,18 @@ struct PcieModel {
     bool ready() const { return on && ncpu >= 8 && ngpu_p >= 4; }
     /// The PCIe count for a layer of `nmiss` misses (`fixed`: pcie_num's).  Every 64th layer with a miss that would
     /// keep them all on one side moves one to the other, so both fits keep seeing both.
-    int pick(int nmiss, int fixed) {
+    int pick(int nmiss, int fixed, int capacity = -1) {
+        const int limit = capacity < 0 ? nmiss : std::min(nmiss, capacity);
         int m = fixed;
         if (ready()) {
             double best = 1e300;
-            for (int k = 0; k <= nmiss; ++k) {
+            for (int k = 0; k <= limit; ++k) {
                 const double cpu = nmiss - k > 0 ? a + c * (nmiss - k) + d * k : p0;
                 const double t = std::max(g0 + g * k, cpu);
                 if (t < best - 1e-6) { best = t; m = k; }
             }
         }
-        if (on && nmiss >= 1 && (++explore & 63u) == 0) m = m == 0 ? 1 : m == nmiss ? nmiss - 1 : m;
+        if (on && limit >= 1 && (++explore & 63u) == 0) m = m == 0 ? 1 : m == nmiss ? nmiss - 1 : m;
         return m;
     }
 };
@@ -672,6 +675,7 @@ struct ExpertDispatch {
     /// per layer: the PCIe share fetched there since the tier's last round (the tier leaves those layers' fetchable
     /// candidates to the admission under STRATA_ADAPT_FETCH=2, and swaps the rest itself)
     std::vector<uint8_t> fetch_avail;
+    bool fetch_paused = false;       ///< no in-place admissions while prefill owns cache slots
     int64_t fetch_admitted = 0;
     bool fetch_log_on = false;          ///< STRATA_ADAPT_FETCH_VERIFY: keep the admissions for a read-back
     std::vector<std::pair<int64_t, int32_t>> fetch_log;   ///< (layer * n_expert + expert, slot)

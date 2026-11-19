@@ -27,6 +27,7 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -135,6 +136,9 @@ public:
     /// accepted row) for T-1 drafts at cells p+a+1 ...  `drafts` gets T-1 tokens.
     bool draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* drafts, std::string& err,
                float* probs = nullptr, float min_p = 0.0f, int* n_drafts = nullptr, DraftResult* result = nullptr);
+    bool draft_async(int T, const int32_t* tokens, int64_t p, int a, int32_t* drafts, std::string& err,
+                     float* probs = nullptr, float min_p = 0.0f, int* n_drafts = nullptr, DraftResult* result = nullptr);
+    bool draft_wait(std::string& err);
 
     /// --lookup-max-t: draft() for a window of up to kVerifyLongT rows (T may pass max_t()).  When the last accepted
     /// row is past max_t() rows, rows 0..a-1 are caught up as prefill() does and row a runs as a one-row round, so the
@@ -307,6 +311,15 @@ private:
     int64_t n_vocab_ = 0;
     uint64_t vram_ = 0;
     cudaStream_t cs_ = nullptr;
+    bool async_pending_ = false;
+    int async_max_steps_ = 0;
+    int32_t* async_drafts_ = nullptr;
+    float* async_probs_ = nullptr;
+    int* async_n_drafts_ = nullptr;
+    DraftResult* async_result_ = nullptr;
+    std::chrono::steady_clock::time_point async_t0_{};
+    int32_t async_ple_prev_[2] = {0, 0};
+    bool async_do_ple_ = false;
     cudaGraphExec_t prefill_exec_[9] = {};
     cudaGraphExec_t prefill_dev_exec_[9] = {};
     PinnedRing pf_ring_;          ///< #1996: the records above go up from a pinned slot, not from the pageable vector they are built in

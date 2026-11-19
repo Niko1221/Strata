@@ -41,6 +41,59 @@ inline void row_multi(const uint8_t* row, const ActQ* const* a, int nblocks, flo
 
 template <int NT> STRATA_ROWS_FN
 void rows(const uint8_t* w, size_t row_bytes, int nblocks, const ActQ* const* a, float* const* out, int r0, int r1) {
+    if constexpr (NT == 1) {
+        const ActQ* const a0 = a[0];
+        float* const o0 = out[0];
+        int r = r0;
+        for (; r + 4 <= r1; r += 4) {
+            const uint8_t* rows_p[4] = {
+                w + (size_t) r * row_bytes,
+                w + (size_t) (r + 1) * row_bytes,
+                w + (size_t) (r + 2) * row_bytes,
+                w + (size_t) (r + 3) * row_bytes,
+            };
+            __m256 acc0 = _mm256_setzero_ps(), acc1 = _mm256_setzero_ps();
+            __m256 acc2 = _mm256_setzero_ps(), acc3 = _mm256_setzero_ps();
+            float corr0 = 0.f, corr1 = 0.f, corr2 = 0.f, corr3 = 0.f;
+            for (int b = 0; b < nblocks; ++b) {
+                const size_t off = (size_t) b * 18;
+                const int8_t* q = a0->q + b * 64;
+                const __m256i q0 = _mm256_loadu_si256((const __m256i*) q);
+                const __m256i q1 = _mm256_loadu_si256((const __m256i*) (q + 32));
+                const float sc0 = a0->scale[2 * b], sc1 = a0->scale[2 * b + 1];
+                const float hx01 = a0->hx[2 * b] + a0->hx[2 * b + 1];
+                #define STRATA_Q2_STEP_ROW(k, acc_v, corr_v) do { \
+                    const uint8_t* blk = rows_p[k] + off; \
+                    const float d = h2f(blk); \
+                    __m256i lo, hi; \
+                    unpack64(blk + 2, lo, hi); \
+                    const __m256i s0 = dot4(lo, q0); \
+                    const __m256i s1 = dot4(hi, q1); \
+                    acc_v = _mm256_fmadd_ps(_mm256_set1_ps(d * sc0), _mm256_cvtepi32_ps(s0), acc_v); \
+                    acc_v = _mm256_fmadd_ps(_mm256_set1_ps(d * sc1), _mm256_cvtepi32_ps(s1), acc_v); \
+                    corr_v += d * hx01; \
+                } while (0)
+                STRATA_Q2_STEP_ROW(0, acc0, corr0);
+                STRATA_Q2_STEP_ROW(1, acc1, corr1);
+                STRATA_Q2_STEP_ROW(2, acc2, corr2);
+                STRATA_Q2_STEP_ROW(3, acc3, corr3);
+                #undef STRATA_Q2_STEP_ROW
+            }
+            const __m256 accs[4] = {acc0, acc1, acc2, acc3};
+            const float corrs[4] = {corr0, corr1, corr2, corr3};
+            for (int k = 0; k < 4; ++k) {
+                const __m128 h = _mm_add_ps(_mm256_castps256_ps128(accs[k]), _mm256_extractf128_ps(accs[k], 1));
+                const __m128 s = _mm_add_ps(h, _mm_movehl_ps(h, h));
+                o0[r + k] = _mm_cvtss_f32(_mm_add_ss(s, _mm_movehdup_ps(s))) - corrs[k];
+            }
+        }
+        for (; r < r1; ++r) {
+            float res1 = 0.f;
+            row_multi<1>(w + (size_t) r * row_bytes, a, nblocks, &res1);
+            o0[r] = res1;
+        }
+        return;
+    }
     float res[NT];
     for (int r = r0; r < r1; ++r) {
         row_multi<NT>(w + (size_t) r * row_bytes, a, nblocks, res);
