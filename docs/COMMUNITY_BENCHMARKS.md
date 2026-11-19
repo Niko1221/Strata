@@ -73,6 +73,8 @@ and their limits. Report what you actually measured and label estimates separate
   IQ2_XS with adaptive cache E4/S24: 48.23 accepted-decode tok/s (median of 5) on a modified, locally built engine (not an official release; source commit and hashes in provenance.json, steps in REPRODUCE.md).
 - [2026-10-12: Radeon 780M (gfx1103), Ryzen 7 8745HS, 60 GB RAM, GTT 50 GiB](bench-results/2026-10-12-community-gfx1103/README.md):
   the gfx1103 port (native dot4, the gfx11 WMMA kernels, the exact speed switches and a calibrated hipBLASLt table), hand-built on ROCm 10.1, Q2_0 + MTP at 32K: prompts 90 tok/s plain, 186 with the table, 277 with the WMMA opt-ins (4K), decode 13.1 -> 14.3 tok/s; zero GPU resets.
+- [2026-11-19: AMD Radeon RX 9070 XT 16 GB (gfx1201), Ryzen 7 9700X, 123 GiB RAM](bench-results/2026-11-19-community-rx-9070-xt-ud-iq4_xs/README.md):
+  Strata 0.2.16, official prebuilt engine 0.1.62 (rx9070 package, bundled ROCm libs), Unsloth UD-IQ4_XS v3.1, 262,144-token context, MTP, calibrated (pcie-frac 0.75, spec-min-p 0.50, pool-workers 2), `--ple-io ram`, `--kv int8 --kv-resident 32768`; speed suite (chat / 4K / 16K / 32K + agent session) plus 6/6 needles at 27.9k / 106.3k actual tokens. Decode 67.4 (chat) / 68.1 (agent) tok/s, prompt 2376 / 3493 / 3407 tok/s at 4K / 16K / 32K, agent cache hit 71 %. Notes that a source build of the same tag segfaults at startup on system ROCm 7.16 (#6322) while the release package runs.
 
 ## Run the standard benchmark
 
