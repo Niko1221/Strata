@@ -293,6 +293,7 @@ from serve.server_parts.http_api import (  # noqa: F401  (moved unchanged, file 
     sampling_defaults_from_config,
     split_joined_args,
     tool_call_recovery_setting,
+    tool_name_constraint_setting,
     undeclared_tool_calls_setting,
     warn_budget_over_ram,
     warn_tight_ram,
@@ -339,6 +340,7 @@ from serve import ready as ready_file  # noqa: E402
 from serve import owner_guard  # noqa: E402
 from serve import launch_identity  # noqa: E402
 from serve import logit_bias as bias_api  # noqa: E402
+from serve import tool_name_constraint as tnc_api  # noqa: E402
 from serve import lifeline  # noqa: E402
 from serve.structured import StructuredOutputError, prepare_format, validated_json, extract_json  # noqa: E402
 from serve import responses as responses_api  # noqa: E402
@@ -1319,6 +1321,9 @@ class StrataEngine:
             if ids:
                 # only these ids are printed; the engine's comma-separated list, renormalised below
                 keys += " allowed=" + ",".join(str(i) for i in ids)
+        tnc = sampling.get("_tool_name_constraint")          # built in Service._run from the declared tools
+        if isinstance(tnc, str) and tnc:
+            keys += " tool_name_constraint=" + tnc
         return keys + StrataEngine.projection_key(sampling) + bias_api.engine_key(sampling.get("logit_bias"))
 
     @staticmethod
@@ -3924,6 +3929,7 @@ class Service:
         self.anthropic_think_unasked = True               # #278: "anthropic_thinking": "on_request" -> False
         self.undeclared_tool_calls = "text"               # #4622: config "undeclared_tool_calls": "call" hands a call of an undeclared name to the client
         self.tool_call_recovery = True                    # default on (0.2.8): tool calls in forms next to the template's; config "tool_call_recovery": false turns it off
+        self.tool_name_constraint = False                 # config "tool_name_constraint": true masks tool names to the declared ones (serve/tool_name_constraint.py)
         # (a): a reply to a request with tools that ends in tool-call markup that is no call is written again once (default
         # on; STRATA_TOOL_MARKUP_RETRY=0 is the way back to sending it as text)
         self.tool_markup_retry = os.environ.get("STRATA_TOOL_MARKUP_RETRY", "1").strip().lower() not in ("0", "off", "false", "no")
@@ -5260,9 +5266,19 @@ class Service:
                 print(f"[strata] thinking capped at {max_new - reserve} of max_tokens {max_new} to leave room for "
                       f"the answer (budget {budget})", flush=True)
                 budget = max(1, max_new - reserve)
-        parser = self.parser_cls(thinking=thinking, tools=with_history_tools(tools, sampling), stream_tools=True,
+        history_tools = with_history_tools(tools, sampling)
+        parser = self.parser_cls(thinking=thinking, tools=history_tools, stream_tools=True,
                                  recover=self.tool_call_recovery, declared_only=declared_only,
                                  deferred=deferred or self.undeclared_tool_calls == "call")   # #4622: opt-in, as for a deferred tool
+        # Engine-side constrained tool-name decoding (config "tool_name_constraint": true): only the names the
+        # request declared (as the parser sees them) may follow <function= or <invoke name=" inside a <tool_call>.
+        # Off when tools are deferred (the declared set is incomplete) or none are declared, and skipped (not
+        # refused: it only narrows names) on an engine that does not report the v2 capability or the split engine.
+        if (self.tool_name_constraint and history_tools and not (deferred or self.undeclared_tool_calls == "call")
+                and tnc_api.engine_supports(self.engine)):
+            tnc = tnc_api.build(self.tok, [t.get("name") for t in history_tools if isinstance(t, dict)], thinking)
+            if tnc:
+                sampling = {**(sampling or {}), "_tool_name_constraint": tnc}
         detok, n, finish = Detokenizer(self.tok), 0, "length"
         run_tok, run_len, repeated = None, 0, False     # #606: the current run of one repeated token
         thinking_n = 0                                  # tokens written while thinking (Responses' reasoning_tokens)
@@ -8545,6 +8561,7 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
     svc.anthropic_think_unasked = mode == "model"
     svc.tool_call_recovery = tool_call_recovery_setting(cfg)
     svc.undeclared_tool_calls = undeclared_tool_calls_setting(cfg)
+    svc.tool_name_constraint = tool_name_constraint_setting(cfg)
     retry = cfg.get("tool_markup_retry", True)         # (a): false (or STRATA_TOOL_MARKUP_RETRY=0) sends the markup as text
     if not isinstance(retry, bool):
         raise SystemExit(f"[strata] config \"tool_markup_retry\" must be true or false, not {retry!r}")

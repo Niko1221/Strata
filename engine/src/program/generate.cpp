@@ -1,4 +1,5 @@
 #include "strata/core/logit_bias.hpp"
+#include "strata/core/tool_name_constraint.hpp"
 // src/program/generate.cpp - P2.S6: `strata generate`.
 //
 // THE DRIVER, and the first program in this project that answers a question.  Everything below it is a
@@ -15370,13 +15371,21 @@ int main(int argc, char** argv) {
                     mib_all += (int64_t) (remote_experts[(size_t) r].gib() * 1024.0);
                 }
             // (#5012: experts = every routed (layer, expert) pair, so the Monitor shows "slots / experts" as a share)
-            std::printf("INFO logit_bias=1 context=%lld kv=%s kv_resident=%lld expert_slots=%lld experts=%lld expert_cache_mib=%lld "
+            // tool_name_constraint=<format>: the record version the request key carries (0: not supported, the server then
+            // does not send the key).  The --batch windows apply the row masks in the CUDA / HIP verifier; Metal's batch is not covered.
+#if defined(STRATA_GPU_METAL)
+            const int tnc_format = o.batch > 0 ? 0 : 2;
+#else
+            const int tnc_format = 2;
+#endif
+            std::printf("INFO logit_bias=1 tool_name_constraint=%d context=%lld kv=%s kv_resident=%lld expert_slots=%lld experts=%lld expert_cache_mib=%lld "
                         "expert_slots_primary=%lld expert_cache_primary_mib=%lld spec=%d "
                         "mtp_max=%d lookup=%d vram_free_mib=%lld cvec=%s arena_mib=%lld pool_workers=%d pcie_frac=%.2f "
                         "spec_min_p=%.2f conversation_cache_mib=%lld conversation_cache_slots=%d "
                         "conversation_cache_min_free_mib=%lld conversation_cache_min_tokens=%lld "
                         "tail_role_token=%lld vram_elastic=%d "
                         "prefill_cap=%lld prefill_stages=%d stream_all_min=%lld prefill_pipe=%g%s engine=" STRATA_VERSION "\n",
+                        tnc_format,
                         (long long) o.max_context, o.kv.c_str(),
                         (long long) (g.n_qsa_layers() > 0 && ss.qsa_states[ss.qsa_primary()].kv_mode == 1
                                          ? ss.qsa_states[ss.qsa_primary()].n_slots * 4 : 0),
@@ -15851,6 +15860,12 @@ int main(int argc, char** argv) {
             std::vector<int32_t> ids;
             int64_t reply0 = 0;            ///< the index in `ids` where its penalty window starts (the last prompt token; 0 with STRATA_PENALTY_PROMPT=1)
             int pen_n = 0;                 ///< its request's penalty window (penalty_last_n) when it has a repeat / frequency / presence penalty, else 0
+            // the request's tool-name constraint (the tool_name_constraint key): the slot's own scan state over `ids` from tnc_from (the reply's
+            // first token), the request's static logit bias it combines with, and whether the verifier holds row masks for the slot's window
+            std::shared_ptr<strata::core::ToolNameConstraint> tnc;
+            int64_t tnc_from = 0;
+            std::vector<float> tnc_bias;
+            bool tnc_masked = false;
             bool cached = false;           ///< idle, and its sessions still hold `ids`
             bool cvec = true;              ///< the control vector setting `ids` were read with
             bool img = false;              ///< the conversation has pictures (never reused from the slot)
@@ -15879,6 +15894,28 @@ int main(int argc, char** argv) {
             double rd_ms = 0.0;
         };
         std::vector<BSlot> bs((size_t) std::max(o.batch, 0));
+        // The tool-name constraint in a slot's window: win[0..n) are the rows the slot's run holds (win[0] its token, the rest its drafts).
+        // Row j is sampled under the mask the name trie gives after win[0..j], as the solo loop does (update() + window_masks()); the
+        // masks go to the verifier (set_slot_row_masks), which draws those rows again with them.  Called before every window that holds
+        // the slot; a slot still reading its prompt, or with no constraint, costs nothing.
+        auto batch_tnc = [&](int b, const int32_t* win, int n, std::string& e) -> bool {
+            BSlot& sl = bs[(size_t) b];
+            if (!sl.tnc && !sl.tnc_masked) return true;
+            std::vector<std::vector<float>> masks;
+            if (sl.tnc && !sl.rd_on && n > 0) {
+                const int64_t from = std::min<int64_t>(sl.tnc_from, (int64_t) sl.ids.size());
+                const std::vector<float> head = sl.tnc->update(sl.ids.data() + from, (int64_t) sl.ids.size() - from, win[0], (int) n_vocab);
+                masks = sl.tnc->window_masks(win, n, (int) n_vocab, head);
+                for (std::vector<float>& m : masks)
+                    for (size_t v = 0; v < m.size(); ++v)   // with the request's own logit bias: -inf bans, else its value
+                        m[v] = std::isinf(m[v]) ? -std::numeric_limits<float>::infinity() : (sl.tnc_bias.empty() ? 0.0f : sl.tnc_bias[v]);
+            }
+            bool any = false;
+            for (const std::vector<float>& m : masks) any = any || !m.empty();
+            if (!any && !sl.tnc_masked) return true;
+            sl.tnc_masked = any;
+            return ver.set_slot_row_masks(b, masks, e);
+        };
         // STRATA_BATCH_DF2_DEFER=0: every round drafts for every slot, spare rows or not (the first measurement's behaviour, for the A/B)
         // STRATA_BATCH_DF2_CONF=P (default: --draft-conf, else 0.35; 0 off): a slot's draft rows stop where the product of the selector's probabilities falls below P;
         // STRATA_BATCH_DF2_MAXX=N: at most N draft rows a slot and window (default kDrafts)
@@ -16309,6 +16346,11 @@ int main(int argc, char** argv) {
                 if (pc.on()) pc.begin(pc_ex(), (int) g.n_layers);
                 bt_a_rounds0 = a_rounds; bt_a_swapped0 = a_swapped;
             }
+            for (int a = 0; a < A; ++a)   // each constrained slot's row masks for its rows of this window
+                if (!batch_tnc(active[a], tok + first[a], nrow[a], err)) {
+                    std::printf("ERR %s\n", err.c_str());
+                    return false;
+                }
             for (int t = 0; t < S; ++t) {   // each penalised slot's reply tail for its penalty window (the verifier builds the rows from it and this window's tokens)
                 const BSlot& ps = bs[(size_t) rows[t]];
                 if (ps.pen_n <= 0 || (t > 0 && rows[t - 1] == rows[t])) continue;
@@ -17201,6 +17243,16 @@ int main(int argc, char** argv) {
                                                                std::max<int64_t>(ps.reply0, (int64_t) ps.ids.size() - ps.pen_n));
                         ver.set_slot_history(grows[t], ps.ids.data() + from, (int64_t) ps.ids.size() - from);
                     }
+                    // the constrained slots' row masks (keyed by slot and place in its run, so another group's window does not meet them)
+                    for (int t = 0, u; t < G.S && t < (int) strata::kernels::kVerifyMaxT; t = u) {
+                        u = t + 1;
+                        if (pmtp) while (u < G.S && u < (int) strata::kernels::kVerifyMaxT && grows[u] == grows[t]) ++u;
+                        if (!bs[(size_t) grows[t]].active) continue;
+                        if (!batch_tnc(grows[t], G.tok + t, u - t, err)) {
+                            std::printf("ERR %s\n", err.c_str());
+                            return false;
+                        }
+                    }
                 }
                 const auto p4_l0 = p4.now();
                 if (!(pmtp ? stage_verifier(k).batch_launch_rows(G.rows, G.S, G.hbase, G.tok, G.pos, err)
@@ -17719,6 +17771,8 @@ int main(int argc, char** argv) {
             long long req_pen_from = -1;   // pen_from=N: this request continues one that began at token N (the last token of the original prompt): the penalty window starts there
             std::string req_bias_text;
             bool req_bias_present = false;
+            std::string req_tnc_text;
+            bool req_tnc_present = false;
             int req_cvec = 1;   // cvec=0|1: a loaded control vector for this request (on when absent)
             // logprobs=K (0..20): after each "T id" an "LP logprob id:logprob ..." line.
             // -1 (absent) = no LP lines, so a server that never asks sees today's output.
@@ -17771,6 +17825,7 @@ int main(int argc, char** argv) {
                     const std::string key = tok.substr(0, eq);
                     const float fv = std::strtof(tok.c_str() + eq + 1, nullptr);
                     if (key == "logit_bias") { req_bias_text = tok.substr(eq + 1); req_bias_present = true; }
+                    else if (key == "tool_name_constraint") { req_tnc_text = tok.substr(eq + 1); req_tnc_present = true; }
                     else if (key == "pen_from") req_pen_from = std::atoll(tok.c_str() + eq + 1);
                     else if (key == "cvec") req_cvec = std::atoi(tok.c_str() + eq + 1);
                     else if (key == "ckpt") req_ckpt = std::atoi(tok.c_str() + eq + 1) != 0;
@@ -17835,6 +17890,26 @@ int main(int argc, char** argv) {
                 std::printf("ERR logit_bias: %s\n", bias_error.c_str());
                 continue;
             }
+            strata::core::ToolNameConstraint req_tnc;
+            std::string tnc_error;
+            if (req_tnc_present && !strata::core::parse_tool_name_constraint(req_tnc_text, (int) n_vocab, req_tnc, tnc_error)) {
+                std::printf("ERR tool_name_constraint: %s\n", tnc_error.c_str());
+                continue;
+            }
+            // --batch: the slot that takes this request scans its own tokens (a state of its own, fresh from `from`, the reply's first
+            // index in the slot's ids) under the same record; the request's static logit bias rides along
+            auto arm_slot_tnc = [&](auto& sl, int64_t from) {
+                sl.tnc.reset();
+                sl.tnc_bias.clear();
+                sl.tnc_masked = false;
+                if (!req_tnc.valid()) return;
+                auto t = std::make_shared<strata::core::ToolNameConstraint>();
+                std::string e;
+                if (!strata::core::parse_tool_name_constraint(req_tnc_text, (int) n_vocab, *t, e)) return;   // (it parsed above)
+                sl.tnc = std::move(t);
+                sl.tnc_from = from;
+                sl.tnc_bias = req_bias;
+            };
             // per-request sampling for the verify window's head (greedy when temperature is absent)
             auto request_sampling = [&]() {
                 strata::kernels::SamplerParams s;
@@ -18345,6 +18420,7 @@ int main(int argc, char** argv) {
                         sl.reply0 = (int64_t) strata::kernels::penalty_window_from((size_t) (n - 1), rd_pen_prompt);
                         if (req_pen_from >= 0 && !rd_pen_prompt) sl.reply0 = std::min<int64_t>(sl.reply0, req_pen_from);
                     }
+                    arm_slot_tnc(sl, (int64_t) n);   // the reply's first token is at ids[n] (the slot's windows read the prompt first)
                     // the turn boundary the read checkpoints (the last <|im_start|> past where it starts, as the prompt
                     // path splits its read; #458: not the server's trailing effort turn)
                     if (req_ckpt && o.turn_token >= 0) {
@@ -20603,7 +20679,8 @@ int main(int argc, char** argv) {
             const bool pl_want = pipe && pl_pw >= 2 && pl_snap_ok;
             const char* pl_serial = !pl_want ? nullptr
                                   : hist_n > 0 ? "repetition penalties (penalty_last_n)"
-                                  : mtp.coupled() ? "coupled draft sampling" : nullptr;
+                                  : mtp.coupled() ? "coupled draft sampling"
+                                  : req_tnc.valid() ? "a tool-name constraint" : nullptr;
             if (pl_serial != nullptr) {   // said once per reason
                 static std::set<std::string> said;
                 if (said.insert(pl_serial).second)
@@ -21453,8 +21530,31 @@ int main(int argc, char** argv) {
             auto draft_df2 = [&](int) -> bool { return false; };
 #endif
             if (df2_trace != nullptr) std::fprintf(df2_trace, "# request prompt %lld df2 %d spec %d\n", (long long) n, req_df2 ? 1 : 0, S_mtp);
+            std::vector<float> tnc_mask;   // the window's logit bias: the name-trie mask, or the request's static bias (or empty)
+            std::vector<float> tnc_rows;   // a per-row T x n_vocab bias when a name is being written inside the window
             while (!pl_ran && !cancelled && produced_n < cap_now()) {
                 int T = 1;
+                // Tool-name constrained decoding (opt-in via the tool_name_constraint request key):
+                // the constraint is stateful per COMMITTED token, but a multi-token spec window validates its
+                // drafts under a PER-ROW mask, so the drafter stays on through the whole reply.  Row 0's mask
+                // comes from update() (the committed head); rows 1.. come from window_masks() walking a COPY of
+                // the state over the drafted prefix, so a drafted `<function=NAME>` that no tool declares is
+                // simply not the verifier's argmax under its row's mask and the acceptance loop stops there.
+                const bool tnc_on = req_tnc.valid();
+                bool tnc_active = false;
+                if (tnc_on) {
+                    tnc_mask = req_tnc.update(consumed.data() + pen_gen0,
+                                              (int64_t) (consumed.size() - pen_gen0), x, (int) n_vocab);
+                    tnc_active = !tnc_mask.empty();
+                    if (tnc_active) {   // combine with a request's own static logit_bias: -inf bans, else the static value
+                        for (size_t v = 0; v < tnc_mask.size(); ++v)
+                            tnc_mask[v] = std::isinf(tnc_mask[v]) ? -std::numeric_limits<float>::infinity()
+                                                                  : (req_bias.empty() ? 0.0f : req_bias[v]);
+                    } else {
+                        tnc_mask = req_bias;   // inactive: restore the request's static bias (or none)
+                    }
+                    // (the bias is uploaded after `window[0..T)` is filled, once the per-row masks are known)
+                }
                 policy.set_context(p);
                 const bool merged = first_window && merge_T > 0;   // the prompt's last tokens and the first token
                 bool from_sfx = false;
@@ -21596,6 +21696,39 @@ int main(int argc, char** argv) {
                                          : from_sfx ? sbuf[(size_t) i - 1]
                                                     : drafts[(size_t) i - 1];
                 for (int i = 0; i < chain_n; ++i) window[(size_t) (T_mtp + i)] = cbuf[(size_t) i];
+                if (tnc_on) {   // the window's logit bias: per-row when a name is being written inside it
+                    if (!merged && T > 1) {
+                        auto masks = req_tnc.window_masks(window.data(), T, (int) n_vocab, tnc_mask);
+                        bool any_row = false;
+                        for (int t = 1; t < T; ++t) if (!masks[(size_t) t].empty()) { any_row = true; break; }
+                        // Broadcast row 0's bias to every row only when the head is NOT inside a name (tnc_mask is
+                        // then the request's static bias or empty, so it is position-independent).  When tnc_active
+                        // is set, tnc_mask is the name-trie mask: if the draft completes the name in window[1] the
+                        // later rows are empty, and broadcasting it would force the post-name (parameter) rows to the
+                        // name terminator.  In that case the per-row path below already fills empty rows with the
+                        // static bias / zeros, so it is correct for every tnc_active window.
+                        if (!tnc_active && !any_row) {
+                            if (!ver.set_logit_bias(tnc_mask, err)) { std::printf("ERR %s\n", err.c_str()); return 1; }
+                        } else {
+                            tnc_rows.resize((size_t) T * (size_t) n_vocab);
+                            for (int t = 0; t < T; ++t) {
+                                const std::vector<float>& m = masks[(size_t) t];
+                                float* dst = tnc_rows.data() + (size_t) t * (size_t) n_vocab;
+                                if (m.empty()) {
+                                    if (req_bias.empty()) std::fill(dst, dst + n_vocab, 0.0f);
+                                    else std::copy(req_bias.begin(), req_bias.end(), dst);
+                                } else {
+                                    for (int v = 0; v < n_vocab; ++v)
+                                        dst[v] = std::isinf(m[(size_t) v]) ? -std::numeric_limits<float>::infinity()
+                                                                           : (req_bias.empty() ? 0.0f : req_bias[v]);
+                                }
+                            }
+                            if (!ver.set_logit_bias_rows(tnc_rows.data(), T, err)) { std::printf("ERR %s\n", err.c_str()); return 1; }
+                        }
+                    } else if (!ver.set_logit_bias(tnc_mask, err)) {
+                        std::printf("ERR %s\n", err.c_str()); return 1;
+                    }
+                }
                 if (!keep_sync()) { std::printf("ERR %s\n", err.c_str()); return 1; }
                 drive.d.layers = 0;
                 drive.d.experts = 0;
@@ -21769,6 +21902,8 @@ int main(int argc, char** argv) {
                     std::printf("ERR the K/V cannot grow: no VRAM is left\n");
                     return 1;
                 }
+                // (the tool-name constraint's mask and its single-token pin were applied at the top of
+                // this window, right after `int T = 1` - see the comment there.)
                 tr("window", p, T);
                 const Clock::time_point tw0 = Clock::now();
                 // STRATA_SPEC_PROB: the MTP drafts' distributions q, judged by rejection sampling (core/spec_prob.hpp);
@@ -21819,6 +21954,8 @@ int main(int argc, char** argv) {
                 }
                 int a = merged ? T - 1 : 0;   // a merged window commits every row, as the prompt windows do
                 while (a < T - 1 && window[(size_t) a + 1] == outv[(size_t) a]) ++a;
+                // Drafted rows were sampled under their OWN mask (per-row logit bias, see the window bias
+                // setup above), so a draft that hallucinates a name is already rejected by the acceptance loop.
                 if (fol != nullptr && fol_lp != nullptr) {   // rows 0..a have valid logits (their inputs are the accepted tokens)
                     std::vector<int32_t> fol_tg((size_t) a + 1, -1);
                     for (int i = 0; i <= a; ++i) {
@@ -22408,6 +22545,7 @@ int main(int argc, char** argv) {
                         sl.reply0 = (int64_t) strata::kernels::penalty_window_from(live.size() > 0 ? live.size() - 1 : 0, pen_prompt);
                         if (req_pen_from >= 0 && !pen_prompt) sl.reply0 = std::min<int64_t>(sl.reply0, req_pen_from);   // a continued request (prompt + what it generated): the reply began earlier
                     }
+                    arm_slot_tnc(sl, (int64_t) sl.ids.size());   // the prompt is in ids; its first reply token (x) is the head of the first window
 #if defined(STRATA_HAVE_DFLASH2)
                     if (batch_df2) {
                         // the slot's first drafts: the last prompt row's taps (still in the verifiers from the admission's window) and the token it produced

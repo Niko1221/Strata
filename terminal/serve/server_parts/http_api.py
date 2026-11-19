@@ -783,6 +783,19 @@ def tool_call_recovery_setting(cfg: dict) -> bool:
     return recovery
 
 
+def tool_name_constraint_setting(cfg: dict) -> bool:
+    """The config's "tool_name_constraint": true masks the tokens after a tool-name opener inside a <tool_call> (`<function=`,
+    `<invoke name="`) to the declared names, on an engine that reports the capability (serve/tool_name_constraint.py).  OFF when
+    the config does not name it (the environment's STRATA_TOOL_NAME_CONSTRAINT=1 turns it on; the config wins).  Anything but
+    true or false stops the start."""
+    on = cfg.get("tool_name_constraint")
+    if on is None:
+        on = os.environ.get("STRATA_TOOL_NAME_CONSTRAINT", "") == "1"
+    if not isinstance(on, bool):
+        raise SystemExit(f"[strata] config \"tool_name_constraint\" must be true or false, not {on!r}")
+    return on
+
+
 #: #5787: the switch that turns the server's own crash reporter off.
 FAULTHANDLER_OFF = "STRATA_NO_FAULTHANDLER"
 

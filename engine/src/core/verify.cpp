@@ -754,6 +754,7 @@ Verifier::~Verifier() {
     if (h_tap_) cudaFreeHost(h_tap_);
     if (logit_bias_device_) cudaFree(logit_bias_device_);
     for (float* b : slot_bias_dev_) if (b) cudaFree(b);
+    for (const std::vector<float*>& rows : slot_row_bias_dev_) for (float* b : rows) if (b) cudaFree(b);
     if (slot_hist_d_) cudaFree(slot_hist_d_);
     if (cs_ && cs_ != ext_stream_) cudaStreamDestroy(cs_);   // set_stream: the stage's stream, shared, not ours
     if (sh_cs_) cudaStreamDestroy(sh_cs_);
@@ -888,6 +889,37 @@ bool Verifier::set_logit_bias(const std::vector<float>& bias, std::string& err) 
     }
     logit_bias_host_ = bias;
     sampling_.logit_bias = bias.empty() ? nullptr : logit_bias_device_;
+    sampling_.logit_bias_stride = 0;   // a broadcast bias: one row for every token in the window
+    return true;
+}
+
+bool Verifier::set_logit_bias_rows(const float* host, int rows, std::string& err) {
+    if (next_ && !next_->set_logit_bias_rows(host, rows, err)) return false;
+    if (le_ >= 0 && le_ < g_->n_layers) return true;   // (the Metal window never sets le_: -1 = the last stage)
+    const OnDevice on_device(device_);
+    if (rows < 0 || (rows > 0 && host == nullptr)) { err = "set_logit_bias_rows: invalid rows/pointer"; return false; }
+    if (rows == 0) {
+        sampling_.logit_bias = nullptr;
+        sampling_.logit_bias_stride = 0;
+        return true;
+    }
+    const int64_t floats = (int64_t) rows * (int64_t) n_vocab_;
+    const size_t bytes = (size_t) floats * sizeof(float);
+    if (logit_bias_device_ == nullptr || logit_bias_cap_ < bytes) {
+        if (logit_bias_device_) cudaFree(logit_bias_device_);
+        logit_bias_device_ = nullptr;
+        logit_bias_cap_ = 0;
+        if (cudaMalloc((void**) &logit_bias_device_, bytes) != cudaSuccess) {
+            err = "cannot allocate per-row logit_bias"; return false;
+        }
+        logit_bias_cap_ = bytes;
+    }
+    if (cudaMemcpy(logit_bias_device_, host, bytes, cudaMemcpyHostToDevice) != cudaSuccess) {
+        err = "cannot upload per-row logit_bias"; return false;
+    }
+    logit_bias_host_.clear();   // the device now holds per-row data: force the next broadcast to re-upload
+    sampling_.logit_bias = logit_bias_device_;
+    sampling_.logit_bias_stride = (int) n_vocab_;
     return true;
 }
 
@@ -4087,6 +4119,8 @@ bool Verifier::init_slots(const std::vector<SessionState*>& slots, std::string& 
     slots_ = slots;
     slot_sp_.assign(slots.size(), sampling_);
     slot_bias_dev_.assign(slots.size(), nullptr);
+    slot_row_bias_dev_.assign(slots.size(), {});
+    slot_row_mask_host_.assign(slots.size(), {});
     slot_tail_.assign(slots.size(), {});
     if (metal_ == nullptr || !strata::metal_engine::window_init_slots(metal_, slots, err)) {
         if (err.empty()) err = "verify: the Metal window is not up";
@@ -4114,6 +4148,8 @@ bool Verifier::init_slots(const std::vector<SessionState*>& slots, std::string& 
     slots_ = slots;
     slot_sp_.assign(slots.size(), sampling_);   // greedy until set_slot_sampling
     slot_bias_dev_.assign(slots.size(), nullptr);
+    slot_row_bias_dev_.assign(slots.size(), {});
+    slot_row_mask_host_.assign(slots.size(), {});
     slot_tail_.assign(slots.size(), {});
     std::fprintf(stderr, "strata verify: batch windows of up to %lld sequences (layers [%lld, %lld))%s\n", (long long) S,
                  (long long) lb_, (long long) le_, g_batch_self_commit ? ", one-row windows keep their rows" : "");
@@ -5009,9 +5045,22 @@ bool Verifier::commit_slot_prefixes(const int* keep, std::string& err) {
     return next_ == nullptr || next_->commit_slot_prefixes(keep, err);
 }
 
+bool Verifier::set_slot_row_masks(int slot, const std::vector<std::vector<float>>& masks, std::string& err) {
+    if (next_ && !next_->set_slot_row_masks(slot, masks, err)) return false;
+    if (le_ >= 0 && le_ < g_->n_layers) return true;
+    if (slot < 0 || slot >= (int) slot_row_mask_host_.size()) return true;
+    for (const std::vector<float>& m : masks)
+        if (!m.empty() && m.size() != (size_t) n_vocab_) { err = "row logit_bias vocabulary size mismatch"; return false; }
+    bool any = false;
+    for (const std::vector<float>& m : masks) any = any || !m.empty();
+    slot_row_mask_host_[(size_t) slot] = any ? masks : std::vector<std::vector<float>>{};   // (host only: the draw uploads, as it does the penalty history)
+    return true;
+}
+
 bool Verifier::set_slot_logit_bias(int slot, const std::vector<float>& bias, std::string& err) {
     if (next_ && !next_->set_slot_logit_bias(slot, bias, err)) return false;
     if (le_ >= 0 && le_ < g_->n_layers) return true;
+    if (slot >= 0 && slot < (int) slot_row_mask_host_.size()) slot_row_mask_host_[(size_t) slot].clear();   // a new request: no row masks of the last one
     if (slot < 0 || slot >= (int) slot_bias_dev_.size()) return true;
     const OnDevice on_device(device_);
     if (bias.empty()) { slot_bias_dev_[(size_t) slot] = nullptr; slot_sp_[(size_t) slot].logit_bias = nullptr; return true; }
@@ -5034,6 +5083,32 @@ int Verifier::slot_row_draw(int S, int t, strata::kernels::SamplerParams& sp, co
                             std::string& err) {
     constexpr int kSlotHistMax = 4096;   // serve's kPenaltyWindowCap
     sp = slot_sp_[(size_t) last_rows_[t]];
+    {   // the tool-name constraint: this row's mask replaces the slot's bias (the mask already holds it where the row is not excluded)
+        const size_t b = (size_t) last_rows_[t];
+        if (b < slot_row_mask_host_.size() && !slot_row_mask_host_[b].empty()) {
+            int j = 0;   // the row's place in its slot's run of the window
+            while (j < t && last_rows_[t - 1 - j] == last_rows_[t]) ++j;
+            if (j < (int) slot_row_mask_host_[b].size() && !slot_row_mask_host_[b][(size_t) j].empty()) {
+                const std::vector<float>& m = slot_row_mask_host_[b][(size_t) j];
+                const OnDevice on_mask(device_);
+                std::vector<float*>& dev = slot_row_bias_dev_[b];
+                if (dev.size() <= (size_t) j) dev.resize((size_t) j + 1, nullptr);
+                const size_t bytes = m.size() * sizeof(float);
+                if (dev[(size_t) j] == nullptr && cudaMalloc((void**) &dev[(size_t) j], bytes) != cudaSuccess) {
+                    dev[(size_t) j] = nullptr;
+                    err = "verify batch: the row logit_bias allocation failed";
+                    return -1;
+                }
+#if defined(STRATA_GPU_METAL)
+                if (cudaMemcpy(dev[(size_t) j], m.data(), bytes, cudaMemcpyHostToDevice) != cudaSuccess)
+#else
+                if (cudaMemcpyAsync(dev[(size_t) j], m.data(), bytes, cudaMemcpyHostToDevice, cs_) != cudaSuccess)   // stream-ordered ahead of this row's draw
+#endif
+                { err = "verify batch: the row logit_bias copy failed"; return -1; }
+                sp.logit_bias = dev[(size_t) j];
+            }
+        }
+    }
     const bool pen = sp.penalty_last_n > 0 && (sp.penalty_repeat != 1.0f || sp.penalty_freq != 0.0f || sp.penalty_present != 0.0f);
     const bool bias = sp.logit_bias != nullptr;
     hist = nullptr;
