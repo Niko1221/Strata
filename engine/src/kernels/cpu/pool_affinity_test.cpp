@@ -130,7 +130,40 @@ static bool host_sibling_layout() {
     return ok;
 }
 
+// Two allowed logical processors on different cores. Take the last allowed
+// sibling of each, so dropping an entire partially allowed core also fails.
+static bool restricted_pool() {
+    if (GetActiveProcessorGroupCount() != 1) return true;
+    DWORD_PTR original = 0, system = 0;
+    if (!check(GetProcessAffinityMask(GetCurrentProcess(), &original, &system), "read process mask")) return false;
+    const auto layout = cpu::logical_cpu_layout();
+    if (layout.empty()) return false;
+    int first = -1, second = -1;
+    long second_core = -1;
+    for (const auto& lp : layout) {
+        if (lp.core == layout.front().core) first = lp.cpu;
+        else if (second_core < 0 || lp.core == second_core) {
+            second_core = lp.core;
+            second = lp.cpu;
+        }
+    }
+    if (second < 0) return true;
+    const DWORD_PTR mask = (DWORD_PTR{1} << first) | (DWORD_PTR{1} << second);
+    if (!check(SetProcessAffinityMask(GetCurrentProcess(), mask), "restrict process mask")) return false;
+    bool ok;
+    {
+        const cpu::ExpertPool pool;
+        const auto topo = cpu::detect_cpu_topology(true);
+        ok = pool.plan_logical() == 2 && pool.workers() == 1 && topo.worker_cores.size() == 1 &&
+             ((topo.host_core == first && topo.worker_cores[0] == second) ||
+              (topo.host_core == second && topo.worker_cores[0] == first));
+    }
+    return check(SetProcessAffinityMask(GetCurrentProcess(), original), "restore process mask") &&
+           check(ok, "two allowed cores should get one worker and the host");
+}
+
 int main() {
+    if (!restricted_pool()) return 1;
     if (!host_sibling_layout()) return 1;
     const auto all = cpu::physical_cores(false);
     std::vector<int> cores;

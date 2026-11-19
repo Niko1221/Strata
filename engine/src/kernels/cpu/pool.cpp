@@ -100,8 +100,7 @@ std::vector<LogicalCpuInfo> logical_cpu_layout() {
     if (!GetLogicalProcessorInformationEx(RelationProcessorCore, (PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX) buf.data(), &len))
         return out;
     // a `start /affinity` or a job limit on a PC with one processor group: only those processors are the process's
-    DWORD_PTR proc_mask = 0, sys_mask = 0;
-    const bool limited = GetActiveProcessorGroupCount() == 1 && GetProcessAffinityMask(GetCurrentProcess(), &proc_mask, &sys_mask);
+    const KAFFINITY allowed = detail::process_cpu_mask();
     long core = 0;
     for (const char* p = buf.data(); p < buf.data() + len; p += ((const SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*) p)->Size) {
         const auto* e = (const SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*) p;
@@ -109,7 +108,7 @@ std::vector<LogicalCpuInfo> logical_cpu_layout() {
         for (WORD group = 0; group < e->Processor.GroupCount; ++group) {
             const GROUP_AFFINITY& g = e->Processor.GroupMask[group];
             for (int bit = 0; bit < 64; ++bit)
-                if ((g.Mask & (KAFFINITY(1) << bit)) && (!limited || (proc_mask & (DWORD_PTR(1) << bit))))
+                if ((g.Mask & allowed) & (KAFFINITY(1) << bit))
                     out.push_back({(int) (g.Group * 64 + bit), core});
         }
         ++core;
@@ -180,7 +179,7 @@ static void fill_plan_fields(CpuTopology& topo, bool skip_first) {
     topo.cpu_quota = container_cpu_quota();
     topo.worker_package.assign(topo.worker_cores.size(), -1);
 #if defined(_WIN32)
-    topo.logical = (int) GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
+    if (topo.logical == 0) topo.logical = (int) GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
     // #6523: populate NUMA node / package per physical core across all processor groups so multi-socket servers
     // (>64 logical CPUs) plan workers across both sockets instead of collapsing into a single group.
     bool known = !topo.worker_cores.empty() || topo.host_core >= 0;
@@ -315,6 +314,7 @@ static CpuTopology detect_cpu_topology_impl(bool skip_first, PoolAffinity affini
     // Ask the OS rather than assuming a layout.  `hardware_concurrency()` returns LOGICAL processors, and on
     // every SMT machine half of them are siblings - pinning one worker to each of the first N would put two
     // workers on each physical core and halve the bandwidth the expert kernel is bound by.
+    const KAFFINITY allowed = detail::process_cpu_mask();
     DWORD len = 0;
     GetLogicalProcessorInformationEx(RelationProcessorCore, nullptr, &len);
     if (len == 0) {
@@ -323,8 +323,10 @@ static CpuTopology detect_cpu_topology_impl(bool skip_first, PoolAffinity affini
         for (WORD group = 0; group < groups; ++group) {
             const DWORD count = GetActiveProcessorCount(group);
             if (count == 0 || count == (DWORD) -1 || count > 64) continue;
-            for (DWORD i = 0; i < count; ++i) topo.worker_cores.push_back((int) group * 64 + (int) i);
+            for (DWORD i = 0; i < count; ++i)
+                if (allowed & (KAFFINITY(1) << i)) topo.worker_cores.push_back((int) group * 64 + (int) i);
         }
+        topo.logical = (int) topo.worker_cores.size();
         if (skip_first && !topo.worker_cores.empty()) {
             topo.host_core = topo.worker_cores.front();
             topo.worker_cores.erase(topo.worker_cores.begin());
@@ -355,12 +357,13 @@ static CpuTopology detect_cpu_topology_impl(bool skip_first, PoolAffinity affini
                 for (WORD group = 0; group < e->Processor.GroupCount; ++group) {
                     const GROUP_AFFINITY& g = e->Processor.GroupMask[group];
                     for (int bit = 0; bit < 64; ++bit) {
-                        if (g.Mask & (KAFFINITY(1) << bit)) {
+                        if ((g.Mask & allowed) & (KAFFINITY(1) << bit)) {
                             cd.lps.push_back((int) (g.Group * 64 + bit));
                         }
                     }
                 }
                 if (!cd.lps.empty()) {
+                    topo.logical += (int) cd.lps.size();
                     descs.push_back(std::move(cd));
                 }
             }

@@ -12,6 +12,15 @@
 
 namespace strata::kernels::cpu::detail {
 
+// On a single-group system the process has one hard mask. With more than one
+// group a single mask cannot describe the process, so keep each core's group-relative mask.
+inline KAFFINITY process_cpu_mask() {
+    DWORD_PTR process = 0, system = 0;
+    if (GetActiveProcessorGroupCount() == 1 && GetProcessAffinityMask(GetCurrentProcess(), &process, &system))
+        return process;
+    return ~KAFFINITY{0};
+}
+
 // Hard affinity is only for pool-owned threads, which terminate with the pool. A caller's implicit
 // all-group affinity cannot be restored from PreviousGroupAffinity, so the host uses CPU Sets below.
 inline bool set_thread_group_affinity(int core, int worker) {
