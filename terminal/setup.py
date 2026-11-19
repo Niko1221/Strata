@@ -384,6 +384,8 @@ GYRO_FILES = {
         (58487015808, "c6ea1b08ca312f99095b27588ba35976b53f948268e7f91e7761926aa01d9c87"),
     "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf":
         (91965774272, "7aa36d15131d255179ab6c87fa9c9f81a0b541fc9e81e959d4c3e29eb20feb5f"),
+    "Qwen3.8-Flash-Next-Gyro-L-TQ3_0.gguf":
+        (108323559808, "5428a5646eaeaa56cc00a892f92e7546aeadb255233503969ad25cf48c7f359b"),
 }
 
 # ISTA-DASLab's Qwen3.8-Flash-Next shards (Q2_0, IQ2_XS, IQ3_XXS, IQ3_S) and the picture reader at the revision pinned in HF_REVISIONS: name -> (bytes, sha256),
@@ -539,6 +541,9 @@ MODELS = {
                         "about 16-21% slower than Q2_0 on 12 GB cards",
                "download_gb": 92.0, "ram_gb": 35.0, "arena_gb": 32.1, "families": ("gyro",), "mem_total": True,
                "file": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf", "shards": 1, "engine": GYRO_ENGINE, "vision": True},
+    "Gyro-L": {"about": "agentionai's pair-trellis quant (TQP5/6/7, 50.2 GB of VRAM + RAM together); highest quality Gyro size",
+               "download_gb": 108.3, "ram_gb": 50.2, "arena_gb": 48.0, "families": ("gyro",), "mem_total": True,
+               "file": "Qwen3.8-Flash-Next-Gyro-L-TQ3_0.gguf", "shards": 1, "engine": GYRO_ENGINE, "vision": True},
     "NVFP4": {"about": "best quality of the NVFP4 versions (GPTQ, sergqwer's strata-nvfp4 pack); RTX 50 has FP4 tensor cores, "
                        "other NVIDIA cards run it at 8-bit precision", "download_gb": 128.0, "ram_gb": 80, "arena_gb": 68.0,
               "families": ("nvfp4",), "nvidia_only": True, "vision": True, "repo": NVFP4_GPTQ_REPO,
