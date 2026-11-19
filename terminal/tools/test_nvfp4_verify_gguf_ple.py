@@ -16,12 +16,15 @@ import unittest
 from pathlib import Path
 
 import numpy as np
-import torch
-from safetensors.torch import save_file
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import nvfp4_verify_gguf as V  # noqa: E402
-from gguf import GGUFWriter, GGMLQuantizationType as Q, quants  # noqa: E402
+try:
+    import torch
+    from safetensors.torch import save_file
+    import nvfp4_verify_gguf as V  # noqa: E402
+    from gguf import GGUFWriter, GGMLQuantizationType as Q, quants  # noqa: E402
+except ImportError as e:            # torch is not in requirements.txt: skip this module instead of failing to import it (#3325)
+    raise unittest.SkipTest(f"needs the checkpoint tools: {e}")
 
 ROWS, WIDTH, SCALE = 64, 160, 0.0002
 NAME = "model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_0.weight"
