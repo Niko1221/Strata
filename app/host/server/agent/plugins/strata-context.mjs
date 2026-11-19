@@ -130,11 +130,12 @@ export function apply(ctx) {
     adapter.streamWithSnapshot = function streamWithSnapshot(options, snapshot) {
       let next = projectForeignReasoning(options);
       try {
-        if (isLocalRoute(options?.provider)) {
+        if (isLocalRoute(options?.provider) && options.purpose === undefined) {
           const model = this.modelOf(snapshot, options.provider, options.model);
           const asked = options.maxTokens ?? model.maxTokens ?? 0;
-          // Only the agent's own reply budget is raised: a summary or a title asks for far less and keeps what it asked.
-          if (model.contextWindow > 0 && asked >= Math.floor(model.contextWindow * 0.25)) {
+          // Raise the profile's default agent budget. It is capped at 32K, even on windows larger than 128K.
+          // Auxiliary requests carry a purpose, and callers with a different explicit limit keep it.
+          if (model.contextWindow > 0 && asked === model.maxTokens) {
             const cap = replyCap(model.contextWindow, asked);
             if (cap > asked) next = { ...next, maxTokens: cap };
           }

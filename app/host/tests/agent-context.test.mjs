@@ -49,6 +49,26 @@ test('calibration is cleared when the session selects another model', () => {
   assert.equal(meter.measure(session).totalTokens, 500);
 });
 
+test('only the default agent request gets the raised reply ceiling at 512K', async () => {
+  const adapter = {
+    modelOf: () => ({ contextWindow: 524288, maxTokens: 32768 }),
+    streamWithSnapshot: options => options,
+  };
+  const provider = 'strata-local';
+  const llm = {
+    adapters: new Map([[provider, { adapter }]]),
+    prepareCall: async () => ({ stream: options => adapter.streamWithSnapshot(options) }),
+  };
+  applyContextPlugin({ llm, inject: () => {} });
+  const { stream } = await llm.prepareCall({ provider });
+  const request = { provider, model: 'fixture', maxTokens: 32768 };
+
+  assert.equal(stream(request).maxTokens, 65536);
+  assert.equal(stream({ ...request, purpose: 'compaction', maxTokens: 61440 }).maxTokens, 61440);
+  assert.equal(stream({ ...request, purpose: 'session-title' }).maxTokens, 32768);
+  assert.equal(stream({ ...request, maxTokens: 16384 }).maxTokens, 16384);
+});
+
 test('the profile loads the context plugin, so compaction and /compact read the measured prompt', () => {
   const profile = buildProfile({ local: [{ id: 'a', modelId: 'm', baseUrl: 'http://x', context: 65536 }], connections: [] });
   assert.match(profile.patch, /"id": "strata-context"/);
