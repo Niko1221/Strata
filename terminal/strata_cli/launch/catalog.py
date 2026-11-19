@@ -310,6 +310,9 @@ def intel_arc_cards(root: str = "/sys/class/drm") -> list[dict]:
     return cards
 
 
+_MISSING = object()                 # cache sentinel: None is a real answer for "no engine backend"
+
+
 class Catalog:
     """setup.py's tables through strata_mcp's `Strata` object (the app's own catalog code)."""
 
@@ -343,6 +346,15 @@ class Catalog:
         self._mcp_data_dir = self.strata.data_dir
         self.strata.data_dir = self.data_dir          # one answer to "where is the data folder" for every caller, the app's included
         self._hardware_override = hardware
+        # Engine-derived answers never change while the launch screens are up. Cache them for this
+        # Catalog instance; invalidate_derived() after an install/update or a folder change.
+        self._installed_backend_cache = _MISSING
+        self._engine_backend_cache = _MISSING
+        self._reader_state_cache = _MISSING
+
+    def invalidate_derived(self) -> None:
+        """Forget engine-derived answers after an install/update or a folder change."""
+        self._installed_backend_cache = self._engine_backend_cache = self._reader_state_cache = _MISSING
 
     # ---- the computer
     def hardware(self, fresh: bool = False) -> dict:
@@ -390,13 +402,17 @@ class Catalog:
 
     def installed_backend(self) -> str | None:
         """The installed engine's backend (cuda, hip, sycl, cpu, metal), None when there is no usable engine yet."""
+        if self._installed_backend_cache is not _MISSING:
+            return self._installed_backend_cache
         try:
             from strata_control import engine_component as ec
             rep = ec.status()
             if rep.get("usable"):
-                return (rep.get("engine") or {}).get("backend")
+                self._installed_backend_cache = (rep.get("engine") or {}).get("backend")
+                return self._installed_backend_cache
         except Exception:                                    # noqa: BLE001
             pass
+        self._installed_backend_cache = None
         return None
 
     def engine_vendor(self, hw: dict | None = None) -> str | None:
@@ -581,19 +597,25 @@ class Catalog:
     # ---- pictures
     def engine_backend(self) -> str | None:
         """The installed engine's backend (cuda, hip, sycl, cpu, metal), else the one this computer's graphics card needs, else None."""
+        if self._engine_backend_cache is not _MISSING:
+            return self._engine_backend_cache
         installed = self.installed_backend()
         if installed:
+            self._engine_backend_cache = installed
             return installed
         for g in self.computer().usable_gpus:
             v = str(g.get("vendor") or "").lower()
-            if g.get("unified_gb") or v == "apple":
-                return "metal"
-            return {"nvidia": "cuda", "amd": "hip", "intel": "sycl"}.get(v)
+            self._engine_backend_cache = "metal" if (g.get("unified_gb") or v == "apple") else \
+                {"nvidia": "cuda", "amd": "hip", "intel": "sycl"}.get(v)
+            return self._engine_backend_cache
+        self._engine_backend_cache = None
         return None
 
     def reader_state(self) -> str:
         """"present" when the installed engine carries the picture reader (strata-vision), "missing" when an engine is installed without it,
         "unknown" before any engine is installed (the first launch fetches one that has it)."""
+        if self._reader_state_cache is not _MISSING:
+            return self._reader_state_cache
         try:
             from strata_control import engine_component as ec
             rep = ec.status()
@@ -601,10 +623,12 @@ class Catalog:
         except Exception:                                    # noqa: BLE001
             exe = None
         if not exe:
-            return "unknown"
+            self._reader_state_cache = "unknown"
+            return self._reader_state_cache
         from strata_control import vision_reader as VR
         found = VR.find(Path(str(exe)).parent, os.name == "nt")
-        return "present" if (found["cpu"] or found["gpu"]) else "missing"
+        self._reader_state_cache = "present" if (found["cpu"] or found["gpu"]) else "missing"
+        return self._reader_state_cache
 
     def picture_default(self, images: bool) -> str:
         """The picture setting nobody chose: off for a model that cannot read pictures or an engine without the reader; else on, with the

@@ -55,6 +55,9 @@ class Ctx:
     _help: str | None = None
     _help_exe: str | None = None             # the engine whose --help _help is: read once per engine, not again on every edit (#5940)
     _cmd: tuple | None = None                # (the choices and base config it was worked out for, the engine command): see command_text
+    _identity: dict | None = None            # this PC / engine / model identity, read once (gpus() spawns a subprocess)
+    _model_state_cache: dict = field(default_factory=dict)   # assess() stats the model folder; the Folder step asks 8x per paint
+    _auto_signals_cache: dict = field(default_factory=dict)  # card_signals reads NVML (~260 ms); asked on every model_state
     probe_offline: bool = False              # S6: ask once, in the background, whether the download hosts answer (only the real launch screens turn this on)
     offline: bool | None = None              # None: not asked yet (or not asked at all)
     _probing: bool = False
@@ -224,12 +227,19 @@ class Ctx:
 
     # ---- where the model is and what it still needs
     def model_state(self, data_dir: str | None = None):
-        """The chosen model's state (installed, what helper files are missing, sizes) for these choices."""
-        from strata_cli.launch import modelstate
+        """The chosen model's state (installed, what helper files are missing, sizes) for these choices.
+        Cached: assess() stats the model folder and the Folder step asks for the same answer on every paint."""
         s = self.settings
-        return modelstate.assess(self.catalog, s.family, s.model, vision=s.vision, model_path=s.model_path,
-                                 data_dir=data_dir if data_dir is not None else s.data_dir, rows=self.rows, mtp=s.mtp,
-                                 drafting=modelstate.resolved_drafting(s.drafting, s.family, **auto_signals(self.catalog, s, s.family)))
+        key = (data_dir, s.family, s.model, s.vision, s.model_path, s.data_dir, s.mtp, s.drafting)
+        hit = self._model_state_cache.get(key)
+        if hit is not None:
+            return hit
+        from strata_cli.launch import modelstate
+        result = modelstate.assess(self.catalog, s.family, s.model, vision=s.vision, model_path=s.model_path,
+                                   data_dir=data_dir if data_dir is not None else s.data_dir, rows=self.rows, mtp=s.mtp,
+                                   drafting=modelstate.resolved_drafting(s.drafting, s.family, **self.auto_signals()))
+        self._model_state_cache[key] = result
+        return result
 
     def default_folder(self) -> Path:
         """The folder the Folder step starts with: where the chosen model already is (installed, or the person's own files with their
@@ -262,7 +272,12 @@ class Ctx:
         if cfg:
             try:
                 from strata_control import presets
-                merged, info = presets.overlay(cfg)
+                # current_identity() reads the GPUs (a subprocess), the engine manifest and the model
+                # file hash. None of that changes while the screens are up, so compute it once and
+                # hand it to overlay() on every rebuild after an edit.
+                if self._identity is None:
+                    self._identity = presets.current_identity(cfg)
+                merged, info = presets.overlay(cfg, now=self._identity)
                 if info.get("applied"):
                     tuned_args, tuned_env = list(merged.get("args") or []), dict(merged.get("env") or {})
             except Exception:                                # noqa: BLE001
@@ -628,6 +643,17 @@ def run_tui(settings: S.LaunchSettings | None, *, catalog: Catalog | None = None
             store.save(s, s.name)
     ctx = Ctx(catalog=catalog, computer=computer, rows=rows, settings=s, glyphs=Glyphs(), feed=feed, move_data=move_data, retune=retune, restart=restart,
               probe_offline=True)
+    # Warm the two caches whose first read spawns child processes / GPU reads (auto_signals reads
+    # NVML, advanced_rows reads the engine's --help and the tuning identity) while the Start screen
+    # is up, so the Folder and Advanced steps do not block on them during navigation.
+    def _warm() -> None:
+        for fn in (ctx.auto_signals, ctx.advanced_rows):
+            try:
+                fn()
+            except Exception:                                # noqa: BLE001 - the screens compute it on demand if this failed
+                pass
+
+    threading.Thread(target=_warm, daemon=True, name="launch-warm").start()
     app = LaunchApp(ctx, auto_run=auto_run)
     result = app.run()
     if getattr(app, "return_code", 0) not in (0, None) or getattr(app, "_exception", None) is not None:

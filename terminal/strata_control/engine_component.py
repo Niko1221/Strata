@@ -66,6 +66,46 @@ UPDATE_STATE = Path(".updates") / "state.json"
 #: the version of the control/runtime that is asking; the app reads it from VERSION when it has one.
 RUNTIME_VERSION_FILE = Path(__file__).resolve().parents[1] / "VERSION"
 
+# --- status() memo ---------------------------------------------------------------------------------
+# status() -> resolve() -> verify() hashes the engine entrypoint (a 171 MB exe on Windows) on every
+# call, even with full=False. The launch TUI asks for status ~14 times per key press, which made a
+# single cursor key take up to 16 s. The engine cannot change while the screens are up, so cache the
+# report per (root, backend, full) and only redo the hash when the folder's cheap fingerprint changes.
+_STATUS_CACHE: dict[tuple, tuple[tuple, dict]] = {}
+
+
+def _status_fingerprint(base: Path, report: dict | None = None) -> tuple:
+    """Cheap signature of the installed engines: folder names + mtimes, the chosen exe's mtime/size,
+    and the updater state. A few stat calls, no hashing. Changes when an engine is installed, replaced
+    or removed, so a stale report is never reused."""
+    parts: list = []
+    try:
+        for folder in sorted(engine_dir(base).iterdir()):
+            if folder.is_dir() and not folder.name.startswith("."):
+                st = folder.stat()
+                parts.append((folder.name, st.st_mtime_ns))
+    except OSError:                                       # noqa: BLE001 - no engine folder yet
+        pass
+    if report:
+        exe = (report.get("engine") or {}).get("exe")
+        if exe:
+            try:
+                st = Path(exe).stat()
+                parts.append((str(exe), st.st_mtime_ns, st.st_size))
+            except OSError:                               # noqa: BLE001 - exe went away: the folder stat above already changes
+                pass
+    try:
+        st = (base / UPDATE_STATE).stat()
+        parts.append((str(UPDATE_STATE), st.st_mtime_ns, st.st_size))
+    except OSError:                                       # noqa: BLE001 - no updater state
+        pass
+    return tuple(parts)
+
+
+def invalidate_status_cache() -> None:
+    """Forget cached status reports. Call after installing, updating or removing an engine file."""
+    _STATUS_CACHE.clear()
+
 
 class EngineMissing(acquisition.AcquisitionRefused):
     """No usable engine component for this machine. Nothing was fetched and nothing will be."""
@@ -1192,6 +1232,18 @@ def expand(value: str, cfg: dict | None = None, *, root: Path | None = None, ful
         return value
     name = value[len(REFERENCE_PREFIX):]
     backend = (cfg or {}).get("backend")
+    if not full and name in ("", COMPONENT_ID):
+        # Quick listing checks (the launch screens ask for the engine path on every paint) must not
+        # re-hash the 171 MB entrypoint through resolve(). status() is memoized with fingerprint
+        # invalidation and resolves the same engine, so reuse its answer. full=True (the start path)
+        # still goes through resolve() and verifies every file.
+        try:
+            rep = status(root or components_dir(), backend=backend, full=False)
+            exe = (rep.get("engine") or {}).get("exe") if rep.get("usable") else None
+            if exe:
+                return str(exe)
+        except Exception:                                    # noqa: BLE001 - unknown engine: fall through to the resolver
+            pass
     if name not in ("", COMPONENT_ID):
         from strata_control import shape_engine
         shape = shape_engine.shape_of_component(name)
@@ -1207,10 +1259,18 @@ def expand(value: str, cfg: dict | None = None, *, root: Path | None = None, ful
 
 
 def status(root: Path | None = None, *, backend: str | None = None, full: bool = False) -> dict:
-    """What `strata components engine` and the app's host report. Always answers; never raises for a missing engine."""
+    """What `strata components engine` and the app's host report. Always answers; never raises for a missing engine.
+
+    Cached per (root, backend, full): the entrypoint hash is expensive and the engine files do not change
+    while a launch-screens session is up. `invalidate_status_cache()` or a changed folder fingerprint
+    (install/update/rollback) makes the next call hash again."""
     base = root or components_dir()
-    found, problems = scan(base)
     backend = split_backend(backend)[0] or None if backend else backend    # `components engine --backend amd` = the hip family
+    key = (str(base), backend, full)
+    hit = _STATUS_CACHE.get(key)
+    if hit is not None and hit[0] == _status_fingerprint(base, hit[1]):
+        return hit[1]
+    found, problems = scan(base)
     try:
         detected, how = detect_backend()
     except ComponentProblem as exc:
@@ -1234,4 +1294,5 @@ def status(root: Path | None = None, *, backend: str | None = None, full: bool =
             report["shapes"] = shapes
     except Exception:                                 # noqa: BLE001 - informational only
         pass
+    _STATUS_CACHE[key] = (_status_fingerprint(base, report), report)
     return report
