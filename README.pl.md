@@ -4,12 +4,16 @@
 
 Lokalne AI dla systemu Windows z czatem, pracą agentów, wyszukiwaniem źródeł i wyborem kompatybilnych modeli. Hakua to fork projektu Niko1221/Strata rozwijany niezależnie przez zapabob i nie jest oficjalnie zatwierdzoną dystrybucją upstream.
 
+## Co się zmieniło w 0.6.6
+
+To wydanie łączy semantykę oficjalnego Strata 0.2.16, zachowując wszystkie funkcje forkowania (oficjalne usunięcia nie zostały zastosowane). Natywny silnik CUDA Qwen3.8 jest teraz podłączony do oficjalnego API: `strata.exe` raportuje `qwen35` w `--families` i obsługuje prawdziwy GGUF Qwen3.8-27B przez standardowy protokół `--serve`. Zbudowane i zweryfikowane z CUDA 13.5 / SM120. Wydajność natywna pozostaje **wolniejsza niż Prism llama.cpp** w podgrzanych testach A/B; zachowano bajtowo identyczne logity (`releaseQualified=false`).
+
 ## Wersja i pobieranie
 
 <!-- release-062-stable -->
-Aktualne wydanie: [0.6.3](https://github.com/zapabob/Strata/releases/tag/v0.6.3) (Aplikacja `0.6.3`, Native Q38 `0.6.3` SM120, Control `0.6.3`). Status `releaseQualified=false` pozostaje jawny; pełne okno kontekstu i ogólna jakość modeli nie są certyfikowane.
+Bieżące wydanie aplikacji: [0.6.6](https://github.com/zapabob/Strata/releases/tag/v0.6.6) (Aplikacja `0.6.6`; Terminal, Control i silnik natywny `0.6.3`). To wydanie aplikacji dla Windows celowo nie jest GitHub Latest; Latest pozostaje `0.6.3`. Silnik GPU pozostaje osobno podpisanim komponentem [`v0.6.4-preview.1`](https://github.com/zapabob/Strata/releases/tag/v0.6.4-preview.1). Status `releaseQualified=false` pozostaje jawny; pełne okno kontekstu i ogólna jakość modeli nie są certyfikowane.
 
-[0.6.3](https://github.com/zapabob/Strata/releases/tag/v0.6.3) · [Strata-0.6.3-windows-x64-setup.exe](https://github.com/zapabob/Strata/releases/download/v0.6.3/Strata-0.6.3-windows-x64-setup.exe) · [tar.7z](https://github.com/zapabob/Strata/releases/download/v0.6.3/Strata-0.6.3-windows-x64.tar.7z) · [SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.6.3/SHA256SUMS.txt)
+[0.6.6](https://github.com/zapabab/Strata/releases/tag/v0.6.6) · [EXE instalacyjny](https://github.com/zapabob/Strata/releases/download/v0.6.6/Strata-0.6.6-windows-x64-setup.exe) · [tar.7z](https://github.com/zapabob/Strata/releases/download/v0.6.6/Strata-0.6.6-windows-x64.tar.7z) · [SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.6.6/SHA256SUMS.txt) · [BUNDLE-SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.6.6/BUNDLE-SHA256SUMS.txt)
 
 ![Hakua / Strata real-model Japanese chat on Qwen3.8-27B](docs/media/native-qwen38-japanese-chat.png)
 *Zainstalowana aplikacja Hakua / Strata uruchamiająca `qwen3.8-27b-abliterated-3.69bpw-12GB-MTP.gguf` przez `strata-q38.exe` (CUDA 13 / RTX 5060 Ti 16 GB).*

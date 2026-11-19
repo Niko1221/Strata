@@ -4,12 +4,16 @@
 
 Windows でローカル AI のチャット、エージェント作業、出典付き調査を使うためのアプリです。Hakua は Niko1221/Strata を基にした zapabob のフォークで、独立して保守しています。公式からの推奨・認定を示す配布物ではありません。
 
+## 0.6.6 の変更点
+
+このリリースは公式 Strata 0.2.16 の意味を fork にマージし、fork 独自機能はすべて保持しました（公式の削除は適用していません）。Qwen3.8 ネイティブ CUDA エンジンは公式エンジン API に接続され、`strata.exe` の `--families` に `qwen35` が表示され、実 GGUF を標準の常驻 `--serve` プロトコルで配信します。CUDA 13.5 / SM120 でビルド・E2E 検証済み。ネイティブ性能は反転順ウォーム A/B で **Prism llama.cpp より遅い** ままです（バイト一致 logits を維持、`releaseQualified=false`）。
+
 ## バージョンと配布物
 
 <!-- release-062-stable -->
-最新リリース: [0.6.3](https://github.com/zapabob/Strata/releases/tag/v0.6.3)（アプリ `0.6.3`、ネイティブ Q38 `0.6.3` SM120、Control `0.6.3`）。最大長の推論や一般的なモデル品質は未認定のため、`releaseQualified=false` を明示しています。
+現在のアプリリリース: [0.6.6](https://github.com/zapabob/Strata/releases/tag/v0.6.6)（アプリ `0.6.6`、Terminal・Control・ネイティブエンジン `0.6.3`）。この Windows アプリ専用リリースは意図的に GitHub Latest ではなく、Latest は `0.6.3` のままです。GPU エンジンは別途署名された [`v0.6.4-preview.1`](https://github.com/zapabob/Strata/releases/tag/v0.6.4-preview.1) コンパニオンです。最大長の推論や一般的なモデル品質は未認定のため、`releaseQualified=false` を明示しています。
 
-[0.6.3](https://github.com/zapabob/Strata/releases/tag/v0.6.3) · [Strata-0.6.3-windows-x64-setup.exe](https://github.com/zapabob/Strata/releases/download/v0.6.3/Strata-0.6.3-windows-x64-setup.exe) · [tar.7z](https://github.com/zapabob/Strata/releases/download/v0.6.3/Strata-0.6.3-windows-x64.tar.7z) · [SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.6.3/SHA256SUMS.txt)
+[0.6.6](https://github.com/zapabob/Strata/releases/tag/v0.6.6) · [setup EXE](https://github.com/zapabob/Strata/releases/download/v0.6.6/Strata-0.6.6-windows-x64-setup.exe) · [tar.7z](https://github.com/zapabob/Strata/releases/download/v0.6.6/Strata-0.6.6-windows-x64.tar.7z) · [SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.6.6/SHA256SUMS.txt) · [BUNDLE-SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.6.6/BUNDLE-SHA256SUMS.txt)
 
 ![Hakua / Strata real-model Japanese chat on Qwen3.8-27B](docs/media/native-qwen38-japanese-chat.png)
 *`strata-q38.exe` で `qwen3.8-27b-abliterated-3.69bpw-12GB-MTP.gguf` を実行している実環境スクリーンショット（CUDA 13 / RTX 5060 Ti 16 GB）。*

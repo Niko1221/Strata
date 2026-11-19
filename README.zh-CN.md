@@ -4,12 +4,16 @@
 
 面向 Windows 的本地 AI 应用，支持对话、智能体任务、带出处检索与兼容模型选择。Hakua 是 zapabob 基于 Niko1221/Strata 独立维护的分支版本，并非上游官方背书的发行版。
 
+## 0.6.6 变更
+
+此版本将官方 Strata 0.2.16 的语义合并到 fork，保留所有 fork 功能（未应用官方删除）。Qwen3.8 原生 CUDA 引擎现已接入官方引擎 API：`strata.exe` 在 `--families` 中报告 `qwen35`，并通过标准常驻 `--serve` 协议服务真实的 Qwen3.8-27B GGUF。已使用 CUDA 13.5 / SM120 构建并通过 E2E 验证。原生性能在预热 A/B 对比中仍 **慢于 Prism llama.cpp**；保持字节一致的 logits（`releaseQualified=false`）。
+
 ## 版本与下载
 
 <!-- release-062-stable -->
-当前版本：[0.6.3](https://github.com/zapabob/Strata/releases/tag/v0.6.3)（应用 `0.6.3`、原生 Q38 `0.6.3` SM120、Control `0.6.3`）。仍明确标注 `releaseQualified=false`；满上下文窗口推理与通用模型质量尚未经过认证。
+当前应用版本：[0.6.6](https://github.com/zapabob/Strata/releases/tag/v0.6.6)（应用 `0.6.6`；Terminal、Control 和原生引擎 `0.6.3`）。此 Windows 仅应用版本有意不设为 GitHub Latest；Latest 仍为 `0.6.3`。GPU 引擎仍由单独签名的 [`v0.6.4-preview.1`](https://github.com/zapabob/Strata/releases/tag/v0.6.4-preview.1) 配套版本提供。仍明确标注 `releaseQualified=false`；满上下文窗口推理与通用模型质量尚未经过认证。
 
-[0.6.3](https://github.com/zapabob/Strata/releases/tag/v0.6.3) · [Strata-0.6.3-windows-x64-setup.exe](https://github.com/zapabob/Strata/releases/download/v0.6.3/Strata-0.6.3-windows-x64-setup.exe) · [tar.7z](https://github.com/zapabob/Strata/releases/download/v0.6.3/Strata-0.6.3-windows-x64.tar.7z) · [SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.6.3/SHA256SUMS.txt)
+[0.6.6](https://github.com/zapabob/Strata/releases/tag/v0.6.6) · [安装 EXE](https://github.com/zapabob/Strata/releases/download/v0.6.6/Strata-0.6.6-windows-x64-setup.exe) · [tar.7z](https://github.com/zapabob/Strata/releases/download/v0.6.6/Strata-0.6.6-windows-x64.tar.7z) · [SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.6.6/SHA256SUMS.txt) · [BUNDLE-SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.6.6/BUNDLE-SHA256SUMS.txt)
 
 ![Hakua / Strata real-model Japanese chat on Qwen3.8-27B](docs/media/native-qwen38-japanese-chat.png)
 *Hakua / Strata 桌面端通过 `strata-q38.exe` 运行 `qwen3.8-27b-abliterated-3.69bpw-12GB-MTP.gguf`（CUDA 13 / RTX 5060 Ti 16 GB）。*
