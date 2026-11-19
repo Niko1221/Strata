@@ -252,7 +252,7 @@ function HelperWindow() {
       void read();
       return () => { controller.abort(); clearTimeout(timer); };
     }, [sessionId, helperId, messageCount]);
-    return <main className="main"><div className="main__body"><div className="wrap stack">
+    return <main className="main helper-window"><div className="main__body"><div className="wrap stack">
       <header className="main__head"><h1>{tr(agent?.name ?? 'Subagent')}</h1></header>
       {disconnected && <p className="muted" role="status">{tr('Reconnecting…')}</p>}
       {agent === null

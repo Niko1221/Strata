@@ -331,6 +331,18 @@ test('#4749 the helper strings are translated', async () => {
   setTranslationLanguage('en');
 });
 
+test('a native helper window has a bounded scroll surface and opens its work log at the newest step', () => {
+  const app = src('app/App.tsx');
+  const row = src('components/SubagentRow.tsx');
+  const css = src('styles/app.css');
+  assert.match(app, /<main className="main helper-window">/, 'the helper window has its own viewport-sized main surface');
+  assert.match(css, /\.helper-window \{ height: 100%; min-height: 0; \}/);
+  assert.match(css, /\.helper-window \.main__body \{ min-height: 0; overflow-y: auto; overscroll-behavior: contain; \}/);
+  assert.match(css, /\.subagent-row\[data-panel\] \.subagent-log \{ max-height: min\(52dvh, 36rem\); overflow-y: auto; overscroll-behavior: contain; \}/);
+  assert.match(row, /useLayoutEffect\(\(\) => \{[\s\S]*?if \(seenStepCount\.current === 0 \|\| followLog\.current\)\s*log\.scrollTop = log\.scrollHeight;/, 'the first paint already shows the current work');
+  assert.match(row, /followLog\.current = log\.scrollHeight - log\.scrollTop - log\.clientHeight < 24;/, 'manual review of older output disables follow mode');
+});
+
 // ---------------------------------------------------------------------------------------------------------------------- #4783
 test('#4783 the three choices while an answer is written, as the web chat page has them, and only those three are valid', async () => {
   const { busyPlan, validWhileBusy, WHILE_BUSY } = await load('lib/while-busy.ts');

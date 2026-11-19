@@ -6033,7 +6033,10 @@ button.menu__item:disabled { opacity: .5; cursor: default; }
 .subagent-row + .subagent-row { border-top: 1px solid var(--st-line-soft); }
 .subagent-row[data-panel] { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; }
 .subagent-row[data-panel] .subagent-log, .subagent-row[data-panel] .subagent-messages { grid-column: 1 / -1; }
-.subagent-row[data-panel] .subagent-log { max-height: none; overflow: visible; }
+.helper-window { height: 100%; min-height: 0; }
+.helper-window .main__body { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.helper-window .wrap { max-width: 960px; padding-bottom: 32px; }
+.subagent-row[data-panel] .subagent-log { max-height: min(52dvh, 36rem); overflow-y: auto; overscroll-behavior: contain; }
 .subagent-row__icon { display: flex; flex: none; margin-top: 2px; color: var(--st-ink-muted); }
 .subagent-row__copy { min-width: 0; flex: 1; }
 .subagent-row__title { display: flex; align-items: center; gap: 8px; }

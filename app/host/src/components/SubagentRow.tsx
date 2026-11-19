@@ -1,5 +1,5 @@
 import { tr } from '../lib/i18n';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Btn, Dialog, type IconName } from './ui';
 import { api } from '../lib/client';
 import { plainFailureText } from '../lib/plain-errors';
@@ -36,6 +36,9 @@ export function SubagentRow({ agent: a, now = Date.now(), sessionId, record, onR
   const [updating, setUpdating] = useState(false);
   const [problem, setProblem] = useState('');
   const [stopping, setStopping] = useState(false);
+  const logRef = useRef<HTMLOListElement>(null);
+  const followLog = useRef(true);
+  const seenStepCount = useRef(0);
 
   // A working helper gets it at its next step (steer); one that has finished or waits gets a new turn with it (queue).
   async function send() {
@@ -99,7 +102,23 @@ export function SubagentRow({ agent: a, now = Date.now(), sessionId, record, onR
     <h2>{tr('Messages to this helper')}</h2>
     <ol>{messages.map(message => <li key={message.id}>{message.text}</li>)}</ol>
   </section> : null;
-  const logEntries = a.steps?.length ? <ol className="subagent-log" aria-label={tr('{0} · log', [a.name])}>
+  const stepCount = a.steps?.length ?? 0;
+  // A helper window opens on its current work, not on an old first step. Keep
+  // following new work only while the reader has stayed at the end, so looking
+  // back through the log never snaps the scroll position away.
+  useLayoutEffect(() => {
+    const log = logRef.current;
+    if (!log) return;
+    if (seenStepCount.current === 0 || followLog.current)
+      log.scrollTop = log.scrollHeight;
+    seenStepCount.current = stepCount;
+  }, [stepCount]);
+  const trackLogPosition = () => {
+    const log = logRef.current;
+    if (!log) return;
+    followLog.current = log.scrollHeight - log.scrollTop - log.clientHeight < 24;
+  };
+  const logEntries = a.steps?.length ? <ol ref={logRef} onScroll={trackLogPosition} className="subagent-log" aria-label={tr('{0} · log', [a.name])}>
     {a.steps.map((step, i) => <li key={i} className={step.said ? 'subagent-log__said' : 'subagent-log__step'}>{step.said
       ? <span>{step.said}</span>
       : <><strong>{tr(step.verb ?? '')}</strong> <span>{step.target ?? ''}</span></>}</li>)}
