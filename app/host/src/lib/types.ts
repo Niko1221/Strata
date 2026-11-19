@@ -326,6 +326,8 @@ export interface MonitorState {
 }
 
 export interface ChatMessage {
+  /** Durable, human-readable activity records. Unlike the live status line these remain after the turn ends. */
+  activity?: { text: string; at: number }[];
   /** Tool calls the model is writing right now (a file, a command): live data for the writing card; see ToolDraft. */
   drafts?: ToolDraft[];
   /** The person's message is written with Markdown (a task handover: bold headings and lists), so the bubble draws it as such. */
@@ -478,6 +480,8 @@ export interface Session {
   timeSkips?: import('./time-skip').TimeSkipRun[];
   showcase?: boolean;
   agents?: SessionAgent[];
+  /** Finished helper rows the person removed from this chat. */
+  dismissedAgentIds?: string[];
   previewOpen?: string;
   closedPreviews?: string[];
   showcaseAgentStates?: boolean;

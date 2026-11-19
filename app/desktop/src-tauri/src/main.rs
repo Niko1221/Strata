@@ -49,6 +49,26 @@ mod renderer_choice;
 #[cfg(target_os = "linux")]
 mod supervisor;
 
+/// Opens a separate, ordinary operating-system window for one helper. The page
+/// owns the data; the shell only gives it a movable native surface on the same
+/// trusted loopback origin as the main window.
+#[tauri::command]
+fn open_helper_window(app: tauri::AppHandle, session_id: String, helper_id: String, name: String) -> Result<(), String> {
+    if session_id.len() > 160 || helper_id.len() > 160 || !session_id.chars().all(|c| c.is_ascii_alphanumeric() || "_-".contains(c)) || !helper_id.chars().all(|c| c.is_ascii_alphanumeric() || "_-".contains(c)) {
+        return Err("The helper window identifier is not valid.".to_string());
+    }
+    let label = format!("helper-{}", helper_id);
+    if let Some(window) = app.get_webview_window(&label) {
+        let _ = window.unminimize(); let _ = window.show(); let _ = window.set_focus();
+        return Ok(());
+    }
+    let port = app.state::<HostPort>().0.lock().map_err(|_| "Strata could not read its local address.")?.ok_or("Strata is not ready yet.")?;
+    let title = if name.trim().is_empty() { "Strata helper" } else { name.trim() };
+    let url: tauri::Url = format!("http://127.0.0.1:{port}/?helperWindow=1&sessionId={session_id}&helperId={helper_id}").parse().map_err(|_| "The helper window address is invalid.")?;
+    WebviewWindowBuilder::new(&app, label, WebviewUrl::External(url)).title(title).inner_size(680.0, 760.0).min_inner_size(420.0, 360.0).build().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// The kill-on-close Job Object that holds everything this app starts (Windows). Its only handle is this process's,
 /// which the system closes however the process ends; closing the last handle ends every process in the job.
 #[cfg(windows)]
@@ -907,6 +927,7 @@ fn run_embedded() {
         });
     });
     builder
+        .invoke_handler(tauri::generate_handler![open_helper_window])
         // First, as the plugin requires: a second launch ends here after telling the running app to show itself.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
@@ -958,7 +979,9 @@ fn run_embedded() {
                     }
                 }
             }
-            if let tauri::WindowEvent::Destroyed = event {
+            // Helper windows are independent reading surfaces. Closing one must
+            // never end the app host or the conversation it is showing.
+            if window.label() == "main" && matches!(event, tauri::WindowEvent::Destroyed) {
                 stop_host(&window.app_handle().clone());
             }
         })
@@ -1266,6 +1289,7 @@ fn run_window_process() -> ! {
         }
     });
     tauri::Builder::default()
+        .invoke_handler(tauri::generate_handler![open_helper_window])
         // First, as the plugin requires: a second window process ends here after telling the open window to show itself.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = tauri::Manager::get_webview_window(app, "main") {
@@ -1293,7 +1317,7 @@ fn run_window_process() -> ! {
             open_window(app, port, &token)
         })
         .on_window_event(|window, event| {
-            if let tauri::WindowEvent::Destroyed = event {
+            if window.label() == "main" && matches!(event, tauri::WindowEvent::Destroyed) {
                 window.app_handle().exit(0);
             }
         })

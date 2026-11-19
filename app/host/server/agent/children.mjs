@@ -88,7 +88,9 @@ export class ChildProjector {
   #cardId(callId) { return `${this.id}:${callId}`; }
 
   #step(step) {
-    this.steps.push(step);
+    const previous = this.steps.at(-1);
+    if (step.said && previous?.said && previous.said.length < 1200) previous.said = `${previous.said}${step.said}`.slice(-1200);
+    else this.steps.push(step);
     if (this.steps.length > MAX_STEPS) this.steps.splice(0, this.steps.length - MAX_STEPS);
   }
 
@@ -119,6 +121,8 @@ export class ChildProjector {
         row = true;
       } else if (f.type === 'chunk' && (f.chunk?.type === 'text-delta' || f.chunk?.type === 'reasoning-delta')) {
         if (this.status === 'queued') set('working');
+        const text = String(f.chunk?.text ?? '');
+        if (text) { this.#step({ said: text }); row = true; }
       }
       return { frames, row };
     }
