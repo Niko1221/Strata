@@ -317,9 +317,9 @@ test('#4749 the bridge uses the Harness own subagents/prompt with the documented
   const index = readFileSync(new URL('../server/index.mjs', import.meta.url), 'utf8');
   assert.match(index, /path === '\/api\/chat\/helper' && method === 'POST'/);
   const row = src('components/SubagentRow.tsx');
-  assert.match(row, /delivery: a\.status === 'working' \? 'steer' : 'queue'/);
-  assert.match(row, /sessionId && a\.status !== 'queued' && a\.status !== 'cancelled'/);
-  assert.match(src('components/ChatToolbar.tsx'), /sessionId=\{!session\.showcase \? session\.id : undefined\}/, 'the example chat has no real helpers to write to');
+  assert.match(row, /const delivery = a\.status === 'working' \? 'steer' : 'queue'/);
+  assert.match(row, /sessionId && !archived && a\.status !== 'cancelled'/);
+  assert.match(src('components/ChatToolbar.tsx'), /const sessionId = session && !session\.showcase \? session\.id : undefined/, 'the example chat has no real helpers to write to');
 });
 
 test('#4749 the helper strings are translated', async () => {

@@ -3579,5 +3579,15 @@
   "s9144": "Detener ayudante",
   "s9145": "Este ayudante ya no está en ejecución.",
   "s9146": "El ayudante no confirmó que se detuvo.",
-  "s9147": "El asistente no confirmó que se detuvo. Se conserva la respuesta parcial. Puede enviar otro mensaje."
+  "s9147": "El asistente no confirmó que se detuvo. Se conserva la respuesta parcial. Puede enviar otro mensaje.",
+  "s9148": "Archivar",
+  "s9149": "Archivar finalizados",
+  "s9150": "Mostrar archivo ({0})",
+  "s9151": "Ocultar archivo",
+  "s9152": "Ayudantes archivados",
+  "s9153": "Todos los ayudantes están archivados.",
+  "s9154": "Mensajes para este ayudante",
+  "s9155": "Se envió el mensaje, pero no se pudo guardar en el historial.",
+  "s9156": "No se pudo actualizar ningún ayudante. Los que siguen activos deben terminar o detenerse primero.",
+  "s9157": "Restaura este ayudante antes de enviarle un mensaje."
 }

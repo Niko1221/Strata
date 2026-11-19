@@ -1,11 +1,12 @@
 import { tr } from '../lib/i18n';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Btn, Dialog, type IconName } from './ui';
 import { api } from '../lib/client';
 import { plainFailureText } from '../lib/plain-errors';
 import { compactTokens, elapsed } from '../lib/chat-metrics';
 import type { Session } from '../lib/types';
 import { helperRanLong } from '../lib/helper-limit';
+import { helperRecordsChanged, updateHelperRecords, type HelperAction, type HelperMessage, type HelperRecord } from '../lib/helper-records';
 
 type Agent = NonNullable<Session['agents']>[number];
 
@@ -17,11 +18,12 @@ const states: Record<Agent['status'], { label: string; icon: IconName }> = {
   cancelled: { label: 'Cancelled', icon: 'x' },
 };
 
-export function SubagentRow({ agent: a, now = Date.now(), sessionId, onRemove, panel = false }: {
+export function SubagentRow({ agent: a, now = Date.now(), sessionId, record, onRemove, panel = false }: {
   agent: Agent;
   now?: number;
   /** The chat the helper belongs to: with it the row can take a message for the helper (#4749). */
   sessionId?: string;
+  record?: HelperRecord;
   onRemove?: () => void;
   panel?: boolean;
 }) {
@@ -30,6 +32,8 @@ export function SubagentRow({ agent: a, now = Date.now(), sessionId, onRemove, p
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
   const [sent, setSent] = useState(false);
+  const [sentMessages, setSentMessages] = useState<HelperMessage[]>([]);
+  const [updating, setUpdating] = useState(false);
   const [problem, setProblem] = useState('');
   const [stopping, setStopping] = useState(false);
 
@@ -39,8 +43,13 @@ export function SubagentRow({ agent: a, now = Date.now(), sessionId, onRemove, p
     if (!message || !sessionId || busy) return;
     setBusy(true); setProblem(''); setSent(false);
     try {
-      await api.post('/api/chat/helper', { sessionId, helperId: a.id, message, delivery: a.status === 'working' ? 'steer' : 'queue' });
+      const delivery = a.status === 'working' ? 'steer' : 'queue';
+      const result = await api.post<{ message?: HelperMessage; historySaved?: boolean }>('/api/chat/helper', { sessionId, helperId: a.id, message, delivery });
+      const item = result.message ?? { id: crypto.randomUUID(), text: message, at: new Date().toISOString(), delivery };
+      setSentMessages(previous => [...previous, item]);
       setDraft(''); setSent(true);
+      if (result.historySaved === false) setProblem(tr('The message was sent, but its history could not be saved.'));
+      helperRecordsChanged(sessionId);
     } catch (e) {
       setProblem(plainFailureText(e instanceof Error ? e.message : String(e)).message);
     } finally {
@@ -69,12 +78,27 @@ export function SubagentRow({ agent: a, now = Date.now(), sessionId, onRemove, p
     }
   }
 
+  async function changeArchive(action: HelperAction) {
+    if (!sessionId || updating) return;
+    setUpdating(true); setProblem('');
+    try { await updateHelperRecords(sessionId, action, [a.id]); }
+    catch (e) { setProblem(plainFailureText(e instanceof Error ? e.message : String(e)).message); }
+    finally { setUpdating(false); }
+  }
+
   const observedAt = useRef(Date.now());
   const duration = a.durationMs + (a.status === 'working' ? Math.max(0, now - (a.updatedAt ?? observedAt.current)) : 0);
   const state = states[a.status] ?? states.queued;
   const canStop = a.status === 'working' || a.status === 'queued';
-  const canRemove = ['completed', 'failed', 'cancelled'].includes(a.status);
-  const canMessage = !!sessionId && a.status !== 'queued' && a.status !== 'cancelled';
+  useEffect(() => { if (!canStop) setStopping(false); }, [canStop]);
+  const archived = !canStop && record?.archived;
+  const canMessage = !!sessionId && !archived && a.status !== 'cancelled';
+  const savedMessages = record?.messages ?? [];
+  const messages = [...savedMessages, ...sentMessages.filter(message => !savedMessages.some(saved => saved.id === message.id))];
+  const messageHistory = messages.length ? <section className="subagent-messages" aria-label={tr('Messages to this helper')}>
+    <h2>{tr('Messages to this helper')}</h2>
+    <ol>{messages.map(message => <li key={message.id}>{message.text}</li>)}</ol>
+  </section> : null;
   const logEntries = a.steps?.length ? <ol className="subagent-log" aria-label={tr('{0} · log', [a.name])}>
     {a.steps.map((step, i) => <li key={i} className={step.said ? 'subagent-log__said' : 'subagent-log__step'}>{step.said
       ? <span>{step.said}</span>
@@ -84,28 +108,35 @@ export function SubagentRow({ agent: a, now = Date.now(), sessionId, onRemove, p
   return <div className="subagent-row" data-status={a.status} data-panel={panel || undefined}>
     <span className="subagent-row__dot" aria-label={tr(state.label)}/>
     <div className="subagent-row__copy">
-      <div className="subagent-row__title"><strong title={a.name}>{a.name}</strong><span className="subagent-row__status">{tr(state.label)}</span></div>
-      <p title={a.description}>{tr(a.description)}</p>
-      <div className="subagent-row__actions" title={a.description}>
-        {!panel && <>{tr(a.status === 'failed' || a.steps?.length ? <button className="text-action" onClick={() => setLog(true)}>{tr('View log')}</button> : null)}
-          <button className="text-action" onClick={() => void openNativeWindow()}>{tr('Open window')}</button></>}
-        {tr(sessionId && canStop ? <button className="text-action" disabled={stopping} onClick={() => void stop()}>{tr(stopping ? 'Stopping…' : 'Stop helper')}</button> : null)}
-        {tr(onRemove && canRemove ? <button className="text-action" onClick={onRemove}>{tr('Remove')}</button> : null)}
-        {tr(canMessage ? (writing
-          ? <form className="subagent-row__reply" onSubmit={e => { e.preventDefault(); void send(); }}>
-              <input className="st-input" value={draft} maxLength={8000} aria-label={tr('Message to {0}', [a.name])} placeholder={tr('Write to {0}…', [a.name])} disabled={busy} onChange={e => { setDraft(e.target.value); setSent(false); }}/>
-              <Btn size="sm" variant="primary" type="submit" disabled={busy || !draft.trim()}>{tr('Send')}</Btn>
-            </form>
-          : <button className="text-action" onClick={() => setWriting(true)}>{tr('Message this helper')}</button>) : null)}
+      <div className="subagent-row__title">
+        <strong title={a.name}>{a.name}</strong>
+        <span className="subagent-row__status">{tr(state.label)}{archived && <> · {tr('Archived')}</>}</span>
       </div>
+      <p title={a.description}>{tr(a.description)}</p>
+      <div className="subagent-row__actions">
+        {!panel && (a.status === 'failed' || a.steps?.length || messages.length) ? <Btn size="sm" onClick={() => setLog(true)}>{tr('View log')}</Btn> : null}
+        {!panel && sessionId && <Btn size="sm" onClick={() => void openNativeWindow()}>{tr('Open window')}</Btn>}
+        {sessionId && canStop && <Btn size="sm" variant="danger" disabled={stopping} onClick={() => void stop()}>{tr(stopping ? 'Stopping…' : 'Stop helper')}</Btn>}
+        {canMessage && !panel && <Btn size="sm" aria-expanded={writing} onClick={() => setWriting(v => !v)}>{tr('Message this helper')}</Btn>}
+        {sessionId && !canStop && <Btn size="sm" disabled={updating || busy}
+          onClick={() => void changeArchive(archived ? 'restore' : 'archive')}>{tr(archived ? 'Restore' : 'Archive')}</Btn>}
+        {onRemove && !canStop && <Btn size="sm" variant="ghost" disabled={updating || busy} onClick={onRemove}>{tr('Remove')}</Btn>}
+      </div>
+      {canMessage && (panel || writing) && <form className="subagent-row__reply" onSubmit={e => { e.preventDefault(); void send(); }}>
+        <textarea className="st-input" rows={2} value={draft} maxLength={8000}
+          aria-label={tr('Message to {0}', [a.name])} placeholder={tr('Write to {0}…', [a.name])}
+          disabled={busy || updating} onChange={e => { setDraft(e.target.value); setSent(false); }}/>
+        <Btn size="sm" variant="primary" type="submit" disabled={busy || updating || !draft.trim()}>{tr('Send')}</Btn>
+      </form>}
       {tr(helperRanLong(a.status, duration) ? <p className="small subagent-row__note" role="status">{tr("This helper has been working for over 30 minutes.")}</p> : null)}
       {tr(sent ? <p className="small subagent-row__note" role="status">{tr('Sent to {0}.', [a.name])}</p> : null)}
       {tr(problem ? <p className="small inline-error subagent-row__note" role="alert">{problem}</p> : null)}
     </div>
     <div className="subagent-row__metrics"><span>{tr(compactTokens(a.tokens))}{tr(' tok')}</span><span>{tr(elapsed(duration))}</span></div>
-    {panel ? logEntries : <Dialog open={log} title={tr('{0} · log', [a.name])} onClose={() => setLog(false)} actions={<Btn onClick={() => setLog(false)}>{tr('Done')}</Btn>}>
+    {panel ? <>{messageHistory}{logEntries}</> : <Dialog open={log} title={tr('{0} · log', [a.name])} onClose={() => setLog(false)} actions={<Btn onClick={() => setLog(false)}>{tr('Done')}</Btn>}>
       <p>{a.description}</p>
       <p className="small muted">{tr('Status: ')}{tr(state.label)} · {tr(elapsed(a.durationMs))} · {tr(compactTokens(a.tokens))}{tr(' tokens')}</p>
+      {messageHistory}
       {logEntries}
     </Dialog>}
   </div>;

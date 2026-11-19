@@ -3579,5 +3579,15 @@
   "s9144": "Helfer stoppen",
   "s9145": "Dieser Helfer läuft nicht mehr.",
   "s9146": "Der Helfer hat seinen Stopp nicht bestätigt.",
-  "s9147": "Der Assistent hat seinen Stopp nicht bestätigt. Die bisherige Antwort bleibt erhalten. Sie können eine weitere Nachricht senden."
+  "s9147": "Der Assistent hat seinen Stopp nicht bestätigt. Die bisherige Antwort bleibt erhalten. Sie können eine weitere Nachricht senden.",
+  "s9148": "Archivieren",
+  "s9149": "Fertige archivieren",
+  "s9150": "Archiv anzeigen ({0})",
+  "s9151": "Archiv ausblenden",
+  "s9152": "Archivierte Helfer",
+  "s9153": "Alle Helfer sind archiviert.",
+  "s9154": "Nachrichten an diesen Helfer",
+  "s9155": "Die Nachricht wurde gesendet, ihr Verlauf konnte aber nicht gespeichert werden.",
+  "s9156": "Es konnten keine Helfer aktualisiert werden. Laufende Helfer müssen zuerst fertig werden oder gestoppt werden.",
+  "s9157": "Stellen Sie diesen Helfer wieder her, bevor Sie ihm eine Nachricht senden."
 }

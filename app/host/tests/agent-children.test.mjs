@@ -124,6 +124,22 @@ test('two helpers run at the same time as two rows, the run ends when both have 
   assert.equal(r.worker.requests.filter(q => q.directive === 'slow').length, 2);
 });
 
+test('the packaged Harness accepts a browser message addressed to a single working helper', { skip, timeout: 40_000 }, async t => {
+  const r = await rig(t);
+  const chatId = 'message-one-helper';
+  const message = 'SCRIPT:echo Accepted browser message';
+  let received;
+  await r.run(chatId, 'SCRIPT:spawn 2 slow 40', { onFrame: f => {
+    if (received || f.type !== 'agent' || f.agent.name !== 'Helper 1' || f.agent.status !== 'working') return;
+    received = r.bridge.messageHelper({ chatId, helperId: f.agent.id, text: message, delivery: 'steer' }).catch(error => error);
+  } });
+  assert.ok(received, 'the first helper was working');
+  const receipt = await received;
+  assert.ok(receipt.ok, receipt.message);
+  assert.equal(receipt.delivery, 'steer');
+  assert.ok(receipt.messageId);
+});
+
 test('helpers are limited to the Harness cap (4, or the slot count if larger); the fifth is refused with a message the model reads', { skip }, async (t) => {
   const r = await rig(t, { slots: 2 });
   const { frames } = await r.run('few', 'SCRIPT:spawn 5 slow 30');

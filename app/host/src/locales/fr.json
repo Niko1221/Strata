@@ -3579,5 +3579,15 @@
   "s9144": "Arrêter l’assistant",
   "s9145": "Cet assistant secondaire n’est plus actif.",
   "s9146": "L’assistant secondaire n’a pas confirmé son arrêt.",
-  "s9147": "L’assistant n’a pas confirmé son arrêt. Votre réponse partielle est conservée. Vous pouvez envoyer un autre message."
+  "s9147": "L’assistant n’a pas confirmé son arrêt. Votre réponse partielle est conservée. Vous pouvez envoyer un autre message.",
+  "s9148": "Archiver",
+  "s9149": "Archiver les assistants terminés",
+  "s9150": "Afficher les archives ({0})",
+  "s9151": "Masquer les archives",
+  "s9152": "Assistants archivés",
+  "s9153": "Tous les assistants sont archivés.",
+  "s9154": "Messages envoyés à cet assistant",
+  "s9155": "Le message a été envoyé, mais son historique n’a pas pu être enregistré.",
+  "s9156": "Aucun assistant n’a pu être mis à jour. Les assistants en cours doivent d’abord terminer ou être arrêtés.",
+  "s9157": "Restaurez cet assistant avant de lui envoyer un message."
 }

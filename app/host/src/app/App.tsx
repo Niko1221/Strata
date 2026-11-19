@@ -17,6 +17,7 @@ import { Brand } from '../components/Brand';
 import { ChatScreen } from '../screens/Chat';
 import { SubagentRow } from '../components/SubagentRow';
 import { api } from '../lib/client';
+import { recordOf, useHelperRecords } from '../lib/helper-records';
 import type { SessionAgent } from '../lib/types';
 import { lazyScreen, useLoadedModule } from '../lib/lazy-screen';
 // The start screen is Chat. Every other screen loads the first time it is opened (7.1), so the first start reads and runs less code.
@@ -226,6 +227,8 @@ function HelperWindow() {
     const query = new URLSearchParams(window.location.search);
     const sessionId = query.get('sessionId') ?? '';
     const helperId = query.get('helperId') ?? '';
+    const record = recordOf(useHelperRecords(sessionId), helperId);
+    const messageCount = record?.messages?.length ?? 0;
     const [agent, setAgent] = useState<SessionAgent | null>();
     const [disconnected, setDisconnected] = useState(false);
     useEffect(() => {
@@ -248,11 +251,13 @@ function HelperWindow() {
       }
       void read();
       return () => { controller.abort(); clearTimeout(timer); };
-    }, [sessionId, helperId]);
+    }, [sessionId, helperId, messageCount]);
     return <main className="main"><div className="main__body"><div className="wrap stack">
       <header className="main__head"><h1>{tr(agent?.name ?? 'Subagent')}</h1></header>
       {disconnected && <p className="muted" role="status">{tr('Reconnecting…')}</p>}
-      {agent === undefined ? <BootSkeleton /> : agent ? <SubagentRow agent={agent} sessionId={sessionId} panel /> : <p className="muted">{tr('This helper is no longer available in this chat.')}</p>}
+      {agent === null
+        ? <p className="muted">{tr('This helper is no longer available in this chat.')}</p>
+        : agent ? <SubagentRow agent={agent} sessionId={sessionId} record={record} panel /> : <BootSkeleton />}
     </div></div></main>;
 }
 export function App() {

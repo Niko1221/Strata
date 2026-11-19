@@ -3579,5 +3579,15 @@
   "s9144": "Parar ajudante",
   "s9145": "Este ajudante já não está em execução.",
   "s9146": "O ajudante não confirmou que parou.",
-  "s9147": "O assistente não confirmou que parou. A resposta parcial foi guardada. Pode enviar outra mensagem."
+  "s9147": "O assistente não confirmou que parou. A resposta parcial foi guardada. Pode enviar outra mensagem.",
+  "s9148": "Arquivar",
+  "s9149": "Arquivar ajudantes concluídos",
+  "s9150": "Mostrar arquivo ({0})",
+  "s9151": "Ocultar arquivo",
+  "s9152": "Ajudantes arquivados",
+  "s9153": "Todos os ajudantes estão arquivados.",
+  "s9154": "Mensagens para este ajudante",
+  "s9155": "A mensagem foi enviada, mas não pôde ser guardada no histórico.",
+  "s9156": "Não foi possível atualizar nenhum ajudante. Os ajudantes ativos têm de terminar ou ser parados primeiro.",
+  "s9157": "Restaure este ajudante antes de lhe enviar uma mensagem."
 }

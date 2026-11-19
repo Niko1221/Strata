@@ -3579,5 +3579,15 @@
   "s9144": "Stop helper",
   "s9145": "This helper is no longer running.",
   "s9146": "The helper did not confirm that it stopped.",
-  "s9147": "The assistant did not confirm that it stopped. Your partial answer is kept. You can send another message."
+  "s9147": "The assistant did not confirm that it stopped. Your partial answer is kept. You can send another message.",
+  "s9148": "Archive",
+  "s9149": "Archive finished",
+  "s9150": "Show archive ({0})",
+  "s9151": "Hide archive",
+  "s9152": "Archived helpers",
+  "s9153": "All helpers are archived.",
+  "s9154": "Messages to this helper",
+  "s9155": "The message was sent, but its history could not be saved.",
+  "s9156": "No helpers could be updated. A helper that is still running must finish or be stopped first.",
+  "s9157": "Restore this helper before sending it a message."
 }

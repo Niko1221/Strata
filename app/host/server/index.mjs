@@ -47,7 +47,8 @@ import * as engine from './engine.mjs';
 import * as monitor from './monitor.mjs';
 import * as serving from './serving.mjs';
 import * as store from './store.mjs';
-import { createChatStore, storeFailure } from './chat-store.mjs';
+import { createChatStore, storeFailure, validChatId } from './chat-store.mjs';
+import { busyHelper, createHelperRecords, recordFor, validHelperId } from './chat-helper-records.mjs';
 import { makePrivateDir } from './private-file.mjs';
 import * as supervisor from './supervisor.mjs';
 import { detectBackend, currentBackend, streamChat, inferenceLine } from './inference.mjs';
@@ -125,6 +126,7 @@ const insideApp = path => { const rel = relative(ROOT, resolve(path)); return re
 const hub = new EventHub();
 /** The chats, as files in the profile's data folder (chat-store.mjs). */
 const chatStore = createChatStore({ dir: store.DATA_DIR, privateDir: makePrivateDir });
+const helperRecords = createHelperRecords(chatStore.root);
 const modelProviders = createModelProviders({ directory: store.DATA_DIR, knownThinks: (connection, modelId) => visionProbe.knownThinks(connection, modelId), changed: value => hub.send('providers', withPictureAnswers(value)) });
 const imageModels = createImageModels({ dataDir: store.DATA_DIR, modelsDir: () => store.MODELS_DIR, real: models.REAL, changed: value => hub.send('image-models', value) });
 /* The installed app ships Strata Control (python + strata_control) next to the host; a source checkout has none and keeps its older paths. */
@@ -1024,6 +1026,21 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+async function savedChat(sessionId) {
+  const text = await chatStore.read(sessionId);
+  return text ? JSON.parse(text).session : null;
+}
+
+function chatHelperRow(sessionId, helperId, saved) {
+  if (Array.isArray(saved?.dismissedAgentIds) && saved.dismissedAgentIds.includes(helperId)) return null;
+  const recent = agent.helperState(sessionId, helperId);
+  const rows = Array.isArray(saved?.agents) ? saved.agents : [];
+  const row = recent ?? rows.find(row => row?.id === helperId) ?? null;
+  return busyHelper(row) && (!recent || !agent.isRunning(sessionId))
+    ? { ...row, status: 'cancelled', description: 'This helper is no longer running.' }
+    : row;
+}
+
 async function api(req, res, path, method, url) {
   if(path==='/api/fonts'&&method==='GET')return json(res,200,await systemFonts());
   // --- chats: one file each in the data folder -----------------------------
@@ -1059,6 +1076,7 @@ async function api(req, res, path, method, url) {
       }
       if (id && method === 'DELETE') {
         const removed = await chatStore.remove(id);
+        try { helperRecords.forget(id); } catch (err) { console.warn('[strata] Could not remove helper history:', err.code); }
         hub.send('chats', { id, deleted: true, from });
         return json(res, 200, removed);
       }
@@ -2028,11 +2046,47 @@ async function api(req, res, path, method, url) {
     try { return json(res, 200, await agent.answerQuestion({ chatId: String(body.sessionId ?? ''), callId: String(body.callId ?? ''), answers: body.answers, skip: body.skip === true })); }
     catch (e) { return error(res, e.code === 'question-gone' ? 409 : 400, e.message); }
   }
-  // A message for one helper (#4749).
+  if (path === '/api/chat/helpers' && method === 'GET') {
+    const sessionId = url.searchParams.get('sessionId');
+    if (!validChatId(sessionId)) return error(res, 400, 'That is not a chat id.');
+    return json(res, 200, helperRecords.read(sessionId));
+  }
+  if (path === '/api/chat/helpers' && method === 'POST') {
+    const { sessionId, action, helperIds } = await readBody(req);
+    if (!validChatId(sessionId) || !['archive', 'restore'].includes(action) ||
+        !Array.isArray(helperIds) || !helperIds.length || !helperIds.every(validHelperId)) {
+      return error(res, 400, 'Choose the helpers you want to update.');
+    }
+    const saved = await savedChat(sessionId);
+    const records = helperRecords.read(sessionId);
+    const ids = [...new Set(helperIds)].filter(id => {
+      if (action === 'restore') return recordFor(records, id)?.archived;
+      const row = chatHelperRow(sessionId, id, saved);
+      return row && !busyHelper(row);
+    });
+    if (!ids.length && action === 'restore') return json(res, 200, records);
+    if (!ids.length) return error(res, 409, 'No helpers could be updated. A helper that is still running must finish or be stopped first.');
+    return json(res, 200, helperRecords.archive(sessionId, ids, action === 'archive'));
+  }
+  // A message for one helper (#4749). A receipt means the Harness accepted it for delivery.
   if (path === '/api/chat/helper' && method === 'POST') {
-    const body = await readBody(req);
-    try { return json(res, 200, await agent.messageHelper({ chatId: String(body.sessionId ?? ''), helperId: body.helperId, text: body.message, delivery: body.delivery })); }
+    const { sessionId, helperId, message, delivery } = await readBody(req);
+    if (!validChatId(sessionId) || !validHelperId(helperId)) return error(res, 400, 'That helper is not known.');
+    if (recordFor(helperRecords.read(sessionId), helperId)?.archived &&
+        !(agent.isRunning(sessionId) && busyHelper(agent.helperState(sessionId, helperId)))) {
+      return error(res, 409, 'Restore this helper before sending it a message.');
+    }
+    const text = typeof message === 'string' ? message.trim().slice(0, 8000) : '';
+    let receipt;
+    try { receipt = await agent.messageHelper({ chatId: sessionId, helperId, text, delivery }); }
     catch (e) { return error(res, e.code === 'helper-idle' || e.code === 'helper-refused' ? 409 : 400, e.message); }
+    try {
+      return json(res, 200, { ...receipt, message: helperRecords.message(sessionId, helperId, receipt, text) });
+    } catch (err) {
+      // The helper already has the message. Returning a delivery error would invite a duplicate.
+      console.warn('[strata] Could not save helper message history:', err.code);
+      return json(res, 200, { ...receipt, historySaved: false });
+    }
   }
   if (path === '/api/chat/helper/stop' && method === 'POST') {
     const body = await readBody(req);
@@ -2041,25 +2095,18 @@ async function api(req, res, path, method, url) {
   }
   if (path === '/api/chat/helper/window' && method === 'POST') {
     const { sessionId, helperId, name } = await readBody(req);
-    if (typeof sessionId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(sessionId) || typeof helperId !== 'string' || !/^[\w.:@-]{1,160}$/.test(helperId)) return error(res, 400, 'That helper is not known.');
+    if (!validChatId(sessionId) || !validHelperId(helperId)) return error(res, 400, 'That helper is not known.');
     try { return json(res, 200, await appUi.openHelper(sessionId, helperId, String(name ?? '').slice(0, 80))); }
     catch (e) { return error(res, 502, e.message); }
   }
   if (path === '/api/chat/helper/state' && method === 'GET') {
     const sessionId = url.searchParams.get('sessionId') ?? '';
     const helperId = url.searchParams.get('helperId') ?? '';
-    if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(sessionId) || !/^[\w.:@-]{1,160}$/.test(helperId)) return error(res, 400, 'That helper is not known.');
+    if (!validChatId(sessionId) || !validHelperId(helperId)) return error(res, 400, 'That helper is not known.');
     const recent = agent.helperState(sessionId, helperId);
     const active = agent.isRunning(sessionId);
     if (recent && active) return json(res, 200, { agent: recent, active });
-    const saved = await chatStore.read(sessionId);
-    const session = saved ? JSON.parse(saved).session : null;
-    const removed = Array.isArray(session?.dismissedAgentIds) && session.dismissedAgentIds.includes(helperId);
-    const savedAgents = Array.isArray(session?.agents) ? session.agents : [];
-    const row = removed ? null : recent ?? savedAgents.find(a => a?.id === helperId) ?? null;
-    // Rows from previous processes have no live owner to receive a Stop.
-    const orphan = !recent && (row?.status === 'queued' || row?.status === 'working');
-    return json(res, 200, { agent: orphan ? { ...row, status: 'failed', description: 'This helper is no longer running.' } : row, active });
+    return json(res, 200, { agent: chatHelperRow(sessionId, helperId, await savedChat(sessionId)), active });
   }
   if (path === '/api/chat/queue/cancel' && method === 'POST') {
     const body = await readBody(req);
