@@ -38,7 +38,7 @@ export function SubagentRow({ agent: a, now = Date.now(), sessionId, record, onR
   const [stopping, setStopping] = useState(false);
   const logRef = useRef<HTMLOListElement>(null);
   const followLog = useRef(true);
-  const seenStepCount = useRef(0);
+  const seenLog = useRef<string | null>(null);
 
   // A working helper gets it at its next step (steer); one that has finished or waits gets a new turn with it (queue).
   async function send() {
@@ -72,10 +72,10 @@ export function SubagentRow({ agent: a, now = Date.now(), sessionId, record, onR
   }
 
   async function openNativeWindow() {
-    if (!sessionId) { setLog(true); return; }
+    if (!sessionId) { showLog(); return; }
     try {
       const { opened } = await api.post<{ opened: boolean }>('/api/chat/helper/window', { sessionId, helperId: a.id, name: a.name });
-      if (!opened) setLog(true);
+      if (!opened) showLog();
     } catch (e) {
       setProblem(plainFailureText(e instanceof Error ? e.message : String(e)).message);
     }
@@ -102,17 +102,25 @@ export function SubagentRow({ agent: a, now = Date.now(), sessionId, record, onR
     <h2>{tr('Messages to this helper')}</h2>
     <ol>{messages.map(message => <li key={message.id}>{message.text}</li>)}</ol>
   </section> : null;
-  const stepCount = a.steps?.length ?? 0;
+  // ChildProjector merges consecutive text chunks into one step. Its count can
+  // stay unchanged while the visible log grows, so follow the rendered content,
+  // not merely the number of list items.
+  const logRevision = JSON.stringify(a.steps ?? []);
+  function showLog() {
+    followLog.current = true;
+    seenLog.current = null;
+    setLog(true);
+  }
   // A helper window opens on its current work, not on an old first step. Keep
   // following new work only while the reader has stayed at the end, so looking
   // back through the log never snaps the scroll position away.
   useLayoutEffect(() => {
     const log = logRef.current;
     if (!log) return;
-    if (seenStepCount.current === 0 || followLog.current)
+    if (seenLog.current === null || followLog.current)
       log.scrollTop = log.scrollHeight;
-    seenStepCount.current = stepCount;
-  }, [stepCount]);
+    seenLog.current = logRevision;
+  }, [log, logRevision, panel]);
   const trackLogPosition = () => {
     const log = logRef.current;
     if (!log) return;
@@ -133,7 +141,7 @@ export function SubagentRow({ agent: a, now = Date.now(), sessionId, record, onR
       </div>
       <p title={a.description}>{tr(a.description)}</p>
       <div className="subagent-row__actions">
-        {!panel && (a.status === 'failed' || a.steps?.length || messages.length) ? <Btn size="sm" onClick={() => setLog(true)}>{tr('View log')}</Btn> : null}
+        {!panel && (a.status === 'failed' || a.steps?.length || messages.length) ? <Btn size="sm" onClick={showLog}>{tr('View log')}</Btn> : null}
         {!panel && sessionId && <Btn size="sm" onClick={() => void openNativeWindow()}>{tr('Open window')}</Btn>}
         {sessionId && canStop && <Btn size="sm" variant="danger" disabled={stopping} onClick={() => void stop()}>{tr(stopping ? 'Stopping…' : 'Stop helper')}</Btn>}
         {canMessage && !panel && <Btn size="sm" aria-expanded={writing} onClick={() => setWriting(v => !v)}>{tr('Message this helper')}</Btn>}

@@ -741,10 +741,29 @@ export function parkMessage(sessionId: string, text: string) {
   set({ parked: { ...state.parked, [sessionId]: [...(state.parked[sessionId] ?? []), clean] } });
 }
 
+/** Keep a live follow-up visible even if its stream frame arrives late or the
+ * page briefly reconnects. The engine's id is shared with that frame, so the
+ * two paths naturally deduplicate and the saved transcript remains one copy. */
+function recordAgentFollowUp(sessionId: string, value: { id?: unknown; text?: unknown; at?: unknown } | null | undefined) {
+  if (typeof value?.id !== 'string' || typeof value.text !== 'string' || typeof value.at !== 'string') return;
+  const message: ChatMessage = { id: value.id, role: 'user', content: value.text, at: value.at };
+  patchSession(sessionId, session => {
+    if (session.messages.some(existing => existing.id === message.id)) return session;
+    const quotes = takeQuoteSources(message.content);
+    const next = quotes ? { ...message, quotes } : message;
+    // A live turn has one streaming reply. Keep the follow-up adjacent to that
+    // reply rather than appending it after a response that has already begun.
+    const replyIndex = session.messages.findIndex(existing => existing.role === 'assistant' && existing.streaming);
+    const at = replyIndex < 0 ? session.messages.length : replyIndex;
+    return { ...session, updatedAt: new Date().toISOString(), messages: [...session.messages.slice(0, at), next, ...session.messages.slice(at)] };
+  });
+}
+
 /** Tell the parent in its own live session. A plain chat or a turn that just ended can accept it as a regular follow-up instead. */
 export async function steerMessage(sessionId: string, message: string): Promise<boolean> {
   try {
-    await api.post('/api/chat/steer', { sessionId, message });
+    const receipt = await api.post<{ message?: { id?: unknown; text?: unknown; at?: unknown } }>('/api/chat/steer', { sessionId, message });
+    recordAgentFollowUp(sessionId, receipt.message);
     return true;
   } catch (error) {
     if (error instanceof ApiError && error.status === 409) return false;
@@ -2280,17 +2299,7 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
           if (frame.event === 'proposed' && planned && typeof planned.id === 'string') { const pid = planned.id; patchAssistant(m => ({ ...m, planId: pid })); }
         } else if (type === 'agent-follow-up') {
           const { id, text, at } = (frame.message ?? {}) as { id?: unknown; text?: unknown; at?: unknown };
-          if (typeof id === 'string' && typeof text === 'string' && typeof at === 'string') {
-            patchSession(sessionId, sess => {
-              if (sess.messages.some(m => m.id === id)) return sess;
-              const replyIndex = sess.messages.findIndex(m => m.id === assistantId);
-              if (replyIndex < 0) return sess;
-              const quotes = takeQuoteSources(text);
-              const message: ChatMessage = { id, role: 'user', content: text, at, ...(quotes ? { quotes } : {}) };
-              // Keep the active reply and its tools, logs and helper results together, including on reattach.
-              return { ...sess, messages: [...sess.messages.slice(0, replyIndex), message, ...sess.messages.slice(replyIndex)] };
-            });
-          }
+          recordAgentFollowUp(sessionId, { id, text, at });
         } else if (type === 'queued-message') {
           applyQueueFrame(sessionId, frame.queue);
           const sent = frame.message as { text?: unknown } | undefined;

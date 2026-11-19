@@ -1219,7 +1219,7 @@ ${note.text}
         turn.steerAdmissions.delete(admission);
         if (!turn.parentOpen) armSettle();
       }
-      return { ok: true };
+      return { ok: true, message: entry.message };
     };
 
     const snapshotTimer = {};

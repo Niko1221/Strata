@@ -339,7 +339,8 @@ test('a native helper window has a bounded scroll surface and opens its work log
   assert.match(css, /\.helper-window \{ height: 100%; min-height: 0; \}/);
   assert.match(css, /\.helper-window \.main__body \{ min-height: 0; overflow-y: auto; overscroll-behavior: contain; \}/);
   assert.match(css, /\.subagent-row\[data-panel\] \.subagent-log \{ max-height: min\(52dvh, 36rem\); overflow-y: auto; overscroll-behavior: contain; \}/);
-  assert.match(row, /useLayoutEffect\(\(\) => \{[\s\S]*?if \(seenStepCount\.current === 0 \|\| followLog\.current\)\s*log\.scrollTop = log\.scrollHeight;/, 'the first paint already shows the current work');
+  assert.match(row, /const logRevision = JSON\.stringify\(a\.steps \?\? \[\]\);/, 'a merged live text step still changes the scroll dependency');
+  assert.match(row, /useLayoutEffect\(\(\) => \{[\s\S]*?if \(seenLog\.current === null \|\| followLog\.current\)\s*log\.scrollTop = log\.scrollHeight;[\s\S]*?\}, \[log, logRevision, panel\]\);/, 'the first paint and every visible log revision follow the current work');
   assert.match(row, /followLog\.current = log\.scrollHeight - log\.scrollTop - log\.clientHeight < 24;/, 'manual review of older output disables follow mode');
 });
 
@@ -358,6 +359,8 @@ test('#4783 the composer acts on the choice, the default keeps today\'s behaviou
   const chat = src('screens/Chat.tsx');
   const steer = chat.slice(chat.indexOf("if (plan === 'steer')"), chat.indexOf("void queueMessage(session.id"));
   assert.match(steer, /steerMessage\(id, out\)/);
+  assert.match(src('lib/store.ts'), /recordAgentFollowUp\(sessionId, receipt\.message\);/, 'a confirmed live message is written to the transcript even when its stream frame is late');
+  assert.match(src('lib/store.ts'), /session\.messages\.some\(existing => existing\.id === message\.id\)/, 'the later stream frame does not duplicate the saved message');
   assert.match(steer, /if \(!delivered\) parkMessage\(id, out\)/);
   assert.doesNotMatch(steer, /stopStreaming\(/);
   assert.match(chat, /if \(plan === 'goal'\) \{ clearQuotes\(session\.id\); parkMessage\(session\.id, out\); return; \}/);

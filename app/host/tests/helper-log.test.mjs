@@ -69,7 +69,7 @@ test('the page merges the steps of a frame, keeps them when a later frame has no
 
 test('View log opens for any helper that has steps, and lists them', () => {
   const row = src('components/SubagentRow.tsx');
-  assert.match(row, /a\.status === 'failed' \|\| a\.steps\?\.length \|\| messages\.length\) \? <Btn size="sm" onClick=\{\(\) => setLog\(true\)\}>/);
+  assert.match(row, /a\.status === 'failed' \|\| a\.steps\?\.length \|\| messages\.length\) \? <Btn size="sm" onClick=\{showLog\}>/);
   assert.match(row, /a\.steps\.map\(\(step, i\) => <li key=\{i\}/);
   assert.doesNotMatch(row, /\{tr\(a\.status === 'failed' \? <button className="text-action"/);
 });
