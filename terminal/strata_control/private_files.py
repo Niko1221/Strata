@@ -105,6 +105,22 @@ def _same_sid(sddl_trustee: str, sid: str) -> bool:
     return _string_sid(sddl_trustee) == sid.upper()
 
 
+def _valid_restricted_result(value: object) -> bool:
+    return isinstance(value, dict) and set(value) == {"restricted"} and value["restricted"] is True
+
+
+def _native_restrict_to_current_user(path: str, directory: bool) -> bool:
+    from strata_control import native_helpers
+    if not native_helpers.enabled("private-files"):
+        return False
+    flag = "--dir" if directory else "--file"
+    try:
+        native_helpers.call("private-files", "restrict", [path, flag], validate=_valid_restricted_result)
+        return True
+    except (native_helpers.Unavailable, native_helpers.Rejected):
+        return False
+
+
 def restrict_to_current_user(path: str | os.PathLike, *, directory: bool | None = None) -> None:
     """Make ``path`` readable and writable by the current user only.
 
@@ -115,6 +131,8 @@ def restrict_to_current_user(path: str | os.PathLike, *, directory: bool | None 
     path = os.fspath(path)
     if directory is None:
         directory = os.path.isdir(path)
+    if _native_restrict_to_current_user(path, directory):
+        return
     if not WINDOWS:
         os.chmod(path, 0o700 if directory else 0o600)
         return
