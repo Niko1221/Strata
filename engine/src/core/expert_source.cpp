@@ -4787,7 +4787,8 @@ bool FileExpertSource::pcie_layer(int64_t layer) const {
 // ================================ THE ADAPTER ================================
 
 bool ExpertDispatch::fetch_can(int64_t layer) const {
-    return fetch_admit > 0 && res_mut != nullptr && !usage.empty() && plan != nullptr && plan->pcie_mode == 2 &&
+    return fetch_admit > 0 && !fetch_paused && res_mut != nullptr && !usage.empty() && plan != nullptr &&
+           (plan->pcie_mode == 2 || (plan->pcie_mode == 0 && plan->dma_cache_admission)) &&
            plan->dst2 != nullptr && peer == nullptr && remote_count == 0 && fs == nullptr && pcie_num > 0 &&
            src != nullptr && src->pcie_layer(layer);
 }
@@ -5059,7 +5060,7 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
         }
         // STRATA_PCIE_BALANCE (opt-in, #1548): the count comes from the measured CPU and GPU costs instead of the share
         const bool pcie_ok = (d.pcie_num > 0 || d.pcie_model.on) && d.src->pcie_layer(d.layers);
-        int m = pcie_ok ? d.pcie_model.pick(nmiss, (nmiss * d.pcie_num) >> 8) : 0;
+        int m = pcie_ok ? d.pcie_model.pick(nmiss, (nmiss * d.pcie_num) >> 8, (int) d.plan->staging_cap) : 0;
         // STRATA_PCIE_MIN1 (opt-in): the share rounds to 0 for 1-2 misses per layer, so the PCIe lane idles on the typical
         // decode step; with >= 2 misses give it at least one (the last in routing order).  It only flies if its blob is
         // pinned (the fetch below checks), else it stays a CPU miss exactly as before.  Read once.
@@ -5183,6 +5184,7 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
                 const int32_t slot = d.res_mut[lb + (size_t) v];
                 P.dst2[q] = (unsigned long long) (d.cache_base + (d.cache_slot_off ? (size_t) d.cache_slot_off[slot]
                                                                                    : (size_t) slot * (size_t) d.cache_blob));
+                if (P.pcie_mode == 0) P.ptr2[q] = P.dst2[q];  // both the DMA and its consumer use the final slot
                 d.res_mut[lb + (size_t) v] = -1;   // kNotResident
                 d.res_mut[lb + (size_t) e] = slot;
                 ++d.fetch_admitted;

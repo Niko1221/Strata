@@ -1051,13 +1051,13 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         bal_->on = true;
     }
     // the GPU plan: counts(4) | start(cap+1) | dst(cap) | tok(cap) | pad | ptr(cap u64) | ptr2(cap u64) | start2(cap+1)
-    // | pad | dst2(kStagingBlobs u64)
+    // | pad | dst2(one u64 per staging slot)
     {
         const int64_t cap = (int64_t) (T * K);
         const int64_t i32 = 4 + (cap + 1) + cap + cap;
         const int64_t ptr_off = (i32 + 1) & ~1ll;
         dst2_off_ = (ptr_off + 4 * cap + (cap + 1) + 1 + 1) & ~1ll;
-        plan_i32_ = dst2_off_ + 2 * kStagingBlobs;
+        plan_i32_ = dst2_off_ + 2 * staging_blobs_;
         if (!mapped((size_t) plan_i32_ * 4 * 2 + 64, (void**) &h_plan_, (void**) &m_plan_)) {
             err = "verify: mapped plan allocation failed " + strata::core::pin_exhausted_hint();
             return false;
@@ -1112,7 +1112,7 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         shared_ = b.take<float>(T * N); parts_ = b.take<float>(T * K * N); hit_out_ = b.take<float>(T * K * N);
         hit_slot_ = b.take<int32_t>(T * K); hit_dst_ = b.take<int32_t>(T * K); hit_count_ = b.take<int32_t>(4);
         plan_ = b.take<int32_t>(2 * ((uint64_t) plan_i32_ + 16));
-        staging_ = b.take<uint8_t>((uint64_t) kStagingBlobs * strata::kernels::cpu::expert_layout().max_blob);
+        staging_ = b.take<uint8_t>((uint64_t) staging_blobs_ * strata::kernels::cpu::expert_layout().max_blob);
         hit_xq_ = b.take<uint8_t>(T * (N / 32) * 34); hit_xs_ = b.take<float>(T * (N / 32));
         nat_xq_ = b.take<uint8_t>(T * (N / 32) * 36);
         nat_xr_ = had_gu_any ? b.take<float>(T * N) : nullptr;
@@ -1190,7 +1190,7 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         had_sh_ = strata::kernels::hadamard_device_signs(strata::kernels::cpu::hadamard_signs((int) g.n_ff), (int) g.n_ff);
     }
     sink_.staging = (unsigned long long) staging_;
-    sink_.staging_cap = kStagingBlobs;
+    sink_.staging_cap = staging_blobs_;
     (void) TS;
     // STRATA_GRAPH_PRIO=1 (opt-in): the window's streams carry priorities that their captured kernel
     // nodes keep (the window graph is instantiated with cudaGraphInstantiateFlagUseNodePriority): the GDN gates / QSA
@@ -2467,7 +2467,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 wait_flag_ge_stamped(m_flagB_, ring, m_bal_ + ((l - lb_) * 2 + grp) * 4 + 1, nullptr, cs);
             else wait_flag_ge(m_flagB_, ring, cs);                 // the PCIe share is in staging (DMA) or mapped
             if (sink_.pcie_mode == 2) {                            // stage it with a copy kernel, then point at staging
-                const int64_t per = G == 2 ? kStagingBlobs / 2 : kStagingBlobs;
+                const int64_t per = staging_blobs_ / (G == 2 ? 2 : 1);
                 uint8_t* stage = staging_ + (size_t) (grp * per) * lay.max_blob;
                 const unsigned long long* p_dst2 = (const unsigned long long*) (pl + dst2_off_);   // STRATA_ADAPT_FETCH
                 fetch_blobs(p_ptr2, p_counts + 2, stage, (int64_t) lay.blob_bytes(l), (int) per, cs, p_dst2);
@@ -3837,7 +3837,7 @@ void Verifier::set_plan_slot(int grp) {
     sink_.start2 = base + ptr_off + 4 * cap;
     sink_.dst2 = (unsigned long long*) (base + dst2_off_);
     const int G = last_batch_ ? 1 : (groups_[last_t_] > 0 ? groups_[last_t_] : 1);
-    const int64_t per = G == 2 ? kStagingBlobs / 2 : kStagingBlobs;
+    const int64_t per = staging_blobs_ / (G == 2 ? 2 : 1);
     sink_.staging = (unsigned long long) (staging_ + (size_t) (grp * per) * strata::kernels::cpu::expert_layout().max_blob);
     sink_.staging_cap = per;
 }
@@ -3874,16 +3874,27 @@ void Verifier::fetch_dma(void* ctx, const uint8_t* const* src, int n, size_t byt
     // cannot be submitted stops the engine: flag B must not release the consumers to expert weights that were never
     // copied.
     const int batch_mode = strata::core::dma_batch_mode();
-    if (batch_mode == 0) {
+    cudaError_t copied = cudaSuccess;
+    if (v->sink_.dma_cache_admission) {
+        void* dsts[kWideStagingBlobs];
+        const void* srcs[kWideStagingBlobs];
+        size_t sizes[kWideStagingBlobs];
+        for (int i = 0; i < n; ++i) {
+            dsts[i] = reinterpret_cast<void*>(v->sink_.ptr2[i]);
+            srcs[i] = src[i];
+            sizes[i] = bytes;
+        }
+        copied = strata::core::copy_blobs(dsts, srcs, sizes, (size_t) n, v->copy_, batch_mode);
+    } else if (batch_mode == 0) {
         for (int i = 0; i < n; ++i) cudaMemcpyAsync(stage + (size_t) i * bytes, src[i], bytes, cudaMemcpyHostToDevice, v->copy_);
     } else {
-        const auto copied = strata::core::copy_expert_blobs(stage, src, n, bytes, v->copy_, batch_mode);
-        if (copied != cudaSuccess) {
-            std::fprintf(stderr, "strata DMA: expert upload failed: %s\n", cudaGetErrorString(copied));
-            std::fflush(stderr);
-            v->release_gpu_waits(5000);
-            std::abort();
-        }
+        copied = strata::core::copy_expert_blobs(stage, src, n, bytes, v->copy_, batch_mode);
+    }
+    if (copied != cudaSuccess) {
+        std::fprintf(stderr, "strata DMA: expert upload failed: %s\n", cudaGetErrorString(copied));
+        std::fflush(stderr);
+        v->release_gpu_waits(5000);
+        std::abort();
     }
     v->raise_flag_b_ordered(want);   // copy_used_ is set: the host function runs after this group's uploads
 }
@@ -3891,6 +3902,7 @@ void Verifier::fetch_dma(void* ctx, const uint8_t* const* src, int n, size_t byt
 void Verifier::publish_plan(void* ctx) {
     Verifier* v = (Verifier*) ctx;
     strata_store_fence();
+    if (v->sample_batch_balance_) v->batch_plan_sent_ = Clock::now();
     *(volatile uint32_t*) v->h_flagA_ = v->cur_layer_ + 1;
 }
 
@@ -4857,6 +4869,8 @@ bool Verifier::run_slot_rows(const int* rows, int S, const int32_t* tokens, cons
     const ModelGeometry& g = *g_;
     if (pre_launch_ && !pre_launch_(cs_, err)) return false;
     if (!stage_batch(rows, S, 0, tokens, pos, err)) return false;
+    const bool sample_balance = h_bal_ != nullptr && !device_plan_ && !ar_on() && !bal_paused_;
+    if (sample_balance) std::memset(h_bal_, 0, bal_p_.size() * 4 * sizeof(unsigned long long));
     const cudaError_t le = cudaGraphLaunch(exec_bm_[bkey(rows, S, 0)], cs_);
     if (le != cudaSuccess) { err = std::string("verify: batch launch: ") + cudaGetErrorString(le); return false; }
     (void) cudaStreamQuery(cs_);
@@ -4923,7 +4937,12 @@ bool Verifier::run_slot_rows(const int* rows, int S, const int32_t* tokens, cons
         // The recorded graph consumes the helper mask and weighted sum just as
         // the solo graph does. Reset both and supply this layer's routing weights.
         if (remote_opt_) remote_opt_->begin(h_w_, 0, S);
+        if (sample_balance) {
+            batch_plan_sent_ = {};
+            sample_batch_balance_ = true;
+        }
         if (pool != nullptr) pool(user, h_x_, h_ids_, S, ss_->k, h_ymiss_, l);
+        if (sample_balance) sample_batch_balance_ = false;
         if (remote_opt_) remote_opt_->end();
         progress_tick();
         std::atomic_thread_fence(std::memory_order_seq_cst);
@@ -4941,10 +4960,19 @@ bool Verifier::run_slot_rows(const int* rows, int S, const int32_t* tokens, cons
         *flag = want;
         ms_wait += std::chrono::duration<double, std::milli>(b - a).count();
         ms_pool += ms_since(b);
+        if (sample_balance) {
+            const size_t bi = (size_t) k * 2;   // one plan group per batch layer
+            bal_ok_[bi] = batch_plan_sent_ != Clock::time_point{};
+            bal_nc_[bi] = sink_.cpu_jobs;
+            bal_np_[bi] = sink_.counts[2];
+            if (bal_ok_[bi]) bal_p_[bi] = ms_since(batch_plan_sent_);
+            sink_.cpu_jobs = 0;
+        }
     }
     const cudaError_t se = cudaStreamSynchronize(cs_);
     if (se != cudaSuccess) { err = std::string("verify batch: ") + cudaGetErrorString(se); return false; }
     cudaStreamSynchronize(copy_);
+    if (sample_balance) pcie_balance_window(steps, 1);
     if (prof_on_) collect_profile();
     ++windows;
     if (le_ < g.n_layers) return next_ == nullptr || next_->run_slot_rows(rows, S, tokens, pos, pool, next_user_, out, err);
