@@ -53,7 +53,7 @@ add_library(strata_q38_kv STATIC
   ${Q38_SRC}/kv.cu
   ${Q38_SRC}/kv_config.cpp)
 target_include_directories(strata_q38_kv PRIVATE
-  ${Q38_SRC}/tqcodec/include ${CMAKE_CURRENT_BINARY_DIR})
+  ${Q38_SRC}/tqcodec/include ${Q38_SRC}/tqcodec/src ${CMAKE_CURRENT_BINARY_DIR})
 target_link_libraries(strata_q38_kv PUBLIC strata_q38_ops q38_spin8)
 set_target_properties(strata_q38_kv PROPERTIES CUDA_ARCHITECTURES 120)
 target_compile_options(strata_q38_kv PRIVATE
