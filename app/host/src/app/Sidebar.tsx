@@ -4,7 +4,6 @@ import { tr } from '../lib/i18n';
 import { useNative } from '../lib/native';
 import { projectedModelState } from '../lib/native-monitor';
 import { modelFamilyIcon } from '../lib/model-icons';
-import { chosenRemote } from '../lib/composer-model';
 import { TaskTree } from './TaskTree';
 import { WorkspaceFiles, type WorkspaceFileCommand } from './WorkspaceFiles';
 /** Quiet navigation, with the same destinations at every window size. */
@@ -21,10 +20,8 @@ import { recentChats, recentChatDescription } from '../lib/recent-chats';
 import type { Session } from '../lib/types';
 import { MOD, runCommand } from '../lib/commands';
 import { bindingFor, bindingKeys, useBindings } from '../lib/shortcut-bindings';
-import { Btn, Dialog, Icon, IconBtn, Select, type IconName } from '../components/ui';
-import { workspaceIdForSession } from '../lib/session-workspace';
+import { Btn, Dialog, Icon, IconBtn, type IconName } from '../components/ui';
 import { Brand } from '../components/Brand';
-import { addWorkspace, deleteDamagedChat, deleteSession, go, isUnread, liveChatIds, moveSession, pickWorkspace, renameSession, removeWorkspace, renameWorkspace, selectSession, setActiveWorkspace, setNavOpen, togglePin, toggleRail, setTheme, useStore } from '../lib/store';
 import { HakuaLlamaChat, type LlamaMemoryAccess } from '../components/HakuaLlamaChat';
 import { api } from '../lib/client';
 import { useCopy } from '../lib/use-copy';
@@ -43,8 +40,6 @@ export function Sidebar({ containerRef }: {
     const navOpen = useStore(s => s.navOpen);
     const collapsed = compact ? !navOpen : rail;
     const sessions = useStore(s => s.sessions);
-    // Chat files the host has a name for but cannot read: listed at the foot of the chat list so one can be deleted (#5421).
-    const damaged = useStore(s => s.damagedChats), newer = useStore(s => s.newerChats);
     const library = useStore(s => s.library);
     const monitor = useStore(s => s.monitor);
     const workspaces = useStore(s => s.workspaces);
@@ -73,9 +68,6 @@ export function Sidebar({ containerRef }: {
     const [renameWsId, setRenameWsId] = useState<string | null>(null), [wsName, setWsName] = useState('');
     const [name, setName] = useState('');
     const [deleteId, setDeleteId] = useState<string | null>(null);
-    // Move a chat to another workspace (#6051): the chat and the workspace picked in the dialog.
-    const [moveId, setMoveId] = useState<string | null>(null), [moveTo, setMoveTo] = useState('');
-    const [deleteDamagedId, setDeleteDamagedId] = useState<string | null>(null);
     const [folders, setFolders] = useState<Record<string, boolean>>({});
     const [workspaceMenu, setWorkspaceMenu] = useState<{ id: string; anchor: HTMLElement } | null>(null);
     const [fileCommands, setFileCommands] = useState<Record<string, WorkspaceFileCommand>>({});
@@ -86,16 +78,10 @@ export function Sidebar({ containerRef }: {
     const menuTrigger = useRef<HTMLElement | null>(null);
     const current = library?.variants.find(v => v.id === library.loaded);
     const native = useNative(), nativeCurrent = native?.instances.find(i => i.id === native.defaultId);
-    // A model picked from an API connection (chat header) is a model to chat with: the chip names it and its connection while no local model is loaded.
-    const remoteChoice = useStore(s => s.remoteModel), remoteProviders = useStore(s => s.providers);
-    const remoteChosen = !current && !nativeCurrent ? chosenRemote(remoteProviders, remoteChoice) : null;
-    const modelName = nativeCurrent?.label ?? (current?.local ? current.name : current?.family) ?? remoteChosen?.model.name ?? tr('No model loaded');
+    const modelName = nativeCurrent?.label ?? (current?.local ? current.name : current?.family) ?? tr('No model loaded');
     // The version from the catalog and the card it runs on ("Q2_0 · GPU 2"), not the file id.
     const nativeSize = nativeCurrent ? native?.catalog?.families.flatMap(f => f.sizes).find(s => s.id === nativeCurrent.model) : undefined;
     const nativeSecond = nativeCurrent ? [nativeSize?.model ?? nativeCurrent.model.toUpperCase(), nativeCurrent.gpus.length ? nativeCurrent.gpus.map(g => `GPU ${g + 1}`).join(' + ') : ''].filter(Boolean).join(' · ') : null;
-    const modelQuant = nativeSecond ?? current?.quant ?? remoteChosen?.connection.name ?? tr('View model versions');
-    const phase = nativeCurrent ? (nativeCurrent.status === 'ready' ? nativeCurrent.phase : nativeCurrent.status) : monitor?.phase ?? 'idle';
-    const status = phase === 'unavailable' ? 'Status unavailable' : phase === 'error' ? 'Error' : phase === 'loading' ? 'Loading' : !current && !nativeCurrent && !remoteChosen ? 'No model loaded' : phase === 'reading' ? 'Reading prompt' : phase === 'thinking' ? 'Thinking' : phase === 'generating' ? 'Generating' : 'Ready';
     const modelQuant = nativeSecond ?? current?.quant ?? tr('View model versions');
     const modelState = projectedModelState(nativeCurrent, monitor, !!current);
     const status = modelState.status;
@@ -137,7 +123,6 @@ export function Sidebar({ containerRef }: {
                 const rows = matching.filter(s => s.workspace === w.path || !!w.aliases?.includes(s.workspace));
                 const shown = q ? rows : rows.slice(0, 20);
                 return <div className="ws__group" key={w.id}>
-              <div className={cx('ws__row', activeWorkspace === w.id && 'is-active')}><button className="ws__name" aria-expanded={expanded} onClick={() => { setActiveWorkspace(w.id); setFolders(f => ({ ...f, [w.id]: !expanded })); }}><Icon name="chevron" size={14} className={cx('ws__chev', expanded && 'is-open')}/><Icon name="folder" size={17}/><span>{w.name}</span></button><IconBtn name="new-chat" title={tr("New chat in {0}", [w.name])} onClick={() => { setActiveWorkspace(w.id); setFolders(f => ({ ...f, [w.id]: true })); setNavOpen(false); runCommand('new'); }}/><IconBtn name="pencil" title={tr("Rename {0}", [w.name])} onClick={() => { setWsName(w.name); setNavOpen(false); setRenameWsId(w.id); }}/>{tr(w.id !== 'root' ? <IconBtn name="x" title={tr("Remove {0} from sidebar", [w.name])} onClick={() => { setNavOpen(false); setRemoveWorkspaceId(w.id); }}/> : null)}</div>
               <div className={cx('ws__row', activeWorkspace === w.id && 'is-active')}><button className="ws__name" title={w.path} aria-expanded={expanded} onClick={() => { setActiveWorkspace(w.id); setFolders(f => ({ ...f, [w.id]: !expanded })); }} onContextMenu={event => { event.preventDefault(); setWorkspaceMenu({ id: w.id, anchor: event.currentTarget }); }}><Icon name="chevron" size={14} className={cx('ws__chev', expanded && 'is-open')}/><Icon name="folder" size={17}/><span>{w.name}</span></button><button type="button" className="st-btn st-btn--icon workspace-menu-trigger" aria-label={tr('Workspace actions for {0}', [w.name])} title={tr('Workspace actions for {0}', [w.name])} aria-haspopup="menu" aria-expanded={workspaceMenu?.id === w.id} onClick={event => setWorkspaceMenu({ id: w.id, anchor: event.currentTarget })}><Icon name="ellipsis" size={16}/></button></div>
               {tr(expanded ? <div className="navsessions">
                 {tr(shown.map(s => <div key={s.id}>
@@ -149,18 +134,7 @@ export function Sidebar({ containerRef }: {
               <WorkspaceFiles workspace={w} hidden={!expanded} command={fileCommands[w.id]}/>
             </div>;
             })}
-          {tr(damaged.length || newer.length ? <div className="ws__group nav-damaged">
-            <div className="navgroup__label">{tr("Unreadable chats")}</div>
-            <div className="navsessions">
-              {tr(damaged.length ? <p className="xs muted nav-damaged__note">{tr("Strata could not read these chat files. You can delete them here.")}</p> : null)}
-              {tr(newer.map(id => <div className="ws__session row" key={`newer-${id}`} data-newer-chat=""><span className="navsession navsession--damaged" title={tr("This chat was saved by a newer version of Strata. Update Strata to open it.")}><Icon name="chat" size={16}/><span className="navsession__title">{id}.json</span></span><p className="xs muted nav-damaged__note">{tr("This chat was saved by a newer version of Strata. Update Strata to open it.")}</p></div>))}
-              {tr(damaged.map(id => <div className="ws__session row" key={id}>
-                <span className="navsession navsession--damaged" title={tr("Strata could not read this chat file, so its messages are not shown.")}><Icon name="chat" size={16}/><span className="navsession__title">{id}.json</span></span>
-                <button className="st-btn st-btn--icon session-overflow" aria-label={tr("Delete {0}.json", [id])} title={tr("Delete chat file")} onClick={() => { setNavOpen(false); setDeleteDamagedId(id); }}><Icon name="trash" size={16}/></button>
-              </div>))}
-            </div>
-          </div> : null)}
-        </div> : null}
+        </div>
       </div>
       <div className="nav__foot">
         <button className="enginechip" data-state={status === 'Ready' ? 'ready' : modelState.busy ? 'busy' : 'off'} onClick={() => go('models')} title={tr("{0} \u00B7 {1} \u00B7 {2}", [modelName, modelLine, tr(status)])} aria-label={tr("{0} \u00B7 {1}", [modelName, modelLine])}><span className="enginechip__family"><Icon name={modelFamilyIcon(current?.family)} size={20}/><span className="enginechip__dot"/></span><span className="enginechip__text nav__rail-hide"><span className="enginechip__title">{modelName}</span><span className="enginechip__sub">{modelLine}</span></span></button>
@@ -185,7 +159,6 @@ export function Sidebar({ containerRef }: {
     {tr(menuId && menuSession ? <FloatingMenu anchor={menuTrigger.current} title={tr("Actions for {0}", [sessionTitle(menuSession)])} onClose={closeMenu}>
       <button role="menuitem" className="menu__item" onClick={() => { setName(sessionTitle(menuSession)); setNavOpen(false); setRenameId(menuId); setMenuId(null); }}><Icon name="pencil"/>{tr("Rename")}</button>
       <button role="menuitem" className="menu__item" onClick={() => { togglePin(menuId); closeMenu(); }}><Icon name="pin"/>{tr(menuSession.pinned ? 'Unpin' : 'Pin')}</button>
-      {tr(workspaces.length > 1 ? <button role="menuitem" className="menu__item" disabled={working.has(menuId)} title={working.has(menuId) ? tr("This chat is still working. Stop it or wait for it to finish, then move it.") : undefined} onClick={() => { const from = workspaceIdForSession(workspaces, menuSession); setMoveTo(workspaces.find(w => w.id !== from)?.id ?? ''); setNavOpen(false); setMoveId(menuId); setMenuId(null); }}><Icon name="folder"/>{tr("Move to workspace…")}</button> : null)}
       <button role="menuitem" className="menu__item" disabled={working.has(menuId)} onClick={() => { setMoveChat(menuId); setDestination(workspaces.find(w => w.path === menuSession.workspace)?.id ?? workspaces[0]?.id ?? ''); closeMenu(); }}><Icon name="folder"/>{tr('Move chat')}</button>
       <button role="menuitem" className="menu__item" disabled={working.has(menuId)} onClick={() => { toggleArchive(menuId); closeMenu(); }}><Icon name="clock"/>{tr(menuSession.archived ? 'Restore chat' : 'Archive chat')}</button>
       <button role="menuitem" className="menu__item menu__item--danger" onClick={() => { setNavOpen(false); setDeleteId(menuId); setMenuId(null); }}><Icon name="trash"/>{tr("Delete chat")}</button>
@@ -202,14 +175,6 @@ export function Sidebar({ containerRef }: {
                     renameSession(renameId, name.trim());
                 setRenameId(null);
             }}>{tr("Save name")}</Btn></>}><label className="input-field" htmlFor="chat-name"><span>{tr("Chat name")}</span><input className="st-input" id="chat-name" value={name} onFocus={e => e.currentTarget.select()} onChange={e => setName(e.target.value)}/></label></Dialog>
-    {tr(moveId ? <Dialog open compact title={tr("Move chat to another workspace")} onClose={() => setMoveId(null)} actions={<><Btn onClick={() => setMoveId(null)}>{tr("Cancel")}</Btn><Btn variant="primary" disabled={!moveTo || working.has(moveId)} onClick={() => {
-                moveSession(moveId, moveTo);
-                setMoveId(null);
-            }}>{tr("Move chat")}</Btn></>}><div className="input-field"><span>{tr("Workspace")}</span><Select ariaLabel={tr("Workspace")} translateLabels={false} value={moveTo} options={workspaces.filter(w => w.id !== workspaceIdForSession(workspaces, sessions.find(s => s.id === moveId))).map(w => ({ value: w.id, label: w.name, title: w.path }))} onChange={setMoveTo}/></div><p className="small muted">{tr(working.has(moveId) ? "This chat is still working. Stop it or wait for it to finish, then move it." : "The chat is listed under this workspace. Its next answer works in that workspace’s folder, unless you chose a folder for this chat.")}</p></Dialog> : null)}
-    <Dialog open={!!renameWsId} compact title={tr("Rename workspace")} onClose={() => setRenameWsId(null)} actions={<><Btn onClick={() => setRenameWsId(null)}>{tr("Cancel")}</Btn><Btn variant="primary" disabled={!wsName.trim()} onClick={() => {
-                if (renameWsId)
-                    void renameWorkspace(renameWsId, wsName.trim());
-                setRenameWsId(null);
     <Dialog open={!!renameWsId} compact title={tr("Rename workspace")} noClose={workspaceBusy} onClose={() => setRenameWsId(null)} actions={<><Btn disabled={workspaceBusy} onClick={() => setRenameWsId(null)}>{tr("Cancel")}</Btn><Btn variant="primary" disabled={workspaceBusy || !wsName.trim()} onClick={() => {
                 if (renameWsId) { setWorkspaceBusy(true); void renameWorkspace(renameWsId, wsName.trim()).then(saved => { if (saved) setRenameWsId(null); }).finally(() => setWorkspaceBusy(false)); }
             }}>{tr("Save name")}</Btn></>}><label className="input-field" htmlFor="workspace-name"><span>{tr("Workspace name")}</span><input className="st-input" id="workspace-name" value={wsName} onFocus={e => e.currentTarget.select()} onChange={e => setWsName(e.target.value)}/></label><p className="small muted">{tr("Only the name changes. The folder stays where it is.")}</p></Dialog>
@@ -218,14 +183,6 @@ export function Sidebar({ containerRef }: {
                     deleteSession(deleteId);
                 setDeleteId(null);
             }}>{tr("Delete chat")}</Btn></>}><p>{tr("This chat will be permanently deleted.")}</p></Dialog>
-    <Dialog open={!!deleteDamagedId} compact title={tr("Delete this chat file?")} onClose={() => setDeleteDamagedId(null)} actions={<><Btn onClick={() => setDeleteDamagedId(null)}>{tr("Keep file")}</Btn><Btn variant="danger" onClick={() => {
-                if (deleteDamagedId)
-                    void deleteDamagedChat(deleteDamagedId);
-                setDeleteDamagedId(null);
-            }}>{tr("Delete file")}</Btn></>}><p>{tr("Strata could not read this chat file, so its messages are not shown.")}</p></Dialog>
-    <Dialog open={!!removeWorkspaceId} title={tr("Remove workspace from sidebar?")} onClose={() => setRemoveWorkspaceId(null)} actions={<><Btn onClick={() => setRemoveWorkspaceId(null)}>{tr("Keep workspace")}</Btn><Btn onClick={() => {
-                if (removeWorkspaceId)
-                    void removeWorkspace(removeWorkspaceId).then(() => setRemoveWorkspaceId(null));
     <Dialog open={!!clearChats && !!clearingWorkspace} compact title={tr('Delete all chats in folder?')} noClose={workspaceBusy} onClose={() => setClearChats(null)} actions={<><Btn disabled={workspaceBusy} onClick={() => setClearChats(null)}>{tr('Cancel')}</Btn><Btn variant="danger" disabled={workspaceBusy || clearingLive || !clearingChats.length} onClick={() => {
                 if (clearChats) { setWorkspaceBusy(true); void deleteWorkspaceSessions(clearChats.workspaceId, clearChats.ids).then(deleted => { if (deleted) { setClearChats(null); if (!activeSession || confirmedChatIds.has(activeSession)) go('chat'); } }).finally(() => setWorkspaceBusy(false)); }
             }}>{tr('Delete {0} chats', [clearingChats.length])}</Btn></>}>
