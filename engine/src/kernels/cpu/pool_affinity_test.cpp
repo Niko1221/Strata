@@ -154,6 +154,8 @@ static bool restricted_pool() {
     {
         const cpu::ExpertPool pool;
         const auto topo = cpu::detect_cpu_topology(true);
+        std::printf("Windows process mask: allowed processors %d and %d, %d logical processors, %d workers, host %d\n",
+                    first, second, pool.plan_logical(), pool.workers(), topo.host_core);
         ok = pool.plan_logical() == 2 && pool.workers() == 1 && topo.worker_cores.size() == 1 &&
              ((topo.host_core == first && topo.worker_cores[0] == second) ||
               (topo.host_core == second && topo.worker_cores[0] == first));
