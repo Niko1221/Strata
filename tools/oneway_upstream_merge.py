@@ -232,6 +232,51 @@ def resolve(repo: Path, ref: str) -> str:
     return proc.stdout.decode().strip()
 
 
+class BlobStore:
+    """One persistent `git cat-file --batch` process for every blob read.
+
+    Windows process startup dominates `git show` for thousands of files; a
+    single batch process makes the classification O(1) process launches.
+    """
+
+    def __init__(self, repo: Path) -> None:
+        self._proc = subprocess.Popen(
+            ["git", "-C", str(repo), "cat-file", "--batch"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        )
+        self._cache: Dict[Tuple[str, str], Optional[bytes]] = {}
+
+    def get(self, ref: str, path: Optional[str]) -> Optional[bytes]:
+        if not path:
+            return None
+        key = (ref, path)
+        if key in self._cache:
+            return self._cache[key]
+        assert self._proc.stdin is not None and self._proc.stdout is not None
+        self._proc.stdin.write(f"{ref}:{path}\n".encode("utf-8"))
+        self._proc.stdin.flush()
+        header = self._proc.stdout.readline().decode("utf-8", "replace").strip()
+        if not header or header.endswith(" missing"):
+            self._cache[key] = None
+            return None
+        parts = header.split()
+        if len(parts) < 3 or parts[1] != "blob":
+            self._cache[key] = None
+            return None
+        data = self._proc.stdout.read(int(parts[2]))
+        self._proc.stdout.read(1)  # trailing newline
+        self._cache[key] = data
+        return data
+
+    def close(self) -> None:
+        try:
+            if self._proc.stdin:
+                self._proc.stdin.close()
+            self._proc.wait(timeout=30)
+        except Exception:  # pragma: no cover - best effort shutdown
+            self._proc.terminate()
+
+
 def safe_target(path: str) -> Path:
     rel = PurePosixPath(path.replace("\\", "/"))
     if rel.is_absolute() or any(p in ("..", ".") for p in rel.parts) or ":" in path:
@@ -322,10 +367,10 @@ def three_way(repo: Path, fork: bytes, base: bytes, upstream: bytes, folder: Pat
 
 
 def decide(repo: Path, rec: Record, *, base: str, fork: str, upstream: str,
-           evidence: Path) -> Decision:
-    b = blob(repo, base, rec.old)
-    f = blob(repo, fork, rec.old)
-    u = blob(repo, upstream, rec.new)
+           evidence: Path, store: "BlobStore") -> Decision:
+    b = store.get(base, rec.old)
+    f = store.get(fork, rec.old)
+    u = store.get(upstream, rec.new)
     owned = any(rec.old.startswith(p) for p in OWNED_PREFIXES)
     target = target_for(rec.old, rec.new, owned)
     safe_target(target)
@@ -408,13 +453,18 @@ def run(args: argparse.Namespace) -> MergeReport:
     report.rename_rules, report.paths = len(renames), len(records)
     LOG.info("classifying %d unified paths (%d rename rules)", len(records), len(renames))
 
-    for rec in tqdm(sorted(records.values(), key=lambda r: (r.new, r.old)),
-                    desc="one-way merge", unit="file"):
-        try:
-            report.decisions.append(decide(repo, rec, base=base, fork=fork,
-                                           upstream=upstream, evidence=evidence))
-        except Exception as exc:
-            report.errors.append(f"{rec.old} -> {rec.new}: {exc}")
+    store = BlobStore(repo)
+    try:
+        for rec in tqdm(sorted(records.values(), key=lambda r: (r.new, r.old)),
+                        desc="one-way merge", unit="file"):
+            try:
+                report.decisions.append(decide(repo, rec, base=base, fork=fork,
+                                               upstream=upstream, evidence=evidence,
+                                               store=store))
+            except Exception as exc:
+                report.errors.append(f"{rec.old} -> {rec.new}: {exc}")
+    finally:
+        store.close()
 
     report.port_checklist = [
         "engine/include/strata/artifact/model_family.hpp: add Qwen38 family to ModelFamily/model_family_from_arch/model_family_runs",
