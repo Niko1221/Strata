@@ -8086,7 +8086,7 @@ def _start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open
     cmd = [sys.executable, str(ROOT / "serve" / "server.py"), "--engine", "strata", "--config", str(cfg_path),
            "--port", str(port or cfg.get("port", 8080))]
     if cfg.get("backend") == "sycl" and WIN:
-        cmd[1] = str(ROOT / "sycl" / "serve" / "server_intel.py")
+        cmd[1] = str(ROOT.parent / "engine" / "sycl" / "serve" / "server_intel.py")
         found = []
         if isinstance(gpu, list):
             cfg["gpu"], cfg["gpus_asked"] = gpu, True

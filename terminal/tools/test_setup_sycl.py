@@ -1,4 +1,4 @@
-﻿"""Tests for setup.py --backend sycl, the experimental Intel Arc engine (sycl/, PR #423): it hands the run to
+"""Tests for setup.py --backend sycl, the experimental Intel Arc engine (sycl/, PR #423): it hands the run to
 sycl/setup_intel.py without its --backend flag, using native execution on Windows. The CUDA / HIP
 paths never see it. No GPU, no network.
 
@@ -187,7 +187,7 @@ class NativeStart(unittest.TestCase):
                                  keep={"host": "127.0.0.1", "api_key": "test-key", "vram_reserve_mib": 1024})
             self.assertEqual(rc, 0)
             cmd = call.call_args.args[0]
-            self.assertEqual(cmd[1], str(ROOT / "sycl" / "serve" / "server_intel.py"))
+            self.assertEqual(cmd[1], str(ROOT.parent / "engine" / "sycl" / "serve" / "server_intel.py"))
             self.assertEqual(cmd[cmd.index("--port") + 1], "8085")
             self.assertNotIn("--gpu", cmd)
             self.assertNotIn("--open", cmd)
@@ -634,8 +634,8 @@ class ToSycl(unittest.TestCase):
     def test_windows_names_the_arc_not_a_geforce_beside_it(self):
         # an RTX 3060 beside an Arc Pro B60: the benchmark report named the GeForce the SYCL engine never used
         import importlib.util
-        spec = importlib.util.spec_from_file_location("server_intel_t2", ROOT / "sycl" / "serve" / "server_intel.py")
-        sys.path.insert(0, str(ROOT / "sycl" / "serve"))
+        spec = importlib.util.spec_from_file_location("server_intel_t2", ROOT.parent / "engine" / "sycl" / "serve" / "server_intel.py")
+        sys.path.insert(0, str(ROOT.parent / "engine" / "sycl" / "serve"))
         try:
             m = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(m)
@@ -666,7 +666,7 @@ class WindowsDeviceProbe(unittest.TestCase):
             "driver": "level_zero", "free_memory_supported": False, "command_graph_supported": False, "devid": "4680"}
 
     def probe(self, cards):
-        spec = importlib.util.spec_from_file_location("setup_intel_probe", ROOT / "sycl" / "setup_intel.py")
+        spec = importlib.util.spec_from_file_location("setup_intel_probe", ROOT.parent / "engine" / "sycl" / "setup_intel.py")
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         done = mock.Mock(returncode=0, stdout=json.dumps(cards), stderr="")
@@ -723,7 +723,7 @@ class Alchemist(unittest.TestCase):
 
     @staticmethod
     def mod():
-        spec = importlib.util.spec_from_file_location("setup_intel_alchemist", ROOT / "sycl" / "setup_intel.py")
+        spec = importlib.util.spec_from_file_location("setup_intel_alchemist", ROOT.parent / "engine" / "sycl" / "setup_intel.py")
         m = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(m)
         return m

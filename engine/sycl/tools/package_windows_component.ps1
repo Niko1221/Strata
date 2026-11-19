@@ -10,7 +10,7 @@
   app's bundled-engine installer accepts (apps/host/server/bundled-engine.mjs).
 
   Usage, from the repo root:
-    powershell -NoProfile -ExecutionPolicy Bypass -File sycl\tools\package_windows_component.ps1
+    powershell -NoProfile -ExecutionPolicy Bypass -File engine\sycl\tools\package_windows_component.ps1
     ... -Out D:\somewhere\engine          # keep it out of the app's folders
     ... -Verify                            # hash-check what is already there and stop
 
@@ -25,7 +25,7 @@
   installer accepts the same folder if it is placed in the installer's engine-bundle directory.
 #>
 param(
-    [string]$Engine = (Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path 'build-sycl-win\strata.exe'),
+    [string]$Engine = (Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path 'build-sycl-win\strata.exe'),
     [string]$Out = (Join-Path $env:LOCALAPPDATA 'Strata\components\engine'),
     [string]$OneApiRoot = 'C:\Program Files (x86)\Intel\oneAPI',
     [string]$Python = 'python',
@@ -34,8 +34,8 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
-$packager = Join-Path $repo 'packaging\package_engine.py'
+$repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
+$packager = Join-Path $repo 'tools\packaging\package_engine.py'
 
 function Say([string]$m) { Write-Host "  $m" }
 function Die([string]$m) { Write-Host "  $m"; exit 1 }
@@ -52,7 +52,7 @@ if ($Verify) {
 }
 
 if (-not (Test-Path $Engine)) {
-    Die "no engine at $Engine - build it first (sycl\tools\build_windows.bat)"
+    Die "no engine at $Engine - build it first (engine\sycl\tools\build_windows.bat)"
 }
 $versionLine = $null
 $setvars = Join-Path $OneApiRoot 'setvars.bat'
@@ -102,7 +102,7 @@ try {
     $pkg = Join-Path $Out ("{0}-windows-x86_64-sycl" -f $version)
     Say ""
     Say "component: $pkg"
-    Say "  verify: powershell -NoProfile -ExecutionPolicy Bypass -File sycl\tools\package_windows_component.ps1 -Verify"
+    Say "  verify: powershell -NoProfile -ExecutionPolicy Bypass -File engine\sycl\tools\package_windows_component.ps1 -Verify"
     Say "  use   : strata components engines    (Control lists it), then a run config whose exe is the package's strata.exe"
     Say "  note  : the app's own engine picker still needs the BACKEND_MATRIX row in #5236"
 }

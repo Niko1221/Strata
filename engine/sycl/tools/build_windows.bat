@@ -1,6 +1,6 @@
 @echo off
 setlocal
-for %%I in ("%~dp0..\..") do set "ROOT=%%~fI"
+for %%I in ("%~dp0..\..\..") do set "ROOT=%%~fI"
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
 if not exist "%VSWHERE%" (
     echo Visual Studio C++ build tools are required.
@@ -32,7 +32,7 @@ if errorlevel 1 (
     echo Intel oneAPI DPC++ and oneMKL are required. See docs\INTEL_ARC.md.
     exit /b 1
 )
-cmake -S "%ROOT%\sycl" -B "%ROOT%\build-sycl-win" -G Ninja -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icx -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 %*
+cmake -S "%ROOT%\engine\sycl" -B "%ROOT%\build-sycl-win" -G Ninja -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icx -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 %*
 if errorlevel 1 exit /b 1
 cmake --build "%ROOT%\build-sycl-win" --parallel 4
 exit /b %errorlevel%

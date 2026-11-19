@@ -16,12 +16,12 @@ Strata has three parts:
   `Strata-0.2.16-windows-x64-setup.exe`, `Strata-0.2.16-linux-x86_64.AppImage`, `Strata-0.2.16-macos-arm64.dmg`.
   The Windows and Linux installers carry no engine: the app downloads the engine for the graphics card on first
   start, or installs a file the user already has. The Mac dmg keeps its small Metal engine inside.
-- **The Terminal** (`strata.py`, `strata_cli/`, `strata_control/`): the `strata` command. It sets up a model, serves
-  it and watches it. Agents use this part.
-- **The engine and the server** (`src/`, `include/`, `metal/`, `sycl/` for the C++/CUDA/HIP/SYCL/Metal engine;
-  `serve/` for the Python server with an OpenAI- and Anthropic-compatible API and a web page). `setup.py`, started by
-  `START-HERE.bat` or `setup.sh`, is setup from a source checkout, for developers. The release paths are the
-  installer and `strata launch`.
+- **The Terminal** (`terminal/strata.py`, `terminal/strata_cli/`, `terminal/strata_control/`): the `strata` command. It
+  sets up a model, serves it and watches it. Agents use this part.
+- **The engine and the server** (`engine/src/`, `engine/include/`, `engine/metal/`, `engine/sycl/` for the
+  C++/CUDA/HIP/SYCL/Metal engine; `terminal/serve/` for the Python server with an OpenAI- and Anthropic-compatible API
+  and a web page). `terminal/setup.py`, started by `START-HERE.bat` or `setup.sh`, is setup from a source checkout, for
+  developers. The release paths are the installer and `strata launch`.
 
 ## Installing Strata for a user
 

@@ -89,7 +89,7 @@ def ensure_windows_engine(force=False):
     exe, _ = sycl_engine()
     if exe is None or force:
         S.say("  Building the native Intel SYCL engine (Visual Studio C++, oneAPI DPC++ and oneMKL required) ...")
-        rc = subprocess.call(["cmd", "/d", "/c", str(ROOT / "engine" / "sycl" / "tools" / "build_windows.bat")], cwd=ROOT)
+        rc = subprocess.call(["cmd", "/d", "/c", str(ROOT / "sycl" / "tools" / "build_windows.bat")], cwd=ROOT.parent)
         if rc:
             S.fail("the native Intel engine could not be built", "install the tools in docs/INTEL_ARC.md and rerun START-HERE.bat")
         exe, _ = sycl_engine()
@@ -241,7 +241,7 @@ def sycl_engine():
     if S.WIN:
         override = os.environ.get("STRATA_SYCL_BIN")
         candidates = ([Path(override)] if override else []) + [
-            ROOT / "build-sycl-win" / "strata.exe", ROOT / "build-sycl" / "strata.exe",
+            ROOT.parent / "build-sycl-win" / "strata.exe", ROOT / "build-sycl" / "strata.exe",
             ROOT / "build-sycl" / "sycl" / "strata.exe", ROOT / "build-sycl-aot" / "strata.exe"]
         exe = next((p.resolve() for p in candidates if p.is_file()), None)
         return (exe, None) if exe else (None, "native strata.exe is not built; see docs/INTEL_ARC.md")
@@ -617,7 +617,7 @@ def install(argv) -> None:
     exe, why = sycl_engine()
     if exe is None:
         if S.WIN:
-            exe = ROOT / "build-sycl-win" / "strata.exe"
+            exe = ROOT.parent / "build-sycl-win" / "strata.exe"
         else:
             S.fail(f"Strata's SYCL engine cannot be used: {why}", "docs/INTEL.md: build it, then run this again")
     for name in ("gpus", "amd_gpus", "amd_problem", "hip_vision", "build_engine_hip", "hipblaslt_table", "ram_gb",
