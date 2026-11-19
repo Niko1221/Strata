@@ -18,7 +18,7 @@ strata launch --status
 **I cannot find `START-HERE.bat` or `SETUP.bat`.**
 Open the installed Strata app, or run `strata launch`. Those wrappers are in the source repository and are not the
 startup path for the app. For a fresh desktop install, download the one installer for your system
-(`Strata-0.2.15-windows-x64-setup.exe`, `Strata-0.2.15-linux-x86_64.AppImage` or `Strata-0.2.15-macos-arm64.dmg`), not a
+(`Strata-0.2.16-windows-x64-setup.exe`, `Strata-0.2.16-linux-x86_64.AppImage` or `Strata-0.2.16-macos-arm64.dmg`), not a
 `strata-engine-…` archive.
 
 **`strata` is not found.**
@@ -53,7 +53,7 @@ numbers; see [updating](INSTALL.md#updating) and the [release notes](https://git
 **A new engine misbehaves after an update.**
 Stop the model, then use the app's rollback control or `strata components rollback`. An update keeps the engine it
 replaced (one generation, about 210 MiB). Source-checkout engines use a separate rollback workflow, in `engine\.previous`:
-`python setup.py --rollback-engine` puts the old one back and keeps the newer one there, so run it again to go forward
+`python terminal/setup.py --rollback-engine` puts the old one back and keeps the newer one there, so run it again to go forward
 (#670). It is described in [source setup](SOURCE_INSTALL.md).
 
 **On a Mac: "Strata is damaged and can't be opened", "cannot be opened", or "unidentified developer".**
@@ -73,7 +73,7 @@ System Settings > Privacy & Security and press "Open Anyway" next to the message
 file you downloaded from the official release; a warning alone does not show that a file is safe or intact. Installs made
 with `curl ... | sh` carry no mark and need none of this. To see which kind you have: `spctl -a -vv /Applications/Strata.app`
 answers "accepted" and "Notarized Developer ID" for a notarised build. How the builds are signed is in
-[Mac packaging](../packaging/mac/README.md).
+[Mac packaging](../tools/packaging/mac/README.md).
 
 **The Linux AppImage does not open.**
 Make the downloaded file executable. It may need FUSE 2 (`libfuse2` on Ubuntu 22.04, `libfuse2t64` on newer Ubuntu;
@@ -365,9 +365,10 @@ overwrite local branches or edits just to make `git pull` succeed.
 - **Linux app crash:** if the window crashes or will not open, run the AppImage with `--save-logs` in a terminal; it writes
   the crash log and the other logs to one file in Downloads.
 - **Installer or source checkout:** `strata-<model>.log` from the Strata folder.
+- **Developer tools:** To open the developer tools in the app window on Windows or Linux, start the app with `STRATA_DEVTOOLS=1`.
 
 Look through a log before you send it, and never send an API key. Include model and quantization, OS, GPU/VRAM, RAM,
 driver, install route (app, Terminal or the installer), Strata and engine versions, exact command, expected result and
 actual error. Open an [issue](https://github.com/Niko1221/Strata/issues) and attach the log. Follow
-[CONTRIBUTING.md](../CONTRIBUTING.md). The full table of error messages, with the older engine fixes, is in the
+[CONTRIBUTING.md](../.github/CONTRIBUTING.md). The full table of error messages, with the older engine fixes, is in the
 [details](DETAILS.md#troubleshooting).
