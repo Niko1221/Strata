@@ -10,6 +10,7 @@ import { startScriptedWorker } from './helpers/scripted-worker.mjs';
 import { createAgentBridge } from '../server/agent/agent-bridge.mjs';
 import { resolveHarness } from '../server/agent/harness-runtime.mjs';
 import { buildProfile } from '../server/agent/profile.mjs';
+import { apply as applyContextPlugin } from '../server/agent/plugins/strata-context.mjs';
 import { clipMessage, densityOf, estimateMessage, isContextOverflow, pressureNow, promptTokensOf, splitMessages, summaryBudget, usageOfEvent, SUMMARY_LANGUAGE_RULE, withSummaryLanguage } from '../server/agent/context-budget.mjs';
 
 const HARNESS = process.env.STRATA_HARNESS_DIR;
@@ -85,6 +86,45 @@ test('a summary request is split into pieces that fit, each message whole when i
   const paired = splitMessages([text(2000), call, result, text(2000)], 1200, 1);
   assert.ok(paired.every(r => !r.includes(call) || r.includes(result)), 'the call and its result are in one piece');
   assert.ok(summaryBudget({ window: 65536, summaryTokens: 5734, toolsTokens: 10133, systemTokens: 400 }) > 40000);
+});
+
+test('a late context refusal retries only the unsummarised messages', async t => {
+  const line = text => ({ role: 'user', content: [{ type: 'text', text }] });
+  const history = Array.from({ length: 6 }, (_, index) => line('PART ' + (index + 1) + '\n' + 'x'.repeat(4000)));
+  const calls = [];
+  const llm = {
+    async resolveModelInfo() { return { context: { contextWindow: 4500 } }; },
+    async *stream({ messages }) {
+      const parts = messages.flatMap(message => {
+        const part = /^PART (\d+)\b/u.exec(message.content[0].text);
+        return part ? [Number(part[1])] : [];
+      });
+      const carried = messages.map(message => message.content[0].text).find(text => text.startsWith('<compacted-summary>'));
+      const prior = carried?.match(/\nDONE ([\d,]+)\n/u)?.[1].split(',').map(Number) ?? [];
+      calls.push({ parts, prior, characters: messages.reduce((total, message) =>
+        total + message.content.reduce((size, block) => size + block.text.length, 0), 0) });
+      if (parts.length > 1 && parts.includes(3)) {
+        yield { type: 'finish', reason: { kind: 'error', failure: { code: 'CONTEXT_WINDOW_EXCEEDED' } } };
+        return;
+      }
+      yield { type: 'text-delta', text: 'DONE ' + [...prior, ...parts].join(',') };
+      yield { type: 'finish', reason: { kind: 'stop' } };
+    },
+  };
+  applyContextPlugin({ llm, inject: () => {} });
+  const final = [];
+  for await (const chunk of llm.stream({
+    purpose: 'compaction', provider: 'strata-local', model: 'fixture', sessionId: 'late-summary-refusal',
+    messages: [...history, line('Condense this history.')], maxTokens: 256,
+  })) final.push(chunk);
+  t.diagnostic(JSON.stringify({ attempts: calls.length, sourceParts: calls.map(call => call.parts),
+    modelInputCharacters: calls.reduce((total, call) => total + call.characters, 0) }));
+  assert.deepEqual(calls.map(call => call.parts), [[1, 2], [3, 4], [3], [4], [5], [6]]);
+  assert.deepEqual(calls[2].prior, [1, 2]);
+  assert.deepEqual(final, [
+    { type: 'text-delta', text: 'DONE 1,2,3,4,5,6' },
+    { type: 'finish', reason: { kind: 'stop' } },
+  ]);
 });
 
 /** The scripted model server counting like the engine (3 characters a token here: logs and code) in a 32K window. */
