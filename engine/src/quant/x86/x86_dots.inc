@@ -157,6 +157,9 @@ void dot_q4_0_q8_0(int n, float* STRATA_RESTRICT s, const void* STRATA_RESTRICT 
 }
 
 void dot_q4_1_q8_1(int n, float* STRATA_RESTRICT s, const void* STRATA_RESTRICT vx, const void* STRATA_RESTRICT vy) {
+#ifdef STRATA_QUANT_AVX2_SCALE_TABLE
+    const auto& h2f = half_scales();
+#endif
     const int qk = QK8_1;
     const int nb = n / qk;
 
@@ -286,6 +289,9 @@ void dot_q5_0_q8_0(int n, float* STRATA_RESTRICT s, const void* STRATA_RESTRICT 
 }
 
 void dot_q5_1_q8_1(int n, float* STRATA_RESTRICT s, const void* STRATA_RESTRICT vx, const void* STRATA_RESTRICT vy) {
+#ifdef STRATA_QUANT_AVX2_SCALE_TABLE
+    const auto& h2f = half_scales();
+#endif
     const int qk = QK8_1;
     const int nb = n / qk;
 

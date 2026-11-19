@@ -17,6 +17,10 @@ macro(strata_quant_layer)
     set_source_files_properties(${_sq}/src/quant/dot_generic.cpp ${_sq}/src/quant/act_ref.cpp PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
   endif()
   if(STRATA_CPU_X86)
+    option(STRATA_QUANT_AVX2_SCALE_TABLE "Use a half-scale lookup in AVX2 Q4_1 and Q5_1 dots" OFF)
+    if(STRATA_QUANT_AVX2_SCALE_TABLE)
+      set_property(SOURCE ${_sq}/src/quant/x86/dot_avx2.cpp APPEND PROPERTY COMPILE_DEFINITIONS STRATA_QUANT_AVX2_SCALE_TABLE)
+    endif()
     # the x86 tiers: ggml's own x86 code ported, each file compiled with its flavour's instruction-set flags so the #if __AVX2__ / __AVX__ branches
     # select what ggml-cpu selects for that flavour (the release builds are AVX2; STRATA_ISA_FLOOR=avx is the AVX-only one)
     target_sources(strata_quant PRIVATE ${_sq}/src/quant/x86/dot_avx2.cpp ${_sq}/src/quant/x86/act_avx2.cpp ${_sq}/src/quant/x86/dot_avx.cpp
