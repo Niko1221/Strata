@@ -3,17 +3,51 @@
 // count a prompt the way the engine does (characters over a density) and to refuse one that leaves no room.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startScriptedWorker } from './helpers/scripted-worker.mjs';
 import { createAgentBridge } from '../server/agent/agent-bridge.mjs';
 import { resolveHarness } from '../server/agent/harness-runtime.mjs';
 import { buildProfile } from '../server/agent/profile.mjs';
+import { apply as applyContextPlugin, projectForeignReasoning } from '../server/agent/plugins/strata-context.mjs';
 import { clipMessage, densityOf, estimateMessage, isContextOverflow, pressureNow, promptTokensOf, splitMessages, summaryBudget, usageOfEvent, SUMMARY_LANGUAGE_RULE, withSummaryLanguage } from '../server/agent/context-budget.mjs';
 
 const HARNESS = process.env.STRATA_HARNESS_DIR;
 const skip = !HARNESS || !resolveHarness({ env: process.env }).ok ? 'STRATA_HARNESS_DIR is not set to a built Harness' : false;
+
+test('a model switch removes only foreign reasoning and replay state from the request', () => {
+  const source = { provider: 'old-route', model: 'a', replayState: { signature: 'opaque' } };
+  const chain = [
+    { role: 'user', content: [{ type: 'text', text: 'Check the test.' }] },
+    { role: 'assistant', source, content: [
+      { type: 'reasoning', text: 'Private to the original model' },
+      { type: 'text', text: 'I ran it.' },
+      { type: 'tool-call', id: 'c', name: 'read', arguments: '{}' },
+    ] },
+    { role: 'tool', toolCallId: 'c', content: [{ type: 'text', text: 'PASS' }] },
+    { role: 'assistant', source, content: [{ type: 'reasoning', text: '' }] },
+  ];
+  const same = { provider: 'old-route', model: 'a', messages: chain };
+  assert.equal(projectForeignReasoning(same), same, 'same-model replay is byte-for-byte unchanged');
+  const changed = projectForeignReasoning({ ...same, provider: 'new-route' });
+  assert.deepEqual(changed.messages.map(m => m.role), ['user', 'assistant', 'tool']);
+  assert.deepEqual(changed.messages[1].content, chain[1].content.slice(1));
+  assert.equal(changed.messages[2], chain[2]);
+  assert.equal(changed.messages[1].source.replayState, undefined);
+  assert.equal(chain[1].source.replayState.signature, 'opaque', 'the durable history is untouched');
+});
+
+test('calibration is cleared when the session selects another model', () => {
+  const session = { id: 'calibration', requestHeader: () => ({ tools: [] }) };
+  const meter = { measure: () => ({ surfaceTokens: 500, totalTokens: 500, nodes: [{ seq: 1, heuristicTokens: 500, tokens: 500 }] }) };
+  let onEvent;
+  applyContextPlugin({ tokenMeter: meter, on: (_, fn) => { onEvent = fn; }, inject: () => {} });
+  onEvent(session, { type: 'assistant/message', seq: 2, data: { usage: { inputTokens: 1500 } } });
+  assert.equal(meter.measure(session).totalTokens, 1500);
+  onEvent(session, { type: 'model/selection' });
+  assert.equal(meter.measure(session).totalTokens, 500);
+});
 
 test('the profile loads the context plugin, so compaction and /compact read the measured prompt', () => {
   const profile = buildProfile({ local: [{ id: 'a', modelId: 'm', baseUrl: 'http://x', context: 65536 }], connections: [] });
@@ -100,6 +134,31 @@ async function rig(t, { window = 32768, charsPerToken = 3, noCount = false } = {
 }
 const answerOf = frames => frames.filter(f => f.type === 'delta' && !f.noteReason).map(f => f.text).join('');
 const dense = 'q=0x1f ok;';   // 10 characters: 2.5 tokens by the Harness price, 3.3 by the model server's count here
+
+test('model switching in the real Harness preserves tool evidence without replaying foreign reasoning', { skip }, async t => {
+  const first = await startScriptedWorker({ model: 'model-a', chunkDelayMs: 5 });
+  const second = await startScriptedWorker({ model: 'model-b', chunkDelayMs: 5 });
+  const dir = mkdtempSync(join(tmpdir(), 'strata-model-switch-'));
+  writeFileSync(join(dir, 'evidence.txt'), 'HANDOFF_EVIDENCE\n');
+  const bridge = createAgentBridge({ dataDir: dir, localInstances: () => [
+    { id: 'a', label: 'Model A', baseUrl: first.url, modelId: 'model-a', context: 32768 },
+    { id: 'b', label: 'Model B', baseUrl: second.url, modelId: 'model-b', context: 32768 },
+  ], connections: () => [], env: process.env, startTimeoutMs: 90_000 });
+  t.after(async () => { await bridge.close(); await first.close(); await second.close(); try { rmSync(dir, { recursive: true, force: true, maxRetries: 3 }); } catch {} });
+  const send = async (instanceId, message) => {
+    const frames = [];
+    await bridge.runTurn({ chatId: 'handoff', choice: { instanceId }, message, workspacePath: dir, mode: 'plan', onFrame: f => frames.push(f) });
+    return frames;
+  };
+  assert.equal((await send('a', 'SCRIPT:call read {"file_path":"evidence.txt"}')).at(-1).type, 'done');
+  const same = first.requests.filter(r => r.toolNames.length).at(-1).raw;
+  assert.match(same, /I will use read/);
+  assert.match(same, /HANDOFF_EVIDENCE/);
+  assert.equal((await send('b', 'SCRIPT:echo switched')).at(-1).type, 'done');
+  const switched = second.requests.find(r => r.directive === 'echo' && r.toolNames.length).raw;
+  assert.match(switched, /HANDOFF_EVIDENCE/);
+  assert.doesNotMatch(switched, /I will use read/);
+});
 
 test('the plugin loads in the real Harness (a plugin that fails to import would leave compaction as it was, silently)', { skip }, async (t) => {
   const { send, harnessLog } = await rig(t);

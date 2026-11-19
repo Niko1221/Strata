@@ -12,9 +12,8 @@
  *      the summary replaces it), the pieces are summarised one after the other, each building on the summary before it, and a piece the
  *      server still refuses is halved and tried again.
  *
- * How. It wraps `tokenMeter.measure` and `llm.stream` in place, once each (the same way strata-models wraps the subagent tools). Only a
- * request the Harness marks `purpose: 'compaction'` is touched in `llm.stream`. Nothing in the Harness is rewritten: a Harness update
- * that renames either leaves compaction as it was, and the test that runs the real Harness fails.
+ * The plugin wraps the token meter and compaction stream once. At adapter preparation it also removes foreign reasoning from the
+ * outgoing request, and for local models it sets the request's reply ceiling. The real Harness tests exercise these hooks.
  */
 import { replyCap } from '../reply-cut.mjs';
 import { densityOf, estimateMessage, estimateTools, isContextOverflow, MAX_DENSITY, pressureNow, promptTokensOf, splitMessages, summaryBudget, usageOfEvent, WINDOW_SLACK, withSummaryLanguage } from '../context-budget.mjs';
@@ -31,6 +30,24 @@ const bySessionId = new Map();
 const wrapped = new WeakSet();
 /** Densities that made a summary request fail on this server, per session id (the next request starts from a more careful one). */
 const careful = new Map();
+
+/** Give a new model the visible transcript and tool evidence. Native reasoning
+ * remains on disk and is replayed verbatim only to the same provider and model. */
+export function projectForeignReasoning(options) {
+  if (!options?.provider || !options.model || !Array.isArray(options.messages)) return options;
+  let changed = false;
+  const messages = options.messages.flatMap(message => {
+    const source = message.source;
+    if (message.role !== 'assistant' || !source?.provider || !source.model
+        || (source.provider === options.provider && source.model === options.model)) return [message];
+    const content = message.content.filter(block => block.type !== 'reasoning');
+    if (content.length === message.content.length && source.replayState === undefined) return [message];
+    changed = true;
+    const { replayState: _native, ...neutral } = source;
+    return content.length ? [{ ...message, content, source: neutral }] : [];
+  });
+  return changed ? { ...options, messages } : options;
+}
 
 export function apply(ctx) {
   const meter = ctx.tokenMeter;
@@ -52,6 +69,15 @@ export function apply(ctx) {
       return { ...m, totalTokens: total, nodes: m.nodes.map(n => ({ ...n, tokens: Math.ceil(n.tokens * density) })) };
     };
     ctx.on('session/event', (session, event) => {
+      if (event.type === 'model/selection') {
+        // The previous prompt was rendered for a different model or adapter.
+        samples.delete(session);
+        if (session.id) {
+          bySessionId.delete(String(session.id));
+          careful.delete(String(session.id));
+        }
+        return;
+      }
       if (event.type !== 'assistant/message') return;
       const real = promptTokensOf(usageOfEvent(event));
       if (!(real > 0)) return;
@@ -90,20 +116,19 @@ export function apply(ctx) {
     const original = llm.prepareCall;
     const raised = new WeakSet();
     const prepare = async function prepareCall(config, signal, configure) {
-      try { raiseReplyCeiling(config?.provider, raised); } catch (e) { log('warn', `could not raise the reply ceiling: ${e.message}`); }
+      try { prepareAdapter(config?.provider, raised); } catch (e) { log('warn', `could not prepare the model adapter: ${e.message}`); }
       return original.call(this, config, signal, configure);
     };
     wrapped.add(prepare);
     llm.prepareCall = prepare;
   }
-  function raiseReplyCeiling(provider, raised) {
-    if (!isLocalRoute(provider)) return;
+  function prepareAdapter(provider, raised) {
     const adapter = llm.adapters?.get?.(provider)?.adapter;
     if (!adapter || raised.has(adapter) || typeof adapter.streamWithSnapshot !== 'function' || typeof adapter.modelOf !== 'function') return;
     raised.add(adapter);
     const stream = adapter.streamWithSnapshot;
     adapter.streamWithSnapshot = function streamWithSnapshot(options, snapshot) {
-      let next = options;
+      let next = projectForeignReasoning(options);
       try {
         if (isLocalRoute(options?.provider)) {
           const model = this.modelOf(snapshot, options.provider, options.model);
@@ -111,10 +136,10 @@ export function apply(ctx) {
           // Only the agent's own reply budget is raised: a summary or a title asks for far less and keeps what it asked.
           if (model.contextWindow > 0 && asked >= Math.floor(model.contextWindow * 0.25)) {
             const cap = replyCap(model.contextWindow, asked);
-            if (cap > asked) next = { ...options, maxTokens: cap };
+            if (cap > asked) next = { ...next, maxTokens: cap };
           }
         }
-      } catch { next = options; }
+      } catch { /* keep the history projection even if no ceiling is available */ }
       return stream.call(this, next, snapshot);
     };
   }

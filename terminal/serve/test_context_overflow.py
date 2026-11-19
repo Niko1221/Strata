@@ -35,12 +35,14 @@ class ContextOverflow(unittest.TestCase):
     def setUp(self):
         self.svc.fit_max_tokens = False
 
-    def post(self, path, budget_key, prompt_tokens, max_tokens=None, stream=False):
+    def post(self, path, budget_key, prompt_tokens, max_tokens=None, stream=False, extra=None):
         body = {"input": "hi"} if path == "/v1/responses" else {
             "messages": [{"role": "user", "content": "hi"}]}
         body["stream"] = stream
         if max_tokens is not None:
             body[budget_key] = max_tokens
+        if extra:
+            body.update(extra)
         c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
         try:
             with mock.patch.object(self.svc, "encode_prompt", return_value=[ord("x")] * prompt_tokens):
@@ -163,6 +165,23 @@ class ContextOverflow(unittest.TestCase):
                     status, _, body = self.post(path, key, tight, 200)
                 self.assertEqual(status, 200, body)
                 self.assertEqual(generate.call_args.args[1], 200)
+
+    def test_agent_floor_is_checked_against_the_full_rendered_prompt(self):
+        path, key = APIS[0]
+        tight = CTX - CTX_SLACK - 700
+        agent = {"strata_min_completion_tokens": 1024}
+        with mock.patch.object(self.engine, "generate") as generate:
+            status, _, body = self.post(path, key, tight, None, True, extra=agent)
+        generate.assert_not_called()
+        self.assertEqual(status, 400, body)
+        self.assertIn("leaves 700", body["error"]["message"])
+        self.assertIn("1024 the agent needs", body["error"]["message"])
+        with mock.patch.object(self.engine, "generate", wraps=self.engine.generate) as generate:
+            status, _, body = self.post(path, key, CTX - CTX_SLACK - 1024, 1024, extra=agent)
+        self.assertEqual(status, 200, body)
+        self.assertEqual(generate.call_args.args[1], 1024)
+        status, _, body = self.post(path, key, tight, 200)
+        self.assertEqual(status, 200, body)
 
     def test_one_token_of_room_still_answers_but_zero_is_rejected(self):
         for path, key in APIS:

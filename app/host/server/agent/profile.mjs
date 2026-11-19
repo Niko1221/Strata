@@ -234,8 +234,30 @@ export const EFFORT_LEVEL = Object.freeze({ off: 'off', low: 'low', medium: 'med
  * OpenRouter's model list names `reasoning` among its supported parameters; the Harness (pi-ai) writes `reasoning: { effort }` into the request.
  */
 export const OPENROUTER_EFFORTS = Object.freeze({ off: 'none', low: 'low', medium: 'medium', high: 'high', max: 'xhigh' });
+export const DEEPSEEK_EFFORTS = Object.freeze({ off: 'none', low: 'low', medium: 'high', high: 'high', max: 'max' });
+const EFFORT_API_LEVELS = Object.freeze({ ...LOCAL_EFFORTS, off: 'none' });
+export const REASONING_FORMATS = Object.freeze(['auto', 'default', 'strata', 'deepseek', 'effort']);
 /** Whether a connection is OpenRouter (the catalog entry, or its address), whatever address it is reached at. */
-export const isOpenRouter = conn => conn?.provider === 'openrouter' || (() => { try { return /(^|.)openrouter.ai$/i.test(new URL(conn.baseUrl).hostname); } catch { return false; } })();
+export const isOpenRouter = conn => conn?.provider === 'openrouter' || (() => { try { return /(^|\.)openrouter\.ai$/i.test(new URL(conn.baseUrl).hostname); } catch { return false; } })();
+export function connectionReasoningFormat(conn) {
+  if (conn.protocol !== 'openai-chat') return 'default';
+  if (conn.reasoningFormat && conn.reasoningFormat !== 'auto') return conn.reasoningFormat;
+  if (isOpenRouter(conn)) return 'openrouter';
+  if (conn.provider === 'deepseek') return 'deepseek';
+  return 'effort';
+}
+
+export function connectionReasoningEfforts(conn, model) {
+  const format = connectionReasoningFormat(conn);
+  if (model.reasoning === false || (model.reasoning !== true && conn.reasoningFormat !== format)) return null;
+  switch (format) {
+    case 'strata': return LOCAL_EFFORTS;
+    case 'openrouter': return OPENROUTER_EFFORTS;
+    case 'deepseek': return DEEPSEEK_EFFORTS;
+    case 'effort': return EFFORT_API_LEVELS;
+    default: return null;
+  }
+}
 export const effortOf = value => EFFORT_LEVEL[String(value ?? '').toLowerCase()] ?? null;
 
 /**
@@ -247,12 +269,12 @@ export const effortOf = value => EFFORT_LEVEL[String(value ?? '').toLowerCase()]
 export const DEFAULT_API_OUTPUT = 32768;
 export function outputBudget(context, maxOutput = null) {
   const c = Number.isFinite(context) && context > 0 ? context : null;
-  const window = c === null ? Infinity : Math.max(1024, c - Math.min(4096, Math.floor(c / 4)));
+  const window = c === null ? Infinity : Math.max(1, Math.floor(c) - Math.min(4096, Math.floor(c / 4)));
   // A provider's maximum is what the model can write, not what every reply should reserve (#5011): a 128K model that may write 128K left the
   // prompt about 4K before compaction. The reply keeps the larger of 32K and half the window; a smaller maximum is still respected.
   const cap = c === null ? Infinity : Math.max(DEFAULT_API_OUTPUT, Math.floor(c / 2));
-  if (Number.isFinite(maxOutput) && maxOutput > 0) return Math.max(1024, Math.min(Math.floor(maxOutput), window, cap));
-  return Math.max(1024, Math.min(DEFAULT_API_OUTPUT, window));
+  if (Number.isFinite(maxOutput) && maxOutput > 0) return Math.max(1, Math.min(Math.floor(maxOutput), window, cap));
+  return Math.min(DEFAULT_API_OUTPUT, window);
 }
 
 /**
@@ -345,10 +367,9 @@ export function buildProfile({ local = [], connections = [], gate = true, tools 
     else if (keyless) env[keyEnv] = 'not-needed';
     let baseURL = conn.baseUrl;
     if (protocol === 'anthropic-messages') baseURL = baseURL.replace(/\/v1\/?$/, '');
-    // A model server on this computer or network (another Strata PC, llama.cpp, LM Studio) takes the same thinking vocabulary as a local model:
-    // without it the Reasoning menu did nothing for a connection to another Strata machine.
-    const openRouter = protocol === 'openai-completions' && isOpenRouter(conn);
-    const ownServer = protocol === 'openai-completions' && !openRouter && isPrivateHost(baseURL);
+    const format = connectionReasoningFormat(conn);
+    // A private address may opt into local forwarding, but says nothing about its wire format.
+    const ownServer = protocol === 'openai-completions' && format !== 'openrouter' && isPrivateHost(baseURL);
     // A model server on this computer or network has a window of its own size like a local model: the reply keeps half of it, so the Harness can compact the conversation
     // before the window is full (with nearly all of it reserved for the reply a long task ended with "the prompt leaves no room to answer").
     const reply = m => (ownServer && Number.isFinite(m.contextMax) && m.contextMax > 0 && !m.maxOutput ? localOutputBudget(m.contextMax) : outputBudget(m.contextMax ?? ASSUMED_API_CONTEXT, m.maxOutput));
@@ -358,15 +379,22 @@ export function buildProfile({ local = [], connections = [], gate = true, tools 
       baseURL,
       retryPolicy: AGENT_RETRY_POLICY,
       ...(conn.apiKey || keyless ? { apiKeyEnv: keyEnv } : {}),
-      ...(ownServer ? { compat: THINKING_COMPAT } : openRouter ? { compat: { thinkingFormat: 'openrouter', ...storeCompat(baseURL) } } : protocol === 'openai-completions' ? { compat: storeCompat(baseURL) } : {}),
-      models: conn.models.map(m => ({
-        id: m.id, name: m.name || m.id,
-        contextWindow: m.contextMax ?? ASSUMED_API_CONTEXT, maxTokens: reply(m),
-        // Pictures are on by default (owner rule): only an explicit no (the person's switch, or the server's own model list or /props) leaves them out.
-        // (any OpenAI-style API: a cloud model the person marked, or whose model list says it reads pictures, takes image_url the same way)
-        input: protocol === 'openai-completions' && m.vision !== false ? ['text', 'image'] : ['text'],
-        ...(ownServer ? { reasoning: true, reasoningEfforts: LOCAL_EFFORTS } : openRouter && m.reasoning === true ? { reasoning: true, reasoningEfforts: OPENROUTER_EFFORTS } : {}),
-      })),
+      ...(protocol === 'openai-completions' ? { compat: format === 'strata' ? THINKING_COMPAT : {
+        ...storeCompat(baseURL),
+        ...(format === 'openrouter' ? { thinkingFormat: 'openrouter' } : {}),
+        ...(format === 'deepseek' ? { thinkingFormat: 'deepseek', supportsReasoningEffort: true, requiresReasoningContentOnAssistantMessages: true } : {}),
+        ...(format === 'effort' ? { supportsReasoningEffort: true } : {}),
+      } } : {}),
+      models: conn.models.map(m => {
+        const reasoningEfforts = connectionReasoningEfforts(conn, m);
+        return {
+          id: m.id, name: m.name || m.id,
+          contextWindow: m.contextMax ?? ASSUMED_API_CONTEXT, maxTokens: reply(m),
+          // Pictures are on unless the model or user explicitly switches them off.
+          input: protocol === 'openai-completions' && m.vision !== false ? ['text', 'image'] : ['text'],
+          ...(reasoningEfforts ? { reasoning: true, reasoningEfforts } : {}),
+        };
+      }),
     };
     const fp = fingerprint(providers[route], conn.apiKey ?? '');
     const shaped = ownServer ? addShaped(route, providers[route], baseURL) : null;

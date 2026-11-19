@@ -194,8 +194,14 @@ export async function startScriptedWorker({ port = 0, chunkDelayMs = 40, model =
       }
       if (step === 'cut') { const tail = '<tool_call>\n<function=read>\n<parameter=file_path>\n'; return markup(`Reading it.\n${tail}`, { strata_unread_tool_markup: { reason: 'cut_off', chars: tail.length } }); }
       if (step === 'junk') { const tail = '<tool_call>\n<=true>\n</tool_call>'; return markup(`Reading it.\n${tail}`, { strata_unread_tool_markup: { reason: 'unreadable', chars: tail.length } }); }
+      if (step === 'length') { send({ role: 'assistant', content: 'A partial answer.' }); return finish('length', 100); }
       if (step === 'read') return toolCall('read', { file_path: file });
       return say(['All done after the tool step.']);
+    }
+    if (directive?.[1] === 'thinkcut') {
+      if (!(body.tools ?? []).length) return say(['Scripted title']);
+      send({ role: 'assistant', reasoning_content: 'I should consider the question before answering.' });
+      return finish('length', 100);
     }
     if (directive?.[1] === 'cutwrite' || directive?.[1] === 'cutalways') {
       // A reply the length limit cuts inside a tool call (AGENT-LOST): some words, then `write` arguments that never close, finish "length".

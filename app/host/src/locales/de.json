@@ -1,4 +1,6 @@
 {
+  "agentReasoningFormat": "Reasoning-Format",
+  "agentProgress5": "Strata hat nach zwei Wiederherstellungsversuchen angehalten. Bereits erledigte Arbeit bleibt erhalten. Schreiben Sie „weiter“, um fortzufahren.",
   "agentProgress4": "Der Assistent hat seine Überlegungen wiederholt. Strata hat den Lauf beendet. Schreiben Sie „weiter“ und nennen Sie den nächsten Schritt.",
   "agentProgress1": "Der Assistent hat ohne abschließende Antwort angehalten. Die Werkzeugergebnisse stehen im Arbeitsprotokoll. Schreiben Sie „weiter“, um dort fortzufahren.",
   "agentProgress2": "Der Assistent erhielt wiederholt dasselbe Werkzeugergebnis. Strata hat den Lauf beendet und die Arbeit behalten. Schreiben Sie „weiter“ und nennen Sie den nächsten Schritt.",

@@ -41,6 +41,7 @@ const NOTES = {
   'repeated-work': 'The assistant kept getting the same tool result, so Strata stopped this run. The work is kept. Say “continue” with the next step.',
   'no-progress': 'The assistant went several steps without a new result, so Strata stopped this run. The work is kept. Say “continue” with the next step.',
   'repeated-thinking': 'The assistant kept repeating the same reasoning, so Strata stopped this run. Say “continue” with the next step.',
+  'recovery-limit': 'Strata stopped after two attempts to recover the reply. Any work already finished is kept. Say “continue” to go on.',
   'goal-failures': 'This goal kept running into the same errors, so I paused it. Look at the last steps, fix what is in the way, then resume the goal.',
 };
 export const GUARD_NOTES = Object.freeze({ ...NOTES });

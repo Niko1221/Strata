@@ -46,7 +46,7 @@ export function agentProvider(route, { budget = 0, sampling = null, forwardAlway
 }
 
 /** How often one turn asks the agent to carry on after a reply the length limit cut (each time in smaller pieces). */
-export const MAX_CUT_RETRIES = 2;
+export const MAX_RECOVERY_PROMPTS = 2;
 /** Replies the agent started by itself (a background command finished) that ended while no page was attached, kept per chat until a page takes them (#6070 review). */
 export const WOKEN_KEPT = 8;
 import { buildAnswer, parseQuestions } from './user-questions.mjs';
@@ -495,7 +495,8 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     let finalAnswer = false;
     // TOOLCALL-B: the texts this turn sent the assistant (a marker whose request carries one is this turn's), the time of its newest own event
     // (a marker from before it is not about the reply that just ended), and the corrections asked for in a row.
-    const fix = { texts: new Set(), since: Date.now(), count: 0, total: 0, waiting: false, ended: false };
+    const fix = { texts: new Set(), since: Date.now(), count: 0, waiting: false, ended: null };
+    let recoveryPrompts = 0;
     // The frame that closed the turn, kept with the turn's text for a page that comes back after it ended (attach).
     let terminal = null;
     // The turn guard (turn-guard.mjs): counts failing searches, searches, plan rewrites and a nearly full context. Set up once the route is known.
@@ -712,7 +713,10 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       // The turn guard: a turn the app stopped, or one that ended with no words, always ends with one plain message (a plan card carries it itself).
       let noteReason = turn.guard ?? null;
       // TOOLCALL-B: the model wrote calls that could not run after two corrections in a row: one plain sentence, nothing else added.
-      if (fix.ended && !noteReason && !failure) { noteReason = 'tool-calls'; extra.push(endNote()); }
+      if (fix.ended && !noteReason && !failure) {
+        noteReason = fix.ended;
+        if (noteReason === 'tool-calls') extra.push(endNote());
+      }
       // A reply the length limit cut ends with a sentence that says so (and what was lost), never with silence (AGENT-LOST).
       const cutEnd = !failure && !turn.stopping && projector.ended?.kind === 'max-tokens';
       if (cutEnd && !noteReason) {
@@ -1102,7 +1106,7 @@ ${note.text}`, key: note.key, values: note.values, noteReason: 'cut' });
           if (turn.pendingSteers.size) { armSettle(); return; }
           if (current && current.phase === 'active' && current.activation === 'armed') { turn.settleTimer = after(700, armSettle); return; }
           // TOOLCALL-B: the reply that ended the turn carried a tool call that could not run (an undeclared name, or markup cut off). The model
-          // gets a tool error and goes on, twice in a row at most; the third time the turn ends with one plain sentence. Nothing guessed runs.
+          // can retry within the turn's shared recovery budget. The bridge never runs a guessed tool call.
           if (fix.waiting) { turn.settleTimer = after(300, armSettle); return; }
           if (!turn.goalRun && !turn.stopping && projector.ended?.kind === 'completed') {
             const others = [...chats.values()].map(x => x.turn).filter(t => t && t !== turn && !t.finished && t.fix).map(t => ({ texts: t.fix.texts, since: t.fix.since }));
@@ -1111,13 +1115,13 @@ ${note.text}`, key: note.key, values: note.values, noteReason: 'cut' });
             else if (got?.marker) {
               const m = got.marker;
               const what = [...(m.rejected ?? []).map(r => `rejected ${String(r?.name ?? '?').slice(0, 40)}`), ...(m.unread ? [`unread ${m.unread.reason ?? '?'}`] : [])].join(', ');
-              if (fix.count >= MAX_TOOL_FIXES) {
-                fix.ended = true;
-                log(`agent · ${chatId}: tool call could not run (${what}) after ${fix.count} corrections in a row; the turn ends`);
+              if (fix.count >= MAX_TOOL_FIXES || recoveryPrompts >= MAX_RECOVERY_PROMPTS) {
+                fix.ended = fix.count >= MAX_TOOL_FIXES && !projector.tools.size ? 'tool-calls' : 'recovery-limit';
+                log(`agent · ${chatId}: tool call could not run (${what}); recovery limit reached, ending the turn`);
                 finishTurn(null);
                 return;
               } else {
-                fix.count += 1; fix.total += 1;
+                fix.count += 1; recoveryPrompts += 1;
                 const text = correctionText(m);
                 log(`agent · ${chatId}: tool call could not run (${what}); correction ${fix.count} of ${MAX_TOOL_FIXES}`);
                 reporter.set({ phase: 'waiting', code: 'fixing-tool-call', text: FIXING_STATUS, key: FIXING_STATUS, values: [], urgent: true });
@@ -1131,9 +1135,12 @@ ${note.text}`, key: note.key, values: note.values, noteReason: 'cut' });
           }
           // A reply the length limit cut (AGENT-LOST): the agent lost what it was writing. Say so in the chat and ask it to carry on in smaller pieces, twice at most.
           if (turn.cutWaiting) { turn.settleTimer = after(300, armSettle); return; }
-          if (projector.ended?.kind === 'max-tokens' && !turn.goalRun && !turn.stopping && (turn.cuts ?? 0) < MAX_CUT_RETRIES) {
+          if (projector.ended?.kind === 'max-tokens' && !turn.goalRun && !turn.stopping && recoveryPrompts < MAX_RECOVERY_PROMPTS) {
             const cut = projector.cut();
-            turn.cuts = (turn.cuts ?? 0) + 1;
+            // A continuation can preserve an incomplete tool draft or visible answer.
+            // A reasoning-only cutoff has neither; resending at the same effort wastes another decode.
+            if (!cut.calls.length && !finalAnswer) { finishTurn(null); return; }
+            recoveryPrompts += 1;
             const note = cutNotice({ ...cut, retrying: true });
             emit({ type: 'delta', own: true, text: `
 

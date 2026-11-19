@@ -1,4 +1,5 @@
 {
+  "agentProgress5": "Strata se detuvo tras dos intentos de recuperar la respuesta. El trabajo terminado se conserva. Escribe «continuar» para seguir.",
   "agentProgress4": "El asistente repitió el mismo razonamiento. Strata detuvo la ejecución. Escribe «continuar» e indica el siguiente paso.",
   "agentProgress1": "El asistente se detuvo sin una respuesta final. Los resultados de las herramientas están en el registro de trabajo. Escribe «continuar» para seguir.",
   "agentProgress2": "El asistente recibió repetidamente el mismo resultado. Strata detuvo la ejecución y conservó el trabajo. Escribe «continuar» e indica el siguiente paso.",
