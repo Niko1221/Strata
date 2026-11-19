@@ -3634,10 +3634,14 @@ int main(int argc, char** argv) {
         // `strata --families`: the GGUF architectures this build runs (setup asks before it installs one)
         if (std::strcmp(argv[i], "--families") == 0) {
 #if defined(STRATA_HAVE_QWEN35)
-            std::printf("qwen4exp qwen35moe\n");
+            std::printf("qwen4exp qwen35moe");
 #else
-            std::printf("qwen4exp\n");
+            std::printf("qwen4exp");
 #endif
+#if defined(STRATA_ENABLE_Q38)
+            std::printf(" qwen35");  // fork dense Q38 (same GGUF arch string)
+#endif
+            std::printf("\n");
             return 0;
         }
         // `strata --geometry`: the name of the model shape the kernels are compiled for (the geometry header's kGeometryName: flash_next for the default build);
