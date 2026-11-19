@@ -735,11 +735,12 @@ struct KvPlan {
     int mode = 0;
     int64_t pages = 0, slots = 0, pooled_rows = 0;
 };
-KvPlan kv_plan(const QsaShapes& s, int64_t max_cells, int64_t ring_cells) {
+KvPlan kv_plan(const QsaShapes& s, int64_t max_cells, int64_t ring_cells, int64_t idx_pooled_cells = 0) {
     KvPlan p;
     p.pages = (max_cells + s.page_size - 1) / s.page_size;
     p.slots = p.pages;
     p.pooled_rows = max_cells / s.idx_block + 2;
+    if (idx_pooled_cells > 0) p.pooled_rows = std::min<int64_t>(p.pooled_rows, idx_pooled_cells / s.idx_block + 2);
     if (g_kv_resident <= 0 || ring_cells < 0) return p;   // ring_cells < 0: always fully resident
     // A/B only: STRATA_KV_RING_OFF keeps the drafter fully resident, STRATA_KV_MAIN_OFF the main layers
     static const bool ring_off = std::getenv("STRATA_KV_RING_OFF") != nullptr;
@@ -785,9 +786,10 @@ int64_t qsa_kv_resident_min() {
 }
 uint64_t qsa_kv_host_bytes() { return g_kv_host_bytes; }
 
-uint64_t qsa_state_bytes(const ModelGeometry& g, int64_t max_cells, bool with_rope, int64_t ring_cells) {
+uint64_t qsa_state_bytes(const ModelGeometry& g, int64_t max_cells, bool with_rope, int64_t ring_cells,
+                         int64_t idx_pooled_cells) {
     const QsaShapes s = qsa_shapes(g);
-    const KvPlan p = kv_plan(s, max_cells, ring_cells);
+    const KvPlan p = kv_plan(s, max_cells, ring_cells, idx_pooled_cells);
     uint64_t n = 0;
     if (!(g_kv_elastic && p.mode == 0))   // the elastic K/V's pools are in their own VMM range
         n += kv_pool_bytes(s, p.slots, g_kv_hybrid && ring_cells <= 0,
@@ -805,9 +807,9 @@ uint64_t qsa_state_bytes(const ModelGeometry& g, int64_t max_cells, bool with_ro
 }
 
 uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, QsaState& st,
-                        const QsaState* share_rope, int64_t ring_cells) {
+                        const QsaState* share_rope, int64_t ring_cells, int64_t idx_pooled_cells) {
     const QsaShapes s = qsa_shapes(g);
-    const KvPlan p = kv_plan(s, max_cells, ring_cells);
+    const KvPlan p = kv_plan(s, max_cells, ring_cells, idx_pooled_cells);
     const int64_t pages = p.pages;
     Cursor c{(uint8_t*) base};
     st.kv_int8 = g_kv_int8 && !g_kv_q4;

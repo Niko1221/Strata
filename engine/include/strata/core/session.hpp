@@ -86,6 +86,7 @@ struct SessionState {
     /// `session_capture`/`session_loop`/`session_token` need no new parameter to reach it.  A `PleRun` whose
     /// `ready()` is false is skipped, which is what every caller had before LEDGER L123.
     PleRun ple;
+    bool borrows_scratch = false;
 };
 
 /// Bytes for a whole session at `max_cells` of context.  Every layer's state is sized at once, because P2.T10
@@ -96,10 +97,11 @@ struct SessionState {
 /// the default full range is byte-identical to the old whole-model carve.  Pure arithmetic - safe to call for
 /// a candidate range before anything is allocated, which is how the layer-split search prices a placement.
 uint64_t session_bytes(const ModelGeometry& g, int64_t max_cells, int64_t k, int64_t layer_lo = 0,
-                       int64_t layer_hi = -1);
+                       int64_t layer_hi = -1, bool share_scratch = false, int64_t idx_pooled_cells = 0);
 /// Carves `base` (DEVICE memory) into `s`.  Returns the bytes used.  Same range convention as `session_bytes`.
 uint64_t session_init(const ModelGeometry& g, int64_t max_cells, int64_t k, void* base, SessionState& s,
-                      int64_t layer_lo = 0, int64_t layer_hi = -1);
+                      int64_t layer_lo = 0, int64_t layer_hi = -1, const SessionState* share_from = nullptr,
+                      int64_t idx_pooled_cells = 0);
 /// Before the memory `session_init` carved is freed: forgets what points into it from outside the session (the
 /// rope kernels' registered angle table, #280), so a later session never rotates by freed memory.
 void session_release(SessionState& s);

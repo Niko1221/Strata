@@ -566,7 +566,7 @@ bool slot_ckpt_move_env() {
 bool slot_copy_batchsync_env() {
     static const bool on = [] {
         const char* v = std::getenv("STRATA_SLOT_COPY_BATCHSYNC");
-        return v && v[0] != '0';
+        return v == nullptr || v[0] == '\0' || v[0] != '0';
     }();
     return on;
 }
@@ -7555,6 +7555,7 @@ int main(int argc, char** argv) {
         o.batch = asked;
         return n;
     };
+    uint64_t saved_batch_slot_vram = 0;
     std::vector<std::vector<std::unique_ptr<strata::core::SessionState>>> bslot_ss;
     if (o.batch != 0) {
         const int cap = strata::kernels::kVerifyMaxT;
@@ -7666,18 +7667,29 @@ int main(int argc, char** argv) {
                 }
             }
         }
-        uint64_t bytes0 = 0;
+        const int64_t batch_idx_cells = [] {
+            const char* v = std::getenv("STRATA_BATCH_IDX_CELLS");
+            const long long n = v != nullptr ? std::atoll(v) : 32768;
+            return n > 0 ? (int64_t) n : (int64_t) 32768;
+        }();
+        uint64_t bytes0 = 0, saved_slot_vram_per_slot = 0;
         for (size_t k = 0; k < bslot_ss.size(); ++k) {
             const int dev = k == 0 ? 0 : stages[k - 1]->dev;
             const int64_t lo = k == 0 ? 0 : stages[k - 1]->lb;
             const int64_t hi = k == 0 ? (multi_gpu ? split_at[0] : -1) : stages[k - 1]->le;
             const strata::core::OnDevice on_k(dev);
-            const uint64_t bytes = strata::core::session_bytes(g, o.max_context, K, lo, hi);
-            if (k == 0) bytes0 = bytes;
+            const strata::core::SessionState* ref_ss = k == 0 ? &ss : &stages[k - 1]->ss;
+            const uint64_t full_bytes = strata::core::session_bytes(g, o.max_context, K, lo, hi);
+            const uint64_t bytes = strata::core::session_bytes(g, o.max_context, K, lo, hi, true, batch_idx_cells);
+            if (k == 0) {
+                bytes0 = bytes;
+                if (full_bytes > bytes) saved_slot_vram_per_slot = full_bytes - bytes;
+            }
             for (int b = 0; b < fit; ++b) {
                 auto u = std::make_unique<strata::core::SessionState>();
                 void* buf = nullptr;
-                if (cudaMalloc(&buf, bytes) != cudaSuccess || strata::core::session_init(g, o.max_context, K, buf, *u, lo, hi) == 0) {
+                if (cudaMalloc(&buf, bytes) != cudaSuccess ||
+                    strata::core::session_init(g, o.max_context, K, buf, *u, lo, hi, ref_ss, batch_idx_cells) == 0) {
                     cudaGetLastError();
                     if (buf != nullptr) cudaFree(buf);
                     size_t fb = 0, tb = 0;
@@ -7712,12 +7724,15 @@ int main(int argc, char** argv) {
                 fit = n;
             }
             o.batch = fit;
+            const uint64_t raw_saved_slot_vram = saved_slot_vram_per_slot * (uint64_t) o.batch;
+            const uint64_t batch_vram_headroom = 56ull << 20;
+            saved_batch_slot_vram = raw_saved_slot_vram > batch_vram_headroom ? raw_saved_slot_vram - batch_vram_headroom : 0;
             resolve_groups_auto();   // (the slots that fit may not be the ones asked for)
             if (o.batch_groups > 1 && o.batch % o.batch_groups != 0) o.batch_groups = 1;
             // the sessions' VRAM is the expert cache's: say what it costs (docs/BATCHING.md has the measured trade)
-            std::fprintf(stderr, "strata generate: --batch %d: the slot sessions take %.2f GiB of VRAM on CUDA0 that the "
-                                 "expert cache would otherwise hold\n", o.batch,
-                         (double) bytes0 * o.batch / 1073741824.0);
+            std::fprintf(stderr, "strata generate: --batch %d: the slot sessions take %.2f GiB of VRAM on CUDA0 (%.2f GiB "
+                                 "reclaimed for the expert cache via compact slot sessions)\n", o.batch,
+                         (double) bytes0 * o.batch / 1073741824.0, (double) saved_batch_slot_vram / 1073741824.0);
         }
     }
 
@@ -8951,7 +8966,7 @@ int main(int argc, char** argv) {
         // what the uniform sizing granted, in the 256-byte slots the loop below counts: the blob formats of 1280 / 2560
         // rows are whole multiples of 256 already; an NVFP4 blob's 16-byte scale tail is not, and the unrounded budget
         // held one slot fewer than asked (--expert-cache 1: none)
-        const uint64_t budget = (uint64_t) o.expert_cache * ((nibble_max_slot_bytes() + 255) / 256 * 256);
+        const uint64_t budget = (uint64_t) o.expert_cache * ((nibble_max_slot_bytes() + 255) / 256 * 256) + saved_batch_slot_vram;
         uint64_t used = 0;
         const size_t keep_free = ((size_t) o.vram_reserve_mib << 20) + (size_t) pipe_first;
         size_t free_room = free_b > keep_free ? free_b - keep_free : 0;
@@ -14206,8 +14221,13 @@ int main(int argc, char** argv) {
                                      "STRATA_ROUTE_TAIL_SKIP=0 turns it off\n", strata::core::tail_skip_rank(),
                              tse == nullptr ? " (default)" : "", strata::core::tail_skip_rank());
         }
-        if (o.adapt_every > 0 && o.adapt_swaps > 0 && !all_experts_resident)
+        if (o.adapt_every > 0 && o.adapt_swaps > 0 && !all_experts_resident) {
             drive.d.usage.assign((size_t) (g.n_layers * g.n_expert), 0.0f);
+            if (o.batch > 0 && !host_res.empty()) {
+                for (size_t idx = 0; idx < host_res.size(); ++idx)
+                    if (host_res[idx] >= 0) drive.d.usage[idx] = 1.0f;
+            }
+        }
         PcieAuto pcie_auto;
         if (o.pcie_frac_auto && !all_experts_resident && o.batch == 0 && o.peer_device < 0 && (n_stages == 1 || pcie_auto_split_ok())) {
             const auto& pl = strata::kernels::cpu::expert_layout();
@@ -15980,7 +16000,7 @@ int main(int argc, char** argv) {
         // synchronized once before and once after.  Opt-in: STRATA_SLOT_COPY_DIRECT=1 (default: the host path).
         static const bool slot_copy_direct = [] {
             const char* v = std::getenv("STRATA_SLOT_COPY_DIRECT");
-            return v != nullptr && v[0] != '\0' && v[0] != '0';
+            return v == nullptr || v[0] == '\0' || v[0] != '0';
         }();
         auto direct_slot_copy = [&](bool into_slot, int b, const std::vector<int32_t>& ids, std::string& e) -> bool {
             const int64_t upto = (int64_t) ids.size();
@@ -16053,13 +16073,19 @@ int main(int argc, char** argv) {
                 // are on the drafter's device (the last stage's GPU with a layer split): the copy's ring refill is a
                 // kernel launch there.
                 const strata::core::OnDevice on_mtp(mtp.device());
-                strata::core::ConversationKv image;
-                if (!mtp.idle(e) || !slot_mtp[(size_t) b]->idle(e) ||
-                    !strata::core::conversation_kv_save(image, mtp.kv_state(), draft_geometry, upto, false, e) ||
-                    !strata::core::conversation_kv_restore(image, slot_mtp[(size_t) b]->kv_state(),
-                                                           draft_geometry, upto, false, e) ||
-                    cudaDeviceSynchronize() != cudaSuccess)
-                    return false;
+                if (!mtp.idle(e) || !slot_mtp[(size_t) b]->idle(e)) return false;
+                if (slot_copy_direct) {
+                    if (!strata::core::conversation_kv_copy(mtp.kv_state(), slot_mtp[(size_t) b]->kv_state(),
+                                                            draft_geometry, upto, false, e, false))
+                        return false;
+                } else {
+                    strata::core::ConversationKv image;
+                    if (!strata::core::conversation_kv_save(image, mtp.kv_state(), draft_geometry, upto, false, e) ||
+                        !strata::core::conversation_kv_restore(image, slot_mtp[(size_t) b]->kv_state(),
+                                                               draft_geometry, upto, false, e))
+                        return false;
+                }
+                if (cudaDeviceSynchronize() != cudaSuccess) return false;
                 slot_mtp[(size_t) b]->set_prompt_len(upto);
             }
             return true;
@@ -16417,6 +16443,7 @@ int main(int argc, char** argv) {
                 bt_accepted += keep[active[a]] - 1;
             }
             std::vector<int> df2_launched;   // batch DFlash2: slots whose draft graph is queued
+            std::vector<int> mtp_launched;   // batch MTP: slots whose draft graph is queued
             for (int t = 0; t < A; ++t) {
                 const int b = active[t];
                 BSlot& sl = bs[(size_t) b];
@@ -16489,21 +16516,18 @@ int main(int argc, char** argv) {
                 }
 #endif
                 if (batch_mtp && !batch_df2 && sl.active) {
-                    // The slot's two residual rows (the final residuals of the last stage: ver.final_R_all() follows the
-                    // chain, so with a layer split they are on the last stage's GPU, where the drafters are).  The copy is
-                    // queued on the drafter's own stream after the window's host sync, so the draft graph reads it.
                     const strata::core::OnDevice on_slot_mtp(slot_mtp[(size_t) b]->device());
                     const size_t stride = (size_t) g.hc * (size_t) g.n_embd;
                     if (cudaMemcpyAsync(slot_mtp_rows[(size_t) b].get(),
                                         ver.final_R_all() + (size_t) first[t] * stride,
                                         2 * stride * sizeof(float), cudaMemcpyDeviceToDevice,
                                         slot_mtp[(size_t) b]->stream()) != cudaSuccess ||
-                        !slot_mtp[(size_t) b]->draft(2, outb + first[t], pos[first[t]], keep[b] - 1,
-                                                    sl.draft.data(), err)) {
+                        !slot_mtp[(size_t) b]->draft_async(2, outb + first[t], pos[first[t]], keep[b] - 1,
+                                                          sl.draft.data(), err)) {
                         std::printf("ERR batch MTP slot %d: %s\n", b, err.c_str());
                         return false;
                     }
-                    sl.draft_ready = true;
+                    mtp_launched.push_back(b);
                 }
             }
 #if defined(STRATA_HAVE_DFLASH2)
@@ -16519,6 +16543,14 @@ int main(int argc, char** argv) {
                 sl.draft_ready = true;
             }
 #endif
+            for (const int b : mtp_launched) {
+                BSlot& sl = bs[(size_t) b];
+                if (!slot_mtp[(size_t) b]->draft_wait(err)) {
+                    std::printf("ERR batch MTP slot %d: %s\n", b, err.c_str());
+                    return false;
+                }
+                sl.draft_ready = true;
+            }
             std::fflush(stdout);
             bt_emit += msd(w2, Clock::now());
             if (adapt_run.th.joinable()) {

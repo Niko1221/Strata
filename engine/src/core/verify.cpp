@@ -527,6 +527,12 @@ bool mapped(size_t bytes, void** h, void** d) {
     return cudaHostGetDevicePointer(d, *h, 0) == cudaSuccess;
 }
 
+inline int64_t qsa_idx_max_cells(const QsaState& st, const strata::kernels::QsaShapes& s) {
+    if (st.idx_pooled_rows >= 2)
+        return std::min<int64_t>(st.max_cells, std::max<int64_t>(1, (st.idx_pooled_rows - 2) * s.idx_block));
+    return st.max_cells;
+}
+
 strata::kernels::QsaShapes shapes_of(const ModelGeometry& g) { return qsa_shapes(g); }
 
 const WeightRef* need(const LayerView& v, const char* suffix, std::string& err) {
@@ -1383,7 +1389,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
     // a streamed K/V's resolve and the attention once per run instead of once per row.  They are the same kernels with
     // n rows instead of 1, as the solo window runs them over its rows.  Opt-in (#5864, off until the two-card
     // measurement): STRATA_BATCH_SLOT_RUNS=1; unset, row by row, as before.
-    static const bool slot_runs_env = [] { const char* v = std::getenv("STRATA_BATCH_SLOT_RUNS"); return v != nullptr && std::atoi(v) != 0; }();
+    static const bool slot_runs_env = [] { const char* v = std::getenv("STRATA_BATCH_SLOT_RUNS"); return v == nullptr || *v == '\0' || std::atoi(v) != 0; }();
     const bool slot_runs = batch_rec_ && dec_batch && slot_runs_env;
     // the end of the run of rows of row `first`'s slot in [first, end) (one row when the runs are off)
     auto run_end = [&](int first, int end, bool on) {
@@ -1917,7 +1923,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                     if (dec_batch && !g_no_batch_kv && !batch_rec_) {
                         const QsaIndexerBuffers ib{st.idx_tail, st.idx_dead, st.idx_pooled, st.idx_block_pos};
                         native_qsa_indexer_append_steps(idx_raw + tb * ID, step_ + tb * kStepCount + kStepPos, kStepCount,
-                                                        n, 0, (const float*) wikn->data, EPS, ib, s, st.max_cells,
+                                                        n, 0, (const float*) wikn->data, EPS, ib, s, qsa_idx_max_cells(st, s),
                                                         rope_scaling(), ns);
                     } else {
                         for (int t = tb; t < te;) {
@@ -1928,10 +1934,10 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                             if (t - first > 1)   // a slot's rows: one launch (slot_runs)
                                 native_qsa_indexer_append_steps(idx_raw + first * ID, step_ + first * kStepCount + kStepPos,
                                                                 kStepCount, t - first, 0, (const float*) wikn->data, EPS,
-                                                                ib, s, sx.max_cells, rope_scaling(), ns);
+                                                                ib, s, qsa_idx_max_cells(sx, s), rope_scaling(), ns);
                             else
                                 native_qsa_indexer_append(idx_raw + first * ID, step_ + first * kStepCount + kStepPos, 0,
-                                                          (const float*) wikn->data, EPS, ib, s, sx.max_cells,
+                                                          (const float*) wikn->data, EPS, ib, s, qsa_idx_max_cells(sx, s),
                                                           rope_scaling(), ns);
                         }
                     }
@@ -3031,8 +3037,9 @@ bool Verifier::capture_commit(std::string& err) {
                 const WeightRef* wikn = need(LayerView(*wt_, l), "indexer.k_norm.weight", err);
                 if (!wikn) { ok = false; fits = false; break; }
                 const QsaState& st = ss.qsa_states[qi];
-                if (nq >= QsaIndexerLayers::kMax || (mc >= 0 && st.max_cells != mc)) { fits = false; break; }
-                mc = st.max_cells;
+                const int64_t ic = qsa_idx_max_cells(st, s);
+                if (nq >= QsaIndexerLayers::kMax || (mc >= 0 && ic != mc)) { fits = false; break; }
+                mc = ic;
                 il.gamma[nq] = (const float*) wikn->data;
                 il.tail_src[nq] = tail_snap_ + (size_t) qi * TS;
                 il.tail[nq] = st.idx_tail; il.dead[nq] = st.idx_dead; il.pooled[nq] = st.idx_pooled;
@@ -3078,11 +3085,11 @@ bool Verifier::capture_commit(std::string& err) {
                 const QsaIndexerBuffers ib{st.idx_tail, st.idx_dead, st.idx_pooled, st.idx_block_pos};
                 if (!g_no_batch_kv) {
                     native_qsa_indexer_append_steps(idx_raw_L_ + (size_t) qsa_index * MT * ID, commit_ + 2, 1, (int) MT, 0,
-                                                    (const float*) wikn->data, EPS, ib, s, st.max_cells, rope_scaling(), cs_);
+                                                    (const float*) wikn->data, EPS, ib, s, qsa_idx_max_cells(st, s), rope_scaling(), cs_);
                 } else {
                     for (int64_t t = 0; t < MT; ++t)
                         native_qsa_indexer_append(idx_raw_L_ + (size_t) (qsa_index * MT + t) * ID, commit_ + 2 + t, 0,
-                                                  (const float*) wikn->data, EPS, ib, s, st.max_cells,
+                                                  (const float*) wikn->data, EPS, ib, s, qsa_idx_max_cells(st, s),
                                                   rope_scaling(), cs_);
                 }
                 ++qsa_index;
@@ -4247,7 +4254,7 @@ bool Verifier::capture_commit_batch(const int* rows, int S, int hbase, std::stri
                     for (int u = first; u < t; ++u)
                         native_qsa_indexer_append(idx_raw_L_ + (size_t) (qsa_index * MT + u) * ID,
                                                   commitb_ + (size_t) rows[first] * CB + 2 + (u - first),
-                                                  0, (const float*) wikn->data, EPS, ib, s, st.max_cells,
+                                                  0, (const float*) wikn->data, EPS, ib, s, qsa_idx_max_cells(st, s),
                                                   rope_scaling(), cs_);
                 }
                 ++qsa_index;
@@ -4425,7 +4432,7 @@ bool Verifier::capture_deferred(const int* rows, int S, int hbase, std::string& 
                         for (int u = first; u < t; ++u)
                             native_qsa_indexer_append(dc_idx_ + (size_t) (qsa_index * R + hbase + u) * ID,
                                                       commitd_ + (size_t) rows[first] * CB + 2 + (u - first), 0,
-                                                      (const float*) wikn->data, EPS, ib, s, st.max_cells,
+                                                      (const float*) wikn->data, EPS, ib, s, qsa_idx_max_cells(st, s),
                                                       rope_scaling(), cs_);
                     }
                     ++qsa_index;

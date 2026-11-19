@@ -437,7 +437,7 @@ bool refresh_residency(const QsaState& st, const ModelGeometry& g, int64_t upto,
 bool copy_residency(const QsaState& from, const QsaState& to, const ModelGeometry& g, bool queued, bool& copied,
                     std::string& error) {
     copied = false;
-    static const bool on = [] { const char* e = std::getenv("STRATA_KV_COPY_RESIDENT"); return e != nullptr && e[0] != '\0' && e[0] != '0'; }();
+    static const bool on = [] { const char* e = std::getenv("STRATA_KV_COPY_RESIDENT"); return e == nullptr || e[0] == '\0' || e[0] != '0'; }();
     const auto& mf = from.map;
     const auto& mt = to.map;
     if (!on || from.kv_mode != 1 || to.kv_mode != 1 || from.n_slots != to.n_slots || mf.n_slots != mt.n_slots ||
