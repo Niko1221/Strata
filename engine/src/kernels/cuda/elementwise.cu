@@ -267,7 +267,36 @@ __global__ void scatter_rows_kernel(const float4* __restrict__ src, float4* dst,
     float4* d = dst + (int64_t) rows[r] * w4;
     for (int64_t i = threadIdx.x; i < w4; i += blockDim.x) d[i] = s[i];
 }
+__global__ void scatter_rows_and_signal_kernel(const float4* __restrict__ src, float4* dst, const int32_t* __restrict__ rows,
+                                               int64_t w4, uint32_t* __restrict__ done_ptr, uint32_t val,
+                                               int* __restrict__ d_blocks_finished) {
+    const int64_t r = blockIdx.x;
+    const float4* s = src + r * w4;
+    float4* d = dst + (int64_t) rows[r] * w4;
+    for (int64_t i = threadIdx.x; i < w4; i += blockDim.x) d[i] = s[i];
+    if (done_ptr != nullptr) {
+        __syncthreads();
+        if (threadIdx.x == 0) {
+            __threadfence_system();
+            if (atomicAdd(d_blocks_finished, 1) == (int) gridDim.x - 1) {
+                *d_blocks_finished = 0;
+                *done_ptr = val;
+            }
+        }
+    }
+}
+__global__ void signal_done_kernel(uint32_t* __restrict__ ptr, uint32_t val) {
+    if (threadIdx.x == 0 && blockIdx.x == 0) {
+        __threadfence_system();
+        *ptr = val;
+    }
+}
 }  // namespace
+void signal_stream_done(uint32_t* d_ptr, uint32_t val, void* stream) {
+    if (d_ptr != nullptr) {
+        signal_done_kernel<<<1, 1, 0, (cudaStream_t) stream>>>(d_ptr, val);
+    }
+}
 void scatter_rows_f32(const float* src, float* dst, const int32_t* rows, int64_t n, int64_t width, void* stream) {
     if (n <= 0) return;
     if ((width & 3) != 0 || ((uintptr_t) dst & 15) != 0 || ((uintptr_t) src & 15) != 0) {
@@ -275,6 +304,16 @@ void scatter_rows_f32(const float* src, float* dst, const int32_t* rows, int64_t
         std::exit(1);
     }
     scatter_rows_kernel<<<(unsigned) n, 128, 0, (cudaStream_t) stream>>>((const float4*) src, (float4*) dst, rows, width / 4);
+}
+void scatter_rows_and_signal_f32(const float* src, float* dst, const int32_t* rows, int64_t n, int64_t width,
+                                 uint32_t* d_done_ptr, uint32_t val, int* d_blocks_finished, void* stream) {
+    if (n <= 0) return;
+    if ((width & 3) != 0 || ((uintptr_t) dst & 15) != 0 || ((uintptr_t) src & 15) != 0) {
+        std::fprintf(stderr, "scatter_rows_and_signal_f32: width must be a multiple of 4 and both pointers 16-byte aligned\n");
+        std::exit(1);
+    }
+    scatter_rows_and_signal_kernel<<<(unsigned) n, 128, 0, (cudaStream_t) stream>>>(
+        (const float4*) src, (float4*) dst, rows, width / 4, d_done_ptr, val, d_blocks_finished);
 }
 void copy_rows_from_mapped(float* dst, const float* src, int64_t rows, int64_t width, const int32_t* hit_rows,
                            const int32_t* count, void* stream) {

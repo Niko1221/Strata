@@ -128,6 +128,10 @@ private:
     std::vector<int32_t> row_of_;                     ///< compact row -> original entry
     int64_t launched_rows_ = 0;
     bool launched_direct_ = false;
+    volatile uint32_t* h_done_seq_ = nullptr;
+    uint32_t* d_done_seq_ = nullptr;
+    int* d_blocks_finished_ = nullptr;
+    uint32_t seq_ = 0;
 };
 
 }  // namespace strata::core
