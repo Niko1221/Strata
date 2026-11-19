@@ -909,6 +909,8 @@ struct Options {
     int peer_reserve_mib = 600;
     int64_t peer_slots = 0;
     int peer_adapt_swaps = -1;
+    double peer_hot = -1.0;
+    int64_t peer_hot_at = -1;
     /// the prompt path's rows per layer the peer computes: -1 = half of chunk x top-k, 0 = the prompt path stays on
     /// the primary
     int64_t peer_prefill_rows = -1;
@@ -1410,6 +1412,8 @@ void usage() {
                  "  --peer-reserve-mib N  VRAM the peer tier leaves free on its card (default 600)\n"
                  "  --peer-slots N       expert slots on the peer (default: what fits)\n"
                  "  --peer-adapt-swaps N  peer cache swaps per adaptation step (default: --adapt-swaps)\n"
+                 "  --peer-hot F         share of hot experts given to the peer (default 0.45, 0 with asymmetric GPUs)\n"
+                 "  --peer-hot-at N      rank threshold for peer hot split (default 8700)\n"
                  "  --peer-prefill-rows N  prompt rows per layer the peer computes (default half of chunk x top-k;\n"
                  "                       0 = the prompt path stays on the primary)\n"
                  "  --expert-cache-per-layer  R4.2g: give each layer its OWN slots instead of letting the first\n"
@@ -4115,6 +4119,8 @@ int main(int argc, char** argv) {
         else if (a == "--peer-reserve-mib") o.peer_reserve_mib = std::atoi(next("--peer-reserve-mib"));
         else if (a == "--peer-slots") o.peer_slots = std::atoll(next("--peer-slots"));
         else if (a == "--peer-adapt-swaps") o.peer_adapt_swaps = std::atoi(next("--peer-adapt-swaps"));
+        else if (a == "--peer-hot") o.peer_hot = std::atof(next("--peer-hot"));
+        else if (a == "--peer-hot-at") o.peer_hot_at = std::atoll(next("--peer-hot-at"));
         else if (a == "--peer-prefill-rows") o.peer_prefill_rows = std::atoll(next("--peer-prefill-rows"));
         else if (a == "--no-hit-poke") o.no_hit_poke = true;
         else if (a == "--expert-profile") o.expert_profile = next("--expert-profile");
@@ -6534,9 +6540,9 @@ int main(int argc, char** argv) {
         // not hold, in order) gets them first.
         if (o.peer_device >= 1) {   // default 0.45 (measured: 0.3-0.6 all better than 0; 0 = off, e.g. for the gate)
             const char* ph = std::getenv("STRATA_PEER_HOT");
-            const double f = ph ? std::atof(ph) : 0.45;
+            const double f = o.peer_hot >= 0.0 ? o.peer_hot : (ph ? std::atof(ph) : 0.45);
             const char* pa = std::getenv("STRATA_PEER_HOT_AT");
-            const size_t at = std::min(profile.size(), (size_t) (pa ? std::atoll(pa) : 8700));
+            const size_t at = std::min(profile.size(), (size_t) (o.peer_hot_at > 0 ? o.peer_hot_at : (pa ? std::atoll(pa) : 8700)));
             if (f > 0.0 && f < 1.0 && at > 0) {
                 std::vector<std::pair<int32_t, int32_t>> keep, moved;
                 for (size_t r = 0; r < at; ++r) {
