@@ -3,7 +3,15 @@
 // #if __AVX2__ / __AVX__ / generic branches are ggml's own, so each tier gives the bits of ggml-cpu built for that flavour.
 // Needs before it: <immintrin.h>, internal.hpp, h2f / f2h (fp16 conversions) and the strata::quant::generic dot declarations.
 
+// Bind the lazy table once per row so the block loop only indexes the scale.
+#ifdef STRATA_QUANT_AVX2_SCALE_TABLE
+#define STRATA_BIND_DOT_HALF_SCALES() const auto& h2f = half_scales()
+#else
+#define STRATA_BIND_DOT_HALF_SCALES()
+#endif
+
 void dot_q4_0_q8_0(int n, float* STRATA_RESTRICT s, const void* STRATA_RESTRICT vx, const void* STRATA_RESTRICT vy) {
+    STRATA_BIND_DOT_HALF_SCALES();
     const int qk = QK8_0;
     const int nb = n / qk;
 
@@ -157,9 +165,7 @@ void dot_q4_0_q8_0(int n, float* STRATA_RESTRICT s, const void* STRATA_RESTRICT 
 }
 
 void dot_q4_1_q8_1(int n, float* STRATA_RESTRICT s, const void* STRATA_RESTRICT vx, const void* STRATA_RESTRICT vy) {
-#ifdef STRATA_QUANT_AVX2_SCALE_TABLE
-    const auto& h2f = half_scales();
-#endif
+    STRATA_BIND_DOT_HALF_SCALES();
     const int qk = QK8_1;
     const int nb = n / qk;
 
@@ -214,6 +220,7 @@ void dot_q4_1_q8_1(int n, float* STRATA_RESTRICT s, const void* STRATA_RESTRICT 
 }
 
 void dot_q5_0_q8_0(int n, float* STRATA_RESTRICT s, const void* STRATA_RESTRICT vx, const void* STRATA_RESTRICT vy) {
+    STRATA_BIND_DOT_HALF_SCALES();
     const int qk = QK8_0;
     const int nb = n / qk;
 
@@ -289,9 +296,7 @@ void dot_q5_0_q8_0(int n, float* STRATA_RESTRICT s, const void* STRATA_RESTRICT 
 }
 
 void dot_q5_1_q8_1(int n, float* STRATA_RESTRICT s, const void* STRATA_RESTRICT vx, const void* STRATA_RESTRICT vy) {
-#ifdef STRATA_QUANT_AVX2_SCALE_TABLE
-    const auto& h2f = half_scales();
-#endif
+    STRATA_BIND_DOT_HALF_SCALES();
     const int qk = QK8_1;
     const int nb = n / qk;
 
@@ -373,6 +378,7 @@ void dot_q5_1_q8_1(int n, float* STRATA_RESTRICT s, const void* STRATA_RESTRICT 
 }
 
 void dot_q8_0_q8_0(int n, float* STRATA_RESTRICT s, const void* STRATA_RESTRICT vx, const void* STRATA_RESTRICT vy) {
+    STRATA_BIND_DOT_HALF_SCALES();
     const int qk = QK8_0;
     const int nb = n / qk;
 
@@ -3080,3 +3086,4 @@ void dot_iq4_xs_q8_K(int n, float* STRATA_RESTRICT s, const void* STRATA_RESTRIC
     generic::dot_iq4_xs_q8_K_generic(n, s, vx, vy);
 #endif
 }
+#undef STRATA_BIND_DOT_HALF_SCALES
