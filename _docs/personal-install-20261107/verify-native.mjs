@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {join,resolve} from 'node:path';
 import {createHash} from 'node:crypto';
-import {verifyEngine,verifyNativeBuild,nativeSources,sha256,verifyPublicAssets} from '../../apps/host/scripts/release-integrity.mjs';
+import {verifyEngine,verifyNativeBuild,nativeSources,sha256,verifyPublicAssets} from '../../app/host/scripts/release-integrity.mjs';
 const root=resolve(import.meta.dirname,'../..');
 const folder=process.argv[2];assert.ok(folder);
 for(const key of ['STRATA_NATIVE_SOURCE_ROOT','STRATA_NATIVE_SOURCE_COMMIT','STRATA_NATIVE_MANIFEST_SHA256'])assert.equal(process.env[key],undefined,'Old frozen-source override must not be present');

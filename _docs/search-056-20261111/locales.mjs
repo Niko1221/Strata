@@ -18,7 +18,7 @@ const rows = [
 ];
 const languages=['en','ja','zh','de','es','ru','pt','ko','fr'];
 for (const [index,language] of languages.entries()) {
-  const file=resolve(import.meta.dirname,`../../apps/host/src/locales/tools-${language}.json`);
+  const file=resolve(import.meta.dirname,`../../app/host/src/locales/tools-${language}.json`);
   const old=readFileSync(file,'utf8'), catalog=JSON.parse(old);
   rows.forEach((row,n)=>{if(n!==4)catalog[`search056_${String(n+1).padStart(2,'0')}`]=row[index];});
   delete catalog.search056_05; // Dismiss already has a translation in the base catalog.

@@ -66,7 +66,7 @@ def stage() -> None:
         str(BUILD / "Release/native-build.json")], check=True, cwd=ROOT, timeout=60)
     source = json.loads((OUT / "build-source-r2.json").read_text())
     old = Path("H:/Strata/releases/strata-0.5.1/component-r1/0.5.1-windows-x86_64-cuda-cuda13")
-    from strata_control import engine_component as ec
+    from terminal.strata_control import engine_component as ec
     old_manifest = ec.read_manifest(old)
     assert old_manifest.version == "0.5.1"
     assert ec.verify_signature(old_manifest, environ={}) == "verified"

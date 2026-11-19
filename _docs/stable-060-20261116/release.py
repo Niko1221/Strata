@@ -873,7 +873,7 @@ def component(args: argparse.Namespace, work: Path) -> dict:
         quiet=True,
     )
     sys.path.insert(0, str(ROOT))
-    from strata_control import engine_component, signing
+    from terminal.strata_control import engine_component, signing
 
     manifest = load(signed / "engine-component.json")
     signing.verify_bytes(

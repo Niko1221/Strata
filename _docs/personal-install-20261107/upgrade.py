@@ -27,7 +27,7 @@ def backup() -> None:
     no_shell();require(not BACKUP.exists(),'Fresh private backup required')
     require(INSTALLED.resolve()==INSTALLED and not INSTALLED.is_junction() and not INSTALLED.is_symlink(),'Linked install destination')
     BACKUP.mkdir()
-    sys.path.insert(0,str(ROOT));from strata_control import private_files
+    sys.path.insert(0,str(ROOT));from terminal.strata_control import private_files
     private_files.restrict_to_current_user(BACKUP,directory=True)
     local=Path('C:/Users/downl/AppData/Local/Strata');data=Path('C:/Users/downl/.strata/data')
     sources={'host-data':data,'roaming':Path('C:/Users/downl/AppData/Roaming/Strata')}

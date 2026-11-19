@@ -61,7 +61,7 @@ run('build-feed', '--out', assets, '--key', args.key, '--sequence', previous['se
     '--channel', 'stable', '--engine', inputs / 'engine', '--control', inputs / 'control')
 for name in ('install.ps1', 'install.sh'):
     shutil.copy2(ROOT / 'packaging' / name, assets / name)
-code = "import sys,json;sys.path.insert(0,sys.argv[1]);from strata_control import feed,signing;f=feed.fetch(sys.argv[2],signing.load_trusted_keys(environ={}));assert len(f.engine)==len(f.control)==1;assert f.engine[0].version==f.control[0].version=='0.5.9';print(json.dumps({'ok':True,'version':'0.5.9','sequence':f.sequence}))"
+code = "import sys,json;sys.path.insert(0,sys.argv[1]);from terminal.strata_control import feed,signing;f=feed.fetch(sys.argv[2],signing.load_trusted_keys(environ={}));assert len(f.engine)==len(f.control)==1;assert f.engine[0].version==f.control[0].version=='0.5.9';print(json.dumps({'ok':True,'version':'0.5.9','sequence':f.sequence}))"
 verified = subprocess.check_output([str(RES / 'control/python/python.exe'), '-I', '-B', '-c', code,
     str(RES / 'control'), str(assets)], cwd=ROOT, text=True, timeout=60)
 assert json.loads(verified)['ok']

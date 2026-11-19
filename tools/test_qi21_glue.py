@@ -47,9 +47,9 @@ class GlueMatchesSdcpp(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             t = Path(td)
             exe = t / "strata-glue-check"
-            r = subprocess.run([CXX, "-std=c++17", *flags, "-I", str(ROOT / "include"),
-                                str(ROOT / "src" / "image" / "pipeline" / "qi21_glue.cpp"),
-                                str(ROOT / "src" / "image" / "pipeline" / "qi21_glue_check_main.cpp"), "-o", str(exe)],
+            r = subprocess.run([CXX, "-std=c++17", *flags, "-I", str(ROOT.parent / "engine" / "include"),
+                                str(ROOT.parent / "engine" / "src" / "image" / "pipeline" / "qi21_glue.cpp"),
+                                str(ROOT.parent / "engine" / "src" / "image" / "pipeline" / "qi21_glue_check_main.cpp"), "-o", str(exe)],
                                capture_output=True, text=True, timeout=300)
             self.assertEqual(r.returncode, 0, r.stderr[-3000:])
 

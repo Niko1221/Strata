@@ -175,7 +175,7 @@ def fresh(path: Path | None) -> Path:
     )
     require(not path.exists(), "fresh output root required; retain all earlier attempts")
     path.mkdir()
-    from strata_control.private_files import restrict_to_current_user
+    from terminal.strata_control.private_files import restrict_to_current_user
 
     restrict_to_current_user(path, directory=True)
     (path / "temp").mkdir()
@@ -208,7 +208,7 @@ def environment(out: Path) -> dict:
 
 def verify_component(component: Path) -> dict:
     """Deferred until execute: built-in signature + full component hashes, never model hashes."""
-    from strata_control import engine_component as ec
+    from terminal.strata_control import engine_component as ec
 
     manifest = ec.read_manifest(component)
     require(manifest.version == "0.5.2", "wrong engine version")

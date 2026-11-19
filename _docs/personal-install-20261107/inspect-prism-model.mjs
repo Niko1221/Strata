@@ -1,6 +1,6 @@
 /** Read the named GGUF through the production inspector without registering or loading it. */
-import {inspectLocalModel} from '../../apps/host/server/local-models.mjs';
-import {readGGUF} from '../../apps/host/server/gguf.mjs';
+import {inspectLocalModel} from '../../app/host/server/local-models.mjs';
+import {readGGUF} from '../../app/host/server/gguf.mjs';
 const input=process.argv[2];if(!input)throw Error('Model path required');
 const {variant}=inspectLocalModel(input);
 const gguf=readGGUF(variant.local.path,{includeTensors:true});

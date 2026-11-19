@@ -4,8 +4,8 @@ import {spawnSync} from 'node:child_process';
 import {createRequire} from 'node:module';
 import {cpSync,existsSync,mkdirSync,readFileSync,writeFileSync} from 'node:fs';
 import {join} from 'node:path';
-import {host} from '../../apps/host/tests/helpers/reference-host.mjs';
-import {verifyPublicAssets,sha256} from '../../apps/host/scripts/release-integrity.mjs';
+import {host} from '../../app/host/tests/helpers/reference-host.mjs';
+import {verifyPublicAssets,sha256} from '../../app/host/scripts/release-integrity.mjs';
 
 const root='C:/Users/downl/Documents/ChatGPT/Strata',base='H:/Strata/releases/repair-055-20261110-opencode';
 const attempt=process.argv[2];assert.match(attempt??'',/^[a-z0-9-]+$/);

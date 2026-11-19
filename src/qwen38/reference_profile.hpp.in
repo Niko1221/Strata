@@ -1,3 +1,0 @@
-#pragma once
-// Generated from the exact source profile bytes; no runtime file lookup.
-inline constexpr unsigned char q38_reference_profile[]={@Q38_PROFILE_BYTES@};

@@ -19,7 +19,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "apps" / "desktop" / "scripts"))
+sys.path.insert(0, str(ROOT.parent / "app" / "desktop" / "scripts"))
 import appimage_elf as E  # noqa: E402
 
 
@@ -231,7 +231,7 @@ class RealStaticPie(unittest.TestCase):
         """The shell function of repack-appimage.sh --check, run on a fixture AppDir whose `rg` is a real static PIE."""
         if sys.platform != "linux" or os.uname().machine != "x86_64" or not shutil.which("bash") or not shutil.which("python3"):
             self.skipTest("the check runs the bundled rg: x86-64 Linux with bash and python3")
-        script = ROOT / "apps" / "desktop" / "scripts" / "repack-appimage.sh"
+        script = ROOT.parent / "app" / "desktop" / "scripts" / "repack-appimage.sh"
         src = Path(self.tmp, "rg.c")
         src.write_text(chr(10).join(["#include <stdio.h>", "#include <string.h>",
                                      'int main(int c, char **v) { for (int i = 1; i < c; i++) if (!strcmp(v[i], "--version")) { puts("ripgrep 0"); return 0; }',

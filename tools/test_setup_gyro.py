@@ -114,7 +114,7 @@ class GyroEngineVersionTest(unittest.TestCase):
         self.assertIsNone(qwen["Q2_0"]["engine_min"])                # a size with no minimum of its own says so
 
     def test_the_pack_reader_is_in_the_source_this_minimum_describes(self):
-        text = (ROOT / "src" / "kernels" / "cpu" / "expert_layout.cpp").read_text(encoding="utf-8")
+        text = (ROOT.parent / "engine" / "src" / "kernels" / "cpu" / "expert_layout.cpp").read_text(encoding="utf-8")
         self.assertIn("native_experts.txt v5 declares Hadamard-folded experts", text)
 
 

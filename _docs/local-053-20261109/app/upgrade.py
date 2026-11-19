@@ -84,7 +84,7 @@ def backup() -> None:
     before_user_inventory = user_hashes()
     BACKUP.mkdir()
     sys.path.insert(0, str(ROOT))
-    from strata_control import private_files
+    from terminal.strata_control import private_files
     private_files.restrict_to_current_user(BACKUP, directory=True)
     sources = set()
     # Retain all small user files. Skip weights and managed engine bytes, which get an exact inventory.

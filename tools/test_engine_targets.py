@@ -17,8 +17,8 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-HELPER = ROOT / "packaging" / "engine_targets.sh"
-SCRIPTS = {"packaging/build_cuda_linux.sh": "cmake", "spark/build_engine.sh": '"$cmake"'}
+HELPER = ROOT.parent / "tools" / "packaging" / "engine_targets.sh"
+SCRIPTS = {"tools/packaging/build_cuda_linux.sh": "cmake", "engine/spark/build_engine.sh": '"$cmake"'}
 
 FAKE_CMAKE = """#!/bin/sh
 echo "$*" >> "$FAKE_ARGS"
@@ -106,9 +106,9 @@ class EngineTargetsRealNinja(unittest.TestCase):
 class ScriptsUseTheHelper(unittest.TestCase):
     def test_the_cuda_linux_scripts_ask_the_build_tree(self):
         for rel, cmake in SCRIPTS.items():
-            text = (ROOT / rel).read_text(encoding="utf-8")
+            text = (ROOT.parent / rel).read_text(encoding="utf-8")
             self.assertNotIn("--target strata strata_kq", text, rel)
-            self.assertIn('. "$repo/packaging/engine_targets.sh"', text, rel)
+            self.assertIn('. "$repo/tools/packaging/engine_targets.sh"', text, rel)
             self.assertIn(f'targets=$(engine_targets {cmake} "$build")', text, rel)
             self.assertIn('--target $targets', text, rel)
 

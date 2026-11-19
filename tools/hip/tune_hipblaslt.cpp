@@ -1,7 +1,7 @@
 #include <hip/hip_runtime.h>
 #include <hip/hip_fp16.h>
 #include <hip/hip_bfloat16.h>
-#include "../../include/strata/kernels/bf16_bits.hpp"
+#include "../../../engine/include/strata/kernels/bf16_bits.hpp"
 #include <hip/hip_version.h>
 #include <hipblas/hipblas.h>
 #include <hipblaslt/hipblaslt.h>

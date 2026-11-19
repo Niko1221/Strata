@@ -169,7 +169,7 @@ def main() -> int:
     (lic / "NOTICE.txt").write_text(NOTICE.format(rocm=a.rocm_version, dlls="\n".join("  " + d for d in shipped)),
                                     encoding="utf-8")
 
-    version = re.search(r"project\(strata VERSION ([\d.]+)", (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")).group(1)
+    version = re.search(r"project\(strata VERSION ([\d.]+)", (ROOT.parent / "engine" / "CMakeLists.txt").read_text(encoding="utf-8")).group(1)
     hl = (a.rocm / "include" / "hipblaslt" / "hipblaslt-version.h").read_text(encoding="utf-8")
     hlv = [int(re.search(rf"#define\s+HIPBLASLT_VERSION_{k}\s+(\d+)", hl).group(1)) for k in ("MAJOR", "MINOR", "PATCH")]
     meta = {"source": "prebuilt", "backend": "hip", "platform": "windows-x64", "version": version, "archs": archs,

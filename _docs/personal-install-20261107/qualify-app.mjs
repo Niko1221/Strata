@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {existsSync,mkdirSync,readFileSync,writeFileSync,readdirSync} from 'node:fs';
 import {spawn,spawnSync,execFileSync} from 'node:child_process';
 import {resolve,join,relative} from 'node:path';
-import {verifyTree,verifyHost,sha256,verifyControlData,verifyEngine,verifyNativeBuild} from '../../apps/host/scripts/release-integrity.mjs';
+import {verifyTree,verifyHost,sha256,verifyControlData,verifyEngine,verifyNativeBuild} from '../../app/host/scripts/release-integrity.mjs';
 const root=resolve(import.meta.dirname,'../..'),out='H:/Strata/releases/personal-052-local2-20261107/app';
 const product='0.5.2-local.2',controlVersion='0.5.3';
 const argv=process.argv.slice(2);
@@ -42,7 +42,7 @@ try{
  assert.equal(signed.signatureVerified,true);assert.equal(sha256(join(native,'engine-component.json')),signed.signedManifestSHA256);
  assert.equal(sha256(join(native,'local-backends/prism/runtime.json')),signed.prismManifestSHA256);
  verifyNativeBuild(native,root,verifyEngine(native,'0.5.2'));
- const signature=spawnSync(join(app,'control/python/python.exe'),['-I','-B','-c',"import sys,json; sys.path.insert(0,sys.argv[1]); from strata_control import signing,engine_component; m=json.load(open(sys.argv[2],encoding='utf-8')); signing.verify_bytes(signing.load_trusted_keys(environ={}),engine_component.signing_payload(m),m.get('signature'))",join(app,'control'),join(native,'engine-component.json')],{encoding:'utf8',windowsHide:true,timeout:30000});
+ const signature=spawnSync(join(app,'control/python/python.exe'),['-I','-B','-c',"import sys,json; sys.path.insert(0,sys.argv[1]); from terminal.strata_control import signing,engine_component; m=json.load(open(sys.argv[2],encoding='utf-8')); signing.verify_bytes(signing.load_trusted_keys(environ={}),engine_component.signing_payload(m),m.get('signature'))",join(app,'control'),join(native,'engine-component.json')],{encoding:'utf8',windowsHide:true,timeout:30000});
  assert.equal(signature.status,0);
  for(const dir of [home,join(home,'Local'),join(home,'Roaming'),join(home,'Temp')])mkdirSync(dir,{recursive:true});
  const env=Object.fromEntries(Object.entries(process.env).filter(([k])=>!/^(STRATA_|DSH_|WEBVIEW2_)/i.test(k)&&!/(?:API_KEY|TOKEN|SECRET|PASSWORD)$/i.test(k)));

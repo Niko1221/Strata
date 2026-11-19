@@ -3,7 +3,7 @@ import {spawn} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {readFileSync, writeFileSync} from 'node:fs';
 import {fileURLToPath} from 'node:url';
-import {createLocalMemoryGuard, RAM_FLOOR_BYTES} from '../../apps/host/server/local-memory-guard.mjs';
+import {createLocalMemoryGuard, RAM_FLOOR_BYTES} from '../../app/host/server/local-memory-guard.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const output = 'H:/Strata/evidence/ram32gb-pr00-20261115';

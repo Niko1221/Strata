@@ -26,7 +26,7 @@ def main() -> None:
     preview=json.loads(subprocess.check_output([str(NODE),str(HERE/'inspect-prism-model.mjs'),str(model)],cwd=ROOT,text=True,encoding='utf-8',timeout=90))
     require(preview['architecture']=='qwen35' and preview['layerCount']==33 and preview['tensorBlockCount']==32
         and preview['minTensorBlock']==0 and preview['maxTensorBlock']==31 and preview['recurrentMapLength']==33,'Expected unmodified Qwen3.5 trunk/map metadata')
-    sys.path.insert(0,str(ROOT));from strata_control import private_files
+    sys.path.insert(0,str(ROOT));from terminal.strata_control import private_files
     PRIVATE.mkdir();private_files.restrict_to_current_user(PRIVATE,directory=True)
     records=[];registry=None
     data=Path('C:/Users/downl/.strata/data')

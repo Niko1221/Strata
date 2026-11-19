@@ -5,10 +5,10 @@ import {mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync} from 'n
 import {tmpdir} from 'node:os';
 import {join, resolve} from 'node:path';
 import {spawnSync} from 'node:child_process';
-import {createAgentBridge} from '../../apps/host/server/agent/agent-bridge.mjs';
-import {GROUP_IDS} from '../../apps/host/server/agent/tools-catalog.mjs';
-import {startScriptedWorker} from '../../apps/host/tests/helpers/scripted-worker.mjs';
-import {harnessFixtureEnvironment} from '../../apps/host/tests/helpers/harness-environment.mjs';
+import {createAgentBridge} from '../../app/host/server/agent/agent-bridge.mjs';
+import {GROUP_IDS} from '../../app/host/server/agent/tools-catalog.mjs';
+import {startScriptedWorker} from '../../app/host/tests/helpers/scripted-worker.mjs';
+import {harnessFixtureEnvironment} from '../../app/host/tests/helpers/harness-environment.mjs';
 import {createFixture, TOOLS} from './real-model-mcp.mjs';
 import {requestHeaders} from './real-model.mjs';
 

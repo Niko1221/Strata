@@ -28,10 +28,10 @@ class NoiseMatchesSdcppX86(unittest.TestCase):
             subprocess.run([sys.executable, "-I", "-B", str(ROOT / "tools" / "image" / "sdcpp_noise" / "apply.py"),
                             "--prepare", str(inc)], check=True, capture_output=True)
             exe = Path(td) / "strata-noise-check"
-            r = subprocess.run([CXX, "-std=c++17", "-O2", "-I", str(ROOT / "include"),
+            r = subprocess.run([CXX, "-std=c++17", "-O2", "-I", str(ROOT.parent / "engine" / "include"),
                                 "-I", str(ROOT / "tools" / "image" / "sdcpp_noise"), "-I", str(inc),
-                                str(ROOT / "src" / "image" / "noise" / "qi21_noise.cpp"),
-                                str(ROOT / "src" / "image" / "noise" / "qi21_noise_check_main.cpp"), "-o", str(exe)],
+                                str(ROOT.parent / "engine" / "src" / "image" / "noise" / "qi21_noise.cpp"),
+                                str(ROOT.parent / "engine" / "src" / "image" / "noise" / "qi21_noise_check_main.cpp"), "-o", str(exe)],
                                capture_output=True, text=True, timeout=600)
             self.assertEqual(r.returncode, 0, r.stderr[-3000:])
             bad = []

@@ -1,8 +1,8 @@
 /** Task-local external staging, using the existing component recipe's validators. */
 import {readFileSync,writeFileSync,existsSync,mkdirSync,copyFileSync,statSync} from 'node:fs';
 import {resolve,join,dirname,relative} from 'node:path';
-import {files,sha256,verifyEngine,verifyNativeBuild} from '../../apps/host/scripts/release-integrity.mjs';
-import {LOCAL_BACKENDS,findLocalBackend,verifyLocalBackend} from '../../apps/host/server/local-backends.mjs';
+import {files,sha256,verifyEngine,verifyNativeBuild} from '../../app/host/scripts/release-integrity.mjs';
+import {LOCAL_BACKENDS,findLocalBackend,verifyLocalBackend} from '../../app/host/server/local-backends.mjs';
 const root=resolve(import.meta.dirname,'../..');
 const [native,input,folder]=process.argv.slice(2).map(p=>resolve(p));
 const owned=resolve('H:/Strata/releases/personal-052-local2-20261107');

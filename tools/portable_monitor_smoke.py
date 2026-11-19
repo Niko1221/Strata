@@ -21,7 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 
-BUILDER = Path(__file__).resolve().parents[1] / "packaging" / "monitor_bundle.py"
+BUILDER = Path(__file__).resolve().parents[1].parent / "tools" / "packaging" / "monitor_bundle.py"
 INTERACTIVE_CODE = r'''
 import asyncio
 import io

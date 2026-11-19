@@ -72,7 +72,7 @@ class Pieces(unittest.TestCase):
     def test_shift_table_matches_the_decoder(self):
         """vae_ref's CONV_SHIFTS is the table of src/image/vae/wan_vae.cu conv_shift(), so "f16op" models our operands."""
         import re
-        cu = (Path(__file__).resolve().parents[3] / "src" / "image" / "vae" / "wan_vae.cu").read_text(encoding="utf-8")
+        cu = (Path(__file__).resolve().parents[3].parent / "engine" / "src" / "image" / "vae" / "wan_vae.cu").read_text(encoding="utf-8")
         body = cu[cu.index("int conv_shift(const std::string& name) {"):]
         body = body[:body.index("\n}\n")]
         table = {m.group(1): int(m.group(2)) for m in re.finditer(r'if \(name == "([^"]+)"\) return (\d+);', body)}

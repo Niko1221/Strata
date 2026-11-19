@@ -30,9 +30,9 @@ const rows=[
 ['Subagent answer · no tools','サブエージェントの回答 · ツールなし','子代理回答 · 无工具','Unteragent-Antwort · ohne Werkzeuge','Respuesta del subagente · sin herramientas','Ответ субагента · без инструментов','Resposta do subagente · sem ferramentas','하위 에이전트 답변 · 도구 없음','Réponse du sous-agent · sans outils'],
 ['Starting side-question subagent…','横の質問用サブエージェントを起動しています…','正在启动旁问子代理…','Unteragent für Nebenfrage startet…','Iniciando el subagente de la pregunta adicional…','Запускается субагент для дополнительного вопроса…','Iniciando o subagente da pergunta adicional…','추가 질문 하위 에이전트 시작 중…','Démarrage du sous-agent pour la question annexe…'],
 ];
-const english=JSON.parse(readFileSync(resolve(import.meta.dirname,'../../apps/host/src/locales/tools-en.json'),'utf8'));
+const english=JSON.parse(readFileSync(resolve(import.meta.dirname,'../../app/host/src/locales/tools-en.json'),'utf8'));
 for(const [column,language] of languages.entries()){
-  const file=resolve(import.meta.dirname,`../../apps/host/src/locales/tools-${language}.json`),catalog=JSON.parse(readFileSync(file,'utf8'));
+  const file=resolve(import.meta.dirname,`../../app/host/src/locales/tools-${language}.json`),catalog=JSON.parse(readFileSync(file,'utf8'));
   for(const [index,row] of rows.entries()){
     if(row.length!==languages.length)throw new Error('Missing language');
     if(Object.values(english).includes(row[0]))continue;

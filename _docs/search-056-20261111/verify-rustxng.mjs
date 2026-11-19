@@ -1,6 +1,6 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { createRustxngRuntime } from '../../apps/host/server/rustxng-runtime.mjs';
-import { createRustxngSearch } from '../../apps/host/server/web-search-rustxng.mjs';
+import { createRustxngRuntime } from '../../app/host/server/rustxng-runtime.mjs';
+import { createRustxngSearch } from '../../app/host/server/web-search-rustxng.mjs';
 
 const out = 'H:/Strata/releases/search-056-20261111-codex';
 const runtime = createRustxngRuntime();

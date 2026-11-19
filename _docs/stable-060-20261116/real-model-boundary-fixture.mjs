@@ -1,8 +1,8 @@
 /** Synthetic preparation evidence only. Never starts an app, model or network request. */
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {apply, manualDecision, MANUAL_PRESET} from '../../apps/host/server/agent/plugins/strata-gate.mjs';
-import {MODE_PRESETS} from '../../apps/host/server/agent/profile.mjs';
+import {apply, manualDecision, MANUAL_PRESET} from '../../app/host/server/agent/plugins/strata-gate.mjs';
+import {MODE_PRESETS} from '../../app/host/server/agent/profile.mjs';
 
 test('Manual uses full access and cannot restrict reads to the requested workspace', () => {
   assert.equal(MODE_PRESETS.manual.sandbox, 'danger-full-access');

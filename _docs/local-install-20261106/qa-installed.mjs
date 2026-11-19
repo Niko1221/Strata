@@ -6,7 +6,7 @@ import {createServer} from 'node:net';
 import {createRequire} from 'node:module';
 import {join,resolve} from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
-import {sha256} from '../../apps/host/scripts/release-integrity.mjs';
+import {sha256} from '../../app/host/scripts/release-integrity.mjs';
 import {createHash} from 'node:crypto';
 const root=resolve(import.meta.dirname,'../..'),out='H:/Strata/releases/local-052-20261106-opencode';
 const attempt=process.argv[2]??'r3';assert.match(attempt,/^r[3-9][0-9]*$/);

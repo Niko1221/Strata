@@ -1,7 +1,7 @@
 # Install and build from a source checkout
 
 Use this guide to work on Strata's code or maintain a source-based installation. It is for developers.
-To just use Strata (version 0.2.15), install the [desktop app or the Terminal](INSTALL.md). Installed apps do not use `START-HERE.bat`.
+To just use Strata (version 0.2.16), install the [desktop app or the Terminal](INSTALL.md). Installed apps do not use `START-HERE.bat`.
 
 The repository includes `START-HERE.bat`, `SETUP.bat`, `UPDATE.bat`, `setup.sh` and `update.sh`.
 Run them from a cloned or extracted **source folder**. They may install dependencies, prepare model files and
@@ -76,7 +76,7 @@ claiming to have tested a code change. A released engine cannot validate changes
 For a direct NVIDIA build, with the required compiler and CUDA toolkit installed:
 
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSTRATA_ENABLE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=native
+cmake -S engine -B build -DCMAKE_BUILD_TYPE=Release -DSTRATA_ENABLE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=native
 cmake --build build --target strata -j8
 ```
 
@@ -85,13 +85,13 @@ cmake --build build --target strata -j8
 
 Run against the resulting binary and the matching model config. Use the build instructions for
 [HIP](AMD_HIP.md), [SYCL](INTEL_ARC.md) or [Metal](MAC.md) when changing those backends.
-Follow [contribution validation requirements](../CONTRIBUTING.md) before requesting review.
+Follow [contribution validation requirements](../.github/CONTRIBUTING.md) before requesting review.
 
 For the Terminal monitor from a checkout:
 
 ```bash
-.venv/bin/pip install -r requirements-monitor.txt
-STRATA_PYTHON="$PWD/.venv/bin/python3" bin/strata monitor --url http://127.0.0.1:8080
+.venv/bin/pip install -r terminal/requirements-monitor.txt
+STRATA_PYTHON="$PWD/.venv/bin/python3" terminal/bin/strata monitor --url http://127.0.0.1:8080
 ```
 
 ## From source: Mac
@@ -138,6 +138,15 @@ Ready-made x86 engines require AVX2. Source setup can build experimental AVX or 
 this does not make every model pack compatible. Q2_0's CPU requirements differ from the i-quants.
 See the [CPU and build notes](DETAILS.md) and [older GPU guide](OLDER_GPUS.md) for the relevant hardware.
 Record the actual CPU, compiler, model and validation results when reporting an experimental build.
+
+### Using an engine you built with `strata launch`
+
+`strata launch` and the app start the engine installed in Strata's component folder, not the one in your checkout. To use your own build,
+run `strata components add-build <folder>`, where the folder holds the engine program you built (`strata`, its libraries and `BUILD.json`).
+Strata first checks that the program runs on this computer (`strata --version`) and is for this computer's kind of graphics card. It then
+copies it in as a local engine, not signed by Strata, and uses it from then on. `strata components engines` and `strata doctor` show it as
+a local build. Strata never switches to a local build by itself, not even when it is newer than the released engines.
+`strata components use newest` goes back to the released engines, and `strata components remove <folder>` deletes the local build.
 
 ## Updating
 

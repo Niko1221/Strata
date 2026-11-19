@@ -6,7 +6,7 @@ import {createRequire} from 'node:module';
 import {mkdirSync,readFileSync,writeFileSync,existsSync,readdirSync,realpathSync} from 'node:fs';
 import {join,resolve} from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
-import {sha256} from '../../apps/host/scripts/release-integrity.mjs';
+import {sha256} from '../../app/host/scripts/release-integrity.mjs';
 const root=resolve(import.meta.dirname,'../..'),out='H:/Strata/releases/local-052-20261106-opencode';
 const attempt=process.argv[2]??'r1';assert.match(attempt,/^r[1-9][0-9]*$/);
 const qa=JSON.parse(readFileSync(join(out,'app-qualification.json')));assert.equal(qa.ok,true);

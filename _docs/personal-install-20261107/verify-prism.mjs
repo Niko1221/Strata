@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import {readFileSync,writeFileSync} from 'node:fs';
 import {join,resolve} from 'node:path';
 import {spawnSync} from 'node:child_process';
-import {verifyLocalBackend,verifyLocalBackendSource} from '../../apps/host/server/local-backends.mjs';
-import {sha256} from '../../apps/host/scripts/release-integrity.mjs';
+import {verifyLocalBackend,verifyLocalBackendSource} from '../../app/host/server/local-backends.mjs';
+import {sha256} from '../../app/host/scripts/release-integrity.mjs';
 const [candidate,legacy,receipt]=process.argv.slice(2);assert.ok(candidate&&legacy&&receipt);
 const report={ok:false,readOnlyPayload:true,modelLoaded:false,runtimes:[]};
 for(const [folder,version,exeHash] of [[candidate,'0.4.1','5ca5d8bfdfcb6fe46a96a06b71eaf45aedfbd1c6673bda2a10eb6412613be777'],[legacy,'0.4.0','90428627933e0c4120fe0bcaa6a3cc7803dd5fe5846102eeacf4cf1298807a8d']]){

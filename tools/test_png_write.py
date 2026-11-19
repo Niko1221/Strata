@@ -49,9 +49,9 @@ class PngWriter(unittest.TestCase):
     def setUpClass(cls):
         cls.td = tempfile.TemporaryDirectory()
         cls.exe = Path(cls.td.name) / "strata-png-write"
-        r = subprocess.run([CXX, "-std=c++17", "-O2", "-I", str(ROOT / "include"),
-                            str(ROOT / "src" / "image" / "png" / "png_write.cpp"),
-                            str(ROOT / "src" / "image" / "png" / "png_write_main.cpp"), "-o", str(cls.exe)],
+        r = subprocess.run([CXX, "-std=c++17", "-O2", "-I", str(ROOT.parent / "engine" / "include"),
+                            str(ROOT.parent / "engine" / "src" / "image" / "png" / "png_write.cpp"),
+                            str(ROOT.parent / "engine" / "src" / "image" / "png" / "png_write_main.cpp"), "-o", str(cls.exe)],
                            capture_output=True, text=True, timeout=300)
         assert r.returncode == 0, r.stderr[-3000:]
 

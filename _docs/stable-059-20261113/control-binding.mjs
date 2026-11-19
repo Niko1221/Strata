@@ -2,7 +2,7 @@
 import {execFileSync} from 'node:child_process';
 import {existsSync,readFileSync} from 'node:fs';
 import {join,relative,resolve} from 'node:path';
-import {files,sha256,verifyTree,verifyControlData} from '../../apps/host/scripts/release-integrity.mjs';
+import {files,sha256,verifyTree,verifyControlData} from '../../app/host/scripts/release-integrity.mjs';
 const root=resolve(import.meta.dirname,'../..'), control=join(root,'apps/desktop/src-tauri/resources/control');
 const commit=readFileSync(join(control,'COMMIT'),'utf8').trim();
 if(!/^[a-f0-9]{40}$/.test(commit)||readFileSync(join(control,'VERSION'),'utf8').trim()!=='0.5.9')throw Error('Wrong Control build identity');

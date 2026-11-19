@@ -18,7 +18,7 @@ types = json.loads((tp / "token_type.json").read_text())
 tok = ST.Tokenizer(tokens, merges, types)
 tpl = ChatTemplate(tp / "chat_template.jinja")
 
-readme = (REPO / "README.md").read_text(encoding="utf-8")[:2600]
+readme = (REPO.parent / "README.md").read_text(encoding="utf-8")[:2600]
 
 PROMPTS = {
     "chat_explain": "Explain how a hash map works and why lookups are O(1) on average. Then say when that guarantee breaks down. Keep it clear for a junior developer.",

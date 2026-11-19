@@ -16,7 +16,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "metal"))
+sys.path.insert(0, str(ROOT.parent / "engine" / "metal"))
 import setup  # noqa: E402
 import setup_mac as M  # noqa: E402
 
@@ -80,7 +80,7 @@ class Recommendation(unittest.TestCase):
         rec, notes = M.recommend_model(32)
         self.assertEqual(rec, "Q2_0")
         self.assertTrue(notes and "stream" in notes[0] and "~14 tok/s" in notes[0])
-        self.assertTrue(M.streams("Q2_0", 32) and M.streams("Q2_0", 48) and not M.streams("Q2_0", 64))
+        self.assertTrue(M.streams("Q2_0", 32) and M.streams("Q2_0", 64) and not M.streams("Q2_0", 96))
 
     def test_a_bigger_choice_is_kept_with_a_note(self):
         notes = M.model_note("IQ3_XXS", 64)
@@ -162,7 +162,7 @@ class Config(unittest.TestCase):
 class Vision(unittest.TestCase):
     def test_the_projector_is_pinned_and_the_encoder_builds_with_metal(self):
         self.assertIn("mmproj-Qwen3.8-Flash-Next-BF16.gguf", M.VISION_SHA256)
-        src = (ROOT / "metal" / "setup_mac.py").read_text(encoding="utf-8")
+        src = (ROOT.parent / "engine" / "metal" / "setup_mac.py").read_text(encoding="utf-8")
         self.assertIn('"-DSTRATA_VISION_CUDA=OFF"', src)
         self.assertIn('cfg["args"] += ["--vision"]', src)
 
@@ -172,7 +172,7 @@ class ExpertsFile(unittest.TestCase):
 
     def run_it(self, free_gb, done=False):
         import tempfile
-        sys.path.insert(0, str(ROOT / "metal" / "tools"))
+        sys.path.insert(0, str(ROOT.parent / "engine" / "metal" / "tools"))
         import stream_experts
         d = Path(tempfile.mkdtemp())
         native = d / "m.gguf"
@@ -260,7 +260,7 @@ class HandOver(unittest.TestCase):
                 setup.main()
 
     def test_setup_sh_fetches_a_pinned_python_on_macos_only(self):
-        sh = (ROOT / "setup.sh").read_text(encoding="utf-8")
+        sh = (ROOT.parent / "setup.sh").read_text(encoding="utf-8")
         self.assertIn('[ "$(uname -s)" = Darwin ]', sh)
         self.assertIn("83dcb04777c798bd95f3687acf9ae84b09860272ee6bdfb05be8bcf9447f75b8", sh)
 
@@ -276,6 +276,16 @@ class RepackGuard(unittest.TestCase):
         self.assertFalse(M.streams("UD-Q4_K_XL", 128))          # 82.6 + 8 GB: resident (measured: nothing compressed)
         self.assertTrue(M.streams("UD-Q5_K_XL", 128))
         self.assertTrue(M.streams("UD-Q4_K_XL", 96))
+
+    def test_setup_decides_streaming_as_the_engine_does(self):
+        # setup writes STRATA_METAL_STREAM=0/1 and the engine follows it: both must use stream.cpp's rule (the mapped bytes
+        # + 12 GiB against resident_cap), or a pack is forced resident where the engine would stream.  Gyro-S on a 48 GB
+        # M4 Pro (working set 40.2 GB): 29.7 + 12.9 GB does not fit, the forced resident run paged until the watchdog stopped it
+        self.assertAlmostEqual(M.OVERHEAD_GB, 12 * 2 ** 30 / 1e9, places=6)
+        self.assertTrue(M.streams("Gyro-S", 48))
+        self.assertFalse(M.streams("Gyro-S", 64))
+        self.assertTrue(M.streams("Gyro-M", 96))
+        self.assertAlmostEqual(M.gpu_budget_gb(16), 16 * 1.073741824 - 7.0, places=3)      # a small Mac: macOS keeps 7 GB
 
     @unittest.skipIf(sys.platform == "win32", "os.kill(pid, 0) is a probe on macOS and Linux only")
     def test_a_live_lock_is_seen_a_stale_one_is_dropped(self):
@@ -326,7 +336,7 @@ class RepackGuard(unittest.TestCase):
         self.assertEqual(M.engine_pids(lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1, "", "")), [])
 
     def test_the_repack_writes_in_bounded_pieces(self):
-        src = (ROOT / "metal" / "tools" / "metal_repack.py").read_text(encoding="utf-8")
+        src = (ROOT.parent / "engine" / "metal" / "tools" / "metal_repack.py").read_text(encoding="utf-8")
         self.assertIn("SYNC_EVERY = 1 << 30", src)                  # flushed every GiB
         self.assertIn("nocache(o)", src)                            # F_NOCACHE on the output
         self.assertIn("buffering=0", src)                           # write() is a write
@@ -426,6 +436,27 @@ class ControlMode(unittest.TestCase):
         self.assertNotIn("--mtp", self.config()["args"])
         rc, _ = self.run_setup()                                  # the Flash-Next size itself says nothing of the kind
         self.assertFalse([s for s in self.said if "model list says" in s])
+
+    def test_a_model_without_a_draft_layer_plans_and_starts_no_drafter(self):
+        # the run config of such a model says what Windows and Linux write ("mtp": false, "drafting": "off"), so the plan and the start say
+        # "Drafting: Off"; before, neither key was written and both said "Drafting: MTP" with nothing to load (TRIAGE-0215)
+        from strata_control import drafting, mac_fit
+        for hw in (M4, M5):                                       # a Mac that streams and one that keeps the model in memory
+            with mock.patch.dict(mac_fit.MAC_MODELS["Q2_0"], {"no_mtp": True}):
+                rc, _ = self.run_setup(hw=hw)
+            self.assertEqual(rc, 0)
+            cfg = self.config()
+            self.assertIs(cfg.get("mtp"), False, hw)
+            self.assertEqual(cfg.get("drafting"), "off", hw)
+            self.assertNotIn("--mtp", cfg["args"])
+            for name in (cfg["model_name"], "feedfam-q4_k_m"):    # the feed model's own name as well
+                d = drafting.apply(dict(cfg, model_name=name), data_dir=self.data, backend="metal", archs=[])
+                self.assertEqual((d.drafter, drafting.summary_line(d)), ("off", "Drafting: Off"), (hw, name))
+        (self.home / "strata-q2_0.json").unlink()                 # (a fresh install: nothing carried over from the runs above)
+        rc, _ = self.run_setup(hw=M5)                             # the Flash-Next size keeps its drafter: neither key is written
+        cfg = self.config()
+        self.assertNotIn("drafting", cfg)
+        self.assertNotIn("mtp", cfg)
 
     def test_a_big_mac_keeps_the_pack_in_memory_and_adds_the_draft_layer(self):
         rc, ran = self.run_setup(hw=M5, argv=("--yes", "--no-start", "--model", "IQ3_XXS"))
@@ -597,11 +628,11 @@ class MacAppUnsloth(unittest.TestCase):
                 self.install("UD-Q3_K_XL")
 
     def test_the_bundle_carries_the_repack_tools(self):
-        sys.path.insert(0, str(ROOT / "packaging"))
+        sys.path.insert(0, str(ROOT.parent / "tools" / "packaging"))
         import package_terminal as pt
         self.assertEqual(pt.INSTALLER_METAL_TOOLS, ("metal_repack", "stream_experts"))
         for n in pt.INSTALLER_METAL_TOOLS:
-            self.assertTrue((ROOT / "metal" / "tools" / f"{n}.py").is_file())
+            self.assertTrue((ROOT.parent / "engine" / "metal" / "tools" / f"{n}.py").is_file())
         with tempfile.TemporaryDirectory() as t:
             out = pt.add_installer(Path(t))
             self.assertIn("metal/tools/metal_repack.py", out["files"])

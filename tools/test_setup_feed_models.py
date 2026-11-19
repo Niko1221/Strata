@@ -556,7 +556,7 @@ class MacTables(Base):
         self.assertNotIn("feed", by["qwen"])
 
     def test_the_terminal_setup_reads_the_feed_for_a_name_it_does_not_know(self):
-        sys.path.insert(0, str(ROOT / "metal"))
+        sys.path.insert(0, str(ROOT.parent / "engine" / "metal"))
         import setup as global_setup
         import setup_mac
         saved = {k: copy.deepcopy(getattr(global_setup, k)) for k in ("MODELS", "FAMILIES", "HF_REVISIONS", "REV_PINS", "FEED_MODELS", "FEED_UNAVAILABLE")}

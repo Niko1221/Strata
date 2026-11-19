@@ -241,7 +241,7 @@ def installed_component(path: Path, signed: Path, files: dict, components: Path)
         "Installed component bytes differ",
     )
     sys.path.insert(0, str(native.PRIMARY))
-    from strata_control import engine_component, signing
+    from terminal.strata_control import engine_component, signing
 
     item = engine_component.read_manifest(path)
     manifest = release.load(path / "engine-component.json")

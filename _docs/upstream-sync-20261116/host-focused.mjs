@@ -4,7 +4,7 @@ import {spawn} from 'node:child_process';
 import {tmpdir} from 'node:os';
 import {resolve,join} from 'node:path';
 import {pathToFileURL} from 'node:url';
-import {isolatedTestEnvironment} from '../../apps/host/scripts/test-environment.mjs';
+import {isolatedTestEnvironment} from '../../app/host/scripts/test-environment.mjs';
 const root=resolve(import.meta.dirname,'../../apps/host');
 const names=process.argv.slice(2);
 if(!names.length||names.some(name=>!/^[a-z0-9-]+$/.test(name)))throw new Error('Explicit test basenames required');

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {existsSync,mkdirSync,readFileSync,writeFileSync,readdirSync} from 'node:fs';
 import {spawn,spawnSync} from 'node:child_process';
 import {resolve,join,relative} from 'node:path';
-import {verifyTree,verifyHost,sha256,verifyControlData,verifyEngine,verifyNativeBuild} from '../../apps/host/scripts/release-integrity.mjs';
+import {verifyTree,verifyHost,sha256,verifyControlData,verifyEngine,verifyNativeBuild} from '../../app/host/scripts/release-integrity.mjs';
 const root=resolve(import.meta.dirname,'../..');
 const out='H:/Strata/releases/local-052-20261106-opencode';
 const build=JSON.parse(readFileSync(join(out,'app-build.json'),'utf8'));

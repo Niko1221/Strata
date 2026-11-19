@@ -20,7 +20,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tools"))
 import setup  # noqa: E402
 
-HEADER = ROOT / "include" / "strata" / "kernels" / "cpu" / "pool_plan.hpp"
+HEADER = ROOT.parent / "engine" / "include" / "strata" / "kernels" / "cpu" / "pool_plan.hpp"
 
 
 class InStepWithTheEngine(unittest.TestCase):

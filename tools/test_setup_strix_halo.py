@@ -92,7 +92,7 @@ class ExactArch(unittest.TestCase):
     def test_matches_the_engines_header(self):
         """include/strata/kernels/gfx_arch.hpp is the reference: gfx1151 has the WMMA kernels and the gfx1151 defaults;
         gfx1103 (Radeon 780M/760M, 0.1.44) shares the gfx11 WMMA kernels; gfx1152 is outside the list."""
-        hpp = (ROOT / "include/strata/kernels/gfx_arch.hpp").read_text(encoding="utf-8")
+        hpp = (ROOT.parent / "engine" / "include" / "strata" / "kernels" / "gfx_arch.hpp").read_text(encoding="utf-8")
         wmma = re.search(r"gfx_arch_is_gfx11_wmma.*?\n}", hpp, re.S).group(0)
         listed = set(re.findall(r'"(gfx\d+)"', wmma))
         self.assertIn("gfx1151", listed)
@@ -121,7 +121,7 @@ class Gfx1103Switches(unittest.TestCase):
         """GFX1103_SWITCHES is the gfx1151 arch-default set (src/core/arch_defaults.cpp) minus STRATA_HCD_EXACT, which
         copies the gfx1151 hipBLASLt table's solutions 1176 / 1177 and so does not apply beside a gfx1103 table.  The
         engine keeps gfx1103 out of its own arch defaults, so setup writes this set."""
-        src = (ROOT / "src/core/arch_defaults.cpp").read_text(encoding="utf-8")
+        src = (ROOT.parent / "engine" / "src" / "core" / "arch_defaults.cpp").read_text(encoding="utf-8")
         tail = src.split("gfx_arch_is_gfx1151(gcn_arch)) return t;", 1)[1].split("bool igpu_prompt_defaults_arch", 1)[0]   # the gfx1151 function only, not the iGPU set below it
         block = tail.rsplit("t = {", 1)[1].split("};", 1)[0]              # the gfx1151 switch table
         gfx1151 = dict(re.findall(r'\{"(STRATA_[A-Z0-9_]+)",\s*"([^"]+)"\}', block))
@@ -138,7 +138,7 @@ class Gfx1150Switches(unittest.TestCase):
         """GFX1150_SWITCHES is the gfx1151 arch-default set (src/core/arch_defaults.cpp) minus STRATA_HCD_EXACT, which
         copies the gfx1151 hipBLASLt table's solutions 1176 / 1177 and so does not apply beside a gfx1150 table.  The
         engine keeps gfx1150 out of its own arch defaults (src/core/arch_defaults_test.cpp), so setup writes this set."""
-        src = (ROOT / "src/core/arch_defaults.cpp").read_text(encoding="utf-8")
+        src = (ROOT.parent / "engine" / "src" / "core" / "arch_defaults.cpp").read_text(encoding="utf-8")
         tail = src.split("gfx_arch_is_gfx1151(gcn_arch)) return t;", 1)[1].split("bool igpu_prompt_defaults_arch", 1)[0]   # the gfx1151 function only, not the iGPU set below it
         block = tail.rsplit("t = {", 1)[1].split("};", 1)[0]              # the gfx1151 switch table
         gfx1151 = dict(re.findall(r'\{"(STRATA_[A-Z0-9_]+)",\s*"([^"]+)"\}', block))
@@ -149,7 +149,7 @@ class Gfx1150Switches(unittest.TestCase):
         for k in setup.GFX1150_SWITCHES:                                 # setup's own: a re-run refreshes them
             self.assertIn(k, setup.SETUP_ENV)
         self.assertIn('arch_default_env("gfx1150").empty()',
-                      (ROOT / "src/core/arch_defaults_test.cpp").read_text(encoding="utf-8"))
+                      (ROOT.parent / "engine" / "src" / "core" / "arch_defaults_test.cpp").read_text(encoding="utf-8"))
 
 
 class PciIds(unittest.TestCase):

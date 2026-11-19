@@ -34,6 +34,11 @@ adaptive expert tier and the OS make single measurements noisy by a few percent.
     python tools/calibrate.py strata-q2_0.json        # measure and print; setup.py --calibrate also saves it
 """
 from __future__ import annotations
+import sys
+if sys.platform == "win32":
+    # CPython 3.12's WMI helper (_wmi, behind platform.system() / uname()) takes an access violation in a worker thread when WMI refuses the
+    # account (0x80041003) and the caller has already gone (DIAG-WINHOST-0216). Without _wmi, platform uses the registry and the environment.
+    sys.modules["_wmi"] = None
 
 import json
 import statistics
@@ -134,7 +139,7 @@ def doc_prompt(tok):
     """`make(i, n)`: a fresh prompt of about n tokens - the same stretch of the docs' text for every i, after a header
     that differs for every i, so no read reuses an earlier one's cache and the reads differ only in their chunks (where
     experts are streamed, the read speed depends on the text: a different stretch per read measured the text)."""
-    text = "\n\n".join(p.read_text(encoding="utf-8", errors="replace") for p in sorted((ROOT / "docs").glob("*.md")))
+    text = "\n\n".join(p.read_text(encoding="utf-8", errors="replace") for p in sorted((ROOT / "docs" if (ROOT / "docs").is_dir() else ROOT.parent / "docs").glob("*.md")))
     body = tok.encode(text, parse_special=False) or [0]
     tail = tok.encode("<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n", parse_special=True)
 

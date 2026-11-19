@@ -23,9 +23,9 @@ class SamplerMatchesSdcpp(unittest.TestCase):
     def build_and_check(self, flags):
         with tempfile.TemporaryDirectory() as td:
             exe = Path(td) / "strata-sampler-check"
-            r = subprocess.run([CXX, "-std=c++17", *flags, "-I", str(ROOT / "include"),
-                                str(ROOT / "src" / "image" / "sample" / "qi21_sampler.cpp"),
-                                str(ROOT / "src" / "image" / "sample" / "qi21_sampler_check_main.cpp"), "-o", str(exe)],
+            r = subprocess.run([CXX, "-std=c++17", *flags, "-I", str(ROOT.parent / "engine" / "include"),
+                                str(ROOT.parent / "engine" / "src" / "image" / "sample" / "qi21_sampler.cpp"),
+                                str(ROOT.parent / "engine" / "src" / "image" / "sample" / "qi21_sampler_check_main.cpp"), "-o", str(exe)],
                                capture_output=True, text=True, timeout=300)
             self.assertEqual(r.returncode, 0, r.stderr[-3000:])
             r = subprocess.run([str(exe), "--fixture-check", str(FIXTURE)], capture_output=True, text=True, timeout=60)

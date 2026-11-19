@@ -194,7 +194,7 @@ class EnginePlaceholders(unittest.TestCase):
             self.assertEqual(setup.MODELS[m]["engine"], (0, 1, 44), m)
         # No minimum may name an engine newer than this tree (a placeholder for a release that does not exist yet would make setup
         # ask for an engine nobody can download). The tree's version is read from CMakeLists.txt, so this does not go stale each release.
-        text = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+        text = (ROOT.parent / "engine" / "CMakeLists.txt").read_text(encoding="utf-8")
         tree = tuple(int(n) for n in re.search(r"project\(strata VERSION ([0-9.]+)", text).group(1).split("."))
         for what, minimum in [("MIN_ENGINE", setup.MIN_ENGINE), ("NVFP4_ENGINE", setup.NVFP4_ENGINE)] + [(m, setup.MODELS[m]["engine"]) for m in setup.MODELS if "engine" in setup.MODELS[m]]:
             self.assertLessEqual(tuple(minimum), tree[:len(minimum)], f"{what} {minimum} is ahead of the tree {tree}")

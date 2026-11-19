@@ -20,7 +20,7 @@ import common
 import upgrade
 from foundation import IdentityHandle
 from installed_state import endpoint, get, shells
-from strata_control import engine_component, private_files
+from terminal.strata_control import engine_component, private_files
 
 ORIGINAL = common.OUT
 OUT = Path('H:/Strata/releases/personal-052-local2-20261107/reinstall-20261109')

@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, readdirSync } from 'node:fs';
 import { resolve, basename } from 'node:path';
 import { execFileSync } from 'node:child_process';
-const root = resolve(import.meta.dirname, '../../apps/host/src/locales');
+const root = resolve(import.meta.dirname, '../../app/host/src/locales');
 function save(file, data) {
  const original = execFileSync('git', ['show', 'HEAD:apps/host/src/locales/' + basename(file)], {cwd: resolve(import.meta.dirname, '../..'), encoding:'utf8'});
  const indent = /\n([ \t]+)"/.exec(original)?.[1] ?? 2;
