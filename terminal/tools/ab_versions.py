@@ -26,7 +26,7 @@ MAX_UNPACKED = 1 << 40
 
 
 def _control_on_path() -> None:
-    """Make `strata_control` importable (repo root on sys.path); the import itself stays lazy."""
+    """Make `strata_control` importable (the folder that holds it on sys.path); the import itself stays lazy."""
     root = Path(__file__).resolve().parents[1]
     if str(root) not in sys.path:
         sys.path.insert(0, str(root))

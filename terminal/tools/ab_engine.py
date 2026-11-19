@@ -11,7 +11,7 @@ medians.  Decode numbers move run to run (the adaptive expert tier, the OS), so 
 Versions mode compares Strata releases.  Each version is the engine and the control of one release, run with that
 control's own defaults.  `--tune quick|thorough` tunes each version once, before round 1.
 
-    python tools/ab_engine.py --model-path <gguf|folder> --engines 0.1.55,0.1.56 [--tune quick] [--rounds 3]
+    python terminal/tools/ab_engine.py --model-path <gguf|folder> --engines 0.1.55,0.1.56 [--tune quick] [--rounds 3]
 
 `--engines` takes a list (`0.1.55,0.1.56`) or a range (`0.1.50..0.1.56`).  The packages are downloaded from the GitHub
 release, checked against its SHA256SUMS.txt and kept in `~/strata-ab` (or `--bench-dir`).  Each version runs in a
