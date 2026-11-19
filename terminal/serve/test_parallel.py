@@ -750,7 +750,7 @@ class ParallelService(FakeEngineCase):
         self.assertEqual(out["b"][3].get("Retry-After"), "5", out["b"])
         completed = next(row for row in self.svc.history if row["output_tokens"] > 0)
         self.assertEqual(self.svc.totals["prompt_tokens"], completed["prompt_tokens"])
-        self.assertEqual(self.svc.latencies.snapshot()["e2e"][2], 1)
+        self.assertEqual(self.svc.latencies.snapshot()["e2e"][3], 1)
         req = urllib.request.Request(self.base + "/metrics", headers={"Accept": "text/plain"})
         with urllib.request.urlopen(req, timeout=10) as r:
             samples = {line.split("{", 1)[0]: float(line.rsplit(" ", 1)[1])
@@ -760,7 +760,7 @@ class ParallelService(FakeEngineCase):
         self.assertEqual(samples["vllm:e2e_request_latency_seconds_count"], 1)
         time.sleep(0.5)
         self.assertEqual(self.chat("fine again")["choices"][0]["message"]["content"], "ok, done.")
-        self.assertEqual(self.svc.latencies.snapshot()["e2e"][2], 2)
+        self.assertEqual(self.svc.latencies.snapshot()["e2e"][3], 2)
 
     def test_bgen_refused_for_good_in_a_stream_is_each_apis_error_frame(self):
         """The same refusal once the 200 is sent: the API's own last frame, not a second HTTP response in the body."""

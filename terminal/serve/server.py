@@ -3900,7 +3900,7 @@ class Service:
         self.admission_changed = threading.Condition(self.status_lock)
         self.mcp = None                                  # serve/mcp.py's McpHub when MCP servers are configured
         self.offline = False                             # no image URL fetch or MCP subprocess in strict local mode
-        self.telemetry_key = ""                         # optional read-only key, valid only on /v1/telemetry
+        self.telemetry_key = ""                         # optional read-only key, valid on /v1/telemetry and /metrics
         # sharing the GPU with other programs (all off by default): unload the engine after this many idle seconds,
         # only start it again when this much VRAM is free, and run this command first (e.g. to unload another
         # server's model); the next request after an unload starts the engine again
@@ -5774,7 +5774,10 @@ class Service:
                                 t["drafts_accepted"] += last.get("drafts_accepted") or 0
                                 ft0 = st.get("first_token")             # this request's own (#465: one per request)
                                 self.latencies.observe(ft0 - started if ft0 else None, n,
-                                                       (last.get("decode_ms") or 0.0) / 1000, time.time() - started)
+                                                       (last.get("decode_ms") or 0.0) / 1000, time.time() - started,
+                                                       prompt_tokens=seen, computed_tokens=last.get("prompt_read"),
+                                                       prefill_s=(last.get("prompt_ms") or 0.0) / 1000,
+                                                       finish=finish)
                                 fresh = getattr(self.engine, "last", None)
                                 if fresh is not None and fresh is not before:      # the engine's clock for THIS request
                                     timings = request_timings(seen, n, last)
@@ -6646,7 +6649,7 @@ def make_handler(svc: Service):
                 self.wfile.write(body)
                 return
             if path == "/metrics/prometheus":
-                if self._authorized():
+                if self._authorized_telemetry():
                     body = svc.prometheus().encode()
                     self.send_response(200)
                     self.send_header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
@@ -6657,7 +6660,7 @@ def make_handler(svc: Service):
             if path == "/metrics":
                 from serve import prometheus
                 if prometheus.wants_prometheus(self.headers.get("Accept", ""), urlsplit(self.path).query):
-                    if self._authorized():   # a scraper: the text format, vLLM's names (serve/prometheus.py)
+                    if self._authorized_telemetry():   # a scraper: the text format, vLLM's names (serve/prometheus.py)
                         body = prometheus.render(svc.metrics(), svc.latencies.snapshot()).encode()
                         self.send_response(200)
                         self.send_header("Content-Type", prometheus.CONTENT_TYPE)
@@ -6665,7 +6668,7 @@ def make_handler(svc: Service):
                         self.end_headers()
                         self.wfile.write(body)
                     return
-                if self._authorized():
+                if self._authorized_telemetry():
                     # the last 12 requests; `?requests=all` every one kept (the Monitor's "Show all", issue #35)
                     self._json(200, svc.metrics(all_requests="requests=all" in self.path))
                 return
