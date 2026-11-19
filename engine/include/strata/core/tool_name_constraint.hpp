@@ -1,19 +1,23 @@
 #pragma once
-// include/strata/core/tool_name_constraint.hpp
+// engine/include/strata/core/tool_name_constraint.hpp
 //
 // Constrained decoding for tool-call names, scoped to a real call envelope.  A model
-// that writes `<tool_call><function=NAME>` can hallucinate a NAME no declared tool has;
-// the parser then drops the call and the raw text leaks into the reply.  This constraint
-// removes the possibility at the sampler: only while the reply is *inside* a `<tool_call>`
-// envelope (and past the `<think>` reasoning block) does a `<function=` trigger, and only
-// tokens that continue one of the declared names (followed by its `>` terminator) are
-// sampled; a complete name releases the constraint.
+// that writes `<tool_call><function=NAME>` (or `<tool_call><invoke name="NAME">`) can
+// hallucinate a NAME no declared tool has; the parser then drops the call and the raw text
+// leaks into the reply.  This constraint removes the possibility at the sampler: only while
+// the reply is *inside* a `<tool_call>` envelope (and past the `<think>` reasoning block) does
+// a name opener trigger, and only tokens that continue one of the declared names (followed by
+// that form's terminator) are sampled; a complete name releases the constraint.
 //
-// The envelope is what makes this safe to leave on: a `<function=` written anywhere else —
-// in the answer's prose, or in the reasoning while the model *talks about* a call ("I will
-// use `<function=foo>` …") — is plain text and is never constrained.  The reasoning block
+// The envelope is what makes this safe to leave on: an opener written anywhere else — in the
+// answer's prose, or in the reasoning while the model *talks about* a call ("I will use
+// `<function=foo>` …") — is plain text and is never constrained.  The reasoning block
 // (`<think>…</think>`) is excluded as well, so the model may freely discuss the call format
 // while it thinks.
+//
+// Several name forms can be armed at once (`<function=NAME>` and `<invoke name="NAME">`), each
+// with its own trigger and its own trie; the first trigger the committed tail ends with picks
+// the trie.
 //
 // The engine streams token ids and has no detokenizer, so the server tokenizes the pieces
 // and sends ids (see `parse_tool_name_constraint` for the wire format).  The mask is a
@@ -22,19 +26,11 @@
 // pays nothing: the whole path is behind `req_tnc.valid()`.
 //
 // The constraint is stateful per request: `update()` feeds the committed reply tokens as the
-// decode loop commits them (the loop already passes `consumed[reply0..]`, which only grows by
-// accepted tokens) and returns the mask for the next token.  Scanning is O(1) amortized per
-// token (a bounded rolling tail + a trie walk), so an enabled-but-idle constraint is as cheap
-// as the static logit_bias it rides.
-//
-// Spec decoding and a per-committed-token constraint do not mix: a multi-token window commits
-// `<function` and the name together, so the mask (which is derived from the *committed* tokens)
-// never existed for the name's first token and the drafter (DFlash2, MTP or the suffix lookup)
-// hands a hallucinated name straight through.  The decode loop therefore pins to one token a
-// round while the reply is past the reasoning block (`!in_reasoning`), where a `<tool_call>` is
-// written, so the trigger is always committed alone and the name is sampled under the mask; the
-// reasoning block — the bulk of the tokens — keeps spec decoding.  `at != nullptr` (a name being
-// written) additionally discards drafted rows as a second guard.
+// decode loop commits them and returns the mask for the next token.  Scanning is O(1) amortized
+// per token (a bounded rolling tail + a trie walk).  A multi-token spec window is validated under
+// a PER-ROW mask: `window_masks()` walks a copy of the state over the drafted rows, so a drafted
+// name no tool declares is not the verifier's pick under its row's mask and the acceptance loop
+// stops there; the drafter stays on through the whole reply.
 #include <algorithm>
 #include <cstdint>
 #include <cstdlib>
@@ -52,14 +48,17 @@ public:
         std::unordered_map<int32_t, std::unique_ptr<Node>> next;
         bool terminal = false;   // a complete "name + terminator" sequence ends here
     };
+    struct Form {
+        std::vector<int32_t> trigger;          // token ids of the opener ("<function=", "<invoke name=\"")
+        std::unique_ptr<Node> root;            // trie over the token-id sequences of "name + terminator"
+    };
 
     // --- config (immutable after parse) ---
-    std::vector<int32_t> trigger;       // token ids of "<function="
+    std::vector<Form> forms;
     std::vector<int32_t> think_open;    // token ids of "<think>"  (empty: no reasoning block)
     std::vector<int32_t> think_close;   // token ids of "</think>"
     std::vector<int32_t> call_open;     // token ids of "<tool_call>"
     std::vector<int32_t> call_close;    // token ids of "</tool_call>"
-    Node root;                          // trie over the token-id sequences of "name + >"
     int max_seq = 0;                    // the longest name sequence, in tokens
     bool initial_reasoning = false;     // the generation prompt opens <think> (thinking enabled)
 
@@ -77,7 +76,7 @@ public:
     int64_t scanned = 0;                // reply tokens already fed to update()
     Snapshot st;                        // the canonical scan state
 
-    bool valid() const { return !trigger.empty() && !call_open.empty() && !call_close.empty() && !root.next.empty(); }
+    bool valid() const { return !forms.empty() && !call_open.empty() && !call_close.empty(); }
 
     void reset_state() {
         scanned = 0;
@@ -85,7 +84,8 @@ public:
         st.in_call = false;
         st.at = nullptr;
         st.buf.clear();
-        st.cap = std::max({trigger.size(), think_open.size(), think_close.size(), call_open.size(), call_close.size()});
+        st.cap = std::max({think_open.size(), think_close.size(), call_open.size(), call_close.size()});
+        for (const Form& f : forms) st.cap = std::max(st.cap, f.trigger.size());
     }
 
     /// Feed the reply committed so far (`tokens[0..n)`, generation order, the most recent token
@@ -150,29 +150,32 @@ private:
         if (s.at != nullptr) {                     // inside a tool name: the token continues (or ends) it
             auto it = s.at->next.find(t);
             s.at = (it == s.at->next.end()) ? nullptr : it->second.get();
-            if (s.at != nullptr && s.at->terminal) s.at = nullptr;   // "name>" complete -> release
+            if (s.at != nullptr && s.at->terminal) s.at = nullptr;   // "name" + terminator complete -> release
             return;
         }
         if (ends_with(s, think_open))  s.in_reasoning = true;
         if (ends_with(s, think_close)) s.in_reasoning = false;
         if (ends_with(s, call_open))   s.in_call = true;
         if (ends_with(s, call_close))  s.in_call = false;
-        if (s.in_call && !s.in_reasoning && ends_with(s, trigger)) s.at = &root;   // begin a tool name
+        if (!s.in_call || s.in_reasoning) return;
+        for (const Form& f : forms)
+            if (ends_with(s, f.trigger)) { s.at = f.root.get(); return; }   // begin a tool name
     }
 };
 
 /// Parse the wire format:
 ///
-///     tool_name_constraint=<initial>|<trigger>|<think_open>|<think_close>|<call_open>|<call_close>|<name+term>|...
+///     tool_name_constraint=v2|<initial>|<think_open>|<think_close>|<call_open>|<call_close>|#<trigger>|<name+term>|...[|#<trigger>|<name+term>|...]
 ///
-/// `<initial>` is `0` or `1`: whether the generation prompt opens the `<think>` block (thinking
-/// enabled).  `<trigger>` is the comma-separated token ids of `<function=`.  The four markers
+/// `v2` is the format version (any other first record is refused, so a server and engine from
+/// different releases fail loudly instead of misreading each other).  `<initial>` is `0` or `1`:
+/// whether the generation prompt opens the `<think>` block (thinking enabled).  The four markers
 /// are the comma-separated token ids of `<think>`, `</think>`, `<tool_call>` and `</tool_call>`
-/// (the reasoning pair may be empty to disable reasoning tracking; a model with no reasoning
-/// block sends `0` for `<initial>` and empty think markers).  Each following `|`-separated record
-/// is the comma-separated token ids of a declared tool name with its `>` terminator appended.
-/// Returns false and sets `error` on malformed input, ids outside [0, vocab), or fewer than one
-/// name.
+/// (the reasoning pair may be empty to disable reasoning tracking).  Then one or more name forms:
+/// a record starting with `#` is the comma-separated token ids of that form's opener (the trigger),
+/// and each following record (up to the next `#`) is the token ids of one declared name with the
+/// form's terminator appended.  Returns false and sets `error` on malformed input, ids outside
+/// [0, vocab), or a form with no name.
 inline bool parse_tool_name_constraint(const std::string& text, int vocab,
                                        ToolNameConstraint& out, std::string& error) {
     out = ToolNameConstraint{};
@@ -202,32 +205,43 @@ inline bool parse_tool_name_constraint(const std::string& text, int vocab,
         if (c == std::string::npos) break;
         p = c + 1;
     }
-    // <initial>|<trigger>|<think_open>|<think_close>|<call_open>|<call_close>|<name...>
-    if (recs.size() < 7) { error = "tool_name_constraint needs initial, five markers and at least one name"; return false; }
-    if (recs[0] == "0") out.initial_reasoning = false;
-    else if (recs[0] == "1") out.initial_reasoning = true;
+    if (recs[0] != "v2") { error = "tool_name_constraint: unsupported format (expected v2)"; return false; }
+    // v2|<initial>|<think_open>|<think_close>|<call_open>|<call_close>|#<trigger>|<name...>
+    if (recs.size() < 8) { error = "tool_name_constraint needs initial, four markers and at least one form with a name"; return false; }
+    if (recs[1] == "0") out.initial_reasoning = false;
+    else if (recs[1] == "1") out.initial_reasoning = true;
     else { error = "tool_name_constraint: the initial flag must be 0 or 1"; return false; }
-    if (!parse_ids(recs[1], out.trigger))    { error = "tool_name_constraint: invalid trigger token ids"; return false; }
     // the think pair may be empty (a model with no reasoning block): then reasoning tracking is off
     if (!recs[2].empty() && !parse_ids(recs[2], out.think_open))  { error = "tool_name_constraint: invalid think-open token ids"; return false; }
     if (!recs[3].empty() && !parse_ids(recs[3], out.think_close)) { error = "tool_name_constraint: invalid think-close token ids"; return false; }
     if (!parse_ids(recs[4], out.call_open))  { error = "tool_name_constraint: invalid call-open token ids"; return false; }
     if (!parse_ids(recs[5], out.call_close)) { error = "tool_name_constraint: invalid call-close token ids"; return false; }
-    if (out.trigger.empty() || out.call_open.empty() || out.call_close.empty()) {
-        error = "tool_name_constraint: trigger, call-open and call-close must be non-empty"; return false;
-    }
     if (out.think_open.empty() != out.think_close.empty()) {
         error = "tool_name_constraint: the think markers must be both present or both absent"; return false;
     }
+    ToolNameConstraint::Form* form = nullptr;
+    size_t form_names = 0;
     for (size_t i = 6; i < recs.size(); ++i) {
+        const std::string& r = recs[i];
+        if (!r.empty() && r[0] == '#') {
+            if (form != nullptr && form_names == 0) { error = "tool_name_constraint: a form without names"; return false; }
+            out.forms.push_back(ToolNameConstraint::Form{{}, std::make_unique<ToolNameConstraint::Node>()});
+            form = &out.forms.back();
+            form_names = 0;
+            if (!parse_ids(r.substr(1), form->trigger)) { error = "tool_name_constraint: invalid trigger token ids"; return false; }
+            continue;
+        }
+        if (form == nullptr) { error = "tool_name_constraint: a name before the first #trigger"; return false; }
         std::vector<int32_t> seq;
-        if (!parse_ids(recs[i], seq)) { error = "tool_name_constraint: invalid name token ids"; return false; }
-        ToolNameConstraint::Node* node = &out.root;
+        if (!parse_ids(r, seq)) { error = "tool_name_constraint: invalid name token ids"; return false; }
+        ToolNameConstraint::Node* node = form->root.get();
         for (int32_t id : seq)
             node = node->next.emplace(id, std::make_unique<ToolNameConstraint::Node>()).first->second.get();
         node->terminal = true;
         out.max_seq = std::max(out.max_seq, (int) seq.size());
+        ++form_names;
     }
+    if (form == nullptr || form_names == 0) { error = "tool_name_constraint: a form without names"; return false; }
     out.reset_state();
     return true;
 }

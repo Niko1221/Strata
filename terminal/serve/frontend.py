@@ -882,6 +882,19 @@ _INVOKE_PART = re.compile(r'<(?:i(?:n(?:v(?:o(?:k(?:e(?:\s+(?:n(?:a(?:m(?:e(?:=(
 _INVOKE_PARAM = re.compile(r'((?:<invoke\s+name="[^"<>\n]+"\s*>|</parameter>)\s*)<parameter\s+name="([^"<>\n]+)"\s*>')
 # the call's end: `</invoke>` right after a value's `</parameter>` or the opener (a value may hold the words)
 _INVOKE_END = re.compile(r'(?:</parameter>|<invoke\s+name="[^"<>\n]+"\s*>)\s*</invoke>')
+# #6022 (recover): a line between `<tool_call>` and the `<invoke>` opener - the `<function=function_calls>` /
+# `<function_calls>` wrapper, or only `=` / `:` (the opener's word dropped) - and the wrapper's closer after `</invoke>`
+_INVOKE_PRELUDE = re.compile(r'(?:<function=function_calls>|<function_calls>|[=:]+)[ \t]*\n\s*')
+_INVOKE_PRELUDE_PART = re.compile(r'(?:<function=function_calls>|<function_calls>|[=:]+)[ \t]*(?:\n\s*)?$')
+_INVOKE_WRAP_ENDS = ("</function>", "</function_calls>")
+# #6022: an `<invoke>` body closed by the template's `</function>` (or `</function_calls>`) instead of `</invoke>`
+_INVOKE_FUNC_END = re.compile(r'(?:</parameter>|<invoke\s+name="[^"<>\n]+"\s*>)\s*(</function(?:_calls)?>)')
+
+
+def _invoke_prelude(after: str):
+    """The prelude match when `after` (the text after `<tool_call>`, stripped) is a prelude line and then `<i`, else None."""
+    pre = _INVOKE_PRELUDE.match(after)
+    return pre if pre and after[pre.end():].startswith("<i") else None
 
 
 def invoke_to_template(raw: str) -> str:
@@ -2413,12 +2426,24 @@ class OutputParser:
                 # it is prose that names the format ("I'll use a <tool_call> block") - content, not a malformed call
                 # that ends the request.  Until its follower has arrived it is held, like a partial tag.
                 after = self.buf[i + len(CALL_START):].lstrip()
-                if self.recover and self.schemas and after.startswith("<i"):
+                pre = _invoke_prelude(after) if self.recover and self.schemas else None
+                part = _INVOKE_PRELUDE.match(after)
+                if self.recover and self.schemas and pre is None and (_INVOKE_PRELUDE_PART.match(after)
+                                                                      or (part and after[part.end():] == "<")):
+                    j = i                                # #6022: a prelude line that may still be followed by `<invoke`
+                    while j > 0 and self.buf[j - 1] == "\n":
+                        j -= 1
+                    if j > 0:
+                        out.append(Event("content", self._track(self.buf[:j])))
+                        self.buf = self.buf[j:]
+                    return out
+                inv = after[pre.end():] if pre else after
+                if self.recover and self.schemas and inv.startswith("<i"):
                     # #5969 (recover): Claude's `<invoke name="NAME">` dialect for a declared tool, its opener ending its
                     # line: held whole as the "invoke" state reads it (a cut one, an undeclared name, or prose that only
-                    # names the tag - more text on the opener's line - stays the text it is)
-                    m = _INVOKE_OPEN.match(after)
-                    line_end = after[m.end():].lstrip(" \t")[:1] if m else ""
+                    # names the tag - more text on the opener's line - stays the text it is).  #6022: after a prelude line too.
+                    m = _INVOKE_OPEN.match(inv)
+                    line_end = inv[m.end():].lstrip(" \t")[:1] if m else ""
                     if m and not line_end:
                         return out                       # what follows the opener decides
                     if m and line_end == "\n" and self._callable(m.group(1)):
@@ -2427,7 +2452,7 @@ class OutputParser:
                         self.buf = self.buf[i + len(CALL_START):]
                         self.state = "invoke"
                         continue
-                    if not m and _INVOKE_PART.match(after) and "\n" not in after:
+                    if not m and _INVOKE_PART.match(inv) and "\n" not in inv:
                         j = i
                         while j > 0 and self.buf[j - 1] == "\n":
                             j -= 1
@@ -2532,21 +2557,40 @@ class OutputParser:
                 # `</tool_call>` after it or left out at the end of the output: read in the template's form; a body that
                 # does not read, or one the output ends inside, is the text it is
                 m = _INVOKE_END.search(self.buf)
+                f = _INVOKE_FUNC_END.search(self.buf)   # #6022: or closed by `</function>` with no `</invoke>`
+                closer = None
+                if f is not None and (m is None or f.start() < m.start()):
+                    m, closer = f, f.group(1)
                 if m is None:
                     return out                          # not whole yet; at the end, finish() returns it as text
-                rest = self.buf[m.end():]
+                end = m.end()
+                pre = _invoke_prelude(self.buf.lstrip())
+                if pre is not None and closer is None:  # #6022: the prelude's wrapper closer after `</invoke>` goes with the call
+                    nxt = self.buf[end:].lstrip()
+                    if not self._final and nxt and any(w.startswith(nxt) for w in _INVOKE_WRAP_ENDS):
+                        return out
+                    for w in _INVOKE_WRAP_ENDS:
+                        if nxt.startswith(w):
+                            end = len(self.buf) - len(nxt) + len(w)
+                            break
+                rest = self.buf[end:]
                 tail = rest.lstrip()
                 if not tail and not self._final:
                     return out                          # its `</tool_call>` may still come
                 if tail and CALL_END.startswith(tail) and not self._final:
                     return out
                 drop = len(rest) - len(tail) + len(CALL_END) if tail.startswith(CALL_END) else 0
-                raw = self.buf[:m.end()]
+                raw = self.buf[:end]
+                body = self.buf[:m.end()].lstrip()
+                if pre is not None:
+                    body = body[pre.end():]
+                if closer is not None:
+                    body = body[:len(body) - len(closer)] + "</invoke>"
                 call = None
                 try:
-                    name = _INVOKE_OPEN.match(raw.lstrip()).group(1)
+                    name = _INVOKE_OPEN.match(body).group(1)
                     name = self.aliases.get(name, name)
-                    call = parse_tool_call(invoke_to_template(raw), self.schemas.get(name), self.notes, recover=True)
+                    call = parse_tool_call(invoke_to_template(body), self.schemas.get(name), self.notes, recover=True)
                     call.name = name
                 except (ValueError, AttributeError):
                     call = None
@@ -2554,7 +2598,7 @@ class OutputParser:
                     out.append(Event("content", self._track(CALL_START + raw + (CALL_END if drop else ""))))
                 else:
                     out.append(Event("tool_call", call=call))
-                self.buf = self.buf[m.end() + drop:]
+                self.buf = self.buf[end + drop:]
                 self.state, self.lead = "content", call is not None
             else:
                 drop = None
