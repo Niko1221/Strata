@@ -217,6 +217,53 @@ void nvfp4_row_dequant(const uint8_t* row, float scale, float* out160) {
     }
 }
 
+// NGQ2 (dnotitia/Qwen3.8-Flash-Next-NGQ2, terminal/tools/ple_ngq2_pack.py): a row of 160 values is 40 bytes of 4-bit trellis
+// symbols (80 of them, the high nibble first) and a BF16 gain. Symbol j with the three before it (wrapping round the
+// row) is a 16-bit state s; u = (s + 1) * s (mod 2^32) picks codebook pair (u >> 6) & 511 and, from bit 15, the sign of
+// its first value. Values 2j, 2j+1 = bf16(pair * gain), the checkpoint's own decoder. The 512 x 2 F32 codebook is in
+// the file (tensor strata.ple.codebook); PleTable::open expands it to the 65,536-state table below, once per process.
+namespace {
+float g_ngq2_lut[65536][2];
+std::vector<float> g_ngq2_codebook;   // what g_ngq2_lut was built from (the first NGQ2 table opened)
+
+float bf16_round(float v) {
+    uint32_t b;
+    std::memcpy(&b, &v, sizeof b);
+    b = (b + 0x7FFFu + ((b >> 16) & 1u)) & 0xFFFF0000u;   // round to nearest even (a decoded value is never NaN)
+    std::memcpy(&v, &b, sizeof v);
+    return v;
+}
+
+bool ngq2_set_codebook(const std::vector<float>& cb, std::string& err) {
+    static std::once_flag once;
+    std::call_once(once, [&cb] {
+        for (uint32_t s = 0; s < 65536; ++s) {
+            const uint32_t u = (s + 1) * s;
+            const uint32_t i = (u >> 6) & 511;
+            g_ngq2_lut[s][0] = (u & 0x8000u) ? -cb[2 * i] : cb[2 * i];
+            g_ngq2_lut[s][1] = cb[2 * i + 1];
+        }
+        g_ngq2_codebook = cb;
+    });
+    if (g_ngq2_codebook == cb) return true;
+    err = "a second NGQ2 table with a different codebook: one process reads one NGQ2 codebook";
+    return false;
+}
+
+void ngq2_row_dequant(const uint8_t* row, float* out160) {
+    const uint32_t gb = ((uint32_t) row[40] | ((uint32_t) row[41] << 8)) << 16;
+    float gain;
+    std::memcpy(&gain, &gb, sizeof gain);
+    const auto sym = [row](int j) { return (uint32_t) (row[(j % 80) >> 1] >> ((j & 1) ? 0 : 4)) & 15u; };
+    uint32_t s = (sym(77) << 8) | (sym(78) << 4) | sym(79);   // the window before symbol 0 wraps round the row
+    for (int j = 0; j < 80; ++j) {
+        s = ((s << 4) | sym(j)) & 0xFFFFu;
+        out160[2 * j] = bf16_round(g_ngq2_lut[s][0] * gain);
+        out160[2 * j + 1] = bf16_round(g_ngq2_lut[s][1] * gain);
+    }
+}
+}  // namespace
+
 // ---------------------------------------------------------------------------------------------------
 // THE FORMAT TABLE (see PleFormatInfo). One entry per table type; the block formats decode 5 blocks of 32.
 namespace {
@@ -228,6 +275,7 @@ void dequant_iq4_nl(const uint8_t* row, float, float* out160) { iq4nl_dequant_ro
 void dequant_fp8(const uint8_t* row, float scale, float* out160) { fp8_e4m3_dequant_row(row, scale, out160); }
 void dequant_bf16(const uint8_t* row, float, float* out160) { bf16_dequant_row(row, out160); }
 void dequant_nvfp4(const uint8_t* row, float scale, float* out160) { nvfp4_row_dequant(row, scale, out160); }
+void dequant_ngq2(const uint8_t* row, float, float* out160) { ngq2_row_dequant(row, out160); }
 
 const PleFormatInfo kPleFormats[] = {
     {PleFormat::IQ4_NL, "IQ4_NL", "IQ4_NL", PLE_ROW_BYTES, false, dequant_iq4_nl},
@@ -244,6 +292,9 @@ const PleFormatInfo kPleFormats[] = {
     // NVFP4 x16 (NVIDIA's Qwen3.8-Flash-Next-FP4-Local, tools/nvfp4_local_pack.py ple): 90-byte rows, I8 bytes marked
     // strata.ple.format = nvfp4x16 with strata.ple.scale. The tensor is [90, rows]: ne0 is the row's byte count.
     {PleFormat::NVFP4, "NVFP4", "I8", PLE_ROW_BYTES_NVFP4, true, dequant_nvfp4},
+    // NGQ2 (terminal/tools/ple_ngq2_pack.py): 42-byte rows, I8 bytes marked strata.ple.format = ngq2, with the codebook as a
+    // second tensor strata.ple.codebook (F32 [2, 512]). The table is [42, rows] like NVFP4's.
+    {PleFormat::NGQ2, "NGQ2", "I8", PLE_ROW_BYTES_NGQ2, false, dequant_ngq2},
 };
 constexpr int kPleFormatCount = (int) (sizeof kPleFormats / sizeof kPleFormats[0]);
 }  // namespace
@@ -270,7 +321,7 @@ std::string ple_format_list() {
     for (int i = 0; i < kPleFormatCount; ++i) {
         const PleFormatInfo& f = kPleFormats[i];
         if (i > 0) out += i + 1 == kPleFormatCount ? " or " : ", ";
-        out += std::strcmp(f.gguf_type, "I8") == 0 ? (f.id == PleFormat::NVFP4 ? "NVFP4 (I8)" : "FP8 (I8)") : f.name;
+        out += std::strcmp(f.gguf_type, "I8") == 0 ? (f.id == PleFormat::NVFP4 ? "NVFP4 (I8)" : f.id == PleFormat::NGQ2 ? "NGQ2 (I8)" : "FP8 (I8)") : f.name;
     }
     return out;
 }
@@ -379,7 +430,8 @@ bool PleTable::open(const std::string& gguf_path, std::string& err, const PleIoO
     // is I8 bytes with ne0 = 90 (the row's byte count), marked strata.ple.format = nvfp4x16.
     const MetaValue* fmt_key = impl_->file->get("strata.ple.format");
     const bool nvfp4x16 = std::strcmp(t->type_name(), "I8") == 0 && fmt_key != nullptr && fmt_key->s == "nvfp4x16";
-    const uint64_t want_ne0 = nvfp4x16 ? (uint64_t) PLE_ROW_BYTES_NVFP4 : (uint64_t) PLE_HEAD_DIM;
+    const bool ngq2 = std::strcmp(t->type_name(), "I8") == 0 && fmt_key != nullptr && fmt_key->s == "ngq2";
+    const uint64_t want_ne0 = nvfp4x16 ? (uint64_t) PLE_ROW_BYTES_NVFP4 : ngq2 ? (uint64_t) PLE_ROW_BYTES_NGQ2 : (uint64_t) PLE_HEAD_DIM;
     if (t->shape.size() != 2 || t->shape[0] != want_ne0) {
         err = "per_layer_token_embd.weight has an unexpected shape";
         close();
@@ -388,7 +440,9 @@ bool PleTable::open(const std::string& gguf_path, std::string& err, const PleIoO
     // The table's type is looked up in the format list (ple_formats()): IQ4_NL (ISTA-DASLab's shard 2, the original's
     // own GGUF), Q5_0 (#296: OrcaRouter's GGUF), or the FP8 table as shipped: I8 bytes marked strata.ple.format =
     // f8_e4m3 with strata.ple.scale (tools/ple_fp8_pack.py)
-    const PleFormatInfo* fmt = nvfp4x16 ? &ple_format_info(PleFormat::NVFP4) : ple_format_for_type(t->type_name());
+    const PleFormatInfo* fmt = nvfp4x16 ? &ple_format_info(PleFormat::NVFP4)
+                             : ngq2     ? &ple_format_info(PleFormat::NGQ2)
+                                        : ple_format_for_type(t->type_name());
     if (fmt == nullptr) {
         err = std::string("per_layer_token_embd.weight is ") + t->type_name() + ", not " + ple_format_list();
         close();
@@ -404,6 +458,30 @@ bool PleTable::open(const std::string& gguf_path, std::string& err, const PleIoO
             return false;
         }
         impl_->scale = (float) s->num();
+    }
+    if (ngq2) {
+        // The codebook is a second tensor, F32 [2, 512], laid out by terminal/tools/ple_ngq2_pack.py right after the table
+        // (aligned to 32) and ending the file. Requiring exactly that keeps the table's size exact even though the
+        // file holds two tensors (the rule below only asks a table that shares its file to fit).
+        const TensorInfo* cb = impl_->file->find("strata.ple.codebook");
+        const uint64_t rows = t->shape[1];
+        const bool sizes_ok = rows <= (std::numeric_limits<uint64_t>::max() - 4096 - 31) / PLE_ROW_BYTES_NGQ2 &&
+                              impl_->file->data_start() <= impl_->file->file_size();
+        const uint64_t cb_at = sizes_ok ? (rows * PLE_ROW_BYTES_NGQ2 + 31) / 32 * 32 : 0;
+        if (cb == nullptr || !sizes_ok || impl_->file->tensors().size() != 2 || std::strcmp(cb->type_name(), "F32") != 0 ||
+            cb->shape.size() != 2 || cb->shape[0] != 2 || cb->shape[1] != 512 || t->offset != 0 || cb->offset != cb_at ||
+            impl_->file->file_size() - impl_->file->data_start() != cb_at + 4096) {
+            err = "NGQ2 PLE table: expected per_layer_token_embd.weight [42, rows] at 0 and an F32 [2, 512] "
+                  "strata.ple.codebook right after it, ending the file";
+            close();
+            return false;
+        }
+        std::vector<float> v(1024);
+        std::memcpy(v.data(), impl_->file->tensor_data(*cb), 4096);
+        if (!ngq2_set_codebook(v, err)) {
+            close();
+            return false;
+        }
     }
     impl_->fmt = fmt;
     impl_->rb = fmt->row_bytes;

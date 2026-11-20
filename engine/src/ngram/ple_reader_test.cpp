@@ -128,10 +128,16 @@ void bf16_widening_is_exact() {
 /// and the type lookup all have to be right for every format, not only for IQ4_NL.
 uint32_t gguf_type_id(const char* name) {
     static const struct { const char* name; uint32_t id; } ids[] = {
-        {"IQ4_NL", 20}, {"Q4_0", 2}, {"Q4_1", 3}, {"Q5_0", 6}, {"Q5_1", 7}, {"Q8_0", 8}, {"BF16", 30}, {"F8_E4M3", 24}, {"NVFP4", 24}};
+        {"IQ4_NL", 20}, {"Q4_0", 2}, {"Q4_1", 3}, {"Q5_0", 6}, {"Q5_1", 7}, {"Q8_0", 8}, {"BF16", 30}, {"F8_E4M3", 24}, {"NVFP4", 24}, {"NGQ2", 24}};
     for (const auto& e : ids)
         if (std::strcmp(e.name, name) == 0) return e.id;
     return 0xFFFFFFFFu;
+}
+
+// NGQ2's codebook in the test tables and the golden check: 512 pairs, the first value of pair i is (i - 255.5) / 256
+float ngq2_test_codebook(int k) {
+    const int i = k / 2;
+    return k % 2 == 0 ? (float) ((i - 255.5) / 256) : (float) ((((i * 37) % 512) - 255.5) / 512);
 }
 
 // `claimed_rows` is the row count the header states; `rows` rows are actually written (equal unless a test lies)
@@ -145,8 +151,9 @@ std::string write_format_table(const std::string& dir, const k::PleFormatInfo& f
         return s;
     };
     const auto str = [&](const char* s) { return le((uint64_t) std::strlen(s), 8) + std::string(s); };
-    const uint64_t n_kv = f.needs_scale ? 3 : 1;
-    std::string head = "GGUF" + le(3u, 4) + le(1ull, 8) + le(n_kv, 8);
+    const bool ngq2 = f.id == k::PleFormat::NGQ2;
+    const uint64_t n_kv = f.needs_scale ? 3 : ngq2 ? 2 : 1;
+    std::string head = "GGUF" + le(3u, 4) + le(ngq2 ? 2ull : 1ull, 8) + le(n_kv, 8);
     head += str("general.architecture") + le(8u, 4) + str("strata-ple");
     if (f.needs_scale) {
         const float scale = 0.75f;
@@ -155,15 +162,31 @@ std::string write_format_table(const std::string& dir, const k::PleFormatInfo& f
         head += str("strata.ple.format") + le(8u, 4) + str(f.id == k::PleFormat::NVFP4 ? "nvfp4x16" : "f8_e4m3");
         head += str("strata.ple.scale") + le(6u, 4) + le(sb, 4);       // 6 = FLOAT32
     }
+    if (ngq2) {
+        head += str("strata.ple.format") + le(8u, 4) + str("ngq2");
+    }
     head += str("per_layer_token_embd.weight") + le(2u, 4);
-    head += le(f.id == k::PleFormat::NVFP4 ? (uint64_t) f.row_bytes : (uint64_t) k::PLE_HEAD_DIM, 8) + le(claimed_rows != 0 ? claimed_rows : (uint64_t) rows, 8);
+    head += le(f.id == k::PleFormat::NVFP4 || ngq2 ? (uint64_t) f.row_bytes : (uint64_t) k::PLE_HEAD_DIM, 8) + le(claimed_rows != 0 ? claimed_rows : (uint64_t) rows, 8);
     head += le(gguf_type_id(f.name), 4) + le(0ull, 8);
+    const auto align32 = [](uint64_t n) { return (n + 31) / 32 * 32; };
+    if (ngq2) {   // the codebook tensor, F32 [2, 512], right after the table the header claims
+        head += str("strata.ple.codebook") + le(2u, 4) + le(2ull, 8) + le(512ull, 8) + le(0u, 4);   // 0 = F32
+        head += le(align32((claimed_rows != 0 ? claimed_rows : (uint64_t) rows) * f.row_bytes), 8);
+    }
     while (head.size() % 32) head += '\0';
     out.write(head.data(), (std::streamsize) head.size());
     std::vector<uint8_t> r(f.row_bytes);
     for (uint32_t i = 0; i < rows; ++i) {
         expected_row(i, f.row_bytes, r.data());
         out.write((const char*) r.data(), (std::streamsize) f.row_bytes);
+    }
+    if (ngq2) {   // after the rows actually written, so a lying header leaves a file whose sizes do not add up
+        const std::string pad(align32((uint64_t) rows * f.row_bytes) - (uint64_t) rows * f.row_bytes, '\0');
+        out.write(pad.data(), (std::streamsize) pad.size());
+        for (int i = 0; i < 1024; ++i) {
+            const float v = ngq2_test_codebook(i);
+            out.write((const char*) &v, 4);
+        }
     }
     out.close();
     return out ? path : std::string();
@@ -548,6 +571,27 @@ void ple_files_are_told_from_model_shards(const std::string& dir) {
     std::printf("ple_gguf_table_only: %zu files checked\n", cases.size());
 }
 
+/// NGQ2 against an independent decoder (numpy, the checkpoint's reference decoder) on one fixed row with the test
+/// codebook, which the round trip above has installed: 8 values (the wrap of the state window included) and an
+/// FNV-1a hash of all 160 bit patterns.
+void ngq2_golden() {
+    uint8_t row[k::PLE_ROW_BYTES_NGQ2];
+    for (int i = 0; i < 40; ++i) row[i] = (uint8_t) ((i * 29 + 7) & 255);
+    row[40] = 0x9A;   // gain bf16 0x3E9A = 0.30078125
+    row[41] = 0x3E;
+    float out[k::PLE_HEAD_DIM];
+    k::ple_format_info(k::PleFormat::NGQ2).dequant(row, 1.0f, out);
+    uint32_t bits[k::PLE_HEAD_DIM];
+    std::memcpy(bits, out, sizeof bits);
+    const struct { int j; uint32_t want; } at[] = {{0, 0xbe310000u}, {1, 0x3dbc0000u}, {2, 0x3dac0000u}, {3, 0xbd790000u},
+                                                   {78, 0xbd4d0000u}, {79, 0xbd030000u}, {158, 0xbc950000u}, {159, 0xbd3f0000u}};
+    for (const auto& e : at) CHECK(bits[e.j] == e.want, "NGQ2 golden: value %d is %08x, not %08x", e.j, bits[e.j], e.want);
+    uint32_t h = 2166136261u;
+    for (uint32_t w : bits) h = (h ^ w) * 16777619u;
+    CHECK(h == 0x21b17e45u, "NGQ2 golden: hash %08x, not 21b17e45", h);
+    if (g_fail == 0) std::printf("ngq2 golden row vs the numpy decoder: OK\n");
+}
+
 void all_formats_round_trip(const std::string& dir) {
     ple_files_are_told_from_model_shards(dir);     // #6026: which --ple-gguf files stay out of the dense shard list
     bf16_widening_is_exact();                      // BF16's own claim: a shift, exact for every pattern
@@ -558,12 +602,14 @@ void all_formats_round_trip(const std::string& dir) {
     for (int i = 0; i < k::ple_format_count(); ++i) {
         const k::PleFormatInfo& f = k::ple_formats()[i];
         CHECK((int) f.id == i, "%s: the table is not in PleFormat order", f.name);
-        // NVFP4 and F8_E4M3 are both I8 bytes: the type finds the FP8 entry, `strata.ple.format` picks NVFP4 in PleTable::open
-        const k::PleFormatInfo* want = f.id == k::PleFormat::NVFP4 ? &k::ple_format_info(k::PleFormat::F8_E4M3) : &f;
+        // NVFP4, NGQ2 and F8_E4M3 are all I8 bytes: the type finds the FP8 entry, `strata.ple.format` picks the others in PleTable::open
+        const bool marked = f.id == k::PleFormat::NVFP4 || f.id == k::PleFormat::NGQ2;
+        const k::PleFormatInfo* want = marked ? &k::ple_format_info(k::PleFormat::F8_E4M3) : &f;
         CHECK(k::ple_format_for_type(f.gguf_type) == want, "%s: type lookup", f.name);
         format_round_trip(dir, f, 2000);
     }
     CHECK(k::ple_format_for_type("Q6_K") == nullptr, "Q6_K must not be a PLE format");
+    ngq2_golden();
     if (g_fail == 0) {
         std::printf("ple formats, both readers vs their dequantizers:");
         for (int i = 0; i < k::ple_format_count(); ++i) std::printf(" %s", k::ple_formats()[i].name);
