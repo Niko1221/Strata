@@ -71,7 +71,16 @@ push main to origin. (User decision 2026-11-20/21: full scope including publicat
   engine-bundle/notices/host/node/harness cleanup exercised. Evidence:
   `H:/Strata/evidence/v070-nsis-upgrade-fixture/` and
   `H:/Strata/releases/v070-main-build/nsis-upgrade-test.log`.
-- tag / release / push: (appended after run)
+- tag / release / push:
+  - `git tag -a v0.7.0` at main HEAD; `git push origin main` and
+    `git push origin v0.7.0` succeeded (origin/main=017804d8e,
+    refs/tags/v0.7.0=8e1f7b2a).
+  - `gh release create v0.7.0 --repo zapabob/Strata --latest` with both assets;
+    published 2026-11-20T16:19:29Z, isPrerelease=false, GitHub Latest=v0.7.0.
+  - Public readback: installer 127,039,448 bytes SHA-256
+    `04ea5022...d76d124` (matches local); tar.7z 127,042,210 bytes SHA-256
+    `ecaaf22f...e4187e2` (matches local); both state=uploaded.
+  - Release URL: https://github.com/zapabob/Strata/releases/tag/v0.7.0
 
 ## Residual risk
 - Windows Authenticode signing remains absent; component signatures verified with
