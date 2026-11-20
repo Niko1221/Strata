@@ -218,7 +218,9 @@ def _print_check(report: dict) -> None:
     text = {"available": (f"update available: {installed} -> {offered} (already installed; the update switches to it, nothing to download)"
                           if eng.get("installed_locally") else f"update available: {installed} -> {offered} ({_mib(eng['download_bytes'])})"),
             "install": f"no engine installed yet; {offered} is the one for this PC ({_mib(eng['download_bytes'])})",
-            "current": f"{installed} is up to date", "none-for-this-pc": eng.get("note") or "the feed has no engine for this PC", "wrong-make": eng.get("note") or "nothing was changed",
+            "current": f"{installed} is up to date", "none-for-this-pc": eng.get("note") or "the feed has no engine for this PC",
+            "kept-variant": eng.get("note") or "your build's variant of Strata is kept",
+            "wrong-make": eng.get("note") or "nothing was changed",
             "not-in-feed": "the feed lists no engines"}.get(eng["status"], eng.get("note") or eng["status"])
     print(f"  Engine   {text}")
     pick = eng.get("offered")

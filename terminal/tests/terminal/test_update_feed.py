@@ -189,6 +189,25 @@ class Selection(unittest.TestCase):
         only13 = [entry(variant="cuda13")]
         self.assertEqual(self.pick(only13, installed_variant="cuda12")[0].variant, "cuda13")   # the feed has no 12: the best fit
 
+    def test_an_update_never_switches_the_variant_of_strata_that_is_installed(self):
+        # the fork's engine (q4u32) must not be replaced by an upstream build by an update that only
+        # meant to bring a newer version of the same thing
+        q4u32 = [entry(flavor="q4u32", version="0.1.60")]
+        upstream = [entry(version="0.1.63")]
+        self.assertEqual(self.pick(q4u32)[0].flavor, "q4u32")                       # nothing installed: as offered
+        kept, reasons = self.pick(upstream, installed_flavor="q4u32")
+        self.assertIsNone(kept, "the q4u32 build is kept")
+        self.assertTrue(any("never switches the variant" in r for r in reasons), reasons)
+        # a newer build of the SAME variant is taken
+        both = [entry(flavor="q4u32", version="0.1.60"), entry(flavor="q4u32", version="0.1.62")]
+        same, reasons = self.pick(both, installed_flavor="q4u32")
+        self.assertEqual(same.version, "0.1.62")
+        # the feed has no build of the same variant at that version: the installed one stays
+        mixed = [entry(flavor="q4u32", version="0.1.60"), entry(version="0.1.62")]
+        same, reasons = self.pick(mixed, installed_flavor="q4u32")
+        self.assertEqual(same.version, "0.1.60")
+        self.assertTrue(any("is kept" in r for r in reasons), reasons)
+
     def test_the_newest_version_wins_and_the_card_must_be_covered(self):
         newer = [entry("0.1.45"), entry("0.1.46")]
         self.assertEqual(self.pick(newer)[0].version, "0.1.46")
