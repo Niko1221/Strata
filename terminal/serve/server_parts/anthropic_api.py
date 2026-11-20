@@ -33,6 +33,8 @@ def anthropic_collect(events) -> dict:
             msg["stop_reason"] = e["delta"]["stop_reason"]
             msg["stop_sequence"] = e["delta"].get("stop_sequence")
             msg["usage"].update(e["usage"])
+            if e.get("timings"):
+                msg["timings"] = e["timings"]                     # the top-level timings a Chat Completions reply has too
             if e.get("strata_rejected_tool_calls"):
                 msg["strata_rejected_tool_calls"] = e["strata_rejected_tool_calls"]
             if e.get("strata_unread_tool_markup"):
