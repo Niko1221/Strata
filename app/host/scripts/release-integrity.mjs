@@ -70,7 +70,18 @@ export function verifyTree(source, staged, {pythonOnly=false}={}) {
   const expected=select(source).map(path=>relative(source,path).replaceAll('\\','/')).sort();
   const actual=select(staged).map(path=>relative(staged,path).replaceAll('\\','/')).sort();
   if (JSON.stringify(expected)!==JSON.stringify(actual)) throw new Error(`Stale staged membership: ${staged}`);
-  for (const name of expected) if (sha256(join(source,name))!==sha256(join(staged,name))) throw new Error(`Stale staged source: ${staged}/${name}`);
+  for (const name of expected) {
+    const a=join(source,name), b=join(staged,name);
+    if (sha256(a)===sha256(b)) continue;
+    // New layout: the packaged Control is flat, so packaging legitimately
+    // rewrites `from terminal.X import` -> `from X import` in the staged .py
+    // files. Accept a staged file whose only difference is that prefix.
+    if (name.endsWith('.py')) {
+      const norm=t=>readFileSync(t,'utf8').replace(/\b(from|import)\s+terminal\./g,'$1 ');
+      if (sha256(Buffer.from(norm(a)))===sha256(Buffer.from(norm(b)))) continue;
+    }
+    throw new Error(`Stale staged source: ${staged}/${name}`);
+  }
 }
 /** Check the package against its manifest before probing the actual executable. */
 export function verifyEngine(folder, version) {
