@@ -1506,6 +1506,7 @@ __global__ void __launch_bounds__(THREADS) gr_norm_fast_kernel(GrMulti m);   // 
 __global__ void __launch_bounds__(THREADS) gr_up_fast_kernel(GrMulti m);
 }  // namespace
 static bool gr_fast();
+extern int g_gr_fast;  // fused_gr_set_fast: the bench can explicitly select either legacy arm
 namespace {
 #endif
 // STRATA_GR_DOWN_MAX4=1 (opt-in): launches of up to 4 tokens hold 4 tokens' sums per thread instead of kFusedGrMaxT (the
@@ -1669,8 +1670,8 @@ __global__ void __launch_bounds__(256) gr_up_gb10_kernel(GrMulti m) {
     }
 }
 
-bool gb10_hc_read(const GrMulti& m) {
-    if (N != 2560 || HC != 4 || LR != 320 || m.T < 1 || m.T > 6) return false;
+bool gb10_hc_device() {
+    if (N != 2560 || HC != 4 || LR != 320 || g_gr_fast >= 0) return false;
     // An explicit kernel selection is for comparing that implementation.
     static const bool overridden = std::getenv("STRATA_NO_MULTI_GR") || std::getenv("STRATA_GR_FAST") ||
         std::getenv("STRATA_GR_DOWN_TG") || std::getenv("STRATA_GR_DOWN_MAX4") || std::getenv("STRATA_GR_NORM_FAST") ||
@@ -1684,13 +1685,18 @@ bool gb10_hc_read(const GrMulti& m) {
         int ma = 0, mi = 0;
         if (cudaDeviceGetAttribute(&ma, cudaDevAttrComputeCapabilityMajor, dev) != cudaSuccess ||
             cudaDeviceGetAttribute(&mi, cudaDevAttrComputeCapabilityMinor, dev) != cudaSuccess) return false;
-        gb10 = ma == 12 && mi == 1;
+        const char* perf = std::getenv("STRATA_SM121_PERF");
+        gb10 = ma == 12 && mi == 1 && !strata::qwen_defaults_026() && (!perf || std::atoi(perf) != 0);
         last_dev = dev;
     }
-    if (!gb10) return false;
+    return gb10;
+}
+
+bool gb10_hc_read(const GrMulti& m) {
+    if (m.T < 1 || m.T > 6 || !gb10_hc_device()) return false;
     for (int t = 0; t < m.T; ++t) {
         const auto& a = m.a[t];
-        if ((a.apply && a.R_out != a.R) || a.s_up || a.s_down || a.q8_mixed) return false;
+        if ((a.apply && a.R_out != a.R) || a.s_up || a.s_down || a.q8_mixed || ((uintptr_t) a.lo & 15)) return false;
         // Normalization now writes the residual early. Only use independent, contiguous token rows.
         if ((uintptr_t) a.R != (uintptr_t) m.a[0].R + (size_t) t * D * sizeof(float)) return false;
     }
@@ -3325,15 +3331,24 @@ bool fused_gr_selftest(bool ok_variant[4], std::string why[4]) {
     };
     ok_variant[2] = ok_variant[3] = ok;
     bool single_ok = ok;
-    for (int apply = 0; apply < 2 && ok; ++apply) {
-        for (int T = 1; T <= TM && ok; ++T) {
+    int residual_cases = 2;
+#if !defined(__HIPCC__)
+    if (gb10_hc_device()) ++residual_cases;   // also exercise the verifier's pending in-place write
+#endif
+    for (int rc = 0; rc < residual_cases && ok; ++rc) {
+        const bool apply = rc != 0, inplace = rc == 2;
+        for (int T = 1; T <= (inplace ? 6 : TM) && ok; ++T) {
             FusedGrArgs a[NV][TM];
             for (int v = 0; v < NV; ++v) {
                 const size_t span = (size_t) ((uint8_t*) (set[v].mixed + (size_t) TM * N) - (uint8_t*) set[v].R_out);
                 ok = ok && cudaMemsetAsync(set[v].R_out, 0xFF, span, st) == cudaSuccess;   // the whole set
+                if (inplace) ok = ok && cudaMemcpyAsync(set[v].R_out, d_R, (size_t) T * D * sizeof(float),
+                                                       cudaMemcpyDeviceToDevice, st) == cudaSuccess;
                 for (int k = 0; k < T; ++k) {
                     FusedGrArgs& x = a[v][k];
-                    x.R = d_R + (size_t) k * D; x.R_out = set[v].R_out + (size_t) k * D; x.apply = apply != 0;
+                    x.R_out = set[v].R_out + (size_t) k * D;
+                    x.R = inplace ? x.R_out : d_R + (size_t) k * D;
+                    x.apply = apply;
                     x.bo_prev = d_bo + (size_t) k * N; x.inj_prev = d_ip + (size_t) k * HC;
                     x.w_norm = d_norm; x.w_down = d_down; x.w_up = d_up; x.w_inject = d_inj; x.eps = 1e-6f;
                     x.lo = set[v].lo + (size_t) k * LR; x.rs = set[v].rs + (size_t) k * HC;
@@ -3413,7 +3428,7 @@ void fused_gr_check() {
     static const char* const what[4] = {
         "", "the plain read (the norm per token, the down projection on 41 blocks)",
         "split (the norm per token and stream, then the plain read's down projection)",
-        "staged (the norm per token and stream, the down projection's activations staged ahead by cp.async)"};
+        "staged (the norm per token and stream, with a device-specific down projection)"};
     std::fprintf(stderr, "strata hc: CUDA%d: the hyper-connection read runs as %s%s\n", dev, what[use],
                  use >= kHcSplit ? "; checked bit for bit against the plain read on this card (STRATA_HC_SPLIT=1 or 0 "
                                    "for the earlier ones)" : "");
@@ -3929,5 +3944,4 @@ bool fused_gr_read_persist(const FusedGrArgs*, int, void*) { return false; }
 #endif
 
 }  // namespace strata::kernels
-
 
