@@ -9,6 +9,27 @@
 namespace strata::quant {
 namespace avx2 {
 
+#ifdef STRATA_QUANT_AVX2_SCALE_TABLE
+struct HalfScaleTable {
+    float values[1u << 16];
+
+    HalfScaleTable() {
+        for (unsigned bits = 0; bits < (1u << 16); ++bits) {
+            // Quiet NaNs before converting so building unused entries cannot raise invalid.
+            const unsigned half = (bits & 0x7fffu) > 0x7c00u ? bits | 0x0200u : bits;
+            values[bits] = _mm_cvtss_f32(_mm_cvtph_ps(_mm_cvtsi32_si128(static_cast<int>(half))));
+        }
+    }
+
+    float operator()(uint16_t bits) const { return values[bits]; }
+};
+
+static const HalfScaleTable& half_scales() {
+    static const HalfScaleTable table;
+    return table;
+}
+#endif
+
 #include "x86_helpers.inc"
 #include "x86_dots.inc"
 
