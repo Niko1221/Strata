@@ -10,6 +10,10 @@
 # building for a pre-Ampere arch would produce a binary that runs and is wrong about its own performance, which is
 # the worst of both outcomes.
 cmake_minimum_required(VERSION 3.24)
+# The base is the Strata version this tree changed (0.1.63, the 0.2.17 release's engine source version); the
+# variant suffix says what this build is.  So the engine calls itself "0.1.63-q4u32": the numbers of the release
+# it came from, plus the measured q4u32 default it adds.  Upstream's engines have no suffix, so nobody mistakes a
+# fork build for an upstream one and the Terminal can tell the two apart (terminal/strata_control/kv_default.py).
 project(strata VERSION 0.1.63 LANGUAGES CXX)
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/strata_geometry.cmake)   # -DSTRATA_GEOMETRY=<name>: the model shape the kernels are compiled for (default flash_next, no flag added)
 # The build is cut by backend (cleanup 5.4): each file below only DEFINES macros (strata_<part>()), which run here, in this scope, at the place their
@@ -32,6 +36,15 @@ if(STRATA_ENABLE_SYCL)
   return()
 endif()
 add_compile_definitions(STRATA_VERSION="${PROJECT_VERSION}")
+# The variant this build is: a fork's engine says so in its own version string ("0.1.63-q4u32"), so nobody mistakes it
+# for an upstream build (upstream's engine source is 0.1.63) and the updater can tell the two apart.  An upstream build
+# has no suffix: STRATA_ENGINE_FLAVOR is empty there.
+set(STRATA_ENGINE_FLAVOR "q4u32" CACHE STRING "the suffix this engine's version carries (empty: an upstream build)")
+if(STRATA_ENGINE_FLAVOR)
+  add_compile_definitions(STRATA_ENGINE_VERSION="${PROJECT_VERSION}-${STRATA_ENGINE_FLAVOR}")
+else()
+  add_compile_definitions(STRATA_ENGINE_VERSION="${PROJECT_VERSION}")
+endif()
 # issue #31: release builds keep a PDB beside the exe (not shipped in it), so a minidump from a stalled engine can
 # be read back to the exact source line
 if(MSVC AND CMAKE_BUILD_TYPE STREQUAL "Release")
@@ -102,8 +115,20 @@ if(STRATA_HIP_GFX906)
   set(STRATA_ENABLE_CUDA ON CACHE BOOL "" FORCE)
 endif()
 option(STRATA_ENABLE_HIP "Build the HIP targets for wave32 AMD GPUs (gfx1100, gfx1201; gfx1012/gfx1030 unvalidated)" OFF)
-# llama.cpp's MMQ prompt kernels are no longer in the tree (0.2.16): every CUDA and HIP build compiles Strata's own prompt kernels (strata_pf_own)
-# and the FP16 path.  MMQ comparison builds come from the v0.2.15 tag.
+# The QSA layer trace (engine/src/core/layer.cpp): one stderr line per QSA layer, for the hunt of a wrong KV path.  It is
+# compiled out by default, so a release build pays nothing for it; ON builds the line in (debug builds only).
+option(STRATA_QSA_LAYER_TRACE "Compile the QSA layer trace into the engine (one stderr line per QSA layer)" OFF)
+# The QSA selection dump (engine/src/core/verify.cpp): Block-Ids per token and QSA layer, for D2 (indexer selection
+# behaviour).  Compiled out by default; ON builds the dump path in.  At run time it is enabled through
+# STRATA_QSA_SELECT_DUMP=1 and writes sel_dump.bin (or $STRATA_QSA_SELECT_DUMP_PATH) in the CWD.
+option(STRATA_QSA_SELECT_DUMP "Compile the QSA selection dump into the engine (D2 instrument: Block-Ids per token and layer)" OFF)
+if(STRATA_QSA_SELECT_DUMP)
+  # Global and not per target: the switch adds members to `Verifier` (engine/include/strata/core/verify.hpp), so every
+  # translation unit that includes the header must see the same class layout - verify.cpp, generate.cpp and the
+  # tests alike. Per-target definitions would give two different `Verifier`s in one link. The SYCL port (engine/sycl/) is
+  # a configure of its own and has no dump; this option does not reach it.
+  add_compile_definitions(STRATA_QSA_SELECT_DUMP=1)
+endif()
 # The community-made AMD changes (include/strata/core/amd_community.hpp): on by default.  This option is the build half of the one
 # switch STRATA_AMD_COMMUNITY_TUNING: OFF compiles the portable signed-byte dot for gfx1010 again (the SDWA sequence of #4855).
 # The rocBLAS tables are switched at run time (STRATA_AMD_COMMUNITY_TUNING=0).

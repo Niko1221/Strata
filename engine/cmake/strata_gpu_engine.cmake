@@ -303,6 +303,9 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     src/core/arch_defaults.cpp src/core/nv_defaults.cpp src/core/vmm.cpp src/core/conversation_file.cpp)
   target_include_directories(strata_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
   target_link_libraries(strata_engine PUBLIC strata_core strata_kernels strata_kernels_cpu ${_strata_gpu_runtime_target})
+  if(STRATA_QSA_LAYER_TRACE)
+    target_compile_definitions(strata_engine PRIVATE STRATA_QSA_LAYER_TRACE=1)
+  endif()
   if(STRATA_BUILD_TESTS AND STRATA_ENABLE_CUDA AND NOT STRATA_HIP_GFX906)
     add_executable(host_graph_launch_test tests/core/host_graph_launch_test.cu)
     target_include_directories(host_graph_launch_test PRIVATE include)
@@ -682,7 +685,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_link_libraries(hip_router_fast PRIVATE strata_kernels strata_hip_runtime)
     add_test(NAME hip_router_fast COMMAND hip_router_fast)
     list(APPEND _strata_hip_tests hip_router_fast)
-    # S6: the RDNA4 matrix-core prompt attention (STRATA_HIP_WMMA) against the FP32 kernel and FP64; skips off gfx12
+    # S6: the matrix-core prompt attention (STRATA_HIP_WMMA) against the FP32 kernel and FP64; skips off gfx11/gfx12
     # the prompt attention on a recorded selection (STRATA_QSA_DUMP), for A/B of kernel variants (STRATA_QSA_UNION=1)
     add_executable(hip_pa_bench tests/cuda/pa_bench.cpp)
     target_link_libraries(hip_pa_bench PRIVATE strata_kernels strata_hip_runtime)
@@ -1218,6 +1221,21 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_include_directories(kv_window_parity PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(kv_window_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   add_test(NAME kv_window_parity COMMAND kv_window_parity)
+
+  # WP-2a (this branch): the exact window's side pool (both append forms: steps and pos0/T) against
+  # kv_gather_q4_step attached and detached - every cell reads bitwise its fp16 twin where qsa_win_slot says exact
+  # and its own quantized values elsewhere: ring wrap, sinks that never move, the legal-max batch T = S + B, stale
+  # tags after a rewind (GPU, synthetic, no model). kv_gather_q4_step reads STRATA_KV_WINDOW_TAG once, so the
+  # win_all variant is a second run of the same binary, like the register kernel above.
+  add_executable(kv_win_parity src/kernels/kv_win_parity.cpp)
+  target_include_directories(kv_win_parity PRIVATE ${_strata_gpu_include_directories})
+  target_link_libraries(kv_win_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+  add_test(NAME kv_win_parity COMMAND kv_win_parity)
+  add_test(NAME kv_win_parity_win_all COMMAND kv_win_parity)
+  set_tests_properties(kv_win_parity_win_all PROPERTIES ENVIRONMENT "STRATA_KV_WINDOW_TAG=1")
+  # the over-sized batch (T = S + B + 1) fails loudly (exit 1); WILL_FAIL turns that refusal into a contract
+  add_test(NAME kv_win_parity_refuse COMMAND kv_win_parity --refuse)
+  set_tests_properties(kv_win_parity_refuse PROPERTIES WILL_FAIL TRUE)
 
   # PR #120: the hybrid K8V4 KV (INT8 K + rotated Q4_0 V) vs host references (GPU, synthetic, no model).
   add_executable(kv_hybrid_parity src/kernels/kv_hybrid_parity.cpp)

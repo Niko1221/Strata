@@ -769,6 +769,19 @@ private:
     float* tail_snap_ = nullptr;                              // per QSA layer
     int32_t* sel_ = nullptr;
     int32_t* topk_scratch_ = nullptr;   // qsa_block_topk_long's multi-CTA exchange (STRATA_SELECT_LONG=1 only)
+#ifdef STRATA_QSA_SELECT_DUMP
+    // D2 instrument (compile-time, default off): one verify window's selected ids staged on the device -
+    // [layer][row][cap_] - filled by the graph itself and drained by the host after the launch, because a host
+    // copy inside the captured window is not allowed (verify.cpp, "D2 instrument").
+    int32_t* sel_dump_dev_ = nullptr;
+    int sel_dump_layers_ = 0;
+    bool sel_dump_capture_ = false;   // true while the window graph is recorded (the staging copies are recorded, not counted)
+    int64_t sel_dump_launched_ = 0;   // windows whose graph was launched (the copies run on every replay)
+    int64_t sel_dump_drained_ = 0;    // windows dumped to the file (a mismatch is reported at exit)
+    int64_t sel_dump_calls_ = 0, sel_dump_skips_ = 0;     // stage calls, and the ones the row/layer guard refused
+    void sel_dump_stage(int layer, int row, int nq, cudaStream_t ns);
+    void sel_dump_drain(int T, int64_t pos0);
+#endif
     float *logits_ = nullptr, *w_ = nullptr, *shared_ = nullptr, *parts_ = nullptr, *hit_out_ = nullptr;
     int32_t *ids_ = nullptr, *hit_slot_ = nullptr, *hit_dst_ = nullptr, *hit_count_ = nullptr;
     int32_t* plan_ = nullptr;                                     // device copy of the plan block

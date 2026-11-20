@@ -39,6 +39,7 @@
 #include <filesystem>
 #include <cuda_runtime.h>
 #include <cmath>
+#include <cassert>
 #include <cstdio>
 #include <cstring>
 #include <limits>
@@ -201,12 +202,155 @@ if (!w.wants_q8k()) {        s_gemv_q8_0_split(x80, p.codes, p.scales, p.offset,
 // namespace
 void layer_set_native_bf16(bool enabled) { native_bf16_projections = enabled; }
 void layer_set_native_flash_attn_short(bool enabled) { native_flash_attn_short = enabled; }
-namespace { bool g_kv_int8 = false, g_kv_q4 = false, g_kv_hybrid = false, g_kv_int8_rot = false; }
+namespace {
+bool g_kv_int8 = false, g_kv_q4 = false, g_kv_hybrid = false, g_kv_int8_rot = false;
+strata::kernels::Q4Mode g_kv_q4_mode = strata::kernels::Q4Mode::kUniform;
+// Measurement-only, opt-in: STRATA_KV_Q4_LAYERS=3,7,... keeps the q4 blocks on those model layers and stores
+// every other QSA layer as fp16. Unset: all layers follow g_kv_q4, the default path, unchanged. The arena is
+// sized as if every layer were fp16 (the largest layout), so one stride still holds both. CUDA/HIP only.
+uint64_t g_kv_q4_mask = 0;
+bool g_kv_q4_mask_active = false;
+int g_kv_q4_layer = -1;   // the model layer whose QSA state is being built; -1 = follow g_kv_q4
+void kv_q4_mask_parse() {
+    static const bool once = [] {
+        const char* e = std::getenv("STRATA_KV_Q4_LAYERS");
+        if (e == nullptr) return true;
+        g_kv_q4_mask_active = true;
+        for (const char* p = e; *p != '\0';) {
+            char* end = nullptr;
+            const long v = std::strtol(p, &end, 10);
+            if (end == p) break;
+            if (v >= 0 && v < 64) g_kv_q4_mask |= (uint64_t) 1 << v;
+            p = (*end == ',') ? end + 1 : end;
+        }
+        std::fprintf(stderr, "strata: STRATA_KV_Q4_LAYERS=%s: q4 only on those layers, fp16 on the rest "
+                             "(measurement build; the arena is fp16-sized)\n", e);
+        return true;
+    }();
+    (void) once;
+}
+// WP-2a window: exact cells, recent S + R sinks (STRATA_KV_WINDOW_S/_R, defaults 128/8). S + R = 0 is exactly
+// the base mode (the arm's identity check). The overlay is orthogonal to the level table: `--kv q4lm32w`
+// (kLloydWin) turns it on for kLloyd and `STRATA_KV_WINDOW=1` for any other q4 mode (e.g. `--kv q4lm8v` +
+// STRATA_KV_WINDOW=1). Read once at mode set; every engine run is a fresh process, so one grid point per run
+// is all the harness needs.
+bool g_kv_win = false;
+int64_t g_kv_win_s = 128, g_kv_win_r = 8, g_kv_win_b = 512;
+bool g_kv_win_all = false;   // STRATA_KV_WINDOW_TAG=1: tag hit is exact, not only the last S
+/// STRATA_KV_WINDOW_BATCH was given: then the ring gets exactly that, and the append's own check (T <= S + B) is
+/// the guard. Without it the ring follows the prompt chunk (qsa_set_kv_win_batch from generate.cpp), because a
+/// ring smaller than one chunk would refuse that chunk loudly.
+bool g_kv_win_b_env = false;
+// WP-2a window grid frozen after the prompt chunk is settled (qsa_kv_win_freeze, called from
+// generate.cpp once qsa_set_kv_win_batch has run): after that the grid must not move, so every
+// state carved later (main, MTP drafter, MTP twin) sees one grid. A late caller is a no-op
+// with a warning instead of silently changing the reader's row mapping.
+bool g_kv_win_frozen = false;
+/// The window wants side pools: the overlay is on, on a q4-**Lloyd** state (its reader mixes exact fp16 with
+/// quantized cells, and only the Lloyd q4 paths carry that reader: `--kv q4_0` maps to kv_mode 2, whose fused
+/// decode ignores the window while the gather would honour it - so a pool is never attached there, see the
+/// loud refusal in `qsa_set_kv_q4_mode`), with at least one exact cell.
+bool qsa_win_wanted() {
+    return g_kv_win && g_kv_q4 &&
+           (strata::kernels::q4_lloyd(g_kv_q4_mode) || strata::kernels::q4_shear(g_kv_q4_mode) ||
+            strata::kernels::q4_uniform_ls(g_kv_q4_mode)) &&
+           g_kv_win_s + g_kv_win_r > 0;
+}
+/// Recent ring rows: S exact recent cells, plus B rows so that one append batch's whole window span
+/// [pos0 - S, pos0 + B) is resident at once (every query of a batch has its own horizon - see qsa_kv_win_b).
+uint64_t qsa_win_ring() { return (uint64_t) (g_kv_win_s + g_kv_win_b); }
+/// Side-pool bytes of ONE fp16 tensor: rows [R sinks][S + B recent ring], [(row, kv_head, head_dim)].
+uint64_t qsa_win_tensor_bytes(const strata::kernels::QsaShapes& s) {
+    return (uint64_t) (g_kv_win_r + g_kv_win_s + g_kv_win_b) * s.n_head_kv * s.head_dim * sizeof(uint16_t);
+}
+/// Side-pool bytes of one state (one layer): both tensors + the recent ring's cell tags. Nothing here scales
+/// with max_cells - the probe's flat full-context pool did, which is what the ring replaces.
+uint64_t qsa_win_bytes(const strata::kernels::QsaShapes& s) {
+    return qsa_win_tensor_bytes(s) * 2 + qsa_win_ring() * sizeof(int32_t);
+}
+}
 void qsa_set_kv_int8(bool enabled) { g_kv_int8 = enabled; }
 void qsa_set_kv_int8_rotate(bool enabled) { g_kv_int8_rot = enabled; }
 bool qsa_kv_int8() { return g_kv_int8; }
+// ---- The centering (bench/results/2026-11-10-centering/) ----
+// The per-(KV head, channel) offsets of the K and of the V rows, subtracted before the rotation.
+// K and V have their own table (measured: their offsets differ), and every head its own (the S2
+// probe merges the heads and measures K only - see the mini-project). The tables live on the device:
+// one block per layer, [n_heads][head_dim] floats, K first then V.
+namespace {
+const float* g_kv_center_k = nullptr;
+const float* g_kv_center_v = nullptr;
+int g_kv_center_layers = 0;
+int g_kv_center_heads = 0;
+int g_kv_center_dim = 0;
+}  // namespace
+void qsa_set_kv_center(const float* k_offsets, const float* v_offsets, int layers, int heads, int dim) {
+    g_kv_center_k = k_offsets;
+    g_kv_center_v = v_offsets;
+    g_kv_center_layers = layers;
+    g_kv_center_heads = heads;
+    g_kv_center_dim = dim;
+}
+bool qsa_kv_center() { return g_kv_center_k != nullptr && g_kv_center_layers > 0; }
+/// The K offsets of one layer (null when the centering is off): [n_heads][head_dim].
+const float* qsa_kv_center_k_offsets(int layer) {
+    if (!qsa_kv_center() || layer < 0 || layer >= g_kv_center_layers) return nullptr;
+    return g_kv_center_k + (size_t) layer * g_kv_center_heads * g_kv_center_dim;
+}
+/// The V offsets of one layer (null when the centering is off).
+const float* qsa_kv_center_v_offsets(int layer) {
+    if (!qsa_kv_center() || layer < 0 || layer >= g_kv_center_layers) return nullptr;
+    return g_kv_center_v + (size_t) layer * g_kv_center_heads * g_kv_center_dim;
+}
 void qsa_set_kv_q4(bool enabled) { g_kv_q4 = enabled; }
 bool qsa_kv_q4() { return g_kv_q4; }
+void qsa_set_kv_q4_layer(int layer) { g_kv_q4_layer = layer; }
+void qsa_set_kv_q4_mode(strata::kernels::Q4Mode mode) {
+    g_kv_q4_mode = mode;
+    g_kv_q4 = g_kv_q4 || (mode != strata::kernels::Q4Mode::kUniform);
+    kv_q4_mask_parse();
+    // Window overlay (kv_q4.hpp), orthogonal to the level table: `--kv q4lm32w` (kLloydWin) is the overlay on
+    // kLloyd, `STRATA_KV_WINDOW=1` turns it on for any other q4 mode (`--kv q4lm8v` + the env is the production
+    // point). Grid via STRATA_KV_WINDOW_S/_R (defaults 128/8); the recent ring's extra rows
+    // (STRATA_KV_WINDOW_BATCH) default to 512 and are raised to the prompt chunk by qsa_set_kv_win_batch
+    // (generate.cpp knows it, here it does not). S + R = 0 is exactly the base mode; when the overlay is off the
+    // grid is zeroed so a reader that only checks the counts sees none.
+    const char* ew = std::getenv("STRATA_KV_WINDOW");
+    g_kv_win = mode == strata::kernels::Q4Mode::kLloydWin || (ew != nullptr && ew[0] == '1');
+    if (g_kv_win && !strata::kernels::q4_lloyd(mode) && !strata::kernels::q4_shear(mode) &&
+        !strata::kernels::q4_uniform_ls(mode)) {
+        // K1: the fused decode reads a window only in its Lloyd instantiations (kv_mode 4); a plain q4_0 state
+        // maps to kv_mode 2 and would get a pool the fused path ignores and the q4 gather honours. That is an
+        // inconsistent state, so it is refused loudly instead of silently half-applied.
+        std::fprintf(stderr, "strata: STRATA_KV_WINDOW=1 needs a q4-Lloyd arm (--kv q4lm32/q4lm32s/"
+                            "q4lm8/q4lm8k/q4lm8v, or --kv q4lm32w); --kv q4_0 has no window reader - "
+                            "window off\n");
+        g_kv_win = false;
+    }
+    if (g_kv_win) {
+        const char* es = std::getenv("STRATA_KV_WINDOW_S");
+        const char* er = std::getenv("STRATA_KV_WINDOW_R");
+        const char* eb = std::getenv("STRATA_KV_WINDOW_BATCH");
+        g_kv_win_s = es != nullptr ? std::atoll(es) : 128;
+        g_kv_win_r = er != nullptr ? std::atoll(er) : 8;
+        g_kv_win_b = eb != nullptr ? std::atoll(eb) : 512;
+        g_kv_win_b_env = eb != nullptr;
+        if (g_kv_win_s < 0) g_kv_win_s = 0;
+        if (g_kv_win_r < 0) g_kv_win_r = 0;
+        if (g_kv_win_b < 0) g_kv_win_b = 0;
+        const char* et = std::getenv("STRATA_KV_WINDOW_TAG");
+        g_kv_win_all = et != nullptr && et[0] == '1';
+        if (g_kv_win_all)
+            std::fprintf(stderr, "strata: KV window reads every ring row whose tag still names the cell "
+                                 "(STRATA_KV_WINDOW_TAG=1), not only the last %lld\n",
+                         (long long) g_kv_win_s);
+    } else {
+        g_kv_win_s = g_kv_win_r = g_kv_win_b = 0;
+        g_kv_win_b_env = false;
+        g_kv_win_all = false;
+    }
+}
+strata::kernels::Q4Mode qsa_kv_q4_mode() { return g_kv_q4_mode; }
 void qsa_set_kv_hybrid(bool enabled) { g_kv_hybrid = enabled; }
 bool qsa_kv_hybrid() { return g_kv_hybrid; }
 uint64_t gdn_buffers_bytes(const ModelGeometry& g) {    const int64_t C = g.ssm_conv_channels;    const int64_t V = g.ssm_value_dim;    const uint64_t parts[] = {        q8k_bytes(g.n_embd),
@@ -754,13 +898,13 @@ KvPlan kv_plan(const QsaShapes& s, int64_t max_cells, int64_t ring_cells) {
     }
     return p;
 }
-uint64_t kv_pool_bytes(const QsaShapes& s, int64_t pages, bool hybrid, bool int8) {
+uint64_t kv_pool_bytes(const QsaShapes& s, int64_t pages, bool hybrid, bool int8, bool q4) {
     if (hybrid) {   // K8V4: the INT8 K half (codes + scales) plus the Q4_0 V half (kv_q4.hpp's rotation)
         const uint64_t rows = (uint64_t) pages * s.page_size * s.n_head_kv;
         return rows * (uint64_t) s.head_dim + rows * (uint64_t) (s.head_dim / strata::kernels::KV_Q8_GROUP) * 2 +
-               rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim) + 64;
+               rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim, strata::kernels::Q4Mode::kUniform) + 64;
     }
-    if (g_kv_q4) return (uint64_t) pages * s.page_size * strata::kernels::kv_q4_bytes_per_cell(s) + 64;
+    if (q4) return (uint64_t) pages * s.page_size * strata::kernels::kv_q4_bytes_per_cell(s, g_kv_q4_mode) + 64;
     return int8 ? (uint64_t) pages * s.page_size * strata::kernels::kv_q8_bytes_per_cell(s) + 64
                 : (uint64_t) pages * s.n_head_kv * s.page_size * s.head_dim * 2 * 2;
 }
@@ -784,14 +928,52 @@ int64_t qsa_kv_resident_min() {
     return v;
 }
 uint64_t qsa_kv_host_bytes() { return g_kv_host_bytes; }
+// WP-2a window grid (STRATA_KV_WINDOW_S/_R, read at mode set): the staged prefill path overlays them too.
+int qsa_kv_win_s() { return (int) g_kv_win_s; }
+int qsa_kv_win_r() { return (int) g_kv_win_r; }
+int qsa_kv_win_b() { return (int) g_kv_win_b; }
+int qsa_kv_win_all() { return g_kv_win_all ? 1 : 0; }
+// The ring's size came from the user (STRATA_KV_WINDOW_BATCH), not from the engine: then the engine neither grows
+// it nor caps the prompt chunk for it, and the append refuses a chunk that does not fit (it says what to change).
+bool qsa_kv_win_batch_is_explicit() { return g_kv_win && g_kv_win_b_env; }
+// Size the recent ring for one prompt chunk: every query of a chunk has its own horizon, so the ring has to hold
+// the chunk's whole window span (see the header). generate.cpp calls this with the chunk it settled on (which is
+// only known there) - an explicit STRATA_KV_WINDOW_BATCH always wins, and this only ever grows the ring.
+void qsa_set_kv_win_batch(const ModelGeometry& g, int64_t chunk) {
+    if (g_kv_win_frozen) {
+        assert(!"qsa_set_kv_win_batch called after the window grid was frozen");
+        std::fprintf(stderr, "strata: qsa_set_kv_win_batch called after the window grid was frozen "
+                            "(%lld cells): ignored\n", (long long) chunk);
+        return;
+    }
+    if (g_kv_win_b_env || chunk <= g_kv_win_b) return;
+    const int64_t was = g_kv_win_b;
+    g_kv_win_b = chunk;
+    const strata::kernels::QsaShapes s = qsa_shapes(g);
+    const double mib = (double) qsa_win_bytes(s) / 1048576.0;   // per layer: both tensors + the tags
+    std::fprintf(stderr,
+                 "strata: KV window ring sized for the prompt chunk (%lld cells): STRATA_KV_WINDOW_BATCH %lld -> "
+                 "%lld (%.1f MiB per QSA layer, always resident)\n",
+                 (long long) chunk, (long long) was, (long long) g_kv_win_b, mib);
+}
+void qsa_kv_win_freeze() { g_kv_win_frozen = true; }
+// The overlay switch itself: a caller that must build a state the window never reads (the MTP drafter, mtp.cpp)
+// turns it off around the init, so `qsa_win_wanted()` is false and no side pool is carved at all - instead of
+// carving one and dropping the pointers afterwards (R6). S/R keep their values, so switching back restores the
+// grid; only `qsa_win_wanted()` needs the flag.
+bool qsa_kv_win() { return g_kv_win; }
+void qsa_set_kv_win(bool on) { g_kv_win = on; }
 
 uint64_t qsa_state_bytes(const ModelGeometry& g, int64_t max_cells, bool with_rope, int64_t ring_cells) {
     const QsaShapes s = qsa_shapes(g);
     const KvPlan p = kv_plan(s, max_cells, ring_cells);
+    kv_q4_mask_parse();
+    // With the per-layer mask the arena must hold the largest layout (fp16) so one stride fits every layer.
+    const bool q4_size = g_kv_q4 && !g_kv_q4_mask_active;
     uint64_t n = 0;
     if (!(g_kv_elastic && p.mode == 0))   // the elastic K/V's pools are in their own VMM range
         n += kv_pool_bytes(s, p.slots, g_kv_hybrid && ring_cells <= 0,
-                           g_kv_int8 || g_kv_hybrid) + 4 * 16;   // K/V pools (the VRAM slots)
+                           g_kv_int8 || g_kv_hybrid, q4_size) + 4 * 16;   // K/V pools (the VRAM slots)
     n += (uint64_t) p.pages * 4;                                               // page_table
     if (p.mode == 1) n += strata::kernels::kv_stream_map_bytes(p.slots) + 6 * 16;   // the residency map
     n += (uint64_t) (s.idx_block - 1) * s.idx_dim * 4;                         // tail
@@ -801,6 +983,8 @@ uint64_t qsa_state_bytes(const ModelGeometry& g, int64_t max_cells, bool with_ro
     if (with_rope) n += (uint64_t) max_cells * (s.n_rot / 2) * 4 * 2;          // cos + sin tables
     n += strata::kernels::qsa_step_bytes() + 16;                               // counts and aligned attention status
     n += (uint64_t) s.n_head * 4;                                              // pos_dev
+    if (qsa_win_wanted() && !(g_kv_elastic && p.mode == 0) && ring_cells <= 0)
+        n += qsa_win_bytes(s);                                                // WP-2a window side pools (fp16)
     return align_up16(n) + 256;
 }
 
@@ -810,8 +994,15 @@ uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, Q
     const KvPlan p = kv_plan(s, max_cells, ring_cells);
     const int64_t pages = p.pages;
     Cursor c{(uint8_t*) base};
-    st.kv_int8 = g_kv_int8 && !g_kv_q4;
-    st.kv_q4 = g_kv_q4;
+    kv_q4_mask_parse();
+    // STRATA_KV_Q4_LAYERS: q4 only where the mask says. Without the variable (or outside a main-layer init, the
+    // drafter passes -1) this is exactly g_kv_q4, the default path.
+    const bool q4 = (g_kv_q4_mask_active && g_kv_q4 && g_kv_q4_layer >= 0)
+                        ? ((g_kv_q4_mask >> g_kv_q4_layer) & 1ull) != 0
+                        : g_kv_q4;
+    st.kv_int8 = g_kv_int8 && !q4;
+    st.kv_q4 = q4;
+    st.kv_q4_mode = g_kv_q4_mode;   // a q4lm32/q4lm32s state is a q4_0 state with another nibble -> value map
     // Hybrid K8V4, main layers only (the drafter's state is created with the globals toggled to INT8 -
     // mtp.cpp). A streamed one keeps its host copy in the same three runs (kv_stream.cu, kKvHybrid).
     if (g_kv_hybrid && ring_cells <= 0) {
@@ -823,7 +1014,7 @@ uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, Q
     st.kv_mode = p.mode;
     st.n_slots = p.slots;
     const uint64_t rows = (uint64_t) p.slots * s.n_head_kv * s.page_size;   // VRAM rows: the slots
-    const uint64_t q4_row = strata::kernels::kv_q4_bytes_per_head((int) s.head_dim);
+    const uint64_t q4_row = strata::kernels::kv_q4_bytes_per_head((int) s.head_dim, st.kv_q4_mode);
     st.kv_elastic = -1;
     if (g_kv_elastic && p.mode == 0) {
         // the elastic K/V: each array at a chunk boundary of the state's own range, the first cells mapped
@@ -876,6 +1067,23 @@ uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, Q
         st.k_pool = c.take<uint16_t>(rows * s.head_dim);
         st.v_pool = c.take<uint16_t>(rows * s.head_dim);
     }
+    if (qsa_win_wanted() && ring_cells <= 0) {
+        // WP-2a window side pools: rows [R sinks][S + B recent ring] fp16 per tensor, always resident (outside
+        // paging and streaming; the row is derived from the cell by qsa_win_slot, never taken as the cell). The
+        // recent rows carry a cell tag, so a row a rewind or a resume left stale reads quantized instead of
+        // wrong. Rings never carry a window (the drafter is not windowed); the elastic per-slot pools cannot
+        // host it either (a separate flat range per layer is fine, but its carve is not part of the elastic
+        // planning) - that combination fails loudly below instead of measuring silently wrong.
+        if (g_kv_elastic && p.mode == 0) {
+            std::fprintf(stderr, "strata: a KV window with elastic K/V is not supported (separate side pool)\n");
+            return 0;
+        }
+        // qsa_win_bytes counts both tensors and the tags; take() counts elements of the target type.
+        const uint64_t one_tensor_bytes = qsa_win_tensor_bytes(s);
+        st.k_win = c.take<uint16_t>(one_tensor_bytes / sizeof(uint16_t));
+        st.v_win = c.take<uint16_t>(one_tensor_bytes / sizeof(uint16_t));
+        st.win_tag = c.take<int32_t>(qsa_win_ring());
+    }
     st.page_table = c.take<int32_t>((uint64_t) pages);
     st.n_pages = pages;
     st.max_cells = max_cells;
@@ -918,7 +1126,7 @@ uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, Q
     st.host = strata::kernels::KvHostPools{};
     if (p.mode != 0) {
         const uint64_t hrows = (uint64_t) pages * s.n_head_kv * s.page_size;
-        const uint64_t bytes = (uint64_t) pages * strata::kernels::kv_block_bytes(s, qsa_kv_format(st)) + 4 * 256;
+        const uint64_t bytes = (uint64_t) pages * strata::kernels::kv_block_bytes(s, qsa_kv_format(st), st.kv_q4_mode) + 4 * 256;
         uint8_t* h = nullptr;
         uint8_t* d = nullptr;
         if ((h = kv_host_alloc(bytes)) == nullptr ||
@@ -987,10 +1195,10 @@ void qsa_state_zero(const QsaState& st, const ModelGeometry& g, void* stream) {
     if (st.kv_hybrid) {
         cudaMemsetAsync(st.k_q, 0, rows * s.head_dim, cs);
         cudaMemsetAsync(st.k_scale, 0, rows * (s.head_dim / strata::kernels::KV_Q8_GROUP) * 2, cs);
-        cudaMemsetAsync(st.v_q4, 0, rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim), cs);
+        cudaMemsetAsync(st.v_q4, 0, rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim, st.kv_q4_mode), cs);
     } else if (st.kv_q4) {
-        cudaMemsetAsync(st.k_q4, 0, rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim), cs);
-        cudaMemsetAsync(st.v_q4, 0, rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim), cs);
+        cudaMemsetAsync(st.k_q4, 0, rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim, st.kv_q4_mode), cs);
+        cudaMemsetAsync(st.v_q4, 0, rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim, st.kv_q4_mode), cs);
     } else if (st.kv_int8) {
         cudaMemsetAsync(st.k_q, 0, rows * s.head_dim, cs);
         cudaMemsetAsync(st.v_q, 0, rows * s.head_dim, cs);
@@ -999,6 +1207,19 @@ void qsa_state_zero(const QsaState& st, const ModelGeometry& g, void* stream) {
     } else {
         cudaMemsetAsync(st.k_pool, 0, rows * s.head_dim * 2, cs);
         cudaMemsetAsync(st.v_pool, 0, rows * s.head_dim * 2, cs);
+    }
+    // WP-2a window side pools (fp16, row derived from the cell): zeroed like the rest, so a fresh sequence
+    // matches the reference's own zeros() for the cells a windowed reader names too. The tags are left at the
+    // empty sentinel (0xFF, see below) so no ring row names a cell a fresh sequence has not written: a
+    // windowed reader then falls back to the blocks.
+    if (st.k_win != nullptr && st.v_win != nullptr) {
+        const size_t wb = (size_t) qsa_win_tensor_bytes(s);
+        cudaMemsetAsync(st.k_win, 0, wb, cs);
+        cudaMemsetAsync(st.v_win, 0, wb, cs);
+        // Tags are the empty sentinel (0xFF = -1 as int32): no cell index is ever -1, so a row that has not
+        // been written (or whose tag went stale) never names a real cell and the reader falls back to the
+        // quantized block. 0 (the old init) could not be distinguished from a real cell 0.
+        cudaMemsetAsync(st.win_tag, 0xFF, (size_t) qsa_win_ring() * sizeof(int32_t), cs);
     }
     // A streamed state starts over with nothing resident. Its host copy is not cleared (GBs over PCIe per new
     // conversation): no reader names a cell before this sequence has written it, and a block copied in whole
@@ -1013,9 +1234,20 @@ strata::kernels::QsaAttnPools qsa_attn_pools(const QsaState& st) {
     strata::kernels::QsaAttnPools pools;
     pools.page_table = st.page_table;
     if (st.kv_hybrid) { pools.k_q = st.k_q; pools.k_scale = st.k_scale; pools.v_q4 = st.v_q4; }
-    else if (st.kv_q4) { pools.k_q4 = st.k_q4; pools.v_q4 = st.v_q4; }
+    else if (st.kv_q4) { pools.k_q4 = st.k_q4; pools.v_q4 = st.v_q4; pools.q4_mode = st.kv_q4_mode; }
     else if (st.kv_int8) { pools.k_q = st.k_q; pools.v_q = st.v_q; pools.k_scale = st.k_scale; pools.v_scale = st.v_scale; }
     else { pools.k_pool = st.k_pool; pools.v_pool = st.v_pool; }
+    // WP-2a window: side pools + grid travel in the pools; the horizon comes from step[kStepNKv] in-kernel
+    // (device-fresh, graph-safe - a host horizon would bake stale on graph reuse).
+    if (st.k_win != nullptr && st.v_win != nullptr) {
+        pools.k_win = st.k_win;
+        pools.v_win = st.v_win;
+        pools.win_tag = st.win_tag;
+        pools.win_s = (int) g_kv_win_s;
+        pools.win_r = (int) g_kv_win_r;
+        pools.win_b = (int) g_kv_win_b;
+        pools.win_all = g_kv_win_all ? 1 : 0;
+    }
     return pools;
 }
 
@@ -1141,7 +1373,8 @@ void stage_timing_report(int64_t n_layers) {
 // needs nothing from the layer it is called for beyond its index.
 static void dump_slot(float* dump, const ModelGeometry& g, int64_t layer, const float* src, uint64_t off,
                       uint64_t n, void* stream);
-bool qsa_layer(const WeightTable& tables, const ModelGeometry& g, int64_t layer, int64_t pos, int32_t pos_base,               const QsaState& st, const QsaBuffers& b, const float* x, float* out, void* stream,               std::string& err, float* dump) {    using namespace strata::kernels;    const QsaShapes s = qsa_shapes(g);    const LayerView v(tables, layer);    const int64_t n_kv = pos + 1;    /* P7 audit: RoPE reads cos/sin row pos_base + pos, and the table holds max_cells rows. */    if ((int64_t) pos_base + pos >= st.max_cells || pos_base < 0) {        err = "qsa_layer: position " + std::to_string((long long) pos_base + pos) + " is outside the RoPE table (" + std::to_string((long long) st.max_cells) + " rows)";        return false;    }    const int64_t cap = qsa_selection_width(kTopkMaxCells, s);
+bool qsa_layer(const WeightTable& tables, const ModelGeometry& g, int64_t layer, int64_t pos, int32_t pos_base,               const QsaState& st, const QsaBuffers& b, const float* x, float* out, void* stream,               std::string& err, float* dump) {
+using namespace strata::kernels;    const QsaShapes s = qsa_shapes(g);    const LayerView v(tables, layer);    const int64_t n_kv = pos + 1;    /* P7 audit: RoPE reads cos/sin row pos_base + pos, and the table holds max_cells rows. */    if ((int64_t) pos_base + pos >= st.max_cells || pos_base < 0) {        err = "qsa_layer: position " + std::to_string((long long) pos_base + pos) + " is outside the RoPE table (" + std::to_string((long long) st.max_cells) + " rows)";        return false;    }    const int64_t cap = qsa_selection_width(kTopkMaxCells, s);
 const auto normalize_rotate = [&](float* data, const WeightRef* norm, int rows, int cols) {
     try {
         if (native_qsa_enabled()) native_qsa_rms_norm_weighted(data, (const float*) norm->data, data, cols, rows, RMS_EPS, stream);
@@ -1232,12 +1465,101 @@ if (st.kv_hybrid) {
     strata::kernels::kv_append_q4_step(st.v_q4, st.v_q4, st.page_table, st.step, b.vcur, b.vcur, s, stream,
                                        mirror ? &hv : nullptr);
 } else {
-if (st.kv_rot) {   // rotated K and V (kv_q4.hpp): Q4_0, and INT8 with STRATA_KV_ROT=1
-    strata::kernels::fwht256_inplace_cuda(b.kcur, g.n_head_kv, stream);
-    strata::kernels::fwht256_inplace_cuda(b.vcur, g.n_head_kv, stream);
+// The S2 probe's target file, read once: the environment does not change during a run, and a getenv per layer and
+// token is a needless lookup on the decode path.
+static const char* const s2path = std::getenv("STRATA_KV_S2_STATS");
+#ifdef STRATA_QSA_LAYER_TRACE
+// The layer trace (debug only): compiled out by default, so a release build pays nothing for it. A build with
+// -DSTRATA_QSA_LAYER_TRACE=1 (cmake -DSTRATA_QSA_LAYER_TRACE=ON) prints one line per QSA layer.
+std::fprintf(stderr, "QSA_LAYER: layer=%lld kv_rot=%d kv_q4=%d\n", (long long)layer, (int)st.kv_rot, (int)st.kv_q4);
+#endif
+if (st.kv_rot && s2path) {
+    // S2 (debug): second moments of K channels before and after the Hadamard, split into the
+    // 64 rotated (RoPE) and 192 unrotated channels, per QSA layer. Accumulated over tokens,
+    // flushed every 500 tokens. int8 path and default path are unaffected (env unset).
+    static std::vector<double> acc_before[12], acc_after[12];
+    static std::vector<double> acc2_before[12], acc2_after[12];
+    static int64_t cnt[12] = {};
+    static bool init = false;
+    if (!init) {
+        for (int l = 0; l < 12; ++l) {
+            acc_before[l].assign(256, 0.0); acc_after[l].assign(256, 0.0);
+            acc2_before[l].assign(256, 0.0); acc2_after[l].assign(256, 0.0);
+        }
+        init = true;
+    }
+    const int li = (int) layer;
+    if (li >= 0 && li < 12) {
+        const int64_t nchan = g.head_dim;   // 256
+        const int64_t nhead = g.n_head_kv;  // 2
+        std::vector<float> host((size_t) nhead * nchan);
+        cudaMemcpy(host.data(), b.kcur, (size_t) nhead * nchan * 4, cudaMemcpyDeviceToHost);
+        cudaStreamSynchronize((cudaStream_t) stream);
+        // before
+        for (int h = 0; h < nhead; ++h)
+            for (int c = 0; c < nchan; ++c) {
+                const double v = host[(size_t) h * nchan + c];
+                acc_before[li][c] += v;
+                acc2_before[li][c] += v * v;
+            }
+        // FWHT on K and V (with the centering: the per-(head, channel) offset is subtracted first)
+        strata::kernels::fwht256_kv_inplace_cuda(b.kcur, g.n_head_kv, g.n_head_kv,
+                                                 qsa_kv_center_k_offsets((int) layer), stream);
+        strata::kernels::fwht256_kv_inplace_cuda(b.vcur, g.n_head_kv, g.n_head_kv,
+                                                 qsa_kv_center_v_offsets((int) layer), stream);
+        // after
+        cudaMemcpy(host.data(), b.kcur, (size_t) nhead * nchan * 4, cudaMemcpyDeviceToHost);
+        cudaStreamSynchronize((cudaStream_t) stream);
+        for (int h = 0; h < nhead; ++h)
+            for (int c = 0; c < nchan; ++c) {
+                const double v = host[(size_t) h * nchan + c];
+                acc_after[li][c] += v;
+                acc2_after[li][c] += v * v;
+            }
+        ++cnt[li];
+        int64_t total = 0;
+        for (int l = 0; l < 12; ++l) total += cnt[l];
+        if (total > 0 && total % 500 == 0) {
+            FILE* f = std::fopen(s2path, "w");
+            if (f) {
+                std::fprintf(f, "layer  channel  group  n  mean_before  var_before  mean_after  var_after\n");
+                for (int l = 0; l < 12; ++l) {
+                    if (cnt[l] == 0) continue;
+                    const double n = (double) cnt[l] * nhead;
+                    for (int c = 0; c < nchan; ++c) {
+                        const double mb = acc_before[l][c] / n;
+                        const double vb = acc2_before[l][c] / n - mb * mb;
+                        const double ma = acc_after[l][c] / n;
+                        const double va = acc2_after[l][c] / n - ma * ma;
+                        const char* grp = (c < 64) ? "rot" : "unrot";
+                        std::fprintf(f, "%d  %d  %s  %lld  %.6g  %.6g  %.6g  %.6g\n",
+                                     l, c, grp, (long long) cnt[l], mb, vb, ma, va);
+                    }
+                }
+                std::fclose(f);
+            }
+        }
+    } else {
+        // layer out of range: normal FWHT (with the centering)
+        strata::kernels::fwht256_kv_inplace_cuda(b.kcur, g.n_head_kv, g.n_head_kv,
+                                                 qsa_kv_center_k_offsets((int) layer), stream);
+        strata::kernels::fwht256_kv_inplace_cuda(b.vcur, g.n_head_kv, g.n_head_kv,
+                                                 qsa_kv_center_v_offsets((int) layer), stream);
+    }
+} else if (st.kv_rot) {
+    strata::kernels::fwht256_kv_inplace_cuda(b.kcur, g.n_head_kv, g.n_head_kv,
+                                             qsa_kv_center_k_offsets((int) layer), stream);
+    strata::kernels::fwht256_kv_inplace_cuda(b.vcur, g.n_head_kv, g.n_head_kv,
+                                             qsa_kv_center_v_offsets((int) layer), stream);
 }
 if (st.kv_q4) {
-    strata::kernels::kv_append_q4_step(st.k_q4, st.v_q4, st.page_table, st.step, b.kcur, b.vcur, s, stream, &st.host);
+    strata::kernels::kv_append_q4_step(st.k_q4, st.v_q4, st.page_table, st.step, b.kcur, b.vcur, s, stream, &st.host,
+                                       st.kv_q4_mode);
+    // WP-2a window: the exact fp16 twin next to the q4 blocks (rotated, like them - the FWHT above already ran).
+    if (st.k_win != nullptr)
+        strata::kernels::kv_append_win_steps(st.k_win, st.v_win, st.win_tag, st.step, 0, 1, b.kcur, b.vcur,
+                                             (int) g.n_head_kv, (int) g.head_dim, stream, (int) g_kv_win_s,
+                                             (int) g_kv_win_r, (int) g_kv_win_b);
 } else if (st.kv_int8) kv_append_q8_step(st.k_q, st.v_q, st.k_scale, st.v_scale, st.page_table, st.step, b.kcur, b.vcur, s, stream, &st.host);    else kv_append_step(st.k_pool, st.v_pool, st.page_table, st.step, b.kcur, b.vcur, s, stream, &st.host); } /* not K8V4 */    {        const uint64_t nvk = (uint64_t) g.n_head_kv * g.head_dim;        const uint64_t base = (uint64_t) 2 * g.n_embd + 2 * g.hc + (uint64_t) g.n_head * g.head_dim + 2 * nvk + 8;        if (!st.kv_int8 && !st.kv_hybrid) dump_slot(dump, g, layer, (const float*) st.k_pool, base, nvk / 2, stream);        if (!st.kv_int8 && !st.kv_hybrid) dump_slot(dump, g, layer, (const float*) st.v_pool, base + nvk / 2, nvk / 2, stream);        dump_slot(dump, g, layer, b.vcur, base + nvk, nvk, stream);        dump_slot(dump, g, layer, b.kcur, base + 2 * nvk, nvk, stream);    }    {        const QsaIndexerBuffers ib{st.idx_tail, st.idx_dead, st.idx_pooled, st.idx_block_pos};        if (native_qsa_indexer_enabled()) {
     try {
         native_qsa_indexer_append(b.idx_raw, st.step + kStepPos, pos_base,
@@ -1285,7 +1607,7 @@ int64_t max_blocks = (st.max_cells / s.idx_block) + 2;
         strata::kernels::kv_gather_q4_step(st.v_q4, st.v_q4, st.page_table, b.ids, st.step, cap, s,
                                            b.v_scratch, b.v_scratch, stream);
     }
-    else if (st.kv_q4) strata::kernels::kv_gather_q4_step(st.k_q4, st.v_q4, st.page_table, b.ids, st.step, cap, s, b.k_scratch, b.v_scratch, stream);
+    else if (st.kv_q4) strata::kernels::kv_gather_q4_step(st.k_q4, st.v_q4, st.page_table, b.ids, st.step, cap, s, b.k_scratch, b.v_scratch, stream, st.kv_q4_mode, st.k_win, st.v_win, st.win_tag, (int) g_kv_win_s, (int) g_kv_win_r, (int) g_kv_win_b);
     else if (st.kv_int8) kv_gather_q8_step(st.k_q, st.v_q, st.k_scale, st.v_scale, st.page_table, b.ids, st.step, cap, s,                                 b.k_scratch, b.v_scratch, stream);
     else kv_gather_step(st.k_pool, st.v_pool, st.page_table, b.ids, st.step, cap, s, b.k_scratch, b.v_scratch,                   stream);
     if (native_flash_attn_short) {
@@ -1303,7 +1625,15 @@ int64_t max_blocks = (st.max_cells / s.idx_block) + 2;
     }
 } else qsa_attend_step(b.qcur, b.k_scratch, b.v_scratch, st.step, cap, s, b.attn, nullptr, stream);
     }
-    if (st.kv_rot || st.kv_hybrid) strata::kernels::fwht256_inplace_cuda(b.attn, g.n_head, stream);   // the output back: H is self-inverse
+    if (st.kv_rot || st.kv_hybrid) strata::kernels::fwht256_inplace_cuda(b.attn, g.n_head, stream);
+    // The centering: the V offsets come back on the output (the attention weights sum to one, so the
+    // output carries -m_V in the rotated domain).  Only when the V was centered - the hybrid rotates
+    // its V without the centering.
+    if (st.kv_rot) {
+        const float* vo = qsa_kv_center_v_offsets((int) layer);
+        if (vo != nullptr)
+            strata::kernels::add_center_offsets_cuda(b.attn, g.n_head, g.n_head, g.n_head / g.n_head_kv, vo, stream);
+    }   // the output back: H is self-inverse
     dump_slot(dump, g, layer, b.attn, (uint64_t) 2 * g.n_embd + 2 * g.hc,                            (uint64_t) g.n_head * g.head_dim, stream);    {        const uint64_t vs = (uint64_t) 2 * g.n_embd + 2 * g.hc + (uint64_t) g.n_head * g.head_dim +                            (uint64_t) 2 * g.n_head_kv * g.head_dim;        dump_slot(dump, g, layer, (const float*) b.v_scratch, vs,                            (uint64_t) g.n_head_kv * g.head_dim / 2, stream);        dump_slot(dump, g, layer, (const float*) b.ids, vs + (uint64_t) g.n_head_kv * g.head_dim / 2, 4, stream);        dump_slot(dump, g, layer, (const float*) st.step,                            vs + (uint64_t) g.n_head_kv * g.head_dim / 2 + 4, 4, stream);    }
 // ---- 9. Gate the attention output before its projection. Native CUDA keeps F32
 // sigmoid/multiply arithmetic and uses Q8_1 for the native quantized projection.

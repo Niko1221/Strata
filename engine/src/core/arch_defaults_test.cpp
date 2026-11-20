@@ -226,14 +226,11 @@ int main() {
     put("STRATA_GFX1151_DEFAULTS", "0");
     CHECK(arch_default_env("gfx1151").empty());
     CHECK(apply_arch_defaults("gfx1151").empty());
-    // the two approved gfx12 prompt defaults (WMMA attention, Q2_0 fused experts): on for Linux, off for Windows
+    // the approved gfx12 prompt defaults: WMMA attention is on for Linux and, since its Windows test (A.17-A.22),
+    // for Windows as well; the Q2_0 fused experts were measured on Linux only and stay opt-in on Windows
     CHECK(gfx12_prompt_defaults_on(false));
     CHECK(!gfx12_prompt_defaults_on(true));
-#if defined(_WIN32)
-    CHECK(!kGfx12PromptDefaultsOn);
-#else
-    CHECK(kGfx12PromptDefaultsOn);
-#endif
+    CHECK(kGfx12WmmaDefaultOn);
     // 153-igpu: the matrix-core prompt set of the integrated Radeons, chosen by the UMA flag AND the architecture.
     // Mock device properties: {gcnArchName, integrated}.
     struct Mock { const char* name; const char* gcn; bool integrated; bool expect_on; };

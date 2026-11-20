@@ -41,7 +41,7 @@ bool layout(const QsaState& st, const ModelGeometry& g, int64_t upto, bool index
         return false;
     }
     const int64_t cells = ((upto + s.page_size - 1) / s.page_size) * s.page_size;
-    const size_t per = st.kv_q4 ? (size_t) strata::kernels::kv_q4_bytes_per_head((int) g.head_dim)
+    const size_t per = st.kv_q4 ? (size_t) strata::kernels::kv_q4_bytes_per_head((int) g.head_dim, st.kv_q4_mode)
                               : (size_t) g.head_dim * (int8_keys ? 1 : 2);
     // Include the moving spare row, not only completed blocks. The checkpoint
     // restore reconstructs that row when rewinding to an earlier prefix.
@@ -64,7 +64,8 @@ bool layout(const QsaState& st, const ModelGeometry& g, int64_t upto, bool index
     l.value_scales = l.scales;
     if (st.kv_hybrid) {
         if (!product(l.value_data, {(uint64_t) cells, (uint64_t) g.n_head_kv,
-                                   (uint64_t) strata::kernels::kv_q4_bytes_per_head((int) g.head_dim)})) {
+                                   (uint64_t) strata::kernels::kv_q4_bytes_per_head((int) g.head_dim,
+                                                                                    strata::kernels::Q4Mode::kUniform)})) {
             error = "conversation snapshot: hybrid V byte count overflow";
             return false;
         }

@@ -87,6 +87,73 @@ void quantize_block_q4_0_host(const float* x, k::block_q4_0& blk) {
     }
 }
 
+// The shear's host reference (bench/results/2026-11-11-shear-codec/): the uniform grid with a
+// per-block offset, i.e. the rule the device writes (kv_q4.cu's q4u_group) and the harness models
+// (tools/kv_affine_price.py).  The grid covers the block (o = min, s = (max-min)/15) and then
+// `passes` rounds of "assign the codes, solve the centred least squares for (o, s)".  The sums run
+// in the device's order -- the XOR butterfly, v[i] += v[i^o] for o = 16, 8, 4, 2, 1 -- so the
+// comparison against the device can be bitwise.
+static void shear_butterfly_add(float* v, int o) {
+    float tmp[32];
+    for (int i = 0; i < 32; ++i) tmp[i] = v[i] + v[i ^ o];
+    for (int i = 0; i < 32; ++i) v[i] = tmp[i];
+}
+
+void quantize_block_shear_host(const float* x, k::block_q4_0z& blk, int passes) {
+    float lo = x[0], hi = x[0];
+    for (int i = 1; i < 32; ++i) {
+        lo = std::min(lo, x[i]);
+        hi = std::max(hi, x[i]);
+    }
+    float s = (hi - lo) / 15.0f;
+    if (!(s > 0.0f)) s = 1.0f;          // an all-zero block keeps s = 1 and the code 0
+    float off = lo;                      // the grid's left end
+    float sx[32];
+    for (int i = 0; i < 32; ++i) sx[i] = x[i];
+    for (int o = 16; o > 0; o >>= 1) shear_butterfly_add(sx, o);
+    for (int pass = 0; pass < passes; ++pass) {
+        float sc[32], sc2[32], scx[32];
+        const float inv = 1.0f / s;   // the device and the harness multiply by the reciprocal
+        for (int i = 0; i < 32; ++i) {
+            int c = (int) std::rint((x[i] - off) * inv);
+            c = std::min(15, std::max(0, c));
+            sc[i] = (float) c;
+            sc2[i] = (float) c * (float) c;
+            scx[i] = (float) c * x[i];
+        }
+        for (int o = 16; o > 0; o >>= 1) {
+            shear_butterfly_add(sc, o);
+            shear_butterfly_add(sc2, o);
+            shear_butterfly_add(scx, o);
+        }
+        constexpr float n = 32.0f;
+        const float cm = sc[0] / n;        // mean(code)
+        const float xm = sx[0] / n;        // mean(x)
+        // the products are rounded separately (no FMA), exactly as the device does it.  The
+        // volatile temporaries are what keeps the compiler from contracting a*b+c into an
+        // FMA (which would round once and move the last bit).
+        volatile float t_den = n * cm;
+        volatile float t_num = n * cm;
+        const float den = sc2[0] - t_den * cm;
+        const float num = scx[0] - t_num * xm;
+        if (den > 0.0f) {
+            const float s_new = num / den;
+            if (s_new > 0.0f) s = s_new;
+        }
+        volatile float t_off = s * cm;
+        off = xm - t_off;
+    }
+    const float inv = 1.0f / s;   // the device and the harness multiply by the reciprocal
+    for (int i = 0; i < 16; ++i) {
+        const int q0 = std::min(15, std::max(0, (int) std::rint((x[i] - off) * inv)));
+        const int q1 = std::min(15, std::max(0, (int) std::rint((x[i + 16] - off) * inv)));
+        blk.qs[i] = (uint8_t) (q0 | (q1 << 4));
+    }
+    blk.d = k::f16_from_f32(s);
+    volatile float t_c = 8.0f * s;
+    blk.c = k::f16_from_f32(off + t_c);
+}
+
 } // namespace
 
 int main() {
@@ -195,7 +262,7 @@ int main() {
     int32_t* d_table = dalloc<int32_t>(pages);
     ck(cudaMemcpy(d_table, table.data(), pages * sizeof(int32_t), cudaMemcpyHostToDevice), "memcpy table");
 
-    const size_t pool_bytes = (size_t) pages * H * P * k::kv_q4_bytes_per_head(D);
+    const size_t pool_bytes = (size_t) pages * H * P * k::kv_q4_bytes_per_head(D, k::Q4Mode::kUniform);
     uint8_t* d_k_q4 = dalloc<uint8_t>(pool_bytes);
     uint8_t* d_v_q4 = dalloc<uint8_t>(pool_bytes);
     float* d_kcur = dalloc<float>(H * D);
@@ -323,6 +390,174 @@ int main() {
         }
     }
     std::printf("  -> Max reconstruction error after 4-bit quant + dequant: %.4f (OK)\n", worst_quant_err);
+
+    // -------------------------------------------------------------
+    // Test 5: the shear -- the uniform grid with a per-block offset
+    //   (bench/results/2026-11-11-shear-codec/).  The writer's blocks bitwise against the host
+    //   reference (the same rule and the same summation order), the gather's reconstruction, and the
+    //   block MSE the effectiveness gate names.
+    // -------------------------------------------------------------
+    std::printf("[5/5] The shear: the writer's blocks bitwise, the gather's reconstruction, the block MSE...\n");
+    {
+        const int sblocks = D / k::QK4_0;
+        const size_t spool = (size_t) pages * H * P * sblocks * sizeof(k::block_q4_0z);
+        uint8_t* d_sk = dalloc<uint8_t>(spool);
+        uint8_t* d_sv = dalloc<uint8_t>(spool);
+
+        std::vector<std::vector<float>> sh_k(cells), sh_v(cells);
+        std::vector<int> sh_pos(cells);
+        for (int i = 0; i < cells; ++i) sh_pos[i] = i;
+        std::shuffle(sh_pos.begin(), sh_pos.end(), rng);
+        const int sh_fill = cells - 25;
+        for (int n = 0; n < sh_fill; ++n) {
+            const int pos = sh_pos[n];
+            std::vector<float> kv(H * D), vv(H * D);
+            for (auto& x : kv) x = nd(rng) * 2.0f;
+            for (auto& x : vv) x = nd(rng) * 2.0f;
+            for (int h = 0; h < H; ++h) {
+                fwht256_host_reference(kv.data() + h * D);
+                fwht256_host_reference(vv.data() + h * D);
+            }
+            sh_k[pos] = kv;
+            sh_v[pos] = vv;
+
+            int32_t hstep[k::kStepCount] = {pos, pos + 1, 0, 0};
+            ck(cudaMemcpy(d_step, hstep, sizeof(hstep), cudaMemcpyHostToDevice), "memcpy step");
+            ck(cudaMemcpy(d_kcur, kv.data(), kv.size() * sizeof(float), cudaMemcpyHostToDevice), "memcpy k");
+            ck(cudaMemcpy(d_vcur, vv.data(), vv.size() * sizeof(float), cudaMemcpyHostToDevice), "memcpy v");
+            k::kv_append_q4_step(d_sk, d_sv, d_table, d_step, d_kcur, d_vcur, s, nullptr, nullptr, k::Q4Mode::kShear);
+            ck(cudaDeviceSynchronize(), "kv_append_q4_step (shear)");
+        }
+
+        std::vector<uint8_t> h_sk(spool), h_sv(spool);
+        ck(cudaMemcpy(h_sk.data(), d_sk, spool, cudaMemcpyDeviceToHost), "d2h k");
+        ck(cudaMemcpy(h_sv.data(), d_sv, spool, cudaMemcpyDeviceToHost), "d2h v");
+
+        long sbad = 0;
+        long sc_ulp = 0;
+        const int sbytes_per_head = sblocks * (int) sizeof(k::block_q4_0z);
+        double mse = 0.0;
+        long nvals = 0;
+        for (int n = 0; n < sh_fill; ++n) {
+            const int pos = sh_pos[n];
+            for (int is_v = 0; is_v < 2; ++is_v) {
+                for (int h = 0; h < H; ++h) {
+                    const long long page = (long long) table[pos / P];
+                    const long long row = (page * H + h) * P + (pos % P);
+                    const uint8_t* pool_ptr = (is_v ? h_sv.data() : h_sk.data()) + row * sbytes_per_head;
+                    const float* raw = (is_v ? sh_v[pos].data() : sh_k[pos].data()) + h * D;
+                    for (int b = 0; b < sblocks; ++b) {
+                        k::block_q4_0z host_blk;
+                        quantize_block_shear_host(raw + b * 32, host_blk, k::kShearPasses);
+                        const k::block_q4_0z* gpu_blk = reinterpret_cast<const k::block_q4_0z*>(pool_ptr) + b;
+                        // The codes and the scale must be bitwise equal: a different code is a full
+                        // step of error.  The constant may differ by one ULP: the device contracts
+                        // nothing (the products are rounded separately) but the last bit of a
+                        // float sum is not a promise, and the constant enters the value as a
+                        // hundredth of a step.  Such blocks are counted and reported, not hidden.
+                        const bool codes_equal =
+                            std::memcmp(host_blk.qs, gpu_blk->qs, sizeof(host_blk.qs)) == 0;
+                        // the scale may differ by one fp16 ULP: the harness fits in double
+                        // precision, the device in float.  A different code would be a full step
+                        // of error, so the codes must be bitwise equal.
+                        const int d_diff = std::abs((int) host_blk.d - (int) gpu_blk->d);
+                        const bool d_equal = d_diff <= 1;
+                        const int c_diff = std::abs((int) host_blk.c - (int) gpu_blk->c);
+                        if (!codes_equal || !d_equal || c_diff > 4) {
+                            if (sbad == 0) {
+                                std::printf("MISMATCH (shear) at n=%d, pos=%d, is_v=%d, h=%d, b=%d\n", n, pos, is_v, h, b);
+                                std::printf("  host d=0x%04x c=0x%04x  gpu d=0x%04x c=0x%04x  codes_equal=%d\n",
+                                            host_blk.d, host_blk.c, gpu_blk->d, gpu_blk->c, (int) codes_equal);
+                            }
+                            ++sbad;
+                        } else if (c_diff == 1) {
+                            ++sc_ulp;
+                        }
+                        const float d = k::f32_from_f16(gpu_blk->d);
+                        const float c = k::f32_from_f16(gpu_blk->c);
+                        for (int i = 0; i < 32; ++i) {
+                            const int j = i < 16 ? i : (i - 16);
+                            const uint8_t byte = gpu_blk->qs[j];
+                            const int code = (i < 16) ? (int) (byte & 0x0F) : (int) (byte >> 4);
+                            const double rec = (double) ((float) (code - 8) * d + c);
+                            const double e = rec - (double) raw[b * 32 + i];
+                            mse += e * e;
+                            ++nvals;
+                        }
+                    }
+                }
+            }
+        }
+        if (sbad > 0) {
+            std::fprintf(stderr, "FAIL: %ld shear blocks differ from the host reference\n", sbad);
+            ++g_fail;
+        } else {
+            std::printf("  -> All shear pool blocks equal to the host reference (codes and scale bitwise, "
+                        "%ld with the constant up to four ULP off) (OK)\n", sc_ulp);
+        }
+        std::printf("  -> the shear's block MSE on these cells: %.6e  (%ld values, %d passes)\n",
+                    mse / (double) (nvals > 0 ? nvals : 1), nvals, k::kShearPasses);
+
+        // the gather: the reconstruction must be the block's value (the constant included)
+        const int sh_max_ids = 128;
+        int32_t* d_shids = dalloc<int32_t>(sh_max_ids);
+        uint16_t* d_shk = dalloc<uint16_t>((size_t) sh_max_ids * H * D);
+        uint16_t* d_shv = dalloc<uint16_t>((size_t) sh_max_ids * H * D);
+        std::vector<int32_t> shids(sh_max_ids);
+        for (int i = 0; i < sh_max_ids; ++i) shids[i] = sh_pos[rng() % sh_fill];
+        ck(cudaMemcpy(d_shids, shids.data(), sh_max_ids * sizeof(int32_t), cudaMemcpyHostToDevice), "memcpy ids");
+        int32_t shstep[k::kStepCount] = {0, 0, 0, sh_max_ids};
+        ck(cudaMemcpy(d_step, shstep, sizeof(shstep), cudaMemcpyHostToDevice), "memcpy step");
+        k::kv_gather_q4_step(d_sk, d_sv, d_table, d_shids, d_step, sh_max_ids, s, d_shk, d_shv, nullptr,
+                             k::Q4Mode::kShear);
+        ck(cudaDeviceSynchronize(), "kv_gather_q4_step (shear)");
+        std::vector<uint16_t> h_shk((size_t) sh_max_ids * H * D);
+        std::vector<uint16_t> h_shv((size_t) sh_max_ids * H * D);
+        ck(cudaMemcpy(h_shk.data(), d_shk, h_shk.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost), "d2h");
+        ck(cudaMemcpy(h_shv.data(), d_shv, h_shv.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost), "d2h");
+        double worst = 0.0;
+        long bad = 0;
+        for (int i = 0; i < sh_max_ids; ++i) {
+            const int cell = shids[i];
+            for (int is_v = 0; is_v < 2; ++is_v) {
+                for (int h = 0; h < H; ++h) {
+                    const float* orig = (is_v ? sh_v[cell].data() : sh_k[cell].data()) + h * D;
+                    const uint16_t* g = (is_v ? h_shv.data() : h_shk.data()) + (i * H + h) * D;
+                    for (int d = 0; d < D; ++d) {
+                        const float got = k::f32_from_f16(g[d]);
+                        const double e = std::fabs((double) got - (double) orig[d]);
+                        if (!(e < 1e30)) {   // inf or NaN
+                            if (bad == 0) {
+                                std::printf("  BAD gathered value: i=%d is_v=%d h=%d d=%d raw=0x%04x got=%f orig=%f\n",
+                                            i, is_v, h, d, g[d], got, orig[d]);
+                                const long long page = (long long) table[cell / P];
+                                const long long row = (page * H + h) * P + (cell % P);
+                                const uint8_t* pp = (is_v ? h_sv.data() : h_sk.data()) + row * sbytes_per_head;
+                                const k::block_q4_0z* blk = reinterpret_cast<const k::block_q4_0z*>(pp) + (d / 32);
+                                std::printf("       der Block: d=0x%04x (%.5f)  c=0x%04x (%.5f)  qs[0]=0x%02x\n",
+                                            blk->d, k::f32_from_f16(blk->d), blk->c, k::f32_from_f16(blk->c),
+                                            blk->qs[0]);
+                            }
+                            ++bad;
+                            continue;
+                        }
+                        if (e > worst) worst = e;
+                    }
+                }
+            }
+        }
+        if (bad > 0) {
+            std::fprintf(stderr, "FAIL: %ld gathered values are inf or NaN (the shear's reader)\n", bad);
+            ++g_fail;
+        }
+        std::printf("  -> the shear's max reconstruction error after the gather: %.4f (OK)\n", worst);
+
+        cudaFree(d_sk);
+        cudaFree(d_sv);
+        cudaFree(d_shids);
+        cudaFree(d_shk);
+        cudaFree(d_shv);
+    }
 
     cudaFree(d_src);
     cudaFree(d_dst);

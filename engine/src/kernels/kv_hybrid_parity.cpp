@@ -125,7 +125,7 @@ int main() {
                                          rv4[((size_t) c * H + h) * (D / 32) + b]);
 
     // ---- device: one cell appended through the COMPOSED hybrid calls, then gathered
-    const int64_t q4_row = (int64_t) k::kv_q4_bytes_per_head(D);
+    const int64_t q4_row = (int64_t) k::kv_q4_bytes_per_head(D, k::Q4Mode::kUniform);
     int8_t* d_kq = dalloc<int8_t>((size_t) cells * H * D);
     uint16_t* d_ks = dalloc<uint16_t>((size_t) cells * H * G);
     uint8_t* d_v4 = dalloc<uint8_t>((size_t) cells * H * q4_row);
