@@ -266,7 +266,51 @@ target_sources(strata_core PRIVATE
 target_link_options(strata_core INTERFACE ${_wrap_flags})
 # The shims call __real_cublas*. strata-device links strata_core and not
 # strata_prefill, so cuBLAS has to travel with the shims.
-target_link_libraries(strata_core PUBLIC CUDA::cublas)
+# hip::host rides along for the same reason: hybrid_hip.cpp is IN strata_core and
+# calls hipGetDeviceCount/hipLaunchKernel/..., and every target that links the
+# engine now needs the HIP runtime too - the GPU-section conversation batteries
+# (conversation_snapshot_test et al.) link strata_core and used to fail at ld with
+# undefined hip* references. The flavor never saw it because the hybrid flavors
+# build with STRATA_BUILD_TESTS=OFF; it is not flavor-only: any hybrid build with
+# tests on hit it.
+# Propagation is LINK-only: hip::host's imported interface carries
+# INTERFACE_COMPILE_DEFINITIONS __HIP_PLATFORM_AMD__=1, and a CUDA-compiled target that
+# links strata_core (strata_kernels is one) would then flip the AMD intrinsic guards in
+# the shared warp-sum headers and fail nvcc. hip::amdhip64 is the runtime itself; its
+# interface adds only the library, its headers as SYSTEM includes and the harmless
+# USE_PROF_API.
+function(_strata_hybrid_rawlibs out)
+  # The imported HIP targets (hip::host and everything linking it - roc::hipblas and
+  # roc::rocblas chain to hip::host) carry INTERFACE_COMPILE_DEFINITIONS
+  # __HIP_PLATFORM_AMD__=1. Only the library files may enter strata_core's link
+  # interface: a compile definition there would flip the AMD intrinsic guards of every
+  # CUDA-compiled target in the closure.
+  set(_libs "")
+  foreach(_t IN ITEMS hip::amdhip64 ${_hip_math})
+    if(NOT TARGET ${_t})
+      continue()
+    endif()
+    # hip-config in ROCm 7 imports the runtime ONLY as *_RELWITHDEBINFO (the hip
+    # flavor is built RelWithDebInfo); hipblas/rocblas import _RELEASE. CMake's own
+    # link resolution falls back through those variants, so the resolver walks the
+    # same set.
+    foreach(_prop IN ITEMS IMPORTED_LOCATION IMPORTED_LOCATION_RELEASE IMPORTED_LOCATION_RELWITHDEBINFO IMPORTED_IMPLIB IMPORTED_IMPLIB_RELEASE IMPORTED_IMPLIB_RELWITHDEBINFO)
+      get_target_property(_loc ${_t} ${_prop})
+      if(_loc AND NOT _loc STREQUAL "${_prop}-NOTFOUND")
+        list(APPEND _libs "${_loc}")
+        break()
+      endif()
+    endforeach()
+  endforeach()
+  if(NOT _libs)
+    message(FATAL_ERROR "hybrid: no imported HIP runtime library found")
+  endif()
+  set(${out} ${_libs} PARENT_SCOPE)
+endfunction()
+_strata_hybrid_rawlibs(_hip_link)
+add_library(strata_hip_runtime INTERFACE)
+target_link_libraries(strata_hip_runtime INTERFACE ${_hip_link})
+target_link_libraries(strata_core PUBLIC CUDA::cublas strata_hip_runtime)
 
 foreach(_tgt IN ITEMS strata strata-device)
   if(TARGET ${_tgt})
