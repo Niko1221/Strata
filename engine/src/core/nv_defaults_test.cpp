@@ -1,0 +1,159 @@
+// src/core/nv_defaults_test.cpp - the NVIDIA per-architecture default tables (no GPU needed): the sm_121 (GB10, DGX Spark) table, its
+// two off switches, and that no other card's table changed.
+#include "strata/core/nv_chunk.hpp"
+#include "strata/core/nv_defaults.hpp"
+
+#include <cstdio>
+#include <cstdlib>
+#include <string>
+
+static int fails = 0;
+#define CHECK(c) do { if (!(c)) { std::printf("FAIL line %d: %s\n", __LINE__, #c); ++fails; } } while (0)
+
+static void unset(const char* k) {
+#if defined(_WIN32)
+    _putenv_s(k, "");
+#else
+    unsetenv(k);
+#endif
+}
+static void put(const char* k, const char* v) {
+#if defined(_WIN32)
+    _putenv_s(k, v);
+#else
+    setenv(k, v, 1);
+#endif
+}
+
+static const std::string* find(const std::vector<std::pair<std::string, std::string>>& t, const char* k) {
+    for (const auto& kv : t)
+        if (kv.first == k) return &kv.second;
+    return nullptr;
+}
+
+int main() {
+    using namespace strata::core;
+    unset("STRATA_SM121_PERF");
+    unset("STRATA_SM86_PERF");
+    unset("STRATA_SM60_PERF");
+    unset("STRATA_EMULATE_CC");
+    // GB10 (12.1): the six measured switches, and nothing else
+    {
+        const auto t = nv_default_env(12, 1, false);
+        CHECK(t.size() == 6);
+        CHECK(find(t, "STRATA_PF_FUSED") && *find(t, "STRATA_PF_FUSED") == "1");
+        CHECK(find(t, "STRATA_PF_FUSED_KQ") && *find(t, "STRATA_PF_FUSED_KQ") == "1");
+        CHECK(find(t, "STRATA_PREFILL_NVFP4") && *find(t, "STRATA_PREFILL_NVFP4") == "w4a4");
+        CHECK(find(t, "STRATA_HC_UPMIX") && *find(t, "STRATA_HC_UPMIX") == "1");
+        CHECK(find(t, "STRATA_SIDE_MIXER") && *find(t, "STRATA_SIDE_MIXER") == "2");
+        CHECK(find(t, "STRATA_SPEC_COST") && *find(t, "STRATA_SPEC_COST") == "1");
+    }
+    // STRATA_DEFAULTS=026 (the 0.2.7 master switch; the sm_121 table is newer than 0.2.6) empties it
+    CHECK(nv_default_env(12, 1, true).empty());
+    // STRATA_SM121_PERF=0 empties it; any other value keeps it
+    put("STRATA_SM121_PERF", "0");
+    CHECK(nv_default_env(12, 1, false).empty());
+    put("STRATA_SM121_PERF", "1");
+    CHECK(nv_default_env(12, 1, false).size() == 6);
+    unset("STRATA_SM121_PERF");
+    // the other cards: sm_120 (RTX 50) and sm_100 get nothing from this file; the sm_86 / sm_60 tables are unchanged by the flag
+    CHECK(nv_default_env(12, 0, false).empty());
+    CHECK(nv_default_env(10, 0, false).empty());
+    CHECK(nv_default_env(8, 9, false).empty());
+    CHECK(nv_default_env(7, 5, false).empty());
+    {
+        const auto a = nv_default_env(8, 6, false), b = nv_default_env(8, 6, true);
+        CHECK(!a.empty() && a == b);               // STRATA_DEFAULTS=026 does not touch the 2026-10 sm_86 table
+        const auto p = nv_default_env(6, 0, false), q = nv_default_env(6, 0, true);
+        CHECK(!p.empty() && p == q);
+        CHECK(!find(a, "STRATA_PF_FUSED") && !find(p, "STRATA_PF_FUSED"));
+        // repeatable output: sm_86 keeps ADAPT_LAG=2 but no longer turns ADAPT_NOWAIT on (option 2); sm_60 keeps both
+        CHECK(!find(a, "STRATA_ADAPT_NOWAIT"));
+        CHECK(find(a, "STRATA_ADAPT_LAG") && *find(a, "STRATA_ADAPT_LAG") == "2");
+        CHECK(find(p, "STRATA_ADAPT_NOWAIT") && *find(p, "STRATA_ADAPT_NOWAIT") == "1");
+        CHECK(find(p, "STRATA_ADAPT_LAG") && *find(p, "STRATA_ADAPT_LAG") == "2");
+    }
+    // round 0212: STRATA_MMQ_KQ=1 is a default for compute capability 8.0+ (owner yes 11-03), with its own off switches
+    unset("STRATA_NV_KQ_DEFAULT");
+    CHECK(kNvKqDefaultOn);
+    for (int major : {8, 9, 10, 12}) CHECK(nv_kq_default_env(major, 0, false).size() == 1);   // on without any switch
+    put("STRATA_NV_KQ_DEFAULT", "1");
+    for (int major : {8, 9, 10, 12}) {
+        const auto k = nv_kq_default_env(major, 0, false);
+        CHECK(k.size() == 1 && find(k, "STRATA_MMQ_KQ") && *find(k, "STRATA_MMQ_KQ") == "1");
+    }
+    CHECK(nv_kq_default_env(7, 5, false).empty());     // Turing / Volta / Pascal keep the FP16 prompt path
+    CHECK(nv_kq_default_env(6, 0, false).empty());
+    CHECK(nv_kq_default_env(12, 0, true).empty());     // STRATA_DEFAULTS=026
+    put("STRATA_NV_KQ_DEFAULT", "0");
+    CHECK(nv_kq_default_env(12, 0, false).empty());    // its own off switch
+    unset("STRATA_NV_KQ_DEFAULT");
+    // the start-up line of that default: the earlier line byte for byte where Strata's own kernels do not read the K-quant experts, one that says what happens where they do
+    CHECK(nv_kq_default_line(false) ==
+          "strata: a model with K-quant experts (Unsloth UD-Q4/Q5/Q6_K_XL) reads its prompt on llama.cpp's MMQ kernels (STRATA_MMQ_KQ=0 or STRATA_NV_KQ_DEFAULT=0 turns it off)");
+    CHECK(nv_kq_default_line(true) ==
+          "strata: a model with K-quant experts (Unsloth UD-Q4/Q5/Q6_K_XL) reads its prompt on Strata's own kernels where they cover the layer (Q4_K and Q5_K gate/up with a Q5_1 or Q8_0 down) "
+          "and on llama.cpp's MMQ kernels for the rest (STRATA_PF_FUSED_KQ=0 gives all of them back to MMQ)");
+    CHECK(nv_kq_default_line(true, true) == nv_kq_default_line(true) && nv_kq_default_line(false, true) == nv_kq_default_line(false));
+    // a build without MMQ names no MMQ kernel it does not have
+    CHECK(nv_kq_default_line(true, false) ==
+          "strata: a model with K-quant experts (Unsloth UD-Q4/Q5/Q6_K_XL) reads its prompt on Strata's own kernels (Q4_K and Q5_K gate/up with a Q5_1 or Q8_0 down); "
+          "the 'prompt kernels' line below gives the counts");
+    CHECK(nv_kq_default_line(false, false) ==
+          "strata: a model with K-quant experts (Unsloth UD-Q4/Q5/Q6_K_XL) reads its prompt on Strata's own int8 kernels (this engine has no MMQ kernels)");
+    {   // the line is printed only for a loaded set that has K-quant experts (ggml types: IQ2_XS 17, IQ3_S 21, IQ4_NL 20, IQ2_S 22, Q8_0 8, Q5_1 7, Q4_K 12, Q5_K 13, Q6_K 14)
+        CHECK(nv_kq_expert_type(12) && nv_kq_expert_type(13) && nv_kq_expert_type(14) && nv_kq_expert_type(7));
+        CHECK(!nv_kq_expert_type(8) && !nv_kq_expert_type(17) && !nv_kq_expert_type(21) && !nv_kq_expert_type(20) && !nv_kq_expert_type(22) && !nv_kq_expert_type(-1) && !nv_kq_expert_type(0));
+        CHECK(!nv_kq_line_wanted({}));                                                                   // nothing loaded
+        CHECK(!nv_kq_line_wanted({{21, 20}, {21, 20}, {22, 20}, {17, 20}}));                              // IQ3_S / IQ2_S / IQ2_XS with IQ4_NL down: no line
+        CHECK(!nv_kq_line_wanted({{21, 8}, {17, 8}}));                                                   // Q8_0 down only: the switch decides nothing there
+        CHECK(nv_kq_line_wanted({{12, 7}}));                                                             // UD-Q4_K_XL: Q4_K gate/up, Q5_1 down
+        CHECK(nv_kq_line_wanted({{21, 20}, {13, 8}, {21, 20}}));                                         // one Q5_K layer among i-quant ones is enough
+        CHECK(nv_kq_line_wanted({{12, 14}}));                                                            // Q6_K down
+        CHECK(nv_kq_line_wanted({{21, 7}}));                                                             // only a Q5_1 down (i-quant gate/up): the switch decides that product, so the line stands
+        CHECK(nv_kq_line_wanted({{21, 20}, {21, 7}}));
+        // apply_nv_kq_default is not called here: its two-argument path reads strata::qwen_defaults_026(), which caches STRATA_DEFAULTS at its first call,
+        // and the one-argument check at the end of main needs that first call to see STRATA_DEFAULTS=026.
+    }
+    {   // which cards: fused_tile::kq_takes with the engine's switches (raw compute capability, SM count)
+        unset("STRATA_PF_FUSED"); unset("STRATA_PF_FUSED_KQ"); unset("STRATA_PF_FUSED_SM40"); unset("STRATA_PF_FUSED_SM86"); 
+        CHECK(nv_kq_fused_here(8, 6, 84) && nv_kq_fused_here(8, 6, 80) && nv_kq_fused_here(12, 0, 110) && nv_kq_fused_here(12, 0, 80));   // RTX A6000, RTX PRO 5000 class
+        CHECK(nv_kq_fused_here(8, 0, 108) && nv_kq_fused_here(8, 9, 128));                                                                  // the sm_86 class
+        CHECK(nv_kq_fused_here(8, 6, 48) && nv_kq_fused_here(12, 0, 48));                                                                   // 40-79 SMs: the staged launches
+        CHECK(!nv_kq_fused_here(8, 6, 39) && !nv_kq_fused_here(12, 1, 48) && !nv_kq_fused_here(7, 5, 68) && !nv_kq_fused_here(8, 7, 16) && !nv_kq_fused_here(9, 0, 132));   // under 40 SMs, GB10, Turing, Orin, Hopper
+        put("STRATA_PF_FUSED_SM40", "0");
+        CHECK(!nv_kq_fused_here(8, 6, 48) && nv_kq_fused_here(8, 6, 84));
+        unset("STRATA_PF_FUSED_SM40");
+        put("STRATA_PF_FUSED_KQ", "0");
+        CHECK(!nv_kq_fused_here(8, 6, 84) && !nv_kq_fused_here(12, 0, 110));                                                                // the way back
+        put("STRATA_PF_FUSED_KQ", "1");
+        CHECK(nv_kq_fused_here(8, 6, 84) && nv_kq_fused_here(12, 1, 48) && nv_kq_fused_here(7, 5, 68));                                      // the opt-in: every card
+        put("STRATA_PF_FUSED", "0");
+        CHECK(!nv_kq_fused_here(8, 6, 84) && !nv_kq_fused_here(12, 1, 48));                                                                 // STRATA_PF_FUSED=0: every fused kernel off
+        unset("STRATA_PF_FUSED"); unset("STRATA_PF_FUSED_KQ");
+        put("STRATA_PF_FUSED_SM86", "0");
+        CHECK(!nv_kq_fused_here(8, 6, 84) && nv_kq_fused_here(12, 0, 110));                                                                 // the sm_86 class diagnostic switch
+        unset("STRATA_PF_FUSED_SM86");
+    }
+    // the other tables are unchanged by it
+    CHECK(nv_default_env(12, 0, false).empty());
+    // round 0212: the NVIDIA prompt-chunk ceiling of a bare `--prefill auto` (nv_chunk.hpp)
+    CHECK(nv_chunk_ceiling(nullptr, false) == 32768);
+    CHECK(nv_chunk_ceiling("1", false) == 32768);
+    CHECK(nv_chunk_ceiling("16", false) == 16384);
+    CHECK(nv_chunk_ceiling("0", false) == 0);          // STRATA_NV_CHUNK=0 keeps 8192
+    CHECK(nv_chunk_ceiling(nullptr, true) == 0);       // STRATA_DEFAULTS=026 keeps 8192
+    CHECK(nv_chunk_ceiling("16", true) == 0);
+    CHECK(nv_chunk_card_ok(7, 0));                                                    // Volta (V100): measured, takes the raise
+    CHECK(!nv_chunk_card_ok(7, 5));                                                   // Turing: not measured, keeps 8192
+    CHECK(!nv_chunk_card_ok(6, 0) && !nv_chunk_card_ok(6, 1) && !nv_chunk_card_ok(6, 2));   // Pascal: not measured, keeps 8192
+    CHECK(!nv_chunk_card_ok(5, 2) && !nv_chunk_card_ok(0, 0));
+    CHECK(nv_chunk_card_ok(8, 0) && nv_chunk_card_ok(8, 6) && nv_chunk_card_ok(9, 0) && nv_chunk_card_ok(12, 0));
+    CHECK(nv_chunk_step_down(32768) == 16384 && nv_chunk_step_down(16384) == 8192 && nv_chunk_step_down(8192) == 8192);
+    // the one-argument form reads STRATA_DEFAULTS
+    put("STRATA_DEFAULTS", "026");
+    CHECK(nv_default_env(12, 1).empty());
+    unset("STRATA_DEFAULTS");
+    if (fails == 0) std::printf("nv_defaults_test: ok\n");
+    return fails == 0 ? 0 : 1;
+}

@@ -5,7 +5,7 @@ several cards. NVIDIA is described here; AMD limits and measurements are in [AMD
 
 > **On this page:** [Using it](#using-it) · [Main, Helper, Off](#main-helper-off) · [How the split works](#how-the-split-works) ·
 > [Tuning options](#tuning-options) · [Pipeline windows](#pipeline-windows) · [Two models on two cards](#two-models-on-two-cards) ·
-> [DeepSeek](#deepseek-v41-flash) · [Limits](#limits) · [History](#history--older-measurements)
+> [Limits](#limits) · [History](#history--older-measurements)
 
 ## Using it
 
@@ -52,7 +52,7 @@ Every card has one of three roles.
 
 The Main card is the last card in the engine's order. The first card runs the first layers and, by default, the picture reader.
 
-**Recommended roles** (the same rule in the app, `strata launch` and setup; `strata_control/gpu_roles.py`):
+**Recommended roles** (the same rule in the app, `strata launch` and setup; `terminal/strata_control/gpu_roles.py`):
 
 - The faster card is Main. Speed is multiprocessors x max clock. Cards within 5% count as the same card, and the one with more memory wins, then the lower number. Of two identical cards the highest number is Main. A card with clearly more memory beats a faster one that is at least half as fast.
 - Every other card starts as Helper, except a card with 8 GB or less when a bigger card is present (Off; with only 8 GB cards the second one is a Helper), built-in graphics beside a card with memory of its own (Off), and a card the engine cannot run (Off).
@@ -77,7 +77,7 @@ The server reads `gpu_roles`. If `gpu` was edited by hand and no longer matches,
 `"gpu": [1, 0]` shows as Main = the last card, Helper = the first, the rest Off. The recommendation is not saved, so a card you
 add later is recommended again; a card you add after choosing roles starts Off.
 
-**Which cards count** (`strata_control/gpu_fit.py` holds the memory arithmetic): not an integrated chip beside a real card; at
+**Which cards count** (`terminal/strata_control/gpu_fit.py` holds the memory arithmetic): not an integrated chip beside a real card; at
 least 4 GB of graphics memory to be listed; 8 GB or less starts Off beside a bigger card. Each extra card of a split costs an
 estimated 2 GB of its own buffers.
 
@@ -147,7 +147,6 @@ restart. Defaults are off unless the table says otherwise.
 | `STRATA_SPLIT_OWN=1` or `auto` | Gives every card its own prompt buffers. `auto` does it only where the buffers are at most 12% of each card's VRAM. | Output differs from the default's (stable and coherent). |
 | `STRATA_PREFILL_HELP=1` | The idle card computes a share of the streamed experts of a one-chunk prompt. `STRATA_PREFILL_HELP_FRAC=f` fixes the share. | Helps prompts up to about 3.3K tokens on slow links only; not bit-identical; native packs on the MMQ prompt path only. |
 | `STRATA_SPLIT_MTP_BATCH=1` | The last card fills the draft layer's prompt K/V in batches, as on one card. | Needs a `--native` pack and a paged or ring draft K/V; says why once if it declines. |
-| `STRATA_STAGE_TRIM=1` | Each card loads only its own layers' dense weights (needs explicit `--layer-split K`, not `auto`). The freed VRAM goes to that card's expert cache. | Output can differ slightly. |
 | `--vram-reserve-later-mib N` | A separate VRAM reserve for the later cards (default: `--vram-reserve-mib`). Use it when the display sits on the last card. | `--vram-reserve-mib 300 --vram-reserve-later-mib 1800` gives the first card that VRAM. |
 | `--prefill-pipe R` (or `STRATA_PREFILL_PIPE=R`) | Reads each prompt in the chunk count with the least pipeline time for b/a = R tokens. `1` evens out today's chunk count. | Opt-in. `./setup.sh --calibrate` measures it per PC and writes it to the config. |
 | `STRATA_SPLIT_RING=N` | Sets the prompt path's streamed ring to N slots (`0`: the pinned-share rule). A split uses 96 when at least 75% of the (layer, expert) pairs sit in some card's cache. | The startup line `lend sizing: ...` shows the result. |
@@ -162,6 +161,12 @@ split's greedy output is the same in either mode.
 
 **Under WDDM (Windows and WSL2)** only 8 GiB of the expert arena is pinned on a multi-GPU run; the rest streams through the
 pinned staging ring. Linux pins the whole arena. `STRATA_ARENA_PIN_GIB=N` pins at most N GiB, `0` the whole arena, on any OS.
+
+### Turning a default off
+
+| Setting | What it does | Notes |
+| --- | --- | --- |
+| `STRATA_STAGE_TRIM=0` (or `--no-trim-stage-weights`) | Every card of a layer split keeps the dense weights of all the layers, as before. By default each card, explicit split or `auto`, loads only its own layers' dense weights and the freed VRAM goes to its expert cache. | Output can differ slightly from the default, which caches more experts. |
 
 ### Overlapped hand-off
 
@@ -205,12 +210,6 @@ for the next model, and explains a failed start on a card that is taken. Two mod
 **Measured on:** a PC with two of four Radeon AI PRO R9700 cards, Linux, AMD build, Q2_0 on one card and IQ3_XXS on the other.
 Both loaded (33 s and 59 s with the files cached, 114 s the first time) and answered chats at about 60 tokens/s each. Unloading
 one left the other answering. The same app code drives NVIDIA cards, but two models on two NVIDIA cards were not run.
-
-## DeepSeek V4.1-Flash
-
-DeepSeek V4.1-Flash runs in the app and the Terminal and spreads its experts and its dense weights over several cards. It does not use
-the Qwen layer split described above. On four Radeon AI PRO R9700 cards it reaches about 31 tokens/s. Hardware, sets and speeds:
-[MODELS.md](MODELS.md#deepseek-v41-flash).
 
 ## Small cards: what a split gives up when it is short of memory
 
@@ -265,7 +264,7 @@ Dated numbers behind the settings above. Each row is one machine; none is a clai
 <a id="measured"></a>
 
 **Layer split, Coder model.** Measured on: RTX 5080 + RTX 3090, Ryzen 9 9950X3D, Coder, 32K context, engine 0.1.20-era
-(`bench/results/2026-09-29-layer-split/`).
+(`docs/bench-results/2026-09-29-layer-split/`).
 
 | Setup | Prompt 16K / 28K tok/s | Decode story / code tok/s |
 | --- | --- | --- |

@@ -5,7 +5,7 @@ experts, 3B active, 256 experts, top-8) with Strata and want to know how picture
 chunk behave. For sizes and memory, see [MODELS.md](MODELS.md).
 
 Strata runs [Unsloth's GGUFs with the MTP layer](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF)
-(UD-Q4_K_XL, UD-Q6_K_XL, Q8_0) on its own engine path (`src/qwen35`; `strata` switches to it from the file's
+(UD-Q4_K_XL, UD-Q6_K_XL, Q8_0) on its own engine path (`engine/src/qwen35`; `strata` switches to it from the file's
 architecture). It runs on NVIDIA and AMD cards. The Intel Arc and Mac engines do not run it.
 
 ## Quick start
@@ -27,7 +27,7 @@ strata launch --family qwen36 --model ud-q4_k_xl --vision on --parallel 2
 
 The vision encoder is Unsloth's `mmproj-F16.gguf` (0.9 GB, pinned revision, SHA-256 checked by setup): a 27-layer ViT
 with a 2x2 merger, the same projector family as the Flash-Next models' (`qwen3vl_merger`; only its output width
-differs: 2048 here, 2560 there). Strata runs it with the same helper (`strata-vision`, llama.cpp's `mtmd`), so the
+differs: 2048 here, 2560 there). Strata runs it with the same helper (`strata-vision`), so the
 encoder choices are the Flash-Next ones ([Images](DETAILS.md#images-vision)).
 
 Pictures are on by default, by the same rule as for every model on NVIDIA and AMD cards:

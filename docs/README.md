@@ -1,6 +1,6 @@
 # Strata guides
 
-**New here? Start with [Install Strata](INSTALL.md).** Download the one installer for your system (Windows, Linux or Mac), or install the Terminal with one line. Both use released engine packages. This documentation is for version 0.2.13.
+**New here? Start with [Install Strata](INSTALL.md).** Download the one installer for your system (Windows, Linux or Mac), or install the Terminal with one line. Both use released engine packages. This documentation is for version 0.2.16.
 
 ## Use Strata
 
@@ -8,7 +8,6 @@
 | --- | --- |
 | Install or update | [Desktop app and Terminal](INSTALL.md) |
 | Choose a model and check memory | [Models and quantizations](MODELS.md) |
-| Run DeepSeek V4.1-Flash (app and Terminal) | [DeepSeek V4.1-Flash](MODELS.md#deepseek-v41-flash) |
 | See which model runs on which hardware | [Model and hardware table](CAPABILITIES.md) |
 | Start from the command line | [Terminal launch](TERMINAL_LAUNCH.md) |
 | Connect a coding tool | [Tool connections](TERMINAL_LAUNCH.md#connect-your-apps-strata-connect) |
@@ -34,11 +33,11 @@ Use the guide for your GPU and operating system. Model and feature support can d
 
 - [Build or run from a source checkout](SOURCE_INSTALL.md)
 - [Docker](DOCKER.md)
-- [Contribution rules](../CONTRIBUTING.md)
+- [Contribution rules](../.github/CONTRIBUTING.md)
 - [Community benchmarks](COMMUNITY_BENCHMARKS.md) and the [standard benchmark protocol](BENCHMARK_PROTOCOL.md)
 - [How the engine works](HOW_IT_WORKS.md), [technical reference](DETAILS.md) and [Terminal reference](TERMINAL.md)
 - [KVA: approximate prompt processing for the late layers (experimental, opt-in)](KVA.md)
-- [App development](../apps/host/README.md) and [packaging](../packaging/README.md)
+- [App development](../app/host/README.md) and [packaging](../tools/packaging/README.md)
 
 ## AI tools and media
 
@@ -62,7 +61,7 @@ does not establish support or speed on every GPU.
 - Installation steps live in [INSTALL.md](INSTALL.md), source steps in [SOURCE_INSTALL.md](SOURCE_INSTALL.md). The public READMEs stay short.
 - Check command examples against the parser and filenames against the release assets.
 - A guide describes the current release. Version history, fixed bugs and superseded settings go in a closing
-  **History / older measurements** section, in `bench/results`, or in the release notes. Do not mix them into instructions.
+  **History / older measurements** section, in `docs/bench-results`, or in the release notes. Do not mix them into instructions.
 
 Every guide page has this shape:
 
