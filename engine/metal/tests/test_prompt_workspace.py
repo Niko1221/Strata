@@ -48,6 +48,7 @@ def main():
     # pc_setup alone: main defines further Window members after it (pc_kprof)
     start = chain.index("bool Window::pc_setup(int C)")
     setup = chain[start:chain.index("\n}\n", start) + 3]
+    has_live_qsa = "STRATA_METAL_PROMPT_QSA_LIVE" in setup
     # pc_setup compiles its libraries with the prelude main derives from the model's down experts.
     prelude = re.search(r"std::string kq_down_prelude\(const gguf::File& f\) \{.*?\n\}\n", window, re.S).group(0)
 
@@ -131,7 +132,7 @@ double footprint_mib() {
     return info.phys_footprint / 1048576.0;
 }
 
-bool scenario(mtl::Context& cx, bool had, bool k4, int type) {
+bool scenario(mtl::Context& cx, bool had, bool k4, int type, bool live, bool legacy) {
     Window w{&cx};
     w.had_on_ = had;
     w.layout_k4 = k4;
@@ -142,6 +143,10 @@ bool scenario(mtl::Context& cx, bool had, bool k4, int type) {
     bool allocated = true;
     for (auto* buffer : all) {
         @OPTIONAL_MIXR@
+        if (live && ((!k4 && buffer == &w.pb_.qcurh) || (!legacy && buffer == &w.pb_.XQ))) {
+            if (!require(!buffer->handle, "inactive QSA buffer absent")) return false;
+            continue;
+        }
         allocated = allocated && buffer->handle != nullptr;
         buffers.push_back(buffer);
     }
@@ -185,6 +190,9 @@ bool scenario(mtl::Context& cx, bool had, bool k4, int type) {
                      std::array<int, 3>{w.pb_.lib, w.pb_.lgdn, w.pb_.lqsa},
                      "growth preserves libraries and capacity")) return false;
         @LAYOUT_CHECK@
+        if (live && !require((w.pb_.qcurh.handle != nullptr) == k4 &&
+                             (w.pb_.XQ.handle != nullptr) == legacy,
+                             "growth preserves active QSA buffers")) return false;
         bool usable = true;
         for (auto* b : buffers) usable = usable && b->handle && b->ptr && b->bytes;
         if (!require(usable, "replacement buffers remain usable")) return false;
@@ -210,11 +218,19 @@ int main() {
             return 77;
         }
     }
+    // The lifetime assertions run with no background command buffer in flight.
+    setenv("STRATA_METAL_KEEPALIVE_MS", "0", 1);
     mtl::Context cx;
     std::printf("device: %s; no model loaded; allocation-pool diagnostic=%d\n",
                 cx.device_name().c_str(), @DRAIN@);
-    if (!scenario(cx, false, false, 0) || !scenario(cx, true, false, 144) ||
-        !scenario(cx, false, true, 0) || !scenario(cx, true, true, 144)) return 1;
+    for (int mode : {0, 1, 2}) {
+        const bool live = mode > 0, legacy = mode == 2;
+        if (live && !@HAS_LIVE_QSA@) break;
+        setenv("STRATA_METAL_PROMPT_QSA_LIVE", live ? "1" : "0", 1);
+        setenv("STRATA_PROMPT_MERGEH", legacy ? "0" : "1", 1);
+        if (!scenario(cx, false, false, 0, live, legacy) || !scenario(cx, true, false, 144, live, legacy) ||
+            !scenario(cx, false, true, 0, live, legacy) || !scenario(cx, true, true, 144, live, legacy)) return 1;
+    }
     std::puts("prompt workspace lifetime: PASS");
 }
 '''
@@ -228,6 +244,7 @@ int main() {
         "@COUNT@": str(len(names)),
         "@REFERENCES@": ", ".join("&w.pb_." + name for name in names),
         "@DRAIN@": "true" if args.drain_allocation_pools else "false",
+        "@HAS_LIVE_QSA@": "true" if has_live_qsa else "false",
         "@OPTIONAL_MIXR@": " ".join(
             f"if ({cond}buffer == &w.pb_.{name}) continue;"
             for name, cond in (("mixr", "!had && "), ("R2", ""), ("yf", ""), ("Wcat", ""))

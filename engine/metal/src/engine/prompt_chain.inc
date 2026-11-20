@@ -69,6 +69,10 @@ bool Window::pc_setup(int C) {
     b.C = C;
     const size_t MT = (size_t) C;
     const int MB = (int) max_cells_ / 4 + 2;
+    const char* merge_half = std::getenv("STRATA_PROMPT_MERGEH");
+    b.merge_half = !(merge_half && std::strcmp(merge_half, "0") == 0);
+    const char* qsa_live = std::getenv("STRATA_METAL_PROMPT_QSA_LIVE");
+    const bool live_scratch = qsa_live && std::strcmp(qsa_live, "1") == 0;
     // the expert GEMM tiles (prompt_chain's defaults): v3 gate/up 16,32,32,4 and down 16,64,32,2 with the M5 layout, else v2.
     // STRATA_PROMPT_GU / STRATA_PROMPT_DN = TM,TN,TK,SG override them (test tooling; TM = the plan's tile height, the same for both)
     b.gu3[0] = 16; b.gu3[1] = 32; b.gu3[2] = 32; b.gu3[3] = 4;
@@ -119,8 +123,11 @@ bool Window::pc_setup(int C) {
     b.ygh = F16(MT * G_ZV); b.gqn = F32(MT * G_HK * G_SS); b.gkn = F32(MT * G_HK * G_SS); b.gvc = F32(MT * G_ZV);
     b.ggb = F32(MT * G_HV * 2); b.gkq = F32(MT * G_HK); b.go = F32(MT * G_ZV);
     b.qfull = F32(MT * G_QFULL); b.kcur = F32(MT * G_KV); b.vcur = F32(MT * G_KV); b.iqr = F32(MT * G_IQR); b.ikr = F32(MT * G_ID);
-    b.qcur = F32(MT * G_QOUT); b.qcurh = F16(MT * G_QOUT); b.qidx = F32(MT * G_IH * G_ID); b.scores = F32(MT * MB);
-    b.qids = alloc(4 * MT * PC_QB); b.part = F32(MT * PC_QCHUNKS * G_QH * (G_QD + 2)); b.XQ = F32(4 * MT * G_QOUT + MT * G_QOUT / 16);
+    b.qcur = F32(MT * G_QOUT);
+    if (!live_scratch || b.k4) b.qcurh = F16(MT * G_QOUT);
+    b.qidx = F32(MT * G_IH * G_ID); b.scores = F32(MT * MB);
+    b.qids = alloc(4 * MT * PC_QB); b.part = F32(MT * PC_QCHUNKS * G_QH * (G_QD + 2));
+    if (!live_scratch || !b.merge_half) b.XQ = F32(4 * MT * G_QOUT + MT * G_QOUT / 16);
     b.xqh = F16(MT * G_QOUT);
     b.logits = F32(MT * nexp_); b.ids = alloc(4 * MT * TOPK); b.wts = F32(MT * TOPK);
     b.bcnt = alloc(4 * (size_t) nblk_max * nexp_); b.boff = alloc(4 * (size_t) nblk_max * nexp_);
@@ -412,8 +419,7 @@ bool Window::pc_chunk(const int64_t* tokens, int nT, int64_t pos0, std::string& 
                                           mtl::Arg::B(b.part), mtl::Arg::V(a)},
                   PC_QCHUNKS, G_QKV, 256, nT);
             }
-            static const bool mergeh = [] { const char* e = std::getenv("STRATA_PROMPT_MERGEH"); return !(e && std::string(e) == "0"); }();
-            if (mergeh) {   // the merge writes the fp16 operand directly (bitwise the same halves)
+            if (b.merge_half) {   // the merge writes the fp16 operand directly (bitwise the same halves)
                 D(P_(b.lqsa, "qsa_merge_h"), {mtl::Arg::B(b.part), mtl::Arg::B(b.qfull), mtl::Arg::B(b.xqh), mtl::Arg::V(a)}, G_QH, nT, 256);
             } else {
                 D(P_(b.lqsa, "qsa_merge"), {mtl::Arg::B(b.part), mtl::Arg::B(b.qfull), mtl::Arg::B(b.XQ), mtl::Arg::V(a)}, G_QH, nT, 256);
