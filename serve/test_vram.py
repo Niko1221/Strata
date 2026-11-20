@@ -19,15 +19,18 @@ class VramEngine(ResidentEngine):
     start's (700 MiB)."""
     def __init__(self, tok, elastic=True):
         super().__init__(tok)
-        self.elastic, self.calls = elastic, []
+        self.elastic, self.calls, self.devices = elastic, [], []
 
-    def vram(self, reserve_mib, timeout=120.0):
+    def vram(self, reserve_mib, timeout=120.0, device=None):
         self.calls.append(reserve_mib)
+        self.devices.append(device)
         if not self.elastic:
             raise ValueError("VRAM needs an engine started with --vram-elastic (one NVIDIA GPU, --serve)")
         r = 700 if reserve_mib is None else reserve_mib
         out = {"reserve_mib": r, "expert_slots": max(100, 4000 - r), "expert_cache_mib": max(500, 6000 - r),
                "expert_cache_full_mib": 6000, "vram_free_mib": r, "prompt_chunk": 4096}
+        if device is not None:
+            out["device"] = device
         self.info["vram"] = out
         return out
 
@@ -56,6 +59,16 @@ class EngineCommand(unittest.TestCase):
         e = self.engine(["VRAM reserve_mib=700 expert_slots=3700\n"])
         e.vram(None)
         self.assertEqual(e.proc.stdin.getvalue(), "VRAM\n")
+
+    def test_the_line_for_one_device(self):
+        e = self.engine(["VRAM reserve_mib=2048 device=1 expert_slots=900 vram_free_mib=512\n"])
+        out = e.vram(2048, device=1)
+        self.assertEqual(e.proc.stdin.getvalue(), "VRAM 2048 1\n")
+
+    def test_a_device_needs_an_explicit_reserve(self):
+        e = self.engine([])
+        with self.assertRaisesRegex(ValueError, "reserve_mib"):
+            e.vram(None, device=1)
 
     def test_refused_and_died(self):
         e = self.engine(["ERR VRAM needs an engine started with --vram-elastic\n"])
@@ -105,6 +118,17 @@ class Route(unittest.TestCase):
         code, body = self.request("/v1/vram", {"reserve_mib": None})   # back to the start's reserve
         self.assertEqual(code, 200)
         self.assertEqual(self.engine.calls, [4000, None])
+
+    def test_per_device_frees_one_card_only(self):
+        self.engine.loaded = True
+        code, body = self.request("/v1/vram", {"reserve_mib": 4096, "device": 1})
+        self.assertEqual(code, 200, body)
+        self.assertEqual(body["status"], "ok")
+        self.assertEqual(self.engine.calls[-1], 4096)
+        self.assertEqual(self.engine.devices[-1], 1)
+        for bad in ({"reserve_mib": 4096, "device": -1}, {"reserve_mib": 4096, "device": True}, {"reserve_mib": 4096, "device": "cuda"}):
+            self.assertEqual(self.request("/v1/vram", bad)[0], 400, bad)
+        self.assertEqual(self.request("/v1/vram", {"device": 1})[0], 400)   # device without a reserve
 
     def test_bad_input_busy_and_foreign_pages(self):
         self.engine.loaded = True
