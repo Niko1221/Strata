@@ -292,6 +292,7 @@ from serve.server_parts.http_api import (  # noqa: F401  (moved unchanged, file 
     parse_config_text,
     read_config,
     sampling_defaults_from_config,
+    shared_preserve,
     split_joined_args,
     tool_call_recovery_setting,
     undeclared_tool_calls_setting,
@@ -4666,6 +4667,15 @@ class Service:
         req = dict(req)
         if "max_tokens" in s and not req.get("max_tokens") and not req.get("max_completion_tokens"):
             req["max_tokens"] = s["max_tokens"]
+        keep = shared_preserve(s)
+        if keep is not None:
+            # The Chat settings ask for it and the request does not: fill the gap only.  A client that sends its own
+            # chat_template_kwargs keeps it (both names are checked, as the templates accept either).
+            ctk = req.get("chat_template_kwargs")
+            ctk = dict(ctk) if isinstance(ctk, dict) else {}
+            if "preserve_thinking" not in ctk and "preserve_reasoning" not in ctk:
+                ctk["preserve_thinking"] = keep
+                req["chat_template_kwargs"] = ctk
         if effort:
             if api == "openai":
                 ctk = req.get("chat_template_kwargs") if isinstance(req.get("chat_template_kwargs"), dict) else {}
