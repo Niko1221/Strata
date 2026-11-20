@@ -81,6 +81,16 @@ push main to origin. (User decision 2026-11-20/21: full scope including publicat
     `04ea5022...d76d124` (matches local); tar.7z 127,042,210 bytes SHA-256
     `ecaaf22f...e4187e2` (matches local); both state=uploaded.
   - Release URL: https://github.com/zapabob/Strata/releases/tag/v0.7.0
+- Real installer overwrite (E2E, isolated fixture): seeded a fixture with the
+  installed 0.6.9 `strata-desktop.exe` (`4260de50...`) and a user-data sentinel
+  (`c0daa0ca...`); backed up `HKCU\...\Uninstall\Strata` (0.6.9, real path) to
+  `H:/Strata/evidence/v070-overwrite-install-regbak/`. Ran the actual
+  `Strata-0.7.0-windows-x64-setup.exe /S /D=<fixture>\app`: exit 0; exe replaced
+  with 0.7.0 (`43dc9d0f...`, 10,956,800 bytes), Control 0.6.3 bundle + all
+  resources (control/harness/host/node/notices) staged, user-data sentinel
+  preserved byte-identical. Restored the uninstall registry from backup
+  (verified back to 0.6.9 / real install path); the real installed app was never
+  touched. Evidence: `H:/Strata/evidence/v070-overwrite-install-fixture/`.
 
 ## Residual risk
 - Windows Authenticode signing remains absent; component signatures verified with
