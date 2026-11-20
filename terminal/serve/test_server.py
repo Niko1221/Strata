@@ -7038,6 +7038,135 @@ class ClaudeCodeBillingStamp(unittest.TestCase):
         self.assertEqual(ids[1][:len(first) - 8], first[:len(first) - 8])   # all but the generation header
 
 
+class SystemRemindersTail(unittest.TestCase):
+    """"system_reminders": "tail" strips past-turn copies of the system-reminder blocks the last user turn
+    already carries, so the tokens a slot holds for the conversation's next turn keep matching and the
+    conversation is not read again (opencode#23595: the block is dropped from the past turn on the next
+    request, cutting the shared prefix there - measured here at 155306 tokens in, 211990 read).  A block the
+    last turn does not carry stays in its own turn: blocks carry mode state, and appending a stale one behind
+    the client's current marker makes the model follow the stale state (the 2026-11-02 plan→build repro)."""
+
+    def user_contents(self, msgs, tail):
+        from serve.frontend import openai_to_messages
+        return [m["content"] for m in openai_to_messages({"messages": msgs}, tail)[0] if m["role"] == "user"]
+
+    def test_a_block_not_in_the_last_turn_stays_in_its_turn(self):
+        rem = "<system-reminder>\nYour operational mode has changed from plan to act.\n</system-reminder>"
+        msgs = [{"role": "user", "content": "door tiles " + rem},
+                {"role": "assistant", "content": "ok"},
+                {"role": "user", "content": "next step"}]
+        users = self.user_contents(msgs, True)
+        self.assertEqual(users, ["door tiles " + rem, "next step"])   # rendered as "keep" renders it
+        self.assertEqual(self.user_contents(msgs, False), users)      # off: identical, by design
+
+    def test_a_block_in_the_last_turn_is_stripped_from_past_turns(self):
+        rem = "<system-reminder>\nmode: act\n</system-reminder>"
+        msgs = [{"role": "user", "content": "a " + rem}, {"role": "assistant", "content": "b"},
+                {"role": "user", "content": "c " + rem}]
+        kept, last = self.user_contents(msgs, True)
+        self.assertEqual(kept, "a")                                   # the past copy is stripped: byte-stable
+        self.assertEqual(last, "c " + rem)
+        self.assertEqual(last.count(rem), 1)
+
+    def test_two_blocks_in_two_past_turns_stay_where_the_client_sent_them(self):
+        """Blocks the last turn does not carry are the client's own state in the client's own turns: moving
+        them to the tail reorders mode state behind a newer marker (the plan→build refusal of 2026-11-02)."""
+        a, b = "<system-reminder>\nmode: plan\n</system-reminder>", "<system-reminder>\nAGENTS rules\n</system-reminder>"
+        msgs = [{"role": "user", "content": "a " + a}, {"role": "assistant", "content": "b"},
+                {"role": "user", "content": "c " + b}, {"role": "assistant", "content": "d"},
+                {"role": "user", "content": "e"}]
+        users = self.user_contents(msgs, True)
+        self.assertEqual(users, ["a " + a, "c " + b, "e"])
+
+    def test_a_turn_that_is_only_a_block_keeps_it(self):
+        """A client sends a turn that is nothing but a reminder block for a date or a mode change.  Clearing it
+        left an empty turn, and the chat template renders that as it stands (<|im_start|>user\n<|im_end|>): the
+        empty assistant turns a reply does not need are dropped by ChatTemplate.render (#843), a user turn is not.
+        The model is then asked to answer nothing, which is a worse risk to the reply than the one re-read a block
+        left in place can cost - so such a turn is not touched, and its block is not copied to the tail either."""
+        rem = "<system-reminder>\nToday's date is now: Mon Nov 02 2026\n</system-reminder>"
+        msgs = [{"role": "user", "content": "fix the styles"}, {"role": "assistant", "content": "looking"},
+                {"role": "user", "content": rem}, {"role": "assistant", "content": "ok"},
+                {"role": "user", "content": "now the buttons"}]
+        users = self.user_contents(msgs, True)
+        self.assertEqual(users, ["fix the styles", rem, "now the buttons"])   # no empty turn, no moved copy
+        self.assertTrue(all(u.strip() for u in users))
+
+    def test_a_reminder_only_turn_is_left_alone_even_when_a_later_text_turn_is_touched(self):
+        """The rule is per turn: a turn that is only a block keeps it, and a later turn that has text of its own
+        is stripped of its tail copies, so the fix does not stop the cache-stability work elsewhere."""
+        only = "<system-reminder>\nmode: plan\n</system-reminder>"
+        tail = "<system-reminder>\nAGENTS rules\n</system-reminder>"
+        msgs = [{"role": "user", "content": "a " + tail}, {"role": "assistant", "content": "b"},
+                {"role": "user", "content": only}, {"role": "assistant", "content": "c"},
+                {"role": "user", "content": "d " + tail}]
+        self.assertEqual(self.user_contents(msgs, True), ["a", only, "d " + tail])
+
+    def test_a_plan_switch_still_lets_the_switch_block_be_the_last_state_in_the_prompt(self):
+        """The 2026-11-02 repro: a fresh plan→build session.  The plan instruction rides in the plan-mode
+        turns; the switch block arrives on the last user turn.  The plan instruction must stay in its turns -
+        appending it behind the switch block made the model read plan mode as the newest instruction and
+        refuse to edit."""
+        plan = ("<system-reminder>\nYou are in Plan mode. Do not modify any files.\n"
+                "You remain in Plan mode until the user switches agents.\n</system-reminder>")
+        left = "<system-reminder>\nYou are NO LONGER in Plan mode. Plan restrictions no longer apply.\n</system-reminder>"
+        msgs = [{"role": "user", "content": "design the overlay " + plan},
+                {"role": "assistant", "content": "here is the plan " + plan},
+                {"role": "user", "content": "key t is fine. please implement " + left}]
+        users = self.user_contents(msgs, True)
+        self.assertEqual(users[0], "design the overlay " + plan)      # the plan instruction stays in its turn
+        self.assertEqual(users[1], "key t is fine. please implement " + left)
+        self.assertNotIn(plan, users[1])                              # the newest state is the switch block
+
+    def test_the_responses_route_applies_the_same_rule(self):
+        """#451: /v1/responses builds its messages in serve/responses.py and never runs the chat route's
+        converter, so the rule has to be passed there.  Codex CLI is the client that switches modes."""
+        from serve.responses import input_messages
+        rem = "<system-reminder>\nYour operational mode has changed from plan to act.\n</system-reminder>"
+        req = {"instructions": "sys", "input": [
+            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "door tiles " + rem}]},
+            {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "ok"}]},
+            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "next step " + rem}]}]}
+        users = lambda tail: [m["content"] for m in input_messages(req, tail) if m["role"] == "user"]   # noqa: E731
+        self.assertEqual(users(True), ["door tiles", "next step " + rem])      # past copy stripped
+        self.assertEqual(users(False), ["door tiles " + rem, "next step " + rem])   # off: as Codex sent it
+
+
+class DivergenceNote(unittest.TestCase):
+    """Service.note_divergence compares a request with what each batch slot holds for its next turn (prompt +
+    the generated tokens) and logs the cut - so a reply a client replays differently than the engine generated
+    is named, which a prompt-vs-prompt comparison cannot see."""
+
+    def service(self, path, held):
+        svc = Service.__new__(Service)
+        svc.engine = SimpleNamespace(log_path=path, slot_held=held)
+        svc.tok = SimpleNamespace(decode=lambda ids: "".join(chr(i) for i in ids))
+        svc.conv_log = SimpleNamespace(state={"last_event": "parked", "last_tokens": 6003, "last_at": time.time()})
+        return svc
+
+    def test_a_replayed_reply_cut_is_logged(self):
+        with tempfile.TemporaryDirectory() as d:
+            base = list(range(97, 107)) * 600                      # 6000 tokens of shared prompt
+            held = [base + [81, 82, 83]]                           # ... plus what the engine generated
+            svc = self.service(str(Path(d) / "engine.log"), held)
+            svc.note_divergence(base + [81, 82, 83])
+            svc.note_divergence(base + [87, 88, 89] + base[:2000])  # the client replays the reply differently
+            line = (Path(d) / "engine.log.divergence").read_text(encoding="utf-8")
+            self.assertIn("prefix 6000", line)
+            self.assertIn("slot 0", line)
+            self.assertIn("QRS", line)                             # the text the slot holds at the cut
+            self.assertIn("WXY", line)                             # and what the client sent there
+            self.assertIn("last_cache: parked 6003", line)         # the engine's last cache event, for context
+
+    def test_a_request_extending_the_held_prefix_is_not_logged(self):
+        with tempfile.TemporaryDirectory() as d:
+            base = list(range(97, 107)) * 600
+            held = [base + [81, 82, 83]]
+            svc = self.service(str(Path(d) / "engine.log"), held)
+            svc.note_divergence(base + [81, 82, 83, 65])
+            self.assertFalse((Path(d) / "engine.log.divergence").exists())
+
+
 class ToolOrder(unittest.TestCase):
     """A tool set that comes back in another order is put back in the order it was first seen (RealScaniX, #1624): the
     template renders the tool list before the system prompt, so a client whose MCP tools register in a varying order
