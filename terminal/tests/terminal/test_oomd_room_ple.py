@@ -160,7 +160,8 @@ class MultiShardNativeAndAutoPle(unittest.TestCase):
     def test_four_shard_native_without_ple_gguf_drops_expert_shards_and_keeps_ple_shard(self):
         # Shard 1 is tiny metadata-only (1 MB), shards 2-4 are ~35 GB each (~105 GB total): total MUST include shards 2-4
         # so free=78 GB triggers make_room, expert shards 1-3 are dropped, and shard 4 (PLE) stays cached.
-        sizes = lambda p: 1_000_000 if p == self.s1 else (35 * GIB if p.suffix == ".gguf" else 1 * GIB)
+        def sizes(p):
+            return 1_000_000 if p == self.s1 else (35 * GIB if p.suffix == ".gguf" else 1 * GIB)
         for extra in (("--ple-io", "ram"), ("--ple-io", "mmap"), ()):
             freed = self.run_room(["--pack", str(self.d / "pack"), "--native", str(self.s1), *extra], free=78 * GIB, sizes=sizes)
             self.assertGreater(freed, 0, extra)
@@ -211,6 +212,19 @@ class MultiShardNativeAndAutoPle(unittest.TestCase):
             p.write_bytes(raw)
             self.assertFalse(op._gguf_has_tensor(p), idx)
             self.assertIsNone(op.ple_table_file(["--native", str(p)]), idx)
+
+    def test_missing_native_file_does_not_expand_sibling_shards(self):
+        missing = self.d / "gone-00001-of-00002.gguf"
+        write_gguf(self.d / "gone-00002-of-00002.gguf", tensors=("per_layer_token_embd.weight",))
+        self.assertEqual(op._native_shards(["--native", str(missing)]), [])
+        self.assertIsNone(op.ple_table_file(["--native", str(missing)]))
+        self.assertEqual(op.trim_files(["--native", str(missing)]), [])
+
+    def test_missing_middle_sibling_is_skipped_and_ple_shard_is_still_found(self):
+        self.s3.unlink()
+        args = ["--native", str(self.s1)]
+        self.assertEqual(op.ple_table_file(args), self.s4)
+        self.assertEqual(op.trim_files(args), [self.s1, self.s2])
 
 
 if __name__ == "__main__":

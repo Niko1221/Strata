@@ -143,6 +143,11 @@ _GGUF_SPLIT_RE = re.compile(r"^(.*)-(\d{5})-of-(\d{5})\.gguf$")
 def _gguf_split_siblings(path: Path) -> list[Path]:
     """Existing shards of a split GGUF (`<name>-00001-of-0000N.gguf` .. `<name>-0000N-of-0000N.gguf`, matching gguf_split.hpp)
     in split order, keeping the caller's directory/stem (symlinked Hugging Face snapshots keep their names). Any other path returns `[path]` if it exists."""
+    try:
+        if not path.is_file():
+            return []
+    except OSError:
+        return []
     m = _GGUF_SPLIT_RE.match(path.name)
     if m is not None:
         stem, no, total = m.group(1), int(m.group(2)), int(m.group(3))
@@ -156,10 +161,7 @@ def _gguf_split_siblings(path: Path) -> list[Path]:
                 except OSError:
                     continue
             return shards
-    try:
-        return [path] if path.is_file() else []
-    except OSError:
-        return []
+    return [path]
 
 
 def _native_shards(args) -> list[Path]:
@@ -252,7 +254,7 @@ def _gguf_has_tensor(path: Path, target: bytes = _PLE_TENSOR) -> bool:
                 else:
                     skip_bytes(nlen)
                 (ndims,) = struct.unpack("<I", read_exact(4))
-                if ndims > 16:
+                if ndims == 0 or ndims > 16:
                     return False
                 skip_bytes(ndims * 8 + 12)                   # shape (ndims * u64) + type (u32) + offset (u64)
             return False
