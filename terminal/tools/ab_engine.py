@@ -11,7 +11,11 @@ medians.  Decode numbers move run to run (the adaptive expert tier, the OS), so 
 Versions mode compares Strata releases.  Each version is the engine and the control of one release, run with that
 control's own defaults.  `--tune quick|thorough` tunes each version once, before round 1.
 
-    python terminal/tools/ab_engine.py --model-path <gguf|folder> --engines 0.1.55,0.1.56 [--tune quick] [--rounds 3]
+    python terminal/tools/ab_engine.py --model-path <gguf|folder> --engines 0.1.55,0.1.56 [--tune quick] [--rounds 3] \
+        [--suite ladder,think,agent] [--context N] [--think-tokens 8192] [--run-code]
+
+`--suite` adds a second start per version and round, with one shared `--context` (default: the model's maximum), that
+runs the chosen suites; their texts come from git tag v0.2.12 of this checkout.
 
 `--engines` takes a list (`0.1.55,0.1.56`) or a range (`0.1.50..0.1.56`).  The packages are downloaded from the GitHub
 release, checked against its SHA256SUMS.txt and kept in `~/strata-ab` (or `--bench-dir`).  Each version runs in a
@@ -45,6 +49,9 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+SUITES = ("ladder", "think", "agent")
+ROW_KEYS = ("round", "req", "decode", "prompt", "prompt_n", "n", "suite", "ok", "check", "predicted_n", "wall_s")
+RUN_CODE_WARNING = "--run-code: code written by the model runs on this PC with your user rights; it is not isolated."
 PROMPTS = (
     "Write a Python function that merges two sorted lists into one sorted list, with a docstring and two tests.",
     "Explain in two paragraphs how a refrigerator moves heat from inside to outside.",
@@ -200,10 +207,15 @@ def pick_pairs(releases: list[dict], target: str, backend: str, spec: str) -> tu
 def run_versions(a: argparse.Namespace) -> int:
     """Each Strata version (engine + control of one release) in its own home under the bench dir, with that release's own defaults."""
     import ab_report
+    import ab_suites                                      # not at the top: ab_suites -> agent_turns_bench -> ab_engine
     import ab_versions as av
     model = Path(a.model_path).absolute()                 # live_roots finds the data folder from the parents
     if not model.exists():
         fail(f"--model-path {model} does not exist")
+    context = None
+    if a.suite:                                           # before anything is downloaded
+        ab_suites.need_corpus()
+        context = a.context or ab_suites.model_context(model)
     bench = Path(a.bench_dir or Path.home() / "strata-ab").expanduser()
     roots = av.live_roots(os.environ, model)
     inside = next((r for r in roots if bench.resolve().is_relative_to(Path(r).resolve())), None)
@@ -218,6 +230,16 @@ def run_versions(a: argparse.Namespace) -> int:
     reqs = [(f"chat{i}", p) for i, p in enumerate(PROMPTS)] + [("long", long_prompt(a.long_words))]
     print(f"{len(versions)} versions for {target}/{backend}: {len(versions) * a.rounds} starts, "
           f"{len(versions) if a.tune else 0} tunings.", flush=True)
+    if a.suite:
+        from agent_turns_bench import SESSIONS
+        steps = ab_suites.ladder_steps(context)
+        plan = {"ladder": lambda: f"ladder {len(steps)} steps" + (f" ({steps[0]}..{steps[-1]} tokens)" if steps else ""),
+                "think": lambda: f"think {len(ab_suites.think_reqs(a.think_tokens, a.run_code))} tasks",
+                "agent": lambda: f"agent {sum(len(st) for _, _, st in SESSIONS)} turns"}
+        print(f"suites at context {context}: {', '.join(plan[x]() for x in a.suite)}; a second start per version and round.",
+              flush=True)
+        if a.run_code:
+            print(RUN_CODE_WARNING, flush=True)
     for v in versions:
         print(f"  v{v}: {pairs[v].engine_name} ({pairs[v].tag})", flush=True)
     try:
@@ -231,8 +253,11 @@ def run_versions(a: argparse.Namespace) -> int:
     run_dir.mkdir(parents=True, exist_ok=True)
     data = bench / "data"
     data.mkdir(parents=True, exist_ok=True)
-    arms = {v: {"version": v, "status": "skipped", "reason": "the run stopped before it", "setup_s": None, "start_s": [], "rows": []} for v in versions}
-    homes, env, pkgs, dead = {}, {}, {}, set()
+    arms = {v: {"version": v, "status": "skipped", "reason": "the run stopped before it", "setup_s": None, "start_s": [], "rows": [],
+                "n_ctx": None, "suites_status": "skipped" if a.suite else None,
+                "suites_reason": "the run stopped before it" if a.suite else "", "left_out": []} for v in versions}
+    homes, env, pkgs, dead, suites_dead = {}, {}, {}, set(), set()
+    built: dict[int, tuple[list, list[str]]] = {}         # suite requests per n_ctx; agent_reqs reads git for seconds
     code = 0
     out = open(run_dir / "ab_engine.jsonl", "a")
     try:
@@ -267,17 +292,53 @@ def run_versions(a: argparse.Namespace) -> int:
                         continue
                     print(f"round {rnd} v{v}: ready in {r.seconds:.0f} s", flush=True)
                     post(a.port, "Say hi.", 8)                       # warm-up, as the config mode's wait_ready does
-                    run_requests(a.port, reqs, a.max_new, rnd, f"v{v}", out, got)
+                    run_requests(a.port, reqs, a.max_new, rnd, f"v{v}", out, got, check=ab_suites.base_check)
                 except Exception as e:                               # noqa: BLE001 - one version that crashes skips, the rest run
                     arm.update(status="skipped", reason=f"{type(e).__name__}: {e}")
                     dead.add(v)
                     print(f"round {rnd} v{v}: skipped: {arm['reason']}", flush=True)
                 finally:
                     if got:                                          # also the rows answered before an interrupt
-                        arm["rows"] += [{k: row[k] for k in ("round", "req", "decode", "prompt", "prompt_n", "n")} for row in got]
+                        arm["rows"] += [{k: row[k] for k in ROW_KEYS if k in row} for row in got]
                         if v not in dead:
                             arm.update(status="ran", reason="")
                     av.stop(control, venv)                         # also after a failed or timed-out start: nothing survives into the next arm
+                if not a.suite or v in dead or v in suites_dead:
+                    continue
+                got = []
+                try:                                                 # the suites' own start: a failure here never touches base
+                    r = av.launch(control, venv, model, data, a.port, None, context=context)
+                    if not r.ok:
+                        arm.update(suites_status="skipped", suites_reason=r.reason)
+                        suites_dead.add(v)
+                        print(f"round {rnd} v{v}: suites skipped: {r.reason}", flush=True)
+                        continue
+                    n_ctx = arm["n_ctx"] = av.served_context(a.port)
+                    n = n_ctx or context
+                    if n not in built:
+                        sreqs, left = [], []
+                        if "ladder" in a.suite:
+                            sreqs += ab_suites.ladder_reqs(n)
+                        if "think" in a.suite:
+                            sreqs += ab_suites.think_reqs(a.think_tokens, a.run_code)
+                        if "agent" in a.suite:
+                            agent, left = ab_suites.agent_reqs(n)
+                            sreqs += agent
+                        built[n] = sreqs, left
+                    sreqs, arm["left_out"] = built[n]
+                    print(f"round {rnd} v{v}: suites ready in {r.seconds:.0f} s, n_ctx {n_ctx}", flush=True)
+                    post(a.port, "Say hi.", 8)
+                    run_suite(a.port, sreqs, rnd, f"v{v}", out, got)
+                except Exception as e:                               # noqa: BLE001 - a crash in the suites skips them, base rows stay
+                    arm.update(suites_status="skipped", suites_reason=f"{type(e).__name__}: {e}")
+                    suites_dead.add(v)
+                    print(f"round {rnd} v{v}: suites skipped: {arm['suites_reason']}", flush=True)
+                finally:
+                    if got:
+                        arm["rows"] += [{k: row[k] for k in ROW_KEYS if k in row} for row in got]
+                        if v not in suites_dead:
+                            arm.update(suites_status="ran", suites_reason="")
+                    av.stop(control, venv)
     except KeyboardInterrupt:
         print("\ninterrupted; the results so far are kept", file=sys.stderr)
         code = 130
@@ -286,7 +347,8 @@ def run_versions(a: argparse.Namespace) -> int:
         diff = av.changed(before, av.snapshot(roots))
         results = {"created": time.strftime("%Y-%m-%dT%H:%M:%S"), "model": model.name, "gpu": gpu_name(), "tune": a.tune,
                    "rounds": a.rounds, "requests": [t for t, _ in reqs], "arms": list(arms.values()), "untouched": not diff,
-                   "changed": diff}
+                   "changed": diff, "suites": a.suite, "context": context, "corpus": ab_suites.CORPUS_REV if a.suite else None,
+                   "run_code": a.run_code}
         (run_dir / "results.json").write_text(json.dumps(results, indent=1), encoding="utf-8")
         if diff:                                                     # in finally, before the report: shown even if either fails
             print("error: files of the real Strata install changed during the run:\n  " + "\n  ".join(diff), file=sys.stderr)
@@ -309,9 +371,24 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--tune", choices=("quick", "thorough"), help="versions mode: each version tunes once before round 0")
     ap.add_argument("--bench-dir", help="versions mode: packages, homes, configs, runs (default: ~/strata-ab)")
     ap.add_argument("--backend", help="versions mode: engine build, e.g. cuda-cuda13 (default: this machine's)")
+    ap.add_argument("--suite", help="versions mode: extra test suites, comma list of ladder, think, agent")
+    ap.add_argument("--context", type=int, help="versions mode: context every version starts with for the suites "
+                                                "(default: the model's maximum)")
+    ap.add_argument("--think-tokens", type=int, help="versions mode: token budget of a thinking task (default 8192)")
+    ap.add_argument("--run-code", action="store_true", help="versions mode: run and test the code the think suite's model "
+                    "writes; it runs on this PC with your user rights and is not isolated.")
     a = ap.parse_intermixed_args(argv)
-    if a.config is not None and any(x is not None for x in (a.model_path, a.engines, a.tune, a.bench_dir, a.backend)):
-        ap.error("--model-path, --engines, --tune, --bench-dir and --backend belong to the versions mode, not to <config> <arms...>")
+    if a.config is not None and (a.run_code or any(x is not None for x in (a.model_path, a.engines, a.tune, a.bench_dir, a.backend,
+                                                                          a.suite, a.context, a.think_tokens))):
+        ap.error("--model-path, --engines, --tune, --bench-dir, --backend, --suite, --context, --think-tokens and --run-code "
+                 "belong to the versions mode, not to <config> <arms...>")
+    a.suite = list(dict.fromkeys(x for x in (a.suite or "").split(",") if x))
+    if any(x not in SUITES for x in a.suite):
+        ap.error(f"--suite takes {', '.join(SUITES)}, not {a.suite!r}")
+    if not a.suite and (a.run_code or a.context is not None or a.think_tokens is not None):
+        ap.error("--context, --think-tokens and --run-code need --suite")
+    if a.think_tokens is None:
+        a.think_tokens = 8192
     if a.config is None and not (a.model_path and a.engines):
         ap.error("give <config> <arms...>, or --model-path and --engines")
     if a.config is not None and not a.arms:

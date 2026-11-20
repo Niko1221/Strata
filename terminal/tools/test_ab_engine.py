@@ -14,6 +14,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import ab_engine  # noqa: E402
 import ab_report  # noqa: E402
+import ab_suites  # noqa: E402
 import ab_versions  # noqa: E402
 from ab_versions import LaunchResult, Packages  # noqa: E402
 
@@ -36,6 +37,16 @@ RELEASES = [
 ANSWER = {"timings": {"predicted_per_second": 50.0, "prompt_per_second": 900.0, "prompt_n": 40}, "usage": {"completion_tokens": 256},
           "choices": [{"message": {"content": "hi"}}]}
 ROW = {"round": 0, "arm": "x", "req": "chat0", "decode": 50.0, "prompt": 900.0, "prompt_n": 40, "n": 256, "text": "hi"}
+SUITE_ROW = {"round": 0, "req": "ladder.8k", "suite": "ladder", "decode": 40.0, "prompt": 800.0, "prompt_n": 8000, "n": 30,
+             "predicted_n": 30, "wall_s": 12.5, "ok": True, "check": "4/4 Codes"}
+
+
+def fake_reqs(suite, n=1):
+    return [ab_suites.Req(suite, f"{suite}.{i}", {}, lambda r: (True, "")) for i in range(n)]
+
+
+def answer_base(port, reqs, max_new, rnd, arm, out, rows, check=None):
+    rows.append(dict(ROW, round=rnd, arm=arm, **({"suite": "base", "ok": True, "check": ""} if check else {})))
 
 
 class VersionsMode(unittest.TestCase):
@@ -57,13 +68,18 @@ class VersionsMode(unittest.TestCase):
              "provision_home": mock.Mock(side_effect=lambda home, p: home / "control"), "assert_idle": mock.Mock(),
              "snapshot": mock.Mock(return_value={}), "changed": mock.Mock(return_value=[]), "live_roots": mock.Mock(return_value=[]),
              "launch": mock.Mock(return_value=LaunchResult(True, 12.0)), "stop": mock.Mock(),
+             "served_context": mock.Mock(return_value=262144),
              "collect_configs": mock.Mock(return_value=[]), "version_problem": mock.Mock(return_value=None)}
-        e = {"run_requests": mock.Mock(side_effect=lambda port, reqs, max_new, rnd, arm, out, rows: rows.append(dict(ROW, round=rnd, arm=arm))),
+        e = {"run_requests": mock.Mock(side_effect=answer_base),
+             "run_suite": mock.Mock(side_effect=lambda port, reqs, rnd, arm, out, rows: rows.append(dict(SUITE_ROW, round=rnd))),
              "post": mock.Mock(), "gpu_name": mock.Mock(return_value="RTX 3090, 24576 MiB"),
              "detect": mock.Mock(return_value=("windows-x86_64", "cuda"))}
         r = {"write_report": mock.Mock(return_value=(self.bench / "report.html", None))}
+        s = {"need_corpus": mock.Mock(), "model_context": mock.Mock(return_value=262144),
+             "ladder_reqs": mock.Mock(return_value=fake_reqs("ladder", 2)), "think_reqs": mock.Mock(return_value=fake_reqs("think", 6)),
+             "agent_reqs": mock.Mock(return_value=(fake_reqs("agent"), ["agent.x.9"]))}
         for key, value in over.items():
-            for d in (m, e, r):
+            for d in (m, e, r, s):
                 if key in d:
                     d[key] = value
         argv = ["--model-path", str(self.model), "--engines", "0.1.55,0.1.56", "--backend", "cuda-cuda13",
@@ -73,13 +89,15 @@ class VersionsMode(unittest.TestCase):
                 st.enter_context(mock.patch.object(ab_versions, name, value))
             for name, value in e.items():
                 st.enter_context(mock.patch.object(ab_engine, name, value))
+            for name, value in s.items():
+                st.enter_context(mock.patch.object(ab_suites, name, value))
             st.enter_context(mock.patch.object(ab_report, "write_report", r["write_report"]))
             st.enter_context(mock.patch("sys.stdout"))
             st.enter_context(mock.patch("sys.stderr"))
             code = ab_engine.main(argv)
         runs = sorted((self.bench / "runs").glob("*/results.json"))
         results = json.loads(runs[-1].read_text(encoding="utf-8")) if runs else None
-        return code, results, {**m, **e, **r}
+        return code, results, {**m, **e, **r, **s}
 
     def test_old_mode_argv_unchanged(self):
         a = ab_engine.parse_args(["cfg.json", "A:exe=x", "--rounds", "2"])
@@ -117,7 +135,7 @@ class VersionsMode(unittest.TestCase):
         self.assertEqual((results["arms"][0]["setup_s"], results["arms"][0]["start_s"]), (12.0, [12.0]))
 
     def test_interrupt_stops_server(self):
-        def answer(port, reqs, max_new, rnd, arm, out, rows):
+        def answer(port, reqs, max_new, rnd, arm, out, rows, check=None):
             if arm != "v0.1.55":
                 raise KeyboardInterrupt
             rows.append(dict(ROW, round=rnd, arm=arm))
@@ -162,10 +180,13 @@ class VersionsMode(unittest.TestCase):
 
     def test_results_schema(self):
         code, results, m = self.run_tool()
-        self.assertEqual(set(results), {"created", "model", "gpu", "tune", "rounds", "requests", "arms", "untouched", "changed"})
+        self.assertEqual(set(results), {"created", "model", "gpu", "tune", "rounds", "requests", "arms", "untouched", "changed",
+                                        "suites", "context", "corpus", "run_code"})
+        self.assertEqual((results["suites"], results["context"], results["corpus"], results["run_code"]), ([], None, None, False))
         self.assertEqual((results["model"], results["gpu"], results["tune"], results["rounds"]), ("model.gguf", "RTX 3090, 24576 MiB", None, 2))
         self.assertEqual(results["requests"], ["chat0", "chat1", "chat2", "long"])
-        self.assertEqual(set(results["arms"][0]["rows"][0]), {"round", "req", "decode", "prompt", "prompt_n", "n"})
+        self.assertEqual(set(results["arms"][0]["rows"][0]), {"round", "req", "decode", "prompt", "prompt_n", "n", "suite", "ok", "check"})
+        self.assertIs(m["run_requests"].call_args.kwargs["check"], ab_suites.base_check)
         m["assert_idle"].assert_called_once_with([8090])
         self.assertEqual(m["live_roots"].call_args.args[1], self.model)
         m["write_report"].assert_called_once()
@@ -232,7 +253,7 @@ class VersionsMode(unittest.TestCase):
         self.assertEqual(code, 0)
 
     def test_crash_after_a_row_keeps_the_row_but_not_ran(self):
-        def answer(port, reqs, max_new, rnd, arm, out, rows):
+        def answer(port, reqs, max_new, rnd, arm, out, rows, check=None):
             rows.append(dict(ROW, round=rnd, arm=arm))
             if arm == "v0.1.55":
                 raise TimeoutError("timed out")
@@ -253,6 +274,103 @@ class VersionsMode(unittest.TestCase):
             for flag in (["--tune", "quick"], ["--backend", "cuda"], ["--bench-dir", "x"]):
                 with self.subTest(flag=flag), self.assertRaises(SystemExit):
                     ab_engine.parse_args(["cfg.json", "A:exe=x", *flag])
+
+    def test_without_suite_one_launch_per_round(self):
+        code, results, m = self.run_tool()
+        self.assertEqual(m["launch"].call_count, 4)
+        self.assertTrue(all("context" not in c.kwargs for c in m["launch"].call_args_list))
+        m["need_corpus"].assert_not_called()
+        m["run_suite"].assert_not_called()
+
+    def test_suite_adds_a_second_launch_with_context(self):
+        code, results, m = self.run_tool(["--suite", "ladder", "--tune", "quick"])
+        calls = m["launch"].call_args_list
+        self.assertEqual(len(calls), 8)
+        self.assertTrue(all(c.kwargs.get("context") == 262144 and c.args[5] is None for c in calls[1::2]))
+        self.assertTrue(all("context" not in c.kwargs for c in calls[0::2]))
+        self.assertEqual(m["stop"].call_count, 8)
+        m["model_context"].assert_called_once_with(self.model)
+        m["ladder_reqs"].assert_called_once_with(262144)              # built once per n_ctx
+        m["think_reqs"].assert_not_called()
+        m["agent_reqs"].assert_not_called()
+        self.assertEqual(m["run_suite"].call_count, 4)
+        self.assertEqual(code, 0)
+
+    def test_explicit_context_wins(self):
+        code, results, m = self.run_tool(["--suite", "ladder,think,agent", "--context", "65536"],
+                                         served_context=mock.Mock(return_value=None))
+        self.assertTrue(all(c.kwargs["context"] == 65536 for c in m["launch"].call_args_list[1::2]))
+        m["model_context"].assert_not_called()
+        m["ladder_reqs"].assert_called_once_with(65536)              # /props gave nothing: the asked context
+        m["think_reqs"].assert_called_with(8192, False)
+        self.assertEqual(len(m["run_suite"].call_args_list[0].args[1]), 2 + 6 + 1)
+        self.assertEqual(results["context"], 65536)
+
+    def test_suite_launch_failure_keeps_base_rows(self):
+        launch = mock.Mock(side_effect=lambda *a, **k: LaunchResult(False, 5, "out of memory") if "context" in k else LaunchResult(True, 12.0))
+        code, results, m = self.run_tool(["--suite", "ladder"], launch=launch)
+        for arm in results["arms"]:
+            self.assertEqual((arm["status"], arm["suites_status"]), ("ran", "skipped"))
+            self.assertIn("out of memory", arm["suites_reason"])
+            self.assertEqual([r["suite"] for r in arm["rows"]], ["base", "base"])
+        m["run_suite"].assert_not_called()
+        self.assertEqual(m["stop"].call_count, m["launch"].call_count)
+        self.assertEqual(code, 0)
+
+    def test_missing_corpus_stops_before_download(self):
+        ensure = mock.Mock()
+        with self.assertRaises(SystemExit):
+            self.run_tool(["--suite", "think"], ensure_packages=ensure, need_corpus=mock.Mock(side_effect=SystemExit("x")))
+        ensure.assert_not_called()
+
+    def test_interrupt_during_suites_stops_and_keeps_rows(self):
+        def suite(port, reqs, rnd, arm, out, rows):
+            rows.append(dict(SUITE_ROW, round=rnd))
+            raise KeyboardInterrupt
+
+        code, results, m = self.run_tool(["--suite", "ladder"], run_suite=mock.Mock(side_effect=suite))
+        self.assertEqual(code, 130)
+        self.assertEqual(m["stop"].call_count, 2)                    # base launch, then the suite launch
+        first = results["arms"][0]
+        self.assertEqual([r["suite"] for r in first["rows"]], ["base", "ladder"])
+        self.assertEqual(first["rows"][1], SUITE_ROW)
+        self.assertEqual(first["suites_status"], "ran")
+
+    def test_suite_crash_skips_suites_not_the_version(self):
+        code, results, m = self.run_tool(["--suite", "ladder"], run_suite=mock.Mock(side_effect=TimeoutError("timed out")))
+        for arm in results["arms"]:
+            self.assertEqual((arm["status"], arm["suites_status"], arm["suites_reason"]), ("ran", "skipped", "TimeoutError: timed out"))
+            self.assertEqual(len(arm["rows"]), 2)
+        self.assertEqual(code, 0)
+
+    def test_suite_flags_refused_in_old_mode(self):
+        with mock.patch("sys.stderr"):
+            for flag in (["--suite", "ladder"], ["--context", "65536"], ["--think-tokens", "4096"], ["--run-code"]):
+                with self.subTest(flag=flag), self.assertRaises(SystemExit):
+                    ab_engine.parse_args(["cfg.json", "A:", *flag])
+
+    def test_unknown_suite_is_refused(self):
+        with mock.patch("sys.stderr"), self.assertRaises(SystemExit):
+            ab_engine.parse_args(["--model-path", "m.gguf", "--engines", "0.1.55", "--suite", "ladder,speed"])
+
+    def test_run_code_warns_before_and_in_help(self):
+        with mock.patch("builtins.print") as pr:
+            self.run_tool(["--suite", "think", "--run-code"])
+        self.assertTrue(any("not isolated" in str(c) for c in pr.call_args_list))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), self.assertRaises(SystemExit):
+            ab_engine.parse_args(["--help"])
+        self.assertIn("not isolated", " ".join(out.getvalue().split()))
+
+    def test_results_schema_with_suites(self):
+        code, results, m = self.run_tool(["--suite", "ladder,agent", "--context", "131072", "--run-code"],
+                                         served_context=mock.Mock(return_value=131072))
+        self.assertEqual((results["suites"], results["context"], results["corpus"], results["run_code"]),
+                         (["ladder", "agent"], 131072, "v0.2.12", True))
+        arm = results["arms"][0]
+        self.assertEqual((arm["n_ctx"], arm["suites_status"], arm["suites_reason"], arm["left_out"]), (131072, "ran", "", ["agent.x.9"]))
+        self.assertEqual(set(arm["rows"][1]), set(SUITE_ROW))
+        self.assertEqual(arm["start_s"], [12.0])                      # base launch only
 
 
 GOLDEN_JSONL = ('{"round": 0, "arm": "A", "req": "chat0", "decode": 50.0, "prompt": 900.0, "prompt_n": 40, "n": 256, "text": "hi there"}\n'
