@@ -84,8 +84,9 @@ int main() {
         in.drafter = true;
         const int64_t free_b = int64_t(7578) << 20;
         check((room_bytes(free_b, in) >> 20) == 426, "without DFlash2 the last card's plan is unchanged: 426 MiB");
-        in.df2_bind_mib = df2_after_mib(true);
-        check((room_bytes(free_b, in) >> 20) == 266, "with DFlash2 the last card's plan keeps its 160 MiB: 266 MiB");
+        check(df2_search_mib(true) == 112 + 160, "the search books DFlash2's drafter over kDrafterMib and its after-cache bind");
+        in.df2_bind_mib = df2_search_mib(true);
+        check((room_bytes(free_b, in) >> 20) == 154, "with DFlash2 the last card's plan keeps 272 MiB more: 154 MiB");
         in.drafter = false;
         check(reserve_mib(in) == 5800 + 256 + 96, "a stage without the drafter books no DFlash2 term");
     }
