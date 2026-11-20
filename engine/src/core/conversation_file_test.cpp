@@ -190,11 +190,30 @@ int main() {
         check(read == written, "read reports the file size");
         check(same(original, back), "round trip is identical");
     }
-    // writing twice produces the same bytes (deterministic format)
     {
-        const fs::path again = dir / "again.bin";
-        check(session_file_write(again.string(), original, id, written, error), "second write");
-        check(slurp(again) == slurp(good), "format is deterministic");
+        SavedConversation image;
+        image.live.ids = {1, 2, 3, 4};
+        image.checkpoints.resize(1);
+        image.checkpoints.front().ids = {1, 2};
+        const fs::path path = dir / "repark.bin";
+        size_t read = 0;
+        SavedConversation restored;
+        check(session_file_write(path.string(), image, id, written, error) &&
+              session_file_read(path.string(), id, restored, read, error), "round trip a session with a shared checkpoint");
+        ConversationCache cache(1 << 20, 2, 0, 2);
+        check(cache.put(std::move(restored)), "repark the file's restored image");
+        const auto shared = cache.best(std::vector<int32_t>{1, 2, 9}, {}, true);
+        check(shared.tokens == 2 && !shared.live && cache.borrows(shared),
+              "the deepest checkpoint is still borrowed after file restore and repark");
+        const auto live = cache.best(std::vector<int32_t>{1, 2, 3, 4, 9}, {}, true);
+        check(live.tokens == 4 && live.live && !cache.borrows(live), "the restored full live state is still taken");
+        const auto unpinned_bytes = slurp(path);
+        image.checkpoints.front().pinned = true;
+        image.checkpoints.front().cache_protected = true;
+        check(session_file_write(path.string(), image, id, written, error) && slurp(path) == unpinned_bytes,
+              "user pins and cache protection do not change the session file bytes");
+        check(session_file_read(path.string(), id, restored, read, error) && !restored.pinned() &&
+              !restored.checkpoints.front().cache_protected, "an explicit file restore does not invent either pin mark");
     }
     // saving over an existing file replaces it (MoveFileExW on Windows, rename elsewhere)
     {
@@ -665,6 +684,27 @@ int main() {
         const auto agree = [&](uint64_t, std::string&) { return true; };
         check(session_save_checkpoints(chain, live, agree, out, why) && out.size() == 1 &&
               same_checkpoint(out[0], chain[1]), "save: admitted, the deepest checkpoint is copied");
+        SavedConversation donor;
+        donor.live = checkpoint(720, 4);
+        donor.live.imgs = chain[0].imgs;
+        donor.checkpoints = {chain[0]};
+        donor.checkpoints[0].pinned = true;
+        auto duplicate = donor;
+        duplicate.live.ids.back() = 999;
+        duplicate.checkpoints.push_back(chain[1]);
+        duplicate.checkpoints.back().imgs = donor.live.imgs;
+        auto continued = duplicate.live.ids;
+        continued.push_back(99);
+        ConversationCache cache(1 << 25, 2, 0, 1000);
+        check(cache.put(std::move(donor)) && cache.put(std::move(duplicate)), "park two branches with one representative");
+        const auto match = cache.best(continued, chain[0].imgs, true);
+        const auto* parked = cache.find(match.serial);
+        check(match.live && parked && parked->pinned() && !parked->checkpoints.front().cache_protected,
+              "the branch about to be restored has a user pin without slot protection");
+        auto active = cache.take(match.index);
+        check(session_save_checkpoints(active.checkpoints, live, agree, out, why) && out.size() == 1 &&
+              out[0].pinned && same_checkpoint(out[0], chain[0]),
+              "SAVE after a full take still selects the user pin over the deeper checkpoint");
         check(session_save_checkpoints({}, live, agree, out, why) && out.empty(), "save: no checkpoints, none copied");
 #if defined(__linux__) && !defined(__SANITIZE_ADDRESS__) && !defined(STRATA_NO_RLIMIT_TEST)
         // under a real address-space limit that cannot hold one more copy: the refusal comes first, no bad_alloc;
@@ -747,10 +787,10 @@ int main() {
         fs::create_symlink(good, link);
         check(rejects(link, id, "symbolic link"), "a symbolic link is not followed");
         const fs::path hard = dir / "hard.bin";
-        fs::create_hard_link(dir / "again.bin", hard);
+        fs::create_hard_link(good, hard);
         check(rejects(hard, id, "hard link"), "a hard-linked file is refused");
         fs::remove(hard);
-        check(!rejects(dir / "again.bin", id), "the same file with one name again reads");
+        check(!rejects(good, id), "the same file with one name again reads");
         const fs::path fifo = dir / "fifo.bin";
         check(::mkfifo(fifo.c_str(), 0600) == 0, "mkfifo");
         check(rejects(fifo, id, "regular"), "a FIFO is refused without blocking");

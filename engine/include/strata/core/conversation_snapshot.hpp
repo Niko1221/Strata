@@ -121,6 +121,8 @@ struct ConversationView {
     const std::vector<ConversationImageKey>& images;
     const std::vector<ConversationCheckpoint>& checkpoints;
     bool cvec;
+    // Keep checkpoints at or below this token count; -1 keeps all of them.
+    int64_t checkpoint_limit = -1;
 };
 bool conversation_snapshot_bytes(const ConversationView& view, const SessionState& session,
                                  const ModelGeometry& g, const QsaState& draft, size_t& bytes, std::string& error);
@@ -137,7 +139,7 @@ bool conversation_snapshot_save(SavedConversation& image, const ConversationView
                                 const QsaState& draft, std::string& error,
                                 ConversationKvReuse reuse = {}, size_t* reused_bytes = nullptr);
 // Disk save without capturing the K/V on the host: `meta` gets everything but the K/V (running state copied,
-// checkpoints as given by the view), `sources` one streamed source per QSA layer then the draft.  Caller has
+// checkpoints retained by the view), `sources` one streamed source per QSA layer then the draft.  Caller has
 // synchronized and must not run the session until the file is written.
 bool conversation_snapshot_sources(SavedConversation& meta, std::vector<SessionKvSource>& sources,
                                    const ConversationView& view, const SessionState& session,
@@ -175,8 +177,8 @@ bool conversation_snapshot_capture_bytes(const ConversationKvReuse& reuse, const
                                          size_t& bytes, std::string& error);
 // `storage` (optional, STRATA_CKPT_POOL): dropped checkpoints whose vectors the image's running state and checkpoint
 // copies go into (their pages are in: no fresh pages to fault); the ones not used are left in it.
-// `moved` (optional): checkpoints the caller drops after this, moved into the image after the copies of the view's
-// (the image holds the same checkpoints as with all of them in the view; nothing is copied for these)
+// `moved` (optional): checkpoints the caller drops after this. Those within the view's limit are moved into the
+// image after the copied checkpoints; the same limit applies to both.
 bool conversation_snapshot_save(SavedConversation& image, const ConversationView& view, const SessionState& session,
                                 const ModelGeometry& g, const QsaState* draft, std::string& error,
                                 ConversationKvReuse reuse = {}, size_t* reused_bytes = nullptr,

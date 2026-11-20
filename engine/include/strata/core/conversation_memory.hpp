@@ -136,6 +136,13 @@ inline bool conversation_memory_admit(std::optional<uint64_t> available,
     return available && *available >= floor && allocation <= *available - floor;
 }
 
+/// Recheck the physical-RAM gate after returning idle pool or heap memory, without evicting any parked entries.
+/// Each reclaim callback returns true if it ran and a fresh reading is needed.
+template <class Admit, class TrimIdle, class ReturnHeap>
+bool admit_after_idle_reclaim(Admit admit, TrimIdle trim_idle, ReturnHeap return_heap) {
+    return admit() || (trim_idle() && admit()) || (return_heap() && admit());
+}
+
 /// #5697: the physical-RAM gate's eviction loop (generate.cpp, park_source).  `admit()` samples the memory reading and
 /// says whether the park fits; `available()` is the reading admit() took last (nullopt: unknown); `evict()` drops the
 /// oldest parked conversation that may go and returns its bytes (0: none could go).  Evicts until the park fits, at most

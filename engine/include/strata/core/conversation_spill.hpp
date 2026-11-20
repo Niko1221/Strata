@@ -222,8 +222,8 @@ private:
 };
 
 /// The SSD tier's entries: parked conversations written as session files into this process's namespace, oldest first.
-/// What stays in RAM per entry is only what matching needs: the token ids and picture keys of its live state and of each
-/// checkpoint (no running state, no K/V).  put() deletes the oldest entries when the budget needs the room, and never
+/// What stays in RAM per entry is the token ids and picture keys of its live state and each checkpoint, with user pins
+/// for the capped cache (no running state, no K/V). put() deletes the oldest entries when the budget needs the room, and never
 /// leaves a partial file behind; take() reads an entry back under the caller's read limits and removes it either way (a
 /// file that does not read back is not tried again).
 /// Thread-safe (P2 step 2c: a background writer puts while the serve loop matches and takes): the entry list and the budget are
@@ -236,9 +236,11 @@ public:
         std::filesystem::path file;
         uint64_t bytes = 0;
         bool cvec = false;
-        ConversationCheckpoint live;                     // ids and images only
-        std::vector<ConversationCheckpoint> checkpoints;   // ids and images only
+        ConversationCheckpoint live;                     // ids, images and process-local user pin
+        std::vector<ConversationCheckpoint> checkpoints;
     };
+
+    explicit ConversationSpill(bool preserve_pins = false) : preserve_pins_(preserve_pins) {}
 
     bool open(const std::filesystem::path& root, uint64_t cap, std::string& error, size_t* cleaned = nullptr) {
         std::lock_guard<std::mutex> lk(mu_);
@@ -301,7 +303,8 @@ public:
     /// The entry and the prefix it gives `prompt`, by the RAM cache's rule (ConversationCache::best): its live state or a
     /// checkpoint, same pictures, same steering; ties prefer the newest.  Reach it by `serial` (find / take_serial).
     template <class Token>
-    ConversationCache::Match best(const std::vector<Token>& prompt, const std::vector<ConversationImageKey>& images, bool cvec) const {
+    ConversationCache::Match best(const std::vector<Token>& prompt, const std::vector<ConversationImageKey>& images,
+                                  bool cvec, bool live_only = false) const {
         std::lock_guard<std::mutex> lk(mu_);
         ConversationCache::Match m;
         for (size_t i = entries_.size(); i-- > 0;) {
@@ -312,7 +315,8 @@ public:
                 if (n > m.tokens) m = {i, n, live, e.serial};
             };
             consider(e.live, true);
-            for (const auto& c : e.checkpoints) consider(c, false);
+            if (!live_only)
+                for (const auto& c : e.checkpoints) consider(c, false);
         }
         return m;
     }
@@ -321,21 +325,32 @@ public:
     /// unchanged and the entry is gone (or was not there).  The file is read outside the lock: the entry leaves the list first.
     bool take_serial(uint64_t serial, const SessionFileIdentity& id, const SessionReadLimits& limits, SavedConversation& out,
                      std::string& error) {
-        std::filesystem::path f;
+        Entry entry;
         {
             std::lock_guard<std::mutex> lk(mu_);
             const size_t i = index_locked(serial);
             if (i == SIZE_MAX) { error = "no such SSD entry"; return false; }
-            f = entries_[i].file;
-            budget_.drop(entries_[i].bytes);
+            entry = std::move(entries_[i]);
+            budget_.drop(entry.bytes);
             entries_.erase(entries_.begin() + (std::ptrdiff_t) i);
         }
         SavedConversation image;
         size_t read = 0;
-        const bool ok = session_file_read(f.string(), id, image, read, error, limits);
+        const bool ok = session_file_read(entry.file.string(), id, image, read, error, limits);
         std::error_code ec;
-        std::filesystem::remove(f, ec);
-        if (ok) out = std::move(image);
+        std::filesystem::remove(entry.file, ec);
+        if (ok) {
+            // The directory preserves the user pin, not slot protection; the RAM cache assigns that on put().
+            if (preserve_pins_ && image.cvec == entry.cvec && image.checkpoints.size() == entry.checkpoints.size()) {
+                auto restore_pin = [](ConversationCheckpoint& c, const ConversationCheckpoint& saved) {
+                    c.pinned = saved.pinned && c.ids == saved.ids && c.imgs == saved.imgs;
+                };
+                restore_pin(image.live, entry.live);
+                for (size_t i = 0; i < image.checkpoints.size(); ++i)
+                    restore_pin(image.checkpoints[i], entry.checkpoints[i]);
+            }
+            out = std::move(image);
+        }
         return ok;
     }
     bool take(size_t i, const SessionFileIdentity& id, const SessionReadLimits& limits, SavedConversation& out, std::string& error) {
@@ -383,12 +398,14 @@ private:
         budget_.drop(entries_[i].bytes);
         entries_.erase(entries_.begin() + (std::ptrdiff_t) i);
     }
-    static ConversationCheckpoint stub(const ConversationCheckpoint& c) {
+    ConversationCheckpoint stub(const ConversationCheckpoint& c) const {
         ConversationCheckpoint s;
         s.ids = c.ids;
         s.imgs = c.imgs;
+        s.pinned = preserve_pins_ && c.pinned;
         return s;
     }
+    const bool preserve_pins_;
     mutable std::mutex mu_;
     SpillNamespace ns_;
     SpillBudget budget_;
@@ -400,15 +417,17 @@ private:
 /// steering): for the images the background writer still holds in RAM.  {tokens, live}; tokens 0 = none.
 template <class Token>
 std::pair<int64_t, bool> conversation_image_prefix(const SavedConversation& s, const std::vector<Token>& prompt,
-                                                   const std::vector<ConversationImageKey>& images, bool cvec) {
+                                                   const std::vector<ConversationImageKey>& images, bool cvec,
+                                                   bool live_only = false) {
     std::pair<int64_t, bool> m{0, false};
     if (s.cvec != cvec) return m;
     const int64_t l = conversation_prefix(s.live, prompt, images);
     if (l > m.first) m = {l, true};
-    for (const auto& c : s.checkpoints) {
-        const int64_t n = conversation_prefix(c, prompt, images);
-        if (n > m.first) m = {n, false};
-    }
+    if (!live_only)
+        for (const auto& c : s.checkpoints) {
+            const int64_t n = conversation_prefix(c, prompt, images);
+            if (n > m.first) m = {n, false};
+        }
     return m;
 }
 

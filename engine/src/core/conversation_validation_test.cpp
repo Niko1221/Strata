@@ -169,10 +169,11 @@ void fixture(int format, int experts, bool zero_qsa, bool ple) {
         stage.qsa_alloc = 1; stage.gdn_alloc = 7;
         check(!conversation_session_sizes(g,stage,zs,error), "carve past the GDN rows rejected");
     }
+    ConversationStateSizes rejected_sizes;
     auto bad_geometry = g; bad_geometry.ssm_state_size = std::numeric_limits<int64_t>::max();
-    check(!conversation_state_sizes(bad_geometry,z,error), "running-state arithmetic overflow rejected");
+    check(!conversation_state_sizes(bad_geometry,rejected_sizes,error), "running-state arithmetic overflow rejected");
     bad_geometry = g; bad_geometry.qsa_interval = 0;
-    check(!conversation_state_sizes(bad_geometry,z,error), "zero layer interval rejected before division");
+    check(!conversation_state_sizes(bad_geometry,rejected_sizes,error), "zero layer interval rejected before division");
     bad_geometry = g; bad_geometry.n_head_kv = std::numeric_limits<int64_t>::max();
     check(conversation_kv_bytes(draft.st,bad_geometry,9,false)==0, "KV byte overflow rejected");
 #if defined(CONVERSATION_TEST_TRANSFERS)
@@ -229,6 +230,71 @@ void fixture(int format, int experts, bool zero_qsa, bool ple) {
               incremental.kv[i].k_scale==full.kv[i].k_scale && incremental.kv[i].v_scale==full.kv[i].v_scale &&
               incremental.kv[i].pooled==full.kv[i].pooled, "incremental and full capture agree across every payload");
     {
+        // Nine live tokens with a checkpoint limit of five: retain three and five, omit seven and eight.
+        std::vector<ConversationCheckpoint> kept{checkpoint(3),checkpoint(5)};
+        kept.front().pinned = true;
+        std::vector<ConversationCheckpoint> checkpoints{kept[0],checkpoint(7),kept[1],checkpoint(8)};
+        checkpoints[1].gdn.clear(); // The excluded checkpoint must not be validated either.
+        const ConversationView limited{view.ids,view.images,checkpoints,view.cvec,5};
+        size_t limited_bytes = 0, kept_bytes = 0;
+        check(conversation_snapshot_bytes(limited,ss,g,draft.st,limited_bytes,error) &&
+              conversation_snapshot_bytes({view.ids,view.images,kept,view.cvec},ss,g,draft.st,kept_bytes,error) &&
+              limited_bytes == kept_bytes, "the estimate counts only retained checkpoints and the full live session");
+
+        auto same_state = [](const ConversationCheckpoint& a, const ConversationCheckpoint& b) {
+            return a.ids == b.ids && a.imgs == b.imgs && a.gdn == b.gdn && a.ple == b.ple &&
+                   a.tails == b.tails && a.dead == b.dead && a.block_pos == b.block_pos;
+        };
+        auto check_state = [&](const SavedConversation& saved) {
+            check(same_state(saved.live,full.live), "the checkpoint limit preserves the complete live state");
+            check(saved.checkpoints.size() == kept.size(), "only checkpoints up to the limit survive");
+            for (size_t j = 0; j < kept.size(); ++j)
+                check(same_state(saved.checkpoints[j],kept[j]) && saved.checkpoints[j].pinned == kept[j].pinned,
+                      "checkpoint state and user pin are unchanged, including at the limit");
+        };
+        SavedConversation meta, filtered;
+        std::vector<SessionKvSource> sources;
+        check(conversation_snapshot_sources(meta,sources,limited,ss,g,draft.st,error), "streamed source with a checkpoint limit");
+        check_state(meta);
+
+        // As in parking, move the dropped checkpoints out after estimating the complete view.
+        std::vector<ConversationCheckpoint> moved;
+        moved.push_back(std::move(checkpoints[2]));
+        moved.push_back(std::move(checkpoints[3]));
+        checkpoints.resize(2);
+        check(conversation_snapshot_save(filtered,limited,ss,g,&draft.st,error,{},nullptr,nullptr,&moved),
+              "capture with a checkpoint limit and moved checkpoints");
+        check_state(filtered);
+        check(filtered.kv.size() == full.kv.size() && sources.size() == full.kv.size(), "all K/V layers are kept");
+        for (size_t j = 0; j < full.kv.size(); ++j) {
+            const auto& a = filtered.kv[j];
+            const auto& b = full.kv[j];
+            check(a.cells == b.cells && a.k == b.k && a.v == b.v && a.k_scale == b.k_scale &&
+                  a.v_scale == b.v_scale && a.pooled == b.pooled, "capture keeps every byte of the full live K/V");
+            check(sources[j].cells == b.cells && sources[j].sizes ==
+                  std::array<size_t,5>{b.k.size(),b.v.size(),b.k_scale.size(),b.v_scale.size(),b.pooled.size()},
+                  "streamed sources span all live K/V");
+        }
+        ConversationCache cache(filtered.bytes(),1,0,5);
+        check(cache.put(std::move(filtered)), "park the filtered capture");
+        auto full_prompt = view.ids;
+        full_prompt.push_back(99);
+        const auto live = cache.best(full_prompt, view.images, view.cvec);
+        check(live.live && !cache.borrows(live), "a full continuation takes the parked image");
+        filtered = cache.take(live.index);
+        check(conversation_snapshot_restore(filtered,ss,g,draft.st,error) == ConversationRestore::restored,
+              "restore the full live state from a filtered capture");
+        check_state(filtered);
+        const ConversationView restored{filtered.live.ids, filtered.live.imgs, filtered.checkpoints, filtered.cvec, 5};
+        SavedConversation reparked;
+        check(conversation_snapshot_save(reparked,restored,ss,g,draft.st,error), "recapture the restored session");
+        check_state(reparked);
+        ConversationCache repark_cache(reparked.bytes(),1,0,5);
+        check(repark_cache.put(std::move(reparked)), "repark the restored capture");
+        const auto shared = repark_cache.best(std::vector<int32_t>{1,2,3,4,5,99}, view.images, view.cvec);
+        check(shared.tokens == 5 && repark_cache.borrows(shared), "a recaptured deepest checkpoint is still borrowed");
+    }
+    {
         QsaState unloaded;
         SavedConversation meta, without_draft;
         std::vector<SessionKvSource> sources;
@@ -277,8 +343,13 @@ void fixture(int format, int experts, bool zero_qsa, bool ple) {
     reuse = {full.kv,9,9};
     fail_copy = copy_calls + 1;
     SavedConversation unpublished;
+    const size_t budget = full.bytes();
+    ConversationCache cache(budget,1,0,5);
+    check(cache.put(std::move(full)) && cache.make_room(budget), "preflight a capture without freeing the occupied slot");
     check(!conversation_snapshot_save(unpublished,view,ss,g,draft.st,error,std::move(reuse)), "incremental capture copy failure is reported");
-    check(unpublished.kv.empty() && unpublished.live.ids.empty(), "failed incremental capture cannot publish a partial image");
+    check(unpublished.kv.empty() && unpublished.live.ids.empty() && cache.size() == 1 &&
+          cache.bytes() == budget && cache.evictions() == 0 && cache.superseded() == 0,
+          "a failed capture publishes no partial image and preserves the old cache entry");
 #endif
 }
 }

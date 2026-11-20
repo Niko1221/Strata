@@ -419,6 +419,285 @@ int main() {
               "an entry without checkpoints is never reported");
     }
     {
+        ConversationCheckpoint root, shared;
+        root.ids = {1};
+        shared.ids = {1, 2};
+        SavedConversation a = image({1, 2, 10, 11});
+        a.live.imgs = {{2, 100}};
+        a.checkpoints = {root, shared};
+        SavedConversation b = image({1, 2, 20, 21});
+        b.checkpoints = {shared};
+        ConversationCache cache(1 << 20, 4, 0, 2);
+        check(cache.put(SavedConversation(a)), "park the first branch with a cap");
+        check(cache.parked_prefix_tokens(b.live.ids, b.live.imgs, b.checkpoints, b.cvec) == 0 &&
+              !cache.supersedes_richer(b.live.ids, b.live.imgs, b.checkpoints, b.cvec) &&
+              !cache.holds(shared.ids, shared.imgs, b.cvec),
+              "a shared remaining checkpoint makes neither a divergent park nor a shorter slot redundant");
+        check(cache.put(std::move(b)) && cache.size() == 2 && cache.superseded() == 0,
+              "divergent branches keep both parked entries");
+
+        SavedConversation shorter_chain = a;
+        shorter_chain.checkpoints = {shared};
+        check(cache.parked_prefix_tokens(a.live.ids, a.live.imgs, shorter_chain.checkpoints, true) == 0 &&
+              cache.drop_superseded(a.live.ids, a.live.imgs, shorter_chain.checkpoints, true) == 0 &&
+              cache.put(std::move(shorter_chain)) && cache.size() == 3 && cache.superseded() == 0,
+              "same live state missing an old checkpoint does not replace it");
+        check(cache.drop_superseded(a.live.ids, {{2, 101}}, a.checkpoints, true) == 0 &&
+              cache.drop_superseded(a.live.ids, a.live.imgs, a.checkpoints, false) == 0,
+              "different live pictures or steering prevent replacement");
+        auto wrong_picture = a.checkpoints;
+        wrong_picture[0].imgs = {{0, 10}};
+        check(!cache.holds(a.live.ids, a.live.imgs, true, wrong_picture) &&
+              cache.drop_superseded(a.live.ids, a.live.imgs, wrong_picture, true) == 1 && cache.size() == 2,
+              "a checkpoint with different pictures does not cover the original checkpoint");
+        check(cache.holds(a.live.ids, a.live.imgs, true, a.checkpoints) &&
+              cache.parked_prefix_tokens(a.live.ids, a.live.imgs, a.checkpoints, true) == a.live.ids.size() &&
+              cache.put(std::move(a)) && cache.size() == 2 && cache.superseded() == 2 && cache.evictions() == 0,
+              "identical live state and complete checkpoint coverage replace only the matching branch");
+        check(cache.put(image({9, 10, 11})) && cache.parked_prefix_tokens({9, 10, 11}, {}, {}, true) == 3 &&
+              cache.drop_superseded({9, 10, 11}, {}, {}, true) == 1,
+              "exact live duplicates without any checkpoints can still be replaced");
+    }
+    {
+        SavedConversation complete = image({1, 2, 10, 11});
+        complete.checkpoints.resize(2);
+        complete.checkpoints[0].ids = {1};
+        complete.checkpoints[1].ids = {1, 2};
+        auto incomplete = complete;
+        incomplete.checkpoints.erase(incomplete.checkpoints.begin());
+        constexpr size_t budget = 1 << 20;
+        ConversationCache one(budget, 1, 0, 2);
+        check(one.put(SavedConversation(complete)), "park the complete same-live image in one slot");
+        // The last prompt token starts the next verify window; include it so these lookups match full live states.
+        auto continued = complete.live.ids;
+        continued.push_back(99);
+        const auto old = one.best(continued, {}, true);
+        check(!one.put(SavedConversation(incomplete)) && one.find(old.serial) && one.size() == 1 &&
+              one.evictions() == 0 && one.superseded() == 0,
+              "slot pressure cannot evict the unpinned same-live image with a missing checkpoint");
+
+        ConversationCache two(budget, 2, 0, 2);
+        check(two.put(SavedConversation(complete)) && two.put(image({4, 5, 6})), "fill two slots with the complete image oldest");
+        const auto keep = two.best(continued, {}, true);
+        const auto unrelated = two.best(std::vector<int32_t>{4, 5, 6, 99}, {}, true);
+        check(keep.live && unrelated.live, "both parked live entries are found before testing admission");
+        auto smaller = SavedConversation(incomplete);
+        const size_t held = budget - smaller.bytes();
+        check(!two.put(std::move(smaller), held) && two.find(keep.serial) && two.find(unrelated.serial) && two.evictions() == 0,
+              "byte pressure also refuses admission without evicting any entry");
+        check(two.put(std::move(incomplete)) && two.find(keep.serial) && !two.find(unrelated.serial) &&
+              two.size() == 2 && two.evictions() == 1 && two.superseded() == 0,
+              "if an unrelated eviction suffices, admit the new image without losing the complete one");
+    }
+    {
+        ConversationCheckpoint root;
+        root.ids = {1, 2};
+        root.pinned = true;
+        SavedConversation a = image({1, 2, 10, 11});
+        a.checkpoints = {root};
+        a.live.pinned = true;
+        ConversationCache cache(1 << 20, 1, 0, 20); // no clipping needed; the policy is still conservative
+        check(cache.put(SavedConversation(a)), "park a pinned donor below the configured cap");
+        const std::vector<int32_t> sibling_ids = {1, 2, 20};
+        const auto sibling = cache.best(sibling_ids, {}, true);
+        check(sibling.tokens == 2 && !sibling.live && cache.borrows(sibling) &&
+              cache.best(sibling_ids, {}, true, true).tokens == 0,
+              "even a pinned deepest match is borrowed, or ignored when only full live restores are possible");
+        const auto continuation = cache.best(std::vector<int32_t>{1, 2, 10, 11, 12}, {}, true, true);
+        check(continuation.live && !cache.borrows(continuation), "a full live match is still taken");
+        auto unpinned_live = a;
+        unpinned_live.live.pinned = false;
+        auto unpinned_checkpoint = a;
+        unpinned_checkpoint.checkpoints.front().pinned = false;
+        check(!cache.put(std::move(unpinned_live)) && !cache.put(std::move(unpinned_checkpoint)) &&
+              cache.find(sibling.serial) && cache.superseded() == 0,
+              "neither live nor checkpoint pin protection can be weakened by replacement or eviction");
+        cache.guard(sibling.serial);
+        check(!cache.put(SavedConversation(a)) && cache.find(sibling.serial), "a guarded donor stays even against an exact duplicate");
+        cache.unguard();
+        check(cache.put(std::move(a)) && !cache.find(sibling.serial) && cache.size() == 1 && cache.superseded() == 1,
+              "complete pin-preserving coverage permits replacement in a full cache");
+    }
+    {
+        SavedConversation donor = image({1, 2, 3, 4, 5, 10, 11});
+        for (size_t len = 2; len <= 5; ++len) {
+            ConversationCheckpoint c;
+            c.ids.assign(donor.live.ids.begin(), donor.live.ids.begin() + len);
+            c.pinned = true;
+            donor.checkpoints.push_back(std::move(c));
+        }
+        ConversationCache cache(1 << 20, 2, 0, 5);
+        check(cache.put(SavedConversation(donor)), "park the pinned donor");
+        const auto donor_serial = cache.best(std::vector<int32_t>{1, 2, 3, 4, 5, 10, 11, 99}, {}, true).serial;
+        SavedConversation active;
+        for (size_t len = 2; len <= 5; ++len) {
+            SavedConversation next = image({});
+            next.live.ids.assign(donor.live.ids.begin(), donor.live.ids.begin() + len);
+            next.live.ids.push_back(99);
+            const auto match = cache.best(next.live.ids, {}, true);
+            check(cache.borrows(match) && match.serial == donor_serial && match.tokens == (int64_t) len,
+                  "each divergent request borrows rather than takes from the pinned donor");
+            cache.guard(match.serial);
+            if (!active.live.ids.empty())
+                check(cache.put(std::move(active)), "switching parks the preceding borrower");
+            cache.unguard();
+            const auto* source = cache.find(match.serial);
+            check(source != nullptr, "switching leaves the donor available to restore");
+            cache.copy_borrowed_checkpoints(*source, match.tokens,
+                [&](const auto& ids, const auto& imgs) {
+                    return imgs.empty() && ids.size() <= next.live.ids.size() &&
+                           std::equal(ids.begin(), ids.end(), next.live.ids.begin());
+                }, next.checkpoints);
+            check(next.checkpoints.size() == len - 1 &&
+                  std::all_of(next.checkpoints.begin(), next.checkpoints.end(), [](const auto& c) {
+                      return c.pinned && !c.cache_protected;
+                  }), "borrowed checkpoints retain user pins but not parked slot protection");
+            active = std::move(next);
+        }
+        const auto* parked_donor = cache.find(donor_serial);
+        check(parked_donor && parked_donor->checkpoints.size() == donor.checkpoints.size() &&
+              std::all_of(parked_donor->checkpoints.begin(), parked_donor->checkpoints.end(), [](const auto& c) { return c.pinned; }) &&
+              cache.size() == 2 && cache.evictions() == 2 && cache.evict_oldest() &&
+              cache.size() == 1 && cache.find(donor_serial) && !cache.evict_oldest(),
+              "borrower copies remain evictable while the donor stays pinned without a guard");
+    }
+    {
+        SavedConversation donor = image({1, 2, 10, 11});
+        donor.live.imgs = {{1, 44}};
+        donor.checkpoints.resize(1);
+        donor.checkpoints[0].ids = {1, 2};
+        donor.checkpoints[0].imgs = donor.live.imgs;
+        donor.checkpoints[0].pinned = true;
+        ConversationCache cache(1 << 20, 2, 0, 2);
+        check(cache.put(SavedConversation(donor)), "park a donor that owns the explicitly pinned prefix");
+        SavedConversation sibling = image({1, 2, 20, 21});
+        sibling.live.imgs = donor.live.imgs;
+        const auto shared = cache.best(sibling.live.ids, sibling.live.imgs, true);
+        check(cache.borrows(shared), "the next branch borrows the pinned checkpoint");
+        const auto* source = cache.find(shared.serial);
+        check(source != nullptr, "the borrowed checkpoint's donor stays parked");
+        cache.copy_borrowed_checkpoints(*source, shared.tokens, [&](const auto& ids, const auto& imgs) {
+            return imgs == sibling.live.imgs && ids.size() <= sibling.live.ids.size() &&
+                   std::equal(ids.begin(), ids.end(), sibling.live.ids.begin());
+        }, sibling.checkpoints);
+        check(sibling.checkpoints.size() == 1 && sibling.pinned() && !sibling.checkpoints.front().cache_protected &&
+              cache.protects_checkpoint(sibling.checkpoints.front(), true),
+              "the borrowed user pin survives, and the parked donor still represents it");
+        auto different = sibling.checkpoints.front();
+        different.imgs.front().hash = 55;
+        check(!cache.protects_checkpoint(different, true), "different pictures do not share protection");
+        different = sibling.checkpoints.front();
+        different.ids.back() = 9;
+        check(!cache.protects_checkpoint(different, true) && !cache.protects_checkpoint(sibling.checkpoints.front(), false),
+              "different tokens or steering do not share protection");
+
+        check(cache.put(SavedConversation(sibling)) && sibling.pinned(), "parking does not clear the active explicit pin");
+        const auto duplicate = cache.best(std::vector<int32_t>{1, 2, 20, 21, 99}, sibling.live.imgs, true);
+        const auto* parked_duplicate = cache.find(duplicate.serial);
+        check(duplicate.live && parked_duplicate && parked_duplicate->pinned() &&
+              !parked_duplicate->checkpoints.front().cache_protected, "the divergent parked duplicate keeps its pin but is evictable");
+        check(cache.put(SavedConversation(donor)) && !cache.find(shared.serial) && cache.superseded() == 1 &&
+              cache.protects_checkpoint(donor.checkpoints.front(), true), "safe same-branch replacement transfers the pin");
+        const auto owner = cache.best(std::vector<int32_t>{1, 2, 10, 11, 99}, donor.live.imgs, true);
+        check(owner.live && cache.put(image({7, 8, 9})) && cache.find(owner.serial) && !cache.find(duplicate.serial) &&
+              cache.size() == 2 && cache.evictions() == 1,
+              "an unrelated session evicts the duplicate, not the only parked owner of the pin");
+    }
+    {
+        SavedConversation complete = image({1, 2, 3, 10});
+        complete.checkpoints.resize(2);
+        const auto continued = std::vector<int32_t>{1, 2, 3, 10, 99};
+        complete.checkpoints[0].ids = {1, 2};
+        complete.checkpoints[0].pinned = true;
+        complete.checkpoints[1].ids = {1, 2, 3};
+        auto incomplete = complete;
+        incomplete.checkpoints.pop_back();
+        ConversationCache cache(1 << 20, 2, 0, 3);
+        check(cache.put(SavedConversation(complete)), "park the complete branch with an explicit pin");
+        const auto owner = cache.best(continued, {}, true);
+        check(cache.put(SavedConversation(incomplete)) && cache.size() == 2 && cache.superseded() == 0,
+              "admit the incomplete same-live copy without replacing the complete one");
+        const auto duplicate = cache.best(continued, {}, true);
+        const auto* copy = cache.find(duplicate.serial);
+        check(owner.live && duplicate.live && copy && copy->pinned() && !copy->checkpoints.front().cache_protected &&
+              cache.evictable_bytes() == copy->bytes(), "the incomplete copy keeps the user pin but can be evicted");
+        auto restored = cache.take(cache.index_of(owner.serial));
+        check(restored.pinned() && !restored.checkpoints.front().cache_protected &&
+              cache.protects_checkpoint(restored.checkpoints.front(), true) && !cache.evict_oldest(),
+              "a full take keeps the user pin and transfers slot protection to the remaining copy");
+        check(cache.put(std::move(restored)) && cache.size() == 1 && cache.superseded() == 1 &&
+              !cache.find(duplicate.serial) && cache.protects_checkpoint(complete.checkpoints.front(), true) && !cache.evict_oldest(),
+              "safe replacement by the complete image transfers the representative back");
+        const auto restored_owner = cache.best(continued, {}, true);
+        check(cache.put(std::move(incomplete)) && cache.put(image({8, 9, 10})) && cache.evictions() == 1 &&
+              cache.best(continued, {}, true).serial == restored_owner.serial &&
+              cache.protects_checkpoint(complete.checkpoints.front(), true),
+              "an unrelated image can evict the incomplete duplicate even though it is explicitly pinned");
+    }
+    {
+        SavedConversation donor = image({1, 2, 3, 4, 10});
+        donor.checkpoints.resize(2);
+        donor.checkpoints[0].ids = {1, 2};   // N: the outgoing session's resume point
+        donor.checkpoints[0].pinned = true;
+        donor.checkpoints[1].ids = {1, 2, 3, 4};   // M: the deeper checkpoint selected from the donor
+        ConversationCache cache(1 << 20, 2, 0, 4);
+        check(cache.put(SavedConversation(donor)), "park both checkpoints in the donor");
+        const auto chosen = cache.best(std::vector<int32_t>{1, 2, 3, 4, 99}, {}, true);
+        auto active = image({1, 2, 20, 21});
+        active.checkpoints = {donor.checkpoints[0]};
+        const bool borrowing = cache.borrows(chosen);
+        check(chosen.tokens > (int64_t) active.checkpoints.front().ids.size() && borrowing,
+              "request pin=N with active resume=N can select a deeper parked checkpoint M");
+        const auto& pinned = active.checkpoints.front();
+        ConversationCache empty_capped(1 << 20, 2, 0, 1), uncapped(1 << 20, 2);
+        check(cache.skip_pinned_sibling_park(pinned, false) && uncapped.skip_pinned_sibling_park(pinned, borrowing),
+              "an active user pin skips a same-prefix park, and the uncapped rule is unchanged");
+        check(!empty_capped.protects_checkpoint(pinned, true) &&
+              empty_capped.checkpoint_limit((int64_t) active.live.ids.size()) < (int64_t) pinned.ids.size() &&
+              empty_capped.skip_pinned_sibling_park(pinned, false),
+              "an active pin above the cap still skips without a parked representative");
+        auto other_active = active;
+        other_active.checkpoints.front().pinned = false;   // P: protected in the donor, but not pinned here
+        ConversationCheckpoint q;
+        q.ids = {1, 2, 20};
+        q.pinned = true;
+        other_active.checkpoints.push_back(std::move(q));   // Q: the active session's user pin
+        const auto& at_p = other_active.checkpoints.front();
+        const auto& at_q = other_active.checkpoints.back();
+        check(cache.protects_checkpoint(at_p, true) && !cache.skip_pinned_sibling_park(at_p, false) &&
+              !cache.protects_checkpoint(at_q, true) && cache.skip_pinned_sibling_park(at_q, false),
+              "the donor's protection at P does not replace the active session's pin at Q");
+        check(!cache.skip_pinned_sibling_park(pinned, borrowing),
+              "the old resume point N must not skip the park when borrowing M");
+        cache.guard(chosen.serial);
+        check(cache.put(std::move(active)) && cache.find(chosen.serial) &&
+              cache.best(std::vector<int32_t>{1, 2, 20, 21, 99}, {}, true).live,
+              "the outgoing branch is parked before borrowing the deeper checkpoint");
+        cache.unguard();
+    }
+    {
+        SavedConversation old = image({1, 2, 3});
+        SavedConversation pinned = image({4, 5, 6});
+        pinned.live.pinned = true;
+        auto larger = old;
+        larger.live.gdn.reserve(old.live.gdn.capacity() + 1);
+        const size_t occupied = old.bytes() + pinned.bytes();
+        const size_t budget = std::max(occupied, larger.bytes());
+        ConversationCache cache(budget, 2, 0, 2);
+        check(cache.put(SavedConversation(old)) && cache.put(SavedConversation(pinned)), "fill the capped budget");
+        const auto old_match = cache.best(std::vector<int32_t>{1, 2, 3, 9}, {}, true);
+        const auto pin_match = cache.best(std::vector<int32_t>{4, 5, 6, 9}, {}, true);
+        check(cache.make_room(larger.bytes()) && !cache.make_room(budget + 1),
+              "pre-capture budget checks do not make room or mutate entries");
+        check(!cache.put(std::move(larger)) && cache.find(old_match.serial) && cache.find(pin_match.serial) &&
+              cache.bytes() == occupied && cache.evictions() == 0 && cache.superseded() == 0,
+              "final admission refusal does not remove even the duplicate that the captured image could replace");
+        check(cache.put(SavedConversation(old)) && cache.size() == 2 && cache.bytes() == occupied && cache.superseded() == 1,
+              "an admitted duplicate replaces the old image");
+        check(cache.put(image({7, 8, 9})) && cache.size() == 2 && cache.evictions() == 1 && cache.find(pin_match.serial),
+              "ordinary capacity eviction still works after successful admission");
+    }
+    {
         // borrowing: a NEW conversation that starts with a checkpoint inside a parked one (a sibling subagent with
         // the same system prompt and tools) restores from it and leaves it parked; the same conversation going on
         // (its live state, or its deepest checkpoint after the client re-rendered the last reply) is still taken
@@ -555,30 +834,12 @@ int main() {
         check(!disabled_min.enabled() && disabled_min.wants(1 << 20), "a disabled cache still answers for length");
     }
     {
-        // --conversation-cache-max-tokens: the other end of the same admission - one very long history must not take a
-        // slot and its whole snapshot's RAM from the shorter ones.  0 sets no maximum, as before the flag.
-        ConversationCache any(1024, 4, 0, 0), cap(1024, 4, 0, 12288);
-        check(any.enabled() && cap.enabled(), "the maximum does not disable the cache");
-        check(any.wants(0) && any.wants(1) && any.wants(1 << 20), "0 sets no maximum, as before the flag");
-        check(cap.wants(0) && cap.wants(12287) && cap.wants(12288), "the maximum itself and below are parked");
-        check(!cap.wants(12289) && !cap.wants(1 << 20), "above the maximum is not parked");
-        // the CLI rejects a negative, but the predicate must not invert for one that reaches it another way
-        ConversationCache negative_max(1024, 4, 0, -1);
-        check(negative_max.wants(0) && negative_max.wants(1 << 20), "a negative maximum sets no maximum, like 0");
-        ConversationCache window(1024, 4, 6000, 12288);
-        check(!window.wants(5999) && window.wants(6000) && window.wants(12288) && !window.wants(12289),
-              "both ends apply, each keeping its own value: only [WRITE,MAX] is parked");
-        ConversationCache inverted(1024, 4, 12288, 6000);
-        check(!inverted.wants(6000) && !inverted.wants(12288) && !inverted.wants(9000),
-              "a maximum below the minimum parks nothing");
-        ConversationCache disabled_max(0, 4, 0, 12288);
-        check(!disabled_max.enabled() && disabled_max.wants(1024), "a disabled cache still answers for length");
-        // the bound is the park admission in generate.cpp, not a rule inside the cache: what is already parked is
-        // still matched and restored whatever its length, and an explicit session save/restore never asks wants()
-        ConversationCache held(1 << 20, 4, 0, 4);
-        check(!held.wants(8) && held.put(image({1, 2, 3, 4, 5, 6, 7, 8})), "put does not apply the maximum itself");
-        check(held.best(std::vector<int64_t>{1, 2, 3, 4, 5, 6, 7, 8, 9}, {}, true).tokens == 8,
-              "a conversation already parked is still matched whatever its length");
+        // The WRITE gate uses the minimum only. The checkpoint limit belongs to capture, not admission or lookup.
+        ConversationCache held(1 << 20, 4, 6);
+        check(!held.wants(5) && held.wants(6) && held.wants(1 << 20), "WRITE has a minimum and no maximum");
+        check(held.put(image({1, 2, 3, 4, 5, 6, 7, 8})), "park the full conversation");
+        const auto match = held.best(std::vector<int64_t>{1, 2, 3, 4, 5, 6, 7, 8, 9}, {}, true);
+        check(match.live && match.tokens == 8, "lookup matches the full live length without a checkpoint");
     }
     {
         // --conversation-cache-min-tokens WRITE[,READ]: a single value keeps the meaning it always had.

@@ -1083,9 +1083,9 @@ struct Options {
     /// many tokens, cached history included.  Below it the request uses the active session, its checkpoints and the
     /// batch slots only.  0 = search for every prompt, as before.
     int64_t conversation_cache_min_read_tokens = 0;
-    /// --conversation-cache-max-tokens: park only conversations of at most this many tokens (0 = no maximum), so one
-    /// very long history does not take a slot and its whole snapshot's RAM from the shorter ones.  The park admission
-    /// only: what is already parked is still reused, and an explicit session save/restore is not limited by it.
+    /// --conversation-cache-max-tokens: park the full conversation and its K/V; omit only checkpoints longer than
+    /// this many tokens (0 = keep all checkpoints). With a cap, only a full live match takes a parked copy.
+    /// Explicit session save/restore is unchanged.
     int64_t conversation_cache_max_tokens = 0;
     /// --serve: park only after the conversation has advanced this many tokens past the copy it would supersede.
     /// A conversation that moved a few hundred tokens writes a full snapshot again, and the turn after that drops it
@@ -1295,10 +1295,9 @@ void usage() {
                  "  --conversation-cache-park-gain N  --serve: park only after the conversation advanced N tokens past\n"
                  "                       the copy it would supersede, so a turn that grew by a few hundred tokens does not\n"
                  "                       write a whole snapshot that the next turn drops (default 0 = park every turn)\n"
-                 "  --conversation-cache-max-tokens N  --serve: park only conversations of at most N tokens, so one very\n"
-                 "                       long history does not take a slot and its whole snapshot's RAM from the shorter\n"
-                 "                       ones (default 0 = no maximum). The park admission only: what is already parked\n"
-                 "                       is still reused, and session save/restore is unchanged\n"
+                 "  --conversation-cache-max-tokens N  --serve: park the full conversation and its K/V; omit only\n"
+                 "                       checkpoints longer than N tokens (default 0 = keep all checkpoints). With a cap,\n"
+                 "                       only a full live match takes a parked copy. Explicit session save/restore is unchanged\n"
                  "  --conversation-cache-rewind-keep N  --serve: when a request resumes this conversation and at most N\n"
                  "                       of its live tokens are past that point (the answer a client that strips reasoning\n"
                  "                       did not send back), skip parking it (default 0 = park; the suffix is re-read only\n"
@@ -2538,11 +2537,16 @@ public:
     /// The bytes of the kept checkpoints (idle memory), and giving them back to the system, newest first
     size_t idle_bytes() const { std::lock_guard<std::mutex> lk(mu_); size_t n = 0; for (const ConvCheckpoint& c : free_) n += c.bytes(); return n; }
     size_t shrink(size_t want) {
-        std::vector<ConvCheckpoint> out;   // freed outside the lock
         size_t given = 0;
-        {
-            std::lock_guard<std::mutex> lk(mu_);
-            while (!free_.empty() && given < want) { given += free_.back().bytes(); out.push_back(std::move(free_.back())); free_.pop_back(); }
+        while (given < want) {
+            ConvCheckpoint out;  // freed outside the lock, without allocating after admission
+            {
+                std::lock_guard<std::mutex> lk(mu_);
+                if (free_.empty()) break;
+                given += free_.back().bytes();
+                out = std::move(free_.back());
+                free_.pop_back();
+            }
         }
         return given;
     }
@@ -13157,6 +13161,7 @@ int main(int argc, char** argv) {
         strata::core::ConversationCache conversations(
             o.prompt_cache > 0 ? (size_t) o.conversation_cache_mib * 1024 * 1024 : 0,
             (size_t) o.conversation_cache_slots, o.conversation_cache_min_tokens, o.conversation_cache_max_tokens);
+        const bool checkpoint_cap = o.conversation_cache_max_tokens > 0;
         // The park pools (park_pool_policy.hpp): memory held idle between parks so a park does not pay the first touch of fresh pages.
         //   * the segment pool: one arena for the K/V buffers of parked conversations (STRATA_PARK_SEGPOOL_MIB=N sets its size, 0 turns it
         //     off; unset: min(2 GiB, a quarter of the cache); Linux only, the OS layer of Windows and macOS is not written yet: inert there);
@@ -13313,7 +13318,7 @@ int main(int argc, char** argv) {
         // prompt it serves best reads it back.  Only on pressure: a park that fits in RAM never touches the disk.  A single-stage
         // serve only (a layer split's stage images are not written).  The file format, its identity and its read limits are the
         // session SAVE / RESTORE's.
-        strata::core::ConversationSpill spill;
+        strata::core::ConversationSpill spill(checkpoint_cap);
         std::optional<strata::core::SessionFileIdentity> spill_id;
         strata::core::SpillCost spill_cost;   // only conversations whose re-read costs more than the disk round trip go there
         if (conversations.enabled() && stages.empty() && o.conversation_spill_mib != 0) {
@@ -13520,32 +13525,26 @@ int main(int argc, char** argv) {
                 ParkStage() { strata::core::progress_at("request: parking the previous conversation"); }
                 ~ParkStage() { strata::core::progress_at("request"); strata::core::progress_beat(); }
             } park_stage;
-            // --conversation-cache-min-tokens WRITE / --conversation-cache-max-tokens: a conversation outside that
-            // window is not worth one of the slots.  Parking is a switch-time decision, so a client's small side
-            // requests would otherwise park themselves and, once the cache is full, evict the long conversation they
-            // were interleaved with (oldest first) - the reuse it wanted; one very long history would take a slot and
-            // its whole snapshot's RAM from the shorter ones.  Returning true is the same non-error skip the
-            // byte-budget and RAM-floor paths below take.  This is the only place either bound applies: the SSD tier
-            // writes what the RAM tier already admitted and then evicted, and a restore never asks wants().
-            if (!conversations.wants((int64_t) src.ids.size())) {
-                if (o.conversation_cache_max_tokens > 0 && (int64_t) src.ids.size() > o.conversation_cache_max_tokens)
-                    std::fprintf(stderr, "strata serve: conversation cache: skip parking (%zu tokens, above the %lld "
-                                         "maximum; parked=%zu)\n",
-                                 src.ids.size(), (long long) o.conversation_cache_max_tokens, conversations.size());
-                else
-                    std::fprintf(stderr, "strata serve: conversation cache: skip parking (%zu tokens, below the %lld "
-                                         "minimum; parked=%zu)\n",
-                                 src.ids.size(), (long long) o.conversation_cache_min_tokens, conversations.size());
+            // WRITE keeps short side requests from evicting longer conversations. The maximum applies only to
+            // the checkpoints in the parked copy, not to its live state or K/V.
+            const int64_t tokens = (int64_t) src.ids.size();
+            if (!conversations.wants(tokens)) {
+                std::fprintf(stderr, "strata serve: conversation cache: skip parking (%zu tokens, below the %lld "
+                                     "minimum; parked=%zu)\n",
+                             src.ids.size(), (long long) o.conversation_cache_min_tokens, conversations.size());
                 return true;
             }
+            const int64_t checkpoint_limit = conversations.checkpoint_limit(tokens);
             // With a park pool, no pool memory is given back (shrink, eviction) while device work could still be pending: the GPU is
             // idle at a park, so this costs nothing
             if (segpool != nullptr || ckpt_pool.on()) (void) cudaDeviceSynchronize();
-            // #342: before make_room evicts oldest-first, the copies of this conversation a turn back go (they hold
-            // nothing the outgoing chain does not, apart from the tail this conversation rewrote)
-            if (const size_t dropped = conversations.drop_superseded(src.ids, src.imgs, src.checks, src.cvec))
-                std::fprintf(stderr, "strata serve: conversation cache: dropped %zu superseded cop%s of this "
-                             "conversation; parked=%zu\n", dropped, dropped == 1 ? "y" : "ies", conversations.size());
+            // #342: without a cap, drop superseded copies before make_room evicts oldest-first. With a cap,
+            // put() alone checks coverage and replaces old copies, after capture and physical admission.
+            if (!checkpoint_cap) {
+                if (const size_t dropped = conversations.drop_superseded(src.ids, src.imgs, src.checks, src.cvec))
+                    std::fprintf(stderr, "strata serve: conversation cache: dropped %zu superseded cop%s of this "
+                                 "conversation; parked=%zu\n", dropped, dropped == 1 ? "y" : "ies", conversations.size());
+            }
             // A layer split parks one image per stage: the first stage's (with the draft layer's K/V) and one per
             // later stage (without it - the draft ring is saved once).  The checkpoints are MOVED apart into their
             // stage parts for the capture and put back together whichever way this ends (no running state copied).
@@ -13561,7 +13560,7 @@ int main(int argc, char** argv) {
                 strata::core::ConversationCheckpointSplit& cs; std::vector<ConvCheckpoint>& checks; bool on;
                 ~MergeBack() { if (on && !strata::core::conversation_checkpoints_merge(std::move(cs), checks)) checks.clear(); }
             } merge_back{cs, checks, n_st > 0};
-            const strata::core::ConversationView view{src.ids, src.imgs, n_st > 0 ? cs.stage0 : checks, src.cvec};
+            const strata::core::ConversationView view{src.ids, src.imgs, n_st > 0 ? cs.stage0 : checks, src.cvec, checkpoint_limit};
             const int64_t retained_n = src.with_reuse ? conversations.retained_tokens() : 0;
             // a batch slot's image carries no retained K/V (it describes the main session's conversation), and the
             // main session's stays retained for its own park
@@ -13579,7 +13578,7 @@ int main(int argc, char** argv) {
             for (size_t k = 0; k < n_st; ++k) {
                 auto& st = stages[k];
                 const strata::core::OnDevice on(st->dev);
-                const strata::core::ConversationView view_k{src.ids, src.imgs, cs.parts[k], src.cvec};
+                const strata::core::ConversationView view_k{src.ids, src.imgs, cs.parts[k], src.cvec, checkpoint_limit};
                 size_t b = 0;
                 if (!strata::core::conversation_snapshot_bytes(view_k, *src.stage_sessions[k], g, draft_of(k), b, err)) {
                     std::fprintf(stderr, "strata serve: conversation cache: skip parking (stage CUDA%d: %s)\n",
@@ -13630,8 +13629,9 @@ int main(int argc, char** argv) {
                 const uint64_t floor = (uint64_t) o.conversation_cache_min_free_mib * 1024 * 1024;
                 const size_t retained = reuse.bytes() + stage_retained;
                 const size_t additional = estimate > retained ? estimate - retained : 0;
-                // The physical-RAM gate: the incoming snapshot has to fit beside the floor.  make_room()
-                // above only balanced the cache's own budget, so a full cache leaves this one short even
+                // The physical-RAM gate: the incoming snapshot has to fit beside the floor. With a cap, only
+                // reclaim unused memory, leaving all old entries intact if capture or admission fails. Otherwise,
+                // make_room() only balanced the cache's own budget, so a full cache leaves this one short even
                 // though every parked conversation could give its RAM back - and refusing here throws
                 // away the whole prompt read that produced this snapshot (measured: 270k tokens, 96 s).
                 // Evict the least recently active parked conversations until it fits, or until none are
@@ -13650,16 +13650,18 @@ int main(int argc, char** argv) {
                 };
                 // STRATA_PARK_SEGPOOL_MIB: the pool's idle bytes are the first RAM to go back (before the heap and before any
                 // parked conversation), so the pool never makes this check fail where it would pass without it
-                bool fits = admit();
-                if (!fits && pools_budget.idle_bytes() > 0) { pools_budget.shrink((size_t) -1); fits = admit(); }
-                fits = fits || (strata::core::release_free_heap() && admit());
+                bool fits = strata::core::admit_after_idle_reclaim(admit, [&] {
+                    if (pools_budget.idle_bytes() == 0) return false;
+                    pools_budget.shrink((size_t) -1);
+                    return true;
+                }, strata::core::release_free_heap);
                 // #5697: oldest first until it fits, and no further than the memory that comes back: an eviction whose
                 // bytes the reading does not show (the C library kept them) stops the loop, and the rest stay parked.
                 // An evicted image's segments go back to the segment pool as idle (resident) memory: given back to the
                 // OS at once, or the reading could never show them.
                 bool no_progress = false;
                 std::string cannot_help_note;   // #2253: the refusal line's note when no eviction could have made room
-                if (!fits) {
+                if (!checkpoint_cap && !fits) {
                     const strata::core::EvictForRam r = strata::core::evict_for_ram(
                         admit, [&] { return mem ? std::optional<uint64_t>(mem->available) : std::nullopt; },
                         [&]() -> size_t {
@@ -13730,7 +13732,7 @@ int main(int argc, char** argv) {
                     auto& st = stages[k];
                     const strata::core::OnDevice on(st->dev);
                     if (cudaDeviceSynchronize() != cudaSuccess) { err = "stage sync failed"; return false; }
-                    const strata::core::ConversationView view_k{src.ids, src.imgs, cs.parts[k], src.cvec};
+                    const strata::core::ConversationView view_k{src.ids, src.imgs, cs.parts[k], src.cvec, checkpoint_limit};
                     strata::core::SavedConversation part;
                     if (!strata::core::conversation_snapshot_save(part, view_k, *src.stage_sessions[k], g, draft_of(k), err,
                             std::move(stage_reuse[k]), &reused_bytes))
@@ -13746,8 +13748,9 @@ int main(int argc, char** argv) {
                 }
                 if (!strata::core::conversation_memory_admit(
                         mem_after ? std::optional<uint64_t>(mem_after->available) : std::nullopt, 0, floor)) {
-                    // the SSD tier: the captured image is written out and freed instead of thrown away (P2, entry c)
-                    if (spill_put(image, "the RAM floor after the capture")) return true;
+                    // Without a cap, try the SSD tier instead. A failed admission with a cap must leave old entries
+                    // alone on SSD too, so do not start a spill that could evict one to reserve disk space.
+                    if (!checkpoint_cap && spill_put(image, "the RAM floor after the capture")) return true;
                     std::fprintf(stderr, "strata serve: conversation cache: skip parking (RAM floor after capture: %lld MiB needed, %s)\n",
                                  (long long) o.conversation_cache_min_free_mib, ram_note(mem_after).c_str());
                     return true;
@@ -16176,7 +16179,7 @@ int main(int argc, char** argv) {
             };
             const bool in_main = live_ok && cvec_cached == sl.cvec && prefix_of(live) &&
                                  imgs_below(live_imgs, (int64_t) sl.ids.size()).empty();
-            if (in_main || conversations.holds(sl.ids, {}, sl.cvec)) return;
+            if ((!checkpoint_cap && in_main) || conversations.holds(sl.ids, {}, sl.cvec, sl.checks, stages.size())) return;
             if (conversations.supersedes_richer(sl.ids, {}, sl.checks, sl.cvec)) {
                 // its park would drop (as superseded) the main session's copy of this conversation, and with it the checkpoints the slot
                 // does not hold - an agent's system-prompt root that the next requests borrow (#4420, as 0.2.6 did: the slot is overwritten)
@@ -18305,7 +18308,7 @@ int main(int argc, char** argv) {
             // RESTORE does not come through here.
             const bool search_parked = strata::core::conversation_cache_should_read_parked(n, o.conversation_cache_min_read_tokens);
             strata::core::ConversationCache::Match parked;   // tokens=0 when not searched: no borrow, no take, no slot read
-            if (search_parked) parked = conversations.best(ids, req_imgs, want_cvec);
+            if (search_parked) parked = conversations.best(ids, req_imgs, want_cvec, checkpoint_cap && !stages.empty());
             // STRATA_SLOT_READ (opt-in: =1, with STRATA_PIPED_MTP; asked for by the server with slot_read=1, which then
             // takes DONE and BADM without a token): the next turn of the conversation an idle slot holds is read IN
             // that slot - its new tokens as rows of the slot's own windows in the pipelined groups, all kept - instead
@@ -18443,11 +18446,12 @@ int main(int argc, char** argv) {
             // A checkpoint inside ANOTHER parked conversation (a sibling subagent's system prompt and tools, say) is
             // borrowed: its K/V up to there and the checkpoint come over, and that conversation stays parked for its
             // own next turn (ConversationCache::borrows).  Everything else is taken whole, as before.
-            // (a layer split restores whole stage images only, so it never borrows; a batch slot that holds a longer
-            // start of this prompt wins as before)
+            // A layer split restores whole stage images only, so it never borrows. With a cap it only considers full
+            // live matches. A batch slot that holds a longer start of this prompt wins as before.
             // The SSD tier (P2): a spilled conversation that gives this prompt a longer start than the session, a batch slot and
             // every RAM entry is read back (the session RESTORE's limits and RAM check); one that does not read back is dropped
-            // and the RAM tier's choice stands.  Never borrowed from (it comes back whole).
+            // and the RAM tier's choice stands. Never borrowed from (it comes back whole), so with a cap the SSD tier
+            // and its writer only consider full live matches.
             bool from_ssd = false;
             strata::core::ConversationCache::Match taken = parked;   // the match whose image is restored: RAM's, or the SSD tier's
             // 2c: a conversation the background writer still holds is still in RAM: when it serves this prompt best it is taken
@@ -18457,7 +18461,7 @@ int main(int argc, char** argv) {
                 const int64_t floor_tokens = std::max({resume, slot_tokens, parked.tokens});
                 int64_t held = 0;
                 spill_writer->for_each_held([&](const strata::core::SavedConversation& s) {
-                    held = std::max(held, strata::core::conversation_image_prefix(s, ids, req_imgs, want_cvec).first);
+                    held = std::max(held, strata::core::conversation_image_prefix(s, ids, req_imgs, want_cvec, checkpoint_cap).first);
                 });
                 if (held > floor_tokens) {
                     const auto t0 = Clock::now();
@@ -18466,7 +18470,7 @@ int main(int argc, char** argv) {
                     size_t at = SIZE_MAX;
                     std::pair<int64_t, bool> m{0, false};
                     for (size_t i = 0; i < done.size(); ++i) {
-                        const auto mi = strata::core::conversation_image_prefix(done[i].item, ids, req_imgs, want_cvec);
+                        const auto mi = strata::core::conversation_image_prefix(done[i].item, ids, req_imgs, want_cvec, checkpoint_cap);
                         if (mi.first > m.first) { m = mi; at = i; }
                     }
                     if (at != SIZE_MAX && m.first > floor_tokens) {
@@ -18483,7 +18487,7 @@ int main(int argc, char** argv) {
             }
             spill_reclaim();   // what the writer finished meanwhile is on the SSD tier: its RAM goes back before this request parks
             if (search_parked && !from_ssd && spill.enabled() && spill.size() > 0 && stages.empty()) {
-                const auto sp = spill.best(ids, req_imgs, want_cvec);
+                const auto sp = spill.best(ids, req_imgs, want_cvec, checkpoint_cap);
                 const auto sp_entry = sp.tokens > 0 ? spill.find(sp.serial) : std::nullopt;
                 if (sp_entry && sp.tokens > std::max({resume, slot_tokens, parked.tokens}) && spill_id) {
                     const auto t0 = Clock::now();
@@ -18613,12 +18617,18 @@ int main(int argc, char** argv) {
             // pin=N: this request resumes exactly at the pinned shared prefix of the conversation the session holds
             // (a sibling query of the last one).  What the last query added past it is its private suffix - a few
             // dozen tokens, cheaper to read than the prefix's whole K/V is to copy to the host - so it is not parked:
-            // N queries keep one prefix.  A request without pin=, or one that resumes anywhere else, parks as before.
+            // With a checkpoint cap, only the active checkpoint's own pin can skip a park, and never on a borrow.
             bool pin_sibling = false;
             if (req_pin > 0 && req_ckpt && o.prompt_cache >= 3 && !from_live && !incoming && slot_source < 0 &&
-                resume == req_pin && live_ok)
-                for (const ConvCheckpoint& c : checks)
-                    if ((int64_t) c.ids.size() == resume && c.pinned) pin_sibling = true;
+                resume == req_pin && live_ok) {
+                for (const ConvCheckpoint& c : checks) {
+                    if ((int64_t) c.ids.size() != resume) continue;
+                    if (checkpoint_cap && (req_pin >= n - 1 || want_cvec != cvec_cached || !starts_with(c.ids, c.imgs)))
+                        continue;
+                    pin_sibling = conversations.skip_pinned_sibling_park(c, borrow);
+                    if (pin_sibling) break;
+                }
+            }
             // The live branch past this request's resume point is only the reply this prompt replaces: the request resumes from
             // the live branch's own turn checkpoint and opens the same assistant turn there again (an OpenAI-style client's
             // next turn sends the reply back without its reasoning; an edited reply; a regenerate).  That branch is not parked:
@@ -18645,11 +18655,11 @@ int main(int argc, char** argv) {
             // this conversation wrote last), so a conversation that advanced fewer than N tokens since then keeps it:
             // it still holds this conversation's prefix, and re-parking writes the whole snapshot only for the next
             // turn to drop it again.  0 (the default) parks every turn, as before.
-            const size_t park_held = o.conversation_cache_park_gain > 0
-                                         ? conversations.parked_prefix_tokens(live, live_imgs, checks, cvec_cached)
+            const size_t park_held = !pin_sibling && o.conversation_cache_park_gain > 0
+                                         ? conversations.parked_prefix_tokens(live, live_imgs, checks, cvec_cached, stages.size())
                                          : 0;
-            const bool park_worth = o.conversation_cache_park_gain <= 0 || park_held == 0 ||
-                                    (int64_t) live.size() >= (int64_t) park_held + o.conversation_cache_park_gain;
+            const bool park_worth = !pin_sibling && (o.conversation_cache_park_gain <= 0 || park_held == 0 ||
+                                    (int64_t) live.size() >= (int64_t) park_held + o.conversation_cache_park_gain);
             // --conversation-cache-rewind-keep N: the request resumes this conversation and at most N of its live
             // tokens are past the resume point.  Those are the client's stripped answer; a park copies the whole K/V
             // (6-8 GB, 4.7-5.0 s measured at 460K) to keep them.  A park only reads, so skipping it cannot change a
@@ -18665,7 +18675,6 @@ int main(int argc, char** argv) {
             // (a batch slot that holds this conversation does not make the park unneeded: with the park skipped on two cards
             // - #5864's STRATA_SLOT_PARK_SKIP - the turn after it read the slot's K/V instead of the parked image and one
             // token differed from the park as before)
-            const bool keep_branch = pin_sibling || rewind_skip;
             if (rewind_skip)
                 std::fprintf(stderr,
                              "strata serve: conversation cache: park not needed (the rewind keeps %lld of %lld tokens "
@@ -18684,7 +18693,7 @@ int main(int argc, char** argv) {
                     return drops_all || (int64_t) c.ids.size() > resume || !starts_with(c.ids, c.imgs);
                 };
             }
-            if (borrow && !keep_branch && park_worth) {
+            if (borrow && !rewind_skip && park_worth) {
                 conversations.guard(parked.serial);   // parking the outgoing conversation must not evict the donor
                 const bool parked_ok = park_current(0);
                 const bool blocked = conversations.guard_blocked();
@@ -18693,7 +18702,7 @@ int main(int argc, char** argv) {
                     std::printf("ERR %s\n", err.c_str());
                     return 1;
                 }
-                if (blocked) {
+                if (!checkpoint_cap && blocked) {
                     // the outgoing conversation fits only in the donor's room: it keeps its place, the donor is
                     // taken whole as before (it was validated above)
                     std::fprintf(stderr, "strata serve: conversation cache: no room beside the parked conversation "
@@ -18706,7 +18715,7 @@ int main(int argc, char** argv) {
                         return 1;
                     }
                 }
-            } else if ((!from_live || incoming || slot_source >= 0) && !keep_branch && !reply_replaced && park_worth &&
+            } else if ((!from_live || incoming || slot_source >= 0) && !rewind_skip && !reply_replaced && park_worth &&
                        !park_current(incoming ? incoming->bytes() : 0)) {
                 std::printf("ERR %s\n", err.c_str());
                 return 1;
@@ -18822,9 +18831,7 @@ int main(int argc, char** argv) {
                 }
                 // the donor's checkpoints on this prompt's path, copied: the donor keeps its own (the one at
                 // parked.tokens is mounted below, as for any checkpoint resume)
-                checks.clear();
-                for (const ConvCheckpoint& c : donor->checkpoints)
-                    if ((int64_t) c.ids.size() <= parked.tokens && starts_with(c.ids, c.imgs)) checks.push_back(c);
+                conversations.copy_borrowed_checkpoints(*donor, parked.tokens, starts_with, checks);
                 for (const ConvCheckpoint& c : checks)
                     if ((int64_t) c.ids.size() == parked.tokens) { live = c.ids; live_imgs = c.imgs; }
                 cvec_cached = donor->cvec;

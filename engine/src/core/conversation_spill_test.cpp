@@ -123,6 +123,16 @@ int main() {
         check(sp.put(img({20, 21, 22, 23}, 5, {20, 21}), id, err), "an entry with a checkpoint");
         auto mc = sp.best(std::vector<int32_t>{20, 21, 99}, {}, true);
         check(mc.tokens == 2 && !mc.live, "a prompt that shares only the checkpoint finds it");
+        check(sp.best(std::vector<int32_t>{20, 21, 99}, {}, true, true).tokens == 0 && sp.size() == 2,
+              "live-only lookup does not select or remove an SSD checkpoint match");
+        check(sp.best(std::vector<int32_t>{20, 21, 22, 23, 99}, {}, true, true).tokens == 4,
+              "live-only lookup still finds the full SSD state");
+        const auto held = img({20, 21, 22, 23}, 5, {20, 21});
+        const std::vector<int32_t> shared = {20, 21, 99}, continued = {20, 21, 22, 23, 99};
+        check(conversation_image_prefix(held, shared, {}, true).first == 2 &&
+              conversation_image_prefix(held, shared, {}, true, true).first == 0 &&
+              conversation_image_prefix(held, continued, {}, true, true) == std::make_pair(int64_t(4), true),
+              "the background writer can match only the full live state when borrowing is unavailable");
         // another model's identity: refused, the entry goes, out unchanged
         SavedConversation keep = img({1}, 1);
         check(!sp.take(mc.index, SessionFileIdentity{11, 23}, {}, keep, err) && keep.live.ids == std::vector<int32_t>({1}), "another identity: refused");
@@ -142,6 +152,25 @@ int main() {
         for (auto& x : fs::directory_iterator(small.dir())) if (x.path().filename() != ".lock") ++files;
         check(files == 0, "nothing of a refused put is left on the disk");
         small.close();
+        ConversationSpill with_pins(true);
+        check(with_pins.open(root, (uint64_t(7) << 19), err), "open the spill directory for a capped cache");
+        auto pinned = img({20, 21, 22, 23}, 5, {20, 21});
+        pinned.checkpoints.front().pinned = true;
+        uint64_t serial = 0;
+        check(with_pins.put(pinned, id, err, &serial), "spill the image with user pins");
+        SavedConversation restored;
+        check(with_pins.take_serial(serial, id, {}, restored, err) && restored.pinned() &&
+              !restored.checkpoints.front().cache_protected, "the directory restores user pins, not slot ownership");
+        ConversationCache ram(3 << 20, 2, 0, 2);
+        pinned.live.ids.back() = 24;
+        check(ram.put(std::move(pinned)) && ram.put(std::move(restored)), "repark the restored image beside a representative");
+        const auto duplicate = ram.best(std::vector<int32_t>{20, 21, 22, 23, 99}, {}, true);
+        const auto* parked = ram.find(duplicate.serial);
+        check(parked && parked->pinned() && !parked->checkpoints.front().cache_protected &&
+              ram.protects_checkpoint(parked->checkpoints.front(), true),
+              "RAM admission recomputes checkpoint protection after a spill round trip");
+        check(ram.evict_oldest() && !ram.find(duplicate.serial) && !ram.evict_oldest(),
+              "the restored duplicate is evicted before the representative");
         // #879: clear() drops every entry and its file, the tier stays open
         check(sp.put(img({30, 31}, 2), id, err) && sp.put(img({40, 41}, 2), id, err) && sp.size() == 2, "two more entries");
         const fs::path c0 = sp.entry(0).file, c1 = sp.entry(1).file;

@@ -41,6 +41,21 @@ struct FakeRam {
         return b;
     }
 };
+void idle_reclaim_cases() {
+    auto run = [](uint64_t avail, uint64_t pool, uint64_t heap, bool expected, std::vector<int> order) {
+        FakeRam m{avail, {100}, 1.0, {}};
+        std::vector<int> calls;
+        const bool fits = admit_after_idle_reclaim([&] { calls.push_back(0); return m.admit(40, 60); },
+            [&] { calls.push_back(1); m.avail += pool; return pool != 0; },
+            [&] { calls.push_back(2); m.avail += heap; return heap != 0; });
+        check(fits == expected && calls == order && m.parked == std::vector<size_t>{100},
+              "admission rechecks only after reclaim and leaves parked entries alone");
+    };
+    run(100, 10, 20, true, {0});
+    run(90, 10, 20, true, {0, 1, 0});
+    run(80, 10, 10, true, {0, 1, 0, 2, 0});
+    run(80, 0, 10, false, {0, 1, 2, 0});
+}
 void evict_for_ram_cases() {
     constexpr uint64_t MiB = uint64_t(1) << 20, GiB = MiB << 10;
     const uint64_t floor = 2 * GiB, need = 3 * GiB;
@@ -121,6 +136,7 @@ void evict_for_ram_cases() {
 }
 
 int main() {
+    idle_reclaim_cases();
     evict_for_ram_cases();
     for (const char* text : {"", "MemFree: 100 kB\n", "MemAvailable: -1 kB\n",
                             "MemAvailable: +1 kB\n", "MemAvailable: 1 MB\n",
