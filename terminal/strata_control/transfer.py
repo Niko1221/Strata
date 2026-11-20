@@ -293,7 +293,27 @@ def read_small(location: str, *, limit: int = SMALL_LIMIT, timeout: float = 30, 
     return data
 
 
+def _valid_sha256_result(value: object) -> bool:
+    if not isinstance(value, dict) or set(value) != {"sha256"}:
+        return False
+    h = value["sha256"]
+    return isinstance(h, str) and len(h) == 64 and all(c in "0123456789abcdef" for c in h)
+
+
+def _native_sha256_file(path: Path) -> str | None:
+    from strata_control import native_helpers
+    if not native_helpers.enabled("transfer"):
+        return None
+    try:
+        res = native_helpers.call("transfer", "sha256-file", [str(path)], validate=_valid_sha256_result, timeout=120.0)
+    except (native_helpers.Unavailable, native_helpers.Rejected):
+        return None
+    return res["sha256"]
+
+
 def sha256_file(path: Path) -> str:
+    if (native_hex := _native_sha256_file(Path(path))) is not None:
+        return native_hex
     digest = hashlib.sha256()
     with Path(path).open("rb") as stream:
         for block in iter(lambda: stream.read(CHUNK), b""):
