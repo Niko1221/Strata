@@ -318,10 +318,11 @@ def _engine_logs(home: Path) -> list[Path]:
 
 
 def launch(control_dir: Path, env: dict, model_path: Path, data_dir: Path, port: int, tune: str | None, timeout: float = 7200,
-           opener=urllib.request.urlopen) -> LaunchResult:
-    """`strata launch` with the release's own defaults (and its tuning when `tune`); ok = exit 0 and /health says ok."""
+           opener=urllib.request.urlopen, context: int | None = None) -> LaunchResult:
+    """`strata launch` with the release's own defaults (and its tuning when `tune`, its `--context` when given); ok = exit 0 and /health says ok."""
     args = ["launch", "--model-path", str(model_path), "--data-dir", str(data_dir), "--port", str(port),
-            "--yes", "--no-tui", "--output", "json"] + (["--tune", tune, "--retune"] if tune else [])
+            "--yes", "--no-tui", "--output", "json"] + (["--context", str(context)] if context else []) \
+        + (["--tune", tune, "--retune"] if tune else [])
     start = time.monotonic()
     code, text = _run(control_dir, env, args, timeout)
     seconds = time.monotonic() - start
@@ -341,6 +342,16 @@ def launch(control_dir: Path, env: dict, model_path: Path, data_dir: Path, port:
     if code is None:
         reason = f"timed out after {timeout:.0f} s" + (f": {reason}" if reason else "")
     return LaunchResult(False, seconds, reason or f"exit {code}")
+
+
+def served_context(port: int, opener=urllib.request.urlopen) -> int | None:
+    """The n_ctx the running server reports on /props; None on any error (503 while the engine loads) or a non-int."""
+    try:
+        with opener(f"http://127.0.0.1:{port}/props", timeout=30) as r:
+            n = json.loads(r.read())["default_generation_settings"]["n_ctx"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return n if isinstance(n, int) and not isinstance(n, bool) else None
 
 
 def stop(control_dir: Path, env: dict) -> None:

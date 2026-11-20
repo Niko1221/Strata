@@ -8,13 +8,14 @@ import sys
 import tarfile
 import tempfile
 import unittest
+import urllib.error
 import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from ab_versions import (Busy, _last_line,Packages, ReleasePair, assert_idle, changed, collect_configs, control_command, ensure_packages,  # noqa: E402
                          isolated_env, launch, list_releases, live_roots, pairs_from_releases, parse_sums, provision_home,
-                         resolve_versions, served_engine, snapshot, version_problem)
+                         resolve_versions, served_context, served_engine, snapshot, version_problem)
 
 
 def a(name):
@@ -389,8 +390,8 @@ class LaunchTest(unittest.TestCase):
         self.exe = self.home / "components" / "engine" / "strata-engine-0.1.55 x" / "strata.exe"
         self.env = isolated_env(self.home, os.environ) | {"FAKE_EXE": str(self.exe)}
 
-    def run_launch(self, tune=None, model=Path("m.gguf"), health=None):
-        return launch(self.control, self.env, model, self.root / "data", 18090, tune, opener=health or fake_health())
+    def run_launch(self, tune=None, model=Path("m.gguf"), health=None, **kw):
+        return launch(self.control, self.env, model, self.root / "data", 18090, tune, opener=health or fake_health(), **kw)
 
     def args(self):
         return json.loads((self.control / "args.json").read_text(encoding="utf-8"))
@@ -409,6 +410,32 @@ class LaunchTest(unittest.TestCase):
     def test_launch_without_tune_has_no_tune_flags(self):
         self.assertTrue(self.run_launch().ok)
         self.assertFalse({"--tune", "--retune"} & set(self.args()))
+
+    def test_launch_passes_context(self):
+        self.assertTrue(self.run_launch().ok)
+        plain = self.args()
+        self.assertNotIn("--context", plain)
+        self.assertTrue(self.run_launch(context=262144).ok)
+        args = self.args()
+        self.assertEqual(args.count("--context"), 1)
+        i = args.index("--context")
+        self.assertEqual(args[i:i + 2], ["--context", "262144"])
+        self.assertEqual(args[:i] + args[i + 2:], plain)
+
+    def test_served_context(self):
+        def props(url, timeout=None):
+            return io.BytesIO(json.dumps({"default_generation_settings": {"n_ctx": 131072}}).encode())
+
+        def loading(url, timeout=None):
+            raise urllib.error.HTTPError(url, 503, "loading", {}, None)
+
+        def body(data):
+            return lambda url, timeout=None: io.BytesIO(data)
+
+        self.assertEqual(served_context(18090, opener=props), 131072)
+        self.assertIsNone(served_context(18090, opener=loading))
+        for data in (b"not json", b"{}", b"[]", b'{"default_generation_settings": {"n_ctx": "big"}}'):
+            self.assertIsNone(served_context(18090, opener=body(data)), data)
 
     def test_launch_args_keep_odd_paths(self):
         odd = r"C:\x\#GIT\Übung dir\m.gguf"
