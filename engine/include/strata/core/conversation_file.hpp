@@ -1,9 +1,10 @@
 // On-disk persistence of a conversation's state (SavedConversation): one file holding the running state, the
 // checkpoints the caller passes (the engine passes only the deepest one), every QSA layer's authoritative K/V and
-// the draft layer's K/V.  Pure host code: no CUDA.  Format v1 and the fail-closed read order are in
-// docs/DETAILS.md (Session files).
+// the draft layer's K/V.  Pure host code: no CUDA.  Format v2 and the fail-closed read order are in
+// docs/DETAILS.md (Session files): a stage table plus per-stage checkpoint parts and stage-grouped K/V groups
+// carry a --layer-split runtime, and format v1 files are refused as foreign.
 //
-// Format v1 is little-endian, with fixed-width integers and IEEE-754 floats; a big-endian build is refused at
+// Format v2 is little-endian, with fixed-width integers and IEEE-754 floats; a big-endian build is refused at
 // compile time.  The hashes detect accidental corruption; they do not authenticate a file: restore trusted files only.
 #pragma once
 
@@ -218,6 +219,14 @@ struct SessionReadLimits {
     // per K/V layer (the QSA layers, then the draft): the most bytes of each part (k, v, k_scale, v_scale, pooled).
     // A layer past the end of the list is bounded by the payload only.
     std::vector<std::array<uint64_t, 5>> max_kv_bytes;
+    // the live later-stage geometry (empty vector: a single-device runtime): a format-v2 file whose stage table
+    // differs from this is refused before its state arrays are read.  nullopt: not compared (test default).
+    std::optional<std::vector<SessionStageGeom>> stages;
+    uint64_t max_stages = UINT64_MAX;  // cap on the file's stage-table count; closedness bounds the file size
+    // the most bytes of each stage part's five running-state arrays, by the checkpoint's part index (a part's own
+    // arrays; the main checkpoint arrays stay bounded by max_state_bytes).  Parts past the end are bounded only
+    // by the payload.
+    std::vector<std::array<uint64_t, 5>> max_stage_state_bytes;
     // the RAM PREFLIGHT: asked once the header and identity match and before any payload allocation, with what the
     // parse holds at its peak (session_read_peak_bytes); false refuses the file.  Not a reservation.
     std::function<bool(uint64_t need_bytes, std::string& why)> admit;
