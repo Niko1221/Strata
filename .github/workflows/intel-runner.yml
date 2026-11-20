@@ -1,0 +1,76 @@
+name: Intel runner
+
+# Runs on the owner's self-hosted runner "Intel" (labels self-hosted, Linux, X64, Intel). Started by hand (Actions -> Intel runner ->
+# Run workflow) or by a push to the branch ci/intel-runner. There is NO pull_request trigger on purpose: this repo is public, and a
+# self-hosted runner must never run code from someone else's pull request.
+# Step 1 prints what the machine has (CPU, RAM, disk, GPU, oneAPI); step 2 runs the same fast checks as check.yml's Linux jobs.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ci/intel-runner]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: intel-runner-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  info:
+    name: Machine info
+    runs-on: [self-hosted, Linux, X64, Intel]
+    timeout-minutes: 15
+    steps:
+      - name: System, CPU, memory, disk, GPU
+        run: |
+          set +e
+          echo "== host";   hostname; uname -a; head -4 /etc/os-release
+          echo "== cpu";    nproc; lscpu | grep -E 'Model name|Socket|Core|Thread|NUMA node\(s\)'
+          echo "== isa";    grep -o -w -E 'avx2|avx512f|avx512_vnni|avx_vnni|amx_tile' /proc/cpuinfo | sort | uniq -c
+          echo "== memory"; free -g
+          echo "== disk";   df -h "$GITHUB_WORKSPACE" /tmp
+          echo "== gpu";    lspci 2>/dev/null | grep -i -E 'vga|display|3d'
+          ls -l /dev/dri 2>/dev/null
+          command -v xpu-smi && xpu-smi discovery
+          command -v sycl-ls && sycl-ls
+          command -v clinfo && clinfo -l
+          echo "== oneapi"; ls /opt/intel/oneapi 2>/dev/null
+          echo "== tools";  python3 --version; cmake --version | head -1; gcc --version | head -1; ninja --version; node --version; git --version
+          echo "== runner"; echo "user $(id -un) groups $(id -Gn)"; echo "workspace $GITHUB_WORKSPACE"; ulimit -l
+
+  checks:
+    name: Checks / ${{ matrix.name }}
+    needs: info
+    runs-on: [self-hosted, Linux, X64, Intel]
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - { name: cpu CMake preset, only: cmake-cpu }
+          - { name: Python tests/, only: py-tests }
+          - { name: Python terminal/serve/, only: py-serve }
+          - { name: Python terminal/tools/, only: py-tools }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Python packages
+        run: python -m pip install -r terminal/requirements.txt -r terminal/requirements-dev.txt -r terminal/requirements-build.txt
+      - name: tools/check
+        run: python tools/check --only "${{ matrix.only }}" --keep --scratch "$RUNNER_TEMP/check" --json "$RUNNER_TEMP/check/result.json"
+      - name: Logs
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: intel-runner-${{ strategy.job-index }}
+          path: |
+            ${{ runner.temp }}/check/*.log
+            ${{ runner.temp }}/check/result.json
+          retention-days: 7
