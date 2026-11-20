@@ -268,6 +268,24 @@ def key_matches(given: str, key) -> bool:
     return ok
 
 
+def matched_key(given: str, key):
+    """The configured key a request's header presents, or None.  The same comparison as key_matches (both header
+    byte-forms, #725; every key compared whatever the outcome, #213), but it answers WHICH key passed: #5004's
+    per-key limits ("api_keys") need the key's identity, not only its right to be here.  A hit on several keys
+    (the same key written twice) keeps the first - a policy is looked up by the key string either way."""
+    raw = given.encode("latin-1", "replace")
+    hit = None
+    for k in key_list(key):
+        ok = hmac.compare_digest(raw, k.encode())
+        try:
+            ok |= hmac.compare_digest(raw, k.encode("latin-1"))
+        except UnicodeEncodeError:
+            pass
+        if ok and hit is None:
+            hit = k
+    return hit
+
+
 def origin_allowed(origin: str, host, names, origins=()) -> bool:
     """A browser page's Origin that may use the model without an API key: this server's own page (the Origin is the
     request's own Host), a page on one of the names this server answers to (any port), or an origin the config lists
