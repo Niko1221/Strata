@@ -756,6 +756,30 @@ def _tool_references(content, deferred: dict):
             for p in content]
 
 
+# Claude Code's auto-mode classifier sends one long prompt per checked action: its system prompt, the user's CLAUDE.md,
+# then a transcript that only grows, each new action inserted just before the "</transcript>" line, its instructions
+# after it.  The engine's checkpoints sit at the end of the system prompt and at the last turn, so every call read the
+# CLAUDE.md and the whole transcript again (~11K tokens, 6 s).  A pinned prefix ending at that line leaves the next call
+# only the new action and the instructions to read (~300 tokens, 1.7 s; measured on a 3090 with FN, 2026-11-18).
+# Opt-in: the config's "auto_mode_prefix": true.
+# CBA: keyed on Claude Code 2.1.327's wording; a reworded prompt only loses the pin, nothing else changes.
+MONITOR_SIGNATURE = "You are a security monitor for autonomous AI coding"
+MONITOR_TRANSCRIPT_END = "\n</transcript>\n"   # transcript lines are JSON (newlines escaped): only the real end matches
+
+
+def monitor_prefix(messages: list[dict]) -> dict | None:
+    """The `strata_prefix` for a request of Claude Code's auto-mode classifier (template messages, system first), else
+    None: the last message up to its "</transcript>" line."""
+    if (len(messages) < 2 or messages[0].get("role") != "system"
+            or MONITOR_SIGNATURE not in str(messages[0].get("content"))):
+        return None
+    text = messages[-1].get("content")
+    if messages[-1].get("role") != "user" or not isinstance(text, str):
+        return None
+    cut = text.find(MONITOR_TRANSCRIPT_END)
+    return {"message": len(messages) - 1, "chars": cut + 1} if cut >= 0 else None
+
+
 def anthropic_to_messages(req: dict, think_unasked: bool = True) -> tuple[list[dict], list[dict] | None, dict]:
     """Anthropic Messages -> (template messages, template tools, template kwargs).  `think_unasked`: a request
     without "thinking", an effort or a budget gets the template's default (it thinks), as through 0.1.31; False

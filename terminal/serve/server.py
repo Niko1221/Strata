@@ -314,8 +314,8 @@ from serve.server_parts.openai_api import (  # noqa: F401  (moved unchanged, fil
 )
 from serve.frontend import (CALL_END, CALL_START, FUNC_END, FUNC_START, THINK_END, ChatTemplate, Event, OutputParser,  # noqa: E402
                             parser_for_template, anthropic_to_messages, anthropic_tools,
-                            forced_call, images_of, literal_tags, mark_think_literals, openai_to_messages, require_messages,
-                            tool_choice_of, unmark_think_literals)
+                            forced_call, images_of, literal_tags, mark_think_literals, monitor_prefix,
+                            openai_to_messages, require_messages, tool_choice_of, unmark_think_literals)
 from serve.mcp import McpCancelled, hub_from_config, resolve_image_results  # noqa: E402
 from serve import appendlog  # noqa: E402
 from serve import runconfig  # noqa: E402
@@ -3969,6 +3969,7 @@ class Service:
         self.reasoning_budget_tokens = 0                 # #123: the config's default thinking budget (0: none)
         self.repeat_stop_tokens = REPEAT_STOP_TOKENS     # #606: one token this many times in a row ends a reply (0: off)
         self.anthropic_think_unasked = True               # #278: "anthropic_thinking": "on_request" -> False
+        self.auto_mode_prefix = False                     # opt-in: see frontend.monitor_prefix
         self.undeclared_tool_calls = "text"               # #4622: config "undeclared_tool_calls": "call" hands a call of an undeclared name to the client
         self.tool_call_recovery = True                    # default on (0.2.8): tool calls in forms next to the template's; config "tool_call_recovery": false turns it off
         # (a): a reply to a request with tools that ends in tool-call markup that is no call is written again once (default
@@ -7812,6 +7813,10 @@ def make_handler(svc: Service):
             svc.load()
             req = svc.with_shared(req, "anthropic")
             messages, tools, kw = anthropic_to_messages(req, svc.anthropic_think_unasked)
+            if svc.auto_mode_prefix and req.get("strata_prefix") is None:
+                spec = monitor_prefix(messages)           # Claude Code's auto-mode classifier, else None
+                if spec is not None:
+                    req["strata_prefix"] = spec
             self._no_local_images(messages)
             callable_tools, deferred = anthropic_tools(req)     # #4663: the deferred tools are callable, unlisted
             if tool_choice_of(req.get("tool_choice"))[0] == "none":   # Anthropic's {"type": "none"}: no tools offered
@@ -8633,6 +8638,10 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
         raise SystemExit(f"[strata] config \"env_to_user\" must be true or false, not {etu!r}")
     import serve.frontend as _frontend
     _frontend.ENV_TO_USER = etu
+    amp = cfg.get("auto_mode_prefix", False)            # opt-in: see frontend.monitor_prefix
+    if not isinstance(amp, bool):
+        raise SystemExit(f"[strata] config \"auto_mode_prefix\" must be true or false, not {amp!r}")
+    svc.auto_mode_prefix = amp
     rs = cfg.get("repeat_stop_tokens", REPEAT_STOP_TOKENS)   # #606: opt-out with 0
     if isinstance(rs, bool) or not isinstance(rs, int) or rs < 0:
         raise SystemExit(f"[strata] config \"repeat_stop_tokens\" must be a whole number >= 0 (0 = off), not {rs!r}")
