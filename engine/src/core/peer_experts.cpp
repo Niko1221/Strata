@@ -17,6 +17,9 @@
 #include <cstdlib>
 #include <stdexcept>
 #include <vector>
+#if defined(_MSC_VER) || defined(__x86_64__) || defined(_M_X64)
+#include <immintrin.h>
+#endif
 
 namespace strata::core {
 
@@ -336,6 +339,9 @@ bool PeerExperts::finish(float* out, std::string& err) {
         // spin on the stream (a blocking sync would sleep the pool thread and wake it late)
         cudaError_t e;
         while ((e = cudaStreamQuery(stream_)) == cudaErrorNotReady) {
+#if defined(_MSC_VER) || defined(__x86_64__) || defined(_M_X64)
+            _mm_pause();
+#endif
         }
         if (!ck(e, "finish", err)) return false;
     }
