@@ -164,9 +164,6 @@ endif()
 if(STRATA_ENABLE_HIP AND NOT STRATA_HYBRID)
   include(cmake/hip_backend.cmake)
 endif()
-if(STRATA_HYBRID)
-  include(cmake/hybrid.cmake)
-endif()
 # Tests are on by default when the build can run them.  What they need: their sources (src/**/*_test.cpp, tests/core,
 # bench/micro; a source drop without them has nothing to build) and the x86 CPU kernels, which most of the CPU suite drives
 # (arm64 stays off by default: -DSTRATA_BUILD_TESTS=ON still builds what builds there).  GPU tests are registered only
@@ -864,4 +861,17 @@ if(STRATA_BUILD_TESTS)
   message(STATUS "strata tests: ON - ${_strata_test_kinds}")
 else()
   message(STATUS "strata tests: OFF (STRATA_BUILD_TESTS=OFF)")
+endif()
+
+# The hybrid patching is target surgery on targets the whole file creates: hybrid.cmake
+# adds definitions, sources, link options and the wrapped HIP archive to strata_core,
+# strata_kernels, strata_engine, strata_prefill, strata_qwen35 and strata_spec (GPU
+# runtime via strata_gpu_engine(), CPU kernels via strata_cpu_kernels()) and to the
+# strata/strata-device binaries.  Before 0.2.16 the chain included it beside
+# hip_backend.cmake - a setup-only file - which worked because those targets were defined
+# at top level earlier in the file.  Include it last: every guarded target lookup then
+# sees the finished graph, exactly like the 0.2.12-era include at the tail of the GPU
+# section.
+if(STRATA_HYBRID)
+  include(cmake/hybrid.cmake)
 endif()

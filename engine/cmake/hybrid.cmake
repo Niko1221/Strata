@@ -282,7 +282,7 @@ if(TARGET strata)
   set(_rescan "")
   foreach(_lib IN ITEMS
       strata_core strata_kernels strata_engine
-      strata_prefill strata_qwen35 strata_artifact strata_plan
+      strata_prefill strata_qwen35 strata_spec
       ggml-base ggml-cpu)
     if(TARGET ${_lib})
       list(APPEND _rescan "$<TARGET_FILE:${_lib}>")
@@ -295,8 +295,9 @@ if(TARGET strata)
     "-Wl,--start-group" ${_rescan} "-Wl,--end-group")
 endif()
 
-# strata_mmq is created later in this file. The trampoline list has to include
-# it, or the fused-expert host is never one of the wrapped symbols.
+# The trampoline list resolves at generate time (cmake_language DEFER): every target
+# the file graph creates - GPU runtime, CPU kernels, and on older trees strata_mmq -
+# is then one of the wrapped hosts, whichever order the includes land in.
 function(_strata_hybrid_trampolines)
   if(NOT TARGET strata)
     return()
@@ -307,7 +308,7 @@ function(_strata_hybrid_trampolines)
   set(_tramp_deps strata_hip_kernels_a)
   foreach(_lib IN ITEMS
       strata_core strata_kernels strata_engine
-      strata_prefill strata_qwen35 strata_artifact strata_plan
+      strata_prefill strata_qwen35 strata_spec
       ggml-base ggml-cpu)
     if(TARGET ${_lib})
       target_compile_definitions(${_lib} PRIVATE STRATA_HYBRID=1)
