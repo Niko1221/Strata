@@ -136,7 +136,8 @@ installed. The engine is tested with sycl-tla commit `87f6850680a580654b9ea2c80d
    - Without Docker, add `-DSTRATA_SYCL_TLA_DIR=$PWD/../sycl-tla` to the `cmake` line above.
    - With the Docker build, add `-e TLA_DIR=/work/sycl-tla` to the `docker run` line. The folder above the checkout is mounted at
      `/work`, so `../sycl-tla` is `/work/sycl-tla` in the container.
-   - An existing build folder takes the new path at the next build.
+   - An existing build folder takes the new path at the next build. A folder configured when TLA was opt-in holds
+     `STRATA_SYCL_TLA_ATTN=OFF`; the next configure changes that to `AUTO` and says so.
 
 3. Check the configure output for `Strata SYCL: Battlemage TLA prompt attention: ON`.
    - TLA is built for a portable (JIT) build and for any Battlemage AOT list (`bmg-g21`, `bmg-g31` or both).

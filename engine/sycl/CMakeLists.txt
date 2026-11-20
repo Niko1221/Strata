@@ -311,6 +311,19 @@ target_link_options(strata_prefill PUBLIC -qmkl=sequential)
 target_link_libraries(strata_prefill PUBLIC strata_engine)
 
 # AUTO evaluates the target and local headers on every configure, including reused build trees.
+# A build tree configured when TLA was an opt-in BOOL option holds OFF, which a new default does not replace.
+# Move that cached value to AUTO (ON stays ON).
+get_property(_tla_attn_type CACHE STRATA_SYCL_TLA_ATTN PROPERTY TYPE)
+if(_tla_attn_type STREQUAL "BOOL")
+  if(STRATA_SYCL_TLA_ATTN)
+    set(_tla_attn_value ON)
+  else()
+    set(_tla_attn_value AUTO)
+  endif()
+  set(STRATA_SYCL_TLA_ATTN "${_tla_attn_value}" CACHE STRING "Battlemage FP32 TLA prompt attention: AUTO, ON or OFF" FORCE)
+  message(STATUS "Strata SYCL: STRATA_SYCL_TLA_ATTN from the former opt-in option is now ${_tla_attn_value}; "
+                 "-DSTRATA_SYCL_TLA_ATTN=OFF leaves TLA out")
+endif()
 set(STRATA_SYCL_TLA_ATTN "AUTO" CACHE STRING "Battlemage FP32 TLA prompt attention: AUTO, ON or OFF")
 set_property(CACHE STRATA_SYCL_TLA_ATTN PROPERTY STRINGS AUTO ON OFF)
 set(STRATA_SYCL_TLA_DIR "" CACHE PATH "Local sycl-tla checkout containing include/cute")
