@@ -334,9 +334,10 @@ def start(cfg_path: Path, port: int | None, open_browser: bool = True) -> int:
 
 # ------------------------------------------------------------------------------------------------ the DFlash2 drafter
 def fetch_drafter(model_name: str, data: Path) -> Path | None:
-    """The DFlash2 drafter of a set whose Mac default is DFlash2 (strata_control/drafting.py SET_DEFAULTS: UD-Q4_K_XL and UD-IQ4_XS-v31): the tuned one (0.34 GB), else the stock one
-    (1.2 GB), through the normal download path (resumable, the pinned size and SHA-256). Offline, or an address that does not answer: nothing is said and the model keeps the MTP
-    (owner, strata-offline-users). A fault that is the person's to know (a file that failed its safety check) is one plain line. Never stops the setup. None when it is not here."""
+    """Fetch the drafter when Auto selects DFlash2 on Metal. Prefer the tuned pack where available.
+
+    Setup continues if the download is unavailable. The server can use MTP at startup if its layer was prepared.
+    """
     from strata_control import acquisition, drafting, drafting_fetch
     if drafting.choice_of("auto", model_name=model_name, backend="metal") != "dflash2":
         return None
@@ -350,7 +351,7 @@ def fetch_drafter(model_name: str, data: Path) -> Path | None:
     try:
         got = drafting_fetch.ensure_for(data, model_name=model_name, backend="metal", progress=show)
     except (drafting_fetch.DraftingError, acquisition.AcquisitionRefused, OSError) as exc:
-        S.warn(f"{exc} This model keeps using the MTP.")
+        S.warn(f"{exc} Setup will continue.")
         return None
     if got is not None:
         S.ok(f"DFlash2 drafter: {got}")
@@ -569,11 +570,9 @@ def main(argv=None) -> int:
     stream = streams(model, info["ram_gb"])
     use_mtp = stream_mtp(stream, info["ram_gb"])
     if stream and not use_mtp:
-        S.ok("the experts will stream from the SSD: no MTP draft layer (one token per step is faster there); "
-             "./setup.sh --setup on a Mac with more memory adds it")
+        S.ok("the experts will stream from the SSD. Setup skips the MTP draft layer on this Mac.")
     elif stream:
-        S.ok(f"the experts will stream from the SSD; the MTP draft layer stays on, with --spec {STREAM_SPEC} "
-             "(a longer window pays when every window has a fixed cost per layer)")
+        S.ok(f"the experts will stream from the SSD. The MTP draft layer is prepared with --spec {STREAM_SPEC}.")
     if stream and info["ram_gb"] < STREAM_MTP_FROM_GB:
         experts_file(shards[0])           # a small Mac: its misses are many; a big Mac's arena holds most experts
     if use_mtp and not (mtp / "mtp-q2_0.gguf").exists():
@@ -588,7 +587,7 @@ def main(argv=None) -> int:
         S.refresh_draft_vocab(rt, a.draft_vocab or "cjk")
         S.ok(f"MTP draft layer: {mtp / 'mtp-q2_0.gguf'}")
 
-    fetch_drafter(f"{fam['name']}-{model.lower()}", pack.parent.parent)       # DFlash2 is this set's default drafter (the MTP above stays as the fallback); the folder a start looks in
+    fetch_drafter(f"{fam['name']}-{model.lower()}", pack.parent.parent)       # the data folder the server checks for DFlash2
 
     # ---- 7. the config, the start script
     S.step(7, "writing the start script")
