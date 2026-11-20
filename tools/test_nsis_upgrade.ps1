@@ -9,7 +9,7 @@ $root=[IO.Path]::GetFullPath($OutputDir)
 if(Test-Path -LiteralPath $root){throw 'Fresh immutable fixture directory required'}
 if(-not (Test-Path -LiteralPath $NsisCompiler -PathType Leaf)){throw 'Pass -NsisCompiler with the installed makensis.exe path'}
 New-Item -ItemType Directory -Path $root|Out-Null
-$source=Join-Path (Split-Path -Parent $PSScriptRoot) 'apps\desktop\src-tauri\nsis\installer.nsi'
+$source=Join-Path (Split-Path -Parent $PSScriptRoot) 'app\desktop\src-tauri\nsis\installer.nsi'
 $sourceHash=(Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant()
 Set-Content -LiteralPath (Join-Path $root 'source-sha256.txt') -Value $sourceHash
 $text=Get-Content -LiteralPath $source -Raw
