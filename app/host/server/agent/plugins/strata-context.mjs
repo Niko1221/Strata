@@ -105,11 +105,12 @@ export function apply(ctx) {
     adapter.streamWithSnapshot = function streamWithSnapshot(options, snapshot) {
       let next = options;
       try {
-        if (isLocalRoute(options?.provider)) {
+        if (isLocalRoute(options?.provider) && options.purpose === undefined) {
           const model = this.modelOf(snapshot, options.provider, options.model);
           const asked = options.maxTokens ?? model.maxTokens ?? 0;
-          // Only the agent's own reply budget is raised: a summary or a title asks for far less and keeps what it asked.
-          if (model.contextWindow > 0 && asked >= Math.floor(model.contextWindow * 0.25)) {
+          // Match the profile's reply budget, which caps at 32K even on very large windows.
+          // Auxiliary requests and callers with a distinct explicit limit keep their own budget.
+          if (model.contextWindow > 0 && asked === model.maxTokens) {
             const cap = replyCap(model.contextWindow, asked);
             if (cap > asked) next = { ...options, maxTokens: cap };
           }
