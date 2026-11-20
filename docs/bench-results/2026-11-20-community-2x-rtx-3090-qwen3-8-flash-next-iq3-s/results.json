@@ -123,7 +123,7 @@
    "vision": {
     "exe": "<strata>\\engine\\strata-vision.exe",
     "mmproj": "<home>\\AppData\\Local\\Strata\\Strata-data\\models\\mmproj-Qwen3.8-Flash-Next-BF16.gguf",
-    "model": "E:\\1\\StrataModels\\IQ3_S\\Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+    "model": "<models-dir>\\IQ3_S\\Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
     "gpu": true,
     "max_tokens": 1024
    },
@@ -131,9 +131,9 @@
     "--pack",
     "<home>\\AppData\\Local\\Strata\\Strata-data\\packs\\iq3_s",
     "--native",
-    "E:\\1\\StrataModels\\IQ3_S\\Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+    "<models-dir>\\IQ3_S\\Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
     "--ple-gguf",
-    "E:\\1\\StrataModels\\IQ3_S\\Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+    "<models-dir>\\IQ3_S\\Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
     "--expert-profile",
     "<strata>\\data\\expert-profile.bin",
     "--expert-cache",

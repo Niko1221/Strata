@@ -82,6 +82,9 @@ Concurrency rounds (four requests released together):
 - The runner cannot see other programs on the machine, the repeat-stop and loop-recovery switches of the server, or the quantization repository's revision; see `missing` in results.json for every value it could not read.
 - The server had answered no request before this run (a freshly loaded engine).
 
-## Recall extra (separate engine instance)
+## Recall extras (separate engine instances)
 
-After this run the production server was restarted fresh and `tools/needle_bench.py --lengths 32k,128k --depths 10,50,90` found **6 of 6** needles (actual prompts 27,870 and 106,321–106,323 tokens; 16–80 s each). This is not the protocol engine — it ran on the restarted server (engine 0.1.59-windows-x86_64-cuda-cuda13: the PATH-CLI relaunch re-resolved the profile to its component store) with light operator agent traffic; same model files and same context/KV settings, older engine build than this report's 0.1.62. Evidence: [needle-2026-11-20-2x3090.json](needle-2026-11-20-2x3090.json).
+Two follow-up recall passes on the restarted production server (same launch profile, same model files and context/KV settings; light operator agent traffic; **not** the protocol engine instance, and drafting differs from this run — see the notes):
+
+- engine **0.1.62-windows-x86_64-cuda-cuda13** (same build as this report), DFlash2 drafter, one concurrent slot: `tools/needle_bench.py --lengths 32k,128k --depths 10,50,90` found **6 of 6** needles (actual prompts 27,870 and 106,321–106,323 tokens; 12–48 s each). Evidence: [needle-2026-11-20-2x3090-engine-0.1.62.json](needle-2026-11-20-2x3090-engine-0.1.62.json).
+- engine **0.1.59-windows-x86_64-cuda-cuda13** (older build, MTP drafting), taken earlier the same day before the engine update: **6 of 6** found, same command, 16–80 s each. Evidence: [needle-2026-11-20-2x3090.json](needle-2026-11-20-2x3090.json).
