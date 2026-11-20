@@ -1,0 +1,38 @@
+# Keep the image to the source only: everything generated is re-created on
+# first start (inside the container or on the /terminal/data volume).
+.git
+
+# local Python environment (rebuilt in the image)
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# terminal/setup.py outputs and downloads (the built engine, packs, models, logs). Not /engine/: that is the engine's source
+# (the built one goes to /terminal/engine/, .gitignore says the same), and a build without it cannot compile.
+/terminal/engine/
+/terminal/engine-sycl/
+/terminal/engine-cuda12/
+/engine-sycl/
+/engine-cuda12/
+/build/
+/build*/
+/dist/
+/packs/
+/mtp/
+/models/
+/Strata-data/
+# the folders tools/docker/entrypoint.sh creates in a mounted terminal/data/ (a link to llama.cpp, the models, the keys): never part of a build (#3644)
+/data/install/
+/data/state/
+/data/home/
+/data/Strata-data/
+engine/third_party/llama.cpp/
+terminal/third_party/llama.cpp/
+engine/third_party/*.zip
+*.done
+*.log
+strata-*.json
+strata-*.txt
+run-*.sh
+run-*.bat

@@ -18,7 +18,7 @@ strata launch --status
 **I cannot find `START-HERE.bat` or `SETUP.bat`.**
 Open the installed Strata app, or run `strata launch`. Those wrappers are in the source repository and are not the
 startup path for the app. For a fresh desktop install, download the one installer for your system
-(`Strata-0.2.9-windows-x64-setup.exe`, `Strata-0.2.9-linux-x86_64.AppImage` or `Strata-0.2.9-macos-arm64.dmg`), not a
+(`Strata-0.2.17-windows-x64-setup.exe`, `Strata-0.2.17-linux-x86_64.AppImage` or `Strata-0.2.17-macos-arm64.dmg`), not a
 `strata-engine-…` archive.
 
 **`strata` is not found.**
@@ -53,7 +53,7 @@ numbers; see [updating](INSTALL.md#updating) and the [release notes](https://git
 **A new engine misbehaves after an update.**
 Stop the model, then use the app's rollback control or `strata components rollback`. An update keeps the engine it
 replaced (one generation, about 210 MiB). Source-checkout engines use a separate rollback workflow, in `engine\.previous`:
-`python setup.py --rollback-engine` puts the old one back and keeps the newer one there, so run it again to go forward
+`python terminal/setup.py --rollback-engine` puts the old one back and keeps the newer one there, so run it again to go forward
 (#670). It is described in [source setup](SOURCE_INSTALL.md).
 
 **On a Mac: "Strata is damaged and can't be opened", "cannot be opened", or "unidentified developer".**
@@ -73,7 +73,7 @@ System Settings > Privacy & Security and press "Open Anyway" next to the message
 file you downloaded from the official release; a warning alone does not show that a file is safe or intact. Installs made
 with `curl ... | sh` carry no mark and need none of this. To see which kind you have: `spctl -a -vv /Applications/Strata.app`
 answers "accepted" and "Notarized Developer ID" for a notarised build. How the builds are signed is in
-[Mac packaging](../packaging/mac/README.md).
+[Mac packaging](../tools/packaging/mac/README.md).
 
 **The Linux AppImage does not open.**
 Make the downloaded file executable. It may need FUSE 2 (`libfuse2` on Ubuntu 22.04, `libfuse2t64` on newer Ubuntu;
@@ -114,8 +114,7 @@ Report it with the CPU model.
 Large models need time to check files, prepare packs and fill memory. A first launch can take many minutes; there is
 no fixed startup time. The engine reads 34-55 GB into RAM, and the second start is faster while the files are in the OS
 cache. Watch progress and the engine log. If memory pressure is high, close memory-heavy programs and try a
-smaller model or context. DeepSeek V4.1-Flash needs 46 GB of RAM at least ([model page](MODELS.md#deepseek-v41-flash));
-`strata launch --plan --family deepseek41 --model ist-das-2.00bpw` shows what your computer is missing.
+smaller model or context.
 Started from Task Scheduler, a start can be 24x slower: see [Running it at startup](DETAILS.md#running-it-at-startup-task-scheduler).
 On Linux the engine asks the kernel to read the model files ahead (a cold start went from ~920 s to 70 s on one PC);
 `STRATA_READ_AHEAD=0` turns that off. With transparent huge pages on `always`, the arena does not ask for `MADV_HUGEPAGE`
@@ -162,7 +161,7 @@ screen or with the matching `strata launch` flags, or `"mtp": false` (draft laye
 
 **The app keeps more graphics memory free than I want (decode is slower than in 0.1.45).**
 Without a value of yours the app keeps graphics memory free for the desktop: 1536 MiB on a card of 16 GB or less that drives
-a display (1024 MiB on a larger card), more with a picture reader on the GPU (2048 MiB), and with the "Leave 20% for my work"
+a display (1024 MiB on a larger card), more with a picture reader on the GPU (2048 MiB), and with the "Leave room for my work"
 profile a fifth of the card (at most 1536 MiB on a card of 16 GB or less). A card that has no display attached, such as a
 second GPU with the screen on the integrated one, keeps 512 MiB (700 MiB with pictures on the GPU). It reads that from the
 driver (nvidia-smi `display_active`, or the Windows adapter that has the desktop); when it cannot tell, it assumes a display.
@@ -259,7 +258,7 @@ from 100 to 14 tok/s with only a few hundred slots too many. Use `--expert-cache
 
 **A low-RAM PC (about 32 GB) stalls with `--resident-budget-gib N` (#649).**
 The budget is pinned (locked) in RAM, which leaves the OS and the CPU workers little room. `STRATA_RESIDENT_PIN=0` keeps
-it pageable; a smaller budget works too.
+it pageable (also the RAM copy the engine makes on its own when the expert arena does not fit); a smaller budget works too.
 
 **Decode got slower in 0.1.40 on a 32 GB PC with `--resident-budget-gib N`, and the drive is read hard (#1194, #1116, #1085).**
 The start line "the file tier reads unbuffered" means the experts outside the RAM copy are read straight from the drive.
@@ -324,7 +323,8 @@ in order, one at a time, and tell us what changed:
    in a source checkout) and restart. The prompt path then waits for the GPU after each step and logs any step over 250 ms, so the log names
    the step. It is slower; use it to diagnose, then take it out.
 3. **`"STRATA_KV_HOST_DMA": "1"`** in the same `"env"` block: no GPU kernel writes the RAM copy of the K/V during a
-   prompt, it is copied by DMA instead. Same answers.
+   prompt, it is copied by DMA instead. Same answers. On AMD and Intel Arc this is off until you set it. NVIDIA cards do it by
+   default; setting it to `"0"` there goes back to the earlier way of writing.
 4. **No KV streaming:** run setup again and pick 32K context (or remove `--kv-resident` and its number from
    `"args"` in the JSON, with a context that fits the VRAM).
 5. **A smaller prompt chunk:** change `--prefill` in `"args"` (for example `--prefill 512`): each GPU launch then does
@@ -348,7 +348,7 @@ R9700) in the `env` block of the server JSON, then a restart. Experimental, one 
 
 ## Source-checkout problems
 
-Python/venv, CUDA compiler versions, ROCm builds, `UPDATE.bat`, `update.sh` and generated `run-<model>` scripts
+Python/venv, CUDA compiler versions, ROCm builds, `UPDATE.bat`, `./setup.sh --update` and generated `run-<model>` scripts
 belong to [SOURCE_INSTALL.md](SOURCE_INSTALL.md); the entries above marked "source checkout" are the common ones. Use the
 backend guide for build prerequisites. If `git pull` fails in an old clone, see the `UPDATE.bat` entry above and do not
 overwrite local branches or edits just to make `git pull` succeed.
@@ -365,9 +365,10 @@ overwrite local branches or edits just to make `git pull` succeed.
 - **Linux app crash:** if the window crashes or will not open, run the AppImage with `--save-logs` in a terminal; it writes
   the crash log and the other logs to one file in Downloads.
 - **Installer or source checkout:** `strata-<model>.log` from the Strata folder.
+- **Developer tools:** To open the developer tools in the app window on Windows or Linux, start the app with `STRATA_DEVTOOLS=1`.
 
 Look through a log before you send it, and never send an API key. Include model and quantization, OS, GPU/VRAM, RAM,
 driver, install route (app, Terminal or the installer), Strata and engine versions, exact command, expected result and
 actual error. Open an [issue](https://github.com/Niko1221/Strata/issues) and attach the log. Follow
-[CONTRIBUTING.md](../CONTRIBUTING.md). The full table of error messages, with the older engine fixes, is in the
+[CONTRIBUTING.md](../.github/CONTRIBUTING.md). The full table of error messages, with the older engine fixes, is in the
 [details](DETAILS.md#troubleshooting).

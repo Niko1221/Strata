@@ -1,0 +1,5 @@
+{
+ "sav01": "Some chats could not be saved",
+ "sav02": "Strata's chat storage is full, so the newest changes to {0} chat(s) are only in this window. Delete old chats to make room; they then save by themselves.",
+ "sav03": "Copy unsaved chats"
+}

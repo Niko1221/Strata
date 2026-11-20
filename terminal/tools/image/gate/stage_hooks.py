@@ -1,0 +1,169 @@
+"""tools/image/gate/stage_hooks.py - TEST-ONLY (OWN-5 gate harness, never in a shipped build path): make a copy of a
+pinned stable-diffusion.cpp tree with stage dump / replace hooks, driven by environment variables:
+
+  OWN5_DUMP_DIR=<dir>   write noise.bin (the initial noise), cond.bin (text-encoder hidden states, c_crossattn),
+                        vel_<k>.bin (the DiT output of model call k = 0, 1, ...), latent.bin (the latent before VAE
+                        decode); each .bin is float32 with a .shape text file beside it
+  OWN5_NOISE_DIR=<dir>  take the initial noise from <dir>/noise_<seed>.bin instead of PhiloxRNG
+  OWN5_COND_IN=<file>   replace c_crossattn by this file (same shape)
+  OWN5_LATENT_IN=<file> replace the final latent by this file before VAE decode (same shape)
+  OWN5_EXIT_AFTER=<k>   exit(0) right after model call k was dumped (no picture)
+  (with OWN5_DUMP_DIR)  also tokens.bin: the text encoder's input token ids (int32) as LLMEmbedder::encode_prompt
+                        builds them, tokens.weights (float32, the prompt-weight of each id) and tokens.start:
+                        prompt_template_encode_start_idx (the system tokens cond drops)
+  OWN5_EXIT_AFTER_TOKENS=1  exit(0) right after that dump (no model is loaded or run: the tokenizer gate)
+  (with OWN5_DUMP_DIR)  also dit_x_<k>.bin / dit_t_<k>.bin: the DiT's input latent and timestep of model call k, and
+                        pe_stock_<k>.bin / pe_native_<k>.bin: the RoPE table the Qwen-Image-2.1 runner built for it,
+                        vae_in.bin (what the VAE decoder gets: the final latent after diffusion_to_vae_latents) and
+                        vae_out.bin (the decoded float picture before tensor_to_sd_image makes it 8-bit)
+
+Without the variables the copy behaves like the original.  Usage: python3 stage_hooks.py <src tree> <dst tree>"""
+import shutil
+import sys
+from pathlib import Path
+
+HOOKS = r'''// own5_hooks.hpp - TEST-ONLY stage hooks (tools/image/gate/stage_hooks.py)
+#pragma once
+#include <cstdio>
+#include <cstdlib>
+#include <string>
+#include <vector>
+#include "core/tensor.hpp"
+namespace own5 {
+inline const char* env(const char* k) { const char* v = std::getenv(k); return v && *v ? v : nullptr; }
+inline void dump(const char* name, const float* p, size_t n, const std::vector<int64_t>& shape) {
+    const char* d = env("OWN5_DUMP_DIR");
+    if (!d) return;
+    std::string base = std::string(d) + "/" + name;
+    if (FILE* f = std::fopen((base + ".bin").c_str(), "wb")) { std::fwrite(p, sizeof(float), n, f); std::fclose(f); }
+    if (FILE* f = std::fopen((base + ".shape").c_str(), "w")) {
+        for (auto s : shape) std::fprintf(f, "%lld ", (long long) s);
+        std::fprintf(f, "\n");
+        std::fclose(f);
+    }
+}
+inline void dump_ids(const std::vector<int>& ids, const std::vector<float>& weights, int start) {
+    const char* d = env("OWN5_DUMP_DIR");
+    if (!d) return;
+    std::string base = std::string(d) + "/tokens";
+    if (FILE* f = std::fopen((base + ".bin").c_str(), "wb")) { std::fwrite(ids.data(), sizeof(int), ids.size(), f); std::fclose(f); }
+    if (FILE* f = std::fopen((base + ".weights").c_str(), "wb")) { std::fwrite(weights.data(), sizeof(float), weights.size(), f); std::fclose(f); }
+    if (FILE* f = std::fopen((base + ".start").c_str(), "w")) { std::fprintf(f, "%d\n", start); std::fclose(f); }
+    if (env("OWN5_EXIT_AFTER_TOKENS")) { std::fprintf(stderr, "OWN5: exit after the token dump\n"); std::fflush(nullptr); std::exit(0); }
+}
+inline void load(const char* file, float* p, size_t n, const char* what) {
+    FILE* f = std::fopen(file, "rb");
+    size_t got = f ? std::fread(p, sizeof(float), n, f) : 0;
+    if (f) std::fclose(f);
+    if (got != n) { std::fprintf(stderr, "OWN5: %s %s missing or short (%zu of %zu)\n", what, file, got, n); std::abort(); }
+    std::fprintf(stderr, "OWN5: %s from %s\n", what, file);
+}
+inline void tensor_hook(sd::Tensor<float>& t, const char* name, const char* in_var) {
+    if (t.numel() == 0) return;
+    if (const char* in = env(in_var)) load(in, t.data(), (size_t) t.numel(), name);
+    dump(name, t.data(), (size_t) t.numel(), t.shape());
+}
+inline int& call_k() { static int k = 0; return k; }   // the model call being made (shared by the hooks)
+inline void dit_in_hook(const sd::Tensor<float>* x, const sd::Tensor<float>* t) {
+    const std::string kk = std::to_string(call_k());
+    if (x && x->numel()) dump(("dit_x_" + kk).c_str(), x->data(), (size_t) x->numel(), x->shape());
+    if (t && t->numel()) dump(("dit_t_" + kk).c_str(), t->data(), (size_t) t->numel(), t->shape());
+}
+inline void pe_hook(const std::vector<float>& pe, const char* who) {
+    const std::string name = std::string("pe_") + who + "_" + std::to_string(call_k());
+    dump(name.c_str(), pe.data(), pe.size(), {(int64_t) pe.size()});
+}
+inline void vel_hook(const sd::Tensor<float>& t) {
+    int& k = call_k();
+    std::string name = "vel_" + std::to_string(k);
+    dump(name.c_str(), t.data(), (size_t) t.numel(), t.shape());
+    if (const char* e = env("OWN5_EXIT_AFTER")) {
+        if (k >= std::atoi(e)) { std::fprintf(stderr, "OWN5: exit after model call %d\n", k); std::fflush(nullptr); std::exit(0); }
+    }
+    ++k;
+}
+}  // namespace own5
+'''
+
+NOISE_OLD = "    std::vector<float> randn(uint32_t n) override {\n"
+NOISE_NEW = NOISE_OLD + r'''        if (const char* own5_dir = std::getenv("OWN5_NOISE_DIR")) {   // OWN-5 test hook
+            std::string p = std::string(own5_dir) + "/noise_" + std::to_string(this->seed) + ".bin";
+            std::vector<float> r(n);
+            FILE* f = std::fopen(p.c_str(), "rb");
+            size_t got = f ? std::fread(r.data(), sizeof(float), n, f) : 0;
+            if (f) std::fclose(f);
+            if (got != n) { std::fprintf(stderr, "OWN5: noise file %s missing or short\n", p.c_str()); std::abort(); }
+            this->offset += 1;
+            return r;
+        }
+'''
+
+# LLMEmbedder::encode_prompt's text-encoder call (conditioning/conditioner.hpp; the one with attention_mask)
+TE_CALL = ("        auto hidden_states = llm->compute(n_threads,\n"
+           "                                          input_ids,\n"
+           "                                          attention_mask,\n"
+           "                                          image_embeds,\n"
+           "                                          out_layers,\n")
+
+
+def edit(path: Path, old: str, new: str, count=1):
+    t = path.read_text()
+    if new in t:
+        return
+    if t.count(old) != count:
+        raise SystemExit(f"{path}: expected {count} x {old!r}")
+    path.write_text(t.replace(old, new))
+
+
+def main():
+    src, dst = Path(sys.argv[1]), Path(sys.argv[2])
+    if not dst.exists():
+        shutil.copytree(src, dst, symlinks=True)
+    (dst / "src" / "own5_hooks.hpp").write_text(HOOKS)
+    h = dst / "src" / "core" / "rng_philox.hpp"
+    edit(h, "#include <vector>\n", "#include <vector>\n#include <cstdio>\n#include <cstdlib>\n#include <string>\n")
+    edit(h, NOISE_OLD, NOISE_NEW)
+    img = dst / "src" / "pipeline" / "image.cpp"
+    edit(img, '#include "core/rng.hpp"\n', '#include "core/rng.hpp"\n#include "own5_hooks.hpp"\n')
+    edit(img, "        auto cond                        = sd->get_learned_condition(condition_params);\n",
+         "        auto cond                        = sd->get_learned_condition(condition_params);\n"
+         '        own5::tensor_hook(cond.c_crossattn, "cond", "OWN5_COND_IN");\n')
+    edit(img, "            sd::Tensor<float> noise = sd::randn_like<float>(latents.init_latent, sd->rng);\n",
+         "            sd::Tensor<float> noise = sd::randn_like<float>(latents.init_latent, sd->rng);\n"
+         '            own5::tensor_hook(noise, "noise", "OWN5_NOISE_IN_UNUSED");\n')
+    edit(img, "                sd::Tensor<float> image = sd->decode_first_stage(final_latents[i]);\n",
+         '                own5::tensor_hook(const_cast<sd::Tensor<float>&>(final_latents[i]), "latent", "OWN5_LATENT_IN");\n'
+         "                sd::Tensor<float> image = sd->decode_first_stage(final_latents[i]);\n"
+         '                if (!image.empty()) own5::dump("vae_out", image.data(), (size_t) image.numel(), image.shape());\n')
+    eng = dst / "src" / "pipeline" / "diffusion_engine.cpp"
+    edit(eng, '#include "core/rng.hpp"\n', '#include "core/rng.hpp"\n#include "own5_hooks.hpp"\n')
+    edit(eng, "            auto output_opt = work_diffusion_model->compute(n_threads, diffusion_params);\n"
+              "            if (output_opt.empty()) {\n",
+         "            own5::dit_in_hook(diffusion_params.x, diffusion_params.timesteps);\n"
+         "            auto output_opt = work_diffusion_model->compute(n_threads, diffusion_params);\n"
+         "            own5::vel_hook(output_opt);\n"
+         "            if (output_opt.empty()) {\n")
+    # the tensor the VAE decoder gets (the final latent after diffusion_to_vae_latents)
+    edit(eng, "    auto latents                      = first_stage_model->diffusion_to_vae_latents(x);\n",
+         "    auto latents                      = first_stage_model->diffusion_to_vae_latents(x);\n"
+         '    own5::dump("vae_in", latents.data(), (size_t) latents.numel(), latents.shape());\n')
+    # the RoPE tables the DiT runners build (stock: Rope::embed_nd + finish_rope_pe; the native runner: the same calls)
+    q21 = dst / "src" / "model" / "diffusion" / "qwen_image_2_1.hpp"
+    edit(q21, '#include "model/diffusion/qwen_image.hpp"\n',
+         '#include "model/diffusion/qwen_image.hpp"\n#include "own5_hooks.hpp"\n')
+    edit(q21, "                pe_data          = finish_rope_pe(std::move(embedding));\n",
+         "                pe_data          = finish_rope_pe(std::move(embedding));\n"
+         '                own5::pe_hook(pe_data, "stock");\n')
+    nat = dst / "src" / "model" / "diffusion" / "qwen_image_2_1_native.hpp"
+    if nat.is_file():                                     # CUDA / HIP trees carry the native runner
+        edit(nat, "            std::vector<float> pe_all = finish_rope_pe(std::move(emb));\n",
+             "            std::vector<float> pe_all = finish_rope_pe(std::move(emb));\n"
+             '            own5::pe_hook(pe_all, "native");\n')
+    cond = dst / "src" / "conditioning" / "conditioner.hpp"
+    edit(cond, '#include "core/util.h"\n', '#include "core/util.h"\n#include "own5_hooks.hpp"\n')
+    edit(cond, TE_CALL, "        own5::dump_ids(tokens, weights, prompt_template_encode_start_idx);\n" + TE_CALL)
+    print("stage hooks applied:", dst)
+
+
+if __name__ == "__main__":
+    main()

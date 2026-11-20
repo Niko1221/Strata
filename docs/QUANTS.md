@@ -8,8 +8,8 @@ the Q8_0 reference. Setup and the per-file details: [UD-Q4_K_XL](UNSLOTH_Q4.md),
 
 ## What each file stores
 
-Read from the GGUF headers alone with `tools/quant_formats.py --hf unsloth/Qwen3.8-Flash-Next-GGUF 38bb39ee... <dir>`
-(HTTP range requests, nothing else is downloaded; on local shards: `tools/quant_formats.py <shard glob>`).
+Read from the GGUF headers alone with `terminal/tools/quant_formats.py --hf unsloth/Qwen3.8-Flash-Next-GGUF 38bb39ee... <dir>`
+(HTTP range requests, nothing else is downloaded; on local shards: `terminal/tools/quant_formats.py <shard glob>`).
 
 The routed experts (gate, up, down; 512 per layer, 10 used per token) are where the files differ:
 
@@ -34,7 +34,7 @@ SHA-256), so a PC that has one of them can link those two shards instead of down
 
 | Format (role) | CUDA decode (grouped experts) | CUDA prompt | CPU pool | AMD (HIP) decode | AMD prompt | Intel (SYCL) decode | Intel prompt |
 |---|---|---|---|---|---|---|---|
-| Q4_K (gate/up) | yes | FP16 path; MMQ with `STRATA_MMQ_KQ=1` | ggml AVX2 dot; multi-token AVX2 (`STRATA_KQ256=1`) | yes (CUDA layout; `STRATA_EXPERT_V2K=1` bitwise) | FP16 path; MMQ with `STRATA_MMQ_KQ=1`; gfx11 fused (`STRATA_PF_FUSED_KQ=1`) | kernels built, not run with these files | FP16 path |
+| Q4_K (gate/up) | yes | FP16 path; MMQ with `STRATA_MMQ_KQ=1`; UD-Q4_K_XL's experts (a Q4_K or Q5_K gate/up with a Q5_1 or Q8_0 down) are read by Strata's own kernels on RTX A6000, RTX 3090 and RTX PRO 5000 class cards, and on RTX A4000 and RTX 5070 class cards for the launches Strata stages, and on the DGX Spark (its defaults table sets the switch); `STRATA_PF_FUSED_KQ=0` gives MMQ back | ggml AVX2 dot; multi-token AVX2 (`STRATA_KQ256=1`) | yes (CUDA layout; `STRATA_EXPERT_V2K=1` bitwise) | FP16 path; MMQ with `STRATA_MMQ_KQ=1`; gfx11 fused (`STRATA_PF_FUSED_KQ=1`) | kernels built, not run with these files | FP16 path |
 | Q5_K (gate/up) | yes | as Q4_K | ggml AVX2 dot | as Q4_K | as Q4_K | kernels built, not run with these files | FP16 path |
 | Q6_K (gate/up) | yes (since this change; was `-DSTRATA_Q6K_EXPERTS=ON`) | FP16 path; MMQ with `STRATA_MMQ_KQ=1` | ggml AVX2 dot | yes (CUDA layout) | FP16 path; MMQ with `STRATA_MMQ_KQ=1` | kernels built, not run with these files | FP16 path |
 | Q5_1 (down) | yes | as Q4_K | ggml AVX2 dot; multi-token AVX2 (`STRATA_KQ256=1`) | yes (CUDA layout; V2K) | as Q4_K | kernels built, not run with these files | FP16 path |
@@ -46,16 +46,14 @@ SHA-256), so a PC that has one of them can link those two shards instead of down
   kernel needs VRAM later, mid-prompt), which is why kernels for formats a model does not have used to take expert
   slots from every model. The Q6_K expert kernels are now part of every build: one more instance per grouped kernel,
   +19 KB of sm_60 code, and the expert-cache slot counts measured unchanged (IQ3_XXS: 6,028 slots on a P100, 15,878
-  and 1,980 on an R9700). The K-quant MMQ prompt kernels (Q4_K, Q5_K, Q5_1, Q6_K: ~3.8 MB of sm_60 code, 3 IQ3_XXS
-  slots on the P100 when they were in the engine) are on CUDA a library of their own next to the engine
-  (`libstrata_kq.so` / `strata_kq.dll`), opened only for a model with these experts and `STRATA_MMQ_KQ=1`; without the
-  file those experts take the FP16 prompt path. On AMD a code object loads on first use, so they stay in the engine.
+  and 1,980 on an R9700). Q4_K, Q5_K, Q5_1 and Q6_K experts take Strata's fused prompt kernels where they cover
+  a layer, and the FP16 path elsewhere. The separate K-quant library (`libstrata_kq.so` / `strata_kq.dll`) left in 0.2.16.
 - `STRATA_MMQ_KQ=1` is opt-in because MMQ rounds the prompt's products differently from the FP16 path (the output
   differs at the rounding level); its speed and KL are measured before it becomes a default.
 
 ## Quality: the yardstick
 
-`tools/quant_quality.py` scores a quant against Q8_0 on one fixed text set (`data/quant_quality/v1`: code, docs,
+`terminal/tools/quant_quality.py` scores a quant against Q8_0 on one fixed text set (`terminal/data/quant_quality/v1`: code, docs,
 English prose, German/French/Japanese/Chinese, an agent transcript; 5 x 1,000 tokens in `set.ids.json`). Every token
 is read through the decode windows (teacher-forced) with the experts on the CPU (one VRAM slot), no expert
 adaptation, no PCIe share, no route tail skip, FP16 K/V; per position the engine writes the log-probability of the
@@ -63,8 +61,8 @@ text's next token and its 64 most likely tokens (`STRATA_LOGPOS`, `STRATA_LOGPOS
 same most likely token as Q8_0. KL: KL(Q8_0 || quant) over Q8_0's 64 most likely tokens.
 
 ```sh
-python tools/quant_quality.py run --config strata-<quant>.json --out <quant>.tsv
-python tools/quant_quality.py compare q8_0.tsv <quant>.tsv --segments
+python terminal/tools/quant_quality.py run --config strata-<quant>.json --out <quant>.tsv
+python terminal/tools/quant_quality.py compare q8_0.tsv <quant>.tsv --segments
 ```
 
 Measured on the AMD box (EPYC 7452, R9700, HIP, engine at 0601072d; 4,995 positions; Q8_0 against itself in a second
@@ -83,7 +81,7 @@ run: byte-identical rows):
 The same file on another backend is not the same answers: UD-Q4_K_XL on an RTX A4000 (CUDA, the RAM
 budget mode of a 62 GB PC) against UD-Q4_K_XL on the R9700 is 94.5% the same top token (KL 0.038), mostly near-ties.
 
-**The prompt path:** `tools/quant_quality.py prompt` / `pcompare` score the batched prompt path the same way (20 prompts
+**The prompt path:** `terminal/tools/quant_quality.py prompt` / `pcompare` score the batched prompt path the same way (20 prompts
 of 256-1,000 tokens of the set, the full vocabulary's KL of the next token's distribution against Q8_0's): every
 quant above picks Q8_0's top token after all 20 prompts. The K-quants' MMQ kernels (`STRATA_MMQ_KQ=1`) against the FP16
 path on the R9700: UD-Q4_K_XL mean KL 0.095 / median 0.0027 (FP16: 0.081 / 0.0047), UD-Q5_K_XL 0.038 / 0.00055 (FP16:
@@ -155,16 +153,19 @@ old config's `--resident-budget-gib 71` holding the same experts read from the G
 story 39.5 -> 53.3 tok/s, code 60.1 -> 80.4, after a 6K document 49.0 -> 68.8, 5/5 each), prompt 4K x2.07, 6K x1.58,
 32K x1.03.
 
-**The route tail skip** (`STRATA_ROUTE_TAIL_SKIP=7`, the default since 0.1.42: a missed expert every token of a window
-routes at rank 7 or lower is skipped) costs these files more than the 2-3-bit packs: UD-Q4_K_XL's yardstick KL against
-Q8_0 goes from 0.056 to 0.086 with every expert in RAM (R9700, the auto cache) and from 0.053 to 0.115 in the RAM
-budget mode (A4000, 1,500 GPU slots), for +4-10% decode in RAM and +26-67% in the budget mode (5 pairs each).
-`STRATA_ROUTE_TAIL_SKIP=0` in a config's `"env"` turns it off.
+**The route tail skip** (`STRATA_ROUTE_TAIL_SKIP=7`: a missed expert every token of a window routes at rank 7 or lower is
+skipped; the engine default from 0.1.42 to 0.1.62, off by default in Strata since 0.2.17) costs these files more than the
+2-3-bit packs: UD-Q4_K_XL's yardstick KL against Q8_0 goes from 0.056 to 0.086 with every expert in RAM (R9700, the auto
+cache) and from 0.053 to 0.115 in the RAM budget mode (A4000, 1,500 GPU slots), for +4-10% decode in RAM and +26-67% in the
+budget mode (5 pairs each). On an RTX 5090 (UD-Q4_K_XL, 12,288 forced-token positions, KL against exact routing) it is
+0.01260 with every expert in RAM and 0.01331 with `--resident-budget-gib 40`, for decode x1.29 and x1.24
+([DETAILS.md](DETAILS.md#route-tail-skip-strata_route_tail_skip-off-by-default-since-0217)).
+`STRATA_ROUTE_TAIL_SKIP=7` in a config's `"env"` turns it on; `STRATA_ROUTE_TAIL_SKIP=0` is the default.
 
 **The hyper-connections on NVIDIA:** the pack's `--compat-bf16` copy of the Q8_0 HC projections rounds them to BF16
-(and doubles their bytes). `STRATA_HC_Q8=1` reads the file's own Q8_0 instead (on AMD gfx12 it is the default): on the
+(and doubles their bytes). On NVIDIA the engine reads the file's own Q8_0 by default for files that carry them as Q8_0 (the Unsloth UD files); `STRATA_HC_Q8=0` restores the BF16 read. On the
 A4000 UD-Q4_K_XL then comes closer to Q8_0 (yardstick KL 0.0562 -> 0.0526, p99 0.925 -> 0.716) and to the same file on
-AMD (KL 0.038 -> 0.033). Opt-in until decided.
+AMD (KL 0.038 -> 0.033).
 
 ## Images
 
