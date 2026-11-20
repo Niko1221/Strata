@@ -1073,8 +1073,13 @@ class PicturesScreen(Base):
 
     def reader(self) -> str:
         """"present" when the installed engine carries the picture reader (strata-vision), "missing" when an engine is installed without it,
-        "unknown" before any engine is installed (the first launch fetches it)."""
-        return self.ctx.catalog.reader_state()
+        "unknown" before any engine is installed (the first launch fetches it). Asked once per screen: the answer cannot change while
+        the screens are up (the Catalog also caches it), and asking on every paint repeated an engine hash before status() was cached."""
+        cached = getattr(self, "_reader", None)
+        if cached is None:
+            cached = self.ctx.catalog.reader_state()
+            self._reader = cached
+        return cached
 
     def on_mount(self) -> None:
         s = self.ctx.settings
