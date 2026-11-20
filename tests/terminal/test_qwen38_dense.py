@@ -11,12 +11,14 @@ import pytest
 from strata_control import models, qwen38_dense as dense, engine_component as ec
 from tests.terminal.test_engine_component import make_package, rewrite
 
-def fixture(path, *, width=5120, codec=23, architecture="qwen35", split=False):
+def fixture(path, *, width=5120, codec=23, architecture="qwen35", split=False, nine=False):
     def string(s):
         b=s.encode("utf-8"); return struct.pack("<Q",len(b))+b
-    dims={"block_count":64,"embedding_length":width,"feed_forward_length":17408,"attention.head_count":24,
+    dims={"block_count":32 if nine else 64,"embedding_length":4096 if nine else width,
+          "feed_forward_length":12288 if nine else 17408,"attention.head_count":16 if nine else 24,
           "attention.head_count_kv":4,"attention.key_length":256,"attention.value_length":256,
-          "ssm.state_size":128,"ssm.group_count":16,"ssm.time_step_rank":48,"ssm.inner_size":6144}
+          "ssm.state_size":128,"ssm.group_count":16,"ssm.time_step_rank":32 if nine else 48,
+          "ssm.inner_size":4096 if nine else 6144}
     pairs=[("general.architecture",8,string(architecture)),("tokenizer.ggml.model",8,string("gpt2")),
            ("tokenizer.ggml.tokens",9,struct.pack("<IQ",8,3)+string("a")+string("<|im_end|>")+string("<|endoftext|>")),
            ("tokenizer.ggml.token_type",9,struct.pack("<IQiii",5,3,1,3,3)),
@@ -26,7 +28,7 @@ def fixture(path, *, width=5120, codec=23, architecture="qwen35", split=False):
     pairs += [("qwen35."+k,4,struct.pack("<I",v)) for k,v in dims.items()]
     if split:pairs.append(("split.count",4,struct.pack("<I",1)))
     header=b"GGUF"+struct.pack("<IQQ",3,1,len(pairs))+b"".join(string(k)+struct.pack("<I",t)+v for k,t,v in pairs)
-    count,size={23:(256,136),142:(128,34),21:(256,110),22:(256,82),2:(32,18)}.get(codec,(32,18))
+    count,size={23:(256,136),142:(128,34),21:(256,110),22:(256,82),12:(256,144),14:(256,210),2:(32,18)}.get(codec,(32,18))
     header+=string("token_embd.weight")+struct.pack("<IQIQ",1,count,codec,0)
     path.write_bytes(header+b"\0"*(-len(header)%32)+b"\0"*size)
     return path
@@ -50,6 +52,12 @@ def test_preview_register_production_arguments(tmp_path,name,codec):
     Path(saved["config"]).write_text(json.dumps(cfg),encoding="utf-8")
     dense.register(str(model),directory=tmp_path)
     assert json.loads(Path(saved["config"]).read_text(encoding="utf-8"))==cfg
+
+def test_preview_accepts_9b_geometry(tmp_path):
+    plan=models.plan_import(str(fixture(tmp_path/"Qwen3.5-9B-Q4_K_M.gguf",nine=True,codec=12)))
+    assert not plan["issues"]
+    selection=plan["candidate_selection"]
+    assert selection["family"]==dense.ARCH and selection.get("geometry")=="q38-9b"
 
 @pytest.mark.parametrize("options,reason",[({"width":4096},"geometry"),({"split":True},"unsplit"),({"codec":2},"codecs"),({"architecture":"qwen35moe"},None)])
 def test_preview_rejects_incompatible_dense(tmp_path,options,reason):

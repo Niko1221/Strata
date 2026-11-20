@@ -12,10 +12,16 @@ H: free 10 GiB and C: free 5 GiB. No diagnostic process memory cap is implied.
 
 `--model FILE --inspect` reads CPU metadata only. Admission uses architecture,
 tensor geometry, operation-specific types and file extents, not author or model
-names. It accepts dense qwen35 with the 5120/17408/248320 geometry, 64 trunk
-layers in a 3:1 GDN/attention pattern, and zero or one declared MTP layer.
-An optional block 64 is validated for safe extents but ignored, never loaded.
-Split files, experts, unknown trunk roles/types and overlapping extents fail.
+names. It accepts two dense qwen35 profiles: 5120/17408/248320 with 64 trunk
+layers (3:1 GDN/attention, 24 Q heads, rank 48, inner 6144) and
+4096/12288/248320 with 32 trunk layers (3:1 GDN/attention, 16 Q heads,
+rank 32, inner 4096). Both allow zero or one declared MTP layer. Geometry is
+selected from GGUF metadata and tensor extents; a shape mismatch is rejected.
+An optional MTP block (`blk.<trunk>.nextn.*`) is validated for safe extents;
+when its tensors are present and `--spec-draft-n-max > 0` it is loaded and used,
+otherwise it is ignored and drafting stays off. A declared MTP without tensors
+is admitted but cannot draft. Split files, experts, unknown trunk roles/types
+and overlapping extents fail.
 
 `--model FILE --ctx-size 4096 --tokens IDS --n 16` generates token IDs. The
 server supplies tokenization and the embedded chat template. No native text
@@ -37,8 +43,14 @@ Weights remain original compressed rows on CUDA. Embeddings remain a read-only
 host mapping and upload one compressed row per input token, without pinning
 the mapping. There is PCIe traffic. F32/F16/BF16 auxiliary tensors convert in
 bounded tensor scratch; compressed alpha/beta remain compressed matvecs.
-Attention uses the selected native packed KV mode. GDN state and activations are FP32. Sequential token
-prefill is the only supported batch behavior; there is no CUDA graph.
+Attention uses the selected native packed KV mode. GDN state and activations are FP32.
+The f16 KV path stages whole prefill batches: one bounded score buffer (32 MiB),
+one batched history store, one batched score kernel and one batched attention
+kernel per sub-batch, instead of one launch set per token. Other KV modes keep
+the per-token path. There is no CUDA graph. `STRATA_Q38_PREFILL_CHUNK` and
+`STRATA_Q38_PREFILL_TILE_MB` are opt-in tuning overrides that still pass the
+same VRAM admission; measured 9B prefill did not improve beyond the built-in
+candidate. `STRATA_FP8_PREFILL=1` is available but measured slower on SM120.
 
 PQ2_0 is type 142, 128 elements per 34 bytes, independently of the existing
 MoE type 42 (64/18). The owned CUDA dot accumulates FP32 activations against

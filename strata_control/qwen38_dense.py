@@ -13,23 +13,35 @@ def preview(metadata: dict, files: int) -> tuple[dict | None, str | None]:
     if metadata.get("architecture") != "qwen35":
         return None, None
     dims = metadata.get("dense_dimensions", {})
-    expected = {"embedding_length": 5120, "feed_forward_length": 17408, "attention.head_count": 24,
-                "attention.head_count_kv": 4, "attention.key_length": 256, "attention.value_length": 256,
-                "ssm.state_size": 128, "ssm.group_count": 16, "ssm.time_step_rank": 48, "ssm.inner_size": 6144}
+    common = {"attention.head_count_kv": 4, "attention.key_length": 256, "attention.value_length": 256,
+              "ssm.state_size": 128, "ssm.group_count": 16}
+    profiles = {
+        "q38-27b": dict(common, embedding_length=5120, feed_forward_length=17408,
+                        **{"attention.head_count": 24, "ssm.time_step_rank": 48, "ssm.inner_size": 6144}),
+        "q38-9b": dict(common, embedding_length=4096, feed_forward_length=12288,
+                       **{"attention.head_count": 16, "ssm.time_step_rank": 32, "ssm.inner_size": 4096}),
+    }
+    layers = {"q38-27b": 64, "q38-9b": 32}
     if files != 1 or metadata.get("split"):
         return None, "dense native runner requires one unsplit GGUF"
     if dims.get("expert_count", 0) or metadata.get("expert_tensor_types"):
         return None, "dense native runner does not support experts"
     nextn = dims.get("nextn_predict_layers", 0)
-    if nextn not in (0, 1) or dims.get("block_count") != 64 + nextn or any(dims.get(k) != v for k, v in expected.items()):
-        return None, "incompatible dense qwen35 geometry; requires Qwen3.8-27B trunk"
+    if nextn not in (0, 1):
+        return None, "dense native runner requires zero or one declared MTP layer"
+    profile = next((name for name, expected in profiles.items()
+                    if dims.get("block_count") == layers[name] + nextn
+                    and all(dims.get(k) == v for k, v in expected.items())), None)
+    if profile is None:
+        return None, "incompatible dense qwen35 geometry; requires a supported 27B or 9B trunk"
     unknown = set(metadata.get("tensor_types", {})) - CODECS
     if unknown:
         return None, "unsupported dense weight codecs: " + ", ".join(sorted(unknown))
     if metadata.get("tokenizer_model") != "gpt2" or not all(metadata.get(k) for k in ("tokenizer_tokens_present", "tokenizer_merges_present")):
         return None, "dense native requires original GPT-2 tokenizer metadata"
-    return {"family": ARCH, "model": "local", "basis": "dense_qwen35_geometry", "expected_expert_types": [],
-            "expected_tensor_count": metadata.get("tensor_count_scanned"), "native_load": "unverified"}, None
+    return {"family": ARCH, "model": "local", "basis": "dense_qwen35_geometry", "geometry": profile,
+            "expected_expert_types": [], "expected_tensor_count": metadata.get("tensor_count_scanned"),
+            "native_load": "unverified"}, None
 
 def arguments(cfg: dict) -> list[str]:
     """Validate argv and reconcile effective scalar reports after user-owned options.

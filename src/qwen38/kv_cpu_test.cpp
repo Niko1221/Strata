@@ -13,7 +13,7 @@ int main(int argc,char** argv){try{
         const auto request=Q::KvConfig::admit("auto");Q::KvBudget budget{123456789,4567890,345678,23456,16777216};const uint64_t reserve=768ull*1024*1024,ctx=4096;
         uint64_t fixed=budget.weights+budget.recurrent+budget.scratch+budget.upload_scratch+budget.allocator_allowance+reserve;
         uint64_t thresholds[3];const char* modes[]={"f16","f16_turbo4","spin8_k8v4"};
-        for(int i=0;i<3;++i){auto c=Q::KvConfig::admit(modes[i]);thresholds[i]=fixed+Q::kv_storage_bytes(c,ctx,16)+c.scratch_bytes()+c.coefficient_bytes()+Q::kv_allocator_slack(c,ctx,16);}
+        for(int i=0;i<3;++i){auto c=Q::KvConfig::admit(modes[i]);thresholds[i]=fixed+Q::kv_storage_bytes(c,ctx,16)+c.scratch_bytes({},ctx)+c.coefficient_bytes()+Q::kv_allocator_slack(c,ctx,16);}
         demand(thresholds[0]>thresholds[1]&&thresholds[1]>thresholds[2],"policy order payload");
         for(int i=0;i<3;++i){auto exact=Q::select_kv(request,ctx,16,budget,thresholds[i],reserve);demand(std::string(exact.config.name())==modes[i]&&exact.required==thresholds[i],"auto exact-fit threshold");
             demand(exact.payload==Q::kv_storage_bytes(exact.config,ctx,16),"auto changed requested context");

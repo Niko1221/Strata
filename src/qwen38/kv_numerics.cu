@@ -175,9 +175,9 @@ static void normalization(cudaStream_t s){
     Q::Buffer qg(12288*4),k(1024*4),v(1024*4),weight(256*4),q(6144*4),gate(6144*4),nk(1024*4),oldq(6144*4),oldgate(6144*4),kc(4*ctx*256*2),vc(4*ctx*256*2),out(6144*4),oldout(6144*4),score(24*ctx*4);
     std::vector<float> hg(12288),hk(1024),hv(1024),hw(256,1.f);for(int i=0;i<12288;++i)hg[i]=float(std::sin(i*.017));for(int i=0;i<1024;++i){hk[i]=float(std::cos(i*.047));hv[i]=float(std::sin(i*.031));}
     put(qg,hg);put(v,hv);put(weight,hw);
-    for(int pos=0;pos<ctx;++pos){put(k,hk);Q::attention_prepare(qg.as(),k.as(),v.as(),weight.as(),weight.as(),oldq.as(),oldgate.as(),kc.as<half>(),vc.as<half>(),pos,ctx,1e-6f,1e7f,s);
-        Q::attention_apply(oldq.as(),oldgate.as(),kc.as<half>(),vc.as<half>(),oldout.as(),score.as(),pos,ctx,s);
-        Q::attention_normalize(qg.as(),k.as(),weight.as(),weight.as(),q.as(),gate.as(),k.as(),pos,1e-6f,1e7f,s);cache.step(0,pos,q.as(),k.as(),v.as(),gate.as(),out.as(),score.as());
+    for(int pos=0;pos<ctx;++pos){put(k,hk);Q::attention_prepare(qg.as(),k.as(),v.as(),weight.as(),weight.as(),oldq.as(),oldgate.as(),kc.as<half>(),vc.as<half>(),pos,ctx,24,4,1e-6f,1e7f,s);
+        Q::attention_apply(oldq.as(),oldgate.as(),kc.as<half>(),vc.as<half>(),oldout.as(),score.as(),pos,ctx,24,4,s);
+        Q::attention_normalize(qg.as(),k.as(),weight.as(),weight.as(),q.as(),gate.as(),k.as(),pos,24,4,1e-6f,1e7f,s);cache.step(0,pos,q.as(),k.as(),v.as(),gate.as(),out.as(),score.as());
         auto old=get<float>(oldout);compare(get<float>(out),std::vector<double>(old.begin(),old.end()),0,0);
     }std::puts("PASS F16 normalize/in-place-K/RoPE/cache exact legacy output");
 }

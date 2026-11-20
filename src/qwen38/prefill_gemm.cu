@@ -55,10 +55,76 @@ __device__ __forceinline__ uint4 pack_f8_to_u4(float v0, float v1, float v2, flo
                       pack_f2_to_u32(v4, v5), pack_f2_to_u32(v6, v7));
 }
 
+// E2M1 value: sign bit + 3-bit magnitude code -> {0, .5, 1, 1.5, 2, 3, 4, 6}.
+__device__ __forceinline__ float e2m1_value(uint8_t nibble) {
+    constexpr float kMag[8] = {0.f, 0.5f, 1.f, 1.5f, 2.f, 3.f, 4.f, 6.f};
+    const float v = kMag[nibble & 7u];
+    return (nibble & 8u) ? -v : v;
+}
+// Unsigned E4M3 scale (exponent bias 7), used by NVFP4 sub-blocks.
+__device__ __forceinline__ float ue4m3_value(uint8_t b) {
+    const int e = (b >> 3) & 15, m = b & 7;
+    if (e == 0) return static_cast<float>(m) / 8.f * (1.f / 64.f);
+    return (1.f + static_cast<float>(m) / 8.f) * __int_as_float((e + 120) << 23); // 2^(e-7)
+}
+
+// GGML Q3_K (type 11): 256 values / 110 bytes. Layout: fp16 d, 32 B high mask,
+// 64 B of 2-bit codes, 12 B of 4-bit sub-block scales. Decoding follows the
+// reference dequantize_row_q3_K in src/quant/dequant.cpp exactly.
+__device__ __forceinline__ float dequant_q3k_elem(const uint8_t* p, int i) {
+    const float d_all = load_fp16_le(p);
+    const uint8_t* q = p + 2;
+    const uint8_t* hm = p + 34;
+    const uint8_t* sr = p + 98;
+    const int n = i / 128, local = i % 128;
+    const int j = local / 32, half = (local % 32) / 16, l = local % 16;
+    const int qidx = n * 32 + l + half * 16;
+    const uint8_t qb = q[qidx];
+    const int code = static_cast<int>((qb >> (2 * j)) & 3);
+    const uint8_t mbit = static_cast<uint8_t>(1u << (4 * n + j));
+    const int val = code - ((hm[qidx] & mbit) ? 0 : 4);
+
+    uint32_t aux[4];
+    #pragma unroll
+    for (int k = 0; k < 4; ++k) {
+        aux[k] = static_cast<uint32_t>(sr[4 * k]) | (static_cast<uint32_t>(sr[4 * k + 1]) << 8) |
+                 (static_cast<uint32_t>(sr[4 * k + 2]) << 16) | (static_cast<uint32_t>(sr[4 * k + 3]) << 24);
+    }
+    const uint32_t tmp = aux[2];
+    aux[2] = ((aux[0] >> 4) & 0x0f0f0f0fu) | (((tmp >> 4) & 0x03030303u) << 4);
+    aux[3] = ((aux[1] >> 4) & 0x0f0f0f0fu) | (((tmp >> 6) & 0x03030303u) << 4);
+    aux[0] = (aux[0] & 0x0f0f0f0fu) | (((tmp >> 0) & 0x03030303u) << 4);
+    aux[1] = (aux[1] & 0x0f0f0f0fu) | (((tmp >> 2) & 0x03030303u) << 4);
+    const int sc = static_cast<int8_t>(reinterpret_cast<const uint8_t*>(aux)[n * 8 + j * 2 + half]);
+    return d_all * static_cast<float>(sc - 32) * static_cast<float>(val);
+}
+
 __device__ __forceinline__ float dequant_elem(int type, const uint8_t* p, int i) {
     if (type == 0)  return reinterpret_cast<const float*>(p)[i];
     if (type == 1)  return __half2float(reinterpret_cast<const half*>(p)[i]);
     if (type == 30) return __uint_as_float(static_cast<uint32_t>(reinterpret_cast<const uint16_t*>(p)[i]) << 16);
+    if (type == 11) {
+        p += static_cast<size_t>(i / 256) * 110;
+        return dequant_q3k_elem(p, i % 256);
+    }
+    if (type == 39 || type == 40) {
+        // MXFP4: 32 values / 17 B = 1 E8M0 scale + 16 B of E2M1 codes.
+        // NVFP4: 64 values / 36 B = 4 UE4M3 sub-scales (16 values each) + 32 B codes.
+        const int blk = (type == 39) ? 32 : 64;
+        const int bytes = (type == 39) ? 17 : 36;
+        const size_t offset = static_cast<size_t>(i / blk) * bytes;
+        const int j = i % blk;
+        float scale;
+        if (type == 39) {
+            const int e = p[offset];
+            scale = (e > 0 && e < 255) ? __int_as_float(e << 23) : 1.f; // 2^(e-127)
+        } else {
+            scale = ue4m3_value(p[offset + j / 16]);
+        }
+        const uint8_t packed = p[offset + ((type == 39) ? 1 : 4) + j / 2];
+        const uint8_t nibble = (j & 1) ? (packed >> 4) : (packed & 15);
+        return scale * e2m1_value(nibble);
+    }
     if (type == 142) {
         p += static_cast<size_t>(i / 128) * 34;
         i %= 128;
@@ -73,6 +139,14 @@ __device__ __forceinline__ float dequant_elem(int type, const uint8_t* p, int i)
         p += static_cast<size_t>(i / 256) * (type == 21 ? 110 : 82);
         i %= 256;
         return iq_value(type, p, i, load_fp16_le(p), q38_iq2s_grid, q38_iq3s_grid);
+    }
+    if (type == 20) {
+        // IQ4_NL: 32 values / 18 B = fp16 scale + 16 B of packed nibbles.
+        p += static_cast<size_t>(i / 32) * 18;
+        i %= 32;
+        constexpr int kNL[16] = {-127,-104,-83,-65,-49,-35,-22,-10,1,13,25,38,53,69,89,113};
+        const int code = (i < 16) ? (p[2 + i] & 15) : (p[2 + i - 16] >> 4);
+        return load_fp16_le(p) * static_cast<float>(kNL[code]);
     }
     if (type == 23) {
         p += static_cast<size_t>(i / 256) * 136;
@@ -524,13 +598,17 @@ void launch_dequant_tile(int type, const uint8_t* src, half* dst, int tile_rows,
         case 0:   dequant_tile_kernel<0><<<grid, block, 0, stream>>>(src, dst, tile_rows, K, row_stride); break;
         case 1:   dequant_tile_kernel<1><<<grid, block, 0, stream>>>(src, dst, tile_rows, K, row_stride); break;
         case 8:   dequant_tile_kernel<8><<<grid, block, 0, stream>>>(src, dst, tile_rows, K, row_stride); break;
+        case 11:  dequant_tile_kernel<11><<<grid, block, 0, stream>>>(src, dst, tile_rows, K, row_stride); break;
         case 12:  dequant_tile_kernel<12><<<grid, block, 0, stream>>>(src, dst, tile_rows, K, row_stride); break;
         case 13:  dequant_tile_kernel<13><<<grid, block, 0, stream>>>(src, dst, tile_rows, K, row_stride); break;
         case 14:  dequant_tile_kernel<14><<<grid, block, 0, stream>>>(src, dst, tile_rows, K, row_stride); break;
+        case 20:  dequant_tile_kernel<20><<<grid, block, 0, stream>>>(src, dst, tile_rows, K, row_stride); break;
         case 21:  dequant_tile_kernel<21><<<grid, block, 0, stream>>>(src, dst, tile_rows, K, row_stride); break;
         case 22:  dequant_tile_kernel<22><<<grid, block, 0, stream>>>(src, dst, tile_rows, K, row_stride); break;
         case 23:  dequant_tile_kernel<23><<<grid, block, 0, stream>>>(src, dst, tile_rows, K, row_stride); break;
         case 30:  dequant_tile_kernel<30><<<grid, block, 0, stream>>>(src, dst, tile_rows, K, row_stride); break;
+        case 39:  dequant_tile_kernel<39><<<grid, block, 0, stream>>>(src, dst, tile_rows, K, row_stride); break;
+        case 40:  dequant_tile_kernel<40><<<grid, block, 0, stream>>>(src, dst, tile_rows, K, row_stride); break;
         case 142: dequant_tile_kernel<142><<<grid, block, 0, stream>>>(src, dst, tile_rows, K, row_stride); break;
         default:  throw std::runtime_error("unsupported matrix type in prefill_gemm");
     }
@@ -849,7 +927,11 @@ void PrefillGemmWorkspace::matmul_batch_prepared(const StrataQuantTensor& weight
         }
 
         const int wtype = static_cast<int>(weight.type);
-        const bool use_fp32_accum = (wtype == 0 || wtype == 1 || wtype == 30);
+        // Opt-in diagnostics: FP32 accumulation writes FP32 directly and can
+        // beat the FP16-accumulate + rescale path on some SM120 shapes.
+        const char* accum_env = std::getenv("STRATA_Q38_FP32_ACCUM");
+        const bool use_fp32_accum = (wtype == 0 || wtype == 1 || wtype == 30) ||
+            (accum_env && accum_env[0] == '1');
         size_t max_tile_rows_sz = impl_->tile_buf_bytes / (static_cast<size_t>(K) * sizeof(half));
         if (max_tile_rows_sz == 0) throw std::runtime_error("PrefillGemmWorkspace tile buffer smaller than one row");
         if (!use_fp32_accum && max_tile_rows_sz > impl_->max_tile_rows_alloc) max_tile_rows_sz = impl_->max_tile_rows_alloc;
