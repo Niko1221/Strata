@@ -31,28 +31,176 @@
   },
   "length_tolerance": 0.02,
   "requests": [
-    {"id": "warmup", "input_tokens": 75, "max_shared_prefix_tokens": 47},
-    {"id": "performance-short-r1", "input_tokens": 77, "max_shared_prefix_tokens": 50},
-    {"id": "performance-prompt-4k-r1", "input_tokens": 4093, "max_shared_prefix_tokens": 54},
-    {"id": "performance-prompt-16k-r1", "input_tokens": 16387, "max_shared_prefix_tokens": 55},
-    {"id": "performance-short-r2", "input_tokens": 77, "max_shared_prefix_tokens": 50},
-    {"id": "performance-prompt-4k-r2", "input_tokens": 4093, "max_shared_prefix_tokens": 54},
-    {"id": "performance-prompt-16k-r2", "input_tokens": 16387, "max_shared_prefix_tokens": 55},
-    {"id": "performance-short-r3", "input_tokens": 77, "max_shared_prefix_tokens": 50},
-    {"id": "performance-prompt-4k-r3", "input_tokens": 4093, "max_shared_prefix_tokens": 54},
-    {"id": "performance-prompt-16k-r3", "input_tokens": 16387, "max_shared_prefix_tokens": 55},
-    {"id": "sanity-I1", "input_tokens": 82, "max_shared_prefix_tokens": 49},
-    {"id": "sanity-I2", "input_tokens": 90, "max_shared_prefix_tokens": 49},
-    {"id": "sanity-I3", "input_tokens": 85, "max_shared_prefix_tokens": 49},
-    {"id": "sanity-I4", "input_tokens": 71, "max_shared_prefix_tokens": 49},
-    {"id": "sanity-R1", "input_tokens": 4089, "max_shared_prefix_tokens": 49},
-    {"id": "sanity-R2", "input_tokens": 4089, "max_shared_prefix_tokens": 49},
-    {"id": "sanity-R3", "input_tokens": 16382, "max_shared_prefix_tokens": 49},
-    {"id": "sanity-R4", "input_tokens": 16390, "max_shared_prefix_tokens": 49},
-    {"id": "sanity-T1", "input_tokens": 325, "max_shared_prefix_tokens": 61},
-    {"id": "sanity-T2", "input_tokens": 335, "max_shared_prefix_tokens": 62},
-    {"id": "sanity-T3", "input_tokens": 352, "max_shared_prefix_tokens": 61},
-    {"id": "sanity-T4", "input_tokens": 339, "max_shared_prefix_tokens": 62}
+    {
+      "id": "warmup",
+      "input_tokens": 75,
+      "max_shared_prefix_tokens": 47
+    },
+    {
+      "id": "performance-short-r1",
+      "input_tokens": 77,
+      "max_shared_prefix_tokens": 50
+    },
+    {
+      "id": "performance-prompt-4k-r1",
+      "input_tokens": 4093,
+      "max_shared_prefix_tokens": 54
+    },
+    {
+      "id": "performance-prompt-16k-r1",
+      "input_tokens": 16387,
+      "max_shared_prefix_tokens": 55
+    },
+    {
+      "id": "performance-short-r2",
+      "input_tokens": 77,
+      "max_shared_prefix_tokens": 50
+    },
+    {
+      "id": "performance-prompt-4k-r2",
+      "input_tokens": 4093,
+      "max_shared_prefix_tokens": 54
+    },
+    {
+      "id": "performance-prompt-16k-r2",
+      "input_tokens": 16387,
+      "max_shared_prefix_tokens": 55
+    },
+    {
+      "id": "performance-short-r3",
+      "input_tokens": 77,
+      "max_shared_prefix_tokens": 50
+    },
+    {
+      "id": "performance-prompt-4k-r3",
+      "input_tokens": 4093,
+      "max_shared_prefix_tokens": 54
+    },
+    {
+      "id": "performance-prompt-16k-r3",
+      "input_tokens": 16387,
+      "max_shared_prefix_tokens": 55
+    },
+    {
+      "id": "sanity-I1",
+      "input_tokens": 82,
+      "max_shared_prefix_tokens": 49
+    },
+    {
+      "id": "sanity-I2",
+      "input_tokens": 90,
+      "max_shared_prefix_tokens": 49
+    },
+    {
+      "id": "sanity-I3",
+      "input_tokens": 85,
+      "max_shared_prefix_tokens": 49
+    },
+    {
+      "id": "sanity-I4",
+      "input_tokens": 71,
+      "max_shared_prefix_tokens": 49
+    },
+    {
+      "id": "sanity-R1",
+      "input_tokens": 4089,
+      "max_shared_prefix_tokens": 49
+    },
+    {
+      "id": "sanity-R2",
+      "input_tokens": 4089,
+      "max_shared_prefix_tokens": 49
+    },
+    {
+      "id": "sanity-R3",
+      "input_tokens": 16382,
+      "max_shared_prefix_tokens": 49
+    },
+    {
+      "id": "sanity-R4",
+      "input_tokens": 16390,
+      "max_shared_prefix_tokens": 49
+    },
+    {
+      "id": "sanity-T1",
+      "input_tokens": 325,
+      "max_shared_prefix_tokens": 61
+    },
+    {
+      "id": "sanity-T2",
+      "input_tokens": 335,
+      "max_shared_prefix_tokens": 62
+    },
+    {
+      "id": "sanity-T3",
+      "input_tokens": 352,
+      "max_shared_prefix_tokens": 61
+    },
+    {
+      "id": "sanity-T4",
+      "input_tokens": 339,
+      "max_shared_prefix_tokens": 62
+    },
+    {
+      "id": "concurrency-r1-c1",
+      "input_tokens": 78,
+      "max_shared_prefix_tokens": 51
+    },
+    {
+      "id": "concurrency-r1-c2",
+      "input_tokens": 78,
+      "max_shared_prefix_tokens": 51
+    },
+    {
+      "id": "concurrency-r1-c3",
+      "input_tokens": 78,
+      "max_shared_prefix_tokens": 51
+    },
+    {
+      "id": "concurrency-r1-c4",
+      "input_tokens": 78,
+      "max_shared_prefix_tokens": 51
+    },
+    {
+      "id": "concurrency-r2-c1",
+      "input_tokens": 78,
+      "max_shared_prefix_tokens": 51
+    },
+    {
+      "id": "concurrency-r2-c2",
+      "input_tokens": 78,
+      "max_shared_prefix_tokens": 51
+    },
+    {
+      "id": "concurrency-r2-c3",
+      "input_tokens": 78,
+      "max_shared_prefix_tokens": 51
+    },
+    {
+      "id": "concurrency-r2-c4",
+      "input_tokens": 78,
+      "max_shared_prefix_tokens": 51
+    },
+    {
+      "id": "concurrency-r3-c1",
+      "input_tokens": 78,
+      "max_shared_prefix_tokens": 51
+    },
+    {
+      "id": "concurrency-r3-c2",
+      "input_tokens": 78,
+      "max_shared_prefix_tokens": 51
+    },
+    {
+      "id": "concurrency-r3-c3",
+      "input_tokens": 78,
+      "max_shared_prefix_tokens": 51
+    },
+    {
+      "id": "concurrency-r3-c4",
+      "input_tokens": 78,
+      "max_shared_prefix_tokens": 51
+    }
   ],
   "note": "input_tokens counts the rendered thinking request with the generation prompt. max_shared_prefix_tokens is the longest token prefix this request shares with any other request of the bundle: cache reuse above it means the user payload was read from the cache."
 }
