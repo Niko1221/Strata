@@ -533,7 +533,7 @@ private:
     double run_ds(Cached& c);
     // prompts on the matrix units (prompt_chunk below)
     struct PromptGemm;
-    PromptGemm* pg_ = nullptr;
+    std::unique_ptr<PromptGemm> pg_;
     const int32_t* cut_ids_ = nullptr;    // the routed ids the handshake reads (a prompt chunk's; else ids_)
     const mtl::Buffer* mtp_src_ = nullptr;   // the rows the draft layer's prompt K/V read (a prompt chunk's; else R_)
     double pg_ms_ = 0;
@@ -2037,12 +2037,6 @@ void Window::stepprof(const std::vector<mtl::Dispatch>& ds, int Tn) {
     std::fflush(stderr);
 }
 
-Window::~Window() {
-    df2_free();
-    if (logpos_) std::fclose(logpos_);
-    print_prof();
-}
-
 // STRATA_METAL_PROFILE=1: the per-window time split.  Printed once: at the window's destruction, or at process exit
 // (the serve loop leaves through exit() without destroying the window)
 void Window::print_prof(bool periodic) {
@@ -3009,6 +3003,13 @@ int pg_unit(int t) { return t == ref::Q2_0 || t == ref::IQ3_S || t == ref::BF16 
 }  // namespace
 
 struct Window::PromptGemm {
+    explicit PromptGemm(mtl::Context& cx) : context(cx) {}
+    ~PromptGemm() {
+        for (auto& buffer : owned) context.free(buffer);
+    }
+    mtl::Context& context;
+    std::vector<mtl::Buffer> owned;
+
     int MT = 0, QS = 256, TM = 16, maxrows = 0, nblk_max = 0;
     int lib = -1, lgdn = -1, lqsa = -1;
     bool k4 = false, gu_v3 = false, dn_v3 = false, flash = false;
@@ -3018,6 +3019,12 @@ struct Window::PromptGemm {
     mtl::Buffer WD, WU, Wqkv, Wz, Wal, Wbe, Wout, Wq, Wk, Wv, Wiq, Wik, Wr, Wsg, Wshg, Wshu, Wshd, Wpk, Wpv;
     mtl::Buffer mixr;   // Gyro: the rotated gate/up input rows [MT][N]
 };
+
+Window::~Window() {
+    df2_free();
+    if (logpos_) std::fclose(logpos_);
+    print_prof();
+}
 
 int Window::prompt_chunk_rows() const { return pg_ ? pg_->MT : 0; }
 
@@ -3046,7 +3053,7 @@ bool Window::prompt_gemm_init(std::string& err) {
     sysctlbyname("hw.memsize", &phys, &plen, nullptr, 0);
     const int stream_chunk = phys >= (96ull << 30) ? 4096 : 1024;
     const int C = std::max(64, ec ? std::atoi(ec) : (stream_ ? stream_chunk : 2048)) / 64 * 64;
-    auto pg = std::make_unique<PromptGemm>();
+    auto pg = std::make_unique<PromptGemm>(*cx_);
     PromptGemm& p = *pg;
     p.MT = C;
     p.QS = std::min(C, 256);
@@ -3075,10 +3082,14 @@ bool Window::prompt_gemm_init(std::string& err) {
     auto AB = [&](size_t bytes) -> mtl::Buffer {
         const size_t b = (bytes + 16383) / 16384 * 16384;
         if (measure) { need += b; return mtl::Buffer{}; }
-        if (region == nullptr) return cx_->alloc(bytes);
-        mtl::Buffer r = cx_->wrap(region, b);
-        region += b;
-        return r;
+        auto& buffer = p.owned.emplace_back();
+        if (region) {
+            buffer = cx_->wrap(region, b);
+            region += b;
+        } else {
+            buffer = cx_->alloc(bytes);
+        }
+        return buffer;
     };
     auto F32 = [&](size_t n) { return AB(4 * n); };
     auto F16 = [&](size_t n) { return AB(2 * n); };
@@ -3116,13 +3127,15 @@ bool Window::prompt_gemm_init(std::string& err) {
     measure = false;
     if (stream_) {
         region = st_->region(need);
-        if (region == nullptr) { err = "metal prompt: no arena region for the prompt buffers"; return false; }
+        if (region == nullptr)
+            std::fprintf(stderr, "strata metal stream: the arena is small: the prompt allocates %.2f GB of Metal scratch\n", need / 1e9);
     }
+    const bool arena_scratch = region != nullptr;
     make();
-    pg_ = pg.release();
+    pg_ = std::move(pg);
     std::fprintf(stderr, "strata metal: prompts on the matrix units in chunks of %d (experts %s, QSA %s, matmul2d layout %s; "
                          "%.2f GB of buffers%s)\n", C, p.gu_v3 ? "v3" : "v2", p.flash ? "flash" : "v1", p.k4 ? "K4" : "other",
-                 need / 1e9, stream_ ? ", in the expert arena while a prompt runs" : "");
+                 need / 1e9, arena_scratch ? ", in the expert arena while a prompt runs" : "");
     (void) err;
     return true;
 }
