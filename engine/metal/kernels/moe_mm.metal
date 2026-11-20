@@ -50,6 +50,11 @@ kernel void mm_hist(device const int* ids [[buffer(0)]], device uint* bcnt [[buf
 // call: gx_gu and gx_down come in the plan because only the host knows which tile the dispatch picked, and the tile
 // and its grid have to agree (src/moe_tiles.h).  They were the host's to write once, and the gate/up grid stayed at
 // NFF / 64 while the K-quant tile writes 16 columns per threadgroup.
+constant bool MM_M8_TAIL [[function_constant(26)]];
+constant bool mm_m8_tail = is_function_constant_defined(MM_M8_TAIL) && MM_M8_TAIL;
+// The M8 specialization uses bit 31 of the tile's row offset to mark an 8-row tail.
+constant uint MM_TAIL_ROW = 0x80000000u;
+
 kernel void mm_scan(device const uint* bcnt [[buffer(0)]], device uint* boff [[buffer(1)]],
                     device uint* eoff [[buffer(2)]], device int2* tiles [[buffer(3)]], device uint* meta [[buffer(4)]],
                     constant MmPlanArgs& a [[buffer(5)]],
@@ -66,7 +71,9 @@ kernel void mm_scan(device const uint* bcnt [[buffer(0)]], device uint* boff [[b
             boff[b * a.n_expert + e] = tot;
             tot += bcnt[b * a.n_expert + e];
         }
-    const uint nt = (tot + a.tm - 1) / a.tm, rows = nt * a.tm;
+    const uint nt = (tot + a.tm - 1) / a.tm;
+    const bool tail = mm_m8_tail && (tot % 16) > 0 && (tot % 16) <= 8;
+    const uint rows = nt * a.tm - (tail ? 8 : 0);
     const uint pr = simd_prefix_exclusive_sum(rows), pt = simd_prefix_exclusive_sum(nt);
     if (lane == 31) { s_rows[sg] = pr + rows; s_tiles[sg] = pt + nt; }
     threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -79,7 +86,10 @@ kernel void mm_scan(device const uint* bcnt [[buffer(0)]], device uint* boff [[b
     if (e < a.n_expert) {
         const uint r0 = orow + pr, t0 = otile + pt;
         eoff[e] = r0;
-        for (uint k = 0; k < nt; ++k) tiles[t0 + k] = int2(int(e), int(r0 + k * a.tm));
+        for (uint k = 0; k < nt; ++k) {
+            const uint row = r0 + k * a.tm;
+            tiles[t0 + k] = int2(int(e), int(row | (tail && k + 1 == nt ? MM_TAIL_ROW : 0)));
+        }
     }
     if (tid == 0) {
         meta[0] = all_tiles;
@@ -306,18 +316,12 @@ constant int MM_PROBE [[function_constant(5)]];
 constant int mm_probe = is_function_constant_defined(MM_PROBE) ? MM_PROBE : 0;
 
 template <int F, int TM, int TN, int TK, int SG>
-kernel void mm_gu2(device const uchar* W [[buffer(0)]], device const half* XS [[buffer(1)]],
-                   device half* HS [[buffer(2)]], device const int2* tiles [[buffer(3)]], constant MmArgs& a [[buffer(4)]], device const uint* smap [[buffer(5)]],
-                     device const uchar* W1 [[buffer(6)]], device const uchar* W2 [[buffer(7)]], device const uchar* W3 [[buffer(8)]],
-                   uint3 tg [[threadgroup_position_in_grid]], ushort tid [[thread_index_in_threadgroup]]) {
+static inline void mm_gu2_tile(device const uchar* W, device const half* XS, device half* HS, constant MmArgs& a,
+                               device const uint* smap, device const uchar* W1, device const uchar* W2, device const uchar* W3,
+                               int e, int row0, int f0, ushort tid, threadgroup half* wg, threadgroup half* wu,
+                               threadgroup float* ot, threadgroup uint* tab) {
     constexpr int NTH = SG * 32;
-    threadgroup half wg[TN * TK];
-    threadgroup half wu[TN * TK];
-    threadgroup float ot[TM * TN];
-    threadgroup uint tab[fmt<F>::TAB];
     load_tab<F>(tab, tid, NTH);
-    const int2 tl = tiles[tg.y];
-    const int e = tl.x, row0 = tl.y, f0 = int(tg.x) * TN;
     device const uchar* E = kArena ? arena_slot(smap[e], W, W1, W2, W3) : W + ulong(e) * a.gu_stride;
     device const uchar* g0 = E + a.gate_off + ulong(f0) * a.gu_row;
     device const uchar* u0 = E + a.up_off + ulong(f0) * a.gu_row;
@@ -362,17 +366,11 @@ kernel void mm_gu2(device const uchar* W [[buffer(0)]], device const half* XS [[
 }
 
 template <int F, int TM, int TN, int TK, int SG>
-kernel void mm_down2(device const uchar* W [[buffer(0)]], device const half* HS [[buffer(1)]],
-                     device float* YE [[buffer(2)]], device const int2* tiles [[buffer(3)]],
-                     constant MmArgs& a [[buffer(4)]], device const uint* smap [[buffer(5)]],
-                     device const uchar* W1 [[buffer(6)]], device const uchar* W2 [[buffer(7)]], device const uchar* W3 [[buffer(8)]],
-                     uint3 tg [[threadgroup_position_in_grid]], ushort tid [[thread_index_in_threadgroup]]) {
+static inline void mm_down2_tile(device const uchar* W, device const half* HS, device float* YE, constant MmArgs& a,
+                                 device const uint* smap, device const uchar* W1, device const uchar* W2, device const uchar* W3,
+                                 int e, int row0, int d0, ushort tid, threadgroup half* wd, threadgroup uint* tab) {
     constexpr int NTH = SG * 32;
-    threadgroup half wd[TN * TK];
-    threadgroup uint tab[fmt<F>::TAB];
     load_tab<F>(tab, tid, NTH);
-    const int2 tl = tiles[tg.y];
-    const int e = tl.x, row0 = tl.y, d0 = int(tg.x) * TN;
     device const uchar* w0 = (kArena ? arena_slot(smap[e], W, W1, W2, W3) : W + ulong(e) * a.d_stride) + a.down_off + ulong(d0) * a.d_row;
     constexpr auto desc = matmul2d_descriptor(TM, TN, TK, false, true, false, matmul2d_descriptor::mode::multiply_accumulate);
     matmul2d<desc, execution_simdgroups<SG>> op;
@@ -392,6 +390,43 @@ kernel void mm_down2(device const uchar* W [[buffer(0)]], device const half* HS 
     }
     tensor<device float, dextents<int32_t, 2>, tensor_inline> tY(YE, dextents<int32_t, 2>(a.n_embd, 1 << 30));
     acc.store(tY.slice(d0, row0));
+}
+
+template <int F, int TM, int TN, int TK, int SG>
+kernel void mm_gu2(device const uchar* W [[buffer(0)]], device const half* XS [[buffer(1)]],
+                   device half* HS [[buffer(2)]], device const int2* tiles [[buffer(3)]], constant MmArgs& a [[buffer(4)]],
+                   device const uint* smap [[buffer(5)]], device const uchar* W1 [[buffer(6)]],
+                   device const uchar* W2 [[buffer(7)]], device const uchar* W3 [[buffer(8)]],
+                   uint3 tg [[threadgroup_position_in_grid]], ushort tid [[thread_index_in_threadgroup]]) {
+    threadgroup half wg[TN * TK], wu[TN * TK];
+    threadgroup float ot[TM * TN];
+    threadgroup uint tab[fmt<F>::TAB];
+    const int2 tl = tiles[tg.y];
+    const int f0 = int(tg.x) * TN;
+    if (TM == 16 && mm_m8_tail && (uint(tl.y) & MM_TAIL_ROW)) {
+        const int row0 = int(uint(tl.y) & ~MM_TAIL_ROW);
+        mm_gu2_tile<F, 8, TN, TK, SG>(W, XS, HS, a, smap, W1, W2, W3, tl.x, row0, f0, tid, wg, wu, ot, tab);
+    } else {
+        mm_gu2_tile<F, TM, TN, TK, SG>(W, XS, HS, a, smap, W1, W2, W3, tl.x, tl.y, f0, tid, wg, wu, ot, tab);
+    }
+}
+
+template <int F, int TM, int TN, int TK, int SG>
+kernel void mm_down2(device const uchar* W [[buffer(0)]], device const half* HS [[buffer(1)]],
+                     device float* YE [[buffer(2)]], device const int2* tiles [[buffer(3)]], constant MmArgs& a [[buffer(4)]],
+                     device const uint* smap [[buffer(5)]], device const uchar* W1 [[buffer(6)]],
+                     device const uchar* W2 [[buffer(7)]], device const uchar* W3 [[buffer(8)]],
+                     uint3 tg [[threadgroup_position_in_grid]], ushort tid [[thread_index_in_threadgroup]]) {
+    threadgroup half wd[TN * TK];
+    threadgroup uint tab[fmt<F>::TAB];
+    const int2 tl = tiles[tg.y];
+    const int d0 = int(tg.x) * TN;
+    if (TM == 16 && mm_m8_tail && (uint(tl.y) & MM_TAIL_ROW)) {
+        const int row0 = int(uint(tl.y) & ~MM_TAIL_ROW);
+        mm_down2_tile<F, 8, TN, TK, SG>(W, HS, YE, a, smap, W1, W2, W3, tl.x, row0, d0, tid, wd, tab);
+    } else {
+        mm_down2_tile<F, TM, TN, TK, SG>(W, HS, YE, a, smap, W1, W2, W3, tl.x, tl.y, d0, tid, wd, tab);
+    }
 }
 
 #define MMGU2_(F, M, N, K, S) template [[host_name("mm_gu2_" #F "_" #M "_" #N "_" #K "_" #S)]] kernel decltype(mm_gu2<F, M, N, K, S>) mm_gu2<F, M, N, K, S>;
