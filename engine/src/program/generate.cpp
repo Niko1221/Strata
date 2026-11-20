@@ -5888,7 +5888,11 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "strata generate: %s\n", err.c_str());
         return 1;
     }
-    if (hc_i8 && !make_hc_i8(wt, 0, multi_gpu ? split_at[0] : g.n_layers, 0)) {   // STRATA_HC_I8ONLY
+    // STRATA_HC_I8ONLY on a trimmed layer split: CUDA0's table is loaded again with its own layers only (the trim block
+    // below, #4522), which replaces every row - the int8 copies are made on that table instead (made here, the marks
+    // would stay on the old rows and the verifier would read rows with neither BF16 nor int8: an illegal access)
+    bool hc_i8_main_pending = hc_i8 && o.trim_stage_weights && multi_gpu;
+    if (hc_i8 && !hc_i8_main_pending && !make_hc_i8(wt, 0, multi_gpu ? split_at[0] : g.n_layers, 0)) {   // STRATA_HC_I8ONLY
         std::fprintf(stderr, "strata generate: %s\n", err.c_str());
         return 1;
     }
@@ -7434,6 +7438,14 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "strata generate: layer split: CUDA0 keeps only its own layers' dense weights "
                              "(%.2f GiB in all): %s (the later cards trim in late_weights)\n",
                      (double) before / 1073741824.0, kept.c_str());
+    }
+    if (hc_i8_main_pending) {   // STRATA_HC_I8ONLY: CUDA0's int8 copies on the table it keeps (see where this is set)
+        const strata::core::OnDevice on(primary_device);
+        if (!make_hc_i8(wt, 0, split_at.empty() ? g.n_layers : split_at[0], 0)) {
+            std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+            return 1;
+        }
+        hc_i8_main_pending = false;
     }
     // the stage that runs a layer (0: CUDA0's)
     auto stage_of = [&](int64_t l) -> int {
