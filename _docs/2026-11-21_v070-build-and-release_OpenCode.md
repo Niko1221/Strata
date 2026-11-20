@@ -46,8 +46,31 @@ push main to origin. (User decision 2026-11-20/21: full scope including publicat
   libstrix NOTICE (`775926b...`); refreshed the staged notices README hash inventory.
 - `verify-release.mjs`: **exit 0** — "Verified the signed Q38 preview companion
   (152 files); Release payload verified: Hakua 0.7.0, engine 0.6.3, Control 0.6.3".
-- build exit / installer SHA: (appended after run)
-- overwrite install: (appended after run)
+- Full `npx tauri build` attempts 1-5 all failed in tauri-build's custom build
+  script at `PERMISSION_FILES_PATH ... __app__-permission-files` with
+  "access denied, E(os error 5)" — before any Rust compilation of the app. Tried:
+  shared H: target (v067), fresh H: target (v070), v066 target that built 0.6.9,
+  creating the app-manifest parent dir, removing a stale permission file, and
+  C:-drive-local target. Capabilities dir is empty in both the prior successful
+  worktree and here; tauri.conf.json is byte-equivalent apart from CRLF.
+- Root cause of "access denied os error 5": the `__app__-permission-files`
+  write by tauri-utils `write_if_changed` failed on the H: NTFS-compressed
+  target dir. Moving CARGO_TARGET_DIR to C:\Users\downl\AppData\Local\Temp\opencode\
+  v070-target let the permission files be written (confirmed len=2, Archive) and
+  the build progressed into compiling strata-desktop v0.7.0.
+- Full build: `BUILD_EXIT=0` (C:-drive target, 5 jobs, 3 GiB RAM / 4 GiB commit /
+  disk floors kept). `strata-desktop.exe` built in 7m20s; NSIS produced
+  `Strata_0.7.0_x64-setup.exe` (121.15 MiB / 127,039,448 bytes).
+  Installer SHA-256: `04ea502271edfa02ca7922f09fb70f42330b2fdf1fa40b8bcce343ad7d76d124`.
+  Copied to `H:/Strata/releases/v070-main-build/`; tar + Copy-mode tar.7z built
+  with the installer and SHA256SUMS.txt.
+- overwrite install: `tools/test_nsis_upgrade.ps1` (fixed to the app/ layout)
+  ran against the real production `installer.nsi` cleanup macros in 6 isolated
+  fixtures (upgrade, fresh, empty, locked, junction, root-junction): **exit 0,
+  all ok=true**; user-sentinel data preserved, old engine retained on upgrade,
+  engine-bundle/notices/host/node/harness cleanup exercised. Evidence:
+  `H:/Strata/evidence/v070-nsis-upgrade-fixture/` and
+  `H:/Strata/releases/v070-main-build/nsis-upgrade-test.log`.
 - tag / release / push: (appended after run)
 
 ## Residual risk
