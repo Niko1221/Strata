@@ -5411,7 +5411,10 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
         for (int q = 0; q < nd; ++q) skip_d[q] = false;
         // (not taken from #6023: the tail skip with a peer card - it changes the bits of a --peer-device run that sets
         // STRATA_ROUTE_TAIL_SKIP, and the owner's default for the skip is off; the peer-resident test below stays, it is right)
-        if (tail_rank > 0 && d.peer == nullptr && d.remote_count == 0) {
+        // No helper: skip a missed tail even when the bytes are in a host copy.
+        // A helper skips a file-tier miss only. A row it holds, or one whose bytes
+        // are already in the host copy, is still computed.
+        if (tail_rank > 0 && d.peer == nullptr) {
             int minr[kMaxWindowEntries];
             for (int q = 0; q < nd; ++q) minr[q] = 99;
             for (int64_t i = 0; i < n; ++i) {
@@ -5424,6 +5427,8 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
                 if (e < 0 || e >= d.n_expert || minr[q] < tail_rank) continue;
                 if (d.host_res[(size_t) d.layers * (size_t) d.n_expert + (size_t) e] >= 0 ||
                     (d.peer != nullptr && d.peer->has(d.layers, e))) continue;   // resident
+                if (d.remote_count > 0 &&
+                    (helper_holds(e) || (d.src != nullptr && d.src->host_copy(d.layers, e)))) continue;
                 skip_d[q] = true;
                 --nmiss;
                 ++d.tail_experts;
@@ -6905,6 +6910,12 @@ uint64_t ArenaExpertSource::arena_off(int64_t layer, int64_t expert) const {
 bool ArenaExpertSource::pcie_layer(int64_t layer) const {
     if (!ranges_) return device_alias(layer, 0) != nullptr;   // the prefix rule (ExpertSource's default)
     return layer >= 0 && (size_t) layer < layer_pcie_.size() && layer_pcie_[(size_t) layer] != 0;
+}
+
+bool ArenaExpertSource::host_copy(int64_t layer, int64_t expert) const {
+    if (map_ != nullptr || base_ == nullptr || layer < 0 || expert < 0 || expert >= n_expert_) return false;
+    const int64_t idx = layer * n_expert_ + expert;
+    return idx >= 0 && idx < blobs_;
 }
 
 bool ArenaExpertSource::pinned(int64_t layer, int64_t expert) const {
