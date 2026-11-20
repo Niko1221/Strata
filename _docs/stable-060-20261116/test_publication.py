@@ -448,7 +448,7 @@ class EnginePhaseBoundaries(Scratch):
     """Run the real phase on synthetic API/files and observe the mutation boundary."""
 
     def exercise(self, change: str | None = None, *, post_change: str | None = None) -> dict:
-        from strata_control import engine_component, signing
+        from terminal.strata_control import engine_component, signing
 
         self.attempt = getattr(self, "attempt", 0) + 1
         root = self.root / str(self.attempt)

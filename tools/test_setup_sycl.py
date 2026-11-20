@@ -58,7 +58,7 @@ class SyclBackend(unittest.TestCase):
 
     def test_setup_intel_finds_the_setup_functions_it_replaces(self):
         """sycl/setup_intel.py swaps these steps; setup.py must still have them (it stops with a message otherwise)."""
-        src = (ROOT / "sycl" / "setup_intel.py").read_text(encoding="utf-8")
+        src = (ROOT.parent / "engine" / "sycl" / "setup_intel.py").read_text(encoding="utf-8")
         names = re.search(r'for name in \(([^)]*)\):', src).group(1)
         for name in re.findall(r'"(\w+)"', names):
             self.assertTrue(callable(getattr(setup, name, None)), name)
@@ -69,7 +69,7 @@ class SyclBackend(unittest.TestCase):
         all the parameters of setup.<name> (or take *args / **kwargs)."""
         import ast
         import inspect
-        tree = ast.parse((ROOT / "sycl" / "setup_intel.py").read_text(encoding="utf-8"))
+        tree = ast.parse((ROOT.parent / "engine" / "sycl" / "setup_intel.py").read_text(encoding="utf-8"))
         defs = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
         checked = 0
         for n in ast.walk(tree):
@@ -94,14 +94,14 @@ class SyclBackend(unittest.TestCase):
         self.assertGreaterEqual(checked, 8)
 
     def test_arc_pro_b60_is_known_under_both_pci_ids(self):
-        src = (ROOT / "sycl" / "setup_intel.py").read_text(encoding="utf-8")
+        src = (ROOT.parent / "engine" / "sycl" / "setup_intel.py").read_text(encoding="utf-8")
         self.assertIn('"e211": ("Arc Pro B60", 24.0)', src)
         self.assertIn('"e221": ("Arc Pro B60", 24.0)', src)
 
 
 class CMakeOption(unittest.TestCase):
     def test_sycl_is_off_by_default_and_exclusive(self):
-        src = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8-sig")
+        src = (ROOT.parent / "engine" / "CMakeLists.txt").read_text(encoding="utf-8-sig")
         self.assertIn('option(STRATA_ENABLE_SYCL "EXPERIMENTAL', src)
         self.assertRegex(src, r'option\(STRATA_ENABLE_SYCL "[^"]*" OFF\)')
         self.assertIn("add_subdirectory(sycl)", src)
@@ -140,7 +140,7 @@ class IntelIds(unittest.TestCase):
     @staticmethod
     def table():
         import importlib.util
-        spec = importlib.util.spec_from_file_location("setup_intel", ROOT / "sycl" / "setup_intel.py")
+        spec = importlib.util.spec_from_file_location("setup_intel", ROOT.parent / "engine" / "sycl" / "setup_intel.py")
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         return mod.INTEL_ARC
@@ -161,7 +161,7 @@ class ToSycl(unittest.TestCase):
     @staticmethod
     def mod():
         import importlib.util
-        spec = importlib.util.spec_from_file_location("setup_intel", ROOT / "sycl" / "setup_intel.py")
+        spec = importlib.util.spec_from_file_location("setup_intel", ROOT.parent / "engine" / "sycl" / "setup_intel.py")
         m = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(m)
         return m
@@ -276,7 +276,7 @@ class ToSycl(unittest.TestCase):
         self.assertFalse(m.is_b_series("xe", "56a0"))                       # A770 on xe
         self.assertIn("new to Strata", m.B_SERIES_LINE)
         self.assertIn("issues", m.B_SERIES_LINE)
-        src = (ROOT / "sycl" / "setup_intel.py").read_text(encoding="utf-8")
+        src = (ROOT.parent / "engine" / "sycl" / "setup_intel.py").read_text(encoding="utf-8")
         self.assertIn("B_SERIES_LINE", src)
         self.assertNotIn('sys.argv += ["--vision", "none"]', src)          # no B-series card has pictures switched off for it
         self.assertIn("S.hip_vision = intel_vision", src)
@@ -292,16 +292,16 @@ class ToSycl(unittest.TestCase):
         self.assertIn("pictures are read on the CPU", warn.call_args[0][0])
 
     def test_the_container_shares_dev_shm_with_the_server_for_the_embeddings(self):
-        sh = (ROOT / "sycl" / "serve" / "strata-sycl.sh").read_text(encoding="utf-8")
+        sh = (ROOT.parent / "engine" / "sycl" / "serve" / "strata-sycl.sh").read_text(encoding="utf-8")
         self.assertIn("-v /dev/shm:/dev/shm", sh)
         self.assertIn("STRATA_SYCL_SHM", sh)
 
     def test_a_picture_that_cannot_reach_the_container_is_said_once(self):
         import importlib.util
-        spec = importlib.util.spec_from_file_location("server_intel_t", ROOT / "sycl" / "serve" / "server_intel.py")
-        src = (ROOT / "sycl" / "serve" / "server_intel.py").read_text(encoding="utf-8")
+        spec = importlib.util.spec_from_file_location("server_intel_t", ROOT.parent / "engine" / "sycl" / "serve" / "server_intel.py")
+        src = (ROOT.parent / "engine" / "sycl" / "serve" / "server_intel.py").read_text(encoding="utf-8")
         self.assertIn("install_shared_embeddings()", src.split('if __name__ == "__main__":')[1])
-        sys.path.insert(0, str(ROOT / "sycl" / "serve"))
+        sys.path.insert(0, str(ROOT.parent / "engine" / "sycl" / "serve"))
         try:
             m = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(m)

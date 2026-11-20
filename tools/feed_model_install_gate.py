@@ -49,7 +49,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "packaging"))
+sys.path.insert(0, str(ROOT.parent / "tools" / "packaging"))
 
 REV = "0123456789abcdef0123456789abcdef01234567"
 REPO = "gate-test/Qwen4-Gate-GGUF"

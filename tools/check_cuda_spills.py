@@ -21,7 +21,7 @@ sits in `strata::` or in an anonymous namespace.  The report line counts what wa
   check_cuda_spills.py --list LIB ...   the full table (library, object, sm, REG, STACK, LOCAL, SHARED, kernel,
                                         gated) as CSV, every kernel on every sm_ - the vendored ones too, gated 0 -
                                         nothing judged: this is how the numbers in ALLOWED were produced
-  --cuobjdump PATH                      the toolkit's cuobjdump when bin/ is not on PATH (CMake passes it)
+  --cuobjdump PATH                      the toolkit's cuobjdump when terminal/bin/ is not on PATH (CMake passes it)
 
 The fork CLI's default gate retains ALLOWED and --baseline remains a source/compiler-bound measurement.
 --capture-baseline requires explicit reviewed provenance and never constitutes a verdict. Upstream known-instance
@@ -140,6 +140,9 @@ ALLOWED = {
     "strata::kernels::{anonymous}::gr_up_q8_fast_kernel": {"sm_86": (8, 0)},
     # spill 4 / 4 at 40 registers under __launch_bounds__(THREADS = 256), no local array
     "strata::kernels::{anonymous}::gr_up_v3_kernel": {"sm_120": (8, 0)},
+    # i8_kernel<23, true, 4, true, false> on sm_86: an 8-byte stack frame, no spill and no local memory (the sm_89 entry further down carries the same 8 bytes); a CUDA
+    # build for sm_86 failed this check until this line (0.2.17, owner's decision)
+    "strata::kernels::{anonymous}::i8_kernel": {"sm_86": (8, 0)},
     # spill 4 / 4 at 48 registers under __launch_bounds__(256), no local array
     "strata::kernels::{anonymous}::native_down_kernel": {"sm_86": (8, 0)},
     # int off[GRP_NC] / float s[GRP_NC] (GRP_NC = 4): per-entry token offsets and partial sums, plus spill 16 / 16
@@ -286,7 +289,7 @@ _INT3_ALLOWED = {
     "{anonymous}::k_attn_prep": {"sm_121": (32, 0)},
     # rc1 (measured on l620, CUDA 13.2 sm_120): the HC down kernel's register-blocked instance <1,6,true,2,0,true> (df2-more, STRATA_GR_V3_PF bit 7, default 133 on sm_120) keeps 8 bytes
     "strata::kernels::{anonymous}::gr_down_v3_kernel": {"sm_120": (8, 0)},
-    # rc1 (l620 sm_120): DFlash2's rope table builder copies its parameter struct to the stack (src/kernels/cuda/dflash2.cu, from the ring / multi-card DFlash2 line); avoidable
+    # rc1 (l620 sm_120): DFlash2's rope table builder copies its parameter struct to the stack (engine/src/kernels/cuda/dflash2.cu, from the ring / multi-card DFlash2 line); avoidable
     "strata::kernels::{anonymous}::rope_table_inv_kernel": {"sm_120": (32, 0)},
 }
 for _key, _per_sm in _INT3_ALLOWED.items():
@@ -686,7 +689,7 @@ def main():
             return 1
     cuobjdump, demangler = find_tools(a.cuobjdump)
     if cuobjdump is None:
-        print("check_cuda_spills: cuobjdump not found (put the CUDA toolkit's bin/ on PATH, or pass --cuobjdump)")
+        print("check_cuda_spills: cuobjdump not found (put the CUDA toolkit's terminal/bin/ on PATH, or pass --cuobjdump)")
         return 77
     if demangler is None:
         # without a demangler every Strata kernel would read as a no-namespace (vendored) one and be skipped: the

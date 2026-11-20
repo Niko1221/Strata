@@ -29,9 +29,9 @@ class TokenizerMatchesSdcpp(unittest.TestCase):
         cls.tmp = tempfile.TemporaryDirectory()
         d = Path(cls.tmp.name)
         cls.exe = d / "strata-te-tokens"
-        r = subprocess.run([CXX, "-std=c++17", "-O2", "-I", str(ROOT / "include"), "-I", str(ROOT / "src" / "image" / "te"),
-                            str(ROOT / "src" / "image" / "te" / "qwen2_tok.cpp"),
-                            str(ROOT / "src" / "image" / "te" / "qwen2_tok_main.cpp"), "-o", str(cls.exe)],
+        r = subprocess.run([CXX, "-std=c++17", "-O2", "-I", str(ROOT.parent / "engine" / "include"), "-I", str(ROOT.parent / "engine" / "src" / "image" / "te"),
+                            str(ROOT.parent / "engine" / "src" / "image" / "te" / "qwen2_tok.cpp"),
+                            str(ROOT.parent / "engine" / "src" / "image" / "te" / "qwen2_tok_main.cpp"), "-o", str(cls.exe)],
                            capture_output=True, text=True, timeout=600)
         if r.returncode != 0:
             raise AssertionError("build failed:\n" + r.stderr[-4000:])

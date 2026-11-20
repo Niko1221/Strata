@@ -4,12 +4,16 @@
 
 Lokale KI für Windows mit Chat, Agenten-Workflows, Recherche mit Quellenangaben und einer Auswahl kompatibler Modelle. Hakua ist der zapabob-Fork von Niko1221/Strata; er wird unabhängig gepflegt und ist keine offiziell empfohlene Distribution des Upstream-Projekts.
 
+## Was sich in 0.6.9 andert
+
+Diese Version portiert die Q38-Arbeiten zu Geschwindigkeit, Formaten und Kontrollvektoren in das neue `terminal/`-Layout für offizielles Strata 0.2.16. Qwen3.8-27B nutzt jetzt GQA-fusionierte Attention: ein Warm-A/B-Test in umgekehrter Reihenfolge maß **6,0 % schnellere Dekodierung bei identischen Ausgabetokens** (Basis 555,8 ms -> GQA 522,6 ms, Mediane, 10-Token-Prompt, ctx 512, F16 KV). Der 9B-Pfad erhält gebündelte FP16-Attention mit gemeinsamem Softmax-Cache sowie RoPE-/Entfernung redundanter memset (5,4 % schneller, bitidentische Tokens). FP4/FP8-NVFP4-Formatunterstützung und Kontrollvektoren sind enthalten. Bereits zuvor: gebündelte F16-KV-Schreibvorgänge senkten die KV-Kosten beim Prefill um 27 % bei byte-identischen Logits, Dekodierung auf Prism-llama.cpp-Niveau (beide DP4A), und der 32-GB-RAM-Squeeze mit Commit-Limit-Hinweis aus Sync-Strata. Gebaut und geprüft mit CUDA 13.5 / SM120. Volle Fenstergenerierung, QSA-Sparse-Attention-Semantik und allgemeine Modellqualität bleiben ungeprüft (`releaseQualified=false`).
+
 ## Version und Downloads
 
 <!-- release-062-stable -->
-Aktuelles Release: [0.6.3](https://github.com/zapabob/Strata/releases/tag/v0.6.3) (App `0.6.3`, Native Q38 `0.6.3` SM120, Control `0.6.3`). `releaseQualified=false` gilt weiterhin; Volllängen-Inferenz und allgemeine Modellqualität sind nicht zertifiziert.
+Aktuelles App-Release: [0.6.9](https://github.com/zapabob/Strata/releases/tag/v0.6.9) (App `0.6.9`; Terminal, Control und Native Engine `0.6.3`). Dieses Windows-App-only-Release ist absichtlich nicht GitHub Latest; Latest bleibt `0.6.3`. Die GPU-Engine bleibt die separat signierte Begleitkomponente [`v0.6.4-preview.1`](https://github.com/zapabob/Strata/releases/tag/v0.6.4-preview.1). `releaseQualified=false` gilt weiterhin; Volllängen-Inferenz und allgemeine Modellqualität sind nicht zertifiziert.
 
-[0.6.3](https://github.com/zapabob/Strata/releases/tag/v0.6.3) · [Strata-0.6.3-windows-x64-setup.exe](https://github.com/zapabob/Strata/releases/download/v0.6.3/Strata-0.6.3-windows-x64-setup.exe) · [tar.7z](https://github.com/zapabob/Strata/releases/download/v0.6.3/Strata-0.6.3-windows-x64.tar.7z) · [SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.6.3/SHA256SUMS.txt)
+[0.6.9](https://github.com/zapabob/Strata/releases/tag/v0.6.9) · [Setup-EXE](https://github.com/zapabob/Strata/releases/download/v0.6.9/Strata-0.6.9-windows-x64-setup.exe) · [tar.7z](https://github.com/zapabob/Strata/releases/download/v0.6.9/Strata-0.6.9-windows-x64.tar.7z) · [SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.6.9/SHA256SUMS.txt) · [BUNDLE-SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.6.9/BUNDLE-SHA256SUMS.txt)
 
 ![Hakua / Strata real-model Japanese chat on Qwen3.8-27B](docs/media/native-qwen38-japanese-chat.png)
 *Hakua / Strata Desktop mit `qwen3.8-27b-abliterated-3.69bpw-12GB-MTP.gguf` über `strata-q38.exe` (CUDA 13 / RTX 5060 Ti 16 GB).*

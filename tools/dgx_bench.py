@@ -235,7 +235,7 @@ def main() -> int:
     for s in a.cells.split(","):
         l, t, n = s.split(":")
         cells.append((int(l), float(t), int(n)))
-    out = Path(a.out) if a.out else ROOT / "bench" / "results" / time.strftime("dgx-%Y-%m-%d-%H%M") 
+    out = Path(a.out) if a.out else ROOT.parent / "docs" / "bench-results" / time.strftime("dgx-%Y-%m-%d-%H%M") 
     out.mkdir(parents=True, exist_ok=True)
     env = {}
     for e in a.env:

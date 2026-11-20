@@ -117,7 +117,7 @@ CMAKE_HOME_DIRECTORY:INTERNAL=C:/work
             self.assertEqual(binary_deps.uncovered(Path(temp)), [])
 
     def test_real_signed_parent_resolves_q38_and_rejects_changed_sibling(self) -> None:
-        from strata_control import engine_component as ec, signing
+        from terminal.strata_control import engine_component as ec, signing
         from tests.terminal.test_engine_component import make_package, rewrite
 
         key = signing.generate_key()

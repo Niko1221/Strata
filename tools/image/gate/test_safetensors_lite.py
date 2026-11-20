@@ -62,7 +62,7 @@ class SafetensorsLite(unittest.TestCase):
         d = Path(cls.tmp.name)
         (d / "t.cpp").write_text(PROGRAM)
         cls.exe = d / "st_test"
-        subprocess.run([CXX, "-std=c++17", "-O1", "-pthread", "-I", str(ROOT / "src" / "image" / "vae"), str(d / "t.cpp"), "-o",
+        subprocess.run([CXX, "-std=c++17", "-O1", "-pthread", "-I", str(ROOT.parent / "engine" / "src" / "image" / "vae"), str(d / "t.cpp"), "-o",
                         str(cls.exe)], check=True)
 
     @classmethod

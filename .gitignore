@@ -54,8 +54,9 @@ build-vision*/
 build-vision.bat
 build-vision-cuda12.bat
 
-# setup.py outputs (engine, downloads) and release builds
-/engine/
+# setup.py outputs (engine, downloads) and release builds.
+# `/engine/` was a build-output rule in the old fork layout; in the 0.2.16
+# layout `engine/` is official source, so it must be tracked.
 /engine-sycl/
 /engine-cuda12/
 /build-release*/
@@ -84,16 +85,16 @@ dist-hip/
 node_modules/
 *.dmg
 /release/artifacts/
-/apps/host/dist/
+/app/host/dist/
 /apps/desktop/src-tauri/target/
-/apps/desktop/src-tauri/resources/node/*
-!/apps/desktop/src-tauri/resources/node/.gitignore
+/app/desktop/src-tauri/resources/node/*
+!/app/desktop/src-tauri/resources/node/.gitignore
 # the Control component (bundled CPython + wheels + strata_control) is built by apps/desktop/scripts/stage-control.py
-/apps/desktop/src-tauri/resources/control/*
-!/apps/desktop/src-tauri/resources/control/.gitignore
+/app/desktop/src-tauri/resources/control/*
+!/app/desktop/src-tauri/resources/control/.gitignore
 # the pruned DeepSeek Harness (MIT) is built by apps/desktop/scripts/stage-harness.mjs
-/apps/desktop/src-tauri/resources/harness/*
-!/apps/desktop/src-tauri/resources/harness/.gitignore
+/app/desktop/src-tauri/resources/harness/*
+!/app/desktop/src-tauri/resources/harness/.gitignore
 # third-party notice files staged into the Windows installer resources; not source
 /apps/desktop/src-tauri/resources/notices/*
 !/apps/desktop/src-tauri/resources/notices/.gitignore
@@ -106,3 +107,4 @@ node_modules/
 /build-spark/
 /build-vision-spark/
 /.venv-build/
+

@@ -132,7 +132,7 @@ def receipt_assets(path: Path, expected: str, phase: str, commit: str) -> dict:
             "Signed component changed",
         )
         sys.path.insert(0, str(native.PRIMARY))
-        from strata_control import engine_component, signing
+        from terminal.strata_control import engine_component, signing
 
         manifest = release.load(signed / "engine-component.json")
         release.require(
@@ -184,7 +184,7 @@ def predecessor(args: argparse.Namespace) -> dict:
     signature = read_current(CURRENT + ".sig")
     release.require(local == remote, "Previous feed is not the current source-side predecessor")
     sys.path.insert(0, str(native.PRIMARY))
-    from strata_control import feed, signing
+    from terminal.strata_control import feed, signing
 
     verified = feed.verify_and_parse(
         remote, signature, source=CURRENT, trusted=signing.load_trusted_keys(environ={})

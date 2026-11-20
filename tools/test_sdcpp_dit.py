@@ -46,7 +46,7 @@ class DitApply(unittest.TestCase):
             sd = fake_tree(Path(td))
             D.apply(sd)
             for src, rel in D.FILES:
-                self.assertEqual((sd / "src" / "strata_dit" / rel).read_bytes(), (ROOT / src).read_bytes(), rel)
+                self.assertEqual((sd / "src" / "strata_dit" / rel).read_bytes(), (ROOT.parent / "engine" / src).read_bytes(), rel)
             self.assertTrue((sd / "src" / "strata_dit" / D.HIP_COMPAT / "cublas_v2.h").is_file())
             nat = (sd / "src" / "model" / "diffusion" / "qwen_image_2_1_native.hpp").read_text()
             self.assertEqual(nat.count('#include "strata/image/dit_gemm.hpp"'), 1)

@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process';
 import { readFileSync, mkdtempSync, mkdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { isolatedTestEnvironment } from '../../apps/host/scripts/test-environment.mjs';
+import { isolatedTestEnvironment } from '../../app/host/scripts/test-environment.mjs';
 const root=resolve(process.argv[2]);
 const receipt='H:/Strata/releases/search-056-20261111-codex/receipts/host-suite.txt';
 const files=[...new Set([...readFileSync(receipt,'utf8').matchAll(/^test at tests[\\/]([^:]+):/gm)].map(match=>join(root,'tests',match[1])))];

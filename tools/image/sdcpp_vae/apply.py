@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-REPO = HERE.parents[2]
+REPO = HERE.parents[2] if (HERE.parents[2] / "src").is_dir() else HERE.parents[3] / "engine"   # the engine's sources (../engine in a 0.2.16 checkout)
 MARK = "// strata: own VAE decoder"
 
 # (repo path, path under src/strata_vae/)

@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-BUILD_SH = ROOT / "sycl" / "tools" / "build.sh"
+BUILD_SH = ROOT.parent / "engine" / "sycl" / "tools" / "build.sh"
 BASH = shutil.which("bash")
 
 
@@ -65,7 +65,7 @@ class BuildGuard(unittest.TestCase):
         self.assertIn("-DSTRATA_SYCL_I8_ESIMD=OFF", self.log.read_text())
 
     def test_the_cmake_switch_is_declared(self):
-        text = (ROOT / "sycl" / "CMakeLists.txt").read_text(encoding="utf-8")
+        text = (ROOT.parent / "engine" / "sycl" / "CMakeLists.txt").read_text(encoding="utf-8")
         self.assertIn('set(STRATA_SYCL_I8_ESIMD "AUTO" CACHE STRING', text)
         self.assertIn("add_compile_definitions(STRATA_I8_NO_ESIMD=1)", text)
 

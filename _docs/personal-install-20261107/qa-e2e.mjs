@@ -6,7 +6,7 @@ import {join,resolve} from 'node:path';
 import {createRequire} from 'node:module';
 import {createServer} from 'node:net';
 import {setTimeout as delay} from 'node:timers/promises';
-import {sha256} from '../../apps/host/scripts/release-integrity.mjs';
+import {sha256} from '../../app/host/scripts/release-integrity.mjs';
 const root=resolve(import.meta.dirname,'../..'),out='H:/Strata/releases/personal-052-local2-20261107/app';
 const args=process.argv.slice(2),python='C:/Users/downl/AppData/Local/Programs/Python/Python312/python.exe';
 if(!args.includes('--execute')){console.log(JSON.stringify({wouldExecute:false,actualWebViewRequired:true,actualR3Required:true,context:4096,prefill:512,slots:5,mtp:2,privateOwner:true,releaseQualified:false}));process.exit(0);}

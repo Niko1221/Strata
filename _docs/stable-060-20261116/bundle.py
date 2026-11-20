@@ -151,7 +151,7 @@ def validate_snapshot(path: Path, expected: str, commit: str) -> dict:
 
 def verify_feed_bytes(path: Path, signature: Path, sequence: int) -> dict:
     sys.path.insert(0, str(native.PRIMARY))
-    from strata_control import feed as parser, signing
+    from terminal.strata_control import feed as parser, signing
 
     verified = parser.verify_and_parse(
         path.read_bytes(),
@@ -167,7 +167,7 @@ def verify_feed_bytes(path: Path, signature: Path, sequence: int) -> dict:
     # production trust, rather than accepting a source-checkout-only result.
     code = (
         "import sys;sys.path.insert(0,sys.argv[1]);from pathlib import Path;"
-        "from strata_control import feed,signing;"
+        "from terminal.strata_control import feed,signing;"
         "v=feed.verify_and_parse(Path(sys.argv[2]).read_bytes(),Path(sys.argv[3]).read_bytes(),"
         "source=sys.argv[4],trusted=signing.load_trusted_keys(environ={}));"
         "assert v.channel=='stable' and v.sequence==int(sys.argv[5]);print('verified')"

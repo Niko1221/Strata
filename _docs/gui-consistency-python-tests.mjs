@@ -2,7 +2,7 @@
 import {mkdtempSync,mkdirSync} from 'node:fs';
 import {join,resolve} from 'node:path';
 import {spawn} from 'node:child_process';
-import {isolatedTestEnvironment} from '../apps/host/scripts/test-environment.mjs';
+import {isolatedTestEnvironment} from '../app/host/scripts/test-environment.mjs';
 
 const files=process.argv.slice(2);
 if(!files.length||files.some(f=>!/^serve\/test_[a-z0-9_]+\.py$/.test(f)))throw new Error('Pass explicit serve/test_*.py paths.');

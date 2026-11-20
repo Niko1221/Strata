@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-GEN = ROOT / "src" / "program" / "generate.cpp"
+GEN = ROOT.parent / "engine" / "src" / "program" / "generate.cpp"
 GUARD = ("#if defined(__linux__) && !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906) && !defined(STRATA_GPU_METAL)"
          "   // SPARK-UMA-DROP")
 

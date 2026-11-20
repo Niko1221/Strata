@@ -4,7 +4,7 @@ import {createHash} from 'node:crypto';
 import {openSync, writeSync, closeSync, mkdirSync, writeFileSync, readFileSync} from 'node:fs';
 import {freemem} from 'node:os';
 import {fileURLToPath} from 'node:url';
-import {createLocalMemoryGuard} from '../../apps/host/server/local-memory-guard.mjs';
+import {createLocalMemoryGuard} from '../../app/host/server/local-memory-guard.mjs';
 
 const root=fileURLToPath(new URL('../../',import.meta.url));
 const base='H:/Strata/evidence/ram32gb-p0-resume-20261115';

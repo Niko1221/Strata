@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-const directory = resolve(import.meta.dirname, '../../apps/host/src/locales');
+const directory = resolve(import.meta.dirname, '../../app/host/src/locales');
 const english = JSON.parse(readFileSync(resolve(directory, 'en.json'), 'utf8'));
 const ids = [...Array.from({length:28},(_,i)=>`uxweb${String(i+1).padStart(3,'0')}`),
   ...[1,2,3,4,5,6,7,...Array.from({length:18},(_,i)=>i+9)].map(i=>`uxskill${String(i).padStart(3,'0')}`),

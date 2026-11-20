@@ -16,7 +16,7 @@ const model='H:/Strata/models/新しいフォルダー/DeepSeek-V4-Pro-Qwen3.5-9
 const modelBefore=statSync(model),modelHash=createHash('sha256');for await(const block of createReadStream(model))modelHash.update(block);
 assert.equal(modelHash.digest('hex'),'8cf793a36e62fb078ac05c2e1bdb2121ff94736dccbede7cf81b76346e868949');
 Object.assign(process.env,{STRATA_HOME:out,STRATA_MODELS_DIR:join(out,'models'),STRATA_COMPONENTS_DIR:join(previous,'components'),STRATA_INSTALL_DIR:join(out,'absent-install'),STRATA_NO_ACQUIRE:'1',LLAMA_ARG_LOG_VERBOSITY:'4'});
-const supervisor=await import('../../apps/host/server/supervisor.mjs');
+const supervisor=await import('../../app/host/server/supervisor.mjs');
 const socket=createServer();await new Promise(resolve=>socket.listen(0,'127.0.0.1',resolve));const port=socket.address().port;await new Promise(resolve=>socket.close(resolve));
 const gpu=()=>execFileSync('C:/Windows/System32/nvidia-smi.exe',['--query-gpu=name,driver_version,memory.free,memory.total','--format=csv,noheader,nounits'],{encoding:'utf8',timeout:10000,windowsHide:true}).trim();
 const config={beginner:saved.beginner,expert:Object.entries(saved.expert).map(([id,value])=>({id,value})),serving:{apiKey:null},configExtra:saved.configExtra};

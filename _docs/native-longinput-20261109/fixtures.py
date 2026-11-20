@@ -28,7 +28,7 @@ def metadata() -> dict:
 def load() -> tuple[object, object]:
     sys.path[:0] = [str(ROOT / "tools"), str(ROOT)]
     from strata_tokenizer import Tokenizer
-    from serve.frontend import ChatTemplate
+    from terminal.serve.frontend import ChatTemplate
 
     cfg = json.loads((TOKENIZER / "tokenizer.json").read_text(encoding="utf-8"))
     vocab = json.loads((TOKENIZER / "vocab.json").read_text(encoding="utf-8"))

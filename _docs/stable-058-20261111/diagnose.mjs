@@ -1,8 +1,8 @@
 /** Private synthetic Harness request/lifecycle diagnostics; no live app profile is opened. */
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { createAgentBridge } from '../../apps/host/server/agent/agent-bridge.mjs';
-import { startScriptedWorker } from '../../apps/host/tests/helpers/scripted-worker.mjs';
+import { createAgentBridge } from '../../app/host/server/agent/agent-bridge.mjs';
+import { startScriptedWorker } from '../../app/host/tests/helpers/scripted-worker.mjs';
 
 const output = 'H:/Strata/releases/stable-058-20261111-codex';
 const attempt = process.argv[2] ?? 'r1';

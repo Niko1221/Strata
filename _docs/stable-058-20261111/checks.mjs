@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { resolve } from 'node:path';
 import { mkdtempSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { harnessFixtureEnvironment } from '../../apps/host/tests/helpers/harness-environment.mjs';
+import { harnessFixtureEnvironment } from '../../app/host/tests/helpers/harness-environment.mjs';
 const root = resolve(import.meta.dirname, '../../apps/host');
 const mode = process.argv[2];
 const groups = {

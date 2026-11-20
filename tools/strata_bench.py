@@ -28,6 +28,11 @@ This is the quick speed check, not the standard benchmark: `strata bench run` fo
 the model card sampling, twelve sanity checks) and writes results other people can compare with.
 """
 from __future__ import annotations
+import sys
+if sys.platform == "win32":
+    # CPython 3.12's WMI helper (_wmi, behind platform.system() / uname()) takes an access violation in a worker thread when WMI refuses the
+    # account (0x80041003) and the caller has already gone (DIAG-WINHOST-0216). Without _wmi, platform uses the registry and the environment.
+    sys.modules["_wmi"] = None
 
 import argparse
 import datetime
@@ -646,7 +651,7 @@ def detect_quant(view: dict) -> str | None:
 def project_version() -> str | None:
     try:
         # UTF-8 as setup.py reads it, whatever the locale's code page (#2792)
-        m = re.search(r"project\(strata VERSION ([\d.]+)", (ROOT / "CMakeLists.txt").read_text(encoding="utf-8"))
+        m = re.search(r"project\(strata VERSION ([\d.]+)", (ROOT / "CMakeLists.txt" if (ROOT / "CMakeLists.txt").is_file() else ROOT.parent / "engine" / "CMakeLists.txt").read_text(encoding="utf-8"))
         return m.group(1) if m else None
     except OSError:
         return None
@@ -1109,7 +1114,7 @@ def main(argv=None) -> int:
                               f" {x}" for x in (f"--clients {a.clients}" if a.clients else "", "--long" if a.long else "",
                                                 "--think" if a.think else "", f"--runs {a.runs}" if a.runs != 3 else "") if x)},
                "elapsed_s": time.time() - t0, "machine": machine, "results": out}
-        parent = Path(a.out) if a.out else ROOT / "bench" / "results"
+        parent = Path(a.out) if a.out else (ROOT.parent / "docs" / "bench-results" if (ROOT.parent / "docs" / "bench-results").is_dir() else ROOT / "bench" / "results")
         d = write_results(res, parent, red, log_excerpt(log_path) if log_path else [])
         say("\nResults (median, range over the runs):")
         say(red(short_table(res)))

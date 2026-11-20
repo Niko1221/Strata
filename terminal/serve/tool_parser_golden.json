@@ -1,0 +1,284 @@
+{
+ "tools": [
+  {
+   "name": "get_weather",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "city": {
+      "type": "string"
+     },
+     "days": {
+      "type": "integer"
+     }
+    }
+   }
+  },
+  {
+   "name": "write_file",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "path": {
+      "type": "string"
+     },
+     "content": {
+      "type": "string"
+     }
+    }
+   }
+  }
+ ],
+ "xml": [
+  {
+   "name": "text only",
+   "input": "Hello there.\nNothing to call.",
+   "thinking": false,
+   "events": [
+    [
+     "content",
+     "Hello there.\nNothing to call.",
+     null,
+     null
+    ]
+   ]
+  },
+  {
+   "name": "one call",
+   "input": "<tool_call>\n<function=get_weather>\n<parameter=city>\nParis\n</parameter>\n<parameter=days>\n3\n</parameter>\n</function>\n</tool_call>",
+   "thinking": false,
+   "events": [
+    [
+     "tool_call",
+     "",
+     "get_weather",
+     {
+      "city": "Paris",
+      "days": 3
+     }
+    ]
+   ]
+  },
+  {
+   "name": "text then call",
+   "input": "Let me check.\n\n<tool_call>\n<function=get_weather>\n<parameter=city>\nRome\n</parameter>\n</function>\n</tool_call>",
+   "thinking": false,
+   "events": [
+    [
+     "content",
+     "Let me check.",
+     null,
+     null
+    ],
+    [
+     "tool_call",
+     "",
+     "get_weather",
+     {
+      "city": "Rome"
+     }
+    ]
+   ]
+  },
+  {
+   "name": "two calls",
+   "input": "<tool_call>\n<function=get_weather>\n<parameter=city>\nA\n</parameter>\n</function>\n</tool_call>\n<tool_call>\n<function=write_file>\n<parameter=path>\nx.txt\n</parameter>\n<parameter=content>\nline1\nline2\n</parameter>\n</function>\n</tool_call>",
+   "thinking": false,
+   "events": [
+    [
+     "tool_call",
+     "",
+     "get_weather",
+     {
+      "city": "A"
+     }
+    ],
+    [
+     "tool_call",
+     "",
+     "write_file",
+     {
+      "path": "x.txt",
+      "content": "line1\nline2"
+     }
+    ]
+   ]
+  },
+  {
+   "name": "thinking then call",
+   "input": "I should look it up.</think>\n\n<tool_call>\n<function=get_weather>\n<parameter=city>\nOslo\n</parameter>\n</function>\n</tool_call>",
+   "thinking": true,
+   "events": [
+    [
+     "reasoning",
+     "I should look it up.",
+     null,
+     null
+    ],
+    [
+     "tool_call",
+     "",
+     "get_weather",
+     {
+      "city": "Oslo"
+     }
+    ]
+   ]
+  },
+  {
+   "name": "undeclared tool stays text",
+   "input": "<tool_call>\n<function=launch_missiles>\n<parameter=x>\n1\n</parameter>\n</function>\n</tool_call>",
+   "thinking": false,
+   "events": [
+    [
+     "content",
+     "<tool_call>\n<function=launch_missiles>\n<parameter=x>\n1\n</parameter>\n</function>\n</tool_call>",
+     null,
+     null
+    ]
+   ]
+  }
+ ],
+ "json": [
+  {
+   "name": "json one call",
+   "input": "<tool_call>\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Paris\", \"days\": 3}}\n</tool_call>",
+   "thinking": false,
+   "events": [
+    [
+     "tool_call",
+     "",
+     "get_weather",
+     {
+      "city": "Paris",
+      "days": 3
+     }
+    ]
+   ]
+  },
+  {
+   "name": "json text then call",
+   "input": "Let me check.\n\n<tool_call>\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Rome\"}}\n</tool_call>",
+   "thinking": false,
+   "events": [
+    [
+     "content",
+     "Let me check.",
+     null,
+     null
+    ],
+    [
+     "tool_call",
+     "",
+     "get_weather",
+     {
+      "city": "Rome"
+     }
+    ]
+   ]
+  },
+  {
+   "name": "json two calls",
+   "input": "<tool_call>\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"A\"}}\n</tool_call>\n<tool_call>\n{\"name\": \"write_file\", \"arguments\": {\"path\": \"x.txt\", \"content\": \"line1\\nline2\"}}\n</tool_call>",
+   "thinking": false,
+   "events": [
+    [
+     "tool_call",
+     "",
+     "get_weather",
+     {
+      "city": "A"
+     }
+    ],
+    [
+     "tool_call",
+     "",
+     "write_file",
+     {
+      "path": "x.txt",
+      "content": "line1\nline2"
+     }
+    ]
+   ]
+  },
+  {
+   "name": "json arguments as a string",
+   "input": "<tool_call>\n{\"name\": \"get_weather\", \"arguments\": \"{\\\"city\\\": \\\"Oslo\\\"}\"}\n</tool_call>",
+   "thinking": false,
+   "events": [
+    [
+     "tool_call",
+     "",
+     "get_weather",
+     {
+      "city": "Oslo"
+     }
+    ]
+   ]
+  },
+  {
+   "name": "json parameters key",
+   "input": "<tool_call>\n{\"name\": \"get_weather\", \"parameters\": {\"city\": \"Kyiv\"}}\n</tool_call>",
+   "thinking": false,
+   "events": [
+    [
+     "tool_call",
+     "",
+     "get_weather",
+     {
+      "city": "Kyiv"
+     }
+    ]
+   ]
+  },
+  {
+   "name": "json thinking then call",
+   "input": "I should look it up.</think>\n\n<tool_call>\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Oslo\"}}\n</tool_call>",
+   "thinking": true,
+   "events": [
+    [
+     "reasoning",
+     "I should look it up.",
+     null,
+     null
+    ],
+    [
+     "tool_call",
+     "",
+     "get_weather",
+     {
+      "city": "Oslo"
+     }
+    ]
+   ]
+  },
+  {
+   "name": "json undeclared tool stays text",
+   "input": "<tool_call>\n{\"name\": \"launch_missiles\", \"arguments\": {}}\n</tool_call>",
+   "thinking": false,
+   "events": [
+    [
+     "content",
+     "<tool_call>\n{\"name\": \"launch_missiles\", \"arguments\": {}}\n</tool_call>",
+     null,
+     null
+    ]
+   ]
+  },
+  {
+   "name": "json in a fence",
+   "input": "<tool_call>\n```json\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Lima\"}}\n```\n</tool_call>",
+   "thinking": false,
+   "events": [
+    [
+     "tool_call",
+     "",
+     "get_weather",
+     {
+      "city": "Lima"
+     }
+    ]
+   ]
+  }
+ ]
+}

@@ -1,0 +1,20 @@
+{
+  "schema_version": 2,
+  "id": "strata-engine-q38",
+  "name": "strata-engine-q38-dense",
+  "version": "0.1.62",
+  "platform": "windows-x86_64",
+  "backend": "cuda",
+  "archs": ["sm_120"],
+  "min_driver": "565.0",
+  "entrypoint": "strata.exe",
+  "files": [
+    {
+      "path": "strata.exe",
+      "sha256": "95cb94b6721b809084e3b2f6bffa18ab725895bb533b2122cba876f7ca1d84f8",
+      "bytes": 68407808
+    }
+  ],
+  "signature": null,
+  "_note": "Prepared but NOT signed: the ed25519 private key is not available in this session (user does not know it). Only public keys are in repo (strata_control/update_keys.json). A production signer must fill 'signature' from the frozen source + payload hash above before this component can be verified by STRATA_REQUIRE_SIGNED_COMPONENTS=1."
+}

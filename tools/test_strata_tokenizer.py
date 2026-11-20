@@ -28,7 +28,7 @@ ADDED = ["<think>", "</think>", "<tool_call>", "</tool_call>", "<tool_response>"
 
 
 def vocab_gguf() -> Path | None:
-    cands = [os.environ.get("STRATA_GGUF_PY"), ROOT / "third_party" / "llama.cpp" / "gguf-py", "/opt/llama.cpp/gguf-py"]
+    cands = [os.environ.get("STRATA_GGUF_PY"), ROOT.parent / "engine" / "third_party" / "llama.cpp" / "gguf-py" / "opt" / "llama.cpp" / "gguf-py"]
     for c in cands:
         if c and (Path(c).parent / "models" / "ggml-vocab-qwen35.gguf").is_file():
             return Path(c).parent / "models" / "ggml-vocab-qwen35.gguf"

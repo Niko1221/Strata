@@ -269,7 +269,7 @@ class OfflineStart(unittest.TestCase):
         env = {k: v for k, v in os.environ.items() if k not in ("STRATA_GGUF_PY", "STRATA_GGML_DIR")}
         with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(setup, "get_llama_cpp", lambda: fetched.append(1)):
             self.assertIsNone(setup.llama_cpp_if_here(), "no override tree by default")
-            self.assertEqual(setup.gguf_py_dir(), setup.ROOT / "third_party" / "strata-gguf-py")
+            self.assertEqual(setup.gguf_py_dir(), setup.ROOT.parent / "engine" / "third_party" / "strata-gguf-py")
             self.assertTrue((setup.gguf_py_dir() / "gguf").is_dir())
             self.assertEqual(setup.gguf_py_env(), {}, "the tools use their own GGUF code by default")
             with mock.patch.object(setup.subprocess, "run", lambda *a, **k: mock.Mock(returncode=0)), \

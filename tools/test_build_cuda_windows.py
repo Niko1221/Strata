@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -14,7 +15,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "packaging"))
+sys.path.insert(0, str(ROOT.parent / "tools" / "packaging"))
 import build_cuda_windows as B  # noqa: E402
 
 CUDA13 = Path("C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.0")
@@ -26,7 +27,7 @@ class ConfigureLine(unittest.TestCase):
         # the 0.1.59 zips' line: 75;86;89;120 real + 120 PTX, portable, native experts, no tests (the K-quant and Q6_K options at their defaults)
         got = B.configure_args(Path("S"), Path("Bd"), "cuda13", CUDA13, [])
         self.assertEqual(got, ["-G", "Ninja", "-S", "S", "-B", "Bd", "-DCMAKE_BUILD_TYPE=Release", "-DSTRATA_ENABLE_CUDA=ON", "-DSTRATA_BUILD_TESTS=OFF",
-                               "-DSTRATA_NATIVE_EXPERTS=ON", "-DSTRATA_PORTABLE=ON", "-DSTRATA_MMQ=OFF",
+                               "-DSTRATA_NATIVE_EXPERTS=ON", "-DSTRATA_PORTABLE=ON",
                                "-DCMAKE_CUDA_ARCHITECTURES=75-real;86-real;89-real;120-real;120-virtual",
                                "-DCMAKE_CUDA_COMPILER=C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.0/bin/nvcc.exe",
                                "-DCUDAToolkit_ROOT=C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.0"])
@@ -34,14 +35,25 @@ class ConfigureLine(unittest.TestCase):
     def test_cuda12_is_the_pascal_and_volta_build(self):
         got = B.configure_args(Path("S"), Path("Bd"), "cuda12", CUDA12, [])
         self.assertIn("-DSTRATA_EXPERIMENTAL_SM60=ON", got)
-        self.assertIn("-DCMAKE_CUDA_ARCHITECTURES=60-real;61-real;70-real;75-real;80-real;86-real;89-real;89-virtual", got)
+        # #5784: machine code for sm_120 too (a Blackwell card beside a Pascal / Volta one, or on a driver under 580.65, runs this package
+        # and compiled its compute_89 PTX for minutes at every start); the PTX stays compute_89, the one sm_90 and other cards between use
+        self.assertIn("-DCMAKE_CUDA_ARCHITECTURES=60-real;61-real;70-real;75-real;80-real;86-real;120-real;89-real;89-virtual", got)
         self.assertEqual(B.VARIANTS["cuda12"][2], "576.02")      # the 0.1.59 cuda12 zip's min_driver
         self.assertEqual(B.VARIANTS["cuda13"][2], "580.65")
 
+    def test_every_cuda12_recipe_names_the_same_archs(self):
+        # the engine (Windows, Linux) and the Windows picture reader: package_engine.py refuses a reader that does not cover the engine
+        want = ";".join(str(a) for a in B.VARIANTS["cuda12"][1])
+        self.assertEqual(want, "60;61;70;75;80;86;120;89")
+        linux = (ROOT.parent / "tools" / "packaging" / "build_cuda_linux.sh").read_text(encoding="utf-8")
+        self.assertIn("cuda12) archs=${ARCHS:-%s};" % want, linux)
+        bat = (ROOT.parent / "tools" / "packaging" / "build_vision_windows.bat").read_text(encoding="utf-8")
+        self.assertIn('set "ARCHS=%s"' % want, bat)
+
     def test_extra_arguments_come_last_and_the_override_is_named(self):
-        got = B.configure_args(Path("S"), Path("Bd"), "cuda13", CUDA13, ["-DSTRATA_MMQ=ON"], ggml_dir="C:\\ref\\llama.cpp")
-        self.assertEqual(got[-2:], ["-DSTRATA_GGML_DIR=C:/ref/llama.cpp", "-DSTRATA_MMQ=ON"])
-        self.assertLess(got.index("-DSTRATA_MMQ=OFF"), got.index("-DSTRATA_MMQ=ON"))   # the A/B override wins (the last -D counts)
+        got = B.configure_args(Path("S"), Path("Bd"), "cuda13", CUDA13, ["-DSTRATA_WINDOW_MAX_T=16"], ggml_dir="C:\\ref\\llama.cpp")
+        self.assertEqual(got[-2:], ["-DSTRATA_GGML_DIR=C:/ref/llama.cpp", "-DSTRATA_WINDOW_MAX_T=16"])
+        self.assertEqual([a for a in got if "MMQ" in a], [])   # 0.2.16: no MMQ option exists any more
 
     def test_an_arch_override_keeps_ptx_for_the_last(self):
         self.assertEqual(B.parse_archs("120"), (120,))
@@ -58,6 +70,32 @@ class ConfigureLine(unittest.TestCase):
         with self.assertRaises(SystemExit):
             B.main(["cuda13"])
         self.assertEqual(B.main(["cuda11"]), 2)
+
+
+class SourcePaths(unittest.TestCase):
+    """Every source path the recipe builds exists in the checkout, on every OS (the layout move of 0.2.16 left it naming the repository root's
+    CMakeLists.txt and packaging/: nothing in a suite ran that path, because main() only runs on Windows with the toolkit)."""
+
+    def test_the_engine_sources_and_the_scripts_it_runs_are_where_it_looks(self):
+        self.assertTrue((B.ENGINE_SRC / "CMakeLists.txt").is_file(), B.ENGINE_SRC)
+        for name in ("build_vision_windows.bat", "package_engine.py", "binary_deps.py"):
+            self.assertTrue((B.PACKAGING / name).is_file(), name)
+
+    def test_the_version_is_read_from_the_engines_cmake_file(self):
+        self.assertRegex(B.project_version(B.ENGINE_SRC), r"^\d+\.\d+")
+
+    def test_every_path_the_source_builds_from_those_two_roots_exists(self):
+        text = Path(B.__file__).read_text(encoding="utf-8")
+        found = re.findall(r'\b(ENGINE_SRC|PACKAGING)\s*/\s*"([^"]+)"', text)
+        self.assertGreaterEqual(len(found), 3)
+        for root, name in found:
+            self.assertTrue((getattr(B, root) / name).exists(), "%s / %s" % (root, name))
+        # nothing is built from the checkout root any more, and the configure line and the version read use the engine's folder
+        self.assertNotIn('src / "packaging"', text)
+        self.assertNotIn("project_version(src)", text)
+        self.assertNotIn("configure_args(src,", text)
+        self.assertIn("configure_args(ENGINE_SRC,", text)
+        self.assertIn("project_version(ENGINE_SRC)", text)
 
 
 FAKE_CMAKE = """#!/bin/sh

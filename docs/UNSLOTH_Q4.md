@@ -27,16 +27,27 @@ strata launch --family unsloth --model UD-Q4_K_XL
   PC with less RAM, or on a unified-memory APU, setup keeps a RAM budget: the hottest experts in RAM, the rest read
   from the GGUF on the SSD. It fits when its files (without the n-gram table) are no bigger than your graphics memory and RAM together; then the menu says "fits", otherwise "may run slower" and setup asks (default no), and
   `--model UD-Q4_K_XL --yes` installs it anyway.
-- **The RAM budget** is the PC's RAM less 24 GB (`--resident-budget-gib 40` on 64 GB), at most all 71 GiB of experts. From
+- **The RAM budget** is the PC's RAM less 17 GB (`--resident-budget-gib 47` on 64 GB; 0.2.16 and earlier: less 24 GB, 40), at most all 71 GiB of experts. From
   a 64K context up, where the KV cache moves to RAM, its size comes out of the budget. `--resident-budget-gib N` at
-  setup sets another one; a bigger one is kept, with a note on what it risks.
+  setup sets another one; a bigger one is kept, with a note on what it risks. The reading is rounded up to the size the PC is sold with where it
+  is within 3% under it (a "64 GB" Windows PC reads 63.1 GiB, Linux 62.5 to 63.7: both give 47; a PC with 60 GB gives 43).
+- **Which mode gets which number (0.2.17).** `--resident-budget-gib` in the run config is the RAM less 17 GB (47 on 64 GB): the Terminal (`strata launch`,
+  `strata serve`, Docker) and the app's "Full performance" run with it. The app's "Leave 20% for my work" runs with the number of the earlier rule, the RAM
+  less 24 GB (40 on 64 GB; 24 on 48 GB, 8 on 32 GB), which setup writes beside it as `"ui_budget_work_gib"`; the app starts the engine with it in that mode, on the started copy only (the saved run config keeps the first number, so a Terminal start of the same file reads it)
+  and "Full performance" starts with the first. The key is left out where the two numbers are the same (a unified-memory GPU keeps 24 in both; 96 GB and up keep every expert in RAM) and when
+  you asked setup for a budget (`--resident-budget-gib N`, or one in the config's `user_args`, or an edit of `args`): yours is used in both modes, as is a `--ram-keep-gib`,
+  `STRATA_RAM_KEEP_GIB` or `STRATA_RESIDENT_HEADROOM_GIB` of yours. A run config of 0.2.16 (setup's 40, no second number) is moved once, at the first
+  command of the new Control after the update: 40 becomes 47 and `"ui_budget_work_gib": 40` is added, so "Leave 20% for my work" keeps 40
+  (32 GB: 8 -> 15 and 8; 48 GB: 24 -> 31 and 24). A number you set, a unified-memory PC and a layer split are not touched; the earlier file is kept as `.bak`.
 - **Download.** The four shards below from the pinned revision `38bb39e`, resumable. Setup checks each one's size and
   SHA-256 against the table below once and remembers it in the file's finish mark. A file with the wrong hash is
   deleted, so the next run downloads it again.
 - **Packing.** `--compat-bf16`, and never an `experts.bin` (`--low-ram` does not apply).
-- **Defaults it writes** into the run config's `env`: `STRATA_ROUTE_TAIL_SKIP=0` where every expert is in RAM, except on
-  Linux AMD gfx12 (R9700, RX 9000), where the engine's own default (the skip on, rank 7) stays: UD-Q4_K_XL decodes 6-16%
-  faster there at an unchanged 61-task suite (`STRATA_ROUTE_TAIL_SKIP=0` turns it off). UD-Q4_K_XL keeps `STRATA_MMQ_KQ`
+- **Defaults it writes** into the run config's `env`: `STRATA_ROUTE_TAIL_SKIP=0` (the tail skip off) in every mode since
+  0.2.17. Before that it wrote it only where every expert is in RAM, and not on Linux AMD gfx12 (R9700, RX 9000), where the
+  engine's own default (the skip on, rank 7) ran: UD-Q4_K_XL decoded 6-16% faster there at an unchanged 61-task suite.
+  `STRATA_ROUTE_TAIL_SKIP=7` turns it on (KL and speed numbers: [DETAILS.md](DETAILS.md#route-tail-skip-strata_route_tail_skip-off-by-default-since-0217)).
+  UD-Q4_K_XL keeps `STRATA_MMQ_KQ`
   opt-in in the config (the Linux gfx12 engine takes it by itself since 0.2.10.1). Setup no longer writes `STRATA_HC_Q8`:
   on NVIDIA the engine itself reads the file's own Q8_0 hyper-connection projections (closer to the file and faster) for
   files that carry them as Q8_0, and `STRATA_HC_Q8=0` restores the BF16 read.
@@ -73,11 +84,11 @@ Windows). Hugging Face snapshot symlinks work if you pass the snapshot's file na
 
 ## The pack (by hand)
 
-Build Strata, then from the repository root, with gguf-py from the pinned llama.cpp (setup installs it;
-`STRATA_GGUF_PY` can point to its `gguf-py` folder):
+Build Strata, then from the repository root (the pack tools carry their own gguf-py;
+`STRATA_GGUF_PY` can point to another `gguf-py` folder):
 
 ```sh
-.venv/bin/python tools/iq_pack.py \
+terminal/.venv/bin/python terminal/tools/iq_pack.py \
   --gguf /path/to/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf \
   --out packs/ud-q4_k_xl --compat-bf16
 ```
@@ -107,8 +118,8 @@ the same file ([Quality](#quality-against-llamacpp-on-the-same-file)).
 ## The MTP draft layer
 
 The draft layer is the base model's, the same one the other packs use. If setup installed Strata, you have it (`mtp/rt`
-in `Strata-data`). Otherwise build it as [ORCA.md](ORCA.md#preparation) shows (`tools/mtp_fetch.py`,
-`tools/mtp_pack.py`, `tools/mtp_rt.py`, then copy `data/draft_vocab.bin` to `mtp/rt/`).
+in `Strata-data`). Otherwise build it as [ORCA.md](ORCA.md#preparation) shows (`terminal/tools/mtp_fetch.py`,
+`terminal/tools/mtp_pack.py`, `terminal/tools/mtp_rt.py`, then copy `terminal/data/draft_vocab.bin` to `mtp/rt/`).
 
 ## The server
 
@@ -124,7 +135,7 @@ implies `--mmap-experts`).
     "--pack", "packs/ud-q4_k_xl",
     "--native", "/path/to/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf",
     "--resident-budget-gib", "40",
-    "--expert-profile", "data/expert-profile.bin", "--expert-cache", "auto",
+    "--expert-profile", "terminal/data/expert-profile.bin", "--expert-cache", "auto",
     "--prefill", "auto", "--spec", "4", "--spec-min-p", "0.5",
     "--mtp", "mtp/rt", "--max-context", "8192"
   ],
@@ -138,18 +149,37 @@ implies `--mmap-experts`).
 ```
 
 ```sh
-.venv/bin/python -m serve.server --engine strata --config strata-ud-q4_k_xl.json --port 8080
+terminal/.venv/bin/python terminal/serve/server.py --engine strata --config strata-ud-q4_k_xl.json --port 8080
 ```
 
 `engine/strata.exe` is setup's engine on Windows; a self-built one is `build/strata`. The expert profile is the base
-model's (`data/expert-profile.bin`). It ranks the same 48 x 512 experts and decides which ones the GPU cache and the RAM
+model's (`terminal/data/expert-profile.bin`). It ranks the same 48 x 512 experts and decides which ones the GPU cache and the RAM
 budget take first.
 
-**Choosing the RAM budget N.** Use your RAM minus 20 to 24 GB (the OS, the engine itself, the 126 MB router copy, and
-room for the OS file cache that serves the rest). On 64 GB that is 40. The engine checks available RAM and, on Windows,
+**Choosing the RAM budget N.** Setup uses your RAM minus 17 GB (the OS, the engine itself, the 126 MB router copy, and
+room for the OS file cache that serves the rest). On 64 GB that is 47 (0.2.16 and earlier: minus 24 GB, 40). The engine checks available RAM and, on Windows,
 available commit capacity. If N exceeds the smaller value minus 4 GiB headroom, it reduces N to that amount minus a
 256 MiB margin and reports which limit applies. Everything above N comes from the SSD for every token, so N is the
 setting that matters most; a bigger budget was faster in every measurement (24 / 32 / 40 GiB).
+
+Under a real 64 GiB memory limit (a cgroup the engine reads; UD-Q4_K_XL, an RTX PRO 4500 Blackwell with an 8,171-slot expert cache,
+48 GiB of experts outside the cache; `phaseA-tests/bw/RESULTS-BW-D.md`):
+
+| setup rule on 64 GB | N | SSD read in a 65K-token prompt | 4K-token prompt | decode, mean of 5 kinds | engine anon+shmem | free of the 64 GiB |
+|---|---|---|---|---|---|---|
+| RAM less 24 (0.2.16) | 40 | 97.7 GB | 3,169 ms | 57.7 tok/s | 47.4 GiB | 16.6 GiB |
+| RAM less 17 | 47 | 37.0 GB | 2,873 ms | 84.2 tok/s | 54.7 GiB | 9.3 GiB |
+| RAM less 12 | 52 | 0.9 GB | 2,138 ms | 83.4 to 88.6 tok/s | 57.4 GiB | 6.6 GiB |
+
+So "Full performance" and the Terminal read 9.3 GiB free of 64 with N 47, and "Leave 20% for my work" 16.6 GiB with N 40 (decode 84.2 and 57.7 tok/s).
+
+A program that took 8 GiB after the engine had started: N 47 and 40 ran on, N 52 was killed by the kernel (the engine reads
+the free RAM at its start and lowers an N that does not fit then, not later). On Windows the engine takes the smaller of
+available RAM and available commit; for `--resident-budget-gib` its headroom is 4 GiB and the margin 256 MiB, so a PC
+with A GiB available at the start runs N at most A - 4.25 (setup writes no `STRATA_RESIDENT_HEADROOM_GIB`): on a 64 GB Windows PC (reads 63.1) with 55 GiB
+available N 47 holds (room 50.75), with 50 GiB available it is 45.75, and N 40 ("Leave 20% for my work") holds from 44.25 GiB available.
+Setup does not count the experts of the card's own cache: the rule is the same for every card, and N above the experts
+outside the cache is not used (47.9 GiB on that card, about 63 GiB on a 12 GB card).
 
 When the driver page-locks the whole budget, the GPU also computes a share of the misses over PCIe, as in the resident
 low-RAM mode. `STRATA_RESIDENT_PIN=0` uses ordinary pageable memory instead, and the CPU then computes every miss. On
@@ -200,7 +230,6 @@ same top 20 per position.
 | Variable | Effect |
 | --- | --- |
 | `STRATA_LOOKAHEAD=0` | Turns off the routing-aware prefetch (on by default in this mode). While the CPU works on a layer, a thread applies the next layer's router to this layer's input and asks the OS to read the predicted experts' pages. Pages only; the answers are the same. `STRATA_LOOKAHEAD_K` sets the experts per token (default 10). |
-| `STRATA_MMQ_KQ=1` | Multiplies the Q4_K / Q5_K / Q5_1 experts of a prompt with llama.cpp's MMQ kernels instead of dequantizing them to FP16. It rounds differently from the FP16 path, so it is opt-in for this file. On CUDA the kernels are a library next to the engine (`libstrata_kq.so` / `strata_kq.dll`), opened only then, so they take no VRAM from other models ([QUANTS.md](QUANTS.md)). |
 | `STRATA_KQ256=1` | Multi-token AVX2 kernels for the Q4_K / Q5_1 / Q8_0 experts. Bit-exact with ggml's, but measured no faster, so off. |
 | `STRATA_PARTIAL_PIN=1` | Registers the hottest part of the RAM budget (up to `STRATA_PARTIAL_PIN_GIB`, default 24) with the GPU driver, so the GPU computes a share of the misses over PCIe (`--pcie-frac`). Measured no faster, and it changes the numerics of those experts, so off. |
 | `STRATA_FETCH_THREADS=N` | Threads that read the experts from the GGUF while it answers (default 8). The prompt path has its own: `STRATA_STAGER_THREADS` (default 32 here) and `STRATA_STAGER_RING` (128). |
@@ -224,8 +253,8 @@ Three shards, 93.7 GB:
 | `Qwen3.8-Flash-Next-UD-IQ4_XS-00002-of-00003.gguf` | 49,835,229,856 | `577a38a2392b40ca2193cea502e1d92f60b8cd370675d308e0ec21885d9daaa7` |
 | `Qwen3.8-Flash-Next-UD-IQ4_XS-00003-of-00003.gguf` | 43,836,407,744 | `d4634e6d84f0ebb0940be15c90d3790bf6464e3dea3a1cddc567dc0e83ad8833` |
 
-Setup treats it like UD-Q4_K_XL: the same RAM budget rule (your RAM less 24 GB, at most all 55 GiB of its experts, so a
-PC with about 80 GB of RAM or more holds all of them), the pack with `--compat-bf16`, no `experts.bin`, and one GPU by
+Setup treats it like UD-Q4_K_XL: the same RAM budget rule (your RAM less 17 GB, at most all 55 GiB of its experts, so a
+PC with about 72 GB of RAM or more holds all of them), the pack with `--compat-bf16`, no `experts.bin`, and one GPU by
 default. It uses the original model's image encoder.
 
 It packs and runs on a Strix Halo (AMD gfx1151, 128 GB unified memory), where prompts read at about 820 tokens/s at 8K
@@ -272,10 +301,9 @@ bartowski's Swift-1.5 Q4_0, whose header shows the same formats.
   engine may not have kernels for. The engine checks every layer's formats at start and refuses an unsupported one by
   name.
 - Tests: the packer's synthetic 4-shard and conversion tests
-  (`.venv/bin/python -m unittest discover -s tools -p test_iq_pack.py`) and the CTests `gguf_split_test`,
+  (`terminal/.venv/bin/python -m unittest discover -s tools -p test_iq_pack.py`) and the CTests `gguf_split_test`,
   `expert_layout_test`, `native_expert_parity_*` (the three real expert format pairs against ggml-cpu, the Q5_1 min term,
-  Q8_0 rows, Q4_0/Q4_0 and Q4_0/Q4_1). With `-DSTRATA_MMQ_KQUANTS=ON`, `prefill_mmq_kquant_test` checks the prompt path's
-  MMQ products for Q4_K / Q5_K / Q5_1 / Q8_0 against ggml's dequantized weights.
+  Q8_0 rows, Q4_0/Q4_0 and Q4_0/Q4_1).
 - Not validated: sampled decoding and long conversations. Please report what you see.
 
 ## Credits

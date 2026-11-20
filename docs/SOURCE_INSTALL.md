@@ -1,9 +1,10 @@
 # Install and build from a source checkout
 
 Use this guide to work on Strata's code or maintain a source-based installation. It is for developers.
-To just use Strata (version 0.2.15), install the [desktop app or the Terminal](INSTALL.md). Installed apps do not use `START-HERE.bat`.
+To just use Strata (version 0.2.17), install the [desktop app or the Terminal](INSTALL.md). Installed apps do not use `START-HERE.bat`.
 
-The repository includes `START-HERE.bat`, `SETUP.bat`, `UPDATE.bat`, `setup.sh` and `update.sh`.
+The repository includes `START-HERE.bat`, `UPDATE.bat` and `setup.sh`. (`SETUP.bat` and `update.sh` went away with the 0.2.16 folder
+layout: `START-HERE.bat --setup` and `./setup.sh --setup` do what `SETUP.bat` did, `START-HERE.bat --update` and `./setup.sh --update` what `update.sh` did.)
 Run them from a cloned or extracted **source folder**. They may install dependencies, prepare model files and
 acquire or build an engine. Check [model requirements](MODELS.md) before downloading.
 
@@ -15,7 +16,7 @@ acquire or build an engine. Check [model requirements](MODELS.md) before downloa
 | Linux | `./setup.sh` ([steps](#from-source-linux)) |
 | Mac (Apple Silicon) | `./setup.sh` ([steps](#from-source-mac)) |
 | A source build to test a change | `./setup.sh --build --no-start` ([steps](#build-from-git-on-linux-to-try-a-pull-request-or-change-the-code)) |
-| An update | `UPDATE.bat` or `./update.sh` ([steps](#updating)) |
+| An update | `UPDATE.bat` or `./setup.sh --update` ([steps](#updating)) |
 
 ## From source: Windows
 
@@ -76,7 +77,7 @@ claiming to have tested a code change. A released engine cannot validate changes
 For a direct NVIDIA build, with the required compiler and CUDA toolkit installed:
 
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSTRATA_ENABLE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=native
+cmake -S engine -B build -DCMAKE_BUILD_TYPE=Release -DSTRATA_ENABLE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=native
 cmake --build build --target strata -j8
 ```
 
@@ -85,13 +86,13 @@ cmake --build build --target strata -j8
 
 Run against the resulting binary and the matching model config. Use the build instructions for
 [HIP](AMD_HIP.md), [SYCL](INTEL_ARC.md) or [Metal](MAC.md) when changing those backends.
-Follow [contribution validation requirements](../CONTRIBUTING.md) before requesting review.
+Follow [contribution validation requirements](../.github/CONTRIBUTING.md) before requesting review.
 
 For the Terminal monitor from a checkout:
 
 ```bash
-.venv/bin/pip install -r requirements-monitor.txt
-STRATA_PYTHON="$PWD/.venv/bin/python3" bin/strata monitor --url http://127.0.0.1:8080
+.venv/bin/pip install -r terminal/requirements-monitor.txt
+STRATA_PYTHON="$PWD/.venv/bin/python3" terminal/bin/strata monitor --url http://127.0.0.1:8080
 ```
 
 ## From source: Mac
@@ -139,12 +140,26 @@ this does not make every model pack compatible. Q2_0's CPU requirements differ f
 See the [CPU and build notes](DETAILS.md) and [older GPU guide](OLDER_GPUS.md) for the relevant hardware.
 Record the actual CPU, compiler, model and validation results when reporting an experimental build.
 
+### Using an engine you built with `strata launch`
+
+`strata launch` and the app start the engine installed in Strata's component folder, not the one in your checkout. To use your own build,
+run `strata components add-build <folder>`, where the folder holds the engine program you built (`strata`, its libraries and `BUILD.json`).
+Strata first checks that the program runs on this computer (`strata --version`) and is for this computer's kind of graphics card. It then
+copies it in as a local engine, not signed by Strata, and uses it from then on. `strata components engines` and `strata doctor` show it as
+a local build. Strata never switches to a local build by itself, not even when it is newer than the released engines.
+`strata components use newest` goes back to the released engines, and `strata components remove <folder>` deletes the local build.
+
 ## Updating
 
-Stop the running source engine before replacing it. Run `UPDATE.bat` on Windows or `./update.sh` on Linux.
+Stop the running source engine before replacing it. Run `UPDATE.bat` on Windows or `./setup.sh --update` on Linux and Mac.
 In a Git checkout the updater can pull source changes, update dependencies and refresh installed configs without
 starting the model. A source ZIP cannot pull Git history: extract a newer source archive instead.
 Preserve your configs and data location when moving between checkouts.
+
+Since 0.2.16 the checkout has a folder for each part (`app/`, `engine/`, `terminal/`, `docs/`, `tools/`). A run config that names a file
+by its old place in the checkout keeps working until the engine restarts and then fails to open it: the expert profile moved from
+`data/expert-profile.bin` to `terminal/data/expert-profile.bin`, and the server from `serve/server.py` to `terminal/serve/server.py`.
+After an update from 0.2.15 or older, point such paths (and the `ExecStart` of a service unit) at the new places.
 
 If you changed engine code, rebuild it and verify the executable path again. The presence of updated source files
 is not evidence that a running engine contains those changes. Desktop and Terminal component updates are covered

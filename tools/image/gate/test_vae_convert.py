@@ -51,8 +51,8 @@ class Convert(unittest.TestCase):
         d = Path(cls.tmp.name)
         (d / "t.cpp").write_text(PROGRAM)
         cls.exe = d / "conv_test"
-        subprocess.run([CXX, "-std=c++17", "-O2", "-pthread", "-I", str(ROOT / "src" / "image" / "vae"),
-                        "-I", str(ROOT / "include"), str(d / "t.cpp"), "-o", str(cls.exe)], check=True)
+        subprocess.run([CXX, "-std=c++17", "-O2", "-pthread", "-I", str(ROOT.parent / "engine" / "src" / "image" / "vae"),
+                        "-I", str(ROOT.parent / "engine" / "include"), str(d / "t.cpp"), "-o", str(cls.exe)], check=True)
 
     @classmethod
     def tearDownClass(cls):

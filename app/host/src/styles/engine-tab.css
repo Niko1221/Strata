@@ -1,0 +1,17 @@
+/* Settings > Engine: the engines installed on this computer. Same row rhythm as the version rows in About; tokens only. */
+.engine-list > .small { margin: 4px 0 0; line-height: 1.6; }
+.engine-group { margin-top: 12px; }
+.engine-group__title { margin: 16px 0 0; font-size: 13px; font-weight: 600; color: var(--st-ink-muted); }
+.engine-row { display: flex; align-items: center; gap: 12px; padding: 14px 0; }
+.engine-row + .engine-row { border-top: 1px solid var(--st-line-soft); }
+.engine-row > .st-icon { flex: none; color: var(--st-ink-muted); }
+.engine-row__text { flex: 1; min-width: 0; }
+.engine-row__text strong { display: block; font-size: 13px; font-weight: 600; }
+.engine-row__text small { display: block; margin-top: 4px; color: var(--st-ink-muted); font-size: 12px; overflow-wrap: anywhere; }
+.engine-row__why { line-height: 1.5; max-width: 460px; }
+.engine-row__state { flex: none; font-size: 12px; color: var(--st-accent-text); }
+.engine-row > .st-btn { flex: none; }
+.engine-row[data-unfit='true'] .engine-row__text strong { color: var(--st-ink-muted); }
+.engine-total { margin: 14px 0 0; }
+.engine-details { margin-top: 10px; }
+.engine-details p { margin: 6px 0 0; overflow-wrap: anywhere; }

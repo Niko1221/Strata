@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { resolve } from 'node:path';
 import { mkdirSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { harnessFixtureEnvironment } from '../../apps/host/tests/helpers/harness-environment.mjs';
+import { harnessFixtureEnvironment } from '../../app/host/tests/helpers/harness-environment.mjs';
 const root = resolve(import.meta.dirname, '../../apps/host');
 const mode = process.argv[2];
 const env = mode === 'full' ? { ...process.env } : harnessFixtureEnvironment(mkdtempSync(resolve(tmpdir(), 'strata-059-checks-')));

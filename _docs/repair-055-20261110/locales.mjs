@@ -6,7 +6,7 @@ import {fileURLToPath} from 'node:url';
 const root=fileURLToPath(new URL('../../',import.meta.url));
 const baseline='c1ceee69e4d5d9e65f9a62b0a8ff10f8b93b3d4c';
 const before=name=>JSON.parse(execFileSync('git',['show',`${baseline}:apps/host/src/locales/${name}.json`],{cwd:root,encoding:'utf8'}));
-const after=name=>JSON.parse(readFileSync(new URL(`../../apps/host/src/locales/${name}.json`,import.meta.url),'utf8'));
+const after=name=>JSON.parse(readFileSync(new URL(`../../app/host/src/locales/${name}.json`,import.meta.url),'utf8'));
 const oldEnglish=before('en'),english=after('en'),keys=Object.keys(english).filter(key=>key.startsWith('wc55'));
 assert.equal(keys.length,29);const rows=[];
 for(const language of ['en','ja','zh','de','fr','es','pt','ru','ko']){

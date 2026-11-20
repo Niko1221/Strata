@@ -7,8 +7,8 @@ import {join,resolve} from 'node:path';
 import {createRequire} from 'node:module';
 import {createServer} from 'node:net';
 import {setTimeout as delay} from 'node:timers/promises';
-import {sha256,verifyEngine} from '../../apps/host/scripts/release-integrity.mjs';
-import {findLocalBackend,verifyLocalBackend} from '../../apps/host/server/local-backends.mjs';
+import {sha256,verifyEngine} from '../../app/host/scripts/release-integrity.mjs';
+import {findLocalBackend,verifyLocalBackend} from '../../app/host/server/local-backends.mjs';
 const root=resolve(import.meta.dirname,'../..'),out='H:/Strata/releases/personal-052-local2-20261107/app';
 const args=process.argv.slice(2),py='C:/Users/downl/AppData/Local/Programs/Python/Python312/python.exe';
 if(!args.includes('--execute')){console.log(JSON.stringify({wouldExecute:false,actualGuiRequired:true,prismVersion:'0.4.1',context:98304,q8Kv:true,flashAttention:true,userProfileMutation:false,fullWindowQualified:false}));process.exit(0);}

@@ -14,7 +14,7 @@ from unittest.mock import patch
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-from strata_control import signing  # noqa: E402
+from terminal.strata_control import signing  # noqa: E402
 
 
 def module(name: str):
@@ -525,7 +525,7 @@ class Boundaries(unittest.TestCase):
                     control_dir=work / "control-entries",
                 )
             else:
-                from strata_control import feed
+                from terminal.strata_control import feed
 
                 checked = feed.fetch(str(work / "assets/strata-feed.json"), trust)
                 self.assertEqual(checked.sequence, 901)

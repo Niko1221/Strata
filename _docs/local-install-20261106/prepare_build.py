@@ -26,7 +26,7 @@ def main() -> None:
     assert OUT.is_dir() and not (OUT/'resources.json').exists()
     assert subprocess.check_output(['git','-C',str(FROZEN),'rev-parse','HEAD'],text=True).strip() == 'c50ca06a863a98ff121cbff30365a035a90205e2'
     sys.path.insert(0, str(ROOT))
-    from strata_control import signing, engine_component
+    from terminal.strata_control import signing, engine_component
     manifest = json.loads((SIGNED/'engine-component.json').read_text())
     signing.verify_bytes(signing.load_trusted_keys(environ={}), engine_component.signing_payload(manifest), manifest['signature'])
     assert sha(SIGNED/'strata.exe') == NATIVE_SHA

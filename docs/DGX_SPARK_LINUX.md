@@ -34,7 +34,7 @@ IQ3_S (84 GB download) or the NVFP4 pack. The engine package needs glibc 2.39 or
 ```
 
 `--data-dir` must be a folder you can write (the default, next to the checkout, may be under `/home`, which a normal user cannot create).
-Setup finds the GB10, calls it unified memory, takes the engine from the feed (or compiles it with `spark/build_engine.sh` when the release
+Setup finds the GB10, calls it unified memory, takes the engine from the feed (or compiles it with `engine/spark/build_engine.sh` when the release
 has none) and writes the run config with the settings measured on this part:
 
 | Setting | Why |
@@ -54,16 +54,15 @@ Start a model with its run script (`./run-iq3_s.sh`) or `./setup.sh`.
 You need the CUDA 13.0 toolkit (`/usr/local/cuda`; DGX OS has it), cmake, ninja and Python 3.10 or newer.
 
 ```sh
-python3 -m venv .venv-build
-.venv-build/bin/pip install -r requirements.txt -r requirements-build.txt
-PATH="$PWD/.venv-build/bin:/usr/local/cuda/bin:$PATH" PYTHON="$PWD/.venv-build/bin/python" JOBS=16 sh spark/build_engine.sh
+python3 -m venv terminal/.venv-build
+.venv-build/bin/pip install -r terminal/requirements.txt -r terminal/requirements-build.txt
+PATH="$PWD/.venv-build/bin:/usr/local/cuda/bin:$PATH" PYTHON="$PWD/.venv-build/bin/python" JOBS=16 sh engine/spark/build_engine.sh
 cp -r out-spark/engine ./engine
 ```
 
-About 3 minutes for the engine (the first run also fetches llama.cpp at the
-pinned commit). `out-spark/engine/` holds `strata`, `strata-vision`, `libstrata_kq.so`, the CUDA libraries and a `BUILD.json`.
-`BUILD_VISION=0` leaves the picture reader out. `packaging/build_cuda_linux_aarch64.sh` runs this build and makes the engine package
-for the feed ([packaging/README.md](../packaging/README.md)). A model on a Q2_0 pack cannot run: its CPU kernels need AVX-512.
+About 3 minutes for the engine. `out-spark/engine/` holds `strata`, `strata-vision`, the CUDA libraries and a `BUILD.json`.
+`BUILD_VISION=0` leaves the picture reader out. `tools/packaging/build_cuda_linux_aarch64.sh` runs this build and makes the engine package
+for the feed ([packaging/README.md](../tools/packaging/README.md)). A model on a Q2_0 pack cannot run: its CPU kernels need AVX-512.
 
 ## What the Spark does with its memory
 
@@ -83,7 +82,7 @@ decode, against 1,252 and 39 without. Leave it on the SSD (setup does).
 
 ## Speeds
 
-Measured on the release-candidate engine package of 0.2.7.1 with `tools/dgx_bench.py`: fresh 4K, 16K and 32K prompts at temperature 0, 256-token
+Measured on the release-candidate engine package of 0.2.7.1 with `terminal/tools/dgx_bench.py`: fresh 4K, 16K and 32K prompts at temperature 0, 256-token
 answers, 64K context, the model's own run config, four samples a cell in two blocks (on, off, off, on), medians. "Table off" is
 `STRATA_SM121_PERF=0`. One Spark, 27 October 2026; the figures move a few percent between sessions.
 
@@ -116,6 +115,15 @@ On a GB10 the engine switches on six settings that were measured here, and print
 | `STRATA_HC_UPMIX=1` | the hyper-connection read's up projection and mix in one kernel | decode +5.4% |
 | `STRATA_SIDE_MIXER=2` | input-only QSA/GDN work on branches of the verify graph | fixed-work IQ3_S decode +6.7% (30 October) |
 | `STRATA_SPEC_COST=1` | the draft window follows what a draft costs | decode +4.7% |
+
+Two more settings of the 12.0 cards' set are on for a GB10 after 0.2.16, in the engine's own kernel rules (they are not in the printed list):
+`STRATA_ATTN_DAILY=1` (the decode attention of the verify windows) and `STRATA_GR_DOWN_TG=2` (the hyper-connection down read, two tokens a block row; the
+GB10 has 48 SMs). Both give the same bits as the kernels they replace (IQ3_S, six prompts, first-token logits and generated tokens equal to the old
+path's, and the same under the BASE-05 token baseline). IQ3_S with the DFlash2 drafter, three paired rounds on a rented Spark, decode tokens/s against
+the old default (chat / code / JSON / agent turn): `STRATA_ATTN_DAILY` +0.3 / +0.9 / +0.7 / +1.2%, `STRATA_GR_DOWN_TG` -0.1 / +0.7 / +1.1 / +0.9%
+(JSON and agent turns faster in 3 of 3 pairs for both). The other switches of the 12.0 set (`STRATA_GU_SWIGLU`, `STRATA_GR_UP75`, `STRATA_GR_UP_WIDE`,
+`STRATA_SMALL_UNR`, `STRATA_DF_PDL`, and the load ordering `STRATA_GR_V3_PF`) measured level or slower on this part and stay off here; setting one
+yourself still works. `STRATA_SM121_PERF=0` (or `STRATA_DEFAULTS=026`) turns the two new ones off with the rest of the GB10 set.
 
 **What the first three switches do to the answers.** The fused prompt path and the FP4 activations round differently from the paths they replace,
 and the other three do not touch the text (the fused hyper-connection read gives bit-identical logits; the side mixer changes only graph scheduling;

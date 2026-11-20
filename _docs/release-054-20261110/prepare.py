@@ -69,7 +69,7 @@ def guard_module():
 
 def signed_source() -> tuple[Path, dict, dict]:
     sys.path.insert(0, str(ROOT))
-    from strata_control import engine_component, signing
+    from terminal.strata_control import engine_component, signing
     receipt, build = load(BUILD / "staged-native.json"), load(BUILD / "app-build.json")
     require(receipt["ok"] and receipt["signatureVerified"] and receipt["releaseQualified"] is False, "Unknown native staging")
     require(build["sourceCommit"] == "85a78234cfcdccd8741cc921677802aba1869e44", "Unknown tested app source")
@@ -138,7 +138,7 @@ def prepare(key: str) -> None:
     # immutable prerelease URL; it is never the default Latest endpoint.
     run(sys.executable, "-B", tool, "build-feed", "--out", str(ASSETS), "--sequence", "20261110000100", "--channel", "stable", "--expires-days", "365",
         "--engine", str(engine_dir), "--control", str(control_dir), "--key", key, quiet=True)
-    from strata_control import feed, signing
+    from terminal.strata_control import feed, signing
     verified = feed.fetch(str(ASSETS), signing.load_trusted_keys(environ={}))
     require(verified.sequence == 20261110000100 and len(verified.engine) == len(verified.control) == 1, "Feed verification failed")
     verify_archives(folder, receipt)

@@ -11,7 +11,7 @@ import psutil
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-from strata_control.private_files import private_mkdir, restrict_to_current_user
+from terminal.strata_control.private_files import private_mkdir, restrict_to_current_user
 
 OUT = Path('H:/Strata/releases/stable-058-20261111-codex/cleanup')
 BACKUP = Path('H:/Strata/private-backups/obsolete-builds-058-20261111')

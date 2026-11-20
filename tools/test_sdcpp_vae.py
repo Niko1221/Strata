@@ -69,7 +69,7 @@ class Apply(unittest.TestCase):
             sd = fake_tree(Path(t))
             V.apply(sd)
             for src, rel in V.FILES:
-                self.assertEqual((sd / "src" / "strata_vae" / rel).read_bytes(), (ROOT / src).read_bytes(), rel)
+                self.assertEqual((sd / "src" / "strata_vae" / rel).read_bytes(), (ROOT.parent / "engine" / src).read_bytes(), rel)
             self.assertTrue((sd / "src" / "strata_vae" / "include" / "strata" / "hip_compat" / "cublas_v2.h").is_file())
             eng = (sd / "src" / "pipeline" / "diffusion_engine.cpp").read_text()
             cm = (sd / "CMakeLists.txt").read_text()
@@ -82,7 +82,7 @@ class Apply(unittest.TestCase):
             # a non-finite picture: the warning says that sd.cpp's decoder (the same f16 operands) may fail the same way
             self.assertIn('if (strata_err.find("not finite") != std::string::npos)', eng)
             self.assertIn("using stable-diffusion.cpp's decoder, which may fail the same way", eng)
-            cu = (ROOT / "src" / "image" / "vae" / "wan_vae.cu").read_text(encoding="utf-8")
+            cu = (ROOT.parent / "engine" / "src" / "image" / "vae" / "wan_vae.cu").read_text(encoding="utf-8")
             self.assertIn('"wan_vae: the picture has values that are not finite', cu)      # the reason the hook looks for
             self.assertLess(eng.index("return decoded;"), eng.rindex("LOG_WARN"))
             self.assertLess(eng.rindex("LOG_WARN"), eng.index("auto tiling_params"))

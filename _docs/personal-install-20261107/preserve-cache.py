@@ -50,7 +50,7 @@ def main() -> None:
     if not args.execute:print(json.dumps({'wouldPreserve':False,'cacheExists':SOURCE.exists()}));return
     require_resources();require(not DEST.exists(),'Fresh protected cache destination required')
     os.environ['PSModuleAnalysisCachePath']=str(OUT/'temp/PSModuleAnalysisCache')
-    DEST.mkdir();sys.path.insert(0,str(ROOT));from strata_control import private_files
+    DEST.mkdir();sys.path.insert(0,str(ROOT));from terminal.strata_control import private_files
     private_files.restrict_to_current_user(DEST,directory=True)
     result=preserve(SOURCE,DEST/'Microsoft')
     write_new(DEST/'receipt.json',dict(result,source=str(SOURCE),destination=str(DEST/'Microsoft')))

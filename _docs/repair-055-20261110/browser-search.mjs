@@ -5,8 +5,8 @@ import {createInterface} from 'node:readline';
 import {createServer} from 'node:http';
 import {existsSync,mkdirSync,writeFileSync} from 'node:fs';
 import {join} from 'node:path';
-import {findBrowser,findPlaywrightMcp} from '../../apps/host/server/agent/browser-probe.mjs';
-import {buildProfile} from '../../apps/host/server/agent/profile.mjs';
+import {findBrowser,findPlaywrightMcp} from '../../app/host/server/agent/browser-probe.mjs';
+import {buildProfile} from '../../app/host/server/agent/profile.mjs';
 
 const attempt=process.argv[2];assert.match(attempt??'',/^[a-z0-9-]+$/);
 const work=join('H:/Strata/releases/repair-055-20261110-opencode','browser-search-'+attempt);

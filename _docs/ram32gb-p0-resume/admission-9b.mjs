@@ -4,9 +4,9 @@ import {readFileSync, statSync, writeFileSync, mkdirSync} from 'node:fs';
 import {freemem, totalmem, cpus} from 'node:os';
 import {join} from 'node:path';
 import {setTimeout} from 'node:timers/promises';
-import {componentsDirectory} from '../../apps/host/server/control-runtime.mjs';
-import {findLocalBackend, verifyLocalBackendSource} from '../../apps/host/server/local-backends.mjs';
-import {admitLocalMemory, RAM_FLOOR_BYTES, RAM_STOP_BYTES} from '../../apps/host/server/local-memory-guard.mjs';
+import {componentsDirectory} from '../../app/host/server/control-runtime.mjs';
+import {findLocalBackend, verifyLocalBackendSource} from '../../app/host/server/local-backends.mjs';
+import {admitLocalMemory, RAM_FLOOR_BYTES, RAM_STOP_BYTES} from '../../app/host/server/local-memory-guard.mjs';
 
 const name = process.argv[2];
 if (!/^[a-zA-Z0-9_-]{1,80}$/.test(name ?? '')) throw new Error('Fresh run name required');

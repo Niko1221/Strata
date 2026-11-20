@@ -24,7 +24,7 @@ class PairTrellisTypes(unittest.TestCase):
         self.assertEqual(gguf_reader.BLOCK_GEOMETRY["TQK7"], (128, 30))
 
     def test_cpp_reader_has_the_same_numbers(self):
-        text = (ROOT / "include" / "strata" / "artifact" / "gguf_reader.hpp").read_text(encoding="utf-8")
+        text = (ROOT.parent / "engine" / "include" / "strata" / "artifact" / "gguf_reader.hpp").read_text(encoding="utf-8")
         for t, name, k in ((147, "TQP5", 5), (148, "TQP6", 6), (149, "TQP7", 7)):
             self.assertRegex(text, r"case %d:\s*return \"%s\";" % (t, name))
             self.assertRegex(text, r"case %d:\s*elems = 128;\s*bytes = %d;" % (t, 2 + 8 * k))

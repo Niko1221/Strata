@@ -209,7 +209,7 @@ def production_modules() -> tuple[Any, Any, Any]:
     """Only the reviewed app's public verification/dependency code is loaded."""
     import sys
     sys.path.insert(0, str(ROOT))
-    from strata_control import engine_component, signing
+    from terminal.strata_control import engine_component, signing
     spec = importlib.util.spec_from_file_location("component_binary_deps", ROOT / "packaging/binary_deps.py")
     require(spec and spec.loader, "Production dependency reader absent")
     deps = importlib.util.module_from_spec(spec)

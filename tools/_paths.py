@@ -16,7 +16,14 @@ import sys
 from pathlib import Path
 
 ENGINE = Path(__file__).resolve().parents[1]
-VENDORED = ENGINE / "third_party" / "strata-gguf-py"       # holds gguf/ (the package) and converter/ (llama.cpp's HF converter)
+def _vendored() -> Path:
+    """ENGINE/third_party/strata-gguf-py (an installed Terminal, a test's tree), else the source checkout's engine/third_party (0.2.16 layout)."""
+    own = ENGINE / "third_party" / "strata-gguf-py"
+    beside = ENGINE.parent / "engine" / "third_party" / "strata-gguf-py"
+    return beside if not own.is_dir() and beside.is_dir() else own
+
+
+VENDORED = _vendored()       # holds gguf/ (the package) and converter/ (llama.cpp's HF converter)
 
 
 def _install_dirs() -> list[Path]:
@@ -37,7 +44,7 @@ def _install_dirs() -> list[Path]:
 
 
 def gguf_py() -> str:
-    cands = [os.environ.get("STRATA_GGUF_PY"), ENGINE / "third_party" / "strata-gguf-py",
+    cands = [os.environ.get("STRATA_GGUF_PY"), _vendored(),
              ENGINE.parents[min(1, len(ENGINE.parents) - 1)] / ".ref" / "llama.cpp" / "gguf-py"]   # the dev tree; a shallow install (G:\Strata) has no grandparent
     cands += [d / "third_party" / "strata-gguf-py" for d in _install_dirs()]
     for c in cands:
@@ -73,7 +80,7 @@ def add_gguf_py() -> None:
 
 def converter_dir() -> str:
     """llama.cpp's Hugging Face converter (convert_hf_to_gguf.py and conversion/), vendored beside gguf-py (the NVFP4-local preparation)."""
-    for c in (ENGINE / "third_party" / "strata-gguf-py" / "converter", *[d / "third_party" / "strata-gguf-py" / "converter" for d in _install_dirs()]):
+    for c in (_vendored() / "converter", *[d / "third_party" / "strata-gguf-py" / "converter" for d in _install_dirs()]):
         if (c / "convert_hf_to_gguf.py").is_file():
             return str(c)
     sys.exit("llama.cpp's converter was not found (third_party/strata-gguf-py/converter)")

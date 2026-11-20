@@ -295,7 +295,7 @@ def bundle() -> None:
                'rustxng': {'version': '0.31.1', 'profile': 'full', 'realQueriesWithResults': 1},
                'installed': load(OUT / 'installed.json')}
     save(ASSETS / 'QUALITY.json', quality)
-    verify_code = "import json,sys;sys.path.insert(0,sys.argv[1]);from strata_control import feed,signing;v=feed.fetch(sys.argv[2],signing.load_trusted_keys(environ={}));assert len(v.engine)==len(v.control)==1;print(json.dumps({'ok':True,'engine':len(v.engine),'control':len(v.control),'trust':'bundled public keys only'}))"
+    verify_code = "import json,sys;sys.path.insert(0,sys.argv[1]);from terminal.strata_control import feed,signing;v=feed.fetch(sys.argv[2],signing.load_trusted_keys(environ={}));assert len(v.engine)==len(v.control)==1;print(json.dumps({'ok':True,'engine':len(v.engine),'control':len(v.control),'trust':'bundled public keys only'}))"
     verified = subprocess.run([str(EXTRACTED / 'control/python/python.exe'), '-I', '-B', '-c', verify_code,
                                str(EXTRACTED / 'control'), str(ASSETS)], check=True, capture_output=True, text=True, timeout=60)
     save(OUT / 'signed-feed-check.json', json.loads(verified.stdout))

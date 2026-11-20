@@ -12,7 +12,7 @@ def verify(folder: Path, *, signed: bool) -> dict:
     result=json.loads(run.stdout)
     if signed:
         sys.path.insert(0,str(ROOT))
-        from strata_control import signing, engine_component
+        from terminal.strata_control import signing, engine_component
         manifest=load(folder/'engine-component.json')
         signing.verify_bytes(signing.load_trusted_keys(environ={}),engine_component.signing_payload(manifest),manifest.get('signature'))
         result['signatureVerified']=True

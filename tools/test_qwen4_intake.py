@@ -444,7 +444,7 @@ class LiveHuggingFace(unittest.TestCase):
 
 # ================================================================================================ the tables against the sources
 def _read(rel: str) -> str:
-    return (ROOT / rel).read_text(encoding="utf-8")
+    return (ROOT.parent / "engine" / rel).read_text(encoding="utf-8")
 
 
 def _ints(text: str, pat: str) -> set[int]:

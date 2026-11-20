@@ -16,8 +16,8 @@ Use the [current release](https://github.com/Niko1221/Strata/releases/latest). Y
 
 | System | What to install | Engine variant |
 | --- | --- | --- |
-| Linux | `Strata-0.2.15-linux-x86_64.AppImage` (it downloads the engine on first start), or `strata launch` | `linux-x86_64-hip-halo` |
-| Windows | `Strata-0.2.15-windows-x64-setup.exe` (it downloads the engine on first start), or `strata launch` | `windows-x86_64-hip-rdna3` |
+| Linux | `Strata-0.2.17-linux-x86_64.AppImage` (it downloads the engine on first start), or `strata launch` | `linux-x86_64-hip-halo` |
+| Windows | `Strata-0.2.17-windows-x64-setup.exe` (it downloads the engine on first start), or `strata launch` | `windows-x86_64-hip-rdna3` |
 
 Packaged engines carry the matching hipBLASLt tuning table for gfx1151 and select it on their own. Setup recognizes `gfx1151` and
 PCI ID `1002:1586`; other integrated Radeon chips have separate support limits. Unified memory is counted once. Setup does not
@@ -32,9 +32,9 @@ On Windows, [STRIX_HALO_WINDOWS.md](STRIX_HALO_WINDOWS.md) has the speeds measur
   changes the 6) for any integrated GPU on Linux, a DGX Spark included.
 - **gfx11 matrix cores.** The prompt attention, the block scorer, the prompt GEMMs and the prompt experts have WMMA kernels for
   gfx1100 / 1101 / 1102 / 1103 / 1150 / 1151. A gfx11 part outside that list (gfx1152) takes the portable path.
-- **The hipBLASLt table.** `tools/hip/gfx1151-hipblaslt-100401.txt` is for ROCm 7.14.1's hipBLASLt (`100401`), including the prompt
+- **The hipBLASLt table.** `terminal/tools/hip/gfx1151-hipblaslt-100401.txt` is for ROCm 7.14.1's hipBLASLt (`100401`), including the prompt
   shapes at `--prefill 16384`. Setup's own ROCm for gfx1151 (the 7.14.0a20260608 wheels, hipBLASLt 1.4.0) takes
-  `tools/hip/gfx1151-hipblaslt-100400.txt`, calibrated against that library.
+  `terminal/tools/hip/gfx1151-hipblaslt-100400.txt`, calibrated against that library.
 - **The expert cache and the RAM budget share the RAM.** For a model with a RAM budget (UD-IQ4_XS, UD-Q4_K_XL) setup writes a number
   for `--expert-cache` (the RAM less 24 GB less the budget), not `auto`, because `auto` counts all memory the OS can give back at
   start and can take the room the OS needs. The number is in the config's `args`. An engine run by hand should pass one too.
@@ -67,13 +67,12 @@ the default is about half of the RAM) and `amd_iommu=off`. Both are host setting
 
 ## 2. The engine
 
-llama.cpp's `ggml` sources are pinned by this repository, and CMake fetches the revision it needs. For an offline build, point
-`STRATA_GGML_DIR` at a checkout of exactly that revision.
+The engine build needs no llama.cpp checkout.
 
 ```sh
 git clone https://github.com/Niko1221/Strata.git && cd Strata
-cmake -S . -B build-halo -G Ninja -DCMAKE_BUILD_TYPE=Release \
-  -DSTRATA_ENABLE_HIP=ON -DSTRATA_ENABLE_CUDA=OFF -DSTRATA_PREFILL_MMQ=ON \
+cmake -S engine -B build-halo -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DSTRATA_ENABLE_HIP=ON -DSTRATA_ENABLE_CUDA=OFF \
   -DCMAKE_HIP_ARCHITECTURES=gfx1151 \
   -DCMAKE_HIP_COMPILER=$SDK/lib/llvm/bin/clang++ -DCMAKE_HIP_COMPILER_ROCM_ROOT=$SDK \
   "-DCMAKE_PREFIX_PATH=$SDK;$SDK/lib/rocm_sysdeps;$SDK/lib/llvm" \
@@ -82,7 +81,7 @@ cmake --build build-halo --target strata -j 8        # about 25 minutes the firs
 ```
 
 The build warns that `gfx1151` is "unvalidated". The engine is built without llama.cpp's MMQ kernels: the prompt experts run on
-Strata's own kernels where they cover a layer and on the FP16 path elsewhere. Add `-DSTRATA_MMQ=ON` to build the MMQ kernels too. To test:
+Strata's own kernels where they cover a layer and on the FP16 path elsewhere. To test:
 `cmake --build build-halo -j 8` builds the tests and `ctest --test-dir build-halo` runs them. `hip_prefill_hcd_exact_parity` and
 `hip_prefill_hipblaslt_gemm` need the table (next section) and skip without it.
 
@@ -142,7 +141,7 @@ export STRATA_PREFILL_STREAM_MIN=128   # prompt reads of 128-1,023 tokens on the
 
 `STRATA_PF_GEMM`, `STRATA_HC_UPMIX`, `STRATA_PA_FAST`, `STRATA_HIP_WMMA` and `STRATA_SELECT_WMMA` together are one opt-in on an
 integrated Radeon: `STRATA_IGPU_PROMPT_SET=1` ([AMD_HIP.md](AMD_HIP.md), "Integrated GPUs"), measured on a Radeon 780M only, where
-it is the default. `STRATA_PF_SWITCH_MIN_T` and `STRATA_PREFILL_STREAM_MIN` stay opt-in as well. `STRATA_PF_FUSED` is on by itself on an integrated Radeon under Linux (measured on the 780M only; the Strix Halo takes it by the same rule and was not run there); `STRATA_PF_FUSED=0` keeps MMQ.
+it is the default. `STRATA_PF_SWITCH_MIN_T` and `STRATA_PREFILL_STREAM_MIN` stay opt-in as well. `STRATA_PF_FUSED` is on by itself on an integrated Radeon under Linux (measured on the 780M only; the Strix Halo takes it by the same rule and was not run there); `STRATA_PF_FUSED=0` keeps MMQ in a build that has it (the release builds of 0.2.16 and later have none: `=0` there runs the prompt experts on the native int8 kernels, #6251).
 
 **On Windows the Strix Halo is the exception** (engine 0.1.52 and later): `gfx1151` takes the matrix-core set by itself -
 `STRATA_HIP_WMMA`, `STRATA_PF_GEMM`, `STRATA_PA_FAST`, `STRATA_HC_UPMIX` and `STRATA_PF_FUSED`, without `STRATA_SELECT_WMMA`

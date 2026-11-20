@@ -18,7 +18,7 @@ import zipfile
 import prepare as p
 
 sys.path.insert(0, str(p.ROOT))
-from strata_control import engine_component as ec, feed, signing, updater
+from terminal.strata_control import engine_component as ec, feed, signing, updater
 
 
 def gh_json(*args: str) -> dict:

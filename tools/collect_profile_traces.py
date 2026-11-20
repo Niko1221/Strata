@@ -50,7 +50,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("config")
     ap.add_argument("outdir")
-    ap.add_argument("--corpus", default=str(ROOT / "bench" / "profile_corpus.json"))
+    ap.add_argument("--corpus", default=str(ROOT.parent / "tools" / "bench" / "profile_corpus.json"))
     ap.add_argument("--max-new", type=int, default=250)
     ap.add_argument("--mode", choices=("usage", "routing"), default="usage")
     ap.add_argument("--only", help="comma-separated prompt numbers (default all)")

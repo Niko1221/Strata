@@ -14,7 +14,7 @@ def replace(text: str, old: str, new: str, count: int = 1) -> str:
 
 def qualify() -> str:
     text = (HISTORY / 'qualify-app.mjs').read_text(encoding='utf-8')
-    text = text.replace("from '../../apps/host/", "from '" + (ROOT / 'apps/host').as_uri() + '/')
+    text = text.replace("from '../../app/host/", "from '" + (ROOT / 'apps/host').as_uri() + '/')
     text = replace(text, "root=resolve(import.meta.dirname,'../..')", 'root=' + json.dumps(ROOT.as_posix()))
     text = text.replace(OLD_OUT, OUT.as_posix()).replace('0.5.2-local.2', PRODUCT).replace("controlVersion='0.5.3'", "controlVersion='0.5.4'")
     text = text.replace("'0.5.2'", "'0.5.3'").replace('0.5.2-windows-x86_64', '0.5.3-windows-x86_64')

@@ -81,7 +81,7 @@ def main() -> None:
         assert BACKUP.parent.is_dir() and not BACKUP.exists(), 'Fresh preservation directory required'
         BACKUP.mkdir()
         sys.path.insert(0, str(ROOT))
-        from strata_control import private_files
+        from terminal.strata_control import private_files
         private_files.restrict_to_current_user(BACKUP, directory=True)
         source = PARENT / 'native-32gb16gb-20261106/_docs/native-32gb16gb'
         expected = inventory(source)

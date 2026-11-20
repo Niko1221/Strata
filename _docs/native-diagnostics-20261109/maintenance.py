@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 PRIVATE = Path('H:/Strata/private-backups/native-diagnostics-20261109')
 sys.path[:0] = [str(ROOT), str(ROOT / '_docs/local-install-20261106')]
 from installed_state import endpoint, get, shells
-from strata_control import private_files
+from terminal.strata_control import private_files
 
 
 def sha(path: Path) -> str:
