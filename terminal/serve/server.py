@@ -8192,7 +8192,11 @@ def make_handler(svc: Service):
                                        if path == "/v1/responses" else {"error": model_err})
                             return
                     self.record = svc.begin_request(path, req)
-                    if svc.session_ladder is not None and svc.session_ladder.cfg.enabled:
+                    # the same getattr discipline as answer_started and retry_after below: a bare svc - a test
+                    # handler built on SimpleNamespace, upstream's test_internal_error_500 - has no ladder, and
+                    # _post must not require attributes its handler contract does not provide.
+                    ladder = getattr(svc, "session_ladder", None)
+                    if ladder is not None and ladder.cfg.enabled:
                         # Task 7: OpenCode's session headers, read once per request on the same thread that later
                         # runs _run (thread-local precedent: request_trace.record at 4633/5212); absent headers ->
                         # None, which an enabled ladder treats as an identity-unknown switch (F2) and a disabled
