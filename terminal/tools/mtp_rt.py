@@ -3,7 +3,8 @@
     python tools/mtp_rt.py --gguf <Strata>/mtp-bf16/mtp-q2_0.gguf --out <Strata>/mtp-bf16/rt
 
 Writes
-  experts.bin   512 routed experts in the engine's blob layout (`include/strata/kernels/cpu/expert.hpp`): gate/up
+  experts.bin   the routed experts (512 for Qwen3.8-Flash-Next; a pruned model's head can have fewer) in the engine's
+                blob layout (`include/strata/kernels/cpu/expert.hpp`): gate/up
                 rows interleaved (2r = gate r, 2r+1 = up r), then down rows; the Q2_0 codes in one plane and the fp16
                 scales in another.  A lossless relayout of the GGUF's Q2_0 blocks (same bytes, `cpu_expert_fixture.py`).
   dense.bin     every other tensor: the large projections quantized to Q8_0 (ggml's reference rounding) so the
@@ -28,7 +29,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _paths import gguf_lib  # noqa: E402
 gguf = gguf_lib()
 
-H, FF, NE = 2560, 640, 512
+H, FF = 2560, 640
+# The routed-expert count is read from the GGUF in main(), not fixed at Qwen3.8-Flash-Next's 512: a pruned model's own
+# MTP head can have fewer (one made from llama.cpp's draft GGUF by terminal/tools/mtp_from_gguf.py, for example). The
+# engine takes the draft layer's count from the size of experts.bin. For a 512-expert head the output is unchanged.
 BLOB = 3 * (H * FF * 18 // 64)
 Q8 = {"fc_embedding.weight", "fc_hidden.weight", "self_attn.q_proj.weight", "self_attn.k_proj.weight",
       "self_attn.v_proj.weight", "self_attn.o_proj.weight", "self_attn.indexer.index_qk_proj.weight",
@@ -73,6 +77,7 @@ def main() -> int:
     tens = {t.name: t for t in r.tensors}
     gu = np.asarray(tens["mtp.layers.0.mlp.experts.gate_up_proj"].data)
     dn = np.asarray(tens["mtp.layers.0.mlp.experts.down_proj"].data)
+    NE = gu.shape[0]
     assert gu.shape == (NE, 2 * FF, 720) and dn.shape == (NE, H, 180), (gu.shape, dn.shape)
     with open(out / "experts.bin", "wb") as f:
         for e in range(NE):
