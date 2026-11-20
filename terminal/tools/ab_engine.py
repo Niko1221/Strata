@@ -40,6 +40,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -69,6 +70,17 @@ def post(port: int, prompt: str, max_tokens: int) -> dict:
         return json.loads(r.read())
 
 
+def send(port: int, body: dict, timeout: float = 3600) -> dict:
+    """POST `body` as post() does. An HTTP error comes back as {"error": ...} so one bad request does not stop the run."""
+    req = urllib.request.Request(f"http://127.0.0.1:{port}/v1/chat/completions", data=json.dumps(body).encode(),
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        return {"error": f"HTTP {e.code}: {e.read().decode(errors='replace')[:200]}"}
+
+
 def wait_ready(port: int, proc: subprocess.Popen, timeout: float = 1800) -> None:
     t0 = time.time()
     while time.time() - t0 < timeout:
@@ -85,9 +97,10 @@ def wait_ready(port: int, proc: subprocess.Popen, timeout: float = 1800) -> None
     raise TimeoutError("server not ready")
 
 
-def run_requests(port: int, reqs: list[tuple[str, str]], max_new: int, rnd: int, arm: str, out, rows: list | None = None) -> list[dict]:
+def run_requests(port: int, reqs: list[tuple[str, str]], max_new: int, rnd: int, arm: str, out, rows: list | None = None,
+                 check=None) -> list[dict]:
     """Send `reqs` once each; every row goes to `out` (jsonl), to the screen and to `rows` (if given) as it comes in, so an
-    interrupt keeps the rows already answered."""
+    interrupt keeps the rows already answered. With `check` (response -> (ok, text)) each row also gets suite "base", ok, check."""
     rows = [] if rows is None else rows
     for tag, p in reqs:
         r = post(port, p, max_new)
@@ -96,11 +109,38 @@ def run_requests(port: int, reqs: list[tuple[str, str]], max_new: int, rnd: int,
                "prompt": t.get("prompt_per_second"), "prompt_n": t.get("prompt_n"),
                "n": r.get("usage", {}).get("completion_tokens"),
                "text": r["choices"][0]["message"].get("content", "")[:80]}
+        if check:
+            row["suite"] = "base"
+            row["ok"], row["check"] = check(r)
         out.write(json.dumps(row) + "\n")
         out.flush()
         rows.append(row)
         print(f"  {tag:6s} decode {row['decode']} tok/s  prompt {row['prompt']} tok/s ({row['prompt_n']})  "
               f"n {row['n']}", flush=True)
+    return rows
+
+
+def run_suite(port: int, reqs: list, rnd: int, arm: str, out, rows: list) -> list[dict]:
+    """Send suite requests (ab_suites.Req) once each and check every answer. A request the server refuses is a wrong row,
+    not a crash. Rows go to `out`, the screen and `rows` as they come in."""
+    for req in reqs:
+        t0 = time.monotonic()
+        r = send(port, req.body)
+        wall = round(time.monotonic() - t0, 1)
+        if "error" in r:
+            ok, check, t, text = False, r["error"], {}, ""
+        else:
+            ok, check = req.check(r)
+            t, text = r.get("timings", {}), r["choices"][0]["message"].get("content") or ""
+        row = {"round": rnd, "req": req.tag, "suite": req.suite, "decode": t.get("predicted_per_second"),
+               "prompt": t.get("prompt_per_second"), "prompt_n": t.get("prompt_n"),
+               "n": r.get("usage", {}).get("completion_tokens"), "predicted_n": t.get("predicted_n"),
+               "wall_s": wall, "ok": ok, "check": check}
+        out.write(json.dumps({**row, "arm": arm, "text": text[:200]}) + "\n")
+        out.flush()
+        rows.append(row)
+        print(f"  {req.tag:24s} decode {row['decode']} tok/s  prompt {row['prompt']} tok/s ({row['prompt_n']})  "
+              f"n {row['n']}  {wall}s  {'ok' if ok else 'WRONG'} {check}", flush=True)
     return rows
 
 

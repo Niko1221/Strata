@@ -1,8 +1,12 @@
 """Tests for ab_engine's versions mode and its CLI.  Everything from ab_versions and ab_report is patched: no network, no GPU, no subprocess."""
+import contextlib
+import io
 import json
 import sys
 import tempfile
+import types
 import unittest
+import urllib.error
 from contextlib import ExitStack
 from pathlib import Path
 from unittest import mock
@@ -249,6 +253,64 @@ class VersionsMode(unittest.TestCase):
             for flag in (["--tune", "quick"], ["--backend", "cuda"], ["--bench-dir", "x"]):
                 with self.subTest(flag=flag), self.assertRaises(SystemExit):
                     ab_engine.parse_args(["cfg.json", "A:exe=x", *flag])
+
+
+GOLDEN_JSONL = ('{"round": 0, "arm": "A", "req": "chat0", "decode": 50.0, "prompt": 900.0, "prompt_n": 40, "n": 256, "text": "hi there"}\n'
+                '{"round": 0, "arm": "A", "req": "long", "decode": 50.0, "prompt": 900.0, "prompt_n": 40, "n": 256, "text": "hi there"}\n')
+GOLDEN_STDOUT = ("  chat0  decode 50.0 tok/s  prompt 900.0 tok/s (40)  n 256\n"
+                 "  long   decode 50.0 tok/s  prompt 900.0 tok/s (40)  n 256\n")
+FULL = {"timings": {"predicted_per_second": 50.0, "prompt_per_second": 900.0, "prompt_n": 40, "predicted_n": 12},
+        "usage": {"completion_tokens": 256}, "choices": [{"message": {"content": "hi there"}}]}
+SUITE_KEYS = ["round", "req", "suite", "decode", "prompt", "prompt_n", "n", "predicted_n", "wall_s", "ok", "check"]
+
+
+def capture(fn):
+    out, so = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(so):
+        rows = fn(out)
+    return rows, out.getvalue(), so.getvalue()
+
+
+class SendingRequests(unittest.TestCase):
+    def test_run_requests_old_call_unchanged(self):
+        with mock.patch.object(ab_engine, "post", lambda port, p, m: FULL):
+            _, jsonl, stdout = capture(lambda out: ab_engine.run_requests(8080, [("chat0", "a"), ("long", "b")], 256, 0, "A", out))
+        self.assertEqual(jsonl, GOLDEN_JSONL)
+        self.assertEqual(stdout, GOLDEN_STDOUT)
+
+    def test_run_requests_with_check_adds_fields(self):
+        with mock.patch.object(ab_engine, "post", lambda port, p, m: FULL):
+            rows, jsonl, _ = capture(lambda out: ab_engine.run_requests(
+                8080, [("chat0", "a")], 256, 0, "A", out, check=lambda r: (False, "x")))
+        self.assertEqual((rows[0]["suite"], rows[0]["ok"], rows[0]["check"]), ("base", False, "x"))
+        self.assertIn('"suite": "base"', jsonl)
+
+    def test_run_suite_row_fields(self):
+        req = types.SimpleNamespace(suite="ladder", tag="ladder.4k", body={"a": 1}, check=lambda r: (True, ""))
+        sent = []
+        with mock.patch.object(ab_engine, "send", lambda port, body: sent.append(body) or FULL):
+            rows, jsonl, stdout = capture(lambda out: ab_engine.run_suite(8080, [req], 1, "v1", out, []))
+        self.assertEqual(sent, [{"a": 1}])
+        self.assertEqual(list(rows[0]), SUITE_KEYS)
+        self.assertEqual((rows[0]["predicted_n"], rows[0]["suite"], rows[0]["req"], rows[0]["ok"]), (12, "ladder", "ladder.4k", True))
+        line = json.loads(jsonl)
+        self.assertEqual((line["arm"], line["text"]), ("v1", "hi there"))
+        self.assertIn("ladder.4k", stdout)
+
+    def test_send_turns_http_error_into_error_dict(self):
+        err = urllib.error.HTTPError("u", 400, "Bad", {}, io.BytesIO(b"prompt too long"))
+        with mock.patch.object(ab_engine.urllib.request, "urlopen", side_effect=err):
+            self.assertEqual(ab_engine.send(8080, {}), {"error": "HTTP 400: prompt too long"})
+
+    def test_run_suite_http_400_is_a_wrong_row_and_continues(self):
+        reqs = [types.SimpleNamespace(suite="ladder", tag=t, body={}, check=lambda r: (True, "")) for t in ("a", "b")]
+        answers = iter([{"error": "HTTP 400: prompt too long"}, FULL])
+        with mock.patch.object(ab_engine, "send", lambda port, body: next(answers)):
+            rows, _, _ = capture(lambda out: ab_engine.run_suite(8080, reqs, 0, "v1", out, []))
+        self.assertEqual([r["ok"] for r in rows], [False, True])
+        self.assertEqual(rows[0]["check"], "HTTP 400: prompt too long")
+        self.assertIsNone(rows[0]["decode"])
+        self.assertIsNone(rows[0]["predicted_n"])
 
 
 if __name__ == "__main__":
