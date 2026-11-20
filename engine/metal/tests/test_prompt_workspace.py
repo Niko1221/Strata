@@ -217,6 +217,9 @@ int main() {
             return 77;
         }
     }
+    // This test checks ownership with no work in flight. Keep-alive command buffers
+    // may legitimately retain the old buffers until their background GPU work ends.
+    setenv("STRATA_METAL_KEEPALIVE_MS", "0", 1);
     mtl::Context cx;
     std::printf("device: %s; no model loaded; allocation-pool diagnostic=%d\n",
                 cx.device_name().c_str(), @DRAIN@);
