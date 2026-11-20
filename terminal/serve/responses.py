@@ -38,6 +38,12 @@ HOSTED_TOOLS = ("web_search", "web_search_preview", "file_search", "computer_use
                 "code_interpreter", "image_generation", "local_shell", "mcp", "tool_search")
 CLIENT_TOOL_SEARCH = "tool_search"                # the template name of a client-side tool_search (it has none)
 CALL_ITEMS = ("function_call", "custom_tool_call", "tool_search_call")
+# T2c (spec item 2): the request key the custom tool grammar entries ride on (see request_tools).  The
+# route hands it to constrain.grammar() as {"type": "custom_calls", "entries": <this list>} and builds
+# Constraint(..., custom_calls=True) - it does NOT go through format_of (there the type is unknown and
+# the request would fall to the bare-call branch).  An underscore key: never echoed in a response, and
+# the engine's sampling merge ignores it the way it ignores the constraint's own key.
+CUSTOM_CALLS_KEY = "_strata_custom_calls"
 
 
 class ResponsesError(ValueError):
@@ -394,8 +400,13 @@ def _declare_tools(given, prefix, tools, names, skipped, ns_descriptions=None):
 
 
 def request_tools(req: dict):
-    """-> (template tools or None, {template name: (namespace, name, kind)}, names of hosted tools left out)."""
+    """-> (template tools or None, {template name: (namespace, name, kind)}, names of hosted tools left out).
+
+    A custom tool with a grammar also records its entry ({name, definition}) under CUSTOM_CALLS_KEY on
+    `req` (T2c): the same request dict the route later passes as the sampling dict, so the constraint
+    route finds the entries there and binds them through constrain.grammar()'s custom_calls branch."""
     tools, names, skipped = [], {}, []
+    entries = []                                     # custom_calls entries: {name, definition} (T2c)
     given = req.get("tools") or []
     if not isinstance(given, list):
         raise ResponsesError("tools must be an array", "tools")
@@ -405,6 +416,28 @@ def request_tools(req: dict):
              if isinstance(item, dict) and item.get("type") == "additional_tools" and isinstance(item.get("tools"), list)
              for t in item["tools"]]
     _declare_tools(list(given) + extra, "tools", tools, names, skipped)
+    # T2c (spec item 2, 80f762180): a custom tool's grammar also binds its call body - the entries ride
+    # on the request (the same dict the route passes as the sampling dict) for the constraint route to
+    # hand to constrain.grammar()'s custom_calls branch; no custom grammar: no key at all, the request
+    # shape stays exactly as it was.  Names this server cannot parse are dropped by grammar()'s
+    # _NAME_SAFE filter; the prefix-pair exclusion lives there too.
+    entries = []                                     # custom_calls entries: {name, definition}
+    stack = [t for t in list(given) + extra if isinstance(t, dict)]
+    while stack:
+        item = stack.pop(0)
+        tool, namespace = item if isinstance(item, tuple) else (item, None)
+        kind = tool.get("type")
+        if kind == "namespace":                      # a namespace member's name is namespaced (see _declare)
+            stack += [(m, tool.get("name")) for m in tool.get("tools") or [] if isinstance(m, dict)]
+            continue
+        if kind != "custom":
+            continue
+        fmt = tool.get("format") or {}
+        if isinstance(fmt, dict) and fmt.get("type") == "grammar" and isinstance(fmt.get("definition"), str):
+            flat = f"{namespace}.{tool.get('name')}" if namespace else tool.get("name")
+            entries.append({"name": flat, "definition": fmt["definition"]})
+    if entries:
+        req[CUSTOM_CALLS_KEY] = entries
     choice = req.get("tool_choice")
     if choice == "none":
         return None, names, skipped
