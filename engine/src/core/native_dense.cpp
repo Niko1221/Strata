@@ -38,6 +38,7 @@ uint64_t alloc_bytes(uint64_t bytes) {
     return bytes < kSmallAlloc ? bytes : (bytes + kAllocGranule - 1) / kAllocGranule * kAllocGranule;
 }
 int g_layer_lb = -1, g_layer_le = -1;   // set_layer_range; -1: every layer
+bool g_hc_bf16_skipped = false;          // add_hc_skip ran: the layers' down / up rows have no bf16 copy on any card
 bool in_range(const std::string& name) {
     if (g_layer_lb < 0 || name.rfind("blk.", 0) != 0) return true;
     const int l = std::atoi(name.c_str() + 4);
@@ -100,6 +101,9 @@ bool hc_q8_name(const std::string& name) {
                                      ".hc_ffn_down.weight", ".hc_ffn_up.weight", ".hc_ffn_inject.weight"};
     for (const char* suffix : suffixes) if (name.ends_with(suffix)) return true;
     return false;
+}
+bool hc_skip_name(const std::string& n) {   // the rows add_hc_skip leaves out of the arena
+    return n.rfind("blk.", 0) == 0 && hc_q8_name(n) && (n.ends_with("_down.weight") || n.ends_with("_up.weight"));
 }
 // S25: the GGUF keeps the inject rows as F32 - quantized here to Q8_0 (ggml's reference rounding) so the Q8_0 read
 // covers every hc projection
@@ -223,6 +227,7 @@ bool NativeDense::weight_bytes_for(const std::vector<std::string>& shards, Weigh
     try {
         std::set<std::string> seen, hc_seen;
         uint64_t total = 0;
+        uint64_t scratch_elems = 0;   // the largest Q8_0 row without a bf16 copy: `load` sizes hc_bf16_view's scratches by it
         auto in_stage = [&](const std::string& name) {   // a blk.<l>. tensor of layers [lb, le); the rest belongs to every stage
             if (name.rfind("blk.", 0) != 0) return true;
             const long l = std::strtol(name.c_str() + 4, nullptr, 10);
@@ -239,8 +244,11 @@ bool NativeDense::weight_bytes_for(const std::vector<std::string>& shards, Weigh
                         hc_seen.insert(tensor.name).second) {
                         const auto found = table.table_.find(tensor.name);
                         if (found != table.table_.end() && found->second.ne0 % 32 == 0 &&
-                            tensor.shape[0] == (uint64_t) found->second.ne0 && tensor.shape[1] == (uint64_t) found->second.ne1)
+                            tensor.shape[0] == (uint64_t) found->second.ne0 && tensor.shape[1] == (uint64_t) found->second.ne1) {
                             total += alloc_bytes((uint64_t) found->second.ne0 / 32 * 34 * (uint64_t) found->second.ne1);
+                            if (g_hc_bf16_skipped && hc_skip_name(tensor.name))
+                                scratch_elems = (std::max)(scratch_elems, (uint64_t) found->second.elements);
+                        }
                     }
                 }
                 if (!eligible(tensor, include_ple_key)) continue;
@@ -275,8 +283,14 @@ bool NativeDense::weight_bytes_for(const std::vector<std::string>& shards, Weigh
                 if (name.rfind("blk.", 0) != 0 || !in_stage(name) || !hc_q8_name(name) || hc_seen.count(name) ||
                     !(name.ends_with("_down.weight") || name.ends_with("_up.weight")))
                     continue;
-                if (ref.ne0 % 32 == 0 && ref.elements == ref.ne0 * ref.ne1) total += alloc_bytes((uint64_t) ref.elements / 32 * 34);
+                if (ref.ne0 % 32 == 0 && ref.elements == ref.ne0 * ref.ne1) {
+                    total += alloc_bytes((uint64_t) ref.elements / 32 * 34);
+                    if (g_hc_bf16_skipped) scratch_elems = (std::max)(scratch_elems, (uint64_t) ref.elements);
+                }
             }
+        // a layer split with add_hc_skip: the rows have no bf16 copy on this card either, so `load` also makes the four
+        // scratches of hc_bf16_view (two classes x two slots, one bf16 matrix each)
+        if (scratch_elems != 0) total += 4 * alloc_bytes(scratch_elems * 2);
         out = total;
         return true;
     } catch (const std::exception& error) {
@@ -538,9 +552,9 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
         }
         if (hc_q8_env()) {
             // a bf16 pack stores no Q8_0 copy: quantize the layers' down / up projections. A row the arena kept
-            // (--keep-canonical, a layer split) is quantized on the GPU from the arena's bf16; a skipped row (the
-            // single-GPU default: add_hc_skip) from the pack file on the host, and has no bf16 copy at all. The
-            // inject rows stay bf16 (82 KB), the final mixer stays bf16 (it runs once a window).
+            // (--keep-canonical) is quantized on the GPU from the arena's bf16; a skipped row
+            // (add_hc_skip - single GPU and layer split alike) from the pack file on the host, and has no bf16 copy
+            // at all. The inject rows stay bf16 (82 KB), the final mixer stays bf16 (it runs once a window).
             uint64_t made = 0;
             for (auto& [name, ref] : table.table_) {
                 if (ref.hc_q8 != nullptr || name.rfind("blk.", 0) != 0 || !in_range(name) ||
@@ -584,6 +598,7 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
                         void* b = nullptr;
                         if (cudaMalloc(&b, (size_t) elems * 2) != cudaSuccess) { err = "native dense (STRATA_HC_Q8): scratch alloc"; return false; }
                         weights_.push_back(b);
+                        allocated += alloc_bytes(elems * 2);   // what the card lost to this load (weight_bytes_for prices it)
                         g_hc_scratch[dev][c][i] = b;
                     }
                 for (int i = 0; i < 2; ++i)
@@ -663,9 +678,10 @@ bool NativeDense::add_hc_skip(const std::string& pack_dir, std::set<std::string>
     while (std::fgets(line, sizeof line, f)) {
         if (line[0] == '#' || std::sscanf(line, "%255s", name) != 1) continue;
         const std::string n = name;
-        if (n.rfind("blk.", 0) == 0 && hc_q8_name(n) && (n.ends_with("_down.weight") || n.ends_with("_up.weight"))) skip.insert(n);
+        if (hc_skip_name(n)) skip.insert(n);
     }
     std::fclose(f);
+    g_hc_bf16_skipped = true;
     return true;
 }
 

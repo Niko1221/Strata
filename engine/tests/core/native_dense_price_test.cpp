@@ -6,6 +6,8 @@
 // every start of a two-card `--layer-split auto`).  The test builds a synthetic GGUF with two layers of projections, their
 // Q8_0 hyper-connection rows and the final mixer, and checks for each stage range that the price equals what `load` took
 // (every matrix is under 1 MiB here, so both are exact payload sums) and that a stage's price counts its own layers' rows only.
+// Part 2 runs the same stages with add_hc_skip (STRATA_HC_Q8 on a layer split leaves the layers' bf16 down / up rows out of
+// every card's arena): `load` then also makes hc_bf16_view's four dequantization scratches, and the price has to count them.
 // Needs a CUDA device for the arena (exits 77 without one).
 #include "gguf_fixture.hpp"
 
@@ -67,8 +69,8 @@ const std::vector<std::string>& names() {
 
 // the projections and the PLE key are shape-only quantized rows (what iq_pack writes for a tensor the GGUF serves): no bytes in
 // the pool.  The hyper-connection rows are real BF16 rows (kind 4, 256 x 4 x 2 = 2,048 B each), as in a real pack: on a layer
-// split generate.cpp does not skip them (add_hc_skip runs on one card only), and WeightTable::load refuses a shape-only row
-// that is not in its skip set.
+// split generate.cpp skips their down / up rows only through add_hc_skip (part 2), and WeightTable::load refuses a shape-only
+// row that is not in its skip set.
 constexpr uint64_t HC_ROW_BYTES = NE0 * NE1 * 2;
 bool is_hc_row(const std::string& n) { return n.find("hc_") != std::string::npos; }
 
@@ -99,11 +101,12 @@ struct Stage {
 };
 
 // generate.cpp's order for a later stage: the price from the headers and the table, then the load of its layers
-Stage run(const fs::path& pack, const std::string& shard, int64_t lb, int64_t le) {
+Stage run(const fs::path& pack, const std::string& shard, int64_t lb, int64_t le, bool hc_skip = false) {
     Stage s;
     const std::vector<std::string> shards{shard};
     std::set<std::string> skip;
     if (!NativeDense::served_names(shards, true, skip, s.err)) return s;
+    if (hc_skip && !NativeDense::add_hc_skip(pack.string(), skip)) { s.err = "add_hc_skip"; return s; }
     uint64_t pool = 0;
     if (!WeightTable::pool_bytes(pack.string(), pool, s.err, &skip)) return s;
     void* arena = nullptr;
@@ -157,6 +160,20 @@ int main() {
     check(s1.priced == s1.loaded, "layers [1, 2): priced == allocated by load (" + std::to_string(s1.priced) + " / " + std::to_string(s1.loaded) + ")");
     check(s01.priced == s01.loaded, "layers [0, 2): priced == allocated by load (" + std::to_string(s01.priced) + " / " + std::to_string(s01.loaded) + ")");
     check(s0.weights == s0.loaded && s1.weights == s1.loaded, "weight_bytes() counts the hc rows too");
+
+    // part 2 last: add_hc_skip is remembered for the rest of the process, as in generate.cpp
+    std::printf("2. STRATA_HC_Q8=1 with add_hc_skip: the price also counts hc_bf16_view's scratches\n");
+    constexpr uint64_t SCRATCH = 4 * NE0 * NE1 * 2;   // two classes x two slots, one bf16 matrix each
+    const Stage k0 = run(pack, shard, 0, 1, true);
+    const Stage k1 = run(pack, shard, 1, 2, true);
+    const Stage k01 = run(pack, shard, 0, 2, true);
+    check(k0.ok && k1.ok && k01.ok, "the three loads work " + k0.err + k1.err + k01.err);
+    check(k0.priced == s0.priced + SCRATCH && k1.priced == s1.priced + SCRATCH && k01.priced == s01.priced + SCRATCH,
+          "each stage priced with the four scratches (" + std::to_string(k0.priced) + " / " + std::to_string(k1.priced) + " / " +
+              std::to_string(k01.priced) + ")");
+    check(k0.priced == k0.loaded, "layers [0, 1): priced == allocated by load (" + std::to_string(k0.priced) + " / " + std::to_string(k0.loaded) + ")");
+    check(k1.priced == k1.loaded, "layers [1, 2): priced == allocated by load (" + std::to_string(k1.priced) + " / " + std::to_string(k1.loaded) + ")");
+    check(k01.priced == k01.loaded, "layers [0, 2): priced == allocated by load (" + std::to_string(k01.priced) + " / " + std::to_string(k01.loaded) + ")");
 
     std::printf(g_fail ? "native_dense_price_test: %d FAILED\n" : "native_dense_price_test: all passed\n", g_fail);
     return g_fail ? 1 : 0;
