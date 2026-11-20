@@ -385,6 +385,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     a.suite = list(dict.fromkeys(x for x in (a.suite or "").split(",") if x))
     if any(x not in SUITES for x in a.suite):
         ap.error(f"--suite takes {', '.join(SUITES)}, not {a.suite!r}")
+    if not a.suite and (a.run_code or a.context is not None or a.think_tokens is not None):
+        ap.error("--context, --think-tokens and --run-code need --suite")    # base always runs with the release defaults
     if a.think_tokens is None:
         a.think_tokens = 8192
     if a.config is None and not (a.model_path and a.engines):

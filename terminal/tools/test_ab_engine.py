@@ -350,6 +350,23 @@ class VersionsMode(unittest.TestCase):
                 with self.subTest(flag=flag), self.assertRaises(SystemExit):
                     ab_engine.parse_args(["cfg.json", "A:", *flag])
 
+    def refused_without_suite(self, *flag):
+        argv = ["--model-path", "m.gguf", "--engines", "0.1.55", *flag]
+        self.assertEqual(ab_engine.parse_args([*argv, "--suite", "think"]).suite, ["think"])
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), self.assertRaises(SystemExit):
+            ab_engine.parse_args(argv)
+        self.assertIn("need --suite", err.getvalue())
+
+    def test_context_needs_suite(self):
+        self.refused_without_suite("--context", "65536")
+
+    def test_think_tokens_needs_suite(self):
+        self.refused_without_suite("--think-tokens", "4096")
+
+    def test_run_code_needs_suite(self):
+        self.refused_without_suite("--run-code")
+
     def test_unknown_suite_is_refused(self):
         with mock.patch("sys.stderr"), self.assertRaises(SystemExit):
             ab_engine.parse_args(["--model-path", "m.gguf", "--engines", "0.1.55", "--suite", "ladder,speed"])
