@@ -172,6 +172,14 @@ if WIN:
     CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_BREAKAWAY_FROM_JOB = 0x200, 0x08000000, 0x01000000
 
 
+def ready_pack_dir(target, md) -> "Path | None":
+    """Where setup keeps a ready-made pack (a size whose setup entry names a `repo`): <data>/models/<owner>--<repo> (setup.py ready_where). The family tag
+    folder is where the other models' GGUF files go; looking only there made "Download and prepare" ask for the whole pack's size on a pack that was
+    already on the disk (#4892). None for a size that names no repository."""
+    repo = md.get("repo") if isinstance(md, dict) else None
+    return Path(target) / "models" / str(repo).replace("/", "--") if repo else None
+
+
 def log(msg: str) -> None:
     """Diagnostics go to stderr: stdout carries only the protocol."""
     try:
@@ -1077,7 +1085,7 @@ class Strata:
                 if g.get("uma") and g.get("usable"):
                     g["usable"], g["problem"] = False, "integrated graphics: Strata uses the NVIDIA card in this computer"
         try:                                            # does the card drive a display?  (the app keeps less VRAM free on one that does not, #3215)
-            mark_display(nv + amd, nvidia_display_active() if nv else {}, windows_desktop_adapters() if WIN and amd else [])
+            mark_display(nv + amd, nvidia_display_active() if nv else {}, windows_desktop_adapters() if WIN and (amd or nv) else [])
         except Exception:                               # noqa: BLE001 - unknown stays unknown: the app then keeps its safety default
             pass
         try:                                            # the reserve setup writes for this chip when a run config names none (strata_control/setup_config.py UMA_WIN_RESERVE_MIB, G16):
@@ -1846,12 +1854,16 @@ def own_nvidia_gpus() -> list:
 
 
 def nvidia_display_active() -> dict:
-    """{GPU index: True when a display is attached to the card} from nvidia-smi (display_active Enabled); {} when it says nothing."""
+    """{GPU index: True when a display is attached to the card} from nvidia-smi (display_active Enabled, or >400 MiB used on Windows #4641); {} when it says nothing."""
     found = {}
-    for line in run_quiet(["nvidia-smi", "--query-gpu=index,display_active", "--format=csv,noheader"]).strip().splitlines():
-        idx, _, state = line.partition(",")
-        if idx.strip().isdigit() and state.strip().lower() in ("enabled", "disabled"):
-            found[int(idx)] = state.strip().lower() == "enabled"
+    for line in run_quiet(["nvidia-smi", "--query-gpu=index,display_active,memory.used", "--format=csv,noheader,nounits"]).strip().splitlines():
+        parts = [x.strip() for x in line.split(",")]
+        if len(parts) >= 2 and parts[0].isdigit():
+            idx = int(parts[0])
+            active = parts[1].lower() == "enabled"
+            if not active and WIN and len(parts) >= 3 and parts[2].isdigit():
+                active = int(parts[2]) > 400
+            found[idx] = active
     return found
 
 
@@ -1874,6 +1886,17 @@ def mark_display(gpus: list, nvidia_active: dict, desktop_pnp: list) -> None:
     desk = [str(p).upper() for p in desktop_pnp]
     for g in gpus:
         if g.get("vendor") == "nvidia" and g.get("index") in nvidia_active:
+            # #4641: On Windows, nvidia-smi display_active reports Disabled even for cards driving displays.
+            # If windows_desktop_adapters() found active NVIDIA display adapter(s) but nvidia-smi said False,
+            # check PCI device id or leave unknown if twins/unmatched so the app safely treats it as a display card.
+            if not nvidia_active[g["index"]] and desk and any("VEN_10DE" in p for p in desk):
+                if isinstance(g.get("pci_id"), int):
+                    tag = f"DEV_{g['pci_id']:04X}"
+                    twins = [x for x in gpus if x.get("vendor") == "nvidia" and x.get("pci_id") == g["pci_id"]]
+                    if len(twins) == 1 and any(tag in p and "VEN_10DE" in p for p in desk):
+                        g["drives_display"] = True
+                        continue
+                continue
             g["drives_display"] = nvidia_active[g["index"]]
         elif g.get("vendor") == "amd" and isinstance(g.get("pci_id"), int) and desktop_pnp is not None and desktop_pnp:
             tag = f"DEV_{g['pci_id']:04X}"
@@ -1893,7 +1916,7 @@ def windows_video_controllers() -> list:
     return [{"name": x.get("Name"), "driver": x.get("DriverVersion")} for x in d if isinstance(x, dict)]
 
 
-KFD_SUPPORTED = ("gfx1100", "gfx1101", "gfx1102", "gfx1200", "gfx1201", "gfx1030", "gfx1031", "gfx1151")
+KFD_SUPPORTED = ("gfx1100", "gfx1101", "gfx1102", "gfx1200", "gfx1201", "gfx1030", "gfx1031", "gfx1032", "gfx1151")   # gfx1032: the RX 6600 / 6650 XT, in the RX 6000 engine package since 0.2.16 (#5261)
 
 
 def kfd_gpus(sysfs: str = "/sys") -> list:
@@ -2251,15 +2274,26 @@ class Tools:
                        backend=None, low_ram=None, port=None, data_dir=None, confirm=False, cancel=False,
                        gguf_dir=None, drafter=None, mtp=None) -> dict:
         s = self.s
+        asked = time.monotonic()                         # when this call came in (before it waits for the lock)
         with s.lock:
             job = s.install_job()
             if cancel:
                 if not job or not job["running"]:
+                    # A start that came in before this cancel and is still waiting for the lock must not launch the job after it
+                    # (the app quit while "Prepare and load" was starting: the job and its packer then ran on with nobody to stop them).
+                    s.install_cancelled_at = time.monotonic()
                     return {"summary": "no install is running", "install": job}
                 j = s.state("install")
                 res = s.state("install-result")
                 child = res.get("child_pid") if res.get("job") == j.get("job") else None
                 tree = proc_tree_snapshot(j["pid"]) if proc_alive(j["pid"], j["ident"]) else []   # setup.py and what it runs (#3257)
+                if not WIN and proc_alive(j["pid"], j["ident"]):
+                    # The job is a session leader and setup.py and the packer are in its group: end the whole group first. Ending setup.py first
+                    # let the job end too, and the group was then no longer reached (the packer, a grandchild, kept writing).
+                    try:
+                        os.killpg(int(j["pid"]), signal.SIGKILL)
+                    except OSError:
+                        pass
                 if child:
                     proc_kill_tree(child, res.get("child_ident"))
                 proc_kill_tree(j["pid"], j["ident"])
@@ -2273,6 +2307,8 @@ class Tools:
                                       if job.get("download") else ""),
                         "install": job, "follow": "call strata_install again for progress, or strata_logs "
                                                   "source=setup for the full output"}
+            if confirm and getattr(s, "install_cancelled_at", 0) >= asked:
+                raise ToolError("the install was cancelled before it started")
             given = [x for x in (family, model, context, vision, kv, gpu, gpus, backend, low_ram, port, data_dir)
                      if x is not None]
             if job and not given and not confirm:
@@ -2347,6 +2383,7 @@ class Tools:
         target = self.check_data_dir(data_dir) if data_dir else s.data_dir()
         tag = (families[family].get("tag", "") + model)
         have_dir = target / "models" / tag
+        ready_dir = ready_pack_dir(target, md)                 # a ready-made pack (NVFP4): setup keeps it under <owner>--<repo>, not under the family tag (#4892)
         # An Intel Arc (Linux, the SYCL engine): setup.py's `--backend sycl` in its CONTROL mode prepares the model's files and writes the run config, as the
         # Terminal does (strata_control/intel_app.py); it downloads nothing. NVIDIA and AMD never come here.
         arc = backend == "sycl" or (backend in (None, "auto") and any(g.get("vendor") == "intel" for g in hw.get("gpus", [])))
@@ -2360,7 +2397,8 @@ class Tools:
             backend, vision = "sycl", "no"                  # pictures stay off on an Arc (strata_cli/launch/adopt.py)
             if not gguf_dir and not intel_app.model_files_in(have_dir, family, families[family]):
                 raise ToolError(intel_app.NO_DOWNLOAD)
-        partly = (have_dir.is_dir() and any(have_dir.glob("*.gguf*"))) or bool(gguf_dir)   # a local folder: nothing to download
+        partly = (have_dir.is_dir() and any(have_dir.glob("*.gguf*"))) or bool(gguf_dir) \
+            or (ready_dir is not None and ready_dir.is_dir() and any(ready_dir.glob("*.gguf*")))   # a local folder: nothing to download
         need = (8 if partly else md["download_gb"] + 8) + (1 if vision in ("yes", "gpu", "cpu") else 0)             + (s.mac().repacked_gb(model) if mac and s.mac() else 0)       # a Mac repacks Unsloth's shards into one file for the GPU (mac_fit.repacked_gb)
         free = s.disk_free(target)
         short = None
