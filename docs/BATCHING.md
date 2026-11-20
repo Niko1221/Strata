@@ -781,3 +781,17 @@ On top of `GEN` / `GENI`:
 
 `terminal/tools/batch_test.py` drives the engine directly: the same prompts alone, then together, compared token by token,
 and the aggregate rate.
+
+## Request priority
+
+Set `STRATA_REQUEST_PRIORITY=1` on a batched server to use the
+`X-Strata-Priority` HTTP header on Chat Completions, Responses and Messages.
+The header accepts a signed 32-bit integer. Lower values run first when several
+requests can start. Omit it for priority zero. Every request can use every slot.
+Within a priority, `STRATA_ADMIT_SHORT_FIRST` still applies if configured.
+
+A higher-priority request can interrupt a lower-priority prompt read at a chunk
+boundary when a slot is available. A fully occupied pool must finish enough
+work to free a slot. Ongoing generation keeps its slot. Priority gives no
+deadline guarantee. Enabling request priority disables experimental
+`STRATA_COALESCE_PREFILL`.
