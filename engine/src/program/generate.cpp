@@ -6659,6 +6659,14 @@ int main(int argc, char** argv) {
         carve_memo.emplace(key, total);
         return total;
     };
+    // DFlash2 will draft on the last stage (its cache step takes `df2_after` out of that stage's room, below): the search plans it
+    // there too.  The same conditions as that term and the DFlash2 block's refusals that are known this early.
+#if defined(STRATA_HAVE_DFLASH2)
+    const bool df2_last = multi_gpu && !stages.empty() && o.draft == "dflash2" && !o.draft_auto && !df2_first && o.pipeline_windows <= 0 &&
+                          native_pack && !o.draft_model.empty() && (df2_solo || !o.mtp.empty()) && !strata::qwen_defaults_026();
+#else
+    constexpr bool df2_last = false;
+#endif
     static const bool place_with_reserve = [] {
         const char* v = std::getenv("STRATA_SPLIT_OWN_PLACE");
         return v != nullptr && std::string(v) == "reserve";
@@ -6680,6 +6688,7 @@ int main(int argc, char** argv) {
         rin.prompt_buffers_mib = pf;
         rin.later = later;
         rin.drafter = drafter;
+        rin.df2_bind_mib = search && drafter && df2_last ? strata::program::stage_reserve::df2_after_mib(o.serve) : 0;
         rin.pipe_window_mib = kPipeWindowMib;
         rin.pipe_snap_mib = kPipeSnapMib;
         return strata::program::stage_reserve::room_bytes((int64_t) fb, rin);
@@ -7007,6 +7016,7 @@ int main(int argc, char** argv) {
             return parts;
         };
         bool gate_on = true;   // off only when no placement can start (below): then the best one is kept and a warning said
+        bool slot_floor = false;   // with the gate off: first only placements whose later stages hold an expert slot (split_rules::later_stage_empty)
         int64_t min_stage_layers = 1;   // #1616: 3 in the second pass below, when the first pick has a one- or two-layer stage
         std::vector<int64_t> stage_floors;   // #2644: each stage's share of the room, in the share pass below (empty: off)
         // #1428: 2 and 3 GPUs - every placement priced, kept (a few hundred) so the near-tie warning below can name the
@@ -7020,6 +7030,7 @@ int main(int argc, char** argv) {
             double hm = 0;
             int64_t held = 0;
             const double ms = predict(at, hm, held);
+            if (slot_floor && strata::program::split_rules::later_stage_empty(held_cnt)) return;   // its cache step would end the start
             ++tried;
             if (ns <= 3) priced.emplace_back(ms, at);
             const double mx = stage_max(at);
@@ -7113,6 +7124,7 @@ int main(int argc, char** argv) {
                         if (min_stage_layers > 1 &&
                             strata::program::split_rules::smallest_stage({k1, k2, k3}, L) < min_stage_layers) continue;
                         if (!stage_floors.empty() && strata::program::split_rules::below_floors({k1, k2, k3}, L, stage_floors)) continue;
+                        if (slot_floor && strata::program::split_rules::later_stage_empty({held_at[a], held_at[b], held_at[c], held_at[d]})) continue;
                         ++tried;
                         const double mx = stage_max({k1, k2, k3});
                         if (!(ms < best_ms - tie_eps || (ms <= best_ms + tie_eps && mx < best_max - tie_eps))) continue;
@@ -7250,7 +7262,12 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: layer split auto: no placement can start the prompt path on the "
                                  "figures here; choosing by decode speed alone\n");
             gate_on = false;
+            // but not a placement whose later card has no room for one expert slot: that card's cache step ends the start ("expert cache: no
+            // room"), and the server starts again without a drafter.  With none that has, the pick is as before.
+            slot_floor = true;
             search();
+            slot_floor = false;
+            if (best.empty()) search();
             if (!best.empty()) split_diagnosis(best);
         }
         if (best.empty()) {
@@ -9470,7 +9487,7 @@ int main(int argc, char** argv) {
         // DFlash2's own draft head and logits (and, in serve, the prompt staging) are bound on its card AFTER the caches, as the single card prices them (mtp_bind above): without
         // this term the last stage ended its load with 130-400 MiB less than the plan kept (the serve check's LOW at 8 and 12 GB).  Not under STRATA_DEFAULTS=026.
         if (use_df2 && &st == last_st && !df2_first && !strata::qwen_defaults_026()) {
-            const int64_t df2_after = df2_head_bytes() + (48 << 20) + (o.serve ? (112 << 20) : 0);
+            const int64_t df2_after = df2_head_bytes() + (strata::program::stage_reserve::df2_after_mib(o.serve) << 20);   // (the split search plans the same, stage_room)
             room = std::max<int64_t>(room - df2_after, 0);
         }
 #endif
