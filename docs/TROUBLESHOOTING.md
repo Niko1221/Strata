@@ -16,8 +16,8 @@ strata launch --status
 ## The desktop app and the Terminal
 
 **I cannot find `START-HERE.bat` or `SETUP.bat`.**
-Open the installed Strata app, or run `strata launch`. Those wrappers are in the source repository and are not the
-startup path for the app. For a fresh desktop install, download the one installer for your system
+For a source checkout, use `START-HERE.bat --setup` in place of the old `SETUP.bat`. For an installed copy,
+open the Strata app or run `strata launch`. For a fresh desktop install, download the one installer for your system
 (`Strata-0.2.17-windows-x64-setup.exe`, `Strata-0.2.17-linux-x86_64.AppImage` or `Strata-0.2.17-macos-arm64.dmg`), not a
 `strata-engine-…` archive.
 
@@ -237,8 +237,7 @@ Strata prints a warning at start when it sees this limit.
 **The prompt exceeds the context.**
 The conversation is longer than the context you chose. Start a new chat, shorten the input, or use the app's Summarize and
 continue action. A larger context needs more memory. In the Terminal, restart your chosen model with an explicit
-`--context`, such as `64k`; keep its family, model and other choices. In a source checkout, run `SETUP.bat` and pick more
-context. Do not look for `SETUP.bat` in an app install.
+`--context`, such as `64k`; keep its family, model and other choices. In a source checkout, run `START-HERE.bat --setup` on Windows or `./setup.sh --setup` on Linux and pick more context.
 
 **It is slower than the tables.**
 The monitor plugged into the graphics card and other GPU programs take VRAM from the expert cache; RAM running below its
