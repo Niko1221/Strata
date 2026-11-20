@@ -87,6 +87,7 @@ bool view_validate(const ConversationView& view, const SessionState& ss,
         std::any_of(view.ids.begin(), view.ids.end(), [](int32_t id) { return id < 0; }))
         return fail(error, "invalid live token/image metadata");
     for (const auto& c : view.checkpoints) {
+        if (!conversation_detail::checkpoint_within_limit(c, view.checkpoint_limit)) continue;
         if (!c.stage_parts.empty() || c.ids.empty() || c.ids.size() > view.ids.size() ||
             !std::equal(c.ids.begin(), c.ids.end(), view.ids.begin()))
             return fail(error, "checkpoint is not a live token prefix");
@@ -503,16 +504,19 @@ bool conversation_snapshot_bytes(const ConversationView& view, const SessionStat
     if (!conversation_session_sizes(g, ss, z, error)) return false;
     size_t ids = 0, images = 0, checkpoints = 0, layers = 0, tails = 0, dead = 0, positions = 0;
     const auto qsa = (uint64_t) owned_qsa(ss);
+    const size_t checkpoint_count = conversation_detail::checkpoint_count_within_limit(view.checkpoints, view.checkpoint_limit);
     if (!product(ids, {view.ids.size(), sizeof(int32_t)}) ||
         !product(images, {view.images.size(), sizeof(ConversationImageKey)}) ||
-        !product(checkpoints, {view.checkpoints.size(), sizeof(ConversationCheckpoint)}) ||
+        !product(checkpoints, {checkpoint_count, sizeof(ConversationCheckpoint)}) ||
         !product(layers, {qsa + (draft ? 1 : 0), sizeof(ConversationKv)}) ||
         !product(tails, {qsa, z.tail}) || !product(dead, {qsa, z.dead}) ||
         !product(positions, {qsa, z.block_pos})) return fail(error, "snapshot metadata byte count overflow");
     for (size_t n : {ids, images, checkpoints, layers, tails, dead, positions, z.gdn, ss.ple_hist ? z.ple : 0})
         if (!add(bytes, n)) return fail(error, "snapshot byte count overflow");
-    for (const auto& c : view.checkpoints)
+    for (const auto& c : view.checkpoints) {
+        if (!conversation_detail::checkpoint_within_limit(c, view.checkpoint_limit)) continue;
         if (!metadata_bytes(c, bytes)) return fail(error, "checkpoint byte count overflow");
+    }
     const int64_t upto = (int64_t) view.ids.size(); // view_validate bounds this by signed max_cells
     for (uint64_t i = 0; i < qsa + (draft ? 1 : 0); ++i) {
         const auto& st = i == qsa ? *draft : owned(ss, (size_t) i);
@@ -588,7 +592,8 @@ bool conversation_snapshot_save(SavedConversation& image, const ConversationView
     captured.live.ids = view.ids; captured.live.imgs = view.images;
     const auto p1 = now();
     const long cf0 = ptr ? conversation_trace::thread_minflt() : 0;
-    captured.cvec = view.cvec; captured.checkpoints = conversation_detail::copy_checkpoints_beating(view.checkpoints, storage);
+    captured.cvec = view.cvec;
+    captured.checkpoints = conversation_detail::copy_checkpoints_beating(view.checkpoints, storage, view.checkpoint_limit);
     const long ck_faults = ptr ? conversation_trace::thread_minflt() - cf0 : 0;
     if (ptr)   // (E1: where each copied checkpoint's running state went: faults of the whole copy, address, heap or mapping)
         for (const auto& c : captured.checkpoints)
@@ -597,7 +602,8 @@ bool conversation_snapshot_save(SavedConversation& image, const ConversationView
     if (moved != nullptr)
         for (auto& c : *moved) {
             conversation_checkpoint_join(c.gdn.data());
-            captured.checkpoints.push_back(std::move(c));
+            if (conversation_detail::checkpoint_within_limit(c, view.checkpoint_limit))
+                captured.checkpoints.push_back(std::move(c));
         }
     const auto p2 = now();
     const int64_t unchanged = reuse.kv.empty() ? 0 : reuse.unchanged_tokens;
@@ -699,7 +705,8 @@ bool conversation_snapshot_sources(SavedConversation& meta, std::vector<SessionK
     captured.geometry = geometry_key(g);
     captured.layer_lo = ss.layer_lo; captured.layer_hi = ss.layer_hi;
     captured.live.ids = view.ids; captured.live.imgs = view.images;
-    captured.cvec = view.cvec; captured.checkpoints = conversation_detail::copy_checkpoints_beating(view.checkpoints);
+    captured.cvec = view.cvec;
+    captured.checkpoints = conversation_detail::copy_checkpoints_beating(view.checkpoints, nullptr, view.checkpoint_limit);
     if (!conversation_checkpoint_save(captured.live, ss, g, error)) return false;
     // STRATA_CKPT_ASYNC: the caller writes `meta` to the session file at once, so the running state's copy lands first
     conversation_checkpoint_join(captured.live.gdn.data());

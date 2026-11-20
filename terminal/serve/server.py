@@ -604,7 +604,7 @@ class ConvCacheLog:
     SKIP = re.compile(r"conversation cache: (?:skip parking \((.*)\)|allocation failed; skip parking)")
     REASONS = (("gave no memory back", "ram_no_progress"), ("physical RAM admission", "ram_floor"),
                ("RAM floor after capture", "ram_after_capture"), ("exceeds available budget", "budget"),
-               ("below the", "short"), ("stage CUDA", "estimate"))
+               ("below the", "short"), ("above the", "long"), ("stage CUDA", "estimate"))
     READ_MAX = 1 << 20                                  # at most the last MiB of new lines per read
 
     def __init__(self):

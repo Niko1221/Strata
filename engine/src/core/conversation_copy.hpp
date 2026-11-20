@@ -234,13 +234,24 @@ inline void copy_checkpoint_into(ConversationCheckpoint& o, const ConversationCh
     for (const auto& part : c.stage_parts) o.stage_parts.push_back(copy_checkpoint_beating(part));
 }
 
+inline bool checkpoint_within_limit(const ConversationCheckpoint& c, int64_t limit) {
+    return limit < 0 || c.ids.size() <= (uint64_t) limit;
+}
+
+inline size_t checkpoint_count_within_limit(const std::vector<ConversationCheckpoint>& cs, int64_t limit) {
+    if (limit < 0) return cs.size();
+    return (size_t) std::count_if(cs.begin(), cs.end(), [limit](const auto& c) { return checkpoint_within_limit(c, limit); });
+}
+
 /// `storage` (optional): dropped checkpoints whose vectors the copies go into, taken from its back while it lasts
 inline std::vector<ConversationCheckpoint> copy_checkpoints_beating(const std::vector<ConversationCheckpoint>& cs,
-                                                                    std::vector<ConversationCheckpoint>* storage = nullptr) {
+                                                                    std::vector<ConversationCheckpoint>* storage = nullptr,
+                                                                    int64_t limit = -1) {
     for (const auto& c : cs) core::conversation_checkpoint_join(c.gdn.data());
     std::vector<ConversationCheckpoint> out;
-    out.reserve(cs.size());
+    out.reserve(checkpoint_count_within_limit(cs, limit));
     for (const auto& c : cs) {
+        if (!checkpoint_within_limit(c, limit)) continue;
         if (storage != nullptr && !storage->empty()) {
             out.push_back(std::move(storage->back()));
             storage->pop_back();
