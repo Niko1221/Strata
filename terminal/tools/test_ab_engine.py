@@ -367,6 +367,31 @@ class VersionsMode(unittest.TestCase):
     def test_run_code_needs_suite(self):
         self.refused_without_suite("--run-code")
 
+    def test_senseless_numbers_are_refused(self):
+        base = ["--model-path", "m.gguf", "--engines", "0.1.55"]
+        for flags in (["--suite", "think", "--context", "0"], ["--suite", "think", "--context", "-5"],
+                      ["--suite", "think", "--think-tokens", "0"], ["--suite", "think", "--think-tokens", "-1"],
+                      ["--suite", "ladder", "--context", "9215"], ["--suite", "think,ladder", "--context", "4096"],
+                      ["--suite", "ladder,agent", "--run-code"], ["--suite", "agent", "--run-code"]):
+            err = io.StringIO()
+            with self.subTest(flags=flags), contextlib.redirect_stderr(err), self.assertRaises(SystemExit):
+                ab_engine.parse_args([*base, *flags])
+            self.assertTrue(err.getvalue())
+        self.assertEqual(ab_engine.parse_args([*base, "--suite", "ladder", "--context", "9216"]).context, 9216)
+        self.assertEqual(ab_engine.parse_args([*base, "--suite", "think", "--context", "4096"]).context, 4096)  # no ladder: fine
+        self.assertTrue(ab_engine.parse_args([*base, "--suite", "agent,think", "--run-code"]).run_code)
+
+    def test_suites_run_think_agent_ladder_in_that_order(self):
+        code, results, m = self.run_tool(["--suite", "ladder,agent,think"])
+        tags = [r.tag for r in m["run_suite"].call_args_list[0].args[1]]
+        self.assertEqual([t.split(".")[0] for t in tags], ["think"] * 6 + ["agent"] + ["ladder"] * 2)
+
+    def test_a_bigger_served_context_does_not_change_the_requests(self):
+        code, results, m = self.run_tool(["--suite", "ladder,agent,think"], served_context=mock.Mock(return_value=524288))
+        m["ladder_reqs"].assert_called_once_with(262144)
+        m["agent_reqs"].assert_called_once_with(262144)
+        self.assertEqual([a["n_ctx"] for a in results["arms"]], [524288, 524288])
+
     def test_unknown_suite_is_refused(self):
         with mock.patch("sys.stderr"), self.assertRaises(SystemExit):
             ab_engine.parse_args(["--model-path", "m.gguf", "--engines", "0.1.55", "--suite", "ladder,speed"])
@@ -381,10 +406,10 @@ class VersionsMode(unittest.TestCase):
         self.assertIn("not isolated", " ".join(out.getvalue().split()))
 
     def test_results_schema_with_suites(self):
-        code, results, m = self.run_tool(["--suite", "ladder,agent", "--context", "131072", "--run-code"],
+        code, results, m = self.run_tool(["--suite", "ladder,think,agent", "--context", "131072", "--run-code"],
                                          served_context=mock.Mock(return_value=131072))
         self.assertEqual((results["suites"], results["context"], results["corpus"], results["run_code"]),
-                         (["ladder", "agent"], 131072, "v0.2.12", True))
+                         (["ladder", "think", "agent"], 131072, "v0.2.12", True))
         arm = results["arms"][0]
         self.assertEqual((arm["n_ctx"], arm["suites_status"], arm["suites_reason"], arm["left_out"]), (131072, "ran", "", ["agent.x.9"]))
         self.assertEqual(set(arm["rows"][1]), set(SUITE_ROW))

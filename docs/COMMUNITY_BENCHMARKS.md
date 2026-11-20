@@ -176,7 +176,7 @@ The report gets one section per suite, with `richtig x/y` (correct answers) per 
 the best one is marked red and its speeds are never highlighted as faster. A version that served a smaller context is marked
 `anderer Kontext`. With `ladder`, `report-ladder.png` is a second card with the two charts. The time is an estimate, not measured: on an RTX
 3090, with the model of the versions comparison and context 256K, all three suites take about 20 to 25 minutes per version and
-round, so two versions with three rounds take about 2 to 2.5 hours. The tool prints its own estimate before the first start.
+round, so two versions with three rounds take about 2 to 2.5 hours. Before the first start the tool prints how many ladder steps, tasks and turns it will run (not a time).
 
 ## What to record
 

@@ -314,16 +314,16 @@ def run_versions(a: argparse.Namespace) -> int:
                         print(f"round {rnd} v{v}: suites skipped: {r.reason}", flush=True)
                         continue
                     n_ctx = arm["n_ctx"] = av.served_context(a.port)
-                    n = n_ctx or context
+                    n = min(n_ctx or context, context)       # a server that reports more must not change the bytes
                     if n not in built:
-                        sreqs, left = [], []
-                        if "ladder" in a.suite:
-                            sreqs += ab_suites.ladder_reqs(n)
+                        sreqs, left = [], []                        # the ladder last: its long prompts fill the cache
                         if "think" in a.suite:
                             sreqs += ab_suites.think_reqs(a.think_tokens, a.run_code)
                         if "agent" in a.suite:
                             agent, left = ab_suites.agent_reqs(n)
                             sreqs += agent
+                        if "ladder" in a.suite:
+                            sreqs += ab_suites.ladder_reqs(n)
                         built[n] = sreqs, left
                     sreqs, arm["left_out"] = built[n]
                     print(f"round {rnd} v{v}: suites ready in {r.seconds:.0f} s, n_ctx {n_ctx}", flush=True)
@@ -387,6 +387,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ap.error(f"--suite takes {', '.join(SUITES)}, not {a.suite!r}")
     if not a.suite and (a.run_code or a.context is not None or a.think_tokens is not None):
         ap.error("--context, --think-tokens and --run-code need --suite")    # base always runs with the release defaults
+    if a.context is not None and a.context <= 0 or a.think_tokens is not None and a.think_tokens <= 0:
+        ap.error("--context and --think-tokens must be above 0")
+    if "ladder" in a.suite and a.context is not None and a.context - 1024 < 8192:  # ab_suites.ladder_steps would be empty
+        ap.error(f"--context {a.context} leaves the ladder no step (it needs at least 9216)")
+    if a.run_code and "think" not in a.suite:
+        ap.error("--run-code belongs to the think suite: add think to --suite")
     if a.think_tokens is None:
         a.think_tokens = 8192
     if a.config is None and not (a.model_path and a.engines):
