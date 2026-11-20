@@ -20,6 +20,7 @@ from strata_control import reader_room
 from strata_control import gpu_roles
 
 from serve.server_parts.base import ENGINE_SILENCE_S
+from serve.session_ladder import register_refused_class
 
 
 class Engine(Protocol):
@@ -98,6 +99,13 @@ class SessionRefused(ValueError):
     @property
     def status(self) -> int:
         return self.STATUS[self.kind]
+
+
+register_refused_class(SessionRefused)   # serve+fix (ladder Task 7 review): the ladder's `except SessionRefused` must
+# pair with exactly this class object.  The file split put the class here and server.py re-exports it, so one
+# registration at import time covers every entry mode - import serve.server, or run server.py as __main__ through
+# its re-export block: this is always the single copy whose Engine raises what the ladder catches.  The ladder's
+# fallback copy stays for its own unit tests, which load no server module.
 
 
 class EngineStuck(RuntimeError):
