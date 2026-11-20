@@ -103,8 +103,12 @@ int main() {
         };
         const SessionFileIdentity id{11, 22};
         ConversationSpill sp;
+        check(!sp.admits_size(0), "the unopened tier cannot accept a capture");
         // room for two entries of ~2 MiB each (1 MiB payload + the 1 MiB margin per write)
         check(sp.open(root, (uint64_t(7) << 19), err) && sp.enabled(), "the tier opens");
+        check(sp.admits_size(uint64_t(5) << 19) && !sp.admits_size((uint64_t(5) << 19) + 1),
+              "preflight counts the same file table allowance as a write");
+        check(!sp.admits_size(UINT64_MAX), "an overflowing payload estimate is refused");
         check(sp.put(img({1, 2, 3, 4}, 7, {1, 2}), id, err) && sp.put(img({5, 6, 7}, 9), id, err) && sp.size() == 2, "two entries written");
         const fs::path first = sp.entry(0).file;
         check(fs::exists(first) && fs::exists(sp.entry(1).file), "their files exist");
