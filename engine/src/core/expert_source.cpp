@@ -3979,6 +3979,21 @@ bool FileExpertSource::pin_cache_complement(
                     budget_bytes = cut;
                 }
             }
+            // #3725 follow-up: cudaHostAllocPortable fails on Windows when leaving less than ~8 GiB of physical RAM free
+            // for the OS working set, causing complete fallback to pageable memory (0 GiB pinned).
+            // Keeps a safety working-set reserve (STRATA_PIN_RESERVE_GIB, default: 8 GiB on Windows) without capping 64+ GB PCs.
+            const char* pr = std::getenv("STRATA_PIN_RESERVE_GIB");
+            const uint64_t win_reserve = (pr != nullptr && *pr != '\0' ? (uint64_t) (std::atof(pr) * 1073741824.0) : (8ull << 30));
+            if (budget_physical > win_reserve) {
+                const uint64_t win_cap = budget_physical - win_reserve;
+                if (budget_bytes > win_cap) {
+                    std::fprintf(stderr, "FileExpertSource: Windows page-locking RAM headroom: %.2f -> %.2f GiB "
+                                         "(keeps %.2f GiB RAM for OS working set; STRATA_PIN_RESERVE_GIB changes it)\n",
+                                 (double) budget_bytes / 1073741824.0, (double) win_cap / 1073741824.0,
+                                 (double) win_reserve / 1073741824.0);
+                    budget_bytes = win_cap;
+                }
+            }
         }
 #endif
         std::vector<uint64_t> ranked(offsets.size(), kNoComplement);
