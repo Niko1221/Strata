@@ -4,16 +4,16 @@
 
 Windows でローカル AI のチャット、エージェント作業、出典付き調査を使うためのアプリです。Hakua は Niko1221/Strata を基にした zapabob のフォークで、独立して保守しています。公式からの推奨・認定を示す配布物ではありません。
 
-## 0.6.8 の変更点
+## 0.6.9 での変更
 
-このリリースは公式 Strata 0.2.16 の意味を fork にマージし、fork 独自機能はすべて保持しました（公式の削除は適用していません）。Qwen3.8 ネイティブ CUDA エンジンは公式エンジン API に接続され、`strata.exe` の `--families` に `qwen35` が表示され、実 GGUF を標準の常驻 `--serve` プロトコルで配信します。CUDA 13.5 / SM120 でビルド・E2E 検証済み。デコードは Prism llama.cpp と同等です（両者とも同じ DP4A カーネル方式）。反転順ウォーム A/B で F16 KV 書き込みのバッチ化により prefill の KV コストを 27% 削減し、バイト一致 logits を維持しました。Sync-Strata 由来の 32GB RAM 起動前スイーズとコミット制限の案内も含まれます。フルウィンドウ生成と一般モデル品質は未検証です（`releaseQualified=false`）。
+このリリースは、公式 Strata 0.2.16 向けに構築された新しい `terminal/` レイアウトへ Q38 の高速化・形式対応・制御ベクトルの作業を移植しました。Qwen3.8-27B は GQA 統合アテンションを使用し、反転順ウォーム A/B で**同一トークン出力のままデコードが 6.0% 高速化**（ベースライン 555.8ms → GQA 522.6ms、中央値、10トークンプロンプト、ctx 512、F16 KV）。9B 経路には共有 softmax キャッシュ付き FP16 バッチアテンションと RoPE/冗長 memset 除去を追加（5.4% 高速、トークンはビット一致）。FP4/FP8-NVFP4 形式対応と制御ベクトルも含まれます。以前から、F16 KV 書き込みのバッチ化で prefill の KV コストを 27% 削減（バイト一致 logits）、デコードは Prism llama.cpp と同等（ともに DP4A 方式）、Sync-Strata 由来の 32GB RAM 起動前スイーズとコミット制限の案内も含まれます。CUDA 13.5 / SM120 でビルド・検証済み。フルウィンドウ生成、QSA スパースアテンションの意味論、一般モデル品質は未検証です（`releaseQualified=false`）。
 
 ## バージョンと配布物
 
 <!-- release-062-stable -->
-現在のアプリリリース: [0.6.8](https://github.com/zapabob/Strata/releases/tag/v0.6.8)（アプリ `0.6.8`、Terminal・Control・ネイティブエンジン `0.6.3`）。この Windows アプリ専用リリースは意図的に GitHub Latest ではなく、Latest は `0.6.3` のままです。GPU エンジンは別途署名された [`v0.6.4-preview.1`](https://github.com/zapabob/Strata/releases/tag/v0.6.4-preview.1) コンパニオンです。最大長の推論や一般的なモデル品質は未認定のため、`releaseQualified=false` を明示しています。
+現在のアプリリリース: [0.6.9](https://github.com/zapabob/Strata/releases/tag/v0.6.9)（アプリ `0.6.9`、Terminal・Control・ネイティブエンジン `0.6.3`）。この Windows アプリ専用リリースは意図的に GitHub Latest ではなく、Latest は `0.6.3` のままです。GPU エンジンは別途署名された [`v0.6.4-preview.1`](https://github.com/zapabob/Strata/releases/tag/v0.6.4-preview.1) コンパニオンです。最大長の推論や一般的なモデル品質は未認定のため、`releaseQualified=false` を明示しています。
 
-[0.6.8](https://github.com/zapabob/Strata/releases/tag/v0.6.8) · [setup EXE](https://github.com/zapabob/Strata/releases/download/v0.6.8/Strata-0.6.8-windows-x64-setup.exe) · [tar.7z](https://github.com/zapabob/Strata/releases/download/v0.6.8/Strata-0.6.8-windows-x64.tar.7z) · [SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.6.8/SHA256SUMS.txt) · [BUNDLE-SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.6.8/BUNDLE-SHA256SUMS.txt)
+[0.6.9](https://github.com/zapabob/Strata/releases/tag/v0.6.9) · [setup EXE](https://github.com/zapabob/Strata/releases/download/v0.6.9/Strata-0.6.9-windows-x64-setup.exe) · [tar.7z](https://github.com/zapabob/Strata/releases/download/v0.6.9/Strata-0.6.9-windows-x64.tar.7z) · [SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.6.9/SHA256SUMS.txt) · [BUNDLE-SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.6.9/BUNDLE-SHA256SUMS.txt)
 
 ![Hakua / Strata real-model Japanese chat on Qwen3.8-27B](docs/media/native-qwen38-japanese-chat.png)
 *`strata-q38.exe` で `qwen3.8-27b-abliterated-3.69bpw-12GB-MTP.gguf` を実行している実環境スクリーンショット（CUDA 13 / RTX 5060 Ti 16 GB）。*
