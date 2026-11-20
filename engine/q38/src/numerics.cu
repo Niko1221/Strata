@@ -117,7 +117,7 @@ static void gdn_batch(cudaStream_t s){
 }
 
 static void attention(cudaStream_t s){admission();constexpr int ctx=9,H=24,KV=4,D=256;std::vector<float> qw(D),kw(D);for(int i=0;i<D;++i){qw[i]=float(.9+.1*std::cos(i));kw[i]=float(1.1+.1*std::sin(i));}auto dqw=upload(qw),dkw=upload(kw);Q::Buffer kc(KV*ctx*D*2),vc(KV*ctx*D*2),q(H*D*4),gate(H*D*4),out(H*D*4),scores(H*ctx*4);kc.zero(s);vc.zero(s);std::vector<double> keys(KV*ctx*D),vals(KV*ctx*D);
-    for(int pos=0;pos<ctx;++pos){std::vector<float> qg(H*D*2),k(KV*D),v(KV*D);for(size_t i=0;i<qg.size();++i)qg[i]=float(std::sin(i*.07+pos*.6));for(int i=0;i<KV*D;++i){k[i]=float(std::cos(i*.13+pos));v[i]=float(std::sin(i*.17-pos*.9));}auto dqg=upload(qg),dk=upload(k),dv=upload(v);Q::attention_prepare(dqg.as(),dk.as(),dv.as(),dqw.as(),dkw.as(),q.as(),gate.as(),kc.as<half>(),vc.as<half>(),pos,ctx,1e-6f,1e7f,s);Q::attention_apply(q.as(),gate.as(),kc.as<half>(),vc.as<half>(),out.as(),scores.as(),pos,ctx,s);
+    for(int pos=0;pos<ctx;++pos){std::vector<float> qg(H*D*2),k(KV*D),v(KV*D);for(size_t i=0;i<qg.size();++i)qg[i]=float(std::sin(i*.07+pos*.6));for(int i=0;i<KV*D;++i){k[i]=float(std::cos(i*.13+pos));v[i]=float(std::sin(i*.17-pos*.9));}auto dqg=upload(qg),dk=upload(k),dv=upload(v);Q::attention_prepare(dqg.as(),dk.as(),dv.as(),dqw.as(),dkw.as(),q.as(),gate.as(),kc.as<half>(),vc.as<half>(),pos,ctx,24,4,1e-6f,1e7f,s);Q::attention_apply(q.as(),gate.as(),kc.as<half>(),vc.as<half>(),out.as(),scores.as(),pos,ctx,24,4,s);
         std::vector<double> query(H*D),want(H*D);
         for(int head=0;head<H+KV;++head){bool isq=head<H;const float* x=isq?qg.data()+head*512:k.data()+(head-H)*D;double ss=0;for(int i=0;i<D;++i)ss+=double(x[i])*x[i];double scale=1/std::sqrt(ss/D+1e-6);std::vector<double> r(D);for(int i=0;i<D;++i)r[i]=x[i]*scale*(isq?qw[i]:kw[i]);
             for(int i=0;i<32;++i){double theta=pos*std::pow(1e7,-double(i)/32),u=r[i],w=r[i+32];r[i]=u*std::cos(theta)-w*std::sin(theta);r[i+32]=u*std::sin(theta)+w*std::cos(theta);}
@@ -125,7 +125,7 @@ static void attention(cudaStream_t s){admission();constexpr int ctx=9,H=24,KV=4,
         for(int head=0;head<H;++head){std::vector<double> p(pos+1);for(int t=0;t<=pos;++t)for(int i=0;i<D;++i)p[t]+=query[head*D+i]*keys[((head/6)*ctx+t)*D+i]/16;double mx=*std::max_element(p.begin(),p.end()),sum=0;for(auto& z:p)sum+=(z=std::exp(z-mx));for(int i=0;i<D;++i){double y=0;for(int t=0;t<=pos;++t)y+=p[t]/sum*vals[((head/6)*ctx+t)*D+i];want[head*D+i]=y*sig(qg[head*512+D+i]);}}
         Q::ck(cudaStreamSynchronize(s));check_close(read(q),query,2e-5,2e-5,"partial_RoPE_Q");check_close(read(out),want,4e-4,3e-4,("GQA_gated_sequence_"+std::to_string(pos)).c_str());
     }
-    bool rejected=false;try{Q::attention_apply(q.as(),gate.as(),kc.as<half>(),vc.as<half>(),out.as(),scores.as(),ctx,ctx,s);}catch(...){rejected=true;}demand(rejected,"context overrun accepted");kc.zero(s);vc.zero(s);Q::ck(cudaStreamSynchronize(s));std::puts("PASS attention capacity/reset");
+    bool rejected=false;try{Q::attention_apply(q.as(),gate.as(),kc.as<half>(),vc.as<half>(),out.as(),scores.as(),ctx,ctx,24,4,s);}catch(...){rejected=true;}demand(rejected,"context overrun accepted");kc.zero(s);vc.zero(s);Q::ck(cudaStreamSynchronize(s));std::puts("PASS attention capacity/reset");
 }
 static std::vector<double> reference_ext(int ty, const std::vector<uint8_t>& bytes, int n) {
     if (ty == 21 || ty == 22) {

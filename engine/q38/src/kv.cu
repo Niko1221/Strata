@@ -17,16 +17,158 @@ __global__ void store_f16(const float* x,uint8_t* cache,int pos,int ctx,int* sta
     int i=blockIdx.x*256+threadIdx.x;if(i<1024){half value=__float2half_rn(x[i]);if(!isfinite(__half2float(value))){atomicExch(status,1);return;}
         reinterpret_cast<half*>(cache)[(size_t(i/256)*ctx+pos)*256+i%256]=value;}
 }
-// Batched F16 K/V write: one launch for all tokens of a row instead of one
-// launch per token.  x_batch is [n_tokens, 1024] (K or V contiguous per token).
-// Cache layout is unchanged: [i/256, pos+t, i%256].
-__global__ void store_f16_batch(const float* x_batch,uint8_t* cache,int pos_start,int n_tokens,int ctx,int* status){
-    if(atomicAdd(status,0))return;
-    int t=blockIdx.y, i=blockIdx.x*256+threadIdx.x;
-    if(t>=n_tokens||i>=1024)return;
-    half value=__float2half_rn(x_batch[size_t(t)*1024+i]);
-    if(!isfinite(__half2float(value))){atomicExch(status,1);return;}
-    reinterpret_cast<half*>(cache)[(size_t(i/256)*ctx+(pos_start+t))*256+i%256]=value;
+// Batched f16 history store: one block per (kv head, token), same layout and
+// rounding as store_f16 but with the token and position taken from the grid.
+__global__ void store_f16_batch(const float* k,const float* v,uint8_t* kc,uint8_t* vc,
+                                int pos0,int ctx,int kv_e,int* status){
+    if(status&&*status)return;
+    int tok=blockIdx.y,i=blockIdx.x*256+threadIdx.x;if(i>=kv_e)return;
+    int pos=pos0+tok,kh=blockIdx.x;
+    half hk=__float2half_rn(k[size_t(tok)*kv_e+i]),hv=__float2half_rn(v[size_t(tok)*kv_e+i]);
+    if(!isfinite(__half2float(hk))||!isfinite(__half2float(hv))){atomicExch(status,1);return;}
+    reinterpret_cast<half*>(kc)[(size_t(kh)*ctx+pos)*256+i-kh*256]=hk;
+    reinterpret_cast<half*>(vc)[(size_t(kh)*ctx+pos)*256+i-kh*256]=hv;
+}
+// Batched f16 scores. Numerics and accumulation order match the single-token
+// `score` kernel exactly; only the score destination is token-strided.
+__global__ void score_batch(const float* q,const half* k,float* scores,
+                            int pos0,int n_tokens,int ctx,int q_heads,int heads_per_kv,int* status){
+    if(status&&*status)return;
+    int tok=blockIdx.z,head=blockIdx.y,int_t=blockIdx.x*8+threadIdx.x/32,lane=threadIdx.x%32;
+    int pos=pos0+tok;if(int_t>pos)return;
+    int kh=head/heads_per_kv;
+    const float* qp=q+(size_t(tok)*q_heads+head)*256;
+    float a=0;for(int i=lane;i<256;i+=32)a=fmaf(qp[i],__half2float(k[(size_t(kh)*ctx+int_t)*256+i]),a);
+    a=reduce(a);if(!lane)scores[((size_t(tok)*q_heads+head)*ctx)+int_t]=a/16;
+}
+// Batched f16 attention. Same stable softmax, value accumulation and gate as
+// `attend`, with one block per (token, query head) instead of 24 blocks total.
+__global__ void attend_batch(const float* scores,const half* v,const float* gate,float* out,
+                             int pos0,int n_tokens,int ctx,int q_heads,int heads_per_kv,int prob_capacity,int* status){
+    if(status&&*status)return;
+    __shared__ float tmp[256],maximum,denominator;
+    extern __shared__ float prob[];
+    int tok=blockIdx.y,head=blockIdx.x,i=threadIdx.x,pos=pos0+tok;
+    const float* s=scores+(size_t(tok)*q_heads+head)*ctx;
+    float mx=-INFINITY;for(int t=i;t<=pos;t+=256)mx=fmaxf(mx,s[t]);tmp[i]=mx;__syncthreads();
+    for(int d=128;d;d/=2){if(i<d)tmp[i]=fmaxf(tmp[i],tmp[i+d]);__syncthreads();}
+    if(!i)maximum=tmp[0];__syncthreads();
+    float z=0;for(int t=i;t<=pos;t+=256)z+=expf(s[t]-maximum);tmp[i]=z;__syncthreads();
+    for(int d=128;d;d/=2){if(i<d)tmp[i]+=tmp[i+d];__syncthreads();}
+    if(!i)denominator=tmp[0];__syncthreads();
+    // The softmax probability for position t is independent of the 256 value
+    // components. Compute each expf once into shared memory instead of once per
+    // thread in the value loop. Inputs and order are unchanged -> bit-identical.
+    const bool cached=pos<prob_capacity;
+    if(cached){
+        for(int t=i;t<=pos;t+=256)prob[t]=expf(s[t]-maximum)/denominator;
+        __syncthreads();
+    }
+    int kh=head/heads_per_kv;
+    float y=0;
+    if(cached)for(int t=0;t<=pos;++t)y=fmaf(prob[t],__half2float(v[(size_t(kh)*ctx+t)*256+i]),y);
+    else for(int t=0;t<=pos;++t)y=fmaf(expf(s[t]-maximum)/denominator,__half2float(v[(size_t(kh)*ctx+t)*256+i]),y);
+    const float* g=gate+(size_t(tok)*q_heads+head)*256;
+    out[(size_t(tok)*q_heads+head)*256+i]=y/(1+expf(-g[i]));
+}
+// Tiled GQA f16 attention: one block handles BR tokens x heads_per_kv query
+// heads for one KV head. All H*BR dot-product reductions for a history position
+// are batched into a single shared-memory array and one __syncthreads, so the
+// serial dependency depth per block falls by a factor of H*BR compared with the
+// per-token kernel. K/V are still loaded once per position. Online softmax
+// changes the summation order, allowed under the 3e-5/4e-5 tolerance contract.
+template<int BR>
+__global__ void attend_batch_gqa_tiled(const float* q,const half* kc,const half* vc,const float* gate,float* out,
+                                       int pos0,int n_tokens,int ctx,int q_heads,int heads_per_kv,int* status){
+    if(status&&*status)return;
+    __shared__ float warp_sum[6][BR][8],s_val[6][BR];
+    const int tok0=blockIdx.y*BR,kh=blockIdx.x,i=threadIdx.x,lane=i&31,warp=i>>5;
+    const int H=heads_per_kv;
+    float qv[6][BR],mx[6][BR],sumv[6][BR],acc[6][BR];
+    #pragma unroll
+    for(int h=0;h<H;++h)for(int b=0;b<BR;++b){
+        int tok=tok0+b;
+        if(tok<n_tokens){
+            qv[h][b]=q[(size_t(tok)*q_heads+kh*H+h)*256+i];
+        }else{qv[h][b]=0.f;}
+        mx[h][b]=-INFINITY;sumv[h][b]=0.f;acc[h][b]=0.f;
+    }
+    const int last=pos0+min(BR,n_tokens-tok0)-1;
+    for(int p=pos0;p<=last;++p){
+        const float kv=__half2float(kc[(size_t(kh)*ctx+p)*256+i]);
+        const float vv=__half2float(vc[(size_t(kh)*ctx+p)*256+i]);
+        #pragma unroll
+        for(int h=0;h<H;++h)for(int b=0;b<BR;++b){
+            float a=qv[h][b]*kv;
+            for(int d=16;d;d>>=1)a+=__shfl_down_sync(0xffffffffu,a,d);
+            if(!lane)warp_sum[h][b][warp]=a;
+        }
+        __syncthreads();
+        if(!warp){
+            #pragma unroll
+            for(int h=0;h<H;++h)for(int b=0;b<BR;++b){
+                float a=0;for(int w=0;w<8;++w)a+=warp_sum[h][b][w];
+                s_val[h][b]=a/16.f;
+            }
+        }
+        __syncthreads();
+        #pragma unroll
+        for(int h=0;h<H;++h)for(int b=0;b<BR;++b){
+            float m_new=fmaxf(mx[h][b],s_val[h][b]);
+            float alpha=expf(mx[h][b]-m_new),pw=expf(s_val[h][b]-m_new);
+            mx[h][b]=m_new;sumv[h][b]=sumv[h][b]*alpha+pw;
+            acc[h][b]=fmaf(pw,vv,acc[h][b]*alpha);
+        }
+    }
+    #pragma unroll
+    for(int h=0;h<H;++h)for(int b=0;b<BR;++b){
+        int tok=tok0+b;
+        if(tok<n_tokens){
+            const size_t off=(size_t(tok)*q_heads+kh*H+h)*256+i;
+            out[off]=(acc[h][b]/sumv[h][b])/(1.f+expf(-gate[off]));
+        }
+    }
+}
+
+// GQA-fused f16 attention: one block per (token, KV head) processes all
+// heads_per_kv query heads. K and V history vectors are loaded ONCE per
+// position instead of once per Q head, and the softmax is accumulated online
+// so no global score buffer is needed. This changes the summation order of the
+// softmax, which is allowed under the 3e-5/4e-5 tolerance contract.
+__global__ void attend_batch_gqa(const float* q,const half* kc,const half* vc,const float* gate,float* out,
+                                 int pos0,int n_tokens,int ctx,int q_heads,int heads_per_kv,int* status){
+    if(status&&*status)return;
+    __shared__ float warp_sum[6][8],s_val[6];
+    int tok=blockIdx.y,kh=blockIdx.x,i=threadIdx.x,lane=i&31,warp=i>>5,pos=pos0+tok;
+    const int H=heads_per_kv;
+    float qv[6],mx[6],sum[6],acc[6];
+    for(int h=0;h<H;++h){
+        const size_t off=(size_t(tok)*q_heads+kh*H+h)*256+i;
+        qv[h]=q[off];mx[h]=-INFINITY;sum[h]=0.f;acc[h]=0.f;
+    }
+    for(int p=0;p<=pos;++p){
+        float kv=__half2float(kc[(size_t(kh)*ctx+p)*256+i]);
+        float vv=__half2float(vc[(size_t(kh)*ctx+p)*256+i]);
+        for(int h=0;h<H;++h){
+            float a=qv[h]*kv;
+            for(int d=16;d;d>>=1)a+=__shfl_down_sync(0xffffffffu,a,d);
+            if(!lane)warp_sum[h][warp]=a;
+        }
+        __syncthreads();
+        for(int h=0;h<H;++h){
+            if(!warp){float a=0;for(int w=0;w<8;++w)a+=warp_sum[h][w];s_val[h]=a/16.f;}
+            __syncthreads();
+            float m_new=fmaxf(mx[h],s_val[h]);
+            float alpha=expf(mx[h]-m_new),pw=expf(s_val[h]-m_new);
+            mx[h]=m_new;sum[h]=sum[h]*alpha+pw;
+            acc[h]=fmaf(pw,vv,acc[h]*alpha);
+            __syncthreads();
+        }
+    }
+    for(int h=0;h<H;++h){
+        const size_t off=(size_t(tok)*q_heads+kh*H+h)*256+i;
+        out[off]=(acc[h]/sum[h])/(1.f+expf(-gate[off]));
+    }
 }
 // GGML reference Q8_0: positive amax/127, roundf (ties away from zero).
 // Q4_0: signed first absolute maximum / -8, low first16/high second16.
@@ -364,6 +506,9 @@ void preload_kv(){
     ck(cudaFuncGetAttributes(&a,inverse_turbo));ck(cudaFuncGetAttributes(&a,apply_gate));
     ck(cudaFuncGetAttributes(&a,spin8_store_q_batch_kernel));ck(cudaFuncGetAttributes(&a,spin8_attend_batch_kernel));
     ck(cudaFuncGetAttributes(&a,spin8_attend_decode_split_kernel));ck(cudaFuncGetAttributes(&a,spin8_attend_decode_reduce_kernel));
+    ck(cudaFuncGetAttributes(&a,attend_batch));
+    // Batched attention caches one softmax probability per position in dynamic
+    // shared memory (up to 32 KiB, within the default SM120 carveout).
 }
 void KvCache::check(){
     demand(!poisoned_,"KV session requires reset after error");
@@ -378,21 +523,26 @@ void kv_spin_transform(const float* in,float* out,const float* matrix,int rows,b
     demand(in&&out&&matrix&&in!=out&&rows>0&&rows<=24,"invalid Spin8 transform");
     spin<<<rows,256,0,s>>>(in,out,matrix,rows*256,inverse);ck(cudaGetLastError());
 }
-KvCache::KvCache(const KvConfig& c,int capacity,int layers,cudaStream_t stream,bool conservative):config_(c),capacity_(capacity),stream_(stream),conservative_(conservative){
+KvCache::KvCache(const KvConfig& c,int capacity,int layers,cudaStream_t stream,bool conservative,const KvShape& shape):config_(c),shape_(shape),capacity_(capacity),stream_(stream),conservative_(conservative){
     demand(capacity>0&&capacity<=262144&&layers>0&&layers<=16&&stream,"invalid KV configuration");
     demand(!c.automatic&&int(c.mode)>=0&&int(c.mode)<=5,"KV cache requires selected effective mode");
     // Two owners avoid per-layer CUDA allocator granularity overhead. Views
     // remain valid for this cache lifetime and are never individually freed.
-    const size_t kb=size_t(4)*capacity*c.key_row_bytes(),vb=size_t(4)*capacity*c.value_row_bytes();
+    const size_t kb=size_t(shape_.kv_heads)*capacity*c.key_row_bytes(),vb=size_t(shape_.kv_heads)*capacity*c.value_row_bytes();
     keys_.allocate(kb*layers);values_.allocate(vb*layers);layers_.resize(layers);
     for(int i=0;i<layers;++i){layers_[i].key={keys_.as<uint8_t>()+size_t(i)*kb,kb};layers_[i].value={values_.as<uint8_t>()+size_t(i)*vb,vb};}
     // These buffers hold at most ONE position, independent of context capacity.
-    status_.allocate(4);if(c.mode!=KvMode::f16)aggregate_.allocate(6144*4);
-    if(c.mode==KvMode::spin8_k8v4){matrix_.allocate(64*4);ck(cudaMemcpy(matrix_.data,c.matrix.data(),64*4,cudaMemcpyHostToDevice));q_.allocate(6144*4);k_.allocate(1024*4);v_.allocate(1024*4);}
+    status_.allocate(4);if(c.mode!=KvMode::f16)aggregate_.allocate(size_t(shape_.q_elements())*4);
+    if(c.mode==KvMode::f16){
+        const uint64_t bytes=kv_batched_score_bytes(shape_,capacity);
+        batch_scores_.allocate(bytes);
+        batch_token_limit_=std::max<int>(1,int(bytes/(uint64_t(shape_.q_heads)*capacity*4)));
+    }
+    if(c.mode==KvMode::spin8_k8v4){matrix_.allocate(64*4);ck(cudaMemcpy(matrix_.data,c.matrix.data(),64*4,cudaMemcpyHostToDevice));q_.allocate(size_t(shape_.q_elements())*4);k_.allocate(size_t(shape_.kv_elements())*4);v_.allocate(size_t(shape_.kv_elements())*4);}
     reset();
 }
 size_t KvCache::persistent_bytes()const{return keys_.bytes+values_.bytes;}
-size_t KvCache::scratch_bytes()const{return q_.bytes+k_.bytes+v_.bytes+aggregate_.bytes+status_.bytes;}
+size_t KvCache::scratch_bytes()const{return q_.bytes+k_.bytes+v_.bytes+aggregate_.bytes+status_.bytes+batch_scores_.bytes;}
 void KvCache::reset(){
     ck(cudaStreamSynchronize(stream_));keys_.zero(stream_);values_.zero(stream_);for(auto& l:layers_)l.length=0;
     if(status_.data)status_.zero(stream_);ck(cudaStreamSynchronize(stream_));poisoned_=false;
@@ -420,21 +570,56 @@ void KvCache::enqueue_batch(int index,int pos_start,int n_tokens,const float* q_
         }catch(...){poisoned_=true;throw;}
         return;
     }
-    // F16 batched K/V store: replace n_tokens separate store_f16 launches with
-    // one launch for K and one for V (grid.y = n_tokens). Attention still runs
-    // per token below (each token has a distinct causal position).
     if(config_.mode==KvMode::f16){
         demand(!poisoned_,"KV session requires reset after error");
         demand(index>=0&&index<int(layers_.size()),"invalid attention layer");
         auto& l=layers_[index];
         demand(pos_start==l.length&&pos_start>=0&&pos_start+n_tokens<=capacity_,"KV batch position out of range");
-        store_f16_batch<<<dim3(4,unsigned(n_tokens)),256,0,stream_>>>(k_batch,l.key.as<uint8_t>(),pos_start,n_tokens,capacity_,status_.as<int>());
-        store_f16_batch<<<dim3(4,unsigned(n_tokens)),256,0,stream_>>>(v_batch,l.value.as<uint8_t>(),pos_start,n_tokens,capacity_,status_.as<int>());
-        ck(cudaGetLastError());
+        demand(q_batch&&k_batch&&v_batch&&gate_batch&&output_batch,"null KV operand");
+        const int qe=shape_.q_elements(),kve=shape_.kv_elements();
+        const int heads_per_kv=shape_.q_heads/shape_.kv_heads;
+        try{
+            finite(q_batch,size_t(n_tokens)*qe,status_.as<int>(),stream_);
+            finite(k_batch,size_t(n_tokens)*kve,status_.as<int>(),stream_);
+            finite(v_batch,size_t(n_tokens)*kve,status_.as<int>(),stream_);
+            finite(gate_batch,size_t(n_tokens)*qe,status_.as<int>(),stream_);
+            if(conservative_)check();
+            for(int start=0;start<n_tokens;start+=batch_token_limit_){
+                const int m=std::min(batch_token_limit_,n_tokens-start);
+                store_f16_batch<<<dim3(shape_.kv_heads,unsigned(m)),256,0,stream_>>>(
+                    k_batch+size_t(start)*kve,v_batch+size_t(start)*kve,
+                    l.key.as<uint8_t>(),l.value.as<uint8_t>(),pos_start+start,capacity_,kve,status_.as<int>());
+                if(shape_.q_heads%shape_.kv_heads==0&&heads_per_kv<=6){
+                    // Tiled GQA: one block per (4 tokens, KV head); all dot-product
+                    // reductions for a position share a single barrier.
+                    if(heads_per_kv<=4)
+                        attend_batch_gqa_tiled<4><<<dim3(unsigned(shape_.kv_heads),unsigned((m+3)/4)),256,0,stream_>>>(
+                            q_batch+size_t(start)*qe,l.key.as<half>(),l.value.as<half>(),
+                            gate_batch+size_t(start)*qe,output_batch+size_t(start)*qe,
+                            pos_start+start,m,capacity_,shape_.q_heads,heads_per_kv,status_.as<int>());
+                    else
+                        attend_batch_gqa_tiled<2><<<dim3(unsigned(shape_.kv_heads),unsigned((m+1)/2)),256,0,stream_>>>(
+                            q_batch+size_t(start)*qe,l.key.as<half>(),l.value.as<half>(),
+                            gate_batch+size_t(start)*qe,output_batch+size_t(start)*qe,
+                            pos_start+start,m,capacity_,shape_.q_heads,heads_per_kv,status_.as<int>());
+                }else{
+                    score_batch<<<dim3((pos_start+start+m+7)/8,unsigned(shape_.q_heads),unsigned(m)),256,0,stream_>>>(
+                        q_batch+size_t(start)*qe,l.key.as<half>(),batch_scores_.as<float>(),
+                        pos_start+start,m,capacity_,shape_.q_heads,heads_per_kv,status_.as<int>());
+                    attend_batch<<<dim3(unsigned(shape_.q_heads),unsigned(m)),256,0,stream_>>>(
+                        batch_scores_.as<float>(),l.value.as<half>(),gate_batch+size_t(start)*qe,
+                        output_batch+size_t(start)*qe,pos_start+start,m,capacity_,shape_.q_heads,heads_per_kv,1,status_.as<int>());
+                }
+                ck(cudaGetLastError());
+                finite(output_batch+size_t(start)*qe,size_t(m)*qe,status_.as<int>(),stream_);
+                if(conservative_)check();
+            }
+            l.length+=n_tokens;
+        }catch(...){poisoned_=true;throw;}
+        return;
     }
-    const bool batched_store=(config_.mode==KvMode::f16);
     for(int t=0;t<n_tokens;++t){
-        enqueue(index,pos_start+t,q_batch+size_t(t)*6144,k_batch+size_t(t)*1024,v_batch+size_t(t)*1024,gate_batch+size_t(t)*6144,output_batch+size_t(t)*6144,scores,batched_store);
+        enqueue(index,pos_start+t,q_batch+size_t(t)*shape_.q_elements(),k_batch+size_t(t)*shape_.kv_elements(),v_batch+size_t(t)*shape_.kv_elements(),gate_batch+size_t(t)*shape_.q_elements(),output_batch+size_t(t)*shape_.q_elements(),scores);
     }
 }
 void KvCache::enqueue(int index,int pos,const float* q,const float* k,const float* v,const float* gate,float* output,float* scores,bool skip_store){
@@ -455,7 +640,7 @@ void KvCache::enqueue(int index,int pos,const float* q,const float* k,const floa
                 spin8_attend_decode_split_kernel<<<dim3(4,unsigned(n_splits)),192,0,stream_>>>(
                     q,l.key.as<uint8_t>(),l.value.as<uint8_t>(),matrix_.as(),scores,pos,capacity_,
                     int(config_.key_row_bytes()),int(config_.value_row_bytes()),int(config_.mode),n_splits,status_.as<int>());
-                spin8_attend_decode_reduce_kernel<<<24,256,0,stream_>>>(scores,matrix_.as(),gate,output,n_splits,status_.as<int>());
+                spin8_attend_decode_reduce_kernel<<<shape_.q_heads,256,0,stream_>>>(scores,matrix_.as(),gate,output,n_splits,status_.as<int>());
             }else{
                 spin8_attend_batch_kernel<<<dim3(4,1),256,0,stream_>>>(
                     q,gate,l.key.as<uint8_t>(),l.value.as<uint8_t>(),matrix_.as(),output,pos,1,capacity_,
@@ -464,21 +649,19 @@ void KvCache::enqueue(int index,int pos,const float* q,const float* k,const floa
             ck(cudaGetLastError());if(conservative_)check();++l.length;
             return;
         }
-        ck(cudaMemsetAsync(output,0,6144*4,stream_));
-        if(aggregate_.data)aggregate_.zero(stream_);
-        finite(q,6144,status_.as<int>(),stream_);finite(k,1024,status_.as<int>(),stream_);finite(v,1024,status_.as<int>(),stream_);finite(gate,6144,status_.as<int>(),stream_);
+        // Both output and aggregate_ are fully written by the kernels below;
+        // zeroing them here only adds a launch and a full-buffer write.
+        finite(q,shape_.q_elements(),status_.as<int>(),stream_);finite(k,shape_.kv_elements(),status_.as<int>(),stream_);finite(v,shape_.kv_elements(),status_.as<int>(),stream_);finite(gate,shape_.q_elements(),status_.as<int>(),stream_);
         if(conservative_)check();
         if(config_.mode==KvMode::f16){
-            if(!skip_store){
-                store_f16<<<4,256,0,stream_>>>(k,l.key.as<uint8_t>(),pos,capacity_,status_.as<int>());store_f16<<<4,256,0,stream_>>>(v,l.value.as<uint8_t>(),pos,capacity_,status_.as<int>());
-                ck(cudaGetLastError());if(conservative_)check();
-            }
-            attention_apply(q,gate,l.key.as<half>(),l.value.as<half>(),output,scores,pos,capacity_,stream_,status_.as<int>());
+            store_f16<<<4,256,0,stream_>>>(k,l.key.as<uint8_t>(),pos,capacity_,status_.as<int>());store_f16<<<4,256,0,stream_>>>(v,l.value.as<uint8_t>(),pos,capacity_,status_.as<int>());
+            ck(cudaGetLastError());if(conservative_)check();
+            attention_apply(q,gate,l.key.as<half>(),l.value.as<half>(),output,scores,pos,capacity_,shape_.q_heads,shape_.kv_heads,stream_,status_.as<int>());
         }else{
             if(config_.mode==KvMode::spin8_k8v4){
-                kv_spin_transform(q,q_.as(),matrix_.as(),24,false,stream_);kv_spin_transform(k,k_.as(),matrix_.as(),4,false,stream_);kv_spin_transform(v,v_.as(),matrix_.as(),4,false,stream_);
+                kv_spin_transform(q,q_.as(),matrix_.as(),shape_.q_heads,false,stream_);kv_spin_transform(k,k_.as(),matrix_.as(),shape_.kv_heads,false,stream_);kv_spin_transform(v,v_.as(),matrix_.as(),shape_.kv_heads,false,stream_);
                 q=q_.as();k=k_.as();v=v_.as();
-                finite(q,6144,status_.as<int>(),stream_);finite(k,1024,status_.as<int>(),stream_);finite(v,1024,status_.as<int>(),stream_);
+                finite(q,shape_.q_elements(),status_.as<int>(),stream_);finite(k,shape_.kv_elements(),status_.as<int>(),stream_);finite(v,shape_.kv_elements(),status_.as<int>(),stream_);
                 if(conservative_)check();
             }
             bool q8=config_.key_row_bytes()==272;
@@ -487,14 +670,14 @@ void KvCache::enqueue(int index,int pos,const float* q,const float* k,const floa
             if(config_.turbo())store_turbo<<<1,32,0,stream_>>>(v,l.value.as<uint8_t>(),pos,capacity_,config_.turbo(),status_.as<int>());
             else store_q<<<1,32,0,stream_>>>(v,l.value.as<uint8_t>(),pos,capacity_,false,status_.as<int>());
             ck(cudaGetLastError());if(conservative_)check();
-            scores_kernel<<<dim3((pos+8)/8,24),256,0,stream_>>>(q,l.key.as<uint8_t>(),scores,pos,capacity_,int(config_.key_row_bytes()),q8,status_.as<int>());
-            aggregate_kernel<<<24,256,0,stream_>>>(scores,l.value.as<uint8_t>(),aggregate_.as(),pos,capacity_,int(config_.value_row_bytes()),int(config_.mode),status_.as<int>());
-            if(config_.mode==KvMode::spin8_k8v4)kv_spin_transform(aggregate_.as(),output,matrix_.as(),24,true,stream_);
+            scores_kernel<<<dim3((pos+8)/8,shape_.q_heads),256,0,stream_>>>(q,l.key.as<uint8_t>(),scores,pos,capacity_,int(config_.key_row_bytes()),q8,status_.as<int>());
+            aggregate_kernel<<<shape_.q_heads,256,0,stream_>>>(scores,l.value.as<uint8_t>(),aggregate_.as(),pos,capacity_,int(config_.value_row_bytes()),int(config_.mode),status_.as<int>());
+            if(config_.mode==KvMode::spin8_k8v4)kv_spin_transform(aggregate_.as(),output,matrix_.as(),shape_.q_heads,true,stream_);
             else if(config_.turbo())inverse_turbo<<<2,32,0,stream_>>>(aggregate_.as(),output);
-            else ck(cudaMemcpyAsync(output,aggregate_.data,6144*4,cudaMemcpyDeviceToDevice,stream_));
-            apply_gate<<<24,256,0,stream_>>>(output,gate);
+            else ck(cudaMemcpyAsync(output,aggregate_.data,size_t(shape_.q_elements())*4,cudaMemcpyDeviceToDevice,stream_));
+            apply_gate<<<shape_.q_heads,256,0,stream_>>>(output,gate);
         }
-        finite(output,6144,status_.as<int>(),stream_);ck(cudaGetLastError());if(conservative_)check();++l.length;
+        finite(output,shape_.q_elements(),status_.as<int>(),stream_);ck(cudaGetLastError());if(conservative_)check();++l.length;
     }catch(...){poisoned_=true;throw;}
 }
 }

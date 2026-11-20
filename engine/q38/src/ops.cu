@@ -4,6 +4,7 @@
 #include "ops.cuh"
 #include "iq_tables.hpp"
 #include "iq_decode.hpp"
+#include <algorithm>
 #include <cmath>
 #include <limits>
 namespace strata::qwen38 {
@@ -799,23 +800,27 @@ __global__ void had(const float* x,const float* signs,float* y,bool inverse,bool
 }
 // Based on Strata q36 k_attn_prep: Q and output gates interleave per head.
 __global__ void prep(const float* qg,const float* k,const float* v,const float* qw,const float* kw,float* q,float* gate,
-                     half* kc,half* vc,int pos,int ctx,float eps,float base,float* normalized_k=nullptr){
-    __shared__ float buf[256],part[8];int head=blockIdx.x,t=blockIdx.y,i=threadIdx.x;bool isq=head<24;
-    const float* x=isq?(qg+size_t(t)*12288+head*512):(k+size_t(t)*1024+(head-24)*256);float z=x[i];float s=sum(z*z);
+                     half* kc,half* vc,int pos,int ctx,int q_heads,int kv_heads,float eps,float base,float* normalized_k=nullptr){
+    __shared__ float buf[256],part[8],inv_freq[32];int head=blockIdx.x,t=blockIdx.y,i=threadIdx.x;bool isq=head<q_heads;
+    // inv_freq depends only on the 32 RoPE frequency slots, not on head, token
+    // or position. Compute it once per block on the device with the same powf
+    // so the angles stay bit-identical to the original expression.
+    if(i<32)inv_freq[i]=powf(base,-float(i)/32);
+    const float* x=isq?(qg+size_t(t)*(2*q_heads*256)+head*512):(k+size_t(t)*(kv_heads*256)+(head-q_heads)*256);float z=x[i];float s=sum(z*z);
     if(!(i%32))part[i/32]=s;__syncthreads();s=0;for(int j=0;j<8;++j)s+=part[j];
     buf[i]=z*rsqrtf(s/256+eps)*(isq?qw[i]:kw[i]);__syncthreads();z=buf[i];
-    if(i<64){int p=i%32;float angle=(pos+t)*powf(base,-float(p)/32),sn,cs;sincosf(angle,&sn,&cs);z=i<32?buf[i]*cs-buf[i+32]*sn:buf[i-32]*sn+buf[i]*cs;}
-    if(isq){q[size_t(t)*6144+head*256+i]=z;gate[size_t(t)*6144+head*256+i]=qg[size_t(t)*12288+head*512+256+i];}
-    else{int kh=head-24;if(normalized_k)normalized_k[size_t(t)*1024+kh*256+i]=z;
-        else{kc[(size_t(kh)*ctx+pos+t)*256+i]=__float2half(z);vc[(size_t(kh)*ctx+pos+t)*256+i]=__float2half(v[size_t(t)*1024+kh*256+i]);}}
+    if(i<64){int p=i%32;float angle=(pos+t)*inv_freq[p],sn,cs;sincosf(angle,&sn,&cs);z=i<32?buf[i]*cs-buf[i+32]*sn:buf[i-32]*sn+buf[i]*cs;}
+    if(isq){const size_t qo=size_t(t)*(q_heads*256)+head*256+i;const size_t go=size_t(t)*(2*q_heads*256)+head*512+256+i;q[qo]=z;gate[qo]=qg[go];}
+    else{int kh=head-q_heads;if(normalized_k)normalized_k[size_t(t)*(kv_heads*256)+kh*256+i]=z;
+        else{kc[(size_t(kh)*ctx+pos+t)*256+i]=__float2half(z);vc[(size_t(kh)*ctx+pos+t)*256+i]=__float2half(v[size_t(t)*(kv_heads*256)+kh*256+i]);}}
 }
-__global__ void score(const float* q,const half* k,float* s,int pos,int ctx,const int* status){
+__global__ void score(const float* q,const half* k,float* s,int pos,int ctx,int heads_per_kv,const int* status){
     if(status&&*status)return;
-    int t=blockIdx.x*8+threadIdx.x/32,head=blockIdx.y,lane=threadIdx.x%32;if(t>pos)return;int kh=head/6;
+    int t=blockIdx.x*8+threadIdx.x/32,head=blockIdx.y,lane=threadIdx.x%32;if(t>pos)return;int kh=head/heads_per_kv;
     float a=0;for(int i=lane;i<256;i+=32)a=fmaf(q[head*256+i],__half2float(k[(size_t(kh)*ctx+t)*256+i]),a);
     a=sum(a);if(!lane)s[size_t(head)*ctx+t]=a/16;
 }
-__global__ void attend(const float* scores,const half* v,const float* gate,float* out,int pos,int ctx,const int* status){
+__global__ void attend(const float* scores,const half* v,const float* gate,float* out,int pos,int ctx,int heads_per_kv,const int* status){
     if(status&&*status)return;
     // One block per query head; stable softmax then each lane's value component.
     __shared__ float tmp[256],maxi,denom;int head=blockIdx.x,i=threadIdx.x;const float* s=scores+size_t(head)*ctx;
@@ -823,7 +828,7 @@ __global__ void attend(const float* scores,const half* v,const float* gate,float
     for(int d=128;d;d/=2){if(i<d)tmp[i]=fmaxf(tmp[i],tmp[i+d]);__syncthreads();}if(!i)maxi=tmp[0];__syncthreads();
     float z=0;for(int t=i;t<=pos;t+=256)z+=expf(s[t]-maxi);tmp[i]=z;__syncthreads();
     for(int d=128;d;d/=2){if(i<d)tmp[i]+=tmp[i+d];__syncthreads();}if(!i)denom=tmp[0];__syncthreads();
-    float y=0;for(int t=0;t<=pos;++t)y=fmaf(expf(s[t]-maxi)/denom,__half2float(v[(size_t(head/6)*ctx+t)*256+i]),y);
+    float y=0;for(int t=0;t<=pos;++t)y=fmaf(expf(s[t]-maxi)/denom,__half2float(v[(size_t(head/heads_per_kv)*ctx+t)*256+i]),y);
     out[head*256+i]=y/(1+expf(-gate[head*256+i]));
 }
 }
@@ -987,15 +992,15 @@ void finite(const float* x,size_t n,int* e,cudaStream_t s){fin<<<unsigned((n+255
 void hadamard(const float* x,const float* signs,float* y,int n,bool inverse,bool grouped,cudaStream_t s){
     if(n<=0||n%1024||!x||!signs||!y||x==y||(grouped&&(n!=6144||inverse)))throw std::runtime_error("invalid Hadamard arguments");
     had<<<n/1024,1024,0,s>>>(x,signs,y,inverse,grouped);ck(cudaGetLastError());}
-void attention_prepare(const float* qg,const float* k,const float* v,const float* qw,const float* kw,float* q,float* gate,half* kc,half* vc,int pos,int ctx,float eps,float base,cudaStream_t s){
-    if(pos<0||pos>=ctx)throw std::runtime_error("attention position out of range");prep<<<28,256,0,s>>>(qg,k,v,qw,kw,q,gate,kc,vc,pos,ctx,eps,base);ck(cudaGetLastError());}
-void attention_apply(const float* q,const float* gate,const half* kc,const half* vc,float* out,float* scores,int pos,int ctx,cudaStream_t s,const int* status){
-    if(pos<0||pos>=ctx)throw std::runtime_error("attention position out of range");score<<<dim3((pos+8)/8,24),256,0,s>>>(q,kc,scores,pos,ctx,status);attend<<<24,256,0,s>>>(scores,vc,gate,out,pos,ctx,status);ck(cudaGetLastError());}
-void attention_normalize(const float* qg,const float* k,const float* qw,const float* kw,float* q,float* gate,float* nk,int pos,float eps,float base,cudaStream_t s){
-    if(pos<0||!qg||!k||!qw||!kw||!q||!gate||!nk)throw std::runtime_error("invalid attention normalization");
-    prep<<<28,256,0,s>>>(qg,k,nullptr,qw,kw,q,gate,nullptr,nullptr,pos,0,eps,base,nk);ck(cudaGetLastError());}
-void attention_normalize_batch(const float* qg,const float* k,const float* qw,const float* kw,float* q,float* gate,float* nk,int pos0,int n_tokens,float eps,float base,cudaStream_t s){
+void attention_prepare(const float* qg,const float* k,const float* v,const float* qw,const float* kw,float* q,float* gate,half* kc,half* vc,int pos,int ctx,int q_heads,int kv_heads,float eps,float base,cudaStream_t s){
+    if(pos<0||pos>=ctx||q_heads<=0||kv_heads<=0||q_heads%kv_heads)throw std::runtime_error("attention position or head geometry out of range");prep<<<q_heads+kv_heads,256,0,s>>>(qg,k,v,qw,kw,q,gate,kc,vc,pos,ctx,q_heads,kv_heads,eps,base);ck(cudaGetLastError());}
+void attention_apply(const float* q,const float* gate,const half* kc,const half* vc,float* out,float* scores,int pos,int ctx,int q_heads,int kv_heads,cudaStream_t s,const int* status){
+    if(pos<0||pos>=ctx||q_heads<=0||kv_heads<=0||q_heads%kv_heads)throw std::runtime_error("attention position or head geometry out of range");const int hp=q_heads/kv_heads;score<<<dim3((pos+8)/8,q_heads),256,0,s>>>(q,kc,scores,pos,ctx,hp,status);attend<<<q_heads,256,0,s>>>(scores,vc,gate,out,pos,ctx,hp,status);ck(cudaGetLastError());}
+void attention_normalize(const float* qg,const float* k,const float* qw,const float* kw,float* q,float* gate,float* nk,int pos,int q_heads,int kv_heads,float eps,float base,cudaStream_t s){
+    if(pos<0||!qg||!k||!qw||!kw||!q||!gate||!nk||q_heads<=0||kv_heads<=0||q_heads%kv_heads)throw std::runtime_error("invalid attention normalization");
+    prep<<<q_heads+kv_heads,256,0,s>>>(qg,k,nullptr,qw,kw,q,gate,nullptr,nullptr,pos,0,q_heads,kv_heads,eps,base,nk);ck(cudaGetLastError());}
+void attention_normalize_batch(const float* qg,const float* k,const float* qw,const float* kw,float* q,float* gate,float* nk,int pos0,int n_tokens,int q_heads,int kv_heads,float eps,float base,cudaStream_t s){
     if(n_tokens<=0)return;
-    if(pos0<0||!qg||!k||!qw||!kw||!q||!gate||!nk)throw std::runtime_error("invalid attention normalization batch");
-    prep<<<dim3(28,unsigned(n_tokens)),256,0,s>>>(qg,k,nullptr,qw,kw,q,gate,nullptr,nullptr,pos0,0,eps,base,nk);ck(cudaGetLastError());}
+    if(pos0<0||!qg||!k||!qw||!kw||!q||!gate||!nk||q_heads<=0||kv_heads<=0||q_heads%kv_heads)throw std::runtime_error("invalid attention normalization batch");
+    prep<<<dim3(q_heads+kv_heads,unsigned(n_tokens)),256,0,s>>>(qg,k,nullptr,qw,kw,q,gate,nullptr,nullptr,pos0,0,q_heads,kv_heads,eps,base,nk);ck(cudaGetLastError());}
 }

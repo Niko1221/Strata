@@ -945,7 +945,8 @@ def plan_import(raw_path: str) -> dict:
         if reason:
             issues.append(reason)
         else:
-            messages.append("Plausible Qwen3.8-27B native model. Native tensor admission and answer quality remain unverified. Original weights stay in place; MTP is off.")
+            label = "Qwen3.8-27B" if (candidate or {}).get("geometry") != "q38-9b" else "Qwen3.5/3.8 dense 9B"
+            messages.append(f"Plausible {label} native model. Native tensor admission and answer quality remain unverified. Original weights stay in place; MTP is off.")
     if candidate is None and metadata is not None and not issues:
         candidate = _candidate_by_header(shards, observed_tensor_count, observed_payload, observed_experts)
     if candidate is None and not dense:

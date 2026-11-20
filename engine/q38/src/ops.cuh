@@ -49,11 +49,11 @@ void hadamard(const float* x,const float* signs,float* y,int n,bool inverse,bool
 // Text positions use identical t/h/w coordinates in IMRoPE sections 11/11/10.
 // Cache layout: [KV head][context cell][256], no hidden fallback or sliding.
 void attention_prepare(const float* qg,const float* k,const float* v,const float* qw,const float* kw,
-                       float* q,float* gate,half* kc,half* vc,int pos,int ctx,float eps,float base,cudaStream_t s);
+                       float* q,float* gate,half* kc,half* vc,int pos,int ctx,int q_heads,int kv_heads,float eps,float base,cudaStream_t s);
 void attention_apply(const float* q,const float* gate,const half* kc,const half* vc,float* out,
-                     float* scores,int pos,int ctx,cudaStream_t s,const int* status=nullptr);
+                     float* scores,int pos,int ctx,int q_heads,int kv_heads,cudaStream_t s,const int* status=nullptr);
 void attention_normalize(const float* qg,const float* k,const float* qw,const float* kw,
-                         float* q,float* gate,float* normalized_k,int pos,float eps,float base,cudaStream_t s);
+                         float* q,float* gate,float* normalized_k,int pos,int q_heads,int kv_heads,float eps,float base,cudaStream_t s);
 void attention_normalize_batch(const float* qg,const float* k,const float* qw,const float* kw,
-                               float* q,float* gate,float* normalized_k,int pos0,int n_tokens,float eps,float base,cudaStream_t s);
+                               float* q,float* gate,float* normalized_k,int pos0,int n_tokens,int q_heads,int kv_heads,float eps,float base,cudaStream_t s);
 }
