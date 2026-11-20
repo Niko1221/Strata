@@ -180,10 +180,14 @@ export function apply(ctx) {
     if (tools && estimateTools({ tools }) * density > window / 3) tools = undefined;   // a long tool list only describes tools: the summary does not need it
     const fixed = (system ? estimateMessage(system) : 0) * density + estimateTools({ tools }) * density + estimateMessage(instruction) * density;
     let budget = summaryBudget({ window, summaryTokens: summaryTokens * 2, systemTokens: fixed, instructionTokens: 0 });
+    // Keep completed work across a size retry. Re-split the original messages
+    // after that boundary, so a retry never clips an already clipped copy.
+    let summarised = 0, summary = '';
     for (let attempt = 0; ; attempt++) {
-      const runs = splitMessages(body, Math.max(1024, budget), density);
-      log('info', `summarising ${body.length} messages in ${runs.length} piece(s) for a ${window}-token window (density ${density.toFixed(2)}, about ${Math.round(budget)} tokens a piece)`);
-      let failed = null, summary = '';
+      const remaining = body.slice(summarised);
+      const runs = splitMessages(remaining, Math.max(1024, budget), density);
+      log('info', `summarising ${remaining.length} messages in ${runs.length} piece(s) for a ${window}-token window (density ${density.toFixed(2)}, about ${Math.round(budget)} tokens a piece)`);
+      let failed = null;
       for (let i = 0; i < runs.length && !failed; i++) {
         options.signal?.throwIfAborted?.();
         const carried = summary ? [{ role: 'user', content: [{ type: 'text', text: `<compacted-summary>\n${summary}\n</compacted-summary>` }] }] : [];
@@ -194,6 +198,7 @@ export function apply(ctx) {
         // The last piece's answer is the summary the Harness reads; a piece that ended in another error ends the request the same way.
         if (i === runs.length - 1 || finish?.kind === 'error' || finish?.kind === 'aborted') { for (const chunk of chunks) yield chunk; return; }
         summary = text;
+        summarised += runs[i].length;
       }
       if (!failed || attempt >= 3) throw Object.assign(new Error(failed?.failure?.message ?? 'the summary request does not fit the window'), { code: 'CONTEXT_WINDOW_EXCEEDED' });
       density = Math.min(MAX_DENSITY, density * 1.6);
