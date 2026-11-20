@@ -15493,11 +15493,22 @@ int main(int argc, char** argv) {
             }
         };
         auto vram_command = [&](const std::string& cmd, std::string& e) -> bool {
-            // `VRAM` alone: the reserve the engine started with (--vram-reserve-mib)
-            char* end = nullptr;
-            const bool bare = cmd.find_first_not_of(' ', 4) == std::string::npos;
-            const long long reserve = bare ? (long long) o.vram_reserve_mib : std::strtoll(cmd.c_str() + 4, &end, 10);
-            if (!bare && (end == cmd.c_str() + 4 || reserve < 0)) { e = "expected: VRAM [reserve_mib]"; return false; }
+            // Grammar (back-compat kept): `VRAM` = every card to the start reserve; `VRAM <reserve_mib>` = every card
+            // (what server.py has always sent); `VRAM <reserve_mib> <dev>` = ONE card only - a CUDA index.  #533 per-GPU:
+            // frees VRAM where it is needed (the music worker's card), not on every card at once.
+            std::vector<std::string> tk;   // whitespace fields of cmd after "VRAM" (no <sstream> dependency)
+            { std::string t; for (char ch : (cmd.size() > 4 ? cmd.substr(4) : std::string()))
+                  if (ch == ' ' || ch == '\t') { if (!t.empty()) { tk.push_back(t); t.clear(); } } else t += ch;
+              if (!t.empty()) tk.push_back(t); }
+            const auto isnum = [](const std::string& x) { if (x.empty() || (x.size() > 1 && x[0] == '-')) return false; for (char c : x) if (c < '0' || c > '9') return false; return !x.empty(); };
+            long long reserve = o.vram_reserve_mib;   // bare `VRAM`: the reserve the engine started with (--vram-reserve-mib)
+            int dev_sel = -1;                          // -1 every card, >=0 a single CUDA device id
+            if (tk.empty()) { /* bare: start reserve, every card */ }
+            else if (tk.size() == 1 && isnum(tk[0])) { reserve = std::strtoll(tk[0].c_str(), nullptr, 10); }   // legacy: all cards
+            else if (tk.size() == 2 && isnum(tk[0]) && isnum(tk[1])) {   // one-card form: <reserve_mib> <dev>
+                reserve = std::strtoll(tk[0].c_str(), nullptr, 10);
+                dev_sel = (int) std::strtoll(tk[1].c_str(), nullptr, 10);
+            } else { e = "expected: VRAM [reserve_mib] [dev]"; return false; }
             if (!xcache.segmented()) {
                 e = "VRAM needs an engine started with --vram-elastic (one NVIDIA GPU, --serve)";
                 return false;
@@ -15529,7 +15540,12 @@ int main(int argc, char** argv) {
             const int64_t want_free = (int64_t) reserve << 20;
             size_t free_b = 0, total_b = 0;   // CUDA0's figures for the summary line below
             std::string note;
-            for (VCard& cd : cards) {
+            // Which cards to act on: every card by default, or just the one whose CUDA id was named (`VRAM <mib> <dev>`).
+            std::vector<int> sel;
+            if (dev_sel == -1) { for (size_t i = 0; i < cards.size(); ++i) sel.push_back((int) i); }
+            else { bool found = false; for (size_t i = 0; i < cards.size(); ++i) if (cards[i].dev == dev_sel) { sel.push_back((int) i); found = true; }
+                if (!found) { e = "VRAM: no such device"; return false; } }   // a split's CUDA0 cache has id 0, each stage its own card.
+            for (int ci : sel) { VCard& cd = cards[ci];
                 const strata::core::OnDevice on(cd.dev);
                 size_t fb = 0, tb = 0;
                 cudaMemGetInfo(&fb, &tb);
