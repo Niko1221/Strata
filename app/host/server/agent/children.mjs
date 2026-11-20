@@ -60,6 +60,7 @@ export class ChildProjector {
     this.closing = '';              // the helper's last words, shown once it finished
     this.workStartedAt = null;      // when it first went to working: the helper time limit counts from here (not from its wait for a turn)
     this.limitReached = false;      // the time limit stopped it
+    this.progressStop = null;
     this.steps = [];                // what it did, newest last: { verb, target } for a tool, { said } for its own words (View log)
     this.failure = null;
     this.endedAt = null;
@@ -77,7 +78,7 @@ export class ChildProjector {
     if (this.status === 'working' && this.activity) description = this.activity;
     if (this.status === 'completed') description = this.closing ? clip(this.closing, 140) : 'Finished.';
     if (this.status === 'failed') description = this.failure ?? 'Stopped because something went wrong.';
-    if (this.status === 'cancelled') description = this.limitReached ? 'Stopped: it reached the helper time limit.' : 'Stopped.';
+    if (this.status === 'cancelled') description = this.progressStop ?? (this.limitReached ? 'Stopped: it reached the helper time limit.' : 'Stopped.');
     return {
       id: this.id, name: this.name, description, status: this.status,
       durationMs: Math.max(0, (done ? this.endedAt : at) - this.startedAt), tokens: this.tokens, updatedAt: at,
@@ -88,7 +89,9 @@ export class ChildProjector {
   #cardId(callId) { return `${this.id}:${callId}`; }
 
   #step(step) {
-    this.steps.push(step);
+    const previous = this.steps.at(-1);
+    if (step.said && previous?.said && previous.said.length < 1200) previous.said = `${previous.said}${step.said}`.slice(-1200);
+    else this.steps.push(step);
     if (this.steps.length > MAX_STEPS) this.steps.splice(0, this.steps.length - MAX_STEPS);
   }
 
@@ -119,6 +122,8 @@ export class ChildProjector {
         row = true;
       } else if (f.type === 'chunk' && (f.chunk?.type === 'text-delta' || f.chunk?.type === 'reasoning-delta')) {
         if (this.status === 'queued') set('working');
+        const text = String(f.chunk?.text ?? '');
+        if (text) { this.#step({ said: text }); row = true; }
       }
       return { frames, row };
     }
@@ -130,7 +135,7 @@ export class ChildProjector {
       case 'turn/start':
         // A request was sent. Whether the engine has room for it yet is told by its first word: until then the helper is waiting for its turn.
         // A helper that had finished and got a new message starts over as waiting.
-        if (this.finished) { this.endedAt = null; this.failure = null; this.workStartedAt = null; this.limitReached = false; set('queued'); }
+        if (this.finished) { this.endedAt = null; this.failure = null; this.workStartedAt = null; this.limitReached = false; this.progressStop = null; set('queued'); }
         break;
       case 'assistant/message': {
         const text = (d.message?.content ?? []).filter(p => p.type === 'text').map(p => p.text).join('').trim();
@@ -186,7 +191,8 @@ export class ChildProjector {
       case 'turn/end': {
         const reason = d.reason ?? { kind: 'completed' };
         this.endedAt = this.now();
-        if (reason.kind === 'aborted') set('cancelled');
+        if (this.progressStop && reason.kind !== 'error') { this.#step({ said: this.progressStop }); set('cancelled'); }
+        else if (reason.kind === 'aborted') set('cancelled');
         else if (reason.kind === 'error') { this.failure = clip(friendlyFailure(reason.error), 140); set('failed'); }
         else if (reason.kind === 'blocked' || reason.kind === 'interrupted') { this.failure = 'Stopped before it finished.'; set('failed'); }
         else set('completed');
