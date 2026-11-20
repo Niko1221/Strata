@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
 const TEXT = 'Share of the time the GPU had work to do. It does not say how much of its compute is in use.';
+// a checkout with CRLF line ends (Git for Windows' default, GitHub's Windows runner) must read the same as one with LF
 const read = async (p) => (await readFile(new URL(p, import.meta.url), 'utf8')).replace(/\r\n/g, '\n');
 
 test('the app Monitor gives the GPU load label its tooltip, translated', async () => {

@@ -3,7 +3,7 @@
 A model whose run config has no ``vision`` section reads no pictures. The person turns "Read pictures" on (it is on by default), presses
 Load, and this module does the one thing that is missing: it finds the picture file (or downloads it once, pinned, size and SHA-256
 checked) and works out the run config's ``vision`` section for the engine in use. It never looks at the model's own files, never prepares
-the pack or the draft layer again, never changes the data folder, and never writes the run config: the caller does (apps/host).
+the pack or the draft layer again, never changes the data folder, and never writes the run config: the caller does (app/host).
 
     pictures.fetch(config_path, ...)        the whole step; returns {"mmproj", "vision", "fetched", "note"}
 
@@ -13,7 +13,7 @@ the folder. The data folder is the one the model's own run config names (``--pac
 model's own folder, or one folder up from it (the layout of the Hugging Face repository).
 
 Only an explicit command reaches the network (strata_control/acquisition.py). With no internet the answer is the plain sentence of
-``PicturesError`` (code ``offline``) after one short probe, never a stalled bar. The apps/host caller then loads the model without
+``PicturesError`` (code ``offline``) after one short probe, never a stalled bar. The app/host caller then loads the model without
 pictures and says so.
 
 ``python -c "...; pictures.main(sys.argv[1:])"`` is how the app runs it: ``fetch --config FILE --engine-dir DIR --vision yes ...``
@@ -152,6 +152,7 @@ def places(data: Path | None, gguf: Path | None, named: str | None, projector: P
         out.append(models_root(data) / projector.name)
     if gguf is not None:
         out += [gguf.parent / projector.name, gguf.parent.parent / projector.name]
+        out += renamed_copies(gguf, projector)
     seen: set[str] = set()
     unique = []
     for p in out:
@@ -160,6 +161,21 @@ def places(data: Path | None, gguf: Path | None, named: str | None, projector: P
             seen.add(key)
             unique.append(p)
     return unique
+
+
+def renamed_copies(gguf: Path, projector: Projector) -> list[Path]:
+    """Files in the model's own folder (and the folder above it) under ANOTHER name that have exactly the pinned size: the person's copy of the same
+    picture file (q38-mmproj-BF16.gguf). Only a candidate: ``whole`` takes it only when its SHA-256 is the pinned one, so a reader of another model
+    (other size, or the same size and other bytes) is never used and the pinned file is downloaded as before. Costs a directory listing."""
+    out: list[Path] = []
+    for folder in (gguf.parent, gguf.parent.parent):
+        try:
+            for p in sorted(folder.iterdir()):
+                if p.suffix.lower() == ".gguf" and p.name.lower() != projector.name.lower() and p.is_file() and p.stat().st_size == projector.size:
+                    out.append(p)
+        except OSError:
+            continue
+    return out
 
 
 def _mark(path: Path) -> Path:
