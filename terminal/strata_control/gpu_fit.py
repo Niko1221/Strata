@@ -149,8 +149,53 @@ def memory_needed(variant: dict) -> float:
     return _round1(float(variant.get("experts_gb") or variant.get("ram_needed_gb") or 0) + DENSE_EXTRA_GB)
 
 
+_FIT_FLOAT_KEYS = ("vram_use_gb", "ram_use_gb", "spill_gb", "spare_ram_gb")
+_FIT_KEYS = set(_FIT_FLOAT_KEYS) | {"known"}
+_OPTIONS_KEYS = {"options", "recommended", "ignored", "cards", "vendor", "other_vendor_note"}
+
+
+def _is_num(v: object) -> bool:
+    return isinstance(v, (int, float)) and type(v) is not bool
+
+
+def _valid_fit_result(value: object) -> bool:
+    if not isinstance(value, dict) or set(value) != _FIT_KEYS:
+        return False
+    return all(_is_num(value[k]) for k in _FIT_FLOAT_KEYS) and type(value["known"]) is bool
+
+
+def _valid_options_result(value: object) -> bool:
+    if not isinstance(value, dict) or set(value) != _OPTIONS_KEYS:
+        return False
+    if not isinstance(value["options"], list) or not isinstance(value["ignored"], list):
+        return False
+    if type(value["cards"]) is not int or value["cards"] < 0:
+        return False
+    if value["recommended"] is not None and not isinstance(value["recommended"], str):
+        return False
+    if value["vendor"] is not None and not isinstance(value["vendor"], str):
+        return False
+    if value["other_vendor_note"] is not None and not isinstance(value["other_vendor_note"], str):
+        return False
+    return True
+
+
+def _native_fit(cmd: str, payload: dict, validate) -> dict[str, Any] | None:
+    import json
+    from strata_control import native_helpers
+    if not native_helpers.enabled("fit"):
+        return None
+    try:
+        return native_helpers.call("fit", cmd, [json.dumps(payload)], validate=validate)
+    except native_helpers.Unavailable:
+        return None
+
+
 def fit(memory_gb: float, ram_gb: float | None, vram_gb: float) -> dict[str, Any]:
     """native-fit.ts `fitOn` for a given memory need: where the weights go. Keys: vram_use_gb, ram_use_gb, spill_gb, spare_ram_gb, known."""
+    if (native := _native_fit("gpu-fit", {"memory_gb": float(memory_gb), "ram_gb": ram_gb, "vram_gb": float(vram_gb or 0)},
+                              _valid_fit_result)) is not None:
+        return native
     vram = float(vram_gb or 0)
     if not ram_gb or ram_gb <= 0:
         return {"vram_use_gb": 0.0, "ram_use_gb": 0.0, "spill_gb": 0.0, "spare_ram_gb": 0.0, "known": False}
@@ -258,6 +303,9 @@ def options(memory_gb: float, ram_gb: float | None, cards: list[dict], vendor: s
     (and all of them when there are more than two); then every other card alone. Exactly one option is recommended:
     the single largest card when the model fits it (with RAM); otherwise the split if it fits better (a smaller verdict or less SSD use);
     otherwise the single largest card again (nothing better to offer)."""
+    if (native := _native_fit("gpu-options", {"memory_gb": float(memory_gb), "ram_gb": ram_gb, "cards": cards, "vendor": vendor},
+                              _valid_options_result)) is not None:
+        return native
     vendor = vendor or pick_vendor(cards)
     mine, others = for_vendor(cards, vendor)
     keep, ignored = usable_cards(mine)
