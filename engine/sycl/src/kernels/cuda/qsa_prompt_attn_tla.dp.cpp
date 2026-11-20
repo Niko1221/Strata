@@ -9,6 +9,7 @@
 #include <cute/atom/copy_traits_xe_2d.hpp>
 #include <algorithm>
 #include <cfloat>
+#include <chrono>
 #include <cstdio>
 #ifdef printf
 #undef printf
@@ -264,6 +265,32 @@ bool qsa_tla_sparse_prefill(const float* q, const QsaAttnPools& p, const int32_t
         announced = true;
     }
     return true;
+}
+
+// A JIT build compiles each kernel when a process first launches it (one device module per kernel). The tiled path
+// picks its kernels by how much of the prefix fits the key workspace, so a new engine met a compile in the middle of
+// its first prompt to pass each threshold: on a B70 with 512-token chunks, +0.9 s at a 4K prompt and +1.4 s at 32K.
+void qsa_tla_prebuild(void* stream) {
+    auto* queue = strata::q_of(stream);
+    if (!battlemage_device(queue))
+        return;
+    using namespace tla_prompt_fp32;
+    const auto start = std::chrono::steady_clock::now();
+    try {
+        (void)sycl::get_kernel_bundle<sycl::bundle_state::executable>(
+            queue->get_context(), {queue->get_device()},
+            {sycl::get_kernel_id<PrepareQueries>(), sycl::get_kernel_id<PackSparseKeys>(),
+             sycl::get_kernel_id<ExpandPrefixValues>(), sycl::get_kernel_id<PrefixCore>(),
+             sycl::get_kernel_id<PrefixMerge>(), sycl::get_kernel_id<PrefixSubgroupMerge>(),
+             sycl::get_kernel_id<SparseCore<true>>(), sycl::get_kernel_id<SparseMerge<true>>(),
+             sycl::get_kernel_id<SparseCore<false>>(), sycl::get_kernel_id<SparseMerge<false>>()});
+    } catch (const sycl::exception& e) {
+        // The first launch reports the same failure; the prompt path keeps its fallbacks.
+        std::fprintf(stderr, "strata: SYCL TLA prompt attention kernels were not built ahead: %s\n", e.what());
+        return;
+    }
+    std::fprintf(stderr, "strata: SYCL TLA prompt attention kernels built in %.0f ms\n",
+                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
 }
 
 bool qsa_prompt_attn_tla_prefill(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,

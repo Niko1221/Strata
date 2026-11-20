@@ -1276,6 +1276,19 @@ uint64_t moe_set_bytes(size_t T, int64_t n_expert, bool fused) {
 }
 }
 
+static bool prompt_attn_old() {
+    static const bool old_attn = std::getenv("STRATA_PROMPT_ATTN_OLD") != nullptr;
+    return old_attn;
+}
+
+#ifdef STRATA_SYCL_TLA_ATTN
+// Supported INT8 KV sparse prefill prefers the FP32 TLA kernel on Battlemage.
+static bool tla_prompt_attn(const core::QsaState& st, const strata::kernels::QsaShapes& s, int64_t cap) {
+    return strata::kernels::qsa_use_tla() && !prompt_attn_old() && st.kv_int8 && !st.kv_q4 && !st.kv_hybrid &&
+           s.n_head == 24 && s.n_head_kv == 2 && s.head_dim == 256 && s.page_size == 4 && cap == 2051;
+}
+#endif
+
 bool Prefill::init(const core::WeightTable &wt, const core::ModelGeometry &g,
                    core::SessionState &ss, core::ExpertSource *src,
                    const core::ExpertCache *cache, const int32_t *host_res,
@@ -1520,6 +1533,11 @@ bool Prefill::init(const core::WeightTable &wt, const core::ModelGeometry &g,
               std::to_string(o.failed_bytes >> 20) + " MiB)";
         return false;
     }
+#ifdef STRATA_SYCL_TLA_ATTN
+    // A JIT build compiles the TLA kernels here, before a prompt reaches them.
+    if (tla_prompt_attn(ss.qsa_states[ss.qsa_primary()], core::qsa_shapes(g), m.cap))
+        strata::kernels::qsa_tla_prebuild(stream);
+#endif
     return true;
 }
 catch (sycl::exception const &exc) {
@@ -3417,11 +3435,10 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                                                                 (p0 + T + s.page_size - 1) / s.page_size, s, m.cs);
                     }
                     if (staged) pf_step("reading the prompt (batched, step sync): the K/V append at layer", l);
-                    static const bool old_attn = std::getenv("STRATA_PROMPT_ATTN_OLD") != nullptr;
+                    const bool old_attn = prompt_attn_old();
                     bool prepared_tla = false;
 #ifdef STRATA_SYCL_TLA_ATTN
-                    if (strata::kernels::qsa_use_tla() && !old_attn && st.kv_int8 && !st.kv_q4 && !st.kv_hybrid &&
-                        s.n_head == 24 && s.n_head_kv == 2 && s.head_dim == 256 && s.page_size == 4 && m.cap == 2051)
+                    if (tla_prompt_attn(st, s, m.cap))
                         prepared_tla = strata::kernels::qsa_tla_prepare_q(m.Qf, (const float*) wqn->data, m.q, T, p0, EPS,
                                                                        strata::kernels::rope_scaling(), m.cs);
 #endif

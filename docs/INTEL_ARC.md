@@ -127,6 +127,8 @@ installed. Strata pins it as a git submodule at `engine/third_party/sycl-tla`, a
 2. Build as above.
    - A portable or Battlemage build compiles TLA from the submodule; nothing else is needed.
    - Without the submodule the build leaves TLA out, and the configure step warns with the command above.
+   - An existing build folder with no header path of its own takes the submodule at the next configure. A folder configured when
+     TLA was opt-in holds `STRATA_SYCL_TLA_ATTN=OFF`; the next configure changes that to `AUTO` and says so.
    - To build from another checkout, add `-DSTRATA_SYCL_TLA_DIR=/path/to/sycl-tla` to the `cmake` line. With the Docker build, add
      `-e TLA_DIR=/work/sycl-tla` to the `docker run` line instead: the folder above the checkout is mounted at `/work`.
    - A source archive without git has no submodule. Unpack the archive of the commit next to the checkout and point the build at it

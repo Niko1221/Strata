@@ -41,4 +41,7 @@ bool qsa_tla_sparse_prefill(const float* q, const QsaAttnPools& pools, const int
                             int64_t cap, const QsaShapes& shapes, float* scratch, float* output, int64_t queries,
                             int64_t scratch_queries, void* stream, QsaTlaKeyWorkspace workspace,
                             const QsaTlaGate* gate);
+// Build the kernels qsa_tla_sparse_prefill can launch with a selection width of 2051 and four-cell pages,
+// for the stream's Battlemage device, before the first prompt needs them.
+void qsa_tla_prebuild(void* stream);
 } // namespace strata::kernels
