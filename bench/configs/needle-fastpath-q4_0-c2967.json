@@ -1,0 +1,40 @@
+{
+  "exe": "<strata-checkout>\\build-hip-port\\strata.exe",
+  "args": [
+    "--pack",
+    "<strata-data>\\packs\\swift-iq3_xxs",
+    "--native",
+    "<strata-data>\\models\\swift-IQ3_XXS\\Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+    "--ple-gguf",
+    "<strata-data>\\models\\swift-IQ3_XXS\\Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+    "--expert-profile",
+    "<strata-checkout>\\data\\expert-profile.bin",
+    "--spec",
+    "4",
+    "--spec-min-p",
+    "0.5",
+    "--mtp",
+    "<strata-data>\\mtp\\rt",
+    "--kv",
+    "q4_0",
+    "--max-context",
+    "133120",
+    "--prefill",
+    "auto",
+    "--expert-cache",
+    "2967"
+  ],
+  "cwd": "<strata-checkout>",
+  "tokenizer": "<strata-data>\\packs\\swift-iq3_xxs\\tokenizer",
+  "model_name": "swift-1.5-iq3_xxs",
+  "log": "<strata-data>\\bench\\2026-11-14-q4u32-fastpath\\logs\\a20-q4_0-c2967.engine.log",
+  "lib_dirs": [
+    "C:\\Program Files\\AMD\\ROCm\\7.2\\bin"
+  ],
+  "port": 7603,
+  "backend": "hip",
+  "env": {
+    "STRATA_PREFILL_CPU_SHARE": "0",
+    "STRATA_HIP_WMMA": "1"
+  }
+}
