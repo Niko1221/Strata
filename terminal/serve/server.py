@@ -2940,6 +2940,8 @@ class Vision:
     lines and writes each image's embeddings; results are cached by the image's hash, so a conversation that
     sends the same picture again (every turn, with most clients) encodes it once."""
 
+    cache_batches = 0   # requests inside batch(): their encoded files stay until they copied them
+
     @staticmethod
     def work_dir() -> Path:
         """#480: the directory for the encoder's files.  The engine reads the embeddings file named in a `GENI` line
@@ -2978,7 +2980,6 @@ class Vision:
         self.proc = None
         self.stopped = True
         self.lock = threading.RLock()
-        self.cache_batches = 0
         self.cache: dict[str, tuple[Path, int]] = {}
         # opt-in (the vision section's "elastic": true, with the config's "vram_elastic"): the encoder starts with the
         # first picture and stops after elastic_idle_s without one; while it runs, the engine's expert cache keeps
