@@ -6027,6 +6027,16 @@ __global__ void __launch_bounds__(256) native_down_lds_kernel(const unsigned lon
     const int e0 = grp_start[g], e1 = grp_start[g + 1];
     const int nrow = (int) L.n_embd;
     const block_q8_1* sh = (const block_q8_1*) sh_raw;
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__==1210
+    auto hint = [&](int p){
+        if(p < LDS_RB/16 && blockIdx.x*LDS_RB+16*p+16<=nrow) {
+            const auto* first=blob+L.down_off+((size_t)blockIdx.x*LDS_RB+16*p)*L.d_row;
+            for(int byte=tid*128;byte<16*L.d_row;byte+=256*128)
+                asm volatile("prefetch.global.L1 [%0];"::"l"(first+byte));
+        }
+    };
+    hint(0);
+#endif
     for (int c0 = e0; c0 < e1; c0 += LDS_NT) {
         const int cn = min(LDS_NT, e1 - c0);
         __syncthreads();
@@ -6036,6 +6046,9 @@ __global__ void __launch_bounds__(256) native_down_lds_kernel(const unsigned lon
         }
         __syncthreads();
         for (int p = 0; p < LDS_RB / 16; ++p) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__==1210
+            if(c0==e0)hint(p+1);
+#endif
             const int r0 = blockIdx.x * LDS_RB + p * 16 + warp, r1 = r0 + 8;
             if (r0 >= nrow) break;
             const bool two = r1 < nrow;
@@ -6105,6 +6118,16 @@ __global__ void __launch_bounds__(256) native_gu_fused_kernel(const unsigned lon
     auto wrow = [&](int i) -> const uint8_t* {   // i < 32: gate row r0 + i, else up row r0 + i - 32
         return blob + (i < 32 ? (size_t) 0 : L.up_off) + (size_t) (r0 + (i & 31)) * L.gu_row;
     };
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__==1210
+    auto hint = [&](int p){
+        if(p < 4) {
+            const auto* first=wrow(16*p);
+            for(int byte=tid*128;byte<16*L.gu_row;byte+=256*128)
+                asm volatile("prefetch.global.L1 [%0];"::"l"(first+byte));
+        }
+    };
+    hint(0);
+#endif
     for (int c0 = e0; c0 < e1; c0 += LDS_NT) {
         const int cn = min(LDS_NT, e1 - c0);
         __syncthreads();
@@ -6114,6 +6137,9 @@ __global__ void __launch_bounds__(256) native_gu_fused_kernel(const unsigned lon
         }
         __syncthreads();
         for (int p = 0; p < 4; ++p) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__==1210
+            if(c0==e0)hint(p+1);
+#endif
             const int i0 = p * 16 + warp, i1 = i0 + 8;
             const uint8_t* w0 = wrow(i0);
             const uint8_t* w1 = wrow(i1);
