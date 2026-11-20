@@ -26,6 +26,26 @@ push main to origin. (User decision 2026-11-20/21: full scope including publicat
 - Output: `Strata_0.7.0_x64-setup.exe`; copy to `H:/Strata/releases/v070-main-build/`.
 
 ## Verification
+- build attempt 1 failed: `tauri` not on PATH → `npm ci` in `app/host` and
+  `app/desktop` installed the pinned toolchain (@tauri-apps/cli 2.12.3).
+- build attempt 2 failed at verify-release: Node v26.10.0 vs required 24.22.3.
+  Rebuilt the host UI with the pinned Node 24.22.3
+  (`H:/Strata/evidence/upstream-sync-20261116/node-24.22.3-v1/node.exe`) and
+  the approved public assets + provenance receipt
+  (`H:/Strata/releases/stable-060-20261116-codex/inputs/{public-assets,lucide-sources/provenance.json}`).
+  `app/host/dist/release-build.json` now reports nodeVersion 24.22.3,
+  publicPackage true, publicAssetCommit 03f11e2d (verified).
+- build attempt 3 failed at verify-release: "Stale staged membership" for
+  `resources/control/strata_cli` — the Control bundle copied from the old
+  upstream-oneway worktree does not match the current 0.2.17-intaken source
+  membership. Copy-based staging is not viable. Re-staging Control from the
+  current source with `stage-control.py` (in progress at time of writing).
+- build attempt 3 follow-ups: re-staged Control from current source
+  (`stage-control.py`, exit 0); restored exact upstream bytes of the control-vector
+  LICENSE (`a0dc4225...`, the 0.2.17 three-way merge had CRLF-corrupted it) and the
+  libstrix NOTICE (`775926b...`); refreshed the staged notices README hash inventory.
+- `verify-release.mjs`: **exit 0** — "Verified the signed Q38 preview companion
+  (152 files); Release payload verified: Hakua 0.7.0, engine 0.6.3, Control 0.6.3".
 - build exit / installer SHA: (appended after run)
 - overwrite install: (appended after run)
 - tag / release / push: (appended after run)
