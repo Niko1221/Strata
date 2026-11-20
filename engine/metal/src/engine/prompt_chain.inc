@@ -73,6 +73,10 @@ bool Window::pc_setup(int C) {
     b.merge_half = !(merge_half && std::strcmp(merge_half, "0") == 0);
     const char* qsa_live = std::getenv("STRATA_METAL_PROMPT_QSA_LIVE");
     const bool live_scratch = qsa_live && std::strcmp(qsa_live, "1") == 0;
+    const char* qsa_slice = std::getenv("STRATA_METAL_PROMPT_QSA_SLICE");
+    const bool slice_qsa = qsa_slice && std::strcmp(qsa_slice, "1") == 0 && !b.k4 &&
+                           cx_->device_name().rfind("Apple M1", 0) == 0;
+    b.qsa_rows = slice_qsa ? std::min(C, 128) : C;
     // the expert GEMM tiles (prompt_chain's defaults): v3 gate/up 16,32,32,4 and down 16,64,32,2 with the M5 layout, else v2.
     // STRATA_PROMPT_GU / STRATA_PROMPT_DN = TM,TN,TK,SG override them (test tooling; TM = the plan's tile height, the same for both)
     b.gu3[0] = 16; b.gu3[1] = 32; b.gu3[2] = 32; b.gu3[3] = 4;
@@ -126,8 +130,12 @@ bool Window::pc_setup(int C) {
     b.qcur = F32(MT * G_QOUT);
     if (!live_scratch || b.k4) b.qcurh = F16(MT * G_QOUT);
     b.qidx = F32(MT * G_IH * G_ID); b.scores = F32(MT * MB);
-    b.qids = alloc(4 * MT * PC_QB); b.part = F32(MT * PC_QCHUNKS * G_QH * (G_QD + 2));
-    if (!live_scratch || !b.merge_half) b.XQ = F32(4 * MT * G_QOUT + MT * G_QOUT / 16);
+    b.qids = alloc(4 * MT * PC_QB);
+    b.part = F32((size_t) b.qsa_rows * PC_QCHUNKS * G_QH * (G_QD + 2));
+    if (!live_scratch || !b.merge_half) {
+        const size_t xq_values = (size_t) (live_scratch ? b.qsa_rows : C) * G_QOUT;
+        b.XQ = F32(4 * xq_values + xq_values / 16);
+    }
     b.xqh = F16(MT * G_QOUT);
     b.logits = F32(MT * nexp_); b.ids = alloc(4 * MT * TOPK); b.wts = F32(MT * TOPK);
     b.bcnt = alloc(4 * (size_t) nblk_max * nexp_); b.boff = alloc(4 * (size_t) nblk_max * nexp_);
@@ -298,9 +306,9 @@ bool Window::pc_chunk(const int64_t* tokens, int nT, int64_t pos0, std::string& 
         D(P_(b.lib, "dq_f16_" + std::to_string(t.type)), {mtl::Arg::B(W_, t.offset), mtl::Arg::B(out, out_off), mtl::Arg::V(a)},
           (n_in / pc_unit_of(t.type) + 63) / 64, n_out, 64);
     };
-    auto act16 = [&](const mtl::Buffer& x, const mtl::Buffer& xh, size_t n) {
+    auto act16 = [&](const mtl::Buffer& x, const mtl::Buffer& xh, size_t n, size_t dest_off = 0) {
         const uint32_t nn = (uint32_t) n;
-        D(P_(b.lib, "act_f16"), {mtl::Arg::B(x), mtl::Arg::B(xh), mtl::Arg::V(nn)}, (nn + 255) / 256, 1, 256);
+        D(P_(b.lib, "act_f16"), {mtl::Arg::B(x), mtl::Arg::B(xh, dest_off), mtl::Arg::V(nn)}, (nn + 255) / 256, 1, 256);
     };
     int cur_inj = 0;
     auto hc_read = [&](const std::string& pre, bool apply) {
@@ -409,21 +417,30 @@ bool Window::pc_chunk(const int64_t* tokens, int nT, int64_t pos0, std::string& 
             if (b.k4) {
                 const uint32_t nq = (uint32_t) nT * G_QOUT;
                 D(P_(b.lqsa, "qsa_q_f16"), {mtl::Arg::B(b.qcur), mtl::Arg::B(b.qcurh), mtl::Arg::V(nq)}, (nq + 255) / 256, 1, 256);
-                D(P_(b.lqsa, "qsa_attn_mm", mtl::Constants().b(7, true), "qsa_attn_mm#k4"),
-                  {mtl::Arg::B(b.qcurh), mtl::Arg::B(kq_[(size_t) qi]), mtl::Arg::B(vq_[(size_t) qi]), mtl::Arg::B(ksc_[(size_t) qi]),
-                   mtl::Arg::B(vsc_[(size_t) qi]), mtl::Arg::B(b.qids), mtl::Arg::B(b.part), mtl::Arg::V(a)},
-                  PC_QCHUNKS, G_QKV, 32, nT);
-            } else {
-                D(P_(b.lqsa, "qsa_attn"), {mtl::Arg::B(b.qcur), mtl::Arg::B(kq_[(size_t) qi]), mtl::Arg::B(vq_[(size_t) qi]),
-                                          mtl::Arg::B(ksc_[(size_t) qi]), mtl::Arg::B(vsc_[(size_t) qi]), mtl::Arg::B(b.qids),
-                                          mtl::Arg::B(b.part), mtl::Arg::V(a)},
-                  PC_QCHUNKS, G_QKV, 256, nT);
             }
-            if (b.merge_half) {   // the merge writes the fp16 operand directly (bitwise the same halves)
-                D(P_(b.lqsa, "qsa_merge_h"), {mtl::Arg::B(b.part), mtl::Arg::B(b.qfull), mtl::Arg::B(b.xqh), mtl::Arg::V(a)}, G_QH, nT, 256);
-            } else {
-                D(P_(b.lqsa, "qsa_merge"), {mtl::Arg::B(b.part), mtl::Arg::B(b.qfull), mtl::Arg::B(b.XQ), mtl::Arg::V(a)}, G_QH, nT, 256);
-                act16(b.XQ, b.xqh, (size_t) nT * G_QOUT);
+            const auto* attn = b.k4 ? P_(b.lqsa, "qsa_attn_mm", mtl::Constants().b(7, true), "qsa_attn_mm#k4")
+                                    : P_(b.lqsa, "qsa_attn");
+            const auto* merge = P_(b.lqsa, b.merge_half ? "qsa_merge_h" : "qsa_merge");
+            // Merge each slice before the next attention dispatch overwrites part. Keep KV positions global.
+            for (int row = 0; row < nT; row += b.qsa_rows) {
+                const int rows = std::min(nT - row, b.qsa_rows);
+                QsaArgs slice = a;
+                slice.pos0 += (uint32_t) row;
+                slice.n_tok = (uint32_t) rows;
+                const size_t out_off = sizeof(uint16_t) * (size_t) row * G_QOUT;
+                const size_t q_off = (b.k4 ? sizeof(uint16_t) : sizeof(float)) * (size_t) row * G_QOUT;
+                const size_t ids_off = sizeof(int32_t) * (size_t) row * PC_QB;
+                const size_t full_off = sizeof(float) * (size_t) row * G_QFULL;
+                D(attn, {mtl::Arg::B(b.k4 ? b.qcurh : b.qcur, q_off), mtl::Arg::B(kq_[(size_t) qi]), mtl::Arg::B(vq_[(size_t) qi]),
+                         mtl::Arg::B(ksc_[(size_t) qi]), mtl::Arg::B(vsc_[(size_t) qi]), mtl::Arg::B(b.qids, ids_off),
+                         mtl::Arg::B(b.part), mtl::Arg::V(slice)}, PC_QCHUNKS, G_QKV, b.k4 ? 32 : 256, rows);
+                if (b.merge_half) {
+                    D(merge, {mtl::Arg::B(b.part), mtl::Arg::B(b.qfull, full_off), mtl::Arg::B(b.xqh, out_off),
+                              mtl::Arg::V(slice)}, G_QH, rows, 256);
+                } else {
+                    D(merge, {mtl::Arg::B(b.part), mtl::Arg::B(b.qfull, full_off), mtl::Arg::B(b.XQ), mtl::Arg::V(slice)}, G_QH, rows, 256);
+                    act16(b.XQ, b.xqh, (size_t) rows * G_QOUT, out_off);
+                }
             }
             gemm(b.xqh, b.Wout, b.bo, nT, N, G_QOUT);
             ++qi;
