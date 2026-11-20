@@ -29282,6 +29282,39 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_PIPELINE_SNAP_RING",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/program/generate.cpp",
+     "line": 13214,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "ab1e298a33",
+   "first_date": "2026-11-20",
+   "since": null,
+   "last_commit": "ab1e298a33",
+   "last_date": "2026-11-20",
+   "status": "opt-in",
+   "owner": "program",
+   "note": "#3944, opt-in (off by default): with --pipeline-windows, a front stage's GDN snapshot is a ring of state buffers that are switched instead of copied; the same bits as the copy.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_PIPELINE_SPEC_DEPTH",
    "backends": [
     "cuda-hip"
