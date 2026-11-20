@@ -24,7 +24,7 @@ SEED = 7
 CORPUS_REV = "v0.2.12"
 ANSWER_ROOM = 1024  # tokens left for question and answer
 REPO = Path(__file__).resolve().parents[2]
-CHARS_PER_TOKEN = 3.3  # pinned; Task 9 measures it on the real run
+CHARS_PER_TOKEN = 3.3  # measured 2026-11-20, Qwen3.8-Flash-Next, 0.1.60: 3.20-3.67 per ladder step; all steps within 10 %, top step fills 97 % of 255K
 LADDER_QUESTION = "List every room mentioned in the document with its access code, one line per room, as 'room: code'."
 WORDS = ("COBALT", "AMBER", "INDIGO", "SCARLET", "JADE", "IVORY", "COPPER", "VIOLET",
          "SILVER", "CRIMSON", "TEAL", "OCHRE", "MAROON", "AZURE", "SAFFRON", "EBONY")
