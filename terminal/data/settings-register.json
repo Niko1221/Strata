@@ -3079,6 +3079,39 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_CKPT_PARK_REUSE",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/program/generate.cpp",
+     "line": 13710,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "265abcbed3",
+   "first_date": "2026-11-20",
+   "since": null,
+   "last_commit": "265abcbed3",
+   "last_date": "2026-11-20",
+   "status": "opt-in",
+   "owner": "program",
+   "note": "#3945, opt-in (off by default): a park moves the checkpoint buffers it already holds (a superseded parked copy, or the outgoing chain) instead of copying them; the parked image is the same.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_CKPT_POOL",
    "backends": [
     "cuda-hip"
@@ -3177,6 +3210,39 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_CKPT_RECENT",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/program/generate.cpp",
+     "line": 4610,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "0a03f6e1fd",
+   "first_date": "2026-11-20",
+   "since": null,
+   "last_commit": "0a03f6e1fd",
+   "last_date": "2026-11-20",
+   "status": "opt-in",
+   "owner": "program",
+   "note": "#3945: --prompt-cache-recent K from the environment, for launchers that pass only the environment (with --prompt-cache-uniform).",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_CKPT_REREAD",
    "backends": [
     "cuda-hip",
@@ -3263,6 +3329,72 @@
    "status": "opt-in",
    "owner": "program",
    "note": "[auto] documented for users (docs/BATCHING.md:119)",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_CKPT_TIMING",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/program/generate.cpp",
+     "line": 13717,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "265abcbed3",
+   "first_date": "2026-11-20",
+   "since": null,
+   "last_commit": "265abcbed3",
+   "last_date": "2026-11-20",
+   "status": "research",
+   "owner": "program",
+   "note": "#3945, diagnostic (prints only): one line per request with the park's phases and the checkpoints' capture and eviction times.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_CKPT_UNIFORM",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/program/generate.cpp",
+     "line": 4606,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "0a03f6e1fd",
+   "first_date": "2026-11-20",
+   "since": null,
+   "last_commit": "0a03f6e1fd",
+   "last_date": "2026-11-20",
+   "status": "opt-in",
+   "owner": "program",
+   "note": "#3945: --prompt-cache-uniform from the environment: N >= 2 is the flag with --prompt-cache N.",
    "retire_after": "",
    "retired_in": ""
   },
