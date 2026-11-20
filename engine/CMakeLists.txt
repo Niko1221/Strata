@@ -10,8 +10,7 @@
 # building for a pre-Ampere arch would produce a binary that runs and is wrong about its own performance, which is
 # the worst of both outcomes.
 cmake_minimum_required(VERSION 3.24)
-project(strata VERSION 0.1.62 LANGUAGES CXX)
-project(strata VERSION 0.6.3 LANGUAGES CXX)
+project(strata VERSION 0.1.63 LANGUAGES CXX)
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/strata_geometry.cmake)   # -DSTRATA_GEOMETRY=<name>: the model shape the kernels are compiled for (default flash_next, no flag added)
 # The build is cut by backend (cleanup 5.4): each file below only DEFINES macros (strata_<part>()), which run here, in this scope, at the place their
 # block used to be - so this file reads in the order the old single CMakeLists.txt evaluated.
@@ -20,12 +19,6 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/backends/cpu.cmake)         # strata_k
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/backends/quant.cmake)       # strata_quant: the Strata quant layer (no ggml) and its oracle tests
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/backends/cuda.cmake)        # NVIDIA: toolchain, Strata's prompt kernels (strata_pf_own)
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/backends/hip.cmake)         # AMD: gfx906 compat, Strata's prompt kernels on HIP
-# Fork-only dense Q38 CUDA engine (opt-in). Declared before the GPU engine
-# so the strata_q38 target exists when the family switch links it.
-option(STRATA_ENABLE_Q38 "Build the fork's dense Q38 CUDA engine" OFF)
-if(STRATA_ENABLE_Q38 AND STRATA_ENABLE_CUDA)
-  add_subdirectory(q38)
-endif()
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/strata_gpu_engine.cmake)    # the GPU engine both of them build
 # EXPERIMENTAL: the Intel Arc engine, the SYCL port in sycl/ (PR #423; icpx + oneMKL, docs/INTEL_ARC.md). It is its
 # own project that takes the unported sources from src/; with this on, nothing below is configured.
@@ -289,30 +282,6 @@ if(STRATA_BUILD_TESTS)
   add_executable(batch_telemetry_test src/core/batch_telemetry_test.cpp)
   target_include_directories(batch_telemetry_test PRIVATE include)
   add_test(NAME batch_telemetry_test COMMAND batch_telemetry_test)
-  # Qwen3.6 mapped expert pack: byte identity, checksum, partial publish. No GPU and no full arena.
-  add_executable(q36_kv_layout_test tests/qwen35/q36_kv_layout_test.cpp)
-  target_include_directories(q36_kv_layout_test PRIVATE include)
-  add_test(NAME q36_kv_layout_test COMMAND q36_kv_layout_test)
-    add_executable(q36_phase_trace_test tests/qwen35/q36_phase_trace_test.cpp)
-    target_include_directories(q36_phase_trace_test PRIVATE include)
-    target_link_libraries(q36_phase_trace_test PRIVATE Threads::Threads)
-    add_test(NAME q36_phase_trace_test COMMAND q36_phase_trace_test)
-  add_executable(q36_expert_store_test tests/qwen35/q36_expert_store_test.cpp src/qwen35/expert_store.cpp)
-  target_include_directories(q36_expert_store_test PRIVATE include)
-  target_link_libraries(q36_expert_store_test PRIVATE Threads::Threads)
-  add_test(NAME q36_expert_store_test COMMAND q36_expert_store_test)
-  # T05-B host pin-pool lifetime only. No CUDA, no engine wire-up, no speed claim.
-  add_executable(q36_transfer_lifetime_test tests/qwen35/q36_transfer_lifetime_test.cpp src/qwen35/expert_store.cpp)
-  target_include_directories(q36_transfer_lifetime_test PRIVATE include)
-  if(WIN32)
-    target_link_libraries(q36_expert_store_test PRIVATE bcrypt crypt32)
-    target_link_libraries(q36_transfer_lifetime_test PRIVATE bcrypt crypt32)
-  endif()
-  add_test(NAME q36_transfer_lifetime_test COMMAND q36_transfer_lifetime_test)
-  add_executable(q36_bounded_experts_test tests/qwen35/q36_bounded_experts_test.cpp)
-  target_include_directories(q36_bounded_experts_test PRIVATE include)
-  target_link_libraries(q36_bounded_experts_test PRIVATE Threads::Threads)
-  add_test(NAME q36_bounded_experts_test COMMAND q36_bounded_experts_test)
   # #5697: an evicted parked conversation gives its RAM back to the system (glibc's heap; RSS before and after)
   add_executable(conversation_heap_test src/core/conversation_heap_test.cpp)
   target_include_directories(conversation_heap_test PRIVATE include)
@@ -422,6 +391,18 @@ if(STRATA_BUILD_TESTS)
   add_executable(prefill_plan_test tests/program/prefill_plan_test.cpp)
   target_include_directories(prefill_plan_test PRIVATE include)
   add_test(NAME prefill_plan_test COMMAND prefill_plan_test)
+  # the Qwen3.6 hybrid placement's slots and VRAM need, with the fallback without the staging pair (#5533 #5285; header-only, no GPU)
+  add_executable(q36_hybrid_fit_test tests/program/q36_hybrid_fit_test.cpp)
+  target_include_directories(q36_hybrid_fit_test PRIVATE include)
+  add_test(NAME q36_hybrid_fit_test COMMAND q36_hybrid_fit_test)
+  # #5841: the MTP draft head subset buffer holds the wider of the head row and the Q4_0 row (header-only, no GPU)
+  add_executable(mtp_head_rule_test tests/core/mtp_head_rule_test.cpp)
+  target_include_directories(mtp_head_rule_test PRIVATE include)
+  add_test(NAME mtp_head_rule_test COMMAND mtp_head_rule_test)
+  # #5822: the batch indexer append names the predicate that failed, with its values (header-only, no GPU)
+  add_executable(qsa_batch_check_test tests/prefill/qsa_batch_check_test.cpp)
+  target_include_directories(qsa_batch_check_test PRIVATE include)
+  add_test(NAME qsa_batch_check_test COMMAND qsa_batch_check_test)
 
   # #5715: strata-q36's one-session context check (the reporter's 12 GB card from its log): header-only, no GPU
   add_executable(q36_context_fit_test tests/program/q36_context_fit_test.cpp)
@@ -477,6 +458,10 @@ if(STRATA_BUILD_TESTS)
   add_executable(stream_floor_rule_test tests/prefill/stream_floor_rule_test.cpp)
   target_include_directories(stream_floor_rule_test PRIVATE include)
   add_test(NAME stream_floor_rule_test COMMAND stream_floor_rule_test)
+  # which experts the layer-major prompt walk counts and streams: the model's, not the compiled shape's (a 256-expert Coder pack on the 512-expert build, #5104 #6018; header-only, no GPU)
+  add_executable(lm_walk_rule_test tests/prefill/lm_walk_rule_test.cpp)
+  target_include_directories(lm_walk_rule_test PRIVATE include)
+  add_test(NAME lm_walk_rule_test COMMAND lm_walk_rule_test)
 
   # whether the staged walk's group entry also takes a layer with no MMQ tile that the fused kernels cover (research switch STRATA_PF_STAGED_FO=1, off by default; header-only, no GPU)
   add_executable(staged_fo_rule_test tests/prefill/staged_fo_rule_test.cpp)
@@ -497,6 +482,11 @@ if(STRATA_BUILD_TESTS)
   add_executable(own_only_line_test tests/prefill/own_only_line_test.cpp)
   target_include_directories(own_only_line_test PRIVATE include)
   add_test(NAME own_only_line_test COMMAND own_only_line_test)
+
+  # #6269: the start-up line for a STRATA_DENSE_MMQ that is set on in an engine without MMQ (header-only, no GPU)
+  add_executable(dense_mmq_notice_test tests/prefill/dense_mmq_notice_test.cpp)
+  target_include_directories(dense_mmq_notice_test PRIVATE include)
+  add_test(NAME dense_mmq_notice_test COMMAND dense_mmq_notice_test)
 
   # the opt-in fused-kernel switches a build without MMQ turns on by default, per backend (header-only, no GPU)
   add_executable(own_only_switches_test tests/prefill/own_only_switches_test.cpp)
@@ -532,6 +522,11 @@ if(STRATA_BUILD_TESTS)
   target_include_directories(fused_tq_hip_test PRIVATE include)
   add_test(NAME fused_tq_hip_test COMMAND fused_tq_hip_test)
 
+  # GPUOS readiness-tier and row-count MMQ expert sorting (src/prefill/mmq_resident_sort.hpp): header-only, no GPU
+  add_executable(mmq_resident_sort_test tests/prefill/mmq_resident_sort_test.cpp)
+  target_include_directories(mmq_resident_sort_test PRIVATE include)
+  add_test(NAME mmq_resident_sort_test COMMAND mmq_resident_sort_test)
+
   # STRATA_SELECT_TWO_PASS: the bound between the single-pass and 3xTF32 QSA block scores and the cut-off rule that
   # keeps the selection (header-only, no GPU)
   add_executable(qsa_two_pass_test tests/prefill/qsa_two_pass_test.cpp)
@@ -542,7 +537,7 @@ if(STRATA_BUILD_TESTS)
   target_include_directories(qsa_two_pass_status_test PRIVATE include)
   add_test(NAME qsa_two_pass_status_test COMMAND qsa_two_pass_status_test
            "${CMAKE_CURRENT_BINARY_DIR}/qsa_two_pass_status_test.log")
-
+           
   # STRATA_PREFILL_ROUTED_STREAM: the prompt stream's issuer walk and route gate, on a simulated link and consumer
   # (header-only, no GPU)
   add_executable(routed_stream_test tests/prefill/routed_stream_test.cpp)
@@ -584,6 +579,23 @@ if(STRATA_BUILD_TESTS)
   add_executable(host_limits_test tests/platform/host_limits_test.cpp)
   target_include_directories(host_limits_test PRIVATE include)
   add_test(NAME host_limits_test COMMAND host_limits_test)
+
+  # the opt-out from the kernel's automatic NUMA balancing (KFD userptr queue evictions, #4866): header-only, no GPU
+  add_executable(numa_balancing_test tests/platform/numa_balancing_test.cpp)
+  target_include_directories(numa_balancing_test PRIVATE include)
+  add_test(NAME numa_balancing_test COMMAND numa_balancing_test)
+
+  # #4431: a per-card answer (the arch of each stage of a mixed gfx11 + gfx12 split) is asked once per card (header-only, no GPU); --legacy is the process-wide form and must fail
+  add_executable(per_device_flag_test tests/core/per_device_flag_test.cpp)
+  target_include_directories(per_device_flag_test PRIVATE include)
+  add_test(NAME per_device_flag_test COMMAND per_device_flag_test)
+  add_test(NAME per_device_flag_test_legacy COMMAND per_device_flag_test --legacy)
+  set_tests_properties(per_device_flag_test_legacy PROPERTIES WILL_FAIL TRUE)
+
+  # #5672, #5738: --adapt-async 1 and STRATA_ADAPT_OVERLAP=1 are refused on Windows HIP unless STRATA_WIN_HIP_RISKY=1 (the decision and the two lines; header-only, no GPU)
+  add_executable(win_hip_risky_test tests/core/win_hip_risky_test.cpp)
+  target_include_directories(win_hip_risky_test PRIVATE include)
+  add_test(NAME win_hip_risky_test COMMAND win_hip_risky_test)
   # #4733: an engine started at Low I/O priority goes back to Normal (Windows; else skips)
   add_executable(io_priority_test tests/platform/io_priority_test.cpp src/platform/io_priority.cpp)
   target_include_directories(io_priority_test PRIVATE include)
@@ -769,7 +781,7 @@ if(STRATA_NATIVE_EXPERTS)
     set_tests_properties(native_dense_types_parity PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
   endif()
   # #296's real-weight checks (OrcaRouter Q4_K_S files; docs/ORCA_Q4_K_S.md) - test programs, not part of a release
-  if(STRATA_ENABLE_CUDA AND STRATA_BUILD_TESTS)
+  if((STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP) AND STRATA_BUILD_TESTS)
     add_executable(ple_q5_parity src/kernels/ple_q5_parity.cpp)
     target_link_libraries(ple_q5_parity PRIVATE strata_kernels strata_artifact ggml-base ${_strata_gpu_runtime_target})
     add_executable(q5_projection_parity src/kernels/q5_projection_parity.cpp)
@@ -792,7 +804,6 @@ if(STRATA_ENABLE_CUDA AND STRATA_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_
 endif()
 
 strata_cpu_tests()
-strata_cpu_dsv41_host_bench() # retained fork extension; inactive unless explicitly requested
 
 # CUDA release kernels must not spill or keep a per-thread array in local memory: every access there is a round trip
 # to device memory in the hottest loops the engine has, and nothing on the build machine says so without -Xptxas -v

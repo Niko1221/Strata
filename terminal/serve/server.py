@@ -58,7 +58,7 @@ from http.client import HTTPException
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Iterator, Protocol
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -9018,11 +9018,14 @@ def make_handler(svc: Service):
                 for k in ("started", "first_token"):
                     s.pop(k, None)
                 self._json(200, s)
-            elif path in ("/v1/models", "/models"):
+            elif path in ("/v1/models", "/models") or path.startswith(("/v1/models/", "/models/")):
                 if self._authorized():
                     loaded = svc.loaded()
+                    ctx = svc.reported_ctx()
+                    # the context size under the names other APIs use too (vLLM's max_model_len, OpenRouter's
+                    # context_length), so a client that sizes its window from /v1/models reads it
                     model = {"id": svc.model, "object": "model", "status": {"value": "loaded"},
-                             "meta": {"n_ctx": svc.reported_ctx()},
+                             "max_model_len": ctx, "context_length": ctx, "max_context_length": ctx, "meta": {"n_ctx": ctx},
                              "architecture": {"input_modalities": ["text", "image"] if svc.vision is not None else ["text"],
                                               "output_modalities": ["text"]}}
                     if not loaded and (svc.idle_unload_s or getattr(svc.engine, "unloaded", False)):
@@ -9035,7 +9038,18 @@ def make_handler(svc: Service):
                     if svc.images is not None:            # the image model: POST /v1/images/generations
                         data.append({"id": svc.images.model, "object": "model", "status": {"value": "loaded"},
                                      "architecture": {"input_modalities": ["text"], "output_modalities": ["image"]}})
-                    self._json(200, {"object": "list", "data": data})
+                    if path in ("/v1/models", "/models"):
+                        self._json(200, {"object": "list", "data": data})
+                    else:                                 # #5460: GET /v1/models/{model_id} (OpenAI model retrieve)
+                        head = "/v1/models/" if path.startswith("/v1/models/") else "/models/"
+                        asked = unquote(path[len(head):])
+                        item = next((m for m in data if m["id"] == asked), None)
+                        if item is None:
+                            self._json(404, {"error": {"message": f"The model '{asked}' does not exist",
+                                                       "type": "invalid_request_error", "param": "model",
+                                                       "code": "model_not_found"}})
+                        else:
+                            self._json(200, item)
             elif path == "/props":
                 if self._authorized():
                     self._props()

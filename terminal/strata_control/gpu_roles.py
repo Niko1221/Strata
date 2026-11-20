@@ -7,7 +7,7 @@ A card has one of three roles:
 
 The engine takes the cards in stage order (`"gpu": [helper, ..., main]` with `"gpu_order": "as_given"`), so the Main card is the LAST one. This
 module turns roles into that list (and back), recommends roles, and words the few warnings a person could not work out alone.
-The app has the same rules in apps/host/src/lib/gpu-roles.ts; both run tests/data/gpu_roles_vectors.json.
+The app has the same rules in app/host/src/lib/gpu-roles.ts; both run tests/data/gpu_roles_vectors.json.
 
 Pure functions, no I/O.
 """
@@ -374,9 +374,15 @@ def sentence(cards: list[dict], vendor: str | None = None) -> str:
         return f"Strata will use your {short_name(m)}."
     helpers = [byi[i] for i, r in rec["roles"].items() if r == "helper"]
     why = {"same": "the cards are alike", "memory": "it has more memory", "faster": "it is faster", "only": "it is the only card"}[rec["why"]]
-    s = f"{short_name(m)} is Main: {why}."
-    if helpers:
-        s += " " + " and ".join(short_name(h) for h in helpers) + (" help." if len(helpers) > 1 else " helps.")
+    if helpers and rec["why"] == "same" and all(short_name(h) == short_name(m) for h in helpers):
+        # 0217 item 12: "RTX A4000 is Main: the cards are alike. RTX A4000 helps." named one card three times and told nothing; the cards are the same, so say that
+        n = len(helpers) + 1
+        s = (f"Both cards are {short_name(m)}, so they are alike: one is Main and the other helps." if n == 2 else
+             f"All {n} cards are {short_name(m)}, so they are alike: one is Main and the others help.")
+    else:
+        s = f"{short_name(m)} is Main: {why}."
+        if helpers:
+            s += " " + " and ".join(short_name(h) for h in helpers) + (" help." if len(helpers) > 1 else " helps.")
     for i, r in rec["roles"].items():
         if r == "off":
             code = rec["reasons"][i]
