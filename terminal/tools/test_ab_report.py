@@ -209,6 +209,17 @@ class Suites(unittest.TestCase):
         self.assertIn("richtig 5/6", h)
         self.assertNotIn('class="fast"', " ".join(worse))  # no faster highlight on a worse version
 
+    def test_worse_compares_the_share_not_the_count(self):
+        tasks = ["math1", "math2", "math3", "math4", "read1", "read2"]
+        full = [srow("think", f"think.{t}", 1, True) for t in tasks]
+        short = lambda oks: [srow("think", f"think.{t}", 1, ok) for t, ok in zip(tasks, oks)]  # noqa: E731
+        h = build_html(suite_results(["think"], [suite_arm("0.1.59", full), suite_arm("0.1.60", short([True] * 3))]))
+        self.assertIn("richtig 3/3", h)
+        self.assertNotIn("weniger richtig", h)  # fewer rounds, same share
+        h = build_html(suite_results(["think"], [suite_arm("0.1.59", full), suite_arm("0.1.60", short([True, True, False]))]))
+        self.assertIn("richtig 2/3", h)
+        self.assertIn("weniger richtig als v0.1.59", h)
+
     def test_faster_is_highlighted_only_among_equal_or_better(self):
         a = [srow("think", "think.math1", 1, True, decode=70.0)]
         b = [srow("think", "think.math1", 1, True, decode=90.0)]

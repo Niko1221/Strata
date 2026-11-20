@@ -172,7 +172,7 @@ python terminal/tools/ab_engine.py --model-path /path/to/model.gguf --engines 0.
   rights, in an empty temporary folder with a 20 second limit and no environment variables except `PATH` and `SYSTEMROOT`.
   This is not isolation: the code can still read and write elsewhere and reach the network. Without the flag no model code runs.
 
-The report gets one section per suite, with `richtig x/y` (correct answers) per version. A version with fewer correct answers than
+The report gets one section per suite, with `richtig x/y` (correct answers) per version. A version with a lower share of correct answers than
 the best one is marked red and its speeds are never highlighted as faster. A version that served a smaller context is marked
 `anderer Kontext`. With `ladder`, `report-ladder.png` is a second card with the two charts. The time is an estimate, not measured: on an RTX
 3090, with the model of the versions comparison and context 256K, all three suites take about 20 to 25 minutes per version and

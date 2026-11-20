@@ -209,13 +209,13 @@ def _tags(arms: list[dict], suite: str) -> list[str]:
 
 
 def _worse(arms: list[dict], suite: str) -> dict[str, str]:
-    """Version -> best version, for every version with fewer correct answers than the best one of this suite."""
+    """Version -> best version, for every version with a lower share of correct answers than the best one of this suite."""
     counts = [(a["version"], *_correct(a, suite)) for a in arms]
     counts = [c for c in counts if c[2]]
     if not counts:
         return {}
-    best = max(counts, key=lambda c: c[1])  # the first of the best ones
-    return {v: best[0] for v, ok, _n in counts if ok < best[1]}
+    best = max(counts, key=lambda c: c[1] / c[2])  # the first of the best ones; the share, as versions may have run different numbers of rounds
+    return {v: best[0] for v, ok, n in counts if ok * best[2] < best[1] * n}
 
 
 def _notes(results: dict, arm: dict, worse: dict[str, str]) -> list[str]:
