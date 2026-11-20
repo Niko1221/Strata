@@ -120,7 +120,7 @@ screens; leave out what you do not care about.
 | `CONTEXT` | how much text it remembers at once: `32k`, `64k`, `128k`, `256k` or a number | the largest that fits |
 | `PARALLEL` | requests answered at the same time, 1 to 8 | fitted to the card |
 | `VISION` | `off`, `on` (the model reads pictures), `gpu`, `cpu`; the picture-reader file (about 0.9 GB) is downloaded with the model | `off` |
-| `KV` | conversation memory format: `int8`, `q4_0` (half the memory), `k8v4`, `fp16` | `int8` |
+| `KV` | conversation memory format: `int8`, `q4_0` (half the memory), `q4u32`, `k8v4`, `fp16`. Left out: `int8` above 8K of context, `fp16` up to 8K (on RDNA4 with this tree's engine: `q4u32` above 8K) | the engine's choice |
 | `DRAFTING` | which drafter guesses ahead: `auto`, `mtp`, `dflash2` or `off` | `auto` |
 | `DRAFT_VOCAB` | which tokens the drafter may guess: `cjk` (with Chinese, Japanese and Korean), `en`, `cyrillic`, `fr` or `latin` (each with English and code) | picked from the container's languages, else `cjk` |
 | `GPU` / `GPUS` | card numbers as the monitor lists them, `0` or `0,1`; empty or `all` = the engine's choice. Changing it later makes the model's run settings again (the files stay) | all that fit |

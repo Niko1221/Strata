@@ -7,6 +7,8 @@ This page is built by `tools/capability_table.py` from [docs/data/capabilities.j
 - **Measured**: where numbers for that combination are published. Empty means none are published; it does not mean the combination fails.
 
 App and Terminal 0.2.17, Control and engines 0.1.63; these packages stay at 0.1.59: DeepSeek engines linux-x86_64-cuda-cuda13, linux-x86_64-hip-rx9070, macos-arm64-metal, windows-x86_64-cuda-cuda13, windows-x86_64-hip-rdna3. App, Control and engine versions differ on purpose.
+In this tree the engine carries the suffix that names its variant: 0.1.63-q4u32 is the 0.1.63 source version
+plus the measured `q4u32` KV default.
 
 ## At a glance
 

@@ -156,7 +156,8 @@ source-checkout option for developers, not a way to start the released app.
   and it reserves each GPU address range while the arena is pinned. When a range's GPU address still covers memory in use,
   that range and the ones after it stay unpinned and the log says so (`strata pin: ... (#3431)`); that start reads prompts more
   slowly but correctly. `STRATA_STACK_ISOLATE=0` runs the engine as before, without the reservation below 1 TiB.
-- **WMMA prompt attention** is opt-in on Windows (`STRATA_HIP_WMMA=1`); it is the default on gfx12 on Linux.
+- **WMMA prompt attention** is on by default on gfx12 (Windows and Linux); `STRATA_HIP_WMMA=0` turns it off.
+  On gfx11 it is opt-in (`STRATA_HIP_WMMA=1`; the integrated gfx1103/gfx1151 cards take it by default).
 
 **Reporting a Windows AMD run.** Give your card, the driver version (AMD Software > System), the output of the two commands
 below (from the Strata folder, after `set PATH=%CD%\engine\rocm\bin;%PATH%`), the end of `strata-<model>.log`, and the speed
@@ -170,6 +171,9 @@ engine\strata-device.exe --selftest
 **Building it yourself.** `terminal\tools\hip\build_windows.bat` (Visual Studio 2022 Build Tools with the C++ workload, Python, git; no
 admin, no AMD GPU) installs ROCm from AMD's TheRock wheels into `.rocm-win`, builds, and packages
 `dist\strata-windows-x64-hip.zip`. `START-HERE.bat --backend hip --prebuilt dist\` installs that one.
+`START-HERE.bat --setup --engine-dir <build folder>` installs the program straight from a build folder
+(`build-hip-win\strata.exe` or any folder with `strata.exe`), without packaging a zip - the way to run a feature
+that only exists in a build of the source, such as `--kv q4lm8v` until it is released.
 `terminal\tools\hip\build_windows.bat tests` also builds the HIP tests. `STRATA_HIP_ARCHS` picks other architectures; for the RX 6000
 package use `STRATA_HIP_ARCHS="gfx1030;gfx1031"` and `package_engine.py --variant rdna2`.
 
@@ -268,7 +272,7 @@ machine then swaps or stalls, raise it. Re-check after a ROCm update.
 | `STRATA_HIP_ADAPT_KERNEL_COPY=1` | Off | Adaptive-tier swaps copied by a kernel instead of the SDMA engine; a workaround for a gfx1030 hang with MMQ prompts and adaptive swaps (untested by the reporter) |
 
 **Why `STRATA_SH_STREAM` goes both ways.** The fork has to hide something. With experts on the CPU in the window, the shared expert forks
-off only after the doorbell is published (`STRATA_SH_FORK_LATE`, `engine/src/core/verify.cpp`), so it runs while the GPU would otherwise wait for the
+off only after the doorbell is published (`STRATA_SH_FORK_LATE`, `engine/engine/src/core/verify.cpp`), so it runs while the GPU would otherwise wait for the
 CPU pool. On a 16 GB card whose cache holds only part of the experts that wait is about half of a verify window (one RX 6900 XT under Linux,
 4,859 slots, `STRATA_DECODE_TIMING=1`: GPU-reach wait 20.7 of 39.1 ms per window), which is where #1272's gain comes from. When every routed
 expert is on the GPU there is no wait to fill, and the fork is two cross-stream event dependencies per layer and nothing else: 7fd67dd measured
@@ -294,7 +298,7 @@ them in the server config's `env`, or in the shell.
 
 | Switch | Cards | Default | Effect |
 | --- | --- | --- | --- |
-| `STRATA_HIP_WMMA` | gfx12; gfx11 on request | gfx12 Linux: on with int8 KV. Windows and gfx11: `=1` | QSA prompt attention on the matrix cores. `=0` off; `=auto` takes it only for batches of `STRATA_HIP_WMMA_MIN_Q` (64) or more queries. Not bitwise: greedy text can differ from about token 50 on. |
+| `STRATA_HIP_WMMA` | gfx12; gfx11 on request | gfx12 (Windows and Linux): on. gfx11: `=1` | QSA prompt attention on the matrix cores. `=0` off; `=auto` takes it only for batches of `STRATA_HIP_WMMA_MIN_Q` (64) or more queries. Not bitwise: greedy text can differ from about token 50 on. |
 | `STRATA_PF_FUSED` | gfx12 native IQ packs; integrated gfx11 | gfx12 Linux: on for IQ3_S, IQ3_XXS and Q2_0 gate/up. Integrated gfx11 on Linux (Radeon 780M / 760M gfx1103, 890M / 880M gfx1150, Strix Halo gfx1151): on. IQ2 formats on gfx12, discrete gfx11 and Windows (the Strix Halo on Windows has it in its own set): `=1` | Prompt experts on int8 matrix-core kernels instead of MMQ. `=0` keeps MMQ in a build that has it (the release builds of 0.2.16 and later have none: `=0` there runs the prompt experts on the native int8 kernels, #6251); `STRATA_PF_FUSED_NATIVE=0` keeps MMQ with the flag set. Radeon 780M, Q2_0: prompt x1.30 at 2K tokens and x1.13 at 8K, no change at 300 and 1,000 tokens; forced-token KL against the FP16 path (24 prompts of 2,048 tokens, 64 tokens each) 0.0060 against 0.0054 for MMQ (ratio 1.10, 95% CI 0.93 to 1.37). The 890M / 880M and Strix Halo take it by the same rule and were not run. |
 | `STRATA_SCORES_THREAD` | gfx12, gfx1100 | gfx12: on; gfx1100: `=1` | Exact long-prompt QSA scorer (below). `=0` off. |
 | `STRATA_SELECT_WMMA=1` | gfx12 | Off | Matrix-core block scorer for the QSA top-k; selects slightly differently |
@@ -446,7 +450,7 @@ The engine prints one line at start-up that names what it set.
 
 | Switch | What it does |
 | --- | --- |
-| `STRATA_HIP_WMMA=1` | Prompt attention on the matrix cores (needs `--kv int8`) |
+| `STRATA_HIP_WMMA=1` | Prompt attention on the matrix cores. It reads the KV pool in the form it has: 8-bit, 16-bit or the 4-bit grid `q4u32` (the 4-bit path needs this switch - without it the 4-bit pool runs on the decode kernel, which is 2.5x slower) |
 | `STRATA_PF_GEMM=1` | The prompt's FP16 projections on the 128 x 256 WMMA GEMM |
 | `STRATA_PA_FAST=1` | Prompt attention with single FP16 q and p |
 | `STRATA_SELECT_WMMA=1` | The block scorer on the matrix cores |
@@ -524,7 +528,7 @@ share is now refined in the first decode windows from the pool's time per missed
 | RX 6900 XT, Windows 11, i9-10900K, PCIe 4.0 x8 probe 12.6 GB/s | 0.35 -> 0.20 (one start 0.25) | 38.0 -> 43.8 (**+15.1%**, 10/10) | 39.0 -> 44.1 (**+13.3%**, 10/10) |
 | RX 6900 XT, Linux, Ryzen 5 5600X, PCIe 4.0 x8 probe 14.1 GB/s | 0.39 -> 0.25 | 45.0 -> 47.1 (**+4.9%**, 10/10) | 47.7 -> 48.1 (**+1.0%**, 10/10) |
 | RX 6700 XT (gfx1031), Linux, Ryzen 7 5800X, x16 probe 28.1 GB/s ([#4007](https://github.com/Niko1221/Strata/issues/4007#issuecomment-6879926995)) | 0.55 -> 0.35 | 41.6 -> 44.0 (**+4.9%**, 9/10) | 42.7 -> 44.0 (**+3.4%**, 10/10) |
-| RX 6700 XT (gfx1031), Linux, probe 2.8 GB/s (maintainers, engine 0.1.61, 3 pairs, [details](bench-results/2026-11-14-rdna2-pcie-auto/README.md#maintainers-check-on-an-rx-6700-xt-2026-11-16)) | 0.08, no change | 19.44 -> 19.41 (-0.2%, 1/3) | not run |
+| RX 6700 XT (gfx1031), Linux, probe 2.8 GB/s (maintainers, engine 0.1.63, 3 pairs, [details](bench-results/2026-11-14-rdna2-pcie-auto/README.md#maintainers-check-on-an-rx-6700-xt-2026-11-16)) | 0.08, no change | 19.44 -> 19.41 (-0.2%, 1/3) | not run |
 
 Windows gains the most because each GPU submission costs more there, so moving missed experts to the CPU pool pays more.
 `STRATA_PCIE_FRAC_DEFAULT=old` keeps the start-up share, an explicit `--pcie-frac` always wins, and integrated gfx103x
@@ -564,7 +568,7 @@ On Windows, setup's ready-made engine runs an RX 6800 beside a 780M iGPU (HIP nu
 ## gfx906 (Instinct MI50 / MI60, Radeon VII): wave64, built from source
 
 gfx906 is wave64 and has no WMMA and no packed byte arithmetic, so the wave32 backend refuses it. A separate opt-in build
-compiles the CUDA sources as HIP through a small compat layer (`include/strata/platform/hip_compat/`), with a CUDA warp mapped
+compiles the CUDA sources as HIP through a small compat layer (`engine/include/strata/platform/hip_compat/`), with a CUDA warp mapped
 to a logical half of the 64-lane wavefront. Setup does not build it: build by hand and run `terminal/serve/server.py` with a config as
 on any other card.
 
