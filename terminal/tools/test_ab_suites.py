@@ -113,6 +113,30 @@ class Ladder(unittest.TestCase):
         self.assertEqual(req.check(dict(none, usage={"prompt_tokens": 16384})), (True, "4/4 Codes"))
 
 
+    def test_top_step_leaves_a_margin_the_others_do_not(self):
+        fake = lambda n, *a: (("x" * 79 + "\n") * (n // 80 + 1))[:n]  # noqa: E731 - no git needed
+        with mock.patch.object(ab_suites, "corpus_text", fake):
+            reqs = ab_suites.ladder_reqs(65536)
+        steps = ab_suites.ladder_steps(65536)
+
+        def size(req):  # the characters of the corpus: without header, needle sentences and question
+            c = req.body["messages"][0]["content"]
+            body = c[c.index("\n") + 1:c.rindex("\n\n" + ab_suites.LADDER_QUESTION)]
+            return len(re.sub(r"\nThe access code for room \d+ is [A-Z]+-\d+\.", "", body))
+        sizes = [size(r) for r in reqs]
+        self.assertEqual(sizes[:-1], [int(s * ab_suites.CHARS_PER_TOKEN) for s in steps[:-1]])
+        self.assertEqual(sizes[-1], int(steps[-1] * 0.97 * ab_suites.CHARS_PER_TOKEN))
+
+    def test_ladder_check_fails_a_cache_hit_inside_the_ten_percent(self):
+        check = ab_suites.ladder_check(["A-11"], 16384)
+
+        def r(prompt_n, tokens):
+            return {"choices": [{"message": {"content": "a-11"}}], "timings": {"prompt_n": prompt_n}, "usage": {"prompt_tokens": tokens}}
+        self.assertEqual(check(r(15000, 16384)), (True, "1/1 Codes"))
+        self.assertEqual(check(r(15000, 17000)), (False, "Cache-Treffer oder falsche Länge"))  # 15000 < 0.9 * 17000
+        self.assertEqual(check(r(15300, 17000)), (True, "1/1 Codes"))
+
+
 class ModelContext(unittest.TestCase):
     def test_model_context_reads_gguf(self):
         with tempfile.TemporaryDirectory() as d:
@@ -128,6 +152,14 @@ class ModelContext(unittest.TestCase):
             with self.assertRaises(SystemExit) as cm:
                 ab_suites.model_context(Path(d))
             self.assertIn("--context", str(cm.exception))
+
+    def test_model_context_unreadable_file_names_file_and_flag(self):
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "m.gguf").write_bytes(b"not a gguf file")
+            with self.assertRaises(SystemExit) as cm:
+                ab_suites.model_context(Path(d) / "m.gguf")
+        self.assertIn("m.gguf", str(cm.exception))
+        self.assertIn("--context N", str(cm.exception))
 
     def test_model_context_missing_path_names_it(self):
         with self.assertRaises(SystemExit) as cm:
@@ -174,6 +206,19 @@ class Think(unittest.TestCase):
             self.assertFalse(check(think_resp(f"ANTWORT: {n}\nANTWORT: 1"))[0])
             self.assertEqual(check(think_resp("no answer", finish="length")), (False, "Token-Grenze erreicht"))
             self.assertEqual(check(think_resp("no answer")), (False, "keine Antwort"))
+
+    def test_answers_in_the_forms_the_model_writes(self):
+        reqs = by_tag(ab_suites.think_reqs(8192, False))
+        for text in (r"ANTWORT: \boxed{334}", "ANTWORT: $334$", "ANTWORT: x = 334", "ANTWORT: 334 (found by counting)"):
+            self.assertTrue(reqs["think.math1"].check(think_resp(text))[0], text)
+        self.assertTrue(reqs["think.math2"].check(think_resp("ANTWORT: **2,549**"))[0])
+        self.assertFalse(reqs["think.math2"].check(think_resp("ANTWORT: 2,550"))[0])
+        self.assertFalse(reqs["think.math1"].check(think_resp("ANTWORT: none"))[0])
+        self.assertTrue(reqs["think.read2"].check(think_resp("ANTWORT: Line 3"))[0])
+        self.assertFalse(reqs["think.read2"].check(think_resp("ANTWORT: Line 4"))[0])
+        self.assertFalse(reqs["think.read2"].check(think_resp("ANTWORT: Line 13"))[0])
+        for text in (r"ANTWORT: \boxed{9-5-0-10-28}", "ANTWORT: $9-5-0-10-28$", r"ANTWORT: $\boxed{9-5-0-10-28}$"):
+            self.assertTrue(reqs["think.read1"].check(think_resp(text))[0], text)
 
     def test_read_answer_compared_as_text(self):
         reqs = by_tag(ab_suites.think_reqs(8192, False))

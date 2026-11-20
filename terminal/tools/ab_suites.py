@@ -95,7 +95,10 @@ def model_context(model: Path) -> int:
         model = files[0]
     elif not model.is_file():
         raise SystemExit(f"error: model path {model} does not exist; pass --context N")
-    md = gguf_reader.GGUFFile(model).metadata
+    try:
+        md = gguf_reader.GGUFFile(model).metadata
+    except (ValueError, OSError) as e:
+        raise SystemExit(f"error: cannot read {model}: {e}; pass --context N")
     n = md.get(f"{md.get('general.architecture')}.context_length")
     if not isinstance(n, int):
         raise SystemExit(f"error: no context_length in {model}; pass --context N")
@@ -179,9 +182,10 @@ def ladder_check(codes: list[str], step: int) -> Callable[[dict], tuple[bool, st
         n = sum(c.lower() in got for c in codes)
         # timings.prompt_n is what was read (prompt minus cache hit); usage.prompt_tokens is the full prompt
         used = (resp.get("timings") or {}).get("prompt_n")
+        full = (resp.get("usage") or {}).get("prompt_tokens")
         if used is None:
-            used = (resp.get("usage") or {}).get("prompt_tokens")
-        if used is None or abs(used - step) > 0.1 * step:
+            used = full
+        if used is None or abs(used - step) > 0.1 * step or (full is not None and used < 0.9 * full):
             return False, "Cache-Treffer oder falsche Länge"
         return n == len(codes), f"{n}/{len(codes)} Codes"
     return check
@@ -197,7 +201,8 @@ def ladder_reqs(n_ctx: int) -> list[Req]:
         rng = random.Random(SEED * 1_000_003 + step)
         rooms = rng.sample(range(1000, 10000), 4)
         codes = [f"{w}-{rng.randint(10, 99)}" for w in rng.sample(WORDS, 4)]
-        text = _with_needles(corpus[:int(step * CHARS_PER_TOKEN)], rooms, codes)
+        margin = 0.97 if step == steps[-1] else 1  # the top step must not overshoot the context (with the needles and question)
+        text = _with_needles(corpus[:int(step * margin * CHARS_PER_TOKEN)], rooms, codes)
         content = f"Document {step}\n{text}\n\n{LADDER_QUESTION}"
         body = {"messages": [{"role": "user", "content": content}], "max_tokens": 256, "temperature": 0,
                 "seed": SEED, "chat_template_kwargs": {"enable_thinking": False}}
@@ -265,7 +270,7 @@ CODE = [
 
 def answer_of(resp: dict) -> str | None:
     """The last 'ANTWORT:' value in the answer text (never in the reasoning), or None."""
-    found = re.findall(r"ANTWORT:[ \t]*((?:(?!ANTWORT:).)*)",resp["choices"][0]["message"].get("content") or "")
+    found = re.findall(r"ANTWORT:[ \t]*((?:(?!ANTWORT:).)*)", resp["choices"][0]["message"].get("content") or "")
     return found[-1].strip() if found else None
 
 
@@ -327,13 +332,13 @@ def _think_check(kind: str, want) -> Callable[[dict], tuple[bool, str]]:
         got = answer_of(resp)
         if got is None:
             return False, "Token-Grenze erreicht" if cut else "keine Antwort"
-        if kind == "math":
-            try:
-                ok = int(_norm(got).replace(",", "")) == want
-            except ValueError:
-                ok = False
+        if kind == "math":  # the last integer of the value: "x = 334", "2,549", "$\boxed{334}$"
+            nums = re.findall(r"-?\d[\d,]*", got)
+            ok = bool(nums) and nums[-1].replace(",", "") == str(want)
+        elif want.isdigit():  # "Line 3" is right for "3"
+            ok = re.findall(r"\d+", got) == [want]
         else:
-            ok = _norm(got) == _norm(want)
+            ok = _norm(re.sub(r"\\boxed\{(.*)\}", r"\1", got).replace("$", "")) == _norm(want)
         return ok, "" if ok else "falsche Antwort"
     return check
 
