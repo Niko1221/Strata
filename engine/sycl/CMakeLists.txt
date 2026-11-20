@@ -310,10 +310,16 @@ target_compile_options(strata_prefill PUBLIC -qmkl=sequential)
 target_link_options(strata_prefill PUBLIC -qmkl=sequential)
 target_link_libraries(strata_prefill PUBLIC strata_engine)
 
-# AUTO evaluates the target and local headers on every configure, including reused build trees.
+# AUTO evaluates the target and the headers on every configure, including reused build trees.  The headers default to the
+# sycl-tla submodule at engine/third_party/sycl-tla (git submodule update --init engine/third_party/sycl-tla); STRATA_SYCL_TLA_DIR takes
+# another checkout.
 set(STRATA_SYCL_TLA_ATTN "AUTO" CACHE STRING "Battlemage FP32 TLA prompt attention: AUTO, ON or OFF")
 set_property(CACHE STRATA_SYCL_TLA_ATTN PROPERTY STRINGS AUTO ON OFF)
-set(STRATA_SYCL_TLA_DIR "" CACHE PATH "Local sycl-tla checkout containing include/cute")
+set(_tla_submodule ${STRATA_ROOT}/third_party/sycl-tla)
+set(STRATA_SYCL_TLA_DIR "${_tla_submodule}" CACHE PATH "sycl-tla checkout (include/cute); default: the engine/third_party/sycl-tla submodule")
+if(NOT STRATA_SYCL_TLA_DIR)   # a build tree configured before the submodule existed caches an empty path
+  set(STRATA_SYCL_TLA_DIR "${_tla_submodule}" CACHE PATH "sycl-tla checkout (include/cute); default: the engine/third_party/sycl-tla submodule" FORCE)
+endif()
 if(NOT STRATA_SYCL_TLA_ATTN MATCHES "^(AUTO|ON|OFF)$")
   message(FATAL_ERROR "STRATA_SYCL_TLA_ATTN must be AUTO, ON or OFF")
 endif()
@@ -327,6 +333,9 @@ if(NOT STRATA_SYCL_TLA_ATTN STREQUAL "OFF")
   endforeach()
   if(_tla_missing)
     list(JOIN _tla_missing ", " _tla_reason)
+    if(STRATA_SYCL_TLA_DIR STREQUAL _tla_submodule)
+      string(APPEND _tla_reason " (the sycl-tla submodule is not checked out: git submodule update --init engine/third_party/sycl-tla)")
+    endif()
     if(STRATA_SYCL_TLA_ATTN STREQUAL "ON")
       message(FATAL_ERROR "Cannot enable TLA prompt attention: missing ${_tla_reason}")
     elseif(STRATA_SYCL_TLA_DIR)

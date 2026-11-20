@@ -33120,7 +33120,7 @@
    "doc_mentions": [
     "docs/NVIDIA_V100.md:43",
     "docs/NVIDIA_V100.md:90",
-    "docs/INTEL_ARC.md:148",
+    "docs/INTEL_ARC.md:146",
     "docs/OLDER_GPUS.md:142",
     "docs/bench-results/2026-10-03-v100-prompt-attn/README.md:5",
     "docs/bench-results/2026-10-03-v100-prompt-attn/README.md:102"
@@ -42614,8 +42614,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL_ARC.md:145",
-    "docs/INTEL_ARC.md:147"
+    "docs/INTEL_ARC.md:143",
+    "docs/INTEL_ARC.md:145"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -42624,7 +42624,7 @@
    "last_date": "2026-11-17",
    "status": "default",
    "owner": "sycl",
-   "note": "Default on in a compatible build with local headers, for supported Battlemage INT8 KV prefill. Set to 0 to restore the existing batch dispatcher.",
+   "note": "Default on in portable and Battlemage builds with the sycl-tla submodule checked out, for supported Battlemage INT8 KV prefill. Set to 0 to restore the existing batch dispatcher.",
    "retire_after": "",
    "retired_in": ""
   },
