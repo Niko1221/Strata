@@ -92,6 +92,7 @@ test('the conversation context and cache format move the estimate (#3832)', () =
   assert.ok(big.vramUseGb >= base.vramUseGb && big.ramUseGb > base.ramUseGb, 'a bigger cache takes graphics memory from the experts, which then sit in RAM');
   assert.ok(fitOn(swift, pc, true, { context: 524288, kv: 'q4_0' }).ramUseGb < big.ramUseGb, 'a smaller cache format leaves more room');
   assert.ok(Math.abs(cacheGb(524288, 'int8') * 1024 - 7361) < 25, 'the 512K Int8 cache is the 7361 MiB the engine reports');
+  assert.equal(cacheGb(131072, 'q4u32'), cacheGb(131072, 'q4_0'), 'q4u32 stores the same 576-byte cell as q4_0, not int8\'s 1056');
   const tight = fitOn(q4, pc, true, { context: 524288, kv: 'int8' });
   assert.ok(tight.spillGb > fitOn(q4, pc).spillGb, 'what no longer fits is read from the SSD and the card says so');
 });

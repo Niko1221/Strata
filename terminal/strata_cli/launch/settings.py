@@ -32,7 +32,7 @@ SPLIT_MODES = ("auto", "on", "off")
 DRAFTING_MODES = ("auto", "mtp", "dflash2", "off")
 #: setup.py DRAFT_VOCABS (tests/terminal/test_launch_draft_vocab.py keeps the two the same)
 DRAFT_VOCAB_MODES = ("cjk", "en", "cyrillic", "fr", "latin")
-KV_MODES = ("int8", "q4_0", "k8v4", "fp16")
+KV_MODES = ("int8", "q4_0", "q4u32", "k8v4", "fp16")
 DEFAULT_PORT = 8080
 
 #: How many requests the card can answer at once (the spec's "fit to card" default): by graphics memory.

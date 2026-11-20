@@ -266,10 +266,13 @@ test('#3723 Context memory has one line per format, from the documented memory f
   const models = src('components/NativeModels.tsx');
   assert.match(models, /KV_CHOICES\.map\(c => \(\{ value: c\.value, label: c\.label, title: c\.hint \}\)\)/);
   for (const text of ['INT8 is the standard: good quality and a medium amount of memory.', 'Q4 uses about half the memory of INT8, but is less precise on very long documents.', 'K8 / V4 uses about a quarter less memory than INT8 and is more precise than Q4. Prompts are 2 to 5% slower.']) assert.ok(models.includes(text), text);
-  // The figures are the ones of docs/DETAILS.md and of native-fit.ts: q4_0 576 and k8v4 816 against int8 1056 bytes per token and layer.
+  // The figures are the ones of docs/DETAILS.md and of native-fit.ts: q4_0 and q4u32 576 and k8v4 816 against int8 1056 bytes per token and layer.
   const fit = src('lib/native-fit.ts');
-  assert.match(fit, /int8: 1056, q4_0: 576, k8v4: 816/);
+  assert.match(fit, /int8: 1056, q4_0: 576, q4u32: 576, k8v4: 816/);
   assert.ok(Math.abs(576 / 1056 - 0.55) < 0.06 && Math.abs(1 - 816 / 1056 - 0.23) < 0.01);
+  // q4u32 stores the same 576-byte cell as q4_0: the picker carries it (the same figure as Q4) and Automatic leaves the choice to the engine.
+  assert.ok(models.includes("{ value: 'q4u32', label: 'Q4U32' }"), 'the Q4U32 entry');
+  assert.ok(models.includes("{ value: 'auto', label: 'Automatic' }"), 'the entry that leaves the choice to the engine');
 });
 
 test('#3723 a start that ran out of graphics memory says so, with the engine\'s own words under Details', async () => {

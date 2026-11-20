@@ -111,7 +111,9 @@ def plan(*, family: str, model: str, model_dir: Path, data_dir: Path, src: Path,
         args += ["--expert-profile", str(profile), "--expert-cache", "auto", "--prefill", "auto", "--spec", "4", "--spec-min-p", "0.5"]
         if mtp.exists() and not feed:                    # the Flash-Next draft layer is not a feed model's own (a feed entry carries no MTP head yet)
             args += ["--mtp", str(mtp)]
-        args += ["--max-context", str(context), "--kv", kv or ("int8" if context > 8192 else "fp16")]
+        from strata_control.kv_default import kv_value
+        _kv = kv_value("", context, kv)   # the engine is looked up when the model loads, so its variant is not known here: name the format, as before
+        args += ["--max-context", str(context), "--kv", _kv]
         if backend == "sycl":
             # an Intel Arc, as sycl/setup_intel.py writes it: an A-series card on i915 loads the experts into a RAM arena and the CPU computes the misses
             # (--ple-io ram); every other Arc (xe: the B70) streams the experts from the GGUF into VRAM (--stream-experts); both keep a VRAM reserve

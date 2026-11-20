@@ -35,7 +35,7 @@ test('the select is drawn only where the choice applies, and is the same select 
 });
 
 test('a saved --kv of a Qwen3.8 model still comes back to the page and goes to setup', () => {
-  assert.match(screen, /setKv\(installed\.kv \?\? 'int8'\);/, 'the saved format is shown when the model opens');
+  assert.match(screen, /setKv\(installed\.kv \?\? 'auto'\);/, 'the saved format is shown when the model opens, and a config that names none shows Automatic');
   assert.match(screen, /const values = useMemo\(\(\) => \(\{[^}]*\bkv,/, 'the chosen format goes to the plan / setup');
   const control = read('../../../terminal/tools/strata_mcp.py');
   assert.match(control, /"kv": val\("--kv"\)/, 'the installed model reports the --kv of its run config');

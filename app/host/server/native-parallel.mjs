@@ -77,7 +77,7 @@ const argValue = (args, flag) => { const at = args.indexOf(flag); return at >= 0
 export function slotGb({ context, kv = 'int8', family = 'flash' }) {
   const ctx = Number(context) > 0 ? Number(context) : 32768;
   if (family === 'q36') return (ctx * 45_000) / 1e9 + 0.07;
-  return (ctx * 12 * (kv === 'q4_0' ? 1150 : 2100)) / 1e9 + 0.17; // measured on the 0.1.45 engine: 0.92 GiB per slot at 32K
+  return (ctx * 12 * (String(kv).startsWith('q4') ? 1150 : 2100)) / 1e9 + 0.17; // measured on the 0.1.45 engine: 0.92 GiB per slot at 32K (q4_0 and q4u32 store the same 576-byte cell)
 }
 
 /** What the saved settings say about the engine, read from the config (never from the screen). */

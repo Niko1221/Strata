@@ -2036,8 +2036,8 @@ def tool_defs(models: dict, families: dict, contexts: list) -> list:
                                        "read them (not on a Mac): yes = the best reader for this card (the CPU "
                                        "under 24 GB of VRAM, the GPU from 24 GB, any make), gpu / cpu = that "
                                        "reader, no = text only"},
-             "kv": {"type": "string", "enum": ["int8", "q4_0", "k8v4"],
-                    "description": "KV cache precision above 8K context (default int8)"},
+             "kv": {"type": "string", "enum": ["int8", "q4_0", "q4u32", "k8v4"],
+                    "description": "KV cache precision above 8K context (default int8; on RDNA4 with this tree's engine the default is q4u32)"},
              "gpu": {"type": "integer", "minimum": 0, "maximum": 63,
                      "description": "one GPU, as nvidia-smi numbers them (default: the one with the most VRAM)"},
              "gpus": {"type": "string", "pattern": GPUS_PATTERN, "maxLength": 40,
