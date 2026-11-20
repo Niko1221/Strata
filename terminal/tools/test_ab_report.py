@@ -47,6 +47,13 @@ class CardPair(unittest.TestCase):
         self.assertIsNone(card_pair(r))
 
 
+class CardMedian(unittest.TestCase):
+    def test_card_median_skips_round_0_when_there_are_more_rounds(self):
+        rows = [{"round": i, "req": "chat0", "decode": d} for i, d in enumerate((10.0, 50.0, 52.0))]
+        self.assertEqual(ab_report._median({"rows": rows}, "chat0", "decode"), 51.0)
+        self.assertEqual(ab_report._median({"rows": rows[:1]}, "chat0", "decode"), 10.0)
+
+
 class Html(unittest.TestCase):
     def test_html_has_title_rows_and_no_external_urls(self):
         h = build_html(RESULTS)

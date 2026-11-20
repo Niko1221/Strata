@@ -27,7 +27,9 @@ def card_pair(results: dict) -> tuple[dict, dict] | None:
 
 
 def _median(arm: dict, req: str, key: str) -> float | None:
-    vals = [r[key] for r in arm.get("rows", []) if r.get("req") == req and isinstance(r.get(key), (int, float))]
+    rows = [r for r in arm.get("rows", []) if r.get("req") == req and isinstance(r.get(key), (int, float))]
+    rows = [r for r in rows if r.get("round", 0) >= 1] or rows  # round 0 is the cold one; keep it only when it is all there is
+    vals = [r[key] for r in rows]
     return statistics.median(vals) if vals else None
 
 
