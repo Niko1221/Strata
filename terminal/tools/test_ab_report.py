@@ -300,5 +300,42 @@ class LadderCard(unittest.TestCase):
         self.assertEqual(calls, [("card", "report.png")])
 
 
+def base_arm(version, ok, decode=(100, 102, 98, 90)):
+    a = arm(version, list(decode), [400, 410, 405, 1500])
+    for r in a["rows"]:
+        r.update(suite="base", ok=ok(r), check="")
+    return a
+
+
+class BaseCorrectness(unittest.TestCase):
+    def test_base_table_has_correct_column_and_marks_worse(self):
+        good = base_arm("0.1.55", lambda r: True)
+        bad = base_arm("0.1.56", lambda r: r["req"] != "long", decode=(130, 130, 130, 130))
+        h = build_html(dict(RESULTS, arms=[good, bad]))
+        self.assertIn("<th>Correct</th>", h)
+        rows = re.findall(r'<tr (?:class="worse" )?data-version=.*?</tr>', h, re.S)
+        self.assertEqual(len(rows), 8)
+        self.assertEqual([("0.1.56" in r, r.startswith('<tr class="worse"')) for r in rows],
+                         [(False, False)] * 4 + [(True, True)] * 4)
+        self.assertEqual([re.findall(r"richtig \d/\d", r) for r in rows[4:]], [["richtig 3/3"]] * 3 + [["richtig 0/3"]])
+        self.assertIn("tr.worse td", h[:h.index("</style>")])  # the rule exists without any suite
+
+    def test_card_has_no_gain_headline_for_a_worse_version(self):
+        good = base_arm("0.1.55", lambda r: True)
+        bad = base_arm("0.1.56", lambda r: r["req"] != "long", decode=(130, 130, 130, 130))
+        c = card(build_html(dict(RESULTS, arms=[good, bad])))
+        self.assertIn("weniger richtig als v0.1.55", c)
+        self.assertNotIn("Answers, up to", c)
+        self.assertIn("+44%", c)  # the number stays
+        fine = card(build_html(dict(RESULTS, arms=[good, base_arm("0.1.56", lambda r: True, decode=(130, 130, 130, 130))])))
+        self.assertNotIn("weniger richtig", fine)
+        self.assertIn("Answers, up to", fine)
+
+    def test_results_without_ok_have_no_column(self):
+        h = build_html(RESULTS)
+        self.assertNotIn("Correct", h)
+        self.assertNotIn("weniger richtig", h)
+
+
 if __name__ == "__main__":
     unittest.main()

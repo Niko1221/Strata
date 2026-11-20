@@ -69,6 +69,8 @@ def _card(results: dict, old: dict, new: dict) -> str:
         bars.append(f'<div class="pair"><span>{e(q)}</span><div>{bar(a, "old")}{bar(b, "new")}</div></div>')
     lp = (_median(old, "long", "prompt"), _median(new, "long", "prompt"))
     tune = f"tuned {results['tune']}" if results.get("tune") else "not tuned"
+    worse = _worse([old, new], "base") if _has_ok(results) else {}
+    label = f"Answers, change (weniger richtig als v{worse[new['version']]})" if new["version"] in worse else "Answers, up to"
     chips = [f"{results.get('rounds', 0)} rounds", f"{len(reqs)} requests"]
     chips += [f"{a['version']} did not run" for a in results.get("arms", []) if a.get("status") != "ran"]
     tile = lambda label, big, small: (f'<div class="tile"><div class="label">{e(label)}</div>'  # noqa: E731
@@ -76,7 +78,7 @@ def _card(results: dict, old: dict, new: dict) -> str:
     return f"""<section id="card"><div class="glow"></div>
 <h1>Strata <span class="ver">{e(old['version'])} → {e(new['version'])}</span></h1>
 <p class="sub">{e(' · '.join(x for x in (results.get('gpu'), results.get('model'), 'default settings', tune) if x))}</p>
-<div class="main"><div class="dark"><div class="label">Answers, up to</div><div class="big">{_pct(max(gains) if gains else None)}</div>
+<div class="main"><div class="dark"><div class="label">{e(label)}</div><div class="big">{_pct(max(gains) if gains else None)}</div>
 <div class="legend"><span class="k old"></span>{e(old['version'])} <span class="k new"></span>{e(new['version'])} <em>decode tok/s, median</em></div>
 {''.join(bars)}</div>
 <div class="tiles">{tile('Long prompt', _pct(_rel(*lp)), f'{_num(lp[0])} → {_num(lp[1])} tok/s prompt')}
@@ -86,17 +88,26 @@ def _card(results: dict, old: dict, new: dict) -> str:
 </section>"""
 
 
+def _has_ok(results: dict) -> bool:
+    """True when any base row says whether its answer was right (runs from before the suites have no such field)."""
+    return any("ok" in r and (r.get("suite") or "base") == "base" for a in results.get("arms", []) for r in a.get("rows", []))
+
+
 def _rows(results: dict) -> str:
     e = lambda s: escape(str(s))  # noqa: E731
     out = []
+    show = _has_ok(results)
+    worse = _worse(_sorted_arms(results), "base") if show else {}
     for a in results.get("arms", []):
         reqs = (results.get("requests") or []) if a.get("status") == "ran" else ["—"]
         status = "ran" if a.get("status") == "ran" else f"did not run: {a.get('reason', '')}"
         for q in reqs:
             d, p = _median(a, q, "decode"), _median(a, q, "prompt")
-            out.append(f'<tr data-version="{e(a["version"])}" data-req="{e(q)}" data-decode="{"" if d is None else d}">'
+            cls = ' class="worse"' if a["version"] in worse else ""
+            ok = (f'<td>{"richtig {}/{}".format(*_correct(a, "base", q)) if a.get("status") == "ran" else ""}</td>') if show else ""
+            out.append(f'<tr{cls} data-version="{e(a["version"])}" data-req="{e(q)}" data-decode="{"" if d is None else d}">'
                        f'<td>{e(a["version"])}</td><td>{e(q)}</td><td>{_num(d)}</td><td>{_num(p)}</td><td class="delta"></td>'
-                       f'<td>{_num(a.get("setup_s"))}</td><td>{_num(_start(a))}</td><td>{e(status)}</td></tr>')
+                       f'{ok}<td>{_num(a.get("setup_s"))}</td><td>{_num(_start(a))}</td><td>{e(status)}</td></tr>')
     return "\n".join(out)
 
 
@@ -182,6 +193,10 @@ tr.worse td{background:rgba(220,38,38,.12);color:#b91c1c}td.fast{color:GREEN;fon
 #ladder .url{font-size:22px;color:#475569;font-weight:600}
 @media (prefers-color-scheme:dark){tr.worse td{color:#fca5a5}td.fast{color:#4ade80}.suite p{color:#94a3b8}}
 """.replace("GREEN", GREEN)
+
+WORSE_CSS = """tr.worse td{background:rgba(220,38,38,.12);color:#b91c1c}
+@media (prefers-color-scheme:dark){tr.worse td{color:#fca5a5}}
+"""
 
 
 def _e(s) -> str:
@@ -445,7 +460,9 @@ def build_html(results: dict) -> str:
         title, card = "Strata versions", "<p>Fewer than two versions ran, so there is no comparison card.</p>"
     versions = [a["version"] for a in results.get("arms", []) if a.get("status") == "ran"]
     opts = "".join(f'<option{" selected" if pair and v == pair[0]["version"] else ""}>{escape(v)}</option>' for v in versions)
-    heads = "".join(f"<th>{h}</th>" for h in ("Version", "Request", "Decode", "Prompt", "Δ Decode", "Setup", "Start", "Status"))
+    show = _has_ok(results)
+    heads = "".join(f"<th>{h}</th>" for h in ("Version", "Request", "Decode", "Prompt", "Δ Decode", *(("Correct",) if show else ()),
+                                              "Setup", "Start", "Status"))
     if results.get("untouched"):
         iso = "<p>Real Strata install untouched: no file changed during the run.</p>"
     else:
@@ -453,7 +470,7 @@ def build_html(results: dict) -> str:
             f"<li><code>{escape(str(c))}</code></li>" for c in results.get("changed") or []) + "</ul>"
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{escape(title)}</title><style>{CSS}</style></head><body>
+<title>{escape(title)}</title><style>{CSS}{WORSE_CSS if show else ""}</style></head><body>
 {card}
 <main><label>Base version <select id="base">{opts}</select></label>
 <span> · decode and prompt in tok/s (median over rounds), setup and start in seconds · {escape(str(results.get('created', '')))}</span>{suite_head(results)}
