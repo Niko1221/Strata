@@ -318,9 +318,10 @@ class VersionsMode(unittest.TestCase):
         self.assertEqual(code, 0)
 
     def test_missing_corpus_stops_before_download(self):
-        ensure = mock.Mock()
+        ensure, corpus = mock.Mock(), mock.Mock(side_effect=SystemExit("x"))
         with self.assertRaises(SystemExit):
-            self.run_tool(["--suite", "think"], ensure_packages=ensure, need_corpus=mock.Mock(side_effect=SystemExit("x")))
+            self.run_tool(["--suite", "think"], ensure_packages=ensure, need_corpus=corpus)
+        corpus.assert_called_once()
         ensure.assert_not_called()
 
     def test_interrupt_during_suites_stops_and_keeps_rows(self):
