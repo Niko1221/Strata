@@ -64,8 +64,8 @@ public:
     // pred2: layer l + 2's, from the same input (STRATA_METAL_PREFETCH2 = its top-k, 0 = off)
     void at_layer(int l, int T, int topk, const int32_t* ids, const float* pred, const float* pred2 = nullptr);
     int ahead2() const { return pre_k2_; }
-    // a prompt's scratch buffers inside the arena: region() places them (once), hold_region() empties and holds its
-    // slots while a prompt runs and gives them back after
+    // Places scratch inside the arena when its remaining slots can hold a layer's experts. Returns nullptr otherwise.
+    // hold_region() empties and holds the selected slots while a prompt runs, then gives them back.
     uint8_t* region(uint64_t bytes);
     void hold_region(bool hold);
     void report(FILE* f) const;
@@ -89,8 +89,6 @@ private:
     void ahead(int ln, int T, const float* pred, int K);
     void submit(int slot, int l, int e, bool urgent);
     void wait_slot(int s);
-    uint8_t* standalone_region(uint64_t bytes);   // the prompt's buffers as their own allocation, when no region of the arena's slots takes them
-
     int fd_ = -1;
     // <gguf>.experts (metal/tools/stream_experts.py): each expert's gate, up and down rows together, read with one
     // request (cfd_ >= 0); else the GGUF's three slices.  STRATA_METAL_CONTIG=0: the GGUF always.
