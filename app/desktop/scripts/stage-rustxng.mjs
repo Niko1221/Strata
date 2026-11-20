@@ -7,7 +7,7 @@ import { RUSTXNG_VERSION, RUSTXNG_SHA256 } from '../../host/server/rustxng-runti
 
 const commit = 'a8ba33d8c9ceed91236f3abf029254d0f84995bb';
 const root = resolve(import.meta.dirname, '../../..');
-const destination = join(root, 'apps/desktop/src-tauri/resources/harness/rustxng');
+const destination = join(root, 'app/desktop/src-tauri/resources/harness/rustxng');
 const release = `https://github.com/sahenjp/RustXNG/releases/download/v${RUSTXNG_VERSION}/`;
 const inputs = [
   { name: 'rustxng.exe', url: release + `rustxng-v${RUSTXNG_VERSION}-x86_64-pc-windows-msvc.exe`, sha256: RUSTXNG_SHA256 },
