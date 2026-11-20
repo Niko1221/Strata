@@ -1,0 +1,14 @@
+[package]
+name = "strata-private-files"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Opt-in Windows ACL and POSIX mode enforcement for Strata private files"
+
+[lib]
+name = "strata_private_files"
+path = "src/lib.rs"
+
+[[bin]]
+name = "strata-private-files"
+path = "src/main.rs"
