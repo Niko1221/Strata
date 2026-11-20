@@ -41,6 +41,12 @@ FORMAT = {"type": "json_schema", "json_schema": {"name": "h3_story", "strict": T
 EXEC = [{"type": "function", "function": {"name": "exec_command", "description": "Runs a command.",
          "parameters": {"type": "object", "properties": {"cmd": {"type": "string"}}, "required": ["cmd"]}}}]
 
+# a tool the model may call, and its call in the chat template's form: with tools offered, a turn may end in a call
+TOOLS = [{"type": "function", "function": {"name": "exec_command",
+          "parameters": {"type": "object", "properties": {"cmd": {"type": "string"}}, "required": ["cmd"]}}}]
+TOOL_CALL = ("Let me look.\n</think>\n\n<tool_call>\n<function=exec_command>\n<parameter=cmd>\ncat a.txt\n"
+             "</parameter>\n</function>\n</tool_call>")
+
 
 class Structured(unittest.TestCase):
     def request(self, path, body=None, headers=None):
@@ -72,6 +78,97 @@ class Structured(unittest.TestCase):
                             {"role": "user", "content": "Photobooth. 15 seconds."}],
                "response_format": FORMAT, "reasoning_effort": "none", **kwargs}
         return self.request("/v1/chat/completions", req)
+
+    def messages(self, script=None, **kwargs):
+        """POST /v1/messages with the Anthropic native carrier output_config.format (what tool-eval-bench --format
+        anthropic sends), the same schema as `chat`; `kwargs` adds or replaces request fields."""
+        if script is not None:
+            self.engine = self.svc.engine = MockEngine(self.tok, script, max_context=16384)
+        req = {"model": "x", "max_tokens": 900, "thinking": {"type": "disabled"},
+               "messages": [{"role": "user", "content": "Write a film plan. Photobooth. 15 seconds."}],
+               "output_config": {"format": {"type": "json_schema", "schema": STORY_SCHEMA}}, **kwargs}
+        return self.request("/v1/messages", req)
+
+    ANTHROPIC_TOOLS = [{"name": "exec_command",
+                        "input_schema": {"type": "object", "properties": {"cmd": {"type": "string"}},
+                                         "required": ["cmd"]}}]
+
+    def test_anthropic_tool_use_turn_passes_through_under_a_format(self):
+        # tools and output_config.format together: the schema is for the final answer, a turn that ends in a
+        # call is not an answer - the call goes out as written, with no validation error
+        code, reply = self.messages(TOOL_CALL, tools=self.ANTHROPIC_TOOLS)
+        self.assertEqual(code, 200, reply)
+        self.assertEqual(reply["stop_reason"], "tool_use")
+        calls = [b for b in reply["content"] if b["type"] == "tool_use"]
+        self.assertEqual(calls[0]["name"], "exec_command")
+        self.assertEqual(calls[0]["input"], {"cmd": "cat a.txt"})
+        self.assertIn("Let me look.", "".join(b.get("text", "") for b in reply["content"] if b["type"] == "text"))
+
+    def test_anthropic_end_turn_answer_is_canonical_json(self):
+        # the answer's text is held while the schema is in force and leaves as the canonical JSON, one delta;
+        # the directive reaches the prompt as on the chat route (the schema itself is what the model is told)
+        code, reply = self.messages(json.dumps({**STORY, "suggestions": []}))
+        self.assertEqual(code, 200, reply)
+        self.assertEqual(reply["stop_reason"], "end_turn")
+        text = "".join(b["text"] for b in reply["content"] if b["type"] == "text")
+        self.assertEqual(text, json.dumps(STORY, ensure_ascii=False, separators=(",", ":")))
+        self.assertIn("OUTPUT FORMAT REQUIREMENT", self.tok.decode(self.engine.last_prompt))
+        self.assertIn('"duration_ms"', self.tok.decode(self.engine.last_prompt))
+        _, raw = self.messages(json.dumps(STORY), stream=True)
+        deltas = [json.loads(line[6:]) for line in raw.splitlines()
+                  if line.startswith("data: {") and '"text_delta"' in line]
+        self.assertEqual(len(deltas), 1)                       # the canonical JSON replaces the held deltas
+        self.assertEqual(deltas[0]["delta"]["text"], json.dumps(STORY, ensure_ascii=False, separators=(",", ":")))
+
+    def test_anthropic_non_json_answer_is_502_and_the_stream_sends_the_error_event(self):
+        code, reply = self.messages("## Film Plan - Photobooth")
+        self.assertEqual(code, 502, reply)
+        self.assertEqual(reply["error"]["type"], "structured_output_failed")
+        code, raw = self.messages("## Film Plan - Photobooth", stream=True)
+        self.assertEqual(code, 200)                            # the stream started; the failure is an event
+        self.assertIn("event: error", raw)
+        self.assertIn("structured_output_failed", raw)
+        self.assertNotIn("text_delta", raw)                    # no text block went out before the failure
+
+    def test_anthropic_response_format_is_the_secondary_carrier(self):
+        # a gateway client sends OpenAI's response_format; it is read when the request carries no output_config,
+        # and an output_config answers for the format when both are there
+        code, reply = self.messages(json.dumps(STORY), output_config=None, response_format=FORMAT)
+        self.assertEqual(code, 200, reply)
+        text = "".join(b["text"] for b in reply["content"] if b["type"] == "text")
+        self.assertEqual(json.loads(text), STORY)
+        # the same non-JSON answer: 502 while the response_format is in force, plain when an output_config
+        # (carrying no format) stands in front of it
+        self.assertEqual(self.messages("## Film Plan", output_config=None, response_format=FORMAT)[0], 502)
+        code, reply = self.messages("## Film Plan", output_config={}, response_format=FORMAT)
+        self.assertEqual(code, 200, reply)
+        # an output_config that is there but carries no format (its text form, or only the thinking effort) asks
+        # for nothing: a plain answer stays a plain answer
+        code, reply = self.messages("Prose.", output_config={"format": {"type": "text"}})
+        self.assertEqual(code, 200, reply)
+        self.assertEqual(reply["content"][0]["text"], "Prose.")
+        code, reply = self.messages("Prose.", output_config={"effort": "high"})
+        self.assertEqual(code, 200, reply)
+
+    def test_anthropic_malformed_format_is_400_before_the_model_is_loaded(self):
+        with mock.patch.object(self.svc, "load") as load:
+            for fmt in ([], {"type": "json_schema"}, {"type": "json_schema", "schema": "not an object"},
+                        {"type": "unsupported"}):
+                with self.subTest(fmt=fmt):
+                    code, reply = self.messages(output_config={"format": fmt})
+                    self.assertEqual(code, 400, reply)
+                    self.assertEqual(reply["error"]["type"], "invalid_request_error")
+            # a secondary response_format is malformed the same way
+            self.assertEqual(self.messages(None, output_config=None, response_format={"type": "unsupported"})[0], 400)
+            load.assert_not_called()
+
+    def test_anthropic_without_a_format_is_unchanged(self):
+        # no format, no validator: the text streams as it always did, deltas and all
+        code, raw = self.messages("Prose answer.", output_config=None, stream=True)
+        self.assertEqual(code, 200)
+        self.assertIn("event: content_block_start", raw)
+        self.assertIn("text_delta", raw)
+        self.assertIn("event: message_stop", raw)
 
     def test_h3_schema_success_and_stream_with_reasoning(self):
         code, reply = self.chat()
@@ -170,7 +267,7 @@ class Structured(unittest.TestCase):
         fmt = {"type": "json_schema", "json_schema": {"name": "local", "schema": schema}}
         self.assertEqual(self.chat('{"answer":4}', response_format=fmt)[0], 200)
 
-    def test_malformed_formats_and_tools_are_rejected_before_loading(self):
+    def test_malformed_formats_are_rejected_before_loading(self):
         formats = ([], {"type": "unsupported"},
                    {"type": "json_schema", "json_schema": {"schema": {"type": "object"}}},
                    {"type": "json_schema", "json_schema": {"name": "x", "strict": "true", "schema": {"type": "object"}}})
