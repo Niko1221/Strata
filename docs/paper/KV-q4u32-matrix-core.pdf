@@ -1,0 +1,559 @@
+       q4u32: A 4-Bit KV Cache the Matrix Core Can Read
+
+The prompt path of RDNA4 reading the 4-bit KV pool directly, and what the format needs to be the
+                                                         default
+
+                                               Matthias Kronenberger
+
+                                        Version 1.3 · built 2026-11-20, 11:16 CET · first version 2026-11-17
+
+Abstract                                                             1 Introduction
+
+On RDNA4 the prompt (prefill) of a transformer runs on the           A 4-bit key/value cache is the cheapest thing a long-context
+matrix cores, and the attention kernel reads the key/value           server can do: it halves the memory that competes with the
+cache there. A 4-bit KV cache could not be read by that              expert weights, and on a card whose experts are streamed
+kernel, so it ran on the decode kernel instead — 2.5 times           from the SSD every freed megabyte is a resident expert. On
+slower, which turned the memory win into a loss. This paper          AMD’s RDNA4 the prompt path of the engine runs on the
+reports the format that removes that loss. The format is             matrix cores, and the batched prompt attention reads the
+q4u32: after the same Walsh–Hadamard rotation the cache              cache there. That kernel could not read a 4-bit pool: it read
+already uses, a uniform grid on blocks of 32 values with a           int8 codes and reconstructed them, and a 4-bit pool — which
+least-squares-fitted step per block, 4.5 bit per cell against        stores a scale next to the codes — had to be served by the
+int8’s 8.25. Its property is that it is affine along the head        decode kernel instead. The consequence was measured and
+dimension, which is exactly the map the batched prompt               it is not subtle: the same model, the same prompt, the same
+attention already applies per group of 32 dimensions: the            cache bytes, 2.5 times slower ( q4u32 at 264.3 tokens per
+operand becomes (code − 8) ⋅ ������, no table, no codebook, no           second against int8 at 663.6 on a 32K needle run). A format
+per-model artifact. We measure the implementation on a               that saves 55% of the cache and costs 60% of the prompt rate
+Windows RDNA4 box (gfx1201): the parity harness is green             is not a memory optimization; it is a rollback.
+(worst deviation 5.7⋅10−6 against an FP64 reference on a scale
+of ≈ 7.5, the same order as the decode kernel), the engine’s            This paper reports the format that removes that loss, and
+own route line appears in every run, and the prompt rate is          the measurements that made it the default. The format is
+level with int8 (−1.8% mean, −2.1% median over nine and              q4u32: a uniform grid on blocks of 32 values with a fitted
+six requests at 32K) while the cache carries 54.5 % of the bytes     step per block, written after the same Hadamard rotation
+— which the expert cache takes up as +18.7% more resident            the cache already applies. It is not a new idea — the sib-
+slots. Without the matrix path the same format is 2.5 times          ling paper’s campaign measured the grid’s geometry on this
+slower, so the path is not an optimization of the format but         engine’s own blocks [2] and found that the uniform grid
+its precondition. The ablation says what the format needs:           with a fitted step is 0.86 dB better than the fitted Lloyd code-
+the per-block scale is load-bearing (a fitted Lloyd codebook         book it would replace, and that the codebook’s own cost is
+on the same blocks costs 0.43 dB; a power-of-two step costs          0.43 dB [2]. What is new here is that the format is read by
+1.81 dB), the codebook is not (the “codebook barely matters”         the matrix core, that the reading is measured end to end,
+finding of UltraQuant, measured here on 1.57 million of our          and that the consequence was taken all the way to the prod-
+own blocks), and the per-channel axis of the 4-bit literature is     uct: the engine’s own default on the cards where the path
+closed: a scale per coordinate instead of per token is 1.26 dB       was measured, and a marking that keeps an update from
+worse on the key side in 12 of 12 layers, because after the          replacing it.
+rotation the dynamic range lives in the token, not in the
+channel. The block’s group size is settled with it (a group             Three things make the format fit the kernel, and it is worth
+of 16 wins 1.19 dB for half a bit per value more and cannot          separating them, because they are often confused. First,
+be served by the kernel’s 32-dimension group at all; a group         the prompt attention applies the block scale per group of 32
+of 64 loses 0.92 dB for a quarter of a bit less and could be         dimensions, after that group’s partial sum; a format whose
+served, for about 1.2 % more resident experts — the wrong            map along the head dimension is affine therefore rides the
+direction for a format whose margin over int8 is what it             kernel for free. Second, the kernel’s hardcoded part is the
+was chosen for), so the format is fixed: 4.5 bit per cell, one       value mapping (code − 8), so a uniform grid with a fitted
+                                                                     step needs no table in the operand, while a codebook format
+step per 32 values, a uniform grid, no codebook, no                  would need one. Third, the writer must not need anything
+zero point, no calibration. The product decision follows             the kernel cannot reconstruct: q4u32 stores a step and the
+the measurement and is stated as such: on gfx12 the engine           codes, nothing else. What the format does not do is shrink
+chooses the format, the Terminal follows it, every other card        below 4.5 bit per cell: the scale is half a bit per cell at a
+and every upstream engine keeps 8-bit, and an update never           group of 32, and that half bit is the price of the group’s own
+switches the variant of Strata that is installed.                    dynamic range.
+
+                                                                        The contributions are: (i) the format and the writer, (ii)
+
+                                                                  1
+Table 1: The price of a 4-bit pool without the matrix path (mea-        Table 2: The matrix-core rate on RDNA4, per instruction (AMD’s
+surement, A. 21: 32K needle run, three requests, same model, same       optimization guide [8]: ops per instruction and the issue cycles; the
+build, same machine; the level is the slow one, the median over the     MAC rate per cycle and unit is the division of the two, and it is a
+requests).                                                              calculation).
+
+KV format        prompt rate (tok/s)               route                Builtin (wave32)      Ops Cycles
+
+int8                              663.6     matrix core                 f32_16x16x16_f16 (this kernel) 8192  16
+q4u32, path off                   264.3  decode kernel
+q4u32, path on                    651.6                                 i32_16x16x16_iu8      8192           8
+                                            matrix core
+                                                                        i32_16x16x16_iu4      8192           8
+
+                                                                        f32_16x16x16_fp8_fp8  8192           8
+
+the kernel work that reads it — the 4-bit pool in the batched           are properties of the code, not of the hardware.
+prompt attention and the exact-cell window that the sibling
+paper’s format needs, (iii) the measurements: parity against            The map along the head dimension must be affine.
+an FP64 reference, the engine’s own route, the prompt rate              The scale is applied per group of 32 dimensions, after that
+against int8, and the expert-cache slots the freed memory               group’s partial sum. A format whose reconstruction is
+buys, (iv) an ablation on the engine’s own blocks that says             (code − 8) ⋅ ������ — an affine map that may vary along the head
+which parts of the format are load-bearing and closes the               dimension — is therefore served exactly. A format with a
+channel axis that the 4-bit literature proposes, and (v) the            level table (value = level[code] ⋅ ������) is not: the table would
+product rule that follows: the card chooses the format where            have to be looked up in the operand, once per element. The
+the path was measured, everywhere else the last release’s               sibling paper measured that price on this engine’s blocks:
+behaviour is unchanged.                                                 the level table costs 0.43 dB against the uniform grid [2], and
+                                                                        the sibling campaign’s end-to-end run put it at 2.25× the
+What this paper is not. It is not a claim about 4-bit                   prompt read time of the uniform arm [2]. The uniform grid
+caches in general. The quality of a 4-bit cache is the sib-             is not a compromise here; it is the format the kernel can read
+ling paper’s subject [2], and this paper takes the format it            without work.
+selected as given and asks whether the hardware can serve
+it. The RDNA3 (gfx11) and the integrated-APU arms are pre-              The value mapping is hardcoded. What the kernel can-
+registered and open (Section 8): the hardware is not on this            not do is a value mapping that is not (code − 8). That is a
+machine. Every number below is labelled as a measurement,               one-line constraint on the format, and it is what rules the
+a citation, a calculation or static analysis; where a number is         codebook out of the fast path. It also rules out a per-block
+not a measurement of this engine, it says so.                           zero point in the fast path (the reconstruction would gain a
+                                                                        per-block constant), which is why the zero point costs half a
+2 The Problem: a cache the prompt                                       bit per cell instead of being free (Section 6).
+
+   kernel cannot read                                                   The wave is 32 lanes, and the layout differs per genera-
+                                                                        tion. The kernel is written for wave32 and addresses the
+2.1 The price, measured                                                 fragments per architecture: on RDNA4 a lane holds eight
+                                                                        halves of a fragment, on RDNA3 sixteen, and the accumula-
+The engine stores the key and the value rows of 12 cache-               tor rows are addressed differently (PA_KL, PA_KOFF, PA_ROW
+carrying attention layers of a 48-layer model. Two formats              in engine/src/kernels/cuda/qsa_prompt_attn.cu).
+were compared on the same 32K needle run, the same model,               Those are details of the implementation, but they are why
+the same machine and the same build (A. 21, Table 1): the               the format cannot be ported by copying a number around:
+8-bit cache the engine reads natively in the prompt kernel,             the block geometry (32 values, one scale) meets the kernel’s
+and a 4-bit cache with a per-block scale. The 4-bit cache was           group geometry (32 dimensions, one scale) exactly, and both
+2.5 times slower — 264.3 tokens per second against 663.6                are 32 for a reason that is not shared.
+— because it could not be served by the matrix-core path
+and fell back to the decode kernel. The same run, with the              2.3 What the hardware gives, and what it does not
+routing switch flipped, is what makes the price attributable
+to the route rather than to the codec: with the switch off, the         The matrix core is not a generic accelerator, and its numbers
+4-bit pool is at 264.3 tokens per second, with it on, it is at          decide which formats are worth writing (the rates below are
+the level of int8 (Section 5).                                          AMD’s documentation [8], not measurements of ours):
+
+2.2 What the prompt kernel does                                            Three readings matter for a KV format. First, the integer
+                                                                        types are twice the rate of the fp16 type, so an 8-bit cache
+The batched prompt attention of the engine computes, for                could in principle be served twice as fast — but both operands
+a tile of 16 query rows against a tile of 16 key positions,             must then be integers, which means the query must be quan-
+a matrix product per 32-dimension group and applies the                 tized too, and that is a separate cost with its own quality
+group’s scale after the group’s partial sum. Two properties
+of that kernel decide which formats it can serve, and both
+
+                                                                     2
+price. Second, the 4-bit type is twice that again, which is           Table 3: The byte budget and what it buys (the cache figures are
+the reason the format’s own bit width is not a constraint             the sibling paper’s 128K measurement [2]; the slots and the rates
+on the matrix core. Third, the fp8 type does not exist on             are this paper’s A. 23, same machine, same run series. The A. 22
+RDNA3 [10], so a plan that reaches for fp8 cannot be ported           series measures the same comparison at 663.6 against 651.6 tokens
+to the older family by configuration.                                 per second — the two series differ by the machine’s throughput
+                                                                      level, which is why the comparison is made inside one series).
+   The catch is the same on every card and it is structural
+rather than architectural: the block scale has to be applied          bits per value             int8         q4u32
+somewhere, and the two places cost very differently. On the           KV cache at 128K
+operand — before the matrix product, once per input value —           expert slots (auto cache)  8.25         4.50
+it is cheap and is what this format does. On the accumulator          prompt rate (32K needle)   1,584 MiB    1,016 MiB
+— after the matrix product, once per output value per block                                      2,888.5      3,428.7
+— it is sixteen times more expensive at a 16-row tile, and it is                                 669.0 tok/s  664.5 tok/s
+what an integer path would need. A foreign measurement on
+this hardware puts the same asymmetry at a factor: with an            16 bytes of codes          ������ (fp16)
+int8 matrix product the matmul halves, but the per-32-value
+descaling takes half of it back, so the realized gain is 1.20×                                   ������ o=n(ecogrdoeu−p 8o)f ⋅3���2���,doinmeesntseiponpser 32 values
+rather than 2× [7]. This paper does not need that path — the
+format’s scale sits on the operand, where it is free — and                   the bloctkh’astgiseowmheytrtyheanfodrmthaetkreidrneselt’hsegrmoautprigxepoamthetwryitahroeutthwe osrakme 32 —
+the measurement is the reason the format was chosen rather
+than the integer one.                                                 Figure 1: The block and the kernel’s group: 32 values along the
+                                                                      head dimension carry one step, and the prompt attention applies the
+3 The Format                                                          step per group of 32 dimensions. The two geometries coincide, so
+                                                                      the format’s reconstruction is exactly the map the kernel performs.
+3.1 The block
+                                                                      change and its reader is a small change.
+The cache is written after the same Walsh–Hadamard rota-
+tion the engine already applies to the key and value rows.            One thing the format does not do. It does not use a
+A block is 32 values along the head dimension: 16 bytes of            power-of-two step. The closest published format to this
+codes (two 4-bit codes per byte) and one fp16 step ������. The            cache — UltraQuant’s 4-bit codes with one scale per 32 val-
+reconstruction is ������ = (code − 8) ⋅ ������: the codes are centred,        ues, aimed at long-context serving on CDNA4 [4] — reads a
+the step carries the magnitude, and there is no third number.         UE8M0 exponent, because the matrix-core instruction wants
+The step is fitted, not taken from the block maximum: one             one. The sibling paper priced that mechanism on this en-
+least-squares pass over the block’s own values against the            gine’s blocks: the power-of-two step costs 1.81 dB in the
+code assignment they received. The sibling paper measured             best form (the writer picks the better of the two neighbour-
+the alternatives on the same blocks [2]: a uniform grid with          ing powers) and 2.43 dB in the paper’s form (the exponent
+a fitted step is 0.86 dB better than the fitted Lloyd table it        is rounded to the nearest power of two), and UltraQuant’s
+replaces (because the cached rows carry a fixed per-channel           global constant costs 2.29 dB against a least-squares step [2].
+offset, and a grid centred on zero spends half its range on           On this hardware the exponent would save one byte per
+it), and a grid with the step taken from the block maximum            18-byte block (4.5 to 4.25 bit per cell), so the trade would
+instead of fitted costs 0.43 dB.                                      be voluntary here and forced there. The format keeps the
+                                                                      fp16 step: it is free here, and the paper’s measurement is the
+3.2 The byte budget                                                   reason it is free.
+
+At a group of 32 values the block costs 18 bytes: 16 for the          4 The Implementation
+codes and 2 for the step. That is 4.5 bit per value, against 8.25
+for the 8-bit cache (which pays one fp16 scale per 64 values).        4.1 Reading the pool in the prompt kernel
+On the measured 128K context that is 1,016 MiB against
+1,584 MiB, and the difference is what the expert cache sees.          The batched prompt attention gained a 4-bit instantiation:
+The half bit is the price of the group’s own dynamic range:           the operand build produces the block’s codes and its step
+a group of 64 would cost 4.25 bit per value and a group of            instead of 8-bit codes and a scale, the accumulator applies
+16 4.75, and the sibling paper’s campaign never varied that           the step per group as before, and the value path reads the
+knob, so it stays open on the quality side (Section 6).               codes of the same block geometry. In the parity harness the
+                                                                      4-bit arm runs against an FP64 reference and against the old
+3.3 What the format asks of the writer and the reader                 kernel, and its cost in the first version of the kernel was a
+                                                                      5.12 times shorter prompt read (97.3 to 19.0 ms per chunk,
+The writer must produce, per 32 values, a fitted step and             same harness, same selection).
+16 bytes of codes, and nothing else: no level table, no per-
+model calibration, no zero point. The reader must recon-
+struct (code − 8) ⋅ ������. Both are the same operations the 4-bit
+Lloyd path already performed, with the table dropped and
+the step fitted, which is why the format’s writer is a small
+
+                                                                   3
+4.2 The window pass                                                   Table 4: The measurements of the product path (all on the machine
+                                                                      named above; the rates are medians over the three requests of a
+The sibling paper’s format keeps the most recent ������=256 cells         run, the parity is the harness’s worst deviation against an FP64
+and the first ������=64 sink cells of each cache-carrying layer           reference on a scale of ≈ 7.5).
+exact, in fp16, in a resident side pool; the rest is 4-bit [3].
+That window has to be read by the same kernel, and the two            Series            What it measures     Result
+paths (quantized and exact) had to be merged: a window                                                       green, 5.7–8.3⋅10−6
+cell stores nothing quantized, its value comes from the side          A. 17 (parity)    the 4-bit arm
+pool, and the mask that decides which is which is per lane.           A. 18 (route)     against FP64         matrix core in ev-
+The implementation adds a second value set and a window-              A. 21 (price)     the engine’s own
+row lookup per cell, and it adds the exact cells as a second          A. 22 (coupling)  route line           ery run
+operand for the affected positions.                                   A. 23 (default)   the format without
+                                                                      A. 23 (slots)     the path             264.3 tok/s (2.5×
+4.3 The parity harness                                                                  the format with the
+                                                                                        path                 slower)
+The harness (hip_prompt_attn_wmma) runs the prompt at-                                  the engine without
+tention against an FP64 reference and against the old kernel                                                 −1.8%    mean,
+over a set of shapes, and it is the gate: a shape that fails                            --kv
+stops the release. Its output is a checksum per shape, and the                                               −2.1% median
+checksums of the unchanged shapes are bit-identical across                              the freed memory
+the 4-bit work — the 4-bit path did not move a single bit of                                                 q4u32 in 3 of 3
+the 8-bit path.
+                                                                                                             runs
+4.4 The occupancy lesson
+                                                                                                             +18.7% expert slots
+One implementation detail is worth its own paragraph, be-
+cause it is not about the format. The second value set (the           5.2 The route, in the engine’s own words
+window’s exact cells) was first added to the 8-bit instantia-
+tion as well, as a 32-register accumulator written only under         The engine prints a line at start-up that names the format
+a runtime condition. The 8-bit prompt kernel fell from 8.07           it chose and the route it takes. In the series of runs that
+to 17.4 ms per chunk (factor 2.16) — with a bit-identical             measures the default, that line reads KV storage: q4u32
+output. Guarding the whole window mechanism with if
+constexpr (and taking Q4 ? tmpw : 0 in the accumulation)              (the default on this part: 54.5 % of int8’s bytes,
+brought it back to 8.26 ms. The lesson is general and it is the       level with it at 32K; . . . ) in three of three runs,
+reason this paper reports kernel times next to every format           and the matrix-core route line appears in each of them. The
+change: on this kernel the occupancy, not the arithmetic,             needle run finds 18 of 18 needles in the six runs of the series.
+decides by a factor of two.                                           That is a route check, not a speed comparison, and it is
+                                                                      reported as such.
+5 The Measurements
+                                                                      5.3 The speed, and the level
+All measurements are on one machine: a Windows PC with
+an RDNA4 card (gfx1201), ROCm 7.2, the engine built from              The rates of the machine fall into two levels, and a run’s
+this tree (version 0.1.63-q4u32), the model Swift-Qwen3.8-            level is not predictable from outside (the fast level is not a
+Flash-Next-GSQ-RCO-IQ3_XXS, the corpus the needle test                measurement of anything the series controls; it appeared in
+(three depths, 30.782–30.783 prompt tokens at a 32K context).         one of twelve int8 requests in an earlier series and in three
+The prompt rate is the median over the three requests of a            of six in another). The comparisons below are therefore
+run; the runs that appear in a table are named, and the series        made inside one level and the level is named.
+is documented run by run in the in-repo record [1]. Where
+a comparison runs in two different levels (the machine has               In the slow level the 4-bit format with the matrix path sits
+two throughput levels, and a run’s level is not predictable           at 651.6 tokens per second against 663.6 for int8 over nine
+from outside), the comparison is made inside one level and            and six requests respectively: −1.8% on the mean, −2.1% on
+the level is stated.                                                  the median, with the per-request spread of both arms over-
+                                                                      lapping (636.0–682.5 against 641.3–664.8). The pre-registered
+5.1 The parity                                                        criterion was “not more than 5% behind”, and the harness’s
+                                                                      own noise floor is 2–3%; the result is inside both. The same
+The harness is green: the worst deviation of the 4-bit arm            series measured the format without the path at 264.3 tokens
+against the FP64 reference is 5.7 ⋅ 10−6 to 8.3 ⋅ 10−6 on a scale     per second (−60.2%), which is the price of Section 2 and the
+of ≈ 7.5, the same order as the decode kernel itself (4.7 to          reason the path is a precondition of the format rather than
+7.2 ⋅ 10−6), and the shapes that do not use the window are            an optimization of it.
+bit-identical to their previous checksums. The harness is
+also the cheapest possible evidence in this paper: it runs on         5.4 The memory, and what it buys
+the machine in minutes and needs no model.
+                                                                      The freed bytes are not an end in themselves; the engine
+                                                                      spends them on the expert cache. With --expert-cache
+                                                                      auto the 4-bit format holds 3428.7 expert slots on average
+                                                                      (3438, 3414, 3434 in three runs) against 2888.5 for int8 (2917,
+                                                                      2860 in two runs): +18.7% more resident experts, at a prompt
+                                                                      rate that is 0.7% behind (median 0.1%). This is the trade the
+                                                                      format exists for, and it is measured on the same machine in
+                                                                      the same series.
+
+                                                                   4
+5.5 The default                                                          The reason is visible in the same run. The question of
+                                                                      which coordinates set the scale in the format itself has an
+Without --kv the engine of this tree chooses q4u32 on gfx12           answer: the five strongest of 256 coordinates set only 6.3 %
+and 16-bit everywhere else, and says which in its start-up            to 13.6 % of the blocks, layer by layer. There are no outlier
+line. The choice is the card’s, because the card’s prompt path        coordinates. After the rotation the dynamic range lives in
+is what decides whether the format can be served: on a part           the token — every row has its own scale — and the format’s
+without the matrix path the same format is 2.5 times slower,          geometry follows that. A scale per coordinate must cover
+and a format that costs 60% of the prompt rate must not be            the extreme token of that coordinate and is therefore too
+the default there.                                                    coarse for the typical one.
+
+6 The Ablation: what the format                                          Two consequences. First, the literature’s warning does
+                                                                      not survive the rotation: it holds for a format without one.
+   needs                                                              Second, the surviving part of the channel axis is the offset,
+                                                                      not the scale: removing a fixed per-channel offset before the
+The ablation is run on the engine’s own cells: 768 records,           rotation is worth 1.70 dB on the key side and 4.63 dB on the
+392.952 tokens, 201.191.424 values per side, 12 cache-carrying        value side [2], and it is a per-model table of 48 KB. The scale
+layers, the same dump the sibling campaign used [2]. The              axis is closed twice, once before and once after the rotation,
+metric is the mean squared error per value, in dB against             and each closure is a measurement.
+the format itself. The parts, from the sibling campaign’s
+measurements and from this paper’s:                                   6.3 What stays open
+
+6.1 The scale is the load-bearing part                                The group size of the block is the one knob the sibling cam-
+                                                                      paign never varied, and A. 27 varies it here on the same
+Three of the four rows say the same thing from different              blocks: a group of 16 wins 1.19 dB and costs 0.5 bit per value
+directions: the per-block scale carries the quality and the code-     more (5.0 against 4.5), a group of 64 loses 0.92 dB and saves
+book barely matters. A fitted Lloyd table on the same blocks          0.25 bit per value (4.25 against 4.5).
+costs 0.43 dB against the uniform grid; a second least-squares
+pass after the code assignment — the only free change left               The kernel decides which of the two is buildable, and
+in the writer — is worth 0.079 dB, a twentieth of the 4K reso-        the rule is not the obvious one. The prompt attention
+lution [2]. This is the finding UltraQuant reports for its own        applies the step per group of 32 dimensions, and a block
+format (“with the per-block scale in place the codebook itself        is a row along the head dimension — so a block that is
+barely matters”) [4], measured here on this engine’s blocks:          larger than the kernel’s group is served by the same step
+the same conclusion on different hardware and a different             twice: the step is constant inside each 32-dimension group,
+corpus. It is also why the format is what it is: a uniform            and the kernel folds it into the operand as it does now
+grid with a fitted step is the cheapest to write, the cheapest        (engine/src/kernels/cuda/qsa_prompt_attn.cu: the
+to read, and the one the kernel’s hardcoded value mapping             step of the group is read from the block, and the fold mul-
+accepts.                                                              tiplies the group’s codes by it). A 64-value block would
+                                                                      therefore need three local changes — the block index, the
+6.2 The channel axis is closed                                        lane’s offset inside the block, and the nibble rule, which goes
+                                                                      from two quadrants to four — and the step lookup would
+The 4-bit literature’s advice for the sub-8-bit regime is asym-       read every second group’s step from the same block. A block
+metric grouping: the key side per channel, the value side             that is smaller than the kernel’s group cannot be served at
+per token, because a few outlier channels would otherwise             all: two blocks would fall inside one group, and the kernel
+poison their neighbours in a group [5]. The sibling campaign          applies one step per group.
+killed half of that axis before this paper existed: the S2 probe
+found that the pre-rotation channels are not the heavier tail            So the 32-value group is not the only buildable one, and
+(mean excess kurtosis −0.18 before against −0.14 after), so a         the honest statement is a trade rather than a closure: the
+per-channel scale was not built [2]. What was open was the            64-value group is buildable and saves 0.25 bit per value (5.6 %
+same axis after the rotation — the axis the format actually           of the bulk, which on the measured card is about 40 more
+sees — and A. 26 closes it with a measurement on the same             resident experts, or 1.2 %), and it costs 0.92 dB of block er-
+blocks.                                                               ror — about 0.0012 nats through the measured block-to-nats
+                                                                      bridge [2]. Against a product arm that is already level with
+   The arms: the format itself (one step per 32 values along          int8 on the mean and behind it on the p99, that is the wrong
+the head dimension, per token), the same quantizer with one           direction: it buys bytes by spending the margin the format
+step per coordinate over all tokens (the per-channel arm),            was chosen for. The 16-value group is the better codec and
+and the hybrid of both (K per coordinate, V per token, which          the more expensive one, and it is not buildable. The group
+is the literature’s recipe). The result is the opposite of a          size therefore stays at 32 in the product, and the format is
+gain: the per-coordinate scale is 1.26 dB worse on the key            fixed: 4.5 bit per cell, one step per 32 values, a uniform
+side (768 records, 392.952 tokens, 201.191.424 values per side        grid, no codebook, no zero point, no calibration. What
+— 6.29 million blocks; the MSE rises from 1.4937 ⋅ 10−2 to            is left open is not a format question: the per-channel offset (a
+1.9970 ⋅ 10−2) and 0.40 dB worse on the value side, and it is         property of the cache, not a lever on this format), the RDNA3
+worse on the key side in 12 of 12 layers (+0.72 to +1.65 dB).
+The hybrid inherits the key-side loss unchanged.
+
+                                                                   5
+and APU arms (Section 8), and the integer path (a kernel            gfx12, the Terminal follows it, and both are preregistered
+question, not a format one).                                        for RDNA3 (A. 24) and for the APUs (A. 25) with their cri-
+                                                                    teria — parity, the rate against int8, the logit gate (the KL
+The one remaining format question is the byte model’s.              against the FP32 kernel and the top-p agreement) and the
+The group’s step costs half a bit per value at 32 values and a      expert slots, separately for the case with and without the KV
+quarter at 64; the quality side of that trade is now measured,      streaming that the APUs use above 64K. The hardware is
+and it says the 32-value group is the only one the kernel can       not on this machine, so those arms are open and everything
+serve (Section 6).                                                  said about them here is static analysis or citation.
+
+7 The Product Path                                                  CUDA. The engine’s format choice is an AMD decision:
+                                                                    on CUDA the 4-bit path is not built and not measured on
+7.1 The engine chooses                                              this branch, so the format choice stays 16-bit there and the
+                                                                    Terminal names 8-bit, exactly as before.
+The engine of this tree is 0.1.63-q4u32: the Strata release
+it was changed from, plus the suffix of what it adds. Without       The bytes. 4.5 bit per cell is the format’s price, and half
+--kv it takes the format where the prompt path can serve            of it is the group’s step. The group size is the open knob
+it (gfx12, and the parts whose matrix path is on) and 16-           (Section 6).
+bit everywhere else; a format the person names is always
+written, and STRATA_HIP_WMMA=0 keeps 16-bit everywhere,             The offset. The per-channel offset is worth decibels and
+because that is the state without the prompt path, in which         costs 48 KB per model and a basis discipline [2]; it is not part
+the format is 2.5 times slower. The engine’s own line names         of this format and was not measured together with it.
+the choice at start-up.
+                                                                    9 Relation to Prior Work
+7.2 The Terminal follows
+                                                                    UltraQuant is the closest published format to this cache:
+A run config must not contradict the engine. The Terminal           4-bit codes with one scale per 32 values — the same group
+writes the format itself only where the engine cannot choose:       size — for long-context serving, on CDNA4 [4]. Two things
+on every card that is not gfx12, on every engine that is not        carry over. Its ablation — the per-block scale carries the
+a q4u32 build, and above 8K context, where the last release         quality, the codebook barely matters — is measured here on
+named 8-bit anyway. Everywhere else it writes nothing and           this engine’s blocks and comes out the same way (0.43 dB
+lets the engine decide. The gate is the engine’s variant, not a     for the codebook), on different hardware and a different
+version number — the manifest carries the variant, and the          corpus. Its scale mechanism does not carry over: the UE8M0
+Terminal reads it — so an upstream engine, which has no             exponent costs 1.81 dB here in its best form and 2.43 dB in
+such default, keeps the last release’s behaviour exactly.           the paper’s form, and on this hardware the exponent would
+                                                                    save one byte per block, so the trade would be voluntary
+7.3 An update never switches the variant                            here and forced there [2]. What this paper adds is the other
+                                                                    half of the format question: not what the scale costs, but that
+A fork’s engine and an upstream engine carry the same               a 4-bit pool can be read by the matrix core at all, and what
+release number and differ in what they do, so a version             that buys (a 2.5 times faster prompt path, and 18.7% more
+comparison cannot keep them apart. The package therefore            resident experts).
+carries the variant in its manifest, and the update rule is
+the same one the CUDA build already follows (an update              KIVI and the sub-8-bit literature propose asymmetric
+never switches the CUDA build): a newer build of the same           grouping — the key side per channel, the value side per to-
+variant is taken, a package of another variant is not offered,      ken [5], and a recent analysis of the sub-8-bit regime warns
+and the update says so in one line. A q4u32 engine cannot           that the quality breaks down below 8 bit and names the same
+be replaced by an upstream engine by an update that only            axis [6]. This paper measures that advice on this format’s
+meant to bring a newer version of the same thing.                   own blocks and finds it does not transfer: a scale per coor-
+                                                                    dinate is 1.26 dB worse on the key side, in 12 of 12 layers,
+8 Limits and Open Questions                                         because the rotation has moved the dynamic range into the
+                                                                    token (Section 6.2). The advice holds for a format without
+The RDNA3 family (gfx11) and the integrated APUs.                   a rotation; ours has one, and the measurement says which
+The matrix-core prompt kernel of this engine is written per         axis is alive.
+architecture and has an RDNA3 variant: its own intrinsic, its
+own fragment layout (PA_KL 16 instead of 8, a different accu-       The upstream 4-bit KV work in the LLM stack dequan-
+mulator row mapping), and the 4-bit path’s nibble expansion         tizes rather than reads: llama.cpp fuses the dequantization
+is consistent with it (statically: a 16-dimension step always       into the MMA flash-attention kernels, so the prompt path no
+falls inside one 32-value block). With STRATA_HIP_WMMA=1
+the 4-bit pool runs on RDNA3 today; on the integrated parts
+(gfx1103, gfx1151) that switch is even the default, and the
+prompt rate there was measured by the community (4K 690
+to 1.090 tokens per second on a Strix Halo box). What is
+missing is the default: the engine’s format choice names
+
+                                                                 6
+longer writes an fp16 scratch, but the codes are still read as 8-     with the needle corpus. The block measurements use one
+bit or dequantized in registers [14]. A community fork goes           corpus (cwe-4k) on the sibling campaign’s dump.
+further and reads the 4-bit codes natively in the tensor-core
+path, with the query quantized to 8-bit [15]. SageAttention’s         The format is compared against int8, not against a
+RDNA4 backend puts the int8 query-key product and the                 better 4-bit format. The claim is that this format is served
+fp8 value-product on the matrix cores [16]. None of them              by the hardware at the level of int8 and costs 54.5 % of its
+reads a 4-bit cache directly into the matrix core: the codes          bytes. It is not a claim that this format is the best 4-bit
+are dequantized on the way. The gap this paper closes is that         format; the sibling paper’s campaign is the source for that
+one.                                                                  question [2].
+
+What the RDNA3 family has, and what it has measured.                  The pre-registration covers the comparisons, not every
+The older family has matrix cores too: AMD’s documenta-               number. The arms that are compared here (A. 21, A. 22,
+tion names the dense WMMA built-ins for gfx1100–gfx1103               A. 23, A. 26) were registered with their criteria before their
+and gfx1150–gfx1153, with the same wave32 shape and the               first run; the block measurements of the sibling campaign
+same 4-bit type at half the cycles of the fp16 type [8, 9];           have their own registration [2]. Numbers that are neither —
+the matrix-multiply-accumulate type of the datacenter cards           the per-layer breakdown, the level structure, the occupancy
+does not exist there [9], and the fp8 type does not either [10].      lesson — are reported as what they are.
+AMD’s own kernel work on RDNA3 (October 2026) reports
+a hand-written WMMA GEMM ahead of the vendor library                  The hardware claims of the RDNA3 arm are static anal-
+on a workstation card of that family (70.92 against 56.86             ysis. The code paths exist and the geometry is consistent;
+TFLOP/s [11]), which says that the family is worth writing            nothing in this paper measures them.
+kernels for. A community fork measured a 34–75 % faster
+prompt on a 7900 XTX with a matrix-core prefill — and the             11 Conclusion
+same run moved the prefill logits measurably (KL 0.0293,
+top-p 92.59 % against the tile path) [12], which is why the           A 4-bit KV cache on RDNA4 was a memory win with a 2.5
+preregistration of the RDNA3 arm in this line asks for a logit        times speed loss, because the matrix-core prompt path could
+gate and not only for a rate. A later community measure-              not read the pool. The format that removes the loss is not
+ment of a natively read quantized KV cache on an integrated           exotic: a uniform grid on blocks of 32 values with a fitted
+RDNA3.5 part reports a decode gain of 3–6 % [13], against             step, written after the rotation the cache already applies.
+1.4–1.9× on RDNA4 [14]: on the older family the bottleneck            Its property is that it is affine along the head dimension,
+stays the memory bandwidth, and a 4-bit cache promises                which is exactly the map the kernel applies per group of
+memory there, not tempo.                                              32 dimensions, so it rides the fast path without a table, a
+                                                                      codebook or a per-model artifact.
+The rotation this format relies on belongs to the fam-
+ily that the quantization literature uses to make outliers               Measured on the machine named above: the parity harness
+harmless [17, 18], and the 2026 theory work shows that the            is green (5.7–8.3 ⋅ 10−6 against FP64, the 8-bit shapes bit-
+sign-only randomized Hadamard suffices [20]. A systematic             identical), the engine takes the matrix route in every run, the
+comparison finds the rotation worth nothing where the data            prompt rate is level with int8 (−1.8% mean, −2.1% median)
+is isotropic and everything where it is heavy-tailed [21]; the        at 54.5 % of its bytes, and the freed memory buys +18.7%
+channel moments measured on this model put it in the light-           expert slots. The ablation says what the format needs: the
+tailed regime, which is why the randomized variant is not             per-block scale is load-bearing, the codebook is not (0.43 dB),
+used here and why the channel axis has so little to offer             and the per-channel axis of the sub-8-bit literature is closed
+(Section 6.2).                                                        by measurement (1.26 dB worse, 12 of 12 layers). The product
+                                                                      rule follows the measurement: the card chooses the format
+10 Threats to Validity                                                where the path was measured, every other card and every
+                                                                      upstream engine keeps the last release’s behaviour, and the
+One machine, one card. Every measurement is a Win-                    variant is marked so that an update cannot silently replace
+dows PC with one RDNA4 card (gfx1201). The level structure            it.
+of the machine (Section 5) is not understood; the compar-
+isons are made inside one level and the level is named, but              The open arms are the RDNA3 and APU extensions (pre-
+a reader should treat the absolute rates as machine-specific          registered, no hardware here), the group size of the block,
+and the differences as the result.                                    and the CUDA path.
+
+One model, one corpus. The route and the parity are                   References
+properties of the kernel and are expected to hold for any
+model of this shape; the rates are measured on one model              [1] M. Kronenberger. The q4u32 fast path: the run-by-
+                                                                           run record (working document, German). In-repo,
+                                                                           bench/results/2026-11-14-q4u32-fastpath/, 2026-
+                                                                           11-17. (The A. 16–A. 26 series; every table in this paper
+                                                                           cites its entry.)
+
+                                                                   7
+[2] M. Kronenberger. Mean-Centered Calibrated KV                       [14] ggml-org/llama.cpp PR #31802: fused q4_0 dequan-
+     Quantization: int8 Quality Below 5 bit/cell. In-repo,                  tization in the MMA flash-attention kernels. 2026-11.
+     docs/paper/, version 0.24, 2026-11-14. (The block
+     measurements this paper inherits: the grid’s geometry,            [15] torad-labs/llama.cpp, commit 60feea0: native
+     the codebook’s price, the power-of-two step, the                       q4_0 in the tensor-core path, 8-bit query. 2026.
+     per-channel offset, the moments and the channel probe.)
+                                                                       [16] thu-ml/SageAttention PR #368: native gfx12 back-
+[3] M. Kronenberger. KV-Window-Hardening: the exact-cell                    end (int8 query-key product, fp8 value-product on the
+     window. In-repo, docs/paper/, version 1.11, 2026-11-11.                matrix cores). 2026.
+    (The window the 4-bit path reads: 256 recent and 64 sink
+     cells per layer, exact.)                                          [17] S. Ashkboos, A. Mohtashami, M. L. Croci, B. Li,
+                                                                            P. Cameron, M. Jaggi, D. Alistarh, T. Hoefler, J. Hens-
+[4] I. Chakrabarti, D. Limpus, A. Ghai Rana, B. Bao, S. Tiwari,             man. QuaRot: Outlier-Free 4-Bit Inference in Rotated LLMs.
+    T. Crepaldi, A. Sirasao. UltraQuant: 4-bit KV Caching                   arXiv:2404.00456, 2024.
+     for Context-Heavy Agents. EMNLP 2026 Industry Track,
+     arXiv:2606.20474.                                                 [18] Z. Su, Z. Chen, W. Shen, H. Wei, L. Li, H. Yu, K. Yuan.
+                                                                            RotateKV: Accurate and Robust 2-Bit KV Cache Quan-
+[5] Z. Liu, J. Yuan, H. Jin, S. Zhong, Z. Xu, V. Braverman,                 tization for LLMs via Outlier-Aware Adaptive Rotations.
+     B. Chen, X. Hu. KIVI: A Tuning-Free Asymmetric 2bit                    arXiv:2501.16383, 2025.
+     Quantization for KV Cache. ICML 2024, arXiv:2402.02750.
+                                                                       [19] A. Tseng, J. Chee, Q. Sun, V. Kuleshov, and
+[6] Sub-8-Bit KV Cache Quantization Is Not a Free Lever                     C. De Sa. QuIP#: Even Better LLM Quantization with
+     for an RDNA4 Agent Swarm. zolotukhin.ai, 2026-08-14.                   Hadamard Incoherence and Lattice Codebooks. ICML 2024,
+    (The KIVI-axis warning this paper measures on its own                   arXiv:2402.04396.
+     blocks.)
+                                                                       [20] R. Ben-Basat, W. Kuszmaul, M. Mitzenmacher, A. Port-
+[7] int8 WMMA doubles RDNA4’s matrix rate, and Q4_K’s                       noy, and S. Vargaftik. Quantizing With Randomized
+     block scales take half of it back. zolotukhin.ai, 2026-07-12.          Hadamard Transforms: Efficient Heuristic Now Proven.
+    (The descaling asymmetry this paper’s format avoids by                  arXiv:2605.06014, 2026.
+     keeping the scale on the operand: 1.20× realized against
+     a theoretical 2×.)                                                [21] P. D’Alberto, A. Sirasao, E. Delaye, and R. Patwari. Ab-
+                                                                            lation, Statistical Inference, and Validation for KV-Cache
+[8] AMD. ROCm Optimization Guide: RDNA4 dense WMMA                          Compression. arXiv:2607.09683, 2026.
+     built-ins (rates, signatures, the lane-group split). 2026.
+    (The rate table of Section 2.2.)                                   [22] Output-Aware Rotation for INT2 KV-Cache Quantization.
+                                                                            arXiv:2608.02691, 2026.
+[9] AMD. Matrix Instruction Calculator (the rdna3 block: the
+     dense WMMA built-ins and their execution cycles; no               [23] OffQ: Taming Structured Outliers in LLM Quantization
+     matrix-multiply-accumulate type on that family). 2026.                 by Offsetting. arXiv:2606.07116, 2026.
+
+[10] AMD. rocWMMA: data-type support (the fp8 and BF8                  [24] E. Jokar. Transforms for LLM Quantization: The Great
+     types require gfx1200/gfx1201; the integer and fp16                    Inversion and Format Co-Design. arXiv:2608.25188, 2026.
+     types are available on gfx11) and installation (the sup-
+     ported gfx11 targets). 2026.                                      [25] G. Federici et al. HadaNorm: Adaptive Channel Center-
+                                                                            ing for Post-Hadamard Quantization. 2025.
+[11] A. Johar, J. Stephan, I. Kiss. FP16 GEMM Optimization
+     on AMD RDNA 3 and RDNA 4 Architectures. AMD ROCm                  [26] KV-cache mean-centering and its calibration-basis guard.
+     blog, 2026-10-16. (Measured: a hand-written WMMA                       Public llama.cpp fork (PrismML-Eng), July 2026.
+     kernel against the vendor library on a workstation card
+     of the RDNA3 family.)                                             [27] G. Xiao, Y. Tian, B. Chen, S. Han, M. Lewis. Effi-
+                                                                            cient Streaming Language Models with Attention Sinks.
+[12] stew675/llama-cpp-rdna-boosts PR #199: matrix-                         arXiv:2309.17453, 2023 (ICLR 2024).
+     core flash attention with head 512 on gfx1100. 2026-10-
+     21. (Measured on a 7900 XTX: the prompt rate and the              [28] M. Kronenberger. Ansatz-Verbesserungen: KV-Cache-
+     logit shift of that path.)                                             Quantisierung & Exact-Cell-Fenster (working document,
+                                                                            German). In-repo, docs/paper/, 2026-10-25.
+[13] ggml-org/llama.cpp PR #31234, with the measure-
+     ment of 2026-11-16 on an integrated RDNA3.5 part: a
+     natively read quantized KV cache in the tile path. 2026.
+
+                                                                    8
+Table 5: What the format needs (block error in dB; the first
+three rows are the sibling campaign’s measurements on the same
+blocks [2], the last two are this paper’s).
+
+Part                            Price      What it
+                                           means
+fitted step (vs. block maximum) 0.43 dB
+                                           the step
+codebook (Lloyd vs. uniform grid) 0.43 dB  is fitted,
+                                           not from
+power-of-two step (vs. fitted)  1.81 dB    the maxi-
+                                           mum
+per-block zero point            0.86 dB    the code-
+                                           book
+per-coordinate scale (A. 26)    +1.26 dB   barely
+                                           matters
+group size 64 (A. 27)           +0.92 dB   a UE8M0
+                                           exponent
+group size 16 (A. 27)           −1.19 dB   is expen-
+                                           sive here
+                                           buys
+                                           range,
+                                           costs 0.5
+                                           bit per
+                                           cell
+                                           worse:
+                                           the chan-
+                                           nel axis
+                                           is closed
+                                           saves 0.25
+                                           bit per
+                                           value; the
+                                           kernel
+                                           can serve
+                                           it
+                                           wins, but
+                                           costs 0.5
+                                           bit per
+                                           value and
+                                           is not
+                                           buildable
+
+                                                                9
+
