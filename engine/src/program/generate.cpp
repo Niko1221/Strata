@@ -7871,7 +7871,10 @@ int main(int argc, char** argv) {
 #endif
     // the draft layer's geometry (the canonical model's MTP head), `static` because MtpDrafter keeps a reference; the batch
     // slots' draft-KV copies use this one too
-    static const strata::core::ModelGeometry draft_geometry = strata::core::kCompiledGeometry;
+    // not const: a model whose MTP head has another number of routed experts than the canonical 512 (a pruned model's
+    // own head, for example one made from its draft GGUF by terminal/tools/mtp_from_gguf.py) takes the count from
+    // experts.bin below
+    static strata::core::ModelGeometry draft_geometry = strata::core::kCompiledGeometry;
     std::vector<std::unique_ptr<strata::core::MtpDrafter>> slot_mtp;
     // KVA (0.2.7: opt-in with STRATA_KVA=1; unset is the exact 0.2.6 path): what only the engine knows.  A layer split and
     // the batch slots read their prompts in pieces and in stages, which the one-device, one-cold-read rule of the
@@ -7973,6 +7976,21 @@ int main(int argc, char** argv) {
         // longer window up in parts)
         const int mtp_t = o.pipeline_windows >= 2 ? strata::kernels::kVerifyNarrowT : std::min(o.spec, (int) strata::kernels::kVerifyNarrowT);
         if (o.pipeline_windows >= 2) mtp.set_force_capture(true);
+        // the draft layer is the canonical model's MTP head (512 experts) unless its experts.bin holds
+        // a whole other number of expert blobs, as a pruned model's own head can. A canonical experts.bin
+        // (512 blobs) leaves draft_geometry exactly as before; any other size that is not whole blobs is left to the
+        // loader's own size check. The MTP code takes the count from g.n_expert throughout (its 512-only router fast
+        // paths fall back to the general router_top10, as the trunk's do for a pruned model).
+        if (!o.mtp.empty()) {
+            std::error_code xec;
+            const uint64_t xb = (uint64_t) std::filesystem::file_size(std::filesystem::path(o.mtp) / "experts.bin", xec);
+            const uint64_t blob = (uint64_t) strata::kernels::cpu::BLOB;
+            if (!xec && xb > 0 && xb % blob == 0 && (int64_t) (xb / blob) != draft_geometry.n_expert) {
+                std::fprintf(stderr, "strata generate: mtp: experts.bin holds %lld routed experts (a pruned MTP head; "
+                             "the canonical one has %lld)\n", (long long) (xb / blob), (long long) draft_geometry.n_expert);
+                draft_geometry.n_expert = (int64_t) (xb / blob);
+            }
+        }
         if (!o.mtp.empty() && !mtp.load(o.mtp, draft_geometry, last_st && !mtp_first ? last_st->ss : ss, mtp_t, err, o.mtp_window)) { std::fprintf(stderr, "strata generate: %s%s%s\n", err.c_str(), vram_free_note().c_str(), vram_batch_hint(err, o.batch).c_str()); return 1; }
         if (!o.mtp.empty()) mtp.set_ple_session(&ss);
 #if defined(STRATA_HAVE_DFLASH2)
