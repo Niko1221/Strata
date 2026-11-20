@@ -268,6 +268,7 @@ void down(const Layer&, void*) {}
 // The Metal backend reads a prompt through its decode window (metal/src/engine/window.cpp): init keeps the chunk, run
 // hands over, draft_kv declines (the MTP hook reads the window's rows itself).
 namespace strata::metal_engine {
+int64_t resident_prompt_auto_chunk(int64_t ceiling, int64_t fallback);
 bool window_ensure(const strata::core::ModelGeometry& g, strata::core::SessionState& ss, int64_t max_cells, std::string& err);
 bool prompt_taps(const std::vector<int>& layers, int64_t first_pos, const std::function<bool(const float*, int64_t, int64_t, std::string&)>& cb, std::string& err);   // dflash2.inc
 bool prompt_run(const int64_t* tokens, int64_t n, int64_t pos0, const float* const* embd_rows,
@@ -2906,6 +2907,12 @@ bool Prefill::relayout(int64_t chunk, void* borrow, uint64_t borrow_bytes, std::
 }
 
 int64_t Prefill::chunk() const { return impl_->T; }
+#if defined(STRATA_GPU_METAL)
+int64_t Prefill::select_metal_auto_chunk(int64_t ceiling) {
+    impl_->T = strata::metal_engine::resident_prompt_auto_chunk(ceiling, impl_->T);
+    return impl_->T;
+}
+#endif
 int64_t Prefill::layout_tail() const { return impl_->tail_req; }
 int64_t Prefill::tail_room() const {
     const Impl& m = *impl_;
