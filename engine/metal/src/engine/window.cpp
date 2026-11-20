@@ -291,7 +291,7 @@ public:
     void set_max_t(int t) { max_t_ = std::min(t, MAXT); }
     // ---- the MTP draft layer (mtp.hpp's math on mac-kern's kernels; the MTP GGUF from tools/mtp_pack.py)
     bool mtp_load(const std::string& gguf, int max_t, std::string& err);
-    bool mtp_prefill(const int32_t* next_tokens, int64_t n, int64_t cell0, std::string& err);
+    bool mtp_prefill(const int32_t* next_tokens, int64_t n, int64_t cell0, int64_t retain_at, std::string& err);
     bool mtp_draft(int T, const int32_t* tokens, int64_t p, int a, int max_steps, int32_t* drafts, float* probs,
                    float min_p, int* n_drafts, std::string& err);
     bool mtp_loaded() const { return mtp_on_; }
@@ -2877,10 +2877,15 @@ void Window::mtp_encode(std::vector<mtl::Dispatch>& ds, const mtl::Buffer& srcR,
 }
 
 // the prompt's K/V: cell cell0 + i pairs the main window's final residual row i with the token at cell0 + i + 1
-bool Window::mtp_prefill(const int32_t* next_tokens, int64_t n, int64_t cell0, std::string& err) {
+bool Window::mtp_prefill(const int32_t* next_tokens, int64_t n, int64_t cell0, int64_t retain_at, std::string& err) {
     if (!mtp_on_) { err = "metal mtp: not loaded"; return false; }
     mtp_wait();   // (the previous chunk's rows share the cache, the scratch and the embedding rows)
-    mrope_sync(cell0, n);
+    // Only the trailing G_BUD cells can be used by the drafter. Keep extra rows for the first round.
+    // Preserve the original groups of MAXT dispatch rows at the boundary.
+    const int64_t unused = retain_at > 0 && !stream_ ? std::max<int64_t>(0, retain_at - G_BUD - 64 - cell0) : 0;
+    const int64_t start = unused >= n ? n : unused / MAXT * MAXT;
+    if (start == n) return true;
+    mrope_sync(cell0 + start, n - start);
     // every group of MAXT rows in one command buffer: the embedding rows of all of them in mpemb_ (row c + i)
     if ((int64_t) mpemb_rows_ < n) {
         if (mpemb_rows_ > 0) cx_->free(mpemb_);
@@ -2890,7 +2895,7 @@ bool Window::mtp_prefill(const int32_t* next_tokens, int64_t n, int64_t cell0, s
     membp_ = &mpemb_;
     std::vector<mtl::Dispatch> ds;
     nb_ = false;
-    for (int64_t c = 0; c < n; c += MAXT) {
+    for (int64_t c = start; c < n; c += MAXT) {
         const int k = (int) std::min<int64_t>(MAXT, n - c);
         mtp_encode(ds, mpsrc_ ? *mpsrc_ : mtp_src_ ? *mtp_src_ : R_, (size_t) c * HC * N * 4, k, next_tokens + c,
                    cell0 + c, false, (int) c, 0);
@@ -3774,9 +3779,9 @@ bool prompt_run_rows(const int64_t* tokens, int64_t n, int64_t pos0,
     }
     return true;
 }
-bool mtp_prefill(const int32_t* next_tokens, int64_t n, int64_t cell0, std::string& err) {
+bool mtp_prefill(const int32_t* next_tokens, int64_t n, int64_t cell0, int64_t retain_at, std::string& err) {
     if (g_window == nullptr) { err = "metal mtp: no decode window"; return false; }
-    return g_window->mtp_prefill(next_tokens, n, cell0, err);
+    return g_window->mtp_prefill(next_tokens, n, cell0, retain_at, err);
 }
 bool mtp_draft(int T, const int32_t* tokens, int64_t p, int a, int max_steps, int32_t* drafts, float* probs, float min_p,
                int* n_drafts, std::string& err) {
