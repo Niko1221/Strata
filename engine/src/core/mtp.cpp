@@ -84,7 +84,7 @@ void mtp_quant_q4_0(const float* x, void* dst, int64_t n) { ggml_quantize_chunk(
 namespace strata::metal_engine {
 bool mtp_load(const std::string& rt_dir, int max_t, std::string& err);
 void mtp_bind_state(strata::core::QsaState& st);
-bool mtp_prefill(const int32_t* next_tokens, int64_t n, int64_t cell0, std::string& err);
+bool mtp_prefill(const int32_t* next_tokens, int64_t n, int64_t cell0, int64_t retain_at, std::string& err);
 bool mtp_draft(int T, const int32_t* tokens, int64_t p, int a, int max_steps, int32_t* drafts, float* probs, float min_p,
                int* n_drafts, std::string& err);
 }  // namespace strata::metal_engine
@@ -1599,11 +1599,12 @@ bool MtpDrafter::reserve_prefill(int64_t n, std::string& err) {
 }
 
 bool MtpDrafter::prefill(const float* R_rows, const int32_t* next_tokens, int64_t n, int64_t cell0, std::string& err,
-                         bool sync) {
+                         bool sync, int64_t metal_retain_at) {
 #if defined(STRATA_GPU_METAL)
     (void) R_rows; (void) sync;   // the rows are the decode window's own (the Metal drafter reads them in place)
-    return strata::metal_engine::mtp_prefill(next_tokens, n, cell0, err);
+    return strata::metal_engine::mtp_prefill(next_tokens, n, cell0, metal_retain_at, err);
 #endif
+    (void) metal_retain_at;
     const OnDevice on_device(device_);
     const Clock::time_point t0 = Clock::now();
     const int64_t HCN = g_->hc * g_->n_embd;
