@@ -351,7 +351,7 @@ version made it the default.
 | `STRATA_PREFILL_STREAM_MIN` | number | NVIDIA and AMD, Intel Arc | v0.2.16 | [AMD_HIP.md](AMD_HIP.md), [STRIX_HALO.md](STRIX_HALO.md), [README.md](bench-results/2026-10-09-community-strix-halo-laptop-70w/README.md) |
 | `STRATA_PREFILL_TAIL_LOAN` | on / off | NVIDIA and AMD | v0.2.16 | - |
 | `STRATA_PROMPT_ATTN_ESIMD` | number | Intel Arc | v0.2.16 | - |
-| `STRATA_PROMPT_ATTN_OLD` | on / off | NVIDIA and AMD, Intel Arc | v0.2.16 | [NVIDIA_V100.md](NVIDIA_V100.md), [OLDER_GPUS.md](OLDER_GPUS.md), [README.md](bench-results/2026-10-03-v100-prompt-attn/README.md) |
+| `STRATA_PROMPT_ATTN_OLD` | on / off | NVIDIA and AMD, Intel Arc | v0.2.16 | [NVIDIA_V100.md](NVIDIA_V100.md), [INTEL_ARC.md](INTEL_ARC.md), [OLDER_GPUS.md](OLDER_GPUS.md) |
 | `STRATA_Q2_WARP` | on / off | NVIDIA and AMD | v0.2.16 | [DETAILS.md](DETAILS.md) |
 | `STRATA_Q36_CHUNK` | number | NVIDIA and AMD | v0.2.16 | [QWEN36.md](QWEN36.md) |
 | `STRATA_Q36_KEEP_STAGING` | on / off | NVIDIA and AMD | - | - |

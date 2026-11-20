@@ -5,7 +5,9 @@
 #include "strata/sycl_queue.hpp"
 #include "strata/kernels/qsa_prompt_attn_tla.hpp"
 #include <cute/tensor.hpp>
+#include "strata/kernels/mrope.hpp"
 #include <cute/atom/copy_traits_xe_2d.hpp>
+#include <algorithm>
 #include <cfloat>
 #include <cstdio>
 #ifdef printf
@@ -167,30 +169,112 @@ void launch(sycl::queue&queue,const float*q,QsaAttnPools p,const int32_t*ids,con
   });
 }
 }
+#include "qsa_prompt_attn_tla_fp32.hpp"
+
 namespace strata::kernels {
-bool qsa_prompt_attn_tla_batch(const float*q,const QsaAttnPools&p,const int32_t*ids,const int32_t*steps,int64_t cap,
- const QsaShapes&sh,float*scratch,float*out,int64_t nq,void*stream){
- if(!q||!ids||!steps||!scratch||!out||!p.k_q||!p.v_q||!p.k_scale||!p.v_scale||!p.page_table||p.k_q4||p.v_q4||
-    nq<=0||nq>32||cap<=0||cap>32768||sh.head_dim!=256||sh.n_head_kv!=2||sh.n_head!=24||sh.page_size<=0)return false;
- if((reinterpret_cast<uintptr_t>(p.v_q)&3)||(reinterpret_cast<uintptr_t>(q)&63)||(reinterpret_cast<uintptr_t>(p.k_q)&63))return false;
- auto*queue=strata::q_of(stream);
-#ifdef STRATA_HAVE_ZE
- if(queue->get_backend()!=sycl::backend::ext_oneapi_level_zero)return false;
- const auto device=sycl::get_native<sycl::backend::ext_oneapi_level_zero>(queue->get_device());
- static thread_local ze_device_handle_t cached_device=nullptr;
- static thread_local bool supported=false;
- if(device!=cached_device){
-  ze_device_properties_t props{};props.stype=ZE_STRUCTURE_TYPE_DEVICE_PROPERTIES;
-  supported=zeDeviceGetProperties(device,&props)==ZE_RESULT_SUCCESS&&props.vendorId==0x8086&&props.deviceId==0xe223;
-  cached_device=device;
- }
- if(!supported)return false;
-#else
- return false;
-#endif
- tla_prompt_fp32::launch(*queue,q,p,ids,steps,int(cap),sh,scratch,out,int(nq));
- static thread_local bool announced=false;
- if(!announced){std::fprintf(stderr,"strata: using SYCL TLA FP32 prompt attention\n");announced=true;}
- return true;
+// Battlemage through Level Zero: the devices the ESIMD prompt kernel serves.
+static bool battlemage_device(sycl::queue* queue) {
+    return queue->get_backend() == sycl::backend::ext_oneapi_level_zero &&
+           strata::intel_gpu_gen(queue->get_device()) == strata::IntelGpuGen::Battlemage;
 }
+
+bool qsa_tla_prepare_q(const float* q_full, const float* w, float* q, int64_t nq, int64_t pos, float eps,
+                       const RopeScaling& scaling, void* stream) {
+    auto* queue = strata::q_of(stream);
+    if (!q_full || !w || !q || nq <= 0 || nq > INT32_MAX / 24 || pos < 0 || pos > INT32_MAX - nq ||
+        !battlemage_device(queue) || rope_scaling_invalid(scaling))
+        return false;
+    tla_prompt_fp32::prepare_queries(*queue, q_full, w, q, nq, pos, eps, scaling);
+    return true;
 }
+
+bool qsa_tla_sparse_prefill(const float* q, const QsaAttnPools& p, const int32_t* ids, const int32_t* steps,
+                            int64_t cap, const QsaShapes& sh, float* scratch, float* out, int64_t nq,
+                            int64_t scratch_queries, void* stream, QsaTlaKeyWorkspace workspace,
+                            const QsaTlaGate* gate) {
+    if (!q || !ids || !steps || !scratch || !out || !p.k_q || !p.v_q || !p.k_scale || !p.v_scale || !p.page_table ||
+        p.k_q4 || p.v_q4 || nq <= 0 || scratch_queries <= 0 || cap <= 0 || cap > 32768 || sh.head_dim != 256 ||
+        sh.n_head_kv != 2 || sh.n_head != 24 || sh.page_size <= 0)
+        return false;
+    if ((reinterpret_cast<uintptr_t>(p.v_q) & 3) || (reinterpret_cast<uintptr_t>(q) & 63) ||
+        (reinterpret_cast<uintptr_t>(p.k_q) & 63))
+        return false;
+    auto* queue = strata::q_of(stream);
+    if (!battlemage_device(queue))
+        return false;
+    const bool tiled = cap == 2051 && sh.page_size == 4;
+    if (gate && (!tiled || !gate->query_and_gate || !gate->output || gate->leading_dimension < sh.n_head * sh.head_dim))
+        return false;
+    const float* q_full = gate ? gate->query_and_gate : nullptr;
+    uint16_t* gated = gate ? gate->output : nullptr;
+    int64_t ld = gate ? gate->leading_dimension : 0;
+    const int64_t capacity = tiled ? std::min<int64_t>(96, scratch_queries) * qsa_decode_attn_scratch_floats(cap, sh) : 0;
+    // Even the widest prefix tile must fit one query before submitting any preparation.
+    if (tiled && capacity < 32 * sh.n_head * (sh.head_dim + 2))
+        return false;
+    const uint64_t* packed = nullptr;
+    float* decoded_v = nullptr;
+    if (tiled && nq >= 256 && workspace.data && (reinterpret_cast<uintptr_t>(workspace.data) & 15) == 0 &&
+        workspace.identity_cells > 0 && workspace.identity_cells <= INT32_MAX) {
+        const size_t pages = (size_t(workspace.identity_cells) + 3) / 4;
+        if (pages <= workspace.bytes / (8 * 256)) {
+            auto* dst = static_cast<uint64_t*>(workspace.data);
+            tla_prompt_fp32::pack_sparse_keys(*queue, p.k_q, dst, pages, workspace.identity_cells);
+            packed = dst;
+            // When the caller supplies consecutive query positions, cap the grid and
+            // scratch for the early causal tiles by their last possible selected cell.
+            if (workspace.first_query_position >= 0 && workspace.identity_cells <= 4096 &&
+                workspace.identity_cells - nq == workspace.first_query_position &&
+                pages <= workspace.bytes / (8 * 256 * (1 + sizeof(float)))) {
+                decoded_v = reinterpret_cast<float*>(dst + pages * 256);
+                tla_prompt_fp32::expand_prefix_values(*queue, p, decoded_v, pages, workspace.identity_cells);
+            }
+        }
+    }
+    const int64_t width = std::min<int64_t>(tiled ? 16 : 32, scratch_queries);
+    const int64_t query_stride = sh.n_head * sh.head_dim;
+    for (int64_t first = 0; first < nq;) {
+        const size_t offset = size_t(first) * query_stride;
+        int count = int(std::min(width, nq - first));
+        const auto* gate_input = q_full ? q_full + 2 * offset : nullptr;
+        auto* gate_output = gated ? gated + first * ld : nullptr;
+        if (decoded_v) {
+            const int64_t position = workspace.first_query_position + first;
+            // Small causal tiles need fewer partials per query and can share one submission.
+            const int64_t tile = position < 1536 ? 96 : 16;
+            count = int(std::min(tile, nq - first));
+            auto active_chunks = [position](int n) { return int(std::min<int64_t>(32, (position + n + 63) / 64)); };
+            const int per_query = active_chunks(count) * 24 * 258;
+            count = int(std::min<int64_t>(count, capacity / per_query));
+            tla_prompt_fp32::launch_sparse<true, true>(
+                *queue, q + offset, p, ids + first * cap, steps + first * kStepCount, int(cap), sh, scratch,
+                out + offset, count, gate_input, gate_output, ld, packed, active_chunks(count), decoded_v);
+        } else if (tiled) {
+            auto launch = packed ? tla_prompt_fp32::launch_sparse<true> : tla_prompt_fp32::launch_sparse<false>;
+            launch(*queue, q + offset, p, ids + first * cap, steps + first * kStepCount, int(cap), sh, scratch,
+                   out + offset, count, gate_input, gate_output, ld, packed, 32, nullptr);
+        } else
+            tla_prompt_fp32::launch(*queue, q + offset, p, ids + first * cap, steps + first * kStepCount, int(cap), sh,
+                                    scratch, out + offset, count);
+        first += count;
+    }
+    static thread_local bool announced = false;
+    if (!announced) {
+        std::fprintf(stderr, "strata: using SYCL TLA FP32 prompt attention\n");
+        announced = true;
+    }
+    return true;
+}
+
+bool qsa_prompt_attn_tla_prefill(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
+                                 int64_t cap, const QsaShapes& shapes, float* scratch, float* output, int64_t queries,
+                                 int64_t scratch_queries, void* stream) {
+    return qsa_tla_sparse_prefill(q, pools, ids, steps, cap, shapes, scratch, output, queries, scratch_queries, stream,
+                                  {}, nullptr);
+}
+
+bool qsa_prompt_attn_tla_batch(const float* q, const QsaAttnPools& p, const int32_t* ids, const int32_t* steps,
+                               int64_t cap, const QsaShapes& sh, float* scratch, float* out, int64_t nq, void* stream) {
+    return nq <= 32 && qsa_prompt_attn_tla_prefill(q, p, ids, steps, cap, sh, scratch, out, nq, nq, stream);
+}
+} // namespace strata::kernels

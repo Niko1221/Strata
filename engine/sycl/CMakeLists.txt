@@ -310,21 +310,38 @@ target_compile_options(strata_prefill PUBLIC -qmkl=sequential)
 target_link_options(strata_prefill PUBLIC -qmkl=sequential)
 target_link_libraries(strata_prefill PUBLIC strata_engine)
 
-# Optional TLA data movement for exact FP32 sparse prompt attention on B70.
-# A caller-provided header checkout avoids adding a download to default builds.
-option(STRATA_SYCL_TLA_ATTN "Build opt-in TLA FP32 prompt attention for B70" OFF)
-set(STRATA_SYCL_TLA_DIR "" CACHE PATH "sycl-tla checkout containing include/cute/tensor.hpp")
-if(STRATA_SYCL_TLA_ATTN)
-  if(NOT STRATA_SYCL_AOT STREQUAL "bmg-g31")
-    message(FATAL_ERROR "STRATA_SYCL_TLA_ATTN requires STRATA_SYCL_AOT=bmg-g31")
+# AUTO evaluates the target and local headers on every configure, including reused build trees.
+set(STRATA_SYCL_TLA_ATTN "AUTO" CACHE STRING "Battlemage FP32 TLA prompt attention: AUTO, ON or OFF")
+set_property(CACHE STRATA_SYCL_TLA_ATTN PROPERTY STRINGS AUTO ON OFF)
+set(STRATA_SYCL_TLA_DIR "" CACHE PATH "Local sycl-tla checkout containing include/cute")
+if(NOT STRATA_SYCL_TLA_ATTN MATCHES "^(AUTO|ON|OFF)$")
+  message(FATAL_ERROR "STRATA_SYCL_TLA_ATTN must be AUTO, ON or OFF")
+endif()
+set(_tla_attn_enabled OFF)
+if(NOT STRATA_SYCL_TLA_ATTN STREQUAL "OFF")
+  set(_tla_missing "")
+  foreach(_header IN ITEMS cute/tensor.hpp cute/atom/copy_traits_xe_2d.hpp)
+    if(NOT STRATA_SYCL_TLA_DIR OR NOT EXISTS "${STRATA_SYCL_TLA_DIR}/include/${_header}")
+      list(APPEND _tla_missing "${_header} under STRATA_SYCL_TLA_DIR/include")
+    endif()
+  endforeach()
+  if(_tla_missing)
+    list(JOIN _tla_missing ", " _tla_reason)
+    if(STRATA_SYCL_TLA_ATTN STREQUAL "ON")
+      message(FATAL_ERROR "Cannot enable TLA prompt attention: missing ${_tla_reason}")
+    elseif(STRATA_SYCL_TLA_DIR)
+      message(WARNING "TLA prompt attention disabled: missing ${_tla_reason}")
+    endif()
+  elseif(NOT STRATA_SYCL_AOT)
+    set(_tla_attn_enabled ON)
+  elseif(STRATA_SYCL_AOT MATCHES "^bmg-g(21|31)(,bmg-g(21|31))*$")
+    set(_tla_attn_enabled ON)
+  elseif(STRATA_SYCL_TLA_ATTN STREQUAL "ON")
+    message(FATAL_ERROR "TLA prompt attention requires a portable or Battlemage build")
   endif()
-  if(NOT EXISTS "${STRATA_SYCL_TLA_DIR}/include/cute/tensor.hpp" OR
-     NOT EXISTS "${STRATA_SYCL_TLA_DIR}/include/cute/atom/copy_traits_xe_2d.hpp")
-    message(FATAL_ERROR "STRATA_SYCL_TLA_DIR must name a sycl-tla header checkout")
-  endif()
-  if(NOT STRATA_ZE_LOADER)
-    message(FATAL_ERROR "STRATA_SYCL_TLA_ATTN requires Level Zero")
-  endif()
+endif()
+message(STATUS "Strata SYCL: Battlemage TLA prompt attention: ${_tla_attn_enabled}")
+if(_tla_attn_enabled)
   set(_tla_attn ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/cuda/qsa_prompt_attn_tla.dp.cpp)
   target_sources(strata_kernels PRIVATE ${_tla_attn})
   set_property(SOURCE ${_tla_attn} APPEND PROPERTY COMPILE_OPTIONS
@@ -495,6 +512,21 @@ if(STRATA_SYCL_PARITY)   # (the option is declared above, next to STRATA_OWN_CPU
   add_executable(qsa_prompt_attn_parity ${_src})
   target_link_libraries(qsa_prompt_attn_parity PRIVATE strata_kernels)
   add_test(NAME qsa_prompt_attn_parity COMMAND qsa_prompt_attn_parity 8192 512 2)
+  if(_tla_attn_enabled)
+    target_compile_definitions(qsa_prompt_attn_parity PRIVATE STRATA_SYCL_TLA_ATTN=1)
+    add_test(NAME qsa_bmg_default_prefill_parity COMMAND ${CMAKE_COMMAND} -E env
+      --unset=STRATA_SYCL_TLA_ATTN --unset=STRATA_PROMPT_ATTN_ESIMD --unset=STRATA_PROMPT_ATTN_XMX
+      $<TARGET_FILE:qsa_prompt_attn_parity> 8192 65 1 --bmg-default)
+    target_link_libraries(qsa_prompt_attn_parity PRIVATE strata_prefill)
+    add_test(NAME qsa_bmg_tla_pipeline_parity COMMAND ${CMAKE_COMMAND} -E env
+      --unset=STRATA_SYCL_TLA_ATTN --unset=STRATA_PROMPT_ATTN_ESIMD --unset=STRATA_PROMPT_ATTN_XMX
+      $<TARGET_FILE:qsa_prompt_attn_parity> 4099 257 1 --bmg-pipeline)
+    add_test(NAME qsa_bmg_tla_prefix_parity COMMAND ${CMAKE_COMMAND} -E env
+      --unset=STRATA_SYCL_TLA_ATTN --unset=STRATA_PROMPT_ATTN_ESIMD --unset=STRATA_PROMPT_ATTN_XMX
+      $<TARGET_FILE:qsa_prompt_attn_parity> 1021 257 1 --bmg-pipeline)
+    set_tests_properties(qsa_bmg_default_prefill_parity qsa_bmg_tla_pipeline_parity
+                         qsa_bmg_tla_prefix_parity PROPERTIES SKIP_RETURN_CODE 77)
+  endif()
   # the hybrid K8V4 KV test (upstream 0.1.27) passes its appends, gathers and attention here and fails only its
   # last step, the same tensor-core prompt kernel. Built, not registered, until that kernel is ported.
   strata_resolve(_src src/kernels/kv_hybrid_parity.cpp)
