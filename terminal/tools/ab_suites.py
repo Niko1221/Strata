@@ -169,8 +169,11 @@ def ladder_check(codes: list[str], step: int) -> Callable[[dict], tuple[bool, st
     def check(resp: dict) -> tuple[bool, str]:
         got = (resp["choices"][0]["message"].get("content") or "").lower()
         n = sum(c.lower() in got for c in codes)
-        used = (resp.get("usage") or {}).get("prompt_tokens") or (resp.get("timings") or {}).get("prompt_n")
-        if not used or abs(used - step) > 0.1 * step:
+        # timings.prompt_n is what was read (prompt minus cache hit); usage.prompt_tokens is the full prompt
+        used = (resp.get("timings") or {}).get("prompt_n")
+        if used is None:
+            used = (resp.get("usage") or {}).get("prompt_tokens")
+        if used is None or abs(used - step) > 0.1 * step:
             return False, "Cache-Treffer oder falsche Länge"
         return n == len(codes), f"{n}/{len(codes)} Codes"
     return check

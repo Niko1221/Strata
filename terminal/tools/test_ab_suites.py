@@ -102,9 +102,14 @@ class Ladder(unittest.TestCase):
         self.assertEqual(req.check(r(" ".join(c.lower() for c in codes), 16384)), (True, "4/4 Codes"))
         self.assertEqual(req.check(r(" ".join(codes[:3]), 16384)), (False, "3/4 Codes"))
         self.assertEqual(req.check(r(" ".join(codes), 200)), (False, "Cache-Treffer oder falsche Länge"))
-        no_usage = {"choices": [{"message": {"content": " ".join(codes)}}]}
-        self.assertEqual(req.check(no_usage), (False, "Cache-Treffer oder falsche Länge"))
-        self.assertEqual(req.check(dict(no_usage, timings={"prompt_n": 16000})), (True, "4/4 Codes"))
+        none = {"choices": [{"message": {"content": " ".join(codes)}}]}
+        self.assertEqual(req.check(none), (False, "Cache-Treffer oder falsche Länge"))
+        # the server's usage.prompt_tokens is the full prompt; timings.prompt_n is what was read (cache hit = small)
+        hit = dict(r(" ".join(codes), 16384), timings={"prompt_n": 200})
+        self.assertEqual(req.check(hit), (False, "Cache-Treffer oder falsche Länge"))
+        self.assertEqual(req.check(dict(hit, timings={"prompt_n": 0})), (False, "Cache-Treffer oder falsche Länge"))
+        self.assertEqual(req.check(dict(hit, timings={"prompt_n": 16000})), (True, "4/4 Codes"))
+        self.assertEqual(req.check(dict(none, usage={"prompt_tokens": 16384})), (True, "4/4 Codes"))
 
 
 class ModelContext(unittest.TestCase):
