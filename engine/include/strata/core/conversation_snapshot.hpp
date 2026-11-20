@@ -58,6 +58,11 @@ bool conversation_session_read_limits(SessionReadLimits& limits, const SessionSt
 bool conversation_session_read_limits(SessionReadLimits& limits, const SessionState& session, const ModelGeometry& g,
                                       const QsaState* draft, uint64_t max_tokens, uint64_t max_checkpoints,
                                       std::string& error);
+// One stage's read limits from its carve (its layer range, running-state bounds, per-K/V-layer bounds).  A layer
+// split builds SessionReadLimits.stage_limits by calling this per later stage (draft == nullptr for a later stage).
+bool conversation_stage_read_limits(SessionReadLimits::SessionStageLimits& stage_limits, const SessionState& session,
+                                    const ModelGeometry& g, const QsaState* draft, uint64_t max_tokens,
+                                    std::string& error);
 
 struct ConversationStateSizes {
     size_t gdn = 0, ple = 0, tail = 0, dead = 0, block_pos = 0;
@@ -142,6 +147,8 @@ bool conversation_snapshot_save(SavedConversation& image, const ConversationView
 bool conversation_snapshot_sources(SavedConversation& meta, std::vector<SessionKvSource>& sources,
                                    const ConversationView& view, const SessionState& session,
                                    const ModelGeometry& g, const QsaState& draft, std::string& error);
+// The same with `draft == nullptr`: sources for a layer split's later stage (the session's own QSA layers only, no
+// draft ring).  `sources` then holds one source per owned QSA layer.
 bool conversation_snapshot_sources(SavedConversation& meta, std::vector<SessionKvSource>& sources,
                                    const ConversationView& view, const SessionState& session,
                                    const ModelGeometry& g, const QsaState* draft, std::string& error);
