@@ -127,17 +127,18 @@ export interface ImageModelLibrary {
 }
 
 export type ModelProtocol = 'openai-chat' | 'openai-responses' | 'anthropic';
+export type ModelReasoningFormat = 'auto' | 'default' | 'strata' | 'deepseek' | 'effort';
 export interface ApiModel { id: string; name: string; contextMax?: number | null; /** What the person ticked ("This model reads pictures"): true, false, or null for not set. */ vision?: boolean | null; /** The answer in use: the tick, else what the server said; null when nobody knows. */ reads?: boolean | null; /** The provider says the model can think (OpenRouter's supported_parameters): the Reasoning menu then works. */ reasoning?: boolean | null; thinks?: boolean | null }
 export interface ModelProviderPreset { id: string; name: string; baseUrl: string; protocol: ModelProtocol; baseUrlHint?: string }
 export interface ModelConnection {
   id: string; kind: 'provider' | 'custom'; provider: string | null; name: string;
-  baseUrl: string; protocol: ModelProtocol; apiKeySet: boolean; models: ApiModel[];
+  baseUrl: string; protocol: ModelProtocol; reasoningFormat?: ModelReasoningFormat; apiKeySet: boolean; models: ApiModel[];
 }
 export interface ModelProviders { catalog: ModelProviderPreset[]; connections: ModelConnection[] }
 export interface RemoteModelSelection { connectionId: string; modelId: string }
 export interface ModelConnectionDraft {
   id?: string; kind: 'provider' | 'custom'; provider: string | null; name: string;
-  baseUrl: string; protocol: ModelProtocol; apiKey: string; clearKey?: boolean; models: ApiModel[];
+  baseUrl: string; protocol: ModelProtocol; reasoningFormat?: ModelReasoningFormat; apiKey: string; clearKey?: boolean; models: ApiModel[];
 }
 
 export type Effort = 'fastest' | 'balanced' | 'quality' | 'max';
@@ -326,6 +327,8 @@ export interface MonitorState {
 }
 
 export interface ChatMessage {
+  /** Durable, human-readable activity records. Unlike the live status line these remain after the turn ends. */
+  activity?: { text: string; at: number }[];
   /** Tool calls the model is writing right now (a file, a command): live data for the writing card; see ToolDraft. */
   drafts?: ToolDraft[];
   /** The person's message is written with Markdown (a task handover: bold headings and lists), so the bubble draws it as such. */
@@ -478,6 +481,8 @@ export interface Session {
   timeSkips?: import('./time-skip').TimeSkipRun[];
   showcase?: boolean;
   agents?: SessionAgent[];
+  /** Finished helper rows the person removed from this chat. */
+  dismissedAgentIds?: string[];
   previewOpen?: string;
   closedPreviews?: string[];
   showcaseAgentStates?: boolean;

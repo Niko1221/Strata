@@ -223,6 +223,8 @@ html[data-motion='reduced'] .task-tree-row[data-leaving] { opacity: 0; }
 .timeskip-card-arrow { transform: rotate(-90deg); }
 .st-msg--user .st-msg__meta { justify-content: flex-end; opacity: 0; transition: opacity 140ms ease; }
 .st-msg--user:hover .st-msg__meta, .st-msg--user:focus-within .st-msg__meta { opacity: 1; }
+.st-msg--follow-up .st-msg__meta { opacity: 1; }
+@media (hover: hover) { .st-msg--follow-up:not(:hover):not(:focus-within) .st-msg__actions { opacity: 0; } }
 .st-msg--user time { white-space: nowrap; }
 .st-msg--user .st-msg__actions { opacity: 1; }
 @media (hover: none) { .st-msg--user .st-msg__meta { opacity: 1; } }

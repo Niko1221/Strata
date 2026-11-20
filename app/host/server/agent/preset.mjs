@@ -22,6 +22,8 @@
 
 import { withoutDisabled } from './tools-catalog.mjs';
 
+const COMPACTION_PLUGIN = new URL('./plugins/strata-compaction.mjs', import.meta.url).href;
+
 /** Plugin ids of the pinned Harness `standard` preset, in its order (the drift check). */
 export const STANDARD_PLUGIN_IDS = [
   'persona', 'agent-instructions', 'time-context', 'tool-bash', 'tool-pwsh', 'tool-fs', 'tool-fs-search', 'tool-jobs',
@@ -44,7 +46,7 @@ export const AGENT_PROMPT = [
   'Look before you change: read a file before you edit or overwrite it, and prefer a small edit to a rewrite. Search with the glob and grep tools and read files with the read tool; use the shell for running programs.',
   'A command that starts a program, folder or page only tells you that it started. Never say a window opened, a page rendered or that you checked how it looks unless a tool confirmed it. If a command fails, say what went wrong in one sentence and what you will try next.',
   'To show the person an image, SVG, HTML page or PDF from their folders, use the present tool: the app shows it next to the chat. A browser cannot open file:// addresses. If you do start a program, start it so the command returns at once and never wait for it to close: Start-Process on Windows, open on macOS, xdg-open on Linux.',
-  'When the person asks you to ask a subagent, a helper or another model ("ask a subagent", "ask model X"), use the subagent tool and name the model in its model field. Never look for a model with shell commands, and never wait for a helper with sleep: end your turn; its answer arrives as a new message.',
+  'When continuing delegated work, including after a pause or update, use list_agents to find your existing direct helper and send_message with its agent_id and the next instruction. An inactive helper resumes its own conversation. Use the subagent tool for a new assignment ("ask a subagent", "ask model X") or when the person requests a new helper. For a requested model use the model field. Never look for a model with shell commands, and never wait for a helper with sleep: end your turn; its answer arrives as a new message.',
   'Tokens prefixed with @ are files or folders the person pointed at. A failed or refused action changed nothing; say so, and do not claim work you did not do.',
 ].join('\n\n');
 
@@ -94,6 +96,7 @@ export function standardPreset({ platform = process.platform, search = false, of
       id: 'compaction', name: 'cordis:group', group: true, isolate: { compaction: true, toolResultPruner: true },
       config: [
         { id: 'compaction-basic', name: '@deepseek-ai/dsh-compaction-basic', ...(compaction.length ? { config: { modelPolicies: compaction } } : {}) },
+        { id: 'strata-compaction', name: COMPACTION_PLUGIN, config: {} },
         { id: 'command-compact', name: '@deepseek-ai/dsh-command-compact' },
         { id: 'tool-result-pruner', name: '@deepseek-ai/dsh-compaction-tool-result-pruner', config: { thresholdChars: 8192, headChars: 4096, tailChars: 1024 } },
       ],
