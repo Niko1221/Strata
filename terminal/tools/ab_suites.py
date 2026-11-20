@@ -313,9 +313,9 @@ def _think_check(kind: str, want) -> Callable[[dict], tuple[bool, str]]:
     def check(resp: dict) -> tuple[bool, str]:
         choice = resp["choices"][0]
         content = choice["message"].get("content") or ""
-        if not content.strip():
-            return False, "keine Antwort"
         cut = choice.get("finish_reason") == "length"
+        if not content.strip():
+            return False, "Token-Grenze erreicht" if cut else "keine Antwort"
         if kind == "code":
             blocks = re.findall(r"```python[ \t]*\n(.*?)```", content, re.S)
             if not blocks:

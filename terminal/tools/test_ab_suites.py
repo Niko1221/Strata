@@ -160,6 +160,10 @@ class Think(unittest.TestCase):
         self.assertEqual(check(think_resp("", "ANTWORT: 334")), (False, "keine Antwort"))
         self.assertIsNone(ab_suites.answer_of(think_resp("so far", "ANTWORT: 334")))
 
+    def test_empty_content_at_length_is_token_limit(self):
+        check = by_tag(ab_suites.think_reqs(8192, False))["think.math1"].check
+        self.assertEqual(check(think_resp("", "still thinking", "length")), (False, "Token-Grenze erreicht"))
+
     def test_math_answer_checked(self):
         reqs = by_tag(ab_suites.think_reqs(8192, False))
         for tag, right in zip(("think.math1", "think.math2", "think.math3", "think.math4"), ab_suites.MATH):
