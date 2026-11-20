@@ -540,8 +540,10 @@ class SessionLadderIntake(unittest.TestCase):
         self.assertEqual(c.drain_events(), [])  # consumed exactly once: a second drain sees nothing new
 
     def test_drain_events_leaves_the_monitor_card_unchanged(self):
-        # poll()'s card state is exactly what it was before drain_events existed: drain-only skip lines move
-        # nothing; park/restore lines move it the same way whether drain_events() reads them or not.
+        # poll()'s card state is exactly what upstream's poll() produces, and drain_events() adds nothing on
+        # top of it.  Since upstream #6081 a skip line also counts as a refusal on the card (reason-keyed
+        # `refused` for /metrics); the drain shares the parse and moves no further card field.  Park/restore
+        # lines move the card the same way whether drain_events() reads them or not.
         from serve.server import ConvCacheLog
         with tempfile.TemporaryDirectory() as d:
             log = Path(d) / "strata.log"
@@ -553,22 +555,12 @@ class SessionLadderIntake(unittest.TestCase):
             with open(log, "a", encoding="utf-8") as f:
                 f.write(self.SKIP_MIN + self.SKIP_BUDGET)
             st = c.poll(str(log), start)
-            self.assertEqual(st, base)  # the card: parks/restores/last_event/last_tokens/bytes all unmoved
-            self.assertEqual([e.kind for e in c.drain_events()], ["skipped_below_min", "skipped_over_budget"])
-            self.assertEqual(c.drain_events(), [])  # consumed exactly once
-            with open(log, "a", encoding="utf-8") as f:
-                f.write(self.PARK1 + self.RESTORE)
-            st = c.poll(str(log), start)
-            self.assertEqual((st["parked"], st["bytes"], st["parks"], st["restores"],
-                              st["last_event"], st["last_tokens"]),
-                             (3, 3828845760, 1, 1, "restored", 16384))  # the monitor card, as in test_monitor
-            self.assertEqual([e.kind for e in c.drain_events()], ["parked", "restored"])
-            with open(log, "a", encoding="utf-8") as f:
-                f.write(self.PARK1 + self.DROP)
-            st = c.poll(str(log), start)
-            self.assertEqual((st["parked"], st["parks"]), (1, 2))
-            self.assertEqual([e.kind for e in c.drain_events()], ["parked", "dropped"])
-
+            self.assertEqual({k: st[k] for k in ("parked", "bytes", "parks", "restores", "evictions",
+                                                 "last_event", "last_tokens", "last_at")},
+                             {k: base[k] for k in ("parked", "bytes", "parks", "restores", "evictions",
+                                                   "last_event", "last_tokens", "last_at")})
+            self.assertEqual((st["refused_total"], st["refused"], st["last_refused"]),
+                             (2, {"short": 1, "budget": 1}, "budget"))   # #6081's counters, upstream's REASONS
     def test_on_conv_event_joins_park_to_session(self):
         lad = self.ladder()
         lad.on_turn_done("probe-p2-20261025T0450", 25861, 1084175728, 0)  # the P2 mid, with its own park snapshot_bytes
