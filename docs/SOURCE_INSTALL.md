@@ -32,7 +32,7 @@ START-HERE.bat --family qwen --model Q2_0
 
 Choose a pack that fits your machine; Q2_0 is an example, not a universal minimum-memory option.
 In PowerShell, prefix the wrapper with `.\`, for example `.\START-HERE.bat`.
-`SETUP.bat` opens setup again to add a model or change settings. The wrapper can reuse an existing install;
+`START-HERE.bat --setup` opens setup again to add a model or change settings. The wrapper can reuse an existing install;
 first-start and later load times depend on the pack, disk, RAM and backend. A model can take several minutes to load.
 Run again over an installed model, setup pre-selects the size that is installed and marks it "(installed)", and `--yes` takes it: a repeat run
 does not move the model to the recommended size.

@@ -48,7 +48,7 @@ Use the guide for your GPU and operating system. Model and feature support can d
 
 ## Which instructions apply?
 
-`strata launch` belongs to the installed Terminal. `START-HERE.bat`, `SETUP.bat`, `UPDATE.bat` and `setup.sh`
+`strata launch` belongs to the installed Terminal. `START-HERE.bat`, `UPDATE.bat` and `setup.sh`
 belong to a **source checkout**. Raw engine commands are a third interface. Their flags are not interchangeable:
 Terminal launch uses `--gpu` and `--vision on|off`; source setup uses `--gpus` and `--vision yes|no`.
 

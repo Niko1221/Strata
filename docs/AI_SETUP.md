@@ -160,7 +160,7 @@ Stop active models before `strata update`. Very old Terminals require rerunning 
 
 ## 8. Source-only and unsupported setups
 
-A source build is a separate workflow: [SOURCE_INSTALL.md](SOURCE_INSTALL.md). `START-HERE.bat`, `SETUP.bat`,
+A source build is a separate workflow: [SOURCE_INSTALL.md](SOURCE_INSTALL.md). `START-HERE.bat`,
 `UPDATE.bat`, `setup.sh` and generated `run-<model>` scripts belong to that workflow. Do not pass their flags to
 `strata launch`, promise a source build will support an unknown model, or describe a source-only command as an
 installed-app command. If a required backend or artifact is missing, say exactly what is missing.

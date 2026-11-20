@@ -18,7 +18,7 @@ New here? Start with the [README](../README.md). Installing is in [INSTALL.md](I
 
 **Which flags go where.** `strata launch` has its own flags (`strata launch --help`). The engine and server flags below go
 in the `"args"` list of `strata-<model>.json` (source setup writes it) or on the `terminal/serve/server.py` command line.
-`START-HERE.bat`, `SETUP.bat`, `./setup.sh` and `run-<model>` exist only in a [source checkout](SOURCE_INSTALL.md). An
+`START-HERE.bat`, `./setup.sh` and `run-<model>` exist only in a [source checkout](SOURCE_INSTALL.md). An
 installed app has none of them.
 
 ## Quick start
@@ -217,7 +217,7 @@ you can fetch the file with the `hf` command, optionally after `hf auth login`, 
 uvx hf auth login            # optional: your own Hugging Face account; Strata does not read or send this token
 uvx hf download agentionai/Qwen3.8-Flash-Next-Gyro-GGUF Qwen3.8-Flash-Next-Gyro-S-TQ1_0.gguf \
     --revision 1ada08422e404aca51ab9df665f089f34c419c6b --local-dir /data/gyro-s
-./setup.sh --gguf-dir /data/gyro-s       # Windows: SETUP.bat --gguf-dir D:\gyro-s
+./setup.sh --gguf-dir /data/gyro-s       # Windows: START-HERE.bat --setup --gguf-dir D:\gyro-s
 ```
 
 Use the file names and the revision setup shows for your model (the revision above is the one this version pins for Gyro-S: another version of Strata may pin another).
