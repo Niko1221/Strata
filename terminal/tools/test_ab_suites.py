@@ -233,5 +233,51 @@ class Think(unittest.TestCase):
         self.assertTrue(ok, why)
 
 
+def tool_resp(name, args):
+    call = {"id": "c1", "type": "function", "function": {"name": name, "arguments": args}}
+    return {"choices": [{"message": {"content": None, "tool_calls": [call]}, "finish_reason": "tool_calls"}]}
+
+
+class Agent(unittest.TestCase):
+    @unittest.skipUnless(corpus_ok(), "tag v0.2.12 not available")
+    def test_agent_turn_count_and_order(self):
+        reqs, left = ab_suites.agent_reqs(262144)
+        self.assertEqual((len(reqs), left), (23, []))
+        self.assertEqual(reqs[0].tag, "agent.server-option.0")
+        for a, b in zip(reqs, reqs[1:]):
+            if a.tag.rsplit(".", 1)[0] == b.tag.rsplit(".", 1)[0]:
+                self.assertEqual(b.body["messages"][:len(a.body["messages"])], a.body["messages"])
+        self.assertEqual(reqs[0].body["messages"][-1]["role"], "tool")
+        self.assertEqual((reqs[0].body["temperature"], reqs[0].body["seed"], reqs[0].body["max_tokens"]), (0, 7, 256))
+
+    @unittest.skipUnless(corpus_ok(), "tag v0.2.12 not available")
+    def test_agent_small_context_leaves_turns_out(self):
+        reqs, left = ab_suites.agent_reqs(16384)
+        self.assertTrue(left)
+        self.assertEqual(len(reqs) + len(left), 23)
+        self.assertTrue(all(t.startswith("agent.") for t in left))
+
+    def test_agent_check(self):
+        en = ab_suites.agent_check("en")
+        fr = ab_suites.agent_check("fr")
+        self.assertEqual(en(tool_resp("read_file", '{"path": "x"}')), (True, "Tool-Call read_file"))
+        self.assertEqual(en(tool_resp("read_file", '{"pth": "x"}')), (False, "Tool-Call ungültig"))
+        self.assertEqual(en(tool_resp("read_file", "not json")), (False, "Tool-Call ungültig"))
+        self.assertFalse(en(tool_resp("nope", '{"path": "x"}'))[0])
+        self.assertEqual(fr(resp("Je lis le fichier pour la suite dans une minute.")), (True, "Text"))
+        self.assertEqual(fr(resp("I will read the file now.")), (False, "nicht Französisch"))
+        self.assertEqual(en(resp("I will read the file now.")), (True, "Text"))
+        self.assertEqual(en(resp("")), (False, "leer"))
+        self.assertEqual(en(resp("a b c d e f g h " * 5)), (False, "Schleife"))
+
+    @unittest.skipUnless(corpus_ok(), "tag v0.2.12 not available")
+    def test_git_grep_errors_and_dash_pattern(self):
+        self.assertEqual(git_grep("zzz_no_such_pattern_zzz"), "")  # exit 1 = no match
+        with self.assertRaises(RuntimeError):
+            git_grep("(")  # invalid regex: git exits 128
+        git_grep("-x-")  # not read as an option
+        self.assertTrue(git_grep("def .*ram"))
+
+
 if __name__ == "__main__":
     unittest.main()

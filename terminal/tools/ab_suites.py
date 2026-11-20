@@ -3,6 +3,7 @@
 The corpus is read from git tag v0.2.12, so every run and every version sees the same bytes.
 """
 import ast
+import json
 import os
 import random
 import re
@@ -77,7 +78,9 @@ def git_show(path: str, repo: Path = REPO, rev: str = CORPUS_REV) -> str:
 
 def git_grep(pattern: str, repo: Path = REPO, rev: str = CORPUS_REV) -> str:
     """Like agent_turns_bench.tool_result("grep"), but at the frozen tag."""
-    r = _git(["grep", "-n", "-I", "-E", pattern, rev], repo)
+    r = _git(["grep", "-n", "-I", "-E", "-e", pattern, rev], repo)
+    if r.returncode > 1:  # 1 means no match
+        raise RuntimeError(r.stderr.strip())
     lines = [ln.removeprefix(f"{rev}:") for ln in r.stdout.splitlines()]
     return "\n".join(lines[:200]) + (f"\n... ({len(lines) - 200} more lines)" if len(lines) > 200 else "")
 
@@ -348,3 +351,65 @@ def think_reqs(think_tokens: int, run_code: bool) -> list[Req]:
                  "reasoning_budget_tokens": think_tokens * 3 // 4},
                 _think_check(kind, want))
             for kind, tag, text, want in tasks]
+
+
+FR_WORDS = {"le", "la", "les", "est", "pour", "dans", "une", "des"}
+
+
+def agent_check(lang: str) -> Callable[[dict], tuple[bool, str]]:
+    """ok: a valid tool call, or non-empty non-looping text (French for lang "fr")."""
+    from agent_turns_bench import TOOLS  # lazy: it imports ab_engine, which will import this module
+
+    required = {t["function"]["name"]: t["function"]["parameters"]["required"] for t in TOOLS}
+
+    def check(resp: dict) -> tuple[bool, str]:
+        msg = resp["choices"][0]["message"]
+        calls = msg.get("tool_calls") or []
+        if calls:
+            fn = calls[0].get("function") or {}
+            try:
+                args = json.loads(fn.get("arguments"))
+            except (TypeError, ValueError):
+                args = None
+            if fn.get("name") in required and isinstance(args, dict) and all(k in args for k in required[fn["name"]]):
+                return True, f"Tool-Call {fn['name']}"
+            return False, "Tool-Call ungültig"
+        ok, why = base_check(resp)
+        if not ok:
+            return False, why
+        if lang == "fr" and sum(w in FR_WORDS for w in re.findall(r"\w+", msg["content"].lower())) < 3:
+            return False, "nicht Französisch"
+        return True, "Text"
+
+    return check
+
+
+def agent_reqs(n_ctx: int, chars_per_token: float = CHARS_PER_TOKEN) -> tuple[list[Req], list[str]]:
+    """One request per point right after a tool result, in session order, built as agent_turns_bench.turns()
+    does but with tool results from the frozen tag. Also returns the tags left out as too long for n_ctx."""
+    from agent_turns_bench import SESSIONS, SYSTEM, TOOLS
+
+    reqs, left = [], []
+    for name, task, steps in SESSIONS:
+        check = agent_check("fr" if name.endswith("-fr") else "en")
+        msgs = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": task}]
+        for i, (tool, arg, before) in enumerate(steps):
+            cid = f"call_{name}_{i}"
+            if tool == "read_file":
+                lines = git_show(arg).splitlines()
+                result = "\n".join(lines[:2000]) + (f"\n... (truncated: lines 1-2000 of {len(lines)})" if len(lines) > 2000 else "")
+            else:
+                result = git_grep(arg)
+            args = {"path": arg} if tool == "read_file" else {"pattern": arg}
+            msgs.append({"role": "assistant", "content": before,
+                         "tool_calls": [{"id": cid, "type": "function",
+                                         "function": {"name": tool, "arguments": json.dumps(args)}}]})
+            msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
+            tag = f"agent.{name}.{i}"
+            if len(json.dumps(msgs)) / chars_per_token > n_ctx - ANSWER_ROOM:
+                left.append(tag)
+                continue
+            body = {"messages": [dict(m) for m in msgs], "tools": TOOLS, "max_tokens": 256, "temperature": 0,
+                    "seed": SEED, "chat_template_kwargs": {"enable_thinking": False}}
+            reqs.append(Req("agent", tag, body, check))
+    return reqs, left
