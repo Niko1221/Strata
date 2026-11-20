@@ -207,7 +207,7 @@ void split_battery(const std::vector<bool>& draft_of) {
         const ConversationView view{sp.ids, sp.images, sp.checkpoints, true};
         SavedConversation meta;
         std::vector<SessionKvSource> sources;
-        check(conversation_snapshot_sources_split(meta, sources, view, sessions, draft_of, devices, sp.draft.state, sp.g, sp.err),
+        check(conversation_snapshot_sources_split(meta, sources, view, sessions, draft_of, devices, &sp.draft.state, sp.g, sp.err),
               "split sources captured");
         check(sources.size() == 3, "one source per owned QSA layer plus the draft");
         size_t at = 0;
@@ -247,7 +247,7 @@ void split_battery(const std::vector<bool>& draft_of) {
 
         // (d) read limits for the whole split.
         SessionReadLimits limits;
-        check(conversation_session_read_limits_split(limits, sessions, sp.g, draft_of, sp.draft.state, 1000, 4, sp.err),
+        check(conversation_session_read_limits_split(limits, sessions, sp.g, draft_of, &sp.draft.state, 1000, 4, sp.err),
               "split read limits built");
         check(limits.max_kv_layers == 3, "max_kv_layers is the owned layers plus the draft");
         check(limits.max_kv_bytes.size() == 3, "one K/V byte bound per layer, in group order");
@@ -438,7 +438,7 @@ void split_battery(const std::vector<bool>& draft_of) {
         const ConversationView view{sp.ids, sp.images, sp.checkpoints, true};
         SavedConversation meta;
         std::vector<SessionKvSource> sources;
-        check(conversation_snapshot_sources_split(meta, sources, view, sessions, draft_of, devices, sp.draft.state, sp.g, sp.err),
+        check(conversation_snapshot_sources_split(meta, sources, view, sessions, draft_of, devices, &sp.draft.state, sp.g, sp.err),
               "split capture accepted a checkpointed chain");
         check(meta.checkpoints.size() == 1 && meta.checkpoints[0].stage_parts.size() == 1,
               "the chain checkpoint kept its part");
@@ -453,20 +453,20 @@ void split_battery(const std::vector<bool>& draft_of) {
         SavedConversation bad;
         std::vector<SessionKvSource> bad_sources;
         std::string berr;
-        check(!conversation_snapshot_sources_split(bad, bad_sources, view, sessions, draft_of, devices, sp.draft.state, sp.g, berr),
+        check(!conversation_snapshot_sources_split(bad, bad_sources, view, sessions, draft_of, devices, &sp.draft.state, sp.g, berr),
               "a checkpoint without its stage parts is refused");
         check(bad_sources.empty() && bad.checkpoints.empty(), "refusal captured nothing");
         sp.checkpoints[0].stage_parts.push_back(chain.stage_parts[0]);
         {   // A `devices` table that does not match the carves is a caller error: refused before any capture.
             SavedConversation none; std::vector<SessionKvSource> none_sources; std::string derr;
-            check(!conversation_snapshot_sources_split(none, none_sources, view, sessions, draft_of, {0}, sp.draft.state, sp.g, derr),
+            check(!conversation_snapshot_sources_split(none, none_sources, view, sessions, draft_of, {0}, &sp.draft.state, sp.g, derr),
                   "split capture refuses a devices table that does not match the carves");
             check(none_sources.empty() && none.checkpoints.empty(), "the refusal captured nothing");
         }
 
         // One carve through the split builders: an engaged empty table, no per-stage bounds.
         SessionReadLimits one;
-        check(conversation_session_read_limits_split(one, {&sp.ss0}, sp.g, {true}, sp.draft.state, 1000, 4, sp.err),
+        check(conversation_session_read_limits_split(one, {&sp.ss0}, sp.g, {true}, &sp.draft.state, 1000, 4, sp.err),
               "one-carve limits through the split builder");
         check(one.stages.has_value() && one.stages->empty(), "one carve engages an empty stage table");
         check(one.max_stages == 0 && one.max_stage_state_bytes.empty(), "one carve admits no later stages");
