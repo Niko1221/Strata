@@ -1,4 +1,4 @@
-import {USER_KEY,flagValue} from './native-user-args.mjs';
+import {USER_KEY,flagValue,capture} from './native-user-args.mjs';
 import {parseEngineVersion} from './engine-version.mjs';
 
 /** The engine's own default reserve, and the one setup writes for pictures read on the GPU: neither is a choice of the person. */
@@ -106,6 +106,21 @@ export function resourceSettings(config,hardware,profile,model={},values={}){
   }
  }
  return {args,vram_reserve_mib:reserve,...(asked!==null?{}:{ui_reserve_applied:reserve}),...(env?{env}:{}),ui_resource_baseline:{...baseline,ramBudget,ramHeadroom,ramKeep}};
+}
+
+/** The `args` of the config of THIS start, with the RAM budget "Leave 20% for my work" runs with. setup writes two numbers (setup.py resident_budget_gib, the one place of the rule, so the app holds
+ *  no copy of it): --resident-budget-gib in "args" is the RAM less 17 GB (47 on 64 GB), which `strata launch`, `strata serve`, Docker and "Full performance" use, and "ui_budget_work_gib" is the
+ *  earlier rule, the RAM less 24 GB (40; 16.6 GiB really free under a 64 GiB limit, against 9.3 GiB at 47). "work" starts the engine with the second; the swap is made on the started copy only and
+ *  is never saved (resourceSettings, which is what every write of the run config takes, does not touch the budget), so a Terminal start of the same file reads setup's number.
+ *  Left as it is: any other profile; a config with no work number (a 0.2.16 install that was not moved yet, a budget the person asked setup for, a layer split, unified memory where both rules are 24);
+ *  a budget of the person's (user_args, or a change of "args" since the file was written, as capture() reads them); a --ram-keep-gib of theirs, or a STRATA_RAM_KEEP_GIB /
+ *  STRATA_RESIDENT_HEADROOM_GIB of theirs in the env (their RAM setting says how much to leave: no number of ours). `cfg` is the config of the start, its env after resourceSettings.
+ *  Returns `cfg.args` itself when nothing changes, else a new list. */
+export function launchBudgetArgs(cfg,profile){
+ const args=Array.isArray(cfg?.args)?cfg.args:[],work=Number(cfg?.ui_budget_work_gib),at=args.indexOf('--resident-budget-gib'),have=at>=0?Number(args[at+1]):NaN;
+ if(profile!=='work'||!(work>0)||!Number.isFinite(have)||have===work)return cfg?.args;
+ if(flagValue(capture(cfg),'--resident-budget-gib')!==null||args.includes('--ram-keep-gib')||cfg.env?.STRATA_RAM_KEEP_GIB||cfg.env?.STRATA_RESIDENT_HEADROOM_GIB)return cfg.args;
+ const next=[...args];next[at+1]=String(work);return next;
 }
 
 /** The RAM, in GiB, "Leave 20% for my work" asks the engine to keep free: a fifth of the PC's RAM rounded up, never under 5 or over 8
