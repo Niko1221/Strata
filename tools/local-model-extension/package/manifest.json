@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "id": "strata-local-models",
+  "version": "1.0.0",
+  "bridgeApi": 1,
+  "app": {
+    "major": 0,
+    "minor": 2
+  },
+  "entry": "ui/entry.mjs",
+  "panel": "ui/index.html"
+}
