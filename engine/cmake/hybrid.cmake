@@ -72,6 +72,18 @@ foreach(_f IN LISTS _src_files)
   if(NOT STRATA_BUILD_SPLIT AND _rel MATCHES "^src/split/")
     continue()
   endif()
+  # src/image is not an engine path either: no engine-tree target compiles it. The
+  # upstream 0.2.13+ image family (DiT, text encoder, VAE) landed after the hybrid glob
+  # was written, and its mere presence in src/ made the glob copy qi21_dit.cu,
+  # qwen3vl_te.cu and te_dequant.cu into strata_hip_objs - whose host-side helpers
+  # (qi21_rope_table/qi21_positions in qi21_rope.cpp, te_dequant_f32_host in
+  # te_dequant_host.cpp) no CUDA lane ever compiles, so the whole-archive pull made the
+  # hybrid strata link fail on them. The image tools build their towers from
+  # terminal/tools/ and the vision tower is its own project (tools/vision/own); keep the
+  # family out of HIP reach exactly like dsv41 and split.
+  if(_rel MATCHES "^src/image/")
+    continue()
+  endif()
   if(_rel MATCHES "\\.cu$")
     # Keep the .cu name so a sibling #include "foo.cu" still resolves, and
     # compile a .hip link of the same file. Tests, benches, and the NVFP4
