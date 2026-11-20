@@ -326,8 +326,11 @@ public:
     /// the session from another stream or the host afterwards (a new request, a checkpoint, a snapshot, the prompt
     /// path, the end of a run) calls wait_commit() first.  STRATA_COMMIT_SYNC=1 keeps the wait.
     static void set_commit_async(bool on);
-    /// Waits for the last commit graph when commit() did not (an event recorded after it, not the whole device);
-    /// false with `err` when it failed.  Free when nothing is pending.
+    /// The stages of a layer split commit without the wait as well (with set_commit_async on; off by default, so a
+    /// split waits after every stage's commit).  STRATA_SPLIT_COMMIT_ASYNC=1 in generate.
+    static void set_split_commit_async(bool on);
+    /// Waits for the last commit graph when commit() did not (an event recorded after it, not the whole device), on
+    /// this stage and every later one; false with `err` when it failed.  Free when nothing is pending.
     bool wait_commit(std::string& err);
     /// #5188 (--prefill-head-alias): every captured window graph is destroyed, so the next window of each size captures
     /// again and reads the buffers where they are now (the output head came back at another address).  Refuses (false)
