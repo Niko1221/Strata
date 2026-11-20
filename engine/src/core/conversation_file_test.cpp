@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <thread>
 #include <new>
 #include <utility>
 #include <vector>
@@ -861,6 +862,133 @@ int main() {
         check(session_phase_limit_s(0) == 60 && session_phase_limit_s(1198691396) == 60 + (1198691396 >> 22) &&
               session_phase_limit_s(UINT64_MAX) == 3600, "phase limit: 60 s + 1 s per 4 MiB, at most an hour");
     }
+    // the pipeline witness: the OS write of a full block must begin while a source read is still running.
+    // A serialized copy->write loop cannot produce this: its writes happen strictly between reads, never during one.
+    {
+        auto ns = []() {
+            return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count());
+        };
+        SavedConversation meta = original;
+        meta.kv.clear();
+        std::vector<SessionKvSource> src(1);
+        src[0].format = 2; src[0].cells = 4096; src[0].heads = 2; src[0].head_dim = 256;
+        src[0].page_size = 64; src[0].pooled_rows = 0; src[0].idx_dim = 0;
+        src[0].sizes = {32u << 20, 16u << 20, 0, 0, 0};
+        std::vector<std::pair<uint64_t, uint64_t>> reads;   // every source-read window [begin_ns, end_ns]
+        src[0].read = [&](size_t, size_t, void* d, size_t c) {
+            const uint64_t t0 = ns();
+            std::memset(d, 0x5a, c);
+            std::this_thread::sleep_for(std::chrono::milliseconds(40));   // a device copy's worth of time
+            reads.push_back({t0, ns()});
+            return true;
+        };
+        std::vector<std::tuple<uint64_t, uint64_t, uint64_t>> spans;   // (byte_end, begin_ns, end_ns) per full block
+        std::vector<uint64_t> seen;                                    // progress reports
+        SessionWriteOptions opt;
+        opt.block_span = [&](uint64_t byte_end, uint64_t b, uint64_t e) { spans.emplace_back(byte_end, b, e); };
+        opt.progress = [&](uint64_t done, uint64_t) { seen.push_back(done); };
+        const fs::path p = dir / "pipeline.bin";
+        check(session_file_write(p.string(), meta, src, id, written, error, opt), "pipeline: 48 MiB streamed write");
+        check(spans.size() == 3, "pipeline: three full 16 MiB blocks written");
+        // the witness is a write BEGAN while a read was still running: a serialized loop's writes always sit
+        // strictly between reads (its start can never fall inside a read window), a pipelined one's do
+        bool overlap = false;
+        for (const auto& sp : spans)
+            for (const auto& w : reads)
+                if (w.first <= std::get<1>(sp) && std::get<1>(sp) < w.second) overlap = true;
+        if (!overlap) {
+            for (const auto& w : reads) std::fprintf(stderr, "read window [%llu..%llu]\n", w.first, w.second);
+            for (const auto& sp : spans) std::fprintf(stderr, "block span end %llu: [%llu..%llu]\n",
+                                                       std::get<0>(sp), std::get<1>(sp), std::get<2>(sp));
+        }
+        check(overlap, "pipeline: a block's OS write began during a source read");
+        // the bytes stay the ordinary streamed-write bytes: a captured-image twin must write the identical file
+        SavedConversation twin = original;
+        twin.kv.clear();
+        ConversationKv kv;
+        kv.format = 2; kv.cells = 4096; kv.heads = 2; kv.head_dim = 256;
+        kv.page_size = 64; kv.pooled_rows = 0; kv.idx_dim = 0;
+        auto flat = [](size_t n) {
+            ConversationBuffer b;
+            b.resize(n);
+            b.visit(0, n, [](uint8_t* q, size_t c, size_t) { std::memset(q, 0x5a, c); return true; });
+            return b;
+        };
+        kv.k = flat(32u << 20);
+        kv.v = flat(16u << 20);
+        twin.kv.push_back(std::move(kv));
+        const fs::path t = dir / "pipeline-twin.bin";
+        check(session_file_write(t.string(), twin, id, written, error), "pipeline: captured-image twin write");
+        check(slurp(p) == slurp(t), "pipeline: the streamed file is the captured-image file, byte for byte");
+        SavedConversation back;
+        size_t read = 0;
+        check(session_file_read(p.string(), id, back, read, error), "pipeline: the file reads back");
+        check(back.kv.size() == 1 && back.kv[0].k.size() == (32u << 20) && back.kv[0].v.size() == (16u << 20),
+              "pipeline: the K/V parts round trip their sizes");
+        bool monotonic = !seen.empty() && seen.front() == 0;
+        for (size_t i = 1; i < seen.size(); ++i) monotonic = monotonic && seen[i] > seen[i - 1];
+        check(monotonic && seen.back() == written, "pipeline: progress never goes back and ends at the file size");
+    }
+    // a block write failing mid-pipeline: the writer latches, the producer stops, and the error/cleanup channel
+    // is the same one the serialized loop used (the test completes at once: no writer to outwait)
+    {
+        SavedConversation meta = original;
+        meta.kv.clear();
+        std::vector<SessionKvSource> src(1);
+        src[0].format = 2; src[0].cells = 8192; src[0].heads = 2; src[0].head_dim = 256;
+        src[0].page_size = 64; src[0].pooled_rows = 0; src[0].idx_dim = 0;
+        src[0].sizes = {(64u << 20) + 4096, 0, 0, 0, 0};
+        src[0].read = [](size_t, size_t, void* d, size_t c) { std::memset(d, 0x33, c); return true; };
+        SessionWriteOptions opt;
+        opt.fault = [](const char* step) { return std::string(step) == "write" ? EIO : 0; };
+        SessionStatus st;
+        const fs::path q = dir / "writer-fault.bin";
+        check(!session_file_write(q.string(), meta, src, id, written, error, opt, &st), "writer fault: the save fails");
+        check(error.find("session file:") != std::string::npos && error.find("failed") != std::string::npos,
+              "writer fault: the error channel is unchanged");
+        check(!st.published, "writer fault: nothing was published");
+        check(!fs::exists(q) && no_temp(dir), "writer fault: no file and no temporary left behind");
+    }
+    // writer-thread starvation (tests seam: fault step "writer_thread"): the save must still complete,
+    // serialized like the un-pipelined FileSink was - and the pipeline witness must NOT appear
+    {
+        auto ns = []() {
+            return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count());
+        };
+        SavedConversation meta = original;
+        meta.kv.clear();
+        std::vector<SessionKvSource> src(1);
+        src[0].format = 2; src[0].cells = 4096; src[0].heads = 2; src[0].head_dim = 256;
+        src[0].page_size = 64; src[0].pooled_rows = 0; src[0].idx_dim = 0;
+        src[0].sizes = {32u << 20, 16u << 20, 0, 0, 0};
+        std::vector<std::pair<uint64_t, uint64_t>> reads;
+        src[0].read = [&](size_t, size_t, void* d, size_t c) {
+            const uint64_t t0 = ns();
+            std::memset(d, 0x5a, c);
+            std::this_thread::sleep_for(std::chrono::milliseconds(40));
+            reads.push_back({t0, ns()});
+            return true;
+        };
+        std::vector<std::tuple<uint64_t, uint64_t, uint64_t>> spans;
+        SessionWriteOptions opt;
+        opt.fault = [](const char* step) { return std::string(step) == "writer_thread" ? EAGAIN : 0; };
+        opt.block_span = [&](uint64_t byte_end, uint64_t b, uint64_t e) { spans.emplace_back(byte_end, b, e); };
+        const fs::path p = dir / "writer-starved.bin";
+        error.clear();
+        check(session_file_write(p.string(), meta, src, id, written, error, opt), "starved writer: the save still completes");
+        check(error.empty(), "starved writer: no error text");
+        check(spans.size() == 3, "starved writer: all three full blocks still written");
+        bool witnessed = false;
+        for (const auto& sp : spans)
+            for (const auto& w : reads)
+                if (w.first <= std::get<1>(sp) && std::get<1>(sp) < w.second) witnessed = true;
+        check(!witnessed, "starved writer: blocks drained in the caller's thread, never during a read");
+        SavedConversation back;
+        size_t read = 0;
+        check(session_file_read(p.string(), id, back, read, error), "starved writer: the file reads back");
+    }
     // A: the SAVE's RAM preflight comes BEFORE the checkpoint is copied
     {
         std::vector<ConversationCheckpoint> chain;
@@ -878,9 +1006,9 @@ int main() {
             check(session_deepest_checkpoint(chain) == &chain[1], "save: no pin, the deepest as before");
         }
         const uint64_t need = session_save_peak_bytes(&chain[1], live);
-        check(need >= 2 * (uint64_t) chain[1].bytes() + 5000 + 4000 + (16u << 20) &&
-              need <= 2 * (uint64_t) chain[1].bytes() + 5000 + 4000 + (18u << 20),
-              "save: the peak counts two checkpoint copies, the live state, tokens and the buffer");
+        check(need >= 2 * (uint64_t) chain[1].bytes() + 5000 + 4000 + (32u << 20) &&
+              need <= 2 * (uint64_t) chain[1].bytes() + 5000 + 4000 + (34u << 20),
+              "save: the peak counts two checkpoint copies, the live state, tokens and the two pipelined buffers");
         SessionSaveLive huge = live;
         huge.state_bytes = UINT64_MAX;
         check(session_save_peak_bytes(&chain[1], huge) == UINT64_MAX, "save: the peak saturates");

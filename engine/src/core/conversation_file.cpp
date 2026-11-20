@@ -1,6 +1,7 @@
 #include "strata/core/conversation_file.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <bit>
 #include <cerrno>
 #include <chrono>
@@ -8,15 +9,18 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <condition_variable>
 #include <new>
 #include <unordered_map>
 #include <optional>
 #include <filesystem>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <random>
 #include <string>
 #include <system_error>
+#include <thread>
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -527,16 +531,17 @@ bool free_space(const std::string& path, uint64_t& out) {
 
 class FileSink {
 public:
-    explicit FileSink(RawFile& f) : buf_(aligned_block()), f_(f) {}
-    bool ok() const { return buf_ != nullptr; }
+    explicit FileSink(RawFile& f) : buf_{aligned_block(), aligned_block()}, f_(f) {}
+    ~FileSink() { join_writer(); }
+    bool ok() const { return buf_[0] && buf_[1]; }
     std::string error() const {
-        if (!buf_) return "out of memory for the write buffer";
+        if (!buf_[0] || !buf_[1]) return "out of memory for the write buffer";
         return fault_ ? fault_msg_ : f_.error();
     }
-    SessionError kind() const { return buf_ ? (fault_ ? fault_kind_ : f_.kind()) : SessionError::memory; }
-    // room in the block for in-place production (avoids a staging copy)
-    uint8_t* span(size_t& room) { room = kBlock - used_; return buf_.get() + used_; }
-    bool commit(size_t n) { used_ += n; total_ += n; return used_ < kBlock || drain(); }
+    SessionError kind() const { return ok() ? (fault_ ? fault_kind_ : f_.kind()) : SessionError::memory; }
+    // room in the active block for in-place production (avoids a staging copy)
+    uint8_t* span(size_t& room) { room = kBlock - used_; return buf_[active_].get() + used_; }
+    bool commit(size_t n) { used_ += n; total_ += n; return used_ < kBlock || hand_off(); }
     bool write(const void* p, size_t n) {
         const uint8_t* s = static_cast<const uint8_t*>(p);
         while (n) {
@@ -549,13 +554,15 @@ public:
         }
         return true;
     }
-    // last block padded to the alignment for direct I/O, then the file cut back to its exact size and flushed
+    // joins the writer, then the last block padded to the alignment for direct I/O, the file cut back to its
+    // exact size and flushed: after join_writer() nothing here and no writer touches RawFile concurrently
     bool finish(bool durable) {
+        join_writer();
         if (!f_.is_open()) return false;
         if (fault_) { f_.close(); return false; }
         const size_t padded = f_.direct() ? (used_ + kAlign - 1) / kAlign * kAlign : used_;
-        std::memset(buf_.get() + used_, 0, padded - used_);
-        bool ok = f_.write_all(buf_.get(), padded);
+        std::memset(buf_[active_].get() + used_, 0, padded - used_);
+        bool ok = f_.write_all(buf_[active_].get(), padded);
         if (ok && used_ && progress) (*progress)(total_, expected);   // the last, partial block
         ok = ok && (padded == used_ || f_.truncate(total_));
         if (ok && durable && phase) phase("flush", total_);
@@ -565,20 +572,126 @@ public:
         return ok;
     }
     std::optional<Ticker> progress;
+    std::optional<std::function<void(uint64_t, uint64_t, uint64_t)>> block_span;   // tests only, see SessionWriteOptions
     SessionPhase phase;
     uint64_t expected = 0;
     int write_fault = 0, flush_fault = 0;   // tests: errno values injected at the first block write / the file flush
+    int writer_thread_fault = 0;            // tests: nonzero forces the synchronous draining fallback
 private:
+    static uint64_t now_ns() {
+        return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+    }
     void fail_with(int e) { fault_ = true; fault_kind_ = errno_kind(e); fault_msg_ = std::strerror(e); }
-    bool drain() {
+    // hands the full block to the writer and flips buffers: the producer only waits on disk when BOTH blocks
+    // are working, which is how the source copy of the next block overlaps this block's write
+    bool hand_off() {
+        if (!writer_.joinable() && !no_writer_) {
+            if (writer_thread_fault) no_writer_ = true;   // tests: the starvation seam below, forced
+            else {
+                try { writer_ = std::thread([this] { run_writer(); }); }
+                catch (const std::system_error&) { no_writer_ = true; }   // no thread available (EAGAIN
+            }                                                             // under process limits): drain
+        }                                                                 // synchronously, as before
+        if (no_writer_) return drain_sync();
+        {
+            std::unique_lock<std::mutex> lk(m_);
+            if (writer_failed_) return false;
+            const int next = 1 - active_;
+            slot_free_.wait(lk, [&] { return ready_ != next && inflight_ != next; });
+            ready_ = active_;
+            active_ = next;
+            used_ = 0;
+            work_ready_.notify_all();
+        }
+        if (progress) report_written();
+        return !writer_failed_;
+    }
+    // the un-pipelined fallback: full blocks are written in the caller's thread, exactly as the single-buffer
+    // FileSink did; every save path and error channel stays the same
+    bool drain_sync() {
         if (write_fault) { fail_with(write_fault); return false; }
-        if (!f_.write_all(buf_.get(), used_)) return false;
+        const uint64_t t0 = now_ns();
+        const bool ok = f_.write_all(buf_[active_].get(), kBlock);
+        const uint64_t t1 = now_ns();
+        if (!ok) {
+            fault_ = true;
+            fault_kind_ = f_.kind();
+            fault_msg_ = f_.error();
+            return false;
+        }
+        const uint64_t w = written_.fetch_add(kBlock) + kBlock;
+        if (block_span) (*block_span)(w, t0, t1);
         used_ = 0;
-        if (progress) (*progress)(total_, expected);
+        active_ = 1 - active_;
+        if (progress) report_written();
         return true;
     }
-    Aligned buf_;
+    void run_writer() {
+        for (;;) {
+            int slot;
+            {
+                std::unique_lock<std::mutex> lk(m_);
+                work_ready_.wait(lk, [&] { return ready_ >= 0 || producer_done_; });
+                if (ready_ < 0) return;
+                slot = ready_;
+                ready_ = -1;
+                inflight_ = slot;
+            }
+            if (write_fault) {
+                std::lock_guard<std::mutex> lk(m_);
+                fail_with(write_fault);
+                writer_failed_ = true;
+                ready_ = -1;
+                inflight_ = -1;   // abandon any other pending block: the write is failing, and a producer
+                slot_free_.notify_all();   // waiting on a slot must not outlive the writer that cannot free it
+                return;
+            }
+            const uint64_t t0 = now_ns();
+            const bool ok = f_.write_all(buf_[slot].get(), kBlock);
+            const uint64_t t1 = now_ns();
+            if (!ok) {
+                std::lock_guard<std::mutex> lk(m_);
+                fault_ = true;
+                fault_kind_ = f_.kind();
+                fault_msg_ = f_.error();
+                writer_failed_ = true;
+                ready_ = -1;
+                inflight_ = -1;
+                slot_free_.notify_all();
+                return;
+            }
+            const uint64_t w = written_.fetch_add(kBlock) + kBlock;
+            if (block_span) (*block_span)(w, t0, t1);   // tests: this block's OS write span
+            { std::lock_guard<std::mutex> lk(m_); inflight_ = -1; }
+            slot_free_.notify_all();
+        }
+    }
+    // progress reports stay on the calling thread and follow real movement: bytes the writer has already handed
+    // to the OS, never ahead, lagging at most the blocks still in flight
+    void report_written() {
+        const uint64_t w = written_.load();
+        if (w > reported_) { reported_ = w; (*progress)(w, expected); }
+    }
+    void join_writer() {
+        if (!writer_.joinable()) return;
+        { std::lock_guard<std::mutex> lk(m_); producer_done_ = true; }
+        work_ready_.notify_all();
+        writer_.join();
+        if (progress) report_written();   // catch up on blocks the writer finished while the producer ran ahead
+    }
+    Aligned buf_[2];
     RawFile& f_;
+    int active_ = 0;
+    bool no_writer_ = false;   // set when the writer cannot start: every block drains in the caller's thread
+    std::thread writer_;
+    std::mutex m_;
+    std::condition_variable work_ready_, slot_free_;
+    int ready_ = -1, inflight_ = -1;
+    bool producer_done_ = false;
+    std::atomic<bool> writer_failed_{false};
+    std::atomic<uint64_t> written_{0};
+    uint64_t reported_ = 0;
     bool fault_ = false;
     SessionError fault_kind_ = SessionError::io;
     std::string fault_msg_;
@@ -1126,12 +1239,14 @@ bool write_impl(const std::string& path, const SavedConversation& image, const s
     FileSink f(raw);
     if (!f.ok()) { st.error = SessionError::memory; error = "session file: " + f.error(); return false; }
     if (opt.progress) f.progress.emplace(opt.progress);
+    if (opt.block_span) f.block_span.emplace(opt.block_span);
     f.phase = opt.phase;
     f.expected = total;
     if (f.progress) (*f.progress)(0, total);   // the temporary file exists: the transfer starts
     const std::function<int(const char*)>* fault = opt.fault ? &opt.fault : nullptr;
     f.write_fault = injected(fault, "write");
     f.flush_fault = injected(fault, "file_flush");
+    f.writer_thread_fault = injected(fault, "writer_thread");
     uint8_t h[kHeader];
     header_bytes(h, id, payload);
     bool ok = f.write(h, kHeader);
@@ -1200,7 +1315,7 @@ const ConversationCheckpoint* session_deepest_checkpoint(const std::vector<Conve
 }
 
 uint64_t session_save_peak_bytes(const ConversationCheckpoint* deepest, const SessionSaveLive& live) {
-    uint64_t n = sat_add(kBlock, uint64_t(1) << 20);                          // write buffer, small vectors
+    uint64_t n = sat_add(sat_mul(2, kBlock), uint64_t(1) << 20);              // the two pipelined write buffers, small vectors
     if (deepest) n = sat_add(n, sat_mul(2, deepest->bytes()));                // the list and the image's copy
     n = sat_add(n, live.state_bytes);                                         // the live running state
     n = sat_add(n, sat_mul(live.tokens, sizeof(int32_t)));                    // its token list
