@@ -77,7 +77,7 @@ export function verifyTree(source, staged, {pythonOnly=false}={}) {
     // rewrites `from terminal.X import` -> `from X import` in the staged .py
     // files. Accept a staged file whose only difference is that prefix.
     if (name.endsWith('.py')) {
-      const norm=t=>readFileSync(t,'utf8').replace(/\b(from|import)\s+terminal\./g,'$1 ');
+      const norm=t=>readFileSync(t,'utf8').replace(/\r\n/g,'\n').replace(/\b(from|import)\s+terminal\./g,'$1 ');
       const h=s=>createHash('sha256').update(s).digest('hex');
       if (h(norm(a))===h(norm(b))) continue;
     }
