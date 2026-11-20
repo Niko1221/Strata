@@ -498,6 +498,24 @@ def main() -> int:
             for cache_dir in list(root.rglob("__pycache__")):
                 shutil.rmtree(cache_dir, ignore_errors=True)
 
+        # New layout (0.2.16): the source uses `from terminal.strata_control import ...`
+        # because the checkout's root is on sys.path. The packaged Terminal/Control are
+        # flat (strata_control/ at the top), so strip the now-bogus `terminal.` prefix.
+        import re as _re
+        _rewrite = _re.compile(r'\b(from|import)\s+terminal\.')
+        _rewritten = 0
+        for _f in root.rglob("*.py"):
+            try:
+                _text = _f.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                continue
+            _new = _rewrite.sub(lambda m: m.group(1) + " ", _text)
+            if _new != _text:
+                _f.write_text(_new, encoding="utf-8")
+                _rewritten += 1
+        if _rewritten:
+            print(f"  rewrote the terminal. import prefix in {_rewritten} files for the flat bundle")
+
         probe = run_probe(py, root)
         print("  " + (probe.stdout.strip() or probe.stderr.strip()[:200]))
         if not args.skip_deps and probe.returncode != 0:
