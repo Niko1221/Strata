@@ -1,6 +1,7 @@
 // metal/tests/arena_budget_test.cpp - the SSD-streaming arena's size rule (src/engine/arena_budget.h), on the sizes of
 // the Macs it was measured on.  No GPU: plain arithmetic.  Exit 0 = every check passed.
 #include "../src/engine/arena_budget.h"
+#include "strata/platform/mac_memory.hpp"
 
 #include <cmath>
 #include <cstdio>
@@ -124,12 +125,17 @@ int main() {
     // no room even for the first step: nothing is filled (the min slots still exist, unfilled)
     check(arena_fill_plan(s4, cost.data(), cost.size(), 1.5 * kGB, [](double) { return 8.0 * kGB; }) == 0,
           "no room for one step: nothing filled", 0);
-    // what counts as available: the M4 at the engine's start (16 KiB pages: 6.3 GB free + purgeable, 10.4 GB
-    // inactive, 14 GB file-backed) - the clean file cache counts; another program's inactive memory does not
-    check(std::fabs(arena_avail(6.3 * kGB, 0.07 * kGB, 10.4 * kGB, 0.1 * kGB, 14.1 * kGB) - 16.87 * kGB) < 1e6,
-          "inactive file cache counts", arena_avail(6.3 * kGB, 0.07 * kGB, 10.4 * kGB, 0.1 * kGB, 14.1 * kGB));
-    check(std::fabs(arena_avail(6.3 * kGB, 0.07 * kGB, 10.4 * kGB, 0.1 * kGB, 2.0 * kGB) - 8.37 * kGB) < 1e6,
-          "inactive anonymous memory does not (only 2 GB file-backed)", arena_avail(6.3 * kGB, 0.07 * kGB, 10.4 * kGB, 0.1 * kGB, 2.0 * kGB));
+    using strata::platform::mac_available_pages;
+    constexpr uint64_t page = 16384;
+    const auto inactive_bound = mac_available_pages(630, 7, 1040, 10, 1410);
+    const auto file_bound = mac_available_pages(630, 7, 1040, 10, 200);
+    const auto no_file_credit = mac_available_pages(10, 0, 20, 10, 8);
+    check(inactive_bound == 1677, "inactive file cache counts", inactive_bound * page);
+    check(file_bound == 827, "speculative file pages counted once", file_bound * page);
+    check(no_file_credit == 10, "no file pages left to credit", no_file_credit * page);
+    // A 16 GB Mac with about 1 GB of speculative pages already included in its 6 GB free.
+    const double avail16 = mac_available_pages(366211, 0, 122071, 61036, 244141) * page;
+    check(!arena_grow(m16, avail16, 1.5 * kGB), "the next step would cross the 7.5 GB reserve", avail16);
     std::printf("%s\n", failures ? "FAILED" : "all passed");
     return failures ? 1 : 0;
 }
