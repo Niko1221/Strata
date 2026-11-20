@@ -2,7 +2,7 @@
 
 Protocol `strata-qwen38-thinking-v1-draft.1` (draft), run `20261120T060959Z-e2f62039`, started 2026-11-20T06:09:59Z. **Status: complete.**
 
-Written by `strata bench run`. The machine-readable result is [results.json](results.json); every request, its raw usage and timings and the client event offsets are in [outputs.jsonl](outputs.jsonl).
+Written by `strata bench run`. The machine-readable result is [results.json](results.json); every request, its raw usage and timings and the client event offsets are in [outputs.jsonl](outputs.jsonl). The engine's startup log is included as [engine-log.txt](engine-log.txt) - the runner wrote it as `engine.log`, renamed here only to pass the repository's `*.log` ignore rule (renamed here only to pass the repository's `*.log` ignore rule; the `artifacts` entry in results.json still lists it as `engine.log` with its sha256).
 
 ## Hardware and software
 

@@ -15,7 +15,7 @@
     "required_duration_s": 154.828,
     "optional_duration_s": 73.547,
     "optional_concurrency": true,
-    "command": "strata bench run --profile launch-iq3_s-200k --track custom --track-notes custom track: machine-calibrated setup (expert-profile.bin + --prefill-pipe 1536); experimental speed projection ON (--control-vector-scaled ...speed-projection.gguf:1.0 --control-vector-layer-range 4 44 --cvec-mode project --cvec-dir per-layer); vision ON (mmproj BF16); 2x RTX 3090 layer_split auto; --kv int8 --kv-resident 32768; --spec 4 --spec-min-p 0.5 MTP; server --parallel 3; 200K context; release binary 0.1.62-windows-x86_64-cuda-cuda13 --model-revision ed59f92082b1e93c0e96d60a8b11aab089b52f09 --quantization IQ3_S --custom-pack prepared pack Strata-data/packs/iq3_s; MTP draft layer fetched by SHA-pinned HTTP range reads from the original Qwen3.8-Flash-Next BF16 checkpoint; model files <models-dir>\\IQ3_S (downloaded by terminal setup at its pinned revision, SHA-256 verified) --background Windows 11 Hyper-V host; Ubuntu Server + Talos VMs stopped for the run; otherwise idle desktop --optional-concurrency --load-timeout 3600"
+    "command": "strata bench run --profile launch-iq3_s-200k --track custom --track-notes custom track: machine-calibrated setup (expert-profile.bin + --prefill-pipe 1536); experimental speed projection ON (--control-vector-scaled ...speed-projection.gguf:1.0 --control-vector-layer-range 4 44 --cvec-mode project --cvec-dir per-layer); vision ON (mmproj BF16); 2x RTX 3090 layer_split auto; --kv int8 --kv-resident 32768; --spec 4 --spec-min-p 0.5 MTP; server --parallel 3; 200K context; release binary 0.1.62-windows-x86_64-cuda-cuda13 --model-revision ed59f92082b1e93c0e96d60a8b11aab089b52f09 --quantization IQ3_S --custom-pack prepared pack Strata-data/packs/iq3_s; MTP draft layer fetched by SHA-pinned HTTP range reads from the original Qwen3.8-Flash-Next BF16 checkpoint; model files E:\\1\\StrataModels\\IQ3_S (downloaded by terminal setup at its pinned revision, SHA-256 verified) --background Windows 11 Hyper-V host; Ubuntu Server + Talos VMs stopped for the run; otherwise idle desktop --optional-concurrency --load-timeout 3600"
   },
   "hardware": {
     "gpus": [
@@ -94,7 +94,7 @@
       }
     ],
     "tokenizer_revision": null,
-    "custom_pack": "prepared pack Strata-data/packs/iq3_s; MTP draft layer fetched by SHA-pinned HTTP range reads from the original Qwen3.8-Flash-Next BF16 checkpoint; model files <models-dir>\\IQ3_S (downloaded by terminal setup at its pinned revision, SHA-256 verified)"
+    "custom_pack": "prepared pack Strata-data/packs/iq3_s; MTP draft layer fetched by SHA-pinned HTTP range reads from the original Qwen3.8-Flash-Next BF16 checkpoint; model files E:\\1\\StrataModels\\IQ3_S (downloaded by terminal setup at its pinned revision, SHA-256 verified)"
   },
   "configuration": {
     "track": "custom",
