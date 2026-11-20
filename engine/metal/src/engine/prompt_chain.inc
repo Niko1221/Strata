@@ -120,13 +120,25 @@ bool Window::pc_setup(int C) {
     b.ggb = F32(MT * G_HV * 2); b.gkq = F32(MT * G_HK); b.go = F32(MT * G_ZV);
     b.qfull = F32(MT * G_QFULL); b.kcur = F32(MT * G_KV); b.vcur = F32(MT * G_KV); b.iqr = F32(MT * G_IQR); b.ikr = F32(MT * G_ID);
     b.qcur = F32(MT * G_QOUT); b.qcurh = F16(MT * G_QOUT); b.qidx = F32(MT * G_IH * G_ID); b.scores = F32(MT * MB);
-    b.qids = alloc(4 * MT * PC_QB); b.part = F32(MT * PC_QCHUNKS * G_QH * (G_QD + 2)); b.XQ = F32(4 * MT * G_QOUT + MT * G_QOUT / 16);
+    const size_t part_bytes = 4 * MT * PC_QCHUNKS * G_QH * (G_QD + 2);
+    const size_t xs_bytes = 2 * (size_t) b.maxrows * N;
+    const size_t ye_bytes = 4 * (size_t) b.maxrows * N;
+    const char* reuse_env = std::getenv("STRATA_METAL_PROMPT_REUSE");
+    const bool reuse = reuse_env && std::strcmp(reuse_env, "1") == 0;
+    b.qids = alloc(4 * MT * PC_QB);
+    // The serial encoder consumes part in the QSA merge before the MoE gather writes XS.
+    // Gate/up reads XS before down writes YE. Only the shared allocation belongs in owned.
+    const mtl::Buffer scratch = reuse ? alloc(std::max({part_bytes, xs_bytes, ye_bytes})) : mtl::Buffer{};
+    b.part = reuse ? view_of(scratch, 0, part_bytes) : alloc(part_bytes);
+    b.XQ = F32(4 * MT * G_QOUT + MT * G_QOUT / 16);
     b.xqh = F16(MT * G_QOUT);
     b.logits = F32(MT * nexp_); b.ids = alloc(4 * MT * TOPK); b.wts = F32(MT * TOPK);
     b.bcnt = alloc(4 * (size_t) nblk_max * nexp_); b.boff = alloc(4 * (size_t) nblk_max * nexp_);
     b.eoff = alloc(4 * nexp_); b.tiles = alloc(8 * (size_t) (b.maxrows / b.tm + 1)); b.meta = alloc(64);
     b.stok = alloc(4 * (size_t) b.maxrows); b.sw = F32(b.maxrows); b.pos = alloc(4 * MT * TOPK);
-    b.XS = F16((size_t) b.maxrows * N); b.HS = F16((size_t) b.maxrows * NFF); b.YE = F32((size_t) b.maxrows * N);
+    b.XS = reuse ? view_of(scratch, 0, xs_bytes) : alloc(xs_bytes);
+    b.HS = F16((size_t) b.maxrows * NFF);
+    b.YE = reuse ? view_of(scratch, 0, ye_bytes) : alloc(ye_bytes);
     b.yr = F32(MT * N); b.gsh = F32(MT * NFF); b.ush = F32(MT * NFF); b.hh = F16(MT * NFF); b.ys = F32(MT * N); b.sgv = F32(MT);
     b.WD = F16((size_t) (LR + HC) * HC * N); b.WU = F16((size_t) HC * N * LR);
     if (b.fused) {
