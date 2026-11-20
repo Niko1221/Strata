@@ -64,9 +64,6 @@ LINES = [
     ("tools/packaging/README.md", r"\(app and Terminal " + V + r", Control " + V + r", engines " + V + r"\)", ["product_version", "control_version", "engine_version"]),
     ("tools/packaging/ENGINE-COMPONENT.md", r'"name": "strata-engine", "version": "' + V + '"', ["engine_version"]),
     ("tools/packaging/ENGINE-COMPONENT.md", r"package_engine.py --src <build folder> --backend cuda --version " + V, ["engine_version"]),
-    ("packaging/README.md", r"Upstream reference: app and Terminal " + V + r", Control " + V + r", engines " + V + r"\.", ["product_version", "control_version", "engine_version"]),
-    ("packaging/ENGINE-COMPONENT.md", r'"name": "strata-engine", "version": "' + V + '"', ["engine_version"]),
-    ("packaging/ENGINE-COMPONENT.md", r"package_engine.py --src <build folder> --backend cuda --version " + V, ["engine_version"]),
 ]
 
 
@@ -150,7 +147,15 @@ def check(manifest):
         problems.append("tag %s does not match product_version %s" % (manifest["tag"], manifest["product_version"]))
     for where, (found, key) in code_versions().items():
         want = manifest.get(key, manifest["product_version"]) if key == "terminal_version" else manifest[key]
-        if where == "CMakeLists.txt (engine)" and "upstream" not in manifest:
+        if where == "CMakeLists.txt (engine)" and "upstream" in manifest:
+            # The Hakua fork keeps its own engine component version (engine_version,
+            # e.g. 0.6.3) while engine/CMakeLists.txt follows the absorbed upstream
+            # engine (upstream.engine_version, e.g. 0.1.63). Compare the CMake project
+            # version against the upstream reference, not the fork component version.
+            up_want = manifest["upstream"]["engine_version"]
+            if found != up_want and not found.startswith(up_want + "."):
+                problems.append("%s says %s, upstream reference engine_version is %s" % (where, found, up_want))
+        elif where == "CMakeLists.txt (engine)" and "upstream" not in manifest:
             # the CMake project version is Control's. The engine packages carry it, except after a Control-only hotfix (Control 0.1.59.1,
             # engines still 0.1.59): then Control is the engine version plus one hotfix part.
             # A release that builds no engine (0.2.15: Control 0.1.61, the 0.1.60 engines of v0.2.14 carried by absolute url) names the release

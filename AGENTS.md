@@ -28,7 +28,7 @@ is absent; component/feed signatures were verified with bundled production publi
 Old engines `0.5.1` through `0.5.8` were removed from `AppData/Local/Strata/components/engine`;
 `0.5.9` and `0.6.0` remain installed.
 See `_docs/2026-11-17_stable-060-release_Antigravity.md` for exact scope and evidence.
-Keep upstream Niko1221 0.2.15 at
+Keep upstream Niko1221 0.2.17 at
 `c77572806996349b49995e4f98d41b5294d36a21` (upstream engine 0.1.60;
 fork versions remain independent).
 ## Historical 0.5.9 records
