@@ -7583,7 +7583,11 @@ bool Prefill::lm_run(const std::vector<Seg>& segs, int depth, const std::vector<
                                 strata::kernels::fwht256_inplace_cuda(m.Kc, T * 2, cs);
                                 strata::kernels::fwht256_inplace_cuda(m.Vc, T * 2, cs);
                             }
-                            if (st.kv_q4)
+                            if (st.kv_oct) {
+                                strata::kernels::kv_append_oct(st.k_q4, st.v_q4, st.page_table, p0, T, m.Kc, m.Vc, s, cs,
+                                                               host_w, staged ? &m.stage : nullptr);
+                                strata::kernels::kv_exact_window_append_range(st.win, 0, p0, sgm.pos0 + sgm.n, m.Kc, m.Vc, T, cs);
+                            } else if (st.kv_q4)
                                 strata::kernels::kv_append_q4(st.k_q4, st.v_q4, st.page_table, p0, T, m.Kc, m.Vc, s, cs,
                                                               host_w, staged ? &m.stage : nullptr);
                             else
