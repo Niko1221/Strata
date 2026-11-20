@@ -17740,7 +17740,10 @@ int main(int argc, char** argv) {
             // a parked conversation holding it stays parked) and a later request that resumes from it does not park the
             // branch it leaves: N queries cost one prefix, not N.  Absent = as before.
             int64_t req_pin = 0;
-            bool req_mask = false;   // mask=1: serve/constrain.py answers MQ before every window (token_mask.hpp)
+            // hold=N:ID (the server's thinking budget, GEN only): end the request after N emitted tokens unless token ID
+            // (</think>) came first, with the session at exactly what was emitted (serve_hold_remaining); DONE says "hold".
+            // Absent = as before.  An older engine skips the key (unknown keys are skipped), and says no "hold" in READY.
+            long long req_hold_n = -1, req_hold_id = -1;
             bool req_mask = false;   // mask=1: serve/constrain.py answers MQ before every window (token_mask.hpp)
             // tuning keys (setup's calibration measures settings without restarting the engine): the PCIe share of
             // the missed experts and the draft-probability floor, for this request only
