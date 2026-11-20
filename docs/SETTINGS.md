@@ -27,8 +27,8 @@ Off unless you set them. The last column says where each one is described.
 | `STRATA_ARGMAX_ROWS_SM70` | number | NVIDIA and AMD | [NVIDIA_V100.md](NVIDIA_V100.md) |
 | `STRATA_ATTN_PRE75` | on / off | NVIDIA and AMD, Intel Arc | [NVIDIA_V100.md](NVIDIA_V100.md), [OLDER_GPUS.md](OLDER_GPUS.md), [README.md](bench-results/2026-10-04-rdna2-pre75-attention/README.md) |
 | `STRATA_ATTN_RS` | number | Intel Arc | [INTEL.md](INTEL.md) |
-| `STRATA_AUX_CPUS` | text | NVIDIA and AMD | [DETAILS.md](DETAILS.md) |
-| `STRATA_AUX_STAGER` | number | NVIDIA and AMD | [DETAILS.md](DETAILS.md), [README.md](bench-results/2026-10-08-community-2x-rtx3080-20gb-ud-q4-k-xl-512k-pool/README.md) |
+| `STRATA_AUX_CPUS` | text | NVIDIA and AMD, Intel Arc | [INTEL.md](INTEL.md), [DETAILS.md](DETAILS.md) |
+| `STRATA_AUX_STAGER` | number | NVIDIA and AMD, Intel Arc | [INTEL.md](INTEL.md), [DETAILS.md](DETAILS.md), [README.md](bench-results/2026-10-08-community-2x-rtx3080-20gb-ud-q4-k-xl-512k-pool/README.md) |
 | `STRATA_BATCH_DECODE_SHARE` | number | NVIDIA and AMD, Intel Arc | [BATCHING.md](BATCHING.md) |
 | `STRATA_BATCH_MTP` | on / off | NVIDIA and AMD, Intel Arc | [BATCHING.md](BATCHING.md) |
 | `STRATA_BATCH_YIELD_CHUNKS` | number | NVIDIA and AMD | [BATCHING.md](BATCHING.md) |

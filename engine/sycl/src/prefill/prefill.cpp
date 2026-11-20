@@ -8,6 +8,7 @@
 #include "strata/prefill/xmx_moe.hpp"
 #include "strata/prefill/esimd_moe.hpp"
 #include "strata/prefill_copy_queue.hpp"
+#include "strata/platform/aux_cpus.hpp"
 #include "strata/prefill/prefill.hpp"
 #include "strata/kernels/dflash2.hpp"
 #include "strata/workload_trace.hpp"
@@ -520,7 +521,16 @@ struct Stager {
                 0) return false;
         }
         device = dpct::get_current_device_id();
-        for (int t = 0; t < nthreads; ++t) threads.emplace_back([this] { work(); });
+        for (int t = 0; t < nthreads; ++t) threads.emplace_back([this] {
+            strata::platform::name_this_thread("strata-stage");
+            static const bool keep = [] {
+                const char* value = std::getenv("STRATA_AUX_STAGER");
+                return value && std::atoi(value) == 0;
+            }();
+            if (keep) strata::aux_cpus::note_owned_thread();
+            else strata::aux_cpus::pin_current_thread();
+            work();
+        });
         return true;
     }
     ~Stager() {
