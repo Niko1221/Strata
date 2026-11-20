@@ -102,3 +102,19 @@ covers the repair and the repaired 0.6.8 release.
 2. Publish `v0.6.8` tag + release with the installer attached in the same
    command (immutable releases: an asset-less release cannot receive assets).
 3. Anonymous download readback with SHA-256.
+
+## Release publication (final)
+- Tag `v0.6.8` pushed at `ec238c6ac` (annotated).
+- GitHub release created in one command with the asset attached (the repo
+  enforces immutable releases, so an asset-less release cannot be patched):
+  `https://github.com/zapabob/Strata/releases/tag/v0.6.8`.
+- Asset: `Strata_0.6.8_x64-setup.exe`, 127,087,187 bytes,
+  SHA-256 `6b606bbf4851afe0f405a38a7539dac301aceb0aa77f112cc6dbfc01b73b5f57`.
+- Anonymous download (no auth) matched the frozen SHA-256 exactly.
+- Earlier v0.6.7 tag/release were consumed by the immutable-release history
+  (the release was created asset-less and could not receive assets); v0.6.8 is
+  the published replacement. No published tag was force-moved or deleted.
+- Note: a separate experiment (`q38-9b-cvec` build) held the GPU at release
+  time; per user decision, the release was published on the previously
+  verified gates (host boots with engine 0.6.3, model load + ready confirmed,
+  tsc clean, signed component 152/152 verified, earlier --serve E2E exit 0).
