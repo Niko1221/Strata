@@ -1,5 +1,6 @@
 """Tests for ab_suites: loop check, request type, frozen corpus.  No GPU, no network."""
 import json
+import os
 import re
 import struct
 import sys
@@ -132,6 +133,100 @@ class ModelContext(unittest.TestCase):
         with self.assertRaises(SystemExit) as cm:
             ab_suites.model_context(Path("no/such/model.gguf"))
         self.assertIn("model.gguf", str(cm.exception))
+
+
+def think_resp(content, reasoning="", finish="stop"):
+    return {"choices": [{"message": {"content": content, "reasoning_content": reasoning}, "finish_reason": finish}]}
+
+
+def by_tag(reqs):
+    return {r.tag: r for r in reqs}
+
+
+class Think(unittest.TestCase):
+    def test_think_reqs_without_run_code_has_no_code_tasks(self):
+        reqs = ab_suites.think_reqs(8192, False)
+        self.assertEqual([r.tag for r in reqs], [f"think.math{i}" for i in range(1, 5)] + ["think.read1", "think.read2"])
+        for r in reqs:
+            self.assertEqual(r.body["reasoning_budget_tokens"], 6144)
+            self.assertEqual(r.body["max_tokens"], 8192)
+            self.assertIs(r.body["chat_template_kwargs"]["enable_thinking"], True)
+            self.assertEqual((r.body["temperature"], r.body["seed"], r.body["reasoning_effort"]), (0, 7, "high"))
+            self.assertTrue(r.body["messages"][0]["content"].endswith("End your reply with a line 'ANTWORT: <answer>'."))
+        self.assertEqual([r.tag for r in ab_suites.think_reqs(8192, True)][-2:], ["think.code1", "think.code2"])
+
+    def test_answer_only_in_reasoning_is_wrong(self):
+        check = by_tag(ab_suites.think_reqs(8192, False))["think.math1"].check
+        self.assertEqual(check(think_resp("", "ANTWORT: 334")), (False, "keine Antwort"))
+        self.assertIsNone(ab_suites.answer_of(think_resp("so far", "ANTWORT: 334")))
+
+    def test_math_answer_checked(self):
+        reqs = by_tag(ab_suites.think_reqs(8192, False))
+        for tag, right in zip(("think.math1", "think.math2", "think.math3", "think.math4"), ab_suites.MATH):
+            check, n = reqs[tag].check, right[1]
+            self.assertTrue(check(think_resp(f"... ANTWORT: 1 ... ANTWORT: {n}"))[0])
+            self.assertTrue(check(think_resp(f"ANTWORT: **{n}**."))[0])
+            self.assertFalse(check(think_resp(f"ANTWORT: {n + 1}"))[0])
+            self.assertFalse(check(think_resp(f"ANTWORT: {n}\nANTWORT: 1"))[0])
+            self.assertEqual(check(think_resp("no answer", finish="length")), (False, "Token-Grenze erreicht"))
+            self.assertEqual(check(think_resp("no answer")), (False, "keine Antwort"))
+
+    def test_read_answer_compared_as_text(self):
+        reqs = by_tag(ab_suites.think_reqs(8192, False))
+        self.assertTrue(reqs["think.read1"].check(think_resp("ANTWORT: `9-5-0-10-28`."))[0])
+        self.assertFalse(reqs["think.read1"].check(think_resp("ANTWORT: 9-5-0-10-27"))[0])
+        self.assertTrue(reqs["think.read2"].check(think_resp('ANTWORT:   "3" '))[0])
+        self.assertFalse(reqs["think.read2"].check(think_resp("ANTWORT: 4"))[0])
+
+    def test_tasks_have_working_reference_solutions(self):
+        # the math answers and the print line, recomputed here
+        self.assertEqual(sum(1 for n in range(1, 2001) if (n % 6 == 0 or n % 15 == 0) and n % 10), 334)
+        self.assertEqual(pow(7, 2026, 1000), 649)
+        ns = {}
+        exec(ab_suites.READ_SNIPPET.replace("print(", "result = ("), ns)
+        self.assertEqual(ns["result"], ab_suites.READ[0][1])
+        self.assertEqual(ab_suites.BUG_SNIPPET.splitlines()[2].split(None, 1)[0], ab_suites.READ[1][1])
+
+    def test_code_tasks_pass_reference_and_fail_stub(self):
+        reqs = ab_suites.think_reqs(8192, True)[-2:]
+        for req, (name, _, _, ref) in zip(reqs, ab_suites.CODE):
+            self.assertIn(f"defines {name}.", req.body["messages"][0]["content"])
+            ok, why = req.check(think_resp(f"first\n```python\nx = 1\n```\nfinal\n```python\n{ref}\n```"))
+            self.assertTrue(ok, why)
+            self.assertEqual(req.check(think_resp(f"```python\ndef {name}(*a):\n    return None\n```"))[0], False)
+            self.assertEqual(req.check(think_resp("prose only")), (False, "kein Code"))
+            self.assertEqual(req.check(think_resp("prose", finish="length")), (False, "Token-Grenze erreicht"))
+
+    def test_no_process_without_run_code(self):
+        with mock.patch("subprocess.run", side_effect=AssertionError("process started")), \
+                mock.patch("subprocess.Popen", side_effect=AssertionError("process started")):
+            for r in ab_suites.think_reqs(8192, False):
+                for text in ("ANTWORT: 1", "```python\nimport os\nos.system('x')\n```", ""):
+                    r.check(think_resp(text))
+
+    def test_run_code_pass_fail_timeout(self):
+        made = []
+        real = tempfile.mkdtemp
+        with mock.patch("tempfile.mkdtemp", side_effect=lambda: made.append(real()) or made[-1]):
+            self.assertEqual(ab_suites.run_code("def f(x): return x+1", "from solution import f\nassert f(1)==2"),
+                             (True, "Tests: 1 von 1"))
+            self.assertEqual(ab_suites.run_code("def f(x): return x", "from solution import f\nassert f(1)==2\nassert f(0)==0"),
+                             (False, "Tests: 1 von 2"))
+            self.assertEqual(ab_suites.run_code("def f(x: return", "from solution import f\nassert f(1)==2"),
+                             (False, "Tests: 0 von 1"))
+            self.assertEqual(ab_suites.run_code("while True: pass", "from solution import f\nassert f(1)==2", timeout=2),
+                             (False, "Zeitlimit"))
+        self.assertEqual(len(made), 4)
+        for d in made:
+            self.assertFalse(Path(d).exists())
+
+    def test_run_code_env_is_clean(self):
+        tests = ("import os\nassert 'PATH' in os.environ\n"
+                 "for k in ('STRATA_X', 'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA'):\n    assert k not in os.environ, k\n"
+                 "assert not any(k.startswith('STRATA_') for k in os.environ)")
+        with mock.patch.dict(os.environ, {"STRATA_X": "1", "HOME": "/h", "USERPROFILE": "u"}):
+            ok, why = ab_suites.run_code("", tests)
+        self.assertTrue(ok, why)
 
 
 if __name__ == "__main__":

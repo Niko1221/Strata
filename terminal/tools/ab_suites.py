@@ -2,9 +2,14 @@
 
 The corpus is read from git tag v0.2.12, so every run and every version sees the same bytes.
 """
+import ast
+import os
 import random
+import re
 import shutil
 import subprocess
+import sys
+import tempfile
 import threading
 from collections import Counter
 from dataclasses import dataclass
@@ -195,3 +200,151 @@ def ladder_reqs(n_ctx: int) -> list[Req]:
                 "seed": SEED, "chat_template_kwargs": {"enable_thinking": False}}
         reqs.append(Req("ladder", f"ladder.{step // 1024}k", body, ladder_check(codes, step)))
     return reqs
+
+
+THINK_END = "End your reply with a line 'ANTWORT: <answer>'."
+# (prompt, integer solution); every answer is above 100 and not in the prompt
+MATH = [
+    ("How many integers from 1 to 2000 are divisible by 6 or by 15, but not by 10?", 334),
+    ("Let a(1) = 3 and a(n+1) = 2*a(n) + n for n >= 1. What is a(10)?", 2549),
+    ("Form every three-digit number whose digits are three different digits from 1, 2, 3, 4, 5, with an odd first "
+     "digit and an even last digit. What is the sum of all these numbers?", 5994),
+    ("What is the remainder when 7^2026 is divided by 1000?", 649),
+]
+READ_SNIPPET = """def f(xs):
+    out = []
+    for i, x in enumerate(xs):
+        if x % 2:
+            out.append(x * i)
+        else:
+            out.insert(0, x + i)
+    return out
+
+print("-".join(map(str, f([3, 4, 5, 6, 7]))))"""
+BUG_SNIPPET = """1  def bsearch(a, t):
+2      lo, hi = 0, len(a) - 1
+3      while lo < hi:
+4          mid = (lo + hi) // 2
+5          if a[mid] == t:
+6              return mid
+7          if a[mid] < t:
+8              lo = mid + 1
+9          else:
+10             hi = mid - 1
+11     return -1"""
+# (prompt, text solution)
+READ = [
+    (f"```python\n{READ_SNIPPET}\n```\nWhat exactly does this program print? Give the one output line.", "9-5-0-10-28"),
+    (f"This binary search of a sorted list returns the index of t, or -1. Exactly one line is wrong. Line numbers "
+     f"are not part of the code.\n```\n{BUG_SNIPPET}\n```\nWhich line number is wrong? Give the number only.", "3"),
+]
+# (function name, prompt, hidden tests, reference solution)
+CODE = [
+    ("longest_run",
+     "Write longest_run(s): the length of the longest run of one repeated character in the string s "
+     "(for example 'aabbbc' gives 3). The empty string gives 0.",
+     "from solution import longest_run\nassert longest_run('aabbbc') == 3\nassert longest_run('abc') == 1\n"
+     "assert longest_run('zzzz') == 4\nassert longest_run('abbbaaaa') == 4\nassert longest_run('') == 0",
+     "def longest_run(s):\n    best = cur = 0\n    for i, c in enumerate(s):\n"
+     "        cur = cur + 1 if i and s[i - 1] == c else 1\n        best = max(best, cur)\n    return best"),
+    ("merge_intervals",
+     "Write merge_intervals(iv): iv is a list of (start, end) integer pairs in any order. Merge intervals that "
+     "overlap or touch (3 touches 3) and return the merged intervals as a sorted list of tuples. "
+     "An empty list gives [].",
+     "from solution import merge_intervals\nassert merge_intervals([(1, 3), (2, 6), (8, 10)]) == [(1, 6), (8, 10)]\n"
+     "assert merge_intervals([(5, 7), (1, 2), (2, 4)]) == [(1, 4), (5, 7)]\n"
+     "assert merge_intervals([(1, 10), (2, 3)]) == [(1, 10)]\nassert merge_intervals([]) == []",
+     "def merge_intervals(iv):\n    out = []\n    for a, b in sorted(iv):\n"
+     "        if out and a <= out[-1][1]:\n            out[-1] = (out[-1][0], max(out[-1][1], b))\n"
+     "        else:\n            out.append((a, b))\n    return out"),
+]
+
+
+def answer_of(resp: dict) -> str | None:
+    """The last 'ANTWORT:' value in the answer text (never in the reasoning), or None."""
+    found = re.findall(r"ANTWORT:[ \t]*((?:(?!ANTWORT:).)*)",resp["choices"][0]["message"].get("content") or "")
+    return found[-1].strip() if found else None
+
+
+def _norm(text: str) -> str:
+    """Lower case, spaces collapsed, quotes, backticks, asterisks and a final period removed."""
+    return " ".join(text.lower().split()).strip("\"'`* ").rstrip(".").strip("\"'`* ")
+
+
+# Runs every assert of the hidden tests alone, so the report can say how many passed.
+HARNESS = """import ast, sys
+sys.path.insert(0, '.')  # -I leaves the script folder off the path
+ns, ok = {}, 0
+tree = ast.parse(%r)
+try:
+    for n in tree.body:
+        try:
+            exec(compile(ast.Module([n], []), 'tests', 'exec'), ns)
+            ok += isinstance(n, ast.Assert)
+        except Exception:
+            if not isinstance(n, ast.Assert):
+                raise
+finally:
+    print('PASSED', ok)
+"""
+
+
+def run_code(src: str, tests: str, timeout: float = 20) -> tuple[bool, str]:
+    """Run tests against src in a fresh temp dir. This is not isolation: the code has the user's rights."""
+    k = sum(isinstance(n, ast.Assert) for n in ast.parse(tests).body)
+    d = Path(tempfile.mkdtemp())
+    try:
+        (d / "solution.py").write_text(src, encoding="utf-8")
+        (d / "test_solution.py").write_text(HARNESS % tests, encoding="utf-8")
+        env = {key: os.environ[key] for key in ("PATH", "SYSTEMROOT") if key in os.environ}
+        try:
+            r = subprocess.run([sys.executable, "-I", "test_solution.py"], cwd=d, env=env, timeout=timeout,
+                               capture_output=True, encoding="utf-8", errors="replace")
+        except subprocess.TimeoutExpired:  # subprocess.run has killed the child
+            return False, "Zeitlimit"
+        m = re.findall(r"PASSED (\d+)", r.stdout)
+        i = int(m[-1]) if m else 0
+        return i == k, f"Tests: {i} von {k}"
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def _think_check(kind: str, want) -> Callable[[dict], tuple[bool, str]]:
+    def check(resp: dict) -> tuple[bool, str]:
+        choice = resp["choices"][0]
+        content = choice["message"].get("content") or ""
+        if not content.strip():
+            return False, "keine Antwort"
+        cut = choice.get("finish_reason") == "length"
+        if kind == "code":
+            blocks = re.findall(r"```python[ \t]*\n(.*?)```", content, re.S)
+            if not blocks:
+                return False, "Token-Grenze erreicht" if cut else "kein Code"
+            return run_code(blocks[-1], want)
+        got = answer_of(resp)
+        if got is None:
+            return False, "Token-Grenze erreicht" if cut else "keine Antwort"
+        if kind == "math":
+            try:
+                ok = int(_norm(got).replace(",", "")) == want
+            except ValueError:
+                ok = False
+        else:
+            ok = _norm(got) == _norm(want)
+        return ok, "" if ok else "falsche Antwort"
+    return check
+
+
+def think_reqs(think_tokens: int, run_code: bool) -> list[Req]:
+    """Six thinking tasks, plus two code-writing tasks that run model code only with run_code."""
+    tasks = [("math", f"math{i}", f"{p}\n{THINK_END}", w) for i, (p, w) in enumerate(MATH, 1)]
+    tasks += [("read", f"read{i}", f"{p}\n{THINK_END}", w) for i, (p, w) in enumerate(READ, 1)]
+    if run_code:
+        tasks += [("code", f"code{i}", f"{p}\nReply with one ```python block that defines {name}.", tests)
+                  for i, (name, p, tests, _) in enumerate(CODE, 1)]
+    return [Req("think", f"think.{tag}",
+                {"messages": [{"role": "user", "content": text}], "max_tokens": think_tokens, "temperature": 0,
+                 "seed": SEED, "chat_template_kwargs": {"enable_thinking": True}, "reasoning_effort": "high",
+                 "reasoning_budget_tokens": think_tokens * 3 // 4},
+                _think_check(kind, want))
+            for kind, tag, text, want in tasks]
