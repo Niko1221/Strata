@@ -44,6 +44,7 @@ def main():
     chain = read("metal/src/engine/prompt_chain.inc")
     buffers = section(window, "struct PromptBufs {", "// The vision path")
     geometry = section(window, "constexpr int N =", "constexpr int P_MAXE")
+    view = section(window, "    static mtl::Buffer view_of(", "    bool run_rows(")
     constants = section(chain, "constexpr int PC_QB", "struct PcDqArgs")
     # pc_setup alone: main defines further Window members after it (pc_kprof)
     start = chain.index("bool Window::pc_setup(int C)")
@@ -107,6 +108,7 @@ struct Window {
     // Metadata-only fixtures; no M5 kernels or Gyro model are executed.
     bool coop_k4() { return layout_k4; }
     const gguf::Tensor& T(const std::string&) const { return gate; }
+@VIEW@
     bool pc_setup(int C);
 };
 @SETUP@
@@ -131,7 +133,7 @@ double footprint_mib() {
     return info.phys_footprint / 1048576.0;
 }
 
-bool scenario(mtl::Context& cx, bool had, bool k4, int type) {
+bool scenario(mtl::Context& cx, bool had, bool k4, int type, bool reuse) {
     Window w{&cx};
     w.had_on_ = had;
     w.layout_k4 = k4;
@@ -154,12 +156,15 @@ bool scenario(mtl::Context& cx, bool had, bool k4, int type) {
         const int old_capacity = w.pb_.C;
         @autoreleasepool {
             std::set<void*> handles;
-            bool distinct = true;
             for (size_t i = 0; i < buffers.size(); ++i) {
-                distinct = distinct && handles.insert(buffers[i]->handle).second;
+                handles.insert(buffers[i]->handle);
                 previous[i] = (__bridge id<MTLBuffer>)buffers[i]->handle;
             }
-            if (!require(distinct, "every buffer handle is distinct")) return false;
+            const auto& b = w.pb_;
+            const bool alias = b.part.handle == b.XS.handle && b.part.handle == b.YE.handle &&
+                               b.part.ptr == b.XS.ptr && b.part.ptr == b.YE.ptr;
+            if (!require(alias == reuse && handles.size() == buffers.size() - (reuse ? 2 : 0),
+                         "only part, XS and YE may share a buffer with reuse enabled")) return false;
         }  // Observer temporaries only; allocations happened before this pool.
         w.pb_.R.as<float>()[0] = 123.0f;
         const uint64_t allocations = cx.allocated();
@@ -194,7 +199,9 @@ bool scenario(mtl::Context& cx, bool had, bool k4, int type) {
     @autoreleasepool {
         for (size_t i = 0; i < buffers.size(); ++i) last[i] = (__bridge id<MTLBuffer>)buffers[i]->handle;
     }
-    for (auto* b : buffers) cx.free(*b);
+    std::set<void*> released;
+    for (auto* b : buffers)
+        if (released.insert(b->handle).second) cx.free(*b);
     bool freed = true;
     @autoreleasepool {
         for (size_t i = 0; i < buffers.size(); ++i) freed = freed && last[i] == nil;
@@ -213,8 +220,12 @@ int main() {
     mtl::Context cx;
     std::printf("device: %s; no model loaded; allocation-pool diagnostic=%d\n",
                 cx.device_name().c_str(), @DRAIN@);
-    if (!scenario(cx, false, false, 0) || !scenario(cx, true, false, 144) ||
-        !scenario(cx, false, true, 0) || !scenario(cx, true, true, 144)) return 1;
+    for (bool reuse : {false, true}) {
+        if (reuse && !@HAS_REUSE@) break;
+        setenv("STRATA_METAL_PROMPT_REUSE", reuse ? "1" : "0", 1);
+        if (!scenario(cx, false, false, 0, reuse) || !scenario(cx, true, false, 144, reuse) ||
+            !scenario(cx, false, true, 0, reuse) || !scenario(cx, true, true, 144, reuse)) return 1;
+    }
     std::puts("prompt workspace lifetime: PASS");
 }
 '''
@@ -224,7 +235,8 @@ int main() {
                         '"growth preserves expert-layout selection")) return false;')
     replacements = {
         "@GEOMETRY@": geometry, "@CONSTANTS@": constants,
-        "@BUFFERS@": buffers, "@SETUP@": setup, "@PRELUDE@": prelude,
+        "@BUFFERS@": buffers, "@SETUP@": setup, "@PRELUDE@": prelude, "@VIEW@": view,
+        "@HAS_REUSE@": "true" if "STRATA_METAL_PROMPT_REUSE" in setup else "false",
         "@COUNT@": str(len(names)),
         "@REFERENCES@": ", ".join("&w.pb_." + name for name in names),
         "@DRAIN@": "true" if args.drain_allocation_pools else "false",
