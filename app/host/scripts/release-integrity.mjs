@@ -78,7 +78,8 @@ export function verifyTree(source, staged, {pythonOnly=false}={}) {
     // files. Accept a staged file whose only difference is that prefix.
     if (name.endsWith('.py')) {
       const norm=t=>readFileSync(t,'utf8').replace(/\b(from|import)\s+terminal\./g,'$1 ');
-      if (sha256(Buffer.from(norm(a)))===sha256(Buffer.from(norm(b)))) continue;
+      const h=s=>createHash('sha256').update(s).digest('hex');
+      if (h(norm(a))===h(norm(b))) continue;
     }
     throw new Error(`Stale staged source: ${staged}/${name}`);
   }
