@@ -261,6 +261,17 @@ bool Window::pc_chunk(const int64_t* tokens, int nT, int64_t pos0, std::string& 
     b.host_ms += now_ms() - th0;
     std::vector<mtl::Dispatch> ds;
     ds.reserve(2400);
+    static const bool m8_tail_enabled = [] {
+        const char* env = std::getenv("STRATA_METAL_PROMPT_M8_TAIL");
+        return env && std::string(env) == "1";
+    }();
+    const bool m8_tail = m8_tail_enabled && !b.v3e && b.tm == 16 && cx_->device_name().rfind("Apple M1", 0) == 0;
+    mtl::Constants tail_constants, gu_constants;
+    gu_constants.i(5, 0);
+    if (m8_tail) {
+        tail_constants.b(26, true);
+        gu_constants.b(26, true);
+    }
     nb_ = false;
     if (pend_fold_ > 0) {   // the last window's commit, first
         fold(ds, pend_fold_, 1 - hp_);
@@ -442,7 +453,8 @@ bool Window::pc_chunk(const int64_t* tokens, int nT, int64_t pos0, std::string& 
         const uint32_t nclr = (uint32_t) b.maxrows;
         D(P_(b.lib, "mm_clear"), {mtl::Arg::B(b.stok), mtl::Arg::V(nclr)}, (b.maxrows + 255) / 256, 1, 256);
         D(P_(b.lib, "mm_hist"), {mtl::Arg::B(b.ids), mtl::Arg::B(b.bcnt), mtl::Arg::V(pa)}, nblk, 1, 1024);
-        D(P_(b.lib, b.v6 ? "mm_scan6" : "mm_scan"), {mtl::Arg::B(b.bcnt), mtl::Arg::B(b.boff), mtl::Arg::B(b.eoff), mtl::Arg::B(b.tiles), mtl::Arg::B(b.meta),
+        D(m8_tail ? P_(b.lib, "mm_scan", tail_constants, "mm_scan#m8") : P_(b.lib, b.v6 ? "mm_scan6" : "mm_scan"),
+          {mtl::Arg::B(b.bcnt), mtl::Arg::B(b.boff), mtl::Arg::B(b.eoff), mtl::Arg::B(b.tiles), mtl::Arg::B(b.meta),
                                 mtl::Arg::V(pa)}, 1, 1, nexp_);
         D(P_(b.lib, "mm_place"), {mtl::Arg::B(b.ids), mtl::Arg::B(b.wts), mtl::Arg::B(b.boff), mtl::Arg::B(b.eoff), mtl::Arg::B(b.stok),
                                  mtl::Arg::B(b.sw), mtl::Arg::B(b.pos), mtl::Arg::V(pa)}, nblk, 1, 1024);
@@ -470,7 +482,7 @@ bool Window::pc_chunk(const int64_t* tokens, int nT, int64_t pos0, std::string& 
             gu.p = P_(b.lib, fn, mtl::Constants().b(7, true), fn + "#k4");
         } else {
             const std::string fn = "mm_gu2_" + std::to_string(eg.type) + gu2.name;
-            gu.p = P_(b.lib, fn, mtl::Constants().i(5, 0), fn + "#p0");
+            gu.p = P_(b.lib, fn, gu_constants, fn + (m8_tail ? "#m8" : "#p0"));
         }
         gu.args = {mtl::Arg::B(W_, ebase), mtl::Arg::B(b.XS), mtl::Arg::B(b.HS), mtl::Arg::B(b.tiles), mtl::Arg::V(ma)};
         gu.tg[0] = b.v3e ? 32 * b.gu3[3] : 64;
@@ -485,7 +497,8 @@ bool Window::pc_chunk(const int64_t* tokens, int nT, int64_t pos0, std::string& 
                                         : "mm_down3_" + std::to_string(ed.type) + "_" + tl3(b.dn3);
             dn.p = P_(b.lib, fn, mtl::Constants().b(7, true), fn + "#k4");
         } else {
-            dn.p = P_(b.lib, "mm_down2_" + std::to_string(ed.type) + dn2.name);
+            const std::string fn = "mm_down2_" + std::to_string(ed.type) + dn2.name;
+            dn.p = m8_tail ? P_(b.lib, fn, tail_constants, fn + "#m8") : P_(b.lib, fn);
         }
         dn.args = {mtl::Arg::B(W_, ebase), mtl::Arg::B(b.HS), mtl::Arg::B(b.YE), mtl::Arg::B(b.tiles), mtl::Arg::V(ma)};
         dn.tg[0] = b.v3e ? 32 * b.dn3[3] : 64;
