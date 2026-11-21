@@ -1,0 +1,44 @@
+// Attention key prep: per-head RMS with k_norm, NEOX RoPE, append to cache at pos.
+#version 450 core
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+layout(std430, binding = 0) readonly buffer K { float k[]; };
+layout(std430, binding = 1) readonly buffer Kw { float kw[]; };
+layout(std430, binding = 2) writeonly buffer Kc { float kc[]; };
+layout(push_constant) uniform Params { uint p0; uint p1; uint p2; uint p3; uint p4; uint p5; };
+// p0 = D, p1 = n_rot, p2 = pos, p3 = rope bits, p4 = eps bits, p5 = ctx
+
+shared float buf[256], red[8];
+
+void main() {
+    const uint D = p0, n_rot = p1, pos = p2, ctx = p5;
+    const float base = uintBitsToFloat(p3), eps = uintBitsToFloat(p4);
+    const uint head = gl_WorkGroupID.x, lane = gl_LocalInvocationID.x;
+    const uint basek = head * D;
+    float s = 0.0;
+    for (uint i = lane; i < D; i += 128u) { float v = k[basek + i]; s += v * v; }
+    if (lane < 8u) red[lane] = 0.0;
+    barrier();
+    const float sub = subgroupAdd(s);
+    if (gl_SubgroupID < 8u && gl_SubgroupInvocationID == 0u) red[gl_SubgroupID] = sub;
+    barrier();
+    float total = 0.0;
+    if (lane == 0u) { for (uint i = 0u; i < 8u; ++i) total += red[i]; red[0] = total; }
+    barrier();
+    total = red[0];
+    const float r = 1.0 / sqrt(total / float(D) + eps);
+    for (uint i = lane; i < D; i += 128u) buf[i] = k[basek + i] * r * kw[i];
+    barrier();
+    const uint half_rot = n_rot / 2u;
+    for (uint i = lane; i < D; i += 128u) {
+        float v = buf[i];
+        if (i < n_rot) {
+            const uint p = i < half_rot ? i : i - half_rot;
+            const float theta = float(pos) * pow(base, -2.0 * float(p) / float(n_rot));
+            const float cs = cos(theta), sn = sin(theta);
+            v = i < half_rot ? buf[i] * cs - buf[i + half_rot] * sn : buf[i - half_rot] * sn + buf[i] * cs;
+        }
+        kc[(head * ctx + pos) * D + i] = v;
+    }
+}

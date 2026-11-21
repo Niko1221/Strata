@@ -1,0 +1,15 @@
+// Append the V projection to the KV cache at pos.
+#version 450 core
+
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+layout(std430, binding = 0) readonly buffer V { float v[]; };
+layout(std430, binding = 2) writeonly buffer Vc { float vc[]; };
+layout(push_constant) uniform Params { uint p0; uint p1; uint p2; uint p3; uint p4; uint p5; };
+// p0 = D, p1 = pos, p2 = ctx
+
+void main() {
+    const uint D = p0, pos = p1, ctx = p2;
+    const uint head = gl_WorkGroupID.x, lane = gl_LocalInvocationID.x;
+    for (uint i = lane; i < D; i += 128u)
+        vc[(head * ctx + pos) * D + i] = v[head * D + i];
+}

@@ -164,6 +164,8 @@ STRATA_PROGRAMS = {
     "strata_cli/bench_standard.py": 2,    # `strata.py serve` (inherits: cli.main sets it) + taskkill
     "strata_cli/launch/runner.py": 2,     # setup.py and the other children (_env)
     "strata_cli/launch/params.py": 2,     # engine --help (inherits)
+    "strata_cli/launch/vulkan_bridge.py": 2,  # build.sh and setup_bridge.py (quiet_crash_env)
+    "strata_cli/launch/vulkan_native.py": 2,  # build.sh and setup_bridge.py (quiet_crash_env)
     "strata_cli/cli.py": 2,               # setup.py, the revise command
     "setup.py": 20,                       # builds, engine probes, the helpers it runs (main sets it); the update's git calls (P6: symbolic-ref) and the
                                           # re-run of the pulled setup.py (it inherits main's environment, Q6)

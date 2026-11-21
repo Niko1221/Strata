@@ -1,0 +1,55 @@
+// MoE router top-k, matching the specification in
+// engine/sycl/src/kernels/router_top10_parity.cpp:
+//   softmax over all experts -> stable descending argsort (smallest index wins
+//   ties) -> gather top k -> clamp the gathered sum at 2^-14 -> renormalise.
+// One invocation per token; k and n_experts are small (8 of 256 on Qwen3.8).
+#version 450 core
+
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, binding = 0) readonly buffer Logits { float l[]; };
+layout(std430, binding = 1) writeonly buffer Ids { int ids[]; };
+layout(std430, binding = 2) writeonly buffer Weights { float w[]; };
+
+layout(push_constant) uniform Params {
+    uint n_experts;
+    uint k;
+    uint n_tokens;
+    uint pad;
+};
+
+int chosen[64];
+
+void main() {
+    const uint t = gl_WorkGroupID.x;
+    if (t >= n_tokens) return;
+    const uint base = t * n_experts;
+
+    float mx = l[base];
+    for (uint e = 1u; e < n_experts; ++e) mx = max(mx, l[base + e]);
+    float sum = 0.0;
+    for (uint e = 0u; e < n_experts; ++e) sum += exp(l[base + e] - mx);
+
+    float acc = 0.0;
+    for (uint i = 0u; i < k; ++i) {
+        float best_p = -1.0;
+        int   best_e = int(n_experts);
+        for (uint e = 0u; e < n_experts; ++e) {
+            bool used = false;
+            for (uint j = 0u; j < i; ++j)
+                if (uint(chosen[j]) == e) { used = true; break; }
+            if (used) continue;
+            const float p = exp(l[base + e] - mx) / sum;
+            if (p > best_p || (p == best_p && int(e) < best_e)) {
+                best_p = p;
+                best_e = int(e);
+            }
+        }
+        chosen[i] = best_e;
+        ids[t * k + i] = best_e;
+        w[t * k + i] = best_p;
+        acc += best_p;
+    }
+    acc = max(acc, 6.103515625e-05);   // 2^-14
+    for (uint i = 0u; i < k; ++i) w[t * k + i] /= acc;
+}

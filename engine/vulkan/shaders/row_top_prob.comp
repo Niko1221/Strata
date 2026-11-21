@@ -1,0 +1,58 @@
+// Probability of a row's top logit: exp(best - best) / sum_i exp(v_i - best).
+// NaN entries are skipped (-inf contributes zero), so the result stays finite
+// even for rows containing NaN/-inf. One workgroup per row.
+#version 450 core
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, binding = 0) readonly buffer Logits { float logits[]; };
+layout(std430, binding = 2) writeonly buffer Probs { float probs[]; };
+
+layout(push_constant) uniform Params {
+    uint n;
+    uint rows;
+};
+
+shared float partial[256];
+
+void main() {
+    const uint r = gl_WorkGroupID.x;
+    if (r >= rows) return;
+    const uint lane = gl_LocalInvocationID.x;
+    const uint base = r * n;
+
+    // Find the maximum first (same tie/NaN rule as argmax_rows).
+    float bv = -1.0 / 0.0;
+    for (uint i = lane; i < n; i += 256u) {
+        const float v = logits[base + i];
+        if (v > bv) bv = v;
+    }
+    partial[lane] = bv;
+    barrier();
+    for (uint stride = 128u; stride > 0u; stride >>= 1u) {
+        if (lane < stride && partial[lane + stride] > partial[lane])
+            partial[lane] = partial[lane + stride];
+        barrier();
+    }
+    const float best = partial[0];
+    barrier();  // all lanes read `best` before the shared array is reused for the sum
+
+    // A row with no value above -inf: greedy picks index 0 with probability 1.
+    if (isinf(best) && best < 0.0) {
+        if (lane == 0u) probs[r] = 1.0;
+        return;  // uniform across the workgroup: no barrier follows this path
+    }
+
+    float sum = 0.0;
+    for (uint i = lane; i < n; i += 256u) {
+        const float v = logits[base + i];
+        if (!isnan(v)) sum += exp(v - best);
+    }
+    partial[lane] = sum;
+    barrier();
+    for (uint stride = 128u; stride > 0u; stride >>= 1u) {
+        if (lane < stride) partial[lane] += partial[lane + stride];
+        barrier();
+    }
+    if (lane == 0u) probs[r] = 1.0 / partial[0];
+}

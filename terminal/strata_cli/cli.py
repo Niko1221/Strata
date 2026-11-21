@@ -131,6 +131,7 @@ def parser() -> argparse.ArgumentParser:
     doctor.add_argument("--profile", help="saved profile name or run config JSON path")
     doctor.add_argument("--components", action="store_true", help="include component inventory (default)")
     doctor.add_argument("--live", action="store_true", help="query host GPUs and compare selected device indices")
+    doctor.add_argument("--vulkan", action="store_true", help="probe Vulkan devices, extensions, memory heaps and subgroup size")
     doctor.add_argument("--output", choices=("human", "json"), default="human")
     components = sp.add_parser("components", help="read-only installed component inventory")
     components_sp = components.add_subparsers(dest="components_command", required=True)
@@ -1059,12 +1060,43 @@ def _profile_command(a: argparse.Namespace) -> int:
                     if a.profile_command == "validate" else None))
 
 
+def _print_vulkan(vulkan_report: dict | None) -> None:
+    """Print the Vulkan probe in the doctor's plain-text style."""
+    if not vulkan_report:
+        return
+    probe, plan = vulkan_report["probe"], vulkan_report["plan"]
+    print(f"Vulkan: {probe['status']}" + (f" — {probe['reason']}" if probe.get("reason") else ""))
+    if probe.get("instance_version"):
+        print(f"  loader: Vulkan {probe['instance_version']}")
+    for device in probe.get("devices", []):
+        print(f"  device: {device['name']} | {device['device_type']} | vendor {device['vendor_id']} | "
+              f"Vulkan {device['api_version']}")
+        subgroup = device.get("subgroup", {})
+        ext = device.get("extensions", {})
+        print(f"    subgroup: {subgroup.get('size')} lanes (supported "
+              f"{subgroup.get('min')}–{subgroup.get('max')}, size control "
+              f"{'yes' if subgroup.get('size_control') else 'no'})")
+        wanted = ", ".join(f"{name}={'yes' if enabled else 'no'}" for name, enabled in ext.items())
+        print(f"    extensions ({device.get('extension_count')} total): {wanted}")
+        memory = device.get("memory", {})
+        heaps = ", ".join(f"heap {h['index']}: {h['size_mib']} MiB"
+                          f"{' (shared/system RAM)' if h['device_local'] and device['device_type'] == 'integrated_gpu' else ''}"
+                          for h in memory.get("heaps", []))
+        print(f"    memory: {heaps or 'none reported'}; cached host-visible type "
+              f"{memory.get('cached_host_visible_type')}")
+    if plan:
+        print(f"  memory: {plan.get('mem_available_mib')} MiB available of {plan.get('mem_total_mib')} MiB total")
+        print(f"  expert cache: {plan.get('configured_slots')} slots (~{plan.get('cache_mib')} MiB); "
+              f"recommended {plan.get('recommended_slots')} slots with headroom")
+
+
 def _doctor(a: argparse.Namespace) -> int:
     machine = a.output == "json"
     ref = getattr(a, "profile", None)
     path, saved, _ = profiles.resolve(ref) if ref else (None, None, None)
     report = inspect_components(path, profile_id=saved["id"] if saved else None,
-                                live=getattr(a, "live", False))
+                                live=getattr(a, "live", False),
+                                vulkan=getattr(a, "vulkan", False))
     if machine:
         print(json.dumps({"schema_version": 1, "ok": report["ok"], "report": report},
                          ensure_ascii=False, allow_nan=False))
@@ -1075,6 +1107,7 @@ def _doctor(a: argparse.Namespace) -> int:
             print(f"{item['status']:>16}  {item['name']}  {detail}")
         for issue in report["issues"]:
             print(f"{issue['severity']}: {issue['code']}: {issue['message']}")
+        _print_vulkan(report.get("vulkan"))
         live_probe = report["live_gpu_probe"]
         if live_probe is not None:
             print(f"Live GPU probe: {live_probe['status']}")

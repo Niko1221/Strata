@@ -1,0 +1,38 @@
+// F32 matrix-vector product for dense projections whose GGUF weights are F32.
+// y[row] = W[row] . x,  W is [n_rows, k] row-major F32. The weight buffer is
+// addressed through a dynamic storage-buffer offset (any tensor in the store).
+#version 450 core
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+layout(std430, binding = 0) readonly buffer Weights { float w[]; };
+layout(std430, binding = 1) readonly buffer Activations { float x[]; };
+layout(std430, binding = 2) writeonly buffer Output { float y[]; };
+layout(push_constant) uniform Params { uint p0; uint p1; uint p2; uint p3; uint p4; uint p5; };
+// p0 = n_rows, p1 = k
+
+shared float partial[8];
+
+void main() {
+    const uint row = gl_WorkGroupID.x;
+    const uint n_rows = p0, k = p1;
+    if (row >= n_rows) return;
+    const uint lane = gl_LocalInvocationID.x;
+    const uint base = row * k;
+    float acc = 0.0;
+    for (uint i = 0; i < 32u; ++i) {
+        const uint e = lane * 32u + i;
+        if (e >= k) break;
+        acc += w[base + e] * x[e];
+    }
+    if (lane < 8u) partial[lane] = 0.0;
+    barrier();
+    const float s = subgroupAdd(acc);
+    if (gl_SubgroupID < 8u && gl_SubgroupInvocationID == 0u) partial[gl_SubgroupID] = s;
+    barrier();
+    if (lane == 0u) {
+        float total = 0.0;
+        for (uint i = 0; i < 8u; ++i) total += partial[i];
+        y[row] = total;
+    }
+}

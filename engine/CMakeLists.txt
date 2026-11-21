@@ -20,6 +20,18 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/backends/quant.cmake)       # strata_q
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/backends/cuda.cmake)        # NVIDIA: toolchain, Strata's prompt kernels (strata_pf_own)
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/backends/hip.cmake)         # AMD: gfx906 compat, Strata's prompt kernels on HIP
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/strata_gpu_engine.cmake)    # the GPU engine both of them build
+# EXPERIMENTAL: the Vulkan expert-streaming tier (engine/vulkan). It builds on its own
+# (Vulkan + C++17 only) and is currently the storage/compute half of a future full
+# Vulkan backend: it streams MoE experts from the GGUF into a bounded VRAM slot pool.
+option(STRATA_ENABLE_VULKAN "EXPERIMENTAL: build the Vulkan expert-streaming tier (engine/vulkan)" OFF)
+if(STRATA_ENABLE_VULKAN)
+  if(STRATA_ENABLE_SYCL OR STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
+    message(FATAL_ERROR "STRATA_ENABLE_VULKAN is a separate backend; leave the other backends off")
+  endif()
+  message(WARNING "STRATA_ENABLE_VULKAN: experimental; see engine/vulkan/README.md")
+  add_subdirectory(vulkan)
+  return()
+endif()
 # EXPERIMENTAL: the Intel Arc engine, the SYCL port in sycl/ (PR #423; icpx + oneMKL, docs/INTEL_ARC.md). It is its
 # own project that takes the unported sources from src/; with this on, nothing below is configured.
 option(STRATA_ENABLE_SYCL "EXPERIMENTAL: build the Intel Arc (SYCL) engine from sycl/ - docs/INTEL_ARC.md" OFF)

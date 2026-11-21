@@ -188,10 +188,38 @@ def _live_probe(cfg: dict, backend: str) -> tuple[dict, list[dict]]:
              "scope": "host card inventory only; engine execution, CUDA compatibility and topology unverified"}, issues)
 
 
-def inspect(config_path: Path | None, *, profile_id: str | None = None, live: bool = False) -> dict:
+def _is_vulkan_config(cfg: dict, exe: Path) -> bool:
+    """The research configs written by the Vulkan launcher have no ``backend`` key and name the engine by its binary."""
+    return cfg.get("backend") == "vulkan" or "vulkan" in exe.name.lower()
+
+
+def _add_vulkan(report: dict, cfg: dict | None, force: bool) -> None:
+    """Probe Vulkan when asked or when the run config is a Vulkan one. Never raises."""
+    if not (force or (cfg and _is_vulkan_config(cfg, Path(cfg.get("exe", ""))))):
+        return
+    try:
+        from strata_control import vulkan
+        result = vulkan.inspect(cfg=cfg)
+    except Exception as exc:                                      # noqa: BLE001 - a probe must not break the doctor
+        result = {"probe": {"status": "error", "reason": f"{type(exc).__name__}: {exc}", "devices": []},
+                  "plan": {}, "issues": [{"code": "VULKAN_PROBE_FAILED", "severity": "warning",
+                                          "message": "the Vulkan probe failed: " + str(exc)}]}
+    report["vulkan"] = result
+    report["issues"].extend(result["issues"])
+    probe = result["probe"]
+    device_names = ", ".join(device.get("name", "?") for device in probe.get("devices", []))
+    report["components"].append({
+        "name": "vulkan_device", "status": "ok" if probe.get("status") == "ok" else "missing",
+        "kind": "external_device", "required": bool(cfg and cfg.get("backend") == "vulkan"),
+        "reason": probe.get("reason") or device_names or "no Vulkan device",
+    })
+
+
+def inspect(config_path: Path | None, *, profile_id: str | None = None, live: bool = False,
+            vulkan: bool = False) -> dict:
     report = {"schema_version": 1, "profile": profile_id, "source_config": str(config_path) if config_path else None,
               "components": [], "issues": [], "backend": None, "devices_selected": None,
-              "live_gpu_probe": None}
+              "live_gpu_probe": None, "vulkan": None}
     components: list[dict] = report["components"]
     if config_path is None:
         report["issues"].append({"code": "PROFILE_NOT_SELECTED", "severity": "info",
@@ -201,7 +229,8 @@ def inspect(config_path: Path | None, *, profile_id: str | None = None, live: bo
         if live:
             report["issues"].append({"code": "PROFILE_NOT_SELECTED_FOR_LIVE_PROBE", "severity": "error",
                                      "message": "select a profile to compare its chosen devices with the host"})
-        report["ok"] = not live
+        _add_vulkan(report, None, vulkan)
+        report["ok"] = not any(issue["severity"] == "error" for issue in report["issues"])
         return report
 
     cfg = read_run_config(config_path)
@@ -296,6 +325,7 @@ def inspect(config_path: Path | None, *, profile_id: str | None = None, live: bo
     cpu_pack = _cpu_pack_issue(cfg, config_path)
     if cpu_pack:
         report["issues"].append(cpu_pack)
+    _add_vulkan(report, cfg, vulkan)
     if live:
         report["live_gpu_probe"], live_issues = _live_probe(cfg, report["backend"])
         report["issues"].extend(live_issues)

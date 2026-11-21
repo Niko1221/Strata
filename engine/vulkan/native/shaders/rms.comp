@@ -1,0 +1,34 @@
+// RMSNorm: y[i] = x[i] / sqrt(mean(x^2) + eps) * w[i]. One workgroup per vector.
+#version 450 core
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+layout(std430, binding = 0) readonly buffer In { float x[]; };
+layout(std430, binding = 1) readonly buffer Weight { float w[]; };
+layout(std430, binding = 2) writeonly buffer Out { float y[]; };
+layout(push_constant) uniform Params { uint p0; uint p1; uint p2; uint p3; uint p4; uint p5; };
+// p0 = n, p1 = eps bits
+
+shared float partial[8];
+
+void main() {
+    const uint n = p0;
+    const float eps = uintBitsToFloat(p1);
+    const uint lane = gl_LocalInvocationID.x;
+    float s = 0.0;
+    for (uint i = lane; i < n; i += 128u) s += x[i] * x[i];
+    if (lane < 8u) partial[lane] = 0.0;
+    barrier();
+    const float sub = subgroupAdd(s);
+    if (gl_SubgroupID < 8u && gl_SubgroupInvocationID == 0u) partial[gl_SubgroupID] = sub;
+    barrier();
+    float total = 0.0;
+    if (lane == 0u) {
+        for (uint i = 0u; i < 8u; ++i) total += partial[i];
+        partial[0] = total;
+    }
+    barrier();
+    total = partial[0];
+    const float r = 1.0 / sqrt(total / float(n) + eps);
+    for (uint i = lane; i < n; i += 128u) y[i] = x[i] * r * w[i];
+}

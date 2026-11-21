@@ -1,0 +1,69 @@
+// Q8_0 expert matvec for Strata's Vulkan expert-streaming tier.
+// One workgroup computes one output row of a [n_rows x k] expert weight matrix.
+// Weights are read through a dynamic storage-buffer offset, so the same binding
+// addresses any slot of the expert cache pool without rebinding descriptors.
+//
+// ggml block_q8_0 (ggml-common.h): ggml_half d (2 bytes) + int8 qs[32] (32 bytes)
+// = 34 bytes per 32 elements. A 256-element super-block spans eight of them,
+// so a Q8_0 row stride is (k / 256) * 272 bytes.
+#version 450 core
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, binding = 0) readonly buffer Weights { uint words[]; };
+layout(std430, binding = 1) readonly buffer Activations { float x[]; };
+layout(std430, binding = 2) writeonly buffer Output { float y[]; };
+
+layout(push_constant) uniform Params {
+    uint n_rows;   // output rows of this expert
+    uint k;        // input width (multiple of 256)
+};
+
+// 8-bit storage is avoided on purpose: byte extraction from uint words works on
+// every Vulkan 1.1+ implementation, including the B390's Mesa ANV driver.
+uint byte_at(uint i) { return (words[i >> 2u] >> ((i & 3u) * 8u)) & 255u; }
+
+shared float partial[8];
+
+float half_to_float(uint bits) { return unpackHalf2x16(bits).x; }
+int int8_from_uint(uint b) { return int(b) - (b >= 128u ? 256 : 0); }
+
+void main() {
+    const uint row = gl_WorkGroupID.x;
+    if (row >= n_rows) return;
+
+    const uint lane = gl_LocalInvocationID.x;
+    const uint row_base = row * (k / 256u) * 272u;   // 8 x 34-byte blocks per 256 elements
+    float acc = 0.0;
+
+    // 64 threads x 32 elements = 2048 columns; the `e >= k` guard handles
+    // narrower inputs (k is always a multiple of 256 for a K-quant-style index).
+    for (uint i = 0; i < 32u; ++i) {
+        const uint e = lane * 32u + i;
+        if (e >= k) break;
+
+        const uint superblk = e / 256u;       // 256-element slice
+        const uint within   = e % 256u;
+        const uint blk      = within / 32u;   // which 32-element block (0..7)
+        const uint pos      = within % 32u;   // position inside that block
+
+        const uint boff = row_base + superblk * 272u + blk * 34u;
+        const float d = half_to_float(byte_at(boff) | (byte_at(boff + 1u) << 8u));
+        const int q = int8_from_uint(byte_at(boff + 2u + pos));
+        acc += d * float(q) * x[e];
+    }
+
+    // Reduce across the workgroup (any subgroup width works here).
+    // Zero the shared slots first: unused subgroups must contribute 0, not junk.
+    if (gl_LocalInvocationID.x < 8u) partial[gl_LocalInvocationID.x] = 0.0;
+    barrier();
+    const float s = subgroupAdd(acc);
+    if (gl_SubgroupID < 8u && gl_SubgroupInvocationID == 0u) partial[gl_SubgroupID] = s;
+    barrier();
+    if (gl_LocalInvocationID.x == 0u) {
+        float total = 0.0;
+        for (uint i = 0; i < 8u; ++i) total += partial[i];
+        y[row] = total;
+    }
+}

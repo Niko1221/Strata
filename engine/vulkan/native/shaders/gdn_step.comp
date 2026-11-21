@@ -1,0 +1,55 @@
+// One Gated DeltaNet recurrent step per V head (matches q36ref.cu k_gdn).
+// g[h] = exp(softplus(alpha+dt)*ssm_a) and b[h] = sigmoid(beta) are computed on
+// the host (tiny F32 vectors) and passed in via bindings 1 and 2.
+// S layout: S[(h*D + i)*D + j], row i owned by thread i.
+#version 450 core
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+layout(std430, binding = 0) readonly buffer Conv { float conv[]; };
+layout(std430, binding = 1) readonly buffer G { float g[]; };
+layout(std430, binding = 2) readonly buffer B { float b[]; };
+layout(std430, binding = 3) buffer S { float s[]; };
+layout(std430, binding = 4) writeonly buffer Out { float outv[]; };
+layout(push_constant) uniform Params { uint p0; uint p1; uint p2; uint p3; uint p4; uint p5; };
+// p0 = HK, p1 = HV, p2 = D, p3 = eps bits
+
+shared float qv[128], kv[128], red[8];
+
+float reduce(float v) {
+    const uint lane = gl_LocalInvocationID.x;
+    if (lane < 8u) red[lane] = 0.0;
+    barrier();
+    const float sub = subgroupAdd(v);
+    if (gl_SubgroupID < 8u && gl_SubgroupInvocationID == 0u) red[gl_SubgroupID] = sub;
+    barrier();
+    float total = 0.0;
+    if (lane == 0u) { for (uint i = 0u; i < 8u; ++i) total += red[i]; red[0] = total; }
+    barrier();
+    const float result = red[0];
+    barrier();
+    return result;
+}
+
+void main() {
+    const uint HK = p0, HV = p1, D = p2;
+    const float eps = uintBitsToFloat(p3);
+    const uint h = gl_WorkGroupID.x, kh = h % HK, i = gl_LocalInvocationID.x;
+    if (i >= D) return;
+    const float qi = conv[kh * D + i];
+    const float ki = conv[HK * D + kh * D + i];
+    const float vi = conv[2u * HK * D + h * D + i];
+    const float qn = reduce(qi * qi);
+    const float kn = reduce(ki * ki);
+    qv[i] = qi / sqrt(qn + eps) / sqrt(float(D));
+    kv[i] = ki / sqrt(kn + eps);
+    barrier();
+    const float gv = g[h], bv = b[h];
+    const uint row = (h * D + i) * D;
+    float sk = 0.0;
+    for (uint j = 0u; j < D; ++j) { s[row + j] *= gv; sk += s[row + j] * kv[j]; }
+    const float d = (vi - sk) * bv;
+    float o = 0.0;
+    for (uint j = 0u; j < D; ++j) { s[row + j] += d * kv[j]; o += s[row + j] * qv[j]; }
+    outv[h * D + i] = o;
+}
