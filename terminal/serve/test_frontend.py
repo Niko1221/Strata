@@ -352,8 +352,6 @@ class EmptyConversation(unittest.TestCase):
 
 
 class BakedPreserveThinking(unittest.TestCase):
-    """A Qwen3.6 pack template must keep the empty think block when the flag is unset."""
-
     _BROKEN = (
         "{%- set ns = namespace(last_query_index=-1) %}\n"
         "{%- for message in messages %}\n"

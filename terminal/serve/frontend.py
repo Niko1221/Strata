@@ -38,10 +38,6 @@ class TemplateRequestError(jinja2.exceptions.TemplateError, ValueError):
     client gets a 400 with the template's message instead of a dropped connection (#365)."""
 
 
-# Qwen3.6 packs bake a template that writes the empty think block only when preserve_thinking
-# is explicitly true. The generation prompt still appends that block when thinking is off, so the
-# next turn is not a prefix and prompt reuse is 0. The repo template already uses the corrected
-# predicate. Rewrite only this known line. Other templates are left as shipped.
 _BROKEN_PRESERVE_THINKING = "preserve_thinking is defined and preserve_thinking is true"
 _FIXED_PRESERVE_THINKING = "preserve_thinking is undefined or preserve_thinking is true"
 
