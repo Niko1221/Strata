@@ -44,7 +44,19 @@ into main, then build/publish v0.7.1.
   `H:/Strata/evidence/worktree-backup-20261122/` before removal.
 - All 17 removable worktrees removed + pruned; only `main` remains.
 
+## v0.7.1 build and verification (completed)
+- Full build: `BUILD_EXIT=0` (C-drive `v071-target`, 5 jobs, 10m22s).
+  `verify-release.mjs` passed: signed Q38 companion 152 files, payload
+  Hakua 0.7.1 / engine 0.6.3 / Control 0.6.3.
+  Installer `Strata_0.7.1_x64-setup.exe` 127,138,637 bytes,
+  SHA-256 `b724b70b07af2db4f87d024e7b82a3b0a8ae1716b6fdfaa5f9ba710676852ed2`.
+  tar + Copy-mode tar.7z built; tar.7z SHA-256
+  `037a1d26654c176772071f08e3957fcaf5f52b9fb9c9cd4621552dc1aed4d528`.
+- NSIS upgrade fixtures (6 scenarios): exit 0, all ok=true.
+- Real installer overwrite (isolated fixture, registry backed up and restored):
+  exit 0; exe replaced (old `4260de50...` -> new `4812b396...`), user-data
+  sentinel preserved, uninstall registry restored to 0.6.9 / real path.
+  Real install was never touched. Evidence: `H:/Strata/evidence/v071-*-fixture/`.
+
 ## Next
-- Full v0.7.1 installer build (C-drive target to avoid the H: NTFS
-  permission-file access-denied seen on v0.7.0), NSIS overwrite check, then
-  v0.7.1 tag/release/publication.
+- v0.7.1 tag, GitHub release with both assets, push, public readback.
