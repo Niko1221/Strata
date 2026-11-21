@@ -3,7 +3,7 @@
 //
 //   stdout, at start:   INFO engine=... arch=hy4flash backend=metal ... drafter=dfly2|none images=0|1    then exactly one   READY <max_context> stop
 //   stdin, per request: GEN <max_new> [temperature=F top_p=F top_k=N min_p=F penalty_repeat=F penalty_freq=F penalty_present=F penalty_last_n=N seed=N] [image=<path> ...] id,id,...
-//   stdout per request: [RESUME n] (n = longest common prefix of the resident KV and the prompt, capped at prompt-1 and by the SWA ring slack)  [IMG i n]  PP <read> <total> <ms> <tok/s>  T <id>  DONE <generated> <prompt_tokens> <prompt_ms> <decode_ms> <finish> <drafts_accepted> <drafts_offered> <reused>
+//   stdout per request: [RESUME n] (n = longest common prefix of the chosen resident conversation slot's KV and the prompt, capped at prompt-1 and by the SWA ring slack; the slot is the one with the longest prefix, else a free or least-recently-used one)  [IMG i n]  PP <read> <total> <ms> <tok/s>  T <id>  DONE <generated> <prompt_tokens> <prompt_ms> <decode_ms> <finish> <drafts_accepted> <drafts_offered> <reused>
 //   stdin, any time:    STOP (cancel at the next token / chunk boundary)   QUIT or EOF (exit)
 // Only protocol lines go to stdout; diagnostics go to stderr.
 #pragma once
@@ -13,6 +13,7 @@
 #include <mutex>
 #include <random>
 #include <iostream>
+#include "hy4_metal_slots.h"
 
 #ifndef HY4_METAL_IMAGES
 #define HY4_METAL_IMAGES 1  // the Metal ViT (hy4_metal_vision.h, hy4_vision.metal) is linked into this build
@@ -25,6 +26,7 @@ struct ServeOpts {
     int chunk = 2048;
     int index_topk = 2048;
     bool no_index = false, no_engram = false, session_reuse = false;
+    int conv_slots = 1, conv_mib = 16384, reuse_min = 1024;  // --conversation-slots / --conversation-cache-mib / --conversation-min-tokens
     int ring_slack = 0;  // extra SWA ring slots (--ring-slack): how far a resume may roll the KV back below the highest position written
     std::string draft = "auto";
     SpecCfg spec;
@@ -209,18 +211,6 @@ static bool finite_row(const float* lg, int V) {
     return true;
 }
 
-// KV reuse point: longest common prefix of the resident sequence tok[0,fwd) and the new prompt, capped so the last prompt token is recomputed (logits exist).
-// Rolling back from fwd to `start` needs the SWA window [start-512, start) intact in the ring: the speculative tail (64) written past fwd must stay within `slack` (= ring - 512) of start.
-static inline int hy4_reuse_start(const std::vector<int32_t>& tok, int fwd, const std::vector<int32_t>& ids, int T0, int slack) {
-    const int lim = std::min({fwd, T0, (int) tok.size(), (int) ids.size()});
-    int L = 0;
-    while (L < lim && tok[L] == ids[L]) ++L;
-    if (L >= T0) L = T0 - 1;
-    if (L < 1) return 0;
-    if (fwd + 64 - L > slack) return 0;
-    return L;
-}
-
 static int hy4_serve_main(Model& g, mtl::Context& cx, const ServeOpts& o, const std::string& kernel_path) {
     const int max_ctx = o.max_ctx;
     const double t_load0 = now_s();
@@ -255,7 +245,18 @@ static int hy4_serve_main(Model& g, mtl::Context& cx, const ServeOpts& o, const 
     const int V = r.c.vocab, EOS = r.c.eos, EOT = 120008;
     std::vector<int32_t> tok;
     tok.reserve((size_t) max_ctx + 16);  // a stable host buffer: the Engram prefetch thread reads it
-    int fwd = 0;                         // positions whose KV is resident (tok[0, fwd) went through forward_chunk)
+    int fwd = 0;                         // positions whose KV is resident (tok[0, fwd) went through forward_chunk); all of tok/fwd/hw below belong to the ACTIVE slot
+    // conversation slots: the Runner holds the active slot's KV buffers; switching parks them in the slot and takes the target's (O(1) vector swaps)
+    typedef HySlotT<mtl::Buffer> Slot;
+    const size_t set_bytes = r.kv_set_bytes;
+    int eff_slots = 1;
+    if (o.session_reuse) eff_slots = (int) std::max<int64_t>(1, std::min<int64_t>(o.conv_slots, (int64_t) o.conv_mib * 1048576 / (int64_t) std::max<size_t>(set_bytes, 1)));
+    std::vector<Slot> slots;
+    slots.reserve((size_t) eff_slots);
+    slots.emplace_back();
+    slots[0].tok.reserve((size_t) max_ctx + 16);
+    int act = 0;
+    uint64_t use_clock = 0;
     std::vector<float> hl((size_t) V);
     std::string base = o.model;
     size_t sl = base.find_last_of("/\\");
@@ -270,8 +271,8 @@ static int hy4_serve_main(Model& g, mtl::Context& cx, const ServeOpts& o, const 
         if (hy4::vision_probe(o.vision, vprobe, verr)) images_ok = true;
         else fprintf(stderr, "[vision] disabled: %s\n", verr.c_str());
     }
-    proto("INFO engine=hy4-metal-serve-0 arch=hy4flash backend=metal model=%s layers=%d vocab=%d chunk=%d session_reuse=%d drafter=%s images=%d ring_slack=%d", base.c_str(), r.c.n_layers, V, r.Tc,
-          o.session_reuse ? 1 : 0, use_spec ? "dfly2" : "none", images_ok ? 1 : 0, r.ring_slack);
+    proto("INFO engine=hy4-metal-serve-0 arch=hy4flash backend=metal model=%s layers=%d vocab=%d chunk=%d session_reuse=%d drafter=%s images=%d ring_slack=%d slots=%d slot_mib=%.0f", base.c_str(), r.c.n_layers, V, r.Tc,
+          o.session_reuse ? 1 : 0, use_spec ? "dfly2" : "none", images_ok ? 1 : 0, r.ring_slack, eff_slots, set_bytes / 1048576.0);
     proto("READY %d stop", max_ctx);
 
     int hw = 0;
@@ -343,17 +344,39 @@ static int hy4_serve_main(Model& g, mtl::Context& cx, const ServeOpts& o, const 
             fprintf(stderr, "[vision] %zu picture(s), %d image rows, encoded in %.2f s\n", recs.size(), vctx.n_rows, vctx.t_encode);
             r.vis = &vctx;
         }
+        // pick the conversation slot (resume point, free, new or least recently used), then make it the active one
+        slots[act].fwd = fwd;
+        slots[act].hw = hw;
+        std::vector<HyPickIn> pin;
+        for (size_t i = 0; i < slots.size(); ++i) pin.push_back({(int) i == act ? &tok : &slots[i].tok, slots[i].fwd, slots[i].hw, slots[i].last_used});
         int start = 0;
-        if (!has_images && o.session_reuse && fwd > 0) {
-            // hw = highest position written since the last full recompute; slots below it may have been clobbered by earlier rollbacks, so count it against the slack too
-            start = hy4_reuse_start(tok, fwd, q.ids, T0, (r.ring - 512) - std::max(0, hw - fwd));
-        }
-        if (start == 0) hw = 0;
-        // no prefetch of the old tok may still be in flight or pending: drop them before tok changes
+        const int pk = hy4_pick_slot(pin, act, q.ids, T0, r.ring - 512, eff_slots, o.reuse_min, has_images || !o.session_reuse, start);
+        // no prefetch of the old tok may still be in flight or pending: drop them before tok (or the KV set) changes
         for (int s = 0; s < 2; ++s) {
             if (r.ep[s].fut.valid()) r.ep[s].fut.wait();
             r.ep[s].pending = false;
         }
+        if (pk >= (int) slots.size()) {
+            slots.emplace_back();
+            slots.back().tok.reserve((size_t) max_ctx + 16);
+            r.alloc_kv_set(slots.back().kcache, slots.back().ivg, slots.back().pooled);
+            fprintf(stderr, "[slots] allocated slot %zu (%.2f GB, cache.allocated %.2f GB)\n", slots.size() - 1, set_bytes / 1e9, cx.allocated() / 1e9);
+        }
+        if (pk != act) {
+            std::swap(r.kcache, slots[act].kcache);
+            std::swap(r.ivg, slots[act].ivg);
+            std::swap(r.pooled, slots[act].pooled);
+            std::swap(tok, slots[act].tok);
+            std::swap(r.kcache, slots[pk].kcache);
+            std::swap(r.ivg, slots[pk].ivg);
+            std::swap(r.pooled, slots[pk].pooled);
+            std::swap(tok, slots[pk].tok);
+            act = pk;
+            fwd = slots[act].fwd;
+            hw = slots[act].hw;
+        }
+        slots[act].last_used = ++use_clock;
+        if (start == 0) hw = 0;
         tok.assign(q.ids.begin(), q.ids.end());
         fwd = 0;
         if (start > 0) proto("RESUME %d", start);

@@ -370,7 +370,27 @@ public:
     uint64_t exp_tick = 0;
     uint64_t exp_cache_hits = 0, exp_cache_misses = 0;
     double t_cold_io = 0;
-    std::vector<Buffer> kcache, ivg, pooled;
+    std::vector<Buffer> kcache, ivg, pooled;  // the ACTIVE conversation slot's KV set (serve swaps these with the parked slots)
+    size_t kv_set_bytes = 0;
+    // one conversation's KV set (SWA ring / sparse cache / index vectors / pooled keys); returns its size in bytes. Zero-init is not needed.
+    size_t alloc_kv_set(std::vector<Buffer>& kc, std::vector<Buffer>& iv, std::vector<Buffer>& pl) {
+        kc.assign(c.n_layers, Buffer());
+        iv.assign(c.n_layers, Buffer());
+        pl.assign(c.n_layers, Buffer());
+        size_t kvbytes = 0;
+        for (int il = 0; il < c.n_layers; ++il) {
+            size_t by = (size_t) (c.is_swa[il] ? ring : slots_sparse) * 576 * 2;
+            kc[il] = cx.alloc(by);
+            kvbytes += by;
+            if (!c.is_swa[il]) {
+                size_t b1 = (size_t) (max_ctx + 8) * 256 * 2, b2 = (size_t) (max_ctx / 4 + 8) * 128 * 2;
+                iv[il] = cx.alloc(b1);
+                pl[il] = cx.alloc(b2);
+                kvbytes += b1 + b2;
+            }
+        }
+        return kvbytes;
+    }
     Buffer ik_f, iv_f, ig_f, ik_h, iq_f, iq_h, hw_f, score, keys, nkeys, tmp_pooled;
     size_t ldS = 0;
     int ring = 0, slots_sparse = 0, logit_rows = 1;
@@ -586,19 +606,7 @@ public:
         // kv caches
         ring = ((512 + Tc + ring_slack + 15) / 16) * 16;
         slots_sparse = ((max_ctx + 8 + 15) / 16) * 16;
-        kcache.resize(c.n_layers);
-        ivg.resize(c.n_layers);
-        pooled.resize(c.n_layers);
-        size_t kvbytes = 0;
-        for (int il = 0; il < c.n_layers; ++il) {
-            size_t by = (size_t) (c.is_swa[il] ? ring : slots_sparse) * 576 * 2;
-            kcache[il] = A(by);
-            kvbytes += by;
-            if (!c.is_swa[il]) {
-                ivg[il] = A((size_t) (max_ctx + 8) * 256 * 2);
-                pooled[il] = A((size_t) (max_ctx / 4 + 8) * 128 * 2);
-            }
-        }
+        size_t kvbytes = kv_set_bytes = alloc_kv_set(kcache, ivg, pooled);
         ik_f = A((size_t) Tc * 128 * 4);
         iv_f = A((size_t) Tc * 128 * 4);
         ig_f = A((size_t) Tc * 128 * 4);
@@ -1412,7 +1420,7 @@ int main(int argc, char** argv) {
     bool no_lin2 = false, no_moe2 = false, save_logits = false, no_f32x = false, no_pipe = false;
     int pipe_segs_arg = 8;
     bool serve = false, session_reuse = false;
-    int ring_slack_arg = -1;
+    int ring_slack_arg = -1, conv_slots_arg = -1, conv_mib_arg = 16384, conv_min_arg = 1024;
     std::string vision, dfly_override;
     std::vector<std::string> image_files;
     int64_t image_max_pixels = 4194304;
@@ -1500,6 +1508,9 @@ int main(int argc, char** argv) {
         else if (a == "--max-context") max_ctx = atoi(nxt().c_str());
         else if (a == "--session-reuse") session_reuse = atoi(nxt().c_str()) != 0;
         else if (a == "--ring-slack") ring_slack_arg = atoi(nxt().c_str());
+        else if (a == "--conversation-slots" || a == "--conversation-cache-slots") conv_slots_arg = atoi(nxt().c_str());
+        else if (a == "--conversation-cache-mib") conv_mib_arg = atoi(nxt().c_str());
+        else if (a == "--conversation-min-tokens") conv_min_arg = atoi(nxt().c_str());
         else if (a == "--vision") vision = nxt();
         else if (a == "--image") image_files.push_back(nxt());  // HY4-VISION (offline runs): one picture file per image-pad token of --tokens, in order
         else if (a == "--image-max-pixels") image_max_pixels = atoll(nxt().c_str());
@@ -1549,6 +1560,9 @@ int main(int argc, char** argv) {
         so.no_engram = no_engram;
         so.session_reuse = session_reuse;
         so.ring_slack = ring_slack_arg >= 0 ? ring_slack_arg : (session_reuse ? 8192 : 0);
+        so.conv_slots = conv_slots_arg > 0 ? conv_slots_arg : (session_reuse ? 4 : 1);
+        so.conv_mib = conv_mib_arg;
+        so.reuse_min = conv_min_arg;
         so.draft = draft;
         so.spec = scfg;
         if (draft != "off" && draft != "dfly2" && draft != "auto") {
