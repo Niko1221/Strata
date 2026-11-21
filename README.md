@@ -45,7 +45,14 @@ A change may alter the output slightly. It is accepted only if task accuracy doe
 
 ## Relationship to Strata
 
-exstrata is its own repository, not a GitHub fork. Its history starts at Strata's `main` commit 3142b66, and later Strata changes are merged into the `exstrata` branch from time to time. The "based on" badge names the Strata commit the code is currently based on.
+exstrata is a GitHub fork of Strata and keeps Strata's full history and contributors.
+
+| Branch | What it holds |
+| --- | --- |
+| `exstrata` (default) | exstrata itself |
+| `main` | An unchanged copy of Strata's `main`, updated with GitHub's "Sync fork" |
+
+Strata's later changes reach `exstrata` through a merge from `main`. The "based on" badge names the Strata commit the code is currently based on.
 
 ## Building and running
 
