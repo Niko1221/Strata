@@ -1228,6 +1228,64 @@ struct Engine {
     // ---- sessions: the conversation states.  One for a single-request engine; --batch N keeps N, each with its own
     // recurrent state and KV cache, so N requests run at once: their rows share one decode window (forward_rows).  The
     // members conv / S / kc / vc / pos / hlast above are the CURRENT session's (select() swaps them).
+    // ---- GDN checkpoints (STRATA_Q36_CKPT_N / STRATA_Q36_CKPT_EVERY).  The GDN / SSM layers hold only the recurrent
+    // state at the END of the held run (Sess::conv, Sess::S), so a session could only be continued where its run ended
+    // (the all-or-nothing match_len).  A ring of pinned host copies of every GDN layer's conv and S at the positions the
+    // run crossed lets a request whose prompt diverges inside the held run resume at the newest checkpoint at or below
+    // the divergence (Serve::resume_len), so a rewritten tail costs the tail instead of the whole conversation.
+    // STRATA_Q36_CKPT_N=0 disables the feature: nothing is allocated or copied and the old all-or-nothing path stands.
+    /// A pinned host buffer (cudaHostAlloc).  A copy owns its bytes: Sess is copied by value (resize, copy_session).
+    struct Pin {
+        float* p = nullptr;
+        size_t n = 0;   // floats
+        Pin() = default;
+        Pin(const Pin& o) {
+            if (o.p) {
+                alloc(o.n);
+                std::memcpy(p, o.p, n * 4);
+            }
+        }
+        Pin& operator=(const Pin& o) {
+            if (this == &o) return *this;
+            if (!o.p) { drop(); return *this; }
+            if (n != o.n) { drop(); alloc(o.n); }
+            std::memcpy(p, o.p, n * 4);
+            return *this;
+        }
+        Pin(Pin&& o) noexcept : p(o.p), n(o.n) { o.p = nullptr; o.n = 0; }
+        ~Pin() { drop(); }
+        void ensure(size_t floats) {
+            if (p != nullptr && n == floats) return;
+            drop();
+            alloc(floats);
+        }
+        void alloc(size_t floats) {
+            if (floats == 0) return;
+            void* q = nullptr;
+            CK(cudaHostAlloc(&q, floats * 4, cudaHostAllocDefault));
+            p = (float*) q;
+            n = floats;
+        }
+        void drop() {
+            if (p) cudaFreeHost(p);
+            p = nullptr;
+            n = 0;
+        }
+    };
+    /// One checkpoint: the tokens its state covers, the session's rotary offset there, and every GDN layer's conv bytes
+    /// followed by its S bytes (then hlast, so the MTP block's seed row of the first fresh token is the prefix's own).
+    struct Ckpt {
+        int64_t pos = -1;      // -1: this ring slot holds no checkpoint
+        int32_t rdelta = 0;
+        Pin buf;
+    };
+    int ckpt_n = 0;                    // STRATA_Q36_CKPT_N (ring depth; 0: the feature is off)
+    int64_t ckpt_every = 4096;         // STRATA_Q36_CKPT_EVERY (tokens between checkpoints)
+    int ckpt_layers = 0;               // GDN layers checkpointed (the MTP block has none)
+    size_t ckpt_conv_bytes = 0;        // per GDN layer: C * (dconv - 1) floats
+    size_t ckpt_S_bytes = 0;           // per GDN layer: v_heads * state_size^2 floats
+    size_t ckpt_h_bytes = 0;           // hlast, once per checkpoint
+    size_t ckpt_bytes = 0;             // one checkpoint (0: nothing to save: the feature stays off)
     struct Sess {
         std::vector<float*> conv, S, kc, vc;
         float* hlast = nullptr;
@@ -1237,6 +1295,9 @@ struct Engine {
         std::vector<ImgKey> imgs;           // the pictures among them
         bool active = false;                // a batch slot is decoding in it
         uint64_t used = 0;                  // when it was last used (the LRU pick)
+        std::vector<Ckpt> ckpts;            // the GDN checkpoint ring (empty until the feature is on and a save happens)
+        int ckpt_next = 0;                  // the ring's next slot
+        int64_t ckpt_last_k = -1;           // the last interval multiple a checkpoint was taken at
     };
     std::vector<Sess> sess;
     int n_sess = 1, cur = 0;
@@ -1629,6 +1690,31 @@ struct Engine {
         CK(cudaDeviceSynchronize());   // every legacy-stream cudaMemset of the buffers above is done
         size_t fr = 0, tot = 0;
         CK(cudaMemGetInfo(&fr, &tot));
+        {   // GDN checkpoints: the two knobs and the geometry each one costs (nothing hardcoded: the runtime's own sizes)
+            auto envn = [](const char* name, long long dflt) -> long long {
+                const char* v = std::getenv(name);
+                if (v == nullptr || *v == '\0') return dflt;
+                char* e = nullptr;
+                const long long x = std::strtoll(v, &e, 10);
+                return e == v ? dflt : x;
+            };
+            ckpt_n = (int) std::max<long long>(0, envn("STRATA_Q36_CKPT_N", 4));
+            ckpt_every = std::max<long long>(1, envn("STRATA_Q36_CKPT_EVERY", 4096));
+            if (ckpt_n > 0) {
+                ckpt_conv_bytes = (size_t) g.ssm_conv_channels * (size_t) (g.ssm_d_conv - 1) * 4;
+                ckpt_S_bytes = (size_t) g.ssm_v_heads * (size_t) g.ssm_state_size * (size_t) g.ssm_state_size * 4;
+                ckpt_h_bytes = (size_t) g.n_embd * 4;
+                ckpt_layers = 0;
+                for (const Layer& L : m->layers)
+                    if (!L.attn) ++ckpt_layers;
+                ckpt_bytes = ckpt_layers > 0 ? (size_t) ckpt_layers * (ckpt_conv_bytes + ckpt_S_bytes) + ckpt_h_bytes : 0;
+                if (ckpt_bytes > 0)
+                    std::fprintf(stderr, "strata-q36: GDN checkpoints: %d per session x %.2f MiB pinned host (%.2f MiB in all "
+                                 "for %d) every %lld tokens; %d GDN layers, conv %zu B + S %zu B + hlast %zu B each\n",
+                                 ckpt_n, (double) ckpt_bytes / (1 << 20), (double) ckpt_bytes * ckpt_n / (1 << 20), n_sess,
+                                 (long long) ckpt_every, ckpt_layers, ckpt_conv_bytes, ckpt_S_bytes, ckpt_h_bytes);
+            }
+        }
         std::fprintf(stderr, "strata-q36: context %d cells, prompt chunk %d%s, %.2f GiB of VRAM free\n", ctx, tmax,
                      m->has_mtp ? ", MTP block loaded" : "", (double) fr / (1 << 30));
     }
@@ -1645,6 +1731,82 @@ struct Engine {
         pos = 0;
         sess[(size_t) cur].pos = 0;
         set_delta(0);
+        Sess& s0 = sess[(size_t) cur];   // a fresh sequence: the checkpoints of the old one are not its prefixes
+        s0.ckpts.clear();
+        s0.ckpt_next = 0;
+        s0.ckpt_last_k = -1;
+    }
+
+    /// The newest GDN checkpoint of session ss at or below `l` (its position), or -1.
+    int64_t ckpt_at_or_below(const Sess& ss, size_t l) const {
+        int64_t best = -1;
+        for (const Ckpt& c : ss.ckpts)
+            if (c.pos > best && (size_t) c.pos <= l) best = c.pos;
+        return best;
+    }
+    /// The checkpoints session ss holds.
+    int ckpt_count(const Sess& ss) const {
+        int n = 0;
+        for (const Ckpt& c : ss.ckpts)
+            if (c.pos >= 0) ++n;
+        return n;
+    }
+    /// One checkpoint of session ss at position `p`: every GDN layer's conv and S (and hlast) to pinned host memory on
+    /// the engine stream, the bytes read only once the stream is idle, then the position recorded and the ring advanced.
+    void ckpt_save(Sess& ss, int64_t p) {
+        if (ckpt_n <= 0 || ckpt_bytes == 0) return;
+        if (ss.ckpts.empty()) ss.ckpts.resize((size_t) ckpt_n);
+        Ckpt& c = ss.ckpts[(size_t) (ss.ckpt_next % ckpt_n)];
+        c.buf.ensure(ckpt_bytes / 4);
+        float* d = c.buf.p;
+        size_t off = 0;
+        for (size_t l = 0; l < ss.conv.size(); ++l) {
+            if (ss.conv[l] == nullptr) continue;
+            CK(cudaMemcpyAsync(d + off / 4, ss.conv[l], ckpt_conv_bytes, cudaMemcpyDeviceToHost, st));
+            off += ckpt_conv_bytes;
+            CK(cudaMemcpyAsync(d + off / 4, ss.S[l], ckpt_S_bytes, cudaMemcpyDeviceToHost, st));
+            off += ckpt_S_bytes;
+        }
+        CK(cudaMemcpyAsync(d + off / 4, ss.hlast, ckpt_h_bytes, cudaMemcpyDeviceToHost, st));
+        CK(cudaStreamSynchronize(st));   // the host bytes are complete before the checkpoint is recorded
+        c.pos = p;
+        c.rdelta = ss.rdelta;
+        ss.ckpt_next = (ss.ckpt_next + 1) % ckpt_n;
+        ss.ckpt_last_k = p / std::max<int64_t>(1, ckpt_every);
+    }
+    /// The current session crossed a multiple of STRATA_Q36_CKPT_EVERY: take a checkpoint (once per multiple).
+    void ckpt_maybe() {
+        if (ckpt_n <= 0 || ckpt_bytes == 0 || warming) return;
+        Sess& ss = sess[(size_t) cur];
+        if (pos <= 0) return;
+        const int64_t k = pos / ckpt_every;
+        if (k <= ss.ckpt_last_k) return;
+        ckpt_save(ss, pos);
+    }
+    /// Session ss resumes at the GDN checkpoint at `p`: its conv / S / hlast bytes back into the layers, the position and
+    /// the rotary offset restored.  The tokens after it are the caller's to drop (ss.live).  False: no such checkpoint.
+    bool ckpt_resume(Sess& ss, int64_t p, int32_t& rdelta) {
+        const Ckpt* c = nullptr;
+        for (const Ckpt& q : ss.ckpts)
+            if (q.pos == p && q.buf.p != nullptr) { c = &q; break; }
+        if (c == nullptr) return false;
+        size_t off = 0;
+        for (size_t l = 0; l < ss.conv.size(); ++l) {
+            if (ss.conv[l] == nullptr) continue;
+            CK(cudaMemcpyAsync(ss.conv[l], c->buf.p + off / 4, ckpt_conv_bytes, cudaMemcpyHostToDevice, st));
+            off += ckpt_conv_bytes;
+            CK(cudaMemcpyAsync(ss.S[l], c->buf.p + off / 4, ckpt_S_bytes, cudaMemcpyHostToDevice, st));
+            off += ckpt_S_bytes;
+        }
+        CK(cudaMemcpyAsync(ss.hlast, c->buf.p + off / 4, ckpt_h_bytes, cudaMemcpyHostToDevice, st));
+        CK(cudaStreamSynchronize(st));
+        ss.pos = p;
+        rdelta = c->rdelta;
+        if (&ss == &sess[(size_t) cur]) {   // the engine's own copies of the position / offset (the decode graphs read the latter)
+            pos = p;
+            set_delta(c->rdelta);
+        }
+        return true;
     }
 
     /// y [T][n_out] = W x [T][n_in] on the native MMVQ, 8 columns per launch.
@@ -2621,6 +2783,7 @@ struct Engine {
             CK(cudaMemcpyAsync(hlast, hmain, (size_t) N * 4, cudaMemcpyDeviceToDevice, st));
             pos += 1;
             after_rows(1);
+            ckpt_maybe();   // (a decode step crossed a multiple of the checkpoint interval)
             on_chunk(1);
             return 1;
         }
@@ -2644,6 +2807,7 @@ struct Engine {
             CK(cudaMemcpyAsync(hlast, hmain + (size_t) (T - 1) * N, (size_t) N * 4, cudaMemcpyDeviceToDevice, st));
             pos += T;
             CK(cudaStreamSynchronize(st));
+            ckpt_maybe();   // (a prompt chunk crossed a multiple of the checkpoint interval)
             mtab_now = nullptr;
             map_on = false;
             if (!on_chunk(i + T)) {
@@ -2839,6 +3003,9 @@ struct Engine {
         b.rdelta = a.rdelta;
         b.live = a.live;
         b.imgs = a.imgs;
+        b.ckpts = a.ckpts;   // the GDN checkpoints travel with the state (a conversation read alone, continued in a slot)
+        b.ckpt_next = a.ckpt_next;
+        b.ckpt_last_k = a.ckpt_last_k;
         if (dst == cur) load_cur();
     }
     int hybrid_swaps_after_prompt = 2048;
@@ -2910,6 +3077,7 @@ struct Engine {
         CK(cudaMemcpyAsync(hlast, hmain + (size_t) a * N, (size_t) N * 4, cudaMemcpyDeviceToDevice, st));
         pos += a + 1;
         after_rows(a + 1);
+        ckpt_maybe();   // (a speculative step crossed a multiple of the checkpoint interval)
         return a;
     }
 
@@ -3579,27 +3747,51 @@ struct Serve {
         std::fflush(stdout);
     }
 
-    /// The length of session ss's held tokens when they are a proper start of `ids` with the same pictures, else 0.
+    /// The longest common prefix of session ss's held tokens and `ids`, with the picture rule: a prefix that ends inside
+    /// a picture is pulled back to that picture's start, and the pictures wholly inside the prefix must be the arriving
+    /// ones (else 0).  It works whether the held run is shorter or longer than the prompt.
     size_t match_len(const Engine::Sess& ss, const std::vector<int32_t>& ids, const std::vector<ImgKey>& imgs) const {
-        const size_t L = ss.live.size();
-        if (L == 0 || L >= ids.size() || !std::equal(ss.live.begin(), ss.live.end(), ids.begin())) return 0;
-        std::vector<ImgKey> in_live;
-        for (const ImgKey& k : imgs) {
-            if (k.cell + k.n <= (int64_t) L) in_live.push_back(k);
-            else if (k.cell < (int64_t) L) return 0;   // the held tokens end inside a picture
+        size_t L = 0;
+        const size_t n = std::min(ss.live.size(), ids.size());
+        while (L < n && ss.live[L] == ids[L]) ++L;
+        for (const ImgKey& k : imgs) {                        // (a prefix ending inside a picture cannot be resumed there)
+            if (k.cell >= (int64_t) L) continue;
+            if (k.cell + k.n > (int64_t) L) L = k.cell > 0 ? (size_t) k.cell : 0;
         }
-        return in_live == ss.imgs ? L : 0;
+        if (L == 0) return 0;
+        std::vector<ImgKey> arriving, held;
+        for (const ImgKey& k : imgs)
+            if (k.cell + k.n <= (int64_t) L) arriving.push_back(k);
+        for (const ImgKey& k : ss.imgs)
+            if (k.cell + k.n <= (int64_t) L) held.push_back(k);
+        return arriving == held ? L : 0;
     }
 
-    /// The session a request alone takes: the one holding the longest start of its prompt, else an empty one, else the
-    /// least recently used (never a decoding slot).
+    /// The length a request can resume session ss at.  With GDN checkpoints on: the whole held run when it starts the
+    /// prompt (its state is exactly there, as before), else the newest checkpoint at or below the longest common prefix;
+    /// 0 when no checkpoint that low (the caller then resets).  With STRATA_Q36_CKPT_N=0, the old rule: the whole held run
+    /// and only when it is a strict prefix of the prompt.
+    size_t resume_len(const Engine::Sess& ss, const std::vector<int32_t>& ids, const std::vector<ImgKey>& imgs) const {
+        size_t L = match_len(ss, ids, imgs);
+        if (L == 0 || ids.empty()) return 0;
+        if (E.ckpt_n <= 0 || E.ckpt_bytes == 0)
+            return (L == ss.live.size() && L < ids.size()) ? L : 0;
+        const size_t last = ids.size() - 1;   // the last prompt token is always read (its logits pick the first)
+        if (L > last) L = last;
+        if (L == ss.live.size()) return L;    // the held run is exactly this prefix: its own state resumes it
+        const int64_t p = E.ckpt_at_or_below(ss, L);
+        return p > 0 ? (size_t) p : 0;
+    }
+
+    /// The session a request alone takes: the one that can resume furthest, else an empty one, else the least recently
+    /// used (never a decoding slot).
     int pick_session(const std::vector<int32_t>& ids, const std::vector<ImgKey>& imgs) const {
         int best = -1, free_empty = -1, lru = -1;
         size_t bl = 0;
         for (int i = 0; i < E.n_sess; ++i) {
             const Engine::Sess& ss = E.sess[(size_t) i];
             if (ss.active) continue;
-            const size_t l = match_len(ss, ids, imgs);
+            const size_t l = resume_len(ss, ids, imgs);
             if (l > bl) { bl = l; best = i; }
             if (ss.live.empty() && free_empty < 0) free_empty = i;
             if (lru < 0 || ss.used < E.sess[(size_t) lru].used) lru = i;
@@ -3698,13 +3890,13 @@ struct Serve {
         // ---- the session: the held state continues when the request extends it (the recurrent state cannot step back)
         const int s = adm ? slot : pick_session(ids, ir.imgs);
         Engine::Sess& ss = E.sess[(size_t) s];
-        size_t reuse = match_len(ss, ids, ir.imgs);
+        size_t reuse = resume_len(ss, ids, ir.imgs);
         if (adm) {   // another session holding more of this prompt (the conversation was read alone): copy its state
             int src = -1;
             size_t best = reuse;
             for (int i = 0; i < E.n_sess; ++i) {
                 if (i == s || E.sess[(size_t) i].active) continue;
-                const size_t l = match_len(E.sess[(size_t) i], ids, ir.imgs);
+                const size_t l = resume_len(E.sess[(size_t) i], ids, ir.imgs);
                 if (l > best) { best = l; src = i; }
             }
             if (src >= 0) {
@@ -3714,9 +3906,24 @@ struct Serve {
         }
         E.select(s);
         if (reuse == 0) {
-            E.reset();
+            E.reset();   // (no prefix, or none the session holds a GDN checkpoint at or below: read the prompt afresh)
             ss.live.clear();
             ss.imgs.clear();
+        } else if (reuse < ss.live.size()) {
+            // a GDN checkpoint at or below the divergence: its recurrent state back into conv / S / hlast, and the tokens
+            // after it dropped (the attention K / V of the prefix stays in its cells: nothing to copy there)
+            int32_t rd = 0;
+            if (!E.ckpt_resume(ss, (int64_t) reuse, rd)) {
+                std::printf("ERR the session's checkpoint at %zu is gone\n", reuse);
+                std::fflush(stdout);
+                return;
+            }
+            (void) rd;   // (ckpt_resume sets the engine's rotary offset itself)
+            ss.live.resize(reuse);
+            std::vector<ImgKey> hold;
+            for (const ImgKey& k : ss.imgs)
+                if (k.cell + k.n <= (int64_t) reuse) hold.push_back(k);
+            ss.imgs.swap(hold);
         }
         if (geni) E.set_images(ir.rows, ir.cell_row, ir.mrope, (int64_t) ids.size(), ir.delta);
         else E.clear_images();
@@ -3852,9 +4059,10 @@ struct Serve {
                     decode_ms, finish, accepted, offered, reuse, (long long) fresh);
         std::fflush(stdout);
         std::fprintf(stderr, "strata serve: session %d: prompt %zu tokens = %zu reused + %lld read in %.0f ms (%.1f tok/s), "
-                     "%lld generated in %.0f ms (%.1f tok/s), drafts accepted %lld of %lld (%s)\n", s, ids.size(), reuse,
+                     "%lld generated in %.0f ms (%.1f tok/s), drafts accepted %lld of %lld (%s), %d ckpt\n", s, ids.size(), reuse,
                      (long long) fresh, prompt_ms, prompt_ms > 0 ? 1000.0 * (double) fresh / prompt_ms : 0.0, produced,
-                     decode_ms, decode_ms > 0 ? 1000.0 * (double) produced / decode_ms : 0.0, accepted, offered, finish);
+                     decode_ms, decode_ms > 0 ? 1000.0 * (double) produced / decode_ms : 0.0, accepted, offered, finish,
+                     E.ckpt_count(ss));
     }
 
     int run() {
