@@ -3959,7 +3959,6 @@ void* pf_alloc(size_t bytes, bool whole = false) {
 float* pf_floats(size_t n) { return (float*) pf_alloc(n * 4); }
 
 void alloc_prefill() {
-    g_pf_elastic = E.grow && E.offload;
     g_pfr.reserve(64);
     const size_t T = PF.TP, TH = T * H;
     CK(cublasCreate(&PF.cb) == CUBLAS_STATUS_SUCCESS ? cudaSuccess : cudaErrorUnknown);
@@ -5098,6 +5097,9 @@ int main(int argc, char** argv) {
     else load();
     if (PF.TP > 0) PF_RING_EXTRA = PF.TP;
     alloc_state();
+    // CBA: not with --spec: its verify blocks read the prompt buffers between prompts; they stay mapped (fixed) there,
+    // a per-verify map / unmap would cost two device syncs per block
+    g_pf_elastic = E.grow && E.offload && !spec;
     if (PF.TP > 0) alloc_prefill();
     const size_t rec_n = (size_t) NCALLS * E.ctx * TOPK;
     if (E.rec_mode) E.rec = (int*) dalloc(rec_n * 4);
