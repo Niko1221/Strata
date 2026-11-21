@@ -4110,7 +4110,7 @@ int pf_fit(int T, int pos0) {
         size_t want = 0, have = 0;
         for (size_t i = 0; i < g_pfr.size(); ++i) {
             const VRange& r = g_pfr[i];
-            want += g_pfr_whole[i] == 2 ? (T <= g_pf_routed_max ? 0 : r.reserved)
+            want += g_pfr_whole[i] == 2 ? (pf_routed_ok(T) ? 0 : r.reserved)
                   : g_pfr_whole[i] ? r.reserved : r.need(std::min(r.reserved, (size_t) ((double) r.reserved * (T + 64) / PF.TP)));
             have += r.mapped;
         }
