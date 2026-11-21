@@ -314,6 +314,29 @@ inline bool route_window_on() {
     return on;
 }
 inline bool g_qfuse() { static const bool on = [] { const char* v = std::getenv("STRATA_QFUSE"); return v != nullptr && std::atoi(v) != 0; }(); return on; }
+// STRATA_P2P_DECODE_SCATTER=1 (opt-in; #6023): decode peer writes outputs straight into primary hit_out over P2P.
+inline bool g_p2p_decode_scatter() {
+    static const bool on = [] {
+        const char* v = std::getenv("STRATA_P2P_DECODE_SCATTER");
+        return v != nullptr && v[0] != '\0' && v[0] != '0';
+    }();
+    return on;
+}
+// Opt-in NVLink P2P decode enhancements (require STRATA_P2P_DECODE_SCATTER=1): off by default so unset runs keep main's path.
+inline bool g_peer_p2p_q8() {
+    static const bool on = [] {
+        const char* v = std::getenv("STRATA_PEER_P2P_Q8");
+        return v != nullptr && v[0] != '\0' && v[0] != '0';
+    }();
+    return g_p2p_decode_scatter() && on;
+}
+inline bool g_peer_gpu_sync() {
+    static const bool on = [] {
+        const char* v = std::getenv("STRATA_PEER_GPU_SYNC");
+        return v != nullptr && v[0] != '\0' && v[0] != '0';
+    }();
+    return g_p2p_decode_scatter() && on;
+}
 #define VDBG(...) do { if (g_dbg) { std::fprintf(stderr, "verify dbg: " __VA_ARGS__); std::fflush(stderr); } } while (0)
 
 struct Bump {
@@ -521,8 +544,11 @@ bool fuse_hits_on() {
         per_dev[dev] = cudaGetDeviceProperties(&p, dev) == cudaSuccess && strata::kernels::gfx_arch_is_gfx12(p.gcnArchName) ? 2 : 1;
     }
     return per_dev[dev] == 2;
-#else
+#elif defined(STRATA_GPU_METAL)
     return false;
+#else
+    static const bool on = [] { const char* v = std::getenv("STRATA_FUSE_HITS"); return v != nullptr && std::atoi(v) != 0; }();
+    return on;
 #endif
 }
 
@@ -652,7 +678,7 @@ bool Verifier::release_gpu_waits(int timeout_ms) {
     // the words the spin kernels read (wait_flag_ge, wait_flag_ge_or) are mapped host memory, so a store here
     // reaches them with no API call; UINT32_MAX is past every ring.  (E-6's skip words are device memory, but
     // wait_flag_ge_or also returns on its flag.)  A host function raising flag B later only raises.
-    for (uint32_t* p : {h_flag_, h_flagA_, h_flagB_, hflag_in_h_})   // + an overlapped split's hand-off wait
+    for (uint32_t* p : {h_flag_, h_flagA_, h_flagB_, hflag_in_h_, h_peer_flag_})   // + an overlapped split's hand-off wait & peer P2P flag
         if (p != nullptr) *(volatile uint32_t*) p = UINT32_MAX;
     std::atomic_thread_fence(std::memory_order_seq_cst);
     strata_store_fence();
@@ -804,9 +830,11 @@ Verifier::~Verifier() {
     for (cudaEvent_t e : df_join_)
         if (e) cudaEventDestroy(e);
     if (arena_) cudaFree(arena_);
+    if (d_peer_res_) cudaFree(d_peer_res_);
+    if (d_peer_flag_) cudaFree(d_peer_flag_);
     if (hcount_d_) cudaFree(hcount_d_);
     void* hosts[] = {h_tok_, h_step_, h_pos_, h_commit_, h_ple_, h_out_, h_x_, h_ids_, h_w_, h_seq_, h_flag_, h_ymiss_,
-                     h_flagA_, h_plan_, h_flagB_, h_plan_err_, h_nf_, herr_h_, hdrop_h_, h_bal_};
+                     h_flagA_, h_plan_, h_flagB_, h_peer_flag_, h_plan_err_, h_nf_, herr_h_, hdrop_h_, h_bal_};
     for (void* h : hosts)
         if (h) cudaFreeHost(h);
 }
@@ -1029,6 +1057,7 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
               mapped(64, (void**) &h_flag_, (void**) &m_flag_) &&
               mapped(64, (void**) &h_flagA_, (void**) &m_flagA_) &&
               mapped(64, (void**) &h_flagB_, (void**) &m_flagB_) &&
+              mapped(64, (void**) &h_peer_flag_, (void**) &m_peer_flag_) &&
               mapped(64, (void**) &h_plan_err_, (void**) &m_plan_err_) &&
               mapped(T * K * N * 4, (void**) &h_ymiss_, (void**) &m_ymiss_);
     if (!ok) { err = "verify: mapped staging allocation failed " + strata::core::pin_exhausted_hint(); return false; }
@@ -1409,6 +1438,27 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
                              cudaMemcpyHostToDevice) == cudaSuccess;
         }
         if (!ok2) { cudaGetLastError(); all_resident_ = false; device_plan_ = false; }
+    }
+    if (peer_ != nullptr && peer_->p2p() && (g_peer_p2p_q8() || g_peer_gpu_sync())) {
+        if (g_peer_gpu_sync()) {
+            if (cudaMalloc((void**) &d_peer_flag_, 64) == cudaSuccess) {
+                cudaMemset(d_peer_flag_, 0, 64);
+            } else {
+                (void) cudaGetLastError();
+                d_peer_flag_ = nullptr;
+            }
+        }
+        peer_->set_sync_flag(g_peer_gpu_sync() ? h_peer_flag_ : nullptr, g_peer_gpu_sync() ? d_peer_flag_ : nullptr);
+        if (g_peer_p2p_q8()) {
+            if (cudaMalloc((void**) &d_peer_res_, (size_t) (g.n_layers * g.n_expert) * sizeof(int32_t)) != cudaSuccess) {
+                (void) cudaGetLastError();
+                d_peer_res_ = nullptr;
+            } else {
+                synced_peer_ver_ = 0;
+                sync_peer_res();
+                cudaStreamSynchronize(cs_);
+            }
+        }
     }
     std::fprintf(stderr, "strata verify: window up to %d tokens, %.1f MiB of device buffers%s\n", max_t,
                  (double) count.used / 1048576.0,
@@ -2441,13 +2491,28 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
 #endif
             // #578: the helper GPUs reduce with the routing weights - publish them; set_always_publish: the rows
             // whatever the device's residency table says (pipelined windows)
-            if (remote_opt_ || always_publish_)
+            if (remote_opt_ || always_publish_) {
                 doorbell_publish(xm, ids_ + tb * K, w_ + tb * K, (int64_t) n * N, (int64_t) n * K, m_x_ + tb * N,
                                  m_ids_ + tb * K, m_w_ + tb * K, m_seq_, cs);
-            else {
+            } else {
                 const int32_t* layer_res = hits_.d_res != nullptr ? (hits_.d_res + l * g.n_expert) : nullptr;
-                doorbell_publish_res(xm, ids_ + tb * K, layer_res, (int) g.n_expert, (int64_t) n * N, (int64_t) n * K,
-                                     m_x_ + tb * N, m_ids_ + tb * K, m_seq_, cs);
+                uint8_t* const peer_q8_out = !batch_rec_ ? peer_q8_slot(l, (l - lb_) * G + grp) : nullptr;
+                uint32_t* const peer_reset_flag = (!batch_rec_ && l == lb_ && grp == 0) ? d_peer_flag_ : nullptr;
+                if (peer_q8_out != nullptr || peer_reset_flag != nullptr) {
+                    const uint8_t* const q8_src = peer_q8_out != nullptr ? (nat_xq_ + (size_t) tb * (N / 32) * 36) : nullptr;
+                    if (peer_q8_out != nullptr && !q8_ffn) quantize_q8_1_rows(xm, n, N, (void*) q8_src, cs);
+                    const int32_t* peer_layer_res = (peer_q8_out != nullptr && d_peer_res_ != nullptr)
+                                                        ? (d_peer_res_ + l * g.n_expert)
+                                                        : nullptr;
+                    doorbell_publish_res_peer(xm, ids_ + tb * K, layer_res, peer_layer_res, (int) g.n_expert,
+                                              (int64_t) n * N, (int64_t) n * K, m_x_ + tb * N, m_ids_ + tb * K,
+                                              m_seq_, q8_src, peer_q8_out,
+                                              peer_q8_out != nullptr ? (int64_t) n * (N / 32) * 36 : 0, cs,
+                                              peer_reset_flag);
+                } else {
+                    doorbell_publish_res(xm, ids_ + tb * K, layer_res, (int) g.n_expert, (int64_t) n * N, (int64_t) n * K,
+                                         m_x_ + tb * N, m_ids_ + tb * K, m_seq_, cs);
+                }
             }
             if (sh_fork_late) {
                 note_prio_fork(cs);
@@ -2455,6 +2520,8 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 cudaStreamWaitEvent(sh_cs_, ev_fork_, 0);
             }
         }
+        const bool peer_q8_done = !ar_on() && !remote_opt_ && !always_publish_ && !batch_rec_ &&
+                                  peer_q8_slot(l, (l - lb_) * G + grp) != nullptr;
         stamp(l, 17, grp);
         bool qdedup = false;   // STRATA_VERIFY_QDEDUP took effect: the experts' q8_1 image of xm is already made
         {
@@ -2473,7 +2540,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             // experts' q8_1 image of xm is made first and the shared expert's gate/up read it (quantize_q8_1_rows and
             // native_quantize_q8_1 write the same bytes)
             qdedup = g_qdedup() && !sh_fork && strata::kernels::cpu::expert_layout().native;
-            if (qdedup && !q8_ffn) quantize_q8_1_rows(xm, n, N, nat_xq_ + (size_t) tb * (N / 32) * 36, cs);
+            if (qdedup && !q8_ffn && !peer_q8_done) quantize_q8_1_rows(xm, n, N, nat_xq_ + (size_t) tb * (N / 32) * 36, cs);
             if (!shared_expert_native_bf16_enabled()) {
                 if (dec_batch) f32_to_bf16_bulk(mixed_ + tb * N, sh_bf16_ + tb * N, (int64_t) n * N, sh_stream);   // contiguous rows
                 else for (int t = tb; t < te; ++t) f32_to_bf16_bulk(mixed_ + t * N, sh_bf16_ + t * N, N, sh_stream);
@@ -2502,7 +2569,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             if (f.had_gu) {   // nat_xr_ exists: init carved it because this layer is folded (had_gu_any)
                 hadamard_rows(xm, nat_xr_ + (size_t) tb * N, n, N, f.had_block, had_sx_, cs);
                 quantize_q8_1_rows(nat_xr_ + (size_t) tb * N, n, N, nat_xq_ + (size_t) tb * (N / 32) * 36, cs);
-            } else if (!qdedup && !q8_ffn) {
+            } else if (!qdedup && !q8_ffn && !peer_q8_done) {
                 quantize_q8_1_rows(xm, n, N, nat_xq_ + (size_t) tb * (N / 32) * 36, cs);
             }
         } else
@@ -2584,22 +2651,27 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             stamp(l, 19, grp);
             grouped(p_ptr, p_start, p_counts, 0, hit_out, true);
             stamp(l, 20, grp);
-            if (device_plan_) wait_flag_ge_or(m_flagB_, ring, skip_ + grp, cs);
-            else if (m_bal_ != nullptr)   // set_pcie_balance: the PCIe part starts
-                wait_flag_ge_stamped(m_flagB_, ring, m_bal_ + ((l - lb_) * 2 + grp) * 4 + 1, nullptr, cs);
-            else wait_flag_ge(m_flagB_, ring, cs);                 // the PCIe share is in staging (DMA) or mapped
-            if (sink_.pcie_mode == 2) {                            // stage it with a copy kernel, then point at staging
-                const int64_t per = G == 2 ? kStagingBlobs / 2 : kStagingBlobs;
-                uint8_t* stage = staging_ + (size_t) (grp * per) * lay.max_blob;
-                const unsigned long long* p_dst2 = (const unsigned long long*) (pl + dst2_off_);   // STRATA_ADAPT_FETCH
-                fetch_blobs(p_ptr2, p_counts + 2, stage, (int64_t) lay.blob_bytes(l), (int) per, cs, p_dst2);
-                rebase_ptrs((unsigned long long*) p_ptr2, p_counts + 2, stage, (int64_t) lay.blob_bytes(l), cs, p_dst2);
+            if (!pcie_disabled_) {
+                if (device_plan_) wait_flag_ge_or(m_flagB_, ring, skip_ + grp, cs);
+                else if (m_bal_ != nullptr)   // set_pcie_balance: the PCIe part starts
+                    wait_flag_ge_stamped(m_flagB_, ring, m_bal_ + ((l - lb_) * 2 + grp) * 4 + 1, nullptr, cs);
+                else wait_flag_ge(m_flagB_, ring, cs);                 // the PCIe share is in staging (DMA) or mapped
+                if (sink_.pcie_mode == 2) {                            // stage it with a copy kernel, then point at staging
+                    const int64_t per = G == 2 ? kStagingBlobs / 2 : kStagingBlobs;
+                    uint8_t* stage = staging_ + (size_t) (grp * per) * lay.max_blob;
+                    const unsigned long long* p_dst2 = (const unsigned long long*) (pl + dst2_off_);   // STRATA_ADAPT_FETCH
+                    fetch_blobs(p_ptr2, p_counts + 2, stage, (int64_t) lay.blob_bytes(l), (int) per, cs, p_dst2);
+                    rebase_ptrs((unsigned long long*) p_ptr2, p_counts + 2, stage, (int64_t) lay.blob_bytes(l), cs, p_dst2);
+                }
+                stamp(l, 21, grp);
+                // the PCIe share is pcie_frac of the misses: a few groups when the cache is cold, usually none (always none at
+                // pcie_frac 0), so its launch is kPcieGroupRows block rows striding over the groups, not cap of them
+                grouped(p_ptr2, p_start2, p_counts + 2, kPcieGroupRows, hit_out, false);
+                stamp(l, 22, grp);
+            } else {
+                stamp(l, 21, grp);
+                stamp(l, 22, grp);
             }
-            stamp(l, 21, grp);
-            // the PCIe share is pcie_frac of the misses: a few groups when the cache is cold, usually none (always none at
-            // pcie_frac 0), so its launch is kPcieGroupRows block rows striding over the groups, not cap of them
-            grouped(p_ptr2, p_start2, p_counts + 2, kPcieGroupRows, hit_out, false);
-            stamp(l, 22, grp);
             if (!l2pf.empty() && !device_plan_ && l + 1 < le_ && l2pf[(size_t) (l + 1)].n > 0 && sh_stream_on() && sh_cs_ != nullptr &&
                 ev_fork_ != nullptr && ev_join_ != nullptr) {
                 // BW-5: the wait for the CPU's rows starts here: pull the next layer's dense weights into L2 meanwhile (the join
@@ -2634,6 +2706,11 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                                           p_dst, p_counts + 1, cs);
                 else
                     copy_from_mapped(parts_out, m_ymiss_ + (size_t) tb * K * N, (int64_t) n * K * N, cs);
+            }
+            if (!batch_rec_ && g_peer_gpu_sync() && peer_ != nullptr && peer_->p2p() && peer_->direct_mode() &&
+                !always_publish_ && !remote_opt_ && !device_plan_ && m_peer_flag_ != nullptr) {
+                if (d_peer_flag_ != nullptr) wait_flag_ge_abort(d_peer_flag_, ring, m_peer_flag_, cs);
+                else wait_flag_ge(m_peer_flag_, ring, cs);
             }
             // 143-amdk: the add of the GPU's hit rows is done by the combine that follows (one launch fewer)
             hits_in_combine = fuse_hits_on() && !prof_on_ && !remote_opt_ && !sg_gated_[grp] && dec_batch && n > 1 &&
@@ -3268,6 +3345,7 @@ void Verifier::stage_inputs(int T, const int32_t* tokens, int64_t pos0) {
     *(volatile uint32_t*) h_flag_ = 0;
     *(volatile uint32_t*) h_flagA_ = 0;
     *(volatile uint32_t*) h_flagB_ = 0;
+    if (h_peer_flag_ != nullptr) *(volatile uint32_t*) h_peer_flag_ = 0;
     // the overlapped split: the next stage's graph is launched after this, and must see THIS window's raise
     if (hflag_out_h_ != nullptr) *(volatile uint32_t*) hflag_out_h_ = 0;
     if (herr_h_ != nullptr) *(volatile uint32_t*) herr_h_ = 0;
@@ -3522,7 +3600,11 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     const bool pre = prelaunched_ == T;
     prelaunched_ = 0;
     if (!pre && pre_launch_ && !pre_launch_(cs_, err)) return false;   // (a prelaunched window's was served with the first stage's)
-    if (!pre) refresh_ar();
+    if (!pre) {
+        refresh_ar();
+        sync_peer_res();
+        if (peer_ != nullptr) peer_->begin_window();
+    }
     // STRATA_SELECT_LONG: the select kernels this window's context pays off with (the same on every stage)
     sel_long_ = select_long_on() && pos0 + T >= select_long_at() ? 1 : 0;
     if (!capture(T, err) || !capture_commit(err)) return false;
@@ -3986,15 +4068,36 @@ void Verifier::set_plan_slot(int grp) {
     sink_.staging = (unsigned long long) (staging_ + (size_t) (grp * per) * strata::kernels::cpu::expert_layout().max_blob);
     sink_.staging_cap = per;
     const int tb = G == 2 && grp == 1 ? (last_t_ + 1) / 2 : 0;
-    // STRATA_P2P_DECODE_SCATTER=1 (opt-in; #6023 had it always on): the decode peer writes its experts' outputs straight into this
-    // buffer over P2P (expert_pool_dispatch_multi); unset, they come back through the host as before.
-    static const bool p2p_scatter = [] {
-        const char* v = std::getenv("STRATA_P2P_DECODE_SCATTER");
-        return v != nullptr && v[0] != '\0' && v[0] != '0';
-    }();
+    const bool p2p_scatter = g_p2p_decode_scatter();
     sink_.hit_out_dev = (p2p_scatter && hit_out_ != nullptr && ss_ != nullptr && g_ != nullptr)
                             ? hit_out_ + (size_t) tb * ss_->k * g_->n_embd
                             : nullptr;
+    const bool can_peer = p2p_scatter && !last_batch_ && peer_ != nullptr && peer_->p2p() && peer_->direct_mode() &&
+                          !always_publish_ && !remote_opt_ && !device_plan_;
+    const int64_t l = g_ != nullptr ? (lb_ + (int64_t) cur_layer_ / G) : 0;
+    sink_.peer_step = can_peer ? (int32_t) cur_layer_ : -1;
+    sink_.peer_ring = (can_peer && g_peer_gpu_sync() && m_peer_flag_ != nullptr) ? (cur_layer_ + 1) : 0u;
+    sink_.peer_gpu_sync = sink_.peer_ring != 0u;
+    sink_.peer_q8_ready = (can_peer && g_ != nullptr && peer_q8_slot(l, (int64_t) cur_layer_) != nullptr);
+}
+
+uint8_t* Verifier::peer_q8_slot(int64_t l, int64_t step_idx) const {
+    if (!g_peer_p2p_q8() || peer_ == nullptr || !peer_->p2p() || !peer_->direct_mode() ||
+        always_publish_ || remote_opt_ != nullptr || device_plan_)
+        return nullptr;
+    const auto& lay = strata::kernels::cpu::expert_layout();
+    if (!lay.native || l < 0 || (size_t) l >= lay.fmt.size() || lay.fmt[(size_t) l].had_gu) return nullptr;
+    return peer_->win_q8_ptr(step_idx);
+}
+
+void Verifier::sync_peer_res() {
+    if (peer_ == nullptr || d_peer_res_ == nullptr) return;
+    const uint64_t ver = peer_->res_version();
+    if (ver == synced_peer_ver_) return;
+    const auto& r = peer_->residency();
+    if (r.empty()) return;
+    cudaMemcpyAsync(d_peer_res_, r.data(), r.size() * sizeof(int32_t), cudaMemcpyHostToDevice, cs_);
+    synced_peer_ver_ = ver;
 }
 
 // Flag B only rises: a host function of an earlier layer may run after a later layer already raised it directly.
@@ -4962,6 +5065,7 @@ bool Verifier::stage_batch(const int* rows, int S, int hbase, const int32_t* tok
     *(volatile uint32_t*) h_flag_ = 0;
     *(volatile uint32_t*) h_flagA_ = 0;
     *(volatile uint32_t*) h_flagB_ = 0;
+    if (h_peer_flag_ != nullptr) *(volatile uint32_t*) h_peer_flag_ = 0;
     std::atomic_thread_fence(std::memory_order_seq_cst);
     last_t_ = S;
     for (int t = 0; t < S; ++t) last_rows_[t] = rows[t];

@@ -106,6 +106,11 @@ void copy_from_mapped(float* dst, const float* src, int64_t n, void* stream);
 /// which are written +0.0 instead (a verify window's GPU-computed entries: the pool leaves zeros there).
 /// multi-GPU: dst[rows[r] * width ..] = src[r * width ..] for r < n (float4; dst may be mapped host memory).
 void scatter_rows_f32(const float* src, float* dst, const int32_t* rows, int64_t n, int64_t width, void* stream);
+/// scatter_rows_f32 plus system fence and atomicMax(*flag, flag_val) from the last block (`counter` is a zeroed device word).
+void scatter_rows_f32_flag(const float* src, float* dst, const int32_t* rows, int64_t n, int64_t width,
+                           uint32_t* counter, uint32_t* flag, uint32_t flag_val, void* stream);
+/// Stream-ordered atomicMax(*flag, flag_val) after a system fence.
+void signal_flag_max(uint32_t* flag, uint32_t flag_val, void* stream);
 void copy_rows_from_mapped(float* dst, const float* src, int64_t rows, int64_t width, const int32_t* hit_rows,
                            const int32_t* count, void* stream);
 /// copy_rows_from_mapped after spinning on *flag >= value (every block's thread 0 polls the mapped flag; the
@@ -124,6 +129,18 @@ void doorbell_publish_value(const float* x, const int32_t* ids, const float* wei
                             void* stream);
 void doorbell_publish_res(const float* x, const int32_t* ids, const int32_t* d_res, int n_expert, int64_t n, int64_t k,
                           float* x_out, int32_t* ids_out, uint32_t* d_seq, void* stream);
+/// Multi-GPU P2P variant of doorbell_publish_res: skips copying FP32 `x` over PCIe unless an expert misses both
+/// `d_res` and `d_peer_res`, pushes `q8_bytes` of `peer_q8` (`q8_1`) over P2P to `peer_q8_out` when any expert hits
+/// `d_peer_res`, and optionally zeroes `reset_flag` (VRAM completion word) before fencing and ringing `d_seq`.
+void doorbell_publish_res_peer(const float* x, const int32_t* ids, const int32_t* d_res, const int32_t* d_peer_res,
+                               int n_expert, int64_t n, int64_t k, float* x_out, int32_t* ids_out, uint32_t* d_seq,
+                               const uint8_t* peer_q8, uint8_t* peer_q8_out, int64_t q8_bytes, void* stream,
+                               uint32_t* reset_flag = nullptr);
+/// Max byte size accepted by `peer_put_meta` (pushed as a 1-block kernel argument without copy-engine DMA).
+constexpr size_t kPeerPutMetaMax = 2048;
+/// Writes `bytes` (multiple of 4, <= kPeerPutMetaMax) from host `src` into device `dst` on `stream` via a 1-block
+/// kernel argument, avoiding H2D copy-engine queue contention with async refill copies.
+bool peer_put_meta(void* dst, const void* src, size_t bytes, void* stream);
 /// SYCL: publishes launched or recorded while `on` store the payload with plain stores instead of uncached ones, for
 /// a caller that reads the payload only after the publishing kernel has ended (the stepped verify window).
 void doorbell_plain_payload(bool on);

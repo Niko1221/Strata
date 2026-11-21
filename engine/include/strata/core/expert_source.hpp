@@ -415,6 +415,10 @@ struct GpuPlanSink {
     int pcie_mode = 0;
     int32_t cpu_jobs = 0;   ///< host only: the distinct experts the pool computes for the layer just published
     float* hit_out_dev = nullptr;   ///< device address of this group's hit_out buffer on the primary GPU (P2P peer scatter)
+    int32_t peer_step = -1;         ///< current verify step index (for P2P q8_1 slot lookup)
+    uint32_t peer_ring = 0;         ///< current verify ring sequence (> 0 enables GPU-side m_peer_flag_ completion)
+    bool peer_q8_ready = false;     ///< primary GPU pushed q8_1 activations for peer_step over P2P
+    bool peer_gpu_sync = false;     ///< peer GPU signals mapped m_peer_flag_ directly instead of host finish() spin
 };
 
 /// Verifier::set_pcie_balance: a verify window's costs, fitted to each layer's measured times (ms, least squares with

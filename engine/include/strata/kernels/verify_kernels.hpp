@@ -100,6 +100,9 @@ struct L2PrefetchSet {
     }
 };
 void l2_prefetch_ranges(const L2PrefetchSet& set, void* stream);
+/// Spin on local device VRAM `*flag >= value` (e.g. written over NVLink P2P) while periodically checking mapped host
+/// `*abort_flag >= value` so `Verifier::release_gpu_waits()` can unblock stalled waits without PCIe traffic on fast layers.
+void wait_flag_ge_abort(const uint32_t* flag, uint32_t value, const uint32_t* abort_flag, void* stream);
 /// wait_flag_ge and copy_i32_from_mapped in ONE launch (143-amdk): thread 0 spins on *flag >= value, the block then
 /// copies dst[0, n) = src[0, n) (mapped host memory, volatile reads).  One kernel node fewer per layer: a dependent
 /// kernel costs ~2.4 us on a gfx1201 graph whatever it does.  n <= 128 * k for any k (a strided loop).

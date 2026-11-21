@@ -12868,14 +12868,51 @@ int main(int argc, char** argv) {
             const size_t hb = (size_t) strata::kernels::kVerifyNarrowT *
                               (size_t) strata::core::Verifier::handoff_floats(g) * sizeof(float);
             std::vector<float*> hand_b((size_t) n_stages - 1, nullptr);   // the odd windows' hand-off per boundary
-            for (float*& h : hand_b) {
-                float* hh = nullptr;
-                if (cudaHostAlloc((void**) &hh, hb, cudaHostAllocMapped | cudaHostAllocPortable) != cudaSuccess ||
-                    cudaHostGetDevicePointer((void**) &h, hh, 0) != cudaSuccess) {
-                    std::fprintf(stderr, "strata serve: --pipeline-windows: the second hand-off allocation failed\n");
-                    return 1;
+            for (size_t si = 0; si < hand_b.size(); ++si) {
+                float*& h = hand_b[si];
+                bool p2p_allocated = false;
+                static const bool p2p_handoff_b = [] {
+                    const char* v = std::getenv("STRATA_P2P_HANDOFF");
+                    return v != nullptr && v[0] != '\0' && v[0] != '0';
+                }();
+                if (p2p_handoff_b && !split_same) {
+                    const int dev_from = (si == 0) ? strata::core::primary_device() : stages[si - 1]->dev;
+                    const int dev_to = stages[si]->dev;
+                    int can01 = 0, can10 = 0;
+                    if (dev_from != dev_to &&
+                        cudaDeviceCanAccessPeer(&can01, dev_from, dev_to) == cudaSuccess &&
+                        cudaDeviceCanAccessPeer(&can10, dev_to, dev_from) == cudaSuccess && can01 && can10) {
+                        cudaError_t e0 = cudaSuccess, e1 = cudaSuccess;
+                        {
+                            const strata::core::OnDevice on0(dev_from);
+                            e0 = cudaDeviceEnablePeerAccess(dev_to, 0);
+                            if (e0 == cudaErrorPeerAccessAlreadyEnabled) { cudaGetLastError(); e0 = cudaSuccess; }
+                        }
+                        {
+                            const strata::core::OnDevice on1(dev_to);
+                            e1 = cudaDeviceEnablePeerAccess(dev_from, 0);
+                            if (e1 == cudaErrorPeerAccessAlreadyEnabled) { cudaGetLastError(); e1 = cudaSuccess; }
+                        }
+                        if (e0 == cudaSuccess && e1 == cudaSuccess) {
+                            const strata::core::OnDevice on_dst(dev_to);
+                            if (cudaMalloc((void**) &h, hb) == cudaSuccess && cudaMemset(h, 0, hb) == cudaSuccess) {
+                                p2p_allocated = true;
+                            } else {
+                                cudaGetLastError();
+                                if (h != nullptr) { cudaFree(h); h = nullptr; }
+                            }
+                        }
+                    }
                 }
-                std::memset(hh, 0, hb);
+                if (!p2p_allocated) {
+                    float* hh = nullptr;
+                    if (cudaHostAlloc((void**) &hh, hb, cudaHostAllocMapped | cudaHostAllocPortable) != cudaSuccess ||
+                        cudaHostGetDevicePointer((void**) &h, hh, 0) != cudaSuccess) {
+                        std::fprintf(stderr, "strata serve: --pipeline-windows: the second hand-off allocation failed\n");
+                        return 1;
+                    }
+                    std::memset(hh, 0, hb);
+                }
             }
             ver_b.set_stage(0, split_at[0], nullptr, hand_b[0]);
             for (int st = 1; st < n_stages; ++st) {
@@ -12920,6 +12957,7 @@ int main(int argc, char** argv) {
             for (int st = 0; st + 1 < n_stages; ++st) stage_ver_p(st, 1).set_next(&stage_ver_p(st + 1, 1), &split_drive_b);
         }
         ver.set_remote_expert_opt(remote_opt.get());
+        ver.set_peer_experts(peer.valid() ? &peer : nullptr);
         if (pcie_balance() && n_stages == 1) ver.set_pcie_balance(&drive.d.pcie_model);
         if (batch_mtp) ver.set_batch_graph_limit(64);   // --batch-mtp only: slot rotation makes many layouts (LRU); 0.1.39 keeps all
 #if defined(STRATA_HAVE_DFLASH2)
@@ -13112,11 +13150,13 @@ int main(int argc, char** argv) {
                 }
             }
         }
+        const bool pcie_off_startup = o.pcie_frac <= 0.0 && !o.pcie_frac_auto && !pcie_balance();
         for (int st = 0; st < n_stages && n_stages > 1; ++st) {
             split_drive.plan[st] = stage_ver(st).plan_sink();
             if (st > 0) {
                 stage_ver(st).set_split(o.spec_split);
                 stage_ver(st).set_pcie_mode(o.pcie_mode == "dma" ? 0 : o.pcie_mode == "direct" ? 1 : 2);
+                stage_ver(st).set_pcie_disabled(pcie_off_startup && split_drive.pcie_num[st] <= 0);
             }
         }
         if (pipe) {   // the odd windows' pool routing: the same as the even ones', with their plans
@@ -13125,6 +13165,7 @@ int main(int argc, char** argv) {
                 split_drive_b.plan[st] = stage_ver_p(st, 1).plan_sink();
                 stage_ver_p(st, 1).set_split(o.spec_split);
                 stage_ver_p(st, 1).set_pcie_mode(o.pcie_mode == "dma" ? 0 : o.pcie_mode == "direct" ? 1 : 2);
+                stage_ver_p(st, 1).set_pcie_disabled(pcie_off_startup && split_drive.pcie_num[st] <= 0);
             }
         }
         // the pool the verify windows call: with a layer split, the wrapper that routes each layer to its stage
@@ -13138,6 +13179,7 @@ int main(int argc, char** argv) {
         // issue #31's thread dumps show the host stuck in that cudaMemcpyAsync on a driver lock for good.  The copy
         // kernel needs no host CUDA call there, and costs ~1-3% decode on IQ3_S (45.3 -> 44.8 tok/s, 8 requests).
         ver.set_pcie_mode(o.pcie_mode == "dma" ? 0 : o.pcie_mode == "direct" ? 1 : 2);
+        ver.set_pcie_disabled(pcie_off_startup);
         // --pipeline-windows 2: stage 0's GDN state before a speculative commit, restored when the guess was wrong.
         // Window W reads the state its snapshot must hold and no window writes it (only commits do), so it is copied
         // on a side stream while W runs, into the buffer of W's parity, and only W's speculative commit waits for it
@@ -14451,8 +14493,27 @@ int main(int argc, char** argv) {
         std::vector<void*> pin_live;   // the swaps' locked arena pages (pin_blob), unlocked once they have landed
         cudaEvent_t adapt_ev = nullptr;
         cudaEventCreateWithFlags(&adapt_ev, cudaEventDisableTiming);
-        // 0.1.43 STRATA_ADAPT_OVERLAP=1 (adapt_overlap above): the single-GPU, plain-RAM-arena decode loop only
+        // 0.1.43 STRATA_ADAPT_OVERLAP=1 (adapt_overlap above)
         strata::core::AdaptGate agate;
+        std::vector<std::unique_ptr<strata::core::AdaptGate>> stage_agates(stages.size());
+        for (auto& g_ptr : stage_agates) g_ptr = std::make_unique<strata::core::AdaptGate>();
+        struct AdaptGateOff {
+            strata::core::Verifier& v0;
+            strata::core::AdaptGate& g0;
+            std::vector<std::unique_ptr<GpuStage>>& sts;
+            std::vector<std::unique_ptr<strata::core::AdaptGate>>& gs;
+            ~AdaptGateOff() {
+                v0.set_adapt_gate(nullptr);
+                if (g0.dvals) cudaFree(const_cast<int32_t*>(g0.dvals));
+                if (g0.hland) cudaFreeHost(const_cast<int32_t*>(g0.hland));
+                for (size_t k = 0; k < sts.size() && k < gs.size(); ++k) {
+                    sts[k]->ver.set_adapt_gate(nullptr);
+                    const strata::core::OnDevice on(sts[k]->dev);
+                    if (gs[k]->dvals) cudaFree(const_cast<int32_t*>(gs[k]->dvals));
+                    if (gs[k]->hland) cudaFreeHost(const_cast<int32_t*>(gs[k]->hland));
+                }
+            }
+        } agate_off{ver, agate, stages, stage_agates};
         bool aflipped = false;   // the pending swaps are in the tables and their copies may still be landing
         bool aov = false;
         int64_t aov_flips = 0;
@@ -14461,7 +14522,7 @@ int main(int argc, char** argv) {
         // A peer tier (--peer-device) joins the overlap: measured on one rig so far (RTX 5060 Ti x8 + RTX 3060, IQ3_XXS),
         // where the blocking wait took 3-8 ms of a 27-43 ms window.
         const bool aov_want = adapt_overlap();
-        const char* aov_why = multi_gpu || !stages.empty() ? "not on a layer split"
+        const char* aov_why = split_same ? "not with same-GPU layer split"
                               : remote_opt ? "not with --remote-expert-opt"
                               : o.adapt_async ? "not with --adapt-async"
                               : o.pipeline_windows > 0 ? "not with --pipeline-windows"
@@ -14477,11 +14538,17 @@ int main(int argc, char** argv) {
                               : nullptr;
         if (aov_want) {
             if (aov_why == nullptr) {
-                agate.ticks.resize((size_t) g.n_layers + 1);
-                for (int64_t l = 0; l <= g.n_layers; ++l) agate.ticks[(size_t) l] = {&agate.landed, (int32_t) l};
-                agate.has.assign((size_t) g.n_layers, 0);
-                agate.peer_has.assign((size_t) g.n_layers, 0);
-                if (!ver.set_adapt_gate(&agate)) aov_why = "the device-planned layers (STRATA_VERIFY_DEVICE_PLAN) are on";
+                auto init_gate = [&](strata::core::AdaptGate& gt, strata::core::Verifier& gv) -> bool {
+                    gt.ticks.resize((size_t) g.n_layers + 1);
+                    for (int64_t l = 0; l <= g.n_layers; ++l) gt.ticks[(size_t) l] = {&gt.landed, (int32_t) l};
+                    gt.has.assign((size_t) g.n_layers, 0);
+                    gt.peer_has.assign((size_t) g.n_layers, 0);
+                    return gv.set_adapt_gate(&gt);
+                };
+                if (!init_gate(agate, ver)) aov_why = "the device-planned layers (STRATA_VERIFY_DEVICE_PLAN) are on";
+                for (size_t k = 0; k < stages.size() && aov_why == nullptr; ++k)
+                    if (!init_gate(*stage_agates[k], stages[k]->ver))
+                        aov_why = "the device-planned layers (STRATA_VERIFY_DEVICE_PLAN) are on";
                 // #2188: on Windows the default is the host function.  Under WDDM a stream's work sits in the driver's
                 // command buffer until something flushes it, and nothing does while the host only spins on the pinned
                 // int: the first request stopped with "copies for layer 45 never landed".  STRATA_ADAPT_SIGNAL=copy asks
@@ -14498,23 +14565,36 @@ int main(int argc, char** argv) {
                 if (aov_why == nullptr && sig_copy) {
                     // the landing of each layer's copies is told by a stream-ordered D2H copy of the layer number into pinned memory
                     // (STRATA_ADAPT_SIGNAL=host: a host function instead). No callback thread has to be scheduled while the pool's workers spin on every other CPU
-                    int32_t* vals = nullptr; void* hp = nullptr;
                     std::vector<int32_t> iota((size_t) g.n_layers + 1);
                     for (size_t i = 0; i < iota.size(); ++i) iota[i] = (int32_t) i;
-                    if (cudaMalloc((void**) &vals, iota.size() * 4) == cudaSuccess &&
-                        cudaMemcpy(vals, iota.data(), iota.size() * 4, cudaMemcpyHostToDevice) == cudaSuccess &&
-                        cudaHostAlloc(&hp, 64, cudaHostAllocPortable) == cudaSuccess) {
-                        *(volatile int32_t*) hp = -1;
-                        agate.hland = (volatile int32_t*) hp;
-                        agate.dvals = vals;
+                    auto alloc_sig = [&](strata::core::AdaptGate& gt, int dev) {
+                        const strata::core::OnDevice on(dev);
+                        int32_t* vals = nullptr; void* hp = nullptr;
+                        if (cudaMalloc((void**) &vals, iota.size() * 4) == cudaSuccess &&
+                            cudaMemcpy(vals, iota.data(), iota.size() * 4, cudaMemcpyHostToDevice) == cudaSuccess &&
+                            cudaHostAlloc(&hp, 64, cudaHostAllocPortable) == cudaSuccess) {
+                            *(volatile int32_t*) hp = -1;
+                            gt.hland = (volatile int32_t*) hp;
+                            gt.dvals = vals;
+                            return true;
+                        }
+                        if (vals) cudaFree(vals);
+                        (void) cudaGetLastError();
+                        return false;
+                    };
+                    if (alloc_sig(agate, -1))
                         std::fprintf(stderr, "strata serve: adaptive overlap signal: stream-ordered copies (STRATA_ADAPT_SIGNAL=host: a host function)\n");
-                    } else { (void) cudaGetLastError(); }
+                    for (size_t k = 0; k < stages.size(); ++k) alloc_sig(*stage_agates[k], stages[k]->dev);
                 }
                 // the peer tier's copies land over its own link and are gated the same way, with the same kind of signal
                 if (aov_why == nullptr && peer.valid())
                     agate.peer_hland = peer.set_overlap_gate(&agate.peer_landed, &agate.peer_has, &agate.peer_last, sig_copy);
             }
             aov = aov_why == nullptr;
+            if (!aov) {
+                ver.set_adapt_gate(nullptr);
+                for (auto& st : stages) st->ver.set_adapt_gate(nullptr);
+            }
             if (aov)
                 std::fprintf(stderr, "strata serve: adaptive overlap (STRATA_ADAPT_OVERLAP=0 turns it off): the adaptive tier's copies land while the next window runs "
                                      "(same tokens, a layer waits for its own copies)%s\n",
@@ -14542,6 +14622,7 @@ int main(int argc, char** argv) {
                 // flight), and the gate closes with them
                 if (!(peer.valid() && peer.has_pending())) {
                     agate.active.store(false, std::memory_order_release);
+                    for (auto& g_ptr : stage_agates) g_ptr->active.store(false, std::memory_order_release);
                     aflipped = false;
                 }
                 return;
@@ -14568,6 +14649,7 @@ int main(int argc, char** argv) {
             pending.clear();
             pending_age = 0;
             agate.active.store(false, std::memory_order_release);   // 0.1.43: the copies have landed (STRATA_ADAPT_OVERLAP)
+            for (auto& g_ptr : stage_agates) g_ptr->active.store(false, std::memory_order_release);
             aflipped = false;
             if (res_upload() == cudaSuccess) {   // the whole table: the hook has nothing left
                 drive.d.res_dirty = false;
@@ -14608,7 +14690,7 @@ int main(int argc, char** argv) {
         constexpr size_t kResPatchCap = 16384;
         std::vector<int> res_devs{-1};
         for (auto& st : stages) res_devs.push_back(st->dev);
-        int32_t* res_pairs = (serial_windows && (drive.d.fetch_admit > 0 || drive.d.evict_sync))
+        int32_t* res_pairs = (serial_windows && (drive.d.fetch_admit > 0 || drive.d.evict_sync || aov_want))
                                  ? res_pairs_alloc(kResPatchCap, res_devs) : nullptr;
         auto res_sync = [&](bool check, std::string& e) -> bool {
             if (drive.d.res_dirty) {
@@ -14712,11 +14794,22 @@ int main(int argc, char** argv) {
             if ((int) swaps.size() > o.adapt_swaps) swaps.resize((size_t) o.adapt_swaps);
             if (aov) {   // 0.1.43: the copies go in layer order and each layer's landing is told to the verify window
                 std::stable_sort(swaps.begin(), swaps.end(), [](const Swap& a, const Swap& b) { return a.layer < b.layer; });
-                agate.landed.store(-1, std::memory_order_release);
-                if (agate.hland != nullptr) *agate.hland = -1;
-                agate.has.assign((size_t) g.n_layers, 0);
-                agate.last = -1;
-                for (const Swap& s : swaps) { agate.has[(size_t) s.layer] = 1; agate.last = std::max(agate.last, s.layer); }
+                auto reset_gate = [&](strata::core::AdaptGate& gt) {
+                    gt.landed.store(-1, std::memory_order_release);
+                    if (gt.hland != nullptr) *gt.hland = -1;
+                    gt.has.assign((size_t) g.n_layers, 0);
+                    gt.last = -1;
+                };
+                reset_gate(agate);
+                for (auto& g_ptr : stage_agates) reset_gate(*g_ptr);
+                for (const Swap& s : swaps) {
+                    const int stn = multi_gpu ? stage_of(s.layer) : 0;
+                    strata::core::AdaptGate& gt = (stn > 0 && (size_t) (stn - 1) < stage_agates.size())
+                                                      ? *stage_agates[(size_t) stn - 1]
+                                                      : agate;
+                    gt.has[(size_t) s.layer] = 1;
+                    gt.last = std::max(gt.last, s.layer);
+                }
                 // the peer's marks of the previous round go too (its adapt below sets this round's, if it swaps anything)
                 agate.peer_landed.store(-1, std::memory_order_release);
                 agate.peer_has.assign((size_t) g.n_layers, 0);
@@ -14763,20 +14856,24 @@ int main(int argc, char** argv) {
             std::vector<size_t> cp_bytes;
             for (size_t si = 0; si < swaps.size(); ++si) {
                 const Swap& s = swaps[si];
+                const int stn = multi_gpu ? stage_of(s.layer) : 0;   // the swap stays in the layer's own cache
+                GpuStage* gs = stn > 0 ? stages[(size_t) stn - 1].get() : nullptr;
+                const cudaStream_t astream = gs ? gs->adapt_stream : adapt_stream;
+                strata::core::AdaptGate& g_st = (gs && (size_t) (stn - 1) < stage_agates.size())
+                                                    ? *stage_agates[(size_t) stn - 1]
+                                                    : agate;
+                const strata::core::OnDevice on(gs ? gs->dev : -1);
                 if (aov && (si == 0 || swaps[si - 1].layer != s.layer)) {
                     // test hook (STRATA_ADAPT_OVERLAP_SLOW_US=N): a slow link, to make the windows wait for the copies
                     static const int slow_us = [] { const char* e = std::getenv("STRATA_ADAPT_OVERLAP_SLOW_US"); return e ? std::atoi(e) : 0; }();
                     static int slow_arg = slow_us;
                     if (slow_us > 0)
-                        cudaLaunchHostFunc(adapt_stream, [](void* p) { std::this_thread::sleep_for(std::chrono::microseconds(*(int*) p)); }, &slow_arg);
+                        cudaLaunchHostFunc(astream, [](void* p) { std::this_thread::sleep_for(std::chrono::microseconds(*(int*) p)); }, &slow_arg);
                 }
                 const size_t in = (size_t) s.layer * g.n_expert + s.in, out = (size_t) s.layer * g.n_expert + s.out;
                 const int32_t slot = fenced_slots.empty() ? host_res[out] : fenced_slots[si];
                 const uint8_t* b = srcp->blob_stable(s.layer, s.in);
                 nib::guard_raw(s.layer, "the adaptive tier's copy in");
-                const int stn = multi_gpu ? stage_of(s.layer) : 0;   // the swap stays in the layer's own cache
-                GpuStage* gs = stn > 0 ? stages[(size_t) stn - 1].get() : nullptr;
-                const strata::core::OnDevice on(gs ? gs->dev : -1);
                 if (dma_mode != 0 && slot >= 0 && b != nullptr) {
                     cp_dst.push_back(xcache.device_slot(slot));
                     cp_src.push_back(b);
@@ -14791,7 +14888,7 @@ int main(int argc, char** argv) {
                 if (slot < 0 || b == nullptr ||
                     adapt_copy_h2d(gs ? gs->cache.device_slot(slot) : xcache.device_slot(slot), b,
                                    (size_t) strata::kernels::cpu::expert_layout().blob_bytes(s.layer),
-                                   gs ? gs->adapt_stream : adapt_stream) != cudaSuccess) {
+                                   astream) != cudaSuccess) {
                     std::fprintf(stderr, "strata serve: adaptive swap copy failed (layer %d, slot %d, pinned %d): %s\n",
                                  (int) s.layer, (int) slot, pin_live.empty() ? 0 : 1, cudaGetErrorString(cudaGetLastError()));
                     return false;
@@ -14802,20 +14899,20 @@ int main(int argc, char** argv) {
                 srcp->prefetch(s.layer, s.out);   // a file-backed arena released its pages: read them back ahead
                 pending.emplace_back((int32_t) in, slot);      // resident once the copy has landed
                 if (aov && (si + 1 == swaps.size() || swaps[si + 1].layer != s.layer) &&
-                    (agate.hland != nullptr
-                         ? cudaMemcpyAsync((void*) agate.hland, agate.dvals + s.layer, 4, cudaMemcpyDeviceToHost, adapt_stream)
-                         : cudaLaunchHostFunc(adapt_stream, [](void* p) {
+                    (g_st.hland != nullptr
+                         ? cudaMemcpyAsync((void*) g_st.hland, g_st.dvals + s.layer, 4, cudaMemcpyDeviceToHost, astream)
+                         : cudaLaunchHostFunc(astream, [](void* p) {
                         auto* t = (strata::core::AdaptGate::Tick*) p;
                         int32_t cur = t->counter->load(std::memory_order_relaxed);
                         while (cur < t->layer && !t->counter->compare_exchange_weak(cur, t->layer, std::memory_order_release)) {}
-                    }, &agate.ticks[(size_t) s.layer])) != cudaSuccess) {
+                    }, &g_st.ticks[(size_t) s.layer])) != cudaSuccess) {
                     (void) cudaGetLastError();
-                    cudaStreamSynchronize(adapt_stream);   // no callback: wait here, the gate opens at once
-                    agate.landed.store((int32_t) g.n_layers, std::memory_order_release);
+                    cudaStreamSynchronize(astream);   // no callback: wait here, the gate opens at once
+                    g_st.landed.store((int32_t) g.n_layers, std::memory_order_release);
                 }
                 if (!drive.d.in_flight.empty()) drive.d.in_flight[in] = 1;   // STRATA_ADAPT_FETCH leaves it alone
             }
-            if (drive.d.evict_sync && !swaps.empty()) {   // the evicted ones are misses now (see the pre-launch hook)
+            if ((drive.d.evict_sync || (aov && res_pairs != nullptr)) && !swaps.empty()) {   // the evicted ones are misses now
                 for (const Swap& s : swaps) drive.d.res_dirty_idx.push_back((int32_t) (s.layer * g.n_expert + s.out));
                 drive.d.res_dirty = true;
             }
@@ -14828,12 +14925,14 @@ int main(int argc, char** argv) {
             if (!swaps.empty()) cudaEventRecord(adapt_ev, adapt_stream);
             // #2188: hand the copies and their landing signals to the GPU now.  WDDM batches a stream's work until a
             // driver call flushes it, and the verify window only spins on the pinned int (Linux submits at once: no-op)
-            if (aov && agate.hland != nullptr && !swaps.empty()) (void) cudaStreamQuery(adapt_stream);
+            if (aov && agate.hland != nullptr && main_live) (void) cudaStreamQuery(adapt_stream);
             (void) main_live;
-            for (auto& st : stages)
-                if (st->adapt_live) {
-                    const strata::core::OnDevice on(st->dev);
-                    cudaEventRecord(st->adapt_ev, st->adapt_stream);
+            for (size_t k = 0; k < stages.size(); ++k)
+                if (stages[k]->adapt_live) {
+                    const strata::core::OnDevice on(stages[k]->dev);
+                    cudaEventRecord(stages[k]->adapt_ev, stages[k]->adapt_stream);
+                    if (aov && k < stage_agates.size() && stage_agates[k]->hland != nullptr)
+                        (void) cudaStreamQuery(stages[k]->adapt_stream);
                 }
             // #477: the routing counted since the start (each count adds up to 1 / (1 - --adapt-decay) over its
             // decays: the sum is proportional to the routing itself) - only with --expert-profile-save, else `heat`
@@ -20520,6 +20619,22 @@ int main(int argc, char** argv) {
                 split_drive.pcie_num[st] = (st == 0 || split_same || req_pcie_frac != o.pcie_frac)
                                                ? drive.d.pcie_num : pcie_num_of(stages[(size_t) st - 1]->pcie_frac);
             if (pipe) for (int st = 0; st < split_drive.n; ++st) split_drive_b.pcie_num[st] = split_drive.pcie_num[st];
+            {
+                auto ensure_pcie_enabled = [](strata::core::Verifier& v, int pnum) {
+                    if (pnum > 0 && v.pcie_disabled()) {
+                        int dropped = 0;
+                        std::string derr;
+                        (void) v.drop_window_graphs(dropped, derr);
+                        v.set_pcie_disabled(false);
+                    }
+                };
+                ensure_pcie_enabled(ver, drive.d.pcie_num);
+                if (pipe) ensure_pcie_enabled(ver_b, split_drive_b.pcie_num[0]);
+                for (int st = 1; st < n_stages; ++st) {
+                    ensure_pcie_enabled(stage_ver(st), split_drive.pcie_num[st]);
+                    if (pipe) ensure_pcie_enabled(stage_ver_p(st, 1), split_drive_b.pcie_num[st]);
+                }
+            }
             const int hist_n = std::min(req_sp.penalty_last_n, kPenaltyWindowCap);
             // #4590: the repeat / frequency / presence penalties count the tokens this reply has written, not the prompt's last
             // tokens (the prompt's own numbers and quoted answers were penalised, and a conversation whose last turn asks for
@@ -21897,12 +22012,24 @@ int main(int argc, char** argv) {
                     if (src.complement_ready() && !src.soft_commit_exchanges()) {
                         apply_pending(true);   // not possible here: the plain wait
                     } else {
-                        for (const auto& [i, slot] : pending) host_res[(size_t) i] = slot;
+                        for (const auto& [i, slot] : pending) {
+                            host_res[(size_t) i] = slot;
+                            if (res_pairs != nullptr) drive.d.res_dirty_idx.push_back(i);
+                        }
                         if (peer.valid()) peer.flip_pending();   // its copies land over its own link, gated the same way
-                        res_upload();
+                        if (res_pairs != nullptr && !pending.empty()) {
+                            drive.d.res_dirty = true;
+                            std::string re;
+                            if (!res_sync(false, re)) { res_upload(); drive.d.res_dirty = false; drive.d.res_dirty_idx.clear(); }
+                        } else if (!pending.empty() || drive.d.res_dirty) {
+                            res_upload();
+                            drive.d.res_dirty = false;
+                            drive.d.res_dirty_idx.clear();
+                        }
                         aflipped = true;
                         ++aov_flips;
                         agate.active.store(true, std::memory_order_release);
+                        for (auto& g_ptr : stage_agates) g_ptr->active.store(true, std::memory_order_release);
                     }
                 }
                 else if (pending.empty() || ++pending_age >= adapt_lag()) apply_pending(true);
@@ -22450,9 +22577,12 @@ int main(int argc, char** argv) {
                                  (d1.entries - ds0.entries) / (w * L), (d1.hits - ds0.hits) / (w * L), (d1.pcie - ds0.pcie) / (w * L),
                                  dt_adapt_wait / w, dt_adapt_join / w, (double) ((ajob ? a_swapped : adapt_nswaps) - dt_sw0) / w);
                 }
-                if (aov)
+                if (aov) {
+                    double tot_gate = ver.ms_gate;
+                    for (auto& st : stages) tot_gate += st->ver.ms_gate;
                     std::fprintf(stderr, "strata decode adapt overlap: %lld windows took swaps still landing, a layer waited %.2f ms in all so far\n",
-                                 (long long) aov_flips, ver.ms_gate);
+                                 (long long) aov_flips, tot_gate);
+                }
                 for (int st = 0; st < n_stages; ++st) {   // every stage's GPU profile, not only the first card's
                     const std::string pr = stage_ver(st).profile_report();
                     if (pr.empty()) continue;
@@ -23518,6 +23648,7 @@ int main(int argc, char** argv) {
         vh.slot_off = xcache.slot_offsets();   // E-6: the device plan's pointers
         vh.n_slots = xcache.slots();
         if (pcie_balance()) ver.set_pcie_balance(&drive.d.pcie_model);
+        ver.set_peer_experts(peer.valid() ? &peer : nullptr);
 #if defined(STRATA_HAVE_DFLASH2)
         if (use_df2) ver.set_taps(df2.tap_layers());
 #endif
@@ -23570,6 +23701,7 @@ int main(int argc, char** argv) {
         drive.d.pcie_num = (int) (o.pcie_frac * 256.0 + 0.5);
         if (drive.d.pcie_num < 0) drive.d.pcie_num = 0;
         if (drive.d.pcie_num > 256) drive.d.pcie_num = 256;
+        ver.set_pcie_disabled(drive.d.pcie_num == 0 && !pcie_balance());
         const int64_t pcie0 = drive.d.pcie_experts;
         // CS-T: the file tier since the decode began (the prompt path's copies are before this)
         const int64_t files0 = src.file_reads(), ram0 = src.ram_reads();

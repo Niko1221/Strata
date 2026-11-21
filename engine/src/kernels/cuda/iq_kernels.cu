@@ -6076,6 +6076,101 @@ __global__ void __launch_bounds__(256) native_down_lds_kernel(const unsigned lon
     }
 }
 
+// Multi-GPU P2P variant of native_down_lds_kernel: stages each 16-row tile in shared memory to emit coalesced
+// 16-byte float4 stores directly into remote GPU memory (`out[ent_out_row[e] * n_embd + r]`), and optionally raises
+// `*sync_flag = max(*sync_flag, sync_ring)` on the last completing block (eliminating separate scatter_rows_f32_flag
+// launch and HBM2 d_out_ bounce).  Requires L.n_embd % 16 == 0 and 16-byte aligned `out`.
+template<int TD>
+__global__ void __launch_bounds__(256) native_down_lds_p2p_kernel(const unsigned long long* __restrict__ grp_ptr,
+                                                                  const int32_t* __restrict__ grp_start,
+                                                                  const int32_t* __restrict__ n_groups,
+                                                                  const int32_t* __restrict__ ent_out_row,
+                                                                  const block_q8_1* __restrict__ hq,
+                                                                  NativeExpertLayout L, float* __restrict__ out,
+                                                                  uint32_t* __restrict__ flag_cnt,
+                                                                  uint32_t* __restrict__ sync_flag,
+                                                                  uint32_t sync_ring) {
+    using F = Fmt<TD>;
+    extern __shared__ int sh_raw[];
+    alignas(16) __shared__ float s_out[LDS_NT][16];
+    const int g = blockIdx.y;
+    const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
+    if (g < *n_groups) {
+        const uint8_t* blob = (const uint8_t*) grp_ptr[g];
+        const int nb = (int) (L.n_ff / F::qk), hb = (int) (L.n_ff / 32);
+        const int e0 = grp_start[g], e1 = grp_start[g + 1];
+        const int nrow = (int) L.n_embd;
+        const block_q8_1* sh = (const block_q8_1*) sh_raw;
+        for (int c0 = e0; c0 < e1; c0 += LDS_NT) {
+            const int cn = min(LDS_NT, e1 - c0);
+            __syncthreads();
+            {
+                const int* src = (const int*) (hq + (size_t) c0 * hb);
+                for (int i = tid; i < cn * hb * 9; i += 256) sh_raw[i] = src[i];
+            }
+            __syncthreads();
+            for (int p = 0; p < LDS_RB / 16; ++p) {
+                const int r_base = blockIdx.x * LDS_RB + p * 16;
+                if (r_base >= nrow) break;
+                const int r0 = r_base + warp, r1 = r0 + 8;
+                const uint8_t* w0 = blob + L.down_off + (size_t) r0 * L.d_row;
+                const uint8_t* w1 = blob + L.down_off + (size_t) r1 * L.d_row;
+                auto pass = [&](auto ntc) {
+                    constexpr int NTC = decltype(ntc)::value;
+                    float s0[NTC], s1[NTC];
+#pragma unroll
+                    for (int j = 0; j < NTC; ++j) { s0[j] = 0.0f; s1[j] = 0.0f; }
+                    for (int k = lane; k < nb * F::ipb; k += 32) {
+                        const int kbx = k / F::ipb, iqs = F::step * (k % F::ipb);
+#pragma unroll
+                        for (int j = 0; j < NTC; ++j) {
+                            const block_q8_1* xk = sh + (size_t) j * hb + kbx * (F::qk / 32);
+                            const float a = F::dot(w0, xk, kbx, iqs);
+                            const float b = F::dot(w1, xk, kbx, iqs);
+                            s0[j] += a;
+                            s1[j] += b;
+                        }
+                    }
+#pragma unroll
+                    for (int j = 0; j < NTC; ++j) {
+                        const float a = warp_sum(s0[j]), b = warp_sum(s1[j]);
+                        if (lane == 0) {
+                            s_out[j][warp] = a;
+                            s_out[j][8 + warp] = b;
+                        }
+                    }
+                    __syncthreads();
+                    if (tid < NTC * 4) {
+                        const int j = tid >> 2;
+                        const int v = tid & 3;
+                        float4* dst = (float4*) (out + (size_t) ent_out_row[c0 + j] * L.n_embd + r_base);
+                        dst[v] = ((const float4*) s_out[j])[v];
+                    }
+                    __syncthreads();
+                };
+                switch (cn) {
+                    case 1: pass(std::integral_constant<int, 1>{}); break;
+                    case 2: pass(std::integral_constant<int, 2>{}); break;
+                    case 3: pass(std::integral_constant<int, 3>{}); break;
+                    default: pass(std::integral_constant<int, 4>{}); break;
+                }
+            }
+        }
+    }
+    if (flag_cnt != nullptr && sync_flag != nullptr) {
+        if (tid < LDS_NT * 4) __threadfence_system();
+        __syncthreads();
+        if (tid == 0) {
+            const uint32_t total = (uint32_t) (gridDim.x * gridDim.y);
+            if (atomicAdd(flag_cnt, 1u) + 1u == total) {
+                *flag_cnt = 0u;
+                atomicMax(sync_flag, sync_ring);
+                __threadfence_system();
+            }
+        }
+    }
+}
+
 // ---- 8: mode 7's gate/up with SwiGLU and the q8_1 quantization in the epilogue.  A block takes h rows
 // [r0, r0 + 32): gate rows r0.. and up rows r0.. (64 weight rows, the same per-(row, entry) sums as mode 7), so
 // one 32-lane warp per entry holds exactly one q8_1 block of h and runs quantize_q8_1_kernel's own code on it -
@@ -6778,6 +6873,61 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
         default: std::fprintf(stderr, "native_expert_grouped: down type %d\n", L.d_type); std::exit(1);
     }
     check("native_expert_grouped/down");
+}
+
+bool native_expert_grouped_p2p(const NativeExpertLayout& L, const unsigned long long* grp_ptr, const int32_t* grp_start,
+                               const int32_t* n_groups, const int32_t* ent_out_row, const int32_t* ent_tok,
+                               int64_t cap_groups, int64_t cap_entries, const void* x_q8_1, void* scratch, float* out,
+                               uint32_t* flag_cnt, uint32_t* sync_flag, uint32_t sync_ring, void* stream) {
+#if STRATA_EXP_LAYOUTS
+    if (cap_groups <= 0 || cap_entries <= 0 || g_grouped_v1 || g_exp_phase != 0 || L.had_block > 0 || nib_layout(L))
+        return false;
+    if ((L.n_embd & 15) != 0 || (L.n_ff % 32) != 0 || ((uintptr_t) out & 15) != 0) return false;
+    const int em0 = exp_mode();
+    const bool fused_gu = em0 == 8 && ((kExpLds16 && L.gu_type == 16) || L.gu_type == 18 || L.gu_type == 21 ||
+                                       L.gu_type == 22 || L.gu_type == 23);
+    const int em0d = sm75_down_em(em0, cap_groups);
+    int dev_d = 0;
+    cudaGetDevice(&dev_d);
+    const bool lds_down_ok = L.d_type == 42 || (L.d_type == 20 && !gfx1151_exp8(dev_d));
+    if (!fused_gu || !(em0d == 7 || em0d == 8) || !lds_down_ok) return false;
+    cudaStream_t s = (cudaStream_t) stream;
+    const block_q8_1* X = (const block_q8_1*) x_q8_1;
+    const size_t n_ef = (size_t) cap_entries * (size_t) L.n_ff;
+    float* gate = (float*) scratch;
+    float* up = gate + n_ef;
+    float* h = up + n_ef;
+    block_q8_1* hq = (block_q8_1*) (h + n_ef);
+    {
+        const dim3 gl((unsigned) (L.n_ff / 32), (unsigned) cap_groups);
+        const size_t sh = (size_t) LDS_NT * (size_t) (L.n_embd / 32) * sizeof(block_q8_1);
+        switch (L.gu_type) {
+            case 16: native_gu_fused_kernel<16><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, hq); break;
+            case 18: native_gu_fused_kernel<18><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, hq); break;
+            case 21: native_gu_fused_kernel<21><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, hq); break;
+            case 23: native_gu_fused_kernel<23><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, hq); break;
+            default: native_gu_fused_kernel<22><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, hq); break;
+        }
+        check("native_expert_grouped_p2p/gu fused");
+    }
+    {
+        const dim3 gl((unsigned) ((L.n_embd + LDS_RB - 1) / LDS_RB), (unsigned) cap_groups);
+        const size_t sh = (size_t) LDS_NT * (size_t) (L.n_ff / 32) * sizeof(block_q8_1);
+        if (L.d_type == 20)
+            native_down_lds_p2p_kernel<20><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_out_row, hq, L, out,
+                                                               flag_cnt, sync_flag, sync_ring);
+        else
+            native_down_lds_p2p_kernel<42><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_out_row, hq, L, out,
+                                                               flag_cnt, sync_flag, sync_ring);
+        check("native_expert_grouped_p2p/down");
+    }
+    return true;
+#else
+    (void) L; (void) grp_ptr; (void) grp_start; (void) n_groups; (void) ent_out_row; (void) ent_tok;
+    (void) cap_groups; (void) cap_entries; (void) x_q8_1; (void) scratch; (void) out;
+    (void) flag_cnt; (void) sync_flag; (void) sync_ring; (void) stream;
+    return false;
+#endif
 }
 
 }  // namespace strata::kernels
