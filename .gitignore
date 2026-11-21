@@ -108,3 +108,6 @@ node_modules/
 /build-vision-spark/
 /.venv-build/
 
+
+# PowerShell module analysis cache written into the packaged host cwd by spawned shells
+Microsoft/
