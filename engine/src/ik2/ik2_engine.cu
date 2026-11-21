@@ -3121,7 +3121,7 @@ int run(int argc, char** argv) {
             if (i + 1 >= argc) die("missing value of " + a);
             return argv[++i];
         };
-        if (a == "--model") model = next();
+        if (a == "--model" || a == "--native") model = next();
         else if (a == "--tokens") {   // (--tokens @FILE: the ids from a file - a long prompt passes a shell's limit)
             toks = next();
             if (!toks.empty() && toks[0] == '@') {
@@ -3130,11 +3130,11 @@ int run(int argc, char** argv) {
                 while (!toks.empty() && std::isspace((unsigned char) toks.back())) toks.pop_back();
             }
         }
-        else if (a == "--gen") gen = std::atoi(next().c_str());
-        else if (a == "--chunk") chunk = std::atoi(next().c_str());
+        else if (a == "--gen" || a == "--max-new") gen = std::atoi(next().c_str());
+        else if (a == "--chunk" || a == "--prefill") chunk = std::atoi(next().c_str());
         else if (a == "--ctx" || a == "--max-context") ctx = std::atoi(next().c_str());   // (--max-context: serve/server.py's name)
-        else if (a == "--cache-gb") cache_gb = std::atof(next().c_str());
-        else if (a == "--threads") threads = std::atoi(next().c_str());
+        else if (a == "--cache-gb" || a == "--expert-vram") cache_gb = std::atof(next().c_str());
+        else if (a == "--threads" || a == "--cpu-threads" || a == "--pool-workers") threads = std::atoi(next().c_str());
         else if (a == "--gpus") n_gpu = std::atoi(next().c_str());
         else if (a == "--draft") draft_path = next();
         else if (a == "--serve") serve = true;
@@ -3149,8 +3149,20 @@ int run(int argc, char** argv) {
         }
         else if (a == "--image-token") image_token = std::atoi(next().c_str());
         else if (a == "--dump") dump = next();
+        else if (a.rfind("--", 0) == 0) {
+            // Strata server passes generic flags (e.g. --layer-split, --vram-reserve-mib, etc.): skip unrecognized flag and its value if any
+            if (i + 1 < argc && std::string(argv[i + 1]).rfind("--", 0) != 0) ++i;
+        }
         else die("unknown argument " + a);
     }
+    auto getenv_str = [](const char* name) -> std::string {
+        const char* val = getenv(name);
+        if (!val) return "";
+        std::string s(val);
+        while (!s.empty() && std::isspace((unsigned char) s.back())) s.pop_back();
+        while (!s.empty() && std::isspace((unsigned char) s.front())) s.erase(0, 1);
+        return s;
+    };
     g_prof = getenv("IK2_PROF") && std::atoi(getenv("IK2_PROF"));
     g_flash = !(getenv("IK2_FLASH") && !std::atoi(getenv("IK2_FLASH")));
     g_mv = !getenv("IK2_MV") || std::atoi(getenv("IK2_MV"));
@@ -3159,9 +3171,9 @@ int run(int argc, char** argv) {
         const int v = std::atoi(getenv("IK2_GROUP"));
         g_group_exp = v == 1 || v >= 3, g_group_attn = v >= 2;
     }
-    g_dense_q8 = getenv("IK2_DENSE") && std::string(getenv("IK2_DENSE")) == "q8";
+    g_dense_q8 = getenv_str("IK2_DENSE") == "q8";
     if (getenv("IK2_KV")) {
-        const std::string kv = getenv("IK2_KV");
+        const std::string kv = getenv_str("IK2_KV");
         if (kv == "f16" || kv == "fp16") g_kv_fp8 = false;
         else if (kv == "fp8" || kv == "e4m3") g_kv_fp8 = true;
         else die("unknown IK2_KV=" + kv + " (expected fp8 or f16)");
@@ -3619,9 +3631,9 @@ int run(int argc, char** argv) {
 #ifdef _WIN32
     // Windows restricts physical memory pinning (cudaHostAlloc fails with OOM for multi-gigabyte models).
     // Default to direct mmap reading unless IK2_HOST=pinned is explicitly requested.
-    const bool host_mmap = getenv("IK2_HOST") ? std::string(getenv("IK2_HOST")) != "pinned" : true;
+    const bool host_mmap = !getenv_str("IK2_HOST").empty() ? getenv_str("IK2_HOST") != "pinned" : true;
 #else
-    const bool host_mmap = getenv("IK2_HOST") ? std::string(getenv("IK2_HOST")) == "mmap" : g_fast_want;
+    const bool host_mmap = !getenv_str("IK2_HOST").empty() ? getenv_str("IK2_HOST") == "mmap" : g_fast_want;
 #endif
     if (host_mmap) {
         if (g_pool) die("IK2_HOST=mmap with the CPU lane");
