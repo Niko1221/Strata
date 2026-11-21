@@ -1,14 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="2034" height="450" viewBox="145 170 2034 450" role="img" aria-labelledby="logoTitle logoDescription">
 <title id="logoTitle">Ex-Strata</title>
 <desc id="logoDescription">Ex-Strata upright high-contrast serif wordmark with transparent counters in both lowercase a characters; no star or orbit. Editable SVG vector paths.</desc>
-<defs>
-  <linearGradient id="pearl" x1="0%" y1="0%" x2="100%" y2="80%">
-    <stop offset="0%" stop-color="#f8f5fc"/>
-    <stop offset="48%" stop-color="#f6eaf5"/>
-    <stop offset="100%" stop-color="#f6e0ee"/>
-  </linearGradient>
-</defs>
-<rect x="145" y="170" width="2034" height="450" fill="#172238"/><g fill="url(#pearl)" fill-rule="evenodd" stroke="none">
+<g fill="#E1E6EC" fill-rule="evenodd" stroke="none">
   <path transform="translate(28 0)" d="M725 411 L725 430 L727 432 L829 432 L830 431 L831 414 L829 408 L726 408 Z"/>
   <path transform="translate(14 0)" d="M469 317 L465 322 L472 320 L488 320 L496 323 L513 340 L567 445 L567 449 L529 515 L508 546 L493 561 L481 567 L474 569 L462 569 L455 567 L458 573 L469 580 L476 582 L485 582 L496 577 L504 569 L513 556 L535 515 L548 494 L553 483 L566 461 L571 455 L574 458 L624 559 L633 573 L645 582 L656 586 L665 586 L672 584 L690 574 L711 553 L714 546 L712 546 L698 559 L686 564 L673 563 L664 558 L653 545 L643 527 L590 421 L611 384 L614 381 L619 371 L636 345 L653 327 L667 320 L682 319 L695 322 L694 319 L685 311 L670 306 L661 307 L649 313 L643 319 L634 332 L591 409 L586 413 L572 388 L542 328 L527 312 L513 306 L495 306 L481 310 Z"/>
   <path transform="translate(70 0)" d="M1426 309 L1413 304 L1395 304 L1384 307 L1374 312 L1366 318 L1352 332 L1342 346 L1331 367 L1328 370 L1326 369 L1326 309 L1325 306 L1312 309 L1273 325 L1274 327 L1285 328 L1289 332 L1293 341 L1294 349 L1294 554 L1293 562 L1288 573 L1284 577 L1274 581 L1273 583 L1286 584 L1287 583 L1348 583 L1349 582 L1338 578 L1332 572 L1327 560 L1326 553 L1326 399 L1329 384 L1333 372 L1341 356 L1350 342 L1368 326 L1377 321 L1385 319 L1407 319 L1414 321 L1420 324 L1428 331 L1434 339 L1437 347 L1439 347 L1440 336 L1437 323 L1432 315 Z"/>
