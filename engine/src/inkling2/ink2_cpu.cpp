@@ -42,6 +42,9 @@ void stop() {}
 #include <pthread.h>
 #include <sched.h>
 #include <sys/mman.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#include <cerrno>
 #include <time.h>
 
 #include <atomic>
@@ -695,6 +698,17 @@ void* node_alloc(size_t bytes, int node) {
     if (p == MAP_FAILED) return nullptr;
     madvise(p, bytes, MADV_HUGEPAGE);
     if (numa_off()) return p;   // first touched by whoever writes it first
+    // MPOL_BIND before the first touch: with the default policy a node short of free pages (page cache: the box had 3.7
+    // of 95 GB free on node 0) silently takes the other node's pages (measured 2.2 GB local / 12.7 GB remote, the pool
+    // then reads across UPI); bound, the kernel reclaims the node's own cache instead
+    unsigned long mask[2] = {0, 0};
+    mask[node / 64] = 1UL << (node % 64);
+    if (syscall(SYS_mbind, p, bytes, 2 /* MPOL_BIND */, mask, 128, 0) != 0) {
+        static bool said = false;
+        if (!said) std::fprintf(stderr, "cpu experts: mbind to node %d failed (%s), placement by first touch only\n", node,
+                                std::strerror(errno));
+        said = true;
+    }
     const std::vector<int> cores = node_cores(node);
     // first touch from threads pinned on the node: the kernel places each page (2 MiB with THP) there
     const int nt = std::max(1, std::min<int>(8, (int) cores.size()));
