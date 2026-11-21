@@ -3107,12 +3107,15 @@ size_t kv_mapped_for(int cells) {
 // slot count is one of its launch arguments) is rebuilt at the next token.
 size_t vram_free() { size_t fr = 0, tot = 0; CK(cudaMemGetInfo(&fr, &tot)); return fr; }
 size_t vram_keep() { return ((size_t) std::max(E.reserve_mib, 0) << 20) + ((size_t) g_off_margin_mib << 20); }   // as setup_offload
+void promote_cancel();                   // (CPU experts)
+cudaGraphExec_t g_vexec[2] = {};         // the --spec verify graphs (forward_prefill): the slot counts baked in too
 void pool_resize(bool nv, int n) {
     int& ns = nv ? E.nslot_nv : E.nslot_mx;
     VRange& r = nv ? E.vpool_nv : E.vpool_mx;
     const size_t eb = nv ? ex_bytes(0) : MX_BYTES;
     n = std::max(0, std::min(n, (int) (r.reserved / eb)));
     if (n < ns) {
+        if (E.cpu) promote_cancel();   // planned promotions may hold slots past n
         k_pool_evict<<<(ns - n + 255) / 256, 256>>>(nv ? E.owner_nv : E.owner_mx, E.slot_of, E.tabA, E.tabB,
                                                     nv ? E.stamp_nv : E.stamp_mx, n, ns);
         CK(cudaDeviceSynchronize());
@@ -3122,6 +3125,7 @@ void pool_resize(bool nv, int n) {
     }
     ns = n;
     if (E.exec) { CK(cudaGraphExecDestroy(E.exec)); E.exec = nullptr; }
+    for (auto& x : g_vexec) if (x) { CK(cudaGraphExecDestroy(x)); x = nullptr; }
 }
 double pool_bytes(bool nv) { return (double) (nv ? E.nslot_nv : E.nslot_mx) * (nv ? ex_bytes(0) : MX_BYTES); }
 // the pools give up `bytes`, in proportion to their sizes
@@ -3596,6 +3600,18 @@ void promote_fork() {
     CK(cudaStreamWaitEvent(E.side, E.ev_fork, 0));
     k_fetch_bg<<<g_bg_blocks, 256, 0, E.side>>>(E.psrc_nv, E.pdst_nv, E.pnf_nv, E.psrc_mx, E.pdst_mx, E.pnf_mx);
     CK(cudaEventRecord(E.ev_join, E.side));
+}
+// --kv-grow shrinking a pool: the promotions planned at the end of the last token are dropped (resizes run between
+// tokens with the device idle: their copies have not started), their slots empty again; later misses want them again
+__global__ void k_promote_cancel(const int* pend, int* npend, int* pnf, unsigned* stamp) {
+    if (threadIdx.x) return;
+    for (int i = 0; i < *npend; ++i) stamp[pend[PMAX + i]] = 0;
+    *npend = 0;
+    *pnf = 0;
+}
+void promote_cancel() {
+    k_promote_cancel<<<1, 32>>>(E.pend_nv, E.npend_nv, E.pnf_nv, E.stamp_nv);
+    k_promote_cancel<<<1, 32>>>(E.pend_mx, E.npend_mx, E.pnf_mx, E.stamp_mx);
 }
 // end of a decode token: join the copies, commit them, plan the next ones
 void promote_join() {
@@ -4770,8 +4786,7 @@ void forward_prefill(const int* toks, int T, int pos0, float* all) {
         CK(cudaStreamSynchronize(cudaStreamPerThread));
     }
     if (PF.rows_argmax && E.graph && T == DBLK) {   // verify block (offload: through the decode cache): one graph per output variant
-        static cudaGraphExec_t vexec[2] = {nullptr, nullptr};
-        cudaGraphExec_t& x = vexec[PF.rows_copy ? 1 : 0];
+        cudaGraphExec_t& x = g_vexec[PF.rows_copy ? 1 : 0];
         CK(cudaMemcpyToSymbolAsync(d_vpos, &pos0, 4, 0, cudaMemcpyHostToDevice, cudaStreamPerThread));
         if (!x) {
             cudaGraph_t g;
