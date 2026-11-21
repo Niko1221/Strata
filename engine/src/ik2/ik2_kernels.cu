@@ -1,3 +1,7 @@
+// Based on Project Maya (https://github.com/mw00/project-maya)
+// Copyright (c) 2026 Peasant Smith, OscarSheng, alesha-pro, cobra91 and the Project Maya contributors
+// Licensed under the MIT License.
+
 // src/ik2/ik2_kernels.cu - strata-ik2's kernels (the interface and the conventions: ik2_kernels.cuh).
 #include "ik2_kernels.cuh"
 #include "ik2_iq_tables.h"

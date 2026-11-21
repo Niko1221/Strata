@@ -1,3 +1,7 @@
+// Based on Project Maya (https://github.com/mw00/project-maya)
+// Copyright (c) 2026 Peasant Smith, OscarSheng, alesha-pro, cobra91 and the Project Maya contributors
+// Licensed under the MIT License.
+
 // src/ik2/ik2_engine.cu - strata-ik2: Inkling 2 (thinkingmachines/Inkling-2-Small, 594B / ~17B active) on one or two
 // GPUs, from an `inkling2` GGUF in llama.cpp PR #32187's layout (docs/INKLING2.md; unsloth/Inkling-2-Small-GGUF's
 // files: NVFP4, IQ3_XXS / IQ4_XS and Q*_K experts).

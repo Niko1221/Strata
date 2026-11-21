@@ -582,6 +582,12 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_link_libraries(strata-ik2 PRIVATE strata_ik2 ${_strata_gpu_runtime_target})
     target_link_libraries(strata PRIVATE strata_ik2)
     target_compile_definitions(strata PRIVATE STRATA_HAVE_IK2=1)
+
+    if(BUILD_TESTING OR STRATA_TESTS)
+      add_executable(ik2_kernels_test tests/cuda/ik2_kernels_test.cu)
+      target_include_directories(ik2_kernels_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include src/ik2)
+      target_link_libraries(ik2_kernels_test PRIVATE strata_warnings ${_strata_gpu_runtime_target} strata_ik2)
+    endif()
   endif()
 
   if(STRATA_ENABLE_HIP)

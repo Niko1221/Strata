@@ -1,3 +1,7 @@
+// Based on Project Maya (https://github.com/mw00/project-maya)
+// Copyright (c) 2026 Peasant Smith, OscarSheng, alesha-pro, cobra91 and the Project Maya contributors
+// Licensed under the MIT License.
+
 // IQ3_XXS's grid and IQ4_XS's values, from ggml (ggml/src/ggml-common.h, MIT License, Copyright (c) 2023-2024 The
 // ggml authors). IK2_IQ3XXS_GRID expands to the 256 uint32 entries.
 #pragma once

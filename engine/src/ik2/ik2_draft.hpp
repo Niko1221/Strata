@@ -1,3 +1,7 @@
+// Based on Project Maya (https://github.com/mw00/project-maya)
+// Copyright (c) 2026 Peasant Smith, OscarSheng, alesha-pro, cobra91 and the Project Maya contributors
+// Licensed under the MIT License.
+
 // src/ik2/ik2_draft.hpp - strata-ik2's drafter: Inkling 2's DSpark draft model (the official checkpoint's
 // mtp.safetensors, BF16) for speculative decoding, after SGLang's models/inkling2_mtp.py, dflash.py and dspark.py.
 //

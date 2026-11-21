@@ -1,3 +1,7 @@
+// Based on Project Maya (https://github.com/mw00/project-maya)
+// Copyright (c) 2026 Peasant Smith, OscarSheng, alesha-pro, cobra91 and the Project Maya contributors
+// Licensed under the MIT License.
+
 // src/ik2/ik2_cpu.hpp - strata-ik2's CPU lane: a routed expert that is not in VRAM computed where it is, in host
 // memory, while the GPU runs the experts it holds - instead of waiting for the expert's 18 MB over PCIe.
 // NVFP4 experts only (AVX-512 F / BW; the weights read as they are stored), a few worker threads sharing an expert's

@@ -1,3 +1,7 @@
+// Based on Project Maya (https://github.com/mw00/project-maya)
+// Copyright (c) 2026 Peasant Smith, OscarSheng, alesha-pro, cobra91 and the Project Maya contributors
+// Licensed under the MIT License.
+
 // src/ik2/ik2_draft.cu - strata-ik2's drafter (the design: ik2_draft.hpp).
 #include "ik2_draft.hpp"
 #include "ik2_kernels.cuh"

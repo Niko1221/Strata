@@ -1,3 +1,7 @@
+// Based on Project Maya (https://github.com/mw00/project-maya)
+// Copyright (c) 2026 Peasant Smith, OscarSheng, alesha-pro, cobra91 and the Project Maya contributors
+// Licensed under the MIT License.
+
 // src/ik2/ik2_cpu.cpp - strata-ik2's CPU lane (the interface: ik2_cpu.hpp).
 #include "ik2_cpu.hpp"
 
