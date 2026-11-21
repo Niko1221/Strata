@@ -9,7 +9,8 @@
 //
 // Experts live in host memory placed per node (ink2cpu::node_alloc), each expert whole on one node, and so do the
 // doorbells and the pools' buffers: a node's threads only touch local memory.  On a two-socket box the inter-socket
-// link is the slow path; only the GPU's traffic (doorbells, expert copies) crosses it.
+// link is the slow path; only the GPU's traffic (doorbells, expert copies) crosses it.  STRATA_NUMA_POOL=0 turns the
+// placement off: one pool over all cores, one doorbell, expert memory unplaced (--cpu-threads is then the total).
 #pragma once
 #include <cstddef>
 #include <cstdint>

@@ -78,9 +78,16 @@ std::string read_line(const std::string& path) {
     std::getline(f, s);
     return s;
 }
-// physical cores of a node (the first thread of each core), in order
+// STRATA_NUMA_POOL=0 (Strata's switch for its own NUMA split): NUMA placement off, one pool over every node's cores,
+// one doorbell, expert memory wherever the kernel puts it
+bool numa_off() {
+    const char* e = std::getenv("STRATA_NUMA_POOL");
+    return e && std::string(e) == "0";
+}
+// physical cores of a node (the first thread of each core), in order; NUMA off: of the whole machine
 std::vector<int> node_cores(int node) {
-    std::vector<int> cpus = parse_list(read_line("/sys/devices/system/node/node" + std::to_string(node) + "/cpulist"));
+    std::vector<int> cpus = parse_list(read_line(numa_off() ? std::string("/sys/devices/system/cpu/online")
+                                                           : "/sys/devices/system/node/node" + std::to_string(node) + "/cpulist"));
     if (cpus.empty() && node == 0) {
         const int n = (int) std::thread::hardware_concurrency();
         for (int i = 0; i < n; ++i) cpus.push_back(i);
@@ -590,6 +597,7 @@ void master(Node* N) {
 int nodes() {
     int n = 0;
     while (!read_line("/sys/devices/system/node/node" + std::to_string(n) + "/cpulist").empty()) ++n;
+    if (numa_off()) return 1;
     if (const char* e = std::getenv("INK2_CPU_NODES")) n = std::min(n, std::max(1, std::atoi(e)));   // 1: node 0 only
     return std::min(n ? n : 1, 2);   // CBA: two nodes at most (InkBell::ack, Setup::bell); more = widen those arrays
 }
@@ -598,6 +606,7 @@ void* node_alloc(size_t bytes, int node) {
     void* p = mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (p == MAP_FAILED) return nullptr;
     madvise(p, bytes, MADV_HUGEPAGE);
+    if (numa_off()) return p;   // first touched by whoever writes it first
     const std::vector<int> cores = node_cores(node);
     // first touch from threads pinned on the node: the kernel places each page (2 MiB with THP) there
     const int nt = std::max(1, std::min<int>(8, (int) cores.size()));
@@ -666,8 +675,9 @@ void start(const Setup& s) {
         total += (int) N->cpus.size();
     }
     while (g_ready.load() < total) std::this_thread::yield();
-    std::fprintf(stderr, "cpu experts: %s, NVFP4 activations %s, %d node(s), threads per node:",
-                 g_isa == 5 ? "avx512" : "avx2", g_q8 ? (g_vnni ? "int8 (VNNI)" : "int8") : "fp32", nn);
+    std::fprintf(stderr, "cpu experts: %s, NVFP4 activations %s, %d node(s)%s, threads per node:",
+                 g_isa == 5 ? "avx512" : "avx2", g_q8 ? (g_vnni ? "int8 (VNNI)" : "int8") : "fp32", nn,
+                 numa_off() ? " (NUMA placement off: STRATA_NUMA_POOL=0)" : "");
     for (Node* N : g_nodes) std::fprintf(stderr, " %zu", N->cpus.size());
     std::fprintf(stderr, "\n");
 }
