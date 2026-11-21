@@ -260,7 +260,8 @@ bool conversation_snapshot_save(SavedConversation& image, const ConversationView
                                 const QsaState* draft, std::string& error,
                                 ConversationKvReuse reuse, size_t* reused_bytes,
                                 std::vector<ConversationCheckpoint>* /*storage: STRATA_CKPT_POOL, CUDA only*/,
-                                std::vector<ConversationCheckpoint>* /*moved: STRATA_PARK_ASYNC, CUDA only*/) {
+                                std::vector<ConversationCheckpoint>* /*moved: STRATA_PARK_ASYNC, CUDA only*/,
+                                ConversationParkSource* /*source: STRATA_CKPT_PARK_REUSE, CUDA only*/) {
     size_t estimate = 0;
     if (!conversation_snapshot_capture_bytes(reuse, view, ss, g, draft, estimate, error) || !sync(error)) return false;
     // Build into a new object so a failure cannot publish a partial snapshot.
