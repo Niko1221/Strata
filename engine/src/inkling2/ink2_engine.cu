@@ -209,22 +209,24 @@ __device__ __forceinline__ float2 e4m3x2(uint32_t a) {
     return __half22float2(*reinterpret_cast<const __half2*>(&h));
 }
 
-// The TOPK selected experts at once (blockIdx.y = k): y[k][row] = W_e[row] . x_k, e = ids[k].
-// NVFP4: lane reads 4 bytes = 8 columns (half a 16-column block, its e4m3 scale s[i/2]); the sum times factors[e].
 // SoftcappedSwiGLU of one (gate, up) pair (row 2j gate j, 2j+1 up j of the gu buffer)
 __device__ __forceinline__ float swiglu1(float g, float u) {
     return (tanhf(g / GATE_CAP) * GATE_CAP) * (1.0f / (1.0f + expf(-g))) * (tanhf(u / UP_CAP) * UP_CAP);
 }
-// SWI: x holds [gate, up] pairs (gu rows, stride x_stride = 2K): the GEMV input is their SwiGLU, computed while staging
-template <int R, bool SWI = false>
+// The TOPK selected experts at once (blockIdx.y = k): y[k][row] = W_e[row] . x_k, e = ids[k].
+// NVFP4: lane reads 4 bytes = 8 columns (half a 16-column block, its e4m3 scale s[i/2]); the sum times factors[e].
+// x is read from global memory through L1 (K x 4 B per expert, shared by the SM's warps): no staging copy, only the
+// scale table in shared memory.  Memory-latency bound (ncu: DRAM 67 %, SM 55 %, long-scoreboard stalls); 3090 bench of
+// the staged version vs this one: gate_up 41 -> 38 us, down 33 -> 22 us (with ACT below).
+// ACT (gate_up, R even): a warp holds rows 2j (gate j) and 2j + 1 (up j) and also writes act[k][j], their SwiGLU, the
+// down GEMV's input: computed once per expert instead of once per down block.  Same values, same operations as before.
+template <int R, bool ACT = false>
 __global__ void k_gemv_nvfp4_sel(const uint8_t* const* __restrict__ tab,
                                  const float* __restrict__ factors, const int* __restrict__ ids,
-                                 const float* __restrict__ x, int x_stride, float* __restrict__ y, int N, int K) {
-    extern __shared__ float sm[];
-    float* xs = sm;           // K
-    float* e4 = sm + K;       // 256 (scale table, * 2^14)
-    const float* xk = x + (size_t) blockIdx.y * x_stride;
-    for (int i = threadIdx.x; i < K; i += blockDim.x) xs[i] = SWI ? swiglu1(xk[2 * i], xk[2 * i + 1]) : xk[i];
+                                 const float* __restrict__ x, int x_stride, float* __restrict__ y, int N, int K,
+                                 float* __restrict__ act = nullptr) {
+    static_assert(!ACT || R % 2 == 0, "ACT needs the gate / up pair in one warp");
+    __shared__ float e4[256];   // scale table, * 2^14
     for (int i = threadIdx.x; i < 256; i += blockDim.x) e4[i] = e4m3_decode(i) * 16384.0f;
     __syncthreads();
     const int row0 = (blockIdx.x * (blockDim.x / 32) + threadIdx.x / 32) * R, lane = threadIdx.x & 31;
@@ -241,7 +243,7 @@ __global__ void k_gemv_nvfp4_sel(const uint8_t* const* __restrict__ tab,
         w[r] = reinterpret_cast<const uint32_t*>(W + row * (K / 2));
         s[r] = S + row * (K / 16);
     }
-    const float4* x4 = reinterpret_cast<const float4*>(xs);
+    const float4* x4 = reinterpret_cast<const float4*>(x + (size_t) blockIdx.y * x_stride);
     float acc[R];
 #pragma unroll
     for (int r = 0; r < R; ++r) acc[r] = 0.0f;
@@ -251,7 +253,7 @@ __global__ void k_gemv_nvfp4_sel(const uint8_t* const* __restrict__ tab,
         uint8_t sc[R];
 #pragma unroll
         for (int r = 0; r < R; ++r) { v[r] = __ldg(w[r] + i); sc[r] = __ldg(s[r] + (i >> 1)); }
-        const float4 a = x4[2 * i], b = x4[2 * i + 1];
+        const float4 a = __ldg(x4 + 2 * i), b = __ldg(x4 + 2 * i + 1);
 #pragma unroll
         for (int r = 0; r < R; ++r) {
             const float2 p0 = e2m1x2(v[r] & 0xff), p1 = e2m1x2((v[r] >> 8) & 0xff), p2 = e2m1x2((v[r] >> 16) & 0xff),
@@ -261,11 +263,16 @@ __global__ void k_gemv_nvfp4_sel(const uint8_t* const* __restrict__ tab,
             acc[r] += part * e4[sc[r]];
         }
     }
+    float t[R];
 #pragma unroll
     for (int r = 0; r < R; ++r) {
-        const float t = warp_sum(acc[r]);
-        if (!lane && row0 + r < N) y[(size_t) blockIdx.y * N + row0 + r] = t * factors[e];
+        t[r] = warp_sum(acc[r]) * factors[e];
+        if (!lane && row0 + r < N) y[(size_t) blockIdx.y * N + row0 + r] = t[r];
     }
+    if (ACT && !lane)
+#pragma unroll
+        for (int r = 0; r < R; r += 2)
+            if (row0 + r + 1 < N) act[(size_t) blockIdx.y * (N / 2) + (row0 + r) / 2] = swiglu1(t[r], t[r + 1]);
 }
 
 // MXFP8: lane reads 4 bytes = 4 columns; the ue8m0 exponent per 32 columns (8 words): 2^(s - 127) * 2^8
@@ -2748,8 +2755,9 @@ void moe(const Layer& Y, const float* x, const float* r, float* mhist, const flo
     const Experts& X = Y.ex;
     if (X.nvfp4) {
 #define SEL(R) \
-        k_gemv_nvfp4_sel<R><<<dim3(2 * FF / (8 * R), TOPK), 256, (H + 256) * 4>>>(X.tA, X.f13, E.ids, x, 0, E.gu, 2 * FF, H); \
-        k_gemv_nvfp4_sel<R, true><<<dim3(H / (8 * R), TOPK), 256, (FF + 256) * 4>>>(X.tB, X.f2, E.ids, E.gu, 2 * FF, E.ey, H, FF);
+        k_gemv_nvfp4_sel<((R) < 2 ? 2 : (R)), true><<<dim3(2 * FF / (8 * ((R) < 2 ? 2 : (R))), TOPK), 256>>>( \
+            X.tA, X.f13, E.ids, x, 0, E.gu, 2 * FF, H, E.act); \
+        k_gemv_nvfp4_sel<R><<<dim3(H / (8 * R), TOPK), 256>>>(X.tB, X.f2, E.ids, E.act, FF, E.ey, H, FF);
         switch (g_sel_rpw) { case 1: SEL(1) break; case 2: SEL(2) break; case 8: SEL(8) break; default: SEL(4) }
 #undef SEL
     } else {
