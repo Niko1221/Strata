@@ -225,8 +225,9 @@ moves about 26 GB; bigger chunks read faster.
 Draft length (200 tokens, `--spec-min-p 0.5`): `--spec 6` against `--spec 4` is +6.5% on code and -1.5% on prose, so the setup
 default (4, 0.5) stays. A `--prefill 8192` chunk is not bit-identical to 4096 (first-token KL 1.1e-2 at 16K, top-1 the same).
 
-**Fused int8 expert path (Battlemage default).** On a Battlemage GPU (B70, B580, B570, detected by device architecture) the
-engine computes the prompt's routed experts with ESIMD kernels that decode the quantized weights in registers into the s8 DPAS B
+**Fused int8 expert path (Battlemage default).** On a Battlemage GPU (B70, B580, B570, detected by device architecture; also
+an Xe3 GPU, see `STRATA_INTEL_GEN`) the engine computes the prompt's routed experts with ESIMD kernels that decode the
+quantized weights in registers into the s8 DPAS B
 operand and multiply them by q8_1 activations. Covered: gate/up IQ3_S, IQ3_XXS, IQ2_S and down IQ4_NL, Q2_0. Other formats keep
 the FP16 path, as does every other GPU. `STRATA_PREFILL_MMQ` unset is `auto`, which times both chains at the first layer of each
 format and takes int8 below the measured crossover (130-250 rows per expert); `=0` turns it off, `=1` forces it. Activations are
@@ -389,6 +390,7 @@ All are environment variables for the engine. Put them in the config's `"env"` b
 | `STRATA_PF_XMX` | 2 on Alchemist | Grouped XMX expert launch; `0` off, `1` dequantize first |
 | `STRATA_GDN_XE` | On for Alchemist | Sub-group GDN recurrence |
 | `STRATA_COPY_ENGINE` | On for Battlemage | Expert copies on the copy engine |
+| `STRATA_INTEL_GEN` | From the device | `battlemage`, `alchemist` or `unknown`: the generation whose kernels and defaults the GPU gets. An Xe3 GPU (Panther Lake: the Arc B390) is classed with Battlemage; `unknown` gives it the generic kernels. |
 | `STRATA_PREFILL_MMQ` | `auto` on Battlemage | Fused int8 prompt experts |
 | `STRATA_PREFILL_STREAM_ALL` | On when VRAM holds more than 90% of the (layer, expert) pairs | Copy every expert the cache does not hold, layer by layer; `=0` / `=1` force it |
 | `STRATA_PREFILL_FIRST` | 256 if the cache holds every expert, else 0 | Tokens in the short first prompt chunk |
