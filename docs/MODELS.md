@@ -1,11 +1,11 @@
 ﻿# Which model? Sizes, versions and what fits
 
 This page helps you choose a model and check that your computer can run it. It covers
-Qwen3.8-Flash-Next (and its variants) and Qwen3.6-35B-A3B. For installing, see [INSTALL.md](INSTALL.md).
+Qwen3.8-Flash-Next (and its variants), Qwen3.6-35B-A3B and Inkling-2-Mini. For installing, see [INSTALL.md](INSTALL.md).
 
 > **On this page:** [Quick start](#quick-start) · [Pick by memory](#pick-by-memory) ·
 > [Qwen3.8-Flash-Next](#qwen38-flash-next) ·
-> [Qwen3.6-35B-A3B](#qwen36-35b-a3b) · [Adding or switching models](#adding-or-switching-models) ·
+> [Qwen3.6-35B-A3B](#qwen36-35b-a3b) · [Inkling-2-Mini](#inkling-2-mini) · [Adding or switching models](#adding-or-switching-models) ·
 > [History](#history--older-measurements)
 
 ## Quick start
@@ -236,6 +236,30 @@ Pictures, parallel requests, full measurements and limits: [QWEN36.md](QWEN36.md
 ```sh
 strata launch --family qwen36 --model UD-Q4_K_XL
 ```
+
+## Inkling-2-Mini
+
+[Inkling-2-Mini](https://huggingface.co/thinkingmachines/Inkling-2-Mini) by Thinking Machines Lab (Apache 2.0): a
+mixture of experts with 128 experts per layer, 8 active, NVFP4 and MXFP8 experts. Strata reads the published
+checkpoint as it is (a 20.2 GB download at a pinned revision, every file checked against its size and SHA-256) with
+its own engine program, `strata-ink2`, which setup compiles for your card. NVIDIA cards (RTX 20 series or newer) on
+Linux only so far; it is not in the app or in `strata launch` yet. It does not read pictures yet.
+
+```sh
+./setup.sh --family inkling2
+```
+
+Setup picks how it runs from the card:
+
+- **Every expert fits on the card** (24 GB cards up to a 64K context): they stay there, with the checkpoint's draft
+  layer (`mtp.safetensors`) for faster answers. Measured on an RTX 3090: 19.3 GiB of graphics memory at an 8K context,
+  21.2 GiB at 64K; the conversation memory takes 36,864 bytes a token.
+- **Otherwise** (8 to 16 GB cards, or a longer context): the card keeps the most used experts and the others stay in
+  RAM (about 32 GB of RAM); the CPU computes the experts a token needs that the card does not hold, one thread per
+  physical core of each CPU socket (`--cpu-threads`, AVX2 needed). `--vram-reserve-mib N` keeps N MiB of the card
+  free for other programs (1500 by default on a card that drives a display).
+
+The run config (`strata-inkling2-mini.json`) holds the engine's arguments; they can be edited there.
 
 ## Adding or switching models
 

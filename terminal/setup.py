@@ -824,6 +824,22 @@ HY4_FAMILIES = {
     }
 }
 
+# Thinking Machines' Inkling-2-Mini, the checkpoint as published (safetensors, pinned revision): a family with its own engine program (strata-ink2,
+# compiled here for the card: no ready-made engine carries it), its own files and its own installer, install_inkling2.  NVIDIA cards on Linux only
+# (ink2_offered).  The files, sizes, memory figures and the rule for the engine's arguments are strata_control/ink2_family.py.
+from strata_control import ink2_family  # noqa: E402
+INK2_FAMILIES = {
+    ink2_family.FAMILY: {
+        "title": ink2_family.TITLE, "by": ink2_family.BY, "tag": ink2_family.TAG, "name": ink2_family.NAME, "arch": ink2_family.ARCH,
+        "about": ink2_family.ABOUT, "license": ink2_family.LICENSE,
+        "models": {ink2_family.MODEL: {"about": f"the published checkpoint, a {ink2_family.DOWNLOAD_GB:.1f} GB download",
+                                       "ram_gb": ink2_family.RAM_GB}},
+        "kv_bytes_per_token": ink2_family.kv_bytes_per_token(True),   # fp16 K/V with the draft layer (--spec 1)
+        "vision": ink2_family.VISION,                                  # pictures: not yet (ink2_family.VISION says where they plug in)
+    }
+}
+HF_REVISIONS[ink2_family.REPO] = ink2_family.REVISION
+
 # Every model file Strata downloads has a fixed size and SHA-256: (repository, file name) -> (bytes, sha256).  download()
 # checks the file against it as soon as it is whole (a wrong file is deleted and setup stops), and stops before the
 # download when the server's size is not the pinned one.  The files are fetched from the commits in HF_REVISIONS.
@@ -834,6 +850,7 @@ REPO_PINS = {
     UNSLOTH_REPO: {**UNSLOTH_V31_SHARDS, **UNSLOTH_SHARDS, **UNSLOTH_IQ4_XS_SHARDS, **UNSLOTH_BIG_SHARDS},
     "unsloth/Qwen3.6-35B-A3B-MTP-GGUF": QWEN36_FILES,
     "agentionai/Qwen3.8-Flash-Next-Gyro-GGUF": GYRO_FILES,
+    ink2_family.REPO: ink2_family.FILES,
 }
 # the files of a repository at a commit other than HF_REVISIONS' (UNSLOTH_V31_REVISION): (repository, commit) -> name -> (bytes, sha256); file_pin looks here first
 REV_PINS = {(UNSLOTH_REPO, UNSLOTH_V31_REVISION): {**UNSLOTH_V31_SHARDS, **UNSLOTH_Q4_V31_SHARDS}}
@@ -7564,9 +7581,9 @@ def choices_from_config(cfg_path: Path) -> dict:
     """The setup answers a config was written with (family, size, context, KV, images, projection, network)."""
     cfg = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
     tag = cfg_path.stem[len("strata-"):]
-    special_fams = {**OWN_PATH_FAMILIES, **HY4_FAMILIES}
+    special_fams = {**OWN_PATH_FAMILIES, **HY4_FAMILIES, **INK2_FAMILIES}
     own = next((f for f, d in special_fams.items() if tag.startswith(d["tag"])), None)
-    if own is not None:                                # Qwen3.6 / Hy4-Flash: own sizes; no Flash-Next KV / projection settings
+    if own is not None:                                # Qwen3.6 / Hy4-Flash / Inkling-2-Mini: own sizes; no Flash-Next KV / projection settings
         d = special_fams[own]
         size = next((m for m in d["models"] if m.lower() == tag[len(d["tag"]):].lower()), None)
         a = cfg.get("args", [])
@@ -7601,7 +7618,7 @@ def choices_from_config(cfg_path: Path) -> dict:
 
 def calibration_targets(have: list, model: str | None, family: str | None) -> list:
     """#2036: the installed configs `--calibrate --model X` (and/or --family) means; every config with neither."""
-    skip = set(OWN_PATH_FAMILIES) | set(HY4_FAMILIES)
+    skip = set(OWN_PATH_FAMILIES) | set(HY4_FAMILIES) | set(INK2_FAMILIES)
     if not (model or family):
         return [c for c in have if choices_from_config(c)["family"] not in skip]
     out = []
@@ -9920,6 +9937,188 @@ def install_hy4_flash(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopt
     return start(cfg_path, port)
 
 
+INK2_SOURCES = ("CMakeLists.txt", "cmake", "include", "src/inkling2", "src/image/vae")   # what strata-ink2 is compiled from (its stamp's hash)
+
+
+def ink2_offered(hip: bool) -> bool:
+    """Is Inkling-2-Mini offered: an NVIDIA card on Linux (strata-ink2 is CUDA only and uses POSIX calls), outside the app (which compiles nothing:
+    no ready-made engine carries strata-ink2)."""
+    return not hip and sys.platform.startswith("linux") and not CONTROL
+
+
+def ink2_cpu_threads() -> int:
+    """strata-ink2's --cpu-threads: threads PER NUMA node.  The engine pins them to that node's physical cores (node 0 less the engine's own
+    thread) and keeps each expert's RAM on one node, so a thread reads only its own node's memory.  The count follows the Strata engine's rule for
+    its CPU expert pool (plan_pool_workers): one socket's physical cores less the engine's thread, one fewer on a big CPU (22 of 24 per socket was
+    measured on a 2 x 24-core Xeon), the performance cores and half the efficiency cores on a hybrid CPU.  CBA: per socket, not per NUMA node; the
+    engine caps it at each node's cores, so a CPU with several nodes per socket gets fewer threads than it could use"""
+    logical, cores = cpu_core_layout()
+    return plan_pool_workers(logical, cores, hybrid=cpu_cores())
+
+
+def ink2_build(gpu, yes) -> tuple[Path, list]:
+    """strata-ink2 compiled for this card, in its own build folder (build-ink2) and copied into engine/ with its own stamp: the ready-made engines do
+    not carry it.  Compiled again when its sources or the card's generation change.  Returns (the program, the CUDA library folders it runs with)."""
+    eng = engine_dir(13)
+    eng.mkdir(exist_ok=True)
+    exe = eng / ink2_family.EXE
+    stamp = eng / (ink2_family.EXE + ".json")
+    try:
+        meta = json.loads(stamp.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        meta = {}
+    src = source_hash(INK2_SOURCES)
+    archs = sorted({int(x) for x in gpu.get("archs", [gpu["arch"]])})
+    if exe.is_file() and meta.get("src") == src and set(archs) <= set(meta.get("archs") or []):
+        ok(f"engine: {exe} (already compiled for this PC)")
+        return exe, meta.get("cuda_dirs") or []
+    archs = sorted(set(archs) | set(meta.get("archs") or []))
+    nvcc, vcvars = install_build_tools({**gpu, "archs": archs, "toolkit": 13}, yes)
+    bdir = ROOT / "build-ink2"
+    say("  Compiling the Inkling-2-Mini engine (strata-ink2) for " + ", ".join(f"sm_{x}" for x in archs) + " (a few minutes, once) ...")
+    cmake_build(engine_src(), bdir, ink2_family.EXE,
+                ["-DSTRATA_ENABLE_CUDA=ON", "-DSTRATA_BUILD_TESTS=OFF", f"-DCMAKE_CUDA_ARCHITECTURES={';'.join(str(x) for x in archs)}",
+                 f"-DCMAKE_CUDA_COMPILER={nvcc}", *toolkit_root_defs(nvcc), *host_compiler_defs(True)],
+                vcvars, "build-ink2.bat")
+    shutil.copy2(bdir / ink2_family.EXE, exe)
+    bindir = Path(nvcc).parent                            # the toolkit's own libraries (cuBLAS, the runtime), as build_engine keeps them
+    dirs = [str(d) for d in (bindir, bindir.parent / "lib64") if d.is_dir()]
+    stamp.write_text(json.dumps({"src": src, "archs": archs, "cuda_dirs": dirs}, indent=1), encoding="utf-8")
+    ok(f"engine compiled: {exe}")
+    return exe, dirs
+
+
+def ink2_tokenizer(model_dir: Path, pack: Path) -> Path:
+    """The tokenizer directory serve reads, from the checkpoint's tokenizer.json and chat_template.jinja (the o200k split rule; the end of a
+    reply is generation_config.json's eos_token_id)."""
+    tok = pack / "tokenizer"
+    if (tok / "vocab.json").is_file() and (tok / "chat_template.jinja").is_file():
+        return tok
+    sys.path.insert(0, str(ROOT / "tools"))
+    import strata_tokenizer
+    eos = json.loads((model_dir / "generation_config.json").read_text(encoding="utf-8"))["eos_token_id"]
+    strata_tokenizer.extract_hf(model_dir, pack, ink2_family.PRE_TOKENIZER, {"eos": int(eos)})
+    return tok
+
+
+def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted):
+    """Steps 2-7 for Inkling-2-Mini (INK2_FAMILIES): the context, the engine program strata-ink2 (compiled here), the checkpoint's files (pinned
+    revision, size and SHA-256), the tokenizer from its tokenizer.json, the config and the start script.  The engine's arguments come from the
+    card (strata_control/ink2_family.py engine_args): every expert on it with the draft layer when they fit, else the expert offload, the card
+    holding the most used experts and the CPU computing the others."""
+    F = ink2_family
+    fam = INK2_FAMILIES[family]
+    say()
+    say(f"  {fam['title']} - {fam['by']}: {fam['about']}")
+    ok(f"model: {fam['title']}")
+    say(f"  Its license: {fam['license']}")
+    if not ink2_offered(hip):
+        fail(f"{fam['title']} runs on NVIDIA cards on Linux only so far: its engine (strata-ink2) is CUDA only, and it is compiled on this PC"
+             + (" (the app compiles no engine)" if CONTROL else ""), "choose another model, or set it up from a Linux checkout (./setup.sh) with an NVIDIA card")
+    if cuda_tk == 12 or int(gpu.get("arch") or 0) < CUDA13_MIN_ARCH:
+        fail(f"{fam['title']} needs an NVIDIA card from the RTX 20 series (sm_75) or newer; this one is sm_{gpu.get('arch')}",
+             "choose another model for this card")
+    if multi:
+        warn(f"{fam['title']} runs on one GPU: using GPU {gpu.get('index', 0)} ({gpu_name(gpu)}) only")
+    if a.model and a.model != F.MODEL:
+        fail(f"{fam['title']} has no {a.model} model file", f"choose {F.MODEL}")
+    model = F.MODEL
+    ok(f"size: {model} (the published checkpoint, {F.DOWNLOAD_GB:.1f} GB)")
+    tag = fam["tag"] + model
+    vram_mib = float(gpu.get("vram_gb", 0.0)) * 1024
+    display = gpu_drives_display(gpu)
+    # the VRAM kept free for other programs: the person's own number, else what a card that drives the screen needs (#779), else none (the engine
+    # keeps its own margin for what it allocates after the experts)
+    reserve = a.vram_reserve_mib if a.vram_reserve_mib is not None else (DISPLAY_RESERVE_MIB if display else 0)
+    rec_ctx = F.recommended_context(vram_mib, reserve)
+    if a.context:
+        ctx = a.context
+    else:
+        say()
+        say("  Context length = how much text the model can see at once. Its cache takes "
+            f"{F.kv_bytes_per_token(True) * 32768 / 2**30:.1f} GB of VRAM per 32K tokens:")
+        for i, c in enumerate(F.CONTEXTS, 1):
+            say(f"  {i}) {c // 1024}K tokens" + ("   (every expert fits on your GPU)" if F.resident_fits(vram_mib, c, reserve) else "")
+                + ("   (recommended for your GPU)" if c == rec_ctx else ""))
+        ctx = F.CONTEXTS[int(ask("Context?", [str(i) for i in range(1, len(F.CONTEXTS) + 1)], str(F.CONTEXTS.index(rec_ctx) + 1), a.yes)) - 1]
+    ok(f"context: {ctx} tokens")
+    _, avx2, _ = cpu_info()
+    threads = ink2_cpu_threads() if avx2 and not is_arm64() else None   # the engine's CPU experts need AVX2 + FMA + F16C on x86
+    if F.resident_fits(vram_mib, ctx, reserve):
+        ok("every expert fits on the card: they stay there, with the draft layer (mtp.safetensors) for faster answers")
+    else:
+        ok(f"the card holds the most used experts and the others stay in RAM ({reserve} MiB of VRAM kept free for other programs)")
+        if threads:
+            ok(f"CPU experts: {threads} threads per CPU socket compute the experts the card does not hold")
+        else:
+            warn("this CPU cannot run the engine's CPU experts (they need AVX2 on an x86 CPU): the experts the card does not hold are copied to it "
+                 "as they are needed, which is slower")
+        if ram < F.RAM_GB:
+            confirm_risk(f"the experts the card does not hold stay in RAM: {fam['title']} needs about {F.RAM_GB} GB of RAM here, this PC has "
+                         f"{ram:.0f} GB, so it may not start", bool(a.family), a.yes, f"{fam['title']} needs about {F.RAM_GB} GB of RAM on this card",
+                         f"--family {family} --yes installs it anyway", "  Install it anyway?")
+            warn(f"installing {fam['title']} with {ram:.0f} GB of RAM, as you chose")
+        if display and a.vram_reserve_mib is None:
+            say(f"  This card drives a display: {DISPLAY_RESERVE_MIB} MiB of VRAM is kept free for it (--vram-reserve-mib N to change it)")
+    if a.vision not in (None, "no", "none"):
+        warn(f"images: {fam['title']}'s engine does not read pictures yet; it is set up without them")
+    if a.rope_scaling or a.rope_scale or a.kv or a.resident_budget_gib is not None or a.low_ram not in (None, "auto") or getattr(a, "parallel", None):
+        warn(f"--rope-scaling / --kv / --resident-budget-gib / --low-ram / --parallel are other models' settings: {fam['title']} does not use them")
+    own = bool(a.gguf_dir)                             # --gguf-dir: a folder that already holds the checkpoint (checked, never changed)
+    folder = Path(a.gguf_dir) if own else Path(a.models_dir) / tag
+    left = sum(size for n, (size, _) in F.FILES.items() if not ((folder / n).is_file() and done(folder / n))) / 1e9
+    if not own and left and free_gb(folder) < left:
+        fail(f"not enough free disk space in {folder}: need ~{left:.0f} GB, {free_gb(folder):.0f} GB free", "use --models-dir on a bigger drive")
+
+    step(3, "Python packages")
+    pip_install(runtime_packages(), "numpy, jinja2, regex, pyyaml, tqdm, requests, cmake, ninja, pillow, psutil, textual (the screens)")
+
+    step(4, "the Inkling-2-Mini engine")
+    exe, lib_dirs = ink2_build(gpu, a.yes)
+
+    step(5, f"downloading {fam['title']}")
+    for name, (size, sha) in F.FILES.items():
+        dst = folder / name
+        if own:
+            if not dst.is_file():
+                fail(f"{dst} is missing", f"put the published {name} in {folder}, or drop --gguf-dir to download it")
+        else:
+            download(hf(F.REPO) + name, dst)
+        verify_sha256(dst, size, sha, own=own)
+    ok(f"model files: {folder}")
+
+    step(6, "preparing the model for Strata")
+    data, _ = data_folder_for(a)
+    tok = ink2_tokenizer(folder, data / "packs" / tag.lower())
+    ok(f"tokenizer: {tok}")
+
+    step(7, "writing the start script")
+    args = F.engine_args(str(folder), ctx, vram_mib, reserve, threads)
+    cfg = {"exe": str(exe), "args": args, "cwd": str(ROOT), "tokenizer": str(tok), "model_name": F.NAME, "arch": fam["arch"],
+           "log": str(home() / f"strata-{tag.lower()}.log"), "lib_dirs": lib_dirs, "port": port}
+    if gpu.get("count", 1) > 1 or a.gpu is not None:
+        cfg["gpu"] = gpu["index"]
+        cfg["gpus_asked"] = True
+    if a.host:
+        cfg["host"] = a.host
+    if a.api_key:
+        cfg["api_key"] = a.api_key
+    if a.browser is not None:
+        cfg["open_browser"] = a.browser
+    cfg_path = home() / f"strata-{tag.lower()}.json"
+    write_setup_config(cfg_path, cfg, adopted if adopted is not None and adopted.name == cfg_path.name else None, explicit_args(a))
+    script = write_run_script(tag, cfg_path, port, cfg.get("open_browser") is not False)
+    ok(f"start script: {script.name}")
+    say()
+    say("All set.")
+    say(f"  API (OpenAI):     http://127.0.0.1:{port}/v1   (any API key; model name: anything)")
+    say(f"  API (Anthropic):  http://127.0.0.1:{port}/v1/messages")
+    say(f"  Next time:        just run ./setup.sh (or {script.name}) - it starts right away")
+    if a.no_start:
+        return 0
+    return start(cfg_path, port)
+
+
 def preview_family(a) -> int:
     """--family qwen36: a family setup knows but the engine does not run yet (PREVIEW_FAMILIES).  Downloads the chosen
     size (pinned revision, size and SHA-256 checked) and, with --vision, the image encoder - and says plainly that
@@ -10370,18 +10569,20 @@ def main() -> int:
     _hy4_ask = _peek("--family") in HY4_FAMILIES or bool(_peek("--model") and model_alias(_peek("--model")) in HY4_FAMILIES["hy4-flash"]["models"])
     if sys.platform == "darwin" and not CONTROL and not _hy4_ask:       # a Mac: metal/setup_mac.py (the Metal engine); the app (Control mode) and Hy4-Flash go on below.
         return mac_setup(sys.argv[1:])                 # (after the retired names above, so a Mac gets the same sentence and exit 2, M1 11-16)
-    if (_peek("--family") and _peek("--family") not in {**FAMILIES, **OWN_PATH_FAMILIES, **HY4_FAMILIES}) \
+    if (_peek("--family") and _peek("--family") not in {**FAMILIES, **OWN_PATH_FAMILIES, **HY4_FAMILIES, **INK2_FAMILIES}) \
             or (_peek("--model") and not _peek("--family") and model_alias(_peek("--model")) not in MODELS
-                and not any(model_alias(_peek("--model")) in f["models"] for f in {**OWN_PATH_FAMILIES, **HY4_FAMILIES}.values())):
+                and not any(model_alias(_peek("--model")) in f["models"] for f in {**OWN_PATH_FAMILIES, **HY4_FAMILIES, **INK2_FAMILIES}.values())):
         feed_models_setup(_peek("--feed"))             # a name the built-in tables do not know may be a model of the signed feed
         if _peek("--family") in FEED_UNAVAILABLE:
             fail(f"{FEED_UNAVAILABLE[_peek('--family')]['title']} is {FEED_UNAVAILABLE[_peek('--family')]['reason']}")
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--family", choices=list(FAMILIES) + list(PREVIEW_FAMILIES) + list(HY4_FAMILIES),
+    ap.add_argument("--family", choices=list(FAMILIES) + list(PREVIEW_FAMILIES) + list(HY4_FAMILIES) + list(INK2_FAMILIES),
                     help="qwen = Qwen3.8-Flash-Next, swift = Swift 1.5, qwen36 = Qwen3.6-35B-A3B (pictures with --vision, "
-                         "several requests at once with --parallel; docs/QWEN36.md), hy4-flash = Tencent Hy4-Flash (SQ-64 / SQ-96 / SQ-128)")
+                         "several requests at once with --parallel; docs/QWEN36.md), hy4-flash = Tencent Hy4-Flash (SQ-64 / SQ-96 / SQ-128), "
+                         "inkling2 = Inkling-2-Mini (NVIDIA cards on Linux; docs/MODELS.md)")
     ap.add_argument("--model", type=model_alias, choices=list(dict.fromkeys([*MODELS, *(m for f in PREVIEW_FAMILIES.values()
-                                                                       for m in f["models"]), *(m for f in HY4_FAMILIES.values() for m in f["models"])])))
+                                                                       for m in f["models"]), *(m for f in HY4_FAMILIES.values() for m in f["models"]),
+                                                                       *(m for f in INK2_FAMILIES.values() for m in f["models"])])))
     ap.add_argument("--context", type=int)
     ap.add_argument("--rope-scaling", choices=["none", "linear", "yarn"],
                     help="the RoPE extension for a context past the model's trained 262144: linear (position "
@@ -10546,8 +10747,8 @@ def main() -> int:
     if getattr(a, "dsv41_package", None):              # DeepSeek's engine package: no longer offered (strata_control/retired.py)
         say("  " + retired.NOT_OFFERED)
         return 2
-    if a.model and a.model not in MODELS and a.family not in PREVIEW_FAMILIES and a.family not in HY4_FAMILIES:
-        ap.error(f"--model {a.model} is a size of " + ", ".join(f"--family {f}" for f, d in {**PREVIEW_FAMILIES, **HY4_FAMILIES}.items()
+    if a.model and a.model not in MODELS and a.family not in PREVIEW_FAMILIES and a.family not in HY4_FAMILIES and a.family not in INK2_FAMILIES:
+        ap.error(f"--model {a.model} is a size of " + ", ".join(f"--family {f}" for f, d in {**PREVIEW_FAMILIES, **HY4_FAMILIES, **INK2_FAMILIES}.items()
                                                               if a.model in d["models"]))
     if a.source:
         os.environ["STRATA_SOURCE"] = a.source
@@ -10598,7 +10799,7 @@ def main() -> int:
             a.gpus = ",".join(str(i) for i in order)
         else:
             a.gpu = order[0]
-    _fams = {**OWN_PATH_FAMILIES, **HY4_FAMILIES}
+    _fams = {**OWN_PATH_FAMILIES, **HY4_FAMILIES, **INK2_FAMILIES}
     say("Strata - " + (_fams[a.family]["title"] if a.family in _fams else "Qwen3.8-Flash-Next")
         + " on a normal PC (a GPU + system RAM + CPU)")
     have = installed_configs()
@@ -10933,9 +11134,10 @@ def main() -> int:
                 + (f"   (recommended for Strix Halo: {STRIX_HALO_MODEL})" if f == rec_fam and rec_fam != fams[0] else ""))
         rest = [*(f for f in OWN_PATH_FAMILIES if not OWN_PATH_FAMILIES[f].get("feed")),
                 *(f for f in OWN_PATH_FAMILIES if OWN_PATH_FAMILIES[f].get("feed")), *feed_late,
-                *(f for f in HY4_FAMILIES if hy4_offered(a))]       # Hy4-Flash: listed where an engine, and files or a source, exist (hy4_offered)
+                *(f for f in HY4_FAMILIES if hy4_offered(a)),       # Hy4-Flash: listed where an engine, and files or a source, exist (hy4_offered)
+                *(f for f in INK2_FAMILIES if ink2_offered(hip))]   # Inkling-2-Mini: an NVIDIA card on Linux (ink2_offered)
         for j, f in enumerate(rest, len(fams) + 1):    # families with an engine path of their own
-            d = {**FAMILIES, **OWN_PATH_FAMILIES, **HY4_FAMILIES}[f]
+            d = {**FAMILIES, **OWN_PATH_FAMILIES, **HY4_FAMILIES, **INK2_FAMILIES}[f]
             say(f"  {j}) {cyan}{d['title']:20s}{reset} {d['by']} - {d['about']}   [new]" + (f"   ({FEED_UNAVAILABLE[f]['reason']})" if f in FEED_UNAVAILABLE else ""))
         for u in FEED_UNAVAILABLE.values():            # a feed model this engine does not run: said, never offered (unless the owner's rule allows it, above)
             if not u.get("allowed"):
@@ -10949,6 +11151,8 @@ def main() -> int:
         return install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted)
     if family in HY4_FAMILIES:                         # Hy4-Flash: its own engine program (strata-hy4), its own files, its own steps 2-7
         return install_hy4_flash(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted)
+    if family in INK2_FAMILIES:                        # Inkling-2-Mini: its own engine program (strata-ink2, compiled here), its own steps 2-7
+        return install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted)
     fam = FAMILIES[family]
     SHAPE_ENGINE.clear()
     if fam.get("shape"):                               # a feed model of its own shape: its own engine component (strata_control/shape_engine.py)
