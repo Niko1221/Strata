@@ -32,6 +32,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <deque>
+#include <functional>
 #include <iostream>
 #include <mutex>
 #include <random>
@@ -829,7 +830,12 @@ __global__ void kb_gate_mix_rms(const float* x, int sx, const float* m, int sm, 
 }
 
 // per head and token: v *= scale; L2 clip; (log scale).  grid (heads, T), block 128
+// Graph-captured verify / draft blocks: the launches carry pos0 = -1 and the kernels read the block's first position
+// from d_vpos (set before each replay); the chunked prefill passes it by value as before.
+__device__ int d_vpos;
+#define VPOS(p) ((p) < 0 ? d_vpos : (p))
 __global__ void kb_head_clip(float* v, int sv, const float* scale, int dim, float thr, int log_scaled, int pos0) {
+    pos0 = VPOS(pos0);
     float* x = v + (size_t) blockIdx.y * sv + (size_t) blockIdx.x * dim;
     const int i = threadIdx.x;
     float a = i < dim ? x[i] * (scale ? scale[(size_t) blockIdx.x * dim + i] : 1.0f) : 0.0f;
@@ -843,6 +849,7 @@ __global__ void kb_head_clip(float* v, int sv, const float* scale, int dim, floa
 // dw (dynamic taps, full layers): per token at dw + t * sx, [NKV][KC]; static_w then [KC][C]; else w [C][KC]
 __global__ void kb_conv(const float* __restrict__ x, int sx, const float* __restrict__ hist, const float* __restrict__ w,
                         const float* __restrict__ dw, float* __restrict__ y, int sy, int C, int pos0) {
+    pos0 = VPOS(pos0);
     const int c = blockIdx.x * blockDim.x + threadIdx.x, t = blockIdx.y, p = pos0 + t;
     if (c >= C) return;
     const float xc = x[(size_t) t * sx + c];
@@ -868,6 +875,7 @@ __global__ void kb_conv(const float* __restrict__ x, int sx, const float* __rest
 }
 // after kb_conv: the chunk's last (up to HR) inputs into hist.  grid (C / 256, min(HR, T))
 __global__ void kb_hist_store(const float* __restrict__ x, int sx, float* __restrict__ hist, int C, int T, int pos0) {
+    pos0 = VPOS(pos0);
     const int c = blockIdx.x * blockDim.x + threadIdx.x, t = T - 1 - blockIdx.y;
     if (c < C) hist[(size_t) ((pos0 + t) % HR) * C + c] = x[(size_t) t * sx + c];
 }
@@ -875,6 +883,7 @@ __global__ void kb_hist_store(const float* __restrict__ x, int sx, float* __rest
 // grid (NKV, T), block HD
 __global__ void kb_kv_store(const float* kc, const float* vc, void* K, void* V, __half* ksc, __half* vsc, int cap,
                             int pos0) {
+    pos0 = VPOS(pos0);
     const int g = blockIdx.x, t = blockIdx.y, i = threadIdx.x;
     const float kv = kc[(size_t) t * KVD + g * HD + i], vv = vc[(size_t) t * KVD + g * HD + i];
     const float kn = sqrtf(block_sum(kv * kv));
@@ -1484,6 +1493,7 @@ __global__ void __launch_bounds__(128 * NREP, 1) kb_attn_tc(const half* __restri
                                                   float* __restrict__ spl, float* __restrict__ spo) {
     // nsplit > 1 (verify blocks, T <= AQ): blockIdx.z = key split, partial (max, sum, unnormalized out) per split into
     // spm / spl / spo, merged by kb_attn_merge_split; the sink counts in split 0 only.
+    pos0 = VPOS(pos0);
     // GQA group per block: the NREP q heads of kv head g share each K / V tile (loaded and converted once);
     // warp w: head g * NREP + w / 4, query rows t0 + (w % 4) * 16.  Per warp the computation is unchanged.
     // P (fp16) overwrites the warp's own S rows once read; the row map lives in the K / V tile before the loop.
@@ -2378,11 +2388,21 @@ void upload_embed(int tok) {
 
 // one token: embedding in E.emb_in, position in E.d_pos; writes E.logits.  Device work only (captured in a graph):
 // the host-side pointer swaps are the same on every call (an even number), so a replay sees the same buffers.
+// --spec: the one-token path also keeps the drafter's features of its position, ring row pos % FRING
+constexpr int FRING = 16;
+float* g_fring = nullptr;   // [FRING][4][H]
+__global__ void k_feat_store(const float* __restrict__ x, float* __restrict__ ring, const int* __restrict__ d_pos, int tap) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < H) ring[((size_t) (*d_pos % FRING) * 4 + tap) * H + i] = x[i];
+}
 void forward_device() {
     rms(E.emb_in, E.embed_norm, E.h);
-    int nB = 0;
+    int nB = 0, visit = 0;
     auto run = [&](int l, int slot, const float* msgs) {
         g_slot = slot;
+        if (g_fring && (visit == 5 || visit == 23 || visit == 41))
+            k_feat_store<<<H / 256, 256>>>(E.h, g_fring, E.d_pos, visit == 5 ? 0 : visit == 23 ? 1 : 2);
+        ++visit;
         layer_forward(l, E.S[slot], nB, msgs);
         if (l % BLOCK == 0) ++nB;
         std::swap(E.h, E.out);
@@ -2407,6 +2427,7 @@ void forward_device() {
     for (int l = LOOP_END; l < NL; ++l) run(l, l, nullptr);
     copy(E.Bbuf + (size_t) nB * H, E.h, H);
     attnres(E.Bbuf, nB + 1, E.final_query, 1, nullptr, E.norm, nullptr, nullptr, E.mn);
+    if (g_fring) k_feat_store<<<H / 256, 256>>>(E.mn, g_fring, E.d_pos, 3);
     gemv(E.unembed, E.mn, E.logits, VOCAB);
     k_softcap<<<(VOCAB + 255) / 256, 256>>>(E.logits, VOCAB, LOGIT_CAP);
 }
@@ -2442,6 +2463,8 @@ struct Prefill {
     float* feat = nullptr;
     int* am = nullptr;
     bool rows_argmax = false;
+    float* rows_host = nullptr;   // rows_argmax + rows_copy (sampling): the rows' softcapped logits [T][VOCAB] (pinned)
+    bool rows_copy = false;
     float *spm = nullptr, *spl = nullptr, *spo = nullptr;   // kb_attn_tc key splits (verify)
 };
 constexpr int SPLIT_MAX = 64;
@@ -2619,8 +2642,8 @@ void attention_b(const Layer& Y, Slot& S, const float* xq, int sq, const float* 
         kb_f32_to_f16<<<(unsigned) ((nqh + 255) / 256), 256>>>(P, np, QD, PF.qh, nqh);
         // verify blocks: the keys split over blocks (8 blocks would walk the whole context otherwise)
         int ns = 1;
-        if (T <= SMALL_T && PF.spo) {
-            const int nk = pos0 + T - (S.full ? 0 : std::max(0, pos0 - WINDOW + 1));
+        if (T <= SMALL_T && PF.spo) {   // graph (pos0 < 0): a fixed count, the kernel spreads the keys it finds
+            const int nk = pos0 < 0 ? (S.full ? E.ctx : WINDOW + T) : pos0 + T - (S.full ? 0 : std::max(0, pos0 - WINDOW + 1));
             ns = std::min(SPLIT_MAX, std::max(1, nk / SPLIT_KEYS));
         }
         kb_attn_tc<<<dim3((T + AQ - 1) / AQ, NKV, ns), 128 * NREP>>>(PF.qh, P, np, S.K, S.V, S.ksc, S.vsc, PF.rel, S.cap,
@@ -2854,6 +2877,7 @@ __device__ __forceinline__ float head_norm_rope(float v, const float* __restrict
 // block rows: q heads (q_norm) and k heads (k_norm) normed + roped in place at pos0 + row; k / v into the cache
 __global__ void kd_qk_rope_store(float* qkv, const float* __restrict__ qn, const float* __restrict__ kn, int pos0,
                                  __half* K, __half* V, int cap) {
+    pos0 = VPOS(pos0);
     const int h = blockIdx.x, r = blockIdx.y, d = threadIdx.x;
     float* x = qkv + (size_t) r * DQKV + (h < NQ ? h * HD : QD + (h - NQ) * HD);
     const float o = head_norm_rope(x[d], h < NQ ? qn : kn, pos0 + r);
@@ -2881,8 +2905,11 @@ __device__ __forceinline__ float4 ld4h(const __half* p) {
     const float2 a = __half22float2(*reinterpret_cast<const __half2*>(&u.x)), b = __half22float2(*reinterpret_cast<const __half2*>(&u.y));
     return make_float4(a.x, a.y, b.x, b.y);
 }
+// keys [lo, p + DBLK), lo = 0 or (local) p + DBLK - (WINDOW + DBLK), spread over gridDim.y splits
 __global__ void kd_attn_partial(const float* __restrict__ qkv, const __half* __restrict__ K, const __half* __restrict__ V,
-                                int cap, int lo, int hi, int per, float* pm, float* pl, float* po) {
+                                int cap, int p, int local, float* pm, float* pl, float* po) {
+    p = VPOS(p);
+    const int hi = p + DBLK, lo = local ? max(0, hi - (WINDOW + DBLK)) : 0, per = (hi - lo + gridDim.y - 1) / gridDim.y;
     const int h = blockIdx.x, s = blockIdx.y, g = h / NREP, w = threadIdx.x >> 5, lane = threadIdx.x & 31;
     const int k0 = lo + s * per, k1 = min(hi, k0 + per);
     const float scale = rsqrtf((float) HD);
@@ -3053,7 +3080,7 @@ struct Drafter {
           *latent, *bias, *pm, *pl, *po, *pv;
     int *drafts, *pi;
     // stats
-    long verifies = 0, accepted = 0;
+    long verifies = 0, accepted = 0, hk[DBLK] = {}, plain = 0, switches = 0;
 };
 Drafter D;
 
@@ -3162,9 +3189,24 @@ void draft_frnn(const float* feat_row) {
     add_b(D.cf, D.rnn_bias, D.cf, 3 * MR);
 }
 // the block for anchor `tok` at position p: drafts for p + 1 .. p + 7 into D.drafts[1..7] (D.drafts[0] = tok)
+void draft_device(int p);
+cudaGraphExec_t g_draft_exec = nullptr;
 void draft_run(int tok, int p) {
     upload_embed(tok);
     CK(cudaMemcpyAsync(D.drafts, &tok, 4, cudaMemcpyHostToDevice));
+    if (!E.graph) { draft_device(p); return; }
+    CK(cudaMemcpyToSymbolAsync(d_vpos, &p, 4, 0, cudaMemcpyHostToDevice, cudaStreamPerThread));
+    if (!g_draft_exec) {
+        cudaGraph_t g;
+        CK(cudaStreamBeginCapture(cudaStreamPerThread, cudaStreamCaptureModeRelaxed));
+        draft_device(-1);
+        CK(cudaStreamEndCapture(cudaStreamPerThread, &g));
+        CK(cudaGraphInstantiate(&g_draft_exec, g, 0));
+    }
+    CK(cudaGraphLaunch(g_draft_exec, cudaStreamPerThread));
+}
+// the block's device work, p < 0: read from d_vpos
+void draft_device(int p) {
     rms(E.emb_in, E.embed_norm, D.x);
     for (int r = 1; r < DBLK; ++r) copy(D.x + (size_t) r * H, D.mask_embed, H);
     const float* mlp_out = D.x;
@@ -3173,12 +3215,10 @@ void draft_run(int tok, int p) {
         kd_add_rms<<<DBLK, 512>>>(mlp_out, D.res, Y.in_ln, D.xn, i == 0);
         gemv_multi(Y.qkv, 0, DQKV, D.xn, H, D.qkv, DQKV, DBLK);
         kd_qk_rope_store<<<dim3(NQ + NKV, DBLK), HD>>>(D.qkv, Y.q_norm, Y.k_norm, p, Y.K, Y.V, Y.cap);
-        const int hi = p + DBLK, lo = Y.local ? std::max(0, hi - (WINDOW + DBLK)) : 0, nk = hi - lo;
-        int ns = (nk + DSPLIT_KEYS - 1) / DSPLIT_KEYS;
-        ns = std::min(ns, DSPLIT_MAX);
-        const int per = (nk + ns - 1) / ns;
-        ns = (nk + per - 1) / per;
-        kd_attn_partial<<<dim3(NQ, ns), 128>>>(D.qkv, Y.K, Y.V, Y.cap, lo, hi, per, D.pm, D.pl, D.po);
+        // split count fixed by the layer's reach (graph-capturable); empty splits write max = -inf, skipped by the merge
+        const int reach = Y.local ? WINDOW + DBLK : E.ctx;
+        const int ns = std::min(DSPLIT_MAX, std::max(1, (reach + DSPLIT_KEYS - 1) / DSPLIT_KEYS));
+        kd_attn_partial<<<dim3(NQ, ns), 128>>>(D.qkv, Y.K, Y.V, Y.cap, p, Y.local, D.pm, D.pl, D.po);
         kd_attn_merge<<<dim3(NQ, DBLK), HD>>>(D.pm, D.pl, D.po, ns, D.att);
         gemv_multi(Y.o, 0, H, D.att, QD, D.out, H, DBLK);
         kd_add_rms<<<DBLK, 512>>>(D.out, D.res, Y.post_ln, D.xn, 0);
@@ -3202,6 +3242,7 @@ void draft_run(int tok, int p) {
     }
 }
 
+void forward_prefill_device(int T, int pos0, float* all);
 void forward_prefill(const int* toks, int T, int pos0, float* all) {
     const size_t ES = (size_t) T * H;
     if (E.xhost) {   // what decode left in the pools
@@ -3222,6 +3263,27 @@ void forward_prefill(const int* toks, int T, int pos0, float* all) {
         CK(cudaMemcpyAsync(PF.x0, e.data(), ES * 4, cudaMemcpyHostToDevice, cudaStreamPerThread));
         CK(cudaStreamSynchronize(cudaStreamPerThread));
     }
+    if (PF.rows_argmax && E.graph && !E.xhost && T == DBLK) {   // verify block: one graph per output variant
+        static cudaGraphExec_t vexec[2] = {nullptr, nullptr};
+        cudaGraphExec_t& x = vexec[PF.rows_copy ? 1 : 0];
+        CK(cudaMemcpyToSymbolAsync(d_vpos, &pos0, 4, 0, cudaMemcpyHostToDevice, cudaStreamPerThread));
+        if (!x) {
+            cudaGraph_t g;
+            CK(cudaStreamBeginCapture(cudaStreamPerThread, cudaStreamCaptureModeRelaxed));
+            forward_prefill_device(T, -1, nullptr);
+            CK(cudaStreamEndCapture(cudaStreamPerThread, &g));
+            CK(cudaGraphInstantiate(&x, g, 0));
+        }
+        CK(cudaGraphLaunch(x, cudaStreamPerThread));
+        CK(cudaStreamSynchronize(cudaStreamPerThread));
+        return;
+    }
+    forward_prefill_device(T, pos0, all);
+    CK(cudaStreamSynchronize(cudaStreamPerThread));
+}
+// forward_prefill's device work (pos0 < 0: from d_vpos; `all` only outside a graph)
+void forward_prefill_device(int T, int pos0, float* all) {
+    const size_t ES = (size_t) T * H;
     k_rms<<<T, 512>>>(PF.x0, E.embed_norm, PF.h, H);
     int nB = 0, visit = 0;
     auto run = [&](int l, int slot, const float* msgs) {
@@ -3264,7 +3326,10 @@ void forward_prefill(const int* toks, int T, int pos0, float* all) {
     if (PF.rows_argmax) {   // softcap is monotonic: argmax of the raw logits
         gemv_multi(E.unembed, 0, VOCAB, PF.mn, H, PF.lg, VOCAB, T);
         k_rows_argmax<<<T, 1024>>>(PF.lg, VOCAB, PF.am);
-        CK(cudaStreamSynchronize(cudaStreamPerThread));
+        if (PF.rows_copy) {   // sampling: every row's softcapped logits
+            k_softcap<<<(unsigned) (((size_t) T * VOCAB + 255) / 256), 256>>>(PF.lg, T * VOCAB, LOGIT_CAP);
+            CK(cudaMemcpyAsync(PF.rows_host, PF.lg, (size_t) T * VOCAB * 4, cudaMemcpyDeviceToHost, cudaStreamPerThread));
+        }
         return;
     }
     gemv(E.unembed, PF.mn + (size_t) (T - 1) * H, E.logits, VOCAB);
@@ -3278,7 +3343,6 @@ void forward_prefill(const int* toks, int T, int pos0, float* all) {
                                  cudaMemcpyDeviceToHost, cudaStreamPerThread));
         }
     }
-    CK(cudaStreamSynchronize(cudaStreamPerThread));
 }
 
 std::vector<int> parse_ids(const char* s) {
@@ -3303,32 +3367,60 @@ struct Sampler {
     int top_k = 0;
     std::mt19937_64 rng{std::random_device{}()};
 };
-int sample(const vec& lg, Sampler& s) {
-    const int best = (int) (std::max_element(lg.begin(), lg.end()) - lg.begin());
-    if (s.temp <= 0.0f) return best;
-    const float mx = lg[best], thr = mx - 20.8f * s.temp;   // exp(-20.8) ~ 1e-9 of the top probability: never matters
+// the sampler's distribution over the logits lg (temp > 0): candidates within 20.8 temp of the max, sorted, top_k,
+// min_p, top_p; unnormalized weights p (total = their sum)
+struct Dist {
     std::vector<std::pair<float, int>> c;
+    std::vector<double> p;
+    size_t keep = 0;
+    double total = 0.0;
+};
+Dist make_dist(const float* lg, const Sampler& s) {
+    Dist d;
+    const int best = (int) (std::max_element(lg, lg + VOCAB) - lg);
+    const float mx = lg[best], thr = mx - 20.8f * s.temp;   // exp(-20.8) ~ 1e-9 of the top probability: never matters
     for (int i = 0; i < VOCAB; ++i)
-        if (lg[i] >= thr) c.push_back({lg[i], i});
-    std::sort(c.begin(), c.end(), [](const auto& a, const auto& b) { return a.first > b.first || (a.first == b.first && a.second < b.second); });
-    if (s.top_k > 0 && (int) c.size() > s.top_k) c.resize(s.top_k);
-    std::vector<double> p(c.size());
-    double z = 0.0;
-    for (size_t i = 0; i < c.size(); ++i) z += p[i] = std::exp((double) (c[i].first - mx) / s.temp);
-    size_t keep = c.size();
+        if (lg[i] >= thr) d.c.push_back({lg[i], i});
+    std::sort(d.c.begin(), d.c.end(), [](const auto& a, const auto& b) { return a.first > b.first || (a.first == b.first && a.second < b.second); });
+    if (s.top_k > 0 && (int) d.c.size() > s.top_k) d.c.resize(s.top_k);
+    d.p.resize(d.c.size());
+    for (size_t i = 0; i < d.c.size(); ++i) d.p[i] = std::exp((double) (d.c[i].first - mx) / s.temp);
+    d.keep = d.c.size();
     if (s.min_p > 0.0f)
-        for (size_t i = 0; i < keep; ++i) if (p[i] < s.min_p * p[0]) { keep = i; break; }
+        for (size_t i = 0; i < d.keep; ++i) if (d.p[i] < s.min_p * d.p[0]) { d.keep = i; break; }
     double acc = 0.0, total = 0.0;
-    for (size_t i = 0; i < keep; ++i) total += p[i];
+    for (size_t i = 0; i < d.keep; ++i) total += d.p[i];
     if (s.top_p < 1.0f) {
-        for (size_t i = 0; i < keep; ++i) { acc += p[i]; if (acc >= s.top_p * total) { keep = i + 1; break; } }
+        for (size_t i = 0; i < d.keep; ++i) { acc += d.p[i]; if (acc >= s.top_p * total) { d.keep = i + 1; break; } }
         total = 0.0;
-        for (size_t i = 0; i < keep; ++i) total += p[i];
+        for (size_t i = 0; i < d.keep; ++i) total += d.p[i];
     }
-    double u = std::uniform_real_distribution<double>(0.0, total)(s.rng);
-    for (size_t i = 0; i < keep; ++i) { u -= p[i]; if (u <= 0.0) return c[i].second; }
-    return c[keep - 1].second;
+    d.total = total;
+    return d;
 }
+// a draw from d, optionally with one token removed (the residual of a rejected greedy draft)
+int draw(const Dist& d, std::mt19937_64& rng, int exclude = -1) {
+    double total = d.total;
+    for (size_t i = 0; i < d.keep; ++i) if (d.c[i].second == exclude) total -= d.p[i];
+    double u = std::uniform_real_distribution<double>(0.0, total)(rng);
+    int last = -1;
+    for (size_t i = 0; i < d.keep; ++i) {
+        if (d.c[i].second == exclude) continue;
+        last = d.c[i].second;
+        u -= d.p[i];
+        if (u <= 0.0) return last;
+    }
+    return last;
+}
+double prob(const Dist& d, int tok) {
+    for (size_t i = 0; i < d.keep; ++i) if (d.c[i].second == tok) return d.p[i] / d.total;
+    return 0.0;
+}
+int sample(const float* lg, Sampler& s) {
+    if (s.temp <= 0.0f) return (int) (std::max_element(lg, lg + VOCAB) - lg);
+    return draw(make_dist(lg, s), s.rng);
+}
+int sample(const vec& lg, Sampler& s) { return sample(lg.data(), s); }
 
 constexpr int EOS_ID = 200006;   // <|content_model_end_sampling|> (generation_config.json)
 
@@ -3405,6 +3497,8 @@ int main(int argc, char** argv) {
         PF.spl = dfloats((size_t) SPLIT_MAX * AQ * NQ);
         PF.spo = dfloats((size_t) SPLIT_MAX * AQ * QD);
         PF.am = (int*) dalloc(DBLK * 4);
+        CK(cudaHostAlloc((void**) &PF.rows_host, (size_t) DBLK * VOCAB * 4, cudaHostAllocDefault));
+        g_fring = dfloats((size_t) FRING * 4 * H);
     }
     if (E.xhost) setup_offload();
 
@@ -3430,6 +3524,75 @@ int main(int argc, char** argv) {
     step(0, 0, false);
     CK(cudaDeviceSynchronize());
     std::fprintf(stderr, "load %.1f s, %.2f GiB in VRAM (ctx %d)\n", (now_ms() - t_load) / 1000, g_vram / 1073741824.0, E.ctx);
+
+    // Speculative continuation (--spec): `first` was sampled for position p (not fed yet; already emitted by the
+    // caller).  Draft 7 / verify 8 until emit() returns false, max_new tokens in all, or stop; the target's per-row
+    // distributions decide (greedy: the draft is the row's argmax; sampling: accept the greedy draft d with
+    // probability P(d), else draw from P without d, which leaves the output distribution exactly the target's).
+    // Near the context end: the one-token path.  Returns the number of tokens emitted (first included).
+    // Adaptive: the loop keeps an estimate of the wall time per emitted token of both modes (EMA) and decodes one
+    // token at a time through the decode graph for PLAIN_RUN tokens whenever the speculative estimate is the slower
+    // (low acceptance: sampling at high temperature, unpredictable text); the drafter's context follows the plain
+    // tokens through the decode graph's feature ring.  The first PLAIN_PROBE tokens measure the plain mode.
+    constexpr int PLAIN_PROBE = 4, PLAIN_RUN = 32;
+    auto spec_continue = [&](int first, int p, int max_new, Sampler& s, const std::function<bool(int)>& emit,
+                             const std::atomic<bool>* stop) {
+        int n = 1, anchor = first, plain_left = PLAIN_PROBE;
+        double ms_plain = 0.0, ms_spec = 0.0;   // EMA, ms per emitted token (0: not measured yet)
+        bool go = true;
+        while (go && n < max_new && !(stop && stop->load())) {
+            if (plain_left > 0 || p + DBLK > E.ctx) {   // one token: decode graph, drafter context from its features
+                const double t0 = now_ms();
+                step(anchor, p, true);
+                draft_context(g_fring + (size_t) (p % FRING) * 4 * H, p, 1);
+                ++p;
+                anchor = sample(logits, s);
+                ++n;
+                go = emit(anchor);
+                CK(cudaDeviceSynchronize());
+                const double dt = now_ms() - t0;
+                ms_plain = ms_plain > 0.0 ? 0.9 * ms_plain + 0.1 * dt : dt;
+                if (plain_left > 0 && --plain_left == 0) draft_frnn(g_fring + (size_t) ((p - 1) % FRING) * 4 * H);
+                ++D.plain;
+                continue;
+            }
+            const double t0 = now_ms();
+            draft_run(anchor, p);
+            int d[DBLK], g[DBLK];
+            CK(cudaMemcpy(d, D.drafts, DBLK * 4, cudaMemcpyDeviceToHost));
+            PF.rows_argmax = true;
+            const float* rows = s.temp > 0.0f ? PF.rows_host : nullptr;
+            PF.rows_copy = rows != nullptr;
+            forward_prefill(d, DBLK, p, nullptr);
+            PF.rows_argmax = PF.rows_copy = false;
+            CK(cudaMemcpy(g, PF.am, DBLK * 4, cudaMemcpyDeviceToHost));
+            int k = 0, next = -1;
+            for (; k < DBLK - 1; ++k) {   // row k predicts position p + k + 1; the draft for it is d[k + 1]
+                if (!rows) {
+                    if (d[k + 1] != g[k]) { next = g[k]; break; }
+                } else {
+                    const Dist dist = make_dist(rows + (size_t) k * VOCAB, s);
+                    const double u = std::uniform_real_distribution<double>(0.0, 1.0)(s.rng);
+                    if (u >= prob(dist, d[k + 1])) { next = draw(dist, s.rng, d[k + 1]); break; }
+                }
+            }
+            if (next < 0) next = rows ? sample(rows + (size_t) (DBLK - 1) * VOCAB, s) : g[DBLK - 1];
+            for (int j = 1; j <= k && go; ++j) { ++n; go = emit(d[j]) && n < max_new; }
+            if (go) { ++n; go = emit(next); }
+            draft_context(PF.feat, p, k + 1);
+            draft_frnn(PF.feat + (size_t) k * 4 * H);
+            p += k + 1;
+            anchor = next;
+            ++D.verifies;
+            D.accepted += k;
+            ++D.hk[k];
+            CK(cudaDeviceSynchronize());
+            const double dt = (now_ms() - t0) / (k + 1);
+            ms_spec = ms_spec > 0.0 ? 0.8 * ms_spec + 0.2 * dt : dt;
+            if (ms_plain > 0.0 && ms_spec > ms_plain) { plain_left = PLAIN_RUN; ms_spec = 0.0; ++D.switches; }
+        }
+        return n;
+    };
 
     if (serve) {
         // Strata engine protocol (terminal/serve/server.py): READY <ctx> stop; GEN <max_new>[ k=v ...] <ids>;
@@ -3500,7 +3663,8 @@ int main(int argc, char** argv) {
             }
             max_new = std::max(0, std::min(max_new, E.ctx - (int) pr.size()));
             const bool reuse = !hist.empty() && pr.size() >= hist.size() && std::equal(hist.begin(), hist.end(), pr.begin());
-            const size_t start = reuse ? hist.size() : 0;
+            size_t start = reuse ? hist.size() : 0;
+            if (spec && start == pr.size()) start = pr.size() - 1;   // re-fed: the drafter needs its features
             const double t0 = now_ms();
             if (start == pr.size()) {
                 logits = last_logits;
@@ -3508,6 +3672,10 @@ int main(int argc, char** argv) {
                 for (size_t p0 = start; p0 < pr.size(); p0 += PF.TP) {
                     const int T = (int) std::min((size_t) PF.TP, pr.size() - p0);
                     forward_prefill(&pr[p0], T, (int) p0, nullptr);
+                    if (spec) {
+                        draft_context(PF.feat, (int) p0, T);
+                        if (p0 + T == pr.size()) draft_frnn(PF.feat + (size_t) (T - 1) * 4 * H);
+                    }
                     const double ms = now_ms() - t0;
                     std::printf("PP %zu %zu %.0f %.1f\n", p0 + T, pr.size(), ms, 1000.0 * (p0 + T - start) / std::max(ms, 1.0));
                     std::fflush(stdout);
@@ -3518,7 +3686,22 @@ int main(int argc, char** argv) {
             std::vector<int> gen;
             const char* finish = "length";
             int pos = (int) pr.size();
-            for (int k = 0; k < max_new; ++k) {
+            if (spec && max_new > 0 && !stop.load()) {
+                const int first = sample(logits, s);
+                gen.push_back(first);
+                std::printf("T %d\n", first);
+                std::fflush(stdout);
+                if (first == EOS_ID) finish = "stop";
+                else spec_continue(first, pos, max_new, s, [&](int t) {
+                    gen.push_back(t);
+                    std::printf("T %d\n", t);
+                    std::fflush(stdout);
+                    if (t == EOS_ID) { finish = "stop"; return false; }
+                    return true;
+                }, &stop);
+                if (stop.load() && std::strcmp(finish, "stop") != 0) finish = "cancel";
+            }
+            for (int k = 0; k < (spec ? 0 : max_new); ++k) {
                 if (stop.load()) { finish = "cancel"; break; }
                 const int next = sample(logits, s);
                 gen.push_back(next);
@@ -3548,28 +3731,11 @@ int main(int argc, char** argv) {
         }
         CK(cudaMemcpy(logits.data(), E.logits, (size_t) VOCAB * 4, cudaMemcpyDeviceToHost));
         const double s1 = now_ms();
-        std::vector<int> out = {(int) (std::max_element(logits.begin(), logits.end()) - logits.begin())};
-        int p = (int) ids.size();
-        PF.rows_argmax = true;
-        std::vector<int> hist_k(DBLK, 0);
-        while ((int) out.size() < n_gen && p + DBLK <= E.ctx) {
-            const int anchor = out.back();
-            draft_run(anchor, p);
-            int d[DBLK], g[DBLK];
-            CK(cudaMemcpy(d, D.drafts, DBLK * 4, cudaMemcpyDeviceToHost));
-            forward_prefill(d, DBLK, p, nullptr);
-            CK(cudaMemcpy(g, PF.am, DBLK * 4, cudaMemcpyDeviceToHost));
-            int k = 0;
-            while (k < DBLK - 1 && d[k + 1] == g[k]) ++k;
-            for (int j = 1; j <= k; ++j) out.push_back(d[j]);
-            out.push_back(g[k]);
-            draft_context(PF.feat, p, k + 1);
-            draft_frnn(PF.feat + (size_t) k * 4 * H);
-            p += k + 1;
-            ++D.verifies;
-            D.accepted += k;
-            ++hist_k[k];
-        }
+        Sampler smp;   // INK2_TEMP / INK2_SEED (tests): sampled speculative decoding
+        if (const char* t = std::getenv("INK2_TEMP")) smp.temp = std::strtof(t, nullptr);
+        if (const char* t = std::getenv("INK2_SEED")) smp.rng.seed(std::strtoull(t, nullptr, 10));
+        std::vector<int> out = {sample(logits, smp)};
+        spec_continue(out[0], (int) ids.size(), n_gen, smp, [&](int t) { out.push_back(t); return true; }, nullptr);
         CK(cudaDeviceSynchronize());
         const double s2 = now_ms();
         out.resize(std::min((size_t) n_gen, out.size()));
@@ -3579,8 +3745,8 @@ int main(int argc, char** argv) {
                     s1 - s0, 1000.0 * ids.size() / (s1 - s0), out.size(), s2 - s1, 1000.0 * out.size() / (s2 - s1));
         std::printf("spec: %ld verifies, %.2f drafts accepted per verify (%.2f tokens per verify); accepted-count histogram:",
                     D.verifies, (double) D.accepted / std::max(1L, D.verifies), 1.0 + (double) D.accepted / std::max(1L, D.verifies));
-        for (int k = 0; k < DBLK; ++k) std::printf(" %d", hist_k[k]);
-        std::printf("\n");
+        for (int k = 0; k < DBLK; ++k) std::printf(" %ld", D.hk[k]);
+        std::printf("; %ld plain tokens, %ld switches to plain\n", D.plain, D.switches);
         return 0;
     }
     FILE* fg = dump_logits.empty() ? nullptr : std::fopen(dump_logits.c_str(), "wb");
