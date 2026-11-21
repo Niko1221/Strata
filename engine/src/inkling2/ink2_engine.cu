@@ -25,6 +25,7 @@
 #include "ink2_cpu.hpp"
 #include "ink2_iq_tables.h"
 
+#include <cuda.h>
 #include <cublas_v2.h>
 #include <cuda_fp16.h>
 #include <mma.h>
@@ -2152,6 +2153,16 @@ __global__ void k_fetch(const uint8_t* const* __restrict__ fsrc, uint8_t* const*
     for (; i < n; i += st) dst[i] = src[i];
 }
 
+// --kv-grow: slots [from, to) leave a pool: their experts out of the tables (the next use fetches them again)
+__global__ void k_pool_evict(int* owner, int* slot_of, const uint8_t** tabA, const uint8_t** tabB, unsigned* stamp,
+                             int from, int to) {
+    const int s = from + (int) (blockIdx.x * blockDim.x + threadIdx.x);
+    if (s >= to) return;
+    const int o = owner[s];
+    if (o >= 0) { slot_of[o] = -1; tabA[o] = nullptr; tabB[o] = nullptr; owner[s] = -1; }
+    stamp[s] = 0;
+}
+
 // teacher-forced routing (verification): the recorded experts, weights from this pass' own scores; grid T, block 32
 __global__ void kb_router_forced(const float* logits, const int* forced, int* ids, float* wts) {
     const int t = blockIdx.x, k = threadIdx.x;
@@ -2222,6 +2233,102 @@ void* upload(const void* p, size_t bytes) {
     return d;
 }
 float* dvec(const vec& v) { return (float*) upload(v.data(), v.size() * 4); }
+// ---------------------------------------------------------------------------------------------------------------------
+// Growable device ranges (CUDA virtual memory): an address range reserved once, physical chunks of the allocation
+// granularity mapped and unmapped at its end.  The addresses never move.  Driver entry points resolved at run time
+// (no link to libcuda), as in src/core/vmm.cpp.
+struct Vmm {
+    bool ok = false;
+    size_t gran = 0;
+    int dev = 0;
+    decltype(&cuMemAddressReserve) reserve = nullptr;
+    decltype(&cuMemCreate) create = nullptr;
+    decltype(&cuMemRelease) release = nullptr;
+    decltype(&cuMemMap) map = nullptr;
+    decltype(&cuMemUnmap) unmap = nullptr;
+    decltype(&cuMemSetAccess) access = nullptr;
+};
+Vmm g_vmm;
+template <class F> bool vmm_resolve(const char* name, F& f) {
+    cudaDriverEntryPointQueryResult q{};
+    void* p = nullptr;
+#if CUDART_VERSION >= 12050
+    const cudaError_t e = cudaGetDriverEntryPointByVersion(name, &p, 12000, cudaEnableDefault, &q);
+#else
+    const cudaError_t e = cudaGetDriverEntryPoint(name, &p, cudaEnableDefault, &q);
+#endif
+    if (e != cudaSuccess || q != cudaDriverEntryPointSuccess || !p) { (void) cudaGetLastError(); return false; }
+    f = (F) p;
+    return true;
+}
+void vmm_init() {
+    Vmm& a = g_vmm;
+    decltype(&cuMemGetAllocationGranularity) granularity = nullptr;
+    CK(cudaGetDevice(&a.dev));
+    if (!vmm_resolve("cuMemGetAllocationGranularity", granularity) || !vmm_resolve("cuMemAddressReserve", a.reserve) ||
+        !vmm_resolve("cuMemCreate", a.create) || !vmm_resolve("cuMemRelease", a.release) || !vmm_resolve("cuMemMap", a.map) ||
+        !vmm_resolve("cuMemUnmap", a.unmap) || !vmm_resolve("cuMemSetAccess", a.access)) {
+        std::fprintf(stderr, "--kv-grow: the driver's virtual memory entry points are missing\n");
+        std::exit(1);
+    }
+    CUmemAllocationProp prop{};
+    prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
+    prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+    prop.location.id = a.dev;
+    if (granularity(&a.gran, &prop, CU_MEM_ALLOC_GRANULARITY_MINIMUM) != CUDA_SUCCESS || !a.gran) {
+        std::fprintf(stderr, "--kv-grow: no allocation granularity\n");
+        std::exit(1);
+    }
+    a.ok = true;
+}
+struct VRange {
+    CUdeviceptr base = 0;
+    size_t reserved = 0, mapped = 0;
+    std::vector<CUmemGenericAllocationHandle> h;
+    void* ptr() const { return (void*) base; }
+    static size_t up(size_t b) { return (b + g_vmm.gran - 1) / g_vmm.gran * g_vmm.gran; }
+    void init(size_t bytes) {
+        reserved = up(std::max<size_t>(bytes, 1));
+        if (g_vmm.reserve(&base, reserved, 0, 0, 0) != CUDA_SUCCESS) {
+            std::fprintf(stderr, "cuMemAddressReserve of %zu bytes failed\n", reserved);
+            std::exit(1);
+        }
+    }
+    size_t need(size_t bytes) const { return std::min(up(bytes), reserved); }   // mapped bytes for `bytes`
+    bool map_to(size_t bytes) {   // false: out of memory (what was mapped stays)
+        const size_t want = need(bytes);
+        CUmemAllocationProp prop{};
+        prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
+        prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+        prop.location.id = g_vmm.dev;
+        CUmemAccessDesc acc{};
+        acc.location = prop.location;
+        acc.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
+        while (mapped < want) {
+            CUmemGenericAllocationHandle hd = 0;
+            if (g_vmm.create(&hd, g_vmm.gran, &prop, 0) != CUDA_SUCCESS) return false;
+            if (g_vmm.map(base + mapped, g_vmm.gran, 0, hd, 0) != CUDA_SUCCESS ||
+                g_vmm.access(base + mapped, g_vmm.gran, &acc, 1) != CUDA_SUCCESS) {
+                std::fprintf(stderr, "cuMemMap failed\n");
+                std::exit(1);
+            }
+            h.push_back(hd);
+            mapped += g_vmm.gran;
+            g_vram += g_vmm.gran;
+        }
+        return true;
+    }
+    void unmap_to(size_t bytes) {
+        const size_t want = need(bytes);
+        while (mapped > want) {
+            mapped -= g_vmm.gran;
+            g_vmm.unmap(base + mapped, g_vmm.gran);
+            g_vmm.release(h.back());
+            h.pop_back();
+            g_vram -= g_vmm.gran;
+        }
+    }
+};
 
 struct DMat {
     const uint16_t* d = nullptr;   // BF16 [n][k]
@@ -2306,6 +2413,9 @@ struct Engine {
     cudaGraphExec_t exec = nullptr;
     int* rec = nullptr;   // routing record / forcing [NCALLS][ctx][TOPK] (verification only)
     int rec_mode = 0;     // 1 record (one-token path), 2 force (prefill)
+    bool grow = false;    // --kv-grow 1: the full-attention slots' K/V mapped as the context grows (VRange), the expert
+    int grow_step = 8192; //   pools (offload) give memory up and take it back (--kv-grow-step cells)
+    int kv_cells = 0;     //   cells mapped now
     int kvm = 1;          // --kv f32 (0) | f16 (1, default) | i8 (2: int8 cells + fp16 scale per 64, Strata's kv_q8
                           // layout) | i8r (3: i8 + Walsh-Hadamard rotation)
     // experts: every expert in layout order (NVFP4 layers 0-19 then MXFP8 layers 20-23, NE per layer, one slot
@@ -2342,6 +2452,7 @@ struct Engine {
     std::vector<float> hf13, hf2;        // [NL * NE] host copies of the NVFP4 factors (1 for MXFP8)
     cudaStream_t side = nullptr;
     cudaEvent_t ev_fork = nullptr, ev_join = nullptr;
+    VRange vpool_nv, vpool_mx;   // --kv-grow: the pools as growable ranges (owner / stamp sized for every expert)
     int *slot_of = nullptr, *owner_nv = nullptr, *owner_mx = nullptr, *nfetch = nullptr;
     unsigned *stamp_nv = nullptr, *stamp_mx = nullptr, *clock = nullptr;
     const uint8_t** fsrc = nullptr;
@@ -2921,9 +3032,22 @@ void setup_offload() {
                      fr / 1073741824.0, E.reserve_mib, E.nslot_nv, E.nslot_mx, FETCH_MAX);
         std::exit(1);
     }
-    E.pool_nv = (uint8_t*) dalloc((size_t) E.nslot_nv * ex_bytes(0));
-    if (E.nslot_mx) E.pool_mx = (uint8_t*) dalloc((size_t) E.nslot_mx * MX_BYTES);
-    std::vector<int> slot_of((size_t) NL * NE, -1), own_nv(E.nslot_nv, -1), own_mx(E.nslot_mx, -1);
+    const int cap_nv = g_is_gguf ? NL * NE : MXFP8_FIRST * NE, cap_mx = g_is_gguf ? 0 : (NL - MXFP8_FIRST) * NE;
+    if (E.grow) {   // growable: --kv-grow takes slots back as the context grows (pool_resize)
+        E.vpool_nv.init((size_t) cap_nv * ex_bytes(0));
+        if (!E.vpool_nv.map_to((size_t) E.nslot_nv * ex_bytes(0))) { std::fprintf(stderr, "offload: pool mapping failed\n"); std::exit(1); }
+        E.pool_nv = (uint8_t*) E.vpool_nv.ptr();
+        if (cap_mx) {
+            E.vpool_mx.init((size_t) cap_mx * MX_BYTES);
+            if (!E.vpool_mx.map_to((size_t) E.nslot_mx * MX_BYTES)) { std::fprintf(stderr, "offload: pool mapping failed\n"); std::exit(1); }
+            E.pool_mx = (uint8_t*) E.vpool_mx.ptr();
+        }
+    } else {
+        E.pool_nv = (uint8_t*) dalloc((size_t) E.nslot_nv * ex_bytes(0));
+        if (E.nslot_mx) E.pool_mx = (uint8_t*) dalloc((size_t) E.nslot_mx * MX_BYTES);
+    }
+    std::vector<int> slot_of((size_t) NL * NE, -1), own_nv(E.grow ? cap_nv : E.nslot_nv, -1),
+                     own_mx(E.grow ? cap_mx : E.nslot_mx, -1);
     std::vector<int> order;
     for (int l = LOOP_BEGIN; l < LOOP_END; ++l) order.push_back(l);
     for (int l = 0; l < NL; ++l) if (l < LOOP_BEGIN || l >= LOOP_END) order.push_back(l);
@@ -2948,8 +3072,8 @@ void setup_offload() {
     E.slot_of = ints(slot_of);
     E.owner_nv = ints(own_nv);
     E.owner_mx = ints(own_mx);
-    E.stamp_nv = (unsigned*) dalloc((size_t) E.nslot_nv * 4);
-    E.stamp_mx = (unsigned*) dalloc((size_t) E.nslot_mx * 4);
+    E.stamp_nv = (unsigned*) dalloc(own_nv.size() * 4);
+    E.stamp_mx = (unsigned*) dalloc(own_mx.size() * 4);
     E.clock = (unsigned*) dalloc(4);
     E.nfetch = (int*) dalloc(4);
     E.fsrc = (const uint8_t**) dalloc(FETCH_MAX * sizeof(void*));
@@ -2961,7 +3085,95 @@ void setup_offload() {
                  100.0 * ((size_t) E.nslot_nv * ex_bytes(0) + (size_t) E.nslot_mx * MX_BYTES) / ex_layer_off(NL));
 }
 
+// bytes per cell of a slot's K (0), V (1), K scales (2), V scales (3) in format E.kvm
+size_t kv_cell_bytes(int a) {
+    const int m = E.kvm;
+    switch (a) {
+    case 0: return (size_t) KVD * (m == 0 ? 4 : m == 1 ? 2 : 1);
+    case 1: return m == 4 ? KVD / 2 : (size_t) KVD * (m == 0 ? 4 : m == 1 ? 2 : 1);
+    case 2: return m >= 2 ? (KVD / KVG) * 2 : 0;
+    default: return m >= 2 ? (KVD / (m == 4 ? V4G : KVG)) * 2 : 0;
+    }
+}
+std::vector<VRange> g_kvr;      // --kv-grow: the full slots' arrays
+std::vector<size_t> g_kvr_bpc;  // their bytes per cell
+size_t kv_mapped_for(int cells) {
+    size_t t = 0;
+    for (size_t i = 0; i < g_kvr.size(); ++i) t += g_kvr[i].need((size_t) cells * g_kvr_bpc[i]);
+    return t;
+}
+
+// --kv-grow with offload: a pool's slot count changes.  Nothing may be running on the device; the decode graph (the
+// slot count is one of its launch arguments) is rebuilt at the next token.
+size_t vram_free() { size_t fr = 0, tot = 0; CK(cudaMemGetInfo(&fr, &tot)); return fr; }
+size_t vram_keep() { return ((size_t) std::max(E.reserve_mib, 0) << 20) + ((size_t) g_off_margin_mib << 20); }   // as setup_offload
+void pool_resize(bool nv, int n) {
+    int& ns = nv ? E.nslot_nv : E.nslot_mx;
+    VRange& r = nv ? E.vpool_nv : E.vpool_mx;
+    const size_t eb = nv ? ex_bytes(0) : MX_BYTES;
+    n = std::max(0, std::min(n, (int) (r.reserved / eb)));
+    if (n < ns) {
+        k_pool_evict<<<(ns - n + 255) / 256, 256>>>(nv ? E.owner_nv : E.owner_mx, E.slot_of, E.tabA, E.tabB,
+                                                    nv ? E.stamp_nv : E.stamp_mx, n, ns);
+        CK(cudaDeviceSynchronize());
+        r.unmap_to((size_t) n * eb);
+    } else if (n > ns) {
+        if (!r.map_to((size_t) n * eb)) n = std::max(ns, (int) (r.mapped / eb));
+    }
+    ns = n;
+    if (E.exec) { CK(cudaGraphExecDestroy(E.exec)); E.exec = nullptr; }
+}
+double pool_bytes(bool nv) { return (double) (nv ? E.nslot_nv : E.nslot_mx) * (nv ? ex_bytes(0) : MX_BYTES); }
+// the pools give up `bytes`, in proportion to their sizes
+void pools_release(double bytes, const char* what) {
+    const double deficit = bytes + 4.0 * g_vmm.gran, used = pool_bytes(true) + pool_bytes(false);
+    for (bool nv : {true, false}) {
+        const int ns = nv ? E.nslot_nv : E.nslot_mx;
+        if (!ns) continue;
+        const int drop = (int) std::ceil(deficit * pool_bytes(nv) / used / (nv ? ex_bytes(0) : MX_BYTES));
+        if (ns - drop < FETCH_MAX) { std::fprintf(stderr, "%s would leave the expert pool %d slots\n", what, ns - drop); std::exit(1); }
+        pool_resize(nv, ns - drop);
+    }
+}
+// the pools take what is free beyond the margin, in proportion to their sizes
+void pools_fill() {
+    if (!E.offload || !E.grow) return;
+    const size_t fr = vram_free(), keep = vram_keep() + 4 * g_vmm.gran;
+    if (fr <= keep) return;
+    const double spare = (double) (fr - keep), used = pool_bytes(true) + pool_bytes(false);
+    for (bool nv : {true, false}) {
+        const int ns = nv ? E.nslot_nv : E.nslot_mx;
+        if (!ns) continue;
+        pool_resize(nv, ns + (int) (spare * pool_bytes(nv) / used / (nv ? ex_bytes(0) : MX_BYTES)));
+    }
+}
+// the full slots hold `need` cells (grown in --kv-grow-step steps, from the expert pools when VRAM is short)
+void kv_fit(int need) {
+    if (!E.grow || need <= E.kv_cells) return;
+    const int nc = std::min(E.ctx, (need + E.grow_step - 1) / E.grow_step * E.grow_step);
+    CK(cudaDeviceSynchronize());
+    const size_t add = kv_mapped_for(nc) - kv_mapped_for(E.kv_cells), keep = vram_keep(), fr = vram_free();
+    if (fr < add + keep && E.offload) pools_release((double) (add + keep - fr), "the K/V");
+    for (size_t i = 0; i < g_kvr.size(); ++i)
+        if (!g_kvr[i].map_to((size_t) nc * g_kvr_bpc[i])) { std::fprintf(stderr, "--kv-grow: out of VRAM at %d cells\n", nc); std::exit(1); }
+    E.kv_cells = nc;
+    std::fprintf(stderr, "kv-grow: %d cells (%.2f GiB K/V), expert slots %d + %d\n", nc, kv_mapped_for(nc) / 1073741824.0,
+                 E.nslot_nv, E.nslot_mx);
+}
+// a request that needs only `need` cells: the rest of the mapped K/V back to the pools
+void kv_trim(int need) {
+    if (!E.grow) return;
+    const int nc = std::min(E.ctx, std::max(E.grow_step, (need + E.grow_step - 1) / E.grow_step * E.grow_step));
+    if (E.kv_cells <= nc + E.grow_step) return;
+    CK(cudaDeviceSynchronize());
+    for (size_t i = 0; i < g_kvr.size(); ++i) g_kvr[i].unmap_to((size_t) nc * g_kvr_bpc[i]);
+    E.kv_cells = nc;
+    pools_fill();
+    std::fprintf(stderr, "kv-grow: back to %d cells, expert slots %d + %d\n", nc, E.nslot_nv, E.nslot_mx);
+}
+
 void alloc_state() {
+    if (E.grow) g_kvr.reserve(4 * NCALLS);   // VRange addresses are handed out: no reallocation
     CK(cudaMemcpyToSymbol(c_kvm, &E.kvm, sizeof(int)));
     E.nchunk_full = (E.ctx + CHUNK - 1) / CHUNK;
     for (int s = 0; s < NCALLS; ++s) {
@@ -2969,21 +3181,29 @@ void alloc_state() {
         Slot& S = E.S[s];
         S.full = full_layer(l);
         S.cap = S.full ? E.ctx : WINDOW + PF_RING_EXTRA;
-        if (E.kvm) {
-            S.K = dalloc((size_t) S.cap * KVD * (E.kvm == 1 ? 2 : 1));
-            S.V = dalloc((size_t) S.cap * (E.kvm == 4 ? KVD / 2 : KVD * (E.kvm == 1 ? 2 : 1)));
-        }
-        if (E.kvm >= 2) {
-            S.ksc = (__half*) dalloc((size_t) S.cap * (KVD / KVG) * 2);
-            S.vsc = (__half*) dalloc((size_t) S.cap * (KVD / (E.kvm == 4 ? V4G : KVG)) * 2);
-        } else if (!E.kvm) {
-            S.K = dfloats((size_t) S.cap * KVD);
-            S.V = dfloats((size_t) S.cap * KVD);
+        void** arr[4] = {&S.K, &S.V, (void**) &S.ksc, (void**) &S.vsc};
+        for (int a = 0; a < 4; ++a) {
+            const size_t b = kv_cell_bytes(a);
+            if (!b) continue;
+            if (E.grow && S.full) {
+                g_kvr.emplace_back();
+                VRange& r = g_kvr.back();
+                r.init((size_t) S.cap * b);
+                g_kvr_bpc.push_back(b);
+                *arr[a] = r.ptr();
+            } else {
+                *arr[a] = dalloc((size_t) S.cap * b);
+            }
         }
         S.khist = dfloats(HR * KVD);
         S.vhist = dfloats(HR * KVD);
         S.ahist = dfloats(HR * H);
         S.mhist = dfloats(HR * H);
+    }
+    if (E.grow) {
+        E.kv_cells = std::min(E.ctx, E.grow_step);
+        for (size_t i = 0; i < g_kvr.size(); ++i)
+            if (!g_kvr[i].map_to((size_t) E.kv_cells * g_kvr_bpc[i])) { std::fprintf(stderr, "--kv-grow: no VRAM for %d cells\n", E.kv_cells); std::exit(1); }
     }
     E.d_pos = (int*) dalloc(4);
     E.h = dfloats(H); E.out = dfloats(H); E.Bbuf = dfloats(8 * H); E.preB = dfloats(8 * H); E.pre_h = dfloats(H);
@@ -4533,6 +4753,7 @@ void draft_device(int p) {
 
 void forward_prefill_device(int T, int pos0, float* all);
 void forward_prefill(const int* toks, int T, int pos0, float* all) {
+    kv_fit(pos0 + T);   // (before the pools are read below: a growth can take slots)
     const size_t ES = (size_t) T * H;
     if (E.offload) {   // what decode left in the pools
         std::vector<const uint8_t*> t((size_t) NL * NE);
@@ -4747,6 +4968,8 @@ int main(int argc, char** argv) {
         else if (a == "--vram-reserve-mib") E.reserve_mib = std::atoi(v);
         else if (a == "--spec") spec = std::atoi(v) != 0;
         else if (a == "--cpu-threads") E.cpu_threads = std::atoi(v);
+        else if (a == "--kv-grow") E.grow = std::atoi(v) != 0;
+        else if (a == "--kv-grow-step") E.grow_step = std::max(CHUNK, std::atoi(v) / CHUNK * CHUNK);
         else if (a == "--kv") {   // Strata's names too (strata_control/tuning.py: fp16, int8)
             const std::string k = v;
             if (k == "f16" || k == "fp16") E.kvm = 1;
@@ -4763,9 +4986,10 @@ int main(int argc, char** argv) {
         else if (a == "--force-routing") { rec_path = v; E.rec_mode = 2; }
         else { std::fprintf(stderr, "unknown option %s\n", a.c_str()); return 2; }
     }
+    if (E.grow) vmm_init();
     if (dir.empty() || (ids.empty() && !serve)) {
         std::fprintf(stderr, "usage: strata-ink2 --model DIR (--serve | --tokens IDS | --tokens-file F) [--n N] [--ctx N] "
-                             "[--chunk N] [--tc 0|1] [--kv f16|fp16|f32|i8|int8|i8r|k8v4|k8v8] [--vram-reserve-mib N [--cpu-threads N]] [--spec 0|1] [--dump-logits F]\n");
+                             "[--chunk N] [--tc 0|1] [--kv f16|fp16|f32|i8|int8|i8r|k8v4|k8v8] [--kv-grow 1 [--kv-grow-step N]] [--vram-reserve-mib N [--cpu-threads N]] [--spec 0|1] [--dump-logits F]\n");
         return 2;
     }
     if (serve && PF.TP <= 0) { std::fprintf(stderr, "--serve needs --chunk > 0\n"); return 2; }
@@ -4824,6 +5048,7 @@ int main(int argc, char** argv) {
 
     vec logits(VOCAB);
     auto step = [&](int tok, int pos, bool want_logits) {
+        kv_fit(pos + 1);
         CK(cudaMemcpyAsync(E.d_pos, &pos, 4, cudaMemcpyHostToDevice));
         upload_embed(tok);
         if (!E.graph) {
@@ -4989,6 +5214,7 @@ int main(int argc, char** argv) {
             }
             max_new = std::max(0, std::min(max_new, E.ctx - (int) pr.size()));
             const bool reuse = !hist.empty() && pr.size() >= hist.size() && std::equal(hist.begin(), hist.end(), pr.begin());
+            kv_trim((int) pr.size() + 1);
             size_t start = reuse ? hist.size() : 0;
             if (spec && start == pr.size()) start = pr.size() - 1;   // re-fed: the drafter needs its features
             const double t0 = now_ms();
