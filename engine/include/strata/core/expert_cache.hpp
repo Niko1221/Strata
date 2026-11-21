@@ -83,6 +83,11 @@ size_t device_free_bytes();
 /// One piece of an expert blob that lives contiguously in a source's own memory: `n` bytes at `p`, to land `at` bytes into the blob.
 struct BlobPart { const uint8_t* p; uint64_t n; uint64_t at; };
 
+/// A blocking host-to-device copy of `bytes` from `src`, which may be a file mapping.  Where the staged copies are on
+/// (STRATA_FILL_STAGED, or an integrated GPU on Linux: see expert_cache.cpp) the bytes go through a pinned bounce buffer
+/// in 64 MiB pieces instead of a pageable cudaMemcpy; elsewhere it is that cudaMemcpy.  Returns the CUDA status.
+int copy_to_device_staged(void* dst, const void* src, std::size_t bytes);
+
 class ExpertCache {
 public:
     ExpertCache() = default;
@@ -244,11 +249,16 @@ public:
     }
 
 private:
-#if defined(STRATA_USE_HIP)
+    // HIP: every blocking fill; CUDA: the staged copies (staged_copies() in expert_cache.cpp)
     bool ensure_blocking_staging(std::size_t bytes, std::string& err);
     uint8_t* blocking_staging_ = nullptr;
     std::size_t blocking_staging_bytes_ = 0;
-#endif
+    // CUDA, staged copies: the queued fills' ring of pinned bounce buffers, each reused once its event says the copy
+    // out of it is done (cudaEvent_t, kept as void* so this header needs no CUDA types)
+    bool queued_staging(std::size_t bytes, uint8_t*& buf, void*& ev, std::string& err);
+    std::vector<uint8_t*> q_stage_;
+    std::vector<void*> q_ev_;
+    std::size_t q_stage_bytes_ = 0, q_next_ = 0;
     int64_t slot_end(int64_t n) const { return off_.empty() ? n * blob_ : (int64_t) off_[(size_t) n]; }
     bool open_segmented(uint64_t want, std::string& err);
     void release_segmented();

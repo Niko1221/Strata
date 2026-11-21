@@ -35,6 +35,14 @@
 #define STRATA_EC_NVML_FREE 1
 #endif
 
+// STRATA_FILL_STAGED (staged_copies below): the CUDA engine on Linux, where it was measured.  HIP keeps its own staging.
+#if defined(__linux__) && !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906) && !defined(STRATA_GPU_METAL) && \
+    !defined(SYCL_LANGUAGE_VERSION)
+#define STRATA_EC_STAGED 1
+#else
+#define STRATA_EC_STAGED 0
+#endif
+
 namespace strata::core {
 
 #if defined(STRATA_EC_NVML_FREE)
@@ -580,7 +588,7 @@ bool ExpertCache::grow(int64_t want_bytes, std::string& err) {
 #endif
 }
 
-#if defined(STRATA_USE_HIP)
+#if defined(STRATA_USE_HIP) || STRATA_EC_STAGED
 bool ExpertCache::ensure_blocking_staging(std::size_t bytes, std::string& err) {
     if (bytes <= blocking_staging_bytes_) return true;
     void* next = nullptr;
@@ -592,6 +600,88 @@ bool ExpertCache::ensure_blocking_staging(std::size_t bytes, std::string& err) {
     if (blocking_staging_) (void) cudaFreeHost(blocking_staging_);
     blocking_staging_ = static_cast<uint8_t*>(next);
     blocking_staging_bytes_ = bytes;
+    return true;
+}
+#endif
+
+#if STRATA_EC_STAGED
+namespace {
+// Copy the expert blobs through pinned bounce buffers instead of handing the driver the pageable source.  On an
+// integrated GPU with unified memory (RTX Spark N1X, driver 620.70.06; measured, docs: #5678) a pageable
+// cudaMemcpy[Async] whose source is a file mapping (--mmap-experts) gets slower with every new file page it touches:
+// 494 MB/s for the first 500 experts, ~40 MB/s after 8,000.  The 24,576-expert profile fill took 36 min, and the
+// refill of a prompt's lent slots took long enough for the no-progress watchdog to end the engine a few tokens before
+// the end of a long prompt.  The same copies from anonymous memory, or repeated from one mapped range, stay at
+// ~50 GB/s, and a memcpy into a pinned buffer plus a pinned copy runs at ~1.4 GB/s for the whole fill (49 s).
+// Opt-in: STRATA_FILL_STAGED=1.  Unset, every copy is the pageable cudaMemcpy[Async] it was.
+bool staged_copies() {
+    static const bool on = [] {
+        const char* v = std::getenv("STRATA_FILL_STAGED");
+        return v != nullptr && v[0] == '1';
+    }();
+    return on;
+}
+constexpr std::size_t kQueuedStageRing = 8;   // bounce buffers in flight; the host memcpy of one overlaps the DMA of the others
+}  // namespace
+#endif
+
+int copy_to_device_staged(void* dst, const void* src, std::size_t bytes) {
+#if STRATA_EC_STAGED
+    if (staged_copies() && bytes > 0) {
+        static std::mutex mu;
+        static uint8_t* buf = nullptr;
+        constexpr std::size_t kPiece = std::size_t(64) << 20;
+        std::lock_guard<std::mutex> lk(mu);
+        if (buf == nullptr) {
+            void* p = nullptr;
+            if (cudaHostAlloc(&p, kPiece, cudaHostAllocDefault) == cudaSuccess) buf = static_cast<uint8_t*>(p);
+        }
+        if (buf != nullptr) {
+            for (std::size_t at = 0; at < bytes; at += kPiece) {
+                const std::size_t n = std::min(kPiece, bytes - at);
+                std::memcpy(buf, static_cast<const uint8_t*>(src) + at, n);
+                if (const cudaError_t e = cudaMemcpy(static_cast<uint8_t*>(dst) + at, buf, n, cudaMemcpyHostToDevice);
+                    e != cudaSuccess)
+                    return (int) e;
+            }
+            return (int) cudaSuccess;
+        }
+    }
+#endif
+    return (int) cudaMemcpy(dst, src, bytes, cudaMemcpyHostToDevice);
+}
+
+#if STRATA_EC_STAGED
+bool ExpertCache::queued_staging(std::size_t bytes, uint8_t*& buf, void*& ev, std::string& err) {
+    if (bytes > q_stage_bytes_) {   // (re)build the ring: wait for what is in flight, then size every buffer to `bytes`
+        (void) cudaStreamSynchronize((cudaStream_t) 0);
+        for (uint8_t* p : q_stage_) (void) cudaFreeHost(p);
+        for (void* e : q_ev_) (void) cudaEventDestroy((cudaEvent_t) e);
+        q_stage_.clear();
+        q_ev_.clear();
+        q_stage_bytes_ = 0;
+        for (std::size_t i = 0; i < kQueuedStageRing; ++i) {
+            void* p = nullptr;
+            cudaEvent_t e = nullptr;
+            if (cudaHostAlloc(&p, bytes, cudaHostAllocDefault) != cudaSuccess ||
+                cudaEventCreateWithFlags(&e, cudaEventDisableTiming) != cudaSuccess) {
+                if (p) (void) cudaFreeHost(p);
+                err = "ExpertCache: the staged copies' pinned ring could not be allocated";
+                return false;
+            }
+            q_stage_.push_back(static_cast<uint8_t*>(p));
+            q_ev_.push_back(e);
+        }
+        q_stage_bytes_ = bytes;
+        q_next_ = 0;
+    }
+    const std::size_t i = q_next_++ % q_stage_.size();
+    if (cudaEventSynchronize((cudaEvent_t) q_ev_[i]) != cudaSuccess) {   // the copy out of this buffer has left it
+        err = "ExpertCache: waiting for a staged copy failed";
+        return false;
+    }
+    buf = q_stage_[i];
+    ev = q_ev_[i];
     return true;
 }
 #endif
@@ -737,10 +827,18 @@ bool ExpertCache::open_sized(const std::vector<int64_t>& slot_bytes, int64_t n_l
 }
 
 void ExpertCache::close() {
-#if defined(STRATA_USE_HIP)
+#if defined(STRATA_USE_HIP) || STRATA_EC_STAGED
     if (blocking_staging_) (void) cudaFreeHost(blocking_staging_);
     blocking_staging_ = nullptr;
     blocking_staging_bytes_ = 0;
+#endif
+#if STRATA_EC_STAGED
+    if (!q_stage_.empty()) (void) cudaStreamSynchronize((cudaStream_t) 0);
+    for (uint8_t* p : q_stage_) (void) cudaFreeHost(p);
+    for (void* e : q_ev_) (void) cudaEventDestroy((cudaEvent_t) e);
+    q_stage_.clear();
+    q_ev_.clear();
+    q_stage_bytes_ = q_next_ = 0;
 #endif
     off_.clear();
     guard_ = 0;
@@ -860,7 +958,15 @@ bool ExpertCache::fill_slot_blocking(int32_t slot, const uint8_t* host_blob, std
     std::memcpy(blocking_staging_, host_blob, n);
     const cudaError_t e = cudaMemcpy(dst, blocking_staging_, n, cudaMemcpyHostToDevice);
 #else
-    const cudaError_t e = cudaMemcpy(dst, host_blob, n, cudaMemcpyHostToDevice);
+    cudaError_t e;
+#if STRATA_EC_STAGED
+    if (staged_copies()) {   // through a pinned bounce buffer (see staged_copies)
+        if (!ensure_blocking_staging(n, err)) return false;
+        std::memcpy(blocking_staging_, host_blob, n);
+        e = cudaMemcpy(dst, blocking_staging_, n, cudaMemcpyHostToDevice);
+    } else
+#endif
+        e = cudaMemcpy(dst, host_blob, n, cudaMemcpyHostToDevice);
 #endif
     if (e != cudaSuccess) {
         err = std::string("ExpertCache::fill_slot_blocking: ") + cudaGetErrorString(e);
@@ -879,6 +985,22 @@ bool ExpertCache::fill_slot_queued(int32_t slot, const uint8_t* host_blob, std::
                              : "ExpertCache::fill_slot_queued: the host blob is null";
         return false;
     }
+#if STRATA_EC_STAGED
+    if (staged_copies()) {   // through the pinned ring, still queued on the legacy stream (sync_queued waits as before)
+        uint8_t* buf = nullptr;
+        void* ev = nullptr;
+        if (!queued_staging((size_t) blob_, buf, ev, err)) return false;
+        std::memcpy(buf, host_blob, n);
+        cudaError_t e = cudaMemcpyAsync(dst, buf, n, cudaMemcpyHostToDevice, (cudaStream_t) 0);
+        if (e == cudaSuccess) e = cudaEventRecord((cudaEvent_t) ev, (cudaStream_t) 0);
+        if (e != cudaSuccess) {
+            err = std::string("ExpertCache::fill_slot_queued: ") + cudaGetErrorString(e);
+            return false;
+        }
+        ++fills_;
+        return true;
+    }
+#endif
     const cudaError_t e = cudaMemcpyAsync(dst, host_blob, n, cudaMemcpyHostToDevice, (cudaStream_t) 0);
     if (e != cudaSuccess) {
         err = std::string("ExpertCache::fill_slot_queued: ") + cudaGetErrorString(e);
@@ -901,6 +1023,26 @@ bool ExpertCache::fill_slot_queued_parts(int32_t slot, const BlobPart* parts, in
         err = "ExpertCache::fill_slot_queued_parts: the pieces are larger than a slot";
         return false;
     }
+#if STRATA_EC_STAGED
+    if (staged_copies()) {   // the pieces assembled in one pinned buffer, then one copy
+        uint8_t* buf = nullptr;
+        void* ev = nullptr;
+        if (!queued_staging((size_t) blob_, buf, ev, err)) return false;
+        uint64_t end = 0;
+        for (int i = 0; i < n; ++i) {
+            std::memcpy(buf + parts[i].at, parts[i].p, (size_t) parts[i].n);
+            end = std::max<uint64_t>(end, parts[i].at + parts[i].n);
+        }
+        cudaError_t e = cudaMemcpyAsync(dst, buf, (size_t) end, cudaMemcpyHostToDevice, (cudaStream_t) 0);
+        if (e == cudaSuccess) e = cudaEventRecord((cudaEvent_t) ev, (cudaStream_t) 0);
+        if (e != cudaSuccess) {
+            err = std::string("ExpertCache::fill_slot_queued_parts: ") + cudaGetErrorString(e);
+            return false;
+        }
+        ++fills_;
+        return true;
+    }
+#endif
     for (int i = 0; i < n; ++i) {
         const cudaError_t e = cudaMemcpyAsync(dst + parts[i].at, parts[i].p, (size_t) parts[i].n, cudaMemcpyHostToDevice,
                                               (cudaStream_t) 0);

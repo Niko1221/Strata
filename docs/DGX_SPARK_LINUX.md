@@ -140,6 +140,23 @@ With `"parallel": 4` (the default) the original four-switch set adds up: 32 clie
 and 35.7 with all four off. The side mixer was not part of that check. At `"parallel": 8` the two original decode switches cost about 3.5%
 each; set `STRATA_HC_UPMIX=0 STRATA_SPEC_COST=0` there.
 
+## RTX Spark N1X laptops: `STRATA_FILL_STAGED=1`
+
+Measured on one HP OmniBook X 14 (RTX Spark N1X, sm_121, 120 GB unified memory, driver 620.70.06, CUDA 13.4, the
+NVFP4-QAD pack with `--mmap-experts`). There a `cudaMemcpy` whose source is the mapped `experts.bin` (or the mapped
+dense GGUF) gets slower with every new file page it touches: about 500 MB/s for the first 500 experts, about 40 MB/s
+after 8,000. The same copies from anonymous memory stay at about 50 GB/s. Two things follow:
+
+- the start takes about 42 minutes: the profile fill of 24,576 experts ran at 31 MB/s (2,184 s), and the 300 native
+  dense matrices took 345 s;
+- a prompt read through the batched path lends cache slots and refills them from the mapping at its end. On a long
+  prompt that refill outlasted the 60 s no-progress watchdog, which ended the engine a few tokens before the end of the
+  prompt (#5678).
+
+`STRATA_FILL_STAGED=1` copies those blobs and tensors through pinned bounce buffers instead (a ring of eight for the
+queued refills). With it the fill took 44 s, the dense matrices 1.4 s, a start 58 s, and a full speed run of 2K to 128K
+prompts had no stall. It is off by default; it was not measured on a DGX Spark.
+
 ## What this does not cover
 
 Decode on the 48-SM GB10 is limited by the GPU's work, about 930 kernel launches per token. No configuration switch measured here moved it more
