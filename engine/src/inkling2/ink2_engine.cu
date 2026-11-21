@@ -4032,6 +4032,26 @@ void alloc_prefill() {
     }
 }
 
+// A chunk is read routed only if its pools can hold all its ids at once, so that no group's plan evicts an expert an
+// earlier group of the chunk fetched (its tiles would be skipped): T x TOPK, plus the promotions in flight with the
+// CPU experts, within the smaller pool.  CBA: counts ids, not distinct experts (a device count would cost a sync).
+bool pf_routed_ok(int T) {
+    if (!E.offload || T > g_pf_routed_max) return false;
+    const int need = T * TOPK + (E.cpu ? PMAX : 0);
+    return need <= E.nslot_nv && (!E.nslot_mx || need <= E.nslot_mx);
+}
+// a chunk that streams after all (pf_map left the staging out, then a K/V growth shrank the pools): the staging halves
+// mapped now, before forward_prefill reads what the pools hold
+void pf_map_staging() {
+    size_t add = 0;
+    for (size_t i = 0; i < g_pfr.size(); ++i) if (g_pfr_whole[i] == 2) add += g_pfr[i].reserved - g_pfr[i].mapped;
+    if (!add) return;
+    CK(cudaDeviceSynchronize());
+    const size_t keep = vram_keep(), fr = vram_free();
+    if (fr < add + keep) pools_release((double) (add + keep - fr), "the staging");
+    for (size_t i = 0; i < g_pfr.size(); ++i)
+        if (g_pfr_whole[i] == 2 && !g_pfr[i].map_to(g_pfr[i].reserved)) { std::fprintf(stderr, "staging: out of VRAM\n"); std::exit(1); }
+}
 // the prompt buffers for chunks of T tokens (T <= --chunk): mapped, from the pools if VRAM is short
 void pf_map(int T) {
     if (g_pfr.empty() || T <= g_pf_mapped_T) return;
@@ -4040,7 +4060,7 @@ void pf_map(int T) {
     std::vector<size_t> want(g_pfr.size());
     for (size_t i = 0; i < g_pfr.size(); ++i) {
         const VRange& r = g_pfr[i];
-        want[i] = g_pfr_whole[i] == 2 ? (T <= g_pf_routed_max ? 0 : r.reserved)
+        want[i] = g_pfr_whole[i] == 2 ? (pf_routed_ok(T) ? 0 : r.reserved)
                 : g_pfr_whole[i] ? r.reserved : r.need(std::min(r.reserved, (size_t) ((double) r.reserved * (T + 64) / PF.TP)));
         if (want[i] > r.mapped) add += want[i] - r.mapped;
     }
@@ -4275,8 +4295,8 @@ void moe_b(const Layer& Y, const float* x, float* out, int T, int pos0) {
     const int l = int(&Y - E.L), nr = T * TOPK, maxt = nr / FM + NE;
     // A short chunk uses few experts: it makes the ones it routes to resident through the decode cache (groups of 8
     // tokens: at most 64 misses per plan) instead of streaming every expert the pools do not hold.
-    g_pf_routed = E.offload && T <= g_pf_routed_max;
-    if (g_pf_routed)
+    // (g_pf_routed: set per chunk by forward_prefill; the small-T path below caches its own experts)
+    if (g_pf_routed && !(T <= SMALL_T && !X.gg13))
         for (int t0 = 0; t0 < T; t0 += 8) expert_cache(l, PF.ids + (size_t) t0 * TOPK, std::min(8, T - t0) * TOPK);
     if (T <= SMALL_T && !X.gg13) {   // offload: the verify's experts through the decode cache (T x TOPK ids), not the staging
         if (E.offload) expert_cache(l, PF.ids, T * TOPK);
@@ -4839,6 +4859,8 @@ void draft_device(int p) {
 void forward_prefill_device(int T, int pos0, float* all);
 void forward_prefill(const int* toks, int T, int pos0, float* all) {
     kv_fit(pos0 + T);   // (before the pools are read below: a growth can take slots)
+    g_pf_routed = pf_routed_ok(T);
+    if (!g_pf_routed) pf_map_staging();
     const size_t ES = (size_t) T * H;
     if (E.offload) {   // what decode left in the pools
         std::vector<const uint8_t*> t((size_t) NL * NE);
