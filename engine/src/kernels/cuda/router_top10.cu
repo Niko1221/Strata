@@ -427,6 +427,8 @@ void router_top10(const float* logits, int n_tokens, int n_expert, int k, int* i
         // gfx906 (wave64): the one-wavefront kernel below stays the default; the S6 kernel is wave32-shaped and only
         // runs here on request (STRATA_HIP_ROUTER_FAST=1) until it is measured on this card
         static const bool old = std::getenv("STRATA_HIP_ROUTER_FAST") == nullptr;
+#elif defined(STRATA_HIP_GFX90A)
+        static const bool old = true;   // M1: keep the generic logical32 block kernel until measured on MI210
 #else
         static const bool old = std::getenv("STRATA_HIP_ROUTER_OLD") != nullptr;
 #endif

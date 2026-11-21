@@ -586,7 +586,7 @@ bool slot_copy_batchsync_env() {
 // Whether pin_blobs locks anything (AMD on Linux with STRATA_ARENA_MMAP=1): the callers only gather the swaps' spans
 // then - `blob()` is not free (it counts reads, and the file tier may assemble the blob), so the default runs skip it.
 bool pin_blobs_on() {
-#if (defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906)) && !defined(_WIN32)
+#if (defined(STRATA_USE_HIP) || defined(STRATA_HIP_WAVE64)) && !defined(_WIN32)
     static const bool on = std::getenv("STRATA_ARENA_MMAP") && std::getenv("STRATA_ARENA_MMAP")[0] == '1';
     return on;
 #else
@@ -619,7 +619,7 @@ cudaError_t adapt_copy_h2d(void* dst, const void* src, size_t bytes, cudaStream_
 }
 int pin_blobs(std::vector<std::pair<uintptr_t, uintptr_t>> r, std::vector<void*>& live) {
     int failed = 0;   // ranges left pageable (a copy from them still works, through the driver's staging)
-#if (defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906)) && !defined(_WIN32)
+#if (defined(STRATA_USE_HIP) || defined(STRATA_HIP_WAVE64)) && !defined(_WIN32)
     if (!pin_blobs_on() || r.empty()) return 0;
     for (auto& [a, e] : r) { a &= ~(uintptr_t) 4095; e = (e + 4095) & ~(uintptr_t) 4095; }
     std::sort(r.begin(), r.end());
@@ -1194,9 +1194,14 @@ void usage() {
                  "  --pack DIR           the pack directory (default pack/full)\n"
                  "  --tokens LIST        the prompt as comma-separated token IDS (required)\n"
                  "  --tokens-file PATH   pretokenized prompt, commas or whitespace (alternative to --tokens)\n"
+#if defined(STRATA_HIP_GFX90A)
+                 "  --gpu LIST           select visible HIP device indices (sets HIP_VISIBLE_DEVICES).\n"
+                 "                       The experimental gfx90a engine runs on one selected GPU per process.\n"
+#else
                  "  --gpu LIST           run on these GPUs, comma-separated nvidia-smi/PCI indices (default: every\n"
                  "                       visible one); sets CUDA_VISIBLE_DEVICES/CUDA_DEVICE_ORDER inside the engine,\n"
                  "                       so a caller never has to export environment variables\n"
+#endif
                  "  --ple-gguf PATH      required PLE table (original second GGUF shard); with --native, the model's\n"
                  "                       shard that holds per_layer_token_embd.weight when not given\n"
                  "  --no-ple             explicit diagnostic ablation of the PLE layer\n"
@@ -1881,7 +1886,7 @@ void pl_diag_print(std::FILE* f) {
 // raises once cudaGraphLaunch has returned, and a blocking launch returns only when the graph has finished, so the
 // first window never ends (the batched prompt path has no such wait and runs).  HIP's own switches are not checked.
 bool launch_blocking() {
-#if defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906)
+#if defined(STRATA_USE_HIP) || defined(STRATA_HIP_WAVE64)
     return false;
 #else
     const char* v = std::getenv("CUDA_LAUNCH_BLOCKING");
@@ -2241,6 +2246,8 @@ std::string draft_costs_key(int argc, char** argv, const std::string& extra, boo
     std::string k = "engine " STRATA_VERSION;
 #if defined(STRATA_GPU_METAL)
     k += "|metal";
+#elif defined(STRATA_HIP_GFX90A)
+    k += "|hip-gfx90a";
 #elif defined(STRATA_USE_HIP)
     k += "|hip";
 #else
@@ -2255,7 +2262,7 @@ std::string draft_costs_key(int argc, char** argv, const std::string& extra, boo
         k += std::string("|") + prop.name + " cc " + std::to_string(prop.major) + "." + std::to_string(prop.minor) + " " +
              std::to_string((unsigned long long) (prop.totalGlobalMem >> 20)) + " MiB";
     }
-#if !defined(STRATA_HIP_GFX906) && !defined(STRATA_GPU_METAL)
+#if !defined(STRATA_HIP_WAVE64) && !defined(STRATA_GPU_METAL)
     int drv = 0, rt = 0;
     if (cudaDriverGetVersion(&drv) != cudaSuccess) { drv = 0; (void) cudaGetLastError(); }
     if (cudaRuntimeGetVersion(&rt) != cudaSuccess) { rt = 0; (void) cudaGetLastError(); }
@@ -2345,7 +2352,7 @@ static void print_startup_gpu_report(const std::vector<int>& devices) {
         cudaDeviceProp prop{};
         if (cudaGetDeviceProperties(&prop, d) == cudaSuccess) c.name = prop.name;
         else (void) cudaGetLastError();
-#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906) && !defined(STRATA_GPU_METAL)
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_WAVE64) && !defined(STRATA_GPU_METAL)
         char bus[64] = {};
         if (cudaDeviceGetPCIBusId(bus, (int) sizeof bus, d) == cudaSuccess) c.processes_known = gr::query_other_processes(bus, c.processes);
         else (void) cudaGetLastError();
@@ -2785,7 +2792,9 @@ static bool pcie_auto_split_ok() {
 // 0.1.43: the HIP defaults of the decode speed push (route tail skip, measured PCIe share) were measured on gfx1201 (Radeon AI PRO
 // R9700) and apply on gfx1200 / gfx1201 only; every other AMD part (gfx11, gfx906, ...) keeps its earlier behaviour.  CUDA: always true.
 [[maybe_unused]] static bool decode_defaults_arch_ok() {
-#if defined(STRATA_USE_HIP)
+#if defined(STRATA_HIP_GFX90A)
+    return false;
+#elif defined(STRATA_USE_HIP)
     int dev = 0;
     cudaDeviceProp p{};
     return cudaGetDevice(&dev) == cudaSuccess && cudaGetDeviceProperties(&p, dev) == cudaSuccess &&
@@ -3403,7 +3412,7 @@ static double ple_direct_rows_per_s(strata::kernels::PleTable& t) {
     return el > 0 ? (double) done / el : -1.0;
 }
 
-#if defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
+#if defined(STRATA_USE_HIP) && !defined(STRATA_HIP_WAVE64)
 // The R9700 / RX 9000 "bimodal prompt speed" (0.2.0 known limit).  The runtime opens the process's hardware queues
 // lazily, as the first stream of each kind is used, and the kernel's scheduler (MES) puts a queue on one of the
 // card's compute pipes when the queue first gets work.  The loader threads reach their streams in a different order
@@ -3670,7 +3679,7 @@ int main(int argc, char** argv) {
             return ok ? 0 : 3;
         }
     }
-#if (defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906)) && !defined(_WIN32)
+#if (defined(STRATA_USE_HIP) || defined(STRATA_HIP_WAVE64)) && !defined(_WIN32)
     // AMD, a file-backed arena (STRATA_ARENA_MMAP): ROCclr copies a pageable source of 1 MiB or more by locking its
     // pages in place (a GPU userptr), and keeps them - so every expert the VRAM fill copied from the mapped
     // experts.bin stayed resident, the release of the VRAM-held ones was undone by the driver at once, and a
@@ -3721,7 +3730,7 @@ int main(int argc, char** argv) {
         // The caller's own environment is overridden, so say so (a stale CUDA_VISIBLE_DEVICES from a launcher
         // would otherwise silently lose to the flag).
         const char* envname = "CUDA_VISIBLE_DEVICES";
-#if defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906)
+#if defined(STRATA_USE_HIP) || defined(STRATA_HIP_WAVE64)
         envname = "HIP_VISIBLE_DEVICES";   // the AMD runtime ignores CUDA_VISIBLE_DEVICES (serve/server.py sets this one)
 #endif
         const char* prev = std::getenv(envname);
@@ -3753,7 +3762,7 @@ int main(int argc, char** argv) {
         break;
     }
 #endif
-#if defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
+#if defined(STRATA_USE_HIP) && !defined(STRATA_HIP_WAVE64)
     prime_hw_queues();
 #endif
     Options o;
@@ -4170,6 +4179,19 @@ int main(int argc, char** argv) {
         }
         }
     }
+#if defined(STRATA_HIP_GFX90A)
+    if (!o.layer_split.empty() || o.peer_device >= 1 ||
+        std::any_of(o.expert_cache_remote.begin(), o.expert_cache_remote.end(), [](int n) { return n > 0; })) {
+        std::fprintf(stderr, "strata generate: the experimental gfx90a engine supports a single GPU per process\n");
+        return 2;
+    }
+    const char* selected = std::getenv("STRATA_PRIMARY_DEVICE");
+    const int primary_device = selected ? std::max(0, std::atoi(selected)) : 0;
+    if (const std::string why = strata::core::gpu_arch_problem(primary_device); !why.empty()) {
+        std::fprintf(stderr, "strata generate: %s\n", why.c_str());
+        return 1;
+    }
+#endif
     {   // --ram-keep-gib W (or STRATA_RAM_KEEP_GIB, for a program that cannot pass the flag; the flag wins): the RAM to leave free.  It also
         // raises the headroom of the explicit RAM modes (--resident-budget-gib, --resident-experts) to at least W, unless
         // STRATA_RESIDENT_HEADROOM_GIB is set (that value wins).
@@ -4303,7 +4325,7 @@ int main(int argc, char** argv) {
         } else (void) cudaGetLastError();
     }
 #endif
-#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906) && !defined(STRATA_GPU_METAL) && !defined(_WIN32)
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_WAVE64) && !defined(STRATA_GPU_METAL) && !defined(_WIN32)
     // Linux CUDA, 2 or more batch slots: the exact parallel-request stack is the engine's own default (QUAL-PAR bit-exact; it was the launcher's
     // PARALLEL_STACK_ENV).  Each switch keeps =0 as its off switch and a value the user set is kept.  Before any engine code reads them.
     strata::core::apply_parallel_defaults_cuda(true, o.batch);
@@ -4314,7 +4336,7 @@ int main(int argc, char** argv) {
                              "on Windows HIP (RX 7900 XTX: the commit charge jumped ~70 GB, exit code 0xC0000409, "
                              "#1630); 7500 and below were stable. Kept as asked; a bare --prefill auto stops at %lld\n",
                      o.prefill_cap_warn.c_str(), (long long) strata::platform::host_limits::kWinHipAutoChunkCap);
-#if !defined(STRATA_USE_HIP) && !defined(STRATA_GPU_METAL)
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_GPU_METAL) && !defined(STRATA_HIP_GFX90A)
     // the start-up line about K-quant experts: the default is set here (before any engine code reads its switches), the line is printed once the expert layout is
     // loaded and only when the loaded set has K-quant experts (strata::core::nv_kq_line_wanted), so a model without them says nothing untrue
     bool kq_line_pending = false, kq_line_fused = false;
@@ -4366,7 +4388,7 @@ int main(int argc, char** argv) {
         (void) cudaGetLastError();
     }
 #endif
-#if !defined(STRATA_USE_HIP) && !defined(STRATA_GPU_METAL)
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_GPU_METAL) && !defined(STRATA_HIP_GFX90A)
     if (o.prefill_auto_bare && o.prefill_auto_cap == 0) {
         // NVIDIA, compute capability 8.0 and up, and 7.0 (Volta, lane 10, one V100: 20K +134%, 32K +111%, see nv_chunk.hpp); Turing and Pascal keep 8192
         // (round 0212, owner 11-03 "after the full test suite passes on it"): a bare `--prefill auto` may reach
@@ -4591,11 +4613,13 @@ int main(int argc, char** argv) {
     // enumerates the cards in a fixed order no HIP_VISIBLE_DEVICES list can change (it only filters), so with a
     // slower card first a run could only put the model on it (RX 6600 before RX 6800).  0 (unset) is upstream's
     // behavior; the helper caches and the peer tier follow it, a layer split still assumes device 0 (see below).
+#if !defined(STRATA_HIP_GFX90A)
     const int primary_device = [] {
         const char* v = std::getenv("STRATA_PRIMARY_DEVICE");
         const int n = v != nullptr ? std::atoi(v) : 0;
         return n > 0 ? n : 0;
     }();
+#endif
     strata::core::set_primary_device(primary_device);
     // parking with --layer-split saves every stage (SavedConversation::stage_images)
     // Layer split (multi-GPU): the later stages run layers [K_i, K_i+1) on their own GPUs (--split-device, default
@@ -4975,7 +4999,7 @@ int main(int argc, char** argv) {
             if (!ple_only && !ple_present)
                 o.native_dense_gguf.push_back(o.ple_gguf);
         }
-#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906) && !defined(STRATA_GPU_METAL)
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_WAVE64) && !defined(STRATA_GPU_METAL)
         // CUDA, a file that carries the hyper-connection projections as Q8_0 (Unsloth's UD-* files): the Q8_0 read is on by default (owner yes
         // 2026-11-07; was setup's unsloth_default_env, "closer to the file and faster").  The GSQ-RCO packs keep them BF16 and stay as they were.
         // STRATA_HC_Q8=0 turns it off; a value the user set is kept.  Before the first read of the switch (the dense load below).
@@ -5195,7 +5219,7 @@ int main(int argc, char** argv) {
             (void) strata::prefill::mmq::supported(f.d_type);
 #endif
         }
-#if !defined(STRATA_USE_HIP) && !defined(STRATA_GPU_METAL)
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_GPU_METAL) && !defined(STRATA_HIP_GFX90A)
         if (kq_line_pending && lay.native) {
             std::vector<std::pair<int, int>> kq_types;
             kq_types.reserve(lay.fmt.size());
@@ -5213,7 +5237,7 @@ int main(int argc, char** argv) {
         if (strata::kernels::cpu::hadamard_spec().any()) {
             std::fprintf(stderr, "strata generate: APR pack: Hadamard-folded experts (block %d)\n",
                          strata::kernels::cpu::hadamard_spec().block);
-#if defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906)
+#if defined(STRATA_USE_HIP) || defined(STRATA_HIP_WAVE64)
             int dev = 0;
             cudaDeviceProp p{};
             if (cudaGetDevice(&dev) == cudaSuccess && cudaGetDeviceProperties(&p, dev) == cudaSuccess) {
@@ -5249,7 +5273,11 @@ int main(int argc, char** argv) {
                          primary_device, cudaGetErrorString(cudaGetLastError()));
             return 1;
         }
+#if defined(STRATA_HIP_GFX90A)
+        std::fprintf(stderr, "strata generate: primary device from STRATA_PRIMARY_DEVICE: HIP%d\n", primary_device);
+#else
         std::fprintf(stderr, "strata generate: primary device from STRATA_PRIMARY_DEVICE: CUDA%d\n", primary_device);
+#endif
     }
     // ---- STRATA_EXPERT_NIBBLE=1 keeps the gate/up experts of IQ2_S / IQ3_XXS / IQ3_S layers as 4-bit codes in their VRAM
     // slots (strata/core/expert_nibble.hpp).  Unset or 0: nothing here runs, no table is set, and every slot size below is
@@ -5773,7 +5801,7 @@ int main(int argc, char** argv) {
         // #486: the arena is the first large allocation and its size does not depend on the context, so what is
         // missing is held by something else: say how much was free
         cudaGetLastError();
-#if (defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906)) && !defined(_WIN32)
+#if (defined(STRATA_USE_HIP) || defined(STRATA_HIP_WAVE64)) && !defined(_WIN32)
         // HIP sees no device at all and /dev/kfd exists but this user cannot open it: the missing render / video group,
         // not another program holding the memory (0 MiB of 0 MiB would blame the wrong thing)
         {
@@ -7983,7 +8011,12 @@ int main(int argc, char** argv) {
                               : o.pipeline_windows > 0 ? "it does not run beside --pipeline-windows (the MTP's speculative next window has no DFlash2 counterpart); --pipeline-windows 0"
                               : o.draft_model.empty() ? "it needs --draft-model PACK (tools/dflash2_pack.py)" : nullptr;
             if (why == nullptr) {
-                if (df2.load(o.draft_model, multi_gpu && last_st != nullptr && !df2_first ? last_st->dev : 0, err)) {
+#if defined(STRATA_HIP_GFX90A)
+                const int draft_device = primary_device;
+#else
+                const int draft_device = multi_gpu && last_st != nullptr && !df2_first ? last_st->dev : 0;
+#endif
+                if (df2.load(o.draft_model, draft_device, err)) {
                     use_df2 = true;
                     // Per card class, from the measured A/Bs (notes-dflash2-p1.md, RESULTS-CONF.md 11-08; the numbers are in core/draft_cap.hpp): Strix Halo 8, Blackwell cc 12.0 with
                     // at least 48 GB 8, other Blackwell 6; a 12 GB NVIDIA card is slower with DFlash2 than with the MTP at every cap but code, which only the user can know.
@@ -8266,11 +8299,14 @@ int main(int argc, char** argv) {
             }
         }
 #endif
+#elif defined(STRATA_HIP_GFX90A)
+        std::fprintf(stderr, "strata generate: GPU %d: %s (%s, wave%d), experimental gfx90a HIP engine\n",
+                     dev, name, named ? p.gcnArchName : "?", named ? p.warpSize : 0);
 #else
         std::fprintf(stderr, "strata generate: GPU %d: %s, compute capability %d.%d%s\n", dev, name,
                      strata::cc_major_of(p.major), strata::cc_minor_of(p.minor),
                      strata::emulated_cc() ? " (STRATA_EMULATE_CC: a test mode, the card is emulated)" : "");
-#if !defined(STRATA_HIP_GFX906) && !defined(STRATA_GPU_METAL)   // a CUDA toolkit mismatch; the gfx906 HIP build has no CUDART_VERSION
+#if !defined(STRATA_HIP_WAVE64) && !defined(STRATA_GPU_METAL)   // a CUDA toolkit mismatch; the gfx906 HIP build has no CUDART_VERSION
         {   // #542: a build whose libcudart is older than its headers (a CUDA 13 kit with a dangling libcudart.so that
             // CMake resolved to the system's CUDA 12 one) reads cudaDeviceProp shifted - silently, and slowly
             int rt = 0;
@@ -12394,7 +12430,7 @@ int main(int argc, char** argv) {
         // Linux CUDA builds only: an AMD APU (HIP maps the attribute to hipDeviceAttributeIntegrated) is not measured with it, the
         // gfx906 layer has no such attribute, Metal reports every Mac as integrated, and Windows has no page drop
         // (tools/test_uma_drop_guard.py checks this guard).
-#if defined(__linux__) && !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906) && !defined(STRATA_GPU_METAL)   // SPARK-UMA-DROP
+#if defined(__linux__) && !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_WAVE64) && !defined(STRATA_GPU_METAL)   // SPARK-UMA-DROP
         if (srcp == &src && gpu_holds_all && !multi_gpu && stages.empty() && [] {
                 const char* v = std::getenv("STRATA_UMA_DROP_PAGES");
                 return v == nullptr || v[0] != '0';

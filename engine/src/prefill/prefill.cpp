@@ -314,7 +314,7 @@ constexpr int kSplitHelpRing = 48;  // layer split help: the helper stage's ring
 // nvidia"; staged_group_rule.hpp).  The card's own fused rule (fused::native_supported) still has to take the layer's formats.
 inline bool staged_group_entry_on() {
     static const bool on = [] {
-#if defined(STRATA_USE_HIP) || defined(__HIPCC__) || defined(STRATA_HIP_GFX906)
+#if defined(STRATA_USE_HIP) || defined(__HIPCC__) || defined(STRATA_HIP_WAVE64)
         constexpr bool hip = true;
 #else
         constexpr bool hip = false;
@@ -464,7 +464,7 @@ inline int switch_point_env() {
 // the card's counts have arrived (set_card_expert_share ran: a single card, no batch slots)
 inline bool switch_point_known() { return g_sp_resident.load(std::memory_order_acquire) >= 0; }
 inline bool switch_point_on() {
-#if defined(STRATA_USE_HIP) || defined(__HIPCC__) || defined(STRATA_HIP_GFX906)
+#if defined(STRATA_USE_HIP) || defined(__HIPCC__) || defined(STRATA_HIP_WAVE64)
     return false;   // measured on CUDA only
 #else
     if (!switch_point_known()) return false;
@@ -490,7 +490,7 @@ inline int link_rule_env() {
     return env;
 }
 inline bool link_rule_on() {
-#if defined(STRATA_USE_HIP) || defined(__HIPCC__) || defined(STRATA_HIP_GFX906)
+#if defined(STRATA_USE_HIP) || defined(__HIPCC__) || defined(STRATA_HIP_WAVE64)
     return false;
 #else
     if (!switch_point_known()) return false;   // the card's counts have not arrived: a single card, no batch slots only
@@ -586,7 +586,7 @@ inline int64_t default_stream_floor() {
     if ((!lay.native || lay.fmt.empty()) && !plain) return strata::prefill::kStreamFloorDefault;
     const bool cls = !plain && stream_floor_class_measured();
     int64_t v = strata::prefill::stream_floor_default(cls, cls && layers_all_fused_only(), staged_fo_on(), plain, trellis_gfx12_all_fused(), trellis_cuda_all_fused(), !plain && trellis_g1151_all_fused());
-#if !defined(STRATA_USE_HIP) && !defined(__HIPCC__) && !defined(STRATA_HIP_GFX906)
+#if !defined(STRATA_USE_HIP) && !defined(__HIPCC__) && !defined(STRATA_HIP_WAVE64)
     // the card's counts are not known yet (set_card_expert_share has not run) and the rule is not switched off: the default, not cached
     if (v == strata::prefill::kStreamFloorDefault && switch_point_env() != 0 && !switch_point_known()) return v;
 #endif
@@ -620,7 +620,7 @@ inline int64_t default_stream_floor() {
 // floor although it takes nothing of that pack, and the plain pack's own 64 was measured on an integrated GPU).  The card must have answered (set_card_expert_share ran: one card, no batch slots) and
 // the expert layout be loaded; before that the old rule answers and nothing is cached.  Integrated cards, HIP builds and a build with MMQ never take it.  STRATA_PF_PLAIN_FLOOR=0 is the way back.
 inline bool plain_discrete_floor_now() {
-#if defined(STRATA_PF_OWN_ONLY) && !defined(STRATA_USE_HIP) && !defined(__HIPCC__) && !defined(STRATA_HIP_GFX906)
+#if defined(STRATA_PF_OWN_ONLY) && !defined(STRATA_USE_HIP) && !defined(__HIPCC__) && !defined(STRATA_HIP_WAVE64)
     static std::atomic<int> cached{-1};
     const int c = cached.load(std::memory_order_acquire);
     if (c >= 0) return c == 1;
@@ -3525,7 +3525,7 @@ int64_t Prefill::short_read_default(int64_t base) {
                                                sm120 && layers_all_fused_only());
 }
 void Prefill::set_card_expert_share(int64_t resident_slots, int64_t total_pairs, double blob_mb, double link_gbps, int pool_workers) {
-#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_WAVE64)
     int dev = 0;
     cudaDeviceProp prop;
     const bool got = cudaGetDevice(&dev) == cudaSuccess && cudaGetDeviceProperties(&prop, dev) == cudaSuccess;
@@ -3756,7 +3756,7 @@ int64_t Prefill::ring_max_slots() {
 int64_t Prefill::ring_slots_for(int64_t chunk) { return ring_slots((size_t) chunk); }
 void Prefill::set_cpu_pool(kernels::cpu::ExpertPool* pool) { cpu_pool_ = pool; }
 void Prefill::arm_cpu_share(bool applies, bool by_default) {
-#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_WAVE64)
     if (applies && by_default && cpu_share_explicit() == -2.0 && !g_share_default) {
         g_share_default = true;
         if (switch_point_on() && g_sp_resident.load(std::memory_order_acquire) >= 0 && strata::prefill::switch_point::card_known(sp_card())) {
@@ -3785,7 +3785,7 @@ void Prefill::arm_cpu_share(bool applies, bool by_default) {
                              "mean KL ~0.004 below 1024 tokens, ~0.011 at 1-3K). STRATA_PREFILL_CPU_SHARE=0 turns it off, "
                              "STRATA_PREFILL_CPU_SHARE_MAX=1024 keeps the old limit.\n", (long long) cpu_share_max());
     }
-#elif defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
+#elif defined(STRATA_USE_HIP) && !defined(STRATA_HIP_WAVE64)
     // AMD-Q (owner decision 10-31): the same default on a single gfx12 card (arch_defaults.hpp: gfx12_prefill_share_default); every other AMD family stays off
     if (applies && by_default && cpu_share_explicit() == -2.0 && !g_share_default) {
         int dev = 0;
@@ -3816,7 +3816,7 @@ void Prefill::arm_cpu_share(bool applies, bool by_default) {
 // BW-H: a layer split arms the default share only where the link rule raises the limit above 3,072 (the stream floor summed over the stages is large: a slow link in the chain); a split of fast links keeps the
 // share off, as before.  Call before arm_cpu_share (whose tail takes the limit as the stream floor).  Returns whether it armed.
 bool Prefill::arm_cpu_share_split(bool applies, double floor_ms, int pool_workers, bool all_cc120) {
-#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_WAVE64)
     if (!applies || cpu_share_explicit() != -2.0 || g_share_default) return false;
     if (!strata::prefill::share_rules::link_rule_enabled(true, true, true, all_cc120 ? 12 : 0, 0, link_rule_env())) return false;
     const auto r = strata::prefill::share_rules::link_rule_floor(floor_ms, pool_workers);
@@ -7960,7 +7960,7 @@ int64_t lm_table_ints(int64_t rows, int64_t G) { return 5 * rows + 3 * lm_entrie
 // needs: the tables in GU, the int8 H in H, the down rows in Dm; the per-token int8 rows are the super-chunk's own (LmBufs::xa).  CUDA
 // (the HIP walk is opt-in and not measured with it); not with STRATA_PF_GROUP_SCRATCH's one-group GU / H.
 bool lm_fused_layer(int64_t l, bool group_scratch) {
-#if defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906)
+#if defined(STRATA_USE_HIP) || defined(STRATA_HIP_WAVE64)
     (void) l; (void) group_scratch;
     return false;
 #else
@@ -7995,7 +7995,7 @@ void Prefill::lm_release() {
 int64_t Prefill::lm_prepare(int64_t n, std::string& why, int64_t cap) {
     Impl& m = *impl_;
     if (m.g == nullptr) { why = "not initialized"; return 0; }
-#if defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906)
+#if defined(STRATA_USE_HIP) || defined(STRATA_HIP_WAVE64)
     // only NVIDIA CUDA has run this path by default; on an AMD build the prompt stays on the chunk-major path unless
     // STRATA_LM_HIP=1 (opt-in, PAR-A 2026-10-30: gfx1201 is being qualified)
     {
@@ -9447,7 +9447,7 @@ bool Prefill::reserve_uploads(int64_t T) {
 }
 
 bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& err) {
-#if defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906)
+#if defined(STRATA_USE_HIP) || defined(STRATA_HIP_WAVE64)
     (void) strata::kernels::qsa_two_pass_on();   // HIP: a set STRATA_SELECT_TWO_PASS says once it is not used
 #endif
 #if defined(STRATA_GPU_METAL)
@@ -9469,7 +9469,7 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
         return ok;
     }
 #endif
-#if defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906)
+#if defined(STRATA_USE_HIP) || defined(STRATA_HIP_WAVE64)
     constexpr bool lm_hip = true;
 #else
     constexpr bool lm_hip = false;
@@ -9496,7 +9496,7 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
         static int64_t off_in_row = 0;
         if (lm_prepare_chain(n, why) > 0) {
             off_in_row = 0;
-#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_WAVE64)
             // STRATA_SELECT_TWO_PASS is in run_impl's selection only, not in this walk: say so once
             static strata::kernels::two_pass::RequestStatus tp_status(std::getenv("STRATA_SELECT_TWO_PASS"));
             (void) tp_status.on("the layer-major prompt path");

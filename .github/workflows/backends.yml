@@ -4,6 +4,7 @@ name: Backend compile checks
 # exists for another backend (or an API a toolkit version dropped) fails here instead of on a user's machine.  Hardware runs are separate.
 #   CUDA 12.9 and 13.0   nvidia/cuda devel container   target strata (no MMQ, the default) (CMake preset cuda-compile)
 #   HIP (ROCm 7.2)       rocm/dev container            target strata                      (CMake preset hip-compile)
+#   gfx90a M1 (ROCm 7.2) rocm/dev container            engine and GPU parity targets linked; only host policy/configuration checks run
 #   SYCL (oneAPI 2026.1) ubuntu + Intel's apt repo     target strata of engine/sycl/             (the commands of tools/packaging/build_sycl_linux.sh)
 #   Metal                macOS runner                  target strata                      (engine/metal/; metal-build.yml keeps its own strata build)
 # ggml comes from the vendored engine/third_party/strata-ggml (frozen at llama.cpp's pin), the same tree the release builds use: nothing is downloaded.
@@ -19,6 +20,9 @@ on:
       - engine/cmake/**
       - engine/src/**
       - engine/include/**
+      - engine/tests/core/hip_device_policy_test.cpp
+      - engine/tests/hip/gfx90a*
+      - tools/test_gfx90a_build_files.py
       - engine/third_party/**
       - engine/sycl/**
       - engine/metal/**
@@ -34,6 +38,9 @@ on:
       - engine/cmake/**
       - engine/src/**
       - engine/include/**
+      - engine/tests/core/hip_device_policy_test.cpp
+      - engine/tests/hip/gfx90a*
+      - tools/test_gfx90a_build_files.py
       - engine/third_party/**
       - engine/sycl/**
       - engine/metal/**
@@ -120,6 +127,75 @@ jobs:
       - name: Build strata
         run: cmake --build build --target strata -j "$(nproc)"
       - name: Cache statistics
+        run: ccache -s | head -8
+
+  hip-gfx90a:
+    name: Experimental gfx90a M1 (compile and link; no GPU)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container: rocm/dev-ubuntu-24.04:7.2.4-complete@sha256:92f309c51b52cef8762867848f1529dee821624f23cd5df38455e819538f762f
+    steps:
+      - name: Tools
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git ca-certificates cmake ninja-build ccache python3 binutils
+          cmake --version | head -1
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-gfx90a-rocm724-${{ hashFiles('engine/CMakeLists.txt', 'engine/src/**', 'engine/include/**', 'engine/cmake/**', 'engine/tests/hip/gfx90a*') }}
+          restore-keys: ccache-gfx90a-rocm724-
+      - name: Configuration rejection checks (no GPU)
+        run: python3 tools/test_gfx90a_build_files.py
+      - name: Configure the gfx90a test targets
+        working-directory: engine
+        run: |
+          /opt/rocm/llvm/bin/clang++ --version | head -1
+          cmake --preset hip-gfx90a-tests \
+            -DCMAKE_C_COMPILER=/opt/rocm/llvm/bin/clang -DCMAKE_CXX_COMPILER=/opt/rocm/llvm/bin/clang++ \
+            -DCMAKE_HIP_COMPILER=/opt/rocm/llvm/bin/clang++ -DCMAKE_HIP_COMPILER_ROCM_ROOT=/opt/rocm -DCMAKE_PREFIX_PATH=/opt/rocm \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_HIP_COMPILER_LAUNCHER=ccache
+      - name: Check the generated gfx90a compilation database
+        run: python3 tools/test_gfx90a_build_files.py --compile-commands engine/build/hip-gfx90a-tests/compile_commands.json
+      - name: Compile and link engine, host policy and GPU tests
+        working-directory: engine
+        run: cmake --build --preset hip-gfx90a-tests --parallel "$(nproc)"
+      - name: Run only the host policy test
+        run: ./engine/build/hip-gfx90a-tests/hip_device_policy_test
+      - name: Check linked libraries and gfx90a code objects (no GPU execution)
+        shell: bash
+        run: |
+          build="$PWD/engine/build/hip-gfx90a-tests"
+          mkdir -p "$build/checks"
+          cd "$build/checks"
+          for target in strata strata-device gfx90a_intrinsics gfx90a_mfma_parity gfx90a_mmvq_parity gfx90a_expert_parity \
+            router_top10_parity gdn_parity gdn_chunk_parity qsa_parity qsa_scores_parity; do
+            readelf -d "$build/$target" > "$build/checks/$target.dynamic.txt"
+            if grep -Ei 'NEEDED.*lib(cuda|cudart|cublas)' "$build/checks/$target.dynamic.txt"; then
+              echo "$target unexpectedly links a CUDA library" >&2
+              exit 1
+            fi
+            ldd "$build/$target" | tee "$build/checks/$target.ldd.txt"
+            if grep -q 'not found' "$build/checks/$target.ldd.txt"; then
+              exit 1
+            fi
+            /opt/rocm/llvm/bin/llvm-objdump --offloading "$build/$target" | tee "$build/checks/$target.offloading.txt"
+            grep -Eq 'hipv[0-9]+-amdgcn-amd-amdhsa--gfx90a([+:[:space:]]|$)' "$build/checks/$target.offloading.txt"
+          done
+      - name: Keep build evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gfx90a-m1-build-evidence
+          path: |
+            engine/build/hip-gfx90a-tests/CMakeCache.txt
+            engine/build/hip-gfx90a-tests/compile_commands.json
+            engine/build/hip-gfx90a-tests/checks/*.txt
+      - name: Cache statistics
+        if: always()
         run: ccache -s | head -8
 
   sycl:

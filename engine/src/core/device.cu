@@ -1,5 +1,8 @@
 // src/core/device.cu - P2.S1: the CUDA side of the runtime core.
 #include "strata/core/device.hpp"
+#if defined(STRATA_HIP_GFX90A)
+#include "strata/core/hip_device_policy.hpp"
+#endif
 
 #include <cuda_runtime.h>
 
@@ -63,12 +66,30 @@ std::string arch_problem(const cudaDeviceProp& p, int ordinal) {
     }
     return "";
 }
+#elif defined(STRATA_HIP_GFX90A)
+#if !defined(STRATA_HIP_ARCHS)
+#error "STRATA_HIP_ARCHS must name the compiled gfx90a HIP target"
+#endif
+std::string arch_problem(const cudaDeviceProp& p, int ordinal) {
+    std::string why = hip_arch_problem(p.gcnArchName, p.warpSize, STRATA_HIP_ARCHS, 64);
+    if (why.empty() && hip_base_arch(p.gcnArchName) != "gfx90a")
+        why = "this Experimental gfx90a backend requires exact architecture gfx90a";
+    if (why.empty()) return {};
+    return "GPU " + std::to_string(ordinal) + " (" + p.name + ", raw arch " + p.gcnArchName +
+           ", wave" + std::to_string(p.warpSize) + "): " + why;
+}
+
+std::string query_problem(int ordinal, const char* call, cudaError_t error) {
+    return "GPU " + std::to_string(ordinal) +
+           " (name unavailable, raw arch unavailable, wave unavailable): " + call + ": " +
+           cudaGetErrorString(error);
+}
 #endif
 
 }  // namespace
 
 const char* compiled_gpu_archs() {
-#if defined(STRATA_USE_HIP)
+#if defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX90A)
     return STRATA_HIP_ARCHS;
 #else
     return "";
@@ -97,6 +118,12 @@ bool device_summary(int ordinal, std::string& name, std::string& detail) {
         cudaGetLastError();
         return false;
     }
+#if defined(STRATA_HIP_GFX90A)
+    char buf[512];
+    std::snprintf(buf, sizeof(buf), "arch %s, %.1f GiB, wave%d (raw %s, compiled for %s, Experimental)",
+                  hip_base_arch(p.gcnArchName).c_str(), (double) p.totalGlobalMem / (1024.0 * 1024 * 1024),
+                  p.warpSize, p.gcnArchName, compiled_gpu_archs());
+#else
     char buf[160];
 #if defined(STRATA_USE_HIP)
     std::snprintf(buf, sizeof(buf), "arch %s, %.1f GiB, wave%d", base_arch(p.gcnArchName).c_str(),
@@ -104,6 +131,7 @@ bool device_summary(int ordinal, std::string& name, std::string& detail) {
 #else
     std::snprintf(buf, sizeof(buf), "compute capability %d.%d, %.1f GiB", p.major, p.minor,
                   (double) p.totalGlobalMem / (1024.0 * 1024 * 1024));
+#endif
 #endif
     name = p.name;
     detail = buf;
@@ -222,7 +250,25 @@ hipError_t mem_get_info(size_t* free_bytes, size_t* total_bytes) {
 namespace strata::core {
 
 std::string gpu_arch_problem(int ordinal) {
-#if defined(STRATA_USE_HIP)
+#if defined(STRATA_HIP_GFX90A)
+    int count = 0;
+    const cudaError_t count_error = cudaGetDeviceCount(&count);
+    if (count_error != cudaSuccess) {
+        cudaGetLastError();
+        return query_problem(ordinal, "cudaGetDeviceCount", count_error);
+    }
+    if (ordinal < 0 || ordinal >= count)
+        return "GPU " + std::to_string(ordinal) +
+               " (name unavailable, raw arch unavailable, wave unavailable): ordinal is out of range (have " +
+               std::to_string(count) + " devices); this Experimental build requires gfx90a wave64";
+    cudaDeviceProp p{};
+    const cudaError_t property_error = cudaGetDeviceProperties(&p, ordinal);
+    if (property_error != cudaSuccess) {
+        cudaGetLastError();
+        return query_problem(ordinal, "cudaGetDeviceProperties", property_error);
+    }
+    return arch_problem(p, ordinal);
+#elif defined(STRATA_USE_HIP)
     int count = 0;
     if (cudaGetDeviceCount(&count) != cudaSuccess || ordinal < 0 || ordinal >= count) {
         cudaGetLastError();
@@ -241,7 +287,15 @@ std::string gpu_arch_problem(int ordinal) {
 }
 
 std::string device_code_error() {
-#if defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906) || defined(STRATA_GPU_METAL)
+#if defined(STRATA_HIP_GFX90A)
+    int ordinal = -1;
+    const cudaError_t error = cudaGetDevice(&ordinal);
+    if (error != cudaSuccess) {
+        cudaGetLastError();
+        return query_problem(ordinal, "cudaGetDevice", error);
+    }
+    return gpu_arch_problem(ordinal);
+#elif defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906) || defined(STRATA_GPU_METAL)
     return "";   // gpu_arch_problem() checks the HIP architectures against STRATA_HIP_ARCHS, before this point
 #else
     // every .cu of the engine is compiled for the same CMAKE_CUDA_ARCHITECTURES, so this kernel stands for all
@@ -257,7 +311,7 @@ DeviceInfo device_info(int ordinal) {
     int count = 0;
     check(cudaGetDeviceCount(&count), "cudaGetDeviceCount");
     if (count == 0) {
-#if defined(STRATA_USE_HIP)
+#if defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX90A)
         throw CudaError(std::string("no HIP device is present; this engine was compiled for ") + STRATA_HIP_ARCHS, -1);
 #else
         throw CudaError("no CUDA device is present; Strata needs an NVIDIA GPU (RTX 20 series or newer)", -1);
@@ -268,12 +322,22 @@ DeviceInfo device_info(int ordinal) {
                             std::to_string(count) + ")",
                         -1);
     }
+#if defined(STRATA_HIP_GFX90A)
+    // Reject before selecting a context, probing free memory, or allocating a region.
+    cudaDeviceProp p{};
+    const cudaError_t property_error = cudaGetDeviceProperties(&p, ordinal);
+    if (property_error != cudaSuccess)
+        throw CudaError(query_problem(ordinal, "cudaGetDeviceProperties", property_error), (int) property_error);
+    if (const std::string why = arch_problem(p, ordinal); !why.empty()) throw CudaError(why, -1);
+#endif
     DeviceInfo d;
     d.ordinal = ordinal;
     check(cudaSetDevice(ordinal), "cudaSetDevice");
 
+#if !defined(STRATA_HIP_GFX90A)
     cudaDeviceProp p{};
     check(cudaGetDeviceProperties(&p, ordinal), "cudaGetDeviceProperties");
+#endif
     d.name = p.name;
     d.cc_major = p.major;
     d.cc_minor = p.minor;
@@ -292,7 +356,10 @@ DeviceInfo device_info(int ordinal) {
     // supported arch is enforced by CMake; RUNNING on an older card is caught here, because a binary can be carried
     // to a machine with an older card and would otherwise silently take whatever path the driver chose.  The HIP
     // backend checks the card against the architectures the binary was compiled for (and wave32).
-#if defined(STRATA_HIP_GFX906)
+#if defined(STRATA_HIP_GFX90A)
+    d.arch = hip_base_arch(p.gcnArchName);
+    d.name += std::string(" (") + p.gcnArchName + ")";
+#elif defined(STRATA_HIP_GFX906)
     // AMD gfx906 (the STRATA_HIP_GFX906 compat build, not STRATA_USE_HIP): the build targets one gfx arch
     // (CMAKE_HIP_ARCHITECTURES, wave64); a card of another arch fails at the first kernel launch with
     // hipErrorInvalidDeviceFunction.  gcnArchName says which it is.
@@ -327,6 +394,9 @@ DeviceInfo device_info(int ordinal) {
 DeviceArena::DeviceArena(uint64_t bytes, int ordinal, bool poison)
     : capacity_(bytes), ordinal_(ordinal), poison_(poison) {
     if (bytes == 0) throw CudaError("DeviceArena of 0 bytes", -1);
+#if defined(STRATA_HIP_GFX90A)
+    if (const std::string why = gpu_arch_problem(ordinal); !why.empty()) throw CudaError(why, -1);
+#endif
     check(cudaSetDevice(ordinal), "cudaSetDevice");
     // One allocation for the whole region.  cudaMalloc of a large block is the thing that can fail late, so it
     // happens once, here, before anything depends on it.

@@ -541,7 +541,7 @@ private:
     // STRATA_GRAPH_PRIO (record_window / capture): the captured tails of the priority streams at their joins and the
     // main stream's tails at their forks, so that a capture that dropped the stream priorities can be repaired per
     // node (apply_node_priorities walks each tail back to its fork)
-#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906) && !defined(STRATA_GPU_METAL)   // (the three methods are no-ops there)
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_WAVE64) && !defined(STRATA_GPU_METAL)   // (the three methods are no-ops there)
     std::vector<cudaGraphNode_t> prio_forks_;
     std::vector<std::pair<cudaGraphNode_t, int>> prio_tails_;
 #endif

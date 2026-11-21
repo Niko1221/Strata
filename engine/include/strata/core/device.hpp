@@ -30,12 +30,15 @@ struct DeviceInfo {
 };
 
 // HIP builds: whether GPU `ordinal` can run this binary - its architecture must be one the binary was COMPILED
-// for (STRATA_HIP_ARCHS, set by cmake/hip_backend.cmake) and it must run wave32.  "" when it can (or when there
-// is no such device: the caller's own device errors apply), else the reason in a sentence.  A binary carried to
+// for (STRATA_HIP_ARCHS, set by CMake) and it must run the backend's physical wave width. gfx90a requires an
+// exact gfx90a base architecture and wave64; ROCm feature suffixes are accepted. RDNA requires wave32.
+// "" when it can (or, on the existing RDNA backend, when there
+// is no such device: the caller's own device errors apply), else the reason in a sentence. gfx90a query failures
+// return a reason too. A binary carried to
 // another card would otherwise fail later with "invalid device function".  CUDA builds: always "".
 std::string gpu_arch_problem(int ordinal);
 
-// The GPU architectures this binary was compiled for ("gfx1100,gfx1201"); "" on CUDA builds.
+// The GPU architectures this binary was compiled for ("gfx1100,gfx1201", or "gfx90a"); "" on CUDA builds.
 const char* compiled_gpu_archs();
 
 // How many devices the runtime enumerates, numbered as HIP_VISIBLE_DEVICES / CUDA_VISIBLE_DEVICES number them; 0 when

@@ -9,6 +9,9 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#if defined(STRATA_HIP_GFX90A)
+#include <hip/hip_runtime_api.h>
+#endif
 #if defined(STRATA_USE_HIP) && defined(_WIN32)
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -68,7 +71,10 @@ int main(int argc, char** argv) {
     try {
         const strata::core::DeviceInfo d = strata::core::device_info(0);
         std::printf("device %d: %s\n", d.ordinal, d.name.c_str());
-#if defined(STRATA_USE_HIP)
+#if defined(STRATA_HIP_GFX90A)
+        std::printf("  HIP arch            %s wave64 (compiled for %s, Experimental)\n", d.arch.c_str(),
+                    strata::core::compiled_gpu_archs());
+#elif defined(STRATA_USE_HIP)
         std::printf("  HIP arch            %s wave32 (compiled for %s)\n", d.arch.c_str(),
                     strata::core::compiled_gpu_archs());
 #else
@@ -94,9 +100,7 @@ int main(int argc, char** argv) {
                     plan.vram_budget <= d.free_bytes ? "FITS" : "*** DOES NOT FIT ***");
 
         if (selftest) {
-            // Exercise the arena for real: allocate, write from the host, read back, and check the poison
-            // path leaves NaNs rather than zeros.  A GPU test that only asks the driver for its name does not
-            // test the runtime this file exists to provide.
+            // Allocate and poison the arena before checking its sub-allocation boundaries.
             const uint64_t bytes = 64ull << 20;      // 64 MiB, small enough to be safe on any card
             strata::core::DeviceArena arena(bytes, 0, /*poison=*/true);
             void* a = arena.alloc(1 << 20, 256);
@@ -105,6 +109,29 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "selftest: alignment not honoured\n");
                 return 1;
             }
+#if defined(STRATA_HIP_GFX90A)
+            const auto copy = [](void* dst, const void* src, size_t size, hipMemcpyKind kind, const char* what) {
+                const hipError_t error = hipMemcpy(dst, src, size, kind);
+                if (error != hipSuccess) {
+                    throw strata::core::CudaError(std::string(what) + ": " + hipGetErrorString(error), (int) error);
+                }
+            };
+            uint32_t poison = 0;
+            copy(&poison, a, sizeof(poison), hipMemcpyDeviceToHost, "selftest read poison");
+            if (poison != 0x7fc00000u) {
+                std::fprintf(stderr, "selftest: arena poison did not match the GPU fill pattern\n");
+                return 1;
+            }
+            constexpr uint32_t data[] = {0x12345678u, 0u, 0xa5a5a5a5u, 0xffffffffu};
+            uint32_t readback[sizeof(data) / sizeof(data[0])] = {};
+            copy(b, data, sizeof(data), hipMemcpyHostToDevice, "selftest upload");
+            copy(readback, b, sizeof(readback), hipMemcpyDeviceToHost, "selftest download");
+            if (std::memcmp(data, readback, sizeof(data)) != 0) {
+                std::fprintf(stderr, "selftest: arena copy round trip did not match the input\n");
+                return 1;
+            }
+            std::printf("selftest: GPU fill and host/device copy round trip verified\n");
+#endif
             std::printf("\nselftest: arena %s, used %s after two 1 MiB allocations\n", human(arena.capacity()).c_str(),
                         human(arena.used()).c_str());
             // and the arena must REFUSE rather than wrap

@@ -17,6 +17,9 @@ set(STRATA_SPLIT_CARDS "2" CACHE STRING "card counts strata-split is built for (
 set(STRATA_SPLIT_ARCH "" CACHE STRING "compute capability strata-split is built for (e.g. 86)")
 set(STRATA_SPLIT_PF_JOB "64" CACHE STRING "rows of one expert per prompt-path job: 64 (default) or 128")
 
+if(STRATA_HIP_GFX90A)
+  message(FATAL_ERROR "STRATA_BUILD_SPLIT is unavailable with STRATA_HIP_GFX90A")
+endif()
 set(_fnx_hip OFF)
 if(STRATA_ENABLE_HIP AND NOT STRATA_ENABLE_CUDA AND NOT WIN32 AND NOT APPLE)
   set(_fnx_hip ON)

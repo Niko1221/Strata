@@ -16,6 +16,9 @@
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
+#if defined(STRATA_HIP_GFX90A)
+#include "strata/kernels/wall_clock.hpp"
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -847,7 +850,7 @@ void row_top_prob(const float* logits, int n_rows, int n_vocab, const int32_t* i
     check("row_top_prob");
 }
 
-#if !defined(STRATA_HIP_GFX906)   // wave32 kernels (CUDA and RDNA HIP; wave64 gfx906 keeps the one-block kernels)
+#if !defined(STRATA_HIP_WAVE64)   // wave32 kernels (CUDA and RDNA HIP; Wave64 keeps the one-block kernels)
 namespace {
 
 #if defined(__HIPCC__)
@@ -1025,7 +1028,7 @@ void logits_nonfinite_rows(const float* logits, int n_rows, int n, uint32_t* fla
 }
 
 bool multi_block_head_ops() {
-#if defined(STRATA_HIP_GFX906)
+#if defined(STRATA_HIP_WAVE64)
     return false;
 #else
     static const int env = [] {
@@ -1049,7 +1052,7 @@ bool multi_block_head_ops() {
 }
 
 bool argmax_rows_wanted() {
-#if defined(STRATA_HIP_GFX906)
+#if defined(STRATA_HIP_WAVE64)
     return false;
 #else
     static const int env = [] {
@@ -1333,6 +1336,27 @@ __global__ void wait_flag_ge_kernel(const volatile uint32_t* flag, uint32_t valu
     __threadfence_system();
 }
 
+// gfx90a uses the runtime's rate, rather than inheriting another GPU's tick period.
+#if defined(STRATA_HIP_GFX90A)
+uint32_t wall_clock_rate_khz() {
+    int dev = 0, rate = 0;
+    if (hipGetDevice(&dev) != hipSuccess ||
+        hipDeviceGetAttribute(&rate, hipDeviceAttributeWallClockRate, dev) != hipSuccess || rate <= 0) {
+        std::fprintf(stderr, "gfx90a: cannot query a positive HIP wall-clock rate\n");
+        std::exit(1);
+    }
+    return (uint32_t) rate;
+}
+#define STRATA_WALL_CLOCK_PARAM , uint32_t wall_clock_khz
+#define STRATA_WALL_CLOCK_ARG , wall_clock_rate_khz()
+#define STRATA_NOW_NS() strata_now_ns(wall_clock_khz)
+__device__ __forceinline__ unsigned long long strata_now_ns(uint32_t wall_clock_khz) {
+    return wall_clock_ticks_to_ns(wall_clock64(), wall_clock_khz);
+}
+#else
+#define STRATA_WALL_CLOCK_PARAM
+#define STRATA_WALL_CLOCK_ARG
+#define STRATA_NOW_NS() strata_now_ns()
 // the GPU's clock in ns (the same sources as gpu_stamp_kernel)
 __device__ __forceinline__ unsigned long long strata_now_ns() {
     unsigned long long t;
@@ -1345,16 +1369,17 @@ __device__ __forceinline__ unsigned long long strata_now_ns() {
 #endif
     return t;
 }
+#endif
 
 // the overlapped split's hand-off wait, bounded: spin until *flag >= value, or give up after timeout_ns (0: never),
 // marking *err = 1 (mapped) so the host fails the window instead of using a stale hand-off.  The window's later
 // kernels still run (on whatever the hand-off buffer holds) so the graph completes and no stream is left hanging.
 __global__ void wait_handoff_kernel(const volatile uint32_t* flag, uint32_t value, uint32_t* err,
-                                    unsigned long long timeout_ns) {
-    const unsigned long long t0 = timeout_ns ? strata_now_ns() : 0ull;
+                                    unsigned long long timeout_ns STRATA_WALL_CLOCK_PARAM) {
+    const unsigned long long t0 = timeout_ns ? STRATA_NOW_NS() : 0ull;
     while (*flag < value) {
         strata_spin_pause();
-        if (timeout_ns && strata_now_ns() - t0 > timeout_ns) {
+        if (timeout_ns && STRATA_NOW_NS() - t0 > timeout_ns) {
             *(volatile uint32_t*) err = 1u;
             __threadfence_system();
             return;
@@ -1387,16 +1412,16 @@ __global__ void handoff_publish_kernel(float* dst, const float* __restrict__ a, 
 
 // wait_flag_ge, with the GPU's clock as it arrives (t_in) and as it leaves (t_out), either may be null
 __global__ void wait_flag_ge_stamped_kernel(const volatile uint32_t* flag, uint32_t value, volatile unsigned long long* t_in,
-                                            volatile unsigned long long* t_out) {
-    if (t_in != nullptr) *t_in = strata_now_ns();
+                                            volatile unsigned long long* t_out STRATA_WALL_CLOCK_PARAM) {
+    if (t_in != nullptr) *t_in = STRATA_NOW_NS();
     while (*flag < value) strata_spin_pause();
     __threadfence_system();
-    if (t_out != nullptr) *t_out = strata_now_ns();
+    if (t_out != nullptr) *t_out = STRATA_NOW_NS();
 }
 }  // namespace
 
 void wait_handoff(const uint32_t* flag, uint32_t value, uint32_t* err, unsigned long long timeout_ns, void* stream) {
-    wait_handoff_kernel<<<1, 1, 0, (cudaStream_t) stream>>>(flag, value, err, timeout_ns);
+    wait_handoff_kernel<<<1, 1, 0, (cudaStream_t) stream>>>(flag, value, err, timeout_ns STRATA_WALL_CLOCK_ARG);
     check("wait_handoff");
 }
 
@@ -1719,7 +1744,7 @@ void l2_prefetch_ranges(const L2PrefetchSet& set, void* stream) {
 
 void wait_flag_ge_stamped(const uint32_t* flag, uint32_t value, unsigned long long* t_in, unsigned long long* t_out,
                           void* stream) {
-    wait_flag_ge_stamped_kernel<<<1, 1, 0, (cudaStream_t) stream>>>(flag, value, t_in, t_out);
+    wait_flag_ge_stamped_kernel<<<1, 1, 0, (cudaStream_t) stream>>>(flag, value, t_in, t_out STRATA_WALL_CLOCK_ARG);
     check("wait_flag_ge_stamped");
 }
 
@@ -1758,13 +1783,15 @@ void copy_indexed(float* dst, const float* src, int64_t stride, const int32_t* i
 // stretch, the stamp lets the next kernel launch at once and takes its time when the one before it has finished.
 namespace {
 template <bool Pdl>
-__global__ void gpu_stamp_kernel(unsigned long long* buf, int i) {
+__global__ void gpu_stamp_kernel(unsigned long long* buf, int i STRATA_WALL_CLOCK_PARAM) {
     if constexpr (Pdl) {
         pdl_trigger();
         pdl_wait();
     }
     unsigned long long t;
-#if defined(STRATA_HIP_GFX906)
+#if defined(STRATA_HIP_GFX90A)
+    t = STRATA_NOW_NS();
+#elif defined(STRATA_HIP_GFX906)
     t = wall_clock64() * 40ull;   // gfx906: the wall clock runs at 25 MHz (hipDeviceAttributeWallClockRate) -> ns
 #elif defined(__HIPCC__)
     t = wall_clock64() * 10ull;   // gfx10.3 / gfx11 / gfx12: a constant 100 MHz counter, in ns
@@ -1779,9 +1806,13 @@ __global__ void noop_kernel() {}
 }  // namespace
 void gpu_noop(void* stream) { noop_kernel<<<1, 32, 0, (cudaStream_t) stream>>>(); }
 void gpu_stamp(unsigned long long* buf, int i, void* stream) {
-    if (pdl_scope()) launch_pdl(gpu_stamp_kernel<true>, dim3(1), dim3(1), 0, (cudaStream_t) stream, buf, i);
-    else gpu_stamp_kernel<false><<<1, 1, 0, (cudaStream_t) stream>>>(buf, i);
+    if (pdl_scope()) launch_pdl(gpu_stamp_kernel<true>, dim3(1), dim3(1), 0, (cudaStream_t) stream, buf, i STRATA_WALL_CLOCK_ARG);
+    else gpu_stamp_kernel<false><<<1, 1, 0, (cudaStream_t) stream>>>(buf, i STRATA_WALL_CLOCK_ARG);
 }
+
+#undef STRATA_WALL_CLOCK_PARAM
+#undef STRATA_WALL_CLOCK_ARG
+#undef STRATA_NOW_NS
 
 namespace {
 __global__ void copy_rows_strided_kernel(float4* __restrict__ dst, const float4* __restrict__ src, long long rows,

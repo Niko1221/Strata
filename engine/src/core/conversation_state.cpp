@@ -212,7 +212,7 @@ VramSlot* vram_slot_for(size_t n, int dev) {
     return best;
 }
 bool ckpt_async_on() {
-#if defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906) || defined(STRATA_GPU_METAL)
+#if defined(STRATA_USE_HIP) || defined(STRATA_HIP_WAVE64) || defined(STRATA_GPU_METAL)
     return false;
 #else
     static const bool on = [] { const char* v = std::getenv("STRATA_CKPT_ASYNC"); return v != nullptr && v[0] == '1'; }();
@@ -228,7 +228,7 @@ bool ckpt_async_on() {
 struct CkptGather { std::mutex mu; void* stage = nullptr; void* host = nullptr; size_t cap = 0; int dev = -1; };
 CkptGather& ckpt_gather() { static CkptGather a; return a; }
 bool ckpt_gather_on() {
-#if defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906) || defined(STRATA_GPU_METAL)
+#if defined(STRATA_USE_HIP) || defined(STRATA_HIP_WAVE64) || defined(STRATA_GPU_METAL)
     return false;
 #else
     static const bool on = [] { const char* v = std::getenv("STRATA_CKPT_GATHER"); return v != nullptr && v[0] == '1'; }();

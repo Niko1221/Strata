@@ -3,24 +3,32 @@
 # Every block below is a macro: it runs in the scope of the caller (CMakeLists.txt calls it where the block used to be), so variables, targets and
 # their order are those of the single-file CMakeLists.txt it was cut from (cleanup 5.4; the build graph is identical).
 
-# HIP for gfx906 through the CUDA compat layer: the toolchain and the CUDA:: stand-in targets
-macro(strata_hip_gfx906_toolchain)
+# Wave64 HIP through the CUDA compat layer: the toolchain and the CUDA:: stand-in targets.
+macro(strata_hip_wave64_toolchain architecture selector)
   if(NOT DEFINED CMAKE_HIP_ARCHITECTURES)
-    set(CMAKE_HIP_ARCHITECTURES gfx906 CACHE STRING "HIP architectures" FORCE)
+    set(CMAKE_HIP_ARCHITECTURES ${architecture} CACHE STRING "HIP architectures" FORCE)
   endif()
   enable_language(HIP)
   find_package(hip REQUIRED)
   find_package(hipblas REQUIRED)
+  if(NOT TARGET hip::host OR NOT TARGET roc::hipblas)
+    message(FATAL_ERROR "${selector} needs ROCm packages exporting hip::host and roc::hipblas")
+  endif()
   add_library(CUDA::cudart INTERFACE IMPORTED)
   target_link_libraries(CUDA::cudart INTERFACE hip::host)
-  target_compile_definitions(CUDA::cudart INTERFACE STRATA_HIP_GFX906=1 __HIP_PLATFORM_AMD__=1)
+  target_compile_definitions(CUDA::cudart INTERFACE ${selector}=1 STRATA_HIP_WAVE64=1 __HIP_PLATFORM_AMD__=1)
   target_include_directories(CUDA::cudart BEFORE INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include/strata/platform/hip_compat)
   add_library(CUDA::cublas INTERFACE IMPORTED)
   target_link_libraries(CUDA::cublas INTERFACE roc::hipblas CUDA::cudart)
   set(CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/include/strata/platform/hip_compat)
   include_directories(BEFORE ${CMAKE_CURRENT_SOURCE_DIR}/include/strata/platform/hip_compat)
-  add_compile_definitions(STRATA_HIP_GFX906=1)
-  message(STATUS "Strata: HIP (gfx906 compat) enabled, arch ${CMAKE_HIP_ARCHITECTURES}")
+  add_compile_definitions(${selector}=1 STRATA_HIP_WAVE64=1)
+  if(STRATA_HIP_GFX90A)
+    target_compile_definitions(CUDA::cudart INTERFACE "STRATA_HIP_ARCHS=\"gfx90a\"")
+    message(STATUS "Strata: HIP gfx90a (experimental), arch ${CMAKE_HIP_ARCHITECTURES}")
+  else()
+    message(STATUS "Strata: HIP (gfx906 compat) enabled, arch ${CMAKE_HIP_ARCHITECTURES}")
+  endif()
   set(_strata_gpu_runtime_target CUDA::cudart)
   set(_strata_gpu_blas_target CUDA::cublas)
   set(_strata_gpu_include_directories ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
@@ -126,11 +134,30 @@ macro(strata_hip_prompt_tests)
 
 endmacro()
 
-# HIP gfx906: every CUDA source of the tree compiled as HIP
-macro(strata_hip_gfx906_sources)
-if(STRATA_HIP_GFX906)
+# Compile the gfx90a checks with production headers and the same device target.
+macro(strata_hip_gfx90a_tests)
+  foreach(_test gfx90a_intrinsics gfx90a_mfma_parity gfx90a_mmvq_parity gfx90a_expert_parity)
+    set_source_files_properties(tests/hip/${_test}.cpp PROPERTIES LANGUAGE HIP)
+    add_executable(${_test} tests/hip/${_test}.cpp)
+    target_include_directories(${_test} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_libraries(${_test} PRIVATE ${_strata_gpu_runtime_target})
+    add_test(NAME ${_test} COMMAND ${_test})
+    set_tests_properties(${_test} PROPERTIES LABELS "gpu;gfx90a" SKIP_RETURN_CODE 77 TIMEOUT 120)
+  endforeach()
+  target_link_libraries(gfx90a_mmvq_parity PRIVATE strata_kernels strata_kernels_cpu)
+  target_link_libraries(gfx90a_expert_parity PRIVATE strata_kernels strata_kernels_cpu)
+  set_property(TEST router_top10_parity APPEND PROPERTY LABELS gpu gfx90a)
+endmacro()
+
+# HIP Wave64: mark the CUDA-shaped sources as HIP.
+macro(strata_hip_wave64_sources)
+if(STRATA_HIP_WAVE64)
   file(GLOB_RECURSE _strata_cu CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cu ${CMAKE_CURRENT_SOURCE_DIR}/bench/micro/*.cu
        ${CMAKE_CURRENT_SOURCE_DIR}/../terminal/tools/vision/*.cu)
+  if(STRATA_HIP_GFX90A)
+    file(GLOB_RECURSE _strata_test_cu CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tests/*.cu)
+    list(APPEND _strata_cu ${_strata_test_cu})
+  endif()
   set_source_files_properties(${_strata_cu} PROPERTIES LANGUAGE HIP)
 endif()
 

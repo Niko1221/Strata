@@ -258,7 +258,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
       src/kernels/cuda/native_flash_attn.cu
       src/kernels/cuda/native_qsa_indexer.cu
       src/kernels/cuda/native_qsa_score.cu
-      PROPERTIES COMPILE_OPTIONS "$<IF:$<BOOL:${STRATA_HIP_GFX906}>,,--use_fast_math>")
+      PROPERTIES COMPILE_OPTIONS "$<IF:$<BOOL:${STRATA_HIP_WAVE64}>,,--use_fast_math>")
   elseif(STRATA_ENABLE_HIP)
     # Keep Q8_K's multiply and magic-bias rounding as separate FP32 operations on HIP; contraction to an
     # FMA changes tie results. The embedding gather also relies on separately rounded operations.
@@ -269,7 +269,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   set(STRATA_ORACLE_SOURCE_DIR "" CACHE PATH "Pinned llama.cpp source for independent CUDA parity tests")
   set(STRATA_ORACLE_BUILD_DIR "" CACHE PATH "Matching existing shared llama.cpp build")
   # This oracle is a CUDA ggml build; do not pull CUDA libraries into a HIP build.
-  if(STRATA_ENABLE_CUDA AND STRATA_ORACLE_SOURCE_DIR AND STRATA_ORACLE_BUILD_DIR)
+  if(STRATA_ENABLE_CUDA AND NOT STRATA_HIP_GFX90A AND STRATA_ORACLE_SOURCE_DIR AND STRATA_ORACLE_BUILD_DIR)
     foreach(parity IN ITEMS native_mmvq native_bf16 native_shared native_gr_norm native_moe native_gdn native_gr_postops native_router native_gdn_preprocess native_gdn_pipeline native_qsa native_rope native_ple_postops native_flash_attn native_qsa_indexer native_qsa_score)
     add_executable(${parity}_parity bench/micro/${parity}_parity.cpp)
     target_include_directories(${parity}_parity PRIVATE
@@ -303,7 +303,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     src/core/arch_defaults.cpp src/core/nv_defaults.cpp src/core/vmm.cpp src/core/conversation_file.cpp)
   target_include_directories(strata_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
   target_link_libraries(strata_engine PUBLIC strata_core strata_kernels strata_kernels_cpu ${_strata_gpu_runtime_target})
-  if(STRATA_BUILD_TESTS AND STRATA_ENABLE_CUDA AND NOT STRATA_HIP_GFX906)
+  if(STRATA_BUILD_TESTS AND STRATA_ENABLE_CUDA AND NOT STRATA_HIP_WAVE64)
     add_executable(host_graph_launch_test tests/core/host_graph_launch_test.cu)
     target_include_directories(host_graph_launch_test PRIVATE include)
     target_link_libraries(host_graph_launch_test PRIVATE CUDA::cudart Threads::Threads)
@@ -347,7 +347,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     # prompt path borrows are served from RAM (the file source reads none of them).  The device calls are
     # wrapped - conversation_transfer_test's pattern - and `pin = false` keeps the copy pageable, so this
     # runs on a CPU-only PC.
-    if(NOT STRATA_ENABLE_HIP AND UNIX AND NOT APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    if(NOT STRATA_ENABLE_HIP AND NOT STRATA_HIP_GFX90A AND UNIX AND NOT APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
       add_executable(split_lend_complement_test tests/core/split_lend_complement_test.cpp)
       target_link_libraries(split_lend_complement_test PRIVATE strata_engine)
       target_link_options(split_lend_complement_test PRIVATE
@@ -556,7 +556,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   # strata-q36 wraps on its own.  Not on gfx906 (#3172, #3271): it calls cuBLAS entry points the wave64 compat layer does
   # not map (cublasSgemm, cublasGemmStridedBatchedEx) and its kernels assume 32-lane warps; main() guards every use with
   # STRATA_HAVE_QWEN35, so a gfx906 build links and runs the Qwen3.8 family, and `strata --families` says so
-  if(NOT STRATA_HIP_GFX906)
+  if(NOT STRATA_HIP_WAVE64)
   add_library(strata_qwen35 STATIC src/qwen35/q36_engine.cu)
   target_include_directories(strata_qwen35 PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(strata_qwen35 PRIVATE strata_prefill strata_kernels strata_warnings ${_strata_gpu_runtime_target})
@@ -816,7 +816,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   # programmatic dependent launch (pdl.hpp) in a captured verify-shaped chain: bitwise vs ordinary launches over
   # replays with poisoned buffers, and only kernel-to-kernel programmatic edges (GPU, synthetic, no model; the edges
   # are only made on sm_90+, elsewhere it checks that there are none).  NVIDIA only: PDL is a CUDA feature.
-  if(STRATA_ENABLE_CUDA AND NOT STRATA_HIP_GFX906)
+  if(STRATA_ENABLE_CUDA AND NOT STRATA_HIP_WAVE64)
     add_executable(pdl_parity src/kernels/pdl_parity.cpp)
     target_include_directories(pdl_parity PRIVATE ${_strata_gpu_include_directories})
     target_link_libraries(pdl_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
@@ -847,7 +847,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   set_tests_properties(iq_multi_parity_kq_nosub16 PROPERTIES ENVIRONMENT "STRATA_KQ_SPLIT=1;STRATA_NO_SUB16_GU=1")
   # the prompt path's DeltaNet recurrence: gdn_rec_kh_kernel against gdn_rec_cols_pipe_kernel, bitwise (GPU,
   # synthetic, no model; --bench adds timings).  NVIDIA only: cp.async and the CUDA occupancy API (not on gfx906)
-  if(STRATA_ENABLE_CUDA AND NOT STRATA_HIP_GFX906)
+  if(STRATA_ENABLE_CUDA AND NOT STRATA_HIP_WAVE64)
     # Independent pinned expert uploads: byte parity and stream/event ordering.
     add_executable(dma_batch_parity tests/core/dma_batch_parity.cu)
     target_include_directories(dma_batch_parity PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -1329,7 +1329,10 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   # The GPU test runs ON THE TARGET PC. `--selftest` allocates
   # and writes real VRAM, so a machine without a device fails this test rather than skipping it silently -
   # which is correct: an engine that targets one GPU should not report a pass for having no GPU.
-  if(STRATA_ENABLE_CUDA)
+  if(STRATA_HIP_GFX90A)
+    add_test(NAME gfx90a_device_selftest COMMAND strata-device --selftest)
+    set_tests_properties(gfx90a_device_selftest PROPERTIES LABELS "gpu;gfx90a" TIMEOUT 60)
+  elseif(STRATA_ENABLE_CUDA)
     add_test(NAME cuda_device_selftest COMMAND strata-device --selftest)
   else()
     add_test(NAME hip_device_selftest COMMAND strata-device --selftest)

@@ -59,7 +59,7 @@ __device__ __forceinline__ uint32_t unpack_ksigns(const uint8_t v) {
     return s * 0x01010101;
 }
 __device__ __forceinline__ int2 get_int_from_table_16(const int& q4, const int8_t* table) {
-#if defined(STRATA_HIP_GFX906)
+#if defined(STRATA_HIP_WAVE64)
     // AMD: llama.cpp's HIP lookup (vecdotq.cuh) - v_perm_b32 takes 3-bit byte indices, so the low and high halves
     // of the table are looked up and the index MSB picks between them: 4 perms per 8 values.
     const uint32_t* v32 = reinterpret_cast<const uint32_t*>(table);
@@ -4344,7 +4344,7 @@ void launch_down(dim3 grid, cudaStream_t s, const unsigned long long* grp_ptr, c
 // 0x7777 masks).  An item's int32 sum is the sum of the same int8 x int8 products, so every output is bit for bit
 // native_down_multi_kernel's (memcmp equal on all 48 layers of the Swift 1.5 IQ3_S pack, all 512 experts, 1-6
 // entries a group and T = 1..4 plans; native_expert_bench checks it against mode 0 and mode 8 by output hash).
-#if defined(STRATA_EXPERIMENTAL_SM60) && !defined(__HIPCC__) && !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906) && \
+#if defined(STRATA_EXPERIMENTAL_SM60) && !defined(__HIPCC__) && !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_WAVE64) && \
     !defined(STRATA_GPU_METAL)
 #define STRATA_DOWN_WS_BUILT 1   // the CUDA build with STRATA_EXPERIMENTAL_SM60 only
 #else
@@ -6169,7 +6169,7 @@ __global__ void __launch_bounds__(256) native_gu_fused_kernel(const unsigned lon
 // IQ packs' gate/up: native_expert_bench on the IQ3_S pack's real rows, 45 groups of one entry (a 8-token verify window's call),
 // gate/up -25% (IQ2_S), -8% (IQ3_XXS), -6% (IQ3_S), bitwise equal to mode 0.  STRATA_GFX1151_EXP8=0 keeps the old layout.
 bool gfx1151_exp8(int dev) {
-#if defined(__HIPCC__) && !defined(STRATA_HIP_GFX906)
+#if defined(__HIPCC__) && !defined(STRATA_HIP_WAVE64)
     static int per_dev[64];   // 0 unknown, 1 no, 2 yes
     if (dev < 0 || dev >= 64) return false;
     if (!per_dev[dev]) {
@@ -6190,7 +6190,7 @@ int exp_mode() {
     static const int m = [] { const char* v = std::getenv("STRATA_EXP_MODE"); return v ? std::atoi(v) : -1; }();
     if (g_exp_mode >= 0) return g_exp_mode;
     if (m >= 0) return m;
-#if defined(STRATA_HIP_GFX906)
+#if defined(STRATA_HIP_WAVE64)
     return kExpModeDefault;
 #else
     // Mode 8 keeps the grid and the group's activations in shared memory with SwiGLU + q8_1 fused.  Volta can opt in;
@@ -6551,7 +6551,7 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
     static const bool v2k = [] {
         const char* v = std::getenv("STRATA_EXPERT_V2K");
         if (v != nullptr && v[0] != '\0') return v[0] == '1';
-#if defined(__HIPCC__) && !defined(STRATA_HIP_GFX906)
+#if defined(__HIPCC__) && !defined(STRATA_HIP_WAVE64)
         int dev = 0;
         cudaDeviceProp p;
         const bool ok = cudaGetDevice(&dev) == cudaSuccess && cudaGetDeviceProperties(&p, dev) == cudaSuccess;

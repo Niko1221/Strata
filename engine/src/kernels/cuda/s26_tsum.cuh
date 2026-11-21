@@ -11,7 +11,7 @@
 
 namespace strata::kernels::s26ts {
 
-#if defined(__HIP_PLATFORM_AMD__) && !defined(STRATA_HIP_GFX906)   // (permlanex16 / DPP row_xmask: gfx10+ only)
+#if defined(__HIP_PLATFORM_AMD__) && !defined(STRATA_HIP_WAVE64)   // (permlanex16 / DPP row_xmask: gfx10+ only)
 __device__ __forceinline__ float xmov16(float v) {
     return __int_as_float(__builtin_amdgcn_permlanex16(__float_as_int(v), __float_as_int(v), 0x76543210u, 0xfedcba98u,
                                                        false, false));
