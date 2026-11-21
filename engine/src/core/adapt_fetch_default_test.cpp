@@ -46,7 +46,7 @@ static bool in(const std::vector<std::string>& v, const char* k) {
 int main() {
     using namespace strata::core;
     const uint64_t GiB = 1ull << 30;
-    unset("STRATA_SM120_PERF"); unset("STRATA_SM121_PERF"); unset("STRATA_SM86_PERF"); unset("STRATA_SM60_PERF");
+    unset("STRATA_SM120_PERF"); unset("STRATA_SM121_PERF"); unset("STRATA_SM86_PERF"); unset("STRATA_SM70_PERF"); unset("STRATA_SM60_PERF");
     unset("STRATA_DEFAULTS"); unset("STRATA_EMULATE_CC"); unset("STRATA_ADAPT_FETCH");
 
     // the card rule: compute capability 12.x, 0 < memory <= 16 GiB
@@ -86,6 +86,7 @@ int main() {
     }
     // no other architecture gets it, whatever its memory
     CHECK(lacks(nv_default_env(8, 6, false, 12 * GiB), "STRATA_ADAPT_FETCH"));
+    CHECK(lacks(nv_default_env(7, 0, false, 16 * GiB), "STRATA_ADAPT_FETCH"));
     CHECK(lacks(nv_default_env(6, 0, false, 16 * GiB), "STRATA_ADAPT_FETCH"));
     CHECK(nv_default_env(8, 9, false, 16 * GiB).empty() && nv_default_env(10, 0, false, 16 * GiB).empty());
 

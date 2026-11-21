@@ -1,5 +1,6 @@
 // src/core/nv_defaults_test.cpp - the NVIDIA per-architecture default tables (no GPU needed): the sm_121 (GB10, DGX Spark) table, its
 // two off switches, and that no other card's table changed.
+#include "strata/core/emulate.hpp"
 #include "strata/core/nv_chunk.hpp"
 #include "strata/core/nv_defaults.hpp"
 
@@ -35,6 +36,7 @@ int main() {
     using namespace strata::core;
     unset("STRATA_SM121_PERF");
     unset("STRATA_SM86_PERF");
+    unset("STRATA_SM70_PERF");
     unset("STRATA_SM60_PERF");
     unset("STRATA_EMULATE_CC");
     // GB10 (12.1): the six measured switches, and nothing else
@@ -75,6 +77,43 @@ int main() {
     CHECK(nv_default_env(10, 0, false).empty());
     CHECK(nv_default_env(8, 9, false).empty());
     CHECK(nv_default_env(7, 5, false).empty());
+    // sm_70 (Volta): 19 validated bit-exact switches; STRATA_DEFAULTS=026 and STRATA_SM70_PERF=0 leave it out
+    {
+        unset("STRATA_SM70_PERF");
+        const auto t = nv_default_env(7, 0, false);
+        CHECK(t.size() == 19);
+        CHECK(find(t, "STRATA_ADAPT_OVERLAP") && *find(t, "STRATA_ADAPT_OVERLAP") == "1");
+        CHECK(find(t, "STRATA_SM70_TABLE") && *find(t, "STRATA_SM70_TABLE") == "1");
+        CHECK(find(t, "STRATA_B6_MMVQ_ROWS") && *find(t, "STRATA_B6_MMVQ_ROWS") == "1");
+        CHECK(find(t, "STRATA_TSUM") && *find(t, "STRATA_TSUM") == "1");
+        CHECK(find(t, "STRATA_SMALL_UNR") && *find(t, "STRATA_SMALL_UNR") == "3");
+        CHECK(find(t, "STRATA_GR_NORM_FAST") && *find(t, "STRATA_GR_NORM_FAST") == "1");
+        CHECK(find(t, "STRATA_SIDE_MIXER") && *find(t, "STRATA_SIDE_MIXER") == "2");
+        CHECK(find(t, "STRATA_ARGMAX_ROWS_SM70") && *find(t, "STRATA_ARGMAX_ROWS_SM70") == "1");
+        CHECK(find(t, "STRATA_LFUSE") && *find(t, "STRATA_LFUSE") == "1");
+        CHECK(find(t, "STRATA_GDN_SPLIT") && *find(t, "STRATA_GDN_SPLIT") == "1");
+        CHECK(find(t, "STRATA_SH_STREAM") && *find(t, "STRATA_SH_STREAM") == "1");
+        CHECK(find(t, "STRATA_Q80_ROWS1") && *find(t, "STRATA_Q80_ROWS1") == "1");
+        CHECK(find(t, "STRATA_NO_MMVQ_ROWS2") && *find(t, "STRATA_NO_MMVQ_ROWS2") == "1");
+        CHECK(find(t, "STRATA_CPU_IQ_ALL_EXACT1") && *find(t, "STRATA_CPU_IQ_ALL_EXACT1") == "1");
+        CHECK(find(t, "STRATA_GR_Q8_DOWN_MODE") && *find(t, "STRATA_GR_Q8_DOWN_MODE") == "2");
+        CHECK(find(t, "STRATA_GR_Q8_UP_COLS") && *find(t, "STRATA_GR_Q8_UP_COLS") == "16");
+        CHECK(find(t, "STRATA_GR_Q8_UP_MODE") && *find(t, "STRATA_GR_Q8_UP_MODE") == "2");
+        CHECK(find(t, "STRATA_SCORES_HALVE") && *find(t, "STRATA_SCORES_HALVE") == "1");
+        CHECK(find(t, "STRATA_SCORES_THREAD") && *find(t, "STRATA_SCORES_THREAD") == "1");
+        CHECK(nv_default_env(7, 0, true).empty());
+        put("STRATA_SM70_PERF", "0");
+        CHECK(nv_default_env(7, 0, false).empty());
+        put("STRATA_SM70_PERF", "1");
+        CHECK(nv_default_env(7, 0, false).size() == 19);
+        unset("STRATA_SM70_PERF");
+    }
+    // nbald/volta-forever remapping: 7.5 -> 7.0 when active, other architectures untouched
+    CHECK(strata::cc_of(7, 5, false) == 75);
+    CHECK(strata::cc_of(7, 5, true) == 70);
+    CHECK(strata::cc_of(7, 0, true) == 70);
+    CHECK(strata::cc_of(8, 6, true) == 86);
+    CHECK(strata::cc_of(12, 0, true) == 120);
     {
         const auto a = nv_default_env(8, 6, false), b = nv_default_env(8, 6, true);
         CHECK(!a.empty() && a == b);               // STRATA_DEFAULTS=026 does not touch the 2026-10 sm_86 table

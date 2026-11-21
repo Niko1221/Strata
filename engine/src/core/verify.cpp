@@ -2802,14 +2802,20 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         }
         if (head_ != nullptr && head_->loaded()) {
             try {
-                float* const hl = head_logits_ + (size_t) h0 * (size_t) n_vocab_;
                 if (!q8_head) native_quantize_q8_1(head_mixed_ + (size_t) h0 * N, xq_, (int) N, HT, cs);   // (else the fused read wrote this chunk's image at xq_)
-                if (g_mmvq_il() && strata::kernels::native_mmvq_il_supported(head_->type(), (int) HT, (int) n_vocab_)) {
-                    if (HT >= 2) strata::kernels::native_q8_1_interleave(xq_, xil_, (int) N, (int) HT, cs);
-                    strata::kernels::native_mmvq_il(head_->type(), head_->weights(), xq_, xil_, hl, (int) N,
-                                                    (int) n_vocab_, (int) HT, cs);
-                } else
-                native_mmvq(head_->type(), head_->weights(), xq_, hl, (int) N, (int) n_vocab_, HT, cs);
+                if (head_->is_split() && T <= head_->max_split_t()) {
+                    head_->run_verify_split(xq_, xil_, head_logits_, h0, HT, g_mmvq_il(), arg_scratch_, m_out_ + h0,
+                                            nan_guard_on() ? (m_nf_ + (size_t) h0 * strata::kernels::kNonfiniteBlocks) : nullptr,
+                                            cs);
+                } else {
+                    float* const hl = head_logits_ + (size_t) h0 * (size_t) n_vocab_;
+                    if (g_mmvq_il() && strata::kernels::native_mmvq_il_supported(head_->type(), (int) HT, (int) n_vocab_)) {
+                        if (HT >= 2) strata::kernels::native_q8_1_interleave(xq_, xil_, (int) N, (int) HT, cs);
+                        strata::kernels::native_mmvq_il(head_->type(), head_->weights(), xq_, xil_, hl, (int) N,
+                                                        (int) n_vocab_, (int) HT, cs);
+                    } else
+                        native_mmvq(head_->type(), head_->weights(), xq_, hl, (int) N, (int) n_vocab_, HT, cs);
+                }
             } catch (const std::exception& e) {
                 err = std::string("verify head: ") + e.what();
                 return false;
@@ -2819,16 +2825,18 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         // Greedy, the default, is recorded here as before (no extra launch or sync per window). A request that
         // samples or penalizes is sampled again host-side after the replay (run()) with its own parameters and a
         // fresh draw counter: a captured sampler would bake them in and replay the same draws forever.
-        if (argmax_rows_wanted()) {   // sm_80 to sm_89 (sm_7x opt-in): the pick over many blocks a row (bitwise the one-block kernel's)
-            argmax_rows(head_logits_, T, (int) n_vocab_, arg_scratch_, m_out_, cs);
-        } else {
-            SamplerParams sp;
-            sp.greedy = true;
-            sp.temperature = 0.0f;
-            sample_tokens(head_logits_, T, (int) n_vocab_, nullptr, 0, sp, m_out_, cs);
+        if (!(head_ != nullptr && head_->loaded() && head_->is_split() && T <= head_->max_split_t())) {
+            if (argmax_rows_wanted()) {   // sm_80 to sm_89 (sm_7x opt-in): the pick over many blocks a row (bitwise the one-block kernel's)
+                argmax_rows(head_logits_, T, (int) n_vocab_, arg_scratch_, m_out_, cs);
+            } else {
+                SamplerParams sp;
+                sp.greedy = true;
+                sp.temperature = 0.0f;
+                sample_tokens(head_logits_, T, (int) n_vocab_, nullptr, 0, sp, m_out_, cs);
+            }
+            // #879: whether each row's logits are all finite, beside the pick (read after the window's own sync)
+            if (nan_guard_on()) strata::kernels::logits_nonfinite_rows(head_logits_, T, (int) n_vocab_, m_nf_, cs);
         }
-        // #879: whether each row's logits are all finite, beside the pick (read after the window's own sync)
-        if (nan_guard_on()) strata::kernels::logits_nonfinite_rows(head_logits_, T, (int) n_vocab_, m_nf_, cs);
     }
     stamp(g.n_layers, 1, 0);
     if (tap_on_ && !batch_rec_ && tap_file_ != nullptr && !tap_split_) copy_from_mapped(m_tap_, tap_dev_, (int64_t) T * (int64_t) tap_layers_.size() * N, cs);
@@ -3510,6 +3518,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     using namespace strata::kernels;
     const OnDevice on_device(device_);
     last_batch_ = false;
+    split_logits_materialized_ = false;
     if (T < 1 || T > max_t_) { err = "verify: window size out of range"; return false; }
     // a layer split's hand-off buffers hold kVerifyMaxT rows
     if (T > kVerifyMaxT && (next_ != nullptr || lb_ > 0)) { err = "verify: windows past 8 tokens need one stage"; return false; }
@@ -3854,6 +3863,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     }
     const bool sampled = !sampling_.greedy && sampling_.temperature > 0.0f;
     if (head_sampling_ && (sampled || hist_d_ != nullptr || sampling_.logit_bias != nullptr)) {
+        ensure_full_logits(T, false);
         SamplerParams sp = sampling_;
         sp.counter = (uint64_t) pos0;
         // STRATA_SPEC_PROB: the drafter's q lists for this window, judged by rejection sampling (spec_prob.hpp)
@@ -3912,6 +3922,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
         static std::FILE* lf = std::fopen(logits_path, "wb");
         static int32_t lrec = 0;
         if (lf != nullptr) {
+            ensure_full_logits(T, true);
             std::vector<float> h((size_t) T * (size_t) n_vocab_);
             const cudaError_t le = cudaMemcpy(h.data(), head_logits_, h.size() * sizeof(float), cudaMemcpyDeviceToHost);
             if (le == cudaSuccess) {
@@ -3934,6 +3945,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     if (static const bool dbg = std::getenv("STRATA_DBG_NAN") != nullptr; dbg) {   // debug: the first non-finite head
         static bool reported = false;
         if (!reported) {
+            ensure_full_logits(T, true);
             std::vector<float> h((size_t) T * (size_t) n_vocab_);
             cudaMemcpy(h.data(), head_logits_, h.size() * 4, cudaMemcpyDeviceToHost);
             for (int t = 0; t < T && !reported; ++t) {
@@ -4071,6 +4083,7 @@ bool Verifier::window_logprobs(const int32_t* targets, int T, int64_t pos0, int3
         return false;
     }
     // run() synchronized cs_ before returning, so the head of this window is complete
+    ensure_full_logits(T, true);
     std::vector<float> h((size_t) T * (size_t) n_vocab_);
     if (cudaMemcpy(h.data(), head_logits_, h.size() * sizeof(float), cudaMemcpyDeviceToHost) != cudaSuccess) {
         err = "window_logprobs: the head logits copy failed";
@@ -5016,6 +5029,7 @@ bool Verifier::run_slot_rows(const int* rows, int S, const int32_t* tokens, cons
 #endif
     using namespace strata::kernels;
     const OnDevice on_device(device_);
+    split_logits_materialized_ = false;
     const ModelGeometry& g = *g_;
     if (pre_launch_ && !pre_launch_(cs_, err)) return false;
     if (!stage_batch(rows, S, 0, tokens, pos, err)) return false;
@@ -5248,6 +5262,7 @@ bool Verifier::sample_rows(int S, std::string& err) {
         const int r = slot_row_draw(S, t, sp, hist, hlen, hrows, err);
         if (r < 0) return false;
         if (r == 0) continue;
+        ensure_full_logits(S, false);
         strata::kernels::sample_tokens(head_logits_ + (size_t) t * (size_t) n_vocab_, 1, (int) n_vocab_, hist, hlen, sp, m_out_ + t, cs_);
         any = true;
     }
@@ -5258,6 +5273,7 @@ bool Verifier::sample_rows(int S, std::string& err) {
 
 bool Verifier::batch_launch(int base, int S, const int32_t* tokens, const int64_t* pos, std::string& err) {
     const OnDevice on_device(device_);
+    split_logits_materialized_ = false;
     if (b_running_) { err = "verify: batch_launch while this stage is busy"; return false; }
     int rows[strata::kernels::kVerifyMaxT] = {};
     for (int t = 0; t < S && t < strata::kernels::kVerifyMaxT; ++t) rows[t] = base + t;
@@ -5457,12 +5473,26 @@ void Verifier::note_nonfinite(int T, const int64_t* pos_b) {
     if (nf_row_ >= 0) nf_pos_ = pos_b != nullptr ? pos_b[nf_row_] : last_pos0_ + nf_row_;
 }
 
+void Verifier::ensure_full_logits(int T, bool sync) const {
+#if defined(STRATA_GPU_METAL)
+    (void) T;
+    (void) sync;
+#else
+    if (split_logits_materialized_ || head_ == nullptr || !head_->is_split() || T <= 0 || T > head_->max_split_t()) return;
+    const OnDevice on_device(device_);
+    head_->materialize_logits(head_logits_, T, cs_);
+    if (sync) (void) cudaStreamSynchronize(cs_);
+    split_logits_materialized_ = true;
+#endif
+}
+
 bool Verifier::copy_logits(int t, float* host) const {
 #if defined(STRATA_GPU_METAL)
     return strata::metal_engine::window_copy_logits(metal_, t, host);
 #endif
     if (next_ != nullptr) return next_->copy_logits(t, host);   // a layer split: the head is on the last stage
     if (head_logits_ == nullptr || host == nullptr || t < 0 || n_vocab_ <= 0) return false;
+    ensure_full_logits(last_t_, true);
     return cudaMemcpy(host, head_logits_ + (size_t) t * (size_t) n_vocab_, (size_t) n_vocab_ * sizeof(float),
                       cudaMemcpyDeviceToHost) == cudaSuccess;
 }
@@ -5571,6 +5601,7 @@ bool Verifier::pl_launch(int T, const int32_t* tokens, int64_t pos0, std::string
     if (pre_launch_ && !pre_launch_(cs_, err)) return false;
     const Clock::time_point t0 = Clock::now();
     last_batch_ = false;
+    split_logits_materialized_ = false;
     bool staged = pl_prestaged_ && last_t_ == T && last_pos0_ == pos0;
     for (int t = 0; staged && t < T; ++t) staged = last_tokens_[t] == tokens[t];
     if (staged && ss.ple.ready() && ple_stage())
@@ -5723,6 +5754,7 @@ bool Verifier::pl_finish(int32_t* out, std::string& err) {
     const int T = fl_T_;
     const bool sampled = !sampling_.greedy && sampling_.temperature > 0.0f;
     if (head_sampling_ && (sampled || hist_d_ != nullptr || sampling_.logit_bias != nullptr)) {   // run()'s host-side sampling, Philox(seed, pos0 + t)
+        ensure_full_logits(T, false);
         SamplerParams sp = sampling_;
         sp.counter = (uint64_t) last_pos0_;
         sample_tokens(head_logits_, T, (int) n_vocab_, hist_d_, hist_len_, sp, m_out_, cs_);

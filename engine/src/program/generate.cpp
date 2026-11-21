@@ -3702,11 +3702,17 @@ int main(int argc, char** argv) {
     // Load every CUDA kernel when the context is created, before the expert cache takes the free VRAM.  With the
     // default lazy loading, a kernel first used mid-prompt (MMQ for IQ3_XXS at 64K+ on a 12 GB card) found no VRAM
     // left for its code and the engine ended ("out of memory: cudaFuncSetAttribute").  Costs ~30 MB of VRAM.
+    // Exception: nbald/volta-forever under CUDA 13 runs out of cublas heap under EAGER loading (#guides/strata.md §5).
     if (std::getenv("CUDA_MODULE_LOADING") == nullptr) {
 #if defined(_WIN32)
         _putenv_s("CUDA_MODULE_LOADING", "EAGER");
 #else
-        setenv("CUDA_MODULE_LOADING", "EAGER", 0);
+        if (strata::volta_forever_active()) {
+            std::fprintf(stderr, "strata generate: volta-forever %s detected: keeping CUDA_MODULE_LOADING=LAZY\n",
+                         strata::volta_forever_version());
+        } else {
+            setenv("CUDA_MODULE_LOADING", "EAGER", 0);
+        }
 #endif
     }
     if (launch_blocking())
@@ -4382,7 +4388,8 @@ int main(int argc, char** argv) {
                 int m = 0, n = 0;
                 if (cudaDeviceGetAttribute(&m, cudaDevAttrComputeCapabilityMajor, d) != cudaSuccess ||
                     cudaDeviceGetAttribute(&n, cudaDevAttrComputeCapabilityMinor, d) != cudaSuccess) { lo_major = 0; break; }
-                const int mj = (int) strata::cc_major_of(m), mn = (int) strata::cc_minor_of(n);
+                const int cc = strata::cc_of(m, n);
+                const int mj = cc / 10, mn = cc % 10;
                 if (mj < lo_major || (mj == lo_major && mn < lo_minor)) { lo_major = mj; lo_minor = mn; }
             }
             if (strata::core::nv_chunk_card_ok(lo_major, lo_minor)) {
@@ -8103,7 +8110,7 @@ int main(int argc, char** argv) {
     strata::core::NativeHead native_head;
     if (!o.native_head_gguf.empty() && !multi_gpu) {   // a layer split's head is on its last stage
         const auto head_t0 = std::chrono::steady_clock::now();
-        if (!native_head.load(o.native_head_shards, g.n_embd, n_vocab, err)) {
+        if (!native_head.load(o.native_head_shards, g.n_embd, n_vocab, err, o.peer_device)) {
             std::fprintf(stderr, "strata generate: %s%s%s\n", err.c_str(), vram_free_note().c_str(), vram_batch_hint(err, o.batch).c_str());
             return 1;
         }
@@ -8267,9 +8274,12 @@ int main(int argc, char** argv) {
         }
 #endif
 #else
-        std::fprintf(stderr, "strata generate: GPU %d: %s, compute capability %d.%d%s\n", dev, name,
-                     strata::cc_major_of(p.major), strata::cc_minor_of(p.minor),
-                     strata::emulated_cc() ? " (STRATA_EMULATE_CC: a test mode, the card is emulated)" : "");
+        const int cc = strata::cc_of(p.major, p.minor);
+        const bool vf_remap = !strata::emulated_cc() && strata::volta_forever_active() && p.major == 7 && p.minor == 5;
+        std::fprintf(stderr, "strata generate: GPU %d: %s, compute capability %d.%d%s%s\n", dev, name,
+                     cc / 10, cc % 10,
+                     strata::emulated_cc() ? " (STRATA_EMULATE_CC: a test mode, the card is emulated)" : "",
+                     vf_remap ? (std::string(" (volta-forever ") + strata::volta_forever_version() + ": remapped from reported 7.5)").c_str() : "");
 #if !defined(STRATA_HIP_GFX906) && !defined(STRATA_GPU_METAL)   // a CUDA toolkit mismatch; the gfx906 HIP build has no CUDART_VERSION
         {   // #542: a build whose libcudart is older than its headers (a CUDA 13 kit with a dangling libcudart.so that
             // CMake resolved to the system's CUDA 12 one) reads cudaDeviceProp shifted - silently, and slowly
@@ -18337,7 +18347,7 @@ int main(int argc, char** argv) {
                     (void) cudaGetLastError();
                     move_spacer = nullptr;
                 }
-                const bool head_ok = native_head.load(o.native_head_shards, g.n_embd, n_vocab, err);
+                const bool head_ok = native_head.load(o.native_head_shards, g.n_embd, n_vocab, err, o.peer_device);
                 if (move_spacer != nullptr) (void) cudaFree(move_spacer);
                 if (!head_ok) {
                     std::printf("ERR restoring the native output head failed: %s\n", err.c_str());
