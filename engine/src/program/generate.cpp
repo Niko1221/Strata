@@ -1562,6 +1562,11 @@ struct Drive {
     /// needs no locking.  `d.layers` is the CURRENT layer on entry (the adapter increments it as it walks the
     /// blob), which is why the layer index comes from there rather than from a counter of our own.
     std::FILE* routing = nullptr;
+    /// STRATA_L3_PF: every layer's router (BF16) and the RAM copy the pool's prefetch of the next layer reads; empty = off
+    std::vector<std::vector<uint16_t>> l3_routers;
+    strata::core::FileExpertSource* l3_src = nullptr;
+    const strata::core::ArenaExpertSource* l3_arena = nullptr;
+    int l3_top = 4;
 };
 
 void drive_pool(void* user, const float* x_f, const int32_t* ids, const float* weights, int64_t n_embd, int64_t k,
@@ -1602,6 +1607,24 @@ void drive_pool_multi_impl(void* user, const float* x_f, const int32_t* ids, int
     strata::core::expert_pool_dispatch_multi(t->d, x_f, ids, n_tok, k, out, arithmetic);
     t->cpu_ms += std::chrono::duration<double, std::milli>(Clock::now() - a).count();
     ++t->calls;
+    // STRATA_L3_PF: while the GPU runs the next layer's attention, the workers read the experts its router is likely to
+    // pick from the RAM copy into their caches (a prediction moves no data the plan depends on)
+    if (!t->l3_routers.empty() && !t->d.failed && t->d.host_res != nullptr && layer + 1 < (int64_t) t->l3_routers.size()) {
+        const int64_t nl = layer + 1;
+        strata::kernels::cpu::ExpertPool::L3Prefetch q;
+        q.router = t->l3_routers[(size_t) nl].data();
+        q.n_expert = (int) t->d.n_expert;
+        q.n_embd = (int) (t->l3_routers[(size_t) nl].size() / (size_t) t->d.n_expert);
+        q.nt = (int) n_tok;
+        q.k = (int) k;
+        q.top = t->l3_top;
+        q.fmt = strata::kernels::cpu::expert_layout().fmt[(size_t) nl];
+        strata::core::FileExpertSource* fsrc = t->l3_src;
+        const strata::core::ArenaExpertSource* asrc = t->l3_arena;
+        if (fsrc != nullptr) q.blob = [fsrc, nl](int e) { return fsrc->resident_blob(nl, e); };
+        else q.blob = [asrc, nl](int e) { return asrc->blob_at(nl, e); };
+        t->d.pool->prefetch_next(q, x_f, t->d.host_res + (size_t) nl * (size_t) t->d.n_expert);
+    }
     // the routing trace for the serve path: the same record format drive_pool writes (layer, k, ids, weights),
     // one record per token.  The multi dispatch fuses the router weights into the kernel and does not surface
     // them, so records carry unit weights: tools/make_profile.py ranks pairs by routed frequency, which is the
@@ -10057,6 +10080,45 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "strata generate: %d expert-pool workers%s%s\n", pool.workers(),
                  pool.host_works() ? " + the host thread" : "",
                  o.no_pool ? " (UNUSED: --no-pool)" : "");
+    // STRATA_L3_PF=1 (opt-in): static row slices per worker, and after each layer the workers read the next layer's
+    // likely non-resident experts (its router on this layer's input, the top STRATA_L3_PF_TOP by votes, default 4) into
+    // their caches while the GPU works.  STRATA_POOL_STATIC=1: the static slices alone (an A/B arm).
+    {
+        const char* pf_env = std::getenv("STRATA_L3_PF");
+        const char* st_env = std::getenv("STRATA_POOL_STATIC");
+        const bool want_pf = pf_env != nullptr && std::atoi(pf_env) != 0;
+        const bool want_static = want_pf || (st_env != nullptr && std::atoi(st_env) != 0);
+        if (want_static && !o.no_pool && strata::kernels::cpu::expert_layout().native) {
+            pool.set_static_slices(true);
+            std::fprintf(stderr, "strata generate: expert pool: static row slices %s\n",
+                         pool.static_slices() ? "on" : "off (the NUMA split, or one thread)");
+        }
+        if (want_pf && pool.static_slices()) {
+            auto* fsrc = dynamic_cast<strata::core::FileExpertSource*>(srcp);
+            auto* asrc = dynamic_cast<strata::core::ArenaExpertSource*>(srcp);
+            std::vector<std::vector<uint16_t>> routers((size_t) g.n_layers);
+            bool ok = (fsrc != nullptr || asrc != nullptr) && strata::kernels::cpu::cpu_avx2_ok() && stages.empty();
+            for (int64_t l = 0; l < g.n_layers && ok; ++l) {
+                const strata::core::WeightRef* w = wt.find("blk." + std::to_string(l) + ".ffn_gate_inp.weight");
+                ok = w != nullptr && w->kind == strata::core::WeightKind::Bf16InF32 &&
+                     w->bytes == (uint64_t) (g.n_expert * g.n_embd) * 2;
+                if (!ok) break;
+                routers[(size_t) l].resize((size_t) (g.n_expert * g.n_embd));
+                ok = cudaMemcpy(routers[(size_t) l].data(), w->data, (size_t) w->bytes, cudaMemcpyDeviceToHost) == cudaSuccess;
+            }
+            if (ok) {
+                drive.l3_routers = std::move(routers);
+                drive.l3_src = fsrc;
+                drive.l3_arena = fsrc == nullptr ? asrc : nullptr;
+                if (const char* v = std::getenv("STRATA_L3_PF_TOP")) drive.l3_top = std::max(1, std::min(16, std::atoi(v)));
+                std::fprintf(stderr, "strata generate: L3 prefetch on: the next layer's top %d non-resident experts, %lld MiB of routers in RAM\n",
+                             drive.l3_top, (long long) (g.n_layers * g.n_expert * g.n_embd * 2 >> 20));
+            } else {
+                (void) cudaGetLastError();
+                std::fprintf(stderr, "strata generate: L3 prefetch off (needs the RAM copy, AVX2, one GPU and BF16 routers)\n");
+            }
+        }
+    }
 
     // **THE MISALIGNMENT WARNING THAT STOOD HERE IS GONE, BECAUSE THE MISALIGNMENT IS FIXED.**
     //
