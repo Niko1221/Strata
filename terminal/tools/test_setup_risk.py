@@ -156,6 +156,38 @@ class Context(unittest.TestCase):
         self.assertTrue(started.called)
 
 
+class ContextWithQ4U32(unittest.TestCase):
+    """The context menu's RAM figure is the KV format the engine will run with: q4u32 on a gfx12 card in a q4u32
+    build (54.5% of 8-bit's bytes), and the conservative 8-bit figure when the engine is an upstream one."""
+
+    RAM64 = 63.7
+
+    def gfx12(self, engine_flavor):
+        from test_setup_golden import card, install
+        amd = [{**card(0, "AMD Radeon RX 9060 XT", 15.9, "gfx1200"), "driver": "amdgpu", "uma": False}]
+        return install(self.RAM64, [], ["--family", "qwen", "--model", "IQ3_XXS", "--no-start",
+                                        "--backend", "hip"], engine_flavor=engine_flavor,
+                       extra=[mock.patch.object(setup, "amd_gpus", lambda: amd),
+                              mock.patch.object(setup, "hip_devices", lambda *a, **k: amd)])
+
+    def test_the_q4u32_default_is_used(self):
+        code, out, cfg, _ = self.gfx12("q4u32")
+        self.assertEqual(code, 0, out)
+        self.assertIn("200K tokens   (needs ~68 GB RAM, this PC has 64: may run out of memory)", out)
+        self.assertIn("256K tokens   (needs ~69 GB RAM, this PC has 64: may run out of memory)", out)
+        self.assertIn("384K tokens   (experimental: setup adds rope scaling)   (needs ~70 GB RAM", out)
+        self.assertIn("512K tokens   (experimental: setup adds rope scaling)   (needs ~71 GB RAM", out)
+        self.assertNotIn("512K tokens   (experimental: setup adds rope scaling)   (needs ~74 GB RAM", out)
+        self.assertNotIn("--kv", cfg["args"])                  # auto: the engine picks q4u32 itself
+
+    def test_an_upstream_engine_keeps_the_8bit_estimate(self):
+        code, out, cfg, _ = self.gfx12(None)
+        self.assertEqual(code, 0, out)
+        self.assertIn("256K tokens   (needs ~70 GB RAM, this PC has 64: may run out of memory)", out)
+        self.assertIn("512K tokens   (experimental: setup adds rope scaling)   (needs ~74 GB RAM", out)
+        self.assertNotIn("512K tokens   (experimental: setup adds rope scaling)   (needs ~71 GB RAM", out)
+
+
 class BrokenEarlierConfig(unittest.TestCase):
     """#459: a new copy of Strata set up like an earlier install skips an earlier config that does not parse (an
     empty strata-*.json crashed START-HERE with JSONDecodeError) and goes on as a fresh install; configs are written

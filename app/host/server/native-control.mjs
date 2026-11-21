@@ -64,7 +64,7 @@ function savedKv(config,model,catalog){
  for(const args of [config.args,config[USER_KEY]])if(args!==undefined&&(!Array.isArray(args)||args.some(a=>typeof a!=='string')))return undefined;
  /* Match buildConfig's captured user options over args; generate.cpp takes the last repeated --kv. */
  const args=mergeUserArgs(config.args,captureUserArgs(config)),at=args.lastIndexOf('--kv'),value=at<0?undefined:args[at+1];
- return ['fp16','int8','q4_0','k8v4'].includes(value)?value:undefined;
+ return ['fp16','int8','q4_0','q4u32','k8v4'].includes(value)?value:undefined;
 }
 
 /** The plain words for "no usable engine": the model still downloads, but loading needs the engine (owner decision 2026-10-18). */

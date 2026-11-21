@@ -124,3 +124,6 @@ node_modules/
 /build-vision-spark/
 /terminal/.venv-build/
 /.venv-build/
+
+# engine crash dumps (the stall evidence stays local, like the profiler captures above)
+*.dmp

@@ -88,7 +88,7 @@ def _gpu(setup, world: World) -> dict:
     return g
 
 
-def _qwen(setup, world: World, lib: ProbeLib, say) -> tuple[dict, dict]:
+def _qwen(setup, world: World, lib: ProbeLib, say, engine_version=(0, 1, 63), engine_flavor="") -> tuple[dict, dict]:
     from strata_control import setup_config
     m, s = world.machine, world.mset
     ram = m.ram_gb
@@ -116,19 +116,19 @@ def _qwen(setup, world: World, lib: ProbeLib, say) -> tuple[dict, dict]:
     ple = shards[min(1, len(shards) - 1)]
     model_args = ["--pack", str(world.pack), "--native", str(shards[0]), *(["--ple-gguf", str(ple)] if len(shards) <= 2 else [])]
     inp = setup_config.SetupInputs(
-        a=a, adopted=None, chosen=[gpu], cuda_tk=13, draft_vocab=None, eng=world.engine_dir, engine_ver=(0, 2, 12), esp=None, fam=fam, family=family,
-        gpu=gpu, hip=hip, in_budget=in_budget, lib_dirs=[], low_ram=low_ram, meta={"version": "0.2.12"}, mmproj=world.models / fam.get("mmproj", setup.MMPROJ),
+        a=a, adopted=None, chosen=[gpu], cuda_tk=13, draft_vocab=None, eng=world.engine_dir, engine_ver=engine_version, engine_flavor=engine_flavor, esp=None, fam=fam, family=family,
+        gpu=gpu, hip=hip, in_budget=in_budget, lib_dirs=[], low_ram=low_ram, meta={"version": ".".join(map(str, engine_version)), **({"flavor": engine_flavor} if engine_flavor else {})}, mmproj=world.models / fam.get("mmproj", setup.MMPROJ),
         model=model, model_args=model_args, models_dir=world.gguf_dir, multi=[], pack=world.pack, ple=ple, port=8080, q4_split=False, ram=ram,
         reader=reader, ready=False, rope_scale=1.0, rt=world.mtp, scaling=None, shards=shards, tag=tag, vision=vision, ctx=ctx, kv=kv,
         resident=resident, budget=budget, GGUFFile=FakeGGUF)
     summary = {"family": family, "model": model, "ram_gb": ram, "gpu": {k: gpu[k] for k in sorted(gpu) if k not in ("driver",)}, "context": ctx, "kv": kv,
-               "vision": vision, "low_ram": low_ram, "resident": resident, "ram_budget_gib": budget, "in_budget": in_budget, "engine_version": "0.2.12"}
+               "vision": vision, "low_ram": low_ram, "resident": resident, "ram_budget_gib": budget, "in_budget": in_budget, "engine_version": ".".join(map(str, engine_version))}
     with contextlib.redirect_stdout(say):
         built = setup_config.config_for(inp, lib)
     return built.cfg, summary
 
 
-def drive_setup(world: World) -> dict:
+def drive_setup(world: World, engine_version=None, engine_flavor="") -> dict:
     from .driver import engine_start
     command = f"strata setup --family {world.mset.family} --model {world.mset.model} --yes --no-start"
     if world.machine.key in NOT_DRIVEN:
@@ -141,7 +141,7 @@ def drive_setup(world: World) -> dict:
     # not a hybrid CPU (setup adds --pool-workers on one: Boston's 8 P + 16 E cores changed 12 goldens): the class decides, not the host
     with world.patched(), mock.patch.object(os, "cpu_count", lambda: 16), mock.patch.object(setup, "cpu_cores", lambda: None), \
             mock.patch.object(setup, "WIN", lib.WIN),             mock.patch.object(setup, "EXE", lib.EXE), mock.patch.object(setup, "VEXE", lib.VEXE):     # setup's own helpers read these globals: the class decides, not the host
-        cfg, summary = _qwen(setup, world, lib, notes)
+        cfg, summary = _qwen(setup, world, lib, notes, engine_version or (0, 1, 63), engine_flavor)
         eng = engine_start(world, dict(cfg))
     return {"entry": "setup", "command": command, "inputs": summary, "config_file": cfg, "engine": eng,
             "setup_says": [l.strip() for l in notes.getvalue().splitlines() if l.strip()]}

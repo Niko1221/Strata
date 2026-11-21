@@ -85,7 +85,6 @@ More VRAM matters more than a faster GPU. Every extra GB holds about 700 more ex
 the CPU does not have to compute. `terminal/tools/make_profile.py` builds an expert profile from your own prompts: run the engine
 once with `--dump-routing trace.bin`, then see the tool's help. The shipped profile ranks every expert pair, so a trace
 changes the order only with `--reorder` (your trace's pairs first, then the base's, then the rest).
-
 ## Which model?
 
 [MODELS.md](MODELS.md) is the page for choosing a model: sizes, memory, providers and what fits. The families are
@@ -247,14 +246,34 @@ New fields may be added to an event; a reader should ignore fields it does not k
 
 | Option | What it does |
 | --- | --- |
-| `--kv int8` (default) | 8-bit KV cache. |
+| `--kv` left out | The Terminal names the format itself: `int8` above 8K of context, `fp16` up to 8K. On RDNA4 (gfx12) with this tree's engine (`0.1.63-q4u32`) it names nothing above 8K, and the engine picks `q4u32` (54.5% of 8-bit's bytes, level with it at 32K and at 106K tokens). An upstream engine has no such default, so the Terminal names a format there. |
+| `--kv int8` | 8-bit KV cache. What the Terminal writes above 8K context on every card that is not gfx12, and on every engine that is not a q4u32 build. |
+| `--kv q4u32` | 4-bit KV cache on the uniform grid (a per-32-value block scale, fitted instead of taken from the block maximum). The default on gfx12 in this tree; on other cards it runs the prompt 2.5x slower (the decode kernel it replaces), so there it has to be named on purpose. |
 | `--kv q4_0` | Half the KV memory with a Hadamard rotation before 4-bit rounding. About 4% faster at 128K, measurably less precise on long documents (perplexity +8-12%; needle tests still pass). Setup asks above 8K context. |
 | `--kv k8v4` | Keys at 8 bits, values as rotated 4-bit: 23% less KV memory than 8-bit, so more experts fit in VRAM. More precise than `q4_0` on long documents. Prompts are 2-5% slower. |
+| `--kv q4u32` + the window (this tree, opt-in) | `q4u32`'s 4-bit cells plus an exact-cell window (the recent 256 and the sink 64 cells of each QSA layer stay fp16 in a resident side pool). Setup's 4th KV choice writes `--kv q4u32` and the engine env `STRATA_KV_WINDOW=1` (S/R 256/64): 1,016 MiB at 128K against 1,584 MiB for 8-bit. Measured quality (cwe-4k, 32,746 positions, engine 0.1.59.1): mean KL 0.01739 against int8's 0.01688 (+0.00052, a statistical tie, int8 ahead in 4 of 8 segments; p99 0.2653 against 0.1888); on the 128K text (131,060 positions) 0.06949 against the fair int8 anchor's 0.06419 (+0.00530, top-1 98.31% against 98.41%, p99 1.9837 against 1.7455). On gfx12 the prompt is level with 8-bit at 32K (657.7 against 656.8 tok/s) and needles pass 3/3 at 4K and 32K. Exists only in a build from this source; does not combine with `--kv-streaming`. |
+| `--kv q4lm8v` (this tree, opt-in) | 4-bit Lloyd K and V plus the same exact-cell window (S/R 256/64, env `STRATA_KV_WINDOW=1`): the Lloyd window arm, with the detailed 2K/4K/128K quality series, 5.29 bit/cell at 128K, 1,016 MiB against 1,584 MiB for 8-bit. A hand-written config needs the env; setup's menu writes the `q4u32` pair. Does not combine with `--kv-streaming`. Details: [KV cache quantization](#kv-cache-quantization-above-8k-context). |
 | `--kv-streaming on\|off\|auto` | Keeps the context's KV cache in RAM and only the part attention reads in VRAM (`--kv-resident 32768`), so more experts fit on the GPU. Costs about 13.7 KB of RAM per context token (1.7 GB at 128K). Setup turns it on from 64K when the RAM has room; `on` overrides the RAM test with a note. Never under WSL. |
 | `--kv-grow` (or `STRATA_KV_GROW=1`; `--no-kv-grow` turns it off) | The KV takes VRAM only for the cells the requests reach; the expert cache holds the rest and gives slots back as the context grows. Needs one GPU, an expert profile, the whole KV in VRAM and every expert in RAM. Otherwise the engine says so and stays off. On HIP it uses virtual memory management (`STRATA_HIP_VMM=0` turns that off). It pays on cards of about 24 GB or less with contexts of 128K and more. |
 
 `STRATA_KV_HOST_REGISTER=1` forces the KV host copy to be pinned with `cudaHostRegister` (the order WSL2 uses
 automatically); `0` forces `cudaHostAlloc` first.
+
+**Who chooses the format, in short.** The engine of this tree (`0.1.63-q4u32`) decides: without `--kv` it
+takes `q4u32` on gfx12 (RDNA4), where the 4-bit prompt path was measured (level with 8-bit: 664,5 against
+669,0 tok/s at 32K, A.23; the paired A/B of the coupled switch gave −1,8 % / −2,1 %, A.22). It uses 54.5 %
+of 8-bit's bytes, which the expert cache gets: **+18,7 %** slots. At 106K tokens (A.28) the same holds:
+737,5 against 743,4 tok/s with the same number of expert-cache slots (−0,8 %), and 3608 against 3079 slots
+with the cache sized automatically (**+17,2 %**). The format's quality at this length was measured with the
+exact-cell window (`q4u32` + `STRATA_KV_WINDOW=1`, the next point): against fp16 over 131.060 positions (13.11.) it
+reaches a mean KL of 0.06949 against the fair 8-bit anchor's 0.06419 (paired +0.00530, t +3.44) and a top-1 of
+98,31 % against 98,41 % (the best rotated anchor, R2a, sits at 0.06238 / 98,49 %); at 4K the same comparison is not
+resolvable. The plain default's quality at 128K is not separately measured. On every other card, and with every engine that is not a q4u32 build, the Terminal writes the
+format itself (int8 above 8K, fp16 up to 8K), so those starts stay byte-identical to the last release; `STRATA_HIP_WMMA=0` keeps 16-bit
+everywhere (that is the state without the prompt path, where the 4-bit pool is 2,5x slower). A format the
+person names is always written. **An update never switches the variant of Strata that is installed** — the
+manifest carries it (`"flavor"`), and the updater keeps a `q4u32` engine when the feed has an upstream one.
+Measurements: `bench/results/2026-11-14-q4u32-fastpath/README.md` (A.21–A.23, A.28).
 
 ### Low-RAM modes (chosen by setup)
 
@@ -657,7 +676,7 @@ applies at the next start. Network, key, MCP and program keys are not editable t
   `STRATA_NAN_INJECT=<n>[,<n>...]` flags the n-th checked window to test the path. The one-shot command line and the
   Intel (SYCL) port do not check.
   The Apple Metal port has no device kernel for it; after each head window it scans the window's logits rows in
-  unified memory from the host (`metal_scan_rows` in `engine/src/core/verify.cpp`) and records the same fact. On an M1 Max
+  unified memory from the host (`metal_scan_rows` in `engine/engine/src/core/verify.cpp`) and records the same fact. On an M1 Max
   the scan costs about 60 microseconds a decode window, 0.2% of the window.
   The origin of a real poisoning was found in the Metal port: the Mixture-of-Experts activations (`XS`, the gathered
   input, and `HS`, the gated intermediate) are fp16, and a value outside fp16's range became `inf`. The expert
@@ -1231,7 +1250,7 @@ sm_86 and sm_61, bit-exact. `STRATA_DEQUANT_WIDE=0` turns it off.
 `STRATA_SELECT_TWO_PASS=1` (opt-in; sm_80+, the prompt path's tensor-core block scorer): every block is scored once in
 single-pass TF32 with a per-block error bound, and again in the usual 3xTF32 only where the bound reaches the query's
 top-k cut-off (a query the bound cannot settle has its 16-query tile scored again in full), so the selected cells, their
-order and the ties are exactly the 3xTF32 scorer's (the bound and the rule: `engine/include/strata/kernels/qsa_two_pass.hpp`).
+order and the ties are exactly the 3xTF32 scorer's (the bound and the rule: `engine/engine/include/strata/kernels/qsa_two_pass.hpp`).
 On an RTX 3090 (sm_86, PCIe 3.0, 250 W; the v0.2.6 release defaults, 2 pairs of 2 runs) a 256K prompt read 5.2% faster
 (1,887 to 1,984 tokens/s), a 128K prompt 2.2% faster and a 32K prompt the same within 1%; decode and the answers did not
 change. Calls whose last query has `STRATA_SELECT_TWO_PASS_MIN` blocks or more take it (default 4096, 16K cells).
@@ -1398,7 +1417,7 @@ off, the output is token for token the stock model's.
 
 ## RTX 30 series (sm_86) and Tesla P100 (sm_60): bitwise decode switches on by default
 
-Switches that are bit-exact on every card are on by default per architecture (`engine/include/strata/core/nv_defaults.hpp`, set before
+Switches that are bit-exact on every card are on by default per architecture (`engine/engine/include/strata/core/nv_defaults.hpp`, set before
 the engine reads its switches; a switch you set yourself, to anything, is kept). The table is used when every visible card has
 that one compute capability. The identity gate (10 prompts plus exact_pp 4K/20K, fixed flags) is identical with the sets on.
 
@@ -1470,6 +1489,94 @@ never changed. `STRATA_ROUTE_PRIOR` raises KL and is an opt-in again in 0.2.8 (0
 
 ---
 
+## KV cache quantization (above 8K context)
+
+The KV cache is the model's memory of the conversation. Above 8K context it is stored as:
+
+- **int8** (the default everywhere but gfx12 of this tree, 8.0 bit/cell) — what every published number was measured with.
+- **q4u32** (the default on gfx12 of this tree above 8K) — 4.5 bit/cell on the uniform grid, one fitted step per
+  32 values: 54.5 % of int8's bytes, level with it in prompt speed at 32K and 106K. Its quality at 4K and 128K was
+  measured on the exact-cell window (the next point): a tie at 4K, +0.00530 KL at 128K. Details:
+  [Memory modes](#memory-modes).
+- **q4_0** — about 4.0 bit, half the memory, ~4% faster at 128K, but measurably less precise
+  on long documents; long-context lookups (needles) still pass.
+- **k8v4** — hybrid, INT8 K + 4-bit V, 816 B/cell.
+- **q4u32 + the exact-cell window** (setup's 4th KV choice, opt-in, NVIDIA/AMD only) — q4u32's
+  4.5 bit/cell plus an **exact-cell window** (256 recent + 64 sink cells kept as fp16 in a resident
+  side pool): 1,016 MiB at 128K against 1,584 MiB for int8. Measured quality: at 4K the pair is a
+  statistical tie with int8 (mean KL 0.01739 against 0.01688, +0.00052, int8 ahead in 4 of 8
+  segments; p99 0.2653 against 0.1888); on the 128K text it is +0.00530 KL behind the fair int8 anchor (0.06949 against
+  0.06419, top-1 98.31 % against 98.41 %, p99 1.9837 against 1.7455). On gfx12 the prompt is level
+  with int8 at 32K (657.7 against 656.8 tok/s) and needles pass 3/3 at 4K and 32K.
+- **q4lm8v** (opt-in, NVIDIA/AMD only) — 4-bit Lloyd K and V plus the same **exact-cell window**
+  (256 recent + 64 sink cells kept as fp16 in a resident side pool): the measured window arm,
+  5.29 bit/cell at 128K, 1,016 MiB against 1,584 MiB for int8. About as fast as int8, more expert
+  slots; accuracy at 4K between 8- and 4-bit, at the 8-bit level in the answer region; needles
+  6/6 at 32K and 128K.
+
+The window is opt-in (`--kv q4u32` + `STRATA_KV_WINDOW=1`, setup's 4th choice from 32K up; or
+`--kv q4lm8v` for the Lloyd arm). Its ring is sized for the prompt chunk (`STRATA_KV_WINDOW_BATCH`, default follows the chunk, capped at 6,144
+cells so setup's 152 MiB figure stays honest); the cap comes from the free ring's 6,144-cell scan
+limit. The exact-cell overlay is orthogonal to the level table: `--kv q4lm32w` turns it on for
+kLloyd, and `STRATA_KV_WINDOW=1` turns it on for any other q4 mode.
+
+**Short-read note (method):** the scan limit is the reason `--prefill auto` is capped at 6,144 cells
+for a windowed run even when the host could take more (`auto_ceiling` 7,600). A run with
+`--short-read 0` (batched prompt path) and a windowed config is the case that crashed before
+the fix; with the fix it runs through. Timing or quality numbers taken on a machine that is not
+quiet (other programs, browser, YouTube) are not valid and are not quoted here.
+
+**The window and KV streaming do not combine.** Streaming (`--kv-resident`) keeps the KV cache in
+RAM and only the attention's window in VRAM; the window's exact cells need an always-resident side
+pool that a streamed KV does not have. Setup never writes the pair: a windowed config's KV cache
+stays in VRAM and nothing streams beside it. A hand-edited config that sets both is refused loudly
+by the engine (exit 2, before anything loads). To stream instead, drop the window (`--kv int8`,
+`q4_0` or `k8v4`); to keep the window on a PC that would otherwise stream, run with
+`--kv-streaming off`.
+
+Measured on the Lloyd window arm (`--kv q4lm8v`) on the author's PC (Ryzen 9 3900XT, 64 GB DDR4-3000, RX 9060 XT
+16 GB, Windows, ROCm 7.1, Qwen3.8-Flash-Next, 128K context, `--prefill auto`): 5.29 bit/cell, 1,016 MiB of KV
+against 1,584 MiB for int8. The int8 path without the window is byte-identical to the last release (dump-logits
+SHA `A014F504...BA052`). On gfx12 the engine of this tree picks `q4u32` instead (see
+[Memory modes](#memory-modes)); every other card and every upstream engine keeps 8-bit.
+
+**The exact-cell window on the 4-bit choices (opt-in):** setup's fourth KV choice (offered at 32K and more; below the
+~28K break-even the ring costs more than the 4-bit base saves) writes `--kv q4u32` and the engine env
+`STRATA_KV_WINDOW=1`, `STRATA_KV_WINDOW_S=256`, `STRATA_KV_WINDOW_R=64`; the Lloyd arm writes `--kv q4lm8v` with the
+same env, and a hand-written config needs both. The first 64 cells (sinks) and the most recent 256 cells of each QSA
+layer stay in exact fp16, the rest in the 4-bit format (q4u32's uniform grid, or the Lloyd table), and the window's
+ring is sized for the prompt chunk and stays resident. The ring holds a chunk of at
+most 6,144 cells: a larger `--prefill` is capped at 6,144 with a note, the chunk the memory figure below is measured
+at. A ring the user sized (`STRATA_KV_WINDOW_BATCH`) is left as it is: then the engine does not cap the chunk, and a
+chunk that does not fit the ring is refused with a message that says what to change.
+
+On the q4u32 pair at 128K (131,072 cells, B = 6,144, RX 9060 XT, Windows HIP): 1,016 MiB of KV (863 MiB of q4u32
+cells + the 152 MiB ring) against 8-bit's 1,584 MiB; at 32K the prompt is 657.7 against int8's 656.8 tok/s (not
+resolvable) and needles pass 3/3 at 4K and 32K. The pair's quality is measured (the cwe-4k table on engine 0.1.59.1,
+32,746 positions; the 13.11.2026 128K run, 131,060 positions): at 4K mean KL 0.01739 against int8's 0.01688
+(+0.00052, a statistical tie, int8 ahead in 4 of 8 segments); at 128K 0.06949 against the fair int8 anchor's 0.06419
+(+0.00530, t +3.44, top-1 98.31 % against 98.41 %, p99 1.9837 against 1.7455). Source:
+[the companion paper](paper/KV-mean-centered-calibrated-quantization.tex), the cwe-4k table and the 128K
+fair-anchor table.
+
+Measured on the Lloyd arm (`--kv q4lm8v`, the window arm the numbers below belong to) at 128K (131,072 cells, B =
+6,144, RX 9060 XT, Windows HIP): 5.29 bit / 1,016 MiB against 8-bit's 8.25 / 1,584
+MiB (-36%), prompt 528 vs 526
+tok/s and decode 34.2 vs 35.2 tok/s (inside 8-bit's run-to-run spread), 14% more expert slots, hit rate 0.76 vs
+0.74. On cwe-4k (32,746 teacher-forced positions) KL 0.02090 against 8-bit's 0.01688 and plain `q4lm8v`'s 0.03182
+- 73% of the gap closed, and in the answer region no longer distinguishable from 8-bit; needles 6/6 at 32K and
+128K. At 128K on cwe-128k (131,062 teacher-forced positions, the text of the workpackage measurement; port build
+0.1.47, Windows HIP, RX 9060 XT) the last 4,096 positions score KL 0.00663 for the window against 8-bit's 0.00959
+and plain `q4lm8v`'s 0.01587 (top-1 99.73 / 99.73 / 99.51%), 58% of the gap to plain closed; 8-bit stays ahead in
+the p99 (0.0166 vs 0.0298), in the last 1,024 positions (0.00265 vs 0.00444) and over the whole segment (0.10715
+against 0.13312 and 0.15758). A second 128K text from the same generator (same seed, alpha and 2,621 code words,
+drawn separately) reverses only the order of the two quantized arms - last 4,096: 8-bit 0.00324, window 0.00437,
+plain 0.00664, so the window keeps a third of the gap to plain closed and loses the p99 (0.0210 against 0.0165);
+whole segment 8-bit 0.06435, window 0.07524, plain 0.08834. The difference between the two quantized arms is
+therefore inside the text-to-text spread; the window's lead over plain is what both texts agree on. `--prefill 512`
+reaches 4.60 bit / 884 MiB but prompts at 105 tok/s (-80%):
+offline only. 8-bit stays the default.
+
 ## How it works
 
 <p align="center"><img src="paper/tiers.svg" width="760" alt="memory tiers"></p>
@@ -1505,7 +1612,7 @@ Strata itself: [MIT](../LICENSE). The model files are not part of it; their lice
   [ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF](https://huggingface.co/ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF) by UkisAI.
   Their licenses apply to the weights.
 - [llama.cpp / ggml](https://github.com/ggml-org/llama.cpp) (MIT): the i-quant formats, the GPU dot products and dequantizers
-  transcribed in `engine/src/kernels/cuda/iq_kernels.cu`, the CPU backend linked for the i-quant experts, and `gguf-py` used by the tools. See `engine/third_party/ggml/LICENSE`.
+  transcribed in `engine/engine/src/kernels/cuda/iq_kernels.cu`, the CPU backend linked for the i-quant experts, and `gguf-py` used by the tools. See `engine/third_party/ggml/LICENSE`.
 - Ideas from [Splash](https://github.com/incoai/splash), [ninfer](https://github.com/Neroued/ninfer) and
   [HyperQwen](https://github.com/syv-ai/HyperQwen); references in the paper.
 - The DFlash2 drafter's Q4_0 selector (174 MiB less graphics memory, same drafts and same text) is nazeshinjite's idea:

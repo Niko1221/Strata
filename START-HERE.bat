@@ -13,6 +13,12 @@ if exist "terminal\setup.py" (
 )
 rem A bundled Python runtime (the python\ folder of the terminal archive) is used when it is there: nothing to find,
 rem install or download. (START-HERE.bat --setup, --update)
+rem Self-built engine: if engine\ or engine72\ holds a build from this tree, setup uses it instead of the ready-made
+rem one (so a hand-built engine, e.g. a ROCm 7.2 build, is never replaced by the feed's older one). Force it with:
+rem   START-HERE.bat --prefer-self-build            (or set STRATA_PREFER_SELF_BUILD=1)
+rem   START-HERE.bat --engine-dir <folder>          (explicit folder with strata.exe)
+rem   set STRATA_SELF_BUILD_DIR=<folder>            (persistent, e.g. ...\engine72)
+rem The feed's engine is older (ROCm 7.1) and would overwrite a hand-built one - avoid "Update engine" in the app.
 if exist "python\python.exe" goto bundled
 if exist ".venv\Scripts\python.exe" goto run
 

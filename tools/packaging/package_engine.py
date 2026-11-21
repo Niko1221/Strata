@@ -168,7 +168,7 @@ def build(src: Path, backend: str, version: str, target: str, out: Path, *, entr
           min_runtime: str | None = None, notes: str = "", tree: bool = False, include: list[str] | None = None,
           variant: str = "", search: list[Path] | None = None, allow_libs: list[str] | None = None,
           check_reader: bool = False, allow_stale_vision: bool = False, allow_no_reader: bool = False,
-          shape: str = "") -> Path:
+          shape: str = "", flavor: str = "") -> Path:
     if shape:
         if not shape_engine.valid(shape):
             raise SystemExit(f"--shape {shape!r} is not a model shape name (the compiled geometry's name, like q4_lite: lower case, digits and _)")
@@ -221,6 +221,10 @@ def build(src: Path, backend: str, version: str, target: str, out: Path, *, entr
             manifest["variant"] = variant
         if min_runtime:
             manifest["min_runtime"] = min_runtime
+        if flavor:
+            # the build's variant of Strata itself ("q4u32", a fork's engine): an update never switches it, so the manifest
+            # has to say which variant this package is (an upstream package has no field)
+            manifest["flavor"] = flavor
         if notes:
             manifest["notes"] = notes
         (staging / ec.MANIFEST).write_text(json.dumps(manifest, indent=1) + "\n", encoding="utf-8")
@@ -310,6 +314,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--min-driver", action="append", default=[], metavar="VENDOR=VERSION",
                     help="the oldest driver, e.g. nvidia=580.65; repeat for several vendors")
     ap.add_argument("--variant", default="", help="tag when one backend has several builds (cuda13, cuda12); goes in the folder name")
+    ap.add_argument("--flavor", default="", help="the build's variant of Strata itself (q4u32, a fork's engine); an update never switches it")
     ap.add_argument("--build-id", default=None, help="default: the source commit of this checkout")
     ap.add_argument("--min-runtime", default=None)
     ap.add_argument("--notes", default="")
@@ -368,7 +373,7 @@ def main(argv: list[str] | None = None) -> int:
                    archs=tuple(a.arch), min_driver=drivers, build_id=a.build_id, min_runtime=a.min_runtime,
                    notes=a.notes, tree=a.tree, include=a.include, variant=a.variant,
                    search=a.search, allow_libs=a.allow_lib, check_reader=True, allow_stale_vision=a.allow_stale_vision,
-                   allow_no_reader=a.no_picture_reader, shape=a.shape)
+                   allow_no_reader=a.no_picture_reader, shape=a.shape, flavor=a.flavor)
     entries = [p for p in folder.rglob("*") if p.is_file()]
     total = sum(p.stat().st_size for p in entries)
     print(f"{folder}  ({total / (1 << 20):.1f} MiB, {len(entries)} files, manifest sha256 {package_sha256(folder)})")

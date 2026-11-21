@@ -105,6 +105,18 @@ everything is a warning: `strata launch` says it could not find an engine, asks 
 the next step (exit 0, nothing started). The app shows the same warning with an "Update engine" button in Settings.
 `packaging/package_engine.py` makes a local package from a build folder.
 
+**The variant of Strata a package is.** A fork's engine carries a **flavour** in its manifest (`"flavor":
+"q4u32"`): the engine of this tree is the release it was changed from plus the suffix of what it adds, and
+`package_engine.py --flavor q4u32` writes that field (an upstream package has no field). (`"variant"` in the
+same manifest is the *model shape*'s variant — the engine of one model shape; `"flavor"` is the variant of
+Strata itself.) The rule the update
+follows: **an update never replaces an installed build of a variant with a build of another variant.** A newer
+build of the *same* variant is taken; a package of another variant is not offered, and the update says so in
+one line. So a `q4u32` engine is not silently replaced by an upstream engine — a different variant is
+installed deliberately. (An installation *without* a variant — an upstream engine — takes what the signed feed
+offers; that feed carries upstream builds.) `strata components engine` shows the variant of what is
+installed.
+
 **No acquisition at run time.** `STRATA_NO_ACQUIRE=1` (set by the Tauri shell for the host, and by the host for Control) makes
 `strata_control/acquisition.py` refuse pip, downloads and compiles. On the host side `server/acquisition.mjs` refuses the llama.cpp
 and cloudflared fetches (a connector placed in `components/cloudflared/` is used as it is). Models the user chooses to download are a

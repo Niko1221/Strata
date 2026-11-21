@@ -38,7 +38,7 @@ export function memoryNeeded(v: FitInput): number {
 
 /** The conversation cache of Flash-Next: 13 attention layers, bytes per token per layer by cache format, 5.4% over the bare cache
  *  (strata_control/vram_fit.py KV_BYTES, KV_MEASURED_FACTOR; setup.py UD_FIT_KV_BYTES). */
-const KV_BYTES: Record<string, number> = { fp16: 2112, int8: 1056, q4_0: 576, k8v4: 816 };
+const KV_BYTES: Record<string, number> = { fp16: 2112, int8: 1056, q4_0: 576, q4u32: 576, k8v4: 816 };
 const KV_LAYERS = 13, KV_FACTOR = 1.054;
 export const BASE_CONTEXT = 32768;
 export function cacheGb(context: number, kv = 'int8'): number {

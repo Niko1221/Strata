@@ -67,12 +67,12 @@ struct Fixture {
         st.kv_mode = mode; st.kv_int8 = fmt==kKvInt8; st.kv_q4 = fmt==kKvQ4; st.kv_hybrid = fmt==3;
         st.n_pages = 24; st.n_slots = mode ? 4 : st.n_pages;
         st.max_cells = st.n_pages * 4; st.idx_pooled_rows = mode==2 ? 2 : st.max_cells/4+2;
-        const size_t per = fmt==kKvQ4 ? kv_q4_bytes_per_head((int)g.head_dim) : g.head_dim*((st.kv_int8 || st.kv_hybrid) ? 1:2);
+        const size_t per = fmt==kKvQ4 ? kv_q4_bytes_per_head((int)g.head_dim, Q4Mode::kUniform) : g.head_dim*((st.kv_int8 || st.kv_hybrid) ? 1:2);
         const size_t rows = st.max_cells*g.n_head_kv, slot_rows = st.n_slots*4*g.n_head_kv;
         sizes = {rows*per, rows*per, fmt==kKvInt8 ? rows*(g.head_dim/64)*2:0,
                  fmt==kKvInt8 ? rows*(g.head_dim/64)*2:0, (size_t)st.idx_pooled_rows*g.idx_key_dim*4};
         if (fmt==3) {
-            sizes = {rows*per, rows*kv_q4_bytes_per_head((int)g.head_dim), rows*(g.head_dim/64)*2, 0,
+            sizes = {rows*per, rows*kv_q4_bytes_per_head((int)g.head_dim, Q4Mode::kUniform), rows*(g.head_dim/64)*2, 0,
                      (size_t)st.idx_pooled_rows*g.idx_key_dim*4};
             alloc(st.k_q,sizes[0]); alloc(st.v_q4,sizes[1]); alloc(st.k_scale,sizes[2]);
             sources[0]=st.k_q; sources[1]=st.v_q4; sources[2]=st.k_scale;
@@ -420,7 +420,7 @@ int main() {
             if (mode==2 && upto>0) {
                 const auto s=qsa_real_shapes();
                 const int64_t b1=(upto+s.page_size-1)/s.page_size,b0=std::max<int64_t>(0,b1-f.state.n_slots);
-                const size_t block=kv_block_bytes(s,fmt)/2;
+                const size_t block=kv_block_bytes(s,fmt,f.state.kv_q4_mode)/2;
                 // Codes and scales are separate in INT8; check code bytes here.
                 const size_t code_block=fmt==kKvInt8 ? s.page_size*s.n_head_kv*s.head_dim : block;
                 const void* slots=fmt==kKvQ4?(void*)f.state.k_q4:fmt==kKvInt8?(void*)f.state.k_q:(void*)f.state.k_pool;

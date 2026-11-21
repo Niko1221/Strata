@@ -60,6 +60,7 @@
 #include "strata/kernels/cvec.hpp"
 #include "strata/kernels/kv_q4.hpp"
 #include "strata/core/layer.hpp"
+#include "strata/core/s2_probe.hpp"
 #include "strata/core/native_dense.hpp"
 #include "strata/core/native_head.hpp"
 #include "strata/kernels/verify_kernels.hpp"
@@ -124,6 +125,7 @@ bool ple_batch_enabled() {
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <deque>
 #include <map>
 #include <string>
@@ -291,6 +293,24 @@ bool ple_copy_stream_on() {
 }  // namespace
 namespace strata::prefill {
 namespace {
+// S2 debug (STRATA_KV_S2_DEBUG=1): the orthonormal Hadamard keeps the energy of every row, so the two
+// copies' sums of squares are the probe's own correctness check, not a measurement.
+void s2_row_energy(const float* host, int64_t rows, int nchan, bool pre) {
+    static const bool on = [] { const char* v = std::getenv("STRATA_KV_S2_DEBUG"); return v != nullptr && v[0] == '1'; }();
+    static bool said_pre = false, said_post = false;
+    bool& said = pre ? said_pre : said_post;
+    if (!on || said) return;
+    said = true;
+    double e = 0.0, m = 0.0;
+    for (int64_t r = 0; r < rows; ++r) {
+        double row = 0.0;
+        for (int c = 0; c < nchan; ++c) { const double x = host[(size_t) r * (size_t) nchan + (size_t) c]; row += x * x; }
+        e += row;
+        if (r == 0) m = row;
+    }
+    std::fprintf(stderr, "strata: S2 %s: %lld rows, sum of squares %.6g (row 0 %.6g)\n",
+                 pre ? "before FWHT" : "after FWHT", (long long) rows, e, m);
+}
 
 using Clock = std::chrono::steady_clock;
 constexpr float EPS = 1e-6f;
@@ -340,6 +360,7 @@ inline bool stream_ahead_enabled() {
     }();
     return on;
 }
+
 // Step 3: from this chunk size on, every non-resident expert of every layer streams in a fixed order through a
 // ring_slots()-slot ring (nearly all 512 are routed at such a chunk), so the copy engine keeps working through the
 // attention halves instead of waiting for each layer's routing.
@@ -1745,10 +1766,11 @@ void take_stage(Alloc& o_borrowed, const core::SessionState& ss, const strata::k
     if (q0.kv_hybrid) {   // K8V4: the three runs of kKvHybrid; pools_of() then reads as the hybrid pools (mode 3)
         st.k_q = o.take<int8_t>(rows * s.head_dim, ok);
         st.k_scale = o.take<uint16_t>(rows * (s.head_dim / 64), ok);
-        st.v_q4 = o.take<uint8_t>(rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim), ok);
+        st.v_q4 = o.take<uint8_t>(rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim,
+                                                                              strata::kernels::Q4Mode::kUniform), ok);
     } else if (q0.kv_q4) {
-        st.k_q4 = o.take<uint8_t>(rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim), ok);
-        st.v_q4 = o.take<uint8_t>(rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim), ok);
+        st.k_q4 = o.take<uint8_t>(rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim, q0.kv_q4_mode), ok);
+        st.v_q4 = o.take<uint8_t>(rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim, q0.kv_q4_mode), ok);
     } else if (q0.kv_int8) {
         st.k_q = o.take<int8_t>(rows * s.head_dim, ok);
         st.v_q = o.take<int8_t>(rows * s.head_dim, ok);
@@ -1759,10 +1781,12 @@ void take_stage(Alloc& o_borrowed, const core::SessionState& ss, const strata::k
         st.v_pool = o.take<uint16_t>(rows * s.head_dim, ok);
     }
 }
-strata::kernels::QsaAttnPools pools_of(const strata::kernels::KvHostPools& h, const int32_t* table) {
+strata::kernels::QsaAttnPools pools_of(const strata::kernels::KvHostPools& h, const int32_t* table,
+                                       strata::kernels::Q4Mode mode) {
     strata::kernels::QsaAttnPools p;
     p.k_pool = h.k_pool; p.v_pool = h.v_pool; p.k_q = h.k_q; p.v_q = h.v_q; p.k_scale = h.k_scale; p.v_scale = h.v_scale;
     p.k_q4 = h.k_q4; p.v_q4 = h.v_q4;
+    p.q4_mode = mode;   // the movers size the q4 rows from it (the shear's block is 20 bytes)
     p.page_table = table;
     return p;
 }
@@ -3098,7 +3122,13 @@ bool Prefill::draft_kv(core::MtpDrafter& mtp, const float* R_rows, const int32_t
             strata::kernels::fwht256_inplace_cuda(Vc, nb * g.n_head_kv, m.cs);
         }
         if (st.kv_q4) {
-            strata::kernels::kv_append_q4(st.k_q4, st.v_q4, st.page_table, c0, nb, Kc, Vc, s, m.cs, &st.host);
+            strata::kernels::kv_append_q4(st.k_q4, st.v_q4, st.page_table, c0, nb, Kc, Vc, s, m.cs, &st.host, nullptr,
+                                          st.kv_q4_mode);
+            // WP-2a window twin (the drafter's own state never carries win pools - guard skips; kept uniform).
+            if (st.k_win != nullptr)
+                strata::kernels::kv_append_win(st.k_win, st.v_win, st.win_tag, c0, nb, Kc, Vc, (int) s.n_head_kv,
+                                               (int) s.head_dim, m.cs, core::qsa_kv_win_s(), core::qsa_kv_win_r(),
+                                               core::qsa_kv_win_b());
         } else {
             kv_append(Kc, Vc, nb, c0, st.page_table, s.page_size, st.kv_int8 ? nullptr : st.k_pool,
                       st.kv_int8 ? nullptr : st.v_pool, st.k_q, st.v_q, st.k_scale, st.v_scale, m.cs, &st.host);
@@ -4538,7 +4568,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     err = "prefill: releasing KV staging pool";
                     return false;
                 }
-                strata::kernels::kv_stage_from_host(pools_of(m.stage, m.ident_table), state.host,
+                strata::kernels::kv_stage_from_host(pools_of(m.stage, m.ident_table, state.kv_q4_mode), state.host,
                     core::qsa_kv_format(state), (p0 + s.page_size - 1) / s.page_size, s, m.kv_copy);
                 if (cudaPeekAtLastError() != cudaSuccess ||
                     cudaEventRecord(m.kv_ready, m.kv_copy) != cudaSuccess) {
@@ -5184,7 +5214,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                 return false;
                             }
                             kv_pending = -1;
-                        } else strata::kernels::kv_stage_from_host(pools_of(m.stage, m.ident_table), st.host,
+                        } else strata::kernels::kv_stage_from_host(pools_of(m.stage, m.ident_table, st.kv_q4_mode), st.host,
                                                             core::qsa_kv_format(st),
                                                             (p0 + s.page_size - 1) / s.page_size, s, m.cs);
                         pt.mark(kPfQsa, cs);
@@ -5217,19 +5247,87 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         strata::kernels::kv_append_q4(st.v_q4, st.v_q4, st.page_table, p0, T, m.Vc, m.Vc, s, m.cs,
                                                       mirror ? &hv : nullptr, staged ? &sv : nullptr);
                     } else {
-                        if (st.kv_rot) {   // rotated K and V (kv_q4.hpp), the queries below too, the output back
-                            strata::kernels::fwht256_inplace_cuda(m.Kc, T * 2, m.cs);
-                            strata::kernels::fwht256_inplace_cuda(m.Vc, T * 2, m.cs);
+                        // S2 probe (debug only): the K buffer is normed and RoPE'd here, and the
+                        // Hadamard below is the rotation the plan asks about.  Nothing is copied
+                        // unless STRATA_KV_S2_STATS names a file.
+                        const char* s2path = std::getenv("STRATA_KV_S2_STATS");
+                        const bool s2_on = s2path != nullptr && st.kv_rot && core::is_qsa_layer(g, l);
+                        static std::vector<strata::core::s2::Layer> s2_acc;
+                        std::vector<float> s2_host;
+                        if (s2_on) {
+                            if (s2_acc.empty()) s2_acc.resize((size_t) g.n_layers);
+                            s2_host.resize((size_t) (T * 2) * 256);
+                            cudaStreamSynchronize((cudaStream_t) m.cs);   // the copy must read what the stream wrote
+                            cudaMemcpy(s2_host.data(), m.Kc, (size_t) (T * 2) * 256 * sizeof(float),
+                                       cudaMemcpyDeviceToHost);
+                            strata::core::s2::accumulate(s2_acc[(size_t) l].pre, s2_host.data(), T * 2, 256);
+                            s2_row_energy(s2_host.data(), T * 2, 256, true);
                         }
-                        if (st.kv_q4)
+                        if (st.kv_rot) {   // rotated K and V (kv_q4.hpp), the queries below too, the output back
+                            // with the centering: the per-(head, channel) offset is subtracted before the rotation
+                            strata::kernels::fwht256_kv_inplace_cuda(m.Kc, T * 2, (int) g.n_head_kv,
+                                                                     core::qsa_kv_center_k_offsets((int) l), m.cs);
+                            strata::kernels::fwht256_kv_inplace_cuda(m.Vc, T * 2, (int) g.n_head_kv,
+                                                                     core::qsa_kv_center_v_offsets((int) l), m.cs);
+                        }
+                        if (s2_on) {
+                            cudaStreamSynchronize((cudaStream_t) m.cs);   // the copy must read what the stream wrote
+                            cudaMemcpy(s2_host.data(), m.Kc, (size_t) (T * 2) * 256 * sizeof(float),
+                                       cudaMemcpyDeviceToHost);
+                            strata::core::s2::accumulate(s2_acc[(size_t) l].post, s2_host.data(), T * 2, 256);
+                            s2_row_energy(s2_host.data(), T * 2, 256, false);
+                            s2_acc[(size_t) l].tokens += T;
+                            if (s2_acc[(size_t) l].tokens >= 500) strata::core::s2::flush(s2path, s2_acc);
+                        }
+                        // P0b probe (debug only, opt-in): K and V here are rotated and not yet quantized, which
+                        // is exactly what the radial/tangential split needs.  Nothing is copied unless
+                        // STRATA_KV_Q4_DUMP names a file; STRATA_KV_Q4_DUMP_FROM/_TO clip it to a position
+                        // range, so a 128K prompt writes only the tail.  One record per layer and chunk:
+                        // magic, layer, p0, T, NKV, HD, pad (32 bytes), then K (T*NKV*HD floats), then V.
+                        if (const char* q4dump = std::getenv("STRATA_KV_Q4_DUMP");
+                            q4dump != nullptr && st.kv_q4 && st.kv_rot) {
+                            struct DumpCfg { std::FILE* f; int64_t from, to; };
+                            static DumpCfg dc = [&] {
+                                DumpCfg c{std::fopen(q4dump, "wb"), 0, (int64_t) 1 << 62};
+                                if (c.f == nullptr)
+                                    std::fprintf(stderr, "strata prefill: STRATA_KV_Q4_DUMP: cannot write %s\n", q4dump);
+                                if (const char* v = std::getenv("STRATA_KV_Q4_DUMP_FROM")) c.from = std::atoll(v);
+                                if (const char* v = std::getenv("STRATA_KV_Q4_DUMP_TO")) c.to = std::atoll(v);
+                                return c;
+                            }();
+                            const int64_t lo = std::max<int64_t>(p0, dc.from), hi = std::min<int64_t>(p0 + T, dc.to);
+                            if (dc.f != nullptr && hi > lo) {
+                                struct RecHdr { int32_t magic, layer; int64_t p0; int32_t T, nkv, hd, pad; };
+                                const RecHdr h{(int32_t) 0x51345042, (int32_t) l, lo, (int32_t) (hi - lo),
+                                               (int32_t) g.n_head_kv, (int32_t) g.head_dim, 0};
+                                const size_t off = (size_t) (lo - p0) * (size_t) g.n_head_kv * (size_t) g.head_dim;
+                                const size_t cnt = (size_t) (hi - lo) * (size_t) g.n_head_kv * (size_t) g.head_dim;
+                                static std::vector<float> buf;
+                                buf.resize(cnt);
+                                cudaStreamSynchronize((cudaStream_t) m.cs);   // the copy must read what the stream wrote
+                                std::fwrite(&h, sizeof h, 1, dc.f);
+                                cudaMemcpy(buf.data(), m.Kc + off, cnt * sizeof(float), cudaMemcpyDeviceToHost);
+                                std::fwrite(buf.data(), sizeof(float), cnt, dc.f);
+                                cudaMemcpy(buf.data(), m.Vc + off, cnt * sizeof(float), cudaMemcpyDeviceToHost);
+                                std::fwrite(buf.data(), sizeof(float), cnt, dc.f);
+                                std::fflush(dc.f);
+                            }
+                        }
+                        if (st.kv_q4) {
                             strata::kernels::kv_append_q4(st.k_q4, st.v_q4, st.page_table, p0, T, m.Kc, m.Vc, s, m.cs,
-                                                          host_w, staged ? &m.stage : nullptr);
-                        else
+                                                          host_w, staged ? &m.stage : nullptr, st.kv_q4_mode);
+                            // WP-2a window: the exact fp16 twin (rotated, like the q4 blocks above).
+                            if (st.k_win != nullptr)
+                                strata::kernels::kv_append_win(st.k_win, st.v_win, st.win_tag, p0, T, m.Kc, m.Vc,
+                                                               (int) s.n_head_kv, (int) s.head_dim, m.cs,
+                                                               core::qsa_kv_win_s(), core::qsa_kv_win_r(),
+                                                               core::qsa_kv_win_b());
+                        } else
                             kv_append(m.Kc, m.Vc, T, p0, st.page_table, s.page_size, st.kv_int8 ? nullptr : st.k_pool,
                                       st.kv_int8 ? nullptr : st.v_pool, st.k_q, st.v_q, st.k_scale, st.v_scale, m.cs,
                                       host_w, staged ? &m.stage : nullptr);
                         if (host_by_dma)
-                            strata::kernels::kv_unstage_to_host(pools_of(m.stage, m.ident_table), st.host,
+                            strata::kernels::kv_unstage_to_host(pools_of(m.stage, m.ident_table, st.kv_q4_mode), st.host,
                                                                 core::qsa_kv_format(st), p0 / s.page_size,
                                                                 (p0 + T + s.page_size - 1) / s.page_size, s, m.cs);
                     }
@@ -5319,6 +5417,121 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                                               m.max_blocks, s, m.sel_scores, m.cs, active);
                         strata::kernels::qsa_block_topk(m.sel_scores, steps0, nb, m.max_blocks, m.cap, s,
                                                         m.sel_ids + t0 * m.cap, m.cs, active);
+                        // STRATA_KV_SELSTATS=<path> (S1, debug): where does the indexer's selection land relative to
+                        // the exact overlay, and how close is the selection boundary?  One line per sampled query and
+                        // QSA layer; R and S are the window's own numbers, so the run must have the window on.  A
+                        // prefill query at position p sees the same keys a decode step at p would, so this covers the
+                        // decode pattern too.  Costs two readbacks and a sync per sampled query: a debug run, not a
+                        // timing run.
+                        if (const char* selstats_path = std::getenv("STRATA_KV_SELSTATS")) {
+                            static int every = std::getenv("STRATA_KV_SELSTATS_EVERY")
+                                                   ? std::max(1, std::atoi(std::getenv("STRATA_KV_SELSTATS_EVERY")))
+                                                   : 32;
+                            static FILE* selstats = nullptr;
+                            if (selstats == nullptr) {
+                                selstats = std::fopen(selstats_path, "w");
+                                if (selstats == nullptr) {
+                                    std::fprintf(stderr, "strata prefill: STRATA_KV_SELSTATS: cannot write %s\n",
+                                                 selstats_path);
+                                } else {
+                                    std::fprintf(selstats, "layer\tpos\tn_kv\twidth\tblocks\tin_r\tin_s\tin_b\toutside"
+                                                           "\td2\td4\td8\td16\td32\tolder"
+                                                           "\ttag_s\ttag_b\ttag_out"
+                                                           "\tmin_sel\tmax_unsel\ts_min\ts_max\n");
+                                }
+                            }
+                            if (selstats != nullptr) {
+                                const int64_t R = core::qsa_kv_win_r(), S = core::qsa_kv_win_s(),
+                                              B = core::qsa_kv_win_b();
+                                // The chunk's window append has already run, so a ring row holds whichever cell wrote
+                                // it last. Read the tags once per batch and count selected cells whose row still names
+                                // them: that is the copy a gather could read exact, as opposed to the geometric range.
+                                const int64_t ring = S + B;
+                                std::vector<int32_t> tags;
+                                if (st.win_tag != nullptr && ring > 0) {
+                                    tags.resize((size_t) ring);
+                                    cudaMemcpyAsync(tags.data(), st.win_tag, (size_t) ring * 4,
+                                                    cudaMemcpyDeviceToHost, m.cs);
+                                    cudaStreamSynchronize(m.cs);
+                                }
+                                std::vector<int64_t> pick;
+                                for (int64_t i = 0; i < nb; i += every) pick.push_back(i);
+                                std::vector<int32_t> h_ids((size_t) pick.size() * (size_t) m.cap);
+                                std::vector<float> h_sc((size_t) pick.size() * (size_t) m.max_blocks);
+                                for (size_t k = 0; k < pick.size(); ++k) {
+                                    const int64_t i = pick[k];
+                                    const int64_t w = m.steps_host[(size_t) ((t0 + i) * strata::kernels::kStepCount +
+                                                                            strata::kernels::kStepWidth)];
+                                    cudaMemcpyAsync(h_ids.data() + k * (size_t) m.cap, m.sel_ids + (t0 + i) * m.cap,
+                                                    (size_t) w * 4, cudaMemcpyDeviceToHost, m.cs);
+                                    cudaMemcpyAsync(h_sc.data() + k * (size_t) m.max_blocks, m.sel_scores + i * m.max_blocks,
+                                                    (size_t) m.max_blocks * 4, cudaMemcpyDeviceToHost, m.cs);
+                                }
+                                cudaStreamSynchronize(m.cs);
+                                for (size_t k = 0; k < pick.size(); ++k) {
+                                    const int32_t* step = m.steps_host.data() + (size_t) ((t0 + pick[k]) *
+                                                                                         strata::kernels::kStepCount);
+                                    const int64_t n_kv = step[strata::kernels::kStepNKv];
+                                    const int64_t n_bid = step[strata::kernels::kStepNBid];
+                                    const int64_t w = step[strata::kernels::kStepWidth];
+                                    if (n_kv <= 0 || n_bid < 0) continue;
+                                    const int32_t* ids = h_ids.data() + k * (size_t) m.cap;
+                                    const float* sc = h_sc.data() + k * (size_t) m.max_blocks;
+                                    int64_t in_r = 0, in_s = 0, in_b = 0, outside = 0;
+                                    int64_t tag_s = 0, tag_b = 0, tag_out = 0;
+                                    // Where the non-exact hits sit, in multiples of S behind the horizon. d2 is the next
+                                    // window's worth (a larger S would catch it); older is more than 32 S back.
+                                    int64_t d2 = 0, d4 = 0, d8 = 0, d16 = 0, d32 = 0, older = 0;
+                                    std::vector<char> sel((size_t) n_bid + 1, 0);
+                                    for (int64_t j = 0; j < w; ++j) {
+                                        const int64_t c = ids[j];
+                                        // qsa_win_slot's predicate: R is the sink rows, S the recent window; the B rows
+                                        // past S are overlaid (they pay) but read quantized, the rest is outside.
+                                        const bool tagged = c >= 0 && !tags.empty() &&
+                                                            tags[(size_t) (c % ring)] == (int32_t) c;
+                                        if (c < R) ++in_r;
+                                        else if (c >= n_kv - S) { ++in_s; tag_s += tagged; }
+                                        else {
+                                            if (c >= n_kv - S - B) { ++in_b; tag_b += tagged; }
+                                            else { ++outside; tag_out += tagged; }
+                                            const int64_t dist = n_kv - c;
+                                            if (S > 0 && dist <= 2 * S) ++d2;
+                                            else if (S > 0 && dist <= 4 * S) ++d4;
+                                            else if (S > 0 && dist <= 8 * S) ++d8;
+                                            else if (S > 0 && dist <= 16 * S) ++d16;
+                                            else if (S > 0 && dist <= 32 * S) ++d32;
+                                            else ++older;
+                                        }
+                                        const int64_t b = c / s.idx_block;
+                                        if (b >= 0 && b <= n_bid) sel[(size_t) b] = 1;
+                                    }
+                                    // Block n_bid carries a +1e9 bias whenever the tail is incomplete (qsa_select.hpp), so it
+                                    // is always selected and its score is not a score. The boundary is over the complete
+                                    // blocks only; a sentinel stays when a side has none (the identity selection).
+                                    const int64_t tail = (n_kv % s.idx_block != 0) ? n_bid : -1;
+                                    float min_sel = 1e30f, max_unsel = -1e30f, s_min = 1e30f, s_max = -1e30f;
+                                    for (int64_t b = 0; b <= n_bid; ++b) {
+                                        if (b == tail) continue;
+                                        const float v = sc[b];
+                                        s_min = std::min(s_min, v);
+                                        s_max = std::max(s_max, v);
+                                        if (sel[(size_t) b]) min_sel = std::min(min_sel, v);
+                                        else max_unsel = std::max(max_unsel, v);
+                                    }
+                                    std::fprintf(selstats, "%lld\t%lld\t%lld\t%lld\t%lld\t%lld\t%lld\t%lld\t%lld"
+                                                           "\t%lld\t%lld\t%lld\t%lld\t%lld\t%lld"
+                                                           "\t%lld\t%lld\t%lld\t%.9g\t%.9g\t%.9g\t%.9g\n",
+                                                 (long long) qsa_index, (long long) step[strata::kernels::kStepPos],
+                                                 (long long) n_kv, (long long) w, (long long) n_bid + 1,
+                                                 (long long) in_r, (long long) in_s, (long long) in_b,
+                                                 (long long) outside, (long long) d2, (long long) d4,
+                                                 (long long) d8, (long long) d16, (long long) d32, (long long) older,
+                                                 (long long) tag_s, (long long) tag_b, (long long) tag_out,
+                                                 min_sel, max_unsel, s_min, s_max);
+                                }
+                                std::fflush(selstats);
+                            }
+                        }
 #if !defined(STRATA_GPU_METAL)
                         // STRATA_SELECT_TWO_PASS_CHECK=1 (diagnostic, one GPU): today's scores and ids for the same
                         // queries, compared with the two-pass ones (counts at the prompt's end).  Their buffers are the
@@ -5459,8 +5672,24 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             }
                         }
                     }
-                    const strata::kernels::QsaAttnPools pools = staged ? pools_of(m.stage, m.ident_table)
-                                                                       : core::qsa_attn_pools(st);
+                    strata::kernels::QsaAttnPools pools = staged ? pools_of(m.stage, m.ident_table, st.kv_q4_mode)
+                                                                      : core::qsa_attn_pools(st);
+                    if (staged) {
+                        // Staged pools_of() carries the byte pools and the q4 mode; the WP-2a window side pool is
+                        // what the non-staged qsa_attn_pools() adds and must be overlaid here, or a streamed chunk
+                        // reads the exact cells quantized. Without the mode the decode kernel would also pick
+                        // kv_mode 2, whose WinRows is empty. (The side pool is never staged - always resident,
+                        // flat by cell. The horizon comes from step[kStepNKv] in-kernel, as everywhere.)
+                        if (st.k_win != nullptr && st.v_win != nullptr) {
+                            pools.k_win = st.k_win;
+                            pools.v_win = st.v_win;
+                            pools.win_tag = st.win_tag;
+                            pools.win_s = core::qsa_kv_win_s();
+                            pools.win_r = core::qsa_kv_win_r();
+                            pools.win_b = core::qsa_kv_win_b();
+                            pools.win_all = core::qsa_kv_win_all();
+                        }
+                    }
                     pt.mark(kPfQsaAttn, cs);
                     // perf-review D-1: the whole chunk on tensor cores, one block per (query, KV head), FP32-level
                     // accuracy but not bitwise (qsa_prompt_attn.hpp). Q4_0 KV, or STRATA_PROMPT_ATTN_OLD=1: the
@@ -5498,6 +5727,14 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                                                    s, m.attn_scratch, m.attn + t0 * kQW, nb, m.cs);
                         }
                     if (st.kv_rot || st.kv_hybrid) strata::kernels::fwht256_inplace_cuda(m.attn, T * kNHead, m.cs);
+                    // The centering: the V offsets come back on the output (the attention weights sum to
+                    // one, so the output carries -m_V in the rotated domain).  Only when the V was centered.
+                    if (st.kv_rot) {
+                        const float* vo = core::qsa_kv_center_v_offsets((int) l);
+                        if (vo != nullptr)
+                            strata::kernels::add_center_offsets_cuda(m.attn, T * kNHead, (int) kNHead,
+                                                                       (int) (kNHead / g.n_head_kv), vo, m.cs);
+                    }
                     pt.mark(kPfQsa, cs);
                     if (!gated) gate_attn(m.attn, m.Qf, m.attn_h, T, m.cs, ld_a);
                     if (!native_proj(m.gemm, wo, m.attn_h, m.bo, T, v.name("attn_output.weight"), err, 0, ld_a)) return false;
@@ -9189,7 +9426,7 @@ bool Prefill::lm_run(const std::vector<Seg>& segs, int depth, const std::vector<
                         const bool staged = st.kv_mode == 1;
                         if (staged) {
                             pt.mark(kPfKvStage, cs);
-                            strata::kernels::kv_stage_from_host(pools_of(m.stage, m.ident_table), st.host,
+                            strata::kernels::kv_stage_from_host(pools_of(m.stage, m.ident_table, st.kv_q4_mode), st.host,
                                                                 core::qsa_kv_format(st),
                                                                 (p0 + s.page_size - 1) / s.page_size, s, cs);
                             pt.mark(kPfQsa, cs);
@@ -9216,8 +9453,11 @@ bool Prefill::lm_run(const std::vector<Seg>& segs, int depth, const std::vector<
                                                           mirror ? &hv : nullptr, staged ? &sv : nullptr);
                         } else {
                             if (st.kv_rot) {
-                                strata::kernels::fwht256_inplace_cuda(m.Kc, T * 2, cs);
-                                strata::kernels::fwht256_inplace_cuda(m.Vc, T * 2, cs);
+                                // with the centering: the per-(head, channel) offset is subtracted before the rotation
+                                strata::kernels::fwht256_kv_inplace_cuda(m.Kc, T * 2, (int) g.n_head_kv,
+                                                                         core::qsa_kv_center_k_offsets((int) l), cs);
+                                strata::kernels::fwht256_kv_inplace_cuda(m.Vc, T * 2, (int) g.n_head_kv,
+                                                                         core::qsa_kv_center_v_offsets((int) l), cs);
                             }
                             if (st.kv_q4)
                                 strata::kernels::kv_append_q4(st.k_q4, st.v_q4, st.page_table, p0, T, m.Kc, m.Vc, s, cs,
@@ -9227,7 +9467,7 @@ bool Prefill::lm_run(const std::vector<Seg>& segs, int depth, const std::vector<
                                           st.kv_int8 ? nullptr : st.v_pool, st.k_q, st.v_q, st.k_scale, st.v_scale, cs,
                                           host_w, staged ? &m.stage : nullptr);
                             if (host_by_dma)
-                                strata::kernels::kv_unstage_to_host(pools_of(m.stage, m.ident_table), st.host,
+                                strata::kernels::kv_unstage_to_host(pools_of(m.stage, m.ident_table, st.kv_q4_mode), st.host,
                                                                     core::qsa_kv_format(st), p0 / s.page_size,
                                                                     (p0 + T + s.page_size - 1) / s.page_size, s, cs);
                         }
@@ -9276,7 +9516,7 @@ bool Prefill::lm_run(const std::vector<Seg>& segs, int depth, const std::vector<
                             strata::kernels::qsa_block_topk(m.sel_scores, steps0, nb, m.max_blocks, m.cap, s,
                                                             m.sel_ids + q0 * m.cap, cs, active);
                         }
-                        const strata::kernels::QsaAttnPools pools = staged ? pools_of(m.stage, m.ident_table)
+                        const strata::kernels::QsaAttnPools pools = staged ? pools_of(m.stage, m.ident_table, st.kv_q4_mode)
                                                                            : core::qsa_attn_pools(st);
                         pt.mark(kPfQsaAttn, cs);
                         static const bool old_attn = std::getenv("STRATA_PROMPT_ATTN_OLD") != nullptr;
@@ -9292,6 +9532,13 @@ bool Prefill::lm_run(const std::vector<Seg>& segs, int depth, const std::vector<
                                                                        s, m.attn_scratch, m.attn + q0 * kQW, nb, cs);
                             }
                         if (st.kv_rot || st.kv_hybrid) strata::kernels::fwht256_inplace_cuda(m.attn, T * kNHead, cs);
+                    // The centering: the V offsets come back on the output (see the other prompt path).
+                    if (st.kv_rot) {
+                        const float* vo = core::qsa_kv_center_v_offsets((int) l);
+                        if (vo != nullptr)
+                            strata::kernels::add_center_offsets_cuda(m.attn, T * kNHead, (int) kNHead,
+                                                                       (int) (kNHead / g.n_head_kv), vo, cs);
+                    }
                         pt.mark(kPfQsa, cs);
                         if (!gated) gate_attn(m.attn, m.Qf, m.attn_h, T, cs);
                         if (!native_proj(m.gemm, wo, m.attn_h, m.bo, T, v.name("attn_output.weight"), err)) return false;

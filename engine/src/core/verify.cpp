@@ -1,6 +1,9 @@
 // src/core/verify.cpp - see include/strata/core/verify.hpp.
 // HostGraphLaunch (the graph launched by the calling thread, or by a helper thread so this one can serve the doorbells): CUDA builds,
-// and the Windows HIP build (STRATA_VERIFY_ASYNC_LAUNCH=1 launches from a helper thread; STRATA_LAUNCH_PROBE=1 logs the launch timing).
+// and the Windows HIP build.  The helper thread is the default on the Windows HIP build, because there the launch
+// call can block until the GPU makes progress while the graph waits for a host doorbell (A.14); elsewhere the
+// in-line launch stays the default.  STRATA_VERIFY_ASYNC_LAUNCH=0/1 picks either arm; STRATA_LAUNCH_PROBE=1 logs
+// the launch timing.
 #if (!defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)) || (defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906) && defined(_WIN32))
 #define STRATA_VERIFY_HGL 1
 #endif
@@ -12,6 +15,7 @@
 #include "strata/kernels/gfx_arch.hpp"
 #include "strata/core/verify.hpp"
 #include "strata/core/pending_cuda_error.hpp"
+#include "strata/core/s2_probe.hpp"
 #include "strata/core/window_evict.hpp"
 #include "strata/core/expert_nibble.hpp"
 #include "strata/core/pin_budget.hpp"
@@ -52,6 +56,70 @@
 #include "strata/kernels/kv_q4.hpp"
 #include "strata/kernels/kv_q8.hpp"
 #include "strata/kernels/native_mmvq.hpp"
+
+#if defined(STRATA_QSA_SELECT_DUMP)
+#include <cstdio>
+#include <cstdlib>
+#include <mutex>
+#include <vector>
+
+// D2 instrument: dump the QSA selection (Block-Ids per token and QSA layer).
+// Compiled in only with STRATA_QSA_SELECT_DUMP=ON; enabled at run time through
+// STRATA_QSA_SELECT_DUMP=1 (writes sel_dump.bin, or $STRATA_QSA_SELECT_DUMP_PATH).
+//
+// Binary record format (host endianness, little-endian on every target):
+//   int64_t pos0           // the window's first sequence position (GLOBAL, not window-local)
+//   int64_t layer          // QSA layer index of this stage (0..n_qsa-1)
+//   int64_t nq             // number of query rows in this record
+//   int64_t cap            // the row stride: every row holds cap ids, only the first min(pos0+row+1, cap) are valid
+//   int32_t block_ids[nq * cap]
+//
+// WHY THE COPY IS DEVICE-SIDE: the verify window is a captured graph (Verifier::capture), and the selection runs
+// inside it. A synchronous host copy there would invalidate the capture (cudaErrorStreamCaptureUnsupported) and
+// the window would never be captured; a narrow host copy after the launch would see only the LAST layer's rows,
+// because sel_ is one buffer reused by every layer. So each layer's rows are copied - inside the graph, so on
+// every replay - into a staging buffer (sel_dump_dev_, one slot per layer and row), and the host drains the whole
+// staging buffer once per window, after run() synchronized the stream.
+//
+// COVERAGE AND THE TWO COUNTERS: drained in window_logprobs(), the per-window call of the STRATA_LOGPOS path
+// (the path the batch measurements take). The staging calls are HOST code: they run once, while the graph is
+// recorded, and never on a replay - so they cannot count windows. What counts is run() (one launch, one window
+// whose copies will run) and the drain; the two are compared in the destructor and a mismatch is printed. A
+// window launched on a path that does not call window_logprobs is reported as never drained, never silently
+// dropped (measured: 176 launches, 175 drains in a 700-token smoke run - the last window has no logprobs).
+static FILE* g_sel_dump_file = nullptr;
+static std::vector<int32_t> g_sel_dump_host;
+static std::mutex g_sel_dump_mutex;
+
+static void sel_dump_close() {
+    std::lock_guard<std::mutex> lock(g_sel_dump_mutex);
+    if (g_sel_dump_file) {
+        std::fclose(g_sel_dump_file);
+        g_sel_dump_file = nullptr;
+    }
+}
+
+static void sel_dump_open() {
+    if (g_sel_dump_file) return;
+    const char* path = std::getenv("STRATA_QSA_SELECT_DUMP_PATH");
+    g_sel_dump_file = std::fopen(path ? path : "sel_dump.bin", "wb");
+    if (!g_sel_dump_file) {
+        std::fprintf(stderr, "STRATA_QSA_SELECT_DUMP: could not open dump file\n");
+        return;
+    }
+    std::atexit(sel_dump_close);
+}
+
+/// Whether the dump is on for this process: the compile-time switch (STRATA_QSA_SELECT_DUMP=ON) says it exists,
+/// this says it runs (STRATA_QSA_SELECT_DUMP=1). Read once; nothing is allocated when it is off.
+static bool g_qsa_select_dump_on() {
+    static const bool v = [] {
+        const char* e = std::getenv("STRATA_QSA_SELECT_DUMP");
+        return e != nullptr && std::atoi(e) != 0;
+    }();
+    return v;
+}
+#endif
 #include "strata/core/dispatch_stats.hpp"
 #include "strata/kernels/native_gr_postops.hpp"
 #include "strata/kernels/native_ple_postops.hpp"
@@ -756,6 +824,19 @@ Verifier::~Verifier() {
     }
     if (cs_) cudaStreamSynchronize(cs_);
     if (sh_cs_) cudaStreamSynchronize(sh_cs_);
+#ifdef STRATA_QSA_SELECT_DUMP
+    if (sel_dump_dev_ != nullptr)
+        std::fprintf(stderr, "STRATA_QSA_SELECT_DUMP: %lld stage calls (%lld refused by the row/layer guard), "
+                             "%lld windows launched, %lld drained\n",
+                     (long long) sel_dump_calls_, (long long) sel_dump_skips_,
+                     (long long) sel_dump_launched_, (long long) sel_dump_drained_);
+    if (sel_dump_dev_ != nullptr && sel_dump_launched_ != sel_dump_drained_)
+        std::fprintf(stderr, "STRATA_QSA_SELECT_DUMP: %lld selection windows were launched but never drained "
+                             "(the dump covers the STRATA_LOGPOS window path; a path without window_logprobs does not drain)\n",
+                     (long long) (sel_dump_launched_ - sel_dump_drained_));
+    if (sel_dump_dev_) cudaFree(sel_dump_dev_);
+    sel_dump_dev_ = nullptr;
+#endif
     for (auto& row : exec_)
         for (auto& e : row)
             if (e) cudaGraphExecDestroy(e);
@@ -1009,6 +1090,22 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
     const uint64_t NH = (uint64_t) g.n_head, HD = (uint64_t) g.head_dim, NKV = (uint64_t) g.n_head_kv;
     const uint64_t IQ = (uint64_t) g.idx_q_heads, ID = (uint64_t) g.idx_key_dim;
     const uint64_t nG = (uint64_t) g.n_gdn_layers(), nQ = (uint64_t) g.n_qsa_layers();
+#ifdef STRATA_QSA_SELECT_DUMP
+    // D2 instrument: the staging buffer of one window (device side, filled by the graph). Off unless asked for.
+    if (g_qsa_select_dump_on()) {
+        if (cudaMalloc((void**) &sel_dump_dev_, (size_t) nQ * (size_t) max_t * (size_t) cap_ * sizeof(int32_t)) != cudaSuccess) {
+            err = "verify: the QSA selection dump's staging buffer could not be allocated";
+            (void) cudaGetLastError();
+            return false;
+        }
+        sel_dump_layers_ = (int) nQ;
+        std::fprintf(stderr, "STRATA_QSA_SELECT_DUMP: staging buffer %.1f MiB (%d layers x %d rows x %lld cells)\n",
+                     (double) nQ * (double) max_t * (double) cap_ * sizeof(int32_t) / (1024.0 * 1024.0),
+                     (int) nQ, max_t, (long long) cap_);
+    } else {
+        std::fprintf(stderr, "STRATA_QSA_SELECT_DUMP: compiled in, not enabled (STRATA_QSA_SELECT_DUMP=1 turns it on)\n");
+    }
+#endif
     const uint64_t HS = (uint64_t) strata::kernels::NG_HIST * strata::kernels::NG_HC_DIM;
     const uint64_t TS = (uint64_t) (s.idx_block - 1) * ID;
     const int max_in = (int) std::max<uint64_t>(std::max<uint64_t>(N, ZV), NH * HD);
@@ -2079,12 +2176,18 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                                               max_blocks_, s, scores_ + (size_t) tb * max_blocks_, ns, -1);
                         qsa_block_topk_long(scores_ + (size_t) tb * max_blocks_, step_ + tb * kStepCount, n, max_blocks_,
                                             cap_, s, sel_ + (size_t) tb * cap_, ns, -1, topk_scratch_);
+#ifdef STRATA_QSA_SELECT_DUMP
+                        sel_dump_stage(qi, tb, n, ns);
+#endif
                         return;
                     }
                     qsa_block_scores(st.idx_pooled, st.idx_dead, qidx_ + tb * IQ * ID, step_ + tb * kStepCount, n, max_blocks_,
                                      s, scores_ + (size_t) tb * max_blocks_, ns);
                     qsa_block_topk(scores_ + (size_t) tb * max_blocks_, step_ + tb * kStepCount, n, max_blocks_, cap_, s,
                                    sel_ + (size_t) tb * cap_, ns);
+#ifdef STRATA_QSA_SELECT_DUMP
+                    sel_dump_stage(qi, tb, n, ns);
+#endif
                 };
                 // the attention's queries: the projection (mm on cs, which may read F4's interleaved copy; on a branch
                 // F4's kernel too, its copy written on cs before the fork - bitwise the same), the q/gate
@@ -2150,11 +2253,43 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 mm(wv, vcur_ + tb * NKV * HD, (int) N, (int) (NKV * HD));
                 if (qb) norm_rope(kcur_ + tb * NKV * HD, wkn, (int) (n * NKV), (int) HD, pos_k + tb * NKV);
                 else for (int t = tb; t < te; ++t) norm_rope(kcur_ + t * NKV * HD, wkn, (int) NKV, (int) HD, pos_ + t * NH);
+                // S2 probe (debug only): the K rows are normed and RoPE'd here; the Hadamard below
+                // is the rotation the plan asks about.  Nothing is copied unless the env names a file.
+                // The file name is read once (the environment does not change during a run), and the capture status
+                // is asked for only when the probe is on - both were per layer and token before.
+                static const char* const s2path = std::getenv("STRATA_KV_S2_STATS");
+                bool s2_on = false;
+                if (s2path != nullptr && st.kv_rot && is_qsa_layer(g, l)) {
+                    cudaStreamCaptureStatus s2_cap = cudaStreamCaptureStatusNone;
+                    cudaStreamIsCapturing(cs, &s2_cap);
+                    s2_on = (s2_cap == cudaStreamCaptureStatusNone);
+                }
+                static std::vector<strata::core::s2::Layer> s2_acc;
+                std::vector<float> s2_host;
+                if (s2_on) {
+                    if (s2_acc.empty()) s2_acc.resize((size_t) g.n_layers);
+                    s2_host.resize((size_t) (n * NKV) * HD);
+                    cudaStreamSynchronize(cs);   // the copy must read what the stream wrote
+                    cudaMemcpy(s2_host.data(), kcur_ + tb * NKV * HD, (size_t) (n * NKV) * HD * sizeof(float),
+                               cudaMemcpyDeviceToHost);
+                    strata::core::s2::accumulate(s2_acc[(size_t) l].pre, s2_host.data(), n * NKV, (int) HD);
+                }
                 if (st.kv_rot) {   // K and V rotated before they are stored (kv_q4.hpp)
-                    fwht256_inplace_cuda(kcur_ + tb * NKV * HD, (int64_t) n * NKV, cs);
-                    fwht256_inplace_cuda(vcur_ + tb * NKV * HD, (int64_t) n * NKV, cs);
+                    // with the centering: the per-(head, channel) offset is subtracted before the rotation
+                    fwht256_kv_inplace_cuda(kcur_ + tb * NKV * HD, (int64_t) n * NKV, (int) NKV,
+                                           qsa_kv_center_k_offsets((int) l), cs);
+                    fwht256_kv_inplace_cuda(vcur_ + tb * NKV * HD, (int64_t) n * NKV, (int) NKV,
+                                           qsa_kv_center_v_offsets((int) l), cs);
                 } else if (st.kv_hybrid) {   // K8V4: only V is rotated
                     fwht256_inplace_cuda(vcur_ + tb * NKV * HD, (int64_t) n * NKV, cs);
+                }
+                if (s2_on) {
+                    cudaStreamSynchronize(cs);   // the copy must read what the stream wrote
+                    cudaMemcpy(s2_host.data(), kcur_ + tb * NKV * HD, (size_t) (n * NKV) * HD * sizeof(float),
+                               cudaMemcpyDeviceToHost);
+                    strata::core::s2::accumulate(s2_acc[(size_t) l].post, s2_host.data(), n * NKV, (int) HD);
+                    s2_acc[(size_t) l].tokens += n;
+                    if (s2_acc[(size_t) l].tokens >= 500) strata::core::s2::flush(s2path, s2_acc);
                 }
                 stamp(l, 8, grp);
                 if (!sidem) idx_snap(cs);
@@ -2174,9 +2309,15 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                                            kc_b, kc_b, (int) (NKV * HD), n, s, cs, mirror ? &hk : nullptr);
                         kv_append_q4_steps(st.v_q4, st.v_q4, st.page_table, step_b, kStepCount, n, vc_b, vc_b, s, cs,
                                            mirror ? &hv : nullptr);
-                    } else if (st.kv_q4)
+                    } else if (st.kv_q4) {
                         kv_append_q4_steps(st.k_q4, st.v_q4, st.page_table, step_b, kStepCount, n, kc_b, vc_b, s, cs,
-                                           &st.host);
+                                           &st.host, st.kv_q4_mode);
+                        // WP-2a window twin (guard skips states without side pools).
+                        if (st.k_win != nullptr)
+                            strata::kernels::kv_append_win_steps(st.k_win, st.v_win, st.win_tag, step_b, kStepCount,
+                                                                 n, kc_b, vc_b, (int) (NKV), (int) (HD), cs,
+                                                                 qsa_kv_win_s(), qsa_kv_win_r(), qsa_kv_win_b());
+                    }
                     else if (st.kv_int8)
                         kv_append_q8_steps(st.k_q, st.v_q, st.k_scale, st.v_scale, st.page_table, step_b, kStepCount,
                                            kc_b, vc_b, (int) (NKV * HD), n, s, cs, &st.host);
@@ -2201,16 +2342,20 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                             kv_append_q8_steps(st.k_q, st.k_q, st.k_scale, st.k_scale, st.page_table, step_t, kStepCount,
                                                kc, kc, (int) (NKV * HD), m, s, cs, mirror ? &hk : nullptr);
                             kv_append_q4_steps(st.v_q4, st.v_q4, st.page_table, step_t, kStepCount, m, vc, vc, s, cs,
-                                               mirror ? &hv : nullptr);
+                                               mirror ? &hv : nullptr, st.kv_q4_mode);
                         } else {
                             kv_append_q8_step(st.k_q, st.k_q, st.k_scale, st.k_scale, st.page_table, step_t, kc, kc, s, cs,
                                               mirror ? &hk : nullptr);
                             kv_append_q4_step(st.v_q4, st.v_q4, st.page_table, step_t, vc, vc, s, cs,
-                                              mirror ? &hv : nullptr);
+                                              mirror ? &hv : nullptr, st.kv_q4_mode);
                         }
                     } else if (st.kv_q4) {
-                        if (m > 1) kv_append_q4_steps(st.k_q4, st.v_q4, st.page_table, step_t, kStepCount, m, kc, vc, s, cs, &st.host);
-                        else kv_append_q4_step(st.k_q4, st.v_q4, st.page_table, step_t, kc, vc, s, cs, &st.host);
+                        if (m > 1) kv_append_q4_steps(st.k_q4, st.v_q4, st.page_table, step_t, kStepCount, m, kc, vc, s, cs, &st.host, st.kv_q4_mode);
+                        else kv_append_q4_step(st.k_q4, st.v_q4, st.page_table, step_t, kc, vc, s, cs, &st.host, st.kv_q4_mode);
+                        if (st.k_win != nullptr)
+                            strata::kernels::kv_append_win_steps(st.k_win, st.v_win, st.win_tag, step_t, kStepCount, m,
+                                                                 kc, vc, (int) (NKV), (int) (HD), cs, qsa_kv_win_s(),
+                                                                 qsa_kv_win_r(), qsa_kv_win_b());
                     } else if (st.kv_int8) {
                         if (m > 1)
                             kv_append_q8_steps(st.k_q, st.v_q, st.k_scale, st.v_scale, st.page_table, step_t, kStepCount, kc,
@@ -2252,6 +2397,9 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                                           scores_ + (size_t) tb * max_blocks_, cs);
                     qsa_block_topk(scores_ + (size_t) tb * max_blocks_, step_ + tb * kStepCount, n_rows, max_blocks_, cap_,
                                    s, sel_ + (size_t) tb * cap_, cs);
+#ifdef STRATA_QSA_SELECT_DUMP
+                    sel_dump_stage(qi, tb, n_rows, cs);
+#endif
                     qsa_decode_attn_batch_rows(qcur_ + tb * NH * HD, pr, sel_ + (size_t) tb * cap_, step_ + tb * kStepCount,
                                                cap_, s, attn_scratch_ + (size_t) tb * attn_scratch_floats_,
                                                attn_ + tb * NH * HD, n_rows, cs);
@@ -2279,6 +2427,9 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                                                  1, max_blocks_, s, scores_ + (size_t) t * max_blocks_, cs);
                         qsa_block_topk(scores_ + (size_t) t0 * max_blocks_, step_ + t0 * kStepCount, m, max_blocks_,
                                        cap_, s, sel_ + (size_t) t0 * cap_, cs);
+#ifdef STRATA_QSA_SELECT_DUMP
+                        sel_dump_stage(qi, t0, m, cs);
+#endif
                         if (!qsa_decode_attn_slots(qcur_ + t0 * NH * HD, px, sel_ + (size_t) t0 * cap_,
                                                    step_ + t0 * kStepCount, cap_, s,
                                                    attn_scratch_ + (size_t) t0 * attn_scratch_floats_,
@@ -2299,6 +2450,9 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                                          max_blocks_, s, scores_ + (size_t) first * max_blocks_, cs);
                         qsa_block_topk(scores_ + (size_t) first * max_blocks_, step_ + first * kStepCount, m, max_blocks_,
                                        cap_, s, sel_ + (size_t) first * cap_, cs);
+#ifdef STRATA_QSA_SELECT_DUMP
+                        sel_dump_stage(qi, first, m, cs);
+#endif
                         qsa_kv_resolve(sx, *g_, sel_ + (size_t) first * cap_, step_ + first * kStepCount, m, cap_, cs);
                         const QsaAttnPools px = qsa_attn_pools(sx);
                         qsa_decode_attn_batch(qcur_ + first * NH * HD, px, sel_ + (size_t) first * cap_,
@@ -2336,6 +2490,15 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 }
                 stamp(l, 13, grp);
                 if (st.kv_rot || st.kv_hybrid) fwht256_inplace_cuda(attn_ + tb * NH * HD, (int64_t) n * NH, cs);   // back: H^-1 = H
+                // The centering: the V offsets come back on the output (the attention weights sum to one, so
+                // the output carries -m_V in the rotated domain).  Only when the V was centered - the hybrid
+                // rotates its V without the centering.
+                if (st.kv_rot) {
+                    const float* vo = qsa_kv_center_v_offsets((int) l);
+                    if (vo != nullptr)
+                        strata::kernels::add_center_offsets_cuda(attn_ + tb * NH * HD, (int64_t) n * NH, (int) NH,
+                                                                   (int) (NH / NKV), vo, cs);
+                }
                 if (qb) native_qsa_gate_apply(attn_ + tb * NH * HD, qfull_ + tb * NH * 2 * HD, attn32_ + tb * NH * HD,
                                               (int) (n * NH), (int) HD, cs);
                 else
@@ -2941,6 +3104,48 @@ void Verifier::refresh_ar() {
     }
 }
 
+#if defined(STRATA_QSA_SELECT_DUMP)
+// D2 instrument, the two halves: sel_dump_stage() runs INSIDE the captured window (a device-to-device copy is a
+// graph node, so every replay fills the staging buffer again), sel_dump_drain() runs on the host after the launch
+// and appends one record per layer. The staging buffer holds one window ([layer][row][cap_]); the drain is called
+// once per window, so nothing is overwritten before it is read. See the format notes at the top of this file.
+void Verifier::sel_dump_stage(int layer, int row, int nq, cudaStream_t ns) {
+    ++sel_dump_calls_;
+    if (sel_dump_dev_ == nullptr || layer < 0 || layer >= sel_dump_layers_ || row < 0 || row >= max_t_ || nq <= 0) {
+        ++sel_dump_skips_;
+        return;
+    }
+    (void) cudaMemcpyAsync(sel_dump_dev_ + ((size_t) layer * (size_t) max_t_ + (size_t) row) * (size_t) cap_,
+                           sel_ + (size_t) row * (size_t) cap_, (size_t) nq * (size_t) cap_ * sizeof(int32_t),
+                           cudaMemcpyDeviceToDevice, ns);
+}
+
+void Verifier::sel_dump_drain(int T, int64_t pos0) {
+    if (sel_dump_dev_ == nullptr || T <= 0 || T > max_t_) return;
+    // The staging buffer is [layer][max_t_][cap_]; a short window uses the first T rows of each layer, so the copy
+    // is the WHOLE buffer and the per-layer row offset stays max_t_ * cap_.
+    const size_t rows = (size_t) sel_dump_layers_ * (size_t) max_t_ * (size_t) cap_;
+    const size_t layer_stride = (size_t) max_t_ * (size_t) cap_;
+    g_sel_dump_host.resize(rows);
+    if (cudaMemcpy(g_sel_dump_host.data(), sel_dump_dev_, rows * sizeof(int32_t), cudaMemcpyDeviceToHost) != cudaSuccess) {
+        const cudaError_t e = cudaGetLastError();
+        std::fprintf(stderr, "STRATA_QSA_SELECT_DUMP: the drain copy failed (%s)\n", cudaGetErrorString(e));
+        return;
+    }
+    std::lock_guard<std::mutex> lock(g_sel_dump_mutex);
+    if (g_sel_dump_file == nullptr) sel_dump_open();
+    if (g_sel_dump_file == nullptr) return;
+    for (int layer = 0; layer < sel_dump_layers_; ++layer) {
+        const int64_t hdr[4] = {pos0, (int64_t) layer, (int64_t) T, (int64_t) cap_};
+        std::fwrite(hdr, sizeof(int64_t), 4, g_sel_dump_file);
+        std::fwrite(g_sel_dump_host.data() + (size_t) layer * layer_stride, sizeof(int32_t),
+                    (size_t) T * (size_t) cap_, g_sel_dump_file);
+    }
+    std::fflush(g_sel_dump_file);
+    ++sel_dump_drained_;
+}
+#endif
+
 bool Verifier::capture(int T, std::string& err) {
     const auto cap_t0 = std::chrono::steady_clock::now();
     cudaGraphExec_t& exec_t = ar_off_ ? exec_nr_[sel_long_][T] : exec_[sel_long_][T];
@@ -2966,7 +3171,13 @@ bool Verifier::capture(int T, std::string& err) {
     prio_tails_.clear();
 #endif
     std::string rerr;
+#ifdef STRATA_QSA_SELECT_DUMP
+    sel_dump_capture_ = true;   // the staging copies below are recorded into the graph, not counted as a window
+#endif
     const bool ok = record_window(T, cs_, rerr);
+#ifdef STRATA_QSA_SELECT_DUMP
+    sel_dump_capture_ = false;
+#endif
     cudaGraph_t graph = nullptr;
     const cudaError_t ce = cudaStreamEndCapture(cs_, &graph);
     if (!ok) {
@@ -3465,6 +3676,11 @@ static inline void metal_fold_nf(uint32_t nf_mask, uint32_t scan, int T, const i
 
 bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool, void* user, int32_t* out,
                    std::string& err) {
+#ifdef STRATA_QSA_SELECT_DUMP
+    // D2 instrument: one window launched. The staging copies are graph nodes, so the host code below runs once,
+    // during the capture, and NOT on a replay - the counter of what should have been drained lives here.
+    if (sel_dump_dev_ != nullptr) ++sel_dump_launched_;
+#endif
     const bool measure = spec_measure_;
     // Clear this borrow and propagated stage borrows on every exit.
     struct ProposalBorrow {
@@ -3582,10 +3798,22 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
         if (adapt_gate_ != nullptr && adapt_gate_->active.load(std::memory_order_acquire) && ar_on() &&
             !adapt_gate_wait((int32_t) g.n_layers, err)) return false;
 #if defined(STRATA_VERIFY_HGL)
-        // A blocking instrumented launch cannot also serve the graph's CPU doorbells.
+        // A diagnostic (“instrumented”) cudaGraphLaunch may block until device work completes, and this graph
+        // waits for the host's doorbells (flag / flagA / flagB).  Launched from the serving thread, that is a
+        // deadlock: the host waits for the launch to return while the GPU waits for the doorbell the host would
+        // publish next.  Measured on the Windows HIP build (bench/results/2026-11-14-q4u32-fastpath, A.14): the
+        // launch call sat 62.9 s with the GPU on "rang 1" and A/B still 0.
+        // Default: the helper thread on the Windows HIP build (where that blocking submit was measured), the
+        // in-line launch everywhere else (unchanged).  STRATA_VERIFY_ASYNC_LAUNCH=0 keeps the in-line launch as
+        // an A/B arm; =1 asks for the helper thread on the other builds too.
         static const bool threaded_launch = [] {
             const char* value = std::getenv("STRATA_VERIFY_ASYNC_LAUNCH");
-            return value != nullptr && value[0] == '1';
+            if (value != nullptr && value[0] != '\0') return value[0] != '0';
+#if defined(STRATA_USE_HIP) && defined(_WIN32)
+            return true;
+#else
+            return false;
+#endif
         }();
         strata::dispatch::Stats::get().graph_launch(T, ar_on() ? 0 : 1);
         // STRATA_LAUNCH_PROBE=1 (diagnostic, the first 12 windows): how long the launch call takes, whether the GPU has rung a layer
@@ -4051,6 +4279,15 @@ void Verifier::publish_plan(void* ctx) {
 
 bool Verifier::window_logprobs(const int32_t* targets, int T, int64_t pos0, int32_t extra_id, std::FILE* out,
                                std::string& err) {
+#ifdef STRATA_QSA_SELECT_DUMP
+    // D2 instrument: this window's selection out of the device staging (run() synchronized cs_ before returning,
+    // so the graph's copy nodes have completed). Draining here - per window, before the scoring - is what makes
+    // the dump per-window data instead of the last layer of the last window.
+    {
+        const OnDevice on_device(device_);
+        sel_dump_drain(T, pos0);
+    }
+#endif
     if (next_ != nullptr) return next_->window_logprobs(targets, T, pos0, extra_id, out, err);
     const OnDevice on_device(device_);
 #if defined(STRATA_GPU_METAL)
@@ -4114,12 +4351,48 @@ bool Verifier::window_logprobs(const int32_t* targets, int T, int64_t pos0, int3
                      (double) row[tgt] - lse, (long long) top, maxv - lse, (int) (top == (int64_t) tgt), extra,
                      without);
         // STRATA_LOGPOS_TOPK=K: the K most likely tokens and their log-probabilities too (`id:logprob`), for a
-        // top-k comparison with another engine on the same tokens (docs/UNSLOTH_Q4.md)
+        // top-k comparison with another engine on the same tokens (docs/UNSLOTH_Q4.md).  4096 is the ceiling: a
+        // full-support KL needs the reference's top-4096 (bench/results/2026-10-28-g2-full-vocab).
         static const int topk = [] {
             const char* v = std::getenv("STRATA_LOGPOS_TOPK");
-            return v != nullptr ? std::max(0, std::min(256, std::atoi(v))) : 0;
+            return v != nullptr ? std::max(0, std::min(4096, std::atoi(v))) : 0;
         }();
-        if (topk > 0) {
+        // STRATA_LOGPOS_IDS=<file>: one line per position, `pos id id id ...` - write exactly those tokens instead of
+        // the top-k, so that another arm can be scored on the same support (KL needs p and q on the same v).  Loaded
+        // once, sorted by (pos, id); a position not in the file falls through to the top-k, which is 0 unless asked,
+        // so an arm run writes its eight fixed columns for every position and the id pairs only where requested.
+        static const std::vector<std::pair<long long, int32_t>> lp_ids = [] {
+            std::vector<std::pair<long long, int32_t>> v;
+            const char* p = std::getenv("STRATA_LOGPOS_IDS");
+            if (p == nullptr) return v;
+            std::FILE* f = std::fopen(p, "rb");
+            if (f == nullptr) return v;
+            std::vector<char> line((size_t) 4 << 20);
+            while (std::fgets(line.data(), (int) line.size(), f) != nullptr) {
+                const char* q = line.data();
+                char* end = nullptr;
+                const long long pos = std::strtoll(q, &end, 10);
+                if (end == q) continue;
+                q = end;
+                for (;;) {
+                    const long long id = std::strtoll(q, &end, 10);
+                    if (end == q) break;
+                    v.emplace_back(pos, (int32_t) id);
+                    q = end;
+                }
+            }
+            std::fclose(f);
+            std::sort(v.begin(), v.end());
+            return v;
+        }();
+        const long long lp_pos = (long long) (pos0 + t);
+        const auto lp_lo = std::lower_bound(lp_ids.begin(), lp_ids.end(),
+                                           std::pair<long long, int32_t>(lp_pos, -1));
+        if (lp_lo != lp_ids.end() && lp_lo->first == lp_pos) {
+            for (auto it = lp_lo; it != lp_ids.end() && it->first == lp_pos; ++it)
+                if (it->second >= 0 && (int64_t) it->second < n_vocab_)
+                    std::fprintf(out, "\t%d:%.6f", it->second, (double) row[it->second] - lse);
+        } else if (topk > 0) {
             std::vector<int32_t> order((size_t) n_vocab_);
             for (int64_t v = 0; v < n_vocab_; ++v) order[(size_t) v] = (int32_t) v;
             std::partial_sort(order.begin(), order.begin() + topk, order.end(),
@@ -4298,7 +4571,13 @@ bool Verifier::capture_batch(const int* rows, int S, int hbase, std::string& err
     for (int t = 0; t < S; ++t) brow_[t] = rows[t];
     std::string rerr;
     sel_long_ = 0;   // batch rows: the one-CTA select
+#ifdef STRATA_QSA_SELECT_DUMP
+    sel_dump_capture_ = true;
+#endif
     const bool ok = record_window(S, cs_, rerr);
+#ifdef STRATA_QSA_SELECT_DUMP
+    sel_dump_capture_ = false;
+#endif
     batch_rec_ = false;
     row_base_ = 0;
     cudaGraph_t graph = nullptr;

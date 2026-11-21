@@ -76,7 +76,7 @@ Slot make_slot(int fmt, const k::QsaShapes& s, int64_t max_blocks, std::mt19937&
     auto halves = [&](size_t n) { std::vector<uint16_t> h(n); for (auto& v : h) v = rnd_half(r); return h; };
     auto codes = [&](size_t n) { std::vector<int8_t> h(n); for (auto& v : h) v = (int8_t) (r() & 0xff); return h; };
     auto q4 = [&](size_t n_rows) {
-        std::vector<uint8_t> h(n_rows * (size_t) k::kv_q4_bytes_per_head((int) hd));
+        std::vector<uint8_t> h(n_rows * (size_t) k::kv_q4_bytes_per_head((int) hd, k::Q4Mode::kUniform));
         k::block_q4_0* b = reinterpret_cast<k::block_q4_0*>(h.data());
         for (size_t i = 0; i < h.size() / sizeof(k::block_q4_0); ++i) {
             b[i].d = rnd_half(r);

@@ -35,13 +35,15 @@ Runs runs_of(const QsaAttnPools& slots, const KvHostPools& host, int fmt, const 
     Runs r{};
     if (fmt == kKvHybrid) {   // K8V4: int8 K codes, their scales, rotated q4_0 V
         const int codes = rows * (int) s.head_dim, scales = rows * (int) (s.head_dim / KV_Q8_GROUP) * 2;
-        const int v = rows * (int) kv_q4_bytes_per_head((int) s.head_dim);
+        const int v = rows * (int) kv_q4_bytes_per_head((int) s.head_dim, Q4Mode::kUniform);
         r.src[0] = (const uint8_t*) host.k_q;     r.dst[0] = (uint8_t*) slots.k_q;     r.len[0] = codes;
         r.src[1] = (const uint8_t*) host.k_scale; r.dst[1] = (uint8_t*) slots.k_scale; r.len[1] = scales;
         r.src[2] = (const uint8_t*) host.v_q4;    r.dst[2] = (uint8_t*) slots.v_q4;    r.len[2] = v;
         r.n = 3;
-    } else if (fmt == kKvQ4) {
-        const int bytes = rows * (int) kv_q4_bytes_per_head((int) s.head_dim);
+    } else if (kv_fmt_q4(fmt)) {
+        // the row width is the one of the mode the pools carry (the shear's block is 20 bytes);
+        // the movers only copy bytes, so the reader's table and the stride come from the same field
+        const int bytes = rows * (int) kv_q4_bytes_per_head((int) s.head_dim, slots.q4_mode);
         r.src[0] = (const uint8_t*) host.k_q4; r.dst[0] = (uint8_t*) slots.k_q4; r.len[0] = bytes;
         r.src[1] = (const uint8_t*) host.v_q4; r.dst[1] = (uint8_t*) slots.v_q4; r.len[1] = bytes;
         r.n = 2;
@@ -196,12 +198,12 @@ __global__ void ring_kernel(int32_t* table, long long n_blocks, long long n_slot
 
 }  // namespace
 
-uint64_t kv_block_bytes(const QsaShapes& s, int fmt) {
+uint64_t kv_block_bytes(const QsaShapes& s, int fmt, Q4Mode mode) {
     const uint64_t rows = (uint64_t) (s.n_head_kv * s.page_size);
     if (fmt == kKvHybrid)
         return rows * (uint64_t) s.head_dim + rows * (uint64_t) (s.head_dim / KV_Q8_GROUP) * 2 +
-               rows * kv_q4_bytes_per_head((int) s.head_dim);
-    if (fmt == kKvQ4) return rows * kv_q4_bytes_per_head((int) s.head_dim) * 2;
+               rows * kv_q4_bytes_per_head((int) s.head_dim, Q4Mode::kUniform);
+    if (kv_fmt_q4(fmt)) return rows * kv_q4_bytes_per_head((int) s.head_dim, mode) * 2;
     return fmt == kKvInt8 ? rows * (uint64_t) s.head_dim * 2 + rows * (uint64_t) (s.head_dim / KV_Q8_GROUP) * 2 * 2
                 : rows * (uint64_t) s.head_dim * 2 * 2;
 }

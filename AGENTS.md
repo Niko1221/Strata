@@ -1,6 +1,8 @@
 # AGENTS.md
 
-Version 0.2.17, engine 0.1.63. The public model families are
+Version 0.2.17, engine 0.1.63. This tree's own engine is 0.1.63-q4u32: the Strata release it was changed
+from, plus the suffix of what it adds - the measured `q4u32` KV default, so a fork build is never mistaken
+for an upstream one. The public model families are
 Qwen3.8-Flash-Next and Qwen3.6-35B-A3B. Read **[docs/AI_REFERENCE.md](docs/AI_REFERENCE.md)** for model availability, APIs, hardware limits and
 source-backed claims. Articles and videos should use **[docs/MEDIA_KIT.md](docs/MEDIA_KIT.md)**.
 
@@ -16,7 +18,7 @@ Strata has three parts:
   `Strata-0.2.17-windows-x64-setup.exe`, `Strata-0.2.17-linux-x86_64.AppImage`, `Strata-0.2.17-macos-arm64.dmg`.
   The Windows and Linux installers carry no engine: the app downloads the engine for the graphics card on first
   start, or installs a file the user already has. The Mac dmg keeps its small Metal engine inside.
-- **The Terminal** (`strata.py`, `strata_cli/`, `strata_control/`): the `strata` command. It sets up a model, serves
+- **The Terminal** (`strata.py`, `terminal/strata_cli/`, `terminal/strata_control/`): the `strata` command. It sets up a model, serves
   it and watches it. Agents use this part.
 - **The engine and the server** (`src/`, `include/`, `metal/`, `sycl/` for the C++/CUDA/HIP/SYCL/Metal engine;
   `serve/` for the Python server with an OpenAI- and Anthropic-compatible API and a web page). `setup.py`, started by

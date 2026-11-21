@@ -91,7 +91,7 @@ strata launch --show-key
 | `--model-path PATH` | Use model files you already have: a folder of shards or one `.gguf`. |
 | `--data-dir DIR`, `--move-data` | Where new downloads go. `--move-data` also moves the models you already have. |
 | `--context SIZE` | `32k`, `64k`, `128k`, `256k` or a number of tokens. |
-| `--kv FORMAT` | Conversation memory format: `int8` (default), `q4_0` (half the memory), `k8v4`, `fp16`. |
+| `--kv FORMAT` | Conversation memory format: `int8`, `q4_0` (half the memory), `q4u32`, `k8v4`, `fp16`. Left out: `int8` above 8K of context, `fp16` up to 8K — and `q4u32` on RDNA4 with this tree's engine, where it was measured. |
 | `--vision off\|on\|gpu\|cpu` | Picture reading. Default: on when the model and the engine can. |
 | `--parallel N` | Requests answered at the same time, 1 to 8. Default: fit to your card; one at a time with DFlash2 (the Auto drafter where the engine has it). |
 | `--mtp on\|off` | The draft layer. `off` saves about 1 GB of graphics memory and is slower. Default: on. |

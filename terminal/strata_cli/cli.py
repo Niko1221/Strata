@@ -2091,11 +2091,13 @@ def _components_engine(a: argparse.Namespace) -> int:
     print(f"component folder  {report['components_dir']}")
     print(f"this PC           {report['platform']}, {report['backend'] or 'no GPU found'} ({report['backend_source']})")
     for item in report["installed"]:
-        print(f"  installed       {item['version']} {item['platform']}-{item['backend']}  {item['root']}")
+        print(f"  installed       {item['version']} {item['platform']}-{item['backend']}"
+              + (f" ({item['flavor']})" if item.get("flavor") else "") + f"  {item['root']}")
     for item in report["problems"]:
         print(f"  unusable        {item['folder']}: {item['problem']}")
     if report["usable"]:
-        print(f"engine            {report['engine']['exe']}  (version {report['engine']['version']})")
+        print(f"engine            {report['engine']['exe']}  (version {report['engine']['version']}"
+              + (f", {report['engine']['flavor']}" if report["engine"].get("flavor") else "") + ")")
     else:
         print(report["notice"], file=sys.stderr)
     for row in report.get("shapes") or []:             # the engines of model shapes, only on a PC that has one (strata_control/shape_engine.py)

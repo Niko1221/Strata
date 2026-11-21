@@ -40,7 +40,7 @@ async function installedKv(config,{family='swift',listed=true}={}){
  }finally{await native.close();rmSync(root,{recursive:true,force:true});}
 }
 
-for(const kv of ['int8','q4_0','k8v4','fp16'])test(`packaged metadata restores saved ${kv} from its run config`,async()=>{
+for(const kv of ['int8','q4_0','q4u32','k8v4','fp16'])test(`packaged metadata restores saved ${kv} from its run config`,async()=>{
  const model=await installedKv({args:['--kv',kv]});
  assert.equal(model.kv,kv);assert.equal(model.ready,true);assert.equal(model.context,65536);
 });

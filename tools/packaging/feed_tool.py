@@ -232,6 +232,8 @@ def pack_engine(folder: Path, out: Path, fmt: str = "tar.gz", *, url_prefix: str
              "min_runtime": component.min_runtime, "build_id": component.build_id, "format": fmt,
              "url": f"{url_prefix}{name}", "size": archive.stat().st_size, "sha256": _sha256(archive),
              "manifest_sha256": _sha256(folder / ec.MANIFEST), "installed_bytes": installed, "notes": component.notes}
+    if component.flavor:
+        entry["flavor"] = component.flavor      # the build's variant of Strata (q4u32); an update never switches it
     if component.shape:
         entry["shape"] = component.shape
     (Path(out) / (name + ".entry.json")).write_text(json.dumps(entry, indent=1) + "\n", encoding="utf-8")

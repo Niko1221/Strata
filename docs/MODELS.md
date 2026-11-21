@@ -244,6 +244,8 @@ strata launch --family qwen36 --model UD-Q4_K_XL
   `strata models list` shows what is installed. `strata models import <folder or .gguf> --plan` shows what a set of
   files you already have would become, without changing anything.
 - **From a source checkout only:** `SETUP.bat` or `./setup.sh --setup` adds another model ([SOURCE_INSTALL.md](SOURCE_INSTALL.md)).
+- **A model Strata does not ship:** a fine-tune, another quantization or a hybrid needs its own pack and server
+  JSON. The steps, and where they stop, are in [Adapting-Models.md](Adapting-Models.md).
 
 Shared files are reused. In the Terminal, choose a model in `strata launch`, pass an explicit family and model, or use a
 saved `--preset`. Add `--restart` when replacing a running launch. Generated `run-<model>` scripts belong to a source

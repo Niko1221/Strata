@@ -46,7 +46,7 @@ SLOT_MIB = 1.243
 MARGIN_MIB = 64                         # the estimate's error (the measurements agree to +-25 MiB)
 HEAD_MIB = 110
 SESSION_FIXED_MIB = 121
-KV_BYTES = {"fp16": 2112, "int8": 1056, "q4_0": 576, "k8v4": 816}   # per token per attention layer (13) = setup.UD_FIT_KV_BYTES
+KV_BYTES = {"fp16": 2112, "int8": 1056, "q4_0": 576, "q4u32": 576, "k8v4": 816}   # per token per attention layer (13) = setup.UD_FIT_KV_BYTES; q4u32's 576 is the layout's (kv_q4.hpp, the same cell as q4_0), not a measured session
 KV_MEASURED_FACTOR = 1.054              # the engine's session is 5.4% over the bare cache (scales)
 PROMPT_BASE_MIB = 170
 PROMPT_PER_TOKEN_MIB = 0.66

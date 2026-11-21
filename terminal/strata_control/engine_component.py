@@ -130,6 +130,7 @@ class EngineComponent:
     min_driver: dict = field(default_factory=dict)       # {"nvidia": "580.65"}: the oldest driver the build runs on
     build_id: str = ""                                    # which engine build this is (source commit + toolkit)
     variant: str = ""                                     # optional tag when one backend has several builds (cuda13, cuda12)
+    flavor: str = ""                                     # the build's variant of Strata itself ("q4u32", a fork's engine); empty for an upstream package
     signature: dict | None = None                         # S6: {"alg", "key_id", "value"} over signing_payload()
     raw: dict = field(default_factory=dict, repr=False)   # the manifest as read, for the signature check
     shape: str = ""                                       # the engine of one model shape (strata_control/shape_engine.py): its compiled geometry's name; "" for the Strata engine
@@ -152,7 +153,7 @@ class EngineComponent:
                 "entrypoint": self.entrypoint, "exe": str(self.exe), "root": str(self.root),
                 "min_runtime": self.min_runtime, "archs": list(self.archs), "min_driver": dict(self.min_driver),
                 "build_id": self.build_id, "variant": self.variant, "signed": bool(self.signature), "local": self.local, "file_count": len(self.files), "bytes": sum(item[2] for item in self.files),
-                **({"shape": self.shape} if self.shape else {})}
+                **({"shape": self.shape} if self.shape else {}), **({"flavor": self.flavor} if self.flavor else {})}
 
 
 def package_lib_dirs(folder) -> list[str]:
@@ -345,7 +346,8 @@ def read_manifest(folder: Path, component_id: str = COMPONENT_ID) -> EngineCompo
         entrypoint=entry, files=tuple(parsed), root=folder, min_runtime=data.get("min_runtime"),
         archs=tuple(archs), notes=str(data.get("notes") or ""), min_driver=dict(driver),
         build_id=str(data.get("build_id") or ""), variant=str(data.get("variant") or ""), signature=signature,
-        raw=data, shape=shape, local=data.get("local") is True and not signature)
+        raw=data, shape=shape, local=data.get("local") is True and not signature,
+        flavor=str(data.get("flavor") or ""))
 
 
 def read_manifest_any(folder: Path) -> EngineComponent:

@@ -46,7 +46,7 @@ bool layout(const QsaState& st, const ModelGeometry& g, int64_t upto, bool index
         return false;
     }
     const int64_t cells = ((upto + s.page_size - 1) / s.page_size) * s.page_size;
-    const size_t per = st.kv_q4 ? (size_t) strata::kernels::kv_q4_bytes_per_head((int) g.head_dim)
+    const size_t per = st.kv_q4 ? (size_t) strata::kernels::kv_q4_bytes_per_head((int) g.head_dim, st.kv_q4_mode)
                               : (size_t) g.head_dim * (int8_keys ? 1 : 2);
     // Include the moving spare row, not only completed blocks. The checkpoint
     // restore reconstructs that row when rewinding to an earlier prefix.
@@ -55,8 +55,22 @@ bool layout(const QsaState& st, const ModelGeometry& g, int64_t upto, bool index
     // STRATA_KV_ROT=1) is another format too (+16): its bytes mean nothing to a state that does not rotate, so a
     // snapshot or prompt checkpoint taken with the rotation never restores into one without it, nor the reverse.
     // (Q4_0 is always rotated: nothing to tell apart; without the rotation the format is the one it always was.)
+    // A windowed state (kKvQ4lmW) has exact fp16 cells outside the five snapshot buffers: refusing is honest,
+    // restoring without them would silently read quantized values as exact. The window *is* the side pool's
+    // existence (any level-table mode, STRATA_KV_WINDOW), so the pointer is the whole test - `kLloydWin` with
+    // S + R = 0 allocates no pool and is a plain kLloyd cache (qsa_win_wanted / qsa_kv_format). Measurement never
+    // snapshots.
+    if (st.k_win != nullptr || st.v_win != nullptr) {
+        error = "conversation snapshot: windowed KV states cannot snapshot (exact side pool outside the image)";
+        return false;
+    }
     const int rotated = st.kv_rot && !st.kv_q4 && !st.kv_hybrid ? 16 : 0;
-    l = {(st.kv_hybrid ? 3 : qsa_kv_format(st)) + rotated, cells, pooled, s.page_size, 0, 0, 0, 0, 0};
+    // The centering (bench/results/2026-11-10-centering/) is another format (+32): a centered state's bytes
+    // mean nothing to a state that does not center, so a snapshot or prompt checkpoint taken with the
+    // centering never restores into one without it, nor the reverse.  The hybrid rotates its V without
+    // the centering, so it keeps the uncentered format.
+    const int centered = (st.kv_rot && !st.kv_hybrid && qsa_kv_center()) ? 32 : 0;
+    l = {(st.kv_hybrid ? 3 : qsa_kv_format(st)) + rotated + centered, cells, pooled, s.page_size, 0, 0, 0, 0, 0};
     using conversation_detail::product;
     if (!product(l.data, {(uint64_t) cells, (uint64_t) g.n_head_kv, per}) ||
         !product(l.scales, {(uint64_t) cells, (uint64_t) g.n_head_kv,
@@ -69,7 +83,8 @@ bool layout(const QsaState& st, const ModelGeometry& g, int64_t upto, bool index
     l.value_scales = l.scales;
     if (st.kv_hybrid) {
         if (!product(l.value_data, {(uint64_t) cells, (uint64_t) g.n_head_kv,
-                                   (uint64_t) strata::kernels::kv_q4_bytes_per_head((int) g.head_dim)})) {
+                                   (uint64_t) strata::kernels::kv_q4_bytes_per_head((int) g.head_dim,
+                                                                                    strata::kernels::Q4Mode::kUniform)})) {
             error = "conversation snapshot: hybrid V byte count overflow";
             return false;
         }

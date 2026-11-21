@@ -14,7 +14,7 @@
 #   CONTEXT       32k, 64k, 128k, 256k or a number of tokens
 #   PARALLEL      requests answered at the same time, 1 to 8 (empty: fit to the card)
 #   VISION        off | on | gpu | cpu  (pictures; the picture reader file is downloaded with the model)
-#   KV            int8 | q4_0 | k8v4 | fp16  (conversation memory format)
+#   KV            int8 | q4u32 | q4_0 | k8v4 | fp16  (conversation memory format)
 #   DRAFTING      auto | mtp | dflash2 | off  (which drafter guesses ahead)
 #   DRAFT_VOCAB   cjk | en | cyrillic | fr | latin  (which tokens the drafter may guess; every one but cjk keeps English and code)
 #   GPU / GPUS    card numbers, e.g. 0 or 0,1 (empty or "all": the engine's choice)

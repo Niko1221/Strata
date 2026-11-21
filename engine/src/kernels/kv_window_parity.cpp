@@ -75,7 +75,7 @@ struct Pools {   // one pool set of `pages` pages in the layout of format `fmt`
             *field = (T*) a.d;
             arrs.push_back(a);
         };
-        const size_t q4 = k::kv_q4_bytes_per_head((int) s.head_dim);
+        const size_t q4 = k::kv_q4_bytes_per_head((int) s.head_dim, k::Q4Mode::kUniform);
         const size_t codes = (size_t) s.head_dim, scales = (size_t) (s.head_dim / k::KV_Q8_GROUP) * 2;
         if (fmt == k::kKvHybrid) {
             mk(codes, &p.k_q); mk(scales, &p.k_scale); mk(q4, &p.v_q4);

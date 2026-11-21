@@ -1,0 +1,80 @@
+{
+ "what": "The four calibration pairs of the beyond-KL work plan (section 3), frozen so that G1 and every later feature is scored against the same truths. The raw runs live outside the repo; the paths are relative to bench_root.",
+ "written": "2026-10-28",
+ "anchor": "fp16",
+ "kl_topk": 256,
+ "segments": 8,
+ "positions_per_arm": 32746,
+ "bench_root": "Strata-data/bench",
+ "runs": {
+  "fp16": "2026-10-27-s3/fp16.tsv",
+  "int8": "2026-10-27-s3/int8.tsv",
+  "q4lm8": "2026-10-27-s3/q4lm8.tsv",
+  "q4lm8k": "2026-10-27-s3/q4lm8k.tsv",
+  "q4lm8v": "2026-10-27-s3/q4lm8v.tsv",
+  "q4lm32": "2026-10-27-s3/q4lm32.tsv",
+  "q4lm32s": "2026-10-27-s3/q4lm32s.tsv",
+  "q4lm32sw": "2026-10-27-s3/q4lm32sw.tsv",
+  "q4lm32w": "2026-10-27-s3/q4lm32w.tsv",
+  "plain": "2026-10-25-s0/plain.tsv",
+  "win256": "2026-10-25-s0/win256.tsv",
+  "tag": "2026-10-25-tag-quality/tag.tsv",
+  "s320r0": "2026-10-28-ring/s320r0.tsv",
+  "s192r128": "2026-10-28-ring/s192r128.tsv",
+  "s64r256": "2026-10-28-ring/s64r256.tsv",
+  "int8_s0": "2026-10-25-s0/int8.tsv",
+  "int8_tag": "2026-10-25-tag-quality/int8.tsv",
+  "win256_tag": "2026-10-25-tag-quality/win256.tsv"
+ },
+ "pinned_arm_means": {
+  "int8": {"kl64": 0.01688, "kl256": 0.01774, "source": "bench/results/2026-10-27-s3-level-split/README.md"},
+  "q4lm32w": {"kl64": 0.01689, "kl256": 0.01809, "source": "ebd."},
+  "q4lm32s": {"kl64": 0.02420, "kl256": 0.02634, "source": "ebd."},
+  "q4lm32sw": {"kl64": 0.01881, "kl256": 0.02017, "source": "ebd. (q4lm32s + Fenster)"},
+  "q4lm32": {"kl64": 0.02512, "kl256": 0.02667, "source": "ebd."},
+  "q4lm8v": {"kl64": 0.03182, "kl256": 0.03387, "source": "ebd."},
+  "q4lm8k": {"kl64": 0.03212, "kl256": 0.03417, "source": "ebd."},
+  "q4lm8": {"kl64": 0.04127, "kl256": 0.04414, "source": "ebd."},
+  "s320r0": {"kl64": 0.02053, "kl256": 0.02203, "source": "bench/results/2026-10-28-ring-geometry/README.md"},
+  "s192r128": {"kl64": 0.01757, "kl256": 0.01871, "source": "ebd."},
+  "s64r256": {"kl64": 0.01882, "kl256": 0.01995, "source": "ebd."}
+ },
+ "duplicate_runs": {
+  "int8_s0": "int8",
+  "int8_tag": "int8",
+  "win256_tag": "win256"
+ },
+ "pinned_tolerance": 0.00002,
+ "pairs": [
+  {
+   "id": "parity",
+   "a": "q4lm32w",
+   "b": "int8",
+   "truth": "parity",
+   "pinned": {"kl64": 0.00002, "kl256": 0.00034, "segments_a_worse_kl64": 4, "segments_a_worse_kl256": 5},
+   "source": "bench/results/2026-10-27-s3-level-split/README.md"
+  },
+  {
+   "id": "certified-loss",
+   "a": "s320r0",
+   "b": "q4lm32w",
+   "truth": "a_worse",
+   "pinned": {"kl256": 0.00394, "ci95_low": 0.00097, "ci95_high": 0.00691, "segments_a_worse_kl256": 8},
+   "source": "bench/results/2026-10-28-ring-geometry/README.md"
+  },
+  {
+   "id": "no-difference",
+   "a": "q4lm8v",
+   "b": "q4lm8k",
+   "truth": "parity",
+   "pinned": {"kl256": -0.0003},
+   "source": "bench/results/2026-10-27-s3-level-split/README.md"
+  }
+ ],
+ "ladder": {
+  "order": ["q4lm8", "q4lm8k", "q4lm8v", "q4lm32", "q4lm32w", "int8"],
+  "steps": [">", "~", ">", ">", "~"],
+  "pinned_kl64": [0.04127, 0.03212, 0.03182, 0.02512, 0.01689, 0.01688],
+  "source": "docs/research/BEYOND_KL_QUANT_FIDELITY.md §3"
+ }
+}

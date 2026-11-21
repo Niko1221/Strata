@@ -113,6 +113,7 @@ class EnginePackage:
     installed_bytes: int
     notes: str = ""
     shape: str = ""                 # the engine of one model shape (feed member ``shape_engines``, strata_control/shape_engine.py): its compiled geometry's name; "" for the others
+    flavor: str = ""                # the build's variant of Strata itself ("q4u32", a fork's engine); "" for an upstream build. An update never switches it.
 
     @property
     def label(self) -> str:
@@ -123,7 +124,7 @@ class EnginePackage:
                 "archs": list(self.archs), "min_driver": dict(self.min_driver), "min_runtime": self.min_runtime,
                 "build_id": self.build_id, "size": self.size, "installed_bytes": self.installed_bytes,
                 "format": self.format, "url": self.url, "sha256": self.sha256, "manifest_sha256": self.manifest_sha256,
-                **({"shape": self.shape} if self.shape else {})}
+                **({"shape": self.shape} if self.shape else {}), **({"flavor": self.flavor} if self.flavor else {})}
 
 
 @dataclass(frozen=True)
@@ -356,7 +357,7 @@ def _engine_package(item: dict, skipped: list | None = None) -> EnginePackage | 
                          build_id=_need(item, "build_id", str, where), url=_need(item, "url", str, where), format=fmt,
                          size=size, sha256=_hex(item.get("sha256"), where),
                          manifest_sha256=_hex(item.get("manifest_sha256"), where), installed_bytes=installed,
-                         notes=str(item.get("notes") or ""))
+                         notes=str(item.get("notes") or ""), flavor=str(item.get("flavor") or ""))
 
 
 def _shape_engine_package(item: dict, skipped: list | None = None) -> EnginePackage | None:
@@ -756,6 +757,12 @@ def select_engine(packages, hardware: dict) -> tuple[EnginePackage | None, list[
     """The best package for this PC and, when none fits, every reason. Best = newest version; with equal versions the build
     that needs the newer driver (CUDA 13 beside CUDA 12), as `engine_component.resolve` chooses between installed ones."""
     from strata_control import engine_component as ec
+
+    def _rank(p):
+        return (version_key(p.version), ec._version_key(p.min_driver.get("nvidia", "0")),
+                ec.hip_preference(p.archs) if p.backend == "hip" else 1,
+                ec.arch_native(p.archs, hardware.get("cuda_archs") or []) if p.backend == "cuda" else False)
+
     fitting, reasons = [], []
     for pkg in packages:
         why = engine_fit_reasons(pkg, hardware)
@@ -768,9 +775,7 @@ def select_engine(packages, hardware: dict) -> tuple[EnginePackage | None, list[
     fitting = _settle_hip_variants(fitting, hardware, reasons)
     if not fitting:
         return None, reasons
-    best = max(fitting, key=lambda p: (version_key(p.version), ec._version_key(p.min_driver.get("nvidia", "0")),
-                                       ec.hip_preference(p.archs) if p.backend == "hip" else 1,
-                                       ec.arch_native(p.archs, hardware.get("cuda_archs") or []) if p.backend == "cuda" else False))
+    best = max(fitting, key=_rank)
     kept = str(hardware.get("installed_variant") or "")
     if best.backend == "cuda" and kept and best.variant != kept:
         # An update never switches the CUDA build (#3835): a model on the CUDA 12 engine (its card is one CUDA 13 has no code for) must not
@@ -779,7 +784,29 @@ def select_engine(packages, hardware: dict) -> tuple[EnginePackage | None, list[
         if same:
             reasons.append(f"the installed {kept} build is kept; {best.variant} would also fit another card in this PC")
             best = same[0]
+    kept_flavor = str(hardware.get("installed_flavor") or "")
+    if kept_flavor and _flavor(best) != kept_flavor:
+        # An update never switches the VARIANT of Strata that is installed: a fork's engine (the q4u32 default) must not be
+        # replaced by an upstream build by an update that only meant to bring a newer version of the same thing.  The newest
+        # build of the SAME variant is taken; a build of another variant is not offered at all - the person installs a
+        # different variant deliberately.  (An installation WITHOUT a variant - an upstream build - takes what the feed
+        # offers: the signed upstream feed carries upstream builds.)
+        same = [p for p in fitting if _flavor(p) == kept_flavor]
+        if same:
+            reasons.append(f"your {kept_flavor} build is kept: the feed also has an engine of another variant, and an update "
+                           f"never switches the variant of Strata that is installed")
+            best = max(same, key=_rank)
+        else:
+            other = _flavor(best) or "an upstream build without a variant"
+            reasons.append(f"your {kept_flavor} build is kept: an update never switches the variant of Strata that is "
+                           f"installed, and the feed's engine is {other}. Install the other variant yourself if you want it.")
+            return None, reasons
     return best, reasons
+
+
+def _flavor(pkg) -> str:
+    """The package's variant of Strata ("q4u32"), "" when it has none (an upstream build, or an older object)."""
+    return str(getattr(pkg, "flavor", "") or "")
 
 
 def _hip_variants(fitting) -> set[str]:

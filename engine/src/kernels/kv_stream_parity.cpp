@@ -53,12 +53,12 @@ struct Pools {   // one K/V pool set of `pages` pages
     void alloc(int64_t pages, const k::QsaShapes& s, int fmt, bool host) {
         const size_t rows = (size_t) pages * s.n_head_kv * s.page_size;
         if (fmt == k::kKvHybrid) {
-            const size_t b = rows * k::kv_q4_bytes_per_head((int) s.head_dim);
+            const size_t b = rows * k::kv_q4_bytes_per_head((int) s.head_dim, k::Q4Mode::kUniform);
             p.k_q = host ? halloc<int8_t>(rows * s.head_dim) : dalloc<int8_t>(rows * s.head_dim);
             p.k_scale = host ? halloc<uint16_t>(rows * 4) : dalloc<uint16_t>(rows * 4);
             p.v_q4 = host ? halloc<uint8_t>(b) : dalloc<uint8_t>(b);
         } else if (fmt == k::kKvQ4) {
-            const size_t b = rows * k::kv_q4_bytes_per_head((int) s.head_dim);
+            const size_t b = rows * k::kv_q4_bytes_per_head((int) s.head_dim, k::Q4Mode::kUniform);
             p.k_q4 = host ? halloc<uint8_t>(b) : dalloc<uint8_t>(b);
             p.v_q4 = host ? halloc<uint8_t>(b) : dalloc<uint8_t>(b);
         } else if (fmt == k::kKvInt8) {

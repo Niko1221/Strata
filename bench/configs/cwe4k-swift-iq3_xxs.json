@@ -1,0 +1,30 @@
+{
+ "_comment": "Pinned config for the KV-quality yardstick on cwe-4k. Do not point this at another model: every arm in bench/results/2026-10-27-s3-level-split was scored on the swift-IQ3_XXS weights below, and KL across models is not comparable. The app's own config (strata-swift-iq3_xxs.json in the repo root) is free to change - it was switched to the flash-next abliterated Q2_0 on 2026-10-27, which is why this copy exists. `env` stays empty on purpose: STRATA_KV_WINDOW there would turn every bulk arm into a window arm without it showing up in the run's seg.json.",
+ "exe": "<strata-checkout>\\build-hip-port\\strata.exe",
+ "args": [
+  "--pack",
+  "<strata-data>\\packs\\swift-iq3_xxs",
+  "--native",
+  "<strata-data>\\models\\swift-IQ3_XXS\\Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+  "--ple-gguf",
+  "<strata-data>\\models\\swift-IQ3_XXS\\Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+  "--expert-profile",
+  "<strata-checkout>\\data\\expert-profile.bin",
+  "--spec",
+  "4",
+  "--spec-min-p",
+  "0.5",
+  "--mtp",
+  "<strata-data>\\mtp\\rt"
+ ],
+ "cwd": "<strata-checkout>",
+ "tokenizer": "<strata-data>\\packs\\swift-iq3_xxs\\tokenizer",
+ "model_name": "swift-1.5-iq3_xxs",
+ "log": "<strata-checkout>\\bench\\configs\\cwe4k-swift-iq3_xxs.log",
+ "lib_dirs": [
+  "C:\\Program Files\\AMD\\ROCm\\7.1\\bin"
+ ],
+ "port": 7602,
+ "backend": "hip",
+ "env": {}
+}

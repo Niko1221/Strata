@@ -52,7 +52,8 @@ struct Pools {
     Pools(const ModelGeometry& g, int format) {
         st.max_cells = 96; st.n_pages = st.n_slots = 24; st.idx_pooled_rows = 26;
         st.kv_int8 = format == 1; st.kv_q4 = format == 2;
-        const size_t per = format == 2 ? strata::kernels::kv_q4_bytes_per_head((int) g.head_dim)
+        const size_t per = format == 2 ? strata::kernels::kv_q4_bytes_per_head((int) g.head_dim,
+                                                                              strata::kernels::Q4Mode::kUniform)
                                       : g.head_dim * (format == 1 ? 1 : 2);
         data[0].resize(96 * g.n_head_kv * per, 0xa5); data[1] = data[0];
         data[2].resize(format == 1 ? 96 * g.n_head_kv * (g.head_dim / 64) * 2 : 0, 0xa5); data[3] = data[2];
