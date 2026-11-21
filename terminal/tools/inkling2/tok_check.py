@@ -4,7 +4,7 @@
 2. ids must match HF on a corpus: per paragraph and per whole file (EN/FR prose, the bench prompts, Strata docs, C++ and
    Python sources, unicode edge cases), and on rendered chat prompts with parse_special;
 3. decode(encode(s)) == s.
-usage: tok_check.py MODEL_DIR STRATA_REPO [--extract OUT_DIR]
+usage: tok_check.py MODEL_DIR STRATA_REPO [TEXT...] [--extract OUT_DIR]  (TEXT: extra corpus files)
 """
 import glob, json, pathlib, sys, time
 
@@ -23,11 +23,12 @@ t0 = time.time()
 tk = st.Tokenizer.from_hf(pathlib.Path(model, "tokenizer.json"), "gpt-4o", {"eos": 200006})
 print(f"strata tokenizer: {len(tk.tokens)} tokens, {len(tk.ranks)} merges, {len(tk.special_tokens)} special, {time.time() - t0:.1f}s")
 
-files = ["/var/fastasfuck/inkling2/kl/long.txt", "/var/fastasfuck/inkling2/kl/text.txt",
-         "/var/fastasfuck/bench/q1.md", "/var/fastasfuck/bench/q2.md"]
+files = sys.argv[3:]   # extra corpus files, minus "--extract OUT_DIR"
+if "--extract" in files:
+    i = files.index("--extract")
+    files = files[:i] + files[i + 2:]
 files += sorted(glob.glob(f"{repo}/docs/*.md"))[:12]
 files += [f"{repo}/engine/src/inkling2/ink2_engine.cu", f"{repo}/terminal/serve/frontend.py"]
-files += sorted(glob.glob("/var/fastasfuck/bench/fr/*"))[:4] + sorted(glob.glob("/var/fastasfuck/bench/dvfr/*"))[:4]
 edge = ["Hello, world! It's 2026; they'll've done it.", "L'été où j'ai vu l'œuf — «déjà» ?", "ÉCOLE École école ÉCOLE's",
         "naïve café́ é́ कि", "😀👍🏽 🇫🇷 a‍b", "你好，世界 こんにちは 안녕하세요", "مرحبا بالعالم",
         "   leading\t\ttabs\n\n\n  trailing   ", "x = 1234567 + 89.01e-5; // 0x1F", "path/to/file.py:42 http://a.b/c?d=e&f",
@@ -38,7 +39,7 @@ for f, txt in docs:
     pieces.append((f, txt))
     pieces += [(f + "#p", p) for p in txt.split("\n\n") if p.strip()]
 chats = [[{"role": "user", "content": "Explique en une phrase pourquoi le ciel est bleu."}],
-         [{"role": "system", "content": "Tu es concis."}, {"role": "user", "content": open("/var/fastasfuck/bench/q1.md").read()}],
+         [{"role": "system", "content": "Tu es concis."}, {"role": "user", "content": open(f"{repo}/README.md").read()}],
          [{"role": "user", "content": "2+2?"}, {"role": "assistant", "content": "4", "reasoning_content": "easy"},
           {"role": "user", "content": "et 3+3 ?"}]]
 bad, n, nchar = 0, 0, 0

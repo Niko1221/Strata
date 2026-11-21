@@ -1,6 +1,6 @@
 """Inkling-2-Mini numerics probe: logits of one long text under a given weight dtype / expert activation mode.
 
-usage: kl_run.py --dtype float32|bfloat16 --mode a16|w4a4 --text FILE --out FILE.pt [--max-tokens N]
+usage: kl_run.py --model DIR --dtype float32|bfloat16 --mode a16|w4a4 --text FILE --out FILE.pt [--max-tokens N]
 
 mode a16  : the transformers PR reference as is (experts dequantized, activations at the model dtype)
 mode w4a4 : expert GEMM inputs quantized as vLLM does on Hopper/Blackwell (vllm PR #69028, ops/nvfp4.py,
@@ -14,7 +14,6 @@ import torch.nn.functional as F
 from transformers import AutoTokenizer, Inkling2LoopForConditionalGeneration
 from transformers.models.inkling2_loop import modeling_inkling2_loop as M
 
-MODEL = "/var/fastasfuck/inkling2/Inkling-2-Mini"
 FP32_MAX = 3.4028234663852886e38
 MXFP8_FIRST_LAYER = 20  # hf_quant_config.json: layers 20-23 experts are MXFP8, 0-19 NVFP4
 
@@ -85,6 +84,7 @@ def w4a4_forward(self, hidden_states, top_k_index, top_k_weights):
 
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--model", required=True, help="the Inkling-2-Mini checkpoint directory")
     ap.add_argument("--dtype", default="float32")
     ap.add_argument("--mode", default="a16")
     ap.add_argument("--text", required=True)
@@ -95,8 +95,8 @@ def main():
     ap.add_argument("--ids-out", help="also write the token ids, comma-separated, for strata-ink2ref --tokens-file")
     a = ap.parse_args()
     torch.set_num_threads(a.threads)
-    tok = AutoTokenizer.from_pretrained(MODEL)
-    model = Inkling2LoopForConditionalGeneration.from_pretrained(MODEL, dtype=getattr(torch, a.dtype), device_map="cpu").eval()
+    tok = AutoTokenizer.from_pretrained(a.model)
+    model = Inkling2LoopForConditionalGeneration.from_pretrained(a.model, dtype=getattr(torch, a.dtype), device_map="cpu").eval()
     for i, layer in enumerate(model.model.language_model.layers):
         layer.mlp.experts.layer_idx = i
         if a.mode == "w4a4":

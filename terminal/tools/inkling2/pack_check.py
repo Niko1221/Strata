@@ -1,4 +1,5 @@
-"""pack_check.py REPO PACK MODEL: load the extracted pack exactly as server.py does, compare to HF on a few files."""
+"""pack_check.py REPO PACK MODEL [TEXT...]: load the extracted pack exactly as server.py does, compare to HF on the
+text files given and on terminal/serve/frontend.py."""
 import json, pathlib, sys
 repo, pack, model = sys.argv[1:4]
 sys.path.insert(0, f"{repo}/terminal/tools")
@@ -16,8 +17,7 @@ tok = ST.Tokenizer(tokens, merges, types, tcfg.get("pre") or "qwen35", tcfg.get(
                    bool(tcfg.get("ignore_merges")))
 hf = AutoTokenizer.from_pretrained(model)
 bad = 0
-for f in ["/var/fastasfuck/inkling2/kl/long.txt", "/var/fastasfuck/bench/q1.md", "/var/fastasfuck/bench/q2.md",
-          f"{repo}/terminal/serve/frontend.py"]:
+for f in sys.argv[4:] + [f"{repo}/terminal/serve/frontend.py"]:
     s = open(f).read()
     a, b = tok.encode(s), hf(s, add_special_tokens=False, split_special_tokens=True).input_ids
     bad += a != b

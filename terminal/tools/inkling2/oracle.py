@@ -1,6 +1,6 @@
 """Inkling-2-Mini oracle: run the transformers PR #51050 reference on CPU and dump per-layer-application tensors.
 
-usage: oracle.py --dtype float32|bfloat16 --out DIR [--prompts prompts.json] [--gen N]
+usage: oracle.py --model DIR --dtype float32|bfloat16 --out DIR [--prompts prompts.json] [--gen N]
 
 Dumps (safetensors, one file per prompt):
   ids, logits (last position + all positions), and for each decoder-layer call k (0..47, in call order):
@@ -12,8 +12,6 @@ import torch
 from safetensors.torch import save_file
 from transformers import AutoTokenizer, Inkling2LoopForConditionalGeneration
 
-MODEL = "/var/fastasfuck/inkling2/Inkling-2-Mini"
-
 DEFAULT_PROMPTS = [
     {"name": "raw_en", "text": "The capital of France is"},
     {"name": "raw_fr", "text": "Le petit chat est monté sur le toit parce que"},
@@ -24,6 +22,7 @@ DEFAULT_PROMPTS = [
 
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--model", required=True, help="the Inkling-2-Mini checkpoint directory")
     ap.add_argument("--dtype", default="float32")
     ap.add_argument("--out", required=True)
     ap.add_argument("--prompts")
@@ -36,8 +35,8 @@ def main():
     prompts = json.load(open(a.prompts)) if a.prompts else DEFAULT_PROMPTS
 
     t0 = time.time()
-    tok = AutoTokenizer.from_pretrained(MODEL)
-    model = Inkling2LoopForConditionalGeneration.from_pretrained(MODEL, dtype=dtype, device_map="cpu")
+    tok = AutoTokenizer.from_pretrained(a.model)
+    model = Inkling2LoopForConditionalGeneration.from_pretrained(a.model, dtype=dtype, device_map="cpu")
     model.eval()
     print(f"loaded in {time.time() - t0:.0f}s", flush=True)
 
