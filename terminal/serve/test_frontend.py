@@ -349,3 +349,49 @@ class EmptyConversation(unittest.TestCase):
         with self.assertRaises(ValueError):
             require_messages(openai_to_messages({})[0])
         require_messages(openai_to_messages({"messages": [{"role": "user", "content": "hi"}]})[0])
+
+
+class BakedPreserveThinking(unittest.TestCase):
+    """A Qwen3.6 pack template must keep the empty think block when the flag is unset."""
+
+    _BROKEN = (
+        "{%- set ns = namespace(last_query_index=-1) %}\n"
+        "{%- for message in messages %}\n"
+        "    {%- if message.role == \"user\" %}\n"
+        "        {%- set ns.last_query_index = loop.index0 %}\n"
+        "    {%- endif %}\n"
+        "{%- endfor %}\n"
+        "{%- for message in messages %}\n"
+        "    {%- if message.role == \"assistant\" %}\n"
+        "        {%- if (preserve_thinking is defined and preserve_thinking is true) or (loop.index0 > ns.last_query_index) %}\n"
+        "            {{- '<|im_start|>assistant\\n<think>\\n\\n</think>\\n\\n' + message.content }}\n"
+        "        {%- else %}\n"
+        "            {{- '<|im_start|>assistant\\n' + message.content }}\n"
+        "        {%- endif %}\n"
+        "    {%- else %}\n"
+        "        {{- '<|im_start|>' + message.role + '\\n' + message.content }}\n"
+        "    {%- endif %}\n"
+        "{%- endfor %}\n"
+    )
+
+    def test_unset_flag_keeps_the_empty_think_block(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "chat_template.jinja"
+            path.write_text(self._BROKEN, encoding="utf-8")
+            template = ChatTemplate(path)
+        self.assertNotIn("preserve_thinking is defined and preserve_thinking is true", template.source)
+        rendered = template.render([
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "OK"},
+            {"role": "user", "content": "again"},
+        ], add_generation_prompt=False)
+        self.assertIn("<think>", rendered)
+        self.assertIn("OK", rendered)
+
+    def test_a_correct_template_is_left_alone(self):
+        source = Path(__file__).with_name("chat_template.jinja").read_text(encoding="utf-8")
+        template = ChatTemplate(Path(__file__).with_name("chat_template.jinja"))
+        self.assertEqual(template.source, source)
+        self.assertNotIn("preserve_thinking is defined and preserve_thinking is true", template.source)
+
