@@ -12257,8 +12257,8 @@ int main(int argc, char** argv) {
             }
             if (multi_gpu) sp.set_stage(0, split_at[0], &stages[0]->sp);
             if (share_pool) sp.set_cpu_pool(&pool);
-            int cur_dev = 0;
-            cudaGetDevice(&cur_dev);   // the device this path is about to run on (dev -1: the current one)
+            int cur_dev = 0;   // the device this path is about to run on (dev -1: the current one)
+            if (cudaGetDevice(&cur_dev) != cudaSuccess) { (void) cudaGetLastError(); cur_dev = 0; }
             const bool room_here = mtp_room_slots > 0 && mtp.device() == cur_dev;
             if (room_here) room_path = &sp;
             sp.set_ring_room(room_here ? mtp_room_slots : 0);
@@ -13871,8 +13871,8 @@ int main(int argc, char** argv) {
         // Foresight swap space (STRATA_FS_SLOTS; unset = null and nothing changes)
         std::unique_ptr<strata::core::ForesightSwap> fs_swap;
         {
-            int main_dev = 0;
-            cudaGetDevice(&main_dev);
+            int main_dev = 0;   // the device this path runs on; default to 0 if there is no current context yet.
+            if (cudaGetDevice(&main_dev) != cudaSuccess) { (void) cudaGetLastError(); main_dev = 0; }
             std::vector<int> devs{main_dev};
             for (auto& st : stages) devs.push_back(st->dev);
             std::vector<int> card((size_t) g.n_layers, 0);
