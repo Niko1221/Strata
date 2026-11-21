@@ -1890,6 +1890,21 @@ struct Slot {
 };
 
 struct Bells { ink2cpu::InkBell* b[2]; };   // device views of the per-node doorbells
+constexpr int SYNC_MAX = 2;   // misses of a visit computed on the GPU over PCIe (the PCIe share), at most
+struct SyncArgs {             // the PCIe share's state, for k_cache_cpu and k_cpu_wait
+    const uint8_t* const* xsrc;   // [NL * NE] device views of the experts in host memory
+    const uint8_t** tabA;
+    const uint8_t** tabB;
+    uint8_t* stage;               // [SYNC_MAX] staging slots of MX_BYTES
+    const uint8_t** fsrc;
+    uint8_t** fdst;
+    int* nfetch;
+    int* keys;                    // [SYNC_MAX] the visit's PCIe experts (their table entries point at the staging)
+    unsigned long long* fbytes;
+    const uint8_t* home;          // [NL * NE] node of each expert
+    float us_nv, us_mx;           // one expert over PCIe, us (0: the share off)
+    float margin;                 // us the GPU side adds to the copies (its GEMVs, the background copies' PCIe)
+};
 
 struct Engine {
     const Ckpt* ck = nullptr;
@@ -1937,6 +1952,7 @@ struct Engine {
     const uint8_t* home_d = nullptr;   // [NL * NE] the node holding expert (l, e) (E.home)
     unsigned *d_seq = nullptr, *d_cur = nullptr;
     float* cnt = nullptr;   // [NL * NE] decayed use counts (placement)
+    SyncArgs sync = {};     // the PCIe share
     int *want_nv = nullptr, *want_mx = nullptr, *nwant_nv = nullptr, *nwant_mx = nullptr;
     int *pend_nv = nullptr, *pend_mx = nullptr, *npend_nv = nullptr, *npend_mx = nullptr;   // [i] = key, [PMAX + i] = slot
     const uint8_t **psrc_nv = nullptr, **psrc_mx = nullptr;   // promotion copies (k_fetch lists of their own)
@@ -2375,6 +2391,11 @@ void expert_cache(int l, const int* ids, int n) {
 // (place/simeng.py): 2.25 -> 1.42 CPU experts per visit, 14.7 -> 8.6 promotions per token; Strata's adaptive cache with
 // a per-token decay, its victims from the whole pool (experts of a pool are all one size).  INK2_PLACE=lru: the
 // least recently used slot, misses in visit order (the previous policy).
+// PCIe share (INK2_PCIE=0: off): k_cache_cpu moves a visit's misses one by one, the busiest node's lowest-ranked
+// first, from the CPU to a GPU staging slot over PCIe while that shortens the visit (each node's us per job measured
+// by its pool, one copy's us measured at start, plus INK2_PCIE_MARGIN us for the GPU side: 120, from a sweep of
+// 0 / 60 / 120 / 200); k_cpu_wait takes them out of the tables.  q1 chat at 8 GiB, one node: 4 threads 37.2 -> 40.6
+// tok/s, 8 threads 52.4 -> 52.8; the 2 x 22-thread box 66.4 -> 65-66 (it rarely fires there).
 constexpr int WANT_MAX = 64, PMAX = 32;
 bool g_place_freq = true;
 float g_decay = 0.97f, g_gain = 1.0f;
@@ -2382,19 +2403,17 @@ int g_bg_blocks = 4;   // INK2_BG_BLOCKS (12 GiB, q1 chat: 4 and 8 blocks 69.8 /
 int g_promote_nv = 12, g_promote_mx = 3;   // per token (INK2_PROMOTE=nv,mx): ~54 + 25 MB of PCIe in the background
 __global__ void k_cache_cpu(int l, const int* __restrict__ ids, const float* __restrict__ x, int* slot_of, unsigned* stamp,
                             unsigned* clock, int* want, int* nwant, Bells bells, int nodes, unsigned* seq, unsigned* cur,
-                            float* cnt) {
+                            float* cnt, SyncArgs sa) {
     __shared__ int nj;
     if (threadIdx.x == 0) {
         unsigned t = *clock;
-        int n = 0, nw = *nwant;
+        int n = 0, nw = *nwant, jk[TOPK], je[TOPK];
         for (int k = 0; k < TOPK; ++k) {
             const int e = ids[k], key = l * NE + e, sl = slot_of[key];
             cnt[key] += 1.0f;
             if (sl >= 0) { stamp[sl] = ++t; continue; }
-            for (int b = 0; b < nodes; ++b) {
-                bells.b[b]->k[n] = k;
-                bells.b[b]->e[n] = e;
-            }
+            jk[n] = k;
+            je[n] = e;
             ++n;
             bool have = false;
             for (int i = 0; i < nw; ++i) have |= want[i] == key;
@@ -2402,6 +2421,44 @@ __global__ void k_cache_cpu(int l, const int* __restrict__ ids, const float* __r
         }
         *clock = t;
         *nwant = nw;
+        // PCIe share: while it shortens the visit, the busiest node's lowest-ranked miss is copied to a staging slot
+        // and computed on the GPU instead: visit ~ max(node jobs x the node's us per job, copies x one copy's us)
+        const bool nv = l < MXFP8_FIRST;
+        const float tp = nv ? sa.us_nv : sa.us_mx;
+        int ns = 0;
+        if (tp > 0.0f && n) {
+            const float u[2] = {bells.b[0]->us_job, nodes > 1 ? bells.b[1]->us_job : 0.0f};
+            int c[2] = {0, 0};
+            for (int j = 0; j < n; ++j) ++c[nodes > 1 ? sa.home[l * NE + je[j]] : 0];
+            while (ns < SYNC_MAX) {
+                const float t0 = c[0] * u[0], t1 = c[1] * u[1];
+                const int m = t1 > t0 ? 1 : 0;
+                if (!c[m]) break;
+                const float now = fmaxf(fmaxf(t0, t1), ns ? ns * tp + sa.margin : 0.0f);
+                const float after = fmaxf(fmaxf((c[m] - 1) * u[m], m ? t0 : t1), (ns + 1) * tp + sa.margin);
+                if (after >= now) break;
+                int j = n - 1;
+                while ((nodes > 1 ? sa.home[l * NE + je[j]] : 0) != m) --j;
+                const int key = l * NE + je[j];
+                uint8_t* st = sa.stage + (size_t) ns * MX_BYTES;
+                sa.fsrc[ns] = sa.xsrc[key];
+                sa.fdst[ns] = st;
+                sa.tabA[key] = st;
+                sa.tabB[key] = st + (nv ? NV_A : MX_A);
+                sa.keys[ns] = key;
+                for (int i = j; i + 1 < n; ++i) { jk[i] = jk[i + 1]; je[i] = je[i + 1]; }
+                --n;
+                --c[m];
+                ++ns;
+            }
+            *sa.fbytes += (unsigned long long) ns * (nv ? NV_BYTES : MX_BYTES);
+        }
+        *sa.nfetch = ns;
+        for (int j = 0; j < n; ++j)
+            for (int b = 0; b < nodes; ++b) {
+                bells.b[b]->k[j] = jk[j];
+                bells.b[b]->e[j] = je[j];
+            }
         nj = n;
     }
     __syncthreads();
@@ -2427,9 +2484,12 @@ __global__ void k_cache_cpu(int l, const int* __restrict__ ids, const float* __r
 }
 // grid TOPK: block j copies job j's output, from the doorbell of the node holding its expert, once every node has acked
 // (a stuck pool traps after ~4 s: an error, not a hang)
-__global__ void k_cpu_wait(Bells bells, const uint8_t* __restrict__ home, const unsigned* cur, int nodes, float* ey) {
+__global__ void k_cpu_wait(Bells bells, const uint8_t* __restrict__ home, const unsigned* cur, int nodes, float* ey,
+                           SyncArgs sa) {
     const volatile ink2cpu::InkBell* b0 = bells.b[0];
     const volatile ink2cpu::InkBell* b1 = bells.b[nodes > 1 ? 1 : 0];
+    if (blockIdx.x == 0 && threadIdx.x == 0)   // the GEMVs are done: the PCIe share's experts leave the tables
+        for (int i = 0; i < *sa.nfetch; ++i) sa.tabA[sa.keys[i]] = sa.tabB[sa.keys[i]] = nullptr;
     const unsigned s = *cur;
     if (!s) return;
     __shared__ int ok;
@@ -2588,7 +2648,8 @@ void promote_join() {
 void expert_cpu_ring(int l, const float* x) {
     const bool nv = l < MXFP8_FIRST;
     k_cache_cpu<<<1, 256>>>(l, E.ids, x, E.slot_of, nv ? E.stamp_nv : E.stamp_mx, E.clock, nv ? E.want_nv : E.want_mx,
-                            nv ? E.nwant_nv : E.nwant_mx, E.bell_d, E.cpu_nodes, E.d_seq, E.d_cur, E.cnt);
+                            nv ? E.nwant_nv : E.nwant_mx, E.bell_d, E.cpu_nodes, E.d_seq, E.d_cur, E.cnt, E.sync);
+    if (E.sync.us_nv > 0.0f) k_fetch<<<dim3(FETCH_BLOCKS, SYNC_MAX), 256>>>(E.fsrc, E.fdst, E.nfetch, ex_bytes(l));
 }
 void setup_cpu() {
     if (const char* p = std::getenv("INK2_PROMOTE")) std::sscanf(p, "%d,%d", &g_promote_nv, &g_promote_mx);
@@ -2613,6 +2674,43 @@ void setup_cpu() {
     }
     if (E.cpu_nodes < 2) E.bell_d.b[1] = E.bell_d.b[0];
     E.home_d = (const uint8_t*) upload(E.home.data(), E.home.size());
+    // PCIe share (INK2_PCIE=0: off): staging slots, and one expert's copy timed with the kernel that will do it
+    // (best of 5; INK2_PCIE_US: an NVFP4 expert's us instead, e.g. to play a faster link)
+    SyncArgs& a = E.sync;   // (off: us_nv 0, k_cache_cpu still writes nfetch = 0)
+    a.xsrc = E.xsrc_d; a.tabA = E.tabA; a.tabB = E.tabB; a.fsrc = E.fsrc; a.fdst = E.fdst; a.nfetch = E.nfetch;
+    a.fbytes = E.fbytes; a.home = E.home_d;
+    a.keys = (int*) dalloc(SYNC_MAX * 4);
+    if (!(std::getenv("INK2_PCIE") && std::string(std::getenv("INK2_PCIE")) == "0")) {
+        a.stage = (uint8_t*) dalloc((size_t) SYNC_MAX * MX_BYTES);
+        const uint8_t* srcd = nullptr;   // layer 0's expert 0 (an NVFP4 one), its device view
+        CK(cudaMemcpy(&srcd, E.xsrc_d, sizeof srcd, cudaMemcpyDeviceToHost));
+        const int one = 1;
+        CK(cudaMemcpy(E.fsrc, &srcd, sizeof srcd, cudaMemcpyHostToDevice));
+        CK(cudaMemcpy(E.fdst, &a.stage, sizeof a.stage, cudaMemcpyHostToDevice));
+        CK(cudaMemcpy(E.nfetch, &one, 4, cudaMemcpyHostToDevice));
+        cudaEvent_t e0, e1;
+        CK(cudaEventCreate(&e0));
+        CK(cudaEventCreate(&e1));
+        float best = 1e9f;
+        for (int i = 0; i < 5; ++i) {
+            CK(cudaEventRecord(e0));
+            k_fetch<<<dim3(FETCH_BLOCKS, 1), 256>>>(E.fsrc, E.fdst, E.nfetch, NV_BYTES);
+            CK(cudaEventRecord(e1));
+            CK(cudaEventSynchronize(e1));
+            float ms = 0;
+            CK(cudaEventElapsedTime(&ms, e0, e1));
+            best = std::min(best, ms);
+        }
+        CK(cudaEventDestroy(e0));
+        CK(cudaEventDestroy(e1));
+        const int zero = 0;
+        CK(cudaMemcpy(E.nfetch, &zero, 4, cudaMemcpyHostToDevice));
+        a.us_nv = std::getenv("INK2_PCIE_US") ? (float) std::atof(std::getenv("INK2_PCIE_US")) : 1e3f * best;
+        a.us_mx = a.us_nv * (float) MX_BYTES / (float) NV_BYTES;
+        a.margin = std::getenv("INK2_PCIE_MARGIN") ? (float) std::atof(std::getenv("INK2_PCIE_MARGIN")) : 120.0f;
+        std::fprintf(stderr, "cpu experts: PCIe share on, an NVFP4 expert over PCIe %.0f us (%.1f GB/s)\n", a.us_nv,
+                     NV_BYTES / (a.us_nv * 1e3));
+    }
     auto zi = [](size_t n) { int* p = (int*) dalloc(n * 4); CK(cudaMemset(p, 0, n * 4)); return p; };
     E.d_seq = (unsigned*) zi(1);
     E.d_cur = (unsigned*) zi(1);
@@ -2661,7 +2759,7 @@ void moe(const Layer& Y, const float* x, const float* r, float* mhist, const flo
         switch (g_sel_rpw) { case 1: SEL(1) break; case 2: SEL(2) break; case 8: SEL(8) break; default: SEL(4) }
 #undef SEL
     }
-    if (E.cpu) k_cpu_wait<<<TOPK, 256>>>(E.bell_d, E.home_d, E.d_cur, E.cpu_nodes, E.ey);
+    if (E.cpu) k_cpu_wait<<<TOPK, 256>>>(E.bell_d, E.home_d, E.d_cur, E.cpu_nodes, E.ey, E.sync);
     k_moe_tail<<<(H + 255) / 256, 256>>>(E.ey, E.wts, mhist, mlp_conv, r, out, E.d_pos);
 }
 

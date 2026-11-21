@@ -22,7 +22,8 @@ struct InkBell {   // one per node in its memory, registered mapped; GPU writes 
     volatile unsigned ring;            // sequence number of the last visit with CPU jobs
     unsigned pad0[15];
     volatile unsigned ack[2];          // [node]: the last sequence number done (written in that node's bell)
-    unsigned pad1[14];
+    volatile float us_job;             // the pool's time per job, us (moving average; the GPU's PCIe share reads it)
+    unsigned pad1[13];
     int layer, n;                      // the visit's layer, number of jobs
     int k[BELL_K], e[BELL_K];          // job j: top-k slot k[j], expert e[j]
     unsigned pad2[14];

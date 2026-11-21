@@ -643,6 +643,10 @@ void master(Node* N) {
         std::atomic_thread_fence(std::memory_order_seq_cst);
         B->ack[N->id] = seq;
         last = now_ms();
+        if (nj) {   // the node's time per job for the GPU's PCIe share (the ring seen -> the ack, over 16 visits)
+            const float us = (float) (1e3 * (last - t_ring) / nj);
+            B->us_job = B->us_job > 0.0f ? B->us_job + (us - B->us_job) / 16.0f : us;
+        }
         if (g_trace) {   // per node, every 2000 rings: busy visits, us from the ring seen to the ack by jobs per visit,
                          // and the master's phases per busy visit
             static thread_local double cnt[K8 + 1], sum[K8 + 1], ph[7], rings = 0, worst = 0;
