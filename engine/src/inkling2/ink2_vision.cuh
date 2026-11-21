@@ -290,6 +290,7 @@ std::string vis_run(const ink2img::Picture& pic, float* out) {
     auto al = [](size_t b) { return (b + 255) / 256 * 256; };
     const size_t b_small = al(g_vis.ns * 4), b_stage = al(WMAX * 2), b_wf = al(WMAX * 4), b_act = al((5 * SH + VSC) * 4);
     VisArena A;
+    const size_t free0 = vram_free();
     std::string err = vis_arena_get(A, b_small + b_stage + b_wf + WS_BYTES + b_act);
     if (!err.empty()) return err;
     const double t0 = vis_ms();
@@ -367,9 +368,10 @@ std::string vis_run(const ink2img::Picture& pic, float* out) {
     const size_t arena = A.bytes;
     vis_arena_put(A);
     if (!ok) return "cuBLAS failed in the picture encoder";
+    const size_t free1 = vram_free();
     std::fprintf(stderr, "[vision] %dx%d px (decoded %dx%d) -> %d x %d image tokens, ViT %d tokens: %.0f ms, %.0f MiB VRAM, "
-                         "%.0f MB weights over PCIe\n", pic.w, pic.h, pic.src_w, pic.src_h, pic.rows, pic.cols, S, t1 - t0,
-                 arena / 1048576.0, h2d / 1e6);
+                         "%.0f MB weights over PCIe; VRAM free %.0f MiB before, %.0f after\n", pic.w, pic.h, pic.src_w, pic.src_h,
+                 pic.rows, pic.cols, S, t1 - t0, arena / 1048576.0, h2d / 1e6, free0 / 1048576.0, free1 / 1048576.0);
     return "";
 }
 
