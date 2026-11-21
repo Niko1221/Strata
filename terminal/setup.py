@@ -811,7 +811,7 @@ OWN_PATH_FAMILIES = {
     "inkling": {"title": "Inkling 2 Mini", "by": "Thinking Machines Lab; GGUFs by Unsloth", "arch": "inkling2",
                 "about": "26B MoE with looped layers",
                 "hf": "unsloth/Inkling-2-Mini-GGUF", "file": "Inkling-2-Mini-{q}.gguf", "tag": "inkling-",
-                "name": "inkling-2-mini", "license": "MIT",
+                "name": "inkling-2-mini", "license": "MIT", "feed": True,
                 "models": {"2-mini": {"about": "4-bit (Unsloth Dynamic UD-Q4_K_XL)", "ram_gb": 32}},
                 "sha256": {"Inkling-2-Mini-2-mini.gguf": (17631899648, "0")},
                 "kv_bytes_per_token": 11 * 2 * 256 * 2 * 4,
