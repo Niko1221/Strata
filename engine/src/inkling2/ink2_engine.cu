@@ -420,7 +420,7 @@ __global__ void k_gemv_gg_sel(const uint8_t* const* __restrict__ tab, size_t rb,
     }
 }
 
-__constant__ int c_q8w;   // INK2_Q8_WIDE (default 1): 16-byte loads in the dense Q8 GEMV (0: 8-byte)
+__constant__ int c_q8w;   // INK2_Q8_WIDE (default: 1 before sm_80): 16-byte loads in the dense Q8 GEMV (0: 8-byte)
 #define g_q8_wide (c_q8w)
 // dense Q8_0 (repacked): y[row] = W[row] . x, as gemv_bf16_dot (one warp per R rows, x staged)
 template <int R>
@@ -3989,7 +3989,7 @@ Prefill PF;
 // Elastic prompt buffers (--kv-grow with offload): the chunk-sized buffers over 8 MiB and the staging halves live in
 // growable ranges, mapped while a prompt is read (memory taken from the expert pools) and unmapped after.
 half* g_dq[2] = {nullptr, nullptr};   // decoded expert weights (fp16), two in turn
-int g_dq_min = 1024;                  // INK2_DQ_MIN: prompt chunks from this size take the decode-once path (0: never)
+int g_dq_min = 4096;                  // INK2_DQ_MIN: prompt chunks from this size take the decode-once path (0: never); 3090 at 1024: 2154 -> 1769 tok/s, at 4096: 2652 -> 2941
 bool g_pf_routed = false;   // this chunk runs through the decode cache (short chunks): no streaming
 int g_pf_routed_max = 64;   // INK2_ROUTED_MAX: chunks of up to this many tokens fetch only the experts they route to
 bool g_pf_elastic = false;
@@ -5205,7 +5205,9 @@ int main(int argc, char** argv) {
     if (const char* r = std::getenv("INK2_ROUTED_MAX")) g_pf_routed_max = std::atoi(r);
     if (const char* r = std::getenv("INK2_DQ_MIN")) g_dq_min = std::atoi(r);
     {
-        const int w = std::getenv("INK2_Q8_WIDE") ? std::atoi(std::getenv("INK2_Q8_WIDE")) : 1;
+        int major = 0;   // default on before Ampere only: Turing gains, 3090 decode 91.7 -> 90.5 tok/s with it
+        CK(cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, 0));
+        const int w = std::getenv("INK2_Q8_WIDE") ? std::atoi(std::getenv("INK2_Q8_WIDE")) : (major < 8);
         CK(cudaMemcpyToSymbol(c_q8w, &w, sizeof(int)));
     }
     std::string dir, dump_logits, rec_path;
