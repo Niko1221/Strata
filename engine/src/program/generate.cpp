@@ -1101,6 +1101,11 @@ struct Options {
     /// data folder --pack sits in (`<data>/packs/<tag>`); none: off.  --conversation-spill-mib N caps it (0 = off; unset = min(32
     /// GiB, a quarter of the free disk), never into --session-min-free-mib).  Tester flags; the tier is on by default.
     std::string conversation_spill_dir;
+    /// --conversation-spill-persist: the tier's folder is `<root>/fp-<model fingerprint>` and its entries survive a restart (a reboot): at
+    /// start those of the current model and settings are adopted and indexed, the folders of other fingerprints are removed.  No time
+    /// limit: an entry goes when the size cap needs room (least recently used first) or when a longer spill of the same conversation
+    /// replaces it.  Off by default (a per-process folder, removed at the end).
+    bool conversation_spill_persist = false;
     int64_t conversation_spill_mib = -1;
     bool session_save_reclaim = false;
     /// --serve: also keep a checkpoint every N freshly read prompt tokens (0 = only at the last turn boundary)
@@ -4016,6 +4021,7 @@ int main(int argc, char** argv) {
             else if (a == "--memory-limit-mib") o.memory_limit_mib = number;
             else o.conversation_cache_slots = (int) number;
         }
+        else if (a == "--conversation-spill-persist") o.conversation_spill_persist = true;
         else if (a == "--conversation-spill-dir") o.conversation_spill_dir = next("--conversation-spill-dir");
         else if (a == "--prompt-cache-tail") o.prompt_cache_tail = true;
         else if (a == "--prompt-cache-spread") o.prompt_cache_spread = true;
@@ -13417,10 +13423,11 @@ int main(int argc, char** argv) {
                         files.push_back({std::string("pack ") + n, o.pack + "/" + n, true});
                     if (srcp == nullptr) files.push_back({"pack experts.bin", o.pack + "/experts.bin", true});
                 }
-                if (!o.mtp.empty()) {
-                    for (const char* n : {"dense.txt", "experts.bin"}) files.push_back({std::string("mtp ") + n, o.mtp + "/" + n});
-                    files.push_back({"mtp draft_vocab.bin", o.mtp + "/draft_vocab.bin", true});
-                }
+                // resolved like the Metal loader (window.cpp): STRATA_METAL_MTP_GGUF overrides the GGUF beside an rt dir
+                const char* mtp_gguf_env = std::getenv("STRATA_METAL_MTP_GGUF");
+                for (auto& m : strata::core::session_mtp_pack_files(o.mtp, o.mtp_draft_vocab,
+                                                                    mtp_gguf_env ? mtp_gguf_env : ""))
+                    files.push_back(std::move(m));
                 uint64_t fp = 0;
                 // each file is one blocking read of at most 2 MiB (head and tail): announced before it starts
                 if (next_file) next_file();
@@ -13498,12 +13505,26 @@ int main(int argc, char** argv) {
                 if (!ec && cap < (uint64_t(64) << 20)) { why = "the disk is full"; cap = 0; }
             }
             size_t cleaned = 0;
-            if (cap > 0 && !spill.open(root, cap, why, &cleaned)) cap = 0;
+            size_t adopted = 0;
+            std::optional<strata::core::SessionFileIdentity> persist_id;
+            if (cap > 0 && o.conversation_spill_persist) {   // the stable folder is named by the model's fingerprint: known before the first spill
+                try {
+                    std::string e;
+                    strata::core::SessionFileIdentity id;
+                    if (session_identity(id, e, {})) { persist_id = id; spill_id = id; }
+                    else std::fprintf(stderr, "strata serve: conversation cache: --conversation-spill-persist: the model cannot be fingerprinted (%s); "
+                                              "a folder of this process is used\n", e.c_str());
+                } catch (...) {}
+            }
+            if (cap > 0 && !spill.open(root, cap, why, &cleaned, persist_id ? &*persist_id : nullptr, &adopted)) cap = 0;
             if (cap > 0) {
-                std::fprintf(stderr, "strata serve: conversation cache: SSD tier in %s, up to %llu MiB%s\n", spill.dir().string().c_str(),
+                std::fprintf(stderr, "strata serve: conversation cache: SSD tier in %s, up to %llu MiB%s%s\n", spill.dir().string().c_str(),
                              (unsigned long long) (cap >> 20),
                              cleaned ? (", " + std::to_string(cleaned) + " folder" + (cleaned == 1 ? "" : "s") +
-                                        " of ended engines removed").c_str() : "");
+                                        (persist_id ? " of other models or ended engines removed" : " of ended engines removed")).c_str() : "",
+                             spill.persistent() ? (", kept across restarts: " + std::to_string(adopted) + " conversation" +
+                                                   (adopted == 1 ? "" : "s") + " adopted from the last run, " +
+                                                   std::to_string(spill.bytes() >> 20) + " MiB").c_str() : "");
             } else {
                 std::fprintf(stderr, "strata serve: conversation cache: no SSD tier: %s\n", why.c_str());
             }
