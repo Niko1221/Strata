@@ -23,9 +23,28 @@ per runtime, and the two days also differ in kernel version and GPU voltage offs
 
 ## Model and configuration
 
-- Model: `qwen3.8-flash-next-coder-iq1_m` (Coder IQ1_M)
-- Context 65,536 tokens, 1 parallel slot, `--vram-reserve-mib 3072`
-- Thinking off for the suite, temperature 0
+- Model: `qwen3.8-flash-next-coder-iq1_m` (Coder IQ1_M, the GSQ-RCO IQ1_M GGUF pair and its native pack)
+- Context 65,536 tokens, 1 parallel slot, `--kv int8`, `--expert-cache auto`, `--prefill auto`, `--resident-experts`,
+  `--vram-reserve-mib 3072` (3,664 expert-cache slots), `--prompt-cache 12 --prompt-cache-tail --prompt-cache-every 8192`
+- MTP draft layer with `--spec 4 --spec-min-p 0.5`
+- Control vector: **on for every request in both runs**. It's the repository's experimental speed projection
+  (`terminal/data/experimental-speed-projection/Qwen3.8-Flash-Next-experimental-speed-projection.gguf`) at scale 1.0,
+  `--control-vector-layer-range 4 44 --cvec-mode project --cvec-dir per-layer`. The engine log confirms it at every
+  start: "control vector mode = project, dir = per-layer, layers 4..44 (41 steered)".
+- Experts are read through mmap (the engine log at start: "experts via mmap"), with a custom expert profile.
+- Thinking off for the suite, temperature 0 (the suite's own settings, not the server's sampling defaults)
+
+The full server configuration of each run is in [launch/](launch/), sanitized: home and data folders are replaced by
+`<strata>` and `<data>`, and the API key, model aliases and allowed origins are removed. The two files differ **only in
+`lib_dirs`**, which selects the HIP runtime:
+
+| Run | `lib_dirs` |
+| --- | --- |
+| [ROCm 7.2.4](launch/rocm-7.2.4.config.json) | `<data>/rocm-7.2.4/opt/rocm/lib`, `<data>/rocm-7.2.4/opt/rocm/llvm/lib` |
+| [ROCm 10.1 + Arch HIP](launch/rocm-10.1-arch-hip.config.json) | `<data>/rocm-10.1-archhip/lib` (Arch's `libamdhip64` only), `/opt/rocm/lib`, `/opt/rocm/lib/llvm/lib` |
+
+The bench tool writes an empty `machine.config` and a null `machine.launch` in `results.json` when it runs against an
+already-running server, so the launch details are only in these files.
 
 ## Method
 
@@ -66,13 +85,30 @@ this card, not that it is faster.
 
 - One full suite per runtime. No repeated A/B, and no answer-quality checks.
 - Kernel and voltage offset differ between the two runs (see above).
-- **One stall on 10.1:** the first full suite on ROCm 10.1 (before the run above) stopped on its first 32K prompt
-  while reading layer 45 of the first prompt chunk. The engine's watchdog ended it after about 10 minutes. During the
-  stall the GPU was idle (2-4% busy, 23 W) and there were no kernel messages: the host was waiting for a completion
-  that never came. A 32K-only retest then passed 3/3 (median 367.1 tok/s), and so did the full suite above. That is
-  1 stall in 7 32K prompts on 10.1 and 0 seen on 7.2.4; the cause is not known. It looks like the host-memory
-  reclaim stall in [AMD_HIP.md](../../AMD_HIP.md#linux-verify-timeouts-while-the-kernel-reclaims-host-memory)
-  (32 GB RAM with about 3 GiB free under this model), but that was not checked.
+- **One stall on 10.1.** The first full suite on ROCm 10.1 (2026-11-21, ending at 17:49, before the run above) passed
+  the chat, 4K, 16K, agent and 4-client tests, then stopped on its first 32K prompt while reading layer 45 of the
+  first prompt chunk.
+  - **What happened:** the engine's watchdog stopped it (exit code −6) at 17:49:06, after the stage had made no
+    progress for 284 s. The suite recorded the 32K test as failed.
+  - **During the stall:** the GPU was idle (2-4% busy, 23-24 W, about 1000 MHz) and there were no kernel messages.
+    The host was waiting for a completion that never came.
+  - **The engine's stall report:** 24.3 GiB resident, 6.3 GiB RAM available, about 578K major page faults so far.
+    Threads were waiting in `folio_wait_bit_common` and in `svm_range_set_attr`, the KFD shared-virtual-memory path.
+  - **Afterwards:** a 32K-only retest (the suite's own `run_prompt(32768)`, same prompts and settings) passed 3/3,
+    median 367.1 tok/s, and so did the full suite above. That's 1 stall in 7 32K prompts on 10.1, and none seen on
+    7.2.4.
+  - **Likely cause, not tested:** this fits the `--mmap-experts` case in
+    [AMD_HIP.md](../../AMD_HIP.md#linux-verify-timeouts-while-the-kernel-reclaims-host-memory) (RX 6800, 31 GiB RAM,
+    #920): experts are mmap-ed here too, on 31 GiB. That row's workaround, `GPU_PINNED_MIN_XFER_SIZE=1048576`, was
+    not tried, so the cause stays unconfirmed.
+- **Evidence for the stall and the retest:**
+  - [stalled-run/strata_bench-output.txt](rocm-10.1-arch-hip/stalled-run/strata_bench-output.txt): the suite's
+    console output. The tool wrote no `results.json` for the aborted suite, so per-request JSON isn't available.
+  - [stalled-run/engine-stall-report.txt](rocm-10.1-arch-hip/stalled-run/engine-stall-report.txt): the server
+    log's stall report, sanitized.
+  - [stalled-run/gpu-hwmon-2s.csv](rocm-10.1-arch-hip/stalled-run/gpu-hwmon-2s.csv): GPU and CPU sensors every
+    2 s from 17:38 to 17:50.
+  - [retest-32k/](rocm-10.1-arch-hip/retest-32k/): the retest script and its output (17:52-17:57).
 
 ## ROCm 10.1 on CachyOS: the crash and the workaround
 
@@ -109,5 +145,15 @@ The fix upstream is ROCm/rocm-systems PR #16099; CachyOS tracks it as CachyOS/Ca
    model config's `lib_dirs`, ahead of `/opt/rocm/lib`. That is the setup measured above.
 3. Stay on ROCm 7.2.4 (for example a copy unpacked from the pacman cache, pointed to by `lib_dirs`).
 
-Check a new `hip-runtime-amd` with `hipcc -O2 --offload-arch=gfx1102 -o narrow repro/narrow.hip && ./narrow mS`
-(use your own `--offload-arch`) before trusting it again: `OK` means the bug is gone.
+**Checking a new `hip-runtime-amd` before dropping the workaround.** Build and run the reproducer (use your own
+`--offload-arch`):
+
+```
+hipcc -O2 --offload-arch=gfx1102 -o narrow repro/narrow.hip && ./narrow mS
+```
+
+A crash means the bug is still there. **`OK` is only a smoke check, not proof of a fix.** Whether the code faults
+depends on where the heap happens to place the object, and unpatched builds can pass by luck (ROCm/rocm-systems#16099
+reports this). Before going back to the distribution package, confirm that it carries the alignment fix: the package's
+changelog or PKGBUILD names #16099 (the `std::align_val_t` overloads on `ReferenceCountedObject`), or it's built for
+generic x86-64. Then also run `./narrow MS`, `./narrow CS` and `./narrow HMCS` a few times each.
