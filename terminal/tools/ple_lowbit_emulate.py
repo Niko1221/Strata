@@ -19,10 +19,12 @@ Stdout reports the NMSE against the IQ4_NL values; the codebook is saved as <out
 --native writes the same quantizer's codes and scales packed (engine/include/strata/kernels/ple_lowbit.hpp): 60 B of 3-bit codes,
 then one fp16 (c4) or one E4M3 byte per block (c3, c2s), as I8 bytes [row bytes, rows] marked strata.ple.format = c4/c3/c2s with
 strata.ple.codebook (8 F32) and, for c3/c2s, strata.ple.scale (the F32 table scale). Every chunk is decoded back as the engine
-decodes it and must give the quantizer's floats bit for bit, so the native table and the Q8_0 emulation hold the same 3-bit values.
-It also writes <out>.ref.bin, about 4096 of its rows with those floats (int32 n, uint32 rows[n], float32 values[n][160]; rows
-numbered in the output table): the reference src/kernels/ple_fp8_parity.cpp checks the engine's reads against
-(PLE_EXPECT_FORMAT=C4|C3|C2s).
+decodes it and must give the quantizer's floats bit for bit. The Q8_0 emulation stores those floats after Q8_0's own rounding
+(about 2.5e-5 NMSE more), so a native table is close to its emulation but not bit identical to it. With the same --seed and
+--ntry the codebook fit is the same; --codebook <emulation>.codebook.json (e.g. ple-c4-q8.gguf.codebook.json for c4) reuses
+the screened grid explicitly. It also writes <out>.ref.bin, about 4096 of its rows with those floats (int32 n,
+uint32 rows[n], float32 values[n][160]; rows numbered in the output table): the reference src/kernels/ple_fp8_parity.cpp
+checks the engine's reads against (PLE_EXPECT_FORMAT=C4|C3|C2s).
 """
 import argparse
 import json
