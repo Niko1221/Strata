@@ -12,8 +12,8 @@
 // interleave.  The codes go through pshufb as doubled int8 + 12 (0..24: unsigned, for vpdpbusd / vpmaddubsw); each
 // int32 lane (4 products) starts at -12 * (its 4 activations), which takes the +12 back; then per lane float(sum) *
 // weight block scale (the e4m3 byte placed into an fp16, value * 2^-8) * activation block scale (* 128: the codes' 0.5
-// and the 2^8) into fp32 accumulators.  1.4x the fp32 kernel on one Cascade Lake core (cpuq8.cpp: 4.9 vs 3.5 GB/s),
-// +6 % decode at 8 GB VRAM, but KL 6e-4 against the resident run (fp32: 1e-4), so not the default.
+// and the 2^8) into fp32 accumulators.  KL 6e-4 against the resident run (fp32: 1e-4), and since the fp32 kernel's
+// prefetch and vpermps decode no faster (one 1-job visit 65-67 us either way, fable/nh.cpp): not the default.
 //
 // fp32 path (default; MXFP8 layers always): NVFP4 codes through pshufb as doubled int8 (the 0.5 folded into the
 // scale), MXFP8 bytes through fp16 (the GPU kernels' placement: the bits shifted into an fp16, exact, value * 2^-8,
@@ -115,6 +115,7 @@ void nap_us(long us) {
 float E4H[256];    // e4m3 scale * 0.5 (the doubled NVFP4 codes)
 float MXS[256];    // 2^(s - 127) * 2^8 (the fp16 placement's 2^-8)
 alignas(16) const int8_t E2M1X2[16] = {0, 1, 2, 3, 4, 6, 8, 12, 0, -1, -2, -3, -4, -6, -8, -12};
+alignas(64) const float E2M1X2F[16] = {0, 1, 2, 3, 4, 6, 8, 12, -0.0f, -1, -2, -3, -4, -6, -8, -12};   // as fp32
 alignas(16) const uint8_t E2M1X2U[16] = {12, 13, 14, 15, 16, 18, 20, 24, 12, 11, 10, 9, 8, 6, 4, 0};   // + 12
 float e4m3_decode(unsigned v) {   // as the GPU's (NaN for 0x7F / 0xFF)
     const int e = (v >> 3) & 15, m = v & 7;
@@ -151,10 +152,22 @@ T5 inline __m256i e4m3_h16(__m256i w) {
 }
 
 constexpr int R = 4;   // rows per step (the activation loads shared)
+// INK2_CPU_OPT (bit mask, default all): 1 vpermps NVFP4 kernel, 2 software prefetch, 4 SwiGLU fused into gate_up with h
+// written by non-temporal stores, 8 the waiting threads keep AVX-512 warm, 16 start() pins its caller
+int g_opt = 31;
+// Software prefetch of the next step's rows (R rows ahead: codes, and the scale bytes).  A thread's share of an expert
+// is ~100 rows read once: the hardware prefetchers restart at every row group (4 streams + 4 scale streams, 18 lines
+// each).  One Cascade Lake core, cold slices (k1.cpp): 3.5 -> 3.9 GB/s (= the L2-resident rate); Zen 3 AVX2: 6.2 -> 7.5.
+#define PF_ROWS(w, s, sdiv, step) \
+    if (pf && (b & (step - 1)) == 0) { \
+        _mm_prefetch((const char*) (w) + pf, _MM_HINT_T0); \
+        if ((b & (8 * step - 1)) == 0) _mm_prefetch((const char*) (s) + pf / sdiv, _MM_HINT_T0); \
+    }
 
 // y[r] = factor * W[r] . x for r in [r0, r1)
 T2 void nv_rows_avx2(const uint8_t* W, int N, int K, const float* x, float factor, float* y, int r0, int r1) {
     const uint8_t* S = W + (size_t) N * (K / 2);
+    const size_t pf = g_opt & 2 ? (size_t) R * (K / 2) : 0;
     const __m128i lut = _mm_load_si128((const __m128i*) E2M1X2);
     for (int r = r0; r < r1; r += R) {
         const int nr = r1 - r < R ? r1 - r : R;
@@ -166,6 +179,7 @@ T2 void nv_rows_avx2(const uint8_t* W, int N, int K, const float* x, float facto
             for (int i = 0; i < nr; ++i) {
                 const uint8_t* w = W + (size_t) (r + i) * (K / 2) + 16 * b;
                 const uint8_t* s = S + (size_t) (r + i) * (K / 16) + 2 * b;
+                PF_ROWS(w, s, 8, 4)
                 __m128i a, c;
                 nv_codes(w, lut, a, c);
                 const __m256 v0 = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(a)),
@@ -183,6 +197,7 @@ T2 void nv_rows_avx2(const uint8_t* W, int N, int K, const float* x, float facto
 }
 T5 void nv_rows_512(const uint8_t* W, int N, int K, const float* x, float factor, float* y, int r0, int r1) {
     const uint8_t* S = W + (size_t) N * (K / 2);
+    const size_t pf = g_opt & 2 ? (size_t) R * (K / 2) : 0;
     const __m128i lut = _mm_load_si128((const __m128i*) E2M1X2);
     for (int r = r0; r < r1; r += R) {
         const int nr = r1 - r < R ? r1 - r : R;
@@ -193,9 +208,40 @@ T5 void nv_rows_512(const uint8_t* W, int N, int K, const float* x, float factor
             for (int i = 0; i < nr; ++i) {
                 const uint8_t* w = W + (size_t) (r + i) * (K / 2) + 16 * b;
                 const uint8_t* s = S + (size_t) (r + i) * (K / 16) + 2 * b;
+                PF_ROWS(w, s, 8, 4)
                 __m128i a, c;
                 nv_codes(w, lut, a, c);
                 const __m512 v0 = _mm512_cvtepi32_ps(_mm512_cvtepi8_epi32(a)), v1 = _mm512_cvtepi32_ps(_mm512_cvtepi8_epi32(c));
+                acc[i] = _mm512_fmadd_ps(_mm512_mul_ps(v0, x0), _mm512_set1_ps(E4H[s[0]]), acc[i]);
+                acc[i] = _mm512_fmadd_ps(_mm512_mul_ps(v1, x1), _mm512_set1_ps(E4H[s[1]]), acc[i]);
+            }
+        }
+        for (int i = 0; i < nr; ++i) y[r + i] = factor * _mm512_reduce_add_ps(acc[i]);
+    }
+}
+// The sums of nv_rows_512 (same element values, same order: bit-identical results) with the codes decoded by one
+// vpermps: 8 bytes zero-extended to 8 qwords, q | q << 28 puts the low nibble in the low 4 bits of the even dword and
+// the high nibble in those of the odd one, and vpermps reads only those 4 bits of an index.  Cascade Lake, one core,
+// L2-resident (k1.cpp): 690 uops per KB on ports 0 + 5 against 862, and the core stays in the AVX-512 "light" licence
+// (2.39 GHz all-core bin against 1.99): 6.05 GB/s against 4.03.
+T5 void nv_rows_perm(const uint8_t* W, int N, int K, const float* x, float factor, float* y, int r0, int r1) {
+    const uint8_t* S = W + (size_t) N * (K / 2);
+    const size_t pf = g_opt & 2 ? (size_t) R * (K / 2) : 0;
+    const __m512 tab = _mm512_load_ps(E2M1X2F);
+    for (int r = r0; r < r1; r += R) {
+        const int nr = r1 - r < R ? r1 - r : R;
+        __m512 acc[R];
+        for (int i = 0; i < R; ++i) acc[i] = _mm512_setzero_ps();
+        for (int b = 0; b < K / 32; ++b) {
+            const __m512 x0 = _mm512_loadu_ps(x + 32 * b), x1 = _mm512_loadu_ps(x + 32 * b + 16);
+            for (int i = 0; i < nr; ++i) {
+                const uint8_t* w = W + (size_t) (r + i) * (K / 2) + 16 * b;
+                const uint8_t* s = S + (size_t) (r + i) * (K / 16) + 2 * b;
+                PF_ROWS(w, s, 8, 4)
+                const __m512i q0 = _mm512_cvtepu8_epi64(_mm_loadl_epi64((const __m128i*) w)),
+                              q1 = _mm512_cvtepu8_epi64(_mm_loadl_epi64((const __m128i*) (w + 8)));
+                const __m512 v0 = _mm512_permutexvar_ps(_mm512_or_si512(q0, _mm512_slli_epi64(q0, 28)), tab),
+                             v1 = _mm512_permutexvar_ps(_mm512_or_si512(q1, _mm512_slli_epi64(q1, 28)), tab);
                 acc[i] = _mm512_fmadd_ps(_mm512_mul_ps(v0, x0), _mm512_set1_ps(E4H[s[0]]), acc[i]);
                 acc[i] = _mm512_fmadd_ps(_mm512_mul_ps(v1, x1), _mm512_set1_ps(E4H[s[1]]), acc[i]);
             }
@@ -228,6 +274,7 @@ T2 void mx_rows_avx2(const uint8_t* W, int N, int K, const float* x, float* y, i
 }
 T5 void mx_rows_512(const uint8_t* W, int N, int K, const float* x, float* y, int r0, int r1) {
     const uint8_t* S = W + (size_t) N * K;
+    const size_t pf = g_opt & 2 ? (size_t) R * K : 0;
     for (int r = r0; r < r1; r += R) {
         const int nr = r1 - r < R ? r1 - r : R;
         __m512 acc[R];
@@ -236,6 +283,7 @@ T5 void mx_rows_512(const uint8_t* W, int N, int K, const float* x, float* y, in
             const __m512 x0 = _mm512_loadu_ps(x + 32 * b), x1 = _mm512_loadu_ps(x + 32 * b + 16);
             for (int i = 0; i < nr; ++i) {
                 const uint8_t* w = W + (size_t) (r + i) * K + 32 * b;
+                PF_ROWS(w, S + (size_t) (r + i) * (K / 32) + b, 32, 2)
                 const __m256i q = _mm256_cvtepu8_epi16(_mm_loadu_si128((const __m128i*) w)),
                               q2 = _mm256_cvtepu8_epi16(_mm_loadu_si128((const __m128i*) (w + 16)));
                 const __m512 v0 = _mm512_cvtph_ps(e4m3_h16(q)), v1 = _mm512_cvtph_ps(e4m3_h16(q2));
@@ -320,6 +368,7 @@ T2 void q8_rows_avx2(const uint8_t* W, int N, int K, QAct X, float factor, float
 T5V void q8_rows_vnni(const uint8_t* W, int N, int K, QAct X, float factor, float* y, int r0, int r1) {
     const uint8_t* S = W + (size_t) N * (K / 2);
     const __m512i lut = _mm512_broadcast_i32x4(_mm_load_si128((const __m128i*) E2M1X2U));
+    const size_t pf = g_opt & 2 ? (size_t) R * (K / 2) : 0;
     const __m256i m4 = _mm256_set1_epi8(0x0F), sm = _mm256_set1_epi16(0x7F00);
     // word w of the 16 lane scales (per 128-bit half, words 0-7 / 8-15): high byte = scale byte (w & 7) >> 1
     const __m256i sctl = _mm256_setr_epi8(-1, 0, -1, 0, -1, 1, -1, 1, -1, 2, -1, 2, -1, 3, -1, 3,
@@ -328,12 +377,14 @@ T5V void q8_rows_vnni(const uint8_t* W, int N, int K, QAct X, float factor, floa
         const int nr = r1 - r < R ? r1 - r : R;
         __m512 acc[R];
         for (int i = 0; i < R; ++i) acc[i] = _mm512_setzero_ps();
-        for (int c = 0; c < K / 64; ++c) {
+        for (int b = 0; b < K / 64; ++b) {
+            const int c = b;
             const __m512i xq = _mm512_loadu_si512(X.q + 64 * c);
             const __m512i in = _mm512_loadu_si512(X.init + 16 * c);
             const __m512 xs = _mm512_loadu_ps(X.xs + 16 * c);
             for (int i = 0; i < nr; ++i) {
                 const uint8_t* w = W + (size_t) (r + i) * (K / 2) + 32 * c;
+                PF_ROWS(w, S + (size_t) (r + i) * (K / 16) + 4 * c, 8, 2)
                 int s4;
                 std::memcpy(&s4, S + (size_t) (r + i) * (K / 16) + 4 * c, 4);
                 const __m256i q = _mm256_loadu_si256((const __m256i*) w);
@@ -355,7 +406,7 @@ bool g_q8 = false;      // NVFP4 layers with int8 activations (INK2_CPU_ACT=int8
 int g_C = 32;
 void rows(bool nv, const uint8_t* W, int N, int K, const float* x, float factor, float* y, int r0, int r1) {
     if (r0 >= r1) return;
-    if (nv) (g_isa == 5 ? nv_rows_512 : nv_rows_avx2)(W, N, K, x, factor, y, r0, r1);
+    if (nv) (g_isa == 5 ? (g_opt & 1 ? nv_rows_perm : nv_rows_512) : nv_rows_avx2)(W, N, K, x, factor, y, r0, r1);
     else (g_isa == 5 ? mx_rows_512 : mx_rows_avx2)(W, N, K, x, y, r0, r1);
 }
 void q8_rows(const uint8_t* W, int N, int K, QAct X, float factor, float* y, int r0, int r1) {
@@ -412,6 +463,7 @@ struct Priv {   // a pool thread's copies of the visit's inputs in the kernels' 
     alignas(64) int8_t qh[K8 * FFX];
     alignas(64) int32_t ih[K8 * FFX / 4];
     alignas(64) float sh[K8 * FFX / 4];
+    alignas(64) float warm[16] = {};   // warm512's scratch
 };
 std::vector<Node*> g_nodes;
 std::atomic<bool> g_stop{false};
@@ -446,7 +498,7 @@ inline void mark(Node& N, int t, int i) { if (!t && g_trace) N.ph[i] = now_ms();
 
 void node_work(Node& N, Priv& P, int t, int& sense) {
     const int T = (int) N.cpus.size(), l = N.layer, H = S.h, FF = S.ff, nj = N.nj, C = g_C;
-    const bool nv = l < S.mx_first, q8 = nv && g_q8;
+    const bool nv = l < S.mx_first, q8 = nv && g_q8, fuse = (g_opt & 4) && !q8;
     const size_t partA = nv ? S.nv_partA : S.mx_partA;
     int a, b;
     // private copies of the input: threads reading a buffer others write near hit an 8x slowdown (cpunv.cpp)
@@ -463,17 +515,35 @@ void node_work(Node& N, Priv& P, int t, int& sense) {
         float* gu = N.gu + (size_t) j * 2 * FF;
         if (q8) q8_rows(S.ex[key], 2 * FF, H, {P.qx, P.ix, P.sx}, S.f13[key], gu, a, b);
         else rows(nv, S.ex[key], 2 * FF, H, P.x, nv ? S.f13[key] : 1.0f, gu, a, b);
+        if (fuse) {
+            // SwiGLU of the thread's own outputs right away (rows 2i and 2i + 1 are both in its share: R is even), one
+            // barrier less.  h by non-temporal stores: every thread of the node reads all of it next, and lines left
+            // modified in 22 cores' caches made those 22 copies of 4.6 KB cost ~8 us (bcast2.cpp: 12 us against
+            // 0.5 us when the writers bypass their caches)
+            float* hh = N.hh + (size_t) j * FF;
+            for (int i = a / 2; i < b / 2; ++i) {
+                const float v = swiglu1(gu[2 * i], gu[2 * i + 1]);
+                int bits;
+                std::memcpy(&bits, &v, 4);
+                _mm_stream_si32((int*) (hh + i), bits);
+            }
+        }
     }
     mark(N, t, 1);
-    N.bar.wait(sense);
-    mark(N, t, 2);
-    share(nj * FF / 16, t, T, 1, a, b);   // SwiGLU per block of 16 outputs (q8: quantized as a block)
-    for (int blk = a; blk < b; ++blk) {
-        alignas(32) float h[16];
-        const float* gu = N.gu + 32 * (size_t) blk;
-        for (int i = 0; i < 16; ++i) h[i] = swiglu1(gu[2 * i], gu[2 * i + 1]);
-        if (q8) q8_block(h, blk, C, N.hq, N.hd);
-        else std::memcpy(N.hh + 16 * (size_t) blk, h, sizeof h);
+    if (fuse) {
+        _mm_sfence();
+        mark(N, t, 2);
+    } else {
+        N.bar.wait(sense);
+        mark(N, t, 2);
+        share(nj * FF / 16, t, T, 1, a, b);   // SwiGLU per block of 16 outputs (q8: quantized as a block)
+        for (int blk = a; blk < b; ++blk) {
+            alignas(32) float h[16];
+            const float* gu = N.gu + 32 * (size_t) blk;
+            for (int i = 0; i < 16; ++i) h[i] = swiglu1(gu[2 * i], gu[2 * i + 1]);
+            if (q8) q8_block(h, blk, C, N.hq, N.hd);
+            else std::memcpy(N.hh + 16 * (size_t) blk, h, sizeof h);
+        }
     }
     N.bar.wait(sense);
     mark(N, t, 3);
@@ -497,18 +567,32 @@ void node_work(Node& N, Priv& P, int t, int& sense) {
     mark(N, t, 6);
 }
 
+// A core that has run no 512-bit code for ~1 ms powers its upper vector lanes down and drops its AVX-512 licence; the
+// next visit then starts slowly (nh.cpp: a 1-job visit after a gap of 1 ms or more takes +50 us, 58 -> 110).  The
+// waiting threads run a few 512-bit FMAs every WARM_SPINS pauses (~0.1 ms) so that a visit always starts warm.
+constexpr unsigned WARM_SPINS = 1024;
+T5 __attribute__((noinline)) void warm512(float* p) {
+    __m512 a = _mm512_loadu_ps(p), b = _mm512_set1_ps(0.999f);
+    for (int i = 0; i < 8; ++i) a = _mm512_fmadd_ps(a, b, b);
+    _mm512_storeu_ps(p, a);
+}
+inline void spin(Priv* P, unsigned& n) {
+    _mm_pause();
+    if ((g_opt & 8) && g_isa == 5 && ++n % WARM_SPINS == 0) warm512(P->warm);
+}
+
 void worker(Node* N, int t) {
     pin(N->cpus[t]);
     Priv* P = new Priv;
     int sense = 0;
-    unsigned seen = 0;   // gen starts at 0
+    unsigned seen = 0, spins = 0;   // gen starts at 0
     g_ready.fetch_add(1);
     double last = now_ms();
     while (!g_stop.load(std::memory_order_relaxed)) {
         const unsigned g = N->gen.load(std::memory_order_acquire);
         if (g == seen) {
             if (now_ms() - last > IDLE_MS) nap_us(NAP_US);
-            else _mm_pause();
+            else spin(P, spins);
             continue;
         }
         seen = g;
@@ -523,14 +607,14 @@ void master(Node* N) {
     Priv* P = new Priv;
     InkBell* B = S.bell[N->id];   // the node's own doorbell (local memory)
     int sense = 0;
-    unsigned seen = 0;   // the bell is zeroed before start(): ring 0 = nothing yet
+    unsigned seen = 0, spins = 0;   // the bell is zeroed before start(): ring 0 = nothing yet
     g_ready.fetch_add(1);
     double last = now_ms();
     while (!g_stop.load(std::memory_order_relaxed)) {
         const unsigned seq = B->ring;
         if (seq == seen) {
             if (now_ms() - last > IDLE_MS) nap_us(NAP_US);
-            else _mm_pause();
+            else spin(P, spins);
             continue;
         }
         seen = seq;
@@ -644,6 +728,7 @@ void start(const Setup& s) {
     const char* act = std::getenv("INK2_CPU_ACT");
     g_q8 = act && std::string(act) == "int8" && S.h % 64 == 0 && S.ff % 64 == 0 && S.h <= BELL_H && S.ff <= FFX;
     g_trace = std::getenv("INK2_CPU_TRACE") != nullptr;
+    if (const char* e = std::getenv("INK2_CPU_OPT")) g_opt = std::atoi(e);
     const int nn = nodes();
     g_stop = false;
     for (int n = 0; n < nn; ++n) {
@@ -653,7 +738,19 @@ void start(const Setup& s) {
         N->id = n;
         std::vector<int> cores = node_cores(n);
         // node 0 keeps its first core for the engine's own thread (graph launches, the serve loop)
-        if (n == 0 && cores.size() > 1) cores.erase(cores.begin());
+        if (n == 0 && cores.size() > 1) {
+            if (g_opt & 16) {
+                // ... and the caller is put there (both hyperthreads): left to the scheduler it sat on the second
+                // hyperthread of a pool core (seen: cpu 78, pool thread 6 of node 1), whose thread then ran at half
+                // speed and held every barrier of its node ~30 us
+                cpu_set_t set;
+                CPU_ZERO(&set);
+                for (int c : parse_list(read_line("/sys/devices/system/cpu/cpu" + std::to_string(cores[0]) + "/topology/thread_siblings_list")))
+                    CPU_SET(c, &set);
+                sched_setaffinity(0, sizeof set, &set);   // CBA: for good: threads the caller starts later inherit it
+            }
+            cores.erase(cores.begin());
+        }
         if ((int) cores.size() > S.threads) cores.resize(S.threads);
         N->cpus = cores;
         N->bar.n = (int) cores.size();
