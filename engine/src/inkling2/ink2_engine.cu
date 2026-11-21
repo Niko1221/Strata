@@ -3983,6 +3983,16 @@ void* pf_alloc(size_t bytes, int whole = 0) {
 }
 float* pf_floats(size_t n) { return (float*) pf_alloc(n * 4); }
 
+// the shared region's phases laid out for a chunk of T tokens (P / rel, gu / ey / act, lg)
+float* g_region = nullptr;
+int g_cur_T = 0;
+void pf_layout(int T) {
+    g_cur_T = T;
+    PF.P = g_region; PF.rel = g_region + (size_t) T * PF.np_max;
+    PF.gu = g_region; PF.ey = g_region; PF.act = g_region + (size_t) T * TOPK * 2 * FF;
+    PF.lg = g_region;
+}
+
 void alloc_prefill() {
     g_pfr.reserve(64);
     const size_t T = PF.TP, TH = T * H;
@@ -4004,10 +4014,9 @@ void alloc_prefill() {
     //   SwiGLU has read gu, act [T*TOPK][FF] after gu;  after the last layer: lg [T][8192] (all-logits dumps only)
     static_assert(2 * FF == H, "ey aliases gu");
     const size_t att_n = T * ((size_t) PF.np_max + NQ * EXTENT), moe_n = T * TOPK * (size_t) 3 * FF;
-    float* region = (float*) pf_alloc(std::max(std::max(att_n, moe_n), T * (size_t) 8192) * 4, true);
-    PF.P = region; PF.rel = region + T * PF.np_max;
-    PF.gu = region; PF.ey = region; PF.act = region + T * TOPK * 2 * FF;
-    PF.lg = region;
+    // (sub-buffers at offsets of the chunk being read, pf_layout: the region maps in proportion to the chunk)
+    g_region = (float*) pf_alloc(std::max(std::max(att_n, moe_n), T * (size_t) 8192) * 4);
+    pf_layout((int) T);
     auto ints = [](size_t n) { return (int*) dalloc(n * 4); };
     PF.ids = ints(T * TOPK); PF.rows = ints(T * TOPK); PF.slot = ints(T * TOPK);
     PF.tile_e = ints(T * TOPK / FM + NE); PF.tile_r0 = ints(T * TOPK / FM + NE); PF.ntiles = ints(1);
@@ -4032,7 +4041,7 @@ void alloc_prefill() {
         cublasSetStream(PF.cbh, cudaStreamPerThread);
         PF.wh = (half*) dalloc((size_t) PF.np_max * H * 2);
         if (g_is_gguf) for (auto& d : g_dq) d = (half*) dalloc((size_t) 2 * FF * H * 2);   // one expert part (w13: 2FF x H)
-        PF.xh = (half*) pf_alloc(3 * T * QD * 2, true);
+        PF.xh = (half*) pf_alloc(3 * T * QD * 2);
         PF.qh = (half*) pf_alloc(((T + 63) / 64 * 64) * QD * 2);
     }
     // cuBLAS loads its kernels and workspace at the first call of each shape class: run them once now, before the
@@ -4093,6 +4102,25 @@ void pf_map(int T) {
         if (!g_pfr[i].map_to(want[i])) { std::fprintf(stderr, "prompt buffers: out of VRAM\n"); std::exit(1); }
     g_pf_mapped_T = T;
 }
+// the largest chunk (<= T, halving down to 256) whose prompt buffers and K/V growth leave the pools 2 x FETCH_MAX
+// slots: long contexts on a small card read the prompt in smaller chunks instead of stopping
+int pf_fit(int T, int pos0) {
+    if (g_pfr.empty() || !E.offload) return T;
+    for (;; T /= 2) {
+        size_t want = 0, have = 0;
+        for (size_t i = 0; i < g_pfr.size(); ++i) {
+            const VRange& r = g_pfr[i];
+            want += g_pfr_whole[i] == 2 ? (T <= g_pf_routed_max ? 0 : r.reserved)
+                  : g_pfr_whole[i] ? r.reserved : r.need(std::min(r.reserved, (size_t) ((double) r.reserved * (T + 64) / PF.TP)));
+            have += r.mapped;
+        }
+        const int nc = std::min(E.ctx, (pos0 + T + E.grow_step - 1) / E.grow_step * E.grow_step);
+        const double kv_add = E.grow && nc > E.kv_cells ? (double) (kv_mapped_for(nc) - kv_mapped_for(E.kv_cells)) : 0.0;
+        const double deficit = kv_add + (double) want - (double) have + (double) vram_keep() - (double) vram_free() + 8.0 * g_vmm.gran;
+        const double slots = (double) E.nslot_nv + E.nslot_mx - (deficit > 0 ? deficit / (double) ex_bytes(0) : 0.0);
+        if (slots >= 2 * FETCH_MAX || T <= 256) return T;
+    }
+}
 // after a prompt: the buffers' memory back to the pools
 void pf_unmap() {
     if (g_pfr.empty() || !g_pf_mapped_T) return;
@@ -4112,7 +4140,7 @@ void hgemm(const DMat& W, bool wcvt, int first, int n, const float* X, int ldx, 
         if (W.q) kb_q8_to_f16<<<(unsigned) ((nw / 8 + 255) / 256), 256>>>(W.q, W.qs, PF.wh, nw / 8);
         else kb_bf16_to_f16<<<(unsigned) ((nw + 255) / 256), 256>>>(W.d, PF.wh, nw);
     }
-    half* xh = PF.xh + (size_t) xslot * PF.TP * QD;
+    half* xh = PF.xh + (size_t) xslot * g_cur_T * QD;   // (thirds of the chunk being read)
     const size_t nx = (size_t) T * K;
     kb_f32_to_f16<<<(unsigned) ((nx + 255) / 256), 256>>>(X, ldx, K, xh, nx);
     const float one = 1.0f, zero = 0.0f;
@@ -4962,7 +4990,8 @@ void draft_device(int p) {
 
 void forward_prefill_device(int T, int pos0, float* all);
 void forward_prefill(const int* toks, int T, int pos0, float* all) {
-    kv_fit(pos0 + T);   // (before the pools are read below: a growth can take slots)
+    kv_fit(pos0 + T);
+    pf_layout(T);   // (before the pools are read below: a growth can take slots)
     g_pf_routed = pf_routed_ok(T);
     if (!g_pf_routed) pf_map_staging();
     const size_t ES = (size_t) T * H;
@@ -5436,9 +5465,11 @@ int main(int argc, char** argv) {
             if (start == pr.size()) {
                 logits = last_logits;
             } else {
-                pf_map((int) std::min((size_t) PF.TP, pr.size() - start));
-                for (size_t p0 = start; p0 < pr.size(); p0 += PF.TP) {
-                    const int T = (int) std::min((size_t) PF.TP, pr.size() - p0);
+                for (size_t p0 = start, Tz = 0; p0 < pr.size(); p0 += Tz) {
+                    const int T = pf_fit((int) std::min((size_t) PF.TP, pr.size() - p0), (int) p0);
+                    Tz = (size_t) T;
+                    if (T < g_pf_mapped_T) pf_unmap();
+                    pf_map(T);
                     forward_prefill(&pr[p0], T, (int) p0, nullptr);
                     if (spec) {
                         draft_context(PF.feat, (int) p0, T);
@@ -5521,10 +5552,11 @@ int main(int argc, char** argv) {
     FILE* fg = dump_logits.empty() ? nullptr : std::fopen(dump_logits.c_str(), "wb");
     const double t0 = now_ms();
     if (PF.TP > 0) {   // chunked prefill
-        pf_map((int) std::min((size_t) PF.TP, ids.size()));
         std::vector<float> all(fg ? (size_t) PF.TP * VOCAB : 0);
-        for (size_t p0 = 0; p0 < ids.size(); p0 += PF.TP) {
-            const int T = (int) std::min((size_t) PF.TP, ids.size() - p0);
+        for (size_t p0 = 0, T = 0; p0 < ids.size(); p0 += T) {
+            T = (size_t) pf_fit((int) std::min((size_t) PF.TP, ids.size() - p0), (int) p0);
+            if ((int) T < g_pf_mapped_T) pf_unmap();
+            pf_map((int) T);
             forward_prefill(&ids[p0], T, (int) p0, fg ? all.data() : nullptr);
             if (fg) std::fwrite(all.data(), 4, (size_t) T * VOCAB, fg);
         }
