@@ -1889,6 +1889,8 @@ struct Slot {
     float *khist, *vhist, *ahist, *mhist;   // [HR][C]
 };
 
+struct Bells { ink2cpu::InkBell* b[2]; };   // device views of the per-node doorbells
+
 struct Engine {
     const Ckpt* ck = nullptr;
     int ctx = 8192, nchunk_full = 0, nchunk_slide = WINDOW / CHUNK;
@@ -1929,7 +1931,10 @@ struct Engine {
     int cpu_threads = 0;
     bool cpu = false;
     int cpu_nodes = 1;
-    ink2cpu::InkBell *bell = nullptr, *bell_d = nullptr;
+    // one doorbell per node, in that node's memory: its pool reads and writes local memory only, the GPU crosses
+    ink2cpu::InkBell* bell[2] = {};
+    Bells bell_d = {};
+    const uint8_t* home_d = nullptr;   // [NL * NE] the node holding expert (l, e) (E.home)
     unsigned *d_seq = nullptr, *d_cur = nullptr;
     int *want_nv = nullptr, *want_mx = nullptr, *nwant_nv = nullptr, *nwant_mx = nullptr;
     int *pend_nv = nullptr, *pend_mx = nullptr, *npend_nv = nullptr, *npend_mx = nullptr;   // [i] = key, [PMAX + i] = slot
@@ -2359,7 +2364,7 @@ void expert_cache(int l, const int* ids, int n) {
 }
 
 // ---- CPU experts (--cpu-threads).  A decode visit: k_cache_cpu stamps the resident experts, hands the others to the
-// CPU (bell: jobs, x, ring = sequence number) and notes them as wanted; the GEMVs skip them (null table entries);
+// CPU (one bell per node: jobs, x, ring = sequence number) and notes them as wanted; the GEMVs skip them (null table entries);
 // k_cpu_wait waits for every node's ack and copies the CPU outputs into ey.  At the end of a token k_promote_commit
 // makes the experts copied during this token resident, then k_promote_plan picks LRU victims for up to PROMOTE_NV /
 // PROMOTE_MX wanted experts (victims unmapped at once, so nothing reads them while the next token copies into them).
@@ -2367,7 +2372,7 @@ constexpr int WANT_MAX = 64, PMAX = 32;
 int g_bg_blocks = 4;   // INK2_BG_BLOCKS (12 GiB, q1 chat: 4 and 8 blocks 69.8 / 68.9 tok/s, 16: 65.8)
 int g_promote_nv = 12, g_promote_mx = 3;   // per token (INK2_PROMOTE=nv,mx): ~54 + 25 MB of PCIe in the background
 __global__ void k_cache_cpu(int l, const int* __restrict__ ids, const float* __restrict__ x, int* slot_of, unsigned* stamp,
-                            unsigned* clock, int* want, int* nwant, ink2cpu::InkBell* bell, unsigned* seq, unsigned* cur) {
+                            unsigned* clock, int* want, int* nwant, Bells bells, int nodes, unsigned* seq, unsigned* cur) {
     __shared__ int nj;
     if (threadIdx.x == 0) {
         unsigned t = *clock;
@@ -2375,8 +2380,10 @@ __global__ void k_cache_cpu(int l, const int* __restrict__ ids, const float* __r
         for (int k = 0; k < TOPK; ++k) {
             const int e = ids[k], key = l * NE + e, sl = slot_of[key];
             if (sl >= 0) { stamp[sl] = ++t; continue; }
-            bell->k[n] = k;
-            bell->e[n] = e;
+            for (int b = 0; b < nodes; ++b) {
+                bells.b[b]->k[n] = k;
+                bells.b[b]->e[n] = e;
+            }
             ++n;
             bool have = false;
             for (int i = 0; i < nw; ++i) have |= want[i] == key;
@@ -2391,35 +2398,41 @@ __global__ void k_cache_cpu(int l, const int* __restrict__ ids, const float* __r
         if (threadIdx.x == 0) *cur = 0;
         return;
     }
-    for (int i = threadIdx.x; i < H; i += blockDim.x) bell->x[i] = x[i];
+    for (int b = 0; b < nodes; ++b)
+        for (int i = threadIdx.x; i < H; i += blockDim.x) bells.b[b]->x[i] = x[i];
     __threadfence_system();
     __syncthreads();
     if (threadIdx.x == 0) {
-        bell->layer = l;
-        bell->n = nj;
+        for (int b = 0; b < nodes; ++b) {
+            bells.b[b]->layer = l;
+            bells.b[b]->n = nj;
+        }
         __threadfence_system();
         const unsigned s = ++*seq;
-        bell->ring = s;
+        for (int b = 0; b < nodes; ++b) bells.b[b]->ring = s;
         __threadfence_system();
         *cur = s;
     }
 }
-// grid TOPK: block j copies job j's output once every node has acked (a stuck pool traps after ~4 s: an error, not a hang)
-__global__ void k_cpu_wait(const ink2cpu::InkBell* __restrict__ bell_c, const unsigned* cur, int nodes, float* ey) {
-    const volatile ink2cpu::InkBell* bell = bell_c;
+// grid TOPK: block j copies job j's output, from the doorbell of the node holding its expert, once every node has acked
+// (a stuck pool traps after ~4 s: an error, not a hang)
+__global__ void k_cpu_wait(Bells bells, const uint8_t* __restrict__ home, const unsigned* cur, int nodes, float* ey) {
+    const volatile ink2cpu::InkBell* b0 = bells.b[0];
+    const volatile ink2cpu::InkBell* b1 = bells.b[nodes > 1 ? 1 : 0];
     const unsigned s = *cur;
     if (!s) return;
     __shared__ int ok;
     if (threadIdx.x == 0) {
         const long long t0 = clock64();
-        while (bell->ack[0] != s || (nodes > 1 && bell->ack[1] != s))
+        while (b0->ack[0] != s || (nodes > 1 && b1->ack[1] != s))
             if (clock64() - t0 > 8000000000ll) __trap();
-        ok = (int) blockIdx.x < bell->n;
+        ok = (int) blockIdx.x < b0->n;
     }
     __syncthreads();
     if (!ok) return;
-    const int j = blockIdx.x, k = bell->k[j];
-    const float4* src = reinterpret_cast<const float4*>(bell_c->y[j]);
+    const int j = blockIdx.x, k = b0->k[j];
+    const int node = nodes > 1 ? home[b0->layer * NE + b0->e[j]] : 0;
+    const float4* src = reinterpret_cast<const float4*>(bells.b[node]->y[j]);
     float4* dst = reinterpret_cast<float4*>(ey + (size_t) k * H);
     for (int i = threadIdx.x; i < H / 4; i += blockDim.x) dst[i] = __ldcv(src + i);   // not through the caches
 }
@@ -2532,18 +2545,26 @@ void promote_join() {
 void expert_cpu_ring(int l, const float* x) {
     const bool nv = l < MXFP8_FIRST;
     k_cache_cpu<<<1, 256>>>(l, E.ids, x, E.slot_of, nv ? E.stamp_nv : E.stamp_mx, E.clock, nv ? E.want_nv : E.want_mx,
-                            nv ? E.nwant_nv : E.nwant_mx, E.bell_d, E.d_seq, E.d_cur);
+                            nv ? E.nwant_nv : E.nwant_mx, E.bell_d, E.cpu_nodes, E.d_seq, E.d_cur);
 }
 void setup_cpu() {
     if (const char* p = std::getenv("INK2_PROMOTE")) std::sscanf(p, "%d,%d", &g_promote_nv, &g_promote_mx);
     if (const char* p = std::getenv("INK2_BG_BLOCKS")) g_bg_blocks = std::max(1, std::atoi(p));
     g_promote_nv = std::min(g_promote_nv, PMAX);
     g_promote_mx = std::min(g_promote_mx, PMAX);
-    CK(cudaHostAlloc((void**) &E.bell, sizeof(ink2cpu::InkBell), cudaHostAllocMapped | cudaHostAllocPortable));
-    std::memset((void*) E.bell, 0, sizeof(ink2cpu::InkBell));
-    void* dv = nullptr;
-    CK(cudaHostGetDevicePointer(&dv, (void*) E.bell, 0));
-    E.bell_d = (ink2cpu::InkBell*) dv;
+    const size_t bell_bytes = (sizeof(ink2cpu::InkBell) + 4095) & ~(size_t) 4095;
+    for (int n = 0; n < E.cpu_nodes; ++n) {   // placed like the experts: node n, or the GPU's node with one node
+        const int place = E.cpu_nodes > 1 ? n : std::max(gpu_node(), 0);
+        E.bell[n] = (ink2cpu::InkBell*) ink2cpu::node_alloc(bell_bytes, place);
+        if (!E.bell[n]) { std::fprintf(stderr, "cannot map the CPU doorbell\n"); std::exit(1); }
+        std::memset((void*) E.bell[n], 0, sizeof(ink2cpu::InkBell));
+        CK(cudaHostRegister((void*) E.bell[n], bell_bytes, cudaHostRegisterMapped | cudaHostRegisterPortable));
+        void* dv = nullptr;
+        CK(cudaHostGetDevicePointer(&dv, (void*) E.bell[n], 0));
+        E.bell_d.b[n] = (ink2cpu::InkBell*) dv;
+    }
+    if (E.cpu_nodes < 2) E.bell_d.b[1] = E.bell_d.b[0];
+    E.home_d = (const uint8_t*) upload(E.home.data(), E.home.size());
     auto zi = [](size_t n) { int* p = (int*) dalloc(n * 4); CK(cudaMemset(p, 0, n * 4)); return p; };
     E.d_seq = (unsigned*) zi(1);
     E.d_cur = (unsigned*) zi(1);
@@ -2566,7 +2587,8 @@ void setup_cpu() {
     s.f2 = E.hf2.data();
     s.nv_partA = NV_A; s.mx_partA = MX_A;
     s.gate_cap = GATE_CAP; s.up_cap = UP_CAP;
-    s.bell = E.bell;
+    s.bell[0] = E.bell[0];
+    s.bell[1] = E.bell[1];
     s.threads = E.cpu_threads;
     ink2cpu::start(s);
 }
@@ -2591,7 +2613,7 @@ void moe(const Layer& Y, const float* x, const float* r, float* mhist, const flo
         switch (g_sel_rpw) { case 1: SEL(1) break; case 2: SEL(2) break; case 8: SEL(8) break; default: SEL(4) }
 #undef SEL
     }
-    if (E.cpu) k_cpu_wait<<<TOPK, 256>>>(E.bell_d, E.d_cur, E.cpu_nodes, E.ey);
+    if (E.cpu) k_cpu_wait<<<TOPK, 256>>>(E.bell_d, E.home_d, E.d_cur, E.cpu_nodes, E.ey);
     k_moe_tail<<<(H + 255) / 256, 256>>>(E.ey, E.wts, mhist, mlp_conv, r, out, E.d_pos);
 }
 
