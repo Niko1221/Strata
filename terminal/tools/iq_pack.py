@@ -10,6 +10,8 @@ its GGUF form:
                        raw GGUF slices.  Blob size is per layer (the files mix IQ1_M ... IQ3_S gate/up and Q2_0 /
                        IQ4_NL down).  experts.bin.src.json says which source it was cut from (the shards' names and
                        sizes, the hash of native_experts.txt); an experts.bin is reused only when that matches.
+  experts.wex4         optional (--experts-wex4): the same blobs in a WEX4 container, one 4096-aligned record with its own
+                       SHA-256 per expert, for the engine's --experts-wex4 (docs/WEX4.md).  Not with NVFP4 or Gyro experts.
   native_experts.txt   one line per layer: layer gu_type d_type offset blob_bytes gate_off up_off down_off [shard];
                        written last, so a pack without it is not finished
   index.txt            the table the engine loads.  Quantized dense tensors, token_embd and output are served
@@ -595,6 +597,35 @@ def read_json(path: pathlib.Path):
         return None
 
 
+def wex4_refusal(layout):
+    """Why the experts cannot go into a WEX4 container (docs/WEX4.md), or None.  A record is the experts.bin blob
+    [gate | up | down], its tensors typed 128 + the ggml type in one byte: no NVFP4 scale tail, no type above 127."""
+    for l, gt, dt, off, blob, ts in layout:
+        if any(t.type_name == "NVFP4" for t in ts):
+            return "layer %d has NVFP4 experts, whose scale tail is not a GGUF tensor; WEX4 records hold the GGUF slices only" % l
+        if gt > 127 or dt > 127:
+            return "layer %d has ggml type %d, which does not fit WEX4's one-byte dtype code (128 + type)" % (l, max(gt, dt))
+    return None
+
+
+def write_wex4(path: pathlib.Path, layout, n_expert: int, model: Model) -> None:
+    """experts.wex4 (--experts-wex4): one RAW record per expert, in layer order, holding the same bytes as its experts.bin blob,
+    [gate | up | down], with its tensors named blk.L.ffn_{gate,up,down}_exps.weight#E.  The writer is the vendored Wex-WRN2 one: it
+    writes <path>.partial, checks it with its own reader and renames it.  shortcut: written again on every run (no reuse check,
+    which would read the whole file); worth one only if setup starts writing these."""
+    from wex4_check import load_wex4
+    w = load_wex4()
+    recs = []
+    for l, gt, dt, off, blob, ts in layout:
+        views = [model.bytes(t.name).reshape(n_expert, -1) for t in ts]
+        for e in range(n_expert):
+            tensors = [w.Tensor("blk.%d.ffn_%s_exps.weight#%d" % (l, r, e), 128 + t.type_id, (int(t.shape[1]), int(t.shape[0])),
+                                int(v.shape[1])) for r, t, v in zip(ROLES, ts, views)]
+            recs.append(w.Record(tensors, blob, lambda views=views, e=e: b"".join(v[e].tobytes() for v in views)))
+    root = w.write(path, recs)
+    print("experts.wex4: %d records, %.2f GiB, root %s" % (len(recs), path.stat().st_size / 2**30, root.hex()), flush=True)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--gguf", required=True, help="the model's shard 1")
@@ -606,6 +637,9 @@ def main() -> int:
                          "(rounds weights; leaves experts and the PLE table unchanged)")
     ap.add_argument("--experts-bin", action="store_true",
                     help="also write experts.bin (the engine otherwise reads the experts from the GGUF itself)")
+    ap.add_argument("--experts-wex4", action="store_true",
+                    help="also write experts.wex4: the same expert blobs in a WEX4 container, one record with its own SHA-256 per "
+                         "expert, for the engine's --experts-wex4 (docs/WEX4.md)")
     a = ap.parse_args()
     if a.compat_bf16 and a.base:
         ap.error("--compat-bf16 cannot reuse --base dense weights")
@@ -631,6 +665,9 @@ def main() -> int:
         print(got)
         return 1
     layout, text, n_expert, offset = got
+    if a.experts_wex4 and wex4_refusal(layout):
+        print("--experts-wex4: " + wex4_refusal(layout))
+        return 1
     if any(t.type_name == "NVFP4" for *_, ts in layout for t in ts):
         a.experts_bin = True   # the GGUF holds the weights without the scale tails: the engine must read experts.bin
     # ---- prism.hadamard: rotated experts need hadamard.txt beside native_experts.txt, which becomes v5 so an engine
@@ -728,6 +765,8 @@ def main() -> int:
     with open(tmp, "w", encoding="utf-8", newline="\n") as fo:
         fo.write(text)
     tmp.replace(out / "native_experts.txt")
+    if a.experts_wex4 and not a.skip_experts:
+        write_wex4(out / "experts.wex4", layout, n_expert, model)
     if a.skip_experts or not a.experts_bin:
         if path.exists() and not a.experts_bin:
             print("note: %s/experts.bin exists; the engine reads it instead of the GGUF" % out)

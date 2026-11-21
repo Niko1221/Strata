@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))   # runnable from the r
 
 from _paths import gguf_lib
 import iq_pack                         # needs numpy + gguf_reader only: import it unguarded
+import wex4_check                      # standard library only
 
 try:
     _gguf = gguf_lib()                  # tools/strata_gguf.py (STRATA_GGUF_PY selects llama.cpp's gguf-py; it exits when that is not a gguf-py folder)
@@ -655,6 +656,62 @@ class SplitArtifactTests(unittest.TestCase):
             (pack / "experts.bin").write_bytes(stale)
             rc, log = run_pack(paths[0], pack, "--experts-bin")
             self.assertEqual((pack / "experts.bin").read_bytes(), want)
+
+
+class Wex4Tests(unittest.TestCase):
+    """--experts-wex4 (docs/WEX4.md): experts.wex4 holds the experts.bin blobs, one record per expert, named and typed as the engine
+    checks them; tools/wex4_check.py names a damaged expert."""
+    setUpClass = require_gguf_py(unittest.TestCase)
+
+    def test_records_are_the_experts_bin_blobs(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            root = Path(tmp)
+            pack = root / "pack"
+            rc, log = run_pack(split_model(root)[0], pack, "--experts-bin", "--experts-wex4")
+            self.assertEqual(rc, 0, log)
+            self.assertIn("experts.wex4: 8 records", log)
+            self.assertFalse(list(pack.glob("*.partial")))
+            want = (pack / "experts.bin").read_bytes()
+            w = wex4_check.load_wex4()
+            with open(pack / "experts.wex4", "rb") as f:
+                rd, r = w.Reader(f), 0
+                for line in (pack / "native_experts.txt").read_text().splitlines()[1:]:
+                    l, gu, d, off, blob = map(int, line.split()[:5])
+                    self.assertNotEqual(blob % 4096, 0)   # the records carry padding
+                    for e in range(N_EXPERT):
+                        ts = rd.tensors[rd.records[r][7]:rd.records[r][7] + rd.records[r][8]]
+                        self.assertEqual([t[0].decode() for t in ts], ["blk.%d.ffn_%s_exps.weight#%d" % (l, x, e) for x in ("gate", "up", "down")])
+                        self.assertEqual([t[1] for t in ts], [128 + gu, 128 + gu, 128 + d])
+                        self.assertEqual(rd.records[r][0] % 4096, 0)
+                        self.assertEqual(rd.record(r), want[off + e * blob:off + (e + 1) * blob])
+                        r += 1
+                self.assertEqual(r, len(rd.records))
+            out = []
+            self.assertEqual(wex4_check.check(pack / "experts.wex4", out=out.append), 0, out)
+            self.assertIn("ok, 8 records intact", out[-1])
+
+    def test_a_damaged_expert_is_named(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            root = Path(tmp)
+            path = root / "pack" / "experts.wex4"
+            rc, log = run_pack(split_model(root)[0], root / "pack", "--experts-wex4")
+            self.assertEqual(rc, 0, log)
+            self.assertFalse((root / "pack" / "experts.bin").exists())
+            with open(path, "rb") as f:
+                rd = wex4_check.load_wex4().Reader(f)
+                at, root_hex = rd.records[N_EXPERT + 2][0] + 7, rd.root.hex()   # layer 1, expert 2
+            out = []
+            self.assertEqual(wex4_check.check(path, root=root_hex, out=out.append), 0, out)
+            out = []
+            self.assertEqual(wex4_check.check(path, root="0" * 64, out=out.append), 1)
+            self.assertIn("--root asks for", out[0])
+            data = bytearray(path.read_bytes())
+            data[at] ^= 1
+            path.write_bytes(bytes(data))
+            out = []
+            self.assertEqual(wex4_check.check(path, out=out.append), 1)
+            self.assertIn("layer 1 expert 2: record hash mismatch", out[0])
+            self.assertIn("1 of 8 records damaged", out[-1])
 
 
 class HadamardTests(unittest.TestCase):

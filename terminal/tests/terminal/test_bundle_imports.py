@@ -65,6 +65,19 @@ class BundleImports(unittest.TestCase):
         self.assertEqual(probe.returncode, 0, probe.stderr[-500:])
         self.assertEqual(Path(probe.stdout.strip()).resolve(), here.resolve(), "a bundled tool finds the bundled copy")
 
+    def test_the_wex4_reader_is_in_the_bundle(self):
+        """iq_pack.py --experts-wex4 and tools/wex4_check.py import Wex-WRN2's wex4.py (third_party/wex, docs/WEX4.md): the bundle carries it
+        with its licence and notice, byte-identical, and a bundled tool finds the bundled copy."""
+        here = self.root / "third_party" / "wex"
+        for rel in ("wex4.py", "LICENSE", "NOTICE", "UPSTREAM.md"):
+            self.assertEqual((here / rel).read_bytes(), (ROOT.parent / "engine" / "third_party" / "wex" / rel).read_bytes(), rel)
+        self.assertIn("third_party/wex/", self.installer["files"])
+        self.assertTrue((self.root / "tools" / "wex4_check.py").is_file(), "iq_pack.py imports wex4_check: it comes with it")
+        probe = subprocess.run([sys.executable, "-I", "-c", f"import sys; sys.path.insert(0, {str(self.root / 'tools')!r}); import wex4_check; "
+                                "print(wex4_check.load_wex4().__file__)"], capture_output=True, text=True, timeout=60)
+        self.assertEqual(probe.returncode, 0, probe.stderr[-500:])
+        self.assertEqual(Path(probe.stdout.strip()).resolve(), (here / "wex4.py").resolve(), "a bundled tool finds the bundled copy")
+
     def test_calibrate_is_in_the_bundle(self):
         # the exact file #3613 and #3467 lacked
         self.assertTrue((self.root / "tools" / "calibrate.py").is_file())

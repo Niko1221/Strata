@@ -134,8 +134,9 @@ INSTALLER_TOOLS = ("strata_mcp", "iq_pack", "strata_pack", "pack_index", "mtp_fe
 INSTALLER_SCRIPTS = ("nvfp4_local_pack", "strata_bench", "strata_inspect")
 INSTALLER_DATA = "data"           # draft vocabularies, expert profiles: 2 MB
 #: gguf-py and llama.cpp's HF converter at the llama.cpp pin (third_party/strata-gguf-py, 1.8 MB, MIT): the preparation tools import them, so
-#: no llama.cpp download is needed to prepare a model (before 0.2.15 the installed Terminal fetched the 170 MB zip for this)
-INSTALLER_THIRD_PARTY = ("third_party/strata-gguf-py",)
+#: no llama.cpp download is needed to prepare a model (before 0.2.15 the installed Terminal fetched the 170 MB zip for this).
+#: third_party/wex: Wex-WRN2's wex4.py (40 KB, Apache-2.0), which iq_pack.py --experts-wex4 and tools/wex4_check.py import (docs/WEX4.md)
+INSTALLER_THIRD_PARTY = ("third_party/strata-gguf-py", "third_party/wex")
 #: the Mac install's tools (setup.py's mac_control_setup runs them by path): Unsloth's many-shard sets become ONE GGUF for the Metal engine (stdlib only, 15 KB)
 INSTALLER_METAL_TOOLS = ("metal_repack", "stream_experts")
 
