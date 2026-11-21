@@ -3799,6 +3799,10 @@ void sgemm(const float* Wf, int n, int K, const float* X, int ldx, float* Y, int
 }
 // rows [first, first + n) of W, T <= SMALL_T vectors
 void gemv_multi(const DMat& W, int first, int n, const float* X, int ldx, float* Y, int ldy, int T) {
+    if (W.q) {   // CBA: Q8 (GGUF) rows read once per vector; a multi-vector Q8 GEMV if short GGUF chunks matter
+        for (int t = 0; t < T; ++t) gemv(W, X + (size_t) t * ldx, Y + (size_t) t * ldy, n, first);
+        return;
+    }
     if (W.k == 64) {
         k_gemv_bf16_multi_k64<<<(unsigned) ((n + 31) / 32), 256>>>(W.d + (size_t) first * 64, X, ldx, Y, ldy, n, T);
         return;
@@ -3969,7 +3973,7 @@ void moe_b(const Layer& Y, const float* x, float* out, int T, int pos0) {
     kb_moe_plan<<<1, 1024>>>(PF.ids, T, PF.rows, PF.slot, PF.tile_e, PF.tile_r0, PF.ntiles, PF.eoff, PF.ecnt);
     const Experts& X = Y.ex;
     const int l = int(&Y - E.L), nr = T * TOPK, maxt = nr / FM + NE;
-    if (T <= SMALL_T) {   // offload: the verify's experts through the decode cache (T x TOPK ids), not the staging
+    if (T <= SMALL_T && !X.gg13) {   // offload: the verify's experts through the decode cache (T x TOPK ids), not the staging
         if (E.offload) expert_cache(l, PF.ids, T * TOPK);
         const int RR = g_grp_r;
         auto g = RR == 2 ? (X.nvfp4 ? k_moe_gemv_grp<true, 2> : k_moe_gemv_grp<false, 2>)
@@ -4775,6 +4779,10 @@ int main(int argc, char** argv) {
     Ckpt ck;
     Gguf gg;
     g_is_gguf = dir.size() > 5 && dir.compare(dir.size() - 5, 5, ".gguf") == 0;
+    // CBA: no GGUF CPU expert kernels (ink2_cpu decodes NVFP4 / MXFP8 only) and no drafter tensors in a GGUF: refused
+    // until IQ3_S / IQ4_NL / Q8_0 CPU dots and a GGUF drafter exist
+    if (g_is_gguf && E.cpu) { std::fprintf(stderr, "--cpu-threads: not with a GGUF model (no GGUF CPU expert kernels yet)\n"); return 2; }
+    if (g_is_gguf && spec) { std::fprintf(stderr, "--spec: not with a GGUF model (no drafter for it yet)\n"); return 2; }
     if (g_is_gguf) {   // --model FILE.gguf: llama.cpp's merged inkling2_loop layout
         const std::string e = gg_open(dir, gg);
         if (!e.empty()) { std::fprintf(stderr, "%s\n", e.c_str()); return 1; }
