@@ -7,6 +7,7 @@
 #include "strata/kernels/cpu/native_expert.hpp"
 #include "strata/quant/types.hpp"   // the type ids (Strata's table, no ggml.h)
 #include "strata/platform/commit.hpp"   // #5742: commit_available
+#include "wex4_writer.hpp"              // --experts-wex4: a small container beside experts.bin
 #endif
 
 #include <cuda_runtime.h>
@@ -659,6 +660,87 @@ void test_unbuffered_reads() {
     source.close();
 }
 
+#if defined(STRATA_NATIVE_EXPERTS)
+// --experts-wex4: one native pack read from experts.bin and from a WEX4 container (tests/core/wex4_writer.hpp) hands out
+// the same bytes: through the mapping, through the unbuffered reads (read_direct merges a layer's neighbouring records
+// across their padding of less than 4 KiB) and copy_blob.  A saved session names the container; a wrong root refuses.
+void test_wex4_source() {
+    using namespace strata::core;
+    using namespace strata::kernels::cpu;
+    constexpr int64_t layers = 2, experts = 4, embedding = 2560, feed_forward = 640;
+    const int gu0 = (int) strata::quant::Type::IQ3_XXS, gu1 = (int) strata::quant::Type::IQ2_XS, d = (int) strata::quant::Type::IQ4_NL;
+    TempDirectory dir(fs::current_path());   // the unbuffered reads need a file system with O_DIRECT (not a tmpfs /tmp)
+    NativeFmt f0, f1;
+    std::string err;
+    require(native_fmt(gu0, d, embedding, feed_forward, f0, err) && native_fmt(gu1, d, embedding, feed_forward, f1, err),
+            "synthetic native format unavailable: " + err);
+    require(f0.bytes % 4096 != 0, "the synthetic blob is a multiple of 4096: the record padding would not be exercised");
+    const uint64_t layer0 = (uint64_t) f0.bytes * experts, total = layer0 + (uint64_t) f1.bytes * experts;
+    {
+        std::ofstream m(dir.path / "native_experts.txt");
+        m << "0 " << gu0 << ' ' << d << " 0 " << f0.bytes << '\n' << "1 " << gu1 << ' ' << d << ' ' << layer0 << ' ' << f1.bytes << '\n';
+        require((bool) m, "could not write native_experts.txt");
+    }
+    std::vector<uint8_t> bytes((size_t) total);
+    uint64_t x = 0x2545F4914F6CDD1Dull;
+    for (uint8_t& b : bytes) {
+        x = x * 6364136223846793005ull + 1442695040888963407ull;
+        b = (uint8_t) (x >> 56);
+    }
+    {
+        std::ofstream out(dir.path / "experts.bin", std::ios::binary | std::ios::trunc);
+        out.write((const char*) bytes.data(), (std::streamsize) bytes.size());
+        require((bool) out, "could not write experts.bin");
+    }
+    require(expert_layout_load(dir.path.string(), layers, experts, err), "could not load the native layout: " + err);
+    const ExpertLayout& lay = expert_layout();
+    auto at = [&](int64_t l, int64_t e) { return (size_t) (lay.offset[(size_t) l] + (uint64_t) e * lay.bytes[(size_t) l]); };
+    const std::string wex = (dir.path / "experts.wex4").string();
+    wex4_test::save(wex, wex4_test::file(wex4_test::expert_records(lay, [&](int64_t l, int64_t e) {
+        return std::vector<uint8_t>(bytes.begin() + at(l, e), bytes.begin() + at(l, e) + lay.bytes[(size_t) l]);
+    })));
+    auto same = [&](FileExpertSource& s, const std::string& what) {
+        for (int64_t l = 0; l < layers; ++l)
+            for (int64_t e = 0; e < experts; ++e) {
+                const uint8_t* b = s.blob(l, e);
+                require(b != nullptr && std::memcmp(b, bytes.data() + at(l, e), (size_t) lay.bytes[(size_t) l]) == 0,
+                        what + ": layer " + std::to_string(l) + " expert " + std::to_string(e) + " differs from experts.bin");
+            }
+    };
+    {
+        FileExpertSource bin;
+        require(bin.open(dir.path.string(), layers, experts, err), "experts.bin: " + err);
+        same(bin, "experts.bin");
+    }
+    FileExpertSource wx;
+    wx.set_wex4(wex, "");
+    require(wx.open(dir.path.string(), layers, experts, err), "experts.wex4: " + err);
+    require(wx.model_inputs().size() == 1 && wx.model_inputs()[0].first == "experts wex4" && wx.model_inputs()[0].second == wex,
+            "the session inputs do not name the WEX4 container");
+    require(wx.wex4_note().find("root ") == 0, "no WEX4 note after open");
+    same(wx, "WEX4, mapped");
+    set_env("STRATA_UNBUFFERED_LOAD", "1");
+    std::string why;
+    const bool unbuffered = wx.set_unbuffered(0, why);
+    set_env("STRATA_UNBUFFERED_LOAD", nullptr);
+    if (!unbuffered) {
+        std::cout << "file_expert_source_test: WEX4 unbuffered reads skipped (" << why << ")\n";
+    } else {
+        const int64_t batch[experts] = {0, 1, 2, 3};
+        wx.prefetch(0, batch, experts);   // layer 0 in one batch: four records with padding between them
+        same(wx, "WEX4, unbuffered");
+        std::vector<uint8_t> copy((size_t) lay.bytes[0]);
+        require(wx.copy_blob(0, 3, copy.data()) && std::memcmp(copy.data(), bytes.data() + at(0, 3), copy.size()) == 0,
+                "WEX4, unbuffered copy_blob differs from experts.bin");
+        require(wx.direct_fallbacks() == 0, "a WEX4 unbuffered read fell back to the mapping");
+    }
+    wx.close();
+    wx.set_wex4(wex, std::string(64, '0'));
+    require(!wx.open(dir.path.string(), layers, experts, err) && err.find("--experts-wex4-root") != std::string::npos,
+            "a wrong --experts-wex4-root was accepted: " + err);
+}
+#endif
+
 // #633: the host RAM probe with fake /proc and cgroup trees: v2 (a limit, "max", a missing or malformed limit), v1
 // (a limit, unlimited), and no cgroup line at all.  Elsewhere than Linux it reads the machine's RAM.
 void test_host_memory() {
@@ -1184,6 +1266,7 @@ int main(int argc, char** argv) {
         test_io_prefetch();
 #if defined(STRATA_NATIVE_EXPERTS)
         test_native_variable_layout();
+        test_wex4_source();
 #endif
         if (argc == 2 && std::string(argv[1]) == "--rotation-gpu") {
             test_rotating_source(false, true);
