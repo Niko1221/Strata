@@ -1420,7 +1420,9 @@ int main(int argc, char** argv) {
     bool no_lin2 = false, no_moe2 = false, save_logits = false, no_f32x = false, no_pipe = false;
     int pipe_segs_arg = 8;
     bool serve = false, session_reuse = false;
-    int ring_slack_arg = -1, conv_slots_arg = -1, conv_mib_arg = 16384, conv_min_arg = 1024;
+    int ring_slack_arg = -1, conv_slots_arg = -1, conv_mib_arg = 16384, conv_min_arg = 1024, spill_mib_arg = 32768;
+    std::string spill_dir_arg;
+    bool spill_persist = false;
     std::string vision, dfly_override;
     std::vector<std::string> image_files;
     int64_t image_max_pixels = 4194304;
@@ -1511,6 +1513,9 @@ int main(int argc, char** argv) {
         else if (a == "--conversation-slots" || a == "--conversation-cache-slots") conv_slots_arg = atoi(nxt().c_str());
         else if (a == "--conversation-cache-mib") conv_mib_arg = atoi(nxt().c_str());
         else if (a == "--conversation-min-tokens") conv_min_arg = atoi(nxt().c_str());
+        else if (a == "--conversation-spill-dir") spill_dir_arg = nxt();
+        else if (a == "--conversation-spill-mib") spill_mib_arg = atoi(nxt().c_str());
+        else if (a == "--conversation-spill-persist") spill_persist = true;
         else if (a == "--vision") vision = nxt();
         else if (a == "--image") image_files.push_back(nxt());  // HY4-VISION (offline runs): one picture file per image-pad token of --tokens, in order
         else if (a == "--image-max-pixels") image_max_pixels = atoll(nxt().c_str());
@@ -1563,6 +1568,9 @@ int main(int argc, char** argv) {
         so.conv_slots = conv_slots_arg > 0 ? conv_slots_arg : (session_reuse ? 4 : 1);
         so.conv_mib = conv_mib_arg;
         so.reuse_min = conv_min_arg;
+        so.spill_root = hy4_spill_root(spill_dir_arg, model, session_reuse);
+        so.spill_mib = spill_mib_arg;
+        so.spill_persist = spill_persist;
         so.draft = draft;
         so.spec = scfg;
         if (draft != "off" && draft != "dfly2" && draft != "auto") {

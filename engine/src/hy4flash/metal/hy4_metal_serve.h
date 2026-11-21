@@ -4,6 +4,7 @@
 //   stdout, at start:   INFO engine=... arch=hy4flash backend=metal ... drafter=dfly2|none images=0|1    then exactly one   READY <max_context> stop
 //   stdin, per request: GEN <max_new> [temperature=F top_p=F top_k=N min_p=F penalty_repeat=F penalty_freq=F penalty_present=F penalty_last_n=N seed=N] [image=<path> ...] id,id,...
 //   stdout per request: [RESUME n] (n = longest common prefix of the chosen resident conversation slot's KV and the prompt, capped at prompt-1 and by the SWA ring slack; the slot is the one with the longest prefix, else a free or least-recently-used one)  [IMG i n]  PP <read> <total> <ms> <tok/s>  T <id>  DONE <generated> <prompt_tokens> <prompt_ms> <decode_ms> <finish> <drafts_accepted> <drafts_offered> <reused>
+//   SSD tier (--session-reuse 1): a slot evicted with >= --conversation-min-tokens tokens is written to <spill root>/hy4-<fp>[.p<pid>] by a background thread; a later request whose prefix matches an entry better than any resident slot reloads it (RESUME n as usual). INFO: spill=0|1 persist=0|1. With --conversation-spill-persist the folder outlives the process (entries adopted at start, resident slots written at QUIT/EOF).
 //   stdin, any time:    STOP (cancel at the next token / chunk boundary)   QUIT or EOF (exit)
 // Only protocol lines go to stdout; diagnostics go to stderr.
 #pragma once
@@ -14,6 +15,7 @@
 #include <random>
 #include <iostream>
 #include "hy4_metal_slots.h"
+#include "hy4_metal_spill.h"
 
 #ifndef HY4_METAL_IMAGES
 #define HY4_METAL_IMAGES 1  // the Metal ViT (hy4_metal_vision.h, hy4_vision.metal) is linked into this build
@@ -27,6 +29,9 @@ struct ServeOpts {
     int index_topk = 2048;
     bool no_index = false, no_engram = false, session_reuse = false;
     int conv_slots = 1, conv_mib = 16384, reuse_min = 1024;  // --conversation-slots / --conversation-cache-mib / --conversation-min-tokens
+    std::string spill_root;  // resolved --conversation-spill-dir / default root; "" = SSD tier off
+    int spill_mib = 32768;   // --conversation-spill-mib (0 = off)
+    bool spill_persist = false;
     int ring_slack = 0;  // extra SWA ring slots (--ring-slack): how far a resume may roll the KV back below the highest position written
     std::string draft = "auto";
     SpecCfg spec;
@@ -257,6 +262,23 @@ static int hy4_serve_main(Model& g, mtl::Context& cx, const ServeOpts& o, const 
     slots[0].tok.reserve((size_t) max_ctx + 16);
     int act = 0;
     uint64_t use_clock = 0;
+    // SSD tier for evicted slots (HySpill): spare KV sets circulate between the slots, the writer thread and a free pool
+    HySpill<mtl::Buffer> sp;
+    if (o.session_reuse && !o.spill_root.empty() && o.spill_mib > 0) {
+        std::vector<char> sw((size_t) r.c.n_layers);
+        for (int il = 0; il < r.c.n_layers; ++il) sw[(size_t) il] = r.c.is_swa[il] ? 1 : 0;
+        sp.init(o.spill_root, hy4_spill_fp(o.model, o.no_engram ? std::string() : o.engram, max_ctx, r.ring, r.slots_sparse, r.c.n_layers), o.spill_persist, o.spill_mib, sw, (size_t) r.ring * 1152);
+    }
+    int nsets = 1;  // KV sets alive: the slots' + the free pool's + those held by the writer
+    const int max_sets = eff_slots + (sp.on ? 1 : 0);
+    auto acquire = [&](HyKvSet<mtl::Buffer>& st) {
+        if (sp.on && sp.take_free(st)) return;
+        if (nsets < max_sets || !sp.on || !sp.wait_free(st)) {
+            r.alloc_kv_set(st.kc, st.iv, st.pl);
+            ++nsets;
+            fprintf(stderr, "[slots] allocated KV set %d (%.2f GB, cache.allocated %.2f GB)\n", nsets, set_bytes / 1e9, cx.allocated() / 1e9);
+        }
+    };
     std::vector<float> hl((size_t) V);
     std::string base = o.model;
     size_t sl = base.find_last_of("/\\");
@@ -271,8 +293,8 @@ static int hy4_serve_main(Model& g, mtl::Context& cx, const ServeOpts& o, const 
         if (hy4::vision_probe(o.vision, vprobe, verr)) images_ok = true;
         else fprintf(stderr, "[vision] disabled: %s\n", verr.c_str());
     }
-    proto("INFO engine=hy4-metal-serve-0 arch=hy4flash backend=metal model=%s layers=%d vocab=%d chunk=%d session_reuse=%d drafter=%s images=%d ring_slack=%d slots=%d slot_mib=%.0f", base.c_str(), r.c.n_layers, V, r.Tc,
-          o.session_reuse ? 1 : 0, use_spec ? "dfly2" : "none", images_ok ? 1 : 0, r.ring_slack, eff_slots, set_bytes / 1048576.0);
+    proto("INFO engine=hy4-metal-serve-0 arch=hy4flash backend=metal model=%s layers=%d vocab=%d chunk=%d session_reuse=%d drafter=%s images=%d ring_slack=%d slots=%d slot_mib=%.0f spill=%d persist=%d", base.c_str(), r.c.n_layers, V, r.Tc,
+          o.session_reuse ? 1 : 0, use_spec ? "dfly2" : "none", images_ok ? 1 : 0, r.ring_slack, eff_slots, set_bytes / 1048576.0, sp.on ? 1 : 0, sp.on && sp.persist ? 1 : 0);
     proto("READY %d stop", max_ctx);
 
     int hw = 0;
@@ -350,7 +372,17 @@ static int hy4_serve_main(Model& g, mtl::Context& cx, const ServeOpts& o, const 
         std::vector<HyPickIn> pin;
         for (size_t i = 0; i < slots.size(); ++i) pin.push_back({(int) i == act ? &tok : &slots[i].tok, slots[i].fwd, slots[i].hw, slots[i].last_used});
         int start = 0;
-        const int pk = hy4_pick_slot(pin, act, q.ids, T0, r.ring - 512, eff_slots, o.reuse_min, has_images || !o.session_reuse, start);
+        const bool no_reuse = has_images || !o.session_reuse;
+        int pk = hy4_pick_slot(pin, act, q.ids, T0, r.ring - 512, eff_slots, o.reuse_min, no_reuse, start);
+        // SSD tier: an entry that shares a longer prefix than any resident slot is reloaded into the LRU / free slot
+        HySpill<mtl::Buffer>::Cand sc;
+        bool from_ssd = false;
+        if (sp.on && !no_reuse && sp.best(q.ids, T0, r.ring - 512, sc) && sc.start >= o.reuse_min && sc.start > start) {
+            int dummy = 0;
+            pk = hy4_pick_slot(pin, act, q.ids, T0, r.ring - 512, eff_slots, o.reuse_min, true, dummy);
+            from_ssd = true;
+            start = 0;
+        }
         // no prefetch of the old tok may still be in flight or pending: drop them before tok (or the KV set) changes
         for (int s = 0; s < 2; ++s) {
             if (r.ep[s].fut.valid()) r.ep[s].fut.wait();
@@ -359,8 +391,11 @@ static int hy4_serve_main(Model& g, mtl::Context& cx, const ServeOpts& o, const 
         if (pk >= (int) slots.size()) {
             slots.emplace_back();
             slots.back().tok.reserve((size_t) max_ctx + 16);
-            r.alloc_kv_set(slots.back().kcache, slots.back().ivg, slots.back().pooled);
-            fprintf(stderr, "[slots] allocated slot %zu (%.2f GB, cache.allocated %.2f GB)\n", slots.size() - 1, set_bytes / 1e9, cx.allocated() / 1e9);
+            HyKvSet<mtl::Buffer> ns;
+            acquire(ns);
+            slots.back().kcache = std::move(ns.kc);
+            slots.back().ivg = std::move(ns.iv);
+            slots.back().pooled = std::move(ns.pl);
         }
         if (pk != act) {
             std::swap(r.kcache, slots[act].kcache);
@@ -374,6 +409,49 @@ static int hy4_serve_main(Model& g, mtl::Context& cx, const ServeOpts& o, const 
             act = pk;
             fwd = slots[act].fwd;
             hw = slots[act].hw;
+        }
+        // the active slot is now the victim (or the resume target): a victim with a conversation worth keeping goes to the writer, the Runner gets another set
+        if (sp.on && start == 0 && fwd >= o.reuse_min && fwd <= (int) tok.size()) {
+            HyKvSet<mtl::Buffer> vs;
+            vs.kc = std::move(r.kcache);
+            vs.iv = std::move(r.ivg);
+            vs.pl = std::move(r.pooled);
+            if (sp.submit(vs, tok, fwd, hw)) {
+                HyKvSet<mtl::Buffer> ns;
+                acquire(ns);
+                r.kcache = std::move(ns.kc);
+                r.ivg = std::move(ns.iv);
+                r.pooled = std::move(ns.pl);
+            } else {
+                r.kcache = std::move(vs.kc);
+                r.ivg = std::move(vs.iv);
+                r.pooled = std::move(vs.pl);
+            }
+            fwd = 0;
+            hw = 0;
+        }
+        if (from_ssd) {
+            HyKvSet<mtl::Buffer> ds;
+            ds.kc = std::move(r.kcache);
+            ds.iv = std::move(r.ivg);
+            ds.pl = std::move(r.pooled);
+            int lf = 0, lh = 0;
+            std::vector<int32_t> lt;
+            const bool ok = sp.load(sc.seq, ds, lt, lf, lh);
+            r.kcache = std::move(ds.kc);
+            r.ivg = std::move(ds.iv);
+            r.pooled = std::move(ds.pl);
+            if (ok) {
+                // adopt the entry as the slot's resident conversation; its own hy4_reuse_start (same inputs as the match) gives the resume point
+                tok.assign(lt.begin(), lt.end());
+                fwd = lf;
+                hw = lh;
+                start = hy4_reuse_start(tok, fwd, q.ids, T0, r.ring - 512 - std::max(0, hw - fwd));
+            } else {
+                start = 0;
+                fwd = 0;
+                hw = 0;
+            }
         }
         slots[act].last_used = ++use_clock;
         if (start == 0) hw = 0;
@@ -483,5 +561,28 @@ static int hy4_serve_main(Model& g, mtl::Context& cx, const ServeOpts& o, const 
         const double decode_ms = (now_s() - t1) * 1000.0;
         proto("DONE %d %d %.1f %.1f %s %ld %ld %d", made, T0, prompt_ms, decode_ms, finish, acc0, off0, start);
     }
+    // QUIT / EOF: with --conversation-spill-persist every resident conversation worth keeping that is not on the SSD yet is written now
+    if (sp.on && sp.persist) {
+        slots[act].fwd = fwd;
+        slots[act].hw = hw;
+        sp.drain();
+        for (size_t i = 0; i < slots.size(); ++i) {
+            const std::vector<int32_t>& t = (int) i == act ? tok : slots[i].tok;
+            const int f = std::min(slots[i].fwd, (int) t.size());
+            if (f < o.reuse_min) continue;
+            std::vector<mtl::Buffer>& kc = (int) i == act ? r.kcache : slots[i].kcache;
+            std::vector<mtl::Buffer>& iv = (int) i == act ? r.ivg : slots[i].ivg;
+            std::vector<mtl::Buffer>& pl = (int) i == act ? r.pooled : slots[i].pooled;
+            HyKvSet<mtl::Buffer> ss;
+            ss.kc = std::move(kc);
+            ss.iv = std::move(iv);
+            ss.pl = std::move(pl);
+            sp.write_now(ss, t, f, slots[i].hw);
+            kc = std::move(ss.kc);
+            iv = std::move(ss.iv);
+            pl = std::move(ss.pl);
+        }
+    }
+    sp.shutdown();
     return 0;
 }
