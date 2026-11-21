@@ -2232,8 +2232,11 @@ void load() {
 // offload: once everything else is allocated, the pools take the free VRAM minus --vram-reserve-mib and a margin
 // (decode graph, cuBLAS workspaces), split 80 / 20 between NVFP4 and MXFP8 bytes (two-pool LRU replay of corpus12k,
 // lru2.py: 0.20 best at 6, 7 and 8 GiB).  Initial content: looped layers first, then the others, expert order.
-// CBA: fixed 384 MiB margin and 0.20 split; per-card measurement / a routing profile if the first tokens matter.
-int g_off_margin_mib = 128;   // INK2_OFF_MARGIN_MIB: VRAM kept beside --vram-reserve-mib (the decode graph; cuBLAS is warmed up at load)
+// CBA: fixed margin and 0.20 split; per-card measurement / a routing profile if the first tokens matter.
+// INK2_OFF_MARGIN_MIB: VRAM kept beside --vram-reserve-mib for what is allocated after the pools (decode graph, cuBLAS,
+// CPU-expert staging).  Measured on the 3090 at 8 GiB (reserve 15946, nvidia-smi peak): 17-31 MiB used after the pools
+// with --tc 0 / 1, --cpu-threads 22, --spec 1, a 6000-token prompt at chunk 1024; 128 leaves ~100 MiB to spare.
+int g_off_margin_mib = 128;
 void setup_offload() {
     size_t fr = 0, tot = 0;
     CK(cudaMemGetInfo(&fr, &tot));
