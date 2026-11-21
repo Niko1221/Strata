@@ -9940,6 +9940,15 @@ def install_hy4_flash(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopt
 INK2_SOURCES = ("CMakeLists.txt", "cmake", "include", "src/inkling2", "src/image/vae")   # what strata-ink2 is compiled from (its stamp's hash)
 
 
+def gpu_used_mib(g) -> float:
+    """The VRAM in use on this NVIDIA card now (nvidia-smi memory.used, MiB); 0 when it does not say."""
+    text = out(["nvidia-smi", "-i", str(g.get("index", 0)), "--query-gpu=memory.used", "--format=csv,noheader,nounits"]).strip()
+    try:
+        return float(text.splitlines()[0])
+    except (ValueError, IndexError):
+        return 0.0
+
+
 def ink2_offered(hip: bool) -> bool:
     """Is Inkling-2-Mini offered: an NVIDIA card on Linux (strata-ink2 is CUDA only and uses POSIX calls), outside the app (which compiles nothing:
     no ready-made engine carries strata-ink2)."""
@@ -10030,7 +10039,8 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     # the VRAM kept free for other programs: the person's own number, else what a card that drives the screen needs (#779), else none (the engine
     # keeps its own margin for what it allocates after the experts)
     reserve = a.vram_reserve_mib if a.vram_reserve_mib is not None else (DISPLAY_RESERVE_MIB if display else 0)
-    rec_ctx = F.recommended_context(vram_mib, reserve)
+    used = gpu_used_mib(gpu)                           # a desktop's VRAM now: the offload's pools are sized from what is free at start
+    rec_ctx = F.recommended_context(vram_mib, reserve, used)
     if a.context:
         ctx = a.context
     else:
@@ -10047,10 +10057,10 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     if F.resident_fits(vram_mib, ctx, reserve):
         ok("every expert fits on the card: they stay there, with the draft layer (mtp.safetensors) for faster answers")
     else:
-        room = F.offload_room_mib(vram_mib, ctx)       # what a reserve can take with the expert pools at the engine's minimum
+        room = F.offload_room_mib(vram_mib, ctx, used)   # what a reserve can take with the expert pools at the engine's minimum
         if room < 0:
-            confirm_risk(f"a {vram_mib / 1024:.0f} GB card is too small for {fam['title']} at a {ctx // 1024}K context: the engine needs about "
-                         f"{-room} MiB more VRAM for its expert pools and would stop at start", bool(a.family), a.yes,
+            confirm_risk(f"a {vram_mib / 1024:.0f} GB card ({used:.0f} MiB of it in use now) is too small for {fam['title']} at a {ctx // 1024}K "
+                         f"context: the engine needs about {-room} MiB more VRAM for its expert pools and may stop at start", bool(a.family), a.yes,
                          f"the card is too small for {fam['title']} at a {ctx // 1024}K context",
                          "choose a smaller context (--context 8192), or another model", "  Install it anyway?")
             warn(f"installing {fam['title']} on a {vram_mib / 1024:.0f} GB card, as you chose")

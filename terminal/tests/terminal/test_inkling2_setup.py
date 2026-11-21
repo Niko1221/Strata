@@ -69,7 +69,7 @@ class Args(unittest.TestCase):
 
     def test_offload_on_an_8_gb_card(self):
         ctx = F.recommended_context(8192)
-        self.assertEqual(ctx, F.DEFAULT_CONTEXT)
+        self.assertEqual(ctx, 8192)
         args = F.engine_args("/m", ctx, 8192, 0, 22)
         self.assertEqual(args[args.index("--vram-reserve-mib") + 1], "0")
         self.assertEqual(args[args.index("--cpu-threads") + 1], "22")
@@ -86,10 +86,12 @@ class Args(unittest.TestCase):
         self.assertEqual(F.OFFLOAD_MARGIN_MIB, 128)
         self.assertGreaterEqual(F.MIN_POOLS_MIB * 2**20, 64 * 8211456 / 0.2)               # 64 MXFP8 slots at the least (MX_BYTES)
         self.assertIn("// 4478976 / 8211456", src)
-        # an 8 GB card: 32K leaves no room for a desktop's reserve, so a card that drives a display gets 8K
-        self.assertEqual(F.recommended_context(8192, 0), 32768)
-        self.assertEqual(F.recommended_context(8192, 1500), 8192)
+        # an 8 GB card: 32K leaves no room beside the slack, so it gets 8K; a desktop's VRAM in use comes out of the room
+        self.assertEqual(F.recommended_context(8192, 0), 8192)
+        self.assertEqual(F.recommended_context(12288, 1500, 600), 32768)
         self.assertGreaterEqual(F.offload_room_mib(8192, 8192), 512)
+        self.assertEqual(F.offload_room_mib(8192, 8192, 500), F.offload_room_mib(8192, 8192) - 500)
+        self.assertLess(F.offload_room_mib(8192, 32768), 0)
         self.assertLess(F.offload_room_mib(6144, 8192), 0)                                  # a 6 GB card is too small
 
     def test_a_reserve_or_a_long_context_moves_a_card_to_offload(self):
