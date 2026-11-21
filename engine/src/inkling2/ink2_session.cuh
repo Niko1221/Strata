@@ -163,7 +163,7 @@ bool sess_room(size_t bytes) {
     }
     return true;
 }
-// CBA: page-locked buffers are kept for reuse (cudaHostAlloc pins ~0.45 ms per MiB on the 3090 box: 80 ms per
+// CBA: page-locked buffers are kept for reuse (cudaHostAlloc pins ~0.45 ms per MiB on a PCIe 3 host: 80 ms per
 // checkpoint) in PIN_UNIT steps, a spare taken for anything up to half its size; a sub-allocator in one pinned arena
 // would waste less
 constexpr size_t PIN_UNIT = (size_t) 32 << 20;
