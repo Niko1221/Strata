@@ -5,6 +5,7 @@
 #include "strata/artifact/gguf_reader.hpp"
 #include "strata/artifact/dequant.hpp"
 #include "strata/kernels/f16_bits.hpp"
+#include "strata/kernels/ple_lowbit.hpp"
 #include "strata/ngram/ple_reader.hpp"
 #include "strata/core/progress.hpp"
 #include "strata/platform/memory.hpp"
@@ -221,29 +222,39 @@ void nvfp4_row_dequant(const uint8_t* row, float scale, float* out160) {
 // THE FORMAT TABLE (see PleFormatInfo). One entry per table type; the block formats decode 5 blocks of 32.
 namespace {
 template <void (*Block)(const uint8_t*, float*), int BlockBytes>
-void dequant_blocks(const uint8_t* row, float /*scale*/, float* out160) {
+void dequant_blocks(const uint8_t* row, const PleParams&, float* out160) {
     for (int b = 0; b < PLE_HEAD_DIM / 32; ++b) Block(row + (size_t) b * BlockBytes, out160 + b * 32);
 }
-void dequant_iq4_nl(const uint8_t* row, float, float* out160) { iq4nl_dequant_row(row, out160); }
-void dequant_fp8(const uint8_t* row, float scale, float* out160) { fp8_e4m3_dequant_row(row, scale, out160); }
-void dequant_bf16(const uint8_t* row, float, float* out160) { bf16_dequant_row(row, out160); }
-void dequant_nvfp4(const uint8_t* row, float scale, float* out160) { nvfp4_row_dequant(row, scale, out160); }
+void dequant_iq4_nl(const uint8_t* row, const PleParams&, float* out160) { iq4nl_dequant_row(row, out160); }
+void dequant_fp8(const uint8_t* row, const PleParams& p, float* out160) { fp8_e4m3_dequant_row(row, p.scale, out160); }
+void dequant_bf16(const uint8_t* row, const PleParams&, float* out160) { bf16_dequant_row(row, out160); }
+void dequant_nvfp4(const uint8_t* row, const PleParams& p, float* out160) { nvfp4_row_dequant(row, p.scale, out160); }
+template <int Block>
+void dequant_lowbit(const uint8_t* row, const PleParams& p, float* out160) {
+    ple_lowbit_dequant_row(row, Block, p.codebook, p.scale, out160);
+}
 
 const PleFormatInfo kPleFormats[] = {
-    {PleFormat::IQ4_NL, "IQ4_NL", "IQ4_NL", PLE_ROW_BYTES, false, dequant_iq4_nl},
-    {PleFormat::Q5_0, "Q5_0", "Q5_0", (PLE_HEAD_DIM / 32) * 22, false, dequant_blocks<strata::dequantize_q5_0, 22>},
-    {PleFormat::F8_E4M3, "F8_E4M3", "I8", PLE_ROW_BYTES_FP8, true, dequant_fp8},
+    {PleFormat::IQ4_NL, "IQ4_NL", "IQ4_NL", PLE_ROW_BYTES, false, dequant_iq4_nl, nullptr, false},
+    {PleFormat::Q5_0, "Q5_0", "Q5_0", (PLE_HEAD_DIM / 32) * 22, false, dequant_blocks<strata::dequantize_q5_0, 22>, nullptr, false},
+    {PleFormat::F8_E4M3, "F8_E4M3", "I8", PLE_ROW_BYTES_FP8, true, dequant_fp8, "f8_e4m3", false},
     // Ordinary GGUFs ship the table in other types: Unsloth's UD-Q6_K_XL and Swift-1.5 Q4_K_L as Q8_0, a Q5_K_M finetune as Q5_1
-    {PleFormat::Q5_1, "Q5_1", "Q5_1", PLE_ROW_BYTES_Q5_1, false, dequant_blocks<strata::dequantize_q5_1, 24>},
-    {PleFormat::Q8_0, "Q8_0", "Q8_0", PLE_ROW_BYTES_Q8_0, false, dequant_blocks<strata::dequantize_q8_0, 34>},
+    {PleFormat::Q5_1, "Q5_1", "Q5_1", PLE_ROW_BYTES_Q5_1, false, dequant_blocks<strata::dequantize_q5_1, 24>, nullptr, false},
+    {PleFormat::Q8_0, "Q8_0", "Q8_0", PLE_ROW_BYTES_Q8_0, false, dequant_blocks<strata::dequantize_q8_0, 34>, nullptr, false},
     // Q4_0 (plain llama-quantize Q4_0 files, #599): 90-byte rows like IQ4_NL (18-byte blocks), a linear 4-bit grid
-    {PleFormat::Q4_0, "Q4_0", "Q4_0", PLE_ROW_BYTES, false, dequant_blocks<strata::dequantize_q4_0, 18>},
+    {PleFormat::Q4_0, "Q4_0", "Q4_0", PLE_ROW_BYTES, false, dequant_blocks<strata::dequantize_q4_0, 18>, nullptr, false},
     // BF16 (#586): the checkpoint's own table at full precision, 320-byte rows; self-describing, so no scale and no
     // metadata to trust (tools/ple_fp8_pack.py writes the FP8 form of the same table)
-    {PleFormat::BF16, "BF16", "BF16", PLE_ROW_BYTES_BF16, false, dequant_bf16},
+    {PleFormat::BF16, "BF16", "BF16", PLE_ROW_BYTES_BF16, false, dequant_bf16, nullptr, false},
     // NVFP4 x16 (NVIDIA's Qwen3.8-Flash-Next-FP4-Local, tools/nvfp4_local_pack.py ple): 90-byte rows, I8 bytes marked
     // strata.ple.format = nvfp4x16 with strata.ple.scale. The tensor is [90, rows]: ne0 is the row's byte count.
-    {PleFormat::NVFP4, "NVFP4", "I8", PLE_ROW_BYTES_NVFP4, true, dequant_nvfp4},
+    {PleFormat::NVFP4, "NVFP4", "I8", PLE_ROW_BYTES_NVFP4, true, dequant_nvfp4, "nvfp4x16", false},
+    // The 3-bit tables of tools/ple_lowbit_emulate.py --native (strata/kernels/ple_lowbit.hpp): I8 bytes [row bytes, rows]
+    // marked strata.ple.format = c4 / c3 / c2s, with the 8-level strata.ple.codebook and, for the E4M3 block scales, the
+    // table's strata.ple.scale
+    {PleFormat::C4, "C4", "I8", (uint32_t) ple_lowbit_row_bytes(160), false, dequant_lowbit<160>, "c4", true},
+    {PleFormat::C3, "C3", "I8", (uint32_t) ple_lowbit_row_bytes(32), true, dequant_lowbit<32>, "c3", true},
+    {PleFormat::C2s, "C2s", "I8", (uint32_t) ple_lowbit_row_bytes(16), true, dequant_lowbit<16>, "c2s", true},
 };
 constexpr int kPleFormatCount = (int) (sizeof kPleFormats / sizeof kPleFormats[0]);
 }  // namespace
@@ -270,7 +281,7 @@ std::string ple_format_list() {
     for (int i = 0; i < kPleFormatCount; ++i) {
         const PleFormatInfo& f = kPleFormats[i];
         if (i > 0) out += i + 1 == kPleFormatCount ? " or " : ", ";
-        out += std::strcmp(f.gguf_type, "I8") == 0 ? (f.id == PleFormat::NVFP4 ? "NVFP4 (I8)" : "FP8 (I8)") : f.name;
+        out += f.marker != nullptr ? std::string(f.id == PleFormat::F8_E4M3 ? "FP8" : f.name) + " (I8)" : std::string(f.name);
     }
     return out;
 }
@@ -299,9 +310,9 @@ struct PleTable::Impl {
     strata::ngram::PleReader::Ticket prefetch_tickets[kMaxPrefetch] = {};
     uint32_t prefetch_keys[kMaxPrefetch][PLE_N_HEADS] = {};
     uint8_t prefetch_raw[kMaxPrefetch][PLE_N_HEADS * PLE_ROW_BYTES_MAX] = {};
-    float scale = 1.0f;               // the FP8 table's one scale
+    PleParams params;                 // the table-wide scale and codebook (FP8, NVFP4, the 3-bit formats)
     uint32_t rb = PLE_ROW_BYTES;      // bytes per row
-    void decode(const uint8_t* row, float* out160) const { fmt->dequant(row, scale, out160); }
+    void decode(const uint8_t* row, float* out160) const { fmt->dequant(row, params, out160); }
     // STRATA_PLE_CHECK=1 (a diagnostic for #3602, off by default): the file and the table's offset, to re-read a row whose decoded
     // values are not plausible and compare the bytes the direct reader delivered with the file's own
     std::string path;
@@ -374,35 +385,50 @@ bool PleTable::open(const std::string& gguf_path, std::string& err, const PleIoO
         close();
         return false;
     }
-    // [160, 320001536]: ne0 = 160 is the FAST axis, so the ROW index is shape[1] and a row is contiguous. The NVFP4 table
-    // is I8 bytes with ne0 = 90 (the row's byte count), marked strata.ple.format = nvfp4x16.
+    // The table's type is looked up in the format list (ple_formats()): IQ4_NL (ISTA-DASLab's shard 2, the original's
+    // own GGUF), Q5_0 (#296: OrcaRouter's GGUF), or I8 bytes whose strata.ple.format marker names the format: the FP8
+    // table as shipped (f8_e4m3 with strata.ple.scale, tools/ple_fp8_pack.py), NVFP4 (nvfp4x16), the 3-bit c4 / c3 / c2s.
+    // An I8 table without a known marker stays F8_E4M3 and is refused below.
     const MetaValue* fmt_key = impl_->file->get("strata.ple.format");
-    const bool nvfp4x16 = std::strcmp(t->type_name(), "I8") == 0 && fmt_key != nullptr && fmt_key->s == "nvfp4x16";
-    const uint64_t want_ne0 = nvfp4x16 ? (uint64_t) PLE_ROW_BYTES_NVFP4 : (uint64_t) PLE_HEAD_DIM;
+    const PleFormatInfo* fmt = ple_format_for_type(t->type_name());
+    if (fmt != nullptr && fmt->marker != nullptr && fmt_key != nullptr)
+        for (const PleFormatInfo& f : kPleFormats)
+            if (f.marker != nullptr && fmt_key->s == f.marker) fmt = &f;
+    // [160, 320001536]: ne0 = 160 is the FAST axis, so the ROW index is shape[1] and a row is contiguous. An I8 table's
+    // ne0 is the row's byte count (90 for NVFP4; FP8's 160 is both).
+    const uint64_t want_ne0 = fmt != nullptr && fmt->marker != nullptr ? (uint64_t) fmt->row_bytes : (uint64_t) PLE_HEAD_DIM;
     if (t->shape.size() != 2 || t->shape[0] != want_ne0) {
         err = "per_layer_token_embd.weight has an unexpected shape";
         close();
         return false;
     }
-    // The table's type is looked up in the format list (ple_formats()): IQ4_NL (ISTA-DASLab's shard 2, the original's
-    // own GGUF), Q5_0 (#296: OrcaRouter's GGUF), or the FP8 table as shipped: I8 bytes marked strata.ple.format =
-    // f8_e4m3 with strata.ple.scale (tools/ple_fp8_pack.py)
-    const PleFormatInfo* fmt = nvfp4x16 ? &ple_format_info(PleFormat::NVFP4) : ple_format_for_type(t->type_name());
     if (fmt == nullptr) {
         err = std::string("per_layer_token_embd.weight is ") + t->type_name() + ", not " + ple_format_list();
         close();
         return false;
     }
-    if (fmt->needs_scale) {
-        const MetaValue* f = impl_->file->get("strata.ple.format");
+    if (fmt->marker != nullptr) {
         const MetaValue* s = impl_->file->get("strata.ple.scale");
-        const char* want = nvfp4x16 ? "nvfp4x16" : "f8_e4m3";
-        if (f == nullptr || f->s != want || s == nullptr || !(s->num() > 0.0)) {
-            err = std::string("per_layer_token_embd.weight is I8 without strata.ple.format = ") + want + " and a positive strata.ple.scale";
+        if (fmt_key == nullptr || fmt_key->s != fmt->marker || (fmt->needs_scale && (s == nullptr || !(s->num() > 0.0)))) {
+            err = std::string("per_layer_token_embd.weight is I8 without strata.ple.format = ") + fmt->marker +
+                  (fmt->needs_scale ? " and a positive strata.ple.scale" : "");
             close();
             return false;
         }
-        impl_->scale = (float) s->num();
+        if (fmt->needs_scale) impl_->params.scale = (float) s->num();
+    }
+    if (fmt->needs_codebook) {
+        const MetaValue* cb = impl_->file->get("strata.ple.codebook");
+        bool ok = cb != nullptr && cb->type == MetaType::ARRAY && cb->count == 8 && cb->items.size() == 8;
+        for (int i = 0; ok && i < 8; ++i) {
+            ok = cb->items[(size_t) i].is_num() && std::isfinite(cb->items[(size_t) i].num());
+            if (ok) impl_->params.codebook[i] = (float) cb->items[(size_t) i].num();
+        }
+        if (!ok) {
+            err = std::string("the ") + fmt->name + " PLE table has no strata.ple.codebook of 8 finite numbers";
+            close();
+            return false;
+        }
     }
     impl_->fmt = fmt;
     impl_->rb = fmt->row_bytes;
@@ -591,7 +617,7 @@ void PleTable::close() {
     impl_->n_rows = 0;
     impl_->rb = PLE_ROW_BYTES;
     impl_->fmt = &ple_format_info(PleFormat::IQ4_NL);
-    impl_->scale = 1.0f;
+    impl_->params = PleParams{};
     impl_->bytes_read = 0;
 }
 
