@@ -24,6 +24,7 @@
 #include "../image/vae/safetensors_lite.hpp"
 #include "ink2_cpu.hpp"
 #include "ink2_iq_tables.h"
+#include "ink2_image.hpp"
 
 #include <cuda.h>
 #include <cublas_v2.h>
@@ -5012,6 +5013,8 @@ void draft_device(int p) {
     }
 }
 
+#include "ink2_vision.cuh"   // pictures: the ViT + projector, the image rows of a prompt
+
 void forward_prefill_device(int T, int pos0, float* all);
 void forward_prefill(const int* toks, int T, int pos0, float* all) {
     kv_fit(pos0 + T);
@@ -5054,6 +5057,7 @@ void forward_prefill(const int* toks, int T, int pos0, float* all) {
 void forward_prefill_device(int T, int pos0, float* all) {
     const size_t ES = (size_t) T * H;
     k_rms<<<T, 512>>>(PF.x0, E.embed_norm, PF.h, H);
+    vis_inject(T, pos0);   // a picture's rows replace its placeholders' normed embeddings
     int nB = 0, visit = 0;
     auto run = [&](int l, int slot, const float* msgs) {
         g_slot = slot;
@@ -5214,6 +5218,8 @@ int main(int argc, char** argv) {
         CK(cudaMemcpyToSymbol(c_q8w, &w, sizeof(int)));
     }
     std::string dir, dump_logits, rec_path;
+    std::vector<std::string> vis_paths;   // --image (one per placeholder of --tokens, in order)
+    std::string vis_pixels;               // --vis-pixels: the ViT alone on a processor pixel tensor
     std::vector<int> ids;
     int n_gen = 32;
     bool serve = false, spec = false;
@@ -5260,10 +5266,14 @@ int main(int argc, char** argv) {
         else if (a == "--kv-resident" || a == "--prefill" || a == "--conversation-cache-slots") std::fprintf(stderr, "[ink2] %s %s ignored\n", a.c_str(), v);
         else if (a == "--record-routing") { rec_path = v; E.rec_mode = 1; }
         else if (a == "--force-routing") { rec_path = v; E.rec_mode = 2; }
+        else if (a == "--image") vis_paths.push_back(v);
+        else if (a == "--vis-pixels") vis_pixels = v;
+        else if (a == "--dump-image-emb") g_vis.dump = v;
+        else if (a == "--image-max-tokens") g_vis.max_tokens = std::atoi(v);
         else { std::fprintf(stderr, "unknown option %s\n", a.c_str()); return 2; }
     }
     if (E.grow) vmm_init();
-    if (dir.empty() || (ids.empty() && !serve)) {
+    if (dir.empty() || (ids.empty() && !serve && vis_pixels.empty())) {
         std::fprintf(stderr, "usage: strata-ink2 --model DIR (--serve | --tokens IDS | --tokens-file F) [--n N] [--ctx N] "
                              "[--chunk N] [--tc 0|1] [--kv f16|fp16|f32|i8|int8|i8r|k8v4|k8v8] [--kv-grow 1 [--kv-grow-step N]] [--vram-reserve-mib N [--cpu-threads N]] [--spec 0|1] [--dump-logits F] [--conversation-cache-mib N [--conversation-cache-min-tokens N]]\n");
         return 2;
@@ -5293,6 +5303,7 @@ int main(int argc, char** argv) {
         if (!e.empty()) { std::fprintf(stderr, "%s\n", e.c_str()); return 1; }
         E.ck = &ck;
     }
+    if (!vis_pixels.empty()) return vis_cli_pixels(vis_pixels);
     const double t_load = now_ms();
     if (g_is_gguf) load_gguf();
     else load();
@@ -5446,6 +5457,7 @@ int main(int argc, char** argv) {
             cv.notify_one();
         });
         reader.detach();
+        std::printf("INFO images=%d\n", vis_available() ? 1 : 0);   // GEN takes image=<path> keys
         std::printf("READY %d stop\n", E.ctx);
         std::fflush(stdout);
         std::vector<int> hist;   // tokens whose KV / conv state is in the slots; last_logits follow hist.back()
@@ -5475,6 +5487,7 @@ int main(int argc, char** argv) {
             std::vector<int> pr = parse_ids(f.back().c_str());
             Sampler s;
             s.rng = std::move(smp.rng);
+            std::vector<std::string> imgs;   // image=<path> keys, one per placeholder (ink2_vision.cuh)
             for (size_t k = 2; k + 1 < f.size(); ++k) {   // unknown keys are ignored
                 const size_t eq = f[k].find('=');
                 if (eq == std::string::npos) continue;
@@ -5484,8 +5497,15 @@ int main(int argc, char** argv) {
                 else if (key == "top_k") s.top_k = std::atoi(val.c_str());
                 else if (key == "min_p") s.min_p = std::strtof(val.c_str(), nullptr);
                 else if (key == "seed") s.rng.seed(std::strtoull(val.c_str(), nullptr, 10));
+                else if (key == "image") imgs.push_back(ink2img::pct_decode(val));
             }
             if (pr.empty()) { std::printf("ERR empty prompt\n"); std::fflush(stdout); smp.rng = std::move(s.rng); continue; }
+            if (const std::string ve = vis_prepare(pr, imgs); !ve.empty()) {   // placeholders -> image tokens
+                std::printf("ERR image: %s\n", ve.c_str());
+                std::fflush(stdout);
+                smp.rng = std::move(s.rng);
+                continue;
+            }
             if ((int) pr.size() >= E.ctx) {
                 std::printf("ERR prompt of %zu tokens exceeds the context %d\n", pr.size(), E.ctx);
                 std::fflush(stdout);
@@ -5495,11 +5515,18 @@ int main(int argc, char** argv) {
             max_new = std::max(0, std::min(max_new, E.ctx - (int) pr.size()));
             const bool reuse = !hist.empty() && pr.size() >= hist.size() && std::equal(hist.begin(), hist.end(), pr.begin());
             size_t start = reuse ? hist.size() : 0;
+            start = vis_reuse(start);   // (the reused prefix must hold the same pictures)
             if (g_sess.on) start = sess_begin(pr, hist, last_logits, start);   // conversation cache (ink2_session.cuh)
             kv_trim((int) pr.size() + 1);
             if (spec && start == pr.size()) start = pr.size() - 1;   // re-fed: the drafter needs its features
             const double t0 = now_ms();
             const long acc0 = D.accepted, ver0 = D.verifies;
+            if (const std::string ve = vis_encode(start); !ve.empty()) {
+                std::printf("ERR image: %s\n", ve.c_str());
+                std::fflush(stdout);
+                smp.rng = std::move(s.rng);
+                continue;
+            }
             if (start == pr.size()) {
                 logits = last_logits;
             } else {
@@ -5552,6 +5579,7 @@ int main(int argc, char** argv) {
             }
             const double t2 = now_ms();
             hist = pr;
+            vis_done();
             if (!gen.empty()) hist.insert(hist.end(), gen.begin(), gen.end() - 1);   // the last token was never fed
             last_logits = logits;
             smp.rng = std::move(s.rng);
@@ -5563,6 +5591,12 @@ int main(int argc, char** argv) {
         return 0;
     }
 
+    if (!vis_paths.empty() || std::count(ids.begin(), ids.end(), IMAGE_TOKEN)) {   // pictures (ink2_vision.cuh)
+        std::string ve = PF.TP > 0 ? vis_prepare(ids, vis_paths) : "pictures need --chunk > 0";
+        if (ve.empty() && (int) ids.size() + n_gen > E.ctx) ve = "prompt + n exceeds --ctx " + std::to_string(E.ctx);
+        if (ve.empty()) ve = vis_encode(0);
+        if (!ve.empty()) { std::fprintf(stderr, "%s\n", ve.c_str()); return 1; }
+    }
     if (spec) {   // greedy speculative decoding: prompt in chunks, then draft 7 / verify 8
         const double s0 = now_ms();
         for (size_t p0 = 0; p0 < ids.size(); p0 += PF.TP) {

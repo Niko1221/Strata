@@ -561,7 +561,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     # the per-thread default stream
     # ink2_cpu.cpp: cold experts on the CPU (--cpu-threads), Linux x86 (a stub elsewhere)
     find_package(Threads REQUIRED)
-    add_executable(strata-ink2 src/inkling2/ink2_engine.cu src/inkling2/ink2_cpu.cpp)
+    add_executable(strata-ink2 src/inkling2/ink2_engine.cu src/inkling2/ink2_cpu.cpp src/inkling2/ink2_image.cpp)
     target_include_directories(strata-ink2 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${_strata_gpu_include_directories})
     target_link_libraries(strata-ink2 PRIVATE strata_warnings ${_strata_gpu_blas_target} ${_strata_gpu_runtime_target} Threads::Threads)
     target_compile_options(strata-ink2 PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--default-stream=per-thread>)
