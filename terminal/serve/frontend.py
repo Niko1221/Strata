@@ -62,6 +62,7 @@ class ChatTemplate:
         env.filters["tojson"] = tojson
         env.globals["raise_exception"] = raise_exception
         self.source = normalize_baked_chat_template(Path(path).read_text(encoding="utf-8"))
+        self._is_hy4 = "<tool_calls{}>" in self.source or "<\uff5creasoning_mode" in self.source
         self.template = env.from_string(self.source)
         self.caps = self._detect_caps()
 
@@ -73,6 +74,9 @@ class ChatTemplate:
                     if i == len(messages) - 1 or os.environ.get("STRATA_KEEP_EMPTY_TURNS") == "1" or not (isinstance(m, dict) and m.get("role") == "assistant"
                                                       and not _text_of(m.get("content")).strip()
                                                       and not _has_image(m.get("content")) and not m.get("tool_calls"))]
+        if self._is_hy4 and kwargs:
+            from serve import hy4_dialect
+            kwargs = hy4_dialect.template_kwargs(kwargs)
         return self.template.render(messages=messages, tools=tools, add_generation_prompt=add_generation_prompt,
                                     **kwargs)
 
@@ -115,6 +119,19 @@ class ChatTemplate:
 
         history = [user, {"role": "assistant", "content": "strata_caps_answer",
                           "reasoning_content": "strata_caps_reasoning"}, user]
+        if "<tool_calls{}>" in self.source:      # Hy4-Flash (serve/hy4_dialect.py): its own spelling of the same capabilities
+            def hy4_calls(count):
+                calls = [{"name": f"strata_caps_call_{i}", "arguments": {"arg": f"strata_caps_arg_{i}"}} for i in range(count)]
+                messages = [user, {"role": "assistant", "content": "", "tool_calls": [{"function": call} for call in calls]}]
+                messages += [{"role": "tool", "content": f"strata_caps_result_{i}"} for i in range(count)] + [user]
+                prompt = render(messages, tools)
+                return all(f"<tool_call:opensource>strata_caps_call_{i}<arg_key:opensource>arg</arg_key:opensource><arg_value:opensource>strata_caps_arg_{i}" in prompt
+                           and f"strata_caps_result_{i}" in prompt for i in range(count))
+            return {"supports_tools": all(s in tool_prompt for s in ("strata_caps_call_0", "strata_caps_description", "<tool_calls:opensource>")),
+                    "supports_tool_calls": hy4_calls(1),
+                    "supports_system_role": "strata_caps_system" in render([{"role": "system", "content": "strata_caps_system"}, user]),
+                    "supports_parallel_tool_calls": hy4_calls(2),
+                    "supports_preserve_reasoning": "strata_caps_reasoning" in render(history, tools)}
         return {"supports_tools": all(s in tool_prompt for s in
                                       ("strata_caps_call_0", "strata_caps_description", "<tool_call>", "<function=")),
                 "supports_tool_calls": calls_supported(1),
@@ -147,20 +164,32 @@ EFFORT = {"none": None, "off": None, "minimal": None, "disabled": None, "false":
 
 
 _EFFORT_QWEN = dict(EFFORT)
+_FAMILY: str | None = None
 
 
 def use_family(family: str | None) -> None:
-    """The reasoning-effort words of the model family this server runs (module state, like ENV_TO_USER): the Qwen table."""
+    """The reasoning-effort words of the model family this server runs (module state, like ENV_TO_USER): the Qwen table, or Hy4-Flash's
+    (its template knows no_think, high and max: serve/hy4_dialect.py)."""
+    global _FAMILY
+    _FAMILY = family
     EFFORT.clear()
+    if family == "hy4":
+        from serve import hy4_dialect
+        EFFORT.update(hy4_dialect.EFFORT)
+        return
     EFFORT.update(_EFFORT_QWEN)
 
 
 def effort_kwargs(value) -> dict:
-    """A reasoning effort as given by a client -> the template's kwargs.  Unknown values are a 400, not a crash."""
+    """A reasoning effort as given by a client -> the template's kwargs.  Unknown values are a 400 on Qwen; Hy4-Flash clamps external client efforts into {no_think, high, max}."""
     if value is None or value == "":
         return {}
     if value is False:
         return {"enable_thinking": False}
+    if _FAMILY == "hy4":
+        from serve import hy4_dialect
+        mode = hy4_dialect.normalize_effort(value)
+        return {"enable_thinking": False} if mode == "no_think" else {"reasoning_effort": mode}
     key = str(value).strip().lower()
     if key not in EFFORT:
         raise ValueError(f"unknown reasoning effort {value!r}: use none, low, medium or high")
@@ -169,12 +198,13 @@ def effort_kwargs(value) -> dict:
 
 
 def budget_effort(tokens) -> dict:
-    """Anthropic's thinking budget (budget_tokens) -> a level: under 2K low, under 8K medium, else high."""
+    """Anthropic's thinking budget (budget_tokens) -> a level: under 2K low, under 8K medium, else high (clamped through EFFORT for Hy4-Flash)."""
     try:
         n = int(tokens)
     except (TypeError, ValueError):
         return {}
-    return {"reasoning_effort": "low" if n < 2048 else "medium" if n < 8192 else EFFORT["high"]}
+    level = EFFORT.get("low", "low") if n < 2048 else EFFORT.get("medium", "medium") if n < 8192 else EFFORT["high"]
+    return {"reasoning_effort": level}
 
 
 def _has_image(content) -> bool:
@@ -655,7 +685,7 @@ def openai_to_messages(req: dict) -> tuple[list[dict], list[dict] | None, dict]:
     for k, v in ctk.items():
         if k == "enable_thinking" and not v:
             kwargs = {"enable_thinking": False}
-        elif k == "reasoning_effort" and "enable_thinking" not in kwargs:
+        elif k in ("reasoning_effort", "thinking_mode") and "enable_thinking" not in kwargs:
             kwargs.update(effort_kwargs(v))
     return _env_to_user(_late_system_to_user(messages)), tools, kwargs
 
@@ -2961,9 +2991,31 @@ class JsonOutputParser(OutputParser):
                          declared_only=declared_only, deferred=deferred)
 
 
+class Hy4OutputParser(OutputParser):
+    """The parser for Hy4-Flash: the model writes its reasoning and its calls with tagged tokens (`<think:opensource>`, `<tool_calls:opensource>`, `<arg_key:opensource>` ...);
+    serve/hy4_dialect.py turns them into the form OutputParser reads as the text arrives, and everything else (reasoning, content, declared-tool rules, recovery) is
+    OutputParser's.  A call is in the declared-tool form once translated, so the recovery that reads a drifted opener is on, as for the JSON form."""
+
+    def __init__(self, thinking: bool = True, tools: list[dict] | None = None, stream_tools: bool = False,
+                 recover: bool = False, declared_only: bool = False, deferred: bool = False):
+        super().__init__(thinking=thinking, tools=tools, stream_tools=stream_tools, recover=recover,
+                         declared_only=declared_only, deferred=deferred)
+        from serve import hy4_dialect
+        self._dialect = hy4_dialect.Hy4Dialect()
+
+    def feed(self, delta: str) -> list[Event]:
+        return super().feed(self._dialect.feed(delta))
+
+    def finish(self, reason: str | None = None) -> list[Event]:
+        tail = self._dialect.feed("", final=True)
+        out = super().feed(tail) if tail else []
+        return out + super().finish(reason)
+
+
 def parser_for_template(source: str | None):
     """The OutputParser class for a chat template's text, by the tool-call form the template documents (serve/toolformat.py):
     the JSON form gets JsonOutputParser; the XML form every Strata model ships with, templates without tools, and forms nothing
     here reads keep OutputParser (the same class as before this existed)."""
     from serve import toolformat
-    return JsonOutputParser if toolformat.tool_format(source or "") == "json" else OutputParser
+    kind = toolformat.tool_format(source or "")
+    return Hy4OutputParser if kind == "hy4" else JsonOutputParser if kind == "json" else OutputParser
