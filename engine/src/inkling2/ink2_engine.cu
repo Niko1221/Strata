@@ -22,6 +22,7 @@
 // Modes: --tokens IDS | --tokens-file F [--n N] [--dump-logits F] [--ctx N] [--graph 0|1] [--chunk N]; prints prompt /
 // decode speed.
 #include "../image/vae/safetensors_lite.hpp"
+#include "ink2_cpu.hpp"
 
 #include <cublas_v2.h>
 #include <cuda_fp16.h>
@@ -230,6 +231,7 @@ __global__ void k_gemv_nvfp4_sel(const uint8_t* const* __restrict__ tab,
     if (row0 >= N) return;
     const int e = ids[blockIdx.y];
     const uint8_t* W = tab[e];
+    if (!W) return;   // computed on the CPU (--cpu-threads): k_cpu_wait writes its output
     const uint8_t* S = W + (size_t) N * (K / 2);
     const uint32_t* w[R];
     const uint8_t* s[R];
@@ -279,6 +281,7 @@ __global__ void k_gemv_mxfp8_sel(const uint8_t* const* __restrict__ tab, const i
     if (row0 >= N) return;
     const int e = ids[blockIdx.y];
     const uint8_t* W = tab[e];
+    if (!W) return;   // computed on the CPU (--cpu-threads)
     const uint8_t* S = W + (size_t) N * K;
     const uint32_t* w[R];
     const uint8_t* s[R];
@@ -1707,7 +1710,7 @@ struct CacheArgs {
     const uint8_t **tabA, **tabB;
     uint8_t* pool;
     size_t eb, partA;
-    const uint8_t* host;   // device view of layer l's experts in pinned host memory (NE x eb)
+    const uint8_t* const* host;   // device views of layer l's experts in mapped host memory ([NE])
     const uint8_t** fsrc;
     uint8_t** fdst;
     int* nfetch;
@@ -1752,7 +1755,7 @@ __global__ void k_cache_plan(int l, const int* __restrict__ ids, int n, CacheArg
             c.stamp[v] = ++clk;
             c.tabA[key] = d;
             c.tabB[key] = d + c.partA;
-            c.fsrc[m] = c.host + (size_t) e * c.eb;
+            c.fsrc[m] = c.host[e];
             c.fdst[m] = d;
         }
         __syncthreads();
@@ -1907,17 +1910,35 @@ struct Engine {
     int rec_mode = 0;     // 1 record (one-token path), 2 force (prefill)
     int kvm = 1;          // --kv f32 (0) | f16 (1, default) | i8 (2: int8 cells + fp16 scale per 64, Strata's kv_q8
                           // layout) | i8r (3: i8 + Walsh-Hadamard rotation)
-    // experts: every expert in xhost layout order (NVFP4 layers 0-19 then MXFP8 layers 20-23, NE per layer, one slot
+    // experts: every expert in layout order (NVFP4 layers 0-19 then MXFP8 layers 20-23, NE per layer, one slot
     // each); resident = the device pool holds them all, in that order
     uint8_t *pool_nv = nullptr, *pool_mx = nullptr;
     const uint8_t **tabA = nullptr, **tabB = nullptr;   // device [NL * NE]: part A / part B of expert (l, e)
     std::vector<const uint8_t*> htabA, htabB;            // host mirrors
     // offload (--vram-reserve-mib N: leave N MiB of the card free, the expert pools take what remains): every expert
-    // in pinned host memory (xhost), the pools hold nslot_nv / nslot_mx of them, LRU (k_cache_plan)
+    // in mapped host memory (xh), the pools hold nslot_nv / nslot_mx of them, LRU (k_cache_plan)
     int reserve_mib = -1;   // < 0: everything resident
-    uint8_t* xhost = nullptr;
-    const uint8_t* xhost_d = nullptr;   // its device view
+    bool offload = false;
+    std::vector<uint8_t*> xh;            // [NL * NE] host address of expert (l, e) (regions placed per NUMA node)
+    std::vector<uint8_t> home;           // [NL * NE] its node
+    const uint8_t** xsrc_d = nullptr;    // device [NL * NE]: its device view (mapped)
+    std::vector<std::pair<void*, size_t>> regions;
     int nslot_nv = 0, nslot_mx = 0;
+    // CPU experts (--cpu-threads N, with offload): misses of a decode visit computed on the CPU (ink2_cpu), wanted
+    // experts promoted into the pools in the background (copied during the next token, committed at its end)
+    int cpu_threads = 0;
+    bool cpu = false;
+    int cpu_nodes = 1;
+    ink2cpu::InkBell *bell = nullptr, *bell_d = nullptr;
+    unsigned *d_seq = nullptr, *d_cur = nullptr;
+    int *want_nv = nullptr, *want_mx = nullptr, *nwant_nv = nullptr, *nwant_mx = nullptr;
+    int *pend_nv = nullptr, *pend_mx = nullptr, *npend_nv = nullptr, *npend_mx = nullptr;   // [i] = key, [PMAX + i] = slot
+    const uint8_t **psrc_nv = nullptr, **psrc_mx = nullptr;   // promotion copies (k_fetch lists of their own)
+    uint8_t **pdst_nv = nullptr, **pdst_mx = nullptr;
+    int *pnf_nv = nullptr, *pnf_mx = nullptr;
+    std::vector<float> hf13, hf2;        // [NL * NE] host copies of the NVFP4 factors (1 for MXFP8)
+    cudaStream_t side = nullptr;
+    cudaEvent_t ev_fork = nullptr, ev_join = nullptr;
     int *slot_of = nullptr, *owner_nv = nullptr, *owner_mx = nullptr, *nfetch = nullptr;
     unsigned *stamp_nv = nullptr, *stamp_mx = nullptr, *clock = nullptr;
     const uint8_t** fsrc = nullptr;
@@ -1926,7 +1947,7 @@ struct Engine {
 };
 size_t ex_bytes(int l) { return l < MXFP8_FIRST ? NV_BYTES : MX_BYTES; }
 size_t ex_partA(int l) { return l < MXFP8_FIRST ? NV_A : MX_A; }
-size_t ex_layer_off(int l) {   // offset of layer l's first expert in the xhost / resident layout
+size_t ex_layer_off(int l) {   // offset of layer l's first expert in the resident layout
     return l < MXFP8_FIRST ? (size_t) l * NE * NV_BYTES
                            : (size_t) MXFP8_FIRST * NE * NV_BYTES + (size_t) (l - MXFP8_FIRST) * NE * MX_BYTES;
 }
@@ -1967,6 +1988,20 @@ DMat dmat_stack(const std::vector<std::string>& names) {   // BF16 matrices with
     return m;
 }
 
+// the NUMA node of the GPU (sysfs), -1 when unknown
+int gpu_node() {
+    char bus[32] = {0};
+    if (cudaDeviceGetPCIBusId(bus, sizeof bus, 0) != cudaSuccess) return -1;
+    std::string id(bus);
+    for (char& c : id) c = (char) std::tolower((unsigned char) c);
+    FILE* f = std::fopen(("/sys/bus/pci/devices/" + id + "/numa_node").c_str(), "r");
+    if (!f) return -1;
+    int n = -1;
+    if (std::fscanf(f, "%d", &n) != 1) n = -1;
+    std::fclose(f);
+    return n;
+}
+
 void load() {
     const Ckpt& ck = *E.ck;
     const std::string p = "model.llm.";
@@ -1993,11 +2028,39 @@ void load() {
         E.pool_nv = (uint8_t*) dalloc((size_t) MXFP8_FIRST * NE * NV_BYTES);
         E.pool_mx = (uint8_t*) dalloc((size_t) (NL - MXFP8_FIRST) * NE * MX_BYTES);
     } else {
-        CK(cudaHostAlloc((void**) &E.xhost, ex_layer_off(NL), cudaHostAllocMapped | cudaHostAllocPortable));
-        void* dv = nullptr;
-        CK(cudaHostGetDevicePointer(&dv, E.xhost, 0));
-        E.xhost_d = (const uint8_t*) dv;
+        // every expert in host memory, registered (mapped) for the copies.  CPU experts on several nodes: each expert
+        // whole on one node, alternating (a node's threads read local memory only); else all on the GPU's node.
+        E.offload = true;
+        E.cpu_nodes = E.cpu ? ink2cpu::nodes() : 1;
+        const int gnode = gpu_node();
+        E.xh.assign((size_t) NL * NE, nullptr);
+        E.home.assign((size_t) NL * NE, 0);
+        std::vector<const uint8_t*> dev((size_t) NL * NE, nullptr);
+        for (int n = 0; n < E.cpu_nodes; ++n) {
+            size_t bytes = 0;
+            for (int k = 0; k < NL * NE; ++k) {
+                E.home[k] = E.cpu_nodes > 1 ? (uint8_t) (k % E.cpu_nodes) : 0;
+                if (E.home[k] == n) bytes += ex_bytes(k / NE);
+            }
+            const int place = E.cpu_nodes > 1 ? n : std::max(gnode, 0);
+            uint8_t* reg = (uint8_t*) ink2cpu::node_alloc(bytes, place);
+            if (!reg) { std::fprintf(stderr, "cannot map %.2f GiB of host memory for the experts\n", bytes / 1073741824.0); std::exit(1); }
+            CK(cudaHostRegister(reg, bytes, cudaHostRegisterMapped | cudaHostRegisterPortable));
+            void* dv = nullptr;
+            CK(cudaHostGetDevicePointer(&dv, reg, 0));
+            E.regions.push_back({reg, bytes});
+            size_t off = 0;
+            for (int k = 0; k < NL * NE; ++k)
+                if (E.home[k] == n) {
+                    E.xh[k] = reg + off;
+                    dev[k] = (const uint8_t*) dv + off;
+                    off += ex_bytes(k / NE);
+                }
+        }
+        E.xsrc_d = (const uint8_t**) upload(dev.data(), dev.size() * sizeof(void*));
     }
+    E.hf13.assign((size_t) NL * NE, 1.0f);
+    E.hf2.assign((size_t) NL * NE, 1.0f);
     E.tabA = (const uint8_t**) dalloc((size_t) NL * NE * sizeof(void*));
     E.tabB = (const uint8_t**) dalloc((size_t) NL * NE * sizeof(void*));
     E.htabA.assign((size_t) NL * NE, nullptr);
@@ -2056,16 +2119,15 @@ void load() {
             const auto w2 = ck.bytes(q + "mlp.experts.w2_weight"), s2 = ck.bytes(q + "mlp.experts.w2_weight_scale");
             const size_t a = w13.size() / NE, b = s13.size() / NE, c = w2.size() / NE, d = s2.size() / NE, eb = ex_bytes(l);
             if (a + b + c + d != eb || a + b != ex_partA(l)) { std::fprintf(stderr, "layer %d: expert bytes %zu\n", l, a + b + c + d); std::exit(1); }
-            std::vector<uint8_t> lay(E.xhost ? 0 : (size_t) NE * eb);
-            uint8_t* lp = E.xhost ? E.xhost + ex_layer_off(l) : lay.data();
+            std::vector<uint8_t> lay(E.offload ? 0 : (size_t) NE * eb);
             for (int e = 0; e < NE; ++e) {
-                uint8_t* o = lp + (size_t) e * eb;
+                uint8_t* o = E.offload ? E.xh[(size_t) l * NE + e] : lay.data() + (size_t) e * eb;
                 std::memcpy(o, w13.data() + e * a, a);
                 std::memcpy(o + a, s13.data() + e * b, b);
                 std::memcpy(o + a + b, w2.data() + e * c, c);
                 std::memcpy(o + a + b + c, s2.data() + e * d, d);
             }
-            if (!E.xhost) {   // resident: the layer's range of its pool (offload: setup_offload fills the pools)
+            if (!E.offload) {   // resident: the layer's range of its pool (offload: setup_offload fills the pools)
                 uint8_t* dst = (X.nvfp4 ? E.pool_nv : E.pool_mx) + ex_layer_off(l) - (X.nvfp4 ? 0 : ex_layer_off(MXFP8_FIRST));
                 CK(cudaMemcpy(dst, lay.data(), lay.size(), cudaMemcpyHostToDevice));
                 for (int e = 0; e < NE; ++e) {
@@ -2080,14 +2142,19 @@ void load() {
             const vec a13 = ck.f32(q + "mlp.experts.w13_weight_amax"), d13 = ck.f32(q + "mlp.experts.w13_weight_outer_scale_denominator");
             const vec a2 = ck.f32(q + "mlp.experts.w2_weight_amax"), d2 = ck.f32(q + "mlp.experts.w2_weight_outer_scale_denominator");
             vec f13(NE), f2(NE);
-            for (int e = 0; e < NE; ++e) { f13[e] = a13[e] / d13[0]; f2[e] = a2[e] / d2[0]; }
+            for (int e = 0; e < NE; ++e) {
+                f13[e] = a13[e] / d13[0];
+                f2[e] = a2[e] / d2[0];
+                E.hf13[(size_t) l * NE + e] = f13[e];
+                E.hf2[(size_t) l * NE + e] = f2[e];
+            }
             X.f13 = dvec(f13);
             X.f2 = dvec(f2);
         }
         std::fprintf(stderr, "\rloaded layer %d/%d, %.1f GiB in VRAM", l + 1, NL, g_vram / 1073741824.0);
     }
     std::fprintf(stderr, "\n");
-    if (!E.xhost) {
+    if (!E.offload) {
         CK(cudaMemcpy(E.tabA, E.htabA.data(), E.htabA.size() * sizeof(void*), cudaMemcpyHostToDevice));
         CK(cudaMemcpy(E.tabB, E.htabB.data(), E.htabB.size() * sizeof(void*), cudaMemcpyHostToDevice));
     }
@@ -2123,7 +2190,7 @@ void setup_offload() {
             if (used >= (nv ? E.nslot_nv : E.nslot_mx)) continue;
             const size_t eb = ex_bytes(l);
             uint8_t* d = (nv ? E.pool_nv : E.pool_mx) + (size_t) used * eb;
-            CK(cudaMemcpy(d, E.xhost + ex_layer_off(l) + (size_t) e * eb, eb, cudaMemcpyHostToDevice));
+            CK(cudaMemcpy(d, E.xh[(size_t) l * NE + e], eb, cudaMemcpyHostToDevice));
             slot_of[l * NE + e] = used;
             (nv ? own_nv : own_mx)[used] = l * NE + e;
             E.htabA[l * NE + e] = d;
@@ -2286,16 +2353,230 @@ void expert_cache(int l, const int* ids, int n) {
     const bool nv = l < MXFP8_FIRST;
     CacheArgs c{E.slot_of, nv ? E.owner_nv : E.owner_mx, nv ? E.stamp_nv : E.stamp_mx, E.clock,
                 nv ? E.nslot_nv : E.nslot_mx, E.tabA, E.tabB, nv ? E.pool_nv : E.pool_mx, ex_bytes(l), ex_partA(l),
-                E.xhost_d + ex_layer_off(l), E.fsrc, E.fdst, E.nfetch, E.fbytes};
+                E.xsrc_d + (size_t) l * NE, E.fsrc, E.fdst, E.nfetch, E.fbytes};
     k_cache_plan<<<1, 1024>>>(l, ids, n, c);
     k_fetch<<<dim3(FETCH_BLOCKS, std::min(n, FETCH_MAX)), 256>>>(E.fsrc, E.fdst, E.nfetch, ex_bytes(l));
+}
+
+// ---- CPU experts (--cpu-threads).  A decode visit: k_cache_cpu stamps the resident experts, hands the others to the
+// CPU (bell: jobs, x, ring = sequence number) and notes them as wanted; the GEMVs skip them (null table entries);
+// k_cpu_wait waits for every node's ack and copies the CPU outputs into ey.  At the end of a token k_promote_commit
+// makes the experts copied during this token resident, then k_promote_plan picks LRU victims for up to PROMOTE_NV /
+// PROMOTE_MX wanted experts (victims unmapped at once, so nothing reads them while the next token copies into them).
+constexpr int WANT_MAX = 64, PMAX = 32;
+int g_bg_blocks = 4;   // INK2_BG_BLOCKS (12 GiB, q1 chat: 4 and 8 blocks 69.8 / 68.9 tok/s, 16: 65.8)
+int g_promote_nv = 12, g_promote_mx = 3;   // per token (INK2_PROMOTE=nv,mx): ~54 + 25 MB of PCIe in the background
+__global__ void k_cache_cpu(int l, const int* __restrict__ ids, const float* __restrict__ x, int* slot_of, unsigned* stamp,
+                            unsigned* clock, int* want, int* nwant, ink2cpu::InkBell* bell, unsigned* seq, unsigned* cur) {
+    __shared__ int nj;
+    if (threadIdx.x == 0) {
+        unsigned t = *clock;
+        int n = 0, nw = *nwant;
+        for (int k = 0; k < TOPK; ++k) {
+            const int e = ids[k], key = l * NE + e, sl = slot_of[key];
+            if (sl >= 0) { stamp[sl] = ++t; continue; }
+            bell->k[n] = k;
+            bell->e[n] = e;
+            ++n;
+            bool have = false;
+            for (int i = 0; i < nw; ++i) have |= want[i] == key;
+            if (!have && nw < WANT_MAX) want[nw++] = key;
+        }
+        *clock = t;
+        *nwant = nw;
+        nj = n;
+    }
+    __syncthreads();
+    if (!nj) {
+        if (threadIdx.x == 0) *cur = 0;
+        return;
+    }
+    for (int i = threadIdx.x; i < H; i += blockDim.x) bell->x[i] = x[i];
+    __threadfence_system();
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        bell->layer = l;
+        bell->n = nj;
+        __threadfence_system();
+        const unsigned s = ++*seq;
+        bell->ring = s;
+        __threadfence_system();
+        *cur = s;
+    }
+}
+// grid TOPK: block j copies job j's output once every node has acked (a stuck pool traps after ~4 s: an error, not a hang)
+__global__ void k_cpu_wait(const ink2cpu::InkBell* __restrict__ bell_c, const unsigned* cur, int nodes, float* ey) {
+    const volatile ink2cpu::InkBell* bell = bell_c;
+    const unsigned s = *cur;
+    if (!s) return;
+    __shared__ int ok;
+    if (threadIdx.x == 0) {
+        const long long t0 = clock64();
+        while (bell->ack[0] != s || (nodes > 1 && bell->ack[1] != s))
+            if (clock64() - t0 > 8000000000ll) __trap();
+        ok = (int) blockIdx.x < bell->n;
+    }
+    __syncthreads();
+    if (!ok) return;
+    const int j = blockIdx.x, k = bell->k[j];
+    const float4* src = reinterpret_cast<const float4*>(bell_c->y[j]);
+    float4* dst = reinterpret_cast<float4*>(ey + (size_t) k * H);
+    for (int i = threadIdx.x; i < H / 4; i += blockDim.x) dst[i] = __ldcv(src + i);   // not through the caches
+}
+struct PromoteArgs {
+    int *slot_of, *owner;
+    unsigned *stamp, *clock;
+    int nslot;
+    const uint8_t **tabA, **tabB;
+    uint8_t* pool;
+    size_t eb, partA;
+    const uint8_t* const* xsrc;   // [NL * NE] device views
+    int *want, *nwant, *pend, *npend;
+    const uint8_t** fsrc;
+    uint8_t** fdst;
+    int* nfetch;
+    unsigned long long* fbytes;
+    int maxn;
+};
+__global__ void k_promote_commit(PromoteArgs c) {
+    if (threadIdx.x) return;
+    unsigned t = *c.clock;
+    for (int i = 0; i < *c.npend; ++i) {
+        const int key = c.pend[i], v = c.pend[PMAX + i];
+        c.owner[v] = key;
+        c.slot_of[key] = v;
+        c.stamp[v] = ++t;
+        c.tabA[key] = c.pool + (size_t) v * c.eb;
+        c.tabB[key] = c.pool + (size_t) v * c.eb + c.partA;
+    }
+    *c.clock = t;
+    *c.npend = 0;
+    *c.nfetch = 0;
+}
+__global__ void k_promote_plan(PromoteArgs c) {
+    __shared__ unsigned long long wmin[32];
+    __shared__ int n, np;
+    if (threadIdx.x == 0) { n = min(*c.nwant, c.maxn); np = 0; }
+    __syncthreads();
+    for (int m = 0; m < n; ++m) {
+        unsigned long long best = ~0ull;
+        for (int i = threadIdx.x; i < c.nslot; i += blockDim.x)
+            best = min(best, ((unsigned long long) c.stamp[i] << 32) | (unsigned) i);
+#pragma unroll
+        for (int o = 16; o; o >>= 1) best = min(best, __shfl_xor_sync(0xffffffffu, best, o));
+        if ((threadIdx.x & 31) == 0) wmin[threadIdx.x / 32] = best;
+        __syncthreads();
+        if (threadIdx.x == 0) {
+            for (int w = 1; w < (int) (blockDim.x / 32); ++w) best = min(best, wmin[w]);
+            const int v = (int) (best & 0xffffffffu), key = c.want[m], old = c.owner[v];
+            if (c.slot_of[key] < 0 && c.stamp[v] != 0xffffffffu) {   // (resident meanwhile: a prefill's cache)
+                if (old >= 0) { c.slot_of[old] = -1; c.tabA[old] = nullptr; c.tabB[old] = nullptr; }
+                c.owner[v] = -1;
+                c.stamp[v] = 0xffffffffu;   // in flight: never a victim before its commit
+                c.pend[np] = key;
+                c.pend[PMAX + np] = v;
+                c.fsrc[np] = c.xsrc[key];
+                c.fdst[np] = c.pool + (size_t) v * c.eb;
+                ++np;
+            }
+        }
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) {
+        *c.npend = np;
+        *c.nfetch = np;
+        *c.fbytes += (unsigned long long) np * c.eb;
+        *c.nwant = 0;
+    }
+}
+PromoteArgs promote_args(bool nv) {
+    return {E.slot_of, nv ? E.owner_nv : E.owner_mx, nv ? E.stamp_nv : E.stamp_mx, E.clock, nv ? E.nslot_nv : E.nslot_mx,
+            E.tabA, E.tabB, nv ? E.pool_nv : E.pool_mx, nv ? NV_BYTES : MX_BYTES, nv ? NV_A : MX_A, E.xsrc_d,
+            nv ? E.want_nv : E.want_mx, nv ? E.nwant_nv : E.nwant_mx, nv ? E.pend_nv : E.pend_mx, nv ? E.npend_nv : E.npend_mx,
+            nv ? E.psrc_nv : E.psrc_mx, nv ? E.pdst_nv : E.pdst_mx, nv ? E.pnf_nv : E.pnf_mx, E.fbytes,
+            nv ? g_promote_nv : g_promote_mx};
+}
+// start of a decode token: the copies planned at the end of the previous one, on a side stream (few blocks: the
+// token's own kernels keep the SMs)
+// BG_BLOCKS blocks in all, one expert after the other: blocks waiting on PCIe reads hold SM slots, so few of them
+__global__ void k_fetch_bg(const uint8_t* const* __restrict__ src_nv, uint8_t* const* __restrict__ dst_nv, const int* nnv,
+                           const uint8_t* const* __restrict__ src_mx, uint8_t* const* __restrict__ dst_mx, const int* nmx) {
+    const int a = *nnv, b = *nmx;
+    for (int m = 0; m < a + b; ++m) {
+        const bool nv = m < a;
+        const uint4* src = reinterpret_cast<const uint4*>(nv ? src_nv[m] : src_mx[m - a]);
+        uint4* dst = reinterpret_cast<uint4*>(nv ? dst_nv[m] : dst_mx[m - a]);
+        const size_t n = (nv ? NV_BYTES : MX_BYTES) / 16, st = (size_t) gridDim.x * blockDim.x;
+        size_t i = (size_t) blockIdx.x * blockDim.x + threadIdx.x;
+        for (; i + 3 * st < n; i += 4 * st) {
+            const uint4 x0 = src[i], x1 = src[i + st], x2 = src[i + 2 * st], x3 = src[i + 3 * st];
+            dst[i] = x0; dst[i + st] = x1; dst[i + 2 * st] = x2; dst[i + 3 * st] = x3;
+        }
+        for (; i < n; i += st) dst[i] = src[i];
+    }
+}
+void promote_fork() {
+    CK(cudaEventRecord(E.ev_fork, cudaStreamPerThread));
+    CK(cudaStreamWaitEvent(E.side, E.ev_fork, 0));
+    k_fetch_bg<<<g_bg_blocks, 256, 0, E.side>>>(E.psrc_nv, E.pdst_nv, E.pnf_nv, E.psrc_mx, E.pdst_mx, E.pnf_mx);
+    CK(cudaEventRecord(E.ev_join, E.side));
+}
+// end of a decode token: join the copies, commit them, plan the next ones
+void promote_join() {
+    CK(cudaStreamWaitEvent(cudaStreamPerThread, E.ev_join, 0));
+    for (int nv = 1; nv >= 0; --nv) {
+        k_promote_commit<<<1, 32>>>(promote_args(nv));
+        k_promote_plan<<<1, 1024>>>(promote_args(nv));
+    }
+}
+void expert_cpu_ring(int l, const float* x) {
+    const bool nv = l < MXFP8_FIRST;
+    k_cache_cpu<<<1, 256>>>(l, E.ids, x, E.slot_of, nv ? E.stamp_nv : E.stamp_mx, E.clock, nv ? E.want_nv : E.want_mx,
+                            nv ? E.nwant_nv : E.nwant_mx, E.bell_d, E.d_seq, E.d_cur);
+}
+void setup_cpu() {
+    if (const char* p = std::getenv("INK2_PROMOTE")) std::sscanf(p, "%d,%d", &g_promote_nv, &g_promote_mx);
+    if (const char* p = std::getenv("INK2_BG_BLOCKS")) g_bg_blocks = std::max(1, std::atoi(p));
+    g_promote_nv = std::min(g_promote_nv, PMAX);
+    g_promote_mx = std::min(g_promote_mx, PMAX);
+    CK(cudaHostAlloc((void**) &E.bell, sizeof(ink2cpu::InkBell), cudaHostAllocMapped | cudaHostAllocPortable));
+    std::memset((void*) E.bell, 0, sizeof(ink2cpu::InkBell));
+    void* dv = nullptr;
+    CK(cudaHostGetDevicePointer(&dv, (void*) E.bell, 0));
+    E.bell_d = (ink2cpu::InkBell*) dv;
+    auto zi = [](size_t n) { int* p = (int*) dalloc(n * 4); CK(cudaMemset(p, 0, n * 4)); return p; };
+    E.d_seq = (unsigned*) zi(1);
+    E.d_cur = (unsigned*) zi(1);
+    E.want_nv = zi(WANT_MAX); E.want_mx = zi(WANT_MAX); E.nwant_nv = zi(1); E.nwant_mx = zi(1);
+    E.pend_nv = zi(2 * PMAX); E.pend_mx = zi(2 * PMAX); E.npend_nv = zi(1); E.npend_mx = zi(1);
+    E.psrc_nv = (const uint8_t**) dalloc(PMAX * sizeof(void*));
+    E.psrc_mx = (const uint8_t**) dalloc(PMAX * sizeof(void*));
+    E.pdst_nv = (uint8_t**) dalloc(PMAX * sizeof(void*));
+    E.pdst_mx = (uint8_t**) dalloc(PMAX * sizeof(void*));
+    E.pnf_nv = zi(1);
+    E.pnf_mx = zi(1);
+    CK(cudaStreamCreateWithFlags(&E.side, cudaStreamNonBlocking));
+    CK(cudaEventCreateWithFlags(&E.ev_fork, cudaEventDisableTiming));
+    CK(cudaEventCreateWithFlags(&E.ev_join, cudaEventDisableTiming));
+    ink2cpu::Setup s;
+    s.nl = NL; s.ne = NE; s.mx_first = MXFP8_FIRST; s.h = H; s.ff = FF;
+    s.ex = E.xh.data();
+    s.home = E.home.data();
+    s.f13 = E.hf13.data();
+    s.f2 = E.hf2.data();
+    s.nv_partA = NV_A; s.mx_partA = MX_A;
+    s.gate_cap = GATE_CAP; s.up_cap = UP_CAP;
+    s.bell = E.bell;
+    s.threads = E.cpu_threads;
+    ink2cpu::start(s);
 }
 
 void moe(const Layer& Y, const float* x, const float* r, float* mhist, const float* mlp_conv, float* out) {
     k_gemv_bf16_rowblock<<<NE, 256>>>(Y.router.d, x, E.rl, H);
     k_router<<<1, NE>>>(E.rl, Y.router_bias, E.ids, E.wts);
     if (E.rec_mode == 1) k_rec_ids<<<1, TOPK>>>(E.ids, E.rec + (size_t) g_slot * E.ctx * TOPK, E.d_pos);
-    if (E.xhost) expert_cache(int(&Y - E.L), E.ids, TOPK);
+    if (E.cpu) expert_cpu_ring(int(&Y - E.L), x);
+    else if (E.offload) expert_cache(int(&Y - E.L), E.ids, TOPK);
     const Experts& X = Y.ex;
     if (X.nvfp4) {
 #define SEL(R) \
@@ -2310,6 +2591,7 @@ void moe(const Layer& Y, const float* x, const float* r, float* mhist, const flo
         switch (g_sel_rpw) { case 1: SEL(1) break; case 2: SEL(2) break; case 8: SEL(8) break; default: SEL(4) }
 #undef SEL
     }
+    if (E.cpu) k_cpu_wait<<<TOPK, 256>>>(E.bell_d, E.d_cur, E.cpu_nodes, E.ey);
     k_moe_tail<<<(H + 255) / 256, 256>>>(E.ey, E.wts, mhist, mlp_conv, r, out, E.d_pos);
 }
 
@@ -2397,6 +2679,7 @@ __global__ void k_feat_store(const float* __restrict__ x, float* __restrict__ ri
     if (i < H) ring[((size_t) (*d_pos % FRING) * 4 + tap) * H + i] = x[i];
 }
 void forward_device() {
+    if (E.cpu) promote_fork();
     rms(E.emb_in, E.embed_norm, E.h);
     int nB = 0, visit = 0;
     auto run = [&](int l, int slot, const float* msgs) {
@@ -2431,6 +2714,7 @@ void forward_device() {
     if (g_fring) k_feat_store<<<H / 256, 256>>>(E.mn, g_fring, E.d_pos, 3);
     gemv(E.unembed, E.mn, E.logits, VOCAB);
     k_softcap<<<(VOCAB + 255) / 256, 256>>>(E.logits, VOCAB, LOGIT_CAP);
+    if (E.cpu) promote_join();
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -2503,7 +2787,7 @@ void alloc_prefill() {
     PF.tile_e = ints(T * TOPK / FM + NE); PF.tile_r0 = ints(T * TOPK / FM + NE); PF.ntiles = ints(1);
     PF.eoff = ints(NE); PF.ecnt = ints(NE);
     CK(cudaFuncSetAttribute(kb_attn, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) FA_SMEM));
-    if (E.xhost) {
+    if (E.offload) {
         CK(cudaStreamCreateWithFlags(&PF.cs, cudaStreamNonBlocking));
         for (int h = 0; h < 2; ++h) {
             CK(cudaEventCreateWithFlags(&PF.ev_free[h], cudaEventDisableTiming));
@@ -2670,7 +2954,7 @@ void attention_b(const Layer& Y, Slot& S, const float* xq, int sq, const float* 
 template <class F> void expert_parts(int l, bool partB, F launch) {
     const Experts& X = E.L[l].ex;
     launch(partB ? X.tB : X.tA);
-    if (!E.xhost) return;
+    if (!E.offload) return;
     const auto& nonres = PF.nonres[l];
     const size_t eb = ex_bytes(l), part = partB ? eb - ex_partA(l) : ex_partA(l), off = partB ? ex_partA(l) : 0;
     const int per = (int) (PF.stg_half / part);
@@ -2683,7 +2967,7 @@ template <class F> void expert_parts(int l, bool partB, F launch) {
         for (int j = 0; j < n; ++j) {
             const int e = nonres[b0 + j];
             uint8_t* d = PF.stg[h] + (size_t) j * part;
-            CK(cudaMemcpyAsync(d, E.xhost + ex_layer_off(l) + (size_t) e * eb + off, part, cudaMemcpyHostToDevice, PF.cs));
+            CK(cudaMemcpyAsync(d, E.xh[(size_t) l * NE + e] + off, part, cudaMemcpyHostToDevice, PF.cs));
             tab[e] = d;
         }
         // the batch table rides on the copy stream too (pinned slot per half, reused once ev_free[h] has fired)
@@ -2706,12 +2990,12 @@ void moe_b(const Layer& Y, const float* x, float* out, int T, int pos0) {
     const Experts& X = Y.ex;
     const int l = int(&Y - E.L), nr = T * TOPK, maxt = nr / FM + NE;
     if (T <= SMALL_T) {   // offload: the verify's experts through the decode cache (T x TOPK ids), not the staging
-        if (E.xhost) expert_cache(l, PF.ids, T * TOPK);
+        if (E.offload) expert_cache(l, PF.ids, T * TOPK);
         const int RR = g_grp_r;
         auto g = RR == 2 ? (X.nvfp4 ? k_moe_gemv_grp<true, 2> : k_moe_gemv_grp<false, 2>)
                          : RR == 1 ? (X.nvfp4 ? k_moe_gemv_grp<true, 1> : k_moe_gemv_grp<false, 1>)
                                    : (X.nvfp4 ? k_moe_gemv_grp<true, 4> : k_moe_gemv_grp<false, 4>);
-        auto parts = [&](bool partB, auto launch) { if (E.xhost) launch(partB ? X.tB : X.tA); else expert_parts(l, partB, launch); };
+        auto parts = [&](bool partB, auto launch) { if (E.offload) launch(partB ? X.tB : X.tA); else expert_parts(l, partB, launch); };
         parts(false, [&](const uint8_t* const* t) {
             g<<<dim3(2 * FF / (8 * RR), maxt), 256>>>(x, H, PF.rows, t, X.f13, PF.tile_e, PF.tile_r0, PF.ntiles, PF.eoff,
                                                  PF.ecnt, PF.gu, 2 * FF, H);
@@ -3252,7 +3536,7 @@ void draft_device(int p) {
 void forward_prefill_device(int T, int pos0, float* all);
 void forward_prefill(const int* toks, int T, int pos0, float* all) {
     const size_t ES = (size_t) T * H;
-    if (E.xhost) {   // what decode left in the pools
+    if (E.offload) {   // what decode left in the pools
         std::vector<const uint8_t*> t((size_t) NL * NE);
         CK(cudaMemcpy(t.data(), E.tabA, t.size() * sizeof(void*), cudaMemcpyDeviceToHost));
         for (int l = 0; l < NL; ++l) {
@@ -3466,6 +3750,7 @@ int main(int argc, char** argv) {
         else if (a == "--tc") PF.tc = std::atoi(v) != 0;
         else if (a == "--vram-reserve-mib") E.reserve_mib = std::atoi(v);
         else if (a == "--spec") spec = std::atoi(v) != 0;
+        else if (a == "--cpu-threads") E.cpu_threads = std::atoi(v);
         else if (a == "--kv") {   // Strata's names too (strata_control/tuning.py: fp16, int8)
             const std::string k = v;
             if (k == "f16" || k == "fp16") E.kvm = 1;
@@ -3482,10 +3767,16 @@ int main(int argc, char** argv) {
     }
     if (dir.empty() || (ids.empty() && !serve)) {
         std::fprintf(stderr, "usage: strata-ink2 --model DIR (--serve | --tokens IDS | --tokens-file F) [--n N] [--ctx N] "
-                             "[--chunk N] [--tc 0|1] [--kv f16|fp16|f32|i8|int8|i8r] [--vram-reserve-mib N] [--spec 0|1] [--dump-logits F]\n");
+                             "[--chunk N] [--tc 0|1] [--kv f16|fp16|f32|i8|int8|i8r] [--vram-reserve-mib N [--cpu-threads N]] [--spec 0|1] [--dump-logits F]\n");
         return 2;
     }
     if (serve && PF.TP <= 0) { std::fprintf(stderr, "--serve needs --chunk > 0\n"); return 2; }
+    if (E.cpu_threads > 0) {   // CPU experts: decode misses on the CPU (needs the offload; not with --spec yet)
+        if (E.reserve_mib < 0) { std::fprintf(stderr, "--cpu-threads needs --vram-reserve-mib (expert offload)\n"); return 2; }
+        if (spec) { std::fprintf(stderr, "--cpu-threads: not with --spec 1 yet\n"); return 2; }
+        if (!ink2cpu::isa()) { std::fprintf(stderr, "--cpu-threads: this CPU has no AVX2 + FMA + F16C\n"); return 2; }
+        E.cpu = true;
+    }
     if (!serve && (int) ids.size() + n_gen > E.ctx) { std::fprintf(stderr, "prompt + n exceeds --ctx %d\n", E.ctx); return 2; }
     Ckpt ck;
     ck.path = dir + "/model-00001-of-00001.safetensors";
@@ -3517,7 +3808,8 @@ int main(int argc, char** argv) {
         CK(cudaHostAlloc((void**) &PF.rows_host, (size_t) DBLK * VOCAB * 4, cudaHostAllocDefault));
         g_fring = dfloats((size_t) FRING * 4 * H);
     }
-    if (E.xhost) setup_offload();
+    if (E.offload) setup_offload();
+    if (E.cpu) setup_cpu();
 
     vec logits(VOCAB);
     auto step = [&](int tok, int pos, bool want_logits) {
@@ -3792,7 +4084,7 @@ int main(int argc, char** argv) {
     const double t1 = now_ms();
     if (fg) std::fclose(fg);
     unsigned long long fb1 = 0, fb2 = 0;
-    if (E.xhost) CK(cudaMemcpy(&fb1, E.fbytes, 8, cudaMemcpyDeviceToHost));
+    if (E.offload) CK(cudaMemcpy(&fb1, E.fbytes, 8, cudaMemcpyDeviceToHost));
     std::printf("gen:");
     int pos = (int) ids.size();
     for (int k = 0; k < n_gen; ++k) {
@@ -3802,7 +4094,7 @@ int main(int argc, char** argv) {
     }
     CK(cudaDeviceSynchronize());
     const double t2 = now_ms();
-    if (E.xhost) {
+    if (E.offload) {
         CK(cudaMemcpy(&fb2, E.fbytes, 8, cudaMemcpyDeviceToHost));
         size_t fr = 0, tot = 0;
         CK(cudaMemGetInfo(&fr, &tot));
