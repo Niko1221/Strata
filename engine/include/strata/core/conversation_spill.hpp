@@ -236,6 +236,7 @@ public:
         std::filesystem::path file;
         uint64_t bytes = 0;
         bool cvec = false;
+        bool lora = true;   // the LoRA adapter's setting the image was made under (kept here so best() skips other settings before any read)
         ConversationCheckpoint live;                     // ids and images only
         std::vector<ConversationCheckpoint> checkpoints;   // ids and images only
     };
@@ -285,7 +286,7 @@ public:
         }
         Entry e;
         if (ok) {
-            e.serial = serial; e.file = f; e.bytes = written; e.cvec = image.cvec;
+            e.serial = serial; e.file = f; e.bytes = written; e.cvec = image.cvec; e.lora = image.lora;
             e.live = stub(image.live);
             for (const auto& c : image.checkpoints) e.checkpoints.push_back(stub(c));
         }
@@ -301,12 +302,13 @@ public:
     /// The entry and the prefix it gives `prompt`, by the RAM cache's rule (ConversationCache::best): its live state or a
     /// checkpoint, same pictures, same steering; ties prefer the newest.  Reach it by `serial` (find / take_serial).
     template <class Token>
-    ConversationCache::Match best(const std::vector<Token>& prompt, const std::vector<ConversationImageKey>& images, bool cvec) const {
+    ConversationCache::Match best(const std::vector<Token>& prompt, const std::vector<ConversationImageKey>& images, bool cvec,
+                                bool lora = true) const {
         std::lock_guard<std::mutex> lk(mu_);
         ConversationCache::Match m;
         for (size_t i = entries_.size(); i-- > 0;) {
             const Entry& e = entries_[i];
-            if (e.cvec != cvec) continue;
+            if (e.cvec != cvec || e.lora != lora) continue;
             auto consider = [&](const ConversationCheckpoint& c, bool live) {
                 const int64_t n = conversation_prefix(c, prompt, images);
                 if (n > m.tokens) m = {i, n, live, e.serial};
@@ -400,9 +402,10 @@ private:
 /// steering): for the images the background writer still holds in RAM.  {tokens, live}; tokens 0 = none.
 template <class Token>
 std::pair<int64_t, bool> conversation_image_prefix(const SavedConversation& s, const std::vector<Token>& prompt,
-                                                   const std::vector<ConversationImageKey>& images, bool cvec) {
+                                                   const std::vector<ConversationImageKey>& images, bool cvec,
+                                                   bool lora = true) {
     std::pair<int64_t, bool> m{0, false};
-    if (s.cvec != cvec) return m;
+    if (s.cvec != cvec || s.lora != lora) return m;
     const int64_t l = conversation_prefix(s.live, prompt, images);
     if (l > m.first) m = {l, true};
     for (const auto& c : s.checkpoints) {

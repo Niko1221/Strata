@@ -311,7 +311,7 @@ def origins_of(value, key: str, wildcard: bool) -> list[str]:
 
 
 SHARED_KEYS = ("reasoning_effort", "reasoning_budget_tokens", "temperature", "top_p", "top_k", "seed", "max_tokens",
-               "experimental_speed_projection")
+               "experimental_speed_projection", "lora")
 
 
 def load_shared_settings(path, warn=print) -> dict:
@@ -377,9 +377,9 @@ def clean_shared_defaults(d) -> dict:
             if not number or value != int(value) or value < 0:
                 raise ValueError("reasoning_budget_tokens: a whole number of tokens (0: no budget)")
             value = int(value)
-        elif key == "experimental_speed_projection":
+        elif key in ("experimental_speed_projection", "lora"):
             if not isinstance(value, bool):
-                raise ValueError("experimental_speed_projection: true or false")
+                raise ValueError(f"{key}: true or false")
         else:
             raise ValueError(f"unknown setting {key!r}")
         out[key] = float(value) if key in ("temperature", "top_p") else value
@@ -554,6 +554,11 @@ def sampling_defaults_from_config(cfg: dict) -> dict:
             if not isinstance(value, bool):
                 raise SystemExit(f"[strata] config sampling.experimental_speed_projection={value!r}: expected true or "
                                  "false (the default for requests that leave it out, when the engine has the vector)")
+            out[key] = value
+        elif key == "lora":
+            if not isinstance(value, bool):
+                raise SystemExit(f"[strata] config sampling.lora={value!r}: expected true or false (the default for "
+                                 "requests that leave it out, when the engine has an adapter)")
             out[key] = value
         else:
             print(f"[strata] config sampling.{key}={value!r}: unknown key, ignored", flush=True)
