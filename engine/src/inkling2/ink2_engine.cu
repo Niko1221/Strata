@@ -420,6 +420,8 @@ __global__ void k_gemv_gg_sel(const uint8_t* const* __restrict__ tab, size_t rb,
     }
 }
 
+__constant__ int c_q8w;   // INK2_Q8_WIDE (default 1): 16-byte loads in the dense Q8 GEMV (0: 8-byte)
+#define g_q8_wide (c_q8w)
 // dense Q8_0 (repacked): y[row] = W[row] . x, as gemv_bf16_dot (one warp per R rows, x staged)
 template <int R>
 __device__ __forceinline__ void gemv_q8_dot(const int8_t* __restrict__ Wq, const __half* __restrict__ Ws, const float* xs,
@@ -437,6 +439,27 @@ __device__ __forceinline__ void gemv_q8_dot(const int8_t* __restrict__ Wq, const
     float acc[R];
 #pragma unroll
     for (int r = 0; r < R; ++r) acc[r] = 0.0f;
+    if (g_q8_wide) {   // 16 codes (one 16-byte load) per lane step, inside one 32-value scale block
+        const uint4* w16[R];
+#pragma unroll
+        for (int r = 0; r < R; ++r) w16[r] = reinterpret_cast<const uint4*>(w[r]);
+#pragma unroll 2
+        for (int i = lane; i < K / 16; i += 32) {
+            uint4 v[R];
+            float f[R];
+#pragma unroll
+            for (int r = 0; r < R; ++r) { v[r] = __ldg(w16[r] + i); f[r] = __half2float(sc[r][i >> 1]); }
+            const float4 a = x4[4 * i], b = x4[4 * i + 1], c = x4[4 * i + 2], d = x4[4 * i + 3];
+#pragma unroll
+            for (int r = 0; r < R; ++r) {
+                const char4 c0 = *reinterpret_cast<const char4*>(&v[r].x), c1 = *reinterpret_cast<const char4*>(&v[r].y);
+                const char4 c2 = *reinterpret_cast<const char4*>(&v[r].z), c3 = *reinterpret_cast<const char4*>(&v[r].w);
+                acc[r] += f[r] * (c0.x * a.x + c0.y * a.y + c0.z * a.z + c0.w * a.w + c1.x * b.x + c1.y * b.y + c1.z * b.z +
+                                  c1.w * b.w + c2.x * c.x + c2.y * c.y + c2.z * c.z + c2.w * c.w + c3.x * d.x + c3.y * d.y +
+                                  c3.z * d.z + c3.w * d.w);
+            }
+        }
+    } else
 #pragma unroll 2
     for (int i = lane; i < K / 8; i += 32) {
         uint2 v[R];
@@ -5181,6 +5204,10 @@ int main(int argc, char** argv) {
     if (const char* r = std::getenv("INK2_GG_RPW")) g_gg_rpw = std::atoi(r);
     if (const char* r = std::getenv("INK2_ROUTED_MAX")) g_pf_routed_max = std::atoi(r);
     if (const char* r = std::getenv("INK2_DQ_MIN")) g_dq_min = std::atoi(r);
+    {
+        const int w = std::getenv("INK2_Q8_WIDE") ? std::atoi(std::getenv("INK2_Q8_WIDE")) : 1;
+        CK(cudaMemcpyToSymbol(c_q8w, &w, sizeof(int)));
+    }
     std::string dir, dump_logits, rec_path;
     std::vector<int> ids;
     int n_gen = 32;
