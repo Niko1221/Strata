@@ -78,6 +78,7 @@ struct AdaptGate {
 };
 
 class NativeHead;
+class PeerExperts;
 class RemoteExpertOpt;
 
 /// The CPU pool for a window: x_f (n_tok, n_embd), ids (n_tok, k) -> out (n_tok * k, n_embd), hit rows zeroed.
@@ -100,6 +101,7 @@ public:
     Verifier(const Verifier&) = delete;
     Verifier& operator=(const Verifier&) = delete;
     void set_remote_expert_opt(RemoteExpertOpt* opt) { remote_opt_ = opt; } // before init/capture
+    void set_peer_experts(PeerExperts* peer) { peer_ = peer; }            // before init/capture
 
     /// The watchdog's view of the window in flight (issue #31): the layer, the GPU's sequence, the flags.
     void diag(std::FILE* f) const;
@@ -429,6 +431,9 @@ public:
     /// arena directly, 2 = a copy kernel stages it inside the graph (no API calls on the pool's thread; best when
     /// the CPU is RAM-bound, Q2_0).  Set before the first `run`.
     void set_pcie_mode(int mode) { sink_.pcie_mode = mode; }
+    /// Skips capturing the PCIe share's flagB wait, blob staging, and empty grouped MoE launches when pcie_frac == 0.
+    void set_pcie_disabled(bool off) { pcie_disabled_ = off; }
+    bool pcie_disabled() const { return pcie_disabled_; }
     /// Called before every window this verifier launches (run, the batch and pipelined launches): the device's
     /// residency table catches up with the host's (the adaptive tier's evictions while its copies are in flight,
     /// STRATA_ADAPT_FETCH's admissions).
@@ -458,6 +463,11 @@ public:
     std::string route_stats_report();
 
 private:
+    PeerExperts* peer_ = nullptr;
+    int32_t* d_peer_res_ = nullptr;
+    uint64_t synced_peer_ver_ = 0;
+    uint8_t* peer_q8_slot(int64_t l, int64_t step_idx) const;
+    void sync_peer_res();
     RemoteExpertOpt* remote_opt_ = nullptr;
     bool capture(int T, std::string& err);
     // batch windows (see init_slots)
@@ -589,6 +599,7 @@ private:
     unsigned long long* rr_stats_ = nullptr;   ///< STRATA_ROUTE_RESIDENT's counters on device_ (#1578); null: none
     std::atomic<bool> released_{false};  ///< #267: release_gpu_waits ran (maybe on the watchdog thread): no more windows
     bool all_resident_ = false;           ///< 100% of experts in [lb_, le_) resident in VRAM: zero-doorbell graph
+    bool pcie_disabled_ = false;          ///< pcie_frac == 0 (no PCIe auto/balance): omit waitB + PCIe grouped MoE nodes
     /// #871: the zero-doorbell graph plans from the device residency table alone, so it is only right while every
     /// expert of the stage is in VRAM.  A prompt loan, a VRAM shrink or an adaptive swap marks some -1 for a while:
     /// every window then runs the doorbell graph (exec_nr_ / the batch key's top bit), the same as a stage that never
@@ -723,6 +734,8 @@ private:
     uint32_t* h_flag_ = nullptr; uint32_t* m_flag_ = nullptr;
     uint32_t* h_flagA_ = nullptr; uint32_t* m_flagA_ = nullptr;  // the GPU plan is in place
     uint32_t* h_flagB_ = nullptr; uint32_t* m_flagB_ = nullptr;  // the PCIe share's DMA copies have landed
+    uint32_t* h_peer_flag_ = nullptr; uint32_t* m_peer_flag_ = nullptr;  // P2P peer's mapped fallback / abort flag
+    uint32_t* d_peer_flag_ = nullptr;                                    // primary GPU VRAM P2P peer completion word
     // set_pcie_balance: per step (layer x group, stride 2 groups) the GPU's clock as the plan arrives, as the PCIe
     // part starts and as it waits for the CPU rows (4 words a step); the pool's ms, its experts, the PCIe ones, and
     // whether the step had a plan

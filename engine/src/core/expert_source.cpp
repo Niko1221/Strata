@@ -5540,10 +5540,12 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
     }
     if (d.peer != nullptr) {                 // multi-GPU: start the second GPU's share before the CPU's own work
         std::string perr;
-        float* peer_out = (d.plan != nullptr && d.peer->p2p() && d.plan->hit_out_dev != nullptr && d.peer->direct_mode())
-                              ? d.plan->hit_out_dev
-                              : out;
-        if (!d.peer->launch(d.layers, x_f, ids, n_tok, k, kind, perr, peer_out)) {
+        const bool p2p_direct = d.plan != nullptr && d.peer->p2p() && d.plan->hit_out_dev != nullptr && d.peer->direct_mode();
+        float* peer_out = p2p_direct ? d.plan->hit_out_dev : out;
+        const int64_t q8_step = p2p_direct ? (int64_t) d.plan->peer_step : -1;
+        const bool p2p_q8 = p2p_direct && d.plan->peer_q8_ready;
+        const uint32_t sync_ring = (p2p_direct && d.plan->peer_gpu_sync) ? d.plan->peer_ring : 0u;
+        if (!d.peer->launch(d.layers, x_f, ids, n_tok, k, kind, perr, peer_out, q8_step, p2p_q8, sync_ring)) {
             std::fprintf(stderr, "strata: %s (layer %lld)\n", perr.c_str(), (long long) d.layers);
             d.failed = true;
             d.fail = "the peer GPU's experts could not be launched";

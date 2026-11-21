@@ -60,11 +60,29 @@ public:
     /// Whether the primary (device 0) and the peer can read each other's memory directly (NVLink / PCIe P2P).
     bool p2p() const { return p2p_; }
 
+    /// Residency vector `[n_layers * n_expert]` (peer slot or -1) and its monotonic version (bumped on evictions/swaps).
+    const std::vector<int32_t>& residency() const { return res_; }
+    uint64_t res_version() const { return res_ver_.load(std::memory_order_acquire); }
+    /// Device pointer on the peer GPU to step `step_idx`'s P2P `q8_1` activation slot (null when unavailable).
+    uint8_t* win_q8_ptr(int64_t step_idx) const {
+        return (d_q8_win_ != nullptr && step_idx >= 0 && step_idx < q8_win_steps_)
+                   ? (d_q8_win_ + (size_t) step_idx * q8_win_stride_)
+                   : nullptr;
+    }
+    /// Registers the verifier's completion flag (`h_peer_flag_` mapped host word, and optional primary GPU VRAM
+    /// word `dev_vram_flag` written directly over P2P NVLink when `p2p()` is true) for GPU-side P2P sync.
+    void set_sync_flag(uint32_t* host_flag, uint32_t* dev_vram_flag = nullptr);
+    /// Resets per-window async tracking at window start (call after resetting `*host_flag = 0`).
+    void begin_window() { async_in_flight_ = false; }
+
     /// Starts the peer's share of one layer: the entries i with kind[i] == 2 (x: n_tok rows of n_embd floats).
     /// multi-GPU: with `out` (pinned, portable host rows) the peer writes its rows straight into
     /// out[entry] with a scatter kernel (no D2H copy + host memcpy in finish); STRATA_PEER_DIRECT=0: the old way.
+    /// When `p2p_q8` is true, reads pre-pushed `q8_1` activations at `win_q8_ptr(q8_step)`; when `sync_ring > 0`,
+    /// signals the mapped completion flag with `sync_ring` on completion so `finish()` returns immediately.
     bool launch(int64_t layer, const float* x, const int32_t* ids, int64_t n_tok, int64_t k, const int32_t* kind,
-                std::string& err, float* out = nullptr);
+                std::string& err, float* out = nullptr, int64_t q8_step = -1, bool p2p_q8 = false,
+                uint32_t sync_ring = 0);
     /// Waits for the launched share and writes its rows into `out` (row i = entry i, n_embd floats).
     bool finish(float* out, std::string& err);
 
@@ -120,11 +138,23 @@ private:
     cudaEvent_t refill_ev_ = nullptr;
     float* h_x_ = nullptr;   float* d_x_ = nullptr;   // n_tok x n_embd
     float* h_out_ = nullptr; float* d_out_ = nullptr; // compact rows
-    void* h_meta_ = nullptr; void* d_meta_ = nullptr; // groups: ptr | start | dst | tok | count
+    void* h_meta_ = nullptr; void* d_meta_ = nullptr; // groups: ptr | start | tok | out_row | count (4-slot fallback ring)
+    int32_t* d_ident_ = nullptr;                      // pre-filled [0, CAP) identity dst table on peer GPU
+    int meta_slot_ = 0;
     uint8_t* d_q8_ = nullptr;
     void* d_scratch_ = nullptr;
     const float* d_sx_ = nullptr;                     // APR: device sign vectors (x: H, h: FF); nullptr = identity
     const float* d_sh_ = nullptr;
+    uint8_t* d_q8_win_ = nullptr;                     // per-step P2P q8_1 activation slots written by primary GPU
+    size_t q8_win_stride_ = 0;
+    int64_t q8_win_steps_ = 0;
+    uint32_t* d_flag_cnt_ = nullptr;                  // device block counter for scatter_rows_f32_flag
+    uint32_t* h_sync_flag_ = nullptr;                 // verifier's portable mapped completion flag (fallback / abort)
+    uint32_t* d_sync_flag_ = nullptr;                 // peer-accessible sync word (primary GPU VRAM over P2P, or mapped host)
+    bool vram_sync_flag_ = false;                     // true when d_sync_flag_ lives in primary GPU VRAM (written over P2P)
+    std::atomic<uint64_t> res_ver_{1};
+    bool async_in_flight_ = false;
+    bool launched_async_ = false;
     std::vector<int32_t> row_of_;                     ///< compact row -> original entry
     int64_t launched_rows_ = 0;
     bool launched_direct_ = false;
