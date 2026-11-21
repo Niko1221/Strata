@@ -17,6 +17,7 @@
 
 #include "strata/core/expert_cache.hpp"
 #include "strata/core/expert_source.hpp"
+#include "strata/core/peer_route_status.hpp"
 
 #include <cuda_runtime.h>
 
@@ -59,6 +60,7 @@ public:
     }
     /// Whether the primary (device 0) and the peer can read each other's memory directly (NVLink / PCIe P2P).
     bool p2p() const { return p2p_; }
+    PeerRouteStatus route_status() const { return route_status_; }
 
     /// Starts the peer's share of one layer: the entries i with kind[i] == 2 (x: n_tok rows of n_embd floats).
     /// multi-GPU: with `out` (pinned, portable host rows) the peer writes its rows straight into
@@ -103,6 +105,7 @@ public:
 private:
     int device_ = -1;
     bool p2p_ = false;
+    PeerRouteStatus route_status_ = PeerRouteStatus::probe_unavailable;
     int64_t n_layers_ = 0, n_expert_ = 0;
     ExpertCache cache_;
     ExpertSource* src_ = nullptr;
