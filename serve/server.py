@@ -1572,7 +1572,7 @@ class StrataEngine:
                     per = {}
                     for part in cards.split("|"):
                         bits = part.split(":")
-                        if len(bits) == 3 and all(b.lstrip("-").isdigit() for b in bits):
+                        if len(bits) == 3 and all(b.isdigit() for b in bits):   # reject any sign: a malformed engine line cannot inject a negative device or figure.
                             dev, mapped_mib, free_mib = (int(b) for b in bits)
                             per[str(dev)] = {"mapped_mib": mapped_mib, "free_mib": free_mib}
                     if per:

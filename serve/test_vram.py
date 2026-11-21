@@ -67,6 +67,12 @@ class EngineCommand(unittest.TestCase):
         self.assertEqual(e.proc.stdin.getvalue(), "VRAM 2048 1\n")
         self.assertEqual(out["per_device"], {"0": {"mapped_mib": 3800, "free_mib": 180}, "1": {"mapped_mib": 1536, "free_mib": 980}})
         self.assertEqual(out["vram_free_on_device_mib"], 980)
+        self.assertEqual(out["expert_slots"], 900); self.assertEqual(out["expert_cache_mib"], 1536); self.assertEqual(out["device"], 1)
+
+    def test_a_negative_card_entry_is_dropped(self):
+        e = self.engine(["VRAM reserve_mib=2048 expert_slots=900 cards=-1:3800:180|1:1536:980\n"])
+        out = e.vram(2048, device=1)
+        self.assertEqual(out["per_device"], {"1": {"mapped_mib": 1536, "free_mib": 980}})   # a negative device is not trusted into per_device.
 
     def test_a_device_needs_an_explicit_reserve(self):
         e = self.engine([])

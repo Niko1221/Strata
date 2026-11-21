@@ -15500,12 +15500,12 @@ int main(int argc, char** argv) {
             { std::string t; for (char ch : (cmd.size() > 4 ? cmd.substr(4) : std::string()))
                   if (ch == ' ' || ch == '\t') { if (!t.empty()) { tk.push_back(t); t.clear(); } } else t += ch;
               if (!t.empty()) tk.push_back(t); }
-            const auto isnum = [](const std::string& x) { if (x.empty() || (x.size() > 1 && x[0] == '-')) return false; for (char c : x) if (c < '0' || c > '9') return false; return !x.empty(); };
+            const auto is_nonneg_int = [](const std::string& x) { if (x.empty() || (x.size() > 1 && x[0] == '-')) return false; for (char c : x) if (c < '0' || c > '9') return false; return !x.empty(); };   // a leading '-' is rejected here as invalid syntax, not range-checked later.
             long long reserve = o.vram_reserve_mib;   // bare `VRAM`: the reserve the engine started with (--vram-reserve-mib)
             int dev_sel = -1;                          // -1 every card, >=0 a single CUDA device id
             if (tk.empty()) { /* bare: start reserve, every card */ }
-            else if (tk.size() == 1 && isnum(tk[0])) { reserve = std::strtoll(tk[0].c_str(), nullptr, 10); }   // legacy: all cards
-            else if (tk.size() == 2 && isnum(tk[0]) && isnum(tk[1])) {   // one-card form: <reserve_mib> <dev>
+            else if (tk.size() == 1 && is_nonneg_int(tk[0])) { reserve = std::strtoll(tk[0].c_str(), nullptr, 10); }   // legacy: all cards
+            else if (tk.size() == 2 && is_nonneg_int(tk[0]) && is_nonneg_int(tk[1])) {   // one-card form: <reserve_mib> <dev>
                 reserve = std::strtoll(tk[0].c_str(), nullptr, 10);
                 dev_sel = (int) std::strtoll(tk[1].c_str(), nullptr, 10);
             } else { e = "expected: VRAM [reserve_mib] [dev]"; return false; }
@@ -15586,13 +15586,14 @@ int main(int argc, char** argv) {
                         if (b == nullptr || !cd.c->fill_slot_queued(slot, b, e,
                                 (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(layer))) {
                             e = "VRAM: refilling a cache failed: " + e;
+                            relend(); res_upload();   // the host table is already partly rewritten for earlier cards - mirror it before bailing.
                             return false;
                         }
                         srcp->note_async_read(b, nullptr);   // #1237: the queued copy reads a stage buffer; it is not recycled under it
                         host_res[(size_t) pick] = slot;
                     }
                     vram_evicted.swap(keep_out);
-                    if (!cd.c->sync_queued(e)) { e = "VRAM: " + e; return false; }   // land this card's queued refills before the tables go up.
+                    if (!cd.c->sync_queued(e)) { e = "VRAM: " + e; relend(); res_upload(); return false; }   // land this card's queued refills before the tables go up.
                 }
             }
             relend();

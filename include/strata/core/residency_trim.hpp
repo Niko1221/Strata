@@ -20,7 +20,8 @@ namespace strata::core {
 inline int64_t evict_slots_past(std::vector<int32_t>& res, int64_t live, int64_t lo_layer, int64_t hi_layer,
                                 int64_t n_expert, std::vector<std::pair<int32_t, int32_t>>& evicted) {
     const size_t begin = (size_t) (lo_layer * n_expert);
-    const size_t cap = (size_t) ((hi_layer == INT64_MAX || hi_layer > res.size()) ? (int64_t) res.size() : hi_layer * n_expert);
+    const int64_t total = (int64_t) res.size();   // one sign for the comparisons below: a residency table never nears INT64_MAX.
+    const size_t cap = (size_t) ((hi_layer == INT64_MAX || hi_layer > total) ? total : hi_layer * n_expert);
     int64_t n = 0;
     for (size_t i = begin; i < res.size() && i < cap; ++i)
         if (res[i] >= live) {

@@ -135,7 +135,7 @@ bool NativeHead::map_stable_weights(int dev, uint64_t bytes) {
 void NativeHead::unload() {
     if (weights_) strata::kernels::native_q6_k_unpack(weights_);   // repacked layouts rewrite the bytes in place: undo while still mapped
     if (weights_) strata::kernels::native_q8_0_sm60_release(weights_);
-    if (scratch_) cudaFree(scratch_);
+    if (scratch_) { cudaFree(scratch_); scratch_ = nullptr; }   // null it here, not only at the end: a VMM unmap failure returns early and must not double-free on a later unload.
 #ifdef STRATA_HEAD_VMM
     if (phys_ != 0) {   // VMM-backed alias: quiesce the device so no stream reads the range, then release physical and keep the VA for a stable remap
         const HeadVmm& v = hv();
