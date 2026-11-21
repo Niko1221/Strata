@@ -36,7 +36,7 @@ decided per architecture when the engine is built.
 
 | Part of the prompt path | On sm_70 |
 | --- | --- |
-| MoE experts | MMQ by default. Opt-in `STRATA_PF_WMMA=1` (only when every visible card is compute capability 7 or newer): `gemm_iq_f16_grouped`, a group of experts per launch on the FP16 tensor cores. FP16 activations instead of MMQ's q8_1, so answers differ. |
+| MoE experts | `native_expert_i8` / `i8h_volta.cuh` by default in `-DSTRATA_MMQ=OFF` release builds (`v0.2.17`); MMQ when built with `-DSTRATA_MMQ=ON` (speeds up partial Tier-1/2 splits on `UD-IQ2_XS`, costs `-25.9%` on `100%` Tier-0 `UD-IQ4_XS` per @noahark's `3× V100-PCIE-32GB` A/B). Opt-in `STRATA_PF_WMMA=1` (only when every visible card is compute capability 7 or newer): `gemm_iq_f16_grouped`, a group of experts per launch on the FP16 tensor cores (uses FP16 activations instead of `q8_1`, so answers differ). |
 | Dense projections (dequantized weights) | FP16 tensor-core GEMMs (cuBLAS / CUTLASS `s884`) |
 | BF16 projections (hyper-connection, router, indexer) | converted to FP16 and run on the FP16 tensor cores (`STRATA_BF16_TC=0`: cuBLAS BF16, an FP32 SIMT kernel on Volta) |
 | QSA attention for decode and verify windows | the #540 kernel, fewer shuffles, bit-exact (`STRATA_ATTN_PRE75=0`: the one other cards run) |
@@ -113,3 +113,8 @@ Greedy output was identical on the 28,650- and 114,338-token prompts and differe
 | Tesla P100 alone and with an RTX 2070 SUPER as expert helper (#1069) | 30.5 tok/s alone, 35.8-38.4 with the helper |
 | Two Tesla P40, layer split (#1028) | [report](bench-results/2026-10-05-community-2x-p40/README.md) |
 | V100 + P100 pair (#1079) | +6-11% decode from engine 0.1.39 to 0.1.40 with the P100 as helper cache |
+| Two Tesla V100-SXM2-16GB, `NV6` NVLink (`v0.2.17`, locked `200W / 1020 MHz / 877 MHz`, `STRATA_ROUTE_TAIL_SKIP=0`) | [report](bench-results/2026-11-18-dual-v100-sxm2-256k-mmq/README.md) — `64K` `UD-IQ2_XS` `--layer-split auto`: `1,814.7 -> 1,993.2 tok/s` prefill (`+9.8%` with `STRATA_PF_WMMA=1` + `MMQ_TIER_SORT=1` + `P2P_HANDOFF=1`), `65.7 -> 67.0 tok/s` decode; `--peer-device 1`: `1,435.7 -> 1,532.6 tok/s` prefill (`+6.7%` with `STRATA_PF_PEER_STREAM=0.28`), `67.9 tok/s` decode |
+
+Community scoping notes:
+- `@noahark` (`3 × V100-PCIE-32GB`, `100%` Tier-0 `UD-IQ4_XS` on `v0.2.15` & `v0.2.17`): keeping `-DSTRATA_MMQ=ON` at `100%` Tier-0 residency regresses prefill `-25.9%` vs `OFF`, and `STRATA_MMQ_TIER_SORT=1 + STRATA_PF_WMMA=1` is neutral when no experts spill to Tier-1/2 (confirms the gain tracks residency shortfall).
+- `@xrip` (`2 × CMP 50HX`, PCIe Gen2 x16 PHB): `STRATA_P2P_HANDOFF=1` measured `-0.6%` wall on `64K` cold prefill and `-0.9%` on `8K` decode even without NVLink.
