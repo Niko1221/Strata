@@ -164,6 +164,7 @@ This page is built by `python tools/bench_results_index.py` (`--check` fails whe
 | Folder | What | Files |
 | --- | --- | ---: |
 | [2026-11-14-rdna2-pcie-auto](2026-11-14-rdna2-pcie-auto/) | PcieAuto on gfx103x: the decode miss split from the CPU pool's speed (#4007) | 3 |
+| [2026-11-21-community-rx-9070-xt-gyro-s-0.2.17](2026-11-21-community-rx-9070-xt-gyro-s-0.2.17/) | Community benchmark: RX 9070 XT 16 GB on Windows, Gyro-S at 131K, app 0.2.17 / engine 0.1.63, a tuned config (quick suite + standard, 12/12 sanity) | 11 |
 
 ## Loose files
 
