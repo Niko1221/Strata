@@ -3466,14 +3466,23 @@ int main(int argc, char** argv) {
         else if (a == "--tc") PF.tc = std::atoi(v) != 0;
         else if (a == "--vram-reserve-mib") E.reserve_mib = std::atoi(v);
         else if (a == "--spec") spec = std::atoi(v) != 0;
-        else if (a == "--kv") E.kvm = std::string(v) == "i8r" ? 3 : std::string(v) == "i8" ? 2 : std::string(v) == "f32" ? 0 : 1;
+        else if (a == "--kv") {   // Strata's names too (strata_control/tuning.py: fp16, int8)
+            const std::string k = v;
+            if (k == "f16" || k == "fp16") E.kvm = 1;
+            else if (k == "f32" || k == "fp32") E.kvm = 0;
+            else if (k == "i8" || k == "int8") E.kvm = 2;
+            else if (k == "i8r") E.kvm = 3;
+            else { std::fprintf(stderr, "--kv %s: this engine has f16 (fp16), f32, i8 (int8) and i8r\n", v); return 2; }
+        }
+        // Strata's server and tuner may add these: the KV cache is always resident here and prefill has one form
+        else if (a == "--kv-resident" || a == "--prefill") std::fprintf(stderr, "[ink2] %s %s ignored\n", a.c_str(), v);
         else if (a == "--record-routing") { rec_path = v; E.rec_mode = 1; }
         else if (a == "--force-routing") { rec_path = v; E.rec_mode = 2; }
         else { std::fprintf(stderr, "unknown option %s\n", a.c_str()); return 2; }
     }
     if (dir.empty() || (ids.empty() && !serve)) {
         std::fprintf(stderr, "usage: strata-ink2 --model DIR (--serve | --tokens IDS | --tokens-file F) [--n N] [--ctx N] "
-                             "[--chunk N] [--tc 0|1] [--kv f16|f32|i8|i8r] [--vram-reserve-mib N] [--spec 0|1] [--dump-logits F]\n");
+                             "[--chunk N] [--tc 0|1] [--kv f16|fp16|f32|i8|int8|i8r] [--vram-reserve-mib N] [--spec 0|1] [--dump-logits F]\n");
         return 2;
     }
     if (serve && PF.TP <= 0) { std::fprintf(stderr, "--serve needs --chunk > 0\n"); return 2; }

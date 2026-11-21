@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import jinja2
+import jinja2.ext
 from jinja2.sandbox import ImmutableSandboxedEnvironment
 
 LOGGER = logging.getLogger(__name__)
@@ -36,6 +37,16 @@ LOGGER = logging.getLogger(__name__)
 class TemplateRequestError(jinja2.exceptions.TemplateError, ValueError):
     """The template refused the request's messages (e.g. "No user query found in messages."): a ValueError, so the
     client gets a 400 with the template's message instead of a dropped connection (#365)."""
+
+
+class _GenerationTag(jinja2.ext.Extension):
+    """transformers' {% generation %}...{% endgeneration %} (it marks the assistant's tokens for training masks; Inkling 2's
+    template uses it): the body is rendered as it is."""
+    tags = {"generation"}
+
+    def parse(self, parser):
+        next(parser.stream)
+        return parser.parse_statements(("name:endgeneration",), drop_needle=True)
 
 
 class ChatTemplate:
@@ -48,7 +59,7 @@ class ChatTemplate:
         def tojson(x, ensure_ascii=False, indent=None, separators=None, sort_keys=False):
             return json.dumps(x, ensure_ascii=ensure_ascii, indent=indent, separators=separators, sort_keys=sort_keys)
 
-        env = ImmutableSandboxedEnvironment(trim_blocks=True, lstrip_blocks=True, extensions=["jinja2.ext.loopcontrols"])
+        env = ImmutableSandboxedEnvironment(trim_blocks=True, lstrip_blocks=True, extensions=["jinja2.ext.loopcontrols", _GenerationTag])
         env.filters["tojson"] = tojson
         env.globals["raise_exception"] = raise_exception
         self.source = Path(path).read_text(encoding="utf-8")
@@ -137,12 +148,31 @@ EFFORT = {"none": None, "off": None, "minimal": None, "disabled": None, "false":
 
 
 _EFFORT_QWEN = dict(EFFORT)
+# Inkling 2's template takes the words themselves (none 0.0, minimal 0.1, low 0.2, medium 0.7, high 0.9, xhigh/max 0.99)
+_EFFORT_INKLING = {"none": "none", "off": "none", "minimal": "minimal", "disabled": "none", "false": "none",
+                   "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max", "maximum": "max"}
+FAMILY = None                                   # the model family this server runs (None: the Qwen form)
+
+
+def is_inkling(source: str | None) -> bool:
+    """Inkling 2's chat template: messages are <|message_model|><|content_KIND|>...<|end_message|>."""
+    return INK_THINK in (source or "")
 
 
 def use_family(family: str | None) -> None:
-    """The reasoning-effort words of the model family this server runs (module state, like ENV_TO_USER): the Qwen table."""
+    """The reasoning-effort words of the model family this server runs (module state, like ENV_TO_USER)."""
+    global FAMILY
+    FAMILY = family
     EFFORT.clear()
-    EFFORT.update(_EFFORT_QWEN)
+    EFFORT.update(_EFFORT_INKLING if family == "inkling2" else _EFFORT_QWEN)
+
+
+def family_text(text: str) -> str:
+    """Text the server writes into the reply itself (the thinking's close, a wrap-up) in this family's spelling: for Inkling 2,
+    </think> and the blank line after it are the end of the thinking message and the start of the text one."""
+    if FAMILY != "inkling2":
+        return text
+    return re.sub(r"\n?</think>\n*", INK_CLOSE, text)
 
 
 def effort_kwargs(value) -> dict:
@@ -150,7 +180,7 @@ def effort_kwargs(value) -> dict:
     if value is None or value == "":
         return {}
     if value is False:
-        return {"enable_thinking": False}
+        value = "false"
     key = str(value).strip().lower()
     if key not in EFFORT:
         raise ValueError(f"unknown reasoning effort {value!r}: use none, low, medium or high")
@@ -594,10 +624,16 @@ def _order_chat_tool_results(messages: list[dict]) -> None:
                 rank = {cid: n for n, cid in enumerate(calls)}
                 messages[i:j] = sorted(messages[i:j], key=lambda m: rank[m["_call_id"]])
         i = j
+    names = {}                                  # Inkling 2 heads a result with its tool's name (<|message_tool|>NAME)
     for message in messages:
-        message.pop("_call_id", None)
+        cid = message.pop("_call_id", None)
+        if (FAMILY == "inkling2" and message["role"] == "tool" and not message.get("name") and isinstance(cid, str)
+                and cid in names):
+            message["name"] = names[cid]
         for call in message.get("tool_calls") or []:
-            call.pop("_call_id", None)
+            cid = call.pop("_call_id", None)
+            if isinstance(cid, str):            # a client's id may be anything (a list, a number)
+                names[cid] = call["function"].get("name")
 
 
 def openai_to_messages(req: dict) -> tuple[list[dict], list[dict] | None, dict]:
@@ -614,6 +650,8 @@ def openai_to_messages(req: dict) -> tuple[list[dict], list[dict] | None, dict]:
         out = {"role": role, "content": _parts_of(content) if images else _text_of(content)}
         if role == "tool":
             out["_call_id"] = m.get("tool_call_id")
+            if FAMILY == "inkling2" and isinstance(m.get("name"), str) and m["name"]:
+                out["name"] = m["name"]
         if m.get("reasoning_content"):
             out["reasoning_content"] = m["reasoning_content"]
         if m.get("tool_calls"):
@@ -877,6 +915,10 @@ class Event:
 
 
 THINK_END = "</think>"
+# Inkling 2's message markers (InklingOutputParser): a header, three content kinds, a message's end, the reply's end
+INK_HEAD, INK_THINK, INK_TEXT = "<|message_model|>", "<|content_thinking|>", "<|content_text|>"
+INK_CALL, INK_END, INK_STOP = "<|content_invoke_tool_json|>", "<|end_message|>", "<|content_model_end_sampling|>"
+INK_CLOSE = INK_END + INK_HEAD + INK_TEXT       # the thinking's end as the model writes it
 CALL_START = "<tool_call>"
 CALL_END = "</tool_call>"
 FUNCTION_CALLS_START = "<function_calls>"     # #6022: Claude's dialect's wrapper around its `<invoke>` calls (recover)
@@ -2951,9 +2993,97 @@ class JsonOutputParser(OutputParser):
                          declared_only=declared_only, deferred=deferred)
 
 
+class InklingOutputParser(JsonOutputParser):
+    """Inkling 2 writes its reply as messages, <|message_model|>[NAME]<|content_KIND|>BODY<|end_message|>, KIND thinking, text
+    or invoke_tool_json (BODY {"name": NAME, "args": {...}}), and ends with <|content_model_end_sampling|>.  The markers become the
+    form JsonOutputParser reads (the thinking closed by </think>, each call a <tool_call> JSON) and the rest is its own."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._raw, self._sec, self._closed, self._call = "", None, False, ""
+
+    def feed(self, delta: str) -> list[Event]:
+        if not delta and not self._raw:
+            return super().feed("")
+        self._raw += delta
+        out = []
+        while self._raw:
+            i = self._raw.find("<|")
+            if i != 0:
+                text = self._raw[:i] if i > 0 else self._raw[:-1] if self._raw.endswith("<") else self._raw
+                if not text:                    # a lone "<" that may start a marker: held back
+                    break
+                self._raw = self._raw[len(text):]
+                out += self._body(text)
+                continue
+            j = self._raw.find("|>")
+            if j < 0:
+                if len(self._raw) < 48:         # a marker split across deltas: held back until it is whole
+                    break
+                out += self._body(self._raw[:2])
+                self._raw = self._raw[2:]
+                continue
+            tag, self._raw = self._raw[:j + 2], self._raw[j + 2:]
+            out += self._marker(tag)
+        return out
+
+    def _body(self, text: str) -> list[Event]:
+        if self._sec in ("think", "text"):
+            return super().feed(text)
+        if self._sec == "call":
+            self._call += text
+        return []                               # the header's NAME (it is in the call's JSON too)
+
+    def _close(self) -> list[Event]:
+        if self._closed:
+            return []
+        self._closed = True
+        return super().feed(THINK_END) if self.state == "reasoning" else []
+
+    def _marker(self, tag: str) -> list[Event]:
+        if tag == INK_HEAD or tag == INK_STOP:
+            self._sec = None
+        elif tag == INK_THINK:
+            self._sec = "think"
+        elif tag == INK_TEXT:
+            out, self._sec = self._close(), "text"
+            return out
+        elif tag == INK_CALL:
+            out, self._sec, self._call = self._close(), "call", ""
+            return out
+        elif tag == INK_END:
+            sec, self._sec = self._sec, None
+            if sec == "think":
+                return self._close()
+            if sec == "call":
+                return super().feed(self._wrap(self._call))
+        elif self._sec in ("think", "text"):
+            return super().feed(tag)            # not a marker of the reply's form: text
+        return []
+
+    @staticmethod
+    def _wrap(body: str) -> str:
+        try:
+            call = json.loads(body)
+            body = json.dumps({"name": call["name"], "arguments": call.get("args", {})}, ensure_ascii=False)
+        except (ValueError, TypeError, KeyError):
+            pass                                # not the form: JsonOutputParser's recovery reads it, or it stays text
+        return f"{CALL_START}\n{body}\n{CALL_END}"
+
+    def finish(self, reason: str | None = None) -> list[Event]:
+        raw, self._raw = self._raw, ""
+        out = self._body(raw) if raw else []
+        if self._sec == "call" and self._call:  # cut inside a call: its opening and body, unclosed, as JsonOutputParser has them
+            out += super().feed(f"{CALL_START}\n{self._call}")
+        self._sec, self._call = None, ""
+        return out + super().finish(reason)
+
+
 def parser_for_template(source: str | None):
     """The OutputParser class for a chat template's text, by the tool-call form the template documents (serve/toolformat.py):
     the JSON form gets JsonOutputParser; the XML form every Strata model ships with, templates without tools, and forms nothing
-    here reads keep OutputParser (the same class as before this existed)."""
+    here reads keep OutputParser (the same class as before this existed).  Inkling 2's message markers: InklingOutputParser."""
     from serve import toolformat
+    if is_inkling(source):
+        return InklingOutputParser
     return JsonOutputParser if toolformat.tool_format(source or "") == "json" else OutputParser

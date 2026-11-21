@@ -313,7 +313,7 @@ from serve.server_parts.openai_api import (  # noqa: F401  (moved unchanged, fil
     openai_collect,
 )
 from serve.frontend import (CALL_END, CALL_START, FUNC_END, FUNC_START, THINK_END, ChatTemplate, Event, OutputParser,  # noqa: E402
-                            parser_for_template, anthropic_to_messages, anthropic_tools,
+                            INK_STOP, family_text, is_inkling, parser_for_template, anthropic_to_messages, anthropic_tools,
                             forced_call, images_of, literal_tags, mark_think_literals, openai_to_messages, require_messages,
                             tool_choice_of, unmark_think_literals)
 from serve.mcp import McpCancelled, hub_from_config, resolve_image_results  # noqa: E402
@@ -3992,7 +3992,14 @@ class Service:
                 else PromptEncoder(tokenizer)
 
     def set_family(self, family: str | None) -> None:
-        """The model family (None: the Qwen form this server was written for)."""
+        """The model family (None: the Qwen form this server was written for; Inkling 2 is known by its template)."""
+        if family is None and is_inkling(getattr(self.template, "source", None)):
+            family = "inkling2"
+            # CBA: the tool-markup retry writes a Qwen user turn into the reply; off until it has an Inkling spelling
+            self.tool_markup_retry = False
+            # its reply ends with <|content_model_end_sampling|> (generation_config.json's eos); <|endoftext|> is one token
+            # in its o200k vocabulary too, but it is the pad, so end_token_ids' Qwen rule would miss the end
+            self.stop_ids = set(self.tok.encode(INK_STOP, parse_special=True))
         self.family = family
         import serve.frontend as _frontend
         _frontend.use_family(family)
@@ -5656,7 +5663,7 @@ class Service:
                             # #1053: the model wrote its reasoning and stopped before </think>: the client would get
                             # an empty answer.  Close the thinking once and let it answer.
                             close_retried = True
-                            extra = self.tok.encode(REASONING_CLOSE, parse_special=True)
+                            extra = self.tok.encode(family_text(REASONING_CLOSE), parse_special=True)
                             if max_new - n - len(extra) >= 1:
                                 print("[strata] the reply ended inside its thinking with no answer: closing the "
                                       "thinking once and continuing (reasoning_close_retry)", flush=True)
@@ -5735,7 +5742,7 @@ class Service:
                         else:
                             text = "\n" * (2 - (len(tail) - len(tail.rstrip("\n")))) + force
                         force = None
-                        extra = self.tok.encode(text, parse_special=True)
+                        extra = self.tok.encode(family_text(text), parse_special=True)
                         if max_new - n - len(extra) < 1:
                             break                       # no room left to answer: "length", as without a budget
                         if wrap:
