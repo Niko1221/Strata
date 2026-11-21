@@ -422,6 +422,9 @@ QUEUE_BEAT_S = 10.0         # a request waiting for the single turn sends a keep
 # it blocked once the socket buffers are full - and that thread holds the engine's turn.  A write that makes no progress
 # for this long ends the request as a disconnect (the engine is stopped, the turn given back).  0: no limit, as before.
 STREAM_WRITE_TIMEOUT_S = float(os.environ.get("STRATA_STREAM_WRITE_TIMEOUT_S", "60") or 0)
+INKLING_NO_IMAGES = ("this Inkling 2 engine does not read images (a GGUF model is text only here, or the engine predates "
+                     "images: one that reads them says images=1 at its start); send the text of the picture instead")
+
 # Reads that had no timeout (#1317).  A blocking read of the image encoder's pipe or of the engine's READY line that
 # never returned held the request turn for good: the engine then sat idle in its command loop, so no watchdog could
 # fire and every later request queued behind it (the "lost step" class of #481).  Generous on purpose: a cold model
@@ -4231,10 +4234,16 @@ class Service:
 
     def has_vision(self) -> bool:
         """Whether this server can read images: either a separate vision encoder (Flash-Next)
-        or an in-process Hy4-Flash engine that reported `images=1`."""
+        or an engine that reads them itself (engine_reads_images) and reported `images=1`."""
         if self.vision is not None:
             return True
-        return bool(self.hy4 and (getattr(self.engine, "info", None) or {}).get("images") == 1)
+        return self.engine_reads_images() and (getattr(self.engine, "info", None) or {}).get("images") == 1
+
+    def engine_reads_images(self) -> bool:
+        """The engine decodes and encodes the pictures itself, from the files named by `image=<path>` keys on its GEN
+        line (protocol 1.6b), never through the separate picture reader: Hy4-Flash, and strata-ink2 for Inkling 2 (its
+        ViT runs in the engine; the template's one <|unused_200054|> per picture becomes rows x cols image tokens there)."""
+        return bool(self.hy4 or self.family == "inkling2")
 
     def reasoning_budget(self, req) -> int | None:
         """#123: the most tokens this request may think, or None: the request's `reasoning_budget_tokens` (or, as
@@ -5085,9 +5094,9 @@ class Service:
         self.embeddings.keys = None
         images = images_of(messages)
         self.embeddings.hy4 = self._drop_hy4_images(getattr(self.embeddings, "hy4", None))      # an earlier pass of this request left its files: gone first
-        if images and self.hy4:                                       # Hy4-Flash: the engine reads the pictures itself (INFO images=1); never the separate picture reader
+        if images and self.engine_reads_images():                     # Hy4-Flash, Inkling 2: the engine reads the pictures itself (INFO images=1); never the separate picture reader
             if (getattr(self.engine, "info", None) or {}).get("images") != 1:
-                raise ValueError(hy4_kind.NO_IMAGES_REPLY)
+                raise ValueError(hy4_kind.NO_IMAGES_REPLY if self.hy4 else INKLING_NO_IMAGES)
             if self.offline and any(src.startswith(("http://", "https://")) for src in images):
                 raise ValueError("offline mode cannot download an image URL; send a data: image instead")
             self.embeddings.hy4 = hy4_kind.write_images(
