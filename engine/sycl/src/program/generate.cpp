@@ -84,6 +84,7 @@ namespace strata::prefill { void set_nonresident_share(double share); }   // SYC
 #include "strata/core/dflash2.hpp"
 #include "strata/spec/window_rule.hpp"
 #include "strata/prefill/prefill.hpp"
+#include "strata/platform/aux_cpus.hpp"
 #include "strata/core/native_dense.hpp"
 #include "strata/program/logits_selection.hpp"
 #include "strata/program/conv_cache.hpp"
@@ -538,6 +539,7 @@ struct Options {
     strata::kernels::cpu::PoolAffinity pool_affinity = strata::kernels::cpu::PoolAffinity::All;
     /// --host-core first|last (STRATA_HOST_CORE): the host thread's core (see HostCore in pool.hpp)
     std::string host_core;
+    std::string aux_cpus;
     /// --pool-cores LIST (STRATA_POOL_CORES; experimental, off by default): the logical processors the pool workers are pinned to
     std::string pool_cores;
     /// R2.2's first half, as an A/B arm.  **ON by default**, because the measurement that justifies it is the
@@ -979,6 +981,9 @@ void usage() {
                  "                       except the one the host loop spins on (with --pool-affinity auto or\n"
                  "                       p-cores on a hybrid CPU: P-cores minus 1).  A sweep is how the pool's\n"
                  "                       deviation from `cpu_s2` is attributed.\n"
+                 "  --aux-cpus SET       Place helper threads on spare CPUs (auto), a CPU list, or off (default).\n"
+                 "                       STRATA_AUX_CPUS sets the start-up policy. Override it per request with\n"
+                 "                       strata_tune.aux_cpus=0|1.\n"
                  "  --host-core WHERE    The host thread's core: first (the default: the first physical core, as always) or\n"
                  "                       last (the last physical core, the workers on the others).  Windows sends a GPU's\n"
                  "                       interrupts to one logical processor, usually the first, and every copy that lands\n"
@@ -1372,7 +1377,9 @@ int adapt_lag() {
 /// it over, `idle` says whether it has finished; the owner never posts while a job runs.
 class JobThread {
 public:
-    JobThread() : th_([this] { loop(); }) {}
+    JobThread() : th_([this] { loop(); }) {
+        wait();   // finish CPU placement before a request can sweep or restore this thread
+    }
     ~JobThread() {
         { std::lock_guard<std::mutex> lk(mu_); quit_ = true; }
         cv_.notify_one();
@@ -1419,10 +1426,14 @@ private:
     }
     void loop() {
         // the job's memcpys stay off the host's core and the pool's: by default the spare SMT sibling of the last
-        // two-thread core (Windows); STRATA_ADAPT_JOB_CPU=<logical cpu>, or -1 for no pinning
+        // two-thread core (Windows). An explicit STRATA_ADAPT_JOB_CPU, including -1 for no pinning, takes precedence.
+        strata::platform::name_this_thread("strata-adapt-job");
         const char* c = std::getenv("STRATA_ADAPT_JOB_CPU");
         const int cpu = c != nullptr ? std::atoi(c) : smt_spare_cpu();
         if (cpu >= 0) (void) strata::kernels::cpu::pin_current_thread(cpu);
+        if (c != nullptr) strata::aux_cpus::note_owned_thread();
+        else if (cpu < 0) strata::aux_cpus::pin_current_thread();
+        done_.store(true, std::memory_order_release);
         for (;;) {
             std::function<void()> f;
             {
@@ -1440,7 +1451,7 @@ private:
     std::condition_variable cv_;
     std::function<void()> job_;
     bool has_ = false, quit_ = false;
-    std::atomic<bool> done_{true};
+    std::atomic<bool> done_{false};
     std::thread th_;   // last: started once the members above exist
 };
 
@@ -1937,6 +1948,7 @@ int main(int argc, char **argv) try {
         else if (a == "--graph-only") o.graph_only = true;
         else if (a == "--gpu-only-full") o.gpu_only_full = true;
         else if (a == "--pool-workers") o.pool_workers = std::atoi(next("--pool-workers"));
+        else if (a == "--aux-cpus") o.aux_cpus = next("--aux-cpus");
         else if (a == "--pool-cores") o.pool_cores = next("--pool-cores");
         else if (a == "--host-core") {
             o.host_core = next("--host-core");
@@ -2183,6 +2195,15 @@ int main(int argc, char **argv) try {
     }
 #endif
     strata::core::set_coupled_draft(o.coupled_draft);
+    if (o.aux_cpus.empty())
+        if (const char* value = std::getenv("STRATA_AUX_CPUS")) o.aux_cpus = value;
+    {
+        std::string error;
+        if (!strata::aux_cpus::configure(o.aux_cpus, error)) {
+            std::fprintf(stderr, "strata generate: %s\n", error.c_str());
+            return 2;
+        }
+    }
     {   // --host-core / STRATA_HOST_CORE, before the pool and the session pin any thread
         std::string hc = o.host_core;
         if (hc.empty())
@@ -4768,7 +4789,12 @@ int main(int argc, char **argv) try {
                      strata::kernels::cpu::host_core_setting() == strata::kernels::cpu::HostCore::Last ? "last" : "first");
         // the same facts in plain words, and whether each worker has a physical core of its own
         std::fprintf(stderr, "strata generate: %s\n", pool.placement_line().c_str());
+        const auto& cores = pool.worker_cores();
+        const auto n = std::min<size_t>(pool.workers(), cores.size());
+        std::fprintf(stderr, "%s\n", strata::aux_cpus::set_topology(
+            ht.host_core, std::vector<int>(cores.begin(), cores.begin() + n)).c_str());
     }
+    const bool aux_start = strata::aux_cpus::enabled();
     if (o.no_ple_prefetch) strata::kernels::ple_prefetch_enable(false);
     // ---- R4's slot storage.  Allocated AFTER the weights and the session, so `cudaMemGetInfo` inside `open`
     // sees the memory this process actually has left rather than the card's idle figure - and refuses with both
@@ -10300,6 +10326,7 @@ int main(int argc, char **argv) try {
             // #2228: img_keys=<hex>,<hex>,... (GENI): each picture's key from the server (its normalized bytes' hash), in
             // prompt order; the conversation cache matches a picture by it and its grid instead of its embedding floats
             std::vector<uint64_t> req_img_keys;
+            bool req_aux_cpus = aux_start;
             double req_pcie_frac = o.pcie_frac, req_spec_min_p = o.spec_min_p;
             if (endp != nullptr) {   // GENI takes the same keys (#75: image requests were always greedy); its
                                      // embedding file path is the first token without an =
@@ -10337,6 +10364,7 @@ int main(int argc, char **argv) try {
                             p = c + 1;
                         }
                     }
+                    else if (key == "aux_cpus") req_aux_cpus = std::atoi(tok.c_str() + eq + 1) != 0;
                     else if (key == "pcie_frac") req_pcie_frac = std::clamp((double) fv, 0.0, 1.0);
                     else if (key == "spec_min_p") req_spec_min_p = std::clamp((double) fv, 0.0, 1.0);
                     else if (key == "img_keys") {
@@ -10811,6 +10839,13 @@ int main(int argc, char **argv) try {
             pp_from = read_from;
             pp_reached = read_from;
             pp_t0 = r0;
+            const bool aux_was_on = strata::aux_cpus::enabled();
+            if (req_aux_cpus || aux_was_on) strata::aux_cpus::set_enabled(req_aux_cpus);
+            if (req_aux_cpus != aux_was_on) {
+                const bool on = strata::aux_cpus::enabled();
+                std::fprintf(stderr, "strata serve: aux cpus %s for this request%s\n", on ? "ON" : "off",
+                             req_aux_cpus && !on ? " (asked for, but no CPU is spare: see the start-up line)" : "");
+            }
             pp_next_check = reread_to > 0 || !req_ckpt ? INT64_MAX : resume + o.prompt_cache_every;   // ckpt=0: none
             pp_tail_saved = reread_to > 0 || !req_ckpt;   // ckpt=0 (#861): no tail checkpoint either
             {

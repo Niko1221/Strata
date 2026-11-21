@@ -549,7 +549,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 1423,
+     "line": 1431,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -563,6 +563,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
+    "docs/INTEL.md:418",
     "docs/DETAILS.md:1364"
    ],
    "first_commit": "4058aa782b",
@@ -572,7 +573,7 @@
    "last_date": "2026-11-17",
    "status": "default",
    "owner": "program",
-   "note": "[reviewed] Pinning is on by default; the variable only picks a CPU or disables pinning (-1). [src comment: spare SMT sibling pinned by default]",
+   "note": "An explicit CPU takes precedence over helper placement for the adaptive job thread. Set -1 to keep its inherited affinity.",
    "retire_after": "",
    "retired_in": ""
   },
@@ -1940,7 +1941,8 @@
   {
    "name": "STRATA_AUX_CPUS",
    "backends": [
-    "cuda-hip"
+    "cuda-hip",
+    "sycl"
    ],
    "reads": [
     {
@@ -1954,6 +1956,12 @@
      "line": 4545,
      "backend": "cuda-hip",
      "fn": "getenv"
+    },
+    {
+     "file": "engine/sycl/src/program/generate.cpp",
+     "line": 2199,
+     "backend": "sycl",
+     "fn": "getenv"
     }
    ],
    "parse": "string",
@@ -1965,6 +1973,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
+    "docs/INTEL.md:412",
     "docs/DETAILS.md:1360"
    ],
    "first_commit": "4058aa782b",
@@ -1974,20 +1983,27 @@
    "last_date": "2026-11-17",
    "status": "opt-in",
    "owner": "program",
-   "note": "[auto] documented for users (docs/DETAILS.md:1253)",
+   "note": "Helper CPU placement on Linux. Set at startup with --aux-cpus or STRATA_AUX_CPUS, or per request with aux_cpus=0|1.",
    "retire_after": "",
    "retired_in": ""
   },
   {
    "name": "STRATA_AUX_STAGER",
    "backends": [
-    "cuda-hip"
+    "cuda-hip",
+    "sycl"
    ],
    "reads": [
     {
      "file": "engine/src/prefill/prefill.cpp",
      "line": 1165,
      "backend": "cuda-hip",
+     "fn": "getenv"
+    },
+    {
+     "file": "engine/sycl/src/prefill/prefill.cpp",
+     "line": 527,
+     "backend": "sycl",
      "fn": "getenv"
     }
    ],
@@ -2000,6 +2016,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
+    "docs/INTEL.md:417",
     "docs/DETAILS.md:1365",
     "docs/bench-results/2026-10-08-community-2x-rtx3080-20gb-ud-q4-k-xl-512k-pool/README.md:341"
    ],
@@ -2010,7 +2027,7 @@
    "last_date": "2026-11-17",
    "status": "opt-in",
    "owner": "prefill",
-   "note": "[auto] documented for users (docs/DETAILS.md:1258)",
+   "note": "Set to 0 to exempt prefill stagers from the aux CPU plan.",
    "retire_after": "",
    "retired_in": ""
   },

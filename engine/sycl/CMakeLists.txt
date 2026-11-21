@@ -350,6 +350,10 @@ if(STRATA_SYCL_PARITY)   # (the option is declared above, next to STRATA_OWN_CPU
   add_executable(window_jobs_test ${CMAKE_CURRENT_SOURCE_DIR}/src/core/window_jobs_test.cpp)
   target_include_directories(window_jobs_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${STRATA_ROOT}/include)
   add_test(NAME window_jobs_test COMMAND window_jobs_test)
+  add_executable(aux_cpus_test ${STRATA_ROOT}/tests/platform/aux_cpus_test.cpp)
+  target_include_directories(aux_cpus_test PRIVATE ${STRATA_ROOT}/include)
+  target_link_libraries(aux_cpus_test PRIVATE strata_core)
+  add_test(NAME aux_cpus_test COMMAND aux_cpus_test)
   add_test(NAME window_jobs_test_legacy COMMAND window_jobs_test --legacy)   # the 756242554 loop: must fail
   set_tests_properties(window_jobs_test_legacy PROPERTIES WILL_FAIL TRUE)
   # Host-only: a GPU wait on the host that runs out fails its window (window_wait.hpp; #5160). --legacy replays the old
