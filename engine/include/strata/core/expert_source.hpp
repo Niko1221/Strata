@@ -762,6 +762,13 @@ public:
     bool open(const std::string& pack_dir, int64_t n_layers, int64_t n_expert, std::string& err);
     /// CS-T: the --native shard (native_experts.txt names the other files beside it); see `open`.
     void set_gguf(const std::string& native) { gguf_ = native; }
+    /// --experts-wex4 (docs/WEX4.md): `open` maps this WEX4 container instead of experts.bin or the GGUF, after
+    /// `wex4_experts_open` checked it against the loaded layout (`root_hex`: 64 hex digits, or empty for any root).
+    /// A record holds the same bytes as the experts.bin blob, so only the file offset of a blob changes: expert e
+    /// of layer l starts at the layer's first record + e * the record size (the blob size rounded up to 4096).
+    void set_wex4(const std::string& path, const std::string& root_hex) { wex4_path_ = path; wex4_root_ = root_hex; }
+    /// After a WEX4 `open`: the container's root, layers, and how long its header and index checks took.
+    const std::string& wex4_note() const { return wex4_note_; }
     /// STRATA_NUMA_SPLIT: files the engine read at start outside this source (the pack's dense.bin, the MTP head),
     /// whose cached pages the placement's drop gives back too.  Set BEFORE `pin_cache_complement`.
     void set_extra_drop_files(std::vector<std::string> paths) { extra_drop_files_ = std::move(paths); }
@@ -1264,6 +1271,10 @@ private:
     int64_t n_expert_ = 0;
     uint64_t mapped_bytes_ = 0;
     std::vector<uint64_t> layer_offsets_, layer_blob_bytes_;
+    /// Per layer, bytes from one expert to the next in the mapped file: the blob size (experts.bin), or a WEX4
+    /// record's size, the blob size rounded up to 4096 (--experts-wex4)
+    std::vector<uint64_t> layer_stride_;
+    std::string wex4_path_, wex4_root_, wex4_note_;
     void* complement_arena_ = nullptr;
     const uint8_t* complement_host_ = nullptr;
     const uint8_t* complement_device_ = nullptr;

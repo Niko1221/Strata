@@ -8,6 +8,7 @@
 #include "strata/core/page_cache_drop.hpp"
 #include "strata/core/ple_residency.hpp"
 #include "strata/core/resident_ram_copy.hpp"
+#include "strata/core/wex4_experts.hpp"
 #include "strata/platform/aux_cpus.hpp"
 #include "strata/core/remote_experts.hpp"
 #include "strata/core/peer_experts.hpp"
@@ -1516,7 +1517,7 @@ bool FileExpertSource::open(const std::string& pack_dir, int64_t n_layers, int64
     }
 
     std::vector<uint64_t> layer_offsets((size_t) n_layers), layer_blob_bytes((size_t) n_layers);
-    const uint64_t want = layout.total;
+    uint64_t want = layout.total;   // the file's size: experts.bin's, or (--experts-wex4) the container's
     if (want == 0 || want > (uint64_t) std::numeric_limits<size_t>::max()) {
         err = "FileExpertSource: the loaded expert layout has an invalid size";
         return false;
@@ -1567,14 +1568,28 @@ bool FileExpertSource::open(const std::string& pack_dir, int64_t n_layers, int64
             return false;
         }
     }
-    const std::string path = pack_dir + "/experts.bin";
-    if (layout.native && !gguf_.empty() && !std::filesystem::exists(path)) {
+    std::string path = pack_dir + "/experts.bin";
+    std::vector<uint64_t> layer_stride = layer_blob_bytes;   // experts.bin: the blobs touch
+    if (!wex4_path_.empty()) {
+        // --experts-wex4: the same blobs, one 4096-aligned record each; checked before anything is mapped
+        Wex4Experts w;
+        if (!wex4_experts_open(wex4_path_, layout, wex4_root_, w, err)) return false;
+        path = wex4_path_;
+        want = w.file_bytes;
+        layer_offsets = std::move(w.first);
+        layer_stride = std::move(w.stride);
+        char note[200];
+        std::snprintf(note, sizeof note, "root %s, %lld layers x %lld experts, header and index checked in %.0f ms",
+                      w.root.c_str(), (long long) n_layers, (long long) n_expert, w.check_ms);
+        wex4_note_ = note;
+    } else if (layout.native && !gguf_.empty() && !std::filesystem::exists(path)) {
         // CS-T: no experts.bin - the model's GGUF shards, read in place
         blobs_ = (int64_t) blob_count;
         n_layers_ = n_layers;
         n_expert_ = n_expert;
         layer_offsets_ = std::move(layer_offsets);
         layer_blob_bytes_ = std::move(layer_blob_bytes);
+        layer_stride_ = std::move(layer_stride);
         if (!open_gguf(err)) { close(); return false; }
         record_inputs(path, gguf_, layout, true);
         return true;
@@ -1665,7 +1680,9 @@ bool FileExpertSource::open(const std::string& pack_dir, int64_t n_layers, int64
     mapped_bytes_ = want;
     layer_offsets_ = std::move(layer_offsets);
     layer_blob_bytes_ = std::move(layer_blob_bytes);
+    layer_stride_ = std::move(layer_stride);
     record_inputs(path, gguf_, layout, false);
+    if (!wex4_path_.empty()) inputs_.assign(1, {"experts wex4", path});   // a saved session names the container it ran on
     return true;
 }
 
@@ -1779,6 +1796,8 @@ void FileExpertSource::close() {
     mapped_bytes_ = 0;
     layer_offsets_.clear();
     layer_blob_bytes_.clear();
+    layer_stride_.clear();
+    wex4_note_.clear();
     reads_ = 0;
 }
 
@@ -3118,7 +3137,7 @@ bool FileExpertSource::read_direct(const Fill* fills, size_t n) const {
         if (f.dst == nullptr || f.layer < 0 || f.e < 0 || f.layer >= n_layers_ || f.e >= n_expert_) return false;
         if (role_ptr_.empty()) {   // experts.bin: the blob is one contiguous range
             const uint64_t per = layer_blob_bytes_[(size_t) f.layer];
-            const uint64_t off = layer_offsets_[(size_t) f.layer] + (uint64_t) f.e * per;
+            const uint64_t off = layer_offsets_[(size_t) f.layer] + (uint64_t) f.e * layer_stride_[(size_t) f.layer];
             const uint64_t a0 = off / kSector * kSector, a1 = (off + per + kSector - 1) / kSector * kSector;
             sc.win.push_back({0, a0, a1 - a0, off - a0, per, 0, f.dst, 0, 0});
             continue;
@@ -3238,7 +3257,7 @@ bool FileExpertSource::read_direct(const Fill* fills, size_t n) const {
         if (f.dst == nullptr || f.layer < 0 || f.e < 0 || f.layer >= n_layers_ || f.e >= n_expert_) return false;
         if (role_ptr_.empty()) {   // experts.bin: the blob is one contiguous range
             const uint64_t per = layer_blob_bytes_[(size_t) f.layer];
-            const uint64_t off = layer_offsets_[(size_t) f.layer] + (uint64_t) f.e * per;
+            const uint64_t off = layer_offsets_[(size_t) f.layer] + (uint64_t) f.e * layer_stride_[(size_t) f.layer];
             const uint64_t a0 = off / kSector * kSector, a1 = (off + per + kSector - 1) / kSector * kSector;
             sc.win.push_back({0, a0, a1 - a0, off - a0, per, 0, f.dst, 0, 0});
             continue;
@@ -3796,10 +3815,10 @@ const uint8_t* FileExpertSource::mapped_blob(int64_t layer, int64_t expert) cons
     if (unmapped_) return nullptr;            // pp-opt: drop_mapping closed the view; read_direct reads them
     if (base_ == nullptr || layer < 0 || expert < 0 || layer >= n_layers_ || expert >= n_expert_) return nullptr;
     const size_t i = (size_t) layer;
-    if (i >= layer_offsets_.size() || i >= layer_blob_bytes_.size()) return nullptr;
-    const uint64_t blob_bytes = layer_blob_bytes_[i];
-    if (blob_bytes == 0 || (uint64_t) expert > std::numeric_limits<uint64_t>::max() / blob_bytes) return nullptr;
-    const uint64_t expert_offset = (uint64_t) expert * blob_bytes;
+    if (i >= layer_offsets_.size() || i >= layer_blob_bytes_.size() || i >= layer_stride_.size()) return nullptr;
+    const uint64_t blob_bytes = layer_blob_bytes_[i], stride = layer_stride_[i];
+    if (blob_bytes == 0 || stride < blob_bytes || (uint64_t) expert > std::numeric_limits<uint64_t>::max() / stride) return nullptr;
+    const uint64_t expert_offset = (uint64_t) expert * stride;
     const uint64_t layer_offset = layer_offsets_[i];
     if (layer_offset > mapped_bytes_ || expert_offset > mapped_bytes_ - layer_offset) return nullptr;
     const uint64_t offset = layer_offset + expert_offset;
@@ -4480,7 +4499,7 @@ bool FileExpertSource::pin_cache_complement(
 #if !defined(_WIN32)
             if (role_ptr_.empty()) {   // experts.bin; the GGUF in place leaves its pages to the OS
             const uint64_t layer_offset = layer_offsets_[(size_t) layer];
-            const uint64_t layer_bytes = blob_bytes * (uint64_t) n_expert_;
+            const uint64_t layer_bytes = layer_stride_[(size_t) layer] * (uint64_t) n_expert_;
             const uint64_t layer_end = layer_offset + layer_bytes;
             const uint64_t page = (uint64_t) page_size;
             const uint64_t advice_start = layer_offset - layer_offset % page;

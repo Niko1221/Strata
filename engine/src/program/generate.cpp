@@ -58,6 +58,7 @@
 #include "strata/core/defaults_026.hpp"
 #include "strata/core/coupled_draft.hpp"
 #include "strata/core/expert_source.hpp"
+#include "strata/core/wex4_experts.hpp"
 #include "strata/core/foresight_swap.hpp"
 #include "strata/core/pinned.hpp"
 #include "strata/core/pin_budget.hpp"
@@ -865,6 +866,8 @@ struct Options {
     bool no_host_worker = false;
     bool coupled_draft = strata::core::coupled_draft_env(); ///< Coupled draft sampling for MTP drafter under sampling
     bool mmap_experts = false;    ///< R2.1: opt OUT of the resident arena, back to MapViewOfFile
+    std::string experts_wex4;      ///< --experts-wex4: the file tier reads the routed experts from this WEX4 container (docs/WEX4.md)
+    std::string experts_wex4_root; ///< --experts-wex4-root: the container's root must be these 64 hex digits
     std::string shared_expert_arena; ///< Linux: optional file backing for the resident arena shared by processes
     bool resident_cpu_experts = false; ///< mmap-backed static-cache misses copied into ordinary RAM
     /// `--resident-experts` (the low-RAM PC's resident mode, chosen by setup): `--resident-cpu-experts` with the copy
@@ -1461,6 +1464,11 @@ void usage() {
                  "  --mmap-experts       R2.1: opt OUT of the resident expert arena, back to MapViewOfFile.\n"
                  "                       The A/B arm: the mmap's rate depends on the OS page cache holding\n"
                  "                       34 GB, and measured 71.97 vs 34.78 ms/token cold vs warm.\n"
+                 "  --experts-wex4 FILE  with --mmap-experts or --resident-experts and a native pack: read the routed\n"
+                 "                       experts from this WEX4 container (iq_pack.py --experts-wex4) instead of\n"
+                 "                       experts.bin or the GGUF.  Its header, index and layout are checked at start;\n"
+                 "                       the expert bytes are not hashed then (tools/wex4_check.py does that).  docs/WEX4.md\n"
+                 "  --experts-wex4-root HEX  refuse to start unless the container's root is these 64 hex digits\n"
                  "  --shared-expert-arena FILE  Linux: back the resident arena with one MAP_SHARED file.\n"
                  "                       Put this file on /dev/shm, not ordinary SSD storage.\n"
                  "                       A small header binds an existing backing file to the same pack.\n"
@@ -4125,6 +4133,14 @@ int main(int argc, char** argv) {
             o.expert_profile_save_min = std::atof(next("--expert-profile-save-every"));
         else if (a == "--gpu-stages") o.gpu_stages = true;
         else if (a == "--mmap-experts") o.mmap_experts = true;
+        else if (a == "--experts-wex4") o.experts_wex4 = next("--experts-wex4");
+        else if (a == "--experts-wex4-root") {
+            o.experts_wex4_root = next("--experts-wex4-root");
+            if (!strata::core::wex4_root_ok(o.experts_wex4_root)) {
+                std::fprintf(stderr, "strata generate: --experts-wex4-root takes 64 hex digits\n");
+                return 2;
+            }
+        }
         else if (a == "--shared-expert-arena") o.shared_expert_arena = next("--shared-expert-arena");
         else if (a == "--resident-cpu-experts") o.resident_cpu_experts = o.resident_cpu_explicit = true;
         else if (a == "--resident-experts") {
@@ -4689,6 +4705,21 @@ int main(int argc, char** argv) {
         return 2;
     }
     bool split_own_auto = false;   // #340: the split keeps own prompt buffers by its rule (not --no-prefill-borrow)
+    if (!o.experts_wex4_root.empty() && o.experts_wex4.empty()) {
+        std::fprintf(stderr, "strata generate: --experts-wex4-root needs --experts-wex4\n");
+        return 2;
+    }
+    // shortcut: the resident arena does not read WEX4; it would need its own loader, measured on a PC whose RAM holds it
+    if (!o.experts_wex4.empty() && !o.mmap_experts) {
+        std::fprintf(stderr, "strata generate: --experts-wex4 reads the experts through the file tier; add --mmap-experts or --resident-experts\n");
+        return 2;
+    }
+#if defined(STRATA_GPU_METAL)
+    if (!o.experts_wex4.empty()) {   // the Metal decode reads the model GGUF itself
+        std::fprintf(stderr, "strata generate: --experts-wex4 is not available in the Metal engine\n");
+        return 2;
+    }
+#endif
     if (o.mmap_experts && !o.shared_expert_arena.empty()) {
         std::fprintf(stderr, "strata generate: --shared-expert-arena backs the resident arena and cannot be used with --mmap-experts\n");
         return 2;
@@ -8326,6 +8357,7 @@ int main(int argc, char** argv) {
         src.set_gguf(o.native_preset);
         if (const char* v = std::getenv("STRATA_FETCH_THREADS"); v != nullptr && std::atoi(v) > 0)
             src.set_fetch_threads(std::atoi(v));
+        if (!o.experts_wex4.empty()) src.set_wex4(o.experts_wex4, o.experts_wex4_root);
         if (!src.open(o.pack, g.n_layers, g.n_expert, err)) {
             if (ram_fallback_taken) {   // #4846: the file cannot be opened either; the arena, loaded the old way, is what is left
                 std::fprintf(stderr, "strata generate: the experts cannot be read from the file either (%s): loading the expert arena "
@@ -8342,7 +8374,11 @@ int main(int argc, char** argv) {
         }
         std::fprintf(stderr, "strata generate: experts via mmap (%s; %s)\n",
                      ram_fallback_taken ? "not enough RAM for the expert arena: the same source as --mmap-experts" : "--mmap-experts",
-                     src.gguf_mode() ? "the GGUF shards in place, no experts.bin" : "the A/B arm of R2.1");
+                     src.gguf_mode() ? "the GGUF shards in place, no experts.bin"
+                                     : !o.experts_wex4.empty() ? "the WEX4 container of --experts-wex4" : "the A/B arm of R2.1");
+        if (!o.experts_wex4.empty())
+            std::fprintf(stderr, "strata generate: --experts-wex4: %s: %s; the expert bytes are not hashed at start\n",
+                         o.experts_wex4.c_str(), src.wex4_note().c_str());
         // #286: with a RAM budget the hottest experts live in it, and the rest are read from the drive unbuffered
         // when the file cache could not keep them beside the budget anyway (a 32 GB PC) - the mapped reads' page
         // faults are small requests on the critical path, and their pages take the RAM the budget was sized for
