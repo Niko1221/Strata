@@ -4031,7 +4031,7 @@ void alloc_prefill() {
         CK(cublasCreate(&PF.cbh) == CUBLAS_STATUS_SUCCESS ? cudaSuccess : cudaErrorUnknown);
         cublasSetStream(PF.cbh, cudaStreamPerThread);
         PF.wh = (half*) dalloc((size_t) PF.np_max * H * 2);
-        for (auto& d : g_dq) d = (half*) dalloc((size_t) 2 * FF * H * 2);   // one expert part (w13: 2FF x H)
+        if (g_is_gguf) for (auto& d : g_dq) d = (half*) dalloc((size_t) 2 * FF * H * 2);   // one expert part (w13: 2FF x H)
         PF.xh = (half*) pf_alloc(3 * T * QD * 2, true);
         PF.qh = (half*) pf_alloc(((T + 63) / 64 * 64) * QD * 2);
     }
