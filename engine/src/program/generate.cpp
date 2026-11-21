@@ -168,6 +168,9 @@
 #if defined(STRATA_HAVE_QWEN35)
 #include "strata/qwen35/engine.hpp"
 #endif
+#if defined(STRATA_HAVE_IK2)
+#include "strata/ik2/engine.hpp"
+#endif
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -3638,11 +3641,14 @@ int main(int argc, char** argv) {
         }
         // `strata --families`: the GGUF architectures this build runs (setup asks before it installs one)
         if (std::strcmp(argv[i], "--families") == 0) {
+            std::string fam = "qwen4exp";
 #if defined(STRATA_HAVE_QWEN35)
-            std::printf("qwen4exp qwen35moe\n");
-#else
-            std::printf("qwen4exp\n");
+            fam += " qwen35moe";
 #endif
+#if defined(STRATA_HAVE_IK2)
+            fam += " inkling2";
+#endif
+            std::printf("%s\n", fam.c_str());
             return 0;
         }
         // `strata --geometry`: the name of the model shape the kernels are compiled for (the geometry header's kGeometryName: flash_next for the default build);
@@ -3750,6 +3756,21 @@ int main(int argc, char** argv) {
             // not readable here: the normal path below reports it
         }
         if (qwen35) return strata::qwen35::run(argc, argv);
+        break;
+    }
+#endif
+#if defined(STRATA_HAVE_IK2)
+    // **INKLING 2 FAMILY SWITCH.** An Inkling 2 file (GGUF architecture inkling2) runs on its own engine path
+    // (src/ik2), decided here from the file's header before any of this engine's state exists.
+    for (int i = 1; i + 1 < argc; ++i) {
+        if (std::strcmp(argv[i], "--native") != 0 && std::strcmp(argv[i], "--model") != 0) continue;
+        bool ik2 = false;
+        try {
+            const strata::GgufFile meta(strata::gguf_split_paths(argv[i + 1]).front());
+            ik2 = strata::model_family(meta) == strata::ModelFamily::Inkling2;
+        } catch (const std::exception&) {
+        }
+        if (ik2) return strata::ik2::run(argc, argv);
         break;
     }
 #endif
