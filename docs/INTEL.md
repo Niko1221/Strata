@@ -385,14 +385,16 @@ All are environment variables for the engine. Put them in the config's `"env"` b
 | Switch | Default | Effect |
 | --- | --- | --- |
 | `STRATA_VERIFY_NO_HOST` | 1 (`strata-sycl.sh`); 0 on `i915` | See above |
-| `STRATA_MIRROR_MIB` | Free RAM less 4 GiB | Size of the pinned host mirror for experts without a VRAM slot. Set `0` on a layer split where the mirror would not be used. |
+| `STRATA_MIRROR_MIB` | Free RAM less 4 GiB. On an integrated GPU: none with `--expert-cache auto`, the pool's rest less `--vram-reserve-mib` with a cache size you give | Size of the pinned host mirror for experts without a VRAM slot. Set `0` on a layer split where the mirror would not be used. |
+| `STRATA_UMA` | From the device | `1` / `0`: plan the GPU as one that shares the system's RAM (an integrated GPU), or as a card. Linux. See [INTEL_ARC.md](INTEL_ARC.md#integrated-arc-gpus-the-b390-panther-lake) |
+| `STRATA_UMA_HEADROOM_GIB` | 6 | On such a GPU, the GiB of RAM the engine leaves free when it sizes its cache |
 | `STRATA_PF_XMX` | 2 on Alchemist | Grouped XMX expert launch; `0` off, `1` dequantize first |
 | `STRATA_GDN_XE` | On for Alchemist | Sub-group GDN recurrence |
 | `STRATA_COPY_ENGINE` | On for Battlemage | Expert copies on the copy engine |
 | `STRATA_PREFILL_MMQ` | `auto` on Battlemage | Fused int8 prompt experts |
 | `STRATA_PREFILL_STREAM_ALL` | On when VRAM holds more than 90% of the (layer, expert) pairs | Copy every expert the cache does not hold, layer by layer; `=0` / `=1` force it |
 | `STRATA_PREFILL_FIRST` | 256 if the cache holds every expert, else 0 | Tokens in the short first prompt chunk |
-| `STRATA_LEND_MIRROR` | On | Mirror the experts in the last 10% of cache slots; `=0` off |
+| `STRATA_LEND_MIRROR` | On; off on an integrated GPU, where an automatic cache also needs `STRATA_MIRROR_MIB` for it | Mirror the experts in the last 10% of cache slots; `=0` off, `=N` the last N slots |
 | `STRATA_VERIFY_LEAN` | On | Decode graph without unanswered nodes; `=0` off |
 | `STRATA_FILL_SERIAL=1` | Off | The old serial expert-cache fill (the pipelined fill is the default) |
 | `STRATA_MMVQ_A2=0`, `STRATA_MMVQ_WIDE_32=0` | On | Restore the older matvec kernels |

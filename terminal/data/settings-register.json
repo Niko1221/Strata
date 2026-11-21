@@ -136,7 +136,7 @@
    "reads": [
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 8462,
+     "line": 8518,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -549,7 +549,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 1423,
+     "line": 1424,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -591,7 +591,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 1367,
+     "line": 1368,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -654,7 +654,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 1357,
+     "line": 1358,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -1146,25 +1146,25 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 215,
+     "line": 216,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 215,
+     "line": 216,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 1828,
+     "line": 1829,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 1828,
+     "line": 1829,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -1360,13 +1360,13 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 6395,
+     "line": 6451,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 6395,
+     "line": 6451,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -1854,9 +1854,9 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL.md:401",
-    "docs/INTEL.md:501",
-    "docs/INTEL.md:502"
+    "docs/INTEL.md:403",
+    "docs/INTEL.md:503",
+    "docs/INTEL.md:504"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -2164,7 +2164,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 11148,
+     "line": 11204,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -2392,7 +2392,7 @@
    "reads": [
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 4360,
+     "line": 4364,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -2483,7 +2483,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 4327,
+     "line": 4331,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -2929,7 +2929,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 11312,
+     "line": 11368,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -2965,13 +2965,13 @@
    "reads": [
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 401,
+     "line": 402,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 13985,
+     "line": 14041,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -3197,13 +3197,13 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 10758,
+     "line": 10814,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 10831,
+     "line": 10887,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -3604,7 +3604,7 @@
    "launch_reads": [],
    "doc_mentions": [
     "docs/INTEL.md:207",
-    "docs/INTEL.md:391"
+    "docs/INTEL.md:393"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -3905,7 +3905,7 @@
    "reads": [
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 13845,
+     "line": 13901,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -4156,7 +4156,7 @@
    "launch_reads": [],
    "doc_mentions": [
     "docs/AMD_HIP.md:510",
-    "docs/INTEL.md:407",
+    "docs/INTEL.md:409",
     "docs/bench-results/2026-10-05-community-arc-b65/BUILD.md:3",
     "docs/bench-results/2026-10-05-community-arc-b65/BUILD.md:93",
     "docs/bench-results/2026-10-05-community-arc-b65/README.md:58",
@@ -4267,7 +4267,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 11425,
+     "line": 11481,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -5267,7 +5267,7 @@
    "reads": [
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 7793,
+     "line": 7849,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -5750,13 +5750,13 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 7794,
+     "line": 7850,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 12600,
+     "line": 12656,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -6020,7 +6020,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 5657,
+     "line": 5713,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -6504,7 +6504,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 13856,
+     "line": 13912,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -6686,7 +6686,7 @@
    "reads": [
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 13808,
+     "line": 13864,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -6726,7 +6726,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 2768,
+     "line": 2769,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -7579,7 +7579,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL.md:403"
+    "docs/INTEL.md:405"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -7868,7 +7868,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 4684,
+     "line": 4688,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -8095,7 +8095,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 5293,
+     "line": 5320,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -8130,7 +8130,7 @@
    "reads": [
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 5185,
+     "line": 5212,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -8144,7 +8144,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL.md:397"
+    "docs/INTEL.md:399"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -8172,7 +8172,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 11443,
+     "line": 11499,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -8247,7 +8247,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 11452,
+     "line": 11508,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -9356,7 +9356,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL.md:480"
+    "docs/INTEL.md:482"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -9988,9 +9988,9 @@
    "launch_reads": [],
    "doc_mentions": [
     "docs/INTEL.md:260",
-    "docs/INTEL.md:390",
-    "docs/INTEL.md:485",
-    "docs/INTEL.md:499"
+    "docs/INTEL.md:392",
+    "docs/INTEL.md:487",
+    "docs/INTEL.md:501"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -12691,7 +12691,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 230,
+     "line": 231,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -13169,7 +13169,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 2189,
+     "line": 2190,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -14623,7 +14623,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL.md:402"
+    "docs/INTEL.md:404"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -16091,7 +16091,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 4236,
+     "line": 4240,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -16133,7 +16133,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 6684,
+     "line": 6740,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -16206,7 +16206,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 4248,
+     "line": 4252,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -16246,7 +16246,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 6682,
+     "line": 6738,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -16556,13 +16556,13 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 2491,
+     "line": 2492,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 8074,
+     "line": 8130,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -16917,7 +16917,7 @@
    "reads": [
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 5369,
+     "line": 5396,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -16932,7 +16932,8 @@
    "launch_reads": [],
    "doc_mentions": [
     "docs/INTEL.md:209",
-    "docs/INTEL.md:395"
+    "docs/INTEL.md:397",
+    "docs/INTEL_ARC.md:191"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -17226,13 +17227,13 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 10969,
+     "line": 11025,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 10997,
+     "line": 11053,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -17281,7 +17282,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 11001,
+     "line": 11057,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -17368,7 +17369,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 5677,
+     "line": 5733,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -17414,7 +17415,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 5691,
+     "line": 5747,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -17499,13 +17500,13 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 11410,
+     "line": 11466,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 13767,
+     "line": 13823,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -20156,7 +20157,13 @@
    "reads": [
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 5386,
+     "line": 5153,
+     "backend": "sycl",
+     "fn": "getenv"
+    },
+    {
+     "file": "engine/sycl/src/program/generate.cpp",
+     "line": 5416,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -20634,7 +20641,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL.md:398"
+    "docs/INTEL.md:400"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -21011,7 +21018,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL.md:399"
+    "docs/INTEL.md:401"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -21298,7 +21305,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL.md:398"
+    "docs/INTEL.md:400"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -22641,7 +22648,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 2861,
+     "line": 2862,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -24012,7 +24019,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 4794,
+     "line": 4798,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -24899,7 +24906,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 2807,
+     "line": 2808,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -25127,7 +25134,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 3751,
+     "line": 3752,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -25167,7 +25174,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 3753,
+     "line": 3754,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -25254,7 +25261,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 11274,
+     "line": 11330,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -28119,8 +28126,8 @@
    "launch_reads": [],
    "doc_mentions": [
     "docs/INTEL.md:262",
-    "docs/INTEL.md:389",
-    "docs/INTEL.md:504",
+    "docs/INTEL.md:391",
+    "docs/INTEL.md:506",
     "docs/release-notes-0.2.0.md:57"
    ],
    "first_commit": "4058aa782b",
@@ -28755,7 +28762,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 11816,
+     "line": 11872,
      "backend": "sycl",
      "fn": "pipe_dbg_env"
     }
@@ -28795,7 +28802,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 3549,
+     "line": 3550,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -28870,7 +28877,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 334,
+     "line": 335,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -28912,7 +28919,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 11608,
+     "line": 11664,
      "backend": "sycl",
      "fn": "pipe_dbg_env"
     }
@@ -28951,13 +28958,13 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 12126,
+     "line": 12182,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 12504,
+     "line": 12560,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -28997,7 +29004,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 10849,
+     "line": 10905,
      "backend": "sycl",
      "fn": "pipe_dbg_env"
     }
@@ -29103,7 +29110,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 11505,
+     "line": 11561,
      "backend": "sycl",
      "fn": "pipe_dbg_env"
     }
@@ -29143,7 +29150,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 11765,
+     "line": 11821,
      "backend": "sycl",
      "fn": "pipe_dbg_env"
     }
@@ -29216,7 +29223,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 11812,
+     "line": 11868,
      "backend": "sycl",
      "fn": "pipe_dbg_env"
     }
@@ -29256,7 +29263,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 7894,
+     "line": 7950,
      "backend": "sycl",
      "fn": "pipe_dbg_env"
     }
@@ -29329,7 +29336,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 10852,
+     "line": 10908,
      "backend": "sycl",
      "fn": "pipe_dbg_env"
     }
@@ -29369,7 +29376,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 10845,
+     "line": 10901,
      "backend": "sycl",
      "fn": "pipe_dbg_env"
     }
@@ -29409,7 +29416,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 11592,
+     "line": 11648,
      "backend": "sycl",
      "fn": "pipe_dbg_env"
     }
@@ -29567,7 +29574,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 3340,
+     "line": 3341,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -29894,7 +29901,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 3329,
+     "line": 3330,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -29976,7 +29983,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 2196,
+     "line": 2197,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -30233,7 +30240,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 1986,
+     "line": 1987,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -30773,7 +30780,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 6539,
+     "line": 6595,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -30826,7 +30833,7 @@
    "launch_reads": [],
    "doc_mentions": [
     "docs/INTEL.md:200",
-    "docs/INTEL.md:394"
+    "docs/INTEL.md:396"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -31191,7 +31198,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 6560,
+     "line": 6616,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -31470,7 +31477,7 @@
     "docs/AMD_HIP_PERFORMANCE.md:15",
     "docs/AMD_HIP_PERFORMANCE.md:19",
     "docs/INTEL.md:231",
-    "docs/INTEL.md:392",
+    "docs/INTEL.md:394",
     "docs/INTEL_INT8_EXPERTS.md:15",
     "docs/INTEL_INT8_EXPERTS.md:16",
     "docs/INTEL_INT8_EXPERTS.md:18",
@@ -31831,7 +31838,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL.md:393"
+    "docs/INTEL.md:395"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -32845,7 +32852,7 @@
    "reads": [
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 11821,
+     "line": 11877,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -32878,7 +32885,7 @@
    "reads": [
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 11952,
+     "line": 12008,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -32911,7 +32918,7 @@
    "reads": [
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 12239,
+     "line": 12295,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -32950,13 +32957,13 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 4544,
+     "line": 4548,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 7938,
+     "line": 7994,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -32989,7 +32996,7 @@
    "reads": [
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 9099,
+     "line": 9155,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -33280,8 +33287,8 @@
    "launch_reads": [],
    "doc_mentions": [
     "docs/INTEL.md:376",
-    "docs/INTEL.md:404",
-    "docs/INTEL.md:500"
+    "docs/INTEL.md:406",
+    "docs/INTEL.md:502"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -34341,7 +34348,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL.md:400"
+    "docs/INTEL.md:402"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -35832,7 +35839,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 315,
+     "line": 316,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -35908,7 +35915,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 11065,
+     "line": 11121,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -36053,13 +36060,13 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 2145,
+     "line": 2146,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 2156,
+     "line": 2157,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -36133,13 +36140,13 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 2143,
+     "line": 2144,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 2154,
+     "line": 2155,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -36991,7 +36998,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 301,
+     "line": 302,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -38982,7 +38989,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 10711,
+     "line": 10767,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -39030,13 +39037,13 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 8376,
+     "line": 8432,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 10684,
+     "line": 10740,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -39866,19 +39873,19 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 3927,
+     "line": 3928,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 3927,
+     "line": 3928,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 3933,
+     "line": 3934,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -39977,7 +39984,7 @@
    "reads": [
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 3987,
+     "line": 3988,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -40012,13 +40019,13 @@
    "reads": [
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 3991,
+     "line": 3992,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 3991,
+     "line": 3992,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -40134,13 +40141,13 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 3901,
+     "line": 3902,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 3901,
+     "line": 3902,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -40308,7 +40315,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 2334,
+     "line": 2335,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -40361,7 +40368,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 7294,
+     "line": 7350,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -40401,7 +40408,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 3847,
+     "line": 3848,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -40441,7 +40448,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 7120,
+     "line": 7176,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -40485,7 +40492,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 7524,
+     "line": 7580,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -40525,7 +40532,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 7522,
+     "line": 7578,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -40598,7 +40605,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 12921,
+     "line": 12977,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -40747,7 +40754,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 3317,
+     "line": 3318,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -40787,7 +40794,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 3318,
+     "line": 3319,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -41135,7 +41142,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 3047,
+     "line": 3048,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -41291,7 +41298,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 12666,
+     "line": 12722,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -41378,7 +41385,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 12720,
+     "line": 12776,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -42026,7 +42033,7 @@
    "launch_reads": [],
    "doc_mentions": [
     "docs/INTEL.md:153",
-    "docs/INTEL.md:405"
+    "docs/INTEL.md:407"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -42350,7 +42357,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 150,
+     "line": 151,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -42820,13 +42827,13 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 5073,
+     "line": 5077,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 5073,
+     "line": 5077,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -44007,13 +44014,13 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 1343,
+     "line": 1344,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 9203,
+     "line": 9259,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -44065,13 +44072,13 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 13509,
+     "line": 13565,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 13547,
+     "line": 13603,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -44222,6 +44229,42 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_UMA",
+   "backends": [
+    "sycl"
+   ],
+   "reads": [
+    {
+     "file": "engine/sycl/src/core/expert_cache.cpp",
+     "line": 72,
+     "backend": "sycl",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/INTEL.md:389",
+    "docs/INTEL_ARC.md:196"
+   ],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "sycl/core",
+   "note": "=1 / =0 plans the GPU as an integrated one (one pool with the RAM) or as a card, whatever the device reports; Linux (#6448) [docs/INTEL_ARC.md:196]",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_UMA_DROP_PAGES",
    "backends": [
     "cuda"
@@ -44275,7 +44318,7 @@
     },
     {
      "file": "engine/sycl/src/core/expert_cache.cpp",
-     "line": 130,
+     "line": 91,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -44289,6 +44332,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
+    "docs/INTEL.md:390",
+    "docs/INTEL_ARC.md:188",
     "docs/STRIX_HALO.md:31"
    ],
    "first_commit": "4058aa782b",
@@ -44466,7 +44511,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 4703,
+     "line": 4707,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -44520,7 +44565,7 @@
    "reads": [
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 13431,
+     "line": 13487,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -44595,7 +44640,7 @@
    "reads": [
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 5241,
+     "line": 5268,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -44888,13 +44933,13 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 1814,
+     "line": 1815,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 4543,
+     "line": 4547,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -44905,11 +44950,11 @@
    "engine_sets": [
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 1816
+     "line": 1817
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 1818
+     "line": 1819
     }
    ],
    "engine_defaults": [],
@@ -44944,7 +44989,7 @@
    "reads": [
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 5272,
+     "line": 5299,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -45088,7 +45133,7 @@
    "reads": [
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 5259,
+     "line": 5286,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -45168,7 +45213,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL.md:396"
+    "docs/INTEL.md:398"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -45279,25 +45324,31 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 1814,
+     "line": 1815,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 4542,
+     "line": 4546,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 5412,
+     "line": 5152,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 5526,
+     "line": 5451,
+     "backend": "sycl",
+     "fn": "getenv"
+    },
+    {
+     "file": "engine/sycl/src/program/generate.cpp",
+     "line": 5582,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -45323,6 +45374,7 @@
     "docs/INTEL.md:387",
     "docs/INTEL_ARC.md:63",
     "docs/INTEL_ARC.md:153",
+    "docs/INTEL_ARC.md:193",
     "docs/bench-results/2026-10-04-community-2x-arc-pro-b60/README.md:34",
     "docs/bench-results/2026-10-04-community-2x-arc-pro-b60/README.md:66",
     "docs/bench-results/2026-10-05-community-arc-b65/BUILD.md:91",
@@ -45723,7 +45775,7 @@
    "reads": [
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 13648,
+     "line": 13704,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -45800,7 +45852,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 9289,
+     "line": 9345,
      "backend": "sycl",
      "fn": "getenv"
     }
