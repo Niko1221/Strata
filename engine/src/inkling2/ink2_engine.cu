@@ -23,6 +23,7 @@
 // decode speed.
 #include "../image/vae/safetensors_lite.hpp"
 #include "ink2_cpu.hpp"
+#include "ink2_iq_tables.h"
 
 #include <cublas_v2.h>
 #include <cuda_fp16.h>
@@ -34,6 +35,7 @@
 #include <condition_variable>
 #include <deque>
 #include <functional>
+#include <map>
 #include <iostream>
 #include <mutex>
 #include <random>
@@ -46,6 +48,10 @@
 #include <cstring>
 #include <string>
 #include <vector>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 namespace {
 
@@ -322,6 +328,178 @@ __global__ void k_gemv_mxfp8_sel(const uint8_t* const* __restrict__ tab, const i
         const float t = warp_sum(acc[r]);
         if (!lane && row0 + r < N) y[(size_t) blockIdx.y * N + row0 + r] = t;
     }
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// GGUF weights (--model FILE.gguf, llama.cpp's merged inkling2_loop layout): experts gate_up IQ3_S / down IQ4_NL (or
+// Q8_0), dense matrices Q8_0 repacked at load into int8 codes [N][K] + fp16 scales [N][K / 32] (lossless).
+enum GgType : int { GG_F32 = 0, GG_F16 = 1, GG_Q8_0 = 8, GG_IQ4_NL = 20, GG_IQ3_S = 21, GG_BF16 = 30 };
+__device__ uint32_t d_iq3s_grid[512];
+__constant__ int8_t c_iq4nl[16];
+
+// 8 weights of one row (row pointer rp, ggml blocks) at columns [kc, kc + 8), kc % 8 == 0; the tables in shared memory
+template <int T>
+__device__ __forceinline__ void gg_ld8(const uint8_t* __restrict__ rp, int kc, float* w, const uint32_t* grid,
+                                       const int8_t* kv) {
+    if constexpr (T == GG_IQ3_S) {   // 110 B per 256: d, qs[64], qh[8], signs[32], scales[4]
+        const uint8_t* b = rp + (size_t) (kc >> 8) * 110;
+        const int ib = (kc & 255) >> 5, il = (kc & 31) >> 3;
+        const float d = __half2float(*reinterpret_cast<const __half*>(b));
+        const float db = d * (float) (1 + 2 * ((b[106 + (ib >> 1)] >> (4 * (ib & 1))) & 15));
+        const uint32_t qh = b[66 + ib], sg = b[74 + 4 * ib + il];
+        const uint32_t g1 = grid[b[2 + 8 * ib + 2 * il] | ((qh << (8 - 2 * il)) & 256)];
+        const uint32_t g2 = grid[b[3 + 8 * ib + 2 * il] | ((qh << (7 - 2 * il)) & 256)];
+#pragma unroll
+        for (int j = 0; j < 4; ++j) {
+            w[j] = db * (float) ((g1 >> (8 * j)) & 255) * (((sg >> j) & 1) ? -1.0f : 1.0f);
+            w[4 + j] = db * (float) ((g2 >> (8 * j)) & 255) * (((sg >> (4 + j)) & 1) ? -1.0f : 1.0f);
+        }
+    } else if constexpr (T == GG_IQ4_NL) {   // 18 B per 32: d, qs[16] (low nibbles values 0..15, high 16..31)
+        const uint8_t* b = rp + (size_t) (kc >> 5) * 18;
+        const int o = kc & 31;
+        const float d = __half2float(*reinterpret_cast<const __half*>(b));
+#pragma unroll
+        for (int j = 0; j < 8; ++j) {
+            const uint32_t by = b[2 + ((o + j) & 15)];
+            w[j] = d * (float) kv[o < 16 ? by & 15u : by >> 4];
+        }
+    } else {   // Q8_0: 34 B per 32: d, qs[32]
+        const uint8_t* b = rp + (size_t) (kc >> 5) * 34;
+        const int o = kc & 31;
+        const float d = __half2float(*reinterpret_cast<const __half*>(b));
+#pragma unroll
+        for (int j = 0; j < 8; ++j) w[j] = d * (float) (int8_t) b[2 + o + j];
+    }
+}
+__device__ __forceinline__ void gg_tables(uint32_t* grid, int8_t* kv) {
+    for (int i = threadIdx.x; i < 512; i += blockDim.x) grid[i] = d_iq3s_grid[i];
+    if (threadIdx.x < 16) kv[threadIdx.x] = c_iq4nl[threadIdx.x];
+}
+// w13 rows of the GGUF are [gate 0..FF) [up FF..2FF); the engine's gu rows interleave them (2j gate j, 2j+1 up j)
+__device__ __forceinline__ int gg_perm(int n, int N) { return (n & 1) ? N / 2 + (n >> 1) : n >> 1; }
+
+// selected experts, GGUF formats: y[k][o] = W_e[row(o)] . x_k (row(o) = gg_perm(o) for PERM); W_e = tab[e] (part A:
+// the gate_up rows, part B: the down rows of the expert's slot); rb = bytes per row
+template <int T, int R, bool SWI, bool PERM>
+__global__ void k_gemv_gg_sel(const uint8_t* const* __restrict__ tab, size_t rb, const int* __restrict__ ids,
+                              const float* __restrict__ x, int x_stride, float* __restrict__ y, int N, int K) {
+    extern __shared__ float sm[];
+    float* xs = sm;
+    uint32_t* grid = reinterpret_cast<uint32_t*>(sm + K);
+    int8_t* kv = reinterpret_cast<int8_t*>(grid + 512);
+    const float* xk = x + (size_t) blockIdx.y * x_stride;
+    for (int i = threadIdx.x; i < K; i += blockDim.x) xs[i] = SWI ? swiglu1(xk[2 * i], xk[2 * i + 1]) : xk[i];
+    gg_tables(grid, kv);
+    __syncthreads();
+    const int row0 = (blockIdx.x * (blockDim.x / 32) + threadIdx.x / 32) * R, lane = threadIdx.x & 31;
+    if (row0 >= N) return;
+    const uint8_t* W = tab[ids[blockIdx.y]];
+    const uint8_t* rp[R];
+#pragma unroll
+    for (int r = 0; r < R; ++r) {
+        const int o = min(row0 + r, N - 1);
+        rp[r] = W + (size_t) (PERM ? gg_perm(o, N) : o) * rb;
+    }
+    float acc[R];
+#pragma unroll
+    for (int r = 0; r < R; ++r) acc[r] = 0.0f;
+    for (int kc = lane * 8; kc < K; kc += 256) {
+        const float4 a = *reinterpret_cast<const float4*>(xs + kc), b = *reinterpret_cast<const float4*>(xs + kc + 4);
+#pragma unroll
+        for (int r = 0; r < R; ++r) {
+            float w[8];
+            gg_ld8<T>(rp[r], kc, w, grid, kv);
+            acc[r] += w[0] * a.x + w[1] * a.y + w[2] * a.z + w[3] * a.w + w[4] * b.x + w[5] * b.y + w[6] * b.z + w[7] * b.w;
+        }
+    }
+#pragma unroll
+    for (int r = 0; r < R; ++r) {
+        const float t = warp_sum(acc[r]);
+        if (!lane && row0 + r < N) y[(size_t) blockIdx.y * N + row0 + r] = t;
+    }
+}
+
+// dense Q8_0 (repacked): y[row] = W[row] . x, as gemv_bf16_dot (one warp per R rows, x staged)
+template <int R>
+__device__ __forceinline__ void gemv_q8_dot(const int8_t* __restrict__ Wq, const __half* __restrict__ Ws, const float* xs,
+                                            float* __restrict__ y, int N, int K, int row0) {
+    const int lane = threadIdx.x & 31;
+    const uint2* w[R];
+    const __half* sc[R];
+#pragma unroll
+    for (int r = 0; r < R; ++r) {
+        const size_t row = (size_t) min(row0 + r, N - 1);
+        w[r] = reinterpret_cast<const uint2*>(Wq + row * K);
+        sc[r] = Ws + row * (K / 32);
+    }
+    const float4* x4 = reinterpret_cast<const float4*>(xs);
+    float acc[R];
+#pragma unroll
+    for (int r = 0; r < R; ++r) acc[r] = 0.0f;
+#pragma unroll 2
+    for (int i = lane; i < K / 8; i += 32) {
+        uint2 v[R];
+        float f[R];
+#pragma unroll
+        for (int r = 0; r < R; ++r) { v[r] = __ldg(w[r] + i); f[r] = __half2float(sc[r][i >> 2]); }
+        const float4 a = x4[2 * i], b = x4[2 * i + 1];
+#pragma unroll
+        for (int r = 0; r < R; ++r) {
+            const char4 c0 = *reinterpret_cast<const char4*>(&v[r].x), c1 = *reinterpret_cast<const char4*>(&v[r].y);
+            acc[r] += f[r] * (c0.x * a.x + c0.y * a.y + c0.z * a.z + c0.w * a.w + c1.x * b.x + c1.y * b.y + c1.z * b.z +
+                              c1.w * b.w);
+        }
+    }
+#pragma unroll
+    for (int r = 0; r < R; ++r) {
+        const float t = warp_sum(acc[r]);
+        if (!lane && row0 + r < N) y[row0 + r] = t;
+    }
+}
+template <int R>
+__global__ void k_gemv_q8(const int8_t* __restrict__ Wq, const __half* __restrict__ Ws, const float* __restrict__ x,
+                          float* __restrict__ y, int N, int K) {
+    extern __shared__ float xs[];
+    for (int i = threadIdx.x; i < K; i += blockDim.x) xs[i] = x[i];
+    __syncthreads();
+    const int row0 = (blockIdx.x * (blockDim.x / 32) + threadIdx.x / 32) * R;
+    if (row0 >= N) return;
+    gemv_q8_dot<R>(Wq, Ws, xs, y, N, K, row0);
+}
+template <int R>
+__global__ void k_gemv_q8_qkv(const int8_t* __restrict__ Wq, const __half* __restrict__ Ws, const float* __restrict__ xq,
+                              const float* __restrict__ xk, const float* __restrict__ xv, int b1, int b2,
+                              float* __restrict__ y, int N, int K) {
+    extern __shared__ float xs[];
+    const int rb = blockIdx.x * (blockDim.x / 32) * R, re = min(rb + (int) (blockDim.x / 32) * R, N);
+    if (rb < b1) for (int i = threadIdx.x; i < K; i += blockDim.x) xs[i] = xq[i];
+    if (rb < b2 && re > b1) for (int i = threadIdx.x; i < K; i += blockDim.x) xs[K + i] = xk[i];
+    if (re > b2) for (int i = threadIdx.x; i < K; i += blockDim.x) xs[2 * K + i] = xv[i];
+    __syncthreads();
+    const int row0 = (blockIdx.x * (blockDim.x / 32) + threadIdx.x / 32) * R;
+    if (row0 >= N) return;
+    gemv_q8_dot<R>(Wq, Ws, xs + (row0 < b1 ? 0 : row0 < b2 ? K : 2 * K), y, N, K, row0);
+}
+// Q8 rows -> fp32 / fp16 (prompt products through cuBLAS); n8 = elements / 8
+__global__ void kb_q8_to_f32(const int8_t* __restrict__ q, const __half* __restrict__ sc, float* __restrict__ dst, size_t n8) {
+    const size_t i = (size_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n8) return;
+    const uint2 v = reinterpret_cast<const uint2*>(q)[i];
+    const float f = __half2float(sc[i >> 2]);
+    const char4 c0 = *reinterpret_cast<const char4*>(&v.x), c1 = *reinterpret_cast<const char4*>(&v.y);
+    float4* d = reinterpret_cast<float4*>(dst + 8 * i);
+    d[0] = make_float4(c0.x * f, c0.y * f, c0.z * f, c0.w * f);
+    d[1] = make_float4(c1.x * f, c1.y * f, c1.z * f, c1.w * f);
+}
+__global__ void kb_q8_to_f16(const int8_t* __restrict__ q, const __half* __restrict__ sc, __half* __restrict__ dst, size_t n8) {
+    const size_t i = (size_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n8) return;
+    const uint2 v = reinterpret_cast<const uint2*>(q)[i];
+    const float f = __half2float(sc[i >> 2]);
+    const char4 c0 = *reinterpret_cast<const char4*>(&v.x), c1 = *reinterpret_cast<const char4*>(&v.y);
+    __half2* d = reinterpret_cast<__half2*>(dst + 8 * i);
+    d[0] = __floats2half2_rn(c0.x * f, c0.y * f); d[1] = __floats2half2_rn(c0.z * f, c0.w * f);
+    d[2] = __floats2half2_rn(c1.x * f, c1.y * f); d[3] = __floats2half2_rn(c1.z * f, c1.w * f);
 }
 
 // y = rms(x) (* w if w): one block
@@ -1516,6 +1694,152 @@ __global__ void __launch_bounds__(256) kb_moe_gemm_tc(const half* __restrict__ A
     }
 }
 
+// Grouped expert products for GGUF experts (prompt): as kb_moe_gemm / kb_moe_gemm_tc, the weights decoded by gg_ld8
+// (no per-expert factor), output column n of w13 read from row gg_perm(n) (PERM)
+template <int T, bool PERM>
+__global__ void __launch_bounds__(256) kb_moe_gemm_gg(const float* __restrict__ A, int lda, const int* __restrict__ rows,
+                                                      const uint8_t* const* __restrict__ tab, size_t rb,
+                                                      const int* __restrict__ tile_e, const int* __restrict__ tile_r0,
+                                                      const int* __restrict__ ntiles, const int* __restrict__ eoff,
+                                                      const int* __restrict__ ecnt, float* __restrict__ C, int N, int K) {
+    __shared__ __align__(16) float As[FKK][FM + 4], Ws[FKK][FN + 4];
+    __shared__ uint32_t grid[512];
+    __shared__ int8_t kv[16];
+    if ((int) blockIdx.x >= *ntiles) return;
+    const int e = tile_e[blockIdx.x], r0 = tile_r0[blockIdx.x], rend = eoff[e] + ecnt[e], n0 = blockIdx.y * FN;
+    const uint8_t* W = tab[e];
+    if (!W) return;   // not in this batch (offload): another launch has it
+    gg_tables(grid, kv);
+    const int tid = threadIdx.x, ty = tid / 16, tx = tid % 16;
+    const float* asrc[2];
+    int arow_l[2], akq[2];
+#pragma unroll
+    for (int u = 0; u < 2; ++u) {
+        const int idx = tid + 256 * u, row = idx / 8, r = r0 + row;
+        arow_l[u] = row;
+        akq[u] = idx % 8;
+        asrc[u] = r < rend ? A + (size_t) (rows ? rows[r] : r) * lda + akq[u] * 4 : nullptr;
+    }
+    const int wn = tid / 4, wq = tid % 4, nrow = n0 + wn;
+    const uint8_t* wp = W + (size_t) (PERM ? gg_perm(nrow, N) : nrow) * rb;
+    float acc[4][4] = {};
+    __syncthreads();   // the tables
+    for (int k0 = 0; k0 < K; k0 += FKK) {
+#pragma unroll
+        for (int u = 0; u < 2; ++u) {
+            const float4 v = asrc[u] ? *reinterpret_cast<const float4*>(asrc[u] + k0) : make_float4(0, 0, 0, 0);
+            const int kk = akq[u] * 4, row = arow_l[u];
+            As[kk][row] = v.x; As[kk + 1][row] = v.y; As[kk + 2][row] = v.z; As[kk + 3][row] = v.w;
+        }
+        float w[8];
+        gg_ld8<T>(wp, k0 + wq * 8, w, grid, kv);
+#pragma unroll
+        for (int j = 0; j < 8; ++j) Ws[wq * 8 + j][wn] = w[j];
+        __syncthreads();
+#pragma unroll 8
+        for (int kk = 0; kk < FKK; ++kk) {
+            const float4 a = *reinterpret_cast<const float4*>(&As[kk][ty * 4]);
+            const float4 b = *reinterpret_cast<const float4*>(&Ws[kk][tx * 4]);
+            const float av[4] = {a.x, a.y, a.z, a.w}, bv[4] = {b.x, b.y, b.z, b.w};
+#pragma unroll
+            for (int i = 0; i < 4; ++i)
+#pragma unroll
+                for (int j = 0; j < 4; ++j) acc[i][j] += av[i] * bv[j];
+        }
+        __syncthreads();
+    }
+#pragma unroll
+    for (int i = 0; i < 4; ++i) {
+        const int r = r0 + ty * 4 + i;
+        if (r < rend)
+            *reinterpret_cast<float4*>(C + (size_t) r * N + n0 + tx * 4) = make_float4(acc[i][0], acc[i][1], acc[i][2], acc[i][3]);
+    }
+}
+
+template <int T, bool PERM>
+__global__ void __launch_bounds__(256) kb_moe_gemm_tc_gg(const half* __restrict__ A, int lda,
+                                                         const uint8_t* const* __restrict__ tab, size_t rb,
+                                                         const int* __restrict__ tile_e, const int* __restrict__ tile_r0,
+                                                         const int* __restrict__ ntiles, const int* __restrict__ eoff,
+                                                         const int* __restrict__ ecnt, float* __restrict__ C, int N, int K) {
+    __shared__ __align__(32) unsigned char smraw[TM * TCLD * 4];
+    __shared__ uint32_t grid[512];
+    __shared__ int8_t kv[16];
+    half* As = reinterpret_cast<half*>(smraw);
+    half* Bs = As + TM * TLD;
+    float* Cs = reinterpret_cast<float*>(smraw);
+    if ((int) blockIdx.x >= *ntiles) return;
+    const int e = tile_e[blockIdx.x], r0 = tile_r0[blockIdx.x], rend = eoff[e] + ecnt[e], n0 = blockIdx.y * TN;
+    const uint8_t* W = tab[e];
+    if (!W) return;   // not in this batch (offload): another launch has it
+    gg_tables(grid, kv);
+    const int tid = threadIdx.x, warp = tid / 32, wm = warp / 4, wn = warp % 4;
+    const int arow = tid / 4, akq = tid % 4;
+    const half* asrc = r0 + arow < rend ? A + (size_t) (r0 + arow) * lda + akq * 8 : nullptr;
+    int wn_[2], wq_[2];
+    const uint8_t* wp[2];
+#pragma unroll
+    for (int u = 0; u < 2; ++u) {
+        const int idx = tid + 256 * u;
+        wn_[u] = idx / 4;
+        wq_[u] = idx % 4;
+        const int nrow = n0 + wn_[u];
+        wp[u] = W + (size_t) (PERM ? gg_perm(nrow, N) : nrow) * rb;
+    }
+    wmma::fragment<wmma::accumulator, 16, 16, 16, float> c[2][2];
+#pragma unroll
+    for (int i = 0; i < 2; ++i)
+#pragma unroll
+        for (int j = 0; j < 2; ++j) wmma::fill_fragment(c[i][j], 0.0f);
+    __syncthreads();   // the tables
+    uint4 av;
+    float wv[2][8];
+    auto gload = [&](int k0) {
+        av = asrc ? *reinterpret_cast<const uint4*>(asrc + k0) : make_uint4(0, 0, 0, 0);
+#pragma unroll
+        for (int u = 0; u < 2; ++u) gg_ld8<T>(wp[u], k0 + wq_[u] * 8, wv[u], grid, kv);
+    };
+    gload(0);
+    for (int k0 = 0; k0 < K; k0 += TK) {
+        *reinterpret_cast<uint4*>(As + arow * TLD + akq * 8) = av;
+#pragma unroll
+        for (int u = 0; u < 2; ++u) {
+            half2 h[4];
+#pragma unroll
+            for (int b = 0; b < 4; ++b) h[b] = __floats2half2_rn(wv[u][2 * b], wv[u][2 * b + 1]);
+            *reinterpret_cast<uint4*>(Bs + wn_[u] * TLD + wq_[u] * 8) = *reinterpret_cast<uint4*>(h);
+        }
+        __syncthreads();
+        if (k0 + TK < K) gload(k0 + TK);
+#pragma unroll
+        for (int kk = 0; kk < TK; kk += 16) {
+            wmma::fragment<wmma::matrix_a, 16, 16, 16, half, wmma::row_major> a[2];
+            wmma::fragment<wmma::matrix_b, 16, 16, 16, half, wmma::col_major> b[2];
+#pragma unroll
+            for (int i = 0; i < 2; ++i) wmma::load_matrix_sync(a[i], As + (wm * 32 + i * 16) * TLD + kk, TLD);
+#pragma unroll
+            for (int j = 0; j < 2; ++j) wmma::load_matrix_sync(b[j], Bs + (wn * 32 + j * 16) * TLD + kk, TLD);
+#pragma unroll
+            for (int i = 0; i < 2; ++i)
+#pragma unroll
+                for (int j = 0; j < 2; ++j) wmma::mma_sync(c[i][j], a[i], b[j], c[i][j]);
+        }
+        __syncthreads();
+    }
+#pragma unroll
+    for (int i = 0; i < 2; ++i)
+#pragma unroll
+        for (int j = 0; j < 2; ++j)
+            wmma::store_matrix_sync(Cs + (wm * 32 + i * 16) * TCLD + wn * 32 + j * 16, c[i][j], TCLD, wmma::mem_row_major);
+    __syncthreads();
+#pragma unroll
+    for (int u = 0; u < 8; ++u) {
+        const int idx = tid + 256 * u, row = idx / 32, c4 = idx % 32, r = r0 + row;
+        if (r >= rend) continue;
+        *reinterpret_cast<float4*>(C + (size_t) r * N + n0 + c4 * 4) = *reinterpret_cast<const float4*>(Cs + row * TCLD + c4 * 4);
+    }
+}
+
 // fp32 [T][K] (row stride ld) -> fp16 [T][K]; bf16 -> fp16 (dense weights: exact for |w| >= 2^-14, the rare smaller
 // ones lose low bits as fp16 subnormals)
 __global__ void kb_f32_to_f16(const float* __restrict__ x, int ld, int K, half* __restrict__ y, size_t n) {
@@ -1883,6 +2207,7 @@ struct Ckpt {
 size_t g_vram = 0;
 
 void* dalloc(size_t bytes) {
+    if (!bytes) return nullptr;   // an empty pool (GGUF: no MXFP8 slots)
     void* d = nullptr;
     CK(cudaMalloc(&d, bytes));
     CK(cudaMemset(d, 0, bytes));
@@ -1892,12 +2217,18 @@ void* dalloc(size_t bytes) {
 float* dfloats(size_t n) { return (float*) dalloc(n * 4); }
 void* upload(const void* p, size_t bytes) {
     void* d = dalloc(bytes);
+    if (!d) return nullptr;
     CK(cudaMemcpy(d, p, bytes, cudaMemcpyHostToDevice));
     return d;
 }
 float* dvec(const vec& v) { return (float*) upload(v.data(), v.size() * 4); }
 
-struct DMat { const uint16_t* d = nullptr; int n = 0, k = 0; };
+struct DMat {
+    const uint16_t* d = nullptr;   // BF16 [n][k]
+    int n = 0, k = 0;
+    const int8_t* q = nullptr;     // or Q8_0 (GGUF): codes [n][k], fp16 scales [n][k / 32]
+    const __half* qs = nullptr;
+};
 
 // Experts live in fixed-size slots of a device pool (one pool per format), each slot one expert as
 // [w13 | w13 scales | w2 | w2 scales] (part A = w13 + scales, part B = w2 + scales).  The kernels address an expert
@@ -1907,6 +2238,8 @@ struct Experts {
     const uint8_t* const* tA = nullptr;
     const uint8_t* const* tB = nullptr;
     const float *f13 = nullptr, *f2 = nullptr;
+    int gg13 = 0, gg2 = 0;       // GGUF: ggml types of gate_up (part A) and down (part B), 0 = the checkpoint formats
+    size_t rb13 = 0, rb2 = 0;    //   bytes per row
 };
 constexpr size_t NV_A = (size_t) 2 * FF * H / 2 + (size_t) 2 * FF * H / 16, NV_B = (size_t) H * FF / 2 + (size_t) H * FF / 16;
 constexpr size_t MX_A = (size_t) 2 * FF * H + (size_t) 2 * FF * H / 32, MX_B = (size_t) H * FF + (size_t) H * FF / 32;
@@ -1957,6 +2290,7 @@ struct Engine {
     const Ckpt* ck = nullptr;
     int ctx = 8192, nchunk_full = 0, nchunk_slide = WINDOW / CHUNK;
     std::vector<uint16_t> embed;   // host BF16
+    std::vector<uint8_t> embed_q8; // or (GGUF) host Q8_0 rows of H / 32 blocks
     const float *embed_norm, *norm, *final_query, *msg_queries;
     DMat unembed;
     Layer L[NL];
@@ -2014,9 +2348,14 @@ struct Engine {
     uint8_t** fdst = nullptr;
     unsigned long long* fbytes = nullptr;
 };
-size_t ex_bytes(int l) { return l < MXFP8_FIRST ? NV_BYTES : MX_BYTES; }
-size_t ex_partA(int l) { return l < MXFP8_FIRST ? NV_A : MX_A; }
-size_t ex_layer_off(int l) {   // offset of layer l's first expert in the resident layout
+// GGUF (--model FILE.gguf): one format for every layer, its slots in pool_nv: [gate_up rows | down rows]
+bool g_is_gguf = false;
+size_t g_gg_a = 0, g_gg_b = 0;
+bool ex_nv(int l) { return g_is_gguf || l < MXFP8_FIRST; }   // the layer's experts live in pool_nv
+size_t ex_bytes(int l) { return g_is_gguf ? g_gg_a + g_gg_b : l < MXFP8_FIRST ? NV_BYTES : MX_BYTES; }
+size_t ex_partA(int l) { return g_is_gguf ? g_gg_a : l < MXFP8_FIRST ? NV_A : MX_A; }
+size_t ex_layer_off(int l) {   // offset of layer l's first expert in the resident / host layout
+    if (g_is_gguf) return (size_t) l * NE * (g_gg_a + g_gg_b);
     return l < MXFP8_FIRST ? (size_t) l * NE * NV_BYTES
                            : (size_t) MXFP8_FIRST * NE * NV_BYTES + (size_t) (l - MXFP8_FIRST) * NE * MX_BYTES;
 }
@@ -2071,29 +2410,12 @@ int gpu_node() {
     return n;
 }
 
-void load() {
-    const Ckpt& ck = *E.ck;
-    const std::string p = "model.llm.";
-    E.embed_norm = fvec(p + "embed_norm.weight");
-    E.norm = fvec(p + "norm.weight");
-    E.final_query = fvec(p + "attn_res.output_query");
-    {
-        auto b = ck.bytes(p + "embed.weight");
-        E.embed.resize(b.size() / 2);
-        std::memcpy(E.embed.data(), b.data(), b.size());
-    }
-    E.unembed = dmat(p + "unembed.weight");
-    {
-        const vec q = ck.f32(p + "middle_cycle_cross_pass_queries"), kv = ck.f32(p + "middle_cycle_cross_pass_kv_queries");
-        vec mq((size_t) NLOOP * 4 * H);
-        for (int i = 0; i < NLOOP; ++i) {
-            const float* src[4] = {&q[(size_t) (2 * i) * H], &kv[(size_t) (2 * i) * H], &kv[(size_t) (2 * i + 1) * H],
-                                   &q[(size_t) (2 * i + 1) * H]};
-            for (int j = 0; j < 4; ++j) std::memcpy(&mq[((size_t) i * 4 + j) * H], src[j], H * 4);
-        }
-        E.msg_queries = dvec(mq);
-    }
-    if (E.reserve_mib < 0) {
+// the experts' memory (load / load_gguf, once ex_bytes is known): resident, the device pools; offload, host regions
+// per NUMA node (E.xh / E.home / E.xsrc_d); the part tables
+void expert_memory() {
+    if (E.reserve_mib < 0 && g_is_gguf) {   // GGUF: one format, every layer in pool_nv
+        E.pool_nv = (uint8_t*) dalloc(ex_layer_off(NL));
+    } else if (E.reserve_mib < 0) {
         E.pool_nv = (uint8_t*) dalloc((size_t) MXFP8_FIRST * NE * NV_BYTES);
         E.pool_mx = (uint8_t*) dalloc((size_t) (NL - MXFP8_FIRST) * NE * MX_BYTES);
     } else {
@@ -2134,6 +2456,31 @@ void load() {
     E.tabB = (const uint8_t**) dalloc((size_t) NL * NE * sizeof(void*));
     E.htabA.assign((size_t) NL * NE, nullptr);
     E.htabB.assign((size_t) NL * NE, nullptr);
+}
+
+void load() {
+    const Ckpt& ck = *E.ck;
+    const std::string p = "model.llm.";
+    E.embed_norm = fvec(p + "embed_norm.weight");
+    E.norm = fvec(p + "norm.weight");
+    E.final_query = fvec(p + "attn_res.output_query");
+    {
+        auto b = ck.bytes(p + "embed.weight");
+        E.embed.resize(b.size() / 2);
+        std::memcpy(E.embed.data(), b.data(), b.size());
+    }
+    E.unembed = dmat(p + "unembed.weight");
+    {
+        const vec q = ck.f32(p + "middle_cycle_cross_pass_queries"), kv = ck.f32(p + "middle_cycle_cross_pass_kv_queries");
+        vec mq((size_t) NLOOP * 4 * H);
+        for (int i = 0; i < NLOOP; ++i) {
+            const float* src[4] = {&q[(size_t) (2 * i) * H], &kv[(size_t) (2 * i) * H], &kv[(size_t) (2 * i + 1) * H],
+                                   &q[(size_t) (2 * i + 1) * H]};
+            for (int j = 0; j < 4; ++j) std::memcpy(&mq[((size_t) i * 4 + j) * H], src[j], H * 4);
+        }
+        E.msg_queries = dvec(mq);
+    }
+    expert_memory();
     for (int l = 0; l < NL; ++l) {
         Layer& Y = E.L[l];
         const std::string q = p + "layers." + std::to_string(l) + ".";
@@ -2229,6 +2576,326 @@ void load() {
     }
 }
 
+// ---------------------------------------------------------------------------------------------------------------------
+// GGUF reader (one file, mapped read-only) and the loader for llama.cpp's merged inkling2_loop layout
+struct GgTensor { uint32_t type = 0; int64_t ne[4] = {1, 1, 1, 1}; int nd = 0; const uint8_t* data = nullptr; size_t bytes = 0; };
+struct Gguf {
+    const uint8_t* base = nullptr;
+    size_t size = 0;
+    std::map<std::string, GgTensor> t;
+    std::map<std::string, int64_t> ints;
+    std::string arch;
+    const GgTensor& get(const std::string& n) const {
+        auto it = t.find(n);
+        if (it == t.end()) { std::fprintf(stderr, "GGUF: missing tensor %s\n", n.c_str()); std::exit(1); }
+        return it->second;
+    }
+    bool has(const std::string& n) const { return t.count(n) != 0; }
+};
+size_t gg_row_bytes(uint32_t type, int64_t ne0) {
+    switch (type) {
+    case GG_F32: return (size_t) ne0 * 4;
+    case GG_F16: case GG_BF16: return (size_t) ne0 * 2;
+    case GG_Q8_0: return (size_t) ne0 / 32 * 34;
+    case GG_IQ4_NL: return (size_t) ne0 / 32 * 18;
+    case GG_IQ3_S: return (size_t) ne0 / 256 * 110;
+    default: return 0;
+    }
+}
+std::string gg_open(const std::string& path, Gguf& g) {
+    const int fd = ::open(path.c_str(), O_RDONLY);
+    if (fd < 0) return "cannot open " + path;
+    struct stat st{};
+    fstat(fd, &st);
+    g.size = (size_t) st.st_size;
+    void* m = mmap(nullptr, g.size, PROT_READ, MAP_PRIVATE, fd, 0);
+    ::close(fd);
+    if (m == MAP_FAILED) return "cannot map " + path;
+    g.base = (const uint8_t*) m;
+    size_t p = 0;
+    auto rd = [&](void* dst, size_t n) { if (p + n > g.size) { std::fprintf(stderr, "GGUF: truncated\n"); std::exit(1); } std::memcpy(dst, g.base + p, n); p += n; };
+    auto u32 = [&] { uint32_t v; rd(&v, 4); return v; };
+    auto u64 = [&] { uint64_t v; rd(&v, 8); return v; };
+    auto str = [&] { const uint64_t n = u64(); std::string r((const char*) g.base + p, n); p += n; return r; };
+    if (u32() != 0x46554747u) return path + ": not a GGUF file";
+    const uint32_t ver = u32();
+    if (ver < 2) return path + ": GGUF version 1";
+    const uint64_t nt = u64(), nkv = u64();
+    const size_t sz[13] = {1, 1, 2, 2, 4, 4, 4, 1, 0, 0, 8, 8, 8};
+    uint64_t align = 32;
+    std::function<void(uint32_t, const std::string&)> skip = [&](uint32_t ty, const std::string& key) {
+        if (ty == 8) { (void) str(); return; }
+        if (ty == 9) {
+            const uint32_t et = u32();
+            const uint64_t n = u64();
+            for (uint64_t i = 0; i < n; ++i) skip(et, "");
+            return;
+        }
+        if (ty > 12) { std::fprintf(stderr, "GGUF: value type %u\n", ty); std::exit(1); }
+        int64_t v = 0;
+        if (ty == 4 || ty == 5) { uint32_t x; rd(&x, 4); v = ty == 5 ? (int32_t) x : x; }
+        else if (ty == 10 || ty == 11) { uint64_t x; rd(&x, 8); v = (int64_t) x; }
+        else p += sz[ty];
+        if (!key.empty() && (ty == 4 || ty == 5 || ty == 10 || ty == 11)) g.ints[key] = v;
+    };
+    for (uint64_t i = 0; i < nkv; ++i) {
+        const std::string key = str();
+        const uint32_t ty = u32();
+        if (key == "general.architecture" && ty == 8) { g.arch = str(); continue; }
+        skip(ty, key);
+        if (key == "general.alignment") align = (uint64_t) g.ints[key];
+    }
+    std::vector<std::pair<std::string, uint64_t>> offs;
+    for (uint64_t i = 0; i < nt; ++i) {
+        const std::string name = str();
+        GgTensor x;
+        x.nd = (int) u32();
+        for (int d = 0; d < x.nd; ++d) x.ne[d] = (int64_t) u64();
+        x.type = u32();
+        const uint64_t off = u64();
+        const size_t rb = gg_row_bytes(x.type, x.ne[0]);
+        if (!rb) return name + ": ggml type " + std::to_string(x.type) + " is not supported";
+        x.bytes = rb * (size_t) (x.ne[1] * x.ne[2] * x.ne[3]);
+        g.t[name] = x;
+        offs.push_back({name, off});
+    }
+    const size_t data = (p + align - 1) / align * align;
+    for (auto& o : offs) {
+        GgTensor& x = g.t[o.first];
+        if (data + o.second + x.bytes > g.size) return o.first + ": data past the end of the file";
+        x.data = g.base + data + o.second;
+    }
+    return "";
+}
+
+const Gguf* g_gg = nullptr;
+
+uint16_t f32_to_bf16(float f) {   // round to nearest even
+    uint32_t u;
+    std::memcpy(&u, &f, 4);
+    u += 0x7FFFu + ((u >> 16) & 1u);
+    return (uint16_t) (u >> 16);
+}
+// any supported 1-D / 2-D GGUF tensor as fp32 (row-major, ne0 fastest)
+vec gg_f32(const std::string& n) {
+    const GgTensor& x = g_gg->get(n);
+    const size_t ne = (size_t) (x.ne[0] * x.ne[1] * x.ne[2] * x.ne[3]);
+    vec out(ne);
+    const uint8_t* b = x.data;
+    switch (x.type) {
+    case GG_F32: std::memcpy(out.data(), b, ne * 4); break;
+    case GG_F16: for (size_t i = 0; i < ne; ++i) { uint16_t h; std::memcpy(&h, b + 2 * i, 2); out[i] = __half2float(*reinterpret_cast<__half*>(&h)); } break;
+    case GG_BF16: for (size_t i = 0; i < ne; ++i) { uint16_t h; std::memcpy(&h, b + 2 * i, 2); uint32_t u = (uint32_t) h << 16; std::memcpy(&out[i], &u, 4); } break;
+    case GG_Q8_0:
+        for (size_t j = 0; j < ne / 32; ++j) {
+            const uint8_t* q = b + j * 34;
+            uint16_t h;
+            std::memcpy(&h, q, 2);
+            const float d = __half2float(*reinterpret_cast<__half*>(&h));
+            for (int i = 0; i < 32; ++i) out[32 * j + i] = d * (float) (int8_t) q[2 + i];
+        }
+        break;
+    default: std::fprintf(stderr, "%s: type %u where a dense tensor was expected\n", n.c_str(), x.type); std::exit(1);
+    }
+    return out;
+}
+// BF16 matrix from F32 / BF16 (exact) or another type (rounded; the loop gates, the router if not exact)
+DMat gg_bf16_stack(const std::vector<std::string>& names) {
+    DMat m;
+    std::vector<uint16_t> all;
+    size_t inexact = 0;
+    for (const auto& n : names) {
+        const GgTensor& x = g_gg->get(n);
+        if (m.k && x.ne[0] != m.k) { std::fprintf(stderr, "%s: K %lld != %d\n", n.c_str(), (long long) x.ne[0], m.k); std::exit(1); }
+        m.k = (int) x.ne[0];
+        m.n += (int) (x.ne[1] * x.ne[2]);
+        for (float f : gg_f32(n)) {
+            const uint16_t h = f32_to_bf16(f);
+            uint32_t u = (uint32_t) h << 16;
+            float back;
+            std::memcpy(&back, &u, 4);
+            inexact += back != f;
+            all.push_back(h);
+        }
+    }
+    if (inexact && std::getenv("INK2_VERBOSE")) std::fprintf(stderr, "%s: %zu values rounded to BF16\n", names[0].c_str(), inexact);
+    m.d = (const uint16_t*) upload(all.data(), all.size() * 2);
+    return m;
+}
+// Q8_0 matrix (rows of the named tensors concatenated) repacked into codes [n][k] + scales [n][k / 32]
+DMat gg_q8_stack(const std::vector<std::string>& names) {
+    DMat m;
+    std::vector<int8_t> q;
+    std::vector<__half> sc;
+    for (const auto& n : names) {
+        const GgTensor& x = g_gg->get(n);
+        if (x.type != GG_Q8_0) return gg_bf16_stack(names);   // a part in another type: the whole stack as BF16
+        if (m.k && x.ne[0] != m.k) { std::fprintf(stderr, "%s: K differs\n", n.c_str()); std::exit(1); }
+        m.k = (int) x.ne[0];
+        const int64_t rows = x.ne[1] * x.ne[2];
+        m.n += (int) rows;
+        const size_t nb = (size_t) rows * (m.k / 32);
+        for (size_t j = 0; j < nb; ++j) {
+            const uint8_t* b = x.data + j * 34;
+            __half h;
+            std::memcpy(&h, b, 2);
+            sc.push_back(h);
+            for (int i = 0; i < 32; ++i) q.push_back((int8_t) b[2 + i]);
+        }
+    }
+    m.q = (const int8_t*) upload(q.data(), q.size());
+    m.qs = (const __half*) upload(sc.data(), sc.size() * 2);
+    return m;
+}
+const float* gg_fvec(const std::string& n) { return dvec(gg_f32(n)); }
+// a [rows][cols] tensor (ne0 = cols) transposed
+vec gg_transpose(const std::string& n) {
+    const GgTensor& x = g_gg->get(n);
+    const vec a = gg_f32(n);
+    const int64_t c = x.ne[0], r = x.ne[1];
+    vec o(a.size());
+    for (int64_t i = 0; i < r; ++i)
+        for (int64_t j = 0; j < c; ++j) o[(size_t) j * r + i] = a[(size_t) i * c + j];
+    return o;
+}
+
+void load_gguf() {
+    const Gguf& g = *g_gg;
+    if (g.arch != "inkling2_loop") { std::fprintf(stderr, "GGUF architecture %s, expected inkling2_loop\n", g.arch.c_str()); std::exit(1); }
+    auto need = [&](const char* k, int64_t v) {
+        auto it = g.ints.find(std::string("inkling2_loop.") + k);
+        if (it == g.ints.end() || it->second != v) { std::fprintf(stderr, "GGUF: %s is not %lld\n", k, (long long) v); std::exit(1); }
+    };
+    need("block_count", NL); need("embedding_length", H); need("expert_count", NE); need("expert_used_count", TOPK);
+    need("loop.start", LOOP_BEGIN); need("loop.end", LOOP_END); need("loop.count", PASSES); need("loop.gate_rank", GATE_RANK);
+    need("attention.sliding_window", WINDOW); need("expert_feed_forward_length", FF);
+    E.embed_norm = gg_fvec("token_embd_norm.weight");
+    E.norm = gg_fvec("output_norm.weight");
+    E.final_query = gg_fvec("output_res_query.weight");
+    {
+        const GgTensor& x = g.get("token_embd.weight");
+        if (x.type != GG_Q8_0 || x.ne[0] != H) { std::fprintf(stderr, "token_embd: Q8_0 [%d] expected\n", H); std::exit(1); }
+        E.embed_q8.assign(x.data, x.data + x.bytes);
+    }
+    E.unembed = gg_q8_stack({"output.weight"});
+    {
+        vec mq((size_t) NLOOP * 4 * H);
+        for (int i = 0; i < NLOOP; ++i) {
+            const vec q = gg_f32("blk." + std::to_string(LOOP_BEGIN + i) + ".loop_msg_query.weight");
+            if (q.size() != (size_t) 4 * H) { std::fprintf(stderr, "loop_msg_query: size\n"); std::exit(1); }
+            std::memcpy(&mq[(size_t) i * 4 * H], q.data(), q.size() * 4);
+        }
+        E.msg_queries = dvec(mq);
+    }
+    {   // expert types: the same in every layer (one pool); slot = [gate_up rows | down rows], 256-byte multiples
+        for (int l = 0; l < NL; ++l)
+            for (const char* n : {"ffn_gate_up_exps.weight", "ffn_down_exps.weight"}) {
+                const GgTensor& x = g.get("blk." + std::to_string(l) + "." + n);
+                if (x.type != GG_IQ3_S && x.type != GG_IQ4_NL && x.type != GG_Q8_0) {
+                    std::fprintf(stderr, "layer %d: expert type %u (IQ3_S, IQ4_NL or Q8_0)\n", l, x.type);
+                    std::exit(1);
+                }
+            }
+        g_gg_a = g.get("blk.0.ffn_gate_up_exps.weight").bytes / NE;
+        g_gg_b = g.get("blk.0.ffn_down_exps.weight").bytes / NE;
+        if (g_gg_a % 16 || g_gg_b % 16) { std::fprintf(stderr, "GGUF experts: %zu / %zu bytes, not 16-byte multiples\n", g_gg_a, g_gg_b); std::exit(1); }
+        expert_memory();
+    }
+    for (int l = 0; l < NL; ++l) {
+        Layer& Y = E.L[l];
+        const std::string b = "blk." + std::to_string(l) + ".";
+        Y.full = full_layer(l);
+        Y.loop = l >= LOOP_BEGIN && l < LOOP_END;
+        {
+            std::vector<std::string> parts = {b + "attn_q.weight", b + "attn_gate.weight", b + "attn_rel.weight",
+                                              b + "attn_sink_proj.weight", b + "attn_k.weight"};
+            if (Y.full) parts.push_back(b + "attn_k_conv_proj.weight");
+            parts.push_back(b + "attn_v.weight");
+            if (Y.full) parts.push_back(b + "attn_v_conv_proj.weight");
+            Y.proj = gg_q8_stack(parts);
+            Y.off_k = OFF_K;
+            Y.n_k = KVD + (Y.full ? NKV * KC : 0);
+            Y.off_v = Y.off_k + Y.n_k;
+            Y.n_v = Y.n_k;
+            if (Y.proj.n != Y.off_v + Y.n_v) { std::fprintf(stderr, "layer %d: stacked rows %d\n", l, Y.proj.n); std::exit(1); }
+        }
+        Y.wo = gg_q8_stack({b + "attn_output.weight"});
+        Y.router = gg_bf16_stack({b + "ffn_gate_inp.weight"});
+        Y.router_bias = gg_fvec(b + "exp_probs_b.bias");
+        Y.q_scale = gg_fvec(b + "attn_q_clip.weight");
+        Y.rel_scale = gg_fvec(b + "attn_rel_clip.weight");
+        Y.rel_proj = dvec(gg_transpose(b + "attn_rel_bias.weight"));   // the converter stored proj^T
+        Y.attn_conv = gg_fvec(b + "attn_post_conv.weight");
+        Y.mlp_conv = gg_fvec(b + "ffn_post_conv.weight");
+        Y.mlp_norm = gg_fvec(b + "ffn_norm.weight");
+        if (Y.full) {   // static_w was stored as flip(0).T: transpose back, then flip the taps
+            for (int kv = 0; kv < 2; ++kv) {
+                vec t = gg_transpose(b + (kv ? "attn_v_conv.weight" : "attn_k_conv.weight"));
+                const size_t taps = t.size() / KVD;
+                vec f(t.size());
+                for (size_t r = 0; r < taps; ++r) std::memcpy(&f[r * KVD], &t[(taps - 1 - r) * KVD], KVD * 4);
+                (kv ? Y.v_static : Y.k_static) = dvec(f);
+            }
+            Y.q_norm = gg_fvec(b + "attn_q_inp_norm.weight");
+            Y.k_norm = gg_fvec(b + "attn_k_inp_norm.weight");
+            Y.v_norm = gg_fvec(b + "attn_v_inp_norm.weight");
+        } else {
+            Y.k_conv = gg_fvec(b + "attn_k_conv.weight");
+            Y.v_conv = gg_fvec(b + "attn_v_conv.weight");
+            Y.attn_norm = gg_fvec(b + "attn_norm.weight");
+        }
+        if (l > 0) Y.attn_query = gg_fvec(b + "attn_res_query.weight");
+        Y.mlp_query = gg_fvec(b + "ffn_res_query.weight");
+        if (Y.loop) {
+            const char* names[4] = {"q", "k", "v", "ffn"};
+            for (int k = 0; k < 4; ++k) {
+                const std::string c = b + "loop_" + names[k] + "_ctrl_";
+                Y.gates[k] = {gg_bf16_stack({c + "down.weight"}), gg_bf16_stack({c + "forget.weight", c + "gain.weight"})};
+            }
+        }
+        Experts& X = Y.ex;
+        const GgTensor& gu = g.get(b + "ffn_gate_up_exps.weight");
+        const GgTensor& dn = g.get(b + "ffn_down_exps.weight");
+        if (gu.ne[0] != H || gu.ne[1] != 2 * FF || gu.ne[2] != NE || dn.ne[0] != FF || dn.ne[1] != H || dn.ne[2] != NE) {
+            std::fprintf(stderr, "layer %d: expert shapes\n", l);
+            std::exit(1);
+        }
+        X.nvfp4 = false;
+        X.gg13 = (int) gu.type;
+        X.gg2 = (int) dn.type;
+        X.rb13 = gg_row_bytes(gu.type, gu.ne[0]);
+        X.rb2 = gg_row_bytes(dn.type, dn.ne[0]);
+        if (gu.bytes / NE != g_gg_a || dn.bytes / NE != g_gg_b) { std::fprintf(stderr, "layer %d: expert sizes differ\n", l); std::exit(1); }
+        {   // one slot per expert: [gate_up rows | down rows], then the layer into its pool range (offload: E.xh)
+            const size_t eb = ex_bytes(l);
+            std::vector<uint8_t> lay(E.offload ? 0 : (size_t) NE * eb);
+            for (int e = 0; e < NE; ++e) {
+                uint8_t* o = E.offload ? E.xh[(size_t) l * NE + e] : lay.data() + (size_t) e * eb;
+                std::memcpy(o, gu.data + (size_t) e * g_gg_a, g_gg_a);
+                std::memcpy(o + g_gg_a, dn.data + (size_t) e * g_gg_b, g_gg_b);
+            }
+            if (!E.offload) {
+                uint8_t* dst = E.pool_nv + ex_layer_off(l);
+                CK(cudaMemcpy(dst, lay.data(), lay.size(), cudaMemcpyHostToDevice));
+                for (int e = 0; e < NE; ++e) {
+                    E.htabA[l * NE + e] = dst + (size_t) e * eb;
+                    E.htabB[l * NE + e] = dst + (size_t) e * eb + g_gg_a;
+                }
+            }
+            X.tA = E.tabA + (size_t) l * NE;
+            X.tB = E.tabB + (size_t) l * NE;
+        }
+        std::fprintf(stderr, "\rloaded layer %d/%d, %.1f GiB in VRAM", l + 1, NL, g_vram / 1073741824.0);
+    }
+    std::fprintf(stderr, "\n");
+    if (!E.offload) {
+        CK(cudaMemcpy(E.tabA, E.htabA.data(), E.htabA.size() * sizeof(void*), cudaMemcpyHostToDevice));
+        CK(cudaMemcpy(E.tabB, E.htabB.data(), E.htabB.size() * sizeof(void*), cudaMemcpyHostToDevice));
+    }
+    CK(cudaMemcpyToSymbol(d_iq3s_grid, k_iq3s_grid, sizeof(k_iq3s_grid)));
+    CK(cudaMemcpyToSymbol(c_iq4nl, k_iq4nl_values, sizeof(k_iq4nl_values)));
+}
+
 // offload: once everything else is allocated, the pools take the free VRAM minus --vram-reserve-mib and a margin
 // (decode graph, cuBLAS workspaces), split 80 / 20 between NVFP4 and MXFP8 bytes (two-pool LRU replay of corpus12k,
 // lru2.py: 0.20 best at 6, 7 and 8 GiB).  Initial content: looped layers first, then the others, expert order.
@@ -2242,15 +2909,20 @@ void setup_offload() {
     CK(cudaMemGetInfo(&fr, &tot));
     const size_t keep = ((size_t) E.reserve_mib << 20) + ((size_t) g_off_margin_mib << 20);
     const size_t budget = fr > keep ? fr - keep : 0;
-    E.nslot_mx = (int) std::min<size_t>((size_t) (budget * 0.2) / MX_BYTES, (size_t) (NL - MXFP8_FIRST) * NE);
-    E.nslot_nv = (int) std::min<size_t>((budget - (size_t) E.nslot_mx * MX_BYTES) / NV_BYTES, (size_t) MXFP8_FIRST * NE);
-    if (E.nslot_nv < FETCH_MAX || E.nslot_mx < FETCH_MAX) {
+    if (g_is_gguf) {   // one format, one pool
+        E.nslot_mx = 0;
+        E.nslot_nv = (int) std::min<size_t>(budget / ex_bytes(0), (size_t) NL * NE);
+    } else {
+        E.nslot_mx = (int) std::min<size_t>((size_t) (budget * 0.2) / MX_BYTES, (size_t) (NL - MXFP8_FIRST) * NE);
+        E.nslot_nv = (int) std::min<size_t>((budget - (size_t) E.nslot_mx * MX_BYTES) / NV_BYTES, (size_t) MXFP8_FIRST * NE);
+    }
+    if (E.nslot_nv < FETCH_MAX || (!g_is_gguf && E.nslot_mx < FETCH_MAX)) {
         std::fprintf(stderr, "offload: %.2f GiB free, reserve %d MiB: room for %d + %d expert slots (need >= %d each)\n",
                      fr / 1073741824.0, E.reserve_mib, E.nslot_nv, E.nslot_mx, FETCH_MAX);
         std::exit(1);
     }
-    E.pool_nv = (uint8_t*) dalloc((size_t) E.nslot_nv * NV_BYTES);
-    E.pool_mx = (uint8_t*) dalloc((size_t) E.nslot_mx * MX_BYTES);
+    E.pool_nv = (uint8_t*) dalloc((size_t) E.nslot_nv * ex_bytes(0));
+    if (E.nslot_mx) E.pool_mx = (uint8_t*) dalloc((size_t) E.nslot_mx * MX_BYTES);
     std::vector<int> slot_of((size_t) NL * NE, -1), own_nv(E.nslot_nv, -1), own_mx(E.nslot_mx, -1);
     std::vector<int> order;
     for (int l = LOOP_BEGIN; l < LOOP_END; ++l) order.push_back(l);
@@ -2258,7 +2930,7 @@ void setup_offload() {
     int used_nv = 0, used_mx = 0;
     for (int l : order)
         for (int e = 0; e < NE; ++e) {
-            const bool nv = l < MXFP8_FIRST;
+            const bool nv = ex_nv(l);
             int& used = nv ? used_nv : used_mx;
             if (used >= (nv ? E.nslot_nv : E.nslot_mx)) continue;
             const size_t eb = ex_bytes(l);
@@ -2285,8 +2957,8 @@ void setup_offload() {
     E.fbytes = (unsigned long long*) dalloc(8);
     std::fprintf(stderr, "offload: %.2f GiB free after the rest, reserve %d MiB -> %d NVFP4 + %d MXFP8 expert slots "
                          "(%.2f GiB, %.0f %% of the experts)\n", fr / 1073741824.0, E.reserve_mib, E.nslot_nv, E.nslot_mx,
-                 ((size_t) E.nslot_nv * NV_BYTES + (size_t) E.nslot_mx * MX_BYTES) / 1073741824.0,
-                 100.0 * ((size_t) E.nslot_nv * NV_BYTES + (size_t) E.nslot_mx * MX_BYTES) / ex_layer_off(NL));
+                 ((size_t) E.nslot_nv * ex_bytes(0) + (size_t) E.nslot_mx * MX_BYTES) / 1073741824.0,
+                 100.0 * ((size_t) E.nslot_nv * ex_bytes(0) + (size_t) E.nslot_mx * MX_BYTES) / ex_layer_off(NL));
 }
 
 void alloc_state() {
@@ -2340,6 +3012,17 @@ void gemv(const DMat& W, const float* x, float* y, int rows = -1, int first = 0)
     while (R > 1 && (n + 8 * R - 1) / (8 * R) < g_gemv_min_blocks) R /= 2;
     const unsigned g = (unsigned) ((n + 8 * R - 1) / (8 * R));
     const size_t sm = (size_t) W.k * 4;
+    if (W.q) {
+        const int8_t* wq = W.q + (size_t) first * W.k;
+        const __half* ws = W.qs + (size_t) first * (W.k / 32);
+        switch (R) {
+        case 1: k_gemv_q8<1><<<g, 256, sm>>>(wq, ws, x, y, n, W.k); break;
+        case 2: k_gemv_q8<2><<<g, 256, sm>>>(wq, ws, x, y, n, W.k); break;
+        case 8: k_gemv_q8<8><<<g, 256, sm>>>(wq, ws, x, y, n, W.k); break;
+        default: k_gemv_q8<4><<<g, 256, sm>>>(wq, ws, x, y, n, W.k);
+        }
+        return;
+    }
     const uint16_t* w = W.d + (size_t) first * W.k;
     switch (R) {
     case 1: k_gemv_bf16<1><<<g, 256, sm>>>(w, x, y, n, W.k); break;
@@ -2399,7 +3082,14 @@ void attention(const Layer& Y, Slot& S, const float* xq, const float* xk, const 
         while (R > 1 && ((N + 8 * R - 1) / (8 * R) < g_gemv_min_blocks || Y.off_k % R || Y.off_v % R)) R /= 2;
         const unsigned g = (unsigned) ((N + 8 * R - 1) / (8 * R));
         const size_t sm = (size_t) 3 * K * 4;
-        switch (R) {
+        if (Y.proj.q) {
+            switch (R) {
+            case 1: k_gemv_q8_qkv<1><<<g, 256, sm>>>(Y.proj.q, Y.proj.qs, xq, xk, xv, Y.off_k, Y.off_v, P, N, K); break;
+            case 2: k_gemv_q8_qkv<2><<<g, 256, sm>>>(Y.proj.q, Y.proj.qs, xq, xk, xv, Y.off_k, Y.off_v, P, N, K); break;
+            case 8: k_gemv_q8_qkv<8><<<g, 256, sm>>>(Y.proj.q, Y.proj.qs, xq, xk, xv, Y.off_k, Y.off_v, P, N, K); break;
+            default: k_gemv_q8_qkv<4><<<g, 256, sm>>>(Y.proj.q, Y.proj.qs, xq, xk, xv, Y.off_k, Y.off_v, P, N, K);
+            }
+        } else switch (R) {
         case 1: k_gemv_bf16_qkv<1><<<g, 256, sm>>>(Y.proj.d, xq, xk, xv, Y.off_k, Y.off_v, P, N, K); break;
         case 2: k_gemv_bf16_qkv<2><<<g, 256, sm>>>(Y.proj.d, xq, xk, xv, Y.off_k, Y.off_v, P, N, K); break;
         case 8: k_gemv_bf16_qkv<8><<<g, 256, sm>>>(Y.proj.d, xq, xk, xv, Y.off_k, Y.off_v, P, N, K); break;
@@ -2423,7 +3113,7 @@ void attention(const Layer& Y, Slot& S, const float* xq, const float* xk, const 
 
 // offload: make layer l's experts ids[0..n) resident (plan + fetch, device side, graph-capturable)
 void expert_cache(int l, const int* ids, int n) {
-    const bool nv = l < MXFP8_FIRST;
+    const bool nv = ex_nv(l);
     CacheArgs c{E.slot_of, nv ? E.owner_nv : E.owner_mx, nv ? E.stamp_nv : E.stamp_mx, E.clock,
                 nv ? E.nslot_nv : E.nslot_mx, E.tabA, E.tabB, nv ? E.pool_nv : E.pool_mx, ex_bytes(l), ex_partA(l),
                 E.xsrc_d + (size_t) l * NE, E.fsrc, E.fdst, E.nfetch, E.fbytes};
@@ -2790,6 +3480,27 @@ void setup_cpu() {
     ink2cpu::start(s);
 }
 
+// GGUF expert GEMV launches (runtime ggml type -> kernel), INK2_GG_RPW rows per warp (2, 4, 8; default 4)
+int g_gg_rpw = 4;
+template <bool SWI, bool PERM, int R>
+void gg_sel_r(int t, const uint8_t* const* tab, size_t rb, const float* x, int xs, float* y, int N, int K) {
+    const dim3 g((unsigned) (N / (8 * R)), TOPK);
+    const size_t sm = (size_t) (K + 512 + 4) * 4;
+    switch (t) {
+    case GG_IQ3_S: k_gemv_gg_sel<GG_IQ3_S, R, SWI, PERM><<<g, 256, sm>>>(tab, rb, E.ids, x, xs, y, N, K); break;
+    case GG_IQ4_NL: k_gemv_gg_sel<GG_IQ4_NL, R, SWI, PERM><<<g, 256, sm>>>(tab, rb, E.ids, x, xs, y, N, K); break;
+    default: k_gemv_gg_sel<GG_Q8_0, R, SWI, PERM><<<g, 256, sm>>>(tab, rb, E.ids, x, xs, y, N, K);
+    }
+}
+template <bool SWI, bool PERM>
+void gg_sel(int t, const uint8_t* const* tab, size_t rb, const float* x, int xs, float* y, int N, int K) {
+    switch (g_gg_rpw) {
+    case 2: gg_sel_r<SWI, PERM, 2>(t, tab, rb, x, xs, y, N, K); break;
+    case 8: gg_sel_r<SWI, PERM, 8>(t, tab, rb, x, xs, y, N, K); break;
+    default: gg_sel_r<SWI, PERM, 4>(t, tab, rb, x, xs, y, N, K);
+    }
+}
+
 void moe(const Layer& Y, const float* x, const float* r, float* mhist, const float* mlp_conv, float* out) {
     k_gemv_bf16_rowblock<<<NE, 256>>>(Y.router.d, x, E.rl, H);
     k_router<<<1, NE>>>(E.rl, Y.router_bias, E.ids, E.wts);
@@ -2797,7 +3508,10 @@ void moe(const Layer& Y, const float* x, const float* r, float* mhist, const flo
     if (E.cpu) expert_cpu_ring(int(&Y - E.L), x);
     else if (E.offload) expert_cache(int(&Y - E.L), E.ids, TOPK);
     const Experts& X = Y.ex;
-    if (X.nvfp4) {
+    if (X.gg13) {
+        gg_sel<false, true>(X.gg13, X.tA, X.rb13, x, 0, E.gu, 2 * FF, H);
+        gg_sel<true, false>(X.gg2, X.tB, X.rb2, E.gu, 2 * FF, E.ey, H, FF);
+    } else if (X.nvfp4) {
 #define SEL(R) \
         k_gemv_nvfp4_sel<((R) < 2 ? 2 : (R)), true><<<dim3(2 * FF / (8 * ((R) < 2 ? 2 : (R))), TOPK), 256>>>( \
             X.tA, X.f13, E.ids, x, 0, E.gu, 2 * FF, H, E.act); \
@@ -2879,13 +3593,28 @@ void layer_forward(int l, Slot& S, int nB, const float* msgs) {
     if (l % BLOCK == 0) copy(stack_h, E.h, H);   // B gets the layer's input (the caller counts it)
 }
 
+// token tok's embedding row (host table, BF16 or Q8_0) as fp32
+void embed_row(int tok, float* out) {
+    if (!E.embed_q8.empty()) {
+        const uint8_t* b = E.embed_q8.data() + (size_t) tok * (H / 32) * 34;
+        for (int j = 0; j < H / 32; ++j, b += 34) {
+            uint16_t hb;
+            std::memcpy(&hb, b, 2);
+            const float d = __half2float(*reinterpret_cast<const __half*>(&hb));
+            for (int i = 0; i < 32; ++i) out[32 * j + i] = d * (float) (int8_t) b[2 + i];
+        }
+        return;
+    }
+    for (int i = 0; i < H; ++i) {
+        uint32_t u = (uint32_t) E.embed[(size_t) tok * H + i] << 16;
+        std::memcpy(&out[i], &u, 4);
+    }
+}
+
 // the token's embedding row (host table) into E.emb_in
 void upload_embed(int tok) {
     vec e(H);
-    for (int i = 0; i < H; ++i) {
-        uint32_t u = (uint32_t) E.embed[(size_t) tok * H + i] << 16;
-        std::memcpy(&e[i], &u, 4);
-    }
+    embed_row(tok, e.data());
     CK(cudaMemcpyAsync(E.emb_in, e.data(), H * 4, cudaMemcpyHostToDevice));
 }
 
@@ -3037,7 +3766,8 @@ void hgemm(const DMat& W, bool wcvt, int first, int n, const float* X, int ldx, 
     if (T <= SMALL_T) { gemv_multi(W, first, n, X, ldx, Y, ldy, T); return; }
     if (wcvt) {
         const size_t nw = (size_t) W.n * W.k;
-        kb_bf16_to_f16<<<(unsigned) ((nw + 255) / 256), 256>>>(W.d, PF.wh, nw);
+        if (W.q) kb_q8_to_f16<<<(unsigned) ((nw / 8 + 255) / 256), 256>>>(W.q, W.qs, PF.wh, nw / 8);
+        else kb_bf16_to_f16<<<(unsigned) ((nw + 255) / 256), 256>>>(W.d, PF.wh, nw);
     }
     half* xh = PF.xh + (size_t) xslot * PF.TP * QD;
     const size_t nx = (size_t) T * K;
@@ -3055,7 +3785,8 @@ const float* wf32(const DMat& W, int first = 0, int n = -1) {
     if (n < 0) n = W.n - first;
     const size_t n8 = (size_t) n * W.k / 8;
     if ((size_t) n * W.k > PF.wf_cap) { std::fprintf(stderr, "wf32: %d x %d over the scratch\n", n, W.k); std::exit(1); }
-    kb_bf16_to_f32<<<(unsigned) ((n8 + 255) / 256), 256>>>(W.d + (size_t) first * W.k, PF.wf, n8);
+    if (W.q) kb_q8_to_f32<<<(unsigned) ((n8 + 255) / 256), 256>>>(W.q + (size_t) first * W.k, W.qs + (size_t) first * (W.k / 32), PF.wf, n8);
+    else kb_bf16_to_f32<<<(unsigned) ((n8 + 255) / 256), 256>>>(W.d + (size_t) first * W.k, PF.wf, n8);
     return PF.wf;
 }
 // Y[t][0..n) (row stride ldy) = X[t] (row stride ldx) . Wf[0..n)^T, Wf fp32 [n][K]
@@ -3204,6 +3935,31 @@ template <class F> void expert_parts(int l, bool partB, F launch) {
     }
 }
 
+// GGUF grouped products (prompt), runtime type -> kernel
+template <bool PERM>
+void gg_gemm(int t, bool tc, int maxt, const void* A, int lda, const int* rows, const uint8_t* const* tab, size_t rb,
+             float* C, int N, int K) {
+#define GGA PF.tile_e, PF.tile_r0, PF.ntiles, PF.eoff, PF.ecnt, C, N, K
+    if (tc) {
+        const dim3 g((unsigned) maxt, (unsigned) (N / TN));
+        const half* a = (const half*) A;
+        switch (t) {
+        case GG_IQ3_S: kb_moe_gemm_tc_gg<GG_IQ3_S, PERM><<<g, 256>>>(a, lda, tab, rb, GGA); break;
+        case GG_IQ4_NL: kb_moe_gemm_tc_gg<GG_IQ4_NL, PERM><<<g, 256>>>(a, lda, tab, rb, GGA); break;
+        default: kb_moe_gemm_tc_gg<GG_Q8_0, PERM><<<g, 256>>>(a, lda, tab, rb, GGA);
+        }
+    } else {
+        const dim3 g((unsigned) maxt, (unsigned) (N / FN));
+        const float* a = (const float*) A;
+        switch (t) {
+        case GG_IQ3_S: kb_moe_gemm_gg<GG_IQ3_S, PERM><<<g, 256>>>(a, lda, rows, tab, rb, GGA); break;
+        case GG_IQ4_NL: kb_moe_gemm_gg<GG_IQ4_NL, PERM><<<g, 256>>>(a, lda, rows, tab, rb, GGA); break;
+        default: kb_moe_gemm_gg<GG_Q8_0, PERM><<<g, 256>>>(a, lda, rows, tab, rb, GGA);
+        }
+    }
+#undef GGA
+}
+
 void moe_b(const Layer& Y, const float* x, float* out, int T, int pos0) {
     gemm(Y.router, x, H, PF.rl, NE, T);
     if (E.rec_mode == 2)
@@ -3228,6 +3984,20 @@ void moe_b(const Layer& Y, const float* x, float* out, int T, int pos0) {
         parts(true, [&](const uint8_t* const* t) {
             g<<<dim3(H / (8 * RR), maxt), 256>>>(PF.act, FF, nullptr, t, X.f2, PF.tile_e, PF.tile_r0, PF.ntiles, PF.eoff,
                                             PF.ecnt, PF.ey, H, FF);
+        });
+    } else if (X.gg13) {   // GGUF experts: the same streaming of part A (gate_up) then part B (down)
+        half* ah = reinterpret_cast<half*>(PF.act);
+        const int mt = PF.tc ? nr / TM + NE : maxt;
+        if (PF.tc) kb_gather_h<<<nr, 256>>>(x, PF.rows, ah);
+        expert_parts(l, false, [&](const uint8_t* const* t) {
+            if (PF.tc) gg_gemm<true>(X.gg13, true, mt, ah, H, nullptr, t, X.rb13, PF.gu, 2 * FF, H);
+            else gg_gemm<true>(X.gg13, false, mt, x, H, PF.rows, t, X.rb13, PF.gu, 2 * FF, H);
+        });
+        if (PF.tc) kb_swiglu_h<<<(unsigned) (((size_t) nr * FF + 255) / 256), 256>>>(PF.gu, ah, nr);
+        else kb_swiglu<<<(unsigned) (((size_t) nr * FF + 255) / 256), 256>>>(PF.gu, PF.act, nr);
+        expert_parts(l, true, [&](const uint8_t* const* t) {
+            if (PF.tc) gg_gemm<false>(X.gg2, true, mt, ah, FF, nullptr, t, X.rb2, PF.ey, H, FF);
+            else gg_gemm<false>(X.gg2, false, mt, PF.act, FF, nullptr, t, X.rb2, PF.ey, H, FF);
         });
     } else if (PF.tc) {
         const int maxt_tc = nr / TM + NE;
@@ -3770,11 +4540,7 @@ void forward_prefill(const int* toks, int T, int pos0, float* all) {
     }
     {
         vec e(ES);
-        for (int t = 0; t < T; ++t)
-            for (int i = 0; i < H; ++i) {
-                uint32_t u = (uint32_t) E.embed[(size_t) toks[t] * H + i] << 16;
-                std::memcpy(&e[(size_t) t * H + i], &u, 4);
-            }
+        for (int t = 0; t < T; ++t) embed_row(toks[t], &e[(size_t) t * H]);
         CK(cudaMemcpyAsync(PF.x0, e.data(), ES * 4, cudaMemcpyHostToDevice, cudaStreamPerThread));
         CK(cudaStreamSynchronize(cudaStreamPerThread));
     }
@@ -3948,6 +4714,7 @@ int main(int argc, char** argv) {
     if (const char* r = std::getenv("INK2_OFF_MARGIN_MIB")) g_off_margin_mib = std::atoi(r);
     if (const char* r = std::getenv("INK2_GRP_R")) g_grp_r = std::atoi(r);
     if (const char* r = std::getenv("INK2_DRAFT_ABL")) g_draft_abl = std::atoi(r);
+    if (const char* r = std::getenv("INK2_GG_RPW")) g_gg_rpw = std::atoi(r);
     std::string dir, dump_logits, rec_path;
     std::vector<int> ids;
     int n_gen = 32;
@@ -4006,12 +4773,21 @@ int main(int argc, char** argv) {
     }
     if (!serve && (int) ids.size() + n_gen > E.ctx) { std::fprintf(stderr, "prompt + n exceeds --ctx %d\n", E.ctx); return 2; }
     Ckpt ck;
-    ck.path = dir + "/model-00001-of-00001.safetensors";
-    const std::string e = strata::image::st_read_header(ck.path, ck.st);
-    if (!e.empty()) { std::fprintf(stderr, "%s\n", e.c_str()); return 1; }
-    E.ck = &ck;
+    Gguf gg;
+    g_is_gguf = dir.size() > 5 && dir.compare(dir.size() - 5, 5, ".gguf") == 0;
+    if (g_is_gguf) {   // --model FILE.gguf: llama.cpp's merged inkling2_loop layout
+        const std::string e = gg_open(dir, gg);
+        if (!e.empty()) { std::fprintf(stderr, "%s\n", e.c_str()); return 1; }
+        g_gg = &gg;
+    } else {
+        ck.path = dir + "/model-00001-of-00001.safetensors";
+        const std::string e = strata::image::st_read_header(ck.path, ck.st);
+        if (!e.empty()) { std::fprintf(stderr, "%s\n", e.c_str()); return 1; }
+        E.ck = &ck;
+    }
     const double t_load = now_ms();
-    load();
+    if (g_is_gguf) load_gguf();
+    else load();
     if (PF.TP > 0) PF_RING_EXTRA = PF.TP;
     alloc_state();
     if (PF.TP > 0) alloc_prefill();
