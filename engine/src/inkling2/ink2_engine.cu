@@ -742,12 +742,23 @@ __global__ void k_attn_partial(const float* __restrict__ q, const void* __restri
     __shared__ float4 red[4][HD / 4];
     float4 o4 = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
     const int ve = g * HD + 4 * lane;
+    // k8v4's V loads in a loop of their own: its format test inside the loop slowed this kernel 13.6 -> 23.8 us (f16)
+    if (c_kvm == 4) {
 #pragma unroll 4
-    for (int k = wp; k < n; k += 4) {
-        const int r = r0 - k < 0 ? r0 - k + cap : r0 - k;
-        const float4 v = kv_ld4<true>(V, vsc, (size_t) r, ve);
-        const float pk = lg[k];
-        o4.x += pk * v.x; o4.y += pk * v.y; o4.z += pk * v.z; o4.w += pk * v.w;
+        for (int k = wp; k < n; k += 4) {
+            const int r = r0 - k < 0 ? r0 - k + cap : r0 - k;
+            const float4 v = kv_ld4<true>(V, vsc, (size_t) r, ve);
+            const float pk = lg[k];
+            o4.x += pk * v.x; o4.y += pk * v.y; o4.z += pk * v.z; o4.w += pk * v.w;
+        }
+    } else {   // V as K in the other formats
+#pragma unroll 4
+        for (int k = wp; k < n; k += 4) {
+            const int r = r0 - k < 0 ? r0 - k + cap : r0 - k;
+            const float4 v = kv_ld4<false>(V, vsc, (size_t) r, ve);
+            const float pk = lg[k];
+            o4.x += pk * v.x; o4.y += pk * v.y; o4.z += pk * v.z; o4.w += pk * v.w;
+        }
     }
     red[wp][lane] = o4;
     __syncthreads();
