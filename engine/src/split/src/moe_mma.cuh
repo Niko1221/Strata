@@ -177,6 +177,48 @@ template <> struct MmTile<T_Q5_1> {
         mm_store8(sw + r * MM_LD + u * 32 + 16, hi);
     }
 };
+#if defined(FNX_DISTRIBUTED)
+template <> struct MmTile<T_Q5_0> {
+    uint16_t v[11];
+    bool live, item;
+    __device__ __forceinline__ void fetch(const char* we, size_t row_a, int nrows, int row0, int k0, int kc) {
+        const int r = threadIdx.x / MM_TPR, u = threadIdx.x % MM_TPR;
+        item = u * 32 < kc;
+        live = item && row0 + r < nrows;
+        if (live) {
+            const auto* b = reinterpret_cast<const uint16_t*>(we + size_t(row0 + r) * row_a + size_t(k0 / 32 + u) * 22);
+#pragma unroll
+            for (int i = 0; i < 11; ++i) v[i] = b[i];
+        }
+    }
+    __device__ __forceinline__ void put(int, int, __half* sw) const {
+        if (!item) return;
+        const int r = threadIdx.x / MM_TPR, u = threadIdx.x % MM_TPR;
+        __half2 lo[8], hi[8];
+        if (live) {
+            const __half2 d = __half2half2(__ushort_as_half(v[0]));
+            const uint32_t high = uint32_t(v[1]) | (uint32_t(v[2]) << 16);
+            const __half2 bias = __float2half2_rn(1040.f);   // quant 0..31 becomes -16..15 before scaling
+#pragma unroll
+            for (int w = 0; w < 4; ++w) {
+                const uint32_t q = uint32_t(v[3 + 2 * w]) | (uint32_t(v[4 + 2 * w]) << 16);
+                const uint32_t a = (q & 0x0f0f0f0fu) | mm_spread4(high >> (4 * w));
+                const uint32_t b = ((q >> 4) & 0x0f0f0f0fu) | mm_spread4(high >> (16 + 4 * w));
+                __half2 x0, x1;
+                mm_bytes_h2(a, bias, x0, x1);
+                lo[2 * w] = __hmul2(x0, d); lo[2 * w + 1] = __hmul2(x1, d);
+                mm_bytes_h2(b, bias, x0, x1);
+                hi[2 * w] = __hmul2(x0, d); hi[2 * w + 1] = __hmul2(x1, d);
+            }
+        } else {
+#pragma unroll
+            for (int i = 0; i < 8; ++i) lo[i] = hi[i] = __float2half2_rn(0.f);
+        }
+        mm_store8(sw + r * MM_LD + u * 32, lo);
+        mm_store8(sw + r * MM_LD + u * 32 + 16, hi);
+    }
+};
+#endif
 template <> struct MmTile<T_Q8_0> {
     uint16_t v[17];
     bool live, item;

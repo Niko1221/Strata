@@ -93,3 +93,8 @@ with two big cards, and contexts over 128K have not been run. The copy-engine ri
 
 `-DSTRATA_BUILD_SPLIT=ON [-DSTRATA_SPLIT_CARDS="2;3"] [-DSTRATA_SPLIT_ARCH=86]` builds
 `strata-split-N` per card count; `tools/packaging/build_split_cuda.sh` does that with the release engine's toolchain rules and checks the result (`tools/packaging/build_split_hip.sh` for AMD).
+
+For one CUDA device per host, the experimental [MPI/NCCL build](DISTRIBUTED_TP.md)
+uses the same engine through a separate, opt-in launcher. It requires its own
+runtime, network and hardware checks; the automatic selection above does not
+start a cluster.

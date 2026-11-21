@@ -43,6 +43,9 @@
 
 #include "../src/batch.hpp"
 #include "../src/engine.hpp"
+#if defined(FNX_DISTRIBUTED)
+#include "../src/distributed.hpp"
+#endif
 #include "../src/env.hpp"
 #include "../src/session.hpp"
 #include "sfnx_input.hpp"
@@ -1111,25 +1114,47 @@ int main(int argc, char** argv) {
         return 2;
     }
     const auto t_load = std::chrono::steady_clock::now();
+#if defined(FNX_DISTRIBUTED)
+    std::optional<fnx::distributed::Runtime> runtime;
+    try {
+        runtime.emplace(argc, argv);
+        if (!fnx::distributed::coordinator() && !std::freopen("/dev/null", "w", stdout))
+            throw std::runtime_error("cannot redirect worker protocol output");
+        runtime->initialize();
+    } catch (const std::exception& ex) { fail(ex); }
+#endif
     // made in place and failed like the rest, so a card or link refused at load ends with its reason too
     std::optional<fnx::Model> m;
     std::optional<fnx::Mtp> mtp;
     std::optional<fnx::df2::Bridge> df2;
     std::optional<fnx::Engine> e;
     try {
+#if defined(FNX_DISTRIBUTED)
+        m.emplace(a.gguf.c_str(), fnx::Load::PLAIN, nullptr, nullptr, fnx::distributed::first_card());
+#else
         m.emplace(a.gguf.c_str());
+#endif
         if (a.draft == "dflash2") {
-            df2.emplace();
-            load_dflash2(*df2, *m, a);   // before the Engine: it sizes its K/V pool from what is left on the cards
+            if (fnx::distributed::coordinator()) {
+                df2.emplace();
+                load_dflash2(*df2, *m, a);   // before the Engine: it sizes its K/V pool from what is left on the cards
+            }
         } else {
             mtp.emplace(*m, a.mtp_dir, a.draft_vocab);
         }
         e.emplace(*m, a.max_ctx, a.batch);
         if (mtp) e->mtp_attach(*mtp);
-        else e->df2_attach(*df2);
+        else if (df2) e->df2_attach(*df2);
     } catch (const std::exception& ex) {
         fail(ex);
     }
+#if defined(FNX_DISTRIBUTED)
+    try { runtime->run(*e); } catch (const std::exception& ex) { fail(ex); }
+    if (!fnx::distributed::coordinator()) {
+        e.reset(); df2.reset(); mtp.reset(); m.reset(); runtime.reset();
+        std::_Exit(0);
+    }
+#endif
     Input in;
     try {
         Server srv(a, *m, *e, in);
@@ -1162,5 +1187,8 @@ int main(int argc, char** argv) {
         fail(ex);
     }
     std::fflush(stdout);
+#if defined(FNX_DISTRIBUTED)
+    e.reset(); df2.reset(); mtp.reset(); m.reset(); runtime.reset();
+#endif
     std::_Exit(0);
 }
