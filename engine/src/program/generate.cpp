@@ -4709,17 +4709,17 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "strata generate: --experts-wex4-root needs --experts-wex4\n");
         return 2;
     }
-    // shortcut: the resident arena does not read WEX4; it would need its own loader, measured on a PC whose RAM holds it
-    if (!o.experts_wex4.empty() && !o.mmap_experts) {
-        std::fprintf(stderr, "strata generate: --experts-wex4 reads the experts through the file tier; add --mmap-experts or --resident-experts\n");
-        return 2;
-    }
 #if defined(STRATA_GPU_METAL)
     if (!o.experts_wex4.empty()) {   // the Metal decode reads the model GGUF itself
         std::fprintf(stderr, "strata generate: --experts-wex4 is not available in the Metal engine\n");
         return 2;
     }
 #endif
+    // shortcut: the resident arena does not read WEX4; it would need its own loader, measured on a PC whose RAM holds it
+    if (!o.experts_wex4.empty() && !o.mmap_experts) {
+        std::fprintf(stderr, "strata generate: --experts-wex4 reads the experts through the file tier; add --mmap-experts or --resident-experts\n");
+        return 2;
+    }
     if (o.mmap_experts && !o.shared_expert_arena.empty()) {
         std::fprintf(stderr, "strata generate: --shared-expert-arena backs the resident arena and cannot be used with --mmap-experts\n");
         return 2;
