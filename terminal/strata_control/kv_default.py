@@ -69,7 +69,12 @@ def kv_flag(flavor: str, context: int, named: str | None, *, hip: bool = False, 
     the release named - 8-bit above 8K, 16-bit up to it (setup.py's own `kv = "fp16" if ctx <= 8192 else (a.kv or
     "int8")`).  The one change: above 8K a q4u32 build on a gfx12 card names nothing at all - it picks the measured
     format itself.  Up to 8K it keeps naming fp16, so those starts stay as they were.
+
+    `q4u32w` is setup's name for q4u32 plus the exact-cell window: the config names `--kv q4u32`, and setup writes
+    the window into the engine env (STRATA_KV_WINDOW=1, S=256, R=64).
     """
+    if named == "q4u32w":
+        return "q4u32"
     if named:
         return named
     if context > 8192 and engine_picks_kv(flavor, hip=hip, arch=arch):
@@ -81,8 +86,10 @@ def kv_value(flavor: str, context: int, named: str | None, *, hip: bool = False,
     """The format to name in a config that always names one, and the format the engine will run with.
 
     Above 8K on a gfx12 card with a q4u32 build that is q4u32 (54.5 % of int8's bytes); everywhere else the format
-    the config named, as before.
+    the config named, as before.  `q4u32w` (setup's window choice) runs as q4u32 with the window env beside it.
     """
+    if named == "q4u32w":
+        return "q4u32"
     if named:
         return named
     if context > 8192 and engine_picks_kv(flavor, hip=hip, arch=arch):

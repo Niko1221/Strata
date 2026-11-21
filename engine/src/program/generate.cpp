@@ -1222,12 +1222,13 @@ void usage() {
                  "                       of the three\n"
                  "  --kv q4lm32w         q4lm32's blocks, but the first R (sink) and most recent S cells read\n"
                  "                       exact fp16 from a side pool. S/R via STRATA_KV_WINDOW_S/_R (default\n"
-                 "                       128/8, 0/0 is q4lm32); the same window can be enabled on q4lm8v with\n"
-                 "                       STRATA_KV_WINDOW=1. No snapshots in this mode\n"
+                 "                       128/8, 0/0 is q4lm32); the same window can be enabled on q4lm8v or\n"
+                 "                       q4u32 with STRATA_KV_WINDOW=1 (setup writes q4u32 + 256/64). No\n"
+                 "                       snapshots in this mode\n"
                  "  --kv q4lm8v          4-bit Lloyd (16-level K, 8-level V) plus the exact-cell window: the first R\n"
                  "                       (sink) and the most recent S cells of each QSA layer read exact fp16 from\n"
                  "                       a ring sized for the prompt chunk. STRATA_KV_WINDOW=1, S/R via\n"
-                 "                       STRATA_KV_WINDOW_S/_R (setup writes 256/64). At 128K with B=6144: 5.29\n"
+                 "                       STRATA_KV_WINDOW_S/_R (the measured point is 256/64). At 128K with B=6144: 5.29\n"
                  "                       bit/cell, 1,016 MiB against int8's 1,584; prompt 528 vs 526 tok/s, decode\n"
                  "                       34.2 vs 35.2 (inside int8's run spread), +14%% expert slots (RX 9060 XT,\n"
                  "                       Windows HIP). Without STRATA_KV_WINDOW=1: the plain probe, measurably\n"
@@ -1240,7 +1241,12 @@ void usage() {
                  "                       and STRATA_KV_Q4_PROMPT=0 sends it back there. Its sibling q4u32z adds\n"
                  "                       the per-block offset (the zero point) and carries a constant per block.\n"
                  "                       This is the default on gfx12 above 8K of context since A.23 (its prompt path is the measured\n"
-                 "                       one there); naming it keeps it on a part that defaults away\n"
+                 "                       one there); naming it keeps it on a part that defaults away.\n"
+                 "                       With STRATA_KV_WINDOW=1 it also reads the exact-cell window (setup's 4th\n"
+                 "                       KV choice, S/R 256/64): 1,016 MiB at 128K against int8's 1,584, needles\n"
+                 "                       3/3 at 4K and 32K, and on gfx12 the prompt is level with int8 at 32K.\n"
+                 "                       At 4K the pair ties int8 (+0.00052 KL); at 128K it is +0.00530 behind\n"
+                 "                       (top-1 98.31%)\n"
                  "  --kv q4lm8[q4lm8k]  WP-2 PROBE (measurement only, not a byte layout): the same blocks\n"
                  "                       and the same 576 B/cell, with Max-Lloyd's 8-level (3-bit) table for N(0,1)\n"
                  "                       on both tensors or on K only. Answers whether the fixed\n"
@@ -5016,13 +5022,13 @@ int main(int argc, char** argv) {
     if (o.kv_resident > 0 && strata::core::qsa_kv_win()) {
         // The exact-cell window keeps its recent cells in an always-resident side pool; a streamed KV
         // (--kv-resident) has no such pool, so the window would read quantized where it promises exact - a silent
-        // wrong measurement, not a crash. Refused loudly instead. Setup never writes this pair (a q4lm8v config's
-        // KV cache stays in VRAM, nothing streams beside the window); this is the fallback for a hand-edited
-        // config that sets both.
-        std::fprintf(stderr, "strata: --kv-resident (KV streaming) and the exact-cell window (--kv q4lm8v + "
-                            "STRATA_KV_WINDOW=1) do not combine: the streamed cells have no resident side pool, so "
-                            "the window would read quantized. Keep the window without --kv-resident, or use --kv "
-                            "int8/q4_0/k8v4 for streaming\n");
+        // wrong measurement, not a crash. Refused loudly instead. Setup never writes this pair (a windowed
+        // config's KV cache stays in VRAM, nothing streams beside the window); this is the fallback for a
+        // hand-edited config that sets both.
+        std::fprintf(stderr, "strata: --kv-resident (KV streaming) and the exact-cell window (--kv q4u32 or "
+                            "q4lm8v + STRATA_KV_WINDOW=1) do not combine: the streamed cells have no resident side "
+                            "pool, so the window would read quantized. Keep the window without --kv-resident, or "
+                            "use --kv int8/q4_0/k8v4 for streaming\n");
         return 2;
     }
     // Prompt lookup (the suffix drafter, on by default): the MTP keeps its --spec windows and a lookup window may be

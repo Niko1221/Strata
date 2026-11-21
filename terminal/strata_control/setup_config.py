@@ -229,6 +229,12 @@ def config_for(inp: SetupInputs, lib) -> SetupConfig:
     if _kv:
         args += ["--kv", _kv]
     kv = kv_value(engine_flavor, ctx, a.kv, hip=bool(hip), arch=_arch)   # the format the engine will run with: the estimates below need one
+    # the exact-cell window's choices (setup's 4th = q4u32w, and the Lloyd arm q4lm8v): its 152 MiB ring is always
+    # resident, so the estimates below use the windowed variant's bytes per cell
+    window = a.kv in ("q4u32w", "q4lm8v")
+    window_kv = "q4lm8v" if a.kv == "q4lm8v" else "q4u32"   # the format the window runs on (the messages name it)
+    if window and kv == "q4u32":
+        kv = "q4u32w"
     if resident and a.low_ram != "resident" and engine_ver < RESIDENT_ENGINE:
         resident = False                               # an engine from before --resident-experts would refuse it
         ok(f"low-RAM mode: engine {meta.get('version')} has no resident variant yet; the experts are read through "
@@ -305,11 +311,12 @@ def config_for(inp: SetupInputs, lib) -> SetupConfig:
     # --kv-streaming on|off overrides the RAM test (the owner's rule); WSL stays off - it cannot stream.
     stream_need = kv_streaming_need_gb(model, ctx, kv)
     stream_fits = ram >= stream_need
-    # The exact-cell window (--kv q4lm8v) and KV streaming do not combine: the window's recent cells live in an
-    # always-resident side pool, which a streamed KV does not have, and the engine refuses the pair loudly (so a
-    # hand-edited config holding both does not start). The window is a memory plan of its own, so it wins when it is
-    # chosen: no --kv-resident beside q4lm8v, the window's KV stays in VRAM (the measured 5.29 bit at 128K).
-    if kv == "q4lm8v":
+    # The exact-cell window (setup's 4th choice: --kv q4u32 with the env; also --kv q4lm8v) and KV streaming do not
+    # combine: the window's recent cells live in an always-resident side pool, which a streamed KV does not have, and
+    # the engine refuses the pair loudly (so a hand-edited config holding both does not start). The window is a memory
+    # plan of its own, so it wins when it is chosen: no --kv-resident beside it, the window's KV stays in VRAM (the
+    # measured 5.29 bit at 128K).
+    if window:
         stream_fits = False
     if is_wsl() and ctx >= 65536:
         ok("WSL: KV streaming off (the driver pins only about 1 GB of RAM); the KV cache stays in VRAM")
@@ -318,14 +325,14 @@ def config_for(inp: SetupInputs, lib) -> SetupConfig:
                  "only about 1 GB there): off")
     elif ctx >= 65536 and a.kv_streaming == "off":
         ok("KV streaming off, as you chose (--kv-streaming off): the KV cache stays in VRAM")
-    elif ctx >= 65536 and kv == "q4lm8v":   # before the streaming branches: streaming never pairs with the window
+    elif ctx >= 65536 and window:   # before the streaming branches: streaming never pairs with the window
         if a.kv_streaming == "on":
             warn("--kv-streaming on: kept as you chose, but it is ignored beside the exact-cell window "
-                 "(--kv q4lm8v): streamed cells have no resident side pool for the window's exact cells, and the "
+                 f"(--kv {window_kv}): streamed cells have no resident side pool for the window's exact cells, and the "
                  "engine refuses the pair. The window stays and streams nothing; to stream, drop the window "
                  "(--kv int8/q4_0/k8v4)")
         else:
-            ok("KV streaming off: the exact-cell window (--kv q4lm8v) and streaming do not combine (the window's "
+            ok(f"KV streaming off: the exact-cell window (--kv {window_kv}) and streaming do not combine (the window's "
                "cells must stay resident, the engine refuses the pair), so the window's KV stays in VRAM "
                f"(~{kv_ram_gb:.1f} GB at {ctx // 1024}K, the measured 5.29 bit). To stream instead, drop the window "
                "(--kv int8/q4_0/k8v4)")
@@ -491,7 +498,7 @@ def config_for(inp: SetupInputs, lib) -> SetupConfig:
             ok(f"rocBLAS tuning tables for {gpu['arch']}: {', '.join(rocblas_tables)} (the engine takes the one of its rocBLAS build)")
         if resident:   # ROCm: large page-locked host allocations can fail or be slow for the CPU; keep the copy pageable
             cfg.setdefault("env", {})["STRATA_RESIDENT_PIN"] = "0"
-    if kv == "q4lm8v":                                 # the window's S/R travel in the engine env (server.py passes it)
+    if window:                                         # the window's S/R travel in the engine env (server.py passes it)
         cfg.setdefault("env", {}).update({"STRATA_KV_WINDOW": "1", "STRATA_KV_WINDOW_S": "256",
                                           "STRATA_KV_WINDOW_R": "64"})
     if gpu["count"] > 1 or a.gpu is not None:

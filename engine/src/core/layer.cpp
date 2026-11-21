@@ -310,8 +310,9 @@ void qsa_set_kv_q4_mode(strata::kernels::Q4Mode mode) {
     g_kv_q4 = g_kv_q4 || (mode != strata::kernels::Q4Mode::kUniform);
     kv_q4_mask_parse();
     // Window overlay (kv_q4.hpp), orthogonal to the level table: `--kv q4lm32w` (kLloydWin) is the overlay on
-    // kLloyd, `STRATA_KV_WINDOW=1` turns it on for any other q4 mode (`--kv q4lm8v` + the env is the production
-    // point). Grid via STRATA_KV_WINDOW_S/_R (defaults 128/8); the recent ring's extra rows
+    // kLloyd, `STRATA_KV_WINDOW=1` turns it on for any other q4 mode (`--kv q4u32` + the env is setup's 4th KV
+    // choice; `--kv q4lm8v` + the env is the measured Lloyd arm). Grid via STRATA_KV_WINDOW_S/_R (defaults 128/8);
+    // the recent ring's extra rows
     // (STRATA_KV_WINDOW_BATCH) default to 512 and are raised to the prompt chunk by qsa_set_kv_win_batch
     // (generate.cpp knows it, here it does not). S + R = 0 is exactly the base mode; when the overlay is off the
     // grid is zeroed so a reader that only checks the counts sees none.
@@ -319,12 +320,13 @@ void qsa_set_kv_q4_mode(strata::kernels::Q4Mode mode) {
     g_kv_win = mode == strata::kernels::Q4Mode::kLloydWin || (ew != nullptr && ew[0] == '1');
     if (g_kv_win && !strata::kernels::q4_lloyd(mode) && !strata::kernels::q4_shear(mode) &&
         !strata::kernels::q4_uniform_ls(mode)) {
-        // K1: the fused decode reads a window only in its Lloyd instantiations (kv_mode 4); a plain q4_0 state
-        // maps to kv_mode 2 and would get a pool the fused path ignores and the q4 gather honours. That is an
-        // inconsistent state, so it is refused loudly instead of silently half-applied.
-        std::fprintf(stderr, "strata: STRATA_KV_WINDOW=1 needs a q4-Lloyd arm (--kv q4lm32/q4lm32s/"
-                            "q4lm8/q4lm8k/q4lm8v, or --kv q4lm32w); --kv q4_0 has no window reader - "
-                            "window off\n");
+        // K1: the fused decode reads a window only in its Lloyd instantiations (kv_mode 4); the uniform grid
+        // (q4u32) reads it on its own path. A plain q4_0 state maps to kv_mode 2 and would get a pool the fused
+        // path ignores and the q4 gather honours. That is an inconsistent state, so it is refused loudly instead
+        // of silently half-applied.
+        std::fprintf(stderr, "strata: STRATA_KV_WINDOW=1 needs a q4 arm with a window reader (--kv q4u32, "
+                            "q4lm32/q4lm32s/q4lm8/q4lm8k/q4lm8v, or --kv q4lm32w); --kv q4_0 has no window "
+                            "reader - window off\n");
         g_kv_win = false;
     }
     if (g_kv_win) {

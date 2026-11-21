@@ -146,9 +146,11 @@ class NamedFormats(unittest.TestCase):
 
     def test_q4u32_and_its_window_need_this_trees_engine(self):
         self.assertFalse(setup.kv_needs_own_engine("q4u32", "q4u32"))
+        self.assertFalse(setup.kv_needs_own_engine("q4u32w", "q4u32"))
         self.assertFalse(setup.kv_needs_own_engine("q4lm8v", "q4u32"))
         self.assertTrue(setup.kv_needs_own_engine("q4u32", ""))
         self.assertTrue(setup.kv_needs_own_engine("q4u32", None))
+        self.assertTrue(setup.kv_needs_own_engine("q4u32w", ""))
         self.assertTrue(setup.kv_needs_own_engine("q4lm8v", "upstream"))
 
     def test_every_other_format_is_written_for_any_engine(self):

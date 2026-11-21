@@ -16665,6 +16665,361 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_KV_WINDOW",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/core/layer.cpp",
+     "line": 318,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [
+    "terminal/setup.py"
+   ],
+   "launch_sets": [
+    {
+     "file": "terminal/setup.py",
+     "line": 7617,
+     "value": "'(unset"
+    },
+    {
+     "file": "terminal/setup.py",
+     "line": 7660,
+     "value": "1"
+    },
+    {
+     "file": "terminal/setup.py",
+     "line": 7663,
+     "value": "1"
+    },
+    {
+     "file": "terminal/setup.py",
+     "line": 7671,
+     "value": "1"
+    },
+    {
+     "file": "terminal/setup.py",
+     "line": 7680,
+     "value": "1"
+    }
+   ],
+   "launch_reads": [
+    {
+     "file": "terminal/setup.py",
+     "line": 7612
+    }
+   ],
+   "doc_mentions": [
+    "docs/DETAILS.md:254",
+    "docs/DETAILS.md:1511",
+    "docs/DETAILS.md:1535",
+    "docs/bench-results/2026-10-24-needle-window/README.md:19",
+    "docs/bench-results/2026-10-25-s0-kl-support/README.md:44",
+    "docs/bench-results/2026-10-25-s1-selstats/README.md:11",
+    "docs/bench-results/2026-10-25-s1-selstats/README.md:23",
+    "docs/bench-results/2026-10-25-tag-quality/README.md:28",
+    "docs/bench-results/2026-10-25-tag-quality/README.md:48",
+    "docs/bench-results/2026-10-25-tag-quality/README.md:49",
+    "docs/bench-results/2026-10-27-s3-level-split/README.md:21",
+    "docs/bench-results/2026-10-27-s3-level-split/README.md:49",
+    "docs/bench-results/2026-10-27-s3-level-split/README.md:272",
+    "docs/bench-results/2026-10-28-g2-full-vocab/README.md:272",
+    "docs/bench-results/2026-10-28-g2-full-vocab/README.md:276",
+    "docs/bench-results/2026-10-28-g2-full-vocab/README.md:299",
+    "docs/bench-results/2026-10-28-ring-geometry/README.md:21",
+    "docs/bench-results/2026-10-28-ring-geometry/README.md:72",
+    "docs/bench-results/2026-10-28-ring-geometry/README.md:85",
+    "docs/bench-results/2026-10-28-ring-geometry/README.md:235",
+    "docs/bench-results/2026-10-31-g3-fwe/README.md:265",
+    "docs/bench-results/2026-10-31-g3-fwe/README.md:266",
+    "docs/bench-results/2026-11-01-e1-128k/README.md:50",
+    "docs/bench-results/2026-11-03-256k/README.md:28",
+    "docs/bench-results/2026-11-03-256k/README.md:192",
+    "docs/bench-results/2026-11-03-deploy-range/README.md:32",
+    "docs/bench-results/2026-11-03-deploy-range/README.md:94",
+    "docs/bench-results/2026-11-03-deploy-range/README.md:251",
+    "docs/bench-results/2026-11-03-repeat-control/README.md:222",
+    "docs/bench-results/2026-11-03-tag-arm/README.md:101",
+    "docs/bench-results/2026-11-03-tag-arm/README.md:214",
+    "docs/bench-results/2026-11-03-tag-arm/README.md:221",
+    "docs/bench-results/2026-11-03-tag-arm/README.md:229",
+    "docs/bench-results/2026-11-03-tag-arm/README.md:451",
+    "docs/bench-results/2026-11-03-tag-arm/README.md:457",
+    "docs/bench-results/2026-11-03-tag-arm/README.md:466",
+    "docs/bench-results/2026-11-10-merge-reeval/README.md:75",
+    "docs/bench-results/2026-11-10-merge-reeval/README.md:110",
+    "docs/bench-results/2026-11-10-merge-reeval/README.md:272",
+    "docs/bench-results/2026-11-14-q4u32-fastpath/README.md:139"
+   ],
+   "first_commit": "f45149b4b4",
+   "first_date": "2026-11-20",
+   "since": null,
+   "last_commit": "f45149b4b4",
+   "last_date": "2026-11-20",
+   "status": "opt-in",
+   "owner": "core",
+   "note": "[reviewed] =1 turns the exact-cell window on (the recent cells and the sinks stay fp16 in a resident side pool). Setup writes it for its 4th KV choice (--kv q4u32 with the window); a hand-written config needs it, and --kv q4lm8v needs it too. The window does not combine with KV streaming (--kv-resident): the engine refuses the pair (docs/DETAILS.md).",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_KV_WINDOW_BATCH",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/core/layer.cpp",
+     "line": 333,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": "128",
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [
+    "terminal/setup.py"
+   ],
+   "launch_sets": [],
+   "launch_reads": [
+    {
+     "file": "terminal/setup.py",
+     "line": 7613
+    }
+   ],
+   "doc_mentions": [
+    "docs/DETAILS.md:1508",
+    "docs/DETAILS.md:1539",
+    "docs/bench-results/2026-10-24-needle-window/README.md:22",
+    "docs/bench-results/2026-10-28-ring-geometry/README.md:72",
+    "docs/bench-results/2026-11-01-decode-4k/README.md:52",
+    "docs/bench-results/2026-11-01-decode-4k/README.md:158",
+    "docs/bench-results/2026-11-03-tag-arm/README.md:215",
+    "docs/bench-results/2026-11-03-tag-arm/README.md:452",
+    "docs/bench-results/2026-11-10-merge-reeval/README.md:273"
+   ],
+   "first_commit": "f45149b4b4",
+   "first_date": "2026-11-20",
+   "since": null,
+   "last_commit": "f45149b4b4",
+   "last_date": "2026-11-20",
+   "status": "opt-in",
+   "owner": "core",
+   "note": "[reviewed] the size of the window's ring in cells; unset follows the prompt chunk, capped at 6,144 cells so setup's 152 MiB figure stays honest (docs/DETAILS.md).",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_KV_WINDOW_R",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/core/layer.cpp",
+     "line": 332,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "string",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [
+    "terminal/setup.py"
+   ],
+   "launch_sets": [],
+   "launch_reads": [
+    {
+     "file": "terminal/setup.py",
+     "line": 7613
+    }
+   ],
+   "doc_mentions": [
+    "docs/DETAILS.md:1535",
+    "docs/bench-results/2026-10-24-needle-window/README.md:19",
+    "docs/bench-results/2026-10-25-s0-kl-support/README.md:44",
+    "docs/bench-results/2026-10-25-tag-quality/README.md:48",
+    "docs/bench-results/2026-10-25-tag-quality/README.md:49",
+    "docs/bench-results/2026-10-28-ring-geometry/README.md:85",
+    "docs/bench-results/2026-11-03-256k/README.md:192",
+    "docs/bench-results/2026-11-03-deploy-range/README.md:94",
+    "docs/bench-results/2026-11-03-deploy-range/README.md:251",
+    "docs/bench-results/2026-11-03-repeat-control/README.md:222",
+    "docs/bench-results/2026-11-03-tag-arm/README.md:215",
+    "docs/bench-results/2026-11-03-tag-arm/README.md:221",
+    "docs/bench-results/2026-11-03-tag-arm/README.md:229",
+    "docs/bench-results/2026-11-03-tag-arm/README.md:452",
+    "docs/bench-results/2026-11-03-tag-arm/README.md:457",
+    "docs/bench-results/2026-11-03-tag-arm/README.md:466",
+    "docs/bench-results/2026-11-10-merge-reeval/README.md:272",
+    "docs/bench-results/2026-11-14-q4u32-fastpath/README.md:139",
+    "docs/research/BEYOND_KL_QUANT_FIDELITY_INVENTORY.md:286"
+   ],
+   "first_commit": "f45149b4b4",
+   "first_date": "2026-11-20",
+   "since": null,
+   "last_commit": "f45149b4b4",
+   "last_date": "2026-11-20",
+   "status": "opt-in",
+   "owner": "core",
+   "note": "[reviewed] the number of sink cells (the oldest cells) the window keeps exact; setup writes 64.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_KV_WINDOW_S",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/core/layer.cpp",
+     "line": 331,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "string",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [
+    "terminal/setup.py"
+   ],
+   "launch_sets": [],
+   "launch_reads": [
+    {
+     "file": "terminal/setup.py",
+     "line": 7613
+    }
+   ],
+   "doc_mentions": [
+    "docs/DETAILS.md:1535",
+    "docs/bench-results/2026-10-24-needle-window/README.md:19",
+    "docs/bench-results/2026-10-25-s0-kl-support/README.md:44",
+    "docs/bench-results/2026-10-25-tag-quality/README.md:48",
+    "docs/bench-results/2026-10-25-tag-quality/README.md:49",
+    "docs/bench-results/2026-10-27-s3-level-split/README.md:39",
+    "docs/bench-results/2026-10-28-ring-geometry/README.md:22",
+    "docs/bench-results/2026-10-28-ring-geometry/README.md:85",
+    "docs/bench-results/2026-11-03-256k/README.md:192",
+    "docs/bench-results/2026-11-03-deploy-range/README.md:94",
+    "docs/bench-results/2026-11-03-deploy-range/README.md:251",
+    "docs/bench-results/2026-11-03-repeat-control/README.md:222",
+    "docs/bench-results/2026-11-03-tag-arm/README.md:214",
+    "docs/bench-results/2026-11-03-tag-arm/README.md:221",
+    "docs/bench-results/2026-11-03-tag-arm/README.md:229",
+    "docs/bench-results/2026-11-03-tag-arm/README.md:451",
+    "docs/bench-results/2026-11-03-tag-arm/README.md:457",
+    "docs/bench-results/2026-11-03-tag-arm/README.md:466",
+    "docs/bench-results/2026-11-10-centering/README.md:191",
+    "docs/bench-results/2026-11-10-merge-reeval/README.md:272",
+    "docs/bench-results/2026-11-14-q4u32-fastpath/README.md:139",
+    "docs/research/BEYOND_KL_QUANT_FIDELITY_INVENTORY.md:285"
+   ],
+   "first_commit": "f45149b4b4",
+   "first_date": "2026-11-20",
+   "since": null,
+   "last_commit": "f45149b4b4",
+   "last_date": "2026-11-20",
+   "status": "opt-in",
+   "owner": "core",
+   "note": "[reviewed] the number of recent cells the window keeps exact; setup writes 256.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_KV_WINDOW_TAG",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/core/layer.cpp",
+     "line": 341,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    },
+    {
+     "file": "engine/src/kernels/kv_win_parity.cpp",
+     "line": 83,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    },
+    {
+     "file": "engine/src/kernels/cuda/kv_q4.cu",
+     "line": 769,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/bench-results/2026-10-25-tag-quality/README.md:5",
+    "docs/bench-results/2026-10-25-tag-quality/README.md:7",
+    "docs/bench-results/2026-10-25-tag-quality/README.md:29",
+    "docs/bench-results/2026-10-25-tag-quality/README.md:49",
+    "docs/bench-results/2026-10-25-tag-quality/README.md:52",
+    "docs/bench-results/2026-11-03-256k/README.md:31",
+    "docs/bench-results/2026-11-03-256k/README.md:65",
+    "docs/bench-results/2026-11-03-256k/README.md:91",
+    "docs/bench-results/2026-11-03-256k/README.md:193",
+    "docs/bench-results/2026-11-03-deploy-range/README.md:35",
+    "docs/bench-results/2026-11-03-deploy-range/README.md:66",
+    "docs/bench-results/2026-11-03-deploy-range/README.md:95",
+    "docs/bench-results/2026-11-03-deploy-range/README.md:114",
+    "docs/bench-results/2026-11-03-deploy-range/README.md:252",
+    "docs/bench-results/2026-11-03-repeat-control/README.md:39",
+    "docs/bench-results/2026-11-03-repeat-control/README.md:70",
+    "docs/bench-results/2026-11-03-repeat-control/README.md:95",
+    "docs/bench-results/2026-11-03-repeat-control/README.md:223",
+    "docs/bench-results/2026-11-03-tag-arm/README.md:15",
+    "docs/bench-results/2026-11-03-tag-arm/README.md:32",
+    "docs/bench-results/2026-11-03-tag-arm/README.md:176",
+    "docs/bench-results/2026-11-03-tag-arm/README.md:215",
+    "docs/bench-results/2026-11-03-tag-arm/README.md:222",
+    "docs/bench-results/2026-11-03-tag-arm/README.md:231",
+    "docs/bench-results/2026-11-03-tag-arm/README.md:253",
+    "docs/bench-results/2026-11-03-tag-arm/README.md:452",
+    "docs/bench-results/2026-11-03-tag-arm/README.md:458",
+    "docs/bench-results/2026-11-03-tag-arm/README.md:467",
+    "docs/paper/Ansatz_Improvements.md:116"
+   ],
+   "first_commit": "f45149b4b4",
+   "first_date": "2026-11-20",
+   "since": null,
+   "last_commit": "f45149b4b4",
+   "last_date": "2026-11-20",
+   "status": "research",
+   "owner": "core",
+   "note": "[reviewed] diagnostic: tags the window's cells in the snapshot.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_L2_PF",
    "backends": [
     "cuda-hip"

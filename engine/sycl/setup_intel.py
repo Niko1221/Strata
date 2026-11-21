@@ -39,7 +39,7 @@ import setup as S  # noqa: E402
 from strata_control import intel_spec, vram_fit  # noqa: E402
 
 # The SYCL engine has the q4-Lloyd 32-level arms but no q4lm8*/exact-cell window (sycl/src/program/generate.cpp
-# rejects them): keep setup's third KV choice out of this backend's menu and fail early if a config asks for it.
+# rejects them): keep setup's window choice out of this backend's menu and fail early if a config asks for it.
 S.WINDOW_KV = False
 
 SYCL_WRAPPER = ROOT / "sycl" / "serve" / "strata-sycl.sh"
@@ -365,8 +365,8 @@ def to_sycl(cfg: dict, exe: Path, ram: float, keep: dict, vram_gb: float = 0.0, 
             args[args.index(f) + 1] = sycl_path(path) + (f":{scale}" if scale else "")
     ctx = int(flag(args, "--max-context") or 32768)
     kv = flag(args, "--kv") or "int8"
-    if kv == "q4lm8v":
-        S.fail("the Intel Arc (SYCL) engine has no q4lm8v: the exact-cell window is NVIDIA/AMD only",
+    if kv in ("q4u32w", "q4lm8v"):
+        S.fail("the Intel Arc (SYCL) engine has no exact-cell window: it is NVIDIA/AMD only",
                "use --kv int8 or --kv q4_0")
     asked_reserve = flag(args, "--vram-reserve-mib")    # setup writes it only when the user gave it
     drop(args, "--vram-reserve-mib", True)

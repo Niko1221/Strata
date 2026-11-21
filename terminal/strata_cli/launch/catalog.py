@@ -581,7 +581,7 @@ class Catalog:
     def kv_gb(self, tokens: int, kv: str = "int8") -> float:
         """The conversation memory for this many tokens, in GB (setup.py's UD_FIT_KV_BYTES: 13 attention layers)."""
         mod = self.strata.setup_module()
-        if kv == "q4lm8v":                     # its ring is resident, so bytes/cell fall with the context
+        if kv in ("q4u32w", "q4lm8v"):          # the window's ring is resident, so bytes/cell fall with the context
             eff = getattr(mod, "kv_cell_bytes", None)
             if callable(eff):
                 return tokens * 13 * eff(kv, tokens) / 1e9

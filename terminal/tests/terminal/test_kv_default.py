@@ -72,6 +72,11 @@ class KvFlag(unittest.TestCase):
         self.assertIsNone(kv_flag(KV_ENGINE_FLAVOR, 16384, None, hip=True, arch="gfx1200"))
         self.assertEqual(kv_flag(KV_ENGINE_FLAVOR, 8192, None, hip=True, arch="gfx1200"), "fp16")   # up to 8K: as before
 
+    def test_setups_window_choice_writes_q4u32_and_the_env(self):
+        # setup's name for q4u32 + the exact-cell window: the engine gets --kv q4u32 (setup_config writes the env)
+        self.assertEqual(kv_flag(KV_ENGINE_FLAVOR, 131072, "q4u32w", hip=True, arch="gfx1201"), "q4u32")
+        self.assertEqual(kv_flag("", 131072, "q4u32w", hip=False, arch="sm_120"), "q4u32")
+
 
 class KvValue(unittest.TestCase):
     """The format the engine will run with: what the estimates use and what a config that always names one writes."""
@@ -84,6 +89,8 @@ class KvValue(unittest.TestCase):
         self.assertEqual(kv_value("", 8192, None, hip=True, arch="gfx1201"), "fp16")
         self.assertEqual(kv_value(KV_ENGINE_FLAVOR, 8192, None, hip=True, arch="gfx1201"), "fp16")    # up to 8K: as before
         self.assertEqual(kv_value(KV_ENGINE_FLAVOR, 16384, None, hip=True, arch="gfx1201"), "q4u32")
+        self.assertEqual(kv_value(KV_ENGINE_FLAVOR, 131072, "q4u32w", hip=True, arch="gfx1201"), "q4u32")
+        self.assertEqual(kv_value("", 131072, "q4u32w", hip=False, arch="sm_120"), "q4u32")
 
 
 if __name__ == "__main__":

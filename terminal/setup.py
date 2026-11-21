@@ -300,18 +300,19 @@ CUDA12_COMPAT_DRIVER = 528 if WIN else 525
 ENGINE12_DIR = "engine-cuda12"
 MIN_ENGINE = (0, 1, 46)                # versions compare all numbers; v0.1.60: engine changes since v0.2.13.1 (git log 628f74955..HEAD); v0.1.59: engine changes since v0.2.12 (git log 146df3c46..HEAD); v0.1.58: engine rounds 0215-0217 (tuned drafters, the file-tier re-check, prefill and Q5_0 fixes; git log c3b3f5035..HEAD); v0.1.46: the 0.2 release engine (UPDATE.bat and setup fetch it from the signed feed, #3469 #3437); v0.1.45: Qwen3.6 parallel requests and pictures, fixes #2346 #2372 #2396; v0.1.44.1: CPUs without AVX2 start again (#2324: an illegal instruction before main in the NVFP4 CPU rows), the CUDA 12.0/12.1 toolkits build (#2322), a crashed engine start is named instead of retried as a GPU runtime start, Mac M2 (#2323); v0.1.44: UD-Q4/Q5/Q6_K_XL and Q8_0 Unsloth files in setup (K-quant experts, MMQ prompt library strata_kq), NVFP4 packs, Qwen3.6-35B-A3B, Intel Arc A-series kernels, the pipelined-decode and latency work; v0.1.43.1: the adaptive overlap no longer collapses decode on pinned-host desktops (#1964 #1975), Windows PLE mmap stall (#1984), pinned prompt uploads (#1996), the I/O watchdog allowance; v0.1.43: adaptive-tier copies overlap on CUDA, P100 (sm_60) kernel tables, RDNA4 (gfx1200/gfx1201) defaults (route tail skip, measured PCIe share, 16K prompt chunks, fused IQ3 prompt experts); v0.1.42.1: the GGUF-in-place file tier on Windows unmaps every shard, dual-socket starts judge each NUMA node and STRATA_DROP_CACHE_ON_EXIT, tools/strata_bench.py; v0.1.42: STRATA_ROUTE_TAIL_SKIP=7 default on CUDA (+13-16% decode), the AMD 2-GPU checkpoint fix (H13), Phase 2 fixes and opt-ins; v0.1.41.1 (folded into 0.1.42): the #1576 card order, #1616 stage size, #1595 CPU share, #1630/#1607 Windows HIP chunk cap and commit-limit warning, #1603 parallel-request bookkeeping; v0.1.41: CPU prefill share on by default (NVIDIA, chunks < 1024), --batch-groups auto, the file tier read in batches on Windows, Pascal decode fix, per-arch tables; v0.1.40.3: the #1357 MTP router guard, the #1376 Windows HIP cache floor, #461 runtime DLLs, Intel A750 first-request fix; v0.1.40.2: F4 verify windows, the Linux file tier (#1194), the stager wait (#1057), #1264/#1201/#1139 fixes, opt-in CPU share (#1282), Intel Arc; v0.1.40: --resident-experts on a layer split with the split+resident variant (#848), --kv k8v4 with KV streaming (#711); v0.1.39: the #577 file-tier regression fixed, the OpenAI Responses API (#451, Codex), a reply stuck on one token ended (#606), the head before the arena (#620), effort_position (#458), --vram-reserve hot resize opt-in (#533), PR batch; v0.1.38: prompts faster (one gather per expert group #372, the first chunk's PLE rows beside layer 0 #374, DeltaNet three heads per thread #413), --kv q4_0 prompts on tensor cores (#452), Q5_0 experts on the GPU (#473), IQ4_XS on AVX-2 (#415), unbuffered expert loading on Windows (#357 #362), --peer-device (#531), a 6 GB card starts (#496), PR batch; v0.1.37: a silent engine is restarted (#481), Windows AMD counts the desktop's VRAM (#380 #377 #497), a steadier PCIe probe (#485), fixes #496 #495 #498 #505 #493; v0.1.36: a cancelled prompt logged as read so far (#471), the draft-head hint (#474), UPDATE.bat (#475), --expert-profile-save (#477); v0.1.35: Windows AMD uses its bundled HIP runtime (#468 #461), the low-RAM resident mode on Windows 32 GB (#467), fixes #460 #459 #446 #447 #457 #448 #444; v0.1.34: AMD on Windows (a ready-made HIP engine), an MCP server for AI assistants (tools/strata_mcp.py), a shorter README; v0.1.33: a portable image encoder again (#411 #412), setup recommends instead of forcing (#406 #403 #364 #384), fixes #352 #365 #369 #371 #375 #393 #408 #414; v0.1.32: split prompts faster (#340), AMD router +12%, Unsloth Q4 in setup, faster Q4 prompts, #326/#327/#342/#344 fixes, PR batch; v0.1.31: Unsloth UD-Q4_K_XL (experimental), GGUF-in-place low-RAM mode, Windows GGUF load 2x, server race + tokenizer fixes, AMD intrinsics; v0.1.30: short prompts faster (streaming from 1024 tokens), resident low-RAM variant, multi-GPU session carve, RDNA4; v0.1.29: sampled answers faster (split top-k), #154 correctness fixes; v0.1.28: the expert cache reserves the draft head, a cancelled request no longer fails the next; v0.1.27: RTX 20 (sm_75) in the ready-made engine, the HIP build without CUDA headers; v0.1.26: the draft layer's prompt pass in batches; v0.1.25: faster prompts (grouping off the copy engine, fused hyper-connection kernels), AMD HIP backend, --kv k8v4; v0.1.24: long prompts faster (QSA select on tensor cores); v0.1.23: image requests honor sampling, 8 GB cards start, batched verify window; v0.1.22: faster prompts (tensor-core attention), multi-GPU across images/steering/KV streaming; v0.1.21: multi-GPU layer split (--gpus); v0.1.20: system-prompt checkpoint, PCIe probe, hit rate; v0.1.19: penalties
 # KV bytes per context token and attention layer: 8-bit 1056, rotated 4-bit 576, hybrid K8V4 (8-bit K, 4-bit V) 816
-KV_CELL_BYTES = {"fp16": 2112, "int8": 1056, "q4_0": 576, "q4u32": 576, "k8v4": 816}
-KV_WINDOW_RING_MIB = 152               # q4lm8v's exact-cell window at B=6144: 12.6 MiB x 12 QSA layers + tags
-WINDOW_KV = True                       # the q4lm8v choice; sycl/setup_intel.py sets this False (the SYCL engine has no q4lm8*/window)
+KV_CELL_BYTES = {"fp16": 2112, "int8": 1056, "q4_0": 576, "q4u32": 576, "q4u32w": 576, "k8v4": 816}
+KV_WINDOW_RING_MIB = 152               # the exact-cell window at B=6144: 12.6 MiB x 12 QSA layers + tags
+WINDOW_KV = True                       # the window choices (q4u32w, q4lm8v); sycl/setup_intel.py sets this False (the SYCL engine has no q4u32/q4lm*/window)
 
 
 def kv_cell_bytes(kv: str, ctx: int) -> int:
     """The KV cache's bytes per context token and attention layer (the 13-layer convention of the estimates below).
 
-    q4lm8v (4-bit Lloyd K/V plus the exact-cell window) is not a flat number: its 18-byte blocks store 576 B/cell
-    (4.5 bit) and its 152 MiB ring is always resident, so the effective value falls as the context grows - 905 B at
-    32K, 718 B at 64K, 625 B at 128K (measured 5.29 bit / 1,016 MiB at 128K, RX 9060 XT, Windows HIP, B=6144)."""
-    if kv == "q4lm8v":
+    The windowed 4-bit choices are not a flat number: their 18-byte blocks store 576 B/cell (4.5 bit) and their
+    152 MiB ring is always resident, so the effective value falls as the context grows - 905 B at 32K, 718 B at 64K,
+    625 B at 128K (measured 5.29 bit / 1,016 MiB at 128K, RX 9060 XT, Windows HIP, B=6144).  `q4u32w` is q4u32 with
+    that window (setup's 4th KV choice); `q4lm8v` is the measured 4-bit Lloyd arm with the same window."""
+    if kv in ("q4u32w", "q4lm8v"):
         return int((576 * 12 * ctx + KV_WINDOW_RING_MIB * 2 ** 20) / (13 * max(ctx, 1)))
     return KV_CELL_BYTES.get(kv, 1056)
 PY_PACKAGES = ["numpy", "jinja2", "regex", "pyyaml", "tqdm", "requests", "pillow", "psutil"]
@@ -7585,9 +7586,13 @@ def choices_from_config(cfg_path: Path) -> dict:
     vis = cfg.get("vision")
     esp = val("--control-vector-scaled")
     esp_path = esp.rsplit(":", 1)[0] if esp else None
+    # setup's window choice is written as --kv q4u32 plus the env: read it back as q4u32w so a re-run keeps the window
+    kv = val("--kv")
+    if kv == "q4u32" and (cfg.get("env") or {}).get("STRATA_KV_WINDOW") == "1":
+        kv = "q4u32w"
     return {"family": family, "model": model if model in MODELS else None,
             "context": int(val("--max-context")) if val("--max-context") else None,
-            "kv": val("--kv") if val("--kv") in ("int8", "q4_0", "q4lm8v") else None,
+            "kv": kv if kv in ("int8", "q4_0", "q4u32", "q4u32w", "q4lm8v") else None,
             "vision": ("gpu" if vis.get("gpu") else "cpu") if isinstance(vis, dict) else "none",
             "esp": ("on" if Path(esp_path).name == ESP_VECTOR.name else esp_path) if esp_path else "off",
             "host": cfg.get("host"), "api_key": cfg.get("api_key"), "port": cfg.get("port"), "gpu": cfg.get("gpu"),
@@ -7620,7 +7625,12 @@ def kv_check_config(cfg_path: Path) -> None:
     # effective bits per cell (the record's byte model: bytes per cell x 8 / 1024, the scale included - the same
     # numbers the papers use, "4.5 bit per cell against int8's 8.25")
     q4_window_arms = ("q4lm32", "q4lm32s", "q4lm8", "q4lm8k", "q4lm8v", "q4lm32w", "q4u32", "q4u32z")
-    if kv == "q4lm8v" and window:
+    window_active = window and kv in q4_window_arms   # the window is only on for an arm with a reader (not q4_0/int8)
+    if kv == "q4u32" and window_active:
+        bits = 5.29
+        note = ("the windowed 4-bit choice (setup's 4th): 4.5 bit/cell plus the resident ring, 1,016 MiB at 128K "
+                "against 1,584 MiB for int8")
+    elif kv == "q4lm8v" and window_active:
         bits = 5.29
         note = "measured 5.29 bit/cell at 128K, 1,016 MiB against 1,584 MiB for int8"
     elif kv == "q4u32":
@@ -7651,35 +7661,31 @@ def kv_check_config(cfg_path: Path) -> None:
     print(f"    effective bits: {shown}/cell  ({note})")
     # checks
     problems = []
-    if kv == "q4lm8v" and resident:
-        problems.append("DEAD PAIR: q4lm8v + --kv-resident. The engine refuses this (exit 2) - the streamed "
-                        "cells have no resident side pool for the window's exact cells. Drop --kv-resident "
+    if window_active and resident:
+        problems.append("DEAD PAIR: the exact-cell window + --kv-resident. The engine refuses this (exit 2) - the "
+                        "streamed cells have no resident side pool for the window's exact cells. Drop --kv-resident "
                         "(keep the window) or switch --kv to int8/q4_0/k8v4.")
     if kv == "q4lm8v" and not window:
         problems.append("q4lm8v without STRATA_KV_WINDOW=1: the window is off, so only the 4-bit base runs "
-                        "(no exact cells). Set STRATA_KV_WINDOW=1 (setup writes it for --kv q4lm8v).")
-    if window and kv in q4_window_arms:
-        if kv == "q4u32":
-            problems.append("note: with STRATA_KV_WINDOW=1 this runs the q4u32+window arm, not the plain product "
-                            "format (the overlay costs a ring on top of the 4.5 bit). Drop the env for the product "
-                            "q4u32 (src/core/layer.cpp: the env turns the overlay on for any q4 arm).")
-    elif window and kv == "q4_0":
-        problems.append("the engine refuses this on start: --kv q4_0 has no window reader, so the window is off. "
-                        "A window needs a q4-Lloyd, shear or uniform-ls arm (q4lm32/q4lm32s/q4lm8/q4lm8k/q4lm8v/"
-                        "q4lm32w, q4u32, q4u32z).")
-    elif window:
+                        "(no exact cells). Set STRATA_KV_WINDOW=1 (setup writes it for its window choice; a "
+                        "hand-written q4lm8v config needs it too).")
+    if window and kv == "q4_0":
+        problems.append("--kv q4_0 has no window reader, so the engine ignores the window and starts without it "
+                        "(the window env is not a refusal here). A window needs a q4-Lloyd, shear or "
+                        "uniform-ls arm (q4lm32/q4lm32s/q4lm8/q4lm8k/q4lm8v/q4lm32w, q4u32, q4u32z).")
+    elif window and not window_active:
         problems.append("STRATA_KV_WINDOW=1 is set but --kv is not a q4 arm: the window env is ignored.")
-    if kv == "q4lm8v" and window and ctx is not None and ctx < 32768:
+    if window_active and ctx is not None and ctx < 32768:
         problems.append(f"context {ctx} is below ~28K: the window's 152 MiB ring costs more than the 4-bit base "
                         "saves; setup warns but keeps the choice.")
-    if kv == "q4lm8v" and window and not resident:
+    if window_active and not resident:
         problems.append("OK: window active, KV stays in VRAM (no streaming). --kv-streaming on is ignored beside "
                         "the window; use --kv-streaming off to say so explicitly.")
     if problems:
         for msg in problems:
-            tag = "FAIL" if msg.startswith("DEAD PAIR") or msg.startswith("q4lm8v without") or msg.startswith("STRATA_KV_WINDOW=1 is set") or msg.startswith("the engine refuses") else "note"
+            tag = "FAIL" if msg.startswith("DEAD PAIR") or msg.startswith("q4lm8v without") else "note"
             print(f"    [{tag}] {msg}")
-    startable = not (kv == "q4lm8v" and resident)
+    startable = not (window_active and resident)
     print(f"    engine starts:  {'yes' if startable else 'NO - refused (exit 2)'}")
 
 
@@ -8680,8 +8686,9 @@ UD_FIT_RUNTIME_MIB = 250          # CUDA / HIP: the runtime's own context (the S
 UD_FIT_ENGINE_RESERVE_MIB = 300   # the reserve the engine settles on when none is given and the card is tight
 KV_WORDS = {"int8": "8-bit", "q4_0": "4-bit (Hadamard-rotated)", "q4u32": "4-bit uniform grid (the default on gfx12)",
             "k8v4": "8-bit keys, 4-bit values", "fp16": "16-bit",
+            "q4u32w": "4-bit uniform grid with exact window (256/64)",
             "q4lm8v": "4-bit with exact window (256/64)"}
-UD_FIT_KV_BYTES = {"fp16": 2112, "int8": 1056, "q4_0": 576, "q4u32": 576, "k8v4": 816, "q4lm8v": 576}   # per token per attention layer (13)
+UD_FIT_KV_BYTES = {"fp16": 2112, "int8": 1056, "q4_0": 576, "q4u32": 576, "q4u32w": 576, "k8v4": 816, "q4lm8v": 576}   # per token per attention layer (13)
 UD_FIT_CTX_STEPS = (8192, 6144, 4608)
 
 
@@ -8751,7 +8758,7 @@ def parallel_slot_gb(ctx: int, kv: str, streaming: bool) -> float:
     sizes on the whole context.  Measured: 0.56 GiB at 32K int8; with KV streaming, 0.95 GiB at 262K and 2.27 GiB at
     1M (RTX 5090, 15/11/2026)."""
     kv_cells = min(ctx, 32768) if streaming else ctx
-    if kv == "q4lm8v":   # 12 QSA layers at 576 B/cell plus the exact-cell window's ring, which is always resident
+    if kv in ("q4u32w", "q4lm8v"):   # 12 QSA layers at 576 B/cell plus the exact-cell window's ring, which is always resident
         return (kv_cells * 12 * 576 + KV_WINDOW_RING_MIB * 2 ** 20 + max(0, ctx - 32768) * PARALLEL_CELL_BYTES) / 1e9 + 0.17
     return (kv_cells * _parallel_kv_tok(kv) + max(0, ctx - 32768) * PARALLEL_CELL_BYTES) / 1e9 + 0.17
 
@@ -9303,8 +9310,9 @@ def control_engine_step(gpu, vision):
 
 
 def local_engine_build() -> Path | None:
-    """A build of this tree, for the engines a ready-made download cannot be: q4lm8v and its exact-cell window
-    exist only in a build from this source (until the feature is released).  The folders a build of this tree
+    """A build of this tree, for the engines a ready-made download cannot be: the exact-cell window (setup's 4th KV
+    choice, `--kv q4u32` + the env; or `--kv q4lm8v`) and `q4u32` itself exist only in a build from this source
+    (until the feature is released).  The folders a build of this tree
     leaves are found by their name (build-hip*), newest first: setup --build keeps its own under terminal/,
     while tools/hip/build_windows.bat and docs/AMD_HIP.md put it at the top of the checkout."""
     dirs = [p for root in (ROOT, ROOT.parent) for p in root.glob("build-hip*") if (p / EXE).is_file()]
@@ -9313,7 +9321,7 @@ def local_engine_build() -> Path | None:
 
 def local_installed_engine() -> Path | None:
     """A self-built engine to use instead of the ready-made download, when the person asked for one
-    (--prefer-self-build / STRATA_PREFER_SELF_BUILD, or q4lm8v's automatic build).  Searched in this order:
+    (--prefer-self-build / STRATA_PREFER_SELF_BUILD, or the window choice's automatic build).  Searched in this order:
       1. STRATA_SELF_BUILD_DIR (explicit)
       2. engine/     when its BUILD.json says source == "local"
       3. the newest build-hip*/ folder (terminal/ or the top of the checkout)
@@ -9455,10 +9463,11 @@ def shape_engine_step(a, gpu, vision):
 
 
 def kv_needs_own_engine(kv, flavor) -> bool:
-    """Whether `--kv` names a format only a build of this tree has: `q4u32` and the exact-cell window (`q4lm8v`) exist
-    in the engine this tree builds (0.1.63-q4u32), and an upstream build refuses them at start ("--kv must be fp16,
-    int8, q4_0 or k8v4").  Setup refuses to write a config that could not start."""
-    return kv in ("q4u32", "q4lm8v") and str(flavor or "") != "q4u32"
+    """Whether `--kv` names a format only a build of this tree has: `q4u32`, its exact-cell window (`q4u32w`) and
+    the Lloyd window arm (`q4lm8v`) exist in the engine this tree builds (0.1.63-q4u32), and an upstream build
+    refuses them at start ("--kv must be fp16, int8, q4_0 or k8v4").  Setup refuses to write a config that could
+    not start."""
+    return kv in ("q4u32", "q4u32w", "q4lm8v") and str(flavor or "") != "q4u32"
 
 
 def engine_step(a, gpu, hip, amd, cuda_tk, vision, kv=None):
@@ -9473,21 +9482,22 @@ def engine_step(a, gpu, hip, amd, cuda_tk, vision, kv=None):
     # a self-built engine is a choice, not a side effect: --engine-dir / STRATA_ENGINE_DIR names one, and
     # --prefer-self-build / STRATA_PREFER_SELF_BUILD picks the newest build that sits in the tree.  Without that
     # opt-in the default path stays the release's ready-made engine (CONTRIBUTING.md).  An explicit --prebuilt
-    # wins over the automatic choice.  q4lm8v is the one format that needs a build from this tree; it picks one
-    # by itself below, because the ready-made engine carries neither q4lm8v nor its window.
+    # wins over the automatic choice.  The window choices (q4u32w, q4lm8v) need a build from this tree; they pick
+    # one by itself below, because the ready-made engine carries no exact-cell window.
     local = getattr(a, "engine_dir", None) or os.environ.get("STRATA_ENGINE_DIR")
     if not local and wants_self_build(a):
         cand = local_installed_engine()
         if cand is not None:
             say(f"  self-built engine preferred: using {cand} instead of the ready-made one")
             local = str(cand)
-    if not local and kv == "q4lm8v" and hip:
+    if not local and kv in ("q4u32w", "q4lm8v") and hip:
         local = local_installed_engine() or local_engine_build()
+        fmt = "q4u32" if kv == "q4u32w" else kv
         if local is None:
-            fail("q4lm8v and its exact-cell window are not in the ready-made engine yet",
+            fail(f"{fmt} and its exact-cell window are not in the ready-made engine yet",
                  "build this tree (tools\\hip\\build_windows.bat on Windows), then run setup again with "
                  "--engine-dir <the build folder> (docs/AMD_HIP.md); --kv int8 needs no build")
-        say(f"  q4lm8v is only in an engine built from this tree: using {local} instead of the ready-made one")
+        say(f"  {fmt} is only in an engine built from this tree: using {local} instead of the ready-made one")
     if local:
         eng = install_local_engine(Path(local), gpu, hip, llama, vision)
         meta = json.loads((eng / "BUILD.json").read_text(encoding="utf-8"))
@@ -10395,13 +10405,15 @@ def main() -> int:
     ap.add_argument("--rope-scale", type=float,
                     help="the extension factor, finite and >= 1 (default: the final context over the trained "
                          "262144, at least 1 - 1.5 for 384K, 2 for 512K, 1 inside the trained range)")
-    ap.add_argument("--kv", choices=["int8", "q4_0", "q4u32", "k8v4", "q4lm8v", "fp16"],
+    ap.add_argument("--kv", choices=["int8", "q4_0", "q4u32", "q4u32w", "k8v4", "q4lm8v", "fp16"],
                     help="KV cache precision above 8K context. Left out, a q4u32 build (this tree's engine, "
                          "0.1.63-q4u32) picks q4u32 on gfx12 (54.5 %% of int8's bytes, level with it at 32K and 106K, "
                          "measured); setup names 8-bit on every other card and on an upstream engine, as before. q4_0 (half the "
                          "memory, a little less precise), k8v4 (hybrid: INT8 K + "
-                         "4-bit V, 816 B/cell), q4lm8v (4-bit with the exact-cell window, 256/64: 5.29 bit/cell at 128K, "
-                         "1,016 MiB against 1,584 MiB for int8; opt-in, NVIDIA/AMD only) or fp16 (16-bit, twice the "
+                         "4-bit V, 816 B/cell), q4u32w (q4u32 with the exact-cell window, 256/64: 1,016 MiB at 128K "
+                         "against 1,584 MiB for int8, at 4K a tie with 8-bit (+0.00052 KL), at 128K +0.00530 KL "
+                         "behind; setup writes --kv q4u32 and the window env; opt-in, NVIDIA/AMD only), q4lm8v (the "
+                         "measured 4-bit Lloyd arm with the same window) or fp16 (16-bit, twice the "
                          "memory of int8) name one")
     ap.add_argument("--vision", choices=["yes", "no", "none", "gpu", "cpu"],
                     help="let the model read images (on by default where the model can; yes = the best reader for this card: the CPU "
@@ -10495,14 +10507,15 @@ def main() -> int:
                          "over a self-build that --prefer-self-build would pick")
     ap.add_argument("--engine-dir", metavar="DIR", default=os.environ.get("STRATA_ENGINE_DIR"),
                     help="install an engine you built yourself from this folder (strata.exe in it) instead of the "
-                         "ready-made one; q4lm8v and its exact-cell window exist only in a build from this tree, "
-                         "so setup picks the newest build-hip*/ folder by itself when q4lm8v is chosen")
+                         "ready-made one; the exact-cell window and the other q4u32 formats exist only in a build "
+                         "from this tree, so setup picks the newest build-hip*/ folder by itself when the window is "
+                         "chosen (q4u32w or q4lm8v)")
     ap.add_argument("--prefer-self-build", action="store_true",
                     default=os.environ.get("STRATA_PREFER_SELF_BUILD") == "1",
                     help="use an engine built from this tree (STRATA_SELF_BUILD_DIR, engine/ marked local, or the "
                          "newest build-hip*/) instead of the ready-made download, even when the model does not need "
-                         "q4lm8v; STRATA_PREFER_SELF_BUILD=1 does the same. Without this opt-in a build that merely "
-                         "sits in the tree is left alone, and an explicit --prebuilt still wins")
+                         "the exact-cell window; STRATA_PREFER_SELF_BUILD=1 does the same. Without this opt-in a "
+                         "build that merely sits in the tree is left alone, and an explicit --prebuilt still wins")
     ap.add_argument("--check", action="store_true", help="only check this PC and exit")
     ap.add_argument("--kv-check", metavar="CONFIG", nargs="?", const="auto", default=None,
                     help="check a Strata config's KV cache settings: --kv mode, STRATA_KV_WINDOW env and the "
@@ -10571,8 +10584,8 @@ def main() -> int:
     if getattr(a, "dsv41_package", None):              # DeepSeek's engine package: no longer offered (strata_control/retired.py)
         say("  " + retired.NOT_OFFERED)
         return 2
-    if a.kv == "q4lm8v" and not WINDOW_KV:
-        ap.error("--kv q4lm8v is the exact-cell window, which the Intel Arc (SYCL) engine does not have; "
+    if a.kv in ("q4u32w", "q4lm8v") and not WINDOW_KV:
+        ap.error(f"--kv {a.kv} is the exact-cell window, which the Intel Arc (SYCL) engine does not have; "
                  "use --kv int8 or --kv q4_0")
     if a.kv_check is not None:
         targets = sorted(Path(".").glob("strata-*.json")) if a.kv_check == "auto" else [Path(a.kv_check)]
@@ -11144,10 +11157,10 @@ def main() -> int:
         ok(f"rope scaling: {scaling}, factor {rope_scale:g} ({origin})")
     ok(f"context: {ctx} tokens")
     # the KV cache (the model's memory of the conversation): 8-bit, 4-bit after a Hadamard rotation (PR #21), or the
-    # 4-bit Lloyd base with the exact-cell window (KV window, 256/64; opt-in)
-    kv = "fp16" if ctx <= 8192 else (a.kv or "int8")
-    if kv == "q4lm8v" and not WINDOW_KV:
-        fail("the Intel Arc (SYCL) engine has no q4lm8v: the exact-cell window is NVIDIA/AMD only",
+    # 4-bit uniform grid with the exact-cell window (KV window, 256/64; opt-in)
+    kv = a.kv or ("fp16" if ctx <= 8192 else "int8")
+    if kv in ("q4u32w", "q4lm8v") and not WINDOW_KV:
+        fail("the Intel Arc (SYCL) engine has no exact-cell window: it is NVIDIA/AMD only",
              "use --kv int8 or --kv q4_0")
     if ctx > 8192 and not a.kv and not a.yes:
         say()
@@ -11161,16 +11174,17 @@ def main() -> int:
         if ctx >= 32768 and WINDOW_KV:   # below ~28K the 152 MiB ring costs more than the 4-bit base saves
             int8_mib = ctx * 12 * 1056 / 2 ** 20
             win_mib = ctx * 12 * 576 / 2 ** 20 + KV_WINDOW_RING_MIB
-            say(f"  4) 4-bit with exact window  (q4lm8v + 256/64: {win_mib:.0f} MiB at {ctx // 1024}K against "
+            say(f"  4) 4-bit with exact window  (q4u32 + 256/64: {win_mib:.0f} MiB at {ctx // 1024}K against "
                 f"{int8_mib:.0f} MiB")
-            say("             for 8-bit, about as fast, more expert slots; accuracy at 4K between 8- and 4-bit, at")
-            say("             8-bit level in the answer region; needles 6/6 at 32K and 128K; opt-in)")
-            opts.append("q4lm8v")
+            say("             for 8-bit; at 4K a tie with 8-bit (+0.00052 KL), at 128K +0.00530 KL behind")
+            say("             it (top-1 98.31%); on gfx12 the prompt is level with 8-bit at 32K; needles")
+            say("             3/3 at 4K and 32K; opt-in)")
+            opts.append("q4u32w")
         picked = opts[int(ask("KV cache?", [str(i + 1) for i in range(len(opts))], "1", a.yes)) - 1]
         if picked != "auto":
             kv = picked
             a.kv = picked                          # a format the person named is written into the run config, on every card
-    if kv == "q4lm8v" and ctx < 32768:
+    if kv in ("q4u32w", "q4lm8v") and ctx < 32768:
         warn(f"the exact-cell window's ring is resident: at {ctx // 1024}K it needs about "
              f"{ctx * 12 * 576 / 2 ** 20 + KV_WINDOW_RING_MIB:.0f} MiB against "
              f"{ctx * 12 * 1056 / 2 ** 20:.0f} MiB for 8-bit (break-even ~28K); your choice is kept")
