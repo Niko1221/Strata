@@ -1,0 +1,4 @@
+[submodule "engine/third_party/sycl-tla"]
+	path = engine/third_party/sycl-tla
+	url = https://github.com/intel/sycl-tla.git
+	shallow = true

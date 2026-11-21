@@ -38,6 +38,10 @@ command -v icpx >/dev/null || { echo "build_sycl_linux.sh: icpx is not on PATH a
 iccver=$(icpx --version | sed -n 's/.*Compiler \([0-9][0-9.]*\).*/\1/p' | head -1)
 
 cd "$repo"
+# The TLA prompt attention reads the sycl-tla headers of the engine/third_party/sycl-tla submodule (docs/INTEL_ARC.md)
+if [ ! -f engine/third_party/sycl-tla/include/cute/tensor.hpp ] && [ -e .git ]; then
+  git submodule update --init engine/third_party/sycl-tla || echo "build_sycl_linux.sh: the sycl-tla submodule did not check out: no TLA prompt attention" >&2
+fi
 . "$repo/tools/packaging/shape_build.sh"; shape_setup "$repo"
 ggml=""
 # ggml is the vendored third_party/strata-ggml. STRATA_GGML_DIR=<llama.cpp checkout> (or LLAMA_CPP=, the name this script used before) builds from that

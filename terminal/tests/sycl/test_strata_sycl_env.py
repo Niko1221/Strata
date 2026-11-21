@@ -50,6 +50,12 @@ class LauncherPassesZero(unittest.TestCase):
         self.assertIn("STRATA_ROUTE_TAIL_SKIP=0", got)
         self.assertIn("STRATA_SPEC=4", got)
 
+    def test_tla_runtime_override_reaches_the_engine(self):
+        for value in ("0", "1"):
+            with self.subTest(value=value):
+                got = self.passed(self.run_launcher({"STRATA_SYCL_TLA_ATTN": value}))
+                self.assertIn("STRATA_SYCL_TLA_ATTN=" + value, got)
+
     def test_the_launchers_own_defaults_can_be_set_to_zero(self):
         got = self.passed(self.run_launcher({"STRATA_VERIFY_NO_HOST": "0"}))
         self.assertIn("STRATA_VERIFY_NO_HOST=0", got, "the config's override of the port default (the engine reads its value)")
@@ -59,7 +65,7 @@ class LauncherPassesZero(unittest.TestCase):
     def test_an_empty_value_is_still_not_set_and_the_launchers_own_settings_stay_out(self):
         got = self.passed(self.run_launcher({"STRATA_EMPTY_SETTING": "", "STRATA_SYCL_IMAGE": "strata-sycl-dev"}))
         self.assertFalse([g for g in got if g.startswith("STRATA_EMPTY_SETTING")], "an empty value means not set")
-        self.assertFalse([g for g in got if g.startswith("STRATA_SYCL_")], "STRATA_SYCL_* are the launcher's own")
+        self.assertFalse([g for g in got if g.startswith("STRATA_SYCL_")], "launcher settings stay out of the engine environment")
 
 
 if __name__ == "__main__":
