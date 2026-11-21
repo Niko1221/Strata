@@ -1,4 +1,30 @@
-# Community benchmark: RTX 3060 12 GiB / Qwen3.8-Flash-Next Q2_0 / Strata 0.1.63 / up to 262K
+# RTX 3060 12 GB — Strata 0.1.63 / Qwen3.8-Flash-Next Q2_0 / 260K benchmark
+
+> **Headline:** A single RTX 3060 12 GB eGPU processed **260,050 input tokens** at **1,160.3 prefill tok/s** and **42.8 decode tok/s** with **Thinking XHIGH**. The dedicated synthetic recall checks at this context passed **2/2**. All tests used **GPU Unlock ON** and **drafting OFF**.
+
+## Quick overview — the numbers that matter
+
+| Configured context | Actual long input | Prefill tok/s | Decode tok/s | TTFT | Recall |
+|---|---:|---:|---:|---:|---:|
+| 32K | 32,051 | **1,422.1** | 49.3 | 22.57 s | 2/2 |
+| 64K | 64,044 | **1,386.9** | 49.6 | 46.23 s | 2/2 |
+| 128K | 128,030 | **1,308.1** | 47.8 | 97.95 s | 2/2 |
+| **262K** | **260,050** | **1,160.3** | **42.8** | **224.25 s** | **2/2** |
+
+**What stands out:**
+
+- **All 8 test runs completed:** four upstream standard pilot runs and four separate long-input runs. **84/84 required standard requests**, **48/48 standard sanity checks**, and **20/20 long-context requests** completed; dedicated synthetic recall passed **8/8**.
+- **Prefill throughput declined 18.4% from 32K to 260K actual input**, while input length increased about eightfold. Median speed is from **three repetitions per context**, not a best single run.
+- **262K hardware observations:** maximum sampled **72°C**, **168.92 W**, minimum **10.70 GiB available RAM** and **562/562 PCIe samples at Gen4 ×4**.
+- **No speedup claim from GPU Unlock:** there was **no Unlock-OFF comparison**. The recall test is synthetic key retrieval, not a general reasoning benchmark.
+
+**Machine:** Minisforum AI X1-255 / AMD Ryzen 7 255 / ~60 GiB usable RAM / RTX 3060 12 GB via DEG1 OCuLink PCIe Gen4 ×4 / Ubuntu 26.04.1 / Strata 0.1.63 CUDA / NVIDIA 595.99.02. **Model:** Qwen3.8-Flash-Next Q2_0; **settings:** thinking ON (`xhigh`), drafting OFF, vision OFF, parallel 1, GPU Unlock ON.
+
+**How to read this report:** the long-input table above is from a **non-standard synthetic extension** that actually read ~32K–260K prompts. The **official** `strata-qwen38-thinking-v1-draft.1` protocol uses fixed workloads of up to ~16K tokens even when 262K is configured. `draft.1` is an upstream **protocol identifier**, not this PR's status. See [standard runs](#standard-protocol--configured-context-fixed-requests-up-to-16k), [full long-context measurements](#non-standard-extension--actual-long-inputs-thinking-xhigh), [GPU telemetry](#gpu-memory-pcie-telemetry-long-context-sweep) and [limitations](#limitations-and-publication-notes).
+
+---
+
+## Detailed evidence and methodology
 
 **Measured on 2026-11-21 (UTC). Completed evidence submission, not an official leaderboard approval.** Four runs of the upstream standard protocol and a separate four-context, **non-standard synthetic** long-context extension. All runs used **Thinking ON (`reasoning_effort=xhigh`)**, **drafting OFF**, **GPU Unlock ON**, vision OFF, parallel capacity 1. This PR is intended as a regular results-only PR for maintainer review.
 
