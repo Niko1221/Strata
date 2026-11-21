@@ -557,8 +557,12 @@ __device__ __forceinline__ float dyn_conv1(float xc, const float* __restrict__ d
 // (kv_q8.hpp): codes + one fp16 scale per 64 values [cap][KVD / 64] (ksc / vsc); scale = fp16(max|x| / 127),
 // code = clamp(rint(x / scale), -127, 127).  K is L2-clipped and V RMS-normalized per head before the store.
 constexpr int KVG = 64;
+constexpr int V4G = 32;   // --kv k8v4: V values per fp16 scale
 __constant__ int c_kvm;   // 3 = int8 with Walsh-Hadamard rotation (Strata's kv_int8_rotate): K, V, q rotated per head,
-                          // the attention output rotated back (H orthonormal and symmetric: scores unchanged)
+                          // the attention output rotated back (H orthonormal and symmetric: scores unchanged);
+                          // 4 = k8v4: K as in 2, V rotated as in 3 and stored as 4-bit codes [cap][KVD / 2] (low nibble
+                          // first) with one fp16 scale per 32 values [cap][KVD / 32]; q is not rotated (K is not)
+__host__ __device__ constexpr bool kv_rot_v(int kvm) { return kvm == 3 || kvm == 4; }   // the output is rotated back
 // orthonormal Walsh-Hadamard transform of one 128-vector held one value per thread by a 128-thread block
 __device__ __forceinline__ float wht128(float x) {
     __shared__ float r[128];
@@ -575,7 +579,15 @@ __device__ __forceinline__ float wht128(float x) {
     __syncthreads();
     return r[t] * 0.08838834764831845f;   // 1 / sqrt(128)
 }
+// VV: the V cache (k8v4 differs between K and V)
+template <bool VV>
 __device__ __forceinline__ float4 kv_ld4(const void* B, const __half* sc, size_t row, int e) {
+    if (VV && c_kvm == 4) {   // 4 nibbles (e % 4 == 0): 2 bytes, low nibble first
+        const uint32_t u = *reinterpret_cast<const uint16_t*>(static_cast<const uint8_t*>(B) + row * (KVD / 2) + e / 2);
+        const float f = __half2float(sc[row * (KVD / V4G) + e / V4G]);
+        return make_float4((float) ((int) (u & 15u) - 8) * f, (float) ((int) ((u >> 4) & 15u) - 8) * f,
+                           (float) ((int) ((u >> 8) & 15u) - 8) * f, (float) ((int) (u >> 12) - 8) * f);
+    }
     if (c_kvm == 0) return *reinterpret_cast<const float4*>(static_cast<const float*>(B) + row * KVD + e);
     if (c_kvm == 1) {
         const uint2 u = *reinterpret_cast<const uint2*>(static_cast<const __half*>(B) + row * KVD + e);
@@ -587,17 +599,33 @@ __device__ __forceinline__ float4 kv_ld4(const void* B, const __half* sc, size_t
     const float f = __half2float(sc[row * (KVD / KVG) + e / KVG]);
     return make_float4(c.x * f, c.y * f, c.z * f, c.w * f);
 }
+template <bool VV>
 __device__ __forceinline__ float kv_ld1(const void* B, const __half* sc, size_t row, int e) {
+    if (VV && c_kvm == 4) {
+        const uint32_t b = static_cast<const uint8_t*>(B)[row * (KVD / 2) + e / 2];
+        return (float) ((int) ((e & 1) ? b >> 4 : b & 15u) - 8) * __half2float(sc[row * (KVD / V4G) + e / V4G]);
+    }
     if (c_kvm == 0) return static_cast<const float*>(B)[row * KVD + e];
     if (c_kvm == 1) return __half2float(static_cast<const __half*>(B)[row * KVD + e]);
     return static_cast<const int8_t*>(B)[row * KVD + e] * __half2float(sc[row * (KVD / KVG) + e / KVG]);
 }
 // one cell value, called by every thread of a 128-thread block, thread i holding element e = g * HD + i (warps 0-1:
 // first group of 64, warps 2-3: second)
+template <bool VV>
 __device__ __forceinline__ void kv_st(void* B, __half* sc, size_t row, int e, float x) {
     if (c_kvm == 0) { static_cast<float*>(B)[row * KVD + e] = x; return; }
     if (c_kvm == 1) { static_cast<__half*>(B)[row * KVD + e] = __float2half_rn(x); return; }
-    if (c_kvm == 3) x = wht128(x);
+    if (c_kvm == 3 || (VV && c_kvm == 4)) x = wht128(x);
+    if (VV && c_kvm == 4) {   // a warp holds one group of 32: scale = fp16(max|x| / 7), code = clamp(rint(x / s), -7, 7) + 8
+        const float m = warp_max(fabsf(x));
+        const __half sh = __float2half_rn(m / 7.0f);
+        const float f = __half2float(sh);
+        const int q = f > 0.0f ? max(-7, min(7, __float2int_rn(x / f))) : 0;
+        const int qn = __shfl_down_sync(0xffffffffu, q, 1);
+        if (!(threadIdx.x & 1)) static_cast<uint8_t*>(B)[row * (KVD / 2) + e / 2] = (uint8_t) ((q + 8) | ((qn + 8) << 4));
+        if (!(threadIdx.x & (V4G - 1))) sc[row * (KVD / V4G) + e / V4G] = sh;
+        return;
+    }
     __shared__ float gm[4];
     const float m = warp_max(fabsf(x));
     __syncthreads();   // gm is reused by the next call
@@ -623,8 +651,8 @@ __device__ __forceinline__ void conv_kv_store1(const float* k, const float* v, f
     const float kn = sqrtf(block_sum(kv * kv));
     const float vr = rsqrtf(block_sum(vv * vv) / HD + EPS);
     const size_t row = (size_t) ((*d_pos) % cap);
-    kv_st(K, ksc, row, c, kv * fminf(QK_CLIP / (kn + 1e-6f), 1.0f));
-    kv_st(V, vsc, row, c, vv * vr);
+    kv_st<false>(K, ksc, row, c, kv * fminf(QK_CLIP / (kn + 1e-6f), 1.0f));
+    kv_st<true>(V, vsc, row, c, vv * vr);
 }
 
 // Attention prep, one launch (block = 128): blocks [0, NQ) clip q head b; [NQ, 2 NQ) clip rs head h then
@@ -687,7 +715,7 @@ __global__ void k_attn_partial(const float* __restrict__ q, const void* __restri
                 const int r = r0 - k < 0 ? r0 - k + cap : r0 - k;
                 float4 kv[4];
 #pragma unroll
-                for (int u = 0; u < 4; ++u) kv[u] = kv_ld4(K, ksc, (size_t) r, g * HD + 4 * (sub + 8 * u));
+                for (int u = 0; u < 4; ++u) kv[u] = kv_ld4<false>(K, ksc, (size_t) r, g * HD + 4 * (sub + 8 * u));
 #pragma unroll
                 for (int u = 0; u < 4; ++u) {
                     const float4 qv = q4[sub + 8 * u];
@@ -717,7 +745,7 @@ __global__ void k_attn_partial(const float* __restrict__ q, const void* __restri
 #pragma unroll 4
     for (int k = wp; k < n; k += 4) {
         const int r = r0 - k < 0 ? r0 - k + cap : r0 - k;
-        const float4 v = kv_ld4(V, vsc, (size_t) r, ve);
+        const float4 v = kv_ld4<true>(V, vsc, (size_t) r, ve);
         const float pk = lg[k];
         o4.x += pk * v.x; o4.y += pk * v.y; o4.z += pk * v.z; o4.w += pk * v.w;
     }
@@ -744,7 +772,7 @@ __global__ void k_attn_merge(const float* pm, const float* pl, const float* po, 
         o += f * po[((size_t) h * nchunk + c) * HD + tid];
     }
     float a = o / L;   // then the output gate: a * sigmoid(g)
-    if (c_kvm == 3) a = wht128(a);   // rotated V: the output comes back with the same transform
+    if (kv_rot_v(c_kvm)) a = wht128(a);   // rotated V: the output comes back with the same transform
     out[h * HD + tid] = a * (1.0f / (1.0f + expf(-gate[h * HD + tid])));
 }
 
@@ -899,8 +927,8 @@ __global__ void kb_kv_store(const float* kc, const float* vc, void* K, void* V, 
     const float kn = sqrtf(block_sum(kv * kv));
     const float vr = rsqrtf(block_sum(vv * vv) / HD + EPS);
     const size_t row = (size_t) ((pos0 + t) % cap);
-    kv_st(K, ksc, row, g * HD + i, kv * fminf(QK_CLIP / (kn + 1e-6f), 1.0f));
-    kv_st(V, vsc, row, g * HD + i, vv * vr);
+    kv_st<false>(K, ksc, row, g * HD + i, kv * fminf(QK_CLIP / (kn + 1e-6f), 1.0f));
+    kv_st<true>(V, vsc, row, g * HD + i, vv * vr);
 }
 
 // rel[t][h][d] = sum_r rs_t[h][r] proj[r][d]; grid (NQ, T)
@@ -952,7 +980,7 @@ __global__ void __launch_bounds__(256) kb_attn(const float* __restrict__ P, int 
         __syncthreads();
         for (int i = tid; i < FK * HD; i += 256) {
             const int r = i / HD, d = i % HD, j = k0 + r;
-            KVs[r * FK_LD + d] = j <= pb ? kv_ld1(K, ksc, (size_t) (j % cap), g * HD + d) : 0.0f;
+            KVs[r * FK_LD + d] = j <= pb ? kv_ld1<false>(K, ksc, (size_t) (j % cap), g * HD + d) : 0.0f;
         }
         __syncthreads();
         float s[4][4];
@@ -1003,7 +1031,7 @@ __global__ void __launch_bounds__(256) kb_attn(const float* __restrict__ P, int 
         __syncthreads();
         for (int i = tid; i < FK * HD; i += 256) {
             const int r = i / HD, d = i % HD, j = k0 + r;
-            KVs[r * HD + d] = j <= pb ? kv_ld1(V, vsc, (size_t) (j % cap), g * HD + d) : 0.0f;
+            KVs[r * HD + d] = j <= pb ? kv_ld1<true>(V, vsc, (size_t) (j % cap), g * HD + d) : 0.0f;
         }
         __syncthreads();
         const int kn = min(FK, pb - k0 + 1);
@@ -1560,8 +1588,8 @@ __global__ void __launch_bounds__(128 * NREP, 1) kb_attn_tc(const half* __restri
             const int r = i / (HD / 4), d = (i % (HD / 4)) * 4, j = k0 + r;
             float4 kv = make_float4(0, 0, 0, 0), vv = kv;
             if (j <= pb) {
-                kv = kv_ld4(K, ksc, (size_t) (j % cap), g * HD + d);
-                vv = kv_ld4(V, vsc, (size_t) (j % cap), g * HD + d);
+                kv = kv_ld4<false>(K, ksc, (size_t) (j % cap), g * HD + d);
+                vv = kv_ld4<true>(V, vsc, (size_t) (j % cap), g * HD + d);
             }
             half2 a[2] = {__floats2half2_rn(kv.x, kv.y), __floats2half2_rn(kv.z, kv.w)};
             half2 b[2] = {__floats2half2_rn(vv.x, vv.y), __floats2half2_rn(vv.z, vv.w)};
@@ -2255,11 +2283,11 @@ void alloc_state() {
         S.cap = S.full ? E.ctx : WINDOW + PF_RING_EXTRA;
         if (E.kvm) {
             S.K = dalloc((size_t) S.cap * KVD * (E.kvm == 1 ? 2 : 1));
-            S.V = dalloc((size_t) S.cap * KVD * (E.kvm == 1 ? 2 : 1));
+            S.V = dalloc((size_t) S.cap * (E.kvm == 4 ? KVD / 2 : KVD * (E.kvm == 1 ? 2 : 1)));
         }
         if (E.kvm >= 2) {
             S.ksc = (__half*) dalloc((size_t) S.cap * (KVD / KVG) * 2);
-            S.vsc = (__half*) dalloc((size_t) S.cap * (KVD / KVG) * 2);
+            S.vsc = (__half*) dalloc((size_t) S.cap * (KVD / (E.kvm == 4 ? V4G : KVG)) * 2);
         } else if (!E.kvm) {
             S.K = dfloats((size_t) S.cap * KVD);
             S.V = dfloats((size_t) S.cap * KVD);
@@ -2962,7 +2990,11 @@ void alloc_prefill() {
     PF.ids = ints(T * TOPK); PF.rows = ints(T * TOPK); PF.slot = ints(T * TOPK);
     PF.tile_e = ints(T * TOPK / FM + NE); PF.tile_r0 = ints(T * TOPK / FM + NE); PF.ntiles = ints(1);
     PF.eoff = ints(NE); PF.ecnt = ints(NE);
-    CK(cudaFuncSetAttribute(kb_attn, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) FA_SMEM));
+    // the fp32 prompt attention needs 83 KB of shared memory: more than Turing's 64 KB (--tc 1 does not use it)
+    if (!PF.tc && cudaFuncSetAttribute(kb_attn, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) FA_SMEM) != cudaSuccess) {
+        std::fprintf(stderr, "the fp32 prompt attention needs %zu bytes of shared memory, more than this card has: use --tc 1\n", FA_SMEM);
+        std::exit(1);
+    }
     if (E.offload) {
         CK(cudaStreamCreateWithFlags(&PF.cs, cudaStreamNonBlocking));
         for (int h = 0; h < 2; ++h) {
@@ -3115,7 +3147,7 @@ void attention_b(const Layer& Y, Slot& S, const float* xq, int sq, const float* 
         kb_attn<<<dim3((T + FQ - 1) / FQ, NQ), 256, FA_SMEM>>>(P, np, S.K, S.V, S.ksc, S.vsc, PF.rel, S.cap, S.full ? 0 : WINDOW, pos0,
                                                              T, PF.att);
     }
-    if (E.kvm == 3) kb_wht<<<dim3(NQ, T), 128>>>(PF.att, QD);
+    if (kv_rot_v(E.kvm)) kb_wht<<<dim3(NQ, T), 128>>>(PF.att, QD);
     kb_mul_sigmoid<<<dim3(QD / 256, T), 256>>>(PF.att, P + OFF_GATE, np);
     if (PF.tc) hgemm(Y.wo, true, 0, H, PF.att, QD, QD, 0, PF.attn_out, H, T);
     else gemm(Y.wo, PF.att, QD, PF.attn_out, H, T);
@@ -3933,7 +3965,8 @@ int main(int argc, char** argv) {
             else if (k == "f32" || k == "fp32") E.kvm = 0;
             else if (k == "i8" || k == "int8") E.kvm = 2;
             else if (k == "i8r") E.kvm = 3;
-            else { std::fprintf(stderr, "--kv %s: this engine has f16 (fp16), f32, i8 (int8) and i8r\n", v); return 2; }
+            else if (k == "k8v4") E.kvm = 4;
+            else { std::fprintf(stderr, "--kv %s: this engine has f16 (fp16), f32, i8 (int8), i8r and k8v4\n", v); return 2; }
         }
         // Strata's server and tuner may add these: the KV cache is always resident here and prefill has one form
         else if (a == "--kv-resident" || a == "--prefill") std::fprintf(stderr, "[ink2] %s %s ignored\n", a.c_str(), v);
@@ -3943,7 +3976,7 @@ int main(int argc, char** argv) {
     }
     if (dir.empty() || (ids.empty() && !serve)) {
         std::fprintf(stderr, "usage: strata-ink2 --model DIR (--serve | --tokens IDS | --tokens-file F) [--n N] [--ctx N] "
-                             "[--chunk N] [--tc 0|1] [--kv f16|fp16|f32|i8|int8|i8r] [--vram-reserve-mib N [--cpu-threads N]] [--spec 0|1] [--dump-logits F]\n");
+                             "[--chunk N] [--tc 0|1] [--kv f16|fp16|f32|i8|int8|i8r|k8v4] [--vram-reserve-mib N [--cpu-threads N]] [--spec 0|1] [--dump-logits F]\n");
         return 2;
     }
     if (serve && PF.TP <= 0) { std::fprintf(stderr, "--serve needs --chunk > 0\n"); return 2; }
