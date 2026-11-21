@@ -33,6 +33,15 @@ namespace strata::core {
 void set_peer_portable(bool on);
 bool peer_portable();
 
+struct PeerPlanDevice {
+    unsigned long long ptr[64];
+    int32_t start[68];
+    int32_t count[4];
+    int32_t dst[64];
+    int32_t tok[64];
+    int32_t out_row[64];
+};
+
 class PeerExperts {
 public:
     PeerExperts() = default;
@@ -64,7 +73,7 @@ public:
     /// multi-GPU: with `out` (pinned, portable host rows) the peer writes its rows straight into
     /// out[entry] with a scatter kernel (no D2H copy + host memcpy in finish); STRATA_PEER_DIRECT=0: the old way.
     bool launch(int64_t layer, const float* x, const int32_t* ids, int64_t n_tok, int64_t k, const int32_t* kind,
-                std::string& err, float* out = nullptr);
+                std::string& err, float* out = nullptr, uint32_t want_flag = 0);
     /// Waits for the launched share and writes its rows into `out` (row i = entry i, n_embd floats).
     bool finish(float* out, std::string& err);
 
@@ -92,7 +101,17 @@ public:
     /// whether a launch given host rows writes them itself (STRATA_PEER_DIRECT, default on): then the caller need not
     /// zero a peer row at all, whether the launch has happened yet or not
     static bool direct_mode();
+    void set_target_flag(volatile uint32_t* h_flag);
+    bool signaled_target_flag() const { return signaled_target_flag_; }
+    bool bind_verifier_buffers(int par, volatile uint32_t* h_seq, volatile uint32_t* h_flag,
+                               const float* h_x, const int32_t* h_ids, float* h_ymiss);
+    bool launch_window(int par, int64_t lb, int64_t le, int T, int k, uint32_t want_flag_start, int G = 1);
+    bool autonomous() const { return autonomous_; }
+    void set_autonomous(bool on) { autonomous_ = on; }
     double gib() const { return cache_.gib(); }
+    int64_t slots() const { return cache_.slots(); }
+    int64_t bytes() const { return cache_.bytes(); }
+    const ExpertCache& cache() const { return cache_; }
     int64_t entries() const { return entries_; }      ///< routed entries the peer computed
     int64_t experts() const { return experts_; }      ///< distinct (layer, expert) the peer computed
     int64_t swaps() const { return swaps_; }
@@ -128,6 +147,23 @@ private:
     std::vector<int32_t> row_of_;                     ///< compact row -> original entry
     int64_t launched_rows_ = 0;
     bool launched_direct_ = false;
+    volatile uint32_t* h_done_seq_ = nullptr;
+    uint32_t* d_done_seq_ = nullptr;
+    int* d_blocks_finished_ = nullptr;
+    volatile uint32_t* h_target_flag_ = nullptr;
+    uint32_t* d_target_flag_ = nullptr;
+    bool signaled_target_flag_ = false;
+    uint32_t seq_ = 0;
+    bool autonomous_ = false;
+    uint32_t* d_seq_[2] = {nullptr, nullptr};
+    uint32_t* d_target_flag_p_[2] = {nullptr, nullptr};
+    const float* d_m_x_[2] = {nullptr, nullptr};
+    const int32_t* d_m_ids_[2] = {nullptr, nullptr};
+    float* d_m_ymiss_[2] = {nullptr, nullptr};
+    int32_t* d_res_peer_ = nullptr;
+    unsigned long long* d_slot_off_peer_ = nullptr;
+    PeerPlanDevice* d_plans_ = nullptr;
+    int* d_blocks_finished_arr_ = nullptr;
 };
 
 }  // namespace strata::core

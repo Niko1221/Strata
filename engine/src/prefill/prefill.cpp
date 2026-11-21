@@ -8013,7 +8013,8 @@ int64_t Prefill::lm_prepare(int64_t n, std::string& why, int64_t cap) {
     // no layer-major form
     const bool split = stage_lb_ != 0 || stage_le_ != g.n_layers || next_ != nullptr;
     if (hand_in_ != nullptr) { why = "a layer split's chunk hand-off is in use"; return 0; }
-    if (m.pp || helper_ != nullptr || core::peer_portable()) { why = "a peer GPU"; return 0; }
+    if (helper_ != nullptr) { why = "a stage helper"; return 0; }
+    if (m.pp && !lm_force_env()) { why = "a peer GPU prefill share"; return 0; }
     // the PLE block (layer 1) reads the token history: on a split it runs in a first stage that holds layers 0 and 1
     // (a later stage never reaches it)
     if (split && m.ss->ple.ready() && stage_lb_ <= 1 && !(stage_lb_ == 0 && stage_le_ >= 2)) {

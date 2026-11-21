@@ -909,6 +909,8 @@ struct Options {
     int peer_reserve_mib = 600;
     int64_t peer_slots = 0;
     int peer_adapt_swaps = -1;
+    double peer_hot = -1.0;
+    int64_t peer_hot_at = -1;
     /// the prompt path's rows per layer the peer computes: -1 = half of chunk x top-k, 0 = the prompt path stays on
     /// the primary
     int64_t peer_prefill_rows = -1;
@@ -1410,6 +1412,8 @@ void usage() {
                  "  --peer-reserve-mib N  VRAM the peer tier leaves free on its card (default 600)\n"
                  "  --peer-slots N       expert slots on the peer (default: what fits)\n"
                  "  --peer-adapt-swaps N  peer cache swaps per adaptation step (default: --adapt-swaps)\n"
+                 "  --peer-hot F         share of hot experts given to the peer (default 0.45, 0 with asymmetric GPUs)\n"
+                 "  --peer-hot-at N      rank threshold for peer hot split (default 8700)\n"
                  "  --peer-prefill-rows N  prompt rows per layer the peer computes (default half of chunk x top-k;\n"
                  "                       0 = the prompt path stays on the primary)\n"
                  "  --expert-cache-per-layer  R4.2g: give each layer its OWN slots instead of letting the first\n"
@@ -4115,6 +4119,8 @@ int main(int argc, char** argv) {
         else if (a == "--peer-reserve-mib") o.peer_reserve_mib = std::atoi(next("--peer-reserve-mib"));
         else if (a == "--peer-slots") o.peer_slots = std::atoll(next("--peer-slots"));
         else if (a == "--peer-adapt-swaps") o.peer_adapt_swaps = std::atoi(next("--peer-adapt-swaps"));
+        else if (a == "--peer-hot") o.peer_hot = std::atof(next("--peer-hot"));
+        else if (a == "--peer-hot-at") o.peer_hot_at = std::atoll(next("--peer-hot-at"));
         else if (a == "--peer-prefill-rows") o.peer_prefill_rows = std::atoll(next("--peer-prefill-rows"));
         else if (a == "--no-hit-poke") o.no_hit_poke = true;
         else if (a == "--expert-profile") o.expert_profile = next("--expert-profile");
@@ -6532,11 +6538,11 @@ int main(int argc, char** argv) {
         // STRATA_PEER_HOT_AT (default 8700, ~ the primary's slots) ranks, every pair with floor((r+1)f) > floor(rf)
         // moves to just after that point: the primary fills past them, the peer (which takes what the primary does
         // not hold, in order) gets them first.
-        if (o.peer_device >= 1) {   // default 0.45 (measured: 0.3-0.6 all better than 0; 0 = off, e.g. for the gate)
+        if (o.peer_device >= 1) {   // default 0.0 for asymmetric / autonomous rigs (STRATA_PEER_HOT overrides)
             const char* ph = std::getenv("STRATA_PEER_HOT");
-            const double f = ph ? std::atof(ph) : 0.45;
+            const double f = o.peer_hot >= 0.0 ? o.peer_hot : (ph ? std::atof(ph) : 0.0);
             const char* pa = std::getenv("STRATA_PEER_HOT_AT");
-            const size_t at = std::min(profile.size(), (size_t) (pa ? std::atoll(pa) : 8700));
+            const size_t at = std::min(profile.size(), (size_t) (o.peer_hot_at > 0 ? o.peer_hot_at : (pa ? std::atoll(pa) : 8700)));
             if (f > 0.0 && f < 1.0 && at > 0) {
                 std::vector<std::pair<int32_t, int32_t>> keep, moved;
                 for (size_t r = 0; r < at; ++r) {
@@ -9272,14 +9278,19 @@ int main(int argc, char** argv) {
             free_b = strata::core::device_free_bytes(); (void) total_b;
             const int64_t want = ((int64_t) o.vram_reserve_mib << 20) + pipe_first;
             if ((int64_t) free_b >= want - (64ll << 20)) break;
-            // short by (want - free); a figure of 0 only says "at least": the first two such reads give back 1 GiB
-            // each (under WDDM the free figure read before the allocation runs ~0.7 GiB high), later ones a quarter
+            // short by (want - free); a figure of 0 only says "at least": the first reads give back 256 MiB
+            // each to avoid over-shrinking on cards where every slot counts (under WDDM the free figure read before
+            // the allocation runs ~0.7 GiB high), later ones a quarter.
             int64_t give = want - (int64_t) free_b + (64ll << 20);
-            if (free_b < ((size_t) 16 << 20))
-                give = std::max<int64_t>(give, ++zero_reads <= 2 ? 1ll << 30 : xcache.bytes() / 4);
+            if (free_b < ((size_t) 16 << 20)) {
+                give = ++zero_reads <= 4 ? (256ll << 20) : xcache.bytes() / 4;
+            } else {
+                give = std::min<int64_t>(give, 256ll << 20);
+            }
             const int64_t keep_bytes = xcache.bytes() - give;
             std::fprintf(stderr, "strata generate: only %lld MiB free once the slots are written (reserve %d MiB); "
-                                 "shrinking the expert cache\n", (long long) (free_b >> 20), o.vram_reserve_mib);
+                                 "shrinking the expert cache by %lld MiB\n", (long long) (free_b >> 20), o.vram_reserve_mib,
+                                 (long long) (give >> 20));
             xcache.close();
             if (!shrink_to(keep_bytes)) break;
         }
@@ -12911,6 +12922,7 @@ int main(int argc, char** argv) {
                     return 1;
                 }
             }
+            if (peer.valid()) ver_b.set_peer(&peer, 1);
             if (!ver_b.init(wt, g, ss, vh, native_head.loaded() ? &native_head : nullptr, o.spec, err)) {
                 std::fprintf(stderr, "strata serve: --pipeline-windows: the second verifier on CUDA0 (the first card): "
                                      "%s (raise --vram-reserve-mib by ~200, or --pipeline-windows 0)\n", err.c_str());
@@ -12926,6 +12938,7 @@ int main(int argc, char** argv) {
         if (use_df2) ver.set_taps(df2.tap_layers());
         if (batch_df2) ver.set_batch_taps(true);
 #endif
+        if (peer.valid()) ver.set_peer(&peer, 0);
         if (!ver.init(wt, g, ss, vh, native_head.loaded() || prefill_head_alias_bound ? &native_head : nullptr,
                       batch_max_t(), err) ||
             (use_mtp && !prefill_head_alias_bound && !mtp.bind(last_st && !mtp_first ? last_st->wt : wt, last_st ? &last_st->head : &native_head,
@@ -12934,6 +12947,13 @@ int main(int argc, char** argv) {
             return 1;
         }
         if (prefill_head_alias_bound) mtp.set_window_R(ver.final_R_all());
+        if (peer.valid()) {
+            peer.set_target_flag(ver.h_flag());
+            peer.bind_verifier_buffers(0, ver.h_seq(), ver.h_flag(), ver.h_x(), ver.h_ids(), ver.h_ymiss());
+            if (pipe) {
+                peer.bind_verifier_buffers(1, ver_b.h_seq(), ver_b.h_flag(), ver_b.h_x(), ver_b.h_ids(), ver_b.h_ymiss());
+            }
+        }
 #if defined(STRATA_HAVE_DFLASH2)
 #if defined(STRATA_HAVE_DFLASH2)
         // DFlash2 prompt taps on a layer split.  Every stage's prompt path taps the requested layers it runs into its own staging and hands them to its
@@ -15514,6 +15534,10 @@ int main(int argc, char** argv) {
             const int64_t slots_primary = (int64_t) xcache.slots();
             const int64_t mib_primary = (int64_t) (xcache.bytes() >> 20);
             int64_t slots_all = slots_primary, mib_all = mib_primary;
+            if (peer.valid()) {
+                slots_all += (int64_t) peer.slots();
+                mib_all += (int64_t) (peer.bytes() >> 20);
+            }
             for (const auto& st : stages) {
                 slots_all += (int64_t) st->cache.slots();
                 mib_all += (int64_t) (st->cache.bytes() >> 20);
@@ -23521,9 +23545,14 @@ int main(int argc, char** argv) {
 #if defined(STRATA_HAVE_DFLASH2)
         if (use_df2) ver.set_taps(df2.tap_layers());
 #endif
+        if (peer.valid()) ver.set_peer(&peer, 0);
         if (!ver.init(wt, g, ss, vh, native_head.loaded() ? &native_head : nullptr, o.spec, err)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
+        }
+        if (peer.valid()) {
+            peer.set_target_flag(ver.h_flag());
+            peer.bind_verifier_buffers(0, ver.h_seq(), ver.h_flag(), ver.h_x(), ver.h_ids(), ver.h_ymiss());
         }
         const bool use_mtp = !o.mtp.empty();
         if (use_mtp && !mtp.bind(wt, &native_head, ver.final_R_all(), err)) {

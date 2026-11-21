@@ -267,7 +267,164 @@ __global__ void scatter_rows_kernel(const float4* __restrict__ src, float4* dst,
     float4* d = dst + (int64_t) rows[r] * w4;
     for (int64_t i = threadIdx.x; i < w4; i += blockDim.x) d[i] = s[i];
 }
+__global__ void scatter_rows_and_signal_kernel(const float4* __restrict__ src, float4* dst, const int32_t* __restrict__ rows,
+                                               int64_t w4, uint32_t* __restrict__ done_ptr, uint32_t val,
+                                               int* __restrict__ d_blocks_finished,
+                                               uint32_t* __restrict__ flag_ptr, uint32_t flag_val) {
+    const int64_t r = blockIdx.x;
+    const float4* s = src + r * w4;
+    float4* d = dst + (int64_t) rows[r] * w4;
+    for (int64_t i = threadIdx.x; i < w4; i += blockDim.x) d[i] = s[i];
+    if (done_ptr != nullptr || flag_ptr != nullptr) {
+        __syncthreads();
+        if (threadIdx.x == 0) {
+            __threadfence_system();
+            if (atomicAdd(d_blocks_finished, 1) == (int) gridDim.x - 1) {
+                *d_blocks_finished = 0;
+                __threadfence_system();
+                if (flag_ptr != nullptr) *flag_ptr = flag_val;
+                if (done_ptr != nullptr) *done_ptr = val;
+            }
+        }
+    }
+}
+__global__ void scatter_rows_and_signal_fixed_kernel(
+    const float4* __restrict__ src, float4* dst, const int32_t* __restrict__ rows,
+    const int32_t* __restrict__ d_count, int64_t w4,
+    int* __restrict__ d_blocks_finished,
+    uint32_t* __restrict__ flag_ptr, uint32_t flag_val) {
+    const int64_t r = blockIdx.x;
+    const int total_rows = d_count != nullptr ? *d_count : (int) gridDim.x;
+    if (r < total_rows) {
+        const float4* s = src + r * w4;
+        float4* d = dst + (int64_t) rows[r] * w4;
+        for (int64_t i = threadIdx.x; i < w4; i += blockDim.x) d[i] = s[i];
+    }
+    if (flag_ptr != nullptr) {
+        __syncthreads();
+        if (threadIdx.x == 0) {
+            __threadfence_system();
+            if (atomicAdd(d_blocks_finished, 1) == (int) gridDim.x - 1) {
+                *d_blocks_finished = 0;
+                __threadfence_system();
+                *flag_ptr = flag_val;
+            }
+        }
+    }
+}
+
+template <int NT>
+__global__ void __launch_bounds__(NT) peer_plan_kernel(
+    const int32_t* __restrict__ ids, int n, int k,
+    const int32_t* __restrict__ res, int n_expert,
+    const uint8_t* cache_base, const unsigned long long* slot_off,
+    long long blob,
+    unsigned long long* __restrict__ grp_ptr,
+    int32_t* __restrict__ grp_start,
+    int32_t* __restrict__ grp_count,
+    int32_t* __restrict__ grp_dst,
+    int32_t* __restrict__ grp_tok,
+    int32_t* __restrict__ grp_out_row) {
+    constexpr int NW = NT / 32;
+    __shared__ int32_t s_ids[NT];
+    __shared__ int32_t s_slot[NT];
+    __shared__ int32_t s_excl[NT];
+    __shared__ int32_t s_wsum[NW];
+    const int tid = threadIdx.x;
+
+    int32_t eid = -1;
+    int32_t slot = -1;
+    if (tid < n) {
+        eid = ids[tid];
+        s_ids[tid] = eid;
+        slot = (eid >= 0 && eid < n_expert) ? res[eid] : -1;
+        s_slot[tid] = slot;
+    } else {
+        s_ids[tid] = -1;
+        s_slot[tid] = -1;
+    }
+    __syncthreads();
+
+    int first_j = tid;
+    int rank_in_group = 0;
+    int count_same = 0;
+    if (tid < n && slot >= 0) {
+        for (int j = 0; j < n; ++j) {
+            if (s_slot[j] >= 0 && s_ids[j] == eid) {
+                if (j < first_j) first_j = j;
+                if (j < tid) ++rank_in_group;
+                ++count_same;
+            }
+        }
+    }
+
+    const bool is_first = (tid < n && slot >= 0 && first_j == tid);
+    const int my_cnt = is_first ? count_same : 0;
+    const int my_pack = (my_cnt << 16) | (is_first ? 1 : 0);
+    const int lane = tid & 31;
+    const int warp = tid >> 5;
+
+    int pref = my_pack;
+#pragma unroll
+    for (int d = 1; d < 32; d <<= 1) {
+        const int up = __shfl_up_sync(0xffffffffu, pref, d);
+        if (lane >= d) pref += up;
+    }
+    s_excl[tid] = pref - my_pack;
+    if (lane == 31) s_wsum[warp] = pref;
+    __syncthreads();
+
+    if (is_first) {
+        int tot = s_excl[tid];
+#pragma unroll
+        for (int w = 0; w < NW; ++w) {
+            if (w < warp) tot += s_wsum[w];
+        }
+        const int grp_idx = tot & 0xffff;
+        const int ent_start = tot >> 16;
+        grp_ptr[grp_idx] = (unsigned long long) (cache_base + (slot_off ? slot_off[slot] : (size_t) slot * (size_t) blob));
+        grp_start[grp_idx] = ent_start;
+    }
+
+    if (tid < n && slot >= 0) {
+        const int fj_warp = first_j >> 5;
+        int fj_tot = s_excl[first_j];
+#pragma unroll
+        for (int w = 0; w < NW; ++w) {
+            if (w < fj_warp) fj_tot += s_wsum[w];
+        }
+        const int out_idx = (fj_tot >> 16) + rank_in_group;
+        grp_dst[out_idx] = out_idx;
+        grp_tok[out_idx] = tid / k;
+        grp_out_row[out_idx] = tid;
+    }
+
+    if (tid == 0) {
+        int groups = 0, entries = 0;
+#pragma unroll
+        for (int w = 0; w < NW; ++w) {
+            groups += (s_wsum[w] & 0xffff);
+            entries += (s_wsum[w] >> 16);
+        }
+        grp_start[groups] = entries;
+        grp_count[0] = groups;
+        grp_count[1] = entries;
+        grp_count[2] = 0;
+        grp_count[3] = 0;
+    }
+}
+__global__ void signal_done_kernel(uint32_t* __restrict__ ptr, uint32_t val) {
+    if (threadIdx.x == 0 && blockIdx.x == 0) {
+        __threadfence_system();
+        *ptr = val;
+    }
+}
 }  // namespace
+void signal_stream_done(uint32_t* d_ptr, uint32_t val, void* stream) {
+    if (d_ptr != nullptr) {
+        signal_done_kernel<<<1, 1, 0, (cudaStream_t) stream>>>(d_ptr, val);
+    }
+}
 void scatter_rows_f32(const float* src, float* dst, const int32_t* rows, int64_t n, int64_t width, void* stream) {
     if (n <= 0) return;
     if ((width & 3) != 0 || ((uintptr_t) dst & 15) != 0 || ((uintptr_t) src & 15) != 0) {
@@ -275,6 +432,37 @@ void scatter_rows_f32(const float* src, float* dst, const int32_t* rows, int64_t
         std::exit(1);
     }
     scatter_rows_kernel<<<(unsigned) n, 128, 0, (cudaStream_t) stream>>>((const float4*) src, (float4*) dst, rows, width / 4);
+}
+void scatter_rows_and_signal_f32(const float* src, float* dst, const int32_t* rows, int64_t n, int64_t width,
+                                 uint32_t* d_done_ptr, uint32_t val, int* d_blocks_finished, void* stream,
+                                 uint32_t* d_flag_ptr, uint32_t flag_val) {
+    if (n <= 0) return;
+    if ((width & 3) != 0 || ((uintptr_t) dst & 15) != 0 || ((uintptr_t) src & 15) != 0) {
+        std::fprintf(stderr, "scatter_rows_and_signal_f32: width must be a multiple of 4 and both pointers 16-byte aligned\n");
+        std::exit(1);
+    }
+    scatter_rows_and_signal_kernel<<<(unsigned) n, 128, 0, (cudaStream_t) stream>>>(
+        (const float4*) src, (float4*) dst, rows, width / 4, d_done_ptr, val, d_blocks_finished, d_flag_ptr, flag_val);
+}
+void scatter_rows_and_signal_fixed_f32(const float* src, float* dst, const int32_t* rows,
+                                       const int32_t* d_count, int64_t cap_entries, int64_t width,
+                                       int* d_blocks_finished, void* stream,
+                                       uint32_t* d_flag_ptr, uint32_t flag_val) {
+    if (cap_entries <= 0) return;
+    if ((width & 3) != 0 || ((uintptr_t) dst & 15) != 0 || ((uintptr_t) src & 15) != 0) {
+        std::fprintf(stderr, "scatter_rows_and_signal_fixed_f32: alignment error\n");
+        std::exit(1);
+    }
+    scatter_rows_and_signal_fixed_kernel<<<(unsigned) cap_entries, 128, 0, (cudaStream_t) stream>>>(
+        (const float4*) src, (float4*) dst, rows, d_count, width / 4, d_blocks_finished, d_flag_ptr, flag_val);
+}
+void peer_plan(const int32_t* ids, int n, int k, const int32_t* res, int n_expert,
+               const uint8_t* cache_base, const unsigned long long* slot_off, long long blob,
+               unsigned long long* grp_ptr, int32_t* grp_start, int32_t* grp_count,
+               int32_t* grp_dst, int32_t* grp_tok, int32_t* grp_out_row, void* stream) {
+    peer_plan_kernel<128><<<1, 128, 0, (cudaStream_t) stream>>>(
+        ids, n, k, res, n_expert, cache_base, slot_off, blob,
+        grp_ptr, grp_start, grp_count, grp_dst, grp_tok, grp_out_row);
 }
 void copy_rows_from_mapped(float* dst, const float* src, int64_t rows, int64_t width, const int32_t* hit_rows,
                            const int32_t* count, void* stream) {

@@ -138,7 +138,8 @@ void copy_rows_strided(float* dst, const float* src, int64_t rows, int64_t w, in
 /// left empty and *plan_err (mapped host memory) is set to 1, so the host sees it instead of running a stale plan.
 void resident_plan(const int32_t* ids, int n_entries, int k, const int32_t* res_layer, int n_expert,
                    const uint8_t* cache_base, const unsigned long long* slot_off, long long blob, int32_t* plan,
-                   long long capx, uint32_t* skip, uint32_t ring, void* stream, uint32_t* plan_err = nullptr);
+                   long long capx, uint32_t* skip, uint32_t ring, void* stream, uint32_t* plan_err = nullptr,
+                   bool allow_partial = false);
 /// wait_flag_ge that also returns when *skip == value (device memory).
 void wait_flag_ge_or(const uint32_t* flag, uint32_t value, const uint32_t* skip, void* stream);
 /// copy_i32_from_mapped unless *skip == value.
