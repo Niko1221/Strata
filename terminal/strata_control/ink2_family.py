@@ -70,6 +70,15 @@ DEFAULT_CONTEXT = 32768                # where nothing larger fits on the card w
 #: the RAM of the offload mode: every expert is kept in RAM (pinned, placed on the NUMA nodes) while the card holds the most used
 RAM_GB = 32
 
+#: The expert offload (--vram-reserve-mib): what the card holds besides the expert pools, from the engine's own "offload: X GiB free" line on an
+#: RTX 3090 (24576 MiB, --chunk 1024, --kv f16, no drafter): 19.41 GiB free at an 8K context, 18.66 at 32K, so 4444 MiB + the K/V.  (--chunk 256
+#: frees 440 MiB more.)  CBA: one card measured; another card's CUDA context moves it by ~100 MiB, and a desktop's own VRAM is not counted
+OFFLOAD_FIXED_MIB = 4444
+OFFLOAD_MARGIN_MIB = 128               # the engine's INK2_OFF_MARGIN_MIB, kept beside the reserve
+#: the least room the pools may have: the engine refuses to start with fewer than 64 slots in either pool (FETCH_MAX), the MXFP8 pool gets 20% of
+#: the room and an MXFP8 expert is 8211456 bytes: 64 x 8211456 / 0.2 bytes = 2506 MiB, rounded up for the 2-decimal GiB of the measurement
+MIN_POOLS_MIB = 2560
+
 
 def resident_need_mib(ctx: int) -> int:
     """VRAM (MiB) the resident mode (every expert on the card, the drafter on) takes at this context."""
@@ -81,11 +90,18 @@ def resident_fits(vram_mib: float, ctx: int, reserve_mib: int = 0) -> bool:
     return resident_need_mib(ctx) + RESIDENT_MARGIN_MIB + reserve_mib <= vram_mib
 
 
+def offload_room_mib(vram_mib: float, ctx: int) -> int:
+    """The VRAM a reserve can take in the offload mode with the expert pools at their minimum; below 0 the engine cannot start at this context."""
+    return int(vram_mib) - OFFLOAD_FIXED_MIB - -(-ctx * kv_bytes_per_token(False) // 2**20) - OFFLOAD_MARGIN_MIB - MIN_POOLS_MIB
+
+
 def recommended_context(vram_mib: float, reserve_mib: int = 0) -> int:
-    """The largest context up to 128K that runs with every expert on the card; DEFAULT_CONTEXT when none does (the experts then share the card,
-    and a longer context takes their room)."""
+    """The largest context up to 128K that runs with every expert on the card.  When none does, the experts share the card and the context takes
+    their room: DEFAULT_CONTEXT where it leaves the pools room beside the reserve, else 8K."""
     fits = [c for c in CONTEXTS if DEFAULT_CONTEXT <= c <= 131072 and resident_fits(vram_mib, c, reserve_mib)]
-    return max(fits) if fits else DEFAULT_CONTEXT
+    if fits:
+        return max(fits)
+    return DEFAULT_CONTEXT if offload_room_mib(vram_mib, DEFAULT_CONTEXT) >= reserve_mib else 8192
 
 
 def engine_args(model_dir: str, ctx: int, vram_mib: float, reserve_mib: int, cpu_threads: int | None) -> list[str]:

@@ -257,7 +257,9 @@ Setup picks how it runs from the card:
 - **Otherwise** (8 to 16 GB cards, or a longer context): the card keeps the most used experts and the others stay in
   RAM (about 32 GB of RAM); the CPU computes the experts a token needs that the card does not hold, one thread per
   physical core of each CPU socket (`--cpu-threads`, AVX2 needed). `--vram-reserve-mib N` keeps N MiB of the card
-  free for other programs (1500 by default on a card that drives a display).
+  free for other programs (1500 by default on a card that drives a display). An 8 GB card is the smallest that runs
+  it: the engine needs about 4.4 GB beside its expert slots, which take 2.5 GB at the least, so such a card gets a
+  32K context, or 8K when it drives a display.
 
 The run config (`strata-inkling2-mini.json`) holds the engine's arguments; they can be edited there.
 

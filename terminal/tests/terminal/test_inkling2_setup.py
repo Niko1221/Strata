@@ -78,6 +78,20 @@ class Args(unittest.TestCase):
         self.assertEqual(no_cpu[no_cpu.index("--vram-reserve-mib") + 1], "1500")
         self.assertNotIn("--cpu-threads", no_cpu)
 
+    def test_the_offload_floor_follows_the_engines_pools(self):
+        src = ENGINE.read_text(encoding="utf-8")
+        self.assertIn("constexpr int FETCH_MAX = 64", src)
+        self.assertIn("(size_t) (budget * 0.2) / MX_BYTES", src)                          # the MXFP8 pool's share of the room
+        self.assertIn("int g_off_margin_mib = 128;", src)
+        self.assertEqual(F.OFFLOAD_MARGIN_MIB, 128)
+        self.assertGreaterEqual(F.MIN_POOLS_MIB * 2**20, 64 * 8211456 / 0.2)               # 64 MXFP8 slots at the least (MX_BYTES)
+        self.assertIn("// 4478976 / 8211456", src)
+        # an 8 GB card: 32K leaves no room for a desktop's reserve, so a card that drives a display gets 8K
+        self.assertEqual(F.recommended_context(8192, 0), 32768)
+        self.assertEqual(F.recommended_context(8192, 1500), 8192)
+        self.assertGreaterEqual(F.offload_room_mib(8192, 8192), 512)
+        self.assertLess(F.offload_room_mib(6144, 8192), 0)                                  # a 6 GB card is too small
+
     def test_a_reserve_or_a_long_context_moves_a_card_to_offload(self):
         self.assertTrue(F.resident_fits(24576, 65536))
         self.assertFalse(F.resident_fits(24576, 131072))

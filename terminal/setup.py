@@ -10047,6 +10047,20 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     if F.resident_fits(vram_mib, ctx, reserve):
         ok("every expert fits on the card: they stay there, with the draft layer (mtp.safetensors) for faster answers")
     else:
+        room = F.offload_room_mib(vram_mib, ctx)       # what a reserve can take with the expert pools at the engine's minimum
+        if room < 0:
+            confirm_risk(f"a {vram_mib / 1024:.0f} GB card is too small for {fam['title']} at a {ctx // 1024}K context: the engine needs about "
+                         f"{-room} MiB more VRAM for its expert pools and would stop at start", bool(a.family), a.yes,
+                         f"the card is too small for {fam['title']} at a {ctx // 1024}K context",
+                         "choose a smaller context (--context 8192), or another model", "  Install it anyway?")
+            warn(f"installing {fam['title']} on a {vram_mib / 1024:.0f} GB card, as you chose")
+        elif reserve > room and a.vram_reserve_mib is None:
+            warn(f"only {room} MiB of VRAM can be kept free for other programs on this card at a {ctx // 1024}K context (not {reserve}): "
+                 "the engine's expert pools need the rest")
+            reserve = room
+        elif reserve > room:
+            warn(f"--vram-reserve-mib {reserve} leaves the engine's expert pools less than they need at a {ctx // 1024}K context (at most "
+                 f"{room} MiB can be kept free): it would stop at start. Kept as you chose")
         ok(f"the card holds the most used experts and the others stay in RAM ({reserve} MiB of VRAM kept free for other programs)")
         if threads:
             ok(f"CPU experts: {threads} threads per CPU socket compute the experts the card does not hold")
@@ -10059,7 +10073,7 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
                          f"--family {family} --yes installs it anyway", "  Install it anyway?")
             warn(f"installing {fam['title']} with {ram:.0f} GB of RAM, as you chose")
         if display and a.vram_reserve_mib is None:
-            say(f"  This card drives a display: {DISPLAY_RESERVE_MIB} MiB of VRAM is kept free for it (--vram-reserve-mib N to change it)")
+            say("  This card drives a display, so VRAM is kept free for it (--vram-reserve-mib N to change how much)")
     if a.vision not in (None, "no", "none"):
         warn(f"images: {fam['title']}'s engine does not read pictures yet; it is set up without them")
     if a.rope_scaling or a.rope_scale or a.kv or a.resident_budget_gib is not None or a.low_ram not in (None, "auto") or getattr(a, "parallel", None):
