@@ -13,7 +13,7 @@ Windows でローカル AI のチャット、エージェント作業、出典�
 <!-- release-062-stable -->
 現在のアプリリリース: [0.6.9](https://github.com/zapabob/Strata/releases/tag/v0.6.9)（アプリ `0.6.9`、Terminal・Control・ネイティブエンジン `0.6.3`）。この Windows アプリ専用リリースは意図的に GitHub Latest ではなく、Latest は `0.6.3` のままです。GPU エンジンは別途署名された [`v0.6.4-preview.1`](https://github.com/zapabob/Strata/releases/tag/v0.6.4-preview.1) コンパニオンです。最大長の推論や一般的なモデル品質は未認定のため、`releaseQualified=false` を明示しています。
 
-[0.7.0](https://github.com/zapabob/Strata/releases/tag/v0.7.0) · [setup EXE](https://github.com/zapabob/Strata/releases/download/v0.7.0/Strata-0.7.0-windows-x64-setup.exe) · [tar.7z](https://github.com/zapabob/Strata/releases/download/v0.7.0/Strata-0.7.0-windows-x64.tar.7z) · [SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.7.0/SHA256SUMS.txt) · [BUNDLE-SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.7.0/BUNDLE-SHA256SUMS.txt)
+[0.7.1](https://github.com/zapabob/Strata/releases/tag/v0.7.1) · [setup EXE](https://github.com/zapabob/Strata/releases/download/v0.7.1/Strata-0.7.1-windows-x64-setup.exe) · [tar.7z](https://github.com/zapabob/Strata/releases/download/v0.7.1/Strata-0.7.1-windows-x64.tar.7z) · [SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.7.1/SHA256SUMS.txt) · [BUNDLE-SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.7.1/BUNDLE-SHA256SUMS.txt)
 
 ![Hakua / Strata real-model Japanese chat on Qwen3.8-27B](docs/media/native-qwen38-japanese-chat.png)
 *`strata-q38.exe` で `qwen3.8-27b-abliterated-3.69bpw-12GB-MTP.gguf` を実行している実環境スクリーンショット（CUDA 13 / RTX 5060 Ti 16 GB）。*
