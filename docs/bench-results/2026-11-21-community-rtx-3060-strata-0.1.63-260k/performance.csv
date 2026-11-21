@@ -1,0 +1,5 @@
+configured_context_tokens,nominal_long_input_tokens,actual_long_speed_prompt_tokens,actual_long_recall_prompt_tokens,official_4k_prefill_tps_median,official_16k_prefill_tps_median,official_16k_decode_tps_median,official_sanity_passed,official_sanity_total,long_prefill_tps_median,long_decode_tps_median,long_ttft_s_median,long_recall_passed,long_recall_total,long_completed_cases,long_capped_cases,official_run_dir,long_run_dir
+32768,32000,32051,30510,780.26,1378.02,46.8,12,12,1422.1,49.3,22.5746,2,2,5,0,20261121T005133Z-32k-off-unlock-on,20261121T014449Z-32k-long-context-thinking-xhigh-unlock-on
+65536,64000,64044,63262,775.25,1319.36,46.54,12,12,1386.9,49.6,46.226,2,2,5,0,20261121T012605Z-64k-off-unlock-on,20261121T015223Z-64k-long-context-thinking-xhigh-unlock-on
+131072,128000,128030,128030,772.85,1319.6,45.73,12,12,1308.1,47.8,97.9536,2,2,5,0,20261121T015638Z-128k-off-unlock-on,20261121T020415Z-128k-long-context-thinking-xhigh-unlock-on
+262144,260000,260050,259889,757.19,1310.72,46.08,12,12,1160.3,42.8,224.2485,2,2,5,0,20261121T021253Z-262k-off-unlock-on,20261121T022046Z-262k-long-context-thinking-xhigh-unlock-on
