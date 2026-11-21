@@ -71,6 +71,7 @@
         "STRATA_ENABLE_HIP": "OFF",
         "STRATA_ENABLE_SYCL": "OFF",
         "STRATA_NATIVE_EXPERTS": "ON",
+        "STRATA_PORTABLE": "ON",
         "STRATA_BUILD_SPLIT": "OFF",
         "STRATA_BUILD_TESTS": "OFF",
         "STRATA_BUILD_CONVERSATION_TESTS": "OFF"
@@ -94,7 +95,11 @@
     {
       "name": "hip-gfx90a-tests",
       "configurePreset": "hip-gfx90a-tests",
-      "targets": ["strata", "strata-device", "hip_device_policy_test", "gfx90a_intrinsics", "gfx90a_mfma_parity", "gfx90a_mmvq_parity", "gfx90a_expert_parity", "router_top10_parity"],
+      "targets": [
+        "strata", "strata-device", "hip_device_policy_test",
+        "gfx90a_intrinsics", "gfx90a_mfma_parity", "gfx90a_mmvq_parity", "gfx90a_expert_parity",
+        "router_top10_parity", "gdn_parity", "gdn_chunk_parity", "qsa_parity", "qsa_scores_parity"
+      ],
       "jobs": 0
     }
   ],
@@ -113,7 +118,7 @@
     {
       "name": "hip-gfx90a-tests",
       "configurePreset": "hip-gfx90a-tests",
-      "filter": { "include": { "name": "^(hip_device_policy_test|gfx90a_intrinsics|gfx90a_mfma_parity|gfx90a_mmvq_parity|gfx90a_expert_parity|router_top10_parity|gfx90a_device_selftest)$" } },
+      "filter": { "include": { "name": "^(hip_device_policy_test|gfx90a_intrinsics|gfx90a_mfma_parity|gfx90a_mmvq_parity|gfx90a_expert_parity|router_top10_parity|gdn_parity|gdn_chunk_parity|qsa_parity|qsa_scores_parity|gfx90a_device_selftest)$" } },
       "output": { "outputOnFailure": true },
       "execution": { "timeout": 1800, "noTestsAction": "error", "jobs": 1 }
     }

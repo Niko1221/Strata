@@ -633,9 +633,9 @@ cmake --build --preset hip-gfx90a-m1
 ./build/hip-gfx90a-m1/strata-device --list-devices
 ```
 
-The selected device must report `gfx90a` and a wave size of 64. On a host with several GPUs, use `HIP_VISIBLE_DEVICES` or the engine's `--gpu` option to select the MI210. Use a fresh build directory when switching from another backend.
+The selected device must report `gfx90a` and a wave size of 64. On a host with several GPUs, use `HIP_VISIBLE_DEVICES` or the engine's `--gpu` option to select the MI210. Use a fresh build directory when switching from another backend. On x86-64, the gfx90a presets use the portable AVX2 CPU baseline. Pass `-DSTRATA_PORTABLE=OFF` to build for the host CPU instead.
 
-The `hip-gfx90a-tests` configure and build presets also compile the device policy, intrinsics, MFMA instruction, MMVQ, expert and router checks. Run `ctest --preset hip-gfx90a-tests` on the target GPU and report each required test's execution status. A skipped GPU test leaves that part of the hardware validation open. Full model inference and production MFMA performance require separate MI210 validation.
+The `hip-gfx90a-tests` configure and build presets also compile the device policy, intrinsics, MFMA instruction, MMVQ, expert, router, GDN, and QSA checks. The device self-test reads back the GPU-filled arena and compares a small host-to-device-to-host copy. Run `ctest --preset hip-gfx90a-tests` on the target GPU and record each test's result, including skips. `gdn_chunk_parity` may skip if the device provides less than 66,048 bytes of shared memory per block. Full model inference and production MFMA performance require separate MI210 validation.
 
 ## Tuning table
 

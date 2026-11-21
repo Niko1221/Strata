@@ -120,9 +120,9 @@ bool device_summary(int ordinal, std::string& name, std::string& detail) {
     }
 #if defined(STRATA_HIP_GFX90A)
     char buf[512];
-    std::snprintf(buf, sizeof(buf), "HIP arch %s (raw %s), %.1f GiB, wave%d, compiled for %s, Experimental",
-                  hip_base_arch(p.gcnArchName).c_str(), p.gcnArchName,
-                  (double) p.totalGlobalMem / (1024.0 * 1024 * 1024), p.warpSize, compiled_gpu_archs());
+    std::snprintf(buf, sizeof(buf), "arch %s, %.1f GiB, wave%d (raw %s, compiled for %s, Experimental)",
+                  hip_base_arch(p.gcnArchName).c_str(), (double) p.totalGlobalMem / (1024.0 * 1024 * 1024),
+                  p.warpSize, p.gcnArchName, compiled_gpu_archs());
 #else
     char buf[160];
 #if defined(STRATA_USE_HIP)

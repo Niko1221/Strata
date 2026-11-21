@@ -171,7 +171,8 @@ jobs:
           build="$PWD/engine/build/hip-gfx90a-tests"
           mkdir -p "$build/checks"
           cd "$build/checks"
-          for target in strata strata-device gfx90a_intrinsics gfx90a_mfma_parity gfx90a_mmvq_parity gfx90a_expert_parity router_top10_parity; do
+          for target in strata strata-device gfx90a_intrinsics gfx90a_mfma_parity gfx90a_mmvq_parity gfx90a_expert_parity \
+            router_top10_parity gdn_parity gdn_chunk_parity qsa_parity qsa_scores_parity; do
             readelf -d "$build/$target" > "$build/checks/$target.dynamic.txt"
             if grep -Ei 'NEEDED.*lib(cuda|cudart|cublas)' "$build/checks/$target.dynamic.txt"; then
               echo "$target unexpectedly links a CUDA library" >&2
