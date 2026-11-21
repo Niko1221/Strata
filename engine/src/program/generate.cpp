@@ -1107,6 +1107,10 @@ struct Options {
     int64_t prompt_cache_every = 16384;
     bool prompt_cache_tail = false;   // optional extra checkpoint at an existing near-tail chunk boundary
     bool prompt_cache_spread = false;   ///< --prompt-cache-spread: keep checkpoints spread back from the end, not the latest
+    /// --serve: skip an automatic checkpoint (a turn boundary, a message boundary, the near-tail one) less than N tokens
+    /// from the deepest checkpoint the session keeps - the copy would serve almost the same prefix.  The root, an explicit
+    /// pin and the periodic grid (--prompt-cache-every) are exempt.  0 = keep every checkpoint, as before.
+    int64_t prompt_cache_min_gap = 0;
     /// --serve: a prompt read from token 0 is also checkpointed at its first turn boundary - the end of the system
     /// prompt, which every chat of the same client shares - when that is at least N tokens (0 = never)
     int64_t prompt_cache_root = 2048;
@@ -1308,6 +1312,9 @@ void usage() {
                  "                       (stage 0 runs the next window while stage 1 verifies this one); docs/MULTI_GPU.md\n"
                  "  --trim-stage-weights a layer split (the default): each GPU loads only its own layers' dense weights\n"
                  "  --prompt-cache-every N  --serve: also checkpoint every N fresh prompt tokens (default 16384, 0 = off)\n"
+                 "  --prompt-cache-min-gap N  --serve: skip a turn, message or near-tail checkpoint less than N tokens from\n"
+                 "                       the deepest one kept (default 0 = keep all; the root, a pin and the\n"
+                 "                       --prompt-cache-every grid are exempt)\n"
                  "  --prompt-cache-tail  --serve, single GPU: one extra checkpoint near the prompt's end, at an existing\n"
                  "                       chunk boundary (default off; requires --prompt-cache and --prompt-cache-every > 0)\n"
                  "  --prompt-cache-spread  --serve: keep the checkpoints spread back from the conversation's end (dense\n"
@@ -4020,6 +4027,16 @@ int main(int argc, char** argv) {
         else if (a == "--prompt-cache-tail") o.prompt_cache_tail = true;
         else if (a == "--prompt-cache-spread") o.prompt_cache_spread = true;
         else if (a == "--prompt-cache-every") o.prompt_cache_every = std::max(0LL, std::atoll(next("--prompt-cache-every")));
+        else if (a == "--prompt-cache-min-gap") {   // (a negative value is 0 = off; junk, a flag and overflow are refused)
+            const std::string value = next("--prompt-cache-min-gap");
+            int64_t number = 0;
+            const auto result = std::from_chars(value.data(), value.data() + value.size(), number);
+            if (result.ec != std::errc{} || result.ptr != value.data() + value.size()) {
+                std::fprintf(stderr, "%s needs an integer\n", a.c_str());
+                return 2;
+            }
+            o.prompt_cache_min_gap = std::max<int64_t>(0, number);
+        }
         else if (a == "--prompt-cache-root") o.prompt_cache_root = std::max(0LL, std::atoll(next("--prompt-cache-root")));
         else if (a == "--turn-token") o.turn_token = std::atoll(next("--turn-token"));
         else if (a == "--tail-role-token") o.tail_role_token = std::atoll(next("--tail-role-token"));
@@ -13273,6 +13290,12 @@ int main(int argc, char** argv) {
         CheckpointPool ckpt_pool(ckpt_pool_env() || slot_ckpt_move_env(), ckpt_pool_cap_env());
         uint64_t check_clock = 0;   // the checkpoints' LRU clock; creation and every use advance it
         int64_t tail_ckpt_len = -1;   // --prompt-cache-tail: the length of the one tail checkpoint alive (-1 = none)
+        // --prompt-cache-min-gap: the last turn boundary whose checkpoint it skipped (-1 = none).  The next request
+        // restores from an older checkpoint, but the branch past this boundary is still only the reply it replaces -
+        // the park decision below needs the boundary to see that (reply_branch.hpp).  It belongs STRICTLY to the live
+        // branch it was set on: every swap, restore, reset or rollback of that branch clears it (the seams below), so a
+        // restored file's shallow chain is never judged by another conversation's boundary
+        int64_t gap_skipped_turn = -1;
         // --prefill-pipe: the plan of the prompt segment being read (read_part sets it around its runs), for the
         // checkpoints taken inside it
         ConvCheckpoint::PromptPlan seg_plan;
@@ -13977,10 +14000,12 @@ int main(int argc, char** argv) {
         std::map<int64_t, std::vector<ConvCheckpoint>> part_at;   // position -> one part per stage
         std::vector<int64_t> part_next(stages.size() + 1, INT64_MAX);
         // a checkpoint of the state after `cur[0, L)`; false only when the copy itself failed.  `parts`: the stages'
-        // states saved at L (a split's mid-prompt checkpoint); without, they are read now (everything is at L)
+        // states saved at L (a split's mid-prompt checkpoint); without, they are read now (everything is at L).
+        // `gap_exempt`: --prompt-cache-min-gap does not apply to this one (the root, a pin, the periodic grid)
         // #613: why the last checkpoint_at failed - a failed device sync is the GPU itself (a hang Windows then resets),
         // not the checkpoint, and the error says so
         std::string ckpt_why;
+        bool ckpt_gap_skipped = false;   // the last checkpoint_at skipped its checkpoint for --prompt-cache-min-gap
         // STRATA_TRACE: what each checkpoint cost - the device syncs, the copies into RAM (the vectors' first fill
         // included), the eviction that frees one - one line per checkpoint; with the prompt's read parts summed per
         // request for a batch admission's line (below, at BADM)
@@ -13997,8 +14022,10 @@ int main(int argc, char** argv) {
             return false;
         };
         StageThreads ckpt_threads;   // STRATA_CKPT_THREADS: the later stages' parts of a checkpoint (started on first use)
-        auto checkpoint_at = [&](int64_t L, std::vector<ConvCheckpoint>* parts = nullptr, bool as_tail = false) -> bool {
+        auto checkpoint_at = [&](int64_t L, std::vector<ConvCheckpoint>* parts = nullptr, bool as_tail = false,
+                                 bool gap_exempt = false) -> bool {
             ckpt_why.clear();
+            ckpt_gap_skipped = false;
             if (o.prompt_cache <= 0 || L < 1) return true;
             for (ConvCheckpoint& c : checks)
                 if ((int64_t) c.ids.size() == L) {
@@ -14006,6 +14033,14 @@ int main(int argc, char** argv) {
                     if (!as_tail && L == tail_ckpt_len) tail_ckpt_len = -1;   // a periodic one lands here: a normal item now
                     return true;
                 }
+            // --prompt-cache-min-gap: the deepest checkpoint still kept is the point this one extends (the chain is
+            // nested prefixes).  Too close to it, the copy serves almost the same prefix: skip it, not an error
+            int64_t last_len = -1;
+            for (const ConvCheckpoint& k : checks) last_len = std::max<int64_t>(last_len, (int64_t) k.ids.size());
+            if (strata::program::conv_cache::checkpoint_gap_skip(L, last_len, o.prompt_cache_min_gap, gap_exempt)) {
+                ckpt_gap_skipped = true;
+                return true;
+            }
             ConvCheckpoint c = parts == nullptr ? ckpt_pool.take() : ConvCheckpoint{};   // (STRATA_CKPT_POOL)
             if (parts == nullptr && ckpt_pool.on()) (c.gdn.empty() ? ck_fresh : ck_from_pool)++;
             if (parts == nullptr) pool_topup();   // the next save finds one ready (between requests only)
@@ -14241,9 +14276,10 @@ int main(int argc, char** argv) {
                     }
                     bool complete = parts.size() == stages.size() + 1;
                     for (const ConvCheckpoint& k : parts) complete = complete && !k.gdn.empty();
-                    saved = !complete || checkpoint_at(done, &parts);   // an incomplete set: no checkpoint here
+                    // an incomplete set: no checkpoint here.  The periodic grid is exempt from --prompt-cache-min-gap
+                    saved = !complete || checkpoint_at(done, &parts, false, true);
                 } else {
-                    saved = checkpoint_at(done, nullptr, tail_checkpoint && !periodic_checkpoint);
+                    saved = checkpoint_at(done, nullptr, tail_checkpoint && !periodic_checkpoint, periodic_checkpoint);
                 }
                 if (!saved) {
                     // #3350: only a GPU that is unwell ends the request; a copy that ran out of memory skips this checkpoint
@@ -17959,6 +17995,7 @@ int main(int argc, char** argv) {
                     checks = std::move(image.checkpoints);
                     for (const ConvCheckpoint& c : checks) check_clock = std::max(check_clock, c.used);
                     cvec_cached = image.cvec;
+                    gap_skipped_turn = -1;   // the marker was the outgoing branch's; this file's chain knows nothing of it
                     live_ok = true;
                     if (nan_flush) {   // #879: the file replaced the poisoned session; the parked ones go (no slots here)
                         nan_flush = false;
@@ -18417,6 +18454,7 @@ int main(int argc, char** argv) {
                 live_ok = false;
                 checks.clear();
                 tail_ckpt_len = -1;
+                gap_skipped_turn = -1;
                 const size_t n_parked = conversations.clear() + spill_clear();   // (the SSD tier's and the writer's too)
                 size_t n_slots = 0, n_running = 0;
                 for (BSlot& sl : bs)
@@ -18858,6 +18896,7 @@ int main(int argc, char** argv) {
             // this request's path that the next park drops as superseded (reply_branch.hpp).  A real switch (another
             // conversation, a parked one coming back, a batch slot, a borrow, another cvec) parks as before.
             bool reply_replaced = false;
+            int64_t replaced_at = resume;   // the boundary the rule found: the resume point, or the turn one min-gap skipped
             if (!from_live && !incoming && !borrow && slot_source < 0 && lent_slot < 0 && live_ok && !pin_sibling &&
                 want_cvec == cvec_cached && resume > 0) {
                 std::vector<int64_t> live_pictures;
@@ -18868,11 +18907,23 @@ int main(int argc, char** argv) {
                         reply_replaced = true;
                         break;
                     }
+                // --prompt-cache-min-gap skipped the turn checkpoint this request would have resumed from, so it restores
+                // from an older one and the loop above finds nothing.  The branch past that skipped boundary is still only
+                // the reply this prompt replaces: ask the rule about it (it compares the tokens below it, the role token
+                // and the live pictures), comparing the pictures below it here.  The restore stays at `resume`.
+                if (!reply_replaced && gap_skipped_turn > resume &&
+                    imgs_below(req_imgs, gap_skipped_turn) == imgs_below(live_imgs, gap_skipped_turn) &&
+                    strata::program::live_tail_is_replaced_reply(live, ids, gap_skipped_turn, o.turn_token, live_pictures)) {
+                    reply_replaced = true;
+                    replaced_at = gap_skipped_turn;
+                }
             }
             if (reply_replaced)
                 std::fprintf(stderr, "strata serve: conversation cache: the reply this request replaces is not parked (%lld "
-                                     "tokens past the turn checkpoint at %lld)\n", (long long) ((int64_t) live.size() - resume),
-                             (long long) resume);
+                                     "tokens past the turn %s at %lld)\n",
+                             (long long) ((int64_t) live.size() - replaced_at),
+                             replaced_at == resume ? "checkpoint" : "boundary (min-gap skipped its checkpoint)",
+                             (long long) replaced_at);
             // --conversation-cache-park-gain N: a park now would supersede the entry parked_prefix_tokens() reports (the copy
             // this conversation wrote last), so a conversation that advanced fewer than N tokens since then keeps it:
             // it still holds this conversation's prefix, and re-parking writes the whole snapshot only for the next
@@ -18954,10 +19005,12 @@ int main(int argc, char** argv) {
                     live.clear();
                     live_imgs.clear();
                     checks.clear();
+                    gap_skipped_turn = -1;
                     resume = 0;
                     from_live = false;
                 } else {
                     checks.clear();   // the main session's checkpoints were of the conversation it held before
+                    gap_skipped_turn = -1;   // (the skipped turn boundary was that conversation's)
                     // a read that gave way, the same request again (into its own slot): on with it - its segments and
                     // checkpoints as if it had not stopped
                     if (slot_ck == nullptr && bs[(size_t) slot_source].partial && admit_slot == slot_source) {
@@ -19060,6 +19113,7 @@ int main(int argc, char** argv) {
                 for (const ConvCheckpoint& c : checks)
                     if ((int64_t) c.ids.size() == parked.tokens) { live = c.ids; live_imgs = c.imgs; }
                 cvec_cached = donor->cvec;
+                gap_skipped_turn = -1;   // the donor's branch replaces the one the marker was set on
                 resume = parked.tokens;
                 from_live = false;
                 conversations.count_borrow();
@@ -19114,6 +19168,7 @@ int main(int argc, char** argv) {
                     if (!strata::core::conversation_checkpoints_merge(std::move(cs), checks)) checks.clear();
                 }
                 cvec_cached = incoming->cvec;
+                gap_skipped_turn = -1;   // the parked conversation's branch replaces the one the marker was set on
                 resume = taken.tokens;   // (parked.tokens unless the image came from the SSD tier)
                 from_live = taken.live;
                 if (std::getenv("STRATA_SNAPSHOT_FULL_CAPTURE") == nullptr) {
@@ -19131,6 +19186,7 @@ int main(int argc, char** argv) {
             if (want_cvec != cvec_cached) {
                 live_ok = false;
                 checks.clear();
+                gap_skipped_turn = -1;
                 cvec_cached = want_cvec;
             }
             if (strata::kernels::cvec().loaded()) strata::kernels::cvec_set_enabled(want_cvec);
@@ -19144,6 +19200,11 @@ int main(int argc, char** argv) {
             else
                 checks.erase(std::remove_if(checks.begin(), checks.end(), off_path), checks.end());
             live_ok = false;   // until this request has finished, the session is in between
+            // the centralized backstop: the marker belongs to the branch THIS request reads (its turn boundary sets a
+            // new one below), so any rewind, restore or reset above that was missed leaves no stale boundary behind.
+            // The one read that keeps it: the whole live session reused past the boundary (the thinking-budget
+            // continuation), which finds no new turn boundary to set it again
+            if (!strata::program::conv_cache::gap_marker_keep(from_live, resume, gap_skipped_turn)) gap_skipped_turn = -1;
             // the elastic K/V: the outgoing session is parked and this request rewrites every cell from `resume` on,
             // so cells past this prompt's are no longer anyone's - far more than it needs go back to the cache
             if (kvg.on) {
@@ -20681,8 +20742,10 @@ int main(int argc, char** argv) {
                     break;
                 }
                 at = to;
+                // the tail kind leaves first; the root and an explicit pin are exempt from --prompt-cache-min-gap
                 if ((to == turn_at || to == root_at || to == message_at || to == pin_at) &&
-                    !checkpoint_at(to, nullptr, to == message_at && to != turn_at && to != root_at && to != pin_at)) {   // the tail kind leaves first
+                    !checkpoint_at(to, nullptr, to == message_at && to != turn_at && to != root_at && to != pin_at,
+                                   to == root_at || to == pin_at)) {
                     if (!ckpt_why.empty() || !checkpoint_failure_is_survivable()) {   // #3350: only an unwell GPU ends the request
                         std::printf("ERR saving a conversation checkpoint failed%s\n", ckpt_why.c_str());
                         return 1;
@@ -20690,11 +20753,19 @@ int main(int argc, char** argv) {
                     std::fprintf(stderr, "strata serve: checkpoint at %lld skipped: its state could not be copied out (see "
                                          "above); the request goes on without it\n", (long long) to);
                 }
+                // --prompt-cache-min-gap: remember a turn boundary whose checkpoint it skipped for the next request's
+                // park decision; one whose checkpoint was kept needs no memory (it is there to resume from)
+                if (to == turn_at) gap_skipped_turn = ckpt_gap_skipped ? to : -1;
                 if (to == pin_at && !pin_checkpoint(pin_at))
                     std::fprintf(stderr, "strata serve: pin=%lld: its checkpoint was not kept\n", (long long) pin_at);
-                if (trace && to == message_at)
-                    std::fprintf(stderr, "strata serve: message boundary checkpoint: %lld tokens, %lld tail\n",
-                                 (long long) message_at, (long long) (turn_at - message_at));
+                if (trace && to == message_at) {   // only a checkpoint that is there is reported (min-gap may have skipped it)
+                    bool kept = false;
+                    for (const ConvCheckpoint& c : checks)
+                        if ((int64_t) c.ids.size() == message_at) kept = true;
+                    if (kept)
+                        std::fprintf(stderr, "strata serve: message boundary checkpoint: %lld tokens, %lld tail\n",
+                                     (long long) message_at, (long long) (turn_at - message_at));
+                }
             }
             if (!refill(err)) {
                 std::printf("ERR refilling a lent slot failed: %s\n", err.c_str());

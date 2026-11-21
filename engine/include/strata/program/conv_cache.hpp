@@ -134,4 +134,28 @@ inline size_t spread_victim(const int64_t* lens, const uint64_t* stamps, size_t 
     return eviction_victim(stamps, n, cap, tail, pinned);
 }
 
+/// --prompt-cache-min-gap N: whether an automatic checkpoint at `L` tokens is too close to the deepest one the session
+/// still keeps (`last_len`; -1 when it keeps none) to be worth its copy.  The kept checkpoints are a chain of prefixes,
+/// so the deepest is the point a new one extends: a turn that grew by a few hundred tokens would copy the whole state
+/// again to serve almost the same prefix.  A distance of `gap` or more keeps it.  `exempt`: the root, an explicit pin
+/// and the periodic grid, whose spacing --prompt-cache-every owns.  `gap <= 0` is off, the previous behaviour.  Pure, so
+/// conv_cache_test.cpp walks the cases; a checkpoint is an optimization, so skipping one cannot change a token.
+inline bool checkpoint_gap_skip(int64_t L, int64_t last_len, int64_t gap, bool exempt) {
+    if (exempt || gap <= 0 || last_len < 0) return false;
+    const int64_t d = L >= last_len ? L - last_len : last_len - L;
+    return d < gap;
+}
+
+/// --prompt-cache-min-gap: whether the turn boundary whose checkpoint was skipped (`marker`; -1 when none) still belongs
+/// to the branch this request reads, so it may be kept for the next request's park decision.  Only a read that reuses the
+/// WHOLE live session (`from_live`) and whose reused range already runs past the boundary (`resume > marker`) keeps it:
+/// the thinking-budget continuation sends the previous prompt plus what was generated plus a wrap-up, so it finds no new
+/// turn boundary and nothing would set the marker again, while the reply it goes on writing is still the one a later
+/// regenerate replaces.  Every other read drops it - a checkpoint restore, a rewind, a read from token 0, and the
+/// slot/borrow/incoming swaps (those clear it at their own seam).  Pure, so conv_cache_test.cpp walks the cases; it
+/// decides only whether a replaced reply is parked, never which tokens are read.
+inline bool gap_marker_keep(bool from_live, int64_t resume, int64_t marker) {
+    return from_live && marker >= 0 && resume > marker;
+}
+
 }  // namespace strata::program::conv_cache
