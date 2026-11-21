@@ -202,7 +202,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 14935,
+     "line": 14956,
      "backend": "cuda-hip",
      "fn": "a_env"
     }
@@ -235,7 +235,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 14934,
+     "line": 14955,
      "backend": "cuda-hip",
      "fn": "a_env"
     }
@@ -268,7 +268,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 8666,
+     "line": 8687,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -282,8 +282,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1135",
-    "docs/DETAILS.md:1593",
+    "docs/DETAILS.md:1136",
+    "docs/DETAILS.md:1594",
     "docs/bench-results/2026-10-11-rtx-5090-callback-affinity/README.md:46"
    ],
    "first_commit": "4058aa782b",
@@ -305,13 +305,13 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 14598,
+     "line": 14619,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 23610,
+     "line": 23631,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -404,7 +404,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1184"
+    "docs/DETAILS.md:1185"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -425,13 +425,13 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 14425,
+     "line": 14446,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 23599,
+     "line": 23620,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -445,7 +445,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1184"
+    "docs/DETAILS.md:1185"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -466,13 +466,13 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 14424,
+     "line": 14445,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 23598,
+     "line": 23619,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -486,7 +486,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1184"
+    "docs/DETAILS.md:1185"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -507,7 +507,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 23600,
+     "line": 23621,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -521,7 +521,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1184"
+    "docs/DETAILS.md:1185"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -563,7 +563,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1364"
+    "docs/DETAILS.md:1365"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -618,13 +618,13 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1182",
-    "docs/DETAILS.md:1183",
-    "docs/DETAILS.md:1407",
-    "docs/DETAILS.md:1408",
-    "docs/DETAILS.md:1412",
-    "docs/DETAILS.md:1638",
     "docs/OLDER_GPUS.md:150",
+    "docs/DETAILS.md:1183",
+    "docs/DETAILS.md:1184",
+    "docs/DETAILS.md:1408",
+    "docs/DETAILS.md:1409",
+    "docs/DETAILS.md:1413",
+    "docs/DETAILS.md:1639",
     "docs/bench-results/2026-10-05-community-e5-2673v3-rtx-4060ti/README.md:56",
     "docs/bench-results/2026-10-09-community-rtx-5080-4060ti-0.1.41/README.md:40"
    ],
@@ -675,12 +675,12 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1182",
-    "docs/DETAILS.md:1407",
-    "docs/DETAILS.md:1408",
-    "docs/DETAILS.md:1412",
-    "docs/DETAILS.md:1413",
     "docs/OLDER_GPUS.md:150",
+    "docs/DETAILS.md:1183",
+    "docs/DETAILS.md:1408",
+    "docs/DETAILS.md:1409",
+    "docs/DETAILS.md:1413",
+    "docs/DETAILS.md:1414",
     "docs/bench-results/2026-10-04-community-rtx-5070ti-windows/README.md:113",
     "docs/bench-results/2026-10-04-community-rx-6800-windows/README.md:104",
     "docs/bench-results/2026-10-04-community-rx-7900-gre/README.md:55",
@@ -711,7 +711,7 @@
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 14523,
+     "line": 14544,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -725,11 +725,11 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1182",
-    "docs/DETAILS.md:1184",
-    "docs/DETAILS.md:1412",
-    "docs/DETAILS.md:1639",
-    "docs/OLDER_GPUS.md:260"
+    "docs/OLDER_GPUS.md:260",
+    "docs/DETAILS.md:1183",
+    "docs/DETAILS.md:1185",
+    "docs/DETAILS.md:1413",
+    "docs/DETAILS.md:1640"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -750,13 +750,13 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 14473,
+     "line": 14494,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 14474,
+     "line": 14495,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -789,7 +789,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 14768,
+     "line": 14789,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -822,7 +822,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 14933,
+     "line": 14954,
      "backend": "cuda-hip",
      "fn": "a_env"
     }
@@ -855,7 +855,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 14489,
+     "line": 14510,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -869,7 +869,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1136"
+    "docs/DETAILS.md:1137"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -962,7 +962,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 8303,
+     "line": 8324,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -976,7 +976,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:826"
+    "docs/DETAILS.md:827"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -1011,7 +1011,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:805"
+    "docs/DETAILS.md:806"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -1178,8 +1178,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:288",
-    "docs/DETAILS.md:1585",
+    "docs/DETAILS.md:289",
+    "docs/DETAILS.md:1586",
     "docs/bench-results/2026-10-03-community-2x-mi50/README.md:52",
     "docs/bench-results/2026-10-03-community-2x-mi50/README.md:69"
    ],
@@ -1251,13 +1251,13 @@
    "doc_mentions": [
     "docs/AMD_HIP.md:472",
     "docs/BATCHING.md:360",
-    "docs/DETAILS.md:294",
-    "docs/DETAILS.md:297",
     "docs/MULTI_GPU.md:164",
     "docs/PREFILL_HEAD_ALIAS.md:135",
     "docs/SECOND_GPU.md:24",
     "docs/STRIX_HALO.md:42",
     "docs/STRIX_HALO.md:179",
+    "docs/DETAILS.md:295",
+    "docs/DETAILS.md:298",
     "docs/bench-results/2026-10-11-community-rtx3090-5600x-arena-pin-by-need/README.md:8"
    ],
    "first_commit": "4058aa782b",
@@ -1279,7 +1279,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 8301,
+     "line": 8322,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -1326,7 +1326,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:804"
+    "docs/DETAILS.md:805"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -1348,13 +1348,13 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 10552,
+     "line": 10573,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 10552,
+     "line": 10573,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -1460,7 +1460,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1541"
+    "docs/DETAILS.md:1542"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -1604,13 +1604,13 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1216",
-    "docs/DETAILS.md:1407",
-    "docs/DETAILS.md:1409",
-    "docs/DETAILS.md:1410",
-    "docs/DETAILS.md:1629",
     "docs/DGX_SPARK_LINUX.md:120",
-    "docs/DGX_SPARK_LINUX.md:123"
+    "docs/DGX_SPARK_LINUX.md:123",
+    "docs/DETAILS.md:1217",
+    "docs/DETAILS.md:1408",
+    "docs/DETAILS.md:1410",
+    "docs/DETAILS.md:1411",
+    "docs/DETAILS.md:1630"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -1891,7 +1891,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1263"
+    "docs/DETAILS.md:1264"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -1912,7 +1912,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 9091,
+     "line": 9112,
      "backend": "cuda",
      "fn": "getenv"
     }
@@ -1965,7 +1965,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1360"
+    "docs/DETAILS.md:1361"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -2000,7 +2000,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1365",
+    "docs/DETAILS.md:1366",
     "docs/bench-results/2026-10-08-community-2x-rtx3080-20gb-ud-q4-k-xl-512k-pool/README.md:341"
    ],
    "first_commit": "4058aa782b",
@@ -2049,11 +2049,11 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1220",
-    "docs/DETAILS.md:1407",
+    "docs/OLDER_GPUS.md:150",
+    "docs/DETAILS.md:1221",
     "docs/DETAILS.md:1408",
-    "docs/DETAILS.md:1629",
-    "docs/OLDER_GPUS.md:150"
+    "docs/DETAILS.md:1409",
+    "docs/DETAILS.md:1630"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -2124,7 +2124,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 19974,
+     "line": 19995,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -2158,7 +2158,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 19818,
+     "line": 19839,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -2204,7 +2204,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 7541,
+     "line": 7562,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -2237,7 +2237,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 16047,
+     "line": 16068,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -2270,7 +2270,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 16049,
+     "line": 16070,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -2303,7 +2303,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 16048,
+     "line": 16069,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -2425,7 +2425,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 7528,
+     "line": 7549,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -2465,7 +2465,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 7553,
+     "line": 7574,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -2518,7 +2518,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 7524,
+     "line": 7545,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -2560,7 +2560,7 @@
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 7837,
+     "line": 7858,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -2637,7 +2637,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 16068,
+     "line": 16089,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -2670,7 +2670,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 20038,
+     "line": 20059,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -2942,7 +2942,6 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1267",
     "docs/NVIDIA_V100.md:41",
     "docs/OLDER_GPUS.md:28",
     "docs/OLDER_GPUS.md:128",
@@ -2950,7 +2949,8 @@
     "docs/OLDER_GPUS.md:278",
     "docs/OLDER_GPUS.md:290",
     "docs/OLDER_GPUS.md:296",
-    "docs/OLDER_GPUS.md:331"
+    "docs/OLDER_GPUS.md:331",
+    "docs/DETAILS.md:1268"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -3073,7 +3073,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 20567,
+     "line": 20588,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -3175,10 +3175,10 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1705",
-    "docs/DETAILS.md:1711",
+    "docs/DETAILS.md:1706",
     "docs/DETAILS.md:1712",
-    "docs/DETAILS.md:1719"
+    "docs/DETAILS.md:1713",
+    "docs/DETAILS.md:1720"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -3213,9 +3213,9 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1705",
-    "docs/DETAILS.md:1714",
-    "docs/DETAILS.md:1715"
+    "docs/DETAILS.md:1706",
+    "docs/DETAILS.md:1715",
+    "docs/DETAILS.md:1716"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -3271,7 +3271,7 @@
    "doc_mentions": [
     "docs/BATCHING.md:118",
     "docs/BATCHING.md:119",
-    "docs/DETAILS.md:1714"
+    "docs/DETAILS.md:1715"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -3313,7 +3313,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1714"
+    "docs/DETAILS.md:1715"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -3335,13 +3335,13 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 19178,
+     "line": 19199,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 19313,
+     "line": 19334,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -3438,7 +3438,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1712"
+    "docs/DETAILS.md:1713"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -3471,13 +3471,13 @@
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 8393,
+     "line": 8414,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 22935,
+     "line": 22956,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -3491,8 +3491,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:308",
-    "docs/release-notes-0.2.0.md:60"
+    "docs/release-notes-0.2.0.md:60",
+    "docs/DETAILS.md:309"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -4197,9 +4197,9 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1192",
-    "docs/DETAILS.md:1407",
-    "docs/DETAILS.md:1549"
+    "docs/DETAILS.md:1193",
+    "docs/DETAILS.md:1408",
+    "docs/DETAILS.md:1550"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -4745,7 +4745,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 10703,
+     "line": 10724,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -4779,7 +4779,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 20853,
+     "line": 20874,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -4800,10 +4800,10 @@
    "launch_reads": [],
    "doc_mentions": [
     "docs/AMD_HIP.md:273",
-    "docs/DETAILS.md:364",
     "docs/MULTI_GPU.md:252",
     "docs/OLDER_GPUS.md:271",
     "docs/QUANTS.md:106",
+    "docs/DETAILS.md:365",
     "docs/bench-results/2026-10-04-rdna2-helper-pcie-share/README.md:8",
     "docs/bench-results/2026-10-04-rdna2-pre75-attention/README.md:96",
     "docs/bench-results/2026-10-05-community-arc-b65/BUILD.md:95",
@@ -4929,19 +4929,19 @@
     "docs/AMD_HIP.md:531",
     "docs/BATCHING.md:463",
     "docs/BATCHING.md:465",
-    "docs/DETAILS.md:1128",
-    "docs/DETAILS.md:1203",
-    "docs/DETAILS.md:1423",
-    "docs/DETAILS.md:1438",
     "docs/DGX_SPARK_LINUX.md:108",
     "docs/DGX_SPARK_LINUX.md:126",
     "docs/MMVQ_IL_TABLE.md:18",
     "docs/MMVQ_IL_TABLE.md:19",
     "docs/MULTI_GPU.md:233",
+    "docs/STRIX_HALO_WINDOWS.md:112",
     "docs/release-notes-0.2.7.md:20",
     "docs/release-notes-0.2.7.md:21",
     "docs/release-notes-0.2.7.md:33",
-    "docs/STRIX_HALO_WINDOWS.md:112"
+    "docs/DETAILS.md:1129",
+    "docs/DETAILS.md:1204",
+    "docs/DETAILS.md:1424",
+    "docs/DETAILS.md:1439"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -5079,7 +5079,7 @@
    "launch_reads": [],
    "doc_mentions": [
     "docs/AMD_HIP.md:267",
-    "docs/DETAILS.md:1207",
+    "docs/DETAILS.md:1208",
     "docs/bench-results/2026-10-05-community-gfx1151/prefill-ab.md:24",
     "docs/bench-results/2026-10-05-community-gfx1151/prefill-ab.md:26"
    ],
@@ -5149,7 +5149,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1745"
+    "docs/DETAILS.md:1746"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -5184,14 +5184,14 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1228",
-    "docs/DETAILS.md:1229",
-    "docs/DETAILS.md:1415",
-    "docs/DETAILS.md:1629",
-    "docs/DETAILS.md:1732",
     "docs/OLDER_GPUS.md:138",
     "docs/OLDER_GPUS.md:251",
     "docs/release-notes-0.2.7.md:23",
+    "docs/DETAILS.md:1229",
+    "docs/DETAILS.md:1230",
+    "docs/DETAILS.md:1416",
+    "docs/DETAILS.md:1630",
+    "docs/DETAILS.md:1733",
     "docs/bench-results/2026-10-12-p40-sm61-kernels/README.md:8",
     "docs/bench-results/2026-10-12-p40-sm61-kernels/README.md:147"
    ],
@@ -5379,13 +5379,13 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 22206,
+     "line": 22227,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 22206,
+     "line": 22227,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -6072,7 +6072,7 @@
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 8120,
+     "line": 8141,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -6307,7 +6307,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 23962,
+     "line": 23983,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -6532,7 +6532,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 9807,
+     "line": 9828,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -6656,7 +6656,7 @@
    "doc_mentions": [
     "docs/BATCHED_DMA.md:3",
     "docs/BATCHED_DMA.md:9",
-    "docs/DETAILS.md:1182"
+    "docs/DETAILS.md:1183"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -6825,7 +6825,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 15772,
+     "line": 15793,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -6858,13 +6858,13 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 15733,
+     "line": 15754,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 15733,
+     "line": 15754,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -6897,7 +6897,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 15732,
+     "line": 15753,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -7010,13 +7010,13 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 22072,
+     "line": 22093,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 24179,
+     "line": 24200,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -7171,7 +7171,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 20789,
+     "line": 20810,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -7291,7 +7291,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1745"
+    "docs/DETAILS.md:1746"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -7326,8 +7326,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1190",
-    "docs/DETAILS.md:1642"
+    "docs/DETAILS.md:1191",
+    "docs/DETAILS.md:1643"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -7498,15 +7498,15 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:298",
-    "docs/DETAILS.md:1318",
-    "docs/DETAILS.md:1415",
-    "docs/DETAILS.md:1595",
     "docs/EXCHANGE_ROTATION.md:11",
     "docs/EXCHANGE_ROTATION.md:15",
     "docs/EXCHANGE_ROTATION.md:19",
     "docs/EXCHANGE_ROTATION.md:89",
     "docs/EXCHANGE_ROTATION.md:164",
+    "docs/DETAILS.md:299",
+    "docs/DETAILS.md:1319",
+    "docs/DETAILS.md:1416",
+    "docs/DETAILS.md:1596",
     "docs/bench-results/2026-10-06-community-2x-rx-7900-gre/README.md:104",
     "docs/bench-results/2026-10-06-community-rtxpro-v0140/README.md:117",
     "docs/bench-results/2026-10-07-community-rtx-5090-laptop-ud-iq4xs/README.md:116"
@@ -7551,13 +7551,13 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1218",
-    "docs/DETAILS.md:1413",
-    "docs/DETAILS.md:1629",
     "docs/EXPERTDEC.md:1",
     "docs/EXPERTDEC.md:4",
     "docs/EXPERTDEC.md:5",
-    "docs/EXPERTDEC.md:40"
+    "docs/EXPERTDEC.md:40",
+    "docs/DETAILS.md:1219",
+    "docs/DETAILS.md:1414",
+    "docs/DETAILS.md:1630"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -7874,7 +7874,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:324"
+    "docs/DETAILS.md:325"
    ],
    "first_commit": "dc3ace6a0c",
    "first_date": "2026-11-19",
@@ -8380,7 +8380,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 8327,
+     "line": 8348,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -8477,8 +8477,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:290",
-    "docs/DETAILS.md:1594",
+    "docs/DETAILS.md:291",
+    "docs/DETAILS.md:1595",
     "docs/bench-results/2026-10-04-windows-mapped-release/README.md:4",
     "docs/bench-results/2026-10-04-windows-mapped-release/README.md:18",
     "docs/bench-results/2026-10-04-windows-mapped-release/README.md:106",
@@ -8536,7 +8536,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 9830,
+     "line": 9851,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -8550,7 +8550,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:317"
+    "docs/DETAILS.md:318"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -8607,7 +8607,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 9344,
+     "line": 9365,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -8627,7 +8627,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:321"
+    "docs/DETAILS.md:322"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -8684,7 +8684,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 20762,
+     "line": 20783,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -8725,7 +8725,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 20788,
+     "line": 20809,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -8759,7 +8759,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 20777,
+     "line": 20798,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -8818,7 +8818,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1195"
+    "docs/DETAILS.md:1196"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -8905,7 +8905,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1195"
+    "docs/DETAILS.md:1196"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -8959,7 +8959,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 9871,
+     "line": 9892,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -9064,13 +9064,13 @@
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 9870,
+     "line": 9891,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 20109,
+     "line": 20130,
      "backend": "cuda-hip",
      "fn": "env_on"
     }
@@ -9085,9 +9085,9 @@
    "launch_reads": [],
    "doc_mentions": [
     "docs/BATCHING.md:259",
-    "docs/DETAILS.md:1188",
-    "docs/DETAILS.md:1636",
-    "docs/OLDER_GPUS.md:227"
+    "docs/OLDER_GPUS.md:227",
+    "docs/DETAILS.md:1189",
+    "docs/DETAILS.md:1637"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -9235,10 +9235,10 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1408",
     "docs/NVIDIA_V100.md:60",
     "docs/NVIDIA_V100.md:112",
-    "docs/OLDER_GPUS.md:151"
+    "docs/OLDER_GPUS.md:151",
+    "docs/DETAILS.md:1409"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -9378,9 +9378,9 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1263",
-    "docs/DETAILS.md:1408",
-    "docs/OLDER_GPUS.md:150"
+    "docs/OLDER_GPUS.md:150",
+    "docs/DETAILS.md:1264",
+    "docs/DETAILS.md:1409"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -9510,9 +9510,9 @@
    "doc_mentions": [
     "docs/AMD_HIP.md:302",
     "docs/AMD_HIP.md:312",
-    "docs/DETAILS.md:1187",
-    "docs/DETAILS.md:1635",
     "docs/GDN_CONTRACT.md:66",
+    "docs/DETAILS.md:1188",
+    "docs/DETAILS.md:1636",
     "docs/bench-results/2026-10-09-community-rtx5090-9800x3d-swift-1m/README.md:73"
    ],
    "first_commit": "4058aa782b",
@@ -10309,9 +10309,9 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1736",
-    "docs/DETAILS.md:1744",
-    "docs/GDN_CONTRACT.md:64"
+    "docs/GDN_CONTRACT.md:64",
+    "docs/DETAILS.md:1737",
+    "docs/DETAILS.md:1745"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -10561,9 +10561,9 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/release-notes-0.2.3.md:5",
     "docs/STRIX_HALO.md:121",
-    "docs/STRIX_HALO_WINDOWS.md:84"
+    "docs/STRIX_HALO_WINDOWS.md:84",
+    "docs/release-notes-0.2.3.md:5"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -10717,7 +10717,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1131"
+    "docs/DETAILS.md:1132"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -10795,8 +10795,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1131",
-    "docs/DETAILS.md:1132"
+    "docs/DETAILS.md:1132",
+    "docs/DETAILS.md:1133"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -10831,7 +10831,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1133"
+    "docs/DETAILS.md:1134"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -11042,7 +11042,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1729"
+    "docs/DETAILS.md:1730"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -11391,12 +11391,12 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1262",
-    "docs/DETAILS.md:1409",
-    "docs/DETAILS.md:1410",
-    "docs/DETAILS.md:1414",
     "docs/DGX_SPARK_LINUX.md:120",
-    "docs/DGX_SPARK_LINUX.md:123"
+    "docs/DGX_SPARK_LINUX.md:123",
+    "docs/DETAILS.md:1263",
+    "docs/DETAILS.md:1410",
+    "docs/DETAILS.md:1411",
+    "docs/DETAILS.md:1415"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -11542,9 +11542,9 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1414",
     "docs/NVIDIA_V100.md:64",
-    "docs/NVIDIA_V100.md:109"
+    "docs/NVIDIA_V100.md:109",
+    "docs/DETAILS.md:1415"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -11876,12 +11876,12 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1262",
-    "docs/DETAILS.md:1407",
+    "docs/DGX_SPARK_LINUX.md:124",
+    "docs/OLDER_GPUS.md:151",
+    "docs/DETAILS.md:1263",
     "docs/DETAILS.md:1408",
     "docs/DETAILS.md:1409",
-    "docs/DGX_SPARK_LINUX.md:124",
-    "docs/OLDER_GPUS.md:151"
+    "docs/DETAILS.md:1410"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -12081,7 +12081,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1224",
+    "docs/DETAILS.md:1225",
     "docs/bench-results/2026-10-03-community-rx7900xtx-rocm102-nightly/README.md:29",
     "docs/bench-results/2026-10-04-community-rx7900xtx-hipblaslt-100500/README.md:35",
     "docs/bench-results/2026-10-09-community-rtx-5080-4060ti-0.1.41/README.md:39",
@@ -12195,9 +12195,9 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1407",
-    "docs/DETAILS.md:1409",
-    "docs/DGX_SPARK_LINUX.md:124"
+    "docs/DGX_SPARK_LINUX.md:124",
+    "docs/DETAILS.md:1408",
+    "docs/DETAILS.md:1410"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -12490,7 +12490,6 @@
     "docs/MAC.md:140",
     "docs/MAC.md:267",
     "docs/QUANTS.md:166",
-    "docs/release-notes-0.2.3.md:5",
     "docs/STRIX_HALO.md:120",
     "docs/STRIX_HALO.md:121",
     "docs/STRIX_HALO.md:238",
@@ -12498,6 +12497,7 @@
     "docs/STRIX_HALO_WINDOWS.md:66",
     "docs/UNSLOTH_Q4.md:51",
     "docs/UNSLOTH_Q4.md:53",
+    "docs/release-notes-0.2.3.md:5",
     "docs/bench-results/2026-10-07-community-gfx1150/README.md:107",
     "docs/bench-results/2026-10-09-community-strix-halo-laptop-70w/README.md:31"
    ],
@@ -12613,8 +12613,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1225",
-    "docs/DETAILS.md:1629"
+    "docs/DETAILS.md:1226",
+    "docs/DETAILS.md:1630"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -12758,8 +12758,6 @@
    "launch_reads": [],
    "doc_mentions": [
     "docs/AMD_HIP.md:453",
-    "docs/DETAILS.md:1222",
-    "docs/DETAILS.md:1629",
     "docs/DGX_SPARK_LINUX.md:115",
     "docs/DGX_SPARK_LINUX.md:141",
     "docs/RADEON_780M.md:85",
@@ -12769,6 +12767,8 @@
     "docs/STRIX_HALO.md:147",
     "docs/STRIX_HALO_WINDOWS.md:70",
     "docs/STRIX_HALO_WINDOWS.md:76",
+    "docs/DETAILS.md:1223",
+    "docs/DETAILS.md:1630",
     "docs/bench-results/2026-10-07-community-gfx1150/README.md:106",
     "docs/bench-results/2026-10-09-community-strix-halo-laptop-70w/README.md:30",
     "docs/bench-results/2026-10-12-community-gfx1103/README.md:154"
@@ -12832,7 +12832,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 18335,
+     "line": 18356,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -12904,13 +12904,13 @@
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 8958,
+     "line": 8979,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 9479,
+     "line": 9500,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -13237,7 +13237,7 @@
    "doc_mentions": [
     "docs/AMD_HIP.md:268",
     "docs/AMD_HIP.md:282",
-    "docs/DETAILS.md:1207",
+    "docs/DETAILS.md:1208",
     "docs/bench-results/2026-10-07-rdna2-qsa-select-simt/README.md:13",
     "docs/bench-results/2026-10-09-community-2x-rx-6900xt-0.1.41/README.md:23",
     "docs/bench-results/2026-10-09-community-2x-rx-6900xt-0.1.41/README.md:73",
@@ -13588,11 +13588,11 @@
     "docs/AMD_HIP.md:449",
     "docs/RADEON_780M.md:84",
     "docs/RADEON_780M.md:101",
-    "docs/release-notes-0.2.0.md:56",
     "docs/STRIX_HALO.md:136",
     "docs/STRIX_HALO.md:142",
     "docs/STRIX_HALO.md:147",
     "docs/STRIX_HALO_WINDOWS.md:69",
+    "docs/release-notes-0.2.0.md:56",
     "docs/bench-results/2026-10-03-community-r9700-windows/METHOD-AND-DISCLOSURES.md:172",
     "docs/bench-results/2026-10-03-community-r9700-windows/README.md:236",
     "docs/bench-results/2026-10-03-community-r9700-windows/README.md:287",
@@ -13713,8 +13713,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1204",
-    "docs/DETAILS.md:1414"
+    "docs/DETAILS.md:1205",
+    "docs/DETAILS.md:1415"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -14352,10 +14352,10 @@
     "docs/AMD_HIP.md:455",
     "docs/RADEON_780M.md:85",
     "docs/RADEON_780M.md:86",
-    "docs/release-notes-0.2.1.md:41",
     "docs/STRIX_HALO.md:143",
     "docs/STRIX_HALO.md:150",
-    "docs/STRIX_HALO_WINDOWS.md:75"
+    "docs/STRIX_HALO_WINDOWS.md:75",
+    "docs/release-notes-0.2.1.md:41"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -14535,7 +14535,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:309"
+    "docs/DETAILS.md:310"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -14636,8 +14636,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:310",
-    "docs/release-notes-0.2.0.md:60"
+    "docs/release-notes-0.2.0.md:60",
+    "docs/DETAILS.md:311"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -14705,7 +14705,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:310"
+    "docs/DETAILS.md:311"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -14740,7 +14740,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:310"
+    "docs/DETAILS.md:311"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -14833,7 +14833,7 @@
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 8413,
+     "line": 8434,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -14847,8 +14847,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:309",
-    "docs/DETAILS.md:1586",
+    "docs/DETAILS.md:310",
+    "docs/DETAILS.md:1587",
     "docs/bench-results/2026-10-08-community-rtx4090-iq3xxs-200k-code/README.md:92",
     "docs/bench-results/2026-10-08-community-rtx4090-iq3xxs-200k-ru/README.md:99"
    ],
@@ -14904,13 +14904,13 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 8389,
+     "line": 8410,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 9937,
+     "line": 9958,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -14924,7 +14924,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:309"
+    "docs/DETAILS.md:310"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -14945,13 +14945,13 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 8380,
+     "line": 8401,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 9862,
+     "line": 9883,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -14966,12 +14966,12 @@
    "launch_reads": [],
    "doc_mentions": [
     "docs/BATCHING.md:261",
-    "docs/DETAILS.md:309",
-    "docs/DETAILS.md:316",
-    "docs/DETAILS.md:317",
     "docs/RADEON_780M.md:143",
     "docs/release-notes-0.2.0.md:60",
     "docs/release-notes-0.2.1.md:45",
+    "docs/DETAILS.md:310",
+    "docs/DETAILS.md:317",
+    "docs/DETAILS.md:318",
     "docs/bench-results/2026-10-08-community-rtx4090-iq3xxs-200k-code/README.md:92",
     "docs/bench-results/2026-10-08-community-rtx4090-iq3xxs-200k-ru/README.md:99",
     "docs/bench-results/2026-10-12-community-gfx1103/README.md:126"
@@ -14995,13 +14995,13 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 9895,
+     "line": 9916,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 9944,
+     "line": 9965,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -15015,7 +15015,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:309"
+    "docs/DETAILS.md:310"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -15036,25 +15036,25 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 8429,
+     "line": 8450,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 9853,
+     "line": 9874,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 9928,
+     "line": 9949,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 22935,
+     "line": 22956,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -15190,7 +15190,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1202"
+    "docs/DETAILS.md:1203"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -15459,13 +15459,13 @@
    "doc_mentions": [
     "docs/BATCHING.md:615",
     "docs/BATCHING.md:746",
-    "docs/DETAILS.md:390",
-    "docs/DETAILS.md:651",
-    "docs/DETAILS.md:1202",
-    "docs/DETAILS.md:1543",
     "docs/OLDER_GPUS.md:268",
     "docs/RESEARCH_RUNS.md:21",
     "docs/SPLIT_SERVE.md:125",
+    "docs/DETAILS.md:391",
+    "docs/DETAILS.md:652",
+    "docs/DETAILS.md:1203",
+    "docs/DETAILS.md:1544",
     "docs/bench-results/2026-10-01-community-rtx-5090-5950x/README.md:54",
     "docs/bench-results/2026-10-01-community-rtx-5090-5950x/README.md:58",
     "docs/bench-results/2026-10-01-community-rtx-5090-5950x/README.md:237",
@@ -15708,7 +15708,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 11668,
+     "line": 11689,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -15754,7 +15754,7 @@
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 9125,
+     "line": 9146,
      "backend": "hip",
      "fn": "getenv"
     },
@@ -15799,7 +15799,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 9126,
+     "line": 9147,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -15967,7 +15967,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1127"
+    "docs/DETAILS.md:1128"
    ],
    "first_commit": "461b94b43a",
    "first_date": "2026-11-19",
@@ -16729,7 +16729,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 11073,
+     "line": 11094,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -16768,7 +16768,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 19152,
+     "line": 19173,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -16842,7 +16842,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 11070,
+     "line": 11091,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -16956,8 +16956,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:256",
-    "docs/DETAILS.md:1414"
+    "docs/DETAILS.md:257",
+    "docs/DETAILS.md:1415"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -17072,7 +17072,7 @@
    "reads": [
     {
      "file": "engine/src/core/layer.cpp",
-     "line": 776,
+     "line": 797,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -17094,6 +17094,36 @@
    "status": "research",
    "owner": "core",
    "note": "[auto] not documented for users; code default not readable from the call",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_KV_RING_ADAPT",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/program/generate.cpp",
+     "line": 7451,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/DETAILS.md:255"
+   ],
+   "status": "opt-in",
+   "owner": "program/generate",
+   "note": "the resident KV ring sizes from the run depth when on; =0 turns it off; the ring grows only past twice the cap (64K tier regressed under needed>=cap); measured 128K +23.9% paired with 64K neutral (fork PR #3919)",
    "retire_after": "",
    "retired_in": ""
   },
@@ -17152,7 +17182,7 @@
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 13443,
+     "line": 13464,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -17178,9 +17208,9 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:862",
     "docs/SPLIT_SERVE.md:159",
-    "docs/SPLIT_SERVE.md:187"
+    "docs/SPLIT_SERVE.md:187",
+    "docs/DETAILS.md:863"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -17486,7 +17516,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 9648,
+     "line": 9669,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -17804,19 +17834,19 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 19501,
+     "line": 19522,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 19541,
+     "line": 19562,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 20613,
+     "line": 20634,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -17877,7 +17907,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 19545,
+     "line": 19566,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -17964,7 +17994,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 9860,
+     "line": 9881,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -17984,8 +18014,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:317",
     "docs/UNSLOTH_Q4.md:232",
+    "docs/DETAILS.md:318",
     "docs/bench-results/2026-10-01-iq4xs-64gb/README.md:105",
     "docs/bench-results/2026-10-08-community-2x-rtx3080-20gb-ud-q4-k-xl-512k-pool/README.md:107",
     "docs/bench-results/2026-10-08-community-rtx4070-iq2-xs/README.md:55"
@@ -18010,7 +18040,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 9891,
+     "line": 9912,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -18030,8 +18060,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:309",
-    "docs/UNSLOTH_Q4.md:232"
+    "docs/UNSLOTH_Q4.md:232",
+    "docs/DETAILS.md:310"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -18052,7 +18082,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 9873,
+     "line": 9894,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -18066,7 +18096,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:366",
+    "docs/DETAILS.md:367",
     "docs/bench-results/2026-10-05-community-e5-2673v3-rtx-4060ti/README.md:31"
    ],
    "first_commit": "4058aa782b",
@@ -18089,13 +18119,13 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 20825,
+     "line": 20846,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 24076,
+     "line": 24097,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -18154,7 +18184,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1198"
+    "docs/DETAILS.md:1199"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -18222,7 +18252,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:795"
+    "docs/DETAILS.md:796"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -21004,7 +21034,6 @@
    ],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1132",
     "docs/QUANTS.md:37",
     "docs/QUANTS.md:39",
     "docs/QUANTS.md:51",
@@ -21013,7 +21042,8 @@
     "docs/UNSLOTH_Q4.md:221",
     "docs/UNSLOTH_Q4.md:334",
     "docs/UNSLOTH_Q6.md:17",
-    "docs/UNSLOTH_Q6.md:102"
+    "docs/UNSLOTH_Q6.md:102",
+    "docs/DETAILS.md:1133"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -21348,8 +21378,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1421",
-    "docs/MMVQ_IL_TABLE.md:17"
+    "docs/MMVQ_IL_TABLE.md:17",
+    "docs/DETAILS.md:1422"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -21390,9 +21420,9 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1423",
     "docs/MMVQ_IL_TABLE.md:18",
-    "docs/release-notes-0.2.7.md:23"
+    "docs/release-notes-0.2.7.md:23",
+    "docs/DETAILS.md:1424"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -21427,9 +21457,9 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1730",
     "docs/MMVQ_IL_TABLE.md:40",
-    "docs/MMVQ_IL_TABLE.md:42"
+    "docs/MMVQ_IL_TABLE.md:42",
+    "docs/DETAILS.md:1731"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -21534,9 +21564,9 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1732",
     "docs/MMVQ_IL_TABLE.md:19",
-    "docs/release-notes-0.2.7.md:23"
+    "docs/release-notes-0.2.7.md:23",
+    "docs/DETAILS.md:1733"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -21604,8 +21634,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1421",
-    "docs/MMVQ_IL_TABLE.md:10"
+    "docs/MMVQ_IL_TABLE.md:10",
+    "docs/DETAILS.md:1422"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -22328,7 +22358,7 @@
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 8121,
+     "line": 8142,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -22400,13 +22430,13 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 7909,
+     "line": 7930,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 7932,
+     "line": 7953,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -22620,7 +22650,7 @@
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 8121,
+     "line": 8142,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -22655,13 +22685,13 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 12292,
+     "line": 12313,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 12301,
+     "line": 12322,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -22675,7 +22705,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1201"
+    "docs/DETAILS.md:1202"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -22908,7 +22938,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:656"
+    "docs/DETAILS.md:657"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -22943,7 +22973,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:657"
+    "docs/DETAILS.md:658"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -23137,7 +23167,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1194"
+    "docs/DETAILS.md:1195"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -23496,7 +23526,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1127"
+    "docs/DETAILS.md:1128"
    ],
    "first_commit": "461b94b43a",
    "first_date": "2026-11-19",
@@ -24194,8 +24224,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1320",
-    "docs/release-notes-0.2.2.md:11"
+    "docs/release-notes-0.2.2.md:11",
+    "docs/DETAILS.md:1321"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -24294,8 +24324,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1320",
-    "docs/release-notes-0.2.2.md:11"
+    "docs/release-notes-0.2.2.md:11",
+    "docs/DETAILS.md:1321"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -24382,8 +24412,8 @@
     }
    ],
    "doc_mentions": [
-    "docs/DETAILS.md:1437",
-    "docs/DETAILS.md:1438"
+    "docs/DETAILS.md:1438",
+    "docs/DETAILS.md:1439"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -24641,7 +24671,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 8740,
+     "line": 8761,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -24661,7 +24691,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1197"
+    "docs/DETAILS.md:1198"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -24715,7 +24745,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 12745,
+     "line": 12766,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -24886,10 +24916,10 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1705",
-    "docs/DETAILS.md:1713",
+    "docs/DETAILS.md:1706",
     "docs/DETAILS.md:1714",
-    "docs/DETAILS.md:1716"
+    "docs/DETAILS.md:1715",
+    "docs/DETAILS.md:1717"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -24973,25 +25003,25 @@
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 13378,
+     "line": 13399,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 13382,
+     "line": 13403,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 13388,
+     "line": 13409,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 13912,
+     "line": 13933,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -25005,7 +25035,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1717"
+    "docs/DETAILS.md:1718"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -25040,7 +25070,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1716"
+    "docs/DETAILS.md:1717"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -25358,7 +25388,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1264"
+    "docs/DETAILS.md:1265"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -25393,7 +25423,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1265"
+    "docs/DETAILS.md:1266"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -25461,8 +25491,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1128",
-    "docs/DETAILS.md:1625"
+    "docs/DETAILS.md:1129",
+    "docs/DETAILS.md:1626"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -25497,9 +25527,9 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1186",
-    "docs/DETAILS.md:1416",
-    "docs/DETAILS.md:1640"
+    "docs/DETAILS.md:1187",
+    "docs/DETAILS.md:1417",
+    "docs/DETAILS.md:1641"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -25559,7 +25589,7 @@
     "docs/AMD_HIP.md:422",
     "docs/AMD_HIP.md:520",
     "docs/AMD_HIP.md:530",
-    "docs/DETAILS.md:1128",
+    "docs/DETAILS.md:1129",
     "docs/bench-results/2026-10-20-0.2.1-idle-gpu/README.md:45",
     "docs/bench-results/2026-11-14-rdna2-pcie-auto/README.md:3",
     "docs/bench-results/2026-11-14-rdna2-pcie-auto/README.md:58"
@@ -25597,7 +25627,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1128"
+    "docs/DETAILS.md:1129"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -25668,7 +25698,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1128"
+    "docs/DETAILS.md:1129"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -25689,7 +25719,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 14319,
+     "line": 14340,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -25871,13 +25901,13 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 18624,
+     "line": 18645,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 20530,
+     "line": 20551,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -25903,7 +25933,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:608"
+    "docs/DETAILS.md:609"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -25971,8 +26001,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1736",
-    "docs/DETAILS.md:1741"
+    "docs/DETAILS.md:1737",
+    "docs/DETAILS.md:1742"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -26366,7 +26396,7 @@
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 12005,
+     "line": 12026,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -26418,23 +26448,23 @@
     "docs/AMD_HIP.md:510",
     "docs/AMD_HIP.md:766",
     "docs/AMD_HIP.md:794",
-    "docs/DETAILS.md:1130",
-    "docs/DETAILS.md:1265",
-    "docs/DETAILS.md:1274",
-    "docs/DETAILS.md:1424",
-    "docs/DETAILS.md:1426",
-    "docs/DETAILS.md:1541",
     "docs/DGX_SPARK_LINUX.md:112",
     "docs/MULTI_GPU.md:355",
     "docs/OLDER_GPUS.md:227",
     "docs/RADEON_780M.md:86",
     "docs/RADEON_780M.md:105",
-    "docs/release-notes-0.2.0.md:56",
     "docs/STRIX_HALO.md:132",
     "docs/STRIX_HALO.md:144",
     "docs/STRIX_HALO.md:147",
     "docs/STRIX_HALO.md:156",
     "docs/STRIX_HALO_WINDOWS.md:70",
+    "docs/release-notes-0.2.0.md:56",
+    "docs/DETAILS.md:1131",
+    "docs/DETAILS.md:1266",
+    "docs/DETAILS.md:1275",
+    "docs/DETAILS.md:1425",
+    "docs/DETAILS.md:1427",
+    "docs/DETAILS.md:1542",
     "docs/bench-results/COMMUNITY.md:32",
     "docs/bench-results/2026-10-01-community-rtx-5090-5950x/README.md:58",
     "docs/bench-results/2026-10-01-community-rtx-5090-5950x/README.md:195",
@@ -26501,8 +26531,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1736",
-    "docs/DETAILS.md:1742"
+    "docs/DETAILS.md:1737",
+    "docs/DETAILS.md:1743"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -26667,7 +26697,7 @@
    "launch_reads": [],
    "doc_mentions": [
     "docs/AMD_HIP.md:298",
-    "docs/DETAILS.md:1274"
+    "docs/DETAILS.md:1275"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -26702,8 +26732,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1736",
-    "docs/DETAILS.md:1740"
+    "docs/DETAILS.md:1737",
+    "docs/DETAILS.md:1741"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -26738,10 +26768,10 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1266",
-    "docs/DETAILS.md:1269",
-    "docs/DETAILS.md:1273",
-    "docs/release-notes-0.2.7.md:53"
+    "docs/release-notes-0.2.7.md:53",
+    "docs/DETAILS.md:1267",
+    "docs/DETAILS.md:1270",
+    "docs/DETAILS.md:1274"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -26994,7 +27024,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1265"
+    "docs/DETAILS.md:1266"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -27205,8 +27235,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1736",
-    "docs/DETAILS.md:1743"
+    "docs/DETAILS.md:1737",
+    "docs/DETAILS.md:1744"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -27287,11 +27317,11 @@
     "docs/RADEON_780M.md:78",
     "docs/RADEON_780M.md:84",
     "docs/RADEON_780M.md:102",
-    "docs/release-notes-0.2.2.md:16",
     "docs/STRIX_HALO.md:133",
     "docs/STRIX_HALO.md:142",
     "docs/STRIX_HALO.md:147",
     "docs/STRIX_HALO_WINDOWS.md:70",
+    "docs/release-notes-0.2.2.md:16",
     "docs/bench-results/2026-10-07-community-gfx1150/README.md:105",
     "docs/bench-results/2026-10-09-community-4x-rx-7900-xt/README.md:51",
     "docs/bench-results/2026-10-09-community-4x-rx-7900-xt/README.md:56",
@@ -27364,7 +27394,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1199"
+    "docs/DETAILS.md:1200"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -27472,7 +27502,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1199"
+    "docs/DETAILS.md:1200"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -27633,7 +27663,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 12510,
+     "line": 12531,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -27819,8 +27849,8 @@
     "docs/AMD_HIP.md:807",
     "docs/GDN_CONTRACT.md:42",
     "docs/RADEON_780M.md:78",
-    "docs/release-notes-0.2.2.md:16",
-    "docs/STRIX_HALO.md:113"
+    "docs/STRIX_HALO.md:113",
+    "docs/release-notes-0.2.2.md:16"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -28298,13 +28328,13 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 11999,
+     "line": 12020,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 11999,
+     "line": 12020,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -28337,7 +28367,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 12016,
+     "line": 12037,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -28843,7 +28873,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 8461,
+     "line": 8482,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -28857,10 +28887,10 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:293",
-    "docs/DETAILS.md:1592",
     "docs/DOCKER.md:133",
     "docs/TERMINAL_LAUNCH.md:81",
+    "docs/DETAILS.md:294",
+    "docs/DETAILS.md:1593",
     "docs/bench-results/README.md:153",
     "docs/bench-results/2026-10-11-community-rtx3090-5600x-arena-pin-by-need/README.md:1",
     "docs/bench-results/2026-10-11-community-rtx3090-5600x-arena-pin-by-need/README.md:8"
@@ -28884,7 +28914,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 8472,
+     "line": 8493,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -29001,7 +29031,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:295"
+    "docs/DETAILS.md:296"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -29028,7 +29058,7 @@
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 20100,
+     "line": 20121,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -29065,7 +29095,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 20126,
+     "line": 20147,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -29133,7 +29163,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 20146,
+     "line": 20167,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -29166,7 +29196,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 20364,
+     "line": 20385,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -29201,7 +29231,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 20368,
+     "line": 20389,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -29236,7 +29266,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 7605,
+     "line": 7626,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -29269,13 +29299,13 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 7531,
+     "line": 7552,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 7595,
+     "line": 7616,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -29314,7 +29344,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 20360,
+     "line": 20381,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -29350,7 +29380,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 11318,
+     "line": 11339,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -29384,7 +29414,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 21198,
+     "line": 21219,
      "backend": "cuda-hip",
      "fn": "pipe_dbg_env"
     },
@@ -29541,7 +29571,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 21021,
+     "line": 21042,
      "backend": "cuda-hip",
      "fn": "pipe_dbg_env"
     },
@@ -29626,7 +29656,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 19364,
+     "line": 19385,
      "backend": "cuda-hip",
      "fn": "pipe_dbg_env"
     },
@@ -29665,7 +29695,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 19343,
+     "line": 19364,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -29698,7 +29728,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 19353,
+     "line": 19374,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -29732,7 +29762,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 20946,
+     "line": 20967,
      "backend": "cuda-hip",
      "fn": "pipe_dbg_env"
     },
@@ -29772,7 +29802,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 21143,
+     "line": 21164,
      "backend": "cuda-hip",
      "fn": "pipe_dbg_env"
     },
@@ -29811,7 +29841,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 19360,
+     "line": 19381,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -29845,7 +29875,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 21194,
+     "line": 21215,
      "backend": "cuda-hip",
      "fn": "pipe_dbg_env"
     },
@@ -29885,7 +29915,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 13160,
+     "line": 13181,
      "backend": "cuda-hip",
      "fn": "pipe_dbg_env"
     },
@@ -29924,7 +29954,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 21398,
+     "line": 21419,
      "backend": "cuda-hip",
      "fn": "pipe_dbg_env"
     }
@@ -29958,7 +29988,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 19367,
+     "line": 19388,
      "backend": "cuda-hip",
      "fn": "pipe_dbg_env"
     },
@@ -29998,7 +30028,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 19347,
+     "line": 19368,
      "backend": "cuda-hip",
      "fn": "pipe_dbg_env"
     },
@@ -30038,7 +30068,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 21005,
+     "line": 21026,
      "backend": "cuda-hip",
      "fn": "pipe_dbg_env"
     },
@@ -30077,19 +30107,19 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 11336,
+     "line": 11357,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 17192,
+     "line": 17213,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 17193,
+     "line": 17214,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -30216,7 +30246,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1137"
+    "docs/DETAILS.md:1138"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -30414,7 +30444,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1745"
+    "docs/DETAILS.md:1746"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -30449,7 +30479,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1745"
+    "docs/DETAILS.md:1746"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -30625,8 +30655,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1346",
-    "docs/release-notes-0.2.2.md:17"
+    "docs/release-notes-0.2.2.md:17",
+    "docs/DETAILS.md:1347"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -30882,8 +30912,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1131",
-    "docs/DETAILS.md:1438"
+    "docs/DETAILS.md:1132",
+    "docs/DETAILS.md:1439"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -30954,13 +30984,13 @@
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 9092,
+     "line": 9113,
      "backend": "cuda",
      "fn": "getenv"
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 9126,
+     "line": 9147,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -31010,7 +31040,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1249"
+    "docs/DETAILS.md:1250"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -31045,7 +31075,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1249"
+    "docs/DETAILS.md:1250"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -31072,13 +31102,13 @@
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 11699,
+     "line": 11720,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 11824,
+     "line": 11845,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -31093,14 +31123,14 @@
    "launch_reads": [],
    "doc_mentions": [
     "docs/AMD_HIP.md:282",
-    "docs/DETAILS.md:1124",
-    "docs/DETAILS.md:1125",
-    "docs/DETAILS.md:1126",
-    "docs/DETAILS.md:1199",
-    "docs/DETAILS.md:1621",
     "docs/OLDER_GPUS.md:260",
     "docs/OLDER_GPUS.md:268",
     "docs/OLDER_GPUS.md:381",
+    "docs/DETAILS.md:1125",
+    "docs/DETAILS.md:1126",
+    "docs/DETAILS.md:1127",
+    "docs/DETAILS.md:1200",
+    "docs/DETAILS.md:1622",
     "docs/bench-results/2026-10-07-community-gfx1150/README.md:108",
     "docs/bench-results/2026-10-07-community-v100-p100-helper/README.md:75",
     "docs/bench-results/2026-10-07-community-v100-p100-helper/README.md:84",
@@ -31152,7 +31182,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1126"
+    "docs/DETAILS.md:1127"
    ],
    "first_commit": "a620ffb619",
    "first_date": "2026-11-19",
@@ -31173,13 +31203,13 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 11783,
+     "line": 11804,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 19838,
+     "line": 19859,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -31232,9 +31262,9 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1124",
     "docs/DETAILS.md:1125",
-    "docs/DETAILS.md:1126"
+    "docs/DETAILS.md:1126",
+    "docs/DETAILS.md:1127"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -31275,8 +31305,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1125",
-    "docs/DETAILS.md:1126"
+    "docs/DETAILS.md:1126",
+    "docs/DETAILS.md:1127"
    ],
    "first_commit": "16c3fa0cd1",
    "first_date": "2026-11-19",
@@ -31390,19 +31420,19 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 10715,
+     "line": 10736,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 10716,
+     "line": 10737,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 10734,
+     "line": 10755,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -31422,7 +31452,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1196",
+    "docs/DETAILS.md:1197",
     "docs/bench-results/2026-10-08-community-2x-rtx3080-20gb-ud-q4-k-xl-512k-pool/README.md:90",
     "docs/bench-results/2026-10-08-community-2x-rtx3080-20gb-ud-q4-k-xl-512k-pool/README.md:105",
     "docs/bench-results/2026-10-08-community-2x-rtx3080-20gb-ud-q4-k-xl-512k-pool/README.md:327"
@@ -31521,7 +31551,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1226"
+    "docs/DETAILS.md:1227"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -31549,7 +31579,7 @@
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 20107,
+     "line": 20128,
      "backend": "cuda-hip",
      "fn": "env_on"
     },
@@ -31595,7 +31625,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 11732,
+     "line": 11753,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -31670,7 +31700,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 10958,
+     "line": 10979,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -31684,9 +31714,9 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:350",
-    "docs/DETAILS.md:1129",
-    "docs/release-notes-0.2.0.md:61"
+    "docs/release-notes-0.2.0.md:61",
+    "docs/DETAILS.md:351",
+    "docs/DETAILS.md:1130"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -31728,7 +31758,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1251"
+    "docs/DETAILS.md:1252"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -31755,7 +31785,7 @@
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 12006,
+     "line": 12027,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -31766,19 +31796,19 @@
    "engine_sets": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 12019
+     "line": 12040
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 12021
+     "line": 12042
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 12032
+     "line": 12053
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 12034
+     "line": 12055
     }
    ],
    "engine_defaults": [],
@@ -31814,13 +31844,13 @@
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 9654,
+     "line": 9675,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 10764,
+     "line": 10785,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -32024,7 +32054,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 10696,
+     "line": 10717,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -32265,7 +32295,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 10974,
+     "line": 10995,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -32320,8 +32350,8 @@
    "launch_reads": [],
    "doc_mentions": [
     "docs/AMD_HIP_PERFORMANCE.md:21",
-    "docs/DETAILS.md:351",
-    "docs/DETAILS.md:1133",
+    "docs/DETAILS.md:352",
+    "docs/DETAILS.md:1134",
     "docs/bench-results/2026-10-03-community-rx7900xtx-rocm102-nightly/README.md:29",
     "docs/bench-results/2026-10-04-community-rx7900xtx-hipblaslt-100500/README.md:35",
     "docs/bench-results/2026-10-08-community-2x-rtx3080-20gb-ud-q4-k-xl-512k-pool/README.md:89",
@@ -32363,7 +32393,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1243"
+    "docs/DETAILS.md:1244"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -32398,7 +32428,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1244"
+    "docs/DETAILS.md:1245"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -32567,7 +32597,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 10700,
+     "line": 10721,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -33704,8 +33734,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1223",
-    "docs/DETAILS.md:1629"
+    "docs/DETAILS.md:1224",
+    "docs/DETAILS.md:1630"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -33937,7 +33967,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 11655,
+     "line": 11676,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -34169,7 +34199,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1200"
+    "docs/DETAILS.md:1201"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -34210,7 +34240,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1193",
+    "docs/DETAILS.md:1194",
     "docs/bench-results/2026-10-09-community-rtx-5060-ti-e5-2680-v4/README.md:66"
    ],
    "first_commit": "4058aa782b",
@@ -34246,7 +34276,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1263"
+    "docs/DETAILS.md:1264"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -34905,7 +34935,7 @@
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 8121,
+     "line": 8142,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -35281,8 +35311,8 @@
    "launch_reads": [],
    "doc_mentions": [
     "docs/RADEON_780M.md:80",
-    "docs/release-notes-0.2.7.md:52",
     "docs/STRIX_HALO.md:117",
+    "docs/release-notes-0.2.7.md:52",
     "docs/bench-results/2026-10-07-community-arc-b65-v01402/BUILD.md:92",
     "docs/bench-results/2026-10-07-community-arc-b65-v01402/QUALIFICATION.md:11",
     "docs/bench-results/2026-10-09-community-gfx1151-ud-iq4xs-0.1.41/README.md:32"
@@ -35428,8 +35458,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1263",
-    "docs/DETAILS.md:1729"
+    "docs/DETAILS.md:1264",
+    "docs/DETAILS.md:1730"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -35509,7 +35539,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1541"
+    "docs/DETAILS.md:1542"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -35845,14 +35875,14 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1217",
-    "docs/DETAILS.md:1407",
-    "docs/DETAILS.md:1629",
     "docs/QSAROWS.md:1",
     "docs/QSAROWS.md:3",
     "docs/QSAROWS.md:51",
     "docs/QSAROWS.md:53",
-    "docs/QSAROWS.md:70"
+    "docs/QSAROWS.md:70",
+    "docs/DETAILS.md:1218",
+    "docs/DETAILS.md:1408",
+    "docs/DETAILS.md:1630"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -35954,8 +35984,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1221",
-    "docs/DETAILS.md:1629"
+    "docs/DETAILS.md:1222",
+    "docs/DETAILS.md:1630"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -36048,7 +36078,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1240"
+    "docs/DETAILS.md:1241"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -36104,7 +36134,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 21917,
+     "line": 21938,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -36118,11 +36148,11 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:277",
-    "docs/DETAILS.md:1414",
-    "docs/DETAILS.md:1589",
+    "docs/release-notes-0.2.7.md:53",
+    "docs/DETAILS.md:278",
+    "docs/DETAILS.md:1415",
     "docs/DETAILS.md:1590",
-    "docs/release-notes-0.2.7.md:53"
+    "docs/DETAILS.md:1591"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -36143,7 +36173,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 11750,
+     "line": 11771,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -36176,7 +36206,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 11753,
+     "line": 11774,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -36209,7 +36239,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 11754,
+     "line": 11775,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -36242,7 +36272,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 11752,
+     "line": 11773,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -36308,7 +36338,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 11755,
+     "line": 11776,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -36364,9 +36394,9 @@
    ],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:816",
-    "docs/DETAILS.md:825",
-    "docs/UNSLOTH_Q4.md:39"
+    "docs/UNSLOTH_Q4.md:39",
+    "docs/DETAILS.md:817",
+    "docs/DETAILS.md:826"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -36438,8 +36468,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:321",
-    "docs/TROUBLESHOOTING.md:120"
+    "docs/TROUBLESHOOTING.md:120",
+    "docs/DETAILS.md:322"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -36500,7 +36530,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 19580,
+     "line": 19601,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -36537,7 +36567,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 19621,
+     "line": 19642,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -36682,7 +36712,7 @@
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 8313,
+     "line": 8334,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -36718,11 +36748,11 @@
    "launch_reads": [],
    "doc_mentions": [
     "docs/AMD_HIP.md:258",
-    "docs/DETAILS.md:271",
-    "docs/DETAILS.md:822",
     "docs/TROUBLESHOOTING.md:279",
     "docs/UNSLOTH_Q4.md:39",
     "docs/UNSLOTH_Q4.md:179",
+    "docs/DETAILS.md:272",
+    "docs/DETAILS.md:823",
     "docs/bench-results/2026-10-04-community-4090-32gb-ram-512k/README.md:13",
     "docs/bench-results/2026-10-04-community-4090-32gb-ram-512k/README.md:76",
     "docs/bench-results/2026-10-04-community-4090-32gb-ram-512k/README.md:105",
@@ -36762,7 +36792,7 @@
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 8575,
+     "line": 8596,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -36796,11 +36826,11 @@
    ],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:286",
-    "docs/DETAILS.md:827",
     "docs/TROUBLESHOOTING.md:260",
     "docs/UNSLOTH_Q4.md:185",
-    "docs/UNSLOTH_Q4.md:236"
+    "docs/UNSLOTH_Q4.md:236",
+    "docs/DETAILS.md:287",
+    "docs/DETAILS.md:828"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -36842,8 +36872,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1491",
-    "docs/DETAILS.md:1685",
+    "docs/DETAILS.md:1492",
+    "docs/DETAILS.md:1686",
     "docs/bench-results/2026-10-04-community-rtx-4080s-iq3s/README.md:262",
     "docs/bench-results/2026-10-04-community-rx-6800-windows/README.md:105",
     "docs/bench-results/2026-10-04-community-rx-6800-windows/README.md:110",
@@ -37156,7 +37186,7 @@
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 15680,
+     "line": 15701,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -37179,11 +37209,11 @@
    ],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1203",
-    "docs/DETAILS.md:1439",
-    "docs/DETAILS.md:1626",
     "docs/release-notes-0.2.0.md:55",
-    "docs/release-notes-0.2.7.md:7"
+    "docs/release-notes-0.2.7.md:7",
+    "docs/DETAILS.md:1204",
+    "docs/DETAILS.md:1440",
+    "docs/DETAILS.md:1627"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -37250,13 +37280,13 @@
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 12664,
+     "line": 12685,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 12666,
+     "line": 12687,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -37270,7 +37300,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1203"
+    "docs/DETAILS.md:1204"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -37291,13 +37321,13 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 12665,
+     "line": 12686,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 12665,
+     "line": 12686,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -37311,7 +37341,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1203"
+    "docs/DETAILS.md:1204"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -37338,7 +37368,7 @@
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 12668,
+     "line": 12689,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -37410,13 +37440,13 @@
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 15581,
+     "line": 15602,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 15582,
+     "line": 15603,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -37450,11 +37480,6 @@
    ],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1143",
-    "docs/DETAILS.md:1151",
-    "docs/DETAILS.md:1155",
-    "docs/DETAILS.md:1156",
-    "docs/DETAILS.md:1623",
     "docs/DOCKER.md:135",
     "docs/NVFP4.md:71",
     "docs/NVFP4.md:72",
@@ -37465,6 +37490,11 @@
     "docs/QUANTS.md:163",
     "docs/UNSLOTH_Q4.md:46",
     "docs/UNSLOTH_Q4.md:49",
+    "docs/DETAILS.md:1144",
+    "docs/DETAILS.md:1152",
+    "docs/DETAILS.md:1156",
+    "docs/DETAILS.md:1157",
+    "docs/DETAILS.md:1624",
     "docs/bench-results/2026-10-12-p40-sm61-kernels/README.md:154",
     "docs/bench-results/2026-10-20-0.2.1-idle-gpu/README.md:45"
    ],
@@ -37795,7 +37825,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1262"
+    "docs/DETAILS.md:1263"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -37916,7 +37946,7 @@
     "docs/AMD_HIP.md:299",
     "docs/AMD_HIP.md:346",
     "docs/AMD_HIP.md:347",
-    "docs/DETAILS.md:1264",
+    "docs/DETAILS.md:1265",
     "docs/bench-results/2026-10-11-gfx1100-qsa-scores/README.md:15",
     "docs/bench-results/2026-10-11-gfx1100-qsa-scores/README.md:62",
     "docs/bench-results/2026-10-11-gfx1100-qsa-scores/README.md:198"
@@ -38235,9 +38265,9 @@
     "docs/AMD_HIP.md:513",
     "docs/AMD_HIP.md:719",
     "docs/AMD_HIP.md:804",
-    "docs/DETAILS.md:1265",
     "docs/OLDER_GPUS.md:281",
     "docs/OLDER_GPUS.md:291",
+    "docs/DETAILS.md:1266",
     "docs/bench-results/2026-10-07-rdna2-qsa-select-simt/README.md:3"
    ],
    "first_commit": "4058aa782b",
@@ -38315,7 +38345,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1231"
+    "docs/DETAILS.md:1232"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -38350,7 +38380,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1238"
+    "docs/DETAILS.md:1239"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -38385,7 +38415,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1237"
+    "docs/DETAILS.md:1238"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -38552,7 +38582,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 20816,
+     "line": 20837,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -38585,7 +38615,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 20819,
+     "line": 20840,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -38901,13 +38931,13 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1219",
-    "docs/DETAILS.md:1407",
+    "docs/DGX_SPARK_LINUX.md:116",
+    "docs/OLDER_GPUS.md:150",
+    "docs/DETAILS.md:1220",
     "docs/DETAILS.md:1408",
     "docs/DETAILS.md:1409",
-    "docs/DETAILS.md:1629",
-    "docs/DGX_SPARK_LINUX.md:116",
-    "docs/OLDER_GPUS.md:150"
+    "docs/DETAILS.md:1410",
+    "docs/DETAILS.md:1630"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -38961,7 +38991,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 16215,
+     "line": 16236,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -39078,7 +39108,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 16111,
+     "line": 16132,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -39121,7 +39151,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 7732,
+     "line": 7753,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -39154,13 +39184,13 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 7624,
+     "line": 7645,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 15499,
+     "line": 15520,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -39193,7 +39223,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 16747,
+     "line": 16768,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -39226,7 +39256,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 16737,
+     "line": 16758,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -39259,7 +39289,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 7624,
+     "line": 7645,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -39306,7 +39336,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1409"
+    "docs/DETAILS.md:1410"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -39348,11 +39378,11 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1410",
     "docs/DGX_SPARK_LINUX.md:87",
     "docs/DGX_SPARK_LINUX.md:107",
     "docs/DGX_SPARK_LINUX.md:126",
-    "docs/DGX_SPARK_LINUX.md:136"
+    "docs/DGX_SPARK_LINUX.md:136",
+    "docs/DETAILS.md:1411"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -39529,7 +39559,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1261"
+    "docs/DETAILS.md:1262"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -39611,7 +39641,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 19119,
+     "line": 19140,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -39631,7 +39661,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:835"
+    "docs/DETAILS.md:836"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -39653,13 +39683,13 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 14211,
+     "line": 14232,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 19092,
+     "line": 19113,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -39817,13 +39847,13 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 15735,
+     "line": 15756,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 23830,
+     "line": 23851,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -39844,9 +39874,9 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:643",
     "docs/DGX_SPARK_LINUX.md:117",
-    "docs/DGX_SPARK_LINUX.md:141"
+    "docs/DGX_SPARK_LINUX.md:141",
+    "docs/DETAILS.md:644"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -39867,7 +39897,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 23878,
+     "line": 23899,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -39914,9 +39944,9 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:617",
-    "docs/DETAILS.md:1643",
-    "docs/DETAILS.md:1644"
+    "docs/DETAILS.md:618",
+    "docs/DETAILS.md:1644",
+    "docs/DETAILS.md:1645"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -39937,7 +39967,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 22985,
+     "line": 23006,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -39951,7 +39981,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:619"
+    "docs/DETAILS.md:620"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -40052,8 +40082,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:618",
-    "docs/DETAILS.md:1643",
+    "docs/DETAILS.md:619",
+    "docs/DETAILS.md:1644",
     "docs/bench-results/2026-10-08-community-rtx4090-iq3xxs-200k-code/README.md:92",
     "docs/bench-results/2026-10-08-community-rtx4090-iq3xxs-200k-ru/README.md:99"
    ],
@@ -40090,7 +40120,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:619"
+    "docs/DETAILS.md:620"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -40125,11 +40155,11 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:618",
-    "docs/DETAILS.md:636",
-    "docs/DETAILS.md:647",
-    "docs/DETAILS.md:1644",
-    "docs/release-notes-0.2.7.md:53"
+    "docs/release-notes-0.2.7.md:53",
+    "docs/DETAILS.md:619",
+    "docs/DETAILS.md:637",
+    "docs/DETAILS.md:648",
+    "docs/DETAILS.md:1645"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -40197,7 +40227,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:641"
+    "docs/DETAILS.md:642"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -40218,13 +40248,13 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 20733,
+     "line": 20754,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 23833,
+     "line": 23854,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -40257,7 +40287,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 20734,
+     "line": 20755,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -40290,7 +40320,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 23818,
+     "line": 23839,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -40323,7 +40353,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 23920,
+     "line": 23941,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -40382,37 +40412,37 @@
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 7908,
+     "line": 7929,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 8882,
+     "line": 8903,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 8929,
+     "line": 8950,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 8958,
+     "line": 8979,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 9480,
+     "line": 9501,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 9594,
+     "line": 9615,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -40447,7 +40477,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 10778,
+     "line": 10799,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -40546,7 +40576,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 11801,
+     "line": 11822,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -40810,13 +40840,13 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 14171,
+     "line": 14192,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 20108,
+     "line": 20129,
      "backend": "cuda-hip",
      "fn": "env_on"
     }
@@ -40895,7 +40925,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 12788,
+     "line": 12809,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -40984,13 +41014,13 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 11443,
+     "line": 11464,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 12209,
+     "line": 12230,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -41070,7 +41100,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 11359,
+     "line": 11380,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -41114,7 +41144,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 12614,
+     "line": 12635,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -41154,7 +41184,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 12612,
+     "line": 12633,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -41227,7 +41257,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 22956,
+     "line": 22977,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -41354,7 +41384,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:350"
+    "docs/DETAILS.md:351"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -41455,7 +41485,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 24610,
+     "line": 24631,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -41593,8 +41623,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1140",
-    "docs/DETAILS.md:1645",
+    "docs/DETAILS.md:1141",
+    "docs/DETAILS.md:1646",
     "docs/bench-results/2026-10-08-community-2x-rtx3080-20gb-ud-q4-k-xl-512k-pool/README.md:341",
     "docs/bench-results/2026-10-08-community-rtx4090-iq3xxs-200k-code/README.md:92",
     "docs/bench-results/2026-10-08-community-rtx4090-iq3xxs-200k-ru/README.md:99"
@@ -41632,7 +41662,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1138"
+    "docs/DETAILS.md:1139"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -41674,9 +41704,9 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1138",
     "docs/INTEL.md:45",
     "docs/UNSLOTH_Q4.md:235",
+    "docs/DETAILS.md:1139",
     "docs/bench-results/2026-10-01-community-rtx-5090-5950x/README.md:7",
     "docs/bench-results/2026-10-01-community-rtx-5090-5950x/README.md:67",
     "docs/bench-results/2026-10-05-community-arc-b65/BUILD.md:94",
@@ -41717,8 +41747,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1185",
-    "docs/DETAILS.md:1637"
+    "docs/DETAILS.md:1186",
+    "docs/DETAILS.md:1638"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -41920,7 +41950,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 22503,
+     "line": 22524,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -42001,7 +42031,7 @@
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 22541,
+     "line": 22562,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -42079,7 +42109,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 15388,
+     "line": 15409,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -43374,7 +43404,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 20233,
+     "line": 20254,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -43443,13 +43473,13 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 9229,
+     "line": 9250,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 9229,
+     "line": 9250,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -43494,7 +43524,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 20150,
+     "line": 20171,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -43639,7 +43669,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 10655,
+     "line": 10676,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -44253,7 +44283,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1263"
+    "docs/DETAILS.md:1264"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -44288,7 +44318,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1263"
+    "docs/DETAILS.md:1264"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -44331,8 +44361,8 @@
    "launch_reads": [],
    "doc_mentions": [
     "docs/AMD_HIP.md:308",
-    "docs/DETAILS.md:1206",
-    "docs/TROUBLESHOOTING.md:252"
+    "docs/TROUBLESHOOTING.md:252",
+    "docs/DETAILS.md:1207"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -44600,37 +44630,37 @@
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 9138,
+     "line": 9159,
      "backend": "hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 11645,
+     "line": 11666,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 13987,
+     "line": 14008,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 15404,
+     "line": 15425,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 15665,
+     "line": 15686,
      "backend": "hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 23162,
+     "line": 23183,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -44663,8 +44693,8 @@
    "launch_reads": [],
    "doc_mentions": [
     "docs/BATCHING.md:126",
-    "docs/DETAILS.md:1248",
-    "docs/DETAILS.md:1721",
+    "docs/DETAILS.md:1249",
+    "docs/DETAILS.md:1722",
     "docs/bench-results/2026-10-05-community-arc-b65/benchy-v1/README.md:14",
     "docs/bench-results/2026-10-07-community-arc-b65-v01402/BUILD.md:109"
    ],
@@ -44688,13 +44718,13 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 23675,
+     "line": 23696,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 23712,
+     "line": 23733,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -44864,13 +44894,13 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 12399,
+     "line": 12420,
      "backend": "cuda",
      "fn": "getenv"
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 12417,
+     "line": 12438,
      "backend": "cuda",
      "fn": "getenv"
     }
@@ -44945,7 +44975,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 11503,
+     "line": 11524,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -45036,8 +45066,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/release-notes-0.2.2.md:16",
-    "docs/STRIX_HALO.md:169"
+    "docs/STRIX_HALO.md:169",
+    "docs/release-notes-0.2.2.md:16"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -45077,7 +45107,7 @@
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 8357,
+     "line": 8378,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -45326,7 +45356,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1191"
+    "docs/DETAILS.md:1192"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -45395,7 +45425,7 @@
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 9422,
+     "line": 9443,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -46043,9 +46073,9 @@
     "docs/A770_SPEED_SPEC.md:622",
     "docs/A770_SPEED_SPEC.md:717",
     "docs/A770_SPEED_SPEC.md:736",
-    "docs/DETAILS.md:364",
     "docs/OLDER_GPUS.md:271",
     "docs/QUANTS.md:106",
+    "docs/DETAILS.md:365",
     "docs/bench-results/2026-10-07-v100-decode-kernels/README.md:59",
     "docs/bench-results/2026-10-12-p40-sm61-kernels/README.md:44",
     "docs/bench-results/2026-10-12-p40-sm61-kernels/README.md:141"
@@ -46268,7 +46298,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1195"
+    "docs/DETAILS.md:1196"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -46303,8 +46333,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1647",
-    "docs/release-notes-0.2.7.md:53"
+    "docs/release-notes-0.2.7.md:53",
+    "docs/DETAILS.md:1648"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -46395,7 +46425,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 15597,
+     "line": 15618,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -46429,7 +46459,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 15593,
+     "line": 15614,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -46449,7 +46479,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1464"
+    "docs/DETAILS.md:1465"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -46578,7 +46608,7 @@
    "reads": [
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 15681,
+     "line": 15702,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -46617,7 +46647,7 @@
     },
     {
      "file": "engine/src/program/generate.cpp",
-     "line": 11282,
+     "line": 11303,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -46791,7 +46821,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/DETAILS.md:1267"
+    "docs/DETAILS.md:1268"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
