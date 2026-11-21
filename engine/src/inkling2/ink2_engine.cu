@@ -915,6 +915,7 @@ __global__ void __launch_bounds__(256) kb_attn(const float* __restrict__ P, int 
                                                const void* __restrict__ V, const __half* __restrict__ ksc,
                                                const __half* __restrict__ vsc, const float* __restrict__ rel, int cap,
                                                int window, int pos0, int T, float* __restrict__ out) {
+    pos0 = VPOS(pos0);
     extern __shared__ float fsm[];
     float* Qs = fsm;                    // [FQ][FQ_LD]
     float* KVs = Qs + FQ * FQ_LD;       // keys [FK][FK_LD], then values [FK][HD]
@@ -2704,17 +2705,19 @@ void moe_b(const Layer& Y, const float* x, float* out, int T, int pos0) {
     kb_moe_plan<<<1, 1024>>>(PF.ids, T, PF.rows, PF.slot, PF.tile_e, PF.tile_r0, PF.ntiles, PF.eoff, PF.ecnt);
     const Experts& X = Y.ex;
     const int l = int(&Y - E.L), nr = T * TOPK, maxt = nr / FM + NE;
-    if (T <= SMALL_T) {
+    if (T <= SMALL_T) {   // offload: the verify's experts through the decode cache (T x TOPK ids), not the staging
+        if (E.xhost) expert_cache(l, PF.ids, T * TOPK);
         const int RR = g_grp_r;
         auto g = RR == 2 ? (X.nvfp4 ? k_moe_gemv_grp<true, 2> : k_moe_gemv_grp<false, 2>)
                          : RR == 1 ? (X.nvfp4 ? k_moe_gemv_grp<true, 1> : k_moe_gemv_grp<false, 1>)
                                    : (X.nvfp4 ? k_moe_gemv_grp<true, 4> : k_moe_gemv_grp<false, 4>);
-        expert_parts(l, false, [&](const uint8_t* const* t) {
+        auto parts = [&](bool partB, auto launch) { if (E.xhost) launch(partB ? X.tB : X.tA); else expert_parts(l, partB, launch); };
+        parts(false, [&](const uint8_t* const* t) {
             g<<<dim3(2 * FF / (8 * RR), maxt), 256>>>(x, H, PF.rows, t, X.f13, PF.tile_e, PF.tile_r0, PF.ntiles, PF.eoff,
                                                  PF.ecnt, PF.gu, 2 * FF, H);
         });
         kb_swiglu<<<(unsigned) (((size_t) nr * FF + 255) / 256), 256>>>(PF.gu, PF.act, nr);
-        expert_parts(l, true, [&](const uint8_t* const* t) {
+        parts(true, [&](const uint8_t* const* t) {
             g<<<dim3(H / (8 * RR), maxt), 256>>>(PF.act, FF, nullptr, t, X.f2, PF.tile_e, PF.tile_r0, PF.ntiles, PF.eoff,
                                             PF.ecnt, PF.ey, H, FF);
         });
@@ -2909,7 +2912,8 @@ __device__ __forceinline__ float4 ld4h(const __half* p) {
 __global__ void kd_attn_partial(const float* __restrict__ qkv, const __half* __restrict__ K, const __half* __restrict__ V,
                                 int cap, int p, int local, float* pm, float* pl, float* po) {
     p = VPOS(p);
-    const int hi = p + DBLK, lo = local ? max(0, hi - (WINDOW + DBLK)) : 0, per = (hi - lo + gridDim.y - 1) / gridDim.y;
+    // (local == 2: ablation, the block only, no context)
+    const int hi = p + DBLK, lo = local == 2 ? p : local ? max(0, hi - (WINDOW + DBLK)) : 0, per = (hi - lo + gridDim.y - 1) / gridDim.y;
     const int h = blockIdx.x, s = blockIdx.y, g = h / NREP, w = threadIdx.x >> 5, lane = threadIdx.x & 31;
     const int k0 = lo + s * per, k1 = min(hi, k0 + per);
     const float scale = rsqrtf((float) HD);
@@ -3083,6 +3087,7 @@ struct Drafter {
     long verifies = 0, accepted = 0, hk[DBLK] = {}, plain = 0, switches = 0;
 };
 Drafter D;
+int g_draft_abl = 0;   // INK2_DRAFT_ABL (tests): 1 = no Markov bias, 2 = no context K/V
 
 void draft_load(const std::string& dir) {
     Ckpt mk;
@@ -3218,7 +3223,7 @@ void draft_device(int p) {
         // split count fixed by the layer's reach (graph-capturable); empty splits write max = -inf, skipped by the merge
         const int reach = Y.local ? WINDOW + DBLK : E.ctx;
         const int ns = std::min(DSPLIT_MAX, std::max(1, (reach + DSPLIT_KEYS - 1) / DSPLIT_KEYS));
-        kd_attn_partial<<<dim3(NQ, ns), 128>>>(D.qkv, Y.K, Y.V, Y.cap, p, Y.local, D.pm, D.pl, D.po);
+        kd_attn_partial<<<dim3(NQ, ns), 128>>>(D.qkv, Y.K, Y.V, Y.cap, p, g_draft_abl == 2 ? 2 : Y.local, D.pm, D.pl, D.po);
         kd_attn_merge<<<dim3(NQ, DBLK), HD>>>(D.pm, D.pl, D.po, ns, D.att);
         gemv_multi(Y.o, 0, H, D.att, QD, D.out, H, DBLK);
         kd_add_rms<<<DBLK, 512>>>(D.out, D.res, Y.post_ln, D.xn, 0);
@@ -3237,7 +3242,9 @@ void draft_device(int p) {
         gemv(D.rsp, D.in1, D.raw);
         kd_markov_gate<<<1, MR>>>(D.raw, D.mctx + (size_t) i * 3 * MR, D.cf, D.state, D.latent);
         gemv(D.fold, D.latent, D.bias, VOCAB);
-        kd_argmax_partial<<<AM_BLOCKS, 256>>>(D.base + (size_t) i * VOCAB, D.bias, D.fold_b, VOCAB, D.pv, D.pi);
+        const bool nomk = g_draft_abl == 1;   // ablation: base logits only
+        kd_argmax_partial<<<AM_BLOCKS, 256>>>(D.base + (size_t) i * VOCAB, nomk ? nullptr : D.bias, nomk ? nullptr : D.fold_b,
+                                              VOCAB, D.pv, D.pi);
         kd_argmax_final<<<1, 256>>>(D.pv, D.pi, AM_BLOCKS, D.drafts + i + 1);
     }
 }
@@ -3263,7 +3270,7 @@ void forward_prefill(const int* toks, int T, int pos0, float* all) {
         CK(cudaMemcpyAsync(PF.x0, e.data(), ES * 4, cudaMemcpyHostToDevice, cudaStreamPerThread));
         CK(cudaStreamSynchronize(cudaStreamPerThread));
     }
-    if (PF.rows_argmax && E.graph && !E.xhost && T == DBLK) {   // verify block: one graph per output variant
+    if (PF.rows_argmax && E.graph && T == DBLK) {   // verify block (offload: through the decode cache): one graph per output variant
         static cudaGraphExec_t vexec[2] = {nullptr, nullptr};
         cudaGraphExec_t& x = vexec[PF.rows_copy ? 1 : 0];
         CK(cudaMemcpyToSymbolAsync(d_vpos, &pos0, 4, 0, cudaMemcpyHostToDevice, cudaStreamPerThread));
@@ -3431,6 +3438,7 @@ int main(int argc, char** argv) {
     if (const char* r = std::getenv("INK2_SEL_RPW")) g_sel_rpw = std::atoi(r);
     if (const char* r = std::getenv("INK2_GEMV_MINB")) g_gemv_min_blocks = std::atoi(r);
     if (const char* r = std::getenv("INK2_GRP_R")) g_grp_r = std::atoi(r);
+    if (const char* r = std::getenv("INK2_DRAFT_ABL")) g_draft_abl = std::atoi(r);
     std::string dir, dump_logits, rec_path;
     std::vector<int> ids;
     int n_gen = 32;
@@ -3534,10 +3542,11 @@ int main(int argc, char** argv) {
     // token at a time through the decode graph for PLAIN_RUN tokens whenever the speculative estimate is the slower
     // (low acceptance: sampling at high temperature, unpredictable text); the drafter's context follows the plain
     // tokens through the decode graph's feature ring.  The first PLAIN_PROBE tokens measure the plain mode.
-    constexpr int PLAIN_PROBE = 4, PLAIN_RUN = 32;
+    constexpr int PLAIN_PROBE = 4, PLAIN_RUN = 32, SPEC_MIN = 3;
+    const bool spec_force = std::getenv("INK2_SPEC_FORCE") != nullptr;   // tests: never fall back
     auto spec_continue = [&](int first, int p, int max_new, Sampler& s, const std::function<bool(int)>& emit,
                              const std::atomic<bool>* stop) {
-        int n = 1, anchor = first, plain_left = PLAIN_PROBE;
+        int n = 1, anchor = first, plain_left = spec_force ? 0 : PLAIN_PROBE, spec_iters = 0;
         double ms_plain = 0.0, ms_spec = 0.0;   // EMA, ms per emitted token (0: not measured yet)
         bool go = true;
         while (go && n < max_new && !(stop && stop->load())) {
@@ -3589,7 +3598,12 @@ int main(int argc, char** argv) {
             CK(cudaDeviceSynchronize());
             const double dt = (now_ms() - t0) / (k + 1);
             ms_spec = ms_spec > 0.0 ? 0.8 * ms_spec + 0.2 * dt : dt;
-            if (ms_plain > 0.0 && ms_spec > ms_plain) { plain_left = PLAIN_RUN; ms_spec = 0.0; ++D.switches; }
+            if (++spec_iters >= SPEC_MIN && ms_plain > 0.0 && ms_spec > ms_plain && !spec_force) {
+                plain_left = PLAIN_RUN;
+                ms_spec = 0.0;
+                spec_iters = 0;
+                ++D.switches;
+            }
         }
         return n;
     };
