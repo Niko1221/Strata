@@ -128,14 +128,25 @@ void bf16_widening_is_exact() {
 /// and the type lookup all have to be right for every format, not only for IQ4_NL.
 uint32_t gguf_type_id(const char* name) {
     static const struct { const char* name; uint32_t id; } ids[] = {
-        {"IQ4_NL", 20}, {"Q4_0", 2}, {"Q4_1", 3}, {"Q5_0", 6}, {"Q5_1", 7}, {"Q8_0", 8}, {"BF16", 30}, {"F8_E4M3", 24}, {"NVFP4", 24}};
+        {"IQ4_NL", 20}, {"Q4_0", 2}, {"Q4_1", 3}, {"Q5_0", 6}, {"Q5_1", 7}, {"Q8_0", 8}, {"BF16", 30}, {"F8_E4M3", 24}, {"NVFP4", 24},
+        {"C4", 24}, {"C3", 24}, {"C2s", 24}};
     for (const auto& e : ids)
         if (std::strcmp(e.name, name) == 0) return e.id;
     return 0xFFFFFFFFu;
 }
 
+/// The table-wide values write_format_table puts in the metadata (a format ignores what it has no use for).
+k::PleParams test_params(const k::PleFormatInfo& f) {
+    k::PleParams p;
+    p.scale = f.needs_scale ? 0.75f : 1.0f;
+    const float cb[8] = {-0.8f, -0.45f, -0.25f, -0.07f, 0.06f, 0.24f, 0.46f, 0.81f};
+    std::memcpy(p.codebook, cb, sizeof cb);
+    return p;
+}
+
 // `claimed_rows` is the row count the header states; `rows` rows are actually written (equal unless a test lies)
-std::string write_format_table(const std::string& dir, const k::PleFormatInfo& f, uint32_t rows, uint64_t claimed_rows = 0) {
+std::string write_format_table(const std::string& dir, const k::PleFormatInfo& f, uint32_t rows, uint64_t claimed_rows = 0,
+                               bool with_codebook = true) {
     const std::string path = dir + "/ple_format_selftest.gguf";
     std::ofstream out(path, std::ios::binary);
     if (!out) { std::fprintf(stderr, "cannot write %s\n", path.c_str()); return {}; }
@@ -145,18 +156,20 @@ std::string write_format_table(const std::string& dir, const k::PleFormatInfo& f
         return s;
     };
     const auto str = [&](const char* s) { return le((uint64_t) std::strlen(s), 8) + std::string(s); };
-    const uint64_t n_kv = f.needs_scale ? 3 : 1;
+    const auto f32 = [&](float v) { uint32_t b; std::memcpy(&b, &v, 4); return le(b, 4); };
+    const k::PleParams p = test_params(f);
+    const bool codebook = f.needs_codebook && with_codebook;
+    const uint64_t n_kv = 1u + (f.marker != nullptr ? 1u : 0u) + (f.needs_scale ? 1u : 0u) + (codebook ? 1u : 0u);
     std::string head = "GGUF" + le(3u, 4) + le(1ull, 8) + le(n_kv, 8);
     head += str("general.architecture") + le(8u, 4) + str("strata-ple");
-    if (f.needs_scale) {
-        const float scale = 0.75f;
-        uint32_t sb;
-        std::memcpy(&sb, &scale, 4);
-        head += str("strata.ple.format") + le(8u, 4) + str(f.id == k::PleFormat::NVFP4 ? "nvfp4x16" : "f8_e4m3");
-        head += str("strata.ple.scale") + le(6u, 4) + le(sb, 4);       // 6 = FLOAT32
+    if (f.marker != nullptr) head += str("strata.ple.format") + le(8u, 4) + str(f.marker);
+    if (f.needs_scale) head += str("strata.ple.scale") + le(6u, 4) + f32(p.scale);       // 6 = FLOAT32
+    if (codebook) {                                                                      // 9 = ARRAY of 6 = FLOAT32
+        head += str("strata.ple.codebook") + le(9u, 4) + le(6u, 4) + le(8ull, 8);
+        for (float v : p.codebook) head += f32(v);
     }
     head += str("per_layer_token_embd.weight") + le(2u, 4);
-    head += le(f.id == k::PleFormat::NVFP4 ? (uint64_t) f.row_bytes : (uint64_t) k::PLE_HEAD_DIM, 8) + le(claimed_rows != 0 ? claimed_rows : (uint64_t) rows, 8);
+    head += le(f.marker != nullptr ? (uint64_t) f.row_bytes : (uint64_t) k::PLE_HEAD_DIM, 8) + le(claimed_rows != 0 ? claimed_rows : (uint64_t) rows, 8);
     head += le(gguf_type_id(f.name), 4) + le(0ull, 8);
     while (head.size() % 32) head += '\0';
     out.write(head.data(), (std::streamsize) head.size());
@@ -200,7 +213,7 @@ void format_round_trip(const std::string& dir, const k::PleFormatInfo& f, uint32
         for (uint32_t r : want) {
             t.read_row(r, got);
             expected_row(r, f.row_bytes, raw.data());
-            f.dequant(raw.data(), f.needs_scale ? 0.75f : 1.0f, ref);
+            f.dequant(raw.data(), test_params(f), ref);
             if (std::memcmp(got, ref, sizeof got) != 0) {
                 CHECK(false, "%s: %s: row %u differs from the format's own dequantizer", f.name, name, r);
                 break;
@@ -213,7 +226,7 @@ void format_round_trip(const std::string& dir, const k::PleFormatInfo& f, uint32
         t.gather(rows16, tok);
         for (int h = 0; h < 16; ++h) {
             expected_row(rows16[h], f.row_bytes, raw.data());
-            f.dequant(raw.data(), f.needs_scale ? 0.75f : 1.0f, ref);
+            f.dequant(raw.data(), test_params(f), ref);
             CHECK(std::memcmp(tok + (size_t) h * k::PLE_HEAD_DIM, ref, sizeof ref) == 0, "%s: %s: gather head %d differs", f.name, name, h);
         }
         // a prompt chunk: gather_batch over more rows than one prefetch window (4096), one of them past the table's end
@@ -235,7 +248,7 @@ void format_round_trip(const std::string& dir, const k::PleFormatInfo& f, uint32
                     continue;
                 }
                 expected_row(br[i], f.row_bytes, raw.data());
-                f.dequant(raw.data(), f.needs_scale ? 0.75f : 1.0f, ref);
+                f.dequant(raw.data(), test_params(f), ref);
                 bad += std::memcmp(bo.data() + i * k::PLE_HEAD_DIM, ref, sizeof ref) != 0;
             }
             CHECK(bad == 0, "%s: %s: gather_batch differs in %zu rows", f.name, name, bad);
@@ -558,10 +571,19 @@ void all_formats_round_trip(const std::string& dir) {
     for (int i = 0; i < k::ple_format_count(); ++i) {
         const k::PleFormatInfo& f = k::ple_formats()[i];
         CHECK((int) f.id == i, "%s: the table is not in PleFormat order", f.name);
-        // NVFP4 and F8_E4M3 are both I8 bytes: the type finds the FP8 entry, `strata.ple.format` picks NVFP4 in PleTable::open
-        const k::PleFormatInfo* want = f.id == k::PleFormat::NVFP4 ? &k::ple_format_info(k::PleFormat::F8_E4M3) : &f;
+        // NVFP4, the 3-bit formats and F8_E4M3 are all I8 bytes: the type finds the FP8 entry, `strata.ple.format` picks
+        // the format in PleTable::open
+        const k::PleFormatInfo* want = f.marker != nullptr ? &k::ple_format_info(k::PleFormat::F8_E4M3) : &f;
         CHECK(k::ple_format_for_type(f.gguf_type) == want, "%s: type lookup", f.name);
         format_round_trip(dir, f, 2000);
+        if (f.needs_codebook) {   // a 3-bit table without its codebook is refused, saying so
+            const std::string path = write_format_table(dir, f, 64, 0, false);
+            k::PleTable t;
+            std::string err;
+            CHECK(!path.empty() && !t.open(path, err) && err.find("strata.ple.codebook") != std::string::npos,
+                  "%s: a table without strata.ple.codebook: open said \"%s\"", f.name, err.c_str());
+            if (!path.empty()) std::filesystem::remove(path);
+        }
     }
     CHECK(k::ple_format_for_type("Q6_K") == nullptr, "Q6_K must not be a PLE format");
     if (g_fail == 0) {
