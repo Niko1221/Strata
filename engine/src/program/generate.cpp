@@ -153,6 +153,7 @@
 #include <unistd.h>
 #endif
 #include "strata/program/pipe_probe.hpp"
+#include "strata/program/pipeline_rows.hpp"
 #include "strata/kernels/cvec.hpp"
 #include "strata/core/progress.hpp"
 #include "strata/core/stream_watch.hpp"
@@ -15503,6 +15504,9 @@ int main(int argc, char** argv) {
             if (!(o.batch > 0 && o.batch_groups > 1 && !stages.empty() && piped_mtp && ver.deferred_commit_on())) return false;
             return (o.batch / o.batch_groups) * pm_slot_rows() <= batch_max_t();
         }();
+        const char* active_rows_env = std::getenv("STRATA_PIPELINE_ACTIVE_ROWS");
+        const bool pipeline_active_rows = o.batch > 0 && o.batch_groups > 1 && !stages.empty() &&
+                                          active_rows_env != nullptr && std::strcmp(active_rows_env, "1") == 0;
         // what the server's Monitor tab shows (servers before 0.1.8 skip unknown lines until READY)
         {
             size_t free_b = 0, total_b = 0;
@@ -15551,7 +15555,10 @@ int main(int argc, char** argv) {
                         o.batch > 0 ? (" batch_slots=" + std::to_string(o.batch) +
                                        " slot_cache=" + std::to_string(o.prompt_cache > 0 ? 1 : 0) +
                                        " batch_groups=" + std::to_string(o.batch_groups) +
-                                       " slot_read=" + std::to_string(slot_read_cap ? 1 : 0)).c_str() : "");
+                                       " slot_read=" + std::to_string(slot_read_cap ? 1 : 0) +
+                                       (pipeline_active_rows ? " slot_padding_safe=1 slot_park=1 turn_token=" +
+                                                                   std::to_string(o.turn_token) : std::string())).c_str()
+                                    : "");
             if (strata::core::manifest::enabled()) {   // STRATA_MANIFEST: engine choice and budgets (a diagnostic; off by default)
                 auto& M = strata::core::manifest::instance();
                 M.engine("version", STRATA_VERSION);
@@ -16767,12 +16774,13 @@ int main(int argc, char** argv) {
             int32_t tok[strata::kernels::kVerifyMaxT] = {};
             int64_t pos[strata::kernels::kVerifyMaxT] = {};
             int64_t since = 0;              ///< tick it started waiting (fairness)
-            int S = 0;                      ///< slots in its window: up to its last active one (idle ones cost rows)
+            int S = 0;                      ///< legacy span, or packed active-row count
             int active = 0;                  ///< live slots at launch; S can also include idle padding rows
             Clock::time_point started;       ///< the group window's first stage launch
             // STRATA_PIPED_MTP (pmtp): S counts ROWS - each of the group's slots' token, then that slot's proposals - at
             // hand-off rows [hbase, hbase + S).  forced: prompt rows only (STRATA_SLOT_READ_AHEAD), committed by every
-            // stage as it launches them; such a window may carry another group's slot (rows[] says whose rows they are)
+            // stage as it launches them; such a window may carry another group's slot (rows[] says whose rows they are).
+            // STRATA_PIPELINE_ACTIVE_ROWS=1: the packed slot IDs, immutable while in flight
             int rows[strata::kernels::kVerifyMaxT] = {};
             int hbase = 0;
             bool forced = false;
@@ -17249,14 +17257,15 @@ int main(int argc, char** argv) {
                 if (pmtp && !pmtp_verdict(G, vk, outb)) return false;
                 const strata::program::PipeProbe::VerdictScope p4_verdict(p4);
                 for (int t = 0; t < G.S && !pmtp; ++t) {
-                    BSlot& sl = bs[(size_t) (gi * GS + t)];
+                    const int slot = pipeline_active_rows ? G.rows[t] : gi * GS + t;
+                    BSlot& sl = bs[(size_t) slot];
                     if (!sl.active) continue;
                     if (vk.nonfinite_in(t)) {   // #879: the slot ends, nothing emitted
                         std::fprintf(stderr, "strata batch: non-finite logits (#879) in slot %d at position %lld: it "
                                              "ends (BDONE nonfinite) and the next request reads its prompt from token 0\n",
-                                     gi * GS + t, (long long) sl.p);
+                                     slot, (long long) sl.p);
                         const double ms = std::chrono::duration<double, std::milli>(Clock::now() - sl.t0).count();
-                        std::printf("BDONE %d %lld nonfinite %.1f\n", gi * GS + t, (long long) sl.produced, ms);
+                        std::printf("BDONE %d %lld nonfinite %.1f\n", slot, (long long) sl.produced, ms);
                         sl.active = false;
                         sl.cached = false;
                         sl.checks.clear();
@@ -17264,7 +17273,7 @@ int main(int argc, char** argv) {
                         continue;
                     }
                     const int32_t y = outb[t];
-                    std::printf("BT %d %d\n", gi * GS + t, (int) y);
+                    std::printf("BT %d %d\n", slot, (int) y);
                     ++sl.produced;
                     ++bt_rows;
                     ++pipe_rows;
@@ -17276,7 +17285,7 @@ int main(int argc, char** argv) {
                     sl.ids.push_back(sl.x);
                     if (fin != nullptr) {
                         const double ms = std::chrono::duration<double, std::milli>(Clock::now() - sl.t0).count();
-                        std::printf("BDONE %d %lld %s %.1f%s\n", gi * GS + t, (long long) sl.produced, fin, ms, strata::program::bdone_drafts_text(sl.drafts_off, sl.drafts_acc).c_str());
+                        std::printf("BDONE %d %lld %s %.1f%s\n", slot, (long long) sl.produced, fin, ms, strata::program::bdone_drafts_text(sl.drafts_off, sl.drafts_acc).c_str());
                         sl.active = false;
                         // a pipelined slot is a cache again (#857: a request left alone in its slot goes back to the solo path with its
                         // drafts): its state is final once its last window has left the last stage.  A later group window whose pad
@@ -17426,6 +17435,9 @@ int main(int argc, char** argv) {
                             for (int t = 0; t < G.S; ++t) G.forced = G.forced && bs[(size_t) G.rows[t]].rd_on;
                             for (int t = 0; t < G.S && G.forced; ++t) ++bs[(size_t) G.rows[t]].fly;
                         }
+                    } else if (pipeline_active_rows) {
+                        G.S = strata::program::pipeline_rows::pack(bs, pick * GS, GS, G.rows, G.tok, G.pos);
+                        G.active = G.S;
                     } else {
                         G.active = 0;
                         for (int t = 0; t < GS; ++t) if (bs[(size_t) (pick * GS + t)].active) {
@@ -17456,7 +17468,7 @@ int main(int argc, char** argv) {
                 if (batch_telemetry_enabled) stage_in_flight.launch(k, Clock::now());
                 if (k == 0) {   // the penalised slots' reply tails for the group's rows (the last stage draws them)
                     int grows[strata::kernels::kVerifyMaxT] = {};
-                    for (int t = 0; t < G.S && t < (int) strata::kernels::kVerifyMaxT; ++t) grows[t] = pmtp ? G.rows[t] : pick * GS + t;
+                    for (int t = 0; t < G.S && t < (int) strata::kernels::kVerifyMaxT; ++t) grows[t] = (pmtp || pipeline_active_rows) ? G.rows[t] : pick * GS + t;
                     for (int t = 0; t < G.S && t < (int) strata::kernels::kVerifyMaxT; ++t) {
                         const BSlot& ps = bs[(size_t) grows[t]];
                         if (ps.pen_n <= 0 || (t > 0 && grows[t - 1] == grows[t])) continue;
@@ -17467,8 +17479,12 @@ int main(int argc, char** argv) {
                     }
                 }
                 const auto p4_l0 = p4.now();
-                if (!(pmtp ? stage_verifier(k).batch_launch_rows(G.rows, G.S, G.hbase, G.tok, G.pos, err)
-                           : stage_verifier(k).batch_launch(pick * GS, G.S, G.tok, G.pos, err))) {
+                const bool launched = pmtp
+                    ? stage_verifier(k).batch_launch_rows(G.rows, G.S, G.hbase, G.tok, G.pos, err)
+                    : pipeline_active_rows
+                    ? stage_verifier(k).batch_launch_rows(pick * GS, G.S, G.rows, G.tok, G.pos, err)
+                    : stage_verifier(k).batch_launch(pick * GS, G.S, G.tok, G.pos, err);
+                if (!launched) {
                     std::printf("ERR %s\n", err.c_str());
                     return false;
                 }
@@ -18025,6 +18041,10 @@ int main(int argc, char** argv) {
             // (</think>) came first, with the session at exactly what was emitted (serve_hold_remaining); DONE says "hold".
             // Absent = as before.  An older engine skips the key (unknown keys are skipped), and says no "hold" in READY.
             long long req_hold_n = -1, req_hold_id = -1;
+            // STRATA_PIPELINE_ACTIVE_ROWS=1: park=B - when this request replaces the main session with another
+            // conversation, first copy the outgoing one into idle batch slot B (chosen by the server), so a short side
+            // request between two turns of a long solo conversation does not cost that conversation its cache
+            int req_park = -1;
             // tuning keys (setup's calibration measures settings without restarting the engine): the PCIe share of
             // the missed experts and the draft-probability floor, for this request only
             double req_pcie_frac = o.pcie_frac, req_spec_min_p = o.spec_min_p;
@@ -18067,6 +18087,7 @@ int main(int argc, char** argv) {
                             if (ie != he + 1 && *ie == '\0' && hid >= 0) { req_hold_n = hn; req_hold_id = hid; }
                         }
                     }
+                    else if (key == "park") req_park = std::atoi(tok.c_str() + eq + 1);
                     else if (key == "temperature") req_temperature = fv;
                     else if (key == "top_p") req_top_p = fv;
                     else if (key == "top_k") req_top_k = std::atoi(tok.c_str() + eq + 1);
@@ -18476,6 +18497,7 @@ int main(int argc, char** argv) {
             // active slot's checkpoints too (its windows write its cells from p on, so the ones below a checkpoint still
             // hold its prompt; the groups have finished before a request is read)
             int slot_source = -1;
+            int observed_slot_source = -1;
             int64_t slot_tokens = 0;
             bool resumed_from0 = false;   // a prompt read parked in a slot (BYIELD) that had started at token 0
             // --prefill-pipe: the plan of the segment a read goes on in (a BYIELD park, a periodic checkpoint), and
@@ -18873,6 +18895,53 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "strata serve: conversation cache: the reply this request replaces is not parked (%lld "
                                      "tokens past the turn checkpoint at %lld)\n", (long long) ((int64_t) live.size() - resume),
                              (long long) resume);
+            // park=B (see req_park).  Only when this prompt is another conversation: it does not share what the main
+            // session holds up to its last turn (the last <|im_start|>, where its latest reply begins - a next turn
+            // without that reply's thinking, or the reply regenerated, still shares it).  Never into the slot this
+            // request restores from or runs in.
+            int64_t park_turn = (int64_t) live.size();
+            if (o.turn_token >= 0)
+                for (int64_t i = (int64_t) live.size() - 1; i > 0; --i)
+                    if (live[(size_t) i] == o.turn_token) { park_turn = i; break; }
+            const bool other_conversation = (int64_t) ids.size() < park_turn ||
+                !std::equal(live.begin(), live.begin() + park_turn, ids.begin());
+            if (pipeline_active_rows && req_park >= 0 && req_park < (int) bs.size() && !bs[(size_t) req_park].active &&
+                req_park != admit_slot && req_park != slot_source && live_ok && !live.empty() &&
+                other_conversation && (!from_live || incoming || slot_source >= 0) && !pin_sibling) {
+                const auto t0 = Clock::now();
+                BSlot& sl = bs[(size_t) req_park];
+                if (copy_to_slot(req_park, live, err)) {
+                    sl = BSlot{};
+                    sl.cached = true;
+                    sl.ids = live;
+                    sl.cvec = cvec_cached;
+                    sl.img = !live_imgs.empty();   // pictures: not matched again by tokens alone
+                    const ConvCheckpoint* best = nullptr;
+                    for (const ConvCheckpoint& c : checks)
+                        if (c.ids.size() < live.size() && (best == nullptr || c.ids.size() > best->ids.size()) &&
+                            std::equal(c.ids.begin(), c.ids.end(), live.begin()))
+                            best = &c;
+                    if (best != nullptr && !sl.img) sl.checks.push_back(*best);
+                    std::fprintf(stderr, "strata batch: slot %d keeps the previous conversation (%zu tokens, copied in "
+                                         "%.1f ms)\n", req_park, live.size(),
+                                 std::chrono::duration<double, std::milli>(Clock::now() - t0).count());
+                    std::printf("PARKED %d %zu\n", req_park, sl.img ? (size_t) 0 : live.size());
+                } else {
+                    std::fprintf(stderr, "strata batch: parking into slot %d failed (%s)\n", req_park, err.c_str());
+                    err.clear();
+                    sl.cached = false;   // its sessions may be half written
+                    sl.checks.clear();
+                    std::printf("PARKED %d 0\n", req_park);
+                }
+                std::fflush(stdout);
+            } else if (req_park >= 0) {
+                std::fprintf(stderr, "strata batch: park=%d not used (rows=%d live_ok=%d live=%zu turn=%lld other=%d "
+                                     "resume=%lld from_live=%d source=%d admit=%d active=%d)\n", req_park,
+                             pipeline_active_rows ? 1 : 0, live_ok ? 1 : 0, live.size(), (long long) park_turn,
+                             other_conversation ? 1 : 0, (long long) resume,
+                             from_live ? 1 : 0, slot_source, admit_slot,
+                             req_park < (int) bs.size() && bs[(size_t) req_park].active ? 1 : 0);
+            }
             // --conversation-cache-park-gain N: a park now would supersede the entry parked_prefix_tokens() reports (the copy
             // this conversation wrote last), so a conversation that advanced fewer than N tokens since then keeps it:
             // it still holds this conversation's prefix, and re-parking writes the whole snapshot only for the next
@@ -19025,6 +19094,7 @@ int main(int argc, char** argv) {
                     }
                     live_imgs.clear();
                     resume = slot_tokens;
+                    observed_slot_source = slot_source;
                     from_live = true;
                     std::fprintf(stderr, "strata batch: slot %d gave back %lld tokens of this conversation (%s) in "
                                  "%.1f ms\n", slot_source, (long long) slot_tokens,
@@ -19127,6 +19197,12 @@ int main(int argc, char** argv) {
                              (long long) resume, from_live ? "live" : "checkpoint",
                              std::chrono::duration<double, std::milli>(Clock::now() - t0).count(),
                              conversations.size(), conversations.bytes());
+            }
+            // Optional protocol metadata, emitted only after a successful restore.
+            // It describes the source, never a batch execution-slot reservation.
+            if (pipeline_active_rows) {
+                std::printf("CACHE_SOURCE %d %lld\n", observed_slot_source, (long long) resume);
+                std::fflush(stdout);
             }
             if (want_cvec != cvec_cached) {
                 live_ok = false;
