@@ -150,11 +150,11 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [],
-   "first_commit": null,
-   "first_date": null,
-   "since": null,
-   "last_commit": null,
-   "last_date": null,
+   "first_commit": "cc4ccb67c1",
+   "first_date": "2026-11-19",
+   "since": "v0.2.17",
+   "last_commit": "cc4ccb67c1",
+   "last_date": "2026-11-19",
    "status": "research",
    "owner": "program",
    "note": "[reviewed] #5540, opt-in (SYCL, off by default): count the helper cards' caches and the peer tier when deciding whether the adaptive expert tier has anything to promote; with every expert on some GPU the tier is skipped (the PR measured decode 32.1 to 61.3 tok/s on two Arc Pro B70 in helper mode; not measured by us).",
@@ -409,8 +409,8 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "4058aa782b",
-   "last_date": "2026-11-17",
+   "last_commit": "ca99e886f7",
+   "last_date": "2026-11-19",
    "status": "default",
    "owner": "program",
    "note": "=2 is the default of a compute capability 12.x CUDA card with 16 GiB of memory or less (RTX 5050 to 5080 and laptop parts), decided by the main card; other cards keep it off; not bit-exact; one-card runs only; STRATA_ADAPT_FETCH=0 is the way back (BW-9 in RESULTS-BW-F.md: decode +4 to +43% by kind, hit rate 54.4 to 62.0%, KL ratio 0.948 [0.830, 1.063])",
@@ -734,8 +734,8 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "4058aa782b",
-   "last_date": "2026-11-17",
+   "last_commit": "15b55d5581",
+   "last_date": "2026-11-19",
    "status": "opt-in",
    "owner": "program",
    "note": "[reviewed] \"adaptive swap copies overlap the next window\"; measured gain, engine turns it off on layer splits. [checklist-143.md:9]",
@@ -1009,7 +1009,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL_ARC.md:357"
+    "docs/INTEL_ARC.md:388"
    ],
    "first_commit": null,
    "first_date": null,
@@ -1312,12 +1312,12 @@
    "launch_sets": [
     {
      "file": "app/host/server/native-resources.mjs",
-     "line": 179,
+     "line": 183,
      "value": "String(gib)"
     },
     {
      "file": "app/host/server/native-resources.mjs",
-     "line": 180,
+     "line": 184,
      "value": "${gib}"
     }
    ],
@@ -1639,7 +1639,8 @@
    "launch_reads": [],
    "doc_mentions": [
     "docs/INTEL_ARC.md:311",
-    "docs/INTEL_ARC.md:313"
+    "docs/INTEL_ARC.md:313",
+    "docs/INTEL_ARC.md:350"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -1692,8 +1693,8 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "4058aa782b",
-   "last_date": "2026-11-17",
+   "last_commit": "7e674a9c66",
+   "last_date": "2026-11-19",
    "status": "default",
    "owner": "kernels/cuda",
    "note": "[auto] on by default for some GPU architectures only (sm_86 src/core/nv_defaults.cpp:35=1); opt-in elsewhere; the variable overrides it",
@@ -1762,7 +1763,7 @@
    "launch_sets": [
     {
      "file": "terminal/setup.py",
-     "line": 4282,
+     "line": 4296,
      "value": "\"1\""
     }
    ],
@@ -2185,8 +2186,8 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "4058aa782b",
-   "last_date": "2026-11-17",
+   "last_commit": "f653fe9489",
+   "last_date": "2026-11-19",
    "status": "default",
    "owner": "core",
    "note": "the engine's own default (the parallel-request stack, bit-exact, QUAL-PAR): on with 2 or more batch slots on Linux CUDA (arch_defaults.cpp parallel_default_env_cuda, applied in generate.cpp) and on Windows gfx1151; NAME=0 turns it off; a value you set is kept",
@@ -2453,8 +2454,8 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "4058aa782b",
-   "last_date": "2026-11-17",
+   "last_commit": "f653fe9489",
+   "last_date": "2026-11-19",
    "status": "default",
    "owner": "core",
    "note": "the engine's own default (the parallel-request stack, bit-exact, QUAL-PAR): on with 2 or more batch slots on Linux CUDA (arch_defaults.cpp parallel_default_env_cuda, applied in generate.cpp) and on Windows gfx1151; NAME=0 turns it off; a value you set is kept",
@@ -2775,6 +2776,156 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_BENCH_GAP_US",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/hy4flash/run/cpu_experts_test.cpp",
+     "line": 410,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    },
+    {
+     "file": "engine/src/hy4flash/run/cpu_experts_test.cpp",
+     "line": 410,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "research",
+   "owner": "",
+   "note": "",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_BENCH_K",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/hy4flash/run/cpu_experts_test.cpp",
+     "line": 425,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    },
+    {
+     "file": "engine/src/hy4flash/run/cpu_experts_test.cpp",
+     "line": 425,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "research",
+   "owner": "",
+   "note": "",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_BENCH_MAXT",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/hy4flash/run/cpu_experts_test.cpp",
+     "line": 409,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    },
+    {
+     "file": "engine/src/hy4flash/run/cpu_experts_test.cpp",
+     "line": 409,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "research",
+   "owner": "",
+   "note": "",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_BENCH_NO512",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/hy4flash/run/cpu_experts_test.cpp",
+     "line": 408,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "research",
+   "owner": "",
+   "note": "",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_BENCH_PLANAR",
    "backends": [
     "sycl"
@@ -2912,11 +3063,11 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [],
-   "first_commit": null,
-   "first_date": null,
-   "since": null,
-   "last_commit": null,
-   "last_date": null,
+   "first_commit": "43e44ac3b7",
+   "first_date": "2026-11-19",
+   "since": "v0.2.17",
+   "last_commit": "43e44ac3b7",
+   "last_date": "2026-11-19",
    "status": "research",
    "owner": "program",
    "note": "[reviewed] #6166, opt-in diagnostic (Windows file tier, off by default): re-read every expert blob the direct reader delivered through a buffered handle and compare, to tell a corrupt direct read from a poisoned cache slot (#879).",
@@ -2945,11 +3096,11 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [],
-   "first_commit": null,
-   "first_date": null,
-   "since": null,
-   "last_commit": null,
-   "last_date": null,
+   "first_commit": "43e44ac3b7",
+   "first_date": "2026-11-19",
+   "since": "v0.2.17",
+   "last_commit": "43e44ac3b7",
+   "last_date": "2026-11-19",
    "status": "research",
    "owner": "program",
    "note": "[reviewed] #6166: seconds the blob verifier (STRATA_BLOB_VERIFY) holds off at start, so the start-up fill is not slowed.",
@@ -3641,11 +3792,11 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [],
-   "first_commit": null,
-   "first_date": null,
-   "since": null,
-   "last_commit": null,
-   "last_date": null,
+   "first_commit": "b3ba3073cd",
+   "first_date": "2026-11-19",
+   "since": "v0.2.17",
+   "last_commit": "b3ba3073cd",
+   "last_date": "2026-11-19",
    "status": "rollback",
    "owner": "core",
    "note": "threads of the load-time model conversion (default: the machine's threads, up to 8); 1 = the old single-threaded loop; the bytes do not depend on the count (RESULTS-0217-FIXSPEED.md)",
@@ -3724,6 +3875,374 @@
    "status": "opt-in",
    "owner": "core",
    "note": "[reviewed] Review states the dma copy priority switch stays opt-in. [phaseA-tests/review-144.md:350]",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_CPUEXP_ACT",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/hy4flash/run/hy4_cpu_experts.cpp",
+     "line": 2056,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    },
+    {
+     "file": "engine/src/hy4flash/run/hy4_graph.hip.h",
+     "line": 1333,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "research",
+   "owner": "",
+   "note": "",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_CPUEXP_COLD_CACHE_MB",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/hy4flash/run/hy4_cpu_experts.cpp",
+     "line": 2773,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": "256",
+   "engine_sets": [
+    {
+     "file": "engine/src/hy4flash/run/cpu_experts_test.cpp",
+     "line": 582
+    },
+    {
+     "file": "engine/src/hy4flash/run/cpu_experts_test.cpp",
+     "line": 584
+    }
+   ],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "research",
+   "owner": "",
+   "note": "",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_CPUEXP_COLD_IO",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/hy4flash/run/hy4_cpu_experts.cpp",
+     "line": 2776,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    },
+    {
+     "file": "engine/src/hy4flash/sycl/sy_graph.h",
+     "line": 173,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [
+    {
+     "file": "engine/src/hy4flash/sycl/sy_graph.h",
+     "line": 174
+    }
+   ],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "research",
+   "owner": "",
+   "note": "",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_CPUEXP_COLD_READERS",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/hy4flash/run/hy4_cpu_experts.cpp",
+     "line": 2775,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": "0",
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "research",
+   "owner": "",
+   "note": "",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_CPUEXP_COLLAPSE",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/hy4flash/run/hy4_cpu_experts.cpp",
+     "line": 2002,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "research",
+   "owner": "",
+   "note": "",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_CPUEXP_KERNEL",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/hy4flash/run/hy4_cpu_experts.cpp",
+     "line": 2023,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    },
+    {
+     "file": "engine/src/hy4flash/run/hy4_cpu_experts.cpp",
+     "line": 2042,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "research",
+   "owner": "",
+   "note": "",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_CPUEXP_PF",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/hy4flash/run/hy4_cpu_experts.cpp",
+     "line": 2197,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "research",
+   "owner": "",
+   "note": "",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_CPUEXP_PIN",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/hy4flash/run/hy4_cpu_experts.cpp",
+     "line": 2071,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    },
+    {
+     "file": "engine/src/hy4flash/run/hy4_cpu_experts.cpp",
+     "line": 2208,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "research",
+   "owner": "",
+   "note": "",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_CPUEXP_SCHED",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/hy4flash/run/hy4_cpu_experts.cpp",
+     "line": 2195,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "research",
+   "owner": "",
+   "note": "",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_CPUEXP_SPIN_US",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/hy4flash/run/hy4_cpu_experts.cpp",
+     "line": 2206,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "research",
+   "owner": "",
+   "note": "",
    "retire_after": "",
    "retired_in": ""
   },
@@ -3881,7 +4400,7 @@
    "launch_sets": [
     {
      "file": "terminal/setup.py",
-     "line": 4280,
+     "line": 4294,
      "value": "\"1\""
     }
    ],
@@ -4481,7 +5000,7 @@
    "launch_reads": [
     {
      "file": "terminal/setup.py",
-     "line": 8738
+     "line": 8755
     }
    ],
    "doc_mentions": [
@@ -4505,8 +5024,8 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "4058aa782b",
-   "last_date": "2026-11-17",
+   "last_commit": "ca99e886f7",
+   "last_date": "2026-11-19",
    "status": "rollback",
    "owner": "core",
    "note": "[auto] described as on by default (docs/MMVQ_IL_TABLE.md:18); rollback wording at docs/release-notes-0.2.7.md:33; first named in release notes 0.2.7; name first appears in v0.2.7",
@@ -4645,8 +5164,8 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "4058aa782b",
-   "last_date": "2026-11-17",
+   "last_commit": "64b02d0c3f",
+   "last_date": "2026-11-19",
    "status": "opt-in",
    "owner": "prefill",
    "note": "[auto] documented for users (docs/AMD_HIP.md:272), 1 more",
@@ -5975,8 +6494,8 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "4058aa782b",
-   "last_date": "2026-11-17",
+   "last_commit": "7b51c85cdc",
+   "last_date": "2026-11-19",
    "status": "default",
    "owner": "core",
    "note": "[reviewed] \"Keep (owner rule: bit-exact gains are kept)\"; sm_90+ only, kept off elsewhere unmeasured. [blackwell/decisions/E21.md:14]",
@@ -6071,11 +6590,11 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [],
-   "first_commit": null,
-   "first_date": null,
-   "since": null,
-   "last_commit": null,
-   "last_date": null,
+   "first_commit": "20338d1f86",
+   "first_date": "2026-11-19",
+   "since": "v0.2.17",
+   "last_commit": "20338d1f86",
+   "last_date": "2026-11-19",
    "status": "research",
    "owner": "core",
    "note": "measuring switch: times the parts of the CPU pool's native expert rows (RESULTS-BW-C.md); off without the variable",
@@ -6926,8 +7445,8 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "4058aa782b",
-   "last_date": "2026-11-17",
+   "last_commit": "ca99e886f7",
+   "last_date": "2026-11-19",
    "status": "research",
    "owner": "core",
    "note": "[auto] not documented for users; code default not readable from the call",
@@ -7437,11 +7956,11 @@
    "doc_mentions": [
     "docs/DETAILS.md:324"
    ],
-   "first_commit": null,
-   "first_date": null,
-   "since": null,
-   "last_commit": null,
-   "last_date": null,
+   "first_commit": "dc3ace6a0c",
+   "first_date": "2026-11-19",
+   "since": "v0.2.17",
+   "last_commit": "dc3ace6a0c",
+   "last_date": "2026-11-19",
    "status": "research",
    "owner": "program",
    "note": "[reviewed] #5561, opt-in (Linux file tier, off by default): mark the mapped expert files MADV_SEQUENTIAL so each page fault reads the drive's read-ahead window; for experts much larger than the file cache. Author's numbers only (follow-up turns 65 to 24 s on one PC).",
@@ -7709,7 +8228,7 @@
    "launch_sets": [
     {
      "file": "terminal/setup.py",
-     "line": 4283,
+     "line": 4297,
      "value": "\"1\""
     }
    ],
@@ -7841,8 +8360,8 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "4058aa782b",
-   "last_date": "2026-11-17",
+   "last_commit": "ca99e886f7",
+   "last_date": "2026-11-19",
    "status": "opt-in",
    "owner": "kernels/native_grouped_parity.cpp",
    "note": "[reviewed] Users run STRATA_EXP_MODE=8 on sm_75; mode 4 measured slower; documented tuning mode. [_issues_dump/2197.md:564]",
@@ -8384,8 +8903,8 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "4058aa782b",
-   "last_date": "2026-11-17",
+   "last_commit": "4e94b05592",
+   "last_date": "2026-11-19",
    "status": "research",
    "owner": "dsv41",
    "note": "[auto] off unless set, not documented for users",
@@ -8433,6 +8952,18 @@
    ],
    "reads": [
     {
+     "file": "engine/src/hy4flash/run/hy4_cpu_experts.cpp",
+     "line": 1461,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    },
+    {
+     "file": "engine/src/hy4flash/run/hy4_cpu_experts.cpp",
+     "line": 1494,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    },
+    {
      "file": "engine/src/kernels/cpu/expert_layout.cpp",
      "line": 30,
      "backend": "cpu",
@@ -8459,8 +8990,8 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "4058aa782b",
-   "last_date": "2026-11-17",
+   "last_commit": "4e94b05592",
+   "last_date": "2026-11-19",
    "status": "research",
    "owner": "kernels/cpu",
    "note": "[auto] not documented for users; code default not readable from the call",
@@ -9243,7 +9774,7 @@
    "launch_sets": [
     {
      "file": "terminal/setup.py",
-     "line": 4279,
+     "line": 4293,
      "value": "\"1\""
     }
    ],
@@ -9386,7 +9917,7 @@
    "launch_sets": [
     {
      "file": "terminal/setup.py",
-     "line": 4279,
+     "line": 4293,
      "value": "\"1\""
     }
    ],
@@ -9492,7 +10023,7 @@
    "launch_sets": [
     {
      "file": "terminal/setup.py",
-     "line": 4279,
+     "line": 4293,
      "value": "\"1\""
     }
    ],
@@ -9631,7 +10162,7 @@
    "launch_sets": [
     {
      "file": "terminal/setup.py",
-     "line": 4279,
+     "line": 4293,
      "value": "\"2\""
     }
    ],
@@ -9797,7 +10328,7 @@
    "launch_sets": [
     {
      "file": "terminal/setup.py",
-     "line": 4283,
+     "line": 4297,
      "value": "\"1\""
     }
    ],
@@ -10950,8 +11481,8 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "4058aa782b",
-   "last_date": "2026-11-17",
+   "last_commit": "7e674a9c66",
+   "last_date": "2026-11-19",
    "status": "opt-in",
    "owner": "kernels/cuda",
    "note": "[reviewed] STRATA_GR_DOWN_TG=2 is an existing measured +2.4% tuning option. [phaseA-tests/notes-147-l620.md:106]",
@@ -11435,8 +11966,8 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "4058aa782b",
-   "last_date": "2026-11-17",
+   "last_commit": "7b51c85cdc",
+   "last_date": "2026-11-19",
    "status": "default",
    "owner": "kernels/cuda",
    "note": "[auto] on by default for some GPU architectures only (sm_86 src/core/nv_defaults.cpp:36=1; sm_60 src/core/nv_defaults.cpp:51=1); opt-in elsewhere; the variable overrides it",
@@ -11536,8 +12067,8 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "4058aa782b",
-   "last_date": "2026-11-17",
+   "last_commit": "7b51c85cdc",
+   "last_date": "2026-11-19",
    "status": "research",
    "owner": "kernels/cuda",
    "note": "[auto] not documented for users; code default not readable from the call",
@@ -11639,8 +12170,8 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "4058aa782b",
-   "last_date": "2026-11-17",
+   "last_commit": "7b51c85cdc",
+   "last_date": "2026-11-19",
    "status": "rollback",
    "owner": "kernels/fused_gr_bench.cpp",
    "note": "[reviewed] On by default since 0.2.7 on cc 12.0 cards over 13 GiB; variable turns it off elsewhere on. [docs/DETAILS.md:1117]",
@@ -11674,8 +12205,8 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "4058aa782b",
-   "last_date": "2026-11-17",
+   "last_commit": "7b51c85cdc",
+   "last_date": "2026-11-19",
    "status": "research",
    "owner": "kernels/cuda",
    "note": "[auto] off unless set, not documented for users",
@@ -11751,8 +12282,8 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "4058aa782b",
-   "last_date": "2026-11-17",
+   "last_commit": "7b51c85cdc",
+   "last_date": "2026-11-19",
    "status": "default",
    "owner": "kernels/cuda",
    "note": "[auto] on by default for some GPU architectures only (sm_86 src/core/nv_defaults.cpp:37=1); opt-in elsewhere; the variable overrides it",
@@ -12325,8 +12856,8 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "4058aa782b",
-   "last_date": "2026-11-17",
+   "last_commit": "ca99e886f7",
+   "last_date": "2026-11-19",
    "status": "default",
    "owner": "core",
    "note": "[auto] on by default for some GPU architectures only (? src/core/arch_defaults.cpp:167=1; gfx1151 (Windows) src/core/arch_defaults.cpp:177=1; sm_121 src/core/nv_defaults.cpp:72=1); opt-in elsewhere; the variable overrides it",
@@ -12365,8 +12896,8 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "4058aa782b",
-   "last_date": "2026-11-17",
+   "last_commit": "501738c68e",
+   "last_date": "2026-11-19",
    "status": "research",
    "owner": "prefill",
    "note": "[auto] not documented for users; code default not readable from the call",
@@ -13273,6 +13804,78 @@
    "status": "opt-in",
    "owner": "program",
    "note": "[auto] documented for users (docs/DETAILS.md:1097), 1 more",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_HY4_KERNELS",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/hy4flash/metal/hy4_metal_main.cpp",
+     "line": 1556,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    },
+    {
+     "file": "engine/src/hy4flash/metal/hy4_metal_main.cpp",
+     "line": 1603,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "research",
+   "owner": "",
+   "note": "",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_HY4_TAIL_SKIP",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/hy4flash/run/hy4_graph.hip.h",
+     "line": 1341,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": "0",
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "hy4-dfly-distill",
+   "note": "Opt-in rank cutoff (1..15) for skipping missed CPU/cold-tier routed experts in Hy4-Flash decode/verify; 0 = off by default (exact lossless).",
    "retire_after": "",
    "retired_in": ""
   },
@@ -15446,11 +16049,11 @@
    "doc_mentions": [
     "docs/DETAILS.md:1127"
    ],
-   "first_commit": null,
-   "first_date": null,
-   "since": null,
-   "last_commit": null,
-   "last_date": null,
+   "first_commit": "461b94b43a",
+   "first_date": "2026-11-19",
+   "since": "v0.2.17",
+   "last_commit": "16c3fa0cd1",
+   "last_date": "2026-11-19",
    "status": "research",
    "owner": "core",
    "note": "token floor of the AVX-512 rows (default 8); floors 3 and 4 measured 1-6% slower decode on a Xeon 8352V (RESULTS-BW-E.md)",
@@ -15528,8 +16131,8 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "4058aa782b",
-   "last_date": "2026-11-17",
+   "last_commit": "b4bc5f6f6a",
+   "last_date": "2026-11-19",
    "status": "research",
    "owner": "kernels/cuda",
    "note": "[reviewed] Measured as KqSplit 0 vs 1 for a no-regression check; no verdict. [notes-intel-quants.md:131]",
@@ -16772,11 +17375,11 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [],
-   "first_commit": null,
-   "first_date": null,
-   "since": null,
-   "last_commit": null,
-   "last_date": null,
+   "first_commit": "3a0e346db1",
+   "first_date": "2026-11-19",
+   "since": "v0.2.17",
+   "last_commit": "ca99e886f7",
+   "last_date": "2026-11-19",
    "status": "default",
    "owner": "core",
    "note": "L2 prefetch of the next layer's dense weights while the window waits for CPU experts; on for compute capability 12.0 cards, off elsewhere; bit-exact, window -1.7%, decode +1.4% (RESULTS-BW-C.md); =0 is the way back",
@@ -16805,11 +17408,11 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [],
-   "first_commit": null,
-   "first_date": null,
-   "since": null,
-   "last_commit": null,
-   "last_date": null,
+   "first_commit": "3a0e346db1",
+   "first_date": "2026-11-19",
+   "since": "v0.2.17",
+   "last_commit": "3a0e346db1",
+   "last_date": "2026-11-19",
    "status": "research",
    "owner": "core",
    "note": "blocks of the L2 prefetch kernel (STRATA_L2_PF); tuning knob (RESULTS-BW-C.md)",
@@ -16838,11 +17441,11 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [],
-   "first_commit": null,
-   "first_date": null,
-   "since": null,
-   "last_commit": null,
-   "last_date": null,
+   "first_commit": "3a0e346db1",
+   "first_date": "2026-11-19",
+   "since": "v0.2.17",
+   "last_commit": "3a0e346db1",
+   "last_date": "2026-11-19",
    "status": "research",
    "owner": "core",
    "note": "keep only the first N MiB of a layer in the L2 prefetch (STRATA_L2_PF); a cap at 72 MiB measured the same as none (RESULTS-BW-C.md)",
@@ -17062,7 +17665,7 @@
    "launch_sets": [
     {
      "file": "terminal/setup.py",
-     "line": 4283,
+     "line": 4297,
      "value": "\"1\""
     }
    ],
@@ -17220,8 +17823,8 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "4058aa782b",
-   "last_date": "2026-11-17",
+   "last_commit": "240aeb9858",
+   "last_date": "2026-11-19",
    "status": "default",
    "owner": "prefill",
    "note": "[auto] on unless set to 0 (src/prefill/prefill.cpp:6999)",
@@ -17743,8 +18346,8 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "4058aa782b",
-   "last_date": "2026-11-17",
+   "last_commit": "c9f031dcd8",
+   "last_date": "2026-11-19",
    "status": "rollback",
    "owner": "core",
    "note": "[reviewed] under a container memory limit the memory guard and the expert arena's RAM check credit active and inactive file cache minus the engine's own mapped pages; set to 1 brings back the old inactive-only credit. [src/core/conversation_memory.cpp:363]",
@@ -17785,8 +18388,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL_ARC.md:338",
-    "docs/INTEL_ARC.md:346"
+    "docs/INTEL_ARC.md:369",
+    "docs/INTEL_ARC.md:377"
    ],
    "first_commit": "2ad30a8d7d",
    "first_date": "2026-11-19",
@@ -18161,6 +18764,39 @@
    "status": "research",
    "owner": "metal/engine",
    "note": "[auto] diagnostic / trace / measurement switch by name or by code, not documented for users",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_METAL_EXP_CACHE_GB",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/hy4flash/metal/hy4_metal_main.cpp",
+     "line": 628,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "float",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "hy4flash/metal",
+   "note": "Override Metal LRU GPU expert cache budget (GB) when cold experts are enabled",
    "retire_after": "",
    "retired_in": ""
   },
@@ -19996,7 +20632,7 @@
    "launch_sets": [
     {
      "file": "terminal/setup.py",
-     "line": 10061,
+     "line": 10330,
      "value": "\"1\" if stream else \"0\""
     }
    ],
@@ -20301,7 +20937,7 @@
     "docs/INTEL.md:388",
     "docs/INTEL_ARC.md:65",
     "docs/INTEL_ARC.md:148",
-    "docs/INTEL_ARC.md:456",
+    "docs/INTEL_ARC.md:487",
     "docs/bench-results/2026-10-04-community-2x-arc-pro-b60/README.md:52",
     "docs/bench-results/2026-10-05-community-arc-b65/BUILD.md:91",
     "docs/bench-results/2026-10-07-community-arc-b65-v01402/BUILD.md:89"
@@ -20413,8 +21049,8 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "4058aa782b",
-   "last_date": "2026-11-17",
+   "last_commit": "240aeb9858",
+   "last_date": "2026-11-19",
    "status": "opt-in",
    "owner": "prefill",
    "note": "[auto] documented for users (docs/BATCHING.md:127)",
@@ -20491,7 +21127,7 @@
    "launch_sets": [
     {
      "file": "terminal/setup.py",
-     "line": 4562,
+     "line": 4576,
      "value": "\"1\""
     }
    ],
@@ -20544,8 +21180,8 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "4058aa782b",
-   "last_date": "2026-11-17",
+   "last_commit": "240aeb9858",
+   "last_date": "2026-11-19",
    "status": "research",
    "owner": "prefill",
    "note": "[auto] off unless set, not documented for users",
@@ -20574,11 +21210,11 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [],
-   "first_commit": null,
-   "first_date": null,
-   "since": null,
-   "last_commit": null,
-   "last_date": null,
+   "first_commit": "240aeb9858",
+   "first_date": "2026-11-19",
+   "since": "v0.2.17",
+   "last_commit": "240aeb9858",
+   "last_date": "2026-11-19",
    "status": "research",
    "owner": "prefill",
    "note": "[reviewed] #6023, opt-in (off by default): the experts of a prompt chunk in readiness-tier and row-count order, and an async P2P copy of a chunk's hidden state between layer-split stages. On an MMQ-free build, 2x Tesla V100-SXM2 NVLink, IQ3_XXS, 5 pairs: layer split about half resident +1.2% at 64K and +1.1% at 8K, tokens identical; --peer-device 0%. With STRATA_PF_WMMA=1 the tokens of 4 of 9 BASE-05 prompts differ (the FP16 tiles), +11.4% / +5.2% (layer split, about half resident) and +27.6% / +24.0% (--peer-device, about half).",
@@ -20710,7 +21346,7 @@
    "launch_sets": [
     {
      "file": "terminal/setup.py",
-     "line": 4282,
+     "line": 4296,
      "value": "\"1\""
     }
    ],
@@ -21844,8 +22480,8 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "4058aa782b",
-   "last_date": "2026-11-17",
+   "last_commit": "6175deb948",
+   "last_date": "2026-11-19",
    "status": "research",
    "owner": "core",
    "note": "[auto] off unless set, not documented for users",
@@ -21877,8 +22513,8 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "4058aa782b",
-   "last_date": "2026-11-17",
+   "last_commit": "8d92f0a388",
+   "last_date": "2026-11-19",
    "status": "default",
    "owner": "core",
    "note": "[auto] described as on by default (release-v0.1.44.md:19)",
@@ -22991,11 +23627,11 @@
    "doc_mentions": [
     "docs/DETAILS.md:1127"
    ],
-   "first_commit": null,
-   "first_date": null,
-   "since": null,
-   "last_commit": null,
-   "last_date": null,
+   "first_commit": "461b94b43a",
+   "first_date": "2026-11-19",
+   "since": "v0.2.17",
+   "last_commit": "16c3fa0cd1",
+   "last_date": "2026-11-19",
    "status": "rollback",
    "owner": "core",
    "note": "=1 never takes the AVX-512 VNNI rows of UD-Q4_K_XL's Q4_K gate/up and Q5_1 / Q8_0 down experts (kq_avx512.cpp, bit-exact against the one-token dot, groups of 8 tokens and more); BW-4 f-bw-e",
@@ -23569,11 +24205,11 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [],
-   "first_commit": null,
-   "first_date": null,
-   "since": null,
-   "last_commit": null,
-   "last_date": null,
+   "first_commit": "87c9821bb1",
+   "first_date": "2026-11-19",
+   "since": "v0.2.17",
+   "last_commit": "87c9821bb1",
+   "last_date": "2026-11-19",
    "status": "default",
    "owner": "host",
    "note": "Linux HIP only: the engine sets MPOL_LOCAL at the top of main() when kernel.numa_balancing is on and no memory policy was set; =keep leaves the default policy (the NUMA scanner evicted the GPU queues on two-socket hosts).",
@@ -23693,8 +24329,8 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "4058aa782b",
-   "last_date": "2026-11-17",
+   "last_commit": "e8814ae4a2",
+   "last_date": "2026-11-19",
    "status": "rollback",
    "owner": "kernels/cpu",
    "note": "[reviewed] NUMA split turned on by default in 0.2.2; =0 turns it off. [phaseA-tests/_issues_dump/3667.md:51]",
@@ -23871,7 +24507,7 @@
    "launch_reads": [
     {
      "file": "terminal/setup.py",
-     "line": 8737
+     "line": 8754
     }
    ],
    "doc_mentions": [
@@ -24189,11 +24825,11 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [],
-   "first_commit": null,
-   "first_date": null,
-   "since": null,
-   "last_commit": null,
-   "last_date": null,
+   "first_commit": "5b1725f0ab",
+   "first_date": "2026-11-19",
+   "since": "v0.2.17",
+   "last_commit": "5b1725f0ab",
+   "last_date": "2026-11-19",
    "status": "research",
    "owner": "",
    "note": "[reviewed] #6023, opt-in (off by default): =1 with --peer-device on two cards that reach each other over P2P: the peer's expert outputs go straight into the primary's hit_out buffer. Measured on 2x Tesla V100-SXM2 32 GB NVLink, IQ3_XXS, 5 pairs, tokens identical (BASE-05 9 of 9 with all experts resident and with about half): decode +0.6% at 8K and +1.3% at 64K with all resident, +3.6% and +5.7% with about half resident.",
@@ -24222,11 +24858,11 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [],
-   "first_commit": null,
-   "first_date": null,
-   "since": null,
-   "last_commit": null,
-   "last_date": null,
+   "first_commit": "5b1725f0ab",
+   "first_date": "2026-11-19",
+   "since": "v0.2.17",
+   "last_commit": "5b1725f0ab",
+   "last_date": "2026-11-19",
    "status": "research",
    "owner": "",
    "note": "[reviewed] #6023, opt-in (off by default): =1: the layer split's hand-off buffers sit in the next stage's VRAM and the stage before writes them over P2P; unset, pinned host memory. Measured on 2x Tesla V100-SXM2 32 GB NVLink, IQ3_XXS, layer split, 5 pairs: prompt -0.2% at 8K and 64K, decode -0.3% and -2.0%, tokens identical (BASE-05 9 of 9, all experts resident and about half). No gain, so off.",
@@ -25347,8 +25983,8 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "4058aa782b",
-   "last_date": "2026-11-17",
+   "last_commit": "822a6b3ebd",
+   "last_date": "2026-11-19",
    "status": "opt-in",
    "owner": "core",
    "note": "[reviewed] Workaround for opt-in peer mode first-request fault (26/26 clean); hardware workaround. [rel212/BODY-FULL.md:259]",
@@ -25500,7 +26136,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL_ARC.md:338"
+    "docs/INTEL_ARC.md:369"
    ],
    "first_commit": null,
    "first_date": null,
@@ -25578,8 +26214,8 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "4058aa782b",
-   "last_date": "2026-11-17",
+   "last_commit": "9e3d24a074",
+   "last_date": "2026-11-19",
    "status": "default",
    "owner": "prefill",
    "note": "[auto] on by default for some GPU architectures only (gfx1151 (Windows) src/core/arch_defaults.cpp:189=1); opt-in elsewhere; the variable overrides it",
@@ -25690,8 +26326,8 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "4058aa782b",
-   "last_date": "2026-11-17",
+   "last_commit": "76f81fa9e0",
+   "last_date": "2026-11-19",
    "status": "default",
    "owner": "prefill",
    "note": "[auto] on by default for some GPU architectures only (gfx1151 (Windows) src/core/arch_defaults.cpp:185=1); opt-in elsewhere; the variable overrides it",
@@ -26236,8 +26872,8 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "4058aa782b",
-   "last_date": "2026-11-17",
+   "last_commit": "bf17993cad",
+   "last_date": "2026-11-19",
    "status": "opt-in",
    "owner": "prefill",
    "note": "[auto] documented for users (docs/DETAILS.md:1629), 1 more",
@@ -26314,8 +26950,8 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "4058aa782b",
-   "last_date": "2026-11-17",
+   "last_commit": "76f81fa9e0",
+   "last_date": "2026-11-19",
    "status": "rollback",
    "owner": "prefill",
    "note": "[OWN-4A 11-10] Q5_0 down layers (UD-IQ4_XS-v31) on the fused prompt kernels: default ON on gfx12 under Linux (0.2.15, owner 11-10) and on gfx1151 under Windows (round 0217); =0 keeps the dequantize + FP16 GEMM route (two releases), =1 turns it on elsewhere (gfx12 Windows, Linux gfx1151)",
@@ -26897,8 +27533,8 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "4058aa782b",
-   "last_date": "2026-11-17",
+   "last_commit": "eda3030f5d",
+   "last_date": "2026-11-19",
    "status": "opt-in",
    "owner": "prefill",
    "note": "[reviewed] Listed among opt-ins checked as off unless set. [gh-sweep-1031/INT-TRIAL2.md:95]",
@@ -27337,7 +27973,7 @@
    "launch_sets": [
     {
      "file": "terminal/setup.py",
-     "line": 4280,
+     "line": 4294,
      "value": "\"1\""
     }
    ],
@@ -27645,8 +28281,8 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "4058aa782b",
-   "last_date": "2026-11-17",
+   "last_commit": "822a6b3ebd",
+   "last_date": "2026-11-19",
    "status": "default",
    "owner": "prefill",
    "note": "[auto] tunable with a built-in default 0.35 (src/prefill/prefill.cpp:2646)",
@@ -28826,8 +29462,8 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "4058aa782b",
-   "last_date": "2026-11-17",
+   "last_commit": "3684cd5323",
+   "last_date": "2026-11-19",
    "status": "opt-in",
    "owner": "program",
    "note": "[reviewed] Shipped as opt-in in 0.2.7 with --batch-mtp. [phaseA-tests/gh027/bodies/3794.md:1]",
@@ -29861,7 +30497,7 @@
    "launch_sets": [
     {
      "file": "terminal/setup.py",
-     "line": 4284,
+     "line": 4298,
      "value": "\"1\""
     }
    ],
@@ -30189,11 +30825,11 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [],
-   "first_commit": null,
-   "first_date": null,
-   "since": null,
-   "last_commit": null,
-   "last_date": null,
+   "first_commit": "edef565b90",
+   "first_date": "2026-11-19",
+   "since": "v0.2.17",
+   "last_commit": "902ea23283",
+   "last_date": "2026-11-19",
    "status": "default",
    "owner": "core",
    "note": "the CPU pool's per-expert dependency queue (a layer's down rows start when its gate/up rows are done); bit-exact, window -2.9% on an RTX 5090 + EPYC box (RESULTS-BW-G.md); =0 is the way back",
@@ -30650,8 +31286,8 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "4058aa782b",
-   "last_date": "2026-11-17",
+   "last_commit": "595d409226",
+   "last_date": "2026-11-19",
    "status": "default",
    "owner": "prefill",
    "note": "[reviewed] CPU prefill share is armed by default in places (gfx12, below 1,024 tokens); variable tunes or disables. [phaseA-tests/amd-q/RESULTS.md:109]",
@@ -30682,11 +31318,11 @@
    "doc_mentions": [
     "docs/DETAILS.md:1126"
    ],
-   "first_commit": null,
-   "first_date": null,
-   "since": null,
-   "last_commit": null,
-   "last_date": null,
+   "first_commit": "a620ffb619",
+   "first_date": "2026-11-19",
+   "since": "v0.2.17",
+   "last_commit": "595d409226",
+   "last_date": "2026-11-19",
    "status": "rollback",
    "owner": "core",
    "note": "=0 keeps the default CPU prompt share's limit 3,072 tokens and 8-token experts; unset: the limit and expert width follow the card's PCIe link, the experts it does not hold and the pool (compute capability 12.0); =1: the same on any CUDA card (RESULTS-BW-H.md)",
@@ -30767,8 +31403,8 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "4058aa782b",
-   "last_date": "2026-11-17",
+   "last_commit": "a620ffb619",
+   "last_date": "2026-11-19",
    "status": "opt-in",
    "owner": "prefill",
    "note": "[reviewed] Documented CPU share extension, off by default. [release-v0.1.41.md:66]",
@@ -30806,11 +31442,11 @@
     "docs/DETAILS.md:1125",
     "docs/DETAILS.md:1126"
    ],
-   "first_commit": null,
-   "first_date": null,
-   "since": null,
-   "last_commit": null,
-   "last_date": null,
+   "first_commit": "16c3fa0cd1",
+   "first_date": "2026-11-19",
+   "since": "v0.2.17",
+   "last_commit": "a620ffb619",
+   "last_date": "2026-11-19",
    "status": "opt-in",
    "owner": "core",
    "note": "experts of up to N tokens may go to the CPU prompt share (default: 8; on a compute capability 12.0 card the link rule STRATA_PREFILL_CPU_SHARE_AUTO sets 32 or 64 where it raises the limit); 2,244-4,272 ms -> 1,828 ms at 4K on an x8 PCIe 4.0 link, KL ratio 1.054 [0.993, 1.120] (RESULTS-BW-E.md, RESULTS-BW-H.md)",
@@ -31054,8 +31690,8 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "4058aa782b",
-   "last_date": "2026-11-17",
+   "last_commit": "240aeb9858",
+   "last_date": "2026-11-19",
    "status": "default",
    "owner": "prefill",
    "note": "[reviewed] Grouped gather is default; =0 turns it off with no gain measured. [docs/DETAILS.md:1117]",
@@ -31774,11 +32410,11 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [],
-   "first_commit": null,
-   "first_date": null,
-   "since": null,
-   "last_commit": null,
-   "last_date": null,
+   "first_commit": "24a917fdcd",
+   "first_date": "2026-11-19",
+   "since": "v0.2.17",
+   "last_commit": "24a917fdcd",
+   "last_date": "2026-11-19",
    "status": "research",
    "owner": "program",
    "note": "[reviewed] #3821: the smallest chunk the --prefill-pipe rule picks, in tokens (rounded up to 256, clamped 256..4096); default 512, the rule as before. Author's numbers on 4x GP100 (-10% on a 1.1K-token read).",
@@ -32278,8 +32914,8 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "4058aa782b",
-   "last_date": "2026-11-17",
+   "last_commit": "ca99e886f7",
+   "last_date": "2026-11-19",
    "status": "opt-in",
    "owner": "program",
    "note": "[auto] documented for users (docs/SECOND_GPU.md:110), 1 more",
@@ -33768,8 +34404,8 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "4058aa782b",
-   "last_date": "2026-11-17",
+   "last_commit": "abb120c5e7",
+   "last_date": "2026-11-19",
    "status": "opt-in",
    "owner": "kernels/cpu",
    "note": "[reviewed] Listed as opt-in speed switch (#706). [release-v0.1.40.md:64]",
@@ -34008,11 +34644,11 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [],
-   "first_commit": null,
-   "first_date": null,
-   "since": null,
-   "last_commit": null,
-   "last_date": null,
+   "first_commit": "e420271229",
+   "first_date": "2026-11-19",
+   "since": "v0.2.17",
+   "last_commit": "e420271229",
+   "last_date": "2026-11-19",
    "status": "rollback",
    "owner": "core",
    "note": "=1: the old q36 hybrid-fit plan with the staging pair, no fallback without it (RESULTS-0217-FIXENG.md)",
@@ -34486,7 +35122,7 @@
    "launch_sets": [
     {
      "file": "terminal/setup.py",
-     "line": 4282,
+     "line": 4296,
      "value": "\"1\""
     }
    ],
@@ -34533,8 +35169,8 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "4058aa782b",
-   "last_date": "2026-11-17",
+   "last_commit": "e8701bbdd3",
+   "last_date": "2026-11-19",
    "status": "opt-in",
    "owner": "sycl/kernels",
    "note": "[auto] documented for users (docs/INTEL.md:397)",
@@ -34570,11 +35206,11 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [],
-   "first_commit": null,
-   "first_date": null,
-   "since": null,
-   "last_commit": null,
-   "last_date": null,
+   "first_commit": "e6efa2b169",
+   "first_date": "2026-11-19",
+   "since": "v0.2.17",
+   "last_commit": "ca99e886f7",
+   "last_date": "2026-11-19",
    "status": "default",
    "owner": "core",
    "note": "Q8_0 one-row kernel for decode; on for compute capability 12.0 cards, off elsewhere; bit-exact, decode +1.2% (RESULTS-BW-C.md); =0 is the way back",
@@ -34670,7 +35306,7 @@
    "launch_sets": [
     {
      "file": "terminal/setup.py",
-     "line": 4282,
+     "line": 4296,
      "value": "\"1\""
     }
    ],
@@ -34826,7 +35462,7 @@
    "launch_sets": [
     {
      "file": "terminal/setup.py",
-     "line": 4284,
+     "line": 4298,
      "value": "\"1\""
     }
    ],
@@ -35911,7 +36547,7 @@
    "launch_sets": [
     {
      "file": "terminal/setup.py",
-     "line": 3830,
+     "line": 3844,
      "value": "base.get(\"ramKeep\""
     }
    ],
@@ -36264,7 +36900,7 @@
    "launch_sets": [
     {
      "file": "terminal/setup.py",
-     "line": 8712,
+     "line": 8729,
      "value": "6"
     }
    ],
@@ -36343,7 +36979,7 @@
    "launch_sets": [
     {
      "file": "terminal/setup.py",
-     "line": 7309,
+     "line": 7323,
      "value": "frozenset({\"0\""
     }
    ],
@@ -36687,8 +37323,8 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "4058aa782b",
-   "last_date": "2026-11-17",
+   "last_commit": "d59c367522",
+   "last_date": "2026-11-19",
    "status": "opt-in",
    "owner": "core",
    "note": "[auto] documented for users (docs/AMD_HIP.md:586)",
@@ -36741,8 +37377,8 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "4058aa782b",
-   "last_date": "2026-11-17",
+   "last_commit": "027aac9bd7",
+   "last_date": "2026-11-19",
    "status": "opt-in",
    "owner": "core",
    "note": "[auto] offered as a user switch (strata_control/speed_switches.py:43)",
@@ -36992,7 +37628,7 @@
     },
     {
      "file": "terminal/setup.py",
-     "line": 4563,
+     "line": 4577,
      "value": "\"0\""
     },
     {
@@ -37024,8 +37660,8 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "4058aa782b",
-   "last_date": "2026-11-17",
+   "last_commit": "5b1725f0ab",
+   "last_date": "2026-11-19",
    "status": "default",
    "owner": "core",
    "note": "[auto] on unless set to 0 (src/core/expert_source.cpp:4878)",
@@ -37054,11 +37690,11 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [],
-   "first_commit": null,
-   "first_date": null,
-   "since": null,
-   "last_commit": null,
-   "last_date": null,
+   "first_commit": "d59c367522",
+   "first_date": "2026-11-19",
+   "since": "v0.2.17",
+   "last_commit": "d59c367522",
+   "last_date": "2026-11-19",
    "status": "research",
    "owner": "program",
    "note": "[reviewed] #3476: the verify window's routing for a router the native one does not take (256 experts) in one launch pair per layer (moe_route_window); on by default on gfx906 builds, opt-in (=1) on every other backend; bitwise equal to the per-token calls (route_window_parity).",
@@ -37087,11 +37723,11 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [],
-   "first_commit": null,
-   "first_date": null,
-   "since": null,
-   "last_commit": null,
-   "last_date": null,
+   "first_commit": "a9a00cd48e",
+   "first_date": "2026-11-19",
+   "since": "v0.2.17",
+   "last_commit": "a9a00cd48e",
+   "last_date": "2026-11-19",
    "status": "research",
    "owner": "core",
    "note": "bytes ahead of the row being computed that the CPU pool's native rows prefetch (0 = off, the default); changes the cold layer call by -2.5% at most (RESULTS-BW-G.md)",
@@ -37120,11 +37756,11 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [],
-   "first_commit": null,
-   "first_date": null,
-   "since": null,
-   "last_commit": null,
-   "last_date": null,
+   "first_commit": "a9a00cd48e",
+   "first_date": "2026-11-19",
+   "since": "v0.2.17",
+   "last_commit": "a9a00cd48e",
+   "last_date": "2026-11-19",
    "status": "research",
    "owner": "core",
    "note": "cache level of the STRATA_ROW_PF prefetch: 0 = L1+L2, 1 = L2 (default), 2 = non-temporal (RESULTS-BW-G.md)",
@@ -37153,11 +37789,11 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [],
-   "first_commit": null,
-   "first_date": null,
-   "since": null,
-   "last_commit": null,
-   "last_date": null,
+   "first_commit": "a9a00cd48e",
+   "first_date": "2026-11-19",
+   "since": "v0.2.17",
+   "last_commit": "a9a00cd48e",
+   "last_date": "2026-11-19",
    "status": "research",
    "owner": "core",
    "note": "prologue prefetch of a row's first lines (default 1) for STRATA_ROW_PF (RESULTS-BW-G.md)",
@@ -38366,7 +39002,7 @@
    "launch_sets": [
     {
      "file": "terminal/setup.py",
-     "line": 4284,
+     "line": 4298,
      "value": "\"1\""
     }
    ],
@@ -38730,8 +39366,8 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "4058aa782b",
-   "last_date": "2026-11-17",
+   "last_commit": "d6ef2d2be1",
+   "last_date": "2026-11-19",
    "status": "research",
    "owner": "program",
    "note": "[reviewed] #5864, opt-in (off by default): =1, with STRATA_PIPED_MTP: the next turn of a conversation is read in the batch slot that holds it, in the slot's own windows; unset, through the main sessions. Measured on 2x RTX A6000, UD-Q4_K_XL, conversations of about 2K tokens, 3 turns per client, STRATA_PIPED_MTP=2 with and without it, 4 repeats each: 4 clients 57.4 committed tok/s with it against 78.1 without, 8 clients 53.2 against 75.4, 2 clients 66.8 against 67.1, 1 client 56.4 against 56.6; time to first token of the later turns, p95: 5.72 s against 0.77 s at 4 clients and 11.79 s against 1.14 s at 8 clients. The pull request reports 115.5 against 102.9 committed tok/s over a round of two turns on 178K-token conversations on 2x RTX 3090 (not measured here).",
@@ -38760,11 +39396,11 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [],
-   "first_commit": null,
-   "first_date": null,
-   "since": null,
-   "last_commit": null,
-   "last_date": null,
+   "first_commit": "9787d4a6a9",
+   "first_date": "2026-11-19",
+   "since": "v0.2.17",
+   "last_commit": "d6ef2d2be1",
+   "last_date": "2026-11-19",
    "status": "research",
    "owner": "",
    "note": "[reviewed] #5868, opt-in (off by default): =1 with STRATA_SLOT_READ=1 and STRATA_SLOT_READ_WIDE=1: a slot that reads its turn alone sends its next whole window through an idle group's rows before the last one has passed the stages. Measured on 2x RTX A4000, IQ3_XXS, two 60K-token conversations taking turns, 4 interleaved rounds: first token of a later turn 12.13 -> 8.20 s (-32.4%, 4 of 4 rounds), read 42.0 -> 62.0 tokens/s, same tokens. At 10K tokens faster in 2 of 4 rounds only.",
@@ -38826,11 +39462,11 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [],
-   "first_commit": null,
-   "first_date": null,
-   "since": null,
-   "last_commit": null,
-   "last_date": null,
+   "first_commit": "3684cd5323",
+   "first_date": "2026-11-19",
+   "since": "v0.2.17",
+   "last_commit": "d6ef2d2be1",
+   "last_date": "2026-11-19",
    "status": "research",
    "owner": "",
    "note": "[reviewed] #5866, opt-in (off by default): =1 with STRATA_SLOT_READ=1: a slot that is the only one of its group that runs reads its turn in windows of 8 rows instead of its draft rows. Measured on 2x RTX A4000, IQ3_XXS, two 60K-token conversations taking turns, 4 interleaved rounds: first token of a later turn 12.13 -> 10.45 s (-13.9%, 4 of 4 rounds), read 42.0 -> 48.6 tokens/s, same tokens. A turn read through the main sessions took 2.29 s there, so the slot read itself stays opt-in.",
@@ -38864,8 +39500,8 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "4058aa782b",
-   "last_date": "2026-11-17",
+   "last_commit": "ca99e886f7",
+   "last_date": "2026-11-19",
    "status": "opt-in",
    "owner": "core",
    "note": "[reviewed] Umbrella for sm_120 bit-exact kernels, +0.3..0.5%; documented. [blackwell/decisions/E21.md:14]",
@@ -38910,8 +39546,8 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "4058aa782b",
-   "last_date": "2026-11-17",
+   "last_commit": "ca99e886f7",
+   "last_date": "2026-11-19",
    "status": "opt-in",
    "owner": "kernels/cuda",
    "note": "[auto] documented for users (docs/DGX_SPARK_LINUX.md:92), 2 more",
@@ -39087,8 +39723,8 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "4058aa782b",
-   "last_date": "2026-11-17",
+   "last_commit": "7b51c85cdc",
+   "last_date": "2026-11-19",
    "status": "opt-in",
    "owner": "core",
    "note": "[reviewed] Umbrella for 22 ported sm_75 commits; users run =1. [notes-145-perfprs.md:12]",
@@ -39147,8 +39783,8 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "4058aa782b",
-   "last_date": "2026-11-17",
+   "last_commit": "7b51c85cdc",
+   "last_date": "2026-11-19",
    "status": "default",
    "owner": "core",
    "note": "[auto] on by default for some GPU architectures only (gfx12 src/core/arch_defaults.cpp:58=3; gfx1151 (Windows) src/core/arch_defaults.cpp:102=3); opt-in elsewhere; the variable overrides it",
@@ -40113,11 +40749,11 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [],
-   "first_commit": null,
-   "first_date": null,
-   "since": null,
-   "last_commit": null,
-   "last_date": null,
+   "first_commit": "38e6a05061",
+   "first_date": "2026-11-19",
+   "since": "v0.2.17",
+   "last_commit": "38e6a05061",
+   "last_date": "2026-11-19",
    "status": "default",
    "owner": "core",
    "note": "a layer split of exactly two CUDA cards arms the CPU prefill share by default, as one card does; =0 turns it off and the split streams every expert over PCIe as before (share_rules::default_share_layout; RESULTS-BW-F.md)",
@@ -40290,11 +40926,11 @@
    "doc_mentions": [
     "docs/MULTI_GPU.md:154"
    ],
-   "first_commit": null,
-   "first_date": null,
-   "since": null,
-   "last_commit": null,
-   "last_date": null,
+   "first_commit": "becf4a3d9a",
+   "first_date": "2026-11-19",
+   "since": "v0.2.17",
+   "last_commit": "becf4a3d9a",
+   "last_date": "2026-11-19",
    "status": "opt-in",
    "owner": "core",
    "note": "gap from which a slow link scales the auto split's miss cost (default 4; =3 puts fewer layers on a x2 card beside a x8 one: 4K prompt 5,950 -> 3,926 ms, RESULTS-BW-E.md)",
@@ -41745,8 +42381,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL_ARC.md:329",
-    "docs/INTEL_ARC.md:426"
+    "docs/INTEL_ARC.md:360",
+    "docs/INTEL_ARC.md:457"
    ],
    "first_commit": null,
    "first_date": null,
@@ -41781,7 +42417,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL_ARC.md:327"
+    "docs/INTEL_ARC.md:358"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -42910,8 +43546,8 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "4058aa782b",
-   "last_date": "2026-11-17",
+   "last_commit": "4ced1736e9",
+   "last_date": "2026-11-19",
    "status": "research",
    "owner": "core",
    "note": "[reviewed] \"the research dump\"; off, nothing captured. [code comment (DFlash2 taps)]",
@@ -42949,8 +43585,8 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "4058aa782b",
-   "last_date": "2026-11-17",
+   "last_commit": "4ced1736e9",
+   "last_date": "2026-11-19",
    "status": "research",
    "owner": "core",
    "note": "[auto] not documented for users; code default not readable from the call",
@@ -43958,11 +44594,11 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [],
-   "first_commit": null,
-   "first_date": null,
-   "since": null,
-   "last_commit": null,
-   "last_date": null,
+   "first_commit": "cb60135e78",
+   "first_date": "2026-11-19",
+   "since": "v0.2.17",
+   "last_commit": "cb60135e78",
+   "last_date": "2026-11-19",
    "status": "research",
    "owner": "program",
    "note": "[reviewed] #5873, opt-in (CPU, off by default): the PR's faster AVX2 rows for the pair trellis (TQP5/6/7, Gyro-L), same bits (tqp_cpu_test); our paired A/B on a Ryzen 5 5600X showed no gain with GCC, so it stays off.",
@@ -44256,7 +44892,7 @@
     "docs/BATCHING.md:126",
     "docs/DETAILS.md:1248",
     "docs/DETAILS.md:1721",
-    "docs/INTEL_ARC.md:327",
+    "docs/INTEL_ARC.md:358",
     "docs/bench-results/2026-10-05-community-arc-b65/benchy-v1/README.md:14",
     "docs/bench-results/2026-10-07-community-arc-b65-v01402/BUILD.md:109"
    ],
@@ -44428,7 +45064,7 @@
    "launch_sets": [
     {
      "file": "terminal/setup.py",
-     "line": 4283,
+     "line": 4297,
      "value": "\"1\""
     }
    ],
@@ -45155,8 +45791,8 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "4058aa782b",
-   "last_date": "2026-11-17",
+   "last_commit": "928aa3d161",
+   "last_date": "2026-11-19",
    "status": "default",
    "owner": "core",
    "note": "[reviewed] strata-sycl.sh sets it =1 for Intel users; launch-script set. [docs/INTEL.md:45]",
@@ -45258,7 +45894,7 @@
     "docs/A770_SPEED_SPEC.md:655",
     "docs/A770_SPEED_SPEC.md:717",
     "docs/A770_SPEED_SPEC.md:736",
-    "docs/INTEL_ARC.md:427",
+    "docs/INTEL_ARC.md:458",
     "docs/bench-results/2026-10-05-community-arc-b65/BUILD.md:95",
     "docs/bench-results/2026-10-07-community-arc-b65-v01402/BUILD.md:92"
    ],
@@ -45551,8 +46187,8 @@
     "docs/INTEL.md:387",
     "docs/INTEL_ARC.md:64",
     "docs/INTEL_ARC.md:154",
-    "docs/INTEL_ARC.md:382",
-    "docs/INTEL_ARC.md:452",
+    "docs/INTEL_ARC.md:413",
+    "docs/INTEL_ARC.md:483",
     "docs/bench-results/2026-10-04-community-2x-arc-pro-b60/README.md:34",
     "docs/bench-results/2026-10-04-community-2x-arc-pro-b60/README.md:66",
     "docs/bench-results/2026-10-05-community-arc-b65/BUILD.md:91",
@@ -45563,8 +46199,8 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "4058aa782b",
-   "last_date": "2026-11-17",
+   "last_commit": "928aa3d161",
+   "last_date": "2026-11-19",
    "status": "opt-in",
    "owner": "sycl/core",
    "note": "[reviewed] SYCL setting with several release-note fixes; user-visible. [release-v0.1.43.1.md:28]",
@@ -45868,8 +46504,8 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "4058aa782b",
-   "last_date": "2026-11-17",
+   "last_commit": "4e94b05592",
+   "last_date": "2026-11-19",
    "status": "research",
    "owner": "kernels/cpu",
    "note": "[auto] off unless set, not documented for users",
@@ -46121,11 +46757,11 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [],
-   "first_commit": null,
-   "first_date": null,
-   "since": null,
-   "last_commit": null,
-   "last_date": null,
+   "first_commit": "d4ed2dfefa",
+   "first_date": "2026-11-19",
+   "since": "v0.2.17",
+   "last_commit": "d4ed2dfefa",
+   "last_date": "2026-11-19",
    "status": "rollback",
    "owner": "core",
    "note": "Windows: the WDDM shared-segment cut of the resident complement (two or more CUDA devices) keeps this many MiB (default 2048) (RESULTS-0217-FIXWIN.md, #3725)",
@@ -46157,8 +46793,8 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "4058aa782b",
-   "last_date": "2026-11-17",
+   "last_commit": "aef30d8fc2",
+   "last_date": "2026-11-19",
    "status": "default",
    "owner": "sycl/core",
    "note": "[reviewed] \"default is 1 on an i915 card, 0 elsewhere\"; arch default, 0/2 tune. [code comment (sycl)]",
@@ -46190,8 +46826,8 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "4058aa782b",
-   "last_date": "2026-11-17",
+   "last_commit": "027aac9bd7",
+   "last_date": "2026-11-19",
    "status": "research",
    "owner": "program",
    "note": "Research switch: =0 turns off the window warm-up (one dummy verify window per allowed width, once, before the first request is read, so a width the policy picks inside a long request does not pay its first-run graph or pipeline build there); default on, changes nothing a request can see.",
@@ -46226,11 +46862,11 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [],
-   "first_commit": null,
-   "first_date": null,
-   "since": null,
-   "last_commit": null,
-   "last_date": null,
+   "first_commit": "15b55d5581",
+   "first_date": "2026-11-19",
+   "since": "v0.2.17",
+   "last_commit": "15b55d5581",
+   "last_date": "2026-11-19",
    "status": "research",
    "owner": "adaptive tier",
    "note": "Windows with an AMD card (HIP) only: --adapt-async 1 and STRATA_ADAPT_OVERLAP=1 are refused (display-driver reset, GPU fault); =1 takes both as asked and warns. Not a user setting; for testing.",
