@@ -49,8 +49,20 @@ Running the staged Control directly:
   effect); the rest are docs/bench-results data intentionally omitted by the fork.
   The intake's empty-stub bug is fully repaired.
 
+## Installed run configs (user decision "both": fix + publish 0.7.1)
+- 3 Q38 run configs existed; 2 pointed at GGUF paths that do not exist
+  (`models/qwen3.8-...gguf` at root and `models/soyaakinohara/...gguf/`).
+  The real 12.6 GB GGUF is only at
+  `H:/Strata/models/qwen38-27b-soya-mixed-iq/qwen3.8-27b-abliterated-3.69bpw-12GB-MTP.gguf`.
+  Backed up 4 configs to `H:/Strata/evidence/runconfig-backup-20261122/` first,
+  then rewrote `--model` and `tokenizer` in the 2 stale configs via
+  `H:/Strata/evidence/fix-runconfig-paths.py`. All 3 configs now resolve to the
+  real file (`exists=True`), which fixes model load/chat on this PC. This was a
+  pre-existing stale-path issue, unrelated to the 0.2.17 intake or engine 0.6.3.
+
 ## Residual risks / next actions
-- The published v0.7.0 installer contains the same broken stubs; per user
-  decision it will be superseded by a new v0.7.1 publication, leaving v0.7.0
-  in history.
+- The published v0.7.0 installer contains the empty-stub bug; per user decision
+  it is superseded by a new v0.7.1 publication, leaving v0.7.0 in history.
 - WebView2 0x80070578 is a separate OS-side fault; captured here, not fixed here.
+- 0.7.1: host rebuilt, verify-release exit 0 (0.7.1/0.6.3/0.6.3); full installer
+  build and publication pending at time of writing.
