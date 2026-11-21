@@ -5499,6 +5499,7 @@ int main(int argc, char** argv) {
             kv_trim((int) pr.size() + 1);
             if (spec && start == pr.size()) start = pr.size() - 1;   // re-fed: the drafter needs its features
             const double t0 = now_ms();
+            const long acc0 = D.accepted, ver0 = D.verifies;
             if (start == pr.size()) {
                 logits = last_logits;
             } else {
@@ -5554,7 +5555,9 @@ int main(int argc, char** argv) {
             if (!gen.empty()) hist.insert(hist.end(), gen.begin(), gen.end() - 1);   // the last token was never fed
             last_logits = logits;
             smp.rng = std::move(s.rng);
-            std::printf("DONE %zu %zu %.0f %.0f %s\n", gen.size(), pr.size(), t1 - t0, t2 - t1, finish);
+            // + drafts accepted / offered, prompt tokens not read (Strata's DONE fields 6-8: usage.cached_tokens)
+            std::printf("DONE %zu %zu %.0f %.0f %s %ld %ld %zu\n", gen.size(), pr.size(), t1 - t0, t2 - t1, finish,
+                        D.accepted - acc0, (D.verifies - ver0) * (DBLK - 1), start);
             std::fflush(stdout);
         }
         return 0;
