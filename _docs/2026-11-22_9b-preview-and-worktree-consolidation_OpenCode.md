@@ -58,5 +58,11 @@ into main, then build/publish v0.7.1.
   sentinel preserved, uninstall registry restored to 0.6.9 / real path.
   Real install was never touched. Evidence: `H:/Strata/evidence/v071-*-fixture/`.
 
-## Next
-- v0.7.1 tag, GitHub release with both assets, push, public readback.
+## v0.7.1 publication (completed)
+- `git tag -a v0.7.1` at main HEAD; pushed main and tag (origin/main=1152af728,
+  refs/tags/v0.7.1=924e2a85).
+- `gh release create v0.7.1 --repo zapabob/Strata --latest` with both assets;
+  published 2026-11-21T16:22:56Z, isPrerelease=false, GitHub Latest=v0.7.1.
+- Public readback: installer 127,138,637 bytes SHA-256 `b724b70b...ed2` and
+  tar.7z 127,141,538 bytes SHA-256 `037a1d26...528` both match local exactly;
+  state=uploaded. Release URL: https://github.com/zapabob/Strata/releases/tag/v0.7.1
