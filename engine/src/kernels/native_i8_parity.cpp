@@ -442,6 +442,11 @@ int main() {
         check(pr.first, pr.second, 512, 256, s, rng);
         check(pr.first, pr.second, 2048, 512, s, rng);
     }
+    // fifth wave: IQ4_XS as the down format (the all-IQ4_XS Qwen3.6-family files, e.g. i1-IQ4_XS requants: IQ4_XS gate/up and down), at the Qwen3.6 shape and a small one
+    for (const auto& pr : std::vector<std::pair<int, int>>{{23, 23}, {12, 23}, {14, 23}}) {
+        check(pr.first, pr.second, 512, 256, s, rng);
+        check(pr.first, pr.second, 2048, 512, s, rng);
+    }
     if (g_run == 0) { std::printf("native_i8_parity: nothing ran (%d skipped: not covered on this device)\n", g_skipped); return 77; }
     if (g_skipped) std::printf("native_i8_parity: %d format rows skipped: not covered on this device\n", g_skipped);
     std::printf("native_i8_parity: %s\n", g_fail ? "FAILED" : "all ok");
