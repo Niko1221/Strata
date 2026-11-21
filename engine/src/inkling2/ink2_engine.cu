@@ -1841,6 +1841,26 @@ __global__ void __launch_bounds__(256) kb_moe_gemm_tc_gg(const half* __restrict_
     }
 }
 
+// big prompt chunks (INK2_DQ_MIN tokens, --tc): an expert's weights decoded once to fp16 [N][K] (row gg_perm(n) for
+// PERM), then a cuBLAS tensor-core GEMM per expert over its rows (the tile GEMMs decode the weights per 64-row tile)
+template <int T, bool PERM>
+__global__ void kb_dequant_gg(const uint8_t* const* __restrict__ tab, int e, size_t rb, half* __restrict__ out, int N, int K) {
+    __shared__ uint32_t grid[512];
+    __shared__ int8_t kv[16];
+    gg_tables(grid, kv);
+    __syncthreads();
+    const uint8_t* W = tab[e];
+    const size_t n8 = (size_t) N * (K / 8);
+    for (size_t i = (size_t) blockIdx.x * blockDim.x + threadIdx.x; i < n8; i += (size_t) gridDim.x * blockDim.x) {
+        const int n = (int) (i / (K / 8)), kc = (int) (i % (K / 8)) * 8;
+        float w[8];
+        gg_ld8<T>(W + (size_t) (PERM ? gg_perm(n, N) : n) * rb, kc, w, grid, kv);
+        half2 h[4];
+#pragma unroll
+        for (int b = 0; b < 4; ++b) h[b] = __floats2half2_rn(w[2 * b], w[2 * b + 1]);
+        *reinterpret_cast<uint4*>(out + (size_t) n * K + kc) = *reinterpret_cast<uint4*>(h);
+    }
+}
 // fp32 [T][K] (row stride ld) -> fp16 [T][K]; bf16 -> fp16 (dense weights: exact for |w| >= 2^-14, the rare smaller
 // ones lose low bits as fp16 subnormals)
 __global__ void kb_f32_to_f16(const float* __restrict__ x, int ld, int K, half* __restrict__ y, size_t n) {
@@ -3945,6 +3965,8 @@ Prefill PF;
 
 // Elastic prompt buffers (--kv-grow with offload): the chunk-sized buffers over 8 MiB and the staging halves live in
 // growable ranges, mapped while a prompt is read (memory taken from the expert pools) and unmapped after.
+half* g_dq[2] = {nullptr, nullptr};   // decoded expert weights (fp16), two in turn
+int g_dq_min = 1024;                  // INK2_DQ_MIN: prompt chunks from this size take the decode-once path (0: never)
 bool g_pf_routed = false;   // this chunk runs through the decode cache (short chunks): no streaming
 int g_pf_routed_max = 64;   // INK2_ROUTED_MAX: chunks of up to this many tokens fetch only the experts they route to
 bool g_pf_elastic = false;
@@ -4009,6 +4031,7 @@ void alloc_prefill() {
         CK(cublasCreate(&PF.cbh) == CUBLAS_STATUS_SUCCESS ? cudaSuccess : cudaErrorUnknown);
         cublasSetStream(PF.cbh, cudaStreamPerThread);
         PF.wh = (half*) dalloc((size_t) PF.np_max * H * 2);
+        for (auto& d : g_dq) d = (half*) dalloc((size_t) 2 * FF * H * 2);   // one expert part (w13: 2FF x H)
         PF.xh = (half*) pf_alloc(3 * T * QD * 2, true);
         PF.qh = (half*) pf_alloc(((T + 63) / 64 * 64) * QD * 2);
     }
@@ -4314,6 +4337,87 @@ void moe_b(const Layer& Y, const float* x, float* out, int T, int pos0) {
             g<<<dim3(H / (8 * RR), maxt), 256>>>(PF.act, FF, nullptr, t, X.f2, PF.tile_e, PF.tile_r0, PF.ntiles, PF.eoff,
                                             PF.ecnt, PF.ey, H, FF);
         });
+    } else if (X.gg13 && PF.tc && g_dq_min > 0 && T >= g_dq_min) {
+        // decode-once: per expert with rows, its part decoded to fp16 and one cuBLAS GEMM over its rows (the row
+        // counts are read back).  The non-resident experts' copies into the two staging halves are queued before the
+        // read-back (they do not depend on it), so they overlap the layer's attention.
+        half* ah = reinterpret_cast<half*>(PF.act);
+        kb_gather_h<<<nr, 256>>>(x, PF.rows, ah);
+        const auto& nr_list = PF.nonres[l];
+        const bool stream = E.offload && !g_pf_routed && !nr_list.empty();
+        const size_t eb = ex_bytes(l), partA = ex_partA(l), partB = eb - partA;
+        const int perA = (int) (PF.stg_half / partA), perB = (int) (PF.stg_half / partB);
+        const bool early = stream && (int) nr_list.size() <= perA && (int) nr_list.size() <= perB;
+        int hA = -1, hB = -1;
+        auto stage = [&](bool pb, int b0, int n) {   // queue the copies of nr_list[b0 .. b0 + n) into a half
+            const int h = PF.stg_turn++ & 1;
+            const size_t part = pb ? partB : partA, poff = pb ? partA : 0;
+            CK(cudaStreamWaitEvent(PF.cs, PF.ev_free[h], 0));
+            CK(cudaEventSynchronize(PF.ev_ready[h]));
+            const uint8_t** tab = PF.ptab[h];
+            std::fill(tab, tab + NE, nullptr);
+            for (int j = 0; j < n; ++j) {
+                const int e = nr_list[b0 + j];
+                uint8_t* d = PF.stg[h] + (size_t) j * part;
+                CK(cudaMemcpyAsync(d, E.xh[(size_t) l * NE + e] + poff, part, cudaMemcpyHostToDevice, PF.cs));
+                tab[e] = d;
+            }
+            CK(cudaMemcpyAsync(PF.dtab[h], PF.ptab[h], NE * sizeof(void*), cudaMemcpyHostToDevice, PF.cs));
+            CK(cudaEventRecord(PF.ev_ready[h], PF.cs));
+            PF.fbytes += (size_t) n * part;
+            return h;
+        };
+        if (early) { hA = stage(false, 0, (int) nr_list.size()); hB = stage(true, 0, (int) nr_list.size()); }
+        std::vector<int> cnt(NE), off(NE);
+        CK(cudaMemcpyAsync(cnt.data(), PF.ecnt, NE * 4, cudaMemcpyDeviceToHost));
+        CK(cudaMemcpyAsync(off.data(), PF.eoff, NE * 4, cudaMemcpyDeviceToHost));
+        CK(cudaStreamSynchronize(cudaStreamPerThread));
+        std::vector<bool> nonres(NE, false);
+        if (E.offload) for (int e : nr_list) nonres[e] = true;
+        int turn = 0;
+        auto run_parts = [&](bool pb, int hpre) {
+            const int t = pb ? X.gg2 : X.gg13, N = pb ? H : 2 * FF, K = pb ? FF : H;
+            const size_t rb = pb ? X.rb2 : X.rb13;
+            float* C = pb ? PF.ey : PF.gu;
+            auto one = [&](const uint8_t* const* tab, int e) {
+                if (!cnt[e]) return;
+                half* wbuf = g_dq[turn++ & 1];
+                const unsigned gb = 2 * 34 * 4;
+                if (!pb) {
+                    if (t == GG_IQ3_S) kb_dequant_gg<GG_IQ3_S, true><<<gb, 256>>>(tab, e, rb, wbuf, N, K);
+                    else if (t == GG_IQ4_NL) kb_dequant_gg<GG_IQ4_NL, true><<<gb, 256>>>(tab, e, rb, wbuf, N, K);
+                    else kb_dequant_gg<GG_Q8_0, true><<<gb, 256>>>(tab, e, rb, wbuf, N, K);
+                } else {
+                    if (t == GG_IQ3_S) kb_dequant_gg<GG_IQ3_S, false><<<gb, 256>>>(tab, e, rb, wbuf, N, K);
+                    else if (t == GG_IQ4_NL) kb_dequant_gg<GG_IQ4_NL, false><<<gb, 256>>>(tab, e, rb, wbuf, N, K);
+                    else kb_dequant_gg<GG_Q8_0, false><<<gb, 256>>>(tab, e, rb, wbuf, N, K);
+                }
+                const float one_f = 1.0f, zero = 0.0f;
+                if (cublasGemmEx(PF.cbh, CUBLAS_OP_T, CUBLAS_OP_N, N, cnt[e], K, &one_f, wbuf, CUDA_R_16F, K,
+                                 ah + (size_t) off[e] * K, CUDA_R_16F, K, &zero, C + (size_t) off[e] * N, CUDA_R_32F, N,
+                                 CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT) != CUBLAS_STATUS_SUCCESS) {
+                    std::fprintf(stderr, "cublasGemmEx (expert) failed\n");
+                    std::exit(1);
+                }
+            };
+            const auto& tabd = pb ? X.tB : X.tA;
+            for (int e = 0; e < NE; ++e) if (!nonres[e]) one(tabd, e);
+            if (!stream) return;
+            auto use = [&](int h, int b0, int n) {
+                CK(cudaStreamWaitEvent(cudaStreamPerThread, PF.ev_ready[h], 0));
+                for (int j = 0; j < n; ++j) one(PF.dtab[h], nr_list[b0 + j]);
+                CK(cudaEventRecord(PF.ev_free[h], cudaStreamPerThread));
+            };
+            if (hpre >= 0) { use(hpre, 0, (int) nr_list.size()); return; }
+            const int per = pb ? perB : perA;
+            for (int b0 = 0; b0 < (int) nr_list.size(); b0 += per) {
+                const int n = std::min(per, (int) nr_list.size() - b0);
+                use(stage(pb, b0, n), b0, n);
+            }
+        };
+        run_parts(false, hA);
+        kb_swiglu_h<<<(unsigned) (((size_t) nr * FF + 255) / 256), 256>>>(PF.gu, ah, nr);
+        run_parts(true, hB);
     } else if (X.gg13) {   // GGUF experts: the same streaming of part A (gate_up) then part B (down)
         half* ah = reinterpret_cast<half*>(PF.act);
         const int mt = PF.tc ? nr / TM + NE : maxt;
@@ -5047,6 +5151,7 @@ int main(int argc, char** argv) {
     if (const char* r = std::getenv("INK2_DRAFT_ABL")) g_draft_abl = std::atoi(r);
     if (const char* r = std::getenv("INK2_GG_RPW")) g_gg_rpw = std::atoi(r);
     if (const char* r = std::getenv("INK2_ROUTED_MAX")) g_pf_routed_max = std::atoi(r);
+    if (const char* r = std::getenv("INK2_DQ_MIN")) g_dq_min = std::atoi(r);
     std::string dir, dump_logits, rec_path;
     std::vector<int> ids;
     int n_gen = 32;
