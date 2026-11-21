@@ -1,4 +1,4 @@
-// src/ik2/ik2_kernels.cuh - strata-ik2's kernels: the ops of Inkling 2 (thinkingmachines/Inkling-2-Small) that Maya's
+// src/ik2/ik2_kernels.cuh - strata-ik2's kernels: the ops of Inkling 2 (thinkingmachines/Inkling-2-Small) that Strata's
 // other engines do not have - the short convolutions, the attention residuals, the attention's clips, relative bias and
 // sink, the softcapped SwiGLU with the experts' scales - and the decodes of the weights an `inkling2` GGUF holds
 // (NVFP4, Q5_K, Q6_K, Q8_0).  The arithmetic follows ref/inkling2.py (transformers' modeling_inkling2.py), in F32; the

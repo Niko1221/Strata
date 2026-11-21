@@ -807,7 +807,15 @@ OWN_PATH_FAMILIES = {
                # pictures: Unsloth's mmproj (the same projector family as Flash-Next's: qwen3vl_merger) through
                # strata-vision; a parallel slot's session: its KV cache (kv_bytes_per_token) and the recurrent state of
                # the 30 GDN layers (state_gb)
-               "vision": True, "state_gb": 0.07}
+               "vision": True, "state_gb": 0.07},
+    "inkling": {"title": "Inkling 2 Mini", "by": "Thinking Machines Lab; GGUFs by Unsloth", "arch": "inkling2",
+                "about": "26B MoE with looped layers",
+                "hf": "unsloth/Inkling-2-Mini-GGUF", "file": "Inkling-2-Mini-{q}.gguf", "tag": "inkling-",
+                "name": "inkling-2-mini", "license": "MIT",
+                "models": {"2-mini": {"about": "4-bit (Unsloth Dynamic UD-Q4_K_XL)", "ram_gb": 32}},
+                "sha256": {"Inkling-2-Mini-2-mini.gguf": (17631899648, "0")},
+                "kv_bytes_per_token": 11 * 2 * 256 * 2 * 4,
+                "vision": False, "state_gb": 0.0}
 }
 PREVIEW_FAMILIES = OWN_PATH_FAMILIES             # the earlier name (tools and tests that import it)
 

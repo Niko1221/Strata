@@ -17,7 +17,7 @@
 //   strata-ik2 --model FIRST-SHARD.gguf --serve [--max-context 262144] [--cache-gb 60] [--gpus 1] [--threads 8]
 //              [--eos a,b]
 //   strata-ik2 --model FIRST-SHARD.gguf --tokens 1,2,3|@FILE [--gen N] [--chunk 2048] [--dump DIR]
-// --serve: Maya's engine protocol on stdin / stdout (serve/server.py's StrataEngine: INFO / READY, GEN, PP, T, DONE,
+// --serve: the engine protocol on stdin / stdout (serve/server.py's StrataEngine: INFO / READY, GEN, PP, T, DONE,
 // STOP); --serve-ik2 the older @-line one.  --dump: each layer's output (blk.L.out) and the log-probabilities of every
 // prompt position, F32 raw files ([T][C], [T][n_vocab]) - what tools/ik2_compare.py holds against ref/inkling2.py's
 // seams.  Settings (IK2_*): docs/SETTINGS.md.
@@ -1178,7 +1178,7 @@ void conv_rec(Layer& Ly, int which, const float* x, const float* hist, int T, in
     CU(cudaMemcpyAsync(Ly.rec_x[which], x, (size_t) T * Cc * 4, cudaMemcpyDeviceToDevice, g_s));
 }
 
-// The pictures of the request running (GENI): the image encoder's rows (maya-vision's SVE1 records, [n][C] F32), each
+// The pictures of the request running (GENI): the image encoder's rows (strata-vision's SVE1 records, [n][C] F32), each
 // in place of one image token of the prompt - the model reads them as they are, without the embedding's norm.
 struct Pictures {
     std::vector<float> rows;
@@ -3111,8 +3111,8 @@ namespace ik2 {
 int run(int argc, char** argv) {
     std::string model, toks, dump, draft_path;
     int gen = 16, chunk = 2048, ctx = 262144, threads = 8, n_gpu = 1;
-    bool serve = false, serve_maya = true;   // (--serve: Maya's engine protocol; --serve-ik2: the @-line one)
-    std::vector<int> eos_ids;                 // --eos a,b: the tokens a request ends at (Maya's protocol)
+    bool serve = false, serve_strata = true;   // (--serve: the engine protocol; --serve-ik2: the @-line one)
+    std::vector<int> eos_ids;                 // --eos a,b: the tokens a request ends at (the engine protocol)
     double cache_gb = 60;
     int image_token = 200054;   // --image-token: Inkling 2's <|unused_200054|>, the template's placeholder of a picture
     for (int i = 1; i < argc; ++i) {
@@ -3138,7 +3138,7 @@ int run(int argc, char** argv) {
         else if (a == "--gpus") n_gpu = std::atoi(next().c_str());
         else if (a == "--draft") draft_path = next();
         else if (a == "--serve") serve = true;
-        else if (a == "--serve-ik2") serve = true, serve_maya = false;
+        else if (a == "--serve-ik2") serve = true, serve_strata = false;
         else if (a == "--eos") {
             const std::string v = next();
             for (const char* p = v.c_str(); *p;) {
@@ -4161,7 +4161,7 @@ int run(int argc, char** argv) {
             return v;
         };
         std::signal(SIGUSR1, on_usr1);
-        // Maya's protocol (serve/server.py's StrataEngine): "GEN <max_new> [key=value ...] <ids>" in; "PP ..." per
+        // The engine protocol (serve/server.py's StrataEngine): "GEN <max_new> [key=value ...] <ids>" in; "PP ..." per
         // prompt pass, "T <id>" per token and "DONE <generated> <prompt> <prompt_ms> <decode_ms> <stop|length|cancel>
         // 0 0 <reused>" out; "STOP" mid-request ends it at the next token (or between the prompt's passes), "QUIT"
         // ends the engine.  The tokens a request ends at: --eos, else the GGUF's eos and <|endoftext|>.
@@ -4169,7 +4169,7 @@ int run(int argc, char** argv) {
             if (const auto* e = S.get("tokenizer.ggml.eos_token_id")) eos_ids.push_back((int) e->u);
             eos_ids.push_back(199999);   // (Inkling 2's <|endoftext|>)
         }
-        if (serve_maya) {
+        if (serve_strata) {
             std::printf("INFO engine=ik2 engine_kind=ik2 model=Inkling-2 kv=%s ctx=%d gpus=%d\n", g_kv_fp8 ? "fp8" : "f16", ctx, n_gpu);
             std::printf("READY %d stop\n", ctx);
         } else {
@@ -4222,15 +4222,15 @@ int run(int argc, char** argv) {
             // GENI: GEN with the request's pictures - "GENI <max_new> [key=value ...] <pictures file> <ids>", the file
             // the image encoder's rows (SVE1 records back to back), one row an image token of the ids in order
             const bool geni = cmd == "GENI";
-            if (cmd != "GEN" && !geni) {   // (Maya's PAUSE / WRAP and the like: not offered in READY, so not sent)
-                if (!serve_maya) {
+            if (cmd != "GEN" && !geni) {   // (PAUSE / WRAP and the like: not offered in READY, so not sent)
+                if (!serve_strata) {
                     std::printf("@END error unknown_command 0 0 0 0\n");
                     std::fflush(stdout);
                 }
                 continue;
             }
             std::vector<int> stops;
-            if (serve_maya) {
+            if (serve_strata) {
                 in >> max_new;
                 std::string w;
                 while (in >> w) {
@@ -4255,7 +4255,7 @@ int run(int argc, char** argv) {
             }
             const std::vector<int> ids = parse_ints(ids_s);
             if (ids.empty() || (int) ids.size() + max_new > ctx) {
-                if (serve_maya)
+                if (serve_strata)
                     std::printf("ERR %s\nDONE 0 %zu 0 0 cancel 0 0 0\n",
                                 ids.empty() ? "an empty prompt" :
                                     ("the prompt and max_tokens pass the context (" + std::to_string(ctx) + ")").c_str(),
@@ -4328,7 +4328,7 @@ int run(int argc, char** argv) {
                         forward_prefill_sup(M, ids.data() + p0, n, (int) p0, sub_chunk,
                                             last_c ? OutMode::kLogits : OutMode::kNone, lo, nullptr, t_exp);
                         if (last_c) last = std::move(lo);
-                        if (serve_maya) {   // (read, total, ms, tok/s, reused)
+                        if (serve_strata) {   // (read, total, ms, tok/s, reused)
                             const double ms = (now() - t0) * 1e3;
                             std::printf("PP %zu %zu %.0f %.1f %d\n", p0 + n, ids.size(), ms,
                                         (p0 + n - L) / std::max(1e-3, ms / 1e3), (int) L);
@@ -4353,7 +4353,7 @@ int run(int argc, char** argv) {
             }
             if (cancelled) {
                 reset();
-                if (serve_maya) std::printf("DONE 0 %zu %.1f 0 cancel 0 0 %d\n", ids.size(), (now() - t0) * 1e3, cached);
+                if (serve_strata) std::printf("DONE 0 %zu %.1f 0 cancel 0 0 %d\n", ids.size(), (now() - t0) * 1e3, cached);
                 else std::printf("@END cancelled %zu %d %.3f %.3f\n", ids.size(), cached, now() - t0, 0.0);
                 std::fflush(stdout);
                 busy = false;
@@ -4434,7 +4434,7 @@ int run(int argc, char** argv) {
                 }
                 const int tok = temp <= 0 ? greedy_tok : cand ? pick_cand() : pick(last.data());
                 ++n_out;
-                std::printf(serve_maya ? "T %d\n" : "@TOK %d\n", tok);
+                std::printf(serve_strata ? "T %d\n" : "@TOK %d\n", tok);
                 std::fflush(stdout);
                 if (std::find(stops.begin(), stops.end(), tok) != stops.end()) {
                     reason = "stop";
@@ -4456,7 +4456,7 @@ int run(int argc, char** argv) {
                 }
                 hist.push_back(tok);
             }
-            if (serve_maya)
+            if (serve_strata)
                 std::printf("DONE %d %zu %.1f %.1f %s 0 0 %d\n", n_out, ids.size(), (t1 - t0) * 1e3, (now() - t1) * 1e3,
                             std::strcmp(reason, "cancelled") == 0 ? "cancel" : reason, cached);
             else
