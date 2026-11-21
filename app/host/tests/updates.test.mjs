@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { checkUpdates } from '../server/updates.mjs';
 const installed = { appVersion: '0.1.0', engineVersion: 'strata-engine 0.1.0' };
 const response = releases => async () => ({ ok: true, json: async () => releases });
-const release = (tag, extra = {}) => ({ tag_name: tag, html_url: `https://github.com/Niko1221/Strata/releases/tag/${tag}`, ...extra });
+const release = (tag, extra = {}) => ({ tag_name: tag, html_url: `https://github.com/4ltena/exstrata/releases/tag/${tag}`, ...extra });
 
 test('release checks compare stable versions and preserve installer capability truth', async () => {
   const result = await checkUpdates(installed, response([release('v0.1.0'), release('v0.2.0'), release('v0.3.0', { prerelease: true }), release('v0.4.0', { draft: true })]));

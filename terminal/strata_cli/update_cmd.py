@@ -30,10 +30,11 @@ import sys
 import threading
 from pathlib import Path
 
-#: Where the feed is read when nothing else is set: the files of the latest GitHub release of Niko1221/Strata (the same folder the
+#: Where the feed is read when nothing else is set: the files of the latest GitHub release of 4ltena/exstrata (the same folder the
 #: one-line installers use). Only a feed signed with a key in update_keys.json (or STRATA_UPDATE_TRUSTED_KEYS) is accepted.
-DEFAULT_FEED = "https://github.com/Niko1221/Strata/releases/latest/download/strata-feed.json"
+DEFAULT_FEED = "https://github.com/4ltena/exstrata/releases/latest/download/strata-feed.json"
 ENV_FEED = "STRATA_UPDATE_FEED"
+STRATA_RELEASES = "https://github.com/Niko1221/Strata/releases/"   # a feed remembered from Strata's releases moves to exstrata's
 
 ENV_APP_VERSION = "STRATA_APP_VERSION"
 
@@ -146,7 +147,7 @@ def _feed_source(a, root: Path) -> str:
     if os.environ.get(ENV_FEED):
         return os.environ[ENV_FEED]
     remembered = (updater.State(root).data.get("feed") or {}).get("source")
-    if remembered == DEFAULT_FEED:                    # the common feed remembered from before: a Linux ARM64 machine reads its own file
+    if remembered == DEFAULT_FEED or (isinstance(remembered, str) and remembered.startswith(STRATA_RELEASES)):                    # the common feed remembered from before: a Linux ARM64 machine reads its own file
         return default_feed()
     return remembered if _may_be_remembered(remembered) else default_feed()
 

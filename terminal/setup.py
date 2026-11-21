@@ -272,15 +272,15 @@ LLAMA_CPP_COMMIT = "3cf03257f219afbe7334045ff7c6a06ac68c627d"
 
 # The ready-made engine: <PREBUILT_URL><asset>, a zip with strata(.exe), strata-vision(.exe) and BUILD.json, built
 # by tools/make_release.py.  Set this to the GitHub release download folder when publishing, e.g.
-# "https://github.com/<you>/Strata/releases/latest/download/" (or pass --prebuilt / set STRATA_PREBUILT_URL).
+# "https://github.com/<you>/exstrata/releases/latest/download/" (or pass --prebuilt / set STRATA_PREBUILT_URL).
 # With the default, the release of this checkout's own version (PREBUILT_TAG_URL, CMakeLists.txt's version) is
 # tried first and the latest release is the fallback (#214): an older checkout keeps the engine it shipped with.
-PREBUILT_URL = "https://github.com/Niko1221/Strata/releases/latest/download/"
+PREBUILT_URL = "https://github.com/4ltena/exstrata/releases/latest/download/"
 # The repository the release assets and their SHA-256 come from; `engine_digest` reads the API here even
 # when --prebuilt points the download somewhere else, because the hash is only worth having if it comes
 # from somewhere the download does not.
-REPO = "Niko1221/Strata"
-PREBUILT_TAG_URL = "https://github.com/Niko1221/Strata/releases/download/v{version}/"
+REPO = "4ltena/exstrata"
+PREBUILT_TAG_URL = "https://github.com/4ltena/exstrata/releases/download/v{version}/"
 PREBUILT_ASSET = "strata-windows-x64.zip" if WIN else "strata-linux-x64.zip"
 # the CUDA libraries the ready-made engine loads (the same CUDA 13.0 it is built with), from NVIDIA's pip packages
 CUDA_WHEELS = ["nvidia-cublas==13.0.2.14", "nvidia-cuda-runtime==13.0.96"]
@@ -5804,7 +5804,7 @@ def release_of(base: str) -> tuple[str, str | None] | None:
     against a release the user did not ask for, over the network, which is wrong twice over.
 
     The repository comes out of the URL when it names one, so a fork's own releases are checked against
-    the fork rather than against Niko1221/Strata (which never has the fork's tags, so the check would
+    the fork rather than against 4ltena/exstrata (which never has the fork's tags, so the check would
     always fail).
     """
     m = re.search(r"https?://(?:www\.)?github\.com/([^/]+)/([^/]+)/releases/(?:download/v([^/]+)|latest)/",
@@ -8144,7 +8144,7 @@ def update_pull(argv: list) -> int | None:
     if repo is None:
         if source_download():
             say("  This copy of Strata was not made with git, so it cannot fetch new files itself. Download the newest one:")
-            say("    https://github.com/Niko1221/Strata/archive/refs/heads/main.zip")
+            say("    https://github.com/4ltena/exstrata/archive/refs/heads/exstrata.zip")
             say(f"  unzip it anywhere and run {'START-HERE.bat' if WIN else './setup.sh'} in it: it finds the model files in Strata-data")
             say("  and sets itself up the same way - nothing big is downloaded again.")
             say("  Checking this copy's engine and settings meanwhile ...")

@@ -162,7 +162,7 @@ test('an AMD build on an NVIDIA PC is not unpacked and the sentence names the ri
     writeFileSync(join(t.bundle, name, 'engine-component.json'), JSON.stringify(manifest));
     const result = await installBundledEngine({ bundleDir: t.bundle, components: t.components, backend: 'cuda' });
     assert.equal(result.action, 'wrong-make');
-    assert.equal(result.notice, 'This Strata is for AMD RX 9000 cards. Your PC has an NVIDIA card: download the NVIDIA version from https://github.com/Niko1221/Strata/releases');
+    assert.equal(result.notice, 'This Strata is for AMD RX 9000 cards. Your PC has an NVIDIA card: download the NVIDIA version from https://github.com/4ltena/exstrata/releases');
     assert.equal(existsSync(t.engine), false, 'nothing was copied');
     // the same build on an AMD PC is unpacked; an unknown card is not a reason to refuse
     assert.equal((await installBundledEngine({ bundleDir: t.bundle, components: t.components, backend: 'hip' })).action, 'installed');
@@ -171,7 +171,7 @@ test('an AMD build on an NVIDIA PC is not unpacked and the sentence names the ri
 });
 
 test('wrongMakeNotice names the make, not a list of reasons', () => {
-  assert.equal(wrongMakeNotice({ backend: 'cuda', archs: ['sm_86'] }, 'hip'), 'This Strata is for NVIDIA cards. Your PC has an AMD card: download the AMD version from https://github.com/Niko1221/Strata/releases');
+  assert.equal(wrongMakeNotice({ backend: 'cuda', archs: ['sm_86'] }, 'hip'), 'This Strata is for NVIDIA cards. Your PC has an AMD card: download the AMD version from https://github.com/4ltena/exstrata/releases');
 });
 
 test('Windows: the display adapters decide the make, and a leftover nvidia-smi does not outvote them (#3688)', async () => {

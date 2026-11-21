@@ -25,7 +25,7 @@ from strata_control import updater  # noqa: E402
 
 COMMON = "strata-feed.json"
 ARM = "strata-feed-linux-aarch64.json"
-RELEASE = "https://github.com/Niko1221/Strata/releases/latest/download"
+RELEASE = "https://github.com/4ltena/exstrata/releases/latest/download"
 
 
 def host(platform):

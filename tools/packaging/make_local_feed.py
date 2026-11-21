@@ -30,7 +30,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 ROOT = REPO / "terminal"          # the Terminal's source tree: the same layout as the archive
-RELEASE_FEED = "https://github.com/Niko1221/Strata/releases/latest/download"      # the address built into install.sh / install.ps1; a local feed bakes its own in its place
+RELEASE_FEED = "https://github.com/4ltena/exstrata/releases/latest/download"      # the address built into install.sh / install.ps1; a local feed bakes its own in its place
 sys.path.insert(0, str(REPO / "tools" / "packaging"))
 sys.path.insert(0, str(ROOT))
 

@@ -98,11 +98,13 @@ class DocumentedLines(unittest.TestCase):
             left += [rel for old in self.OLD if old in text]
         self.assertEqual(left, [])
 
-    def test_the_readme_lines(self):
-        text = (ROOT.parent / "README.md").read_text(encoding="utf-8")
-        self.assertIn("curl -fsSL --connect-timeout 15 --max-time 120 https://github.com/Niko1221/Strata/releases/latest/download/install.sh "
-                      "-o install.sh && sh install.sh", text)
-        self.assertIn("irm -TimeoutSec 120 https://github.com/Niko1221/Strata/releases/latest/download/install.ps1 | iex", text)
+    def test_the_usage_lines(self):
+        # exstrata's README has no install lines until exstrata publishes a release; the installers' own usage lines carry them
+        packaging = ROOT.parent / "tools" / "packaging"
+        self.assertIn("curl -fsSL --connect-timeout 15 --max-time 120 https://github.com/4ltena/exstrata/releases/latest/download/install.sh "
+                      "-o install.sh && sh install.sh", (packaging / "install.sh").read_text(encoding="utf-8"))
+        self.assertIn("irm -TimeoutSec 120 https://github.com/4ltena/exstrata/releases/latest/download/install.ps1 | iex",
+                      (packaging / "install.ps1").read_text(encoding="utf-8"))
 
 
 class InstallPs1Text(unittest.TestCase):

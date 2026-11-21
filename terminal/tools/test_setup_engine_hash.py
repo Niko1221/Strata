@@ -29,8 +29,8 @@ import setup  # noqa: E402
 
 ASSET = "strata-windows-x64.zip"
 HIP_ASSET = "strata-windows-x64-hip.zip"
-TAG_BASE = "https://github.com/Niko1221/Strata/releases/download/v0.1.40/"
-LATEST_BASE = "https://github.com/Niko1221/Strata/releases/latest/download/"
+TAG_BASE = "https://github.com/4ltena/exstrata/releases/download/v0.1.40/"
+LATEST_BASE = "https://github.com/4ltena/exstrata/releases/latest/download/"
 FORK_BASE = "https://github.com/someone/Strata/releases/download/v1.0/"
 LOCAL_BASE = r"C:\my\mirror"
 
@@ -53,11 +53,11 @@ class WhereTheHashComesFrom(unittest.TestCase):
 
     def test_a_tag_url_names_its_tag(self):
         self.assertEqual(setup.release_of(TAG_BASE),
-                         ("https://api.github.com/repos/Niko1221/Strata/releases", "0.1.40"))
+                         ("https://api.github.com/repos/4ltena/exstrata/releases", "0.1.40"))
 
     def test_the_latest_url_names_no_tag(self):
         self.assertEqual(setup.release_of(LATEST_BASE),
-                         ("https://api.github.com/repos/Niko1221/Strata/releases", None))
+                         ("https://api.github.com/repos/4ltena/exstrata/releases", None))
 
     def test_a_fork_names_the_fork_not_this_repository(self):
         # The repository used to be hardcoded, so a fork's own tag was looked up under Niko1221/Strata,
@@ -130,13 +130,13 @@ class DigestLookup(unittest.TestCase):
         seen = self.asked(self.release_json(
             "v0.1.40", [{"name": ASSET, "size": 42, "digest": "sha256:" + "a" * 64}]))
         self.assertEqual(setup.engine_digest(ASSET, TAG_BASE), (42, "a" * 64))
-        self.assertEqual(seen, ["https://api.github.com/repos/Niko1221/Strata/releases/tags/v0.1.40"])
+        self.assertEqual(seen, ["https://api.github.com/repos/4ltena/exstrata/releases/tags/v0.1.40"])
 
     def test_latest_when_the_url_says_latest(self):
         seen = self.asked(self.release_json(
             "v0.1.40.1", [{"name": ASSET, "size": 7, "digest": "sha256:" + "b" * 64}]))
         setup.engine_digest(ASSET, LATEST_BASE)
-        self.assertEqual(seen, ["https://api.github.com/repos/Niko1221/Strata/releases/latest"])
+        self.assertEqual(seen, ["https://api.github.com/repos/4ltena/exstrata/releases/latest"])
 
     def test_asks_the_fork_for_a_fork_url(self):
         seen = self.asked(self.release_json(

@@ -217,7 +217,7 @@ All signing happens on the release PC, on the finished files.
     python packaging/feed_tool.py set-app-platform --app-json RELEASE/tauri-latest.json --target windows-x86_64 --version 0.2.17 --archive Strata-0.2.17-windows-x64-setup.exe --sig Strata-0.2.17-windows-x64-setup.exe.sig --notes "..."
     python packaging/feed_tool.py set-app-platform --app-json RELEASE/tauri-latest.json --target linux-x86_64   --version 0.2.17 --archive Strata-0.2.17-linux-x86_64.AppImage --sig Strata-0.2.17-linux-x86_64.AppImage.sig
     python packaging/feed_tool.py set-app-platform --app-json RELEASE/tauri-latest.json --target darwin-aarch64 --version 0.2.17 --archive Strata.app.tar.gz --sig Strata.app.tar.gz.sig
-    python packaging/feed_tool.py build-feed --out RELEASE --sequence N --key <feed-key.json> --engine RELEASE/engine --control RELEASE/control --app-json RELEASE/tauri-latest.json (--carry-dsv41 <the last strata-feed.json> --carry-dsv41-base https://github.com/Niko1221/Strata/releases/download/<DSV41-TAG>/ | --no-dsv41-carry) [--shapes RELEASE/shapes] [--drafters RELEASE/drafters]
+    python packaging/feed_tool.py build-feed --out RELEASE --sequence N --key <feed-key.json> --engine RELEASE/engine --control RELEASE/control --app-json RELEASE/tauri-latest.json (--carry-dsv41 <the last strata-feed.json> --carry-dsv41-base https://github.com/4ltena/exstrata/releases/download/<DSV41-TAG>/ | --no-dsv41-carry) [--shapes RELEASE/shapes] [--drafters RELEASE/drafters]
     python packaging/feed_tool.py verify-feed RELEASE --pub <feed-key.pub.json>
 
 `set-app-platform` checks each `.sig` against the public key in `tauri.conf.json` over the exact bytes, so a file signed with another key, or changed after
@@ -248,15 +248,15 @@ a platform with no line gets "this release has no Terminal for <platform>". Uplo
 
 **Linux ARM64 (DGX Spark) has its own feed file.** A Control up to 0.1.52 refuses a feed that names a platform it does not know (`the feed's control entry names an unknown platform`), so the `linux-aarch64` entries are not in `strata-feed.json`, which every released client reads. They are in `strata-feed-linux-aarch64.json` (+ `.sig`, same format, same key, its own `sequence`, aarch64 entries only), uploaded to the same release. A Linux ARM64 Terminal reads that file by default, from a folder or a release address (`strata_control.feed.feed_name()`); a source that names its own `.json` file is used as given. Until every client skips unknown platforms, each release must publish both files, and the aarch64 file's sequence must never go down.
 
-The feed is hosted as the files of a GitHub release of `Niko1221/Strata`. The built-in address is
-`https://github.com/Niko1221/Strata/releases/latest/download` (`strata_cli/update_cmd.py` `DEFAULT_FEED` adds `/strata-feed.json`; `install.sh`
+The feed is hosted as the files of a GitHub release of `4ltena/exstrata`. The built-in address is
+`https://github.com/4ltena/exstrata/releases/latest/download` (`strata_cli/update_cmd.py` `DEFAULT_FEED` adds `/strata-feed.json`; `install.sh`
 and `install.ps1` use the folder). GitHub assets are flat, so build the packages with `--url-prefix ""` and upload every file of the release folder
 as an asset: `strata-feed.json`, `strata-feed.json.sig`, `install-manifest.txt`, `install.sh`, `install.ps1`, the engine and Control archives and the
 app installer with `latest.json` (the Tauri updater endpoint). `STRATA_FEED` (installers) and `--feed` / `STRATA_UPDATE_FEED` (`strata update`) override the
 address. Nothing in this tree uploads anything.
 
 Publish as a normal release (latest): a pre-release is not found by `latest/download`, so the installers, `strata update` and the app updater would get a 404. The `latest` release must carry every file listed above, so a later hotfix release repeats them all. The app updater reads
-`https://github.com/Niko1221/Strata/releases/latest/download/latest.json`.
+`https://github.com/4ltena/exstrata/releases/latest/download/latest.json`.
 
 ## Testing locally
 

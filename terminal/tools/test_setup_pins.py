@@ -273,11 +273,11 @@ class Engine(unittest.TestCase):
 
     def test_bases(self):
         self.assertEqual(setup.prebuilt_bases(setup.PREBUILT_URL),
-                         ["https://github.com/Niko1221/Strata/releases/download/v0.1.31/", setup.PREBUILT_URL])
+                         ["https://github.com/4ltena/exstrata/releases/download/v0.1.31/", setup.PREBUILT_URL])
         self.assertEqual(setup.prebuilt_bases("https://mirror.example/x"), ["https://mirror.example/x/"])
 
     def test_the_checkout_s_release_first(self):
-        tag = "https://github.com/Niko1221/Strata/releases/download/v0.1.31/"
+        tag = "https://github.com/4ltena/exstrata/releases/download/v0.1.31/"
         eng, out, heads, got = self.run_get([tag, setup.PREBUILT_URL])
         self.assertEqual(eng, self.root / "engine")
         self.assertEqual(got, [tag + setup.PREBUILT_ASSET])

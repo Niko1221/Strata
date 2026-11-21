@@ -37,6 +37,11 @@ class FeedMemoryTest(unittest.TestCase):
     def test_nothing_remembered_is_the_project_feed(self):
         self.assertEqual(self.source(None), update_cmd.default_feed())
 
+    def test_a_feed_remembered_from_strata_is_exstratas(self):
+        base = "https://github.com/Niko1221/Strata/releases/latest/download/"
+        self.assertEqual(self.source(base + "strata-feed.json"), update_cmd.default_feed())
+        self.assertEqual(self.source(base + "strata-feed-linux-aarch64.json"), update_cmd.default_feed())
+
     def test_a_named_feed_still_wins(self):
         self.assertEqual(self.source("https://a.example/f.json", feed="http://127.0.0.1:1"), "http://127.0.0.1:1")
 

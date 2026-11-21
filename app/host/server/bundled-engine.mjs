@@ -65,7 +65,7 @@ export function nvidiaDriverVersion() {
 }
 
 /** Where the builds are published; the wrong-make sentence points here. */
-export const RELEASES_URL = 'https://github.com/Niko1221/Strata/releases';
+export const RELEASES_URL = 'https://github.com/4ltena/exstrata/releases';
 
 /** The PCI vendor ids of the display adapters Windows reports as present right now (PowerShell, Win32_VideoController); empty when that cannot be read. */
 export function windowsPresentVendors({ platform = process.platform, run = execFileSync } = {}) {

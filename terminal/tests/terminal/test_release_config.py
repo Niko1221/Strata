@@ -39,7 +39,7 @@ class ReleaseConfig(unittest.TestCase):
 
     def test_the_updater_points_at_github_releases(self):
         up = load("tauri.conf.json")["plugins"]["updater"]
-        self.assertEqual(up["endpoints"], ["https://github.com/Niko1221/Strata/releases/latest/download/latest.json"])
+        self.assertEqual(up["endpoints"], ["https://github.com/4ltena/exstrata/releases/latest/download/latest.json"])
         self.assertNotIn("REPLACE", up["pubkey"])
 
     def test_the_update_overlay_drops_only_the_engine(self):

@@ -39,7 +39,7 @@ class HotfixTag(unittest.TestCase):
         # and if a four-part project version ever exists, its tag is tried first, the latest release is the fallback
         with mock.patch.object(setup, "source_version", return_value="0.1.40.1"):
             self.assertEqual(setup.prebuilt_bases(setup.PREBUILT_URL),
-                             ["https://github.com/Niko1221/Strata/releases/download/v0.1.40.1/", setup.PREBUILT_URL])
+                             ["https://github.com/4ltena/exstrata/releases/download/v0.1.40.1/", setup.PREBUILT_URL])
 
     def test_an_engine_that_says_four_parts_is_read_as_four(self):
         with tempfile.TemporaryDirectory() as d:

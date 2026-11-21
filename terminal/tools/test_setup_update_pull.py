@@ -224,7 +224,7 @@ class UpdatePull(unittest.TestCase):
         (zipped / "CMakeLists.txt").write_text("project(strata VERSION 0.1.0)\n", encoding="utf-8")
         rc, call, out = self.update(zipped, zipped / "setup.py")
         self.assertIsNone(rc)
-        self.assertIn("archive/refs/heads/main.zip", out)
+        self.assertIn("archive/refs/heads/exstrata.zip", out)
 
     def test_an_installed_terminal_neither_pulls_nor_talks(self):
         installed = self.tmp / "install" / "terminal" / "0.2.16"

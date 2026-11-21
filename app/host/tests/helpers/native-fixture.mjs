@@ -27,7 +27,7 @@ export function nativeFixture({modelsDirectory,tuneHandler,engineStatus}={}){
    else result={structuredContent:{summary:'Ready to prepare',plan:{download_gb:68},install:{running:false,exit_code:0}}};
    queueMicrotask(()=>child.stdout.emit('data',Buffer.from(JSON.stringify({jsonrpc:'2.0',id:message.id,result})+'\n')));
   }};
-  else queueMicrotask(()=>{if(command==='git')child.stdout.emit('data',Buffer.from(args[0]==='describe'?'v0.1.40\n':args[0]==='status'?' M local.py\n':'https://github.com/Niko1221/Strata\n'));if(command==='git'||args[0]==='-c'&&!programWait){child.exitCode=0;child.emit('exit',0);}});
+  else queueMicrotask(()=>{if(command==='git')child.stdout.emit('data',Buffer.from(args[0]==='describe'?'v0.1.40\n':args[0]==='status'?' M local.py\n':'https://github.com/4ltena/exstrata\n'));if(command==='git'||args[0]==='-c'&&!programWait){child.exitCode=0;child.emit('exit',0);}});
   return child;
  };
  let benchmarkWait=false,healthWait=false,releaseHealth=null;
