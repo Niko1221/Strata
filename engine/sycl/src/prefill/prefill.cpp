@@ -39,9 +39,7 @@
 #include "strata/kernels/verify_kernels.hpp"
 #include "strata/kernels/qsa_decode_attn.hpp"
 #include "strata/kernels/qsa_prompt_attn.hpp"
-#ifdef STRATA_SYCL_TLA_ATTN
-#include "strata/kernels/qsa_prompt_attn_tla.hpp"
-#endif
+#include "qsa_prefill_batch.hpp"
 #include "strata/kernels/qsa_select.hpp"
 #include "strata/kernels/qsa_two_pass_status.hpp"
 #include "strata/prefill/gemm.hpp"
@@ -1278,6 +1276,19 @@ uint64_t moe_set_bytes(size_t T, int64_t n_expert, bool fused) {
 }
 }
 
+static bool prompt_attn_old() {
+    static const bool old_attn = std::getenv("STRATA_PROMPT_ATTN_OLD") != nullptr;
+    return old_attn;
+}
+
+#ifdef STRATA_SYCL_TLA_ATTN
+// Supported INT8 KV sparse prefill prefers the FP32 TLA kernel on Battlemage.
+static bool tla_prompt_attn(const core::QsaState& st, const strata::kernels::QsaShapes& s, int64_t cap) {
+    return strata::kernels::qsa_use_tla() && !prompt_attn_old() && st.kv_int8 && !st.kv_q4 && !st.kv_hybrid &&
+           s.n_head == 24 && s.n_head_kv == 2 && s.head_dim == 256 && s.page_size == 4 && cap == 2051;
+}
+#endif
+
 bool Prefill::init(const core::WeightTable &wt, const core::ModelGeometry &g,
                    core::SessionState &ss, core::ExpertSource *src,
                    const core::ExpertCache *cache, const int32_t *host_res,
@@ -1522,6 +1533,11 @@ bool Prefill::init(const core::WeightTable &wt, const core::ModelGeometry &g,
               std::to_string(o.failed_bytes >> 20) + " MiB)";
         return false;
     }
+#ifdef STRATA_SYCL_TLA_ATTN
+    // A JIT build compiles the TLA kernels here, before a prompt reaches them.
+    if (tla_prompt_attn(ss.qsa_states[ss.qsa_primary()], core::qsa_shapes(g), m.cap))
+        strata::kernels::qsa_tla_prebuild(stream);
+#endif
     return true;
 }
 catch (sycl::exception const &exc) {
@@ -3419,9 +3435,18 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                                                                 (p0 + T + s.page_size - 1) / s.page_size, s, m.cs);
                     }
                     if (staged) pf_step("reading the prompt (batched, step sync): the K/V append at layer", l);
-                    split_q(m.Qf, m.q, T, m.cs);
-                    rms_rows(m.q, (const float*) wqn->data, T * kNHead, kHeadDim, kHeadDim, EPS, m.cs);
-                    rope(m.q, T, kNHead, kHeadDim, kQW, p0, strata::kernels::rope_scaling(), m.cs);
+                    const bool old_attn = prompt_attn_old();
+                    bool prepared_tla = false;
+#ifdef STRATA_SYCL_TLA_ATTN
+                    if (tla_prompt_attn(st, s, m.cap))
+                        prepared_tla = strata::kernels::qsa_tla_prepare_q(m.Qf, (const float*) wqn->data, m.q, T, p0, EPS,
+                                                                       strata::kernels::rope_scaling(), m.cs);
+#endif
+                    if (!prepared_tla) {
+                        split_q(m.Qf, m.q, T, m.cs);
+                        rms_rows(m.q, (const float*) wqn->data, T * kNHead, kHeadDim, kHeadDim, EPS, m.cs);
+                        rope(m.q, T, kNHead, kHeadDim, kQW, p0, strata::kernels::rope_scaling(), m.cs);
+                    }
                     if (st.kv_rot) strata::kernels::fwht256_inplace_cuda(m.q, T * kNHead, m.cs);
                     rms_rows(m.q_idx, (const float*) wiqn->data, T * kIdxQHeads, kIdxK, kIdxK, EPS, m.cs);
                     rope(m.q_idx, T, kIdxQHeads, kIdxK, kIdxQW, p0, strata::kernels::rope_scaling(), m.cs);
@@ -3629,7 +3654,6 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                     // accuracy but not bitwise (qsa_prompt_attn.hpp). Q4_0 KV, or STRATA_PROMPT_ATTN_OLD=1: the
                     // decode kernel, 32 queries at a time (K8V4 runs the tensor kernel's mode 3: INT8 K,
                     // V dequantized from its q4_0 blocks to fp16 at gather)
-                    static const bool old_attn = std::getenv("STRATA_PROMPT_ATTN_OLD") != nullptr;
                     // STRATA_DUMP_SEL=<file>: the selected cells of every prompt position of the first QSA layer of the
                     // last chunk (int32 T, cap, then T*cap ids and T widths) - the input to the grouped-gather study
                     if (static const char* dsel = std::getenv("STRATA_DUMP_SEL"); dsel && c0 + T >= n && qsa_index == 0) {
@@ -3649,17 +3673,24 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                             std::fprintf(stderr, "strata: selection of %lld positions dumped to %s\n", (long long) T, dsel);
                         }
                     }
-                    if (old_attn || !strata::kernels::qsa_prompt_attn_batch(m.q, pools, m.sel_ids, m.steps_dev, m.cap, s,
-                                                                            m.attn, T, m.cs))
+                    const int64_t ld_a = pf_pad() && T >= std::max<int64_t>(pf_switch_min_t(), 64) ? ZV + ZV_PAD : 0;
+                    bool gated_tla = false;
+#ifdef STRATA_SYCL_TLA_ATTN
+                    // Rotated INT8 requires the inverse Hadamard transform before gating.
+                    if (prepared_tla && !st.kv_rot) {
+                        // bo is written by the attention output projection after this call on m.cs.
+                        const int64_t cells = staged || st.kv_mode == 0 ? p0 + T : 0;
+                        const strata::kernels::QsaTlaKeyWorkspace keys{m.bo, size_t(T) * N * sizeof(float), cells, p0};
+                        const strata::kernels::QsaTlaGate gate{m.Qf, m.attn_h, ld_a ? ld_a : ZV};
+                        gated_tla = strata::kernels::qsa_tla_sparse_prefill(
+                            m.q, pools, m.sel_ids, m.steps_dev, m.cap, s, m.attn_scratch, m.attn, T, m.attn_batch, m.cs, keys, &gate);
+                    }
+#endif
+                    if (!gated_tla && (old_attn || strata::kernels::qsa_prefill_batch(
+                            m.q, pools, m.sel_ids, m.steps_dev, m.cap, s, m.attn_scratch,
+                            m.attn, T, m.attn_batch, m.cs) == strata::kernels::QsaPrefillBatch::declined))
                         for (int64_t t0 = 0; t0 < T; t0 += m.attn_batch) {
                             const int64_t nb = std::min(m.attn_batch, T - t0);
-#ifdef STRATA_SYCL_TLA_ATTN
-                            static const bool tla_attn = [] { const char* v=std::getenv("STRATA_SYCL_TLA_ATTN"); return v&&v[0]=='1'; }();
-                            if (tla_attn && nb == 32 && m.cap == 2051 &&
-                                strata::kernels::qsa_prompt_attn_tla_batch(m.q + t0 * kQW, pools, m.sel_ids + t0 * m.cap,
-                                    m.steps_dev + t0 * strata::kernels::kStepCount, m.cap, s, m.attn_scratch,
-                                    m.attn + t0 * ZV, nb, m.cs)) continue;
-#endif
                             // SYCL port: the scores one work-item per cell (qsa_prompt_attn_percell, 128-cell chunks;
                             // FP32, not bitwise with the warp kernel). STRATA_ATTN_PERCELL=0: the warp kernel.
                             static const bool percell = [] { const char* v = std::getenv("STRATA_ATTN_PERCELL"); return !v || v[0] != '0'; }();
@@ -3675,8 +3706,7 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                         }
                     if (st.kv_rot || st.kv_hybrid) strata::kernels::fwht256_inplace_cuda(m.attn, T * kNHead, m.cs);
                     pt.mark(kPfQsa, cs);
-                    const int64_t ld_a = pf_pad() && T >= std::max<int64_t>(pf_switch_min_t(), 64) ? ZV + ZV_PAD : 0;
-                    gate_attn(m.attn, m.Qf, m.attn_h, T, m.cs, ld_a);
+                    if (!gated_tla) gate_attn(m.attn, m.Qf, m.attn_h, T, m.cs, ld_a);
                     if (!native_proj(m.gemm, wo, m.attn_h, m.bo, T, v.name("attn_output.weight"), err, 0, ld_a)) return false;
                     ++qsa_index;
                     if (!kv_prefetch_after(l + 1, qsa_index)) return false;

@@ -106,9 +106,47 @@ cmake --build build-sycl --target strata
 
 | Option | Effect |
 | --- | --- |
+| `-DSTRATA_SYCL_TLA_DIR=/path/to/sycl-tla` | Build the FP32 TLA prompt attention from a sycl-tla checkout: see [FP32 TLA prompt attention](#fp32-tla-prompt-attention) below. Without it the build leaves TLA out. |
 | `-DSTRATA_SYCL_AOT=bmg-g31` | Compile ahead of time for Arc Pro B70. Needs `ocloc` (Intel's `intel-ocloc` package). Without it the first start JIT-compiles every kernel (about 47 s). |
 | `-DSTRATA_SYCL_AOT=bmg-g21` | The same for B580, B570 and Pro B60 |
 | `-DSTRATA_SYCL_PARITY=OFF` | Skip the kernel tests (on by default). Run them with `ctest --test-dir build-sycl` on the card. |
+
+### FP32 TLA prompt attention
+
+On a Battlemage GPU the default prompt attention for INT8 KV is the INT8 ESIMD kernel. An engine built with TLA prefers the FP32
+TLA kernel instead: it matches the FP32 reference kernel bit for bit. TLA comes from [sycl-tla](https://github.com/intel/sycl-tla),
+Intel's SYCL port of CUTLASS and CuTe. It is header-only. The build reads only its `include/` folder; nothing of sycl-tla is built or
+installed. The engine is tested with sycl-tla commit `87f6850680a580654b9ea2c80dbc01aeb36ad231`.
+
+1. Put the headers at that commit next to the checkout, with git:
+
+   ```sh
+   git clone https://github.com/intel/sycl-tla.git ../sycl-tla
+   git -C ../sycl-tla checkout 87f6850680a580654b9ea2c80dbc01aeb36ad231
+   ```
+
+   or from the archive of the commit:
+
+   ```sh
+   curl -L https://github.com/intel/sycl-tla/archive/87f6850680a580654b9ea2c80dbc01aeb36ad231.tar.gz | tar xz
+   mv sycl-tla-87f6850680a580654b9ea2c80dbc01aeb36ad231 ../sycl-tla
+   ```
+
+2. Point the build at it.
+   - Without Docker, add `-DSTRATA_SYCL_TLA_DIR=$PWD/../sycl-tla` to the `cmake` line above.
+   - With the Docker build, add `-e TLA_DIR=/work/sycl-tla` to the `docker run` line. The folder above the checkout is mounted at
+     `/work`, so `../sycl-tla` is `/work/sycl-tla` in the container.
+   - An existing build folder takes the new path at the next build. A folder configured when TLA was opt-in holds
+     `STRATA_SYCL_TLA_ATTN=OFF`; the next configure changes that to `AUTO` and says so.
+
+3. Check the configure output for `Strata SYCL: Battlemage TLA prompt attention: ON`.
+   - TLA is built for a portable (JIT) build and for any Battlemage AOT list (`bmg-g21`, `bmg-g31` or both).
+   - A path without `include/cute/tensor.hpp` or `include/cute/atom/copy_traits_xe_2d.hpp` gives a warning naming the missing file,
+     and TLA stays off.
+   - `-DSTRATA_SYCL_TLA_ATTN=ON` makes a missing header an error. `-DSTRATA_SYCL_TLA_ATTN=OFF` leaves TLA out even with the headers.
+
+At run time, set `STRATA_SYCL_TLA_ATTN=0` to use the previous dispatch; `strata-sycl.sh` passes it to the container.
+Unsupported inputs use the existing batch and per-cell/warp fallbacks, and `STRATA_PROMPT_ATTN_OLD` still bypasses batched attention.
 
 `setup_intel.py` looks for `build-sycl-aot/strata` or `build-sycl/strata` in the checkout. With the top-level option the
 engine is at `build-sycl/sycl/strata`, so use `-S sycl` or set `STRATA_SYCL_BIN`.

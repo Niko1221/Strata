@@ -33739,7 +33739,7 @@
     },
     {
      "file": "engine/sycl/src/prefill/prefill.cpp",
-     "line": 3632,
+     "line": 1280,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -33755,6 +33755,7 @@
    "doc_mentions": [
     "docs/NVIDIA_V100.md:43",
     "docs/NVIDIA_V100.md:90",
+    "docs/INTEL_ARC.md:149",
     "docs/OLDER_GPUS.md:142",
     "docs/bench-results/2026-10-03-v100-prompt-attn/README.md:5",
     "docs/bench-results/2026-10-03-v100-prompt-attn/README.md:102"
@@ -43233,29 +43234,33 @@
    ],
    "reads": [
     {
-     "file": "engine/sycl/src/prefill/prefill.cpp",
-     "line": 3657,
+     "file": "engine/sycl/src/prefill/qsa_prefill_batch.hpp",
+     "line": 14,
      "backend": "sycl",
      "fn": "getenv"
     }
    ],
    "parse": "flag",
-   "default_state": "off",
+   "default_state": "on",
    "code_default": null,
    "engine_sets": [],
    "engine_defaults": [],
    "launch_files": [],
    "launch_sets": [],
    "launch_reads": [],
-   "doc_mentions": [],
+   "doc_mentions": [
+    "docs/INTEL_ARC.md:140",
+    "docs/INTEL_ARC.md:146",
+    "docs/INTEL_ARC.md:148"
+   ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
    "last_commit": "4058aa782b",
    "last_date": "2026-11-17",
-   "status": "research",
+   "status": "default",
    "owner": "sycl",
-   "note": "Opt-in (=1), off by default, and compiled only in builds that define the macro of the same name: the TLA attention kernel for batch 32 with a 2,051 cap (sycl/src/prefill/prefill.cpp:3638). Read from the code only; the integration lane measured nothing on it.",
+   "note": "Default on in a compatible build with local headers, for supported Battlemage INT8 KV prefill. Set to 0 to restore the existing batch dispatcher.",
    "retire_after": "",
    "retired_in": ""
   },
