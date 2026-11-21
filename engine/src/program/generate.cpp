@@ -1077,6 +1077,7 @@ struct Options {
     int prompt_cache = 6;
     int64_t conversation_cache_mib = -1; // host RAM for independent conversations; -1: not given, --serve sizes it from the free RAM (#3493), 0: off
     int conversation_cache_slots = 4;
+    int conversation_cache_swap_block_mib = strata::core::conversation_cache_swap_default_block_mib;
     int64_t conversation_cache_min_free_mib = 2560;
     /// --serve: park only conversations of at least this many tokens.  Every parked conversation costs one of
     /// conversation_cache_slots whatever its length, so without it a client that interleaves short side requests
@@ -1276,6 +1277,7 @@ void usage() {
                  "                       of RAM each; 0 = read every prompt from the start)\n"
                  "  --conversation-cache-mib N  --serve: RAM budget for parked conversations (default: sized from the free RAM, up to 8192; 0 = off)\n"
                  "  --conversation-cache-slots N  --serve: at most N parked conversations (default 4)\n"
+                 "  --conversation-cache-swap-block-mib N  --serve: host K/V exchange block, 0..256 MiB (default 0: off)\n"
                  "  --conversation-cache-min-free-mib N  --serve: RAM floor (under MemAvailable, the cgroup limits and\n"
                  "                       --memory-limit-mib) when parking, saving or restoring a session (default 2560)\n"
                  "  --memory-limit-mib N  --serve: the total RAM (MiB) this engine's container or cgroup may use, when\n"
@@ -3991,6 +3993,17 @@ int main(int argc, char** argv) {
         else if (a == "--vision") o.vision = true;
         else if (a == "--session-save-reclaim") o.session_save_reclaim = true;
         else if (a == "--prompt-cache") o.prompt_cache = std::max(0, std::atoi(next("--prompt-cache")));
+        else if (a == "--conversation-cache-swap-block-mib") {
+            const std::string value = next(a.c_str());
+            if (value == "-h" || (value.size() >= 2 && value[0] == '-' && value[1] == '-')) {
+                std::fprintf(stderr, "%s needs a value\n", a.c_str());
+                return 2;
+            }
+            if (!strata::core::parse_conversation_cache_swap_block_mib(value, o.conversation_cache_swap_block_mib)) {
+                std::fprintf(stderr, "%s needs a decimal integer in [0, 256]\n", a.c_str());
+                return 2;
+            }
+        }
         else if (a == "--conversation-cache-mib" || a == "--conversation-cache-slots" ||
                  a == "--conversation-cache-min-free-mib" || a == "--conversation-cache-min-tokens" ||
                  a == "--conversation-cache-park-gain" || a == "--conversation-spill-mib" ||
@@ -18916,6 +18929,87 @@ int main(int argc, char** argv) {
                     return drops_all || (int64_t) c.ids.size() > resume || !starts_with(c.ids, c.imgs);
                 };
             }
+            bool swapped_parked = false;
+            Clock::time_point swap_t0;
+            // A retained K/V matching the live prefix stays for park_current;
+            // unrelated retained K/V does not block an ordinary RAM-tier exchange.
+            const size_t swap_block_bytes = strata::core::conversation_cache_swap_block_bytes(o.conversation_cache_swap_block_mib);
+            if (swap_block_bytes != 0 && incoming && !from_ssd && taken.live &&
+                taken.tokens == (int64_t) incoming->live.ids.size() &&
+                !borrow && !keep_branch && !reply_replaced && park_worth && live_ok && !live.empty() &&
+                conversations.wants((int64_t) live.size()) && !conversations.has_reuse_for(live) &&
+                stages.empty() && o.batch == 0 && !kvg.on) {
+                swap_t0 = Clock::now();
+                struct SwapStage {
+                    SwapStage() { strata::core::progress_at("request: parking the previous conversation"); }
+                    ~SwapStage() { strata::core::progress_at("request"); strata::core::progress_beat(); }
+                } swap_stage;
+                try {
+                    const strata::core::ConversationView view{live, live_imgs, checks, cvec_cached};
+                    strata::core::ConversationSwapPlan plan;
+                    if (strata::core::conversation_snapshot_swap_prepare(plan, *incoming, view, ss, g,
+                            use_mtp ? &mtp.kv_state() : nullptr, swap_block_bytes, err)) {
+                        // As in park_source, quiesce device work before reclaiming either pool.
+                        const cudaError_t swap_sync = cudaDeviceSynchronize();
+                        if (swap_sync != cudaSuccess) {
+                            std::printf("ERR synchronizing before conversation exchange: %s\n", cudaGetErrorString(swap_sync));
+                            return 1;
+                        }
+                        const uint64_t floor = (uint64_t) o.conversation_cache_min_free_mib << 20;
+                        auto admit = [&](uint64_t additional) {
+                            const auto mem = strata::core::sample_host_memory();
+                            return strata::core::conversation_memory_admit(
+                                mem ? std::optional<uint64_t>(mem->available) : std::nullopt, additional, floor);
+                        };
+                        // Match the upstream RAM gate's pool-then-heap reclaim, without evicting entries.
+                        auto admit_without_eviction = [&](uint64_t additional) {
+                            bool fits = admit(additional);
+                            if (!fits && pools_budget.idle_bytes() > 0) {
+                                pools_budget.shrink((size_t) -1);
+                                fits = admit(additional);
+                            }
+                            return fits || (strata::core::release_free_heap() && admit(additional));
+                        };
+                        const bool fits = conversations.can_fit(plan.image_bytes, plan.held_bytes) &&
+                                          admit_without_eviction(plan.additional_bytes);
+                        if (fits) {
+                            auto ready = [&](size_t image_bytes, size_t held_bytes) {
+                                return conversations.can_fit(image_bytes, held_bytes) &&
+                                       admit_without_eviction(plan.final_additional_bytes);
+                            };
+                            strata::core::SavedConversation outgoing;
+                            const auto result = strata::core::conversation_snapshot_swap(
+                                plan, *incoming, outgoing, view, ss, g, swap_block_bytes, ready, err);
+                            if (result == strata::core::ConversationSwap::transfer_failed) {
+                                std::printf("ERR exchanging parked conversation: %s\n",
+                                            err.empty() ? "state transfer failed" : err.c_str());
+                                return 1;
+                            }
+                            if (result == strata::core::ConversationSwap::swapped) {
+                                swapped_parked = true;
+                                const size_t snapshot_bytes = outgoing.bytes();
+                                bool stored = false;
+                                try {
+                                    if (conversations.can_fit(snapshot_bytes, incoming->bytes()))
+                                        stored = conversations.put_exchanged(std::move(outgoing), incoming->bytes());
+                                } catch (const std::bad_alloc&) {
+                                    std::fprintf(stderr, "strata serve: conversation cache: allocation failed while publishing exchanged image\n");
+                                }
+                                std::fprintf(stderr, "strata serve: conversation cache: %s %zu tokens by host K/V exchange; "
+                                                     "parked=%zu bytes=%zu snapshot_bytes=%zu\n",
+                                             stored ? "parked" : "skipped", live.size(), conversations.size(),
+                                             conversations.bytes(), snapshot_bytes);
+                            }
+                        }
+                    }
+                } catch (const std::bad_alloc&) {
+                    if (swapped_parked) {
+                        std::printf("ERR exchanging parked conversation: allocation failed after exchange\n");
+                        return 1;
+                    }
+                }
+                if (!swapped_parked) err.clear();
+            }
             if (borrow && !keep_branch && park_worth) {
                 conversations.guard(parked.serial);   // parking the outgoing conversation must not evict the donor
                 const bool parked_ok = park_current(0);
@@ -18939,7 +19033,7 @@ int main(int argc, char** argv) {
                     }
                 }
             } else if ((!from_live || incoming || slot_source >= 0) && !keep_branch && !reply_replaced && park_worth &&
-                       !park_current(incoming ? incoming->bytes() : 0)) {
+                       !swapped_parked && !park_current(incoming ? incoming->bytes() : 0)) {
                 std::printf("ERR %s\n", err.c_str());
                 return 1;
             }
@@ -19069,8 +19163,8 @@ int main(int argc, char** argv) {
                              conversations.size(), conversations.bytes(), conversations.borrowed());
             }
             if (incoming) {
-                const auto t0 = Clock::now();
-                if (strata::core::conversation_snapshot_restore(*incoming, ss, g,
+                const auto t0 = swapped_parked ? swap_t0 : Clock::now();
+                if (!swapped_parked && strata::core::conversation_snapshot_restore(*incoming, ss, g,
                         use_mtp && (stages.empty() || mtp_first) ? &mtp.kv_state() : nullptr, err) !=
                     strata::core::ConversationRestore::restored) {
                     // Already prevalidated above: a failure here is fatal, never
@@ -19116,7 +19210,7 @@ int main(int argc, char** argv) {
                 cvec_cached = incoming->cvec;
                 resume = taken.tokens;   // (parked.tokens unless the image came from the SSD tier)
                 from_live = taken.live;
-                if (std::getenv("STRATA_SNAPSHOT_FULL_CAPTURE") == nullptr) {
+                if (!swapped_parked && std::getenv("STRATA_SNAPSHOT_FULL_CAPTURE") == nullptr) {
                     std::vector<std::vector<strata::core::ConversationKv>> stage_kv;   // every stage's, for its next park
                     for (auto& si : incoming->stage_images) stage_kv.push_back(std::move(si.kv));
                     conversations.retain(std::move(incoming->kv), int64_t(live.size()), std::move(stage_kv), live);
