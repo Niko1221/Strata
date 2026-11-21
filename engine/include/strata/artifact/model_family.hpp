@@ -17,12 +17,14 @@ enum class ModelFamily {
     Qwen4Exp,    ///< Qwen3.8-Flash-Next and its fine-tunes / pruned variants (Swift 1.5, the Coder)
     Qwen35Moe,   ///< Qwen3.6-35B-A3B (Unsloth's MTP GGUFs): plain pre-norm residual, dense attention, nextn MTP block
     Hy4Flash,    ///< Tencent Hy4-Flash 220B-A12B (LatentMoE + Hybrid MLA/IndexPool + 4-Module Engram + 5L DFly2)
+    Inkling2,    ///< Inkling 2 / Inkling-2-Small / Inkling-2-Mini (thinkingmachines/Inkling-2)
 };
 
 inline ModelFamily model_family_from_arch(const std::string& arch) {
     if (arch == "qwen4exp") return ModelFamily::Qwen4Exp;
     if (arch == "qwen35moe") return ModelFamily::Qwen35Moe;
     if (arch == "hy_v4_flash") return ModelFamily::Hy4Flash;
+    if (arch == "inkling2") return ModelFamily::Inkling2;
     return ModelFamily::Unknown;
 }
 
@@ -35,6 +37,8 @@ inline const char* model_family_arch(ModelFamily f) {
         return "qwen35moe";
     case ModelFamily::Hy4Flash:
         return "hy_v4_flash";
+    case ModelFamily::Inkling2:
+        return "inkling2";
     default:
         return "";
     }
@@ -49,6 +53,8 @@ inline const char* model_family_title(ModelFamily f) {
         return "Qwen3.6-35B-A3B";
     case ModelFamily::Hy4Flash:
         return "Tencent Hy4-Flash";
+    case ModelFamily::Inkling2:
+        return "Inkling 2";
     default:
         return "an unknown model";
     }

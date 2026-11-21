@@ -2969,6 +2969,124 @@ class OutputParser:
         return [Event("tool_call", call=call)]
 
 
+INK_THINK, INK_TEXT, INK_CALL = "<|content_thinking|>", "<|content_text|>", "<|content_invoke_tool_json|>"
+INK_MODEL, INK_END, INK_EOS = "<|message_model|>", "<|end_message|>", "<|content_model_end_sampling|>"
+INK_OTHER_TEXT = ("<|content_tool_error|>", "<|content_invoke_tool_text|>")
+
+
+class InklingRewriter:
+    """Inkling 2's output rewritten, as it streams, into what OutputParser reads.
+    The model writes typed segments: <|content_thinking|> opens reasoning.
+    <|content_text|> opens answer text (emitting </think> while reasoning is open).
+    What stands between segments (<|message_model|>, <|end_message|>, <|content_model_end_sampling|>) is dropped.
+    A mark split across deltas is held until it is whole."""
+
+    MARKS = (INK_THINK, INK_TEXT, INK_CALL, INK_MODEL, INK_END, INK_EOS) + INK_OTHER_TEXT
+
+    def __init__(self, thinking: bool = True):
+        self.buf = ""
+        self.mode = "lead"
+        self.open = thinking
+        self.name = ""
+        self.body = ""
+
+    def feed(self, text: str) -> str:
+        self.buf += text
+        out = []
+        while self.buf:
+            hits = [(i, m) for m in self.MARKS for i in (self.buf.find(m),) if i >= 0]
+            if not hits:
+                keep = max((n for m in self.MARKS for n in range(1, len(m)) if self.buf.endswith(m[:n])), default=0)
+                out.append(self._text(self.buf[:len(self.buf) - keep]))
+                self.buf = self.buf[len(self.buf) - keep:]
+                break
+            i, m = min(hits, key=lambda x: (x[0], -len(x[1])))
+            if i:
+                out.append(self._text(self.buf[:i]))
+            self.buf = self.buf[i + len(m):]
+            out.append(self._mark(m))
+        return "".join(out)
+
+    def _text(self, s: str) -> str:
+        if self.mode == "name":
+            self.name += s
+            return ""
+        if self.mode == "call":
+            self.body += s
+            return ""
+        if self.mode == "lead":
+            self.mode = "text" if s.strip() else "lead"
+            return (self._close() + s) if self.mode == "text" else ""
+        return s if self.mode in ("think", "text") else ""
+
+    def _close(self) -> str:
+        if self.open:
+            self.open = False
+            return "</think>\n"
+        return ""
+
+    def _mark(self, m: str) -> str:
+        if m == INK_THINK:
+            self.mode = "think"
+            self.open = True
+            return ""
+        if m == INK_TEXT or m in INK_OTHER_TEXT:
+            self.mode = "text"
+            return self._close()
+        if m == INK_MODEL:
+            self.mode, self.name = "name", ""
+            return ""
+        if m == INK_CALL:
+            self.mode, self.body = "call", ""
+            return ""
+        out = self._call() if self.mode == "call" else ""
+        self.mode = "between"
+        return out
+
+    def finish(self) -> str:
+        rest, self.buf = self.buf, ""
+        out = self._text(rest)
+        if self.mode == "call":
+            out += self._call()
+            self.mode = "between"
+        return out
+
+    def _call(self) -> str:
+        try:
+            j = json.loads(self.body)
+            name = (j.get("name") if isinstance(j, dict) else None) or self.name.strip()
+            args = (j.get("args") if isinstance(j, dict) else None) or {}
+            if not name or not isinstance(args, dict):
+                raise ValueError(self.body)
+        except ValueError:
+            return self._close() + self.body
+        val = lambda v: json.dumps(v, ensure_ascii=False).replace("<", "\\u003c")
+        return (self._close() + CALL_START + f"<function={name}>\n" +
+                "".join(f"<parameter={k}>\n{val(v)}\n</parameter>\n" for k, v in args.items()) + "</function>" + CALL_END)
+
+
+class InklingOutputParser(OutputParser):
+    """The parser for Inkling 2's typed-segment output."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.inkling = InklingRewriter(self.state == "reasoning")
+
+    @property
+    def clean(self) -> bool:
+        return super().clean and not self.inkling.buf
+
+    def feed(self, delta: str) -> list[Event]:
+        delta = self.inkling.feed(delta)
+        return super().feed(delta)
+
+    def finish(self, reason: str | None = None) -> list[Event]:
+        rest = self.inkling.finish()
+        if rest:
+            super().feed(rest)
+        return super().finish(reason)
+
+
 class JsonOutputParser(OutputParser):
     """The parser for a model whose chat template tells it to write each call as JSON inside the wrapper:
     `<tool_call>\n{"name": NAME, "arguments": {...}}\n</tool_call>` (Qwen3, Hermes).  OutputParser already reads that form, but only
@@ -3006,6 +3124,8 @@ def parser_for_template(source: str | None):
     """The OutputParser class for a chat template's text, by the tool-call form the template documents (serve/toolformat.py):
     the JSON form gets JsonOutputParser; the XML form every Strata model ships with, templates without tools, and forms nothing
     here reads keep OutputParser (the same class as before this existed)."""
+    if source and ("<|content_invoke_tool_json|>" in source or "<|content_thinking|>" in source or "effort_map" in source):
+        return InklingOutputParser
     from serve import toolformat
     kind = toolformat.tool_format(source or "")
     return Hy4OutputParser if kind == "hy4" else JsonOutputParser if kind == "json" else OutputParser
