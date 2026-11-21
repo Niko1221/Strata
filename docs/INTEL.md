@@ -159,7 +159,10 @@ with Coder IQ1_M 1,024 MiB fits all 12,288 experts with 2 GB of VRAM free.
 - **Monitor tab.** `server_intel.py` plugs the shared Intel reader (`terminal/serve/telemetry.py`) into the Monitor. Temperature, power and
   the PCIe link come from sysfs. Load and VRAM work without root: load is the GPU busy time of the engine's own processes
   (`/proc/<pid>/fdinfo`, readable by the user who started them), the VRAM total comes from Level Zero sysman (`libze_loader.so.1`),
-  and the VRAM in use from sysman on `xe` and from the engine's own fdinfo memory on `i915`. The root sampler
+  and the VRAM in use from sysman on `xe` and from the engine's own fdinfo memory on `i915`. An Intel GPU built into the
+  processor (Level Zero's integrated flag) has no VRAM: its total is the RAM (`MemTotal`) and its use the fdinfo memory in
+  `gtt` and `system` of the GPU clients this user can see (on a laptop, the desktop's too). The server's free-memory checks (`min_free_vram_mib`, the room for a GPU picture reader) count
+  `MemAvailable` plus `GPUReclaim` from `/proc/meminfo` there. The root sampler
   (`engine/sycl/tools/gpustat.py`, `gpustat.service`) is optional: when it runs, its `/run/gpustat.json` is used first, and it also sees
   other users' processes. PCIe traffic needs Intel PMT, which is root-only unless the host grants it; without it the Monitor leaves
   that reading empty. A run config may name a `model_switcher`; the web app's header then gets a Model menu.
