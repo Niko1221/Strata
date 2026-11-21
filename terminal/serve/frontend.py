@@ -1737,6 +1737,20 @@ class OutputParser:
             if isinstance(name, str) and name:
                 for prefix in ("tools.", "functions.", "default_api."):
                     aliases.setdefault(prefix + name, set()).add(name)
+        # A client that declares MCP tools as `mcp__server__tool` next to plain tools (`web_fetch`, `memory`): Qwen carries
+        # the prefix over to a plain tool (`mcp__web_fetch`), drops it from an MCP tool (`server__tool`), or keeps it and
+        # drops the server (`mcp__tool`, the #5281 last segment with its prefix).  Spellings of a declared name, under the
+        # same unambiguous-alias rule; a server name that differs (`mcp__serevr__tool`) is not guessed.
+        for name in self.schemas:
+            if not isinstance(name, str) or not name or "." in name:
+                continue
+            if name.startswith("mcp__"):
+                rest = name[len("mcp__"):]
+                if "__" in rest:
+                    aliases.setdefault(rest, set()).add(name)
+                    aliases.setdefault("mcp__" + rest.rsplit("__", 1)[1], set()).add(name)
+            elif "__" not in name:
+                aliases.setdefault("mcp__" + name, set()).add(name)
         self.aliases = {alias: next(iter(names)) for alias, names in aliases.items()
                         if len(names) == 1 and alias not in self.schemas}
         self.unread = 0              # #3441: `<tool_call>` blocks that opened like a call and were returned as text
