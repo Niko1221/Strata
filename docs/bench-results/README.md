@@ -4,7 +4,7 @@ Raw results and short reports from measurement runs, one folder per run, named b
 the Strata version, hardware and method of its own day, and none is a statement about a later release. Current numbers are in the
 [docs](../README.md) and the [README](../../README.md); how to measure is in [BENCHMARK_PROTOCOL.md](../BENCHMARK_PROTOCOL.md).
 
-This page is built by `python tools/bench_results_index.py` (`--check` fails when a folder is missing from it). 143 folders and 3 loose files, 2188 files in all.
+This page is built by `python tools/bench_results_index.py` (`--check` fails when a folder is missing from it). 151 folders and 4 loose files, 2245 files in all.
 
 
 ## 2026-09
@@ -164,11 +164,20 @@ This page is built by `python tools/bench_results_index.py` (`--check` fails whe
 | Folder | What | Files |
 | --- | --- | ---: |
 | [2026-11-14-rdna2-pcie-auto](2026-11-14-rdna2-pcie-auto/) | PcieAuto on gfx103x: the decode miss split from the CPU pool's speed (#4007) | 3 |
+| [2026-11-20-standard-unlocked-rtx4080-coder-b6](2026-11-20-standard-unlocked-rtx4080-coder-b6/) | Strata standard benchmark: NVIDIA GeForce RTX 4080 | 7 |
+| [2026-11-20-standard-unlocked-rtx4080-iq3s-b1](2026-11-20-standard-unlocked-rtx4080-iq3s-b1/) | Strata standard benchmark: NVIDIA GeForce RTX 4080 | 7 |
+| [2026-11-20-standard-unlocked-rtx4080-iq3s-b2-fused](2026-11-20-standard-unlocked-rtx4080-iq3s-b2-fused/) | Strata standard benchmark: NVIDIA GeForce RTX 4080 | 7 |
+| [2026-11-20-standard-unlocked-rtx4080-iq3s-b4-alesha-cvec](2026-11-20-standard-unlocked-rtx4080-iq3s-b4-alesha-cvec/) | Strata standard benchmark: NVIDIA GeForce RTX 4080 | 7 |
+| [2026-11-20-standard-unlocked-rtx4080-iq3s-b7-acvec](2026-11-20-standard-unlocked-rtx4080-iq3s-b7-acvec/) | Strata standard benchmark: NVIDIA GeForce RTX 4080 | 7 |
+| [2026-11-20-standard-unlocked-rtx4080-sc117-b5](2026-11-20-standard-unlocked-rtx4080-sc117-b5/) | Strata standard benchmark: NVIDIA GeForce RTX 4080 | 7 |
+| [2026-11-20-standard-unlocked-rtx4080-udq4-b8-262144](2026-11-20-standard-unlocked-rtx4080-udq4-b8-262144/) | Strata standard benchmark: NVIDIA GeForce RTX 4080 | 7 |
+| [2026-11-20-standard-unlocked-rtx4080-udq4-b9-262144-mtp](2026-11-20-standard-unlocked-rtx4080-udq4-b9-262144-mtp/) | Strata standard benchmark: NVIDIA GeForce RTX 4080 | 7 |
 
 ## Loose files
 
 | File |
 | --- |
+| [2026-11-20-unlocked-rtx4080-night-report.md](2026-11-20-unlocked-rtx4080-night-report.md) |
 | [COMMUNITY.md](COMMUNITY.md) |
 | [exchange-rotation-ab.json](exchange-rotation-ab.json) |
 | [exchange-rotation-token-ids.json](exchange-rotation-token-ids.json) |
