@@ -37,6 +37,7 @@
 #include <deque>
 #include <functional>
 #include <map>
+#include <memory>
 #include <iostream>
 #include <mutex>
 #include <random>
@@ -5192,6 +5193,8 @@ int sample(const vec& lg, Sampler& s) { return sample(lg.data(), s); }
 
 constexpr int EOS_ID = 200006;   // <|content_model_end_sampling|> (generation_config.json)
 
+#include "ink2_session.cuh"
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -5214,6 +5217,7 @@ int main(int argc, char** argv) {
     std::vector<int> ids;
     int n_gen = 32;
     bool serve = false, spec = false;
+    int cc_mib = 0, cc_min = 512;   // --conversation-cache-mib / -min-tokens (ink2_session.cuh)
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--serve") { serve = true; continue; }
@@ -5239,6 +5243,8 @@ int main(int argc, char** argv) {
         else if (a == "--spec") spec = std::atoi(v) != 0;
         else if (a == "--cpu-threads") E.cpu_threads = std::atoi(v);
         else if (a == "--kv-grow") E.grow = std::atoi(v) != 0;
+        else if (a == "--conversation-cache-mib") cc_mib = std::atoi(v);
+        else if (a == "--conversation-cache-min-tokens") cc_min = std::atoi(v);
         else if (a == "--kv-grow-step") E.grow_step = std::max(CHUNK, std::atoi(v) / CHUNK * CHUNK);
         else if (a == "--kv") {   // Strata's names too (strata_control/tuning.py: fp16, int8)
             const std::string k = v;
@@ -5259,7 +5265,7 @@ int main(int argc, char** argv) {
     if (E.grow) vmm_init();
     if (dir.empty() || (ids.empty() && !serve)) {
         std::fprintf(stderr, "usage: strata-ink2 --model DIR (--serve | --tokens IDS | --tokens-file F) [--n N] [--ctx N] "
-                             "[--chunk N] [--tc 0|1] [--kv f16|fp16|f32|i8|int8|i8r|k8v4|k8v8] [--kv-grow 1 [--kv-grow-step N]] [--vram-reserve-mib N [--cpu-threads N]] [--spec 0|1] [--dump-logits F]\n");
+                             "[--chunk N] [--tc 0|1] [--kv f16|fp16|f32|i8|int8|i8r|k8v4|k8v8] [--kv-grow 1 [--kv-grow-step N]] [--vram-reserve-mib N [--cpu-threads N]] [--spec 0|1] [--dump-logits F] [--conversation-cache-mib N [--conversation-cache-min-tokens N]]\n");
         return 2;
     }
     if (serve && PF.TP <= 0) { std::fprintf(stderr, "--serve needs --chunk > 0\n"); return 2; }
@@ -5318,6 +5324,7 @@ int main(int argc, char** argv) {
     }
     if (E.offload) setup_offload();
     if (E.cpu) setup_cpu();
+    if (serve) sess_init(cc_mib, cc_min);
 
     vec logits(VOCAB);
     auto step = [&](int tok, int pos, bool want_logits) {
@@ -5487,15 +5494,16 @@ int main(int argc, char** argv) {
             }
             max_new = std::max(0, std::min(max_new, E.ctx - (int) pr.size()));
             const bool reuse = !hist.empty() && pr.size() >= hist.size() && std::equal(hist.begin(), hist.end(), pr.begin());
-            kv_trim((int) pr.size() + 1);
             size_t start = reuse ? hist.size() : 0;
+            if (g_sess.on) start = sess_begin(pr, hist, last_logits, start);   // conversation cache (ink2_session.cuh)
+            kv_trim((int) pr.size() + 1);
             if (spec && start == pr.size()) start = pr.size() - 1;   // re-fed: the drafter needs its features
             const double t0 = now_ms();
             if (start == pr.size()) {
                 logits = last_logits;
             } else {
                 for (size_t p0 = start, Tz = 0; p0 < pr.size(); p0 += Tz) {
-                    const int T = pf_fit((int) std::min((size_t) PF.TP, pr.size() - p0), (int) p0);
+                    const int T = sess_chunk((int) p0, pf_fit((int) std::min((size_t) PF.TP, pr.size() - p0), (int) p0));
                     Tz = (size_t) T;
                     if (T < g_pf_mapped_T) pf_unmap();
                     pf_map(T);
@@ -5504,6 +5512,7 @@ int main(int argc, char** argv) {
                         draft_context(PF.feat, (int) p0, T);
                         if (p0 + T == pr.size()) draft_frnn(PF.feat + (size_t) (T - 1) * 4 * H);
                     }
+                    sess_after_chunk((int) (p0 + T));
                     const double ms = now_ms() - t0;
                     std::printf("PP %zu %zu %.0f %.1f\n", p0 + T, pr.size(), ms, 1000.0 * (p0 + T - start) / std::max(ms, 1.0));
                     std::fflush(stdout);
@@ -5511,6 +5520,7 @@ int main(int argc, char** argv) {
                 CK(cudaMemcpy(logits.data(), E.logits, (size_t) VOCAB * 4, cudaMemcpyDeviceToHost));
                 pf_unmap();
             }
+            sess_prompt_end(pr, logits);
             const double t1 = now_ms();
             std::vector<int> gen;
             const char* finish = "length";
