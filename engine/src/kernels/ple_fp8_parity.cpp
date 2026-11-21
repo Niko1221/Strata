@@ -7,6 +7,10 @@
 // F8_E4M3 bytes, times its weight_scale (n a multiple of 16 for the gather_batch check). Every row must match BIT FOR BIT through
 // both I/O modes (Direct and Mmap) and through the prompt path's gather_batch. With the IQ4_NL shard the same rows
 // are compared too: same table, so a correlation near 0.997 - a shifted row order would be ~0.
+//
+// PLE_EXPECT_FORMAT (default F8_E4M3) is the format the table must open as. A 3-bit table (C4, C3, C2s; reference.bin
+// from tools/ple_lowbit_emulate.py --native) is only about sqrt(1 - NMSE) ~ 0.98 a row from IQ4_NL, lower for some rows,
+// so its correlation floor is 0.9 instead of FP8's 0.98: it still fails a shifted row and nothing else.
 #include "strata/kernels/ngram.hpp"
 
 #include <cmath>
@@ -33,6 +37,7 @@ int main(int argc, char** argv) {
     f.read((char*) ref.data(), (std::streamsize) ref.size() * 4);
     if (!f || n <= 0) { std::fprintf(stderr, "cannot read %s\n", argv[2]); return 2; }
 
+    const char* expect = std::getenv("PLE_EXPECT_FORMAT") ? std::getenv("PLE_EXPECT_FORMAT") : "F8_E4M3";
     int bad = 0;
     for (const k::PleIo mode : {k::PleIo::Direct, k::PleIo::Mmap}) {
         k::PleTable t;
@@ -52,7 +57,7 @@ int main(int argc, char** argv) {
         std::printf("%-6s %s, %llu rows: read_row %d/%zu values differ, gather_batch %s %d differ\n",
                     mode == k::PleIo::Direct ? "Direct" : "Mmap", t.format(), (unsigned long long) t.rows(), diff,
                     got.size(), ok ? "ok," : "FAILED,", bdiff);
-        bad += diff + bdiff + (ok ? 0 : 1) + (std::strcmp(t.format(), std::getenv("PLE_EXPECT_FORMAT") ? std::getenv("PLE_EXPECT_FORMAT") : "F8_E4M3") != 0);
+        bad += diff + bdiff + (ok ? 0 : 1) + (std::strcmp(t.format(), expect) != 0);
     }
     if (argc > 3) {
         k::PleTable q;
@@ -76,10 +81,14 @@ int main(int argc, char** argv) {
             rsum += std::sqrt(e2 / r2);
             ++counted;
         }
-        std::printf("IQ4_NL table, same rows: correlation min %.4f, error vs FP8 %.1f%% mean (%d non-zero rows)\n",
-                    cmin, 100 * rsum / (counted ? counted : 1), counted);
-        if (cmin < 0.98) ++bad;
+        bool lowbit = false;   // the 3-bit formats are the ones with a codebook
+        for (int i = 0; i < k::ple_format_count(); ++i)
+            lowbit = lowbit || (k::ple_formats()[i].needs_codebook && std::strcmp(k::ple_formats()[i].name, expect) == 0);
+        const double cfloor = lowbit ? 0.9 : 0.98;
+        std::printf("IQ4_NL table, same rows: correlation min %.4f (floor %.2f for %s), error vs %s %.1f%% mean (%d non-zero rows)\n",
+                    cmin, cfloor, expect, expect, 100 * rsum / (counted ? counted : 1), counted);
+        if (cmin < cfloor) ++bad;
     }
-    std::printf("RESULT: %s\n", bad ? "MISMATCH" : "FP8 rows exact");
+    std::printf("RESULT: %s\n", bad ? "MISMATCH" : (std::string(expect) + " rows exact").c_str());
     return bad ? 1 : 0;
 }
