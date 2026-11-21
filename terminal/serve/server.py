@@ -278,6 +278,7 @@ from serve.server_parts.http_api import (  # noqa: F401  (moved unchanged, file 
     default_model_name,
     desktop_vram_note,
     explicit_no_key,
+    free_port_after,
     host_allowed,
     host_name,
     key_list,
@@ -290,6 +291,8 @@ from serve.server_parts.http_api import (  # noqa: F401  (moved unchanged, file 
     origin_allowed,
     origins_of,
     parse_config_text,
+    port_holders,
+    port_in_use_message,
     read_config,
     sampling_defaults_from_config,
     split_joined_args,
@@ -8361,7 +8364,9 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
     try:                                                # before the minutes of loading: is the port free?
         Server((a.host, a.port), BaseHTTPRequestHandler).server_close()
     except OSError as e:
-        ap.error(listen_problem(a.host, a.port, e))
+        # not ap.error: its usage line in front would bury what to do; the exit status stays ap.error's 2
+        print("[strata] cannot start: " + listen_problem(a.host, a.port, e), file=sys.stderr)
+        sys.exit(2)
     if cfg.get("tokenizer"):
         a.tokenizer = cfg["tokenizer"]
     tok = ByteTokenizer()
