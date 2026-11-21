@@ -72,7 +72,7 @@ class NoLlamaDownload(unittest.TestCase):
 
     def test_the_terminal_and_control_carry_gguf_py_so_a_model_is_prepared_without_a_download(self):
         pt = (ROOT.parent / "tools" / "packaging" / "package_terminal.py").read_text(encoding="utf-8")
-        self.assertIn('INSTALLER_THIRD_PARTY = ("third_party/strata-gguf-py",)', pt)
+        self.assertIn('INSTALLER_THIRD_PARTY = ("third_party/strata-gguf-py", "third_party/wex")', pt)
 
 
 if __name__ == "__main__":
