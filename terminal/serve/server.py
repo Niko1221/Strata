@@ -2267,10 +2267,12 @@ class StrataEngine:
                 if phase in ("solo", "admit") and self._ctl_erred:
                     phase = "none"                      # #1059: it ended on the engine's ERR: no DONE to wait 300 s for
                 if phase == "solo":
-                    self._send("STOP")
+                    self._send_for(born, "STOP")
                     if self._drain_control("DONE", born=born, lines_q=lines_q) is None and self.gen == born and self.alive():
                         undrained = "DONE"
                 elif phase == "admit":
+                    if len(out) == adm_from:            # still reading the prompt (no admission token yet): abort the read
+                        self._send_for(born, "STOP")
                     line = self._drain_control("BADM", born=born, lines_q=lines_q)
                     if line and line.startswith("BADM "):
                         admission_pending = line.split()[2:3] == ["1"]
