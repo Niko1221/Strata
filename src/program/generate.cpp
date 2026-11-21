@@ -15599,19 +15599,29 @@ int main(int argc, char** argv) {
             res_upload();   // one pass pushes the shared table (slots now match every card's cache) to each device.
             cudaMemGetInfo(&free_b, &total_b);   // CUDA0's figure for the summary line below
             long long sum_slots = 0, sum_full = 0; int64_t sum_mapped = 0, sum_bytes = 0;
+            std::string card_detail;   // #533 per-GPU: every card as "dev:mapped_mib:free_after_mib", '|'-joined (no spaces).
+            long long dev_free = -1;    // the free VRAM on the device a `VRAM <mib> <dev>` named (-1 when none was).
             for (const VCard& cd : cards) {
+                const strata::core::OnDevice on(cd.dev);
+                size_t f2 = 0, t2 = 0; cudaMemGetInfo(&f2, &t2);   // each card's own figures after this command acted.
                 sum_slots += cd.c->slots(); sum_full += cd.c->full_slots();
                 sum_mapped += cd.c->mapped_bytes(); sum_bytes += cd.c->full_bytes();
+                char buf[96]; std::snprintf(buf, sizeof buf, "%s%d:%lld:%lld", card_detail.empty() ? "" : "|", cd.dev,
+                                            (long long) (cd.c->mapped_bytes() >> 20), (long long) (f2 >> 20));
+                card_detail += buf;
+                if (dev_sel >= 0 && cd.dev == dev_sel) dev_free = (long long) (f2 >> 20);
             }   // one GPU: a single card, so these equal the old xcache-only figures exactly.
             std::fprintf(stderr, "strata serve: VRAM %lld MiB kept free on each card: the expert caches hold %lld of %lld slots "
                                  "(%.2f of %.2f GiB over %zu cache(s)), CUDA0 %lld MiB free now, prompt chunk %lld, in %.0f ms%s\n",
                          reserve, sum_slots, sum_full, (double) sum_mapped / 1073741824.0, (double) sum_bytes / 1073741824.0,
                          cards.size(), (long long) (free_b >> 20), (long long) o.prefill_chunk,
                          std::chrono::duration<double, std::milli>(Clock::now() - t0).count(), note.c_str());
+            std::string extra = " cards=" + card_detail;   // #533 per-GPU detail, always reported (one card: one entry).
+            if (dev_sel >= 0) { char d[80]; std::snprintf(d, sizeof d, " device=%d vram_free_on_device_mib=%lld", dev_sel, dev_free); extra += d; }
             std::printf("VRAM reserve_mib=%lld expert_slots=%lld expert_slots_full=%lld expert_cache_mib=%lld "
-                        "expert_cache_full_mib=%lld vram_free_mib=%lld prompt_chunk=%lld\n", reserve,
+                        "expert_cache_full_mib=%lld vram_free_mib=%lld prompt_chunk=%lld%s\n", reserve,
                         sum_slots, sum_full, (long long) (sum_mapped >> 20), (long long) (sum_bytes >> 20),
-                        (long long) (free_b >> 20), (long long) o.prefill_chunk);
+                        (long long) (free_b >> 20), (long long) o.prefill_chunk, extra.c_str());
             return true;
         };
         // ---- --batch: the slots of the batch windows

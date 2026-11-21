@@ -61,9 +61,12 @@ class EngineCommand(unittest.TestCase):
         self.assertEqual(e.proc.stdin.getvalue(), "VRAM\n")
 
     def test_the_line_for_one_device(self):
-        e = self.engine(["VRAM reserve_mib=2048 device=1 expert_slots=900 vram_free_mib=512\n"])
+        e = self.engine(["VRAM reserve_mib=2048 expert_slots=900 expert_cache_mib=1536 expert_cache_full_mib=4900 "
+                         "vram_free_mib=180 prompt_chunk=2048 cards=0:3800:180|1:1536:980 device=1 vram_free_on_device_mib=980\n"])
         out = e.vram(2048, device=1)
         self.assertEqual(e.proc.stdin.getvalue(), "VRAM 2048 1\n")
+        self.assertEqual(out["per_device"], {"0": {"mapped_mib": 3800, "free_mib": 180}, "1": {"mapped_mib": 1536, "free_mib": 980}})
+        self.assertEqual(out["vram_free_on_device_mib"], 980)
 
     def test_a_device_needs_an_explicit_reserve(self):
         e = self.engine([])

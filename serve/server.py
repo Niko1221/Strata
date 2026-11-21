@@ -1567,6 +1567,16 @@ class StrataEngine:
                     k, _, v = kv.partition("=")
                     out[k] = int(v) if v.lstrip("-").isdigit() else v
                 self.info.update({k: out[k] for k in ("expert_slots", "vram_free_mib") if k in out})
+                cards = out.get("cards")                     # #533 per-GPU free, keyed by CUDA device id (a card the command did not act on is reported too).
+                if isinstance(cards, str):
+                    per = {}
+                    for part in cards.split("|"):
+                        bits = part.split(":")
+                        if len(bits) == 3 and all(b.lstrip("-").isdigit() for b in bits):
+                            dev, mapped_mib, free_mib = (int(b) for b in bits)
+                            per[str(dev)] = {"mapped_mib": mapped_mib, "free_mib": free_mib}
+                    if per:
+                        out["per_device"] = per
                 self.info["vram"] = out
                 return out
             if time.time() > deadline:
