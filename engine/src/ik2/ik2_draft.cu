@@ -1,4 +1,4 @@
-// src/ik2/ik2_draft.cu - maya-ik2's drafter (the design: ik2_draft.hpp).
+// src/ik2/ik2_draft.cu - strata-ik2's drafter (the design: ik2_draft.hpp).
 #include "ik2_draft.hpp"
 #include "ik2_kernels.cuh"
 

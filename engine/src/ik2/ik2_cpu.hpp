@@ -1,4 +1,4 @@
-// src/ik2/ik2_cpu.hpp - maya-ik2's CPU lane: a routed expert that is not in VRAM computed where it is, in host
+// src/ik2/ik2_cpu.hpp - strata-ik2's CPU lane: a routed expert that is not in VRAM computed where it is, in host
 // memory, while the GPU runs the experts it holds - instead of waiting for the expert's 18 MB over PCIe.
 // NVFP4 experts only (AVX-512 F / BW; the weights read as they are stored), a few worker threads sharing an expert's
 // rows.  The arithmetic is ref/inkling2.py's in F32 (the activation not rounded to FP16 as the device's is).

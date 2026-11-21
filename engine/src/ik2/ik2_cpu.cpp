@@ -1,4 +1,4 @@
-// src/ik2/ik2_cpu.cpp - maya-ik2's CPU lane (the interface: ik2_cpu.hpp).
+// src/ik2/ik2_cpu.cpp - strata-ik2's CPU lane (the interface: ik2_cpu.hpp).
 #include "ik2_cpu.hpp"
 
 #include <immintrin.h>

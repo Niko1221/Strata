@@ -1,4 +1,4 @@
-// src/ik2/ik2_kernels.cu - maya-ik2's kernels (the interface and the conventions: ik2_kernels.cuh).
+// src/ik2/ik2_kernels.cu - strata-ik2's kernels (the interface and the conventions: ik2_kernels.cuh).
 #include "ik2_kernels.cuh"
 #include "ik2_iq_tables.h"
 

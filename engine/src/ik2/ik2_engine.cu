@@ -1,4 +1,4 @@
-// src/ik2/ik2_main.cu - maya-ik2: Inkling 2 (thinkingmachines/Inkling-2-Small, 594B / ~17B active) on one or two
+// src/ik2/ik2_engine.cu - strata-ik2: Inkling 2 (thinkingmachines/Inkling-2-Small, 594B / ~17B active) on one or two
 // GPUs, from an `inkling2` GGUF in llama.cpp PR #32187's layout (docs/INKLING2.md; unsloth/Inkling-2-Small-GGUF's
 // files: NVFP4, IQ3_XXS / IQ4_XS and Q*_K experts).
 //
@@ -14,9 +14,9 @@
 //     than its copy.  Two GPUs (--gpus 2): IK2_EP=1 deals each layer's experts to both (expert parallel - each with its
 //     own cache and PCIe link), else the layers are split between them.
 //
-//   maya-ik2 --model FIRST-SHARD.gguf --serve [--max-context 262144] [--cache-gb 60] [--gpus 1] [--threads 8]
-//            [--eos a,b]
-//   maya-ik2 --model FIRST-SHARD.gguf --tokens 1,2,3|@FILE [--gen N] [--chunk 2048] [--dump DIR]
+//   strata-ik2 --model FIRST-SHARD.gguf --serve [--max-context 262144] [--cache-gb 60] [--gpus 1] [--threads 8]
+//              [--eos a,b]
+//   strata-ik2 --model FIRST-SHARD.gguf --tokens 1,2,3|@FILE [--gen N] [--chunk 2048] [--dump DIR]
 // --serve: Maya's engine protocol on stdin / stdout (serve/server.py's StrataEngine: INFO / READY, GEN, PP, T, DONE,
 // STOP); --serve-ik2 the older @-line one.  --dump: each layer's output (blk.L.out) and the log-probabilities of every
 // prompt position, F32 raw files ([T][C], [T][n_vocab]) - what tools/ik2_compare.py holds against ref/inkling2.py's
@@ -120,7 +120,7 @@ namespace k = ik2::k;
     do {                                                                                                   \
         cudaError_t e_ = (x);                                                                              \
         if (e_ != cudaSuccess) {                                                                           \
-            std::fprintf(stderr, "maya-ik2: %s: %s (%s:%d)\n", #x, cudaGetErrorString(e_), __FILE__, __LINE__); \
+            std::fprintf(stderr, "strata-ik2: %s: %s (%s:%d)\n", #x, cudaGetErrorString(e_), __FILE__, __LINE__); \
             std::exit(1);                                                                                  \
         }                                                                                                  \
     } while (0)
@@ -128,13 +128,13 @@ namespace k = ik2::k;
     do {                                                                                                   \
         cublasStatus_t e_ = (x);                                                                           \
         if (e_ != CUBLAS_STATUS_SUCCESS) {                                                                 \
-            std::fprintf(stderr, "maya-ik2: %s: cuBLAS status %d (line %d)\n", #x, (int) e_, __LINE__);    \
+            std::fprintf(stderr, "strata-ik2: %s: cuBLAS status %d (line %d)\n", #x, (int) e_, __LINE__);    \
             std::exit(1);                                                                                  \
         }                                                                                                  \
     } while (0)
 
 [[noreturn]] void die(const std::string& m) {
-    std::fprintf(stderr, "maya-ik2: %s\n", m.c_str());
+    std::fprintf(stderr, "strata-ik2: %s\n", m.c_str());
     std::exit(1);
 }
 
@@ -3171,7 +3171,7 @@ int run(int argc, char** argv) {
         if (!g_trace) die(std::string("cannot write ") + getenv("IK2_TRACE"));
     }
     if (model.empty() || (toks.empty() && !serve))
-        die("usage: maya-ik2 --model FIRST.gguf (--tokens 1,2,3 [--gen N] | --serve) [--chunk 2048] [--ctx N] ...");
+        die("usage: strata-ik2 --model FIRST.gguf (--tokens 1,2,3 [--gen N] | --serve) [--chunk 2048] [--ctx N] ...");
     std::vector<int> prompt;
     for (const char* p = toks.c_str(); *p;) {
         prompt.push_back(std::atoi(p));
@@ -3232,7 +3232,7 @@ int run(int argc, char** argv) {
     // (a row of an expert is whole blocks of its type: checked per tensor below; 64 covers NVFP4 and Q8_0)
     if (c.D != 128 || c.H % c.KV || c.C % 64 || c.F % 64) die("unexpected shapes");
     const int n_sliding = (int) std::count(c.sliding.begin(), c.sliding.end(), true);
-    std::printf("maya-ik2: %d layers (%d sliding), %d experts (%d a token), width %d, vocab %d; %zu shards\n",
+    std::printf("strata-ik2: %d layers (%d sliding), %d experts (%d a token), width %d, vocab %d; %zu shards\n",
                 c.n_layer, n_sliding, c.E, c.K, c.C, c.n_vocab, S.files.size());
     if (c.n_pass > 1) {
         std::printf("looped: layers %d .. %d run %d times - %d layer visits a token; message gates of rank %d\n", c.core0,
@@ -3616,7 +3616,13 @@ int run(int argc, char** argv) {
     // (the resident path keeps every expert in VRAM, so no pinned host copy is needed: the experts go from where the
     //  files are mapped straight to their slots, and stay in the page cache for the next load - IK2_HOST=pinned: as
     //  for the other models)
+#ifdef _WIN32
+    // Windows restricts physical memory pinning (cudaHostAlloc fails with OOM for multi-gigabyte models).
+    // Default to direct mmap reading unless IK2_HOST=pinned is explicitly requested.
+    const bool host_mmap = getenv("IK2_HOST") ? std::string(getenv("IK2_HOST")) != "pinned" : true;
+#else
     const bool host_mmap = getenv("IK2_HOST") ? std::string(getenv("IK2_HOST")) == "mmap" : g_fast_want;
+#endif
     if (host_mmap) {
         if (g_pool) die("IK2_HOST=mmap with the CPU lane");
         for (const auto& J : exp_jobs) {
@@ -3774,7 +3780,7 @@ int run(int argc, char** argv) {
             reg_th.join();   // (the layers read last are still registering)
             t_pin = now() - tp0;
             if (reg_fail > 0)
-                std::fprintf(stderr, "maya-ik2: warning: cudaHostRegister failed on %d layers (running pageable)\n",
+                std::fprintf(stderr, "strata-ik2: warning: cudaHostRegister failed on %d layers (running pageable)\n",
                              reg_fail);
         }
         if (use_mmap_reg) {
