@@ -2233,10 +2233,11 @@ void load() {
 // (decode graph, cuBLAS workspaces), split 80 / 20 between NVFP4 and MXFP8 bytes (two-pool LRU replay of corpus12k,
 // lru2.py: 0.20 best at 6, 7 and 8 GiB).  Initial content: looped layers first, then the others, expert order.
 // CBA: fixed 384 MiB margin and 0.20 split; per-card measurement / a routing profile if the first tokens matter.
+int g_off_margin_mib = 128;   // INK2_OFF_MARGIN_MIB: VRAM kept beside --vram-reserve-mib (the decode graph; cuBLAS is warmed up at load)
 void setup_offload() {
     size_t fr = 0, tot = 0;
     CK(cudaMemGetInfo(&fr, &tot));
-    const size_t keep = ((size_t) E.reserve_mib << 20) + (384ull << 20);
+    const size_t keep = ((size_t) E.reserve_mib << 20) + ((size_t) g_off_margin_mib << 20);
     const size_t budget = fr > keep ? fr - keep : 0;
     E.nslot_mx = (int) std::min<size_t>((size_t) (budget * 0.2) / MX_BYTES, (size_t) (NL - MXFP8_FIRST) * NE);
     E.nslot_nv = (int) std::min<size_t>((budget - (size_t) E.nslot_mx * MX_BYTES) / NV_BYTES, (size_t) MXFP8_FIRST * NE);
@@ -3941,6 +3942,7 @@ int main(int argc, char** argv) {
     if (const char* r = std::getenv("INK2_RPW")) g_rpw = std::atoi(r);
     if (const char* r = std::getenv("INK2_SEL_RPW")) g_sel_rpw = std::atoi(r);
     if (const char* r = std::getenv("INK2_GEMV_MINB")) g_gemv_min_blocks = std::atoi(r);
+    if (const char* r = std::getenv("INK2_OFF_MARGIN_MIB")) g_off_margin_mib = std::atoi(r);
     if (const char* r = std::getenv("INK2_GRP_R")) g_grp_r = std::atoi(r);
     if (const char* r = std::getenv("INK2_DRAFT_ABL")) g_draft_abl = std::atoi(r);
     std::string dir, dump_logits, rec_path;
