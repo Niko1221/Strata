@@ -1412,6 +1412,7 @@ int main(int argc, char** argv) {
     bool no_lin2 = false, no_moe2 = false, save_logits = false, no_f32x = false, no_pipe = false;
     int pipe_segs_arg = 8;
     bool serve = false, session_reuse = false;
+    int ring_slack_arg = -1;
     std::string vision, dfly_override;
     std::vector<std::string> image_files;
     int64_t image_max_pixels = 4194304;
@@ -1498,6 +1499,7 @@ int main(int argc, char** argv) {
         else if (a == "--native") model = nxt();
         else if (a == "--max-context") max_ctx = atoi(nxt().c_str());
         else if (a == "--session-reuse") session_reuse = atoi(nxt().c_str()) != 0;
+        else if (a == "--ring-slack") ring_slack_arg = atoi(nxt().c_str());
         else if (a == "--vision") vision = nxt();
         else if (a == "--image") image_files.push_back(nxt());  // HY4-VISION (offline runs): one picture file per image-pad token of --tokens, in order
         else if (a == "--image-max-pixels") image_max_pixels = atoll(nxt().c_str());
@@ -1546,6 +1548,7 @@ int main(int argc, char** argv) {
         so.no_index = no_index;
         so.no_engram = no_engram;
         so.session_reuse = session_reuse;
+        so.ring_slack = ring_slack_arg >= 0 ? ring_slack_arg : (session_reuse ? 8192 : 0);
         so.draft = draft;
         so.spec = scfg;
         if (draft != "off" && draft != "dfly2" && draft != "auto") {

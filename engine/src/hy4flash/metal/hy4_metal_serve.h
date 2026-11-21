@@ -3,7 +3,7 @@
 //
 //   stdout, at start:   INFO engine=... arch=hy4flash backend=metal ... drafter=dfly2|none images=0|1    then exactly one   READY <max_context> stop
 //   stdin, per request: GEN <max_new> [temperature=F top_p=F top_k=N min_p=F penalty_repeat=F penalty_freq=F penalty_present=F penalty_last_n=N seed=N] [image=<path> ...] id,id,...
-//   stdout per request: [RESUME n]  [IMG i n]  PP <read> <total> <ms> <tok/s>  T <id>  DONE <generated> <prompt_tokens> <prompt_ms> <decode_ms> <finish> <drafts_accepted> <drafts_offered> <reused>
+//   stdout per request: [RESUME n] (n = longest common prefix of the resident KV and the prompt, capped at prompt-1 and by the SWA ring slack)  [IMG i n]  PP <read> <total> <ms> <tok/s>  T <id>  DONE <generated> <prompt_tokens> <prompt_ms> <decode_ms> <finish> <drafts_accepted> <drafts_offered> <reused>
 //   stdin, any time:    STOP (cancel at the next token / chunk boundary)   QUIT or EOF (exit)
 // Only protocol lines go to stdout; diagnostics go to stderr.
 #pragma once
@@ -25,6 +25,7 @@ struct ServeOpts {
     int chunk = 2048;
     int index_topk = 2048;
     bool no_index = false, no_engram = false, session_reuse = false;
+    int ring_slack = 0;  // extra SWA ring slots (--ring-slack): how far a resume may roll the KV back below the highest position written
     std::string draft = "auto";
     SpecCfg spec;
 };
@@ -208,6 +209,18 @@ static bool finite_row(const float* lg, int V) {
     return true;
 }
 
+// KV reuse point: longest common prefix of the resident sequence tok[0,fwd) and the new prompt, capped so the last prompt token is recomputed (logits exist).
+// Rolling back from fwd to `start` needs the SWA window [start-512, start) intact in the ring: the speculative tail (64) written past fwd must stay within `slack` (= ring - 512) of start.
+static inline int hy4_reuse_start(const std::vector<int32_t>& tok, int fwd, const std::vector<int32_t>& ids, int T0, int slack) {
+    const int lim = std::min({fwd, T0, (int) tok.size(), (int) ids.size()});
+    int L = 0;
+    while (L < lim && tok[L] == ids[L]) ++L;
+    if (L >= T0) L = T0 - 1;
+    if (L < 1) return 0;
+    if (fwd + 64 - L > slack) return 0;
+    return L;
+}
+
 static int hy4_serve_main(Model& g, mtl::Context& cx, const ServeOpts& o, const std::string& kernel_path) {
     const int max_ctx = o.max_ctx;
     const double t_load0 = now_s();
@@ -215,6 +228,7 @@ static int hy4_serve_main(Model& g, mtl::Context& cx, const ServeOpts& o, const 
     r.kernel_path = kernel_path;
     r.index_topk = o.index_topk;
     r.index_on = o.no_index ? 0 : 1;
+    r.ring_slack = o.ring_slack;
     const bool has_df = g.man.T.count("model.dfly_layers.0.self_attn.q_a_proj.weight") && g.man.T.count("model.dfly_layers.hidden_correction.gate_proj.weight");
     const bool want_spec = o.draft != "off" && has_df && r.Tc >= 16;
     if (o.draft == "dfly2" && !want_spec) {
@@ -256,10 +270,11 @@ static int hy4_serve_main(Model& g, mtl::Context& cx, const ServeOpts& o, const 
         if (hy4::vision_probe(o.vision, vprobe, verr)) images_ok = true;
         else fprintf(stderr, "[vision] disabled: %s\n", verr.c_str());
     }
-    proto("INFO engine=hy4-metal-serve-0 arch=hy4flash backend=metal model=%s layers=%d vocab=%d chunk=%d session_reuse=%d drafter=%s images=%d", base.c_str(), r.c.n_layers, V, r.Tc,
-          o.session_reuse ? 1 : 0, use_spec ? "dfly2" : "none", images_ok ? 1 : 0);
+    proto("INFO engine=hy4-metal-serve-0 arch=hy4flash backend=metal model=%s layers=%d vocab=%d chunk=%d session_reuse=%d drafter=%s images=%d ring_slack=%d", base.c_str(), r.c.n_layers, V, r.Tc,
+          o.session_reuse ? 1 : 0, use_spec ? "dfly2" : "none", images_ok ? 1 : 0, r.ring_slack);
     proto("READY %d stop", max_ctx);
 
+    int hw = 0;
     LineInput in;
     in.start();
     std::string line;
@@ -329,7 +344,16 @@ static int hy4_serve_main(Model& g, mtl::Context& cx, const ServeOpts& o, const 
             r.vis = &vctx;
         }
         int start = 0;
-        if (!has_images && o.session_reuse && fwd > 0 && fwd < T0&& (int) tok.size() >= fwd && std::equal(tok.begin(), tok.begin() + fwd, q.ids.begin())) start = fwd;
+        if (!has_images && o.session_reuse && fwd > 0) {
+            // hw = highest position written since the last full recompute; slots below it may have been clobbered by earlier rollbacks, so count it against the slack too
+            start = hy4_reuse_start(tok, fwd, q.ids, T0, (r.ring - 512) - std::max(0, hw - fwd));
+        }
+        if (start == 0) hw = 0;
+        // no prefetch of the old tok may still be in flight or pending: drop them before tok changes
+        for (int s = 0; s < 2; ++s) {
+            if (r.ep[s].fut.valid()) r.ep[s].fut.wait();
+            r.ep[s].pending = false;
+        }
         tok.assign(q.ids.begin(), q.ids.end());
         fwd = 0;
         if (start > 0) proto("RESUME %d", start);
@@ -431,6 +455,7 @@ static int hy4_serve_main(Model& g, mtl::Context& cx, const ServeOpts& o, const 
         }
         if (nonfinite) finish = "nonfinite";
         if (!o.session_reuse || has_images) fwd = 0;
+        hw = std::max(hw, std::max(fwd, (int) tok.size()));
         r.vis = nullptr;
         const double decode_ms = (now_s() - t1) * 1000.0;
         proto("DONE %d %d %.1f %.1f %s %ld %ld %d", made, T0, prompt_ms, decode_ms, finish, acc0, off0, start);
