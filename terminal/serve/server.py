@@ -313,7 +313,7 @@ from serve.server_parts.openai_api import (  # noqa: F401  (moved unchanged, fil
     openai_collect,
 )
 from serve.frontend import (CALL_END, CALL_START, FUNC_END, FUNC_START, THINK_END, ChatTemplate, Event, OutputParser,  # noqa: E402
-                            INK_STOP, family_text, is_inkling, parser_for_template, anthropic_to_messages, anthropic_tools,
+                            INK_STOP, family_text, inkling_force, is_inkling, parser_for_template, anthropic_to_messages, anthropic_tools,
                             forced_call, images_of, literal_tags, mark_think_literals, openai_to_messages, require_messages,
                             tool_choice_of, unmark_think_literals)
 from serve.mcp import McpCancelled, hub_from_config, resolve_image_results  # noqa: E402
@@ -4000,6 +4000,7 @@ class Service:
             # its reply ends with <|content_model_end_sampling|> (generation_config.json's eos); <|endoftext|> is one token
             # in its o200k vocabulary too, but it is the pad, so end_token_ids' Qwen rule would miss the end
             self.stop_ids = set(self.tok.encode(INK_STOP, parse_special=True))
+            self._force_text = inkling_force
         self.family = family
         import serve.frontend as _frontend
         _frontend.use_family(family)
@@ -5740,7 +5741,8 @@ class Service:
                             budget = st["thinking_budget"] = None
                             text = REASONING_WRAP_UP + (force or "")
                         else:
-                            text = "\n" * (2 - (len(tail) - len(tail.rstrip("\n")))) + force
+                            text = force if self.family == "inkling2" else \
+                                "\n" * (2 - (len(tail) - len(tail.rstrip("\n")))) + force   # (Inkling: no blank line between messages)
                         force = None
                         extra = self.tok.encode(family_text(text), parse_special=True)
                         if max_new - n - len(extra) < 1:

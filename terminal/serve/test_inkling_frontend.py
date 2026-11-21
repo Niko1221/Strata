@@ -81,6 +81,19 @@ def test_tool_result_named_from_its_call(inkling):
     assert "name" not in msgs[-1]
 
 
+def test_forced_call_opening():
+    from serve.frontend import forced_call, inkling_force
+    tools = [{"name": "get_weather"}, {"name": "other"}]
+    named = inkling_force(forced_call({"type": "function", "function": {"name": "get_weather"}}, tools))
+    assert named == INK_HEAD + "get_weather" + INK_CALL + '{"name":"get_weather","args":'
+    assert inkling_force(forced_call("required", tools)) == INK_HEAD
+    assert inkling_force(None) is None
+    p = InklingOutputParser(thinking=True, tools=TOOLS, stream_tools=True)   # the opening, then the model's arguments
+    evs = p.feed(INK_HEAD + INK_THINK + "t" + INK_END) + p.feed(named) + p.feed('{"city":"Lyon"}}' + INK_END + INK_STOP)
+    evs += p.finish("stop")
+    assert [(e.call.name, e.call.arguments) for e in evs if e.kind == "tool_call"] == [("get_weather", {"city": "Lyon"})]
+
+
 def test_generation_tag(tmp_path):
     t = tmp_path / "t.jinja"
     t.write_text("{% for m in messages %}{% generation %}[{{ m.content }}]{% endgeneration %}{% endfor %}")

@@ -175,6 +175,17 @@ def family_text(text: str) -> str:
     return re.sub(r"\n?</think>\n*", INK_CLOSE, text)
 
 
+def inkling_force(force: str | None) -> str | None:
+    """forced_call's opening (`<tool_call>\\n<function=NAME>\\n`) in Inkling 2's form: the call message's header and the start
+    of its JSON body, so the model can only write the arguments."""
+    if not force:
+        return force
+    m = re.search(r"<function=([^>\n]*)>", force)
+    if m is None:   # CBA: "required" among several tools opens a model message only; the model may still write text
+        return INK_HEAD
+    return f'{INK_HEAD}{m.group(1)}{INK_CALL}{{"name":{json.dumps(m.group(1), ensure_ascii=False)},"args":'
+
+
 def effort_kwargs(value) -> dict:
     """A reasoning effort as given by a client -> the template's kwargs.  Unknown values are a 400, not a crash."""
     if value is None or value == "":
