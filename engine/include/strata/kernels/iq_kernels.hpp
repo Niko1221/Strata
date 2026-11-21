@@ -86,6 +86,14 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
                            const int32_t* n_groups, const int32_t* ent_dst, const int32_t* ent_tok, int64_t cap_groups,
                            int64_t cap_entries, const void* x_q8_1, void* scratch, float* out, void* stream,
                            int64_t grid_groups = 0);
+/// Multi-GPU P2P fast path for `PeerExperts::launch()`: runs fused gate/up + SwiGLU/q8_1 and writes down-projection
+/// rows directly to `out[ent_out_row[e] * n_embd + ...]` using coalesced `float4` stores (over NVLink P2P), optionally
+/// raising `*sync_flag = max(*sync_flag, sync_ring)` via `flag_cnt` on the last completing block.  Returns false when
+/// the current device mode or layer formats are ineligible (caller falls back to `native_expert_grouped` + scatter).
+bool native_expert_grouped_p2p(const NativeExpertLayout& L, const unsigned long long* grp_ptr, const int32_t* grp_start,
+                               const int32_t* n_groups, const int32_t* ent_out_row, const int32_t* ent_tok,
+                               int64_t cap_groups, int64_t cap_entries, const void* x_q8_1, void* scratch, float* out,
+                               uint32_t* flag_cnt, uint32_t* sync_flag, uint32_t sync_ring, void* stream);
 /// OWN-I8 (research, off by default): the same call as `native_expert_grouped` on our own int8 dot-product kernels - a tile of
 /// 64 weight rows x 32..64 entries per block, each weight sub-block decoded once per tile into int8 in shared memory, `dp4a`
 /// products, SwiGLU and the q8_1 quantization of H in the gate/up epilogue (gate/up never go to memory).  For cards with no

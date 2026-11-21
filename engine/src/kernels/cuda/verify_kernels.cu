@@ -1605,6 +1605,15 @@ __global__ void wait_flag_ge_or_kernel(const volatile uint32_t* flag, uint32_t v
     while (*flag < value) strata_spin_pause();
     __threadfence_system();
 }
+__global__ void wait_flag_ge_abort_kernel(const volatile uint32_t* flag, uint32_t value,
+                                          const volatile uint32_t* abort_flag) {
+    uint32_t spins = 0;
+    while (*flag < value) {
+        if (((++spins) & 1023u) == 0u && abort_flag != nullptr && *abort_flag >= value) return;
+        strata_spin_pause();
+    }
+    __threadfence_system();
+}
 __global__ void copy_i32_unless_kernel(int32_t* __restrict__ dst, const volatile int32_t* src, int n,
                                        const uint32_t* skip, uint32_t value) {
     if (*skip == value) return;
@@ -1715,6 +1724,11 @@ void l2_prefetch_ranges(const L2PrefetchSet& set, void* stream) {
     const unsigned blocks = (unsigned) std::max(1, std::min(blocks_env, 64));
     l2_prefetch_kernel<<<blocks, 128, 0, (cudaStream_t) stream>>>(s, total);
     check("l2_prefetch_ranges");
+}
+
+void wait_flag_ge_abort(const uint32_t* flag, uint32_t value, const uint32_t* abort_flag, void* stream) {
+    wait_flag_ge_abort_kernel<<<1, 1, 0, (cudaStream_t) stream>>>(flag, value, abort_flag);
+    check("wait_flag_ge_abort");
 }
 
 void wait_flag_ge_stamped(const uint32_t* flag, uint32_t value, unsigned long long* t_in, unsigned long long* t_out,

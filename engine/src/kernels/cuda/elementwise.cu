@@ -267,6 +267,29 @@ __global__ void scatter_rows_kernel(const float4* __restrict__ src, float4* dst,
     float4* d = dst + (int64_t) rows[r] * w4;
     for (int64_t i = threadIdx.x; i < w4; i += blockDim.x) d[i] = s[i];
 }
+__global__ void scatter_rows_flag_kernel(const float4* __restrict__ src, float4* dst, const int32_t* __restrict__ rows,
+                                         int64_t w4, uint32_t* counter, uint32_t* flag, uint32_t flag_val) {
+    const int64_t r = blockIdx.x;
+    const float4* s = src + r * w4;
+    float4* d = dst + (int64_t) rows[r] * w4;
+    for (int64_t i = threadIdx.x; i < w4; i += blockDim.x) d[i] = s[i];
+    if (flag != nullptr) {
+        __syncthreads();
+        if (threadIdx.x == 0) {
+            __threadfence_system();
+            if (atomicAdd(counter, 1u) == (unsigned) gridDim.x - 1u) {
+                *counter = 0u;
+                atomicMax(flag, flag_val);
+                __threadfence_system();
+            }
+        }
+    }
+}
+__global__ void signal_flag_max_kernel(uint32_t* flag, uint32_t flag_val) {
+    __threadfence_system();
+    atomicMax(flag, flag_val);
+    __threadfence_system();
+}
 }  // namespace
 void scatter_rows_f32(const float* src, float* dst, const int32_t* rows, int64_t n, int64_t width, void* stream) {
     if (n <= 0) return;
@@ -275,6 +298,23 @@ void scatter_rows_f32(const float* src, float* dst, const int32_t* rows, int64_t
         std::exit(1);
     }
     scatter_rows_kernel<<<(unsigned) n, 128, 0, (cudaStream_t) stream>>>((const float4*) src, (float4*) dst, rows, width / 4);
+}
+void scatter_rows_f32_flag(const float* src, float* dst, const int32_t* rows, int64_t n, int64_t width,
+                           uint32_t* counter, uint32_t* flag, uint32_t flag_val, void* stream) {
+    if (n <= 0) {
+        if (flag != nullptr) signal_flag_max(flag, flag_val, stream);
+        return;
+    }
+    if ((width & 3) != 0 || ((uintptr_t) dst & 15) != 0 || ((uintptr_t) src & 15) != 0) {
+        std::fprintf(stderr, "scatter_rows_f32_flag: width must be a multiple of 4 and both pointers 16-byte aligned\n");
+        std::exit(1);
+    }
+    scatter_rows_flag_kernel<<<(unsigned) n, 128, 0, (cudaStream_t) stream>>>(
+        (const float4*) src, (float4*) dst, rows, width / 4, counter, flag, flag_val);
+}
+void signal_flag_max(uint32_t* flag, uint32_t flag_val, void* stream) {
+    if (flag == nullptr) return;
+    signal_flag_max_kernel<<<1, 1, 0, (cudaStream_t) stream>>>(flag, flag_val);
 }
 void copy_rows_from_mapped(float* dst, const float* src, int64_t rows, int64_t width, const int32_t* hit_rows,
                            const int32_t* count, void* stream) {
@@ -350,6 +390,62 @@ __global__ void doorbell_publish_res_kernel(const float* __restrict__ x, const i
     }
 }
 
+__global__ void doorbell_publish_res_peer_kernel(const float* __restrict__ x, const int32_t* __restrict__ ids,
+                                                 const int32_t* __restrict__ d_res,
+                                                 const int32_t* __restrict__ d_peer_res, int n_expert, int n, int k,
+                                                 float* x_out, int32_t* ids_out, uint32_t* seq,
+                                                 const uint8_t* __restrict__ peer_q8, uint8_t* peer_q8_out,
+                                                 int q8_bytes, uint32_t* reset_flag) {
+    int any_miss = 0;
+    int any_peer = 0;
+    if ((int) threadIdx.x < k) {
+        const int32_t id = ids[threadIdx.x];
+        ids_out[threadIdx.x] = id;
+        if (d_res == nullptr || id < 0 || id >= n_expert) {
+            any_miss = 1;
+        } else if (d_res[id] < 0) {
+            if (d_peer_res == nullptr || d_peer_res[id] < 0) any_miss = 1;
+            else any_peer = 1;
+        }
+    }
+    if (reset_flag != nullptr && threadIdx.x == 0) *(volatile uint32_t*) reset_flag = 0u;
+    const bool send_q8 = peer_q8_out != nullptr && peer_q8 != nullptr && q8_bytes > 0 &&
+                         (d_peer_res == nullptr || __syncthreads_or(any_peer) != 0);
+    if (send_q8) {
+        if (((uintptr_t) peer_q8 & 15) == 0 && ((uintptr_t) peer_q8_out & 15) == 0 && (q8_bytes & 15) == 0) {
+            const int q16 = q8_bytes >> 4;
+            const uint4* s = (const uint4*) peer_q8;
+            uint4* d = (uint4*) peer_q8_out;
+            for (int i = (int) threadIdx.x; i < q16; i += (int) blockDim.x) d[i] = s[i];
+        } else {
+            for (int i = (int) threadIdx.x; i < q8_bytes; i += (int) blockDim.x) peer_q8_out[i] = peer_q8[i];
+        }
+    }
+    if (__syncthreads_or(any_miss)) {
+        for (int i = threadIdx.x; i < n; i += blockDim.x) x_out[i] = x[i];
+        __threadfence_system();
+    } else if (send_q8 || reset_flag != nullptr || (int) threadIdx.x < k) {
+        __threadfence_system();
+    }
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        *(volatile uint32_t*) seq = *(volatile uint32_t*) seq + 1u;
+#if defined(__HIPCC__)
+        __threadfence_system();
+#endif
+    }
+}
+
+template <int NW>
+struct PeerMetaArg {
+    uint32_t w[NW];
+};
+
+template <int NW>
+__global__ void peer_put_meta_kernel(const PeerMetaArg<NW> a, uint32_t* __restrict__ dst, int nw) {
+    for (int i = threadIdx.x; i < nw; i += blockDim.x) dst[i] = a.w[i];
+}
+
 // #649 (HIP, STRATA_DOORBELL_STORE=1): the same publish, but the ring is STORED (the step's own number, known at
 // capture) instead of read-modify-written over PCIe - one store, no read of host memory from the GPU.
 __global__ void doorbell_publish_value_kernel(const float* __restrict__ x, const int32_t* __restrict__ ids,
@@ -388,6 +484,37 @@ void doorbell_publish_res(const float* x, const int32_t* ids, const int32_t* d_r
     doorbell_publish_res_kernel<<<1, 1024, 0, (cudaStream_t) stream>>>(x, ids, d_res, n_expert, (int) n, (int) k,
                                                                         x_out, ids_out, d_seq);
     check_launch("doorbell_publish_res");
+}
+
+void doorbell_publish_res_peer(const float* x, const int32_t* ids, const int32_t* d_res, const int32_t* d_peer_res,
+                               int n_expert, int64_t n, int64_t k, float* x_out, int32_t* ids_out, uint32_t* d_seq,
+                               const uint8_t* peer_q8, uint8_t* peer_q8_out, int64_t q8_bytes, void* stream,
+                               uint32_t* reset_flag) {
+    if (k > 1024) { std::fprintf(stderr, "doorbell_publish_res_peer: k too large\n"); std::exit(1); }
+    doorbell_publish_res_peer_kernel<<<1, 1024, 0, (cudaStream_t) stream>>>(
+        x, ids, d_res, d_peer_res, n_expert, (int) n, (int) k, x_out, ids_out, d_seq, peer_q8, peer_q8_out,
+        (int) q8_bytes, reset_flag);
+    check_launch("doorbell_publish_res_peer");
+}
+
+bool peer_put_meta(void* dst, const void* src, size_t bytes, void* stream) {
+    if (bytes == 0) return true;
+    if (bytes > kPeerPutMetaMax || (bytes & 3) != 0 || dst == nullptr || src == nullptr) return false;
+    const int nw = (int) (bytes >> 2);
+    if (bytes <= 512) {
+        PeerMetaArg<128> a{};
+        std::memcpy(a.w, src, bytes);
+        peer_put_meta_kernel<128><<<1, 128, 0, (cudaStream_t) stream>>>(a, (uint32_t*) dst, nw);
+    } else if (bytes <= 1024) {
+        PeerMetaArg<256> a{};
+        std::memcpy(a.w, src, bytes);
+        peer_put_meta_kernel<256><<<1, 128, 0, (cudaStream_t) stream>>>(a, (uint32_t*) dst, nw);
+    } else {
+        PeerMetaArg<512> a{};
+        std::memcpy(a.w, src, bytes);
+        peer_put_meta_kernel<512><<<1, 128, 0, (cudaStream_t) stream>>>(a, (uint32_t*) dst, nw);
+    }
+    return cudaGetLastError() == cudaSuccess;
 }
 
 __global__ void copy_i32_from_mapped_kernel(int32_t* __restrict__ dst, const volatile int32_t* src, int64_t n) {
