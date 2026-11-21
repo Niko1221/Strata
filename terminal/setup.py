@@ -1983,6 +1983,19 @@ def engine_dir(toolkit=13) -> Path:
     return ROOT / (ENGINE12_DIR if int(toolkit) == 12 else "engine")
 
 
+def installed_engine_flavor(folder=None) -> str:
+    """The variant of the engine already in `folder` (BUILD.json's "flavor", else the suffix of its own version
+    line), or "" when there is none or it has none.  The context step reads this before step 4 picks or downloads the
+    engine, so its memory estimate can use the format the engine will actually run (q4u32 on gfx12 in a q4u32 build).
+    """
+    eng = Path(folder) if folder else engine_dir(13)
+    try:
+        flavor = str(json.loads((eng / "BUILD.json").read_text(encoding="utf-8")).get("flavor") or "")
+    except (OSError, ValueError):
+        flavor = ""
+    return flavor or binary_engine_flavor(eng / EXE)
+
+
 def config_toolkit(cfg: dict) -> int:
     """12 when a model config runs the experimental CUDA 12 engine (its exe is in engine-cuda12/), else 13."""
     return 12 if cfg.get("cuda") == 12 or Path(str(cfg.get("exe", ""))).parent.name == ENGINE12_DIR else 13
@@ -7027,21 +7040,24 @@ def confirm_paging(model, ram, choice, yes, explicit_model=False):
                                                                           " (--model)" if explicit_model else ""))
 
 
-def ctx_ram_need(model, ctx, low_ram=False):
+def ctx_ram_need(model, ctx, low_ram=False, kv="int8"):
     """#406: the RAM (GB) setup estimates for a long context with IQ3_XXS / IQ3_S: their experts + the context's
-    8-bit KV cache + 24 GB of room for everything else (the 0.1.29 arithmetic, counted).  None where the context does
-    not count against RAM by this rule: the other sizes, and the low-RAM mode (its KV cache stays in VRAM)."""
+    KV cache + 24 GB of room for everything else (the 0.1.29 arithmetic, counted).  `kv` is the format the engine
+    will run with: 8-bit by default, q4u32 on a gfx12 card with this tree's engine (the setup default), or the format
+    the person named.  None where the context does not count against RAM by this rule: the other sizes, and the
+    low-RAM mode (its KV cache stays in VRAM)."""
     if model not in ("IQ3_XXS", "IQ3_S") or low_ram:
         return None
-    return MODELS[model]["arena_gb"] + ctx * 13 * 1056 / 1e9 + 24
+    return MODELS[model]["arena_gb"] + ctx * 13 * kv_cell_bytes(kv, ctx) / 1e9 + 24
 
 
-def ram_ctx(model, ram, low_ram=False) -> int:
+def ram_ctx(model, ram, low_ram=False, kv="int8") -> int:
     """#406: the longest context the RAM rule recommends: 128K, or longer where the estimate fits this PC's RAM.  It
     is part of the recommended default (the smaller of it and the GPU's rule); a longer choice is kept, with a note.
     The 200K menu step is never the recommendation (#608)."""
     # 204800 (#608) is a menu step between 128K and 256K, never the recommendation: where 256K does not fit, 128K stays
-    return max(c for c in CONTEXTS if c <= 131072 or (c != 204800 and (ctx_ram_need(model, c, low_ram) or 0) <= ram))
+    return max(c for c in CONTEXTS
+               if c <= 131072 or (c != 204800 and (ctx_ram_need(model, c, low_ram, kv) or 0) <= ram))
 
 
 def app_settings_file() -> Path | None:
@@ -11111,9 +11127,20 @@ def main() -> int:
         say(f"  Its license: {MODELS[model]['license']}")
     tag = fam["tag"] + model                           # names of the pack, config and start script
     small = min(x["vram_gb"] for x in chosen)         # each card keeps its layers' KV of the whole context
+    # The KV format the engine will run with, for the context estimate: the person's --kv, else this tree's measured
+    # q4u32 default on gfx12 (only in a q4u32 build), else 8-bit.  Step 4 may pick or download the engine later, so
+    # an engine that is not here yet leaves the estimate at the conservative 8-bit; the line in step 3 says which.
+    from strata_control.kv_default import kv_value
+    _arch = str((gpu or {}).get("arch") or "")
+    _gfx12 = hip and _arch.lower().startswith(("gfx1200", "gfx1201"))
+    _flavor = installed_engine_flavor(getattr(a, "engine_dir", None) or os.environ.get("STRATA_ENGINE_DIR"))
+
+    def _ctx_kv(c):
+        return kv_value(_flavor, c, a.kv, hip=bool(hip), arch=_arch)
+
     rec_ctx = 131072                                   # 128K on every card (owner, 2026-11-01); a card it leaves little room on is warned about below, never lowered
     # #406: the RAM rule is part of the recommendation (the smaller of the two), no longer a cap over the user's choice
-    rec_ctx = min(rec_ctx, ram_ctx(model, ram, low_ram))
+    rec_ctx = min(rec_ctx, ram_ctx(model, ram, low_ram, _ctx_kv(262144)))
     if a.context:
         ctx = a.context
     else:
@@ -11121,7 +11148,7 @@ def main() -> int:
         say("  Context length = how much text the model can see at once (your chat, files, tool output).")
         say("  Longer needs more VRAM for it, so fewer experts fit on the GPU:")
         for i, c in enumerate(CONTEXTS, 1):
-            need_c = ctx_ram_need(model, c, low_ram)
+            need_c = ctx_ram_need(model, c, low_ram, _ctx_kv(c))
             note = ("   (recommended for your GPU)" if c == rec_ctx else "") + \
                    ("   (experimental: setup adds rope scaling)" if c > 262144 else "") + \
                    (f"   (needs ~{need_c:.0f} GB RAM, this PC has {ram:.0f}: may run out of memory)"
@@ -11131,7 +11158,7 @@ def main() -> int:
                                str(CONTEXTS.index(rec_ctx) + 1), a.yes)) - 1]
     # #406 #364: a context past the RAM rule (an explicit --context, a pick in the list, or the earlier install's) is
     # kept, with what it risks.  It used to become 128K: users ran 256K fine where setup's estimate said no.
-    need_gb = ctx_ram_need(model, ctx, low_ram)
+    need_gb = ctx_ram_need(model, ctx, low_ram, _ctx_kv(ctx))
     if need_gb is not None and ram < need_gb and ctx > 131072:
         warn(f"{ctx // 1024}K with {model} needs ~{need_gb:.0f} GB of RAM by setup's estimate "
              f"({MODELS[model]['arena_gb']:.0f} GB of experts + the context + room for the rest); this PC has "
@@ -11191,7 +11218,6 @@ def main() -> int:
     if ctx > 8192:
         # on gfx12 the engine's own default is the measured 4-bit one, but only in a q4u32 build (0.1.63-q4u32); the engine is not
         # known yet (step 4 comes later), so the line says both
-        _gfx12 = hip and str((gpu or {}).get("arch") or "").lower().startswith(("gfx1200", "gfx1201"))
         if a.kv is None and _gfx12:
             ok(f"KV cache: {KV_WORDS['q4u32']} (the default on this card in a q4u32 build (0.1.63-q4u32); "
                "an upstream engine uses 8-bit)")
@@ -11236,12 +11262,13 @@ def main() -> int:
         arena = MODELS[model]["arena_gb"]
         vram = low_ram_vram(gpu) - (VISION[vision]["reserve_mib"] / 1024 if vision != "none" else 0)
         with_mtp = a.mtp != "off"                       # the draft layer's ~1 GB comes out of the expert cache
-        share = low_ram_gpu_share(model, vram, ctx, kv, with_mtp)
-        rest = arena - low_ram_gpu_gb(model, vram, ctx, kv, with_mtp)
-        resident = a.low_ram == "resident" or (a.low_ram != "mmap" and low_ram_resident(model, ram, vram, ctx, kv, with_mtp))
+        ctx_kv = _ctx_kv(ctx)                           # the format the engine will run with (q4u32 on gfx12 in a q4u32 build)
+        share = low_ram_gpu_share(model, vram, ctx, ctx_kv, with_mtp)
+        rest = arena - low_ram_gpu_gb(model, vram, ctx, ctx_kv, with_mtp)
+        resident = a.low_ram == "resident" or (a.low_ram != "mmap" and low_ram_resident(model, ram, vram, ctx, ctx_kv, with_mtp))
         if multi:      # every chosen card's share (the image encoder on the main one); #364 #384: the mapped variant
-            held = min(arena, low_ram_gpu_gb(model, vram, ctx, kv, with_mtp) +
-                       sum(low_ram_gpu_gb(model, low_ram_vram(x), ctx, kv, with_mtp) for x in chosen[1:]))
+            held = min(arena, low_ram_gpu_gb(model, vram, ctx, ctx_kv, with_mtp) +
+                       sum(low_ram_gpu_gb(model, low_ram_vram(x), ctx, ctx_kv, with_mtp) for x in chosen[1:]))
             share, rest = held / arena, arena - held
             # #642: the resident variant on a split, by the same rule as on one card - what no card holds fits the RAM
             resident = resident_split() and (a.low_ram == "resident" or
