@@ -1936,6 +1936,7 @@ struct Engine {
     Bells bell_d = {};
     const uint8_t* home_d = nullptr;   // [NL * NE] the node holding expert (l, e) (E.home)
     unsigned *d_seq = nullptr, *d_cur = nullptr;
+    float* cnt = nullptr;   // [NL * NE] decayed use counts (placement)
     int *want_nv = nullptr, *want_mx = nullptr, *nwant_nv = nullptr, *nwant_mx = nullptr;
     int *pend_nv = nullptr, *pend_mx = nullptr, *npend_nv = nullptr, *npend_mx = nullptr;   // [i] = key, [PMAX + i] = slot
     const uint8_t **psrc_nv = nullptr, **psrc_mx = nullptr;   // promotion copies (k_fetch lists of their own)
@@ -2366,19 +2367,29 @@ void expert_cache(int l, const int* ids, int n) {
 // ---- CPU experts (--cpu-threads).  A decode visit: k_cache_cpu stamps the resident experts, hands the others to the
 // CPU (one bell per node: jobs, x, ring = sequence number) and notes them as wanted; the GEMVs skip them (null table entries);
 // k_cpu_wait waits for every node's ack and copies the CPU outputs into ey.  At the end of a token k_promote_commit
-// makes the experts copied during this token resident, then k_promote_plan picks LRU victims for up to PROMOTE_NV /
-// PROMOTE_MX wanted experts (victims unmapped at once, so nothing reads them while the next token copies into them).
+// makes the experts copied during this token resident, then k_promote_plan promotes up to PROMOTE_NV / PROMOTE_MX
+// wanted experts (victims unmapped at once, so nothing reads them while the next token copies into them).
+// Placement (INK2_PLACE=freq, default): a count per (layer, expert), +1 per routed use (each loop pass counts), times
+// INK2_DECAY (0.97) per token; the token's misses are taken most counted first, each against the resident expert of
+// the pool with the lowest count, and only if it beats it by INK2_GAIN (1.0).  Replay of the corpus routing at 8 GiB
+// (place/simeng.py): 2.25 -> 1.42 CPU experts per visit, 14.7 -> 8.6 promotions per token; Strata's adaptive cache with
+// a per-token decay, its victims from the whole pool (experts of a pool are all one size).  INK2_PLACE=lru: the
+// least recently used slot, misses in visit order (the previous policy).
 constexpr int WANT_MAX = 64, PMAX = 32;
+bool g_place_freq = true;
+float g_decay = 0.97f, g_gain = 1.0f;
 int g_bg_blocks = 4;   // INK2_BG_BLOCKS (12 GiB, q1 chat: 4 and 8 blocks 69.8 / 68.9 tok/s, 16: 65.8)
 int g_promote_nv = 12, g_promote_mx = 3;   // per token (INK2_PROMOTE=nv,mx): ~54 + 25 MB of PCIe in the background
 __global__ void k_cache_cpu(int l, const int* __restrict__ ids, const float* __restrict__ x, int* slot_of, unsigned* stamp,
-                            unsigned* clock, int* want, int* nwant, Bells bells, int nodes, unsigned* seq, unsigned* cur) {
+                            unsigned* clock, int* want, int* nwant, Bells bells, int nodes, unsigned* seq, unsigned* cur,
+                            float* cnt) {
     __shared__ int nj;
     if (threadIdx.x == 0) {
         unsigned t = *clock;
         int n = 0, nw = *nwant;
         for (int k = 0; k < TOPK; ++k) {
             const int e = ids[k], key = l * NE + e, sl = slot_of[key];
+            cnt[key] += 1.0f;
             if (sl >= 0) { stamp[sl] = ++t; continue; }
             for (int b = 0; b < nodes; ++b) {
                 bells.b[b]->k[n] = k;
@@ -2450,6 +2461,9 @@ struct PromoteArgs {
     int* nfetch;
     unsigned long long* fbytes;
     int maxn;
+    const float* cnt;   // [NL * NE] decayed use counts
+    int freq;           // 1: victims by count, candidates by count, admission margin; 0: LRU, visit order
+    float gain;
 };
 __global__ void k_promote_commit(PromoteArgs c) {
     if (threadIdx.x) return;
@@ -2468,13 +2482,33 @@ __global__ void k_promote_commit(PromoteArgs c) {
 }
 __global__ void k_promote_plan(PromoteArgs c) {
     __shared__ unsigned long long wmin[32];
-    __shared__ int n, np;
-    if (threadIdx.x == 0) { n = min(*c.nwant, c.maxn); np = 0; }
+    __shared__ int n, np, stop;
+    if (threadIdx.x == 0) {
+        n = *c.nwant;
+        np = 0;
+        stop = c.maxn <= 0;
+        if (c.freq)   // candidates most counted first (n <= WANT_MAX: insertion sort)
+            for (int i = 1; i < n; ++i) {
+                const int k = c.want[i];
+                int j = i;
+                for (; j > 0 && c.cnt[c.want[j - 1]] < c.cnt[k]; --j) c.want[j] = c.want[j - 1];
+                c.want[j] = k;
+            }
+        else
+            n = min(n, c.maxn);
+    }
     __syncthreads();
-    for (int m = 0; m < n; ++m) {
+    for (int m = 0; m < n && !stop; ++m) {
+        // victim: the lowest (count or stamp, slot); an empty slot first, a slot in flight never
         unsigned long long best = ~0ull;
-        for (int i = threadIdx.x; i < c.nslot; i += blockDim.x)
-            best = min(best, ((unsigned long long) c.stamp[i] << 32) | (unsigned) i);
+        for (int i = threadIdx.x; i < c.nslot; i += blockDim.x) {
+            const int o = c.owner[i];
+            const unsigned key = c.stamp[i] == 0xffffffffu ? 0xffffffffu
+                                 : !c.freq                 ? c.stamp[i]
+                                 : o < 0                   ? 0u
+                                                           : __float_as_uint(c.cnt[o]);   // counts >= 0: ordered as uints
+            best = min(best, ((unsigned long long) key << 32) | (unsigned) i);
+        }
 #pragma unroll
         for (int o = 16; o; o >>= 1) best = min(best, __shfl_xor_sync(0xffffffffu, best, o));
         if ((threadIdx.x & 31) == 0) wmin[threadIdx.x / 32] = best;
@@ -2482,7 +2516,8 @@ __global__ void k_promote_plan(PromoteArgs c) {
         if (threadIdx.x == 0) {
             for (int w = 1; w < (int) (blockDim.x / 32); ++w) best = min(best, wmin[w]);
             const int v = (int) (best & 0xffffffffu), key = c.want[m], old = c.owner[v];
-            if (c.slot_of[key] < 0 && c.stamp[v] != 0xffffffffu) {   // (resident meanwhile: a prefill's cache)
+            const bool admit = !c.freq || old < 0 || c.cnt[key] >= c.cnt[old] + c.gain;
+            if (c.slot_of[key] < 0 && c.stamp[v] != 0xffffffffu && admit) {   // (resident meanwhile: a prefill's cache)
                 if (old >= 0) { c.slot_of[old] = -1; c.tabA[old] = nullptr; c.tabB[old] = nullptr; }
                 c.owner[v] = -1;
                 c.stamp[v] = 0xffffffffu;   // in flight: never a victim before its commit
@@ -2491,6 +2526,9 @@ __global__ void k_promote_plan(PromoteArgs c) {
                 c.fsrc[np] = c.xsrc[key];
                 c.fdst[np] = c.pool + (size_t) v * c.eb;
                 ++np;
+                stop = np >= c.maxn;
+            } else if (!admit) {
+                stop = 1;   // the next candidates are counted less: none beats this victim either
             }
         }
         __syncthreads();
@@ -2502,12 +2540,16 @@ __global__ void k_promote_plan(PromoteArgs c) {
         *c.nwant = 0;
     }
 }
+__global__ void k_decay(float* cnt, int n, float f) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) cnt[i] *= f;
+}
 PromoteArgs promote_args(bool nv) {
     return {E.slot_of, nv ? E.owner_nv : E.owner_mx, nv ? E.stamp_nv : E.stamp_mx, E.clock, nv ? E.nslot_nv : E.nslot_mx,
             E.tabA, E.tabB, nv ? E.pool_nv : E.pool_mx, nv ? NV_BYTES : MX_BYTES, nv ? NV_A : MX_A, E.xsrc_d,
             nv ? E.want_nv : E.want_mx, nv ? E.nwant_nv : E.nwant_mx, nv ? E.pend_nv : E.pend_mx, nv ? E.npend_nv : E.npend_mx,
             nv ? E.psrc_nv : E.psrc_mx, nv ? E.pdst_nv : E.pdst_mx, nv ? E.pnf_nv : E.pnf_mx, E.fbytes,
-            nv ? g_promote_nv : g_promote_mx};
+            nv ? g_promote_nv : g_promote_mx, E.cnt, g_place_freq ? 1 : 0, g_gain};
 }
 // start of a decode token: the copies planned at the end of the previous one, on a side stream (few blocks: the
 // token's own kernels keep the SMs)
@@ -2537,6 +2579,7 @@ void promote_fork() {
 // end of a decode token: join the copies, commit them, plan the next ones
 void promote_join() {
     CK(cudaStreamWaitEvent(cudaStreamPerThread, E.ev_join, 0));
+    if (g_place_freq) k_decay<<<(NL * NE + 255) / 256, 256>>>(E.cnt, NL * NE, g_decay);
     for (int nv = 1; nv >= 0; --nv) {
         k_promote_commit<<<1, 32>>>(promote_args(nv));
         k_promote_plan<<<1, 1024>>>(promote_args(nv));
@@ -2545,11 +2588,16 @@ void promote_join() {
 void expert_cpu_ring(int l, const float* x) {
     const bool nv = l < MXFP8_FIRST;
     k_cache_cpu<<<1, 256>>>(l, E.ids, x, E.slot_of, nv ? E.stamp_nv : E.stamp_mx, E.clock, nv ? E.want_nv : E.want_mx,
-                            nv ? E.nwant_nv : E.nwant_mx, E.bell_d, E.cpu_nodes, E.d_seq, E.d_cur);
+                            nv ? E.nwant_nv : E.nwant_mx, E.bell_d, E.cpu_nodes, E.d_seq, E.d_cur, E.cnt);
 }
 void setup_cpu() {
     if (const char* p = std::getenv("INK2_PROMOTE")) std::sscanf(p, "%d,%d", &g_promote_nv, &g_promote_mx);
     if (const char* p = std::getenv("INK2_BG_BLOCKS")) g_bg_blocks = std::max(1, std::atoi(p));
+    if (const char* p = std::getenv("INK2_PLACE")) g_place_freq = std::string(p) != "lru";
+    if (const char* p = std::getenv("INK2_DECAY")) g_decay = (float) std::atof(p);
+    if (const char* p = std::getenv("INK2_GAIN")) g_gain = (float) std::atof(p);
+    E.cnt = (float*) dalloc((size_t) NL * NE * 4);
+    CK(cudaMemset(E.cnt, 0, (size_t) NL * NE * 4));
     g_promote_nv = std::min(g_promote_nv, PMAX);
     g_promote_mx = std::min(g_promote_mx, PMAX);
     const size_t bell_bytes = (sizeof(ink2cpu::InkBell) + 4095) & ~(size_t) 4095;
