@@ -297,11 +297,16 @@ class VisionRequestFiles(unittest.TestCase):
                                          {"type": "image", "source": "x.png"}]}]
 
     @staticmethod
-    def leftovers(d):
-        # #874: on Linux the file goes to /dev/shm when that has room, so look there as well
+    def in_shm():
+        # #874: on Linux the file goes to /dev/shm when that has room; its name carries only the process id
         shm = Path("/dev/shm")
-        in_shm = sorted(p.name for p in shm.glob(f"strata-vision-{os.getpid()}-req-*.sve")) if shm.is_dir() else []
-        return sorted(p.name for p in Path(d).glob("req-*.sve")) + in_shm
+        return sorted(p.name for p in shm.glob(f"strata-vision-{os.getpid()}-req-*.sve")) if shm.is_dir() else []
+
+    def setUp(self):
+        self.shm_before = set(self.in_shm())     # what earlier tests in this process left there is not this test's
+
+    def leftovers(self, d):
+        return sorted(p.name for p in Path(d).glob("req-*.sve")) + [n for n in self.in_shm() if n not in self.shm_before]
 
     def test_a_refused_request_writes_none(self):
         from serve.server import EngineStarting
