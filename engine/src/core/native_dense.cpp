@@ -1,4 +1,5 @@
 #include "strata/core/native_dense.hpp"
+#include "strata/core/expert_cache.hpp"   // copy_to_device_staged
 #include "strata/core/run_manifest.hpp"
 #include <cstdlib>
 #include "strata/core/weights.hpp"
@@ -454,7 +455,7 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
                 auto status = cudaMalloc(&allocation, bytes);
                 DevicePtr data(allocation);
                 if (status == cudaSuccess)
-                    status = cudaMemcpy(data.get(), gguf.tensor_data(tensor), bytes, cudaMemcpyHostToDevice);
+                    status = (cudaError_t) strata::core::copy_to_device_staged(data.get(), gguf.tensor_data(tensor), bytes);
                 if (status != cudaSuccess) {
                     err = "native dense upload " + tensor.name + ": " + cudaGetErrorString(status); return false;
                 }
@@ -525,8 +526,8 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
                     std::vector<uint8_t> q8;
                     if (f32_inject) q8 = q8_0_of((const float*) gguf.tensor_data(tensor), (uint64_t) ref.ne0 * (uint64_t) ref.ne1);
                     if (cudaMalloc(&p, bytes) != cudaSuccess ||
-                        cudaMemcpy(p, f32_inject ? (const void*) q8.data() : gguf.tensor_data(tensor), bytes,
-                                   cudaMemcpyHostToDevice) != cudaSuccess) {
+                        strata::core::copy_to_device_staged(p, f32_inject ? (const void*) q8.data() : gguf.tensor_data(tensor),
+                                                            bytes) != (int) cudaSuccess) {
                         err = "native dense (STRATA_HC_Q8) upload " + tensor.name; return false;
                     }
                     ref.hc_q8 = p;

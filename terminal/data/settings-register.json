@@ -8158,6 +8158,42 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_FILL_STAGED",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/core/expert_cache.cpp",
+     "line": 619,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/DGX_SPARK_LINUX.md:143",
+    "docs/DGX_SPARK_LINUX.md:156"
+   ],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "core",
+   "note": "copies mapped expert blobs and dense tensors to the GPU through pinned bounce buffers (RTX Spark N1X, #5678)",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_FOLLOW",
    "backends": [
     "cuda-hip",
