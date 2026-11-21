@@ -98,4 +98,4 @@ def test_generation_tag(tmp_path):
     t = tmp_path / "t.jinja"
     t.write_text("{% for m in messages %}{% generation %}[{{ m.content }}]{% endgeneration %}{% endfor %}")
     assert ChatTemplate(t).render([{"role": "user", "content": "hi"}]) == "[hi]"
-    assert frontend.FAMILY is None
+    assert frontend._FAMILY is None
