@@ -500,7 +500,7 @@ bool attn_v3_on() {
 // no DPP it is the Daily's (be4cf1c) attn_chunk_kernel line for line - the same reduce12 scores, the same cell-major
 // probabilities and the same four-cell value fold - except that `spt` shares `sq`'s storage here (no arithmetic
 // change).  Without the variable nothing selects it on a card at or above sm_75.
-#if defined(STRATA_EXPERIMENTAL_SM60) || !defined(__HIPCC__) || !defined(STRATA_HIP_GFX906)
+#if !defined(STRATA_HIP_GFX90A) && (defined(STRATA_EXPERIMENTAL_SM60) || !defined(__HIPCC__) || !defined(STRATA_HIP_GFX906))
 #define STRATA_ATTN_PRE75_BUILT 1
 #endif
 #if defined(STRATA_ATTN_PRE75_BUILT)

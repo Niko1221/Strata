@@ -15,7 +15,7 @@ class Gfx906CMake(unittest.TestCase):
     def test_qwen35_is_not_built_for_gfx906(self):
         # q36_engine.cu calls cublasSgemm / cublasGemmStridedBatchedEx, which the wave64 compat layer does not map; main() guards every use
         # with STRATA_HAVE_QWEN35, so leaving the library out gives a gfx906 build that links
-        block = re.search(r"if\(NOT STRATA_HIP_GFX906\)\n  add_library\(strata_qwen35.*?target_compile_definitions\(strata PRIVATE STRATA_HAVE_QWEN35=1\)\n  endif\(\)", TEXT, re.S)
+        block = re.search(r"if\(NOT STRATA_HIP_WAVE64\)\n  add_library\(strata_qwen35.*?target_compile_definitions\(strata PRIVATE STRATA_HAVE_QWEN35=1\)\n  endif\(\)", TEXT, re.S)
         self.assertIsNotNone(block)
         self.assertIn("add_executable(strata-q36 ", block.group(0))
         self.assertIn("target_link_libraries(strata PRIVATE strata_qwen35)", block.group(0))
@@ -31,10 +31,10 @@ class Gfx906CMake(unittest.TestCase):
         # kernels, takes moe_f16_kq.cu and moe_p1a.cu on gfx906 (moe_fused_iq.cu calls them), and every .cu of src/ is compiled as HIP
         own = re.search(r"macro\(strata_cuda_pf_own\).*?endmacro\(\)", TEXT, re.S)
         self.assertIsNotNone(own)
-        block = own.group(0)[own.group(0).index("if(STRATA_HIP_GFX906)"):]
+        block = own.group(0)[own.group(0).index("if(STRATA_HIP_WAVE64)"):]
         self.assertIn("target_sources(strata_pf_own PRIVATE src/prefill/moe_f16_kq.cu)", block)
         self.assertIn("target_sources(strata_pf_own PRIVATE src/prefill/moe_p1a.cu)", block)
-        tail = HIP_TEXT[HIP_TEXT.index("# HIP gfx906: every CUDA source"):]
+        tail = HIP_TEXT[HIP_TEXT.index("macro(strata_hip_wave64_sources)"):]
         self.assertIn("set_source_files_properties(${_strata_cu} PROPERTIES LANGUAGE HIP)", tail)
         self.assertNotIn("strata_mmq", TEXT.replace("strata_mmq_ids", ""))
 

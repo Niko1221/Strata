@@ -65,7 +65,7 @@ inline cudaError_t host_alias(const void* p, const void** out) {
 inline cudaError_t copy_blobs(void* const* dst, const void* const* src, const size_t* bytes, size_t n,
                               cudaStream_t stream, int batch_mode) {
     if (n == 0) return cudaSuccess;
-#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906) && defined(CUDART_VERSION) && CUDART_VERSION >= 13000
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_WAVE64) && defined(CUDART_VERSION) && CUDART_VERSION >= 13000
     constexpr size_t cap = 128;
     if (batch_mode != 0 && n > 1 && n <= cap) {
         std::array<const void*, cap> srcs{};

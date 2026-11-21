@@ -1,7 +1,7 @@
 // src/core/verify.cpp - see include/strata/core/verify.hpp.
 // HostGraphLaunch (the graph launched by the calling thread, or by a helper thread so this one can serve the doorbells): CUDA builds,
 // and the Windows HIP build (STRATA_VERIFY_ASYNC_LAUNCH=1 launches from a helper thread; STRATA_LAUNCH_PROBE=1 logs the launch timing).
-#if (!defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)) || (defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906) && defined(_WIN32))
+#if (!defined(STRATA_USE_HIP) && !defined(STRATA_HIP_WAVE64)) || (defined(STRATA_USE_HIP) && !defined(STRATA_HIP_WAVE64) && defined(_WIN32))
 #define STRATA_VERIFY_HGL 1
 #endif
 #include "strata/core/batch_rows.hpp"
@@ -236,7 +236,7 @@ inline bool g_qfuse_hc() {
 // STRATA_GRAPH_PRIO=1 (opt-in): the window graph's kernel nodes keep their capturing stream's
 // priority (side_ high, sh_cs_ low).  Unset / 0: every node at the launch stream's priority, as before.
 [[maybe_unused]] inline bool graph_prio_on() {   // (every HIP caller is guarded off)
-#if defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906) || defined(STRATA_GPU_METAL)
+#if defined(STRATA_USE_HIP) || defined(STRATA_HIP_WAVE64) || defined(STRATA_GPU_METAL)
     return false;
 #else
     static const bool on = [] { const char* v = std::getenv("STRATA_GRAPH_PRIO"); return v != nullptr && std::atoi(v) != 0; }();
@@ -245,7 +245,7 @@ inline bool g_qfuse_hc() {
 }
 // STRATA_GRAPH_PRIO: the capture and graph queries by CUDA version (13 renamed the edge-data forms: the same split as
 // verify_kernels.cu's and the PDL edge check above).  Nothing is returned for the edge data.
-#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906) && !defined(STRATA_GPU_METAL)
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_WAVE64) && !defined(STRATA_GPU_METAL)
 inline cudaError_t prio_capture_deps(cudaStream_t s, cudaStreamCaptureStatus* st, const cudaGraphNode_t** deps, size_t* n) {
 #if CUDART_VERSION >= 13000
     return cudaStreamGetCaptureInfo(s, st, nullptr, nullptr, deps, nullptr, n);
@@ -1270,7 +1270,7 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
     // lowest (= the default).  The indexer chain's 1-block kernels are then dispatched ahead of the q GEMV's queued
     // blocks, and the shared expert behind the experts.  Unset: every stream at the default priority, as before.
     int gp_lo = 0, gp_hi = 0;
-#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_WAVE64)
     const bool gprio = graph_prio_on() && cudaDeviceGetStreamPriorityRange(&gp_lo, &gp_hi) == cudaSuccess && gp_lo != gp_hi;
     if (graph_prio_on() && !gprio) (void) cudaGetLastError();   // (only a failed range query's error: unset clears nothing)
 #else
@@ -1282,7 +1282,7 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
     // STRATA_PIPED_CONCURRENT=1 (opt-in): a prompt can run on the same GPU while the batch windows run, so the windows'
     // streams get the device's highest priority (HIP: the default priority, as the drafter's)
     auto make_stream = [&](cudaStream_t* s, int gp = 0) -> cudaError_t {
-#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_WAVE64)
         static const bool hi = [] {   // (STRATA_PIPED_CONCURRENT_PRIO=0: the default priority)
             const char* v = std::getenv("STRATA_PIPED_CONCURRENT");
             const char* p = std::getenv("STRATA_PIPED_CONCURRENT_PRIO");
@@ -1305,7 +1305,7 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         return cudaStreamCreateWithFlags(s, cudaStreamNonBlocking);
     };
     bool copy_made = false;
-#if defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
+#if defined(STRATA_USE_HIP) && !defined(STRATA_HIP_WAVE64)
     // engine-latency, STRATA_COPY_HIP_PRIO=1 (opt-in): the copy stream at high priority, so it gets a hardware queue of
     // its own (ROCm hands queues out per priority).  Sharing one with the window's stream, --pcie-mode dma's copies and
     // their host function queue behind the window's graph, which spins on the flag they raise (a timeout at layer 1).
@@ -2952,7 +2952,7 @@ bool Verifier::capture(int T, std::string& err) {
         else
             (void) cudaGetLastError();
     }
-#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906) && !defined(STRATA_GPU_METAL)
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_WAVE64) && !defined(STRATA_GPU_METAL)
     // #5636: an error an earlier unchecked call left in the thread's slot is said and cleared here; otherwise the first launch check of the capture
     // (copy_i32_from_mapped: "invalid argument" on sm_70 / sm_75) reads it and ends the engine as if that launch had failed
     (void) strata::core::take_pending_cuda_error("the verify window's capture");
@@ -2961,7 +2961,7 @@ bool Verifier::capture(int T, std::string& err) {
         err = "verify: begin capture failed";
         return false;
     }
-#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906) && !defined(STRATA_GPU_METAL)
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_WAVE64) && !defined(STRATA_GPU_METAL)
     prio_forks_.clear();
     prio_tails_.clear();
 #endif
@@ -3076,7 +3076,7 @@ bool Verifier::capture(int T, std::string& err) {
     }
 #endif
     unsigned long long iflags = 0;
-#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906) && !defined(STRATA_GPU_METAL)
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_WAVE64) && !defined(STRATA_GPU_METAL)
     if (graph_prio_on()) {   // STRATA_GRAPH_PRIO: the nodes run at their own (captured or repaired) priorities
         apply_node_priorities(graph, T);
         iflags = cudaGraphInstantiateFlagUseNodePriority;
@@ -4733,7 +4733,7 @@ bool Verifier::evict_window_graph(int keep_t, bool& evicted, std::string& err) {
 // will depend on); a tail note keeps a priority stream's current tail and the priority its nodes should run at
 // (1 = the device's highest, -1 = its lowest).  No-ops with the switch off, outside a capture, and on HIP / Metal.
 void Verifier::note_prio_fork(cudaStream_t from) {
-#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906) && !defined(STRATA_GPU_METAL)
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_WAVE64) && !defined(STRATA_GPU_METAL)
     if (!graph_prio_on()) return;
     cudaStreamCaptureStatus st = cudaStreamCaptureStatusNone;
     const cudaGraphNode_t* deps = nullptr;
@@ -4749,7 +4749,7 @@ void Verifier::note_prio_fork(cudaStream_t from) {
 }
 
 void Verifier::note_prio_tail(cudaStream_t on, int prio) {
-#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906) && !defined(STRATA_GPU_METAL)
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_WAVE64) && !defined(STRATA_GPU_METAL)
     if (!graph_prio_on()) return;
     cudaStreamCaptureStatus st = cudaStreamCaptureStatusNone;
     const cudaGraphNode_t* deps = nullptr;
@@ -4768,7 +4768,7 @@ void Verifier::note_prio_tail(cudaStream_t on, int prio) {
 // capture copied none from the streams (design 1's R1: some drivers read back 0 everywhere), each priority stream's
 // nodes are found by walking its noted tails back to the noted forks and the attribute is set per node.
 void Verifier::apply_node_priorities(cudaGraph_t graph, int T) {
-#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906) && !defined(STRATA_GPU_METAL)
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_WAVE64) && !defined(STRATA_GPU_METAL)
     int lo = 0, hi = 0;
     if (cudaDeviceGetStreamPriorityRange(&lo, &hi) != cudaSuccess) { (void) cudaGetLastError(); return; }
     auto histogram = [&](std::map<int, int>& h) {

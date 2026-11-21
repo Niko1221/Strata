@@ -620,6 +620,23 @@ In the config: `"args": [ ..., "--pipeline-windows", "2", "--trim-stage-weights"
 Not done on gfx906: setup detection and automatic build, Windows, images (`--vision`), MI60 and Radeon VII (same ISA, not run),
 a single-card run. Other measurements are under [History](#history--older-measurements).
 
+## Experimental gfx90a source build (Instinct MI210)
+
+The Linux source build has a separate `STRATA_HIP_GFX90A` option for CDNA2 Wave64. Use a ROCm installation with the HIP compiler and hipBLAS development files. The preset builds the Flash-Next main engine with the generic kernel paths and hipBLAS. This build is for one selected GPU per process.
+
+```bash
+cd engine
+cmake --preset hip-gfx90a-m1 \
+  -DCMAKE_HIP_COMPILER=/opt/rocm/llvm/bin/clang++ \
+  -DCMAKE_PREFIX_PATH=/opt/rocm
+cmake --build --preset hip-gfx90a-m1
+./build/hip-gfx90a-m1/strata-device --list-devices
+```
+
+The selected device must report `gfx90a` and a wave size of 64. On a host with several GPUs, use `HIP_VISIBLE_DEVICES` or the engine's `--gpu` option to select the MI210. Use a fresh build directory when switching from another backend.
+
+The `hip-gfx90a-tests` configure and build presets also compile the device policy, intrinsics, MFMA instruction, MMVQ, expert and router checks. Run `ctest --preset hip-gfx90a-tests` on the target GPU and report each required test's execution status. A skipped GPU test leaves that part of the hardware validation open. Full model inference and production MFMA performance require separate MI210 validation.
+
 ## Tuning table
 
 A hipBLASLt table holds solution ids that are valid only for one GPU architecture and one hipBLASLt version, so it is calibrated

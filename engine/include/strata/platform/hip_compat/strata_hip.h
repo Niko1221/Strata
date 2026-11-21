@@ -1,10 +1,10 @@
-// strata_hip.h - the CUDA runtime/cuBLAS names Strata uses, mapped onto HIP/hipBLAS for AMD GPUs (gfx906).
+// strata_hip.h - CUDA runtime and cuBLAS names mapped onto HIP and hipBLAS for Wave64 GPUs.
 //
-// This directory is put FIRST on the include path of a STRATA_ENABLE_HIP build only; its `cuda_runtime.h`,
+// The Wave64 build puts this directory first on the include path. Its `cuda_runtime.h`,
 // `cuda_fp16.h` and `cublas_v2.h` include this header instead of the NVIDIA ones, so the engine's sources stay
 // one tree.  The mapping list follows llama.cpp's ggml-cuda/vendors/hip.h (MIT) where the two overlap.
 //
-// The warp contract: every Strata kernel is written for a 32-lane warp.  gfx906 runs 64-lane wavefronts, so
+// The warp contract: the CUDA-shaped kernels expect 32-lane warps. CDNA and gfx906 run 64-lane wavefronts, so
 // here a CUDA warp is a LOGICAL 32-lane half of a wavefront: every shuffle defaults to width 32 (a
 // `__shfl_down_sync(m, v, 1)` at lane 31 must not read lane 32), `__ballot_sync` returns the 32-bit mask of the
 // caller's own half, and `__syncwarp` is a wavefront barrier plus an LDS fence.  That keeps every kernel's
@@ -21,7 +21,12 @@
 #include <cstdint>
 #include <cstdlib>
 
-#define STRATA_HIP_GFX906 1
+#if defined(STRATA_HIP_GFX906) == defined(STRATA_HIP_GFX90A) || !defined(STRATA_HIP_WAVE64)
+#error "The Wave64 HIP shim requires exactly one build selector: STRATA_HIP_GFX906 or STRATA_HIP_GFX90A"
+#endif
+#if defined(STRATA_HIP_GFX90A) && defined(__HIP_DEVICE_COMPILE__) && !defined(__gfx90a__)
+#error "STRATA_HIP_GFX90A device code must target gfx90a"
+#endif
 
 // ---- runtime: types and constants ------------------------------------------------------------------------
 #define cudaError_t hipError_t
@@ -205,15 +210,20 @@ inline hipError_t cudaInitDevice(int device, unsigned int device_flags, unsigned
 #define STRATA_SHFL_W_I(d, a, b, ...) b
 #define STRATA_SHFL_W_GIVEN(w) (w)
 #define STRATA_SHFL_W_DEFAULT(...) 32
-#define __all_sync(mask, pred) __all(pred)
-#define __any_sync(mask, pred) __any(pred)
-
 static __device__ __forceinline__ unsigned int strata_ballot32(int pred) {
     const unsigned long long b = __ballot(pred);
     return (unsigned int) (b >> (__lane_id() & 32u));
 }
 #define __ballot_sync(mask, pred) strata_ballot32(pred)
 #define __activemask() ((unsigned int) (__ballot(1) >> (__lane_id() & 32u)))
+#if defined(STRATA_HIP_GFX90A)
+// The CUDA-shaped callers use full logical-warp masks.
+#define __all_sync(mask, pred) (strata_ballot32(pred) == strata_ballot32(1))
+#define __any_sync(mask, pred) (strata_ballot32(pred) != 0)
+#else
+#define __all_sync(mask, pred) __all(pred)
+#define __any_sync(mask, pred) __any(pred)
+#endif
 
 static __device__ __forceinline__ void strata_syncwarp() {
     __builtin_amdgcn_fence(__ATOMIC_RELEASE, "wavefront");
