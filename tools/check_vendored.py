@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify engine/third_party/strata-ggml, strata-gguf-py, strata-llama and stb against their manifests (UPSTREAM.md).   python tools/check_vendored.py [--upstream <llama.cpp dir>]
+"""Verify engine/third_party/strata-ggml, strata-gguf-py, strata-llama, stb and wex against their manifests (UPSTREAM.md).   python tools/check_vendored.py [--upstream <llama.cpp dir>]
 
 The vendored ggml / ggml-cuda sources are frozen at the llama.cpp commit named in UPSTREAM.md.  The manifest lists every file with its
 kind and sha256 (text files are hashed with LF line ends, so a Windows checkout agrees with a Linux one):
@@ -16,6 +16,9 @@ Checks: every listed file exists and has the listed hash; no file of the tree is
 engine/third_party/ggml/VERSION.txt; the LICENSE is there; every `edited` row names its upstream hash.  With --upstream <dir> the upstream
 hashes are also checked against that checkout (the files at the pin, e.g. `git archive` of the commit): `upstream` rows must equal the file
 there, `edited` rows must carry its hash.  Standard library only.  Exit 0 clean, 1 on any problem.
+
+engine/third_party/wex (wex4.py of github.com/KairaCode/Wex-WRN2) has its own pin, not llama.cpp's: its manifest is checked the same
+way, without the VERSION.txt pin and without --upstream.
 """
 import argparse
 import hashlib
@@ -39,7 +42,7 @@ TEXT_SUFFIXES = {".c", ".cc", ".cpp", ".cu", ".cuh", ".h", ".hpp", ".txt", ".cma
 def sha(path):
     with open(path, "rb") as f:
         data = f.read()
-    if os.path.splitext(path)[1].lower() in TEXT_SUFFIXES or os.path.basename(path) == "LICENSE":
+    if os.path.splitext(path)[1].lower() in TEXT_SUFFIXES or os.path.basename(path) in ("LICENSE", "NOTICE"):
         data = data.replace(b"\r\n", b"\n")
     return hashlib.sha256(data).hexdigest()
 
@@ -97,12 +100,17 @@ def upstream_rel(rel, upmap):
     return rel
 
 
-def check_tree(root, tree_rel, upmap, upstream, problems):
-    """Check one vendored tree against its UPSTREAM.md; returns the one-line summary."""
+def check_tree(root, tree_rel, upmap, upstream, problems, llama=True):
+    """Check one vendored tree against its UPSTREAM.md; returns the one-line summary.  llama=False: a tree from another upstream (its own
+    pin; --upstream, a llama.cpp checkout, does not apply)."""
     tree = os.path.join(root, tree_rel)
     rows, pin = parse(os.path.join(tree, "UPSTREAM.md"))
+    if not llama:
+        upstream = None
+        if pin is None:
+            problems.append("%s: UPSTREAM.md has no pin" % tree_rel)
     ver = os.path.join(root, "engine", "third_party", "ggml", "VERSION.txt")
-    if os.path.exists(ver):
+    if llama and os.path.exists(ver):
         vpin = open(ver, encoding="utf-8").read().split()[0]
         if vpin != pin:
             problems.append("%s: pin %s in UPSTREAM.md differs from engine/third_party/ggml/VERSION.txt (%s)" % (tree_rel, pin, vpin))
@@ -166,7 +174,8 @@ def main(argv=None):
     summary = [check_tree(a.root, TREE, None, a.upstream, problems),
                check_tree(a.root, os.path.join("engine", "third_party", "strata-gguf-py"), GGUF_PY_MAP, a.upstream, problems),
                check_tree(a.root, os.path.join("engine", "third_party", "strata-llama"), IDENTITY, a.upstream, problems),
-               check_tree(a.root, os.path.join("engine", "third_party", "stb"), STB_MAP, a.upstream, problems)]
+               check_tree(a.root, os.path.join("engine", "third_party", "stb"), STB_MAP, a.upstream, problems),
+               check_tree(a.root, os.path.join("engine", "third_party", "wex"), IDENTITY, a.upstream, problems, llama=False)]
     for p in problems:
         print("check_vendored: " + p)
     if problems:

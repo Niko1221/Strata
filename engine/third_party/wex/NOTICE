@@ -1,0 +1,81 @@
+Wex-WRN2 / WEX expert container formats - Copyright 2026 Ludovico Zanichelli
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not
+use these files except in compliance with the License. A copy is in LICENSE
+and at http://www.apache.org/licenses/LICENSE-2.0. Distributed on an "AS IS"
+BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+implied. See the License for the specific language governing permissions and
+limitations under the License.
+
+
+Code derived from colibri
+-------------------------
+
+This product includes code derived from colibri
+(https://github.com/JustVugg/colibri), licensed under the Apache License,
+Version 2.0. The NOTICE file of colibri reads:
+
+    colibri
+    Copyright 2026 Vincenzo Fornaro
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+        http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+
+    Third-party components bundled with this software and their licenses
+    are listed in THIRD_PARTY_NOTICES.md.
+
+These files are derived from colibri sources and were modified by Ludovico
+Zanichelli in 2026; each one names its colibri source in its header:
+
+    c/tests/test_qwen38_mxfp4.c
+    c/tests/test_v4_mirror_guard_source.py
+    integration/backend/backend_cuda_dsv4.wex-excerpt.cu
+    integration/backend/backend_cuda_dsv4.wex-excerpt.h
+    integration/backend/backend_loader_dsv4.wex-excerpt.c
+    integration/backend/dsv4.wex-excerpt.def
+    integration/build/Makefile.deepseek-v4.wex-excerpt.mk
+    integration/build/Makefile.wex-excerpt.mk
+    integration/engine/deepseek_v4.direct-gpu.wex-excerpt.c
+    integration/engine/deepseek_v4.direct-store.wex-excerpt.c
+    integration/engine/deepseek_v4.mode0-store.wex-excerpt.c
+    integration/engine/deepseek_v4.wex4.wex-excerpt.c
+    integration/engine/deepseek_v4.wnr3.wex-excerpt.c
+    integration/engine/deepseek_v4_internal.wex-excerpt.h
+    research/wnr-testkit-20261108/WNR-TESTKIT/tests/gpu/src_zero/zs_gpu_kernels.cu
+    research/wnr3-20261107/team2/zero-refuter/gpu_probe.py
+    research/wnr3-20261107/team2/zero-safety/scripts/zs_cpu.c
+    research/wnr3-20261107/team2/zero-safety/scripts/zs_gpu_kernels.cu
+    research/wnr3-20261107/team2/zero-safety/scripts/zs_kern.c
+    wex4/fuzz/engine/deepseek_v4_internal.h
+    wex4/fuzz/engine/expert_store.h
+    wex4/fuzz/engine/q38_engine.h
+
+These files are patches against colibri sources (the maintainer's engine tree or stock
+colibri); they quote colibri lines as diff context:
+
+    integration/backend/backend-upload-race-fix.patch
+    integration/history/wex-gpu-direct.patch
+    integration/engine-q38-wex4-loader-de17198.patch
+    integration/engine-wex4-first-read-4ba5568.patch
+    integration/engine-wex4-loader-75932c1.patch
+    integration/upstream-561966ec-levelA.patch
+    research/v41-w2-20261109/laneW-w2.patch
+
+
+Other third-party material
+--------------------------
+
+THIRD_PARTY_NOTICES.md lists the remaining third-party material and its
+licences: portions of ds4 (MIT) that colibri's backend_cuda_dsv4.cu carries,
+copies of DeepSeek inference code and of a model card (MIT) under
+research/wnr3-20261107/team3/other-tensors/data/, and the files computed from
+DeepSeek model weights (MIT). No model weights are in this repository.
