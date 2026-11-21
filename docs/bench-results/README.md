@@ -4,7 +4,7 @@ Raw results and short reports from measurement runs, one folder per run, named b
 the Strata version, hardware and method of its own day, and none is a statement about a later release. Current numbers are in the
 [docs](../README.md) and the [README](../../README.md); how to measure is in [BENCHMARK_PROTOCOL.md](../BENCHMARK_PROTOCOL.md).
 
-This page is built by `python tools/bench_results_index.py` (`--check` fails when a folder is missing from it). 143 folders and 3 loose files, 2188 files in all.
+This page is built by `python tools/bench_results_index.py` (`--check` fails when a folder is missing from it). 147 folders and 3 loose files, 2216 files in all.
 
 
 ## 2026-09
@@ -164,6 +164,10 @@ This page is built by `python tools/bench_results_index.py` (`--check` fails whe
 | Folder | What | Files |
 | --- | --- | ---: |
 | [2026-11-14-rdna2-pcie-auto](2026-11-14-rdna2-pcie-auto/) | PcieAuto on gfx103x: the decode miss split from the CPU pool's speed (#4007) | 3 |
+| [2026-11-21-dev-256k-port-0160-a1](2026-11-21-dev-256k-port-0160-a1/) | Strata standard benchmark: Intel(R) Arc(TM) Pro B70 Graphics | 7 |
+| [2026-11-21-dev-256k-port-0160-a2](2026-11-21-dev-256k-port-0160-a2/) | Strata standard benchmark: Intel(R) Arc(TM) Pro B70 Graphics | 7 |
+| [2026-11-21-dev-256k-port-0163-b1](2026-11-21-dev-256k-port-0163-b1/) | Strata standard benchmark: Intel(R) Arc(TM) Pro B70 Graphics | 7 |
+| [2026-11-21-dev-256k-port-0163-b2](2026-11-21-dev-256k-port-0163-b2/) | Strata standard benchmark: Intel(R) Arc(TM) Pro B70 Graphics | 7 |
 
 ## Loose files
 
