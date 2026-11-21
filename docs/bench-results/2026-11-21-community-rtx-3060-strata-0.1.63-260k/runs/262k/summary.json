@@ -1,0 +1,33 @@
+{
+  "kind": "strata-long-synthetic-thinking-xhigh-v3",
+  "status": "complete",
+  "context": 262144,
+  "target": 260000,
+  "cases": 5,
+  "recall_passed": 2,
+  "recall_total": 2,
+  "speed_cases_with_answer": 3,
+  "speed_cases_capped": 0,
+  "recall_cases_capped": 0,
+  "sampling": {
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "top_k": 20,
+    "min_p": 0.0,
+    "presence_penalty": 0.0,
+    "repetition_penalty": 1.0,
+    "reasoning_effort": "xhigh",
+    "reasoning_budget_tokens": 0,
+    "chat_template_kwargs": {
+      "enable_thinking": true,
+      "preserve_thinking": true
+    }
+  },
+  "speed_repetitions": 3,
+  "median_prefill_tps": 1160.3,
+  "median_decode_tps": 42.8,
+  "median_ttft_s": 224.2485,
+  "model": "qwen3.8-flash-next-q2_0",
+  "finished_utc": "2026-11-21T02:40:00+00:00",
+  "note": "Thinking xhigh; sampling as in official Strata draft.1. NONSTANDARD prompts/lengths; speeds include reasoning tokens; keep all runs and quality failures."
+}
