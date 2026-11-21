@@ -2531,7 +2531,8 @@ def find_vcvars(cuda_v=None):
     return v if v and v.exists() else None
 
 
-CMAKE_MIN = (3, 24)                    # CMakeLists.txt: cmake_minimum_required(VERSION 3.24)
+CMAKE_MIN = (3, 25, 2)                 # CMakeLists.txt says 3.24, but the engine's CUDA20 targets configure with nvcc 13 from CMake 3.25.2 on
+                                       # (3.24.3 and Debian 12's 3.25.1: "does not support the language dialect CUDA20")
 
 
 def _tool_version(path, name):
@@ -2563,7 +2564,7 @@ def find_tool(name):
         runs, version = _tool_version(c, name)
         if not runs:
             continue
-        if name == "cmake" and version and version[:2] < CMAKE_MIN:
+        if name == "cmake" and version and version[:3] < CMAKE_MIN:
             older = older or c
             continue
         return c
@@ -6491,7 +6492,7 @@ def tool_usable(name):
         return False
     if name == "cmake":
         runs, version = _tool_version(found, name)
-        return runs and (not version or version[:2] >= CMAKE_MIN)
+        return runs and (not version or version[:3] >= CMAKE_MIN)
     return True
 
 
