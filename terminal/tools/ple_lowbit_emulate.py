@@ -1,6 +1,7 @@
-"""tools/ple_lowbit_emulate.py - emulate a 3-bit PLE n-gram table as a Q8_0 table-only GGUF, to measure its accuracy by teacher forcing.
+"""tools/ple_lowbit_emulate.py - emulate a 3-bit PLE n-gram table as a Q8_0 table-only GGUF, to measure its accuracy by teacher forcing,
+or (--native) write it in the 3-bit format itself, which the engine reads (PLE formats C4, C3, C2s).
 
-    python tools/ple_lowbit_emulate.py --format c4 --src <IQ4_NL shard 2 .gguf> --out <c4-emulated.gguf> [--rows A:B] [--workers N]
+    python tools/ple_lowbit_emulate.py --format c4 --src <IQ4_NL shard 2 .gguf> --out <c4.gguf> [--rows A:B] [--workers N] [--native]
 
 The candidates (docs: memory-goal/ple-representation.md section 4), all derived from B's IQ4_NL values:
     c4   3-bit Lloyd codebook, one fp16 scale per 160-value row            62 B/row
@@ -14,6 +15,14 @@ Quantizer = the one that produced the doc's NMSE figures: the block scale comes 
 mapped to either end of the grid (IQ4_NL-like, +-NTRY steps), then the least-squares scale, rounded to the scale type; the grid is
 a Lloyd-Max fit (8 levels, 30 iterations) on block-max-normalized values sampled over the whole table with a fixed seed.
 Stdout reports the NMSE against the IQ4_NL values; the codebook is saved as <out>.codebook.json and can be reused with --codebook.
+
+--native writes the same quantizer's codes and scales packed (engine/include/strata/kernels/ple_lowbit.hpp): 60 B of 3-bit codes,
+then one fp16 (c4) or one E4M3 byte per block (c3, c2s), as I8 bytes [row bytes, rows] marked strata.ple.format = c4/c3/c2s with
+strata.ple.codebook (8 F32) and, for c3/c2s, strata.ple.scale (the F32 table scale). Every chunk is decoded back as the engine
+decodes it and must give the quantizer's floats bit for bit, so the native table and the Q8_0 emulation hold the same 3-bit values.
+It also writes <out>.ref.bin, about 4096 of its rows with those floats (int32 n, uint32 rows[n], float32 values[n][160]; rows
+numbered in the output table): the reference src/kernels/ple_fp8_parity.cpp checks the engine's reads against
+(PLE_EXPECT_FORMAT=C4|C3|C2s).
 """
 import argparse
 import json
@@ -30,7 +39,7 @@ from gguf_reader import GGUFFile  # noqa: E402
 
 TENSOR = "per_layer_token_embd.weight"
 DIM, IQ_RB, Q8_RB = 160, 90, 170          # PLE_HEAD_DIM, IQ4_NL row bytes, Q8_0 row bytes (ngram.hpp:52,55)
-GGML_Q8_0 = 8
+GGML_Q8_0, GGML_I8 = 8, 24
 ALIGN = 32
 KV_IQ4NL = np.array([-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113], np.float32)  # ngram.cpp:134
 E4M3_MAX = 448.0
@@ -87,6 +96,23 @@ def e4m3_round(x):
     return np.copysign(q, x).astype(np.float32)
 
 
+# E4M3FN bytes 0..126 as values (0x7F is NaN): increasing, so a value's byte is its index
+E4M3_POS = np.array([np.ldexp(np.float32(m), -9) if e == 0 else np.ldexp(np.float32(8 + m), e - 10)
+                     for e in range(16) for m in range(8)][:127], np.float32)
+
+
+def e4m3_bytes(x):
+    """float32 -> the E4M3FN byte of e4m3_round(x), sign bit included (also for -0)."""
+    q = e4m3_round(x)
+    return (np.searchsorted(E4M3_POS, np.abs(q)) | (np.signbit(q).astype(np.int64) << 7)).astype(np.uint8)
+
+
+def e4m3_value(b):
+    """E4M3FN bytes -> float32, as the engine reads them (ple_e4m3; the NaN bytes read as 0)."""
+    v = np.append(E4M3_POS, np.float32(0))[b & 127]
+    return np.where(b & 128, -v, v).astype(np.float32)
+
+
 def quantize(Z, grid, bs, scale_kind, table_scale, ntry):
     """Z (n, 160) float32 -> (dequantized (n, 160) float32, codes (n, 160) uint8, scales (n, 160/bs) float32, n_saturated).
     scale_kind: "f16", "e4m3" (E4M3 x table_scale) or "f32" (unrounded, used to size the table scale)."""
@@ -119,6 +145,29 @@ def quantize(Z, grid, bs, scale_kind, table_scale, ntry):
         sat = int((np.abs(best_s) / table_scale > E4M3_MAX * 0.999).sum())
     deq = (best_s[:, :, None] * g[best_c]).reshape(n, DIM).astype(np.float32)
     return deq, best_c.reshape(n, DIM).astype(np.uint8), best_s, sat
+
+
+def pack_native(codes, scales, cb):
+    """quantize()'s codes (n, 160) and scales (n, 160/block) -> (n, row_bytes) uint8, the engine's row (ple_lowbit.hpp)."""
+    n = codes.shape[0]
+    w = np.bitwise_or.reduce(codes.reshape(n, 20, 8).astype(np.uint32) << (3 * np.arange(8, dtype=np.uint32)), axis=2)
+    out = [(w[:, :, None] >> np.array([0, 8, 16], np.uint32) & 255).astype(np.uint8).reshape(n, CODE_BYTES)]
+    if cb["scale"] == "f16":
+        out.append(scales.astype("<f2").view(np.uint8).reshape(n, 2))
+    else:   # the scales are e4m3 x T, so e4m3_round(scale / T) is that e4m3 again (the decode check in _work proves it)
+        out.append(e4m3_bytes(scales / np.float32(cb["table_scale"])))
+    return np.concatenate(out, axis=1)
+
+
+def native_dequant(rows, cb):
+    """The engine's decode of pack_native's rows (ple_lowbit_dequant_row): value j = s[j // block] * grid[code j] in float32."""
+    n, bs = rows.shape[0], cb["block"]
+    b = rows[:, :CODE_BYTES].reshape(n, 20, 3).astype(np.uint32)
+    w = b[:, :, 0] | b[:, :, 1] << 8 | b[:, :, 2] << 16
+    codes = (w[:, :, None] >> (3 * np.arange(8, dtype=np.uint32)) & 7).reshape(n, DIM)
+    sc = np.ascontiguousarray(rows[:, CODE_BYTES:])
+    s = sc.view("<f2").astype(np.float32) if cb["scale"] == "f16" else e4m3_value(sc) * np.float32(cb["table_scale"])
+    return (s[:, :, None] * np.array(cb["grid"], np.float32)[codes].reshape(n, -1, bs)).reshape(n, DIM)
 
 
 def lloyd(x, k, iters=30):
@@ -174,20 +223,30 @@ def fit_codebook(src, fmt, seed, ntry, n_chunks=256, chunk=256, n_values=2_000_0
 _G = {}
 
 
-def _init(src_path, cb):
+def _init(src_path, cb, native=False, lo=0, ref_stride=1):
     _G["src"], _G["cb"], _G["f"] = Source(src_path), cb, open(src_path, "rb")
     _G["grid"] = np.array(cb["grid"], np.float32)
+    _G["native"], _G["lo"], _G["ref_stride"] = native, lo, ref_stride
 
 
 def _work(span):
     a, b = span
     src, cb = _G["src"], _G["cb"]
     X = iq4nl_decode(src.read(_G["f"], a, b))
-    Y, _, _, sat = quantize(X, _G["grid"], cb["block"], cb["scale"], np.float32(cb["table_scale"]), cb["ntry"])
-    q8 = q8_0_encode(Y)
-    Y8 = q8_0_decode(q8)
+    Y, codes, scales, sat = quantize(X, _G["grid"], cb["block"], cb["scale"], np.float32(cb["table_scale"]), cb["ntry"])
+    ref = None
+    if _G["native"]:
+        out = pack_native(codes, scales, cb)
+        Y8 = native_dequant(out, cb)
+        if not np.array_equal(Y8.view(np.uint32), Y.view(np.uint32)):
+            raise RuntimeError("rows %d:%d: the packed rows do not decode to the quantizer's values" % (a, b))
+        i = np.arange((_G["lo"] - a) % _G["ref_stride"], b - a, _G["ref_stride"])
+        ref = (a + i, Y[i])
+    else:
+        out = q8_0_encode(Y)
+        Y8 = q8_0_decode(out)
     X64, Y64, Y864 = X.astype(np.float64), Y.astype(np.float64), Y8.astype(np.float64)
-    return a, q8.tobytes(), ((X64 ** 2).sum(), ((Y64 - X64) ** 2).sum(), ((Y864 - X64) ** 2).sum(), ((Y864 - Y64) ** 2).sum()), sat
+    return a, out.tobytes(), ((X64 ** 2).sum(), ((Y64 - X64) ** 2).sum(), ((Y864 - X64) ** 2).sum(), ((Y864 - Y64) ** 2).sum()), sat, ref
 
 
 def gguf_str(s):
@@ -195,10 +254,18 @@ def gguf_str(s):
     return struct.pack("<Q", len(b)) + b
 
 
-def gguf_header(rows, kv):
-    kvs = b"".join(gguf_str(k) + struct.pack("<I", 8) + gguf_str(v) for k, v in kv.items())
+def gguf_kv(k, v):
+    if isinstance(v, str):
+        return gguf_str(k) + struct.pack("<I", 8) + gguf_str(v)
+    if isinstance(v, float):
+        return gguf_str(k) + struct.pack("<If", 6, v)                                            # FLOAT32
+    return gguf_str(k) + struct.pack("<IIQ", 9, 6, len(v)) + struct.pack("<%df" % len(v), *v)   # ARRAY of FLOAT32
+
+
+def gguf_header(rows, kv, ggml_type=GGML_Q8_0, ne0=DIM):
+    kvs = b"".join(gguf_kv(k, v) for k, v in kv.items())
     head = b"GGUF" + struct.pack("<IQQ", 3, 1, len(kv)) + kvs
-    head += gguf_str(TENSOR) + struct.pack("<I", 2) + struct.pack("<QQ", DIM, rows) + struct.pack("<IQ", GGML_Q8_0, 0)
+    head += gguf_str(TENSOR) + struct.pack("<I", 2) + struct.pack("<QQ", ne0, rows) + struct.pack("<IQ", ggml_type, 0)
     return head + b"\0" * ((-len(head)) % ALIGN)
 
 
@@ -214,6 +281,7 @@ def main():
     ap.add_argument("--chunk-rows", type=int, default=8192)
     ap.add_argument("--workers", type=int, default=1)
     ap.add_argument("--idle-priority", action="store_true", help="Windows: run at idle priority")
+    ap.add_argument("--native", action="store_true", help="write the packed 3-bit table the engine reads, not the Q8_0 emulation")
     a = ap.parse_args()
     if a.idle_priority and sys.platform == "win32":
         import ctypes
@@ -241,26 +309,40 @@ def main():
     print("  grid:", " ".join("%.5f" % v for v in cb["grid"]), flush=True)
 
     spans = [(s, min(s + a.chunk_rows, hi)) for s in range(lo, hi, a.chunk_rows)]
-    kv = {"general.architecture": "strata-ple",
-          "general.name": "PLE n-gram table emulating %s (3-bit dequantized values stored as Q8_0)" % a.format,
-          "strata.ple.emulated_format": a.format, "strata.ple.emulated_from": pathlib.Path(a.src).name,
-          "strata.ple.emulated_rows": "%d:%d" % (lo, hi)}
+    out_rb = row_bytes(a.format) if a.native else Q8_RB
+    if a.native:
+        kv = {"general.architecture": "strata-ple",
+              "general.name": "PLE n-gram table, 3-bit %s (%d B a row)" % (a.format, out_rb),
+              "strata.ple.format": a.format, "strata.ple.codebook": [float(v) for v in np.float32(cb["grid"])],
+              "strata.ple.source": pathlib.Path(a.src).name, "strata.ple.rows": "%d:%d" % (lo, hi)}
+        if cb["scale"] == "e4m3":
+            kv["strata.ple.scale"] = float(np.float32(cb["table_scale"]))
+        head = gguf_header(hi - lo, kv, GGML_I8, out_rb)
+    else:
+        kv = {"general.architecture": "strata-ple",
+              "general.name": "PLE n-gram table emulating %s (3-bit dequantized values stored as Q8_0)" % a.format,
+              "strata.ple.emulated_format": a.format, "strata.ple.emulated_from": pathlib.Path(a.src).name,
+              "strata.ple.emulated_rows": "%d:%d" % (lo, hi)}
+        head = gguf_header(hi - lo, kv)
+    ref_stride = max(1, (hi - lo) // 4096)
     tmp = out.with_name(out.name + ".part")
-    tot, sat, done, t1 = np.zeros(4), 0, 0, time.time()
+    tot, sat, done, t1, refs = np.zeros(4), 0, 0, time.time(), []
     if a.workers > 1:
         import multiprocessing as mp
-        pool = mp.get_context("spawn").Pool(a.workers, _init, (a.src, cb))
+        pool = mp.get_context("spawn").Pool(a.workers, _init, (a.src, cb, a.native, lo, ref_stride))
         results = pool.imap(_work, spans)
     else:
-        _init(a.src, cb)
+        _init(a.src, cb, a.native, lo, ref_stride)
         pool, results = None, map(_work, spans)
     with open(tmp, "wb") as w:
-        w.write(gguf_header(hi - lo, kv))
-        for i, (s, buf, sums, sx) in enumerate(results):
+        w.write(head)
+        for i, (s, buf, sums, sx, ref) in enumerate(results):
             w.write(buf)
             tot += sums
             sat += sx
-            done += len(buf) // Q8_RB
+            done += len(buf) // out_rb
+            if ref is not None:
+                refs.append(ref)
             if i % 50 == 49 or i == len(spans) - 1:
                 el = time.time() - t1
                 print("  %d/%d rows, %.0f rows/s, eta %.0f s, running NMSE %.5f" %
@@ -268,15 +350,26 @@ def main():
     if pool:
         pool.close()
         pool.join()
-    if tmp.stat().st_size != len(gguf_header(hi - lo, kv)) + (hi - lo) * Q8_RB:
+    if tmp.stat().st_size != len(head) + (hi - lo) * out_rb:
         sys.exit("size check failed on " + str(tmp))
     tmp.replace(out)
     n = hi - lo
-    print("format %s rows %d:%d (%d rows), %d B/row in %s, written as Q8_0 (%d B/row): %s" %
-          (a.format, lo, hi, n, row_bytes(a.format), "its own layout", Q8_RB, out))
-    print("NMSE vs IQ4_NL values (3-bit dequantized)      : %.5f" % (tot[1] / tot[0]))
-    print("NMSE vs IQ4_NL values (after Q8_0 rounding)    : %.5f" % (tot[2] / tot[0]))
-    print("  Q8_0's own rounding, relative to the values   : %.2e" % (tot[3] / tot[0]))
+    if a.native:
+        rows = np.concatenate([r for r, _ in refs])
+        m = len(rows) // 16 * 16 or len(rows)   # ple_fp8_parity gathers them 16 rows (one token) at a time
+        ref_path = out.with_name(out.name + ".ref.bin")
+        ref_path.write_bytes(struct.pack("<i", m) + (rows[:m] - lo).astype("<u4").tobytes() +
+                             np.concatenate([v for _, v in refs])[:m].astype("<f4").tobytes())
+        print("format %s rows %d:%d (%d rows), written packed, %d B/row (I8, strata.ple.format = %s): %s" %
+              (a.format, lo, hi, n, out_rb, a.format, out))
+        print("NMSE vs IQ4_NL values (3-bit, as stored)       : %.5f" % (tot[1] / tot[0]))
+        print("%d rows and their values for ple_fp8_parity: %s" % (m, ref_path))
+    else:
+        print("format %s rows %d:%d (%d rows), %d B/row in %s, written as Q8_0 (%d B/row): %s" %
+              (a.format, lo, hi, n, row_bytes(a.format), "its own layout", Q8_RB, out))
+        print("NMSE vs IQ4_NL values (3-bit dequantized)      : %.5f" % (tot[1] / tot[0]))
+        print("NMSE vs IQ4_NL values (after Q8_0 rounding)    : %.5f" % (tot[2] / tot[0]))
+        print("  Q8_0's own rounding, relative to the values   : %.2e" % (tot[3] / tot[0]))
     if cb["scale"] == "e4m3":
         print("E4M3 block scales saturated at 448: %d of %d" % (sat, n * DIM // cb["block"]))
     print("%.1f s total (%.0f rows/s)" % (time.time() - t0, n / (time.time() - t1)))
