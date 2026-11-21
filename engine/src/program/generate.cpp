@@ -247,6 +247,13 @@ static void df2_tap_dump(const float* dev, int64_t rows, int64_t pos0, int64_t f
     }
 }
 
+#if defined(STRATA_HYBRID)
+extern "C" int strata_hybrid_device_count();
+extern "C" int strata_hybrid_hip_overflow();
+extern "C" int strata_hybrid_is_hip_device(int ordinal);
+extern "C" const char* strata_hybrid_arch(int ordinal);
+#endif
+
 // logprobs=K / allowed=...: one `LP` line for the token just emitted, from `ver`'s head
 // logits for the window row it came from (before sampling, penalties and temperature).
 // Format matches the SYCL port's LP line so one server-side reader serves both.
@@ -1103,6 +1110,10 @@ struct Options {
     std::string conversation_spill_dir;
     int64_t conversation_spill_mib = -1;
     bool session_save_reclaim = false;
+    /// --session-save-append: save session files in the v3 append-log format and APPEND a generation onto an
+    /// existing file when its checkpoint chain validates and the session's immutability watermark proves the
+    /// region the file already committed is untouched (else a full v3 rewrite; opt-in)
+    bool session_save_append = false;
     /// --serve: also keep a checkpoint every N freshly read prompt tokens (0 = only at the last turn boundary)
     int64_t prompt_cache_every = 16384;
     bool prompt_cache_tail = false;   // optional extra checkpoint at an existing near-tail chunk boundary
@@ -1291,7 +1302,10 @@ void usage() {
                  "                       did not send back), skip parking it (default 0 = park; the suffix is re-read only\n"
                  "                       if that branch is revisited)\n"
                  "  --session-min-free-mib N  --serve: disk space a SAVE must leave free (default 4096; 0 = no check)\n"
-                 "  --session-save-reclaim  --serve: reclaim unpinned host caches if SAVE needs RAM (opt-in)\n"
+                 "  --session-save-reclaim  --serve: reclaim unpinned host caches if SAVE or RESTORE needs RAM (opt-in)\n"
+                 "  --session-save-append  --serve (opt-in): session files in the append-log format; a SAVE adds one\n"
+                 "                       generation to the existing file when its checkpoint chain and the session's\n"
+                 "                       write watermark allow it, instead of rewriting the whole file\n"
                  "  --vram-elastic       --serve (#533, opt-in, NVIDIA): the expert cache in segments (--vram-segment-mib,\n"
                  "                       default 512), so the command `VRAM <reserve_mib>` (the server's POST /v1/vram) can\n"
                  "                       give VRAM back to other programs between requests and take it back later\n"
@@ -2782,6 +2796,22 @@ static bool pcie_auto_split_ok() {
     return on;
 }
 
+#if defined(STRATA_HYBRID)
+// The CUDA host's device properties leave gcnArchName empty on a HIP ordinal,
+// so the gfx12 checks read the name the HIP runtime reported.
+static bool hybrid_hip_device() {
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess) return false;
+    return strata_hybrid_is_hip_device(dev) != 0;
+}
+static const char* hybrid_gcn_arch() {
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess || !strata_hybrid_is_hip_device(dev)) return "";
+    const char* arch = strata_hybrid_arch(dev);
+    return arch != nullptr ? arch : "";
+}
+#endif
+
 // 0.1.43: the HIP defaults of the decode speed push (route tail skip, measured PCIe share) were measured on gfx1201 (Radeon AI PRO
 // R9700) and apply on gfx1200 / gfx1201 only; every other AMD part (gfx11, gfx906, ...) keeps its earlier behaviour.  CUDA: always true.
 [[maybe_unused]] static bool decode_defaults_arch_ok() {
@@ -2790,6 +2820,9 @@ static bool pcie_auto_split_ok() {
     cudaDeviceProp p{};
     return cudaGetDevice(&dev) == cudaSuccess && cudaGetDeviceProperties(&p, dev) == cudaSuccess &&
            strata::kernels::gfx_arch_is_gfx12_wmma(p.gcnArchName);
+#elif defined(STRATA_HYBRID)
+    // An NVIDIA primary keeps the CUDA default. A HIP primary matches pure HIP.
+    return !hybrid_hip_device() || strata::kernels::gfx_arch_is_gfx12_wmma(hybrid_gcn_arch());
 #else
     return true;
 #endif
@@ -2800,6 +2833,8 @@ static bool pcie_auto_split_ok() {
 [[maybe_unused]] static bool mtp_first_default_on() {
 #if defined(STRATA_USE_HIP)
     return decode_defaults_arch_ok();
+#elif defined(STRATA_HYBRID)
+    return hybrid_hip_device() && decode_defaults_arch_ok();
 #else
     return false;
 #endif
@@ -2839,6 +2874,10 @@ static bool pcie_auto_split_ok() {
         return strata::pcie_auto_hip_default(arch, spill_discrete_gpu(), strata::qwen_defaults_026(), std::getenv("STRATA_PCIE_FRAC_DEFAULT"));
     }();
     return on;
+#elif defined(STRATA_HYBRID)
+    // An NVIDIA primary keeps the CUDA default.  A HIP primary matches pure HIP, on its own arch name.
+    if (!hybrid_hip_device()) return false;
+    return strata::pcie_auto_hip_default(hybrid_gcn_arch(), spill_discrete_gpu(), strata::qwen_defaults_026(), std::getenv("STRATA_PCIE_FRAC_DEFAULT"));
 #else
     return false;
 #endif
@@ -3403,7 +3442,7 @@ static double ple_direct_rows_per_s(strata::kernels::PleTable& t) {
     return el > 0 ? (double) done / el : -1.0;
 }
 
-#if defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
+#if (defined(STRATA_USE_HIP) || defined(STRATA_HYBRID)) && !defined(STRATA_HIP_GFX906)
 // The R9700 / RX 9000 "bimodal prompt speed" (0.2.0 known limit).  The runtime opens the process's hardware queues
 // lazily, as the first stream of each kind is used, and the kernel's scheduler (MES) puts a queue on one of the
 // card's compute pipes when the queue first gets work.  The loader threads reach their streams in a different order
@@ -3416,23 +3455,36 @@ static double ple_direct_rows_per_s(strata::kernels::PleTable& t) {
 //   decode 2 to 3.6% and two expert slots, four normal ones did not even fix the starts.
 //   STRATA_HIP_QUEUE_PRIME unset: gfx1200 / gfx1201 on Linux only, "nn" (not when GPU_MAX_HW_QUEUES is 1 or 2, #3480); "0": off; any other string is a spec
 //   ('n' = a stream at the default priority, 'h' = at the highest) for experiments on other cards.
+//   Hybrid (the opt-in CUDA+HIP build): the AMD scheduler's rule, so it primes only when the primary device is a HIP ordinal.
 static void prime_hw_queues() {
     const char* env = std::getenv("STRATA_HIP_QUEUE_PRIME");
     if (env != nullptr && std::strcmp(env, "0") == 0) return;
     const char* pv = std::getenv("STRATA_PRIMARY_DEVICE");
     const int dev = pv != nullptr && std::atoi(pv) > 0 ? std::atoi(pv) : 0;
+#if defined(STRATA_HYBRID)
+    // An NVIDIA primary keeps its CUDA path (the priming is the AMD MES scheduler's), and the ordinal space here is the
+    // combined one --gpu names: the wrapped cudaGetDeviceCount reports the CUDA cards only.
+    if (strata_hybrid_is_hip_device(dev) == 0) return;
+    if (dev >= strata_hybrid_device_count()) return;
+#else
     int n_dev = 0;
     if (cudaGetDeviceCount(&n_dev) != cudaSuccess || dev >= n_dev) { (void) cudaGetLastError(); return; }
+#endif
     const char* spec = env != nullptr && env[0] != 0 ? env : nullptr;
     if (spec == nullptr) {
 #if defined(_WIN32)
         return;
+#else
+#if defined(STRATA_HYBRID)
+        // The CUDA-side properties of a HIP ordinal carry no gcnArchName; read the name the HIP runtime reported.
+        if (!strata::kernels::gfx_arch_is_gfx12(strata_hybrid_arch(dev))) return;
 #else
         cudaDeviceProp prop{};
         if (cudaGetDeviceProperties(&prop, dev) != cudaSuccess || !strata::kernels::gfx_arch_is_gfx12(prop.gcnArchName)) {
             (void) cudaGetLastError();
             return;
         }
+#endif
         // #3480: with the runtime capped to two hardware queues (GPU_MAX_HW_QUEUES=1 or 2, the user's own setting) the two
         // primed queues are all of them: the high-priority draft stream and the side stream share them and a 4K prompt
         // reads 39% slower (RX 9060 XT, 681-753 against 1188-1238 tok/s).  Not primed then; a spec in
@@ -3446,16 +3498,30 @@ static void prime_hw_queues() {
         spec = "nn";
 #endif
     }
+#if defined(STRATA_HYBRID)
+    // Always set the device in a hybrid build: the wrapped calls below then reach the HIP runtime for this HIP ordinal.
+    if (cudaSetDevice(dev) != cudaSuccess) { (void) cudaGetLastError(); return; }
+#else
     if (dev != 0 && cudaSetDevice(dev) != cudaSuccess) { (void) cudaGetLastError(); return; }
+#endif
     void* buf = nullptr;
     if (cudaMalloc(&buf, 256) != cudaSuccess) { (void) cudaGetLastError(); return; }
     int lo = 0, hi = 0;
+#if defined(STRATA_HYBRID)
+    const bool have_prio = cudaDeviceGetStreamPriorityRange(&lo, &hi) == cudaSuccess;   // wrapped: reaches the HIP runtime
+#else
     const bool have_prio = hipDeviceGetStreamPriorityRange(&lo, &hi) == hipSuccess;
+#endif
     std::vector<cudaStream_t> ss;
     for (const char* c = spec; *c != 0; ++c) {
         cudaStream_t s = nullptr;
+#if defined(STRATA_HYBRID)
+        const bool ok = (*c == 'h' && have_prio) ? cudaStreamCreateWithPriority(&s, cudaStreamNonBlocking, hi) == cudaSuccess
+                                                  : cudaStreamCreateWithFlags(&s, cudaStreamNonBlocking) == cudaSuccess;
+#else
         const bool ok = (*c == 'h' && have_prio) ? hipStreamCreateWithPriority(&s, hipStreamNonBlocking, hi) == hipSuccess
-                                                 : cudaStreamCreateWithFlags(&s, cudaStreamNonBlocking) == cudaSuccess;
+                                                  : cudaStreamCreateWithFlags(&s, cudaStreamNonBlocking) == cudaSuccess;
+#endif
         if (!ok) continue;
         cudaMemsetAsync(buf, 0, 256, s);
         cudaStreamSynchronize(s);
@@ -3636,6 +3702,13 @@ int main(int argc, char** argv) {
             std::printf("strata %s\n", STRATA_VERSION);
             return 0;
         }
+#if defined(STRATA_HYBRID)
+        // Runs the fused-expert host on device 0 and on the HIP ordinal, then exits.
+        if (std::strcmp(argv[i], "--hip-probe") == 0) {
+            extern int strata_hip_probe();
+            return strata_hip_probe();
+        }
+#endif
         // `strata --families`: the GGUF architectures this build runs (setup asks before it installs one)
         if (std::strcmp(argv[i], "--families") == 0) {
 #if defined(STRATA_HAVE_QWEN35)
@@ -3753,8 +3826,8 @@ int main(int argc, char** argv) {
         break;
     }
 #endif
-#if defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
-    prime_hw_queues();
+#if (defined(STRATA_USE_HIP) || defined(STRATA_HYBRID)) && !defined(STRATA_HIP_GFX906)
+    prime_hw_queues();   // the function itself stands aside unless a hybrid primary is a HIP ordinal
 #endif
     Options o;
     bool have_tokens = false;
@@ -3990,6 +4063,7 @@ int main(int argc, char** argv) {
         else if (a == "--serve") { o.serve = true; strata::core::set_serve_error_line(true); }   // #6054: a check that fails ends at once, with an ERR line
         else if (a == "--vision") o.vision = true;
         else if (a == "--session-save-reclaim") o.session_save_reclaim = true;
+        else if (a == "--session-save-append") o.session_save_append = true;
         else if (a == "--prompt-cache") o.prompt_cache = std::max(0, std::atoi(next("--prompt-cache")));
         else if (a == "--conversation-cache-mib" || a == "--conversation-cache-slots" ||
                  a == "--conversation-cache-min-free-mib" || a == "--conversation-cache-min-tokens" ||
@@ -4314,6 +4388,41 @@ int main(int argc, char** argv) {
                              "on Windows HIP (RX 7900 XTX: the commit charge jumped ~70 GB, exit code 0xC0000409, "
                              "#1630); 7500 and below were stable. Kept as asked; a bare --prefill auto stops at %lld\n",
                      o.prefill_cap_warn.c_str(), (long long) strata::platform::host_limits::kWinHipAutoChunkCap);
+
+#if defined(STRATA_HYBRID)
+    // Device 0 is the card this block sees, as on a pure HIP build. A hybrid
+    // property read does not carry gcnArchName.
+    if (strata_hybrid_is_hip_device(0)) {
+        cudaDeviceProp ad{};
+        if (cudaGetDeviceProperties(&ad, 0) == cudaSuccess) {
+            const char* arch = strata_hybrid_arch(0);
+            if (arch == nullptr) arch = "";
+            bool all_igpu = ad.integrated != 0;
+            const int ndev = strata_hybrid_device_count();
+            if (all_igpu && ndev > 1) {
+                for (int d = 1; d < ndev && d < 64; ++d) {
+                    const char* oa = strata_hybrid_is_hip_device(d) ? strata_hybrid_arch(d) : "";
+                    if (oa == nullptr) oa = "";
+                    cudaDeviceProp od{};
+                    if (!strata_hybrid_is_hip_device(d) || cudaGetDeviceProperties(&od, d) != cudaSuccess ||
+                        od.integrated == 0 || std::strncmp(oa, arch, 7) != 0) {
+                        all_igpu = false;
+                        (void) cudaGetLastError();
+                        break;
+                    }
+                }
+            }
+            strata::core::apply_arch_defaults(arch, all_igpu);
+#if defined(_WIN32)
+            const bool win_host = true;
+#else
+            const bool win_host = false;
+#endif
+            if (strata::core::igpu_uma_arena_default(arch, all_igpu, win_host))
+                strata::core::arena_uma_no_register_flag().store(true);
+        } else (void) cudaGetLastError();
+    }
+#endif
 #if !defined(STRATA_USE_HIP) && !defined(STRATA_GPU_METAL)
     // the start-up line about K-quant experts: the default is set here (before any engine code reads its switches), the line is printed once the expert layout is
     // loaded and only when the loaded set has K-quant experts (strata::core::nv_kq_line_wanted), so a model without them says nothing untrue
@@ -4418,6 +4527,20 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: gfx12: --prefill auto may take chunks up to %lld (STRATA_GFX12_CHUNK=16 keeps 16384, =0 keeps 8192)\n", (long long) top);
         }
         (void) cudaGetLastError();
+    }
+#endif
+#if defined(STRATA_HYBRID) && !defined(_WIN32)
+    if (o.prefill_auto_bare && o.prefill_auto_cap == 0 && strata_hybrid_is_hip_device(0)) {
+        const char* c0 = std::getenv("STRATA_GFX12_CHUNK");
+        const char* d0 = std::getenv("STRATA_GFX12_DEFAULTS");
+        const char* arch = strata_hybrid_arch(0);
+        if (!(c0 != nullptr && c0[0] == '0') && !(d0 != nullptr && d0[0] == '0') &&
+            strata::kernels::gfx_arch_is_gfx12(arch)) {
+            o.prefill_auto_max = 16384;
+            o.prefill_chunk = 16384;
+            o.prefill_gfx12_16k = true;
+            std::fprintf(stderr, "strata generate: gfx12: --prefill auto may take chunks up to 16384 (STRATA_GFX12_CHUNK=0 keeps 8192)\n");
+        }
     }
 #endif
 #if defined(STRATA_HIP_GFX906)
@@ -4597,6 +4720,21 @@ int main(int argc, char** argv) {
         return n > 0 ? n : 0;
     }();
     strata::core::set_primary_device(primary_device);
+    const auto visible_devices = [] {
+#if defined(STRATA_HYBRID)
+        if (const int extra = strata_hybrid_hip_overflow(); extra > 8) return -extra;
+        const int n = strata_hybrid_device_count();
+        if (n < 0) return n;
+        return n > 0 ? n : 0;
+#else
+        int n = 0;
+        if (cudaGetDeviceCount(&n) != cudaSuccess || n < 0) {
+            cudaGetLastError();
+            return 0;
+        }
+        return n;
+#endif
+    };
     // parking with --layer-split saves every stage (SavedConversation::stage_images)
     // Layer split (multi-GPU): the later stages run layers [K_i, K_i+1) on their own GPUs (--split-device, default
     // the next visible ones); "auto" places the K from each GPU's free VRAM once the weights are in (below).  KV
@@ -4610,9 +4748,12 @@ int main(int argc, char** argv) {
     std::vector<int> split_devs;
     bool split_auto = false, split_same = false;
     if (!o.layer_split.empty()) {
-        int n_dev = 1;
-        if (cudaGetDeviceCount(&n_dev) != cudaSuccess || n_dev < 1) n_dev = 1;
-        cudaGetLastError();
+        int n_dev = visible_devices();
+        if (n_dev < 0) {
+            std::fprintf(stderr, "strata hybrid: %d HIP devices; this build supports 8\n", -n_dev);
+            return 2;
+        }
+        if (n_dev < 1) n_dev = 1;
         auto ints = [](const std::string& str, auto& out) -> bool {
             using V = typename std::decay_t<decltype(out)>::value_type;
             size_t a = 0;
@@ -4708,6 +4849,21 @@ int main(int argc, char** argv) {
     // the helper-GPU expert caches (--expert-cache-remote, docs/SECOND_GPU.md): CUDA1..3 on one GPU; with a layer
     // split, the visible GPUs no stage runs on, in order
     int remote_dev[3] = {1, 2, 3};
+#if defined(STRATA_HYBRID)
+    {
+        // Every visible device except the primary, CUDA and HIP. A HIP-only
+        // list drops a spare NVIDIA GPU, including on a CUDA-only machine.
+        const int n_vis = visible_devices();
+        if (n_vis < 0) {
+            std::fprintf(stderr, "strata hybrid: %d HIP devices; this build supports 8\n", -n_vis);
+            return 2;
+        }
+        int k = 0;
+        for (int d = 0; d < n_vis && k < 3; ++d)
+            if (d != primary_device) remote_dev[k++] = d;
+        for (; k < 3; ++k) remote_dev[k] = -1;
+    }
+#else
     if (primary_device != 0) {
         // STRATA_PRIMARY_DEVICE: the helpers are the visible devices except the primary, in order
         int n_vis = 1;
@@ -4718,6 +4874,7 @@ int main(int argc, char** argv) {
             if (d != primary_device) remote_dev[k++] = d;
         for (; k < 3; ++k) remote_dev[k] = -1;
     }
+#endif
     if (multi_gpu) {
         if (o.expert_profile.empty()) {
             std::fprintf(stderr, "strata generate: a layer split across GPUs needs --expert-profile\n");
@@ -4777,14 +4934,18 @@ int main(int argc, char** argv) {
                              why.c_str());
             }
         }
-        int n_vis = 1;
-        if (cudaGetDeviceCount(&n_vis) != cudaSuccess || n_vis < 1) n_vis = 1;
-        cudaGetLastError();
+        int n_vis = visible_devices();
+        if (n_vis < 0) {
+            std::fprintf(stderr, "strata hybrid: %d HIP devices; this build supports 8\n", -n_vis);
+            return 2;
+        }
+        if (n_vis < 1) n_vis = 1;
         int next_free = 1;
         for (int r = 0; r < 3; ++r) {
             if (o.expert_cache_remote[(size_t) r] <= 0) continue;
             while (next_free < n_vis &&
-                   std::find(split_devs.begin(), split_devs.end(), next_free) != split_devs.end()) ++next_free;
+                   std::find(split_devs.begin(), split_devs.end(), next_free) != split_devs.end())
+                ++next_free;
             if (next_free >= n_vis) {
                 std::fprintf(stderr, "strata generate: --expert-cache-remote with a layer split needs a GPU that runs no "
                                      "stage (%d visible, %zu used by the split)\n", n_vis, split_devs.size() + 1);
@@ -4797,7 +4958,7 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "strata generate: layer split across %zu GPUs: CUDA0, then CUDA%s (split %s)\n",
                      split_devs.size() + 1, devs.c_str(), o.layer_split.c_str());
     }
-#if defined(STRATA_USE_HIP)
+#if defined(STRATA_USE_HIP) || defined(STRATA_HYBRID)
     {
         // every GPU this run uses must be an architecture the binary has code for (a gfx1100 build on a gfx1201
         // card would otherwise fail later with "invalid device function")
@@ -5237,8 +5398,12 @@ int main(int argc, char** argv) {
     // arena all follow it).  Every other device switch in the engine saves and restores the current
     // device, so this single call is where the primary is picked.
     if (primary_device != 0) {
-        int n_vis = 0;
-        if (cudaGetDeviceCount(&n_vis) != cudaSuccess || primary_device >= n_vis) {
+        int n_vis = visible_devices();
+        if (n_vis < 0) {
+            std::fprintf(stderr, "strata hybrid: %d HIP devices; this build supports 8\n", -n_vis);
+            return 2;
+        }
+        if (primary_device >= n_vis) {
             cudaGetLastError();
             std::fprintf(stderr, "strata generate: STRATA_PRIMARY_DEVICE=%d: no such visible device (%d visible)\n",
                          primary_device, n_vis);
@@ -5327,7 +5492,10 @@ int main(int argc, char** argv) {
         // STRATA_PCIE_FRAC_DEFAULT=old keep the x16 share measured for them.
         const double base = strata::pcie_start_frac(nvfp4_pack, native_pack, pcie_share_gfx12_default(), pf_old, strata::qwen_defaults_026());
         std::string bursts;
-#if !defined(STRATA_USE_HIP) && defined(_WIN32)
+#if defined(STRATA_HYBRID)
+        // A HIP primary matches pure HIP: the canonical pack is not probed and does not refine.
+        const bool pf_old_canon = pf_old || hybrid_hip_device();
+#elif !defined(STRATA_USE_HIP) && defined(_WIN32)
         // Windows: opt-in (STRATA_PCIE_AUTO_CANON=1); an RTX 5070 decoded a short Q2_0 answer 3% slower with it, code 2.5% faster
         const char* pac = std::getenv("STRATA_PCIE_AUTO_CANON");
         const bool pf_old_canon = pf_old || !(pac != nullptr && pac[0] == '1');
@@ -5343,11 +5511,17 @@ int main(int argc, char** argv) {
             o.pcie_frac = base;
         } else if (!native_pack) {
             o.pcie_frac = base;
+#if !defined(STRATA_USE_HIP)
+            // Pure HIP leaves this off. A hybrid HIP primary does too, and must not say the share will refine.
+#if defined(STRATA_HYBRID)
+            if (!hybrid_hip_device())
+#endif
+            {
             std::fprintf(stderr, "strata generate: PCIe probe: %.1f GB/s host->device (best of %s); the canonical pack "
                                  "starts at pcie_frac %.2f and refines it from the CPU pool's speed\n", bw, bursts.c_str(), base);
-#if !defined(STRATA_USE_HIP)
             o.pcie_frac_auto = o.layer_split.empty();
             o.pcie_probe_gbps = bw;
+            }
 #endif
         } else if (bw > 0.0) {
             o.pcie_frac = pcie_frac_for_gbps(bw, base);
@@ -6340,6 +6514,8 @@ int main(int argc, char** argv) {
         bool on = o.serve && multi_gpu && !split_same && split_devs.size() + 1 >= min_st && !(ae != nullptr && std::atoi(ae) == 0);
 #if defined(STRATA_USE_HIP)
         on = on && decode_defaults_arch_ok();
+#elif defined(STRATA_HYBRID)
+        on = hybrid_hip_device() && on && decode_defaults_arch_ok();
 #else
         on = false;
 #endif
@@ -7992,6 +8168,10 @@ int main(int argc, char** argv) {
                     if (cudaGetDeviceProperties(&dp, df2.device()) == cudaSuccess) {
 #if defined(STRATA_USE_HIP)
                         const bool uma = strata::kernels::gfx_arch_is_gfx1151(dp.gcnArchName);
+#elif defined(STRATA_HYBRID)
+                        // The CUDA-side properties of a HIP ordinal carry no gcnArchName; ask the HIP runtime for the name.
+                        const bool uma = strata_hybrid_is_hip_device(0) != 0 &&
+                                         strata::kernels::gfx_arch_is_gfx1151(strata_hybrid_arch(0));
 #else
                         const bool uma = false;
 #endif
@@ -8014,7 +8194,11 @@ int main(int argc, char** argv) {
                             o.spec = cap;
                         }
 #if !defined(STRATA_USE_HIP)
-                        if (o.draft_cap == 0 && strata::core::dflash2_small_nvidia(true, dp.totalGlobalMem))
+                        bool small_nvidia = strata::core::dflash2_small_nvidia(true, dp.totalGlobalMem);
+#if defined(STRATA_HYBRID)
+                        if (strata_hybrid_is_hip_device(0) != 0) small_nvidia = false;   // an AMD card in a hybrid build is not an NVIDIA card
+#endif
+                        if (o.draft_cap == 0 && small_nvidia)
                             std::fprintf(stderr, "strata generate: --draft dflash2: on a 12 GB NVIDIA card the MTP drafter was faster in most measurements "
                                                  "(code prompts at a window of 6 gained 3%%); continuing as asked\n");
 #endif
@@ -8267,6 +8451,13 @@ int main(int argc, char** argv) {
         }
 #endif
 #else
+#if defined(STRATA_HYBRID)
+        if (named && strata_hybrid_is_hip_device(dev)) {
+            const char* arch = strata_hybrid_arch(dev);
+            std::fprintf(stderr, "strata generate: GPU %d: %s (%s)\n", dev, name, arch && arch[0] ? arch : "?");
+        } else
+#endif
+        {
         std::fprintf(stderr, "strata generate: GPU %d: %s, compute capability %d.%d%s\n", dev, name,
                      strata::cc_major_of(p.major), strata::cc_minor_of(p.minor),
                      strata::emulated_cc() ? " (STRATA_EMULATE_CC: a test mode, the card is emulated)" : "");
@@ -8282,12 +8473,18 @@ int main(int argc, char** argv) {
                              CUDART_VERSION / 1000, CUDART_VERSION % 1000 / 10, rt / 1000, rt % 1000 / 10);
         }
 #endif
+        }
 #endif
+#if defined(STRATA_HYBRID)
+        if (!(named && strata_hybrid_is_hip_device(dev)))
+#endif
+        {
         const std::string e = strata::core::device_code_error();
         if (!e.empty()) {
             std::fprintf(stderr, "strata generate: this engine has no code for %s (sm_%d%d): %s - rebuild it for this "
                                  "card (setup does: START-HERE.bat --setup)\n", name, p.major, p.minor, e.c_str());
             return 1;
+        }
         }
     }
     strata::core::ArenaExpertSource arena_src;
@@ -8751,7 +8948,7 @@ int main(int argc, char** argv) {
             (void) cudaGetLastError();
             free_b = strata::core::device_free_bytes();
         }
-#if defined(STRATA_USE_HIP) && !defined(_WIN32)
+#if (defined(STRATA_USE_HIP) || defined(STRATA_HYBRID)) && !defined(_WIN32)
         {   // An integrated GPU's "free VRAM" is system RAM (the BIOS carve-out plus the GTT pool, nearly all of the RAM when the kernel was told
             // ttm.pages_limit), and the cache copies experts into that same RAM on top of the arena: sized from the pool alone it can ask for
             // more than the OS has left, and the OOM killer takes the engine or the desktop.  So the AUTO size counts that RAM once: the
@@ -8854,7 +9051,7 @@ int main(int argc, char** argv) {
                              "draft head%s) -> %d slots\n",
                      (double) free_b / 1073741824.0, o.vram_reserve_mib, (long long) (mtp_bind >> 20),
                      auto_slots.late_priced ? ", +256 MiB for what is allocated after the cache" : "", o.expert_cache);
-#if defined(STRATA_USE_HIP) && !defined(_WIN32)
+#if (defined(STRATA_USE_HIP) || defined(STRATA_HYBRID)) && !defined(_WIN32)
         // An APU's "VRAM" is system RAM: the device-free figure above counts the whole GPU-addressable pool and does not
         // subtract ordinary CPU allocations (the host expert arena), so a cache sized from it alone can ask the OOM killer
         // for nearly all RAM (PR #895). A warning, not a cap: the cache stays as asked, and --expert-cache N chooses.
@@ -9165,6 +9362,8 @@ int main(int argc, char** argv) {
                         : o.vram_segment_mib < 64 ? "--vram-segment-mib is below 64" : nullptr;
 #if defined(STRATA_USE_HIP)
         if (why == nullptr) why = "it is NVIDIA-only for now";
+#elif defined(STRATA_HYBRID)
+        if (why == nullptr && hybrid_hip_device()) why = "it is NVIDIA-only for now";
 #endif
         if (why != nullptr) {
             std::fprintf(stderr, "strata generate: --vram-elastic is off: %s\n", why);
@@ -11156,9 +11355,11 @@ int main(int argc, char** argv) {
             {
                 const int64_t c0 = (int64_t) ((xcache.slot_offset(kvg.lo) + G - 1) / G);
                 const int64_t c1 = (int64_t) (xcache.slot_offset(kvg.top) / G);
-                for (int64_t c = c0; c < c1; ++c)
+                int64_t churn_lo = -1;   // watermark M7 (kept defensive, R1 unproven): cells from the lowest
+                for (int64_t c = c0; c < c1; ++c)   // remapped chunk on may differ from what the last save committed
                     if (r.mapped(c))
-                        if (const strata::core::VmmChunk h = r.unmap(c)) kvg.spare.push_back(h);
+                        if (const strata::core::VmmChunk h = r.unmap(c)) { kvg.spare.push_back(h); if (churn_lo < 0) churn_lo = c; }
+                if (churn_lo >= 0) ss.mark_kv_dirty(churn_lo * (int64_t) G);
             }
             if (gave > 0 &&
                 cudaMemcpy(d_res, host_res.data(), host_res.size() * sizeof(int32_t), cudaMemcpyHostToDevice) != cudaSuccess) {
@@ -11204,6 +11405,9 @@ int main(int argc, char** argv) {
         const int64_t target = std::max<int64_t>(kvg.step, (want + kvg.step - 1) / kvg.step * kvg.step);
         if (kvg.cells < target + 2 * kvg.step || kvg.lo >= kvg.top) return true;
         strata::core::qsa_kv_elastic_shrink(target, [&](strata::core::VmmChunk h) { kvg.spare.push_back(h); });
+        // Watermark M6: this trim unmapped real chunks (the early return above proves it): cells from the
+        // trim target on are gone from the pools, so a save in between must not treat them as committed.
+        ss.mark_kv_dirty(target);
         kvg.cells = strata::core::qsa_kv_elastic_cells();
         strata::core::VmmRange& r = *xcache.vmm_range();
         const uint64_t G = strata::core::vmm_granularity();
@@ -11623,6 +11827,20 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: CPU expert residency: %s\n", err.c_str());
             return 1;
         }
+#if defined(STRATA_HYBRID)
+        if (resident_ok && src.apu_ready()) {
+            bool any = false;
+            for (int r = 0; r < 3; ++r) {
+                if (o.expert_cache_remote[(size_t) r] <= 0) continue;
+                if (!strata_hybrid_is_hip_device(remote_dev[r])) continue;
+                remote_experts[(size_t) r].use_pinned(&src);
+                any = true;
+            }
+            if (any)
+                std::fprintf(stderr,
+                             "strata generate: pinned experts are computed on the HIP helper before the CPU\n");
+        }
+#endif
         // #577: the unbuffered choice above was made before the RAM copy existed, from the budget asked for; now the
         // copy is built, decide again from the RAM it really holds and the expert bytes outside it (on a 96 GB PC
         // the file cache keeps those, and every refill after a prompt read the drive instead).  Windows and Linux: the
@@ -14341,7 +14559,15 @@ int main(int argc, char** argv) {
         // lower is neither copied nor computed; STRATA_ROUTE_TAIL_SKIP=7 turns it on (KL 0.0126 against exact routing, decode x1.24 to x1.29 on UD-Q4_K_XL, RTX
         // 5090; docs/DETAILS.md), 1 to 9 pick a rank.  An unset value is rank 0 (strata/core/tail_skip_default.hpp), so this start-up sets nothing.
         // Nothing to say when every expert is in VRAM.
-        if (strata::core::tail_skip_rank() > 0 && !all_experts_resident)
+        // With no helper, a missed tail is skipped even when its bytes are in a host copy.  With a helper
+        // (remote tiers), a file-tier miss is skipped; a row the helper holds, or one already in the host
+        // copy, is still computed.  A layer split is fine: each stage skips by itself.
+        if (strata::core::tail_skip_rank() > 0 && !all_experts_resident && drive.d.remote_count > 0)
+            std::fprintf(stderr, "strata serve: STRATA_ROUTE_TAIL_SKIP=%d is ON: a file-tier miss that every token of a verify window routes at rank %d or "
+                                 "lower is skipped. An expert a helper holds, or one already in the host copy, is still computed; "
+                                 "it is off when STRATA_ROUTE_TAIL_SKIP is not set or is 0\n",
+                         strata::core::tail_skip_rank(), strata::core::tail_skip_rank());
+        else if (strata::core::tail_skip_rank() > 0 && !all_experts_resident)
             std::fprintf(stderr, "strata serve: STRATA_ROUTE_TAIL_SKIP=%d is ON: a missed expert that every token of a verify window routes at rank %d or "
                                  "lower is skipped (answers differ slightly); it is off when STRATA_ROUTE_TAIL_SKIP is not set or is 0\n",
                          strata::core::tail_skip_rank(), strata::core::tail_skip_rank());
@@ -16274,6 +16500,14 @@ int main(int argc, char** argv) {
                     return false;
                 mtp.set_prompt_len(upto);
             }
+            // Watermark M5 (#4552): the slot's K/V replaced the main session's pools (and the stages' where the
+            // copy ran) - with the slot conversation's own rows, on the direct path as well as the checkpointed
+            // one.  Trusted up to the tokens that came back, not dirtied from 0: the returning request's next
+            // save is then an append, not a rewrite of everything the slot already held.
+            const int64_t slot_cells = strata::core::session_whole_cells(
+                upto, strata::kernels::qsa_real_shapes().page_size);
+            ss.mark_kv_dirty(slot_cells);
+            for (auto& st : stages) st->ss.mark_kv_dirty(slot_cells);
             return true;
         };
         auto stage_verifier = [&](int k) -> strata::core::Verifier& { return k == 0 ? ver : stages[(size_t) k - 1]->ver; };
@@ -17781,7 +18015,11 @@ int main(int argc, char** argv) {
                 strata::core::conversation_checkpoint_join(nullptr);
                 strata::core::conversation_park_join();   // (STRATA_PARK_ASYNC: the last park's K/V)
                 if (path.empty()) { refuse("missing path"); continue; }
-                if (!stages.empty() || multi_gpu) { refuse("session files do not support --layer-split"); continue; }
+                // Design 2026-10-24: a layer split IS a session-file host now.  The file records its
+                // stage table, and every stage's running state and K/V group are captured, validated
+                // and restored per stage (conversation_snapshot_sources_split et al.); a file from a
+                // different split (or a no-split runtime) is refused by the stage-table comparison,
+                // exactly as the single-session form refuses foreign geometry.
                 if (o.peer_device >= 1) { refuse("session files do not support --peer-device"); continue; }
                 if (o.batch > 0) { refuse("session files do not support --batch (parallel requests)"); continue; }
                 if (o.prompt_cache <= 0) { refuse("session files need --prompt-cache > 0"); continue; }
@@ -17803,31 +18041,59 @@ int main(int argc, char** argv) {
                     refuse(std::string("session identity: ") + e.what(), strata::core::SessionError::io);
                     continue;
                 }
+                // The carves a save/restore addresses: the main session, then every later stage's own
+                // session in park's order (the shape park's per-stage capture and restore use), and each carve's
+                // own device (main is the engine's primary device: 0 unless STRATA_PRIMARY_DEVICE
+                // moved it, which only a no-split engine can do; the batch-slot restore's convention).  The draft layer follows park's own
+                // rule (park_current_body's draft0/draft_of): an engine without --mtp has no draft group, and with
+                // one it sits in stage 0's group when there is no split or the drafter sits on the first card,
+                // else in the last stage's.
+                std::vector<strata::core::SessionState*> sessions{&ss};
+                for (const auto& st : stages) sessions.push_back(&st->ss);
+                std::vector<int> devices{strata::core::primary_device()};
+                for (const auto& st : stages) devices.push_back(st->dev);
+                std::vector<bool> draft_of(sessions.size(), false);
+                if (session_draft) draft_of[mtp_first || stages.empty() ? 0 : sessions.size() - 1] = true;
+                std::vector<const strata::core::SessionState*> carves(sessions.begin(), sessions.end());
                 if (save) {
                     if (!live_ok || live.empty()) { refuse("no complete session to save"); continue; }
                     size_t bytes = 0, kept = 0;
                     double capture_ms = 0;
+                    bool appended = false;
                     try {
                         // RAM PREFLIGHT for the save (not a reservation), BEFORE anything is copied: the deepest
                         // checkpoint is chosen by reference, and the copies it will take (the list below and the one
                         // in `meta`), the copied live running state with its tokens and images, the K/V source
-                        // directory and the 16 MiB write buffer are asked for above the parking floor.  Only the
+                        // directory and the two 16 MiB write buffers (the pipelined FileSink) are asked for above
+                        // the parking floor.  Only the
                         // deepest checkpoint goes to disk (the next turn's resume point); the K/V is streamed from
                         // the authoritative pools straight into the file, without a full host capture.
                         strata::core::SessionSaveLive sl;
                         {
-                            strata::core::ConversationStateSizes z;
+                            std::vector<strata::core::ConversationStateSizes> zs;
                             std::string why;
                             uint64_t state = UINT64_MAX;   // unknown sizes: the preflight refuses rather than guesses
-                            if (strata::core::conversation_session_sizes(g, ss, z, why)) {
-                                const uint64_t q = (uint64_t) std::max<int64_t>(ss.qsa_alloc, 0);
-                                const uint64_t per = (uint64_t) z.tail + z.dead + z.block_pos;
-                                if (q == 0 || per <= (UINT64_MAX - z.gdn - z.ple) / q) state = z.gdn + z.ple + q * per;
+                            uint64_t layers = 0;
+                            if (strata::core::conversation_session_sizes_split(g, carves, zs, why)) {
+                                for (size_t k = 0; k < zs.size(); ++k)
+                                    layers += (uint64_t) std::max<int64_t>(carves[k]->qsa_alloc, 0) + (draft_of[k] ? 1 : 0);
+                                uint64_t total = 0;
+                                bool closed = true;
+                                for (size_t k = 0; closed && k < zs.size(); ++k) {
+                                    const auto& z = zs[k];
+                                    const uint64_t q = (uint64_t) std::max<int64_t>(carves[k]->qsa_alloc, 0);
+                                    const uint64_t per = (uint64_t) z.tail + z.dead + z.block_pos;
+                                    if (q != 0 && per > (UINT64_MAX - z.gdn - z.ple) / q) { closed = false; break; }
+                                    const uint64_t stage = z.gdn + z.ple + q * per;   // the same per-carve sum today's
+                                    if (total > UINT64_MAX - stage) closed = false;   // single session computes, added
+                                    else total += stage;                              // stage by stage
+                                }
+                                if (closed) state = total;
                             }
                             sl.state_bytes = state;
                             sl.tokens = live.size();
                             sl.images = live_imgs.size();
-                            sl.kv_layers = (uint64_t) std::max<int64_t>(ss.qsa_alloc, 0) + (session_draft ? 1 : 0);
+                            sl.kv_layers = layers;
                         }
                         const uint64_t floor = (uint64_t) o.conversation_cache_min_free_mib << 20;
                         pools_budget.shrink((size_t) -1);   // (the park pools' idle memory goes back before the RAM checks of a session save)
@@ -17866,8 +18132,8 @@ int main(int argc, char** argv) {
                         std::vector<strata::core::SessionKvSource> sources;
                         // the live running state comes off the device in one synchronous copy
                         blocking("capture", sl.state_bytes == UINT64_MAX ? 0 : sl.state_bytes);
-                        if (!strata::core::conversation_snapshot_sources(meta, sources, view, ss, g, session_draft,
-                                                                         err)) {
+                        if (!strata::core::conversation_snapshot_sources_split(meta, sources, view, carves, draft_of,
+                                                                               devices, session_draft, g, err)) {
                             refuse(err, strata::core::SessionError::io);
                             continue;
                         }
@@ -17877,10 +18143,64 @@ int main(int argc, char** argv) {
                         wo.progress = moving;
                         wo.phase = blocking;
                         strata::core::SessionStatus st;
-                        if (!strata::core::session_file_write(path, meta, sources, id, bytes, err, wo, &st)) {
+                        const int64_t save_page = strata::kernels::qsa_real_shapes().page_size;
+                        // --session-save-append: try one generation onto the existing file.  The gate (pure,
+                        // core-side) demands a validated checkpoint chain for this identity, live K/V geometry
+                        // that matches the file's (only growing), and the session's immutability watermark clear
+                        // of the committed boundary - every pool rewrite since the last save bumped it (M1-M9).
+                        // Metal (spike S2 R6): the window paths bypass the QsaState pools the watermark watches,
+                        // so the append path is off there entirely.
+                        bool append_wanted = o.session_save_append;
+#if defined(STRATA_GPU_METAL)
+                        append_wanted = false;
+#endif
+                        if (append_wanted) {
+                            wo.use_v3 = true;   // the full-rewrite fallback writes the append-log format too
+                            strata::core::SessionAppendPlan plan;
+                            std::string perr;
+                            // The gate walks the file with the very bounds this session could ever restore it
+                            // with (review finding M3): the framing plan obeys the runtime's limits - a file this
+                            // runtime could not restore never earns an append plan, and the walk allocates
+                            // nothing past them.
+                            strata::core::SessionReadLimits plan_limits;
+                            const bool limits_ok = strata::core::conversation_session_read_limits_split(
+                                plan_limits, carves, g, draft_of, session_draft, (uint64_t) o.max_context,
+                                (uint64_t) std::max(o.prompt_cache, 1), perr);
+                            const bool have_plan =
+                                limits_ok && strata::core::session_file_append_plan(path, id, plan, perr, plan_limits);
+                            std::string gwhy;
+                            // #4552: a split save writes rows from every carve into one file, so the gate judges
+                            // the whole conversation - the most-dirty carve governs.  Reading only the main
+                            // carve's watermark let a dirty stage ride an append.
+                            if (strata::core::session_save_gate(have_plan ? &plan : nullptr, sources,
+                                                                strata::core::session_gate_watermark(sessions),
+                                                                save_page, gwhy) ==
+                                    strata::core::SessionSaveChoice::append) {
+                                if (strata::core::session_file_append(path, meta, sources, id, plan, bytes, err,
+                                                                      wo, &st))
+                                    appended = true;   // the saved-line suffix reports it (and `bytes` is the delta)
+                                else
+                                    // an append that failed left whatever landed as a torn tail: the reader
+                                    // cascades to the last intact generation, and the full rewrite below re-lays
+                                    // the file whole.  The operator sees the same visibility the gate refusal gets.
+                                    std::fprintf(stderr, "strata serve: save append: full rewrite - %s\n",
+                                                 err.c_str());
+                            } else
+                                std::fprintf(stderr, "strata serve: save gate: full rewrite - %s\n", gwhy.c_str());
+                        }
+                        if (!appended &&
+                            !strata::core::session_file_write(path, meta, sources, id, bytes, err, wo, &st)) {
                             refuse(err, st.error, st.published);
                             continue;
                         }
+                        // every successful save commits [0, whole(live)) into the file afresh - for EVERY
+                        // carve's rows (#4552: the stage watermarks rise with the main carve's, or a split save
+                        // would keep claiming its stages dirty and refuse its own next append): the watermark
+                        // may rise to that boundary (a later pool rewrite below it bumps it down again)
+                        const int64_t commit_cells =
+                            strata::core::session_whole_cells((int64_t) live.size(), save_page);
+                        for (strata::core::SessionState* sp : sessions)
+                            sp->kv_first_dirty = std::max(sp->kv_first_dirty, commit_cells);
                         if (st.dir_flush_unsupported)
                             std::fprintf(stderr, "strata serve: session saved to %s; this filesystem cannot flush a "
                                                  "folder, so the new name is not flushed\n", path.c_str());
@@ -17889,9 +18209,11 @@ int main(int argc, char** argv) {
                         continue;
                     }
                     std::fprintf(stderr, "strata serve: session saved %zu tokens, %zu of %zu checkpoints, %zu bytes to %s "
-                                 "in %.1f ms (state %.1f ms)\n", live.size(), kept, checks.size(), bytes,
-                                 path.c_str(), ms(), capture_ms);
-                    std::printf("SAVED %zu %zu %.1f\n", live.size(), bytes, ms());
+                                 "in %.1f ms (state %.1f ms)%s\n", live.size(), kept, checks.size(), bytes,
+                                 path.c_str(), ms(), capture_ms, appended ? " (appended)" : "");
+                    // the fifth field is appended-only: an append reports the DELTA as `bytes`, and server.py
+                    // reads the field only when present (a 4-field line stays today's exact exchange)
+                    std::printf("SAVED %zu %zu %.1f%s\n", live.size(), bytes, ms(), appended ? " 1" : "");
                 } else {
                     strata::core::SavedConversation image;
                     size_t bytes = 0;
@@ -17903,17 +18225,37 @@ int main(int argc, char** argv) {
                         limits.progress = moving;
                         const uint64_t floor = (uint64_t) o.conversation_cache_min_free_mib << 20;
                         pools_budget.shrink((size_t) -1);   // (the park pools' idle memory goes back before the RAM checks of a session load)
-                        limits.admit = [floor, &o](uint64_t need, std::string& why) {
+                        limits.admit = [floor, &o, &conversations, &checks, &tail_ckpt_len](uint64_t need,
+                                                                                             std::string& why) {
                             const auto mem = strata::core::sample_host_memory();
                             const std::optional<uint64_t> avail = mem ? std::optional<uint64_t>(mem->available) : std::nullopt;
                             if (strata::core::conversation_memory_admit(avail, need, floor)) return true;
+                            // The save side's opt-in ladder, here: free the reconstructible host caches (retained K/V
+                            // reuse, the oldest unpinned parked conversations, the chain's own checkpoints from the
+                            // back - never the live device state) and probe the RAM again.
+                            if (o.session_save_reclaim) {
+                                const auto freed = strata::core::session_read_reclaim(checks, conversations, need,
+                                                                                      floor, strata::core::available_host_bytes);
+                                if (freed.bytes || freed.checkpoints || freed.parked) {
+                                    // A removed tail must not mark a later checkpoint at this length as a tail.
+                                    if (tail_ckpt_len >= 0 && std::none_of(checks.begin(), checks.end(), [&](const auto& c) {
+                                            return int64_t(c.ids.size()) == tail_ckpt_len;
+                                        })) tail_ckpt_len = -1;
+                                    std::fprintf(stderr, "strata serve: restore reclaimed %zu checkpoints, %zu parked, "
+                                                 "%zu host bytes; checking RAM again\n",
+                                                 freed.checkpoints, freed.parked, freed.bytes);
+                                    if (strata::core::conversation_memory_admit(strata::core::available_host_bytes(),
+                                                                                need, floor))
+                                        return true;
+                                }
+                            }
                             why = "not enough RAM to read it (" + std::to_string(need >> 20) + " MiB plus a floor of " +
                                   std::to_string((long long) o.conversation_cache_min_free_mib) + " MiB needed, " +
                                   ram_note(mem) + ")";
                             return false;
                         };
-                        if (!strata::core::conversation_session_read_limits(
-                                limits, ss, g, session_draft, (uint64_t) o.max_context,
+                        if (!strata::core::conversation_session_read_limits_split(
+                                limits, carves, g, draft_of, session_draft, (uint64_t) o.max_context,
                                 (uint64_t) std::max(o.prompt_cache, 1), err)) {
                             refuse(err, strata::core::SessionError::io);
                             continue;
@@ -17930,7 +18272,8 @@ int main(int argc, char** argv) {
                     const double read_ms = ms();
                     // the whole image against this engine, still without any device write
                     blocking("validate", bytes);
-                    if (!strata::core::conversation_snapshot_validate(image, ss, g, session_draft, err)) {
+                    if (!strata::core::conversation_snapshot_validate_split(image, sessions, draft_of,
+                                                                            session_draft, g, err)) {
                         refuse(err);
                         continue;
                     }
@@ -17943,7 +18286,8 @@ int main(int argc, char** argv) {
                     live_ok = false;
                     // host -> device in synchronous copies of the whole state: one bounded allowance
                     blocking("transfer", bytes);
-                    if (strata::core::conversation_snapshot_restore(image, ss, g, session_draft, err) !=
+                    if (strata::core::conversation_snapshot_restore_split(image, sessions, draft_of, devices,
+                                                                          session_draft, g, err) !=
                         strata::core::ConversationRestore::restored) {
                         // validated above: a failure here is a transfer failure, after device writes began - never
                         // decode from a partial state; the server starts the engine again
@@ -17960,6 +18304,15 @@ int main(int argc, char** argv) {
                     for (const ConvCheckpoint& c : checks) check_clock = std::max(check_clock, c.used);
                     cvec_cached = image.cvec;
                     live_ok = true;
+                    // Watermark M3 (#4552): the file's bytes are now in the pools of every carve, and what it
+                    // wrote is the file's own rows - so every carve is trusted up to the restored count, not
+                    // dirtied from token 0.  Marking 0 here is what made a resumed session full-rewrite on its
+                    // next save (a ~5 GB write for a conversation that changed by kilobytes).  Rounded to whole
+                    // cells: the last partial block's spare rows are not trusted (the M8 checkpoint mount
+                    // covers them the same way).
+                    const int64_t restored_cells = strata::core::session_whole_cells(
+                        (int64_t) live.size(), strata::kernels::qsa_real_shapes().page_size);
+                    for (strata::core::SessionState* sp : sessions) sp->mark_kv_dirty(restored_cells);
                     if (nan_flush) {   // #879: the file replaced the poisoned session; the parked ones go (no slots here)
                         nan_flush = false;
                         const size_t n_parked = conversations.clear() + spill_clear();   // (the SSD tier's and the writer's too)
@@ -18286,6 +18639,9 @@ int main(int argc, char** argv) {
             // ms_begin/ms_wait are cumulative since boot; the log line used to print them next to per-request deltas,
             // so the host time read as if it belonged to this request.  Take deltas here like every other column.
             std::array<double, 3> begin_before{}, wait_before{};
+#if defined(STRATA_HYBRID)
+            std::array<int64_t, 3> pinned_before{};
+#endif
             for (int r = 0; r < 3; ++r) if (o.expert_cache_remote[(size_t) r] > 0)
             {
                 remote_before[(size_t) r] = remote_experts[(size_t) r].computed();
@@ -18294,6 +18650,9 @@ int main(int argc, char** argv) {
                 full_before[(size_t) r] = remote_experts[(size_t) r].full_row_bytes();
                 begin_before[(size_t) r] = remote_experts[(size_t) r].ms_begin();
                 wait_before[(size_t) r] = remote_experts[(size_t) r].ms_wait();
+#if defined(STRATA_HYBRID)
+                pinned_before[(size_t) r] = remote_experts[(size_t) r].pinned_rows();
+#endif
             }
             cur = ids;
             const Clock::time_point r0 = Clock::now();
@@ -19063,6 +19422,10 @@ int main(int argc, char** argv) {
                 resume = parked.tokens;
                 from_live = false;
                 conversations.count_borrow();
+                // Watermark M4 (borrow) (#4552): the donor's prefix is now in this session's pools, and it is
+                // the donor's own rows - the session is trusted up to the borrowed count, not dirtied from 0.
+                ss.mark_kv_dirty(strata::core::session_whole_cells(
+                    parked.tokens, strata::kernels::qsa_real_shapes().page_size));
                 std::fprintf(stderr, "strata serve: conversation cache: borrowed %lld tokens from a parked "
                              "conversation, which stays parked, in %.1f ms; parked=%zu bytes=%zu borrowed=%zu\n",
                              (long long) resume, std::chrono::duration<double, std::milli>(Clock::now() - t0).count(),
@@ -19089,6 +19452,16 @@ int main(int argc, char** argv) {
                     }
                     if (cudaDeviceSynchronize() != cudaSuccess) { std::printf("ERR stage sync\n"); return 1; }
                 }
+                // Watermark M4 (park restore) (#4552): the parked conversation's K/V is now in these sessions'
+                // pools - and it is that conversation's own rows, so every carve is trusted up to the restored
+                // count rather than dirtied from token 0.  Marking 0 here is what made the ladder's normal loop
+                // (switch away, mount back, save) full-rewrite every time.
+                const int64_t park_page = strata::kernels::qsa_real_shapes().page_size;
+                ss.mark_kv_dirty(strata::core::session_whole_cells(
+                    (int64_t) incoming->live.ids.size(), park_page));
+                for (size_t i = 0; i < stages.size(); ++i)
+                    stages[i]->ss.mark_kv_dirty(strata::core::session_whole_cells(
+                        (int64_t) incoming->stage_images[i].live.ids.size(), park_page));
                 if (use_mtp && std::getenv("STRATA_SNAPSHOT_VERIFY") != nullptr) {
                     uint64_t draft_hash = 0;
                     const auto& draft_kv = stages.empty() || mtp_first ? incoming->kv.back() : incoming->stage_images.back().kv.back();
@@ -19165,6 +19538,9 @@ int main(int argc, char** argv) {
                     strata::core::session_zero(st->ss, g, nullptr, (void*) st->stream);
                     cudaStreamSynchronize(st->stream);
                 }
+                // Watermark M2: a zeroed session's pools no longer hold what the last save committed, at any position
+                ss.mark_kv_dirty(0);
+                for (auto& st : stages) st->ss.mark_kv_dirty(0);
                 checks.clear();
             } else if (!from_live) {
                 ConvCheckpoint* c = nullptr;
@@ -19189,6 +19565,8 @@ int main(int argc, char** argv) {
                         strata::core::session_zero(st->ss, g, nullptr, (void*) st->stream);
                         cudaStreamSynchronize(st->stream);
                     }
+                    ss.mark_kv_dirty(0);   // Watermark M2 (the STRATA_CKPT_REREAD zeroing, same rule)
+                    for (auto& st : stages) st->ss.mark_kv_dirty(0);
                     reread_to = resume;
                     std::fprintf(stderr, "strata serve: STRATA_CKPT_REREAD: reading %lld tokens again instead of "
                                          "restoring\n", (long long) resume);
@@ -19286,6 +19664,10 @@ int main(int argc, char** argv) {
                 }
             }
             conversations.limit_reuse(read_from);
+            // Watermark M1: this request rewrites every cell from read_from on (the rule above the resume),
+            // so pool rows from there on may differ from what the last save committed.
+            ss.mark_kv_dirty(read_from);
+            for (auto& st : stages) st->ss.mark_kv_dirty(read_from);
             pp_total = n;
             pp_from = read_from;
             pp_reached = read_from;
@@ -23002,6 +23384,14 @@ int main(int argc, char** argv) {
                              (double) (remote_experts[(size_t) r].full_row_bytes() - full_before[(size_t) r]) / 1048576.0,
                              remote_experts[(size_t) r].ms_begin() - begin_before[(size_t) r],
                              remote_experts[(size_t) r].ms_wait() - wait_before[(size_t) r]);
+#if defined(STRATA_HYBRID)
+            for (int r = 0; r < 3; ++r) if (o.expert_cache_remote[(size_t) r] > 0) {
+                const int64_t pin_rows = remote_experts[(size_t) r].pinned_rows() - pinned_before[(size_t) r];
+                if (pin_rows > 0)
+                    std::fprintf(stderr, "strata serve: CUDA%d pinned RAM: %lld rows computed on the helper\n",
+                                 remote_dev[r], (long long) pin_rows);
+            }
+#endif
             if (prefill_helper_src) {
                 const uint64_t blobs = prefill_helper_src->helper_blobs(), bytes = prefill_helper_src->helper_bytes();
                 std::fprintf(stderr, "strata serve: prefill helper source: %lld blobs / %.1f MiB taken from a helper's "
