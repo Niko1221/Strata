@@ -4303,10 +4303,19 @@ int main(int argc, char** argv) {
         } else (void) cudaGetLastError();
     }
 #endif
+    bool self_commit_held_back = false;   // #6160: STRATA_BATCH_SELF_COMMIT left out of the stack for STRATA_PIPED_MTP (decided below)
 #if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906) && !defined(STRATA_GPU_METAL) && !defined(_WIN32)
     // Linux CUDA, 2 or more batch slots: the exact parallel-request stack is the engine's own default (QUAL-PAR bit-exact; it was the launcher's
     // PARALLEL_STACK_ENV).  Each switch keeps =0 as its off switch and a value the user set is kept.  Before any engine code reads them.
-    strata::core::apply_parallel_defaults_cuda(true, o.batch);
+    // With STRATA_PIPED_MTP asked, STRATA_BATCH_SELF_COMMIT is left out for now: it turns PIPED_MTP off (#6160).  It goes back
+    // on where PIPED_MTP is decided, once the slots and groups are final, if PIPED_MTP does not run.
+    {
+        const char* pm = std::getenv("STRATA_PIPED_MTP");
+        const bool pm_asked = pm != nullptr && pm[0] != '\0' && pm[0] != '0';
+        strata::core::apply_parallel_defaults_cuda(true, o.batch, pm_asked);
+        self_commit_held_back = pm_asked && !strata::core::parallel_default_env_cuda(true, o.batch).empty() &&
+                                std::getenv("STRATA_BATCH_SELF_COMMIT") == nullptr;
+    }
     strata::core::apply_gdn_defaults_cuda(true);   // STRATA_GDN_TC=1, STRATA_GDN_CONVL2=2 (owner yes 2026-11-07; was the launcher's GDN_STACK_CUDA)
 #endif
     if (!o.prefill_cap_warn.empty() && !o.prefill_cap_warn_skip)
@@ -7841,6 +7850,8 @@ int main(int argc, char** argv) {
             why = buf;
         } else if (sc != nullptr && sc[0] != '\0' && sc[0] != '0') {
             why = "it does not combine with STRATA_BATCH_SELF_COMMIT (the window would keep its rows itself)";
+        } else if (batch_df2_wanted) {   // the slots draft with DFlash2 and get no MTP slot drafters (#6160: SELF_COMMIT hid this)
+            why = "the slots draft with DFlash2 (STRATA_BATCH_DF2), which the pipelined groups do not run";
         } else if ((o.batch / o.batch_groups) * (1 + pm_drafts) > (int) strata::kernels::kVerifyNarrowT) {
             std::snprintf(buf, sizeof buf, "a group's window would hold %d rows (%d slots x %d), more than %d",
                           (o.batch / o.batch_groups) * (1 + pm_drafts), o.batch / o.batch_groups, 1 + pm_drafts,
@@ -7855,6 +7866,14 @@ int main(int argc, char** argv) {
                                  "proposal%s per slot each window\n", o.batch_groups, o.batch_groups == 1 ? "" : "s",
                          o.batch / o.batch_groups, o.batch / o.batch_groups == 1 ? "" : "s", pm_drafts,
                          pm_drafts > 1 ? "s" : "");
+        }
+    }
+    if (self_commit_held_back) {   // #6160: the stack as measured wherever PIPED_MTP does not run
+        if (piped_mtp) {
+            std::fprintf(stderr, "strata generate: STRATA_BATCH_SELF_COMMIT left off: it would turn STRATA_PIPED_MTP off\n");
+        } else {
+            strata::core::apply_self_commit_default();
+            std::fprintf(stderr, "strata generate: STRATA_BATCH_SELF_COMMIT back on: STRATA_PIPED_MTP does not run here\n");
         }
     }
     // Secure MTP's CUDA0 allocations before the large host arena is registered with both CUDA contexts.

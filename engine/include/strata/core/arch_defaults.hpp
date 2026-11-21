@@ -115,11 +115,17 @@ std::vector<std::pair<std::string, std::string>> parallel_default_env(const char
 /// PARALLEL_STACK_ENV set for a managed start, now the engine's own so a plain start is the same.  QUAL-PAR: bit-exact against the plain
 /// slots (greedy identity at c=1, first-token KL 0).  `linux_cuda` is false on HIP, Windows, Metal and SYCL builds (empty then).  Each
 /// switch keeps =0 as its off switch; a value the user set is kept.  Silent: the launcher printed nothing for these either.
-std::vector<std::pair<std::string, std::string>> parallel_default_env_cuda(bool linux_cuda, int batch_slots);
+/// `piped_mtp` (STRATA_PIPED_MTP asked for) leaves STRATA_BATCH_SELF_COMMIT out: PIPED_MTP does not run with it, so the default
+/// would turn off what was asked for (#6160).  generate.cpp puts it back with `apply_self_commit_default` when PIPED_MTP does not run.
+std::vector<std::pair<std::string, std::string>> parallel_default_env_cuda(bool linux_cuda, int batch_slots, bool piped_mtp = false);
 
 /// Sets `parallel_default_env_cuda` in this process's environment where the user has not set the variable; returns the names it set.
 /// Call once, before any engine code reads its switches.
-std::vector<std::string> apply_parallel_defaults_cuda(bool linux_cuda, int batch_slots);
+std::vector<std::string> apply_parallel_defaults_cuda(bool linux_cuda, int batch_slots, bool piped_mtp = false);
+
+/// Sets STRATA_BATCH_SELF_COMMIT to the stack's value where the user has not set it: for the start that left it out for
+/// STRATA_PIPED_MTP and then found PIPED_MTP cannot run (#6160).  Before the verifiers read it (Verifier::init_slots).
+void apply_self_commit_default();
 
 /// The tensor-core GDN prompt scan and the one-pass conv (QUAL-GDN, l620: prompt +4.4% at 4K, +5.5% at 16K, +5.7% at 32K; first-token KL mean
 /// 0.0019, max 0.0125; owner yes 2026-11-07): STRATA_GDN_TC=1 and STRATA_GDN_CONVL2=2 on Linux CUDA, what serve/server.py's GDN_STACK_CUDA set.
