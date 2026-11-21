@@ -1,0 +1,8 @@
+b8731ac3ce8ff52f2bf1f51eec0423b49b5e6c45abb5450848dcfcce330af2ba  ./config.json
+424da87a6882caa41ace281a17ce33df48b5a3d6c31c08a1c8140e1b96d1fa93  ./outputs.jsonl
+12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce  ./provenance/chat_template.jinja
+bc6c1f81d86863c3dc36a31f58010701d8ab05180f69f86c6978214409e43af2  ./provenance/corpus-build.json
+e75eff8b9feea04f745520b392c4c17d97aefc1ba185e222aa6740efa8f68407  ./provenance/corpus-manifest.sha256
+9fe140f53cb241bb0470e2649074dbf4e2e855165e5bee3be63ebcb6123e2b51  ./provenance/engine.log
+7917c4ffe53a1015a64cb8a8d76e27024ef4482219e05a04d993d2ec7f3261c8  ./README.md
+34de33e7fcc3daefcad32f69dc4dc9750f07e3c4fb76b43941bda24f3647b224  ./results.json
