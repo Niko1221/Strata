@@ -15586,6 +15586,7 @@ int main(int argc, char** argv) {
                         if (b == nullptr || !cd.c->fill_slot_queued(slot, b, e,
                                 (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(layer))) {
                             e = "VRAM: refilling a cache failed: " + e;
+                            vram_evicted.swap(keep_out);   // keep the pending-refill list accurate up to here before publishing.
                             relend(); res_upload();   // the host table is already partly rewritten for earlier cards - mirror it before bailing.
                             return false;
                         }
