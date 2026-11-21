@@ -42,6 +42,7 @@ target_link_libraries(mtl_rt PUBLIC "-framework Metal" "-framework Foundation")
 
 file(GLOB STRATA_METAL_TESTS CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tests/*.cpp)
 list(REMOVE_ITEM STRATA_METAL_TESTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/runtime_hello.cpp)
+list(REMOVE_ITEM STRATA_METAL_TESTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/pack_direct_test.cpp)
 enable_testing()
 foreach(src ${STRATA_METAL_TESTS})
   get_filename_component(t ${src} NAME_WE)
@@ -164,6 +165,10 @@ if(STRATA_OWN_CPU_QUANT)
   target_link_libraries(strata_metal_host PUBLIC strata_quant)
   target_compile_definitions(strata_metal_host PUBLIC STRATA_OWN_CPU_QUANT=1)
 endif()
+
+add_executable(pack_direct_test tests/pack_direct_test.cpp)
+target_link_libraries(pack_direct_test PRIVATE strata_metal_host)
+add_test(NAME pack_direct COMMAND pack_direct_test)
 
 add_library(strata_metal_kernels STATIC ${STRATA_METAL_ENGINE_SOURCES})
 target_include_directories(strata_metal_kernels PRIVATE src ${STRATA_ROOT}/third_party/ggml)

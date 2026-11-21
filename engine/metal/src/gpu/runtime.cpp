@@ -320,6 +320,13 @@ void* host_view(const void* p) {
     return a ? a->cpu + off : nullptr;
 }
 
+void* host_view_span(const void* p, size_t bytes) {
+    size_t off = 0;
+    const Alloc* a = find(p, &off);
+    check_purged(a, "host view");
+    return a && bytes <= a->bytes - off ? a->cpu + off : nullptr;
+}
+
 // The Metal decode window reads the model itself; the device copies of the weights the shared host code uploads for
 // the CUDA-shaped kernels (the pack's dense pool, the native head, ...) are never read on Metal.  On a small Mac their
 // memory is worth more as expert arena: every device (not host) allocation of min_bytes or more is made purgeable-empty
