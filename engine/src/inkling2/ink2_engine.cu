@@ -3943,7 +3943,24 @@ constexpr int SPLIT_MAX = 64;
 #endif
 Prefill PF;
 
+// Elastic prompt buffers (--kv-grow with offload): the chunk-sized buffers over 8 MiB and the staging halves live in
+// growable ranges, mapped while a prompt is read (memory taken from the expert pools) and unmapped after.
+bool g_pf_elastic = false;
+std::vector<VRange> g_pfr;
+std::vector<bool> g_pfr_whole;   // parts at offsets of the full --chunk (the region, the fp16 input thirds, staging)
+int g_pf_mapped_T = 0;
+void* pf_alloc(size_t bytes, bool whole = false) {
+    if (!g_pf_elastic || bytes < ((size_t) 8 << 20)) return dalloc(bytes);
+    g_pfr.emplace_back();
+    g_pfr.back().init(bytes);
+    g_pfr_whole.push_back(whole);
+    return g_pfr.back().ptr();
+}
+float* pf_floats(size_t n) { return (float*) pf_alloc(n * 4); }
+
 void alloc_prefill() {
+    g_pf_elastic = E.grow && E.offload;
+    g_pfr.reserve(64);
     const size_t T = PF.TP, TH = T * H;
     CK(cublasCreate(&PF.cb) == CUBLAS_STATUS_SUCCESS ? cudaSuccess : cudaErrorUnknown);
     cublasSetStream(PF.cb, cudaStreamPerThread);
@@ -3951,19 +3968,19 @@ void alloc_prefill() {
     for (int l = 0; l < NL; ++l) PF.np_max = std::max(PF.np_max, E.L[l].proj.n);
     PF.wf_cap = std::max((size_t) PF.np_max * H, (size_t) 8192 * H);
     PF.wf = dfloats(PF.wf_cap);
-    PF.x0 = dfloats(TH); PF.h = dfloats(TH); PF.out = dfloats(TH); PF.B = dfloats(8 * TH); PF.preB = dfloats(8 * TH);
-    PF.pre_h = dfloats(TH); PF.prev = dfloats(8 * TH); PF.msgs = dfloats(4 * TH); PF.a = dfloats(3 * TH);
-    PF.xq = dfloats(TH); PF.xk = dfloats(TH); PF.xv = dfloats(TH);
-    PF.kc = dfloats(T * KVD); PF.vc = dfloats(T * KVD); PF.att = dfloats(((T + 63) / 64 * 64) * QD);
-    PF.attn_out = dfloats(TH); PF.att2 = dfloats(TH); PF.r = dfloats(TH); PF.m = dfloats(TH); PF.mn = dfloats(TH);
-    PF.moe = dfloats(TH); PF.y2 = dfloats(TH); PF.cat = dfloats(2 * TH); PF.gdown = dfloats(T * GATE_RANK);
-    PF.gfg = dfloats(2 * TH); PF.rl = dfloats(T * NE); PF.wts = dfloats(T * TOPK);
+    PF.x0 = pf_floats(TH); PF.h = pf_floats(TH); PF.out = pf_floats(TH); PF.B = pf_floats(8 * TH); PF.preB = pf_floats(8 * TH);
+    PF.pre_h = pf_floats(TH); PF.prev = pf_floats(8 * TH); PF.msgs = pf_floats(4 * TH); PF.a = pf_floats(3 * TH);
+    PF.xq = pf_floats(TH); PF.xk = pf_floats(TH); PF.xv = pf_floats(TH);
+    PF.kc = pf_floats(T * KVD); PF.vc = pf_floats(T * KVD); PF.att = pf_floats(((T + 63) / 64 * 64) * QD);
+    PF.attn_out = pf_floats(TH); PF.att2 = pf_floats(TH); PF.r = pf_floats(TH); PF.m = pf_floats(TH); PF.mn = pf_floats(TH);
+    PF.moe = pf_floats(TH); PF.y2 = pf_floats(TH); PF.cat = pf_floats(2 * TH); PF.gdown = pf_floats(T * GATE_RANK);
+    PF.gfg = pf_floats(2 * TH); PF.rl = pf_floats(T * NE); PF.wts = pf_floats(T * TOPK);
     // One region, phases with disjoint lifetimes (saves ~217 KB per chunk token, 445 MB at chunk 2048):
     //   attention: P [T][np_max], rel [T][NQ][EXTENT];  MoE: gu [T*TOPK][2FF] then ey (same rows, H = 2FF) after the
     //   SwiGLU has read gu, act [T*TOPK][FF] after gu;  after the last layer: lg [T][8192] (all-logits dumps only)
     static_assert(2 * FF == H, "ey aliases gu");
     const size_t att_n = T * ((size_t) PF.np_max + NQ * EXTENT), moe_n = T * TOPK * (size_t) 3 * FF;
-    float* region = dfloats(std::max(std::max(att_n, moe_n), T * (size_t) 8192));
+    float* region = (float*) pf_alloc(std::max(std::max(att_n, moe_n), T * (size_t) 8192) * 4, true);
     PF.P = region; PF.rel = region + T * PF.np_max;
     PF.gu = region; PF.ey = region; PF.act = region + T * TOPK * 2 * FF;
     PF.lg = region;
@@ -3981,7 +3998,7 @@ void alloc_prefill() {
         for (int h = 0; h < 2; ++h) {
             CK(cudaEventCreateWithFlags(&PF.ev_free[h], cudaEventDisableTiming));
             CK(cudaEventCreateWithFlags(&PF.ev_ready[h], cudaEventDisableTiming));
-            PF.stg[h] = (uint8_t*) dalloc(PF.stg_half);
+            PF.stg[h] = (uint8_t*) pf_alloc(PF.stg_half, true);
             CK(cudaHostAlloc((void**) &PF.ptab[h], NE * sizeof(void*), cudaHostAllocDefault));
             PF.dtab[h] = (const uint8_t**) dalloc(NE * sizeof(void*));
         }
@@ -3990,9 +4007,53 @@ void alloc_prefill() {
         CK(cublasCreate(&PF.cbh) == CUBLAS_STATUS_SUCCESS ? cudaSuccess : cudaErrorUnknown);
         cublasSetStream(PF.cbh, cudaStreamPerThread);
         PF.wh = (half*) dalloc((size_t) PF.np_max * H * 2);
-        PF.xh = (half*) dalloc(3 * T * QD * 2);
-        PF.qh = (half*) dalloc(((T + 63) / 64 * 64) * QD * 2);
+        PF.xh = (half*) pf_alloc(3 * T * QD * 2, true);
+        PF.qh = (half*) pf_alloc(((T + 63) / 64 * 64) * QD * 2);
     }
+    // cuBLAS loads its kernels and workspace at the first call of each shape class: run them once now, before the
+    // expert pools take the free memory (a first prompt after that would find only the reserve)
+    {
+        const int Tw[3] = {16, 256, PF.TP}, Nw[3] = {NE, H, QD};   // the buffers hold QD x QD and TP x QD
+        const size_t big = (size_t) PF.TP * QD;
+        float *a = nullptr, *w = nullptr, *c = nullptr;
+        CK(cudaMalloc(&a, big * 4)); CK(cudaMalloc(&w, (size_t) QD * QD * 4)); CK(cudaMalloc(&c, big * 4));
+        const float one = 1.0f, zero = 0.0f;
+        for (int ti : Tw)
+            for (int nw : Nw) {
+                cublasSgemm(PF.cb, CUBLAS_OP_T, CUBLAS_OP_N, nw, ti, H, &one, w, H, a, H, &zero, c, nw);
+                if (PF.tc)
+                    cublasGemmEx(PF.cbh, CUBLAS_OP_T, CUBLAS_OP_N, nw, ti, H, &one, w, CUDA_R_16F, H, a, CUDA_R_16F, H, &zero, c,
+                                 CUDA_R_32F, nw, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+            }
+        CK(cudaDeviceSynchronize());
+        CK(cudaFree(a)); CK(cudaFree(w)); CK(cudaFree(c));
+    }
+}
+
+// the prompt buffers for chunks of T tokens (T <= --chunk): mapped, from the pools if VRAM is short
+void pf_map(int T) {
+    if (g_pfr.empty() || T <= g_pf_mapped_T) return;
+    CK(cudaDeviceSynchronize());
+    size_t add = 0;
+    std::vector<size_t> want(g_pfr.size());
+    for (size_t i = 0; i < g_pfr.size(); ++i) {
+        const VRange& r = g_pfr[i];
+        want[i] = g_pfr_whole[i] ? r.reserved : r.need(std::min(r.reserved, (size_t) ((double) r.reserved * (T + 64) / PF.TP)));
+        if (want[i] > r.mapped) add += want[i] - r.mapped;
+    }
+    const size_t keep = vram_keep(), fr = vram_free();
+    if (fr < add + keep) pools_release((double) (add + keep - fr), "the prompt buffers");
+    for (size_t i = 0; i < g_pfr.size(); ++i)
+        if (!g_pfr[i].map_to(want[i])) { std::fprintf(stderr, "prompt buffers: out of VRAM\n"); std::exit(1); }
+    g_pf_mapped_T = T;
+}
+// after a prompt: the buffers' memory back to the pools
+void pf_unmap() {
+    if (g_pfr.empty() || !g_pf_mapped_T) return;
+    CK(cudaDeviceSynchronize());
+    for (auto& r : g_pfr) r.unmap_to(0);
+    g_pf_mapped_T = 0;
+    pools_fill();
 }
 
 // tensor-core dense product: Y[t][0..n) = fp16(X[t]) . fp16(W rows [first, first + n))^T, fp32 accumulation.
@@ -5236,6 +5297,7 @@ int main(int argc, char** argv) {
             if (start == pr.size()) {
                 logits = last_logits;
             } else {
+                pf_map((int) std::min((size_t) PF.TP, pr.size() - start));
                 for (size_t p0 = start; p0 < pr.size(); p0 += PF.TP) {
                     const int T = (int) std::min((size_t) PF.TP, pr.size() - p0);
                     forward_prefill(&pr[p0], T, (int) p0, nullptr);
@@ -5248,6 +5310,7 @@ int main(int argc, char** argv) {
                     std::fflush(stdout);
                 }
                 CK(cudaMemcpy(logits.data(), E.logits, (size_t) VOCAB * 4, cudaMemcpyDeviceToHost));
+                pf_unmap();
             }
             const double t1 = now_ms();
             std::vector<int> gen;
@@ -5319,6 +5382,7 @@ int main(int argc, char** argv) {
     FILE* fg = dump_logits.empty() ? nullptr : std::fopen(dump_logits.c_str(), "wb");
     const double t0 = now_ms();
     if (PF.TP > 0) {   // chunked prefill
+        pf_map((int) std::min((size_t) PF.TP, ids.size()));
         std::vector<float> all(fg ? (size_t) PF.TP * VOCAB : 0);
         for (size_t p0 = 0; p0 < ids.size(); p0 += PF.TP) {
             const int T = (int) std::min((size_t) PF.TP, ids.size() - p0);
@@ -5326,6 +5390,7 @@ int main(int argc, char** argv) {
             if (fg) std::fwrite(all.data(), 4, (size_t) T * VOCAB, fg);
         }
         CK(cudaMemcpy(logits.data(), E.logits, (size_t) VOCAB * 4, cudaMemcpyDeviceToHost));
+        pf_unmap();
     } else {
         for (size_t t = 0; t < ids.size(); ++t) {
             step(ids[t], (int) t, fg != nullptr || t + 1 == ids.size());
