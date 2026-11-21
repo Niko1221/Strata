@@ -215,7 +215,7 @@ __device__ __forceinline__ float swiglu1(float g, float u) {
 }
 // SWI: x holds [gate, up] pairs (gu rows, stride x_stride = 2K): the GEMV input is their SwiGLU, computed while staging
 template <int R, bool SWI = false>
-__global__ void k_gemv_nvfp4_sel(const uint8_t* __restrict__ W, const uint8_t* __restrict__ S,
+__global__ void k_gemv_nvfp4_sel(const uint8_t* const* __restrict__ tab,
                                  const float* __restrict__ factors, const int* __restrict__ ids,
                                  const float* __restrict__ x, int x_stride, float* __restrict__ y, int N, int K) {
     extern __shared__ float sm[];
@@ -228,11 +228,13 @@ __global__ void k_gemv_nvfp4_sel(const uint8_t* __restrict__ W, const uint8_t* _
     const int row0 = (blockIdx.x * (blockDim.x / 32) + threadIdx.x / 32) * R, lane = threadIdx.x & 31;
     if (row0 >= N) return;
     const int e = ids[blockIdx.y];
+    const uint8_t* W = tab[e];
+    const uint8_t* S = W + (size_t) N * (K / 2);
     const uint32_t* w[R];
     const uint8_t* s[R];
 #pragma unroll
     for (int r = 0; r < R; ++r) {
-        const size_t row = (size_t) e * N + min(row0 + r, N - 1);
+        const size_t row = min(row0 + r, N - 1);
         w[r] = reinterpret_cast<const uint32_t*>(W + row * (K / 2));
         s[r] = S + row * (K / 16);
     }
@@ -265,8 +267,7 @@ __global__ void k_gemv_nvfp4_sel(const uint8_t* __restrict__ W, const uint8_t* _
 
 // MXFP8: lane reads 4 bytes = 4 columns; the ue8m0 exponent per 32 columns (8 words): 2^(s - 127) * 2^8
 template <int R, bool SWI = false>
-__global__ void k_gemv_mxfp8_sel(const uint8_t* __restrict__ W, const uint8_t* __restrict__ S,
-                                 const int* __restrict__ ids, const float* __restrict__ x, int x_stride,
+__global__ void k_gemv_mxfp8_sel(const uint8_t* const* __restrict__ tab, const int* __restrict__ ids, const float* __restrict__ x, int x_stride,
                                  float* __restrict__ y, int N, int K) {
     extern __shared__ float sm[];
     float* xs = sm;
@@ -276,11 +277,13 @@ __global__ void k_gemv_mxfp8_sel(const uint8_t* __restrict__ W, const uint8_t* _
     const int row0 = (blockIdx.x * (blockDim.x / 32) + threadIdx.x / 32) * R, lane = threadIdx.x & 31;
     if (row0 >= N) return;
     const int e = ids[blockIdx.y];
+    const uint8_t* W = tab[e];
+    const uint8_t* S = W + (size_t) N * K;
     const uint32_t* w[R];
     const uint8_t* s[R];
 #pragma unroll
     for (int r = 0; r < R; ++r) {
-        const size_t row = (size_t) e * N + min(row0 + r, N - 1);
+        const size_t row = min(row0 + r, N - 1);
         w[r] = reinterpret_cast<const uint32_t*>(W + row * K);
         s[r] = S + row * (K / 32);
     }
@@ -1044,7 +1047,7 @@ __global__ void kb_moe_plan(const int* __restrict__ ids, int T, int* rows, int* 
 // 256 threads, 4x4 outputs per thread.  arow = rows[r] (gather) or r.
 template <bool NV>
 __global__ void __launch_bounds__(256) kb_moe_gemm(const float* __restrict__ A, int lda, const int* __restrict__ rows,
-                                                   const uint8_t* __restrict__ W, const uint8_t* __restrict__ S,
+                                                   const uint8_t* const* __restrict__ tab,
                                                    const float* __restrict__ factors, const int* __restrict__ tile_e,
                                                    const int* __restrict__ tile_r0, const int* __restrict__ ntiles,
                                                    const int* __restrict__ eoff, const int* __restrict__ ecnt,
@@ -1052,6 +1055,9 @@ __global__ void __launch_bounds__(256) kb_moe_gemm(const float* __restrict__ A, 
     __shared__ __align__(16) float As[FKK][FM + 4], Ws[FKK][FN + 4];
     if ((int) blockIdx.x >= *ntiles) return;
     const int e = tile_e[blockIdx.x], r0 = tile_r0[blockIdx.x], rend = eoff[e] + ecnt[e], n0 = blockIdx.y * FN;
+    const uint8_t* W = tab[e];
+    if (!W) return;
+    const uint8_t* S = W + (size_t) N * (NV ? K / 2 : K);
     const int tid = threadIdx.x, ty = tid / 16, tx = tid % 16;
     // A loads: 2 float4 per thread (row idx / 8, float4 idx % 8)
     const float* asrc[2];
@@ -1064,7 +1070,7 @@ __global__ void __launch_bounds__(256) kb_moe_gemm(const float* __restrict__ A, 
         asrc[u] = r < rend ? A + (size_t) (rows ? rows[r] : r) * lda + akq[u] * 4 : nullptr;
     }
     const int wn = tid / 4, wq = tid % 4;   // W loads: row n0 + wn, 8 columns from wq * 8
-    const size_t wrow = (size_t) e * N + n0 + wn;
+    const size_t wrow = (size_t) n0 + wn;
     float acc[4][4] = {};
     for (int k0 = 0; k0 < K; k0 += FKK) {
 #pragma unroll
@@ -1128,7 +1134,7 @@ __global__ void __launch_bounds__(256) kb_moe_gemm(const float* __restrict__ A, 
 constexpr int TM = 64, TN = 128, TK = 32, TLD = TK + 8, TCLD = TN + 4;
 template <bool NV>
 __global__ void __launch_bounds__(256) kb_moe_gemm_tc(const half* __restrict__ A, int lda,
-                                                      const uint8_t* __restrict__ W, const uint8_t* __restrict__ S,
+                                                      const uint8_t* const* __restrict__ tab,
                                                       const float* __restrict__ factors, const int* __restrict__ tile_e,
                                                       const int* __restrict__ tile_r0, const int* __restrict__ ntiles,
                                                       const int* __restrict__ eoff, const int* __restrict__ ecnt,
@@ -1139,6 +1145,9 @@ __global__ void __launch_bounds__(256) kb_moe_gemm_tc(const half* __restrict__ A
     float* Cs = reinterpret_cast<float*>(smraw);
     if ((int) blockIdx.x >= *ntiles) return;
     const int e = tile_e[blockIdx.x], r0 = tile_r0[blockIdx.x], rend = eoff[e] + ecnt[e], n0 = blockIdx.y * TN;
+    const uint8_t* W = tab[e];
+    if (!W) return;
+    const uint8_t* S = W + (size_t) N * (NV ? K / 2 : K);
     const int tid = threadIdx.x, warp = tid / 32, wm = warp / 4, wn = warp % 4;
     // A: fp16 rows in expert order (gathered / converted once per layer, not once per N block): 16 B per thread
     const int arow = tid / 4, akq = tid % 4;
@@ -1164,7 +1173,7 @@ __global__ void __launch_bounds__(256) kb_moe_gemm_tc(const half* __restrict__ A
         av = asrc ? *reinterpret_cast<const uint4*>(asrc + k0) : make_uint4(0, 0, 0, 0);
 #pragma unroll
         for (int u = 0; u < 2; ++u) {
-            const size_t wrow = (size_t) e * N + n0 + wn_[u];
+            const size_t wrow = (size_t) n0 + wn_[u];
             const int kc = k0 + wq_[u] * 8;
             if (NV) {
                 wv[u].x = __ldg(reinterpret_cast<const uint32_t*>(W + wrow * (K / 2) + kc / 2));
@@ -1498,11 +1507,19 @@ float* dvec(const vec& v) { return (float*) upload(v.data(), v.size() * 4); }
 
 struct DMat { const uint16_t* d = nullptr; int n = 0, k = 0; };
 
+// Experts live in fixed-size slots of a device pool (one pool per format), each slot one expert as
+// [w13 | w13 scales | w2 | w2 scales] (part A = w13 + scales, part B = w2 + scales).  The kernels address an expert
+// through tA / tB (device tables, NE part pointers per layer, slices of E.tabA / E.tabB).
 struct Experts {
     bool nvfp4 = true;
-    const uint8_t *w13 = nullptr, *s13 = nullptr, *w2 = nullptr, *s2 = nullptr;
+    const uint8_t* const* tA = nullptr;
+    const uint8_t* const* tB = nullptr;
     const float *f13 = nullptr, *f2 = nullptr;
 };
+constexpr size_t NV_A = (size_t) 2 * FF * H / 2 + (size_t) 2 * FF * H / 16, NV_B = (size_t) H * FF / 2 + (size_t) H * FF / 16;
+constexpr size_t MX_A = (size_t) 2 * FF * H + (size_t) 2 * FF * H / 32, MX_B = (size_t) H * FF + (size_t) H * FF / 32;
+constexpr size_t NV_BYTES = NV_A + NV_B, MX_BYTES = MX_A + MX_B;   // 4478976 / 8211456
+static_assert(NV_A % 256 == 0 && NV_BYTES % 256 == 0 && MX_A % 256 == 0 && MX_BYTES % 256 == 0, "slot alignment");
 
 struct Gate { DMat down, fg; };   // fg: [forget; gain] stacked [2H, GATE_RANK]
 
@@ -1548,7 +1565,18 @@ struct Engine {
     int rec_mode = 0;     // 1 record (one-token path), 2 force (prefill)
     int kvm = 1;          // --kv f32 (0) | f16 (1, default) | i8 (2: int8 cells + fp16 scale per 64, Strata's kv_q8
                           // layout) | i8r (3: i8 + Walsh-Hadamard rotation)
+    // experts: every expert in xhost layout order (NVFP4 layers 0-19 then MXFP8 layers 20-23, NE per layer, one slot
+    // each); resident = the device pool holds them all, in that order
+    uint8_t *pool_nv = nullptr, *pool_mx = nullptr;
+    const uint8_t **tabA = nullptr, **tabB = nullptr;   // device [NL * NE]: part A / part B of expert (l, e)
+    std::vector<const uint8_t*> htabA, htabB;            // host mirrors
 };
+size_t ex_bytes(int l) { return l < MXFP8_FIRST ? NV_BYTES : MX_BYTES; }
+size_t ex_partA(int l) { return l < MXFP8_FIRST ? NV_A : MX_A; }
+size_t ex_layer_off(int l) {   // offset of layer l's first expert in the xhost / resident layout
+    return l < MXFP8_FIRST ? (size_t) l * NE * NV_BYTES
+                           : (size_t) MXFP8_FIRST * NE * NV_BYTES + (size_t) (l - MXFP8_FIRST) * NE * MX_BYTES;
+}
 int g_slot = 0;   // the layer application being built (host side, baked into the launches)
 int g_rpw = 4;    // decode GEMV rows per warp, upper bound (INK2_RPW: 1, 2, 4, 8)
 int g_sel_rpw = 2;   // expert (selected) GEMV rows per warp (INK2_SEL_RPW: 1, 2, 4, 8)
@@ -1607,6 +1635,12 @@ void load() {
         }
         E.msg_queries = dvec(mq);
     }
+    E.pool_nv = (uint8_t*) dalloc((size_t) MXFP8_FIRST * NE * NV_BYTES);
+    E.pool_mx = (uint8_t*) dalloc((size_t) (NL - MXFP8_FIRST) * NE * MX_BYTES);
+    E.tabA = (const uint8_t**) dalloc((size_t) NL * NE * sizeof(void*));
+    E.tabB = (const uint8_t**) dalloc((size_t) NL * NE * sizeof(void*));
+    E.htabA.assign((size_t) NL * NE, nullptr);
+    E.htabB.assign((size_t) NL * NE, nullptr);
     for (int l = 0; l < NL; ++l) {
         Layer& Y = E.L[l];
         const std::string q = p + "layers." + std::to_string(l) + ".";
@@ -1656,11 +1690,28 @@ void load() {
         }
         Experts& X = Y.ex;
         X.nvfp4 = l < MXFP8_FIRST;
-        auto up = [&](const std::string& n) { auto b = ck.bytes(n); return (const uint8_t*) upload(b.data(), b.size()); };
-        X.w13 = up(q + "mlp.experts.w13_weight");
-        X.s13 = up(q + "mlp.experts.w13_weight_scale");
-        X.w2 = up(q + "mlp.experts.w2_weight");
-        X.s2 = up(q + "mlp.experts.w2_weight_scale");
+        {   // the four expert tensors interleaved into one slot per expert, then the layer into its pool range
+            const auto w13 = ck.bytes(q + "mlp.experts.w13_weight"), s13 = ck.bytes(q + "mlp.experts.w13_weight_scale");
+            const auto w2 = ck.bytes(q + "mlp.experts.w2_weight"), s2 = ck.bytes(q + "mlp.experts.w2_weight_scale");
+            const size_t a = w13.size() / NE, b = s13.size() / NE, c = w2.size() / NE, d = s2.size() / NE, eb = ex_bytes(l);
+            if (a + b + c + d != eb || a + b != ex_partA(l)) { std::fprintf(stderr, "layer %d: expert bytes %zu\n", l, a + b + c + d); std::exit(1); }
+            std::vector<uint8_t> lay((size_t) NE * eb);
+            for (int e = 0; e < NE; ++e) {
+                uint8_t* o = lay.data() + (size_t) e * eb;
+                std::memcpy(o, w13.data() + e * a, a);
+                std::memcpy(o + a, s13.data() + e * b, b);
+                std::memcpy(o + a + b, w2.data() + e * c, c);
+                std::memcpy(o + a + b + c, s2.data() + e * d, d);
+            }
+            uint8_t* dst = (X.nvfp4 ? E.pool_nv : E.pool_mx) + ex_layer_off(l) - (X.nvfp4 ? 0 : ex_layer_off(MXFP8_FIRST));
+            CK(cudaMemcpy(dst, lay.data(), lay.size(), cudaMemcpyHostToDevice));
+            for (int e = 0; e < NE; ++e) {
+                E.htabA[l * NE + e] = dst + (size_t) e * eb;
+                E.htabB[l * NE + e] = dst + (size_t) e * eb + ex_partA(l);
+            }
+            X.tA = E.tabA + (size_t) l * NE;
+            X.tB = E.tabB + (size_t) l * NE;
+        }
         if (X.nvfp4) {
             const vec a13 = ck.f32(q + "mlp.experts.w13_weight_amax"), d13 = ck.f32(q + "mlp.experts.w13_weight_outer_scale_denominator");
             const vec a2 = ck.f32(q + "mlp.experts.w2_weight_amax"), d2 = ck.f32(q + "mlp.experts.w2_weight_outer_scale_denominator");
@@ -1672,6 +1723,8 @@ void load() {
         std::fprintf(stderr, "\rloaded layer %d/%d, %.1f GiB in VRAM", l + 1, NL, g_vram / 1073741824.0);
     }
     std::fprintf(stderr, "\n");
+    CK(cudaMemcpy(E.tabA, E.htabA.data(), E.htabA.size() * sizeof(void*), cudaMemcpyHostToDevice));
+    CK(cudaMemcpy(E.tabB, E.htabB.data(), E.htabB.size() * sizeof(void*), cudaMemcpyHostToDevice));
 }
 
 void alloc_state() {
@@ -1813,14 +1866,14 @@ void moe(const Layer& Y, const float* x, const float* r, float* mhist, const flo
     const Experts& X = Y.ex;
     if (X.nvfp4) {
 #define SEL(R) \
-        k_gemv_nvfp4_sel<R><<<dim3(2 * FF / (8 * R), TOPK), 256, (H + 256) * 4>>>(X.w13, X.s13, X.f13, E.ids, x, 0, E.gu, 2 * FF, H); \
-        k_gemv_nvfp4_sel<R, true><<<dim3(H / (8 * R), TOPK), 256, (FF + 256) * 4>>>(X.w2, X.s2, X.f2, E.ids, E.gu, 2 * FF, E.ey, H, FF);
+        k_gemv_nvfp4_sel<R><<<dim3(2 * FF / (8 * R), TOPK), 256, (H + 256) * 4>>>(X.tA, X.f13, E.ids, x, 0, E.gu, 2 * FF, H); \
+        k_gemv_nvfp4_sel<R, true><<<dim3(H / (8 * R), TOPK), 256, (FF + 256) * 4>>>(X.tB, X.f2, E.ids, E.gu, 2 * FF, E.ey, H, FF);
         switch (g_sel_rpw) { case 1: SEL(1) break; case 2: SEL(2) break; case 8: SEL(8) break; default: SEL(4) }
 #undef SEL
     } else {
 #define SEL(R) \
-        k_gemv_mxfp8_sel<R><<<dim3(2 * FF / (8 * R), TOPK), 256, H * 4>>>(X.w13, X.s13, E.ids, x, 0, E.gu, 2 * FF, H); \
-        k_gemv_mxfp8_sel<R, true><<<dim3(H / (8 * R), TOPK), 256, FF * 4>>>(X.w2, X.s2, E.ids, E.gu, 2 * FF, E.ey, H, FF);
+        k_gemv_mxfp8_sel<R><<<dim3(2 * FF / (8 * R), TOPK), 256, H * 4>>>(X.tA, E.ids, x, 0, E.gu, 2 * FF, H); \
+        k_gemv_mxfp8_sel<R, true><<<dim3(H / (8 * R), TOPK), 256, FF * 4>>>(X.tB, E.ids, E.gu, 2 * FF, E.ey, H, FF);
         switch (g_sel_rpw) { case 1: SEL(1) break; case 2: SEL(2) break; case 8: SEL(8) break; default: SEL(4) }
 #undef SEL
     }
@@ -2107,22 +2160,22 @@ void moe_b(const Layer& Y, const float* x, float* out, int T, int pos0) {
         // until the SwiGLU, then the fp16 act [nr][FF]
         half* ah = reinterpret_cast<half*>(PF.act);
         kb_gather_h<<<nr, 256>>>(x, PF.rows, ah);
-        g<<<dim3(maxt_tc, 2 * FF / TN), 256>>>(ah, H, X.w13, X.s13, X.f13, PF.tile_e, PF.tile_r0, PF.ntiles,
+        g<<<dim3(maxt_tc, 2 * FF / TN), 256>>>(ah, H, X.tA, X.f13, PF.tile_e, PF.tile_r0, PF.ntiles,
                                                PF.eoff, PF.ecnt, PF.gu, 2 * FF, H);
         kb_swiglu_h<<<(unsigned) (((size_t) nr * FF + 255) / 256), 256>>>(PF.gu, ah, nr);
-        g<<<dim3(maxt_tc, H / TN), 256>>>(ah, FF, X.w2, X.s2, X.f2, PF.tile_e, PF.tile_r0, PF.ntiles,
+        g<<<dim3(maxt_tc, H / TN), 256>>>(ah, FF, X.tB, X.f2, PF.tile_e, PF.tile_r0, PF.ntiles,
                                           PF.eoff, PF.ecnt, PF.ey, H, FF);
     } else if (X.nvfp4) {
-        kb_moe_gemm<true><<<dim3(maxt, 2 * FF / FN), 256>>>(x, H, PF.rows, X.w13, X.s13, X.f13, PF.tile_e, PF.tile_r0,
+        kb_moe_gemm<true><<<dim3(maxt, 2 * FF / FN), 256>>>(x, H, PF.rows, X.tA, X.f13, PF.tile_e, PF.tile_r0,
                                                             PF.ntiles, PF.eoff, PF.ecnt, PF.gu, 2 * FF, H);
         kb_swiglu<<<(unsigned) (((size_t) nr * FF + 255) / 256), 256>>>(PF.gu, PF.act, nr);
-        kb_moe_gemm<true><<<dim3(maxt, H / FN), 256>>>(PF.act, FF, nullptr, X.w2, X.s2, X.f2, PF.tile_e, PF.tile_r0,
+        kb_moe_gemm<true><<<dim3(maxt, H / FN), 256>>>(PF.act, FF, nullptr, X.tB, X.f2, PF.tile_e, PF.tile_r0,
                                                        PF.ntiles, PF.eoff, PF.ecnt, PF.ey, H, FF);
     } else {
-        kb_moe_gemm<false><<<dim3(maxt, 2 * FF / FN), 256>>>(x, H, PF.rows, X.w13, X.s13, nullptr, PF.tile_e, PF.tile_r0,
+        kb_moe_gemm<false><<<dim3(maxt, 2 * FF / FN), 256>>>(x, H, PF.rows, X.tA, nullptr, PF.tile_e, PF.tile_r0,
                                                              PF.ntiles, PF.eoff, PF.ecnt, PF.gu, 2 * FF, H);
         kb_swiglu<<<(unsigned) (((size_t) nr * FF + 255) / 256), 256>>>(PF.gu, PF.act, nr);
-        kb_moe_gemm<false><<<dim3(maxt, H / FN), 256>>>(PF.act, FF, nullptr, X.w2, X.s2, nullptr, PF.tile_e,
+        kb_moe_gemm<false><<<dim3(maxt, H / FN), 256>>>(PF.act, FF, nullptr, X.tB, nullptr, PF.tile_e,
                                                         PF.tile_r0, PF.ntiles, PF.eoff, PF.ecnt, PF.ey, H, FF);
     }
     kb_combine<<<dim3(H / 256, T), 256>>>(PF.ey, PF.slot, PF.wts, out);
