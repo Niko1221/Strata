@@ -16,8 +16,13 @@
 //     reference masked_scatter's them into inputs_embeds = embed_norm(embed(ids))); positions stay plain token indices.
 //
 // Numerics: fp32 throughout (cuBLAS SGEMM, pedantic math, on fp32 copies of the BF16 weights made per use).
+// CBA: attention as SGEMM over query chunks with the scores in VRAM, fine to a few thousand ViT tokens (a 1000-token
+// picture: ~0.2 s) but 7 s at the cap (16k ViT tokens, 4096 image tokens); a flash-style TF32 / fp16 kernel if big
+// pictures matter.  One picture at a time, no batching across a prompt's pictures.
 //
-// Memory: nothing at load and nothing kept on the GPU.  The weights are read at the first picture into pinned host
+// Memory: nothing at load and nothing kept on the GPU.
+// CBA: the weights cross PCIe at every encode (~650 MB, about 90 ms on this box: most of a small picture's cost); a
+// resident copy when VRAM is free (no offload) is the upgrade.  The weights are read at the first picture into pinned host
 // memory (607 MB BF16 + 6 MB fp32) and streamed to the GPU matrix by matrix during each encode.  An encode's working
 // VRAM (weight staging 100 MB + 20 KB per ViT token + 32 MB) comes from the tail of the NVFP4 expert pool when the
 // experts are offloaded (those slots are evicted, then handed back empty: the pool refills them on demand), else from
@@ -410,6 +415,7 @@ std::string vis_prepare(std::vector<int>& ids, const std::vector<std::string>& p
 
 // The reused prefix (the first `start` tokens, already in the engine's state) holds the same pictures as this prompt's
 // at the same places, else nothing is reused: two different pictures of the same size have the same token ids.
+// CBA: one history (g_vis.hist, set by vis_done); a cache of several sessions needs each session's own spans.
 size_t vis_reuse(size_t start) {
     if (!start) return 0;
     auto in = [start](const std::vector<Vis::Span>& v) {
