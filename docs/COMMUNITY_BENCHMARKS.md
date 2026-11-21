@@ -73,6 +73,8 @@ and their limits. Report what you actually measured and label estimates separate
   IQ2_XS with adaptive cache E4/S24: 48.23 accepted-decode tok/s (median of 5) on a modified, locally built engine (not an official release; source commit and hashes in provenance.json, steps in REPRODUCE.md).
 - [2026-10-12: Radeon 780M (gfx1103), Ryzen 7 8745HS, 60 GB RAM, GTT 50 GiB](bench-results/2026-10-12-community-gfx1103/README.md):
   the gfx1103 port (native dot4, the gfx11 WMMA kernels, the exact speed switches and a calibrated hipBLASLt table), hand-built on ROCm 10.1, Q2_0 + MTP at 32K: prompts 90 tok/s plain, 186 with the table, 277 with the WMMA opt-ins (4K), decode 13.1 -> 14.3 tok/s; zero GPU resets.
+- [2026-11-21: RX 7600 XT 16 GB (gfx1102), Ryzen 5 3600, 32 GB DDR4, CachyOS](bench-results/2026-11-21-community-rx-7600-xt-rocm-10.1/README.md):
+  ROCm 7.2.4 vs ROCm 10.1 with Arch's `libamdhip64` (CachyOS's x86-64-v3 build crashes at start; cause, reproducer and workaround included), same engine binary, Coder IQ1_M at 65K context, 150 W cap, the standard `strata_bench.py --long --clients 4` suite once per runtime: decode 29.8 / 29.2 tok/s, prompt 339-365 / 344-372 tok/s at 4K-32K, agent decode 32.9 / 33.7 tok/s. Kernel and voltage offset differ between the runs; one 32K stall seen on 10.1.
 
 ## Run the standard benchmark
 
