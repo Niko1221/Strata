@@ -66,6 +66,18 @@ def test_qwen_unchanged():
     assert effort_kwargs("high") == {"reasoning_effort": "xhigh"}
 
 
+def test_thinking_off_is_the_effort_none(inkling):
+    """Inkling 2's template reads no enable_thinking: "thinking off" from any client is its effort "none" (the model still writes a short
+    thinking message, which the parser keeps out of the answer)."""
+    from serve.frontend import anthropic_to_messages
+    q = [{"role": "user", "content": "hi"}]
+    assert openai_to_messages({"messages": q, "chat_template_kwargs": {"enable_thinking": False}})[2] == {"reasoning_effort": "none"}
+    assert anthropic_to_messages({"messages": q, "thinking": {"type": "disabled"}})[2] == {"reasoning_effort": "none"}
+    use_family(None)
+    assert openai_to_messages({"messages": q, "chat_template_kwargs": {"enable_thinking": False}})[2] == {"enable_thinking": False}
+    assert anthropic_to_messages({"messages": q, "thinking": {"type": "disabled"}})[2] == {"enable_thinking": False}
+
+
 def test_tool_result_named_from_its_call(inkling):
     msgs, _, _ = openai_to_messages({"messages": [
         {"role": "user", "content": "w?"},
