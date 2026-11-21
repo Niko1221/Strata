@@ -19,6 +19,7 @@ includes hardware, settings, and per-run JSON. The
 and their limits. Report what you actually measured and label estimates separately.
 
 ## Community reports
+- [2026-11-21: RX 7900 XTX (gfx1100), Ryzen 9 7900X, 96 GB RAM](bench-results/2026-11-21-rx7900xtx-ud-iq3xxs/README.md): engine 0.1.63 (v0.2.17 + 11 disclosed fork commits), unsloth UD-IQ3_XXS, production-shaped one-shot runs at 1K/32K/64K/128K/262K (prompt 3,133-3,344 tok/s at 32K-262K, output 43.9-56.7 tok/s), plus a 150-cell control-calibrated sweep validating the spec-width / draft-min-p / lookup-chain defaults on this quant (nothing moved) and a single-cell +-14-18% variance caveat for deep tiers.
 
 - [2026-09-30: RTX 5090, Core Ultra 9 285K, 64 GB RAM](bench-results/2026-09-30-community-rtx-5090/README.md):
   Strata 0.1.29, original Flash-Next IQ2_XS, 131,072-token context; three runs
