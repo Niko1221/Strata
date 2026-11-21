@@ -70,6 +70,26 @@ class InklingImages(unittest.TestCase):
         svc.drop_embeddings()
         self.assertFalse(Path(paths[0]).exists())
 
+    def test_a_jpeg_goes_as_pillows_pixels(self):
+        try:
+            import io
+            from PIL import Image
+        except ImportError:
+            self.skipTest("no Pillow")
+        im = Image.new("RGB", (45, 30))
+        im.putdata([((x * 37) % 256, (y * 91) % 256, (x * y) % 256) for y in range(30) for x in range(45)])
+        buf = io.BytesIO()
+        im.save(buf, format="JPEG", quality=80)
+        url = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+        msgs, _, _ = openai_to_messages({"messages": [{"role": "user", "content": [
+            {"type": "image_url", "image_url": {"url": url}}, {"type": "text", "text": "?"}]}]})
+        svc = self.service(1)
+        svc.prepare(msgs, None, {})
+        sent = Path(svc.embeddings.hy4[0]).read_bytes()
+        self.assertEqual(sent[:2], b"BM")                            # decoded by Pillow (libjpeg-turbo, as the reference)
+        want = Image.open(io.BytesIO(buf.getvalue())).convert("RGB")
+        self.assertEqual(list(Image.open(io.BytesIO(sent)).convert("RGB").getdata()), list(want.getdata()))
+
     def test_the_gen_line_names_the_picture(self):
         keys = StrataEngine.sampling_keys({"strata_hy4_images": ["/tmp/a b%.png"]})
         self.assertIn(" image=/tmp/a%20b%25.png", keys)

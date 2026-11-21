@@ -425,6 +425,28 @@ STREAM_WRITE_TIMEOUT_S = float(os.environ.get("STRATA_STREAM_WRITE_TIMEOUT_S", "
 INKLING_NO_IMAGES = ("this Inkling 2 engine does not read images (a GGUF model is text only here, or the engine predates "
                      "images: one that reads them says images=1 at its start); send the text of the picture instead")
 
+def inkling_picture(data: bytes) -> bytes:
+    """A picture for strata-ink2: Vision.normalize, then a JPEG decoded by Pillow and handed over as an uncompressed BMP.
+    The reference (transformers' processor) decodes with libjpeg-turbo; the engine's stb_image decodes ~3 % of a photo's
+    pixels a few levels off, and that alone moves the ViT's output by ~2 % (measured on a 960x686 JPEG: rel-L2 2.4e-2
+    against 2.7e-5 for the same pixels as a PNG).  Pillow is the same libjpeg-turbo, so the pixels are the reference's."""
+    data = Vision.normalize(data)
+    if data[:3] != b"\xff\xd8\xff":
+        return data
+    try:
+        import io
+        from PIL import Image
+        im = Image.open(io.BytesIO(data), formats=["JPEG"])
+        im = im.convert("RGB")
+        out = io.BytesIO()
+        im.save(out, format="BMP")
+        return out.getvalue()
+    except ImportError:   # CBA: without Pillow the engine decodes the JPEG itself (stb_image: close, not the reference's pixels)
+        return data
+    except Exception as e:  # noqa: BLE001 - Pillow could not read what normalize passed through
+        raise ValueError(f"the image could not be read ({e})") from None
+
+
 # Reads that had no timeout (#1317).  A blocking read of the image encoder's pipe or of the engine's READY line that
 # never returned held the request turn for good: the engine then sat idle in its command loop, so no watchdog could
 # fire and every later request queued behind it (the "lost step" class of #481).  Generous on purpose: a cold model
@@ -5100,7 +5122,8 @@ class Service:
             if self.offline and any(src.startswith(("http://", "https://")) for src in images):
                 raise ValueError("offline mode cannot download an image URL; send a data: image instead")
             self.embeddings.hy4 = hy4_kind.write_images(
-                images, lambda s: fetched[s] if s in fetched else Vision.load(s), Vision.normalize, cancel)
+                images, lambda s: fetched[s] if s in fetched else Vision.load(s),
+                Vision.normalize if self.hy4 else inkling_picture, cancel)
             images = []
         if images:
             if self.offline and any(src.startswith(("http://", "https://")) for src in images):
