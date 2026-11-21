@@ -3403,12 +3403,14 @@ struct Serve {
         const int S = (int) act.size();
         if (S == 0) return;
         // who verifies a proposal this window: the greedy slots in turn, as many as fit beside one row per slot
+        // (STRATA_Q36_MTP_SAMPLED=1: sampled slots can also verify proposals)
         const int room = Engine::kVerify - S;
         std::vector<char> cand((size_t) S, 0);
         int nc = 0;
+        static const bool mtp_sampled = std::getenv("STRATA_Q36_MTP_SAMPLED") != nullptr && std::string(std::getenv("STRATA_Q36_MTP_SAMPLED")) != "0";
         for (int k = 0; k < S && nc < room; ++k) {
             const int i = (mtp_turn + k) % S;
-            if (!slots[(size_t) act[(size_t) i]].smp.needs_logits()) { cand[(size_t) i] = 1; ++nc; }
+            if (!slots[(size_t) act[(size_t) i]].smp.needs_logits() || mtp_sampled) { cand[(size_t) i] = 1; ++nc; }
         }
         ++mtp_turn;
         // a candidate without a proposal gets its first one from the state its last row left
@@ -3766,7 +3768,9 @@ struct Serve {
         const char* finish = "length";
         // greedy requests alone with the MTP block: speculative steps of mtp_d drafts (verified, so the text is the greedy
         // text); sampled ones, and requests beside others, one token at a time
-        const bool spec = E.mtp_d > 0 && !smp.needs_logits() && !adm;
+        // (STRATA_Q36_MTP_SAMPLED=1: opt-in toggle allowing sampled requests to utilize MTP speculative drafting)
+        static const bool mtp_sampled = std::getenv("STRATA_Q36_MTP_SAMPLED") != nullptr && std::string(std::getenv("STRATA_Q36_MTP_SAMPLED")) != "0";
+        const bool spec = E.mtp_d > 0 && (!smp.needs_logits() || mtp_sampled) && !adm;
         std::vector<int32_t> fix, drafts;
         int32_t picks[16];
         int nx = smp.needs_logits() ? -1 : E.greedy();
@@ -3804,11 +3808,13 @@ struct Serve {
                          prompt_ms > 0 ? 1000.0 * (double) fresh / prompt_ms : 0.0, cont ? "" : ", done at once");
             return;
         }
+        bool need_sample = smp.needs_logits();
         for (;;) {
-            if (smp.needs_logits()) {
+            if (need_sample) {
                 E.host_logits(lg);
                 nx = sample(lg, smp, hist, rng);
             }
+            need_sample = smp.needs_logits();
             auto emit = [&](int t) {   // false: the answer ends here
                 std::printf("T %d\n", t);
                 std::fflush(stdout);
@@ -3837,6 +3843,7 @@ struct Serve {
                     if (!emit(drafts[(size_t) i])) ended = true;
                 if (ended) break;
                 nx = picks[a];
+                need_sample = false;
                 continue;
             }
             if (E.pos + 1 > E.ctx) break;
