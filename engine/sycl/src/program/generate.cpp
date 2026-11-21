@@ -10733,7 +10733,8 @@ int main(int argc, char **argv) try {
                                 (avail ? std::to_string(*avail >> 20) + " MiB available)" : "RAM telemetry unavailable)");
                             return false;
                         };
-                        if (strata::core::conversation_session_read_limits(limits, ss, g, session_draft,
+                        if (strata::core::conversation_session_read_limits(limits, ss, g,
+                                use_mtp ? &mtp.kv_state() : nullptr,
                                 (uint64_t) o.max_context, (uint64_t) std::max(o.prompt_cache, 1), why) &&
                             spill.take_serial(sp.serial, *spill_id, limits, image, why))
                             from_ssd = true;
