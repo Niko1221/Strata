@@ -176,8 +176,6 @@ Dziękujemy wszystkim, którzy wspierają Stratę.
 <a href="https://github.com/hrkgk"><img src="https://images.weserv.nl/?url=github.com/hrkgk.png&w=112&h=112&fit=cover&mask=circle&output=png" width="56" height="56" alt="hrkgk" title="hrkgk"></a>
 <!-- supporters:end -->
 
-Wszyscy wspierający i jak wesprzeć Stratę: [SUPPORTERS.md](../../SUPPORTERS.md)
-
 [Licencja MIT](../../LICENSE) · [Podziękowania i licencje modeli](../HOW_IT_WORKS.md#credits) · [Prywatność](../SAFETY.md)
 
 <a id="option-c-let-your-ai-set-it-up"></a>

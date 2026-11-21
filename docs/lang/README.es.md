@@ -175,8 +175,6 @@ Gracias a todas las personas que apoyan Strata.
 <a href="https://github.com/hrkgk"><img src="https://images.weserv.nl/?url=github.com/hrkgk.png&w=112&h=112&fit=cover&mask=circle&output=png" width="56" height="56" alt="hrkgk" title="hrkgk"></a>
 <!-- supporters:end -->
 
-Todas las personas que apoyan Strata y cómo apoyar el proyecto: [SUPPORTERS.md](../../SUPPORTERS.md)
-
 [Licencia MIT](../../LICENSE) · [Créditos y licencias de los modelos](../HOW_IT_WORKS.md#credits) · [Privacidad](../SAFETY.md)
 
 <a id="option-c-let-your-ai-set-it-up"></a>
