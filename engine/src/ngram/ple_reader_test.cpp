@@ -19,6 +19,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <random>
 #include <sstream>
 #include <string>
@@ -144,9 +145,12 @@ k::PleParams test_params(const k::PleFormatInfo& f) {
     return p;
 }
 
+/// A metadata fault write_format_table can put in a table, for the refusals PleTable::open must make.
+enum class Fault { None, NoCodebook, IntCodebook, InfScale, NoMarker, Shifted, FromZero };
+
 // `claimed_rows` is the row count the header states; `rows` rows are actually written (equal unless a test lies)
 std::string write_format_table(const std::string& dir, const k::PleFormatInfo& f, uint32_t rows, uint64_t claimed_rows = 0,
-                               bool with_codebook = true) {
+                               Fault fault = Fault::None) {
     const std::string path = dir + "/ple_format_selftest.gguf";
     std::ofstream out(path, std::ios::binary);
     if (!out) { std::fprintf(stderr, "cannot write %s\n", path.c_str()); return {}; }
@@ -158,16 +162,23 @@ std::string write_format_table(const std::string& dir, const k::PleFormatInfo& f
     const auto str = [&](const char* s) { return le((uint64_t) std::strlen(s), 8) + std::string(s); };
     const auto f32 = [&](float v) { uint32_t b; std::memcpy(&b, &v, 4); return le(b, 4); };
     const k::PleParams p = test_params(f);
-    const bool codebook = f.needs_codebook && with_codebook;
-    const uint64_t n_kv = 1u + (f.marker != nullptr ? 1u : 0u) + (f.needs_scale ? 1u : 0u) + (codebook ? 1u : 0u);
+    const bool marker = f.marker != nullptr && fault != Fault::NoMarker;
+    const bool codebook = f.needs_codebook && fault != Fault::NoCodebook;
+    const bool span = fault == Fault::Shifted || fault == Fault::FromZero;
+    const uint64_t n_kv = 1u + (marker ? 1u : 0u) + (f.needs_scale ? 1u : 0u) + (codebook ? 1u : 0u) + (span ? 1u : 0u);
     std::string head = "GGUF" + le(3u, 4) + le(1ull, 8) + le(n_kv, 8);
     head += str("general.architecture") + le(8u, 4) + str("strata-ple");
-    if (f.marker != nullptr) head += str("strata.ple.format") + le(8u, 4) + str(f.marker);
-    if (f.needs_scale) head += str("strata.ple.scale") + le(6u, 4) + f32(p.scale);       // 6 = FLOAT32
-    if (codebook) {                                                                      // 9 = ARRAY of 6 = FLOAT32
+    if (marker) head += str("strata.ple.format") + le(8u, 4) + str(f.marker);
+    if (f.needs_scale)                                                                   // 6 = FLOAT32
+        head += str("strata.ple.scale") + le(6u, 4) + f32(fault == Fault::InfScale ? std::numeric_limits<float>::infinity() : p.scale);
+    if (codebook && fault == Fault::IntCodebook) {                                       // 9 = ARRAY of 5 = INT32
+        head += str("strata.ple.codebook") + le(9u, 4) + le(5u, 4) + le(8ull, 8);
+        for (int v = -4; v < 4; ++v) head += le((uint32_t) v, 4);
+    } else if (codebook) {                                                               // 9 = ARRAY of 6 = FLOAT32
         head += str("strata.ple.codebook") + le(9u, 4) + le(6u, 4) + le(8ull, 8);
         for (float v : p.codebook) head += f32(v);
     }
+    if (span) head += str("strata.ple.rows") + le(8u, 4) + str(fault == Fault::Shifted ? "5:69" : "0:64");
     head += str("per_layer_token_embd.weight") + le(2u, 4);
     head += le(f.marker != nullptr ? (uint64_t) f.row_bytes : (uint64_t) k::PLE_HEAD_DIM, 8) + le(claimed_rows != 0 ? claimed_rows : (uint64_t) rows, 8);
     head += le(gguf_type_id(f.name), 4) + le(0ull, 8);
@@ -576,12 +587,24 @@ void all_formats_round_trip(const std::string& dir) {
         const k::PleFormatInfo* want = f.marker != nullptr ? &k::ple_format_info(k::PleFormat::F8_E4M3) : &f;
         CHECK(k::ple_format_for_type(f.gguf_type) == want, "%s: type lookup", f.name);
         format_round_trip(dir, f, 2000);
-        if (f.needs_codebook) {   // a 3-bit table without its codebook is refused, saying so
-            const std::string path = write_format_table(dir, f, 64, 0, false);
+        // metadata the format needs and does not have, or that would shift its rows, is refused with a message naming it
+        const struct { Fault fault; bool applies; const char* what; const char* says; } faults[] = {
+            {Fault::NoCodebook, f.needs_codebook, "no codebook", "strata.ple.codebook"},
+            {Fault::IntCodebook, f.needs_codebook, "an INT32 codebook", "strata.ple.codebook"},
+            {Fault::InfScale, f.needs_scale, "an infinite scale", "finite strata.ple.scale"},
+            {Fault::NoMarker, f.marker != nullptr, "no strata.ple.format", "strata.ple.format = "},
+            {Fault::Shifted, true, "rows 5:69 of a table", "strata.ple.rows"},
+            {Fault::FromZero, true, "rows 0:64 of a table", nullptr},   // (accepted)
+        };
+        for (const auto& c : faults) {
+            if (!c.applies) continue;
+            const std::string path = write_format_table(dir, f, 64, 0, c.fault);
             k::PleTable t;
             std::string err;
-            CHECK(!path.empty() && !t.open(path, err) && err.find("strata.ple.codebook") != std::string::npos,
-                  "%s: a table without strata.ple.codebook: open said \"%s\"", f.name, err.c_str());
+            const bool opened = !path.empty() && t.open(path, err);
+            if (c.says == nullptr) CHECK(opened, "%s: a table with %s does not open: %s", f.name, c.what, err.c_str());
+            else CHECK(!opened && err.find(c.says) != std::string::npos, "%s: a table with %s: open said \"%s\"", f.name, c.what, err.c_str());
+            t.close();
             if (!path.empty()) std::filesystem::remove(path);
         }
     }

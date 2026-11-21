@@ -399,6 +399,13 @@ bool PleTable::open(const std::string& gguf_path, std::string& err, const PleIoO
     const uint64_t want_ne0 = fmt != nullptr && fmt->marker != nullptr ? (uint64_t) fmt->row_bytes : (uint64_t) PLE_HEAD_DIM;
     if (t->shape.size() != 2 || t->shape[0] != want_ne0) {
         err = "per_layer_token_embd.weight has an unexpected shape";
+        if (fmt != nullptr && fmt->marker != nullptr && (fmt_key == nullptr || fmt_key->s != fmt->marker)) {
+            // I8 bytes without a known marker: name the markers, which also fix ne0 (the row's byte count)
+            err += ": an I8 table needs strata.ple.format =";
+            const char* sep = " ";
+            for (const PleFormatInfo& f : kPleFormats)
+                if (f.marker != nullptr) { err += sep; err += f.marker; sep = ", "; }
+        }
         close();
         return false;
     }
@@ -409,9 +416,9 @@ bool PleTable::open(const std::string& gguf_path, std::string& err, const PleIoO
     }
     if (fmt->marker != nullptr) {
         const MetaValue* s = impl_->file->get("strata.ple.scale");
-        if (fmt_key == nullptr || fmt_key->s != fmt->marker || (fmt->needs_scale && (s == nullptr || !(s->num() > 0.0)))) {
+        if (fmt_key == nullptr || fmt_key->s != fmt->marker || (fmt->needs_scale && (s == nullptr || !(s->num() > 0.0) || !std::isfinite((float) s->num())))) {
             err = std::string("per_layer_token_embd.weight is I8 without strata.ple.format = ") + fmt->marker +
-                  (fmt->needs_scale ? " and a positive strata.ple.scale" : "");
+                  (fmt->needs_scale ? " and a positive, finite strata.ple.scale" : "");
             close();
             return false;
         }
@@ -419,13 +426,23 @@ bool PleTable::open(const std::string& gguf_path, std::string& err, const PleIoO
     }
     if (fmt->needs_codebook) {
         const MetaValue* cb = impl_->file->get("strata.ple.codebook");
-        bool ok = cb != nullptr && cb->type == MetaType::ARRAY && cb->count == 8 && cb->items.size() == 8;
+        bool ok = cb != nullptr && cb->type == MetaType::ARRAY && cb->elem == MetaType::F32 && cb->count == 8 && cb->items.size() == 8;
         for (int i = 0; ok && i < 8; ++i) {
-            ok = cb->items[(size_t) i].is_num() && std::isfinite(cb->items[(size_t) i].num());
+            ok = std::isfinite(cb->items[(size_t) i].num());
             if (ok) impl_->params.codebook[i] = (float) cb->items[(size_t) i].num();
         }
         if (!ok) {
-            err = std::string("the ") + fmt->name + " PLE table has no strata.ple.codebook of 8 finite numbers";
+            err = std::string("the ") + fmt->name + " PLE table has no strata.ple.codebook of 8 finite F32 values";
+            close();
+            return false;
+        }
+    }
+    // tools/ple_lowbit_emulate.py --rows A:B records the span it wrote: a table that starts past row 0 would be read with
+    // every row shifted by A, and the hash only reaches row 320001446, so a slice A:320001536 with A <= 90 still fits it
+    for (const char* key : {"strata.ple.rows", "strata.ple.emulated_rows"}) {
+        const MetaValue* span = impl_->file->get(key);
+        if (span != nullptr && span->s.rfind("0:", 0) != 0) {
+            err = std::string("the PLE table holds rows ") + span->s + " (" + key + "), not a table from row 0: every row would be read shifted";
             close();
             return false;
         }
