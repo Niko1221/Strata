@@ -35,29 +35,29 @@ Run by `python tools/strata_bench.py --long` against the HTTP API of a Strata se
 
 | Configuration | Actual prompt tokens | Reused tokens | Generated tokens | Runs | Prompt tok/s median and range | Decode tok/s median and range | TTFT seconds median and range |
 | --- | ---: | ---: | ---: | ---: | --- | --- | --- |
-| short chat | 46 (43-51) | 0 | 100 (100-100) | 9 | not measured | 87.7 (66.0-125.3) | 0.33 (0.29-0.37) |
-| 4K prompt, fresh | 4019 (4019-4019) | 0 (0-0) | 24 cap | 3 | 1708.0 (1465.1-1708.7) | not measured | 2.39 (2.37-2.78) |
-| 16K prompt, fresh | 16058 (16058-16058) | 0 (0-0) | 24 cap | 3 | 2410.6 (2376.8-2416.4) | not measured | 7.05 (6.80-7.12) |
-| 32K prompt, fresh | 32049 (32049-32049) | 0 (0-0) | 24 cap | 3 | 2477.0 (2474.3-2477.3) | not measured | 14.24 (14.14-14.35) |
-| agent session, follow-up turns | 8927 (8900-8929) at the last turn | see below | up to 64 | 3 | see below | 83.5 (38.2-132.7) | 1.98 (1.55-2.21) |
+| short chat | 46 (43-51) | 0 | 100 (100-100) | 9 | not measured | 86.9 (66.9-124.2) | 0.33 (0.29-0.36) |
+| 4K prompt, fresh | 4019 (4019-4019) | 0 (0-0) | 24 cap | 3 | 1744.6 (1741.6-1760.2) | not measured | 2.33 (2.32-2.34) |
+| 16K prompt, fresh | 16058 (16058-16058) | 0 (0-0) | 24 cap | 3 | 2405.4 (2391.3-2422.4) | not measured | 7.01 (6.76-7.16) |
+| 32K prompt, fresh | 32049 (32049-32049) | 0 (0-0) | 24 cap | 3 | 2451.7 (2450.7-2453.5) | not measured | 13.86 (13.41-14.04) |
+| agent session, follow-up turns | 8941 (8914-8971) at the last turn | see below | up to 64 | 3 | see below | 57.1 (39.4-87.6) | 1.92 (1.45-2.12) |
 
 Ranges are the lowest and highest of the runs; `Runs` counts requests that returned a token.
 
 ### Agent session (conversation cache)
 
-Cache hit over the follow-up turns: 70.8 % (70.6-70.8); earlier-turn tokens read again per session: 5 (5-5) (earlier turns that the cache did not hold; the 8206 (8205-8206) new tokens of the files are read once); first turn (nothing cached) first token: 2.35 s (2.28-2.65).
+Cache hit over the follow-up turns: 70.8 % (70.7-70.9); earlier-turn tokens read again per session: 5 (5-5) (earlier turns that the cache did not hold; the 8206 (8206-8207) new tokens of the files are read once); first turn (nothing cached) first token: 2.24 s (2.21-2.26).
 
 | Turn (run 1) | Prompt tokens | Reused | Read | Prompt tok/s | First token (s) | Decode tok/s |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 0 | 609 | 0 | 609 | 324.6 | 2.353 | 70.8 |
-| 1 | 2260 | 618 | 1642 | 1080.3 | 1.548 | 83.5 |
-| 2 | 3966 | 2323 | 1643 | 942.2 | 1.772 | 59.3 |
-| 3 | 5637 | 3995 | 1642 | 841.4 | 1.99 | 126.6 |
-| 4 | 7284 | 5642 | 1642 | 818.0 | 2.027 | 38.2 |
-| 5 | 8927 | 7285 | 1642 | 798.0 | 2.093 | 46.4 |
+| 0 | 609 | 0 | 609 | 322.8 | 2.264 | 72.7 |
+| 1 | 2273 | 631 | 1642 | 1117.8 | 1.499 | 68.9 |
+| 2 | 3979 | 2336 | 1643 | 987.1 | 1.693 | 70.8 |
+| 3 | 5654 | 4012 | 1642 | 867.2 | 1.917 | 40.9 |
+| 4 | 7298 | 5656 | 1642 | 838.9 | 1.989 | 42.8 |
+| 5 | 8941 | 7299 | 1642 | 811.9 | 2.043 | 39.4 |
 
 Per-request data: `results.json`. Engine log lines from the start: `engine-log-excerpt.txt` (when this run started the server).
 
 ## Correctness and limitations
 
-Not measured: this is a speed suite. The conversation uses the model's own replies, so token counts differ a little between runs. Machine details come from the server, `nvidia-smi`/`rocm-smi` and the OS; background load is not recorded. Total time of the suite: 133 s.
+Not measured: this is a speed suite. The conversation uses the model's own replies, so token counts differ a little between runs. Machine details come from the server, `nvidia-smi`/`rocm-smi` and the OS; background load is not recorded. Total time of the suite: 129 s.

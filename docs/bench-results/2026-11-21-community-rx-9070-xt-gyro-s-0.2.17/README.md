@@ -4,11 +4,12 @@ Measured on 2026-11-21 by @ric20527. This is the same PC and model as #6161 (202
 days and three releases later. It uses the official Windows HIP `rx9070` engine 0.1.63 with Qwen3.8-Flash-Next Gyro-S at
 a 131,072-token context, and the hand-tuned configuration this PC uses every day. There are two runs, one after the
 other, each from a freshly started engine: the quick suite (`quick/`) and the standard benchmark (`standard/`, status
-complete, 12 of 12 sanity checks). Main limitation: one PC, one model, one run of each suite.
+complete, 12 of 12 sanity checks). **The GPU ran at stock clocks.** Main limitation: one PC, one model, one run of each
+suite.
 
 ## Hardware and software
 
-- GPU: AMD Radeon RX 9070 XT 16 GiB (gfx1201), PCIe Gen5 x16; driver 32.0.32029.2010
+- GPU: AMD Radeon RX 9070 XT 16 GiB (gfx1201), PCIe Gen5 x16; driver 32.0.32029.2010; stock clocks, no Adrenalin tuning
 - CPU: AMD Ryzen 5 7600X3D (6 cores, 12 threads, AVX-512); RAM: 31.4 GiB DDR5-6000; page file on the system SSD
 - Model files on an SK Hynix HFS512GDE9X084N NVMe (512 GB)
 - OS: Windows 11 Pro 10.0.26300
@@ -43,12 +44,9 @@ What the configuration adds to the app's own arguments (the full list is in `sta
 | `--prompt-cache-spread` | on | new |
 | `--conversation-cache-mib`, `--conversation-cache-min-free-mib` | 0, 0 | new |
 
-`--adapt-async 1` is **not** in this configuration. This PC used it from 2026-11-17 to 2026-11-21 (with
-`STRATA_WIN_HIP_RISKY=1` on 0.1.63). It was removed after it reset the display driver here too, as #5672 describes for an
-RX 7900 XTX (details below). A single run of each suite with and without it shows no consistent difference
-(see the last section).
+`--adapt-async 1` is not in this configuration (see the last section for why it was left out).
 
-Placement (engine log): 8,734 expert slots in VRAM (8.54 GiB), 17.00 GiB of experts resident in RAM, 8.00 GiB of it
+Placement (engine log): 8,864 expert slots in VRAM (8.66 GiB), 17.00 GiB of experts resident in RAM, 8.00 GiB of it
 registered for the GPU. The engine command line in `standard/` shows every flag above in effect. The quick suite's
 README prints only the config's `args`; the same `user_args`, `--prompt-cache-spread` included, were in effect there too
 (checked in the engine log).
@@ -56,9 +54,9 @@ README prints only the config's `args`; the same `user_args`, `--prompt-cache-sp
 ## Method
 
 - `quick/`: `python tools/strata_bench.py --config <file> --long` from the app's control, three runs per test, thinking
-  off, temperature 0. Started 01:14 local time.
+  off, temperature 0. Started 01:43 local time.
 - `standard/`: `strata bench run --profile <same file> --track custom` (protocol `strata-qwen38-thinking-v1-draft.1`),
-  started 01:18, right after, from a freshly started engine. Time after the model loaded: 1 min 55 s.
+  started 01:46, right after, from a freshly started engine. Time after the model loaded: 1 min 56 s.
 - Model loading is not timed. Each folder's README describes its method in full.
 
 ## Results
@@ -67,47 +65,47 @@ Quick suite, median (range):
 
 | Test | #6161 tuned (0.1.60, 2026-11-17) | This run (0.1.63) | Change |
 | --- | ---: | ---: | ---: |
-| short chat decode tok/s (n=9) | 71.3 (60.8-89.9) | 87.7 (66.0-125.3) | +23 % |
-| short chat first token s | 0.35 | 0.33 (0.29-0.37) | -6 % |
-| 4K fresh prompt tok/s (n=3) | 1236.2 | 1708.0 (1465.1-1708.7) | +38 % |
-| 16K fresh prompt tok/s (n=3) | 1571.3 | 2410.6 (2376.8-2416.4) | +53 % |
-| 32K fresh prompt tok/s (n=3) | 1568.9 | 2477.0 (2474.3-2477.3) | +58 % |
-| agent session cache hit % | 70.8 | 70.8 (70.6-70.8) | 0 |
-| agent turn first token s (n=15) | 1.93 | 1.98 (1.55-2.21) | +2 % |
-| agent decode tok/s (n=15) | 60.4 | 83.5 (38.2-132.7) | +38 % |
+| short chat decode tok/s (n=9) | 71.3 (60.8-89.9) | 86.9 (66.9-124.2) | +22 % |
+| short chat first token s | 0.35 | 0.33 (0.29-0.36) | -6 % |
+| 4K fresh prompt tok/s (n=3) | 1236.2 | 1744.6 (1741.6-1760.2) | +41 % |
+| 16K fresh prompt tok/s (n=3) | 1571.3 | 2405.4 (2391.3-2422.4) | +53 % |
+| 32K fresh prompt tok/s (n=3) | 1568.9 | 2451.7 (2450.7-2453.5) | +56 % |
+| agent session cache hit % | 70.8 | 70.8 (70.7-70.9) | 0 |
+| agent turn first token s (n=15) | 1.93 | 1.92 (1.45-2.12) | -1 % |
+| agent decode tok/s (n=15) | 60.4 (38.0-100.7) | 57.1 (39.4-87.6) | within the spread |
 
 Standard benchmark (thinking on, the model card's sampling), median (range), n=3:
 
 | Case | #6161 tuned (0.1.60) | This run (0.1.63) |
 | --- | ---: | ---: |
-| short decode tok/s | 83.7 (76.9-84.4) | 94.6 (83.2-97.3) |
-| 4K prompt tok/s | 1276.7 (1175.6-1278.5) | 1866.5 (1846.4-1867.5) |
-| 16K prompt tok/s | 1608.3 (1602.5-1612.1) | 2494.0 (2483.0-2514.0) |
-| decode on the 16K case tok/s | 81.2 (78.6-87.9) | 95.2 (91.7-98.3) |
+| short decode tok/s | 83.7 (76.9-84.4) | 79.8 (77.6-95.7) |
+| 4K prompt tok/s | 1276.7 (1175.6-1278.5) | 1830.2 (1781.3-1831.8) |
+| 16K prompt tok/s | 1608.3 (1602.5-1612.1) | 2446.1 (2426.7-2447.9) |
+| decode on the 16K case tok/s | 81.2 (78.6-87.9) | 91.5 (88.9-94.4) |
 | sanity checks | 12 of 12 | **12 of 12** |
 
-Four of nine performance requests reached the 512-token cap while reasoning, as the protocol allows (the same count as
-in #6161); no request failed.
+Three of nine performance requests reached the 512-token cap while reasoning, as the protocol allows; no request failed.
 
-The #6161 columns are from a different day, not a same-day control. The change against them is the sum of the new
-settings and three engine releases, and this run had a little more free RAM at load. I did not run the app's default
-configuration or the #6161 configuration on 0.1.63, so the table does not split the gain between settings and
-releases. The per-setting measurements are in #6325 (spec/draft-conf/pcie-frac, paired sessions with confidence
-intervals).
+Prompt reads gain 41-56 % over #6161. Decode is mixed: the two short-answer decode medians are within their own spread
+(the agent turns produce only 64 tokens each, the standard short case 3 answers). The decode with a 16K context gains
+13 % and the quick chat decode 22 %. The #6161 columns are from a different day, not a same-day control, and #6161 ran
+with Chrome open. I did not run the app's default configuration or the #6161 configuration on 0.1.63, so the tables do
+not split the gain between settings and releases. The per-setting measurements are in #6325 (spec/draft-conf/pcie-frac,
+paired sessions with confidence intervals).
 
-## The driver resets with `--adapt-async 1`
+## Earlier runs on an overclocked card, and `--adapt-async 1`
 
-Earlier the same night, a first run of these two suites with `--adapt-async 1` (and `STRATA_WIN_HIP_RISKY=1`) finished
-cleanly. Two engine starts later, in a prefix-reuse test with the same configuration, the engine died during a prompt
-read: the engine log shows
-`iq_dequant_gu_f16: unspecified launch failure` on the first chunk of a 2,259-token prompt, right after eight rounds of
-the asynchronous adaptive tier. Windows wrote a `VIDEO_ENGINE_TIMEOUT_DETECTED` (0x141) live dump in `amdkmdag.sys`.
-Seven more 0x141/0x117 dumps from 2026-11-19, a day of heavy benchmarking with the option on, fail at the same offset
-in `amdkmdag.sys`; the last one ended in a 0x7E bugcheck in `dxgkrnl.sys`. That day also had a driver reinstall (DDU),
-so not every reset can be pinned on the option. **None of these resets logged System event 4101**; they show only as
-dumps in `C:\Windows\LiveKernelReports`. The first run's numbers are not published here. Against the run above they went
-both ways by up to ~10 % (short decode 88.3 vs 94.6 in the standard suite, 95.8 vs 87.7 in the quick one; prompts
-2-7 % lower), so one run of each does not show a consistent cost or gain from the option.
+Before this run, the card had a manual Adrenalin overclock. That night it reset the display driver twice in a
+synthetic agent test (0x141 `VIDEO_ENGINE_TIMEOUT_DETECTED` dumps in `amdkmdag.sys`, `unspecified launch failure` in the
+engine's dequant kernels during short prompt reads). One reset happened with `--adapt-async 1` and one without it.
+With the card back at stock and `--adapt-async 1` + `STRATA_WIN_HIP_RISKY=1` on, the same test ran 4 full sessions,
+about 10 minutes, with no reset. So the overclock is the likely cause, not the option (corrected in #5672). One clean
+10-minute run does not prove the option safe, so it stays out of the measured configuration. **None of these resets
+logged System event 4101**; they show only as dumps in `C:\Windows\LiveKernelReports`.
+
+The same two suites ran twice on the overclocked card (with and without `--adapt-async`). Those numbers are not
+published here. Against the stock run, prompt reads were within ±2 %, and decode was mixed and within the spread of
+single runs.
 
 ## Correctness and limitations
 

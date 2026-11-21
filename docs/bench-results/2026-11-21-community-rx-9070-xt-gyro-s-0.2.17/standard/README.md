@@ -1,6 +1,6 @@
 # Strata standard benchmark: AMD Radeon RX 9070 XT
 
-Protocol `strata-qwen38-thinking-v1-draft.1` (draft), run `20261121T041908Z-7b4558cb`, started 2026-11-21T04:19:08Z. **Status: complete.**
+Protocol `strata-qwen38-thinking-v1-draft.1` (draft), run `20261121T044757Z-701bcc16`, started 2026-11-21T04:47:57Z. **Status: complete.**
 
 Written by `strata bench run`. The machine-readable result is [results.json](results.json); every request, its raw usage and timings and the client event offsets are in [outputs.jsonl](outputs.jsonl).
 
@@ -11,7 +11,7 @@ Written by `strata bench run`. The machine-readable result is [results.json](res
 - Storage of the model files: ssd SKHynix_HFS512GDE9X084N (nvme)
 - OS: Windows 10.0.26300; drivers: gpu-driver 32.0.32029.2010; runtime: not measured
 - Strata commit: `12d491da4a6904eb49aaa6f2f63ec4b1a17582e3`; engine 0.1.63; release build
-- Background work: Windows desktop only; Strata desktop app and Chrome closed, Claude desktop app open; no other GPU work
+- Background work: Windows desktop only; GPU at stock clocks (no Adrenalin tuning); Strata desktop app and Chrome closed, Claude desktop app open; no other GPU work
 
 ## Model and configuration
 
@@ -24,22 +24,22 @@ Written by `strata bench run`. The machine-readable result is [results.json](res
 
 ## Method
 
-The frozen requests of `bench/prompts/standard-v1` (corpus `e75eff8b9feea04f...`) were sent over loopback HTTP, streaming, one at a time, in this order: 1 warm-up (excluded), 3 repetitions of the short, 4K and 16K prompts, and the twelve sanity checks. Prompt and decode speed are the engine's own `timings`; time to first token is the client's monotonic clock from dispatch to the first nonempty reasoning, answer or tool-call delta. No request was retried. Time after the model loaded: 1 min 55 s.
+The frozen requests of `bench/prompts/standard-v1` (corpus `e75eff8b9feea04f...`) were sent over loopback HTTP, streaming, one at a time, in this order: 1 warm-up (excluded), 3 repetitions of the short, 4K and 16K prompts, and the twelve sanity checks. Prompt and decode speed are the engine's own `timings`; time to first token is the client's monotonic clock from dispatch to the first nonempty reasoning, answer or tool-call delta. No request was retried. Time after the model loaded: 1 min 56 s.
 
 ## Results
 
 | Case | Prompt tok/s | Decode tok/s | TTFT s | First answer s | Total s | Capped |
 | --- | --- | --- | --- | --- | --- | --- |
-| short | n/a | 94.6 (83.2-97.3) n=3 | 1.05 (0.84-1.12) n=3 | 1.69 (1.50-2.34) n=3 | 4.5 (4.2-5.5) n=3 | 0/3 |
-| prompt-4k | 1866.5 (1846.4-1867.5) n=3 | 90.1 (88.2-97.7) n=3 | 2.22 (2.22-2.23) n=3 | 5.11 (4.09-5.88) n=3 | 7.9 (7.4-8.0) n=3 | 2/3 |
-| prompt-16k | 2494.0 (2483.0-2514.0) n=3 | 95.2 (91.7-98.3) n=3 | 6.61 (6.56-6.62) n=3 | 8.77 (8.55-8.80) n=3 | 11.8 (10.0-11.9) n=3 | 2/3 |
+| short | n/a | 79.8 (77.6-95.7) n=3 | 1.05 (0.89-1.11) n=3 | 2.28 (1.95-3.28) n=3 | 5.0 (4.6-6.2) n=3 | 0/3 |
+| prompt-4k | 1830.2 (1781.3-1831.8) n=3 | 89.2 (71.5-93.0) n=3 | 2.28 (2.27-2.31) n=3 | 4.61 (4.28-9.41) n=3 | 7.2 (6.6-9.4) n=3 | 1/3 |
+| prompt-16k | 2446.1 (2426.7-2447.9) n=3 | 91.5 (88.9-94.4) n=3 | 6.74 (6.72-6.78) n=3 | 9.58 (9.02-9.69) n=3 | 12.3 (11.9-12.5) n=3 | 2/3 |
 
 Cells are median (min-max) n=samples. Short is a prompt of about 80 tokens: its prompt rate is dominated by the fixed cost of a request, so it is not shown; read prompt speed from prompt-4k and prompt-16k. Capped = requests that reached the 512-token cap, reasoning and answer together. A capped request's total time is the time to the cap, not to an answer, and it has no first-answer time when it was still reasoning.
 
 | Phase | Planned | Completed | Truncated | Failed | Skipped |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | warmup | 1 | 0 | 1 | 0 | 0 |
-| performance | 9 | 5 | 4 | 0 | 0 |
+| performance | 9 | 6 | 3 | 0 | 0 |
 | sanity | 12 | 12 | 0 | 0 | 0 |
 | concurrency | 0 | 0 | 0 | 0 | 0 |
 
