@@ -815,6 +815,9 @@ class StrataEngine:
             pin["preexec_fn"] = lambda: (say_nice() if say_nice else None, os.nice(nice))[0]
             print(f"[strata] engine priority: nice +{nice} (this PC has built-in Radeon graphics that usually draw the desktop; "
                   "STRATA_ENGINE_NICE=0 turns it off)", flush=True)
+        # --conversation-spill-persist on: at QUIT the engine first writes its conversations to the disk (GBs)
+        keep = "--conversation-spill-persist" in args and args[args.index("--conversation-spill-persist") + 1] == "on"
+        self.quit_s = 300 if keep else ENGINE_QUIT_WAIT_S
         end_leftover_engines(exe)                        # one an earlier run lost still holds the GPU and the memory
         oomd_pacer.make_room(args)                       # Linux desktop: the file cache an earlier start left is dropped first, so the engine's RAM is free (serve/oomd_pacer.py)
         spawned_at = time.monotonic()
@@ -2812,7 +2815,7 @@ class StrataEngine:
                     self.proc.stdin.write("STOP\nQUIT\n")
                     self.proc.stdin.flush()
                     self.proc.stdin.close()  # Windows' detached stdin reader must see EOF before shutdown
-                    self.proc.wait(timeout=ENGINE_QUIT_WAIT_S)
+                    self.proc.wait(timeout=getattr(self, "quit_s", ENGINE_QUIT_WAIT_S))
                 except (OSError, ValueError, subprocess.TimeoutExpired):
                     self.proc.terminate()
                     self.proc.wait(timeout=ENGINE_TERM_WAIT_S)

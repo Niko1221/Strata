@@ -221,6 +221,7 @@ bool draft_vocab_whole_head();       // STRATA_METAL_DRAFT_VOCAB=full
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <csignal>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -1101,6 +1102,9 @@ struct Options {
     /// data folder --pack sits in (`<data>/packs/<tag>`); none: off.  --conversation-spill-mib N caps it (0 = off; unset = min(32
     /// GiB, a quarter of the free disk), never into --session-min-free-mib).  Tester flags; the tier is on by default.
     std::string conversation_spill_dir;
+    /// --conversation-spill-persist on: the SSD tier keeps its conversations for the next start (`<dir>/kept`), and QUIT writes the
+    /// current and the parked ones there first; off: they go with the process
+    std::string conversation_spill_persist = "off";
     int64_t conversation_spill_mib = -1;
     bool session_save_reclaim = false;
     /// --serve: also keep a checkpoint every N freshly read prompt tokens (0 = only at the last turn boundary)
@@ -4017,6 +4021,13 @@ int main(int argc, char** argv) {
             else o.conversation_cache_slots = (int) number;
         }
         else if (a == "--conversation-spill-dir") o.conversation_spill_dir = next("--conversation-spill-dir");
+        else if (a == "--conversation-spill-persist") {
+            o.conversation_spill_persist = next("--conversation-spill-persist");
+            if (o.conversation_spill_persist != "off" && o.conversation_spill_persist != "on") {
+                std::fprintf(stderr, "--conversation-spill-persist must be off or on\n");
+                return 2;
+            }
+        }
         else if (a == "--prompt-cache-tail") o.prompt_cache_tail = true;
         else if (a == "--prompt-cache-spread") o.prompt_cache_spread = true;
         else if (a == "--prompt-cache-every") o.prompt_cache_every = std::max(0LL, std::atoll(next("--prompt-cache-every")));
@@ -13467,13 +13478,13 @@ int main(int argc, char** argv) {
         // The conversation cache's SSD tier (P2 of the cache admission design; conversation_spill.hpp).  A parked conversation the
         // RAM tier evicts (its byte budget, its slot count, the RAM gate) or a captured one the RAM floor refuses is written as a
         // session file into this process's own folder under the data folder, instead of being dropped; a later request whose
-        // prompt it serves best reads it back.  Only on pressure: a park that fits in RAM never touches the disk.  A single-stage
-        // serve only (a layer split's stage images are not written).  The file format, its identity and its read limits are the
-        // session SAVE / RESTORE's.
+        // prompt it serves best reads it back.  Only on pressure: a park that fits in RAM never touches the disk.  A layer split's
+        // conversation is one file per stage.  The file format, its identity and its read limits are the session SAVE / RESTORE's.
+        // --conversation-spill-persist on: the folder is kept for the next start and QUIT writes every conversation there first.
         strata::core::ConversationSpill spill;
         std::optional<strata::core::SessionFileIdentity> spill_id;
         strata::core::SpillCost spill_cost;   // only conversations whose re-read costs more than the disk round trip go there
-        if (conversations.enabled() && stages.empty() && o.conversation_spill_mib != 0) {
+        if (conversations.enabled() && o.conversation_spill_mib != 0) {
             std::filesystem::path root;
             if (!o.conversation_spill_dir.empty()) {
                 root = o.conversation_spill_dir;
@@ -13498,21 +13509,39 @@ int main(int argc, char** argv) {
                 if (!ec && cap < (uint64_t(64) << 20)) { why = "the disk is full"; cap = 0; }
             }
             size_t cleaned = 0;
-            if (cap > 0 && !spill.open(root, cap, why, &cleaned)) cap = 0;
+            if (cap > 0 && o.conversation_spill_persist == "on") {   // the files' identity is needed to take earlier ones in
+                std::string e;
+                strata::core::SessionFileIdentity id;
+                if (session_identity(id, e, {})) spill_id = id;
+                else std::fprintf(stderr, "strata serve: conversation cache: the SSD tier is not kept: the model cannot be "
+                                          "fingerprinted (%s)\n", e.c_str());
+            }
+            if (cap > 0 && !spill.open(root, cap, why, &cleaned, spill_id ? &*spill_id : nullptr)) cap = 0;
             if (cap > 0) {
-                std::fprintf(stderr, "strata serve: conversation cache: SSD tier in %s, up to %llu MiB%s\n", spill.dir().string().c_str(),
+                std::fprintf(stderr, "strata serve: conversation cache: SSD tier in %s, up to %llu MiB%s%s\n", spill.dir().string().c_str(),
                              (unsigned long long) (cap >> 20),
                              cleaned ? (", " + std::to_string(cleaned) + " folder" + (cleaned == 1 ? "" : "s") +
-                                        " of ended engines removed").c_str() : "");
+                                        " of ended engines removed").c_str() : "",
+                             spill.kept() ? ("; kept for the next start, from earlier runs: on SSD " + std::to_string(spill.size()) +
+                                             ", " + std::to_string(spill.bytes() >> 20) + " MiB").c_str() : "");
+                if (spill.kept()) {
+                    // the engine ends only through its stdin (the server's QUIT, or EOF when the server is gone), after the save:
+                    // Ctrl+C, a shutdown's SIGTERM to every process and a closed terminal's SIGHUP reach it too
+                    std::signal(SIGINT, SIG_IGN);
+                    std::signal(SIGTERM, SIG_IGN);
+#if defined(SIGHUP)
+                    std::signal(SIGHUP, SIG_IGN);
+#endif
+                }
             } else {
                 std::fprintf(stderr, "strata serve: conversation cache: no SSD tier: %s\n", why.c_str());
             }
         }
         std::mutex spill_cost_mu;   // (the background writer measures writes while the serve loop asks the rule)
-        // On the serve thread: whether `img` goes to the SSD tier at all - the tier is on, one stage, the cost rule says it pays -
+        // On the serve thread: whether `img` goes to the SSD tier at all - the tier is on, the cost rule says it pays -
         // and the model's identity is known (it is fingerprinted once, here, never on the writer thread).
         auto spill_ready = [&](const strata::core::SavedConversation& img, const char* why) -> bool {
-            if (!spill.enabled() || !img.stage_images.empty()) return false;
+            if (!spill.enabled()) return false;
             const int64_t tokens = (int64_t) img.live.ids.size();
             const uint64_t bytes = (uint64_t) img.bytes();
             {
@@ -18685,7 +18714,7 @@ int main(int argc, char** argv) {
             strata::core::ConversationCache::Match taken = parked;   // the match whose image is restored: RAM's, or the SSD tier's
             // 2c: a conversation the background writer still holds is still in RAM: when it serves this prompt best it is taken
             // back as it is (waiting for the one write in flight, if it is that one) and its SSD copy dropped - no read.
-            if (spill_writer && stages.empty()) {
+            if (spill_writer) {
                 const int64_t floor_tokens = std::max({resume, slot_tokens, parked.tokens});
                 int64_t held = 0;
                 spill_writer->for_each_held([&](const strata::core::SavedConversation& s) {
@@ -18714,7 +18743,7 @@ int main(int argc, char** argv) {
                 }   // (the other written ones are freed here: they are on the SSD tier)
             }
             spill_reclaim();   // what the writer finished meanwhile is on the SSD tier: its RAM goes back before this request parks
-            if (!from_ssd && spill.enabled() && spill.size() > 0 && stages.empty()) {
+            if (!from_ssd && spill.enabled() && spill.size() > 0) {
                 const auto sp = spill.best(ids, req_imgs, want_cvec);
                 const auto sp_entry = sp.tokens > 0 ? spill.find(sp.serial) : std::nullopt;
                 if (sp_entry && sp.tokens > std::max({resume, slot_tokens, parked.tokens}) && spill_id) {
@@ -23012,6 +23041,16 @@ int main(int argc, char** argv) {
             }
         }
         save_profile("exit");   // #477: QUIT, or the server closed stdin
+        if (spill.kept() && spill_writer) {   // --conversation-spill-persist on: every conversation goes to the kept folder first
+            const auto t0 = Clock::now();
+            park_current(0);
+            while (conversations.evict_oldest()) {}   // (each through the evict sink to the background writer; pinned ones stay)
+            spill_writer->wait_idle();
+            spill_reclaim();
+            std::fprintf(stderr, "strata serve: conversation cache: saved for the next start in %.1f s; on SSD %zu, %llu MiB\n",
+                         std::chrono::duration<double>(Clock::now() - t0).count(), spill.size(),
+                         (unsigned long long) (spill.bytes() >> 20));
+        }
 #if defined(STRATA_USE_HIP) && defined(__linux__)
         kfdq_exit::g_stop.store(nullptr);   // the flag goes with this scope
 #endif

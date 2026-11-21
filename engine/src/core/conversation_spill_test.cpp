@@ -267,6 +267,72 @@ int main() {
         }
         sp.close();
     }
+    {   // a layer split's conversation (one file per stage) and the kept folder (--conversation-spill-persist on)
+        auto split_img = [](std::vector<int32_t> ids, uint8_t fill) {
+            SavedConversation s;
+            s.live.ids = ids;
+            s.live.gdn.assign(1 << 16, fill);
+            s.cvec = true;
+            ConversationCheckpoint c;
+            c.ids = {ids[0]};
+            s.checkpoints.push_back(c);
+            SavedConversation stage = s;
+            stage.live.gdn.assign(1 << 16, (uint8_t) (fill + 1));
+            s.stage_images.push_back(stage);
+            return s;
+        };
+        const SessionFileIdentity id{11, 22}, other{11, 23};
+        const fs::path kroot = root / "kept-root";
+        std::string err;
+        {
+            ConversationSpill sp;
+            check(sp.open(kroot, 64 << 20, err, nullptr, &id) && sp.kept() && sp.size() == 0 && sp.dir() == kroot / "kept",
+                  "the kept folder opens empty");
+            ConversationSpill second;
+            check(!second.open(kroot, 64 << 20, err, nullptr, &id) && !err.empty(), "a second engine cannot take the kept folder");
+            check(sp.put(split_img({1, 2, 3}, 5), id, err) && sp.put(split_img({7, 8}, 6), id, err) && sp.size() == 2, "two split entries");
+            check(fs::exists(sp.dir() / "conv-1.session") && fs::exists(sp.dir() / "conv-1.s1.session") &&
+                  fs::exists(sp.dir() / "conv-1.idx"), "one file per stage and an index");
+            SavedConversation back;
+            const auto m = sp.best(std::vector<int32_t>{7, 8, 9}, {}, true);
+            check(m.tokens == 2 && sp.take_serial(m.serial, id, {}, back, err) && back.live.gdn == std::vector<uint8_t>(1 << 16, 6) &&
+                  back.stage_images.size() == 1 && back.stage_images[0].live.gdn == std::vector<uint8_t>(1 << 16, 7),
+                  "read back with its stage image, byte for byte");
+            check(!fs::exists(sp.dir() / "conv-2.session") && !fs::exists(sp.dir() / "conv-2.s1.session") &&
+                  !fs::exists(sp.dir() / "conv-2.idx"), "a taken entry's files and index go");
+            touch(sp.dir() / "stray.session");
+            touch(sp.dir() / ".conv-9.session.1234.tmp");
+            sp.close();
+            check(fs::exists(kroot / "kept" / "conv-1.session") && fs::exists(kroot / "kept" / "conv-1.idx"), "the end keeps the entry");
+        }
+        {
+            ConversationSpill sp;
+            check(sp.open(kroot, 64 << 20, err, nullptr, &id) && sp.size() == 1 && sp.bytes() > 0, "the next start takes the entry in");
+            check(!fs::exists(kroot / "kept" / "stray.session") && !fs::exists(kroot / "kept" / ".conv-9.session.1234.tmp"),
+                  "files no index names go at that start");
+            check(sp.best(std::vector<int32_t>{1, 2, 3, 4}, {}, true).tokens == 3, "it is matched from its index, without a read");
+            check(sp.put(split_img({4, 5}, 8), id, err) && sp.entry(1).serial == 2, "a new entry takes the next serial");
+            SavedConversation back;
+            check(sp.take_serial(sp.entry(0).serial, id, {}, back, err) && back.live.ids == std::vector<int32_t>({1, 2, 3}) &&
+                  back.stage_images.size() == 1, "the earlier run's entry reads back whole");
+            sp.close();
+        }
+        {
+            ConversationSpill sp;
+            check(sp.open(kroot, 64 << 20, err, nullptr, &other) && sp.size() == 0, "another identity: none taken in");
+            check(!fs::exists(kroot / "kept" / "conv-2.session") && !fs::exists(kroot / "kept" / "conv-2.idx"), "and its files went");
+            sp.clear();
+            sp.close();
+        }
+        {
+            ConversationSpill sp;
+            check(sp.open(kroot, 64 << 20, err) && !sp.kept() && sp.dir() != kroot / "kept" && sp.put(split_img({1}, 1), id, err),
+                  "without persistence: a folder of this process");
+            const fs::path d = sp.dir();
+            sp.close();
+            check(!fs::exists(d) && fs::exists(kroot / "kept"), "it goes at the end; the kept folder stays");
+        }
+    }
     fs::remove_all(root, ec);
     std::printf("conversation_spill_test: %d checks, %d failed\n", checks, failures);
     return failures == 0 ? 0 : 1;

@@ -12,13 +12,24 @@
 //
 // Budget: min(32 GiB, 25% of the free space), never below the free-space floor; a write reserves its estimate first and
 // the reservation counts until the write ends (temporary files included).
+//
+// A layer split's conversation is one file per stage (`conv-N.session`, then `conv-N.s1.session` ...).
+//
+// Kept (--conversation-spill-persist on): the folder is `<root>/kept`, the same at every start and held by its lock (one engine at a
+// time), and it is not removed at the end.  Beside each entry an index file (`conv-N.idx`) names the files' identity (the session
+// files' model and settings fingerprints) and the tokens and pictures it matches on, so the next start takes the entries in without
+// reading their files; entries of another identity, damaged indexes and files no index names are removed at that start.
 
 #include "strata/core/conversation_cache.hpp"
 #include "strata/core/conversation_file.hpp"
 
+#include <algorithm>
 #include <condition_variable>
 #include <cstdint>
+#include <cstring>
 #include <deque>
+#include <fstream>
+#include <iterator>
 #include <functional>
 #include <mutex>
 #include <optional>
@@ -123,6 +134,50 @@ inline void lower_thread_priority() {
 }
 }  // namespace spill_detail
 
+namespace spill_detail {
+// A kept entry's index file: native-endian fields (the session files refuse a big-endian build too), counts before arrays.
+constexpr uint64_t kIndexMagic = 0x3258444943525453ull;   // "STRCIDX2"
+
+struct IndexWriter {
+    std::string b;
+    template <class T> void put(T v) { b.append(reinterpret_cast<const char*>(&v), sizeof v); }
+    void key(const ConversationCheckpoint& c) {
+        put<uint32_t>((uint32_t) c.ids.size());
+        b.append(reinterpret_cast<const char*>(c.ids.data()), c.ids.size() * sizeof(int32_t));
+        put<uint32_t>((uint32_t) c.imgs.size());
+        for (const auto& i : c.imgs) { put<int64_t>(i.start); put<uint64_t>(i.hash); }
+    }
+};
+
+struct IndexReader {
+    const std::string& b;
+    size_t at = 0;
+    bool ok = true;
+    size_t left() const { return b.size() - at; }
+    template <class T> T get() {
+        T v{};
+        if (left() < sizeof v) { ok = false; return v; }
+        std::memcpy(&v, b.data() + at, sizeof v);
+        at += sizeof v;
+        return v;
+    }
+    bool key(ConversationCheckpoint& c) {
+        const uint32_t n = get<uint32_t>();
+        if (!ok || left() / sizeof(int32_t) < n) return ok = false;
+        c.ids.resize(n);
+        std::memcpy(c.ids.data(), b.data() + at, n * sizeof(int32_t));
+        at += n * sizeof(int32_t);
+        const uint32_t m = get<uint32_t>();
+        if (!ok || left() / 16 < m) return ok = false;
+        for (uint32_t i = 0; i < m; ++i) {
+            const int64_t start = get<int64_t>();
+            c.imgs.push_back({start, get<uint64_t>()});
+        }
+        return ok;
+    }
+};
+}  // namespace spill_detail
+
 /// Whether a conversation is worth writing to the SSD tier: reading it back (and writing it first) must cost less than reading its
 /// prompt again.  A parked image has a fixed-size running state (about 236 MB on Qwen3.8-Flash-Next) whatever its length, so a short
 /// conversation is cheaper to re-read than to round-trip through the disk, and a long one is not (l620, RTX PRO 5000: a 51-token
@@ -155,7 +210,8 @@ public:
     SpillNamespace& operator=(const SpillNamespace&) = delete;
     ~SpillNamespace() { close(); }
 
-    bool open(const std::filesystem::path& root, std::string& error, size_t* cleaned = nullptr) {
+    /// `kept`: the folder is `<root>/kept` (it may hold an earlier run's entries) and close() leaves it on the disk
+    bool open(const std::filesystem::path& root, std::string& error, size_t* cleaned = nullptr, bool kept = false) {
         close();
         std::error_code ec;
         std::filesystem::create_directories(root, ec);
@@ -168,19 +224,21 @@ public:
         std::random_device rd;
         char name[64];
         std::snprintf(name, sizeof name, "%lu-%08x%08x", spill_detail::own_pid(), (unsigned) rd(), (unsigned) rd());
-        const std::filesystem::path dir = root / name;
-        if (!std::filesystem::create_directory(dir, ec) || ec) {
+        const std::filesystem::path dir = kept ? root / "kept" : root / name;
+        const bool made = std::filesystem::create_directory(dir, ec);
+        if (ec || (!made && !kept) || std::filesystem::is_symlink(dir, ec)) {
             error = "spill folder " + dir.string() + " cannot be made" + (ec ? ": " + ec.message() : std::string());
             return false;
         }
         lock_ = spill_detail::try_lock(dir / ".lock");
         if (lock_ == spill_detail::no_lock()) {
-            std::filesystem::remove_all(dir, ec);
-            error = "spill folder " + dir.string() + ": its lock cannot be taken";
+            if (!kept) std::filesystem::remove_all(dir, ec);
+            error = "spill folder " + dir.string() + ": its lock cannot be taken" + (kept ? " (another engine keeps it)" : "");
             return false;
         }
         root_ = root;
         dir_ = dir;
+        kept_ = kept;
         return true;
     }
     void close() {
@@ -188,15 +246,18 @@ public:
         spill_detail::unlock(lock_);
         lock_ = spill_detail::no_lock();
         std::error_code ec;
-        std::filesystem::remove_all(dir_, ec);
+        if (!kept_) std::filesystem::remove_all(dir_, ec);
         dir_.clear();
     }
     bool is_open() const { return !dir_.empty(); }
+    bool kept() const { return kept_; }
     const std::filesystem::path& dir() const { return dir_; }
-    /// the file of parked conversation `serial` (a session file; written to a temporary name first by session_file_write)
-    std::filesystem::path file_for(uint64_t serial) const {
-        return dir_ / ("conv-" + std::to_string(serial) + ".session");
+    /// the file of parked conversation `serial`, stage `part` (a session file; written to a temporary name first by session_file_write)
+    std::filesystem::path file_for(uint64_t serial, size_t part = 0) const {
+        return dir_ / ("conv-" + std::to_string(serial) + (part ? ".s" + std::to_string(part) : std::string()) + ".session");
     }
+    /// a kept entry's index file
+    std::filesystem::path index_for(uint64_t serial) const { return dir_ / ("conv-" + std::to_string(serial) + ".idx"); }
 
     /// Removes the folders under `root` that are named like a namespace, are real folders (not links) and whose lock can be
     /// taken - no process holds them.  Returns how many went.  Everything else under `root` is left alone.
@@ -219,6 +280,7 @@ public:
 private:
     std::filesystem::path root_, dir_;
     spill_detail::LockHandle lock_ = spill_detail::no_lock();
+    bool kept_ = false;
 };
 
 /// The SSD tier's entries: parked conversations written as session files into this process's namespace, oldest first.
@@ -233,19 +295,25 @@ class ConversationSpill {
 public:
     struct Entry {
         uint64_t serial = 0;
-        std::filesystem::path file;
+        std::filesystem::path file;                      // the first stage's
+        size_t parts = 1;                                // files: one per layer-split stage
         uint64_t bytes = 0;
         bool cvec = false;
         ConversationCheckpoint live;                     // ids and images only
         std::vector<ConversationCheckpoint> checkpoints;   // ids and images only
     };
 
-    bool open(const std::filesystem::path& root, uint64_t cap, std::string& error, size_t* cleaned = nullptr) {
+    /// `keep`: the kept folder (--conversation-spill-persist), with the entries an earlier run left of this identity
+    bool open(const std::filesystem::path& root, uint64_t cap, std::string& error, size_t* cleaned = nullptr,
+              const SessionFileIdentity* keep = nullptr) {
         std::lock_guard<std::mutex> lk(mu_);
         entries_.clear();
         budget_ = SpillBudget{cap, 0, 0};
-        return ns_.open(root, error, cleaned);
+        if (!ns_.open(root, error, cleaned, keep != nullptr)) return false;
+        if (keep) take_in_locked(*keep);
+        return true;
     }
+    bool kept() const { std::lock_guard<std::mutex> lk(mu_); return ns_.kept(); }
     bool enabled() const { std::lock_guard<std::mutex> lk(mu_); return enabled_locked(); }
     size_t size() const { std::lock_guard<std::mutex> lk(mu_); return entries_.size(); }
     uint64_t bytes() const { std::lock_guard<std::mutex> lk(mu_); return budget_.used; }
@@ -263,9 +331,10 @@ public:
     /// than the whole tier, or the write failed; nothing of this call is then left on the disk.  The file is written outside the
     /// lock, under a budget reserved for it.
     bool put(const SavedConversation& image, const SessionFileIdentity& id, std::string& error, uint64_t* serial_out = nullptr) {
-        const uint64_t need = (uint64_t) image.bytes() + (uint64_t(1) << 20);   // the payload and the file's own tables
+        const size_t parts = 1 + image.stage_images.size();
+        const uint64_t need = (uint64_t) image.bytes() + (uint64_t(parts) << 20);   // the payload and the files' own tables
         uint64_t serial = 0;
-        std::filesystem::path f;
+        bool kept = false;
         {
             std::lock_guard<std::mutex> lk(mu_);
             if (!enabled_locked()) { error = "the SSD tier is off"; return false; }
@@ -275,20 +344,22 @@ public:
                 drop_locked(0);
             }
             serial = next_serial_++;
-            f = ns_.file_for(serial);
-        }
-        size_t written = 0;
-        const bool ok = session_file_write(f.string(), image, id, written, error);
-        if (!ok) {
-            std::error_code ec;
-            std::filesystem::remove(f, ec);
+            kept = ns_.kept();
         }
         Entry e;
-        if (ok) {
-            e.serial = serial; e.file = f; e.bytes = written; e.cvec = image.cvec;
-            e.live = stub(image.live);
-            for (const auto& c : image.checkpoints) e.checkpoints.push_back(stub(c));
+        e.serial = serial; e.file = ns_.file_for(serial); e.parts = parts; e.cvec = image.cvec;
+        e.live = stub(image.live);
+        for (const auto& c : image.checkpoints) e.checkpoints.push_back(stub(c));
+        bool ok = true;
+        uint64_t written = 0;
+        for (size_t k = 0; ok && k < parts; ++k) {   // (session_file_write writes the image it is given, not its stage images)
+            size_t n = 0;
+            ok = session_file_write(ns_.file_for(serial, k).string(), k ? image.stage_images[k - 1] : image, id, n, error);
+            written += n;
         }
+        e.bytes = written;
+        if (ok && kept) ok = write_index(ns_.index_for(serial), e, id, error);   // after the files: it names complete ones
+        if (!ok) remove_files(e);
         std::lock_guard<std::mutex> lk(mu_);
         budget_.finish(need, ok ? written : 0);
         if (!ok) return false;
@@ -317,24 +388,34 @@ public:
         return m;
     }
 
-    /// Reads entry `serial` back into `out` (bounded by `limits`, the identity checked) and removes the entry.  False: `out` is
-    /// unchanged and the entry is gone (or was not there).  The file is read outside the lock: the entry leaves the list first.
+    /// Reads entry `serial` back into `out` (the identity checked; the first stage's file bounded by `limits`, a later stage's by
+    /// its RAM preflight only - the caller validates every stage image against its runtime) and removes the entry.  False: `out` is
+    /// unchanged and the entry is gone (or was not there).  The files are read outside the lock: the entry leaves the list first.
     bool take_serial(uint64_t serial, const SessionFileIdentity& id, const SessionReadLimits& limits, SavedConversation& out,
                      std::string& error) {
-        std::filesystem::path f;
+        Entry e;
         {
             std::lock_guard<std::mutex> lk(mu_);
             const size_t i = index_locked(serial);
             if (i == SIZE_MAX) { error = "no such SSD entry"; return false; }
-            f = entries_[i].file;
-            budget_.drop(entries_[i].bytes);
+            e = entries_[i];
+            budget_.drop(e.bytes);
             entries_.erase(entries_.begin() + (std::ptrdiff_t) i);
+            if (ns_.kept()) { std::error_code ec; std::filesystem::remove(ns_.index_for(serial), ec); }   // (first: not taken in again)
         }
+        SessionReadLimits stage_limits;
+        stage_limits.admit = limits.admit;
         SavedConversation image;
-        size_t read = 0;
-        const bool ok = session_file_read(f.string(), id, image, read, error, limits);
-        std::error_code ec;
-        std::filesystem::remove(f, ec);
+        bool ok = true;
+        for (size_t k = 0; ok && k < e.parts; ++k) {
+            SavedConversation part;
+            size_t read = 0;
+            ok = session_file_read(ns_.file_for(serial, k).string(), id, part, read, error, k ? stage_limits : limits);
+            if (!ok) break;
+            if (k == 0) image = std::move(part);
+            else image.stage_images.push_back(std::move(part));
+        }
+        remove_files(e);
         if (ok) out = std::move(image);
         return ok;
     }
@@ -364,9 +445,12 @@ public:
         while (!entries_.empty()) drop_locked(entries_.size() - 1);
         return n;
     }
+    /// the end: the entries go with their files, except in the kept folder, where they stay for the next start
     void close() {
         std::lock_guard<std::mutex> lk(mu_);
-        while (!entries_.empty()) drop_locked(entries_.size() - 1);
+        if (!ns_.kept())
+            while (!entries_.empty()) drop_locked(entries_.size() - 1);
+        entries_.clear();
         ns_.close();
     }
 
@@ -378,10 +462,87 @@ private:
         return SIZE_MAX;
     }
     void drop_locked(size_t i) {
-        std::error_code ec;
-        std::filesystem::remove(entries_.at(i).file, ec);
+        remove_files(entries_.at(i));
         budget_.drop(entries_[i].bytes);
         entries_.erase(entries_.begin() + (std::ptrdiff_t) i);
+    }
+    /// an entry's index (first: a removed entry is never taken in again) and files
+    void remove_files(const Entry& e) const {
+        std::error_code ec;
+        std::filesystem::remove(ns_.index_for(e.serial), ec);
+        for (size_t k = 0; k < e.parts; ++k) std::filesystem::remove(ns_.file_for(e.serial, k), ec);
+    }
+    /// open() of the kept folder: the entries an earlier run left with this identity, oldest first, within the budget; every
+    /// other file of the folder goes (another identity, a damaged index, files no index names, interrupted writes).  An index
+    /// is written after its entry's files and removed before them, so an index names complete files
+    void take_in_locked(const SessionFileIdentity& id) {
+        std::vector<Entry> found;
+        std::error_code ec;
+        for (std::filesystem::directory_iterator it(ns_.dir(), ec), end; !ec && it != end; it.increment(ec)) {
+            if (it->path().extension() != ".idx") continue;
+            Entry e;
+            if (read_index(it->path(), id, e)) {
+                e.file = ns_.file_for(e.serial);
+                found.push_back(std::move(e));
+            }
+        }
+        std::sort(found.begin(), found.end(), [](const Entry& a, const Entry& b) { return a.serial < b.serial; });
+        std::vector<std::filesystem::path> keep{ns_.dir() / ".lock"};
+        for (auto& e : found) {
+            for (size_t k = 0; k < e.parts; ++k) keep.push_back(ns_.file_for(e.serial, k));
+            keep.push_back(ns_.index_for(e.serial));
+            next_serial_ = std::max(next_serial_, e.serial + 1);
+            budget_.used += e.bytes;
+            entries_.push_back(std::move(e));
+        }
+        for (std::filesystem::directory_iterator it(ns_.dir(), ec), end; !ec && it != end; it.increment(ec))
+            if (std::find(keep.begin(), keep.end(), it->path()) == keep.end()) { std::error_code e2; std::filesystem::remove_all(it->path(), e2); }
+        while (budget_.over() && !entries_.empty()) drop_locked(0);
+    }
+    static bool write_index(const std::filesystem::path& path, const Entry& e, const SessionFileIdentity& id, std::string& error) {
+        spill_detail::IndexWriter out;
+        out.put(spill_detail::kIndexMagic);
+        out.put(id.model);
+        out.put(id.config);
+        out.put<uint64_t>(e.serial);
+        out.put<uint32_t>((uint32_t) e.parts);
+        out.put<uint64_t>(e.bytes);
+        out.put<uint8_t>(e.cvec ? 1 : 0);
+        out.key(e.live);
+        out.put<uint32_t>((uint32_t) e.checkpoints.size());
+        for (const auto& c : e.checkpoints) out.key(c);
+        std::filesystem::path temp = path;
+        temp += ".tmp";
+        bool written = false;
+        {
+            std::ofstream f(temp, std::ios::binary | std::ios::trunc);
+            f.write(out.b.data(), (std::streamsize) out.b.size());
+            written = bool(f);
+        }
+        std::error_code ec;
+        if (written) std::filesystem::rename(temp, path, ec);   // a reader sees the whole index or none
+        if (written && !ec) return true;
+        error = written ? "cannot publish the index: " + ec.message() : "cannot write the index " + temp.string();
+        std::filesystem::remove(temp, ec);
+        return false;
+    }
+    static bool read_index(const std::filesystem::path& path, const SessionFileIdentity& id, Entry& e) {
+        std::ifstream f(path, std::ios::binary);
+        const std::string b((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        spill_detail::IndexReader in{b};
+        if (in.get<uint64_t>() != spill_detail::kIndexMagic || in.get<uint64_t>() != id.model || in.get<uint64_t>() != id.config)
+            return false;
+        e.serial = in.get<uint64_t>();
+        e.parts = in.get<uint32_t>();
+        e.bytes = in.get<uint64_t>();
+        e.cvec = in.get<uint8_t>() != 0;
+        if (!in.key(e.live)) return false;
+        const uint32_t n = in.get<uint32_t>();
+        for (uint32_t i = 0; in.ok && i < n; ++i) {
+            ConversationCheckpoint c;
+            if (in.key(c)) e.checkpoints.push_back(std::move(c));
+        }
+        return in.ok && in.left() == 0 && e.parts >= 1;
     }
     static ConversationCheckpoint stub(const ConversationCheckpoint& c) {
         ConversationCheckpoint s;
