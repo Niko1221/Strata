@@ -222,6 +222,12 @@ def test_native_rows_decode_to_the_quantizer_s_floats(case, tmp_path):
         assert (P[2001, 60:] & 0x78 == 0).all()                     # the tiny row's scales are subnormal (exponent 0)
 
 
+def test_committed_cpp_fixture_is_what_the_emulator_writes_now(tmp_path):
+    # the C++ test (engine/tests/ngram/ple_lowbit_test.cpp) must not stay green against rows an older emulator wrote
+    assert FIXTURE.read_text() == fixture_text(lowbit_cases(tmp_path, 3)), \
+        "stale fixture: python tools/test_ple_lowbit_emulate.py --write-fixture"
+
+
 def test_native_pipeline_writes_the_engine_s_table(tmp_path, monkeypatch):
     gguf = gguf_py()
     src = tmp_path / "src.gguf"

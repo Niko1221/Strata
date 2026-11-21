@@ -7,9 +7,10 @@
 //   C3     5 E4M3 scales, one per 32 values (5 B): 65 B a row
 //   C2s    10 E4M3 scales, one per 16 values (10 B): 70 B a row
 // value j = s * codebook[code j], with s the fp16 scale (C4) or e4m3(block's byte) * table scale (C3, C2s), each product
-// rounded to float32 in that order: exactly the floats the emulator's quantizer produces, so a native table and its Q8_0
-// emulation encode the same values. The 8-level codebook (`strata.ple.codebook`) and the table scale (`strata.ple.scale`)
-// are the GGUF's metadata. Header-only so the CPU test (tests/ngram/ple_lowbit_test.cpp) decodes with this very code.
+// rounded to float32 in that order: exactly the floats the emulator's quantizer produces. (Its Q8_0 emulation stores those
+// floats after Q8_0's own rounding, about 2.5e-5 NMSE more, so a native table is close to the emulation but not bit
+// identical to it.) The 8-level codebook (`strata.ple.codebook`) and the table scale (`strata.ple.scale`) are the GGUF's
+// metadata. Header-only so the CPU test (tests/ngram/ple_lowbit_test.cpp) decodes with this very code.
 #pragma once
 
 #include "strata/kernels/f16_bits.hpp"
