@@ -66,6 +66,9 @@ void cut(Picture& p, F px) {
 
 std::string load_picture(const std::string& path, int max_tokens, Picture& p) {
     int w = 0, h = 0, comp = 0;
+    if (!stbi_info(path.c_str(), &w, &h, &comp)) return "cannot decode " + path + ": " + stbi_failure_reason();
+    if ((int64_t) w * h > ((int64_t) 1 << 27))   // 134 MP (16 bytes a pixel while it is read: ~2 GB of RAM)
+        return "picture of " + std::to_string(w) + "x" + std::to_string(h) + " px: more than 134 million pixels";
     unsigned char* px = stbi_load(path.c_str(), &w, &h, &comp, 4);
     if (!px) return "cannot decode " + path + ": " + stbi_failure_reason();
     if (w < 1 || h < 1) { stbi_image_free(px); return "empty picture " + path; }

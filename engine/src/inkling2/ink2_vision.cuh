@@ -20,13 +20,14 @@
 // picture: ~0.2 s) but 7 s at the cap (16k ViT tokens, 4096 image tokens); a flash-style TF32 / fp16 kernel if big
 // pictures matter.  One picture at a time, no batching across a prompt's pictures.
 //
-// Memory: nothing at load and nothing kept on the GPU.
+// Memory: nothing at load.  At the first picture the weights are read into pinned host memory (634 MB BF16 + 6 MB
+// fp32) and a cuBLAS handle is made (a few MiB of VRAM: 7.90 GiB used at 8 GiB text-only, 7.91 GiB after a picture).
+// The weights are streamed to the GPU matrix by matrix during each encode.  An encode's working VRAM (weight staging
+// 100 MB + 20 KB per ViT token + 32 MB) comes from the tail of the NVFP4 expert pool when the experts are offloaded
+// (those slots are evicted, then handed back empty: the pool refills them on demand), else from free VRAM beyond the
+// margin, and goes back as the encode ends.
 // CBA: the weights cross PCIe at every encode (~650 MB, about 90 ms on this box: most of a small picture's cost); a
-// resident copy when VRAM is free (no offload) is the upgrade.  The weights are read at the first picture into pinned host
-// memory (607 MB BF16 + 6 MB fp32) and streamed to the GPU matrix by matrix during each encode.  An encode's working
-// VRAM (weight staging 100 MB + 20 KB per ViT token + 32 MB) comes from the tail of the NVFP4 expert pool when the
-// experts are offloaded (those slots are evicted, then handed back empty: the pool refills them on demand), else from
-// free VRAM beyond the margin, and goes back as the encode ends.
+// resident copy when VRAM is free (no offload) is the upgrade.
 //
 // Protocol (Hy4-Flash's 1.6b): GEN ... image=<path> ... <ids>, one image= key per <|unused_200054|> of the ids in
 // prompt order; the engine decodes the files, expands each placeholder to its rows x cols image tokens and encodes

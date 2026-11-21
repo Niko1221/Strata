@@ -8,5 +8,6 @@ uv venv -p 3.12 .venv
 . .venv/bin/activate
 uv pip install --index-url https://download.pytorch.org/whl/cpu torch
 uv pip install -e ./transformers safetensors tiktoken numpy accelerate pillow
+uv pip install --index-url https://download.pytorch.org/whl/cpu torchvision   # the image processor (vision_oracle.py, vision_kl.py)
 python -c "import torch, transformers; print(torch.__version__, transformers.__version__); from transformers import Inkling2LoopForConditionalGeneration; print(\"OK\")"
 echo SETUP-DONE
