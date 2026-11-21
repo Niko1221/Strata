@@ -3945,11 +3945,14 @@ Prefill PF;
 
 // Elastic prompt buffers (--kv-grow with offload): the chunk-sized buffers over 8 MiB and the staging halves live in
 // growable ranges, mapped while a prompt is read (memory taken from the expert pools) and unmapped after.
+bool g_pf_routed = false;   // this chunk runs through the decode cache (short chunks): no streaming
+int g_pf_routed_max = 64;   // INK2_ROUTED_MAX: chunks of up to this many tokens fetch only the experts they route to
 bool g_pf_elastic = false;
 std::vector<VRange> g_pfr;
-std::vector<bool> g_pfr_whole;   // parts at offsets of the full --chunk (the region, the fp16 input thirds, staging)
+std::vector<int> g_pfr_whole;    // 1: parts at offsets of the full --chunk (the region, the fp16 input thirds), mapped
+                                 // whole; 2: the staging halves (whole, and not at all for a routed short prompt)
 int g_pf_mapped_T = 0;
-void* pf_alloc(size_t bytes, bool whole = false) {
+void* pf_alloc(size_t bytes, int whole = 0) {
     if (!g_pf_elastic || bytes < ((size_t) 8 << 20)) return dalloc(bytes);
     g_pfr.emplace_back();
     g_pfr.back().init(bytes);
@@ -3997,7 +4000,7 @@ void alloc_prefill() {
         for (int h = 0; h < 2; ++h) {
             CK(cudaEventCreateWithFlags(&PF.ev_free[h], cudaEventDisableTiming));
             CK(cudaEventCreateWithFlags(&PF.ev_ready[h], cudaEventDisableTiming));
-            PF.stg[h] = (uint8_t*) pf_alloc(PF.stg_half, true);
+            PF.stg[h] = (uint8_t*) pf_alloc(PF.stg_half, 2);
             CK(cudaHostAlloc((void**) &PF.ptab[h], NE * sizeof(void*), cudaHostAllocDefault));
             PF.dtab[h] = (const uint8_t**) dalloc(NE * sizeof(void*));
         }
@@ -4037,7 +4040,8 @@ void pf_map(int T) {
     std::vector<size_t> want(g_pfr.size());
     for (size_t i = 0; i < g_pfr.size(); ++i) {
         const VRange& r = g_pfr[i];
-        want[i] = g_pfr_whole[i] ? r.reserved : r.need(std::min(r.reserved, (size_t) ((double) r.reserved * (T + 64) / PF.TP)));
+        want[i] = g_pfr_whole[i] == 2 ? (T <= g_pf_routed_max ? 0 : r.reserved)
+                : g_pfr_whole[i] ? r.reserved : r.need(std::min(r.reserved, (size_t) ((double) r.reserved * (T + 64) / PF.TP)));
         if (want[i] > r.mapped) add += want[i] - r.mapped;
     }
     const size_t keep = vram_keep(), fr = vram_free();
@@ -4209,7 +4213,7 @@ void attention_b(const Layer& Y, Slot& S, const float* xq, int sq, const float* 
 template <class F> void expert_parts(int l, bool partB, F launch) {
     const Experts& X = E.L[l].ex;
     launch(partB ? X.tB : X.tA);
-    if (!E.offload) return;
+    if (!E.offload || g_pf_routed) return;
     const auto& nonres = PF.nonres[l];
     const size_t eb = ex_bytes(l), part = partB ? eb - ex_partA(l) : ex_partA(l), off = partB ? ex_partA(l) : 0;
     const int per = (int) (PF.stg_half / part);
@@ -4269,6 +4273,11 @@ void moe_b(const Layer& Y, const float* x, float* out, int T, int pos0) {
     kb_moe_plan<<<1, 1024>>>(PF.ids, T, PF.rows, PF.slot, PF.tile_e, PF.tile_r0, PF.ntiles, PF.eoff, PF.ecnt);
     const Experts& X = Y.ex;
     const int l = int(&Y - E.L), nr = T * TOPK, maxt = nr / FM + NE;
+    // A short chunk uses few experts: it makes the ones it routes to resident through the decode cache (groups of 8
+    // tokens: at most 64 misses per plan) instead of streaming every expert the pools do not hold.
+    g_pf_routed = E.offload && T <= g_pf_routed_max;
+    if (g_pf_routed)
+        for (int t0 = 0; t0 < T; t0 += 8) expert_cache(l, PF.ids + (size_t) t0 * TOPK, std::min(8, T - t0) * TOPK);
     if (T <= SMALL_T && !X.gg13) {   // offload: the verify's experts through the decode cache (T x TOPK ids), not the staging
         if (E.offload) expert_cache(l, PF.ids, T * TOPK);
         const int RR = g_grp_r;
@@ -5015,6 +5024,7 @@ int main(int argc, char** argv) {
     if (const char* r = std::getenv("INK2_GRP_R")) g_grp_r = std::atoi(r);
     if (const char* r = std::getenv("INK2_DRAFT_ABL")) g_draft_abl = std::atoi(r);
     if (const char* r = std::getenv("INK2_GG_RPW")) g_gg_rpw = std::atoi(r);
+    if (const char* r = std::getenv("INK2_ROUTED_MAX")) g_pf_routed_max = std::atoi(r);
     std::string dir, dump_logits, rec_path;
     std::vector<int> ids;
     int n_gen = 32;
