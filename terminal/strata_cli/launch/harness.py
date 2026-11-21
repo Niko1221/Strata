@@ -75,7 +75,7 @@ class Harness:
     id: str
     title: str
     speaks: str
-    tested: str = ""                   # "opencode 1.19.3": the version the config was tested with
+    tested: str = ""                   # "opencode 2.2.3": the version the config was tested with
     files: list[FileSpec] = field(default_factory=list)
     env: Callable[[Target], dict[str, str]] | None = None
     limits: Callable[[Target], list[str]] | None = None
@@ -111,14 +111,17 @@ def _display_name(t: Target) -> str:
 
 
 def opencode_file(t: Target) -> str:
-    return _j({"$schema": "https://opencode.ai/config.json", "model": f"strata/{t.model}", "small_model": f"strata/{t.model}",
-               "autoupdate": False,
-               "compaction": {"auto": True, "buffer": max(1024, t.input_limit - compact_at(t))},
-               "share": "disabled",
-               "provider": {"strata": {"npm": "@ai-sdk/openai-compatible", "name": "Strata (local)",
-                                       "options": {"baseURL": t.base, "apiKey": t.key},
-                                       "models": {t.model: {"name": _display_name(t), "tool_call": True, "reasoning": True,
-                                                            "limit": {"context": t.context, "input": t.input_limit, "output": t.output_cap}}}}}})
+    return _j({"$schema": "https://opencode.ai/config.json", "model": f"strata/{t.model}",
+    "compaction": {"auto": True, "buffer": max(1024, t.input_limit - compact_at(t))},
+    "share": "disabled",
+    "providers": {"strata": {"package": "@opencode/ai/providers/openai-compatible", "name": "Strata (local)",
+    "settings": {"baseURL": t.base, "apiKey": t.key},
+    "models": {t.model: {"name": "Qwen3.8-Flash-Next (local)",
+    "type": "chat",
+    "capabilities": {"tools": True, "input": ["text"], "output": ["text"], "reasoning": {"supported": True, "effort": ["low", "medium", "high"], "toggle": True}},
+    "compatibility": {"reasoningField": "reasoning_content"},
+    "variants": [{"id": "low", "settings": {"reasoningEffort": "low"}, "body": {"reasoning_budget_tokens": 2048}}, {"id": "none", "body": {"reasoning_effort": "none"}}, {"id": "budget", "body": {"reasoning_budget_tokens": 4096}}],
+    "limit": {"context": t.context, "input": t.input_limit, "output": t.output_cap}}}}}})
 
 
 def codex_file(t: Target) -> str:
@@ -245,7 +248,7 @@ def _limits_dsh(t: Target) -> list[str]:
 
 
 HARNESSES: list[Harness] = [
-    Harness("opencode", "OpenCode", "chat + tools", tested="opencode 1.19.3",
+    Harness("opencode", "OpenCode", "chat + tools", tested="opencode 2.2.3",
             files=[FileSpec("~/.config/opencode/opencode.json", "json", opencode_file, merge=True)], limits=_limits_opencode,
             run='opencode run "your task"', install="npm i -g opencode-ai"),
     Harness("codex", "Codex CLI", "responses + tools", tested="codex-cli 0.163.0",
@@ -359,8 +362,8 @@ def _keep_output_cap(old, merged) -> None:
     the cap that breaks compaction for ever. OpenCode's limit.output and Claude Code's CLAUDE_CODE_MAX_OUTPUT_TOKENS."""
     if not (isinstance(old, dict) and isinstance(merged, dict)):
         return
-    models = ((old.get("provider") or {}).get("strata") or {}).get("models")
-    new_models = ((merged.get("provider") or {}).get("strata") or {}).get("models")
+    models = ((old.get("providers") or {}).get("strata") or {}).get("models")
+    new_models = ((merged.get("providers") or {}).get("strata") or {}).get("models")
     if isinstance(models, dict) and isinstance(new_models, dict):
         for name, entry in models.items():
             was = ((entry or {}).get("limit") or {}).get("output") if isinstance(entry, dict) else None

@@ -23,12 +23,12 @@ class OutputCap(unittest.TestCase):
     def test_opencode_gets_room_for_a_compaction_summary_on_a_wide_server(self):
         text = render("opencode", 131072)["files"][0]["text"]
         cfg = json.loads(text)
-        limit = next(iter(cfg["provider"]["strata"]["models"].values()))["limit"]
+        limit = next(iter(cfg["providers"]["strata"]["models"].values()))["limit"]
         self.assertEqual(limit, {"context": 131072, "input": 126976, "output": 16384})
         trigger = limit["input"] - cfg["compaction"]["buffer"]
         self.assertLess(trigger + limit["output"], limit["context"], "compaction fires with room left for its own summary and the reply")
         small = json.loads(render("opencode", 32768)["files"][0]["text"])
-        self.assertEqual(next(iter(small["provider"]["strata"]["models"].values()))["limit"], {"context": 32768, "input": 28672, "output": 4096})
+        self.assertEqual(next(iter(small["providers"]["strata"]["models"].values()))["limit"], {"context": 32768, "input": 28672, "output": 4096})
 
     def test_every_config_that_names_a_cap_uses_it(self):
         r = render("claude-code", 131072)
@@ -43,10 +43,10 @@ class OutputCap(unittest.TestCase):
     def test_the_opencode_block_keeps_the_fields_the_tested_clients_read(self):
         """#4528: the block is the documented (not the newer 'providers') schema; 2.2.1 and 2.2.3 take it, per the thread. A change of schema is the owner's call."""
         cfg = json.loads(render("opencode", 131072)["files"][0]["text"])
-        p = cfg["provider"]["strata"]
-        self.assertEqual((p["npm"], sorted(p["options"])), ("@ai-sdk/openai-compatible", ["apiKey", "baseURL"]))
+        p = cfg["providers"]["strata"]
+        self.assertEqual((p["package"], sorted(p["settings"])), ("@opencode/ai/providers/openai-compatible", ["apiKey", "baseURL"]))
         model = next(iter(p["models"].values()))
-        self.assertTrue(model["tool_call"] and model["reasoning"])
+        self.assertTrue(model["capabilities"]["tools"] and model["capabilities"]["reasoning"])
 
 
 class RewriteKeepsTheirCap(unittest.TestCase):
@@ -62,10 +62,10 @@ class RewriteKeepsTheirCap(unittest.TestCase):
 
     @staticmethod
     def out(cfg):
-        return next(iter(cfg["provider"]["strata"]["models"].values()))["limit"]["output"]
+        return next(iter(cfg["providers"]["strata"]["models"].values()))["limit"]["output"]
 
     def old_file(self, output):
-        return {"theme": "mine", "provider": {"strata": {"models": {"m": {"limit": {"context": 131072, "input": 126976, "output": output}}}}}}
+        return {"theme": "mine", "providers": {"strata": {"models": {"m": {"limit": {"context": 131072, "input": 126976, "output": output}}}}}}
 
     def test_the_4096_an_older_strata_wrote_is_replaced(self):
         cfg = self.write(self.old_file(4096))
