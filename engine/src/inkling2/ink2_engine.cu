@@ -1129,40 +1129,19 @@ __global__ void __launch_bounds__(256) kb_moe_gemm(const float* __restrict__ A, 
     }
 }
 
-// --- small T (speculative verification, T <= SMALL_T tokens): weights read once for all T vectors, x staged per KT
-// columns.  Per (row, token) the same operations in the same order as the decode GEMVs (gemv_bf16_dot,
-// k_gemv_nvfp4_sel, k_gemv_mxfp8_sel): KT / 8 = 32 bf16 / e2m1 words per chunk = one per lane, so a lane walks the
-// same column sequence.
-constexpr int SMALL_T = 8, KT = 1024;
-// dense: Y[t][row] (row stride ldy) = W[row] . X[t] (row stride ldx), t < T <= SMALL_T; R rows per warp.  A chunk
-// gives each lane U = KT / 256 words (lane, lane + 32, ...), loaded before any arithmetic.
-// xs[t][0..kn) = X[row(t)][0..kn) for t < n, row(t) = rows ? rows[r0 + t] : r0 + t (256 threads; float4, every load of
-// a thread issued before its stores: the staging is L2 latency, not bandwidth).  kn % 4 == 0, X and ldx 16 B aligned.
-__device__ __forceinline__ void stage_rows(float* xs, const float* __restrict__ X, int ldx, const int* __restrict__ rows,
-                                           int r0, int n, int kn) {
-    constexpr int PT = SMALL_T * KT / 4 / 256;   // float4 per thread at most
-    const int q = kn / 4;
-    float4 v[PT];
-#pragma unroll
-    for (int u = 0; u < PT; ++u) {
-        const int i = threadIdx.x + 256 * u, t = i / q;
-        if (t < n) {
-            const int row = rows ? rows[r0 + t] : r0 + t;
-            v[u] = __ldg(reinterpret_cast<const float4*>(X + (size_t) row * ldx) + (i - t * q));
-        }
-    }
-#pragma unroll
-    for (int u = 0; u < PT; ++u) {
-        const int i = threadIdx.x + 256 * u, t = i / q;
-        if (t < n) reinterpret_cast<float4*>(xs + (size_t) t * KT)[i - t * q] = v[u];
-    }
-}
+// --- small T (speculative verification, T <= SMALL_T tokens): weights read once for all T vectors.  Per (row, token)
+// the same operations in the same order as the decode GEMVs (gemv_bf16_dot, k_gemv_nvfp4_sel, k_gemv_mxfp8_sel: a
+// lane walks words lane, lane + 32, ...), so a verified token's products match its decode products bit for bit.
+constexpr int SMALL_T = 8;
+// dense: Y[t][row] (row stride ldy) = W[row] . X[t] (row stride ldx), t < T <= SMALL_T; R rows per warp.  The T input
+// rows are read straight from global memory (L1 / L2: T x K x 4 B <= 147 KB, reused by every warp of an SM): no
+// shared-memory staging, no barrier, the weight loads of consecutive words pipelined (unroll 2).
 template <int R>
 __global__ void __launch_bounds__(256) k_gemv_bf16_multi(const uint16_t* __restrict__ W, const float* __restrict__ X,
                                                          int ldx, float* __restrict__ Y, int ldy, int N, int K, int T) {
-    constexpr int TV = SMALL_T, U = KT / 256;
-    __shared__ __align__(16) float xs[TV][KT];
+    constexpr int TV = SMALL_T;
     const int lane = threadIdx.x & 31, row0 = (blockIdx.x * (blockDim.x / 32) + threadIdx.x / 32) * R;
+    if (row0 >= N) return;
     const uint4* w[R];
 #pragma unroll
     for (int r = 0; r < R; ++r) w[r] = reinterpret_cast<const uint4*>(W + (size_t) min(row0 + r, N - 1) * K);
@@ -1171,34 +1150,22 @@ __global__ void __launch_bounds__(256) k_gemv_bf16_multi(const uint16_t* __restr
     for (int r = 0; r < R; ++r)
 #pragma unroll
         for (int t = 0; t < TV; ++t) acc[r][t] = 0.0f;
-    for (int k0 = 0; k0 < K; k0 += KT) {
-        const int kn = min(KT, K - k0), nw = kn / 8;
-        __syncthreads();
-        stage_rows(xs[0], X + k0, ldx, nullptr, 0, T, kn);
-        __syncthreads();
-        if (row0 >= N) continue;
-        uint4 v[U][R];
+#pragma unroll 2
+    for (int i = lane; i < K / 8; i += 32) {
+        uint4 v[R];
 #pragma unroll
-        for (int u = 0; u < U; ++u)
-            if (lane + 32 * u < nw)
+        for (int r = 0; r < R; ++r) v[r] = __ldg(w[r] + i);
 #pragma unroll
-                for (int r = 0; r < R; ++r) v[u][r] = __ldg(w[r] + k0 / 8 + lane + 32 * u);
+        for (int t = 0; t < TV; ++t) {
+            if (t >= T) break;
+            const float4* x4 = reinterpret_cast<const float4*>(X + (size_t) t * ldx);
+            const float4 a = __ldg(x4 + 2 * i), b = __ldg(x4 + 2 * i + 1);
 #pragma unroll
-        for (int u = 0; u < U; ++u) {
-            const int i = lane + 32 * u;
-            if (i >= nw) break;
-#pragma unroll
-            for (int t = 0; t < TV; ++t) {
-                if (t >= T) break;
-                const float4 a = *reinterpret_cast<const float4*>(&xs[t][8 * i]), b = *reinterpret_cast<const float4*>(&xs[t][8 * i + 4]);
-#pragma unroll
-                for (int r = 0; r < R; ++r)
-                    acc[r][t] += bf16lo(v[u][r].x) * a.x + bf16hi(v[u][r].x) * a.y + bf16lo(v[u][r].y) * a.z + bf16hi(v[u][r].y) * a.w +
-                                 bf16lo(v[u][r].z) * b.x + bf16hi(v[u][r].z) * b.y + bf16lo(v[u][r].w) * b.z + bf16hi(v[u][r].w) * b.w;
-            }
+            for (int r = 0; r < R; ++r)
+                acc[r][t] += bf16lo(v[r].x) * a.x + bf16hi(v[r].x) * a.y + bf16lo(v[r].y) * a.z + bf16hi(v[r].y) * a.w +
+                             bf16lo(v[r].z) * b.x + bf16hi(v[r].z) * b.y + bf16lo(v[r].w) * b.z + bf16hi(v[r].w) * b.w;
         }
     }
-    if (row0 >= N) return;
 #pragma unroll
     for (int t = 0; t < TV; ++t) {
         if (t >= T) break;
@@ -1209,101 +1176,156 @@ __global__ void __launch_bounds__(256) k_gemv_bf16_multi(const uint16_t* __restr
         }
     }
 }
+// short matrices (N <= 256: router, gate down): one block per row, the K words split over 256 threads, block
+// reduction per vector (latency-bound otherwise: a warp per row walks K alone)
+__global__ void __launch_bounds__(256) k_gemv_bf16_multi_rows(const uint16_t* __restrict__ W, const float* __restrict__ X,
+                                                              int ldx, float* __restrict__ Y, int ldy, int K, int T) {
+    constexpr int TV = SMALL_T;
+    __shared__ float red[8][TV];
+    const uint4* w = reinterpret_cast<const uint4*>(W + (size_t) blockIdx.x * K);
+    float acc[TV];
+#pragma unroll
+    for (int t = 0; t < TV; ++t) acc[t] = 0.0f;
+    for (int i = threadIdx.x; i < K / 8; i += 256) {
+        const uint4 v = __ldg(w + i);
+#pragma unroll
+        for (int t = 0; t < TV; ++t) {
+            if (t >= T) break;
+            const float4* x4 = reinterpret_cast<const float4*>(X + (size_t) t * ldx);
+            const float4 a = __ldg(x4 + 2 * i), b = __ldg(x4 + 2 * i + 1);
+            acc[t] += bf16lo(v.x) * a.x + bf16hi(v.x) * a.y + bf16lo(v.y) * a.z + bf16hi(v.y) * a.w + bf16lo(v.z) * b.x +
+                      bf16hi(v.z) * b.y + bf16lo(v.w) * b.z + bf16hi(v.w) * b.w;
+        }
+    }
+    const int lane = threadIdx.x & 31, wp = threadIdx.x >> 5;
+#pragma unroll
+    for (int t = 0; t < TV; ++t) {
+        const float x = warp_sum(acc[t]);
+        if (!lane) red[wp][t] = x;
+    }
+    __syncthreads();
+    if (threadIdx.x < T) {
+        float x = 0.0f;
+        for (int u = 0; u < 8; ++u) x += red[u][threadIdx.x];
+        Y[(size_t) threadIdx.x * ldy + blockIdx.x] = x;
+    }
+}
+// K = 64 (the gates' fg): 8 lanes per row (one word each), 4 rows per warp; the 8-lane butterfly is the decode's
+// 32-lane warp_sum minus its zero steps (bit-identical)
+__global__ void __launch_bounds__(256) k_gemv_bf16_multi_k64(const uint16_t* __restrict__ W, const float* __restrict__ X,
+                                                             int ldx, float* __restrict__ Y, int ldy, int N, int T) {
+    constexpr int TV = SMALL_T;
+    __shared__ __align__(16) float xs[TV][64];
+    for (int i = threadIdx.x; i < T * 64; i += 256) xs[i / 64][i % 64] = X[(size_t) (i / 64) * ldx + i % 64];
+    __syncthreads();
+    const int lane = threadIdx.x & 31, j = lane & 7, row = (blockIdx.x * 8 + (threadIdx.x >> 5)) * 4 + (lane >> 3);
+    const uint4 v = row < N ? __ldg(reinterpret_cast<const uint4*>(W + (size_t) row * 64) + j) : make_uint4(0, 0, 0, 0);
+#pragma unroll
+    for (int t = 0; t < TV; ++t) {
+        if (t >= T) break;
+        const float4 a = *reinterpret_cast<const float4*>(&xs[t][8 * j]), b = *reinterpret_cast<const float4*>(&xs[t][8 * j + 4]);
+        float x = bf16lo(v.x) * a.x + bf16hi(v.x) * a.y + bf16lo(v.y) * a.z + bf16hi(v.y) * a.w + bf16lo(v.z) * b.x +
+                  bf16hi(v.z) * b.y + bf16lo(v.w) * b.z + bf16hi(v.w) * b.w;
+        x += __shfl_xor_sync(0xffffffffu, x, 4);
+        x += __shfl_xor_sync(0xffffffffu, x, 2);
+        x += __shfl_xor_sync(0xffffffffu, x, 1);
+        if (j == 0 && row < N) Y[(size_t) t * ldy + row] = x;
+    }
+}
 // grouped experts: the rows of one expert (blockIdx.y = tile of kb_moe_plan; with T <= SMALL_T an expert has at most
 // SMALL_T rows, one tile) times its weights, read once.  C[r][n] = factor_e * W_e[n] . A[arow(r)], arow = rows[r] or r.
-// 4 rows per warp; per chunk a lane loads U words per row (NVFP4 8 columns, MXFP8 4 columns per word) first.
+// R rows per warp; each word's weights decoded once for all the tile's rows; inputs read from L1 / L2.
+#ifndef GRP_UNROLL
+#define GRP_UNROLL 2
+#endif
+#ifndef GRP_MINB
+#define GRP_MINB 2
+#endif
+constexpr int GRP_UNR = GRP_UNROLL;   // (a pragma argument is not macro-expanded)
 template <bool NV, int R>
-__global__ void __launch_bounds__(256, 2) k_moe_gemv_grp(const float* __restrict__ A, int lda, const int* __restrict__ rows,
+__global__ void __launch_bounds__(256, GRP_MINB) k_moe_gemv_grp(const float* __restrict__ A, int lda, const int* __restrict__ rows,
                                                       const uint8_t* const* __restrict__ tab,
                                                       const float* __restrict__ factors, const int* __restrict__ tile_e,
                                                       const int* __restrict__ tile_r0, const int* __restrict__ ntiles,
                                                       const int* __restrict__ eoff, const int* __restrict__ ecnt,
                                                       float* __restrict__ C, int N, int K) {
-    constexpr int TV = SMALL_T, CPW = NV ? 8 : 4, U = KT / CPW / 32;
-    __shared__ __align__(16) float xs[TV][KT];
+    constexpr int TV = SMALL_T, CPW = NV ? 8 : 4;
     __shared__ float e4[256];
     if ((int) blockIdx.y >= *ntiles) return;
     const int e = tile_e[blockIdx.y], r0 = tile_r0[blockIdx.y], nr = min(eoff[e] + ecnt[e] - r0, TV);
     const uint8_t* W = tab[e];
     if (!W) return;
     const uint8_t* S = W + (size_t) N * (NV ? K / 2 : K);
-    if (NV) for (int i = threadIdx.x; i < 256; i += blockDim.x) e4[i] = e4m3_decode(i) * 16384.0f;
+    if (NV) {
+        for (int i = threadIdx.x; i < 256; i += blockDim.x) e4[i] = e4m3_decode(i) * 16384.0f;
+        __syncthreads();
+    }
     const int lane = threadIdx.x & 31, row0 = (blockIdx.x * (blockDim.x / 32) + threadIdx.x / 32) * R;
+    if (row0 >= N) return;
+    const float* xr[TV];
+#pragma unroll
+    for (int t = 0; t < TV; ++t) xr[t] = A + (size_t) (t < nr ? (rows ? rows[r0 + t] : r0 + t) : 0) * lda;
     const int kw = K / CPW;   // words per row
     float acc[R][TV];
 #pragma unroll
     for (int r = 0; r < R; ++r)
 #pragma unroll
         for (int t = 0; t < TV; ++t) acc[r][t] = 0.0f;
-    for (int k0 = 0; k0 < K; k0 += KT) {
-        const int kn = min(KT, K - k0), nw = kn / CPW;
-        __syncthreads();
-        stage_rows(xs[0], A + k0, lda, rows, r0, nr, kn);
-        __syncthreads();
-        if (row0 >= N) continue;
-        uint32_t v[U][R];
-        uint8_t sc[U][R];
+#pragma unroll GRP_UNR
+    for (int i = lane; i < kw; i += 32) {
+        uint32_t v[R];
+        uint8_t sc[R];
 #pragma unroll
-        for (int u = 0; u < U; ++u) {
-            const int j = lane + 32 * u, i = k0 / CPW + j;
-            if (j < nw)
-#pragma unroll
-                for (int r = 0; r < R; ++r) {
-                    const size_t row = row0 + r;
-                    v[u][r] = __ldg(reinterpret_cast<const uint32_t*>(W + row * kw * 4) + i);
-                    sc[u][r] = NV ? __ldg(S + row * (K / 16) + (i >> 1)) : __ldg(S + row * (K / 32) + (i >> 3));
-                }
+        for (int r = 0; r < R; ++r) {
+            const size_t row = row0 + r;
+            v[r] = __ldg(reinterpret_cast<const uint32_t*>(W + row * kw * 4) + i);
+            sc[r] = NV ? __ldg(S + row * (K / 16) + (i >> 1)) : __ldg(S + row * (K / 32) + (i >> 3));
         }
+        if (NV) {   // weights decoded once per word, then every row of the tile
+            float wd[R][8], ws[R];
 #pragma unroll
-        for (int u = 0; u < U; ++u) {
-            const int j = lane + 32 * u;
-            if (j >= nw) break;
-            if (NV) {   // weights decoded once per word, then every token of the tile
-                float wd[R][8], ws[R];
+            for (int r = 0; r < R; ++r) {
+                const uint32_t vv = v[r];
+                const float2 p0 = e2m1x2(vv & 0xff), p1 = e2m1x2((vv >> 8) & 0xff), p2 = e2m1x2((vv >> 16) & 0xff),
+                             p3 = e2m1x2(vv >> 24);
+                wd[r][0] = p0.x; wd[r][1] = p0.y; wd[r][2] = p1.x; wd[r][3] = p1.y;
+                wd[r][4] = p2.x; wd[r][5] = p2.y; wd[r][6] = p3.x; wd[r][7] = p3.y;
+                ws[r] = e4[sc[r]];
+            }
 #pragma unroll
-                for (int r = 0; r < R; ++r) {
-                    const uint32_t vv = v[u][r];
-                    const float2 p0 = e2m1x2(vv & 0xff), p1 = e2m1x2((vv >> 8) & 0xff), p2 = e2m1x2((vv >> 16) & 0xff),
-                                 p3 = e2m1x2(vv >> 24);
-                    wd[r][0] = p0.x; wd[r][1] = p0.y; wd[r][2] = p1.x; wd[r][3] = p1.y;
-                    wd[r][4] = p2.x; wd[r][5] = p2.y; wd[r][6] = p3.x; wd[r][7] = p3.y;
-                    ws[r] = e4[sc[u][r]];
-                }
-#pragma unroll
-                for (int t = 0; t < TV; ++t) {
-                    if (t >= nr) break;
-                    const float4 a = *reinterpret_cast<const float4*>(&xs[t][8 * j]), b = *reinterpret_cast<const float4*>(&xs[t][8 * j + 4]);
-#pragma unroll
-                    for (int r = 0; r < R; ++r) {
-                        const float part = wd[r][0] * a.x + wd[r][1] * a.y + wd[r][2] * a.z + wd[r][3] * a.w + wd[r][4] * b.x +
-                                           wd[r][5] * b.y + wd[r][6] * b.z + wd[r][7] * b.w;
-                        acc[r][t] += part * ws[r];
-                    }
-                }
-            } else {
-                float wd[R][4], ws[R];
+            for (int t = 0; t < TV; ++t) {
+                if (t >= nr) break;
+                const float4 a = __ldg(reinterpret_cast<const float4*>(xr[t]) + 2 * i),
+                             b = __ldg(reinterpret_cast<const float4*>(xr[t]) + 2 * i + 1);
 #pragma unroll
                 for (int r = 0; r < R; ++r) {
-                    const uint32_t vv = v[u][r];
-                    const float2 p01 = e4m3x2((vv & 0xffu) | ((vv & 0xff00u) << 8));
-                    const float2 p23 = e4m3x2(((vv >> 16) & 0xffu) | ((vv & 0xff000000u) >> 8));
-                    wd[r][0] = p01.x; wd[r][1] = p01.y; wd[r][2] = p23.x; wd[r][3] = p23.y;
-                    ws[r] = exp2f((float) sc[u][r] - 119.0f);
+                    const float part = wd[r][0] * a.x + wd[r][1] * a.y + wd[r][2] * a.z + wd[r][3] * a.w + wd[r][4] * b.x +
+                                       wd[r][5] * b.y + wd[r][6] * b.z + wd[r][7] * b.w;
+                    acc[r][t] += part * ws[r];
                 }
+            }
+        } else {
+            float wd[R][4], ws[R];
 #pragma unroll
-                for (int t = 0; t < TV; ++t) {
-                    if (t >= nr) break;
-                    const float4 a = *reinterpret_cast<const float4*>(&xs[t][4 * j]);
+            for (int r = 0; r < R; ++r) {
+                const uint32_t vv = v[r];
+                const float2 p01 = e4m3x2((vv & 0xffu) | ((vv & 0xff00u) << 8));
+                const float2 p23 = e4m3x2(((vv >> 16) & 0xffu) | ((vv & 0xff000000u) >> 8));
+                wd[r][0] = p01.x; wd[r][1] = p01.y; wd[r][2] = p23.x; wd[r][3] = p23.y;
+                ws[r] = exp2f((float) sc[r] - 119.0f);
+            }
 #pragma unroll
-                    for (int r = 0; r < R; ++r) {
-                        const float part = wd[r][0] * a.x + wd[r][1] * a.y + wd[r][2] * a.z + wd[r][3] * a.w;
-                        acc[r][t] += part * ws[r];
-                    }
+            for (int t = 0; t < TV; ++t) {
+                if (t >= nr) break;
+                const float4 a = __ldg(reinterpret_cast<const float4*>(xr[t]) + i);
+#pragma unroll
+                for (int r = 0; r < R; ++r) {
+                    const float part = wd[r][0] * a.x + wd[r][1] * a.y + wd[r][2] * a.z + wd[r][3] * a.w;
+                    acc[r][t] += part * ws[r];
                 }
             }
         }
     }
-    if (row0 >= N) return;
     const float f = NV ? factors[e] : 1.0f;
 #pragma unroll
     for (int t = 0; t < TV; ++t) {
@@ -1458,7 +1480,10 @@ __global__ void __launch_bounds__(128 * NREP, 1) kb_attn_tc(const half* __restri
                                                   const void* __restrict__ K, const void* __restrict__ V,
                                                   const __half* __restrict__ ksc, const __half* __restrict__ vsc,
                                                   const float* __restrict__ rel, int cap, int window, int pos0, int T,
-                                                  float* __restrict__ out) {
+                                                  float* __restrict__ out, int nsplit, float* __restrict__ spm,
+                                                  float* __restrict__ spl, float* __restrict__ spo) {
+    // nsplit > 1 (verify blocks, T <= AQ): blockIdx.z = key split, partial (max, sum, unnormalized out) per split into
+    // spm / spl / spo, merged by kb_attn_merge_split; the sink counts in split 0 only.
     // GQA group per block: the NREP q heads of kv head g share each K / V tile (loaded and converted once);
     // warp w: head g * NREP + w / 4, query rows t0 + (w % 4) * 16.  Per warp the computation is unchanged.
     // P (fp16) overwrites the warp's own S rows once read; the row map lives in the K / V tile before the loop.
@@ -1496,16 +1521,19 @@ __global__ void __launch_bounds__(128 * NREP, 1) kb_attn_tc(const half* __restri
     FC o[HD / 16];
 #pragma unroll
     for (int n = 0; n < HD / 16; ++n) wmma::fill_fragment(o[n], 0.0f);
+    const int split = blockIdx.z;
     if (lane < 16) {
         const int r = tw + lane;
-        ms[w][lane] = r < T ? P[(size_t) r * sp + OFF_SINK + h] : 0.0f;
-        ls[w][lane] = 1.0f;
+        ms[w][lane] = split > 0 ? -INFINITY : r < T ? P[(size_t) r * sp + OFF_SINK + h] : 0.0f;
+        ls[w][lane] = split > 0 ? 0.0f : 1.0f;
     }
     const float scale = rsqrtf((float) HD);
     const int nq = min(AQ, T - t0);
     const int pa = pos0 + t0, pb = pos0 + t0 + nq - 1;
     const int lo = window > 0 ? max(0, pa - window + 1) : 0;
-    for (int k0 = lo; k0 <= pb; k0 += AK) {
+    const int per = nsplit > 1 ? ((pb - lo + 1 + nsplit - 1) / nsplit + AK - 1) / AK * AK : pb - lo + 1;
+    const int kb = lo + split * per, ke = min(pb, kb + per - 1);
+    for (int k0 = kb; k0 <= ke; k0 += AK) {
         __syncthreads();
         for (int i = tid; i < AK * HD / 4; i += 128 * NREP) {   // float4 units
             const int r = i / (HD / 4), d = (i % (HD / 4)) * 4, j = k0 + r;
@@ -1547,12 +1575,13 @@ __global__ void __launch_bounds__(128 * NREP, 1) kb_attn_tc(const half* __restri
                 mx = fmaxf(mx, sv[c]);
             }
             mx = fmaxf(mx, __shfl_xor_sync(0xffffffffu, mx, 1));
-            const float mo = ms[w][r], mn = fmaxf(mo, mx), f = expf(mo - mn);
+            // (-inf only in a split > 0 with every key so far masked for this row: nothing to rescale, e = 0)
+            const float mo = ms[w][r], mn = fmaxf(mo, mx), f = mn == -INFINITY ? 1.0f : expf(mo - mn);
             float sum = 0.0f;
             __syncwarp();   // every S value of the warp read before P overwrites them
 #pragma unroll
             for (int c = 0; c < 16; ++c) {
-                const float e = expf(sv[c] - mn);
+                const float e = mn == -INFINITY ? 0.0f : expf(sv[c] - mn);
                 sum += e;
                 Pw[r * PLD + c0 + c] = __float2half_rn(e);
             }
@@ -1580,6 +1609,17 @@ __global__ void __launch_bounds__(128 * NREP, 1) kb_attn_tc(const half* __restri
     }
     if (tw >= T) return;
     __syncwarp();
+    if (nsplit > 1) {   // T <= AQ: rows tw.. of split `split`, [nsplit][AQ][...]
+        if (lane < 16 && tw + lane < T) {
+            const size_t i = ((size_t) split * AQ + tw + lane) * NQ + h;
+            spm[i] = ms[w][lane];
+            spl[i] = ls[w][lane];
+        }
+#pragma unroll
+        for (int n = 0; n < HD / 16; ++n)
+            wmma::store_matrix_sync(spo + ((size_t) split * AQ + tw) * QD + h * HD + n * 16, o[n], QD, wmma::mem_row_major);
+        return;
+    }
     float il[8];
     for (int i = 0; i < ne && i < 8; ++i) il[i] = 1.0f / ls[w][rowof[i]];
 #pragma unroll
@@ -1587,6 +1627,23 @@ __global__ void __launch_bounds__(128 * NREP, 1) kb_attn_tc(const half* __restri
         for (int i = 0; i < ne && i < 8; ++i) o[n].x[i] *= il[i];
         wmma::store_matrix_sync(out + (size_t) tw * QD + h * HD + n * 16, o[n], QD, wmma::mem_row_major);
     }
+}
+
+// merge of kb_attn_tc's key splits: grid (NQ, T), block HD
+__global__ void kb_attn_merge_split(const float* __restrict__ spm, const float* __restrict__ spl,
+                                    const float* __restrict__ spo, int nsplit, float* __restrict__ out) {
+    const int h = blockIdx.x, t = blockIdx.y, d = threadIdx.x;
+    float M = -INFINITY;
+    for (int s = 0; s < nsplit; ++s) M = fmaxf(M, spm[((size_t) s * AQ + t) * NQ + h]);
+    float L = 0.0f, O = 0.0f;
+    for (int s = 0; s < nsplit; ++s) {
+        const size_t i = ((size_t) s * AQ + t) * NQ + h;
+        if (spm[i] == -INFINITY) continue;
+        const float f = expf(spm[i] - M);
+        L += spl[i] * f;
+        O += spo[((size_t) s * AQ + t) * QD + h * HD + d] * f;
+    }
+    out[(size_t) t * QD + h * HD + d] = O / L;
 }
 
 // SoftcappedSwiGLU on nr rows: gu [nr][2FF] -> act [nr][FF]
@@ -2385,7 +2442,12 @@ struct Prefill {
     float* feat = nullptr;
     int* am = nullptr;
     bool rows_argmax = false;
+    float *spm = nullptr, *spl = nullptr, *spo = nullptr;   // kb_attn_tc key splits (verify)
 };
+constexpr int SPLIT_MAX = 64;
+#ifndef SPLIT_KEYS
+#define SPLIT_KEYS 32
+#endif
 Prefill PF;
 
 void alloc_prefill() {
@@ -2474,6 +2536,14 @@ void sgemm(const float* Wf, int n, int K, const float* X, int ldx, float* Y, int
 }
 // rows [first, first + n) of W, T <= SMALL_T vectors
 void gemv_multi(const DMat& W, int first, int n, const float* X, int ldx, float* Y, int ldy, int T) {
+    if (W.k == 64) {
+        k_gemv_bf16_multi_k64<<<(unsigned) ((n + 31) / 32), 256>>>(W.d + (size_t) first * 64, X, ldx, Y, ldy, n, T);
+        return;
+    }
+    if (n <= 256) {
+        k_gemv_bf16_multi_rows<<<(unsigned) n, 256>>>(W.d + (size_t) first * W.k, X, ldx, Y, ldy, W.k, T);
+        return;
+    }
     int R = 4;   // as gemv(): fewer rows per warp while the grid is short
     while (R > 1 && (n + 8 * R - 1) / (8 * R) < g_gemv_min_blocks) R /= 2;
     const unsigned g = (unsigned) ((n + 8 * R - 1) / (8 * R));
@@ -2547,8 +2617,16 @@ void attention_b(const Layer& Y, Slot& S, const float* xq, int sq, const float* 
     if (PF.tc) {
         const size_t nqh = (size_t) T * QD;
         kb_f32_to_f16<<<(unsigned) ((nqh + 255) / 256), 256>>>(P, np, QD, PF.qh, nqh);
-        kb_attn_tc<<<dim3((T + AQ - 1) / AQ, NKV), 128 * NREP>>>(PF.qh, P, np, S.K, S.V, S.ksc, S.vsc, PF.rel, S.cap, S.full ? 0 : WINDOW, pos0,
-                                                         T, PF.att);
+        // verify blocks: the keys split over blocks (8 blocks would walk the whole context otherwise)
+        int ns = 1;
+        if (T <= SMALL_T && PF.spo) {
+            const int nk = pos0 + T - (S.full ? 0 : std::max(0, pos0 - WINDOW + 1));
+            ns = std::min(SPLIT_MAX, std::max(1, nk / SPLIT_KEYS));
+        }
+        kb_attn_tc<<<dim3((T + AQ - 1) / AQ, NKV, ns), 128 * NREP>>>(PF.qh, P, np, S.K, S.V, S.ksc, S.vsc, PF.rel, S.cap,
+                                                                 S.full ? 0 : WINDOW, pos0, T, PF.att, ns, PF.spm,
+                                                                 PF.spl, PF.spo);
+        if (ns > 1) kb_attn_merge_split<<<dim3(NQ, T), HD>>>(PF.spm, PF.spl, PF.spo, ns, PF.att);
     } else {
         kb_attn<<<dim3((T + FQ - 1) / FQ, NQ), 256, FA_SMEM>>>(P, np, S.K, S.V, S.ksc, S.vsc, PF.rel, S.cap, S.full ? 0 : WINDOW, pos0,
                                                              T, PF.att);
@@ -3323,6 +3401,9 @@ int main(int argc, char** argv) {
         if (PF.TP < 256) { std::fprintf(stderr, "--spec needs --chunk >= 256\n"); return 2; }
         draft_load(dir);
         PF.feat = dfloats((size_t) PF.TP * 4 * H);
+        PF.spm = dfloats((size_t) SPLIT_MAX * AQ * NQ);
+        PF.spl = dfloats((size_t) SPLIT_MAX * AQ * NQ);
+        PF.spo = dfloats((size_t) SPLIT_MAX * AQ * QD);
         PF.am = (int*) dalloc(DBLK * 4);
     }
     if (E.xhost) setup_offload();
