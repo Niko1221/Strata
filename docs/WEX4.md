@@ -28,8 +28,10 @@ strata generate --pack <pack dir> --native <model>-00001-of-00002.gguf --mmap-ex
 `--experts-wex4` needs the file tier: `--mmap-experts` or `--resident-experts`. Without one of them the engine stops
 and says so. `--experts-wex4-root` is optional.
 
-The flags were tried with `strata generate` only. The app and `strata launch` pass extra engine flags through
-`user_args` in the run config, but that path was not tried with these flags.
+The flags were tried with `strata generate` and with `serve/server.py --engine strata --config <run config>`, the
+flags written in the config's `args` (with `--resident-experts`, MTP drafting and a 512K context: the same greedy reply
+as the same config on `experts.bin`). The app and `strata launch` pass extra engine flags through `user_args` in the
+run config, but that path was not tried with these flags.
 
 ## What is checked, and when
 
@@ -67,7 +69,7 @@ Measured on one PC: RTX 5090 32 GB, Ryzen 9 7950X3D, 32 GB RAM (about 20 GB free
 | What | experts.bin | experts.wex4 |
 | --- | --- | --- |
 | File size | 25,146,163,200 B | 25,179,885,568 B (+33,722,368 B, +0.13 %: the 5.7 MB index and the record padding) |
-| Engine start: header and index checks | - | 29 to 39 ms (9 runs) |
+| Engine start: header and index checks | - | 28 to 39 ms (14 starts) |
 | `wex4_check.py`, every expert hashed | - | 20.0 s and 20.2 s for 25.18 GB (1.25 GB/s, Python `hashlib`, one thread) |
 
 Generate, 999-token prompt, 128 new tokens, greedy, `--spec 2 --suffix-draft 0 --prefill 512 --expert-cache 1000`,
