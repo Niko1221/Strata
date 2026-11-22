@@ -6,6 +6,11 @@
 # which ggml tree the engine builds from: the vendored third_party/strata-ggml, or the -DSTRATA_GGML_DIR override (repo_root: the checkout)
 macro(strata_ggml_resolve repo_root)
 set(STRATA_GGML_DIR "" CACHE PATH "llama.cpp checkout to take ggml from instead of the vendored third_party/strata-ggml (empty: the vendored tree)")
+# ggml's switch for its ccache / sccache launcher, declared when the configure passes it.  setup.py does (-DGGML_CCACHE=OFF, #6172) and a release engine configures
+# no ggml: undeclared, CMake reports it as a manually-specified variable the project did not use.  Not passed, it stays undeclared and the ggml tree keeps its default.
+if(DEFINED CACHE{GGML_CCACHE})
+  option(GGML_CCACHE "ggml: use ccache if available" ON)
+endif()
 if(STRATA_GGML_DIR)
   set(_strata_ggml_root "${STRATA_GGML_DIR}")
 else()

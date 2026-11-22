@@ -23,6 +23,11 @@ option(STRATA_VISION_HIP "run the vision encoder on an AMD GPU (our tower with h
 option(STRATA_VISION_SYCL "run the vision encoder on an Intel GPU (our tower with oneMKL, needs the oneAPI icx/icpx compilers); the program is named strata-vision-sycl" OFF)
 set(STRATA_VISION_HIP_ARCHS "" CACHE STRING "the gfx architectures strata-vision-hip is compiled for (';'-separated)")
 option(STRATA_VISION_ORACLES "also build the llama.cpp-based test oracles (not part of any package)" OFF)
+# ggml's switch for its ccache / sccache launcher, declared when the configure passes it.  setup.py does (-DGGML_CCACHE=OFF, #6172) and only the test oracles' llama.cpp
+# reads it: undeclared, CMake reports it as a manually-specified variable the project did not use.  Not passed, it stays undeclared and llama.cpp keeps its default.
+if(DEFINED CACHE{GGML_CCACHE})
+  option(GGML_CCACHE "ggml: use ccache if available" ON)
+endif()
 if(STRATA_VISION_HIP AND STRATA_VISION_CUDA)
   message(FATAL_ERROR "strata-vision: STRATA_VISION_CUDA and STRATA_VISION_HIP are two different programs")
 endif()
