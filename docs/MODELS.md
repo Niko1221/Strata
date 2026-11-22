@@ -242,7 +242,7 @@ strata launch --family qwen36 --model UD-Q4_K_XL
 [Inkling-2-Mini](https://huggingface.co/thinkingmachines/Inkling-2-Mini) by Thinking Machines Lab (Apache 2.0): a
 mixture of experts with 128 experts per layer, 8 active, NVFP4 and MXFP8 experts. Strata reads the published
 checkpoint as it is (a 20.2 GB download at a pinned revision, every file checked against its size and SHA-256) with
-its own engine program, `strata-ink2`, which setup compiles for your card. NVIDIA cards (RTX 20 series or newer) on
+its own engine program, `strata-ink2`, which setup compiles for your card. NVIDIA cards (RTX 20 series or newer) and AMD RDNA cards (ROCm) on
 Linux only so far; it is not in the app or in `strata launch` yet. It reads pictures itself (send them in the chat
 page or as `image_url`; nothing is loaded for them until the first one, then about 0.65 GB of RAM). Setup also
 gives it a conversation cache in RAM (`--conversation-cache-mib`, 4096 or 2048 MiB depending on the RAM left, off

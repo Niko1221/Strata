@@ -8,7 +8,8 @@ token goes through 48 layer applications. The engine reads the published checkpo
 To install and start it, see [MODELS.md](MODELS.md#inkling-2-mini): `./setup.sh --family inkling2` picks the flags
 below for your card. This page is for reading what setup chose, or for running the engine by hand.
 
-NVIDIA only (RTX 20 series or newer), one GPU. Setup offers it on Linux.
+NVIDIA (RTX 20 series or newer) or AMD RDNA (wave32, gfx10 to gfx12) through ROCm, one GPU, Linux. The AMD port is
+jingx8885's, measured on a gfx1151 (Radeon 8060S); the speeds below are NVIDIA ones.
 
 ## What setup chooses
 
