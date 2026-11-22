@@ -12,10 +12,20 @@ image.
 
 | probe | result |
 |---|---|
-| decode_128 / decode_256 | **148–149 tok/s** |
-| prefill_8192 | **1290–1305 tok/s** |
+| decode_128 / decode_256 (bench probe) | **148–149 tok/s** |
+| prefill_8192 (bench probe) | **1290–1305 tok/s** |
+| long cold prefill (60–70K-token prompts, live traffic) | **~2150–2190 tok/s** |
+| generation, real-world (17.8K prod generations ≥100 tok) | **median 58, p10 44, p90 81 tok/s** |
 | context | 262 144 tokens (int8 KV) |
 | VRAM | 93.6 GiB across 4 GPUs, layer-split auto |
+
+The bench probes are short, cache-warm best cases. Day-to-day numbers with
+50–70K-token conversation contexts are honest lows of ~45–50 and an average
+near 60 tok/s — every token pays real attention/KV cost at those depths,
+and that is what the production-traffic row measures. Long cold
+prefills (~2.2K tok/s on 60–70K-token reads) run faster per token than the
+8K bench probe — we have not isolated why, so treat that as an observation,
+not a guarantee.
 
 For comparison, stock upstream engines *regress* on gfx906 (0.1.60+ measures
 ~40 % slower decode on wave64 hardware). This branch exists because nothing
