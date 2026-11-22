@@ -417,7 +417,8 @@ int main(int argc, char** argv) {
             else if (kv == "fp16" || kv == "f16") { cfg.bopts.kv_dtype = KvDtype::FP16; cfg.bopts.kv_dtype_auto = false; }
             else if (kv == "k8v8" || kv == "i8" || kv == "q8") { cfg.bopts.kv_dtype = KvDtype::K8V8; cfg.bopts.kv_dtype_auto = false; }
             else if (kv == "k8v4") { cfg.bopts.kv_dtype = KvDtype::K8V4; cfg.bopts.kv_dtype_auto = false; }
-            else { cfg.bopts.kv_dtype_auto = true; }
+            else if (kv == "auto") { cfg.bopts.kv_dtype_auto = true; }
+            else { fprintf(stderr, "unknown --kv value '%s' (use: auto, fp8, fp16, k8v8, k8v4)\n", kv.c_str()); std::exit(2); }
         } else if (a == "--kv-offload") {
             cfg.bopts.kv_offload = next();
         } else if (a == "--draft") {

@@ -30,6 +30,15 @@ inline const char* kv_dtype_name(KvDtype dt) noexcept {
     }
 }
 
+// #6681: the integer quantized formats (K8V8/K8V4, #6520) have real KV storage on the CPU (the pool init takes the
+// dtype and the selfcheck verifies the round-trip) and on CUDA (its own InkKvDtype path). The HIP, Metal and SYCL
+// pools have no integer path at all: they allocate fp16-sized pages and ignore the dtype in alloc_slot, so asking
+// for k8v4/k8v8 there pays the quantize cost for fp16-class memory. A backend without the integer storage rejects
+// these at init instead of silently mis-sizing the KV.
+inline bool kv_dtype_is_int_quant(KvDtype dt) noexcept {
+    return dt == KvDtype::K8V8 || dt == KvDtype::K8V4;
+}
+
 // ---- Scalar FP16 / BF16 / FP8 E4M3FN conversion helpers (portable across CPU & GPU host prep) ----
 inline float bf16_to_f32(uint16_t b) noexcept {
     uint32_t u = static_cast<uint32_t>(b) << 16;

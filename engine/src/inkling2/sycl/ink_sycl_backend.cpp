@@ -63,6 +63,11 @@ public:
     }
 
     bool init(const InkModelFile& model, const BackendOpts& opts, std::string& err) override {
+        if (kv_dtype_is_int_quant(opts.kv_dtype)) {  // #6681: the sycl pool ignores the dtype, fp16-sized pages
+            err = "sycl: --kv k8v4/k8v8 is not implemented on the SYCL backend (see #6681): the KV pool ignores the "
+                  "dtype and allocates fp16-sized pages. Use --kv fp8 or fp16.";
+            return false;
+        }
         ink_sycl::set_primary_gpu_index(opts.gpu_index);
         kv_dtype_ = opts.kv_dtype;
         const int par = std::max(1, std::min(64, opts.parallel));

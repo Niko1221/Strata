@@ -568,6 +568,11 @@ public:
             err = "[ink-hip] no HIP devices visible";
             return false;
         }
+        if (kv_dtype_is_int_quant(opts.kv_dtype)) {  // #6681: the hip pool has no integer KV path, fp16-sized pages regardless
+            err = "[ink-hip] --kv k8v4/k8v8 is not implemented on the HIP backend (see #6681): the KV pool allocates "
+                  "fp16-sized pages regardless of dtype. Use --kv fp8 (halves KV memory) or fp16.";
+            return false;
+        }
         gpu0_id_ = (!opts.gpu_ids.empty()) ? opts.gpu_ids[0] : opts.gpu_index;
         gpu0_id_ = std::max(0, std::min(gpu0_id_, dev_count - 1));
         gpu1_id_ = -1;
