@@ -6,12 +6,12 @@ Lokalne AI dla systemu Windows z czatem, pracą agentów, wyszukiwaniem źróde�
 
 ## Co si? zmieni?o w 0.6.9
 
-Ta wersja przenosi prace Q38 nad szybkoµcią, formatami i wektorami sterowania na nowy układ `terminal/` dla oficjalnego Strata 0.2.16. Qwen3.8-27B używa teraz połączonej uwagi GQA: test A/B w odwrotnej kolejnoµci zmierzył **dekodowanie o 6,0 % szybsze przy identycznych tokenach wyjµciowych** (baza 555,8 ms -> GQA 522,6 ms, mediany, monit 10 tokenów, ctx 512, KV F16). Ścieżka 9B dodaje pogrupowaną uwagę FP16 ze wspólnym cache softmax oraz usunięcie nadmiarowych memset/RoPE (5,4 % szybciej, tokeny identyczne bitowo). Obsługa formatów FP4/FP8-NVFP4 i wektory sterowania są włączone. Wczeµniej: pogrupowane zapisy KV F16 zmniejszyły koszt KV prefill o 27 % przy bajtowo identycznych logitach, dekodowanie jest na poziomie Prism llama.cpp (oba DP4A), a 32-gigabajtowy squeeze RAM z ostrzeżeniem o limicie commit z Sync-Strata. Zbudowano i przetestowano z CUDA 13.5 / SM120. Pełne okno generowania, semantyka rzadkiej uwagi QSA i ogólna jakoµć modelu pozostają niezweryfikowane (`releaseQualified=false`).
+To wydanie przejmuje wszystkie zmiany oficjalnego upstreamu **Niko1221/Strata v0.2.18**, zachowując wszystkie funkcje forkowe. Natywny silnik CUDA to teraz **rodzina 0.6.4** z trzema opcjonalnymi komponentami, a wersja produktu stosuje wersjonowanie semantyczne 0.7.2. Zawiera obsługę Hy4-Flash 220B MoE (`strata-hy4` 0.1.64, Tree-8 CUDA Graphs, VNNI 1,5x), oficjalne API/ustawienia (Control i silnik 0.1.64) oraz poprawki upstreamu. Przebudowany silnik Q38 obsługuje pliki GGUF 27B (64 warstwy) i 9B (32 warstwy) z wektorami sterowania; oficjalny podpisany silnik Hy4-Flash oraz `yskn_inkling2.dll` z Inkling-2 Mini (Apache-2.0, dołączony, wymaga GPU 24 GB+) są rozpowszechniane jako osobne opcjonalne komponenty. Decyzją opiekuna usunięto weryfikację podpisu ed25519 (nie istnieje klucz podpisu); weryfikacja SHA-256 pozostaje kontrolą integralności. Wszystkie 16 punktów kotwicznych forku (Q38, DS4, RAM32, Hakua, 8 języków) są nienaruszone, a optymalizacja RAM 32 GB została zachowana. Pełnookienkowa inferencja i ogólna jakość modelu pozostają niekwalifikowane (`releaseQualified=false`).
 
 ## Wersja i pobieranie
 
 <!-- release-062-stable -->
-Bieżące wydanie aplikacji: [0.6.9](https://github.com/zapabob/Strata/releases/tag/v0.6.9) (Aplikacja `0.6.9`; Terminal, Control i silnik natywny `0.6.3`). To wydanie aplikacji dla Windows celowo nie jest GitHub Latest; Latest pozostaje `0.6.3`. Silnik GPU pozostaje osobno podpisanim komponentem [`v0.6.4-preview.1`](https://github.com/zapabob/Strata/releases/tag/v0.6.4-preview.1). Status `releaseQualified=false` pozostaje jawny; pełne okno kontekstu i ogólna jakość modeli nie są certyfikowane.
+Bieżące wydanie aplikacji: [0.7.2](https://github.com/zapabob/Strata/releases/tag/v0.7.2) (Aplikacja `0.7.2`; Terminal, Control `0.6.3`; rodzina silnika natywnego `0.6.4`) — to jest GitHub Latest. Aplikacja Windows dostarcza rodzinę silników 0.6.4 (przebudowany Q38 27B+9B, oficjalny Hy4-Flash 0.1.64, DLL Inkling-2 Mini) jako osobne opcjonalne komponenty. Weryfikacja podpisu została usunięta (brak klucza); hashe SHA-256 pozostają kontrolą integralności. `releaseQualified=false` pozostaje; pełnookienkowa inferencja i jakość modelu nie są zakwalifikowane.
 
 [0.7.2](https://github.com/zapabab/Strata/releases/tag/v0.7.2) · [EXE instalacyjny](https://github.com/zapabob/Strata/releases/download/v0.7.2/Strata-0.7.2-windows-x64-setup.exe) · [tar.7z](https://github.com/zapabob/Strata/releases/download/v0.7.2/Strata-0.7.2-windows-x64.tar.7z) · [SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.7.2/SHA256SUMS.txt) · [BUNDLE-SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.7.2/BUNDLE-SHA256SUMS.txt)
 
@@ -22,7 +22,7 @@ Bieżące wydanie aplikacji: [0.6.9](https://github.com/zapabob/Strata/releases/
 
 Do lokalnego czatu tekstowego na RTX 5060 Ti z 16 GB VRAM polecamy przetestowany [GGUF o mieszanej kwantyzacji 3,69 bpw od soyaakinohara](https://huggingface.co/soyaakinohara/qwen3.8-27b-abliterated-3.69bpw-12GB-MTP.gguf). Dziękujemy **soyaakinohara** za kwantyzację i publikację, a **AEON-7** za wagi źródłowe. Model należy pobrać osobno. Zacznij od kontekstu 4096 tokenów; nazwa pliku nie gwarantuje działania z 12 GB VRAM.
 
-[Podpisana wersja demonstracyjna natywnego silnika CUDA 13.5](https://github.com/zapabob/Strata/releases/tag/v0.6.4-preview.1) przeszła w aplikacji 0.6.3 dwie tury po japońsku, zatrzymanie odpowiedzi i zwolnienie modelu z pamięci. W dwóch próbach pierwszego żądania czas krótkiego prefill F16 spadł o 35–43% względem dotychczasowej ścieżki natywnej. Prism (llama.cpp) nadal dekodował szybciej. [Konfiguracja, klucz publiczny i ograniczenia](docs/Q38_NATIVE_PREFILL_PREVIEW.md).
+[Podpisana wersja demonstracyjna natywnego silnika CUDA 13.5](https://github.com/zapabob/Strata/releases/tag/v0.7.2) przeszła w aplikacji 0.6.3 dwie tury po japońsku, zatrzymanie odpowiedzi i zwolnienie modelu z pamięci. W dwóch próbach pierwszego żądania czas krótkiego prefill F16 spadł o 35–43% względem dotychczasowej ścieżki natywnej. Prism (llama.cpp) nadal dekodował szybciej. [Konfiguracja, klucz publiczny i ograniczenia](docs/Q38_NATIVE_PREFILL_PREVIEW.md).
 
 ## Instalacja i aktualizacja
 
@@ -45,7 +45,7 @@ Wersja 0.6.2 rozbudowuje [lokalny runner GGUF dla rodziny Qwen3.8-27B (`strata-q
 
 ## Integracja z upstreamem i zgodność
 
-Przypięte źródło oficjalne to [c775728069](https://github.com/Niko1221/Strata/commit/c77572806996349b49995e4f98d41b5294d36a21) (odpowiednik 0.2.15 / silnik 0.1.60). Wersje forka są niezależne. Zgodność z DeepSeek jest utrzymywana jako rozszerzenie i blokuje ładowanie bez dedykowanego środowiska uruchomieniowego. Ten pakiet Windows nie oznacza natywnego wejścia obrazu, dystrybuowanego natywnego silnika DeepSeek ani certyfikowanej inferencji na Linux/Mac.
+Przypięte źródło oficjalne to [6e38f588](https://github.com/Niko1221/Strata/commit/6e38f588a646c0ee6948a74afbe670eb75896106) (odpowiednik 0.2.15 / silnik 0.1.60). Wersje forka są niezależne. Zgodność z DeepSeek jest utrzymywana jako rozszerzenie i blokuje ładowanie bez dedykowanego środowiska uruchomieniowego. Ten pakiet Windows nie oznacza natywnego wejścia obrazu, dystrybuowanego natywnego silnika DeepSeek ani certyfikowanej inferencji na Linux/Mac.
 
 ## Ochrona i zmierzone limity
 

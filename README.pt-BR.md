@@ -4,14 +4,14 @@
 
 IA local para Windows com chat, trabalho de agente, pesquisa com fontes e escolha de modelos compatíveis. Hakua é o fork do zapabob baseado em Niko1221/Strata; é mantido de forma independente e não é uma distribuição endossada pelo projeto original.
 
-## O que muda em 0.6.9
+## O que muda em 0.7.2
 
-Esta versão porta o trabalho de Q38 em velocidade, formatos e vetores de controle para o novo layout `terminal/` do Strata oficial 0.2.16. O Qwen3.8-27B agora usa atenção fusionada GQA: um A/B aquecido em ordem inversa mediu **decodificação 6,0 % mais rápida com tokens de saída idênticos** (base 555,8 ms -> GQA 522,6 ms, medianas, prompt de 10 tokens, ctx 512, KV F16). O caminho 9B adiciona atenção FP16 agrupada com cache softmax compartilhado e remoção de memset redundante/RoPE (5,4 % mais rápido, tokens idênticos bit a bit). Suporte a formatos FP4/FP8-NVFP4 e vetores de controle estão incluídos. Antes: as escritas F16 de KV agrupadas reduziram o custo de KV no prefill em 27 % com logits idênticos byte a byte, a decodificação está no nível do Prism llama.cpp (ambos DP4A), e o squeeze de RAM de 32 GB com aviso de limite de commit do Sync-Strata. Compilado e verificado com CUDA 13.5 / SM120. A geração de janela completa, a semântica de atenção esparsa QSA e a qualidade geral do modelo permanecem não qualificadas (`releaseQualified=false`).
+Esta versão incorpora todas as alterações do upstream oficial **Niko1221/Strata v0.2.18** e mantém todos os recursos próprios do fork. O mecanismo CUDA nativo agora é a **família 0.6.4** com três componentes opcionais, e a versão do produto segue versionamento semântico 0.7.2. Inclui suporte ao Hy4-Flash 220B MoE (`strata-hy4` 0.1.64, Tree-8 CUDA Graphs, VNNI 1,5x), a API/configurações oficiais (Control e mecanismo 0.1.64) e correções do upstream. Um mecanismo Q38 recompilado suporta GGUF de 27B (64 camadas) e 9B (32 camadas) com vetores de controle; o mecanismo oficial assinado do Hy4-Flash e o `yskn_inkling2.dll` do Inkling-2 Mini (Apache-2.0, incluído, requer GPU de 24 GB+) são distribuídos como componentes opcionais separados. Por decisão do mantenedor, a verificação de assinatura ed25519 foi removida (não existe chave de assinatura); a verificação SHA-256 permanece como controle de integridade. Todas as 16 âncoras do fork (Q38, DS4, RAM32, Hakua, 8 idiomas) estão intactas, e a otimização de RAM de 32 GB foi mantida. A inferência de janela completa e a qualidade geral do modelo permanecem não qualificadas (`releaseQualified=false`).
 
 ## Versão e downloads
 
 <!-- release-062-stable -->
-Versão atual do aplicativo: [0.6.9](https://github.com/zapabob/Strata/releases/tag/v0.6.9) (App `0.6.9`; Terminal, Control e mecanismo nativo `0.6.3`). Esta versão somente do aplicativo para Windows não é GitHub Latest de propósito; Latest continua sendo `0.6.3`. A mechanism GPU continua como o componente assinado separadamente [`v0.6.4-preview.1`](https://github.com/zapabob/Strata/releases/tag/v0.6.4-preview.1). `releaseQualified=false` permanece explícito; inferência em janela completa e qualidade geral de modelos seguem não qualificadas.
+Versao atual do aplicativo: [0.7.2](https://github.com/zapabob/Strata/releases/tag/v0.7.2) (App `0.7.2`; Terminal, Control `0.6.3`; familia de mecanismo nativo `0.6.4`) — este e o GitHub Latest. O aplicativo Windows inclui a familia de mecanismos 0.6.4 (Q38 27B+9B recompilado, Hy4-Flash 0.1.64 oficial, DLL do Inkling-2 Mini) como componentes opcionais separados. A verificacao de assinatura foi removida (sem chave); os hashes SHA-256 permanecem como controle de integridade. `releaseQualified=false` permanece; inferencia de janela completa e qualidade do modelo nao qualificadas.
 
 [0.7.2](https://github.com/zapabob/Strata/releases/tag/v0.7.2) · [EXE de instalação](https://github.com/zapabob/Strata/releases/download/v0.7.2/Strata-0.7.2-windows-x64-setup.exe) · [tar.7z](https://github.com/zapabob/Strata/releases/download/v0.7.2/Strata-0.7.2-windows-x64.tar.7z) · [SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.7.2/SHA256SUMS.txt) · [BUNDLE-SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.7.2/BUNDLE-SHA256SUMS.txt)
 
@@ -22,7 +22,7 @@ Versão atual do aplicativo: [0.6.9](https://github.com/zapabob/Strata/releases/
 
 Para testar conversas de texto locais numa RTX 5060 Ti com 16 GB de VRAM, recomendamos o [GGUF com quantização mista de 3,69 bpw de soyaakinohara](https://huggingface.co/soyaakinohara/qwen3.8-27b-abliterated-3.69bpw-12GB-MTP.gguf) usado nos nossos testes. Agradecemos a **soyaakinohara** pela quantização e publicação e à **AEON-7** pelos pesos de origem. Baixe o modelo separadamente e comece com um contexto de 4.096 tokens. O nome do arquivo não garante funcionamento com 12 GB de VRAM.
 
-A [prévia nativa assinada para CUDA 13.5](https://github.com/zapabob/Strata/releases/tag/v0.6.4-preview.1) passou em dois turnos em japonês, na interrupção da resposta e na remoção do modelo da memória no aplicativo 0.6.3. Em dois testes da primeira solicitação, o tempo de prefill F16 curto caiu 35–43% em relação ao caminho nativo anterior; Prism (llama.cpp) ainda decodificou mais rápido. [Configuração, chave pública e limites](docs/Q38_NATIVE_PREFILL_PREVIEW.md).
+A [prévia nativa assinada para CUDA 13.5](https://github.com/zapabob/Strata/releases/tag/v0.7.2) passou em dois turnos em japonês, na interrupção da resposta e na remoção do modelo da memória no aplicativo 0.6.3. Em dois testes da primeira solicitação, o tempo de prefill F16 curto caiu 35–43% em relação ao caminho nativo anterior; Prism (llama.cpp) ainda decodificou mais rápido. [Configuração, chave pública e limites](docs/Q38_NATIVE_PREFILL_PREVIEW.md).
 
 ## Instalação e atualização
 
@@ -45,7 +45,7 @@ A versão 0.6.2 aprimora o [executor local GGUF denso da família Qwen3.8-27B (`
 
 ## Integração oficial e compatibilidade
 
-A base oficial fixada é [c775728069](https://github.com/Niko1221/Strata/commit/c77572806996349b49995e4f98d41b5294d36a21), associada ao 0.2.15 / motor 0.1.60. As versões do fork são independentes. A compatibilidade com DeepSeek é mantida como extensão e impede o carregamento sem o runtime dedicado. Este pacote Windows não implica entrada nativa de imagem, motor DeepSeek nativo distribuído ou inferência qualificada em Linux/Mac.
+A base oficial fixada é [6e38f588](https://github.com/Niko1221/Strata/commit/6e38f588a646c0ee6948a74afbe670eb75896106), associada ao 0.2.15 / motor 0.1.60. As versões do fork são independentes. A compatibilidade com DeepSeek é mantida como extensão e impede o carregamento sem o runtime dedicado. Este pacote Windows não implica entrada nativa de imagem, motor DeepSeek nativo distribuído ou inferência qualificada em Linux/Mac.
 
 ## Proteções e limites medidos
 

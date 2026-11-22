@@ -4,14 +4,14 @@
 
 Windows でローカル AI のチャット、エージェント作業、出典付き調査を使うためのアプリです。Hakua は Niko1221/Strata を基にした zapabob のフォークで、独立して保守しています。公式からの推奨・認定を示す配布物ではありません。
 
-## 0.6.9 での変更
+## 0.7.2 での変更
 
-このリリースは、公式 Strata 0.2.16 向けに構築された新しい `terminal/` レイアウトへ Q38 の高速化・形式対応・制御ベクトルの作業を移植しました。Qwen3.8-27B は GQA 統合アテンションを使用し、反転順ウォーム A/B で**同一トークン出力のままデコードが 6.0% 高速化**（ベースライン 555.8ms → GQA 522.6ms、中央値、10トークンプロンプト、ctx 512、F16 KV）。9B 経路には共有 softmax キャッシュ付き FP16 バッチアテンションと RoPE/冗長 memset 除去を追加（5.4% 高速、トークンはビット一致）。FP4/FP8-NVFP4 形式対応と制御ベクトルも含まれます。以前から、F16 KV 書き込みのバッチ化で prefill の KV コストを 27% 削減（バイト一致 logits）、デコードは Prism llama.cpp と同等（ともに DP4A 方式）、Sync-Strata 由来の 32GB RAM 起動前スイーズとコミット制限の案内も含まれます。CUDA 13.5 / SM120 でビルド・検証済み。フルウィンドウ生成、QSA スパースアテンションの意味論、一般モデル品質は未検証です（`releaseQualified=false`）。
+このリリースは、公式 upstream **Niko1221/Strata v0.2.18** のすべてを取り込みつつ、フォーク独自機能を完全に維持します。ネイティブ CUDA エンジンは **0.6.4 ファミリ**となり、3 つの opt-in コンポーネントで提供されます。プロダクトバージョンはセマンティックバージョニングで 0.7.2 です。Hy4-Flash 220B MoE 対応（`strata-hy4` 0.1.64、Tree-8 CUDA Graphs、VNNI 1.5x）、公式 API／設定（Control と engine 0.1.64）、upstream の修正が含まれます。再ビルドした Q38 エンジンは 27B（64 層）と 9B（32 層）の両 GGUF と control vector に対応。公式署名済み Hy4-Flash エンジンと Inkling-2 Mini の `yskn_inkling2.dll`（Apache-2.0、同梱、24 GB 以上の GPU 必須）は別の opt-in コンポーネントです。メンテナーの判断で ed25519 コンポーネント署名検証は撤去され（署名鍵が存在しない）、SHA-256 ダイジェスト検証が完全性チェックとして残ります。16 個すべてのフォークアンカー（Q38、DS4、RAM32、Hakua、8 言語）は健在で、32 GB RAM スクイーズも維持されています。フルウィンドウ推論と一般モデル品質は未検証のままです（`releaseQualified=false`）。
 
 ## バージョンと配布物
 
 <!-- release-062-stable -->
-現在のアプリリリース: [0.6.9](https://github.com/zapabob/Strata/releases/tag/v0.6.9)（アプリ `0.6.9`、Terminal・Control・ネイティブエンジン `0.6.3`）。この Windows アプリ専用リリースは意図的に GitHub Latest ではなく、Latest は `0.6.3` のままです。GPU エンジンは別途署名された [`v0.6.4-preview.1`](https://github.com/zapabob/Strata/releases/tag/v0.6.4-preview.1) コンパニオンです。最大長の推論や一般的なモデル品質は未認定のため、`releaseQualified=false` を明示しています。
+現在のアプリリリース: [0.7.2](https://github.com/zapabob/Strata/releases/tag/v0.7.2)（アプリ `0.7.2`、Terminal、Control `0.6.3`、ネイティブエンジンファミリ `0.6.4`）— GitHub Latest です。Windows アプリには 0.6.4 エンジンファミリ（再ビルド Q38 27B+9B、公式 Hy4-Flash 0.1.64、Inkling-2 Mini DLL）が別の opt-in コンポーネントとして同梱されます。コンポーネント署名検証は撤去され（署名鍵なし）、SHA-256 ダイジェストが完全性チェックです。`releaseQualified=false` は明示のまま、フルウィンドウ推論と一般モデル品質は未検証です。
 
 [0.7.2](https://github.com/zapabob/Strata/releases/tag/v0.7.2) · [setup EXE](https://github.com/zapabob/Strata/releases/download/v0.7.2/Strata-0.7.2-windows-x64-setup.exe) · [tar.7z](https://github.com/zapabob/Strata/releases/download/v0.7.2/Strata-0.7.2-windows-x64.tar.7z) · [SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.7.2/SHA256SUMS.txt) · [BUNDLE-SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.7.2/BUNDLE-SHA256SUMS.txt)
 
@@ -22,7 +22,7 @@ Windows でローカル AI のチャット、エージェント作業、出典�
 
 RTX 5060 Ti（VRAM 16 GB）でローカルのテキスト会話を試すなら、実機検証に使った [soyaakinohara さんの混合量子化 GGUF（3.69 bpw）](https://huggingface.co/soyaakinohara/qwen3.8-27b-abliterated-3.69bpw-12GB-MTP.gguf) をおすすめします。量子化と公開を行った **soyaakinohara さん**、元の重みを公開した **AEON-7** に感謝します。モデルは別途ダウンロードし、まず4,096トークンのコンテキストでお試しください。ファイル名の「12GB」は VRAM 12 GB での動作保証ではありません。
 
-[署名済みネイティブ CUDA 13.5 プレビュー](https://github.com/zapabob/Strata/releases/tag/v0.6.4-preview.1) は、インストール済み 0.6.3 アプリで日本語の2ターン生成・応答途中の停止・アンロードに合格しました。初回リクエスト2組で短文 F16 プリフィルを従来ネイティブ経路より35〜43%短縮しました。同条件のデコードは Prism（llama.cpp）が速い結果でした。[導入・公開鍵・制限](docs/Q38_NATIVE_PREFILL_PREVIEW.md)
+[署名済みネイティブ CUDA 13.5 プレビュー](https://github.com/zapabob/Strata/releases/tag/v0.7.2) は、インストール済み 0.6.3 アプリで日本語の2ターン生成・応答途中の停止・アンロードに合格しました。初回リクエスト2組で短文 F16 プリフィルを従来ネイティブ経路より35〜43%短縮しました。同条件のデコードは Prism（llama.cpp）が速い結果でした。[導入・公開鍵・制限](docs/Q38_NATIVE_PREFILL_PREVIEW.md)
 
 ## インストールと更新
 
@@ -47,7 +47,7 @@ RTX 5060 Ti（VRAM 16 GB）でローカルのテキスト会話を試すなら�
 
 ## 公式の取り込みと互換性
 
-公式ソースの基準は [c775728069](https://github.com/Niko1221/Strata/commit/c77572806996349b49995e4f98d41b5294d36a21)（公式 0.2.15 / エンジン 0.1.60 相当）です。通信、ドラフト選択、プロンプトカーネル、メモリー管理、各 OS の修正を取り込んでいます。フォークのバージョン体系は独立しています。DeepSeek 互換性は公式が削除した経路を独自拡張として維持し、専用ランタイムがなければ読み込みを止めます。この Windows 配布は、ネイティブ画像入力、専用 DeepSeek エンジンの配布、Linux・Mac での推論検証を意味しません。
+公式ソースの基準は [6e38f588](https://github.com/Niko1221/Strata/commit/6e38f588a646c0ee6948a74afbe670eb75896106)（公式 0.2.15 / エンジン 0.1.60 相当）です。通信、ドラフト選択、プロンプトカーネル、メモリー管理、各 OS の修正を取り込んでいます。フォークのバージョン体系は独立しています。DeepSeek 互換性は公式が削除した経路を独自拡張として維持し、専用ランタイムがなければ読み込みを止めます。この Windows 配布は、ネイティブ画像入力、専用 DeepSeek エンジンの配布、Linux・Mac での推論検証を意味しません。
 
 ## 保護条件と測定上の制限
 

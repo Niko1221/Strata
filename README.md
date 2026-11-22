@@ -4,14 +4,14 @@
 
 Local AI for Windows, with chat, agent work, research and a choice of compatible models. Hakua is the zapabob fork of Niko1221/Strata; it is independently maintained and is not an upstream-endorsed distribution.
 
-## What changed in 0.6.9
+## What changed in 0.7.2
 
-This release ports the Q38 speed, format and control-vector work onto the new `terminal/` layout built for official Strata 0.2.16. Qwen3.8-27B now uses GQA-fused attention: a reversed-order warm A/B measured decode **6.0% faster with identical output tokens** (baseline 555.8 ms -> GQA 522.6 ms medians, 10-token prompt, ctx 512, F16 KV). The 9B path adds batched FP16 attention with a shared softmax cache and RoPE/redundant-memset removal (5.4% faster, bit-identical tokens). FP4/FP8-NVFP4 format support and control vectors are included. Earlier in the line: batched F16 KV writes cut prefill KV cost 27% with byte-identical logits, decode is at Prism llama.cpp parity (both use the DP4A kernel class), and the 32 GB RAM pre-start squeeze and commit-limit advice from Sync-Strata are included. Built and tested with CUDA 13.5 / SM120. Full-window generation, QSA sparse-attention semantics and general model quality remain unqualified (`releaseQualified=false`).
+This release absorbs all of official upstream **Niko1221/Strata v0.2.18** while keeping every fork-only feature. The native CUDA engine is now the **0.6.4 family** with three opt-in components, and the product follows semantic versioning at 0.7.2. The update includes the Hy4-Flash 220B MoE support (`strata-hy4` 0.1.64, Tree-8 CUDA Graphs, VNNI 1.5x), the official API/settings at control and engine 0.1.64, and upstream correctness fixes. A rebuilt Q38 engine covers both 27B (64 layers) and 9B (32 layers) GGUFs with control vectors; the official signed Hy4-Flash engine and the Inkling-2 Mini `yskn_inkling2.dll` (Apache-2.0, bundled, 24 GB+ GPU required) ship as separate opt-in components. Per maintainer decision, ed25519 component signature checks were removed (no signing key exists); SHA-256 digest verification remains. All 16 fork anchors (Q38, DS4, RAM32, Hakua, 8 languages) are verified intact, and the 32 GB RAM squeeze remains. Full-window inference and general model quality stay unqualified (`releaseQualified=false`).
 
 ## Version and downloads
 
 <!-- release-062-stable -->
-Current app release: [0.7.2](https://github.com/zapabob/Strata/releases/tag/v0.7.2) (App `0.7.2`; Terminal, Control and native engine `0.6.3`). This Windows app-only release is intentionally not GitHub Latest; Latest remains `0.6.3`. The GPU engine remains the separately signed [`v0.6.4-preview.1`](https://github.com/zapabob/Strata/releases/tag/v0.6.4-preview.1) companion. `releaseQualified=false` remains explicit; full-window inference and general model quality remain unqualified.
+Current app release: [0.7.2](https://github.com/zapabob/Strata/releases/tag/v0.7.2) (App `0.7.2`; Terminal, Control `0.6.3`; native engine family `0.6.4`) — this is GitHub Latest. The Windows app ships the **0.6.4 engine family** as separate opt-in components on the release page: a rebuilt Q38 engine (27B + 9B), the official Hy4-Flash `strata-hy4` 0.1.64 engine, and the Inkling-2 Mini `yskn_inkling2.dll` inside the installer. Component signature verification was removed (no signing key); SHA-256 digests remain the integrity check. `releaseQualified=false` remains explicit; full-window inference and general model quality remain unqualified.
 
 [0.7.2](https://github.com/zapabob/Strata/releases/tag/v0.7.2) · [setup EXE](https://github.com/zapabob/Strata/releases/download/v0.7.2/Strata-0.7.2-windows-x64-setup.exe) · [tar.7z](https://github.com/zapabob/Strata/releases/download/v0.7.2/Strata-0.7.2-windows-x64.tar.7z) · [SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.7.2/SHA256SUMS.txt) · [BUNDLE-SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.7.2/BUNDLE-SHA256SUMS.txt)
 
@@ -22,7 +22,7 @@ Current app release: [0.7.2](https://github.com/zapabob/Strata/releases/tag/v0.7
 
 For local text chat on an RTX 5060 Ti with 16 GB VRAM, start with the tested [3.69 bpw mixed-quantized GGUF by soyaakinohara](https://huggingface.co/soyaakinohara/qwen3.8-27b-abliterated-3.69bpw-12GB-MTP.gguf). Thanks to **soyaakinohara** for quantizing and sharing it and to **AEON-7** for the source weights. Download the model separately and start with a 4,096-token context. The filename does not guarantee that it fits on a 12 GB card.
 
-The [signed native CUDA 13.5 preview](https://github.com/zapabob/Strata/releases/tag/v0.6.4-preview.1) passed two Japanese turns, mid-response Stop, and unload in installed app 0.6.3. In two first-request tests, short F16 prefill took 35–43% less time than the native control; Prism (llama.cpp) still decoded faster in the matched comparison. [Setup, public key and limits](docs/Q38_NATIVE_PREFILL_PREVIEW.md).
+The [signed native CUDA 13.5 preview](https://github.com/zapabob/Strata/releases/tag/v0.7.2) passed two Japanese turns, mid-response Stop, and unload in installed app 0.6.3. In two first-request tests, short F16 prefill took 35–43% less time than the native control; Prism (llama.cpp) still decoded faster in the matched comparison. [Setup, public key and limits](docs/Q38_NATIVE_PREFILL_PREVIEW.md).
 
 ## Install or update
 
@@ -47,7 +47,7 @@ Workflow skill learning and automatic application are separate options; new prof
 
 ## Official integration and compatibility
 
-The pinned official source is [c775728069](https://github.com/Niko1221/Strata/commit/c77572806996349b49995e4f98d41b5294d36a21), associated with official 0.2.15 / engine 0.1.60. It brings networking, drafting selection, prompt kernels, memory handling and platform fixes. Fork versions are independent. DeepSeek compatibility is retained as an extension where official paths were removed; a missing dedicated runtime prevents loading. This Windows package does not imply native image input, a distributed native DeepSeek engine, or qualified Linux/Mac inference.
+The pinned official source is [6e38f588](https://github.com/Niko1221/Strata/commit/6e38f588a646c0ee6948a74afbe670eb75896106), associated with official 0.2.18 / engine 0.1.64. It brings networking, drafting selection, prompt kernels, memory handling and platform fixes. Fork versions are independent. DeepSeek compatibility is retained as an extension where official paths were removed; a missing dedicated runtime prevents loading. This Windows package does not imply native image input, a distributed native DeepSeek engine, or qualified Linux/Mac inference.
 
 ## Protection and measured limits
 
