@@ -62,6 +62,7 @@ None of these is on by default. Each was measured by its contributor on a V100, 
 | `STRATA_PF_WMMA2=1` | A second prompt-expert kernel for IQ2_S gate/up and IQ4_NL down (#2356). |
 | `STRATA_ARGMAX_ROWS_SM70=1` | The multi-block greedy pick on sm_7x (#2357), bitwise the one-block pick. |
 | `STRATA_GR_NORM_FAST=1` | The register-split hyper-connection norm (#2358). |
+| `STRATA_GR_V70=1` | The token-split hyper-connection read: one warp per row and token for the down and up projections. Bitwise the default read; each card checks it at start-up against the default read at 1-8 tokens and keeps the default read if any output differs. |
 | `STRATA_Q8_GATHER_WIDE=0` | Turns off the 8-wide int8 KV gather (#1095) that the experimental build uses below compute capability 7.5. |
 | `STRATA_GDN_REC_WARP=2` | The chain-split DeltaNet recurrence of the prompt (#1098). Changes the FP32 summation order, so the default stays the pipelined kernel. `1` is the bit-exact sync-free variant; `STRATA_GDN_CHUNK=1` the chunked path. |
 
