@@ -574,6 +574,11 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
                 status = cudaMemcpy(item.view, item.host, item.bytes, cudaMemcpyHostToDevice);
                 ++arena_matrices;
             }
+            if (status == cudaSuccess && at != arena_used) {   // the walk and the copy placed different matrices
+                err = "native dense (STRATA_DENSE_ARENA=1): the matrices end at " + std::to_string(at) + " B of a " +
+                      std::to_string(arena_used) + " B arena";
+                return false;
+            }
             if (status != cudaSuccess) {
                 err = std::string("native dense (STRATA_DENSE_ARENA=1): one allocation of ") + std::to_string(arena_used >> 20) +
                       " MiB for the projections: " + cudaGetErrorString(status) + " (unset STRATA_DENSE_ARENA for one allocation each)";
