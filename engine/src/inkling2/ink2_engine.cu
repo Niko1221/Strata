@@ -26,10 +26,16 @@
 #include "ink2_iq_tables.h"
 #include "ink2_image.hpp"
 
+#if !defined(STRATA_USE_HIP)
 #include <cuda.h>
+#endif
 #include <cublas_v2.h>
 #include <cuda_fp16.h>
+#if defined(STRATA_USE_HIP)
+#include "ink2_wmma_hip.cuh"
+#else
 #include <mma.h>
+#endif
 #include <cuda_runtime.h>
 
 #include <algorithm>
@@ -59,7 +65,11 @@
 namespace {
 
 using vec = std::vector<float>;
+#if defined(STRATA_USE_HIP)
+namespace wmma = ink2_wmma;
+#else
 namespace wmma = nvcuda::wmma;
+#endif
 using strata::image::StFile;
 using strata::image::StTensor;
 
@@ -2282,6 +2292,109 @@ float* dvec(const vec& v) { return (float*) upload(v.data(), v.size() * 4); }
 // Growable device ranges (CUDA virtual memory): an address range reserved once, physical chunks of the allocation
 // granularity mapped and unmapped at its end.  The addresses never move.  Driver entry points resolved at run time
 // (no link to libcuda), as in src/core/vmm.cpp.
+#if defined(STRATA_USE_HIP)
+struct Vmm {
+    bool ok = false;
+    size_t gran = 0;
+    int dev = 0;
+};
+Vmm g_vmm;
+void vmm_init() {
+#if defined(HIP_VERSION_MAJOR) && HIP_VERSION_MAJOR >= 6
+    Vmm& a = g_vmm;
+    CK(cudaGetDevice(&a.dev));
+    int vmm = 0;
+    if (hipDeviceGetAttribute(&vmm, hipDeviceAttributeVirtualMemoryManagementSupported, a.dev) != hipSuccess || !vmm) {
+        std::fprintf(stderr, "--kv-grow: HIP virtual memory management is not supported on this device\n");
+        std::exit(1);
+    }
+    hipMemAllocationProp prop{};
+    prop.type = hipMemAllocationTypePinned;
+    prop.requestedHandleType = hipMemHandleTypeNone;
+    prop.location.type = hipMemLocationTypeDevice;
+    prop.location.id = a.dev;
+    size_t g = 0;
+    if (hipMemGetAllocationGranularity(&g, &prop, hipMemAllocationGranularityMinimum) != hipSuccess || !g) {
+        std::fprintf(stderr, "--kv-grow: no allocation granularity\n");
+        std::exit(1);
+    }
+    const size_t want = 2ull << 20;
+    a.gran = g >= want ? g : (want + g - 1) / g * g;
+    a.ok = true;
+#else
+    std::fprintf(stderr, "--kv-grow: HIP virtual memory management requires ROCm 6+\n");
+    std::exit(1);
+#endif
+}
+struct VRange {
+    void* base = nullptr;
+    size_t reserved = 0, mapped = 0;
+#if defined(HIP_VERSION_MAJOR) && HIP_VERSION_MAJOR >= 6
+    std::vector<hipMemGenericAllocationHandle_t> h;
+#endif
+    void* ptr() const { return base; }
+    static size_t up(size_t b) { return (b + g_vmm.gran - 1) / g_vmm.gran * g_vmm.gran; }
+    void init(size_t bytes) {
+#if defined(HIP_VERSION_MAJOR) && HIP_VERSION_MAJOR >= 6
+        reserved = up(std::max<size_t>(bytes, 1));
+        if (hipMemAddressReserve(&base, reserved, 0, nullptr, 0) != hipSuccess) {
+            std::fprintf(stderr, "hipMemAddressReserve of %zu bytes failed\n", reserved);
+            std::exit(1);
+        }
+#else
+        (void) bytes;
+#endif
+    }
+    size_t need(size_t bytes) const { return std::min(up(bytes), reserved); }
+    bool map_to(size_t bytes) {
+#if defined(HIP_VERSION_MAJOR) && HIP_VERSION_MAJOR >= 6
+        const size_t want = need(bytes);
+        hipMemAllocationProp prop{};
+        prop.type = hipMemAllocationTypePinned;
+        prop.requestedHandleType = hipMemHandleTypeNone;
+        prop.location.type = hipMemLocationTypeDevice;
+        prop.location.id = g_vmm.dev;
+        hipMemAccessDesc acc{};
+        acc.location = prop.location;
+        acc.flags = hipMemAccessFlagsProtReadWrite;
+        while (mapped < want) {
+            hipMemGenericAllocationHandle_t hd = nullptr;
+            if (hipMemCreate(&hd, g_vmm.gran, &prop, 0) != hipSuccess) {
+                (void) hipGetLastError();
+                return false;
+            }
+            void* addr = static_cast<char*>(base) + mapped;
+            if (hipMemMap(addr, g_vmm.gran, 0, hd, 0) != hipSuccess ||
+                hipMemSetAccess(addr, g_vmm.gran, &acc, 1) != hipSuccess) {
+                std::fprintf(stderr, "hipMemMap failed\n");
+                std::exit(1);
+            }
+            h.push_back(hd);
+            mapped += g_vmm.gran;
+            g_vram += g_vmm.gran;
+        }
+        return true;
+#else
+        (void) bytes;
+        return false;
+#endif
+    }
+    void unmap_to(size_t bytes) {
+#if defined(HIP_VERSION_MAJOR) && HIP_VERSION_MAJOR >= 6
+        const size_t want = need(bytes);
+        while (mapped > want) {
+            mapped -= g_vmm.gran;
+            (void) hipMemUnmap(static_cast<char*>(base) + mapped, g_vmm.gran);
+            (void) hipMemRelease(h.back());
+            h.pop_back();
+            g_vram -= g_vmm.gran;
+        }
+#else
+        (void) bytes;
+#endif
+    }
+};
+#else
 struct Vmm {
     bool ok = false;
     size_t gran = 0;
@@ -2374,6 +2487,7 @@ struct VRange {
         }
     }
 };
+#endif
 
 struct DMat {
     const uint16_t* d = nullptr;   // BF16 [n][k]
@@ -4047,6 +4161,16 @@ void alloc_prefill() {
     PF.tile_e = ints(T * TOPK / FM + NE); PF.tile_r0 = ints(T * TOPK / FM + NE); PF.ntiles = ints(1);
     PF.eoff = ints(NE); PF.ecnt = ints(NE);
     // the fp32 prompt attention needs 83 KB of shared memory: more than Turing's 64 KB (--tc 1 does not use it)
+#if defined(STRATA_USE_HIP)
+    if (!PF.tc) {
+        int max_smem = 0;
+        if (cudaDeviceGetAttribute(&max_smem, cudaDevAttrMaxSharedMemoryPerBlockOptin, 0) != cudaSuccess ||
+            (size_t) max_smem < FA_SMEM) {
+            std::fprintf(stderr, "the fp32 prompt attention needs %zu bytes of shared memory, more than this card has: use --tc 1\n", FA_SMEM);
+            std::exit(1);
+        }
+    }
+#endif
     if (!PF.tc && cudaFuncSetAttribute(kb_attn, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) FA_SMEM) != cudaSuccess) {
         std::fprintf(stderr, "the fp32 prompt attention needs %zu bytes of shared memory, more than this card has: use --tc 1\n", FA_SMEM);
         std::exit(1);
@@ -5213,9 +5337,13 @@ int main(int argc, char** argv) {
     if (const char* r = std::getenv("INK2_ROUTED_MAX")) g_pf_routed_max = std::atoi(r);
     if (const char* r = std::getenv("INK2_DQ_MIN")) g_dq_min = std::atoi(r);
     {
+#if defined(STRATA_USE_HIP)
+        const int w = std::getenv("INK2_Q8_WIDE") ? std::atoi(std::getenv("INK2_Q8_WIDE")) : 0;
+#else
         int major = 0;   // default on before Ampere only: Turing gains, 3090 decode 91.7 -> 90.5 tok/s with it
         CK(cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, 0));
         const int w = std::getenv("INK2_Q8_WIDE") ? std::atoi(std::getenv("INK2_Q8_WIDE")) : (major < 8);
+#endif
         CK(cudaMemcpyToSymbol(c_q8w, &w, sizeof(int)));
     }
     std::string dir, dump_logits, rec_path;
