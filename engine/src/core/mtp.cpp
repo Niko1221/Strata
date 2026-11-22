@@ -1,5 +1,6 @@
 // src/core/mtp.cpp - see include/strata/core/mtp.hpp.
 #include "strata/core/mtp.hpp"
+#include "strata/core/dense_arena.hpp"
 #include "strata/core/mtp_head_rule.hpp"
 #include "strata/core/pin_budget.hpp"
 #include "strata/core/per_device_flag.hpp"
@@ -199,7 +200,7 @@ MtpDrafter::~MtpDrafter() {
     if (state_arena_) cudaFree(state_arena_);
     if (arena_) cudaFree(arena_);
     if (head_logits_) cudaFree(head_logits_);
-    if (owns_draft_head_ && dhead_) {
+    if (owns_draft_head_ && dhead_ && !dhead_index_) {   // (STRATA_MTP_HEAD_INDEX: dhead_ is the main head's)
         strata::kernels::native_q6_k_unpack(dhead_);
         strata::kernels::native_q8_0_sm60_release(dhead_);
         cudaFree(dhead_);
@@ -586,6 +587,11 @@ bool MtpDrafter::top2_env() {
     return on;
 }
 
+bool MtpDrafter::head_index_env() {
+    static const bool on = [] { const char* v = std::getenv("STRATA_MTP_HEAD_INDEX"); return v && v[0] == '1'; }();
+    return on;
+}
+
 // STRATA_MTP_TOP2=1 (a diagnostic for tree drafts): draft j's runner-up under the draft layer, from the head logits
 // the step just wrote (row 0), on the host.  Slow; only for measuring what a second branch would have caught.
 void MtpDrafter::record_top2(int j) {
@@ -661,7 +667,8 @@ uint64_t MtpDrafter::bind_bytes(uint64_t head_row_bytes, int64_t n_vocab) const 
             std::fseek(f, 0, SEEK_END);
             const long size = std::ftell(f);
             std::fclose(f);
-            if (size >= 4 && size % 4 == 0) bytes += (uint64_t) (size / 4) * head_row_bytes + (uint64_t) size;
+            if (size >= 4 && size % 4 == 0)   // STRATA_MTP_HEAD_INDEX: the ids only, the rows stay the main head's
+                bytes += (uint64_t) (size / 4) * (head_index_env() ? 0 : head_row_bytes) + (uint64_t) size;
         }
     }
     // coupled draft sampling (STRATA_SPEC_COUPLED=1 only): an upper bound - the id -> subset map, the penalty ring,
@@ -672,7 +679,9 @@ uint64_t MtpDrafter::bind_bytes(uint64_t head_row_bytes, int64_t n_vocab) const 
 }
 
 bool MtpDrafter::draft_head_view(const NativeHead* head, const std::string& vocab_path, DraftHeadView& out) const {
-    if (head == nullptr || head != head_ || dhead_ == nullptr || dvocab_ == nullptr || !owns_draft_head_ || !dhead_plain_) return false;
+    if (head == nullptr || head != head_ || dhead_ == nullptr || dvocab_ == nullptr || !owns_draft_head_ || !dhead_plain_ ||
+        dhead_index_)
+        return false;
     if (dhead_type_ != head->type() || vocab_path != vocab_file()) return false;
     if (head->device() >= 0 && head->device() != device_) return false;
     if (dvocab_host_.size() != (size_t) n_dvocab_) return false;
@@ -818,6 +827,7 @@ bool MtpDrafter::bind(const WeightTable& wt, const NativeHead* head, const float
         dhead_type_ = shared->dhead_type_;   // the subset's type (the main head's, or Q4_0): -1 failed every --batch-mtp step
         dvocab_ = shared->dvocab_;
         n_dvocab_ = shared->n_dvocab_;
+        dhead_index_ = shared->dhead_index_;
         owns_draft_head_ = false;
     }
     // the draft head's token subset, when tools/draft_vocab.py wrote one
@@ -828,8 +838,25 @@ bool MtpDrafter::bind(const WeightTable& wt, const NativeHead* head, const float
             const int64_t row_bytes = (int64_t) head->row_bytes();   // a vocabulary row of the native head
             // #5841: --mtp-q4 head/all rewrites the subset as Q4_0 rows in place; a head in IQ4_XS has the narrower row, so the buffer takes the wider one
             const int64_t head_cap = strata::core::mtp_draft_head_row_cap(row_bytes, g_->n_embd, q4_head_);
+            // STRATA_MTP_HEAD_INDEX=1: no copy where the indexed read gives the copy's logits (a Q5_K head in this card's VRAM,
+            // its rows as they are: no --mtp-q4 head) and every id is a row of the head.  The head must then stay where it is:
+            // --prefill-head-alias, which unloads it, refuses the switch (generate.cpp)
+            const auto ids_ok = [&] {
+                for (size_t i = 0; i < raw.size() / 4; ++i) {
+                    int32_t id;
+                    std::memcpy(&id, raw.data() + 4 * i, 4);
+                    if (id < 0 || id >= n_vocab_) return false;
+                }
+                return true;
+            };
+            const bool by_index = head_index_env() && !q4_head_ && (head->device() < 0 || head->device() == device_) &&
+                                  !head->on_host() && strata::kernels::native_mmvq_rows_supported(head->type()) && ids_ok();
+            if (head_index_env() && !by_index)
+                std::fprintf(stderr, "strata mtp: STRATA_MTP_HEAD_INDEX=1 does not apply here (it needs a Q5_K head in the drafter's "
+                                     "card's VRAM, no --mtp-q4 head and ids inside the vocabulary): the draft head keeps its copy, "
+                                     "which the expert cache was not sized for\n");
             if (cudaMalloc((void**) &dvocab_, raw.size()) != cudaSuccess ||
-                cudaMalloc((void**) &dhead_, (size_t) (n_dvocab_ * head_cap)) != cudaSuccess) {
+                (!by_index && cudaMalloc((void**) &dhead_, (size_t) (n_dvocab_ * head_cap)) != cudaSuccess)) {
                 err = "mtp: the draft head does not fit";
                 draft_head_hint(n_dvocab_, row_bytes);
                 return false;
@@ -838,7 +865,11 @@ bool MtpDrafter::bind(const WeightTable& wt, const NativeHead* head, const float
             dvocab_host_.resize((size_t) n_dvocab_);
             std::memcpy(dvocab_host_.data(), raw.data(), raw.size());
             const int head_dev = head->device();
-            if (head_dev >= 0 && head_dev != device_) {
+            if (by_index) {
+                // the main head's own rows: record_rest reads row dvocab_[i] for logit i (native_mmvq_rows); never written
+                dhead_ = (uint8_t*) head->weights();
+                dhead_index_ = true;
+            } else if (head_dev >= 0 && head_dev != device_) {
                 // the main head is on another card (the drafter on the first stage of a layer split, 0.1.44): the rows are
                 // gathered where the head is and the subset copied over once
                 void* tmp = nullptr;
@@ -866,11 +897,19 @@ bool MtpDrafter::bind(const WeightTable& wt, const NativeHead* head, const float
                 strata::kernels::gather_rows((const uint8_t*) head->weights(), row_bytes, dvocab_, n_dvocab_, dhead_, nullptr);
             }
             cudaDeviceSynchronize();
-            vram_ += (uint64_t) (n_dvocab_ * head_cap) + raw.size();
-            std::fprintf(stderr, "strata mtp: draft head over %lld tokens (%.1f MiB)\n", (long long) n_dvocab_,
-                         (double) (n_dvocab_ * row_bytes) / 1048576.0);
+            vram_ += (by_index ? 0 : (uint64_t) (n_dvocab_ * head_cap)) + raw.size();
+            if (by_index)
+                std::fprintf(stderr, "strata mtp: draft head over %lld tokens read by index from the main head "
+                                     "(STRATA_MTP_HEAD_INDEX=1): no %.1f MiB copy of its rows, %.0f MiB less VRAM in 2 MiB "
+                                     "granules; %.2f MiB of token ids\n",
+                             (long long) n_dvocab_, (double) (n_dvocab_ * head_cap) / 1048576.0,
+                             (double) strata::core::dense_arena::granule_bytes((uint64_t) (n_dvocab_ * head_cap)) / 1048576.0,
+                             (double) raw.size() / 1048576.0);
+            else
+                std::fprintf(stderr, "strata mtp: draft head over %lld tokens (%.1f MiB)\n", (long long) n_dvocab_,
+                             (double) (n_dvocab_ * row_bytes) / 1048576.0);
             dhead_type_ = head->type();
-            dhead_plain_ = !q4_head_;
+            dhead_plain_ = !q4_head_ && !by_index;
             if (q4_head_ && !make_q4_head(err)) return false;
             if (dhead_type_ == 14 && strata::kernels::native_q6_k_packed_enabled()) {   // STRATA_Q6_PACKED=1
                 dhead_plain_ = false;
@@ -1389,8 +1428,11 @@ bool MtpDrafter::record_rest(int step_row, cudaStream_t cs, std::string& err) {
         if (!q8_head) native_quantize_q8_1(sample_, xq_, (int) N, T, cs);
         const bool sub = dhead_ != nullptr;
         const int64_t nv = sub ? n_dvocab_ : n_vocab_;
-        native_mmvq(sub ? dhead_type_ : head_->type(), sub ? dhead_ : head_->weights(), xq_, head_logits_, (int) N,
-                    (int) nv, T, cs);
+        if (dhead_index_)   // STRATA_MTP_HEAD_INDEX: the subset's rows read in the main head, bitwise the copy's logits
+            native_mmvq_rows(dhead_type_, dhead_, dvocab_, xq_, head_logits_, (int) N, (int) nv, cs);
+        else
+            native_mmvq(sub ? dhead_type_ : head_->type(), sub ? dhead_ : head_->weights(), xq_, head_logits_, (int) N,
+                        (int) nv, T, cs);
         g_mp.stamp(14, cs);
         if (coupled_rec_) {
             // coupled draft sampling: the target's chain and Philox draw for the row that will verify this draft

@@ -59,6 +59,11 @@ std::size_t native_q8_1_bytes(int n_in, int ncols) {
 }
 std::size_t native_q8_1_il_bytes(int n_in, int ncols) { return native_q8_1_bytes(n_in, ncols) * 2; }
 bool native_mmvq_il_supported(int, int, int) { return false; }
+// STRATA_MTP_HEAD_INDEX: not on Metal (the draft head keeps its copy), so the launch is never reached
+bool native_mmvq_rows_supported(int) noexcept { return false; }
+void native_mmvq_rows(int, const void*, const int32_t*, const void*, float*, int, int, void*) {
+    throw std::logic_error("native_mmvq_rows is not ported to Metal");
+}
 bool native_q8_0_packed_eligible(int, int) { return false; }
 bool native_q8_0_packed_enabled() { return false; }
 bool native_q6_k_packed_enabled() { return false; }

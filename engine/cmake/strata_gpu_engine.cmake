@@ -1199,6 +1199,12 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_link_libraries(ple_iq4nl_dequant_test PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   add_test(NAME ple_iq4nl_dequant_test COMMAND ple_iq4nl_dequant_test)
   set_tests_properties(ple_iq4nl_dequant_test PROPERTIES SKIP_RETURN_CODE 77)
+  # STRATA_MTP_HEAD_INDEX: the draft head's logits read by index in the main head against the gathered copy's, bit for bit (synthetic, no model)
+  add_executable(mmvq_rows_parity src/kernels/mmvq_rows_parity.cpp)
+  target_include_directories(mmvq_rows_parity PRIVATE ${_strata_gpu_include_directories})
+  target_link_libraries(mmvq_rows_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+  add_test(NAME mmvq_rows_parity COMMAND mmvq_rows_parity)
+  set_tests_properties(mmvq_rows_parity PROPERTIES SKIP_RETURN_CODE 77)
 
   # Plan v0.3 P7: INT8 KV storage vs a host reference and vs the FP16 path (GPU, synthetic, no model).
   add_executable(kv_q8_parity src/kernels/kv_q8_parity.cpp)

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 
 namespace strata::kernels {
 
@@ -147,6 +148,12 @@ bool native_mmvq_supported(int ggml_type) noexcept;
 std::size_t native_mmvq_weight_bytes(int ggml_type, int n_in, int n_out);
 void native_mmvq(int ggml_type, const void* weights, const void* x_q8_1, float* y,
                  int n_in, int n_out, int ncols, void* stream);
+/// STRATA_MTP_HEAD_INDEX=1 (opt-in): native_mmvq for one column over the rows `rows[0..n_out)` of `weights`, y[i] from
+/// row rows[i] - bitwise native_mmvq over a copy made by gather_rows(weights, rows), without the copy (the MTP draft
+/// head reads the main head's rows by index).  Supported: Q5_K (13) on CUDA; the caller keeps the copy elsewhere.
+bool native_mmvq_rows_supported(int ggml_type) noexcept;
+void native_mmvq_rows(int ggml_type, const void* weights, const int32_t* rows, const void* x_q8_1, float* y,
+                      int n_in, int n_out, void* stream);
 /// S26 STRATA_LFUSE: native_mmvq(w1 -> y1) and native_mmvq(w2 -> y2), same type / shape / input, in ONE launch,
 /// bitwise the two calls. Returns false (nothing launched) where that is not the case (Q8_0, 2-8 columns only).
 bool native_mmvq_pair(int ggml_type, const void* w1, const void* w2, const void* x_q8_1, float* y1, float* y2,

@@ -8120,6 +8120,7 @@ int main(int argc, char** argv) {
     // (STRATA_DF2_SHARE_HEAD_OFF=1: its own copy, the A/B), and the cache is sized without that second copy
     const bool df2_expect_share = !df2_solo && !strata::core::Dflash2Drafter::head_native() && !o.mtp.empty() && std::getenv("STRATA_DF2_SHARE_HEAD_OFF") == nullptr && o.mtp_q4 != "all" && o.mtp_q4 != "head" &&
                                   std::getenv("STRATA_MTP_FULL_HEAD") == nullptr && std::getenv("STRATA_Q6_PACKED") == nullptr && std::getenv("STRATA_MTP_Q8_SM60") == nullptr &&
+                                  !strata::core::MtpDrafter::head_index_env() &&   // (an indexed head has no copy to share)
                                   std::filesystem::exists(df2_vocab_path());
     auto df2_offer_head = [&]() {   // after mtp.bind, before df2.bind
 #if defined(STRATA_HAVE_DFLASH2)
@@ -8134,7 +8135,8 @@ int main(int argc, char** argv) {
     auto df2_head_bytes = [&]() -> int64_t {
         if (df2_expect_share) return 0;   // (its logits are in the 48 MiB the callers add)
         if (strata::core::Dflash2Drafter::head_native()) return (int64_t) 7 * n_vocab * (int64_t) sizeof(float);   // STRATA_DF2_HEAD=native: no pruned copy, the logits of every row
-        if (!df2_solo) return (int64_t) mtp.bind_bytes(native_head.row_bytes(), n_vocab);
+        // (STRATA_MTP_HEAD_INDEX: the MTP's bind_bytes leaves out the rows the DFlash2 still copies, so the file's formula below)
+        if (!df2_solo && !strata::core::MtpDrafter::head_index_env()) return (int64_t) mtp.bind_bytes(native_head.row_bytes(), n_vocab);
         int64_t bytes = (int64_t) std::min(o.spec, (int) strata::kernels::kVerifyNarrowT) * n_vocab * (int64_t) sizeof(float);
         if (FILE* f = std::fopen(df2_vocab_path().c_str(), "rb")) {
             std::fseek(f, 0, SEEK_END);
@@ -8162,6 +8164,8 @@ int main(int argc, char** argv) {
                         : o.expert_cache != 1 && o.expert_cache >= 0 ? "it needs --expert-cache 1 or auto"
                         : o.mtp.empty() ? "it needs --mtp"
                         : !native_head.loaded() ? "it needs the native output head"
+                        : strata::core::MtpDrafter::head_index_env() ? "it does not support STRATA_MTP_HEAD_INDEX=1 (the draft head "
+                                                                       "would read the head it unloads)"
                         : nullptr;
         if (why != nullptr) {
             std::fprintf(stderr, "strata generate: --prefill-head-alias is unavailable: %s\n", why);
