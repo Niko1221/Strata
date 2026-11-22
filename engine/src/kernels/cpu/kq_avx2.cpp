@@ -296,8 +296,8 @@ static inline float kq_fast_tanh_f32(float x) noexcept {
     return num / den;
 }
 
-// Evolved T==1 2-row unrolled fused gate+up Q4_K x Q8_K:
-// Hoists y[i].bsums -> q8s[i] outside the row loop and shares Q8_K activation loads across 2 rows (4 weight rows: g0,u0,g1,u1).
+// Evolved T==1 zero-spill fused gate+up Q4_K x Q8_K:
+// Hoists y[i].bsums -> q8s_pre[i] outside the row loop while keeping 1-row register footprint (<= 14 YMM, 0 stack spills).
 // Bit-exact (0.00e+00 max diff) against single-row AVX2 dot.
 void kq256_gu_t1_q4k(const uint8_t* blob, size_t gu_row, size_t up_off, int n, const void* act0,
                      float* ff0, int r0, int r1, bool situ, float situ_beta, float situ_linear_beta) {
@@ -322,88 +322,13 @@ void kq256_gu_t1_q4k(const uint8_t* blob, size_t gu_row, size_t up_off, int n, c
         return _mm_cvtss_f32(m);
     };
 
-    auto eval_act = [&](float gs, float us) -> float {
-        if (situ) {
-            const float tg = situ_beta * kq_fast_tanh_f32(gs * inv_beta);
-            const float tu = situ_linear_beta > 0.f ? situ_linear_beta * kq_fast_tanh_f32(us * inv_lb) : us;
-            const float sig = 0.5f * (1.0f + kq_fast_tanh_f32(0.5f * gs));
-            return (tg * sig) * tu;
-        }
-        return (gs / (1.f + std::exp(-gs))) * us;
-    };
-
-    auto accum_q4k_block = [&](const block_q4_K& bx, float yd, __m128i q8s,
-                               const __m256i q8l[4], const __m256i q8h[4],
-                               __m256& acc, __m128& acc_m) {
-        const float d = yd * half_at(&bx, 0);
-        const float dmin = -yd * half_at(&bx, 1);
-        uint32_t utmp[4];
-        std::memcpy(utmp, bx.scales, 12);
-        utmp[3] = ((utmp[2] >> 4) & kmask2) | (((utmp[1] >> 6) & kmask3) << 4);
-        const uint32_t uaux = utmp[1] & kmask1;
-        utmp[1] = (utmp[2] & kmask2) | (((utmp[0] >> 6) & kmask3) << 4);
-        utmp[2] = uaux;
-        utmp[0] &= kmask1;
-        const __m256i ms = _mm256_cvtepu8_epi16(_mm_set_epi32((int) utmp[3], (int) utmp[2], (int) utmp[1], (int) utmp[0]));
-        const __m128i mins = _mm256_extracti128_si256(ms, 1);
-        const __m128i sc128 = _mm256_extracti128_si256(ms, 0);
-        const __m256i scales = _mm256_insertf128_si256(_mm256_castsi128_si256(sc128), sc128, 1);
-        acc_m = _mm_fmadd_ps(_mm_set1_ps(dmin), _mm_cvtepi32_ps(_mm_madd_epi16(mins, q8s)), acc_m);
-        __m256i sumi = _mm256_setzero_si256();
-        const uint8_t* q4 = bx.qs;
-        for (int j = 0; j < 4; ++j) {
-            const __m256i sl = _mm256_shuffle_epi8(scales, get_scale_shuffle_k4(2 * j + 0));
-            const __m256i sh = _mm256_shuffle_epi8(scales, get_scale_shuffle_k4(2 * j + 1));
-            const __m256i q4b = _mm256_loadu_si256((const __m256i*) q4); q4 += 32;
-            const __m256i p16l = _mm256_madd_epi16(sl, _mm256_maddubs_epi16(_mm256_and_si256(q4b, m4), q8l[j]));
-            const __m256i p16h = _mm256_madd_epi16(sh, _mm256_maddubs_epi16(_mm256_and_si256(_mm256_srli_epi16(q4b, 4), m4), q8h[j]));
-            sumi = _mm256_add_epi32(sumi, _mm256_add_epi32(p16l, p16h));
-        }
-        acc = _mm256_fmadd_ps(_mm256_set1_ps(d), _mm256_cvtepi32_ps(sumi), acc);
-    };
-
-    int r = r0;
-    for (; r + 1 < r1; r += 2) {
-        const block_q4_K* xg0 = (const block_q4_K*) (blob + (size_t) r * gu_row);
-        const block_q4_K* xu0 = (const block_q4_K*) (blob + up_off + (size_t) r * gu_row);
-        const block_q4_K* xg1 = (const block_q4_K*) (blob + (size_t) (r + 1) * gu_row);
-        const block_q4_K* xu1 = (const block_q4_K*) (blob + up_off + (size_t) (r + 1) * gu_row);
-        if (r + 3 < r1) {
-            _mm_prefetch((const char*) (blob + (size_t) (r + 2) * gu_row), _MM_HINT_T0);
-            _mm_prefetch((const char*) (blob + up_off + (size_t) (r + 2) * gu_row), _MM_HINT_T0);
-            _mm_prefetch((const char*) (blob + (size_t) (r + 3) * gu_row), _MM_HINT_T0);
-            _mm_prefetch((const char*) (blob + up_off + (size_t) (r + 3) * gu_row), _MM_HINT_T0);
-        }
-        __m256 ag0 = _mm256_setzero_ps(), au0 = _mm256_setzero_ps();
-        __m256 ag1 = _mm256_setzero_ps(), au1 = _mm256_setzero_ps();
-        __m128 mg0 = _mm_setzero_ps(), mu0 = _mm_setzero_ps();
-        __m128 mg1 = _mm_setzero_ps(), mu1 = _mm_setzero_ps();
-        for (int i = 0; i < nb; ++i) {
-            const float yd = y[i].d;
-            __m128i q8s;
-            if (i < 64) {
-                q8s = q8s_pre[i];
-            } else {
-                const __m256i q8sums = _mm256_loadu_si256((const __m256i*) y[i].bsums);
-                q8s = _mm_hadd_epi16(_mm256_extracti128_si256(q8sums, 0), _mm256_extracti128_si256(q8sums, 1));
-            }
-            __m256i q8l[4], q8h[4];
-            const int8_t* q8 = y[i].qs;
-            for (int j = 0; j < 4; ++j) {
-                q8l[j] = _mm256_loadu_si256((const __m256i*) q8); q8 += 32;
-                q8h[j] = _mm256_loadu_si256((const __m256i*) q8); q8 += 32;
-            }
-            accum_q4k_block(xg0[i], yd, q8s, q8l, q8h, ag0, mg0);
-            accum_q4k_block(xu0[i], yd, q8s, q8l, q8h, au0, mu0);
-            accum_q4k_block(xg1[i], yd, q8s, q8l, q8h, ag1, mg1);
-            accum_q4k_block(xu1[i], yd, q8s, q8l, q8h, au1, mu1);
-        }
-        ff0[r]     = eval_act(hsum_float_8(ag0) + hsum4(mg0), hsum_float_8(au0) + hsum4(mu0));
-        ff0[r + 1] = eval_act(hsum_float_8(ag1) + hsum4(mg1), hsum_float_8(au1) + hsum4(mu1));
-    }
-    for (; r < r1; ++r) {
+    for (int r = r0; r < r1; ++r) {
         const block_q4_K* xg = (const block_q4_K*) (blob + (size_t) r * gu_row);
         const block_q4_K* xu = (const block_q4_K*) (blob + up_off + (size_t) r * gu_row);
+        if (r + 2 < r1) {
+            _mm_prefetch((const char*) (blob + (size_t) (r + 2) * gu_row), _MM_HINT_T0);
+            _mm_prefetch((const char*) (blob + up_off + (size_t) (r + 2) * gu_row), _MM_HINT_T0);
+        }
         __m256 acc_g = _mm256_setzero_ps(), acc_u = _mm256_setzero_ps();
         __m128 acc_mg = _mm_setzero_ps(), acc_mu = _mm_setzero_ps();
         for (int i = 0; i < nb; ++i) {
@@ -421,10 +346,48 @@ void kq256_gu_t1_q4k(const uint8_t* blob, size_t gu_row, size_t up_off, int n, c
                 q8l[j] = _mm256_loadu_si256((const __m256i*) q8); q8 += 32;
                 q8h[j] = _mm256_loadu_si256((const __m256i*) q8); q8 += 32;
             }
-            accum_q4k_block(xg[i], yd, q8s, q8l, q8h, acc_g, acc_mg);
-            accum_q4k_block(xu[i], yd, q8s, q8l, q8h, acc_u, acc_mu);
+            const block_q4_K* bpair[2] = { &xg[i], &xu[i] };
+            __m256* apair[2] = { &acc_g, &acc_u };
+            __m128* mpair[2] = { &acc_mg, &acc_mu };
+            for (int k = 0; k < 2; ++k) {
+                const block_q4_K& bx = *bpair[k];
+                const float d = yd * half_at(&bx, 0);
+                const float dmin = -yd * half_at(&bx, 1);
+                uint32_t utmp[4];
+                std::memcpy(utmp, bx.scales, 12);
+                utmp[3] = ((utmp[2] >> 4) & kmask2) | (((utmp[1] >> 6) & kmask3) << 4);
+                const uint32_t uaux = utmp[1] & kmask1;
+                utmp[1] = (utmp[2] & kmask2) | (((utmp[0] >> 6) & kmask3) << 4);
+                utmp[2] = uaux;
+                utmp[0] &= kmask1;
+                const __m256i ms = _mm256_cvtepu8_epi16(_mm_set_epi32((int) utmp[3], (int) utmp[2], (int) utmp[1], (int) utmp[0]));
+                const __m128i mins = _mm256_extracti128_si256(ms, 1);
+                const __m128i sc128 = _mm256_extracti128_si256(ms, 0);
+                const __m256i scales = _mm256_insertf128_si256(_mm256_castsi128_si256(sc128), sc128, 1);
+                *mpair[k] = _mm_fmadd_ps(_mm_set1_ps(dmin), _mm_cvtepi32_ps(_mm_madd_epi16(mins, q8s)), *mpair[k]);
+                __m256i sumi = _mm256_setzero_si256();
+                const uint8_t* q4 = bx.qs;
+                for (int j = 0; j < 4; ++j) {
+                    const __m256i sl = _mm256_shuffle_epi8(scales, get_scale_shuffle_k4(2 * j + 0));
+                    const __m256i sh = _mm256_shuffle_epi8(scales, get_scale_shuffle_k4(2 * j + 1));
+                    const __m256i q4b = _mm256_loadu_si256((const __m256i*) q4); q4 += 32;
+                    const __m256i p16l = _mm256_madd_epi16(sl, _mm256_maddubs_epi16(_mm256_and_si256(q4b, m4), q8l[j]));
+                    const __m256i p16h = _mm256_madd_epi16(sh, _mm256_maddubs_epi16(_mm256_and_si256(_mm256_srli_epi16(q4b, 4), m4), q8h[j]));
+                    sumi = _mm256_add_epi32(sumi, _mm256_add_epi32(p16l, p16h));
+                }
+                *apair[k] = _mm256_fmadd_ps(_mm256_set1_ps(d), _mm256_cvtepi32_ps(sumi), *apair[k]);
+            }
         }
-        ff0[r] = eval_act(hsum_float_8(acc_g) + hsum4(acc_mg), hsum_float_8(acc_u) + hsum4(acc_mu));
+        const float gs = hsum_float_8(acc_g) + hsum4(acc_mg);
+        const float us = hsum_float_8(acc_u) + hsum4(acc_mu);
+        if (situ) {
+            const float tg = situ_beta * kq_fast_tanh_f32(gs * inv_beta);
+            const float tu = situ_linear_beta > 0.f ? situ_linear_beta * kq_fast_tanh_f32(us * inv_lb) : us;
+            const float sig = 0.5f * (1.0f + kq_fast_tanh_f32(0.5f * gs));
+            ff0[r] = (tg * sig) * tu;
+        } else {
+            ff0[r] = (gs / (1.f + std::exp(-gs))) * us;
+        }
     }
 }
 

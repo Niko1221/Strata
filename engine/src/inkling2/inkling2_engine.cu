@@ -4,6 +4,7 @@
 // src/inkling2/inkling2_engine.cu - Standalone / integrated CUDA + AVX2 hybrid engine for Inkling-2-Mini (arch inkling2).
 #include "strata/inkling2/engine.hpp"
 #include "strata/inkling2/profile_rules.hpp"
+#include "strata/math/riemann_rh.hpp"
 #include "inkling2_kernels.cuh"
 
 #include "strata/artifact/gguf_reader.hpp"
@@ -19,6 +20,7 @@
 #include "strata/kernels/cpu/native_expert.hpp"
 #include "strata/kernels/cpu/pool.hpp"
 #endif
+#include "strata/platform/cpu_relax.hpp"
 
 #include <cublas_v2.h>
 #include <cuda_fp16.h>
@@ -925,6 +927,7 @@ struct Engine {
     int elt_min_passes = 1;
     float cpu_miss_prune = 0.0f;
     int64_t cpu_pruned_experts = 0;
+    uint64_t rh_rebal_step = 0;
     float* elt_prev = nullptr;
     float* elt_delta_host = nullptr;
     float* elt_delta_dev = nullptr;
@@ -1718,8 +1721,9 @@ struct Engine {
         if (need_cpu) {
             namespace C = strata::kernels::cpu;
             const auto tp_wait0 = Clock::now();
-            while (cudaEventQuery(ev_route) == cudaErrorNotReady) {
-                std::this_thread::yield();
+            for (int sp = 0; cudaEventQuery(ev_route) == cudaErrorNotReady; ++sp) {
+                if (sp < 2048) strata_cpu_pause();
+                else std::this_thread::yield();
             }
             if (prof) p_moe_wait_ms += ms_since(tp_wait0);
             const auto t0 = Clock::now();
@@ -1738,6 +1742,8 @@ struct Engine {
                 const float prune_thr = cpu_miss_prune * w_max;
                 for (int e = 0; e < Kp; ++e) {
                     const int x = h_ids[e];
+                    // HybriMoE (arXiv:2504.05897) impact-driven scoring: weight hits by router magnitude.
+                    L.score[(size_t) x] += 1.0 + 0.5 * (double) std::max(0.0f, h_ewts[e]);
                     h_miss[e] = L.slot_of[(size_t) x] < 0 ? 1 : 0;
                     if (!h_miss[e]) continue;
                     if (cpu_miss_prune > 0.0f && h_ewts[e] < prune_thr && (n_gpu_hits + n_miss) > 0) {
@@ -1856,10 +1862,14 @@ struct Engine {
         if (prof && need_cpu) { CK(cudaStreamSynchronize(st)); p_moe_post_ms += ms_since(tp_p0); }
     }
 
-    void rebalance(int max_swaps, int max_per_layer = 1) {
+    void rebalance(int max_swaps, int max_per_layer = 1, bool need_gpu_sync = true) {
         if (!hybrid) return;
-        CK(cudaStreamSynchronize(st));
-        sync_d_hits(false);
+        if (need_gpu_sync) {
+            CK(cudaStreamSynchronize(st));
+            sync_d_hits(false);
+        }
+        ++rh_rebal_step;
+        const double decay = strata::math::rh_critical_decay(rh_rebal_step);
         const auto& hp = m->hp;
         const int64_t ne = hp.n_expert;
         struct Cand {
@@ -1896,12 +1906,16 @@ struct Engine {
                 if (L.slot_of[(size_t) hot_cand] >= 0) continue;
                 const int s = victims[(size_t) v_idx];
                 const int y = L.exp_in_slot[(size_t) s];
-                const double diff = L.score[(size_t) hot_cand] - L.score[(size_t) y];
-                if (diff <= 0.0) break;
+                const double s_hot = L.score[(size_t) hot_cand];
+                const double s_cold = L.score[(size_t) y];
+                const double diff = s_hot - s_cold;
+                // Under RH (von Koch explicit-formula bound O(sqrt(N) log N)), skip swaps within noise floor.
+                const double thr = (s_cold > 0.0) ? strata::math::rh_von_koch_threshold(s_hot, s_cold, rh_rebal_step) : 0.0;
+                if (diff <= thr) break;
                 cands.push_back(Cand{diff * weight, li, s, hot_cand, y});
                 ++v_idx;
             }
-            for (int x = 0; x < ne; ++x) L.score[(size_t) x] *= 0.8;
+            for (int x = 0; x < ne; ++x) L.score[(size_t) x] *= decay;
         }
         if (cands.empty()) return;
         std::sort(cands.begin(), cands.end(), [](const Cand& a, const Cand& b) { return a.gain > b.gain; });
@@ -3005,27 +3019,23 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, std::strin
         }
     }
 
-    // Priority 2: Distribute remaining VRAM equally across tier2, then greedily fill leftover budget
+    // Priority 2: Fate (arXiv:2502.12224) Shallow-Favoring + Riemann Zeta-Lagrangian VRAM allocation.
+    // Shallow outer layers (ip < core_start) exhibit steeper Zipf/Zeta skewness (s=1.38 vs 1.02) and higher hit-rate/byte.
     if (!tier2.empty() && budget > used) {
-        size_t sum_tier2_stride = 0;
-        for (int ip : tier2) sum_tier2_stride += m.layers[(size_t) ip].stride;
-        const int s = sum_tier2_stride > 0 ? (int) std::min<size_t>((size_t) ne, (budget - used) / sum_tier2_stride) : 0;
-        if (s > 0) {
-            for (int ip : tier2) slots[(size_t) ip] = s;
-            used += (size_t) s * sum_tier2_stride;
+        std::vector<strata::math::ZetaLayerSpec> specs;
+        specs.reserve(tier2.size());
+        for (int ip : tier2) {
+            const PhysLayer& L = m.layers[(size_t) ip];
+            const double cost = (L.L.gu_type == 13) ? 1.43 : ((L.L.d_type == 8) ? 1.30 : 1.0);
+            const double zeta_s = (ip < hp.core_start) ? 1.38 : 1.02;
+            specs.push_back(strata::math::ZetaLayerSpec{ip, L.stride, cost, zeta_s, ne});
         }
-        bool added = true;
-        while (added && used < budget) {
-            added = false;
-            for (int ip : tier2) {
-                const size_t st_b = m.layers[(size_t) ip].stride;
-                if (slots[(size_t) ip] < ne && used + st_b <= budget) {
-                    slots[(size_t) ip] += 1;
-                    used += st_b;
-                    added = true;
-                }
-            }
+        size_t t2_used = 0;
+        const std::vector<int> t2_slots = strata::math::zeta_lagrangian_allocate(specs, budget - used, &t2_used);
+        for (size_t i = 0; i < tier2.size(); ++i) {
+            slots[(size_t) tier2[i]] = t2_slots[i];
         }
+        used += t2_used;
     }
 
     std::vector<uint8_t> tmp;
@@ -3353,7 +3363,7 @@ void decode_tokens_loop(Engine& E, DsparkEngine* dspark, int draft_max, int32_t 
 
         if (!dspark || rem < 2 || draft_max < 1) {
             feed_single(next_tok);
-            if (E.hybrid && (emitted % 8 == 0)) E.rebalance(E.core_all_gpu ? 4 : 8, 2);
+            if (E.hybrid && (emitted % 4 == 0)) E.rebalance(E.core_all_gpu ? 8 : 10, 2, false);
             continue;
         }
 
@@ -3830,7 +3840,7 @@ int run(int argc, char** argv) {
                              false, dspark != nullptr, 0, nullptr, is_last);
         if (dspark) dspark->inject(E, p0, tc);
         const auto tr0 = Clock::now();
-        if (E.hybrid) E.rebalance(8);
+        if (E.hybrid) E.rebalance(64, 16, true);
         if (profile) { CK(cudaStreamSynchronize(E.st)); E.p_rebal_ms += ms_since(tr0); }
     }
     const double pp_ms = ms_since(t_pp0);

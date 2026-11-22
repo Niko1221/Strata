@@ -424,7 +424,13 @@ inline int plan_memory(int max_ctx, int chunk, size_t total, const std::string& 
     if (!getenv("HY4_RESERVE_GB")) {
         const double kv_res = (mask & 1) ? 0.0 : (init_slots < max_ctx ? kv_init_gb : (dev_pos ? dev_pos * per_pos / GB : (rows + pivg)));
         const double pf_res = (tot >= 21.5 && tot < 64.0 && mask == 0) ? 0.82 : ((tot >= 10.0 && tot < 64.0 && mask == 0) ? 0.56 : 0.0);  // 2 x 384 MiB (>= 21.5 GiB) or 2 x 256 MiB device scratch for prefill streaming
-        const double reserve = work_gb + kv_res + wkv + cublas_gb + pf_res + 0.45;
+#ifdef _WIN32
+        // Windows WDDM shares physical VRAM with DWM/OS; reserve extra headroom on <=17 GB cards so expert slabs never spill to Shared GPU Memory.
+        const double wddm_extra = (tot <= 17.5) ? 1.65 : 0.0;
+#else
+        const double wddm_extra = 0.0;
+#endif
+        const double reserve = work_gb + kv_res + wkv + cublas_gb + pf_res + 0.45 + wddm_extra;
         char b[32];
         snprintf(b, sizeof b, "%.2f", reserve);
         hy4_setenv("HY4_RESERVE_GB", b, 1);
@@ -439,7 +445,19 @@ inline double host_mem_gb();
 // RAM this process may use: min(MemTotal, the container's cgroup limit), in GiB (matching host_mem_gb())
 inline double ram_limit_gb() {
     double gb = host_mem_gb();
-#ifndef _WIN32
+#ifdef _WIN32
+    // On 32 GB Windows PCs, clamp against available commit charge (ullAvailPageFile) as well as physical RAM
+    // so Hy4-Flash-SQ-64 cleanly splits experts across VRAM (Tier 0) + RAM (Tier 2) + SSD (Tier 3) without OOM/pagefile thrash.
+    MEMORYSTATUSEX ms;
+    ms.dwLength = sizeof(ms);
+    if (GlobalMemoryStatusEx(&ms)) {
+        const double avail_commit_gb = (double)ms.ullAvailPageFile / 1073741824.0;
+        const double safe_commit_gb = std::max(0.0, avail_commit_gb - 2.0);
+        if (safe_commit_gb > 0.0 && safe_commit_gb < gb) {
+            gb = safe_commit_gb;
+        }
+    }
+#else
     const char* files[2] = {"/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory/memory.limit_in_bytes"};
     for (const char* fn : files) {
         FILE* f = fopen(fn, "r");

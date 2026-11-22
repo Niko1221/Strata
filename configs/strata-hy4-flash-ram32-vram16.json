@@ -1,0 +1,26 @@
+{
+  "arch": "hy4flash",
+  "engine": "strata",
+  "model_name": "hy4-flash-sq-64",
+  "exe": "H:/Strata/build/engine-cuda135/strata-hy4.exe",
+  "args": [
+    "--native",
+    "H:/Strata/models/Hy4-Flash-SQ-64.strata",
+    "--engram",
+    "H:/Strata/models/Hy4-Flash-Engram-Q8.strata",
+    "--max-context",
+    "32768",
+    "--chunk",
+    "2048",
+    "--draft",
+    "dfly2"
+  ],
+  "env": {
+    "STRATA_RAM_SQUEEZE": "on",
+    "HY4_KV_INIT_SLOTS": "16384",
+    "HY4_VCACHE_FRAC": "0.35"
+  },
+  "host": "127.0.0.1",
+  "port": 8093,
+  "max_tokens": 4096
+}

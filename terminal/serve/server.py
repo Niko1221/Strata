@@ -11192,7 +11192,12 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
             vision = Vision(vcfg, log=open(cfg["log"], "a", encoding="utf-8") if cfg.get("log") else None,
                             env=vision_env(cfg, env), lazy=lazy)
         budget_args = engine_args(cfg, announce=False) if "args" in cfg else []
-        sq = ram_fit.squeeze(budget_gib=ram_fit.budget_from_args(budget_args))
+        req_budget = ram_fit.budget_from_args(budget_args)
+        if req_budget is None and hy4_kind.is_hy4(cfg):
+            mem_now = ram_fit.mem_gib()
+            if mem_now and mem_now.get("total_gib", 0.0) <= 36.0:
+                req_budget = ram_fit.commit_room_gib() or 20.0
+        sq = ram_fit.squeeze(budget_gib=req_budget)
         if sq.get("detail"):
             print(f"[strata] {sq['detail']}", flush=True)
         print("model unloaded; the first request loads it ..." if lazy else

@@ -18,8 +18,14 @@ inline constexpr int kThreads = 256;
 
 __device__ __forceinline__ float sigmf(float x) { return __fdividef(1.0f, 1.0f + __expf(-x)); }
 __device__ __forceinline__ float fast_tanh(float x) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 750
+    float y;
+    asm("tanh.approx.f32 %0, %1;" : "=f"(y) : "f"(x));
+    return y;
+#else
     const float xc = fmaxf(-9.0f, fminf(9.0f, x));
     return __fdividef(2.0f, 1.0f + __expf(-2.0f * xc)) - 1.0f;
+#endif
 }
 
 __device__ __forceinline__ float block_sum(float v, float* sh) {
@@ -1097,17 +1103,25 @@ __global__ void k_attn_q8(const float* __restrict__ Q,
         const int dist = pos_q - j;
         const float bias = dist < n_ext ? rt[dist] : neg_sink;
         const float sc = dot * d_k * kq_scale + bias;
-        const float m_new = fmaxf(m, sc);
-        const float alpha = l > 0.0f ? expf(m - m_new) : 0.0f;
-        const float p = expf(sc - m_new);
-        const float pv = p * d_v;
-        l = l * alpha + p;
         const char4 vc4 = *reinterpret_cast<const char4*>(vj + base4);
-        acc0 = acc0 * alpha + pv * (float) vc4.x;
-        acc1 = acc1 * alpha + pv * (float) vc4.y;
-        acc2 = acc2 * alpha + pv * (float) vc4.z;
-        acc3 = acc3 * alpha + pv * (float) vc4.w;
-        m = m_new;
+        // FlashAttention-4 (2026) warp-uniform conditional softmax rescaling: skip expf+rescale when sc <= m (>95% of steps).
+        if (sc > m) {
+            const float alpha = l > 0.0f ? expf(m - sc) : 0.0f;
+            l = l * alpha + 1.0f;
+            acc0 = fmaf(acc0, alpha, d_v * (float) vc4.x);
+            acc1 = fmaf(acc1, alpha, d_v * (float) vc4.y);
+            acc2 = fmaf(acc2, alpha, d_v * (float) vc4.z);
+            acc3 = fmaf(acc3, alpha, d_v * (float) vc4.w);
+            m = sc;
+        } else {
+            const float p = expf(sc - m);
+            const float pv = p * d_v;
+            l += p;
+            acc0 = fmaf(pv, (float) vc4.x, acc0);
+            acc1 = fmaf(pv, (float) vc4.y, acc1);
+            acc2 = fmaf(pv, (float) vc4.z, acc2);
+            acc3 = fmaf(pv, (float) vc4.w, acc3);
+        }
     }
     if (lane == 0) {
         s_m[warp] = m;
@@ -1226,16 +1240,24 @@ __global__ void k_attn_q8_gqa3_pp(const float* __restrict__ Q,
         for (int g = 0; g < 3; ++g) {
             const float bias = dist < n_ext ? rt[g][dist] : neg_sink[g];
             const float sc = dots[g] * dkkq + bias;
-            const float m_new = fmaxf(m[g], sc);
-            const float alpha = l[g] > 0.0f ? __expf(m[g] - m_new) : 0.0f;
-            const float p = __expf(sc - m_new);
-            const float pv = p * d_v;
-            l[g] = l[g] * alpha + p;
-            acc[g][0] = acc[g][0] * alpha + pv * v0;
-            acc[g][1] = acc[g][1] * alpha + pv * v1;
-            acc[g][2] = acc[g][2] * alpha + pv * v2;
-            acc[g][3] = acc[g][3] * alpha + pv * v3;
-            m[g] = m_new;
+            // FlashAttention-4 (2026) warp-uniform conditional softmax rescaling.
+            if (sc > m[g]) {
+                const float alpha = l[g] > 0.0f ? __expf(m[g] - sc) : 0.0f;
+                l[g] = l[g] * alpha + 1.0f;
+                acc[g][0] = fmaf(acc[g][0], alpha, d_v * v0);
+                acc[g][1] = fmaf(acc[g][1], alpha, d_v * v1);
+                acc[g][2] = fmaf(acc[g][2], alpha, d_v * v2);
+                acc[g][3] = fmaf(acc[g][3], alpha, d_v * v3);
+                m[g] = sc;
+            } else {
+                const float p = __expf(sc - m[g]);
+                const float pv = p * d_v;
+                l[g] += p;
+                acc[g][0] = fmaf(pv, v0, acc[g][0]);
+                acc[g][1] = fmaf(pv, v1, acc[g][1]);
+                acc[g][2] = fmaf(pv, v2, acc[g][2]);
+                acc[g][3] = fmaf(pv, v3, acc[g][3]);
+            }
         }
     }
 
