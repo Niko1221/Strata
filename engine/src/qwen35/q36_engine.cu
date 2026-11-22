@@ -94,12 +94,11 @@ constexpr int kThreads = 256;
 // fp8 (int8) quarters it with one float scale per (KV head, cell); fp4 (q4_0) gives 4-bit values in 32-value blocks
 // with one fp16 scale each.  The width is fixed at the first allocation, so it is a start-time decision.
 //
-// fp4 is 4-bit codes AFTER a 256-point Hadamard rotation, always - there is no unrotated fp4 to select.  Reason,
-// measured on this model (fp32 logits as the reference, one 111-token prompt, 8 greedy steps): unrotated, one
-// outlier K channel sets its block's scale and the other 31 values round to zero, which put the cache 5.19 nats
-// from fp32 on average (13.30 worst) and picked a different next token at 6 of the 8 steps.  Rotated, it is 0.0115
-// (0.0222 worst) with the same token at all 8.  The rotation is orthonormal, so norms and dot products are
-// unchanged: <Hq, Hk> = <q, k>, and the output, a mix of rotated V, is rotated back with the same transform.
+// fp4 is 4-bit codes AFTER a 256-point Hadamard rotation, always - there is no unrotated fp4 to select.  Unrotated,
+// one outlier K channel sets its 32-value block's scale and the other 31 values round to zero, which this model's
+// K channels make a correctness problem rather than a rounding one.  The rotation spreads a head's outliers over
+// all 256 dimensions before the codes are rounded.  It is orthonormal, so norms and dot products are unchanged:
+// <Hq, Hk> = <q, k>, and the output, a mix of rotated V, is rotated back with the same transform.
 enum KvMode { KV_FP32 = 0, KV_FP16 = 1, KV_INT8 = 2, KV_Q4 = 3 };
 inline const char* kv_name(int m) {
     return m == KV_FP32 ? "fp32" : m == KV_FP16 ? "fp16" : m == KV_INT8 ? "fp8 (int8)" : "fp4 (q4_0, rotated)";
@@ -501,10 +500,8 @@ __global__ void k_attn_prep_q4(const float* qg, const float* kx, const float* vx
         const int kh = head - H, lane = i & 31;
         kb[i] = v;
         vb[i] = vx[((size_t) t * HKV + kh) * HD + i];
-        // always, for both: unrotated 4-bit codes are not offered.  Measured on this model over 8 greedy steps,
-        // unrotated fp4 sits 5.2 nats (max 13.3) from fp32 and picks a different token at 6 of them; rotated it is
-        // 0.0115 (max 0.022) with the same token at all 8.  K and V are rotated, the query the same way (<Hq,Hk> =
-        // <q,k>), and the output (a mix of rotated V) is rotated back on the way out.
+        // always, for both: unrotated 4-bit codes are not offered.  K and V are rotated here, the query the same
+        // way (<Hq,Hk> = <q,k>), and the output (a mix of rotated V) is rotated back on the way out.
         fwht256_row(kb);
         fwht256_row(vb);
         v = kb[i];
