@@ -832,12 +832,14 @@ INKLING_FAMILIES = {
     }
 }
 # The family's other source: Thinking Machines' checkpoint as published (safetensors, pinned revision), run by its own engine program strata-ink2
-# (compiled here for the card; NVIDIA and AMD cards on Linux, ink2_offered) and installed by install_ink2.  `--family inkling2` names it too.
+# (compiled here for the card; NVIDIA and AMD cards on Linux, ink2_offered) and installed by install_ink2: `--family inkling-2-mini --model official`
+# or `--family inkling2`, or the last line of install_inkling2's menu.  Not one of INKLING_FAMILIES' "models": that table also feeds the catalog
+# (tools/strata_mcp.py, strata launch), which sizes every entry as an SQ build (inkling_fit.BUILDS).
 # The files, sizes, memory figures and the rule for the engine's arguments are strata_control/ink2_family.py.
+# CBA: strata launch (strata_cli/launch) and its agent harness still take every inkling-2-mini model for strata-inkling (thinking off,
+# --parallel, the Vision shard); the official source is set up with ./setup.sh.  Upgrade path: route those by the config's exe/arch.
 from strata_control import ink2_family  # noqa: E402
-INKLING_FAMILIES[inkling_family.FAMILY]["models"][ink2_family.MODEL] = {
-    "about": f"the official checkpoint as published (safetensors, a {ink2_family.DOWNLOAD_GB:.1f} GB download), run by strata-ink2",
-    "ram_gb": ink2_family.RAM_GB}
+INK2_ABOUT = f"the official checkpoint as published (safetensors, a {ink2_family.DOWNLOAD_GB:.1f} GB download), run by strata-ink2"
 HF_REVISIONS[ink2_family.REPO] = ink2_family.REVISION
 
 # Inkling-2-Mini custom/community local-file & Hugging Face import sources (official HF safetensors + Unsloth GGUFs).
@@ -7695,6 +7697,8 @@ def choices_from_config(cfg_path: Path) -> dict:
     if own is not None:                                # Qwen3.6 / Hy4-Flash / Inkling-2-Mini: own sizes; no Flash-Next KV / projection settings
         d = special_fams[own]
         size = next((m for m in d["models"] if m.lower() == tag[len(d["tag"]):].lower()), None)
+        if own == inkling_family.FAMILY and tag[len(d["tag"]):].lower() == ink2_family.MODEL:
+            size = ink2_family.MODEL                    # the official checkpoint's config (install_ink2)
         a = cfg.get("args", [])
         ctx = a[a.index("--max-context") + 1] if "--max-context" in a and a.index("--max-context") + 1 < len(a) else None
         vis = cfg.get("vision")
@@ -10163,8 +10167,8 @@ def ink2_tokenizer(model_dir: Path, pack: Path) -> Path:
 
 
 def install_ink2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted):
-    """Steps 2-7 for the official checkpoint of Inkling-2-Mini (INKLING_FAMILIES' model ink2_family.MODEL; install_inkling2 hands it over after
-    the size menu): the context, the engine program strata-ink2 (compiled here), the checkpoint's files (pinned revision, size and SHA-256), the
+    """Steps 2-7 for the official checkpoint of Inkling-2-Mini (--model ink2_family.MODEL of the Inkling family; install_inkling2 hands it
+    over): the context, the engine program strata-ink2 (compiled here), the checkpoint's files (pinned revision, size and SHA-256), the
     tokenizer from its tokenizer.json, the config and the start script.  The engine's arguments come from the card (strata_control/ink2_family.py
     engine_args): every expert on it with the draft layer when they fit, else the expert offload, the card holding the most used experts and the
     CPU computing the others."""
@@ -10462,6 +10466,8 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     say(f"  {fam['title']} - {fam['by']}: {fam['about']}")
     ok(f"model: {fam['title']}")
     say(f"  Its license: {fam['license']}")
+    if a.model == ink2_family.MODEL:                   # the official checkpoint: strata-ink2, its own installer
+        return install_ink2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted)
     names = list(fam["models"])
     if a.model and a.model not in names:
         fail(f"{fam['title']} has no {a.model} model file", "choose one of: " + ", ".join(names))
@@ -10473,7 +10479,7 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     want_ctx = a.context or inkling_family.DEFAULT_CONTEXT
     lines = inkling_menu_lines(vram_gib, ram_gib, unified, want_ctx, vision, igpu=igpu, arch=arch)
     if ink2_offered(hip):                              # the official checkpoint: strata-ink2, its own installer (install_ink2)
-        lines.append((ink2_family.MODEL, f"{ink2_family.MODEL:7s} {fam['models'][ink2_family.MODEL]['about']} (NVIDIA or AMD, Linux)"))
+        lines.append((ink2_family.MODEL, f"{ink2_family.MODEL:7s} {INK2_ABOUT} (NVIDIA or AMD, Linux)"))
     rec = inkling_fit.recommend(vram_gib, ram_gib, unified, want_ctx, vision, igpu=igpu, arch=arch)
     say()
     order = [b for b, _ in lines]
@@ -11078,7 +11084,7 @@ def main() -> int:
                          "NVIDIA or AMD cards on Linux, docs/MODELS.md), inkling2 = inkling-2-mini --model official")
     ap.add_argument("--model", type=model_alias, choices=list(dict.fromkeys([*MODELS, *(m for f in PREVIEW_FAMILIES.values()
                                                                        for m in f["models"]), *(m for f in HY4_FAMILIES.values() for m in f["models"]),
-                                                                       *(m for f in INKLING_FAMILIES.values() for m in f["models"])])))
+                                                                       *(m for f in INKLING_FAMILIES.values() for m in f["models"]), ink2_family.MODEL])))
     ap.add_argument("--context", type=int)
     ap.add_argument("--rope-scaling", choices=["none", "linear", "yarn"],
                     help="the RoPE extension for a context past the model's trained 262144: linear (position "

@@ -213,7 +213,7 @@ class OneFamily(unittest.TestCase):
 
     def test_the_family_lists_it_and_routes_it_to_strata_ink2(self):
         fam = setup.INKLING_FAMILIES["inkling-2-mini"]
-        self.assertIn(F.MODEL, fam["models"])
+        self.assertNotIn(F.MODEL, fam["models"])                                         # the catalog sizes every entry as an SQ build
         self.assertTrue({"SQ-20", "SQ-15", "SQ-10"} <= set(fam["models"]))
         self.assertNotIn("INK2_FAMILIES", vars(setup))
         src = setup.INKLING_COMMUNITY_SOURCES["safetensors"]
