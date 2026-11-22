@@ -1,7 +1,7 @@
 # THE PLATINUM BUILD — Strata on 4× MI50 (gfx906)
 
 **What this is:** the fastest Strata build we have ever measured for
-Qwen3.8-Flash-Next on gfx906 hardware. Branch `rp-graft-0214` = upstream Strata
+Qwen3.8-Flash-Next IQ4_XS on gfx906 hardware. Branch `rp-graft-0214` = upstream Strata
 **v0.2.14.1** + 13 gfx906 graft commits (MMQ dense/expert repacks + the "rp"
 prompt-path stack, vendored MIT code from mx-llama.cpp), compiled with the
 **clang 24** bundled in **ROCm 10.1** on the community
