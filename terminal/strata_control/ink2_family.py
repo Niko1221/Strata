@@ -86,11 +86,12 @@ RAM_GB = 32
 #: ends with "the context is full" (a 400 to the client, the engine keeps running).  So the context setup writes is the one whose deepest point -
 #: the whole K/V and a 256-token chunk's buffers - still leaves the pools their minimum.  Measured on an RTX 3090 set up as an 8 GB card with a
 #: 500 MiB desktop (the engine's "offload:" and "kv-grow: N cells, expert slots a + b" lines): at rest it holds GROW_BASE_MIB beside the pools
-#: and the K/V (--chunk 1024); a 256-token chunk maps PROMPT_BUF_MIN_MIB more (1000 MiB for 1024).  Checked there with i8r: a 30K-token prompt
-#: read in 83 s (chunks shrinking near the end; --chunk 256 throughout took 240 s), a 55K one refused at 40,960 tokens with the engine still up.
-#: CBA: one card measured; another card's CUDA context moves it by ~100 MiB
+#: and the K/V (--chunk 1024); a prompt maps up to 1000 MiB more for 1024-token chunks, and PROMPT_BUF_MIN_MIB where pf_fit has shrunk the
+#: chunk (the parts laid out for a full chunk stay mapped whole: the largest drop beside the K/V seen at the floor was 728 MiB).  Checked there
+#: with i8r: a 30K-token prompt read in 83 s (chunks shrinking near the end; --chunk 256 throughout took 240 s), a 55K one refused at 40,960
+#: tokens with the engine still up.  CBA: one card measured; another card's CUDA context moves it by ~100 MiB
 GROW_BASE_MIB = 3451
-PROMPT_BUF_MIN_MIB = 524
+PROMPT_BUF_MIN_MIB = 730
 #: the offload's K/V formats, in order: the first that reaches TARGET_CONTEXT is used (f16 first: the reference)
 OFFLOAD_KV = ["f16", "i8r"]
 TARGET_CONTEXT = 32768                 # agentic coding needs 30-60K

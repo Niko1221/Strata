@@ -79,7 +79,7 @@ class Args(unittest.TestCase):
         # a desktop holding 500 MiB (measured on the 3090 as an 8 GB card: i8r reads a 30K prompt, refuses a 55K one cleanly): 32K in i8r
         self.assertEqual(F.recommended_context(8192, 1500, 500), 32768)
         self.assertEqual(F.offload_kv(8192, 1500, 500, 32768), "i8r")
-        no_cpu = F.engine_args("/m", 32768, 8192, 245, None, 500)
+        no_cpu = F.engine_args("/m", 32768, 8192, 39, None, 500)
         self.assertEqual((no_cpu[no_cpu.index("--kv") + 1], no_cpu[no_cpu.index("--chunk") + 1]), ("i8r", "1024"))
         self.assertNotIn("--cpu-threads", no_cpu)
 
