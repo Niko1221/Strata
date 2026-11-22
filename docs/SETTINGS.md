@@ -288,7 +288,7 @@ Off unless you set them. The last column says where each one is described.
 | `STRATA_WATCHDOG_S` | number | NVIDIA and AMD, Intel Arc | [DETAILS.md](DETAILS.md) |
 | `STRATA_WDDM_BUDGET` | number | AMD, Intel Arc | [AMD_HIP.md](AMD_HIP.md) |
 
-## Switches that go back to earlier behaviour (90)
+## Switches that go back to earlier behaviour (91)
 
 These behaviours are on by default. Setting the switch returns the earlier behaviour; the notes in the register say which
 version made it the default.
@@ -371,6 +371,7 @@ version made it the default.
 | `STRATA_SPLIT_OWN` | on / off | NVIDIA and AMD, Intel Arc | v0.2.16 | [MULTI_GPU.md](MULTI_GPU.md), [README.md](bench-results/2026-10-02-community-2x5060ti/README.md), [README.md](bench-results/2026-10-06-community-2x-rx-7900-gre/README.md) |
 | `STRATA_SWITCH_POINT` | on / off | NVIDIA and AMD | v0.2.16 | - |
 | `STRATA_SYCL_BF16_DET` | number | Intel Arc | v0.2.16 | - |
+| `STRATA_SYCL_GDN_PREFILL_REG_QK` | on / off | Intel Arc | v0.2.16 | [INTEL.md](INTEL.md) |
 | `STRATA_SYCL_IQ4_LOOKUP` | number | Intel Arc | v0.2.16 | - |
 | `STRATA_SYCL_IQ4_PAIR_REUSE` | on / off | Intel Arc | v0.2.16 | - |
 | `STRATA_SYCL_IQ4_Q8_SPLIT` | on / off | Intel Arc | v0.2.16 | - |

@@ -42508,28 +42508,30 @@
    "reads": [
     {
      "file": "engine/sycl/src/prefill/kernels.dp.cpp",
-     "line": 2762,
+     "line": 2833,
      "backend": "sycl",
      "fn": "getenv"
     }
    ],
    "parse": "flag",
-   "default_state": "off",
+   "default_state": "auto",
    "code_default": null,
    "engine_sets": [],
    "engine_defaults": [],
    "launch_files": [],
    "launch_sets": [],
    "launch_reads": [],
-   "doc_mentions": [],
+   "doc_mentions": [
+    "docs/INTEL.md:391"
+   ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
    "last_commit": "4058aa782b",
    "last_date": "2026-11-17",
-   "status": "research",
+   "status": "rollback",
    "owner": "sycl",
-   "note": "Opt-in (=1), off by default: register-resident QK variant of the GDN prompt kernel (sycl/src/prefill/kernels.dp.cpp:2762). Read from the code only; the integration lane measured nothing on it.",
+   "note": "Set 0 to use the original pipelined column recurrence. With the setting unset, a Level Zero Battlemage GPU with subgroup 16 uses paired Q/K inputs for 128-wide state, 16 key heads, 48 value heads and at least 128 tokens. A value beginning with 1 requests register Q/K on supported inputs. Any other explicit value, including an empty string, on or true, selects the original column kernel.",
    "retire_after": "",
    "retired_in": ""
   },
