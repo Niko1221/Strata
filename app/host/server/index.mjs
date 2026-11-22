@@ -10,6 +10,7 @@ import { saveSnapshot } from './snapshot.mjs';
 import { resolvePython, shellPrefix } from './python-resolver.mjs';
 import { chooseFolder, chooserUnavailable, typedFolder } from './folder-dialog.mjs';
 import { createLocalShare } from './local-share.mjs';
+import { workspaceBases } from './model-directory-default.mjs';
 import { createTaskService, validateTask } from './tasks.mjs';
 import { createAgentTaskRunner } from './agent/task-run.mjs';
 import { migrateSetup } from './setup.mjs';
@@ -111,7 +112,7 @@ const HOST = process.env.STRATA_BIND ?? '127.0.0.1';
 function defaultWorkspace() {
   if (process.env.STRATA_WORKSPACE) return resolve(process.env.STRATA_WORKSPACE);
   const user = process.env.USERPROFILE ?? process.env.HOME ?? homedir();
-  for (const base of [join(user, 'Documents'), user]) {
+  for (const base of workspaceBases(user)) {                // #3749: the Documents folder the models folder uses
     const dir = join(base, 'Strata', 'Workspace');
     try { mkdirSync(dir, { recursive: true }); return dir; } catch { /* try the next place */ }
   }
@@ -134,7 +135,7 @@ const control = createControl({ control: CONTROL, log: line => console.log(line)
 if (control && process.platform === 'win32' && !process.env.STRATA_NO_REPAIR_ACCESS) void control.repairAccess().catch(() => {});
 /* Which window shows the page (the app window or, when that cannot run, a browser tab) and what only the app window can do: app-ui.mjs. */
 const appUi = createAppUi({ shutdown: () => shutdown() });
-/* The app's version has one source: the desktop shell passes it (STRATA_APP_VERSION, from apps/desktop/src-tauri/Cargo.toml). Outside the app it is read from the same file in a checkout, else 'dev'. */
+/* The app's version has one source: the desktop shell passes it (STRATA_APP_VERSION, from app/desktop/src-tauri/Cargo.toml). Outside the app it is read from the same file in a checkout, else 'dev'. */
 function appVersion() { return appVersionFrom({ env: process.env, here: HERE }); }
 const appUpdater = appUi.updater;
 const shellNotifier = createShellNotifier();
@@ -321,6 +322,9 @@ function setupState() {
 const CREATED_SKILLS = join(store.DATA_DIR, 'skills');
 /** What the agent scans: the whole current list, written out by syncAgentSkills (the Harness watches it, so no restart). */
 const AGENT_SKILLS = join(store.DATA_DIR, 'agent', 'skills-live');
+/** Skill id -> the folder a written or added skill lives in, so the files beside its SKILL.md go to the agent too (#6245). Kept here, not on the
+ *  skill, which the page receives. */
+const skillFolders = new Map();
 
 function skills() {
   const bundled = [
@@ -398,6 +402,7 @@ for the choice being made.`,
   // Two places hold skills a person brought or wrote: the app's own folder (written in the Skills page) and the workspace's skills folder (added
   // with "Add skill"). Both are plain `<name>/SKILL.md` folders; the frontmatter (name, description) is optional.
   const extra = [];
+  skillFolders.clear();
   for (const [dir, source, prefix] of [[CREATED_SKILLS, 'created', 'my-'], [join(WORKSPACE, 'skills'), 'workspace', 'ws-']]) {
     if (!existsSync(dir) || !statSync(dir).isDirectory()) continue;
     for (const name of readdirSync(dir)) {
@@ -407,6 +412,7 @@ for the choice being made.`,
       const md = join(full, 'SKILL.md');
       try { text = readFileSync(md, 'utf8'); sizeKb = Math.max(0.1, statSync(md).size / 1024); } catch { /* a folder with no SKILL.md is listed but has nothing to show */ }
       const parsed = parseSkillFile(text);
+      skillFolders.set(`${prefix}${name}`, full);
       extra.push({
         id: `${prefix}${name}`,
         name: parsed.title ?? name.replace(/-/g, ' ').replace(/^./, c => c.toUpperCase()),
@@ -438,7 +444,7 @@ let skillState = skills().map((s) => ({
  * switched off is written as hidden. Called after every change to the list.
  */
 function syncAgentSkills() {
-  try { materializeSkills(AGENT_SKILLS, skillState.filter(s => !s.onlyIn)); } catch (e) { console.warn('skills · could not write the agent skills folder:', e.message); }
+  try { materializeSkills(AGENT_SKILLS, skillState.filter(s => !s.onlyIn), skillFolders); } catch (e) { console.warn('skills · could not write the agent skills folder:', e.message); }
 }
 syncAgentSkills();
 
@@ -669,7 +675,7 @@ async function runTurn({ message, history = [], onFrame, signal, client, workspa
   if(native.hasLive()||nativeModelId){
     let instance;try{instance=native.resolveInstance(nativeModelId??native.state().defaultId);}catch(e){const message=plainNoModel(e.message);onFrame({type:'error',message});return {error:message};}const started=Date.now(),cancel=new AbortController();
     const entry=serving.open({client:client??'Strata chat',endpoint:'/chat/completions',model:instance.apiModelId,instanceId:instance.id,gpuIds:instance.gpus.map(String),cancel:()=>cancel.abort()});
-    try{serving.mark(entry.id,{state:'generating'});const applied=selectSkills(skillState,message,workspaceId);const result=await proxyCompletion({baseUrl:`http://127.0.0.1:${instance.port}/v1`,modelId:instance.apiModelId,authorization:instance.key,message,history,images,extra:{strata_mcp:useTools===true,...(thinkingBudget>0&&String(thinking).toLowerCase()!=='off'?{reasoning_budget_tokens:thinkingBudget}:{}),reasoning_effort:({off:'none',max:'high'}[String(thinking).toLowerCase()]??String(thinking).toLowerCase())},systemPrompt:[SYSTEM_PROMPT,userRules.promptBlock(),skillInstructions(applied)].filter(Boolean).join('\n\n'),signal:signal?AbortSignal.any([signal,cancel.signal]):cancel.signal,onFrame:frame=>onFrame({...frame,requestId:entry.id,model:instance.label,contextMax:instance.metrics?.engine?.max_context??instance.context,skills:applied.map(s=>s.name)})});serving.mark(entry.id,{...result,usageSource:result.usageSource});serving.finish(entry.id,{tokensOut:result.tokensOut,durationMs:Date.now()-started});return result;}catch(e){serving.finish(entry.id,{durationMs:Date.now()-started,error:e.message});onFrame({type:'error',message:e.message,requestId:entry.id});return {error:e.message};}
+    try{serving.mark(entry.id,{state:'generating'});const applied=selectSkills(skillState,message,workspaceId);const hy4Local=/^hy4-flash/i.test(String(instance.model??instance.apiModelId??''));const effortWord=hy4Local?({off:'none',low:'high',medium:'high',high:'high',max:'max'}[String(thinking).toLowerCase()]??'high'):({off:'none',max:'high'}[String(thinking).toLowerCase()]??String(thinking).toLowerCase());const result=await proxyCompletion({baseUrl:`http://127.0.0.1:${instance.port}/v1`,modelId:instance.apiModelId,authorization:instance.key,message,history,images,extra:{strata_mcp:useTools===true,...(thinkingBudget>0&&String(thinking).toLowerCase()!=='off'?{reasoning_budget_tokens:thinkingBudget}:{}),reasoning_effort:effortWord},systemPrompt:[SYSTEM_PROMPT,userRules.promptBlock(),skillInstructions(applied)].filter(Boolean).join('\n\n'),signal:signal?AbortSignal.any([signal,cancel.signal]):cancel.signal,onFrame:frame=>onFrame({...frame,requestId:entry.id,model:instance.label,contextMax:instance.metrics?.engine?.max_context??instance.context,skills:applied.map(s=>s.name)})});serving.mark(entry.id,{...result,usageSource:result.usageSource});serving.finish(entry.id,{tokensOut:result.tokensOut,durationMs:Date.now()-started});return result;}catch(e){serving.finish(entry.id,{durationMs:Date.now()-started,error:e.message});onFrame({type:'error',message:e.message,requestId:entry.id});return {error:e.message};}
   }
   runtimeState();
   let instance;

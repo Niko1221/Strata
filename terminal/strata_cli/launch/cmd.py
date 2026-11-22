@@ -94,7 +94,7 @@ def add_parsers(sp: argparse._SubParsersAction) -> list[argparse.ArgumentParser]
                    help="let the model read pictures. Default: on when the model can read pictures and the engine has the picture reader. "
                         "'on' picks the reader by your graphics memory: the CPU reader under 24 GB, the GPU reader from 24 GB (any make); "
                         "gpu / cpu choose one; off turns pictures off")
-    g.add_argument("--parallel", type=_parallel, metavar="N", help="requests answered at the same time, 1 to 8 (default: fit to your graphics card)")
+    g.add_argument("--parallel", type=_parallel, metavar="N", help="requests answered at the same time, 1 to 8 (default: fit to your graphics card; one request at a time with the DFlash2 drafter)")
     g.add_argument("--mtp", type=_choice("a draft layer setting", S.MTP_MODES), metavar="on|off",
                    help="the draft layer that makes answers faster. off starts without it: about 1 GB less graphics memory and less RAM, "
                         "slower answers; use it when the engine stops at start on a small card or a PC with little RAM. Default: on")
@@ -313,7 +313,9 @@ def settings_from_args(a: argparse.Namespace, catalog=None) -> tuple[S.LaunchSet
 
 
 def _parallel_word(plan: dict, s: S.LaunchSettings) -> str:
-    """The plan's parallel word: fit to the card unless a number was given."""
+    """The plan's parallel word: fit to the card unless a number was given (1 for Hy4-Flash)."""
+    if s.family == "hy4-flash":
+        return "1"
     return str(s.parallel or "fit to your card")
 
 
@@ -391,8 +393,8 @@ def apply_defaults(s: S.LaunchSettings, catalog) -> tuple[S.LaunchSettings, list
                 notices.append(S.Notice("warn", f"{r.title} cannot read pictures yet, so pictures are off.", ""))
                 s.vision = "off"
             if s.vision is None:                             # nobody chose: on when the model and the engine can, silently off otherwise
-                s.vision = catalog.picture_default(r.images)
-                if s.vision == "off" and r.images and catalog.reader_state() == "missing":
+                s.vision = ("on" if r.images else "off") if s.family == "hy4-flash" else catalog.picture_default(r.images)
+                if s.vision == "off" and r.images and s.family != "hy4-flash" and catalog.reader_state() == "missing":
                     notices.append(S.Notice("warn", "The engine installed here has no picture reader, so pictures are off.",
                                             "Update the engine to read pictures, or add --vision off to silence this."))
         notices += S.check_context(s, max_fit_tokens=None)
@@ -570,6 +572,12 @@ def _can_ask() -> bool:
     if sys.stdin is None or sys.stdin.closed:
         return False
     if os.environ.get("CI") or os.environ.get("STRATA_NO_PROMPT"):
+        return False
+    try:
+        from strata_cli import noinput                       # (0217-PLAT's module; a tree without it asks as before)
+    except ImportError:
+        return bool(os.environ.get("MSYSTEM") or os.environ.get("TERM_PROGRAM") or os.environ.get("TERM") or os.environ.get("WT_SESSION"))
+    if noinput.stdin_is_no_keyboard():                       # `strata launch < /dev/null`: no question that nobody can answer (0.2.17)
         return False
     return bool(os.environ.get("MSYSTEM") or os.environ.get("TERM_PROGRAM") or os.environ.get("TERM") or os.environ.get("WT_SESSION"))
 
@@ -764,9 +772,12 @@ def run_launch(a: argparse.Namespace) -> int:
             else:
                 for i in items:
                     sm = store.summary(i)
+                    is_hy4 = i.family == "hy4-flash"
+                    req = "1 request" if is_hy4 else ((str(i.parallel) + ' request' + ('s' if i.parallel != 1 else '')) if i.parallel else 'fit to card')
+                    tuned = "built-in" if is_hy4 else (('tuned ' + (i.tuned_at or '')) if i.is_tuned else 'not tuned')
                     _say(f"{i.name:<28} {sm['model']:<14} {S.context_label(i.context):<6} "
-                         f"{(str(i.parallel) + ' request' + ('s' if i.parallel != 1 else '')) if i.parallel else 'fit to card':<14} "
-                         f"{('tuned ' + (i.tuned_at or '')) if i.is_tuned else 'not tuned':<16} {i.last_used or ''}")
+                         f"{req:<14} "
+                         f"{tuned:<16} {i.last_used or ''}")
             return 0
         if a.delete_preset:
             store.delete(a.delete_preset)
@@ -883,6 +894,7 @@ def run_launch(a: argparse.Namespace) -> int:
         move_data = _move_data_choice(a, s, catalog, machine)
         runner.s, runner.move_data = s, move_data
         if a.plan:
+            runner.look_up_feed = True                       # the plan asks the signed feed whether the small tuned drafter is listed (it lists the size the launch fetches)
             plan = runner.plan()
             plan["warnings"] = [n.line() for n in notes]
             if machine:
@@ -899,7 +911,8 @@ def run_launch(a: argparse.Namespace) -> int:
                 _say(f"  download  {(plan.get('download') or {}).get('text', '')}")
                 if plan.get("drafting"):
                     _say(f"  drafting  {plan['drafting'].replace('Drafting: ', '', 1)}")
-                _say(f"  tuning    {s.tune}    access {S.ACCESS_WORDS[s.access]}, port {s.port}"
+                tune_word = "built-in" if s.family == "hy4-flash" else s.tune
+                _say(f"  tuning    {tune_word}    access {S.ACCESS_WORDS[s.access]}, port {s.port}"
                      + ("    API key on" if s.api_key else ""))
                 for n in notes:
                     _say(f"  [!] {n.line()}")

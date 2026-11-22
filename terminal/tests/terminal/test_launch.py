@@ -129,7 +129,7 @@ class CatalogRules(unittest.TestCase):
             self.assertEqual((rec["family"], rec["model"]), ("qwen", "IQ3_XXS"))
 
     def test_fit_on_matches_native_fit_ts(self):
-        # apps/host/src/lib/native-fit.ts: memory = experts + 1; GPU holds experts up to vram - 5; RAM holds up to ram - 10; the rest spills
+        # app/host/src/lib/native-fit.ts: memory = experts + 1; GPU holds experts up to vram - 5; RAM holds up to ram - 10; the rest spills
         f = fit_on({"experts_gb": 42.9, "ram_needed_gb": 60}, 64.0, 12.0)
         self.assertEqual((f["memoryGb"], f["vramUseGb"], f["spillGb"]), (43.9, 12.0, 0.0))
         self.assertAlmostEqual(f["ramUseGb"], 35.9, places=1)
@@ -146,7 +146,8 @@ class CatalogRules(unittest.TestCase):
             cat = catalog(hw)
             rows = {r.model: r for r in cat.rows()}
             self.assertEqual(set(rows), {"Q2_0", "IQ3_XXS", "IQ3_S", "Gyro-S", "Gyro-M", "UD-IQ1_M",
-                                "UD-Q2_0", "UD-IQ2_XS", "UD-Q2_K_XL", "UD-IQ3_XXS", "UD-Q3_K_XL", "UD-IQ4_XS-v31", "UD-Q4_K_XL", "UD-Q5_K_XL", "UD-Q6_K_XL"})   # Unsloth's sets (round 0214: the Mac app repacks them)
+                                "UD-Q2_0", "UD-IQ2_XS", "UD-Q2_K_XL", "UD-IQ3_XXS", "UD-Q3_K_XL", "UD-IQ4_XS-v31", "UD-Q4_K_XL", "UD-Q5_K_XL", "UD-Q6_K_XL",
+                                "SQ-64", "SQ-96", "SQ-128"})   # Unsloth's sets + Hy4-Flash builds on Mac
             self.assertEqual([r.model for r in rows.values() if r.recommended], ["Q2_0"])
             self.assertEqual((rows["Q2_0"].verdict, rows["Q2_0"].words), ("slower", "may run slower"))
             self.assertEqual(rows["IQ3_S"].verdict, "slower")

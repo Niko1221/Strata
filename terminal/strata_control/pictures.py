@@ -3,7 +3,7 @@
 A model whose run config has no ``vision`` section reads no pictures. The person turns "Read pictures" on (it is on by default), presses
 Load, and this module does the one thing that is missing: it finds the picture file (or downloads it once, pinned, size and SHA-256
 checked) and works out the run config's ``vision`` section for the engine in use. It never looks at the model's own files, never prepares
-the pack or the draft layer again, never changes the data folder, and never writes the run config: the caller does (apps/host).
+the pack or the draft layer again, never changes the data folder, and never writes the run config: the caller does (app/host).
 
     pictures.fetch(config_path, ...)        the whole step; returns {"mmproj", "vision", "fetched", "note"}
 
@@ -13,7 +13,7 @@ the folder. The data folder is the one the model's own run config names (``--pac
 model's own folder, or one folder up from it (the layout of the Hugging Face repository).
 
 Only an explicit command reaches the network (strata_control/acquisition.py). With no internet the answer is the plain sentence of
-``PicturesError`` (code ``offline``) after one short probe, never a stalled bar. The apps/host caller then loads the model without
+``PicturesError`` (code ``offline``) after one short probe, never a stalled bar. The app/host caller then loads the model without
 pictures and says so.
 
 ``python -c "...; pictures.main(sys.argv[1:])"`` is how the app runs it: ``fetch --config FILE --engine-dir DIR --vision yes ...``
@@ -102,9 +102,16 @@ def family_of(cfg: dict, gguf: Path | None, asked: str | None = None) -> str | N
     """The family whose picture file this model uses; None for one this step does not handle. ``asked`` is the catalog's family (the app knows it);
     without it the model's own file name and name decide (Swift's files are called Swift-..., Qwen3.6's start with Qwen3.6)."""
     if asked:
-        return asked.lower() if asked.lower() in PROJECTOR_BY_FAMILY else None
+        low = asked.lower()
+        if low == "hy4-flash":
+            return low
+        return low if low in PROJECTOR_BY_FAMILY else None
     arch = str(cfg.get("arch") or "").lower()
+    if arch == "hy4flash" or "strata-hy4" in str(cfg.get("exe") or "").lower():
+        return "hy4-flash"
     names = [str(cfg.get("model_name") or "").lower(), (gguf.name.lower() if gguf else "")]
+    if any(n.startswith("hy4-flash") for n in names):
+        return "hy4-flash"
     from strata_control import retired
     if retired.config_reason(cfg) or any("deepseek" in n for n in names):      # never a DeepSeek config (retired.py)
         return None
@@ -152,6 +159,7 @@ def places(data: Path | None, gguf: Path | None, named: str | None, projector: P
         out.append(models_root(data) / projector.name)
     if gguf is not None:
         out += [gguf.parent / projector.name, gguf.parent.parent / projector.name]
+        out += renamed_copies(gguf, projector)
     seen: set[str] = set()
     unique = []
     for p in out:
@@ -160,6 +168,21 @@ def places(data: Path | None, gguf: Path | None, named: str | None, projector: P
             seen.add(key)
             unique.append(p)
     return unique
+
+
+def renamed_copies(gguf: Path, projector: Projector) -> list[Path]:
+    """Files in the model's own folder (and the folder above it) under ANOTHER name that have exactly the pinned size: the person's copy of the same
+    picture file (q38-mmproj-BF16.gguf). Only a candidate: ``whole`` takes it only when its SHA-256 is the pinned one, so a reader of another model
+    (other size, or the same size and other bytes) is never used and the pinned file is downloaded as before. Costs a directory listing."""
+    out: list[Path] = []
+    for folder in (gguf.parent, gguf.parent.parent):
+        try:
+            for p in sorted(folder.iterdir()):
+                if p.suffix.lower() == ".gguf" and p.name.lower() != projector.name.lower() and p.is_file() and p.stat().st_size == projector.size:
+                    out.append(p)
+        except OSError:
+            continue
+    return out
 
 
 def _mark(path: Path) -> Path:
@@ -304,6 +327,92 @@ def reader_section(engine_dir: Path, mmproj: Path, gguf: Path, asked: str, hardw
 
 # ------------------------------------------------------------------------------------------------------------- the step
 
+def _fetch_hy4(config: Path, cfg: dict, foot: "discovery.Footprint", *, data_dir: str | Path | None = None,
+               progress: Progress | None = None, cancel: threading.Event | None = None,
+               endpoint: str | None = None, online: Callable[[str], bool] | None = None) -> dict:
+    from strata_control import hy4_family
+    report = progress or (lambda *_: None)
+    size, sha = hy4_family.FILES[hy4_family.VISION_FILE]
+    projector = Projector(hy4_family.VISION_FILE, size, sha, "", "")
+    args = [str(a) for a in cfg.get("args") or []]
+    native_raw = discovery._flag_value(args, "--native")
+    native_path = Path(native_raw) if native_raw else None
+    named_raw = discovery._flag_value(args, "--vision")
+    named = named_raw if named_raw and not named_raw.startswith("--") else None
+    data = run_folder(foot) or (Path(data_dir) if data_dir else None)
+    if data is None and native_path is not None:
+        for parent in native_path.parents:
+            if parent.name.lower() == "models":
+                data = parent.parent
+                break
+    cands: list[Path] = []
+    if named:
+        cands.append(Path(named))
+    if native_path is not None:
+        cands.append(native_path.parent / projector.name)
+    if data is not None:
+        cands.append(models_root(data) / hy4_family.FAMILY / projector.name)
+        cands.append(models_root(data) / projector.name)
+    seen: set[str] = set()
+    unique: list[Path] = []
+    for p in cands:
+        key = os.path.normcase(str(p))
+        if key not in seen:
+            seen.add(key)
+            unique.append(p)
+    found = find(unique, projector, report)
+    fetched = False
+    if found is None:
+        if named and Path(named).parent.is_dir():
+            out = Path(named)
+        elif native_path is not None:
+            out = native_path.parent / projector.name
+        elif data is not None:
+            out = models_root(data) / hy4_family.FAMILY / projector.name
+        else:
+            raise PicturesError("no_folder", WORDS["no_folder"])
+        acquisition.require("the picture files", "Load in the app, or strata install")
+        if endpoint is not None:
+            urls = [f"{endpoint.rstrip('/')}/{projector.name}"]
+        else:
+            urls = [u for src in hy4_family.sources(cfg=cfg) for u in hy4_family.urls_for(projector.name, src)]
+        if not urls:
+            raise PicturesError("failed", WORDS["failed"], "no Hy4-Flash download source is configured")
+        _room(out.parent, projector.size)
+        probe = online or _online
+        out.parent.mkdir(parents=True, exist_ok=True)
+        partial = out.with_name(out.name + ".part")
+        any_online = False
+        last_err: Exception | None = None
+        for url in urls:
+            if not probe(url):
+                continue
+            any_online = True
+            try:
+                transfer.download(url, partial, size=projector.size, sha256=projector.sha256, cancel=cancel, what="the picture reader",
+                                  progress=lambda d, s: report("Downloading the picture files…", d, s))
+                last_err = None
+                break
+            except transfer.ChecksumMismatch:
+                raise PicturesError("checksum", f"{WORDS['checksum']} Try again.") from None
+            except transfer.Cancelled:
+                raise
+            except (transfer.TransferError, OSError) as exc:
+                last_err = exc
+        if not any_online:
+            raise PicturesError("offline", WORDS["offline"])
+        if last_err is not None:
+            raise PicturesError("failed", f"{WORDS['failed']} Try again; it continues where it stopped.", str(last_err)) from None
+        os.replace(partial, out)
+        try:
+            _mark(out).write_text(f"sha256 {projector.sha256}", encoding="utf-8")
+        except OSError:
+            pass
+        found, fetched = out, True
+    report("The picture files are ready.", projector.size, projector.size)
+    return {"mmproj": str(found), "vision": None, "fetched": fetched, "note": "", "data_dir": str(data) if data else None, "family": hy4_family.FAMILY}
+
+
 def fetch(config_path: str | Path, *, engine_dir: str | Path, asked: str = "yes", data_dir: str | Path | None = None, family: str | None = None,
           hardware: dict | None = None, progress: Progress | None = None, cancel: threading.Event | None = None,
           endpoint: str | None = None, online: Callable[[str], bool] | None = None) -> dict:
@@ -322,6 +431,8 @@ def fetch(config_path: str | Path, *, engine_dir: str | Path, asked: str = "yes"
     foot = discovery.footprint(cfg, config)
     gguf = foot.weights[0] if foot.weights else None
     name = family_of(cfg, gguf, family)
+    if name == "hy4-flash":
+        return _fetch_hy4(config, cfg, foot, data_dir=data_dir, progress=progress, cancel=cancel, endpoint=endpoint, online=online)
     projector = PROJECTOR_BY_FAMILY.get(name) if name else None
     if projector is None or gguf is None:
         raise PicturesError("unsupported", WORDS["unsupported"])

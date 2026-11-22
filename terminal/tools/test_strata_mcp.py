@@ -40,6 +40,10 @@ def main():
     for pct in (10, 20, 30):
         print(f"\r  model.gguf:  {pct * 0.5:.2f} / 50.00 GB ({pct}%)   ", end="", flush=True)
     print(flush=True)
+    if (root / "packer").exists():                  # setup.py -> tools/iq_pack.py: a grandchild that writes on its own for minutes
+        import subprocess
+        pk = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+        (root / "packer.pid").write_text(str(pk.pid))
     if (root / "slow").exists():
         end = time.time() + 30
         while not (root / "go").exists() and time.time() < end:
@@ -367,7 +371,7 @@ class Validation(FakeRoot):
             self.assertFalse(M.mounted_drive(M.norm(raw)), raw)
 
     def test_the_persons_own_data_folder_is_accepted_whatever_it_is_called(self):
-        """The app writes the folder the person chose into the settings file (apps/host model-folder.mjs); an AI tool naming a new
+        """The app writes the folder the person chose into the settings file (app/host model-folder.mjs); an AI tool naming a new
         folder still needs a Strata... name."""
         chosen = self.root.parent / "my-big-disk"
         chosen.mkdir()
@@ -444,6 +448,75 @@ class Install(FakeRoot):
         res, err = self.call("strata_install", {"cancel": True})
         self.assertIn("stopped", res["summary"])
         self.assertFalse(self.strata.install_job()["running"])
+
+    def test_cancel_ends_the_packer_setup_started(self):
+        """A quit during "Prepare and load" cancels the install; the model packer (a grandchild of the job) must end with it, and its half-written files
+        are left for the next run to resume (iq_pack writes experts.bin.tmp + a sidecar and renames only when complete)."""
+        (self.root / "slow").write_text("")
+        (self.root / "packer").write_text("")
+        res, err = self.call("strata_install", {"family": "coder", "confirm": True})
+        self.assertFalse(err, res)
+        pidfile = self.root / "packer.pid"
+        self.assertTrue(wait_for(pidfile.exists, 30))
+        time.sleep(0.3)
+        packer = int(pidfile.read_text())
+        ident = M.proc_identity(packer)
+        self.assertTrue(ident, "the packer is running before the cancel")
+        try:
+            res, err = self.call("strata_install", {"cancel": True})
+            self.assertIn("stopped", res["summary"])
+            self.assertTrue(wait_for(lambda: not M.proc_alive(packer, ident), 10), "the packer kept running after the install was cancelled")
+        finally:
+            if M.proc_alive(packer, ident):
+                M.proc_terminate(packer, ident)
+
+    @unittest.skipIf(M.WIN, "POSIX process groups")
+    def test_cancel_reaches_the_packer_when_the_job_ends_as_soon_as_setup_is_killed(self):
+        """Ending setup.py first lets the job (its parent, waiting for it) end at once; the group was then no longer reached and the packer,
+        a grandchild, kept writing. The cancel ends the job's whole group before it touches setup.py."""
+        (self.root / "slow").write_text("")
+        (self.root / "packer").write_text("")
+        res, err = self.call("strata_install", {"family": "coder", "confirm": True})
+        self.assertFalse(err, res)
+        pidfile = self.root / "packer.pid"
+        self.assertTrue(wait_for(pidfile.exists, 30))
+        time.sleep(0.3)
+        packer = int(pidfile.read_text())
+        ident = M.proc_identity(packer)
+        self.assertTrue(ident)
+        real = M.proc_kill_tree
+        calls = []
+
+        def slow_after_the_first(pid, ident_):
+            out = real(pid, ident_)
+            if not calls:                                   # the time the job needs to notice that setup is gone, and to end
+                calls.append(pid)
+                time.sleep(0.6)
+            return out
+        try:
+            with mock.patch.object(M, "proc_kill_tree", slow_after_the_first):
+                self.call("strata_install", {"cancel": True})
+            self.assertTrue(wait_for(lambda: not M.proc_alive(packer, ident), 10), "the packer kept running after the cancel")
+        finally:
+            if M.proc_alive(packer, ident):
+                M.proc_terminate(packer, ident)
+
+    def test_a_start_that_came_in_before_a_cancel_does_not_launch_the_job(self):
+        """The app quit while "Prepare and load" was starting: the cancel got the installer's lock first and found nothing to stop; the start then
+        launched the job and its packer with nobody left to stop them."""
+        res, err = self.call("strata_install", {})
+        self.assertFalse(err)
+        res, err = self.call("strata_install", {"cancel": True})
+        self.assertIn("no install is running", res["summary"])
+        stamp = self.strata.install_cancelled_at
+        with mock.patch.object(M.time, "monotonic", return_value=stamp - 5.0):       # this start came in before the cancel
+            res, err = self.call("strata_install", {"family": "coder", "confirm": True})
+        self.assertTrue(err)
+        self.assertIn("cancelled before it started", res["error"])
+        self.assertIsNone(self.strata.install_job(), "no job was launched")
+        res, err = self.call("strata_install", {"family": "coder", "confirm": True})   # a start asked for after the cancel goes ahead
+        self.assertFalse(err, res)
+        self.wait_job()
 
     def test_failure_is_reported(self):
         (self.root / "fail").write_text("")
@@ -806,8 +879,8 @@ class MacCatalog(unittest.TestCase):
     def test_the_model_list_is_the_macs_sizes_with_unified_memory_verdicts(self):
         s, hw = self.hw(32)
         fams = s.model_table(hw)
-        self.assertEqual([f["family"] for f in fams], ["qwen", "unsloth", "gyro"],
-                         "Unsloth's sets since round 0214 (the app repacks them), no Swift or NVFP4 on a Mac; Gyro after the regular sizes")
+        self.assertEqual([f["family"] for f in fams], ["qwen", "unsloth", "gyro", "hy4-flash"],
+                         "Unsloth's sets since round 0214 (the app repacks them), no Swift or NVFP4 on a Mac; Gyro after the regular sizes; Hy4-Flash when offered")
         by = {x["model"]: x for x in fams[0]["sizes"]}
         self.assertEqual(list(by), ["Q2_0", "IQ3_XXS", "IQ3_S"])
         un = {x["model"]: x for x in fams[1]["sizes"]}
@@ -823,12 +896,15 @@ class MacCatalog(unittest.TestCase):
         self.assertEqual(by["IQ3_S"]["on_this_pc"], "may run slower")
         self.assertTrue(all(x["images"] for x in by.values()), "the Mac engine carries the Metal picture reader: pictures are on")
         s, hw = self.hw(128)
-        fits = {x["model"]: x["on_this_pc"] for f in s.model_table(hw) for x in f["sizes"]}
+        table_128 = s.model_table(hw)
+        fits = {x["model"]: x["on_this_pc"] for f in table_128 if f["family"] != "hy4-flash" for x in f["sizes"]}
         from strata_control import mac_fit
         for m, v in fits.items():                       # the 128 GB Mac keeps ~96 GB resident: UD-Q5_K_XL and UD-Q6_K_XL (104 / 115 GB to map) stream, said not refused
             self.assertEqual(v == "fits", not mac_fit.streams(m, 128.0), m)
             self.assertIn(v, ("fits", "may run slower"), m)
         self.assertEqual({m for m, v in fits.items() if v != "fits"}, {"UD-Q5_K_XL", "UD-Q6_K_XL"})
+        hy4_128 = {x["model"]: x["on_this_pc"] for f in table_128 if f["family"] == "hy4-flash" for x in f["sizes"]}
+        self.assertEqual(hy4_128, {"SQ-64": "fits", "SQ-96": "fits", "SQ-128": "fits"})
         s, hw = self.hw(8)
         self.assertEqual({x["on_this_pc"] for f in s.model_table(hw) for x in f["sizes"]}, {"may run slower"})      # too little memory: the same two words
 
