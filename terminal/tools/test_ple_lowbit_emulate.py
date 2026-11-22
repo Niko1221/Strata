@@ -5,6 +5,7 @@
 import json
 import pathlib
 import struct
+import subprocess
 import sys
 import tempfile
 
@@ -340,6 +341,40 @@ def test_c5_fit_is_deterministic_and_beats_c4_on_gaussian_rows():
     Bn = (X[X.any(1)] / np.abs(X[X.any(1)]).max(1, keepdims=True)).ravel()
     c4 = E.quantize(X, E.lloyd(Bn.astype(np.float64), 8).astype(np.float32), 160, "f16", 1.0, 7)[0]
     assert nmse(deq, X) < 0.75 * nmse(c4, X)                         # Gaussian rows: c4 about 0.036, c5 about 0.02
+
+
+@pytest.mark.parametrize("dll", ["missing", "not a DLL"])
+def test_c5_without_its_encoder_stops_before_the_workers(dll, tmp_path):
+    # the full-table command (--codebook, --workers 8): the main process never needs the DLL itself, so a worker was the
+    # first to load it, and a worker's sys.exit made the pool replace it and wait forever
+    src = tmp_path / "src.gguf"
+    synthetic_source(src, 3000, seed=5)
+    (tmp_path / "c5.json").write_text(json.dumps(E.fit_codebook(E.Source(src), "c5", 1, 7, **C5_SMALL_FIT)))
+    tools = tmp_path / "terminal" / "tools"                         # a copy whose C5_DLL is tmp_path/build/ple_c5_viterbi.dll
+    tools.mkdir(parents=True)
+    for f in ("ple_lowbit_emulate.py", "gguf_reader.py"):
+        (tools / f).write_bytes((HERE / f).read_bytes())
+    if dll != "missing":
+        (tmp_path / "build").mkdir()
+        (tmp_path / "build" / "ple_c5_viterbi.dll").write_bytes(b"not a DLL" * 100)
+    try:
+        r = subprocess.run([sys.executable, str(tools / "ple_lowbit_emulate.py"), "--format", "c5", "--src", str(src),
+                            "--out", str(tmp_path / "o.gguf"), "--codebook", str(tmp_path / "c5.json"), "--workers", "2",
+                            "--chunk-rows", "700", "--native"], capture_output=True, text=True, timeout=90)
+    except subprocess.TimeoutExpired:
+        pytest.fail("ple_lowbit_emulate.py hangs when the c5 encoder is %s" % dll)
+    assert r.returncode != 0 and "ple_c5_viterbi.dll" in r.stderr and "Traceback" not in r.stderr, r.stderr
+    assert not (tmp_path / "o.gguf.part").exists()
+
+
+def test_a_short_read_raises_in_a_worker_too(tmp_path):
+    src = tmp_path / "src.gguf"
+    synthetic_source(src, 100, seed=5)
+    s = E.Source(src)
+    with open(src, "r+b") as f:
+        f.truncate(src.stat().st_size - 10)
+    with open(src, "rb") as f, pytest.raises(RuntimeError, match="short read at row 90"):   # not SystemExit (see above)
+        s.read(f, 90, 100)
 
 
 def test_c5_codebook_of_another_trellis_is_refused(tmp_path, monkeypatch):
