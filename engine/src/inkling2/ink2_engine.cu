@@ -1405,7 +1405,9 @@ __global__ void __launch_bounds__(256) kb_moe_gemm(const float* __restrict__ A, 
 
 // --- small T (speculative verification, T <= SMALL_T tokens): weights read once for all T vectors.  Per (row, token)
 // the same operations in the same order as the decode GEMVs (gemv_bf16_dot, k_gemv_nvfp4_sel, k_gemv_mxfp8_sel: a
-// lane walks words lane, lane + 32, ...), so a verified token's products match its decode products bit for bit.
+// lane walks words lane, lane + 32, ...).  The verified token as a whole does not match decode bit for bit: its
+// attention runs kb_attn_tc / kb_attn, decode's k_attn_partial + k_attn_merge, another summation order, so greedy
+// --spec can part from plain decoding at a near-tie.
 constexpr int SMALL_T = 8;
 // dense: Y[t][row] (row stride ldy) = W[row] . X[t] (row stride ldx), t < T <= SMALL_T; R rows per warp.  The T input
 // rows are read straight from global memory (L1 / L2: T x K x 4 B <= 147 KB, reused by every warp of an SM): no
