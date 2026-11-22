@@ -254,10 +254,11 @@ size_t sess_begin(const std::vector<int>& pr, std::vector<int>& hist, vec& last_
         for (size_t i = 0; i < g_sess.parked[j].cks.size(); ++i)
             if (g_sess.parked[j].cks[i].n <= (int) l && g_sess.parked[j].cks[i].n > (int) best) { best = g_sess.parked[j].cks[i].n; src = 2; ck = (int) i; pv = (int) j; }
     }
-    if (share >= best + SPLIT_MIN && share < pr.size()) g_sess.split = (int) share;
     // the live conversation is parked unless the request extends its last prompt (the same conversation, re-rendered
     // or continued)
     const bool same = (!hist.empty() && l_live == hist.size()) || (g_sess.live_prompt > 0 && (int) l_live >= g_sess.live_prompt);
+    // a branch point between conversations only (a re-render diverging deep in the generated tail is not one)
+    if (!same && share >= best + SPLIT_MIN && share < pr.size()) g_sess.split = (int) share;
     if (pv >= 0) g_sess.parked[pv].hold = true;
     if (!same && !hist.empty()) sess_park(hist, last_logits);   // (may evict parked conversations, not the held one)
     for (size_t j = 0; j < g_sess.parked.size(); ++j) if (g_sess.parked[j].hold) { pv = (int) j; g_sess.parked[j].hold = false; }
