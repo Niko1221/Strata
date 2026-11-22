@@ -282,7 +282,7 @@ Setup picks how it runs from the card:
   and answered (83 s to the end of the answer's 1,450 tokens), a 55K-token prompt refused with "the context is full"
   after 41K tokens, and the next request answered by the same engine.
 
-The run config (`strata-inkling2-mini.json`) holds the engine's arguments; they can be edited there.
+The run config (`strata-inkling2-mini.json`) holds the engine's arguments; they can be edited there. Every flag and its measured effect: [INKLING2.md](INKLING2.md).
 
 ## Adding or switching models
 

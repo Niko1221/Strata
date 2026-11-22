@@ -1,0 +1,98 @@
+# Inkling-2-Mini (`strata-ink2`)
+
+`strata-ink2` is Strata's engine program for [Inkling-2-Mini](https://huggingface.co/thinkingmachines/Inkling-2-Mini)
+(Thinking Machines Lab, Apache 2.0): a 128-expert, top-8 mixture of experts whose layers 6-17 run three times, so a
+token goes through 48 layer applications. The engine reads the published checkpoint as it is: NVFP4 experts in layers
+0-19, MXFP8 experts in layers 20-23, BF16 for everything else, and the ViT that reads pictures. Nothing is requantized.
+
+To install and start it, see [MODELS.md](MODELS.md#inkling-2-mini): `./setup.sh --family inkling2` picks the flags
+below for your card. This page is for reading what setup chose, or for running the engine by hand.
+
+NVIDIA only (RTX 20 series or newer), one GPU. Setup offers it on Linux.
+
+## What setup chooses
+
+Measured on an RTX 3090 with its VRAM limited to the card size (the expert pools only see that much), 2x Xeon Gold
+6252, 257-token chat prompt, 512 greedy tokens; prompt speed on a 16K-token prompt.
+
+| Card | Engine flags (besides `--model`, `--chunk 1024 --tc 1`) | Decode | Prompt |
+| --- | --- | --- | --- |
+| 24 GB | `--max-context 65536 --kv f16 --spec 1` (every expert on the card) | 88-90 tok/s (108 on short prompts with `--spec`) | 2,380 tok/s |
+| 16 GB | `--max-context 131072 --kv f16`, offload as below | not measured | not measured |
+| 12 GB, with a desktop | `--max-context 65536 --kv f16 --kv-grow 1 --vram-reserve-mib R --cpu-threads N` | 73-75 tok/s | 717 tok/s |
+| 8 GB, nothing else on it | `--max-context 32768 --kv f16 --kv-grow 1 --vram-reserve-mib R --cpu-threads N` | 66 tok/s | 568 tok/s |
+| 8 GB, with a desktop | the same with `--kv i8r` | 60-61 tok/s | 560 tok/s |
+
+Every config also gets `--conversation-cache-mib 4096` (2048, or off, when RAM is short). In offload the engine pins
+about 17 GiB of RAM for the experts that are not on the card; setup asks for 32 GB of RAM.
+
+## Flags
+
+**Model and context**
+
+- `--model DIR` the checkpoint folder (or a GGUF file, below).
+- `--max-context N` (alias `--ctx`) the longest conversation, prompt plus answer.
+- `--chunk N` prompt tokens read per step (`--serve` needs one; setup uses 1024). With `--kv-grow` a chunk shrinks by
+  itself when the card is short of room.
+- `--tc 0|1` tensor cores for the prompt (1, the default in setup). `--tc 0` is the exact fp32 path, slower, used to
+  check the other one.
+- `--serve` the line protocol the Strata server speaks.
+
+**Memory**
+
+- `--vram-reserve-mib N` leaves N MiB of VRAM free and turns on the expert offload: the experts that do not fit stay
+  in pinned RAM, and the card keeps the most used ones (decayed use counts, promotions in the background).
+- `--cpu-threads N` computes the experts that are not on the card on the CPU instead of copying them over PCIe: one
+  pool of N threads per NUMA node (at most two), each expert's memory bound to its node. Needs `--vram-reserve-mib`,
+  AVX2 + FMA + F16C, and Linux. Not with `--spec 1` yet. `STRATA_NUMA_POOL=0` turns the NUMA placement off.
+- `--kv-grow 1` the K/V cache starts small and grows into the expert pools as the conversation grows, so a long
+  context costs expert slots only when it is used. Each pool keeps at least 64 slots: a prompt that would need more
+  ends with a "context is full" error, and the engine keeps serving. `--kv-grow-step N` sets the growth step.
+- `--kv FORMAT` the K/V format. Mean KL against fp32 K/V (expert routing fixed, 23K-token mixed text):
+
+  | `--kv` | Bytes per token and layer pass | KL mean | Top-1 |
+  | --- | --- | --- | --- |
+  | `f16` (default) | 4,096 | 0 | 100% |
+  | `i8r` (int8, rotated) | 2,112 | 3.5e-5 | 99.80% |
+  | `k8v8` | 2,112 | 5.3e-5 | 99.73% |
+  | `i8` | 2,112 | 1.3e-4 | 99.61% |
+  | `k8v4` | 1,632 | 1.5e-3 (1.6K-token text) | 98.75% |
+
+  `f32` exists for checks.
+
+**Speed**
+
+- `--spec 1` speculative decoding with the model's own drafter (`mtp.safetensors`): greedy output stays exact and
+  sampled output keeps the model's distribution. It falls back to plain decoding while that is faster.
+
+**Conversations and pictures**
+
+- `--conversation-cache-mib N` (0, off, by default) keeps conversations in pinned RAM so that a request never reads
+  again a prompt the engine already read: a checkpoint at the end of each prompt lets the next turn continue from
+  there even when the client sends the history back without the model's reasoning, conversations set aside (an
+  agent and its subagents taking turns) are taken up again, and conversations sharing a long beginning (a system
+  prompt and tools) read it once. `--conversation-cache-min-tokens N` (512): shorter conversations are not kept.
+- Pictures need no flag. The ViT is read into RAM at the first picture and streamed to the card for each one, so
+  text-only use costs no VRAM; with offload it borrows a few hundred MiB of expert slots while it runs. A picture
+  over `--image-max-tokens N` (4096; one token is a 40x40 pixel tile) is scaled down.
+
+**Checks and debugging**: `--tokens IDS` / `--tokens-file F` with `--n N` run one prompt without the server,
+`--dump-logits F`, `--record-routing F` / `--force-routing F`, `--image F`, `--dump-image-emb F`, `--vis-pixels F`.
+`terminal/tools/inkling2/README.md` describes the comparison against the transformers implementation.
+
+## GGUF files
+
+`--model FILE.gguf` reads llama.cpp's merged `inkling2_loop` layout with IQ3_S, IQ4_NL and Q8_0 experts (work by
+merbanan). GGUF models run without `--cpu-threads` and `--spec` for now, and setup does not install them.
+
+## Quality
+
+Against the transformers implementation in fp32 on a 1,600-token text: the token-by-token path with fp32 K/V is at
+mean KL 1.4e-12 (top-1 100%), and the tensor-core prompt path at 2.1e-7 with the expert routing fixed. Pictures: mean
+KL 1e-7 or less in fp32, with the same greedy answers.
+
+## Limits
+
+- One GPU. `--cpu-threads` on Linux only, at most two NUMA nodes.
+- `--spec` and `--cpu-threads` do not combine yet.
+- Not offered in `strata launch` or the desktop app yet.
