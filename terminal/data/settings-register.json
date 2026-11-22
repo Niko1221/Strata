@@ -7132,6 +7132,39 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_DRAFT_KV_LOG",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/core/mtp.cpp",
+     "line": 1750,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "e8731d8888",
+   "first_date": "2026-11-20",
+   "since": null,
+   "last_commit": "e8731d8888",
+   "last_date": "2026-11-20",
+   "status": "research",
+   "owner": "core",
+   "note": "#3760, diagnostic (prints only): where each drafter K/V row is written and with which token's shift, so two window depths can be compared from the log.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_DRAFT_LOG",
    "backends": [
     "cuda-hip"
@@ -23329,6 +23362,72 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_MTP_CHAIN_MAX",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/program/generate.cpp",
+     "line": 6494,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "6fd03ca395",
+   "first_date": "2026-11-20",
+   "since": null,
+   "last_commit": "d1556c81dc",
+   "last_date": "2026-11-20",
+   "status": "research",
+   "owner": "program",
+   "note": "#3760, testing: the outputs a depth-3 chain may have (7 to MtpDrafter::kChainMax = 11, the default); --pipeline-windows 3 only.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_MTP_CHAIN_STOP",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/program/generate.cpp",
+     "line": 6498,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "5b4f55c892",
+   "first_date": "2026-11-20",
+   "since": null,
+   "last_commit": "d1556c81dc",
+   "last_date": "2026-11-20",
+   "status": "research",
+   "owner": "program",
+   "note": "#3760, testing: 0 queues every output of a depth-3 chain at its launch instead of only as far as its last new window needs (default 1); --pipeline-windows 3 only.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_MTP_FULL_HEAD",
    "backends": [
     "cuda-hip",
@@ -30840,6 +30939,39 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_PIPELINE_CHECK_STATE",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/program/generate.cpp",
+     "line": 13566,
+     "backend": "cuda-hip",
+     "fn": "pipe_dbg_env"
+    }
+   ],
+   "parse": "debug-gated",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "6c507a6d8a",
+   "first_date": "2026-11-20",
+   "since": null,
+   "last_commit": "6c507a6d8a",
+   "last_date": "2026-11-20",
+   "status": "research",
+   "owner": "program",
+   "note": "#3760, testing (with STRATA_PIPELINE_DEBUG=1): a state dump after each request of the pipelined loops, so two arms of an A/B compare line by line.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_PIPELINE_DEBUG",
    "backends": [
     "cuda-hip",
@@ -31003,6 +31135,39 @@
    "status": "research",
    "owner": "program",
    "note": "[auto] diagnostic / trace / measurement switch by name or by code, not documented for users",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_PIPELINE_FORCE_MISS_C",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/program/generate.cpp",
+     "line": 19757,
+     "backend": "cuda-hip",
+     "fn": "pipe_dbg_env"
+    }
+   ],
+   "parse": "debug-gated",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "6fd03ca395",
+   "first_date": "2026-11-20",
+   "since": null,
+   "last_commit": "6c507a6d8a",
+   "last_date": "2026-11-20",
+   "status": "research",
+   "owner": "program",
+   "note": "#3760, exactness test (with STRATA_PIPELINE_DEBUG=1): every k-th window behind two guesses gets a wrong first token.",
    "retire_after": "",
    "retired_in": ""
   },
@@ -31186,6 +31351,78 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_PIPELINE_NEWLOOP",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/program/generate.cpp",
+     "line": 19751,
+     "backend": "cuda-hip",
+     "fn": "pipe_dbg_env"
+    }
+   ],
+   "parse": "debug-gated",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "6c507a6d8a",
+   "first_date": "2026-11-20",
+   "since": null,
+   "last_commit": "6c507a6d8a",
+   "last_date": "2026-11-20",
+   "status": "research",
+   "owner": "program",
+   "note": "#3760, testing (with STRATA_PIPELINE_DEBUG=1): the new pipelined loop with the existing loop's semantics (N2: global undo, two slots), to check the translation against it.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_PIPELINE_POOL_FAIL",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/program/generate.cpp",
+     "line": 687,
+     "backend": "cuda-hip",
+     "fn": "pipe_dbg_env"
+    },
+    {
+     "file": "engine/src/program/generate.cpp",
+     "line": 13485,
+     "backend": "cuda-hip",
+     "fn": "pipe_dbg_env"
+    }
+   ],
+   "parse": "debug-gated",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "428e30b38a",
+   "first_date": "2026-11-20",
+   "since": null,
+   "last_commit": "d1556c81dc",
+   "last_date": "2026-11-20",
+   "status": "research",
+   "owner": "program",
+   "note": "#3760, testing (with STRATA_PIPELINE_DEBUG=1): init|snap|capture|chain makes the slot pool's allocation or capture at that point behave as if it failed, so its fallback can be run on purpose.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_PIPELINE_PRESTAGE",
    "backends": [
     "cuda-hip",
@@ -31222,6 +31459,39 @@
    "status": "research",
    "owner": "program",
    "note": "[auto] diagnostic / trace / measurement switch by name or by code, not documented for users",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_PIPELINE_SLOTS",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/program/generate.cpp",
+     "line": 6467,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": "0",
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "6fd03ca395",
+   "first_date": "2026-11-20",
+   "since": null,
+   "last_commit": "d1556c81dc",
+   "last_date": "2026-11-20",
+   "status": "research",
+   "owner": "program",
+   "note": "#3760, testing: the slot pool holds at least k (at most 5) verifiers per stage, so a server started with it can be switched per request (STRATA_PIPELINE_SWITCH).",
    "retire_after": "",
    "retired_in": ""
   },
@@ -31379,6 +31649,39 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_PIPELINE_THETA3",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/program/generate.cpp",
+     "line": 19753,
+     "backend": "cuda-hip",
+     "fn": "pipe_dbg_env"
+    }
+   ],
+   "parse": "debug-gated",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "6fd03ca395",
+   "first_date": "2026-11-20",
+   "since": null,
+   "last_commit": "d1556c81dc",
+   "last_date": "2026-11-20",
+   "status": "research",
+   "owner": "program",
+   "note": "#3760, testing (with STRATA_PIPELINE_DEBUG=1): the gate of a window behind two guesses (--pipeline-windows 3); unset, the theta gate.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_PIPELINE_TRACE",
    "backends": [
     "cuda-hip",
@@ -31415,6 +31718,39 @@
    "status": "research",
    "owner": "program",
    "note": "[auto] diagnostic / trace / measurement switch by name or by code, not documented for users",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_PIPELINE_UNDO_PER_STAGE",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/program/generate.cpp",
+     "line": 6468,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": "2",
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "6c507a6d8a",
+   "first_date": "2026-11-20",
+   "since": null,
+   "last_commit": "428e30b38a",
+   "last_date": "2026-11-20",
+   "status": "opt-in",
+   "owner": "program",
+   "note": "#3760, opt-in (off by default): the new pipelined decode loop at depth 2 with the slot pool and the per-stage undo (B0); --pipeline-windows 3 runs it at depth 3.",
    "retire_after": "",
    "retired_in": ""
   },
@@ -43552,6 +43888,111 @@
    "status": "research",
    "owner": "core",
    "note": "[auto] not documented for users; code default not readable from the call",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_STATE_CLEAN",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/program/generate.cpp",
+     "line": 21393,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    },
+    {
+     "file": "engine/src/program/pl_sched.cpp",
+     "line": 14,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": "0",
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "e8731d8888",
+   "first_date": "2026-11-20",
+   "since": null,
+   "last_commit": "e8731d8888",
+   "last_date": "2026-11-20",
+   "status": "opt-in",
+   "owner": "program",
+   "note": "#3760, opt-in (off by default): the session a request leaves in the new pipelined loop does not depend on the window depth; the value (1-4) says how far the drafter's cells are cleaned.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_STATE_CLEAN_LOG",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/program/generate.cpp",
+     "line": 23646,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "e8731d8888",
+   "first_date": "2026-11-20",
+   "since": null,
+   "last_commit": "e8731d8888",
+   "last_date": "2026-11-20",
+   "status": "research",
+   "owner": "program",
+   "note": "#3760, diagnostic (prints only): one line per STRATA_STATE_CLEAN pass with the ranges it cleaned.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_STATE_CLEAN_TAIL",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/program/generate.cpp",
+     "line": 23635,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "4b43c73745",
+   "first_date": "2026-11-20",
+   "since": null,
+   "last_commit": "4b43c73745",
+   "last_date": "2026-11-20",
+   "status": "research",
+   "owner": "program",
+   "note": "#3760: with STRATA_STATE_CLEAN=4, how many drafter cells before the end are cleaned (default 32).",
    "retire_after": "",
    "retired_in": ""
   },
