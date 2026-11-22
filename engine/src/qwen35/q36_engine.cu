@@ -3791,8 +3791,8 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
                      (long long) c0, (long long) ne, mtp_only ? " (the main layers whole)" : "", E.peer.slots,
                      E.peer.device, (long long) E.peer.resident, (double) E.peer.bytes / (double) (1ull << 30),
                      E.peer_reserve_mib, (long long) std::max<int64_t>(0, ne - c0 - (int64_t) E.peer.slots));
-        // S7: the split in GiB per card, and whether the two cards can reach each other (they cannot on 2x3060: the
-        // activation image and the rows then cross PCIe through the host, which is what the counters measure)
+        // S7: the split in GiB per card, and whether the two cards can reach each other.  Without P2P the activation
+        // image and the rows cross PCIe through the host, which is what the counters measure.
         {
             int p2p_01 = 0, p2p_10 = 0;
             (void) cudaDeviceCanAccessPeer(&p2p_01, 0, E.peer.device);
