@@ -49,6 +49,12 @@ class Server(ThreadingHTTPServer):
         super().__init__(server_address, RequestHandlerClass, bind_and_activate)
 
     def server_bind(self):
+        # Even without SO_REUSEADDR, Windows lets 0.0.0.0:8080 be bound beside another program's
+        # 127.0.0.1:8080 (Steam's web helper holds that on some PCs).  The start then said "ready" while every client
+        # on this PC reached the other program: a benchmark waited "still loading" for ten minutes.  The exclusive bind
+        # fails there instead (WSAEADDRINUSE, measured), so main()'s early check names the program before loading.
+        if os.name == "nt" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
         # http.server's own server_bind also asks socket.getfqdn(host) for a server_name nothing here reads; on a Mac whose reverse lookup
         # stalls (GitHub's macOS runner: 35 s on the first lookup of every new process) each start waited that long before it listened
         socketserver.TCPServer.server_bind(self)
@@ -65,6 +71,67 @@ class Server(ThreadingHTTPServer):
         if tel is not None and hasattr(tel, "close"):
             tel.close()
         super().server_close()
+
+
+def port_holders(port: int) -> list[tuple[str, int | None, str]]:
+    """The programs listening on TCP `port`, as (name, pid, address) - for a message that names them instead of
+    leaving the user to find out with netstat.  [] when psutil is missing or the OS does not say (it is a hint only)."""
+    try:
+        import psutil
+        out = []
+        for c in psutil.net_connections("tcp"):
+            if c.status != psutil.CONN_LISTEN or not c.laddr or c.laddr.port != port:
+                continue
+            try:
+                name = psutil.Process(c.pid).name() if c.pid else "a program"
+            except psutil.Error:
+                name = "a program"
+            if (name, c.pid, c.laddr.ip) not in out:
+                out.append((name, c.pid, c.laddr.ip))
+        return out
+    except Exception:                                   # noqa: BLE001 - no psutil, or no permission: no names
+        return []
+
+
+def free_port_after(host: str, port: int, tries: int = 20) -> int | None:
+    """The first port after `port` this server could listen on now (the same exclusive bind as `Server`), or None."""
+    from http.server import BaseHTTPRequestHandler
+    for p in range(port + 1, min(port + 1 + tries, 65536)):
+        try:
+            Server((host, p), BaseHTTPRequestHandler).server_close()
+            return p
+        except OSError:
+            continue
+    return None
+
+
+def port_in_use_message(host: str, port: int) -> str:
+    """#2159 follow-up: the port is taken.  Says by which program (a second Strata reads differently from, say,
+    Steam's web helper, which holds 127.0.0.1:8080 on some PCs), what that means for clients on this PC, and the two
+    ways out with a port that is free right now - for this start, and for good."""
+    held = port_holders(port)
+    if held:
+        who = ", ".join(f"{n} (PID {pid}) on {ip}" if pid else f"{n} on {ip}" for n, pid, ip in held)
+        mine = any("python" in n.lower() or "strata" in n.lower() for n, _, _ in held)
+        lines = [f"port {port} is already in use by {who}."]
+        if mine:
+            lines.append("That is most likely Strata (or another Python server) already running: close its window "
+                         "first, or use another port.")
+        elif host != "127.0.0.1" and all(ip in ("127.0.0.1", "::1") for _, _, ip in held):
+            lines.append(f"It listens only on this PC's own address, but programs on this PC (the web app, chat.py, "
+                         f"your coding tools) use http://127.0.0.1:{port} and would reach it instead of Strata.")
+    else:
+        lines = [f"port {port} is already in use by another program (run `netstat -ano | findstr :{port}` on Windows "
+                 f"or `ss -ltnp | grep :{port}` on Linux to see which)."]
+    alt = free_port_after(host, port)
+    p = alt if alt is not None else port + 1
+    lines.append(f"Close that program, or give Strata another port{f' ({p} is free now)' if alt is not None else ''}:")
+    lines.append(f"  - this start only: add --port {p}")
+    # setup writes the port into the config and run-<model>.bat both: only a setup run changes it for good
+    lines.append(f"  - from now on: run setup again with --port {p} (Windows: SETUP.bat --port {p}; Linux: "
+                 f"./setup.sh --setup --port {p})")
+    lines.append(f"  then point your clients at http://127.0.0.1:{p}/v1")
+    return "\n".join(lines)
 
 
 def warn_tight_ram(arena_mib) -> None:
