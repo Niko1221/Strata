@@ -52,9 +52,11 @@ LINES = [
     # Upstream v0.2.19 reworded the AGENTS.md version line; the version and the
     # three installer asset names are now on separate lines.
     ("AGENTS.md", r"Version " + V + r", engine " + V + r"\.", ["product_version", "engine_version"]),
-    ("AGENTS.md", r"Strata-" + V + r"-windows-x64-setup\.exe", ["product_version"]),
-    ("AGENTS.md", r"Strata-" + V + r"-linux-x86_64\.AppImage", ["product_version"]),
-    ("AGENTS.md", r"Strata-" + V + r"-macos-arm64\.dmg", ["product_version"]),
+    # One combined rule for the three upstream installers on the single
+    # "one installer per system" line; a separate rule per name would also
+    # match the fork's own v0.5.9/Hakua installer line.
+    ("AGENTS.md", r"Strata-" + V + r"-windows-x64-setup\.exe, `Strata-" + V + r"-linux-x86_64\.AppImage`, `Strata-" + V + r"-macos-arm64\.dmg`",
+     ["product_version", "product_version", "product_version"]),
     ("docs/AI_REFERENCE.md", r"against the " + V + r" release tree \(app and Terminal " + V + r"; Control " + V + r", engines " + V + r"\)",
      ["product_version", "product_version", "control_version", "engine_version"]),
     ("tools/packaging/UPDATES.md", r"one per OS \(" + V + r"\)", ["product_version"]),
