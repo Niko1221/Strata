@@ -15,7 +15,7 @@ image.
 | decode_128 / decode_256 (bench probe) | **148–149 tok/s** |
 | prefill_8192 (bench probe) | **1290–1305 tok/s** |
 | long cold prefill (60–70K-token prompts, live traffic) | **~2150–2190 tok/s** |
-| generation, real-world (17.8K prod generations ≥100 tok) | **median 58, p10 44, p90 81 tok/s** |
+| generation, real-world (17.8K prod generations ≥100 tok) | **typical 58, worst 10% ≤44, best 10% ≥81 tok/s** |
 | context | 262 144 tokens (int8 KV) |
 | VRAM | 93.6 GiB across 4 GPUs, layer-split auto |
 
