@@ -13,13 +13,12 @@ from __future__ import annotations
 FAMILY = "inkling2"                    # setup.sh --family inkling2: --family inkling-2-mini --model official
 ARCH = "inkling2"                      # the run config's "arch" (serve: the family's sampling defaults); never strata-inkling's inkling2_loop
 MODEL = "official"                     # its "model" in the Inkling family; run config file: strata-inkling-2-mini-official.json
-NAME = "inkling-2-mini"                # the run config's model_name
+# the run config's model_name (the API's model id): not upstream's "inkling-2-mini" prefix, which strata launch's agent harness, tune and pictures
+# take for strata-inkling (thinking off, --parallel, the Vision shard)
+NAME = "inkling2-mini"
 EXE = "strata-ink2"                    # Linux only: the engine includes sys/mman.h and unistd.h
-TITLE = "Inkling-2-Mini"
-BY = "Thinking Machines Lab (the official checkpoint)"
 ABOUT = ("a 128-expert mixture of experts with NVFP4 / MXFP8 experts, read as published (19.5 GB); "
          "NVIDIA (CUDA) and AMD (ROCm/HIP) cards on Linux, the experts that do not fit the card stay in RAM")
-LICENSE = "Apache 2.0: https://huggingface.co/thinkingmachines/Inkling-2-Mini"
 REPO = "thinkingmachines/Inkling-2-Mini"
 REVISION = "ed40e7da625f594fc9c4990f5f66be24873c22d7"   # 2026-11-20 ("Declare the dtype at the top level of config.json")
 #: Pictures: strata-ink2 reads them itself (its ViT, ink2_vision.cuh) and says INFO images=1 at its start, which is what the server enables image

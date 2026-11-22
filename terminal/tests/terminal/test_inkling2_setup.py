@@ -233,6 +233,33 @@ class OneFamily(unittest.TestCase):
         self.assertEqual(ink2.call_args[0][1], "inkling-2-mini")
 
 
+class Routing(unittest.TestCase):
+    """A strata-ink2 config is never routed as strata-inkling's: no batch flag, no Vision shard, a model id the harness leaves thinking."""
+
+    CFG = {"exe": "/x/engine/strata-ink2", "arch": F.ARCH, "model_name": F.NAME, "parallel": 8, "args": ["--model", "/m"]}
+
+    def test_no_parallel_flag(self):
+        from serve.server_parts import engines
+        self.assertEqual(engines.parallel_args(dict(self.CFG), list(self.CFG["args"])), [])
+        up = {"exe": "component:strata-inkling", "arch": "inkling2_loop", "parallel": 8, "args": ["--native", "m.strata"]}
+        self.assertEqual(engines.parallel_args(up, list(up["args"])), ["--parallel", "8"])
+
+    def test_no_vision_shard(self):
+        from strata_control import pictures
+        self.assertEqual(pictures.family_of(self.CFG, None, "inkling-2-mini"), "inkling2")
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "strata-inkling-2-mini-official.json"
+            p.write_text(json.dumps(self.CFG), encoding="utf-8")
+            got = pictures.fetch(p, engine_dir=d)
+        self.assertEqual((got["mmproj"], got["vision"], got["fetched"]), (None, None, False))
+
+    def test_the_harness_keeps_its_thinking(self):
+        from strata_cli.launch import harness
+        t = harness.target("http://127.0.0.1:8080", None, F.NAME)
+        self.assertFalse(harness._is_inkling(t))
+        self.assertEqual(harness._display_name(t), "Inkling-2-Mini (Strata, local)")
+
+
 class Build(unittest.TestCase):
     def test_hip_build_cmake_args_and_stamp_reuse(self):
         with tempfile.TemporaryDirectory() as d:
