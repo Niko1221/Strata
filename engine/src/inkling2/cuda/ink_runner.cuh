@@ -167,7 +167,14 @@ struct InkCudaModel {
                 h_exp[(size_t)il * man.c.n_experts + e.expert_id] = dev;
                 if (e.gu_code_id == FMT_SF4) moe_info[il].has_sf4 = true;
                 else if (e.gu_code_id == FMT_MX8) moe_info[il].has_mx8 = true;
-                else moe_info[il].has_sk = true;
+                else {
+                    moe_info[il].has_sk = true;
+                    if (e.gu_code_id < 32) moe_info[il].sk_gu_mask |= (1u << e.gu_code_id);
+                }
+                if (e.dn_code_id != FMT_SF4 && e.dn_code_id != FMT_MX8 && e.dn_code_id < 32) {
+                    moe_info[il].has_sk = true;
+                    moe_info[il].sk_dn_mask |= (1u << e.dn_code_id);
+                }
             }
         }
 
