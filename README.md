@@ -14,18 +14,19 @@ image.
 |---|---|
 | decode_128 / decode_256 (bench probe) | **148–149 tok/s** |
 | prefill_8192 (bench probe) | **1290–1305 tok/s** |
+| generation, real-world average (Strata monitor, 940K tokens generated) | **68 tok/s** — 80% of generations land 44–81 |
+| cold prefill, real-world average (Strata monitor, 2.7M tokens read) | **719 tok/s** |
 | long cold prefill (60–70K-token prompts, live traffic) | **~2150–2190 tok/s** |
-| generation, real-world (17.8K prod generations ≥100 tok) | **typical 58, worst 10% ≤44, best 10% ≥81 tok/s** |
 | context | 262 144 tokens (int8 KV) |
 | VRAM | 93.6 GiB across 4 GPUs, layer-split auto |
 
-The bench probes are short, cache-warm best cases. Day-to-day numbers with
-50–70K-token conversation contexts are honest lows of ~45–50 and an average
-near 60 tok/s — every token pays real attention/KV cost at those depths,
-and that is what the production-traffic row measures. Long cold
-prefills (~2.2K tok/s on 60–70K-token reads) run faster per token than the
-8K bench probe — we have not isolated why, so treat that as an observation,
-not a guarantee.
+The bench probes are short, cache-warm best cases. Real conversations run at
+50–115K-token contexts, where every generated token pays real attention/KV
+cost — hence the 68 tok/s production average from Strata's own request
+monitor. Prefill averages lower than the 8K bench probe because small cold
+reads (a few hundred tokens) are dominated by fixed overhead; big cold reads
+run 2.1–2.2K tok/s — we have not isolated why they beat the 8K probe, so
+treat that as an observation, not a guarantee.
 
 For comparison, stock upstream engines *regress* on gfx906 (0.1.60+ measures
 ~40 % slower decode on wave64 hardware). This branch exists because nothing
