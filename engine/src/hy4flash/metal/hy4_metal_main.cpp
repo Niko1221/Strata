@@ -1512,7 +1512,14 @@ int main(int argc, char** argv) {
         else if (a == "--ab") ab_rounds = atoi(nxt().c_str());
         else if (a == "--bench-m") bench_m = atoi(nxt().c_str());
         else if (a == "--par-m") par_m = atoi(nxt().c_str());
-        else if (a == "--info") return print_info(nxt());
+        else if (a == "--info") {
+            if (i + 1 >= argc) {
+                // no model: the facts serve needs (drafter / images support) are the build's
+                printf("arch=hy4flash drafter=dfly2 images=%d backend=metal\n", HY4_METAL_IMAGES);
+                return 0;
+            }
+            return print_info(nxt());
+        }
         else if (a == "--version") {
             printf("strata-hy4 %s\n", STRATA_HY4_VERSION);
             return 0;
