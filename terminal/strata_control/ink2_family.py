@@ -22,9 +22,12 @@ ABOUT = ("a 128-expert mixture of experts with NVFP4 / MXFP8 experts, read as pu
 LICENSE = "Apache 2.0: https://huggingface.co/thinkingmachines/Inkling-2-Mini"
 REPO = "thinkingmachines/Inkling-2-Mini"
 REVISION = "ed40e7da625f594fc9c4990f5f66be24873c22d7"   # 2026-11-20 ("Declare the dtype at the top level of config.json")
-#: Pictures: off until the engine reads them (another change adds image input).  The hook: set this True and add "processor_config.json"'s reader to
-#: the run config the way install_own_path writes cfg["vision"]; the file is already in the download set.
-VISION = False
+#: Pictures: strata-ink2 reads them itself (its ViT, ink2_vision.cuh) and says INFO images=1 at its start, which is what the server enables image
+#: input from (Service.engine_reads_images): nothing to write in the run config.  The engine takes no file for it beyond the checkpoint (its
+#: preprocessing constants are processor_config.json's, built in); the file stays in the download set as part of the published checkpoint
+VISION = True
+#: the ViT weights, pinned in host memory at the first picture (634 MB BF16 + 6 MB fp32)
+VISION_RAM_GIB = 0.65
 
 #: file name -> (bytes, sha256), in download order (the big ones first: a disk that fills up says so early)
 FILES = {
@@ -78,7 +81,23 @@ DEFAULT_CONTEXT = 32768                # where nothing larger fits on the card w
 #: the RAM of the offload mode: every expert is kept in RAM (pinned, placed on the NUMA nodes) while the card holds the most used.  Measured: the
 #: engine's peak resident memory (VmHWM) 16.8 GiB on an RTX 3090 set up as an 8 GB card; 32 GB leaves the OS, the server and the browser room
 OFFLOAD_RAM_GIB = 16.8
+RESIDENT_RAM_GIB = 3.2                 # the same peak with every expert on the card (24 GB, 64K context)
+#: the OS, the server and a browser beside the engine.  CBA: one figure for every PC, not measured per system
+OS_RAM_GIB = 6.0
 RAM_GB = 32
+
+#: The conversation cache (--conversation-cache-mib, the engine's default 0 = off): prompt-end checkpoints and parked conversations in pinned
+#: host memory.  Without it a client that drops the reasoning from its history (every agent client does) re-reads its whole prompt every turn: the
+#: rewind point it needs lives in that cache.  The largest of CACHE_MIB that leaves CACHE_SPARE_MIN_GIB of RAM beside the engine, the pictures'
+#: weights and the OS; off below that.
+CACHE_MIB = (4096, 2048)
+CACHE_SPARE_MIN_GIB = 1.5
+
+
+def conversation_cache_mib(ram_gib: float, offload: bool) -> tuple:
+    """(MiB for --conversation-cache-mib or 0, the RAM left beside the engine, the pictures and the OS in GiB)."""
+    spare = ram_gib - (OFFLOAD_RAM_GIB if offload else RESIDENT_RAM_GIB) - VISION_RAM_GIB - OS_RAM_GIB
+    return next((m for m in CACHE_MIB if spare - m / 1024 >= CACHE_SPARE_MIN_GIB), 0), spare
 
 #: The expert offload (--vram-reserve-mib) runs with --kv-grow 1: the full-attention K/V is mapped in 8192-cell steps as a conversation grows and
 #: the prompt buffers only while a prompt is read, both taken from the expert pools and given back after.  The engine keeps each pool at its
@@ -145,16 +164,18 @@ def recommended_context(vram_mib: float, reserve_mib: int = 0, used_mib: float =
     return ctx if ctx >= TARGET_CONTEXT or not reserve_mib else max(ctx, min(best(0), TARGET_CONTEXT))
 
 
-def engine_args(model_dir: str, ctx: int, vram_mib: float, reserve_mib: int, cpu_threads: int | None, used_mib: float = 0) -> list[str]:
+def engine_args(model_dir: str, ctx: int, vram_mib: float, reserve_mib: int, cpu_threads: int | None, used_mib: float = 0,
+                cache_mib: int = 0) -> list[str]:
     """The engine's arguments.  Every expert fits on the card: resident, with the drafter (--spec 1).  Otherwise the expert offload with --kv-grow 1:
     the card keeps `reserve_mib` free and fills the rest with the most used experts, the others stay in RAM; `cpu_threads` (per NUMA node; None: no
     CPU experts) computes a token's missing experts on the CPU instead of copying them over PCIe; the K/V format is offload_kv's.  The engine
     refuses --cpu-threads with --spec 1, so the offload mode has no drafter.  CBA: offload without CPU experts (no AVX2) also goes without the
     drafter, unmeasured either way"""
+    cache = ["--conversation-cache-mib", str(int(cache_mib))] if cache_mib else []   # (conversation_cache_mib)
     if resident_fits(vram_mib, ctx, reserve_mib):
-        return ["--model", model_dir, "--max-context", str(ctx), "--chunk", str(CHUNK), "--kv", "f16", "--tc", "1", "--spec", "1"]
+        return ["--model", model_dir, "--max-context", str(ctx), "--chunk", str(CHUNK), "--kv", "f16", "--tc", "1", "--spec", "1", *cache]
     args = ["--model", model_dir, "--max-context", str(ctx), "--chunk", str(CHUNK), "--kv", offload_kv(vram_mib, reserve_mib, used_mib, ctx),
             "--tc", "1", "--kv-grow", "1", "--vram-reserve-mib", str(int(reserve_mib))]
     if cpu_threads:
         args += ["--cpu-threads", str(int(cpu_threads))]
-    return args
+    return args + cache

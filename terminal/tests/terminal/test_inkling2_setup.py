@@ -127,11 +127,25 @@ class Args(unittest.TestCase):
         self.assertIn("--vram-reserve-mib", known)
         for vram in (8192, 12288, 16384, 24576, 49152):
             for threads in (None, 7, 22):
-                args = F.engine_args("/m", F.recommended_context(vram), vram, 0, threads)
+                args = F.engine_args("/m", F.recommended_context(vram), vram, 0, threads, 0, 4096)
                 flags = [x for x in args if x.startswith("--")]
                 self.assertEqual(set(flags) - known, set(), (vram, threads))
                 self.assertFalse("--spec" in flags and "--cpu-threads" in flags)          # the engine refuses the pair
                 self.assertFalse("--cpu-threads" in flags and "--vram-reserve-mib" not in flags)
+
+    def test_conversation_cache_from_the_ram(self):
+        self.assertEqual(F.conversation_cache_mib(187, True)[0], 4096)
+        self.assertEqual(F.conversation_cache_mib(29.8, True)[0], 4096)                    # a 32 GB PC, experts in RAM: 6.4 GiB spare
+        self.assertEqual(F.conversation_cache_mib(27.0, True)[0], 2048)
+        self.assertEqual(F.conversation_cache_mib(25.0, True), (0, 25.0 - 16.8 - 0.65 - 6.0))   # off below 1.5 GiB left
+        self.assertEqual(F.conversation_cache_mib(16, False)[0], 4096)                     # resident: the experts are not in RAM
+        args = F.engine_args("/m", 32768, 8192, 0, 22, 0, 2048)
+        self.assertEqual(args[args.index("--conversation-cache-mib") + 1], "2048")
+        self.assertNotIn("--conversation-cache-mib", F.engine_args("/m", 32768, 8192, 0, 22))
+        # the RAM setup asks of an offload PC holds the engine, the pictures' weights, the OS and the largest cache
+        self.assertGreaterEqual(F.RAM_GB * 1e9 / 2**30, F.OFFLOAD_RAM_GIB + F.VISION_RAM_GIB + F.OS_RAM_GIB + F.CACHE_MIB[0] / 1024)
+        self.assertTrue(F.VISION)
+        self.assertIn("processor_config.json", F.FILES)
 
     def test_cpu_threads_per_socket(self):
         with mock.patch.object(setup, "cpu_core_layout", return_value=(96, [24, 24])), mock.patch.object(setup, "cpu_cores", return_value=None):

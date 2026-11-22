@@ -8467,7 +8467,8 @@ def _start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open
     a_ = cfg["args"]
     if cfg.get("arch") == ink2_family.ARCH:            # Inkling-2-Mini: its own figures (strata_control/ink2_family.py)
         say(f"  Starting {cfg.get('model_name', 'the model')}: " + (
-            f"it keeps the experts the card does not hold in RAM (about {ink2_family.OFFLOAD_RAM_GIB:.1f} GiB, locked for the GPU)."
+            f"it keeps the experts the card does not hold in RAM (about {ink2_family.OFFLOAD_RAM_GIB:.1f} GiB, locked for the GPU)"
+            + (f", and {a_[a_.index('--conversation-cache-mib') + 1]} MiB for its conversation cache." if "--conversation-cache-mib" in a_[:-1] else ".")
             if "--vram-reserve-mib" in a_ else
             f"it loads its {ink2_family.FILES['model-00001-of-00001.safetensors'][0] / 1e9:.0f} GB onto the graphics card."))
     elif "--mmap-experts" in a_ and "--resident-budget-gib" not in a_ and "--resident-experts" not in a_:
@@ -10092,8 +10093,15 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
             warn(f"installing {fam['title']} with {ram:.0f} GB of RAM, as you chose")
         if display and a.vram_reserve_mib is None:
             say("  This card drives a display, so VRAM is kept free for it (--vram-reserve-mib N to change how much)")
-    if a.vision not in (None, "no", "none"):
-        warn(f"images: {fam['title']}'s engine does not read pictures yet; it is set up without them")
+    ok("images: on (the engine reads pictures itself; nothing is loaded for them until the first one)")
+    if a.vision in ("no", "none"):
+        warn(f"--vision {a.vision}: {fam['title']}'s engine reads pictures itself, there is nothing to turn off (no download, no memory until a picture)")
+    cache_mib, spare = F.conversation_cache_mib(ram, not F.resident_fits(vram_mib, ctx, reserve))
+    if cache_mib:
+        ok(f"conversation cache: {cache_mib} MiB of RAM (an agent's next turn reads only what is new)")
+    else:
+        warn(f"conversation cache: off - {spare:.1f} GB of RAM are left beside the model and the system, less than the "
+             f"{F.CACHE_MIB[-1] // 1024 + F.CACHE_SPARE_MIN_GIB:.1f} GB it needs; every turn of an agent re-reads its whole conversation")
     if a.rope_scaling or a.rope_scale or a.kv or a.resident_budget_gib is not None or a.low_ram not in (None, "auto") or getattr(a, "parallel", None):
         warn(f"--rope-scaling / --kv / --resident-budget-gib / --low-ram / --parallel are other models' settings: {fam['title']} does not use them")
     own = bool(a.gguf_dir)                             # --gguf-dir: a folder that already holds the checkpoint (checked, never changed)
@@ -10125,7 +10133,7 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     ok(f"tokenizer: {tok}")
 
     step(7, "writing the start script")
-    args = F.engine_args(str(folder), ctx, vram_mib, reserve, threads, used)
+    args = F.engine_args(str(folder), ctx, vram_mib, reserve, threads, used, cache_mib)
     cfg = {"exe": str(exe), "args": args, "cwd": str(ROOT), "tokenizer": str(tok), "model_name": F.NAME, "arch": fam["arch"],
            "log": str(home() / f"strata-{tag.lower()}.log"), "lib_dirs": lib_dirs, "port": port}
     if gpu.get("count", 1) > 1 or a.gpu is not None:
