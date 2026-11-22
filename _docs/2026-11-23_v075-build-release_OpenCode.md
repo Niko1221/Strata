@@ -53,6 +53,25 @@ settings SHA + GUI launch title.
   task was locating a model file, not a CVE/supply-chain trust decision; the
   LFS OID/SHA-256 was cross-checked against the downloaded bytes.
 
+## Completion evidence (2026-11-23)
+- Dev work committed at 0348411d3; bump 0.7.5/0.6.7 at 54475dd3a; Cargo.lock
+  libloading restored at b25325e2c; provenance notes at 80868c840; logs at
+  b4d505903. `release_manifest --check` ok (0.7.5, engine 0.6.7).
+- 8 READMEs rewritten with 0.7.5/0.6.7 + provenance note; tag v0.7.5 pushed.
+- Full build BUILD_EXIT=0, installer 127,142,902 bytes SHA-256 734558cc...eeb;
+  NSIS 6/6 ok=true; tar.7z public SHA-256 b761f998...d21c (downloaded from the
+  release and 7-Zip integrity-tested).
+- GitHub Latest = v0.7.5 with 4 assets uploaded (setup, tar.7z, engine 0.6.4,
+  hy4 0.1.64), digests matching local.
+- Real machine overwritten from the published installer payload (7-Zip unpack,
+  29,702 files): strata-desktop.exe SHA-256 0d1f0781...6af3, registry 0.7.5,
+  user-data settings SHA 6b7d7b11... preserved, GUI launch attempted
+  (`ai.strata.desktop-siw`).
+- Note: two concurrent finalize scripts raced on nsis-upgrade.log and tar.7z;
+  one publish succeeded with the verified tar.7z (b761f998...), the stale local
+  copy was replaced with the published one. No impact on the shipped asset.
+- PR https://github.com/Niko1221/Strata/pull/6571 still OPEN.
+
 ## Residual risks
 - Windows Authenticode signing absent; SHA-256 digest verification retained;
   `releaseQualified=false`.
