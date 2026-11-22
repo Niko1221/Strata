@@ -292,7 +292,7 @@ class LadderCard(unittest.TestCase):
                 mock.patch.object(ab_report, "render_png", side_effect=fake):
             html, png = write_report(r, Path(d))
             self.assertEqual(png.name, "report.png")
-        self.assertEqual(calls, [("card", "report.png"), ("ladder", "report-ladder.png")])
+        self.assertEqual(calls, [("card", "report.png"), ("card-all", "report-all.png"), ("ladder", "report-ladder.png")])
         calls.clear()
         with tempfile.TemporaryDirectory() as d, mock.patch.object(ab_report, "find_browser", return_value="edge"), \
                 mock.patch.object(ab_report, "render_png", side_effect=fake):
@@ -330,6 +330,30 @@ class BaseCorrectness(unittest.TestCase):
         fine = card(build_html(dict(RESULTS, arms=[good, base_arm("0.1.56", lambda r: True, decode=(130, 130, 130, 130))])))
         self.assertNotIn("weniger richtig", fine)
         self.assertIn("Answers, up to", fine)
+
+    def test_all_card_adds_one_bar_per_suite(self):
+        a = [srow("think", "think.math1", 1, True, decode=60.0), srow("agent", "agent.s.0", 1, True, decode=40.0)]
+        b = [srow("think", "think.math1", 1, True, decode=66.0), srow("agent", "agent.s.0", 1, True, decode=50.0)]
+        h = build_html(suite_results(["think", "agent"], [suite_arm("0.1.59", a), suite_arm("0.1.60", b)]))
+        allc = h[h.index('id="card-all"'):]
+        allc = allc[:allc.index("</section>")]
+        for label in ("chat0", "long", "think", "agent"):
+            self.assertIn(f"<span>{label}</span>", allc)
+        self.assertIn("+25%", allc)  # agent 40 -> 50 is the top gain
+        self.assertNotIn("<span>think</span>", card(h))  # the first card stays base only
+        self.assertIn("#card-all:target", h[:h.index("</style>")])  # the PNG shows this card
+
+    def test_all_card_marks_a_version_worse_in_any_suite(self):
+        a = [srow("think", "think.math1", 1, True)]
+        b = [srow("think", "think.math1", 1, False)]
+        h = build_html(suite_results(["think"], [suite_arm("0.1.59", a), suite_arm("0.1.60", b)]))
+        allc = h[h.index('id="card-all"'):]
+        self.assertIn("weniger richtig als v0.1.59", allc[:allc.index("</section>")])
+        self.assertNotIn("Answers, up to", allc[:allc.index("</section>")])
+
+    def test_no_all_card_without_suite_rows(self):
+        self.assertNotIn("card-all", build_html(RESULTS))
+        self.assertNotIn("card-all", build_html(suite_results(["think"], [suite_arm("0.1.59", []), suite_arm("0.1.60", [])])))
 
     def test_results_without_ok_have_no_column(self):
         h = build_html(RESULTS)

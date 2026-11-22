@@ -56,10 +56,23 @@ def _num(v, unit="") -> str:
     return "n/a" if v is None else f"{v:.1f}{unit}" if v < 100 else f"{v:.0f}{unit}"
 
 
-def _card(results: dict, old: dict, new: dict) -> str:
+def _suite_decode(arm: dict, suite: str) -> float | None:
+    """Median over the requests of a suite of each request's median decode."""
+    vals = [m for t in _tags([arm], suite) if (m := _median(arm, t, "decode", suite)) is not None]
+    return statistics.median(vals) if vals else None
+
+
+def _card_suites(results: dict) -> list[str]:
+    """The chosen suites that have rows, in report order: the bars the third card adds."""
+    return [s for s in SUITE_TITLES if s in (results.get("suites") or []) and any(_correct(a, s)[1] for a in results.get("arms", []))]
+
+
+def _card(results: dict, old: dict, new: dict, suites: list[str] | None = None) -> str:
+    """The release card; with suites, the third card: the same plus one bar per suite (median decode over its requests)."""
     e = lambda s: escape(str(s))  # noqa: E731
     reqs = results.get("requests") or []
     dec = {q: (_median(old, q, "decode"), _median(new, q, "decode")) for q in reqs}
+    dec.update({s: (_suite_decode(old, s), _suite_decode(new, s)) for s in suites or []})
     gains = [g for g in (_rel(a, b) for a, b in dec.values()) if g is not None]
     top = max((v for pair in dec.values() for v in pair if v), default=0) or 1  # no positive value: all bars empty
     bars = []
@@ -70,12 +83,16 @@ def _card(results: dict, old: dict, new: dict) -> str:
     lp = (_median(old, "long", "prompt"), _median(new, "long", "prompt"))
     tune = f"tuned {results['tune']}" if results.get("tune") else "not tuned"
     worse = _worse([old, new], "base") if _has_ok(results) else {}
+    for s in suites or []:
+        worse = {**_worse([old, new], s), **worse}
     label = f"Answers, change (weniger richtig als v{worse[new['version']]})" if new["version"] in worse else "Answers, up to"
     chips = [f"{results.get('rounds', 0)} rounds", f"{len(reqs)} requests"]
+    if suites:
+        chips[1] += " + " + ", ".join(suites)
     chips += [f"{a['version']} did not run" for a in results.get("arms", []) if a.get("status") != "ran"]
     tile = lambda label, big, small: (f'<div class="tile"><div class="label">{e(label)}</div>'  # noqa: E731
                                       f'<div class="value">{e(big)}</div><div class="small">{e(small)}</div></div>')
-    return f"""<section id="card"><div class="glow"></div>
+    return f"""<section id="card{'-all' if suites else ''}"><div class="glow"></div>
 <h1>Strata <span class="ver">{e(old['version'])} → {e(new['version'])}</span></h1>
 <p class="sub">{e(' · '.join(x for x in (results.get('gpu'), results.get('model'), 'default settings', tune) if x))}</p>
 <div class="main"><div class="dark"><div class="label">{e(label)}</div><div class="big">{_pct(max(gains) if gains else None)}</div>
@@ -171,6 +188,12 @@ document.querySelectorAll('th').forEach((th,i)=>th.addEventListener('click',()=>
 
 SERIES = ("#2a78d6", "#eb6834", "#1baf7a", "#eda100")  # fixed order; a fifth version gets grey, never a reused colour
 GREY, INK, INK2, GRID = "#898781", "#0f172a", "#475569", "#e2e8f0"
+# The third card: the card rules again under its own id (the other rules repeat harmlessly), smaller bars so up to 7 fit.
+ALL_CSS = CSS.replace("#card", "#card-all") + (
+    "#card-all{margin-top:24px}#card-all .big{font-size:80px;margin:0 0 6px}#card-all .pair{margin-top:4px}"
+    "#card-all .bar{height:15px;margin:2px 0}#card-all .bar b{font-size:15px}"
+    "#card-all:target{position:fixed;left:0;top:0;z-index:99;margin:0}")  # the PNG: the card on top, like #ladder
+
 SUITE_TITLES = {"ladder": "Context ladder", "think": "Thinking on", "agent": "Agent turns"}
 
 SUITE_CSS = """
@@ -453,9 +476,13 @@ def suite_sections(results: dict) -> str:
 
 def build_html(results: dict) -> str:
     pair = card_pair(results)
+    extra = ""
     if pair:
         title = f"Strata {pair[0]['version']} → {pair[1]['version']}"
         card = _card(results, *pair)
+        if suites := _card_suites(results):
+            card += _card(results, *pair, suites=suites)
+            extra = ALL_CSS
     else:
         title, card = "Strata versions", "<p>Fewer than two versions ran, so there is no comparison card.</p>"
     versions = [a["version"] for a in results.get("arms", []) if a.get("status") == "ran"]
@@ -470,7 +497,7 @@ def build_html(results: dict) -> str:
             f"<li><code>{escape(str(c))}</code></li>" for c in results.get("changed") or []) + "</ul>"
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{escape(title)}</title><style>{CSS}{WORSE_CSS if show else ""}</style></head><body>
+<title>{escape(title)}</title><style>{CSS}{WORSE_CSS if show else ""}{extra}</style></head><body>
 {card}
 <main><label>Base version <select id="base">{opts}</select></label>
 <span> · decode and prompt in tok/s (median over rounds), setup and start in seconds · {escape(str(results.get('created', '')))}</span>{suite_head(results)}
@@ -517,6 +544,8 @@ def write_report(results: dict, out_dir: Path) -> tuple[Path, Path | None]:
     html = out_dir / "report.html"
     html.write_text(build_html(results), encoding="utf-8")
     cards = [("card", "report.png")] if card_pair(results) else []
+    if cards and _card_suites(results):
+        cards.append(("card-all", "report-all.png"))
     if "ladder" in (results.get("suites") or []) and any(_correct(a, "ladder")[1] for a in results.get("arms", [])):
         cards.append(("ladder", "report-ladder.png"))
     if not cards:
