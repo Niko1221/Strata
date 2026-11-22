@@ -4477,6 +4477,39 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_DENSE_ARENA",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/core/native_dense.cpp",
+     "line": 39,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "core",
+   "note": "exstrata memory goal V1: the native dense matrices in one VRAM allocation instead of one cudaMalloc each (Qwen3.8-Flash-Next IQ3_XXS: 300 matrices, 186 MiB less, calc); bit-identical by design; tests/core/dense_arena_test.cpp",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_DENSE_F32",
    "backends": [
     "cuda"
