@@ -113,3 +113,26 @@ author kuraneko1 (_ryu15_) in code and docs.
   Preserved intact: preview-components/0.6.4-9b27b-unsigned (verify companion),
   all research/, all _docs, evidence receipts/logs, model weights, the git repo,
   and the v073-regbak / v065-uncommitted-backup safety dirs.
+
+## Local overwrite-install attempt and rollback (2026-11-22)
+- User asked to apply the overwrite install to the real local install (0.7.1 at
+  C:/Users/downl/AppData/Local/Programs/Strata). Full pre-change backup taken:
+  uninstall registry, user data (560 files), local data (3744 files), settings
+  SHA `6b7d7b11...`, old exe SHA `4812b396...` →
+  H:/Strata/evidence/real-overwrite-backup-20261122.
+- The NSIS installer (installer.nsi) shows a custom reinstall page on an existing
+  install. `/S` alone leaves $PassiveMode=0 and upgrade takes the uninstall.exe
+  branch, which failed with exit 2 (user abort) on the real path. `/S /P`, `/S /D=`
+  and seeded-fixture conditions also returned exit 2 on the real path, although
+  the isolated fixture test earlier returned exit 0 (different InstallLocation).
+- A GUI install attempt via UIAutomation reached the "Installing Strata" screen
+  but the installer crashed/closed without producing the exe or registry key.
+- Rollback performed to the exact pre-change 0.7.1 state: restored uninstall
+  registry from backup, restored app layout from v071-overwrite-fixture, and
+  replaced strata-desktop.exe with the byte-identical original (`4812b396...`,
+  found in H:/Strata/evidence/v071-overwrite-fixture/app). Verified reg 0.7.1,
+  real path, user-data SHA unchanged. Local install is healthy again.
+- Conclusion: the desktop/GUI overwrite should be performed by the user directly
+  (double-click Strata-0.7.3-windows-x64-setup.exe from the v0.7.3 release);
+  agent-side GUI automation was not reliable and silent mode hit the reinstall-page
+  branch. GitHub release assets are unaffected and remain correct.
