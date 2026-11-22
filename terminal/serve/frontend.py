@@ -3010,9 +3010,9 @@ class InklingOutputParser(JsonOutputParser):
     def feed(self, text: str) -> list[Event]:
         return self._emit_channels(self._dialect.feed_channels(text, final=False))
 
-    def finish(self) -> list[Event]:
+    def finish(self, finish: str = "stop") -> list[Event]:
         out = self._emit_channels(self._dialect.feed_channels("", final=True))
-        out.extend(super().finish())
+        out.extend(super().finish(finish))
         return out
 
 
