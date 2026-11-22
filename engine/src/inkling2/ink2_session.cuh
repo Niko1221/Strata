@@ -21,7 +21,6 @@
 //     system prompt and tools) stops its prefill at the branch point once and takes a checkpoint there.
 // LRU over whole parked conversations under the budget.  Off: none of this runs (the serve loop is the base one).
 
-constexpr int IMAGE_ID = 200054;   // <|unused_200054|>: every image's placeholder (the same id whatever the image)
 constexpr int SPLIT_MIN = 512;     // a branch point is taken when it covers this many tokens more than the best state
 
 struct Pinned {   // page-locked host memory (DMA only: any NUMA node)
@@ -68,7 +67,6 @@ struct Sess {
     std::vector<PinnedP> spare;   // tails no longer used (cudaHostAlloc is slow): taken again first
     uint64_t clock = 0;
     int split = -1;        // this request: the prefill stops here for a branch checkpoint
-    bool skip = false;     // this request bypasses the cache (an image in it)
     std::string note;      // this request's log line
 } g_sess;
 
@@ -196,7 +194,7 @@ bool sess_take(int n, const vec& lg, int kind) {
 // The live conversation (hist, last_logits) to the parked set, when worth it: its full rows, its checkpoints and its
 // history end.  The live checkpoints stay valid for the slots (a later restore may use them).
 void sess_park(const std::vector<int>& hist, const vec& last_logits) {
-    if ((int) hist.size() < g_sess.min_tokens || std::find(hist.begin(), hist.end(), IMAGE_ID) != hist.end()) return;
+    if ((int) hist.size() < g_sess.min_tokens) return;
     Conv v;
     v.ids = hist;
     v.prompt_n = g_sess.live_prompt;
@@ -233,16 +231,9 @@ size_t sess_begin(const std::vector<int>& pr, std::vector<int>& hist, vec& last_
     g_sess.split = -1;
     g_sess.note.clear();
     const double t0 = now_ms();
-    g_sess.skip = std::find(pr.begin(), pr.end(), IMAGE_ID) != pr.end();
+    // (a picture's image tokens are ids made from its pixels' hash, ink2_vision.cuh vis_id: every comparison below
+    // tells two pictures of the same size apart)
     const size_t l_live = sess_lcp(hist, pr);
-    // CBA: an image's tokens are the same placeholder whatever the image: a prompt with one bypasses the cache (no
-    // restore, no checkpoint) and a conversation with one is never parked; key the cache on the image bytes to lift it
-    if (g_sess.skip) {
-        for (size_t i = g_sess.live.size(); i-- > 0;) if (g_sess.live[i].n > (int) start) { PinnedP t = g_sess.live[i].tail; g_sess.live.erase(g_sess.live.begin() + i); sess_drop(std::move(t)); }
-        g_sess.live_prompt = 0;
-        std::fprintf(stderr, "[ink2] conversation cache: prompt %zu with an image: read from %zu, not cached\n", pr.size(), start);
-        return start;
-    }
     // the best state: the live history end (start), a live checkpoint, a parked conversation's checkpoint
     size_t best = start, share = l_live;
     int src = start > 0 ? 0 : -1, ck = -1, pv = -1;   // src: 0 live end, 1 live checkpoint, 2 parked, -1 none
@@ -327,7 +318,7 @@ unsigned long long sess_hash(const vec& lg) {
 }
 // the prompt read (lg: its last logits), before the first sampled token: the live prompt-end checkpoint
 void sess_prompt_end(const std::vector<int>& pr, const vec& lg) {
-    if (!g_sess.on || g_sess.skip) {   // INK2_LOGITS_HASH=1: the hash without the cache too (the reference runs)
+    if (!g_sess.on) {   // INK2_LOGITS_HASH=1: the hash without the cache too (the reference runs)
         static const bool h = std::getenv("INK2_LOGITS_HASH") != nullptr;
         if (h) std::fprintf(stderr, "[ink2] conversation cache: off, prompt end %zu, logits %016llx\n", pr.size(), sess_hash(lg));
         return;

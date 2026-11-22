@@ -32,6 +32,13 @@
 // Protocol (Hy4-Flash's 1.6b): GEN ... image=<path> ... <ids>, one image= key per <|unused_200054|> of the ids in
 // prompt order; the engine decodes the files, expands each placeholder to its rows x cols image tokens and encodes
 // them before the prompt is read.  INFO images=1 at the start says it can.
+//
+// Picture identity: an expanded image token is not 200054 in the prompt the engine keeps but a negative id made from
+// the picture's key (its pixels' hash) and its offset in the picture (vis_id).  Every prefix comparison of the serve
+// loop and of the conversation cache (hist, live checkpoints, parked conversations, branch points) therefore sees two
+// different pictures of the same size as different tokens: a state is reused only with the same pictures at the same
+// places.  Only the embedding lookup (forward_prefill) maps a negative id back to the placeholder's row, which the
+// picture's row then replaces.
 #pragma once
 
 constexpr int VH = 1024, VHEADS = 16, VHD = 64, VFF = 4096, VLAYERS = 23, VGRID = 32, VMERGE_IN = 4 * VH, VPROJ = 4096;
@@ -56,7 +63,7 @@ struct Vis {
     // the request
     struct Span { int pos, n; uint64_t key; size_t row; };
     std::vector<ink2img::Picture> pics;
-    std::vector<Span> spans, hist;   // this prompt's pictures; those of the tokens the engine holds (serve's hist)
+    std::vector<Span> spans;         // this prompt's pictures
     float* emb = nullptr;            // pinned [rows][H]: the image rows of this prompt
     size_t emb_cap = 0;
     bool pending = false;            // the prompt being read has image rows to put in
@@ -382,6 +389,13 @@ std::string vis_run(const ink2img::Picture& pic, float* out) {
 }
 
 // ------------------------------------------------------------------------------------------------------- the prompt
+// the prompt id of image token j of the picture with key k: negative (never a vocabulary id), 31 bits of a mix of both
+// CBA: two different pictures match only if all 31-bit ids of the shared span collide (~2^-31 per token)
+int vis_id(uint64_t k, int j) {
+    uint64_t x = k ^ (0x9e3779b97f4a7c15ull * (uint64_t) (j + 1));
+    x ^= x >> 33; x *= 0xff51afd7ed558ccdull; x ^= x >> 33; x *= 0xc4ceb9fe1a85ec53ull; x ^= x >> 33;
+    return -1 - (int) (x & 0x3fffffff);
+}
 // This prompt's pictures: each IMAGE_TOKEN of `ids` (one per picture, prompt order) becomes its rows x cols image
 // tokens.  `paths` empty and no placeholder: a text prompt (nothing to do).  "" or the error.
 std::string vis_prepare(std::vector<int>& ids, const std::vector<std::string>& paths, bool pixels = false) {
@@ -408,23 +422,10 @@ std::string vis_prepare(std::vector<int>& ids, const std::vector<std::string>& p
         const int n = p.rows * p.cols;
         g_vis.spans.push_back({(int) out.size(), n, p.key, row});
         row += (size_t) n;
-        out.insert(out.end(), (size_t) n, IMAGE_TOKEN);
+        for (int j = 0; j < n; ++j) out.push_back(vis_id(p.key, j));
     }
     ids.swap(out);
     return "";
-}
-
-// The reused prefix (the first `start` tokens, already in the engine's state) holds the same pictures as this prompt's
-// at the same places, else nothing is reused: two different pictures of the same size have the same token ids.
-// CBA: one history (g_vis.hist, set by vis_done); a cache of several sessions needs each session's own spans.
-size_t vis_reuse(size_t start) {
-    if (!start) return 0;
-    auto in = [start](const std::vector<Vis::Span>& v) {
-        std::vector<uint64_t> r;
-        for (const auto& s : v) if ((size_t) s.pos < start) { r.push_back((uint64_t) s.pos); r.push_back((uint64_t) s.n); r.push_back(s.key); }
-        return r;
-    };
-    return in(g_vis.spans) == in(g_vis.hist) ? start : 0;
 }
 
 // Encodes the pictures whose rows are read from `start` on (the others are in the reused prefix).  "" or the error.
@@ -463,12 +464,6 @@ void vis_inject(int T, int pos0) {
         CK(cudaMemcpyAsync(PF.h + (size_t) (a - pos0) * H, g_vis.emb + (s.row + (size_t) (a - s.pos)) * H,
                            (size_t) (b - a) * H * 4, cudaMemcpyHostToDevice, cudaStreamPerThread));
     }
-}
-
-// a request is done: its pictures are those of the engine's state from now on
-void vis_done() {
-    g_vis.hist = g_vis.spans;
-    g_vis.pending = false;
 }
 
 // --vis-pixels FILE: the ViT alone on the processor's pixel tensor (no language model loaded), rows to --dump-image-emb

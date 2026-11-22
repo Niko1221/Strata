@@ -5032,7 +5032,7 @@ void forward_prefill(const int* toks, int T, int pos0, float* all) {
     }
     {
         vec e(ES);
-        for (int t = 0; t < T; ++t) embed_row(toks[t], &e[(size_t) t * H]);
+        for (int t = 0; t < T; ++t) embed_row(toks[t] < 0 ? IMAGE_TOKEN : toks[t], &e[(size_t) t * H]);   // (vis_id)
         CK(cudaMemcpyAsync(PF.x0, e.data(), ES * 4, cudaMemcpyHostToDevice, cudaStreamPerThread));
         CK(cudaStreamSynchronize(cudaStreamPerThread));
     }
@@ -5515,7 +5515,6 @@ int main(int argc, char** argv) {
             max_new = std::max(0, std::min(max_new, E.ctx - (int) pr.size()));
             const bool reuse = !hist.empty() && pr.size() >= hist.size() && std::equal(hist.begin(), hist.end(), pr.begin());
             size_t start = reuse ? hist.size() : 0;
-            start = vis_reuse(start);   // (the reused prefix must hold the same pictures)
             if (g_sess.on) start = sess_begin(pr, hist, last_logits, start);   // conversation cache (ink2_session.cuh)
             kv_trim((int) pr.size() + 1);
             if (spec && start == pr.size()) start = pr.size() - 1;   // re-fed: the drafter needs its features
@@ -5579,7 +5578,7 @@ int main(int argc, char** argv) {
             }
             const double t2 = now_ms();
             hist = pr;
-            vis_done();
+            g_vis.pending = false;
             if (!gen.empty()) hist.insert(hist.end(), gen.begin(), gen.end() - 1);   // the last token was never fed
             last_logits = logits;
             smp.rng = std::move(s.rng);
