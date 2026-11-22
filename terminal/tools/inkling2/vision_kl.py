@@ -1,7 +1,7 @@
 """Inkling-2-Mini with a picture, end to end (transformers PR #51050 on the CPU): all-position logits of a chat prompt
 with one picture, and its greedy continuation, for strata-ink2 --image --dump-logits (compare with kl_cmp-style KL).
 
-usage: vision_kl.py --model DIR --out PREFIX --image FILE [--image FILE ...] [--dtype float32] [--gen N]
+usage: vision_kl.py --model DIR --out PREFIX --image FILE [--image FILE ...] [--together] [--dtype float32] [--gen N]
 
 Per picture k (PREFIX.k.*): .pt {"ids": the processor-expanded prompt, "logits": [T][V] fp32, "gen": greedy ids},
 .ids1 (the prompt with one <|unused_200054|> per picture: what strata-ink2 --tokens-file takes with --image).
@@ -22,14 +22,17 @@ def main():
     ap.add_argument("--dtype", default="float32")
     ap.add_argument("--gen", type=int, default=24)
     ap.add_argument("--threads", type=int, default=48)
+    ap.add_argument("--together", action="store_true", help="all pictures in one message (one prompt, PREFIX.0.*)")
     a = ap.parse_args()
     torch.set_num_threads(a.threads)
     proc = AutoProcessor.from_pretrained(a.model)
     t = time.time()
     model = Inkling2LoopForConditionalGeneration.from_pretrained(a.model, dtype=getattr(torch, a.dtype), device_map="cpu").eval()
     print(f"loaded in {time.time() - t:.0f}s", flush=True)
-    for k, img in enumerate(a.image):
-        msgs = [{"role": "user", "content": [{"type": "image", "image": img}, {"type": "text", "text": a.prompt}]}]
+    groups = [a.image] if a.together else [[img] for img in a.image]
+    for k, imgs in enumerate(groups):
+        img = ",".join(imgs)
+        msgs = [{"role": "user", "content": [{"type": "image", "image": i} for i in imgs] + [{"type": "text", "text": a.prompt}]}]
         inp = proc.apply_chat_template(msgs, tokenize=True, add_generation_prompt=True, return_dict=True,
                                        return_tensors="pt", reasoning_effort=a.effort)
         ids = inp["input_ids"][0].tolist()
@@ -46,7 +49,7 @@ def main():
             g = model.generate(**inp, max_new_tokens=a.gen, do_sample=False)
         gen = g[0, len(ids):].tolist()
         torch.save({"ids": inp["input_ids"][0], "logits": logits, "gen": gen}, f"{a.out}.{k}.pt")
-        print(json.dumps({"image": img, "grid": inp["image_grid_thw"][0].tolist(), "tokens": len(ids), "fwd_s": round(fwd, 1),
+        print(json.dumps({"image": img, "grid": inp["image_grid_thw"].tolist(), "tokens": len(ids), "fwd_s": round(fwd, 1),
                           "gen_ids": gen, "gen_text": proc.tokenizer.decode(gen)}, ensure_ascii=False), flush=True)
     print("VISION-KL-DONE", flush=True)
 
