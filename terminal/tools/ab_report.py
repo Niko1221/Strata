@@ -490,11 +490,18 @@ def build_html(results: dict) -> str:
     show = _has_ok(results)
     heads = "".join(f"<th>{h}</th>" for h in ("Version", "Request", "Decode", "Prompt", "Δ Decode", *(("Correct",) if show else ()),
                                               "Setup", "Start", "Status"))
+    sessions = results.get("sessions") or []
+    unchecked = sum(not x.get("checked") for x in sessions)
     if results.get("untouched"):
         iso = "<p>Real Strata install untouched: no file changed during the run.</p>"
-    else:
+    elif results.get("changed") or not unchecked:
         iso = "<p>Files of the real Strata install changed during the run:</p><ul>" + "".join(
             f"<li><code>{escape(str(c))}</code></li>" for c in results.get("changed") or []) + "</ul>"
+    else:
+        iso = ""
+    if unchecked:   # a killed session never compared the install after its launches
+        iso += (f"<p>{unchecked} of {len(sessions)} sessions of this run stopped before the check of the real Strata install; "
+                "their time is not covered by it.</p>")
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{escape(title)}</title><style>{CSS}{WORSE_CSS if show else ""}{extra}</style></head><body>

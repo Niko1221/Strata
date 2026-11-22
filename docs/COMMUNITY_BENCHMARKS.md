@@ -154,6 +154,12 @@ it can contain the API key of the test home, so do not attach it to an issue. Ea
 `~/strata-ab/packages` and copied again into each run's home under `~/strata-ab/homes`, so every run adds to the disk use. The tool never deletes anything there;
 delete old homes by hand. Details: the top of `terminal/tools/ab_engine.py`.
 
+`results.json` is saved after every finished start. If a run stops (Ctrl-C, a crash, a reboot), the same command
+continues it in the same folder and runs only the starts that are missing; a start that did not finish runs again from its
+beginning. A run continues only when every setting that changes the requests is the same; `--rounds` may grow and
+`--engines` may add versions. A finished run is never continued. `--fresh` starts a new run. When a run was stopped hard,
+the check of the real install did not happen for that part, and the report says so.
+
 Three optional test suites go beyond the four short requests. They need a git checkout of Strata that has the tag `v0.2.12`,
 because their texts are read from it, so every version and every run sees the same bytes. Every request uses temperature 0
 and seed 7. Each version gets a second start with one shared `--context` (default: the model's maximum), so the suites compare

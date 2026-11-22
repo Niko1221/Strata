@@ -355,6 +355,14 @@ class BaseCorrectness(unittest.TestCase):
         self.assertNotIn("card-all", build_html(RESULTS))
         self.assertNotIn("card-all", build_html(suite_results(["think"], [suite_arm("0.1.59", []), suite_arm("0.1.60", [])])))
 
+    def test_unchecked_sessions_are_named_not_called_untouched(self):
+        r = dict(RESULTS, untouched=False, changed=[], sessions=[{"checked": False}, {"checked": True}])
+        h = build_html(r)
+        self.assertIn("1 of 2 sessions of this run stopped before the check", h)
+        self.assertNotIn("untouched", h.split("</table>")[1])
+        self.assertNotIn("changed during the run", h)
+        self.assertNotIn("sessions of this run", build_html(dict(RESULTS, sessions=[{"checked": True}])))
+
     def test_results_without_ok_have_no_column(self):
         h = build_html(RESULTS)
         self.assertNotIn("Correct", h)

@@ -181,7 +181,7 @@ class VersionsMode(unittest.TestCase):
     def test_results_schema(self):
         code, results, m = self.run_tool()
         self.assertEqual(set(results), {"created", "model", "gpu", "tune", "rounds", "requests", "arms", "untouched", "changed",
-                                        "suites", "context", "corpus", "run_code"})
+                                        "suites", "context", "corpus", "run_code", "params", "done", "sessions", "homes"})
         self.assertEqual((results["suites"], results["context"], results["corpus"], results["run_code"]), ([], None, None, False))
         self.assertEqual((results["model"], results["gpu"], results["tune"], results["rounds"]), ("model.gguf", "RTX 3090, 24576 MiB", None, 2))
         self.assertEqual(results["requests"], ["chat0", "chat1", "chat2", "long"])
@@ -414,6 +414,94 @@ class VersionsMode(unittest.TestCase):
         self.assertEqual((arm["n_ctx"], arm["suites_status"], arm["suites_reason"], arm["left_out"]), (131072, "ran", "", ["agent.x.9"]))
         self.assertEqual(set(arm["rows"][1]), set(SUITE_ROW))
         self.assertEqual(arm["start_s"], [12.0])                      # base launch only
+
+
+class Resume(unittest.TestCase):
+    """A stopped run continues where it stopped: only the missing launches run, in the same run folder and homes."""
+    setUp, tearDown, run_tool = VersionsMode.setUp, VersionsMode.tearDown, VersionsMode.run_tool
+
+    def killed(self, n, extra=()):
+        """Launch number n dies hard: the tool's own finally never gets to write (its install check fails too), only checkpoints stay."""
+        calls = []
+
+        def launch(*args, **kw):
+            calls.append(args)
+            if len(calls) == n:
+                raise SystemExit("killed")
+            return LaunchResult(True, 12.0)
+        with self.assertRaises(SystemExit):
+            self.run_tool(list(extra), launch=mock.Mock(side_effect=launch), snapshot=mock.Mock(side_effect=[{}, SystemExit("killed")]))
+
+    def blocks(self, m):
+        return [(c.args[0].parent.parent.name, "suites" if c.kwargs.get("context") else "base") for c in m["launch"].call_args_list]
+
+    def test_checkpoint_after_every_block(self):
+        self.killed(3, ["--suite", "think"])
+        r = json.loads(next((self.bench / "runs").glob("*/results.json")).read_text(encoding="utf-8"))
+        self.assertEqual(r["done"], ["0:0.1.55:base", "0:0.1.55:suites"])
+        self.assertEqual(r["sessions"][0]["checked"], False)
+
+    def test_only_the_missing_blocks_run(self):
+        self.killed(4, ["--suite", "think"])                         # dies in the suites start of 0.1.56, round 0
+        code, results, m = self.run_tool(["--suite", "think"])
+        self.assertEqual(code, 0)
+        self.assertEqual(self.blocks(m), [("0.1.56", "suites"), ("0.1.56", "base"), ("0.1.56", "suites"),
+                                          ("0.1.55", "base"), ("0.1.55", "suites")])
+        self.assertEqual(len(list((self.bench / "runs").iterdir())), 1)
+        for arm in results["arms"]:                                  # one base and one suite row per round, no duplicate
+            self.assertEqual(sorted((r["round"], r["suite"]) for r in arm["rows"]), [(0, "base"), (0, "ladder"), (1, "base"), (1, "ladder")])
+        self.assertEqual([x["checked"] for x in results["sessions"]], [False, True])
+
+    def test_an_unfinished_block_is_redone_without_its_old_rows(self):
+        def answer(port, reqs, max_new, rnd, arm, out, rows, check=None):
+            rows.append(dict(ROW, round=rnd, arm=arm, suite="base", ok=True, check=""))
+            if arm == "v0.1.56":
+                raise KeyboardInterrupt                              # Ctrl-C: rows of this block are in the file, block not done
+        self.run_tool(run_requests=mock.Mock(side_effect=answer))
+        code, results, m = self.run_tool()
+        self.assertEqual([len(a["rows"]) for a in results["arms"]], [2, 2])
+
+    def test_resume_reuses_homes_and_stops_leftover_servers_first(self):
+        self.killed(2)
+        first = next((self.bench / "runs").iterdir()).name
+        code, results, m = self.run_tool()
+        homes = [c.args[0] for c in m["provision_home"].call_args_list][-2:]   # before them: the cleanup of 0.1.55
+        self.assertEqual(homes[0], self.bench / "homes" / "0.1.55" / first)
+        self.assertEqual(homes[1], self.bench / "homes" / "0.1.56" / f"{first}-1")  # no block done: a fresh home, a clean setup time
+        self.assertEqual(m["stop"].call_count, 4)                   # 3 launches, and first the leftover server of 0.1.55
+        self.assertEqual(results["arms"][0]["setup_s"], 12.0)
+        self.assertEqual(results["arms"][0]["start_s"], [12.0])
+
+    def test_fresh_starts_over(self):
+        self.killed(2)
+        with mock.patch("time.strftime", mock.Mock(side_effect=lambda f, *x: "20991231-235959" if f == "%Y%m%d-%H%M%S" else "x")):
+            code, results, m = self.run_tool(["--fresh"])
+        self.assertEqual(len(m["launch"].call_args_list), 4)
+        self.assertEqual(len(list((self.bench / "runs").iterdir())), 2)
+
+    def test_other_parameters_start_a_new_run(self):
+        self.killed(2)
+        with mock.patch("time.strftime", mock.Mock(side_effect=lambda f, *x: "20991231-235959" if f == "%Y%m%d-%H%M%S" else "x")):
+            code, results, m = self.run_tool(["--max-new", "128"])
+        self.assertEqual(len(m["launch"].call_args_list), 4)
+
+    def test_more_rounds_and_a_new_version_join_a_finished_run(self):
+        self.run_tool(["--engines", "0.1.55"])
+        code, results, m = self.run_tool(["--rounds", "3"])
+        self.assertEqual(self.blocks(m), [("0.1.56", "base"), ("0.1.56", "base"), ("0.1.55", "base"), ("0.1.56", "base")])
+        self.assertEqual(len(list((self.bench / "runs").iterdir())), 1)
+        self.assertEqual(results["rounds"], 3)
+
+    def test_a_finished_run_is_not_continued(self):
+        self.run_tool()
+        with mock.patch("time.strftime", mock.Mock(side_effect=lambda f, *x: "20991231-235959" if f == "%Y%m%d-%H%M%S" else "x")):
+            code, results, m = self.run_tool()
+        self.assertEqual(len(m["launch"].call_args_list), 4)
+        self.assertEqual(len(list((self.bench / "runs").iterdir())), 2)
+
+    def test_fresh_belongs_to_versions_mode(self):
+        with mock.patch("sys.stderr"), self.assertRaises(SystemExit):
+            ab_engine.parse_args(["cfg.json", "A:", "--fresh"])
 
 
 GOLDEN_JSONL = ('{"round": 0, "arm": "A", "req": "chat0", "decode": 50.0, "prompt": 900.0, "prompt_n": 40, "n": 256, "text": "hi there"}\n'

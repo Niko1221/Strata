@@ -204,6 +204,25 @@ def pick_pairs(releases: list[dict], target: str, backend: str, spec: str) -> tu
     return versions, pairs
 
 
+def find_unfinished(runs: Path, params: dict, versions: list[str], wanted: list[str]) -> tuple[Path, dict] | None:
+    """The newest run with exactly these parameters and only versions among `versions`, when it still misses launches of
+    `wanted`; None when there is none or that run is complete (a finished run is never continued)."""
+    for f in sorted(runs.glob("*/results.json"), reverse=True):
+        try:
+            saved = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if saved.get("params") != params or "done" not in saved or not {x["version"] for x in saved["arms"]} <= set(versions):
+            continue
+        return (f.parent, saved) if set(wanted) - set(saved["done"]) else None
+    return None
+
+
+def _block(version: str, row: dict) -> str:
+    """The launch a row belongs to: "<round>:<version>:base" or "...:suites"."""
+    return f"{row['round']}:{version}:{'base' if (row.get('suite') or 'base') == 'base' else 'suites'}"
+
+
 def run_versions(a: argparse.Namespace) -> int:
     """Each Strata version (engine + control of one release) in its own home under the bench dir, with that release's own defaults."""
     import ab_report
@@ -242,13 +261,37 @@ def run_versions(a: argparse.Namespace) -> int:
             print(RUN_CODE_WARNING, flush=True)
     for v in versions:
         print(f"  v{v}: {pairs[v].engine_name} ({pairs[v].tag})", flush=True)
+    # Everything that changes the bytes sent or the way a version starts; a run continues only with all of it the same.
+    params = {"model": str(model), "backend": backend, "tune": a.tune, "max_new": a.max_new, "long_words": a.long_words,
+              "suite": a.suite, "context": context, "think_tokens": a.think_tokens, "run_code": a.run_code,
+              "corpus": ab_suites.CORPUS_REV if a.suite else None, "chars_per_token": ab_suites.CHARS_PER_TOKEN if a.suite else None}
+    parts = ("base", "suites") if a.suite else ("base",)
+    wanted = [f"{rnd}:{v}:{p}" for rnd in range(a.rounds) for v in versions for p in parts]
+    found = None if a.fresh else find_unfinished(bench / "runs", params, versions, wanted)
+    saved = found[1] if found else {}
+    done = list(saved.get("done", []))
+    stamp = found[0].name if found else time.strftime("%Y%m%d-%H%M%S")
+    sessions = saved.get("sessions", [])
+    homes = {}
+    for v in versions:      # a version with a finished launch keeps its home; any other gets a fresh one, so setup is measured clean
+        kept = saved.get("homes", {}).get(v) if any(b.split(":")[1] == v for b in done) else None
+        homes[v] = bench / "homes" / v / (kept or (f"{stamp}-{len(sessions)}" if sessions else stamp))
+    if found:
+        print(f"continuing run {stamp}: {len(set(wanted) - set(done))} of {len(wanted)} launches left; --fresh starts over",
+              flush=True)
+        for v in versions:  # a session that was killed leaves its server running
+            if homes[v].name == saved.get("homes", {}).get(v):
+                try:
+                    p = av.ensure_packages(pairs[v], bench / "packages")
+                    av.stop(av.provision_home(homes[v], p), av.isolated_env(homes[v], os.environ))
+                except Exception:                                   # noqa: BLE001 - only a cleanup; a real problem shows in the run
+                    pass
     try:
         av.assert_idle([a.port])
     except av.Busy as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
     before = av.snapshot(roots)
-    stamp = time.strftime("%Y%m%d-%H%M%S")
     run_dir = bench / "runs" / stamp
     run_dir.mkdir(parents=True, exist_ok=True)
     data = bench / "data"
@@ -256,13 +299,35 @@ def run_versions(a: argparse.Namespace) -> int:
     arms = {v: {"version": v, "status": "skipped", "reason": "the run stopped before it", "setup_s": None, "start_s": [], "rows": [],
                 "n_ctx": None, "suites_status": "skipped" if a.suite else None,
                 "suites_reason": "the run stopped before it" if a.suite else "", "left_out": []} for v in versions}
-    homes, env, pkgs, dead, suites_dead = {}, {}, {}, set(), set()
+    for x in saved.get("arms", []):     # rows of a launch that did not finish go; that launch runs again
+        arms[x["version"]].update(x, rows=[r for r in x["rows"] if _block(x["version"], r) in done])
+    sessions.append({"started": time.strftime("%Y-%m-%dT%H:%M:%S"), "checked": False, "changed": []})
+    reqs_names = [t for t, _ in reqs]
+
+    def results_now() -> dict:
+        changed = sorted({c for x in sessions for c in x["changed"]})
+        return {"created": saved.get("created") or sessions[0]["started"], "model": model.name, "gpu": gpu_name(), "tune": a.tune,
+                "rounds": a.rounds, "requests": reqs_names, "arms": list(arms.values()),
+                "untouched": all(x["checked"] for x in sessions) and not changed, "changed": changed, "suites": a.suite,
+                "context": context, "corpus": ab_suites.CORPUS_REV if a.suite else None, "run_code": a.run_code,
+                "params": params, "done": done, "sessions": sessions, "homes": {v: h.name for v, h in homes.items()}}
+
+    def save(results: dict) -> None:    # whole or not at all: a kill while writing must not lose the checkpoint
+        tmp = run_dir / "results.json.tmp"
+        tmp.write_text(json.dumps(results, indent=1), encoding="utf-8")
+        os.replace(tmp, run_dir / "results.json")
+
+    def finished(key: str) -> None:
+        done.append(key)
+        save(results_now())
+
+    save(results_now())
+    env, pkgs, dead, suites_dead = {}, {}, set(), set()
     built: dict[int, tuple[list, list[str]]] = {}         # suite requests per n_ctx; agent_reqs reads git for seconds
     code = 0
     out = open(run_dir / "ab_engine.jsonl", "a")
     try:
-        for v in versions:
-            homes[v] = bench / "homes" / v / stamp                # fresh per run: no preset or launch config of an earlier run
+        for v in versions:                                          # homes are per run: no preset or launch config of an earlier run
             try:
                 pkgs[v] = av.ensure_packages(pairs[v], bench / "packages")
                 env[v] = (av.provision_home(homes[v], pkgs[v]), av.isolated_env(homes[v], os.environ))
@@ -276,34 +341,37 @@ def run_versions(a: argparse.Namespace) -> int:
                 if v in dead:
                     continue
                 control, venv = env[v]
-                got: list[dict] = []
-                try:
-                    r = av.launch(control, venv, model, data, a.port, a.tune if rnd == 0 else None)
-                    av.collect_configs(homes[v], bench / "configs" / v / stamp)
-                    if rnd == 0:
-                        arm["setup_s"] = round(r.seconds, 1)
-                    elif r.ok:
-                        arm["start_s"].append(round(r.seconds, 1))
-                    reason = av.version_problem(homes[v], pkgs[v]) if r.ok else r.reason
-                    if reason:
-                        arm.update(status="skipped", reason=reason)
+                if f"{rnd}:{v}:base" not in done:
+                    got: list[dict] = []
+                    try:
+                        r = av.launch(control, venv, model, data, a.port, a.tune if rnd == 0 else None)
+                        av.collect_configs(homes[v], bench / "configs" / v / stamp)
+                        if rnd == 0:
+                            arm["setup_s"] = round(r.seconds, 1)
+                        reason = av.version_problem(homes[v], pkgs[v]) if r.ok else r.reason
+                        if reason:
+                            arm.update(status="skipped", reason=reason)
+                            dead.add(v)
+                            print(f"round {rnd} v{v}: skipped: {reason}", flush=True)
+                            continue
+                        print(f"round {rnd} v{v}: ready in {r.seconds:.0f} s", flush=True)
+                        post(a.port, "Say hi.", 8)                       # warm-up, as the config mode's wait_ready does
+                        run_requests(a.port, reqs, a.max_new, rnd, f"v{v}", out, got, check=ab_suites.base_check)
+                        if rnd:                                          # only a finished launch counts: one that runs again must not count twice
+                            arm["start_s"].append(round(r.seconds, 1))
+                    except Exception as e:                               # noqa: BLE001 - one version that crashes skips, the rest run
+                        arm.update(status="skipped", reason=f"{type(e).__name__}: {e}")
                         dead.add(v)
-                        print(f"round {rnd} v{v}: skipped: {reason}", flush=True)
-                        continue
-                    print(f"round {rnd} v{v}: ready in {r.seconds:.0f} s", flush=True)
-                    post(a.port, "Say hi.", 8)                       # warm-up, as the config mode's wait_ready does
-                    run_requests(a.port, reqs, a.max_new, rnd, f"v{v}", out, got, check=ab_suites.base_check)
-                except Exception as e:                               # noqa: BLE001 - one version that crashes skips, the rest run
-                    arm.update(status="skipped", reason=f"{type(e).__name__}: {e}")
-                    dead.add(v)
-                    print(f"round {rnd} v{v}: skipped: {arm['reason']}", flush=True)
-                finally:
-                    if got:                                          # also the rows answered before an interrupt
-                        arm["rows"] += [{k: row[k] for k in ROW_KEYS if k in row} for row in got]
-                        if v not in dead:
-                            arm.update(status="ran", reason="")
-                    av.stop(control, venv)                         # also after a failed or timed-out start: nothing survives into the next arm
-                if not a.suite or v in dead or v in suites_dead:
+                        print(f"round {rnd} v{v}: skipped: {arm['reason']}", flush=True)
+                    finally:
+                        if got:                                          # also the rows answered before an interrupt
+                            arm["rows"] += [{k: row[k] for k in ROW_KEYS if k in row} for row in got]
+                            if v not in dead:
+                                arm.update(status="ran", reason="")
+                        av.stop(control, venv)                         # also after a failed or timed-out start: nothing survives into the next arm
+                    if v not in dead:
+                        finished(f"{rnd}:{v}:base")
+                if not a.suite or v in dead or v in suites_dead or f"{rnd}:{v}:suites" in done:
                     continue
                 got = []
                 try:                                                 # the suites' own start: a failure here never touches base
@@ -339,17 +407,17 @@ def run_versions(a: argparse.Namespace) -> int:
                         if v not in suites_dead:
                             arm.update(suites_status="ran", suites_reason="")
                     av.stop(control, venv)
+                if v not in suites_dead:
+                    finished(f"{rnd}:{v}:suites")
     except KeyboardInterrupt:
         print("\ninterrupted; the results so far are kept", file=sys.stderr)
         code = 130
     finally:
         out.close()
         diff = av.changed(before, av.snapshot(roots))
-        results = {"created": time.strftime("%Y-%m-%dT%H:%M:%S"), "model": model.name, "gpu": gpu_name(), "tune": a.tune,
-                   "rounds": a.rounds, "requests": [t for t, _ in reqs], "arms": list(arms.values()), "untouched": not diff,
-                   "changed": diff, "suites": a.suite, "context": context, "corpus": ab_suites.CORPUS_REV if a.suite else None,
-                   "run_code": a.run_code}
-        (run_dir / "results.json").write_text(json.dumps(results, indent=1), encoding="utf-8")
+        sessions[-1].update(checked=True, changed=diff)
+        results = results_now()
+        save(results)
         if diff:                                                     # in finally, before the report: shown even if either fails
             print("error: files of the real Strata install changed during the run:\n  " + "\n  ".join(diff), file=sys.stderr)
         html, png = ab_report.write_report(results, run_dir)
@@ -375,12 +443,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--context", type=int, help="versions mode: context every version starts with for the suites "
                                                 "(default: the model's maximum)")
     ap.add_argument("--think-tokens", type=int, help="versions mode: token budget of a thinking task (default 8192)")
+    ap.add_argument("--fresh", action="store_true", help="versions mode: start a new run; by default an unfinished run with the "
+                    "same settings continues and runs only its missing launches")
     ap.add_argument("--run-code", action="store_true", help="versions mode: run and test the code the think suite's model "
                     "writes; it runs on this PC with your user rights and is not isolated.")
     a = ap.parse_intermixed_args(argv)
-    if a.config is not None and (a.run_code or any(x is not None for x in (a.model_path, a.engines, a.tune, a.bench_dir, a.backend,
+    if a.config is not None and (a.run_code or a.fresh or any(x is not None for x in (a.model_path, a.engines, a.tune, a.bench_dir, a.backend,
                                                                           a.suite, a.context, a.think_tokens))):
-        ap.error("--model-path, --engines, --tune, --bench-dir, --backend, --suite, --context, --think-tokens and --run-code "
+        ap.error("--model-path, --engines, --tune, --bench-dir, --backend, --suite, --context, --think-tokens, --run-code and --fresh "
                  "belong to the versions mode, not to <config> <arms...>")
     a.suite = list(dict.fromkeys(x for x in (a.suite or "").split(",") if x))
     if any(x not in SUITES for x in a.suite):
