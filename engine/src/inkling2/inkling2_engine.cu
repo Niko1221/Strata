@@ -400,12 +400,30 @@ bool load_model(const std::string& path, Model& m, std::string& err) {
         err = "expected architecture inkling2";
         return false;
     }
+    // Ryu/kuraneko1 GGUFs use the `inkling2.` prefix; Sakura re-quantized GGUFs
+    // (arch `inkling2_loop`) use `inkling2_loop.`. Fall back to the alternate
+    // prefix so both load without duplicating every get_i/get_f call site.
+    auto lookup = [&](const char* k) -> const strata::MetaValue* {
+        if (const auto* v = meta.get(k)) return v;
+        std::string alt = k;
+        const std::string pfx = "inkling2.";
+        if (alt.compare(0, pfx.size(), pfx) == 0) {
+            alt = "inkling2_loop." + alt.substr(pfx.size());
+            return meta.get(alt);
+        }
+        const std::string pfx2 = "inkling2_loop.";
+        if (alt.compare(0, pfx2.size(), pfx2) == 0) {
+            alt = "inkling2." + alt.substr(pfx2.size());
+            return meta.get(alt);
+        }
+        return nullptr;
+    };
     auto get_i = [&](const char* k, int64_t def) -> int64_t {
-        const auto* v = meta.get(k);
+        const auto* v = lookup(k);
         return v && v->is_num() ? (int64_t) v->u : def;
     };
     auto get_f = [&](const char* k, float def) -> float {
-        const auto* v = meta.get(k);
+        const auto* v = lookup(k);
         return v ? (float) v->num() : def;
     };
     Hparams& hp = m.hp;

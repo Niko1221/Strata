@@ -24,7 +24,7 @@ inline ModelFamily model_family_from_arch(const std::string& arch) {
     if (arch == "qwen4exp") return ModelFamily::Qwen4Exp;
     if (arch == "qwen35moe") return ModelFamily::Qwen35Moe;
     if (arch == "qwen35") return ModelFamily::Qwen38Dense;  // fork dense Q38
-    if (arch == "inkling2") return ModelFamily::Inkling2;   // strata-inkling2 (kuraneko1, MIT)
+    if (arch == "inkling2" || arch == "inkling2_loop") return ModelFamily::Inkling2;   // strata-inkling2 (kuraneko1, MIT); Sakura GGUF uses inkling2_loop
     return ModelFamily::Unknown;
 }
 

@@ -863,11 +863,31 @@ inline std::string geometry_unsupported(const core::ModelGeometry& g) {
 /// The architecture guard: "" when the engine can read the model whose metadata shard is `f`.  Qwen3.8-Flash-Next
 /// (qwen4exp) is read and checked against the shape the kernels are compiled for; Qwen3.6-35B-A3B (qwen35moe) must
 /// carry every key its geometry is read from (core::geometry_from_gguf).
+// Inkling-2 Mini (from kuraneko1/Strata, MIT, kuraneko1/_ryu15_): the hybrid
+// engine reads these keys directly, independent of the qwen4exp geometry path.
+// Sakura GGUF uses the `inkling2_loop.` prefix while kuraneko1's own GGUFs use
+// `inkling2.`; accept either so both loaders work.
+inline std::string check_architecture_inkling2(const GgufFile& f) {
+    static const char* const suffixes[] = {
+        "block_count", "embedding_length", "attention.head_count",
+        "attention.head_count_kv", "attention.key_length", "attention.value_length",
+        "expert_count", "expert_used_count", "expert_feed_forward_length",
+        "vocab_size", "vocab_size_unpadded",
+    };
+    for (const char* pfx : {"inkling2.", "inkling2_loop."}) {
+        bool all = true;
+        for (const char* s : suffixes) if (!f.get(std::string(pfx) + s)) { all = false; break; }
+        if (all) return {};
+    }
+    return "inkling2: missing required inkling2.*/inkling2_loop.* geometry keys";
+}
+
 inline std::string check_architecture(const GgufFile& f) {
     const MetaValue* arch = f.get("general.architecture");
     if (!arch) return "missing general.architecture";
     const ModelFamily family = model_family_from_arch(arch->s);
     if (family == ModelFamily::Qwen35Moe) return check_architecture_qwen35moe(f);
+    if (family == ModelFamily::Inkling2) return check_architecture_inkling2(f);
     core::ModelGeometry g;   // anything else is refused by name by read_geometry
     std::string err = read_geometry(f, g);
     if (err.empty()) err = geometry_unsupported(g);
