@@ -4505,7 +4505,7 @@
    "last_date": null,
    "status": "opt-in",
    "owner": "core",
-   "note": "exstrata memory goal V1: the native dense matrices in one VRAM allocation instead of one cudaMalloc each (Qwen3.8-Flash-Next IQ3_XXS: 300 matrices, 186 MiB less, calc); bit-identical by design; tests/core/dense_arena_test.cpp",
+   "note": "opt-in: the native dense projection matrices in one VRAM allocation instead of one cudaMalloc each, each at a 256 B boundary; the same bytes, so the output is bit-identical (Qwen3.8-Flash-Next IQ3_XXS: 300 matrices, 186 MiB less, calc); tests/core/dense_arena_test.cpp, tests/core/native_dense_arena_test.cpp",
    "retire_after": "",
    "retired_in": ""
   },
@@ -21786,7 +21786,7 @@
    "last_date": null,
    "status": "opt-in",
    "owner": "core",
-   "note": "exstrata memory goal V2: the MTP draft head reads its subset's rows from the main Q5_K head by index (native_mmvq_rows) instead of a 178 MiB copy; bit-identical by design; tests/core/mmvq_rows_test.cpp, src/kernels/mmvq_rows_parity.cpp",
+   "note": "opt-in: the MTP draft head reads its subset's rows in the main Q5_K head by index (native_mmvq_rows) instead of a copy (178 MiB for 106,299 tokens); bit-identical logits; CUDA only, the copy stays for other heads, --mtp-q4 head, a head on another card or on the host (bind_bytes prices it the same way); saves nothing with DFlash2, which keeps its own copy; --prefill-head-alias refuses it; tests/core/mtp_head_rule_test.cpp, tests/core/mmvq_rows_test.cpp, src/kernels/mmvq_rows_parity.cpp",
    "retire_after": "",
    "retired_in": ""
   },
