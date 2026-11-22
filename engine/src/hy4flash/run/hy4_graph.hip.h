@@ -937,7 +937,7 @@ public:
     };
     std::vector<PeerRun> peer_runs;
     void peers_launch(int il, int T) {
-#if HY4_CUDA
+#if HY4_CUDA || HY4_HIP_PEERS
         if (peer_runs.empty()) return;
         const size_t nz = (size_t)T * 1536;
         for (size_t p = 0; p < peer_runs.size(); ++p) {
@@ -958,7 +958,7 @@ public:
 #endif
     }
     void peers_gather(int T) {
-#if HY4_CUDA
+#if HY4_CUDA || HY4_HIP_PEERS
         if (peer_runs.empty()) return;
         const size_t nz = (size_t)T * 1536;
         for (auto& pr : peer_runs) {
@@ -1274,7 +1274,7 @@ public:
             d_experts = dalloc<ExpertDev>(41 * 512);
             HCK(hipMemcpy(d_experts, h_experts, (size_t)41 * 512 * sizeof(ExpertDev), hipMemcpyHostToDevice));
         }
-#if HY4_CUDA
+#if HY4_CUDA || HY4_HIP_PEERS
         if (!g.peers.empty()) {
             skd::moe_has_cpu() = 1;  // zero w.y on every GPU so partial sums add cleanly
             peer_runs.resize(g.peers.size());

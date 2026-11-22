@@ -213,6 +213,20 @@ ctest --test-dir build-hip --output-on-failure --timeout 60 -E '^(ple_parity|pla
 
 `ple_parity` needs an external model fixture. `platform_memory_test` needs a memlock limit above the shell's default.
 
+### Hy4-Flash: experts on a second card (opt-in build)
+
+The Hy4-Flash engine (`strata-hy4`) puts experts on the peer cards of `--gpus 0,1` only in its CUDA build. On HIP the second
+card gets no experts and the adaptive VRAM cache is off. Compiling `strata-hy4` with `-DHY4_HIP_PEERS=1` builds the same
+split on HIP; without the flag a HIP build is unchanged. The output is not bitwise equal to one card, because each card adds
+its own partial sums.
+
+Each peer card keeps 960 MiB free for its expert work buffers, sized for 4,096-token prompt chunks. With 8,192-token chunks
+set `HY4_PEER_RESERVE_MB=2048`; with the default an RX 7900 XTX peer ran out of memory on the first long prompt.
+
+Measured on a Radeon PRO W7800 48 GB (main) + RX 7900 XTX 24 GB, Ryzen 5 7600, 64 GB DDR5, SQ-96, 128K context, gfx1100,
+ROCm 7 runtime, the same build without and with the flag: decode 30.7 → 36.5 tok/s, prompt reading 817 → 1,241 tok/s at
+24K tokens.
+
 ## Model and serving configuration
 
 Prepare a supported model pack and its MTP runtime with the existing tools. For OrcaRouter IQ3_XXS, follow the

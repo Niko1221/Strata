@@ -514,13 +514,15 @@ inline bool load_experts_tiered(GpuModel& g, const std::string& path, size_t vra
         static_budget = vram_budget - dyn_bytes;
     }
     vcap[0] = static_budget;
-#if HY4_CUDA
+#if HY4_CUDA || HY4_HIP_PEERS
     for (size_t p = 0; p < g.peer_devs.size(); ++p) {
         const int pd = g.peer_devs[p];
         HCK(hipSetDevice(pd));
         size_t pfr = 0, ptot = 0;
         HCK(hipMemGetInfo(&pfr, &ptot));
-        const size_t preserve = (size_t)960 << 20;  // 960 MiB for peer moe_ws (604 MiB at Tc=4096) + buffers + runtime
+        // 960 MiB for peer moe_ws (604 MiB at Tc=4096) + buffers + runtime; HY4_PEER_RESERVE_MB for larger prefill chunks
+        const char* reserve_mb = getenv("HY4_PEER_RESERVE_MB");
+        const size_t preserve = (size_t)(reserve_mb && atoi(reserve_mb) > 0 ? atoi(reserve_mb) : 960) << 20;
         vcap[1 + p] = pfr > preserve ? (uint64_t)(pfr - preserve) : 0;
         int can = 0;
         if (cudaDeviceCanAccessPeer(&can, g.primary_gpu, pd) == cudaSuccess && can) {
