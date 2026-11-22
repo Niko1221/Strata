@@ -11,9 +11,9 @@ This release ports the Q38 speed, format and control-vector work onto the new `t
 ## Version and downloads
 
 <!-- release-062-stable -->
-Current app release: [0.7.1](https://github.com/zapabob/Strata/releases/tag/v0.7.1) (App `0.7.1`; Terminal, Control and native engine `0.6.3`). This Windows app-only release is intentionally not GitHub Latest; Latest remains `0.6.3`. The GPU engine remains the separately signed [`v0.6.4-preview.1`](https://github.com/zapabob/Strata/releases/tag/v0.6.4-preview.1) companion. `releaseQualified=false` remains explicit; full-window inference and general model quality remain unqualified.
+Current app release: [0.7.2](https://github.com/zapabob/Strata/releases/tag/v0.7.2) (App `0.7.2`; Terminal, Control and native engine `0.6.3`). This Windows app-only release is intentionally not GitHub Latest; Latest remains `0.6.3`. The GPU engine remains the separately signed [`v0.6.4-preview.1`](https://github.com/zapabob/Strata/releases/tag/v0.6.4-preview.1) companion. `releaseQualified=false` remains explicit; full-window inference and general model quality remain unqualified.
 
-[0.7.1](https://github.com/zapabob/Strata/releases/tag/v0.7.1) · [setup EXE](https://github.com/zapabob/Strata/releases/download/v0.7.1/Strata-0.7.1-windows-x64-setup.exe) · [tar.7z](https://github.com/zapabob/Strata/releases/download/v0.7.1/Strata-0.7.1-windows-x64.tar.7z) · [SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.7.1/SHA256SUMS.txt) · [BUNDLE-SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.7.1/BUNDLE-SHA256SUMS.txt)
+[0.7.2](https://github.com/zapabob/Strata/releases/tag/v0.7.2) · [setup EXE](https://github.com/zapabob/Strata/releases/download/v0.7.2/Strata-0.7.2-windows-x64-setup.exe) · [tar.7z](https://github.com/zapabob/Strata/releases/download/v0.7.2/Strata-0.7.2-windows-x64.tar.7z) · [SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.7.2/SHA256SUMS.txt) · [BUNDLE-SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.7.2/BUNDLE-SHA256SUMS.txt)
 
 ![Hakua / Strata real-model Japanese chat on Qwen3.8-27B](docs/media/native-qwen38-japanese-chat.png)
 *Hakua / Strata desktop running `qwen3.8-27b-abliterated-3.69bpw-12GB-MTP.gguf` via `strata-q38.exe` (CUDA 13 / RTX 5060 Ti 16 GB).*
