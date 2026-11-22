@@ -4127,8 +4127,9 @@ void pf_map(int T) {
         if (!g_pfr[i].map_to(want[i])) { std::fprintf(stderr, "prompt buffers: out of VRAM\n"); std::exit(1); }
     g_pf_mapped_T = T;
 }
-// the largest chunk (<= T, halving down to 256) whose prompt buffers and K/V growth leave the pools 2 x FETCH_MAX
-// slots: long contexts on a small card read the prompt in smaller chunks instead of stopping
+#include "ink2_grow_guard.cuh"
+// the largest chunk (<= T, halving down to 256) whose prompt buffers and K/V growth leave each pool its FETCH_MAX
+// slots: long contexts on a small card read the prompt in smaller chunks instead of stopping (g_pf_full: not even 256)
 int pf_fit(int T, int pos0) {
     if (g_pfr.empty() || !E.offload) return T;
     for (;; T /= 2) {
@@ -4142,8 +4143,8 @@ int pf_fit(int T, int pos0) {
         const int nc = std::min(E.ctx, (pos0 + T + E.grow_step - 1) / E.grow_step * E.grow_step);
         const double kv_add = E.grow && nc > E.kv_cells ? (double) (kv_mapped_for(nc) - kv_mapped_for(E.kv_cells)) : 0.0;
         const double deficit = kv_add + (double) want - (double) have + (double) vram_keep() - (double) vram_free() + 8.0 * g_vmm.gran;
-        const double slots = (double) E.nslot_nv + E.nslot_mx - (deficit > 0 ? deficit / (double) ex_bytes(0) : 0.0);
-        if (slots >= 2 * FETCH_MAX || T <= 256) return T;
+        const bool fits = pools_keep_min(deficit);
+        if (fits || T <= 256) { g_pf_full = !fits; return T; }
     }
 }
 // after a prompt: the buffers' memory back to the pools
@@ -5531,6 +5532,7 @@ int main(int argc, char** argv) {
             } else {
                 for (size_t p0 = start, Tz = 0; p0 < pr.size(); p0 += Tz) {
                     const int T = sess_chunk((int) p0, pf_fit((int) std::min((size_t) PF.TP, pr.size() - p0), (int) p0));
+                    if (g_pf_full) { context_full(hist, p0, pr.size()); break; }   // ink2_grow_guard.cuh
                     Tz = (size_t) T;
                     if (T < g_pf_mapped_T) pf_unmap();
                     pf_map(T);
@@ -5544,6 +5546,7 @@ int main(int argc, char** argv) {
                     std::printf("PP %zu %zu %.0f %.1f\n", p0 + T, pr.size(), ms, 1000.0 * (p0 + T - start) / std::max(ms, 1.0));
                     std::fflush(stdout);
                 }
+                if (g_ctx_full) { g_ctx_full = false; g_vis.pending = false; smp.rng = std::move(s.rng); continue; }
                 CK(cudaMemcpy(logits.data(), E.logits, (size_t) VOCAB * 4, cudaMemcpyDeviceToHost));
                 pf_unmap();
             }
@@ -5574,7 +5577,10 @@ int main(int argc, char** argv) {
                 std::printf("T %d\n", next);
                 std::fflush(stdout);
                 if (next == EOS_ID) { finish = "stop"; break; }
-                if (k + 1 < max_new) step(next, pos++, true);
+                if (k + 1 < max_new) {
+                    if (!kv_room(pos + 1)) { std::fprintf(stderr, "kv-grow: the answer ends at %d tokens: the K/V cannot grow\n", pos); break; }
+                    step(next, pos++, true);
+                }
             }
             const double t2 = now_ms();
             hist = pr;
