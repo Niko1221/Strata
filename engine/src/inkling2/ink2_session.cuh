@@ -204,16 +204,26 @@ void sess_park(const std::vector<int>& hist, const vec& last_logits) {
     const bool end = std::none_of(v.cks.begin(), v.cks.end(), [&](const Ck& c) { return c.n == (int) hist.size(); });
     const size_t need = hist.size() * g_sess.row_bytes + (end ? g_sess.tail_bytes : 0);
     if (!sess_room(need)) { g_sess.note += " park-no-room"; return; }
-    v.full = sess_alloc(hist.size() * g_sess.row_bytes, true);
-    if (!v.full) { g_sess.note += " park-no-pin"; return; }
-    sess_full((int) hist.size(), v.full->p, true);
+    // in the parked set (held) while its buffers are taken, so that the budget counts them
+    v.used = ++g_sess.clock;
+    v.hold = true;
+    const uint64_t id = v.used;
+    g_sess.parked.push_back(std::move(v));
+    auto me = [&]() -> Conv& { for (auto& c : g_sess.parked) if (c.used == id) return c; return g_sess.parked.back(); };
+    PinnedP full = sess_alloc(hist.size() * g_sess.row_bytes, true);
+    if (!full) {
+        for (size_t j = 0; j < g_sess.parked.size(); ++j) if (g_sess.parked[j].used == id) g_sess.parked.erase(g_sess.parked.begin() + j);
+        g_sess.note += " park-no-room";
+        return;
+    }
+    me().full = full;
+    sess_full((int) hist.size(), full->p, true);
     if (end) {
         PinnedP t = sess_alloc(g_sess.tail_bytes);
-        if (t) { sess_tail((int) hist.size(), t->p, true); v.cks.push_back({(int) hist.size(), t, last_logits, CK_END}); }
+        if (t) { sess_tail((int) hist.size(), t->p, true); me().cks.push_back({(int) hist.size(), t, last_logits, CK_END}); }
     }
-    v.used = ++g_sess.clock;
+    me().hold = false;
     g_sess.note += " parked " + std::to_string(hist.size());
-    g_sess.parked.push_back(std::move(v));
 }
 
 // Before the request's kv_trim (a parked conversation's rows are still mapped): picks the longest prefix of pr with a
@@ -327,7 +337,8 @@ void sess_prompt_end(const std::vector<int>& pr, const vec& lg) {
         if (g_sess.live[i].n == (int) pr.size()) { have = true; continue; }
         if (g_sess.live[i].kind != CK_BRANCH) { PinnedP t = g_sess.live[i].tail; g_sess.live.erase(g_sess.live.begin() + i); sess_drop(std::move(t)); }
     }
+    g_sess.note.clear();
     g_sess.live_prompt = have || sess_take((int) pr.size(), lg, CK_PROMPT) ? (int) pr.size() : 0;
-    std::fprintf(stderr, "[ink2] conversation cache: prompt end %zu checkpoint %.0f ms, logits %016llx\n", pr.size(),
-                 now_ms() - t0, sess_hash(lg));
+    std::fprintf(stderr, "[ink2] conversation cache: prompt end %zu checkpoint %.0f ms%s, %.0f MiB, logits %016llx\n", pr.size(),
+                 now_ms() - t0, g_sess.note.c_str(), sess_used() / 1048576.0, sess_hash(lg));
 }
