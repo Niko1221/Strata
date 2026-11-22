@@ -310,24 +310,25 @@ def t_codes(Y, lut, threads=1):
 
 
 def t_pack(states):
-    """(n, 160) t58 states -> (n, 56) uint8, the code stream: state j's low b_j bits at stream bits e_j - b_j .. e_j - 1, most
-    significant first (stream bit t is bit 7 - t % 8 of byte t // 8)."""
+    """(n, 160) t58 states of a trellis path -> (n, 56) uint8, the code stream (stream bit t is bit 7 - t % 8 of byte t // 8):
+    each 14-bit step k is stream bits 14k .. 14k + 13, the low 2 bits of state 5k (ending at 14k + 2) and state 5k + 4 (the
+    12 bits ending at 14k + 14), four steps to 7 bytes. (States that are no path pack to a stream that decodes to other
+    states: native_rows' decode check stops there.)"""
     st = states.astype(np.int64)
-    bits = np.zeros((st.shape[0], T_CODE_BITS), np.uint8)
-    for k in range(int(T_SHIFTS.max())):
-        j = np.nonzero(T_SHIFTS > k)[0]
-        bits[:, T_ENDS[j] - 1 - k] = (st[:, j] >> k) & 1
-    return np.packbits(bits, axis=1)
+    w = ((st[:, 0::5] & 3) << 12) | st[:, 4::5]
+    v = (w.reshape(-1, 8, 4) << np.array([42, 28, 14, 0], np.int64)).sum(2)
+    return ((v[:, :, None] >> (8 * np.arange(6, -1, -1, dtype=np.int64))) & 255).astype(np.uint8).reshape(-1, T_CODE_BITS // 8)
 
 
 def t_states(code_bytes):
     """(n, 56) uint8 code streams -> (n, 160) states, as ple_t58_dequant_row makes them: value j's state is the 12 bits of
-    the circular stream ending at e_j, most significant first."""
-    bits = np.unpackbits(np.ascontiguousarray(code_bytes), axis=1)
-    st = np.zeros((bits.shape[0], DIM), np.int64)
-    for k in range(C5_STATE_BITS):
-        st = (st << 1) | bits[:, (T_ENDS - C5_STATE_BITS + k) % T_CODE_BITS]
-    return st
+    the circular stream ending at e_j, most significant first (read from 3 bytes of the stream with its last 2 bytes put
+    in front, so the first values' states wrap)."""
+    b = np.ascontiguousarray(code_bytes).astype(np.int64)
+    ext = np.concatenate([b[:, -2:], b, np.zeros((b.shape[0], 1), np.int64)], 1)   # stream bit t is ext bit t + 16
+    o = T_ENDS - C5_STATE_BITS + 16
+    q, r = o // 8, o % 8
+    return (((ext[:, q] << 16) | (ext[:, q + 1] << 8) | ext[:, q + 2]) >> (12 - r)) & ((1 << C5_STATE_BITS) - 1)
 
 
 def trellis_path(fmt, Y, lut, threads=1):
