@@ -24,11 +24,11 @@ constexpr size_t native_act_bytes_for(int64_t n) {
 /// Bytes of the largest quantized activation any native layer uses (2560 values as Q8_K: 10 x 292); never below the
 /// 4096 of the Flash-Next engine, and it grows with the compiled hidden size (4096 values need 4672).
 inline constexpr size_t kNativeActBytes =
-    native_act_bytes_for(strata::core::kCompiledGeometry.n_embd) > 4096 ? native_act_bytes_for(strata::core::kCompiledGeometry.n_embd) : 4096;
+    native_act_bytes_for(strata::core::kCompiledGeometry.n_embd) > 9216 ? native_act_bytes_for(strata::core::kCompiledGeometry.n_embd) : 9216;  // 9216 lower bound from kuraneko1/Strata (Inkling2 BF16)
 /// Bytes of the largest quantized down activation (640 values as Q8_0: 20 x 34, or Q8_K 3 x 292); never below 1024,
 /// and it grows with the compiled expert width (1024 values as Q8_K need 1168).
 inline constexpr size_t kNativeHBytes =
-    native_act_bytes_for(strata::core::kCompiledGeometry.n_ff) > 1024 ? native_act_bytes_for(strata::core::kCompiledGeometry.n_ff) : 1024;
+    native_act_bytes_for(strata::core::kCompiledGeometry.n_ff) > 4608 ? native_act_bytes_for(strata::core::kCompiledGeometry.n_ff) : 4608;  // 4608 lower bound from kuraneko1/Strata (Inkling2 BF16)
 
 /// Arithmetic fixed for one pool batch. WindowInvariant preserves the legacy singleton result at every width.
 enum class NativeArithmetic { Default, WindowInvariant };
@@ -54,7 +54,12 @@ struct NativeFmt {
     int layer = -1;                     ///< the layer this format belongs to (set by expert_layout_load; STRATA_ACT_DUMP only)
     const float* gu_signs = nullptr;    ///< n_embd signs for x (nullptr: identity)
     const float* d_signs = nullptr;     ///< n_ff signs for h (nullptr: identity)
+    // Inkling2 SITU activation (from kuraneko1/Strata, MIT)
+    bool situ = false;
+    float situ_beta = 4.0f;
+    float situ_linear_beta = 25.0f;
 };
+constexpr int kBf16Type = 30;
 constexpr int kNvfp4Type = 40;
 constexpr size_t kNvfp4Tail = 16;
 

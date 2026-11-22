@@ -1060,6 +1060,17 @@ bool Gemm::bf16_converts_x() const {
     return bf16_path() == 1;
 #endif
 }
+void Gemm::reserve_bf16_tc(int64_t w_elems, int64_t x_elems) {
+#if !defined(__HIPCC__)
+    const int path = bf16_path();
+    if (path != 1 && path != 2) return;
+    const int mult = (path == 2) ? 2 : 1;
+    if (w_elems > 0) grow(tc_w_, tc_w_elems_, mult * w_elems);
+    if (x_elems > 0) grow(tc_x_, tc_x_elems_, mult * std::min<int64_t>(x_elems, kXSliceElems));
+#else
+    (void) w_elems; (void) x_elems;
+#endif
+}
 __global__ void f16_to_bf16_kernel(const __half* __restrict__ in, uint16_t* __restrict__ out, int64_t n) {
     const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) out[i] = (uint16_t) (__float_as_uint(__half2float(in[i])) >> 16);   // exact: the value was a BF16
@@ -1123,7 +1134,7 @@ void Gemm::bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64
         int64_t x_rows = std::max<int64_t>(1, std::min<int64_t>(T, kXSliceElems / K));
         bool fit = false;
         for (;;) {
-            if (grow(tc_w_, tc_w_elems_, mult * w_rows * K) && grow(tc_x_, tc_x_elems_, mult * x_rows * K)) { fit = true; break; }
+            if (grow(tc_w_, tc_w_elems_, mult * w_rows * K) && (x_f16 || grow(tc_x_, tc_x_elems_, mult * x_rows * K))) { fit = true; break; }
             if (w_rows <= 64 && x_rows <= 64) break;
             w_rows = std::max<int64_t>(std::min<int64_t>(w_rows, 64), w_rows / 2);
             x_rows = std::max<int64_t>(std::min<int64_t>(x_rows, 64), x_rows / 2);

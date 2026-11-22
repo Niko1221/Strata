@@ -2207,6 +2207,17 @@ __global__ void swiglu_entries_kernel(const float* __restrict__ gate, const floa
     h[i] = (g / (1.0f + __expf(-g))) * up[i];
 }
 
+__global__ void situ_entries_kernel(const float* __restrict__ gate, const float* __restrict__ up, float* __restrict__ h,
+                                    long long n, float beta, float lb) {
+    const long long i = (long long) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    const float g = gate[i];
+    const float u = up[i];
+    const float tg = beta * tanhf(g / beta) * (1.0f / (1.0f + __expf(-g)));
+    const float tu = lb > 0.0f ? lb * tanhf(u / lb) : u;
+    h[i] = tg * tu;
+}
+
 template<int TD>
 __global__ void __launch_bounds__(256) native_down_kernel(const unsigned long long* __restrict__ grp_ptr,
                                                           const int32_t* __restrict__ grp_start,
@@ -2798,39 +2809,21 @@ __global__ void __launch_bounds__(256, STRATA_EXPDEC_MINB) expdec_down_kernel(co
             for (int p = 0; p * RPP < rb; ++p) {
                 const int row0 = row_base + p * RPP + sw * R;
                 if (row0 >= nrow) break;   // uniform over the block
+                const uint8_t* wr[R];
+#pragma unroll
+                for (int r = 0; r < R; ++r) wr[r] = blob + (size_t) (row0 + r) * L.d_row;
                 auto run = [&](auto nc) {
                     constexpr int NC = decltype(nc)::value;
-                    if constexpr (TD == 20 && R == 4) {
-                        // Bound decoded weights and completed sums to two rows.
-                        // A non-unrolled pair loop prevents PTXAS from retaining
-                        // both pairs across the 64-register launch-bound budget.
-#pragma unroll 1
-                        for (int pair = 0; pair < 2; ++pair) {
-                            const int first = row0 + pair * 2;
-                            const uint8_t* rows[2] = {blob + (size_t) first * L.d_row,
-                                                      blob + (size_t) (first + 1) * L.d_row};
-                            float s[2][NC];
-                            ed_d20_rows<2, NC>(rows, (const int2*) s_u, s_ds, t, s);
+                    float s[R][NC];
+                    if constexpr (TD == 20) ed_d20_rows<R, NC>(wr, (const int2*) s_u, s_ds, t, s);
+                    else ed_d42_rows<R, NC>(wr, s_u, s_ds, t, s);
 #pragma unroll
-                            for (int c = 0; c < NC; ++c) if (t == c) {
-                                const size_t o = (size_t) ent_dst[e + c] * L.n_embd + first;
-                                out[o] = s[0][c]; out[o + 1] = s[1][c];
-                            }
-                        }
-                    } else {
-                        const uint8_t* wr[R];
-#pragma unroll
-                        for (int r = 0; r < R; ++r) wr[r] = blob + (size_t) (row0 + r) * L.d_row;
-                        float s[R][NC];
-                        if constexpr (TD == 20) ed_d20_rows<R, NC>(wr, (const int2*) s_u, s_ds, t, s);
-                        else ed_d42_rows<R, NC>(wr, s_u, s_ds, t, s);
-#pragma unroll
-                        for (int c = 0; c < NC; ++c) if (t == c) {
+                    for (int c = 0; c < NC; ++c)
+                        if (t == c) {
                             const size_t o = (size_t) ent_dst[e + c] * L.n_embd + row0;
 #pragma unroll
                             for (int r = 0; r < R; ++r) out[o + r] = s[r][c];
                         }
-                    }
                 };
                 switch (n) {
                     case 1: run(std::integral_constant<int, 1>{}); break;
@@ -2889,6 +2882,24 @@ __global__ void __launch_bounds__(256) swiglu_q8_1_entries_kernel(const float* _
 #else
         const float h = __fmul_rn(g / (1.0f + __expf(-g)), up[i]);
 #endif
+        q8_1_store(h, hq, i);
+    }
+}
+
+__global__ void __launch_bounds__(256) situ_q8_1_entries_kernel(const float* __restrict__ gate,
+                                                                 const float* __restrict__ up,
+                                                                 const int32_t* __restrict__ grp_start,
+                                                                 const int32_t* __restrict__ n_groups, int n_ff,
+                                                                 float beta, float lb,
+                                                                 block_q8_1* __restrict__ hq) {
+    const long long lo = (long long) grp_start[0] * n_ff, hi = (long long) grp_start[*n_groups] * n_ff;
+    for (long long i = lo + (long long) blockIdx.x * blockDim.x + threadIdx.x; i < hi;
+         i += (long long) gridDim.x * blockDim.x) {
+        const float g = gate[i];
+        const float u = up[i];
+        const float tg = beta * tanhf(g / beta) * (1.0f / (1.0f + __expf(-g)));
+        const float tu = lb > 0.0f ? lb * tanhf(u / lb) : u;
+        const float h = tg * tu;
         q8_1_store(h, hq, i);
     }
 }
@@ -6656,7 +6667,7 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
 #else
     const bool gs_layout = true;
 #endif
-    if (gs_layout && !nib_layout(L) && g_exp_phase == 0 && !v1 && gu_swiglu_on() && !(expdec_mode() && !g_old_kernels && expdec_gu_ok(L))) {
+    if (gs_layout && !L.situ && !nib_layout(L) && g_exp_phase == 0 && !v1 && gu_swiglu_on() && !(expdec_mode() && !g_old_kernels && expdec_gu_ok(L))) {
         switch (L.gu_type) {
 #define STRATA_GS(T) case T: gs_done = launch_gu_swiglu<T>(L, gy, s, grp_ptr, grp_start, n_groups, ent_tok, X, hq); break;
             STRATA_GU_FMTS(STRATA_GS)
@@ -6736,7 +6747,17 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
     const bool sw_v1 = v1;
 #endif
     // APR: Hadamard-folded down weights take the rotated h, so h exists as floats first (the separate passes)
-    if (sw_v1 || L.had_block > 0) {
+    if (L.situ) {
+        if (sw_v1 || L.had_block > 0) {
+            situ_entries_kernel<<<(unsigned) ((nh + 255) / 256), 256, 0, s>>>(gate, up, h, nh, L.situ_beta, L.situ_linear_beta);
+            if (L.had_block > 0)
+                hadamard_rows(h, h, cap_entries, L.n_ff, L.had_block, L.d_signs, s);
+            quantize_q8_1_kernel<<<(unsigned) ((nh + 255) / 256), 256, 0, s>>>(h, hq, nh);
+        } else {
+            situ_q8_1_entries_kernel<<<(unsigned) ((nh + 255) / 256), 256, 0, s>>>(gate, up, grp_start, n_groups,
+                                                                                   (int) L.n_ff, L.situ_beta, L.situ_linear_beta, hq);
+        }
+    } else if (sw_v1 || L.had_block > 0) {
         swiglu_entries_kernel<<<(unsigned) ((nh + 255) / 256), 256, 0, s>>>(gate, up, h, nh);
         if (L.had_block > 0)   // APR: the down weights are Hadamard-folded, so is their input (in place, every entry row)
             hadamard_rows(h, h, cap_entries, L.n_ff, L.had_block, L.d_signs, s);
@@ -7360,6 +7381,665 @@ bool gemm_iq_f16_grouped(int ty, const void* W, size_t expert_bytes, int n_out, 
         gemm_iq_f16_grouped_kernel<256, false><<<grid, WG_THREADS, smem(256), s>>>(ty, (const uint8_t*) W, expert_bytes, row_bytes, K,
                                                                                   (const __half*) X, ldx, bounds, mt, Y, ldy);
     return cudaGetLastError() == cudaSuccess;
+}
+
+namespace {
+
+__global__ void situ_f16_valid_kernel(const float* __restrict__ gate, const float* __restrict__ up,
+                                      __half* __restrict__ h16, const int32_t* __restrict__ grp_start,
+                                      const int32_t* __restrict__ n_groups, int n_ff, float beta, float lb) {
+    const long long n = (long long) grp_start[*n_groups] * n_ff;
+    const float inv_b = __fdividef(1.0f, beta);
+    const float inv_lb = lb > 0.0f ? __fdividef(1.0f, lb) : 0.0f;
+    auto ftanh = [](float x) -> float {
+        const float xc = fmaxf(-9.0f, fminf(9.0f, x));
+        return __fdividef(2.0f, 1.0f + __expf(-2.0f * xc)) - 1.0f;
+    };
+    if ((n & 3) == 0) {
+        const long long n4 = n >> 2;
+        const float4* g4 = reinterpret_cast<const float4*>(gate);
+        const float4* u4 = reinterpret_cast<const float4*>(up);
+        uint2* dst4 = reinterpret_cast<uint2*>(h16);
+        for (long long i = (long long) blockIdx.x * blockDim.x + threadIdx.x; i < n4; i += (long long) gridDim.x * blockDim.x) {
+            const float4 gv = g4[i], uv = u4[i];
+            auto act = [&](float g, float u) -> __half {
+                const float tg = beta * ftanh(g * inv_b) * __fdividef(1.0f, 1.0f + __expf(-g));
+                const float tu = lb > 0.0f ? (lb * ftanh(u * inv_lb)) : u;
+                return __float2half_rn(tg * tu);
+            };
+            __half2 p0 = __halves2half2(act(gv.x, uv.x), act(gv.y, uv.y));
+            __half2 p1 = __halves2half2(act(gv.z, uv.z), act(gv.w, uv.w));
+            uint2 out;
+            memcpy(&out.x, &p0, 4);
+            memcpy(&out.y, &p1, 4);
+            dst4[i] = out;
+        }
+        return;
+    }
+    for (long long i = (long long) blockIdx.x * blockDim.x + threadIdx.x; i < n; i += (long long) gridDim.x * blockDim.x) {
+        const float g = gate[i], u = up[i];
+        const float tg = beta * ftanh(g * inv_b) * __fdividef(1.0f, 1.0f + __expf(-g));
+        const float tu = lb > 0.0f ? (lb * ftanh(u * inv_lb)) : u;
+        h16[i] = __float2half_rn(tg * tu);
+    }
+}
+
+__global__ void swiglu_f16_valid_kernel(const float* __restrict__ gate, const float* __restrict__ up,
+                                        __half* __restrict__ h16, const int32_t* __restrict__ grp_start,
+                                        const int32_t* __restrict__ n_groups, int n_ff) {
+    const long long n = (long long) grp_start[*n_groups] * n_ff;
+    for (long long i = (long long) blockIdx.x * blockDim.x + threadIdx.x; i < n; i += (long long) gridDim.x * blockDim.x) {
+        const float g = gate[i];
+        h16[i] = __float2half_rn((g / (1.0f + __expf(-g))) * up[i]);
+    }
+}
+
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 700
+__device__ __forceinline__ __half ue4m3_to_half_halved(uint8_t x) {
+    if (x == 0 || x == 0x7F) return __ushort_as_half(0);
+    const uint32_t exp = (x >> 3) & 0xFu, man = x & 0x7u;
+    if (exp == 0) return __float2half((float) man * 0.0009765625f);
+    return __ushort_as_half((uint16_t) (((exp + 7u) << 10) | (man << 7)));
+}
+
+__device__ __forceinline__ __half2 e2m1_pair_to_h2(uint32_t q0, uint32_t q1) {
+    // Bit-exact 1-instruction PRMT lookup for doubled E2M1 high bytes {0x00,0x3C,0x40,0x42,0x44,0x46,0x48,0x4A}
+    const uint32_t sel = ((q0 & 7u) << 4) | ((q1 & 7u) << 12);
+    const uint32_t signs = ((q0 & 8u) << 12) | ((q1 & 8u) << 28);
+    const uint32_t packed = __byte_perm(0x42403C00u, 0x4A484644u, sel) | signs;
+    __half2 r;
+    memcpy(&r, &packed, sizeof(r));
+    return r;
+}
+
+__device__ __forceinline__ void dq_nvfp4_sub16_store_sc(uint32_t w0, uint32_t w1, __half sc, __half* dst) {
+    const __half2 sc2 = __half2half2(sc);
+    __align__(16) __half2 p[4];
+    p[0] = __hmul2(e2m1_pair_to_h2(w0,       w0 >> 8),  sc2);
+    p[1] = __hmul2(e2m1_pair_to_h2(w0 >> 16, w0 >> 24), sc2);
+    p[2] = __hmul2(e2m1_pair_to_h2(w1,       w1 >> 8),  sc2);
+    p[3] = __hmul2(e2m1_pair_to_h2(w1 >> 16, w1 >> 24), sc2);
+    *reinterpret_cast<uint4*>(dst) = *reinterpret_cast<const uint4*>(p);
+    p[0] = __hmul2(e2m1_pair_to_h2(w0 >> 4,  w0 >> 12), sc2);
+    p[1] = __hmul2(e2m1_pair_to_h2(w0 >> 20, w0 >> 28), sc2);
+    p[2] = __hmul2(e2m1_pair_to_h2(w1 >> 4,  w1 >> 12), sc2);
+    p[3] = __hmul2(e2m1_pair_to_h2(w1 >> 20, w1 >> 28), sc2);
+    *reinterpret_cast<uint4*>(dst + 8) = *reinterpret_cast<const uint4*>(p);
+}
+
+__device__ __forceinline__ void dq_nvfp4_sub16_store(uint32_t w0, uint32_t w1, uint8_t db, __half* dst) {
+    dq_nvfp4_sub16_store_sc(w0, w1, ue4m3_to_half_halved(db), dst);
+}
+
+__device__ __forceinline__ void i8x4_to_h2x2_scaled_iq(uint32_t packed_i8x4, __half2 scale2, __half2& out0, __half2& out1) {
+    const uint32_t u = packed_i8x4 ^ 0x80808080u;
+    const uint32_t lo = __byte_perm(u, 0x6400u, 0x5150u);
+    const uint32_t hi = __byte_perm(u, 0x6400u, 0x5352u);
+    const __half2 bias = __half2half2(__float2half(1152.0f));
+    out0 = __hmul2(__hsub2(*reinterpret_cast<const __half2*>(&lo), bias), scale2);
+    out1 = __hmul2(__hsub2(*reinterpret_cast<const __half2*>(&hi), bias), scale2);
+}
+
+template <int WT>
+__device__ __forceinline__ void dq_sub16_k64_store(const uint8_t* row_ptr, int k0, int sb, __half* dst) {
+    if constexpr (WT == 40) {
+        const uint8_t* bp = row_ptr + (size_t) (k0 >> 6) * 36;
+        const uint32_t w0 = *reinterpret_cast<const uint32_t*>(bp + 4 + sb * 8);
+        const uint32_t w1 = *reinterpret_cast<const uint32_t*>(bp + 8 + sb * 8);
+        dq_nvfp4_sub16_store(w0, w1, bp[sb], dst);
+    } else if constexpr (WT == 8) {
+        const block_q8_0* xb = reinterpret_cast<const block_q8_0*>(row_ptr) + (k0 >> 5) + (sb >> 1);
+        const __half2 d2 = __half2half2(*reinterpret_cast<const __half*>(&xb->d));
+        // block_q8_0 is 34 B (2-byte aligned); read via uint16_t pairs -> SIMD i8x4_to_h2x2_scaled_iq
+        const uint16_t* q16 = reinterpret_cast<const uint16_t*>(xb->qs + (sb & 1) * 16);
+        __align__(16) __half2 h2[8];
+#pragma unroll
+        for (int j = 0; j < 4; ++j) {
+            const uint32_t w = (uint32_t) q16[j * 2] | ((uint32_t) q16[j * 2 + 1] << 16);
+            i8x4_to_h2x2_scaled_iq(w, d2, h2[j * 2 + 0], h2[j * 2 + 1]);
+        }
+        *reinterpret_cast<uint4*>(dst)     = *reinterpret_cast<const uint4*>(h2);
+        *reinterpret_cast<uint4*>(dst + 8) = *reinterpret_cast<const uint4*>(h2 + 4);
+    } else if constexpr (WT == 13 || WT == 12) {
+        const int il = (k0 >> 6) & 3;
+        const int is_hi = sb >> 1;
+        const int off16 = (sb & 1) * 16;
+        uint8_t sc_u = 0, m_u = 0;
+        const uint8_t* ql = nullptr;
+        const uint8_t* qh = nullptr;
+        float dall = 0.0f, dmin = 0.0f;
+        if constexpr (WT == 13) {
+            const block_q5_K* x = reinterpret_cast<const block_q5_K*>(row_ptr) + (k0 >> 8);
+            dall = __low2half(x->dm);
+            dmin = __high2half(x->dm);
+            get_scale_min_k4(2 * il + is_hi, x->scales, sc_u, m_u);
+            ql = x->qs + 32 * il + off16;
+            qh = x->qh + off16;
+        } else {
+            const block_q4_K* x = reinterpret_cast<const block_q4_K*>(row_ptr) + (k0 >> 8);
+            dall = __low2half(x->dm);
+            dmin = __high2half(x->dm);
+            get_scale_min_k4(2 * il + is_hi, x->scales, sc_u, m_u);
+            ql = x->qs + 32 * il + off16;
+        }
+        const __half2 d2 = __half2half2(__float2half(dall * (float) sc_u));
+        const __half2 nm2 = __half2half2(__float2half(-(dmin * (float) m_u)));
+        const uint32_t hm = 1u << (2 * il + is_hi);
+        const uint4 ql4 = *reinterpret_cast<const uint4*>(ql);
+        uint4 qh4 = make_uint4(0, 0, 0, 0);
+        if constexpr (WT == 13) qh4 = *reinterpret_cast<const uint4*>(qh);
+        const uint32_t qw[4] = {ql4.x, ql4.y, ql4.z, ql4.w};
+        const uint32_t hw[4] = {qh4.x, qh4.y, qh4.z, qh4.w};
+        __align__(16) __half2 h2[8];
+#pragma unroll
+        for (int j = 0; j < 4; ++j) {
+            const uint32_t q = qw[j];
+            const uint32_t h = hw[j];
+            const int n0 = (int) (is_hi ? ((q >> 4) & 0xFu) : (q & 0xFu)) + ((WT == 13 && (h & hm)) ? 16 : 0);
+            const int n1 = (int) (is_hi ? ((q >> 12) & 0xFu) : ((q >> 8) & 0xFu)) + ((WT == 13 && ((h >> 8) & hm)) ? 16 : 0);
+            const int n2 = (int) (is_hi ? ((q >> 20) & 0xFu) : ((q >> 16) & 0xFu)) + ((WT == 13 && ((h >> 16) & hm)) ? 16 : 0);
+            const int n3 = (int) (is_hi ? ((q >> 28) & 0xFu) : ((q >> 24) & 0xFu)) + ((WT == 13 && ((h >> 24) & hm)) ? 16 : 0);
+            h2[j * 2 + 0] = __hfma2(__halves2half2(__int2half_rn(n0), __int2half_rn(n1)), d2, nm2);
+            h2[j * 2 + 1] = __hfma2(__halves2half2(__int2half_rn(n2), __int2half_rn(n3)), d2, nm2);
+        }
+        *reinterpret_cast<uint4*>(dst)     = *reinterpret_cast<const uint4*>(h2);
+        *reinterpret_cast<uint4*>(dst + 8) = *reinterpret_cast<const uint4*>(h2 + 4);
+    }
+}
+#endif
+
+/// BM=64 WK=64 grouped WMMA kernel (NVFP4=40, Q8_0=8, Q5_K=13, Q4_K=12) with 18-27KB smem and register prefetch.
+template <int WT, bool IS_DOWN, int BN>
+__global__ void __launch_bounds__(256, (WT == 40 && BN == 128) ? 2 : 3) wmma_grouped_64_kernel(
+    const unsigned long long* __restrict__ grp_ptr, const int32_t* __restrict__ grp_start,
+    const int32_t* __restrict__ n_groups, const int32_t* __restrict__ ent_idx,
+    const __half* __restrict__ X, NativeExpertLayout L, float* __restrict__ out0, float* __restrict__ out1) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 700
+    using namespace nvcuda;
+    constexpr int BM = 64, WK = 64, LD = 72;
+    constexpr int MW = (BN == 128) ? 2 : 4;
+    constexpr int NW = (BN == 128) ? 4 : 2;
+    constexpr int MR = (BN == 128) ? 2 : 1;
+    __shared__ __align__(16) __half smem[(BM + BN) * LD];
+    __shared__ __half s_ue4m3[256];
+    __half* sx = smem;
+    __half* sw = smem + BM * LD;
+    const int tid = threadIdx.x, warp = tid >> 5;
+    if constexpr (WT == 40) {
+        s_ue4m3[tid] = ue4m3_to_half_halved((uint8_t) tid);
+        __syncthreads();
+    }
+
+    const int ng = *n_groups;
+    const int col0_all = (int) blockIdx.x * BN;
+    const bool is_up = !IS_DOWN && (col0_all >= (int) L.n_ff);
+    const int col0 = IS_DOWN ? col0_all : (is_up ? (col0_all - (int) L.n_ff) : col0_all);
+    const size_t role_off = IS_DOWN ? L.down_off : (is_up ? L.up_off : 0);
+    const size_t row_stride = IS_DOWN ? L.d_row : L.gu_row;
+    const int K = IS_DOWN ? (int) L.n_ff : (int) L.n_embd;
+    const int N_out = IS_DOWN ? (int) L.n_embd : (int) L.n_ff;
+    float* dst_mat = IS_DOWN ? out0 : (is_up ? out1 : out0);
+
+    const int wm = warp / NW;  // 0..MW-1
+    const int wn = warp % NW;  // 0..NW-1 (each warp covers 32 cols)
+    const int ch_per_e = (int) gridDim.y;
+
+    const int wr = tid >> 2, sb = tid & 3;
+    const int xr = tid >> 2, xc = (tid & 3) * 16;
+
+    for (int g = (int) blockIdx.z; g < ng; g += (int) gridDim.z) {
+        const uint8_t* blob = (const uint8_t*) grp_ptr[g];
+        const uint8_t* we_t = blob + role_off + (size_t) (col0 + wr) * row_stride;
+        const float sc = L.tail_off ? ((const float*) (blob + L.tail_off))[IS_DOWN ? 2 : (is_up ? 1 : 0)] : 1.0f;
+        const int e0 = grp_start[g], e1 = grp_start[g + 1];
+
+        for (int c0 = e0 + (int) blockIdx.y * BM; c0 < e1; c0 += ch_per_e * BM) {
+            const int rows = min(BM, e1 - c0);
+            const bool x_ok = (xr < rows);
+            const int in_row = x_ok ? (IS_DOWN ? (c0 + xr) : ent_idx[c0 + xr]) : 0;
+            const __half* xp = X + (size_t) in_row * K + xc;
+
+            wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc[MR][2];
+#pragma unroll
+            for (int mr = 0; mr < MR; ++mr) {
+                wmma::fill_fragment(acc[mr][0], 0.0f);
+                wmma::fill_fragment(acc[mr][1], 0.0f);
+            }
+
+            if constexpr (WT == 40) {
+                constexpr int NB = BN / 64;
+                const uint8_t* wp = we_t;
+                uint32_t nw0[NB], nw1[NB];
+                uint8_t ndb[NB];
+#pragma unroll
+                for (int b = 0; b < NB; ++b) {
+                    const uint8_t* wpb = wp + (size_t) (b * 64) * row_stride;
+                    nw0[b] = *reinterpret_cast<const uint32_t*>(wpb + 4 + sb * 8);
+                    nw1[b] = *reinterpret_cast<const uint32_t*>(wpb + 8 + sb * 8);
+                    ndb[b] = wpb[sb];
+                }
+                uint4 nx0 = x_ok ? *reinterpret_cast<const uint4*>(xp)     : make_uint4(0, 0, 0, 0);
+                uint4 nx1 = x_ok ? *reinterpret_cast<const uint4*>(xp + 8) : make_uint4(0, 0, 0, 0);
+
+                *reinterpret_cast<uint4*>(sx + xr * LD + xc)     = nx0;
+                *reinterpret_cast<uint4*>(sx + xr * LD + xc + 8) = nx1;
+#pragma unroll
+                for (int b = 0; b < NB; ++b) {
+                    dq_nvfp4_sub16_store_sc(nw0[b], nw1[b], s_ue4m3[ndb[b]], sw + (b * 64 + wr) * LD + sb * 16);
+                }
+                __syncthreads();
+
+                for (int k0 = 0; k0 < K; k0 += WK) {
+                    const bool has_next = (k0 + WK < K);
+                    if (has_next) {
+                        const uint8_t* nwp = wp + 36;
+                        const __half* nxp = xp + k0 + WK;
+#pragma unroll
+                        for (int b = 0; b < NB; ++b) {
+                            const uint8_t* wpb = nwp + (size_t) (b * 64) * row_stride;
+                            nw0[b] = *reinterpret_cast<const uint32_t*>(wpb + 4 + sb * 8);
+                            nw1[b] = *reinterpret_cast<const uint32_t*>(wpb + 8 + sb * 8);
+                            ndb[b] = wpb[sb];
+                        }
+                        nx0 = x_ok ? *reinterpret_cast<const uint4*>(nxp)     : make_uint4(0, 0, 0, 0);
+                        nx1 = x_ok ? *reinterpret_cast<const uint4*>(nxp + 8) : make_uint4(0, 0, 0, 0);
+                        wp = nwp;
+                    }
+#pragma unroll
+                    for (int kk = 0; kk < WK; kk += 16) {
+                        wmma::fragment<wmma::matrix_b, 16, 16, 16, __half, wmma::col_major> fb0, fb1;
+                        wmma::load_matrix_sync(fb0, sw + (wn * 32) * LD + kk, LD);
+                        wmma::load_matrix_sync(fb1, sw + (wn * 32 + 16) * LD + kk, LD);
+#pragma unroll
+                        for (int mr = 0; mr < MR; ++mr) {
+                            wmma::fragment<wmma::matrix_a, 16, 16, 16, __half, wmma::row_major> fa;
+                            wmma::load_matrix_sync(fa, sx + (wm * MR * 16 + mr * 16) * LD + kk, LD);
+                            wmma::mma_sync(acc[mr][0], fa, fb0, acc[mr][0]);
+                            wmma::mma_sync(acc[mr][1], fa, fb1, acc[mr][1]);
+                        }
+                    }
+                    if (has_next) {
+                        __syncthreads();
+                        *reinterpret_cast<uint4*>(sx + xr * LD + xc)     = nx0;
+                        *reinterpret_cast<uint4*>(sx + xr * LD + xc + 8) = nx1;
+#pragma unroll
+                        for (int b = 0; b < NB; ++b) {
+                            dq_nvfp4_sub16_store_sc(nw0[b], nw1[b], s_ue4m3[ndb[b]], sw + (b * 64 + wr) * LD + sb * 16);
+                        }
+                        __syncthreads();
+                    }
+                }
+            } else {
+                for (int k0 = 0; k0 < K; k0 += WK) {
+                    const __half* cxp = xp + k0;
+                    const uint4 x0 = x_ok ? *reinterpret_cast<const uint4*>(cxp)     : make_uint4(0, 0, 0, 0);
+                    const uint4 x1 = x_ok ? *reinterpret_cast<const uint4*>(cxp + 8) : make_uint4(0, 0, 0, 0);
+                    *reinterpret_cast<uint4*>(sx + xr * LD + xc)     = x0;
+                    *reinterpret_cast<uint4*>(sx + xr * LD + xc + 8) = x1;
+#pragma unroll
+                    for (int rb = 0; rb < BN; rb += 64) {
+                        dq_sub16_k64_store<WT>(we_t + (size_t) rb * row_stride, k0, sb, sw + (rb + wr) * LD + sb * 16);
+                    }
+                    __syncthreads();
+#pragma unroll
+                    for (int kk = 0; kk < WK; kk += 16) {
+                        wmma::fragment<wmma::matrix_a, 16, 16, 16, __half, wmma::row_major> fa[MR];
+                        wmma::fragment<wmma::matrix_b, 16, 16, 16, __half, wmma::col_major> fb0, fb1;
+#pragma unroll
+                        for (int mr = 0; mr < MR; ++mr) {
+                            wmma::load_matrix_sync(fa[mr], sx + (wm * MR * 16 + mr * 16) * LD + kk, LD);
+                        }
+                        wmma::load_matrix_sync(fb0, sw + (wn * 32) * LD + kk, LD);
+                        wmma::load_matrix_sync(fb1, sw + (wn * 32 + 16) * LD + kk, LD);
+#pragma unroll
+                        for (int mr = 0; mr < MR; ++mr) {
+                            wmma::mma_sync(acc[mr][0], fa[mr], fb0, acc[mr][0]);
+                            wmma::mma_sync(acc[mr][1], fa[mr], fb1, acc[mr][1]);
+                        }
+                    }
+                    __syncthreads();
+                }
+            }
+
+            __syncthreads();
+            float* s_out = reinterpret_cast<float*>(smem);
+            if constexpr (BN == 64) {
+                wmma::store_matrix_sync(s_out + (wm * 16) * BN + wn * 32,      acc[0][0], BN, wmma::mem_row_major);
+                wmma::store_matrix_sync(s_out + (wm * 16) * BN + wn * 32 + 16, acc[0][1], BN, wmma::mem_row_major);
+                __syncthreads();
+                for (int i = tid; i < rows * BN; i += 256) {
+                    const int r = i / BN, c = i % BN;
+                    const int out_row = IS_DOWN ? ent_idx[c0 + r] : (c0 + r);
+                    dst_mat[(size_t) out_row * N_out + col0 + c] = s_out[i] * sc;
+                }
+                __syncthreads();
+            } else {
+                // BN == 128: write MR=2 row halves (32 rows x 128 cols = 16384 B) sequentially in smem.
+                for (int mh = 0; mh < MW; ++mh) {
+                    if (wm == mh) {
+                        wmma::store_matrix_sync(s_out + wn * 32,                  acc[0][0], BN, wmma::mem_row_major);
+                        wmma::store_matrix_sync(s_out + wn * 32 + 16,             acc[0][1], BN, wmma::mem_row_major);
+                        wmma::store_matrix_sync(s_out + 16 * BN + wn * 32,        acc[1][0], BN, wmma::mem_row_major);
+                        wmma::store_matrix_sync(s_out + 16 * BN + wn * 32 + 16,   acc[1][1], BN, wmma::mem_row_major);
+                    }
+                    __syncthreads();
+                    const int r_start = mh * 32;
+                    const int r_end = min(rows, r_start + 32);
+                    const int n_valid = max(0, r_end - r_start);
+                    for (int i = tid; i < n_valid * (BN / 4); i += 256) {
+                        const int r = r_start + (i >> 5), c4 = i & 31;
+                        const int out_row = IS_DOWN ? ent_idx[c0 + r] : (c0 + r);
+                        const float4 v = reinterpret_cast<const float4*>(s_out)[i];
+                        reinterpret_cast<float4*>(dst_mat + (size_t) out_row * N_out + col0)[c4] =
+                            make_float4(v.x * sc, v.y * sc, v.z * sc, v.w * sc);
+                    }
+                    __syncthreads();
+                }
+            }
+        }
+    }
+#else
+    (void) grp_ptr; (void) grp_start; (void) n_groups; (void) ent_idx; (void) X; (void) L; (void) out0; (void) out1;
+#endif
+}
+
+/// Adaptive BM=128 (fast MR=2 for <=64 rows, single-weight-load MR=4 for 65..128 rows), BN=128, WK=64, 2 blk/SM (37 KB SMEM).
+/// Cuts expert weight reloads in half on long prefills (T >= 512) and runs BN=128 + vectorized decode for NVFP4/Q5_K/Q4_K/Q8_0.
+template <int WT, bool IS_DOWN>
+__global__ void __launch_bounds__(256, 2) wmma_grouped_128_kernel(
+    const unsigned long long* __restrict__ grp_ptr, const int32_t* __restrict__ grp_start,
+    const int32_t* __restrict__ n_groups, const int32_t* __restrict__ ent_idx,
+    const __half* __restrict__ X, NativeExpertLayout L, float* __restrict__ out0, float* __restrict__ out1) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 700
+    using namespace nvcuda;
+    constexpr int BM = 128, BN = 128, WK = 64, LD = 72;
+    __shared__ __align__(16) __half smem[(BM + BN) * LD];
+    __shared__ __half s_ue4m3[256];
+    __half* sx = smem;
+    __half* sw = smem + BM * LD;
+
+    const int tid = threadIdx.x;
+    if constexpr (WT == 40) {
+        s_ue4m3[tid] = ue4m3_to_half_halved((uint8_t) tid);
+        __syncthreads();
+    }
+
+    const int ng = *n_groups;
+    const int col0_all = (int) blockIdx.x * BN;
+    const bool is_up = !IS_DOWN && (col0_all >= (int) L.n_ff);
+    const int col0 = IS_DOWN ? col0_all : (is_up ? (col0_all - (int) L.n_ff) : col0_all);
+    const size_t role_off = IS_DOWN ? L.down_off : (is_up ? L.up_off : 0);
+    const size_t row_stride = IS_DOWN ? L.d_row : L.gu_row;
+    const int K = IS_DOWN ? (int) L.n_ff : (int) L.n_embd;
+    const int N_out = IS_DOWN ? (int) L.n_embd : (int) L.n_ff;
+    float* dst_mat = IS_DOWN ? out0 : (is_up ? out1 : out0);
+
+    const int warp = tid >> 5;
+    const int wm = warp >> 2;  // 0..1
+    const int wn = warp & 3;   // 0..3 (32 cols/warp)
+    const int ch_per_e = (int) gridDim.y;
+    const int wr = tid >> 2, sb = tid & 3;
+    const int xr = wr, xc = sb * 16;
+
+    for (int g = (int) blockIdx.z; g < ng; g += (int) gridDim.z) {
+        const uint8_t* blob = (const uint8_t*) grp_ptr[g];
+        const uint8_t* we_t = blob + role_off + (size_t) (col0 + wr) * row_stride;
+        const float sc = L.tail_off ? ((const float*) (blob + L.tail_off))[IS_DOWN ? 2 : (is_up ? 1 : 0)] : 1.0f;
+        const int e0 = grp_start[g], e1 = grp_start[g + 1];
+
+        for (int c0 = e0 + (int) blockIdx.y * BM; c0 < e1; c0 += ch_per_e * BM) {
+            const int rows = min(BM, e1 - c0);
+            const bool has_hi = (rows > 64);
+            const bool x0_ok = (xr < rows);
+            const bool x1_ok = ((xr + 64) < rows);
+            const int in_row0 = x0_ok ? (IS_DOWN ? (c0 + xr) : ent_idx[c0 + xr]) : 0;
+            const int in_row1 = x1_ok ? (IS_DOWN ? (c0 + xr + 64) : ent_idx[c0 + xr + 64]) : 0;
+            const __half* xp0 = X + (size_t) in_row0 * K + xc;
+            const __half* xp1 = X + (size_t) in_row1 * K + xc;
+
+            wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc[4][2];
+#pragma unroll
+            for (int mr = 0; mr < 4; ++mr) {
+                wmma::fill_fragment(acc[mr][0], 0.0f);
+                wmma::fill_fragment(acc[mr][1], 0.0f);
+            }
+
+            if (has_hi) {
+                for (int k0 = 0; k0 < K; k0 += WK) {
+                    const __half* cxp0 = xp0 + k0;
+                    const __half* cxp1 = xp1 + k0;
+                    *reinterpret_cast<uint4*>(sx + xr * LD + xc)            = x0_ok ? *reinterpret_cast<const uint4*>(cxp0)     : make_uint4(0, 0, 0, 0);
+                    *reinterpret_cast<uint4*>(sx + xr * LD + xc + 8)        = x0_ok ? *reinterpret_cast<const uint4*>(cxp0 + 8) : make_uint4(0, 0, 0, 0);
+                    *reinterpret_cast<uint4*>(sx + (xr + 64) * LD + xc)     = x1_ok ? *reinterpret_cast<const uint4*>(cxp1)     : make_uint4(0, 0, 0, 0);
+                    *reinterpret_cast<uint4*>(sx + (xr + 64) * LD + xc + 8) = x1_ok ? *reinterpret_cast<const uint4*>(cxp1 + 8) : make_uint4(0, 0, 0, 0);
+                    if constexpr (WT == 40) {
+                        const uint8_t* bp = we_t + (size_t) (k0 >> 6) * 36;
+#pragma unroll
+                        for (int b = 0; b < 2; ++b) {
+                            const uint8_t* wpb = bp + (size_t) (b * 64) * row_stride;
+                            dq_nvfp4_sub16_store_sc(*reinterpret_cast<const uint32_t*>(wpb + 4 + sb * 8),
+                                                    *reinterpret_cast<const uint32_t*>(wpb + 8 + sb * 8),
+                                                    s_ue4m3[wpb[sb]], sw + (b * 64 + wr) * LD + sb * 16);
+                        }
+                    } else {
+#pragma unroll
+                        for (int b = 0; b < 2; ++b) {
+                            dq_sub16_k64_store<WT>(we_t + (size_t) (b * 64) * row_stride, k0, sb, sw + (b * 64 + wr) * LD + sb * 16);
+                        }
+                    }
+                    __syncthreads();
+#pragma unroll
+                    for (int kk = 0; kk < WK; kk += 16) {
+                        wmma::fragment<wmma::matrix_b, 16, 16, 16, __half, wmma::col_major> fb0, fb1;
+                        wmma::load_matrix_sync(fb0, sw + (wn * 32) * LD + kk, LD);
+                        wmma::load_matrix_sync(fb1, sw + (wn * 32 + 16) * LD + kk, LD);
+#pragma unroll
+                        for (int mr = 0; mr < 4; ++mr) {
+                            wmma::fragment<wmma::matrix_a, 16, 16, 16, __half, wmma::row_major> fa;
+                            wmma::load_matrix_sync(fa, sx + (wm * 64 + mr * 16) * LD + kk, LD);
+                            wmma::mma_sync(acc[mr][0], fa, fb0, acc[mr][0]);
+                            wmma::mma_sync(acc[mr][1], fa, fb1, acc[mr][1]);
+                        }
+                    }
+                    __syncthreads();
+                }
+            } else {
+                for (int k0 = 0; k0 < K; k0 += WK) {
+                    const __half* cxp0 = xp0 + k0;
+                    *reinterpret_cast<uint4*>(sx + xr * LD + xc)     = x0_ok ? *reinterpret_cast<const uint4*>(cxp0)     : make_uint4(0, 0, 0, 0);
+                    *reinterpret_cast<uint4*>(sx + xr * LD + xc + 8) = x0_ok ? *reinterpret_cast<const uint4*>(cxp0 + 8) : make_uint4(0, 0, 0, 0);
+                    if constexpr (WT == 40) {
+                        const uint8_t* bp = we_t + (size_t) (k0 >> 6) * 36;
+#pragma unroll
+                        for (int b = 0; b < 2; ++b) {
+                            const uint8_t* wpb = bp + (size_t) (b * 64) * row_stride;
+                            dq_nvfp4_sub16_store_sc(*reinterpret_cast<const uint32_t*>(wpb + 4 + sb * 8),
+                                                    *reinterpret_cast<const uint32_t*>(wpb + 8 + sb * 8),
+                                                    s_ue4m3[wpb[sb]], sw + (b * 64 + wr) * LD + sb * 16);
+                        }
+                    } else {
+#pragma unroll
+                        for (int b = 0; b < 2; ++b) {
+                            dq_sub16_k64_store<WT>(we_t + (size_t) (b * 64) * row_stride, k0, sb, sw + (b * 64 + wr) * LD + sb * 16);
+                        }
+                    }
+                    __syncthreads();
+#pragma unroll
+                    for (int kk = 0; kk < WK; kk += 16) {
+                        wmma::fragment<wmma::matrix_b, 16, 16, 16, __half, wmma::col_major> fb0, fb1;
+                        wmma::load_matrix_sync(fb0, sw + (wn * 32) * LD + kk, LD);
+                        wmma::load_matrix_sync(fb1, sw + (wn * 32 + 16) * LD + kk, LD);
+#pragma unroll
+                        for (int mr = 0; mr < 2; ++mr) {
+                            wmma::fragment<wmma::matrix_a, 16, 16, 16, __half, wmma::row_major> fa;
+                            wmma::load_matrix_sync(fa, sx + (wm * 32 + mr * 16) * LD + kk, LD);
+                            wmma::mma_sync(acc[mr][0], fa, fb0, acc[mr][0]);
+                            wmma::mma_sync(acc[mr][1], fa, fb1, acc[mr][1]);
+                        }
+                    }
+                    __syncthreads();
+                }
+            }
+
+            float* s_out = reinterpret_cast<float*>(smem);
+            if (has_hi) {
+                for (int mh = 0; mh < 2; ++mh) {
+                    if (wm == mh) {
+#pragma unroll
+                        for (int mr = 0; mr < 4; ++mr) {
+                            wmma::store_matrix_sync(s_out + (mr * 16) * BN + wn * 32,      acc[mr][0], BN, wmma::mem_row_major);
+                            wmma::store_matrix_sync(s_out + (mr * 16) * BN + wn * 32 + 16, acc[mr][1], BN, wmma::mem_row_major);
+                        }
+                    }
+                    __syncthreads();
+                    const int r_start = mh * 64;
+                    const int n_valid = max(0, min(rows, r_start + 64) - r_start);
+                    for (int i = tid; i < n_valid * BN; i += 256) {
+                        const int r = r_start + (i >> 7), c = i & 127;
+                        const int out_row = IS_DOWN ? ent_idx[c0 + r] : (c0 + r);
+                        dst_mat[(size_t) out_row * N_out + col0 + c] = s_out[i] * sc;
+                    }
+                    __syncthreads();
+                }
+            } else {
+                // Single-shot 64 x 128 = 32,768 B <= 36,864 B
+                wmma::store_matrix_sync(s_out + (wm * 32) * BN + wn * 32,           acc[0][0], BN, wmma::mem_row_major);
+                wmma::store_matrix_sync(s_out + (wm * 32) * BN + wn * 32 + 16,      acc[0][1], BN, wmma::mem_row_major);
+                wmma::store_matrix_sync(s_out + (wm * 32 + 16) * BN + wn * 32,      acc[1][0], BN, wmma::mem_row_major);
+                wmma::store_matrix_sync(s_out + (wm * 32 + 16) * BN + wn * 32 + 16, acc[1][1], BN, wmma::mem_row_major);
+                __syncthreads();
+                for (int i4 = tid; i4 < (rows * BN) / 4; i4 += 256) {
+                    const int r = i4 >> 5, c = (i4 & 31) << 2;
+                    const int out_row = IS_DOWN ? ent_idx[c0 + r] : (c0 + r);
+                    const float4 v = reinterpret_cast<const float4*>(s_out)[i4];
+                    *reinterpret_cast<float4*>(dst_mat + (size_t) out_row * N_out + col0 + c) =
+                        make_float4(v.x * sc, v.y * sc, v.z * sc, v.w * sc);
+                }
+                __syncthreads();
+            }
+        }
+    }
+#else
+    (void) grp_ptr; (void) grp_start; (void) n_groups; (void) ent_idx; (void) X; (void) L; (void) out0; (void) out1;
+#endif
+}
+
+}  // namespace
+
+bool native_expert_grouped_wmma(const NativeExpertLayout& L, const unsigned long long* grp_ptr, const int32_t* grp_start,
+                                const int32_t* n_groups, const int32_t* ent_dst, const int32_t* ent_tok,
+                                int64_t cap_groups, int64_t cap_entries, const void* x_f16, void* scratch, float* out,
+                                void* stream, int64_t expected_entries) {
+    if (cap_groups <= 0 || cap_entries <= 0 || L.had_block > 0 || L.gu_nib) return false;
+    if (L.n_embd % 256 != 0 || L.n_ff % 128 != 0) return false;
+    if (L.gu_type != 40 && L.gu_type != 12 && L.gu_type != 13 && L.gu_type != 8) return false;
+    if (L.d_type != 40 && L.d_type != 8) return false;
+
+    static int cc_ok[64];
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) return false;
+    if (!cc_ok[dev]) {
+        int maj = 0;
+        if (cudaDeviceGetAttribute(&maj, cudaDevAttrComputeCapabilityMajor, dev) != cudaSuccess) return false;
+        cc_ok[dev] = (maj >= 7) ? 2 : 1;
+        if (maj >= 7) {
+            cudaFuncSetAttribute(wmma_grouped_64_kernel<40, false, 64>, cudaFuncAttributePreferredSharedMemoryCarveout, cudaSharedmemCarveoutMaxShared);
+            cudaFuncSetAttribute(wmma_grouped_64_kernel<40, true, 64>, cudaFuncAttributePreferredSharedMemoryCarveout, cudaSharedmemCarveoutMaxShared);
+            cudaFuncSetAttribute(wmma_grouped_64_kernel<40, false, 128>, cudaFuncAttributePreferredSharedMemoryCarveout, cudaSharedmemCarveoutMaxShared);
+            cudaFuncSetAttribute(wmma_grouped_64_kernel<40, true, 128>, cudaFuncAttributePreferredSharedMemoryCarveout, cudaSharedmemCarveoutMaxShared);
+            cudaFuncSetAttribute(wmma_grouped_64_kernel<13, false, 64>, cudaFuncAttributePreferredSharedMemoryCarveout, cudaSharedmemCarveoutMaxShared);
+            cudaFuncSetAttribute(wmma_grouped_64_kernel<12, false, 64>, cudaFuncAttributePreferredSharedMemoryCarveout, cudaSharedmemCarveoutMaxShared);
+            cudaFuncSetAttribute(wmma_grouped_64_kernel<8, false, 64>, cudaFuncAttributePreferredSharedMemoryCarveout, cudaSharedmemCarveoutMaxShared);
+            cudaFuncSetAttribute(wmma_grouped_64_kernel<8, true, 64>, cudaFuncAttributePreferredSharedMemoryCarveout, cudaSharedmemCarveoutMaxShared);
+            cudaFuncSetAttribute(wmma_grouped_128_kernel<40, false>, cudaFuncAttributePreferredSharedMemoryCarveout, cudaSharedmemCarveoutMaxShared);
+            cudaFuncSetAttribute(wmma_grouped_128_kernel<40, true>, cudaFuncAttributePreferredSharedMemoryCarveout, cudaSharedmemCarveoutMaxShared);
+            cudaFuncSetAttribute(wmma_grouped_128_kernel<13, false>, cudaFuncAttributePreferredSharedMemoryCarveout, cudaSharedmemCarveoutMaxShared);
+            cudaFuncSetAttribute(wmma_grouped_128_kernel<12, false>, cudaFuncAttributePreferredSharedMemoryCarveout, cudaSharedmemCarveoutMaxShared);
+            cudaFuncSetAttribute(wmma_grouped_128_kernel<8, false>, cudaFuncAttributePreferredSharedMemoryCarveout, cudaSharedmemCarveoutMaxShared);
+            cudaFuncSetAttribute(wmma_grouped_128_kernel<8, true>, cudaFuncAttributePreferredSharedMemoryCarveout, cudaSharedmemCarveoutMaxShared);
+        }
+    }
+    if (cc_ok[dev] != 2) return false;
+
+    cudaStream_t s = (cudaStream_t) stream;
+    const int64_t est_ent = (expected_entries > 0) ? std::min(cap_entries, expected_entries) : cap_entries;
+    const int avg_rows = (int) ((est_ent + cap_groups - 1) / cap_groups);
+    const int ch_per_e64 = std::clamp((avg_rows + 47) / 48, 1, 4);
+    const bool use_bm128 = (avg_rows >= 32);
+    const int ch_per_e128 = std::clamp((avg_rows + 95) / 96, 1, 4);
+    const bool use_bn128 = (avg_rows >= 24);
+    const size_t f = (size_t) cap_entries * (size_t) L.n_ff * sizeof(float);
+    const size_t fa = (f + 255) & ~(size_t) 255;
+    float* gate = (float*) scratch;
+    float* up = (float*) ((uint8_t*) scratch + fa);
+    __half* h16 = (__half*) ((uint8_t*) scratch + 2 * fa);
+
+    if (use_bm128 && L.gu_type != 40) {
+        const dim3 ggu128((unsigned) (2 * L.n_ff / 128), (unsigned) ch_per_e128, (unsigned) cap_groups);
+        if (L.gu_type == 13) {
+            wmma_grouped_128_kernel<13, false><<<ggu128, 256, 0, s>>>(
+                grp_ptr, grp_start, n_groups, ent_tok, (const __half*) x_f16, L, gate, up);
+        } else if (L.gu_type == 12) {
+            wmma_grouped_128_kernel<12, false><<<ggu128, 256, 0, s>>>(
+                grp_ptr, grp_start, n_groups, ent_tok, (const __half*) x_f16, L, gate, up);
+        } else {
+            wmma_grouped_128_kernel<8, false><<<ggu128, 256, 0, s>>>(
+                grp_ptr, grp_start, n_groups, ent_tok, (const __half*) x_f16, L, gate, up);
+        }
+    } else {
+        const int gu_bn = (L.gu_type == 40 && use_bn128) ? 128 : 64;
+        const dim3 ggu64((unsigned) (2 * L.n_ff / gu_bn), (unsigned) ch_per_e64, (unsigned) cap_groups);
+        if (L.gu_type == 40) {
+            if (use_bn128) {
+                wmma_grouped_64_kernel<40, false, 128><<<ggu64, 256, 0, s>>>(
+                    grp_ptr, grp_start, n_groups, ent_tok, (const __half*) x_f16, L, gate, up);
+            } else {
+                wmma_grouped_64_kernel<40, false, 64><<<ggu64, 256, 0, s>>>(
+                    grp_ptr, grp_start, n_groups, ent_tok, (const __half*) x_f16, L, gate, up);
+            }
+        } else if (L.gu_type == 13) {
+            wmma_grouped_64_kernel<13, false, 64><<<ggu64, 256, 0, s>>>(
+                grp_ptr, grp_start, n_groups, ent_tok, (const __half*) x_f16, L, gate, up);
+        } else if (L.gu_type == 12) {
+            wmma_grouped_64_kernel<12, false, 64><<<ggu64, 256, 0, s>>>(
+                grp_ptr, grp_start, n_groups, ent_tok, (const __half*) x_f16, L, gate, up);
+        } else {
+            wmma_grouped_64_kernel<8, false, 64><<<ggu64, 256, 0, s>>>(
+                grp_ptr, grp_start, n_groups, ent_tok, (const __half*) x_f16, L, gate, up);
+        }
+    }
+    check("native_expert_grouped_wmma/gu");
+
+    const unsigned act_blocks = (unsigned) std::min<int64_t>(4096, ((est_ent * L.n_ff) + 255) / 256);
+    if (L.situ) {
+        situ_f16_valid_kernel<<<act_blocks, 256, 0, s>>>(gate, up, h16, grp_start, n_groups, (int) L.n_ff, L.situ_beta, L.situ_linear_beta);
+    } else {
+        swiglu_f16_valid_kernel<<<act_blocks, 256, 0, s>>>(gate, up, h16, grp_start, n_groups, (int) L.n_ff);
+    }
+    check("native_expert_grouped_wmma/act");
+
+    if (use_bm128 && L.d_type != 40) {
+        const dim3 gd128((unsigned) (L.n_embd / 128), (unsigned) ch_per_e128, (unsigned) cap_groups);
+        wmma_grouped_128_kernel<8, true><<<gd128, 256, 0, s>>>(
+            grp_ptr, grp_start, n_groups, ent_dst, h16, L, out, nullptr);
+    } else {
+        const int d_bn = (L.d_type == 40 && use_bn128) ? 128 : 64;
+        const dim3 gd64((unsigned) (L.n_embd / d_bn), (unsigned) ch_per_e64, (unsigned) cap_groups);
+        if (L.d_type == 40) {
+            if (use_bn128) {
+                wmma_grouped_64_kernel<40, true, 128><<<gd64, 256, 0, s>>>(
+                    grp_ptr, grp_start, n_groups, ent_dst, h16, L, out, nullptr);
+            } else {
+                wmma_grouped_64_kernel<40, true, 64><<<gd64, 256, 0, s>>>(
+                    grp_ptr, grp_start, n_groups, ent_dst, h16, L, out, nullptr);
+            }
+        } else {
+            wmma_grouped_64_kernel<8, true, 64><<<gd64, 256, 0, s>>>(
+                grp_ptr, grp_start, n_groups, ent_dst, h16, L, out, nullptr);
+        }
+    }
+    check("native_expert_grouped_wmma/down");
+    return true;
 }
 }  // namespace strata::kernels
 #else

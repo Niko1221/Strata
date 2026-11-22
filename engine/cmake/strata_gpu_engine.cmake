@@ -635,6 +635,22 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_include_directories(strata PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../q38/include)
   endif()
 
+  # Inkling-2 Mini (GGUF arch `inkling2`): CUDA + AVX2 hybrid engine ported from
+  # strata-inkling2 by kuraneko1 (_ryu15_), https://github.com/kuraneko1/Strata (MIT).
+  # See docs/third-party/inkling2-kuraneko/CREDITS.md.
+  add_library(strata_inkling2 STATIC src/inkling2/inkling2_engine.cu)
+  target_include_directories(strata_inkling2 PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include PRIVATE ${_strata_gpu_include_directories})
+  target_link_libraries(strata_inkling2 PRIVATE strata_prefill strata_kernels strata_warnings ${_strata_gpu_runtime_target} ${_strata_gpu_blas_target})
+  if(STRATA_NATIVE_EXPERTS)
+    target_link_libraries(strata_inkling2 PRIVATE strata_kernels_cpu)
+    target_compile_definitions(strata_inkling2 PRIVATE STRATA_INKLING2_CPU_POOL=1)
+  endif()
+  add_executable(strata-inkling2 src/inkling2/inkling2_main.cpp)
+  strata_utf8_manifest(strata-inkling2)
+  target_link_libraries(strata-inkling2 PRIVATE strata_inkling2 ${_strata_gpu_runtime_target})
+  target_link_libraries(strata PRIVATE strata_inkling2)
+  target_compile_definitions(strata PRIVATE STRATA_HAVE_INKLING2=1)
+
   # DeepSeek-V4.1-Flash: the third engine path (src/dsv41, from Project Maya's maya-ds4, MIT, third_party/project-maya).
   # Its own executable for now (strata-dsv41); a family switch in `strata` comes after first light.  OFF by default: it
   # changes no existing target (the vendored kernels live in strata::dsv41k, so no symbol is shared with strata_kernels).

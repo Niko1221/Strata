@@ -54,6 +54,10 @@ struct NativeExpertLayout {
     bool gu_nib = false;                // STRATA_EXPERT_NIBBLE: gate/up as 4-bit codes (strata/core/expert_nibble.hpp's
                                         // slot); set only by native_expert_layout_nib
     const float* d_signs = nullptr;
+    // Inkling2 SITU activation (from kuraneko1/Strata, MIT): situ(g,u) = (beta*tanh(g/beta)*sigmoid(g))*(lb*tanh(u/lb)).
+    bool situ = false;
+    float situ_beta = 4.0f;
+    float situ_linear_beta = 25.0f;
 };
 NativeExpertLayout native_expert_layout(int gu_type, int d_type, int64_t n_embd, int64_t n_ff);
 /// STRATA_EXPERT_NIBBLE: a converted VRAM slot - gate/up as 4-bit codes, scales and d (expert_nibble.hpp's layout:
@@ -86,6 +90,12 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
                            const int32_t* n_groups, const int32_t* ent_dst, const int32_t* ent_tok, int64_t cap_groups,
                            int64_t cap_entries, const void* x_q8_1, void* scratch, float* out, void* stream,
                            int64_t grid_groups = 0);
+/// Volta+ (sm_70+) FP16 WMMA grouped MoE for prefill (from kuraneko1/Strata, MIT). Returns false cleanly on
+/// unsupported CC/shapes; the caller falls back to native_expert_grouped.
+bool native_expert_grouped_wmma(const NativeExpertLayout& L, const unsigned long long* grp_ptr, const int32_t* grp_start,
+                                const int32_t* n_groups, const int32_t* ent_dst, const int32_t* ent_tok,
+                                int64_t cap_groups, int64_t cap_entries, const void* x_f16, void* scratch, float* out,
+                                void* stream, int64_t expected_entries = 0);
 /// OWN-I8 (research, off by default): the same call as `native_expert_grouped` on our own int8 dot-product kernels - a tile of
 /// 64 weight rows x 32..64 entries per block, each weight sub-block decoded once per tile into int8 in shared memory, `dp4a`
 /// products, SwiGLU and the q8_1 quantization of H in the gate/up epilogue (gate/up never go to memory).  For cards with no

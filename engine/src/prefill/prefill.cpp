@@ -445,6 +445,7 @@ inline bool share_keeps_own_kernels(int64_t rows_cpu) {
 std::atomic<int64_t> g_sp_resident{-1}, g_sp_total{0};
 double g_sp_blob_mb = 0.0, g_sp_link_gbps = 0.0;   // the cache's mean blob (MB) and the start-up probe (GB/s), from Prefill::set_card_expert_share
 int g_sp_sm = 0;                                   // the card's multiprocessor count
+int g_sp_pool_workers = 0;                         // CPU pool workers, from Prefill::set_card_expert_share (BW-H, upstream 0.2.18)
 int g_sp_cc_major = 0, g_sp_cc_minor = 0;          // the card's compute capability
 bool g_sp_integrated = true;                       // not known as discrete until the card answered
 // STRATA_SWITCH_POINT as set: -1 unset, 1 for "1", 0 for any other value (the way back)
@@ -3411,7 +3412,7 @@ int64_t Prefill::short_read_default(int64_t base) {
     const bool cls = stream_floor_class_measured();
     return strata::prefill::short_read_default(base, cls, cls && layers_all_fused_only(), staged_fo_on(), trellis_g1151_all_fused() && layers_any_folded());
 }
-void Prefill::set_card_expert_share(int64_t resident_slots, int64_t total_pairs, double blob_mb, double link_gbps) {
+void Prefill::set_card_expert_share(int64_t resident_slots, int64_t total_pairs, double blob_mb, double link_gbps, int pool_workers) {
 #if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
     int dev = 0;
     cudaDeviceProp prop;
@@ -3423,6 +3424,7 @@ void Prefill::set_card_expert_share(int64_t resident_slots, int64_t total_pairs,
 #endif
     g_sp_blob_mb = blob_mb;
     g_sp_link_gbps = link_gbps;
+    g_sp_pool_workers = pool_workers;
     g_sp_total.store(total_pairs, std::memory_order_release);
     g_sp_resident.store(resident_slots, std::memory_order_release);
 }

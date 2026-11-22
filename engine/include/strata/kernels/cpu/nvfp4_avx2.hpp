@@ -18,6 +18,9 @@ bool nvfp4_256_fits(int n);
 /// Gate/up rows [r0, r1) for `nt` tokens: ff[t][r] = silu(s_gate * g) * (s_up * u), as nvfp4_512_gu_rows.
 void nvfp4_256_gu_rows(const uint8_t* blob, size_t gu_row, size_t up_off, int n, const void* const* act, int nt,
                        float* const* ff, int r0, int r1, float s_gate, float s_up);
+/// Inkling2 SITU variant: ff[t][r] = (beta * tanh(gs / beta) * sigmoid(gs)) * (lb * tanh(us / lb)).
+void nvfp4_256_gu_rows_situ(const uint8_t* blob, size_t gu_row, size_t up_off, int n, const void* const* act, int nt,
+                            float* const* ff, int r0, int r1, float s_gate, float s_up, float beta, float lb);
 
 /// Plain rows [r0, r1) against `nt` Q8_0 activations of `n` values, times `scale`, as nvfp4_512_rows.
 void nvfp4_256_rows(const uint8_t* w, size_t row_bytes, int n, const void* const* act, int nt, float* const* out,

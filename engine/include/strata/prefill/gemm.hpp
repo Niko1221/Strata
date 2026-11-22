@@ -43,6 +43,9 @@ public:
               float beta = 0.0f, int64_t ldx = 0, bool x_f16 = false);
     /// true when bf16() runs its products through FP16 tensor cores here (Turing, STRATA_BF16_TC): where X may be FP16
     bool bf16_converts_x() const;
+    /// Pre-allocate bf16() conversion buffers so CUDA Graph capture never holds a pointer freed by later growth
+    /// (from kuraneko1/Strata, MIT).
+    void reserve_bf16_tc(int64_t w_elems, int64_t x_elems);
 
     /// S (STRATA_HCD_EXACT): the HC down projection (N 320, K 10240) by the WMMA kernel that reproduces hipBLASLt's
     /// solution 1176 / 1177 bit for bit; false (nothing launched) unless hipBLASLt would take one of those for this

@@ -10,6 +10,7 @@
 #include "strata/kernels/cpu/kq_avx512.hpp"
 #include "strata/kernels/cpu/nvfp4_avx2.hpp"
 #include "strata/kernels/cpu/nvfp4_avx512.hpp"
+#include "strata/kernels/cpu/bf16_avx2.hpp"
 #include "strata/kernels/cpu/expert_layout.hpp"
 #include "strata/kernels/cpu/row_prefetch.hpp"
 #include "strata/kernels/cpu/hadamard.hpp"
@@ -361,6 +362,30 @@ bool kq512_ok(int type) {
 
 bool native_fmt(int gu_type, int d_type, int64_t n_embd, int64_t n_ff, NativeFmt& f, std::string& err) {
     init_once();
+    if (gu_type == kBf16Type && d_type == kBf16Type) {
+        if ((n_embd % 16) != 0 || (n_ff % 16) != 0) {
+            err = "native experts: BF16 expert geometry must be a multiple of 16";
+            return false;
+        }
+        f.gu_type = kBf16Type;
+        f.d_type = kBf16Type;
+        f.gu_act = 0;
+        f.d_act = 0;
+        f.n_embd = n_embd;
+        f.n_ff = n_ff;
+        f.gu_row = (size_t) n_embd * 2;
+        f.d_row = (size_t) n_ff * 2;
+        f.up_off = f.gu_row * (size_t) n_ff;
+        f.down_off = 2 * f.up_off;
+        f.bytes = f.down_off + f.d_row * (size_t) n_embd;
+        f.act_bytes = (size_t) n_embd * sizeof(float);
+        f.h_bytes = (size_t) n_ff * sizeof(float);
+        if (f.act_bytes > kNativeActBytes || f.h_bytes > kNativeHBytes) {
+            err = "native experts: BF16 activation larger than the pool's buffers";
+            return false;
+        }
+        return true;
+    }
     // The trellis types (Gyro, ggml types 144-146) are not in a ggml built from upstream (and an upstream ggml indexes its
     // type table by the id, so asking it about 144 reads past the table): their geometry and activation format (Q8_0)
     // are known here, and their rows run on tq_cpu.hpp.
@@ -518,6 +543,7 @@ void native_quant_act(const NativeFmt& f, const float* x, void* dst) {
         x = tmp.data();
     }
     if (act_dump().on) act_dump_record(f.layer, 0, x, f.n_embd);
+    if (f.gu_act == 0) { std::memcpy(dst, x, (size_t) f.n_embd * sizeof(float)); return; }
     if (q8k_avx2(f.gu_act)) { q8k_quant_avx2(x, dst, f.n_embd); return; }
     if (q8k_avx1(f.gu_act)) { q8k_quant_avx1(x, dst, f.n_embd); return; }
     traits(f.gu_act).from_float(x, dst, f.n_embd);
@@ -531,6 +557,7 @@ void native_quant_h(const NativeFmt& f, const float* h, void* dst) {
         h = tmp.data();
     }
     if (act_dump().on) act_dump_record(f.layer, 1, h, f.n_ff);
+    if (f.d_act == 0) { std::memcpy(dst, h, (size_t) f.n_ff * sizeof(float)); return; }
     if (q8k_avx2(f.d_act)) { q8k_quant_avx2(h, dst, f.n_ff); return; }
     if (q8k_avx1(f.d_act)) { q8k_quant_avx1(h, dst, f.n_ff); return; }
     traits(f.d_act).from_float(h, dst, f.n_ff);
@@ -719,7 +746,7 @@ void native_gu_rows_impl(const NativeFmt& f, const uint8_t* blob, const void* co
     // NVFP4 in 512-bit lanes: ggml's arithmetic, blocks decoded once per window; 1.8x at one token, 3.7x at seven
     // (nvfp4_avx512_parity). STRATA_NO_NVFP4_512 falls back to ggml-cpu.
     static const bool nvfp4_512 = cpu_avx512_ok() && std::getenv("STRATA_NO_NVFP4_512") == nullptr;
-    if (f.gu_type == kNvfp4Type && nvfp4_512 && nvfp4_512_fits(n)) {
+    if (f.gu_type == kNvfp4Type && !f.situ && nvfp4_512 && nvfp4_512_fits(n)) {
         nvfp4_512_gu_rows(blob, f.gu_row, f.up_off, n, act, nt, ff, r0, r1, sg, su);
         return;
     }
@@ -727,7 +754,41 @@ void native_gu_rows_impl(const NativeFmt& f, const uint8_t* blob, const void* co
     // tokens, 2x under DRAM load with 6 threads (nvfp4_avx512_parity). STRATA_NO_NVFP4_256 falls back to ggml-cpu.
     static const bool nvfp4_256 = cpu_avx2_ok() && std::getenv("STRATA_NO_NVFP4_256") == nullptr;
     if (f.gu_type == kNvfp4Type && nvfp4_256 && nvfp4_256_fits(n)) {
-        nvfp4_256_gu_rows(blob, f.gu_row, f.up_off, n, act, nt, ff, r0, r1, sg, su);
+        if (f.situ) nvfp4_256_gu_rows_situ(blob, f.gu_row, f.up_off, n, act, nt, ff, r0, r1, sg, su, f.situ_beta, f.situ_linear_beta);
+        else nvfp4_256_gu_rows(blob, f.gu_row, f.up_off, n, act, nt, ff, r0, r1, sg, su);
+        return;
+    }
+    if (f.gu_type == kBf16Type) {
+        if (cpu_avx2_ok() && bf16_256_fits(n)) {
+            bf16_256_gu_rows(blob, f.gu_row, f.up_off, n, act, nt, ff, r0, r1, f.situ, f.situ_beta, f.situ_linear_beta);
+            return;
+        }
+        auto bf16_f32 = [](uint16_t h) -> float {
+            uint32_t u = (uint32_t) h << 16;
+            float fv;
+            std::memcpy(&fv, &u, sizeof fv);
+            return fv;
+        };
+        for (int r = r0; r < r1; ++r) {
+            const uint16_t* gr = (const uint16_t*) (blob + (size_t) r * f.gu_row);
+            const uint16_t* ur = (const uint16_t*) (blob + f.up_off + (size_t) r * f.gu_row);
+            for (int t = 0; t < nt; ++t) {
+                const float* a = (const float*) act[t];
+                float g = 0.f, u = 0.f;
+                for (int k = 0; k < n; ++k) {
+                    const float av = a[k];
+                    g += bf16_f32(gr[k]) * av;
+                    u += bf16_f32(ur[k]) * av;
+                }
+                if (f.situ) {
+                    const float tg = f.situ_beta * std::tanh(g / f.situ_beta);
+                    const float tu = f.situ_linear_beta > 0.f ? f.situ_linear_beta * std::tanh(u / f.situ_linear_beta) : u;
+                    ff[t][r] = (tg / (1.f + std::exp(-g))) * tu;
+                } else {
+                    ff[t][r] = (g / (1.f + std::exp(-g))) * u;
+                }
+            }
+        }
         return;
     }
     const Tr dot = traits(f.gu_type);
@@ -757,7 +818,13 @@ void native_gu_rows_impl(const NativeFmt& f, const uint8_t* blob, const void* co
             dot.dot(n, &u, ur, act[t]);
             const float gs = *static_cast<volatile const float*>(&g) * sg;
             const float us = *static_cast<volatile const float*>(&u) * su;
-            ff[t][r] = (gs / (1.f + std::exp(-gs))) * us;
+            if (f.situ) {
+                const float tg = f.situ_beta * std::tanh(gs / f.situ_beta);
+                const float tu = f.situ_linear_beta > 0.f ? f.situ_linear_beta * std::tanh(us / f.situ_linear_beta) : us;
+                ff[t][r] = (tg / (1.f + std::exp(-gs))) * tu;
+            } else {
+                ff[t][r] = (gs / (1.f + std::exp(-gs))) * us;
+            }
         }
     }
 }
@@ -827,6 +894,28 @@ void native_down_rows_impl(const NativeFmt& f, const uint8_t* blob, const void* 
     static const bool nvfp4_256 = cpu_avx2_ok() && std::getenv("STRATA_NO_NVFP4_256") == nullptr;   // see above
     if (f.d_type == kNvfp4Type && nvfp4_256 && nvfp4_256_fits(n)) {
         nvfp4_256_rows(blob + f.down_off, f.d_row, n, hq, nt, out, r0, r1, sd);
+        return;
+    }
+    if (f.d_type == kBf16Type) {
+        if (cpu_avx2_ok() && bf16_256_fits(n)) {
+            bf16_256_rows(blob + f.down_off, f.d_row, n, hq, nt, out, r0, r1);
+            return;
+        }
+        auto bf16_f32 = [](uint16_t h) -> float {
+            uint32_t u = (uint32_t) h << 16;
+            float fv;
+            std::memcpy(&fv, &u, sizeof fv);
+            return fv;
+        };
+        for (int r = r0; r < r1; ++r) {
+            const uint16_t* dr = (const uint16_t*) (blob + f.down_off + (size_t) r * f.d_row);
+            for (int t = 0; t < nt; ++t) {
+                const float* h = (const float*) hq[t];
+                float s = 0.f;
+                for (int k = 0; k < n; ++k) s += bf16_f32(dr[k]) * h[k];
+                out[t][r] = s;
+            }
+        }
         return;
     }
     const Tr dot = traits(f.d_type);
