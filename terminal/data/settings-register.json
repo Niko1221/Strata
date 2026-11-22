@@ -12648,6 +12648,41 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_GR_V70",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/kernels/cuda/fused_gr.cu",
+     "line": 1738,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/NVIDIA_V100.md:65"
+   ],
+   "first_commit": "341d8111c9",
+   "first_date": "2026-11-22",
+   "since": null,
+   "last_commit": "341d8111c9",
+   "last_date": "2026-11-22",
+   "status": "opt-in",
+   "owner": "kernels/cuda",
+   "note": "Volta (sm_70) only: the token-split hyper-connection read (a warp per row and token); fused_gr_check compares it bit for bit with the default read at 1-8 tokens and keeps the default read on a card where it differs.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_GU_LANES",
    "backends": [
     "sycl"
