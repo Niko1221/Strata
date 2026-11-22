@@ -95,7 +95,7 @@ class EveryFileIsPinned(unittest.TestCase):
             for name, (size, sha) in files.items():
                 with self.subTest(repo=repo, file=name):
                     self.assertIsInstance(size, int)
-                    self.assertGreater(size, 1000)
+                    self.assertGreater(size, 50 if name.endswith((".json", ".jinja")) else 1000)   # (a checkpoint's small config files)
                     self.assertRegex(sha, HEX)
 
     def test_known_values(self):

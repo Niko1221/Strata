@@ -95,7 +95,9 @@ class Args(unittest.TestCase):
         src = ENGINE.read_text(encoding="utf-8")
         guard = (ENGINE.parent / "ink2_grow_guard.cuh").read_text(encoding="utf-8")
         self.assertIn("constexpr int FETCH_MAX = 64", src)
-        self.assertIn("(size_t) (budget * 0.2) / MX_BYTES", src)                          # the MXFP8 pool's share of the room
+        self.assertIn("(size_t) (budget * 0.2) / pool_slot(false)", src)                  # the MXFP8 pool's share of the room ...
+        self.assertIn("size_t pool_slot(bool nv) { return ex_bytes(nv ? 0 : NL - 1); }", src)
+        self.assertIn("g_is_gguf ? g_gg_a[r] + g_gg_b[r] : r ? MX_BYTES : NV_BYTES;", src)   # ... MX_BYTES a slot for the checkpoint
         self.assertIn("int g_off_margin_mib = 128;", src)
         self.assertIn("int grow_step = 8192;", src)                                       # the K/V grows in 8192-cell steps
         self.assertIn("for (;; T /= 2) {", src)                                           # pf_fit halves the chunk ...
