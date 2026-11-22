@@ -8,9 +8,10 @@
 // both I/O modes (Direct and Mmap) and through the prompt path's gather_batch. With the IQ4_NL shard the same rows
 // are compared too: same table, so a correlation near 0.997 - a shifted row order would be ~0.
 //
-// PLE_EXPECT_FORMAT (default F8_E4M3) is the format the table must open as. A 3-bit table (C4, C3, C2s; reference.bin
-// from tools/ple_lowbit_emulate.py --native) is only about sqrt(1 - NMSE) ~ 0.98 a row from IQ4_NL, lower for some rows,
-// so its correlation floor is 0.9 instead of FP8's 0.98: it still fails a shifted row and nothing else.
+// PLE_EXPECT_FORMAT (default F8_E4M3) is the format the table must open as. A low-bit table (C1, C2, C2s, C3, C4, C6;
+// reference.bin from tools/ple_lowbit_emulate.py --native) is only about sqrt(1 - NMSE) a row from IQ4_NL, lower for some
+// rows, so its correlation floor is 0.9 instead of FP8's 0.98 (rows 0:200000: min 0.993 for C1, 0.981 for C2), and 0.8
+// for the 2-bit C6 (NMSE 0.11: min 0.908 over 4160 rows, so 0.9 would fail on chance): it still fails a shifted row (~0).
 #include "strata/kernels/ngram.hpp"
 
 #include <cmath>
@@ -81,10 +82,10 @@ int main(int argc, char** argv) {
             rsum += std::sqrt(e2 / r2);
             ++counted;
         }
-        bool lowbit = false;   // the 3-bit formats are the ones with a codebook
+        bool lowbit = false;   // the low-bit formats are the ones with a codebook
         for (int i = 0; i < k::ple_format_count(); ++i)
             lowbit = lowbit || (k::ple_formats()[i].codebook_levels > 0 && std::strcmp(k::ple_formats()[i].name, expect) == 0);
-        const double cfloor = lowbit ? 0.9 : 0.98;
+        const double cfloor = !lowbit ? 0.98 : std::strcmp(expect, "C6") == 0 ? 0.8 : 0.9;
         std::printf("IQ4_NL table, same rows: correlation min %.4f (floor %.2f for %s), error vs %s %.1f%% mean (%d non-zero rows)\n",
                     cmin, cfloor, expect, expect, 100 * rsum / (counted ? counted : 1), counted);
         if (cmin < cfloor) ++bad;
