@@ -122,6 +122,17 @@ localized READMEs.
   waits for Latest=v0.7.4 then runs v074-install.ps1 (GUI then silent fallback)
   and logs final exe SHA / registry version.
 
+## Goal status (final verification)
+- upstream v0.2.19 intake: done (55 commits, verify ok).
+- PR https://github.com/Niko1221/Strata/pull/6571: OPEN (Ryu's profile tables
+  returned upstream).
+- version 0.7.4 / engine 0.6.6 / upstream v0.2.19; `release_manifest --check` ok.
+- READMEs: 8 languages, all contain 0.7.4/0.6.6/0.2.19.
+- GitHub Latest = v0.7.4; 4 assets uploaded with SHA-256 readback matching local.
+- Real GGUF benchmark: H:/Strata/evidence/inkling2-benchmark-result.txt
+  (pp 9.09 t/s, tg 11.78 t/s on RTX 5060 Ti 16 GB).
+- Real-machine overwrite install: in progress (uninstall done, GUI installing).
+
 ## Residual risks
 - No signing key; ed25519 component signature verification removed earlier by
   user decision; SHA-256 digest verification retained. `releaseQualified=false`.
