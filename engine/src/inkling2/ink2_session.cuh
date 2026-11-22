@@ -299,7 +299,8 @@ size_t sess_begin(const std::vector<int>& pr, std::vector<int>& hist, vec& last_
 
 // the prefill chunk at p0 of T tokens: ends at the branch point when it crosses it
 int sess_chunk(int p0, int T) { return g_sess.on && g_sess.split > p0 && g_sess.split < p0 + T ? g_sess.split - p0 : T; }
-// after the chunk ending at p: the branch checkpoint
+// after the chunk ending at p: the branch checkpoint.  CBA: the live conversation's checkpoints are never evicted
+// (only parked conversations are); one branch point per request at most, they leave with it when it is parked
 void sess_after_chunk(int p) {
     if (!g_sess.on || p != g_sess.split) return;
     vec lg(VOCAB);
