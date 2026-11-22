@@ -140,6 +140,12 @@ const Case CASES[] = {
     {"Q3_K 2560x640", 11, 2560, 640, 256, 110, {108, -1}},
     {"Q3_K 2560x512", 11, 2560, 512, 256, 110, {108, -1}},
     {"Q3_K 2560x2051 odd", 11, 2560, 2051, 256, 110, {108, -1}},
+    {"Q8_0 2560x10240", 8, 2560, 10240, 32, 34, {0, -1}},
+    {"Q8_0 2560x6144", 8, 2560, 6144, 32, 34, {0, -1}},
+    {"Q8_0 4096x2560", 8, 4096, 2560, 32, 34, {0, -1}},
+    {"Q8_0 2560x512", 8, 2560, 512, 32, 34, {0, -1}},
+    {"Q8_0 2560x12288", 8, 2560, 12288, 32, 34, {0, -1}},
+    {"Q8_0 odd rows 2560x2051", 8, 2560, 2051, 32, 34, {0, -1}},
 };
 
 uint16_t sane_half(std::mt19937& rng) {
@@ -290,8 +296,8 @@ int run_case(const Case& c, bool bench, cudaStream_t s) {
 // A cell with several measured shapes takes the worst (smallest) gain of the best choice, as the shipped table does for
 // two cards; a class with no measured shape prints the value of its neighbour below it (or 0).
 void emit_table() {
-    const int types[] = {23, 12, 13, 14, 11};
-    const char* names[] = {"IQ4_XS", "Q4_K", "Q5_K", "Q6_K", "Q3_K"};
+    const int types[] = {23, 12, 13, 14, 11, 8};
+    const char* names[] = {"IQ4_XS", "Q4_K", "Q5_K", "Q6_K", "Q3_K", "Q8_0"};
     std::printf("// measured on this card by mmvq_il_parity --bench --emit-table\n");
     // per cell: the rows count whose WORST ratio to native_mmvq over the cell's measured shapes is the best, taken only
     // when that worst ratio is under 0.97 (else 0); a class with no measured shape takes its lower neighbour's value
@@ -319,7 +325,7 @@ void emit_table() {
         return best_worst < 0.97 ? best : 0;
     };
     const int pf_today = g_pf.empty() ? -1 : 0;
-    for (int ti = 0; ti < 5; ++ti) {
+    for (int ti = 0; ti < 6; ++ti) {
         std::printf("    {%d, {", types[ti]);
         for (int nc = 2; nc <= 4; ++nc) {
             int prev = 0;
@@ -333,7 +339,7 @@ void emit_table() {
         std::printf("}},   // %s\n", names[ti]);
     }
     std::printf("// 5-8 columns (kIlRows58_<cc>; rows 4 runs as 2 there):\n");
-    for (int ti = 0; ti < 5; ++ti) {
+    for (int ti = 0; ti < 6; ++ti) {
         std::printf("    {%d, {", types[ti]);
         for (int nc = 5; nc <= 8; ++nc) {
             int prev = 0;
@@ -348,7 +354,7 @@ void emit_table() {
     }
     if (!g_pf.empty()) {   // the joint (variant, rows) table over the listed variants: kIlPf_80 / kIlPf58_80
         std::printf("// variant << 4 | rows over --pf (kIlPf_<cc>), 2-4 columns:\n");
-        for (int ti = 0; ti < 5; ++ti) {
+        for (int ti = 0; ti < 6; ++ti) {
             std::printf("    {%d, {", types[ti]);
             for (int nc = 2; nc <= 4; ++nc) {
                 int prev = 0;
@@ -362,7 +368,7 @@ void emit_table() {
             std::printf("}},   // %s\n", names[ti]);
         }
         std::printf("// 5-8 columns (kIlPf58_<cc>):\n");
-        for (int ti = 0; ti < 5; ++ti) {
+        for (int ti = 0; ti < 6; ++ti) {
             std::printf("    {%d, {", types[ti]);
             for (int nc = 5; nc <= 8; ++nc) {
                 int prev = 0;
@@ -377,7 +383,7 @@ void emit_table() {
         }
     }
     std::printf("// one column (kIl1RowsShared):\n");
-    for (int ti = 0; ti < 5; ++ti) {
+    for (int ti = 0; ti < 6; ++ti) {
         std::printf("    {%d, {", types[ti]);
         int prev = 0;
         for (int cls = 0; cls < 5; ++cls) {
@@ -404,11 +410,12 @@ int check_tables() {
     const char* e89 = std::getenv("STRATA_MMVQ_IL_89");
     // sm_89's own tables are ON by default (#3453, 0.2.7) unless STRATA_MMVQ_IL_89=0 or STRATA_DEFAULTS=026
     const bool opt89 = strata::mmvq_il_89_resolve(e89, false, 89, strata::qwen_defaults_026());
-    for (int type : {23, 12, 13, 14, 11})
+    for (int type : {23, 12, 13, 14, 11, 8})
         for (int nc = 2; nc <= 4; ++nc)
             for (int n_out : {512, 2560, 6144, 10240, 12288, 248320}) {
                 const int a = native_mmvq_il_rows_for(86, type, nc, n_out);
                 if (a != 0 && a != 1 && a != 2 && a != 4) { ++bad; std::printf("FAIL table: rows %d\n", a); }
+                if (type == 8) continue;   // Q8_0: the V100's row standing in on sm_86, not an Ada cell
                 // sm_89 (#3453): the cells where an RTX 4070 and an RTX 4080 gave the same rows count, else 0
                 const int cls = n_out < 2048 ? 0 : n_out < 4096 ? 1 : n_out < 8192 ? 2 : n_out < 12288 ? 3 : 4;
                 const int ti = type == 23 ? 0 : type == 12 ? 1 : type == 13 ? 2 : type == 14 ? 3 : 4;

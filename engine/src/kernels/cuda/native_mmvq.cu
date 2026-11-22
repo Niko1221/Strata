@@ -1181,6 +1181,7 @@ struct SmallTraits<Q50Block, 4> {
 template<>
 struct SmallTraits<Q80Block, 8> {
     using Block = Q80Block;
+    [[maybe_unused]] static constexpr int TYPE = 8;   // ggml type (launch_il_rows asks a traits struct for it)
     static constexpr int DIV = 32, T = 4, KBY = 1, BPI = 2 * WARPS * WARP / 8;
     __device__ static int kqs(int tid) { return 2 * (tid % 4); }
     struct W { int v[2]; float d0; };
@@ -2013,6 +2014,30 @@ struct IlQ6K {
             const int uc[2] = {u[0][c], u[1][c]};
             const float dc[2] = {d8[0][c], d8[1][c]};
             out[c] = FAST ? q6_q8_dot_fast(r.vl, vh, uc, r.sc0, r.sc1, d, dc) : q6_q8_dot_sc(r.vl, vh, uc, r.sc0, r.sc1, d, dc);
+        }
+    }
+};
+// Q8_0: one Q8_1 block a weight block; its traits' single-column apply reads the same two ints and scale, so here the
+// loaded W meets the interleaved columns' u() and scales() - the same dot product, bitwise.
+struct IlQ80 {
+    using F = SmallTraits<Q80Block, 8>;
+    static constexpr bool PM = false;
+    // no P1 hoisted-load variant for this type: nothing measured one, and the table that would use it (kIlPf_80) is the
+    // CMP 170HX's, which has no Q8_0 row.  The plain interleaved kernel is the one the V100's row was measured with.
+    static constexpr bool HAS_PF = false;
+    template <int NC, class X>
+    __device__ static void apply(const F::W& r, const X& x, int kby, int iqs, float (&out)[NC]) {
+        int u0[NC], u1[NC];
+        x.u(kby, iqs, u0);
+        x.u(kby, iqs + 1, u1);
+        float d8[NC];
+        x.scales(kby, d8);
+#pragma unroll
+        for (int c = 0; c < NC; ++c) {
+            int sumi = 0;
+            sumi = STRATA_DP4A(r.v[0], u0[c], sumi);
+            sumi = STRATA_DP4A(r.v[1], u1[c], sumi);
+            out[c] = r.d0 * d8[c] * float(sumi);
         }
     }
 };
@@ -3681,6 +3706,7 @@ constexpr IlRows kIlRowsShared[] = {   // sm_86 + sm_120, and the fallback for e
     {12, {{0, 0, 1, 1, 1}, {0, 1, 1, 1, 1}, {0, 1, 1, 1, 1}}},   // Q4_K
     {13, {{0, 0, 1, 1, 1}, {0, 4, 1, 1, 1}, {0, 1, 1, 1, 2}}},   // Q5_K
     {14, {{0, 0, 1, 1, 0}, {0, 0, 1, 1, 2}, {0, 0, 1, 1, 1}}},   // Q6_K
+    {8, {{0, 0, 4, 2, 1}, {0, 2, 2, 2, 2}, {0, 2, 2, 2, 2}}},   // Q8_0 (the V100's row standing in: nothing measured here)
 };
 // Per-architecture tables (P10).  A card whose compute capability (major * 10 + minor) is listed here uses its own table;
 // every other sm_80+ card uses kIlRowsShared.  sm_89 (Ada) has an opt-in table (kIlRows_89, below; STRATA_MMVQ_IL_89=1).  To add one, run
@@ -3695,6 +3721,7 @@ constexpr IlRows kIlRows_70[] = {
     {12, {{0, 2, 2, 4, 4}, {0, 2, 2, 2, 2}, {0, 2, 2, 2, 2}}},   // Q4_K
     {13, {{0, 2, 2, 2, 2}, {0, 2, 2, 2, 2}, {0, 1, 2, 2, 2}}},   // Q5_K
     {14, {{0, 1, 1, 1, 1}, {0, 2, 2, 2, 2}, {0, 2, 2, 4, 2}}},   // Q6_K
+    {8, {{0, 1, 4, 2, 4}, {0, 1, 1, 4, 2}, {0, 2, 2, 2, 2}}},    // Q8_0 (the same emit-table run, the same 3% rule)
 };
 // Pascal (sm_60), read off mmvq_il_parity --bench --emit-table on a Tesla P100-PCIE-16GB (three runs, identical
 // tables), the same 3% rule.  Pascal has no dp4a (strata_dp4a: four vmad), so the kernels are compute-bound and more rows a
@@ -3724,6 +3751,7 @@ constexpr IlRows kIlRows_86[] = {
     {12, {{0, 0, 1, 1, 1}, {0, 1, 1, 1, 1}, {0, 1, 1, 1, 1}}},   // Q4_K
     {13, {{0, 0, 1, 1, 1}, {0, 4, 1, 1, 1}, {0, 1, 1, 1, 2}}},   // Q5_K
     {14, {{0, 0, 1, 1, 0}, {0, 0, 1, 1, 2}, {0, 0, 1, 1, 1}}},   // Q6_K
+    {8, {{0, 0, 4, 2, 1}, {0, 2, 2, 2, 2}, {0, 2, 2, 2, 2}}},    // Q8_0: the shared row (nothing measured on the A4000)
     {11, {{1, 2, 2, 2, 2}, {1, 1, 1, 2, 2}, {1, 1, 1, 1, 1}}},   // Q3_K (two runs; 2560x10240 at 4 columns 120 -> 70 us)
 };
 // RTX PRO 5000 Blackwell (sm_120), 147-verify: read off mmvq_il_parity --bench --emit-table with the engine's shapes, the
@@ -3864,7 +3892,7 @@ constexpr IlArch kIlArch[] = {
     {1201, kIlRows_120, sizeof(kIlRows_120) / sizeof(IlRows)},
 };
 // STRATA_MMVQ_IL_ROWS="type:ncols:r0,r1,r2,r3,r4;..." overrides single rows of the table for every card (type = ggml
-// type 23/12/13/14, ncols 2-4, r* = rows a warp 0/1/2/4 for the five n_out classes).  Parsed once.
+// type 23/12/13/14/8, ncols 2-4, r* = rows a warp 0/1/2/4 for the five n_out classes).  Parsed once.
 struct IlEnvRow { int type, ncols; uint8_t r[5]; };
 const std::vector<IlEnvRow>& il_env_rows() {
     static const std::vector<IlEnvRow> v = [] {
@@ -4007,7 +4035,8 @@ bool native_mmvq_il_supported(int ggml_type, int ncols, int n_out) {
         return false;
     }
     return (g_tune_rows ? g_tune_rows : il_rows(ggml_type, ncols, n_out)) != 0 &&
-           (ggml_type == 23 || ggml_type == 12 || ggml_type == 13 || ggml_type == 14 || ggml_type == 11);
+           (ggml_type == 23 || ggml_type == 12 || ggml_type == 13 || ggml_type == 14 || ggml_type == 11 ||
+            ggml_type == 8);
 }
 
 void native_mmvq_il(int ggml_type, const void* weights, const void* x_q8_1, const void* x_il, float* y, int n_in,
@@ -4031,6 +4060,7 @@ void native_mmvq_il(int ggml_type, const void* weights, const void* x_q8_1, cons
     case 13: launch_il_rows<IlQ5K>(r, weights, x_il, y, n_in, n_out, ncols, s); break;
     case 14: launch_il_rows<IlQ6K>(r, weights, x_il, y, n_in, n_out, ncols, s); break;
     case 11: launch_il_rows<IlQ3K>(r, weights, x_il, y, n_in, n_out, ncols, s); break;
+    case 8: launch_il_rows<IlQ80>(r, weights, x_il, y, n_in, n_out, ncols, s); break;
     }
     launch_check();
 }
