@@ -16,6 +16,9 @@ void kq256_gu_rows(int ggml_type, const uint8_t* blob, size_t gu_row, size_t up_
 /// Single-token (T==1) fused gate+up Q4_K x Q8_K with shared activation loads (+ optional SITU activation), bit-exact.
 void kq256_gu_t1_q4k(const uint8_t* blob, size_t gu_row, size_t up_off, int n, const void* act0,
                      float* ff0, int r0, int r1, bool situ, float situ_beta, float situ_linear_beta);
+/// Single-token (T==1) algebraic unsigned Q5_0 x Q8_0 down projection (eliminates sign_epi8 via sum(q*y) - 16*sum(y)).
+void kq256_down_t1_q5_0(const uint8_t* w, size_t row_bytes, int n, const void* hq0,
+                        float* out0, int r0, int r1);
 /// out[t][r] = w_r . a[t], rows [r0, r1).
 void kq256_rows(int ggml_type, const uint8_t* w, size_t row_bytes, int n, const void* const* act, int nt,
                 float* const* out, int r0, int r1);

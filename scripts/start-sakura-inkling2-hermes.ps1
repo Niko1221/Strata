@@ -3,7 +3,8 @@ param(
     [string]$Context = "98k",
     [int]$Port = 8092,
     [string]$BindHost = "127.0.0.1",
-    [double]$LoopExitTol = 0.0
+    [double]$LoopExitTol = 0.0,
+    [double]$CpuMissPrune = 0.0
 )
 
 $ErrorActionPreference = "Stop"
@@ -18,13 +19,19 @@ if (-not (Test-Path $ConfigPath)) {
     throw "Config file not found: $ConfigPath"
 }
 
-if ($LoopExitTol -gt 0.0) {
+if ($LoopExitTol -gt 0.0 -or $CpuMissPrune -gt 0.0) {
     $cfg = Get-Content -Raw -Encoding UTF8 $ConfigPath | ConvertFrom-Json
     $argsList = [System.Collections.ArrayList]@($cfg.args)
-    [void]$argsList.Add("--loop-exit-tol")
-    [void]$argsList.Add($LoopExitTol.ToString([System.Globalization.CultureInfo]::InvariantCulture))
+    if ($LoopExitTol -gt 0.0) {
+        [void]$argsList.Add("--loop-exit-tol")
+        [void]$argsList.Add($LoopExitTol.ToString([System.Globalization.CultureInfo]::InvariantCulture))
+    }
+    if ($CpuMissPrune -gt 0.0) {
+        [void]$argsList.Add("--cpu-miss-prune")
+        [void]$argsList.Add($CpuMissPrune.ToString([System.Globalization.CultureInfo]::InvariantCulture))
+    }
     $cfg.args = $argsList
-    $TempCfg = Join-Path $env:TEMP "strata-sakura-inkling2-$Context-elt.json"
+    $TempCfg = Join-Path $env:TEMP "strata-sakura-inkling2-$Context-opt.json"
     $cfg | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 $TempCfg
     $ConfigPath = $TempCfg
 }

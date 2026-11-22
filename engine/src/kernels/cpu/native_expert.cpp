@@ -871,6 +871,11 @@ void native_down_rows_impl(const NativeFmt& f, const uint8_t* blob, const void* 
         kq512_rows(f.d_type, blob + f.down_off, f.d_row, (int) f.n_ff, hq, nt, out, r0, r1);
         return;
     }
+    if (cpu_avx2_ok() && f.d_type == 6 && nt == 1 && f.tail_off == 0 && f.n_ff <= 256 * 32 &&
+        (Arithmetic == NativeArithmetic::Default || flavour_avx2())) {
+        kq256_down_t1_q5_0(blob + f.down_off, f.d_row, (int) f.n_ff, hq[0], out[0], r0, r1);
+        return;
+    }
     if (cpu_avx2_ok() && kq && nt >= 2 && (f.d_type == 7 || f.d_type == 8) &&
         (Arithmetic == NativeArithmetic::Default || (flavour_avx2()))) {   // Q5_1 / Q8_0 down: bit-exact, any group size
         kq256_rows(f.d_type, blob + f.down_off, f.d_row, (int) f.n_ff, hq, nt, out, r0, r1);

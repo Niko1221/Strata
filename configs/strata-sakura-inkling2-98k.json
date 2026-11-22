@@ -12,9 +12,7 @@
     "H:/Strata/models/Sakura-Inkling-2-Mini-Uncensored-Q4_K_M.gguf",
     "--max-context",
     "98304",
-    "--kv-q8",
-    "--cpu-threads",
-    "6"
+    "--kv-q8"
   ],
   "host": "127.0.0.1",
   "port": 8092,

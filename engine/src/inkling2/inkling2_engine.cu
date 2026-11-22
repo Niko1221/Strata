@@ -919,9 +919,12 @@ struct Engine {
     bool core_all_gpu = false;
     bool graph_oom = false;
 
-    // Elastic Looped Transformer (ELT, arXiv:2604.09168) dynamic loop-exit (opt-in: --loop-exit-tol > 0).
+    // Elastic Looped Transformer (ELT, arXiv:2604.09168) dynamic loop-exit (opt-in: --loop-exit-tol > 0)
+    // and Miss-Aware Tail-Expert Pruning (opt-in: --cpu-miss-prune > 0, default 0 = bit-exact).
     float elt_exit_tol = 0.0f;
     int elt_min_passes = 1;
+    float cpu_miss_prune = 0.0f;
+    int64_t cpu_pruned_experts = 0;
     float* elt_prev = nullptr;
     float* elt_delta_host = nullptr;
     float* elt_delta_dev = nullptr;
@@ -1724,10 +1727,24 @@ struct Engine {
             int n_miss = 0;
             if (T == 1) {
                 const void* act0 = (L.cpu_fmt.gu_act == 0) ? (const void*) h_h : (const void*) acts;
+                float w_max = 0.0f;
+                int n_gpu_hits = 0;
+                if (cpu_miss_prune > 0.0f) {
+                    for (int e = 0; e < Kp; ++e) {
+                        if (h_ewts[e] > w_max) w_max = h_ewts[e];
+                        if (L.slot_of[(size_t) h_ids[e]] >= 0) ++n_gpu_hits;
+                    }
+                }
+                const float prune_thr = cpu_miss_prune * w_max;
                 for (int e = 0; e < Kp; ++e) {
                     const int x = h_ids[e];
                     h_miss[e] = L.slot_of[(size_t) x] < 0 ? 1 : 0;
                     if (!h_miss[e]) continue;
+                    if (cpu_miss_prune > 0.0f && h_ewts[e] < prune_thr && (n_gpu_hits + n_miss) > 0) {
+                        h_miss[e] = 0;
+                        ++cpu_pruned_experts;
+                        continue;
+                    }
                     ++n_miss;
                     C::ExpertJobMulti j;
                     j.blob = L.hblobs + (size_t) x * L.stride;
@@ -1861,7 +1878,8 @@ struct Engine {
             const int S = L.n_slots;
             if (S <= 0 || S >= ne) continue;
             const bool is_core = ((int) li >= hp.core_start && (int) li < hp.core_end);
-            const double weight = is_core ? 3.0 : ((L.L.gu_type == 13) ? 1.43 : 1.0);
+            // MoE-CORE / DALI heterogeneous cost weight: Q8_0 down outer layers are ~1.3x heavier on CPU than Q5_0.
+            const double weight = is_core ? 3.0 : ((L.L.gu_type == 13) ? 1.43 : ((L.L.d_type == 8) ? 1.30 : 1.0));
             for (int x = 0; x < ne; ++x) order[(size_t) x] = x;
             std::sort(order.begin(), order.end(),
                       [&](int a, int b) { return L.score[(size_t) a] > L.score[(size_t) b]; });
@@ -2887,8 +2905,8 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, std::strin
 #if defined(_WIN32)
     // Windows WDDM shares physical VRAM with DWM/OS; overcommitting to free=0 MiB silently migrates
     // late tier2 expert slabs to Shared GPU Memory (~20 GB/s PCIe vs 448 GB/s GDDR7 = 16x slower).
-    // Reserve 2816 MiB on <=17 GiB WDDM GPUs so all placed VRAM slabs + 65K-98K KV stay strictly GDDR-resident.
-    if (tot <= (17ull << 30)) reserve = std::max(reserve, (size_t) 2816 << 20);
+    // Reserve 3328 MiB on <=17 GiB WDDM GPUs so placed VRAM slabs + 65K-98K KV + cuBLAS/CUDA Graphs stay strictly GDDR-resident.
+    if (tot <= (17ull << 30)) reserve = std::max(reserve, (size_t) 3328 << 20);
 #endif
     if (const char* v = std::getenv("STRATA_VRAM_RESERVE_MB")) {
         const int mb = std::atoi(v);
@@ -3426,6 +3444,7 @@ int run(int argc, char** argv) {
     double expert_vram = -1.0;
     float loop_exit_tol = 0.0f;
     int loop_min_passes = 1;
+    float cpu_miss_prune = 0.0f;
     bool serve = false;
     bool bench = false;
     bool kv_q8 = true;
@@ -3451,6 +3470,7 @@ int run(int argc, char** argv) {
         else if (a == "--expert-vram") expert_vram = std::atof(next_arg());
         else if (a == "--loop-exit-tol") loop_exit_tol = (float) std::atof(next_arg());
         else if (a == "--loop-min-passes") loop_min_passes = std::max(1, std::atoi(next_arg()));
+        else if (a == "--cpu-miss-prune") cpu_miss_prune = std::clamp((float) std::atof(next_arg()), 0.0f, 0.95f);
         else if (a == "--cpu-threads" || a == "--pool-workers") cpu_threads = std::atoi(next_arg());
         else if (a == "--dump-logits") dump_logits_path = next_arg();
         else if (a == "--kv-f16") kv_q8 = false;
@@ -3530,6 +3550,7 @@ int run(int argc, char** argv) {
     Engine E;
     E.elt_exit_tol = loop_exit_tol;
     E.elt_min_passes = loop_min_passes;
+    E.cpu_miss_prune = cpu_miss_prune;
     if (!E.init(m, max_ctx, chunk, kv_q8, err, dm && dm->has_quant_dense, dm ? (draft_max + 1) : 1, &prof_cfg)) {
         std::fprintf(stderr, "strata-inkling2: engine init failed: %s\n", err.c_str());
         return 1;
@@ -3786,6 +3807,7 @@ int run(int argc, char** argv) {
         }
         E.reset_state();
         E.reset_elt_stats();
+        E.cpu_pruned_experts = 0;
         E.hy_gpu = E.hy_cpu = 0;
         E.hy_cpu_ms = 0.0;
         if (dspark) {
@@ -3850,6 +3872,10 @@ int run(int argc, char** argv) {
         }
     }
 
+    if (E.cpu_pruned_experts > 0) {
+        std::fprintf(stderr, "strata-inkling2: cpu_miss_prune=%.2f pruned=%lld CPU experts\n",
+                     E.cpu_miss_prune, (long long) E.cpu_pruned_experts);
+    }
     if (E.elt_total_tokens > 0) {
         const double d_avg = E.elt_delta_cnt > 0 ? (E.elt_delta_sum / (double) E.elt_delta_cnt) : 0.0;
         std::fprintf(stderr, "strata-inkling2: ELT avg_passes=%.2f/%lld early_exits=%lld/%lld delta(min=%.4f avg=%.4f max=%.4f) (tol=%.4f min_passes=%d)\n",
