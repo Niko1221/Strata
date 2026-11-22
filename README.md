@@ -1,179 +1,143 @@
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="apps/host/public/brand/strata-lockup-dark.svg">
-    <img src="apps/host/public/brand/strata-lockup-light.svg" alt="Strata" width="340">
-  </picture>
-</p>
+# THE PLATINUM BUILD — Strata on 4× MI50 (gfx906)
 
-<h3 align="center">Run powerful AI on your own computer.</h3>
-<p align="center">Chat, code and work with images, locally.</p>
+**What this is:** the fastest Strata build we have ever measured for
+Qwen3.8-Flash-Next on gfx906 hardware. Branch `rp-graft-0214` = upstream Strata
+**v0.2.14.1** + 13 gfx906 graft commits (MMQ dense/expert repacks + the "rp"
+prompt-path stack, vendored MIT code from mx-llama.cpp), compiled with the
+**clang 24** bundled in **ROCm 10.1** on the community
+[`mixa3607/rocm-gfx906:10.1-complete`](https://hub.docker.com/r/mixa3607/rocm-gfx906)
+image.
 
-<p align="center">
-  <a href="#models">Models</a> · <a href="#install"><b>Install</b></a> ·
-  <a href="#hardware">Hardware</a> · <a href="#tools">Tools</a> ·
-  <a href="#help">Help</a> · <a href="#support-strata">Support</a>
-</p>
+**Verified on GOLEM (4× MI50 32 GB, Threadripper 2990WX, 250 GB RAM):**
 
-<p align="center">
-  <a href="https://github.com/Niko1221/Strata/releases/latest"><img src="https://img.shields.io/github/v/release/Niko1221/Strata?label=download&color=0ab887" alt="Download Strata"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/Niko1221/Strata" alt="MIT license"></a>
-  <a href="https://github.com/sponsors/Niko1221"><img src="https://img.shields.io/badge/Sponsor-EA4AAA?logo=githubsponsors&logoColor=fff" alt="Sponsor Strata on GitHub Sponsors"></a>
-  <a href="https://buymeacoffee.com/strataengine"><img src="https://img.shields.io/badge/Buy_me_a_coffee-FFDD00?logo=buymeacoffee&logoColor=000" alt="Support Strata on Buy Me a Coffee"></a>
-</p>
+| probe | result |
+|---|---|
+| decode_128 / decode_256 | **148–149 tok/s** |
+| prefill_8192 | **1290–1305 tok/s** |
+| context | 262 144 tokens (int8 KV) |
+| VRAM | 93.6 GiB across 4 GPUs, layer-split auto |
 
-<p align="center"><sub><b>English</b> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ja.md">日本語</a> · <a href="README.de.md">Deutsch</a> · <a href="README.fr.md">Français</a> · <a href="README.es.md">Español</a> · <a href="README.pt-BR.md">Português</a> · <a href="README.pl.md">Polski</a></sub></p>
+For comparison, stock upstream engines *regress* on gfx906 (0.1.60+ measures
+~40 % slower decode on wave64 hardware). This branch exists because nothing
+upstream targets gfx906 prompt-path performance.
 
-**Free, open source, and yours to run.** Use Strata on your desktop or with your favorite coding tools. No account needed.
+## Hardware envelope (read before anything else)
 
-## Models
+- **4× gfx906** datacenter cards (MI50 32 GB; MI60/VII should work, untested).
+  The config assumes ≥ 96 GiB aggregate VRAM and the full model HBM-resident.
+- **~250 GB system RAM** in our box; the working set is the expert arena +
+  ~3–4 GiB engine runtime + ~3 GiB pinned KV at 256 K ctx. Budget accordingly
+  before copying our flags.
+- **PPTable + memory-clock cap applied first.** Our numbers assume the cards
+  run a PPTable with the memory clock hard-capped at 1080 MHz (stability
+  ceiling on used HBM2). Without proper PPTable/clocks you will see lower
+  numbers and intermittent hangs — that is a hardware layer, not this build.
+- **NUMA matters.** On the 2990WX we pin to the two RAM-bearing nodes
+  (`--membind=0,2`, CPUs 0-15,32-47). Wrong-NUMA placement costs real tok/s.
+- Docker, `/dev/kfd` + `/dev/dri` exposed, `memlock` unlimited.
 
-We recommend **ISTA-DASLab first**, then **Unsloth** and other providers, where a compatible model fits.
+## Path A — use the prebuilt binary
 
-<details>
-<summary><img src="docs/media/models/qwen.svg" width="22" alt="" align="middle"> &nbsp;<b>Qwen3.8-Flash-Next</b></summary>
+1. Download `strata` from the [`platinum-r101` release](releases/tag/platinum-r101)
+   and verify: `sha256sum strata` must equal
+   `accc4ac0031123a39b9f681fd3b9820df1d55f03d60e43437ec0d2d6db5f2451`.
+2. Pull the runtime base image (we do **not** host a container — this is the
+   community image everything is built on):
+   `docker pull mixa3607/rocm-gfx906:10.1-complete`
+   and build the serve image with `Dockerfile.runtime` from the release
+   (adds the 4 Python packages the serve wrapper needs).
+3. Get the model data (below), edit `strata.json.example` paths, launch with
+   `strata_serve.sh` from the release.
 
-| Provider | Choices |
-| --- | --- |
-| **ISTA-DASLab · recommended** | Q2\_0, IQ2\_XS, IQ3\_XXS, IQ3\_S. [Coder: IQ1\_M](docs/MODELS.md#coder) for coding. |
-| **Unsloth** | UD-IQ4\_XS, UD-Q4\_K\_XL, UD-Q5\_K\_XL, UD-Q6\_K\_XL, Q8\_0 |
-| **Gyro · agentionai** | [Gyro-S, Gyro-M](https://huggingface.co/agentionai/Qwen3.8-Flash-Next-Gyro-GGUF). Lower memory use but slower. |
-| **Other options** | [Swift 1.5](docs/MODELS.md#swift-15), [NVFP4](docs/NVFP4.md), [OrcaRouter](docs/ORCA.md) |
+## Path B — build from source (~20 min)
 
-[Compare sizes, memory needs and compatibility](docs/MODELS.md).
-
-</details>
-
-<details>
-<summary><img src="docs/media/models/qwen.svg" width="22" alt="" align="middle"> &nbsp;<b>Qwen3.6-35B-A3B</b></summary>
-
-**Unsloth:** UD-Q4_K_XL, UD-Q6_K_XL, Q8_0. These are the currently documented packs for this model.
-
-[Model guide and compatibility](docs/QWEN36.md).
-
-</details>
-
-<a id="the-other-sizes"></a>
-
-Not sure what fits? [Choose a model for your computer](docs/MODELS.md#pick-by-memory).
-
-## Install
-
-<a id="option-a-the-strata-app"></a>
-
-### Desktop app
-
-**[Download Strata for Windows, Linux or Mac →](https://github.com/Niko1221/Strata/releases/latest)**
-
-Install the app, choose a model, and start chatting. There is one installer for each system. On first start the app
-downloads the engine for your graphics card. [Help with the installer](docs/INSTALL.md#the-app).
-
-<sub>Files: `Strata-0.2.14-windows-x64-setup.exe` · `Strata-0.2.14-linux-x86_64.AppImage` · `Strata-0.2.14-macos-arm64.dmg`</sub>
-
-<p align="center">
-  <img src="docs/media/app-chat.png" width="900" alt="Strata desktop app with a chat and live code preview side by side">
-  <br><sub>Chat, files and a live preview in one window.</sub>
-</p>
-
-<a id="option-b-the-terminal-one-line"></a>
-
-### Terminal app
-
-Prefer the terminal? Install Strata, then run **`strata launch`**.
-
-<details open>
-<summary><b>Install commands</b></summary>
-
-**Linux / Mac**
-
-```sh
-curl -fsSL --connect-timeout 15 --max-time 120 https://github.com/Niko1221/Strata/releases/latest/download/install.sh -o install.sh && sh install.sh
+```
+git clone -b rp-graft-0214 https://github.com/rpcribari/Strata rp-graft
+cd rp-graft
+bash build_r101.sh          # dockerized; log: build-r101.log
+sha256sum build-r101/strata # must equal the release sha above
 ```
 
-**Windows PowerShell**
+Do not drift the flags in `build_r101.sh` — `STRATA_HIP_GFX906=ON`,
+`STRATA_MMQ=ON`, `STRATA_MMQ_KQUANTS=ON`, `STRATA_PREFILL_MMQ=OFF`, gfx906
+arch, clang 24 at `/opt/rocm/llvm/bin`. The +8 % over the previous champion
+build came specifically from clang 24 / ROCm 10.1; clang 23 on the older
+7.2.4 image reproduces the old 137–139 numbers.
 
-```powershell
-irm -TimeoutSec 120 https://github.com/Niko1221/Strata/releases/latest/download/install.ps1 | iex
+Optional vision encoder (HIP): re-run cmake with `-DSTRATA_VISION_HIP=ON` and
+build target `strata-vision-hip` (see `tools/vision/CMakeLists.txt`).
+
+## Model data
+
+All from Hugging Face [`unsloth/Qwen3.8-Flash-Next-GGUF`](https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF):
+
+- `UD-IQ4_XS/` — the 3-shard GGUF (`...-UD-IQ4_XS-0000{1,2,3}-of-00003.gguf`)
+- `MTP/` — the MTP draft layer (this is the 1.6–1.8× decode speedup; keep it on)
+- `mmproj-F16.gguf` — vision projector (only if you built the vision encoder)
+
+Then build the expert pack from shard 1 (needs numpy):
+
+```
+python3 tools/iq_pack.py --gguf <path>/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf \
+  --out ~/Strata-data/packs/ud-iq4_xs --experts-bin
 ```
 
-On Windows, open a new terminal afterwards. Then:
+`--experts-bin` is required with `STRATA_ARENA_MMAP=1` (which we run).
 
-```sh
-strata launch
+**Expert profile:** the release ships `expert-profile-starter.bin` (ranked
+routing pairs learned from our production traffic — better than nothing on day
+one). Regenerate from your own traffic once you have some:
+`tools/collect_profile_traces.py --mode routing` + `tools/make_profile_mix.py`.
+
+## Serve
+
+`strata.json.example` is our exact production config with paths replaced by
+`/home/YOURUSER` — `sed` them to your layout. The serve wrapper is the `serve/`
+Python package in this checkout:
+
+```
+python3 -m serve.server --engine /home/YOURUSER/rp-graft/build-r101/strata \
+  --config /home/YOURUSER/strata.json --port 8081 --host 0.0.0.0
 ```
 
-Follow the prompts to download and start a model. [Terminal guide](docs/TERMINAL_LAUNCH.md).
+`strata_serve.sh` wraps that in the container with the flags we need:
+`--device=/dev/kfd --device=/dev/dri --group-add video --group-add <render-gid>
+--ipc=host --ulimit memlock=-1:-1`.
 
-</details>
+**Required env** (baked into the example config):
 
-<p align="center">
-  <img src="docs/media/terminal-monitor.png" width="900" alt="Strata terminal app showing model activity, speed, memory and recent requests">
-  <br><sub>Watch your model and hardware while it runs.</sub>
-</p>
+- `HSA_OVERRIDE_GFX_VERSION=9.0.6`
+- `HSA_USERPTR_FOR_PAGED_MEM=0` and `HSA_SVM_FOR_PAGED_MEM=0` — REQUIRED on the
+  ROCm 10.1 stack, the engine misbehaves without them
+- `STRATA_ARENA_MMAP=1`, `STRATA_ENGINE_READY_S=2400` (long load on big RAM)
+- attention knobs `STRATA_GFX906_ATTN_QUERY_SWIZZLE=1`,
+  `STRATA_GFX906_ATTN_REDUCE12=1`, `STRATA_ATTN_MERGE_V2=1`
 
-<a id="build-from-source"></a>
+## Verify
 
-[Build from source](docs/SOURCE_INSTALL.md) · [Docker](docs/DOCKER.md) · [Full install guide](docs/INSTALL.md)
+```
+BENCH_BASE=http://127.0.0.1:8081/v1/chat/completions python3 bench_api.py
+```
 
-<a id="what-you-need"></a>
+Expect decode ≈ 148, prefill_8192 ≈ 1290 on GOLEM-class hardware.
+**If decode reads 58–86, your probe is missing `"reasoning_effort":"none"`** —
+you are counting reasoning tokens, not a regression.
 
-## Hardware
+## Pitfalls (each cost us real time)
 
-| Supported hardware | Guide |
-| --- | --- |
-| **NVIDIA GeForce RTX 20 / 30 / 40 / 50 series** | [NVIDIA setup](docs/INSTALL.md#what-you-need) |
-| **AMD Radeon RX 7700 / 7800 / 7900, RX 9060 / 9070, AI PRO R9700** | [AMD setup](docs/AMD_HIP.md) |
-| **AMD Radeon RX 6800 / 6900 · experimental** | [RX 6000 setup](docs/AMD_HIP.md#rdna2-gfx1030) |
-| **Intel Arc · Linux** | [Intel setup](docs/INTEL_ARC.md) |
-| **Apple Silicon · M1 or newer** | [Mac setup](docs/MAC.md) |
-| **AMD Ryzen AI Max · Strix Halo** | [Strix Halo setup](docs/STRIX_HALO.md) |
-| **NVIDIA DGX Spark · Linux** | [DGX Spark setup](docs/DGX_SPARK_LINUX.md) |
+1. `--group-add render` **by name** fails intermittently in dockerd — resolve
+   the GID with `getent group render | cut -d: -f3`.
+2. Never run a second engine while one serves traffic — VRAM overcommit stalls
+   the GPUs and kills the engine.
+3. Bring-up scripts must not send docker errors to `/dev/null`.
+4. Bench probes must replicate the real request body (stream, include_usage,
+   `reasoning_effort:none`) or you will chase ghosts.
+5. The engine reads `strata.json` only at launch — config edits are inert
+   until restart.
+6. Upstream engines newer than 0.1.52-era regress gfx906 ~40 %; that is the
+   whole reason this graft exists. Don't "just upgrade" back onto it.
 
-<a id="using-it"></a>
+## Rollback reference
 
-## Tools
-
-**Claude Code · Codex CLI · OpenCode · oh-my-pi · pi.dev · Hermes Agent · OpenClaw**, and more through the OpenAI- and Anthropic-compatible APIs.
-
-Run **`strata connect`** to see setup instructions for your tool. [Connection guide](docs/TERMINAL_LAUNCH.md#connect-your-apps-strata-connect).
-
-<a id="guides"></a>
-<a id="how-fast-is-it"></a>
-<a id="how-does-it-work"></a>
-<a id="something-went-wrong"></a>
-
-## Help
-
-[All guides](docs) · [Troubleshooting](docs/TROUBLESHOOTING.md) · [Report a bug](https://github.com/Niko1221/Strata/issues/new/choose) ·
-[Benchmarks](docs/COMMUNITY_BENCHMARKS.md) · [How it works](docs/HOW_IT_WORKS.md) · [Contribute](CONTRIBUTING.md)
-
-## Support Strata
-
-**Help keep local AI open to everyone.** A GitHub sponsorship or a coffee helps fund development and testing on more hardware.
-
-<a href="https://github.com/sponsors/Niko1221"><img src="https://img.shields.io/badge/Sponsor_on_GitHub-EA4AAA?style=for-the-badge&logo=githubsponsors&logoColor=white" alt="GitHub Sponsors: sponsor Strata" height="48"></a>
-<a href="https://buymeacoffee.com/strataengine"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me a Coffee: support Strata" height="48"></a>
-
-### Loyal supporters
-
-Thank you to everyone who supports Strata.
-
-<!-- supporters:start (one line per public supporter, newest last; copy a line and change the GitHub name in all four places) -->
-<a href="https://github.com/ryan4yin"><img src="https://github.com/ryan4yin.png?size=96" width="48" height="48" alt="ryan4yin" title="ryan4yin"></a>
-<a href="https://github.com/themactep"><img src="https://github.com/themactep.png?size=96" width="48" height="48" alt="themactep" title="themactep"></a>
-<a href="https://github.com/macintog"><img src="https://github.com/macintog.png?size=96" width="48" height="48" alt="macintog" title="macintog"></a>
-<a href="https://github.com/bisonbet"><img src="https://github.com/bisonbet.png?size=96" width="48" height="48" alt="bisonbet" title="bisonbet"></a>
-<a href="https://github.com/vizv"><img src="https://github.com/vizv.png?size=96" width="48" height="48" alt="vizv" title="vizv"></a>
-<a href="https://github.com/kod88vn"><img src="https://github.com/kod88vn.png?size=96" width="48" height="48" alt="kod88vn" title="kod88vn"></a>
-<a href="https://github.com/seoulworker"><img src="https://github.com/seoulworker.png?size=96" width="48" height="48" alt="seoulworker" title="seoulworker"></a>
-<a href="https://github.com/jackyini"><img src="https://github.com/jackyini.png?size=96" width="48" height="48" alt="jackyini" title="jackyini"></a>
-<a href="https://github.com/router0mail"><img src="https://github.com/router0mail.png?size=96" width="48" height="48" alt="router0mail" title="router0mail"></a>
-<!-- supporters:end -->
-
-[MIT license](LICENSE) · [Credits and model licenses](docs/HOW_IT_WORKS.md#credits) · [Privacy](docs/SAFETY.md)
-
-<a id="option-c-let-your-ai-set-it-up"></a>
-
-<sub>For AI tools and automated readers: <a href="AGENTS.md">technical reference</a> · <a href="docs/AI_SETUP.md">setup instructions</a>.</sub>
-
-**Sponsorships, hardware partnerships or collaborations:** [niko.veit@outlook.com](mailto:niko.veit@outlook.com).
-
+Previous champion ("crown build"): 0.1.52-era fork, clang 23, older 7.2.4
+image — 137–139 tok/s decode. See branch `int6` (legacy).
