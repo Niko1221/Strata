@@ -43,6 +43,8 @@ upstream targets gfx906 prompt-path performance.
   run a PPTable with the memory clock hard-capped at 1080 MHz (stability
   ceiling on used HBM2). Without proper PPTable/clocks you will see lower
   numbers and intermittent hangs — that is a hardware layer, not this build.
+  Our exact profile, boot-persistence unit, and the pitfalls we hit:
+  [`docs/tuning/`](docs/tuning/).
 - **NUMA matters.** On the 2990WX we pin to the two RAM-bearing nodes
   (`--membind=0,2`, CPUs 0-15,32-47). Wrong-NUMA placement costs real tok/s.
 - Docker, `/dev/kfd` + `/dev/dri` exposed, `memlock` unlimited.

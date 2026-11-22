@@ -1,0 +1,16 @@
+[Unit]
+Description=Re-apply MI50 UCLK 1080 tuning profile (driver re-latches factory PPTable at boot)
+
+[Service]
+Type=oneshot
+# Edit PROFILE_PATH (quote it if the path contains spaces — ExecStart splits
+# on whitespace; a space in an unquoted path fails with a misleading
+# "profile is not readable" error).
+ExecStart=/usr/bin/amd-tuning apply --gpu 0 --profile "PROFILE_PATH"
+ExecStart=/usr/bin/amd-tuning apply --gpu 1 --profile "PROFILE_PATH"
+ExecStart=/usr/bin/amd-tuning apply --gpu 2 --profile "PROFILE_PATH"
+ExecStart=/usr/bin/amd-tuning apply --gpu 3 --profile "PROFILE_PATH"
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,24 @@
+# 4x MI50 Safe Baseline v2 — clock-only bump, timings left at vendor stock
+# Rationale (see ML-gfx906/amd-tuning/mi50-hbm/): the repo's tested rig got its
+# gains from UCLK; sub-timing tightening is where hangs/ECC errors came from
+# (RCDRD=12 -> 156k UMC errors, RDRDSCL=2 -> host reboot). Our cards are on
+# VBIOS 113-D1631711-100 with mixed Samsung (GPU0/1) + Hynix (GPU2/3) stock
+# timings, so we change ONLY the memory clock and keep every sub-timing at each
+# vendor's own stock. Power limits/sclk already at target on this rig (no-ops).
+schemaVersion: 1
+
+ppTable:
+  # 225 W per GPU — unchanged from current VBIOS default, pinned explicitly
+  SmallPowerLimit1: 225
+  SmallPowerLimit2: 225
+  BoostPowerLimit: 225
+  smcPPTable/SocketPowerLimitAc0: 225
+  smcPPTable/SocketPowerLimitDc: 225
+  # Max core clock — unchanged (stock max)
+  smcPPTable/FreqTableGfx/8: 1725
+  # Memory clock 1000 -> 1080 (+8%): the real bandwidth lever, conservative step
+  # (repo tested error-free all the way to 1180; we take half the delta first)
+  smcPPTable/FreqTableUclk/2: 1080
+  smcPPTable/FreqTableUclk/3: 1080
+
+# memoryTweak section intentionally EMPTY — Samsung and Hynix stock timings stay.
