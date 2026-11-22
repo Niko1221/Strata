@@ -148,6 +148,27 @@ class Effort(unittest.TestCase):
         frontend.use_family(None)
         self.assertEqual(frontend.effort_kwargs("high"), {"reasoning_effort": "xhigh"})       # the Qwen table is back
 
+    def test_config_reasoning_effort_max_is_hy4_only(self):
+        from serve.server import clean_shared_defaults
+        hy4_cfg = {"arch": hy4_kind.ARCH}
+        self.assertTrue(hy4_kind.is_hy4(hy4_cfg))
+        self.assertEqual(clean_shared_defaults({"reasoning_effort": "max"}, hy4=hy4_kind.is_hy4(hy4_cfg)), {"reasoning_effort": "max"})
+        self.assertEqual(clean_shared_defaults({"reasoning_effort": "none"}, hy4=True), {"reasoning_effort": "none"})
+        with self.assertRaises(ValueError):                                   # other families: today's validation
+            clean_shared_defaults({"reasoning_effort": "max"}, hy4=hy4_kind.is_hy4({"arch": "qwen"}))
+        with self.assertRaises(ValueError):
+            clean_shared_defaults({"reasoning_effort": "max"})
+        with self.assertRaises(ValueError):
+            clean_shared_defaults({"reasoning_effort": "bogus"}, hy4=True)
+        # the configured level reaches the template the way a request's own does (OpenAI body; Anthropic output_config)
+        frontend.use_family("hy4")
+        tpl = ChatTemplate(TEMPLATE)
+        msgs, tools, kw = frontend.openai_to_messages({"messages": [{"role": "user", "content": "hi"}], "reasoning_effort": "max"})
+        self.assertIn("reasoning_effort:max", tpl.render(msgs, tools=tools, **D.template_kwargs(kw)))
+        msgs, tools, kw = frontend.anthropic_to_messages({"messages": [{"role": "user", "content": "hi"}], "max_tokens": 9,
+                                                          "output_config": {"effort": "max"}})
+        self.assertIn("reasoning_effort:max", tpl.render(msgs, tools=tools, **D.template_kwargs(kw)))
+
     def test_template_kwargs(self):
         self.assertEqual(D.template_kwargs({"enable_thinking": False}), {"enable_thinking": False, "reasoning_effort": "no_think"})
         self.assertEqual(D.template_kwargs({"reasoning_effort": "max"}), {"reasoning_effort": "max"})
