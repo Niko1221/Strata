@@ -18,7 +18,7 @@ class HipFlagsNameTheRootFirst(unittest.TestCase):
 
     def test_setup_py_has_the_engine_and_the_picture_reader_builds(self):
         found = self.flags("setup.py")
-        self.assertEqual(len(found), 2, found)
+        self.assertEqual(len(found), 3, found)
         for flags in found:
             self.assertTrue(flags.startswith("-isystem {root}/include --rocm-path={root}"), flags)
 
