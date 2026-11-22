@@ -16,7 +16,7 @@ bool pools_keep_min(double bytes) {
     for (bool nv : {true, false}) {
         const int ns = nv ? E.nslot_nv : E.nslot_mx;
         if (!ns) continue;
-        const int drop = (int) std::ceil(deficit * pool_bytes(nv) / used / (nv ? ex_bytes(0) : MX_BYTES));
+        const int drop = (int) std::ceil(deficit * pool_bytes(nv) / used / pool_slot(nv));
         if (ns - drop < FETCH_MAX) return false;
     }
     return true;

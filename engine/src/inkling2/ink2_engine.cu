@@ -2618,17 +2618,18 @@ struct Engine {
     uint8_t** fdst = nullptr;
     unsigned long long* fbytes = nullptr;
 };
-// GGUF (--model FILE.gguf): one format for every layer, its slots in pool_nv: [gate_up rows | down rows]
-bool g_is_gguf = false;
-size_t g_gg_a = 0, g_gg_b = 0;
-bool ex_nv(int l) { return g_is_gguf || l < MXFP8_FIRST; }   // the layer's experts live in pool_nv
-size_t ex_bytes(int l) { return g_is_gguf ? g_gg_a + g_gg_b : l < MXFP8_FIRST ? NV_BYTES : MX_BYTES; }
-size_t ex_partA(int l) { return g_is_gguf ? g_gg_a : l < MXFP8_FIRST ? NV_A : MX_A; }
+// GGUF (--model FILE.gguf): slots [gate_up rows | down rows]; one format for every layer, every slot in pool_nv; or one
+// for layers < MXFP8_FIRST and another after (g_gg_two, ink2_gguf_experts.cuh): offload uses both pools as the checkpoint
+bool g_is_gguf = false, g_gg_two = false;
+size_t g_gg_a[2] = {}, g_gg_b[2] = {};   // GGUF part A / part B bytes of an expert: layers < MXFP8_FIRST [0], after [1]
+bool ex_nv(int l) { return (g_is_gguf && !g_gg_two) || l < MXFP8_FIRST; }   // the layer's experts live in pool_nv (offload)
+size_t ex_bytes(int l) { const int r = l >= MXFP8_FIRST; return g_is_gguf ? g_gg_a[r] + g_gg_b[r] : r ? MX_BYTES : NV_BYTES; }
+size_t ex_partA(int l) { const int r = l >= MXFP8_FIRST; return g_is_gguf ? g_gg_a[r] : r ? MX_A : NV_A; }
 size_t ex_layer_off(int l) {   // offset of layer l's first expert in the resident / host layout
-    if (g_is_gguf) return (size_t) l * NE * (g_gg_a + g_gg_b);
-    return l < MXFP8_FIRST ? (size_t) l * NE * NV_BYTES
-                           : (size_t) MXFP8_FIRST * NE * NV_BYTES + (size_t) (l - MXFP8_FIRST) * NE * MX_BYTES;
+    return l < MXFP8_FIRST ? (size_t) l * NE * ex_bytes(0)
+                           : (size_t) MXFP8_FIRST * NE * ex_bytes(0) + (size_t) (l - MXFP8_FIRST) * NE * ex_bytes(NL - 1);
 }
+size_t pool_slot(bool nv) { return ex_bytes(nv ? 0 : NL - 1); }   // bytes of a pool_nv / pool_mx slot (offload)
 int g_slot = 0;   // the layer application being built (host side, baked into the launches)
 int g_rpw = 4;    // decode GEMV rows per warp, upper bound (INK2_RPW: 1, 2, 4, 8)
 int g_sel_rpw = 2;   // expert (selected) GEMV rows per warp (INK2_SEL_RPW: 1, 2, 4, 8)
@@ -2683,7 +2684,7 @@ int gpu_node() {
 // the experts' memory (load / load_gguf, once ex_bytes is known): resident, the device pools; offload, host regions
 // per NUMA node (E.xh / E.home / E.xsrc_d); the part tables
 void expert_memory() {
-    if (E.reserve_mib < 0 && g_is_gguf) {   // GGUF: one format, every layer in pool_nv
+    if (E.reserve_mib < 0 && g_is_gguf) {   // GGUF resident: every layer in pool_nv (one or two formats)
         E.pool_nv = (uint8_t*) dalloc(ex_layer_off(NL));
     } else if (E.reserve_mib < 0) {
         E.pool_nv = (uint8_t*) dalloc((size_t) MXFP8_FIRST * NE * NV_BYTES);
@@ -2872,6 +2873,7 @@ size_t gg_row_bytes(uint32_t type, int64_t ne0) {
     default: return 0;
     }
 }
+#include "ink2_gguf_experts.cuh"
 std::string gg_open(const std::string& path, Gguf& g) {
     const int fd = ::open(path.c_str(), O_RDONLY);
     if (fd < 0) return "cannot open " + path;
@@ -2924,7 +2926,7 @@ std::string gg_open(const std::string& path, Gguf& g) {
         x.type = u32();
         const uint64_t off = u64();
         const size_t rb = gg_row_bytes(x.type, x.ne[0]);
-        if (!rb) return name + ": ggml type " + std::to_string(x.type) + " is not supported";
+        if (!rb) return name + ": ggml type " + std::to_string(x.type) + " (" + gg_type_name(x.type) + ") is not supported";
         x.bytes = rb * (size_t) (x.ne[1] * x.ne[2] * x.ne[3]);
         g.t[name] = x;
         offs.push_back({name, off});
@@ -3039,6 +3041,7 @@ void load_gguf() {
     need("block_count", NL); need("embedding_length", H); need("expert_count", NE); need("expert_used_count", TOPK);
     need("loop.start", LOOP_BEGIN); need("loop.end", LOOP_END); need("loop.count", PASSES); need("loop.gate_rank", GATE_RANK);
     need("attention.sliding_window", WINDOW); need("expert_feed_forward_length", FF);
+    gg_expert_formats(g);   // one expert type pair for every layer, or one for 0..19 and one for 20..23; slot = [gate_up | down]
     E.embed_norm = gg_fvec("token_embd_norm.weight");
     E.norm = gg_fvec("output_norm.weight");
     E.final_query = gg_fvec("output_res_query.weight");
@@ -3057,20 +3060,7 @@ void load_gguf() {
         }
         E.msg_queries = dvec(mq);
     }
-    {   // expert types: the same in every layer (one pool); slot = [gate_up rows | down rows], 256-byte multiples
-        for (int l = 0; l < NL; ++l)
-            for (const char* n : {"ffn_gate_up_exps.weight", "ffn_down_exps.weight"}) {
-                const GgTensor& x = g.get("blk." + std::to_string(l) + "." + n);
-                if (x.type != GG_IQ3_S && x.type != GG_IQ4_NL && x.type != GG_Q8_0) {
-                    std::fprintf(stderr, "layer %d: expert type %u (IQ3_S, IQ4_NL or Q8_0)\n", l, x.type);
-                    std::exit(1);
-                }
-            }
-        g_gg_a = g.get("blk.0.ffn_gate_up_exps.weight").bytes / NE;
-        g_gg_b = g.get("blk.0.ffn_down_exps.weight").bytes / NE;
-        if (g_gg_a % 16 || g_gg_b % 16) { std::fprintf(stderr, "GGUF experts: %zu / %zu bytes, not 16-byte multiples\n", g_gg_a, g_gg_b); std::exit(1); }
-        expert_memory();
-    }
+    expert_memory();
     for (int l = 0; l < NL; ++l) {
         Layer& Y = E.L[l];
         const std::string b = "blk." + std::to_string(l) + ".";
@@ -3135,21 +3125,22 @@ void load_gguf() {
         X.gg2 = (int) dn.type;
         X.rb13 = gg_row_bytes(gu.type, gu.ne[0]);
         X.rb2 = gg_row_bytes(dn.type, dn.ne[0]);
-        if (gu.bytes / NE != g_gg_a || dn.bytes / NE != g_gg_b) { std::fprintf(stderr, "layer %d: expert sizes differ\n", l); std::exit(1); }
+        const size_t ga = ex_partA(l), gb = ex_bytes(l) - ga;   // gg_expert_formats checked the types per layer range
+        if (gu.bytes / NE != ga || dn.bytes / NE != gb) { std::fprintf(stderr, "layer %d: expert sizes differ\n", l); std::exit(1); }
         {   // one slot per expert: [gate_up rows | down rows], then the layer into its pool range (offload: E.xh)
             const size_t eb = ex_bytes(l);
             std::vector<uint8_t> lay(E.offload ? 0 : (size_t) NE * eb);
             for (int e = 0; e < NE; ++e) {
                 uint8_t* o = E.offload ? E.xh[(size_t) l * NE + e] : lay.data() + (size_t) e * eb;
-                std::memcpy(o, gu.data + (size_t) e * g_gg_a, g_gg_a);
-                std::memcpy(o + g_gg_a, dn.data + (size_t) e * g_gg_b, g_gg_b);
+                std::memcpy(o, gu.data + (size_t) e * ga, ga);
+                std::memcpy(o + ga, dn.data + (size_t) e * gb, gb);
             }
             if (!E.offload) {
                 uint8_t* dst = E.pool_nv + ex_layer_off(l);
                 CK(cudaMemcpy(dst, lay.data(), lay.size(), cudaMemcpyHostToDevice));
                 for (int e = 0; e < NE; ++e) {
                     E.htabA[l * NE + e] = dst + (size_t) e * eb;
-                    E.htabB[l * NE + e] = dst + (size_t) e * eb + g_gg_a;
+                    E.htabB[l * NE + e] = dst + (size_t) e * eb + ga;
                 }
             }
             X.tA = E.tabA + (size_t) l * NE;
@@ -3179,31 +3170,34 @@ void setup_offload() {
     CK(cudaMemGetInfo(&fr, &tot));
     const size_t keep = ((size_t) E.reserve_mib << 20) + ((size_t) g_off_margin_mib << 20);
     const size_t budget = fr > keep ? fr - keep : 0;
-    if (g_is_gguf) {   // one format, one pool
+    // GGUF with one expert format: one pool; else (checkpoint, GGUF g_gg_two) layers >= MXFP8_FIRST in pool_mx.
+    // CBA: a two-format GGUF (IQ4_NL / Q8_0) reuses the checkpoint's 0.20 split, not replayed for its slot sizes
+    const bool one = g_is_gguf && !g_gg_two;
+    if (one) {
         E.nslot_mx = 0;
         E.nslot_nv = (int) std::min<size_t>(budget / ex_bytes(0), (size_t) NL * NE);
     } else {
-        E.nslot_mx = (int) std::min<size_t>((size_t) (budget * 0.2) / MX_BYTES, (size_t) (NL - MXFP8_FIRST) * NE);
-        E.nslot_nv = (int) std::min<size_t>((budget - (size_t) E.nslot_mx * MX_BYTES) / NV_BYTES, (size_t) MXFP8_FIRST * NE);
+        E.nslot_mx = (int) std::min<size_t>((size_t) (budget * 0.2) / pool_slot(false), (size_t) (NL - MXFP8_FIRST) * NE);
+        E.nslot_nv = (int) std::min<size_t>((budget - (size_t) E.nslot_mx * pool_slot(false)) / pool_slot(true), (size_t) MXFP8_FIRST * NE);
     }
-    if (E.nslot_nv < FETCH_MAX || (!g_is_gguf && E.nslot_mx < FETCH_MAX)) {
+    if (E.nslot_nv < FETCH_MAX || (!one && E.nslot_mx < FETCH_MAX)) {
         std::fprintf(stderr, "offload: %.2f GiB free, reserve %d MiB: room for %d + %d expert slots (need >= %d each)\n",
                      fr / 1073741824.0, E.reserve_mib, E.nslot_nv, E.nslot_mx, FETCH_MAX);
         std::exit(1);
     }
-    const int cap_nv = g_is_gguf ? NL * NE : MXFP8_FIRST * NE, cap_mx = g_is_gguf ? 0 : (NL - MXFP8_FIRST) * NE;
+    const int cap_nv = one ? NL * NE : MXFP8_FIRST * NE, cap_mx = one ? 0 : (NL - MXFP8_FIRST) * NE;
     if (E.grow) {   // growable: --kv-grow takes slots back as the context grows (pool_resize)
         E.vpool_nv.init((size_t) cap_nv * ex_bytes(0));
         if (!E.vpool_nv.map_to((size_t) E.nslot_nv * ex_bytes(0))) { std::fprintf(stderr, "offload: pool mapping failed\n"); std::exit(1); }
         E.pool_nv = (uint8_t*) E.vpool_nv.ptr();
         if (cap_mx) {
-            E.vpool_mx.init((size_t) cap_mx * MX_BYTES);
-            if (!E.vpool_mx.map_to((size_t) E.nslot_mx * MX_BYTES)) { std::fprintf(stderr, "offload: pool mapping failed\n"); std::exit(1); }
+            E.vpool_mx.init((size_t) cap_mx * pool_slot(false));
+            if (!E.vpool_mx.map_to((size_t) E.nslot_mx * pool_slot(false))) { std::fprintf(stderr, "offload: pool mapping failed\n"); std::exit(1); }
             E.pool_mx = (uint8_t*) E.vpool_mx.ptr();
         }
     } else {
         E.pool_nv = (uint8_t*) dalloc((size_t) E.nslot_nv * ex_bytes(0));
-        if (E.nslot_mx) E.pool_mx = (uint8_t*) dalloc((size_t) E.nslot_mx * MX_BYTES);
+        if (E.nslot_mx) E.pool_mx = (uint8_t*) dalloc((size_t) E.nslot_mx * pool_slot(false));
     }
     std::vector<int> slot_of((size_t) NL * NE, -1), own_nv(E.grow ? cap_nv : E.nslot_nv, -1),
                      own_mx(E.grow ? cap_mx : E.nslot_mx, -1);
@@ -3240,8 +3234,8 @@ void setup_offload() {
     E.fbytes = (unsigned long long*) dalloc(8);
     std::fprintf(stderr, "offload: %.2f GiB free after the rest, reserve %d MiB -> %d NVFP4 + %d MXFP8 expert slots "
                          "(%.2f GiB, %.0f %% of the experts)\n", fr / 1073741824.0, E.reserve_mib, E.nslot_nv, E.nslot_mx,
-                 ((size_t) E.nslot_nv * ex_bytes(0) + (size_t) E.nslot_mx * MX_BYTES) / 1073741824.0,
-                 100.0 * ((size_t) E.nslot_nv * ex_bytes(0) + (size_t) E.nslot_mx * MX_BYTES) / ex_layer_off(NL));
+                 ((size_t) E.nslot_nv * ex_bytes(0) + (size_t) E.nslot_mx * pool_slot(false)) / 1073741824.0,
+                 100.0 * ((size_t) E.nslot_nv * ex_bytes(0) + (size_t) E.nslot_mx * pool_slot(false)) / ex_layer_off(NL));
 }
 
 // bytes per cell of a slot's K (0), V (1), K scales (2), V scales (3) in format E.kvm
@@ -3271,7 +3265,7 @@ cudaGraphExec_t g_vexec[2] = {};         // the --spec verify graphs (forward_pr
 void pool_resize(bool nv, int n) {
     int& ns = nv ? E.nslot_nv : E.nslot_mx;
     VRange& r = nv ? E.vpool_nv : E.vpool_mx;
-    const size_t eb = nv ? ex_bytes(0) : MX_BYTES;
+    const size_t eb = pool_slot(nv);
     n = std::max(0, std::min(n, (int) (r.reserved / eb)));
     if (n < ns) {
         if (E.cpu) promote_cancel();   // planned promotions may hold slots past n
@@ -3286,14 +3280,14 @@ void pool_resize(bool nv, int n) {
     if (E.exec) { CK(cudaGraphExecDestroy(E.exec)); E.exec = nullptr; }
     for (auto& x : g_vexec) if (x) { CK(cudaGraphExecDestroy(x)); x = nullptr; }
 }
-double pool_bytes(bool nv) { return (double) (nv ? E.nslot_nv : E.nslot_mx) * (nv ? ex_bytes(0) : MX_BYTES); }
+double pool_bytes(bool nv) { return (double) (nv ? E.nslot_nv : E.nslot_mx) * pool_slot(nv); }
 // the pools give up `bytes`, in proportion to their sizes
 void pools_release(double bytes, const char* what) {
     const double deficit = bytes + 4.0 * g_vmm.gran, used = pool_bytes(true) + pool_bytes(false);
     for (bool nv : {true, false}) {
         const int ns = nv ? E.nslot_nv : E.nslot_mx;
         if (!ns) continue;
-        const int drop = (int) std::ceil(deficit * pool_bytes(nv) / used / (nv ? ex_bytes(0) : MX_BYTES));
+        const int drop = (int) std::ceil(deficit * pool_bytes(nv) / used / pool_slot(nv));
         if (ns - drop < FETCH_MAX) { std::fprintf(stderr, "%s would leave the expert pool %d slots\n", what, ns - drop); std::exit(1); }
         pool_resize(nv, ns - drop);
     }
@@ -3307,7 +3301,7 @@ void pools_fill() {
     for (bool nv : {true, false}) {
         const int ns = nv ? E.nslot_nv : E.nslot_mx;
         if (!ns) continue;
-        pool_resize(nv, ns + (int) (spare * pool_bytes(nv) / used / (nv ? ex_bytes(0) : MX_BYTES)));
+        pool_resize(nv, ns + (int) (spare * pool_bytes(nv) / used / pool_slot(nv)));
     }
 }
 // the full slots hold `need` cells (grown in --kv-grow-step steps, from the expert pools when VRAM is short)
