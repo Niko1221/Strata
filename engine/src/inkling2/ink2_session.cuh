@@ -164,11 +164,13 @@ bool sess_room(size_t bytes) {
     return true;
 }
 // CBA: page-locked buffers are kept for reuse (cudaHostAlloc pins ~0.45 ms per MiB on a PCIe 3 host: 80 ms per
-// checkpoint) in PIN_UNIT steps, a spare taken for anything up to half its size; a sub-allocator in one pinned arena
-// would waste less
+// checkpoint), a spare taken for anything up to half its size; checkpoints in PIN_UNIT steps, a parked conversation's
+// rows in PIN_UNIT << k (a conversation that grew a turn finds its last buffer again).  Up to half a row buffer is
+// slack; a sub-allocator in one pinned arena would waste less
 constexpr size_t PIN_UNIT = (size_t) 32 << 20;
-PinnedP sess_alloc(size_t bytes) {
+PinnedP sess_alloc(size_t bytes, bool geo = false) {
     bytes = (bytes + PIN_UNIT - 1) / PIN_UNIT * PIN_UNIT;
+    if (geo) { size_t g = PIN_UNIT; while (g < bytes) g *= 2; bytes = g; }
     auto& sp = g_sess.spare;
     size_t bi = sp.size();
     for (size_t i = 0; i < sp.size(); ++i)
@@ -202,7 +204,7 @@ void sess_park(const std::vector<int>& hist, const vec& last_logits) {
     const bool end = std::none_of(v.cks.begin(), v.cks.end(), [&](const Ck& c) { return c.n == (int) hist.size(); });
     const size_t need = hist.size() * g_sess.row_bytes + (end ? g_sess.tail_bytes : 0);
     if (!sess_room(need)) { g_sess.note += " park-no-room"; return; }
-    v.full = sess_alloc(hist.size() * g_sess.row_bytes);
+    v.full = sess_alloc(hist.size() * g_sess.row_bytes, true);
     if (!v.full) { g_sess.note += " park-no-pin"; return; }
     sess_full((int) hist.size(), v.full->p, true);
     if (end) {
