@@ -85,6 +85,10 @@ about 17 GiB of RAM for the experts that are not on the card; setup asks for 32 
 
 `--model FILE.gguf` reads llama.cpp's merged `inkling2_loop` layout with IQ3_S, IQ4_NL and Q8_0 experts (work by
 merbanan). GGUF models run without `--cpu-threads` and `--spec` for now, and setup does not install them.
+Layers 20-23 may use a different expert type than layers 0-19, as in ggml-org's `Inkling-2-Mini-IQ4_NL.gguf` (IQ4_NL,
+Q8_0 in layers 20-23): on the 1,600-token text its mean KL against the fp32 reference is 5.9e-3 (llama.cpp on the same
+file: 5.4e-3). Any other mix, or an expert type outside these three (NVFP4, for example), stops the load with an error
+that names the layers and types.
 
 ## Quality
 
