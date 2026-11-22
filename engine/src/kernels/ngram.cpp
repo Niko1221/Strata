@@ -235,6 +235,8 @@ void dequant_lowbit(const uint8_t* row, const PleParams& p, float* out160) {
 }
 template <int Bits, int Block, bool F16Scales>
 constexpr uint32_t lowbit_rb = (uint32_t) ple_lowbit_row_bytes(Bits, Block, F16Scales);
+void dequant_c5(const uint8_t* row, const PleParams& p, float* out160) { ple_c5_dequant_row(row, p.codebook, out160); }
+static_assert(PLE_C5_LEVELS <= PLE_CODEBOOK_MAX, "PleParams::codebook cannot hold C5's trellis values");
 
 const PleFormatInfo kPleFormats[] = {
     {PleFormat::IQ4_NL, "IQ4_NL", "IQ4_NL", PLE_ROW_BYTES, false, dequant_iq4_nl, nullptr, 0},
@@ -260,6 +262,9 @@ const PleFormatInfo kPleFormats[] = {
     {PleFormat::C1, "C1", "I8", lowbit_rb<4, 160, true>, false, dequant_lowbit<4, 160, true>, "c1", 16},
     {PleFormat::C2, "C2", "I8", lowbit_rb<3, 32, true>, false, dequant_lowbit<3, 32, true>, "c2", 8},
     {PleFormat::C6, "C6", "I8", lowbit_rb<2, 32, true>, false, dequant_lowbit<2, 32, true>, "c6", 4},
+    // C5: C4's row (3-bit codes, one fp16 scale) whose codes are the path of a 12-bit trellis; the codebook is its 4096
+    // values, and strata.ple.trellis_bits must be 12 (open() below)
+    {PleFormat::C5, "C5", "I8", lowbit_rb<3, 160, true>, false, dequant_c5, "c5", PLE_C5_LEVELS},
 };
 constexpr int kPleFormatCount = (int) (sizeof kPleFormats / sizeof kPleFormats[0]);
 }  // namespace
@@ -393,7 +398,7 @@ bool PleTable::open(const std::string& gguf_path, std::string& err, const PleIoO
     // The table's type is looked up in the format list (ple_formats()): IQ4_NL (ISTA-DASLab's shard 2, the original's
     // own GGUF), Q5_0 (#296: OrcaRouter's GGUF), or I8 bytes whose strata.ple.format marker names the format: the FP8
     // table as shipped (f8_e4m3 with strata.ple.scale, tools/ple_fp8_pack.py), NVFP4 (nvfp4x16), the low-bit c4 / c3 /
-    // c2s / c1 / c2 / c6. An I8 table without a known marker stays F8_E4M3 and is refused below.
+    // c2s / c1 / c2 / c6 / c5. An I8 table without a known marker stays F8_E4M3 and is refused below.
     const MetaValue* fmt_key = impl_->file->get("strata.ple.format");
     const PleFormatInfo* fmt = ple_format_for_type(t->type_name());
     if (fmt != nullptr && fmt->marker != nullptr && fmt_key != nullptr)
@@ -439,6 +444,17 @@ bool PleTable::open(const std::string& gguf_path, std::string& err, const PleIoO
         }
         if (!ok) {
             err = std::string("the ") + fmt->name + " PLE table has no strata.ple.codebook of " + std::to_string(levels) + " finite F32 values";
+            close();
+            return false;
+        }
+    }
+    // C5's codes are states of a PLE_C5_STATE_BITS-bit trellis register: a table searched in another trellis would decode
+    // to other values (one of another size also has another codebook length, refused above)
+    if (fmt->id == PleFormat::C5) {
+        const MetaValue* tb = impl_->file->get("strata.ple.trellis_bits");
+        if (tb == nullptr || tb->type != MetaType::U32 || tb->u != (uint64_t) PLE_C5_STATE_BITS) {
+            err = "the C5 PLE table has no strata.ple.trellis_bits = " + std::to_string(PLE_C5_STATE_BITS) +
+                  " (U32), the trellis this engine decodes";
             close();
             return false;
         }

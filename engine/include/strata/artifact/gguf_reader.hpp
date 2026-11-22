@@ -381,10 +381,14 @@ inline MetaValue read_value(Cursor& c, MetaType t, int depth = 0) {
         v.elem = (MetaType)c.read<uint32_t>();
         v.count = c.read<uint64_t>();
         if (v.count > (1u << 24)) throw std::runtime_error("GGUF: implausible array length");
-        v.items.reserve((size_t)std::min<uint64_t>(v.count, 64));
+        // a long list (the tokenizer's) keeps a sample, the count is what matters; a numeric one of up to 4096 is kept
+        // whole (the PLE C5 table's codebook, strata.ple.codebook, has 4096 values)
+        const bool numeric = v.elem != MetaType::STRING && v.elem != MetaType::ARRAY;
+        const uint64_t keep = numeric && v.count <= 4096 ? v.count : 64;
+        v.items.reserve((size_t)std::min<uint64_t>(v.count, keep));
         for (uint64_t i = 0; i < v.count; ++i) {
             MetaValue e = read_value(c, v.elem, depth + 1);
-            if (i < 64) v.items.push_back(std::move(e)); // keep a sample; the count is what matters
+            if (i < keep) v.items.push_back(std::move(e));
         }
         break;
     }

@@ -9,6 +9,7 @@
 #include "strata/artifact/gguf_reader.hpp"
 #include "strata/core/progress.hpp"
 #include "strata/kernels/ngram.hpp"
+#include "strata/kernels/ple_lowbit.hpp"
 #include "strata/ngram/ple_reader.hpp"
 #include "strata/platform/direct_file.hpp"
 
@@ -130,7 +131,7 @@ void bf16_widening_is_exact() {
 uint32_t gguf_type_id(const char* name) {
     static const struct { const char* name; uint32_t id; } ids[] = {
         {"IQ4_NL", 20}, {"Q4_0", 2}, {"Q4_1", 3}, {"Q5_0", 6}, {"Q5_1", 7}, {"Q8_0", 8}, {"BF16", 30}, {"F8_E4M3", 24}, {"NVFP4", 24},
-        {"C4", 24}, {"C3", 24}, {"C2s", 24}, {"C1", 24}, {"C2", 24}, {"C6", 24}};
+        {"C4", 24}, {"C3", 24}, {"C2s", 24}, {"C1", 24}, {"C2", 24}, {"C6", 24}, {"C5", 24}};
     for (const auto& e : ids)
         if (std::strcmp(e.name, name) == 0) return e.id;
     return 0xFFFFFFFFu;
@@ -143,11 +144,12 @@ k::PleParams test_params(const k::PleFormatInfo& f) {
     const float cb[16] = {-0.8f, -0.45f, -0.25f, -0.07f, 0.06f, 0.24f, 0.46f, 0.81f,
                           -0.95f, -0.6f, -0.35f, -0.15f, 0.15f, 0.35f, 0.6f, 0.95f};   // a format reads its first 2^bits
     std::memcpy(p.codebook, cb, sizeof cb);
+    for (int i = 16; i < k::PLE_C5_LEVELS; ++i) p.codebook[i] = cb[i % 16] * (1.0f + (float) (i / 16) / 256.0f);   // C5's 4096
     return p;
 }
 
 /// A metadata fault write_format_table can put in a table, for the refusals PleTable::open must make.
-enum class Fault { None, NoCodebook, IntCodebook, FewLevels, InfScale, NoMarker, Shifted, FromZero };
+enum class Fault { None, NoCodebook, IntCodebook, FewLevels, InfScale, NoMarker, Shifted, FromZero, NoTrellis, OtherTrellis };
 
 // `claimed_rows` is the row count the header states; `rows` rows are actually written (equal unless a test lies)
 std::string write_format_table(const std::string& dir, const k::PleFormatInfo& f, uint32_t rows, uint64_t claimed_rows = 0,
@@ -166,7 +168,8 @@ std::string write_format_table(const std::string& dir, const k::PleFormatInfo& f
     const bool marker = f.marker != nullptr && fault != Fault::NoMarker;
     const bool codebook = f.codebook_levels > 0 && fault != Fault::NoCodebook;
     const bool span = fault == Fault::Shifted || fault == Fault::FromZero;
-    const uint64_t n_kv = 1u + (marker ? 1u : 0u) + (f.needs_scale ? 1u : 0u) + (codebook ? 1u : 0u) + (span ? 1u : 0u);
+    const bool trellis = f.id == k::PleFormat::C5 && fault != Fault::NoTrellis;
+    const uint64_t n_kv = 1u + (marker ? 1u : 0u) + (f.needs_scale ? 1u : 0u) + (codebook ? 1u : 0u) + (span ? 1u : 0u) + (trellis ? 1u : 0u);
     std::string head = "GGUF" + le(3u, 4) + le(1ull, 8) + le(n_kv, 8);
     head += str("general.architecture") + le(8u, 4) + str("strata-ple");
     if (marker) head += str("strata.ple.format") + le(8u, 4) + str(f.marker);
@@ -181,6 +184,8 @@ std::string write_format_table(const std::string& dir, const k::PleFormatInfo& f
         for (int v = 0; v < levels; ++v) head += f32(p.codebook[v]);
     }
     if (span) head += str("strata.ple.rows") + le(8u, 4) + str(fault == Fault::Shifted ? "5:69" : "0:64");
+    if (trellis)                                                                         // 4 = UINT32
+        head += str("strata.ple.trellis_bits") + le(4u, 4) + le((uint32_t) (k::PLE_C5_STATE_BITS + (fault == Fault::OtherTrellis ? 1 : 0)), 4);
     head += str("per_layer_token_embd.weight") + le(2u, 4);
     head += le(f.marker != nullptr ? (uint64_t) f.row_bytes : (uint64_t) k::PLE_HEAD_DIM, 8) + le(claimed_rows != 0 ? claimed_rows : (uint64_t) rows, 8);
     head += le(gguf_type_id(f.name), 4) + le(0ull, 8);
@@ -598,6 +603,8 @@ void all_formats_round_trip(const std::string& dir) {
             {Fault::NoMarker, f.marker != nullptr, "no strata.ple.format", "strata.ple.format = "},
             {Fault::Shifted, true, "rows 5:69 of a table", "strata.ple.rows"},
             {Fault::FromZero, true, "rows 0:64 of a table", nullptr},   // (accepted)
+            {Fault::NoTrellis, f.id == k::PleFormat::C5, "no strata.ple.trellis_bits", "strata.ple.trellis_bits = "},
+            {Fault::OtherTrellis, f.id == k::PleFormat::C5, "a 13-bit trellis", "strata.ple.trellis_bits = "},
         };
         for (const auto& c : faults) {
             if (!c.applies) continue;

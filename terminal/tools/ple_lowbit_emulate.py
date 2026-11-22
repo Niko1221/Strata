@@ -1,5 +1,5 @@
 """tools/ple_lowbit_emulate.py - emulate a low-bit PLE n-gram table as a Q8_0 table-only GGUF, to measure its accuracy by teacher
-forcing, or (--native) write it in the low-bit format itself, which the engine reads (PLE formats C1, C2, C2s, C3, C4, C6).
+forcing, or (--native) write it in the low-bit format itself, which the engine reads (PLE formats C1, C2, C2s, C3, C4, C5, C6).
 
     python tools/ple_lowbit_emulate.py --format c4 --src <IQ4_NL shard 2 .gguf> --out <c4.gguf> [--rows A:B] [--workers N] [--native]
 
@@ -9,6 +9,7 @@ The candidates (docs: memory-goal/ple-representation.md section 4), all derived 
     c2s  3-bit Lloyd codebook, 16-value blocks, E4M3 scale x one F32 table scale   70 B/row
     c3   3-bit Lloyd codebook, 32-value blocks, E4M3 scale x one F32 table scale   65 B/row
     c4   3-bit Lloyd codebook, one fp16 scale per 160-value row            62 B/row
+    c5   3-bit codes through a trellis (below), one fp16 scale per row      62 B/row
     c6   2-bit Lloyd codebook, 32-value blocks, fp16 scale                  50 B/row (the doc's "16- or 32-value blocks":
          32 with fp16, the variant both of its NMSE figures were computed with; 16 with E4M3 has only the one vs B)
 Per row: decode IQ4_NL exactly as ggml/the engine does (ngram.cpp:139-170), quantize to the format, dequantize, and encode the
@@ -19,18 +20,25 @@ Quantizer = the one that produced the doc's NMSE figures: the block scale comes 
 mapped to either end of the grid (IQ4_NL-like, +-NTRY steps), then the least-squares scale, rounded to the scale type; the grid is
 a Lloyd-Max fit (2^bits levels, 30 iterations) on block-max-normalized values sampled over the whole table with a fixed seed
 (c1 keeps IQ4_NL's own grid, as the doc's C1 did).
+c5 is a tail-biting bitshift trellis (QTIP-style, one value a step): a register of C5_STATE_BITS = 12 bits takes each 3-bit
+code in at the bottom, starting with the row's own last codes, and value j = s * lut[state j], with lut 4096 floats. The codes
+are the Viterbi path of the row over its RMS (terminal/tools/ple_c5_viterbi.cpp, a DLL built with cl: see C5_BUILD), s the
+least-squares scale of that path as fp16. The lut is fitted like a Lloyd grid: from a random permutation of the normalized
+values' quantiles, C5_FIT_ITERS rounds of encoding the fit rows and setting each state's value to the mean of the values
+its paths put there (deterministic for a seed; --workers threads).
 Stdout reports the NMSE against the IQ4_NL values; the codebook is saved as <out>.codebook.json and can be reused with --codebook.
 
 --native writes the same quantizer's codes and scales packed (engine/include/strata/kernels/ple_lowbit.hpp): 20 x bits bytes of
 codes (a little-endian bit stream), then one fp16 per block (c1, c2, c4, c6) or one E4M3 byte per block (c3, c2s), as I8 bytes
-[row bytes, rows] marked strata.ple.format = <format> with strata.ple.codebook (2^bits F32) and, for c3/c2s, strata.ple.scale
-(the F32 table scale). Every chunk is decoded back as the engine
+[row bytes, rows] marked strata.ple.format = <format> with strata.ple.codebook (2^bits F32; c5: its 4096-float lut, with
+strata.ple.trellis_bits = 12) and, for c3/c2s, strata.ple.scale (the F32 table scale). c5's rows are c4's layout.
+Every chunk is decoded back as the engine
 decodes it and must give the quantizer's floats bit for bit. The Q8_0 emulation stores those floats after Q8_0's own rounding
 (about 2.5e-5 NMSE more), so a native table is close to its emulation but not bit identical to it. With the same --seed and
 --ntry the codebook fit is the same; --codebook <emulation>.codebook.json (e.g. ple-c4-q8.gguf.codebook.json for c4) reuses
 the screened grid explicitly. It also writes <out>.ref.bin, about 4096 of its rows with those floats (int32 n,
 uint32 rows[n], float32 values[n][160]; rows numbered in the output table): the reference src/kernels/ple_fp8_parity.cpp
-checks the engine's reads against (PLE_EXPECT_FORMAT=C1|C2|C2s|C3|C4|C6).
+checks the engine's reads against (PLE_EXPECT_FORMAT=C1|C2|C2s|C3|C4|C5|C6).
 """
 import argparse
 import json
@@ -53,10 +61,14 @@ KV_IQ4NL = np.array([-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53
 E4M3_MAX = 448.0
 # name -> (values per scale block, scale kind, scale bytes per row)
 FORMATS = {"c4": (160, "f16", 2), "c3": (32, "e4m3", 5), "c2s": (16, "e4m3", 10),
-           "c1": (160, "f16", 2), "c2": (32, "f16", 10), "c6": (32, "f16", 10)}
+           "c1": (160, "f16", 2), "c2": (32, "f16", 10), "c6": (32, "f16", 10), "c5": (160, "f16", 2)}
 BITS = {"c1": 4, "c6": 2}                    # bits a code; 3 for the others (60 B of codes a row)
 FIXED_GRID = {"c1": KV_IQ4NL / np.float32(127)}   # C1 keeps IQ4_NL's grid (the doc's "4b_iq4nl_b160_f16"); the rest fit Lloyd
 SCALE_HEADROOM = 256.0                       # table scale T = max block scale / 256, so E4M3 (max 448) has 1.75x headroom
+C5_STATE_BITS = 12                           # PLE_C5_STATE_BITS (ple_lowbit.hpp): c5's lut has 2^12 floats
+C5_FIT_ITERS = 100                           # lut fit rounds (rows 0:4000: NMSE 0.01844 after 30, 0.01818 after 100)
+C5_DLL = pathlib.Path(__file__).resolve().parents[2] / "build" / "ple_c5_viterbi.dll"
+C5_BUILD = r"cl /nologo /O2 /arch:AVX2 /LD /EHsc /Fo:build\ /Fe:build\ple_c5_viterbi.dll terminal\tools\ple_c5_viterbi.cpp"
 
 
 def bits_of(fmt):
@@ -182,7 +194,87 @@ def native_dequant(rows, cb):
     codes = (w[:, :, None] >> (bits * np.arange(8, dtype=np.uint32)) & ((1 << bits) - 1)).reshape(n, DIM)
     sc = np.ascontiguousarray(rows[:, 20 * bits:])
     s = sc.view("<f2").astype(np.float32) if cb["scale"] == "f16" else e4m3_value(sc) * np.float32(cb["table_scale"])
+    if cb.get("format") == "c5":   # ple_c5_dequant_row: s * lut[state j]
+        return s * np.array(cb["grid"], np.float32)[c5_states(codes)]
     return (s[:, :, None] * np.array(cb["grid"], np.float32)[codes].reshape(n, -1, bs)).reshape(n, DIM)
+
+
+# ---------------------------------------------------------------- c5: the trellis
+_C5 = {}
+
+
+def c5_codes(Y, lut, threads=1):
+    """Y (n, 160) float32, the rows over their RMS -> (n, 160) uint8 codes: the tail-biting trellis path closest to Y
+    in squared error (ple_c5_viterbi.cpp, Viterbi), `threads` rows at once."""
+    if "f" not in _C5:
+        import ctypes
+        if not C5_DLL.exists():
+            sys.exit("c5 needs the compiled encoder %s; in a Visual Studio x64 prompt at the repository root run\n    md build\n    %s"
+                     % (C5_DLL, C5_BUILD))
+        dll = ctypes.CDLL(str(C5_DLL))
+        if dll.ple_c5_abi() != 1:
+            sys.exit("%s is not the encoder this script calls: rebuild it (%s)" % (C5_DLL, C5_BUILD))
+        dll.ple_c5_viterbi.argtypes = [ctypes.c_void_p, ctypes.c_int64, ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p]
+        _C5["f"] = dll.ple_c5_viterbi
+    Y = np.ascontiguousarray(Y, np.float32)
+    lut = np.ascontiguousarray(lut, np.float32)
+    if lut.shape != (1 << C5_STATE_BITS,) or Y.ndim != 2 or Y.shape[1] != DIM:
+        raise ValueError("c5_codes: Y %s, lut %s" % (Y.shape, lut.shape))
+    codes = np.empty(Y.shape, np.uint8)
+
+    def run(span):   # the DLL call releases the GIL, so the threads run at once
+        a, b = span
+        if b > a and _C5["f"](Y[a:b].ctypes.data, b - a, lut.ctypes.data, C5_STATE_BITS, codes[a:b].ctypes.data) != 0:
+            raise RuntimeError("ple_c5_viterbi refused L = %d" % C5_STATE_BITS)
+    cut = np.linspace(0, Y.shape[0], max(1, threads) + 1).astype(int)
+    spans = list(zip(cut[:-1], cut[1:]))
+    if threads > 1:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(threads) as ex:
+            list(ex.map(run, spans))
+    else:
+        run(spans[0])
+    return codes
+
+
+def c5_states(codes):
+    """(n, 160) codes -> (n, 160) trellis states, as ple_c5_dequant_row makes them: the register takes each code in at the
+    bottom and starts with the row's own last codes (tail-biting), so state j = codes j, j-1, ... in 3-bit groups, mod 2^12."""
+    k = (C5_STATE_BITS - 1) // 3                      # the codes before code 0 that reach into state 0: 157, 158, 159
+    c = np.concatenate([codes[:, DIM - k:], codes], 1).astype(np.int64)
+    st = np.zeros(c.shape, np.int64)
+    for j in range(0, C5_STATE_BITS, 3):
+        st[:, j // 3:] |= c[:, :c.shape[1] - j // 3] << j
+    return st[:, k:] & ((1 << C5_STATE_BITS) - 1)
+
+
+def c5_normalized(Z):
+    r = np.sqrt((Z.astype(np.float64) ** 2).mean(1)).astype(np.float32)
+    return (Z / np.where(r > 0, r, np.float32(1))[:, None]).astype(np.float32)
+
+
+def quantize_c5(Z, lut, threads=1):
+    """Z (n, 160) float32 -> (dequantized (n, 160) float32, codes (n, 160) uint8, scales (n, 1) float32): the trellis path of
+    the row over its RMS, then the least-squares scale of that path, rounded to fp16 (as quantize() rounds c4's)."""
+    codes = c5_codes(c5_normalized(Z), lut, threads)
+    q = lut[c5_states(codes)]
+    s = (q * Z).sum(1) / np.maximum((q * q).sum(1), np.float32(1e-30))
+    s = s.astype(np.float16).astype(np.float32)[:, None]
+    return s * q, codes, s
+
+
+def fit_c5_lut(Z, seed, iters, threads=1):
+    """Lloyd for the trellis: start from a random permutation of the normalized values' 4096 quantiles; each round encodes
+    the rows and sets every state's value to the mean of the values the paths put on it (an unused state keeps its own)."""
+    Y = c5_normalized(Z)
+    S = 1 << C5_STATE_BITS
+    lut = np.random.default_rng(seed).permutation(np.quantile(Y.ravel(), (np.arange(S) + 0.5) / S)).astype(np.float32)
+    for _ in range(iters):
+        st = c5_states(c5_codes(Y, lut, threads)).ravel()
+        cnt = np.bincount(st, minlength=S)
+        sm = np.bincount(st, weights=Y.ravel().astype(np.float64), minlength=S)
+        lut = np.where(cnt > 0, sm / np.maximum(cnt, 1), lut).astype(np.float32)
+    return lut
 
 
 def lloyd(x, k, iters=30):
@@ -215,13 +307,18 @@ class Source:
         return buf.reshape(b - a, IQ_RB)
 
 
-def fit_codebook(src, fmt, seed, ntry, n_chunks=256, chunk=256, n_values=2_000_000):
+def fit_codebook(src, fmt, seed, ntry, n_chunks=256, chunk=256, n_values=2_000_000, threads=1, c5_iters=C5_FIT_ITERS):
     """Codebook from rows spread over the whole table (not the slice), so a slice run and the full run use the same grid."""
     bs, kind, _ = FORMATS[fmt]
     rng = np.random.default_rng(seed)
     starts = np.sort(rng.integers(0, src.n_rows - chunk, n_chunks))
     with open(src.path, "rb") as f:
         Z = np.concatenate([iq4nl_decode(src.read(f, int(s), int(s) + chunk)) for s in starts])
+    if fmt == "c5":
+        return {"format": fmt, "bits": 3, "block": bs, "scale": kind, "bytes_per_row": row_bytes(fmt),
+                "grid": [float(v) for v in fit_c5_lut(Z, seed, c5_iters, threads)], "table_scale": 1.0,
+                "trellis_bits": C5_STATE_BITS, "iters": c5_iters, "seed": seed, "fit_rows": int(Z.shape[0]),
+                "src": pathlib.Path(src.path).name}
     Bn = Z.reshape(-1, bs)
     Bn = (Bn / np.abs(Bn).max(1, keepdims=True)).ravel()
     if fmt in FIXED_GRID:
@@ -251,7 +348,10 @@ def _work(span):
     a, b = span
     src, cb = _G["src"], _G["cb"]
     X = iq4nl_decode(src.read(_G["f"], a, b))
-    Y, codes, scales, sat = quantize(X, _G["grid"], cb["block"], cb["scale"], np.float32(cb["table_scale"]), cb["ntry"])
+    if cb["format"] == "c5":
+        (Y, codes, scales), sat = quantize_c5(X, _G["grid"]), 0
+    else:
+        Y, codes, scales, sat = quantize(X, _G["grid"], cb["block"], cb["scale"], np.float32(cb["table_scale"]), cb["ntry"])
     ref = None
     if _G["native"]:
         out = pack_native(codes, scales, cb)
@@ -277,6 +377,8 @@ def gguf_kv(k, v):
         return gguf_str(k) + struct.pack("<I", 8) + gguf_str(v)
     if isinstance(v, float):
         return gguf_str(k) + struct.pack("<If", 6, v)                                            # FLOAT32
+    if isinstance(v, int):
+        return gguf_str(k) + struct.pack("<II", 4, v)                                            # UINT32
     return gguf_str(k) + struct.pack("<IIQ", 9, 6, len(v)) + struct.pack("<%df" % len(v), *v)   # ARRAY of FLOAT32
 
 
@@ -318,13 +420,16 @@ def main():
         cb = json.loads(pathlib.Path(a.codebook).read_text())
         if cb["format"] != a.format:
             sys.exit("codebook is for %s, not %s" % (cb["format"], a.format))
+        if a.format == "c5" and (cb.get("trellis_bits") != C5_STATE_BITS or len(cb["grid"]) != 1 << C5_STATE_BITS):
+            sys.exit("codebook is a %s-bit trellis of %d values, not %d bits" % (cb.get("trellis_bits"), len(cb["grid"]), C5_STATE_BITS))
     else:
-        cb = fit_codebook(src, a.format, a.seed, a.ntry)
+        cb = fit_codebook(src, a.format, a.seed, a.ntry, threads=a.workers)
     out.parent.mkdir(parents=True, exist_ok=True)
     cb_path.write_text(json.dumps(cb, indent=1))
     print("codebook (%s, %d B/row, %s scale, table scale %.6g), fitted in %.1f s -> %s" %
           (a.format, row_bytes(a.format), cb["scale"], cb["table_scale"], time.time() - t0, cb_path), flush=True)
-    print("  grid:", " ".join("%.5f" % v for v in cb["grid"]), flush=True)
+    g = cb["grid"]
+    print("  grid:", " ".join("%.5f" % v for v in g[:16]) + (" ... (%d values)" % len(g) if len(g) > 16 else ""), flush=True)
 
     spans = [(s, min(s + a.chunk_rows, hi)) for s in range(lo, hi, a.chunk_rows)]
     out_rb = row_bytes(a.format) if a.native else Q8_RB
@@ -335,6 +440,8 @@ def main():
               "strata.ple.source": pathlib.Path(a.src).name, "strata.ple.rows": "%d:%d" % (lo, hi)}
         if cb["scale"] == "e4m3":
             kv["strata.ple.scale"] = float(np.float32(cb["table_scale"]))
+        if a.format == "c5":
+            kv["strata.ple.trellis_bits"] = C5_STATE_BITS
         head = gguf_header(hi - lo, kv, GGML_I8, out_rb)
     else:
         kv = {"general.architecture": "strata-ple",
