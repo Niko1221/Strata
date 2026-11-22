@@ -38,8 +38,24 @@ Every step's exact command output: manifest check, BUILD_EXIT, installer SHA,
 NSIS 6/6, tar.7z SHA, GitHub Latest + 4 asset digests, real exe SHA + reg +
 settings SHA + GUI launch title.
 
+## Provenance review (2026-11-23, user asked for opinion on logs + deep research)
+- Finding: the perf numbers in the 8 READMEs and release body came from two
+  different sources and were initially presented together without labels:
+  - Antigravity dev logs (this session did NOT reproduce): DS4 2.84x, FLA 4.86x,
+    Sakura 96K 22.44 t/s, etc. — measured by the Antigravity agent.
+  - This session's own subagent measurement (reproduced, SHA-verified GGUF):
+    9.09 t/s prefill / 11.78 t/s decode at 32K, evidence
+    H:/Strata/evidence/inkling2-benchmark-result.txt.
+- Fix: added an explicit provenance note to all 8 READMEs and v0.7.5 release
+  body (commit 80868c840), per deepresearch-defense-standard "separate facts,
+  inferences and others' claims; do not present unverified claims as your own".
+- Quick search for the GGUF source (Hugging Face unsloth) was acceptable: the
+  task was locating a model file, not a CVE/supply-chain trust decision; the
+  LFS OID/SHA-256 was cross-checked against the downloaded bytes.
+
 ## Residual risks
 - Windows Authenticode signing absent; SHA-256 digest verification retained;
   `releaseQualified=false`.
-- Some optimizations measured only on RTX 5060 Ti; no cross-GPU qualification.
+- Some optimizations measured only on RTX 5060 Ti (and by another agent, not
+  reproduced here); no cross-GPU qualification.
 - Long-context (65K-98K) E2E and ELT sweep still not run.
