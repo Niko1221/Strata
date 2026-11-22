@@ -91,8 +91,7 @@ int main() {
         return 77;
     }
     if (!k::native_mmvq_rows_supported(13)) {   // HIP: the drafter keeps its copy there
-        std::printf("mmvq_rows_parity: native_mmvq_rows is not on this backend, skipped
-");
+        std::printf("mmvq_rows_parity: native_mmvq_rows is not on this backend, skipped\n");
         return 77;
     }
     std::printf("native_mmvq_rows against gather_rows + native_mmvq (Q5_K, one column), bit for bit\n");
