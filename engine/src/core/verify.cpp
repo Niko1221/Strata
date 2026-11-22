@@ -364,6 +364,9 @@ bool qsa_slots_on() { static const bool v = env_on("STRATA_QSA_SLOTS"); return v
 // once across all rows, resolve distinct streamed slots in parallel in a single epoch per slot (falling back to the
 // per-slot/per-row loop if any slot's ntok*max_pages_per_q exceeds its n_slots), and run batched multi-slot attention.
 bool batch_qsa_stream_opt_on() { static const bool v = env_on("STRATA_BATCH_QSA_STREAM_OPT"); return v; }
+// STRATA_BATCH_SIDE_MIXER=1 (opt-in, default OFF): enable STRATA_SIDE_MIXER=1/2 branches in batch windows
+// (GDN gates + wg on side_/side2_; QSA indexer + scores + top-k on side_, q_chain on side2_).
+bool batch_side_mixer_on() { static const bool v = env_on("STRATA_BATCH_SIDE_MIXER"); return v; }
 // STRATA_BATCH_ATTN_ROWS=1 / STRATA_BATCH_GDN_GROUPS=1 (opt-in, #2234): see record_window and capture_commit_batch.  Read at the
 // first use, like the switches above (main() sets platform defaults after the namespace-scope constants are initialised).
 bool env_nonzero(const char* name) {
@@ -1472,15 +1475,16 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
     // fork 34a35db: the GDN gates and the QSA indexer beside the projections (STRATA_SIDE_MIXER=1; 0 / unset = in line)
     const int side_mixer_mode = g_side_mixer();
     const bool side_mixer = side_mixer_mode >= 1;
-    const bool side_proj = side_mixer_mode >= 2 && !batch_rec_;   // fork b063c13: the GDN gate projection, the QSA queries
+    const bool batch_side = batch_rec_ && batch_side_mixer_on();
+    const bool side_proj = side_mixer_mode >= 2 && (!batch_rec_ || batch_side);   // fork b063c13: the GDN gate projection, the QSA queries
     auto branch = [&](cudaEvent_t e, cudaStream_t from, cudaStream_t to, const char* what) {
         if (to == side_) note_prio_fork(from);   // STRATA_GRAPH_PRIO: where the high-priority branch leaves cs
         if (cudaEventRecord(e, from) == cudaSuccess && cudaStreamWaitEvent(to, e, 0) == cudaSuccess) return true;
         err = std::string("verify: the mixer branch could not ") + what;
         return false;
     };
-    // a batch window's rows each read their own slot's indexer: in line there
-    const bool sidem = side_mixer && !batch_rec_;
+    // a batch window's rows each read their own slot's indexer: in line unless STRATA_BATCH_SIDE_MIXER=1
+    const bool sidem = side_mixer && (!batch_rec_ || batch_side);
     auto stamp = [&](int64_t l, int i, int grp) {
         if (prof_on_ && grp == 0) gpu_stamp(prof_, (int) (l * kProfPer + i), cs);
         if (trace_m_ != nullptr) gpu_stamp(trace_m_, (int) ((l * kProfPer + i) * 2 + grp), cs);   // #649
