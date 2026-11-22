@@ -155,7 +155,8 @@ bool numa_arena_usable(uint64_t bytes);
 // are the resident arena.  This shared-file layout is intended for tmpfs (/dev/shm); hugetlbfs would need
 // hugepage-aligned file size and arena offset rather than the 4 KiB header layout used here.
 void* reserve(uint64_t bytes, PageBacking& got, std::string& note, const std::string& shared_file,
-              uint64_t shared_pack_hash, void*& mapping_base, uint64_t& mapping_bytes) {
+              uint64_t shared_pack_hash, void*& mapping_base, uint64_t& mapping_bytes,
+              bool numa_placeable) {
     mapping_base = nullptr;
     mapping_bytes = 0;
 
@@ -283,7 +284,7 @@ void* reserve(uint64_t bytes, PageBacking& got, std::string& note, const std::st
     // native layout it can place, two NUMA nodes): a 2 MB large page cannot split a role across sockets (a
     // [gate | up | down] role is ~512-614 KiB), so per-slice placement needs 4 KB pages - the same reason the
     // Linux twin asks for MADV_NOHUGEPAGE.  A host or pack the placement cannot serve keeps its large pages.
-    const bool numa_arena = numa_arena_usable(bytes);
+    const bool numa_arena = numa_placeable && numa_arena_usable(bytes);
     if (large > 0 && std::getenv("STRATA_NO_LARGEPAGES") == nullptr && !numa_arena) {
         // MEM_LARGE_PAGES requires the allocation size to be an exact multiple of the large page size -
         // anything else is ERROR_INVALID_PARAMETER (87), which reads like a privilege problem but is not.
@@ -749,8 +750,8 @@ void release_alias_claims(std::vector<void*>& claims) {
 
 #if defined(_WIN32)
 
-// node -> GROUP_AFFINITY for nodes 0 and 1 (the only shape the slice placement serves; a host with more nodes
-// places on 0 and 1 and says so in the note).  GetLogicalProcessorInformationEx(RelationNumaNode) is the documented
+// node -> GROUP_AFFINITY for nodes 0 and 1 (the only shape the slice placement serves; a host with more
+// nodes gets its note saying only 0 and 1 were placed).  GetLogicalProcessorInformationEx(RelationNumaNode) is the documented
 // form; this SDK's NUMA_NODE_RELATIONSHIP names the affinity GroupMask (a GroupCount + GroupMask/GroupMasks union)
 // and every layout of the struct keeps it at the same offset, so GroupMask reads across SDK generations.  The older
 // GetNumaNodeProcessorMaskEx is not used: on Win10 19044 it writes a bare GROUP_AFFINITY per node (observed), which
@@ -759,6 +760,7 @@ void release_alias_claims(std::vector<void*>& claims) {
 struct NumaWinTopology {
     GROUP_AFFINITY ga[2];
     bool two_nodes = false;
+    int nodes_seen = 0;   // RelationNumaNode entries of this host (0 and 1 are the ones placed)
 };
 NumaWinTopology numa_win_topology() {
     NumaWinTopology topo;
@@ -780,6 +782,7 @@ NumaWinTopology numa_win_topology() {
         auto* it = reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(buf.data() + at);
         if (it->Size == 0 || at + it->Size > need) break;
         if (it->Relationship == RelationNumaNode) {
+            ++topo.nodes_seen;
             const DWORD n = it->NumaNode.NodeNumber;   // file by NodeNumber: the entry order is not defined
             if (n < 2 && it->NumaNode.GroupMask.Mask != 0) {
                 topo.ga[n] = it->NumaNode.GroupMask;
@@ -822,19 +825,23 @@ bool numa_arena_usable(uint64_t bytes) {
 // Called from the first constructor and the Deferred one, whose arenas use the packed expert layout
 // expert_layout().blob_offset.  The ByNeed constructor is NOT called: pin-by-need pads every blob to a 4 KiB
 // stride (ArenaExpertSource's PadMap, so any set of blobs can register exactly) and moves the destination
-// offsets - placing the packed layout there would misplace every blob after the first layer.
+// offsets - placing the packed layout there would misplace every blob after the first one.
 void place_arena_numa_slices_win(void* base, uint64_t bytes, std::string& note) {
     const char* env = std::getenv("STRATA_NUMA_ARENA");
     if (env == nullptr || env[0] != '1' || base == nullptr || bytes == 0) return;
     const auto& lay = strata::kernels::cpu::expert_layout();
     if (!lay.native || lay.n_layers <= 0 || lay.n_expert <= 0 || lay.fmt.size() != (size_t) lay.n_layers ||
-        lay.total > bytes)
+        lay.total > bytes) {
+        note += "; STRATA_NUMA_ARENA=1: the pack layout is not one this placement can serve (native expert blobs "
+                "required), the switch was ignored";
         return;
+    }
     const NumaWinTopology topo = numa_win_topology();
     if (!topo.two_nodes) {
         note += "; STRATA_NUMA_ARENA=1: one NUMA node (or the topology query failed), slice placement not needed";
         return;
     }
+    const char* extra_nodes = topo.nodes_seen > 2 ? "; more nodes seen, 0 and 1 placed" : "";
     const auto t0 = std::chrono::steady_clock::now();
     constexpr int kWorkersPerNode = 8;
     constexpr uint64_t kPage = 4096;
@@ -883,11 +890,12 @@ void place_arena_numa_slices_win(void* base, uint64_t bytes, std::string& note) 
     if (!spawned_all || failures != 0)
         std::snprintf(msg, sizeof msg,
                       "; STRATA_NUMA_ARENA=1: WARNING: slice placement partial (%d toucher(s) off-node%s); "
-                      "the arena is faulted but not fully placed per node", failures,
+                      "the pages the missing workers own stay unpinned", failures,
                       spawned_all ? "" : "; a worker could not start");
     else
         std::snprintf(msg, sizeof msg,
-                      "; NUMA slice-placed (STRATA_NUMA_ARENA=1: slice 0 -> node 0, slice 1 -> node 1 in %.2f s)", secs);
+                      "; NUMA slice-placed (STRATA_NUMA_ARENA=1: slice 0 -> node 0, slice 1 -> node 1 in %.2f s%s)", secs,
+                      extra_nodes);
     note += msg;
 }
 #endif
@@ -946,7 +954,8 @@ PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds,
                          uint64_t max_pinned_bytes, const std::string& shared_file,
                          uint64_t shared_pack_hash) : capacity(bytes) {
     if (bytes == 0) return;
-    base = reserve(bytes, backing, note, shared_file, shared_pack_hash, mapping_base, mapping_bytes);
+    base = reserve(bytes, backing, note, shared_file, shared_pack_hash, mapping_base, mapping_bytes,
+                      /*numa_placeable=*/true);
     if (!shared_file.empty() && base != nullptr && mapping_base != nullptr)
         shared_state = reinterpret_cast<std::atomic<uint64_t>*>(static_cast<char*>(mapping_base) +
                                                                 offsetof(SharedArenaHeader, reserved));
@@ -1090,7 +1099,8 @@ PinnedArena::PinnedArena(uint64_t bytes, ByNeed, const std::vector<std::pair<uin
                          uint64_t shared_pack_hash) : capacity(bytes) {
     by_need = true;
     if (bytes == 0) return;
-    base = reserve(bytes, backing, note, shared_file, shared_pack_hash, mapping_base, mapping_bytes);
+    base = reserve(bytes, backing, note, shared_file, shared_pack_hash, mapping_base, mapping_bytes,
+                      /*numa_placeable=*/false);
     if (!shared_file.empty() && base != nullptr && mapping_base != nullptr)
         shared_state = reinterpret_cast<std::atomic<uint64_t>*>(static_cast<char*>(mapping_base) +
                                                                 offsetof(SharedArenaHeader, reserved));
@@ -1184,7 +1194,8 @@ PinnedArena::PinnedArena(uint64_t bytes, ByNeed, const std::vector<std::pair<uin
 PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds, Deferred)
     : capacity(bytes), bounds_(bounds) {
     if (bytes == 0 || bounds.size() < 2) return;
-    base = reserve(bytes, backing, note, std::string{}, 0, mapping_base, mapping_bytes);
+    base = reserve(bytes, backing, note, std::string{}, 0, mapping_base, mapping_bytes,
+                   /*numa_placeable=*/true);
     if (base != nullptr && mapping_base == nullptr) {
         mapping_base = base;
         mapping_bytes = bytes;
