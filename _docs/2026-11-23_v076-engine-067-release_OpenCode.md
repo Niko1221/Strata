@@ -28,7 +28,18 @@ speedups, Sakura Inkling-2 98K). User pointed out "エンジンがリリース�
 - No Authenticode signing; signature verification removed earlier; SHA-256 digest
   verification retained. `releaseQualified=false`.
 
+## Publication result (2026-11-23)
+- main committed + pushed at 8f172e9b8 (version 0.7.6 / engine 0.6.7),
+  tag v0.7.6 pushed, GitHub release created with --latest:
+  https://github.com/zapabob/Strata/releases/tag/v0.7.6
+- 4 assets uploaded, all state=uploaded with SHA-256 matching local:
+  engine 0.6.7 6ef349f9...e126128d, hy4 0.1.64 fad3a195...ff91,
+  app setup/tar.7z (the 0.7.5 app binary, unchanged) 734558cc.../b761f998....
+- GitHub Latest verified = v0.7.6.
+
 ## Residual risks
 - Q38 binary is unchanged from 0.6.4 (kernel speedups not compiled into a new
   Q38 executable); those optimizations remain source-only until Q38 is rebuilt.
 - No cross-GPU qualification; measurements from RTX 5060 Ti only.
+- The installer/tar.7z assets carry 0.7.5 filenames (the app itself was not
+  rebuilt for 0.7.6; only the engine component changed).
