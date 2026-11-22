@@ -77,6 +77,11 @@ public:
     bool draft_head_view(const NativeHead* head, const std::string& vocab_path, DraftHeadView& out) const;
     /// STRATA_MTP_TOP2=1 (diagnostic): draft j's runner-up token in the last draft() (-1 = unknown)
     static bool top2_env();
+    /// STRATA_MTP_HEAD_INDEX=1 (opt-in): the draft head reads its subset's rows from the main head by index
+    /// (native_mmvq_rows) instead of a copy of them - the same logits bit for bit, without the copy's VRAM (178 MiB for
+    /// Qwen3.8-Flash-Next's 106,299 tokens).  bind_bytes does not count the rows; bind keeps the copy, and says so,
+    /// where it cannot apply (not Q5_K, the head on another card, --mtp-q4 head).  DFlash2 does not share such a head.
+    static bool head_index_env();
     int32_t top2(int j) const { return j >= 0 && j < (int) top2_.size() ? top2_[(size_t) j] : -1; }
     int max_t() const { return max_t_; }
     uint64_t vram_bytes() const { return vram_; }
@@ -330,6 +335,7 @@ private:
     bool owns_weights_ = true;
     bool owns_draft_head_ = true;
     bool dhead_plain_ = false;               ///< the subset is the main head's rows as gathered (no Q4_0 copy, no repack)
+    bool dhead_index_ = false;               ///< STRATA_MTP_HEAD_INDEX: dhead_ is the main head itself (not owned), read by dvocab_
     void* state_arena_ = nullptr;
     QsaState st_;
     void* arena_ = nullptr;

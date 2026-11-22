@@ -21758,6 +21758,39 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_MTP_HEAD_INDEX",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/core/mtp.cpp",
+     "line": 591,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "core",
+   "note": "exstrata memory goal V2: the MTP draft head reads its subset's rows from the main Q5_K head by index (native_mmvq_rows) instead of a 178 MiB copy; bit-identical by design; tests/core/mmvq_rows_test.cpp, src/kernels/mmvq_rows_parity.cpp",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_MTP_HIP_PRIO",
    "backends": [
     "cuda-hip"

@@ -24,6 +24,7 @@
 // SOFTWARE.
 
 #include "strata/kernels/native_mmvq.hpp"
+#include "strata/kernels/mmvq_rows.hpp"
 #include "strata/kernels/dp4a.hpp"
 #include "strata/kernels/q8_1_finite.hpp"
 #include "strata/kernels/iq_kernels.hpp"
@@ -253,11 +254,13 @@ __device__ __forceinline__ float q5_q8_dot(const Q5KBlock* __restrict__ bq5,
 
 // The generic ncols=1 oracle uses 4 warps and 1 row (or 4 rows for small K),
 // eight weight blocks per K iteration, warp-ascending shared sum, then XOR tree.
-template<bool SmallK>
+// Indexed (STRATA_MTP_HEAD_INDEX, native_mmvq_rows): output row r reads weight row rows[r]; nothing else changes.
+template<bool SmallK, bool Indexed = false>
 __launch_bounds__(WARPS * WARP, 1)
 __global__ void native_q5_k_mmvq_kernel(const Q5KBlock* __restrict__ w,
                                         const Q81Block* __restrict__ x,
-                                        float* __restrict__ y, int n_in, int n_out) {
+                                        float* __restrict__ y, int n_in, int n_out,
+                                        const int32_t* __restrict__ rows) {
     constexpr int ROWS = SmallK ? WARPS : 1;
     constexpr int BLOCKS_PER_ITER = VDR * WARPS * WARP / QI;
     const int tid = WARP * int(threadIdx.y) + int(threadIdx.x);
@@ -272,7 +275,7 @@ __global__ void native_q5_k_mmvq_kernel(const Q5KBlock* __restrict__ w,
             // The source assumes allocator padding for partial row groups. This
             // guard preserves every valid row's math without an out-of-bounds read.
             if (row0 + i < n_out) {
-                const std::size_t block = std::size_t(row0 + i) * blocks_per_row + kbx;
+                const std::size_t block = mmvq_block<Indexed>(rows, row0 + i, blocks_per_row, kbx);
                 tmp[i] += q5_q8_dot(w + block, x + kby, kqs);
             }
         }
@@ -3140,9 +3143,44 @@ void native_q5_k_mmvq(const void* weights, const void* x_q8_1, float* y,
     const dim3 threads(WARP, WARPS);
     if (n_in / QK < VDR * WARPS * WARP / QI) {
         const unsigned blocks = unsigned((std::size_t(n_out) + WARPS - 1) / WARPS);
-        native_q5_k_mmvq_kernel<true><<<blocks, threads, 0, s>>>(w, x, y, n_in, n_out);
+        native_q5_k_mmvq_kernel<true><<<blocks, threads, 0, s>>>(w, x, y, n_in, n_out, nullptr);
     } else {
-        native_q5_k_mmvq_kernel<false><<<unsigned(n_out), threads, 0, s>>>(w, x, y, n_in, n_out);
+        native_q5_k_mmvq_kernel<false><<<unsigned(n_out), threads, 0, s>>>(w, x, y, n_in, n_out, nullptr);
+    }
+    launch_check();
+}
+
+// STRATA_MTP_HEAD_INDEX=1: native_q5_k_mmvq's single-column launch with output row i read from weight row rows[i].
+// Not on HIP: gfx906 takes its wave kernel there (STRATA_WAVE_MMVQ), which this does not mirror.
+bool native_mmvq_rows_supported(int ggml_type) noexcept {
+#if defined(__HIPCC__)
+    (void) ggml_type;
+    return false;
+#else
+    return ggml_type == 13;
+#endif
+}
+
+void native_mmvq_rows(int ggml_type, const void* weights, const int32_t* rows, const void* x_q8_1, float* y,
+                      int n_in, int n_out, void* stream) {
+    if (!native_mmvq_rows_supported(ggml_type)) throw std::invalid_argument("native_mmvq_rows: unsupported GGML type");
+    validate_shape(n_in, 1, QK);
+    if (n_out <= 0) throw std::invalid_argument("native MMVQ requires n_out > 0");
+    validate_pointer(weights);
+    validate_pointer(rows);
+    validate_pointer(x_q8_1);
+    validate_pointer(y);
+    validate_stream(stream);
+    strata::dispatch::kernel(strata::dispatch::kDense, 0, ggml_type, n_in, n_out, 1);   // as native_mmvq counts it
+    const auto* w = static_cast<const Q5KBlock*>(weights);
+    const auto* x = static_cast<const Q81Block*>(x_q8_1);
+    const auto s = static_cast<cudaStream_t>(stream);
+    const dim3 threads(WARP, WARPS);
+    if (n_in / QK < VDR * WARPS * WARP / QI) {
+        const unsigned blocks = unsigned((std::size_t(n_out) + WARPS - 1) / WARPS);
+        native_q5_k_mmvq_kernel<true, true><<<blocks, threads, 0, s>>>(w, x, y, n_in, n_out, rows);
+    } else {
+        native_q5_k_mmvq_kernel<false, true><<<unsigned(n_out), threads, 0, s>>>(w, x, y, n_in, n_out, rows);
     }
     launch_check();
 }
