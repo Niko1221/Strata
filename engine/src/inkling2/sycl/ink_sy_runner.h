@@ -284,7 +284,9 @@ struct InkSyRunner {
     }
 
     void reset_slot(int s) {
-        if (s < 0 || s >= max_slots) return;
+        // sc_hist_* are empty until alloc: --selfcheck used to reach this with the default
+        // max_slots of 1 and dereferenced the empty vector.
+        if (s < 0 || s >= max_slots || sc_hist_k.empty()) return;
         const size_t sc_kv = 3ul * 1024 * 4, sc_d = 3ul * INK_D * 4;
         for (int v = 0; v < mod->man.c.n_visits; ++v) {
             dzero(sc_hist_k[v] + (size_t)s * 3 * 1024, sc_kv);
