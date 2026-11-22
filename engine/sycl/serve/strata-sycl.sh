@@ -32,6 +32,7 @@ declare -A setting=([STRATA_VERIFY_DEVICE_PLAN]=1 [STRATA_VERIFY_NO_HOST]=1 [STR
                     [STRATA_CACHE_DIR]=/work/.strata-cache)
 while IFS= read -r k; do
     case "$k" in
+        STRATA_SYCL_TLA_ATTN) setting[$k]=${!k} ;;          # engine dispatch control
         STRATA_SYCL_*) ;;                                 # this script's own settings
         STRATA_*|ONEAPI_*|UR_*|IGC_*|SYCL_*|ZES_*|NEOReadDebugKeys|OverrideDefaultFP64Settings) setting[$k]=${!k} ;;
     esac

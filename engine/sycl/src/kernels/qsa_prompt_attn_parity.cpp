@@ -14,7 +14,12 @@
 #include <dpct/dpct.hpp>
 #include "strata/kernels/qsa.hpp"
 #include "strata/kernels/qsa_decode_attn.hpp"
-#include "strata/kernels/qsa_prompt_attn.hpp"
+#include "../prefill/qsa_prefill_batch.hpp"
+#ifdef STRATA_SYCL_TLA_ATTN
+#include "strata/prefill/kernels.hpp"
+#include "strata/kernels/rope_scaling.hpp"
+#include "strata/sycl_queue.hpp"
+#endif
 #include "strata/kernels/kv_q4.hpp"
 
 #include <algorithm>
@@ -23,6 +28,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <random>
+#include <utility>
 #include <vector>
 
 namespace k = strata::kernels;
@@ -68,7 +74,68 @@ uint16_t f2h(float f) {
     return *reinterpret_cast<uint16_t *>(&h);
 }
 
-int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2 q4_0
+#ifdef STRATA_SYCL_TLA_ATTN
+// Exercise the two model entry points against the unfused query and gate operations.
+bool pipeline_parity(const k::QsaShapes& shapes, const k::QsaAttnPools& pools,
+                     const std::vector<float>& host_q, const float* query, const float* expected_attention,
+                     const int32_t* ids, const int32_t* steps, int64_t ctx, int64_t nq, int64_t cap,
+                     float* scratch, int64_t scratch_queries) {
+    auto& queue = dpct::get_in_order_queue();
+    constexpr int width = 24 * 256;
+    const size_t count = size_t(nq) * width;
+    std::vector<float> joined(2 * count), weights(256);
+    for (size_t i = 0; i < count; ++i) {
+        const size_t dest = (i / 256) * 512 + i % 256;
+        joined[dest] = host_q[i];
+        joined[dest + 256] = host_q[count - 1 - i];
+    }
+    for (int d = 0; d < 256; ++d) weights[d] = float(127 - d) / 64.f;
+    float* full = up(joined);
+    float* norm = up(weights);
+    float* reference = sycl::malloc_device<float>(count, queue);
+    float* candidate = sycl::malloc_device<float>(count, queue);
+    strata::prefill::split_q(full, reference, nq, &queue);
+    strata::prefill::rms_rows(reference, norm, nq * 24, 256, 256, 1e-6f, &queue);
+    strata::prefill::rope(reference, nq, 24, 256, width, ctx - nq, k::rope_scaling(), &queue);
+    bool ok = k::qsa_tla_prepare_q(full, norm, candidate, nq, ctx - nq, 1e-6f, k::rope_scaling(), &queue);
+    std::vector<float> before(count), after(count);
+    queue.memcpy(before.data(), reference, count * sizeof(float));
+    queue.memcpy(after.data(), candidate, count * sizeof(float)).wait_and_throw();
+    ok = ok && !std::memcmp(before.data(), after.data(), count * sizeof(float));
+
+    const size_t bytes = size_t((ctx + 3) / 4) * 2 * 4 * 256;
+    const size_t expanded_bytes = bytes * (1 + sizeof(float));
+    void* key_buffer = sycl::malloc_device(expanded_bytes, queue);
+    const int stride = width + 32;
+    std::vector<uint16_t> expected(size_t(nq) * stride, 0xbeef);
+    uint16_t* gated_reference = up(expected);
+    strata::prefill::gate_attn(expected_attention, full, gated_reference, nq, &queue, stride);
+    queue.memcpy(expected.data(), gated_reference, expected.size() * sizeof(uint16_t)).wait_and_throw();
+    for (const auto [available, offset] : {std::pair{expanded_bytes, 0}, std::pair{expanded_bytes - 1, 0},
+                                           std::pair{bytes, 0}, std::pair{bytes - 1, 0}, std::pair{expanded_bytes, 1}}) {
+        std::vector<uint16_t> result(expected.size(), 0xbeef);
+        uint16_t* output = up(result);
+        const k::QsaTlaGate gate{full, output, stride};
+        const k::QsaTlaKeyWorkspace workspace{key_buffer, available, ctx, ctx - nq};
+        bool selected = k::qsa_tla_sparse_prefill(query, pools, ids, steps, cap, shapes, scratch + offset, candidate,
+                                                  nq, scratch_queries, &queue, workspace, &gate);
+        queue.memcpy(result.data(), output, result.size() * sizeof(uint16_t)).wait_and_throw();
+        ok = ok && selected && result == expected;
+        sycl::free(output, queue);
+    }
+    sycl::free(key_buffer, queue);
+    sycl::free(gated_reference, queue);
+    sycl::free(reference, queue);
+    sycl::free(candidate, queue);
+    sycl::free(norm, queue);
+    sycl::free(full, queue);
+    std::printf("%s TLA query preparation, gated output, row padding, full and undersized key workspace\n",
+                ok ? "PASS" : "FAIL");
+    return ok;
+}
+#endif
+
+int run(int fmt, int64_t ctx, int64_t nq, int reps, bool bmg_default = false, bool pipeline = false) {   // fmt 1 int8, 0 fp16, 2 q4_0
 #if !defined(__HIPCC__) && !defined(STRATA_USE_HIP)
     if (fmt == 2) {   // mode 4 (Q4_0 KV) runs on sm_80 and newer only: below that the dispatcher keeps the old kernel
         int dev = 0, major = 0;
@@ -120,14 +187,14 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
     }
     std::vector<int32_t> table(pages);
     for (int64_t i = 0; i < pages; ++i) table[i] = (int32_t) i;
-    std::shuffle(table.begin(), table.end(), rng);
+    if (!pipeline) std::shuffle(table.begin(), table.end(), rng);
     if (const char* mask = std::getenv("QA_MASK_PAGES")) {
         const bool all = std::strcmp(mask, "all") == 0;
         for (size_t i = 0; i < table.size(); ++i)
             if (all || i % 7 == 0) table[i] = -1;
     }
     // queries at positions ctx - nq .. ctx - 1
-    const int64_t cap = k::qsa_selection_width(ctx, s);
+    const int64_t cap = k::qsa_selection_width(pipeline ? k::kTopkMaxCells : ctx, s);
     std::vector<int32_t> ids((size_t) (nq * cap), 0), steps((size_t) (nq * k::kStepCount), 0);
     std::vector<float> q((size_t) (nq * NH * HD));
     for (auto& x : q) x = nd(rng) * 2.0f;
@@ -260,7 +327,7 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
        "malloc");
     ck(DPCT_CHECK_ERROR(
            scratch = (float *)sycl::malloc_device(
-               batch * k::qsa_decode_attn_scratch_floats(cap, s) * 4,
+               (batch * k::qsa_decode_attn_scratch_floats(cap, s) + (pipeline ? 1 : 0)) * 4,
                dpct::get_in_order_queue())),
        "malloc");
     auto old_run = [&]() {
@@ -277,7 +344,15 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
     };
     bool refused = false;   // SYCL port: the XMX kernel takes int8 and FP16 pools; the per-cell check runs anyway
     auto new_run = [&]() {
-        if (!k::qsa_prompt_attn_batch(d_q, pl, d_ids, d_steps, cap, s, d_new, nq, nullptr)) {
+        if (bmg_default) {
+            const auto selected = k::qsa_prefill_batch(d_q, pl, d_ids, d_steps, cap, s, scratch, d_new,
+                                                       nq, batch, nullptr);
+            if ((fmt == 1) != (selected == k::QsaPrefillBatch::tla)) {
+                std::fprintf(stderr, "unexpected Battlemage default prefill backend for KV format %d\n", fmt);
+                std::exit(1);
+            }
+            refused = selected == k::QsaPrefillBatch::declined;
+        } else if (!k::qsa_prompt_attn_batch(d_q, pl, d_ids, d_steps, cap, s, d_new, nq, nullptr)) {
             if (!refused) std::fprintf(stderr, "qsa_prompt_attn_batch refused the pools: per-cell check only\n");
             refused = true;
         }
@@ -285,6 +360,11 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
     old_run();
     new_run();
     pc_run();
+    bool pipeline_ok = true;
+#ifdef STRATA_SYCL_TLA_ATTN
+    if (pipeline)
+        pipeline_ok = pipeline_parity(s, pl, q, d_q, d_old, d_ids, d_steps, ctx, nq, cap, scratch, batch);
+#endif
     ck(DPCT_CHECK_ERROR(dpct::get_current_device().queues_wait_and_throw()),
        "run");
     std::vector<float> o((size_t) (nq * NH * HD)), nw(o.size()), pcw(o.size());
@@ -448,12 +528,14 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
         sycl::free((void *)pl.page_table, dpct::get_in_order_queue());
     sycl::free((void *)pl.k_q4, dpct::get_in_order_queue());
         sycl::free((void *)pl.v_q4, dpct::get_in_order_queue());
-    return ok1 && ok2 ? 0 : 1;
+    return ok1 && ok2 && pipeline_ok ? 0 : 1;
 }
 }  // namespace
 
 int main(int argc, char** argv) {
-    setenv("STRATA_PROMPT_ATTN_XMX", "1", 0);   // SYCL port: the batched kernel under test is the XMX one (opt-in in the engine)
+    const bool pipeline = argc > 4 && std::strcmp(argv[4], "--bmg-pipeline") == 0;
+    const bool bmg_default = pipeline || (argc > 4 && std::strcmp(argv[4], "--bmg-default") == 0);
+    if (!bmg_default) setenv("STRATA_PROMPT_ATTN_XMX", "1", 0);   // SYCL port: the batched kernel under test is the XMX one (opt-in in the engine)
 #if defined(__HIP_PLATFORM_AMD__)
     // S6: on AMD the kernel under test is the RDNA4 matrix-core one (opt-in in the engine); other cards skip
     {
@@ -475,6 +557,18 @@ int main(int argc, char** argv) {
     const int64_t nq = argc > 2 ? std::atoll(argv[2]) : 2048;
     const int reps = argc > 3 ? std::atoi(argv[3]) : 5;
     const bool int8_only = argc > 4 && std::strcmp(argv[4], "--int8-only") == 0;
+    if (bmg_default) {
+#ifdef STRATA_SYCL_TLA_ATTN
+        auto& queue = dpct::get_in_order_queue();
+        if (queue.get_backend() != sycl::backend::ext_oneapi_level_zero ||
+            strata::intel_gpu_gen(queue.get_device()) != strata::IntelGpuGen::Battlemage)
+            return 77;
+        if (pipeline) return run(1, ctx, nq, reps, true, true);
+        return run(1, ctx, nq, reps, true) + run(0, ctx, nq, reps, true);
+#else
+        return 77;
+#endif
+    }
     if (argc > 4 && !int8_only) {
         std::fprintf(stderr, "usage: qsa_prompt_attn_parity [context] [queries] [reps] [--int8-only]\n");
         return 2;
