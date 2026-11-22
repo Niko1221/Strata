@@ -7,6 +7,8 @@ Lokalna sztuczna inteligencja dla Windows, z czatem, pracą agentów, badaniami 
 <!-- upstream v0.2.19 -->
 ## Co zmieniło się w 0.7.5
 
+Uwaga: wartości DS4 2,84x / FLA 4,86x / Sakura 22,44 t/s pochodzą z dzienników rozwoju Antigravity i nie zostały niezależnie odtworzone w tej sesji budowy. Ta sesja zmierzyła 9,09 t/s prefill / 11,78 t/s decode na kanonicznym GGUF przy 32K.
+
 To wydanie zachowuje wszystkie funkcje forkowe i dodaje natywne optymalizacje z 22/23-11. Produkt to **0.7.5**, rodzina silników natywnych **0.6.7**, źródło upstream **Niko1221/Strata v0.2.19** (Control/engines 0.1.65). Optymalizacje RTX 5060 Ti (sm_120a) / CUDA 13.5: DS4-9B prefill 2,84x szybciej, decode +13,4%, E2E +22,7%; FLA GDN + Spin(8) exp2f prefill 4,86x i kompresja KV 59,4%; branchless router Inkling-2 (1,16x); Sakura Inkling-2-Mini 65K–98K (`--expert-vram 7.8` daje decode 22,44 t/s, 12,7x, 32/32 identyczne tokeny). Warstwa serve czyta tokenizator i szablon czatu osadzone w GGUF oraz udostępnia parser wyjścia Inkling; Hermes Agent ma providera `inkling2`. Tablice profili SM × VRAM Ryu (kuraneko1, MIT) zostały włączone do oficjalnego CUDA Inkling-2 i odesłane upstream jako PR #6571. Weryfikacja podpisu usunięta (brak klucza); hashe SHA-256 pozostają. `releaseQualified=false`.
 
 ## Wersja i pobieranie

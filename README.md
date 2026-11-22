@@ -4,6 +4,8 @@
 
 ## What changed in 0.7.5
 
+Note: the DS4 2.84x / FLA 4.86x / Sakura 22.44 t/s figures come from the Antigravity development logs and were not independently reproduced in this build session; this session's own measurement was 9.09 t/s prefill / 11.78 t/s decode on the canonical GGUF at 32K (evidence: H:/Strata/evidence/inkling2-benchmark-result.txt).
+
 This release keeps every fork-only feature and adds the 2026-11-22/23 native speedups. Product is **0.7.5**, native engine family **0.6.7**, upstream reference Niko1221/Strata **v0.2.19** (Control/engines 0.1.65). RTX 5060 Ti (sm_120a) / CUDA 13.5 optimizations: DS4-9B prefill 2.84x faster, decode +13.4%, E2E +22.7%; FLA GDN + Spin(8) triality exp2f prefill 4.86x faster with 59.4% KV compression; Inkling-2 branchless router (1.16x) and Sakura Inkling-2-Mini 65K-98K context (22.44 t/s decode with `--expert-vram 7.8`, 12.7x faster, 32/32 exact tokens). The serve layer now reads the GGUF-embedded tokenizer/chat template and exposes an Inkling output parser; Hermes Agent has an `inkling2` provider. Ryu's (kuraneko1, MIT) SM x VRAM profile tables are merged into the official CUDA Inkling-2 path and returned upstream as PR #6571. Component signature verification removed (no signing key); SHA-256 digests retained. `releaseQualified=false`.
 
 ## Version and downloads

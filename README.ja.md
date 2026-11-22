@@ -1,5 +1,7 @@
 ## 0.7.5 での変更
 
+注記：DS4 2.84倍／FLA 4.86倍／Sakura 22.44 t/s の数値は Antigravity の開発ログ由来で、本ビルドセッションでは独立再現していません。本セッションの実測は正規 GGUF・32K コンテキストで prefill 9.09 t/s／decode 11.78 t/s です（証拠：H:/Strata/evidence/inkling2-benchmark-result.txt）。
+
 本リリースはフォーク独自機能をすべて維持し、2026-11-22/23 のネイティブ高速化を追加します。プロダクト **0.7.5**、ネイティブエンジンファミリ **0.6.7**、upstream **Niko1221/Strata v0.2.19**（Control/engines 0.1.65）。RTX 5060 Ti（sm_120a）/ CUDA 13.5 最適化：DS4-9B prefill 2.84倍、decode +13.4%、E2E +22.7%、FLA GDN + Spin(8) triality exp2f で prefill 4.86倍・KV 59.4% 圧縮、Inkling-2 branchless router（1.16倍）、Sakura Inkling-2-Mini 65K〜98K コンテキスト（`--expert-vram 7.8` で decode 22.44 t/s、12.7倍、32/32 完全一致）。serve 層は GGUF 埋め込みトークナイザ／テンプレートと Inkling 出力パーサに対応、Hermes Agent に `inkling2` プロバイダを追加。Ryu さん（kuraneko1、MIT）の SM × VRAM プロファイル表を公式 CUDA Inkling-2 にマージし、upstream PR #6571 として還元。署名検証は削除済み、SHA-256 ダイジェストが残ります。`releaseQualified=false`。
 
 ## バージョンと配布物

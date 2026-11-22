@@ -1,5 +1,7 @@
 ## 0.7.5 变更
 
+注：DS4 2.84倍／FLA 4.86倍／Sakura 22.44 t/s 等数值来自 Antigravity 开发日志，本次构建会话未独立复现。本次会话实测为正规 GGUF、32K 上下文下 prefill 9.09 t/s／decode 11.78 t/s（证据：H:/Strata/evidence/inkling2-benchmark-result.txt）。
+
 本版本保留所有 fork 独有功能，并加入 11/22-23 的原生优化：产品 **0.7.5**，原生引擎系列 **0.6.7**，上游 v0.2.19。RTX 5060 Ti（sm_120a）/ CUDA 13.5：DS4-9B prefill 2.84 倍、E2E +22.7%、FLA GDN + Spin(8) prefill 4.86 倍、Sakura Inkling-2 65K-98K（解码 22.44 t/s）。Ryu（kuraneko1，MIT）的 SM × VRAM 配置表已合并到官方 CUDA Inkling-2（PR #6571）。签名验证已移除，SHA-256 保留。`releaseQualified=false`。
 
 ## 版本与下载

@@ -1,5 +1,7 @@
 ## Was sich in 0.7.5 ändert
 
+Hinweis: Die Werte DS4 2,84x / FLA 4,86x / Sakura 22,44 t/s stammen aus den Antigravity-Entwicklungsprotokollen und wurden in dieser Build-Sitzung nicht unabhängig reproduziert. Diese Sitzung maß 9,09 t/s Prefill / 11,78 t/s Decode mit dem kanonischen GGUF bei 32K.
+
 Diese Version behält alle Fork-Eigenschaften und fügt die nativen Optimierungen vom 22./23.11. hinzu: Produkt **0.7.5**, Engine-Familie **0.6.7**, Upstream v0.2.19. RTX 5060 Ti (sm_120a)/CUDA 13.5: DS4-9B Prefill 2,84x, E2E +22,7 %, FLA GDN + Spin(8) Prefill 4,86x, Sakura Inkling-2 65K-98K (22,44 t/s Decode). Ryu's (kuraneko1, MIT) SM x VRAM-Profile in der offiziellen CUDA-Inkling-2 (PR #6571). Signaturprüfung entfernt, SHA-256 bleibt. `releaseQualified=false`.
 
 ## Version und Downloads
