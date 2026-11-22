@@ -941,6 +941,11 @@ public:
     std::vector<PeerRun> peer_runs;
 #ifdef STRATA_HY4_DISTRIBUTED
     RemoteExperts* remote_experts = nullptr;
+    void reduce_remote_experts(int il, int T) {
+        const float* local = skd::moe_ws_split(T <= 8 ? moe_ws_dec : moe_ws, T * MOE_TOPK).y;
+        hipLaunchKernelGGL(k_moe_reduce_remote, dim3(T), dim3(256), 0, st, local, remote_experts->result(), zout_f,
+                           d_experts + size_t(il - 1) * MOE_E, moe_idx);
+    }
 #endif
     bool has_expert_peers() const {
 #ifdef STRATA_HY4_DISTRIBUTED
@@ -980,10 +985,8 @@ public:
         const size_t nz = (size_t)T * 1536;
 #ifdef STRATA_HY4_DISTRIBUTED
         if (remote_experts) {
-            const float* remote = remote_experts->collect();
-            const float* local = skd::moe_ws_split(T <= 8 ? moe_ws_dec : moe_ws, T * MOE_TOPK).y;
-            hipLaunchKernelGGL(k_moe_reduce_remote, dim3(T), dim3(256), 0, st, local, remote, zout_f,
-                               d_experts + size_t(il - 1) * MOE_E, moe_idx);
+            remote_experts->wait();
+            reduce_remote_experts(il, T);
             return;
         }
 #endif
@@ -1479,7 +1482,7 @@ public:
         skd::cublas_pf().ensure(st);
         cuda_graph_on = getenv("HY4_CUDA_GRAPH") ? atoi(getenv("HY4_CUDA_GRAPH")) != 0 : true;
 #ifdef STRATA_HY4_DISTRIBUTED
-        if (remote_experts) cuda_graph_on = false;
+        if (remote_experts && !getenv("HY4_CUDA_GRAPH")) cuda_graph_on = false;
 #endif
         HCK(hipHostMalloc((void**)&h_step, sizeof(DevStepArgs), hipHostMallocDefault));
         d_step = dalloc<DevStepArgs>(1);
@@ -2448,16 +2451,21 @@ public:
         hipLaunchKernelGGL(k_swiglu_h, dim3((nz + 255) / 256), dim3(256), 0, st, F1, F3_dec, H1, nz);
         lin(pm + ".shared_experts.down_proj.weight", H1, F3_dec, T);
     }
+    void cg_emit_layer_tail_mgpu(int il, int T) {
+        const size_t nz = (size_t)T * 1536;
+#ifdef STRATA_HY4_DISTRIBUTED
+        if (remote_experts) reduce_remote_experts(il, T);
+#endif
+        const std::string pm = L(il) + ".mlp";
+        for (const auto& pr : peer_runs)
+            hipLaunchKernelGGL(k_add_inplace, dim3((nz + 255) / 256), dim3(256), 0, st, zout_f, (const float*)pr.d_zpeer0, nz);
+        hipLaunchKernelGGL(k_f2h, dim3((nz + 255) / 256), dim3(256), 0, st, zout_f, z_h, nz);
+        lin(pm + ".routed_expert_up_proj.weight", z_h, F2, T);
+        hipLaunchKernelGGL(k_add_rms_post, dim3(T), dim3(256), 0, st, F2, (const float*)F3_dec, (const float*)tw(pm + ".combine_output_norm.weight"), x, post, c.rms_eps);
+    }
     void cg_emit_layer_pre_mgpu(int il, int p0, int T, const TreeSpec* tree = nullptr) {
         const size_t nz = (size_t)T * 1536;
-        if (il > 1) {
-            const std::string pm_prev = L(il - 1) + ".mlp";
-            for (const auto& pr : peer_runs)
-                hipLaunchKernelGGL(k_add_inplace, dim3((nz + 255) / 256), dim3(256), 0, st, zout_f, (const float*)pr.d_zpeer0, nz);
-            hipLaunchKernelGGL(k_f2h, dim3((nz + 255) / 256), dim3(256), 0, st, zout_f, z_h, nz);
-            lin(pm_prev + ".routed_expert_up_proj.weight", z_h, F2, T);
-            hipLaunchKernelGGL(k_add_rms_post, dim3(T), dim3(256), 0, st, F2, (const float*)F3_dec, (const float*)tw(pm_prev + ".combine_output_norm.weight"), x, post, c.rms_eps);
-        }
+        if (il > 1) cg_emit_layer_tail_mgpu(il - 1, T);
         int mo = -1;
         for (int j = 0; j < 4; ++j) if (emeta.layers[j] == il) mo = j;
         if (mo >= 0 && engram_ready) engram_layer(mo, il, T);
@@ -2483,7 +2491,11 @@ public:
         const size_t nz = (size_t)T * 1536;
         const std::string pm = L(il) + ".mlp";
         void* mws = T <= 8 ? moe_ws_dec : moe_ws;
-        moe_experts(st, g.d_sec4, d_experts + (size_t)(il - 1) * 512, z_h, moe_idx, moe_w, zout_f, T, mws);
+        float* reduced = zout_f;
+#ifdef STRATA_HY4_DISTRIBUTED
+        if (remote_experts) reduced = nullptr;
+#endif
+        moe_experts(st, g.d_sec4, d_experts + (size_t)(il - 1) * 512, z_h, moe_idx, moe_w, reduced, T, mws);
         if (lm_ok_m(T) && (il - 1) < (int)lm_sh.size() && lm_sh[il - 1].d_jobs) {
             linear_h_multi(st, lm_sh[il - 1], cur_h, T);
         } else {
@@ -2524,8 +2536,9 @@ public:
         key.s_swa = s_swa;
         key.score_grid = score_grid;
         key.dfly_cap = dfly_cap ? 1 : 0;
-        key.route_now = ((tune & TN_ROUTE) && T == 1 && !hyb && peer_runs.empty()) ? 1 : 0;
-        key.nof = (T <= 4 && (tune & TN_NOF2H) && !hyb && peer_runs.empty()) ? 1 : 0;
+        const bool split_experts = has_expert_peers();
+        key.route_now = ((tune & TN_ROUTE) && T == 1 && !hyb && !split_experts) ? 1 : 0;
+        key.nof = (T <= 4 && (tune & TN_NOF2H) && !hyb && !split_experts) ? 1 : 0;
         key.kv_is_host = kv_is_host ? 1 : 0;
         key.slots_sparse = slots_sparse;
         key.engram_ready = engram_ready ? 1 : 0;
@@ -2550,7 +2563,7 @@ public:
             ent->key = key;
             capturing = true;
             cap_score_grid = score_grid;
-            if (!hyb && peer_runs.empty()) {
+            if (!hyb && !split_experts) {
                 if (!engram_ready) {
                     ent->g_l0 = cg_capture_one([&] {
                         hipLaunchKernelGGL(k_embed_hc, dim3(T), dim3(256), 0, st, (const uint8_t*)tw("model.embed_tokens.weight"), d_ids, x, T);
@@ -2585,8 +2598,8 @@ public:
                         }
                     });
                 }
-            } else if (!hyb && !peer_runs.empty()) {
-                // Multi-GPU segmented CUDA Graphs: GPU 0 segments + per-peer moe_experts graphs (zero host sync!)
+            } else if (!hyb && split_experts) {
+                // GPU-only segments bracket expert transport between nodes.
                 ent->g_l0 = cg_capture_one([&] {
                     hipLaunchKernelGGL(k_embed_hc, dim3(T), dim3(256), 0, st, (const uint8_t*)tw("model.embed_tokens.weight"), d_ids, x, T);
                     attention_layer(0, p0, T, tree);
@@ -2609,15 +2622,7 @@ public:
                     }
                     HCK(cudaSetDevice(g.primary_gpu));
                 }
-                const size_t nz = (size_t)T * 1536;
-                const std::string pm_last = L(c.n_layers - 1) + ".mlp";
-                ent->g_tail_last = cg_capture_one([&] {
-                    for (const auto& pr : peer_runs)
-                        hipLaunchKernelGGL(k_add_inplace, dim3((nz + 255) / 256), dim3(256), 0, st, zout_f, (const float*)pr.d_zpeer0, nz);
-                    hipLaunchKernelGGL(k_f2h, dim3((nz + 255) / 256), dim3(256), 0, st, zout_f, z_h, nz);
-                    lin(pm_last + ".routed_expert_up_proj.weight", z_h, F2, T);
-                    hipLaunchKernelGGL(k_add_rms_post, dim3(T), dim3(256), 0, st, F2, (const float*)F3_dec, (const float*)tw(pm_last + ".combine_output_norm.weight"), x, post, c.rms_eps);
-                });
+                ent->g_tail_last = cg_capture_one([&] { cg_emit_layer_tail_mgpu(c.n_layers - 1, T); });
             } else {
                 // Hybrid segmented graphs: layer 0 + 41 (pre, gpuexp) pairs + final layer tail
                 ent->g_l0 = cg_capture_one([&] {
@@ -2665,7 +2670,7 @@ public:
             prefetch_engram(tok_all, p0, T, tree);
             t_eng_issue += now_s() - t_pf0;
         }
-        if (!hyb && peer_runs.empty()) {
+        if (!hyb && !split_experts) {
             HCK(cudaGraphLaunch(ent->g_l0, st));
             if (engram_ready) {
                 double tq = now_s();
@@ -2675,7 +2680,7 @@ public:
                 if (!engram_prep_rest(err)) return false;
                 HCK(cudaGraphLaunch(ent->g_l11_41, st));
             }
-        } else if (!hyb && !peer_runs.empty()) {
+        } else if (!hyb && split_experts) {
             const size_t nz = (size_t)T * 1536;
             const int l_mid = engram_ready ? emeta.layers[1] : -1;
             HCK(cudaGraphLaunch(ent->g_l0, st));
@@ -2683,6 +2688,14 @@ public:
                 if (engram_ready && il == 1) { double tq = now_s(); if (!engram_prep(tok_all, p0, T, err, tree)) return false; t_eng_prep += now_s() - tq; ++n_eng_dec; }
                 if (engram_ready && il == l_mid && !engram_prep_rest(err)) return false;
                 HCK(cudaGraphLaunch(ent->g_pre[il - 1], st));
+#ifdef STRATA_HY4_DISTRIBUTED
+                if (remote_experts) {
+                    remote_experts->submit(il, T, z_h, moe_idx, moe_w, st);
+                    HCK(cudaGraphLaunch(ent->g_gpuexp[il - 1], st));
+                    remote_experts->wait();
+                    continue;
+                }
+#endif
                 for (size_t p = 0; p < peer_runs.size(); ++p) {
                     PeerRun& pr = peer_runs[p];
                     HCK(cudaEventRecord(pr.ev_in, st));

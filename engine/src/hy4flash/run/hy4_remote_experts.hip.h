@@ -62,12 +62,14 @@ public:
         mpi_.fail(failure.what());
     }
 
-    const float* collect() try {
+    void wait() try {
         channel_.synchronize(stream_);
-        return result_;
     } catch (const std::exception& failure) {
         mpi_.fail(failure.what());
     }
+
+    // Stable destination for the coordinator's captured reduction kernels.
+    const float* result() const { return result_; }
 
     void finish() { control(Op::stop); }
 
@@ -109,7 +111,7 @@ public:
         check(cudaMalloc(&idx, size_t(max_rows) * 16 * sizeof(int32_t)));
         check(cudaMalloc(&weight, size_t(max_rows) * 16 * sizeof(float)));
         check(cudaMalloc(&workspace, moe_ws_bytes(max_rows)));
-        skd::moe_has_cpu() = 1;  // Each rank masks nonlocal experts and writes a partial sum.
+        skd::moe_has_cpu() = 1;  // Each rank evaluates only the slots it owns.
         mpi_.minimum(1);
         for (;;) {
             const auto cmd = control();

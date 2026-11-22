@@ -180,7 +180,10 @@ such as `/tmp/hy4-nccl-%h-%p.log` and add `-x NCCL_DEBUG_FILE` to the launch.
 Standard output carries the engine protocol. For HTTP
 serving, configure an executable wrapper that uses MPI for `--serve` and runs the
 binary directly for metadata commands such as `--info` and `--export-tokenizer`.
-MPI serving uses eager CUDA launches. `--session-reuse 1` enables reuse for
+Set `HY4_CUDA_GRAPH=1` on the coordinator to capture the GPU work in decode
+and verification windows of up to eight rows. Each segment runs between MPI
+expert exchanges. This also enables graphs for the DFly2 drafter.
+`--session-reuse 1` enables reuse for
 prompts that extend the cached prefix. `--draft dfly2` enables DFly2 on packs
 that contain the drafter. Add `--vision FILE` on an image-capable configuration.
 
