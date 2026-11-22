@@ -15,7 +15,7 @@ image.
 | decode_128 / decode_256 (bench probe) | **148–149 tok/s** |
 | prefill_8192 (bench probe) | **1290–1305 tok/s** |
 | generation, real-world average (Strata monitor, 940K tokens generated) | **68 tok/s** — 80% of generations land 44–81 |
-| cold prefill, real-world average (Strata monitor, 2.7M tokens read) | **719 tok/s** |
+| cold prefill, real-world average (Strata monitor, 2.5M tokens read) | **706 tok/s** |
 | long cold prefill (60–70K-token prompts, live traffic) | **~2150–2190 tok/s** |
 | context | 262 144 tokens (int8 KV) |
 | VRAM | 93.6 GiB across 4 GPUs, layer-split auto |
@@ -152,3 +152,11 @@ you are counting reasoning tokens, not a regression.
 
 Previous champion ("crown build"): 0.1.52-era fork, clang 23, older 7.2.4
 image — 137–139 tok/s decode. See branch `int6` (legacy).
+
+## Production monitor
+
+Strata's own request monitor on GOLEM, mid-day with real traffic — hardware
+state, 98% prompt-token cache reuse, and the per-request decode speeds that
+back the real-world rows above:
+
+![Strata production monitor on 4x MI50](docs/platinum-monitor.png)
