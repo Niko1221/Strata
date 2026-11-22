@@ -122,6 +122,34 @@ MIN_POOLS_MIB = 2560
 OFFLOAD_SLACK_MIB = 256
 
 
+#: --spec 1 beside the expert offload (with CPU experts: a verify block's missing experts run on the CPU pools).  The drafter takes VRAM from the
+#: expert pools: its weights (SPEC_DRAFTER_MIB), the prompt buffers, which stay mapped with it (SPEC_PROMPT_BUF_MIB), and its K/V layer for the whole
+#: context, 4096 bytes a token in every --kv format, not grown.  Measured on the RTX 3090 (the engine's "offload:" line with and without --spec 1):
+#: 1884 MiB at 256K without --kv-grow (the buffers mapped either way), 2120 MiB at 64K and 2376 MiB at 128K with it.
+#: A verify block computes 8 tokens' experts and keeps 3 to 5 of them, so every missing expert costs more CPU time a token than in plain
+#: decoding, and the smaller pools miss more.  SPEC_OFFLOAD_SPEEDS: per card shape, the share of the experts the pools hold with the drafter (%),
+#: then decode tok/s plain and with --spec 1 on the 257-token chat prompt, plain and with --spec 1 on a 24-token prompt (the 3090 limited to the
+#: card size, 2 x 22 threads, 512 greedy tokens at the start of the context, the mean of two runs; 16 GB: one run).  With most experts on the
+#: card it does what it does with all of them (88.6 against 90.9 on the chat prompt, whose drafts are rarely kept, and well ahead where they
+#: are); at 45% and less the chat prompt loses 10% and more.  So the drafter is on where the pools still hold SPEC_OFFLOAD_POOLS_MIB (70% of
+#: the experts) beside it and the whole context's K/V.  CBA: one box measured (fewer or slower CPU threads move the break-even up); nothing
+#: between 45% and 70%
+SPEC_DRAFTER_MIB = 860
+SPEC_PROMPT_BUF_MIB = 1004
+SPEC_OFFLOAD_POOLS_MIB = 10500
+SPEC_OFFLOAD_SPEEDS = {"8 GB, 32K": (19, 66.9, 51.8, 64.6, 59.9), "12 GB, 64K": (45, 80.6, 72.3, 81.5, 87.9),
+                       "16 GB, 128K": (70, 84.1, 84.4, 85.7, 100.2), "24 GB, 128K": (98, 85.9, 83.9, 86.7, 103.1),
+                       "24 GB, 256K, i8r, no --kv-grow": (92, 82.9, 84.7, 83.3, 100.0)}
+
+
+def offload_spec(vram_mib: float, ctx: int, reserve_mib: int = 0, used_mib: float = 0, kv: str = "f16") -> bool:
+    """The offload mode runs the drafter (--spec 1) too: the expert pools keep SPEC_OFFLOAD_POOLS_MIB beside it at the deepest point (the whole
+    K/V of `ctx`)."""
+    spec_mib = SPEC_DRAFTER_MIB + SPEC_PROMPT_BUF_MIB + -(-ctx * DRAFT_FULL_LAYERS * KV_CELL_BYTES["f16"] // 2**20)
+    pools = int(vram_mib - used_mib) - reserve_mib - GROW_BASE_MIB - -(-ctx * kv_bytes_per_token(False, kv) // 2**20) - spec_mib
+    return pools >= SPEC_OFFLOAD_POOLS_MIB
+
+
 def resident_need_mib(ctx: int) -> int:
     """VRAM (MiB) the resident mode (every expert on the card, the drafter on) takes at this context."""
     return RESIDENT_FIXED_MIB + -(-ctx * kv_bytes_per_token(True) // 2**20)
@@ -167,9 +195,9 @@ def engine_args(model_dir: str, ctx: int, vram_mib: float, reserve_mib: int, cpu
                 cache_mib: int = 0) -> list[str]:
     """The engine's arguments.  Every expert fits on the card: resident, with the drafter (--spec 1).  Otherwise the expert offload with --kv-grow 1:
     the card keeps `reserve_mib` free and fills the rest with the most used experts, the others stay in RAM; `cpu_threads` (per NUMA node; None: no
-    CPU experts) computes a token's missing experts on the CPU instead of copying them over PCIe; the K/V format is offload_kv's.  The engine
-    refuses --cpu-threads with --spec 1, so the offload mode has no drafter.  CBA: offload without CPU experts (no AVX2) also goes without the
-    drafter, unmeasured either way"""
+    CPU experts) computes a token's missing experts on the CPU instead of copying them over PCIe; the K/V format is offload_kv's.  With CPU
+    experts the drafter stays on where the pools keep most of the experts beside it (offload_spec).  CBA: offload without CPU experts (no AVX2)
+    goes without the drafter: its verify blocks would copy their missing experts over PCIe (measured at 8 GB: 16 tok/s)"""
     cache = ["--conversation-cache-mib", str(int(cache_mib))] if cache_mib else []   # (conversation_cache_mib)
     if resident_fits(vram_mib, ctx, reserve_mib):
         return ["--model", model_dir, "--max-context", str(ctx), "--chunk", str(CHUNK), "--kv", "f16", "--tc", "1", "--spec", "1", *cache]
@@ -177,4 +205,6 @@ def engine_args(model_dir: str, ctx: int, vram_mib: float, reserve_mib: int, cpu
             "--tc", "1", "--kv-grow", "1", "--vram-reserve-mib", str(int(reserve_mib))]
     if cpu_threads:
         args += ["--cpu-threads", str(int(cpu_threads))]
+        if offload_spec(vram_mib, ctx, reserve_mib, used_mib, args[args.index("--kv") + 1]):
+            args += ["--spec", "1"]
     return args + cache

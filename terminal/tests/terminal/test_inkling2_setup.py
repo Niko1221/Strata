@@ -85,6 +85,25 @@ class Args(unittest.TestCase):
         self.assertEqual((no_cpu[no_cpu.index("--kv") + 1], no_cpu[no_cpu.index("--chunk") + 1]), ("i8r", "1024"))
         self.assertNotIn("--cpu-threads", no_cpu)
 
+    def test_the_offload_keeps_the_drafter_where_the_pools_stay_large(self):
+        src = ENGINE.read_text(encoding="utf-8")
+        self.assertNotIn("not with --spec 1 yet", src)                                     # the engine takes --spec 1 with --cpu-threads
+        self.assertIn("k_cache_cpu_b", src)
+        for vram, ctx in ((8192, 32768), (12288, 65536), (16384, 131072)):                  # the pools keep under 70% of the experts
+            self.assertFalse(F.offload_spec(vram, ctx), vram)
+            self.assertNotIn("--spec", F.engine_args("/m", ctx, vram, 0, 22))
+        self.assertFalse(F.resident_fits(24576, 131072))                                    # a 24 GB card at 128K: offload, most experts on it
+        args = F.engine_args("/m", 131072, 24576, 0, 22)
+        self.assertEqual((args[args.index("--spec") + 1], args[args.index("--cpu-threads") + 1], args[args.index("--kv-grow") + 1]),
+                         ("1", "22", "1"))
+        self.assertNotIn("--spec", F.engine_args("/m", 131072, 24576, 0, None))            # no CPU experts: no drafter in offload
+        self.assertTrue(F.offload_spec(24576, 65536, 3072))                                 # a 3 GB desktop reserve at 64K
+        self.assertFalse(F.offload_spec(24576, 262144))                                     # 256K of fp16 K/V leaves the pools 67% ...
+        self.assertTrue(F.offload_spec(24576, 262144, kv="i8r"))                            # ... of int8 K/V 93%
+        for shape, (share, chat, chat_spec, short, short_spec) in F.SPEC_OFFLOAD_SPEEDS.items():
+            on = share >= 70                                                                # SPEC_OFFLOAD_POOLS_MIB of the experts' 15013 MiB
+            self.assertEqual(chat_spec >= 0.95 * chat and short_spec > 1.1 * short, on, shape)   # on: the chat prompt holds, the short one gains
+
     def test_offload_contexts_by_card(self):
         self.assertEqual(F.recommended_context(12288, 1500, 600), 65536)
         self.assertEqual(F.offload_kv(12288, 1500, 600, 65536), "f16")
@@ -134,7 +153,8 @@ class Args(unittest.TestCase):
                 args = F.engine_args("/m", F.recommended_context(vram), vram, 0, threads, 0, 4096)
                 flags = [x for x in args if x.startswith("--")]
                 self.assertEqual(set(flags) - known, set(), (vram, threads))
-                self.assertFalse("--spec" in flags and "--cpu-threads" in flags)          # the engine refuses the pair
+                if "--vram-reserve-mib" in flags:                                        # offload: the drafter only with the CPU experts
+                    self.assertLessEqual("--spec" in flags, "--cpu-threads" in flags)
                 self.assertFalse("--cpu-threads" in flags and "--vram-reserve-mib" not in flags)
 
     def test_conversation_cache_from_the_ram(self):
