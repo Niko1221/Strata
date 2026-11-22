@@ -8465,7 +8465,12 @@ def _start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open
     say("  " + "-" * 100)
     size = f'about {gb:.0f} GB' if gb >= 1 else '34-55 GB'
     a_ = cfg["args"]
-    if "--mmap-experts" in a_ and "--resident-budget-gib" not in a_ and "--resident-experts" not in a_:
+    if cfg.get("arch") == ink2_family.ARCH:            # Inkling-2-Mini: its own figures (strata_control/ink2_family.py)
+        say(f"  Starting {cfg.get('model_name', 'the model')}: " + (
+            f"it keeps the experts the card does not hold in RAM (about {ink2_family.OFFLOAD_RAM_GIB:.1f} GiB, locked for the GPU)."
+            if "--vram-reserve-mib" in a_ else
+            f"it loads its {ink2_family.FILES['model-00001-of-00001.safetensors'][0] / 1e9:.0f} GB onto the graphics card."))
+    elif "--mmap-experts" in a_ and "--resident-budget-gib" not in a_ and "--resident-experts" not in a_:
         # #505: the mapped low-RAM mode loads nothing into RAM up front (the server's narrator says the same)
         say(f"  Starting {cfg.get('model_name', 'the model')}: it maps {size} of experts from the model files (the OS "
             "file cache reads them).")

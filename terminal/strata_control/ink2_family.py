@@ -67,7 +67,9 @@ CHUNK = 1024
 #: the contexts offered (the model was trained to 1M; past 256K is untested here)
 CONTEXTS = [8192, 32768, 65536, 131072, 262144]
 DEFAULT_CONTEXT = 32768                # where nothing larger fits on the card with every expert
-#: the RAM of the offload mode: every expert is kept in RAM (pinned, placed on the NUMA nodes) while the card holds the most used
+#: the RAM of the offload mode: every expert is kept in RAM (pinned, placed on the NUMA nodes) while the card holds the most used.  Measured: the
+#: engine's peak resident memory (VmHWM) 16.8 GiB on an RTX 3090 set up as an 8 GB card; 32 GB leaves the OS, the server and the browser room
+OFFLOAD_RAM_GIB = 16.8
 RAM_GB = 32
 
 #: The expert offload (--vram-reserve-mib): what the card holds besides the expert pools, from the engine's own "offload: X GiB free" line on an
