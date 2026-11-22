@@ -372,6 +372,9 @@ public:
     double t_cold_io = 0;
     std::vector<Buffer> kcache, ivg, pooled;  // the ACTIVE conversation slot's KV set (serve swaps these with the parked slots)
     size_t kv_set_bytes = 0;
+    int plan_slots = 1;              // serve: --conversation-slots, --conversation-cache-mib, SSD tier on: the cold-expert cache leaves room for the KV sets they allocate after init
+    size_t plan_conv_mib = 0;
+    bool plan_spill = false;
     // one conversation's KV set (SWA ring / sparse cache / index vectors / pooled keys); returns its size in bytes. Zero-init is not needed.
     size_t alloc_kv_set(std::vector<Buffer>& kc, std::vector<Buffer>& iv, std::vector<Buffer>& pl) {
         kc.assign(c.n_layers, Buffer());
@@ -635,6 +638,17 @@ public:
             size_t budget = (work_set > used_now + (size_t) 4 * 1024 * 1024 * 1024ULL) ? (work_set - used_now - (size_t) 4 * 1024 * 1024 * 1024ULL) : ((size_t) 2 * 1024 * 1024 * 1024ULL);
             const char* env_gb = getenv("STRATA_METAL_EXP_CACHE_GB");
             if (env_gb && *env_gb) budget = (size_t) (atof(env_gb) * 1e9);
+            // later allocations (further conversation-slot KV sets) must still fit the working set
+            size_t extra_kv = 0;
+            if (plan_slots > 1 || plan_spill) {
+                const size_t fit = plan_conv_mib * 1048576 / std::max<size_t>(kv_set_bytes, 1);
+                const size_t eff = std::max<size_t>(1, std::min<size_t>((size_t) plan_slots, fit));
+                extra_kv = (eff - 1 + (plan_spill ? 1 : 0)) * kv_set_bytes;
+            }
+            budget = budget > extra_kv ? budget - extra_kv : 0;
+            // one Metal buffer cannot exceed maxBufferLength
+            const size_t max_buf = cx.max_buffer_length();
+            budget = std::min(budget, max_buf > ((size_t) 1 << 30) ? max_buf - ((size_t) 1 << 30) : max_buf / 2);
             budget = std::min(budget, (size_t) 41 * 512 * exp_slot_bytes);
             budget = std::max(budget, (size_t) 512 * exp_slot_bytes);  // at least 1 full layer (512 experts) for prefill!
             exp_n_slots = (int) (budget / exp_slot_bytes);
@@ -1677,6 +1691,14 @@ int main(int argc, char** argv) {
     }
     const bool spec_mode = (gen > 0 || bench_m > 0 || par_m > 0) && draft != "off" && has_df && r.Tc >= 16 && !all_logits && recs.empty();  // a picture request decodes plainly (the drafter positions are token indices, the picture rows use 3D positions)
     if (draft == "dfly2" && !spec_mode && gen > 0) fprintf(stderr, "[spec] --draft dfly2 requested but not possible (no drafter in the file, chunk < 16, or --all-logits)\n");
+    if (serve && session_reuse) {
+        // KV sets beyond the first that serve allocates later (slots + the SSD tier's spare); the set size is known once init allocated the first
+        const int ns = conv_slots_arg > 0 ? conv_slots_arg : 4;
+        const bool sp = !hy4_spill_root(spill_dir_arg, model, session_reuse).empty() && spill_mib_arg > 0;
+        r.plan_slots = ns;
+        r.plan_conv_mib = (size_t) conv_mib_arg;
+        r.plan_spill = sp;
+    }
     if (!r.init(no_engram ? std::string() : engram, std::max(all_logits ? r.Tc : 1, spec_mode ? 8 : 1), err)) {
         fprintf(stderr, "init: %s\n", err.c_str());
         return 1;
