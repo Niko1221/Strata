@@ -1,0 +1,49 @@
+{
+  "engine_options": {
+    "--pack": "gyro-gyro-s",
+    "--native": "Qwen3.8-Flash-Next-Gyro-S-TQ1_0.gguf",
+    "--ple-gguf": "Qwen3.8-Flash-Next-Gyro-S-TQ1_0.gguf",
+    "--expert-profile": "perfil-expertos-bench.bin",
+    "--expert-cache": "auto",
+    "--max-context": "131072",
+    "--kv": "int8",
+    "--resident-experts": true,
+    "--kv-resident": "32768",
+    "--vision": true,
+    "--resident-budget-gib": "17",
+    "--spec": "6",
+    "--prefill": "8192",
+    "--pcie-frac": "1.0",
+    "--vram-reserve-mib": "1024",
+    "--conversation-cache-min-free-mib": "0",
+    "--conversation-cache-mib": "0",
+    "--prompt-cache-spread": true,
+    "--draft": "dflash2",
+    "--draft-model": "qwen3.8-flash-next-dflash2.q4_0.pack",
+    "--draft-fallback": "none",
+    "--mtp-draft-vocab": "draft_vocab_latin.bin",
+    "--draft-conf": "0.6",
+    "--expert-profile-save": "perfil-expertos-bench.bin"
+  },
+  "other_engine_options": {
+    "--pack": "gyro-gyro-s",
+    "--native": "Qwen3.8-Flash-Next-Gyro-S-TQ1_0.gguf",
+    "--ple-gguf": "Qwen3.8-Flash-Next-Gyro-S-TQ1_0.gguf",
+    "--max-context": "131072",
+    "--resident-experts": true,
+    "--vision": true,
+    "--resident-budget-gib": "17",
+    "--conversation-cache-min-free-mib": "0",
+    "--conversation-cache-mib": "0",
+    "--prompt-cache-spread": true
+  },
+  "server_defaults": {
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "top_k": 20,
+    "n_predict": -1
+  },
+  "total_slots": 1,
+  "context": 131072,
+  "source": "effective engine arguments of the profile"
+}
