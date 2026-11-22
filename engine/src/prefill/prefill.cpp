@@ -696,6 +696,19 @@ inline bool pf_peer_cpu() {
 // STRATA_PREFILL_CPU_SHARE_MAX (default 3072, at least 1024): with the share on, chunks below it are staged after their
 // routing - so they can hand the CPU its share - instead of streaming every expert the cards do not hold.  The share pays
 // on chunks up to ~3K tokens, where few tokens route to many of the streamed experts; 1024 keeps the old limit.
+// BW-3/BW-4 (opt-in): the most tokens of a chunk one expert may route and still be the CPU share's.
+// Restored from official v0.2.19 (three-way intake dropped this block); default 0 = pool MAXT.
+int g_share_nt_arch = 0;   // link rule's expert width, set by arm_cpu_share for the default-armed share
+inline int cpu_share_nt() {
+    static const bool explicit_nt = std::getenv("STRATA_PREFILL_CPU_SHARE_NT") != nullptr;
+    static const int env_n = [] {
+        const char* e = std::getenv("STRATA_PREFILL_CPU_SHARE_NT");
+        return e ? std::atoi(e) : 0;
+    }();
+    const int n = (!explicit_nt && g_share_nt_arch > 0 && g_share_default && cpu_share_explicit() == -2.0) ? g_share_nt_arch : env_n;
+    return n <= strata::kernels::cpu::MAXT ? (int) strata::kernels::cpu::MAXT : std::min(n, 256);
+}
+constexpr int64_t kShareRowsMax = 16384;   // CPU share rows a layer may take (16384 x 2560 floats = 160 MiB pinned)
 int64_t g_share_limit_arch = 0;   // AMD-Q: the default limit of a gfx12 card (share_rules::gfx12_share_limit), set by arm_cpu_share
 inline int64_t cpu_share_max() {
     static const int64_t v = [] {
