@@ -27,6 +27,10 @@ struct alignas(8) BlockQ8_1 {
     int32_t qs[8];
 };
 void quantize_q8_1(const float* input, BlockQ8_1* output, int n, cudaStream_t stream);
+void quantize_q8_1_batch(const float* input, BlockQ8_1* output, int n_tokens, int n, cudaStream_t stream);
+bool matvec_q8_1_batch_supported(int type);
+void matvec_q8_1_batch(int type, const void* weights, const BlockQ8_1* input_q8,
+                       float* output, int n, int rows, int n_tokens, cudaStream_t stream);
 void rms_quantize_q8_1(const float* x, const float* weight, float* out_f32, BlockQ8_1* out_q8, int n, float eps, cudaStream_t s);
 void swiglu_quantize_q8_1(float* gate, const float* up, BlockQ8_1* out_q8, int n, cudaStream_t s);
 void matvec_q8_1(int type, const void* weights, const BlockQ8_1* input_q8, const float* input_f32,

@@ -3697,6 +3697,13 @@ int64_t Prefill::ring_max_slots() {
 
 int64_t Prefill::ring_slots_for(int64_t chunk) { return ring_slots((size_t) chunk); }
 void Prefill::set_cpu_pool(kernels::cpu::ExpertPool* pool) { cpu_pool_ = pool; }
+bool Prefill::arm_cpu_share_split(bool applies, double floor_ms, int pool_workers, bool all_cc120) {
+    (void) applies;
+    (void) floor_ms;
+    (void) pool_workers;
+    (void) all_cc120;
+    return false;
+}
 void Prefill::arm_cpu_share(bool applies, bool by_default) {
 #if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
     if (applies && by_default && cpu_share_explicit() == -2.0 && !g_share_default) {

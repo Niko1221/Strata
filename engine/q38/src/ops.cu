@@ -249,6 +249,14 @@ __global__ void __launch_bounds__(256) quantize_q8_1_kernel(const float* __restr
     quantize_warp_q8_1(xv, y + blk, lane);
 }
 
+__global__ void __launch_bounds__(256) quantize_q8_1_batch_kernel(
+    const float* __restrict__ x, BlockQ8_1* __restrict__ out, int n_tokens, int n) {
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+    const int blk = blockIdx.x * 8 + warp, tok = blockIdx.y;
+    const int nb = n >> 5;
+    if (tok >= n_tokens || blk >= nb) return;
+    quantize_warp_q8_1(x[size_t(tok) * n + blk * 32 + lane], out + size_t(tok) * nb + blk, lane);
+}
 __global__ void __launch_bounds__(256) rms_quantize_q8_1_kernel(
     const float* x, const float* w, float* out_f32, BlockQ8_1* out_q8, int n, float eps) {
     __shared__ float sums[8];
@@ -399,6 +407,78 @@ __global__ void __launch_bounds__(256, 4) mv_q8_qk45_4blk_2row(
     if (lane == 0) { *y_out0 = s0; if (has_r1) *y_out1 = s1; }
 }
 
+template <bool FIVE, int NCOLS>
+__global__ void __launch_bounds__(256, 4) mv_q8_qk45_batch(
+    const uint8_t* __restrict__ wp, const BlockQ8_1* __restrict__ x, float* __restrict__ y,
+    int n, int rows, size_t stride) {
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+    const int row = blockIdx.x * 8 + warp;
+    if (row >= rows) return;
+    const uint8_t* row_ptr = wp + size_t(row) * stride;
+    const int blk_off = lane >> 3, sub_lane = lane & 7;
+    const int b_pair = sub_lane >> 1, half_off = (sub_lane & 1) * 4;
+    const int nb = n >> 8, x_stride = n >> 5;
+    constexpr int BLOCK_BYTES = FIVE ? 176 : 144;
+    constexpr int QS_OFF = FIVE ? 48 : 16;
+    float acc[NCOLS];
+    #pragma unroll
+    for (int c = 0; c < NCOLS; ++c) acc[c] = 0.0f;
+    for (int blk_i = blk_off; blk_i < nb; blk_i += 4) {
+        const uint8_t* p = row_ptr + size_t(blk_i) * BLOCK_BYTES;
+        const uint4 hdr = __ldg(reinterpret_cast<const uint4*>(p));
+        const uint4 q16 = __ldg(reinterpret_cast<const uint4*>(p + QS_OFF + sub_lane * 16));
+        uint4 qh16 = {0, 0, 0, 0};
+        if constexpr (FIVE) qh16 = __ldg(reinterpret_cast<const uint4*>(p + 16 + (sub_lane & 1) * 16));
+        const float d0 = __half2float(__ushort_as_half(uint16_t(hdr.x & 0xFFFFu)));
+        const float dm0 = __half2float(__ushort_as_half(uint16_t(hdr.x >> 16)));
+        int d_lo, m_lo, d_hi, m_hi;
+        if (b_pair < 2) {
+            const int sh = b_pair * 16;
+            const uint32_t sy = hdr.y >> sh, sz = hdr.z >> sh;
+            d_lo = int(sy & 0x3Fu); d_hi = int((sy >> 8) & 0x3Fu);
+            m_lo = int(sz & 0x3Fu); m_hi = int((sz >> 8) & 0x3Fu);
+        } else {
+            const int sh = (b_pair - 2) * 16;
+            const uint32_t sy = hdr.y >> sh, sz = hdr.z >> sh, sw = hdr.w >> sh;
+            d_lo = int((sw & 0x0Fu) | (((sy >> 6) & 0x03u) << 4));
+            m_lo = int(((sw >> 4) & 0x0Fu) | (((sz >> 6) & 0x03u) << 4));
+            d_hi = int(((sw >> 8) & 0x0Fu) | (((sy >> 14) & 0x03u) << 4));
+            m_hi = int(((sw >> 12) & 0x0Fu) | (((sz >> 14) & 0x03u) << 4));
+        }
+        uint32_t lo0 = q16.x & 0x0F0F0F0Fu, hi0 = (q16.x >> 4) & 0x0F0F0F0Fu;
+        uint32_t lo1 = q16.y & 0x0F0F0F0Fu, hi1 = (q16.y >> 4) & 0x0F0F0F0Fu;
+        uint32_t lo2 = q16.z & 0x0F0F0F0Fu, hi2 = (q16.z >> 4) & 0x0F0F0F0Fu;
+        uint32_t lo3 = q16.w & 0x0F0F0F0Fu, hi3 = (q16.w >> 4) & 0x0F0F0F0Fu;
+        if constexpr (FIVE) {
+            const int b0 = b_pair * 2, b1 = b0 + 1;
+            lo0 |= ((qh16.x >> b0) & 0x01010101u) << 4; hi0 |= ((qh16.x >> b1) & 0x01010101u) << 4;
+            lo1 |= ((qh16.y >> b0) & 0x01010101u) << 4; hi1 |= ((qh16.y >> b1) & 0x01010101u) << 4;
+            lo2 |= ((qh16.z >> b0) & 0x01010101u) << 4; hi2 |= ((qh16.z >> b1) & 0x01010101u) << 4;
+            lo3 |= ((qh16.w >> b0) & 0x01010101u) << 4; hi3 |= ((qh16.w >> b1) & 0x01010101u) << 4;
+        }
+        #pragma unroll
+        for (int c = 0; c < NCOLS; ++c) {
+            const BlockQ8_1* xc = x + size_t(c) * x_stride + blk_i * 8 + b_pair * 2;
+            const float2 ds0 = __ldg(reinterpret_cast<const float2*>(&xc[0].d));
+            const float2 ds1 = __ldg(reinterpret_cast<const float2*>(&xc[1].d));
+            const int2 x0_a = __ldg(reinterpret_cast<const int2*>(&xc[0].qs[half_off]));
+            const int2 x0_b = __ldg(reinterpret_cast<const int2*>(&xc[0].qs[half_off + 2]));
+            const int2 x1_a = __ldg(reinterpret_cast<const int2*>(&xc[1].qs[half_off]));
+            const int2 x1_b = __ldg(reinterpret_cast<const int2*>(&xc[1].qs[half_off + 2]));
+            const int32_t dp0 = __dp4a(int32_t(lo3), x0_b.y, __dp4a(int32_t(lo2), x0_b.x, __dp4a(int32_t(lo1), x0_a.y, __dp4a(int32_t(lo0), x0_a.x, 0))));
+            const int32_t dp1 = __dp4a(int32_t(hi3), x1_b.y, __dp4a(int32_t(hi2), x1_b.x, __dp4a(int32_t(hi1), x1_a.y, __dp4a(int32_t(hi0), x1_a.x, 0))));
+            float res = d0 * (float(d_lo * dp0) * ds0.x + float(d_hi * dp1) * ds1.x);
+            if ((sub_lane & 1) == 0) res -= dm0 * (float(m_lo) * ds0.y + float(m_hi) * ds1.y);
+            acc[c] += res;
+        }
+    }
+    #pragma unroll
+    for (int c = 0; c < NCOLS; ++c) {
+        const float s = sum(acc[c]);
+        if (lane == 0) y[size_t(c) * rows + row] = s;
+    }
+}
+
 template <bool FIVE>
 __device__ __forceinline__ float dot_q8_qk45(const uint8_t* p, const BlockQ8_1* xb, int lane) {
     const float d0 = h(p), dmin0 = h(p + 2);
@@ -514,6 +594,48 @@ __global__ void __launch_bounds__(256, 4) mv_q8_q6k_16rows(MvTargets t, const Bl
     if (lane == 0) { *y_out0 = s0; if (has_r1) *y_out1 = s1; }
 }
 
+template <int NCOLS>
+__global__ void __launch_bounds__(256, 4) mv_q8_q6k_batch(
+    const uint8_t* __restrict__ wp, const BlockQ8_1* __restrict__ x, float* __restrict__ y,
+    int n, int rows, size_t stride) {
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, row = blockIdx.x * 8 + warp;
+    if (row >= rows) return;
+    const uint8_t* row_ptr = wp + size_t(row) * stride;
+    const int nb = n >> 8, x_stride = n >> 5;
+    const int ip = lane >> 4, group = (lane & 15) >> 2, j = (lane & 3) * 4;
+    const int ql_off = ip * 64 + (group & 1) * 32 + j * 2;
+    const int qh_off = 128 + ip * 32 + j * 2;
+    const int sc_off = 192 + ip * 8 + group * 2 + (j >> 2);
+    const int x_blk = ip * 4 + group;
+    float acc[NCOLS];
+    #pragma unroll
+    for (int c = 0; c < NCOLS; ++c) acc[c] = 0.0f;
+    for (int blk_i = 0; blk_i < nb; ++blk_i) {
+        const uint8_t* p = row_ptr + size_t(blk_i) * 210;
+        const float d = __half2float(__ushort_as_half(__ldg(reinterpret_cast<const uint16_t*>(p + 208))));
+        const uint32_t ql_a = ldg_u32_from_u16(p + ql_off);
+        const uint32_t qh_a = ldg_u32_from_u16(p + qh_off);
+        const int sc_a = int(__ldg(reinterpret_cast<const int8_t*>(p + sc_off)));
+        const uint32_t ql_b = ldg_u32_from_u16(p + ql_off + 4);
+        const uint32_t qh_b = ldg_u32_from_u16(p + qh_off + 4);
+        const int sc_b = int(__ldg(reinterpret_cast<const int8_t*>(p + sc_off + 1)));
+        const int32_t w4_a = __vsub4(int32_t(((group >= 2) ? ((ql_a >> 4) & 0x0F0F0F0Fu) : (ql_a & 0x0F0F0F0Fu)) | (((qh_a >> (2 * group)) & 0x03030303u) << 4)), 0x20202020);
+        const int32_t w4_b = __vsub4(int32_t(((group >= 2) ? ((ql_b >> 4) & 0x0F0F0F0Fu) : (ql_b & 0x0F0F0F0Fu)) | (((qh_b >> (2 * group)) & 0x03030303u) << 4)), 0x20202020);
+        #pragma unroll
+        for (int c = 0; c < NCOLS; ++c) {
+            const BlockQ8_1& x0 = x[size_t(c) * x_stride + blk_i * 8 + x_blk];
+            const float xd = __ldg(&x0.d);
+            const int2 xq2 = __ldg(reinterpret_cast<const int2*>(&x0.qs[j]));
+            acc[c] += d * (float(sc_a * __dp4a(w4_a, xq2.x, 0) + sc_b * __dp4a(w4_b, xq2.y, 0)) * xd);
+        }
+    }
+    #pragma unroll
+    for (int c = 0; c < NCOLS; ++c) {
+        const float s = sum(acc[c]);
+        if (lane == 0) y[size_t(c) * rows + row] = s;
+    }
+}
+
 __device__ __forceinline__ float dot_q8_iq2_s_sgrid(
     const uint8_t* __restrict__ p, const BlockQ8_1* __restrict__ xb, const uint64_t* __restrict__ sgrid, int lane) {
     const int sub = lane >> 2, group = lane & 3;
@@ -595,6 +717,48 @@ __global__ void __launch_bounds__(256, 4) mv_q8_iq2s_4blk_2row(MvTargets t, cons
     if (lane == 0) { *y_out0 = s0; if (has_r1) *y_out1 = s1; }
 }
 
+template <int NCOLS>
+__global__ void __launch_bounds__(256, 4) mv_q8_q6k_batch(
+    const uint8_t* __restrict__ wp, const BlockQ8_1* __restrict__ x, float* __restrict__ y,
+    int n, int rows, size_t stride) {
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, row = blockIdx.x * 8 + warp;
+    if (row >= rows) return;
+    const uint8_t* row_ptr = wp + size_t(row) * stride;
+    const int nb = n >> 8, x_stride = n >> 5;
+    const int ip = lane >> 4, group = (lane & 15) >> 2, j = (lane & 3) * 4;
+    const int ql_off = ip * 64 + (group & 1) * 32 + j * 2;
+    const int qh_off = 128 + ip * 32 + j * 2;
+    const int sc_off = 192 + ip * 8 + group * 2 + (j >> 2);
+    const int x_blk = ip * 4 + group;
+    float acc[NCOLS];
+    #pragma unroll
+    for (int c = 0; c < NCOLS; ++c) acc[c] = 0.0f;
+    for (int blk_i = 0; blk_i < nb; ++blk_i) {
+        const uint8_t* p = row_ptr + size_t(blk_i) * 210;
+        const float d = __half2float(__ushort_as_half(__ldg(reinterpret_cast<const uint16_t*>(p + 208))));
+        const uint32_t ql_a = ldg_u32_from_u16(p + ql_off);
+        const uint32_t qh_a = ldg_u32_from_u16(p + qh_off);
+        const int sc_a = int(__ldg(reinterpret_cast<const int8_t*>(p + sc_off)));
+        const uint32_t ql_b = ldg_u32_from_u16(p + ql_off + 4);
+        const uint32_t qh_b = ldg_u32_from_u16(p + qh_off + 4);
+        const int sc_b = int(__ldg(reinterpret_cast<const int8_t*>(p + sc_off + 1)));
+        const int32_t w4_a = __vsub4(int32_t(((group >= 2) ? ((ql_a >> 4) & 0x0F0F0F0Fu) : (ql_a & 0x0F0F0F0Fu)) | (((qh_a >> (2 * group)) & 0x03030303u) << 4)), 0x20202020);
+        const int32_t w4_b = __vsub4(int32_t(((group >= 2) ? ((ql_b >> 4) & 0x0F0F0F0Fu) : (ql_b & 0x0F0F0F0Fu)) | (((qh_b >> (2 * group)) & 0x03030303u) << 4)), 0x20202020);
+        #pragma unroll
+        for (int c = 0; c < NCOLS; ++c) {
+            const BlockQ8_1& x0 = x[size_t(c) * x_stride + blk_i * 8 + x_blk];
+            const float xd = __ldg(&x0.d);
+            const int2 xq2 = __ldg(reinterpret_cast<const int2*>(&x0.qs[j]));
+            acc[c] += d * (float(sc_a * __dp4a(w4_a, xq2.x, 0) + sc_b * __dp4a(w4_b, xq2.y, 0)) * xd);
+        }
+    }
+    #pragma unroll
+    for (int c = 0; c < NCOLS; ++c) {
+        const float s = sum(acc[c]);
+        if (lane == 0) y[size_t(c) * rows + row] = s;
+    }
+}
+
 __device__ __forceinline__ float dot_q8_iq3_s_sgrid(
     const uint8_t* __restrict__ p, const BlockQ8_1* __restrict__ xb, const uint32_t* __restrict__ sgrid3, int lane) {
     const int sub = lane >> 2, group = lane & 3, idx0 = group * 2, idx1 = idx0 + 1;
@@ -670,6 +834,48 @@ __global__ void __launch_bounds__(256, 4) mv_q8_iq3s_4blk_2row(MvTargets t, cons
     if (blk_base + blk_off < nb) step_iq3s_4blk_2row(wp0, wp1, x, sgrid3, blk_base + blk_off, sub, s0, s1);
     s0 = sum(s0); s1 = sum(s1);
     if (lane == 0) { *y_out0 = s0; if (has_r1) *y_out1 = s1; }
+}
+
+template <int NCOLS>
+__global__ void __launch_bounds__(256, 4) mv_q8_q6k_batch(
+    const uint8_t* __restrict__ wp, const BlockQ8_1* __restrict__ x, float* __restrict__ y,
+    int n, int rows, size_t stride) {
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, row = blockIdx.x * 8 + warp;
+    if (row >= rows) return;
+    const uint8_t* row_ptr = wp + size_t(row) * stride;
+    const int nb = n >> 8, x_stride = n >> 5;
+    const int ip = lane >> 4, group = (lane & 15) >> 2, j = (lane & 3) * 4;
+    const int ql_off = ip * 64 + (group & 1) * 32 + j * 2;
+    const int qh_off = 128 + ip * 32 + j * 2;
+    const int sc_off = 192 + ip * 8 + group * 2 + (j >> 2);
+    const int x_blk = ip * 4 + group;
+    float acc[NCOLS];
+    #pragma unroll
+    for (int c = 0; c < NCOLS; ++c) acc[c] = 0.0f;
+    for (int blk_i = 0; blk_i < nb; ++blk_i) {
+        const uint8_t* p = row_ptr + size_t(blk_i) * 210;
+        const float d = __half2float(__ushort_as_half(__ldg(reinterpret_cast<const uint16_t*>(p + 208))));
+        const uint32_t ql_a = ldg_u32_from_u16(p + ql_off);
+        const uint32_t qh_a = ldg_u32_from_u16(p + qh_off);
+        const int sc_a = int(__ldg(reinterpret_cast<const int8_t*>(p + sc_off)));
+        const uint32_t ql_b = ldg_u32_from_u16(p + ql_off + 4);
+        const uint32_t qh_b = ldg_u32_from_u16(p + qh_off + 4);
+        const int sc_b = int(__ldg(reinterpret_cast<const int8_t*>(p + sc_off + 1)));
+        const int32_t w4_a = __vsub4(int32_t(((group >= 2) ? ((ql_a >> 4) & 0x0F0F0F0Fu) : (ql_a & 0x0F0F0F0Fu)) | (((qh_a >> (2 * group)) & 0x03030303u) << 4)), 0x20202020);
+        const int32_t w4_b = __vsub4(int32_t(((group >= 2) ? ((ql_b >> 4) & 0x0F0F0F0Fu) : (ql_b & 0x0F0F0F0Fu)) | (((qh_b >> (2 * group)) & 0x03030303u) << 4)), 0x20202020);
+        #pragma unroll
+        for (int c = 0; c < NCOLS; ++c) {
+            const BlockQ8_1& x0 = x[size_t(c) * x_stride + blk_i * 8 + x_blk];
+            const float xd = __ldg(&x0.d);
+            const int2 xq2 = __ldg(reinterpret_cast<const int2*>(&x0.qs[j]));
+            acc[c] += d * (float(sc_a * __dp4a(w4_a, xq2.x, 0) + sc_b * __dp4a(w4_b, xq2.y, 0)) * xd);
+        }
+    }
+    #pragma unroll
+    for (int c = 0; c < NCOLS; ++c) {
+        const float s = sum(acc[c]);
+        if (lane == 0) y[size_t(c) * rows + row] = s;
+    }
 }
 
 // Q8_0 uses 34 bytes/block (34 % 4 == 2): assemble 4 int8_t weights from two uint16_t loads.
@@ -949,6 +1155,85 @@ void dispatch_matvec_q8_1(int type, const MvTargets& t, uintptr_t u_align, const
     }
     ck(cudaGetLastError());
 }
+}
+
+template <int NCOLS>
+__global__ void __launch_bounds__(256, 4) mv_q8_q8_0_batch(
+    const uint8_t* __restrict__ wp, const BlockQ8_1* __restrict__ x, float* __restrict__ y,
+    int n, int rows, size_t stride) {
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, row = blockIdx.x * 8 + warp;
+    if (row >= rows) return;
+    const uint8_t* row_ptr = wp + size_t(row) * stride;
+    const int sub_blk = lane >> 3, g = lane & 7, nb = n >> 5, x_stride = n >> 5;
+    float acc[NCOLS];
+    #pragma unroll
+    for (int c = 0; c < NCOLS; ++c) acc[c] = 0.0f;
+    for (int blk_i = sub_blk; blk_i < nb; blk_i += 4) {
+        const uint8_t* blk = row_ptr + size_t(blk_i) * 34;
+        const float d = __half2float(__ushort_as_half(__ldg(reinterpret_cast<const uint16_t*>(blk))));
+        const int32_t w4 = int32_t(ldg_u32_from_u16(blk + 2 + g * 4));
+        #pragma unroll
+        for (int c = 0; c < NCOLS; ++c) {
+            const BlockQ8_1& x0 = x[size_t(c) * x_stride + blk_i];
+            acc[c] += d * __ldg(&x0.d) * float(__dp4a(w4, __ldg(&x0.qs[g]), 0));
+        }
+    }
+    #pragma unroll
+    for (int c = 0; c < NCOLS; ++c) {
+        const float s = sum(acc[c]);
+        if (lane == 0) y[size_t(c) * rows + row] = s;
+    }
+}
+
+template <int NCOLS>
+static void launch_mv_q8_batch_cols(int type, const uint8_t* wp, const BlockQ8_1* x_q8, float* y, int n, int rows, size_t rb, cudaStream_t s) {
+    const dim3 grid((rows + 7) / 8);
+    switch (type) {
+        case 8:  mv_q8_q8_0_batch<NCOLS><<<grid, 256, 0, s>>>(wp, x_q8, y, n, rows, rb); break;
+        case 12: mv_q8_qk45_batch<false, NCOLS><<<grid, 256, 0, s>>>(wp, x_q8, y, n, rows, rb); break;
+        case 13: mv_q8_qk45_batch<true, NCOLS><<<grid, 256, 0, s>>>(wp, x_q8, y, n, rows, rb); break;
+        case 14: mv_q8_q6k_batch<NCOLS><<<grid, 256, 0, s>>>(wp, x_q8, y, n, rows, rb); break;
+        default: throw std::runtime_error("unsupported batch MMVQ type");
+    }
+}
+
+bool matvec_q8_1_batch_supported(int type) {
+    return type == 8 || type == 12 || type == 13 || type == 14;
+}
+
+void quantize_q8_1_batch(const float* input, BlockQ8_1* output, int n_tokens, int n, cudaStream_t stream) {
+    if (n_tokens <= 0) return;
+    if (!input || !output || n <= 0 || (n % 32) != 0) throw std::runtime_error("invalid quantize_q8_1_batch");
+    const int nb = n >> 5;
+    quantize_q8_1_batch_kernel<<<dim3(unsigned((nb + 7) / 8), unsigned(n_tokens)), 256, 0, stream>>>(input, output, n_tokens, n);
+    ck(cudaGetLastError());
+}
+
+void matvec_q8_1_batch(int type, const void* w, const BlockQ8_1* x_q8, float* y, int n, int rows, int n_tokens, cudaStream_t s) {
+    if (n_tokens <= 0) return;
+    shape(type, n, rows);
+    if (!w || !x_q8 || !y) throw std::runtime_error("null matrix input");
+    const auto* wp = static_cast<const uint8_t*>(w);
+    const size_t rb = row_bytes(type, n);
+    const int x_stride = n >> 5;
+    int t = 0;
+    while (t < n_tokens) {
+        const int rem = n_tokens - t;
+        if (rem >= 8) {
+            launch_mv_q8_batch_cols<8>(type, wp, x_q8 + size_t(t) * x_stride, y + size_t(t) * rows, n, rows, rb, s);
+            t += 8;
+        } else if (rem >= 4) {
+            launch_mv_q8_batch_cols<4>(type, wp, x_q8 + size_t(t) * x_stride, y + size_t(t) * rows, n, rows, rb, s);
+            t += 4;
+        } else if (rem >= 2) {
+            launch_mv_q8_batch_cols<2>(type, wp, x_q8 + size_t(t) * x_stride, y + size_t(t) * rows, n, rows, rb, s);
+            t += 2;
+        } else {
+            launch_mv_q8_batch_cols<1>(type, wp, x_q8 + size_t(t) * x_stride, y + size_t(t) * rows, n, rows, rb, s);
+            t += 1;
+        }
+    }
+    ck(cudaGetLastError());
 }
 
 void matvec_q8_1(int type, const void* w, const BlockQ8_1* x_q8, const float* x_f32, float* y, int n, int rows, cudaStream_t s) {

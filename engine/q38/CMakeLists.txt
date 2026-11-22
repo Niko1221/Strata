@@ -1,6 +1,7 @@
 # Dense Q38 CUDA engine in the fork's dedicated area of the official engine
 # tree.  Built only when STRATA_ENABLE_Q38 is on and linked into `strata`'s
 # family switch (engine/src/program/generate.cpp).
+enable_language(C)
 set(Q38_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 set(Q38_SRC ${Q38_DIR}/src)
 set(Q38_ENGINE ${Q38_DIR}/..)

@@ -638,9 +638,12 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   # Fork dense Q38: the family switch in generate.cpp calls
   # strata::qwen38::run() for a `qwen35` dense 64-layer GGUF.
   if(STRATA_ENABLE_Q38)
+    if(NOT TARGET strata_q38 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/q38/CMakeLists.txt")
+      add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/q38 ${CMAKE_CURRENT_BINARY_DIR}/q38)
+    endif()
     target_link_libraries(strata PRIVATE strata_q38)
     target_compile_definitions(strata PRIVATE STRATA_ENABLE_Q38=1)
-    target_include_directories(strata PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../q38/include)
+    target_include_directories(strata PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/q38/include)
   endif()
 
   # Inkling-2 Mini (GGUF arch `inkling2`): CUDA + AVX2 hybrid engine ported from

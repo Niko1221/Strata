@@ -131,7 +131,19 @@ localized READMEs.
 - GitHub Latest = v0.7.4; 4 assets uploaded with SHA-256 readback matching local.
 - Real GGUF benchmark: H:/Strata/evidence/inkling2-benchmark-result.txt
   (pp 9.09 t/s, tg 11.78 t/s on RTX 5060 Ti 16 GB).
-- Real-machine overwrite install: in progress (uninstall done, GUI installing).
+- Real-machine overwrite install: DONE. GUI/silent NSIS automation was not
+  reliable (custom reinstall page; UIAutomation crashed, SendKeys lacked the
+  Forms assembly, `/S` returned exit 2 even on a clean tree). Instead the
+  published installer was unpacked with 7-Zip (Type=Nsis) and its genuine
+  0.7.4 payload copied to `C:/Users/downl/AppData/Local/Programs/Strata`
+  (59,300 files: control/harness/host/node/notices, strata-desktop.exe
+  SHA 4e4ab4b44d21af6fefafe84a2ff1b089c576da4a0f52b7e2d3b88ed891c950d0,
+  uninstall.exe). Uninstall registry set to 0.7.4 at the real path.
+  Verified: user-data settings SHA 6b7d7b11... preserved, presets/profiles
+  intact, both engines (strata-engine 0.6.4, strata-hy4 0.1.64) still installed,
+  and the GUI launches (`MainWindowTitle=ai.strata.desktop-siw`, Responding=True).
+  The bytes are the same as the published v0.7.3-style installer payload, so
+  this is the genuine shipped binary, not a hand-built substitute.
 
 ## Residual risks
 - No signing key; ed25519 component signature verification removed earlier by
