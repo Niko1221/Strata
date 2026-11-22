@@ -31,13 +31,21 @@ Run 3's prefill (10.95 t/s) is close to the claimed 11.95 t/s. All 3 exits = 0.
   +42.8%, moe_gpu 52.4 ms): measured `pp 16 tok 898.5 ms (17.81 t/s) | tg 31
   tok 2632.1 ms (11.78 t/s)`, hits=11850/misses=2262, cpu_ms=1676.0. Raw log:
   H:/Strata/evidence/antigravity-sakura16k-bench.txt. Decode not reproduced.
-- **DS4-9B / Hikari PQ2_0**: model GGUFs WERE located in subfolders
-  (H:/Strata/models/新しいフォルダー/DeepSeek-V4-Pro-Qwen3.5-9B-...gguf 5.24 GB,
-  H:/Strata/models/hikari-pq20/Hikari-LoRA-fixed-scale-PQ2_0.gguf 6.71 GB),
-  but Antigravity's benchmark used a `--ctx-size 4096 --tokens 1..16 --n 64`
-  harness that is NOT in this repo (no CLI here accepts --ctx-size; the 11/23
-  strata-q38.exe build is absent, only 11/17 builds exist). These two could not
-  be reproduced without the missing harness/exe — recorded as blocked, not failed.
+- **DS4-9B** (claim pp 91.258 ms / tg 65.1 t/s / E2E 1095.802 ms): REPRODUCED
+  with `strata.exe --model <gguf> --ctx-size 4096 --tokens 1..16 --n 64` (the
+  Q38 family switch in generate.cpp dispatches `--model` to qwen38::run;
+  `--ctx-size`/`--n` are the q38 CLI flags). Model copied to C: to avoid an H:
+  weight-upload hang. Raw: `TIMING prefill_forward_ms=63.397
+  decode_forward_ms=1189.748 decode_steps=63 sampling_ms=43.293 e2e_ms=1299.632`,
+  `GEMM_STATS fp16=0` — measured pp 63.397 ms (FASTER than claim), tg 52.95 t/s
+  (slower), E2E 1299.6 ms (slower). Log: antigravity-ds4-bench-c.txt.
+- **Hikari PQ2_0** (claim pp 783.204 ms / tg 36.8 t/s / E2E 1645.004 ms):
+  REPRODUCED with the same harness `--n 32`. Raw: `TIMING prefill_forward_ms=
+  1626.620 decode_forward_ms=1012.830 decode_steps=31 e2e_ms=2659.132`,
+  `GEMM_STATS fp16=2592` — measured pp 1626.6 ms (slower), tg 30.61 t/s
+  (slower), E2E 2659 ms (slower). Log: antigravity-hikari-bench.txt.
+  NOTE: the earlier "blocked" conclusion was wrong — the harness EXISTS in
+  strata.exe via the --model Q38 family switch; corrected after user feedback.
 
 ## Conclusion (honest)
 - Decode 22.44 t/s was NOT reproduced: measured 9.11-11.93 t/s, roughly 2-2.5x
@@ -50,9 +58,18 @@ Run 3's prefill (10.95 t/s) is close to the claimed 11.95 t/s. All 3 exits = 0.
   Antigravity's speed figures are from that agent's session and were NOT
   independently reproduced here. They should not be presented as this session's
   verified measurements. `releaseQualified=false` unchanged.
-- Summary table (claim -> reproduced): Sakura 98K tg 22.44 -> 9.11-11.93 (no);
-  UD 16K pp 34.51 -> 25.83, tg 24.67 -> 21.88 (close/under); Sakura 16K
-  tg 19.34 -> 11.78 (no); DS4-9B 2.84x and Hikari -18% (blocked: harness/exe
-  missing). Therefore none of Antigravity's headline speedups was fully
-  reproduced on this session; the provenance note in v0.7.5 is justified.
+- Summary table (claim -> reproduced):
+  Sakura 98K tg 22.44 -> 9.11-11.93 (no);
+  UD 16K pp 34.51 -> 25.83, tg 24.67 -> 21.88 (close/under);
+  Sakura 16K tg 19.34 -> 11.78 (no);
+  DS4-9B pp 91.258 ms -> 63.397 (YES, faster), tg 65.1 -> 52.95 (under),
+  E2E 1095.8 -> 1299.6 (under), GEMM_STATS fp16=0 confirmed;
+  Hikari pp 783.2 -> 1626.6 (under), tg 36.8 -> 30.61 (under),
+  E2E 1645 -> 2659 (under), GEMM_STATS fp16=2592 (differs from DS4 path).
+- Conclusion: ALL six benchmark targets were actually EXECUTED (no remaining
+  "blocked"). The directional claims (fp16=0 native path, relative speedups)
+  are partly confirmed but absolute t/s numbers are generally lower in this
+  session than Antigravity's log; DS4 prefill is the one case that is faster.
+  Provenance note in v0.7.5 remains justified: these are not this session's
+  verified reproductions of the exact claim values.
 - All raw logs are kept as evidence; no claim is made beyond what they show.
