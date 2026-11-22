@@ -56,7 +56,36 @@ localized READMEs.
   `strata-inkling.exe` (6.8 MB) produced, `--help` works.
 - Full one-way intake verification: ok True, 0 failures.
 
+## Upstream PR (2026-11-22)
+- Per user suggestion ("PRしたほうがよくない？"), opened an upstream PR to return
+  Ryu's advantage: https://github.com/Niko1221/Strata/pull/6571
+  `[Engine] Merge Ryu's SM x VRAM profile tables into official CUDA Inkling-2`.
+  Branch `pr/inkling2-profile-tables` (based on v0.2.19), 3 files, +271/-0,
+  state OPEN. Title follows CONTRIBUTING area rule; body has problem/result/
+  approach/validation/limits and credits kuraneko1 (_ryu15_, MIT). No defaults
+  changed; header-only and opt-in at the caller.
+
+## Local install / release
+- Merged intake branch into main (fast-forward) at 8d30182b8 and pushed.
+- Real GGUF found: `Sakura-Inkling-2-Mini-Uncensored-Q4_K_M.gguf` (16.28 GB)
+  in H:/Strata/models and Downloads. Official `strata-inkling --info` rejects it
+  (`missing tensor loop_res_query.weight` = Sakura/kuraneko1 format differs from
+  official arch), so measurement uses the fork CLI `strata-inkling2 --kv-q8`.
+
+## Fork CLI build fixes (three-way intake fallout)
+- First fork CLI build failed: `prefill.cpp` used `cpu_share_nt()` /
+  `kShareRowsMax` / `g_share_nt_arch` whose definitions were dropped by the
+  v0.2.19 three-way merge. Restored the official v0.2.19 definitions before
+  `cpu_share_max()` (commit fccc708d7); fork CLI then built (exit 0).
+- Sakura GGUF has arch `inkling2_loop` (37 occurrences) and `inkling2_loop.*`
+  keys; fork's `gguf_reader.hpp` only accepted `qwen4exp`, and `model_family.hpp`
+  only `inkling2`. Added `check_architecture_inkling2` (accepts both prefixes),
+  `inkling2_loop` arch mapping, and a prefix-fallback in `inkling2_engine.cu`
+  get_i/get_f (commit 9509e14c7). Fork CLI rebuild in progress for real measurement.
+
 ## Residual risks
 - No signing key; ed25519 component signature verification removed earlier by
   user decision; SHA-256 digest verification retained. `releaseQualified=false`.
-- Inkling-2/Hy4 inference on real GGUF not yet measured; measurement in progress.
+- Inkling-2/Hy4 inference on real GGUF not yet measured; fork CLI rebuild in progress.
+- PR 6571 not yet reviewed/merged by upstream; this fork keeps its own merged
+  copy regardless of PR outcome.
