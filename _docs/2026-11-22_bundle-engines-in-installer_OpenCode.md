@@ -59,6 +59,25 @@ User chose "official-conformant" over the ~2 GB bundled installer. Result:
   User should install v0.7.3 from GitHub directly (double-click) and then add the
   two engine components from the release page if models for them are needed.
 
+## Installed both engines on the real machine (2026-11-22)
+User asked to put both engines into the running 0.7.3 install (screenshot showed
+"エンジン: バージョンを利用できません"). Steps:
+- Found engine components dir `C:/Users/downl/AppData/Local/Strata/components/engine`
+  held 0.5.9-0.6.3 but not 0.6.4 / hy4 0.1.64. App scans this folder for
+  `engine-component.json` (id/version naming `<id>-<version>-<platform>-<backend>-<variant>`).
+- C: was full (0.10 GB free); first extraction produced 0-byte files. Removed
+  incomplete dirs plus old build caches v070-target/v071-target (7.5 GB free).
+- Extracted `strata-engine-0.6.4-windows-x86_64-cuda-cuda13` (153 files) and
+  `strata-hy4-0.1.64-windows-x86_64-cuda-cuda13` (8 files, strata-hy4.exe 32 MB)
+  from the SHA-verified v0.7.3 release assets into the components/engine dir.
+- Verified with `engine_component.verify(full=True)` (digest, no signature):
+  strata-engine 0.6.4 -> 152 files OK; strata-hy4 0.1.64 -> 7 files OK.
+- Deterministic: the engine dirs are the official opt-in component layout, so
+  the GUI "Engines" settings should show versions after an app restart.
+- Note: v072-target C: build cache was preserved (used by the 0.7.3 build).
+
 ## Residual risks
 - `releaseQualified=false` remains; Windows Authenticode signing absent;
   signature verification removed by user decision; SHA-256 digest checks retained.
+- No Inkling-2 GGUF or Hy4 model locally; engine binaries installed but inference
+  untested on this machine.
