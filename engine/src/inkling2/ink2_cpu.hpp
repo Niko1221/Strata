@@ -6,6 +6,9 @@
 // (gate_up, softcapped SwiGLU, down: the same math as the GPU kernels; fp32 activations, int8 opt-in) and writes each
 // expert's output row and its ack into its own doorbell; the graph waits for both acks, then the MoE tail weights all
 // eight outputs as usual.
+// A --spec verify block (8 tokens per layer visit) rings the same doorbells through `vring`: the block's inputs vx, one
+// job per (token, expert) not in VRAM, in token order, outputs vy per job.  The pools run it one token at a time, a
+// decode visit each (the same kernels, so the same numbers as a decode visit of that token).
 //
 // Experts live in host memory placed per node (ink2cpu::node_alloc), each expert whole on one node, and so do the
 // doorbells and the pools' buffers: a node's threads only touch local memory.  On a two-socket box the inter-socket
@@ -17,10 +20,11 @@
 
 namespace ink2cpu {
 
-constexpr int BELL_H = 2304, BELL_K = 8;
+constexpr int BELL_H = 2304, BELL_K = 8, BELL_M = 8, BELL_J = BELL_M * BELL_K;   // M: tokens of a verify block
 struct InkBell {   // one per node in its memory, registered mapped; GPU writes ring/job/x, the node's pool y/ack
     volatile unsigned ring;            // sequence number of the last visit with CPU jobs
-    unsigned pad0[15];
+    volatile unsigned vring;           // the same for verify block visits (one sequence for both; the fields after y)
+    unsigned pad0[14];
     volatile unsigned ack[2];          // [node]: the last sequence number done (written in that node's bell)
     volatile float us_job;             // the pool's time per job, us (moving average; the GPU's PCIe share reads it)
     unsigned pad1[13];
@@ -30,6 +34,12 @@ struct InkBell {   // one per node in its memory, registered mapped; GPU writes 
     float x[BELL_H];                   // the visit's MoE input
     float y[BELL_K][BELL_H];           // job j's expert output (factor applied, not the router weight), in the bell
                                        // of its expert's node
+    // a verify block's visit (vring): jobs in token order
+    int vlayer, vn;                    // the visit's layer, number of jobs
+    int vt[BELL_J], ve[BELL_J];        // job j: token (row of vx) vt[j], expert ve[j]
+    unsigned pad3[14];
+    float vx[BELL_M][BELL_H];          // the block's MoE inputs
+    float vy[BELL_J][BELL_H];          // job j's expert output, in the bell of its expert's node
 };
 
 struct Setup {

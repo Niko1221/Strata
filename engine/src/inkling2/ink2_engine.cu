@@ -2603,6 +2603,7 @@ struct Engine {
     Bells bell_d = {};
     const uint8_t* home_d = nullptr;   // [NL * NE] the node holding expert (l, e) (E.home)
     unsigned *d_seq = nullptr, *d_cur = nullptr;
+    int *vjob = nullptr, *nvjob = nullptr;   // a --spec verify visit's CPU jobs: [BELL_J] row of PF.ey | node << 16
     float* cnt = nullptr;   // [NL * NE] decayed use counts (placement)
     SyncArgs sync = {};     // the PCIe share
     int *want_nv = nullptr, *want_mx = nullptr, *nwant_nv = nullptr, *nwant_mx = nullptr;
@@ -3627,6 +3628,88 @@ __global__ void k_cpu_wait(Bells bells, const uint8_t* __restrict__ home, const 
     float4* dst = reinterpret_cast<float4*>(ey + (size_t) k * H);
     for (int i = threadIdx.x; i < H / 4; i += blockDim.x) dst[i] = __ldcv(src + i);   // not through the caches
 }
+// ---- A --spec verify block's visit (T <= BELL_M tokens, moe_b's small-T path) with the CPU experts: k_cache_cpu_b is
+// k_cache_cpu over the block's T x TOPK ids: the resident ones stamped and counted, one CPU job per (token, expert)
+// that is not (jobs in token order, the pools run a token at a time; its row of PF.ey in vjob), the experts wanted;
+// the grouped GEMVs skip them (null table entries); k_cpu_wait_b copies the CPU outputs into their rows of PF.ey.
+// CBA: no PCIe share here.  Measured (INK2_CPU_TRACE, q1 chat, 2 x 22 threads, a copy 370 us + margin): at 16 GiB a
+// node's busy visit is 3.2 jobs on 2.2 experts, 301 us, shorter than one copy; at 8 GiB 15-16 jobs on 7-8 experts,
+// 1.1 ms, where a copy per node would save ~2 jobs (~140 us), and --spec loses to plain decoding there anyway.  A slower
+// CPU could want a share that takes the experts with the most rows of the block.
+__global__ void k_cache_cpu_b(int l, const int* __restrict__ ids, const int* __restrict__ slot, int T,
+                              const float* __restrict__ x, const int* slot_of, unsigned* stamp, unsigned* clock,
+                              int* want, int* nwant, Bells bells, int nodes, const uint8_t* __restrict__ home,
+                              unsigned* seq, unsigned* cur, float* cnt, int* vjob, int* nvjob) {
+    __shared__ int nj, jt[ink2cpu::BELL_J], je[ink2cpu::BELL_J], busy[2];
+    if (threadIdx.x == 0) {
+        unsigned t = *clock;
+        int n = 0, nw = *nwant;
+        busy[0] = busy[1] = 0;
+        for (int i = 0; i < T * TOPK; ++i) {
+            const int e = ids[i], key = l * NE + e, sl = slot_of[key];
+            cnt[key] += 1.0f;
+            if (sl >= 0) { stamp[sl] = ++t; continue; }
+            const int node = nodes > 1 ? home[key] : 0;
+            jt[n] = i / TOPK;
+            je[n] = e;
+            vjob[n] = slot[i] | node << 16;
+            busy[node] = 1;
+            ++n;
+            bool have = false;
+            for (int j = 0; j < nw; ++j) have |= want[j] == key;
+            if (!have && nw < WANT_MAX) want[nw++] = key;
+        }
+        *clock = t;
+        *nwant = nw;
+        *nvjob = n;
+        nj = n;
+    }
+    __syncthreads();
+    if (!nj) {
+        if (threadIdx.x == 0) *cur = 0;
+        return;
+    }
+    for (int b = 0; b < nodes; ++b) {
+        if ((int) threadIdx.x < nj) {
+            bells.b[b]->vt[threadIdx.x] = jt[threadIdx.x];
+            bells.b[b]->ve[threadIdx.x] = je[threadIdx.x];
+        }
+        if (!busy[b]) continue;   // a node without jobs only acks
+        float* dst = &bells.b[b]->vx[0][0];
+        for (int i = threadIdx.x; i < T * H; i += blockDim.x) dst[i] = x[i];
+    }
+    __threadfence_system();
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        for (int b = 0; b < nodes; ++b) {
+            bells.b[b]->vlayer = l;
+            bells.b[b]->vn = nj;
+        }
+        __threadfence_system();
+        const unsigned s = ++*seq;
+        for (int b = 0; b < nodes; ++b) bells.b[b]->vring = s;
+        __threadfence_system();
+        *cur = s;
+    }
+}
+// grid BELL_J: block j copies job j's output into its row of ey once every node has acked (a stuck pool traps)
+__global__ void k_cpu_wait_b(Bells bells, const unsigned* cur, int nodes, const int* __restrict__ vjob,
+                             const int* __restrict__ nvjob, float* ey) {
+    const unsigned s = *cur;
+    if (!s || (int) blockIdx.x >= *nvjob) return;
+    const volatile ink2cpu::InkBell* b0 = bells.b[0];
+    const volatile ink2cpu::InkBell* b1 = bells.b[nodes > 1 ? 1 : 0];
+    if (threadIdx.x == 0) {
+        const long long t0 = clock64();
+        while (b0->ack[0] != s || (nodes > 1 && b1->ack[1] != s))
+            if (clock64() - t0 > 8000000000ll) __trap();
+    }
+    __syncthreads();
+    const int j = blockIdx.x, r = vjob[j] & 0xffff;
+    const float4* src = reinterpret_cast<const float4*>(bells.b[vjob[j] >> 16]->vy[j]);
+    float4* dst = reinterpret_cast<float4*>(ey + (size_t) r * H);
+    for (int i = threadIdx.x; i < H / 4; i += blockDim.x) dst[i] = __ldcv(src + i);   // not through the caches
+}
 struct PromoteArgs {
     int *slot_of, *owner;
     unsigned *stamp, *clock;
@@ -3846,6 +3929,8 @@ void setup_cpu() {
     auto zi = [](size_t n) { int* p = (int*) dalloc(n * 4); CK(cudaMemset(p, 0, n * 4)); return p; };
     E.d_seq = (unsigned*) zi(1);
     E.d_cur = (unsigned*) zi(1);
+    E.vjob = zi(ink2cpu::BELL_J);
+    E.nvjob = zi(1);
     E.want_nv = zi(WANT_MAX); E.want_mx = zi(WANT_MAX); E.nwant_nv = zi(1); E.nwant_mx = zi(1);
     E.pend_nv = zi(2 * PMAX); E.pend_mx = zi(2 * PMAX); E.npend_nv = zi(1); E.npend_mx = zi(1);
     E.psrc_nv = (const uint8_t**) dalloc(PMAX * sizeof(void*));
@@ -4496,7 +4581,14 @@ void moe_b(const Layer& Y, const float* x, float* out, int T, int pos0) {
     if (g_pf_routed && !(T <= SMALL_T && !X.gg13))
         for (int t0 = 0; t0 < T; t0 += 8) expert_cache(l, PF.ids + (size_t) t0 * TOPK, std::min(8, T - t0) * TOPK);
     if (T <= SMALL_T && !X.gg13) {   // offload: the verify's experts through the decode cache (T x TOPK ids), not the staging
-        if (E.offload) expert_cache(l, PF.ids, T * TOPK);
+        // a verify block with the CPU experts: its misses on the CPU (other short chunks: fetched, as before)
+        const bool vcpu = E.cpu && PF.rows_argmax && T <= ink2cpu::BELL_M;
+        if (vcpu) {
+            const bool nv = l < MXFP8_FIRST;
+            k_cache_cpu_b<<<1, 1024>>>(l, PF.ids, PF.slot, T, x, E.slot_of, nv ? E.stamp_nv : E.stamp_mx, E.clock,
+                                       nv ? E.want_nv : E.want_mx, nv ? E.nwant_nv : E.nwant_mx, E.bell_d, E.cpu_nodes,
+                                       E.home_d, E.d_seq, E.d_cur, E.cnt, E.vjob, E.nvjob);
+        } else if (E.offload) expert_cache(l, PF.ids, T * TOPK);
         const int RR = g_grp_r;
         auto g = RR == 2 ? (X.nvfp4 ? k_moe_gemv_grp<true, 2> : k_moe_gemv_grp<false, 2>)
                          : RR == 1 ? (X.nvfp4 ? k_moe_gemv_grp<true, 1> : k_moe_gemv_grp<false, 1>)
@@ -4511,6 +4603,7 @@ void moe_b(const Layer& Y, const float* x, float* out, int T, int pos0) {
             g<<<dim3(H / (8 * RR), maxt), 256>>>(PF.act, FF, nullptr, t, X.f2, PF.tile_e, PF.tile_r0, PF.ntiles, PF.eoff,
                                             PF.ecnt, PF.ey, H, FF);
         });
+        if (vcpu) k_cpu_wait_b<<<ink2cpu::BELL_J, 256>>>(E.bell_d, E.d_cur, E.cpu_nodes, E.vjob, E.nvjob, PF.ey);
     } else if (X.gg13 && PF.tc && g_dq_min > 0 && T >= g_dq_min) {
         // decode-once: per expert with rows, its part decoded to fp16 and one cuBLAS GEMM over its rows (the row
         // counts are read back).  The non-resident experts' copies into the two staging halves are queued before the
@@ -5177,6 +5270,10 @@ void forward_prefill(const int* toks, int T, int pos0, float* all) {
 // forward_prefill's device work (pos0 < 0: from d_vpos; `all` only outside a graph)
 void forward_prefill_device(int T, int pos0, float* all) {
     const size_t ES = (size_t) T * H;
+    // a verify block with the CPU experts promotes as a decode token does (copies during the block, committed at its
+    // end).  CBA: the per-token budget and decay once per block of 1-8 tokens (INK2_PROMOTE)
+    const bool vcpu = E.cpu && PF.rows_argmax && T <= ink2cpu::BELL_M;
+    if (vcpu) promote_fork();
     k_rms<<<T, 512>>>(PF.x0, E.embed_norm, PF.h, H);
     vis_inject(T, pos0);   // a picture's rows replace its placeholders' normed embeddings
     int nB = 0, visit = 0;
@@ -5224,6 +5321,7 @@ void forward_prefill_device(int T, int pos0, float* all) {
             k_softcap<<<(unsigned) (((size_t) T * VOCAB + 255) / 256), 256>>>(PF.lg, T * VOCAB, LOGIT_CAP);
             CK(cudaMemcpyAsync(PF.rows_host, PF.lg, (size_t) T * VOCAB * 4, cudaMemcpyDeviceToHost, cudaStreamPerThread));
         }
+        if (vcpu) promote_join();
         return;
     }
     gemv(E.unembed, PF.mn + (size_t) (T - 1) * H, E.logits, VOCAB);
@@ -5404,9 +5502,8 @@ int main(int argc, char** argv) {
         return 2;
     }
     if (serve && PF.TP <= 0) { std::fprintf(stderr, "--serve needs --chunk > 0\n"); return 2; }
-    if (E.cpu_threads > 0) {   // CPU experts: decode misses on the CPU (needs the offload; not with --spec yet)
+    if (E.cpu_threads > 0) {   // CPU experts: decode and --spec verify misses on the CPU (needs the offload)
         if (E.reserve_mib < 0) { std::fprintf(stderr, "--cpu-threads needs --vram-reserve-mib (expert offload)\n"); return 2; }
-        if (spec) { std::fprintf(stderr, "--cpu-threads: not with --spec 1 yet\n"); return 2; }
         if (!ink2cpu::isa()) { std::fprintf(stderr, "--cpu-threads: this CPU has no AVX2 + FMA + F16C\n"); return 2; }
         E.cpu = true;
     }
@@ -5497,6 +5594,9 @@ int main(int argc, char** argv) {
     // tokens through the decode graph's feature ring.  The first PLAIN_PROBE tokens measure the plain mode.
     constexpr int PLAIN_PROBE = 4, PLAIN_RUN = 32, SPEC_MIN = 3;
     const bool spec_force = std::getenv("INK2_SPEC_FORCE") != nullptr;   // tests: never fall back
+    // tests: INK2_VDUMP=FILE keeps the first INK2_VDUMP_N (16) verify blocks: position, 8 input tokens, 8 rows of logits
+    FILE* vdump = std::getenv("INK2_VDUMP") ? std::fopen(std::getenv("INK2_VDUMP"), "wb") : nullptr;
+    int vdump_left = std::getenv("INK2_VDUMP_N") ? std::atoi(std::getenv("INK2_VDUMP_N")) : 16;
     auto spec_continue = [&](int first, int p, int max_new, Sampler& s, const std::function<bool(int)>& emit,
                              const std::atomic<bool>* stop) {
         int n = 1, anchor = first, plain_left = spec_force ? 0 : PLAIN_PROBE, spec_iters = 0;
@@ -5524,8 +5624,14 @@ int main(int argc, char** argv) {
             CK(cudaMemcpy(d, D.drafts, DBLK * 4, cudaMemcpyDeviceToHost));
             PF.rows_argmax = true;
             const float* rows = s.temp > 0.0f ? PF.rows_host : nullptr;
-            PF.rows_copy = rows != nullptr;
+            PF.rows_copy = rows != nullptr || (vdump && vdump_left > 0);
             forward_prefill(d, DBLK, p, nullptr);
+            if (vdump && vdump_left-- > 0) {
+                std::fwrite(&p, 4, 1, vdump);
+                std::fwrite(d, 4, DBLK, vdump);
+                std::fwrite(PF.rows_host, 4, (size_t) DBLK * VOCAB, vdump);
+                std::fflush(vdump);
+            }
             PF.rows_argmax = PF.rows_copy = false;
             CK(cudaMemcpy(g, PF.am, DBLK * 4, cudaMemcpyDeviceToHost));
             int k = 0, next = -1;

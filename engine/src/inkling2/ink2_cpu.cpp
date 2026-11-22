@@ -445,7 +445,8 @@ struct alignas(64) Node {
     Barrier bar;
     // the node's jobs (published by its master before gen)
     int nj = 0, layer = 0;
-    int bj[K8], ex[K8];                         // bell job index, expert
+    int ex[K8];                                 // expert
+    float* y[K8];                               // its output row (in the node's doorbell)
     // node-local; written by one thread (x) or by slices (the rest), read by all
     float* x = nullptr;                         // [H]          fp32 path
     int8_t* xq = nullptr;                       // [H]          q8 path: x quantized, and its block scales
@@ -560,7 +561,7 @@ void node_work(Node& N, Priv& P, int t, int& sense) {
     share(H, t, T, R, a, b);
     for (int j = 0; j < nj; ++j) {
         const int key = l * S.ne + N.ex[j];
-        float* y = S.bell[N.id]->y[N.bj[j]];
+        float* y = N.y[j];
         if (q8) q8_rows(S.ex[key] + partA, H, FF, {P.qh + (size_t) j * FF, P.ih + (size_t) j * FF / 4, P.sh + (size_t) j * FF / 4},
                         S.f2[key], y, a, b);
         else rows(nv, S.ex[key] + partA, H, FF, P.h + (size_t) j * FF, nv ? S.f2[key] : 1.0f, y, a, b);
@@ -610,14 +611,64 @@ void master(Node* N) {
     Priv* P = new Priv;
     InkBell* B = S.bell[N->id];   // the node's own doorbell (local memory)
     int sense = 0;
-    unsigned seen = 0, spins = 0;   // the bell is zeroed before start(): ring 0 = nothing yet
+    unsigned seen = 0, vseen = 0, spins = 0, gen = 0;   // the bell is zeroed before start(): ring 0 = nothing yet
+    // nj jobs (N->ex, N->y) of layer l on the input x (in the node's doorbell): published to the workers, run with them
+    auto pass = [&](int l, int nj, const float* x) {
+        N->nj = nj;
+        N->layer = l;
+        if (l < S.mx_first && g_q8)
+            for (int b = 0; b < S.h / 16; ++b) q8_block(x + 16 * b, b, g_C, N->xq, N->xd);
+        else
+            std::memcpy(N->x, x, (size_t) S.h * 4);
+        N->gen.store(++gen, std::memory_order_release);
+        node_work(*N, *P, 0, sense);
+    };
     g_ready.fetch_add(1);
     double last = now_ms();
     while (!g_stop.load(std::memory_order_relaxed)) {
-        const unsigned seq = B->ring;
-        if (seq == seen) {
+        const unsigned seq = B->ring, vseq = B->vring;
+        if (seq == seen && vseq == vseen) {
             if (now_ms() - last > IDLE_MS) nap_us(NAP_US);
             else spin(P, spins);
+            continue;
+        }
+        if (vseq != vseen) {   // a verify block's visit: its tokens one after the other, each as a decode visit
+            vseen = vseq;
+            const double t_ring = g_trace ? now_ms() : 0.0;
+            int jobs = 0;
+            std::atomic_thread_fence(std::memory_order_acquire);
+            const int n = std::min((int) B->vn, BELL_J), l = B->vlayer;
+            // CBA: one pass over an expert's weights per token that routes to it; a row kernel taking several inputs
+            // per expert (as the GPU's k_moe_gemv_grp) would read them once
+            for (int j = 0; j < n;) {
+                const int tok = B->vt[j];
+                int nj = 0;
+                for (; j < n && B->vt[j] == tok; ++j) {
+                    const int e = B->ve[j];
+                    if (S.home[l * S.ne + e] != N->id || nj == K8) continue;
+                    N->ex[nj] = e;
+                    N->y[nj] = B->vy[j];
+                    ++nj;
+                }
+                if (nj) pass(l, nj, B->vx[tok]);
+                jobs += nj;
+            }
+            std::atomic_thread_fence(std::memory_order_seq_cst);
+            B->ack[N->id] = vseq;
+            last = now_ms();
+            if (g_trace && jobs) {   // per node, every 1000 busy verify visits: jobs, experts with jobs, us per visit
+                static thread_local double v = 0, sj = 0, se = 0, su = 0;
+                bool ex[256] = {};
+                for (int j = 0; j < n; ++j)
+                    if (S.home[l * S.ne + B->ve[j]] == N->id && !ex[B->ve[j] & 255]) { ex[B->ve[j] & 255] = true; se += 1; }
+                sj += jobs;
+                su += last - t_ring;
+                if (++v == 1000) {
+                    std::fprintf(stderr, "[cpu] node %d verify: per busy visit %.1f jobs on %.1f experts, %.0f us\n", N->id,
+                                 sj / v, se / v, 1e3 * su / v);
+                    v = sj = se = su = 0;
+                }
+            }
             continue;
         }
         seen = seq;
@@ -628,21 +679,11 @@ void master(Node* N) {
         for (int j = 0; j < n && j < K8; ++j) {
             const int e = B->e[j];
             if (S.home[l * S.ne + e] != N->id) continue;
-            N->bj[nj] = j;
             N->ex[nj] = e;
+            N->y[nj] = B->y[j];
             ++nj;
         }
-        if (nj) {
-            N->nj = nj;
-            N->layer = l;
-            const float* x = (const float*) B->x;
-            if (l < S.mx_first && g_q8)
-                for (int b = 0; b < S.h / 16; ++b) q8_block(x + 16 * b, b, g_C, N->xq, N->xd);
-            else
-                std::memcpy(N->x, x, (size_t) S.h * 4);
-            N->gen.store(seq, std::memory_order_release);
-            node_work(*N, *P, 0, sense);
-        }
+        if (nj) pass(l, nj, (const float*) B->x);
         std::atomic_thread_fence(std::memory_order_seq_cst);
         B->ack[N->id] = seq;
         last = now_ms();
