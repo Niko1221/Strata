@@ -68,7 +68,7 @@ the model. The section above is about the engine's HTTP server. This is what the
   one it accepted (a replayed old feed) or expired, and checks every engine package against its SHA-256, its signed manifest and the
   card in your PC before it test-starts it and switches to it. Any failure keeps the engine you had. The app installer itself is signed
   with a separate key (Tauri's minisign key) that the app and the Terminal both check. The private keys are kept offline by the owner.
-  See [packaging/UPDATES.md](../tools/packaging/UPDATES.md).
+  See [packaging/UPDATES.md](https://github.com/Niko1221/Strata/blob/main/tools/packaging/UPDATES.md).
 
 ### How far to trust `curl | sh` and `irm | iex`
 
