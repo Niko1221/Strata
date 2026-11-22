@@ -335,6 +335,9 @@ int main(int argc, char** argv) {
     bool load_only = false, dump = false, save_logits = false, all_logits = false, no_engram = false, no_index = false, prof = false, prof2 = false;
     int gen = 0, max_ctx = 0, chunk = 0 /* 0: auto from the card */, index_topk = 2048;
     bool serve = false, session_reuse = false;
+#ifdef STRATA_HY4_DISTRIBUTED
+    bool mpi_experts = false;
+#endif
     int gpu = -1;
     std::string gpus_csv = getenv("HY4_GPUS") ? getenv("HY4_GPUS") : "";
     std::string draft = "auto";  // auto: dfly2 under --serve (when the file carries the drafter), off for the CLI runs (gates / benches); "off" and "dfly2" force
@@ -371,6 +374,9 @@ int main(int argc, char** argv) {
             return export_tokenizer(f, nxt());
         }
         if (a == "--serve") serve = true;
+#ifdef STRATA_HY4_DISTRIBUTED
+        else if (a == "--mpi-experts") mpi_experts = true;
+#endif
         else if (a == "--model" || a == "--native") model = nxt();
         else if (a == "--max-context") max_ctx = atoi(nxt().c_str());
         else if (a == "--gpu") gpu = atoi(nxt().c_str());
@@ -451,6 +457,12 @@ int main(int argc, char** argv) {
         }
     }
     if (!info_file.empty()) return print_info(info_file, vision_path);
+#ifdef STRATA_HY4_DISTRIBUTED
+    if (mpi_experts && (!serve || !gpus_csv.empty() || gpu > 0)) {
+        fprintf(stderr, "--mpi-experts requires --serve and a single visible CUDA device per host\n");
+        return 2;
+    }
+#endif
     std::vector<int> peer_devs;
     int primary_gpu = gpu >= 0 ? gpu : 0;
     if (!gpus_csv.empty()) {
@@ -497,6 +509,39 @@ int main(int argc, char** argv) {
         so.image_max_pixels = image_max_pixels;
         so.primary_gpu = primary_gpu;
         so.peer_devs = peer_devs;
+#ifdef STRATA_HY4_DISTRIBUTED
+        if (mpi_experts) {
+            try {
+                strata::tp::MpiRuntime mpi(argc, argv, std::chrono::minutes(10));
+                if (mpi.size() != 2 || mpi.minimum(mpi.local_rank() == 0 ? 1 : 0) != 1)
+                    mpi.fail("Hy4 expert parallelism requires two hosts with one MPI rank each");
+                try {
+                    int devices = 0;
+                    HCK(cudaGetDeviceCount(&devices));
+                    if (devices != 1) mpi.fail("Hy4 each host must expose exactly one CUDA device");
+                    HCK(cudaSetDevice(0));
+                    mpi.agree(expert_model_identity(model));
+                    {
+                        RemoteExperts remote(mpi);
+                        if (mpi.rank() == 0) {
+                            so.remote_experts = &remote;
+                            if (hy4_serve_main(so) != 0) mpi.fail("Hy4 coordinator failed to serve");
+                            remote.finish();
+                        } else {
+                            remote.work(model);
+                        }
+                    }
+                    mpi.finish();
+                    return 0;
+                } catch (const std::exception& failure) {
+                    mpi.fail(failure.what());
+                }
+            } catch (const std::exception& failure) {
+                fprintf(stderr, "Hy4 MPI initialization failed: %s\n", failure.what());
+                return 1;
+            }
+        }
+#endif
         return hy4_serve_main(so);
     }
     if (model.empty()) {

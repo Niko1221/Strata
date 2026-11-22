@@ -22,6 +22,9 @@
 #include "hy4_vision.hip.h"  // HY4-VISION hook: image rows + 3D rope (all hooks below are no-ops while Runner::vis is null)
 #include "mla_attn.hip.h"
 #include "skhy4.hip.h"
+#ifdef STRATA_HY4_DISTRIBUTED
+#include "hy4_remote_experts.hip.h"
+#endif
 
 #ifndef TUNE_DEFAULT
 #define TUNE_DEFAULT 834  // default HY4_TUNE bitmask when the environment variable is not set (see Runner::tune_init)
@@ -936,8 +939,23 @@ public:
         float* d_zpeer0 = nullptr;  // on primary GPU 0
     };
     std::vector<PeerRun> peer_runs;
+#ifdef STRATA_HY4_DISTRIBUTED
+    RemoteExperts* remote_experts = nullptr;
+#endif
+    bool has_expert_peers() const {
+#ifdef STRATA_HY4_DISTRIBUTED
+        if (remote_experts) return true;
+#endif
+        return !peer_runs.empty();
+    }
     void peers_launch(int il, int T) {
 #if HY4_CUDA
+#ifdef STRATA_HY4_DISTRIBUTED
+        if (remote_experts) {
+            remote_experts->submit(il, T, z_h, moe_idx, moe_w, st);
+            return;
+        }
+#endif
         if (peer_runs.empty()) return;
         const size_t nz = (size_t)T * 1536;
         for (size_t p = 0; p < peer_runs.size(); ++p) {
@@ -957,10 +975,18 @@ public:
         (void)il; (void)T;
 #endif
     }
-    void peers_gather(int T) {
+    void peers_gather([[maybe_unused]] int il, int T) {
 #if HY4_CUDA
-        if (peer_runs.empty()) return;
         const size_t nz = (size_t)T * 1536;
+#ifdef STRATA_HY4_DISTRIBUTED
+        if (remote_experts) {
+            const float* remote = remote_experts->collect();
+            const float* local = skd::moe_ws_split(T <= 8 ? moe_ws_dec : moe_ws, T * MOE_TOPK).y;
+            hipLaunchKernelGGL(k_moe_reduce_remote, dim3(T), dim3(256), 0, st, local, remote, zout_f,
+                               d_experts + size_t(il - 1) * MOE_E, moe_idx);
+            return;
+        }
+#endif
         for (auto& pr : peer_runs) {
             HCK(cudaStreamWaitEvent(st, pr.ev_out, 0));
             hipLaunchKernelGGL(k_add_inplace, dim3((nz + 255) / 256), dim3(256), 0, st, zout_f, (const float*)pr.d_zpeer0, nz);
@@ -1275,6 +1301,9 @@ public:
             HCK(hipMemcpy(d_experts, h_experts, (size_t)41 * 512 * sizeof(ExpertDev), hipMemcpyHostToDevice));
         }
 #if HY4_CUDA
+#ifdef STRATA_HY4_DISTRIBUTED
+        if (remote_experts) skd::moe_has_cpu() = 1;
+#endif
         if (!g.peers.empty()) {
             skd::moe_has_cpu() = 1;  // zero w.y on every GPU so partial sums add cleanly
             peer_runs.resize(g.peers.size());
@@ -1449,6 +1478,9 @@ public:
 #if HY4_CUDA
         skd::cublas_pf().ensure(st);
         cuda_graph_on = getenv("HY4_CUDA_GRAPH") ? atoi(getenv("HY4_CUDA_GRAPH")) != 0 : true;
+#ifdef STRATA_HY4_DISTRIBUTED
+        if (remote_experts) cuda_graph_on = false;
+#endif
         HCK(hipHostMalloc((void**)&h_step, sizeof(DevStepArgs), hipHostMallocDefault));
         d_step = dalloc<DevStepArgs>(1);
         HCK(hipHostMalloc((void**)&h_ids, 64, hipHostMallocDefault));
@@ -2043,7 +2075,7 @@ public:
                     }
                 }
             }
-            peers_gather(T);
+            peers_gather(il, T);
             if (need_cpu_pass) {
                 if (!cpu_submitted) {
                     t_cpu0 = now_s();
@@ -2119,7 +2151,7 @@ public:
         if (vcache_nslots > 1) vcache_note_decode(ml, T, h_idx);  // hidden behind CPU expert execution!
         cpu.wait();
         t_cpu_wait += now_s() - t0;
-        peers_gather(T);
+        peers_gather(il, T);
         HCK(hipMemcpyAsync(d_zcpu, h_zcpu, nz * 4, hipMemcpyHostToDevice, st));
         hipLaunchKernelGGL(k_add_inplace, dim3((nz + 255) / 256), dim3(256), 0, st, zout_f, (const float*)d_zcpu, nz);
         { PS _q(this, "f2h"); hipLaunchKernelGGL(k_f2h, dim3((nz + 255) / 256), dim3(256), 0, st, zout_f, z_h, nz); }
@@ -2158,7 +2190,8 @@ public:
                 else if (T <= 16) hipLaunchKernelGGL(k_f32_gemv, dim3(512), dim3(256), 0, st, rw, (const float*)cur_f, F1, 512, HID, T);
                 else hipLaunchKernelGGL(k_f32_gemm, dim3(8, (T + 63) / 64), dim3(256), 0, st, rw, (const float*)cur_f, F1, 512, HID, T);
             }
-            route_now = (tune & TN_ROUTE) && T == 1 && !hyb && peer_runs.empty();
+            const bool expert_peers = has_expert_peers();
+            route_now = (tune & TN_ROUTE) && T == 1 && !hyb && !expert_peers;
             {
                 PS _q(this, "router_topk");
                 const uint4* exl = route_now ? (const uint4*)(d_experts + (size_t)(il - 1) * 512) : nullptr;
@@ -2171,13 +2204,17 @@ public:
             lin(pm + ".routed_expert_down_proj.weight", cur_h, z_f, T, w16_ok ? (__half*)F2 : nullptr);  // [T][1536]
             if (hyb) { moe_hybrid_tail(il, T, pm); } else {
             void* mws = T <= 8 ? moe_ws_dec : moe_ws;
-            const bool nof = T <= 4 && (tune & TN_NOF2H) && peer_runs.empty();  // fp32 latent read directly by the expert kernels, fp16 result written by their reduce
+            const bool nof = T <= 4 && (tune & TN_NOF2H) && !expert_peers;  // fp32 latent read directly by the expert kernels, fp16 result written by their reduce
             if (nof) { PS _q(this, "moe_experts"); moe_experts(st, g.d_sec4, d_experts + (size_t)(il - 1) * 512, nullptr, moe_idx, moe_w, zout_f, T, mws, z_f, z_h, route_now ? slot_rec : nullptr); }
             else {
             { PS _q(this, "f2h"); hipLaunchKernelGGL(k_f2h, dim3((nz + 255) / 256), dim3(256), 0, st, z_f, z_h, nz); }
             peers_launch(il, T);
-            { PS _q(this, "moe_experts"); moe_experts(st, g.d_sec4, d_experts + (size_t)(il - 1) * 512, z_h, moe_idx, moe_w, zout_f, T, mws, nullptr, nullptr, route_now ? slot_rec : nullptr); }
-            peers_gather(T);
+            float* reduced = zout_f;
+#ifdef STRATA_HY4_DISTRIBUTED
+            if (remote_experts) reduced = nullptr;
+#endif
+            { PS _q(this, "moe_experts"); moe_experts(st, g.d_sec4, d_experts + (size_t)(il - 1) * 512, z_h, moe_idx, moe_w, reduced, T, mws, nullptr, nullptr, route_now ? slot_rec : nullptr); }
+            peers_gather(il, T);
             { PS _q(this, "f2h"); hipLaunchKernelGGL(k_f2h, dim3((nz + 255) / 256), dim3(256), 0, st, zout_f, z_h, nz); }
             }
             lin(pm + ".routed_expert_up_proj.weight", z_h, F2, T, w16_ok ? (__half*)F1 : nullptr);  // [T][3072]

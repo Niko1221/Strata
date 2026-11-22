@@ -128,6 +128,9 @@ struct GpuModel {
     bool has_vision = false;
     std::vector<int> peer_devs;   // secondary GPU device ids for multi-GPU expert split (--gpus 0,1,...)
     std::vector<PeerGpu> peers;
+#ifdef STRATA_HY4_DISTRIBUTED
+    int expert_shard = -1;
+#endif
     uint8_t* d_trunk = nullptr;   // Section 1
     uint8_t* d_sec4 = nullptr;    // Section 4 (expert bodies), 4 KiB aligned bodies, same offsets as the file's directory
     uint64_t trunk_bytes = 0, sec4_bytes = 0;
@@ -161,6 +164,66 @@ struct GpuModel {
         return d_trunk + man.get(name).off;
     }
 };
+
+#ifdef STRATA_HY4_DISTRIBUTED
+// The directory stores hotness order within each layer. Alternate ranks so both
+// GPUs receive a mix of hot and cold experts without changing routed expert IDs.
+inline bool load_expert_shard(GpuModel& g, const std::string& path, size_t budget, std::string& err) {
+    const auto& dir = g.rd.expert_directory();
+    const auto& section = g.rd.header().sections[4];
+    constexpr size_t count = 41 * 512;
+    if (dir.size() != count) { err = "Hy4 expert directory has the wrong geometry"; return false; }
+    g.experts.assign(count, ExpertRef{0, 0, 0, 0, 4});
+    g.expert_rank.assign(count, -1);
+    uint64_t bytes = 0;
+    for (size_t i = 0; i < count; ++i) {
+        const auto& e = dir[i];
+        const size_t idx = (i / 512) * 512 + e.expert_id;
+        if (e.expert_id >= 512 || g.expert_rank[idx] != -1) { err = "invalid Hy4 expert ID"; return false; }
+        if (e.dn_offset >= e.body_bytes || e.body_offset > section.byte_length || e.body_bytes > section.byte_length - e.body_offset) {
+            err = "Hy4 expert body lies outside its data section";
+            return false;
+        }
+        g.expert_rank[idx] = int(i % 512);
+        if ((i & 1) != size_t(g.expert_shard)) continue;
+        g.experts[idx] = ExpertRef{bytes, e.dn_offset, e.gu_code_id, e.dn_code_id, 0};
+        bytes += (uint64_t(e.body_bytes) + 4095) & ~4095ull;
+    }
+    if (!bytes || bytes > budget) { err = "Hy4 expert shard exceeds the local GPU memory budget"; return false; }
+    const hipError_t allocation = hipMalloc((void**)&g.d_sec4, bytes);
+    if (allocation != hipSuccess) { err = hipGetErrorString(allocation); return false; }
+    const double started = now_s();
+    std::atomic<bool> failed{false};
+    std::atomic<size_t> next{size_t(g.expert_shard)};
+    std::vector<std::jthread> threads;
+    for (int t = 0; t < 4; ++t) threads.emplace_back([&] {
+      try {
+        if (hipSetDevice(g.primary_gpu) != hipSuccess) { failed = true; return; }
+        AlignedFile file;
+        if (!file.open(path, false)) { failed = true; return; }
+        std::vector<uint8_t> staging;
+        for (size_t i; !failed && (i = next.fetch_add(2)) < count;) {
+            const auto& e = dir[i];
+            const auto& local = g.experts[(i / 512) * 512 + e.expert_id];
+            staging.resize(e.body_bytes);
+            if (file.read_at(section.file_offset + e.body_offset, staging.data(), staging.size()) != staging.size() ||
+                hipMemcpy(g.d_sec4 + local.body_off, staging.data(), staging.size(), hipMemcpyHostToDevice) != hipSuccess) {
+                failed = true;
+                break;
+            }
+        }
+      } catch (const std::exception&) { failed = true; }
+    });
+    for (auto& thread : threads) thread.join();
+    if (failed) { hipFree(g.d_sec4); g.d_sec4 = nullptr; err = "Hy4 expert shard loading failed"; return false; }
+    g.n_vram_experts = count / 2;
+    g.vram_expert_bytes = bytes;
+    g.t_load_experts = now_s() - started;
+    fprintf(stderr, "[load] rank %d: %llu local experts, %.2f GB in %.1f s\n", g.expert_shard,
+            (unsigned long long)g.n_vram_experts, bytes / 1e9, g.t_load_experts);
+    return true;
+}
+#endif
 
 // Parallel direct read into a host-accessible buffer (used for UMA zero-copy mapped load).
 inline void read_file_parallel(const std::string& path, uint64_t file_off, uint64_t bytes, uint8_t* dst, double* seconds, const char* what) {
@@ -781,6 +844,17 @@ inline bool load_gpu_model(GpuModel& g, const std::string& path, bool with_exper
         fprintf(stderr, "sec2: %s\n", err.c_str());
         return false;
     }
+#ifdef STRATA_HY4_DISTRIBUTED
+    if (g.expert_shard >= 0) {
+        size_t free_bytes = 0, total = 0;
+        gpu_mem_avail(free_bytes, total);
+        const char* reserve = getenv("HY4_RESERVE_GB");
+        const double budget = double(free_bytes) - (reserve ? atof(reserve) : 6.0) * 1073741824.0;
+        if (load_expert_shard(g, path, budget > 0 ? size_t(budget) : 0, err)) return true;
+        fprintf(stderr, "experts: %s\n", err.c_str());
+        return false;
+    }
+#endif
     const auto& dir = g.rd.expert_directory();
     g.experts.assign(41 * 512, ExpertRef{0, 0, 0, 0});
     g.expert_rank.assign(41 * 512, 511);
