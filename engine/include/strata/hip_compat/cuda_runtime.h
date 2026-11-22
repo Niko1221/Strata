@@ -24,6 +24,7 @@
 #define cudaDevAttrComputeCapabilityMinor hipDeviceAttributeComputeCapabilityMinor
 #define cudaDevAttrIntegrated hipDeviceAttributeIntegrated
 #define cudaDeviceGetAttribute hipDeviceGetAttribute
+#define cudaDeviceGetPCIBusId hipDeviceGetPCIBusId
 #define cudaDeviceCanAccessPeer hipDeviceCanAccessPeer
 #define cudaDeviceEnablePeerAccess hipDeviceEnablePeerAccess
 #define cudaDeviceDisablePeerAccess hipDeviceDisablePeerAccess
@@ -34,6 +35,7 @@
 #define cudaErrorMemoryAllocation hipErrorOutOfMemory
 #define cudaErrorPeerAccessAlreadyEnabled hipErrorPeerAccessAlreadyEnabled
 #define cudaErrorStreamCaptureUnsupported hipErrorStreamCaptureUnsupported
+#define cudaErrorUnknown hipErrorUnknown
 #define cudaError_t hipError_t
 #define cudaEventCreate hipEventCreate
 #define cudaEventCreateWithFlags hipEventCreateWithFlags
@@ -111,6 +113,7 @@ hipError_t mem_get_info(size_t* free_bytes, size_t* total_bytes);
 #define cudaRuntimeGetVersion hipRuntimeGetVersion
 #define cudaSetDevice hipSetDevice
 #define cudaStreamBeginCapture hipStreamBeginCapture
+#define cudaStreamCaptureModeRelaxed hipStreamCaptureModeRelaxed
 #define cudaStreamCaptureModeThreadLocal hipStreamCaptureModeThreadLocal
 #define cudaStreamCaptureStatus hipStreamCaptureStatus
 #define cudaStreamCaptureStatusNone hipStreamCaptureStatusNone
@@ -120,6 +123,7 @@ hipError_t mem_get_info(size_t* free_bytes, size_t* total_bytes);
 #define cudaStreamEndCapture hipStreamEndCapture
 #define cudaStreamIsCapturing hipStreamIsCapturing
 #define cudaStreamNonBlocking hipStreamNonBlocking
+#define cudaStreamPerThread hipStreamPerThread
 #define cudaStreamQuery hipStreamQuery
 #define cudaStreamSynchronize hipStreamSynchronize
 #define cudaStreamWaitEvent hipStreamWaitEvent
@@ -145,7 +149,14 @@ inline hipError_t cudaGraphInstantiate(hipGraphExec_t* exec, hipGraph_t graph,
     return hipGraphInstantiate(exec, graph, error, log, size);
 }
 #define __trap() __builtin_trap()   // the compiled-out sm_80 paths (never selected on AMD)
+#if defined(__HIP_STREAM_PER_THREAD)
+#define cudaMemcpyToSymbol(symbol, ...) hipMemcpyToSymbol(static_cast<const void*>(&(symbol)), __VA_ARGS__)
+#define cudaMemcpyToSymbolAsync(symbol, ...) hipMemcpyToSymbolAsync(static_cast<const void*>(&(symbol)), __VA_ARGS__)
+#define cudaMemcpyFromSymbol(dst, symbol, ...) hipMemcpyFromSymbol(dst, static_cast<const void*>(&(symbol)), __VA_ARGS__)
+#else
 #define cudaMemcpyToSymbol(symbol, ...) hipMemcpyToSymbol(HIP_SYMBOL(symbol), __VA_ARGS__)
+#define cudaMemcpyToSymbolAsync(symbol, ...) hipMemcpyToSymbolAsync(HIP_SYMBOL(symbol), __VA_ARGS__)
 #define cudaMemcpyFromSymbol(dst, symbol, ...) hipMemcpyFromSymbol(dst, HIP_SYMBOL(symbol), __VA_ARGS__)
+#endif
 
 #include "intrinsics.hpp"

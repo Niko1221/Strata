@@ -144,6 +144,34 @@ __device__ __forceinline__ unsigned ballot_sync(uint32_t mask, int predicate) {
     return static_cast<unsigned>(__ballot(predicate));
 }
 
+// CUDA's __ldcv: load bypassing L1/L2 cache (system-scope coherent load for mapped host memory).
+template <typename T>
+__device__ __forceinline__ T ldcv(const T* p) {
+    static_assert(sizeof(T) == 4 || sizeof(T) == 8 || sizeof(T) == 16, "__ldcv: 4, 8, or 16 bytes");
+    if constexpr (sizeof(T) == 4) {
+        const unsigned u =
+            __hip_atomic_load(reinterpret_cast<const unsigned*>(p), __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_SYSTEM);
+        T r;
+        __builtin_memcpy(&r, &u, 4);
+        return r;
+    } else if constexpr (sizeof(T) == 8) {
+        const unsigned long long u = __hip_atomic_load(reinterpret_cast<const unsigned long long*>(p),
+                                                       __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_SYSTEM);
+        T r;
+        __builtin_memcpy(&r, &u, 8);
+        return r;
+    } else {
+        const unsigned long long* q = reinterpret_cast<const unsigned long long*>(p);
+        const unsigned long long u[2] = {
+            __hip_atomic_load(q + 0, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_SYSTEM),
+            __hip_atomic_load(q + 1, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_SYSTEM),
+        };
+        T r;
+        __builtin_memcpy(&r, u, 16);
+        return r;
+    }
+}
+
 }  // namespace strata::hip_compat
 
 #define __dp4a(a, b, c) (::strata::hip_compat::dp4a((a), (b), (c)))
@@ -156,6 +184,7 @@ __device__ __forceinline__ unsigned ballot_sync(uint32_t mask, int predicate) {
 #define __shfl_up_sync(...) (::strata::hip_compat::shfl_up_sync(__VA_ARGS__))
 #define __shfl_sync(...) (::strata::hip_compat::shfl_sync(__VA_ARGS__))
 #define __ballot_sync(mask, predicate) (::strata::hip_compat::ballot_sync((mask), (predicate)))
+#define __ldcv(p) (::strata::hip_compat::ldcv((p)))
 #if HIP_VERSION_MAJOR < 7
 #define __syncwarp(...) (::strata::hip_compat::syncwarp(__VA_ARGS__))
 #endif

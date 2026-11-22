@@ -9,6 +9,7 @@
 #include <rocblas/rocblas.h>
 #define CUBLAS_COMPUTE_32F rocblas_datatype_f32_r
 #define CUBLAS_DEFAULT_MATH 0
+#define CUBLAS_PEDANTIC_MATH CUBLAS_DEFAULT_MATH
 #define CUBLAS_GEMM_DEFAULT rocblas_gemm_algo_standard
 #define CUBLAS_OP_N rocblas_operation_none
 #define CUBLAS_OP_T rocblas_operation_transpose
@@ -21,6 +22,7 @@
 #define cublasHandle_t rocblas_handle
 #define cublasSetStream rocblas_set_stream
 #define cublasSetWorkspace rocblas_set_workspace
+#define cublasSgemm rocblas_sgemm
 #define cublasStatus_t rocblas_status
 
 inline rocblas_status cublasSetMathMode(rocblas_handle h, int mode) {
@@ -42,6 +44,8 @@ inline rocblas_status cublasGemmEx(rocblas_handle h, rocblas_operation trans_a,
 #else
 #define CUBLAS_COMPUTE_32F HIPBLAS_COMPUTE_32F
 #define CUBLAS_DEFAULT_MATH HIPBLAS_DEFAULT_MATH
+// rocBLAS returns HIPBLAS_STATUS_NOT_SUPPORTED for HIPBLAS_PEDANTIC_MATH and already runs SGEMM in full FP32.
+#define CUBLAS_PEDANTIC_MATH HIPBLAS_DEFAULT_MATH
 #define CUBLAS_GEMM_DEFAULT HIPBLAS_GEMM_DEFAULT
 #define CUBLAS_OP_N HIPBLAS_OP_N
 #define CUBLAS_OP_T HIPBLAS_OP_T

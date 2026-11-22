@@ -553,7 +553,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_link_libraries(strata-q36ref PRIVATE strata_kernels strata_warnings ${_strata_gpu_runtime_target})
   # NEW-MODELS-PLAN.md T1: Inkling-2-Mini's reference path (the thinkingmachines safetensors as shipped: BF16, NVFP4 and
   # MXFP8 experts; one GPU, the model resident, plain kernels), checked against transformers by terminal/tools/inkling2/
-  if(STRATA_ENABLE_CUDA)
+  if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     add_executable(strata-ink2ref src/inkling2/ink2ref.cu)
     target_include_directories(strata-ink2ref PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${_strata_gpu_include_directories})
     target_link_libraries(strata-ink2ref PRIVATE strata_warnings ${_strata_gpu_runtime_target})
@@ -564,7 +564,9 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     add_executable(strata-ink2 src/inkling2/ink2_engine.cu src/inkling2/ink2_cpu.cpp src/inkling2/ink2_image.cpp)
     target_include_directories(strata-ink2 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${_strata_gpu_include_directories})
     target_link_libraries(strata-ink2 PRIVATE strata_warnings ${_strata_gpu_blas_target} ${_strata_gpu_runtime_target} Threads::Threads)
-    target_compile_options(strata-ink2 PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--default-stream=per-thread>)
+    target_compile_options(strata-ink2 PRIVATE
+      $<$<COMPILE_LANGUAGE:CUDA>:--default-stream=per-thread>
+      $<$<COMPILE_LANGUAGE:HIP>:-fgpu-default-stream=per-thread>)
   endif()
   # the engine path for the same family (serve protocol, prompt chunks, decode graph): src/qwen35/q36_engine.cu, a
   # library that `strata` switches to for a qwen35moe model (the family switch at the top of its main) and that
