@@ -39,7 +39,8 @@
       "resources/node": "node",
       "resources/control": "control",
       "resources/harness": "harness",
-      "resources/notices": "notices"
+      "resources/notices": "notices",
+      "resources/inkling2": "inkling2"
     },
     "linux": {
       "appimage": {

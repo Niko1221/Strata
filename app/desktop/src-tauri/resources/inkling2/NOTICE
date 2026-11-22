@@ -1,0 +1,26 @@
+YASAKANI
+Copyright 2026 the YASAKANI authors
+
+This product includes software developed by the YASAKANI authors.
+
+Model files distributed with this software
+------------------------------------------
+The model files are distributed separately, in three model folders (the quality model, the fastest model and the max-quality
+model).
+
+* qwen38_27b_quality.yskn (quality model), qwen38_27b_speed.yskn (fastest model) and qwen38_27b_max_quality.yskn (max-quality
+  model) are derived from Qwen3.8-27B, published by the Qwen team (Alibaba Cloud) under the Apache License 2.0. They are NOT
+  the original weights: each was converted to the YASAKANI file format and compressed (quantized), so the numbers stored in it
+  differ from the original model, and its behaviour, accuracy and speed differ accordingly.
+* bdraft2_k8.yskn and bdraft2_k8.shead (the small draft model that proposes next tokens; the same two files are in every
+  model folder) are derived from the DFlash 2 draft model for Qwen3.8-27B published by z-lab (a mirror of
+  incoai/Qwen3.8-27B-DFlash2, credited to Inco AI), whose Hugging Face page lists the Apache License 2.0. They were converted to
+  the YASAKANI file format, compressed (quantized) and re-trained by the YASAKANI authors against a compressed Qwen3.8-27B model
+  (an earlier YASAKANI conversion). They are NOT the original weights.
+
+Third-party software, models and publications used by or credited in this product are listed in
+THIRD_PARTY_NOTICES.md.
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not use this software except in
+compliance with the License. You may obtain a copy of the License in the file LICENSE or at
+http://www.apache.org/licenses/LICENSE-2.0

@@ -90,18 +90,20 @@ if(process.platform==='win32') {
   if(probe.error||probe.status!==0||!((probe.stdout+probe.stderr).match(/\b[0-9a-f]{7,40}\b/gi)??[]).some(value=>manifest.source.commit.startsWith(value.toLowerCase())))throw new Error(`Bundled ${choice} executable does not match its source revision`);
  }
   // The Windows installer does not bundle the GPU engine. For the reviewed
-  // portable Q38 preview, verify the exact signed companion rather than
-  // treating its distinct legacy and Q38 source receipts as one build.
+  // portable Q38 preview, verify the exact companion payload.
+  // SIGNATURE VERIFICATION REMOVED by user decision 2026-11-22: this fork ships
+  // rebuilt/unsigned engines (0.6.4, 9B, Inkling-2) and there is no signing key.
+  // The bundled public-key signature check is replaced by the manifest-pinned
+  // SHA-256 digest below plus e.verify(full=True) file-by-file digests.
   const preview=process.env.STRATA_Q38_PREVIEW_COMPONENT_DIR;
   if(preview) {
    const folder=resolve(preview), manifestPath=join(folder,'engine-component.json');
-   if(sha256(manifestPath)!=='1408136b87a77149b598c08320a7e0a4ec32c3088d9addafa93fd85471f67f3a')throw new Error('Wrong Q38 preview manifest');
-   const verify="import sys; from pathlib import Path; sys.path.insert(0,sys.argv[1]); from strata_control import engine_component as e, signing; c=e.read_manifest_any(Path(sys.argv[2])); signing.install_component_verifier(signing.load_trusted_keys(environ={})); assert c.signature['key_id']=='9c835e4839a4c6f3' and e.verify_signature(c)=='verified'; e.verify(c,full=True); print(len(c.files))";
+   const verify="import sys; from pathlib import Path; sys.path.insert(0,sys.argv[1]); from strata_control import engine_component as e; c=e.read_manifest_any(Path(sys.argv[2])); e.verify(c,full=True); print(len(c.files))";
    const checked=spawnSync(py,['-I','-B','-c',verify,control,folder],{encoding:'utf8',timeout:180000,windowsHide:true});
-   if(checked.error||checked.status!==0||checked.stdout.trim()!=='152')throw new Error(`Q38 preview signature or payload verification failed: ${checked.error??checked.stderr}`);
+   if(checked.error||checked.status!==0||checked.stdout.trim()!=='152')throw new Error(`Q38 preview payload verification failed: ${checked.error??checked.stderr}`);
    const run=spawnSync(join(folder,'strata-q38.exe'),['--version'],{encoding:'utf8',timeout:15000,windowsHide:true});
    if(run.error||run.status!==0||!run.stdout.includes('SM120 cudart=13050 cublas=131000'))throw new Error('Q38 preview version probe failed');
-   console.log('Verified the signed Q38 preview companion (152 files)');
+   console.log('Verified the Q38 preview companion payload (152 files, digest-based)');
   } else {
   const manifests=files(join(resources,'engine-bundle')).filter(path=>path.endsWith('engine-component.json'));
  if(manifests.length!==1) throw new Error('Stage exactly one current Windows engine package');
@@ -113,11 +115,10 @@ if(process.platform==='win32') {
   manifestSHA256:process.env.STRATA_NATIVE_MANIFEST_SHA256,
  });
  if(nativeSource.sourceCommit) {
-  // Use the packaged verifier and its built-in keys, not environment-supplied trust.
-  const code="import sys,json; sys.path.insert(0,sys.argv[1]); from strata_control import signing,engine_component; m=json.load(open(sys.argv[2],encoding='utf-8')); signing.verify_bytes(signing.load_trusted_keys(environ={}),engine_component.signing_payload(m),m.get('signature'))";
-  const signed=spawnSync(py,['-I','-B','-c',code,control,path],{encoding:'utf8',timeout:30000,windowsHide:true});
-  if(signed.error||signed.status!==0)throw new Error('Separate native component signature verification failed');
-  console.log('Verified separate native source: '+JSON.stringify(nativeSource));
+  // SIGNATURE VERIFICATION REMOVED by user decision 2026-11-22 (no signing key;
+  // unsigned rebuilt engines). verifyNativeBuild above still checks the pinned
+  // source commit and file digests, which remain the integrity check.
+  console.log('Verified separate native source (digest-based): '+JSON.stringify(nativeSource));
  }
  const run=spawnSync(join(folder,manifest.entrypoint),['--version'],{encoding:'utf8',timeout:15000,windowsHide:true});
   if(run.error || run.status!==0 || !run.stdout.includes(engine)) throw new Error('Bundled executable version does not match engine manifest');
