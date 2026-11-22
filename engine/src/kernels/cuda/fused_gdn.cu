@@ -90,6 +90,114 @@ __global__ void __launch_bounds__(S * RG) gdn_step_norm_kernel(float* __restrict
     }
 }
 
+// Evolved float4 128-bit vectorized GDN recurrence (256 threads = 32x8, single-warp RMSNorm with zero extra barrier).
+template <bool SILU, bool CHECK_FINITE = false>
+__global__ void __launch_bounds__(256) gdn_step_norm_vec4_kernel(
+    float* __restrict__ state, const float* __restrict__ q, const float* __restrict__ k,
+    const float* __restrict__ v, const float* __restrict__ gate, const float* __restrict__ beta,
+    const float* __restrict__ z, const float* __restrict__ gamma, float eps,
+    float* __restrict__ y, int h_k, int h_v, int* __restrict__ error = nullptr) {
+    constexpr int RG4 = 8;
+    constexpr int RPG4 = S / RG4;
+    __shared__ float sk[S], sq[S];
+    __shared__ float4 red_kv[RG4][32];
+    __shared__ float4 red_o[RG4][32];
+    const int head = blockIdx.x;
+    const int col4 = threadIdx.x;  // 0..31
+    const int rg = threadIdx.y;    // 0..7
+    const int tid = rg * 32 + col4;
+    const int qh = head % h_k;
+    if (tid < 32) {
+        reinterpret_cast<float4*>(sk)[tid] = __ldg(reinterpret_cast<const float4*>(k + qh * S) + tid);
+        reinterpret_cast<float4*>(sq)[tid] = __ldg(reinterpret_cast<const float4*>(q + qh * S) + tid);
+    }
+    float4 s[RPG4];
+    float4* base = reinterpret_cast<float4*>(state + ((size_t) (rg * RPG4) * h_v + head) * S) + col4;
+    const size_t row_stride4 = ((size_t) h_v * S) >> 2;
+#pragma unroll
+    for (int r = 0; r < RPG4; ++r) s[r] = base[r * row_stride4];
+    __syncthreads();
+    const float g = __expf(__ldg(gate + head));
+    const float b = __ldg(beta + head);
+    float4 kv = make_float4(0.f, 0.f, 0.f, 0.f);
+#pragma unroll
+    for (int r = 0; r < RPG4; ++r) {
+        const float kr = sk[rg * RPG4 + r];
+        kv.x = fmaf(s[r].x, kr, kv.x);
+        kv.y = fmaf(s[r].y, kr, kv.y);
+        kv.z = fmaf(s[r].z, kr, kv.z);
+        kv.w = fmaf(s[r].w, kr, kv.w);
+    }
+    red_kv[rg][col4] = kv;
+    __syncthreads();
+    float4 kv_col = make_float4(0.f, 0.f, 0.f, 0.f);
+#pragma unroll
+    for (int i = 0; i < RG4; ++i) {
+        const float4 t = red_kv[i][col4];
+        kv_col.x += t.x; kv_col.y += t.y; kv_col.z += t.z; kv_col.w += t.w;
+    }
+    const float4 vv = __ldg(reinterpret_cast<const float4*>(v + head * S) + col4);
+    const float4 delta = make_float4(
+        (vv.x - g * kv_col.x) * b, (vv.y - g * kv_col.y) * b,
+        (vv.z - g * kv_col.z) * b, (vv.w - g * kv_col.w) * b);
+    float4 o = make_float4(0.f, 0.f, 0.f, 0.f);
+    [[maybe_unused]] bool nonfinite = false;
+#pragma unroll
+    for (int r = 0; r < RPG4; ++r) {
+        const float kr = sk[rg * RPG4 + r];
+        const float qr = sq[rg * RPG4 + r];
+        s[r].x = fmaf(g, s[r].x, kr * delta.x);
+        s[r].y = fmaf(g, s[r].y, kr * delta.y);
+        s[r].z = fmaf(g, s[r].z, kr * delta.z);
+        s[r].w = fmaf(g, s[r].w, kr * delta.w);
+        o.x = fmaf(s[r].x, qr, o.x);
+        o.y = fmaf(s[r].y, qr, o.y);
+        o.z = fmaf(s[r].z, qr, o.z);
+        o.w = fmaf(s[r].w, qr, o.w);
+        base[r * row_stride4] = s[r];
+        if constexpr (CHECK_FINITE) {
+            if (!isfinite(s[r].x) || !isfinite(s[r].y) || !isfinite(s[r].z) || !isfinite(s[r].w)) nonfinite = true;
+        }
+    }
+    red_o[rg][col4] = o;
+    __syncthreads();
+    if (rg == 0) {
+        float4 oc = make_float4(0.f, 0.f, 0.f, 0.f);
+#pragma unroll
+        for (int i = 0; i < RG4; ++i) {
+            const float4 t = red_o[i][col4];
+            oc.x += t.x; oc.y += t.y; oc.z += t.z; oc.w += t.w;
+        }
+        const float inv_sq = rsqrtf((float) S);
+        oc.x *= inv_sq; oc.y *= inv_sq; oc.z *= inv_sq; oc.w *= inv_sq;
+        float ss = oc.x * oc.x + oc.y * oc.y + oc.z * oc.z + oc.w * oc.w;
+#pragma unroll
+        for (int off = 16; off > 0; off >>= 1) ss += __shfl_xor_sync(0xffffffffu, ss, off);
+        const float scale = rsqrtf(ss / (float) S + eps);
+        const float4 gam = __ldg(reinterpret_cast<const float4*>(gamma) + col4);
+        const float4 zz = __ldg(reinterpret_cast<const float4*>(z + head * S) + col4);
+        float4 out;
+        if constexpr (SILU) {
+            out.x = oc.x * scale * gam.x * (zz.x / (1.0f + __expf(-zz.x)));
+            out.y = oc.y * scale * gam.y * (zz.y / (1.0f + __expf(-zz.y)));
+            out.z = oc.z * scale * gam.z * (zz.z / (1.0f + __expf(-zz.z)));
+            out.w = oc.w * scale * gam.w * (zz.w / (1.0f + __expf(-zz.w)));
+        } else {
+            out.x = oc.x * scale * gam.x * (1.0f / (1.0f + __expf(-zz.x)));
+            out.y = oc.y * scale * gam.y * (1.0f / (1.0f + __expf(-zz.y)));
+            out.z = oc.z * scale * gam.z * (1.0f / (1.0f + __expf(-zz.z)));
+            out.w = oc.w * scale * gam.w * (1.0f / (1.0f + __expf(-zz.w)));
+        }
+        reinterpret_cast<float4*>(y + head * S)[col4] = out;
+        if constexpr (CHECK_FINITE) {
+            if (!isfinite(out.x) || !isfinite(out.y) || !isfinite(out.z) || !isfinite(out.w)) nonfinite = true;
+        }
+    }
+    if constexpr (CHECK_FINITE) {
+        if (nonfinite) atomicExch(error, 1);
+    }
+}
+
 __global__ void __launch_bounds__(S) gdn_conv_l2_kernel(float* __restrict__ hist, const float* __restrict__ qkv,
                                                         const float* __restrict__ w, float* __restrict__ h,
                                                         int qk_heads, float eps) {
@@ -290,7 +398,17 @@ void step_norm(float* state, const float* q, const float* k, const float* v, con
         std::fprintf(stderr, "fused_gdn_step_norm: invalid arguments\n");
         std::exit(1);
     }
-    if (error) {
+    const bool aligned16 = ((((uintptr_t) state | (uintptr_t) q | (uintptr_t) k | (uintptr_t) v |
+                              (uintptr_t) z | (uintptr_t) gamma | (uintptr_t) y) & 15u) == 0u);
+    if (aligned16) {
+        if (error) {
+            gdn_step_norm_vec4_kernel<SILU, true><<<(unsigned) h_v, dim3(32, 8), 0, (cudaStream_t) stream>>>(
+                state, q, k, v, gate, beta, z, gamma, eps, y, h_k, h_v, error);
+        } else {
+            gdn_step_norm_vec4_kernel<SILU, false><<<(unsigned) h_v, dim3(32, 8), 0, (cudaStream_t) stream>>>(
+                state, q, k, v, gate, beta, z, gamma, eps, y, h_k, h_v, nullptr);
+        }
+    } else if (error) {
         gdn_step_norm_kernel<SILU, true><<<(unsigned) h_v, dim3(S, RG), 0, (cudaStream_t) stream>>>(
             state, q, k, v, gate, beta, z, gamma, eps, y, h_k, h_v, error);
     } else {
@@ -330,6 +448,121 @@ void fused_gdn_conv_l2_batch(float* history, const float* qkv_batch, const float
     if (e != cudaSuccess) { std::fprintf(stderr, "fused_gdn_conv_l2_batch: %s\n", cudaGetErrorString(e)); std::exit(1); }
 }
 
+// Evolved float4 128-bit vectorized batch GDN recurrence (FLA/ICLR2025 register-resident state + single-warp RMSNorm).
+template <bool SILU, bool CHECK_FINITE = false>
+__global__ void __launch_bounds__(256) gdn_step_norm_vec4_batch_kernel(
+    float* __restrict__ state, const float* __restrict__ qkv_batch, int qkv_stride,
+    const float* __restrict__ gate, const float* __restrict__ beta, const float* __restrict__ z,
+    const float* __restrict__ gamma, float eps, float* __restrict__ y, int h_k, int h_v, int n_tokens,
+    int* __restrict__ error = nullptr) {
+    constexpr int RG4 = 8;
+    constexpr int RPG4 = S / RG4;
+    __shared__ float sk[S], sq[S];
+    __shared__ float4 red_kv[RG4][32];
+    __shared__ float4 red_o[RG4][32];
+    const int head = blockIdx.x;
+    const int col4 = threadIdx.x;
+    const int rg = threadIdx.y;
+    const int tid = rg * 32 + col4;
+    const int qh = head % h_k;
+    float4 s[RPG4];
+    float4* base = reinterpret_cast<float4*>(state + ((size_t)(rg * RPG4) * h_v + head) * S) + col4;
+    const size_t row_stride4 = ((size_t)h_v * S) >> 2;
+#pragma unroll
+    for (int r = 0; r < RPG4; ++r) s[r] = base[r * row_stride4];
+    const float4 gam = (rg == 0) ? __ldg(reinterpret_cast<const float4*>(gamma) + col4) : make_float4(0.f, 0.f, 0.f, 0.f);
+    [[maybe_unused]] bool nonfinite = false;
+    const float inv_sq = rsqrtf((float)S);
+
+    for (int t = 0; t < n_tokens; ++t) {
+        const float* qt = qkv_batch + (size_t)t * qkv_stride;
+        const float* kt = qt + (size_t)h_k * S;
+        const float* vt = kt + (size_t)h_k * S;
+        if (tid < 32) {
+            reinterpret_cast<float4*>(sq)[tid] = __ldg(reinterpret_cast<const float4*>(qt + qh * S) + tid);
+            reinterpret_cast<float4*>(sk)[tid] = __ldg(reinterpret_cast<const float4*>(kt + qh * S) + tid);
+        }
+        __syncthreads();
+        const float g = __expf(__ldg(gate + (size_t)t * h_v + head));
+        const float b = __ldg(beta + (size_t)t * h_v + head);
+        float4 kv = make_float4(0.f, 0.f, 0.f, 0.f);
+#pragma unroll
+        for (int r = 0; r < RPG4; ++r) {
+            const float kr = sk[rg * RPG4 + r];
+            kv.x = fmaf(s[r].x, kr, kv.x); kv.y = fmaf(s[r].y, kr, kv.y);
+            kv.z = fmaf(s[r].z, kr, kv.z); kv.w = fmaf(s[r].w, kr, kv.w);
+        }
+        red_kv[rg][col4] = kv;
+        __syncthreads();
+        float4 kv_col = make_float4(0.f, 0.f, 0.f, 0.f);
+#pragma unroll
+        for (int i = 0; i < RG4; ++i) {
+            const float4 tr = red_kv[i][col4];
+            kv_col.x += tr.x; kv_col.y += tr.y; kv_col.z += tr.z; kv_col.w += tr.w;
+        }
+        const float4 vv = __ldg(reinterpret_cast<const float4*>(vt + head * S) + col4);
+        const float4 delta = make_float4(
+            (vv.x - g * kv_col.x) * b, (vv.y - g * kv_col.y) * b,
+            (vv.z - g * kv_col.z) * b, (vv.w - g * kv_col.w) * b);
+        float4 o = make_float4(0.f, 0.f, 0.f, 0.f);
+#pragma unroll
+        for (int r = 0; r < RPG4; ++r) {
+            const float kr = sk[rg * RPG4 + r];
+            const float qr = sq[rg * RPG4 + r];
+            s[r].x = fmaf(g, s[r].x, kr * delta.x);
+            s[r].y = fmaf(g, s[r].y, kr * delta.y);
+            s[r].z = fmaf(g, s[r].z, kr * delta.z);
+            s[r].w = fmaf(g, s[r].w, kr * delta.w);
+            o.x = fmaf(s[r].x, qr, o.x); o.y = fmaf(s[r].y, qr, o.y);
+            o.z = fmaf(s[r].z, qr, o.z); o.w = fmaf(s[r].w, qr, o.w);
+        }
+        red_o[rg][col4] = o;
+        __syncthreads();
+        if (rg == 0) {
+            float4 oc = make_float4(0.f, 0.f, 0.f, 0.f);
+#pragma unroll
+            for (int i = 0; i < RG4; ++i) {
+                const float4 tr = red_o[i][col4];
+                oc.x += tr.x; oc.y += tr.y; oc.z += tr.z; oc.w += tr.w;
+            }
+            oc.x *= inv_sq; oc.y *= inv_sq; oc.z *= inv_sq; oc.w *= inv_sq;
+            float ss = oc.x * oc.x + oc.y * oc.y + oc.z * oc.z + oc.w * oc.w;
+#pragma unroll
+            for (int off = 16; off > 0; off >>= 1) ss += __shfl_xor_sync(0xffffffffu, ss, off);
+            const float scale = rsqrtf(ss / (float)S + eps);
+            const size_t yoff = ((size_t)t * h_v + head) * S;
+            const float4 zz = __ldg(reinterpret_cast<const float4*>(z + yoff) + col4);
+            float4 out;
+            if constexpr (SILU) {
+                out.x = oc.x * scale * gam.x * (zz.x / (1.0f + __expf(-zz.x)));
+                out.y = oc.y * scale * gam.y * (zz.y / (1.0f + __expf(-zz.y)));
+                out.z = oc.z * scale * gam.z * (zz.z / (1.0f + __expf(-zz.z)));
+                out.w = oc.w * scale * gam.w * (zz.w / (1.0f + __expf(-zz.w)));
+            } else {
+                out.x = oc.x * scale * gam.x * (1.0f / (1.0f + __expf(-zz.x)));
+                out.y = oc.y * scale * gam.y * (1.0f / (1.0f + __expf(-zz.y)));
+                out.z = oc.z * scale * gam.z * (1.0f / (1.0f + __expf(-zz.z)));
+                out.w = oc.w * scale * gam.w * (1.0f / (1.0f + __expf(-zz.w)));
+            }
+            reinterpret_cast<float4*>(y + yoff)[col4] = out;
+            if constexpr (CHECK_FINITE) {
+                if (!isfinite(out.x) || !isfinite(out.y) || !isfinite(out.z) || !isfinite(out.w)) nonfinite = true;
+            }
+        }
+        __syncthreads();
+    }
+#pragma unroll
+    for (int r = 0; r < RPG4; ++r) {
+        base[r * row_stride4] = s[r];
+        if constexpr (CHECK_FINITE) {
+            if (!isfinite(s[r].x) || !isfinite(s[r].y) || !isfinite(s[r].z) || !isfinite(s[r].w)) nonfinite = true;
+        }
+    }
+    if constexpr (CHECK_FINITE) {
+        if (nonfinite) atomicExch(error, 1);
+    }
+}
+
 void fused_gdn_step_norm_silu_batch(float* state, const float* qkv_batch, int qkv_stride, const float* gate,
                                     const float* beta, const float* z, const float* gamma, float eps, float* y,
                                     int h_k, int h_v, int n_tokens, void* stream, int* error) {
@@ -338,7 +571,17 @@ void fused_gdn_step_norm_silu_batch(float* state, const float* qkv_batch, int qk
         std::fprintf(stderr, "fused_gdn_step_norm_silu_batch: invalid arguments\n");
         std::exit(1);
     }
-    if (error) {
+    const bool aligned16 = ((((uintptr_t)state | (uintptr_t)qkv_batch | (uintptr_t)z | (uintptr_t)gamma |
+                              (uintptr_t)y) & 15u) == 0u) && ((qkv_stride & 3) == 0);
+    if (aligned16) {
+        if (error) {
+            gdn_step_norm_vec4_batch_kernel<true, true><<<(unsigned)h_v, dim3(32, 8), 0, (cudaStream_t)stream>>>(
+                state, qkv_batch, qkv_stride, gate, beta, z, gamma, eps, y, h_k, h_v, n_tokens, error);
+        } else {
+            gdn_step_norm_vec4_batch_kernel<true, false><<<(unsigned)h_v, dim3(32, 8), 0, (cudaStream_t)stream>>>(
+                state, qkv_batch, qkv_stride, gate, beta, z, gamma, eps, y, h_k, h_v, n_tokens, nullptr);
+        }
+    } else if (error) {
         gdn_step_norm_batch_kernel<true, true><<<(unsigned)h_v, dim3(S, RG), 0, (cudaStream_t)stream>>>(
             state, qkv_batch, qkv_stride, gate, beta, z, gamma, eps, y, h_k, h_v, n_tokens, error);
     } else {

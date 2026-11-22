@@ -112,6 +112,10 @@ struct Hparams {
     int64_t n_sconv_channels() const { return 2 * kv_dim + 2 * n_embd; }
     bool is_swa(int64_t il) const {
         if ((size_t) il < swa_pattern.size()) return swa_pattern[(size_t) il] != 0;
+        if (!swa_pattern.empty()) {
+            const int ip = loop_layer((int) il);
+            if ((size_t) ip < swa_pattern.size()) return swa_pattern[(size_t) ip] != 0;
+        }
         return (il % 6) != 5;
     }
     int loop_layer(int il) const {
@@ -427,18 +431,27 @@ bool load_model(const std::string& path, Model& m, std::string& err) {
         return v ? (float) v->num() : def;
     };
     Hparams& hp = m.hp;
-    hp.n_layer = get_i("inkling2.block_count", 48);
-    hp.num_loops = get_i("inkling2.num_loops", 3);
-    hp.core_start = get_i("inkling2.loop.core_start", 6);
-    hp.core_end = get_i("inkling2.loop.core_end", 18);
+    const auto* arch_v = meta.get("general.architecture");
+    const bool is_loop_arch = arch_v && arch_v->s == "inkling2_loop";
+    const int64_t raw_bc = get_i("inkling2.block_count", 48);
+    hp.num_loops = get_i("inkling2.num_loops", get_i("inkling2_loop.loop.count", 3));
+    hp.core_start = get_i("inkling2.loop.core_start", get_i("inkling2_loop.loop.start", 6));
+    hp.core_end = get_i("inkling2.loop.core_end", get_i("inkling2_loop.loop.end", 18));
     const int64_t n_core = hp.num_loops > 1 ? (hp.core_end - hp.core_start) : 0;
-    hp.n_phys = hp.n_layer - (hp.num_loops - 1) * n_core;
+    if (is_loop_arch) {
+        // Sakura `inkling2_loop` stores physical block_count (=24); virtual layer count expands the looped core.
+        hp.n_phys = raw_bc;
+        hp.n_layer = hp.n_phys + (hp.num_loops - 1) * n_core;
+    } else {
+        hp.n_layer = raw_bc;
+        hp.n_phys = hp.n_layer - (hp.num_loops - 1) * n_core;
+    }
     hp.n_embd = get_i("inkling2.embedding_length", 2304);
     hp.n_ff = get_i("inkling2.expert_feed_forward_length", get_i("inkling2.feed_forward_length", 1152));
-    if (const auto* v = meta.get("inkling2.attention.head_count")) {
+    if (const auto* v = lookup("inkling2.attention.head_count")) {
         hp.n_head = !v->items.empty() ? (int64_t) v->items[0].u : (int64_t) v->u;
     }
-    if (const auto* v = meta.get("inkling2.attention.head_count_kv")) {
+    if (const auto* v = lookup("inkling2.attention.head_count_kv")) {
         hp.n_head_kv = !v->items.empty() ? (int64_t) v->items[0].u : (int64_t) v->u;
     }
     hp.head_dim = get_i("inkling2.attention.key_length", 128);
@@ -463,7 +476,7 @@ bool load_model(const std::string& path, Model& m, std::string& err) {
     hp.situ_linear_beta = get_f("inkling2.activation.situ_linear_beta", 25.0f);
     hp.expert_weights_scale = get_f("inkling2.expert_weights_scale", 8.0f);
     hp.softcap = get_f("inkling2.final_logit_softcapping", 30.0f);
-    if (const auto* v = meta.get("inkling2.attention.sliding_window_pattern")) {
+    if (const auto* v = lookup("inkling2.attention.sliding_window_pattern")) {
         hp.swa_pattern.resize(v->items.size());
         for (size_t i = 0; i < v->items.size(); ++i) hp.swa_pattern[i] = v->items[i].u ? 1 : 0;
     }
@@ -487,8 +500,36 @@ bool load_model(const std::string& path, Model& m, std::string& err) {
     }
     m.tok_embd_norm = m.upload_f32("token_embd_norm.weight", (size_t) hp.n_embd);
     if (hp.num_loops > 1) {
-        m.loop_res_query = m.upload_f32("loop_res_query.weight", (size_t) hp.n_embd * 2 * n_core);
-        m.loop_kv_res_query = m.upload_f32("loop_kv_res_query.weight", (size_t) hp.n_embd * 2 * n_core);
+        if (m.find_tensor("loop_res_query.weight")) {
+            m.loop_res_query = m.upload_f32("loop_res_query.weight", (size_t) hp.n_embd * 2 * n_core);
+            m.loop_kv_res_query = m.upload_f32("loop_kv_res_query.weight", (size_t) hp.n_embd * 2 * n_core);
+        } else {
+            // Sakura `inkling2_loop` stores per-core `blk.<ip>.loop_msg_query.weight` [4, n_embd]:
+            // row 0 -> loop_res_query[2*c+0] (attn), row 1 -> loop_kv_res_query[2*c+0] (k),
+            // row 2 -> loop_kv_res_query[2*c+1] (v), row 3 -> loop_res_query[2*c+1] (ffn).
+            const size_t N = (size_t) hp.n_embd;
+            std::vector<float> h_res(N * 2 * (size_t) n_core);
+            std::vector<float> h_kv(N * 2 * (size_t) n_core);
+            for (int64_t c = 0; c < n_core; ++c) {
+                char qnm[128];
+                std::snprintf(qnm, sizeof qnm, "blk.%lld.loop_msg_query.weight", (long long) (hp.core_start + c));
+                const strata::TensorInfo* ti = nullptr;
+                const uint8_t* raw = m.find_tensor(qnm, &ti);
+                if (!raw || !ti || ti->type != 0) {
+                    err = std::string("missing or non-f32 ") + qnm;
+                    return false;
+                }
+                const float* src = reinterpret_cast<const float*>(raw);
+                std::memcpy(h_res.data() + (size_t) (2 * c + 0) * N, src + 0 * N, N * sizeof(float));
+                std::memcpy(h_kv.data()  + (size_t) (2 * c + 0) * N, src + 1 * N, N * sizeof(float));
+                std::memcpy(h_kv.data()  + (size_t) (2 * c + 1) * N, src + 2 * N, N * sizeof(float));
+                std::memcpy(h_res.data() + (size_t) (2 * c + 1) * N, src + 3 * N, N * sizeof(float));
+            }
+            m.loop_res_query = m.gpu_alloc<float>(h_res.size());
+            m.loop_kv_res_query = m.gpu_alloc<float>(h_kv.size());
+            CK(cudaMemcpy(m.loop_res_query, h_res.data(), h_res.size() * sizeof(float), cudaMemcpyHostToDevice));
+            CK(cudaMemcpy(m.loop_kv_res_query, h_kv.data(), h_kv.size() * sizeof(float), cudaMemcpyHostToDevice));
+        }
     }
     m.output_res_query = m.upload_f32("output_res_query.weight", (size_t) hp.n_embd);
     m.output_norm = m.upload_f32("output_norm.weight", (size_t) hp.n_embd);
@@ -623,7 +664,10 @@ bool load_model(const std::string& path, Model& m, std::string& err) {
         }
 
         if (L.has_loop) {
-            static const char* mods[4] = {"attn", "k", "v", "mlp"};
+            static const char* mods_ud[4]     = {"attn",   "k",      "v",      "mlp"};
+            static const char* mods_sakura[4] = {"q_ctrl", "k_ctrl", "v_ctrl", "ffn_ctrl"};
+            const bool use_sakura = (m.find_tensor(tn("loop_attn_down.weight")) == nullptr);
+            const char** mods = use_sakura ? mods_sakura : mods_ud;
             for (int j = 0; j < 4; ++j) {
                 char s0[64], s1[64], s2[64];
                 std::snprintf(s0, sizeof s0, "loop_%s_down.weight", mods[j]);
@@ -874,6 +918,25 @@ struct Engine {
     std::vector<cudaGraphExec_t> layer_pre_graph;
     bool core_all_gpu = false;
     bool graph_oom = false;
+
+    // Elastic Looped Transformer (ELT, arXiv:2604.09168) dynamic loop-exit (opt-in: --loop-exit-tol > 0).
+    float elt_exit_tol = 0.0f;
+    int elt_min_passes = 1;
+    float* elt_prev = nullptr;
+    float* elt_delta_host = nullptr;
+    float* elt_delta_dev = nullptr;
+    int64_t elt_total_tokens = 0;
+    int64_t elt_total_passes = 0;
+    int64_t elt_early_exits = 0;
+    void ensure_elt_bufs(size_t N) {
+        if (!elt_prev) {
+            CK(cudaMalloc(&elt_prev, N * sizeof(float)));
+        }
+        if (!elt_delta_host) {
+            CK(cudaHostAlloc(&elt_delta_host, sizeof(float), cudaHostAllocMapped));
+            CK(cudaHostGetDevicePointer(&elt_delta_dev, elt_delta_host, 0));
+        }
+    }
 
     // Prefix cache checkpoint (stores conv_hist + circular SWA KV state in host RAM; full-attn KV stays append-only on GPU)
     struct StateCheckpoint {
@@ -1563,7 +1626,9 @@ struct Engine {
                 wmma_ready = true;
             }
         };
-        const bool try_wmma = (T >= 16);
+        // For 128-expert Top-8 MoE, average tokens/active-expert is T*8/128 = T/16.
+        // Below T=48 (< 3 tok/expert), WMMA 16x16 tiles waste >80% compute & dequant overhead vs dp4a grouped MMVQ.
+        const bool try_wmma = (T >= 48);
         auto run_grouped = [&](const unsigned long long* gptr, int64_t cap_g, int64_t est_ent = 0) {
             if (try_wmma) {
                 ensure_f16();
@@ -1637,6 +1702,7 @@ struct Engine {
             namespace C = strata::kernels::cpu;
             const auto tp_wait0 = Clock::now();
             while (cudaEventQuery(ev_route) == cudaErrorNotReady) {
+                std::this_thread::yield();
             }
             if (prof) p_moe_wait_ms += ms_since(tp_wait0);
             const auto t0 = Clock::now();
@@ -2624,9 +2690,37 @@ struct Engine {
         };
 
         const int core_end_virt = (int) (hp.core_start + hp.num_loops * n_core);
+        const bool elt_active = (elt_exit_tol > 0.0f && T == 1 && n_core > 0 && hp.num_loops > 1 && !capture_dspark);
+        if (elt_active) ensure_elt_bufs((size_t) N);
         pp_streaming = (hybrid && T >= pp_stream_t && pp_stage_cnt > 0 && pp_stage[0] != nullptr);
         if (pp_streaming) pp_begin(core_end_virt, core_all_gpu ? 1 : 0);
         for (int il = 0; il < hp.n_layer; ++il) {
+            if (elt_active && il == hp.core_start) {
+                // Elastic Looped Transformer (ELT, arXiv:2604.09168): run core pass-by-pass with dynamic early exit.
+                CK(cudaMemcpyAsync(elt_prev, cur, (size_t) N * sizeof(float), cudaMemcpyDeviceToDevice, st));
+                ++elt_total_tokens;
+                int executed_passes = 0;
+                for (int pass = 0; pass < hp.num_loops; ++pass) {
+                    const int cl0 = (int) (hp.core_start + pass * n_core);
+                    const int cl1 = cl0 + (int) n_core;
+                    for (int cl = cl0; cl < cl1; ++cl) {
+                        run_layer_pre(cl, false);
+                        run_layer_post(cl, false);
+                    }
+                    ++executed_passes;
+                    if (pass + 1 < hp.num_loops) {
+                        k_elt_rel_delta<<<1, 256, 0, st>>>(cur, elt_prev, elt_delta_dev, (int) N);
+                        CK(cudaStreamSynchronize(st));
+                        if (executed_passes >= elt_min_passes && *elt_delta_host <= elt_exit_tol) {
+                            ++elt_early_exits;
+                            break;
+                        }
+                    }
+                }
+                elt_total_passes += executed_passes;
+                il = core_end_virt - 1;
+                continue;
+            }
             const bool use_t1_core = (T == 1 && !capture_dspark);
             const bool use_vf_core = (verify_max_t > 1 && T == verify_max_t && save_conv_trace && capture_dspark);
             if ((use_t1_core || use_vf_core) && core_all_gpu && !prof_detail && il == hp.core_start && n_core > 0) {
@@ -2744,7 +2838,17 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, std::strin
     size_t fr = 0, tot = 0;
     CK(cudaMemGetInfo(&fr, &tot));
     const bool core_res_hy = (E.profile.regime == strata::inkling2::VramRegime::CoreResidentHybrid);
-    const size_t reserve = core_res_hy ? ((size_t) 144 << 20) : ((size_t) 256 << 20);
+    size_t reserve = core_res_hy ? ((size_t) 144 << 20) : ((size_t) 256 << 20);
+#if defined(_WIN32)
+    // Windows WDDM shares physical VRAM with DWM/OS; overcommitting to free=0 MiB silently migrates
+    // late tier2 expert slabs to Shared GPU Memory (~20 GB/s PCIe vs 448 GB/s GDDR7 = 16x slower).
+    // Reserve 2048 MiB on <=17 GiB WDDM GPUs so all placed VRAM slabs stay strictly GDDR-resident.
+    if (tot <= (17ull << 30)) reserve = std::max(reserve, (size_t) 2048 << 20);
+#endif
+    if (const char* v = std::getenv("STRATA_VRAM_RESERVE_MB")) {
+        const int mb = std::atoi(v);
+        if (mb >= 0) reserve = (size_t) mb << 20;
+    }
     size_t budget = vram_gib >= 0.0 ? (size_t) (vram_gib * (double) (1ull << 30))
                                     : (fr > reserve ? fr - reserve : 0);
 
@@ -3275,6 +3379,8 @@ int run(int argc, char** argv) {
     int draft_max = 3;
     int cpu_threads = 0;
     double expert_vram = -1.0;
+    float loop_exit_tol = 0.0f;
+    int loop_min_passes = 1;
     bool serve = false;
     bool bench = false;
     bool kv_q8 = true;
@@ -3298,6 +3404,8 @@ int run(int argc, char** argv) {
         else if (a == "--max-new" || a == "-n") max_new = std::atoi(next_arg());
         else if (a == "--tokens") tokens_str = next_arg();
         else if (a == "--expert-vram") expert_vram = std::atof(next_arg());
+        else if (a == "--loop-exit-tol") loop_exit_tol = (float) std::atof(next_arg());
+        else if (a == "--loop-min-passes") loop_min_passes = std::max(1, std::atoi(next_arg()));
         else if (a == "--cpu-threads" || a == "--pool-workers") cpu_threads = std::atoi(next_arg());
         else if (a == "--dump-logits") dump_logits_path = next_arg();
         else if (a == "--kv-f16") kv_q8 = false;
@@ -3375,6 +3483,8 @@ int run(int argc, char** argv) {
     std::fprintf(stderr, "strata-inkling2: %s\n", strata::inkling2::format_profile_line(pin, prof_cfg).c_str());
 
     Engine E;
+    E.elt_exit_tol = loop_exit_tol;
+    E.elt_min_passes = loop_min_passes;
     if (!E.init(m, max_ctx, chunk, kv_q8, err, dm && dm->has_quant_dense, dm ? (draft_max + 1) : 1, &prof_cfg)) {
         std::fprintf(stderr, "strata-inkling2: engine init failed: %s\n", err.c_str());
         return 1;
@@ -3694,6 +3804,11 @@ int run(int argc, char** argv) {
         }
     }
 
+    if (E.elt_total_tokens > 0) {
+        std::fprintf(stderr, "strata-inkling2: ELT avg_passes=%.2f/%lld early_exits=%lld/%lld (tol=%.4f min_passes=%d)\n",
+                     (double) E.elt_total_passes / (double) E.elt_total_tokens, (long long) m.hp.num_loops,
+                     (long long) E.elt_early_exits, (long long) E.elt_total_tokens, E.elt_exit_tol, E.elt_min_passes);
+    }
     std::printf("tokens:");
     for (int32_t id : gen) std::printf(" %d", (int) id);
     std::printf("\n");

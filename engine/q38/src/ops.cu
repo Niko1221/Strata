@@ -407,6 +407,32 @@ __global__ void __launch_bounds__(256, 4) mv_q8_qk45_4blk_2row(
     if (lane == 0) { *y_out0 = s0; if (has_r1) *y_out1 = s1; }
 }
 
+template <bool FIVE>
+__global__ void __launch_bounds__(128) mv_q8_qk45_4blk_2row_128(
+    MvTargets t, const BlockQ8_1* __restrict__ x, int n, size_t stride) {
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+    const int r0 = blockIdx.x * 8 + warp * 2;
+    if (r0 >= t.total_rows) return;
+    const int r1 = r0 + 1;
+    float *y_out0 = nullptr, *y_out1 = nullptr;
+    const uint8_t* wp0 = target_row_ptr(t, r0, stride, y_out0);
+    const bool has_r1 = (r1 < t.total_rows);
+    const uint8_t* wp1 = has_r1 ? target_row_ptr(t, r1, stride, y_out1) : wp0;
+    const int blk_off = lane >> 3, sub_lane = lane & 7;
+    const int nb = n >> 8, nb4 = nb & ~3;
+    float s0 = 0.0f, s1 = 0.0f;
+    int blk_base = 0;
+    for (; blk_base < nb4; blk_base += 4) {
+        step_qk45_4blk_2row<FIVE>(wp0, wp1, x, blk_base + blk_off, sub_lane, s0, s1);
+    }
+    if (blk_base + blk_off < nb) {
+        step_qk45_4blk_2row<FIVE>(wp0, wp1, x, blk_base + blk_off, sub_lane, s0, s1);
+    }
+    s0 = sum(s0);
+    s1 = sum(s1);
+    if (lane == 0) { *y_out0 = s0; if (has_r1) *y_out1 = s1; }
+}
+
 template <bool FIVE, int NCOLS>
 __global__ void __launch_bounds__(256, 4) mv_q8_qk45_batch(
     const uint8_t* __restrict__ wp, const BlockQ8_1* __restrict__ x, float* __restrict__ y,
@@ -602,11 +628,12 @@ __global__ void __launch_bounds__(256, 4) mv_q8_q6k_batch(
     if (row >= rows) return;
     const uint8_t* row_ptr = wp + size_t(row) * stride;
     const int nb = n >> 8, x_stride = n >> 5;
-    const int ip = lane >> 4, group = (lane & 15) >> 2, j = (lane & 3) * 4;
-    const int ql_off = ip * 64 + (group & 1) * 32 + j * 2;
-    const int qh_off = 128 + ip * 32 + j * 2;
-    const int sc_off = 192 + ip * 8 + group * 2 + (j >> 2);
+    const int ip = lane >> 4, group = (lane & 15) >> 2, sub = lane & 3, j = sub * 8;
+    const int ql_off = ip * 64 + (group & 1) * 32 + j;
+    const int qh_off = 128 + ip * 32 + j;
+    const int sc_off = 192 + ip * 8 + group * 2 + (sub >> 1);
     const int x_blk = ip * 4 + group;
+    const int x_qs_off = sub * 2;
     float acc[NCOLS];
     #pragma unroll
     for (int c = 0; c < NCOLS; ++c) acc[c] = 0.0f;
@@ -615,18 +642,17 @@ __global__ void __launch_bounds__(256, 4) mv_q8_q6k_batch(
         const float d = __half2float(__ushort_as_half(__ldg(reinterpret_cast<const uint16_t*>(p + 208))));
         const uint32_t ql_a = ldg_u32_from_u16(p + ql_off);
         const uint32_t qh_a = ldg_u32_from_u16(p + qh_off);
-        const int sc_a = int(__ldg(reinterpret_cast<const int8_t*>(p + sc_off)));
+        const int sc = int(__ldg(reinterpret_cast<const int8_t*>(p + sc_off)));
         const uint32_t ql_b = ldg_u32_from_u16(p + ql_off + 4);
         const uint32_t qh_b = ldg_u32_from_u16(p + qh_off + 4);
-        const int sc_b = int(__ldg(reinterpret_cast<const int8_t*>(p + sc_off + 1)));
         const int32_t w4_a = __vsub4(int32_t(((group >= 2) ? ((ql_a >> 4) & 0x0F0F0F0Fu) : (ql_a & 0x0F0F0F0Fu)) | (((qh_a >> (2 * group)) & 0x03030303u) << 4)), 0x20202020);
         const int32_t w4_b = __vsub4(int32_t(((group >= 2) ? ((ql_b >> 4) & 0x0F0F0F0Fu) : (ql_b & 0x0F0F0F0Fu)) | (((qh_b >> (2 * group)) & 0x03030303u) << 4)), 0x20202020);
         #pragma unroll
         for (int c = 0; c < NCOLS; ++c) {
             const BlockQ8_1& x0 = x[size_t(c) * x_stride + blk_i * 8 + x_blk];
             const float xd = __ldg(&x0.d);
-            const int2 xq2 = __ldg(reinterpret_cast<const int2*>(&x0.qs[j]));
-            acc[c] += d * (float(sc_a * __dp4a(w4_a, xq2.x, 0) + sc_b * __dp4a(w4_b, xq2.y, 0)) * xd);
+            const int2 xq2 = __ldg(reinterpret_cast<const int2*>(&x0.qs[x_qs_off]));
+            acc[c] += d * (float(sc * (__dp4a(w4_a, xq2.x, 0) + __dp4a(w4_b, xq2.y, 0))) * xd);
         }
     }
     #pragma unroll
@@ -717,48 +743,6 @@ __global__ void __launch_bounds__(256, 4) mv_q8_iq2s_4blk_2row(MvTargets t, cons
     if (lane == 0) { *y_out0 = s0; if (has_r1) *y_out1 = s1; }
 }
 
-template <int NCOLS>
-__global__ void __launch_bounds__(256, 4) mv_q8_q6k_batch(
-    const uint8_t* __restrict__ wp, const BlockQ8_1* __restrict__ x, float* __restrict__ y,
-    int n, int rows, size_t stride) {
-    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, row = blockIdx.x * 8 + warp;
-    if (row >= rows) return;
-    const uint8_t* row_ptr = wp + size_t(row) * stride;
-    const int nb = n >> 8, x_stride = n >> 5;
-    const int ip = lane >> 4, group = (lane & 15) >> 2, j = (lane & 3) * 4;
-    const int ql_off = ip * 64 + (group & 1) * 32 + j * 2;
-    const int qh_off = 128 + ip * 32 + j * 2;
-    const int sc_off = 192 + ip * 8 + group * 2 + (j >> 2);
-    const int x_blk = ip * 4 + group;
-    float acc[NCOLS];
-    #pragma unroll
-    for (int c = 0; c < NCOLS; ++c) acc[c] = 0.0f;
-    for (int blk_i = 0; blk_i < nb; ++blk_i) {
-        const uint8_t* p = row_ptr + size_t(blk_i) * 210;
-        const float d = __half2float(__ushort_as_half(__ldg(reinterpret_cast<const uint16_t*>(p + 208))));
-        const uint32_t ql_a = ldg_u32_from_u16(p + ql_off);
-        const uint32_t qh_a = ldg_u32_from_u16(p + qh_off);
-        const int sc_a = int(__ldg(reinterpret_cast<const int8_t*>(p + sc_off)));
-        const uint32_t ql_b = ldg_u32_from_u16(p + ql_off + 4);
-        const uint32_t qh_b = ldg_u32_from_u16(p + qh_off + 4);
-        const int sc_b = int(__ldg(reinterpret_cast<const int8_t*>(p + sc_off + 1)));
-        const int32_t w4_a = __vsub4(int32_t(((group >= 2) ? ((ql_a >> 4) & 0x0F0F0F0Fu) : (ql_a & 0x0F0F0F0Fu)) | (((qh_a >> (2 * group)) & 0x03030303u) << 4)), 0x20202020);
-        const int32_t w4_b = __vsub4(int32_t(((group >= 2) ? ((ql_b >> 4) & 0x0F0F0F0Fu) : (ql_b & 0x0F0F0F0Fu)) | (((qh_b >> (2 * group)) & 0x03030303u) << 4)), 0x20202020);
-        #pragma unroll
-        for (int c = 0; c < NCOLS; ++c) {
-            const BlockQ8_1& x0 = x[size_t(c) * x_stride + blk_i * 8 + x_blk];
-            const float xd = __ldg(&x0.d);
-            const int2 xq2 = __ldg(reinterpret_cast<const int2*>(&x0.qs[j]));
-            acc[c] += d * (float(sc_a * __dp4a(w4_a, xq2.x, 0) + sc_b * __dp4a(w4_b, xq2.y, 0)) * xd);
-        }
-    }
-    #pragma unroll
-    for (int c = 0; c < NCOLS; ++c) {
-        const float s = sum(acc[c]);
-        if (lane == 0) y[size_t(c) * rows + row] = s;
-    }
-}
-
 __device__ __forceinline__ float dot_q8_iq3_s_sgrid(
     const uint8_t* __restrict__ p, const BlockQ8_1* __restrict__ xb, const uint32_t* __restrict__ sgrid3, int lane) {
     const int sub = lane >> 2, group = lane & 3, idx0 = group * 2, idx1 = idx0 + 1;
@@ -834,48 +818,6 @@ __global__ void __launch_bounds__(256, 4) mv_q8_iq3s_4blk_2row(MvTargets t, cons
     if (blk_base + blk_off < nb) step_iq3s_4blk_2row(wp0, wp1, x, sgrid3, blk_base + blk_off, sub, s0, s1);
     s0 = sum(s0); s1 = sum(s1);
     if (lane == 0) { *y_out0 = s0; if (has_r1) *y_out1 = s1; }
-}
-
-template <int NCOLS>
-__global__ void __launch_bounds__(256, 4) mv_q8_q6k_batch(
-    const uint8_t* __restrict__ wp, const BlockQ8_1* __restrict__ x, float* __restrict__ y,
-    int n, int rows, size_t stride) {
-    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, row = blockIdx.x * 8 + warp;
-    if (row >= rows) return;
-    const uint8_t* row_ptr = wp + size_t(row) * stride;
-    const int nb = n >> 8, x_stride = n >> 5;
-    const int ip = lane >> 4, group = (lane & 15) >> 2, j = (lane & 3) * 4;
-    const int ql_off = ip * 64 + (group & 1) * 32 + j * 2;
-    const int qh_off = 128 + ip * 32 + j * 2;
-    const int sc_off = 192 + ip * 8 + group * 2 + (j >> 2);
-    const int x_blk = ip * 4 + group;
-    float acc[NCOLS];
-    #pragma unroll
-    for (int c = 0; c < NCOLS; ++c) acc[c] = 0.0f;
-    for (int blk_i = 0; blk_i < nb; ++blk_i) {
-        const uint8_t* p = row_ptr + size_t(blk_i) * 210;
-        const float d = __half2float(__ushort_as_half(__ldg(reinterpret_cast<const uint16_t*>(p + 208))));
-        const uint32_t ql_a = ldg_u32_from_u16(p + ql_off);
-        const uint32_t qh_a = ldg_u32_from_u16(p + qh_off);
-        const int sc_a = int(__ldg(reinterpret_cast<const int8_t*>(p + sc_off)));
-        const uint32_t ql_b = ldg_u32_from_u16(p + ql_off + 4);
-        const uint32_t qh_b = ldg_u32_from_u16(p + qh_off + 4);
-        const int sc_b = int(__ldg(reinterpret_cast<const int8_t*>(p + sc_off + 1)));
-        const int32_t w4_a = __vsub4(int32_t(((group >= 2) ? ((ql_a >> 4) & 0x0F0F0F0Fu) : (ql_a & 0x0F0F0F0Fu)) | (((qh_a >> (2 * group)) & 0x03030303u) << 4)), 0x20202020);
-        const int32_t w4_b = __vsub4(int32_t(((group >= 2) ? ((ql_b >> 4) & 0x0F0F0F0Fu) : (ql_b & 0x0F0F0F0Fu)) | (((qh_b >> (2 * group)) & 0x03030303u) << 4)), 0x20202020);
-        #pragma unroll
-        for (int c = 0; c < NCOLS; ++c) {
-            const BlockQ8_1& x0 = x[size_t(c) * x_stride + blk_i * 8 + x_blk];
-            const float xd = __ldg(&x0.d);
-            const int2 xq2 = __ldg(reinterpret_cast<const int2*>(&x0.qs[j]));
-            acc[c] += d * (float(sc_a * __dp4a(w4_a, xq2.x, 0) + sc_b * __dp4a(w4_b, xq2.y, 0)) * xd);
-        }
-    }
-    #pragma unroll
-    for (int c = 0; c < NCOLS; ++c) {
-        const float s = sum(acc[c]);
-        if (lane == 0) y[size_t(c) * rows + row] = s;
-    }
 }
 
 // Q8_0 uses 34 bytes/block (34 % 4 == 2): assemble 4 int8_t weights from two uint16_t loads.
@@ -1131,12 +1073,14 @@ void dispatch_matvec_q8_1(int type, const MvTargets& t, uintptr_t u_align, const
             else mv_q8_q8_0_8rows<<<(rows + 7) / 8, 256, 0, s>>>(t, x_q8, n, rb);
             break;
         case 12:
-            if ((u_align & 15) == 0 && rows >= 256) mv_q8_qk45_4blk_2row<false><<<(rows + 15) / 16, 256, 0, s>>>(t, x_q8, n, rb);
+            if ((u_align & 15) == 0 && rows >= 65536) mv_q8_qk45_4blk_2row_128<false><<<(rows + 7) / 8, 128, 0, s>>>(t, x_q8, n, rb);
+            else if ((u_align & 15) == 0 && rows >= 256) mv_q8_qk45_4blk_2row<false><<<(rows + 15) / 16, 256, 0, s>>>(t, x_q8, n, rb);
             else if (rows < 256) mv_q8_1row<MvKind::Q4_K, 144><<<rows, 256, 0, s>>>(t, x_q8, n, rb);
             else mv_q8_4rows<MvKind::Q4_K, 144><<<(rows + 3) / 4, 128, 0, s>>>(t, x_q8, n, rb);
             break;
         case 13:
-            if ((u_align & 15) == 0 && rows >= 256) mv_q8_qk45_4blk_2row<true><<<(rows + 15) / 16, 256, 0, s>>>(t, x_q8, n, rb);
+            if ((u_align & 15) == 0 && rows >= 65536) mv_q8_qk45_4blk_2row_128<true><<<(rows + 7) / 8, 128, 0, s>>>(t, x_q8, n, rb);
+            else if ((u_align & 15) == 0 && rows >= 256) mv_q8_qk45_4blk_2row<true><<<(rows + 15) / 16, 256, 0, s>>>(t, x_q8, n, rb);
             else if (rows < 256) mv_q8_1row<MvKind::Q5_K, 176><<<rows, 256, 0, s>>>(t, x_q8, n, rb);
             else mv_q8_4rows<MvKind::Q5_K, 176><<<(rows + 3) / 4, 128, 0, s>>>(t, x_q8, n, rb);
             break;

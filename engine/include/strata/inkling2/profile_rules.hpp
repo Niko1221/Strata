@@ -22,8 +22,9 @@ namespace strata::inkling2 {
 
 enum class ArchId {
     Generic = 0,
-    Sm70Volta,   // Tesla V100 (sm_70): measured R5 (819K Q8KV, DSpark ON)
-    Sm89Ada,     // RTX 4070 (sm_89): measured R4 (65K/131K/262K Q8KV, DSpark OFF)
+    Sm70Volta,      // Tesla V100 (sm_70): measured R5 (819K Q8KV, DSpark ON)
+    Sm89Ada,        // RTX 4070 (sm_89): measured R4 (65K/131K/262K Q8KV, DSpark OFF)
+    Sm120Blackwell, // RTX 5060 Ti / Blackwell (sm_120): 36 SM, GDDR7
 };
 
 struct ArchProfile {
@@ -61,9 +62,45 @@ inline ArchProfile select_arch_profile(int cc_major, int cc_minor) {
         return p;
     }
     if (cc_major == 8 && cc_minor == 9) {
+        if (cc_major == 12) {
         ArchProfile p;
+        p.id = ArchId::Sm120Blackwell;
+        p.name = "sm120";
+        p.force_bf16_x_f16 = false;
+        p.full_vram_want_sp = 7;
+        p.hybrid_want_sp_1024 = 5;
+        p.hybrid_want_sp_2048 = 4;
+        p.t1_full_split_mult = 8;
+        p.t1_swa_split_mult = 2;
+        p.pp_stage_mb = 64;
+        p.pp_stage_cnt_pref = 3;
+        p.pp_stage_cnt_core = 2;
+        p.kv_grow_reserve_mib = 112;
+        p.allow_tight_chunk_2048 = true;
+        p.allow_core_chunk_2048 = true;
+        return p;
+    }
+    ArchProfile p;
         p.id = ArchId::Sm89Ada;
         p.name = "sm89";
+        p.force_bf16_x_f16 = false;
+        p.full_vram_want_sp = 7;
+        p.hybrid_want_sp_1024 = 5;
+        p.hybrid_want_sp_2048 = 4;
+        p.t1_full_split_mult = 8;
+        p.t1_swa_split_mult = 2;
+        p.pp_stage_mb = 64;
+        p.pp_stage_cnt_pref = 3;
+        p.pp_stage_cnt_core = 2;
+        p.kv_grow_reserve_mib = 112;
+        p.allow_tight_chunk_2048 = true;
+        p.allow_core_chunk_2048 = true;
+        return p;
+    }
+    if (cc_major == 12) {
+        ArchProfile p;
+        p.id = ArchId::Sm120Blackwell;
+        p.name = "sm120";
         p.force_bf16_x_f16 = false;
         p.full_vram_want_sp = 7;
         p.hybrid_want_sp_1024 = 5;

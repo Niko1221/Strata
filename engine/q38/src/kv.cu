@@ -231,7 +231,7 @@ __global__ void inverse_turbo(const float* in,float* out){
     for(int i=0;i<128;++i)x[i]=in[block*128+i];tqc_cuda_detail::fwht(x,true);
     for(int i=0;i<128;++i)out[block*128+i]=x[i];
 }
-__global__ void apply_gate(float* out,const float* gate){int i=blockIdx.x*256+threadIdx.x;if(i<6144)out[i]/=1+expf(-gate[i]);}
+__global__ void apply_gate(float* out,const float* gate){int i=blockIdx.x*256+threadIdx.x;if(i<6144)out[i]/=1.f+__expf(-gate[i]);}
 __device__ __forceinline__ int smem_swiz(int elem){return elem^((elem&32)>>3);}
 __global__ void spin8_store_q_batch_kernel(const float* in,uint8_t* cache,const float* r,int pos_start,int n_tokens,int ctx,bool q8,int* status){
     __shared__ int early_stop;
@@ -239,18 +239,21 @@ __global__ void spin8_store_q_batch_kernel(const float* in,uint8_t* cache,const 
     const int tok=blockIdx.x;
     const int b=threadIdx.x; // 32 blocks of 32 elems = 1024 elems (4 KV heads * 256)
     if(b==0)early_stop=atomicAdd(status,0);
-    if(b<32){sr[b]=r[b];sr[b+32]=r[b+32];}
+    if(b<32){sr[b]=__ldg(r+b);sr[b+32]=__ldg(r+b+32);}
     __syncthreads();
     if(early_stop||tok>=n_tokens||b>=32)return;
     const float* src=in+size_t(tok)*1024+b*32;
     float rot[32];
+    #pragma unroll
     for(int g=0;g<4;++g){
-        float sv[8];
+        const float4 s0=__ldg(reinterpret_cast<const float4*>(src+g*8));
+        const float4 s1=__ldg(reinterpret_cast<const float4*>(src+g*8+4));
+        const float sv[8]={s0.x,s0.y,s0.z,s0.w,s1.x,s1.y,s1.z,s1.w};
         #pragma unroll
         for(int j=0;j<8;++j){
-            sv[j]=src[g*8+j];
             if(!isfinite(sv[j])){atomicExch(status,1);return;}
         }
+        #pragma unroll
         for(int row=0;row<8;++row){
             float v=0.f;
             #pragma unroll
@@ -340,10 +343,11 @@ __global__ void __launch_bounds__(256) spin8_attend_batch_kernel(
                     p=fmaf(q_rot[s][6],kv1.z,p);p=fmaf(q_rot[s][7],kv1.w,p);
                     #pragma unroll
                     for(int d=16;d>0;d>>=1)p+=__shfl_xor_sync(0xffffffffu,p,d);
-                    const float sc=p*(1.f/16.f);
+                    // FlashAttention-2/3 base-2 log-space softmax: fold log2(e) into 1/sqrt(d_k) so exp becomes 1-op SFU exp2f.
+                    const float sc=p*(1.4426950408889634f/16.f);
                     const float new_mx=fmaxf(mx[s],sc);
-                    const float alpha=(kp==0)?0.f:expf(mx[s]-new_mx);
-                    const float w=expf(sc-new_mx);
+                    const float alpha=(kp==0)?0.f:exp2f(mx[s]-new_mx);
+                    const float w=exp2f(sc-new_mx);
                     denom[s]=fmaf(denom[s],alpha,w);
                     mx[s]=new_mx;
                     acc[s][0]=fmaf(acc[s][0],alpha,w*vv0.x);acc[s][1]=fmaf(acc[s][1],alpha,w*vv0.y);
@@ -360,9 +364,10 @@ __global__ void __launch_bounds__(256) spin8_attend_batch_kernel(
         const int q_idx=warp+s*8;
         const int t=q_idx/6,h=q_idx%6;
         if(t<t_cnt){
+            const float inv_den=1.f/denom[s];
             float norm_acc[8];
             #pragma unroll
-            for(int j=0;j<8;++j)norm_acc[j]=acc[s][j]/denom[s];
+            for(int j=0;j<8;++j)norm_acc[j]=acc[s][j]*inv_den;
             const size_t qoff=size_t(tok_base+t)*6144+size_t(kh*6+h)*256+b;
             const float4 g0=*reinterpret_cast<const float4*>(gate_batch+qoff);
             const float4 g1=*reinterpret_cast<const float4*>(gate_batch+qoff+4);
@@ -373,7 +378,7 @@ __global__ void __launch_bounds__(256) spin8_attend_batch_kernel(
                 float out_val=0.f;
                 #pragma unroll
                 for(int j=0;j<8;++j)out_val=fmaf(sr[j*8+row],norm_acc[j],out_val);
-                const float res=out_val/(1.f+expf(-gv[row]));
+                const float res=out_val/(1.f+__expf(-gv[row]));
                 if(!isfinite(gv[row])||!isfinite(res))atomicExch(status,1);
                 out_v[row]=res;
             }
@@ -442,10 +447,11 @@ __global__ void __launch_bounds__(192) spin8_attend_decode_split_kernel(
             p=fmaf(q_rot[6],kv1.z,p);p=fmaf(q_rot[7],kv1.w,p);
             #pragma unroll
             for(int d=16;d>0;d>>=1)p+=__shfl_xor_sync(0xffffffffu,p,d);
-            const float sc=p*(1.f/16.f);
+            // FlashAttention-2/3 base-2 log-space softmax (mx stored in log2 space for reduce_kernel).
+            const float sc=p*(1.4426950408889634f/16.f);
             const float new_mx=fmaxf(mx,sc);
-            const float alpha=(kp_base==kp_start&&k==0)?0.f:expf(mx-new_mx);
-            const float w=expf(sc-new_mx);
+            const float alpha=(kp_base==kp_start&&k==0)?0.f:exp2f(mx-new_mx);
+            const float w=exp2f(sc-new_mx);
             denom=fmaf(denom,alpha,w);
             mx=new_mx;
             acc[0]=fmaf(acc[0],alpha,w*vv0.x);acc[1]=fmaf(acc[1],alpha,w*vv0.y);
@@ -468,10 +474,10 @@ __global__ void __launch_bounds__(256) spin8_attend_decode_reduce_kernel(
     if(threadIdx.x==0)early_stop=atomicAdd(status,0);
     __syncthreads();
     if(early_stop)return;
-    __shared__ float sacc[256],sr[64];
+    __shared__ float sr[64];
     const int head=blockIdx.x,i=threadIdx.x;
-    const int b=(i>>3)<<3,row=i&7;
-    if(i<64)sr[i]=r[i];
+    const int lane=i&31,sub_base=lane&~7,row=i&7;
+    if(i<64)sr[i]=__ldg(r+i);
     __syncthreads();
     float mx=-INFINITY,denom=0.f,acc=0.f;
     for(int sp=0;sp<n_splits;++sp){
@@ -480,20 +486,23 @@ __global__ void __launch_bounds__(256) spin8_attend_decode_reduce_kernel(
         if(sp_den<=0.f)continue;
         const float sp_mx=src[256];
         const float new_mx=fmaxf(mx,sp_mx);
-        const float alpha=(denom==0.f)?0.f:expf(mx-new_mx);
-        const float beta=expf(sp_mx-new_mx);
+        const float alpha=(denom==0.f)?0.f:exp2f(mx-new_mx);
+        const float beta=exp2f(sp_mx-new_mx);
         denom=fmaf(denom,alpha,beta*sp_den);
         acc=fmaf(acc,alpha,beta*src[i]);
         mx=new_mx;
     }
-    sacc[i]=acc/denom;
-    __syncthreads();
+    // 8-lane sub-warp register shuffle for Spin(8) transpose inverse rotation (eliminates smem sacc[256] + barrier).
+    const float norm_val=acc/denom;
     float out_val=0.f;
     #pragma unroll
-    for(int j=0;j<8;++j)out_val=fmaf(sr[j*8+row],sacc[b+j],out_val);
+    for(int j=0;j<8;++j){
+        const float vj=__shfl_sync(0xffffffffu,norm_val,sub_base+j);
+        out_val=fmaf(sr[j*8+row],vj,out_val);
+    }
     const size_t qoff=size_t(head)*256+i;
-    const float gv=gate[qoff];
-    const float res=out_val/(1.f+expf(-gv));
+    const float gv=__ldg(gate+qoff);
+    const float res=out_val/(1.f+__expf(-gv));
     if(!isfinite(gv)||!isfinite(res))atomicExch(status,1);
     output[qoff]=res;
 }

@@ -4223,6 +4223,9 @@ def engine_args(cfg: dict, exe: str | None = None, *, announce: bool = True) -> 
     if cfg.get("arch") == "qwen38_dense":
         from strata_control.qwen38_dense import arguments
         return arguments(cfg)
+    from serve import inkling_kind
+    if inkling_kind.is_inkling(cfg):
+        return inkling_kind.engine_args(cfg, exe, announce=announce)
     if cfg.get("output_language") not in (None, "", "model-default"):
         raise ValueError("output language decoder profile is unsupported by this native adapter")
     args = native_merged_args(cfg)
@@ -11079,7 +11082,14 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
     tcfg = {}
     tpath = Path(a.tokenizer)
     embedded_template = None
+    from serve import inkling_kind
     dense_native = a.engine == "strata" and cfg.get("arch") == "qwen38_dense"
+    inkling_gguf = (
+        a.engine == "strata"
+        and inkling_kind.is_inkling(cfg)
+        and not (tpath / "vocab.json").exists()
+        and "--model" in (cfg.get("args") or [])
+    )
     if dense_native:
         from strata_control.qwen38_dense import arguments
         dense_args = arguments(cfg)
@@ -11088,9 +11098,16 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
             tok, embedded_template = dense_tokenizer(model_file)
         except ValueError as exc:
             ap.error(str(exc))
-    if a.engine == "strata" and not dense_native and not (tpath / "vocab.json").exists():
+    elif inkling_gguf:
+        ink_args = list(cfg.get("args") or [])
+        model_file = Path(ink_args[ink_args.index("--model") + 1])
+        try:
+            tok, embedded_template = dense_tokenizer(model_file)
+        except ValueError as exc:
+            ap.error(str(exc))
+    if a.engine == "strata" and not dense_native and not inkling_gguf and not (tpath / "vocab.json").exists():
         ap.error(f"the model's tokenizer is missing ({tpath / 'vocab.json'}); run setup again")
-    if not dense_native and (tpath / "vocab.json").exists():
+    if not dense_native and not inkling_gguf and (tpath / "vocab.json").exists():
         import strata_tokenizer as ST
         vocab = json.loads((tpath / "vocab.json").read_text(encoding="utf-8"))
         tokens = [None] * len(vocab)
@@ -11252,7 +11269,7 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
         if swapped:
             print("[strata] this pack's chat template spells the tool-call block differently from the V4.1 model's; "
                   "using the V4.1 template so tool calls come back as real calls", flush=True)
-    svc = Service(engine, tok, ChatTemplate(None, source=embedded_template) if dense_native else ChatTemplate(tpl if tpl.exists() else ROOT / "serve/chat_template.jinja"),
+    svc = Service(engine, tok, ChatTemplate(None, source=embedded_template) if embedded_template is not None else ChatTemplate(tpl if tpl.exists() else ROOT / "serve/chat_template.jinja"),
                   model_name=default_model_name(cfg), vision=vision,
                   sampling_defaults=sampling_defaults,
                   fit_max_tokens=a.fit_max_tokens or (not a.no_fit_max_tokens and cfg.get("fit_max_tokens") is not False),

@@ -244,11 +244,21 @@ void init_once() {
     std::call_once(once, [] { layer_init(); });
 }
 
+// Padé [7/6] rational approximation of tanh(x): max error < 4e-5 on |x|<=5, exact +-1 for |x|>5, ~15x faster than libm std::tanh.
+inline float fast_tanh_f32(float x) noexcept {
+    if (x > 5.0f) return 1.0f;
+    if (x < -5.0f) return -1.0f;
+    const float x2 = x * x;
+    const float num = x * (135135.0f + x2 * (17325.0f + x2 * (378.0f + x2)));
+    const float den = 135135.0f + x2 * (62370.0f + x2 * (3150.0f + 28.0f * x2));
+    return num / den;
+}
+
 // BW-G: how many bytes ahead of the row being computed the row loops request the weights (row_prefetch.hpp).
 int row_pf_setting() {
     static const int v = [] {
         const char* e = std::getenv("STRATA_ROW_PF");
-        return e != nullptr && e[0] != '\0' ? std::atoi(e) : 0;
+        return e != nullptr && e[0] != '\0' ? std::atoi(e) : 2048;
     }();
     return v;
 }
@@ -800,6 +810,8 @@ void native_gu_rows_impl(const NativeFmt& f, const uint8_t* blob, const void* co
             row_prefetch_range(blob + (size_t) (r0 + k) * f.gu_row, f.gu_row, pf_hint);
             row_prefetch_range(blob + f.up_off + (size_t) (r0 + k) * f.gu_row, f.gu_row, pf_hint);
         }
+    const float inv_beta = f.situ ? (1.0f / f.situ_beta) : 0.0f;
+    const float inv_lb = (f.situ && f.situ_linear_beta > 0.f) ? (1.0f / f.situ_linear_beta) : 0.0f;
     for (int r = r0; r < r1; ++r) {
         const uint8_t* gr = blob + (size_t) r * f.gu_row;
         const uint8_t* ur = blob + f.up_off + (size_t) r * f.gu_row;
@@ -819,9 +831,10 @@ void native_gu_rows_impl(const NativeFmt& f, const uint8_t* blob, const void* co
             const float gs = *static_cast<volatile const float*>(&g) * sg;
             const float us = *static_cast<volatile const float*>(&u) * su;
             if (f.situ) {
-                const float tg = f.situ_beta * std::tanh(gs / f.situ_beta);
-                const float tu = f.situ_linear_beta > 0.f ? f.situ_linear_beta * std::tanh(us / f.situ_linear_beta) : us;
-                ff[t][r] = (tg / (1.f + std::exp(-gs))) * tu;
+                const float tg = f.situ_beta * fast_tanh_f32(gs * inv_beta);
+                const float tu = f.situ_linear_beta > 0.f ? f.situ_linear_beta * fast_tanh_f32(us * inv_lb) : us;
+                const float sig = 0.5f * (1.0f + fast_tanh_f32(0.5f * gs));
+                ff[t][r] = (tg * sig) * tu;
             } else {
                 ff[t][r] = (gs / (1.f + std::exp(-gs))) * us;
             }
@@ -836,7 +849,7 @@ void native_down_rows_impl(const NativeFmt& f, const uint8_t* blob, const void* 
     // block instead of once per token; ggml-cpu's dot is single-token.  STRATA_NO_IQ4NL falls back to it.
     static const bool iq4nl_mt = std::getenv("STRATA_NO_IQ4NL") == nullptr;
     static const int mt_min = [] { const char* e = std::getenv("STRATA_IQ_MT_MIN"); return e ? std::atoi(e) : 2; }();
-    static const bool kq = [] { const char* v = std::getenv("STRATA_KQ256"); return v != nullptr && std::atoi(v) != 0; }();
+    static const bool kq = [] { const char* v = std::getenv("STRATA_KQ256"); return v == nullptr || std::atoi(v) != 0; }();
     // Both multi-token kernels below are /arch:AVX2 translation units (kq_avx2.cpp and iq_avx2.cpp),
     // so a CPU without AVX2 has to reach ggml-cpu's vec_dot instead - same reasoning as the gate/up
     // rows above, where `avx512` tested cpu_avx512_ok() and `avx2` did not.

@@ -51,8 +51,12 @@ class ChatTemplate:
         env = ImmutableSandboxedEnvironment(trim_blocks=True, lstrip_blocks=True, extensions=["jinja2.ext.loopcontrols"])
         env.filters["tojson"] = tojson
         env.globals["raise_exception"] = raise_exception
-        self.source = source if source is not None else Path(path).read_text(encoding="utf-8")
+        raw_source = source if source is not None else Path(path).read_text(encoding="utf-8")
+        # HuggingFace transformers uses `{% generation %}...{% endgeneration %}` markers for assistant loss masking.
+        self.source = re.sub(r"\{%-?\s*(?:end)?generation\s*-?%\}", "", raw_source)
         self.template = env.from_string(self.source)
+        from serve import toolformat
+        self._is_inkling = toolformat.tool_format(self.source) == "inkling2"
         self.caps = self._detect_caps()
 
     def render(self, messages: list[dict], tools: list[dict] | None = None, add_generation_prompt: bool = True,
@@ -63,6 +67,10 @@ class ChatTemplate:
                     if i == len(messages) - 1 or os.environ.get("STRATA_KEEP_EMPTY_TURNS") == "1" or not (isinstance(m, dict) and m.get("role") == "assistant"
                                                       and not _text_of(m.get("content")).strip()
                                                       and not _has_image(m.get("content")) and not m.get("tool_calls"))]
+        if self._is_inkling:
+            from serve import inkling_dialect
+            messages = inkling_dialect.prepare_messages(messages)
+            kwargs = inkling_dialect.template_kwargs(kwargs)
         return self.template.render(messages=messages, tools=tools, add_generation_prompt=add_generation_prompt,
                                     **kwargs)
 
@@ -77,6 +85,15 @@ class ChatTemplate:
                 # discovery still answers for the others, and the start-up goes on.
                 LOGGER.debug("chat template capability probe failed: %s", exc, exc_info=True)
                 return ""
+
+        if self._is_inkling:
+            return {
+                "supports_tools": True,
+                "supports_tool_calls": True,
+                "supports_system_role": True,
+                "supports_parallel_tool_calls": True,
+                "supports_preserve_reasoning": False,
+            }
 
         user = {"role": "user", "content": "strata_caps_user"}
         tools = [{"name": f"strata_caps_call_{i}", "description": "strata_caps_description",
@@ -2966,10 +2983,46 @@ class JsonOutputParser(OutputParser):
                          declared_only=declared_only, deferred=deferred)
 
 
+class InklingOutputParser(JsonOutputParser):
+    """Streaming parser for Inkling-2-Mini channel tokens (`<|message_model|>`, `<|content_thinking|>`,
+    `<|content_text|>`, `<|content_invoke_tool_json|>`, `<|end_message|>`), translating into JsonOutputParser."""
+
+    def __init__(self, thinking: bool = True, tools: list[dict] | None = None, stream_tools: bool = False,
+                 recover: bool = False, declared_only: bool = False, deferred: bool = False):
+        super().__init__(thinking=False, tools=tools, stream_tools=stream_tools, recover=True,
+                         declared_only=declared_only, deferred=deferred)
+        from serve.inkling_dialect import InklingDialect
+        self._dialect = InklingDialect()
+        self._inkling_thinking = thinking
+
+    def _emit_channels(self, channels: list[tuple[str, str]]) -> list[Event]:
+        out: list[Event] = []
+        for kind, chunk in channels:
+            if not chunk:
+                continue
+            if kind == "reasoning":
+                if self._inkling_thinking:
+                    out.append(Event("reasoning", chunk))
+            else:
+                out.extend(super().feed(chunk))
+        return out
+
+    def feed(self, text: str) -> list[Event]:
+        return self._emit_channels(self._dialect.feed_channels(text, final=False))
+
+    def finish(self) -> list[Event]:
+        out = self._emit_channels(self._dialect.feed_channels("", final=True))
+        out.extend(super().finish())
+        return out
+
+
 def parser_for_template(source: str | None):
     """The OutputParser class for a chat template's text, by the tool-call form the template documents (serve/toolformat.py):
-    the JSON form gets JsonOutputParser; the XML form every Strata model ships with, templates without tools, and forms nothing
-    here reads keep OutputParser (the same class as before this existed).  DeepSeek's DSML parser is chosen by the model family
-    (Service.set_family), not here."""
+    the JSON form gets JsonOutputParser; the Inkling-2-Mini channel form gets InklingOutputParser; the XML form every Strata
+    model ships with, templates without tools, and forms nothing here reads keep OutputParser. DeepSeek's DSML parser is chosen
+    by the model family (Service.set_family), not here."""
     from serve import toolformat
-    return JsonOutputParser if toolformat.tool_format(source or "") == "json" else OutputParser
+    fmt = toolformat.tool_format(source or "")
+    if fmt == "inkling2":
+        return InklingOutputParser
+    return JsonOutputParser if fmt == "json" else OutputParser

@@ -448,11 +448,12 @@ __device__ __forceinline__ float vec_dot_q5_K_q8_1(const void* __restrict__ vbq,
 __device__ __forceinline__ float vec_dot_q5_0_q8_1(const void* __restrict__ vbq, const block_q8_1* __restrict__ bq8_1,
                                                    const int& kbx, const int& iqs) {
     const block_q5_0* bq5_0 = (const block_q5_0*) vbq + kbx;
+    const int qh_all = get_int_b2(bq5_0->qh, 0);
     int sumi = 0, sumu = 0;
 #pragma unroll
     for (int i = 0; i < VDR_Q5_0; ++i) {
         const int vl = get_int_b2(bq5_0->qs, iqs + i);
-        const int vh = get_int_b2(bq5_0->qh, 0) >> (4 * (iqs + i));
+        const int vh = qh_all >> (4 * (iqs + i));
         const int u0 = get_int_b4(bq8_1->qs, iqs + i), u1 = get_int_b4(bq8_1->qs, iqs + i + QI5_0);
         int vi0 = (vl >> 0) & 0x0F0F0F0F;
         vi0 |= (vh << 4) & 0x00000010;
@@ -2208,14 +2209,26 @@ __global__ void swiglu_entries_kernel(const float* __restrict__ gate, const floa
     h[i] = (g / (1.0f + __expf(-g))) * up[i];
 }
 
+__device__ __forceinline__ float fast_tanh_situ(float x) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 750
+    float y;
+    asm("tanh.approx.f32 %0, %1;" : "=f"(y) : "f"(x));
+    return y;
+#else
+    return tanhf(x);
+#endif
+}
+
 __global__ void situ_entries_kernel(const float* __restrict__ gate, const float* __restrict__ up, float* __restrict__ h,
                                     long long n, float beta, float lb) {
     const long long i = (long long) blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n) return;
+    const float inv_beta = 1.0f / beta;
+    const float inv_lb = lb > 0.0f ? (1.0f / lb) : 0.0f;
     const float g = gate[i];
     const float u = up[i];
-    const float tg = beta * tanhf(g / beta) * (1.0f / (1.0f + __expf(-g)));
-    const float tu = lb > 0.0f ? lb * tanhf(u / lb) : u;
+    const float tg = beta * fast_tanh_situ(g * inv_beta) * (1.0f / (1.0f + __expf(-g)));
+    const float tu = lb > 0.0f ? lb * fast_tanh_situ(u * inv_lb) : u;
     h[i] = tg * tu;
 }
 
@@ -2894,12 +2907,14 @@ __global__ void __launch_bounds__(256) situ_q8_1_entries_kernel(const float* __r
                                                                  float beta, float lb,
                                                                  block_q8_1* __restrict__ hq) {
     const long long lo = (long long) grp_start[0] * n_ff, hi = (long long) grp_start[*n_groups] * n_ff;
+    const float inv_beta = 1.0f / beta;
+    const float inv_lb = lb > 0.0f ? (1.0f / lb) : 0.0f;
     for (long long i = lo + (long long) blockIdx.x * blockDim.x + threadIdx.x; i < hi;
          i += (long long) gridDim.x * blockDim.x) {
         const float g = gate[i];
         const float u = up[i];
-        const float tg = beta * tanhf(g / beta) * (1.0f / (1.0f + __expf(-g)));
-        const float tu = lb > 0.0f ? lb * tanhf(u / lb) : u;
+        const float tg = beta * fast_tanh_situ(g * inv_beta) * (1.0f / (1.0f + __expf(-g)));
+        const float tu = lb > 0.0f ? lb * fast_tanh_situ(u * inv_lb) : u;
         const float h = tg * tu;
         q8_1_store(h, hq, i);
     }

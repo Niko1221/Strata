@@ -4575,58 +4575,62 @@ __global__ void k_mul_sigmoid(float* __restrict__ att, const float* __restrict__
     if (i < n) att[i] *= sigmf(gate[i]);
 }
 
+/// Order-preserving IEEE-754 float -> uint32 mapping for branchless uint64_t top-k reduction.
+__device__ __forceinline__ uint32_t ink_float_to_ordered_u32(float f) {
+    const uint32_t u = __float_as_uint(f);
+    return (u & 0x80000000u) ? ~u : (u | 0x80000000u);
+}
+
 /// MoE router for Inkling2: sigmoid(logits) + exp_probs_b -> top-k -> normalize weights -> * scale.
+/// Evolved branchless uint64_t key-pack (score, 127 - e) for zero-divergence warp reduction.
 /// n_exp <= 128, top_k <= 16. 1 warp (32 threads) per token (grid T).
 __global__ void k_route_inkling2(const float* __restrict__ logits, const float* __restrict__ bias,
                                  int32_t* __restrict__ ids, float* __restrict__ ewts,
                                  int n_exp, int top_k, float scale,
                                  uint32_t* __restrict__ d_hits = nullptr) {
     const int t = blockIdx.x, lane = threadIdx.x;
-    float p[4], s[4];
+    uint64_t key[4];
+    float p[4];
 #pragma unroll
     for (int j = 0; j < 4; ++j) {
         const int e = j * 32 + lane;
         if (e < n_exp) {
             const float pr = sigmf(logits[(size_t) t * n_exp + e]);
+            const float sc = pr + (bias ? bias[e] : 0.0f);
             p[j] = pr;
-            s[j] = pr + (bias ? bias[e] : 0.0f);
+            key[j] = (uint64_t(ink_float_to_ordered_u32(sc)) << 8) | uint64_t(127 - e);
         } else {
             p[j] = 0.0f;
-            s[j] = -1e30f;
+            key[j] = 0ull;
         }
     }
     float wlocal[16];
     float wsum = 0.0f;
     for (int k = 0; k < top_k; ++k) {
-        float bv = s[0];
-        int be = lane;
+        uint64_t bk = key[0];
         float bp = p[0];
-#pragma unroll
-        for (int j = 1; j < 4; ++j) {
-            if (s[j] > bv) {
-                bv = s[j];
-                be = j * 32 + lane;
-                bp = p[j];
-            }
-        }
+        if (key[1] > bk) { bk = key[1]; bp = p[1]; }
+        if (key[2] > bk) { bk = key[2]; bp = p[2]; }
+        if (key[3] > bk) { bk = key[3]; bp = p[3]; }
 #pragma unroll
         for (int o = 16; o > 0; o >>= 1) {
-            const float ov = __shfl_xor_sync(0xffffffffu, bv, o);
-            const int oe = __shfl_xor_sync(0xffffffffu, be, o);
+            const uint32_t lo = __shfl_xor_sync(0xffffffffu, uint32_t(bk), o);
+            const uint32_t hi = __shfl_xor_sync(0xffffffffu, uint32_t(bk >> 32), o);
+            const uint64_t ok = (uint64_t(hi) << 32) | lo;
             const float op = __shfl_xor_sync(0xffffffffu, bp, o);
-            if (ov > bv || (ov == bv && oe < be)) {
-                bv = ov;
-                be = oe;
+            if (ok > bk) {
+                bk = ok;
                 bp = op;
             }
         }
+        const int be = 127 - int(bk & 0xFFu);
         if (lane == 0) {
             ids[(size_t) t * top_k + k] = be;
             if (d_hits) atomicAdd(&d_hits[be], 1u);
             wlocal[k] = bp;
             wsum += bp;
         }
-        if ((be & 31) == lane) s[be >> 5] = -1e30f;
+        if ((be & 31) == lane) key[be >> 5] = 0ull;
     }
     if (lane == 0) {
         const float denom = fmaxf(wsum, 6.103515625e-5f);
@@ -4644,10 +4648,19 @@ __global__ void k_combine_experts(const float* __restrict__ eparts, const float*
         const int i4 = blockIdx.x * blockDim.x + threadIdx.x;
         if (i4 >= n4) return;
         float sx = 0.0f, sy = 0.0f, sz = 0.0f, sw = 0.0f;
-        for (int k = 0; k < top_k; ++k) {
-            const float w = ewts[base + k];
-            const float4 v = reinterpret_cast<const float4*>(eparts + (base + k) * N)[i4];
-            sx += w * v.x; sy += w * v.y; sz += w * v.z; sw += w * v.w;
+        if (top_k == 8) {
+#pragma unroll
+            for (int k = 0; k < 8; ++k) {
+                const float w = __ldg(ewts + base + k);
+                const float4 v = __ldg(reinterpret_cast<const float4*>(eparts + (base + k) * N) + i4);
+                sx = fmaf(w, v.x, sx); sy = fmaf(w, v.y, sy); sz = fmaf(w, v.z, sz); sw = fmaf(w, v.w, sw);
+            }
+        } else {
+            for (int k = 0; k < top_k; ++k) {
+                const float w = __ldg(ewts + base + k);
+                const float4 v = __ldg(reinterpret_cast<const float4*>(eparts + (base + k) * N) + i4);
+                sx = fmaf(w, v.x, sx); sy = fmaf(w, v.y, sy); sz = fmaf(w, v.z, sz); sw = fmaf(w, v.w, sw);
+            }
         }
         reinterpret_cast<float4*>(out + (size_t) t * N)[i4] = make_float4(sx, sy, sz, sw);
         return;
@@ -4702,40 +4715,60 @@ __global__ void k_group_experts(const int32_t* __restrict__ ids, const int32_t* 
                                 int32_t* __restrict__ n_groups, int32_t* __restrict__ ent_dst,
                                 int32_t* __restrict__ ent_tok, int top_k,
                                 uint32_t* __restrict__ d_hits = nullptr) {
-    // 1 block of 128 threads over all n_ent <= 512*8? For T <= 512, n_ent <= 4096.
     __shared__ int32_t cnt[128];
     __shared__ int32_t slot_id[128];
     __shared__ int32_t cur_off[128];
-    if (threadIdx.x < n_exp) {
-        cnt[threadIdx.x] = 0;
-        slot_id[threadIdx.x] = n_slots > 0 ? slot_of[threadIdx.x] : -1;
+    __shared__ int32_t warp_ng[4];
+    __shared__ int32_t warp_off[4];
+    const int tid = threadIdx.x;
+    const int warp = tid >> 5, lane = tid & 31;
+    if (tid < n_exp) {
+        cnt[tid] = 0;
+        slot_id[tid] = n_slots > 0 ? slot_of[tid] : -1;
     }
     __syncthreads();
-    for (int e = threadIdx.x; e < n_ent; e += blockDim.x) {
+    for (int e = tid; e < n_ent; e += blockDim.x) {
         const int x = ids[e];
         if (slot_id[x] >= 0) atomicAdd(&cnt[x], 1);
     }
     __syncthreads();
-    if (d_hits && threadIdx.x < n_exp && cnt[threadIdx.x] > 0) {
-        d_hits[threadIdx.x] += (uint32_t) cnt[threadIdx.x];
+    const int c = (tid < n_exp) ? cnt[tid] : 0;
+    if (d_hits && c > 0) {
+        d_hits[tid] += (uint32_t) c;
     }
-    if (threadIdx.x == 0) {
-        int ng = 0;
-        int off = 0;
-        for (int x = 0; x < n_exp; ++x) {
-            if (cnt[x] > 0) {
-                grp_ptr[ng] = (unsigned long long) (blobs + (size_t) slot_id[x] * stride);
-                grp_start[ng] = off;
-                cur_off[x] = off;
-                off += cnt[x];
-                ++ng;
-            }
-        }
-        grp_start[ng] = off;
-        *n_groups = ng;
+    const int active = (c > 0) ? 1 : 0;
+    const uint32_t mask = __ballot_sync(0xffffffffu, active);
+    const int w_ng = __popc(mask & ((1u << lane) - 1u));
+    int w_c = c;
+#pragma unroll
+    for (int d = 1; d < 32; d <<= 1) {
+        const int prev = __shfl_up_sync(0xffffffffu, w_c, d);
+        if (lane >= d) w_c += prev;
+    }
+    if (lane == 31) {
+        warp_ng[warp] = __popc(mask);
+        warp_off[warp] = w_c;
     }
     __syncthreads();
-    for (int e = threadIdx.x; e < n_ent; e += blockDim.x) {
+    if (warp == 0 && lane == 0) {
+        const int ng0 = warp_ng[0], ng1 = warp_ng[1], ng2 = warp_ng[2], ng3 = warp_ng[3];
+        warp_ng[0] = 0; warp_ng[1] = ng0; warp_ng[2] = ng0 + ng1; warp_ng[3] = ng0 + ng1 + ng2;
+        const int o0 = warp_off[0], o1 = warp_off[1], o2 = warp_off[2], o3 = warp_off[3];
+        warp_off[0] = 0; warp_off[1] = o0; warp_off[2] = o0 + o1; warp_off[3] = o0 + o1 + o2;
+        const int tot_ng = ng0 + ng1 + ng2 + ng3;
+        grp_start[tot_ng] = o0 + o1 + o2 + o3;
+        *n_groups = tot_ng;
+    }
+    __syncthreads();
+    if (active) {
+        const int ng = warp_ng[warp] + w_ng;
+        const int off = warp_off[warp] + (w_c - c);
+        grp_ptr[ng] = (unsigned long long) (blobs + (size_t) slot_id[tid] * stride);
+        grp_start[ng] = off;
+        cur_off[tid] = off;
+    }
+    __syncthreads();
+    for (int e = tid; e < n_ent; e += blockDim.x) {
         const int x = ids[e];
         if (slot_id[x] >= 0) {
             const int pos = atomicAdd(&cur_off[x], 1);
@@ -4950,6 +4983,47 @@ __global__ void k_swa_f16_bak(SwaLayerPtrs swa, uint8_t* __restrict__ bak, int k
     for (int i = threadIdx.x; i < kv_dim; i += blockDim.x) {
         if (restore) { dkc[i] = bkc[i]; dvc[i] = bvc[i]; }
         else { bkc[i] = dkc[i]; bvc[i] = dvc[i]; }
+    }
+}
+
+/// Elastic Looped Transformer (ELT, arXiv:2604.09168) loop-exit convergence metric:
+/// computes delta = ||cur - prev||_2 / (||cur||_2 + 1e-6) in a single 256-thread CTA using float4 + warp shuffles,
+/// and updates prev <- cur in-place so zero extra memcpy is needed between passes.
+__global__ void __launch_bounds__(256) k_elt_rel_delta(const float* __restrict__ cur,
+                                                       float* __restrict__ prev,
+                                                       float* __restrict__ out_delta,
+                                                       int N) {
+    __shared__ float s_diff[8];
+    __shared__ float s_norm[8];
+    const int tid = threadIdx.x;
+    const int n4 = N >> 2;
+    const float4* c4 = reinterpret_cast<const float4*>(cur);
+    float4* p4 = reinterpret_cast<float4*>(prev);
+    float d_acc = 0.0f;
+    float n_acc = 0.0f;
+    for (int i = tid; i < n4; i += 256) {
+        const float4 cv = __ldg(c4 + i);
+        const float4 pv = p4[i];
+        p4[i] = cv;
+        const float dx = cv.x - pv.x, dy = cv.y - pv.y, dz = cv.z - pv.z, dw = cv.w - pv.w;
+        d_acc = fmaf(dx, dx, fmaf(dy, dy, fmaf(dz, dz, fmaf(dw, dw, d_acc))));
+        n_acc = fmaf(cv.x, cv.x, fmaf(cv.y, cv.y, fmaf(cv.z, cv.z, fmaf(cv.w, cv.w, n_acc))));
+    }
+#pragma unroll
+    for (int off = 16; off > 0; off >>= 1) {
+        d_acc += __shfl_xor_sync(0xffffffffu, d_acc, off);
+        n_acc += __shfl_xor_sync(0xffffffffu, n_acc, off);
+    }
+    if ((tid & 31) == 0) {
+        s_diff[tid >> 5] = d_acc;
+        s_norm[tid >> 5] = n_acc;
+    }
+    __syncthreads();
+    if (tid == 0) {
+        float dt = 0.0f, nt = 0.0f;
+#pragma unroll
+        for (int w = 0; w < 8; ++w) { dt += s_diff[w]; nt += s_norm[w]; }
+        out_delta[0] = sqrtf(dt) / (sqrtf(nt) + 1e-6f);
     }
 }
 

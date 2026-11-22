@@ -680,6 +680,8 @@ struct PrefillGemmWorkspace::Impl {
     size_t max_tile_rows_alloc = 0;
     half* y_tile_fp16 = nullptr;
     float* act_scales = nullptr;
+    BlockQ8_1* act_q8 = nullptr;
+    int act_q8_max_tokens = 0;
 
     __nv_fp8_e4m3* act_fp8 = nullptr;
     __nv_fp8_e4m3* w_fp8 = nullptr;
@@ -761,6 +763,10 @@ void PrefillGemmWorkspace::init(int max_tokens, int max_k, size_t tile_buf_bytes
         alloc_dev(&impl_->tile_buf[0], tile_buf_bytes);
         alloc_dev(&impl_->act_fp16, impl_->act_elems * sizeof(half));
         alloc_dev(&impl_->act_scales, static_cast<size_t>(max_tokens) * sizeof(float));
+        impl_->act_q8_max_tokens = std::min(max_tokens, 16);
+        if (impl_->act_q8_max_tokens >= 2 && (max_k / 32) > 0) {
+            alloc_dev(&impl_->act_q8, static_cast<size_t>(impl_->act_q8_max_tokens) * static_cast<size_t>(max_k / 32) * sizeof(BlockQ8_1));
+        }
         if (!impl_->use_fp8) {
             impl_->max_tile_rows_alloc = std::max<size_t>(16, tile_buf_bytes / (5120u * sizeof(half)));
             alloc_dev(&impl_->y_tile_fp16, static_cast<size_t>(max_tokens) * impl_->max_tile_rows_alloc * sizeof(half));
@@ -826,6 +832,7 @@ void PrefillGemmWorkspace::release() {
     }
     if (impl_->dequant_stream) cudaStreamDestroy(impl_->dequant_stream);
     for (void* p : {impl_->lt_workspace, static_cast<void*>(impl_->w_scales), static_cast<void*>(impl_->act_scales),
+                    static_cast<void*>(impl_->act_q8),
                     static_cast<void*>(impl_->w_fp8), static_cast<void*>(impl_->act_fp8),
                     static_cast<void*>(impl_->y_tile_fp16), static_cast<void*>(impl_->act_fp16),
                     static_cast<void*>(impl_->tile_buf[0]), static_cast<void*>(impl_->tile_buf[1])}) {
@@ -859,6 +866,10 @@ void PrefillGemmWorkspace::prepare_activation(const float* x_fp32, int n_tokens,
     impl_->prepared_x_fp32 = x_fp32;
     impl_->prepared_tokens = n_tokens;
     impl_->prepared_k = K;
+    if (impl_->act_q8 && !impl_->force_fp32_matvec && !fp16_gemv_requested() &&
+        n_tokens >= 2 && n_tokens <= impl_->act_q8_max_tokens && (K % 32) == 0) {
+        quantize_q8_1_batch(x_fp32, impl_->act_q8, n_tokens, K, stream);
+    }
     if (n_tokens < 4 || impl_->force_fp32_matvec) return;
 
     if (!impl_->use_fp8) {
@@ -897,6 +908,19 @@ void PrefillGemmWorkspace::matmul_batch_prepared(const StrataQuantTensor& weight
     const int K = weight.ne0, N = weight.ne1;
     if (!impl_->prepared_x_fp32 || n_tokens != impl_->prepared_tokens || K != impl_->prepared_k) {
         throw std::runtime_error("matmul_batch_prepared shape mismatch with prepare_activation");
+    }
+
+    const int wtype = static_cast<int>(weight.type);
+    if (impl_->act_q8 && !impl_->force_fp32_matvec && !fp16_gemv_requested() &&
+        n_tokens >= 2 && n_tokens <= impl_->act_q8_max_tokens && matvec_q8_1_batch_supported(wtype)) {
+        const bool aligned_ok = (wtype == 8)
+            ? ((K % 32) == 0)
+            : ((wtype == 14) ? ((K % 256) == 0)
+                             : (((K % 256) == 0) && ((reinterpret_cast<uintptr_t>(weight.d_data) & 15u) == 0u) && ((weight.row_bytes & 15u) == 0u)));
+        if (aligned_ok) {
+            matvec_q8_1_batch(wtype, weight.d_data, impl_->act_q8, y_fp32, K, N, n_tokens, stream);
+            return;
+        }
     }
 
     if ((n_tokens < 4 || impl_->force_fp32_matvec) && !fp16_gemv_requested()) {
@@ -1079,7 +1103,7 @@ void PrefillGemmWorkspace::matmul_batch(const StrataQuantTensor& weight, const f
         throw std::runtime_error("invalid matmul_batch arguments");
     }
     const int K = weight.ne0, N = weight.ne1;
-    if (n_tokens < 4 || !impl_ || impl_->force_fp32_matvec) {
+    if (n_tokens < 2 || !impl_ || impl_->force_fp32_matvec) {
         if (impl_) impl_->stats.matvec_fallback_calls += static_cast<uint64_t>(n_tokens);
         for (int t = 0; t < n_tokens; ++t) {
             matvec(static_cast<int>(weight.type), weight.d_data,
