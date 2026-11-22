@@ -83,7 +83,7 @@ int main(int argc, char** argv) {
         }
         bool lowbit = false;   // the 3-bit formats are the ones with a codebook
         for (int i = 0; i < k::ple_format_count(); ++i)
-            lowbit = lowbit || (k::ple_formats()[i].needs_codebook && std::strcmp(k::ple_formats()[i].name, expect) == 0);
+            lowbit = lowbit || (k::ple_formats()[i].codebook_levels > 0 && std::strcmp(k::ple_formats()[i].name, expect) == 0);
         const double cfloor = lowbit ? 0.9 : 0.98;
         std::printf("IQ4_NL table, same rows: correlation min %.4f (floor %.2f for %s), error vs %s %.1f%% mean (%d non-zero rows)\n",
                     cmin, cfloor, expect, expect, 100 * rsum / (counted ? counted : 1), counted);

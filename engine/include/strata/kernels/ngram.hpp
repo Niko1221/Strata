@@ -60,15 +60,16 @@ inline constexpr int PLE_ROW_BYTES_MAX = PLE_ROW_BYTES_BF16;             // the 
 /// The table-wide values a format's rows are decoded with, read from the GGUF's metadata by `PleTable::open`.
 struct PleParams {
     float scale = 1.0f;        ///< `strata.ple.scale`: F8_E4M3, NVFP4, C3 and C2s
-    float codebook[8] = {};    ///< `strata.ple.codebook`: the 8 levels of the 3-bit codes (C4, C3, C2s)
+    float codebook[16] = {};   ///< `strata.ple.codebook`: the levels of the low-bit codes (16 for C1, 8 for C2-C4, 4 for C6)
 };
 
 /// THE FORMATS OF THE TABLE, ONE ROW EACH. A table type is one entry here (its GGUF type name, the bytes of one
 /// 160-value row, how to turn a row into floats) and nothing else: `PleTable::open`, `format()`, the reader's row size,
 /// the error string and the buffers' size all read this list, so a new format cannot be in one switch and missing from
-/// another. A row is always `PLE_HEAD_DIM` = 160 values = 5 blocks of 32 for the block formats. C4, C3 and C2s are the
-/// 3-bit rows of `strata/kernels/ple_lowbit.hpp` (62, 65 and 70 B; tools/ple_lowbit_emulate.py --native).
-enum class PleFormat : uint8_t { IQ4_NL, Q5_0, F8_E4M3, Q5_1, Q8_0, Q4_0, BF16, NVFP4, C4, C3, C2s };
+/// another. A row is always `PLE_HEAD_DIM` = 160 values = 5 blocks of 32 for the block formats. C4, C3, C2s, C1, C2 and
+/// C6 are the low-bit rows of `strata/kernels/ple_lowbit.hpp` (62, 65, 70, 82, 70 and 50 B; tools/ple_lowbit_emulate.py
+/// --native).
+enum class PleFormat : uint8_t { IQ4_NL, Q5_0, F8_E4M3, Q5_1, Q8_0, Q4_0, BF16, NVFP4, C4, C3, C2s, C1, C2, C6 };
 
 struct PleFormatInfo {
     PleFormat id;
@@ -77,10 +78,10 @@ struct PleFormatInfo {
     uint32_t row_bytes;        ///< bytes of one 160-value row in the file
     bool needs_scale;          ///< the table has one scale in the GGUF metadata (`strata.ple.scale`): F8_E4M3, NVFP4, C3, C2s
     void (*dequant)(const uint8_t* row, const PleParams& p, float* out160);
-    /// I8 tables only: the `strata.ple.format` value that names this format (f8_e4m3, nvfp4x16, c4, c3, c2s). The
-    /// tensor's ne0 is then the row's byte count (160 for FP8, which is also its value count).
+    /// I8 tables only: the `strata.ple.format` value that names this format (f8_e4m3, nvfp4x16, c4, c3, c2s, c1, c2,
+    /// c6). The tensor's ne0 is then the row's byte count (160 for FP8, which is also its value count).
     const char* marker;
-    bool needs_codebook;       ///< the table has an 8-level codebook in the GGUF metadata (`strata.ple.codebook`)
+    int codebook_levels;       ///< the levels of the codebook in the GGUF metadata (`strata.ple.codebook`); 0: none
 };
 
 /// Every format, in the order of `PleFormat`; `ple_format_count()` entries.

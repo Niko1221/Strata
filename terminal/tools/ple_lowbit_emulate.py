@@ -1,30 +1,36 @@
-"""tools/ple_lowbit_emulate.py - emulate a 3-bit PLE n-gram table as a Q8_0 table-only GGUF, to measure its accuracy by teacher forcing,
-or (--native) write it in the 3-bit format itself, which the engine reads (PLE formats C4, C3, C2s).
+"""tools/ple_lowbit_emulate.py - emulate a low-bit PLE n-gram table as a Q8_0 table-only GGUF, to measure its accuracy by teacher
+forcing, or (--native) write it in the low-bit format itself, which the engine reads (PLE formats C1, C2, C2s, C3, C4, C6).
 
     python tools/ple_lowbit_emulate.py --format c4 --src <IQ4_NL shard 2 .gguf> --out <c4.gguf> [--rows A:B] [--workers N] [--native]
 
 The candidates (docs: memory-goal/ple-representation.md section 4), all derived from B's IQ4_NL values:
-    c4   3-bit Lloyd codebook, one fp16 scale per 160-value row            62 B/row
-    c3   3-bit Lloyd codebook, 32-value blocks, E4M3 scale x one F32 table scale   65 B/row
+    c1   4-bit IQ4_NL grid (kvalues / 127, not fitted), one fp16 scale per 160-value row   82 B/row
+    c2   3-bit Lloyd codebook, 32-value blocks, fp16 scale                  70 B/row
     c2s  3-bit Lloyd codebook, 16-value blocks, E4M3 scale x one F32 table scale   70 B/row
+    c3   3-bit Lloyd codebook, 32-value blocks, E4M3 scale x one F32 table scale   65 B/row
+    c4   3-bit Lloyd codebook, one fp16 scale per 160-value row            62 B/row
+    c6   2-bit Lloyd codebook, 32-value blocks, fp16 scale                  50 B/row (the doc's "16- or 32-value blocks":
+         32 with fp16, the variant both of its NMSE figures were computed with; 16 with E4M3 has only the one vs B)
 Per row: decode IQ4_NL exactly as ggml/the engine does (ngram.cpp:139-170), quantize to the format, dequantize, and encode the
 dequantized values as Q8_0 (ngram.cpp:238), which the engine already reads through --ple-gguf as a table-only file
 (ngram.cpp:259-267). Q8_0 adds a small rounding of its own (about 3e-5 NMSE); it is reported separately.
 
 Quantizer = the one that produced the doc's NMSE figures: the block scale comes from a local search around the max-abs element
 mapped to either end of the grid (IQ4_NL-like, +-NTRY steps), then the least-squares scale, rounded to the scale type; the grid is
-a Lloyd-Max fit (8 levels, 30 iterations) on block-max-normalized values sampled over the whole table with a fixed seed.
+a Lloyd-Max fit (2^bits levels, 30 iterations) on block-max-normalized values sampled over the whole table with a fixed seed
+(c1 keeps IQ4_NL's own grid, as the doc's C1 did).
 Stdout reports the NMSE against the IQ4_NL values; the codebook is saved as <out>.codebook.json and can be reused with --codebook.
 
---native writes the same quantizer's codes and scales packed (engine/include/strata/kernels/ple_lowbit.hpp): 60 B of 3-bit codes,
-then one fp16 (c4) or one E4M3 byte per block (c3, c2s), as I8 bytes [row bytes, rows] marked strata.ple.format = c4/c3/c2s with
-strata.ple.codebook (8 F32) and, for c3/c2s, strata.ple.scale (the F32 table scale). Every chunk is decoded back as the engine
+--native writes the same quantizer's codes and scales packed (engine/include/strata/kernels/ple_lowbit.hpp): 20 x bits bytes of
+codes (a little-endian bit stream), then one fp16 per block (c1, c2, c4, c6) or one E4M3 byte per block (c3, c2s), as I8 bytes
+[row bytes, rows] marked strata.ple.format = <format> with strata.ple.codebook (2^bits F32) and, for c3/c2s, strata.ple.scale
+(the F32 table scale). Every chunk is decoded back as the engine
 decodes it and must give the quantizer's floats bit for bit. The Q8_0 emulation stores those floats after Q8_0's own rounding
 (about 2.5e-5 NMSE more), so a native table is close to its emulation but not bit identical to it. With the same --seed and
 --ntry the codebook fit is the same; --codebook <emulation>.codebook.json (e.g. ple-c4-q8.gguf.codebook.json for c4) reuses
 the screened grid explicitly. It also writes <out>.ref.bin, about 4096 of its rows with those floats (int32 n,
 uint32 rows[n], float32 values[n][160]; rows numbered in the output table): the reference src/kernels/ple_fp8_parity.cpp
-checks the engine's reads against (PLE_EXPECT_FORMAT=C4|C3|C2s).
+checks the engine's reads against (PLE_EXPECT_FORMAT=C1|C2|C2s|C3|C4|C6).
 """
 import argparse
 import json
@@ -45,14 +51,20 @@ GGML_Q8_0, GGML_I8 = 8, 24
 ALIGN = 32
 KV_IQ4NL = np.array([-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113], np.float32)  # ngram.cpp:134
 E4M3_MAX = 448.0
-# name -> (values per scale block, scale kind, scale bytes per row, 3-bit code bytes per row)
-FORMATS = {"c4": (160, "f16", 2), "c3": (32, "e4m3", 5), "c2s": (16, "e4m3", 10)}
-CODE_BYTES = DIM * 3 // 8                    # 60: every candidate stores 160 x 3 bits
+# name -> (values per scale block, scale kind, scale bytes per row)
+FORMATS = {"c4": (160, "f16", 2), "c3": (32, "e4m3", 5), "c2s": (16, "e4m3", 10),
+           "c1": (160, "f16", 2), "c2": (32, "f16", 10), "c6": (32, "f16", 10)}
+BITS = {"c1": 4, "c6": 2}                    # bits a code; 3 for the others (60 B of codes a row)
+FIXED_GRID = {"c1": KV_IQ4NL / np.float32(127)}   # C1 keeps IQ4_NL's grid (the doc's "4b_iq4nl_b160_f16"); the rest fit Lloyd
 SCALE_HEADROOM = 256.0                       # table scale T = max block scale / 256, so E4M3 (max 448) has 1.75x headroom
 
 
+def bits_of(fmt):
+    return BITS.get(fmt, 3)
+
+
 def row_bytes(fmt):
-    return CODE_BYTES + FORMATS[fmt][2]
+    return DIM * bits_of(fmt) // 8 + FORMATS[fmt][2]
 
 
 # ---------------------------------------------------------------- IQ4_NL decode, Q8_0 encode/decode
@@ -150,12 +162,13 @@ def quantize(Z, grid, bs, scale_kind, table_scale, ntry):
 
 
 def pack_native(codes, scales, cb):
-    """quantize()'s codes (n, 160) and scales (n, 160/block) -> (n, row_bytes) uint8, the engine's row (ple_lowbit.hpp)."""
-    n = codes.shape[0]
-    w = np.bitwise_or.reduce(codes.reshape(n, 20, 8).astype(np.uint32) << (3 * np.arange(8, dtype=np.uint32)), axis=2)
-    out = [(w[:, :, None] >> np.array([0, 8, 16], np.uint32) & 255).astype(np.uint8).reshape(n, CODE_BYTES)]
+    """quantize()'s codes (n, 160) and scales (n, 160/block) -> (n, row_bytes) uint8, the engine's row (ple_lowbit.hpp):
+    8 codes of cb["bits"] (default 3) bits in that many bytes, a little-endian word each, then the scales."""
+    n, bits = codes.shape[0], cb.get("bits", 3)
+    w = np.bitwise_or.reduce(codes.reshape(n, 20, 8).astype(np.uint32) << (bits * np.arange(8, dtype=np.uint32)), axis=2)
+    out = [(w[:, :, None] >> (8 * np.arange(bits, dtype=np.uint32)) & 255).astype(np.uint8).reshape(n, 20 * bits)]
     if cb["scale"] == "f16":
-        out.append(scales.astype("<f2").view(np.uint8).reshape(n, 2))
+        out.append(scales.astype("<f2").view(np.uint8).reshape(n, -1))
     else:   # the scales are e4m3 x T, so e4m3_round(scale / T) is that e4m3 again (the decode check in _work proves it)
         out.append(e4m3_bytes(scales / np.float32(cb["table_scale"])))
     return np.concatenate(out, axis=1)
@@ -163,11 +176,11 @@ def pack_native(codes, scales, cb):
 
 def native_dequant(rows, cb):
     """The engine's decode of pack_native's rows (ple_lowbit_dequant_row): value j = s[j // block] * grid[code j] in float32."""
-    n, bs = rows.shape[0], cb["block"]
-    b = rows[:, :CODE_BYTES].reshape(n, 20, 3).astype(np.uint32)
-    w = b[:, :, 0] | b[:, :, 1] << 8 | b[:, :, 2] << 16
-    codes = (w[:, :, None] >> (3 * np.arange(8, dtype=np.uint32)) & 7).reshape(n, DIM)
-    sc = np.ascontiguousarray(rows[:, CODE_BYTES:])
+    n, bs, bits = rows.shape[0], cb["block"], cb.get("bits", 3)
+    b = rows[:, :20 * bits].reshape(n, 20, bits).astype(np.uint32)
+    w = np.bitwise_or.reduce(b << (8 * np.arange(bits, dtype=np.uint32)), axis=2)
+    codes = (w[:, :, None] >> (bits * np.arange(8, dtype=np.uint32)) & ((1 << bits) - 1)).reshape(n, DIM)
+    sc = np.ascontiguousarray(rows[:, 20 * bits:])
     s = sc.view("<f2").astype(np.float32) if cb["scale"] == "f16" else e4m3_value(sc) * np.float32(cb["table_scale"])
     return (s[:, :, None] * np.array(cb["grid"], np.float32)[codes].reshape(n, -1, bs)).reshape(n, DIM)
 
@@ -211,12 +224,15 @@ def fit_codebook(src, fmt, seed, ntry, n_chunks=256, chunk=256, n_values=2_000_0
         Z = np.concatenate([iq4nl_decode(src.read(f, int(s), int(s) + chunk)) for s in starts])
     Bn = Z.reshape(-1, bs)
     Bn = (Bn / np.abs(Bn).max(1, keepdims=True)).ravel()
-    grid = lloyd(Bn[rng.choice(Bn.size, min(n_values, Bn.size), replace=False)].astype(np.float64), 8).astype(np.float32)
+    if fmt in FIXED_GRID:
+        grid = FIXED_GRID[fmt]
+    else:
+        grid = lloyd(Bn[rng.choice(Bn.size, min(n_values, Bn.size), replace=False)].astype(np.float64), 1 << bits_of(fmt)).astype(np.float32)
     table_scale = 1.0
     if kind == "e4m3":   # size T from the unrounded block scales of 16384 of the fit rows
         _, _, s, _ = quantize(Z[:16384], grid, bs, "f32", 1.0, ntry)
         table_scale = float(np.abs(s).max() / SCALE_HEADROOM)
-    return {"format": fmt, "block": bs, "scale": kind, "bytes_per_row": row_bytes(fmt), "grid": [float(v) for v in grid],
+    return {"format": fmt, "bits": bits_of(fmt), "block": bs, "scale": kind, "bytes_per_row": row_bytes(fmt), "grid": [float(v) for v in grid],
             "table_scale": table_scale, "seed": seed, "ntry": ntry, "fit_rows": int(Z.shape[0]), "fit_values": int(min(n_values, Bn.size)),
             "src": pathlib.Path(src.path).name}
 
@@ -283,7 +299,7 @@ def main():
     ap.add_argument("--chunk-rows", type=int, default=8192)
     ap.add_argument("--workers", type=int, default=1)
     ap.add_argument("--idle-priority", action="store_true", help="Windows: run at idle priority")
-    ap.add_argument("--native", action="store_true", help="write the packed 3-bit table the engine reads, not the Q8_0 emulation")
+    ap.add_argument("--native", action="store_true", help="write the packed low-bit table the engine reads, not the Q8_0 emulation")
     a = ap.parse_args()
     if a.idle_priority and sys.platform == "win32":
         import ctypes
@@ -314,7 +330,7 @@ def main():
     out_rb = row_bytes(a.format) if a.native else Q8_RB
     if a.native:
         kv = {"general.architecture": "strata-ple",
-              "general.name": "PLE n-gram table, 3-bit %s (%d B a row)" % (a.format, out_rb),
+              "general.name": "PLE n-gram table, %d-bit %s (%d B a row)" % (bits_of(a.format), a.format, out_rb),
               "strata.ple.format": a.format, "strata.ple.codebook": [float(v) for v in np.float32(cb["grid"])],
               "strata.ple.source": pathlib.Path(a.src).name, "strata.ple.rows": "%d:%d" % (lo, hi)}
         if cb["scale"] == "e4m3":
@@ -322,7 +338,7 @@ def main():
         head = gguf_header(hi - lo, kv, GGML_I8, out_rb)
     else:
         kv = {"general.architecture": "strata-ple",
-              "general.name": "PLE n-gram table emulating %s (3-bit dequantized values stored as Q8_0)" % a.format,
+              "general.name": "PLE n-gram table emulating %s (%d-bit dequantized values stored as Q8_0)" % (a.format, bits_of(a.format)),
               "strata.ple.emulated_format": a.format, "strata.ple.emulated_from": pathlib.Path(a.src).name,
               "strata.ple.emulated_rows": "%d:%d" % (lo, hi)}
         head = gguf_header(hi - lo, kv)
@@ -364,12 +380,12 @@ def main():
                              np.concatenate([v for _, v in refs])[:m].astype("<f4").tobytes())
         print("format %s rows %d:%d (%d rows), written packed, %d B/row (I8, strata.ple.format = %s): %s" %
               (a.format, lo, hi, n, out_rb, a.format, out))
-        print("NMSE vs IQ4_NL values (3-bit, as stored)       : %.5f" % (tot[1] / tot[0]))
+        print("NMSE vs IQ4_NL values (%d-bit, as stored)       : %.5f" % (bits_of(a.format), tot[1] / tot[0]))
         print("%d rows and their values for ple_fp8_parity: %s" % (m, ref_path))
     else:
         print("format %s rows %d:%d (%d rows), %d B/row in %s, written as Q8_0 (%d B/row): %s" %
               (a.format, lo, hi, n, row_bytes(a.format), "its own layout", Q8_RB, out))
-        print("NMSE vs IQ4_NL values (3-bit dequantized)      : %.5f" % (tot[1] / tot[0]))
+        print("NMSE vs IQ4_NL values (%d-bit dequantized)      : %.5f" % (bits_of(a.format), tot[1] / tot[0]))
         print("NMSE vs IQ4_NL values (after Q8_0 rounding)    : %.5f" % (tot[2] / tot[0]))
         print("  Q8_0's own rounding, relative to the values   : %.2e" % (tot[3] / tot[0]))
     if cb["scale"] == "e4m3":

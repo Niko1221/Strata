@@ -1,4 +1,5 @@
-// tests/ngram/ple_lowbit_test.cpp - the 3-bit PLE rows (C4, C3, C2s) as the engine decodes them (strata/kernels/ple_lowbit.hpp),
+// tests/ngram/ple_lowbit_test.cpp - the low-bit PLE rows (C4, C3, C2s, C1, C2, C6) as the engine decodes them
+// (strata/kernels/ple_lowbit.hpp),
 // against the floats the emulator's quantizer produced for the same rows, bit for bit. No model, no GPU.
 //
 // The fixture (ple_lowbit_fixture.inc) is written by the emulator's own --native code path:
@@ -15,18 +16,20 @@ namespace k = strata::kernels;
 int main() {
     int bad = 0;
     for (const ple_lowbit_fixture::Case& c : ple_lowbit_fixture::cases) {
-        if (c.row_bytes != k::ple_lowbit_row_bytes(c.block)) {
-            std::printf("%s: %d B rows in the fixture, %d in the engine\n", c.name, c.row_bytes, k::ple_lowbit_row_bytes(c.block));
+        const int rb = k::ple_lowbit_row_bytes(c.bits, c.block, c.f16_scales);
+        if (c.row_bytes != rb) {
+            std::printf("%s: %d B rows in the fixture, %d in the engine\n", c.name, c.row_bytes, rb);
             ++bad;
             continue;
         }
-        float codebook[8], table_scale;
+        float codebook[16], table_scale;
         std::memcpy(codebook, c.codebook, sizeof codebook);
         std::memcpy(&table_scale, &c.table_scale, 4);
         int differ = 0;
         for (int r = 0; r < c.rows; ++r) {
             float out[160];
-            k::ple_lowbit_dequant_row(c.packed + (size_t) r * (size_t) c.row_bytes, c.block, codebook, table_scale, out);
+            k::ple_lowbit_dequant_row(c.packed + (size_t) r * (size_t) c.row_bytes, c.bits, c.block, c.f16_scales, codebook,
+                                      table_scale, out);
             for (int j = 0; j < 160; ++j) {
                 uint32_t got;
                 std::memcpy(&got, &out[j], 4);
