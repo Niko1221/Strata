@@ -822,7 +822,8 @@ public:
             }
         }
 
-        // Build per-layer GPU expert descriptor tables [128] & per-layer codec class (0=all S_K, 1=all SF4, 2=MX8/mixed)
+        // Build GPU expert tables and classify each projection for codec-specialized kernels.
+        // Classes: 0 = all S_K, 1 = all SF4, 2 = all MX8, 3 = use the per-expert codec.
         d_layer_exps_.resize(c_.n_phys);
         h_layer_exps_.resize(c_.n_phys);
         layer_all_gpu_.assign(c_.n_phys, true);
@@ -830,8 +831,8 @@ public:
         layer_dn_class_.assign(c_.n_phys, 2);
         for (int il = 0; il < c_.n_phys; ++il) {
             std::vector<GpuExpertDesc> tbl(c_.n_experts);
-            bool all_gu_sk = true, all_gu_sf4 = true;
-            bool all_dn_sk = true, all_dn_sf4 = true;
+            bool all_gu_sk = true, all_gu_sf4 = true, all_gu_mx8 = true;
+            bool all_dn_sk = true, all_dn_sf4 = true, all_dn_mx8 = true;
             for (int e = 0; e < c_.n_experts; ++e) {
                 const int dir_idx = model.dir_index_of[il * c_.n_experts + e];
                 GpuExpertDesc d{};
@@ -841,17 +842,20 @@ public:
                     d.gu_code = dir[dir_idx].gu_code_id;
                     d.dn_code = dir[dir_idx].dn_code_id;
                     if (d.gu_code != CODE_SF4) all_gu_sf4 = false;
+                    if (d.gu_code != CODE_MX8) all_gu_mx8 = false;
                     if (d.gu_code == CODE_SF4 || d.gu_code == CODE_MX8) all_gu_sk = false;
                     if (d.dn_code != CODE_SF4) all_dn_sf4 = false;
+                    if (d.dn_code != CODE_MX8) all_dn_mx8 = false;
                     if (d.dn_code == CODE_SF4 || d.dn_code == CODE_MX8) all_dn_sk = false;
                 } else {
                     layer_all_gpu_[il] = false;
                     all_gu_sk = all_gu_sf4 = all_dn_sk = all_dn_sf4 = false;
+                    all_gu_mx8 = all_dn_mx8 = false;
                 }
                 tbl[e] = d;
             }
-            layer_gu_class_[il] = all_gu_sk ? 0 : (all_gu_sf4 ? 1 : 2);
-            layer_dn_class_[il] = all_dn_sk ? 0 : (all_dn_sf4 ? 1 : 2);
+            layer_gu_class_[il] = all_gu_sk ? 0 : (all_gu_sf4 ? 1 : (all_gu_mx8 ? 2 : 3));
+            layer_dn_class_[il] = all_dn_sk ? 0 : (all_dn_sf4 ? 1 : (all_dn_mx8 ? 2 : 3));
             h_layer_exps_[il] = tbl;
             if (!upload_raw(d_layer_exps_[il], tbl.data(), tbl.size() * sizeof(GpuExpertDesc), err)) return false;
         }
