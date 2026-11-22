@@ -37,7 +37,8 @@ public:
     /// PLE tensors are loaded everywhere).  Process-wide, read by the next `load`; (-1, -1) = all layers.
     static void set_layer_range(int lb, int le);
     /// Layer split: the device bytes `load` would allocate for the matrices of layers [lb, le) - the same walk and
-    /// filters, each matrix rounded up to the granule cudaMalloc backs it with (with STRATA_HC_Q8 the Q8_0
+    /// filters, each matrix rounded up to the granule cudaMalloc backs it with (STRATA_DENSE_ARENA=1: their one
+    /// allocation rounded up instead, as `load` makes it; with STRATA_HC_Q8 the Q8_0
     /// hyper-connection rows `load` copies too) - reading the GGUF headers and `table`
     /// only, so it allocates nothing and needs no device (#1238).  `table` must hold every tensor the shards carry.
     static bool weight_bytes_for(const std::vector<std::string>& shards, WeightTable& table, bool include_ple_key,
@@ -67,9 +68,11 @@ public:
     uint64_t weight_bytes() const { return bytes_; }
     /// What the device lost to `load`: each matrix rounded up to the granule `cudaMalloc` backs it with.
     uint64_t allocated_bytes() const { return allocated_; }
-    size_t tensor_count() const { return weights_.size() - packed_keys_.size(); }
+    size_t tensor_count() const { return weights_.size() - packed_keys_.size() + arena_matrices_; }
 
 private:
+    void* arena_ = nullptr;        ///< STRATA_DENSE_ARENA=1: the upload loop's matrices, in one allocation (dense_arena.hpp)
+    size_t arena_matrices_ = 0;    ///< the matrices in it (not in weights_)
     std::vector<void*> weights_;
     std::vector<const void*> packed_keys_;   // GGUF-layout pointers registered with STRATA_Q8_PACKED=1
     void* scratch_ = nullptr;
