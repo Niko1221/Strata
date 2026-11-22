@@ -196,9 +196,13 @@ def install_logprobs():
 
     keys = Eng.sampling_keys
 
-    def sampling_keys(sampling):
+    def sampling_keys(sampling, **kw):
+        # v0.2.18's shared serve (836ab9714) calls this with hy4=/inkling= (the GEN/GENI head and
+        # the conversation-cache key both do): take the keywords and pass them on. They are False
+        # on this path unless a config serves strata-hy4/strata-inkling through this wrapper, and
+        # the key strings this returns are unchanged from before.
         k = top_logprobs(sampling or {})
-        return keys(sampling) + (f" logprobs={k}" if k is not None else "")
+        return keys(sampling, **kw) + (f" logprobs={k}" if k is not None else "")
     Eng.sampling_keys = staticmethod(sampling_keys)
 
     generate = Eng.generate
