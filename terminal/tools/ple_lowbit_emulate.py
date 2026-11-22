@@ -203,19 +203,31 @@ def native_dequant(rows, cb):
 _C5 = {}
 
 
-def c5_codes(Y, lut, threads=1):
-    """Y (n, 160) float32, the rows over their RMS -> (n, 160) uint8 codes: the tail-biting trellis path closest to Y
-    in squared error (ple_c5_viterbi.cpp, Viterbi), `threads` rows at once."""
+def c5_encoder():
+    """The compiled search (ple_c5_viterbi.cpp), loaded once a process. A missing or other DLL is a RuntimeError, not a
+    sys.exit: in a Pool worker SystemExit kills the worker, the pool replaces it and imap waits forever (main() checks
+    the DLL before it starts the workers, so a worker does not get here first)."""
     if "f" not in _C5:
         import ctypes
         if not C5_DLL.exists():
-            sys.exit("c5 needs the compiled encoder %s; in a Visual Studio x64 prompt at the repository root run\n    md build\n    %s"
-                     % (C5_DLL, C5_BUILD))
-        dll = ctypes.CDLL(str(C5_DLL))
-        if dll.ple_c5_abi() != 1:
-            sys.exit("%s is not the encoder this script calls: rebuild it (%s)" % (C5_DLL, C5_BUILD))
+            raise RuntimeError("c5 needs the compiled encoder %s; in a Visual Studio x64 prompt at the repository root run\n"
+                               "    md build\n    %s" % (C5_DLL, C5_BUILD))
+        try:
+            dll = ctypes.CDLL(str(C5_DLL))
+            abi = dll.ple_c5_abi()
+        except (OSError, AttributeError) as e:
+            raise RuntimeError("%s does not load as the c5 encoder (%s): rebuild it (%s)" % (C5_DLL, e, C5_BUILD)) from None
+        if abi != 1:
+            raise RuntimeError("%s is not the encoder this script calls: rebuild it (%s)" % (C5_DLL, C5_BUILD))
         dll.ple_c5_viterbi.argtypes = [ctypes.c_void_p, ctypes.c_int64, ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p]
         _C5["f"] = dll.ple_c5_viterbi
+    return _C5["f"]
+
+
+def c5_codes(Y, lut, threads=1):
+    """Y (n, 160) float32, the rows over their RMS -> (n, 160) uint8 codes: the tail-biting trellis path closest to Y
+    in squared error (ple_c5_viterbi.cpp, Viterbi), `threads` rows at once."""
+    f = c5_encoder()
     Y = np.ascontiguousarray(Y, np.float32)
     lut = np.ascontiguousarray(lut, np.float32)
     if lut.shape != (1 << C5_STATE_BITS,) or Y.ndim != 2 or Y.shape[1] != DIM:
@@ -224,7 +236,7 @@ def c5_codes(Y, lut, threads=1):
 
     def run(span):   # the DLL call releases the GIL, so the threads run at once
         a, b = span
-        if b > a and _C5["f"](Y[a:b].ctypes.data, b - a, lut.ctypes.data, C5_STATE_BITS, codes[a:b].ctypes.data) != 0:
+        if b > a and f(Y[a:b].ctypes.data, b - a, lut.ctypes.data, C5_STATE_BITS, codes[a:b].ctypes.data) != 0:
             raise RuntimeError("ple_c5_viterbi refused L = %d" % C5_STATE_BITS)
     cut = np.linspace(0, Y.shape[0], max(1, threads) + 1).astype(int)
     spans = list(zip(cut[:-1], cut[1:]))
@@ -302,8 +314,8 @@ class Source:
     def read(self, f, a, b):
         f.seek(self.off + a * IQ_RB)
         buf = np.fromfile(f, np.uint8, (b - a) * IQ_RB)
-        if buf.size != (b - a) * IQ_RB:
-            sys.exit("short read at row %d" % a)
+        if buf.size != (b - a) * IQ_RB:   # (in a Pool worker too: a RuntimeError reaches main(), a SystemExit hangs the pool)
+            raise RuntimeError("%s: short read at row %d" % (self.path, a))
         return buf.reshape(b - a, IQ_RB)
 
 
@@ -413,6 +425,11 @@ def main():
         lo, hi = (int(x) for x in a.rows.split(":"))
     if not 0 <= lo < hi <= src.n_rows:
         sys.exit("--rows %s outside 0:%d" % (a.rows, src.n_rows))
+    if a.format == "c5":   # here, not first in a worker (with --codebook this process would not load it at all)
+        try:
+            c5_encoder()
+        except RuntimeError as e:
+            sys.exit(str(e))
     out = pathlib.Path(a.out)
     cb_path = out.with_name(out.name + ".codebook.json")
     t0 = time.time()
