@@ -3532,8 +3532,10 @@ bool Prefill::set_peer(core::PeerExperts* peer, int64_t cap_rows, std::string& e
     cudaMemGetInfo(&fb, &tb);
     cudaSetDevice(prev);
     if (!ok) { err = "prefill peer: the peer's buffers do not fit (raise --peer-reserve-mib or lower --peer-prefill-rows)"; return false; }
-    std::fprintf(stderr, "strata prefill: peer GPU %d computes its experts' rows of each prompt chunk (up to %lld rows per "
-                         "layer%s%s); %zu MiB left free on it\n", pp->dev, (long long) pp->cap_rows,
+    std::fprintf(stderr, "strata prefill: peer GPU %d transport=%s probe=%s computes its experts' rows of each prompt chunk "
+                         "(up to %lld rows per layer%s%s); %zu MiB left free on it\n", pp->dev,
+                 pp->p2p ? "direct_cuda_peer_copy" : "mapped_host_fallback",
+                 peer_route_status_name(peer->route_status()), (long long) pp->cap_rows,
                  pp->p2p ? "" : (pp->sums ? (pp->f16 ? ", no P2P: through mapped host memory in FP16, one weighted sum per token back"
                                                      : ", no P2P: through mapped host memory, one weighted sum per token back")
                                           : ", no P2P: through mapped host memory"),
