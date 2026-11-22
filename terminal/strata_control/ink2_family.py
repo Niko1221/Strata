@@ -1,6 +1,7 @@
 """Inkling-2-Mini (Thinking Machines' checkpoint as published on Hugging Face): its files (exact sizes and SHA-256 at a pinned revision), its engine
 program (strata-ink2, built from engine/src/inkling2) and the rule that turns this PC's card, RAM and CPU into the engine's arguments.  Pure data and
-small functions; setup.py's install_inkling2 does the downloads, the build and the questions.
+small functions; setup.py's install_ink2 does the downloads, the build and the questions.  In setup it is one source ("model") of the
+Inkling family (setup.py INKLING_FAMILIES, whose SQ builds run upstream's strata-inkling).
 
 The pins: the four LFS files' SHA-256 are Hugging Face's own (the repository tree's `lfs.oid`); the small files' SHA-256 were computed from copies whose
 git blob id matched the tree's `oid` at REVISION, so they are that revision's bytes.  README.md, .gitattributes and tiktoken/tokenizer.model are not
@@ -9,10 +10,9 @@ downloaded: neither the engine nor the tokenizer pack reads them.
 
 from __future__ import annotations
 
-FAMILY = "inkling2"
-TAG = "inkling2-"                      # run config file: strata-inkling2-mini.json
-ARCH = "inkling2"                      # the run config's "arch" (serve: the family's sampling defaults)
-MODEL = "mini"                         # the one size
+FAMILY = "inkling2"                    # setup.sh --family inkling2: --family inkling-2-mini --model official
+ARCH = "inkling2"                      # the run config's "arch" (serve: the family's sampling defaults); never strata-inkling's inkling2_loop
+MODEL = "official"                     # its "model" in the Inkling family; run config file: strata-inkling-2-mini-official.json
 NAME = "inkling-2-mini"                # the run config's model_name
 EXE = "strata-ink2"                    # Linux only: the engine includes sys/mman.h and unistd.h
 TITLE = "Inkling-2-Mini"

@@ -5,8 +5,9 @@
 token goes through 48 layer applications. The engine reads the published checkpoint as it is: NVFP4 experts in layers
 0-19, MXFP8 experts in layers 20-23, BF16 for everything else, and the ViT that reads pictures. Nothing is requantized.
 
-To install and start it, see [MODELS.md](MODELS.md#inkling-2-mini): `./setup.sh --family inkling2` picks the flags
-below for your card. This page is for reading what setup chose, or for running the engine by hand.
+To install and start it, see [MODELS.md](MODELS.md#inkling-2-mini): `./setup.sh --family inkling2` (the official
+checkpoint, one of the two sources of setup's Inkling family; the `.strata` SQ builds run `strata-inkling` instead)
+picks the flags below for your card. This page is for reading what setup chose, or for running the engine by hand.
 
 NVIDIA (RTX 20 series or newer) or AMD RDNA (wave32, gfx10 to gfx12) through ROCm, one GPU, Linux. The AMD port is
 jingx8885's, measured on a gfx1151 (Radeon 8060S); the speeds below are NVIDIA ones.

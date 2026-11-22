@@ -83,6 +83,20 @@ DEEPSEEK3_PATTERNS = (
 )
 
 
+# Inkling-2-Mini pre-tokenizer: o200k regex before byte-level BPE with ignore_merges.
+O200K_PATTERN = (
+    r"[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]*[\p{Ll}\p{Lm}\p{Lo}\p{M}]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?"
+    r"|[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]+[\p{Ll}\p{Lm}\p{Lo}\p{M}]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?"
+    r"|\p{N}{1,3}"
+    r"| ?[^\s\p{L}\p{N}]+[\r\n/]*"
+    r"|\s*[\r\n]+"
+    r"|\s+(?!\S)"
+    r"|\s+"
+)
+O200K_PRES = ("o200k", "o200k_base", "gpt-4o", "inkling", "inkling2")
+GPT4O_PATTERN = O200K_PATTERN   # the name tools/inkling2/tok_check.py checks against the model's tokenizer.json
+
+
 # The `qwen2` pre-tokenizer (Qwen2 / Qwen3-Next; llama.cpp LLAMA_VOCAB_PRE_TYPE_QWEN2,
 # `.ref`-equivalent src/llama-vocab.cpp L391-398, fetched master 2026-11-12).  It is the `qwen35` pattern
 # WITHOUT `p{M}`: same contraction classes, same digit/punctuation/whitespace arms.  The two families differ
@@ -95,23 +109,6 @@ QWEN2_PATTERN = (
     r"|[^\r\n\p{L}\p{N}]?\p{L}+"
     r"|\p{N}"
     r"| ?[^\s\p{L}\p{N}]+[\r\n]*"
-    r"|\s*[\r\n]+"
-    r"|\s+(?!\S)"
-    r"|\s+"
-)
-
-
-# The `gpt-4o` / o200k pre-tokenizer (Inkling-2-Mini; llama.cpp LLAMA_VOCAB_PRE_TYPE_GPT4O).  Copied verbatim from the
-# model's own tokenizer.json (pre_tokenizer Sequence[Split(Regex, behavior Isolated), ByteLevel(use_regex=False)]),
-# not re-typed: terminal/tools/inkling2/tok_check.py asserts the two strings are equal before comparing ids with the
-# HF tokenizer.  Case-aware word arms (an upper-case run then lower-case letters, contractions glued with `(?i:...)`),
-# digits in runs of 1..3, `/` kept on the end of a punctuation run.  "Isolated" = every match and every unmatched span
-# is a piece: _sequence_findall with this one pattern.
-GPT4O_PATTERN = (
-    r"[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]*[\p{Ll}\p{Lm}\p{Lo}\p{M}]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?"
-    r"|[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]+[\p{Ll}\p{Lm}\p{Lo}\p{M}]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?"
-    r"|\p{N}{1,3}"
-    r"| ?[^\s\p{L}\p{N}]+[\r\n/]*"
     r"|\s*[\r\n]+"
     r"|\s+(?!\S)"
     r"|\s+"
@@ -142,7 +139,7 @@ class UnknownPreTokenizer(ValueError):
 
 
 def pre_tokenizer_kind(pre) -> str | None:
-    """The splitting rule `pre` (the GGUF's tokenizer.ggml.pre, or a pack's tokenizer.json "pre") stands for: "qwen35", "qwen2", "deepseek3", or
+    """The splitting rule `pre` (the GGUF's tokenizer.ggml.pre, or a pack's tokenizer.json "pre") stands for: "qwen35", "qwen2", "deepseek3", "o200k", or
     None for a type this file does not know.  An empty or missing value is the qwen35 default, as it always was."""
     p = "qwen35" if pre is None or pre == "" else str(pre)
     if p == "qwen35":
@@ -151,8 +148,8 @@ def pre_tokenizer_kind(pre) -> str | None:
         return "qwen2"
     if p.startswith("deepseek"):
         return "deepseek3"
-    if p in ("gpt-4o", "o200k"):
-        return "gpt4o"
+    if p in O200K_PRES:
+        return "o200k"
     return None
 
 
@@ -160,11 +157,10 @@ class Tokenizer:
     def __init__(self, tokens: list[str], merges: list[str], token_types: list[int] | None = None,
                  pre: str = "qwen35", special_ids: dict[str, int] | None = None, ignore_merges: bool = False):
         self.tokens = tokens
-        # HF BPE `ignore_merges` (o200k-style vocabs converted from tiktoken, e.g. Inkling-2-Mini): a pre-token piece
-        # that is itself a vocab entry is that one token, whatever the merges would make of it (" kwargs" is one id
-        # there, while the merge list stops at "kwar" + "g" + "s").
-        self.ignore_merges = ignore_merges
         self.pre = pre
+        # HF BPE `ignore_merges` (a pack's tokenizer.json says it; the o200k rule implies it): a pre-token piece that is
+        # itself a vocab entry is that one token, whatever the merges would make of it
+        self.ignore_merges = bool(ignore_merges) or pre in O200K_PRES
         if pre_tokenizer_kind(pre) is None:
             # Not a fallback: another model's pre-tokenizer splits text differently, so encoding with the qwen35 rule would
             # change every prompt without any error (llama.cpp has one rule per `tokenizer.ggml.pre` type for the same reason).
@@ -190,11 +186,14 @@ class Tokenizer:
         if pre_tokenizer_kind(pre) == "deepseek3":
             seq = [regex.compile(x) for x in DEEPSEEK3_PATTERNS]
             self._split = lambda text: _sequence_findall(seq, text)
-        elif pre_tokenizer_kind(pre) == "gpt4o":
-            seq = [regex.compile(GPT4O_PATTERN)]
-            self._split = lambda text: _sequence_findall(seq, text)
+        elif pre_tokenizer_kind(pre) == "o200k":
+            self._re = regex.compile(O200K_PATTERN)
+            self._split = self._re.findall
         elif pre_tokenizer_kind(pre) == "qwen2":
             self._re = regex.compile(QWEN2_PATTERN)
+            self._split = self._re.findall
+        elif pre_tokenizer_kind(pre) == "inkling2":
+            self._re = regex.compile(O200K_PATTERN)
             self._split = self._re.findall
         else:
             self._re = regex.compile(QWEN35_PATTERN)
@@ -256,28 +255,41 @@ class Tokenizer:
                    md.get("tokenizer.ggml.pre", "qwen35"), special)
 
     @classmethod
-    def from_hf(cls, tokenizer_json, pre: str, special_ids: dict[str, int] | None = None) -> "Tokenizer":
-        """A HF `tokenizer.json` (byte-level BPE) for a model shipped without a GGUF.  Added tokens: special -> CONTROL
-        (type 3, matched only with parse_special), non-special -> USER_DEFINED (type 4, always matched)."""
-        t = json.loads(pathlib.Path(tokenizer_json).read_text(encoding="utf-8"))
+    def from_hf(cls, tokenizer_json, pre: str = "gpt-4o", special_ids: dict[str, int] | None = None) -> "Tokenizer":
+        """Load a Hugging Face `tokenizer.json` (or HF directory containing `tokenizer.json`)."""
+        p = pathlib.Path(tokenizer_json)
+        if p.is_dir():
+            p = p / "tokenizer.json"
+        t = json.loads(p.read_text(encoding="utf-8"))
         m = t["model"]
         if m.get("type") != "BPE":
             raise ValueError("expected a BPE tokenizer.json, got %r" % m.get("type"))
         ids = dict(m["vocab"])
-        types = {}
+        types: dict[int, int] = {}
         for a in t.get("added_tokens", []):
             ids[a["content"]] = a["id"]
             types[a["id"]] = 3 if a.get("special") else 4
         n = max(ids.values()) + 1
-        tokens = [None] * n
+        tokens: list[str | None] = [None] * n
         for tok, i in ids.items():
             tokens[i] = tok
         holes = [i for i, x in enumerate(tokens) if x is None]
         if holes:
             raise ValueError("tokenizer.json leaves %d ids without a token (first %d)" % (len(holes), holes[0]))
         merges = [mg if isinstance(mg, str) else " ".join(mg) for mg in m["merges"]]
-        return cls(tokens, merges, [types.get(i, 1) for i in range(n)], pre, special_ids or {},
-                   bool(m.get("ignore_merges")))
+        sp = dict(special_ids or {})
+        tok_cfg = p.parent / "tokenizer_config.json"
+        if not sp and tok_cfg.is_file():
+            try:
+                tc = json.loads(tok_cfg.read_text(encoding="utf-8"))
+                eos = tc.get("eos_token")
+                if isinstance(eos, dict):
+                    eos = eos.get("content")
+                if isinstance(eos, str) and eos in ids:
+                    sp["tokenizer.ggml.eos_token_id"] = int(ids[eos])
+            except Exception:
+                pass
+        return cls([str(x) for x in tokens], merges, [types.get(i, 1) for i in range(n)], pre, sp, bool(m.get("ignore_merges")))
 
     # -------------------------------------------------------------- the algorithm
     def _bpe(self, word: str) -> list[str]:
@@ -361,12 +373,15 @@ class Tokenizer:
             got = cache.get(piece)
             if got is None:
                 mapped = "".join(BYTE_TO_UNICODE[b] for b in piece.encode("utf-8"))
-                got = []
-                for tok in ([mapped] if self.ignore_merges and mapped in self.ids else self._bpe(mapped)):
-                    i = self.ids.get(tok)
-                    if i is None:
-                        raise KeyError("BPE produced a token outside the vocabulary: %r" % tok)
-                    got.append(i)
+                if self.ignore_merges and mapped in self.ids:
+                    got = [self.ids[mapped]]
+                else:
+                    got = []
+                    for tok in self._bpe(mapped):
+                        i = self.ids.get(tok)
+                        if i is None:
+                            raise KeyError("BPE produced a token outside the vocabulary: %r" % tok)
+                        got.append(i)
                 if len(cache) < self.PIECE_CACHE_MAX:
                     cache[piece] = got
             out.extend(got)
@@ -567,6 +582,7 @@ def extract(gguf_path, out_dir) -> dict:
     out = pathlib.Path(out_dir) / "tokenizer"
     out.mkdir(parents=True, exist_ok=True)
     tk = Tokenizer.from_gguf(gguf_path)
+    is_o200k = pre_tokenizer_kind(tk.pre) == "o200k"
     cfg = {
         "model": "gpt2",
         "pre": tk.pre,
@@ -574,10 +590,11 @@ def extract(gguf_path, out_dir) -> dict:
         "n_merges": len(tk.ranks),
         "special_ids": tk.special_ids,
         "add_bos_token": False,
+        "ignore_merges": bool(getattr(tk, "ignore_merges", False)),
         # The pattern is SHIPPED, not recomputed by the reader: it is transcribed from llama.cpp for the
         # declared `pre` type, and a C++ port that re-derived it would be free to get `\p{M}` wrong again.
-        "pre_pattern": QWEN35_PATTERN,
-        "pre_pattern_source": ".ref/llama.cpp src/llama-vocab.cpp L396 (LLAMA_VOCAB_PRE_TYPE_QWEN35)",
+        "pre_pattern": O200K_PATTERN if is_o200k else QWEN35_PATTERN,
+        "pre_pattern_source": "o200k / Inkling-2-Mini pre_tokenizer" if is_o200k else ".ref/llama.cpp src/llama-vocab.cpp L396 (LLAMA_VOCAB_PRE_TYPE_QWEN35)",
     }
     (out / "vocab.json").write_text(json.dumps(tk.ids, ensure_ascii=False), encoding="utf-8")
     (out / "merges.txt").write_text("\n".join("%s %s" % k for k, _ in
@@ -593,19 +610,27 @@ def extract(gguf_path, out_dir) -> dict:
     return cfg
 
 
-def extract_hf(model_dir, out_dir, pre: str, special_ids: dict[str, int]) -> dict:
-    """extract() for a model shipped as HF files (tokenizer.json + chat_template.jinja), no GGUF."""
+def extract_hf(model_dir, out_dir, pre: str = "gpt-4o", special_ids: dict[str, int] | None = None) -> dict:
+    """extract() for a model shipped as official HF files (tokenizer.json + chat_template.jinja), no GGUF."""
     out = pathlib.Path(out_dir) / "tokenizer"
     out.mkdir(parents=True, exist_ok=True)
     src = pathlib.Path(model_dir)
-    tk = Tokenizer.from_hf(src / "tokenizer.json", pre, special_ids)
-    cfg = {"model": "gpt2", "pre": tk.pre, "vocab_size": len(tk.tokens), "n_merges": len(tk.ranks),
-           "special_ids": tk.special_ids, "add_bos_token": False, "ignore_merges": tk.ignore_merges,
-           "pre_pattern": GPT4O_PATTERN if pre_tokenizer_kind(pre) == "gpt4o" else QWEN35_PATTERN,
-           "pre_pattern_source": "%s/tokenizer.json pre_tokenizer" % src.name}
+    tk = Tokenizer.from_hf(src / "tokenizer.json", pre, special_ids or {})
+    is_o200k = pre_tokenizer_kind(pre) == "o200k"
+    cfg = {
+        "model": "gpt2",
+        "pre": tk.pre,
+        "vocab_size": len(tk.tokens),
+        "n_merges": len(tk.ranks),
+        "special_ids": tk.special_ids,
+        "add_bos_token": False,
+        "ignore_merges": bool(getattr(tk, "ignore_merges", False)),
+        "pre_pattern": O200K_PATTERN if is_o200k else QWEN35_PATTERN,
+        "pre_pattern_source": "%s/tokenizer.json pre_tokenizer" % src.name,
+    }
     (out / "vocab.json").write_text(json.dumps(tk.ids, ensure_ascii=False), encoding="utf-8")
     (out / "merges.txt").write_text("\n".join("%s %s" % k for k, _ in
-                                             sorted(tk.ranks.items(), key=lambda kv: kv[1])), encoding="utf-8")
+                                              sorted(tk.ranks.items(), key=lambda kv: kv[1])), encoding="utf-8")
     (out / "token_type.json").write_text(json.dumps(tk.token_types), encoding="utf-8")
     (out / "tokenizer.json").write_text(json.dumps(cfg, ensure_ascii=False, indent=1), encoding="utf-8")
     if (src / "chat_template.jinja").exists():

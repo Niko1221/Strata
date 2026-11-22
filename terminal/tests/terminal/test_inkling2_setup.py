@@ -1,4 +1,4 @@
-"""Inkling-2-Mini in setup (install_inkling2, strata_control/ink2_family.py): its pinned files, the engine arguments it writes for a card, the K/V
+"""Inkling-2-Mini's official checkpoint in setup (install_ink2, strata_control/ink2_family.py): its pinned files, the engine arguments it writes for a card, the K/V
 figure against the engine's own layout, and the places a family is registered."""
 
 from __future__ import annotations
@@ -57,7 +57,7 @@ class KV(unittest.TestCase):
         self.assertEqual((c["NKV"], c["HD"]), (F.KV_HEADS, F.HEAD_DIM))
         self.assertEqual(F.kv_bytes_per_token(False), 32768)
         self.assertEqual(F.kv_bytes_per_token(True), 36864)                              # measured: 864 MiB from 8K to 32K context
-        self.assertEqual(setup.INK2_FAMILIES["inkling2"]["kv_bytes_per_token"], 36864)
+        self.assertEqual(F.kv_bytes_per_token(True), 36864)
 
 
 class Args(unittest.TestCase):
@@ -185,26 +185,50 @@ class Registered(unittest.TestCase):
                 mock.patch.object(setup, "say"), mock.patch.object(setup, "ok"), \
                 mock.patch.object(setup, "fail", side_effect=RuntimeError("refused")) as fail_mock:
             with self.assertRaises(RuntimeError):
-                setup.install_inkling2(args, "inkling2", {"arch": "gfx906", "vram_gb": 32.0}, True,
+                setup.install_ink2(args, "inkling-2-mini", {"arch": "gfx906", "vram_gb": 32.0}, True,
                                        [{"arch": "gfx906"}], 13, [], 8080, 64.0, None)
         self.assertIn("gfx906", fail_mock.call_args[0][0])
 
     def test_its_config_is_read_back_and_not_tuned(self):
         with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "strata-inkling2-mini.json"
+            p = Path(d) / "strata-inkling-2-mini-official.json"
             p.write_text(json.dumps({"exe": "x/strata-ink2", "arch": "inkling2", "model_name": "inkling-2-mini",
                                      "args": F.engine_args("/m", 65536, 24576, 0, None)}), encoding="utf-8")
             ch = setup.choices_from_config(p)
-            self.assertEqual((ch["family"], ch["model"], ch["context"], ch["vision"]), ("inkling2", "mini", 65536, "none"))
+            self.assertEqual((ch["family"], ch["model"], ch["context"], ch["vision"]), ("inkling-2-mini", "official", 65536, "none"))
             self.assertEqual(setup.calibration_targets([p], None, None), [])
 
     def test_the_start_leaves_its_arguments_alone(self):
         cfg = {"exe": "x/strata-ink2", "arch": "inkling2", "args": F.engine_args("/m", 32768, 8192, 0, 22)}
         before = list(cfg["args"])
         with mock.patch.object(setup, "write_config") as w:
-            out = setup.upgrade_config(Path("strata-inkling2-mini.json"), cfg)
+            out = setup.upgrade_config(Path("strata-inkling-2-mini-official.json"), cfg)
         self.assertEqual(out["args"], before)
         w.assert_not_called()
+
+
+class OneFamily(unittest.TestCase):
+    """The official checkpoint is a source ("model") of upstream's Inkling family: install_inkling2 hands it to install_ink2 (strata-ink2), the
+    SQ builds stay on strata-inkling."""
+
+    def test_the_family_lists_it_and_routes_it_to_strata_ink2(self):
+        fam = setup.INKLING_FAMILIES["inkling-2-mini"]
+        self.assertIn(F.MODEL, fam["models"])
+        self.assertTrue({"SQ-20", "SQ-15", "SQ-10"} <= set(fam["models"]))
+        self.assertNotIn("INK2_FAMILIES", vars(setup))
+        src = setup.INKLING_COMMUNITY_SOURCES["safetensors"]
+        self.assertEqual((src["exe"], src["arch"], src["model"]), (F.EXE, F.ARCH, F.MODEL))
+        from serve import inkling_kind
+        cfg = {"exe": "/x/engine/strata-ink2", "arch": F.ARCH, "args": F.engine_args("/m", 32768, 24576, 0, None)}
+        self.assertFalse(inkling_kind.is_inkling(cfg))                                   # never strata-inkling's start rules
+
+    def test_install_inkling2_hands_the_official_source_over(self):
+        args = mock.MagicMock(model=F.MODEL, context=None, vision=None)
+        with mock.patch.object(setup, "install_ink2", return_value=7) as ink2, mock.patch.object(setup, "say"), \
+                mock.patch.object(setup, "ok"), mock.patch.object(setup, "ink2_offered", return_value=True):
+            got = setup.install_inkling2(args, "inkling-2-mini", {"vram_gb": 24.0, "arch": 86}, False, None, 13, [], 8080, 64.0, None)
+        self.assertEqual(got, 7)
+        self.assertEqual(ink2.call_args[0][1], "inkling-2-mini")
 
 
 class Build(unittest.TestCase):

@@ -1,10 +1,11 @@
-"""Inkling 2's reply form through InklingOutputParser, its effort words, its thinking close and the {% generation %} tag."""
+"""strata-ink2's side of Inkling 2: its reply form through Ink2OutputParser, its effort words, its thinking close and the {% generation %}
+tag.  strata-inkling (upstream) keeps InklingOutputParser and thinking off: serve/test_inkling_dialect.py."""
 import random
 
 import pytest
 
 from serve import frontend
-from serve.frontend import (INK_CALL, INK_END, INK_HEAD, INK_STOP, INK_TEXT, INK_THINK, ChatTemplate, InklingOutputParser,
+from serve.frontend import (INK_CALL, INK_END, INK_HEAD, INK_STOP, INK_TEXT, INK_THINK, ChatTemplate, Ink2OutputParser, InklingOutputParser,
                             effort_kwargs, family_text, openai_to_messages, parser_for_template, use_family)
 
 TOOLS = [{"name": n, "description": "", "parameters": {"type": "object", "properties": {}}} for n in ("get_weather", "a", "b")]
@@ -23,13 +24,13 @@ CASES = {
 
 @pytest.fixture
 def inkling():
-    use_family("inkling2")
+    use_family("inkling2", thinks=True)
     yield
     use_family(None)
 
 
 def _run(stream: str, rng: random.Random):
-    p = InklingOutputParser(thinking=True, tools=TOOLS, stream_tools=True)
+    p = Ink2OutputParser(thinking=True, tools=TOOLS, stream_tools=True)
     evs, i = [], 0
     while i < len(stream):
         k = rng.randint(1, 7)
@@ -48,9 +49,28 @@ def test_reply_form_any_split(name):
         assert _run(stream, rng) == want
 
 
-def test_parser_chosen_by_template():
-    assert parser_for_template("x <|content_thinking|> y") is InklingOutputParser
-    assert parser_for_template("{{ '<think>' }}") is not InklingOutputParser
+def test_parser_chosen_by_engine(tmp_path):
+    """The same template for both engines: strata-inkling (known by its program's name) gets upstream's parser and thinking off,
+    any other engine on Inkling 2's template is strata-ink2."""
+    from serve.server import ByteTokenizer, Service
+    from serve.test_vram import VramEngine
+    t = tmp_path / "t.jinja"
+    t.write_text("{#- <|content_thinking|> <|content_invoke_tool_json|> -#}{{ reasoning_effort }}")
+    assert parser_for_template(t.read_text()) is InklingOutputParser
+    tok = ByteTokenizer()
+    try:
+        svc = Service(VramEngine(tok), tok, ChatTemplate(t))
+        svc.set_family(None)
+        assert (svc.family, svc.parser_cls, frontend._INK_THINKS) == ("inkling2", Ink2OutputParser, True)
+        assert svc.template.render([], **effort_kwargs("high")) == "high"
+        eng = VramEngine(tok)
+        eng.inkling_engine = True
+        svc = Service(eng, tok, ChatTemplate(t))
+        svc.set_family("inkling2")
+        assert (svc.family, svc.parser_cls, frontend._INK_THINKS) == ("inkling2", InklingOutputParser, False)
+        assert svc.template.render([], **effort_kwargs("high")) == "none"
+    finally:
+        use_family(None)
 
 
 def test_family_text_and_effort(inkling):
@@ -100,7 +120,7 @@ def test_forced_call_opening():
     assert named == INK_HEAD + "get_weather" + INK_CALL + '{"name":"get_weather","args":'
     assert inkling_force(forced_call("required", tools)) == INK_HEAD
     assert inkling_force(None) is None
-    p = InklingOutputParser(thinking=True, tools=TOOLS, stream_tools=True)   # the opening, then the model's arguments
+    p = Ink2OutputParser(thinking=True, tools=TOOLS, stream_tools=True)   # the opening, then the model's arguments
     evs = p.feed(INK_HEAD + INK_THINK + "t" + INK_END) + p.feed(named) + p.feed('{"city":"Lyon"}}' + INK_END + INK_STOP)
     evs += p.finish("stop")
     assert [(e.call.name, e.call.arguments) for e in evs if e.kind == "tool_call"] == [("get_weather", {"city": "Lyon"})]

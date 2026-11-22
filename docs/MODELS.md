@@ -239,6 +239,11 @@ strata launch --family qwen36 --model UD-Q4_K_XL
 
 ## Inkling-2-Mini
 
+Setup's Inkling family has two sources, each with its own engine: Strata's requantized `.strata` builds
+(`./setup.sh --family inkling-2-mini --model SQ-20`, `SQ-15` or `SQ-10`) run `strata-inkling`; the official
+checkpoint (`--model official`, or `--family inkling2` for short) runs `strata-ink2`. The rest of this section is
+about the official checkpoint.
+
 [Inkling-2-Mini](https://huggingface.co/thinkingmachines/Inkling-2-Mini) by Thinking Machines Lab (Apache 2.0): a
 mixture of experts with 128 experts per layer, 8 active, NVFP4 and MXFP8 experts. Strata reads the published
 checkpoint as it is (a 20.2 GB download at a pinned revision, every file checked against its size and SHA-256) with
@@ -282,7 +287,7 @@ Setup picks how it runs from the card:
   and answered (83 s to the end of the answer's 1,450 tokens), a 55K-token prompt refused with "the context is full"
   after 41K tokens, and the next request answered by the same engine.
 
-The run config (`strata-inkling2-mini.json`) holds the engine's arguments; they can be edited there. Every flag and its measured effect: [INKLING2.md](INKLING2.md).
+The run config (`strata-inkling-2-mini-official.json`) holds the engine's arguments; they can be edited there. Every flag and its measured effect: [INKLING2.md](INKLING2.md).
 
 ## Adding or switching models
 
