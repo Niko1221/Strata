@@ -4,7 +4,7 @@ Raw results and short reports from measurement runs, one folder per run, named b
 the Strata version, hardware and method of its own day, and none is a statement about a later release. Current numbers are in the
 [docs](../README.md) and the [README](../../README.md); how to measure is in [BENCHMARK_PROTOCOL.md](../BENCHMARK_PROTOCOL.md).
 
-This page is built by `python tools/bench_results_index.py` (`--check` fails when a folder is missing from it). 143 folders and 3 loose files, 2188 files in all.
+This page is built by `python tools/bench_results_index.py` (`--check` fails when a folder is missing from it). 144 folders and 3 loose files, 2189 files in all.
 
 
 ## 2026-09
@@ -164,6 +164,7 @@ This page is built by `python tools/bench_results_index.py` (`--check` fails whe
 | Folder | What | Files |
 | --- | --- | ---: |
 | [2026-11-14-rdna2-pcie-auto](2026-11-14-rdna2-pcie-auto/) | PcieAuto on gfx103x: the decode miss split from the CPU pool's speed (#4007) | 3 |
+| [2026-11-20-q36-kv-precision](2026-11-20-q36-kv-precision/) | q36 --kv fp32/fp16/fp8/fp4 — memory width for the K/V cache | 1 |
 
 ## Loose files
 

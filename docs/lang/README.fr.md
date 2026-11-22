@@ -44,11 +44,40 @@ Nous recommandons **d'abord ISTA-DASLab**, puis **Unsloth** et d'autres fourniss
 </details>
 
 <details>
+<summary><img src="../media/models/hunyuan.svg" width="22" alt="" align="middle"> &nbsp;<b>Tencent Hy4-Flash</b></summary>
+
+| Paquet | Votre RAM | Carte graphique |
+| --- | --- | --- |
+| **SQ-64** | 64 GiB | 8, 12 ou 16 GiB |
+| **SQ-96** | 96 GiB | 8 ou 12 GiB |
+| **SQ-128** | 128 GiB | 8 ou 12 GiB |
+
+Le nombre dans le nom correspond à la mémoire vive (RAM) pour laquelle le paquet est conçu.
+
+[Paquets Hy4-Flash sur Hugging Face](https://huggingface.co/strata-engine/Hy4-Flash-Strata)
+
+</details>
+
+<details>
 <summary><img src="../media/models/qwen.svg" width="22" alt="" align="middle"> &nbsp;<b>Qwen3.6-35B-A3B</b></summary>
 
 **Unsloth:** UD-Q4_K_XL, UD-Q6_K_XL, Q8_0. Ce sont les paquets actuellement documentés pour ce modèle.
 
 [Guide du modèle et compatibilité](../QWEN36.md).
+
+</details>
+
+<details>
+<summary><picture><source media="(prefers-color-scheme: dark)" srcset="../media/models/thinking-machines-white.png"><img src="../media/models/thinking-machines.png" height="22" alt="Thinking Machines" align="middle"></picture> &nbsp;<b>Inkling 2 Mini</b></summary>
+
+| Fournisseur | Choix |
+| --- | --- |
+| **Strata** | SQ-20 (19.35 GB), SQ-15 (14.35 GB), SQ-10 (10.47 GB) |
+| **Unsloth** | UD-Q8\_K\_XL (22.87 GB), UD-Q4\_K\_XL (17.63 GB), UD-Q4\_K\_M (16.61 GB), UD-IQ4\_XS (15.73 GB), UD-Q3\_K\_XL (13.63 GB), UD-IQ3\_XXS (11.66 GB), UD-Q2\_K\_XL (9.14 GB), UD-IQ2\_XXS (8.49 GB), UD-IQ1\_M (8.02 GB), UD-IQ1\_S (7.76 GB) |
+
+SQ-20 est conçu pour une carte graphique de 24 GiB, SQ-15 pour 16 GiB et SQ-10 pour 12 GiB. Une carte de 4 GiB suffit pour commencer.
+
+[Paquets Strata sur Hugging Face](https://huggingface.co/strata-engine/Inkling-2-Mini-Strata) · [Fichiers GGUF Unsloth](https://huggingface.co/unsloth/Inkling-2-Mini-GGUF)
 
 </details>
 
@@ -125,6 +154,7 @@ Suivez les invites pour télécharger et démarrer un modèle. [Guide du Termina
 | **Intel Arc · Linux** | [Installation Intel](../INTEL_ARC.md) |
 | **Apple Silicon · M1 ou plus récent** | [Installation sur Mac](../MAC.md) |
 | **AMD Ryzen AI Max · Strix Halo** | [Installation Strix Halo](../STRIX_HALO.md) |
+| **NVIDIA DGX Spark · Linux** | [Installation DGX Spark](../DGX_SPARK_LINUX.md) |
 
 <a id="using-it"></a>
 
@@ -143,6 +173,13 @@ Lancez **`strata connect`** pour voir la configuration de votre outil. [Guide de
 
 [Tous les guides](..) · [Dépannage](../TROUBLESHOOTING.md) · [Signaler un bogue](https://github.com/Niko1221/Strata/issues/new/choose) ·
 [Benchmarks](../COMMUNITY_BENCHMARKS.md) · [Comment ça marche](../HOW_IT_WORKS.md) · [Contribuer](../../.github/CONTRIBUTING.md)
+
+## Sponsors de Strata
+
+<!-- Sponsor logos: one centred row with room for five, each 130 px wide. Add the next sponsor after Olares, with &nbsp;&nbsp;&nbsp;&nbsp; between two logos. -->
+<p align="center">
+  <a href="https://www.olares.com/one"><picture><source media="(prefers-color-scheme: dark)" srcset="../media/sponsors/olares-logo-white.svg"><img src="../media/sponsors/olares-logo-color.svg" alt="Olares" title="Olares" width="130"></picture></a>
+</p>
 
 ## Soutenir Strata
 

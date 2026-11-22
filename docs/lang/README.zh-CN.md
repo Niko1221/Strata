@@ -44,11 +44,40 @@
 </details>
 
 <details>
+<summary><img src="../media/models/hunyuan.svg" width="22" alt="" align="middle"> &nbsp;<b>Tencent Hy4-Flash</b></summary>
+
+| 版本包 | 系统内存 (RAM) | 显卡 |
+| --- | --- | --- |
+| **SQ-64** | 64 GiB | 8、12 或 16 GiB |
+| **SQ-96** | 96 GiB | 8 或 12 GiB |
+| **SQ-128** | 128 GiB | 8 或 12 GiB |
+
+名称中的数字表示该版本包所适配的系统内存大小。
+
+[Hugging Face 上的 Hy4-Flash 版本包](https://huggingface.co/strata-engine/Hy4-Flash-Strata)
+
+</details>
+
+<details>
 <summary><img src="../media/models/qwen.svg" width="22" alt="" align="middle"> &nbsp;<b>Qwen3.6-35B-A3B</b></summary>
 
 **Unsloth:** UD-Q4_K_XL, UD-Q6_K_XL, Q8_0。这些是目前文档中收录的该模型的版本。
 
 [模型指南和兼容性](../QWEN36.md)。
+
+</details>
+
+<details>
+<summary><picture><source media="(prefers-color-scheme: dark)" srcset="../media/models/thinking-machines-white.png"><img src="../media/models/thinking-machines.png" height="22" alt="Thinking Machines" align="middle"></picture> &nbsp;<b>Inkling 2 Mini</b></summary>
+
+| 提供方 | 可选项 |
+| --- | --- |
+| **Strata** | SQ-20 (19.35 GB), SQ-15 (14.35 GB), SQ-10 (10.47 GB) |
+| **Unsloth** | UD-Q8\_K\_XL (22.87 GB), UD-Q4\_K\_XL (17.63 GB), UD-Q4\_K\_M (16.61 GB), UD-IQ4\_XS (15.73 GB), UD-Q3\_K\_XL (13.63 GB), UD-IQ3\_XXS (11.66 GB), UD-Q2\_K\_XL (9.14 GB), UD-IQ2\_XXS (8.49 GB), UD-IQ1\_M (8.02 GB), UD-IQ1\_S (7.76 GB) |
+
+SQ-20 适合 24 GiB 显卡，SQ-15 适合 16 GiB，SQ-10 适合 12 GiB。最低 4 GiB 显卡即可起步。
+
+[Hugging Face 上的 Strata 版本包](https://huggingface.co/strata-engine/Inkling-2-Mini-Strata) · [Unsloth GGUF 文件](https://huggingface.co/unsloth/Inkling-2-Mini-GGUF)
 
 </details>
 
@@ -125,6 +154,7 @@ strata launch
 | **Intel Arc · Linux** | [Intel 安装](../INTEL_ARC.md) |
 | **Apple Silicon · M1 或更新** | [Mac 安装](../MAC.md) |
 | **AMD Ryzen AI Max · Strix Halo** | [Strix Halo 安装](../STRIX_HALO.md) |
+| **NVIDIA DGX Spark · Linux** | [DGX Spark 安装](../DGX_SPARK_LINUX.md) |
 
 <a id="using-it"></a>
 
@@ -143,6 +173,13 @@ strata launch
 
 [全部指南](..) · [故障排查](../TROUBLESHOOTING.md) · [报告问题](https://github.com/Niko1221/Strata/issues/new/choose) ·
 [基准测试](../COMMUNITY_BENCHMARKS.md) · [工作原理](../HOW_IT_WORKS.md) · [参与贡献](../../.github/CONTRIBUTING.md)
+
+## Strata 赞助商
+
+<!-- Sponsor logos: one centred row with room for five, each 130 px wide. Add the next sponsor after Olares, with &nbsp;&nbsp;&nbsp;&nbsp; between two logos. -->
+<p align="center">
+  <a href="https://www.olares.com/one"><picture><source media="(prefers-color-scheme: dark)" srcset="../media/sponsors/olares-logo-white.svg"><img src="../media/sponsors/olares-logo-color.svg" alt="Olares" title="Olares" width="130"></picture></a>
+</p>
 
 ## 支持 Strata
 

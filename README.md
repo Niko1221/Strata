@@ -34,44 +34,50 @@ We recommend **ISTA-DASLab first**, then **Unsloth** and other providers, where 
 
 | Provider | Choices |
 | --- | --- |
-| **ISTA-DASLab · recommended** | [Q2\_0, IQ2\_XS, IQ3\_XXS, IQ3\_S](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF). [Coder: IQ1\_M](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF) ([guide](docs/MODELS.md#coder)) for coding. |
-| **Unsloth** | [UD-IQ4\_XS, UD-Q4\_K\_XL, UD-Q5\_K\_XL, UD-Q6\_K\_XL, Q8\_0](https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF) |
+| **ISTA-DASLab · recommended** | Q2\_0, IQ2\_XS, IQ3\_XXS, IQ3\_S. [Coder: IQ1\_M](docs/MODELS.md#coder) for coding. |
+| **Unsloth** | UD-IQ4\_XS, UD-Q4\_K\_XL, UD-Q5\_K\_XL, UD-Q6\_K\_XL, Q8\_0 |
 | **Gyro · agentionai** | [Gyro-S, Gyro-M](https://huggingface.co/agentionai/Qwen3.8-Flash-Next-Gyro-GGUF). Lower memory use but slower. |
-| **Other options** | [Swift 1.5](https://huggingface.co/ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF) ([guide](docs/MODELS.md#swift-15)), [NVFP4](docs/NVFP4.md), [OrcaRouter](docs/ORCA.md) |
+| **Other options** | [Swift 1.5](docs/MODELS.md#swift-15), [NVFP4](docs/NVFP4.md), [OrcaRouter](docs/ORCA.md) |
 
-[Compare sizes, memory needs and compatibility](docs/MODELS.md#qwen38-flash-next).
+[Compare sizes, memory needs and compatibility](docs/MODELS.md).
+
+</details>
+
+<details>
+<summary><img src="docs/media/models/hunyuan.svg" width="22" alt="" align="middle"> &nbsp;<b>Tencent Hy4-Flash</b></summary>
+
+| Pack | Your RAM | Graphics card |
+| --- | --- | --- |
+| **SQ-64** | 64 GiB | 8, 12 or 16 GiB |
+| **SQ-96** | 96 GiB | 8 or 12 GiB |
+| **SQ-128** | 128 GiB | 8 or 12 GiB |
+
+The number in the name is the RAM the pack is made for.
+
+[Hy4-Flash packs on Hugging Face](https://huggingface.co/strata-engine/Hy4-Flash-Strata)
 
 </details>
 
 <details>
 <summary><img src="docs/media/models/qwen.svg" width="22" alt="" align="middle"> &nbsp;<b>Qwen3.6-35B-A3B</b></summary>
 
-**Unsloth:** [UD-Q4\_K\_XL, UD-Q6\_K\_XL, Q8\_0](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF). These are the currently documented packs for this model.
+**Unsloth:** UD-Q4_K_XL, UD-Q6_K_XL, Q8_0. These are the currently documented packs for this model.
 
 [Model guide and compatibility](docs/QWEN36.md).
 
 </details>
 
 <details>
-<summary><b>Tencent Hy4-Flash</b></summary>
+<summary><picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/models/thinking-machines-white.png"><img src="docs/media/models/thinking-machines.png" height="22" alt="Thinking Machines" align="middle"></picture> &nbsp;<b>Inkling 2 Mini</b></summary>
 
 | Provider | Choices |
 | --- | --- |
-| **Strata native (`.strata`)** | [SQ-64, SQ-96, SQ-128](https://huggingface.co/strata-engine/Hy4-Flash-Strata) (with Engram shard on SSD, DFly2 drafter, and vision; base model: [tencent/Hy4-flash](https://huggingface.co/tencent/Hy4-flash)). |
+| **Strata** | SQ-20 (19.35 GB), SQ-15 (14.35 GB), SQ-10 (10.47 GB) |
+| **Unsloth** | UD-Q8\_K\_XL (22.87 GB), UD-Q4\_K\_XL (17.63 GB), UD-Q4\_K\_M (16.61 GB), UD-IQ4\_XS (15.73 GB), UD-Q3\_K\_XL (13.63 GB), UD-IQ3\_XXS (11.66 GB), UD-Q2\_K\_XL (9.14 GB), UD-IQ2\_XXS (8.49 GB), UD-IQ1\_M (8.02 GB), UD-IQ1\_S (7.76 GB) |
 
-[Compare sizes, memory needs and compatibility](docs/MODELS.md#tencent-hy4-flash).
+SQ-20 is made for a 24 GiB graphics card, SQ-15 for 16 GiB and SQ-10 for 12 GiB. A 4 GiB card is enough to start.
 
-</details>
-
-<details>
-<summary><b>Inkling-2-Mini</b></summary>
-
-| Provider | Choices |
-| --- | --- |
-| **Strata native (`.strata`)** | [SQ-10, SQ-15, SQ-20](https://huggingface.co/strata-engine/Inkling-2-Mini-Strata) (with built-in DSpark drafter and vision; base model: [thinkingmachines/Inkling-2-Mini](https://huggingface.co/thinkingmachines/Inkling-2-Mini)). |
-| **Unsloth GGUF** | [UD-IQ1\_S through UD-Q8\_K\_XL](https://huggingface.co/unsloth/Inkling-2-Mini-GGUF) (with companion DSpark drafter and vision). |
-
-[Compare sizes, memory needs and compatibility](docs/MODELS.md#inkling-2-mini).
+[Strata packs on Hugging Face](https://huggingface.co/strata-engine/Inkling-2-Mini-Strata) · [Unsloth GGUF files](https://huggingface.co/unsloth/Inkling-2-Mini-GGUF)
 
 </details>
 
@@ -168,6 +174,13 @@ Run **`strata connect`** to see setup instructions for your tool. [Connection gu
 
 [All guides](docs) · [Troubleshooting](docs/TROUBLESHOOTING.md) · [Report a bug](https://github.com/Niko1221/Strata/issues/new/choose) ·
 [Benchmarks](docs/COMMUNITY_BENCHMARKS.md) · [How it works](docs/HOW_IT_WORKS.md) · [Contribute](.github/CONTRIBUTING.md)
+
+## Sponsors of Strata
+
+<!-- Sponsor logos: one centred row with room for five, each 130 px wide. Add the next sponsor after Olares, with &nbsp;&nbsp;&nbsp;&nbsp; between two logos. -->
+<p align="center">
+  <a href="https://www.olares.com/one"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/sponsors/olares-logo-white.svg"><img src="docs/media/sponsors/olares-logo-color.svg" alt="Olares" title="Olares" width="130"></picture></a>
+</p>
 
 ## Support Strata
 

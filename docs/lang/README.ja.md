@@ -44,11 +44,40 @@
 </details>
 
 <details>
+<summary><img src="../media/models/hunyuan.svg" width="22" alt="" align="middle"> &nbsp;<b>Tencent Hy4-Flash</b></summary>
+
+| パック | メモリ (RAM) | グラフィックスカード |
+| --- | --- | --- |
+| **SQ-64** | 64 GiB | 8、12 または 16 GiB |
+| **SQ-96** | 96 GiB | 8 または 12 GiB |
+| **SQ-128** | 128 GiB | 8 または 12 GiB |
+
+名前の数字は、そのパックが想定しているメモリ容量 (RAM) です。
+
+[Hugging Face の Hy4-Flash パック](https://huggingface.co/strata-engine/Hy4-Flash-Strata)
+
+</details>
+
+<details>
 <summary><img src="../media/models/qwen.svg" width="22" alt="" align="middle"> &nbsp;<b>Qwen3.6-35B-A3B</b></summary>
 
 **Unsloth:** UD-Q4_K_XL, UD-Q6_K_XL, Q8_0。現在、このモデルで文書化されているパックです。
 
 [モデルガイドと互換性](../QWEN36.md)。
+
+</details>
+
+<details>
+<summary><picture><source media="(prefers-color-scheme: dark)" srcset="../media/models/thinking-machines-white.png"><img src="../media/models/thinking-machines.png" height="22" alt="Thinking Machines" align="middle"></picture> &nbsp;<b>Inkling 2 Mini</b></summary>
+
+| 提供元 | 選択肢 |
+| --- | --- |
+| **Strata** | SQ-20 (19.35 GB), SQ-15 (14.35 GB), SQ-10 (10.47 GB) |
+| **Unsloth** | UD-Q8\_K\_XL (22.87 GB), UD-Q4\_K\_XL (17.63 GB), UD-Q4\_K\_M (16.61 GB), UD-IQ4\_XS (15.73 GB), UD-Q3\_K\_XL (13.63 GB), UD-IQ3\_XXS (11.66 GB), UD-Q2\_K\_XL (9.14 GB), UD-IQ2\_XXS (8.49 GB), UD-IQ1\_M (8.02 GB), UD-IQ1\_S (7.76 GB) |
+
+SQ-20 は 24 GiB、SQ-15 は 16 GiB、SQ-10 は 12 GiB のグラフィックスカード向けです。4 GiB のカードから始められます。
+
+[Hugging Face の Strata パック](https://huggingface.co/strata-engine/Inkling-2-Mini-Strata) · [Unsloth GGUF ファイル](https://huggingface.co/unsloth/Inkling-2-Mini-GGUF)
 
 </details>
 
@@ -125,6 +154,7 @@ strata launch
 | **Intel Arc · Linux** | [Intel のセットアップ](../INTEL_ARC.md) |
 | **Apple Silicon · M1 以降** | [Mac のセットアップ](../MAC.md) |
 | **AMD Ryzen AI Max · Strix Halo** | [Strix Halo のセットアップ](../STRIX_HALO.md) |
+| **NVIDIA DGX Spark · Linux** | [DGX Spark のセットアップ](../DGX_SPARK_LINUX.md) |
 
 <a id="using-it"></a>
 
@@ -143,6 +173,13 @@ strata launch
 
 [すべてのガイド](..) · [トラブルシューティング](../TROUBLESHOOTING.md) · [不具合を報告](https://github.com/Niko1221/Strata/issues/new/choose) ·
 [ベンチマーク](../COMMUNITY_BENCHMARKS.md) · [仕組み](../HOW_IT_WORKS.md) · [貢献する](../../.github/CONTRIBUTING.md)
+
+## Strata のスポンサー
+
+<!-- Sponsor logos: one centred row with room for five, each 130 px wide. Add the next sponsor after Olares, with &nbsp;&nbsp;&nbsp;&nbsp; between two logos. -->
+<p align="center">
+  <a href="https://www.olares.com/one"><picture><source media="(prefers-color-scheme: dark)" srcset="../media/sponsors/olares-logo-white.svg"><img src="../media/sponsors/olares-logo-color.svg" alt="Olares" title="Olares" width="130"></picture></a>
+</p>
 
 ## Strata を支援する
 
