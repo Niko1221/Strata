@@ -36728,6 +36728,41 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_Q8_V70",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/kernels/cuda/native_mmvq.cu",
+     "line": 1628,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/NVIDIA_V100.md:67"
+   ],
+   "first_commit": "9b9189a6b0",
+   "first_date": "2026-11-22",
+   "since": null,
+   "last_commit": "9b9189a6b0",
+   "last_date": "2026-11-22",
+   "status": "opt-in",
+   "owner": "kernels/cuda",
+   "note": "Volta (sm_70) only: the dense Q8_0 GEMV of 2-4 columns with its block loop unrolled (n_in a multiple of 1024), bitwise the default kernel; not taken with STRATA_TSUM=1.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_QFUSE",
    "backends": [
     "cuda-hip",
