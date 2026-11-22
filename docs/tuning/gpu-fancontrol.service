@@ -1,0 +1,13 @@
+# /etc/systemd/system/gpu-fancontrol.service
+[Unit]
+Description=GPU-temp-linked chassis fan control (Super I/O PWM)
+
+[Service]
+# Quote the path if it contains spaces — unquoted spaces give status=203/EXEC.
+ExecStart="/usr/local/sbin/gpu-fancontrol.sh"
+Restart=always
+RestartSec=5
+Nice=-5
+
+[Install]
+WantedBy=multi-user.target

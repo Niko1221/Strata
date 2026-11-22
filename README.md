@@ -44,7 +44,8 @@ upstream targets gfx906 prompt-path performance.
   ceiling on used HBM2). Without proper PPTable/clocks you will see lower
   numbers and intermittent hangs — that is a hardware layer, not this build.
   Our exact profile, boot-persistence unit, and the pitfalls we hit:
-  [`docs/tuning/`](docs/tuning/).
+  [`docs/tuning/`](docs/tuning/). GPU-temp-linked chassis fans on
+  motherboard headers: [`docs/tuning/fan-control.md`](docs/tuning/fan-control.md).
 - **NUMA matters.** On the 2990WX we pin to the two RAM-bearing nodes
   (`--membind=0,2`, CPUs 0-15,32-47). Wrong-NUMA placement costs real tok/s.
 - Docker, `/dev/kfd` + `/dev/dri` exposed, `memlock` unlimited.

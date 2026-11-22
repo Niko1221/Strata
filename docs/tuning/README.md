@@ -36,3 +36,9 @@ engine — a box without it runs, just slower and less predictably.
 Pitfall we hit: a non-amdgpu display card breaks `amdmemtweak` enumeration
 and the service fails silently at boot (cards revert to stock clocks).
 Symptom/fix: `journalctl -u mi50-tuning` + `cat /sys/kernel/debug/dri/*/name`.
+
+## Chassis fans
+
+GPU-temp-linked chassis fan control on motherboard headers (Super I/O PWM,
+the firmware-fights-you pitfalls, header current ratings):
+**[fan-control.md](fan-control.md)**.
