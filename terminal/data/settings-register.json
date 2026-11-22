@@ -42204,6 +42204,66 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_SYCL_BMG_EXPERT_WINDOW",
+   "backends": [
+    "sycl"
+   ],
+   "reads": [
+    {
+     "file": "engine/sycl/src/bmg_prefill_options.hpp",
+     "line": 22,
+     "backend": "sycl",
+     "fn": "env_tri"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/INTEL.md:388"
+   ],
+   "status": "rollback",
+   "owner": "sycl",
+   "note": "Eligible streamed Battlemage models reuse weights across chunks when expert TLA is built. Set to 0 to disable only the window.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_SYCL_BMG_ROUTED_EXPERTS",
+   "backends": [
+    "sycl"
+   ],
+   "reads": [
+    {
+     "file": "engine/sycl/src/bmg_prefill_options.hpp",
+     "line": 17,
+     "backend": "sycl",
+     "fn": "env_tri"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/INTEL.md:387"
+   ],
+   "status": "rollback",
+   "owner": "sycl",
+   "note": "Eligible Battlemage queues group native routed expert work automatically. Set to 0 to disable the routed optimizations and expert window.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_SYCL_DEQUANT_GU_BOUNDED",
    "backends": [
     "sycl"
