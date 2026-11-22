@@ -66,3 +66,50 @@ author kuraneko1 (_ryu15_) in code and docs.
   additive with defaults, but full Q38/DS4 regression build and tests are not yet run.
 - Windows Authenticode signing absent; ed25519 component signature checks removed by
   user decision; SHA-256 digest verification retained. `releaseQualified=false`.
+
+## Full build, install verification and publication (2026-11-22)
+- Host UI rebuilt with pinned Node 24.22.3 + prepared public assets (STRATA_PUBLIC_PACKAGE=1,
+  STRATA_PUBLIC_ASSETS, STRATA_PUBLIC_ASSETS_RECEIPT) — exit 0.
+- `verify-release.mjs` (Node 24.22.3, digest-based, STRATA_Q38_PREVIEW_COMPONENT_DIR
+  = 0.6.4 preview, 152 files): exit 0, "Release payload verified: Hakua 0.7.3".
+- Full `npx tauri build --bundles nsis` with C:-drive target (v072-target), 5 jobs:
+  BUILD_EXIT=0, NSIS `Strata_0.7.3_x64-setup.exe` 121.24 MiB / 127,127,684 bytes,
+  SHA-256 `baf25ef97cc5c6336426faeeed0448e24c99af37297f7e442dae2a43eceba3e5`.
+- tar (Copy-mode) + tar.7z: `Strata-0.7.3-windows-x64.tar.7z` 127,130,786 bytes,
+  SHA-256 `9ca7651ecddb0f684372899239ef83afe3b6efdfda3b17a0fa541062acb62517`.
+- NSIS upgrade fixtures (`tools/test_nsis_upgrade.ps1`): 6/6 ok=true, exit 0.
+- Real installer overwrite E2E (isolated fixture, `/S /D=<fixture>\app`, uninstall
+  registry backed up then restored): exit 0; strata-desktop.exe replaced
+  (old 2519bd44... -> new 05618eb0...), user-data sentinel preserved byte-identical,
+  Control bundle staged; registry restored to 0.7.1 / real install path.
+- Tag `v0.7.3` annotated + pushed; main pushed at 2f1061fc3.
+- GitHub release created with `--latest`, 4 assets uploaded/readback `state=uploaded`
+  and SHA-256 matching local:
+  - Strata-0.7.3-windows-x64-setup.exe  baf25ef9...e5
+  - Strata-0.7.3-windows-x64.tar.7z     9ca7651e...17
+  - strata-engine-0.6.4-...tar.gz       607a7bd1...9d (reused, verified)
+  - strata-hy4-0.1.64-...tar.gz         fad3a195...91 (reused, verified)
+  GitHub Latest = v0.7.3.
+- Worktree consolidation: removed `integrate-upstream-0218` (clean) and
+  `v065-app-only-correction` (13 uncommitted files backed up and byte-verified to
+  H:/Strata/evidence/v065-worktree-uncommitted-backup-20261122 before --force removal).
+  Only C:/Users/downl/Documents/ChatGPT/Strata on main remains.
+- Build-artifact cleanup: user chose "large cleanup including old build caches";
+  plan prepared at H:/Strata/evidence/cleanup-plan-20261122.ps1. Removed 98 dirs /
+  ~148 GB (61 build caches, 33 old release dirs, 2 temp patch dirs, current-session
+  inkling2 build + v073 E2E fixture + published-local copy). 0 failures.
+- Cleanup-script bug (recorded honestly): the preserve comparison used forward-slash
+  paths against `Get-ChildItem.FullName` (backslashes), so two intended-preserved
+  dirs were deleted: `stable-060 inputs` (verify public assets + provenance) and
+  `v072-component` (reused engine/hy4 source). Both were restored:
+  - v072-component: re-downloaded engine 0.6.4 (SHA 607a7bd1...) and hy4 0.1.64
+    (SHA fad3a195...) from the published v0.7.3 GitHub release; SHA matched.
+  - stable-060 inputs: `public-assets` (20 files) reconstructed from app/host/dist
+    using release-build.json recipe/publicAssets SHA (all 20 matched), and the
+    provenance receipt regenerated as
+    `{lucide_commit: 03f11e2d..., files: <recipe.publicAssets>}` at
+    inputs/lucide-sources/provenance.json via H:/Strata/evidence/restore-verify-inputs.py.
+  - `verify-release.mjs` re-run with restored inputs: exit 0 (verify-073-restored.log).
+  Preserved intact: preview-components/0.6.4-9b27b-unsigned (verify companion),
+  all research/, all _docs, evidence receipts/logs, model weights, the git repo,
+  and the v073-regbak / v065-uncommitted-backup safety dirs.
