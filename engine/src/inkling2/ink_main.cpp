@@ -428,10 +428,10 @@ int main(int argc, char** argv) {
                    "  --version\n"
                    "  --info PATH [--vision VISION] [--dspark PATH]\n"
                    "  --export-tokenizer PATH OUT_DIR\n"
-                   "  --selfcheck [--native PATH] [--verify-hash] [--cpu] [--gpus 1|2] [--kv fp16|fp8|k8v8|k8v4]\n"
-                   "  --bench --native PATH [--parallel 1..64] [--gpus 1|2] [--ep-split F] [--vram-reserve-mib N] [--cpu-threads N] [--kv auto|fp16|fp8|k8v8|k8v4] [--prompt-len N] [--gen N]\n"
+                   "  --selfcheck [--native PATH] [--verify-hash] [--cpu] [--gpu N] [--gpus 1|2] [--kv fp16|fp8|k8v8|k8v4]\n"
+                   "  --bench --native PATH [--gpu N] [--parallel 1..64] [--gpus 1|2] [--ep-split F] [--vram-reserve-mib N] [--cpu-threads N] [--kv auto|fp16|fp8|k8v8|k8v4] [--prompt-len N] [--gen N]\n"
                    "  --kld-eval REF.bin --native PATH\n"
-                   "  --serve --native PATH [--vision VISION] [--dspark PATH] [--max-context N] [--parallel 1..64] [--gpus 1|2] [--draft auto|dspark|off]\n",
+                   "  --serve --native PATH [--vision VISION] [--dspark PATH] [--gpu N] [--max-context N] [--parallel 1..64] [--gpus 1|2] [--draft auto|dspark|off]\n",
                    INKLING_VERSION);
             return 0;
         } else {

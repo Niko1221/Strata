@@ -56,6 +56,17 @@ inline bool seek_abs(FILE* fp, uint64_t off) {
 #endif
 }
 
+inline void apply_gpu_index(int idx, int gpus) {
+    // --gpu N (BackendOpts::gpu_index) picks the Level-Zero device the same way the CUDA and
+    // HIP backends use it (cudaSetDevice/hipSetDevice): through the runtime's selector, which
+    // Q() honors whenever ONEAPI_DEVICE_SELECTOR is not already set. 0 is the "not said"
+    // default, so the no-flag start keeps the selector's own pick unchanged; --gpus 2 needs
+    // both devices visible and is never overridden. This runtime parses the two-component
+    // "level_zero:N" form; the three-component "level_zero:gpu:N" aborts with "Too many colons".
+    if (idx <= 0 || gpus >= 2 || std::getenv("ONEAPI_DEVICE_SELECTOR")) return;
+    sy_setenv("ONEAPI_DEVICE_SELECTOR", ("level_zero:" + std::to_string(idx)).c_str(), 1);
+}
+
 inline sycl::queue& Q() {
     static sycl::queue q = [] {
         if (!std::getenv("ONEAPI_DEVICE_SELECTOR")) {

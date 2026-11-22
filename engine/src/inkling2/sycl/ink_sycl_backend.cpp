@@ -40,6 +40,7 @@ public:
     }
 
     bool init(const InkModelFile& model, const BackendOpts& opts, std::string& err) override {
+        ink_sycl::apply_gpu_index(opts.gpu_index, opts.gpus);   // before the first Q()/dev_caps() touch
         kv_dtype_ = opts.kv_dtype;
         const int par = std::max(1, std::min(64, opts.parallel));
         const int ctx = std::max(256, opts.max_ctx);
@@ -160,6 +161,7 @@ public:
     }
 
     bool selfcheck(std::string& err) override {
+        ink_sycl::apply_gpu_index(pending_gpu_index_, pending_gpus_);   // --gpu N selects the device with or without --native
         StepBatch b;
         b.push(0, 0, 1, true);
         std::vector<float> lg((size_t)mod_.man.c.vocab_unpadded);
@@ -178,10 +180,20 @@ private:
     std::vector<uint8_t> slot_used_;
     int active_slots_ = 0;
     KvDtype kv_dtype_ = KvDtype::FP16;
+    // Set by make_sycl_backend (the factory is the one place every entry point goes through):
+    // the no-model --selfcheck applies them itself; the model paths apply them in init.
+    friend std::unique_ptr<InkBackend> make_sycl_backend(const BackendOpts* opts);
+    int pending_gpu_index_ = 0;
+    int pending_gpus_ = 1;
 };
 
-std::unique_ptr<InkBackend> make_sycl_backend() {
-    return std::make_unique<SyclInkBackend>();
+std::unique_ptr<InkBackend> make_sycl_backend(const BackendOpts* opts) {
+    auto b = std::make_unique<SyclInkBackend>();
+    if (opts) {
+        b->pending_gpu_index_ = opts->gpu_index;
+        b->pending_gpus_ = opts->gpus;
+    }
+    return b;
 }
 
 }  // namespace ink2
