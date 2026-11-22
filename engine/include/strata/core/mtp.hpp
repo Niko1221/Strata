@@ -79,9 +79,12 @@ public:
     static bool top2_env();
     /// STRATA_MTP_HEAD_INDEX=1 (opt-in): the draft head reads its subset's rows from the main head by index
     /// (native_mmvq_rows) instead of a copy of them - the same logits bit for bit, without the copy's VRAM (178 MiB for
-    /// Qwen3.8-Flash-Next's 106,299 tokens).  bind_bytes does not count the rows; bind keeps the copy, and says so,
-    /// where it cannot apply (not Q5_K, the head on another card, --mtp-q4 head).  DFlash2 does not share such a head.
+    /// Qwen3.8-Flash-Next's 106,299 tokens).  Where it cannot apply (mtp_draft_head_by_index: not Q5_K, any HIP build, the
+    /// head on another card or on the host, --mtp-q4 head) bind keeps the copy, says so, and bind_bytes counts it.  A
+    /// DFlash2 drafter does not share such a head: it keeps its own copy, so with DFlash2 the switch saves nothing.
     static bool head_index_env();
+    /// whether bind did read the subset's rows in the head by index (STRATA_MTP_HEAD_INDEX)
+    bool draft_head_indexed() const { return dhead_index_; }
     int32_t top2(int j) const { return j >= 0 && j < (int) top2_.size() ? top2_[(size_t) j] : -1; }
     int max_t() const { return max_t_; }
     uint64_t vram_bytes() const { return vram_; }
@@ -109,9 +112,10 @@ public:
     /// KV streaming: refill the ring of the drafter's window from its host copy for a sequence that continues at
     /// `upto` (a conversation-cache resume). No-op unless the drafter's K/V is a ring.
     void kv_restore(int64_t upto);
-    /// The VRAM bind() will allocate for a native head of `head_row_bytes` per vocabulary row: the draft logits and
-    /// the draft head over rt/draft_vocab.bin's subset.  The expert cache is sized before bind(), so it reserves this.
-    uint64_t bind_bytes(uint64_t head_row_bytes, int64_t n_vocab) const;
+    /// The VRAM bind() will allocate for the native head `head` (where it is now): the draft logits and the draft head over
+    /// rt/draft_vocab.bin's subset - its rows unless bind will read them in `head` by index (the rule bind applies).  The
+    /// expert cache is sized before bind(), so it reserves this; price again if the head moves (NativeHead::to_host).
+    uint64_t bind_bytes(const NativeHead* head, int64_t n_vocab) const;
     /// The main model's embedding and head, and the verify window's final residuals (T rows, hc*n_embd each).
     bool bind(const WeightTable& wt, const NativeHead* head, const float* window_R, std::string& err,
               const MtpDrafter* shared = nullptr);
@@ -336,6 +340,8 @@ private:
     bool owns_draft_head_ = true;
     bool dhead_plain_ = false;               ///< the subset is the main head's rows as gathered (no Q4_0 copy, no repack)
     bool dhead_index_ = false;               ///< STRATA_MTP_HEAD_INDEX: dhead_ is the main head itself (not owned), read by dvocab_
+    /// mtp_draft_head_by_index for `head` and the subset's id bytes: the one rule of bind and bind_bytes
+    bool head_by_index(const NativeHead* head, const std::vector<uint8_t>& ids, int64_t n_vocab) const;
     void* state_arena_ = nullptr;
     QsaState st_;
     void* arena_ = nullptr;

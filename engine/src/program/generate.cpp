@@ -8130,13 +8130,16 @@ int main(int argc, char** argv) {
             sh.rows = hv.rows; sh.vocab_dev = hv.vocab_dev; sh.vocab_host = hv.vocab_host; sh.n = hv.n; sh.type = hv.type;
             df2.share_head(sh);
         }
+        if (!o.mtp.empty() && mtp.draft_head_indexed())
+            std::fprintf(stderr, "strata generate: STRATA_MTP_HEAD_INDEX=1 saves nothing with DFlash2: the MTP draft head reads the "
+                                 "main head by index, and the DFlash2 drafter keeps its own copy of the rows\n");
 #endif
     };
     auto df2_head_bytes = [&]() -> int64_t {
         if (df2_expect_share) return 0;   // (its logits are in the 48 MiB the callers add)
         if (strata::core::Dflash2Drafter::head_native()) return (int64_t) 7 * n_vocab * (int64_t) sizeof(float);   // STRATA_DF2_HEAD=native: no pruned copy, the logits of every row
         // (STRATA_MTP_HEAD_INDEX: the MTP's bind_bytes leaves out the rows the DFlash2 still copies, so the file's formula below)
-        if (!df2_solo && !strata::core::MtpDrafter::head_index_env()) return (int64_t) mtp.bind_bytes(native_head.row_bytes(), n_vocab);
+        if (!df2_solo && !strata::core::MtpDrafter::head_index_env()) return (int64_t) mtp.bind_bytes(&native_head, n_vocab);
         int64_t bytes = (int64_t) std::min(o.spec, (int) strata::kernels::kVerifyNarrowT) * n_vocab * (int64_t) sizeof(float);
         if (FILE* f = std::fopen(df2_vocab_path().c_str(), "rb")) {
             std::fseek(f, 0, SEEK_END);
@@ -8486,12 +8489,12 @@ int main(int argc, char** argv) {
                     } else {
                         const int64_t pf_mib = (o.prefill_chunk > 0 && !pf_borrow) ? 160 + (o.prefill_chunk * 680) / 1024 : 0;
                         int64_t mtp_b = (!o.mtp.empty() && native_head.loaded())
-                                            ? (int64_t) mtp.bind_bytes(native_head.row_bytes(), n_vocab) : 0;
+                                            ? (int64_t) mtp.bind_bytes(&native_head, n_vocab) : 0;
 #if defined(STRATA_HAVE_DFLASH2)
                         if (use_df2 && native_head.loaded()) mtp_b += df2_head_bytes() + (48 << 20) + (o.serve ? (112 << 20) : 0);   // DFlash2's own draft head and logits (serve: and the prompt staging)
 #endif
                         if (stages.empty())
-                            for (const auto& d : slot_mtp) mtp_b += (int64_t) d->bind_bytes(native_head.row_bytes(), n_vocab);
+                            for (const auto& d : slot_mtp) mtp_b += (int64_t) d->bind_bytes(&native_head, n_vocab);
                         const int64_t pipe_b = o.pipeline_windows <= 0 ? 0
                             : (kPipeWindowMib << 20) + (o.pipeline_windows >= 2 ? 2 * (int64_t) gdn_snapshot_bytes(ss) : 0);
                         const int64_t room = (int64_t) strata::core::device_free_bytes() -
@@ -8817,17 +8820,23 @@ int main(int argc, char** argv) {
         const int64_t prefill_mib = owned_prefill_mib();
         // the draft layer's head and logits are allocated when it binds, after this: 0.1.27's CJK subset made them
         // ~110-180 MiB larger, and out of the reserve they left 16 GB cards below the stall line (#199)
-        int64_t mtp_bind = (!o.mtp.empty() && native_head.loaded())
-                               ? (int64_t) mtp.bind_bytes(native_head.row_bytes(), n_vocab)
-                               : (mtp_first && last_st->head.loaded()) ? (int64_t) mtp.bind_bytes(last_st->head.row_bytes(), n_vocab) : 0;
-        // (with a layer split the slot drafters bind on the last stage, whose cache is sized from what is free there)
-        if (stages.empty())
-            for (const auto& d : slot_mtp)
-                mtp_bind += (int64_t) d->bind_bytes(native_head.row_bytes(), n_vocab);
+        // (priced where the head is now: drafter_bind runs again if the head moves to the host below)
+        auto drafter_bind = [&]() -> int64_t {
+            int64_t b = (!o.mtp.empty() && native_head.loaded())
+                            ? (int64_t) mtp.bind_bytes(&native_head, n_vocab)
+                            : (mtp_first && last_st->head.loaded()) ? (int64_t) mtp.bind_bytes(&last_st->head, n_vocab) : 0;
+            // (with a layer split the slot drafters bind on the last stage, whose cache is sized from what is free there)
+            if (stages.empty())
+                for (const auto& d : slot_mtp)
+                    b += (int64_t) d->bind_bytes(&native_head, n_vocab);
+            return b;
+        };
+        const int64_t drafter_bind0 = drafter_bind();
+        int64_t mtp_bind = drafter_bind0;
 #if defined(STRATA_HAVE_DFLASH2)
         if (use_df2 && native_head.loaded()) mtp_bind += df2_head_bytes() + (48 << 20) + (o.serve ? (112 << 20) : 0);   // DFlash2's own draft head and logits (serve: and the prompt staging), bound after this
 #endif
-        const int64_t reserve = (((int64_t) o.vram_reserve_mib + prefill_mib) << 20) + mtp_bind + pipe_first;
+        int64_t reserve = (((int64_t) o.vram_reserve_mib + prefill_mib) << 20) + mtp_bind + pipe_first;
         const int64_t blob = (int64_t) nibble_max_slot_bytes();   // max_blob (STRATA_EXPERT_NIBBLE: or a larger 4-bit slot)
         // #496: the least a working cache needs (the verify window cannot start without one, #174): a cache too small to lend the prompt path a
         // 256-token chunk's buffers (plus the 128 slots a loan leaves; one slot without --prefill) makes it allocate its own on top
@@ -8963,6 +8972,12 @@ int main(int argc, char** argv) {
             std::getenv("STRATA_HEAD_HOST_OFF") == nullptr && std::getenv("STRATA_SPILL_OFF") == nullptr && spill_discrete_gpu()) {
             std::string herr;
             if (native_head.to_host(herr)) {
+                // STRATA_MTP_HEAD_INDEX: a head on the host is no longer read by index, so the draft head's copy is back in
+                // the reserve (#199); with the switch off nothing changes here
+                if (const int64_t more = drafter_bind() - drafter_bind0; more != 0) {
+                    mtp_bind += more;
+                    reserve += more;
+                }
                 free_b = strata::core::device_free_bytes();
                 strata::core::AutoCacheSlots a2 = strata::core::auto_cache_slots((int64_t) free_b, reserve, blob, min_slots, strata::qwen_defaults_026() ? 0 : strata::core::kLateAllocMib);
                 int64_t s4 = a2.slots;
@@ -9468,7 +9483,7 @@ int main(int argc, char** argv) {
         // they come out of the cache here.  Out of the reserve instead, a later card without a display (300 MiB)
         // had no room left for them: "mtp: the draft head does not fit" on two 16 GB cards.  (Strata-DualGPU)
         const int64_t draft_head = (&st == last_st && !o.mtp.empty() && st.head.loaded() && !mtp_first)
-                                       ? (int64_t) mtp.bind_bytes(st.head.row_bytes(), n_vocab) : 0;
+                                       ? (int64_t) mtp.bind_bytes(&st.head, n_vocab) : 0;
         int64_t room = stage_room(st.dev, true, false) - draft_head;
         const strata::core::OnDevice on(st.dev);
 #if defined(STRATA_HAVE_DFLASH2)
@@ -9488,6 +9503,9 @@ int main(int argc, char** argv) {
             const uint64_t head_mib = st.head.weight_bytes() >> 20;
             if (st.head.to_host(herr)) {
                 room = stage_room(st.dev, true, false);
+                // STRATA_MTP_HEAD_INDEX: a head on the host is no longer read by index, so the rows draft_head left out come back
+                // (0 with the switch off)
+                if (draft_head != 0) room -= (int64_t) mtp.bind_bytes(&st.head, n_vocab) - draft_head;
                 std::fprintf(stderr, "strata generate: short of GPU memory: CUDA%d: the cache would have no room, so the output head (%llu MiB) moves to pinned host memory and is read over "
                                      "PCIe for every logits row: decode is slower; the room for experts is now %.2f GiB\n",
                              st.dev, (unsigned long long) head_mib, (double) room / 1073741824.0);
