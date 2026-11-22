@@ -261,20 +261,22 @@ Setup picks how it runs from the card:
   `--vram-reserve-mib N` keeps N MiB of the card free for other programs (1500 by default on a card that drives a
   display, less where the card has no room for it).
 
-  The engine needs at least 64 expert slots of each kind (about 2.5 GB) at every point of a conversation, so setup
-  picks the longest context that keeps them, counting what a desktop already holds on the card:
+  The engine keeps at least 64 expert slots of each kind (about 2.5 GB) at every point of a conversation: a long
+  prompt is read in smaller pieces near that limit, and a prompt that does not fit even then gets a plain error ("the
+  context is full") while the model keeps running. Setup picks the longest context that never reaches that point,
+  counting what a desktop already holds on the card, with 16-bit conversation memory where it reaches 32K and 8-bit
+  (`--kv i8r`, the closest 8-bit format to full precision) where it does not:
 
-  | Card | Context | Conversation memory, prompt chunk |
+  | Card | Context | Conversation memory |
   | --- | ---: | --- |
-  | 8 GB, nothing else on it | 48K | 8-bit (`--kv k8v8`), 1024 |
-  | 8 GB driving a desktop | 32K | 8-bit, 256 (prompts are read about 3x slower) |
-  | 12 GB driving a desktop | 64K | 16-bit, 1024 |
-  | 16 GB driving a desktop | 128K | 16-bit, 1024 |
+  | 8 GB, nothing else on it | 32K | 16-bit |
+  | 8 GB driving a desktop | 32K | 8-bit (`i8r`) |
+  | 12 GB driving a desktop | 64K | 16-bit |
+  | 16 GB driving a desktop | 128K | 16-bit |
 
-  Measured on an RTX 3090 set up as an 8 GB card with a 500 MiB desktop: a 30K-token prompt and a 49K-token one were
-  read and answered with the 8-bit conversation memory and 256-token chunks (a 30K prompt in about 3 minutes); with
-  16-bit memory the engine stopped while growing past 8K tokens (1024 chunks) or past 24K (256 chunks). A
-  prompt longer than the context gets a plain error from the server.
+  Measured on an RTX 3090 set up as an 8 GB card with a 500 MiB desktop and 8-bit memory: a 30K-token prompt read
+  and answered (83 s to the end of the answer's 1,450 tokens), a 55K-token prompt refused with "the context is full"
+  after 41K tokens, and the next request answered by the same engine.
 
 The run config (`strata-inkling2-mini.json`) holds the engine's arguments; they can be edited there.
 
