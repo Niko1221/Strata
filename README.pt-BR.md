@@ -1,19 +1,19 @@
+## O que muda em 0.7.4
+
+Esta versão incorpora todas as alterações do upstream oficial **Niko1221/Strata v0.2.19** e mantém todos os recursos próprios do fork (Q38 27B/9B, DS4/DeepSeek, RAM32, Hakua UI/memória, habilidades de fluxo, 8 READMEs). O produto é **0.7.4**, a família de mecanismos nativos **0.6.6** e a API oficial segue Control/engines **0.1.65**. O v0.2.19 integra o Inkling-2 Mini em todos os backends e traz correções de bugs/segurança. A seleção automática de perfil SM x VRAM de Ryu (kuraneko1, MIT) foi incorporada ao Inkling-2 CUDA oficial com crédito. Verificação de assinatura removida; SHA-256 permanece. `releaseQualified=false` inalterado.
+
 # Hakua / Strata
 
 [English](README.md) · [日本語](README.ja.md) · [Deutsch](README.de.md) · [Español](README.es.md) · [Français](README.fr.md) · [Polski](README.pl.md) · [Português](README.pt-BR.md) · [简体中文](README.zh-CN.md)
 
 IA local para Windows com chat, trabalho de agente, pesquisa com fontes e escolha de modelos compatíveis. Hakua é o fork do zapabob baseado em Niko1221/Strata; é mantido de forma independente e não é uma distribuição endossada pelo projeto original.
 
-## O que muda em 0.7.3
-
-Esta versão incorpora todas as alterações do upstream oficial **Niko1221/Strata v0.2.18** e mantém todos os recursos próprios do fork. O mecanismo CUDA nativo agora é a **família 0.6.5** com tres componentes opcionais, e a versão do produto segue versionamento semântico 0.7.3. Inclui suporte ao Hy4-Flash 220B MoE (`strata-hy4` 0.1.64, Tree-8 CUDA Graphs, VNNI 1,5x), a API/configurações oficiais (Control e mecanismo 0.1.64) e correções do upstream. Um mecanismo Q38 recompilado suporta GGUF de 27B (64 camadas) e 9B (32 camadas) com vetores de controle; o mecanismo oficial do Hy4-Flash é distribuído como componente opcional separado. Por decisão do mantenedor, a verificação de assinatura ed25519 foi removida (sem chave de assinatura); os hashes SHA-256 permanecem como controle de integridade. Todas as 16 âncoras do fork (Q38, DS4, RAM32, Hakua, 8 idiomas) estão intactas, e a otimização de RAM de 32 GB foi mantida. A inferência de janela completa e a qualidade geral do modelo permanecem não qualificadas (`releaseQualified=false`). Um terceiro mecanismo opcional, `strata-inkling2` (Inkling-2 Mini, arch GGUF `inkling2`), foi portado de kuraneko1/Strata (MIT) por kuraneko1 (_ryu15_) com credito.
-
 ## Versão e downloads
 
 <!-- release-062-stable -->
-Versao atual do aplicativo: [0.7.3](https://github.com/zapabob/Strata/releases/tag/v0.7.3) (App `0.7.3`; Terminal, Control `0.6.3`; familia de mecanismo nativo `0.6.5`) — este e o GitHub Latest. O aplicativo Windows inclui a familia de mecanismos 0.6.5 (Q38 27B+9B recompilado, Hy4-Flash 0.1.64 oficial) como componentes opcionais separados. A verificacao de assinatura foi removida (sem chave); os hashes SHA-256 permanecem como controle de integridade. `releaseQualified=false` permanece; inferencia de janela completa e qualidade do modelo nao qualificadas. Um terceiro mecanismo opcional, `strata-inkling2` (Inkling-2 Mini, arch GGUF `inkling2`), foi portado de kuraneko1/Strata (MIT) por kuraneko1 (_ryu15_) com credito.
+Versao atual do aplicativo: [0.7.4](https://github.com/zapabob/Strata/releases/tag/v0.7.4) (App `0.7.3`; Terminal, Control `0.6.3`; familia de mecanismo nativo `0.6.5`) — este e o GitHub Latest. O aplicativo Windows inclui a familia de mecanismos 0.6.5 (Q38 27B+9B recompilado, Hy4-Flash 0.1.64 oficial) como componentes opcionais separados. A verificacao de assinatura foi removida (sem chave); os hashes SHA-256 permanecem como controle de integridade. `releaseQualified=false` permanece; inferencia de janela completa e qualidade do modelo nao qualificadas. Um terceiro mecanismo opcional, `strata-inkling2` (Inkling-2 Mini, arch GGUF `inkling2`), foi portado de kuraneko1/Strata (MIT) por kuraneko1 (_ryu15_) com credito.
 
-[0.7.3](https://github.com/zapabob/Strata/releases/tag/v0.7.3) · [EXE de instalação](https://github.com/zapabob/Strata/releases/download/v0.7.3/Strata-0.7.3-windows-x64-setup.exe) · [tar.7z](https://github.com/zapabob/Strata/releases/download/v0.7.3/Strata-0.7.3-windows-x64.tar.7z) · [SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.7.3/SHA256SUMS.txt) · [BUNDLE-SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.7.3/BUNDLE-SHA256SUMS.txt)
+[0.7.4](https://github.com/zapabob/Strata/releases/tag/v0.7.4) · [EXE de instalação](https://github.com/zapabob/Strata/releases/download/v0.7.4/Strata-0.7.4-windows-x64-setup.exe) · [tar.7z](https://github.com/zapabob/Strata/releases/download/v0.7.4/Strata-0.7.4-windows-x64.tar.7z) · [SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.7.4/SHA256SUMS.txt) · [BUNDLE-SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.7.4/BUNDLE-SHA256SUMS.txt)
 
 ![Hakua / Strata real-model Japanese chat on Qwen3.8-27B](docs/media/native-qwen38-japanese-chat.png)
 *Hakua / Strata Desktop executando `qwen3.8-27b-abliterated-3.69bpw-12GB-MTP.gguf` via `strata-q38.exe` (CUDA 13 / RTX 5060 Ti 16 GB).*

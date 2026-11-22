@@ -42,9 +42,15 @@ if(STRATA_BUILD_TESTS)
   add_executable(gfx12_extra_test src/core/gfx12_extra_test.cpp src/core/arch_defaults.cpp)   # gfx12 extra defaults and their off switches
   target_include_directories(gfx12_extra_test PRIVATE include)
   add_test(NAME gfx12_extra_test COMMAND gfx12_extra_test)
+  add_executable(gfx11_extra_test src/core/gfx11_extra_test.cpp src/core/arch_defaults.cpp)   # discrete RDNA3 (gfx1100/1101/1102) defaults and off switches
+  target_include_directories(gfx11_extra_test PRIVATE include)
+  add_test(NAME gfx11_extra_test COMMAND gfx11_extra_test)
   add_executable(nv_defaults_test src/core/nv_defaults_test.cpp src/core/nv_defaults.cpp)   # the sm_121 (GB10) table and its two off switches
   target_include_directories(nv_defaults_test PRIVATE include)
   add_test(NAME nv_defaults_test COMMAND nv_defaults_test)
+  add_executable(device_hits_plan_test src/core/device_hits_plan_test.cpp)   # partial-VRAM device hit planning and tail-skip renorm
+  target_include_directories(device_hits_plan_test PRIVATE include)
+  add_test(NAME device_hits_plan_test COMMAND device_hits_plan_test)
   add_executable(adapt_fetch_default_test src/core/adapt_fetch_default_test.cpp src/core/nv_defaults.cpp)   # STRATA_ADAPT_FETCH=2 for a 12.x card of 16 GiB or less: the rule, the off switches, the user's value
   target_include_directories(adapt_fetch_default_test PRIVATE include)
   add_test(NAME adapt_fetch_default_test COMMAND adapt_fetch_default_test)

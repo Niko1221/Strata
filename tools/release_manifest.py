@@ -49,7 +49,12 @@ LINES = [
     ("docs/INSTALL.md", r"\(version " + V + r"\)", ["product_version"]),
     ("docs/AI_SETUP.md", r"install Strata \(version " + V + r"\)", ["product_version"]),
     ("docs/SOURCE_INSTALL.md", r"use Strata \(version " + V + r"\)", ["product_version"]),
-    ("AGENTS.md", r"Keep upstream Niko1221 " + V + r" at", ["product_version"]),
+    # Upstream v0.2.19 reworded the AGENTS.md version line; the version and the
+    # three installer asset names are now on separate lines.
+    ("AGENTS.md", r"Version " + V + r", engine " + V + r"\.", ["product_version", "engine_version"]),
+    ("AGENTS.md", r"Strata-" + V + r"-windows-x64-setup\.exe", ["product_version"]),
+    ("AGENTS.md", r"Strata-" + V + r"-linux-x86_64\.AppImage", ["product_version"]),
+    ("AGENTS.md", r"Strata-" + V + r"-macos-arm64\.dmg", ["product_version"]),
     ("docs/AI_REFERENCE.md", r"against the " + V + r" release tree \(app and Terminal " + V + r"; Control " + V + r", engines " + V + r"\)",
      ["product_version", "product_version", "control_version", "engine_version"]),
     ("tools/packaging/UPDATES.md", r"one per OS \(" + V + r"\)", ["product_version"]),

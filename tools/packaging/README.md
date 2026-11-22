@@ -1,39 +1,11 @@
 # Strata packaging: targets, recipes and locks
 
 This page is for developers who build the desktop app, the Terminal archive and the engine packages. To install Strata, use
-[docs/INSTALL.md](../../docs/INSTALL.md). It describes the current release (app and Terminal 0.2.18, Control 0.1.64, engines 0.1.64).
-This page is for developers who build the desktop app, Terminal and engine packages.
-Upstream reference: app and Terminal 0.2.15, Control 0.1.61, engines 0.1.60.
-The Hakua fork uses independent versions; its current source candidate is 0.6.0.
-To install the fork on Windows, use [docs/HAKUA_INSTALL.md](../docs/HAKUA_INSTALL.md).
-The cross-platform recipes below describe upstream builds, not measured Hakua
-inference on every platform.
-The Windows fork keeps the upstream per-user Tauri NSIS layout, private Node and
-Python, and independently signed engine/Control packages. Its tar.7z contains
-the identical installer plus components, instructions and checksums. Model
-weights and personal data are excluded. Component/feed signatures are separate
-from Windows Authenticode; the installer has no Windows code signature.
-Actual build, installation, publication and qualification evidence belongs in
-[HAKUA_RELEASE.md](../docs/HAKUA_RELEASE.md); old measurements remain historical.
-Before staging the Windows app, run
-`node apps/desktop/scripts/stage-rustxng.mjs --execute` from the repository root.
-It verifies the pinned RustXNG Full binary, attribution and corresponding source.
-The files remain under installer-managed `harness/rustxng`, with normal NSIS
-upgrade cleanup. Never substitute an old signed component for a newly labelled
-source build. Preserve the 3 GiB RAM, 4 GiB commit and disk floors and use at
-most five compiler jobs for this PC's candidate builds.
+[docs/INSTALL.md](../../docs/INSTALL.md). It describes the current release (app and Terminal 0.2.19, Control 0.1.65, engines 0.1.65).
 How packages are signed and published is in [UPDATES.md](UPDATES.md), and the package format is in [ENGINE-COMPONENT.md](ENGINE-COMPONENT.md).
 
 Release assets show what was published; the platform guides and retained reports show what was tested. A published package does not
 qualify every GPU, model or feature on its platform.
-
-The preview's tar.7z uses Copy mode for already-compressed EXE/gzip/ZIP inputs.
-Its entire streamed member set was compared by size/SHA256. The initial055
-readback stopped at the existing3GiB RAM floor during a running user model;
-the drained failure remains. User-approved normal unload preceded the complete
-passing readback, without changing payloads/floors. The earlier054 LZMA failure
-also stays separate. See [_docs/release-055-20261111](../_docs/release-055-20261111)
-and the [publication log](../_docs/2026-11-11_preview-055-release_OpenCode.md).
 
 ## Quick start
 
@@ -72,9 +44,9 @@ The desktop bundle ships a pinned standalone Node beside the App Host, so an end
 (about 117 MB, an input rather than source). Fetch and verify it:
 
 ```sh
-apps/desktop/scripts/fetch-node.sh                 # host platform
-apps/desktop/scripts/fetch-node.sh --target linux-x64
-apps/desktop/scripts/fetch-node.sh --check         # verify what is installed
+app/desktop/scripts/fetch-node.sh                 # host platform
+app/desktop/scripts/fetch-node.sh --target linux-x64
+app/desktop/scripts/fetch-node.sh --check         # verify what is installed
 ```
 
 The script refuses an archive whose SHA-256 differs from the digest recorded for that target. The digests come from nodejs.org's
@@ -83,18 +55,8 @@ The script refuses an archive whose SHA-256 differs from the digest recorded for
 
 ## Desktop app
 
-For an app-only candidate with a separately shipped Windows engine, the optional
-`STRATA_NATIVE_SOURCE_ROOT` must name an absolute frozen source checkout.
-Also set `STRATA_NATIVE_SOURCE_COMMIT` to its full Git SHA and
-`STRATA_NATIVE_MANIFEST_SHA256` to the intended signed component manifest hash.
-The packaging guard still checks every native source, any recorded CUDA spill
-baseline, the engine bytes, manifest membership and signature using Control's
-built-in trusted keys. It prints the independent source binding without rewriting
-engine provenance. Omitting these variables keeps the strict app-root source check.
-The Windows NSIS installer still excludes GPU runtimes.
-
 ```sh
-cd apps/desktop
+cd app/desktop
 ./scripts/fetch-node.sh                                                      # the sidecar (once)
 npm install --prefix ../host && npm --prefix ../host run build                # the UI
 cargo tauri build --bundles app                                              # macOS: Strata.app
@@ -113,7 +75,7 @@ release PC ([UPDATES.md](UPDATES.md#releasing)).
 
 The installer carries Control, and on a Mac the Metal engine too. Neither fetches anything when it runs.
 
-**Control** (`<install>/control`, built by `apps/desktop/scripts/stage-control.py`) is the same bundle as the Terminal archive:
+**Control** (`<install>/control`, built by `app/desktop/scripts/stage-control.py`) is the same bundle as the Terminal archive:
 the pinned CPython 3.12.15, the hash-locked wheels, `strata_control`, `strata_cli` and `serve`, plus a `BUNDLE.json` with the
 interpreter and lock digests. The host finds it beside itself or through `STRATA_CONTROL_DIR`, runs it on its own interpreter
 (`PYTHONNOUSERSITE=1`, no `PYTHONHOME` or `PYTHONPATH`) and starts a model with `strata profile create|use-config` and
@@ -146,8 +108,8 @@ the next step (exit 0, nothing started). The app shows the same warning with an 
 **No acquisition at run time.** `STRATA_NO_ACQUIRE=1` (set by the Tauri shell for the host, and by the host for Control) makes
 `strata_control/acquisition.py` refuse pip, downloads and compiles. On the host side `server/acquisition.mjs` refuses the llama.cpp
 and cloudflared fetches (a connector placed in `components/cloudflared/` is used as it is). Models the user chooses to download are a
-separate, explicit action. `apps/host/tests/no-acquire.test.mjs` fails on any outbound request or installer process.
-`apps/desktop/scripts/installed-flow.mjs` drives an installed app end to end.
+separate, explicit action. `app/host/tests/no-acquire.test.mjs` fails on any outbound request or installer process.
+`app/desktop/scripts/installed-flow.mjs` drives an installed app end to end.
 
 ## The Terminal archive
 
@@ -173,13 +135,6 @@ The Terminal bundles a private Python and its dependencies for `windows-x86_64`,
 ## Release checks and gaps
 
 - CI covers scripts, Terminal checks, Metal builds and Docker images ([.github/workflows](../../.github/workflows)). It does not replace native desktop
-Windows updates replace the seven installer-managed resource folders before copying the new payload: Control, Host, Node, Harness, engine-bundle, local-backends and notices. The installer checks those trees for links first and refuses linked or locked content instead of reporting a mixed installation as successful. User profiles, memories and model libraries live outside these folders.
-Run the Windows cleanup regression with an installed NSIS compiler and a fresh output directory:
-```powershell
-pwsh -NoProfile -File tools/test_nsis_upgrade.ps1 -OutputDir (Join-Path $env:TEMP 'Strata-nsis-check-1')
-```
-It compiles the production cleanup macros into isolated fixtures. It checks upgrades, fresh/empty directories, locked runtimes, nested directory junctions and an installation-root junction, plus uninstall/data preservation. It does not download models or install the real app. The final full installer still needs its own upgrade and payload comparison.
-- CI covers scripts, Terminal checks, Metal builds and Docker images ([.github/workflows](../.github/workflows)). It does not replace native desktop
   packaging, signing or real-GPU acceptance on every target. Some recipes still run by hand.
 - Signing needs the owner's credentials, which are never in this tree. The feed and every engine package are signed with the feed key
   (`feed_tool.py`); the app installers with the Tauri updater key ([UPDATES.md](UPDATES.md)). The Mac app and Terminal archive are signed and
@@ -191,16 +146,8 @@ It compiles the production cleanup macros into isolated fixtures. It checks upgr
 
 - **Tauri config:** an early draft used `perMachine`, `oneClick` and `deleteAppDataOnUninstall`. The Tauri schema rejects them; the
   current config uses `installMode: currentUser`.
-- **Repository size:** `apps/desktop/src-tauri/target` and the Node sidecar were briefly committed, which left about 324 MB in the git object
+- **Repository size:** `app/desktop/src-tauri/target` and the Node sidecar were briefly committed, which left about 324 MB in the git object
   store. They are untracked and ignored now. History was not rewritten.
 - **Mac packaging tests:** the first DMG self-test (8/8) and the engine's 17 kernel-parity suites ran on an Apple M4 GPU in a 16 GiB Mac, with service stand-ins for signing.
   Later inference measurements on larger Macs are in [MAC.md](../../docs/MAC.md).
 - **Intel Arc:** official since 0.1.40.2. The 2026-10 B70 tests used the source build, not the engine package. `sycl/setup_intel.py` (Docker) remains the source-build route.
-
-### Hakua Windows release layout
-
-The Hakua app EXE contains its private Node/Python runtimes, Control, Hakua-memory and Harness. Publish the signed GPU engine component separately. The outer tar.7z contains the identical NSIS setup EXE, signed CUDA component, Control ZIP, signed stable feed, install scripts, INSTALL.md and internal checksums. Read it back and verify every member before publication. Full inference models and personal profiles are excluded.
-
-For GitHub Release assets, use Windows Control ZIP with `packaging/feed_tool.py pack-control` and the options `--format zip --url-prefix=`. Use `--url-prefix=` for `pack-engine` too. This empty prefix puts package URLs beside strata-feed.json; the tool defaults control/ and engine/ do not describe this flat asset layout. Generate the matching install-manifest.txt for the ZIP Control package. Verify the signed feed, package sizes/hashes and anonymous latest/download URLs after publication.
-
-This Windows app is code-unsigned and uses manual installer updates. The signed feed has engine/Control entries and no app entry or latest.json. Component Ed25519 signatures do not replace Windows executable signing. Keep private signing material and personal profile data outside the checkout and release assets. See docs/HAKUA_RELEASE.md for qualified source commits, final digests and unsupported hardware/features.

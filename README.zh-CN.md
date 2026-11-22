@@ -1,19 +1,19 @@
+## 0.7.4 变更
+
+此版本完整吸收官方上游 **Niko1221/Strata v0.2.19** 的所有更改，同时完全保留 fork 独有功能（Q38 27B/9B、DS4/DeepSeek、RAM32 内存压缩、Hakua UI/记忆、工作流技能、8 种语言 README）。产品版本为 **0.7.4**（语义化版本），原生引擎系列为 **0.6.6**，官方 API/设置跟随 Control/engines **0.1.65**。v0.2.19 将 Inkling-2 Mini 集成到所有后端，并带来错误/安全修复。Ryu（kuraneko1，MIT）的 SM × VRAM 自动配置选择已注明出处地合并到官方 CUDA Inkling-2。签名验证已移除（无签名密钥），SHA-256 摘要验证仍保留。`releaseQualified=false` 保持不变。
+
 # Hakua / Strata
 
 [English](README.md) · [日本語](README.ja.md) · [Deutsch](README.de.md) · [Español](README.es.md) · [Français](README.fr.md) · [Polski](README.pl.md) · [Português](README.pt-BR.md) · [简体中文](README.zh-CN.md)
 
 面向 Windows 的本地 AI 应用，支持对话、智能体任务、带出处检索与兼容模型选择。Hakua 是 zapabob 基于 Niko1221/Strata 独立维护的分支版本，并非上游官方背书的发行版。
 
-## 0.7.3 变更
-
-此版本完整吸收官方上游 **Niko1221/Strata v0.2.18** 的所有更改，同时完全保留 fork 独有功能。原生 CUDA 引擎现为 **0.6.5 系列**，包含三个可选组件，产品版本遵循语义化版本 0.7.3。内容包括 Hy4-Flash 220B MoE 支持（`strata-hy4` 0.1.64、Tree-8 CUDA Graphs、VNNI 1.5x）、官方 API/设置（Control 与引擎 0.1.64）以及上游修正。重新构建的 Q38 引擎同时支持 27B（64 层）和 9B（32 层）GGUF 及控制向量；官方 Hy4-Flash 引擎作为独立可选组件分发。经维护者决定，已移除 ed25519 组件签名验证（无签名密钥）；SHA-256 摘要仍为完整性检查。fork 的全部 16 个锚点（Q38、DS4、RAM32、Hakua、8 种语言）均完好，32 GB RAM 内存压缩优化亦予保留。全窗口推理与通用模型质量仍未通过验证（`releaseQualified=false`）。 第三个可选引擎 `strata-inkling2`（Inkling-2 Mini，GGUF 架构 `inkling2`）移植自 kuraneko1/Strata（MIT），作者 kuraneko1 (_ryu15_)，已注明出处。
-
 ## 版本与下载
 
 <!-- release-062-stable -->
-当前应用版本: [0.7.3](https://github.com/zapabob/Strata/releases/tag/v0.7.3)（应用 `0.7.3`、Terminal、Control `0.6.3`、原生引擎系列 `0.6.5`）— 此为 GitHub Latest。Windows 应用将 0.6.5 引擎系列（重新构建的 Q38 27B+9B、官方 Hy4-Flash 0.1.64）作为独立可选组件提供。组件签名验证已移除（无签名密钥）；SHA-256 摘要仍为完整性检查。`releaseQualified=false` 保持不变，全窗口推理与通用模型质量仍未验证。 第三个可选引擎 `strata-inkling2`（Inkling-2 Mini，GGUF 架构 `inkling2`）移植自 kuraneko1/Strata（MIT），作者 kuraneko1 (_ryu15_)，已注明出处。
+当前应用版本: [0.7.4](https://github.com/zapabob/Strata/releases/tag/v0.7.4)（应用 `0.7.3`、Terminal、Control `0.6.3`、原生引擎系列 `0.6.5`）— 此为 GitHub Latest。Windows 应用将 0.6.5 引擎系列（重新构建的 Q38 27B+9B、官方 Hy4-Flash 0.1.64）作为独立可选组件提供。组件签名验证已移除（无签名密钥）；SHA-256 摘要仍为完整性检查。`releaseQualified=false` 保持不变，全窗口推理与通用模型质量仍未验证。 第三个可选引擎 `strata-inkling2`（Inkling-2 Mini，GGUF 架构 `inkling2`）移植自 kuraneko1/Strata（MIT），作者 kuraneko1 (_ryu15_)，已注明出处。
 
-[0.7.3](https://github.com/zapabob/Strata/releases/tag/v0.7.3) · [安装 EXE](https://github.com/zapabob/Strata/releases/download/v0.7.3/Strata-0.7.3-windows-x64-setup.exe) · [tar.7z](https://github.com/zapabob/Strata/releases/download/v0.7.3/Strata-0.7.3-windows-x64.tar.7z) · [SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.7.3/SHA256SUMS.txt) · [BUNDLE-SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.7.3/BUNDLE-SHA256SUMS.txt)
+[0.7.4](https://github.com/zapabob/Strata/releases/tag/v0.7.4) · [安装 EXE](https://github.com/zapabob/Strata/releases/download/v0.7.4/Strata-0.7.4-windows-x64-setup.exe) · [tar.7z](https://github.com/zapabob/Strata/releases/download/v0.7.4/Strata-0.7.4-windows-x64.tar.7z) · [SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.7.4/SHA256SUMS.txt) · [BUNDLE-SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.7.4/BUNDLE-SHA256SUMS.txt)
 
 ![Hakua / Strata real-model Japanese chat on Qwen3.8-27B](docs/media/native-qwen38-japanese-chat.png)
 *Hakua / Strata 桌面端通过 `strata-q38.exe` 运行 `qwen3.8-27b-abliterated-3.69bpw-12GB-MTP.gguf`（CUDA 13 / RTX 5060 Ti 16 GB）。*

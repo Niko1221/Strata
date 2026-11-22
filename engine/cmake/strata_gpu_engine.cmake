@@ -96,9 +96,17 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
                           src/kernels/cuda/verify_kernels.cu
                           src/kernels/cuda/dflash2.cu
                           src/kernels/cuda/iq_kernels.cu
+                          src/kernels/cuda/rdna_gr.cu
+                          src/kernels/cuda/rdna_mmvq.cu
+                          src/kernels/cuda/megakernel_gdn.cu
+                          src/kernels/cuda/vhead_bitplane.cu
+                          src/kernels/cuda/dense_i8_tc.cu
                           src/kernels/ngram.cpp
                           src/ngram/ple_reader.cpp
                           src/platform/direct_file.cpp)
+  if(STRATA_ENABLE_HIP)
+    target_sources(strata_kernels PRIVATE src/kernels/cuda/nvfp4_decode_sm120_absent.cpp)
+  endif()
   if(STRATA_ISA_FLOOR STREQUAL "avx")
     if(MSVC)
       set_source_files_properties(src/kernels/ngram.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX")
