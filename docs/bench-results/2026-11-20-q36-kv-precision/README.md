@@ -29,10 +29,42 @@ Same card, same model, tier on with the peer expert profile where noted:
 | 131,072 | refused | loads, 68.3 | loads, 71.6 | loads, 71.7 |
 | 262,144 | refused | refused | refused | **loads, 72.4** |
 
-Decode is 400 greedy tokens, read from `timings.predicted_per_second`, one rep per arm. `--kv fp4 --max-context
-262144` reports `"max_context": 262144` from `/health`, holds 11.36 GiB on each card and leaves 1.82 GiB of VRAM
-free; a 12-request soak at that window ran 67.1–78.6 tok/s (mean 73.4, first three 74.1 against last three 73.9)
-with VRAM and host memory flat.
+**Read the decode column as "decode in a window of this size", not "decode at this fill."** Every rate in the
+table above is 400 greedy tokens from a ~300-token prompt, so about 300 cells of the window were occupied; the
+column varies by 3 tok/s across a 3.5x change of window because window size on its own costs almost nothing.
+Decode at a window that is actually *full* is a different and much smaller number — see the next section. `--kv
+fp4 --max-context 262144` reports `"max_context": 262144` from `/health`, holds 11.36 GiB on each card and leaves
+1.82 GiB of VRAM free; a 12-request soak at that window (also short-fill) ran 67.1–78.6 tok/s (mean 73.4, first
+three 74.1 against last three 73.9) with VRAM and host memory flat.
+
+## Decode at real fill
+
+Measured 2026-11-22 03:0x on the same box and model, from the same source with the peer tier merged in
+(`engine/src/qwen35/q36_engine.cu`, binary md5 `2c5a884a821286b5bcf9b74fae458f32`). Each rep sends a fresh nonce
+so nothing is reused from the last one; 3 reps per long-fill arm, 2 per short-fill control, 320 generated tokens,
+temperature 0, `--prefill auto --mtp 2 --expert-vram 0.1 --cpu-threads 6`.
+
+| width, window | prompt tokens actually in the cache | tier | decode (3 reps) | prefill |
+|---|---:|---|---:|---:|
+| fp4, 262,144 | 250,460 | on | **4.6** (4.6 / 4.6 / 4.6) | 212 tok/s |
+| fp4, 262,144 | 250,460 | off | **4.3** (4.4 / 4.4 / 4.2) | 212 tok/s |
+| fp16, 131,072 | 126,367 | on | **6.8** (7.1 / 6.6 / 6.7) | 479 tok/s |
+| fp16, 131,072 | 126,367 | off | **6.5** (6.7 / 6.3 / 6.6) | 479 tok/s |
+| fp4, 262,144 (control) | 305 | on | 74.8 (71.2 / 78.3) | 186 tok/s |
+| fp16, 131,072 (control) | 305 | on | 84.3 (82.2 / 86.4) | 187 tok/s |
+
+Two things follow, and both matter when reading the first table:
+
+- **Fill, not window, is what costs decode.** fp16 goes 84.3 → 6.8 tok/s between 305 and 126,367 cells in the
+  same window, and fp4 74.8 → 4.6. The short-fill controls reproduce the first table's numbers on this binary, so
+  the two tables disagree about the measurement, not about the build.
+- **The second card is not what carries a full cache.** Tier on against tier off is 4.6 vs 4.3 at 250k and 6.8 vs
+  6.5 at 126k. The tier's own hit rate falls with fill as well (91.7% of 2,880 routed entries on the short
+  request, 76.5–80.8% of ~111,000 on the long ones), so attention and experts living on separate cards buys
+  roughly 5% once the window is full, against +97% at short fill.
+
+What this does **not** change: which contexts load, the per-token cache arithmetic, and the byte-identical fp32
+default are all independent of how full the cache is.
 
 Why the refusals look the way they do — the card is 12 GiB (12,288 MiB):
 
@@ -103,7 +135,11 @@ Not run, and known gaps:
   placed deep in a 262,144-token prompt comes back.
 - One prompt, eight steps, for the KL numbers; no multi-prompt sweep and no perplexity run.
 - fp4's decode cost is not isolated: 71.7 tok/s at 131,072 against 72.4 at 262,144 is one rep each, inside the
-  noise of this harness.
+  noise of this harness, and both are short-fill.
+- Decode at fill was measured at two points only (126,367 and 250,460 cells); nothing between ~300 and 126,000
+  cells was sampled, so the shape of the curve between them is unknown.
+- The fill measurements did not re-run the fp32, fp8, 73,728 or 98,304 arms, so the first table's rates for those
+  remain short-fill only.
 - `--batch N` (several sessions decoded in one window) with a non-fp32 width compiles and follows the width
   through the row tables and `copy_session`, but every measurement above ran one session.
 - One unexplained failure: fp8 at 98,304 refused once on a plain float `cudaMalloc` (not the cache) and served on
