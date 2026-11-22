@@ -52,9 +52,9 @@ decided per architecture when the engine is built.
 
 ## Default `sm_70` table & `volta-forever` detection
 
-Every single-GPU or uniform-`sm_70` run enables 19 bit-exact switches by default (`STRATA_SM70_PERF=0` or `STRATA_DEFAULTS=026` turns the table off; any individual switch you set yourself wins):
+Every single-GPU or uniform-`sm_70` run enables 21 bit-exact switches by default (`STRATA_SM70_PERF=0` or `STRATA_DEFAULTS=026` turns the table off; any individual switch you set yourself wins):
 
-- `STRATA_ADAPT_OVERLAP=1`, `STRATA_SM70_TABLE=1`, `STRATA_B6_MMVQ_ROWS=1`, `STRATA_TSUM=1`, `STRATA_SMALL_UNR=3`, `STRATA_GR_NORM_FAST=1`, `STRATA_SIDE_MIXER=2`, `STRATA_ARGMAX_ROWS_SM70=1`, `STRATA_LFUSE=1`, `STRATA_GDN_SPLIT=1`, `STRATA_SH_STREAM=1`, `STRATA_Q80_ROWS1=1`, `STRATA_NO_MMVQ_ROWS2=1`, `STRATA_CPU_IQ_ALL_EXACT1=1`, `STRATA_GR_Q8_DOWN_MODE=2`, `STRATA_GR_Q8_UP_COLS=16`, `STRATA_GR_Q8_UP_MODE=2`, `STRATA_SCORES_HALVE=1`, `STRATA_SCORES_THREAD=1`.
+- `STRATA_ADAPT_OVERLAP=1`, `STRATA_SM70_TABLE=1`, `STRATA_B6_MMVQ_ROWS=1`, `STRATA_TSUM=1`, `STRATA_SMALL_UNR=3`, `STRATA_GR_NORM_FAST=1`, `STRATA_SIDE_MIXER=2`, `STRATA_ARGMAX_ROWS_SM70=1`, `STRATA_LFUSE=1`, `STRATA_GDN_SPLIT=1`, `STRATA_SH_STREAM=1`, `STRATA_Q80_ROWS1=1`, `STRATA_NO_MMVQ_ROWS2=1`, `STRATA_CPU_IQ_ALL_EXACT1=1`, `STRATA_GR_Q8_DOWN_MODE=2`, `STRATA_GR_Q8_UP_COLS=16`, `STRATA_GR_Q8_UP_MODE=2`, `STRATA_SCORES_HALVE=1`, `STRATA_SCORES_THREAD=1`, `STRATA_TOPK_SAMPLE=1`, `STRATA_SELECT_LONG=1`.
 
 When running under CUDA 13 via [nbald/volta-forever](https://github.com/nbald/volta-forever), Strata probes `volta_forever_version` in `libcuda.so.1`, remaps emulated `7.5` reporting back to Volta `(7, 0)` for defaults and kernel selection, and keeps `CUDA_MODULE_LOADING=LAZY` so cuBLAS initialization does not exhaust heap memory.
 
@@ -66,6 +66,7 @@ These switches are opt-in (either multi-GPU topology-specific or non-bitwise FP 
 | --- | --- |
 | `STRATA_Q8_INPLACE=1` | Packs eligible dense `Q8_0` matrices (with `n_out >= STRATA_Q8_INPLACE_MIN_OUT`, default `640`) in-place into split int8/fp16 planes at zero extra VRAM (`q8_sm60.cuh`, `6` blocks/SM on Volta) and bit-exact prefill dequantization. Changes FP accumulation order (`~1e-7` relative RMS). |
 | `STRATA_PEER_HEAD_SPLIT=1` | Splits the `Q6_K` output LM head 50/50 across GPU 0 and peer GPU 1 over NVLink P2P (`cudaMemcpyDefault`), cutting LM head time and freeing ~248.7 MiB on GPU 0 for additional resident experts. |
+| `STRATA_NUMA_ARENA=1` | On dual-socket Linux hosts using the resident expert arena (`4 KiB` pages), first-touches Slice 0 and Slice 1 of each expert's `[gate \| up \| down]` roles on NUMA nodes 0 and 1 before `cudaHostRegister`, overriding any process-wide `MPOL_INTERLEAVE` (`numactl --interleave=all`). |
 | `STRATA_FUSE_DECODE=1` | The decode GEMV / MoE fusions of #1097. Bitwise the unfused kernels. |
 | `STRATA_PF_WMMA=1` | The FP16 tensor-core prompt experts; also takes IQ4_NL down projections. |
 | `STRATA_PF_WMMA2=1` | A second prompt-expert kernel for IQ2_S gate/up and IQ4_NL down (#2356). |

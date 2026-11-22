@@ -77,11 +77,11 @@ int main() {
     CHECK(nv_default_env(10, 0, false).empty());
     CHECK(nv_default_env(8, 9, false).empty());
     CHECK(nv_default_env(7, 5, false).empty());
-    // sm_70 (Volta): 19 validated bit-exact switches; STRATA_DEFAULTS=026 and STRATA_SM70_PERF=0 leave it out
+    // sm_70 (Volta): 21 validated bit-exact switches; STRATA_DEFAULTS=026 and STRATA_SM70_PERF=0 leave it out
     {
         unset("STRATA_SM70_PERF");
         const auto t = nv_default_env(7, 0, false);
-        CHECK(t.size() == 19);
+        CHECK(t.size() == 21);
         CHECK(find(t, "STRATA_ADAPT_OVERLAP") && *find(t, "STRATA_ADAPT_OVERLAP") == "1");
         CHECK(find(t, "STRATA_SM70_TABLE") && *find(t, "STRATA_SM70_TABLE") == "1");
         CHECK(find(t, "STRATA_B6_MMVQ_ROWS") && *find(t, "STRATA_B6_MMVQ_ROWS") == "1");
@@ -101,11 +101,13 @@ int main() {
         CHECK(find(t, "STRATA_GR_Q8_UP_MODE") && *find(t, "STRATA_GR_Q8_UP_MODE") == "2");
         CHECK(find(t, "STRATA_SCORES_HALVE") && *find(t, "STRATA_SCORES_HALVE") == "1");
         CHECK(find(t, "STRATA_SCORES_THREAD") && *find(t, "STRATA_SCORES_THREAD") == "1");
+        CHECK(find(t, "STRATA_TOPK_SAMPLE") && *find(t, "STRATA_TOPK_SAMPLE") == "1");
+        CHECK(find(t, "STRATA_SELECT_LONG") && *find(t, "STRATA_SELECT_LONG") == "1");
         CHECK(nv_default_env(7, 0, true).empty());
         put("STRATA_SM70_PERF", "0");
         CHECK(nv_default_env(7, 0, false).empty());
         put("STRATA_SM70_PERF", "1");
-        CHECK(nv_default_env(7, 0, false).size() == 19);
+        CHECK(nv_default_env(7, 0, false).size() == 21);
         unset("STRATA_SM70_PERF");
     }
     // nbald/volta-forever remapping: 7.5 -> 7.0 when active, other architectures untouched

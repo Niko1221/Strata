@@ -77,8 +77,8 @@ std::vector<std::pair<std::string, std::string>> nv_default_env(int major, int m
         // (the engine turns it off, with a line, for a layer split, helper cards, --batch and the other cases of the DETAILS.md row).  STRATA_ADAPT_FETCH=0 is the way back.
         if (adapt_fetch_default_card(major, minor, main_vram_bytes)) t.push_back({"STRATA_ADAPT_FETCH", "2"});
     } else if (mj == 7 && mn == 0) {
-        // Volta (Tesla V100 / Titan V / Quadro GV100, sm_70): 19 validated bit-exact switches measured on locked-clock
-        // dual V100-SXM2-16GB (200 W / 1020 MHz SM / 877 MHz MEM; identical sha and needle checks).
+        // Volta (Tesla V100 / Titan V / Quadro GV100, sm_70): 21 validated bit-exact switches measured on locked-clock
+        // dual V100-SXM2-16GB (200 W / 1020 MHz and 300 W / 1530 MHz SM / 877 MHz MEM; identical sha and needle checks).
         // STRATA_SM70_PERF=0 and STRATA_DEFAULTS=026 leave the table out.
         if (off("STRATA_SM70_PERF") || defaults026) return t;
         t = {
@@ -101,6 +101,8 @@ std::vector<std::pair<std::string, std::string>> nv_default_env(int major, int m
             {"STRATA_GR_Q8_UP_MODE", "2"},
             {"STRATA_SCORES_HALVE", "1"},
             {"STRATA_SCORES_THREAD", "1"},
+            {"STRATA_TOPK_SAMPLE", "1"},
+            {"STRATA_SELECT_LONG", "1"},
         };
     } else if (mj == 6 && mn == 0) {
         if (off("STRATA_SM60_PERF")) return t;
