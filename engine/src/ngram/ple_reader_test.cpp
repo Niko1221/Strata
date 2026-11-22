@@ -130,7 +130,7 @@ void bf16_widening_is_exact() {
 uint32_t gguf_type_id(const char* name) {
     static const struct { const char* name; uint32_t id; } ids[] = {
         {"IQ4_NL", 20}, {"Q4_0", 2}, {"Q4_1", 3}, {"Q5_0", 6}, {"Q5_1", 7}, {"Q8_0", 8}, {"BF16", 30}, {"F8_E4M3", 24}, {"NVFP4", 24},
-        {"C4", 24}, {"C3", 24}, {"C2s", 24}};
+        {"C4", 24}, {"C3", 24}, {"C2s", 24}, {"C1", 24}, {"C2", 24}, {"C6", 24}};
     for (const auto& e : ids)
         if (std::strcmp(e.name, name) == 0) return e.id;
     return 0xFFFFFFFFu;
@@ -140,13 +140,14 @@ uint32_t gguf_type_id(const char* name) {
 k::PleParams test_params(const k::PleFormatInfo& f) {
     k::PleParams p;
     p.scale = f.needs_scale ? 0.75f : 1.0f;
-    const float cb[8] = {-0.8f, -0.45f, -0.25f, -0.07f, 0.06f, 0.24f, 0.46f, 0.81f};
+    const float cb[16] = {-0.8f, -0.45f, -0.25f, -0.07f, 0.06f, 0.24f, 0.46f, 0.81f,
+                          -0.95f, -0.6f, -0.35f, -0.15f, 0.15f, 0.35f, 0.6f, 0.95f};   // a format reads its first 2^bits
     std::memcpy(p.codebook, cb, sizeof cb);
     return p;
 }
 
 /// A metadata fault write_format_table can put in a table, for the refusals PleTable::open must make.
-enum class Fault { None, NoCodebook, IntCodebook, InfScale, NoMarker, Shifted, FromZero };
+enum class Fault { None, NoCodebook, IntCodebook, FewLevels, InfScale, NoMarker, Shifted, FromZero };
 
 // `claimed_rows` is the row count the header states; `rows` rows are actually written (equal unless a test lies)
 std::string write_format_table(const std::string& dir, const k::PleFormatInfo& f, uint32_t rows, uint64_t claimed_rows = 0,
@@ -163,7 +164,7 @@ std::string write_format_table(const std::string& dir, const k::PleFormatInfo& f
     const auto f32 = [&](float v) { uint32_t b; std::memcpy(&b, &v, 4); return le(b, 4); };
     const k::PleParams p = test_params(f);
     const bool marker = f.marker != nullptr && fault != Fault::NoMarker;
-    const bool codebook = f.needs_codebook && fault != Fault::NoCodebook;
+    const bool codebook = f.codebook_levels > 0 && fault != Fault::NoCodebook;
     const bool span = fault == Fault::Shifted || fault == Fault::FromZero;
     const uint64_t n_kv = 1u + (marker ? 1u : 0u) + (f.needs_scale ? 1u : 0u) + (codebook ? 1u : 0u) + (span ? 1u : 0u);
     std::string head = "GGUF" + le(3u, 4) + le(1ull, 8) + le(n_kv, 8);
@@ -172,11 +173,12 @@ std::string write_format_table(const std::string& dir, const k::PleFormatInfo& f
     if (f.needs_scale)                                                                   // 6 = FLOAT32
         head += str("strata.ple.scale") + le(6u, 4) + f32(fault == Fault::InfScale ? std::numeric_limits<float>::infinity() : p.scale);
     if (codebook && fault == Fault::IntCodebook) {                                       // 9 = ARRAY of 5 = INT32
-        head += str("strata.ple.codebook") + le(9u, 4) + le(5u, 4) + le(8ull, 8);
-        for (int v = -4; v < 4; ++v) head += le((uint32_t) v, 4);
+        head += str("strata.ple.codebook") + le(9u, 4) + le(5u, 4) + le((uint64_t) f.codebook_levels, 8);
+        for (int v = 0; v < f.codebook_levels; ++v) head += le((uint32_t) (v - f.codebook_levels / 2), 4);
     } else if (codebook) {                                                               // 9 = ARRAY of 6 = FLOAT32
-        head += str("strata.ple.codebook") + le(9u, 4) + le(6u, 4) + le(8ull, 8);
-        for (float v : p.codebook) head += f32(v);
+        const int levels = fault == Fault::FewLevels ? f.codebook_levels / 2 : f.codebook_levels;   // (another format's)
+        head += str("strata.ple.codebook") + le(9u, 4) + le(6u, 4) + le((uint64_t) levels, 8);
+        for (int v = 0; v < levels; ++v) head += f32(p.codebook[v]);
     }
     if (span) head += str("strata.ple.rows") + le(8u, 4) + str(fault == Fault::Shifted ? "5:69" : "0:64");
     head += str("per_layer_token_embd.weight") + le(2u, 4);
@@ -582,15 +584,16 @@ void all_formats_round_trip(const std::string& dir) {
     for (int i = 0; i < k::ple_format_count(); ++i) {
         const k::PleFormatInfo& f = k::ple_formats()[i];
         CHECK((int) f.id == i, "%s: the table is not in PleFormat order", f.name);
-        // NVFP4, the 3-bit formats and F8_E4M3 are all I8 bytes: the type finds the FP8 entry, `strata.ple.format` picks
+        // NVFP4, the low-bit formats and F8_E4M3 are all I8 bytes: the type finds the FP8 entry, `strata.ple.format` picks
         // the format in PleTable::open
         const k::PleFormatInfo* want = f.marker != nullptr ? &k::ple_format_info(k::PleFormat::F8_E4M3) : &f;
         CHECK(k::ple_format_for_type(f.gguf_type) == want, "%s: type lookup", f.name);
         format_round_trip(dir, f, 2000);
         // metadata the format needs and does not have, or that would shift its rows, is refused with a message naming it
         const struct { Fault fault; bool applies; const char* what; const char* says; } faults[] = {
-            {Fault::NoCodebook, f.needs_codebook, "no codebook", "strata.ple.codebook"},
-            {Fault::IntCodebook, f.needs_codebook, "an INT32 codebook", "strata.ple.codebook"},
+            {Fault::NoCodebook, f.codebook_levels > 0, "no codebook", "strata.ple.codebook"},
+            {Fault::IntCodebook, f.codebook_levels > 0, "an INT32 codebook", "strata.ple.codebook"},
+            {Fault::FewLevels, f.codebook_levels > 0, "half its codebook levels", "strata.ple.codebook"},
             {Fault::InfScale, f.needs_scale, "an infinite scale", "finite strata.ple.scale"},
             {Fault::NoMarker, f.marker != nullptr, "no strata.ple.format", "strata.ple.format = "},
             {Fault::Shifted, true, "rows 5:69 of a table", "strata.ple.rows"},

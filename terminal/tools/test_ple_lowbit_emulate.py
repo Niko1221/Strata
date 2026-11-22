@@ -18,7 +18,9 @@ import ple_lowbit_emulate as E  # noqa: E402
 GGUF_PY = HERE.parents[1] / "engine" / "third_party" / "strata-gguf-py"
 FIXTURE = HERE.parents[1] / "engine" / "tests" / "ngram" / "ple_lowbit_fixture.inc"
 REAL = pathlib.Path(r"D:\exstrata-work\models\IQ3_XXS\Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf")
-DOC_NMSE = {"c4": 0.0361, "c3": 0.0281, "c2s": 0.0227}   # ple-representation.md section 4
+DOC_NMSE = {"c4": 0.0361, "c3": 0.0281, "c2s": 0.0227,   # ple-representation.md section 4 (c6: its 2b_lloyd_b32_f16)
+            "c1": 0.0061, "c2": 0.0275, "c6": 0.1117}
+ALL = ["c4", "c3", "c2s", "c1", "c2", "c6"]              # the fixture's order: the 3-bit formats first, as committed
 
 
 def gguf_py():
@@ -54,7 +56,7 @@ def lowbit_cases(tmp, n_plain):
     X = E.iq4nl_decode(rows[:n_plain])
     X = np.concatenate([X, X[:1] * 2000, X[1:2] * 3e-5, np.zeros((1, E.DIM), np.float32)]).astype(np.float32)
     out = []
-    for fmt in ("c4", "c3", "c2s"):
+    for fmt in ALL:
         cb = E.fit_codebook(E.Source(src), fmt, seed=1, ntry=7)
         Y, codes, scales, _ = E.quantize(X, np.array(cb["grid"], np.float32), cb["block"], cb["scale"], np.float32(cb["table_scale"]), 7)
         out.append((fmt, cb, E.pack_native(codes, scales, cb), Y))
@@ -73,8 +75,8 @@ def fixture_text(cases):
          "",
          "namespace ple_lowbit_fixture {",
          "",
-         "struct Case { const char* name; int block; uint32_t codebook[8]; uint32_t table_scale; int rows; int row_bytes;",
-         "              const uint8_t* packed; const uint32_t* want; };",
+         "struct Case { const char* name; int bits; int block; bool f16_scales; uint32_t codebook[16]; uint32_t table_scale;",
+         "              int rows; int row_bytes; const uint8_t* packed; const uint32_t* want; };",
          ""]
     for fmt, cb, P, Y in cases:
         L.append("inline const uint8_t %s_packed[%d] = {" % (fmt, P.size))
@@ -86,8 +88,9 @@ def fixture_text(cases):
     L.append("inline const Case cases[%d] = {" % len(cases))
     for fmt, cb, P, Y in cases:
         grid = ", ".join("0x%08x" % v for v in np.array(cb["grid"], np.float32).view(np.uint32))
-        L.append('    {"%s", %d, {%s}, 0x%08x, %d, %d, %s_packed, %s_want},' %
-                 (fmt, cb["block"], grid, int(np.float32(cb["table_scale"]).view(np.uint32)), P.shape[0], P.shape[1], fmt, fmt))
+        L.append('    {"%s", %d, %d, %s, {%s}, 0x%08x, %d, %d, %s_packed, %s_want},' %
+                 (fmt, cb["bits"], cb["block"], "true" if cb["scale"] == "f16" else "false", grid,
+                  int(np.float32(cb["table_scale"]).view(np.uint32)), P.shape[0], P.shape[1], fmt, fmt))
     L += ["};", "", "}  // namespace ple_lowbit_fixture", ""]
     return "\n".join(L)
 
@@ -145,6 +148,7 @@ def test_c4_gaussian_rows_are_62_bytes_and_sane():
     assert scales.shape == (4096, 1)                              # one fp16 scale a row
     assert E.row_bytes("c4") == 160 * 3 // 8 + 2 == 62
     assert E.row_bytes("c3") == 65 and E.row_bytes("c2s") == 70
+    assert E.row_bytes("c1") == 160 * 4 // 8 + 2 == 82 and E.row_bytes("c2") == 60 + 5 * 2 == 70 and E.row_bytes("c6") == 40 + 5 * 2 == 50
     assert (scales == scales.astype(np.float16)).all()
     assert np.array_equal(deq, (scales[:, :, None] * grid[codes.reshape(4096, 1, 160)]).reshape(4096, 160))
     assert 0.025 < nmse(deq, X) < 0.045                          # the doc's 0.0361 on near-Gaussian data
@@ -187,18 +191,23 @@ def test_e4m3_bytes_and_values_round_trip_every_byte():
     assert (v[1:127] == E.e4m3_round(v[1:127])).all() and (np.diff(v[:127]) > 0).all()
 
 
-@pytest.mark.parametrize("fmt", ["c4", "c3", "c2s"])
+@pytest.mark.parametrize("fmt", ALL)
 def test_pack_native_round_trips_codes_and_scales(fmt):
     bs, kind, _ = E.FORMATS[fmt]
-    n, nb = 500, 160 // bs
+    n, nb, bits = 500, 160 // bs, E.bits_of(fmt)
     rng = np.random.default_rng(6)
-    codes = rng.integers(0, 8, (n, 160)).astype(np.uint8)
-    ident = {"block": bs, "scale": kind, "table_scale": 1.0, "grid": [float(k) for k in range(8)]}
+    codes = rng.integers(0, 1 << bits, (n, 160)).astype(np.uint8)
+    codes[0] = (1 << bits) - 1                                       # every bit of the code bytes set
+    ident = {"bits": bits, "block": bs, "scale": kind, "table_scale": 1.0, "grid": [float(k) for k in range(1 << bits)]}
     P = E.pack_native(codes, np.ones((n, nb), np.float32), ident)
     assert P.shape == (n, E.row_bytes(fmt)) and P.dtype == np.uint8
+    assert (P[0, :20 * bits] == 255).all()
     assert np.array_equal(E.native_dequant(P, ident), codes.astype(np.float32))    # every code where the decoder looks
+    # the layout: code j is bits bits*j .. bits*j + bits - 1 of the little-endian bit stream
+    stream = np.unpackbits(P[:, :20 * bits], axis=1, bitorder="little").reshape(n, 160, bits)
+    assert np.array_equal((stream << np.arange(bits)).sum(2), codes)
     if kind == "f16":
-        s16 = (rng.standard_normal((n, 1)) * 0.05).astype(np.float16)
+        s16 = (rng.standard_normal((n, nb)) * 0.05).astype(np.float16)
         s16[:3, 0] = [-0.0, 6e-8, 65504]                             # a signed zero, the smallest subnormal, the largest
         s, T = s16.astype(np.float32), 1.0
     else:
@@ -207,19 +216,23 @@ def test_pack_native_round_trips_codes_and_scales(fmt):
         sb[(sb & 127) == 127] = 0x80
         sb[0, :2] = [0x7E, 0x81]                                     # 448 (saturated), the smallest negative subnormal
         s = E.e4m3_value(sb) * np.float32(T)
-    flat = {"block": bs, "scale": kind, "table_scale": T, "grid": [1.0] * 8}
+    flat = {"bits": bits, "block": bs, "scale": kind, "table_scale": T, "grid": [1.0] * (1 << bits)}
     got = E.native_dequant(E.pack_native(codes, s, flat), flat)
     assert np.array_equal(got.view(np.uint32), np.repeat(s, bs, axis=1).view(np.uint32))   # every scale, bit for bit
 
 
-@pytest.mark.parametrize("case", [0, 1, 2], ids=["c4", "c3", "c2s"])
+@pytest.mark.parametrize("case", range(len(ALL)), ids=ALL)
 def test_native_rows_decode_to_the_quantizer_s_floats(case, tmp_path):
     fmt, cb, P, Y = lowbit_cases(tmp_path, 2000)[case]
-    assert P.shape == (2003, E.row_bytes(fmt))
+    assert P.shape == (2003, E.row_bytes(fmt)) and len(cb["grid"]) == 1 << E.bits_of(fmt)
     assert np.array_equal(E.native_dequant(P, cb).view(np.uint32), Y.view(np.uint32))
+    if fmt == "c1":                                                  # IQ4_NL's grid, not a fitted one
+        assert np.array_equal(np.float32(cb["grid"]), E.KV_IQ4NL / np.float32(127))
     if cb["scale"] == "e4m3":
         assert (P[2000, 60:] & 127 == 0x7E).any()                   # the 2000x row saturated
         assert (P[2001, 60:] & 0x78 == 0).all()                     # the tiny row's scales are subnormal (exponent 0)
+    else:                                                            # the tiny row's fp16 scales are subnormal (exponent 0)
+        assert (np.ascontiguousarray(P[2001, 20 * E.bits_of(fmt):]).view("<u2") & 0x7C00 == 0).all()
 
 
 def test_committed_cpp_fixture_is_what_the_emulator_writes_now(tmp_path):
@@ -228,14 +241,16 @@ def test_committed_cpp_fixture_is_what_the_emulator_writes_now(tmp_path):
         "stale fixture: python tools/test_ple_lowbit_emulate.py --write-fixture"
 
 
-def test_native_pipeline_writes_the_engine_s_table(tmp_path, monkeypatch):
+@pytest.mark.parametrize("fmt", ["c3", "c1", "c6"])
+def test_native_pipeline_writes_the_engine_s_table(fmt, tmp_path, monkeypatch):
     gguf = gguf_py()
     src = tmp_path / "src.gguf"
     rows = synthetic_source(src, 3000, seed=5)
+    rb = E.row_bytes(fmt)
     outs = []
     for workers in (1, 2):
         out = tmp_path / ("n%d.gguf" % workers)
-        monkeypatch.setattr(sys, "argv", ["x", "--format", "c3", "--src", str(src), "--out", str(out), "--rows", "100:2900",
+        monkeypatch.setattr(sys, "argv", ["x", "--format", fmt, "--src", str(src), "--out", str(out), "--rows", "100:2900",
                                           "--chunk-rows", "700", "--workers", str(workers), "--native"])
         E.main()
         outs.append(out.read_bytes())
@@ -243,15 +258,19 @@ def test_native_pipeline_writes_the_engine_s_table(tmp_path, monkeypatch):
     r = gguf.GGUFReader(str(tmp_path / "n1.gguf"))
     assert len(r.tensors) == 1
     t = r.tensors[0]
-    assert t.name == "per_layer_token_embd.weight" and list(t.shape) == [65, 2800] and t.tensor_type == gguf.GGMLQuantizationType.I8
-    assert r.data_offset % 32 == 0 and r.data_offset + 2800 * 65 == len(outs[0])   # ngram.cpp: the tensor fills the file
+    assert t.name == "per_layer_token_embd.weight" and list(t.shape) == [rb, 2800] and t.tensor_type == gguf.GGMLQuantizationType.I8
+    assert r.data_offset % 32 == 0 and r.data_offset + 2800 * rb == len(outs[0])   # ngram.cpp: the tensor fills the file
     meta = {k: f.contents() for k, f in r.fields.items() if k.startswith("strata.ple.")}
     cb = json.loads((tmp_path / "n1.gguf.codebook.json").read_text())
-    assert meta["strata.ple.format"] == "c3"
-    assert np.array_equal(np.float32(meta["strata.ple.codebook"]), np.float32(cb["grid"]))
-    assert np.float32(meta["strata.ple.scale"]) == np.float32(cb["table_scale"]) > 0
-    got = E.native_dequant(np.asarray(t.data).view(np.uint8).reshape(2800, 65), cb)
-    Y = E.quantize(E.iq4nl_decode(rows[100:2900]), np.float32(cb["grid"]), 32, "e4m3", np.float32(cb["table_scale"]), cb["ntry"])[0]
+    assert meta["strata.ple.format"] == fmt
+    assert np.array_equal(np.float32(meta["strata.ple.codebook"]), np.float32(cb["grid"])) and len(cb["grid"]) == 1 << E.bits_of(fmt)
+    if cb["scale"] == "e4m3":
+        assert np.float32(meta["strata.ple.scale"]) == np.float32(cb["table_scale"]) > 0
+    else:
+        assert "strata.ple.scale" not in meta
+    got = E.native_dequant(np.asarray(t.data).view(np.uint8).reshape(2800, rb), cb)
+    Y = E.quantize(E.iq4nl_decode(rows[100:2900]), np.float32(cb["grid"]), cb["block"], cb["scale"], np.float32(cb["table_scale"]),
+                   cb["ntry"])[0]
     assert np.array_equal(got.view(np.uint32), Y.view(np.uint32))
     ref = (tmp_path / "n1.gguf.ref.bin").read_bytes()                # ple_fp8_parity's reference: every row of this small table
     m = struct.unpack("<i", ref[:4])[0]
@@ -261,7 +280,7 @@ def test_native_pipeline_writes_the_engine_s_table(tmp_path, monkeypatch):
 
 
 @pytest.mark.skipif(not REAL.exists(), reason="the real IQ4_NL table is not on this machine")
-@pytest.mark.parametrize("fmt", ["c4", "c3", "c2s"])
+@pytest.mark.parametrize("fmt", ALL)
 def test_real_table_slice_native_decodes_exactly(fmt, tmp_path, monkeypatch, capsys):
     out = tmp_path / (fmt + ".gguf")                                 # main() checks every chunk's decode bit for bit
     monkeypatch.setattr(sys, "argv", ["x", "--format", fmt, "--src", str(REAL), "--out", str(out), "--rows", "0:50000",
@@ -276,7 +295,7 @@ def test_real_table_slice_native_decodes_exactly(fmt, tmp_path, monkeypatch, cap
 
 
 @pytest.mark.skipif(not REAL.exists(), reason="the real IQ4_NL table is not on this machine")
-@pytest.mark.parametrize("fmt", ["c4", "c3", "c2s"])
+@pytest.mark.parametrize("fmt", ALL)
 def test_real_table_slice_nmse_matches_doc(fmt, tmp_path, monkeypatch, capsys):
     gguf = gguf_py()
     out = tmp_path / (fmt + ".gguf")
