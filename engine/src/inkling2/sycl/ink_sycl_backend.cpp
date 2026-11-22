@@ -40,6 +40,7 @@ public:
     }
 
     bool init(const InkModelFile& model, const BackendOpts& opts, std::string& err) override {
+        ink_sycl::apply_gpu_index(opts.gpu_index, opts.gpus);   // before the first Q()/dev_caps() touch
         kv_dtype_ = opts.kv_dtype;
         const int par = std::max(1, std::min(64, opts.parallel));
         const int ctx = std::max(256, opts.max_ctx);
@@ -160,6 +161,13 @@ public:
     }
 
     bool selfcheck(std::string& err) override {
+        ink_sycl::apply_gpu_index(pending_gpu_index_, pending_gpus_);   // --gpu N selects the device with or without --native
+        // Without --native there is no model, no slots and no vocab to forward. Before, this
+        // path built a StepBatch against a default-constructed manifest and died on the first
+        // GPU touch: InkSyRunner::reset_slot read sc_hist_k (empty until alloc) while
+        // max_slots defaults to 1, so `strata-inkling --selfcheck` segfaulted before printing
+        // a line (both GPUs, every release binary; --selfcheck --native was fine).
+        if (mod_.path.empty()) return selfcheck_device(err);
         StepBatch b;
         b.push(0, 0, 1, true);
         std::vector<float> lg((size_t)mod_.man.c.vocab_unpadded);
@@ -172,16 +180,64 @@ public:
         return true;
     }
 
+    // --selfcheck without --native: one SG16 F32 linear kernel against the scalar reference,
+    // the device-side counterpart of the CPU backend's SF4/MX8 dot checks. It proves the
+    // runtime came up, USM allocates, the kernels compile (AOT or JIT) and compute.
+    bool selfcheck_device(std::string& err) {
+        constexpr int N = 32, K = 64, M = 2;
+        std::vector<float> w((size_t)N * K), x((size_t)M * K);
+        for (size_t i = 0; i < w.size(); ++i) w[i] = std::sin((float)(i % 97)) * 0.5f - 0.25f;
+        for (size_t i = 0; i < x.size(); ++i) x[i] = std::cos((float)(i % 89)) * 0.5f;
+        float* wd = ink_sycl::dalloc<float>(w.size());
+        float* xd = ink_sycl::dalloc<float>(x.size());
+        float* yd = ink_sycl::dalloc<float>((size_t)M * N);
+        if (!wd || !xd || !yd) {
+            ink_sycl::dfree(wd); ink_sycl::dfree(xd); ink_sycl::dfree(yd);
+            err = "sycl selfcheck: device allocation failed";
+            return false;
+        }
+        ink_sycl::h2d_sync(wd, w.data(), w.size() * sizeof(float));
+        ink_sycl::h2d_sync(xd, x.data(), x.size() * sizeof(float));
+        ink_sycl::dzero(yd, (size_t)M * N * sizeof(float));
+        ink_sycl::k_linear_f32_sg16(wd, N, K, xd, yd, M);
+        std::vector<float> y((size_t)M * N, 0.0f);
+        ink_sycl::d2h(y.data(), yd, y.size() * sizeof(float));
+        ink_sycl::wait();
+        ink_sycl::dfree(wd); ink_sycl::dfree(xd); ink_sycl::dfree(yd);
+        for (int m = 0; m < M; ++m) {
+            for (int n = 0; n < N; ++n) {
+                float ref = 0.0f;
+                for (int k = 0; k < K; ++k) ref += w[(size_t)n * K + k] * x[(size_t)m * K + k];
+                if (std::fabs(ref - y[(size_t)m * N + n]) > 1e-4f * std::max(1.0f, std::fabs(ref))) {
+                    err = "sycl selfcheck F32 linear mismatch at row " + std::to_string(n) +
+                          ": ref=" + std::to_string(ref) + " got=" + std::to_string(y[(size_t)m * N + n]);
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
 private:
     ink_sycl::InkSyModel mod_;
     ink_sycl::InkSyRunner runner_;
     std::vector<uint8_t> slot_used_;
     int active_slots_ = 0;
     KvDtype kv_dtype_ = KvDtype::FP16;
+    // Set by make_sycl_backend (the factory is the one place every entry point goes through):
+    // the no-model --selfcheck applies them itself; the model paths apply them in init.
+    friend std::unique_ptr<InkBackend> make_sycl_backend(const BackendOpts* opts);
+    int pending_gpu_index_ = 0;
+    int pending_gpus_ = 1;
 };
 
-std::unique_ptr<InkBackend> make_sycl_backend() {
-    return std::make_unique<SyclInkBackend>();
+std::unique_ptr<InkBackend> make_sycl_backend(const BackendOpts* opts) {
+    auto b = std::make_unique<SyclInkBackend>();
+    if (opts) {
+        b->pending_gpu_index_ = opts->gpu_index;
+        b->pending_gpus_ = opts->gpus;
+    }
+    return b;
 }
 
 }  // namespace ink2
