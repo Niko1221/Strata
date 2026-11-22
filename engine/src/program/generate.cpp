@@ -16528,6 +16528,20 @@ int main(int argc, char** argv) {
                 }
             }
             std::vector<int> df2_launched;   // batch DFlash2: slots whose draft graph is queued
+            // STRATA_BATCH_MTP_FUSED=1 (opt-in, default off): batch all active slots' MTP drafting into one
+            // multi-slot forward pass on solo `mtp` (1x MTP + draft-head weight read instead of A separate passes).
+            static const bool batch_mtp_fused = [] {
+                const char* v = std::getenv("STRATA_BATCH_MTP_FUSED");
+                return v != nullptr && v[0] != '\0' && v[0] != '0';
+            }();
+            const bool try_fused_mtp = batch_mtp_fused && batch_mtp && !batch_df2 && stages.empty();
+            struct PendingSlotMtp {
+                int b = -1;
+                int first = 0;
+                int keep = 1;
+            };
+            std::vector<PendingSlotMtp> pending_mtp;
+            if (try_fused_mtp) pending_mtp.reserve((size_t) A);
             for (int t = 0; t < A; ++t) {
                 const int b = active[t];
                 BSlot& sl = bs[(size_t) b];
@@ -16600,21 +16614,25 @@ int main(int argc, char** argv) {
                 }
 #endif
                 if (batch_mtp && !batch_df2 && sl.active) {
-                    // The slot's two residual rows (the final residuals of the last stage: ver.final_R_all() follows the
-                    // chain, so with a layer split they are on the last stage's GPU, where the drafters are).  The copy is
-                    // queued on the drafter's own stream after the window's host sync, so the draft graph reads it.
-                    const strata::core::OnDevice on_slot_mtp(slot_mtp[(size_t) b]->device());
-                    const size_t stride = (size_t) g.hc * (size_t) g.n_embd;
-                    if (cudaMemcpyAsync(slot_mtp_rows[(size_t) b].get(),
-                                        ver.final_R_all() + (size_t) first[t] * stride,
-                                        2 * stride * sizeof(float), cudaMemcpyDeviceToDevice,
-                                        slot_mtp[(size_t) b]->stream()) != cudaSuccess ||
-                        !slot_mtp[(size_t) b]->draft(2, outb + first[t], pos[first[t]], keep[b] - 1,
-                                                    sl.draft.data(), err)) {
-                        std::printf("ERR batch MTP slot %d: %s\n", b, err.c_str());
-                        return false;
+                    if (try_fused_mtp) {
+                        pending_mtp.push_back({b, first[t], keep[b]});
+                    } else {
+                        // The slot's two residual rows (the final residuals of the last stage: ver.final_R_all() follows the
+                        // chain, so with a layer split they are on the last stage's GPU, where the drafters are).  The copy is
+                        // queued on the drafter's own stream after the window's host sync, so the draft graph reads it.
+                        const strata::core::OnDevice on_slot_mtp(slot_mtp[(size_t) b]->device());
+                        const size_t stride = (size_t) g.hc * (size_t) g.n_embd;
+                        if (cudaMemcpyAsync(slot_mtp_rows[(size_t) b].get(),
+                                            ver.final_R_all() + (size_t) first[t] * stride,
+                                            2 * stride * sizeof(float), cudaMemcpyDeviceToDevice,
+                                            slot_mtp[(size_t) b]->stream()) != cudaSuccess ||
+                            !slot_mtp[(size_t) b]->draft(2, outb + first[t], pos[first[t]], keep[b] - 1,
+                                                        sl.draft.data(), err)) {
+                            std::printf("ERR batch MTP slot %d: %s\n", b, err.c_str());
+                            return false;
+                        }
+                        sl.draft_ready = true;
                     }
-                    sl.draft_ready = true;
                 }
             }
 #if defined(STRATA_HAVE_DFLASH2)
@@ -16630,7 +16648,50 @@ int main(int argc, char** argv) {
                 sl.draft_ready = true;
             }
 #endif
-            std::fflush(stdout);
+            if (try_fused_mtp) {
+                // Flush BT/BDONE tokens immediately so clients receive them before MTP drafting finishes.
+                std::fflush(stdout);
+                if (!pending_mtp.empty()) {
+                    const size_t stride = (size_t) g.hc * (size_t) g.n_embd;
+                    std::vector<strata::core::MtpDrafter::BatchSlotDraft> items(pending_mtp.size());
+                    for (size_t i = 0; i < pending_mtp.size(); ++i) {
+                        const PendingSlotMtp& pm = pending_mtp[i];
+                        BSlot& sl = bs[(size_t) pm.b];
+                        items[i].slot = slot_mtp[(size_t) pm.b].get();
+                        items[i].R_rows = ver.final_R_all() + (size_t) pm.first * stride;
+                        items[i].tokens = outb + pm.first;
+                        items[i].pos0 = pos[pm.first];
+                        items[i].keep = pm.keep;
+                        items[i].out_drafts = sl.draft.data();
+                        items[i].out_prob = nullptr;
+                    }
+                    if (items.size() >= 2 && mtp.can_draft_slots(items.data(), (int) items.size())) {
+                        if (!mtp.draft_slots(items.data(), (int) items.size(), err)) {
+                            std::printf("ERR batch MTP fused: %s\n", err.c_str());
+                            return false;
+                        }
+                        for (const PendingSlotMtp& pm : pending_mtp)
+                            bs[(size_t) pm.b].draft_ready = true;
+                    } else {
+                        for (const PendingSlotMtp& pm : pending_mtp) {
+                            BSlot& sl = bs[(size_t) pm.b];
+                            const strata::core::OnDevice on_slot_mtp(slot_mtp[(size_t) pm.b]->device());
+                            if (cudaMemcpyAsync(slot_mtp_rows[(size_t) pm.b].get(),
+                                                ver.final_R_all() + (size_t) pm.first * stride,
+                                                2 * stride * sizeof(float), cudaMemcpyDeviceToDevice,
+                                                slot_mtp[(size_t) pm.b]->stream()) != cudaSuccess ||
+                                !slot_mtp[(size_t) pm.b]->draft(2, outb + pm.first, pos[pm.first], pm.keep - 1,
+                                                                sl.draft.data(), err)) {
+                                std::printf("ERR batch MTP slot %d: %s\n", pm.b, err.c_str());
+                                return false;
+                            }
+                            sl.draft_ready = true;
+                        }
+                    }
+                }
+            } else {
+                std::fflush(stdout);
+            }
             bt_emit += msd(w2, Clock::now());
             if (adapt_run.th.joinable()) {
                 const Clock::time_point wa = Clock::now();
