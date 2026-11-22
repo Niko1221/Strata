@@ -438,6 +438,16 @@ their 19.00 GiB. `--ple-io` stays at its default (`direct`) here: the engine's p
 ("fine"; the warning bar is 15,000), and on Windows the engine does not switch to mapped reads by itself - a slow probe
 warns instead. `mmap`/`ram` are for a slow drive, not for the expert path.
 
+**The arena and `STRATA_VERIFY_NO_HOST` do not mix unless the arena is imported** (#4698). Measured on the B70 with
+Coder IQ3_XXS at 32K: with a pageable host arena (no `--stream-experts`) and `STRATA_VERIFY_NO_HOST=1` the reply is
+256 `!` characters and an empty answer; with `=0` the same request answers 391. The device plan reads each routed
+expert's rows from the arena and no host fills them. The engine now refuses that combination at the start, naming the
+setting, and still allows a fully imported arena (the B60 case `prepare_for_device_copy` was added for). Two things
+found on the way: a config from before the Level Zero V2 investigation needs `SYCL_UR_USE_LEVEL_ZERO_V2=0` and
+`UR_LOADER_USE_LEVEL_ZERO_V2=0`, or it dies in the V2 adapter's UMF path (`zeMemAllocHost` null dereference, #5914);
+and on this machine the 40 GiB import itself costs the device (`UR_RESULT_ERROR_DEVICE_LOST` at the first profile
+fill), so the arena here runs with `STRATA_ARENA_COPY_REGISTER=0`.
+
 What has **not** been run on Windows: pictures, two cards, and the Docker path. The Arc A-series **has** now been run
 (an A770 16 GB, below). WSL2 with an Arc has been used by one tester (the B580 row above), but setup cannot detect the
 card there, because it reads `/sys/class/drm`, which WSL2 does not have.
