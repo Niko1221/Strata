@@ -1,0 +1,6 @@
+{"prompt_tokens": 40990, "reused": 0, "prompt_tps": 2027.5, "decode_tps": 39.1, "generated": 43, "prompt_ms": 20217.0, "source": "strata-iq3_s-512k-df2-kvresident-routed.log"}
+{"prompt_tokens": 40989, "reused": 0, "prompt_tps": 2100.5, "decode_tps": 53.3, "generated": 41, "prompt_ms": 19514.0, "source": "strata-iq3_s-512k-df2-kvresident-routed.log"}
+{"prompt_tokens": 40988, "reused": 0, "prompt_tps": 2104.8, "decode_tps": 58.4, "generated": 42, "prompt_ms": 19474.0, "source": "strata-iq3_s-512k-df2-kvresident-routed.log"}
+{"prompt_tokens": 202369, "reused": 0, "prompt_tps": 1935.8, "decode_tps": 42.2, "generated": 256, "prompt_ms": 104542.0, "source": "strata-iq3_s-512k-df2-kvresident-routed.log"}
+{"prompt_tokens": 351473, "reused": 0, "prompt_tps": 1788.3, "decode_tps": 45.2, "generated": 256, "prompt_ms": 196538.0, "source": "strata-iq3_s-512k-df2-kvresident-routed.log"}
+{"prompt_tokens": 500614, "reused": 0, "prompt_tps": 1647.7, "decode_tps": 42.4, "generated": 256, "prompt_ms": 303829.0, "source": "strata-iq3_s-512k-df2-kvresident-routed.log"}
