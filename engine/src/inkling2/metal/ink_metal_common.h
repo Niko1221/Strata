@@ -437,8 +437,29 @@ struct InkMetalModel {
         if (map_len <= max_buf) {
             wbuf = cx.wrap(base, map_len);
         } else {
-            // Chunked zero-copy wrap (max single tensor span = 1 GiB)
-            wbuf = cx.wrap(base, map_len, 1ull << 30);
+            // The file is larger than one MTLBuffer may be.  The expert kernels bind Section 4 once (sec4_arg) and add each
+            // routed expert's body_off inside the kernel, so the whole of Section 4 has to be addressable from that one
+            // binding.  The generic chunked wrap cannot promise that: it binds sec4_off inside chunk 0, which ends at
+            // maxBufferLength, so the experts stored past it (SQ-15 on a 24 GB Mac: 13 experts of layer 23 in the last
+            // ~50 MB) were read from memory the GPU had no mapping for.  The first time the router picked one the hidden
+            // state became non-finite and every answer was token 0 ("!") until the length limit.
+            //
+            // Wrap two ranges instead: everything before Section 4 (the trunk tensors tw()/dw() bind) and Section 4 to the
+            // end of the file, each its own MTLBuffer that starts on a page.  BO() selects the range by offset.
+            const size_t s4_lo = (size_t)sec4_off / pg * pg;
+            const size_t s1_hi = std::min(map_len, ((size_t)sec4_off + pg - 1) / pg * pg);   // overlaps the next by < 1 page
+            if (s1_hi > max_buf || map_len - s4_lo > max_buf) {
+                char msg[512];
+                std::snprintf(msg, sizeof msg,
+                              "this model does not fit this GPU's largest Metal buffer: the experts (Section 4, %.2f GB) "
+                              "and the trunk (%.2f GB) must each be at most maxBufferLength (%.2f GB) because a kernel "
+                              "reaches every expert from one binding; choose a smaller build (e.g. SQ-15 instead of SQ-20) "
+                              "or a Mac with more memory",
+                              (map_len - s4_lo) / 1e9, s1_hi / 1e9, max_buf / 1e9);
+                err = msg;
+                return false;
+            }
+            wbuf = cx.wrap_ranges(base, {{0, s1_hi}, {s4_lo, map_len}});
         }
 
         // Upload compact metadata & pre-oriented tables to GPU
