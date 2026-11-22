@@ -1,0 +1,3 @@
+{"prompt_tokens": 40990, "reused": 0, "generated": 43, "prompt_tps": 2027.5, "decode_tps": 39.1, "ttft_s": 20.297, "total_s": 21.375, "prompt_ms": 20217.3, "predicted_ms": 1100.1, "label": "routed-40k", "size": 40960, "run": 1, "tune": null}
+{"prompt_tokens": 40989, "reused": 0, "generated": 41, "prompt_tps": 2100.5, "decode_tps": 53.3, "ttft_s": 19.578, "total_s": 20.328, "prompt_ms": 19513.9, "predicted_ms": 769.2, "label": "routed-40k", "size": 40960, "run": 2, "tune": null}
+{"prompt_tokens": 40988, "reused": 0, "generated": 42, "prompt_tps": 2104.8, "decode_tps": 58.4, "ttft_s": 19.547, "total_s": 20.235, "prompt_ms": 19473.8, "predicted_ms": 718.8, "label": "routed-40k", "size": 40960, "run": 3, "tune": null}

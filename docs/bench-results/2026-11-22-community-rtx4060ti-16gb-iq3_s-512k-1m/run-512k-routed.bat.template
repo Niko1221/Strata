@@ -1,0 +1,26 @@
+@echo off
+setlocal
+title Strata IQ3_S 512K routed - speed preset
+
+rem ---------------------------------------------------------------------------
+rem Render first (one time, or after changing paths):
+rem   python tools\render_preset.py presets\strata-512k-routed.json.template ^
+rem     --strata-root "%STRATA_ROOT%" --strata-data "%STRATA_DATA%" ^
+rem     --python "%PYTHON%" --out "%STRATA_ROOT%\strata-512k-routed.json"
+rem ---------------------------------------------------------------------------
+
+if "%STRATA_ROOT%"=="" (
+  echo Set STRATA_ROOT to your Strata folder before running.
+  exit /b 1
+)
+if "%PYTHON%"=="" (
+  echo Set PYTHON to your Python 3.12 executable.
+  exit /b 1
+)
+
+cd /d "%STRATA_ROOT%"
+"%PYTHON%" "%STRATA_ROOT%\engine-feed\control\0.1.62\serve\server.py" ^
+  --engine strata ^
+  --config "%STRATA_ROOT%\strata-512k-routed.json" ^
+  --port 8080
+if errorlevel 1 pause
