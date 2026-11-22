@@ -5030,6 +5030,27 @@ int main(int argc, char **argv) try {
         if (!arena_src.ram_warning().empty())   // #633: said before the load's numbers, which it explains
             std::fprintf(stderr, "strata generate: WARNING: %s\n", arena_src.ram_warning().c_str());
         std::fprintf(stderr, "strata generate: expert arena: %s\n", arena_src.note().c_str());
+        // #4698 (Windows): a host arena and the device plan (STRATA_VERIFY_NO_HOST) cannot be combined unless the
+        // whole arena is imported for device copies. The plan reads a routed expert's rows straight out of the arena
+        // and expects no host to answer for them; a pageable arena (VirtualAlloc, not a USM mirror) that is not
+        // imported leaves those reads with whatever the pages hold - measured here as the reasoning channel filled
+        // with '!' x 256 and an empty answer. Refuse at the start, naming the setting, instead of serving that.
+        {
+            const char* v = std::getenv("STRATA_VERIFY_NO_HOST");
+            const bool no_host = v != nullptr && *v != 0 && std::strcmp(v, "0") != 0;
+            // the last expert's blob ends at the arena's end, so this is true only for a full import
+            const bool arena_device_visible = arena_src.copy_ready(g.n_layers - 1, g.n_expert - 1);
+            if (no_host && !arena_device_visible) {
+                std::fprintf(stderr,
+                             "strata generate: REFUSED: STRATA_VERIFY_NO_HOST=1 with a host expert arena (no "
+                             "--stream-experts) that is not imported for device copies: the device plan reads each "
+                             "routed expert's rows from the arena and no host answers for them, so replies come out "
+                             "as garbage ('!' x N; #4698). The arena is pageable VirtualAlloc memory, not a USM "
+                             "mirror. Set STRATA_VERIFY_NO_HOST=0 for this configuration, or use --stream-experts, "
+                             "whose mirror the plan can read\n");
+                refuse_exit(2);
+            }
+        }
         std::fprintf(stderr, "strata generate: loaded %.2f GiB at %.2f GiB/s\n",
                      (double) strata::kernels::cpu::expert_layout().total / (1024.0 * 1024 * 1024),
                      arena_src.load_gib_per_second());
