@@ -12862,10 +12862,7 @@ int main(int argc, char **argv) try {
                     // branching inside this conversation resumes from. The longest (the turn) alone diverges
                     // before that boundary and is useless to such a request, which then overwrites another
                     // chat's slot instead. (The slot -> main copy at copy_from_slot already carries all of them.)
-                    for (const ConvCheckpoint& c : checks)
-                        if (!sl.img && c.ids.size() < live.size() &&
-                            std::equal(c.ids.begin(), c.ids.end(), live.begin()))
-                            sl.checks.push_back(c);
+                    sl.checks = strata::core::conversation_checkpoints_prefixing(checks, live, sl.img);
                     std::fprintf(stderr, "strata batch: slot %d takes %lld tokens (copied in %.1f ms)\n", admit_slot,
                                  (long long) live.size(), std::chrono::duration<double, std::milli>(Clock::now() - tc0).count());
                 }
