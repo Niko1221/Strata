@@ -19,8 +19,10 @@ GGUF_PY = HERE.parents[1] / "engine" / "third_party" / "strata-gguf-py"
 FIXTURE = HERE.parents[1] / "engine" / "tests" / "ngram" / "ple_lowbit_fixture.inc"
 REAL = pathlib.Path(r"D:\exstrata-work\models\IQ3_XXS\Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf")
 DOC_NMSE = {"c4": 0.0361, "c3": 0.0281, "c2s": 0.0227,   # ple-representation.md section 4 (c6: its 2b_lloyd_b32_f16)
-            "c1": 0.0061, "c2": 0.0275, "c6": 0.1117}
-ALL = ["c4", "c3", "c2s", "c1", "c2", "c6"]              # the fixture's order: the 3-bit formats first, as committed
+            "c1": 0.0061, "c2": 0.0275, "c6": 0.1117,
+            "c5": 0.0182}                                 # (c5: measured on rows 0:200000, ple-native-report.md section 9)
+ALL = ["c4", "c3", "c2s", "c1", "c2", "c6", "c5"]        # the fixture's order: the 3-bit formats first, as committed; c5 last
+C5_SMALL_FIT = {"n_chunks": 8, "chunk": 128, "c5_iters": 3}   # a quick lut for the synthetic tables
 
 
 def gguf_py():
@@ -57,8 +59,12 @@ def lowbit_cases(tmp, n_plain):
     X = np.concatenate([X, X[:1] * 2000, X[1:2] * 3e-5, np.zeros((1, E.DIM), np.float32)]).astype(np.float32)
     out = []
     for fmt in ALL:
-        cb = E.fit_codebook(E.Source(src), fmt, seed=1, ntry=7)
-        Y, codes, scales, _ = E.quantize(X, np.array(cb["grid"], np.float32), cb["block"], cb["scale"], np.float32(cb["table_scale"]), 7)
+        if fmt == "c5":
+            cb = E.fit_codebook(E.Source(src), fmt, seed=1, ntry=7, **C5_SMALL_FIT)
+            Y, codes, scales = E.quantize_c5(X, np.array(cb["grid"], np.float32))
+        else:
+            cb = E.fit_codebook(E.Source(src), fmt, seed=1, ntry=7)
+            Y, codes, scales, _ = E.quantize(X, np.array(cb["grid"], np.float32), cb["block"], cb["scale"], np.float32(cb["table_scale"]), 7)
         out.append((fmt, cb, E.pack_native(codes, scales, cb), Y))
     return out
 
@@ -85,18 +91,76 @@ def fixture_text(cases):
         L.append("inline const uint32_t %s_want[%d] = {" % (fmt, Y.size))
         L += ["    " + ", ".join("0x%08x" % v for v in r[i:i + 10]) + "," for r in Y.view(np.uint32) for i in range(0, E.DIM, 10)]
         L.append("};")
-    L.append("inline const Case cases[%d] = {" % len(cases))
-    for fmt, cb, P, Y in cases:
+    plain = [c for c in cases if c[0] != "c5"]
+    L.append("inline const Case cases[%d] = {" % len(plain))
+    for fmt, cb, P, Y in plain:
         grid = ", ".join("0x%08x" % v for v in np.array(cb["grid"], np.float32).view(np.uint32))
         L.append('    {"%s", %d, %d, %s, {%s}, 0x%08x, %d, %d, %s_packed, %s_want},' %
                  (fmt, cb["bits"], cb["block"], "true" if cb["scale"] == "f16" else "false", grid,
                   int(np.float32(cb["table_scale"]).view(np.uint32)), P.shape[0], P.shape[1], fmt, fmt))
-    L += ["};", "", "}  // namespace ple_lowbit_fixture", ""]
+    L.append("};")
+    trellis = [c for c in cases if c[0] == "c5"]
+    if trellis:   # C5: the codes are trellis states, its lut (4096 values) does not fit Case
+        L += ["", "struct TrellisCase { const char* name; int state_bits; const uint32_t* lut; int levels; int rows; int row_bytes;",
+              "                     const uint8_t* packed; const uint32_t* want; };", ""]
+        for fmt, cb, P, Y in trellis:
+            lut = np.array(cb["grid"], np.float32).view(np.uint32)
+            L.append("inline const uint32_t %s_lut[%d] = {" % (fmt, lut.size))
+            L += ["    " + ", ".join("0x%08x" % v for v in lut[i:i + 8]) + "," for i in range(0, lut.size, 8)]
+            L.append("};")
+        L.append("inline const TrellisCase trellis_cases[%d] = {" % len(trellis))
+        for fmt, cb, P, Y in trellis:
+            L.append('    {"%s", %d, %s_lut, %d, %d, %d, %s_packed, %s_want},' %
+                     (fmt, cb["trellis_bits"], fmt, len(cb["grid"]), P.shape[0], P.shape[1], fmt, fmt))
+        L.append("};")
+    L += ["", "}  // namespace ple_lowbit_fixture", ""]
     return "\n".join(L)
 
 
 def nmse(y, x):
     return float(((y.astype(np.float64) - x) ** 2).sum() / (x.astype(np.float64) ** 2).sum())
+
+
+def levels(fmt):
+    """Values in the format's strata.ple.codebook: 2^bits, or c5's 2^12 trellis states."""
+    return 1 << (E.C5_STATE_BITS if fmt == "c5" else E.bits_of(fmt))
+
+
+def ref_viterbi(Y, lut, L):
+    """numpy reference of ple_c5_viterbi.cpp, written from its definition (same float ops, ties to the lowest p and the
+    lowest final state): -> (n, 160) codes of the tail-biting path closest to Y."""
+    H = 1 << (L - 3)
+    idx = np.arange(8)[:, None] * (H >> 3) + np.arange(H)[None, :] // 8   # m index of state p*H + h: (p*H + h) >> 3
+    L8 = lut.reshape(8, H)                                                  # state p*H + h
+
+    def run(y, start, end):
+        n, T = y.shape
+        m = np.zeros((n, H), np.float32)
+        if start is not None:
+            m[:] = np.inf
+            m[np.arange(n), start] = 0
+        back = np.empty((T - 1, n, H), np.uint8)
+        for t in range(T - 1):
+            e = y[:, t, None, None] - L8[None]
+            J = m[:, idx] + e * e                                           # (n, 8, H)
+            back[t] = J.argmin(1)
+            m = J.min(1)
+        e = y[:, T - 1, None] - lut[None]
+        J = m[:, np.arange(1 << L) >> 3] + e * e
+        if end is not None:
+            J = np.where((np.arange(1 << L)[None] & (H - 1)) == end[:, None], J, np.inf)
+        st = J.argmin(1)
+        codes = np.empty((n, T), np.uint8)
+        for t in range(T - 1, -1, -1):
+            codes[:, t] = st & 7
+            h = st >> 3
+            if t:
+                st = (back[t - 1][np.arange(n), h].astype(np.int64) << (L - 3)) | h
+        return codes
+
+    c = np.roll(run(np.roll(Y, -80, 1), None, None), 80, 1)                 # pass 1: the row from value 80, free ends
+    w = sum(c[:, 159 - k].astype(np.int64) << (3 * k) for k in range((L - 1) // 3)) & (H - 1)
+    return run(Y, w, w)
 
 
 def test_iq4nl_decode_matches_ggml_reference():
@@ -224,7 +288,7 @@ def test_pack_native_round_trips_codes_and_scales(fmt):
 @pytest.mark.parametrize("case", range(len(ALL)), ids=ALL)
 def test_native_rows_decode_to_the_quantizer_s_floats(case, tmp_path):
     fmt, cb, P, Y = lowbit_cases(tmp_path, 2000)[case]
-    assert P.shape == (2003, E.row_bytes(fmt)) and len(cb["grid"]) == 1 << E.bits_of(fmt)
+    assert P.shape == (2003, E.row_bytes(fmt)) and len(cb["grid"]) == levels(fmt)
     assert np.array_equal(E.native_dequant(P, cb).view(np.uint32), Y.view(np.uint32))
     if fmt == "c1":                                                  # IQ4_NL's grid, not a fitted one
         assert np.array_equal(np.float32(cb["grid"]), E.KV_IQ4NL / np.float32(127))
@@ -241,17 +305,70 @@ def test_committed_cpp_fixture_is_what_the_emulator_writes_now(tmp_path):
         "stale fixture: python tools/test_ple_lowbit_emulate.py --write-fixture"
 
 
-@pytest.mark.parametrize("fmt", ["c3", "c1", "c6"])
+def test_c5_viterbi_dll_matches_the_numpy_reference():
+    rng = np.random.default_rng(21)
+    Y = rng.standard_normal((150, 160)).astype(np.float32)
+    Y[0] = 0                                                         # with the repeated values below: ties at every step
+    lut = rng.permutation(np.quantile(rng.standard_normal(100000), (np.arange(4096) + 0.5) / 4096)).astype(np.float32)
+    lut[:64] = lut[64:128]
+    assert np.array_equal(E.c5_codes(Y, lut, threads=3), ref_viterbi(Y, lut, E.C5_STATE_BITS))
+
+
+def test_c5_states_are_the_engine_s_register():
+    codes = np.random.default_rng(22).integers(0, 8, (40, 160)).astype(np.uint8)
+    codes[0] = 7
+    st = E.c5_states(codes)
+    for r in range(codes.shape[0]):                                  # ple_c5_dequant_row, value by value
+        reg = 0
+        for j in range(160 - (E.C5_STATE_BITS - 1) // 3, 160):
+            reg = (reg << 3) | int(codes[r, j])
+        for j in range(160):
+            reg = ((reg << 3) | int(codes[r, j])) & ((1 << E.C5_STATE_BITS) - 1)
+            assert st[r, j] == reg
+    assert (st[0] == 4095).all()
+
+
+def test_c5_fit_is_deterministic_and_beats_c4_on_gaussian_rows():
+    X = np.random.default_rng(23).standard_normal((3000, 160)).astype(np.float32) * 0.1
+    X[5] = 0
+    lut = E.fit_c5_lut(X, seed=1, iters=6, threads=4)
+    assert np.array_equal(lut, E.fit_c5_lut(X, seed=1, iters=6, threads=1)) and lut.dtype == np.float32 and lut.shape == (4096,)
+    deq, codes, s = E.quantize_c5(X, lut, threads=2)
+    assert codes.shape == (3000, 160) and codes.max() < 8 and s.shape == (3000, 1)
+    assert (s == s.astype(np.float16)).all() and (deq[5] == 0).all()
+    assert np.array_equal(deq.view(np.uint32), (s * lut[E.c5_states(codes)]).view(np.uint32))
+    Bn = (X[X.any(1)] / np.abs(X[X.any(1)]).max(1, keepdims=True)).ravel()
+    c4 = E.quantize(X, E.lloyd(Bn.astype(np.float64), 8).astype(np.float32), 160, "f16", 1.0, 7)[0]
+    assert nmse(deq, X) < 0.75 * nmse(c4, X)                         # Gaussian rows: c4 about 0.036, c5 about 0.02
+
+
+def test_c5_codebook_of_another_trellis_is_refused(tmp_path, monkeypatch):
+    src = tmp_path / "src.gguf"
+    synthetic_source(src, 600, seed=5)
+    cb = E.fit_codebook(E.Source(src), "c5", 1, 7, **C5_SMALL_FIT)
+    bad = tmp_path / "bad.json"
+    bad.write_text(json.dumps(dict(cb, trellis_bits=13)))
+    monkeypatch.setattr(sys, "argv", ["x", "--format", "c5", "--src", str(src), "--out", str(tmp_path / "o.gguf"), "--codebook", str(bad),
+                                      "--native"])
+    with pytest.raises(SystemExit, match="13-bit trellis"):
+        E.main()
+
+
+@pytest.mark.parametrize("fmt", ["c3", "c1", "c6", "c5"])
 def test_native_pipeline_writes_the_engine_s_table(fmt, tmp_path, monkeypatch):
     gguf = gguf_py()
     src = tmp_path / "src.gguf"
     rows = synthetic_source(src, 3000, seed=5)
     rb = E.row_bytes(fmt)
+    extra = []
+    if fmt == "c5":                                                  # a quick lut (the default fit takes minutes)
+        (tmp_path / "c5.json").write_text(json.dumps(E.fit_codebook(E.Source(src), "c5", 1, 7, **C5_SMALL_FIT)))
+        extra = ["--codebook", str(tmp_path / "c5.json")]
     outs = []
     for workers in (1, 2):
         out = tmp_path / ("n%d.gguf" % workers)
         monkeypatch.setattr(sys, "argv", ["x", "--format", fmt, "--src", str(src), "--out", str(out), "--rows", "100:2900",
-                                          "--chunk-rows", "700", "--workers", str(workers), "--native"])
+                                          "--chunk-rows", "700", "--workers", str(workers), "--native"] + extra)
         E.main()
         outs.append(out.read_bytes())
     assert outs[0] == outs[1]
@@ -263,14 +380,21 @@ def test_native_pipeline_writes_the_engine_s_table(fmt, tmp_path, monkeypatch):
     meta = {k: f.contents() for k, f in r.fields.items() if k.startswith("strata.ple.")}
     cb = json.loads((tmp_path / "n1.gguf.codebook.json").read_text())
     assert meta["strata.ple.format"] == fmt
-    assert np.array_equal(np.float32(meta["strata.ple.codebook"]), np.float32(cb["grid"])) and len(cb["grid"]) == 1 << E.bits_of(fmt)
+    assert np.array_equal(np.float32(meta["strata.ple.codebook"]), np.float32(cb["grid"])) and len(cb["grid"]) == levels(fmt)
     if cb["scale"] == "e4m3":
         assert np.float32(meta["strata.ple.scale"]) == np.float32(cb["table_scale"]) > 0
     else:
         assert "strata.ple.scale" not in meta
+    if fmt == "c5":
+        assert meta["strata.ple.trellis_bits"] == 12 and r.fields["strata.ple.trellis_bits"].types == [gguf.GGUFValueType.UINT32]
+    else:
+        assert "strata.ple.trellis_bits" not in meta
     got = E.native_dequant(np.asarray(t.data).view(np.uint8).reshape(2800, rb), cb)
-    Y = E.quantize(E.iq4nl_decode(rows[100:2900]), np.float32(cb["grid"]), cb["block"], cb["scale"], np.float32(cb["table_scale"]),
-                   cb["ntry"])[0]
+    X = E.iq4nl_decode(rows[100:2900])
+    if fmt == "c5":
+        Y = E.quantize_c5(X, np.float32(cb["grid"]))[0]
+    else:
+        Y = E.quantize(X, np.float32(cb["grid"]), cb["block"], cb["scale"], np.float32(cb["table_scale"]), cb["ntry"])[0]
     assert np.array_equal(got.view(np.uint32), Y.view(np.uint32))
     ref = (tmp_path / "n1.gguf.ref.bin").read_bytes()                # ple_fp8_parity's reference: every row of this small table
     m = struct.unpack("<i", ref[:4])[0]
@@ -284,7 +408,7 @@ def test_native_pipeline_writes_the_engine_s_table(fmt, tmp_path, monkeypatch):
 def test_real_table_slice_native_decodes_exactly(fmt, tmp_path, monkeypatch, capsys):
     out = tmp_path / (fmt + ".gguf")                                 # main() checks every chunk's decode bit for bit
     monkeypatch.setattr(sys, "argv", ["x", "--format", fmt, "--src", str(REAL), "--out", str(out), "--rows", "0:50000",
-                                      "--idle-priority", "--native"])
+                                      "--idle-priority", "--native"] + (["--workers", "8"] if fmt == "c5" else []))
     E.main()
     text = capsys.readouterr().out
     val = float([l for l in text.splitlines() if "as stored" in l][0].split(":")[1])
@@ -300,7 +424,7 @@ def test_real_table_slice_nmse_matches_doc(fmt, tmp_path, monkeypatch, capsys):
     gguf = gguf_py()
     out = tmp_path / (fmt + ".gguf")
     monkeypatch.setattr(sys, "argv", ["x", "--format", fmt, "--src", str(REAL), "--out", str(out), "--rows", "0:200000",
-                                      "--idle-priority"])
+                                      "--idle-priority"] + (["--workers", "8"] if fmt == "c5" else []))
     E.main()
     text = capsys.readouterr().out
     with capsys.disabled():

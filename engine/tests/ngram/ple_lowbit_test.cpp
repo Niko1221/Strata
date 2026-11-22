@@ -1,4 +1,4 @@
-// tests/ngram/ple_lowbit_test.cpp - the low-bit PLE rows (C4, C3, C2s, C1, C2, C6) as the engine decodes them
+// tests/ngram/ple_lowbit_test.cpp - the low-bit PLE rows (C4, C3, C2s, C1, C2, C6, C5) as the engine decodes them
 // (strata/kernels/ple_lowbit.hpp),
 // against the floats the emulator's quantizer produced for the same rows, bit for bit. No model, no GPU.
 //
@@ -30,6 +30,30 @@ int main() {
             float out[160];
             k::ple_lowbit_dequant_row(c.packed + (size_t) r * (size_t) c.row_bytes, c.bits, c.block, c.f16_scales, codebook,
                                       table_scale, out);
+            for (int j = 0; j < 160; ++j) {
+                uint32_t got;
+                std::memcpy(&got, &out[j], 4);
+                if (got != c.want[r * 160 + j] && differ++ < 4)
+                    std::printf("%s: row %d value %d is 0x%08x, the emulator's is 0x%08x\n", c.name, r, j, got, c.want[r * 160 + j]);
+            }
+        }
+        std::printf("%s: %d rows of %d B, %d of %d values differ\n", c.name, c.rows, c.row_bytes, differ, c.rows * 160);
+        bad += differ;
+    }
+    // C5: the trellis rows (ple_c5_dequant_row), with the emulator's 4096-value lut
+    for (const ple_lowbit_fixture::TrellisCase& c : ple_lowbit_fixture::trellis_cases) {
+        if (c.state_bits != k::PLE_C5_STATE_BITS || c.levels != k::PLE_C5_LEVELS || c.row_bytes != k::ple_lowbit_row_bytes(3, 160, true)) {
+            std::printf("%s: a %d-bit trellis of %d values in %d B rows in the fixture, the engine's is %d bits\n", c.name, c.state_bits,
+                        c.levels, c.row_bytes, k::PLE_C5_STATE_BITS);
+            ++bad;
+            continue;
+        }
+        static float lut[k::PLE_C5_LEVELS];
+        std::memcpy(lut, c.lut, sizeof lut);
+        int differ = 0;
+        for (int r = 0; r < c.rows; ++r) {
+            float out[160];
+            k::ple_c5_dequant_row(c.packed + (size_t) r * (size_t) c.row_bytes, lut, out);
             for (int j = 0; j < 160; ++j) {
                 uint32_t got;
                 std::memcpy(&got, &out[j], 4);

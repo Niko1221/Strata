@@ -1,4 +1,5 @@
-// include/strata/kernels/ple_lowbit.hpp - the low-bit PLE table rows C1, C2, C2s, C3, C4 and C6 (tools/ple_lowbit_emulate.py --native).
+// include/strata/kernels/ple_lowbit.hpp - the low-bit PLE table rows C1, C2, C2s, C3, C4, C5 and C6 (tools/ple_lowbit_emulate.py
+// --native). C5 (a trellis) is ple_c5_dequant_row, at the end.
 //
 // A row is 160 values: 20 * bits bytes of codes, then the row's scales.
 //   codes  a little-endian bit stream: 8 codes in `bits` bytes read as one little-endian word, value j's code is bits
@@ -68,6 +69,31 @@ inline void ple_lowbit_dequant_row(const uint8_t* row, int bits, int block, bool
             const int j = 8 * g + k;
             out160[j] = s[j / block] * codebook[(w >> (bits * k)) & mask];
         }
+    }
+}
+
+/// C5: the 3-bit codes of a C4 row (60 B, then one fp16 scale: 62 B) name trellis states, not levels. A register of
+/// PLE_C5_STATE_BITS bits takes each code in at the bottom, state_j = ((state_{j-1} << 3) | code_j) mod 2^bits, and value
+/// j = s * lut[state_j], rounded to float32 once, with `lut` the table's PLE_C5_LEVELS floats (`strata.ple.codebook`). The
+/// trellis is tail-biting: the register starts with the row's own last codes (157, 158, 159; their low
+/// PLE_C5_STATE_BITS - 3 bits matter), as tools/ple_c5_viterbi.cpp encodes it.
+inline constexpr int PLE_C5_STATE_BITS = 12;
+inline constexpr int PLE_C5_LEVELS = 1 << PLE_C5_STATE_BITS;
+
+inline void ple_c5_dequant_row(const uint8_t* row, const float* lut, float* out160) {
+    uint8_t c[160];
+    for (int g = 0; g < 20; ++g) {
+        const uint32_t w = (uint32_t) row[3 * g] | (uint32_t) row[3 * g + 1] << 8 | (uint32_t) row[3 * g + 2] << 16;
+        for (int k = 0; k < 8; ++k) c[8 * g + k] = (uint8_t) ((w >> (3 * k)) & 7u);
+    }
+    uint16_t h;
+    std::memcpy(&h, row + 60, 2);
+    const float s = f32_from_f16(h);
+    uint32_t st = 0;
+    for (int j = 160 - (PLE_C5_STATE_BITS - 1) / 3; j < 160; ++j) st = (st << 3) | c[j];
+    for (int j = 0; j < 160; ++j) {
+        st = ((st << 3) | c[j]) & (uint32_t) (PLE_C5_LEVELS - 1);
+        out160[j] = s * lut[st];
     }
 }
 
