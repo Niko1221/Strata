@@ -53,6 +53,24 @@ __global__ void __launch_bounds__(256) mv(int type,const uint8_t* __restrict__ w
     for(int j=lane;j<n;j+=32)s=fmaf(value(type,w,j),__ldg(x+j),s);
     s=sum(s);if(!lane)y[row]=s;
 }
+__global__ void __launch_bounds__(128) mv_pq2_0(const uint8_t* __restrict__ w,const float* __restrict__ x,float* __restrict__ y,int n,int rows,size_t stride){
+    const int warp=threadIdx.x>>5,lane=threadIdx.x&31;
+    const int row=blockIdx.x*4+warp;if(row>=rows)return;
+    const uint8_t* wp=w+size_t(row)*stride;const int nb=n/128;float s=0;
+    for(int b=0;b<nb;++b){
+        const uint8_t* blk=wp+size_t(b)*34;
+        const float d=h(blk);
+        const uint8_t qb=__ldg(blk+2+lane);
+        const float4 xv=__ldg(reinterpret_cast<const float4*>(x+b*128+lane*4));
+        const float c0=float(int(qb&3)-1);
+        const float c1=float(int((qb>>2)&3)-1);
+        const float c2=float(int((qb>>4)&3)-1);
+        const float c3=float(int((qb>>6)&3)-1);
+        const float acc=fmaf(c0,xv.x,fmaf(c1,xv.y,fmaf(c2,xv.z,c3*xv.w)));
+        s=fmaf(d,acc,s);
+    }
+    s=sum(s);if(!lane)y[row]=s;
+}
 __global__ void __launch_bounds__(256) mv_q8_0(const uint8_t* __restrict__ w,const float* __restrict__ x,float* __restrict__ y,int n,int rows,size_t stride){
     const int row=blockIdx.x*8+threadIdx.x/32,lane=threadIdx.x%32;if(row>=rows)return;
     const uint8_t* wp=w+size_t(row)*stride;const int nb=n/32;float s=0;
@@ -798,6 +816,16 @@ __global__ void had(const float* x,const float* signs,float* y,bool inverse,bool
     for(int stride=1;stride<1024;stride*=2){float v=b[j],other=b[j^stride];__syncthreads();b[j]=(j&stride)?other-v:v+other;__syncthreads();}
     y[index]=b[j]*(1.f/32)*(inverse?signs[index]:1.f);
 }
+__global__ void had_batch(const float* __restrict__ x,const float* __restrict__ signs,float* __restrict__ y,int n,bool inverse,bool grouped){
+    __shared__ float b[1024];
+    const int j=threadIdx.x,index=blockIdx.x*1024+j,tok=blockIdx.y;
+    int src=index;
+    if(grouped){int head=index/128;src=((head%3)*16+head/3)*128+index%128;}
+    const size_t base=size_t(tok)*n;
+    b[j]=x[base+src]*(inverse?1.f:signs[index]);__syncthreads();
+    for(int stride=1;stride<1024;stride*=2){float v=b[j],other=b[j^stride];__syncthreads();b[j]=(j&stride)?other-v:v+other;__syncthreads();}
+    y[base+index]=b[j]*(1.f/32)*(inverse?signs[index]:1.f);
+}
 // Based on Strata q36 k_attn_prep: Q and output gates interleave per head.
 __global__ void prep(const float* qg,const float* k,const float* v,const float* qw,const float* kw,float* q,float* gate,
                      half* kc,half* vc,int pos,int ctx,int q_heads,int kv_heads,float eps,float base,float* normalized_k=nullptr){
@@ -978,6 +1006,7 @@ void matvec(int type,const void* w,const float* x,float* y,int n,int rows,cudaSt
         case 14: launch_mv_256<MvKind::Q6_K, 210>(wp,x,y,n,rows,rb,s); break;
         case 21: launch_mv_256<MvKind::IQ3_S, 110>(wp,x,y,n,rows,rb,s); break;
         case 22: launch_mv_256<MvKind::IQ2_S, 82>(wp,x,y,n,rows,rb,s); break;
+        case 142: mv_pq2_0<<<(rows+3)/4,128,0,s>>>(wp,x,y,n,rows,rb); break;
         default: mv<<<grid,256,0,s>>>(type,wp,x,y,n,rows,rb); break;
     }
     ck(cudaGetLastError());
@@ -992,6 +1021,10 @@ void finite(const float* x,size_t n,int* e,cudaStream_t s){fin<<<unsigned((n+255
 void hadamard(const float* x,const float* signs,float* y,int n,bool inverse,bool grouped,cudaStream_t s){
     if(n<=0||n%1024||!x||!signs||!y||x==y||(grouped&&(n!=6144||inverse)))throw std::runtime_error("invalid Hadamard arguments");
     had<<<n/1024,1024,0,s>>>(x,signs,y,inverse,grouped);ck(cudaGetLastError());}
+void hadamard_batch(const float* x,const float* signs,float* y,int n_tokens,int n,bool inverse,bool grouped,cudaStream_t s){
+    if(n_tokens<=0)return;
+    if(n<=0||n%1024||!x||!signs||!y||x==y||(grouped&&(n!=6144||inverse)))throw std::runtime_error("invalid Hadamard arguments");
+    had_batch<<<dim3(unsigned(n/1024),unsigned(n_tokens)),1024,0,s>>>(x,signs,y,n,inverse,grouped);ck(cudaGetLastError());}
 void attention_prepare(const float* qg,const float* k,const float* v,const float* qw,const float* kw,float* q,float* gate,half* kc,half* vc,int pos,int ctx,int q_heads,int kv_heads,float eps,float base,cudaStream_t s){
     if(pos<0||pos>=ctx||q_heads<=0||kv_heads<=0||q_heads%kv_heads)throw std::runtime_error("attention position or head geometry out of range");prep<<<q_heads+kv_heads,256,0,s>>>(qg,k,v,qw,kw,q,gate,kc,vc,pos,ctx,q_heads,kv_heads,eps,base);ck(cudaGetLastError());}
 void attention_apply(const float* q,const float* gate,const half* kc,const half* vc,float* out,float* scores,int pos,int ctx,int q_heads,int kv_heads,cudaStream_t s,const int* status){

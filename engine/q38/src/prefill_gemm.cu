@@ -864,10 +864,14 @@ void PrefillGemmWorkspace::prepare_activation(const float* x_fp32, int n_tokens,
     if (!impl_->use_fp8) {
         const bool aligned_16 = ((reinterpret_cast<uintptr_t>(x_fp32) & 15u) == 0u) &&
                                 ((reinterpret_cast<uintptr_t>(impl_->act_fp16) & 15u) == 0u);
-        if (aligned_16 && K == 5120)
+        if (aligned_16 && K == 4096)
+            prepare_act_scaled_fp16_reg_kernel<4096><<<n_tokens, 256, 0, stream>>>(x_fp32, impl_->act_fp16, impl_->act_scales, n_tokens);
+        else if (aligned_16 && K == 5120)
             prepare_act_scaled_fp16_reg_kernel<5120><<<n_tokens, 256, 0, stream>>>(x_fp32, impl_->act_fp16, impl_->act_scales, n_tokens);
         else if (aligned_16 && K == 6144)
             prepare_act_scaled_fp16_reg_kernel<6144><<<n_tokens, 256, 0, stream>>>(x_fp32, impl_->act_fp16, impl_->act_scales, n_tokens);
+        else if (aligned_16 && K == 12288)
+            prepare_act_scaled_fp16_reg_kernel<12288><<<n_tokens, 256, 0, stream>>>(x_fp32, impl_->act_fp16, impl_->act_scales, n_tokens);
         else if (aligned_16 && ((K & 7) == 0))
             prepare_act_scaled_fp16_kernel<true><<<n_tokens, 256, 0, stream>>>(x_fp32, impl_->act_fp16, impl_->act_scales, n_tokens, K);
         else

@@ -105,6 +105,23 @@ localized READMEs.
   Mainline_Support GGUFs confirmed incompatible (no loop_res_query.weight).
   Numbers added to v0.7.4 release notes + GitHub body.
 
+## Build/publish/install execution (final, 2026-11-22)
+- Single clean Tauri/NSIS build: BUILD_EXIT=0, installer `Strata_0.7.4_x64-setup.exe`
+  127,147,110 bytes (121.26 MiB), SHA-256 cafe80949546b68ad0f124542d6d08dd
+  ab03e4493c86a50a8399d0a604ae2148 (staged + SHA256SUMS written).
+- NSIS cleanup fixtures: 6/6 ok=true, exit 0.
+- tar.7z: 127,150,242 bytes, SHA-256 c79858bff8b05db8d2cd78a442301f00f2ff
+  9ed5f042bae468ace073573de61c.
+- Published v0.7.4 with 4 assets (setup, tar.7z, engine 0.6.4, hy4 0.1.64),
+  --latest; PUBLISH_EXIT=0, URL https://github.com/zapabob/Strata/releases/tag/v0.7.4.
+- Public readback VERIFIED: GitHub Latest = v0.7.4; all 4 assets state=uploaded
+  with SHA-256 matching local exactly — setup cafe8094...2148, tar.7z
+  c79858bf...de61c, engine 607a7bd1...ce9d, hy4 fad3a195...ff91.
+- Overwrite install: backup at v074-install-backup (reg + userdata 560 +
+  localdata 3905, settings SHA 6b7d7b11... matched). v074-auto-install.ps1
+  waits for Latest=v0.7.4 then runs v074-install.ps1 (GUI then silent fallback)
+  and logs final exe SHA / registry version.
+
 ## Residual risks
 - No signing key; ed25519 component signature verification removed earlier by
   user decision; SHA-256 digest verification retained. `releaseQualified=false`.

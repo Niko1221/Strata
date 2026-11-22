@@ -46,6 +46,7 @@ void gdn_gates(float* alpha,float* beta,const float* dt,const float* a,int n,cud
 void gdn_gates_batch(float* alpha,float* beta,const float* dt,const float* a,int rows,int n,cudaStream_t s);
 void finite(const float* x,size_t n,int* error,cudaStream_t s);
 void hadamard(const float* x,const float* signs,float* y,int n,bool inverse,bool grouped_gdn,cudaStream_t s);
+void hadamard_batch(const float* x,const float* signs,float* y,int n_tokens,int n,bool inverse,bool grouped_gdn,cudaStream_t s);
 // Text positions use identical t/h/w coordinates in IMRoPE sections 11/11/10.
 // Cache layout: [KV head][context cell][256], no hidden fallback or sliding.
 void attention_prepare(const float* qg,const float* k,const float* v,const float* qw,const float* kw,

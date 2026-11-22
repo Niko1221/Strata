@@ -80,6 +80,7 @@ struct Engine {
     cudaGraphExec_t head_graph=nullptr;
     bool graphs_ready=false;
     bool h_q8_valid=false;
+    int* pinned_error=nullptr;
     float* bx_ptr()const{return bscratch.as<float>();}
     float* bh_ptr()const{return bscratch.as<float>()+size_t(prefill_chunk)*size_t(G.hidden);}
     float* by_ptr()const{return bscratch.as<float>()+size_t(prefill_chunk)*(size_t(G.hidden)+size_t(G.hidden));}
@@ -93,6 +94,7 @@ struct Engine {
     ~Engine(){
         for(int g=0;g<16;++g){if(gdn_graphs[g])cudaGraphExecDestroy(gdn_graphs[g]);if(ffn_graphs[g])cudaGraphExecDestroy(ffn_graphs[g]);if(attn_proj_graphs[g])cudaGraphExecDestroy(attn_proj_graphs[g]);}
         if(head_graph)cudaGraphExecDestroy(head_graph);
+        if(pinned_error)cudaFreeHost(pinned_error);
     }
     Engine(const std::string& path,int context,const Q::KvConfig& config,bool reference=false,bool ja=false,int draft_n_max=0,
            const std::string& cvec_path="",float cvec_scale=1.f,int cvec_first=1,int cvec_last=-1,int cvec_mode=0):
@@ -106,6 +108,8 @@ struct Engine {
             std::fprintf(stderr,"control_vector=loaded path=%s layers=%d..%d mode=%s hidden=%d\n",
                 cvec_path.c_str(),cvec_first,last,cvec_mode?"add":"project",G.hidden);
         }
+        Q::ck(cudaHostAlloc(&pinned_error,sizeof(int),cudaHostAllocDefault));
+        *pinned_error=0;
         japanese=ja;
         const Q::KvShape shape{G.q_heads,G.kv_heads,G.head_dim};
         if(ja){strata::GgufFile vocabulary(path,{"tokenizer.ggml.tokens","tokenizer.ggml.token_type"},true,G.vocab);
@@ -390,8 +394,7 @@ struct Engine {
             const bool grp=admission.grouped_gdn&&name.find(".ssm_out.")!=std::string::npos;
             const float* sg=signs.at(qt.ne0).as();
             float* dst=brot_ptr();
-            for(int t=0;t<n_tokens;++t)
-                Q::hadamard(in+size_t(t)*qt.ne0,sg,dst+size_t(t)*qt.ne0,qt.ne0,false,grp,stream.s);
+            Q::hadamard_batch(in,sg,dst,n_tokens,qt.ne0,false,grp,stream.s);
             input=dst;
         }else if(admission.folded.count(name)&&pre_rot)input=pre_rot;
         prefill_ws.matmul_batch(qt,input,out,n_tokens,stream.s);
@@ -502,12 +505,13 @@ struct Engine {
         const bool prof=(std::getenv("STRATA_Q38_PROFILE")!=nullptr);
         double prof_fence_ms=0,prof_gdn_ms=0,prof_attn_mm_ms=0,prof_kv_ms=0,prof_ffn_ms=0,prof_head_ms=0;
         const Q::LayerFence fences(conservative?1:8);
-        int fence_bad=0;
         auto check=[&]{
             auto t0=prof?Clock::now():Clock::time_point{};
             Q::host_resources();gpu_resources();
-            fence_bad=0;Q::ck(cudaMemcpyAsync(&fence_bad,error.data,4,cudaMemcpyDeviceToHost,stream.s));
-            kv->check();Q::require(!fence_bad,"non-finite activation/state/logit");
+            if(conservative){
+                *pinned_error=0;Q::ck(cudaMemcpyAsync(pinned_error,error.data,4,cudaMemcpyDeviceToHost,stream.s));
+                kv->check();Q::require(!*pinned_error,"non-finite activation/state/logit");
+            }
             if(prof)prof_fence_ms+=std::chrono::duration<double,std::milli>(Clock::now()-t0).count();
         };
         if(!conservative&&!fp32_decode&&graphs_ready){
@@ -549,9 +553,10 @@ struct Engine {
             }
             if(head){rms_h(x.as(),"output_norm.weight");mm("output.weight",h,logits);Q::finite(logits.as(),G.vocab,error.as<int>(),stream.s);}
         }
-        int bad=0;Q::ck(cudaMemcpyAsync(&bad,error.data,4,cudaMemcpyDeviceToHost,stream.s));Q::ck(cudaStreamSynchronize(stream.s));
+        *pinned_error=0;Q::ck(cudaMemcpyAsync(pinned_error,error.data,4,cudaMemcpyDeviceToHost,stream.s));Q::ck(cudaStreamSynchronize(stream.s));
+        kv->check();
         if(prof)std::fprintf(stderr,"PROF_STEP pos=%d gdn=%.2f attn_mm=%.2f kv=%.2f ffn=%.2f head=%.2f fence=%.2f\n",position,prof_gdn_ms,prof_attn_mm_ms,prof_kv_ms,prof_ffn_ms,prof_head_ms,prof_fence_ms);
-        Q::require(!bad,"non-finite activation/state/logit");fences.before(stop);++position;
+        Q::require(!*pinned_error,"non-finite activation/state/logit");fences.before(stop);++position;
     }
     void run_prefill_chunk(const int32_t* tokens,int n_tokens,std::atomic<bool>& stop,bool head){
         Q::require(n_tokens>0&&n_tokens<=prefill_chunk&&position+n_tokens<=ctx,"prefill chunk out of range");

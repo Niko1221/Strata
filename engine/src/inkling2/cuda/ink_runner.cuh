@@ -955,8 +955,8 @@ struct InkCudaRunner {
                     CUBLAS_GEMM_DEFAULT_TENSOR_OP));
             }
         } else if (ti.fmt == FMT_Q8ROW) {
-            // Hardware INT8 GEMM (45 TOPS dp4a on GTX 1080 Ti sm_61!)
-            if (M > 16 && m.sm_cc == 61 && (K % 4 == 0) && (N % 4 == 0) && N_override == 0) {
+            // Hardware INT8 Tensor Core / dp4a GEMM (sm_61 dp4a, sm_75+ / sm_120 INT8 Tensor Core)
+            if (M > 16 && (m.sm_cc == 61 || m.sm_cc >= 75) && (K % 4 == 0) && (N % 4 == 0) && N_override == 0) {
                 int8_t* x_i8 = reinterpret_cast<int8_t*>(d_x_bf16);
                 float*  x_sc = d_ctrl_gain;  // [max_batch * 2304] -> plenty of room for M floats!
                 if (!reuse_x_bf16) {
