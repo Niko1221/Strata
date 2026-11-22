@@ -1,6 +1,7 @@
 // engine/src/inkling2/ink_gguf_loader.h - Direct Community / Unsloth .gguf loader for strata-inkling
 // Supports single & split multi-shard GGUFs (UD-Q4_K_XL, IQ3_S, IQ4_NL, IQ4_XS, Q8_0, Q4_K, Q5_K, Q6_K, MXFP4, NVFP4)
-// in BOTH llama.cpp master (Unsloth GGUF_shard_rewrite) and PR #32187 layouts + optional GGUF dspark / mmproj + embedded o200k tokenizer.
+// in llama.cpp master / Unsloth GGUF_shard_rewrite, merged mainline (#32694) and PR #32187 layouts
+// + optional GGUF dspark / mmproj + embedded o200k tokenizer.
 //
 // MIT License
 // Copyright (c) 2026 Strata contributors
@@ -260,6 +261,7 @@ struct GgufAdapter {
     bool has_dspark_st = false;
     SafetensorsShard dspark_st;
     bool is_rewrite_layout = false;  // true = llama.cpp master / Unsloth (blk.0.ffn_gate_up_exps.weight)
+    bool is_merged_layout = false;   // true = merged mainline (#32694): rewrite names + per-block cross-pass queries
 
     std::vector<uint8_t> sec1_arena; // Assembled canonical Section 1 trunk + DSpark bytes
     std::vector<strata::artifact::StrataExpertEntry> expert_dir;
@@ -332,6 +334,10 @@ struct GgufAdapter {
         }
 
         is_rewrite_layout = (model->find("blk.0.ffn_gate_up_exps.weight") != nullptr);
+        // The merged mainline conversion (#32694) keeps every rewrite-side name and the fused gate_up experts, but it
+        // stores no global loop_res_query / loop_kv_res_query: the cross-pass queries live per core block as
+        // blk.N.loop_msg_query.weight [D, 4] and the loop controllers are named loop_{q,k,v,ffn}_ctrl_*.
+        is_merged_layout = is_rewrite_layout && model->find("loop_res_query.weight") == nullptr;
 
         // 1. Parse InkCfg from GGUF metadata (supports BOTH llama.cpp master & PR #32187 keys)
         m = ManifestT{};
@@ -372,9 +378,9 @@ struct GgufAdapter {
             c.situ_lb    = static_cast<float>(get_num({"mlp_up_softcap", "activation.situ_linear_beta"}, 25.0));
             c.logit_softcap = static_cast<float>(get_num({"final_logit_softcapping"}, 30.0));
             c.vocab_unpadded = static_cast<int>(get_num({"unpadded_vocab_size", "vocab_size_unpadded"}, 200058));
-            c.num_passes = static_cast<int>(get_num({"num_loops"}, 3));
-            c.core_start = static_cast<int>(get_num({"loop.core_start"}, 6));
-            c.core_end   = static_cast<int>(get_num({"loop.core_end"}, 18));
+            c.num_passes = static_cast<int>(get_num({"num_loops", "loop.count"}, 3));
+            c.core_start = static_cast<int>(get_num({"loop.core_start", "loop.start"}, 6));
+            c.core_end   = static_cast<int>(get_num({"loop.core_end", "loop.end"}, 18));
             c.gate_rank  = static_cast<int>(get_num({"loop.gate_rank"}, 64));
             if (const auto* tok_emb = model->find("token_embd.weight")) {
                 if (tok_emb->shape.size() >= 2) c.vocab_padded = static_cast<int>(tok_emb->shape[1]);
@@ -382,14 +388,18 @@ struct GgufAdapter {
             if (const auto* eos = meta.get("tokenizer.ggml.eos_token_id")) c.eos_token_id = static_cast<int>(eos->u);
 
             const int core_len = (c.num_passes > 1) ? (c.core_end - c.core_start) : 0;
-            c.n_phys = n_visits_meta - (c.num_passes - 1) * core_len;
+            // #32694 stores block_count as the PHYSICAL layer count (the loop is described by loop.* keys);
+            // the pre-merge / #32187 files store the visit count instead.
+            c.n_phys = is_merged_layout ? n_visits_meta : n_visits_meta - (c.num_passes - 1) * core_len;
             if (c.n_phys <= 0) c.n_phys = 24;
 
             c.is_swa.assign(c.n_phys, 1);
             if (const auto* pat = meta.get(ap + "attention.sliding_window_pattern");
-                pat && pat->type == strata::MetaType::ARRAY && static_cast<int>(pat->items.size()) >= n_visits_meta) {
+                pat && pat->type == strata::MetaType::ARRAY &&
+                static_cast<int>(pat->items.size()) >= (is_merged_layout ? c.n_phys : n_visits_meta)) {
                 for (int l = 0; l < c.n_phys; ++l) {
-                    int v = (l < c.core_end) ? l : (l + (c.num_passes - 1) * core_len);
+                    // #32694 indexes the pattern per physical layer; the visit-indexed pre-merge layout has to be folded
+                    int v = is_merged_layout ? l : ((l < c.core_end) ? l : (l + (c.num_passes - 1) * core_len));
                     bool swa_v = false;
                     if (v < static_cast<int>(pat->items.size())) {
                         swa_v = (pat->items[v].num() != 0.0);
@@ -514,8 +524,32 @@ struct GgufAdapter {
 
         const int core_len = c.core_end - c.core_start;
         if (c.num_passes > 1 && core_len > 0) {
-            if (!copy_vec_f32("loop_res_query.weight", "model.llm.middle_cycle_cross_pass_queries", {2 * core_len, D})) return false;
-            if (!copy_vec_f32("loop_kv_res_query.weight", "model.llm.middle_cycle_cross_pass_kv_queries", {2 * core_len, D})) return false;
+            if (is_merged_layout) {
+                // blk.(core_start + i).loop_msg_query holds the four message queries of core layer i stacked
+                // row-major as [q[2i], kv[2i], kv[2i + 1], q[2i + 1]] (llama.cpp conversion/inkling2.py);
+                // reassemble the canonical [2 * core_len, D] q / kv pair.
+                std::vector<float> q(static_cast<size_t>(2) * static_cast<size_t>(core_len) * static_cast<size_t>(D));
+                std::vector<float> kv(q.size());
+                for (int i = 0; i < core_len; ++i) {
+                    std::vector<float> v;
+                    if (!read_tensor_f32(*model, "blk." + std::to_string(c.core_start + i) + ".loop_msg_query.weight", v, err))
+                        return false;
+                    if (v.size() != static_cast<size_t>(4) * static_cast<size_t>(D)) {
+                        err = "GGUF: blk." + std::to_string(c.core_start + i) + ".loop_msg_query.weight is not [D, 4]";
+                        return false;
+                    }
+                    const float* s = v.data();
+                    std::memcpy(q.data()  + static_cast<size_t>(2 * i)     * D, s + static_cast<size_t>(0) * D, static_cast<size_t>(D) * sizeof(float));
+                    std::memcpy(q.data()  + static_cast<size_t>(2 * i + 1) * D, s + static_cast<size_t>(3) * D, static_cast<size_t>(D) * sizeof(float));
+                    std::memcpy(kv.data() + static_cast<size_t>(2 * i)     * D, s + static_cast<size_t>(1) * D, static_cast<size_t>(D) * sizeof(float));
+                    std::memcpy(kv.data() + static_cast<size_t>(2 * i + 1) * D, s + static_cast<size_t>(2) * D, static_cast<size_t>(D) * sizeof(float));
+                }
+                add_f32("model.llm.middle_cycle_cross_pass_queries", q, {2 * core_len, D});
+                add_f32("model.llm.middle_cycle_cross_pass_kv_queries", kv, {2 * core_len, D});
+            } else {
+                if (!copy_vec_f32("loop_res_query.weight", "model.llm.middle_cycle_cross_pass_queries", {2 * core_len, D})) return false;
+                if (!copy_vec_f32("loop_kv_res_query.weight", "model.llm.middle_cycle_cross_pass_kv_queries", {2 * core_len, D})) return false;
+            }
         }
 
         // Helper: load a ShortConv weight [C, 4] (lag 3..0) into raw unfolded canonical convention
@@ -643,8 +677,10 @@ struct GgufAdapter {
 
             if (c.num_passes > 1 && il >= c.core_start && il < c.core_end) {
                 static const char* mods[4] = {"attn", "k", "v", "mlp"};
+                static const char* mods_merged[4] = {"q", "k", "v", "ffn"};  // #32694 names the q/ffn controllers differently
                 for (int mi = 0; mi < 4; ++mi) {
-                    const std::string gp = b + "loop_" + mods[mi] + "_";
+                    const std::string gp = is_merged_layout ? b + "loop_" + mods_merged[mi] + "_ctrl_"
+                                                            : b + "loop_" + mods[mi] + "_";
                     const std::string cp = p + "controllers." + mods[mi] + ".";
                     if (!copy_mat_bf16(gp + "down.weight", cp + "down_weight", c.gate_rank, 2 * D)) return false;
                     if (!copy_mat_bf16(gp + "gain.weight", cp + "gain_weight", D, c.gate_rank)) return false;
