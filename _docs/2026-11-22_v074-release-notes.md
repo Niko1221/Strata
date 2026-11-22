@@ -50,9 +50,24 @@ UI/memory, workflow skills, 8-language READMEs) are preserved.
   CMake configure + build exit 0, `strata-inkling.exe` produced, `--help` OK.
 - Fork `strata-inkling2` CLI built (CUDA 13.5 / sm_120).
 
+## Real GGUF benchmark (measured 2026-11-22)
+- Model: `unsloth/Inkling-2-Mini-GGUF` root `Inkling-2-Mini-UD-Q4_K_M.gguf`
+  (16,610,543,328 bytes, SHA-256 f90c5a4d...7e1 = HF LFS OID). The canonical
+  root file (arch `inkling2`, 734 tensors) has `loop_res_query.weight`,
+  `loop_kv_res_query.weight`, `output_res_query.weight`, matching the CLI.
+  The `Mainline_Support` (`inkling2_loop`) variant has none of these and cannot
+  be used by this CLI. The Sakura re-quantized GGUF is likewise incompatible.
+- Fork CLI `strata-inkling2 --kv-q8 --bench --chunk 512 --max-new 32
+  --max-context 32768`, exit 0, on RTX 5060 Ti 16 GB (sm_120, 13.5 GiB free):
+  `profile=generic+core_resident_hybrid (cc=12.0 sm=36)`; placed 2756/3072
+  experts in VRAM (12.25 GiB, tier1 128/128/layer, free=0 MiB) in 132.82 s;
+  `pp 2 tok in 219.9 ms (9.09 t/s) | tg 31 tok in 2630.7 ms (11.78 t/s)`.
+- Caveat: generated token IDs repeat; output quality not assessed. No OOM or
+  hang. `--info`'s implicit default config (ctx 65536 / chunk 1024) was much
+  slower (pp 0.03 t/s) — the reported numbers are for the requested config.
+  Full evidence: H:/Strata/evidence/inkling2-benchmark-result.txt.
+
 ## Limits
 - Windows Authenticode signing absent; `releaseQualified=false`.
-- Real GGUF measurement in progress; the Sakura re-quantized GGUF
-  (`inkling2_loop.attn_res.*`) is not loadable by either engine; kuraneko1's
-  canonical `Inkling-2-Mini-UD-Q4_K_M.gguf` is being used for the benchmark.
-- No full-window inference, general model-quality or GPU-concurrency claim.
+- These are short 2-token prefill / 31-token decode numbers on one consumer GPU;
+  not a general model-quality, full-window or GPU-concurrency qualification.

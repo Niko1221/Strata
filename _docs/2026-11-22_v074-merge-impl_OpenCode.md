@@ -83,6 +83,28 @@ localized READMEs.
   `inkling2_loop` arch mapping, and a prefix-fallback in `inkling2_engine.cu`
   get_i/get_f (commit 9509e14c7). Fork CLI rebuild in progress for real measurement.
 
+## Publication + overwrite automation (2026-11-22, in progress)
+- Pre-flight verified: tag v0.7.4 -> 263906a8d (HEAD), reuse assets SHA-verified
+  (engine 607a7bd1..., hy4 fad3a195...), release body + scripts present, both
+  PowerShell scripts parse with 0 syntax errors, `release_manifest --check` ok.
+- Real-machine backup taken before overwrite:
+  H:/Strata/evidence/v074-install-backup (userdata 560 files, localdata 188
+  files, uninstall registry, settings.json SHA 6b7d7b11... matched live).
+- `v074-auto-finish.ps1` was killed by a 30 s shell timeout (SIGTERM) before it
+  could act; publication/install are done directly by the parent instead.
+- Subagent build (ses_dfca58781ffejlBv9p0tqmMygO): BUILD_EXIT=1 — cargo compiled
+  strata-desktop v0.7.4 but makensis bundling hit `os error 32` from two
+  simultaneous makensis processes (subagent + parent retry) contending for the
+  output. Parent stopped both and re-ran one clean build (v074-full-build-r3.log)
+  which reached `Running makensis to produce Strata_0.7.4_x64-setup.exe`.
+- Subagent benchmark (ses_dfca58783ffeBVScN3tHPLDKGi): canonical GGUF fully
+  downloaded (16,610,543,328 bytes, SHA f90c5a4d...7e1 = HF OID). Fork CLI
+  `--kv-q8 --bench --chunk 512 --max-new 32 --max-context 32768` exit 0 on RTX
+  5060 Ti 16 GB: profile generic+core_resident_hybrid, 2756/3072 experts in VRAM,
+  pp 9.09 t/s, tg 11.78 t/s. Evidence: inkling2-benchmark-result.txt. Sakura /
+  Mainline_Support GGUFs confirmed incompatible (no loop_res_query.weight).
+  Numbers added to v0.7.4 release notes + GitHub body.
+
 ## Residual risks
 - No signing key; ed25519 component signature verification removed earlier by
   user decision; SHA-256 digest verification retained. `releaseQualified=false`.
