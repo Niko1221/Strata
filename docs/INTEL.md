@@ -406,6 +406,18 @@ All are environment variables for the engine. Put them in the config's `"env"` b
 | `STRATA_I8_NO_ESIMD` | n/a | Compile-time: stubs for the int8 ESIMD kernels (set for a device without them) |
 | `STRATA_DBG_NAN=1` | Off | Report non-finite values, including the experts' FP16 inputs |
 
+### CPU placement for prefill helpers
+
+On Linux, prefill copy threads can inherit the CPU reserved by `--host-core first` (the default) or `last`.
+Use `--aux-cpus auto` or `STRATA_AUX_CPUS=auto` to place helpers on spare CPUs using the engine's existing CPU plan.
+A CPU list selects specific allowed CPUs. With no spare CPU, auto leaves placement alone. The startup default is off.
+The Terminal request field `strata_tune.aux_cpus` accepts 1 or 0 for that request. Omitting it restores the startup setting.
+When workers occupy all physical cores except the host, auto can use only the host’s available SMT siblings.
+On the same topology without SMT it leaves helpers in place.
+Set `STRATA_AUX_STAGER=0` to leave the stagers in place when other helpers use the plan.
+An explicit `STRATA_ADAPT_JOB_CPU` takes precedence for the asynchronous adaptive job thread, including `-1` to keep its inherited affinity.
+With placement off, startup prints the CPU plan and leaves helper affinity alone.
+
 ## History / older measurements
 
 Dated results from earlier engines. They show how the numbers moved and are not instructions. Narrative from the original work

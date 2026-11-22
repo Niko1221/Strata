@@ -431,6 +431,15 @@ class TunerTest(unittest.TestCase):
         self.assertEqual(r.settings["per_request"], {})
         self.assertNotEqual(r.outcome, "improved")
 
+    def test_sycl_can_tune_aux_cpu_placement_per_request(self):
+        ctx = make_ctx()
+        ctx.backend = "sycl"
+        def model(args, env, tune=None):
+            return 60.0 * (1.10 if tune and tune.get("aux_cpus") == 1 else 1.0)
+        _, _, result = run_tuner(model, ctx=ctx, session_kw={"noise": 0.002})
+        self.assertEqual(result.settings["per_request"], {"aux_cpus": 1})
+        self.assertEqual(result.per_request_confirm["status"], "PASS")
+
     def test_a_real_per_request_gain_is_confirmed_in_a_fresh_engine(self):
         def model(args, env, tune=None):
             return 60.0 * (1.06 if tune and tune.get("spec_min_p") == 0.7 else 1.0)

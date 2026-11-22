@@ -129,7 +129,7 @@ PER_REQUEST: tuple[dict[str, Any], ...] = (
      "label": "PCIe share", "answer": "placement"},
     {"key": "spec_min_p", "values": (0.7, 0.5), "backends": ("cuda", "hip", "sycl", "metal"),
      "label": "speculative confidence floor", "answer": "exact"},
-    {"key": "aux_cpus", "values": (1, 0), "backends": ("cuda", "hip"), "label": "spare CPU cores for helper threads",
+    {"key": "aux_cpus", "values": (1, 0), "backends": ("cuda", "hip", "sycl"), "label": "spare CPU cores for helper threads",
      "answer": "exact"},
 )
 
