@@ -18,7 +18,7 @@ EXE = "strata-ink2"                    # Linux only: the engine includes sys/mma
 TITLE = "Inkling-2-Mini"
 BY = "Thinking Machines Lab (the official checkpoint)"
 ABOUT = ("a 128-expert mixture of experts with NVFP4 / MXFP8 experts, read as published (19.5 GB); "
-         "NVIDIA cards on Linux, the experts that do not fit the card stay in RAM")
+         "NVIDIA (CUDA) and AMD (ROCm/HIP) cards on Linux, the experts that do not fit the card stay in RAM")
 LICENSE = "Apache 2.0: https://huggingface.co/thinkingmachines/Inkling-2-Mini"
 REPO = "thinkingmachines/Inkling-2-Mini"
 REVISION = "ed40e7da625f594fc9c4990f5f66be24873c22d7"   # 2026-11-20 ("Declare the dtype at the top level of config.json")
