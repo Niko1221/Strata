@@ -4,7 +4,9 @@ figure against the engine's own layout, and the places a family is registered.""
 from __future__ import annotations
 
 import json
+import os
 import re
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -155,16 +157,39 @@ class Args(unittest.TestCase):
 
 
 class Registered(unittest.TestCase):
-    def test_offered_on_nvidia_linux_only(self):
-        with mock.patch.object(setup.sys, "platform", "linux"):
-            self.assertTrue(setup.ink2_offered(False))
-            self.assertFalse(setup.ink2_offered(True))
-        with mock.patch.object(setup.sys, "platform", "win32"):
+    def test_offered_on_linux_for_cuda_and_hip(self):
+        with mock.patch.object(setup, "CONTROL", False):
+            with mock.patch.object(setup.sys, "platform", "linux"):
+                self.assertTrue(setup.ink2_offered(False))
+                self.assertTrue(setup.ink2_offered(True))
+            with mock.patch.object(setup.sys, "platform", "win32"):
+                self.assertFalse(setup.ink2_offered(False))
+                self.assertFalse(setup.ink2_offered(True))
+            with mock.patch.object(setup.sys, "platform", "darwin"):
+                self.assertFalse(setup.ink2_offered(False))
+                self.assertFalse(setup.ink2_offered(True))
+        with mock.patch.object(setup, "CONTROL", True), mock.patch.object(setup.sys, "platform", "linux"):
             self.assertFalse(setup.ink2_offered(False))
+            self.assertFalse(setup.ink2_offered(True))
         self.assertNotIn("inkling2", setup.OWN_PATH_FAMILIES)                               # that table's installer is the single-GGUF one
 
+    def test_hip_arch_set_allows_wave32_and_refuses_gfx906(self):
+        self.assertIn("gfx1151", setup.INK2_HIP_ARCHS)
+        self.assertIn("gfx1201", setup.INK2_HIP_ARCHS)
+        self.assertIn("gfx1100", setup.INK2_HIP_ARCHS)
+        self.assertNotIn("gfx906", setup.INK2_HIP_ARCHS)
+        self.assertIn("AMD", F.ABOUT)
+        self.assertIn("NVIDIA", F.ABOUT)
+        args = mock.MagicMock()
+        with mock.patch.object(setup, "CONTROL", False), mock.patch.object(setup.sys, "platform", "linux"), \
+                mock.patch.object(setup, "say"), mock.patch.object(setup, "ok"), \
+                mock.patch.object(setup, "fail", side_effect=RuntimeError("refused")) as fail_mock:
+            with self.assertRaises(RuntimeError):
+                setup.install_inkling2(args, "inkling2", {"arch": "gfx906", "vram_gb": 32.0}, True,
+                                       [{"arch": "gfx906"}], 13, [], 8080, 64.0, None)
+        self.assertIn("gfx906", fail_mock.call_args[0][0])
+
     def test_its_config_is_read_back_and_not_tuned(self):
-        import tempfile
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "strata-inkling2-mini.json"
             p.write_text(json.dumps({"exe": "x/strata-ink2", "arch": "inkling2", "model_name": "inkling-2-mini",
@@ -180,6 +205,122 @@ class Registered(unittest.TestCase):
             out = setup.upgrade_config(Path("strata-inkling2-mini.json"), cfg)
         self.assertEqual(out["args"], before)
         w.assert_not_called()
+
+
+class Build(unittest.TestCase):
+    def test_hip_build_cmake_args_and_stamp_reuse(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            rocm = root / "rocm"
+            clang = rocm / "llvm" / "bin" / "clang++"
+            clang.parent.mkdir(parents=True)
+            clang.write_text("", encoding="utf-8")
+            bitcode = rocm / "lib" / "llvm" / "amdgcn" / "bitcode"
+            bitcode.mkdir(parents=True)
+            extra_pkg = root / "rocm_libs"
+            dirs = [str(rocm / "lib"), str(extra_pkg / "lib")]
+            builds = []
+
+            def fake_cmake(src, bdir, target, defs, vcvars, bat):
+                builds.append((bdir, target, list(defs)))
+                bdir.mkdir(parents=True, exist_ok=True)
+                (bdir / F.EXE).write_text("hip-bin", encoding="utf-8")
+
+            src_hash = ["h1"]
+            with mock.patch.object(setup, "ROOT", root), \
+                    mock.patch.object(setup, "engine_src", return_value=root / "engine-src"), \
+                    mock.patch.object(setup, "rocm_root", return_value=(rocm, dirs)) as rocm_mock, \
+                    mock.patch.object(setup, "cmake_build", side_effect=fake_cmake), \
+                    mock.patch.object(setup, "source_hash", side_effect=lambda _parts: src_hash[0]), \
+                    mock.patch.object(setup.shutil, "which", side_effect=lambda name: f"/usr/bin/{name}"), \
+                    mock.patch.object(setup, "say"), mock.patch.object(setup, "ok"), \
+                    mock.patch.dict(os.environ, {}, clear=False):
+                gpu = {"arch": "gfx1151", "archs": ["gfx1151"]}
+                exe, got_dirs = setup.ink2_build(gpu, True, hip=True, amd=[gpu])
+                self.assertEqual(exe, root / "engine" / F.EXE)
+                self.assertEqual(got_dirs, dirs)
+                self.assertEqual(len(builds), 1)
+                bdir, target, defs = builds[0]
+                self.assertEqual(bdir, root / "build-ink2-hip")
+                self.assertEqual(target, F.EXE)
+                self.assertIn("-DSTRATA_ENABLE_HIP=ON", defs)
+                self.assertIn("-DSTRATA_ENABLE_CUDA=OFF", defs)
+                self.assertIn("-DSTRATA_BUILD_TESTS=OFF", defs)
+                self.assertIn("-DCMAKE_HIP_ARCHITECTURES=gfx1151", defs)
+                self.assertIn(f"-DCMAKE_HIP_COMPILER={clang}", defs)
+                self.assertIn(f"-DCMAKE_HIP_COMPILER_ROCM_ROOT={rocm}", defs)
+                self.assertIn(f"-DCMAKE_PREFIX_PATH={rocm};{extra_pkg}", defs)
+                self.assertIn(f"-DCMAKE_HIP_FLAGS=-isystem {rocm}/include --rocm-path={rocm} --rocm-device-lib-path={bitcode}", defs)
+                rocm_mock.assert_called_once_with(["gfx1151"])
+
+                stamp = json.loads((root / "engine" / (F.EXE + ".json")).read_text(encoding="utf-8"))
+                self.assertEqual(stamp, {"backend": "hip", "archs": ["gfx1151"], "src": "h1", "lib_dirs": dirs})
+
+                exe2, got_dirs2 = setup.ink2_build({"arch": "gfx1151"}, True, hip=True, amd=[gpu])
+                self.assertEqual((exe2, got_dirs2), (exe, dirs))
+                self.assertEqual(len(builds), 1)
+
+                src_hash[0] = "h2"
+                setup.ink2_build({"arch": "gfx1151"}, True, hip=True, amd=[gpu])
+                self.assertEqual(len(builds), 2)
+
+                setup.ink2_build({"arch": "gfx1201"}, True, hip=True)
+                self.assertEqual(len(builds), 3)
+                self.assertIn("-DCMAKE_HIP_ARCHITECTURES=gfx1201", builds[2][2])
+
+    def test_cuda_build_rebuilds_cleanly_over_a_hip_stamp(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            eng = root / "engine"
+            eng.mkdir()
+            (eng / F.EXE).write_text("hip-bin", encoding="utf-8")
+            (eng / (F.EXE + ".json")).write_text(
+                json.dumps({"backend": "hip", "archs": ["gfx1151"], "src": "h1", "lib_dirs": ["/rocm/lib"]}),
+                encoding="utf-8",
+            )
+            nvcc = root / "cuda" / "bin" / "nvcc"
+            nvcc.parent.mkdir(parents=True)
+            nvcc.write_text("", encoding="utf-8")
+            builds = []
+
+            def fake_cmake(src, bdir, target, defs, vcvars, bat):
+                builds.append((bdir, target, list(defs)))
+                bdir.mkdir(parents=True, exist_ok=True)
+                (bdir / F.EXE).write_text("cuda-bin", encoding="utf-8")
+
+            with mock.patch.object(setup, "ROOT", root), \
+                    mock.patch.object(setup, "engine_src", return_value=root / "engine-src"), \
+                    mock.patch.object(setup, "install_build_tools", return_value=(str(nvcc), None)), \
+                    mock.patch.object(setup, "toolkit_root_defs", return_value=[]), \
+                    mock.patch.object(setup, "host_compiler_defs", return_value=[]), \
+                    mock.patch.object(setup, "cmake_build", side_effect=fake_cmake), \
+                    mock.patch.object(setup, "source_hash", return_value="h1"), \
+                    mock.patch.object(setup, "say"), mock.patch.object(setup, "ok"):
+                exe, _ = setup.ink2_build({"arch": 86}, True, hip=False)
+                self.assertEqual(exe, eng / F.EXE)
+                self.assertEqual(len(builds), 1)
+                self.assertEqual(builds[0][0], root / "build-ink2")
+                self.assertIn("-DSTRATA_ENABLE_CUDA=ON", builds[0][2])
+                self.assertIn("-DCMAKE_CUDA_ARCHITECTURES=86", builds[0][2])
+
+    def test_source_hash_tracks_hip_wmma_and_hip_compat(self):
+        with tempfile.TemporaryDirectory() as d:
+            eng = Path(d)
+            (eng / "CMakeLists.txt").write_text("cmake", encoding="utf-8")
+            (eng / "src" / "inkling2").mkdir(parents=True)
+            (eng / "include" / "strata" / "hip_compat").mkdir(parents=True)
+            wmma = eng / "src" / "inkling2" / "ink2_wmma_hip.cuh"
+            compat = eng / "include" / "strata" / "hip_compat" / "hip_compat.h"
+            wmma.write_text("v1", encoding="utf-8")
+            compat.write_text("c1", encoding="utf-8")
+            with mock.patch.object(setup, "engine_src", return_value=eng):
+                h0 = setup.source_hash(setup.INK2_SOURCES)
+                wmma.write_text("v2", encoding="utf-8")
+                h1 = setup.source_hash(setup.INK2_SOURCES)
+                compat.write_text("c2", encoding="utf-8")
+                h2 = setup.source_hash(setup.INK2_SOURCES)
+            self.assertNotEqual(h0, h1)
+            self.assertNotEqual(h1, h2)
 
 
 if __name__ == "__main__":
