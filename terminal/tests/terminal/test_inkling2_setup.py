@@ -68,31 +68,45 @@ class Args(unittest.TestCase):
         self.assertNotIn("--cpu-threads", args)
 
     def test_offload_on_an_8_gb_card(self):
-        ctx = F.recommended_context(8192)
-        self.assertEqual(ctx, 8192)
+        ctx = F.recommended_context(8192)                                                   # no desktop on the card
+        self.assertEqual(ctx, 49152)
         args = F.engine_args("/m", ctx, 8192, 0, 22)
         self.assertEqual(args[args.index("--vram-reserve-mib") + 1], "0")
         self.assertEqual(args[args.index("--cpu-threads") + 1], "22")
+        self.assertEqual(args[args.index("--kv-grow") + 1], "1")
+        self.assertEqual((args[args.index("--kv") + 1], args[args.index("--chunk") + 1]), ("k8v8", "1024"))
         self.assertNotIn("--spec", args)
-        no_cpu = F.engine_args("/m", ctx, 8192, 1500, None)
-        self.assertEqual(no_cpu[no_cpu.index("--vram-reserve-mib") + 1], "1500")
+        # a desktop holding 500 MiB (measured on the 3090 as an 8 GB card: k8v8 / --chunk 256 reads a 49K prompt at the 64-slot floor): 32K
+        self.assertEqual(F.recommended_context(8192, 1500, 500), 32768)
+        no_cpu = F.engine_args("/m", 32768, 8192, 173, None, 500)
+        self.assertEqual((no_cpu[no_cpu.index("--kv") + 1], no_cpu[no_cpu.index("--chunk") + 1]), ("k8v8", "256"))
         self.assertNotIn("--cpu-threads", no_cpu)
+
+    def test_offload_contexts_by_card(self):
+        self.assertEqual(F.recommended_context(12288, 1500, 600), 65536)
+        self.assertEqual(F.offload_plan(12288, 1500, 600, 65536), ("f16", 1024))
+        self.assertEqual(F.recommended_context(16384, 1500, 800), 131072)
+        self.assertEqual(F.recommended_context(7168, 0, 300), 8192)                          # too small for anything better
 
     def test_the_offload_floor_follows_the_engines_pools(self):
         src = ENGINE.read_text(encoding="utf-8")
         self.assertIn("constexpr int FETCH_MAX = 64", src)
         self.assertIn("(size_t) (budget * 0.2) / MX_BYTES", src)                          # the MXFP8 pool's share of the room
         self.assertIn("int g_off_margin_mib = 128;", src)
+        self.assertIn("int grow_step = 8192;", src)                                       # the K/V grows in 8192-cell steps
+        self.assertIn('if (ns - drop < FETCH_MAX) { std::fprintf(stderr, "%s would leave the expert pool %d slots\\n", what, ns - drop); std::exit(1); }', src)
         self.assertEqual(F.OFFLOAD_MARGIN_MIB, 128)
         self.assertGreaterEqual(F.MIN_POOLS_MIB * 2**20, 64 * 8211456 / 0.2)               # 64 MXFP8 slots at the least (MX_BYTES)
         self.assertIn("// 4478976 / 8211456", src)
-        # an 8 GB card: 32K leaves no room beside the slack, so it gets 8K; a desktop's VRAM in use comes out of the room
-        self.assertEqual(F.recommended_context(8192, 0), 8192)
-        self.assertEqual(F.recommended_context(12288, 1500, 600), 32768)
-        self.assertGreaterEqual(F.offload_room_mib(8192, 8192), 512)
-        self.assertEqual(F.offload_room_mib(8192, 8192, 500), F.offload_room_mib(8192, 8192) - 500)
-        self.assertLess(F.offload_room_mib(8192, 32768), 0)
-        self.assertLess(F.offload_room_mib(6144, 8192), 0)                                  # a 6 GB card is too small
+        self.assertEqual(F.offload_room_mib(8192, 8192, 500), F.offload_room_mib(8192, 8192) - 500)   # a desktop's VRAM comes out of the room
+        self.assertLess(F.offload_room_mib(8192, 16384, 500), 0)                            # measured (500 MiB desktop): f16 / 1024 stops at 16K
+        self.assertLess(F.offload_room_mib(6144, 8192, 0, ("k8v8", 256)), 0)               # a 6 GB card is too small
+
+    def test_the_k8v8_cell_follows_the_engine(self):
+        src = ENGINE.read_text(encoding="utf-8")
+        self.assertIn('else if (k == "k8v8") E.kvm = 5;', src)
+        self.assertIn("case 2: return m >= 2 ? (KVD / KVG) * 2 : 0;", src)                  # K scales: fp16 per 64
+        self.assertEqual(F.KV_CELL_BYTES["k8v8"], 1024 + 1024 + 2 * (1024 // 64) * 2)
 
     def test_a_reserve_or_a_long_context_moves_a_card_to_offload(self):
         self.assertTrue(F.resident_fits(24576, 65536))

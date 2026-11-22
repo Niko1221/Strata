@@ -10063,7 +10063,8 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     if F.resident_fits(vram_mib, ctx, reserve):
         ok("every expert fits on the card: they stay there, with the draft layer (mtp.safetensors) for faster answers")
     else:
-        room = F.offload_room_mib(vram_mib, ctx, used)   # what a reserve can take with the expert pools at the engine's minimum
+        plan = F.offload_plan(vram_mib, reserve, used, ctx)   # (K/V format, prompt chunk)
+        room = F.offload_room_mib(vram_mib, ctx, used, plan)  # what a reserve can take with the expert pools at the engine's minimum
         if room < 0:
             confirm_risk(f"a {vram_mib / 1024:.0f} GB card ({used:.0f} MiB of it in use now) is too small for {fam['title']} at a {ctx // 1024}K "
                          f"context: the engine needs about {-room} MiB more VRAM for its expert pools and may stop at start", bool(a.family), a.yes,
@@ -10077,7 +10078,9 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
         elif reserve > room:
             warn(f"--vram-reserve-mib {reserve} leaves the engine's expert pools less than they need at a {ctx // 1024}K context (at most "
                  f"{room} MiB can be kept free): it would stop at start. Kept as you chose")
-        ok(f"the card holds the most used experts and the others stay in RAM ({reserve} MiB of VRAM kept free for other programs)")
+        ok(f"the card holds the most used experts and the others stay in RAM ({reserve} MiB of VRAM kept free for other programs); the "
+           f"conversation memory grows into the card as it is used" + (f" ({plan[0]}, prompts read {plan[1]} tokens at a time to leave the "
+                                                                         "experts room)" if plan != F.OFFLOAD_PLANS[0] else ""))
         if threads:
             ok(f"CPU experts: {threads} threads per CPU socket compute the experts the card does not hold")
         else:
@@ -10123,7 +10126,7 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     ok(f"tokenizer: {tok}")
 
     step(7, "writing the start script")
-    args = F.engine_args(str(folder), ctx, vram_mib, reserve, threads)
+    args = F.engine_args(str(folder), ctx, vram_mib, reserve, threads, used)
     cfg = {"exe": str(exe), "args": args, "cwd": str(ROOT), "tokenizer": str(tok), "model_name": F.NAME, "arch": fam["arch"],
            "log": str(home() / f"strata-{tag.lower()}.log"), "lib_dirs": lib_dirs, "port": port}
     if gpu.get("count", 1) > 1 or a.gpu is not None:

@@ -50,10 +50,14 @@ PRE_TOKENIZER = "gpt-4o"
 #: + 11, 17 twice more = 8; each holds K and V of 8 heads x 128 at 2 bytes.  --spec 1 adds the drafter's one global layer (mtp.safetensors: 3 layers,
 #: 0 and 2 local).  Measured on an RTX 3090 (nvidia-smi, --spec 1, --chunk 1024): 8K -> 32K context +864 MiB = 36864 bytes a token.
 KV_HEADS, HEAD_DIM, KV_FULL_VISITS, DRAFT_FULL_LAYERS = 8, 128, 8, 1
+#: bytes of one full-attention visit's K and V per token in each --kv format (the engine's kv_cell_bytes): f16 2 x 1024 x 2; k8v8 int8 K and V with
+#: an fp16 scale per 64 values (2 x (1024 + 32)).  k8v8: mean KL 1.24e-3, top-1 99.48% against an f32 K/V run (the engine commit that added it)
+KV_CELL_BYTES = {"f16": 4096, "k8v8": 2112}
 
 
-def kv_bytes_per_token(spec: bool) -> int:
-    return (KV_FULL_VISITS + (DRAFT_FULL_LAYERS if spec else 0)) * 2 * KV_HEADS * HEAD_DIM * 2
+def kv_bytes_per_token(spec: bool, kv: str = "f16") -> int:
+    return (KV_FULL_VISITS + (DRAFT_FULL_LAYERS if spec else 0)) * KV_CELL_BYTES[kv] if kv != "f16" else \
+        (KV_FULL_VISITS + (DRAFT_FULL_LAYERS if spec else 0)) * 2 * KV_HEADS * HEAD_DIM * 2
 
 
 #: VRAM with every expert on the card (nvidia-smi memory.used, CUDA context included) less the K/V: --spec 1, --chunk 1024, --kv f16, after a
@@ -65,17 +69,26 @@ RESIDENT_MARGIN_MIB = 1024
 #: --chunk: prompt tokens per step (the measured default of the hand-tuned config)
 CHUNK = 1024
 #: the contexts offered (the model was trained to 1M; past 256K is untested here)
-CONTEXTS = [8192, 32768, 65536, 131072, 262144]
+CONTEXTS = [8192, 16384, 32768, 49152, 65536, 131072, 262144]
 DEFAULT_CONTEXT = 32768                # where nothing larger fits on the card with every expert
 #: the RAM of the offload mode: every expert is kept in RAM (pinned, placed on the NUMA nodes) while the card holds the most used.  Measured: the
 #: engine's peak resident memory (VmHWM) 16.8 GiB on an RTX 3090 set up as an 8 GB card; 32 GB leaves the OS, the server and the browser room
 OFFLOAD_RAM_GIB = 16.8
 RAM_GB = 32
 
-#: The expert offload (--vram-reserve-mib): what the card holds besides the expert pools, from the engine's own "offload: X GiB free" line on an
-#: RTX 3090 (24576 MiB, --chunk 1024, --kv f16, no drafter): 19.41 GiB free at an 8K context, 18.66 at 32K, so 4444 MiB + the K/V.  (--chunk 256
-#: frees 440 MiB more.)  CBA: one card measured; another card's CUDA context moves it by ~100 MiB, and a desktop's own VRAM is not counted
-OFFLOAD_FIXED_MIB = 4444
+#: The expert offload (--vram-reserve-mib) runs with --kv-grow 1: the full-attention K/V is mapped in 8192-cell steps as a conversation grows and
+#: the prompt buffers only while a prompt is read, both taken from the expert pools and given back after.  When a step would leave a pool under its
+#: minimum the engine stops (503 to the client, restarted by the next request), so the context setup writes is the one whose deepest point - the
+#: whole K/V and the prompt buffers - still leaves the pools their minimum.  Measured on an RTX 3090 set up as an 8 GB card (the engine's
+#: "offload:" and "kv-grow: N cells, expert slots a + b" lines): at rest it holds GROW_BASE_MIB beside the pools and the K/V; reading a prompt maps
+#: PROMPT_BUF_MIB more.  Checked: f16 / --chunk 1024 stops at the first step (16K), f16 / 256 at 32K, k8v8 / 256 reads a 49K-token prompt at
+#: exactly 64 MXFP8 slots.  --chunk 256 reads prompts about 3x slower than 1024 (a 30K-token prompt: 180 s against 57 s), so it is used only where
+#: 1024 would not reach 32K.  CBA: one card measured; another card's CUDA context moves it by ~100 MiB
+GROW_BASE_MIB = {1024: 3451, 256: 3523}
+PROMPT_BUF_MIB = {1024: 1000, 256: 524}
+#: the offload's choices, in order: the first that reaches TARGET_CONTEXT is used (f16 K/V and big prompt chunks first)
+OFFLOAD_PLANS = [("f16", 1024), ("k8v8", 1024), ("k8v8", 256)]
+TARGET_CONTEXT = 32768                 # agentic coding needs 30-60K
 OFFLOAD_MARGIN_MIB = 128               # the engine's INK2_OFF_MARGIN_MIB, kept beside the reserve
 #: the least room the pools may have: the engine refuses to start with fewer than 64 slots in either pool (FETCH_MAX), the MXFP8 pool gets 20% of
 #: the room and an MXFP8 expert is 8211456 bytes: 64 x 8211456 / 0.2 bytes = 2506 MiB, rounded up for the 2-decimal GiB of the measurement
@@ -95,32 +108,48 @@ def resident_fits(vram_mib: float, ctx: int, reserve_mib: int = 0) -> bool:
     return resident_need_mib(ctx) + RESIDENT_MARGIN_MIB + reserve_mib <= vram_mib
 
 
-def offload_room_mib(vram_mib: float, ctx: int, used_mib: float = 0) -> int:
-    """The VRAM a reserve can take in the offload mode, with the expert pools at their minimum and the slack kept; below 0 the engine may not start
-    at this context.  `used_mib`: what other programs (a desktop) hold on the card now: the engine sizes its pools from the FREE VRAM and keeps
-    the reserve on top of that, so their VRAM comes out of this room."""
-    return (int(vram_mib - used_mib) - OFFLOAD_FIXED_MIB - -(-ctx * kv_bytes_per_token(False) // 2**20) - OFFLOAD_MARGIN_MIB - MIN_POOLS_MIB
-            - OFFLOAD_SLACK_MIB)
+def offload_room_mib(vram_mib: float, ctx: int, used_mib: float = 0, plan: tuple = OFFLOAD_PLANS[0]) -> int:
+    """The VRAM a reserve can take in the offload mode at its deepest point (the whole K/V of `ctx` and a prompt's buffers mapped), with the
+    expert pools at their minimum and the slack kept; below 0 the engine may stop at this context.  `used_mib`: what other programs (a desktop)
+    hold on the card now: the engine sizes its pools from the FREE VRAM and keeps the reserve on top of that.  `plan`: (K/V format, --chunk)."""
+    kv, chunk = plan
+    return (int(vram_mib - used_mib) - GROW_BASE_MIB[chunk] - -(-ctx * kv_bytes_per_token(False, kv) // 2**20) - PROMPT_BUF_MIB[chunk]
+            - OFFLOAD_MARGIN_MIB - MIN_POOLS_MIB - OFFLOAD_SLACK_MIB)
+
+
+def offload_plan(vram_mib: float, reserve_mib: int = 0, used_mib: float = 0, ctx: int = TARGET_CONTEXT) -> tuple:
+    """(K/V format, --chunk) of the offload at this context: the first plan that leaves the reserve its room; else the first that fits at all
+    (setup then cuts the reserve to its room); else the last (the smallest)."""
+    return (next((p for p in OFFLOAD_PLANS if offload_room_mib(vram_mib, ctx, used_mib, p) >= reserve_mib), None)
+            or next((p for p in OFFLOAD_PLANS if offload_room_mib(vram_mib, ctx, used_mib, p) >= 0), OFFLOAD_PLANS[-1]))
 
 
 def recommended_context(vram_mib: float, reserve_mib: int = 0, used_mib: float = 0) -> int:
     """The largest context up to 128K that runs with every expert on the card (the reserve covers what a desktop holds there).  When none does,
-    the experts share the card and the context takes their room: DEFAULT_CONTEXT where it leaves the pools room beside the reserve, else 8K."""
+    the experts share the card: the largest context up to 128K whose deepest point leaves the pools their room beside the reserve (offload_plan's
+    K/V format and chunk).  A reserve that would hold the context under TARGET_CONTEXT gives way: TARGET_CONTEXT (or the largest that fits)
+    with whatever room is left for the reserve (setup cuts it and says so); 8K at the least."""
     fits = [c for c in CONTEXTS if DEFAULT_CONTEXT <= c <= 131072 and resident_fits(vram_mib, c, reserve_mib)]
     if fits:
         return max(fits)
-    return DEFAULT_CONTEXT if offload_room_mib(vram_mib, DEFAULT_CONTEXT, used_mib) >= reserve_mib else 8192
+    def best(reserve):
+        plan = offload_plan(vram_mib, reserve, used_mib)
+        return max([c for c in CONTEXTS if c <= 131072 and offload_room_mib(vram_mib, c, used_mib, plan) >= reserve], default=8192)
+    ctx = best(reserve_mib)
+    return ctx if ctx >= TARGET_CONTEXT or not reserve_mib else max(ctx, min(best(0), TARGET_CONTEXT))
 
 
-def engine_args(model_dir: str, ctx: int, vram_mib: float, reserve_mib: int, cpu_threads: int | None) -> list[str]:
-    """The engine's arguments.  Every expert fits on the card: resident, with the drafter (--spec 1).  Otherwise the expert offload: the card keeps
-    `reserve_mib` free and fills the rest with the most used experts, the others stay in RAM; `cpu_threads` (per NUMA node; None: no CPU experts)
-    computes a token's missing experts on the CPU instead of copying them over PCIe.  The engine refuses --cpu-threads with --spec 1, so the
-    offload mode has no drafter.  CBA: offload without CPU experts (no AVX2) also goes without the drafter, unmeasured either way"""
-    args = ["--model", model_dir, "--max-context", str(ctx), "--chunk", str(CHUNK), "--kv", "f16", "--tc", "1"]
+def engine_args(model_dir: str, ctx: int, vram_mib: float, reserve_mib: int, cpu_threads: int | None, used_mib: float = 0) -> list[str]:
+    """The engine's arguments.  Every expert fits on the card: resident, with the drafter (--spec 1).  Otherwise the expert offload with --kv-grow 1:
+    the card keeps `reserve_mib` free and fills the rest with the most used experts, the others stay in RAM; `cpu_threads` (per NUMA node; None: no
+    CPU experts) computes a token's missing experts on the CPU instead of copying them over PCIe; the K/V format and the prompt chunk are
+    offload_plan's.  The engine refuses --cpu-threads with --spec 1, so the offload mode has no drafter.  CBA: offload without CPU experts (no AVX2)
+    also goes without the drafter, unmeasured either way"""
     if resident_fits(vram_mib, ctx, reserve_mib):
-        return args + ["--spec", "1"]
-    args += ["--vram-reserve-mib", str(int(reserve_mib))]
+        return ["--model", model_dir, "--max-context", str(ctx), "--chunk", str(CHUNK), "--kv", "f16", "--tc", "1", "--spec", "1"]
+    kv, chunk = offload_plan(vram_mib, reserve_mib, used_mib, ctx)
+    args = ["--model", model_dir, "--max-context", str(ctx), "--chunk", str(chunk), "--kv", kv, "--tc", "1", "--kv-grow", "1",
+            "--vram-reserve-mib", str(int(reserve_mib))]
     if cpu_threads:
         args += ["--cpu-threads", str(int(cpu_threads))]
     return args

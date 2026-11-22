@@ -255,12 +255,26 @@ Setup picks how it runs from the card:
   layer (`mtp.safetensors`) for faster answers. Measured on an RTX 3090: 19.3 GiB of graphics memory at an 8K context,
   21.2 GiB at 64K; the conversation memory takes 36,864 bytes a token.
 - **Otherwise** (8 to 16 GB cards, or a longer context): the card keeps the most used experts and the others stay in
-  RAM (about 32 GB of RAM); the CPU computes the experts a token needs that the card does not hold, one thread per
-  physical core of each CPU socket (`--cpu-threads`, AVX2 needed). `--vram-reserve-mib N` keeps N MiB of the card
-  free for other programs (1500 by default on a card that drives a display, less where the card has no room for it).
-  An 8 GB card is the smallest that runs it: the engine needs about 4.4 GB beside its expert slots, which take
-  2.5 GB at the least, so such a card gets an 8K context and little VRAM kept free; what a desktop already holds on
-  the card counts against that room.
+  RAM (about 32 GB of RAM; the engine's peak was 16.8 GiB); the CPU computes the experts a token needs that the card
+  does not hold, one thread per physical core of each CPU socket (`--cpu-threads`, AVX2 needed). The conversation
+  memory grows into the card as it is used (`--kv-grow 1`) and gives the room back to the experts afterwards.
+  `--vram-reserve-mib N` keeps N MiB of the card free for other programs (1500 by default on a card that drives a
+  display, less where the card has no room for it).
+
+  The engine needs at least 64 expert slots of each kind (about 2.5 GB) at every point of a conversation, so setup
+  picks the longest context that keeps them, counting what a desktop already holds on the card:
+
+  | Card | Context | Conversation memory, prompt chunk |
+  | --- | ---: | --- |
+  | 8 GB, nothing else on it | 48K | 8-bit (`--kv k8v8`), 1024 |
+  | 8 GB driving a desktop | 32K | 8-bit, 256 (prompts are read about 3x slower) |
+  | 12 GB driving a desktop | 64K | 16-bit, 1024 |
+  | 16 GB driving a desktop | 128K | 16-bit, 1024 |
+
+  Measured on an RTX 3090 set up as an 8 GB card with a 500 MiB desktop: a 30K-token prompt and a 49K-token one were
+  read and answered with the 8-bit conversation memory and 256-token chunks (a 30K prompt in about 3 minutes); with
+  16-bit memory the engine stopped while growing past 8K tokens (1024 chunks) or past 24K (256 chunks). A
+  prompt longer than the context gets a plain error from the server.
 
 The run config (`strata-inkling2-mini.json`) holds the engine's arguments; they can be edited there.
 
