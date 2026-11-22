@@ -825,8 +825,8 @@ HY4_FAMILIES = {
 }
 
 # Thinking Machines' Inkling-2-Mini, the checkpoint as published (safetensors, pinned revision): a family with its own engine program (strata-ink2,
-# compiled here for the card: no ready-made engine carries it), its own files and its own installer, install_inkling2.  NVIDIA cards on Linux only
-# (ink2_offered).  The files, sizes, memory figures and the rule for the engine's arguments are strata_control/ink2_family.py.
+# compiled here for the card: no ready-made engine carries it), its own files and its own installer, install_inkling2.  NVIDIA and AMD cards on Linux
+# only (ink2_offered).  The files, sizes, memory figures and the rule for the engine's arguments are strata_control/ink2_family.py.
 from strata_control import ink2_family  # noqa: E402
 INK2_FAMILIES = {
     ink2_family.FAMILY: {
@@ -9944,7 +9944,8 @@ def install_hy4_flash(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopt
     return start(cfg_path, port)
 
 
-INK2_SOURCES = ("CMakeLists.txt", "cmake", "include", "src/inkling2", "src/image/vae")   # what strata-ink2 is compiled from (its stamp's hash)
+INK2_SOURCES = ("CMakeLists.txt", "cmake", "include", "src/inkling2", "src/image/vae")
+INK2_HIP_ARCHS = tuple(a for a in AMD_ARCHS if a.startswith(("gfx10", "gfx11", "gfx12")))
 
 
 def gpu_used_mib(g) -> float:
@@ -9957,9 +9958,9 @@ def gpu_used_mib(g) -> float:
 
 
 def ink2_offered(hip: bool) -> bool:
-    """Is Inkling-2-Mini offered: an NVIDIA card on Linux (strata-ink2 is CUDA only and uses POSIX calls), outside the app (which compiles nothing:
-    no ready-made engine carries strata-ink2)."""
-    return not hip and sys.platform.startswith("linux") and not CONTROL
+    """Is Inkling-2-Mini offered: an NVIDIA (CUDA) or AMD (ROCm/HIP) card on Linux (strata-ink2 uses POSIX calls), outside the app (which compiles
+    nothing: no ready-made engine carries strata-ink2)."""
+    return sys.platform.startswith("linux") and not CONTROL
 
 
 def ink2_cpu_threads() -> int:
@@ -9972,9 +9973,10 @@ def ink2_cpu_threads() -> int:
     return plan_pool_workers(logical, cores, hybrid=cpu_cores())
 
 
-def ink2_build(gpu, yes) -> tuple[Path, list]:
-    """strata-ink2 compiled for this card, in its own build folder (build-ink2) and copied into engine/ with its own stamp: the ready-made engines do
-    not carry it.  Compiled again when its sources or the card's generation change.  Returns (the program, the CUDA library folders it runs with)."""
+def ink2_build(gpu, yes, hip=False, amd=None) -> tuple[Path, list]:
+    """strata-ink2 compiled for this card, in its own build folder (build-ink2 for CUDA, build-ink2-hip for ROCm/HIP) and copied into engine/ with
+    its own stamp: the ready-made engines do not carry it.  Compiled again when its sources, backend or the card's generation change.  Returns
+    (the program, the GPU runtime library folders it runs with)."""
     eng = engine_dir(13)
     eng.mkdir(exist_ok=True)
     exe = eng / ink2_family.EXE
@@ -9984,11 +9986,46 @@ def ink2_build(gpu, yes) -> tuple[Path, list]:
     except (OSError, ValueError):
         meta = {}
     src = source_hash(INK2_SOURCES)
+    if hip:
+        raw_archs = gpu.get("archs") or (
+            [gpu["arch"]] if gpu.get("arch") else
+            [amd["arch"]] if isinstance(amd, dict) and amd.get("arch") else
+            [g["arch"] for g in (amd or []) if isinstance(g, dict) and g.get("arch")]
+        )
+        archs = sorted({a.split(":")[0] for a in arch_names(raw_archs)})
+        if exe.is_file() and meta.get("backend") == "hip" and meta.get("src") == src and set(archs) <= set(arch_names(meta.get("archs"))):
+            ok(f"engine: {exe} (already compiled for this PC)")
+            return exe, meta.get("lib_dirs") or []
+        if not (shutil.which("c++") or shutil.which("g++")) or not shutil.which("git"):
+            fail("a C++ compiler and git are needed to compile the AMD engine",
+                 "Ubuntu/Debian: sudo apt install build-essential git   Fedora: sudo dnf install gcc-c++ git")
+        root, dirs = rocm_root(archs)
+        libs = [str(Path(d).parent) for d in dirs[1:]]
+        bitcode = next((p for p in (root / "lib" / "llvm" / "amdgcn" / "bitcode", root / "amdgcn" / "bitcode") if p.is_dir()),
+                       root / "amdgcn" / "bitcode")
+        os.environ.update({"HIP_PLATFORM": "amd", "HIP_COMPILER": "clang", "HIP_RUNTIME": "rocclr", "ROCM_PATH": str(root),
+                           "HIP_PATH": str(root)})
+        os.environ["LD_LIBRARY_PATH"] = os.pathsep.join(dirs + [os.environ.get("LD_LIBRARY_PATH", "")]).rstrip(os.pathsep)
+        os.environ["PATH"] = os.pathsep.join([str(root / "bin"), str(rocm_clang(root).parent), os.environ.get("PATH", "")])
+        bdir = ROOT / "build-ink2-hip"
+        say("  Compiling the Inkling-2-Mini engine (strata-ink2) for " + ", ".join(archs) + " (a few minutes, once) ...")
+        cmake_build(engine_src(), bdir, ink2_family.EXE,
+                    ["-DSTRATA_ENABLE_HIP=ON", "-DSTRATA_ENABLE_CUDA=OFF", "-DSTRATA_BUILD_TESTS=OFF",
+                     "-DCMAKE_HIP_ARCHITECTURES=" + ";".join(archs),
+                     f"-DCMAKE_HIP_COMPILER={rocm_clang(root)}", f"-DCMAKE_HIP_COMPILER_ROCM_ROOT={root}",
+                     "-DCMAKE_PREFIX_PATH=" + ";".join([str(root), *libs]),
+                     f"-DCMAKE_HIP_FLAGS=-isystem {root}/include --rocm-path={root} --rocm-device-lib-path={bitcode}"],
+                    None, "")
+        shutil.copy2(bdir / ink2_family.EXE, exe)
+        stamp.write_text(json.dumps({"backend": "hip", "archs": archs, "src": src, "lib_dirs": dirs}, indent=1), encoding="utf-8")
+        ok(f"engine compiled: {exe}")
+        return exe, dirs
     archs = sorted({int(x) for x in gpu.get("archs", [gpu["arch"]])})
-    if exe.is_file() and meta.get("src") == src and set(archs) <= set(meta.get("archs") or []):
+    prev_archs = meta.get("archs") or [] if meta.get("backend", "cuda") == "cuda" else []
+    if exe.is_file() and meta.get("backend", "cuda") == "cuda" and meta.get("src") == src and set(archs) <= set(prev_archs):
         ok(f"engine: {exe} (already compiled for this PC)")
         return exe, meta.get("cuda_dirs") or []
-    archs = sorted(set(archs) | set(meta.get("archs") or []))
+    archs = sorted(set(archs) | set(prev_archs))
     nvcc, vcvars = install_build_tools({**gpu, "archs": archs, "toolkit": 13}, yes)
     bdir = ROOT / "build-ink2"
     say("  Compiling the Inkling-2-Mini engine (strata-ink2) for " + ", ".join(f"sm_{x}" for x in archs) + " (a few minutes, once) ...")
@@ -9999,7 +10036,7 @@ def ink2_build(gpu, yes) -> tuple[Path, list]:
     shutil.copy2(bdir / ink2_family.EXE, exe)
     bindir = Path(nvcc).parent                            # the toolkit's own libraries (cuBLAS, the runtime), as build_engine keeps them
     dirs = [str(d) for d in (bindir, bindir.parent / "lib64") if d.is_dir()]
-    stamp.write_text(json.dumps({"src": src, "archs": archs, "cuda_dirs": dirs}, indent=1), encoding="utf-8")
+    stamp.write_text(json.dumps({"backend": "cuda", "src": src, "archs": archs, "cuda_dirs": dirs}, indent=1), encoding="utf-8")
     ok(f"engine compiled: {exe}")
     return exe, dirs
 
@@ -10029,9 +10066,15 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     ok(f"model: {fam['title']}")
     say(f"  Its license: {fam['license']}")
     if not ink2_offered(hip):
-        fail(f"{fam['title']} runs on NVIDIA cards on Linux only so far: its engine (strata-ink2) is CUDA only, and it is compiled on this PC"
-             + (" (the app compiles no engine)" if CONTROL else ""), "choose another model, or set it up from a Linux checkout (./setup.sh) with an NVIDIA card")
-    if cuda_tk == 12 or int(gpu.get("arch") or 0) < CUDA13_MIN_ARCH:
+        fail(f"{fam['title']} runs on NVIDIA or AMD cards on Linux only so far: its engine (strata-ink2) is compiled on this PC"
+             + (" (the app compiles no engine)" if CONTROL else ""),
+             "choose another model, or set it up from a Linux checkout (./setup.sh) with an NVIDIA or AMD card")
+    if hip:
+        arch = str(gpu.get("arch") or "")
+        if not any(gfx_arch_is(arch, a) for a in INK2_HIP_ARCHS):
+            fail(f"{fam['title']} on AMD needs a wave32 RDNA GPU ({', '.join(INK2_HIP_ARCHS)}); this one is {arch or 'unknown'}",
+                 "choose another model for this card")
+    elif cuda_tk == 12 or int(gpu.get("arch") or 0) < CUDA13_MIN_ARCH:
         fail(f"{fam['title']} needs an NVIDIA card from the RTX 20 series (sm_75) or newer; this one is sm_{gpu.get('arch')}",
              "choose another model for this card")
     if multi:
@@ -10042,11 +10085,11 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     ok(f"size: {model} (the published checkpoint, {F.DOWNLOAD_GB:.1f} GB)")
     tag = fam["tag"] + model
     vram_mib = float(gpu.get("vram_gb", 0.0)) * 1024
-    display = gpu_drives_display(gpu)
+    display = False if hip else gpu_drives_display(gpu)
     # the VRAM kept free for other programs: the person's own number, else what a card that drives the screen needs (#779), else none (the engine
     # keeps its own margin for what it allocates after the experts)
     reserve = a.vram_reserve_mib if a.vram_reserve_mib is not None else (DISPLAY_RESERVE_MIB if display else 0)
-    used = gpu_used_mib(gpu)                           # a desktop's VRAM now: the offload's pools are sized from what is free at start
+    used = 0.0 if hip else gpu_used_mib(gpu)           # a desktop's VRAM now: the offload's pools are sized from what is free at start
     rec_ctx = F.recommended_context(vram_mib, reserve, used)
     if a.context:
         ctx = a.context
@@ -10114,7 +10157,7 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     pip_install(runtime_packages(), "numpy, jinja2, regex, pyyaml, tqdm, requests, cmake, ninja, pillow, psutil, textual (the screens)")
 
     step(4, "the Inkling-2-Mini engine")
-    exe, lib_dirs = ink2_build(gpu, a.yes)
+    exe, lib_dirs = ink2_build(gpu, a.yes, hip=hip, amd=amd)
 
     step(5, f"downloading {fam['title']}")
     for name, (size, sha) in F.FILES.items():
@@ -10136,6 +10179,8 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     args = F.engine_args(str(folder), ctx, vram_mib, reserve, threads, used, cache_mib)
     cfg = {"exe": str(exe), "args": args, "cwd": str(ROOT), "tokenizer": str(tok), "model_name": F.NAME, "arch": fam["arch"],
            "log": str(home() / f"strata-{tag.lower()}.log"), "lib_dirs": lib_dirs, "port": port}
+    if hip:
+        cfg["backend"] = "hip"
     if gpu.get("count", 1) > 1 or a.gpu is not None:
         cfg["gpu"] = gpu["index"]
         cfg["gpus_asked"] = True
@@ -10619,7 +10664,7 @@ def main() -> int:
     ap.add_argument("--family", choices=list(FAMILIES) + list(PREVIEW_FAMILIES) + list(HY4_FAMILIES) + list(INK2_FAMILIES),
                     help="qwen = Qwen3.8-Flash-Next, swift = Swift 1.5, qwen36 = Qwen3.6-35B-A3B (pictures with --vision, "
                          "several requests at once with --parallel; docs/QWEN36.md), hy4-flash = Tencent Hy4-Flash (SQ-64 / SQ-96 / SQ-128), "
-                         "inkling2 = Inkling-2-Mini (NVIDIA cards on Linux; docs/MODELS.md)")
+                         "inkling2 = Inkling-2-Mini (NVIDIA or AMD cards on Linux; docs/MODELS.md)")
     ap.add_argument("--model", type=model_alias, choices=list(dict.fromkeys([*MODELS, *(m for f in PREVIEW_FAMILIES.values()
                                                                        for m in f["models"]), *(m for f in HY4_FAMILIES.values() for m in f["models"]),
                                                                        *(m for f in INK2_FAMILIES.values() for m in f["models"])])))
@@ -11175,7 +11220,7 @@ def main() -> int:
         rest = [*(f for f in OWN_PATH_FAMILIES if not OWN_PATH_FAMILIES[f].get("feed")),
                 *(f for f in OWN_PATH_FAMILIES if OWN_PATH_FAMILIES[f].get("feed")), *feed_late,
                 *(f for f in HY4_FAMILIES if hy4_offered(a)),       # Hy4-Flash: listed where an engine, and files or a source, exist (hy4_offered)
-                *(f for f in INK2_FAMILIES if ink2_offered(hip))]   # Inkling-2-Mini: an NVIDIA card on Linux (ink2_offered)
+                *(f for f in INK2_FAMILIES if ink2_offered(hip))]   # Inkling-2-Mini: NVIDIA or AMD cards on Linux (ink2_offered)
         for j, f in enumerate(rest, len(fams) + 1):    # families with an engine path of their own
             d = {**FAMILIES, **OWN_PATH_FAMILIES, **HY4_FAMILIES, **INK2_FAMILIES}[f]
             say(f"  {j}) {cyan}{d['title']:20s}{reset} {d['by']} - {d['about']}   [new]" + (f"   ({FEED_UNAVAILABLE[f]['reason']})" if f in FEED_UNAVAILABLE else ""))
