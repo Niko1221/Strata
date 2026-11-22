@@ -21,6 +21,8 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import sys
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -113,8 +115,14 @@ def reference(shape: str) -> str:
     return ec.REFERENCE_PREFIX + component_id(shape)
 
 
-def exe_name() -> str:
-    return "strata.exe" if os.name == "nt" else "strata"
+#: The engine of Tencent Hy4-Flash is a "shape" in this module's sense (its own component next to the Strata engine, fetched through the signed feed, named by the run
+#: config's exe "component:strata-hy4") but not a compile of the Strata engine: its program is strata-hy4 and it has no geometry, so it says what it is with `--info`.
+HY4_SHAPE = "hy4"
+
+
+def exe_name(shape: str | None = None) -> str:
+    base = "strata-hy4" if shape == HY4_SHAPE else "strata"
+    return base + (".exe" if os.name == "nt" else "")
 
 
 # ---------------------------------------------------------------------------------------------- where, what is installed
@@ -199,7 +207,7 @@ def _test_start(exe: Path, timeout: float = 120.0, shape: str | None = None) -> 
     the signed manifest says is refused here, not at its first load, and so is one that cannot answer the flag (NO_SHAPE_ANSWER, owner 11-09)."""
     import subprocess
     env = dict(os.environ)
-    var = "PATH" if os.name == "nt" else "LD_LIBRARY_PATH"
+    var = "PATH" if sys.platform == "win32" else ("DYLD_LIBRARY_PATH" if sys.platform == "darwin" else "LD_LIBRARY_PATH")
     dirs = [d for d in ec.package_lib_dirs(Path(exe).parent) if Path(d).is_dir()]
     if dirs:
         env[var] = os.pathsep.join(dirs + ([env[var]] if env.get(var) else []))
@@ -211,7 +219,11 @@ def _test_start(exe: Path, timeout: float = 120.0, shape: str | None = None) -> 
     if done.returncode != 0 or not first.startswith("strata"):
         tail = ((done.stderr or "").strip().splitlines() or [first or f"exit {done.returncode}"])[-1]
         return False, tail[:160]
-    if shape:
+    if shape == HY4_SHAPE:
+        # Hy4-Flash's engine has no geometry: `strata-hy4 --version` named it ("strata-hy4 <version>") and that is the whole check
+        if not first.startswith("strata-hy4"):
+            return False, NO_SHAPE_ANSWER
+    elif shape:
         ok, why = check_geometry(exe, shape, env, timeout)
         if not ok:
             return False, why
@@ -294,9 +306,9 @@ def update_one(ctx, feed, shape: str, *, install_missing: bool = True, title: st
             shutil.rmtree(longpath.long_path(target), ignore_errors=True)
         updater._move_dir(folder, target)
         if os.name != "nt":
-            (target / exe_name()).chmod(0o755)
+            (target / exe_name(shape)).chmod(0o755)
         ctx.say("test", f"Test-starting the engine for {name} {pkg.version}", component=comp)
-        ok, why = _test_start(target / exe_name(), shape=shape)
+        ok, why = _test_start(target / exe_name(shape), shape=shape)
         if not ok:
             shutil.rmtree(longpath.long_path(target), ignore_errors=True)         # (never an older one)
             refused = updater.UpdateError(WORDS["start_failed"].format(model=name, version=pkg.version, why=why), 6)
@@ -311,6 +323,10 @@ def update_one(ctx, feed, shape: str, *, install_missing: bool = True, title: st
     finally:
         if stage_root is not None:
             shutil.rmtree(longpath.long_path(stage_root), ignore_errors=True)
+
+
+LOCK_WAIT_S = 120.0
+LOCK_POLL_S = 1.0
 
 
 def ensure(shape: str, source: str, *, components: Path | None = None, hardware: dict | None = None, emit: Callable[[str], None] = print, cancel=None,
@@ -332,18 +348,28 @@ def ensure(shape: str, source: str, *, components: Path | None = None, hardware:
                           automatic=bool(automatic and have),
                           emit=lambda event: emit(event["message"]) if event.get("event") == "phase" and event.get("message") and event.get("phase") != "feed" else None)
     try:
-        with updater.update_lock(components):
-            state = updater.State(components)
+        deadline = time.monotonic() + (0.0 if automatic else LOCK_WAIT_S)
+        while True:
             try:
-                feed = updater.open_feed(ctx, state)
-            except feedmod.FeedError as exc:
-                if have:                                          # offline with an engine installed: the engine runs, nothing to say
-                    return find(shape, components, full=False, title=title).exe
-                emit(WORDS["fetch_failed"].format(model=name, why=exc))
-                return None
-            state.save()
-            result = update_one(ctx, feed, shape, title=title)
-            state.save()
+                with updater.update_lock(components):
+                    state = updater.State(components)
+                    try:
+                        feed = updater.open_feed(ctx, state)
+                    except feedmod.FeedError as exc:
+                        if have:                                          # offline with an engine installed: the engine runs, nothing to say
+                            return find(shape, components, full=False, title=title).exe
+                        emit(WORDS["fetch_failed"].format(model=name, why=exc))
+                        return None
+                    state.save()
+                    result = update_one(ctx, feed, shape, title=title)
+                    state.save()
+                break
+            except updater.UpdateError as exc:
+                if automatic or exc.exit_code != 7 or time.monotonic() >= deadline:
+                    raise
+                if cancel is not None and (cancel.is_set() if hasattr(cancel, "is_set") else cancel()):
+                    raise
+                time.sleep(min(LOCK_POLL_S, max(0.0, deadline - time.monotonic())))
     except Exception as exc:                                      # noqa: BLE001 - with an engine installed, a check for a newer one never stops a launch
         if not isinstance(exc, (updater.UpdateError, feedmod.FeedError, signing.SignatureError, acquisition.AcquisitionRefused, OSError)) and not have:
             raise
