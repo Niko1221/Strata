@@ -1,19 +1,13 @@
-## Was sich in 0.7.4 ändert
+## Was sich in 0.7.5 ändert
 
-Diese Version übernimmt alle Änderungen des offiziellen Upstreams **Niko1221/Strata v0.2.19** und bewahrt alle Fork-Eigenschaften (Q38 27B/9B, DS4/DeepSeek, RAM32, Hakua UI/memory, Workflow-Skills, 8 README-Sprachen). Produktversion ist **0.7.4**, die native Engine-Familie **0.6.6**, die offizielle API folgt Control/Engines **0.1.65**. Upstream 0.2.19 integriert Inkling-2 Mini für alle Backends und bringt Fehler-/Sicherheitskorrekturen. Ryu's (kuraneko1, MIT) SM x VRAM-Profilauswahl wurde in die offizielle CUDA-Inkling-2 eingearbeitet (mit Quellenangabe). Signaturprüfung entfernt, SHA-256-Digest-Prüfung bleibt. `releaseQualified=false` bleibt.
-
-# Hakua / Strata
-
-[English](README.md) · [日本語](README.ja.md) · [Deutsch](README.de.md) · [Español](README.es.md) · [Français](README.fr.md) · [Polski](README.pl.md) · [Português](README.pt-BR.md) · [简体中文](README.zh-CN.md)
-
-Lokale KI für Windows mit Chat, Agenten-Workflows, Recherche mit Quellenangaben und einer Auswahl kompatibler Modelle. Hakua ist der zapabob-Fork von Niko1221/Strata; er wird unabhängig gepflegt und ist keine offiziell empfohlene Distribution des Upstream-Projekts.
+Diese Version behält alle Fork-Eigenschaften und fügt die nativen Optimierungen vom 22./23.11. hinzu: Produkt **0.7.5**, Engine-Familie **0.6.7**, Upstream v0.2.19. RTX 5060 Ti (sm_120a)/CUDA 13.5: DS4-9B Prefill 2,84x, E2E +22,7 %, FLA GDN + Spin(8) Prefill 4,86x, Sakura Inkling-2 65K-98K (22,44 t/s Decode). Ryu's (kuraneko1, MIT) SM x VRAM-Profile in der offiziellen CUDA-Inkling-2 (PR #6571). Signaturprüfung entfernt, SHA-256 bleibt. `releaseQualified=false`.
 
 ## Version und Downloads
 
 <!-- release-062-stable -->
-Aktuelles App-Release: [0.7.4](https://github.com/zapabob/Strata/releases/tag/v0.7.4) (App `0.7.3`; Terminal, Control `0.6.3`; native Engine-Familie `0.6.5`) — dies ist GitHub Latest. Die Windows-App liefert die 0.6.5-Engine-Familie (neu gebautes Q38 27B+9B, offizielles Hy4-Flash 0.1.64) als getrennte optionale Komponenten. Die Signaturprüfung wurde entfernt (kein Schlüssel); SHA-256-Prüfsummen bleiben die Integritätsprüfung. `releaseQualified=false` bleibt; Vollfenster-Inferenz und Modellqualität sind nicht qualifiziert. Eine dritte optionale Engine, `strata-inkling2` (Inkling-2 Mini, GGUF-Arch `inkling2`), wurde aus kuraneko1/Strata (MIT) von kuraneko1 (_ryu15_) mit Quellenangabe portiert.
+Aktuelles App-Release: [0.7.5](https://github.com/zapabob/Strata/releases/tag/v0.7.5) (App `0.7.3`; Terminal, Control `0.6.3`; native Engine-Familie `0.6.5`) — dies ist GitHub Latest. Die Windows-App liefert die 0.6.5-Engine-Familie (neu gebautes Q38 27B+9B, offizielles Hy4-Flash 0.1.64) als getrennte optionale Komponenten. Die Signaturprüfung wurde entfernt (kein Schlüssel); SHA-256-Prüfsummen bleiben die Integritätsprüfung. `releaseQualified=false` bleibt; Vollfenster-Inferenz und Modellqualität sind nicht qualifiziert. Eine dritte optionale Engine, `strata-inkling2` (Inkling-2 Mini, GGUF-Arch `inkling2`), wurde aus kuraneko1/Strata (MIT) von kuraneko1 (_ryu15_) mit Quellenangabe portiert.
 
-[0.7.4](https://github.com/zapabob/Strata/releases/tag/v0.7.4) · [Setup-EXE](https://github.com/zapabob/Strata/releases/download/v0.7.4/Strata-0.7.4-windows-x64-setup.exe) · [tar.7z](https://github.com/zapabob/Strata/releases/download/v0.7.4/Strata-0.7.4-windows-x64.tar.7z) · [SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.7.4/SHA256SUMS.txt) · [BUNDLE-SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.7.4/BUNDLE-SHA256SUMS.txt)
+[0.7.5](https://github.com/zapabob/Strata/releases/tag/v0.7.5) · [Setup-EXE](https://github.com/zapabob/Strata/releases/download/v0.7.5/Strata-0.7.5-windows-x64-setup.exe) · [tar.7z](https://github.com/zapabob/Strata/releases/download/v0.7.5/Strata-0.7.5-windows-x64.tar.7z) · [SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.7.5/SHA256SUMS.txt) · [BUNDLE-SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.7.5/BUNDLE-SHA256SUMS.txt)
 
 ![Hakua / Strata real-model Japanese chat on Qwen3.8-27B](docs/media/native-qwen38-japanese-chat.png)
 *Hakua / Strata Desktop mit `qwen3.8-27b-abliterated-3.69bpw-12GB-MTP.gguf` über `strata-q38.exe` (CUDA 13 / RTX 5060 Ti 16 GB).*

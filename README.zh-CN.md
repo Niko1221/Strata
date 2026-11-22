@@ -1,19 +1,13 @@
-## 0.7.4 变更
+## 0.7.5 变更
 
-此版本完整吸收官方上游 **Niko1221/Strata v0.2.19** 的所有更改，同时完全保留 fork 独有功能（Q38 27B/9B、DS4/DeepSeek、RAM32 内存压缩、Hakua UI/记忆、工作流技能、8 种语言 README）。产品版本为 **0.7.4**（语义化版本），原生引擎系列为 **0.6.6**，官方 API/设置跟随 Control/engines **0.1.65**。v0.2.19 将 Inkling-2 Mini 集成到所有后端，并带来错误/安全修复。Ryu（kuraneko1，MIT）的 SM × VRAM 自动配置选择已注明出处地合并到官方 CUDA Inkling-2。签名验证已移除（无签名密钥），SHA-256 摘要验证仍保留。`releaseQualified=false` 保持不变。
-
-# Hakua / Strata
-
-[English](README.md) · [日本語](README.ja.md) · [Deutsch](README.de.md) · [Español](README.es.md) · [Français](README.fr.md) · [Polski](README.pl.md) · [Português](README.pt-BR.md) · [简体中文](README.zh-CN.md)
-
-面向 Windows 的本地 AI 应用，支持对话、智能体任务、带出处检索与兼容模型选择。Hakua 是 zapabob 基于 Niko1221/Strata 独立维护的分支版本，并非上游官方背书的发行版。
+本版本保留所有 fork 独有功能，并加入 11/22-23 的原生优化：产品 **0.7.5**，原生引擎系列 **0.6.7**，上游 v0.2.19。RTX 5060 Ti（sm_120a）/ CUDA 13.5：DS4-9B prefill 2.84 倍、E2E +22.7%、FLA GDN + Spin(8) prefill 4.86 倍、Sakura Inkling-2 65K-98K（解码 22.44 t/s）。Ryu（kuraneko1，MIT）的 SM × VRAM 配置表已合并到官方 CUDA Inkling-2（PR #6571）。签名验证已移除，SHA-256 保留。`releaseQualified=false`。
 
 ## 版本与下载
 
 <!-- release-062-stable -->
-当前应用版本: [0.7.4](https://github.com/zapabob/Strata/releases/tag/v0.7.4)（应用 `0.7.3`、Terminal、Control `0.6.3`、原生引擎系列 `0.6.5`）— 此为 GitHub Latest。Windows 应用将 0.6.5 引擎系列（重新构建的 Q38 27B+9B、官方 Hy4-Flash 0.1.64）作为独立可选组件提供。组件签名验证已移除（无签名密钥）；SHA-256 摘要仍为完整性检查。`releaseQualified=false` 保持不变，全窗口推理与通用模型质量仍未验证。 第三个可选引擎 `strata-inkling2`（Inkling-2 Mini，GGUF 架构 `inkling2`）移植自 kuraneko1/Strata（MIT），作者 kuraneko1 (_ryu15_)，已注明出处。
+当前应用版本: [0.7.5](https://github.com/zapabob/Strata/releases/tag/v0.7.5)（应用 `0.7.3`、Terminal、Control `0.6.3`、原生引擎系列 `0.6.5`）— 此为 GitHub Latest。Windows 应用将 0.6.5 引擎系列（重新构建的 Q38 27B+9B、官方 Hy4-Flash 0.1.64）作为独立可选组件提供。组件签名验证已移除（无签名密钥）；SHA-256 摘要仍为完整性检查。`releaseQualified=false` 保持不变，全窗口推理与通用模型质量仍未验证。 第三个可选引擎 `strata-inkling2`（Inkling-2 Mini，GGUF 架构 `inkling2`）移植自 kuraneko1/Strata（MIT），作者 kuraneko1 (_ryu15_)，已注明出处。
 
-[0.7.4](https://github.com/zapabob/Strata/releases/tag/v0.7.4) · [安装 EXE](https://github.com/zapabob/Strata/releases/download/v0.7.4/Strata-0.7.4-windows-x64-setup.exe) · [tar.7z](https://github.com/zapabob/Strata/releases/download/v0.7.4/Strata-0.7.4-windows-x64.tar.7z) · [SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.7.4/SHA256SUMS.txt) · [BUNDLE-SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.7.4/BUNDLE-SHA256SUMS.txt)
+[0.7.5](https://github.com/zapabob/Strata/releases/tag/v0.7.5) · [安装 EXE](https://github.com/zapabob/Strata/releases/download/v0.7.5/Strata-0.7.5-windows-x64-setup.exe) · [tar.7z](https://github.com/zapabob/Strata/releases/download/v0.7.5/Strata-0.7.5-windows-x64.tar.7z) · [SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.7.5/SHA256SUMS.txt) · [BUNDLE-SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.7.5/BUNDLE-SHA256SUMS.txt)
 
 ![Hakua / Strata real-model Japanese chat on Qwen3.8-27B](docs/media/native-qwen38-japanese-chat.png)
 *Hakua / Strata 桌面端通过 `strata-q38.exe` 运行 `qwen3.8-27b-abliterated-3.69bpw-12GB-MTP.gguf`（CUDA 13 / RTX 5060 Ti 16 GB）。*

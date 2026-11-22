@@ -1,19 +1,13 @@
-## 0.7.4 での変更
+## 0.7.5 での変更
 
-このリリースは、公式 upstream **Niko1221/Strata v0.2.19** のすべてを取り込みつつ、フォーク独自機能（Q38 27B/9B dense、DS4/DeepSeek、RAM32 スクイーズ、Hakua UI/memory、ワークフロースキル、8 言語 README）を完全に維持します。プロダクトは **0.7.4**（セマンティックバージョニング）、ネイティブエンジンファミリは **0.6.6**、公式 API／設定は Control／engines **0.1.65** に追従しました。upstream 0.2.19 は Inkling-2 Mini を全バックエンド（CUDA/HIP/Metal/SYCL）に統合し、Flash-Next の sm_120/sm_89/sm_86 と RDNA3 を最適化し、バグ／セキュリティ修正（sm_60 dp4a フォールバック、libstdc++-11 JVal map、VRAM キャッシュ eviction race、思考チャネル漏れ、MSVC atomic fence）を加えました。Ryu さん（kuraneko1、MIT）の SM × VRAM 自動プロファイル選択を公式 CUDA Inkling-2 にクレジット明記でマージしました。署名検証は削除済み（署名鍵なし）、SHA-256 ダイジェスト検証が残ります。`releaseQualified=false` は変更なしです。
-
-# Hakua / Strata
-
-[English](README.md) · [日本語](README.ja.md) · [Deutsch](README.de.md) · [Español](README.es.md) · [Français](README.fr.md) · [Polski](README.pl.md) · [Português](README.pt-BR.md) · [简体中文](README.zh-CN.md)
-
-Windows でローカル AI のチャット、エージェント作業、出典付き調査を使うためのアプリです。Hakua は Niko1221/Strata を基にした zapabob のフォークで、独立して保守しています。公式からの推奨・認定を示す配布物ではありません。
+本リリースはフォーク独自機能をすべて維持し、2026-11-22/23 のネイティブ高速化を追加します。プロダクト **0.7.5**、ネイティブエンジンファミリ **0.6.7**、upstream **Niko1221/Strata v0.2.19**（Control/engines 0.1.65）。RTX 5060 Ti（sm_120a）/ CUDA 13.5 最適化：DS4-9B prefill 2.84倍、decode +13.4%、E2E +22.7%、FLA GDN + Spin(8) triality exp2f で prefill 4.86倍・KV 59.4% 圧縮、Inkling-2 branchless router（1.16倍）、Sakura Inkling-2-Mini 65K〜98K コンテキスト（`--expert-vram 7.8` で decode 22.44 t/s、12.7倍、32/32 完全一致）。serve 層は GGUF 埋め込みトークナイザ／テンプレートと Inkling 出力パーサに対応、Hermes Agent に `inkling2` プロバイダを追加。Ryu さん（kuraneko1、MIT）の SM × VRAM プロファイル表を公式 CUDA Inkling-2 にマージし、upstream PR #6571 として還元。署名検証は削除済み、SHA-256 ダイジェストが残ります。`releaseQualified=false`。
 
 ## バージョンと配布物
 
 <!-- release-062-stable -->
-現在のアプリリリース: [0.7.4](https://github.com/zapabob/Strata/releases/tag/v0.7.4)（アプリ `0.7.3`、Terminal、Control `0.6.3`、ネイティブエンジンファミリ `0.6.5`）— GitHub Latest です。Windows アプリには 0.6.5 エンジンファミリ（再ビルド Q38 27B+9B、公式 Hy4-Flash 0.1.64）が別の opt-in コンポーネントとして同梱されます。コンポーネント署名検証は撤去され（署名鍵なし）、SHA-256 ダイジェストが完全性チェックです。`releaseQualified=false` は明示のまま、フルウィンドウ推論と一般モデル品質は未検証です。 第 3 の opt-in エンジン `strata-inkling2`（Inkling-2 Mini、GGUF arch `inkling2`）は、kuraneko1/Strata（MIT）の kuraneko1 (_ryu15_) による実装をクレジット明記で移植したものです。
+現在のアプリリリース: [0.7.5](https://github.com/zapabob/Strata/releases/tag/v0.7.5)（アプリ `0.7.3`、Terminal、Control `0.6.3`、ネイティブエンジンファミリ `0.6.5`）— GitHub Latest です。Windows アプリには 0.6.5 エンジンファミリ（再ビルド Q38 27B+9B、公式 Hy4-Flash 0.1.64）が別の opt-in コンポーネントとして同梱されます。コンポーネント署名検証は撤去され（署名鍵なし）、SHA-256 ダイジェストが完全性チェックです。`releaseQualified=false` は明示のまま、フルウィンドウ推論と一般モデル品質は未検証です。 第 3 の opt-in エンジン `strata-inkling2`（Inkling-2 Mini、GGUF arch `inkling2`）は、kuraneko1/Strata（MIT）の kuraneko1 (_ryu15_) による実装をクレジット明記で移植したものです。
 
-[0.7.4](https://github.com/zapabob/Strata/releases/tag/v0.7.4) · [setup EXE](https://github.com/zapabob/Strata/releases/download/v0.7.4/Strata-0.7.4-windows-x64-setup.exe) · [tar.7z](https://github.com/zapabob/Strata/releases/download/v0.7.4/Strata-0.7.4-windows-x64.tar.7z) · [SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.7.4/SHA256SUMS.txt) · [BUNDLE-SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.7.4/BUNDLE-SHA256SUMS.txt)
+[0.7.5](https://github.com/zapabob/Strata/releases/tag/v0.7.5) · [setup EXE](https://github.com/zapabob/Strata/releases/download/v0.7.5/Strata-0.7.5-windows-x64-setup.exe) · [tar.7z](https://github.com/zapabob/Strata/releases/download/v0.7.5/Strata-0.7.5-windows-x64.tar.7z) · [SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.7.5/SHA256SUMS.txt) · [BUNDLE-SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.7.5/BUNDLE-SHA256SUMS.txt)
 
 ![Hakua / Strata real-model Japanese chat on Qwen3.8-27B](docs/media/native-qwen38-japanese-chat.png)
 *`strata-q38.exe` で `qwen3.8-27b-abliterated-3.69bpw-12GB-MTP.gguf` を実行している実環境スクリーンショット（CUDA 13 / RTX 5060 Ti 16 GB）。*
