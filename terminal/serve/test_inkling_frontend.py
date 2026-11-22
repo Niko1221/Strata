@@ -63,6 +63,7 @@ def test_parser_chosen_by_engine(tmp_path):
         svc.set_family(None)
         assert (svc.family, svc.parser_cls, frontend._INK_THINKS) == ("inkling2", Ink2OutputParser, True)
         assert svc.template.render([], **effort_kwargs("high")) == "high"
+        assert svc.template.caps["supports_preserve_reasoning"] is False   # (this template drops it; the official one keeps it)
         eng = VramEngine(tok)
         eng.inkling_engine = True
         svc = Service(eng, tok, ChatTemplate(t))

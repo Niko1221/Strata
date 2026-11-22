@@ -4068,6 +4068,10 @@ class Service:
         self.family = family
         import serve.frontend as _frontend
         _frontend.use_family(family, thinks=ink2)
+        if ink2:   # /props: upstream sets False for strata-inkling (it drops the thinking); strata-ink2 keeps it, as the template does
+            hist = [{"role": "user", "content": "q"}, {"role": "assistant", "content": "a", "reasoning_content": "strata_caps_reasoning"},
+                    {"role": "user", "content": "q"}]
+            self.template.caps = {**self.template.caps, "supports_preserve_reasoning": "strata_caps_reasoning" in self.template.render(hist)}
 
     _force_text = None
 
