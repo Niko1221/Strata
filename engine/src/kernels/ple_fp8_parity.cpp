@@ -8,11 +8,11 @@
 // both I/O modes (Direct and Mmap) and through the prompt path's gather_batch. With the IQ4_NL shard the same rows
 // are compared too: same table, so a correlation near 0.997 - a shifted row order would be ~0.
 //
-// PLE_EXPECT_FORMAT (default F8_E4M3) is the format the table must open as. A low-bit table (C1, C2, C2s, C3, C4, C5, C6;
-// reference.bin from tools/ple_lowbit_emulate.py --native) is only about sqrt(1 - NMSE) a row from IQ4_NL, lower for some
-// rows, so its correlation floor is 0.9 instead of FP8's 0.98 (rows 0:200000: min 0.993 for C1, 0.981 for C2, 0.988 for
-// C5), and 0.8 for the 2-bit C6 (NMSE 0.11: min 0.908 over 4160 rows, so 0.9 would fail on chance): it still fails a
-// shifted row (~0).
+// PLE_EXPECT_FORMAT (default F8_E4M3) is the format the table must open as. A low-bit table (C1, C2, C2s, C3, C4, C5, C6,
+// C5e, T58, T58e; reference.bin from tools/ple_lowbit_emulate.py --native) is only about sqrt(1 - NMSE) a row from IQ4_NL,
+// lower for some rows, so its correlation floor is 0.9 instead of FP8's 0.98 (rows 0:200000: min 0.993 for C1, 0.981 for
+// C2, 0.988 for C5; T58's NMSE 0.024 expects about 0.988), and 0.8 for the 2-bit C6 (NMSE 0.11: min 0.908 over 4160 rows,
+// so 0.9 would fail on chance): it still fails a shifted row (~0).
 #include "strata/kernels/ngram.hpp"
 
 #include <cmath>

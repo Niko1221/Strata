@@ -1,5 +1,5 @@
-// include/strata/kernels/ple_lowbit.hpp - the low-bit PLE table rows C1, C2, C2s, C3, C4, C5 and C6 (tools/ple_lowbit_emulate.py
-// --native). C5 (a trellis) is ple_c5_dequant_row, at the end.
+// include/strata/kernels/ple_lowbit.hpp - the low-bit PLE table rows C1, C2, C2s, C3, C4, C5, C6, C5e, T58 and T58e
+// (tools/ple_lowbit_emulate.py --native). The trellis rows (C5, C5e, T58, T58e) are at the end.
 //
 // A row is 160 values: 20 * bits bytes of codes, then the row's scales.
 //   codes  a little-endian bit stream: 8 codes in `bits` bytes read as one little-endian word, value j's code is bits
@@ -80,21 +80,64 @@ inline void ple_lowbit_dequant_row(const uint8_t* row, int bits, int block, bool
 inline constexpr int PLE_C5_STATE_BITS = 12;
 inline constexpr int PLE_C5_LEVELS = 1 << PLE_C5_STATE_BITS;
 
-inline void ple_c5_dequant_row(const uint8_t* row, const float* lut, float* out160) {
+/// C5's 60 B of codes (bytes 0..59) through the register, times the row scale `s`.
+inline void ple_c5_codes_dequant(const uint8_t* row, const float* lut, float s, float* out160) {
     uint8_t c[160];
     for (int g = 0; g < 20; ++g) {
         const uint32_t w = (uint32_t) row[3 * g] | (uint32_t) row[3 * g + 1] << 8 | (uint32_t) row[3 * g + 2] << 16;
         for (int k = 0; k < 8; ++k) c[8 * g + k] = (uint8_t) ((w >> (3 * k)) & 7u);
     }
-    uint16_t h;
-    std::memcpy(&h, row + 60, 2);
-    const float s = f32_from_f16(h);
     uint32_t st = 0;
     for (int j = 160 - (PLE_C5_STATE_BITS - 1) / 3; j < 160; ++j) st = (st << 3) | c[j];
     for (int j = 0; j < 160; ++j) {
         st = ((st << 3) | c[j]) & (uint32_t) (PLE_C5_LEVELS - 1);
         out160[j] = s * lut[st];
     }
+}
+
+inline void ple_c5_dequant_row(const uint8_t* row, const float* lut, float* out160) {
+    uint16_t h;
+    std::memcpy(&h, row + 60, 2);
+    ple_c5_codes_dequant(row, lut, f32_from_f16(h), out160);
+}
+
+/// C5e: C5's codes, then one E4M3 byte: s = e4m3(byte 60) * table_scale (as C3's block scales), 61 B a row.
+inline constexpr int PLE_C5E_ROW_BYTES = 61;
+inline void ple_c5e_dequant_row(const uint8_t* row, const float* lut, float table_scale, float* out160) {
+    ple_c5_codes_dequant(row, lut, ple_e4m3(row[60]) * table_scale, out160);
+}
+
+/// T58 (2.8 bits a value): the row's first PLE_T58_CODE_BITS / 8 = 56 bytes are one circular bit stream, most significant
+/// bit first (stream bit t is bit 7 - t % 8 of byte t / 8). Value j's state is the PLE_C5_STATE_BITS stream bits ending at
+/// e_j = (j + 1) * 448 / 160 (so value j shifts 2 3 3 3 3 2 3 ... new bits in, five values a 14-bit step), wrapping to
+/// the stream's end for the first values (tail-biting: value 0's state is bits 438..447, 0, 1), and value j =
+/// s * lut[state] with C5's 4096-value lut, rounded to float32 once. T58: s is the fp16 at bytes 56..57 (58 B a row);
+/// T58e: s = e4m3(byte 56) * table_scale (57 B). tools/ple_t_viterbi.cpp searches the stream.
+inline constexpr int PLE_T58_CODE_BITS = 448;
+inline constexpr int PLE_T58_ROW_BYTES = PLE_T58_CODE_BITS / 8 + 2;
+inline constexpr int PLE_T58E_ROW_BYTES = PLE_T58_CODE_BITS / 8 + 1;
+
+inline void ple_t58_codes_dequant(const uint8_t* row, const float* lut, float s, float* out160) {
+    constexpr int nb = PLE_T58_CODE_BITS / 8;
+    // the stream read in order: acc holds it up to bit 8 * pos (newest bit lowest), after its last 16 bits (the wrap), so
+    // state j = (acc >> (8 * pos - e_j)) & 0xFFF; a value shifts in at most 3 bits, so at most one byte is read per value
+    uint64_t acc = (uint64_t) row[nb - 2] << 8 | row[nb - 1];
+    int pos = 0;
+    for (int j = 0; j < 160; ++j) {
+        const int e = (j + 1) * PLE_T58_CODE_BITS / 160;
+        if (8 * pos < e) acc = acc << 8 | row[pos++];
+        out160[j] = s * lut[(acc >> (8 * pos - e)) & (uint64_t) (PLE_C5_LEVELS - 1)];
+    }
+}
+
+inline void ple_t58_dequant_row(const uint8_t* row, const float* lut, float* out160) {
+    uint16_t h;
+    std::memcpy(&h, row + PLE_T58_CODE_BITS / 8, 2);
+    ple_t58_codes_dequant(row, lut, f32_from_f16(h), out160);
+}
+
+inline void ple_t58e_dequant_row(const uint8_t* row, const float* lut, float table_scale, float* out160) {
+    ple_t58_codes_dequant(row, lut, ple_e4m3(row[PLE_T58_CODE_BITS / 8]) * table_scale, out160);
 }
 
 }  // namespace strata::kernels

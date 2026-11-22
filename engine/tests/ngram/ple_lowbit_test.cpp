@@ -1,5 +1,5 @@
-// tests/ngram/ple_lowbit_test.cpp - the low-bit PLE rows (C4, C3, C2s, C1, C2, C6, C5) as the engine decodes them
-// (strata/kernels/ple_lowbit.hpp),
+// tests/ngram/ple_lowbit_test.cpp - the low-bit PLE rows (C4, C3, C2s, C1, C2, C6, and the trellis rows C5, C5e, T58,
+// T58e) as the engine decodes them (strata/kernels/ple_lowbit.hpp),
 // against the floats the emulator's quantizer produced for the same rows, bit for bit. No model, no GPU.
 //
 // The fixture (ple_lowbit_fixture.inc) is written by the emulator's own --native code path:
@@ -40,20 +40,31 @@ int main() {
         std::printf("%s: %d rows of %d B, %d of %d values differ\n", c.name, c.rows, c.row_bytes, differ, c.rows * 160);
         bad += differ;
     }
-    // C5: the trellis rows (ple_c5_dequant_row), with the emulator's 4096-value lut
+    // the trellis rows (ple_c5_dequant_row, ple_c5e_dequant_row, ple_t58_dequant_row, ple_t58e_dequant_row), with the
+    // emulator's 4096-value lut and table scale
     for (const ple_lowbit_fixture::TrellisCase& c : ple_lowbit_fixture::trellis_cases) {
-        if (c.state_bits != k::PLE_C5_STATE_BITS || c.levels != k::PLE_C5_LEVELS || c.row_bytes != k::ple_lowbit_row_bytes(3, 160, true)) {
-            std::printf("%s: a %d-bit trellis of %d values in %d B rows in the fixture, the engine's is %d bits\n", c.name, c.state_bits,
-                        c.levels, c.row_bytes, k::PLE_C5_STATE_BITS);
+        const bool c5 = std::strcmp(c.name, "c5") == 0, c5e = std::strcmp(c.name, "c5e") == 0;
+        const bool t58 = std::strcmp(c.name, "t58") == 0, t58e = std::strcmp(c.name, "t58e") == 0;
+        const int rb = c5 ? k::ple_lowbit_row_bytes(3, 160, true) : c5e ? k::PLE_C5E_ROW_BYTES : t58 ? k::PLE_T58_ROW_BYTES
+                     : t58e ? k::PLE_T58E_ROW_BYTES : -1;
+        if (c.state_bits != k::PLE_C5_STATE_BITS || c.levels != k::PLE_C5_LEVELS || c.row_bytes != rb) {
+            std::printf("%s: a %d-bit trellis of %d values in %d B rows in the fixture, the engine's is %d bits in %d B rows\n", c.name,
+                        c.state_bits, c.levels, c.row_bytes, k::PLE_C5_STATE_BITS, rb);
             ++bad;
             continue;
         }
         static float lut[k::PLE_C5_LEVELS];
         std::memcpy(lut, c.lut, sizeof lut);
+        float table_scale;
+        std::memcpy(&table_scale, &c.table_scale, 4);
         int differ = 0;
         for (int r = 0; r < c.rows; ++r) {
+            const uint8_t* row = c.packed + (size_t) r * (size_t) c.row_bytes;
             float out[160];
-            k::ple_c5_dequant_row(c.packed + (size_t) r * (size_t) c.row_bytes, lut, out);
+            if (c5) k::ple_c5_dequant_row(row, lut, out);
+            else if (c5e) k::ple_c5e_dequant_row(row, lut, table_scale, out);
+            else if (t58) k::ple_t58_dequant_row(row, lut, out);
+            else k::ple_t58e_dequant_row(row, lut, table_scale, out);
             for (int j = 0; j < 160; ++j) {
                 uint32_t got;
                 std::memcpy(&got, &out[j], 4);

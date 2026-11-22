@@ -131,7 +131,7 @@ void bf16_widening_is_exact() {
 uint32_t gguf_type_id(const char* name) {
     static const struct { const char* name; uint32_t id; } ids[] = {
         {"IQ4_NL", 20}, {"Q4_0", 2}, {"Q4_1", 3}, {"Q5_0", 6}, {"Q5_1", 7}, {"Q8_0", 8}, {"BF16", 30}, {"F8_E4M3", 24}, {"NVFP4", 24},
-        {"C4", 24}, {"C3", 24}, {"C2s", 24}, {"C1", 24}, {"C2", 24}, {"C6", 24}, {"C5", 24}};
+        {"C4", 24}, {"C3", 24}, {"C2s", 24}, {"C1", 24}, {"C2", 24}, {"C6", 24}, {"C5", 24}, {"C5e", 24}, {"T58", 24}, {"T58e", 24}};
     for (const auto& e : ids)
         if (std::strcmp(e.name, name) == 0) return e.id;
     return 0xFFFFFFFFu;
@@ -149,7 +149,11 @@ k::PleParams test_params(const k::PleFormatInfo& f) {
 }
 
 /// A metadata fault write_format_table can put in a table, for the refusals PleTable::open must make.
-enum class Fault { None, NoCodebook, IntCodebook, FewLevels, InfScale, NoMarker, Shifted, FromZero, NoTrellis, OtherTrellis };
+enum class Fault { None, NoCodebook, IntCodebook, FewLevels, InfScale, NoMarker, Shifted, FromZero, NoTrellis, OtherTrellis,
+                   NoCodeBits, OtherCodeBits, ShortRows };
+
+bool trellis_format(const k::PleFormatInfo& f) { return f.codebook_levels == k::PLE_C5_LEVELS; }   // C5, C5e, T58, T58e
+bool stream_format(const k::PleFormatInfo& f) { return f.id == k::PleFormat::T58 || f.id == k::PleFormat::T58e; }
 
 // `claimed_rows` is the row count the header states; `rows` rows are actually written (equal unless a test lies)
 std::string write_format_table(const std::string& dir, const k::PleFormatInfo& f, uint32_t rows, uint64_t claimed_rows = 0,
@@ -168,8 +172,12 @@ std::string write_format_table(const std::string& dir, const k::PleFormatInfo& f
     const bool marker = f.marker != nullptr && fault != Fault::NoMarker;
     const bool codebook = f.codebook_levels > 0 && fault != Fault::NoCodebook;
     const bool span = fault == Fault::Shifted || fault == Fault::FromZero;
-    const bool trellis = f.id == k::PleFormat::C5 && fault != Fault::NoTrellis;
-    const uint64_t n_kv = 1u + (marker ? 1u : 0u) + (f.needs_scale ? 1u : 0u) + (codebook ? 1u : 0u) + (span ? 1u : 0u) + (trellis ? 1u : 0u);
+    const bool trellis = trellis_format(f) && fault != Fault::NoTrellis;
+    const bool code_bits = stream_format(f) && fault != Fault::NoCodeBits;
+    // ShortRows: rows one byte shorter than the marker's format (a T58e table marked t58), ne0 included
+    const uint32_t rb = fault == Fault::ShortRows ? f.row_bytes - 1 : f.row_bytes;
+    const uint64_t n_kv = 1u + (marker ? 1u : 0u) + (f.needs_scale ? 1u : 0u) + (codebook ? 1u : 0u) + (span ? 1u : 0u) + (trellis ? 1u : 0u) +
+                          (code_bits ? 1u : 0u);
     std::string head = "GGUF" + le(3u, 4) + le(1ull, 8) + le(n_kv, 8);
     head += str("general.architecture") + le(8u, 4) + str("strata-ple");
     if (marker) head += str("strata.ple.format") + le(8u, 4) + str(f.marker);
@@ -186,15 +194,17 @@ std::string write_format_table(const std::string& dir, const k::PleFormatInfo& f
     if (span) head += str("strata.ple.rows") + le(8u, 4) + str(fault == Fault::Shifted ? "5:69" : "0:64");
     if (trellis)                                                                         // 4 = UINT32
         head += str("strata.ple.trellis_bits") + le(4u, 4) + le((uint32_t) (k::PLE_C5_STATE_BITS + (fault == Fault::OtherTrellis ? 1 : 0)), 4);
+    if (code_bits)                                                                       // 4 = UINT32 (T57's 440 for the fault)
+        head += str("strata.ple.code_bits") + le(4u, 4) + le((uint32_t) (fault == Fault::OtherCodeBits ? 440 : k::PLE_T58_CODE_BITS), 4);
     head += str("per_layer_token_embd.weight") + le(2u, 4);
-    head += le(f.marker != nullptr ? (uint64_t) f.row_bytes : (uint64_t) k::PLE_HEAD_DIM, 8) + le(claimed_rows != 0 ? claimed_rows : (uint64_t) rows, 8);
+    head += le(f.marker != nullptr ? (uint64_t) rb : (uint64_t) k::PLE_HEAD_DIM, 8) + le(claimed_rows != 0 ? claimed_rows : (uint64_t) rows, 8);
     head += le(gguf_type_id(f.name), 4) + le(0ull, 8);
     while (head.size() % 32) head += '\0';
     out.write(head.data(), (std::streamsize) head.size());
-    std::vector<uint8_t> r(f.row_bytes);
+    std::vector<uint8_t> r(rb);
     for (uint32_t i = 0; i < rows; ++i) {
-        expected_row(i, f.row_bytes, r.data());
-        out.write((const char*) r.data(), (std::streamsize) f.row_bytes);
+        expected_row(i, rb, r.data());
+        out.write((const char*) r.data(), (std::streamsize) rb);
     }
     out.close();
     return out ? path : std::string();
@@ -603,8 +613,11 @@ void all_formats_round_trip(const std::string& dir) {
             {Fault::NoMarker, f.marker != nullptr, "no strata.ple.format", "strata.ple.format = "},
             {Fault::Shifted, true, "rows 5:69 of a table", "strata.ple.rows"},
             {Fault::FromZero, true, "rows 0:64 of a table", nullptr},   // (accepted)
-            {Fault::NoTrellis, f.id == k::PleFormat::C5, "no strata.ple.trellis_bits", "strata.ple.trellis_bits = "},
-            {Fault::OtherTrellis, f.id == k::PleFormat::C5, "a 13-bit trellis", "strata.ple.trellis_bits = "},
+            {Fault::NoTrellis, trellis_format(f), "no strata.ple.trellis_bits", "strata.ple.trellis_bits = "},
+            {Fault::OtherTrellis, trellis_format(f), "a 13-bit trellis", "strata.ple.trellis_bits = "},
+            {Fault::NoCodeBits, stream_format(f), "no strata.ple.code_bits", "strata.ple.code_bits = "},
+            {Fault::OtherCodeBits, stream_format(f), "a 440-bit code stream", "strata.ple.code_bits = "},
+            {Fault::ShortRows, f.marker != nullptr, "rows one byte short", "unexpected shape"},
         };
         for (const auto& c : faults) {
             if (!c.applies) continue;
