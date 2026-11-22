@@ -21,12 +21,30 @@ Measured on an RTX 3090 with its VRAM limited to the card size (the expert pools
 | --- | --- | --- | --- |
 | 24 GB | `--max-context 65536 --kv f16 --spec 1` (every expert on the card) | 88-90 tok/s (108 on short prompts with `--spec`) | 2,380 tok/s |
 | 16 GB | `--max-context 131072 --kv f16`, offload as below | not measured | not measured |
+| 24 GB, longer contexts | `--max-context 131072 --kv f16 --kv-grow 1 --vram-reserve-mib R --cpu-threads N --spec 1` | 84-86 tok/s (103 on short prompts) | not measured |
 | 12 GB, with a desktop | `--max-context 65536 --kv f16 --kv-grow 1 --vram-reserve-mib R --cpu-threads N` | 73-75 tok/s | 717 tok/s |
 | 8 GB, nothing else on it | `--max-context 32768 --kv f16 --kv-grow 1 --vram-reserve-mib R --cpu-threads N` | 66 tok/s | 568 tok/s |
 | 8 GB, with a desktop | the same with `--kv i8r` | 60-61 tok/s | 560 tok/s |
 
 Every config also gets `--conversation-cache-mib 4096` (2048, or off, when RAM is short). In offload the engine pins
 about 17 GiB of RAM for the experts that are not on the card; setup asks for 32 GB of RAM.
+
+With the offload, setup adds `--spec 1` only where the card still holds 70% of the experts beside the drafter at the
+full context. The drafter takes about 2 GiB from the expert pools (its weights, its K/V, and the prompt buffers, which
+stay mapped with it), and a check computes eight tokens' experts to keep three to five, so the experts that are not on
+the card cost more per token than in plain decoding. Decode in tok/s, plain and with `--spec 1` (same box, 512 greedy
+tokens, mean of two runs; 16 GB: one run):
+
+| Card and context | Experts on the card with the drafter | Chat prompt (257 tokens) | Short prompt (24 tokens) |
+| --- | --- | --- | --- |
+| 8 GB, 32K | 19% | 66.9, with `--spec 1` 51.8 | 64.6, with `--spec 1` 59.9 |
+| 12 GB, 64K | 45% | 80.6, with `--spec 1` 72.3 | 81.5, with `--spec 1` 87.9 |
+| 16 GB, 128K | 70% | 84.1, with `--spec 1` 84.4 | 85.7, with `--spec 1` 100.2 |
+| 24 GB, 128K | 98% | 85.9, with `--spec 1` 83.9 | 86.7, with `--spec 1` 103.1 |
+| 24 GB, 256K, `--kv i8r`, no `--kv-grow` | 92% | 82.9, with `--spec 1` 84.7 | 83.3, with `--spec 1` 100.0 |
+
+These are speeds at the start of a conversation: with `--kv-grow` the K/V of a long conversation takes expert slots,
+which is why the 16 GB card at 128K stays without the drafter.
 
 ## Flags
 
@@ -46,7 +64,7 @@ about 17 GiB of RAM for the experts that are not on the card; setup asks for 32 
   in pinned RAM, and the card keeps the most used ones (decayed use counts, promotions in the background).
 - `--cpu-threads N` computes the experts that are not on the card on the CPU instead of copying them over PCIe: one
   pool of N threads per NUMA node (at most two), each expert's memory bound to its node. Needs `--vram-reserve-mib`,
-  AVX2 + FMA + F16C, and Linux. Not with `--spec 1` yet. `STRATA_NUMA_POOL=0` turns the NUMA placement off.
+  AVX2 + FMA + F16C, and Linux. `STRATA_NUMA_POOL=0` turns the NUMA placement off.
 - `--kv-grow 1` the K/V cache starts small and grows into the expert pools as the conversation grows, so a long
   context costs expert slots only when it is used. Each pool keeps at least 64 slots: a prompt that would need more
   ends with a "context is full" error, and the engine keeps serving. `--kv-grow-step N` sets the growth step.
@@ -68,7 +86,9 @@ about 17 GiB of RAM for the experts that are not on the card; setup asks for 32 
   is the model's own choice (greedy) or passes the usual acceptance test (sampled). It falls back to plain decoding
   while that is faster. The check reads the drafts through other kernels than plain decoding, so a near-tie can go the
   other way: a 512-token greedy answer matched plain decoding for 273 tokens, then parted where the top two logits were
-  0.2 apart.
+  0.2 apart. With `--cpu-threads` the CPU also computes a check's experts that are not on the card (same answer as
+  with every expert on the card over those 512 tokens); it pays only where most experts are on the card (the table
+  under [What setup chooses](#what-setup-chooses)).
 
 **Conversations and pictures**
 
@@ -103,5 +123,6 @@ KL 1e-7 or less in fp32, with the same greedy answers.
 ## Limits
 
 - One GPU. `--cpu-threads` on Linux only, at most two NUMA nodes.
-- `--spec` and `--cpu-threads` do not combine yet.
+- `--spec` with the expert offload and no `--cpu-threads` copies a check's missing experts over PCIe: 16 tok/s on an
+  8 GB card. Setup does not write that pair.
 - Not offered in `strata launch` or the desktop app yet.
