@@ -5257,7 +5257,7 @@ int main(int argc, char** argv) {
             else { std::fprintf(stderr, "--kv %s: this engine has f16 (fp16), f32, i8 (int8), i8r, k8v4 and k8v8\n", v); return 2; }
         }
         // Strata's server and tuner may add these: the KV cache is always resident here and prefill has one form
-        else if (a == "--kv-resident" || a == "--prefill") std::fprintf(stderr, "[ink2] %s %s ignored\n", a.c_str(), v);
+        else if (a == "--kv-resident" || a == "--prefill" || a == "--conversation-cache-slots") std::fprintf(stderr, "[ink2] %s %s ignored\n", a.c_str(), v);
         else if (a == "--record-routing") { rec_path = v; E.rec_mode = 1; }
         else if (a == "--force-routing") { rec_path = v; E.rec_mode = 2; }
         else { std::fprintf(stderr, "unknown option %s\n", a.c_str()); return 2; }
