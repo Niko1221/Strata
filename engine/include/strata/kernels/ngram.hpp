@@ -56,35 +56,35 @@ inline constexpr int PLE_ROW_BYTES_Q8_0 = (PLE_HEAD_DIM / 32) * 34;     // 170: 
 inline constexpr int PLE_ROW_BYTES_BF16 = PLE_HEAD_DIM * 2;             // 320: a BF16 row, two bytes a value
 inline constexpr int PLE_ROW_BYTES_NVFP4 = PLE_HEAD_DIM / 2 + PLE_HEAD_DIM / 16;   // 90: 80 B of E2M1 codes + 10 E4M3 block scales
 inline constexpr int PLE_ROW_BYTES_MAX = PLE_ROW_BYTES_BF16;             // the widest row any format in `ple_formats()` has
-inline constexpr int PLE_CODEBOOK_MAX = 4096;                            // the most values a format's codebook has (C5's)
+inline constexpr int PLE_CODEBOOK_MAX = 4096;                            // the most values a format's codebook has (the trellises')
 
 /// The table-wide values a format's rows are decoded with, read from the GGUF's metadata by `PleTable::open`.
 struct PleParams {
-    float scale = 1.0f;        ///< `strata.ple.scale`: F8_E4M3, NVFP4, C3 and C2s
-    /// `strata.ple.codebook`: the levels of the low-bit codes (16 for C1, 8 for C2-C4, 4 for C6), or C5's 4096 trellis
-    /// values (PLE_C5_LEVELS, strata/kernels/ple_lowbit.hpp)
+    float scale = 1.0f;        ///< `strata.ple.scale`: F8_E4M3, NVFP4, C3, C2s, C5e and T58e
+    /// `strata.ple.codebook`: the levels of the low-bit codes (16 for C1, 8 for C2-C4, 4 for C6), or the 4096 trellis
+    /// values of C5, C5e, T58 and T58e (PLE_C5_LEVELS, strata/kernels/ple_lowbit.hpp)
     float codebook[PLE_CODEBOOK_MAX] = {};
 };
 
 /// THE FORMATS OF THE TABLE, ONE ROW EACH. A table type is one entry here (its GGUF type name, the bytes of one
 /// 160-value row, how to turn a row into floats) and nothing else: `PleTable::open`, `format()`, the reader's row size,
 /// the error string and the buffers' size all read this list, so a new format cannot be in one switch and missing from
-/// another. A row is always `PLE_HEAD_DIM` = 160 values = 5 blocks of 32 for the block formats. C4, C3, C2s, C1, C2, C6
-/// and C5 are the low-bit rows of `strata/kernels/ple_lowbit.hpp` (62, 65, 70, 82, 70, 50 and 62 B;
-/// tools/ple_lowbit_emulate.py --native).
-enum class PleFormat : uint8_t { IQ4_NL, Q5_0, F8_E4M3, Q5_1, Q8_0, Q4_0, BF16, NVFP4, C4, C3, C2s, C1, C2, C6, C5 };
+/// another. A row is always `PLE_HEAD_DIM` = 160 values = 5 blocks of 32 for the block formats. C4, C3, C2s, C1, C2, C6,
+/// C5, C5e, T58 and T58e are the low-bit rows of `strata/kernels/ple_lowbit.hpp` (62, 65, 70, 82, 70, 50, 62, 61, 58 and
+/// 57 B; tools/ple_lowbit_emulate.py --native).
+enum class PleFormat : uint8_t { IQ4_NL, Q5_0, F8_E4M3, Q5_1, Q8_0, Q4_0, BF16, NVFP4, C4, C3, C2s, C1, C2, C6, C5, C5e, T58, T58e };
 
 struct PleFormatInfo {
     PleFormat id;
     const char* name;          ///< what `PleTable::format()` returns
     const char* gguf_type;     ///< `TensorInfo::type_name()` of the table tensor ("I8" for F8_E4M3: GGUF has no FP8 type)
     uint32_t row_bytes;        ///< bytes of one 160-value row in the file
-    bool needs_scale;          ///< the table has one scale in the GGUF metadata (`strata.ple.scale`): F8_E4M3, NVFP4, C3, C2s
+    bool needs_scale;          ///< the table has one scale in the GGUF metadata (`strata.ple.scale`): F8_E4M3, NVFP4, C3, C2s, C5e, T58e
     void (*dequant)(const uint8_t* row, const PleParams& p, float* out160);
     /// I8 tables only: the `strata.ple.format` value that names this format (f8_e4m3, nvfp4x16, c4, c3, c2s, c1, c2,
-    /// c6, c5). The tensor's ne0 is then the row's byte count (160 for FP8, which is also its value count).
+    /// c6, c5, c5e, t58, t58e). The tensor's ne0 is then the row's byte count (160 for FP8, which is also its value count).
     const char* marker;
-    int codebook_levels;       ///< the levels of the codebook in the GGUF metadata (`strata.ple.codebook`); 0: none; C5: 4096
+    int codebook_levels;       ///< the levels of the codebook in the GGUF metadata (`strata.ple.codebook`); 0: none; the trellises: 4096
 };
 
 /// Every format, in the order of `PleFormat`; `ple_format_count()` entries.

@@ -236,7 +236,12 @@ void dequant_lowbit(const uint8_t* row, const PleParams& p, float* out160) {
 template <int Bits, int Block, bool F16Scales>
 constexpr uint32_t lowbit_rb = (uint32_t) ple_lowbit_row_bytes(Bits, Block, F16Scales);
 void dequant_c5(const uint8_t* row, const PleParams& p, float* out160) { ple_c5_dequant_row(row, p.codebook, out160); }
+void dequant_c5e(const uint8_t* row, const PleParams& p, float* out160) { ple_c5e_dequant_row(row, p.codebook, p.scale, out160); }
+void dequant_t58(const uint8_t* row, const PleParams& p, float* out160) { ple_t58_dequant_row(row, p.codebook, out160); }
+void dequant_t58e(const uint8_t* row, const PleParams& p, float* out160) { ple_t58e_dequant_row(row, p.codebook, p.scale, out160); }
 static_assert(PLE_C5_LEVELS <= PLE_CODEBOOK_MAX, "PleParams::codebook cannot hold C5's trellis values");
+/// A trellis table: its codebook is the 4096 values of the register's states (C5, C5e, T58, T58e)
+bool ple_trellis(const PleFormatInfo& f) { return f.codebook_levels == PLE_C5_LEVELS; }
 
 const PleFormatInfo kPleFormats[] = {
     {PleFormat::IQ4_NL, "IQ4_NL", "IQ4_NL", PLE_ROW_BYTES, false, dequant_iq4_nl, nullptr, 0},
@@ -265,6 +270,12 @@ const PleFormatInfo kPleFormats[] = {
     // C5: C4's row (3-bit codes, one fp16 scale) whose codes are the path of a 12-bit trellis; the codebook is its 4096
     // values, and strata.ple.trellis_bits must be 12 (open() below)
     {PleFormat::C5, "C5", "I8", lowbit_rb<3, 160, true>, false, dequant_c5, "c5", PLE_C5_LEVELS},
+    // C5e: C5's codes with one E4M3 row scale times strata.ple.scale (61 B). T58 / T58e: a 448-bit code stream through the
+    // same register at 2.8 bits a value, with an fp16 row scale (58 B) or an E4M3 one times strata.ple.scale (57 B), and
+    // strata.ple.code_bits = 448 (open() below)
+    {PleFormat::C5e, "C5e", "I8", PLE_C5E_ROW_BYTES, true, dequant_c5e, "c5e", PLE_C5_LEVELS},
+    {PleFormat::T58, "T58", "I8", PLE_T58_ROW_BYTES, false, dequant_t58, "t58", PLE_C5_LEVELS},
+    {PleFormat::T58e, "T58e", "I8", PLE_T58E_ROW_BYTES, true, dequant_t58e, "t58e", PLE_C5_LEVELS},
 };
 constexpr int kPleFormatCount = (int) (sizeof kPleFormats / sizeof kPleFormats[0]);
 }  // namespace
@@ -320,7 +331,7 @@ struct PleTable::Impl {
     strata::ngram::PleReader::Ticket prefetch_tickets[kMaxPrefetch] = {};
     uint32_t prefetch_keys[kMaxPrefetch][PLE_N_HEADS] = {};
     uint8_t prefetch_raw[kMaxPrefetch][PLE_N_HEADS * PLE_ROW_BYTES_MAX] = {};
-    PleParams params;                 // the table-wide scale and codebook (FP8, NVFP4, the 3-bit formats)
+    PleParams params;                 // the table-wide scale and codebook (FP8, NVFP4, the low-bit formats)
     uint32_t rb = PLE_ROW_BYTES;      // bytes per row
     void decode(const uint8_t* row, float* out160) const { fmt->dequant(row, params, out160); }
     // STRATA_PLE_CHECK=1 (a diagnostic for #3602, off by default): the file and the table's offset, to re-read a row whose decoded
@@ -398,7 +409,7 @@ bool PleTable::open(const std::string& gguf_path, std::string& err, const PleIoO
     // The table's type is looked up in the format list (ple_formats()): IQ4_NL (ISTA-DASLab's shard 2, the original's
     // own GGUF), Q5_0 (#296: OrcaRouter's GGUF), or I8 bytes whose strata.ple.format marker names the format: the FP8
     // table as shipped (f8_e4m3 with strata.ple.scale, tools/ple_fp8_pack.py), NVFP4 (nvfp4x16), the low-bit c4 / c3 /
-    // c2s / c1 / c2 / c6 / c5. An I8 table without a known marker stays F8_E4M3 and is refused below.
+    // c2s / c1 / c2 / c6 / c5 / c5e / t58 / t58e. An I8 table without a known marker stays F8_E4M3 and is refused below.
     const MetaValue* fmt_key = impl_->file->get("strata.ple.format");
     const PleFormatInfo* fmt = ple_format_for_type(t->type_name());
     if (fmt != nullptr && fmt->marker != nullptr && fmt_key != nullptr)
@@ -448,13 +459,23 @@ bool PleTable::open(const std::string& gguf_path, std::string& err, const PleIoO
             return false;
         }
     }
-    // C5's codes are states of a PLE_C5_STATE_BITS-bit trellis register: a table searched in another trellis would decode
-    // to other values (one of another size also has another codebook length, refused above)
-    if (fmt->id == PleFormat::C5) {
+    // A trellis table's codes are states of a PLE_C5_STATE_BITS-bit register: a table searched in another trellis would
+    // decode to other values (one of another size also has another codebook length, refused above), and T58's stream must
+    // be the PLE_T58_CODE_BITS bits its decoder walks
+    if (ple_trellis(*fmt)) {
         const MetaValue* tb = impl_->file->get("strata.ple.trellis_bits");
         if (tb == nullptr || tb->type != MetaType::U32 || tb->u != (uint64_t) PLE_C5_STATE_BITS) {
-            err = "the C5 PLE table has no strata.ple.trellis_bits = " + std::to_string(PLE_C5_STATE_BITS) +
+            err = std::string("the ") + fmt->name + " PLE table has no strata.ple.trellis_bits = " + std::to_string(PLE_C5_STATE_BITS) +
                   " (U32), the trellis this engine decodes";
+            close();
+            return false;
+        }
+    }
+    if (fmt->id == PleFormat::T58 || fmt->id == PleFormat::T58e) {
+        const MetaValue* cbits = impl_->file->get("strata.ple.code_bits");
+        if (cbits == nullptr || cbits->type != MetaType::U32 || cbits->u != (uint64_t) PLE_T58_CODE_BITS) {
+            err = std::string("the ") + fmt->name + " PLE table has no strata.ple.code_bits = " + std::to_string(PLE_T58_CODE_BITS) +
+                  " (U32), the code stream this engine decodes";
             close();
             return false;
         }

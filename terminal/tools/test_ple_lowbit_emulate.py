@@ -21,8 +21,10 @@ FIXTURE = HERE.parents[1] / "engine" / "tests" / "ngram" / "ple_lowbit_fixture.i
 REAL = pathlib.Path(r"D:\exstrata-work\models\IQ3_XXS\Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf")
 DOC_NMSE = {"c4": 0.0361, "c3": 0.0281, "c2s": 0.0227,   # ple-representation.md section 4 (c6: its 2b_lloyd_b32_f16)
             "c1": 0.0061, "c2": 0.0275, "c6": 0.1117,
-            "c5": 0.0182}                                 # (c5: measured on rows 0:200000, ple-native-report.md section 9)
-ALL = ["c4", "c3", "c2s", "c1", "c2", "c6", "c5"]        # the fixture's order: the 3-bit formats first, as committed; c5 last
+            "c5": 0.0182,                                 # (c5: measured on rows 0:200000, ple-native-report.md section 9)
+            "c5e": 0.0183, "t58": 0.0240, "t58e": 0.0242}  # (t-proto-report.md: the held-out rows)
+ALL = ["c4", "c3", "c2s", "c1", "c2", "c6", "c5", "c5e", "t58", "t58e"]   # the fixture's order, as committed: the trellises last
+NEW = ["c5e", "t58", "t58e"]                              # (no Q8_0 emulation test on the real table: the same quantizer)
 C5_SMALL_FIT = {"n_chunks": 8, "chunk": 128, "c5_iters": 3}   # a quick lut for the synthetic tables
 
 
@@ -60,9 +62,9 @@ def lowbit_cases(tmp, n_plain):
     X = np.concatenate([X, X[:1] * 2000, X[1:2] * 3e-5, np.zeros((1, E.DIM), np.float32)]).astype(np.float32)
     out = []
     for fmt in ALL:
-        if fmt == "c5":
+        if fmt in E.TRELLIS:
             cb = E.fit_codebook(E.Source(src), fmt, seed=1, ntry=7, **C5_SMALL_FIT)
-            Y, codes, scales = E.quantize_c5(X, np.array(cb["grid"], np.float32))
+            Y, codes, scales, _ = E.quantize_trellis(X, fmt, np.array(cb["grid"], np.float32), cb["table_scale"])
         else:
             cb = E.fit_codebook(E.Source(src), fmt, seed=1, ntry=7)
             Y, codes, scales, _ = E.quantize(X, np.array(cb["grid"], np.float32), cb["block"], cb["scale"], np.float32(cb["table_scale"]), 7)
@@ -92,7 +94,7 @@ def fixture_text(cases):
         L.append("inline const uint32_t %s_want[%d] = {" % (fmt, Y.size))
         L += ["    " + ", ".join("0x%08x" % v for v in r[i:i + 10]) + "," for r in Y.view(np.uint32) for i in range(0, E.DIM, 10)]
         L.append("};")
-    plain = [c for c in cases if c[0] != "c5"]
+    plain = [c for c in cases if c[0] not in E.TRELLIS]
     L.append("inline const Case cases[%d] = {" % len(plain))
     for fmt, cb, P, Y in plain:
         grid = ", ".join("0x%08x" % v for v in np.array(cb["grid"], np.float32).view(np.uint32))
@@ -100,19 +102,24 @@ def fixture_text(cases):
                  (fmt, cb["bits"], cb["block"], "true" if cb["scale"] == "f16" else "false", grid,
                   int(np.float32(cb["table_scale"]).view(np.uint32)), P.shape[0], P.shape[1], fmt, fmt))
     L.append("};")
-    trellis = [c for c in cases if c[0] == "c5"]
-    if trellis:   # C5: the codes are trellis states, its lut (4096 values) does not fit Case
+    trellis = [c for c in cases if c[0] in E.TRELLIS]
+    if trellis:   # the trellis rows: the codes are trellis states, a lut (4096 values) does not fit Case
         L += ["", "struct TrellisCase { const char* name; int state_bits; const uint32_t* lut; int levels; int rows; int row_bytes;",
-              "                     const uint8_t* packed; const uint32_t* want; };", ""]
+              "                     const uint8_t* packed; const uint32_t* want; uint32_t table_scale; };", ""]
+        luts = {}                                                    # one array per distinct lut (c5e's is c5's, t58e's t58's)
         for fmt, cb, P, Y in trellis:
             lut = np.array(cb["grid"], np.float32).view(np.uint32)
+            if lut.tobytes() in luts:
+                continue
+            luts[lut.tobytes()] = fmt + "_lut"
             L.append("inline const uint32_t %s_lut[%d] = {" % (fmt, lut.size))
             L += ["    " + ", ".join("0x%08x" % v for v in lut[i:i + 8]) + "," for i in range(0, lut.size, 8)]
             L.append("};")
         L.append("inline const TrellisCase trellis_cases[%d] = {" % len(trellis))
         for fmt, cb, P, Y in trellis:
-            L.append('    {"%s", %d, %s_lut, %d, %d, %d, %s_packed, %s_want},' %
-                     (fmt, cb["trellis_bits"], fmt, len(cb["grid"]), P.shape[0], P.shape[1], fmt, fmt))
+            L.append('    {"%s", %d, %s, %d, %d, %d, %s_packed, %s_want, 0x%08x},' %
+                     (fmt, cb["trellis_bits"], luts[np.array(cb["grid"], np.float32).tobytes()], len(cb["grid"]), P.shape[0], P.shape[1],
+                      fmt, fmt, int(np.float32(cb["table_scale"]).view(np.uint32))))
         L.append("};")
     L += ["", "}  // namespace ple_lowbit_fixture", ""]
     return "\n".join(L)
@@ -123,8 +130,8 @@ def nmse(y, x):
 
 
 def levels(fmt):
-    """Values in the format's strata.ple.codebook: 2^bits, or c5's 2^12 trellis states."""
-    return 1 << (E.C5_STATE_BITS if fmt == "c5" else E.bits_of(fmt))
+    """Values in the format's strata.ple.codebook: 2^bits, or a trellis's 2^12 states."""
+    return 1 << (E.C5_STATE_BITS if fmt in E.TRELLIS else E.bits_of(fmt))
 
 
 def ref_viterbi(Y, lut, L):
@@ -162,6 +169,53 @@ def ref_viterbi(Y, lut, L):
     c = np.roll(run(np.roll(Y, -80, 1), None, None), 80, 1)                 # pass 1: the row from value 80, free ends
     w = sum(c[:, 159 - k].astype(np.int64) << (3 * k) for k in range((L - 1) // 3)) & (H - 1)
     return run(Y, w, w)
+
+
+def ref_t_viterbi(Y, lut, b, L):
+    """numpy reference of ple_t_viterbi.cpp, written from its definition (state_j = ((state_{j-1} << b_j) | new bits) mod 2^L;
+    same float ops, ties to the lowest top bits and the lowest final state): -> (n, 160) states of the tail-biting path."""
+    S, b = 1 << L, [int(x) for x in b]
+    H0 = S >> b[0]
+
+    def run(y, start, end):
+        n, T = y.shape
+        m = np.zeros((n, H0), np.float32)                              # by state_{t-1}'s low L - b_t bits
+        if start is not None:
+            m[:] = np.inf
+            m[np.arange(n), start] = 0
+        backs = []
+        for t in range(T - 1):
+            s = np.arange(S)                                           # state_t = p * 2^(L - b_{t+1}) + h
+            e = y[:, t, None] - lut[None]
+            J = (m[:, s >> b[t]] + e * e).reshape(n, 1 << b[t + 1], S >> b[t + 1])
+            backs.append(J.argmin(1).astype(np.uint8))
+            m = J.min(1)
+        e = y[:, T - 1, None] - lut[None]
+        J = m[:, np.arange(S) >> b[T - 1]] + e * e
+        if end is not None:
+            J = np.where((np.arange(S)[None] & (H0 - 1)) == end[:, None], J, np.inf)
+        s = J.argmin(1)
+        st = np.empty((n, T), np.int64)
+        st[:, T - 1] = s
+        for t in range(T - 1, 0, -1):
+            h = s >> b[t]
+            s = (backs[t - 1][np.arange(n), h].astype(np.int64) << (L - b[t])) | h
+            st[:, t - 1] = s
+        return st
+
+    w = run(np.roll(Y, -80, 1), None, None)[:, 79] & (H0 - 1)           # pass 1: the row from value 80; its state 159
+    return run(Y, w, w)
+
+
+def engine_t58_states(row56):
+    """ple_t58_dequant_row's register, value by value: the stream read in order after its last 16 bits."""
+    acc, pos, out = int(row56[54]) << 8 | int(row56[55]), 0, []
+    for j in range(160):
+        e = (j + 1) * 448 // 160
+        if 8 * pos < e:
+            acc, pos = acc << 8 | int(row56[pos]), pos + 1
+        out.append((acc >> (8 * pos - e)) & 4095)
+    return out
 
 
 def test_iq4nl_decode_matches_ggml_reference():
@@ -259,18 +313,28 @@ def test_e4m3_bytes_and_values_round_trip_every_byte():
 @pytest.mark.parametrize("fmt", ALL)
 def test_pack_native_round_trips_codes_and_scales(fmt):
     bs, kind, _ = E.FORMATS[fmt]
-    n, nb, bits = 500, 160 // bs, E.bits_of(fmt)
+    n, nb, bits, nc = 500, 160 // bs, E.bits_of(fmt), E.code_bytes(fmt)
     rng = np.random.default_rng(6)
-    codes = rng.integers(0, 1 << bits, (n, 160)).astype(np.uint8)
-    codes[0] = (1 << bits) - 1                                       # every bit of the code bytes set
-    ident = {"bits": bits, "block": bs, "scale": kind, "table_scale": 1.0, "grid": [float(k) for k in range(1 << bits)]}
-    P = E.pack_native(codes, np.ones((n, nb), np.float32), ident)
-    assert P.shape == (n, E.row_bytes(fmt)) and P.dtype == np.uint8
-    assert (P[0, :20 * bits] == 255).all()
-    assert np.array_equal(E.native_dequant(P, ident), codes.astype(np.float32))    # every code where the decoder looks
-    # the layout: code j is bits bits*j .. bits*j + bits - 1 of the little-endian bit stream
-    stream = np.unpackbits(P[:, :20 * bits], axis=1, bitorder="little").reshape(n, 160, bits)
-    assert np.array_equal((stream << np.arange(bits)).sum(2), codes)
+    if fmt in E.T_FORMATS:   # the codes are the states of a stream: any 56 B are one, and pack writes them back
+        stream = rng.integers(0, 256, (n, nc)).astype(np.uint8)
+        stream[0], stream[1] = 255, 0
+        codes = E.t_states(stream)
+        ident = {"format": fmt, "block": bs, "scale": kind, "table_scale": 1.0, "grid": [float(k) for k in range(4096)]}
+        P = E.pack_native(codes, np.ones((n, nb), np.float32), ident)
+        assert P.shape == (n, E.row_bytes(fmt)) and P.dtype == np.uint8 and np.array_equal(P[:, :nc], stream)
+        assert np.array_equal(E.native_dequant(P, ident), codes.astype(np.float32))
+        assert (codes[0] == 4095).all() and (codes[1] == 0).all()
+    else:
+        codes = rng.integers(0, 1 << bits, (n, 160)).astype(np.uint8)
+        codes[0] = (1 << bits) - 1                                   # every bit of the code bytes set
+        ident = {"bits": bits, "block": bs, "scale": kind, "table_scale": 1.0, "grid": [float(k) for k in range(1 << bits)]}
+        P = E.pack_native(codes, np.ones((n, nb), np.float32), ident)
+        assert P.shape == (n, E.row_bytes(fmt)) and P.dtype == np.uint8
+        assert (P[0, :20 * bits] == 255).all()
+        assert np.array_equal(E.native_dequant(P, ident), codes.astype(np.float32))    # every code where the decoder looks
+        # the layout: code j is bits bits*j .. bits*j + bits - 1 of the little-endian bit stream
+        stream = np.unpackbits(P[:, :20 * bits], axis=1, bitorder="little").reshape(n, 160, bits)
+        assert np.array_equal((stream << np.arange(bits)).sum(2), codes)
     if kind == "f16":
         s16 = (rng.standard_normal((n, nb)) * 0.05).astype(np.float16)
         s16[:3, 0] = [-0.0, 6e-8, 65504]                             # a signed zero, the smallest subnormal, the largest
@@ -279,9 +343,9 @@ def test_pack_native_round_trips_codes_and_scales(fmt):
         T = float(np.float32(1.37 * 2 ** -12))
         sb = rng.integers(0, 256, (n, nb)).astype(np.uint8)
         sb[(sb & 127) == 127] = 0x80
-        sb[0, :2] = [0x7E, 0x81]                                     # 448 (saturated), the smallest negative subnormal
+        sb.reshape(-1)[:2] = [0x7E, 0x81]                            # 448 (saturated), the smallest negative subnormal
         s = E.e4m3_value(sb) * np.float32(T)
-    flat = {"bits": bits, "block": bs, "scale": kind, "table_scale": T, "grid": [1.0] * (1 << bits)}
+    flat = {"format": fmt, "bits": bits, "block": bs, "scale": kind, "table_scale": T, "grid": [1.0] * levels(fmt)}
     got = E.native_dequant(E.pack_native(codes, s, flat), flat)
     assert np.array_equal(got.view(np.uint32), np.repeat(s, bs, axis=1).view(np.uint32))   # every scale, bit for bit
 
@@ -293,11 +357,12 @@ def test_native_rows_decode_to_the_quantizer_s_floats(case, tmp_path):
     assert np.array_equal(E.native_dequant(P, cb).view(np.uint32), Y.view(np.uint32))
     if fmt == "c1":                                                  # IQ4_NL's grid, not a fitted one
         assert np.array_equal(np.float32(cb["grid"]), E.KV_IQ4NL / np.float32(127))
+    nc = E.code_bytes(fmt)
     if cb["scale"] == "e4m3":
-        assert (P[2000, 60:] & 127 == 0x7E).any()                   # the 2000x row saturated
-        assert (P[2001, 60:] & 0x78 == 0).all()                     # the tiny row's scales are subnormal (exponent 0)
+        assert (P[2000, nc:] & 127 == 0x7E).any()                   # the 2000x row saturated
+        assert (P[2001, nc:] & 0x78 == 0).all()                     # the tiny row's scales are subnormal (exponent 0)
     else:                                                            # the tiny row's fp16 scales are subnormal (exponent 0)
-        assert (np.ascontiguousarray(P[2001, 20 * E.bits_of(fmt):]).view("<u2") & 0x7C00 == 0).all()
+        assert (np.ascontiguousarray(P[2001, nc:]).view("<u2") & 0x7C00 == 0).all()
 
 
 def test_committed_cpp_fixture_is_what_the_emulator_writes_now(tmp_path):
@@ -332,10 +397,10 @@ def test_c5_states_are_the_engine_s_register():
 def test_c5_fit_is_deterministic_and_beats_c4_on_gaussian_rows():
     X = np.random.default_rng(23).standard_normal((3000, 160)).astype(np.float32) * 0.1
     X[5] = 0
-    lut = E.fit_c5_lut(X, seed=1, iters=6, threads=4)
-    assert np.array_equal(lut, E.fit_c5_lut(X, seed=1, iters=6, threads=1)) and lut.dtype == np.float32 and lut.shape == (4096,)
-    deq, codes, s = E.quantize_c5(X, lut, threads=2)
-    assert codes.shape == (3000, 160) and codes.max() < 8 and s.shape == (3000, 1)
+    lut = E.fit_trellis_lut(X, seed=1, iters=6, threads=4)
+    assert np.array_equal(lut, E.fit_trellis_lut(X, seed=1, iters=6, threads=1)) and lut.dtype == np.float32 and lut.shape == (4096,)
+    deq, codes, s, sat = E.quantize_trellis(X, "c5", lut, threads=2)
+    assert codes.shape == (3000, 160) and codes.max() < 8 and s.shape == (3000, 1) and sat == 0
     assert (s == s.astype(np.float16)).all() and (deq[5] == 0).all()
     assert np.array_equal(deq.view(np.uint32), (s * lut[E.c5_states(codes)]).view(np.uint32))
     Bn = (X[X.any(1)] / np.abs(X[X.any(1)]).max(1, keepdims=True)).ravel()
@@ -343,27 +408,79 @@ def test_c5_fit_is_deterministic_and_beats_c4_on_gaussian_rows():
     assert nmse(deq, X) < 0.75 * nmse(c4, X)                         # Gaussian rows: c4 about 0.036, c5 about 0.02
 
 
-@pytest.mark.parametrize("dll", ["missing", "not a DLL"])
-def test_c5_without_its_encoder_stops_before_the_workers(dll, tmp_path):
+def test_t_viterbi_dll_matches_the_numpy_reference():
+    rng = np.random.default_rng(31)
+    Y = rng.standard_normal((60, 160)).astype(np.float32)
+    Y[0] = 0                                                         # with the repeated values below: ties at every step
+    lut = rng.permutation(np.quantile(rng.standard_normal(100000), (np.arange(4096) + 0.5) / 4096)).astype(np.float32)
+    lut[:64] = lut[64:128]
+    assert np.array_equal(E.t_codes(Y, lut, threads=3).astype(np.int64), ref_t_viterbi(Y, lut, E.T_SHIFTS, E.C5_STATE_BITS))
+    # b = 3 everywhere is c5's trellis: the same search gives c5's states
+    three = np.full(160, 3, np.uint8)
+    f = E._encoder("t58")
+    got = np.empty(Y.shape, np.uint16)
+    assert f(Y.ctypes.data, Y.shape[0], lut.ctypes.data, 12, three.ctypes.data, got.ctypes.data) == 0
+    assert np.array_equal(got.astype(np.int64), E.c5_states(E.c5_codes(Y, lut)))
+
+
+def test_t_states_are_the_engine_s_stream():
+    rows = np.random.default_rng(32).integers(0, 256, (40, 56)).astype(np.uint8)
+    rows[0] = 255
+    st = E.t_states(rows)
+    for r in range(rows.shape[0]):                                   # ple_t58_dequant_row, value by value
+        assert list(st[r]) == engine_t58_states(rows[r])
+    assert (st[0] == 4095).all() and np.array_equal(E.t_pack(st), rows)
+    # every state is the previous one shifted by b_j new bits (the trellis), the first ones wrapping to the stream's end
+    assert ((np.roll(st, 1, 1) << E.T_SHIFTS.astype(np.int64)) & 4095 == st & ~((1 << E.T_SHIFTS.astype(np.int64)) - 1) & 4095).all()
+
+
+@pytest.mark.parametrize("fmt", ["t58", "t58e", "c5e"])
+def test_trellis_forms_on_gaussian_rows(fmt):
+    X = np.random.default_rng(33).standard_normal((2000, 160)).astype(np.float32) * 0.1
+    X[5] = 0
+    X[6] *= 3000                                                     # past the table scale's headroom: saturates
+    lut = E.fit_trellis_lut(X[:1500], seed=1, iters=6, threads=4, fmt=fmt)
+    deq5 = E.quantize_trellis(X, "c5", E.fit_trellis_lut(X[:1500], seed=1, iters=6, threads=4))[0]
+    T = float(np.float32(0.1 / 2 ** 4))
+    deq, codes, s, sat = E.quantize_trellis(X, fmt, lut, T, threads=2)
+    st = codes.astype(np.int64) if fmt in E.T_FORMATS else E.c5_states(codes)
+    assert np.array_equal(deq.view(np.uint32), (s * lut[st]).view(np.uint32)) and (deq[5] == 0).all()
+    if fmt == "t58":
+        assert (s == s.astype(np.float16)).all() and sat == 0
+        k = np.arange(X.shape[0]) != 6                               # (the 3000x row would be the whole NMSE)
+        assert nmse(deq5[k], X[k]) < nmse(deq[k], X[k]) < 1.6 * nmse(deq5[k], X[k])   # 2.8 bits: above c5's 3 (1.32x on B's rows)
+        return
+    assert (s == E.e4m3_round(s / np.float32(T)) * np.float32(T)).all() and sat == 1 and abs(s[6, 0]) == np.float32(448 * T)
+    # the second search (e4m3r) never makes a row worse than the first path with its scale rounded
+    base = (E.t_codes if fmt in E.T_FORMATS else E.c5_codes)(E.c5_normalized(X), lut)
+    q = lut[base.astype(np.int64) if fmt in E.T_FORMATS else E.c5_states(base)]
+    s1 = E.e4m3_round(E.ls_scale(q, X) / np.float32(T)) * np.float32(T)
+    err = lambda Y: ((Y.astype(np.float64) - X) ** 2).sum(1)
+    assert (err(deq) <= err(s1[:, None] * q)).all() and (err(deq) < err(s1[:, None] * q)).any()
+
+
+@pytest.mark.parametrize("fmt,dll", [("c5", "missing"), ("c5", "not a DLL"), ("t58", "missing"), ("t58", "not a DLL")])
+def test_trellis_without_its_encoder_stops_before_the_workers(fmt, dll, tmp_path):
     # the full-table command (--codebook, --workers 8): the main process never needs the DLL itself, so a worker was the
     # first to load it, and a worker's sys.exit made the pool replace it and wait forever
     src = tmp_path / "src.gguf"
     synthetic_source(src, 3000, seed=5)
-    (tmp_path / "c5.json").write_text(json.dumps(E.fit_codebook(E.Source(src), "c5", 1, 7, **C5_SMALL_FIT)))
-    tools = tmp_path / "terminal" / "tools"                         # a copy whose C5_DLL is tmp_path/build/ple_c5_viterbi.dll
+    (tmp_path / "cb.json").write_text(json.dumps(E.fit_codebook(E.Source(src), fmt, 1, 7, **C5_SMALL_FIT)))
+    name = E.T_DLL.name if fmt in E.T_FORMATS else E.C5_DLL.name
+    tools = tmp_path / "terminal" / "tools"                         # a copy whose DLLs are tmp_path/build/<name>
     tools.mkdir(parents=True)
     for f in ("ple_lowbit_emulate.py", "gguf_reader.py"):
         (tools / f).write_bytes((HERE / f).read_bytes())
     if dll != "missing":
         (tmp_path / "build").mkdir()
-        (tmp_path / "build" / "ple_c5_viterbi.dll").write_bytes(b"not a DLL" * 100)
+        (tmp_path / "build" / name).write_bytes(b"not a DLL" * 100)
     try:
-        r = subprocess.run([sys.executable, str(tools / "ple_lowbit_emulate.py"), "--format", "c5", "--src", str(src),
-                            "--out", str(tmp_path / "o.gguf"), "--codebook", str(tmp_path / "c5.json"), "--workers", "2",
+        r = subprocess.run([sys.executable, str(tools / "ple_lowbit_emulate.py"), "--format", fmt, "--src", str(src),
+                            "--out", str(tmp_path / "o.gguf"), "--codebook", str(tmp_path / "cb.json"), "--workers", "2",
                             "--chunk-rows", "700", "--native"], capture_output=True, text=True, timeout=90)
     except subprocess.TimeoutExpired:
-        pytest.fail("ple_lowbit_emulate.py hangs when the c5 encoder is %s" % dll)
-    assert r.returncode != 0 and "ple_c5_viterbi.dll" in r.stderr and "Traceback" not in r.stderr, r.stderr
+        pytest.fail("ple_lowbit_emulate.py hangs when the %s encoder is %s" % (fmt, dll))
+    assert r.returncode != 0 and name in r.stderr and "Traceback" not in r.stderr, r.stderr
     assert not (tmp_path / "o.gguf.part").exists()
 
 
@@ -387,18 +504,24 @@ def test_c5_codebook_of_another_trellis_is_refused(tmp_path, monkeypatch):
                                       "--native"])
     with pytest.raises(SystemExit, match="13-bit trellis"):
         E.main()
+    cb = E.fit_codebook(E.Source(src), "t58", 1, 7, **C5_SMALL_FIT)   # t58's stream length is part of its codebook too
+    bad.write_text(json.dumps(dict(cb, code_bits=440)))
+    monkeypatch.setattr(sys, "argv", ["x", "--format", "t58", "--src", str(src), "--out", str(tmp_path / "o.gguf"), "--codebook", str(bad),
+                                      "--native"])
+    with pytest.raises(SystemExit, match="440-bit code stream"):
+        E.main()
 
 
-@pytest.mark.parametrize("fmt", ["c3", "c1", "c6", "c5"])
+@pytest.mark.parametrize("fmt", ["c3", "c1", "c6", "c5", "c5e", "t58", "t58e"])
 def test_native_pipeline_writes_the_engine_s_table(fmt, tmp_path, monkeypatch):
     gguf = gguf_py()
     src = tmp_path / "src.gguf"
     rows = synthetic_source(src, 3000, seed=5)
     rb = E.row_bytes(fmt)
     extra = []
-    if fmt == "c5":                                                  # a quick lut (the default fit takes minutes)
-        (tmp_path / "c5.json").write_text(json.dumps(E.fit_codebook(E.Source(src), "c5", 1, 7, **C5_SMALL_FIT)))
-        extra = ["--codebook", str(tmp_path / "c5.json")]
+    if fmt in E.TRELLIS:                                             # a quick lut (the default fit takes minutes)
+        (tmp_path / "cb.json").write_text(json.dumps(E.fit_codebook(E.Source(src), fmt, 1, 7, **C5_SMALL_FIT)))
+        extra = ["--codebook", str(tmp_path / "cb.json")]
     outs = []
     for workers in (1, 2):
         out = tmp_path / ("n%d.gguf" % workers)
@@ -420,14 +543,18 @@ def test_native_pipeline_writes_the_engine_s_table(fmt, tmp_path, monkeypatch):
         assert np.float32(meta["strata.ple.scale"]) == np.float32(cb["table_scale"]) > 0
     else:
         assert "strata.ple.scale" not in meta
-    if fmt == "c5":
+    if fmt in E.TRELLIS:
         assert meta["strata.ple.trellis_bits"] == 12 and r.fields["strata.ple.trellis_bits"].types == [gguf.GGUFValueType.UINT32]
     else:
         assert "strata.ple.trellis_bits" not in meta
+    if fmt in E.T_FORMATS:
+        assert meta["strata.ple.code_bits"] == 448 and r.fields["strata.ple.code_bits"].types == [gguf.GGUFValueType.UINT32]
+    else:
+        assert "strata.ple.code_bits" not in meta
     got = E.native_dequant(np.asarray(t.data).view(np.uint8).reshape(2800, rb), cb)
     X = E.iq4nl_decode(rows[100:2900])
-    if fmt == "c5":
-        Y = E.quantize_c5(X, np.float32(cb["grid"]))[0]
+    if fmt in E.TRELLIS:
+        Y = E.quantize_trellis(X, fmt, np.float32(cb["grid"]), cb["table_scale"])[0]
     else:
         Y = E.quantize(X, np.float32(cb["grid"]), cb["block"], cb["scale"], np.float32(cb["table_scale"]), cb["ntry"])[0]
     assert np.array_equal(got.view(np.uint32), Y.view(np.uint32))
@@ -443,18 +570,21 @@ def test_native_pipeline_writes_the_engine_s_table(fmt, tmp_path, monkeypatch):
 def test_real_table_slice_native_decodes_exactly(fmt, tmp_path, monkeypatch, capsys):
     out = tmp_path / (fmt + ".gguf")                                 # main() checks every chunk's decode bit for bit
     monkeypatch.setattr(sys, "argv", ["x", "--format", fmt, "--src", str(REAL), "--out", str(out), "--rows", "0:50000",
-                                      "--idle-priority", "--native"] + (["--workers", "8"] if fmt == "c5" else []))
+                                      "--idle-priority", "--native"] + (["--workers", "8"] if fmt in E.TRELLIS else []))
     E.main()
     text = capsys.readouterr().out
     val = float([l for l in text.splitlines() if "as stored" in l][0].split(":")[1])
     assert abs(val / DOC_NMSE[fmt] - 1) < 0.06
+    if fmt in ("c5e", "t58e"):                                       # one E4M3 scale a row, T at 1/256 of the fit rows' largest
+        assert int(text.split("saturated at 448: ")[1].split()[0]) < 50
+
     gguf = gguf_py()
     t = gguf.GGUFReader(str(out)).tensors[0]
     assert list(t.shape) == [E.row_bytes(fmt), 50000] and t.tensor_type == gguf.GGMLQuantizationType.I8
 
 
 @pytest.mark.skipif(not REAL.exists(), reason="the real IQ4_NL table is not on this machine")
-@pytest.mark.parametrize("fmt", ALL)
+@pytest.mark.parametrize("fmt", [f for f in ALL if f not in NEW])
 def test_real_table_slice_nmse_matches_doc(fmt, tmp_path, monkeypatch, capsys):
     gguf = gguf_py()
     out = tmp_path / (fmt + ".gguf")

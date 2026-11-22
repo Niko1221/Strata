@@ -1,5 +1,6 @@
 """tools/ple_lowbit_emulate.py - emulate a low-bit PLE n-gram table as a Q8_0 table-only GGUF, to measure its accuracy by teacher
-forcing, or (--native) write it in the low-bit format itself, which the engine reads (PLE formats C1, C2, C2s, C3, C4, C5, C6).
+forcing, or (--native) write it in the low-bit format itself, which the engine reads (PLE formats C1, C2, C2s, C3, C4, C5, C6,
+C5e, T58, T58e).
 
     python tools/ple_lowbit_emulate.py --format c4 --src <IQ4_NL shard 2 .gguf> --out <c4.gguf> [--rows A:B] [--workers N] [--native]
 
@@ -12,6 +13,10 @@ The candidates (docs: memory-goal/ple-representation.md section 4), all derived 
     c5   3-bit codes through a trellis (below), one fp16 scale per row      62 B/row
     c6   2-bit Lloyd codebook, 32-value blocks, fp16 scale                  50 B/row (the doc's "16- or 32-value blocks":
          32 with fp16, the variant both of its NMSE figures were computed with; 16 with E4M3 has only the one vs B)
+    c5e  c5's codes, one E4M3 scale per row x one F32 table scale            61 B/row
+    t58  2.8-bit trellis (below): a 448-bit code stream, one fp16 scale      58 B/row
+    t58e t58's code stream, one E4M3 scale per row x one F32 table scale     57 B/row
+    (memory-goal/t-proto-report.md: held-out NMSE c5e 0.01830, t58 0.02402, t58e 0.02415)
 Per row: decode IQ4_NL exactly as ggml/the engine does (ngram.cpp:139-170), quantize to the format, dequantize, and encode the
 dequantized values as Q8_0 (ngram.cpp:238), which the engine already reads through --ple-gguf as a table-only file
 (ngram.cpp:259-267). Q8_0 adds a small rounding of its own (about 3e-5 NMSE); it is reported separately.
@@ -26,19 +31,27 @@ are the Viterbi path of the row over its RMS (terminal/tools/ple_c5_viterbi.cpp,
 least-squares scale of that path as fp16. The lut is fitted like a Lloyd grid: from a random permutation of the normalized
 values' quantiles, C5_FIT_ITERS rounds of encoding the fit rows and setting each state's value to the mean of the values
 its paths put there (deterministic for a seed; --workers threads).
+t58 is the same trellis at 2.8 bits a value (terminal/tools/ple_t_viterbi.cpp, its own DLL: see T_BUILD): a row's codes are
+one circular 448-bit stream, value j shifts b_j = 2 3 3 3 3 (repeated) new bits into the 12-bit register, so its state is
+the 12 stream bits ending at e_j = (j+1)*448/160, most significant first (the first values' states wrap to the stream's
+end). The E4M3 forms (c5e, t58e) take the table scale T = the fit rows' largest least-squares scale / 256 (c3's headroom),
+round the row's scale to e4m3 x T, run the Viterbi again on the row over that scale, and keep whichever path, with its own
+least-squares scale rounded the same way, is closer (t-proto-report.md: "e4m3r").
 Stdout reports the NMSE against the IQ4_NL values; the codebook is saved as <out>.codebook.json and can be reused with --codebook.
 
 --native writes the same quantizer's codes and scales packed (engine/include/strata/kernels/ple_lowbit.hpp): 20 x bits bytes of
-codes (a little-endian bit stream), then one fp16 per block (c1, c2, c4, c6) or one E4M3 byte per block (c3, c2s), as I8 bytes
-[row bytes, rows] marked strata.ple.format = <format> with strata.ple.codebook (2^bits F32; c5: its 4096-float lut, with
-strata.ple.trellis_bits = 12) and, for c3/c2s, strata.ple.scale (the F32 table scale). c5's rows are c4's layout.
+codes (a little-endian bit stream; t58/t58e: the 56 B stream, most significant bit first), then one fp16 per block (c1, c2,
+c4, c6, c5, t58) or one E4M3 byte per block (c3, c2s, c5e, t58e), as I8 bytes [row bytes, rows] marked strata.ple.format =
+<format> with strata.ple.codebook (2^bits F32; the trellis forms: their 4096-float lut, with strata.ple.trellis_bits = 12,
+and for t58/t58e strata.ple.code_bits = 448) and, with E4M3 scales, strata.ple.scale (the F32 table scale). c5's rows are
+c4's layout.
 Every chunk is decoded back as the engine
 decodes it and must give the quantizer's floats bit for bit. The Q8_0 emulation stores those floats after Q8_0's own rounding
 (about 2.5e-5 NMSE more), so a native table is close to its emulation but not bit identical to it. With the same --seed and
 --ntry the codebook fit is the same; --codebook <emulation>.codebook.json (e.g. ple-c4-q8.gguf.codebook.json for c4) reuses
 the screened grid explicitly. It also writes <out>.ref.bin, about 4096 of its rows with those floats (int32 n,
 uint32 rows[n], float32 values[n][160]; rows numbered in the output table): the reference src/kernels/ple_fp8_parity.cpp
-checks the engine's reads against (PLE_EXPECT_FORMAT=C1|C2|C2s|C3|C4|C5|C6).
+checks the engine's reads against (PLE_EXPECT_FORMAT=C1|C2|C2s|C3|C4|C5|C6|C5e|T58|T58e).
 """
 import argparse
 import json
@@ -61,22 +74,40 @@ KV_IQ4NL = np.array([-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53
 E4M3_MAX = 448.0
 # name -> (values per scale block, scale kind, scale bytes per row)
 FORMATS = {"c4": (160, "f16", 2), "c3": (32, "e4m3", 5), "c2s": (16, "e4m3", 10),
-           "c1": (160, "f16", 2), "c2": (32, "f16", 10), "c6": (32, "f16", 10), "c5": (160, "f16", 2)}
-BITS = {"c1": 4, "c6": 2}                    # bits a code; 3 for the others (60 B of codes a row)
+           "c1": (160, "f16", 2), "c2": (32, "f16", 10), "c6": (32, "f16", 10), "c5": (160, "f16", 2),
+           "c5e": (160, "e4m3", 1), "t58": (160, "f16", 2), "t58e": (160, "e4m3", 1)}
+BITS = {"c1": 4, "c6": 2}                    # bits a code; 3 for the others (60 B of codes a row; t58/t58e: below)
 FIXED_GRID = {"c1": KV_IQ4NL / np.float32(127)}   # C1 keeps IQ4_NL's grid (the doc's "4b_iq4nl_b160_f16"); the rest fit Lloyd
 SCALE_HEADROOM = 256.0                       # table scale T = max block scale / 256, so E4M3 (max 448) has 1.75x headroom
 C5_STATE_BITS = 12                           # PLE_C5_STATE_BITS (ple_lowbit.hpp): c5's lut has 2^12 floats
 C5_FIT_ITERS = 100                           # lut fit rounds (rows 0:4000: NMSE 0.01844 after 30, 0.01818 after 100)
-C5_DLL = pathlib.Path(__file__).resolve().parents[2] / "build" / "ple_c5_viterbi.dll"
+TRELLIS = ("c5", "c5e", "t58", "t58e")       # the formats whose codes are trellis states (a 4096-float lut)
+T_FORMATS = ("t58", "t58e")                  # ... through the 2.8-bit stream (PLE_T58_CODE_BITS, ple_lowbit.hpp)
+T_CODE_BITS = 448
+T_SHIFTS = np.array([2, 3, 3, 3, 3] * 32, np.uint8)          # b_j: the new stream bits of value j (5 values a 14-bit step)
+T_ENDS = np.cumsum(T_SHIFTS.astype(np.int64))                 # e_j = (j+1)*448/160: value j's state ends at stream bit e_j
+assert T_ENDS[-1] == T_CODE_BITS and (T_ENDS == (np.arange(1, DIM + 1) * T_CODE_BITS) // DIM).all()
+_ROOT = pathlib.Path(__file__).resolve().parents[2]
+C5_DLL = _ROOT / "build" / "ple_c5_viterbi.dll"
 C5_BUILD = r"cl /nologo /O2 /arch:AVX2 /LD /EHsc /Fo:build\ /Fe:build\ple_c5_viterbi.dll terminal\tools\ple_c5_viterbi.cpp"
+T_DLL = _ROOT / "build" / "ple_t_viterbi.dll"
+T_BUILD = r"cl /nologo /O2 /arch:AVX2 /LD /EHsc /Fo:build\ /Fe:build\ple_t_viterbi.dll terminal\tools\ple_t_viterbi.cpp"
 
 
 def bits_of(fmt):
     return BITS.get(fmt, 3)
 
 
+def bits_label(fmt):
+    return "2.8" if fmt in T_FORMATS else str(bits_of(fmt))
+
+
+def code_bytes(fmt):
+    return (T_CODE_BITS if fmt in T_FORMATS else DIM * bits_of(fmt)) // 8
+
+
 def row_bytes(fmt):
-    return DIM * bits_of(fmt) // 8 + FORMATS[fmt][2]
+    return code_bytes(fmt) + FORMATS[fmt][2]
 
 
 # ---------------------------------------------------------------- IQ4_NL decode, Q8_0 encode/decode
@@ -175,10 +206,14 @@ def quantize(Z, grid, bs, scale_kind, table_scale, ntry):
 
 def pack_native(codes, scales, cb):
     """quantize()'s codes (n, 160) and scales (n, 160/block) -> (n, row_bytes) uint8, the engine's row (ple_lowbit.hpp):
-    8 codes of cb["bits"] (default 3) bits in that many bytes, a little-endian word each, then the scales."""
+    8 codes of cb["bits"] (default 3) bits in that many bytes, a little-endian word each, then the scales. t58/t58e: the
+    codes are the trellis states, packed as their stream (t_pack)."""
     n, bits = codes.shape[0], cb.get("bits", 3)
-    w = np.bitwise_or.reduce(codes.reshape(n, 20, 8).astype(np.uint32) << (bits * np.arange(8, dtype=np.uint32)), axis=2)
-    out = [(w[:, :, None] >> (8 * np.arange(bits, dtype=np.uint32)) & 255).astype(np.uint8).reshape(n, 20 * bits)]
+    if cb.get("format") in T_FORMATS:
+        out = [t_pack(codes)]
+    else:
+        w = np.bitwise_or.reduce(codes.reshape(n, 20, 8).astype(np.uint32) << (bits * np.arange(8, dtype=np.uint32)), axis=2)
+        out = [(w[:, :, None] >> (8 * np.arange(bits, dtype=np.uint32)) & 255).astype(np.uint8).reshape(n, 20 * bits)]
     if cb["scale"] == "f16":
         out.append(scales.astype("<f2").view(np.uint8).reshape(n, -1))
     else:   # the scales are e4m3 x T, so e4m3_round(scale / T) is that e4m3 again (the decode check in _work proves it)
@@ -187,57 +222,70 @@ def pack_native(codes, scales, cb):
 
 
 def native_dequant(rows, cb):
-    """The engine's decode of pack_native's rows (ple_lowbit_dequant_row): value j = s[j // block] * grid[code j] in float32."""
+    """The engine's decode of pack_native's rows (ple_lowbit_dequant_row): value j = s[j // block] * grid[code j] in float32;
+    the trellis forms (ple_c5_dequant_row, ple_c5e_dequant_row, ple_t58_dequant_row, ple_t58e_dequant_row): s * lut[state j]."""
     n, bs, bits = rows.shape[0], cb["block"], cb.get("bits", 3)
+    nc = code_bytes(cb["format"]) if cb.get("format") in T_FORMATS else 20 * bits
+    sc = np.ascontiguousarray(rows[:, nc:])
+    s = sc.view("<f2").astype(np.float32) if cb["scale"] == "f16" else e4m3_value(sc) * np.float32(cb["table_scale"])
+    if cb.get("format") in T_FORMATS:
+        return s * np.array(cb["grid"], np.float32)[t_states(rows[:, :nc])]
     b = rows[:, :20 * bits].reshape(n, 20, bits).astype(np.uint32)
     w = np.bitwise_or.reduce(b << (8 * np.arange(bits, dtype=np.uint32)), axis=2)
     codes = (w[:, :, None] >> (bits * np.arange(8, dtype=np.uint32)) & ((1 << bits) - 1)).reshape(n, DIM)
-    sc = np.ascontiguousarray(rows[:, 20 * bits:])
-    s = sc.view("<f2").astype(np.float32) if cb["scale"] == "f16" else e4m3_value(sc) * np.float32(cb["table_scale"])
-    if cb.get("format") == "c5":   # ple_c5_dequant_row: s * lut[state j]
+    if cb.get("format") in ("c5", "c5e"):
         return s * np.array(cb["grid"], np.float32)[c5_states(codes)]
     return (s[:, :, None] * np.array(cb["grid"], np.float32)[codes].reshape(n, -1, bs)).reshape(n, DIM)
 
 
-# ---------------------------------------------------------------- c5: the trellis
-_C5 = {}
+# ---------------------------------------------------------------- the trellis forms (c5, c5e, t58, t58e)
+_ENC = {}
+
+
+def _encoder(fmt):
+    """The compiled search for fmt (c5/c5e: ple_c5_viterbi.cpp, t58/t58e: ple_t_viterbi.cpp), loaded once a process. A
+    missing or other DLL is a RuntimeError, not a sys.exit: in a Pool worker SystemExit kills the worker, the pool replaces
+    it and imap waits forever (main() checks the DLL before it starts the workers, so a worker does not get here first)."""
+    t = fmt in T_FORMATS
+    dll_path, build, abi_fn, fn = (T_DLL, T_BUILD, "ple_t_abi", "ple_t_viterbi") if t else \
+                                  (C5_DLL, C5_BUILD, "ple_c5_abi", "ple_c5_viterbi")
+    if fn not in _ENC:
+        import ctypes
+        if not dll_path.exists():
+            raise RuntimeError("%s needs the compiled encoder %s; in a Visual Studio x64 prompt at the repository root run\n"
+                               "    md build\n    %s" % (fmt, dll_path, build))
+        try:
+            dll = ctypes.CDLL(str(dll_path))
+            abi = getattr(dll, abi_fn)()
+        except (OSError, AttributeError) as e:
+            raise RuntimeError("%s does not load as the %s encoder (%s): rebuild it (%s)" % (dll_path, fmt, e, build)) from None
+        if abi != 1:
+            raise RuntimeError("%s is not the encoder this script calls: rebuild it (%s)" % (dll_path, build))
+        f = getattr(dll, fn)
+        f.argtypes = [ctypes.c_void_p, ctypes.c_int64, ctypes.c_void_p, ctypes.c_int] + [ctypes.c_void_p] * (2 if t else 1)
+        _ENC[fn] = f
+    return _ENC[fn]
 
 
 def c5_encoder():
-    """The compiled search (ple_c5_viterbi.cpp), loaded once a process. A missing or other DLL is a RuntimeError, not a
-    sys.exit: in a Pool worker SystemExit kills the worker, the pool replaces it and imap waits forever (main() checks
-    the DLL before it starts the workers, so a worker does not get here first)."""
-    if "f" not in _C5:
-        import ctypes
-        if not C5_DLL.exists():
-            raise RuntimeError("c5 needs the compiled encoder %s; in a Visual Studio x64 prompt at the repository root run\n"
-                               "    md build\n    %s" % (C5_DLL, C5_BUILD))
-        try:
-            dll = ctypes.CDLL(str(C5_DLL))
-            abi = dll.ple_c5_abi()
-        except (OSError, AttributeError) as e:
-            raise RuntimeError("%s does not load as the c5 encoder (%s): rebuild it (%s)" % (C5_DLL, e, C5_BUILD)) from None
-        if abi != 1:
-            raise RuntimeError("%s is not the encoder this script calls: rebuild it (%s)" % (C5_DLL, C5_BUILD))
-        dll.ple_c5_viterbi.argtypes = [ctypes.c_void_p, ctypes.c_int64, ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p]
-        _C5["f"] = dll.ple_c5_viterbi
-    return _C5["f"]
+    return _encoder("c5")
 
 
-def c5_codes(Y, lut, threads=1):
-    """Y (n, 160) float32, the rows over their RMS -> (n, 160) uint8 codes: the tail-biting trellis path closest to Y
-    in squared error (ple_c5_viterbi.cpp, Viterbi), `threads` rows at once."""
-    f = c5_encoder()
+def _search(fmt, Y, lut, threads, out_dtype):
+    """Y (n, 160) float32 -> (n, 160) of the DLL's output for the tail-biting trellis path closest to Y in squared error
+    (Viterbi), `threads` rows at once: c5's 3-bit codes, or t58's states."""
+    f = _encoder(fmt)
     Y = np.ascontiguousarray(Y, np.float32)
     lut = np.ascontiguousarray(lut, np.float32)
     if lut.shape != (1 << C5_STATE_BITS,) or Y.ndim != 2 or Y.shape[1] != DIM:
-        raise ValueError("c5_codes: Y %s, lut %s" % (Y.shape, lut.shape))
-    codes = np.empty(Y.shape, np.uint8)
+        raise ValueError("%s search: Y %s, lut %s" % (fmt, Y.shape, lut.shape))
+    out = np.empty(Y.shape, out_dtype)
+    extra = (T_SHIFTS.ctypes.data,) if fmt in T_FORMATS else ()
 
     def run(span):   # the DLL call releases the GIL, so the threads run at once
         a, b = span
-        if b > a and f(Y[a:b].ctypes.data, b - a, lut.ctypes.data, C5_STATE_BITS, codes[a:b].ctypes.data) != 0:
-            raise RuntimeError("ple_c5_viterbi refused L = %d" % C5_STATE_BITS)
+        if b > a and f(Y[a:b].ctypes.data, b - a, lut.ctypes.data, C5_STATE_BITS, *extra, out[a:b].ctypes.data) != 0:
+            raise RuntimeError("the %s encoder refused L = %d" % (fmt, C5_STATE_BITS))
     cut = np.linspace(0, Y.shape[0], max(1, threads) + 1).astype(int)
     spans = list(zip(cut[:-1], cut[1:]))
     if threads > 1:
@@ -246,7 +294,49 @@ def c5_codes(Y, lut, threads=1):
             list(ex.map(run, spans))
     else:
         run(spans[0])
-    return codes
+    return out
+
+
+def c5_codes(Y, lut, threads=1):
+    """Y (n, 160) float32, the rows over their RMS -> (n, 160) uint8 codes: the tail-biting trellis path closest to Y
+    in squared error (ple_c5_viterbi.cpp, Viterbi), `threads` rows at once."""
+    return _search("c5", Y, lut, threads, np.uint8)
+
+
+def t_codes(Y, lut, threads=1):
+    """As c5_codes for t58/t58e (ple_t_viterbi.cpp): -> (n, 160) uint16 states of the path. They are their own codes: value
+    j's new stream bits are state j's low b_j bits (t_pack)."""
+    return _search("t58", Y, lut, threads, np.uint16)
+
+
+def t_pack(states):
+    """(n, 160) t58 states -> (n, 56) uint8, the code stream: state j's low b_j bits at stream bits e_j - b_j .. e_j - 1, most
+    significant first (stream bit t is bit 7 - t % 8 of byte t // 8)."""
+    st = states.astype(np.int64)
+    bits = np.zeros((st.shape[0], T_CODE_BITS), np.uint8)
+    for k in range(int(T_SHIFTS.max())):
+        j = np.nonzero(T_SHIFTS > k)[0]
+        bits[:, T_ENDS[j] - 1 - k] = (st[:, j] >> k) & 1
+    return np.packbits(bits, axis=1)
+
+
+def t_states(code_bytes):
+    """(n, 56) uint8 code streams -> (n, 160) states, as ple_t58_dequant_row makes them: value j's state is the 12 bits of
+    the circular stream ending at e_j, most significant first."""
+    bits = np.unpackbits(np.ascontiguousarray(code_bytes), axis=1)
+    st = np.zeros((bits.shape[0], DIM), np.int64)
+    for k in range(C5_STATE_BITS):
+        st = (st << 1) | bits[:, (T_ENDS - C5_STATE_BITS + k) % T_CODE_BITS]
+    return st
+
+
+def trellis_path(fmt, Y, lut, threads=1):
+    """-> (codes as pack_native takes them, states): the tail-biting path closest to Y."""
+    if fmt in T_FORMATS:
+        st = t_codes(Y, lut, threads)
+        return st, st.astype(np.int64)
+    codes = c5_codes(Y, lut, threads)
+    return codes, c5_states(codes)
 
 
 def c5_states(codes):
@@ -265,24 +355,42 @@ def c5_normalized(Z):
     return (Z / np.where(r > 0, r, np.float32(1))[:, None]).astype(np.float32)
 
 
-def quantize_c5(Z, lut, threads=1):
-    """Z (n, 160) float32 -> (dequantized (n, 160) float32, codes (n, 160) uint8, scales (n, 1) float32): the trellis path of
-    the row over its RMS, then the least-squares scale of that path, rounded to fp16 (as quantize() rounds c4's)."""
-    codes = c5_codes(c5_normalized(Z), lut, threads)
-    q = lut[c5_states(codes)]
-    s = (q * Z).sum(1) / np.maximum((q * q).sum(1), np.float32(1e-30))
-    s = s.astype(np.float16).astype(np.float32)[:, None]
-    return s * q, codes, s
+def ls_scale(q, Z):
+    return (q * Z).sum(1) / np.maximum((q * q).sum(1), np.float32(1e-30))
 
 
-def fit_c5_lut(Z, seed, iters, threads=1):
+def quantize_trellis(Z, fmt, lut, table_scale=1.0, threads=1):
+    """Z (n, 160) float32 -> (dequantized (n, 160) float32, codes, scales (n, 1) float32, n_saturated): the trellis path of
+    the row over its RMS, then the least-squares scale of that path, rounded to fp16 (c5, t58; as quantize() rounds c4's).
+    c5e/t58e: that scale as e4m3 x table_scale, then the path of the row over that scale and its own scale rounded the
+    same way, whichever is closer (t-proto-report.md: "e4m3r", the Viterbi twice)."""
+    codes, st = trellis_path(fmt, c5_normalized(Z), lut, threads)
+    q = lut[st]
+    s = ls_scale(q, Z)
+    if FORMATS[fmt][1] == "f16":
+        s = s.astype(np.float16).astype(np.float32)[:, None]
+        return s * q, codes, s, 0
+    T = np.float32(table_scale)
+    s1 = e4m3_round(s / T) * T
+    codes2, st2 = trellis_path(fmt, Z / np.where(s1 != 0, s1, np.float32(1))[:, None], lut, threads)
+    q2 = lut[st2]
+    s2 = e4m3_round(ls_scale(q2, Z) / T) * T
+    Y1, Y2 = s1[:, None] * q, s2[:, None] * q2
+    better = ((Y2 - Z) ** 2).sum(1) < ((Y1 - Z) ** 2).sum(1)
+    s = np.where(better, s2, s1)[:, None]
+    sat = int((np.abs(s) / T > E4M3_MAX * 0.999).sum())
+    return np.where(better[:, None], Y2, Y1), np.where(better[:, None], codes2, codes), s, sat
+
+
+def fit_trellis_lut(Z, seed, iters, threads=1, fmt="c5"):
     """Lloyd for the trellis: start from a random permutation of the normalized values' 4096 quantiles; each round encodes
-    the rows and sets every state's value to the mean of the values the paths put on it (an unused state keeps its own)."""
+    the rows and sets every state's value to the mean of the values the paths put on it (an unused state keeps its own).
+    c5e's lut is c5's, t58e's is t58's (the same fit)."""
     Y = c5_normalized(Z)
     S = 1 << C5_STATE_BITS
     lut = np.random.default_rng(seed).permutation(np.quantile(Y.ravel(), (np.arange(S) + 0.5) / S)).astype(np.float32)
     for _ in range(iters):
-        st = c5_states(c5_codes(Y, lut, threads)).ravel()
+        st = trellis_path(fmt, Y, lut, threads)[1].ravel()
         cnt = np.bincount(st, minlength=S)
         sm = np.bincount(st, weights=Y.ravel().astype(np.float64), minlength=S)
         lut = np.where(cnt > 0, sm / np.maximum(cnt, 1), lut).astype(np.float32)
@@ -326,11 +434,18 @@ def fit_codebook(src, fmt, seed, ntry, n_chunks=256, chunk=256, n_values=2_000_0
     starts = np.sort(rng.integers(0, src.n_rows - chunk, n_chunks))
     with open(src.path, "rb") as f:
         Z = np.concatenate([iq4nl_decode(src.read(f, int(s), int(s) + chunk)) for s in starts])
-    if fmt == "c5":
-        return {"format": fmt, "bits": 3, "block": bs, "scale": kind, "bytes_per_row": row_bytes(fmt),
-                "grid": [float(v) for v in fit_c5_lut(Z, seed, c5_iters, threads)], "table_scale": 1.0,
-                "trellis_bits": C5_STATE_BITS, "iters": c5_iters, "seed": seed, "fit_rows": int(Z.shape[0]),
-                "src": pathlib.Path(src.path).name}
+    if fmt in TRELLIS:
+        lut = fit_trellis_lut(Z, seed, c5_iters, threads, fmt)
+        table_scale = 1.0
+        if kind == "e4m3":   # T from the unrounded least-squares scales of all the fit rows' paths (as t-proto measured)
+            table_scale = float(np.abs(ls_scale(lut[trellis_path(fmt, c5_normalized(Z), lut, threads)[1]], Z)).max() / SCALE_HEADROOM)
+        cb = {"format": fmt, "bits": 3, "block": bs, "scale": kind, "bytes_per_row": row_bytes(fmt),
+              "grid": [float(v) for v in lut], "table_scale": table_scale,
+              "trellis_bits": C5_STATE_BITS, "iters": c5_iters, "seed": seed, "fit_rows": int(Z.shape[0]),
+              "src": pathlib.Path(src.path).name}
+        if fmt in T_FORMATS:
+            cb["code_bits"] = T_CODE_BITS
+        return cb
     Bn = Z.reshape(-1, bs)
     Bn = (Bn / np.abs(Bn).max(1, keepdims=True)).ravel()
     if fmt in FIXED_GRID:
@@ -356,23 +471,35 @@ def _init(src_path, cb, native=False, lo=0, ref_stride=1):
     _G["native"], _G["lo"], _G["ref_stride"] = native, lo, ref_stride
 
 
+def quantize_any(X, cb, grid, threads=1):
+    """The format's quantizer with the codebook cb (grid: its values as float32) -> (floats, codes, scales, n_saturated)."""
+    if cb["format"] in TRELLIS:
+        return quantize_trellis(X, cb["format"], grid, np.float32(cb["table_scale"]), threads)
+    return quantize(X, grid, cb["block"], cb["scale"], np.float32(cb["table_scale"]), cb["ntry"])
+
+
+def native_rows(X, cb, grid, threads=1, what="rows"):
+    """X (n, 160) float32 -> (the packed rows (n, row bytes), the quantizer's floats, n_saturated); the rows decode as the
+    engine decodes them to exactly those floats, or this raises."""
+    Y, codes, scales, sat = quantize_any(X, cb, grid, threads)
+    out = pack_native(codes, scales, cb)
+    if not np.array_equal(native_dequant(out, cb).view(np.uint32), Y.view(np.uint32)):
+        raise RuntimeError("%s: the packed rows do not decode to the quantizer's values" % what)
+    return out, Y, sat
+
+
 def _work(span):
     a, b = span
     src, cb = _G["src"], _G["cb"]
     X = iq4nl_decode(src.read(_G["f"], a, b))
-    if cb["format"] == "c5":
-        (Y, codes, scales), sat = quantize_c5(X, _G["grid"]), 0
-    else:
-        Y, codes, scales, sat = quantize(X, _G["grid"], cb["block"], cb["scale"], np.float32(cb["table_scale"]), cb["ntry"])
     ref = None
     if _G["native"]:
-        out = pack_native(codes, scales, cb)
-        Y8 = native_dequant(out, cb)
-        if not np.array_equal(Y8.view(np.uint32), Y.view(np.uint32)):
-            raise RuntimeError("rows %d:%d: the packed rows do not decode to the quantizer's values" % (a, b))
+        out, Y, sat = native_rows(X, cb, _G["grid"], what="rows %d:%d" % (a, b))
+        Y8 = Y
         i = np.arange((_G["lo"] - a) % _G["ref_stride"], b - a, _G["ref_stride"])
         ref = (a + i, Y[i])
     else:
+        Y, _, _, sat = quantize_any(X, cb, _G["grid"])
         out = q8_0_encode(Y)
         Y8 = q8_0_decode(out)
     X64, Y64, Y864 = X.astype(np.float64), Y.astype(np.float64), Y8.astype(np.float64)
@@ -401,6 +528,35 @@ def gguf_header(rows, kv, ggml_type=GGML_Q8_0, ne0=DIM):
     return head + b"\0" * ((-len(head)) % ALIGN)
 
 
+def native_kv(fmt, cb, src, lo, hi):
+    """The metadata of a --native table of rows lo:hi (PleTable::open reads and checks it)."""
+    kv = {"general.architecture": "strata-ple",
+          "general.name": "PLE n-gram table, %s-bit %s (%d B a row)" % (bits_label(fmt), fmt, row_bytes(fmt)),
+          "strata.ple.format": fmt, "strata.ple.codebook": [float(v) for v in np.float32(cb["grid"])],
+          "strata.ple.source": pathlib.Path(src).name, "strata.ple.rows": "%d:%d" % (lo, hi)}
+    if cb["scale"] == "e4m3":
+        kv["strata.ple.scale"] = float(np.float32(cb["table_scale"]))
+    if fmt in TRELLIS:
+        kv["strata.ple.trellis_bits"] = C5_STATE_BITS
+    if fmt in T_FORMATS:
+        kv["strata.ple.code_bits"] = T_CODE_BITS
+    return kv
+
+
+def load_codebook(path, fmt):
+    """A saved codebook JSON for fmt, or sys.exit saying why it is not one."""
+    cb = json.loads(pathlib.Path(path).read_text())
+    if cb["format"] != fmt:
+        sys.exit("codebook is for %s, not %s" % (cb["format"], fmt))
+    if fmt in TRELLIS and (cb.get("trellis_bits") != C5_STATE_BITS or len(cb["grid"]) != 1 << C5_STATE_BITS):
+        sys.exit("codebook is a %s-bit trellis of %d values, not %d bits" % (cb.get("trellis_bits"), len(cb["grid"]), C5_STATE_BITS))
+    if fmt in T_FORMATS and cb.get("code_bits") != T_CODE_BITS:
+        sys.exit("codebook is for a %s-bit code stream, not %d" % (cb.get("code_bits"), T_CODE_BITS))
+    if cb["scale"] == "e4m3" and not 0 < cb["table_scale"] < float("inf"):
+        sys.exit("codebook has the table scale %r" % cb["table_scale"])
+    return cb
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--format", required=True, choices=sorted(FORMATS))
@@ -425,20 +581,16 @@ def main():
         lo, hi = (int(x) for x in a.rows.split(":"))
     if not 0 <= lo < hi <= src.n_rows:
         sys.exit("--rows %s outside 0:%d" % (a.rows, src.n_rows))
-    if a.format == "c5":   # here, not first in a worker (with --codebook this process would not load it at all)
+    if a.format in TRELLIS:   # here, not first in a worker (with --codebook this process would not load it at all)
         try:
-            c5_encoder()
+            _encoder(a.format)
         except RuntimeError as e:
             sys.exit(str(e))
     out = pathlib.Path(a.out)
     cb_path = out.with_name(out.name + ".codebook.json")
     t0 = time.time()
     if a.codebook:
-        cb = json.loads(pathlib.Path(a.codebook).read_text())
-        if cb["format"] != a.format:
-            sys.exit("codebook is for %s, not %s" % (cb["format"], a.format))
-        if a.format == "c5" and (cb.get("trellis_bits") != C5_STATE_BITS or len(cb["grid"]) != 1 << C5_STATE_BITS):
-            sys.exit("codebook is a %s-bit trellis of %d values, not %d bits" % (cb.get("trellis_bits"), len(cb["grid"]), C5_STATE_BITS))
+        cb = load_codebook(a.codebook, a.format)
     else:
         cb = fit_codebook(src, a.format, a.seed, a.ntry, threads=a.workers)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -451,18 +603,10 @@ def main():
     spans = [(s, min(s + a.chunk_rows, hi)) for s in range(lo, hi, a.chunk_rows)]
     out_rb = row_bytes(a.format) if a.native else Q8_RB
     if a.native:
-        kv = {"general.architecture": "strata-ple",
-              "general.name": "PLE n-gram table, %d-bit %s (%d B a row)" % (bits_of(a.format), a.format, out_rb),
-              "strata.ple.format": a.format, "strata.ple.codebook": [float(v) for v in np.float32(cb["grid"])],
-              "strata.ple.source": pathlib.Path(a.src).name, "strata.ple.rows": "%d:%d" % (lo, hi)}
-        if cb["scale"] == "e4m3":
-            kv["strata.ple.scale"] = float(np.float32(cb["table_scale"]))
-        if a.format == "c5":
-            kv["strata.ple.trellis_bits"] = C5_STATE_BITS
-        head = gguf_header(hi - lo, kv, GGML_I8, out_rb)
+        head = gguf_header(hi - lo, native_kv(a.format, cb, a.src, lo, hi), GGML_I8, out_rb)
     else:
         kv = {"general.architecture": "strata-ple",
-              "general.name": "PLE n-gram table emulating %s (%d-bit dequantized values stored as Q8_0)" % (a.format, bits_of(a.format)),
+              "general.name": "PLE n-gram table emulating %s (%s-bit dequantized values stored as Q8_0)" % (a.format, bits_label(a.format)),
               "strata.ple.emulated_format": a.format, "strata.ple.emulated_from": pathlib.Path(a.src).name,
               "strata.ple.emulated_rows": "%d:%d" % (lo, hi)}
         head = gguf_header(hi - lo, kv)
@@ -504,12 +648,12 @@ def main():
                              np.concatenate([v for _, v in refs])[:m].astype("<f4").tobytes())
         print("format %s rows %d:%d (%d rows), written packed, %d B/row (I8, strata.ple.format = %s): %s" %
               (a.format, lo, hi, n, out_rb, a.format, out))
-        print("NMSE vs IQ4_NL values (%d-bit, as stored)       : %.5f" % (bits_of(a.format), tot[1] / tot[0]))
+        print("NMSE vs IQ4_NL values (%s-bit, as stored)       : %.5f" % (bits_label(a.format), tot[1] / tot[0]))
         print("%d rows and their values for ple_fp8_parity: %s" % (m, ref_path))
     else:
         print("format %s rows %d:%d (%d rows), %d B/row in %s, written as Q8_0 (%d B/row): %s" %
               (a.format, lo, hi, n, row_bytes(a.format), "its own layout", Q8_RB, out))
-        print("NMSE vs IQ4_NL values (%d-bit dequantized)      : %.5f" % (bits_of(a.format), tot[1] / tot[0]))
+        print("NMSE vs IQ4_NL values (%s-bit dequantized)      : %.5f" % (bits_label(a.format), tot[1] / tot[0]))
         print("NMSE vs IQ4_NL values (after Q8_0 rounding)    : %.5f" % (tot[2] / tot[0]))
         print("  Q8_0's own rounding, relative to the values   : %.2e" % (tot[3] / tot[0]))
     if cb["scale"] == "e4m3":
