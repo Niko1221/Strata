@@ -63,8 +63,11 @@ about 17 GiB of RAM for the experts that are not on the card; setup asks for 32 
 
 **Speed**
 
-- `--spec 1` speculative decoding with the model's own drafter (`mtp.safetensors`): greedy output stays exact and
-  sampled output keeps the model's distribution. It falls back to plain decoding while that is faster.
+- `--spec 1` speculative decoding with the model's own drafter (`mtp.safetensors`): a draft token is kept only when it
+  is the model's own choice (greedy) or passes the usual acceptance test (sampled). It falls back to plain decoding
+  while that is faster. The check reads the drafts through other kernels than plain decoding, so a near-tie can go the
+  other way: a 512-token greedy answer matched plain decoding for 273 tokens, then parted where the top two logits were
+  0.2 apart.
 
 **Conversations and pictures**
 
