@@ -1,15 +1,15 @@
-## Was sich in 0.7.6 ändert
+## Was sich in 0.7.7 ändert
 
 Hinweis: Die Werte DS4 2,84x / FLA 4,86x / Sakura 22,44 t/s stammen aus den Antigravity-Entwicklungsprotokollen und wurden in dieser Build-Sitzung nicht unabhängig reproduziert. Diese Sitzung maß 9,09 t/s Prefill / 11,78 t/s Decode mit dem kanonischen GGUF bei 32K.
 
-Diese Version behält alle Fork-Eigenschaften und fügt die nativen Optimierungen vom 22./23.11. hinzu: Produkt **0.7.6**, Engine-Familie **0.6.7**, Upstream v0.2.19. RTX 5060 Ti (sm_120a)/CUDA 13.5: DS4-9B Prefill 2,84x, E2E +22,7 %, FLA GDN + Spin(8) Prefill 4,86x, Sakura Inkling-2 65K-98K (22,44 t/s Decode). Ryu's (kuraneko1, MIT) SM x VRAM-Profile in der offiziellen CUDA-Inkling-2 (PR #6571). Signaturprüfung entfernt, SHA-256 bleibt. `releaseQualified=false`.
+Diese Version behält alle Fork-Eigenschaften und fügt die nativen Optimierungen vom 22./23.11. hinzu: Produkt **0.7.7**, Engine-Familie **0.6.7**, Upstream v0.2.19. RTX 5060 Ti (sm_120a)/CUDA 13.5: DS4-9B Prefill 2,84x, E2E +22,7 %, FLA GDN + Spin(8) Prefill 4,86x, Sakura Inkling-2 65K-98K (22,44 t/s Decode). Ryu's (kuraneko1, MIT) SM x VRAM-Profile in der offiziellen CUDA-Inkling-2 (PR #6571). Signaturprüfung entfernt, SHA-256 bleibt. `releaseQualified=false`.
 
 ## Version und Downloads
 
 <!-- release-062-stable -->
-Aktuelles App-Release: [0.7.6](https://github.com/zapabob/Strata/releases/tag/v0.7.6) (App `0.7.3`; Terminal, Control `0.6.3`; native Engine-Familie `0.6.5`) — dies ist GitHub Latest. Die Windows-App liefert die 0.6.5-Engine-Familie (neu gebautes Q38 27B+9B, offizielles Hy4-Flash 0.1.64) als getrennte optionale Komponenten. Die Signaturprüfung wurde entfernt (kein Schlüssel); SHA-256-Prüfsummen bleiben die Integritätsprüfung. `releaseQualified=false` bleibt; Vollfenster-Inferenz und Modellqualität sind nicht qualifiziert. Eine dritte optionale Engine, `strata-inkling2` (Inkling-2 Mini, GGUF-Arch `inkling2`), wurde aus kuraneko1/Strata (MIT) von kuraneko1 (_ryu15_) mit Quellenangabe portiert.
+Aktuelles App-Release: [0.7.7](https://github.com/zapabob/Strata/releases/tag/v0.7.7) (App `0.7.3`; Terminal, Control `0.6.3`; native Engine-Familie `0.6.5`) — dies ist GitHub Latest. Die Windows-App liefert die 0.6.5-Engine-Familie (neu gebautes Q38 27B+9B, offizielles Hy4-Flash 0.1.64) als getrennte optionale Komponenten. Die Signaturprüfung wurde entfernt (kein Schlüssel); SHA-256-Prüfsummen bleiben die Integritätsprüfung. `releaseQualified=false` bleibt; Vollfenster-Inferenz und Modellqualität sind nicht qualifiziert. Eine dritte optionale Engine, `strata-inkling2` (Inkling-2 Mini, GGUF-Arch `inkling2`), wurde aus kuraneko1/Strata (MIT) von kuraneko1 (_ryu15_) mit Quellenangabe portiert.
 
-[0.7.6](https://github.com/zapabob/Strata/releases/tag/v0.7.6) · [Setup-EXE](https://github.com/zapabob/Strata/releases/download/v0.7.6/Strata-0.7.6-windows-x64-setup.exe) · [tar.7z](https://github.com/zapabob/Strata/releases/download/v0.7.6/Strata-0.7.6-windows-x64.tar.7z) · [SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.7.6/SHA256SUMS.txt) · [BUNDLE-SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.7.6/BUNDLE-SHA256SUMS.txt)
+[0.7.7](https://github.com/zapabob/Strata/releases/tag/v0.7.7) · [Setup-EXE](https://github.com/zapabob/Strata/releases/download/v0.7.7/Strata-0.7.7-windows-x64-setup.exe) · [tar.7z](https://github.com/zapabob/Strata/releases/download/v0.7.7/Strata-0.7.7-windows-x64.tar.7z) · [SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.7.7/SHA256SUMS.txt) · [BUNDLE-SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.7.7/BUNDLE-SHA256SUMS.txt)
 
 ![Hakua / Strata real-model Japanese chat on Qwen3.8-27B](docs/media/native-qwen38-japanese-chat.png)
 *Hakua / Strata Desktop mit `qwen3.8-27b-abliterated-3.69bpw-12GB-MTP.gguf` über `strata-q38.exe` (CUDA 13 / RTX 5060 Ti 16 GB).*
