@@ -925,9 +925,20 @@ struct Engine {
     float* elt_prev = nullptr;
     float* elt_delta_host = nullptr;
     float* elt_delta_dev = nullptr;
+    std::vector<cudaGraphExec_t> core_pass_graph;
     int64_t elt_total_tokens = 0;
     int64_t elt_total_passes = 0;
     int64_t elt_early_exits = 0;
+    int64_t elt_delta_cnt = 0;
+    double elt_delta_sum = 0.0;
+    float elt_delta_min = 1e9f;
+    float elt_delta_max = 0.0f;
+    void reset_elt_stats() {
+        elt_total_tokens = elt_total_passes = elt_early_exits = elt_delta_cnt = 0;
+        elt_delta_sum = 0.0;
+        elt_delta_min = 1e9f;
+        elt_delta_max = 0.0f;
+    }
     void ensure_elt_bufs(size_t N) {
         if (!elt_prev) {
             CK(cudaMalloc(&elt_prev, N * sizeof(float)));
@@ -1028,7 +1039,10 @@ struct Engine {
     ~Engine() {
         if (core_graph) cudaGraphExecDestroy(core_graph);
         if (verify_core_graph) cudaGraphExecDestroy(verify_core_graph);
+        for (auto g : core_pass_graph) if (g) cudaGraphExecDestroy(g);
         for (auto g : layer_pre_graph) if (g) cudaGraphExecDestroy(g);
+        if (elt_prev) cudaFree(elt_prev);
+        if (elt_delta_host) cudaFreeHost(elt_delta_host);
         for (auto* p : kc) cudaFree(p);
         for (auto* p : vc) cudaFree(p);
         for (auto* p : kq) cudaFree(p);
@@ -1908,6 +1922,9 @@ struct Engine {
         // and reset graph_oom so graphs cleanly re-capture at the new capacity.
         if (core_graph) { cudaGraphExecDestroy(core_graph); core_graph = nullptr; }
         if (verify_core_graph) { cudaGraphExecDestroy(verify_core_graph); verify_core_graph = nullptr; }
+        for (auto& g : core_pass_graph) {
+            if (g) { cudaGraphExecDestroy(g); g = nullptr; }
+        }
         for (auto& g : layer_pre_graph) {
             if (g) { cudaGraphExecDestroy(g); g = nullptr; }
         }
@@ -2696,27 +2713,55 @@ struct Engine {
         if (pp_streaming) pp_begin(core_end_virt, core_all_gpu ? 1 : 0);
         for (int il = 0; il < hp.n_layer; ++il) {
             if (elt_active && il == hp.core_start) {
-                // Elastic Looped Transformer (ELT, arXiv:2604.09168): run core pass-by-pass with dynamic early exit.
+                // Elastic Looped Transformer (ELT, arXiv:2604.09168): run core pass-by-pass with per-pass CUDA Graphs.
                 CK(cudaMemcpyAsync(elt_prev, cur, (size_t) N * sizeof(float), cudaMemcpyDeviceToDevice, st));
                 ++elt_total_tokens;
+                if ((int) core_pass_graph.size() < hp.num_loops) core_pass_graph.resize((size_t) hp.num_loops, nullptr);
                 int executed_passes = 0;
+                const auto tp_elt0 = Clock::now();
                 for (int pass = 0; pass < hp.num_loops; ++pass) {
                     const int cl0 = (int) (hp.core_start + pass * n_core);
                     const int cl1 = cl0 + (int) n_core;
-                    for (int cl = cl0; cl < cl1; ++cl) {
-                        run_layer_pre(cl, false);
-                        run_layer_post(cl, false);
+                    if (core_all_gpu && !prof_detail) {
+                        cudaGraphExec_t& pg = core_pass_graph[(size_t) pass];
+                        if (!pg) {
+                            cudaGraph_t g = nullptr;
+                            CK(cudaStreamBeginCapture(st, cudaStreamCaptureModeThreadLocal));
+                            for (int cl = cl0; cl < cl1; ++cl) {
+                                run_layer_pre(cl, false);
+                                run_layer_post(cl, false);
+                            }
+                            CK(cudaStreamEndCapture(st, &g));
+                            CK(cudaGraphInstantiate(&pg, g, nullptr, nullptr, 0));
+                            CK(cudaGraphDestroy(g));
+                        }
+                        CK(cudaGraphLaunch(pg, st));
+                    } else {
+                        for (int cl = cl0; cl < cl1; ++cl) {
+                            run_layer_pre(cl, false);
+                            run_layer_post(cl, false);
+                        }
                     }
                     ++executed_passes;
                     if (pass + 1 < hp.num_loops) {
                         k_elt_rel_delta<<<1, 256, 0, st>>>(cur, elt_prev, elt_delta_dev, (int) N);
                         CK(cudaStreamSynchronize(st));
-                        if (executed_passes >= elt_min_passes && *elt_delta_host <= elt_exit_tol) {
+                        const float dval = *elt_delta_host;
+                        ++elt_delta_cnt;
+                        elt_delta_sum += (double) dval;
+                        if (dval < elt_delta_min) elt_delta_min = dval;
+                        if (dval > elt_delta_max) elt_delta_max = dval;
+                        if (executed_passes >= elt_min_passes && dval <= elt_exit_tol) {
                             ++elt_early_exits;
                             break;
                         }
                     }
                 }
+                if (core_all_gpu && !prof_detail) {
+                    norm_blocks = {norm_blk_buf[0], norm_blk_buf[5], norm_blk_buf[6]};
+                    next_blk_buf = 7;
+                }
+                if (prof) { CK(cudaStreamSynchronize(st)); p_core_ms += ms_since(tp_elt0); }
                 elt_total_passes += executed_passes;
                 il = core_end_virt - 1;
                 continue;
@@ -2842,8 +2887,8 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, std::strin
 #if defined(_WIN32)
     // Windows WDDM shares physical VRAM with DWM/OS; overcommitting to free=0 MiB silently migrates
     // late tier2 expert slabs to Shared GPU Memory (~20 GB/s PCIe vs 448 GB/s GDDR7 = 16x slower).
-    // Reserve 2048 MiB on <=17 GiB WDDM GPUs so all placed VRAM slabs stay strictly GDDR-resident.
-    if (tot <= (17ull << 30)) reserve = std::max(reserve, (size_t) 2048 << 20);
+    // Reserve 2816 MiB on <=17 GiB WDDM GPUs so all placed VRAM slabs + 65K-98K KV stay strictly GDDR-resident.
+    if (tot <= (17ull << 30)) reserve = std::max(reserve, (size_t) 2816 << 20);
 #endif
     if (const char* v = std::getenv("STRATA_VRAM_RESERVE_MB")) {
         const int mb = std::atoi(v);
@@ -3740,6 +3785,7 @@ int run(int argc, char** argv) {
             }
         }
         E.reset_state();
+        E.reset_elt_stats();
         E.hy_gpu = E.hy_cpu = 0;
         E.hy_cpu_ms = 0.0;
         if (dspark) {
@@ -3805,9 +3851,12 @@ int run(int argc, char** argv) {
     }
 
     if (E.elt_total_tokens > 0) {
-        std::fprintf(stderr, "strata-inkling2: ELT avg_passes=%.2f/%lld early_exits=%lld/%lld (tol=%.4f min_passes=%d)\n",
+        const double d_avg = E.elt_delta_cnt > 0 ? (E.elt_delta_sum / (double) E.elt_delta_cnt) : 0.0;
+        std::fprintf(stderr, "strata-inkling2: ELT avg_passes=%.2f/%lld early_exits=%lld/%lld delta(min=%.4f avg=%.4f max=%.4f) (tol=%.4f min_passes=%d)\n",
                      (double) E.elt_total_passes / (double) E.elt_total_tokens, (long long) m.hp.num_loops,
-                     (long long) E.elt_early_exits, (long long) E.elt_total_tokens, E.elt_exit_tol, E.elt_min_passes);
+                     (long long) E.elt_early_exits, (long long) E.elt_total_tokens,
+                     E.elt_delta_cnt > 0 ? E.elt_delta_min : 0.0f, d_avg, E.elt_delta_max,
+                     E.elt_exit_tol, E.elt_min_passes);
     }
     std::printf("tokens:");
     for (int32_t id : gen) std::printf(" %d", (int) id);

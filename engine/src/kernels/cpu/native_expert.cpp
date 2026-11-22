@@ -703,6 +703,12 @@ void native_gu_rows_impl(const NativeFmt& f, const uint8_t* blob, const void* co
         return;
     }
     // KQ matches the ggml AVX2/FMA dot; other builds keep their own singleton arithmetic.
+    if (cpu_avx2_ok() && f.gu_type == 12 && nt == 1 && f.tail_off == 0 &&
+        (Arithmetic == NativeArithmetic::Default || (flavour_avx2()))) {
+        kq256_gu_t1_q4k(blob, f.gu_row, f.up_off, (int) f.n_embd, act[0], ff[0], r0, r1,
+                        f.situ, f.situ_beta, f.situ_linear_beta);
+        return;
+    }
     if (kq && f.gu_type == 12 && nt >= 2 &&
         (Arithmetic == NativeArithmetic::Default || (flavour_avx2()))) {   // one token: ggml's own dot below (the same bits, less overhead)
         kq256_gu_rows(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act, nt, ff, r0, r1);

@@ -22,6 +22,23 @@ treating them as verified facts in the v0.7.5 release.
 
 Run 3's prefill (10.95 t/s) is close to the claimed 11.95 t/s. All 3 exits = 0.
 
+## Additional reproductions (same session)
+- **Inkling-2-Mini-UD-Q4_K_M.gguf, 16K ctx** (Antigravity claim: pp 34.51 /
+  tg 24.67 t/s): measured `pp 16 tok 619.5 ms (25.83 t/s) | tg 31 tok
+  1416.9 ms (21.88 t/s)`, hits=12506/misses=1606, cpu_ms=684.0. Raw log:
+  H:/Strata/evidence/antigravity-ud16k-bench.txt. Same order of magnitude; below claim.
+- **Sakura-Inkling-2-Mini, 16K ctx** (Antigravity claim: tg 19.34 t/s,
+  +42.8%, moe_gpu 52.4 ms): measured `pp 16 tok 898.5 ms (17.81 t/s) | tg 31
+  tok 2632.1 ms (11.78 t/s)`, hits=11850/misses=2262, cpu_ms=1676.0. Raw log:
+  H:/Strata/evidence/antigravity-sakura16k-bench.txt. Decode not reproduced.
+- **DS4-9B / Hikari PQ2_0**: model GGUFs WERE located in subfolders
+  (H:/Strata/models/新しいフォルダー/DeepSeek-V4-Pro-Qwen3.5-9B-...gguf 5.24 GB,
+  H:/Strata/models/hikari-pq20/Hikari-LoRA-fixed-scale-PQ2_0.gguf 6.71 GB),
+  but Antigravity's benchmark used a `--ctx-size 4096 --tokens 1..16 --n 64`
+  harness that is NOT in this repo (no CLI here accepts --ctx-size; the 11/23
+  strata-q38.exe build is absent, only 11/17 builds exist). These two could not
+  be reproduced without the missing harness/exe — recorded as blocked, not failed.
+
 ## Conclusion (honest)
 - Decode 22.44 t/s was NOT reproduced: measured 9.11-11.93 t/s, roughly 2-2.5x
   slower than the claim. Prefill is approximately reproducible.
@@ -33,4 +50,9 @@ Run 3's prefill (10.95 t/s) is close to the claimed 11.95 t/s. All 3 exits = 0.
   Antigravity's speed figures are from that agent's session and were NOT
   independently reproduced here. They should not be presented as this session's
   verified measurements. `releaseQualified=false` unchanged.
-- All 3 raw logs are kept as evidence; no claim is made beyond what they show.
+- Summary table (claim -> reproduced): Sakura 98K tg 22.44 -> 9.11-11.93 (no);
+  UD 16K pp 34.51 -> 25.83, tg 24.67 -> 21.88 (close/under); Sakura 16K
+  tg 19.34 -> 11.78 (no); DS4-9B 2.84x and Hikari -18% (blocked: harness/exe
+  missing). Therefore none of Antigravity's headline speedups was fully
+  reproduced on this session; the provenance note in v0.7.5 is justified.
+- All raw logs are kept as evidence; no claim is made beyond what they show.

@@ -211,10 +211,13 @@ inline ResolvedProfile resolve_inkling2_profile(const ProfileInput& in) {
     }
 
     // 1. Initial full-attention KV capacity:
-    //    - FullVram & CoreResidentHybrid allocate max_ctx upfront (zero mid-run KV expansion pauses!).
-    //    - TightHybrid starts at min(max_ctx, 32768) so short prompts keep maximum VRAM experts, then grows dynamically.
+    //    - FullVram allocates max_ctx upfront (zero mid-run KV expansion pauses).
+    //    - TightHybrid, and CoreResidentHybrid on <=17 GiB GPUs with max_ctx > 32768, start lazily at 16384/32768
+    //      so ~1.3 GiB of GDDR7 VRAM stays available for hot tier2 outer experts until context actually grows via ensure_kv_cap().
     if (out.regime == VramRegime::TightHybrid && in.max_ctx > 32768) {
         out.full_kv_init = 32768;
+    } else if (out.regime == VramRegime::CoreResidentHybrid && in.max_ctx > 32768 && in.vram_total_bytes <= (17ull << 30)) {
+        out.full_kv_init = 16384;
     } else {
         out.full_kv_init = std::max(1, in.max_ctx);
     }
