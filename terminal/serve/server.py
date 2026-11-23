@@ -763,6 +763,8 @@ class StrataEngine:
         self.split_engine = os.path.basename(str(exe)).startswith("strata-split")
         self.hy4_engine = hy4_kind.is_hy4_exe(exe)     # the Hy4-Flash engine (serve/hy4_kind.py): one request at a time, no logprobs, no logit bias
         self.inkling_engine = inkling_kind.is_inkling_exe(exe)   # Inkling-2-Mini (serve/inkling_kind.py): 1..64 continuous batching, DSpark, in-process Vision
+        if self.inkling_engine:
+            self.TURN_ID = 200001  # <|message_model|>: match Inkling's next turn to the slot holding its history.
         self.session_save_reclaim = '--session-save-reclaim' in args
         paths = {k: v for k, v in zip(args, args[1:]) if k in ("--native", "--pack")}
         self.model_path = paths.get("--native") or paths.get("--pack", "pack/full")
@@ -2047,7 +2049,8 @@ class StrataEngine:
                     lines_q, sq = self.lines, self.slot_q           # (it holds no slot of the engine before: nothing to lose)
                 with self.slot_cv:
                     alone = not any(self.slot_busy) and self.waiting == 0
-                if alone and left > 1 and not (not embeddings and self._turn_in_slot(prompt)):
+                # Inkling's GEN uses implicit slot 0; track even an isolated chat so later turns find its cache.
+                if alone and left > 1 and not self.inkling_engine and not (not embeddings and self._turn_in_slot(prompt)):
                     pf = self.pen_from_key(orig_len, len(prompt))
                     head = f"GENI {left}{leg_keys()}{pf} {embeddings}" if embeddings else f"GEN {left}{leg_keys()}{pf}"
                     self._last_done = None                  # (#879: this request's DONE decides below)

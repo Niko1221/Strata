@@ -336,8 +336,8 @@ class DFlash2ChosenWithRequests(unittest.TestCase):
 
 
 class PickSlot(unittest.TestCase):
-    def engine(self, n):
-        e = StrataEngine("missing-executable", [], lazy=True)
+    def engine(self, n, exe="missing-executable"):
+        e = StrataEngine(exe, [], lazy=True)
         e.batch = n
         e.slot_order = list(range(n))
         e.slot_busy = [False] * n
@@ -346,6 +346,19 @@ class PickSlot(unittest.TestCase):
         e.slot_live = [None] * n
         e.slot_group = [0] * n
         return e
+
+    def test_inkling_next_turn_returns_to_its_slot_after_history_is_rendered_again(self):
+        e = self.engine(6, exe="strata-inkling")
+        history = list(range(1000, 1700))
+        # The next turn renders the assistant header differently, so the held stream is not a full prefix.
+        e.slot_held[3] = history + [200001, 200004, 70, 71]
+        prompt = history + [200001, 200004, 80, 81]
+        self.assertEqual(e.pick_slot(prompt), 3)    # keep this chat instead of overwriting empty slot 0
+
+        # Choosing Inkling's marker must not change the default Qwen marker on another engine.
+        qwen = self.engine(6)
+        qwen.slot_held[3] = history + [248045, 70, 71]
+        self.assertEqual(qwen.pick_slot(history + [248045, 80, 81]), 3)
 
     def test_the_slot_that_holds_the_conversation(self):
         e = self.engine(3)
@@ -525,7 +538,7 @@ class FakeEngineCase(unittest.TestCase):
     """The real StrataEngine and Service over HTTP, the fake engine behind them."""
 
     def start(self, slots, fit=None, slot_cache=False, fail=False, reuse=False, says_groups=0,
-              more=(), stage_plan=False, batch_sample=False, stage_sample=False):
+              more=(), stage_plan=False, batch_sample=False, stage_sample=False, exe="strata"):
         import serve.server as server
         self.tmp = tempfile.TemporaryDirectory()
         script = Path(self.tmp.name) / "fake_strata.py"
@@ -543,7 +556,7 @@ class FakeEngineCase(unittest.TestCase):
         extra += list(more)
         with mock.patch.object(server.subprocess, "Popen",
                                lambda cmd, **kw: real([sys.executable, str(script), *cmd[1:]], **kw)):
-            self.engine = StrataEngine("strata", extra, log=str(Path(self.tmp.name) / "engine.log") if stage_plan else None)
+            self.engine = StrataEngine(exe, extra, log=str(Path(self.tmp.name) / "engine.log") if stage_plan else None)
         tok = ByteTokenizer()
         self.svc = Service(self.engine, tok, ChatTemplate(Path(__file__).parent / "chat_template.jinja"))
         self.httpd = serve(self.svc, port=0)
@@ -1210,6 +1223,27 @@ class SlotRead(FakeEngineCase):
         reply = self.tokens(prompt)
         self.assertEqual(bytes(self.tokens(prompt + reply + list(b" more?"))[:-1]), b"ok, done.")
         self.assertEqual([x.split()[0] for x in self.log.read_text().splitlines()], ["GEN", "GEN"])
+
+    def test_inkling_tracks_an_isolated_chat_across_another_chat_and_a_quiet_period(self):
+        self.start(6, more=("--slotread",), exe="strata-inkling")
+        prompt = list(b"the first chat " + b"c" * 600)
+        reply = self.tokens(prompt)
+        self.assertEqual(bytes(reply[:-1]), b"ok, done.")
+        self.assertEqual(self.log.read_text().split()[0], "BGEN")
+        first_slot = int(self.log.read_text().split()[1])
+
+        other = list(b"another chat " + b"d" * 600)
+        self.assertEqual(bytes(self.tokens(other)[:-1]), b"ok, done.")
+        # No recent parallel activity: Inkling must still use its tracked slot, not GEN's implicit slot 0.
+        self.engine.slot_used = [0.0] * self.engine.batch
+        before = len(self.log.read_text())
+        turn = prompt + reply + list(b" more?")
+        got = self.tokens(turn)
+        self.assertEqual(bytes(got[:-1]), b"ok, done.")
+        new = self.log.read_text()[before:].splitlines()
+        self.assertEqual([x.split()[0] for x in new], ["BGEN", "SLOTREAD"])
+        self.assertEqual(int(new[0].split()[1]), first_slot)
+        self.assertEqual(self.engine.slot_held[first_slot], turn + got[:-1])
 
     def test_an_engine_that_does_not_say_slot_read_is_served_as_before(self):
         self.start(2, slot_cache=True)
