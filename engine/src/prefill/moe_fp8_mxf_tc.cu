@@ -86,11 +86,6 @@ void ck(cudaError_t e, const char* what) {
     }
 }
 
-unsigned blocks_for(int64_t items, int per_block) {
-    const int64_t b = (items + per_block - 1) / per_block;
-    return (unsigned) std::max<int64_t>(1, std::min<int64_t>(b, 65535));
-}
-
 #if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 1200) && (__CUDA_ARCH__ < 1300)
 #define STRATA_FP8_MXF_DEV 1
 #endif
@@ -416,31 +411,36 @@ __device__ __forceinline__ void decode_half16_mxfp8(const uint8_t* row, int ib_g
 __global__ void __launch_bounds__(256) quant_act_mxfp8_kernel(const float* __restrict__ x, int64_t nblk,
                                                               uint8_t* __restrict__ xa) {
 #if defined(STRATA_FP8_MXF_DEV)
-    const int64_t w = (int64_t) blockIdx.x * 8 + (threadIdx.x >> 5);
-    if (w >= nblk) return;
     const int lane = threadIdx.x & 31;
-    const float* xb = x + w * K_STEP;
-    const float v0 = xb[lane];
-    const float v1 = xb[32 + lane];
-    float a0 = fabsf(v0);
-    float a1 = fabsf(v1);
+    const int64_t stride = (int64_t) gridDim.x * 8;
+    for (int64_t w = (int64_t) blockIdx.x * 8 + (threadIdx.x >> 5); w < nblk; w += stride) {
+        const float* xb = x + w * K_STEP;
+        const float r0 = xb[lane];
+        const float r1 = xb[32 + lane];
+        const float v0 = isfinite(r0) ? r0 : 0.0f;
+        const float v1 = isfinite(r1) ? r1 : 0.0f;
+        float a0 = fabsf(v0);
+        float a1 = fabsf(v1);
 #pragma unroll
-    for (int o = 16; o > 0; o >>= 1) {
-        a0 = fmaxf(a0, __shfl_xor_sync(0xffffffffu, a0, o));
-        a1 = fmaxf(a1, __shfl_xor_sync(0xffffffffu, a1, o));
-    }
-    uint8_t sc0 = 1u, sc1 = 1u;
-    float inv0 = 0.0f, inv1 = 0.0f;
-    amax_to_ue8m0(a0, sc0, inv0);
-    amax_to_ue8m0(a1, sc1, inv1);
-    uint8_t* out = xa + w * AB;
-    const __nv_fp8_e4m3 q0(v0 * inv0);
-    const __nv_fp8_e4m3 q1(v1 * inv1);
-    out[lane] = q0.__x;
-    out[32 + lane] = q1.__x;
-    if (lane == 0) {
-        out[64] = sc0;
-        out[65] = sc1;
+        for (int o = 16; o > 0; o >>= 1) {
+            a0 = fmaxf(a0, __shfl_xor_sync(0xffffffffu, a0, o));
+            a1 = fmaxf(a1, __shfl_xor_sync(0xffffffffu, a1, o));
+        }
+        uint8_t sc0 = 1u, sc1 = 1u;
+        float inv0 = 0.0f, inv1 = 0.0f;
+        amax_to_ue8m0(a0, sc0, inv0);
+        amax_to_ue8m0(a1, sc1, inv1);
+        uint8_t* out = xa + w * AB;
+        const float q0f = v0 * inv0;
+        const float q1f = v1 * inv1;
+        const __nv_fp8_e4m3 q0(isfinite(q0f) ? q0f : 0.0f);
+        const __nv_fp8_e4m3 q1(isfinite(q1f) ? q1f : 0.0f);
+        out[lane] = q0.__x;
+        out[32 + lane] = q1.__x;
+        if (lane == 0) {
+            out[64] = sc0;
+            out[65] = sc1;
+        }
     }
 #else
     (void) x; (void) nblk; (void) xa;
@@ -621,7 +621,8 @@ __global__ void __launch_bounds__(NT, 1) fp8_mxf_tc_kernel(Batch b, NativeGeom g
                         for (int i = 0; i < 4; ++i) {
                             const float gt = acc[i][n][c];
                             const float up = acc[i][n][2 + c];
-                            hv[i] = (gt / (1.0f + __expf(-gt))) * up;
+                            const float hv_raw = (gt / (1.0f + __expf(-gt))) * up;
+                            hv[i] = isfinite(hv_raw) ? hv_raw : 0.0f;
                             am = fmaxf(am, fabsf(hv[i]));
                         }
 #pragma unroll
@@ -633,7 +634,8 @@ __global__ void __launch_bounds__(NT, 1) fp8_mxf_tc_kernel(Batch b, NativeGeom g
                             uint8_t* dst_slot = out + (size_t) (row0 + r) * H_ROW_BYTES + (size_t) fb * AB;
 #pragma unroll
                             for (int i = 0; i < 4; ++i) {
-                                const __nv_fp8_e4m3 q(hv[i] * inv);
+                                const float qf = hv[i] * inv;
+                                const __nv_fp8_e4m3 q(isfinite(qf) ? qf : 0.0f);
                                 dst_slot[32 * wf + 8 * i + g] = q.__x;
                             }
                             if (g == 0) dst_slot[64 + wf] = sc;
@@ -735,13 +737,23 @@ bool wanted(int gu_type, int d_type) {
 }
 
 void quantize_act(const float* x, int64_t rows, int64_t cols, void* xa, void* stream) {
-    if (rows <= 0) return;
-    if (cols % K_STEP != 0) {
-        std::fprintf(stderr, "fp8_mxf_tc::quantize_act: cols=%lld not a multiple of 64\n", (long long) cols);
+    if (cols < 0 || cols % K_STEP != 0) {
+        std::fprintf(stderr, "fp8_mxf_tc::quantize_act: cols=%lld must be a non-negative multiple of %d\n",
+                     (long long) cols, K_STEP);
         std::exit(1);
     }
-    const int64_t nblk = rows * (cols / K_STEP);
-    quant_act_mxfp8_kernel<<<blocks_for(nblk, 8), 256, 0, (cudaStream_t) stream>>>(x, nblk, (uint8_t*) xa);
+    if (rows <= 0 || cols == 0) return;
+    const int64_t blocks_per_row = cols / K_STEP;
+    static constexpr int64_t kMaxGridX = 0x7fffffffLL;
+    if (rows > (kMaxGridX * 8) / blocks_per_row) {
+        std::fprintf(stderr, "fp8_mxf_tc::quantize_act: rows=%lld cols=%lld exceeds CUDA grid.x limit\n",
+                     (long long) rows, (long long) cols);
+        std::exit(1);
+    }
+    const int64_t nblk = rows * blocks_per_row;
+    // Each warp handles one 64-value block. Large prefill chunks need more than 65535 CTAs in grid.x.
+    const unsigned grid = (unsigned) ((nblk + 7) / 8);
+    quant_act_mxfp8_kernel<<<grid, 256, 0, (cudaStream_t) stream>>>(x, nblk, (uint8_t*) xa);
     ck(cudaGetLastError(), "quantize_act");
 }
 

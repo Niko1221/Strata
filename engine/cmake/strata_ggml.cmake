@@ -5,6 +5,9 @@
 
 # which ggml tree the engine builds from: the vendored third_party/strata-ggml, or the -DSTRATA_GGML_DIR override (repo_root: the checkout)
 macro(strata_ggml_resolve repo_root)
+if(DEFINED CACHE{GGML_CCACHE})
+  option(GGML_CCACHE "ggml: use ccache if available" ON)
+endif()
 set(STRATA_GGML_DIR "" CACHE PATH "llama.cpp checkout to take ggml from instead of the vendored third_party/strata-ggml (empty: the vendored tree)")
 if(STRATA_GGML_DIR)
   set(_strata_ggml_root "${STRATA_GGML_DIR}")

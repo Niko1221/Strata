@@ -24,7 +24,7 @@
 #endif
 
 #ifndef INK_VERSION
-#define INK_VERSION "0.1.65"
+#define INK_VERSION "0.1.66"
 #endif
 
 namespace ink_metal {
@@ -497,7 +497,7 @@ int main(int argc, char** argv) {
     if (!image_path.empty()) {
         std::vector<float> emb;
         int ntok = 0;
-        if (!runner.vis.encode_image_file(cx, image_path, emb, ntok, err)) {
+        if (!runner.ensure_vision(err) || !runner.vis.encode_image_file(cx, image_path, emb, ntok, err)) {
             fprintf(stderr, "[ERROR] vision: %s\n", err.c_str());
             return 1;
         }

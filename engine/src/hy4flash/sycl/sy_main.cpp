@@ -12,7 +12,7 @@
 using namespace hy4s;
 
 #ifndef HY4_VERSION
-#define HY4_VERSION "0.2.18-dev-sycl"
+#define HY4_VERSION "0.1.66"
 #endif
 
 // `strata-hy4 --export-tokenizer FILE.strata DIR`: Section 0's tokenizer_json and chat_template to DIR/tokenizer.hf.json and DIR/chat_template.jinja
@@ -41,8 +41,18 @@ static int export_tokenizer(const std::string& file, const std::string& dir) {
     return 0;
 }
 
-// `strata-hy4 --info FILE.strata`: one line of key=value facts, no GPU needed. drafter= and images= are what THIS engine can do with this file (images=1: the SYCL engine reads pictures when it is started with --vision).
+// `strata-hy4 --info [FILE.strata]`: one line of key=value facts, no GPU needed.
 static int print_info(const std::string& file) {
+    if (file.empty()) {
+        printf("arch=hy4flash engine=hy4-serve-sycl-0 backend=sycl drafter=dfly2 spec_tree=1 spec_prob=1 lcp_resume=1 images=1 version=%s\n", HY4_VERSION);
+        return 0;
+    }
+    std::string verr;
+    hy4::VisionShardInfo vinfo;
+    if (hy4::vision_probe(file, vinfo, verr)) {
+        printf("arch=hy4flash_vision backend=sycl images=1 tensors=%zu\n", vinfo.T.size());
+        return 0;
+    }
     strata::artifact::StrataFileReader rd;
     std::string err;
     if (!rd.open(file, err)) {
@@ -67,14 +77,22 @@ static void top5_line(const float* lg, int V, int pos, std::string& out) {
 }
 
 int main(int argc, char** argv) {
+    // Work around oneMKL + Level Zero V2 adapter segfault (exit 139) on Battlemage Xe2 (Arc Pro B70 bmg_g31):
+    // default UR_LOADER_USE_LEVEL_ZERO_V2=0 when unset in user env BEFORE any SYCL device/queue init.
+    if (!std::getenv("UR_LOADER_USE_LEVEL_ZERO_V2")) {
+        hy4s_setenv("UR_LOADER_USE_LEVEL_ZERO_V2", "0", 0);
+    }
     // Backend: Level Zero with SYCL command_graph replay (~2.15 us/kernel) beats OpenCL eager (~7.35 us/kernel) on both prefill & decode!
     // HY4S_BACKEND=opencl (or an explicit ONEAPI_DEVICE_SELECTOR) overrides.
     const bool user_sel = std::getenv("ONEAPI_DEVICE_SELECTOR") != nullptr;
+    const char* be_env = std::getenv("HY4S_BACKEND");
+    const bool want_ocl = (be_env && std::string(be_env) == "opencl");
     if (!user_sel) {
-        const char* be = std::getenv("HY4S_BACKEND");
-        hy4s_setenv("ONEAPI_DEVICE_SELECTOR", (be && std::string(be) == "opencl") ? "opencl:gpu" : "level_zero:gpu", 1);
+        hy4s_setenv("ONEAPI_DEVICE_SELECTOR", want_ocl ? "opencl:gpu" : "level_zero:gpu", 1);
     }
     std::string model, engram, tok_path, out_dir = ".", force_route, draft;
+    std::string gpus_spec = std::getenv("HY4_GPUS") ? std::getenv("HY4_GPUS") : "";
+    int gpu_arg = -1;
     SpecCfg scfg;
     int wincheck = 0, wincheck_skip = 0, detcheck = 0;
     bool detnotap = false;
@@ -100,7 +118,10 @@ int main(int argc, char** argv) {
             printf("strata-hy4 %s\n", HY4_VERSION);
             return 0;
         }
-        if (a == "--info") return print_info(nxt());
+        if (a == "--info") {
+            const std::string f = (i + 1 < argc && argv[i + 1][0] != '-') ? std::string(argv[++i]) : std::string();
+            return print_info(f);
+        }
         if (a == "--export-tokenizer") {
             const std::string f = nxt();
             return export_tokenizer(f, nxt());
@@ -110,8 +131,9 @@ int main(int argc, char** argv) {
         else if (a == "--max-context") max_ctx = atoi(nxt().c_str());
         else if (a == "--session-reuse") session_reuse = atoi(nxt().c_str()) != 0;
         else if (a == "--gpu") {
-            const std::string n = nxt();
-            if (!user_sel) hy4s_setenv("ONEAPI_DEVICE_SELECTOR", ("opencl:gpu:" + n).c_str(), 1);
+            gpu_arg = atoi(nxt().c_str());
+        } else if (a == "--gpus" || a == "--devices") {
+            gpus_spec = nxt();
         } else if (a == "--vision") {
             vision_path = nxt();
             vision_requested = true;
@@ -162,6 +184,9 @@ int main(int argc, char** argv) {
         else if (a == "--spec-check") scfg.check = true;
         else if (a == "--spec-plain-only") scfg.plain_only = true;
         else if (a == "--spec-rv") scfg.rv = atoi(nxt().c_str());
+        else if (a == "--spec-tree") scfg.tree = true;
+        else if (a == "--no-spec-tree") scfg.tree = false;
+        else if (a == "--spec-early-cut") scfg.early_cut = (float)atof(nxt().c_str());
         else {
             fprintf(stderr, "unknown arg %s\n", a.c_str());
             if (serve) {
@@ -169,6 +194,22 @@ int main(int argc, char** argv) {
                 fflush(stdout);
             }
             return 2;
+        }
+    }
+    // Resolve single-GPU (--gpu N) or multi-GPU (--gpus 0,1 / --gpus 2 / --devices 0,1 / HY4_GPUS) BEFORE touching Q()/dev_caps().
+    int primary_gpu = (gpu_arg >= 0) ? gpu_arg : 0;
+    std::vector<int> peer_devs;
+    if (!gpus_spec.empty()) {
+        const auto avail_devs = enum_gpu_devices();
+        parse_gpu_spec(gpus_spec, primary_gpu, (int)avail_devs.size(), primary_gpu, peer_devs);
+        set_primary_gpu_index(primary_gpu);
+    } else if (gpu_arg >= 0) {
+        if (!user_sel) {
+            const std::string sel = std::string(want_ocl ? "opencl:gpu:" : "level_zero:gpu:") + std::to_string(gpu_arg);
+            hy4s_setenv("ONEAPI_DEVICE_SELECTOR", sel.c_str(), 1);
+            set_primary_gpu_index(0);
+        } else {
+            set_primary_gpu_index(gpu_arg);
         }
     }
     if (serve) {
@@ -201,6 +242,8 @@ int main(int argc, char** argv) {
         so.vision_requested = vision_requested;
         so.vision = vision_path;
         so.image_max_pixels = image_max_pixels;
+        so.primary_gpu = primary_gpu;
+        so.peer_devs = peer_devs;
         so.spec = scfg;
         return hy4s_serve_main(so);
     }
@@ -211,9 +254,9 @@ int main(int argc, char** argv) {
     }
     try {
         const auto& caps = dev_caps();
-        fprintf(stderr, "[gpu] %s, %.2f GiB (runtime: %s, sg8=%d sg16=%d xmx8=%d graph=%d onemkl=%d)\n",
+        fprintf(stderr, "[gpu] %s, %.2f GiB (runtime: %s, sg8=%d sg16=%d xmx8=%d xmx16=%d graph=%d onemkl=%d)\n",
                 caps.name.c_str(), caps.global_mem / 1073741824.0, caps.platform.c_str(),
-                (int)caps.has_sg8, (int)caps.has_sg16, (int)caps.has_xmx_sg8, (int)caps.has_graph, (int)onemkl_enabled());
+                (int)caps.has_sg8, (int)caps.has_sg16, (int)caps.has_xmx_sg8, (int)caps.has_xmx_sg16, (int)caps.has_graph, (int)onemkl_enabled());
         SyModel g;
         std::string err;
         if (!g.load(model, err)) {
@@ -236,6 +279,7 @@ int main(int argc, char** argv) {
         const bool spec_mode = draft == "dfly2" && gen > 0;
         hy4::CpuExperts ucx;
         SyVramExpertCache vcache;
+        SyPeerExperts peers;
         Runner r(g, ucx, max_ctx, Tc, std::max(8, all_logits ? std::min(Tc, std::max(T0, 1)) : 8));
         r.dump = dump;
         r.dbg_layers = dbg;
@@ -257,11 +301,12 @@ int main(int argc, char** argv) {
         const bool want_gx = (gx_mb > 0 && (load_only || T0 >= gx_min_t));
         const size_t gx_reserve = (want_gx ? ((size_t)gx_mb * 2 / 3 + 220) * (1ull << 20) : 0) + (16ull << 20);
         const size_t host_oh = r.kv_host_bytes + g.host_bytes_total + ((size_t)std::max(gx_mb, 0) << 20) + (640ull << 20);
-        if (!setup_experts_unified(model, threads, vram_experts_gb, ram_experts_gb, gx_reserve, host_oh, hi_act || (expert_act == 0), vcache, ucx, err)) {
+        if (!setup_experts_unified(model, threads, vram_experts_gb, ram_experts_gb, gx_reserve, host_oh, hi_act || (expert_act == 0), vcache, ucx, err, peer_devs, &peers)) {
             fprintf(stderr, "experts: %s\n", err.c_str());
             return 1;
         }
         r.vcache = vcache.active() ? &vcache : nullptr;
+        r.peers = peers.active() ? &peers : nullptr;
         DFly2 df(r);
         if (draft == "dfly2") {
             if (!df.init(err)) {
@@ -350,9 +395,11 @@ int main(int argc, char** argv) {
                     (unsigned long long)r.graph_replays, (unsigned long long)r.graph_captures);
             if (vcache.active()) {
                 const uint64_t ht = vcache.hits(), ms = vcache.misses();
-                fprintf(stderr, "[vram-cache] hits %llu / %llu (%.1f%%), promotions %llu\n",
+                const uint64_t uq = vcache.unique_expert_launches(), tp_l = vcache.total_pair_launches();
+                fprintf(stderr, "[vram-cache] hits %llu / %llu (%.1f%%), promotions %llu, dedup %llu/%llu (%.2fx)\n",
                         (unsigned long long)ht, (unsigned long long)(ht + ms),
-                        (ht + ms) ? 100.0 * (double)ht / (double)(ht + ms) : 0.0, (unsigned long long)vcache.promotions());
+                        (ht + ms) ? 100.0 * (double)ht / (double)(ht + ms) : 0.0, (unsigned long long)vcache.promotions(),
+                        (unsigned long long)uq, (unsigned long long)tp_l, uq ? (double)tp_l / (double)uq : 1.0);
             }
             fprintf(stderr, "[io] decode: SSD read %.2f GB in %.2f s = %.3f GB/s (cpu pool %.1f GB/s)\n",
                     io_read_gb() - io1, td, (io_read_gb() - io1) / std::max(td, 1e-9), ucx.stats().gbps());
@@ -538,9 +585,11 @@ int main(int argc, char** argv) {
                     (unsigned long long)r.graph_replays, (unsigned long long)r.graph_captures);
             if (vcache.active()) {
                 const uint64_t ht = vcache.hits(), ms = vcache.misses();
-                fprintf(stderr, "[vram-cache] hits %llu / %llu (%.1f%%), promotions %llu\n",
+                const uint64_t uq = vcache.unique_expert_launches(), tp_l = vcache.total_pair_launches();
+                fprintf(stderr, "[vram-cache] hits %llu / %llu (%.1f%%), promotions %llu, dedup %llu/%llu (%.2fx)\n",
                         (unsigned long long)ht, (unsigned long long)(ht + ms),
-                        (ht + ms) ? 100.0 * (double)ht / (double)(ht + ms) : 0.0, (unsigned long long)vcache.promotions());
+                        (ht + ms) ? 100.0 * (double)ht / (double)(ht + ms) : 0.0, (unsigned long long)vcache.promotions(),
+                        (unsigned long long)uq, (unsigned long long)tp_l, uq ? (double)tp_l / (double)uq : 1.0);
             }
             fprintf(stderr, "[io] decode: SSD read %.2f GB in %.2f s = %.3f GB/s (cpu pool %.1f GB/s)\n",
                     io_read_gb() - io1, td, (io_read_gb() - io1) / std::max(td, 1e-9), ucx.stats().gbps());

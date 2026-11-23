@@ -166,7 +166,8 @@ static inline void mpp_sk_w8(device const uchar* pl, int j, thread float4& o0, t
         o1 = float4(kMppS2Lut[p[1]]);
     } else if constexpr (F == 3) {
         device const uchar* p = pl + (j >> 2);
-        const uint h = uint(pl[64 + (j >> 3)]);
+        device const uchar* hp = pl + 64;
+        const uint h = uint(hp[j >> 3]);
         o0 = float4(kMppS2Lut[p[0]] + kMppS3Hi[h & 15u]);
         o1 = float4(kMppS2Lut[p[1]] + kMppS3Hi[h >> 4]);
     } else if constexpr (F == 4) {
@@ -175,7 +176,8 @@ static inline void mpp_sk_w8(device const uchar* pl, int j, thread float4& o0, t
         o1 = float4(half4(kMppS4Lut[p[2]], kMppS4Lut[p[3]]));
     } else if constexpr (F == 5) {
         device const uchar* p = pl + (j >> 1);
-        const uint h = uint(pl[128 + (j >> 3)]);
+        device const uchar* hp = pl + 128;
+        const uint h = uint(hp[j >> 3]);
         o0 = float4(half4(kMppS4Lut[p[0]], kMppS4Lut[p[1]]) + kMppS5Hi[h & 15u]);
         o1 = float4(half4(kMppS4Lut[p[2]], kMppS4Lut[p[3]]) + kMppS5Hi[h >> 4]);
     } else if constexpr (F == 6) {
@@ -203,8 +205,20 @@ struct InkExpertDevMpp {
     uint dn_off;
     uchar gu_code;
     uchar dn_code;
-    ushort pad;
+    ushort chunk_idx;
 };
+
+static inline device const uchar* ink_mpp_sec4_ptr(
+    ushort cidx,
+    device const uchar* s0,
+    device const uchar* s1,
+    device const uchar* s2,
+    device const uchar* s3) {
+    if (cidx == 0u) return s0;
+    if (cidx == 1u) return s1;
+    if (cidx == 2u) return s2;
+    return s3;
+}
 
 // ============================================================================
 // 1. Cast / Init-Time Weight Conversion + Metal 4 matmul2d Dense Trunk GEMMs
@@ -612,6 +626,9 @@ kernel void ink_mpp_moe_gu_dir(
     device half* XS                    [[buffer(2)]],
     device half* HS                    [[buffer(3)]],
     device const int4* tiles           [[buffer(4)]],
+    device const uchar* sec4_1         [[buffer(5)]],
+    device const uchar* sec4_2         [[buffer(6)]],
+    device const uchar* sec4_3         [[buffer(7)]],
     uint2 tg  [[threadgroup_position_in_grid]],
     ushort tid [[thread_index_in_threadgroup]]) {
     constexpr int TN = 64, TK = 64, SG = 4, NTH = 128;
@@ -624,8 +641,8 @@ kernel void ink_mpp_moe_gu_dir(
     const int e = tl.x, row0 = tl.y;
     const int n0 = int(tg.y) * TN;
     const InkExpertDevMpp ed = ex[e];
-    device const uchar* body = sec4 + ed.body_off;
-    const bool is_sk_dn = (ed.dn_code != 15 && ed.dn_code != 16);
+    device const uchar* body = ink_mpp_sec4_ptr(ed.chunk_idx, sec4, sec4_1, sec4_2, sec4_3) + ed.body_off;
+    const bool is_sk_dn = (ed.dn_code != 15 && ed.dn_code != 16 && ed.dn_code != 20);
     const int gcode = (CODEC == 0) ? int(ed.gu_code) : CODEC;
     const float sf4_outer = (gcode == 15) ? (((device const float*)body)[0] / ((device const float*)body)[1]) : 0.0f;
     const size_t sk_rowb = (CODEC == 0 && gcode != 15 && gcode != 16) ? (9ul * size_t(mpp_sk_sb_bytes(gcode))) : 0ul;
@@ -707,6 +724,9 @@ kernel void ink_mpp_moe_dn_dir(
     device half* HS                    [[buffer(2)]],
     device float* YE                   [[buffer(3)]],
     device const int4* tiles           [[buffer(4)]],
+    device const uchar* sec4_1         [[buffer(5)]],
+    device const uchar* sec4_2         [[buffer(6)]],
+    device const uchar* sec4_3         [[buffer(7)]],
     uint2 tg  [[threadgroup_position_in_grid]],
     ushort tid [[thread_index_in_threadgroup]]) {
     constexpr int TN = 64, TK = 64, SG = 4;
@@ -716,7 +736,7 @@ kernel void ink_mpp_moe_dn_dir(
     const int e = tl.x, row0 = tl.y;
     const int d0 = int(tg.y) * TN;
     const InkExpertDevMpp ed = ex[e];
-    device const uchar* body = sec4 + ed.body_off;
+    device const uchar* body = ink_mpp_sec4_ptr(ed.chunk_idx, sec4, sec4_1, sec4_2, sec4_3) + ed.body_off;
     const int dcode = (CODEC == 0) ? int(ed.dn_code) : CODEC;
     const float sf4_outer = (dcode == 15) ? (((device const float*)body)[2] / ((device const float*)body)[3]) : 0.0f;
     const size_t sk_pairb = (CODEC == 0 && dcode != 15 && dcode != 16) ? (9ul * size_t(mpp_sk_sb_bytes(dcode))) : 0ul;

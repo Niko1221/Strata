@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#define INK_METAL_WITH_MODEL_FILE 1
 #include "ink_metal_runner.h"
 
 #ifdef INK_METAL_EMBEDDED_SHADERS
@@ -66,6 +67,10 @@ class MetalInkBackend final : public InkBackend {
 public:
     const char* backend_name() const noexcept override { return "metal"; }
 
+    int effective_max_ctx() const override { return runner_.max_ctx; }
+
+    bool dspark_ready() const override { return runner_.use_dspark; }
+
     std::string device_info() const override {
         return cx_.device_name() + " (workSet=" +
                std::to_string((int)(cx_.recommended_working_set() / (1024ull * 1024ull * 1024ull))) + " GiB)";
@@ -85,8 +90,17 @@ public:
     }
 
     bool init(const InkModelFile& model, const BackendOpts& opts, std::string& err) override {
+        if (kv_dtype_is_int_quant(opts.kv_dtype)) {
+            err = "metal: --kv k8v4/k8v8 is not supported on the Metal backend (allocates fp16-sized pages); use --kv fp8 or fp16";
+            return false;
+        }
         kv_dtype_ = opts.kv_dtype;
-        if (!mod_.load(cx_, model.path, err)) return false;
+        const char* force_mf = std::getenv("INK_METAL_FORCE_MODEL_FILE");
+        if (model.kind == ModelSourceKind::Strata && !(force_mf && force_mf[0] == '1')) {
+            if (!mod_.load(cx_, model.path, err)) return false;
+        } else {
+            if (!mod_.load_from_model_file(cx_, model, err)) return false;
+        }
         const int par = std::max(1, std::min(64, opts.parallel));
         const int batch_cap = std::max(256, std::max(opts.chunk, par));
         if (!runner_.init(cx_, mod_, par, std::max(256, opts.max_ctx), batch_cap,
@@ -421,12 +435,16 @@ public:
     }
 
     bool encode_image(const ImageRec& img, std::vector<float>& out_embeds, std::string& err) override {
-        if (!runner_.vis.loaded || img.file.empty()) return false;
+        if (img.file.empty()) return false;
+        if (!runner_.ensure_vision(err)) return false;
         int ntok = 0;
         return runner_.vis.encode_image_file(cx_, img.file, out_embeds, ntok, err);
     }
 
     bool selfcheck(std::string& err) override {
+        if (runner_.mod == nullptr) {
+            return selfcheck_device(err);
+        }
         StepBatch b;
         b.push(0, 0, 1, true);
         std::vector<float> lg((size_t)mod_.man.c.vocab_unpadded);
@@ -437,6 +455,58 @@ public:
         }
         runner_.reset_slot(0);
         return true;
+    }
+
+    bool selfcheck_device(std::string& err) {
+        runner_.cx = &cx_;
+        if (runner_.lib_codecs < 0) {
+            if (!runner_.compile_shaders("", err)) return false;
+        }
+        // Verify M1/M2 S3_K/S5_K gate-up pipelines compile cleanly (#6608) alongside ink_linear_f32!
+        auto p_f32 = cx_.pipeline(runner_.lib_codecs, "ink_linear_f32");
+        (void)cx_.pipeline(runner_.lib_codecs, "ink_moe_gu_situ");
+        (void)cx_.pipeline(runner_.lib_codecs, "ink_moe_gu_sk23");
+        (void)cx_.pipeline(runner_.lib_codecs, "ink_moe_gu_sk3");
+        (void)cx_.pipeline(runner_.lib_codecs, "ink_moe_gu_sk5");
+
+        constexpr int N = 32, K = 64, M = 2;
+        mtl::Buffer bw = cx_.alloc((size_t)N * K * sizeof(float));
+        mtl::Buffer bx = cx_.alloc((size_t)M * K * sizeof(float));
+        mtl::Buffer by = cx_.alloc((size_t)M * N * sizeof(float));
+        float* wp = bw.as<float>();
+        float* xp = bx.as<float>();
+        float* yp = by.as<float>();
+        for (size_t i = 0; i < (size_t)N * K; ++i) wp[i] = std::sin((float)(i % 97)) * 0.5f - 0.25f;
+        for (size_t i = 0; i < (size_t)M * K; ++i) xp[i] = std::cos((float)(i % 89)) * 0.5f;
+        std::memset(yp, 0, (size_t)M * N * sizeof(float));
+
+        mtl::Dispatch d;
+        d.p = &p_f32;
+        d.grid[0] = (uint32_t)((N + 3) / 4);
+        d.grid[1] = (uint32_t)((M + 3) / 4);
+        d.tg[0] = 128;
+        d.args = {mtl::Arg::B(bw), mtl::Arg::B(bx), mtl::Arg::B(by),
+                  mtl::Arg::V(N), mtl::Arg::V(K), mtl::Arg::V(M)};
+        cx_.run({d});
+
+        bool ok = true;
+        for (int m = 0; m < M && ok; ++m) {
+            for (int n = 0; n < N; ++n) {
+                float ref = 0.0f;
+                for (int k = 0; k < K; ++k) ref += wp[(size_t)n * K + k] * xp[(size_t)m * K + k];
+                const float got = yp[(size_t)m * N + n];
+                if (!std::isfinite(got) || std::fabs(ref - got) > 1e-4f * std::max(1.0f, std::fabs(ref))) {
+                    err = "metal selfcheck F32 linear mismatch at (" + std::to_string(m) + "," + std::to_string(n) +
+                          "): ref=" + std::to_string(ref) + " got=" + std::to_string(got);
+                    ok = false;
+                    break;
+                }
+            }
+        }
+        cx_.free(bw);
+        cx_.free(bx);
+        cx_.free(by);
+        return ok;
     }
 
 private:

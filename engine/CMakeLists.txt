@@ -10,7 +10,7 @@
 # building for a pre-Ampere arch would produce a binary that runs and is wrong about its own performance, which is
 # the worst of both outcomes.
 cmake_minimum_required(VERSION 3.24)
-project(strata VERSION 0.1.65 LANGUAGES CXX)
+project(strata VERSION 0.1.66 LANGUAGES CXX)
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/strata_geometry.cmake)   # -DSTRATA_GEOMETRY=<name>: the model shape the kernels are compiled for (default flash_next, no flag added)
 # The build is cut by backend (cleanup 5.4): each file below only DEFINES macros (strata_<part>()), which run here, in this scope, at the place their
 # block used to be - so this file reads in the order the old single CMakeLists.txt evaluated.
@@ -311,6 +311,10 @@ if(STRATA_BUILD_TESTS)
   add_executable(kv_grow_rules_test tests/core/kv_grow_rules_test.cpp)
   target_include_directories(kv_grow_rules_test PRIVATE include)
   add_test(NAME kv_grow_rules_test COMMAND kv_grow_rules_test)
+  # #6681: KV dtype guard truth table for HIP/Metal/SYCL pools (no GPU)
+  add_executable(kv_dtype_guard_test tests/core/kv_dtype_guard_test.cpp)
+  target_include_directories(kv_dtype_guard_test PRIVATE src/inkling2)
+  add_test(NAME kv_dtype_guard_test COMMAND kv_dtype_guard_test)
   # how the prompt path's K/V append reaches the host copy under KV streaming: the switch both ways, the backend defaults, no pool (no GPU)
   add_executable(kv_host_dma_test tests/core/kv_host_dma_test.cpp)
   target_include_directories(kv_host_dma_test PRIVATE include)
@@ -412,11 +416,20 @@ if(STRATA_BUILD_TESTS)
   add_executable(q36_expert_info_test tests/program/q36_expert_info_test.cpp)
   target_include_directories(q36_expert_info_test PRIVATE include)
   add_test(NAME q36_expert_info_test COMMAND q36_expert_info_test)
+  # #6522 / #6425: qwen35moe per-layer head_count_kv array, feed_forward_length=0, and hybrid staging headroom (no GPU)
+  add_executable(q36_metadata_test src/qwen35/q36_metadata_test.cpp)
+  target_link_libraries(q36_metadata_test PRIVATE strata_artifact)
+  add_test(NAME q36_metadata_test COMMAND q36_metadata_test)
 
   # the default CPU prefill share is not armed when every expert is resident (#1595): header-only rule, no GPU
   add_executable(share_rules_test tests/prefill/share_rules_test.cpp)
   target_include_directories(share_rules_test PRIVATE include)
   add_test(NAME share_rules_test COMMAND share_rules_test)
+
+  # Track 6A: low-VRAM (<= 13 GiB) consumer GPU rules (auto reserve, tiny-cache anti-thrash, Zipf pinning, auto L3_PF)
+  add_executable(low_vram_rules_test src/core/low_vram_rules_test.cpp)
+  target_include_directories(low_vram_rules_test PRIVATE include)
+  add_test(NAME low_vram_rules_test COMMAND low_vram_rules_test)
 
   # the chunk a prompt piece below the walk floor lends its buffers for (the staged layout, not the rounded chunk's streamed one): header-only rule, no GPU
   add_executable(loan_rules_test tests/prefill/loan_rules_test.cpp)
@@ -830,9 +843,81 @@ if(STRATA_BUILD_SPLIT)
   add_subdirectory(src/split)
 endif()
 
+# ---- strata-hy4: Tencent Hy4-Flash 220B-A12B .strata engine (src/hy4flash/run, CUDA sm_70+ or HIP) ----
+# OFF by default so existing CI presets stay unchanged; unified CMake build alongside strata / strata-q36 / strata-split / strata-inkling.
+option(STRATA_BUILD_HY4 "Build strata-hy4: Tencent Hy4-Flash .strata engine (CUDA or HIP)" OFF)
+if(STRATA_BUILD_HY4)
+  if(NOT STRATA_ENABLE_CUDA AND NOT STRATA_ENABLE_HIP)
+    message(FATAL_ERROR "STRATA_BUILD_HY4 requires STRATA_ENABLE_CUDA=ON or STRATA_ENABLE_HIP=ON (Metal/SYCL have dedicated scripts in src/hy4flash/)")
+  endif()
+  find_path(STRATA_HY4_ZSTD_INCLUDE_DIR zstd.h)
+  find_library(STRATA_HY4_ZSTD_LIBRARY NAMES zstd libzstd zstd_static)
+  set(_strata_hy4_zstd_bundled OFF)
+  if(STRATA_HY4_ZSTD_INCLUDE_DIR AND STRATA_HY4_ZSTD_LIBRARY)
+    set(_strata_hy4_reader src/artifact/strata_reader.cpp)
+  elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/zstd-dec/zstd.h")
+    enable_language(C)
+    set(_hy4_zstd_dir "${CMAKE_CURRENT_SOURCE_DIR}/third_party/zstd-dec")
+    if(NOT TARGET strata_zstd_dec)
+      add_library(strata_zstd_dec STATIC
+        ${_hy4_zstd_dir}/common/debug.c
+        ${_hy4_zstd_dir}/common/entropy_common.c
+        ${_hy4_zstd_dir}/common/error_private.c
+        ${_hy4_zstd_dir}/common/fse_decompress.c
+        ${_hy4_zstd_dir}/common/xxhash.c
+        ${_hy4_zstd_dir}/common/zstd_common.c
+        ${_hy4_zstd_dir}/decompress/huf_decompress.c
+        ${_hy4_zstd_dir}/decompress/zstd_ddict.c
+        ${_hy4_zstd_dir}/decompress/zstd_decompress.c
+        ${_hy4_zstd_dir}/decompress/zstd_decompress_block.c
+      )
+      target_include_directories(strata_zstd_dec PUBLIC ${_hy4_zstd_dir} ${_hy4_zstd_dir}/common ${_hy4_zstd_dir}/decompress)
+      target_compile_definitions(strata_zstd_dec PRIVATE ZSTD_DISABLE_ASM=1)
+    endif()
+    set(_strata_hy4_reader src/artifact/strata_reader.cpp)
+    set(_strata_hy4_zstd_bundled ON)
+    message(STATUS "STRATA_BUILD_HY4: using bundled third_party/zstd-dec (strata_zstd_dec) for native .strata manifest decompression")
+  else()
+    message(WARNING "STRATA_BUILD_HY4: libzstd not found; building strata-hy4 with sidecar manifest reader (strata_reader_nozstd.cpp)")
+    set(_strata_hy4_reader src/hy4flash/metal/strata_reader_nozstd.cpp)
+  endif()
+  set(_strata_hy4_gpu_srcs src/hy4flash/run/hy4_main.hip.cpp src/hy4flash/run/mla_attn.hip.cpp)
+  if(STRATA_ENABLE_CUDA)
+    set_source_files_properties(${_strata_hy4_gpu_srcs} PROPERTIES LANGUAGE CUDA)
+  else()
+    set_source_files_properties(${_strata_hy4_gpu_srcs} PROPERTIES LANGUAGE HIP)
+  endif()
+  add_executable(strata-hy4 ${_strata_hy4_gpu_srcs}
+    src/hy4flash/run/hy4_engram.cpp src/hy4flash/run/hy4_cpu_experts.cpp src/hy4flash/run/hy4_cpu_k512.cpp ${_strata_hy4_reader})
+  strata_utf8_manifest(strata-hy4)
+  target_include_directories(strata-hy4 PRIVATE include src/hy4flash/run)
+  if(STRATA_CPU_X86)
+    if(MSVC)
+      set_source_files_properties(src/hy4flash/run/hy4_cpu_experts.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
+      set_source_files_properties(src/hy4flash/run/hy4_cpu_k512.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX512")
+    else()
+      set_source_files_properties(src/hy4flash/run/hy4_cpu_experts.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma;-mf16c")
+    endif()
+  endif()
+  find_package(Threads REQUIRED)
+  if(STRATA_ENABLE_CUDA)
+    target_compile_options(strata-hy4 PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>)
+    target_link_libraries(strata-hy4 PRIVATE strata_quant CUDA::cudart CUDA::cublas Threads::Threads)
+  else()
+    target_link_libraries(strata-hy4 PRIVATE strata_quant strata_hip_runtime Threads::Threads)
+  endif()
+  if(STRATA_HY4_ZSTD_INCLUDE_DIR AND STRATA_HY4_ZSTD_LIBRARY)
+    target_include_directories(strata-hy4 PRIVATE "${STRATA_HY4_ZSTD_INCLUDE_DIR}")
+    target_link_libraries(strata-hy4 PRIVATE "${STRATA_HY4_ZSTD_LIBRARY}")
+  elseif(_strata_hy4_zstd_bundled)
+    target_link_libraries(strata-hy4 PRIVATE strata_zstd_dec)
+  endif()
+endif()
+
 # ---- strata-inkling: standalone Inkling-2-Mini (.strata v1.1) shape-engine binary (CMake component `inkling2`) ----
+option(STRATA_BUILD_INKLING "Build strata-inkling: Inkling-2-Mini (.strata v1.1) looped MoE engine (alias of STRATA_BUILD_INKLING2)" ON)
 option(STRATA_BUILD_INKLING2 "Build strata-inkling: Inkling-2-Mini (.strata v1.1) looped MoE engine + Vision + 1..64 continuous batching" ON)
-if(STRATA_BUILD_INKLING2 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/inkling2/CMakeLists.txt")
+if((STRATA_BUILD_INKLING AND STRATA_BUILD_INKLING2) AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/inkling2/CMakeLists.txt")
   add_subdirectory(src/inkling2)
 endif()
 

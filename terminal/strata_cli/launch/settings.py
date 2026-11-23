@@ -31,8 +31,28 @@ SPLIT_MODES = ("auto", "on", "off")
 #: strata_control/drafting.py MODES (tests/terminal/test_drafting.py keeps the two the same)
 DRAFTING_MODES = ("auto", "mtp", "dflash2", "off")
 #: setup.py DRAFT_VOCABS (tests/terminal/test_launch_draft_vocab.py keeps the two the same)
-DRAFT_VOCAB_MODES = ("cjk", "en", "cyrillic", "fr", "latin")
-KV_MODES = ("int8", "q4_0", "k8v4", "fp16")
+DRAFT_VOCAB_MODES = ("cjk", "en", "cyrillic", "fr", "latin", "arabic")
+KV_MODES = ("int8", "q4_0", "k8v4", "fp16", "fp8", "k8v8")
+INKLING_KV_MODES_CUDA = ("fp16", "fp8", "k8v8", "k8v4")
+INKLING_KV_MODES_SAFE = ("fp16", "fp8")        # #6681: HIP/Metal/SYCL support fp16 and fp8 only (k8v4/k8v8 OOM on HIP)
+
+
+def inkling_kv_modes(backend: str | None = None) -> tuple[str, ...]:
+    """KV cache formats supported by strata-inkling for `backend` (fp16/fp8 on HIP/Metal/SYCL; fp16/fp8/k8v8/k8v4 on CUDA)."""
+    return INKLING_KV_MODES_SAFE if str(backend or "").strip().lower() in ("hip", "metal", "sycl") else INKLING_KV_MODES_CUDA
+
+
+def safe_inkling_kv(kv: str | None, backend: str | None = None) -> tuple[str | None, bool]:
+    """Return (effective_kv, clamped) for Inkling-2-Mini: clamps k8v4/k8v8 -> fp8 on HIP/Metal/SYCL (#6681)."""
+    if not kv:
+        return None, False
+    val = str(kv).strip().lower()
+    allowed = inkling_kv_modes(backend)
+    if val in allowed:
+        return val, False
+    if val in ("k8v4", "k8v8"):
+        return "fp8", True
+    return None, False
 DEFAULT_PORT = 8080
 
 #: How many requests the card can answer at once (the spec's "fit to card" default): by graphics memory.

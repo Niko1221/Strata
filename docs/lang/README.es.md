@@ -44,11 +44,40 @@ Recomendamos **primero ISTA-DASLab**, después **Unsloth** y otros proveedores, 
 </details>
 
 <details>
+<summary><img src="../media/models/hunyuan.svg" width="22" alt="" align="middle"> &nbsp;<b>Tencent Hy4-Flash</b></summary>
+
+| Paquete | Tu RAM | Tarjeta gráfica |
+| --- | --- | --- |
+| **SQ-64** | 64 GiB | 8, 12 o 16 GiB |
+| **SQ-96** | 96 GiB | 8 o 12 GiB |
+| **SQ-128** | 128 GiB | 8 o 12 GiB |
+
+El número del nombre indica la memoria RAM para la que está pensado el paquete.
+
+[Paquetes de Hy4-Flash en Hugging Face](https://huggingface.co/strata-engine/Hy4-Flash-Strata)
+
+</details>
+
+<details>
 <summary><img src="../media/models/qwen.svg" width="22" alt="" align="middle"> &nbsp;<b>Qwen3.6-35B-A3B</b></summary>
 
 **Unsloth:** UD-Q4_K_XL, UD-Q6_K_XL, Q8_0. Son los paquetes documentados actualmente para este modelo.
 
 [Guía del modelo y compatibilidad](../QWEN36.md).
+
+</details>
+
+<details>
+<summary><picture><source media="(prefers-color-scheme: dark)" srcset="../media/models/thinking-machines-white.png"><img src="../media/models/thinking-machines.png" height="22" alt="Thinking Machines" align="middle"></picture> &nbsp;<b>Inkling 2 Mini</b></summary>
+
+| Proveedor | Opciones |
+| --- | --- |
+| **Strata** | SQ-20 (19.35 GB), SQ-15 (14.35 GB), SQ-10 (10.47 GB) |
+| **Unsloth** | UD-Q8\_K\_XL (22.87 GB), UD-Q4\_K\_XL (17.63 GB), UD-Q4\_K\_M (16.61 GB), UD-IQ4\_XS (15.73 GB), UD-Q3\_K\_XL (13.63 GB), UD-IQ3\_XXS (11.66 GB), UD-Q2\_K\_XL (9.14 GB), UD-IQ2\_XXS (8.49 GB), UD-IQ1\_M (8.02 GB), UD-IQ1\_S (7.76 GB) |
+
+SQ-20 está pensado para una tarjeta gráfica de 24 GiB, SQ-15 para 16 GiB y SQ-10 para 12 GiB. Con una tarjeta de 4 GiB basta para empezar.
+
+[Paquetes de Strata en Hugging Face](https://huggingface.co/strata-engine/Inkling-2-Mini-Strata) · [Archivos GGUF de Unsloth](https://huggingface.co/unsloth/Inkling-2-Mini-GGUF)
 
 </details>
 
@@ -66,7 +95,7 @@ Recomendamos **primero ISTA-DASLab**, después **Unsloth** y otros proveedores, 
 
 Instala la aplicación, elige un modelo y empieza a chatear. Hay un instalador por sistema. En el primer arranque, la aplicación descarga el motor para tu tarjeta gráfica. [Ayuda con el instalador](../INSTALL.md#the-app).
 
-<sub>Archivos: `Strata-0.2.19-windows-x64-setup.exe` · `Strata-0.2.19-linux-x86_64.AppImage` · `Strata-0.2.19-macos-arm64.dmg`</sub>
+<sub>Archivos: `Strata-0.2.20-windows-x64-setup.exe` · `Strata-0.2.20-linux-x86_64.AppImage` · `Strata-0.2.20-macos-arm64.dmg`</sub>
 
 <p align="center">
   <img src="../media/app-chat.png" width="900" alt="Aplicación de escritorio de Strata con un chat y una vista previa del código en vivo, una junto a otra">
@@ -125,6 +154,7 @@ Sigue las indicaciones para descargar e iniciar un modelo. [Guía del Terminal](
 | **Intel Arc · Linux** | [Instalación en Intel](../INTEL_ARC.md) |
 | **Apple Silicon · M1 o posterior** | [Instalación en Mac](../MAC.md) |
 | **AMD Ryzen AI Max · Strix Halo** | [Instalación en Strix Halo](../STRIX_HALO.md) |
+| **NVIDIA DGX Spark · Linux** | [Instalación en DGX Spark](../DGX_SPARK_LINUX.md) |
 
 <a id="using-it"></a>
 
@@ -143,6 +173,15 @@ Ejecuta **`strata connect`** para ver las instrucciones de tu herramienta. [Guí
 
 [Todas las guías](..) · [Solución de problemas](../TROUBLESHOOTING.md) · [Informar de un error](https://github.com/Niko1221/Strata/issues/new/choose) ·
 [Benchmarks](../COMMUNITY_BENCHMARKS.md) · [Cómo funciona](../HOW_IT_WORKS.md) · [Contribuir](../../.github/CONTRIBUTING.md)
+
+## Patrocinadores de Strata
+
+<!-- Sponsor logos: one centred row with room for five, each 130 px wide. Add the next sponsor after Olares, with &nbsp;&nbsp;&nbsp;&nbsp; between two logos. -->
+<p align="center">
+  <a href="https://heylinger.com"><picture><source media="(prefers-color-scheme: dark)" srcset="../media/sponsors/linger-logo-white.svg"><img src="../media/sponsors/linger-logo-color.svg" alt="Linger" title="Linger" width="130" align="middle"></picture></a>
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <a href="https://www.olares.com/one"><picture><source media="(prefers-color-scheme: dark)" srcset="../media/sponsors/olares-logo-white.svg"><img src="../media/sponsors/olares-logo-color.svg" alt="Olares" title="Olares" width="130" align="middle"></picture></a>
+</p>
 
 ## Apoya Strata
 

@@ -89,6 +89,23 @@ void kv_stream_resolve(const KvStreamMap& m, const QsaAttnPools& slots, const Kv
                        const int32_t* ids, const int32_t* steps, int64_t n_q, int64_t cap, const QsaShapes& s,
                        void* stream);
 
+/// Multi-slot grouped KV resolve: resolves up to kKvResolveMaxGroups distinct streamed slots in
+/// one resolve launch (`grid = ng`) and one copy launch (`grid = (copy_x, ng)`). Every group in `g` MUST name a
+/// distinct KvStreamMap (cross-slot disjointness) and satisfy `ntok[i] * max_pages_per_q <= map[i].n_slots`.
+inline constexpr int kKvResolveMaxGroups = 8;
+struct KvResolveGroups {
+    KvStreamMap  map[kKvResolveMaxGroups] = {};
+    QsaAttnPools slots[kKvResolveMaxGroups] = {};
+    KvHostPools  host[kKvResolveMaxGroups] = {};
+    int fmt[kKvResolveMaxGroups] = {};
+    int first[kKvResolveMaxGroups] = {};
+    int ntok[kKvResolveMaxGroups] = {};
+    int ng = 0;
+};
+
+void kv_stream_resolve_groups(const KvResolveGroups& g, const int32_t* ids, const int32_t* steps, int64_t cap,
+                              const QsaShapes& s, void* stream);
+
 /// The static ring table `block -> block % n_slots`.
 void kv_ring_table(int32_t* page_table, int64_t n_blocks, int64_t n_slots, void* stream);
 
@@ -111,6 +128,7 @@ void kv_unstage_to_host(const QsaAttnPools& stage, const KvHostPools& host, int 
 struct KvStreamCounters {
     uint64_t misses = 0, lookups = 0, calls = 0;
     bool overflow = false;
+    uint32_t overflow_count = 0;
 };
 /// Synchronous read of the counters (debug and the end-of-request summary).
 KvStreamCounters kv_stream_counters(const KvStreamMap& m);

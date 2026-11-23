@@ -535,9 +535,12 @@ class TablesMatchTheSources(unittest.TestCase):
         self.assertRegex(_read("CMakeLists.txt"), r'option\(STRATA_Q6K_EXPERTS "[^"]*" ON\)')
 
     def test_mmvq_lists(self):
-        for rel in ("src/kernels/cuda/native_mmvq.cu", "sycl/src/kernels/cuda/native_mmvq.dp.cpp", "metal/src/engine/mmvq_host.cpp"):
+        for be, rel in (("cuda", "src/kernels/cuda/native_mmvq.cu"),
+                        ("sycl", "sycl/src/kernels/cuda/native_mmvq.dp.cpp"),
+                        ("metal", "metal/src/engine/mmvq_host.cpp")):
             with self.subTest(rel):
-                self.assertEqual(_ints(_func(_read(rel), "bool native_mmvq_supported"), r"ggml_type == (\d+)"), Q.MMVQ)
+                self.assertEqual(_ints(_func(_read(rel), "bool native_mmvq_supported"), r"ggml_type == (\d+)"),
+                                 Q.BACKEND_LISTS[be]["mmvq"])
 
     def test_sycl_lists(self):
         text = _read("sycl/src/kernels/cuda/iq_kernels.dp.cpp")

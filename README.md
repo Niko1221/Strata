@@ -44,11 +44,40 @@ We recommend **ISTA-DASLab first**, then **Unsloth** and other providers, where 
 </details>
 
 <details>
+<summary><img src="docs/media/models/hunyuan.svg" width="22" alt="" align="middle"> &nbsp;<b>Tencent Hy4-Flash</b></summary>
+
+| Pack | Your RAM | Graphics card |
+| --- | --- | --- |
+| **SQ-64** | 64 GiB | 8, 12 or 16 GiB |
+| **SQ-96** | 96 GiB | 8 or 12 GiB |
+| **SQ-128** | 128 GiB | 8 or 12 GiB |
+
+The number in the name is the RAM the pack is made for.
+
+[Hy4-Flash packs on Hugging Face](https://huggingface.co/strata-engine/Hy4-Flash-Strata)
+
+</details>
+
+<details>
 <summary><img src="docs/media/models/qwen.svg" width="22" alt="" align="middle"> &nbsp;<b>Qwen3.6-35B-A3B</b></summary>
 
 **Unsloth:** UD-Q4_K_XL, UD-Q6_K_XL, Q8_0. These are the currently documented packs for this model.
 
 [Model guide and compatibility](docs/QWEN36.md).
+
+</details>
+
+<details>
+<summary><picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/models/thinking-machines-white.png"><img src="docs/media/models/thinking-machines.png" height="22" alt="Thinking Machines" align="middle"></picture> &nbsp;<b>Inkling 2 Mini</b></summary>
+
+| Provider | Choices |
+| --- | --- |
+| **Strata** | SQ-20 (19.35 GB), SQ-15 (14.35 GB), SQ-10 (10.47 GB) |
+| **Unsloth** | UD-Q8\_K\_XL (22.87 GB), UD-Q4\_K\_XL (17.63 GB), UD-Q4\_K\_M (16.61 GB), UD-IQ4\_XS (15.73 GB), UD-Q3\_K\_XL (13.63 GB), UD-IQ3\_XXS (11.66 GB), UD-Q2\_K\_XL (9.14 GB), UD-IQ2\_XXS (8.49 GB), UD-IQ1\_M (8.02 GB), UD-IQ1\_S (7.76 GB) |
+
+SQ-20 is made for a 24 GiB graphics card, SQ-15 for 16 GiB and SQ-10 for 12 GiB. A 4 GiB card is enough to start.
+
+[Strata packs on Hugging Face](https://huggingface.co/strata-engine/Inkling-2-Mini-Strata) · [Unsloth GGUF files](https://huggingface.co/unsloth/Inkling-2-Mini-GGUF)
 
 </details>
 
@@ -67,7 +96,7 @@ Not sure what fits? [Choose a model for your computer](docs/MODELS.md#pick-by-me
 Install the app, choose a model, and start chatting. There is one installer for each system. On first start the app
 downloads the engine for your graphics card. [Help with the installer](docs/INSTALL.md#the-app).
 
-<sub>Files: `Strata-0.2.19-windows-x64-setup.exe` · `Strata-0.2.19-linux-x86_64.AppImage` · `Strata-0.2.19-macos-arm64.dmg`</sub>
+<sub>Files: `Strata-0.2.20-windows-x64-setup.exe` · `Strata-0.2.20-linux-x86_64.AppImage` · `Strata-0.2.20-macos-arm64.dmg`</sub>
 
 <p align="center">
   <img src="docs/media/app-chat.png" width="900" alt="Strata desktop app with a chat and live code preview side by side">
@@ -145,6 +174,15 @@ Run **`strata connect`** to see setup instructions for your tool. [Connection gu
 
 [All guides](docs) · [Troubleshooting](docs/TROUBLESHOOTING.md) · [Report a bug](https://github.com/Niko1221/Strata/issues/new/choose) ·
 [Benchmarks](docs/COMMUNITY_BENCHMARKS.md) · [How it works](docs/HOW_IT_WORKS.md) · [Contribute](.github/CONTRIBUTING.md)
+
+## Sponsors of Strata
+
+<!-- Sponsor logos: one centred row with room for five, each 130 px wide. Add the next sponsor after Olares, with &nbsp;&nbsp;&nbsp;&nbsp; between two logos. -->
+<p align="center">
+  <a href="https://heylinger.com"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/sponsors/linger-logo-white.svg"><img src="docs/media/sponsors/linger-logo-color.svg" alt="Linger" title="Linger" width="130" align="middle"></picture></a>
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <a href="https://www.olares.com/one"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/sponsors/olares-logo-white.svg"><img src="docs/media/sponsors/olares-logo-color.svg" alt="Olares" title="Olares" width="130" align="middle"></picture></a>
+</p>
 
 ## Support Strata
 

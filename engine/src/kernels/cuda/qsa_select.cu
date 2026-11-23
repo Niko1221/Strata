@@ -1075,11 +1075,11 @@ __global__ void __launch_bounds__(SCORE_WARPS * 32) block_scores_slots_kernel(Sc
 // same level (float add commutes), the dot expression is the same text in the same file, the relu-and-add runs over the
 // heads in the same order: the same score bits.  The tail block and the +1e9 are as in the multi kernel.
 template <int NQ>
-__global__ void __launch_bounds__(SCORE_WARPS * 32) block_scores_rows_kernel(const float* __restrict__ pooled,
-                                                                             const float* __restrict__ dead,
-                                                                             const float* __restrict__ q_idx,
-                                                                             const int32_t* __restrict__ steps, int nq,
-                                                                             int64_t max_blocks, float* __restrict__ out) {
+__device__ __forceinline__ void block_scores_rows_body(const float* __restrict__ pooled,
+                                                       const float* __restrict__ dead,
+                                                       const float* __restrict__ q_idx,
+                                                       const int32_t* __restrict__ steps, int nq,
+                                                       int64_t max_blocks, float* __restrict__ out) {
     __shared__ int64_t s_nkv[NQ], s_nbid[NQ];
     if (threadIdx.x < nq) {
         s_nkv[threadIdx.x] = steps[threadIdx.x * kStepCount + kStepNKv];
@@ -1138,6 +1138,63 @@ __global__ void __launch_bounds__(SCORE_WARPS * 32) block_scores_rows_kernel(con
             }
         }
     }
+}
+
+template <int NQ>
+__global__ void __launch_bounds__(SCORE_WARPS * 32) block_scores_rows_kernel(const float* __restrict__ pooled,
+                                                                             const float* __restrict__ dead,
+                                                                             const float* __restrict__ q_idx,
+                                                                             const int32_t* __restrict__ steps, int nq,
+                                                                             int64_t max_blocks, float* __restrict__ out) {
+    block_scores_rows_body<NQ>(pooled, dead, q_idx, steps, nq, max_blocks, out);
+}
+
+// Slot-grouped block scores: blockIdx.y selects one slot group g, reading that slot's pooled/dead
+// keys once across all ntok[g] contiguous draft rows with the exact QSAROWS reduce-scatter arithmetic (bitwise).
+template <int MAX_NQ>
+__global__ void __launch_bounds__(SCORE_WARPS * 32) block_scores_slot_groups_rows_kernel(
+    QsaScoreGroups groups, const float* __restrict__ q_idx, const int32_t* __restrict__ steps, int64_t max_blocks,
+    float* __restrict__ out) {
+    const unsigned g = blockIdx.y;
+    const float* pooled = groups.pooled[0];
+    const float* dead = groups.dead[0];
+    int first = groups.first[0];
+    int ntok = groups.ntok[0];
+#pragma unroll
+    for (unsigned i = 1; i < (unsigned) kScoreMaxGroups; ++i) {
+        if (g == i) {
+            pooled = groups.pooled[i];
+            dead = groups.dead[i];
+            first = groups.first[i];
+            ntok = groups.ntok[i];
+        }
+    }
+    block_scores_rows_body<MAX_NQ>(pooled, dead, q_idx + (size_t) first * IDX_HEADS * IDX_DIM,
+                                   steps + (size_t) first * kStepCount, ntok, max_blocks,
+                                   out + (size_t) first * max_blocks);
+}
+
+// Slot-grouped fallback for groups with 5..MQ rows or STRATA_QSA_ROWS=0: same bitwise block_scores_multi_body.
+__global__ void __launch_bounds__(SCORE_WARPS * 32) block_scores_slot_groups_multi_kernel(
+    QsaScoreGroups groups, const float* __restrict__ q_idx, const int32_t* __restrict__ steps, int64_t max_blocks,
+    float* __restrict__ out, bool early_exit) {
+    const unsigned g = blockIdx.y;
+    const float* pooled = groups.pooled[0];
+    const float* dead = groups.dead[0];
+    int first = groups.first[0];
+    int ntok = groups.ntok[0];
+#pragma unroll
+    for (unsigned i = 1; i < (unsigned) kScoreMaxGroups; ++i) {
+        if (g == i) {
+            pooled = groups.pooled[i];
+            dead = groups.dead[i];
+            first = groups.first[i];
+            ntok = groups.ntok[i];
+        }
+    }
+    block_scores_multi_body(pooled, dead, q_idx + (size_t) first * IDX_HEADS * IDX_DIM,
+                            steps + (size_t) first * kStepCount, ntok, max_blocks, out + (size_t) first * max_blocks,
+                            early_exit, QsaScoreRows{});
 }
 
 #if defined(__HIPCC__)
@@ -1958,6 +2015,43 @@ bool qsa_block_scores_slots(const float* const* pooled, const float* const* dead
     return true;
 }
 
+bool qsa_block_scores_slot_groups(const QsaScoreGroups& groups, const float* q_idx, const int32_t* steps,
+                                  int64_t max_blocks, const QsaShapes& s, float* scores, void* stream) {
+    if (groups.ng <= 0) return true;
+    if (s.idx_dim != IDX_DIM || s.idx_n_head != IDX_HEADS || s.idx_block != R) {
+        std::fprintf(stderr, "qsa_block_scores_slot_groups: unsupported indexer geometry\n");
+        std::exit(1);
+    }
+    if (groups.ng > kScoreMaxGroups || !scores_multi_on()) return false;
+    int max_ntok = 0;
+    for (int g = 0; g < groups.ng; ++g) {
+        if (groups.ntok[g] < 1 || groups.ntok[g] > MQ || !groups.pooled[g] || !groups.dead[g]) return false;
+        if (groups.ntok[g] > max_ntok) max_ntok = groups.ntok[g];
+    }
+    static const bool rows_env = [] {
+        const char* v = std::getenv("STRATA_QSA_ROWS");
+        return v != nullptr && v[0] == '1' && v[1] == '\0';
+    }();
+    const dim3 grid(256u, (unsigned) groups.ng);
+    const cudaStream_t st = (cudaStream_t) stream;
+    if (rows_env && max_ntok <= 4) {
+        if (max_ntok == 1)
+            block_scores_slot_groups_rows_kernel<1><<<grid, SCORE_WARPS * 32, 0, st>>>(groups, q_idx, steps, max_blocks, scores);
+        else if (max_ntok == 2)
+            block_scores_slot_groups_rows_kernel<2><<<grid, SCORE_WARPS * 32, 0, st>>>(groups, q_idx, steps, max_blocks, scores);
+        else if (max_ntok == 3)
+            block_scores_slot_groups_rows_kernel<3><<<grid, SCORE_WARPS * 32, 0, st>>>(groups, q_idx, steps, max_blocks, scores);
+        else
+            block_scores_slot_groups_rows_kernel<4><<<grid, SCORE_WARPS * 32, 0, st>>>(groups, q_idx, steps, max_blocks, scores);
+    } else {
+        block_scores_slot_groups_multi_kernel<<<grid, SCORE_WARPS * 32, 0, st>>>(groups, q_idx, steps, max_blocks,
+                                                                                 scores, scores_early_exit());
+    }
+    const cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) { std::fprintf(stderr, "qsa_block_scores_slot_groups: %s\n", cudaGetErrorString(e)); std::exit(1); }
+    return true;
+}
+
 // block_scores_multi_kernel with the warp sums as one recursive-halving reduction.  A (query, head) dot is a lane's
 // 4-term product summed over the 32 lanes by an xor butterfly (offsets 16, 8, 4, 2, 1): 5 shuffles per value, 20 per
 // (block, query) - on Turing the decode scorer's time grew with the window's queries (420K cells: 117 / 265 / 509 us
@@ -2058,6 +2152,15 @@ __global__ void __launch_bounds__(SCORE_WARPS * 32) block_scores_halve_kernel(co
 // #1825: the prompt path's thread-per-head scorer (bitwise the warp kernel's scores).  Default: Turing with
 // STRATA_SM75_PERF=1 (the P100 gain measured here is +1..3% at 30-60K tokens, under the 3% bar for a new default);
 // STRATA_SCORES_THREAD=1 turns it on, =0 off, on any CUDA card
+static bool sm70_default_on(int major, int minor) {
+    static const bool perf_on = [] {
+        const char* e = std::getenv("STRATA_SM70_PERF");
+        const char* d = std::getenv("STRATA_DEFAULTS");
+        return (e == nullptr || e[0] != '0') && !(d != nullptr && std::strcmp(d, "026") == 0);
+    }();
+    return strata::cc_of(major, minor) == 70 && perf_on;
+}
+
 bool scores_thread_on() {
     static const int env = [] { const char* v = std::getenv("STRATA_SCORES_THREAD"); return v ? (std::atoi(v) != 0 ? 1 : 0) : -1; }();
     if (env >= 0) return env != 0;
@@ -2068,7 +2171,7 @@ bool scores_thread_on() {
         int major = 0, minor = 0;
         cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev);
         cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev);
-        ok[dev] = strata::sm75_default(major, minor) ? 1 : 2;   // Turing, STRATA_SM75_PERF=1
+        ok[dev] = (strata::sm75_default(major, minor) || sm70_default_on(major, minor)) ? 1 : 2;   // Turing / Volta
     }
     return ok[dev] == 1;
 }
@@ -2083,7 +2186,7 @@ bool scores_halve_on() {
         int major = 0, minor = 0;
         cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev);
         cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev);
-        ok[dev] = strata::sm75_default(major, minor) ? 1 : 2;   // Turing, STRATA_SM75_PERF=1
+        ok[dev] = (strata::sm75_default(major, minor) || sm70_default_on(major, minor)) ? 1 : 2;   // Turing / Volta
     }
     return ok[dev] == 1;
 }
@@ -2366,7 +2469,7 @@ static bool topk_active_turing_device() {
     if (dev != cached_device) {
         cudaDeviceProp prop{};
         if (cudaGetDeviceProperties(&prop, dev) != cudaSuccess) return false;
-        turing = prop.major == 7 && prop.minor == 5;
+        turing = (prop.major == 7 && prop.minor == 5) || sm70_default_on(prop.major, prop.minor);
         cached_device = dev;
     }
     return turing;
@@ -2904,7 +3007,7 @@ bool topk_sample_on() {
         int major = 0, minor = 0;
         cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev);
         cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev);
-        ok[dev] = strata::sm75_default(major, minor) ? 1 : 2;
+        ok[dev] = (strata::sm75_default(major, minor) || sm70_default_on(major, minor)) ? 1 : 2;
     }
     return ok[dev] == 1;
 }
@@ -3016,9 +3119,10 @@ static bool scores_dx_device(int& sms) {
     static thread_local int cached_device = -1, cached_sms = 0;
     static thread_local bool pascal = false;
     if (dev != cached_device) {
-        int major = 0;
+        int major = 0, minor = 0;
         pascal = cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) == cudaSuccess &&
-                 strata::cc_major_of(major) == 6;
+                 cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev) == cudaSuccess &&
+                 (strata::cc_major_of(major) == 6 || sm70_default_on(major, minor));
         if (cudaDeviceGetAttribute(&cached_sms, cudaDevAttrMultiProcessorCount, dev) != cudaSuccess) cached_sms = 0;
         cudaGetLastError();
         cached_device = dev;
@@ -3081,9 +3185,10 @@ static int topk_multi_mode() {
     static thread_local int cached_device = -1;
     static thread_local int mode = 0;
     if (dev != cached_device) {
-        int major = 0;
+        int major = 0, minor = 0;
         mode = cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) == cudaSuccess &&
-                       strata::cc_major_of(major) == 6 ? 2 : 0;
+               cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev) == cudaSuccess &&
+               (strata::cc_major_of(major) == 6 || sm70_default_on(major, minor)) ? 2 : 0;
         cudaGetLastError();
         cached_device = dev;
     }
