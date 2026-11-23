@@ -16672,6 +16672,39 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_INK_GGUF_MT",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/cuda/ink_moe_cuda.cuh",
+     "line": 3812,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": "0",
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "7d635fe051",
+   "first_date": "2026-11-23",
+   "since": null,
+   "last_commit": "7d635fe051",
+   "last_date": "2026-11-23",
+   "status": "research",
+   "owner": "inkling2/cuda",
+   "note": "strata-inkling CUDA (0221 INKSPEED): tokens per group of the dp4a kernels for the GGUF-stored experts (Q8_0 and the other llama.cpp types); 1 / 2 / 4 / 8 / 16 forces a value, unset picks 1 at one token, 2 up to 128, 16 above (16 per group cost 14 ms for the four Q8_0 layers of UD-Q4_K_XL at 64 slots on a 5090, 2 per group 8 ms); tuning switch.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_INK_HASH",
    "backends": [
     "cuda-hip",
@@ -16785,7 +16818,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_moe_cuda.cuh",
-     "line": 3605,
+     "line": 3736,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -17054,6 +17087,39 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_INK_Q80_TC",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/cuda/ink_moe_cuda.cuh",
+     "line": 3817,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": "256",
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "7d635fe051",
+   "first_date": "2026-11-23",
+   "since": null,
+   "last_commit": "7d635fe051",
+   "last_date": "2026-11-23",
+   "status": "rollback",
+   "owner": "inkling2/cuda",
+   "note": "strata-inkling CUDA sm_80+ (0221 INKSPEED): Q8_0 experts of a GGUF on the int8 tensor cores from this many tokens (default 256, bit-identical to the dp4a kernels, +20 percent on a 2048-token UD-Q4_K_XL prefill chunk on a 4090); 0 never uses them; A/B and rollback switch.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_INK_Q8_0_DENSE",
    "backends": [
     "cuda-hip"
@@ -17082,7 +17148,7 @@
    "last_date": "2026-11-23",
    "status": "rollback",
    "owner": "inkling2/cuda",
-   "note": "strata-inkling CUDA, one GPU sm_80+ (0221 INKSPEED): a GGUF's Q8_0 dense matrices stay Q8_0 and run on the int8 tensor cores; =0 goes back to BF16 (A/B).",
+   "note": "strata-inkling CUDA, one GPU of compute capability 8.6 only (0221 INKSPEED; the int8 GEMM loses at one token on sm_89 and sm_120): a GGUF's Q8_0 dense matrices stay Q8_0 and run on the int8 tensor cores; =0 goes back to BF16 (A/B).",
    "retire_after": "",
    "retired_in": ""
   },
