@@ -10368,19 +10368,33 @@ def inkling_local_source(a, model: str | None = None) -> tuple[Path, Path, bool]
 
 
 def inkling_find_local_vision(folder: Path, data: Path, is_gguf: bool) -> Path | None:
-    """Find a local Inkling-2-Mini Vision shard (.strata) or companion mmproj*.gguf beside a local model."""
+    """Find a local Inkling-2-Mini picture reader beside a local model: the Vision shard (.strata). An `mmproj*.gguf` beside an Unsloth GGUF is NOT one: it is
+    llama.cpp's projector (architecture "clip"), which strata-inkling cannot read (`--info mmproj-BF16.gguf` says "GGUF architecture is 'clip', expected
+    'inkling2'"); handing it over as --vision left the engine without a reader and images failed with "does not read images yet" (0221 APPTUI, GRID report)."""
     for cand in (folder / inkling_family.VISION_FILE, data / "models" / inkling_family.FAMILY / inkling_family.VISION_FILE):
         if cand.is_file():
             return cand
-    if is_gguf:
-        mmprojs = sorted(p for p in folder.glob("mmproj*.gguf") if p.is_file())
-        if mmprojs:
-            for pref in ("bf16", "f16", "q8_0"):
-                hit = next((p for p in mmprojs if pref in p.name.lower()), None)
-                if hit:
-                    return hit
-            return mmprojs[0]
     return None
+
+
+def inkling_fetch_local_vision(a, folder: Path, data: Path) -> Path | None:
+    """The person's own model files have no picture reader beside them and pictures are on: download Inkling-2-Mini-Vision.strata (0.64 GB, checked by size and
+    SHA-256) into the data folder's models/inkling-2-mini, where the next start finds it too. None, and one plain sentence, when it cannot be had: the model then
+    starts without pictures and the sentence says how to add the file."""
+    dest = data / "models" / inkling_family.FAMILY
+    beside = sorted(p.name for p in folder.glob("mmproj*.gguf") if p.is_file())
+    why = (f"the {beside[0]} beside the model is llama.cpp's picture projector, which Strata's engine does not read" if beside
+           else "there is no picture reader beside the model")
+    say(f"  {why}; downloading {inkling_family.VISION_FILE} (0.64 GB, once) into {dest}")
+    try:
+        dest.mkdir(parents=True, exist_ok=True)
+        got = inkling_fetch(a, inkling_family.VISION_FILE, dest, False)
+    except (SystemExit, OSError):
+        warn(f"images will not work: {inkling_family.VISION_FILE} could not be downloaded. The model starts without a picture reader. "
+             f"To add it later: put {inkling_family.VISION_FILE} in {dest} (or next to the model) and run this again")
+        return None
+    ok(f"images: on ({got.name})")
+    return got
 
 
 def inkling_find_local_dspark(folder: Path) -> Path | None:
@@ -10611,6 +10625,7 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
         folder = local_src[1]
     data, _ = data_folder_for(a)
     vision_path: Path | None = None
+    fetch_vision = False
     dspark_path: Path | None = None
     drafter_asked = str(getattr(a, "drafter", None) or "").strip().lower()
     want_dspark = drafter_asked != "off"
@@ -10620,8 +10635,7 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
             if vision_path is not None:
                 ok(f"images: on ({vision_path.name})")
             else:
-                vision = False
-                warn("no local Inkling-2-Mini Vision shard or mmproj found beside the model; starting text-only")
+                fetch_vision = True                          # step 5 downloads it (the engine comes first, as for any download)
         else:
             ok("images: off")
         if is_gguf and want_dspark:
@@ -10657,6 +10671,10 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
         step(5, f"using local {fam['title']} files")
         model_file = local_src[0]
         ok(f"model file: {model_file}")
+        if fetch_vision:
+            vision_path = inkling_fetch_local_vision(a, folder, data)
+            if vision_path is None:
+                vision = False
     else:
         step(5, f"downloading {fam['title']} {model}")
         files = inkling_family.files_of(model, vision, dspark=want_dspark)

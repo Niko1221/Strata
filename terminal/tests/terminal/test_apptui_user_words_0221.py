@@ -110,6 +110,53 @@ class PictureWords(unittest.TestCase):
         self.assertFalse(order.stale("pictures", part))              # a new, partial download line is shown
 
 
+class InklingPictureReader(unittest.TestCase):
+    """GRID: an Unsloth GGUF with mmproj-BF16.gguf beside it. strata-inkling reads only its own Vision.strata (`--info mmproj-BF16.gguf`: "GGUF architecture is
+    'clip', expected 'inkling2'"), so the projector must never be passed as --vision, and a launch with pictures on and no reader fetches the right file or says plainly
+    that images will not work."""
+
+    def test_the_projector_beside_a_gguf_is_not_a_reader(self):
+        import setup
+        with tempfile.TemporaryDirectory() as td:
+            folder, data = Path(td) / "g", Path(td) / "d"
+            folder.mkdir()
+            data.mkdir()
+            (folder / "mmproj-BF16.gguf").write_bytes(b"GGUF")
+            self.assertIsNone(setup.inkling_find_local_vision(folder, data, True))
+            (folder / "Inkling-2-Mini-Vision.strata").write_bytes(b"x")
+            self.assertEqual(setup.inkling_find_local_vision(folder, data, True), folder / "Inkling-2-Mini-Vision.strata")
+
+    def test_adopting_such_a_folder_says_so_and_passes_no_vision(self):
+        from strata_cli.launch import adopt
+        from strata_control import inkling_family
+        from tests.terminal.test_inkling_gguf_import import make_inkling_gguf, write_fake_o200k_files, ROOT
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            folder, data = base / "g", base / "d"
+            folder.mkdir()
+            gguf = folder / "Inkling-2-Mini-UD-Q4_K_XL.gguf"
+            gguf.write_bytes(make_inkling_gguf(architecture="inkling2", expert_type=12))
+            (folder / "mmproj-BF16.gguf").write_bytes(b"GGUF")
+            tok = data / "packs" / "inkling-2-mini-ud-q4_k_xl" / "tokenizer"
+            tok.mkdir(parents=True)
+            (tok / "vocab.json").write_text("{}", encoding="utf-8")
+            notes: list[str] = []
+            cfg, problems = adopt.plan(family="inkling-2-mini", model="UD-Q4_K_XL", model_dir=folder, data_dir=data, src=ROOT, context=32768, kv=None,
+                                       model_name="inkling-2-mini-ud-q4_k_xl", family_def={}, log=base / "ink.log", backend="cuda", notes=notes)
+            self.assertEqual(problems, [], problems)
+            self.assertNotIn("--vision", cfg["args"])
+            self.assertTrue(any("mmproj-BF16.gguf beside the model is llama.cpp's picture projector" in n and inkling_family.VISION_FILE in n for n in notes), notes)
+
+    def test_launch_says_the_real_reason_when_the_installed_model_has_no_reader(self):
+        from strata_cli.launch.runner import Runner
+        from tests.terminal.launch_support import HW_12, Home, catalog
+        with Home():
+            r = Runner(S.LaunchSettings(family="inkling-2-mini", model="SQ-10", vision="on", context=32768), catalog=catalog(HW_12))
+            r.catalog.strata.describe_config = lambda path: {"images": "off"}
+            r.check_pictures(Path("x.json"))
+        self.assertTrue(any("Images will not work: no picture reader file (Inkling-2-Mini-Vision.strata, 0.64 GB)" in n for n in r.notices), r.notices)
+
+
 class UpdateWords(unittest.TestCase):
     def test_control_has_no_question_mark(self):
         with mock.patch.object(update_cmd, "_source_version", return_value="0.1.66"):

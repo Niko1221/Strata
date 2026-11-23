@@ -1297,6 +1297,9 @@ class Runner:
         if (desc or {}).get("images") in (None, "off"):
             note = ("Pictures could not be switched on: this engine does not carry the picture reader, or this model cannot read pictures, "
                     "so it will answer text only.")
+            if self.is_inkling():                            # 0221 APPTUI: the real reason, and the way to add it
+                note = ("Images will not work: no picture reader file (Inkling-2-Mini-Vision.strata, 0.64 GB) is installed for this model, so it answers text only. "
+                        "`strata launch --vision on` downloads it, or put the file next to the model files.")
             self.notices.append(note)
             self.emit("model", note, 100, level="warn")
 
