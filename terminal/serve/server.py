@@ -1981,6 +1981,7 @@ class StrataEngine:
                        for b in range(self.batch))
 
     INKLING_ROUTE_MIN = 32       # a held prefix shorter than this does not decide the slot
+    _side_note_said = False      # the "--parallel 2 keeps it" line is printed once per server run
 
     def _inkling_route(self, prompt: list[int]) -> int:
         """Inkling-2-Mini with several slots, nothing else running: where this prompt goes.  0 is the solo path (GEN: slot 0, where
@@ -2087,6 +2088,11 @@ class StrataEngine:
                     solo = alone and left > 1 and not (not embeddings and self._turn_in_slot(prompt))
                 if solo:
                     if getattr(self, "inkling_engine", False) and self.batch:
+                        if (self.batch == 1 and not self._side_note_said and len(self.slot_held[0]) >= self.SIDE_REQUEST_MIN
+                                and len(prompt) < self.SIDE_REQUEST_MIN and self._slot_prefix(0, prompt, {}) < self.INKLING_ROUTE_MIN):
+                            self._side_note_said = True     # once per server run
+                            print(f"[strata] a side request ({len(prompt)} tokens) replaced the cached chat ({len(self.slot_held[0])} tokens); "
+                                  "--parallel 2 keeps it", flush=True)
                         self.slot_held[0] = []              # the solo path is slot 0 of this engine: the read overwrites what it held
                         self.slot_prompt[0] = list(prompt)
                         solo_leg = (list(prompt), len(out), self.gen)

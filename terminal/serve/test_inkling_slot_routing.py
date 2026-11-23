@@ -102,6 +102,30 @@ class SlotRouting(unittest.TestCase):
         self.assertNotReused(t2, "turn 2 after a title request, one slot")
         self.assertReused(t3, "turn 3 (the chat is back in the slot)")
 
+    def server_log_after(self, parallel, requests):
+        with tempfile.TemporaryDirectory() as td:
+            with Harness(Path(td), parallel=parallel) as h:
+                c = Client(f"http://127.0.0.1:{h.port}")
+                msgs = conversation("A")
+                reply, _, _ = c.chat(msgs)
+                for _ in range(requests):
+                    c.chat([{"role": "user", "content": "Name this conversation in three words."}])
+                    msgs = next_turn(msgs, reply, "again")
+                    reply, _, _ = c.chat(msgs)
+                h.proc.terminate()
+                out = h.proc.stdout.read()
+                h.proc.stdout.close()
+        return [x for x in out.splitlines() if "a side request" in x]
+
+    def test_one_slot_says_once_that_a_side_request_replaced_the_chat(self):
+        lines = self.server_log_after(1, 3)           # three title requests, each replaced the chat
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn("--parallel 2 keeps it", lines[0])
+        self.assertIn("[strata]", lines[0])
+
+    def test_two_slots_never_say_it(self):
+        self.assertEqual(self.server_log_after(2, 2), [])
+
     def test_two_chats_each_keep_their_prompt_with_two_slots(self):
         with tempfile.TemporaryDirectory() as td:
             with Harness(Path(td), parallel=2) as h:

@@ -9,6 +9,11 @@ conversations at the same time instead of waiting for each other.
 
 It is opt-in and changes nothing when the options are absent (#465; the engine part is PR #559).
 
+**If your agent or app sends small side requests between turns (titles, summaries, suggestions), start the engine with `--parallel 2`
+(`"parallel": 2`) so the chat stays cached.** With one slot such a request replaces the cached conversation and the next turn reads the
+whole history again; the second slot holds the side request instead. On Inkling-2-Mini it costs about 164 MiB of video memory (measured at 64K
+context on an RTX PRO 5000; the slot's fixed state is the same size on a 12 GB card). The default stays one slot.
+
 **Qwen3.6-35B-A3B** has the same option on its own engine path (`"parallel": N`, `--batch N`, `--batch-mtp`, up to 8 slots, the same
 engine protocol and the same server): its numbers, what a slot costs and where setup recommends it are in [QWEN36.md](QWEN36.md).
 
