@@ -814,6 +814,14 @@ def run_cell(spec: dict, out_root: Path) -> dict:
             model_path = str(mdir)
         else:
             model_path = os.path.expanduser(model["path"])
+        if profile.get("vision", "off") != "off" and model.get("vision_files"):
+            # `strata launch --model-path` takes pictures from files BESIDE the model (Inkling-2-Mini-Vision.strata, or mmproj*.gguf for a GGUF) and
+            # starts without the picture reader when there are none, whatever --vision says; so the grid puts them there.
+            for vf in model["vision_files"]:
+                if not os.path.exists(os.path.expanduser(vf)):
+                    steps["launch"] = step(FAIL, "picture reader file %s is missing" % vf)
+                    raise StopCell()
+            link_files(model["vision_files"], Path(model_path))
         need = [Path(model_path)] if not model.get("files") else []
         for p in need:
             if not p.exists():

@@ -60,6 +60,11 @@ def make_pins(repo_root: Path) -> dict:
         out["ink/" + key] = {"folder": "Inkling-2-Mini-" + key, "files": [
             {"name": fn, "bytes": size, "sha256": sha, "url": "%s/%s" % (gguf_base, fn)},
             {"name": d, "bytes": ink.FILES[d][0], "sha256": ink.FILES[d][1], "url": "%s/%s" % (gguf_base, d)}]}
+    # the picture readers: SQ builds read pictures with the Vision shard beside the model, the Unsloth GGUFs with an mmproj file beside it
+    out["ink/Vision"] = {"folder": "Inkling-2-Mini-Vision", "files": [
+        {"name": ink.VISION_FILE, "bytes": ink.FILES[ink.VISION_FILE][0], "sha256": ink.FILES[ink.VISION_FILE][1], "url": "%s/%s" % (strata_base, ink.VISION_FILE)}]}
+    out["ink/mmproj-BF16"] = {"folder": "Inkling-2-Mini-mmproj-BF16", "files": [
+        {"name": ink.MMPROJ_BF16_FILE, "bytes": ink.FILES[ink.MMPROJ_BF16_FILE][0], "sha256": ink.FILES[ink.MMPROJ_BF16_FILE][1], "url": "%s/%s" % (gguf_base, ink.MMPROJ_BF16_FILE)}]}
     hsrc = json.loads((repo_root / "terminal" / "data" / "hy4-sources.json").read_text(encoding="utf-8"))["sources"][0]["base"]
     for name in ("SQ-64",):
         fn = hy4.build_file(name)

@@ -82,7 +82,7 @@
    "jobq": "vast0221-5090", "ssh": "vast0221-5090", "os": "linux", "class": "NVIDIA sm_120 (RTX 5090 32 GB)", "backend": "nvidia",
    "grid_dir": "/workspace/grid0221", "python": "python3", "locks": ["gpu"], "targets": ["ink-5090"],
    "profile": {"ready_timeout_s": 3000},
-   "models": {"ink-ud-q4kxl": {"fetch": true}, "ink-ud-iq4xs": {"fetch": true}, "ink-sq20": {"fetch": true}, "ink-sq10": {"fetch": true}, "qwen-ud-q4kxl": {"fetch": true, "tier": "full"}, "qwen-pack-q2": {"fetch": true, "tier": "full"}}
+   "models": {"ink-ud-q4kxl": {"fetch": true, "vision_files": ["/workspace/grid0221/models/Inkling-2-Mini-mmproj-BF16/mmproj-BF16.gguf"]}, "ink-ud-iq4xs": {"fetch": true, "vision_files": ["/workspace/grid0221/models/Inkling-2-Mini-mmproj-BF16/mmproj-BF16.gguf"]}, "ink-sq20": {"fetch": true, "vision_files": ["/workspace/grid0221/models/Inkling-2-Mini-Vision/Inkling-2-Mini-Vision.strata"]}, "ink-sq10": {"fetch": true, "vision_files": ["/workspace/grid0221/models/Inkling-2-Mini-Vision/Inkling-2-Mini-Vision.strata"]}, "qwen-ud-q4kxl": {"fetch": true, "tier": "full"}, "qwen-pack-q2": {"fetch": true, "tier": "full"}}
   },
   "vast0221-4060": {
    "jobq": "vast0221-4060", "ssh": "vast0221-4060", "os": "linux", "class": "NVIDIA sm_89 (RTX 4060 8 GB, engine RAM capped to 32 GB)", "backend": "nvidia",
@@ -171,9 +171,9 @@
     "qwen-ud-q4kxl": {"path": "/workspace/p0cuda/models/UD-Q4_K_XL", "profile": {"ready_timeout_s": 3600}},
     "qwen-pack-q2": {"fetch": true, "profile": {"ready_timeout_s": 3600}},
     "ink-sq10": {"files": ["/workspace/models/Inkling-2-Mini-SQ-10.strata"]},
-    "ink-sq20": {"files": ["/workspace/models/Inkling-2-Mini-SQ-20.strata"]},
-    "ink-ud-q4kxl": {"files": ["/workspace/models/gguf/Inkling-2-Mini-UD-Q4_K_XL.gguf", "/workspace/models/gguf/dspark-Inkling-2-Mini-Q8_0.gguf"]},
-    "ink-ud-iq4xs": {"fetch": true},
+    "ink-sq20": {"files": ["/workspace/models/Inkling-2-Mini-SQ-20.strata"], "vision_files": ["/workspace/models/Inkling-2-Mini-Vision.strata"]},
+    "ink-ud-q4kxl": {"files": ["/workspace/models/gguf/Inkling-2-Mini-UD-Q4_K_XL.gguf", "/workspace/models/gguf/dspark-Inkling-2-Mini-Q8_0.gguf"], "vision_files": ["/workspace/grid0221/models/Inkling-2-Mini-mmproj-BF16/mmproj-BF16.gguf"]},
+    "ink-ud-iq4xs": {"fetch": true, "vision_files": ["/workspace/grid0221/models/Inkling-2-Mini-mmproj-BF16/mmproj-BF16.gguf"]},
     "hy4-sq64": {"fetch": true}
    }
   },

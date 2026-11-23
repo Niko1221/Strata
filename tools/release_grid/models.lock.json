@@ -228,6 +228,28 @@
    ],
    "folder": "Inkling-2-Mini-UD-Q8_K_XL"
   },
+  "ink/Vision": {
+   "files": [
+    {
+     "bytes": 636526592,
+     "name": "Inkling-2-Mini-Vision.strata",
+     "sha256": "6589eff47f9c20bc3a032faa3d449f10bf4f04a84cc6b2ee8a44d51d2b6fc677",
+     "url": "https://huggingface.co/strata-engine/Inkling-2-Mini-Strata/resolve/main/Inkling-2-Mini-Vision.strata"
+    }
+   ],
+   "folder": "Inkling-2-Mini-Vision"
+  },
+  "ink/mmproj-BF16": {
+   "files": [
+    {
+     "bytes": 641805760,
+     "name": "mmproj-BF16.gguf",
+     "sha256": "2c165c78790e78a3f45a2d1e9e931083e52ee69d45ff2a0dc9c281fdf1a666e7",
+     "url": "https://huggingface.co/unsloth/Inkling-2-Mini-GGUF/resolve/main/mmproj-BF16.gguf"
+    }
+   ],
+   "folder": "Inkling-2-Mini-mmproj-BF16"
+  },
   "qwen/IQ2_XS": {
    "files": [
     {

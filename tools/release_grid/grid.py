@@ -77,6 +77,8 @@ def model_spec(data, box, model_id, entry):
         key = data["models"][model_id]["pins"]
         lock = json.loads(gl.LOCK_FILE.read_text(encoding="utf-8"))["models"]
         spec["path"] = "%s/models/%s" % (box["grid_dir"].rstrip("/"), lock[key]["folder"])
+    if entry.get("vision_files"):
+        spec["vision_files"] = entry["vision_files"]
     spec["launch_args"] += list(entry.get("launch_args") or [])
     return spec
 
@@ -273,8 +275,8 @@ def cmd_fetch(a, data):
     lock = json.loads(gl.LOCK_FILE.read_text(encoding="utf-8"))["models"]
     for bid in _csv(a.boxes):
         box = data["boxes"][bid]
-        keys = []
-        for mid, entry in box["models"].items():
+        keys = list(_csv(a.keys) or [])
+        for mid, entry in ([] if keys else box["models"].items()):
             if entry.get("fetch") and (not a.models or mid in _csv(a.models)):
                 if entry.get("skip") and not a.include_skipped:
                     continue
@@ -348,6 +350,7 @@ def main(argv=None) -> int:
     ap.add_argument("--declared", help="declared_changes.json: {cell-id glob: reason}")
     ap.add_argument("--floor-gb", default="25")
     ap.add_argument("--include-skipped", action="store_true")
+    ap.add_argument("--keys", help="fetch: explicit pin keys (ink/Vision, ink/mmproj-BF16, ...) instead of the cells' fetch models")
     ap.add_argument("--usage-cases", help="comma list of usage cases (coding,agent,vision,longdoc,chat,parallel)")
     ap.add_argument("--usage-long", help="document sizes in tokens for the longdoc case, e.g. 8000 or 30000,60000")
     ap.add_argument("--usage-parallel", help="client counts, e.g. 1,2,4")
