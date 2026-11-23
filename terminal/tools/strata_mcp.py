@@ -28,6 +28,7 @@ if sys.platform == "win32":
 
 import argparse
 import importlib.util
+import itertools
 import json
 import os
 import platform
@@ -48,6 +49,7 @@ PROTOCOL = "2025-06-18"
 PROTOCOLS = ("2025-06-18", "2025-03-26", "2024-11-05")   # the revisions this server answers in
 VERSION = "0.1.0"
 WIN = os.name == "nt"
+_INSTALL_SEQ = itertools.count(1)
 DEFAULT_ROOT = Path(__file__).resolve().parent.parent
 # The desktop app runs this under Strata Control's Python (STRATA_CONTROL_INSTALL=1): the install runs on that Python, makes no
 # .venv and installs no package (setup.py's own CONTROL mode).
@@ -2504,6 +2506,7 @@ class Tools:
                        gguf_dir=None, drafter=None, mtp=None) -> dict:
         s = self.s
         asked = time.monotonic()                         # when this call came in (before it waits for the lock)
+        asked_seq = next(_INSTALL_SEQ)
         with s.lock:
             job = s.install_job()
             if cancel:
@@ -2511,6 +2514,7 @@ class Tools:
                     # A start that came in before this cancel and is still waiting for the lock must not launch the job after it
                     # (the app quit while "Prepare and load" was starting: the job and its packer then ran on with nobody to stop them).
                     s.install_cancelled_at = time.monotonic()
+                    s.install_cancelled_seq = next(_INSTALL_SEQ)
                     return {"summary": "no install is running", "install": job}
                 j = s.state("install")
                 res = s.state("install-result")
@@ -2536,7 +2540,8 @@ class Tools:
                                       if job.get("download") else ""),
                         "install": job, "follow": "call strata_install again for progress, or strata_logs "
                                                   "source=setup for the full output"}
-            if confirm and getattr(s, "install_cancelled_at", 0) >= asked:
+            if confirm and (asked < getattr(s, "install_cancelled_at", 0)
+                            or asked_seq < getattr(s, "install_cancelled_seq", 0)):
                 raise ToolError("the install was cancelled before it started")
             given = [x for x in (family, model, context, vision, kv, gpu, gpus, backend, low_ram, port, data_dir)
                      if x is not None]
