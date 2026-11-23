@@ -354,7 +354,7 @@ Off unless you set them. The last column says where each one is described.
 | `STRATA_WATCHDOG_S` | text | NVIDIA and AMD, Intel Arc | [DETAILS.md](DETAILS.md) |
 | `STRATA_WDDM_BUDGET` | number | AMD, Intel Arc | [AMD_HIP.md](AMD_HIP.md) |
 
-## Switches that go back to earlier behaviour (121)
+## Switches that go back to earlier behaviour (122)
 
 These behaviours are on by default. Setting the switch returns the earlier behaviour; the notes in the register say which
 version made it the default.
@@ -398,6 +398,7 @@ version made it the default.
 | `STRATA_INK_MOE_V1` | on / off | NVIDIA and AMD | - | - |
 | `STRATA_INK_NO_CAND` | on / off | NVIDIA and AMD | - | - |
 | `STRATA_INK_OOM_RETRY` | number | NVIDIA and AMD | - | - |
+| `STRATA_INK_PF_TILE` | on / off | NVIDIA and AMD | - | - |
 | `STRATA_INK_PIN_GB` | on / off | NVIDIA and AMD | - | - |
 | `STRATA_INK_PROMOTE_ASYNC` | text | AMD | - | - |
 | `STRATA_INK_Q80_TC` | number | NVIDIA and AMD | - | - |

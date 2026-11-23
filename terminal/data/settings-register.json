@@ -16712,7 +16712,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_moe_cuda.cuh",
-     "line": 3812,
+     "line": 3826,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -16746,7 +16746,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_runner.cuh",
-     "line": 2100,
+     "line": 2101,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -16785,7 +16785,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_runner.cuh",
-     "line": 2103,
+     "line": 2104,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -16851,7 +16851,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_moe_cuda.cuh",
-     "line": 3736,
+     "line": 3750,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -17015,6 +17015,39 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_INK_PF_TILE",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/cuda/ink_moe_cuda.cuh",
+     "line": 3683,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "on",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "0c655e75ec",
+   "first_date": "2026-11-23",
+   "since": null,
+   "last_commit": "0c655e75ec",
+   "last_date": "2026-11-23",
+   "status": "rollback",
+   "owner": "inkling2/cuda",
+   "note": "strata-inkling CUDA sm_80..89 (0221 PARITY): prefill chunks of 256 tokens or more run the SF4 / MX8 experts with 64 tokens of an expert per tile (k_ink_moe_pf_fp16tc: the weight tile is decoded once per 64 tokens instead of once per 16); same arithmetic, bit-identical logits, +24 percent UD-Q4_K_XL and +47 percent SQ-20 prefill on a 4090; =0 keeps the 16-token kernel; A/B and rollback switch.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_INK_PIN_GB",
    "backends": [
     "cuda-hip"
@@ -17111,7 +17144,7 @@
    "first_commit": "e32fa5334c",
    "first_date": "2026-11-23",
    "since": null,
-   "last_commit": "c60259fa6a",
+   "last_commit": "c77e47d953",
    "last_date": "2026-11-23",
    "status": "research",
    "owner": "inkling2/cuda",
@@ -17160,7 +17193,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_moe_cuda.cuh",
-     "line": 3817,
+     "line": 3831,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -17413,6 +17446,39 @@
    "status": "rollback",
    "owner": "inkling2/cuda",
    "note": "strata-inkling CUDA hybrid (0221 INKPLACE): the cold experts' rows are shared by the CPU pool; =0 gives each expert to one thread (the old way).",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_STEPTIME",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
+     "line": 708,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "fb5973183e",
+   "first_date": "2026-11-23",
+   "since": null,
+   "last_commit": "fb5973183e",
+   "last_date": "2026-11-23",
+   "status": "research",
+   "owner": "inkling2/cuda",
+   "note": "strata-inkling CUDA (0221 PARITY): =1 prints every 100 one-token decode steps the host time between steps, the wall time of the step call and its GPU span (stderr); diagnostic, off by default.",
    "retire_after": "",
    "retired_in": ""
   },
