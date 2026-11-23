@@ -3,6 +3,9 @@
 // MIT License
 // Copyright (c) 2026 Niko1221 and the Strata contributors
 #include "ink_backend.h"
+#ifdef STRATA_INKLING_DISTRIBUTED
+#include "ink_mpi.h"
+#endif
 #include "ink_batch.h"
 #include "ink_manifest.h"
 
@@ -69,9 +72,16 @@ namespace ink2 {
 
 class InkCudaBackend final : public InkBackend {
 public:
+    InkCudaBackend() = default;
+#ifdef STRATA_INKLING_DISTRIBUTED
+    explicit InkCudaBackend(strata::ink::InkRemoteExperts& remote) : remote_(&remote) {}
+#endif
     ~InkCudaBackend() override { cleanup(); }
 
     const char* backend_name() const noexcept override {
+#ifdef STRATA_INKLING_DISTRIBUTED
+        if (remote_) return "cuda-mpi-experts";
+#endif
         return model_.ls_active ? "cuda-ls" : (model_.ep2_active ? "cuda-ep2" : "cuda");
     }
 
@@ -191,6 +201,9 @@ public:
             min_reserve_bytes = std::max(min_reserve_bytes, (size_t)opts.vram_reserve_mib << 20);
         }
 
+#ifdef STRATA_INKLING_DISTRIBUTED
+        if (remote_) model_.expert_rank = 0;
+#endif
         // Load .strata v1.1 / .gguf (Unsloth + ggml-org) / HF safetensors trunk + experts (Single-GPU, EP2, Layer-Split, or 4-tier GPU+RAM+SSD!)
         if (!model_.load_from_model_file(mf, gpu_id_, peer_gpu_id, (float)opts.ep_split, build_screen, err,
                                          min_reserve_bytes, gguf_detail::gguf_dequant_row_f32, gguf_detail::gguf_row_bytes,
@@ -234,6 +247,13 @@ public:
         const bool vf_graph_ok = strata::core::allow_1024_thread_cuda_graphs(
             prop.major, prop.minor, strata::core::volta_forever_active());
         runner_->use_cuda_graph = vf_graph_ok && !model_.ep2_active && !model_.ls_active;
+#ifdef STRATA_INKLING_DISTRIBUTED
+        if (remote_) {
+            runner_->remote_experts = remote_;
+            // This graph contains all 48 visits. The worker needs a host control message at each visit.
+            runner_->use_cuda_graph = false;
+        }
+#endif
         if (!vf_graph_ok) {
             std::fprintf(stderr, "[inkling-cuda] sm_70 under volta-forever: disabling 1024-thread CUDA Graph capture by default\n");
         }
@@ -887,6 +907,9 @@ private:
     KvDtype kv_dtype_ = KvDtype::FP16;
     std::string dev_info_;
 
+#ifdef STRATA_INKLING_DISTRIBUTED
+    strata::ink::InkRemoteExperts* remote_ = nullptr;
+#endif
     strata::ink::InkCudaModel model_;
     std::unique_ptr<strata::ink::InkCudaRunner> runner_;
     std::unique_ptr<strata::ink::InkDSpark> dspark_;
@@ -909,5 +932,60 @@ private:
 std::unique_ptr<InkBackend> make_cuda_backend() {
     return std::make_unique<InkCudaBackend>();
 }
+
+#ifdef STRATA_INKLING_DISTRIBUTED
+int run_mpi_experts(int& argc, char**& argv, const std::string& path, const BackendOpts& opts,
+                    const std::function<int(InkModelFile&, InkBackend&)>& serve) {
+    using namespace strata::ink;
+    try {
+        strata::tp::MpiRuntime mpi(argc, argv, std::chrono::minutes(10));
+        try {
+            if (mpi.size() != 2 || mpi.minimum(mpi.local_rank() == 0) != 1)
+                mpi.fail("Inkling requires two hosts with one MPI rank on each");
+            int devices = 0;
+            INK_CK(cudaGetDeviceCount(&devices));
+            if (devices != 1) mpi.fail("expose exactly one CUDA device on each host");
+            INK_CK(cudaSetDevice(0));
+
+            InkModelFile mf;
+            std::string error;
+            if (!mf.open(path, error, false, opts.dspark_path)) mpi.fail(error);
+            if (!mf.rd.is_open()) mpi.fail("--mpi-experts needs a native .strata pack");
+            const int rows = std::max(64, std::max(opts.chunk, opts.parallel));
+            if (rows > 65535 / kInkTopK) mpi.fail("chunk exceeds expert slot grid capacity");
+            std::string identity = "inkling-mpi-experts-v1/" + std::to_string(rows) + "/";
+            constexpr char hex[] = "0123456789abcdef";
+            for (const auto& section : mf.rd.header().sections) {
+                for (uint8_t b : section.sha256) { identity += hex[b >> 4]; identity += hex[b & 15]; }
+            }
+            mpi.agree(identity);
+            int status = 0;
+            {
+                InkRemoteExperts remote(mpi, rows);
+                if (mpi.rank() == 0) {
+                    InkCudaBackend backend(remote);
+                    if (!backend.init(mf, opts, error)) mpi.fail(error);
+                    mpi.minimum(1);
+                    status = serve(mf, backend);
+                    if (status != 0) mpi.fail("Inkling coordinator stopped with an error");
+                    remote.stop();
+                } else {
+                    strata::ink::InkCudaModel model;
+                    model.expert_rank = 1;
+                    const size_t reserve = opts.vram_reserve_mib > 0 ? size_t(opts.vram_reserve_mib) << 20 : 0;
+                    if (!model.load(path, 0, false, error, reserve)) mpi.fail(error);
+                    remote.serve_peer<InkMoeWorkspace>(model);
+                    model.free_all();
+                }
+            }
+            mpi.finish();
+            return status;
+        } catch (const std::exception& e) { mpi.fail(e.what()); }
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "Inkling distributed setup: %s\n", e.what());
+        return 1;
+    }
+}
+#endif
 
 }  // namespace ink2

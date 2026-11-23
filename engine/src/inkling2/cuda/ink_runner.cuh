@@ -216,6 +216,8 @@ struct InkCudaModel {
     std::string path;
     int primary_gpu = 0;
     int peer_gpu = -1;
+    // Set only by the two-host native .strata entry point.
+    int expert_rank = -1;
     bool ep2_active = false;
     bool ep2_p2p = false;
     float ep_split = 0.5f;
@@ -299,6 +301,41 @@ struct InkCudaModel {
         return (avail > os_res) ? static_cast<size_t>(avail - os_res) : 0u;
     }
 
+    bool load_expert_shard(std::vector<InkExpertDev>& table, size_t budget, std::string& err) {
+        const auto& dir = rd.expert_directory();
+        size_t bytes = 0;
+        for (size_t i = 0; i < dir.size(); ++i) {
+            const auto& e = dir[i];
+            const size_t layer = i / kInkExperts;
+            auto& dev = table[layer * kInkExperts + e.expert_id];
+            if ((e.expert_id & 1) != expert_rank) {
+                dev.tier = 3; // Routing remains global. The local bin skips nonresident rows.
+                ++n_peer_experts;
+                continue;
+            }
+            bytes = (bytes + 255) & ~size_t(255);
+            dev.body_off = bytes;
+            bytes += e.body_bytes;
+            ++n_vram_experts;
+        }
+        if (bytes == 0 || bytes > budget) {
+            err = "insufficient device memory for the resident Inkling expert shard";
+            return false;
+        }
+        INK_CK(cudaMalloc(&d_sec4, bytes));
+        std::vector<uint8_t> body;
+        for (size_t i = 0; i < dir.size(); ++i) {
+            const auto& e = dir[i];
+            if ((e.expert_id & 1) != expert_rank) continue;
+            if (!rd.read_expert_body(i, body, err)) return false;
+            const auto& dev = table[(i / kInkExperts) * kInkExperts + e.expert_id];
+            INK_CK(cudaMemcpy(d_sec4 + dev.body_off, body.data(), body.size(), cudaMemcpyHostToDevice));
+        }
+        std::fprintf(stderr, "[inkling-mpi] rank=%d resident_experts=%zu expert_bytes=%zu\n",
+                     expert_rank, n_vram_experts, bytes);
+        return true;
+    }
+
     bool load(const std::string& strata_path, int gpu_id, bool build_screen, std::string& err,
               size_t extra_reserve_bytes = 0, double vram_experts_gb = -1.0,
               double ram_experts_gb = -1.0, bool ssd_experts = false, int cpu_threads = 0) {
@@ -319,8 +356,8 @@ struct InkCudaModel {
 
         double t0 = now_s();
         // 1. Load Section 1 (Contiguous GPU Trunk + DSpark) in one DMA transfer
-        INK_CK(cudaMalloc(&d_trunk, trunk_bytes));
-        {
+        if (expert_rank != 1) {
+            INK_CK(cudaMalloc(&d_trunk, trunk_bytes));
             const size_t CH = 64ull << 20;
             uint8_t* hbuf = halloc_pinned<uint8_t>(std::min(CH, trunk_bytes));
             size_t done = 0;
@@ -340,7 +377,7 @@ struct InkCudaModel {
         // 1B. On Volta sm_70 (V100) & Turing sm_75 (2080 Ti), convert .attn.* BF16 weights IN-PLACE to IEEE FP16 once!
         //     Eliminates 336+ per-visit conversion launches & unlocks 125 TFLOPS direct FP16 Tensor Core GEMMs!
         trunk_attn_fp16 = (sm_cc >= 70 && sm_cc < 80);
-        if (trunk_attn_fp16) {
+        if (trunk_attn_fp16 && expert_rank != 1) {
             for (const auto& kv : man.trunk) {
                 if (kv.second.fmt == FMT_BF16 && kv.first.find(".attn.") != std::string::npos) {
                     const size_t nw = (size_t)kv.second.rows() * kv.second.cols();
@@ -356,11 +393,17 @@ struct InkCudaModel {
         INK_CK(ink_cuda_mem_info(&vfree, &vtot));
         const auto& dir = rd.expert_directory();
         const int n_total = (int)dir.size();  // 24 * 128 = 3072
+        if (expert_rank >= 0 && (man.c.n_phys != kInkPhysLayers || man.c.n_experts != kInkExperts ||
+                                 n_total != kInkPhysLayers * kInkExperts)) {
+            err = "unsupported Inkling expert layout";
+            return false;
+        }
         std::vector<InkExpertDev> h_exp(n_total);
         for (int il = 0; il < man.c.n_phys; ++il) {
             moe_info[il] = {};
             for (int r = 0; r < man.c.n_experts; ++r) {
                 const auto& e = dir[(size_t)il * man.c.n_experts + r];
+                if (e.expert_id >= man.c.n_experts) { err = "invalid expert id"; return false; }
                 InkExpertDev dev{};
                 dev.body_off = e.body_offset;
                 dev.dn_off   = e.dn_offset;
@@ -392,7 +435,9 @@ struct InkCudaModel {
             ? static_cast<size_t>(vram_experts_gb * 1073741824.0)
             : static_cast<size_t>(-1);
         for (int il = 0; il < 24; ++il) layer_has_host[il] = false;
-        if (!ssd_experts && vfree > sec4_bytes + reserve && sec4_bytes <= user_vram_cap) {
+        if (expert_rank >= 0) {
+            if (!load_expert_shard(h_exp, vfree > reserve ? vfree - reserve : 0, err)) return false;
+        } else if (!ssd_experts && vfree > sec4_bytes + reserve && sec4_bytes <= user_vram_cap) {
             // 100% VRAM resident! Single sequential streaming DMA!
             INK_CK(cudaMalloc(&d_sec4, sec4_bytes));
             const size_t CH = 64ull << 20;
@@ -581,6 +626,8 @@ struct InkCudaModel {
             INK_CK(cudaMemcpy(d_experts[il], h_exp.data() + (size_t)il * man.c.n_experts,
                               (size_t)man.c.n_experts * sizeof(InkExpertDev), cudaMemcpyHostToDevice));
         }
+
+        if (expert_rank == 1) return true;
 
         // 3. Preprocess msg_queries[6..17] and static_sconv[0..23] into exact contiguous F32 GPU arrays
         {
@@ -1625,6 +1672,9 @@ struct InkCudaModel {
 // ============================================================================
 struct InkCudaRunner {
     InkCudaModel& m;
+#ifdef STRATA_INKLING_DISTRIBUTED
+    InkRemoteExperts* remote_experts = nullptr;
+#endif
     cudaStream_t st = nullptr;
     cublasHandle_t cublas = nullptr;
 
@@ -3222,7 +3272,11 @@ struct InkCudaRunner {
                 st, cublas, m.sec4_stage(cur_stage), m.d_experts[ip], m.moe_info[ip],
                 (const float*)m.trunk_ptr_stage(cur_stage, p + ".mlp.gate.weight"),
                 (const float*)m.trunk_ptr_stage(cur_stage, p + ".mlp.gate.bias"),
-                d_moe_in, d_moe_raw, M, *cur_moe_ws, m.man.c.route_scale, (mode == 2), !fuse_moe_sconv);
+                d_moe_in, d_moe_raw, M, *cur_moe_ws, m.man.c.route_scale, (mode == 2), !fuse_moe_sconv
+#ifdef STRATA_INKLING_DISTRIBUTED
+                , remote_experts, ip
+#endif
+            );
             prof_mark_end(5); prof_mark_start();
             if (fuse_moe_sconv) {
                 constexpr int mlp_ch_off = 2 * kInkKVDim + kInkHidden;

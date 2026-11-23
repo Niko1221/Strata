@@ -12,6 +12,11 @@ else()
   enable_language(C)
 endif()
 
+option(STRATA_INKLING_DISTRIBUTED "Enable two-host native CUDA expert serving" OFF)
+if(STRATA_INKLING_DISTRIBUTED AND (NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" OR NOT STRATA_ENABLE_CUDA))
+  message(FATAL_ERROR "STRATA_INKLING_DISTRIBUTED requires Linux and STRATA_ENABLE_CUDA")
+endif()
+
 # Vendored ZSTD decompressor (zero external libzstd dependency on Win/Linux/macOS)
 set(_zstd_dir "${_ink_engine_root}/third_party/zstd-dec")
 if(NOT TARGET strata_zstd_dec)
