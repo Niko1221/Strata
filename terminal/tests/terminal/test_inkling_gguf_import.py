@@ -320,6 +320,33 @@ class InklingGgufImportTests(unittest.TestCase):
         self.assertIn(str(gguf), cfg["args"])
         self.assertNotIn("reasoning_effort", cfg)
 
+    def test_an_unsloth_mmproj_is_not_handed_to_the_engine_as_its_picture_reader(self):
+        """mmproj-BF16.gguf beside an Inkling GGUF is a llama.cpp file: given as --vision, strata-inkling answers "vision shard: Invalid .strata magic"
+        and --info says images=0 (measured with the rc0 engine on an RTX 5090). The plan leaves --vision out, says why, and uses
+        Inkling-2-Mini-Vision.strata when it is there."""
+        folder = self.root / "adopt-ink-mm"
+        folder.mkdir()
+        gguf = folder / "Inkling-2-Mini-UD-Q4_K_XL.gguf"
+        gguf.write_bytes(make_inkling_gguf(architecture="inkling2", expert_type=12))
+        (folder / "mmproj-BF16.gguf").write_bytes(b"GGUF" + bytes(60))
+        data_dir = self.root / "adopt-data-mm"
+        tok = data_dir / "packs" / "inkling-2-mini-ud-q4_k_xl" / "tokenizer"
+        tok.mkdir(parents=True)
+        (tok / "vocab.json").write_text("{}", encoding="utf-8")
+        kw = dict(family="inkling-2-mini", model="UD-Q4_K_XL", model_dir=folder, data_dir=data_dir, src=ROOT, context=32768, kv=None,
+                  model_name="inkling-2-mini-ud-q4_k_xl", family_def={}, log=self.root / "ink-mm.log", backend="cuda")
+        notes = []
+        cfg, problems = adopt.plan(**kw, notes=notes)
+        self.assertEqual(problems, [])
+        self.assertNotIn("--vision", cfg["args"])
+        self.assertTrue(any("mmproj-BF16.gguf" in n and "Vision.strata" in n for n in notes), notes)
+        # the Vision shard, when it is there, is used
+        from strata_control import inkling_family
+        vision = folder / inkling_family.VISION_FILE
+        vision.write_bytes(b"STRATA\x00\x01")
+        cfg, _ = adopt.plan(**kw)
+        self.assertEqual(cfg["args"][cfg["args"].index("--vision") + 1], str(vision))
+
     def test_strata_mcp_install_plan_accepts_inkling_gguf_file(self):
         sys.path.insert(0, str(ROOT / "tools"))
         import strata_mcp

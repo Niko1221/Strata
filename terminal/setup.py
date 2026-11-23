@@ -10542,6 +10542,11 @@ def inkling_plan_extra(gpu) -> dict:
             out["desktop"] = True
     except Exception:                                  # noqa: BLE001
         pass
+    try:                                                # the card's compute capability ("86" -> 86): a GGUF's dense share depends on it
+        if str(g.get("arch", "")).isdigit():
+            out["sm"] = int(g["arch"])
+    except Exception:                                  # noqa: BLE001
+        pass
     return out
 
 
