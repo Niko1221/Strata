@@ -82,6 +82,44 @@ inline void s15_unpack64_local(const uint8_t* pl, int g, int8_t out[64], const i
     }
 }
 
+
+// 16 bytes of 2-bit fields -> 64 u8 in two ymm (element 4i + k = bits 2k..2k+1 of byte i): shift + mask four copies, then byte / word interleave
+inline void unpack_2bit_16(const uint8_t* p, __m256i& u0, __m256i& u1) noexcept {
+    const __m128i v  = _mm_loadu_si128(reinterpret_cast<const __m128i*>(p));
+    const __m128i m3 = _mm_set1_epi8(3);
+    const __m128i a0 = _mm_and_si128(v, m3);
+    const __m128i a1 = _mm_and_si128(_mm_srli_epi16(v, 2), m3);
+    const __m128i a2 = _mm_and_si128(_mm_srli_epi16(v, 4), m3);
+    const __m128i a3 = _mm_and_si128(_mm_srli_epi16(v, 6), m3);
+    const __m128i p01l = _mm_unpacklo_epi8(a0, a1), p01h = _mm_unpackhi_epi8(a0, a1);
+    const __m128i p23l = _mm_unpacklo_epi8(a2, a3), p23h = _mm_unpackhi_epi8(a2, a3);
+    u0 = _mm256_set_m128i(_mm_unpackhi_epi16(p01l, p23l), _mm_unpacklo_epi16(p01l, p23l));   // elements 0..15 | 16..31
+    u1 = _mm256_set_m128i(_mm_unpackhi_epi16(p01h, p23h), _mm_unpacklo_epi16(p01h, p23h));   // elements 32..47 | 48..63
+}
+
+// 32 bytes of nibbles -> 64 u8 in two ymm (element 2i = low nibble of byte i, 2i + 1 = high nibble)
+inline void unpack_nibbles_32(const uint8_t* p, __m256i& u0, __m256i& u1) noexcept {
+    const __m256i v  = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(p));
+    const __m256i m0f = _mm256_set1_epi8(0x0F);
+    const __m256i lo = _mm256_and_si256(v, m0f);
+    const __m256i hi = _mm256_and_si256(_mm256_srli_epi16(v, 4), m0f);
+    const __m256i ul = _mm256_unpacklo_epi8(lo, hi);   // [bytes 0..7 | bytes 16..23]
+    const __m256i uh = _mm256_unpackhi_epi8(lo, hi);   // [bytes 8..15 | bytes 24..31]
+    u0 = _mm256_permute2x128_si256(ul, uh, 0x20);
+    u1 = _mm256_permute2x128_si256(ul, uh, 0x31);
+}
+
+// 8 bytes = 64 flag bits (element j <- bit j) -> `value` in the flagged bytes of two ymm, 0 elsewhere
+inline void flag_bytes_8(const uint8_t* p8, int value, __m256i& f0, __m256i& f1) noexcept {
+    const __m256i t = _mm256_broadcastsi128_si256(_mm_loadl_epi64(reinterpret_cast<const __m128i*>(p8)));
+    const __m256i idx0 = _mm256_setr_epi8(0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3);
+    const __m256i idx1 = _mm256_setr_epi8(4, 4, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 5, 5, 5, 5, 6, 6, 6, 6, 6, 6, 6, 6, 7, 7, 7, 7, 7, 7, 7, 7);
+    const __m256i sel = _mm256_set1_epi64x(static_cast<long long>(0x8040201008040201ull));
+    const __m256i val = _mm256_set1_epi8(static_cast<char>(value));
+    const __m256i r0 = _mm256_shuffle_epi8(t, idx0), r1 = _mm256_shuffle_epi8(t, idx1);
+    f0 = _mm256_and_si256(_mm256_cmpeq_epi8(_mm256_and_si256(r0, sel), sel), val);
+    f1 = _mm256_and_si256(_mm256_cmpeq_epi8(_mm256_and_si256(r1, sel), sel), val);
+}
 }  // namespace
 
 float dot_sf4_row(const uint8_t* p, const uint8_t* sc, float w_outer, const float* x, int cols,
@@ -158,64 +196,38 @@ float dot_sk_sub64(const uint8_t* pl, int fmt, int g, const int8_t* qs, float x_
         isum = avx2_hsum_epi32(_mm256_add_epi32(a0, a1));
         return eff * x_d * (float)isum;
     } else {
-        alignas(32) uint8_t u[64];
+        // S2_K / S3_K / S5_K / S6_K: the 2-bit, nibble and flag-bit fields are unpacked with vector shuffles (the integer sums are exact either way)
+        __m256i u0, u1;
+        float c;
         if (fmt == kFmtS2_K) {
-            const uint8_t* p = pl + g * 16;
-            for (int i = 0; i < 16; ++i) {
-                const uint8_t b = p[i];
-                u[4 * i + 0] = (uint8_t)(b & 3u);
-                u[4 * i + 1] = (uint8_t)((b >> 2) & 3u);
-                u[4 * i + 2] = (uint8_t)((b >> 4) & 3u);
-                u[4 * i + 3] = (uint8_t)(b >> 6);
-            }
-            isum = avx2_dot_u8_i8_64(_mm256_load_si256(reinterpret_cast<const __m256i*>(u)),
-                                     _mm256_load_si256(reinterpret_cast<const __m256i*>(u + 32)), qs);
-            return eff * (x_d * (float)isum - 1.5f * x_s);
+            unpack_2bit_16(pl + g * 16, u0, u1);
+            c = 1.5f;
         } else if (fmt == kFmtS3_K) {
-            const uint8_t* p = pl + g * 16;
-            const uint8_t* hp = pl + 64 + g * 8;
-            for (int i = 0; i < 8; ++i) {
-                const uint8_t b0 = p[2 * i], b1 = p[2 * i + 1], h = hp[i];
-                u[8 * i + 0] = (uint8_t)((b0 & 3u) | ((h & 1u) << 2));
-                u[8 * i + 1] = (uint8_t)(((b0 >> 2) & 3u) | (((h >> 1) & 1u) << 2));
-                u[8 * i + 2] = (uint8_t)(((b0 >> 4) & 3u) | (((h >> 2) & 1u) << 2));
-                u[8 * i + 3] = (uint8_t)((b0 >> 6) | (((h >> 3) & 1u) << 2));
-                u[8 * i + 4] = (uint8_t)((b1 & 3u) | (((h >> 4) & 1u) << 2));
-                u[8 * i + 5] = (uint8_t)(((b1 >> 2) & 3u) | (((h >> 5) & 1u) << 2));
-                u[8 * i + 6] = (uint8_t)(((b1 >> 4) & 3u) | (((h >> 6) & 1u) << 2));
-                u[8 * i + 7] = (uint8_t)((b1 >> 6) | (((h >> 7) & 1u) << 2));
-            }
-            isum = avx2_dot_u8_i8_64(_mm256_load_si256(reinterpret_cast<const __m256i*>(u)),
-                                     _mm256_load_si256(reinterpret_cast<const __m256i*>(u + 32)), qs);
-            return eff * (x_d * (float)isum - 3.5f * x_s);
+            unpack_2bit_16(pl + g * 16, u0, u1);
+            __m256i f0, f1;
+            flag_bytes_8(pl + 64 + g * 8, 4, f0, f1);
+            u0 = _mm256_or_si256(u0, f0);
+            u1 = _mm256_or_si256(u1, f1);
+            c = 3.5f;
         } else if (fmt == kFmtS5_K) {
-            const uint8_t* p = pl + g * 32;
-            const uint8_t* hp = pl + 128 + g * 8;
-            for (int i = 0; i < 8; ++i) {
-                const uint8_t h = hp[i];
-                for (int k = 0; k < 4; ++k) {
-                    const uint8_t b = p[4 * i + k];
-                    u[8 * i + 2 * k + 0] = (uint8_t)((b & 0xFu) | (((h >> (2 * k)) & 1u) << 4));
-                    u[8 * i + 2 * k + 1] = (uint8_t)((b >> 4) | (((h >> (2 * k + 1)) & 1u) << 4));
-                }
-            }
-            isum = avx2_dot_u8_i8_64(_mm256_load_si256(reinterpret_cast<const __m256i*>(u)),
-                                     _mm256_load_si256(reinterpret_cast<const __m256i*>(u + 32)), qs);
-            return eff * (x_d * (float)isum - 15.5f * x_s);
+            unpack_nibbles_32(pl + g * 32, u0, u1);
+            __m256i f0, f1;
+            flag_bytes_8(pl + 128 + g * 8, 16, f0, f1);
+            u0 = _mm256_or_si256(u0, f0);
+            u1 = _mm256_or_si256(u1, f1);
+            c = 15.5f;
         } else if (fmt == kFmtS6_K) {
-            const uint8_t* p = pl + g * 32;
-            const uint8_t* hp = pl + 128 + g * 16;
-            for (int i = 0; i < 16; ++i) {
-                const uint8_t h = hp[i], b0 = p[2 * i], b1 = p[2 * i + 1];
-                u[4 * i + 0] = (uint8_t)((b0 & 0xFu) | ((h & 3u) << 4));
-                u[4 * i + 1] = (uint8_t)((b0 >> 4) | (((h >> 2) & 3u) << 4));
-                u[4 * i + 2] = (uint8_t)((b1 & 0xFu) | (((h >> 4) & 3u) << 4));
-                u[4 * i + 3] = (uint8_t)((b1 >> 4) | ((h >> 6) << 4));
-            }
-            isum = avx2_dot_u8_i8_64(_mm256_load_si256(reinterpret_cast<const __m256i*>(u)),
-                                     _mm256_load_si256(reinterpret_cast<const __m256i*>(u + 32)), qs);
-            return eff * (x_d * (float)isum - 31.5f * x_s);
+            unpack_nibbles_32(pl + g * 32, u0, u1);
+            __m256i h0, h1;
+            unpack_2bit_16(pl + 128 + g * 16, h0, h1);   // fields 0..3 in every byte: a 16-bit shift by 4 moves no bit across a byte
+            u0 = _mm256_or_si256(u0, _mm256_slli_epi16(h0, 4));
+            u1 = _mm256_or_si256(u1, _mm256_slli_epi16(h1, 4));
+            c = 31.5f;
+        } else {
+            return 0.0f;
         }
+        isum = avx2_dot_u8_i8_64(u0, u1, qs);
+        return eff * (x_d * (float)isum - c * x_s);
     }
     return 0.0f;
 }
