@@ -126,7 +126,10 @@ struct InkMoeWorkspace {
         const size_t o_hqg32   = bump(P * (kInkInter / 32) * sizeof(InkQ8_1_G32));
 
         raw_bytes = off;
-        INK_CK(cudaMalloc(&raw_buf, raw_bytes));
+        {
+            const cudaError_t me = cudaMalloc(&raw_buf, raw_bytes);
+            if (me != cudaSuccess) { raw_buf = nullptr; ink_alloc_failed(me, raw_bytes, __FILE__, __LINE__); }
+        }
         uint8_t* base = (uint8_t*)raw_buf;
         tb.cnt     = (int32_t*)(base + o_cnt);
         tb.off     = (int32_t*)(base + o_off);

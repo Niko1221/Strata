@@ -26,6 +26,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <chrono>
+#include <stdexcept>
+#include <string>
 #include "strata/core/device_error_exit.hpp"
 #include "strata/platform/cgroup_mem.hpp"
 
@@ -55,10 +57,35 @@ inline double now_s() {
     return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
+// A device allocation that did not fit. While start-up code runs with ink_alloc_throws() set (the backend's init), a failed
+// allocation throws this so the backend can retry with a smaller workspace (#6644 #6792); everywhere else it ends the engine
+// the way every other CUDA error does.
+struct InkAllocFailure : std::runtime_error {
+    explicit InkAllocFailure(const std::string& m) : std::runtime_error(m) {}
+};
+inline bool& ink_alloc_throws() {
+    static thread_local bool v = false;
+    return v;
+}
+// Names the request and the card's free memory ("CUDA error 2 at ink_cuda.cuh:54" alone cannot be acted on).
+inline void ink_alloc_failed(cudaError_t e, size_t bytes, const char* file, int line) {
+    size_t vf = 0, vt = 0;
+    cudaGetLastError();
+    cudaMemGetInfo(&vf, &vt);
+    char _what[300];
+    std::snprintf(_what, sizeof(_what), "strata-inkling CUDA error %d at %s:%d (allocating %.0f MiB; %.0f of %.0f MiB free)",
+                  (int)e, file, line, (double)bytes / 1048576.0, (double)vf / 1048576.0, (double)vt / 1048576.0);
+    if (ink_alloc_throws()) throw InkAllocFailure(_what);
+    strata::core::exit_device_error(_what, cudaGetErrorString(e));
+}
+
 template <typename T>
 inline T* dalloc(size_t count) {
     T* p = nullptr;
-    if (count > 0) INK_CK(cudaMalloc(&p, count * sizeof(T)));
+    if (count > 0) {
+        const cudaError_t e = cudaMalloc(&p, count * sizeof(T));
+        if (e != cudaSuccess) ink_alloc_failed(e, count * sizeof(T), __FILE__, __LINE__);
+    }
     return p;
 }
 
