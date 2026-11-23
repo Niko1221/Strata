@@ -247,6 +247,9 @@ memory), and the last line shown is the engine's own reason.
   An explicit `--expert-cache` on the first card is capped to leave room for them.
 - More cards pay off when the model's routed experts do not fit the faster ones. An extra slow card costs its own round per
   window and can make a good pair slower.
+  With `--layer-split auto`, the engine prints a `FEWER CARDS` line when its cost model predicts a decode window that is at
+  least 20% shorter without the first cards. The placement does not change. `STRATA_SPLIT_FEWER_PCT` sets the threshold in
+  percent, and 0 disables the line. The model predicts decode only, so measure the prompt read before you remove a card.
 - **The split pays most when the CPU pool is the bottleneck.** On two identical RTX 2080 Ti 22 GB over a dual-socket Xeon E5-2696 v4 (AVX2 only,
   88 logical CPUs), a plain split moved decode from 35.2 to 51.0 tok/s (+45%) and an 11.6K-token prompt from 672 to 908 tok/s (+35%) at 180 W,
   engine 0.1.49, six 300-token coding prompts. `STRATA_DECODE_TIMING=1` shows why: the window fell from 70.06 to 37.96 ms, almost entirely
