@@ -204,6 +204,59 @@ int main() {
         CHECK(later_stage_empty({400, 0}) && later_stage_empty({400, 5, 0}));
         CHECK(!later_stage_empty({0, 5}) && !later_stage_empty({0}) && !later_stage_empty({}));
     }
+    // ---- #6758: fewer cards.  The search predicts only placements of all the cards.  A much slower card can cost more time
+    // per decode window than its expert cache saves.  The rule compares the predicted time of fewer cards with the time of
+    // the chosen placement.  It returns the number of first stages to remove.
+    {
+        // These checks are for the placement without its first stages.  Each removed stage gets a cut of 0, thus its layers go
+        // to the next stage.
+        CHECK((without_first({10}, 1) == std::vector<int64_t>{0}));
+        CHECK((without_first({11, 24, 36}, 1) == std::vector<int64_t>{0, 24, 36}));
+        CHECK((without_first({11, 24, 36}, 2) == std::vector<int64_t>{0, 0, 36}));
+        CHECK((without_first({11, 24, 36}, 3) == std::vector<int64_t>{0, 0, 0}));   // only the last card stays
+        CHECK((without_first({11, 24, 36}, 0) == std::vector<int64_t>{11, 24, 36}));
+        CHECK((without_first({11, 24, 36}, 9) == std::vector<int64_t>{0, 0, 0}));   // `drop` can be more than the number of cuts
+        CHECK((without_first({11, 24, 36}, -1) == std::vector<int64_t>{11, 24, 36}));
+        CHECK(without_first({}, 1).empty());                                         // one card has no stage to remove
+
+        // The example of #6758 is an RTX 4090 (PCIe x16) with an RTX 3060 (PCIe x4), IQ3_S and 48 layers.  The search chose
+        // K=10.  The engine log shows 1.43 ms per layer for the RTX 3060 and 0.22 ms for the RTX 4090.  The model predicts
+        // 27.0 ms per decode window for K=10 and 17.5 ms for the RTX 4090 alone.
+        CHECK(fewer_cards(27.0, {17.5}, 20.0) == 1);
+        // Here the predicted time is almost equal with and without the first card.  The rule keeps the two cards.
+        CHECK(fewer_cards(76.0, {78.0}, 20.0) == 0);
+        CHECK(fewer_cards(27.0, {25.0}, 20.0) == 0);    // 7% less is below the threshold
+        CHECK(fewer_cards(27.0, {21.6}, 20.0) == 1);    // exactly 20% less is sufficient
+        CHECK(fewer_cards(27.0, {21.7}, 20.0) == 0);
+        // This case has four different cards.  The rule selects the lowest time.  Here it is the time without the first two
+        // stages.
+        CHECK(fewer_cards(30.0, {24.0, 21.0, 26.0}, 20.0) == 2);
+        CHECK(fewer_cards(30.0, {24.0, 25.0, 26.0}, 20.0) == 1);
+        CHECK(fewer_cards(30.0, {29.0, 28.0, 20.0}, 20.0) == 3);   // only the last card alone is 20% faster
+        // This case has ten cards (one fast, nine slow).  The time decreases while the rule removes slow cards.  It increases
+        // when the caches become too small.
+        CHECK(fewer_cards(45.0, {41.0, 38.0, 35.0, 33.0, 31.0, 30.0, 29.5, 31.0, 36.0}, 20.0) == 7);
+        // For equal times, the rule keeps more cards.
+        CHECK(fewer_cards(30.0, {20.0, 20.0, 20.0}, 20.0) == 1);
+        // The result is 0 for no candidate, for a placement without a prediction, and for a disabled rule.
+        CHECK(fewer_cards(27.0, {}, 20.0) == 0);
+        CHECK(fewer_cards(0.0, {17.5}, 20.0) == 0);
+        CHECK(fewer_cards(27.0, {0.0}, 20.0) == 0);     // a value of 0 or less has no prediction
+        CHECK(fewer_cards(27.0, {17.5}, 0.0) == 0);
+        CHECK(fewer_cards(27.0, {17.5}, -5.0) == 0);
+
+        // STRATA_SPLIT_FEWER_PCT sets the threshold in percent.  0 disables the rule.  An invalid value gives the default.
+        CHECK(fewer_cards_pct_resolve(nullptr) == kFewerCardsPct);
+        CHECK(fewer_cards_pct_resolve("") == kFewerCardsPct);
+        CHECK(fewer_cards_pct_resolve("35") == 35.0);
+        CHECK(fewer_cards_pct_resolve("0") == 0.0);
+        CHECK(fewer_cards_pct_resolve("x") == kFewerCardsPct);
+        CHECK(fewer_cards_pct_resolve("-5") == kFewerCardsPct);
+        std::printf("split_rules_test: fewer cards: RTX 4090 + RTX 3060 (27.0 and 17.5 ms) removes %d stage, 4 cards remove %d, "
+                    "10 cards remove %d\n",
+                    fewer_cards(27.0, {17.5}, kFewerCardsPct), fewer_cards(30.0, {24.0, 21.0, 26.0}, kFewerCardsPct),
+                    fewer_cards(45.0, {41.0, 38.0, 35.0, 33.0, 31.0, 30.0, 29.5, 31.0, 36.0}, kFewerCardsPct));
+    }
     if (failed == 0) std::printf("split_rules_test: ok\n");
     return failed ? 1 : 0;
 }

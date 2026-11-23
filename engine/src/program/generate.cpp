@@ -7518,6 +7518,53 @@ int main(int argc, char** argv) {
                 }
             }
         }
+        // #6758: fewer cards (split_rules.hpp).  The same model predicts this placement without its first stages, down to
+        // the last card alone.  The search does not predict these cases.  This block only prints a line, as the NEAR TIE
+        // block does.
+        if (const double fewer_pct = strata::program::split_rules::fewer_cards_pct_resolve(std::getenv("STRATA_SPLIT_FEWER_PCT"));
+            fewer_pct > 0.0 && best_ms > 0.0) {
+            // STRATA_SPLIT_FEWER_PCT is a number in percent (`fewer_cards_pct_resolve` reads it with strtod).  0 disables
+            // this block.
+            // `predict` reports a failed carve through `err` and `carve_ok`.  This advice must not stop a start.  Thus the
+            // block restores `err` and sets `carve_ok` to true after the predictions.
+            const std::string err_was = err;
+            std::vector<double> without;
+            for (int drop = 1; drop < ns; ++drop) {
+                double hm = 0;
+                int64_t held = 0;
+                without.push_back(predict(strata::program::split_rules::without_first(best, drop), hm, held));
+            }
+            const bool carve_fine = carve_ok;
+            carve_ok = true;
+            err = err_was;
+            {   // `predict` writes its fill to `used` and `held_cnt`.  This call writes the fill of the chosen placement again.
+                double hm = 0;
+                int64_t held = 0;
+                (void) predict(best, hm, held);
+            }
+            const int leave = carve_fine ? strata::program::split_rules::fewer_cards(best_ms, without, fewer_pct) : 0;
+            if (leave > 0) {
+                // The line gives each card with its engine number and its model name.  The server puts the faster card last
+                // (#1352).  Thus CUDA1 here can be "gpu": 0 in the server config, and a number alone can identify the wrong card.
+                std::string gone, kept;
+                for (int i = 0; i < ns; ++i) {
+                    const int dev = i == 0 ? 0 : stages[(size_t) i - 1]->dev;
+                    std::string& s = i < leave ? gone : kept;
+                    s += (s.empty() ? "CUDA" : ", CUDA") + std::to_string(dev);
+                    cudaDeviceProp prop{};
+                    if (cudaGetDeviceProperties(&prop, dev) == cudaSuccess) s += std::string(" (") + prop.name + ")";
+                    else (void) cudaGetLastError();
+                }
+                const double ms = without[(size_t) leave - 1];
+                std::fprintf(stderr, "strata generate: layer split auto: FEWER CARDS - without %s, the same model predicts %.1f ms "
+                                     "per decode window. This is %.0f%% less than K=%s (%.1f ms). A decode window passes each card "
+                                     "in turn, so a much slower card can cost more time than its expert cache saves. The model "
+                                     "predicts decode only, not the prompt read. To try this, start the engine with only %s. The "
+                                     "CUDA numbers follow the card order of this start. STRATA_SPLIT_FEWER_PCT=0 disables this "
+                                     "line.\n",
+                             gone.c_str(), ms, 100.0 * (1.0 - ms / best_ms), ks.c_str(), best_ms, kept.c_str());
+            }
+        }
     }
     for (size_t i = 0; i < split_at.size(); ++i)
         if (split_at[i] >= g.n_layers) {

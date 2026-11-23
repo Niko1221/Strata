@@ -197,4 +197,56 @@ inline int64_t min_spare(const std::vector<int64_t>& cuts, int64_t n_layers, con
     return lo;
 }
 
+// ---- #6758: fewer cards.  The search predicts the decode time only for placements of all the cards.  A decode window
+// passes each stage in turn.  Thus each card adds the time of its layers to each window.  The only gain is that its expert
+// cache decreases the misses.  A much slower card can cost more time than its cache saves.
+//
+// The example of #6758 is an RTX 4090 (PCIe x16) with an RTX 3060 (PCIe x4), IQ3_S and 48 layers.  The search chose K=10
+// at a predicted 27.0 ms per decode window.  The best split run decoded at 34.6 tok/s.  The RTX 4090 alone decoded at
+// 62 to 74 tok/s.
+//
+// The same model thus also predicts the chosen placement without its first stages, down to the last card alone.  The
+// layers of a removed stage go to the next stage.  The last stage always stays, because it holds the head.  The engine
+// prints one line when fewer cards are much faster.  The line is advice only.  The model predicts decode, and a split
+// can read a prompt faster than one card (docs/MULTI_GPU.md).
+
+constexpr double kFewerCardsPct = 20.0;   // This is the default threshold in percent.  No sweep supports this value (#6758).
+
+/// Returns the threshold in percent from STRATA_SPLIT_FEWER_PCT.  The engine prints the line only when the predicted
+/// time of fewer cards is at least this much less.  0 disables the line.  An unset, empty or invalid value (not a
+/// number >= 0) gives kFewerCardsPct.
+inline double fewer_cards_pct_resolve(const char* env) {
+    if (env == nullptr || env[0] == '\0') return kFewerCardsPct;
+    char* end = nullptr;
+    const double v = std::strtod(env, &end);
+    return end != env && v >= 0.0 ? v : kFewerCardsPct;
+}
+
+/// Returns `cuts` without its first `drop` stages.  Each removed stage gets a cut of 0, thus its layers go to the next
+/// stage.  With drop >= cuts.size(), only the last card stays.  With drop <= 0, the result is `cuts`.
+inline std::vector<int64_t> without_first(const std::vector<int64_t>& cuts, int drop) {
+    std::vector<int64_t> out = cuts;
+    for (size_t i = 0; i < out.size() && (int) i < drop; ++i) out[i] = 0;
+    return out;
+}
+
+/// Returns the number of first stages to remove (0 keeps each card).  ms_all is the predicted window time of the chosen
+/// placement.  ms_without[j] is the predicted time without the first j + 1 stages (a value <= 0 has no prediction).
+/// The rule selects the lowest time if it is at least `pct` percent below ms_all.  For equal times, it keeps more cards.
+inline int fewer_cards(double ms_all, const std::vector<double>& ms_without, double pct) {
+    if (!(pct > 0.0) || !(ms_all > 0.0)) return 0;
+    const double limit = ms_all * (1.0 - pct / 100.0) + ms_all * 1e-9;
+    int pick = 0;
+    double pick_ms = 0.0;
+    for (size_t j = 0; j < ms_without.size(); ++j) {
+        const double ms = ms_without[j];
+        if (!(ms > 0.0) || ms > limit) continue;
+        if (pick == 0 || ms < pick_ms) {
+            pick = (int) j + 1;
+            pick_ms = ms;
+        }
+    }
+    return pick;
+}
+
 }  // namespace strata::program::split_rules
