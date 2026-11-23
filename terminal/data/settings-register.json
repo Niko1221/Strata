@@ -14416,7 +14416,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 726,
+     "line": 748,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -14449,7 +14449,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 733,
+     "line": 755,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -14746,13 +14746,13 @@
    "reads": [
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 1890,
+     "line": 1938,
      "backend": "hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 1890,
+     "line": 1938,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -14970,7 +14970,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 739,
+     "line": 761,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -15003,13 +15003,13 @@
    "reads": [
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 3534,
+     "line": 3582,
      "backend": "hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 3534,
+     "line": 3582,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -15266,25 +15266,25 @@
    "reads": [
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 2145,
+     "line": 2193,
      "backend": "hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 2145,
+     "line": 2193,
      "backend": "hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 5016,
+     "line": 5065,
      "backend": "hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 5016,
+     "line": 5065,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -16607,7 +16607,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 717,
+     "line": 739,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -16647,7 +16647,7 @@
     },
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 718,
+     "line": 740,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -17022,7 +17022,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/ink_main.cpp",
-     "line": 814,
+     "line": 891,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -17242,6 +17242,39 @@
    "status": "rollback",
    "owner": "inkling2/cuda",
    "note": "strata-inkling CUDA hybrid (0221 INKPLACE): the cold experts' rows are shared by the CPU pool; =0 gives each expert to one thread (the old way).",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_SWA_RING",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
+     "line": 727,
+     "backend": "hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "64c224f3c1",
+   "first_date": "2026-11-23",
+   "since": null,
+   "last_commit": "64c224f3c1",
+   "last_date": "2026-11-23",
+   "status": "research",
+   "owner": "inkling2/hip",
+   "note": "strata-inkling HIP (0221 DETERM, #6878): N overrides the size of the sliding-window K/V ring (tokens); default is sized for the batch span so a batch cannot overwrite K/V its own earlier rows still read. For A/B and the --ring-check test.",
    "retire_after": "",
    "retired_in": ""
   },
@@ -44682,7 +44715,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/ink_main.cpp",
-     "line": 530,
+     "line": 605,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -44715,7 +44748,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/ink_main.cpp",
-     "line": 538,
+     "line": 613,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -44748,7 +44781,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/ink_main.cpp",
-     "line": 425,
+     "line": 500,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -44781,7 +44814,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/ink_main.cpp",
-     "line": 422,
+     "line": 497,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
