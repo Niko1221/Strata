@@ -15,6 +15,7 @@
 #pragma once
 
 #include "ink_cuda.cuh"
+#include "strata/core/ink_caps.hpp"
 #include "ink_moe_fp4_sm120.cuh"
 
 #if defined(__CUDACC__)
@@ -2153,30 +2154,29 @@ __device__ __forceinline__ void sk_unpack64_sub_to_i8(
     }
 }
 
-inline bool ink_has_int8_tc() {
-    static int cached = -1;
-    if (cached >= 0) return cached != 0;
+// Capability answers are per DEVICE, indexed by cudaGetDevice(): a mixed split (sm_120 + sm_86, sm_86 + sm_60) calls these on every
+// stage, and one process-wide cache filled on stage 0 gave the later stages stage 0's kernel path (#6796, #6808).
+inline int ink_cap_device() {
     int dev = 0;
-    cudaDeviceProp p{};
-    if (cudaGetDevice(&dev) != cudaSuccess || cudaGetDeviceProperties(&p, dev) != cudaSuccess) {
-        cached = 0;
-        return false;
-    }
-    cached = (p.major >= 8) ? 1 : 0;
-    return cached != 0;
+    return cudaGetDevice(&dev) == cudaSuccess ? dev : -1;
+}
+
+inline bool ink_has_int8_tc() {
+    static strata::core::PerDeviceFlag flag;
+    const int dev = ink_cap_device();
+    return flag.get(dev, [dev] {
+        cudaDeviceProp p{};
+        return cudaGetDeviceProperties(&p, dev) == cudaSuccess && strata::core::ink_cap_int8_tc(p.major);
+    });
 }
 
 inline bool ink_has_wmma_f16() {
-    static int cached = -1;
-    if (cached >= 0) return cached != 0;
-    int dev = 0;
-    cudaDeviceProp p{};
-    if (cudaGetDevice(&dev) != cudaSuccess || cudaGetDeviceProperties(&p, dev) != cudaSuccess) {
-        cached = 0;
-        return false;
-    }
-    cached = (p.major == 7) ? 1 : 0;  // Volta sm_70 (V100) + Turing sm_75 (RTX 2080 Ti)
-    return cached != 0;
+    static strata::core::PerDeviceFlag flag;
+    const int dev = ink_cap_device();
+    return flag.get(dev, [dev] {
+        cudaDeviceProp p{};
+        return cudaGetDeviceProperties(&p, dev) == cudaSuccess && strata::core::ink_cap_wmma_f16(p.major);
+    });
 }
 
 // Persistent Coalesced 256-Thread INT8 Tensor Core S_K MoE Kernel (sm_80..sm_121: GU=true -> Gate+Up+SITU, GU=false -> Paired-2-Row Down)
@@ -3270,13 +3270,14 @@ inline void launch_ink_moe_dispatch_only(
             k_ink_moe_wmma_f16<true, 16><<<grid, 256, 0, st>>>(sec4_base, experts, ws.tb, x_f32, nullptr, ws.h_f32);
             k_ink_moe_wmma_f16<false, 16><<<grid, 256, 0, st>>>(sec4_base, experts, ws.tb, ws.h_f32, ws.topk_w, ws.y_pair);
         } else {
-            static bool s_carveout_set = false;
-            if (!s_carveout_set) {
+            static bool s_carveout_set[strata::core::kInkCapDevices] = {};   // a function attribute belongs to the device it is set on
+            const int cdev = std::min(std::max(ink_cap_device(), 0), strata::core::kInkCapDevices - 1);
+            if (!s_carveout_set[cdev]) {
                 cudaFuncSetAttribute(k_ink_moe_wmma_f16_bk64<true,  false>, cudaFuncAttributePreferredSharedMemoryCarveout, cudaSharedmemCarveoutMaxShared);
                 cudaFuncSetAttribute(k_ink_moe_wmma_f16_bk64<false, false>, cudaFuncAttributePreferredSharedMemoryCarveout, cudaSharedmemCarveoutMaxShared);
                 cudaFuncSetAttribute(k_ink_moe_wmma_f16_bk64<true,  true>,  cudaFuncAttributePreferredSharedMemoryCarveout, cudaSharedmemCarveoutMaxShared);
                 cudaFuncSetAttribute(k_ink_moe_wmma_f16_bk64<false, true>,  cudaFuncAttributePreferredSharedMemoryCarveout, cudaSharedmemCarveoutMaxShared);
-                s_carveout_set = true;
+                s_carveout_set[cdev] = true;
             }
             const unsigned grid = (unsigned)std::min(std::max(1, mt * 36), 4096);
             if (info.has_sf4 || info.has_mx8) {

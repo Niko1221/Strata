@@ -2486,7 +2486,8 @@ struct InkCudaRunner {
             if (norm_w) k_ink_rms_norm<<<M, 256, 0, st>>>(out, norm_w, out, nullptr, M, D);
         } else {
             const float alpha = 1.0f, beta = 0.0f;
-            if (!exact_fp32 && m.sm_cc >= 70 && m.sm_cc < 80) {
+            const int ctl_cc = m.ls_active ? m.stage_cc[cur_stage] : m.sm_cc;   // the stage that runs this, not the first card (#6796)
+            if (!exact_fp32 && ctl_cc >= 70 && ctl_cc < 80) {
                 // Volta sm_70 (V100) / Turing sm_75 (2080 Ti): 125 TFLOPS FP16 TC for loop controller GEMMs (4x faster than FP32!)
                 __half* x_h = reinterpret_cast<__half*>(d_x_bf16);
                 __half* w_h = reinterpret_cast<__half*>(d_w_scratch);
@@ -2512,7 +2513,7 @@ struct InkCudaRunner {
                     w_h, CUDA_R_16F, kInkGateRank, x_h, CUDA_R_16F, kInkGateRank, &beta,
                     d_ctrl_forget, CUDA_R_32F, D, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP));
             } else {
-                const cublasComputeType_t ctype = (!exact_fp32 && m.sm_cc >= 80) ? CUBLAS_COMPUTE_32F_FAST_TF32 : CUBLAS_COMPUTE_32F;
+                const cublasComputeType_t ctype = (!exact_fp32 && ctl_cc >= 80) ? CUBLAS_COMPUTE_32F_FAST_TF32 : CUBLAS_COMPUTE_32F;
                 INK_CUBLAS_CK(cublasGemmEx(
                     cublas, CUBLAS_OP_T, CUBLAS_OP_N, kInkGateRank, M, D2, &alpha,
                     w_down, CUDA_R_32F, D2, d_ctrl_cat, CUDA_R_32F, D2, &beta,
