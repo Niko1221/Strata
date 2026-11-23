@@ -19,6 +19,7 @@ sys.path.insert(0, str(ROOT))
 from serve import frontend, inkling_dialect, server  # noqa: E402
 
 TEMPLATE = ROOT / "tests" / "data" / "inkling" / "chat_template.jinja"
+_EMPTY_THINK = "<|message_model|><|content_thinking|><|end_message|>"
 TOOLS = [
     {"type": "function", "function": {"name": "read_file", "description": "Read a file.",
                                       "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}},
@@ -99,6 +100,17 @@ class TestRealTemplatePrefixChain(_Base):
         self.assertNotIn(inkling_dialect._EMPTY_THINK_MARK, prompt)
         plain = self.render(conversation()[:2], None)
         self.assertTrue(plain.endswith("<|message_model|><|content_text|>"))
+
+    def test_a_forced_tool_call_turn_chains_onto_the_next_request(self):
+        # tool_choice naming a tool: the prompt is the rendered conversation + the empty thinking turn + the forced opening (serve.prepare);
+        # the next request's history renders that call in full and must start with it
+        conv = conversation()[:2]
+        first = self.render(conv, TOOLS) + inkling_dialect.force_text("<tool_call>\n<function=read_file>\n")
+        self.assertTrue(first.endswith('<|message_model|>read_file<|content_invoke_tool_json|>{"name":"read_file","args":'))
+        self.assertIn(_EMPTY_THINK, first)
+        nxt = conv + [{"role": "assistant", "content": None, "tool_calls": [call(1, "read_file", path="setup.py")]},
+                      {"role": "tool", "tool_call_id": "call_1", "content": "print('hi')"}]
+        self.assertTrue(self.render(nxt, TOOLS).startswith(first))
 
     def test_a_short_helper_request_does_not_change_the_conversations_prompt(self):
         # LobeHub / Hermes send a title request between two turns: it is another prompt, and the conversation's next prompt must still

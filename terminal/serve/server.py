@@ -5356,7 +5356,7 @@ class Service:
                         part["source"] = str(image)
         fetched = self._note_unreadable_tool_images(messages, cancel)
         ids = encoded_ids = self.encode_prompt(messages, tools, kwargs)
-        if force and kwargs.get("enable_thinking", True) is False:
+        if force and (kwargs.get("enable_thinking", True) is False or self.inkling):   # Inkling: the call opens the reply (no thinking pass to wait for)
             ids = ids + self.tok.encode(force, parse_special=True)
         self.embeddings.path = None
         self.embeddings.keys = None
@@ -5506,7 +5506,7 @@ class Service:
                 n = req["strata_prefix"].get("tokens", 0)
                 n = (n // chunk) * chunk if chunk > 0 else 0
                 req["strata_prefix"] = {"tokens": n} if n > 0 else {}
-        return ids, kwargs.get("enable_thinking", True) is not False, max_new
+        return ids, kwargs.get("enable_thinking", True) is not False and not (force and self.inkling), max_new
 
     PREFIX_END = "\u0001strata-prefix-end\u0001"          # marks where a message's shared part ends in the rendered prompt
 
