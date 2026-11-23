@@ -623,6 +623,7 @@ struct InkCudaModel {
                 INK_CK(ink_cuda_mem_info(&vf_now, &vt_now));
                 const size_t avail = (vf_now > hyb_post_res) ? (vf_now - hyb_post_res) : 0;
                 hybrid.alloc_staging(max_exp_bytes, avail);
+                hybrid.exact_prepare();
                 if (hybrid.cold_store) {
                     std::vector<int> idle_keys;
                     for (uint16_t di : order) {
@@ -1588,6 +1589,7 @@ struct InkCudaModel {
             INK_CK(ink_cuda_mem_info(&vf_now, &vt_now, primary_gpu));
             const size_t avail = (vf_now > hyb_post_res) ? (vf_now - hyb_post_res) : 0;
             hybrid.alloc_staging(max_exp_b, avail);
+            hybrid.exact_prepare();
         }
         double t_exp = now_s() - t1;
 
@@ -3534,7 +3536,7 @@ struct InkCudaRunner {
         INK_CK(cudaMemcpyAsync(d_tok_ids, slot_buf, (size_t)M * 4, cudaMemcpyHostToDevice, st));
         INK_CK(cudaMemcpyAsync(d_pos, h_pos, (size_t)M * 4, cudaMemcpyHostToDevice, st));
 
-        if (use_cuda_graph && !m.ls_active && !has_img_step && max_passes_override == 0 && M == 1 && slot0 == 0) {
+        if (use_cuda_graph && !m.ls_active && !has_img_step && max_passes_override == 0 && M == 1 && slot0 == 0 && !m.hybrid.needs_eager()) {
             GraphKey key{M, 0, want_taps ? 1 : 0, (int)kv_dtype};
             cudaGraphExec_t exec = nullptr;
             for (const auto& e : graph_cache) if (e.key == key) { exec = e.exec; break; }
@@ -3633,7 +3635,7 @@ struct InkCudaRunner {
         INK_CK(cudaMemcpyAsync(d_slots, slot_buf + B, (size_t)B * 4, cudaMemcpyHostToDevice, st));
         INK_CK(cudaMemcpyAsync(d_pos, slot_buf + 2 * B, (size_t)B * 4, cudaMemcpyHostToDevice, st));
 
-        if (use_cuda_graph && !m.ls_active && B <= 64 && (m.n_host_experts == 0 || B == 1)) {
+        if (use_cuda_graph && !m.ls_active && B <= 64 && (m.n_host_experts == 0 || (B == 1 && !m.hybrid.needs_eager()))) {
             GraphKey key{B, 10, want_taps ? 1 : 0, (int)kv_dtype};
             cudaGraphExec_t exec = nullptr;
             for (const auto& e : graph_cache) if (e.key == key) { exec = e.exec; break; }

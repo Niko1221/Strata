@@ -1219,6 +1219,83 @@ __global__ void __launch_bounds__(256) k_ink_doorbell_wait_collect(
     }
 }
 
+// ---- Exact mode, M = 1, inside the CUDA graph: the cold experts of a visit are copied by the card itself from the pinned arena into per-slot staging
+// areas and then computed by the card's own expert kernels, so the bits of a token do not depend on where an expert lives. Three small steps:
+//   plan: for each of the 8 routed experts that is cold (tier 2): remember its table entry, point the entry at the staging slot (tier 0);
+//   copy: all blocks copy the cold experts' bytes (host -> card, 16-byte loads, many in flight);
+//   [the ordinary dispatch of tier <= 1 experts runs]
+//   restore: the entries get their old contents back (a cold expert is cold again for the next visit and for the host's own bookkeeping).
+struct InkStageState {
+    InkExpertDev saved[kInkTopK];
+    uint32_t bytes[kInkTopK];
+    int32_t eid[kInkTopK];
+    int32_t miss[kInkTopK];
+};
+
+__global__ void __launch_bounds__(32) k_ink_stage_plan(
+    int layer,
+    InkExpertDev* __restrict__ experts,
+    const int32_t* __restrict__ topk_idx,
+    const uint32_t* __restrict__ key_bytes,
+    uint8_t* __restrict__ stage, size_t slot_bytes,
+    const uint8_t* __restrict__ sec4_base,
+    InkStageState* __restrict__ ss,
+    float* __restrict__ use_cnt,
+    unsigned long long* __restrict__ stat) {
+    const int k = threadIdx.x;
+    int miss = 0;
+    if (k < kInkTopK) {
+        const int e = topk_idx[k];
+        const int key = layer * kInkExperts + e;
+        if (use_cnt) atomicAdd(&use_cnt[key], 1.0f);
+        InkExpertDev ed = experts[e];
+        miss = (ed.tier == 2) ? 1 : 0;
+        ss->eid[k] = e;
+        ss->miss[k] = miss;
+        ss->saved[k] = ed;
+        ss->bytes[k] = key_bytes[key];
+        if (miss) {
+            InkExpertDev p = ed;
+            p.tier = 0;
+            p.body_off = (uint64_t)((intptr_t)(stage + (size_t)k * slot_bytes) - (intptr_t)sec4_base);
+            experts[e] = p;
+        }
+    }
+    const unsigned ballot = __ballot_sync(0xFFu, miss);
+    if (k == 0 && stat) { stat[0] += (unsigned long long)kInkTopK; stat[1] += (unsigned long long)__popc(ballot); }
+}
+
+// grid (chunks, 8), block 256: chunk c of cold expert k, 64 KiB per block
+__global__ void __launch_bounds__(256) k_ink_stage_copy(
+    const InkStageState* __restrict__ ss,
+    const uint8_t* __restrict__ arena,
+    uint8_t* __restrict__ stage, size_t slot_bytes) {
+    const int k = blockIdx.y;
+    if (!ss->miss[k]) return;
+    constexpr uint32_t CH = 64u * 1024u;
+    const uint32_t begin = blockIdx.x * CH;
+    const uint32_t total = ss->bytes[k];
+    if (begin >= total) return;
+    const uint32_t len = min(CH, total - begin);
+    const uint8_t* src = arena + ss->saved[k].body_off + begin;
+    uint8_t* dst = stage + (size_t)k * slot_bytes + begin;
+    const uint32_t n16 = len / 16u;
+    const uint4* s4 = reinterpret_cast<const uint4*>(src);
+    uint4* d4 = reinterpret_cast<uint4*>(dst);
+    uint32_t i = threadIdx.x;
+    for (; i + 3u * 256u < n16; i += 4u * 256u) {
+        const uint4 a = s4[i], b = s4[i + 256u], c = s4[i + 512u], d = s4[i + 768u];
+        d4[i] = a; d4[i + 256u] = b; d4[i + 512u] = c; d4[i + 768u] = d;
+    }
+    for (; i < n16; i += 256u) d4[i] = s4[i];
+    if (threadIdx.x < (len & 15u)) dst[n16 * 16u + threadIdx.x] = src[n16 * 16u + threadIdx.x];
+}
+
+__global__ void __launch_bounds__(32) k_ink_stage_restore(InkExpertDev* __restrict__ experts, const InkStageState* __restrict__ ss) {
+    const int k = threadIdx.x;
+    if (k < kInkTopK && ss->miss[k]) experts[ss->eid[k]] = ss->saved[k];
+}
+
 __global__ void __launch_bounds__(256) k_ink_decay_use_cnt(float* __restrict__ cnt, int n, float decay) {
     const int i = blockIdx.x * 256 + threadIdx.x;
     if (i < n) cnt[i] *= decay;
@@ -1259,6 +1336,33 @@ struct InkHybridEngine {
     float* d_v_y    = nullptr;   // device mirror for fast scatter
     int32_t* d_v_p  = nullptr;   // device pair indices
     double dec_pcie_share = -1.0; // -1 = auto, 0 = 100% CPU, 1 = 100% PCIe DMA (STRATA_INK_DEC_PCIE_SHARE)
+    bool exact_mode = true;      // default ON (STRATA_INK_EXACT=0: the CPU computes cold experts, faster but not bit-identical to the card): no CPU compute of experts, so the result of a token does not depend on where an expert is
+    bool exact_graph = false;    // exact mode with the cold experts of a decode visit staged by the card inside the graph (needs the pinned arena)
+    bool needs_eager() const noexcept { return exact_mode && !exact_graph; }   // exact mode without the in-graph staging: decode runs eagerly (host sync per visit)
+    uint32_t* d_key_bytes = nullptr;
+    uint8_t* d_stage = nullptr;
+    size_t stage_slot_bytes = 0;
+    InkStageState* d_stage_state = nullptr;
+
+    // After the loaders: prepare the in-graph staging of exact mode (the arena must be pinned: the card reads it).
+    void exact_prepare() {
+        if (!exact_mode || !active || ssd_only || !sec4_is_pinned || !h_sec4_pinned || host_meta.empty()) return;
+        if (const char* e = std::getenv("STRATA_INK_EXACT_GRAPH")) if (e[0] == '0') return;   // keep the eager copy path (for A/B)
+        size_t mx = 0;
+        std::vector<uint32_t> kb(host_meta.size(), 0u);
+        for (size_t k = 0; k < host_meta.size(); ++k) {
+            if (host_meta[k].body) { kb[k] = host_meta[k].body_bytes; mx = std::max<size_t>(mx, host_meta[k].body_bytes); }
+        }
+        if (mx == 0) return;
+        stage_slot_bytes = (mx + 255ull) & ~255ull;
+        if (cudaMalloc(&d_stage, stage_slot_bytes * kInkTopK) != cudaSuccess) { (void)cudaGetLastError(); d_stage = nullptr; return; }
+        d_key_bytes = dalloc<uint32_t>(kb.size());
+        INK_CK(cudaMemcpy(d_key_bytes, kb.data(), kb.size() * 4, cudaMemcpyHostToDevice));
+        d_stage_state = dalloc<InkStageState>(1);
+        INK_CK(cudaMemset(d_stage_state, 0, sizeof(InkStageState)));
+        exact_graph = true;
+        std::fprintf(stderr, "[InkHybrid] exact mode: cold experts are staged by the card inside the graph (%zu x %.2f MB staging)\n", (size_t)kInkTopK, (double)stage_slot_bytes / 1e6);
+    }
     uint32_t promo_step = 0;      // cadence counter so step_promote does NOT sync every single token!
     // Expert-cache statistics of the batched path (M <= 16, i.e. decode): every routed expert counted, and those that were not in the card
     // (host RAM or SSD) counted as misses; STATS reports the hit rate (the share of routed experts served from the card).
@@ -1633,6 +1737,10 @@ struct InkHybridEngine {
         if (const char* e = std::getenv("STRATA_INK_SPLIT")) split_experts = (e[0] != '0');
         if (const char* e = std::getenv("STRATA_L3_PF")) l3_pf_enabled = (e[0] != '0');
         if (const char* e = std::getenv("STRATA_INK_DEC_PCIE_SHARE")) dec_pcie_share = std::max(0.0, std::min(1.0, std::atof(e)));
+        if (const char* e = std::getenv("STRATA_INK_EXACT")) exact_mode = (e[0] != '0');
+        std::fprintf(stderr, "[InkHybrid] cold experts: %s\n", exact_mode ? "copied into the card and computed by its kernels (exact: the same bits wherever an expert lives)"
+                                                                       : "computed on the CPU where they are (STRATA_INK_EXACT=0: faster, not bit-identical to the card)");
+        if (exact_mode) dec_pcie_share = 1.0;   // every cold expert is copied into the card and computed by the card's own kernels: the same bits wherever the expert lives
         INK_CK(cudaHostAlloc(&h_bell, sizeof(InkMappedDoorbell), cudaHostAllocMapped));
         std::memset(h_bell, 0, sizeof(InkMappedDoorbell));
         INK_CK(cudaHostGetDevicePointer(&d_bell, h_bell, 0));
@@ -2329,7 +2437,14 @@ inline void launch_ink_moe_hybrid(
     }
     k_ink_router_select_topk8<<<M, 32, 0, st>>>(ws.r_logits, gate_b, ws.topk_idx, ws.topk_w, route_scale, M);
 
-    if (M == 1) {
+    if (M == 1 && hyb.exact_graph) {
+        // exact mode: the card copies the cold experts in and computes them itself (see k_ink_stage_plan)
+        k_ink_stage_plan<<<1, 32, 0, st>>>(ip, const_cast<InkExpertDev*>(experts), ws.topk_idx, hyb.d_key_bytes, hyb.d_stage, hyb.stage_slot_bytes,
+                                            sec4_base, hyb.d_stage_state, hyb.d_use_cnt, hyb.d_stat);
+        k_ink_stage_copy<<<dim3((unsigned)((hyb.stage_slot_bytes + 65535u) / 65536u), kInkTopK), 256, 0, st>>>(hyb.d_stage_state, hyb.h_sec4_pinned, hyb.d_stage, hyb.stage_slot_bytes);
+        launch_ink_moe_dispatch_only(st, sec4_base, experts, info, x_f32, 1, ws, force_exact_dec, false);
+        k_ink_stage_restore<<<1, 32, 0, st>>>(const_cast<InkExpertDev*>(experts), hyb.d_stage_state);
+    } else if (M == 1 && !hyb.exact_mode) {
         // Zero-sync CUDA-Graph-capturable Doorbell: CPU DDR5 computes tier==2 experts IN PARALLEL with GPU tier==0!
         k_ink_doorbell_ring<<<1, 256, 0, st>>>(
             ip, experts, ws.topk_idx, x_f32,
