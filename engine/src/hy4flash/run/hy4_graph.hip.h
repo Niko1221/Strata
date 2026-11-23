@@ -1269,9 +1269,22 @@ public:
         fprintf(stderr, "[runner] %s: %.2f GB in pinned host memory (read by the GPU)\n", what, bytes / 1e9);
         return (T*)dp;
     }
+    // A failed device allocation says how big it was and how much the card had left (#6744: "HIP error 2" alone could not say which buffer ran out).
+    static void alloc_failed_note(hipError_t e, size_t bytes, const char* what) {
+        if (e == hipSuccess) return;
+        size_t fr = 0, tot = 0;
+        (void)hipGetLastError();
+        const bool have = hipMemGetInfo(&fr, &tot) == hipSuccess;
+        fprintf(stderr, "[runner] device allocation of %.3f GB (%s) failed: %.3f GB free of %.1f GB. The context (--max-context) sets the size of the KV and index buffers; "
+                        "HY4_KV_HOST=3 keeps them in pinned host memory and HY4_RESERVE_GB leaves room for them\n",
+                bytes / 1e9, what, have ? fr / 1e9 : 0.0, have ? tot / 1e9 : 0.0);
+    }
     template <class T> T* dalloc(size_t n) {
         T* p = nullptr;
-        HCK(hipMalloc((void**)&p, n * sizeof(T)));
+        const hipError_t e_alloc = hipMalloc((void**)&p, n * sizeof(T));
+        alloc_failed_note(e_alloc, n * sizeof(T), "dalloc");
+        if (e_alloc == hipSuccess && n * sizeof(T) >= (300ull << 20) && getenv("HY4_ALLOC_TRACE")) fprintf(stderr, "[alloc] %.3f GB (%zu x %zu B)\n", n * sizeof(T) / 1e9, n, sizeof(T));
+        HCK(e_alloc);
         if (getenv("HY4_POISON")) HCK(hipMemset(p, 0xFF, n * sizeof(T)));  // debug: NaN / -1 fill, finds reads of uninitialised device memory
         return p;
     }

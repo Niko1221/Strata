@@ -22,6 +22,7 @@
 #include "strata/hip_uma_guard.hpp"
 #include "strata/inkling2/inkling2_loop.hpp"
 #include "strata/platform/cgroup_mem.hpp"
+#include "strata/platform/commit.hpp"
 #include "strata/quant/sk_codecs.hpp"
 #if defined(__linux__)
 #include "strata/platform/numa_balancing.hpp"
@@ -985,6 +986,22 @@ public:
             if (mem_info_.effective_total_bytes > overhead) {
                 vram_budget = mem_info_.effective_total_bytes - overhead;
             }
+            // #6711: the budget above is the card's TOTAL minus what this engine holds. The desktop, the browser and other programs hold VRAM too (3 GB on the
+            // reporter's R9700 with 29 GB free), so the single arena allocation failed "out of memory" before any model line. What is free NOW (the trunk is
+            // already in it) bounds the arena as well, like the CUDA backend's free-VRAM sizing.
+            size_t fr_now = 0, tot_now = 0;
+            if (hipMemGetInfo(&fr_now, &tot_now) == hipSuccess) {
+                uint64_t eff_fr = fr_now, eff_tot = tot_now;
+                effective_uma_memory(mem_info_.is_uma, fr_now, tot_now, eff_fr, eff_tot);
+                const size_t keep = mem_info_.reserve_bytes + kv_est + (768ULL << 20);
+                const size_t by_free = eff_fr > keep ? static_cast<size_t>(eff_fr - keep) : 0u;
+                if (by_free < vram_budget) {
+                    std::fprintf(stderr, "[ink-hip] expert arena budget %.2f GiB -> %.2f GiB: only %.2f GiB of the card is free now (other programs hold the rest)\n",
+                                 static_cast<double>(vram_budget) / 1073741824.0, static_cast<double>(by_free) / 1073741824.0,
+                                 static_cast<double>(eff_fr) / 1073741824.0);
+                    vram_budget = by_free;
+                }
+            }
         }
 
         // Check whether all experts fit in vram_budget; if hybrid (partial VRAM), reserve elastic VRAM cache inside budget!
@@ -1042,6 +1059,16 @@ public:
                     if (std::strcmp(key, "MemAvailable") == 0) { host_avail = kb * 1024ull; break; }
                 }
                 std::fclose(fp);
+            }
+#elif defined(_WIN32)
+            {   // #6748: Windows had no cap at all here (ram_cap stayed unlimited): the free RAM and the commit left bound the host experts
+                MEMORYSTATUSEX ms{};
+                ms.dwLength = sizeof(ms);
+                if (GlobalMemoryStatusEx(&ms)) {
+                    const uint64_t commit = strata::platform::commit_available(static_cast<uint64_t>(ms.ullAvailPageFile),
+                                                                                 strata::platform::commit_growth(static_cast<uint64_t>(ms.ullTotalPhys)));
+                    host_avail = strata::platform::host_ram_budget(static_cast<uint64_t>(ms.ullAvailPhys), commit);
+                }
             }
 #endif
             if (host_avail > 0) {
@@ -1103,7 +1130,32 @@ public:
 
         const int tc_threads = transcode::default_transcode_threads();
         if (arena_bytes > 0) {
-            if (!hip_ok(alloc_gpu_buffer(expert_gpu_arena_, arena_bytes, mem_info_.is_uma), "expert GPU arena alloc", err)) {
+            // #6711: one contiguous arena can still fail on a discrete card whose free VRAM is fragmented or capped by the driver (Windows WDDM). Give up the
+            // coldest GPU-planned experts in 5% steps (they go to the RAM tier, or the SSD tier when RAM is short) and try again, instead of failing the start.
+            hipError_t arena_err = alloc_gpu_buffer(expert_gpu_arena_, arena_bytes, mem_info_.is_uma);
+            while (arena_err == hipErrorOutOfMemory && !mem_info_.is_uma && !gpu_plan.empty() && arena_bytes > (1ULL << 30)) {
+                (void)hipGetLastError();
+                const size_t target = arena_bytes - std::max<size_t>(arena_bytes / 20, 256ULL << 20);
+                size_t dropped = 0;
+                while (!gpu_plan.empty()) {
+                    const uint16_t di = gpu_plan.back();
+                    const size_t end = expert_gpu_offset_[di] + ((dir[di].body_bytes + 63u) & ~size_t(63u));
+                    if (end <= target) break;
+                    expert_gpu_offset_[di] = static_cast<size_t>(-1);
+                    if (ram_bytes + dir[di].body_bytes <= ram_cap) {
+                        ram_bytes += dir[di].body_bytes;
+                        ram_plan.push_back(di);
+                    }
+                    gpu_plan.pop_back();
+                    ++dropped;
+                }
+                arena_bytes = gpu_plan.empty() ? 0 : expert_gpu_offset_[gpu_plan.back()] + ((dir[gpu_plan.back()].body_bytes + 63u) & ~size_t(63u));
+                std::fprintf(stderr, "[ink-hip] expert GPU arena did not fit: %zu experts move to the RAM/SSD tier, arena now %.2f GiB\n",
+                             dropped, static_cast<double>(arena_bytes) / 1073741824.0);
+                if (arena_bytes == 0) { arena_err = hipSuccess; break; }
+                arena_err = alloc_gpu_buffer(expert_gpu_arena_, arena_bytes, mem_info_.is_uma);
+            }
+            if (!hip_ok(arena_err, "expert GPU arena alloc", err)) {
                 return false;
             }
             if (model.kind == ModelSourceKind::Strata) {

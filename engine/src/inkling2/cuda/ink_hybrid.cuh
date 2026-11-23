@@ -19,6 +19,7 @@
 #include "ink_moe_cuda.cuh"
 #include "../ink_cold_store.hpp"
 #include "../ink_host_avx2.h"
+#include "strata/platform/commit.hpp"
 #include "strata/core/moe_wave_plan.hpp"
 #include "strata/quant/act.hpp"
 #include "strata/quant/dequant.hpp"
@@ -59,7 +60,10 @@ inline uint64_t ink_ram_available_bytes() noexcept {
 #ifdef _WIN32
     MEMORYSTATUSEX ms{};
     ms.dwLength = sizeof(ms);
-    return GlobalMemoryStatusEx(&ms) ? (uint64_t)ms.ullAvailPhys : 0ull;
+    if (!GlobalMemoryStatusEx(&ms)) return 0ull;
+    // #6748: free RAM is not the limit when the commit left is smaller (pinned/private memory is charged to the commit limit)
+    const uint64_t commit = strata::platform::commit_available((uint64_t)ms.ullAvailPageFile, strata::platform::commit_growth((uint64_t)ms.ullTotalPhys));
+    return strata::platform::host_ram_budget((uint64_t)ms.ullAvailPhys, commit);
 #else
     uint64_t avail = 0, mfree = 0, mbuf = 0, mcache = 0;
     if (FILE* f = std::fopen("/proc/meminfo", "r")) {
