@@ -41,7 +41,7 @@ class SettingsRules(unittest.TestCase):
         notes = S.check_parallel(S.LaunchSettings(parallel=4), vram_gb=12)
         self.assertEqual([n.level for n in notes], ["warn"])
         self.assertIn("still start", notes[0].line())
-        self.assertEqual(S.check_parallel(S.LaunchSettings(parallel=9), vram_gb=12)[0].level, "error")
+        self.assertEqual(S.check_parallel(S.LaunchSettings(parallel=65), vram_gb=12)[0].level, "error")
         self.assertEqual(S.check_parallel(S.LaunchSettings(parallel=2), vram_gb=24), [])
 
     def test_no_key_warnings_are_plain_and_stronger_in_public(self):
@@ -1035,7 +1035,7 @@ class FlagsCommand(unittest.TestCase):
 
     def test_bad_values_are_plain_sentences(self):
         for argv, word in ((["--tune", "quik"], "quick"), (["--access", "lann"], "lan"), (["--context", "huge"], "context"),
-                           (["--port", "99999"], "1 to 65535"), (["--parallel", "12"], "1 to 8"), (["--vision", "maybe"], "off")):
+                           (["--port", "99999"], "1 to 65535"), (["--parallel", "65"], "1 to 64"), (["--vision", "maybe"], "off")):
             code, out, err = run_cli(["launch", "--plan", *argv])
             self.assertEqual(code, 2, argv)
             self.assertIn(word, err, argv)
