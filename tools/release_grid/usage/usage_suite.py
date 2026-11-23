@@ -305,7 +305,7 @@ def case_coding(c, a):
     # d. explain code
     r = ask("What does pack('aaabccdddd') return? Think about the code, then answer with the exact string on the last line.\n\n```python\n%s```" % EXPLAIN_FILE, cap=500)
     good = "a3b1c2d4" in r["text"]
-    notes.append("explain: " + ("right" if good else "FAIL"))
+    notes.append("explain: " + ("right" if good else "FAIL, the reply ends: " + r["text"][-90:].replace("\n", " ")))
     ok &= good
     return case_result(rec, ok, notes)
 
