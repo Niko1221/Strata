@@ -563,6 +563,10 @@ public:
         c_ = model.m.c;
         dspark_cfg_ = model.m.dspark;
 
+        if (kv_dtype_is_int_quant(opts.kv_dtype)) {
+            err = "[ink-hip] --kv k8v4/k8v8 is not supported on the HIP backend (allocates fp16-sized pages); use --kv fp8 or fp16";
+            return false;
+        }
         int dev_count = 0;
         if (hipGetDeviceCount(&dev_count) != hipSuccess || dev_count < 1) {
             err = "[ink-hip] no HIP devices visible";

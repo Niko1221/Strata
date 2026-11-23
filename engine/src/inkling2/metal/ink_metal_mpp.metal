@@ -166,7 +166,8 @@ static inline void mpp_sk_w8(device const uchar* pl, int j, thread float4& o0, t
         o1 = float4(kMppS2Lut[p[1]]);
     } else if constexpr (F == 3) {
         device const uchar* p = pl + (j >> 2);
-        const uint h = uint(pl[64 + (j >> 3)]);
+        device const uchar* hp = pl + 64;
+        const uint h = uint(hp[j >> 3]);
         o0 = float4(kMppS2Lut[p[0]] + kMppS3Hi[h & 15u]);
         o1 = float4(kMppS2Lut[p[1]] + kMppS3Hi[h >> 4]);
     } else if constexpr (F == 4) {
@@ -175,7 +176,8 @@ static inline void mpp_sk_w8(device const uchar* pl, int j, thread float4& o0, t
         o1 = float4(half4(kMppS4Lut[p[2]], kMppS4Lut[p[3]]));
     } else if constexpr (F == 5) {
         device const uchar* p = pl + (j >> 1);
-        const uint h = uint(pl[128 + (j >> 3)]);
+        device const uchar* hp = pl + 128;
+        const uint h = uint(hp[j >> 3]);
         o0 = float4(half4(kMppS4Lut[p[0]], kMppS4Lut[p[1]]) + kMppS5Hi[h & 15u]);
         o1 = float4(half4(kMppS4Lut[p[2]], kMppS4Lut[p[3]]) + kMppS5Hi[h >> 4]);
     } else if constexpr (F == 6) {

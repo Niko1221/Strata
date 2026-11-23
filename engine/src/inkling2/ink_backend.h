@@ -144,7 +144,7 @@ std::unique_ptr<InkBackend> make_hip_backend();
 std::unique_ptr<InkBackend> make_metal_backend();
 #endif
 #ifdef INKLING_ENABLE_SYCL
-std::unique_ptr<InkBackend> make_sycl_backend();
+std::unique_ptr<InkBackend> make_sycl_backend(const BackendOpts* opts = nullptr);
 #endif
 
 inline std::unique_ptr<InkBackend> make_default_backend(bool force_cpu = false, const BackendOpts* opts = nullptr) {
@@ -161,7 +161,7 @@ inline std::unique_ptr<InkBackend> make_default_backend(bool force_cpu = false, 
 #elif defined(INKLING_ENABLE_METAL)
         return make_metal_backend();
 #elif defined(INKLING_ENABLE_SYCL)
-        return make_sycl_backend();
+        return make_sycl_backend(opts);
 #endif
     }
     return make_cpu_backend();

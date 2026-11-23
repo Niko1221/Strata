@@ -1518,19 +1518,23 @@ public:
             const int n_want = static_cast<int>(want_idx.size());
             const int V = c_.vocab_unpadded;
             if (n_want > 0) {
-                if (d_unembed_bf16_ != nullptr && n_want <= kMaxParallelSlots) {
-                    std::vector<float> h_want(static_cast<size_t>(n_want) * D);
-                    for (int wi = 0; wi < n_want; ++wi) {
-                        std::memcpy(h_want.data() + static_cast<size_t>(wi) * D,
-                                    h_norm.data() + static_cast<size_t>(want_idx[wi]) * D, D * 4);
-                    }
+                if (d_unembed_bf16_ != nullptr) {
                     EP_CK(cudaSetDevice(gpu_ids_[0]));
-                    EP_CK(cudaMemcpyAsync(d_dense_x_, h_want.data(), h_want.size() * 4, cudaMemcpyHostToDevice, streams_[0]));
-                    dim3 grid((V + 7) / 8, n_want);
-                    k_unembed_softcap_bf16<<<grid, 256, 0, streams_[0]>>>(
-                        d_dense_x_, d_unembed_bf16_, d_dense_y_, n_want, V, D, c_.logit_softcap);
-                    EP_CK(cudaMemcpyAsync(logits_out, d_dense_y_, static_cast<size_t>(n_want) * V * 4, cudaMemcpyDeviceToHost, streams_[0]));
-                    EP_CK(cudaStreamSynchronize(streams_[0]));
+                    std::vector<float> h_want(static_cast<size_t>(std::min(n_want, kMaxParallelSlots)) * D);
+                    for (int w0 = 0; w0 < n_want; w0 += kMaxParallelSlots) {
+                        const int cw = std::min(kMaxParallelSlots, n_want - w0);
+                        for (int wi = 0; wi < cw; ++wi) {
+                            std::memcpy(h_want.data() + static_cast<size_t>(wi) * D,
+                                        h_norm.data() + static_cast<size_t>(want_idx[w0 + wi]) * D, D * 4);
+                        }
+                        EP_CK(cudaMemcpyAsync(d_dense_x_, h_want.data(), static_cast<size_t>(cw) * D * 4, cudaMemcpyHostToDevice, streams_[0]));
+                        dim3 grid((V + 7) / 8, cw);
+                        k_unembed_softcap_bf16<<<grid, 256, 0, streams_[0]>>>(
+                            d_dense_x_, d_unembed_bf16_, d_dense_y_, cw, V, D, c_.logit_softcap);
+                        EP_CK(cudaMemcpyAsync(logits_out + static_cast<size_t>(w0) * V, d_dense_y_,
+                                              static_cast<size_t>(cw) * V * 4, cudaMemcpyDeviceToHost, streams_[0]));
+                        EP_CK(cudaStreamSynchronize(streams_[0]));
+                    }
                 } else {
                     const auto& unemb_pk = packed_trunk_.at("model.llm.unembed.weight");
                     const float cap = c_.logit_softcap, inv_cap = 1.0f / cap;
@@ -1743,7 +1747,12 @@ private:
         const int max_k = std::max(c_.hidden, c_.n_head * c_.head_dim);
         const int max_n = std::max(std::max(c_.vocab_unpadded, c_.n_head * c_.head_dim), std::max(c_.hidden, c_.n_experts));
         if (it == d_mats_bf16_.end() || K > max_k || N > max_n) {
-            cpu_matmul(x, trunk_f32_.at(wname).data(), y, M, N, K);
+            auto tf = trunk_f32_.find(wname);
+            if (tf == trunk_f32_.end()) {
+                err = "cuda-ep: missing dense weight " + wname + " for CPU fallback";
+                return false;
+            }
+            cpu_matmul(x, tf->second.data(), y, M, N, K);
             return true;
         }
         EP_CK(cudaSetDevice(gpu_ids_[0]));

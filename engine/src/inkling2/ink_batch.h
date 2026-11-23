@@ -30,6 +30,12 @@ inline const char* kv_dtype_name(KvDtype dt) noexcept {
     }
 }
 
+// Integer quantized KV modes (K8V8/K8V4) have dedicated storage on CPU and CUDA;
+// HIP, Metal, and SYCL pools currently allocate FP16/FP8 pages only and reject integer modes at init (#6681).
+inline bool kv_dtype_is_int_quant(KvDtype dt) noexcept {
+    return dt == KvDtype::K8V8 || dt == KvDtype::K8V4;
+}
+
 // ---- Scalar FP16 / BF16 / FP8 E4M3FN conversion helpers (portable across CPU & GPU host prep) ----
 inline float bf16_to_f32(uint16_t b) noexcept {
     uint32_t u = static_cast<uint32_t>(b) << 16;

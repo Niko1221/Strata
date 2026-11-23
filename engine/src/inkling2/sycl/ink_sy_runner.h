@@ -336,7 +336,7 @@ struct InkSyRunner {
     }
 
     void reset_slot(int s) {
-        if (s < 0 || s >= max_slots) return;
+        if (s < 0 || s >= max_slots || !mod || sc_hist_k.empty()) return;
         const size_t sc_kv = 3ul * 1024 * 4, sc_d = 3ul * INK_D * 4;
         for (int v = 0; v < mod->man.c.n_visits; ++v) {
             dzero(sc_hist_k[v] + (size_t)s * 3 * 1024, sc_kv);
@@ -348,7 +348,7 @@ struct InkSyRunner {
     }
 
     void snapshot_slot(int s) {
-        if (s < 0 || s >= max_slots) return;
+        if (s < 0 || s >= max_slots || !mod || sc_hist_k.empty()) return;
         const size_t sc_kv = 3ul * 1024 * 4, sc_d = 3ul * INK_D * 4;
         for (int v = 0; v < mod->man.c.n_visits; ++v) {
             d2d(sc_snap_k[v] + (size_t)s * 3 * 1024, sc_hist_k[v] + (size_t)s * 3 * 1024, sc_kv);
@@ -359,7 +359,7 @@ struct InkSyRunner {
     }
 
     void rollback_slot(int s, int keep_len) {
-        if (s < 0 || s >= max_slots) return;
+        if (s < 0 || s >= max_slots || !mod || sc_hist_k.empty()) return;
         const size_t sc_kv = 3ul * 1024 * 4, sc_d = 3ul * INK_D * 4;
         if (s == last_ver_slot && keep_len > last_ver_pos0 && keep_len <= last_ver_pos0 + last_ver_m) {
             const int step_idx = keep_len - last_ver_pos0 - 1;

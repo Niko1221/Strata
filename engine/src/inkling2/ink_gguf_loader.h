@@ -260,6 +260,7 @@ struct GgufAdapter {
     bool has_dspark_st = false;
     SafetensorsShard dspark_st;
     bool is_rewrite_layout = false;  // true = llama.cpp master / Unsloth (blk.0.ffn_gate_up_exps.weight)
+    bool is_merged_layout = false;   // true = merged mainline (#32694): rewrite names + per-block loop_msg_query & loop_*_ctrl_*
 
     std::vector<uint8_t> sec1_arena; // Assembled canonical Section 1 trunk + DSpark bytes
     std::vector<strata::artifact::StrataExpertEntry> expert_dir;
@@ -332,6 +333,7 @@ struct GgufAdapter {
         }
 
         is_rewrite_layout = (model->find("blk.0.ffn_gate_up_exps.weight") != nullptr);
+        is_merged_layout  = is_rewrite_layout && (model->find("loop_res_query.weight") == nullptr);
 
         // 1. Parse InkCfg from GGUF metadata (supports BOTH llama.cpp master & PR #32187 keys)
         m = ManifestT{};
@@ -382,9 +384,9 @@ struct GgufAdapter {
             if (const auto* eos = meta.get("tokenizer.ggml.eos_token_id")) c.eos_token_id = static_cast<int>(eos->u);
 
             const int core_len = (c.num_passes > 1) ? (c.core_end - c.core_start) : 0;
-            // ggml-org GGUFs (`general.architecture = "inkling2_loop"`) store physical block_count=24 directly;
-            // Unsloth GGUFs (`general.architecture = "inkling2"`) store virtual block_count=48.
-            if (arch_v->s == "inkling2_loop" || n_visits_meta <= c.core_end + 6) {
+            // Merged mainline (#32694, ggml-org/Inkling-2-Mini-GGUF) stores physical block_count=24 directly;
+            // Unsloth / pre-merge GGUFs store virtual visit count=48.
+            if (is_merged_layout || arch_v->s == "inkling2_loop" || n_visits_meta <= c.core_end + 6) {
                 c.n_phys = n_visits_meta;
             } else {
                 c.n_phys = n_visits_meta - (c.num_passes - 1) * core_len;
@@ -394,7 +396,7 @@ struct GgufAdapter {
             c.is_swa.assign(c.n_phys, 1);
             if (const auto* pat = meta.get(ap + "attention.sliding_window_pattern");
                 pat && pat->type == strata::MetaType::ARRAY && static_cast<int>(pat->items.size()) >= c.n_phys) {
-                const bool phys_indexed = (static_cast<int>(pat->items.size()) == c.n_phys);
+                const bool phys_indexed = is_merged_layout || (static_cast<int>(pat->items.size()) == c.n_phys);
                 for (int l = 0; l < c.n_phys; ++l) {
                     int v = phys_indexed ? l : ((l < c.core_end) ? l : (l + (c.num_passes - 1) * core_len));
                     bool swa_v = false;
