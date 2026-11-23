@@ -1097,6 +1097,46 @@ public:
                 }
             }
         }
+        // A GGUF whose experts need a transcode (types without a HIP kernel: IQ1_S, IQ2_*, IQ3_S ...) grows when it is
+        // transcoded to S_K, so the planner's file-size budget can leave experts that fit neither VRAM nor RAM. They would
+        // be re-read from the file and re-transcoded on every token (0.3 tok/s, #6729). Keep them in RAM when RAM allows.
+        if (model.kind != ModelSourceKind::Strata && !opts.ssd_experts && !ep2_active_) {
+            std::vector<char> in_ram(n_dir, 0);
+            for (uint16_t idx : ram_plan) in_ram[idx] = 1;
+            std::vector<uint16_t> left;
+            size_t left_bytes = 0;
+            for (uint16_t idx : model.vram_load_order) {
+                if (idx >= n_dir || in_ram[idx] || expert_gpu_offset_[idx] != static_cast<size_t>(-1)) continue;
+                left.push_back(idx);
+                left_bytes += dir[idx].body_bytes;
+            }
+            if (!left.empty()) {
+                uint64_t host_avail = 0;
+#ifdef __linux__
+                if (FILE* fp = std::fopen("/proc/meminfo", "r")) {
+                    char key[64];
+                    unsigned long long kb = 0;
+                    char unit[32];
+                    while (std::fscanf(fp, "%63[^:]: %llu %31s\n", key, &kb, unit) == 3) {
+                        if (std::strcmp(key, "MemAvailable") == 0) { host_avail = kb * 1024ull; break; }
+                    }
+                    std::fclose(fp);
+                }
+#endif
+                const uint64_t os_res = std::max<uint64_t>(2ULL << 30, std::min<uint64_t>(host_avail / 4, 4ULL << 30));
+                const size_t safe_host = static_cast<size_t>(host_avail > os_res ? (host_avail - os_res) : 0);
+                if (host_avail == 0 || left_bytes + ram_bytes <= safe_host) {
+                    for (uint16_t idx : left) ram_plan.push_back(idx);
+                    std::fprintf(stderr, "[ink-hip] %zu experts (%.2f GiB, transcoded) did not fit --vram-experts-gb / --ram-experts-gb: keeping them in RAM "
+                                         "instead of re-reading and re-transcoding them from the file on every token\n",
+                                 left.size(), static_cast<double>(left_bytes) / 1073741824.0);
+                } else {
+                    std::fprintf(stderr, "[ink-hip] WARNING: %zu experts (%.2f GiB, transcoded) fit neither VRAM nor RAM here: they are re-read and "
+                                         "re-transcoded from the file on every token, so decode will be very slow. Use a smaller GGUF or a quant with a native HIP kernel.\n",
+                                 left.size(), static_cast<double>(left_bytes) / 1073741824.0);
+                }
+            }
+        }
         if (ep2_active_ && peer_gpu_plan.empty()) {
             ep2_active_ = false;
         }
@@ -4069,6 +4109,7 @@ private:
             } else if (hybrid_.active() && B <= 16) {
                 // Fast Path B1: Strata Predictive CPU/RAM Hybrid Decode!
                 // Coherent Host Doorbell + Spin-Wait AVX-512/AVX2 CPU Worker Pool overlapped with GPU VRAM + Elastic Cache + 3x-Loop Predictive Async DMA Prefetch!
+                const double hp_t0 = hyb_prof_.on ? HybProf::now() : 0.0;
                 if (!hybrid_.ensure_doorbell_cap(B, D, c_.top_k)) {
                     err = "hybrid doorbell resize failed";
                     return false;
@@ -4079,6 +4120,7 @@ private:
                     !hip_ok(hipStreamSynchronize(stream_), "hyb route sync", err)) {
                     return false;
                 }
+                const double hp_t1 = hyb_prof_.on ? HybProf::now() : 0.0;
                 const auto& dir = adj_dir_;
                 const bool is_core_repeat_candidate = (ip >= c_.core_start && ip < c_.core_end && visit < (c_.core_start + 2 * (c_.core_end - c_.core_start)));
 
@@ -4238,15 +4280,27 @@ private:
                         (void)hybrid_.stage_prefill_async(mi + 2, mx8_stream_jobs[mi + 2].body, dir[mx8_stream_jobs[mi + 2].dir_idx].body_bytes, true);
                     }
                 }
+                const double hp_t2 = hyb_prof_.on ? HybProf::now() : 0.0;
                 if (!cpu_jobs.empty()) {
                     hybrid_.pool().wait_and_reduce();
                     // Upload ONLY the tiny 9 KB/tok output vector (NOT 4.5 MB expert weights!) and accumulate!
                     (void)hipMemcpyAsync(hybrid_.d_cpu_y(), hybrid_.h_y(), static_cast<size_t>(B) * D * 4, hipMemcpyHostToDevice, stream_);
                     k_vec_add<<<(B * D + 255) / 256, 256, 0, stream_>>>(moeout, hybrid_.d_cpu_y(), moeout, B * D);
                 }
+                const double hp_t3 = hyb_prof_.on ? HybProf::now() : 0.0;
                 if (!disk_fallback_bufs.empty()) {
                     (void)hipStreamSynchronize(hybrid_.dma_stream());
                     (void)hipStreamSynchronize(stream_);
+                }
+                if (hyb_prof_.on) {
+                    const double hp_t4 = HybProf::now();
+                    hyb_prof_.route_sync += hp_t1 - hp_t0;
+                    hyb_prof_.launch_to_wait += hp_t2 - hp_t1;
+                    hyb_prof_.cpu_wait += hp_t3 - hp_t2;
+                    hyb_prof_.rest += hp_t4 - hp_t3;
+                    hyb_prof_.cpu_jobs += static_cast<long>(cpu_jobs.size());
+                    ++hyb_prof_.visits;
+                    hyb_prof_.report();
                 }
             } else {
                 // Fast Path B2: Chunked Double-Buffered GPU Matrix-Core Expert Streaming for Hybrid Prefill!
@@ -5424,6 +5478,7 @@ private:
     float* h_ep_y1_ = nullptr;
     HipBlasLtRunner blaslt_;
     HipHybridController hybrid_;
+    HybProf hyb_prof_;
     int blaslt_min_m_ = 16;
     int blaslt_moe_min_b_ = 999999;
     bool use_i8_moe_wmma_ = true;

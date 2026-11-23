@@ -521,6 +521,82 @@ void eval_inkling2_expert_batch(
     }
 }
 
+bool expert_m1_splittable(SkCode gu_code, SkCode dn_code) noexcept {
+    return gu_code != SkCode::GGUF_RAW && dn_code != SkCode::GGUF_RAW;
+}
+
+void expert_m1_gu_rows(const uint8_t* body, SkCode gu_code, const float* x_in, size_t hidden, size_t inter,
+                       size_t r0, size_t r1, float* gu) noexcept {
+    if (r1 <= r0) return;
+    if (gu_code == SkCode::SF4) {
+        float hdr[4];
+        std::memcpy(hdr, body, 16);
+        const float w13_outer = hdr[0] / hdr[1];
+        const size_t w13_p_bytes = (2 * inter) * (hidden / 2);
+        const uint8_t* w13_p = body + 16;
+        const uint8_t* w13_s = w13_p + w13_p_bytes;
+        for (size_t r = r0; r < r1; ++r) {
+            gu[r] = dot_sf4_f32_row(w13_p + r * (hidden / 2), w13_s + r * (hidden / 16), w13_outer, x_in, hidden);
+        }
+    } else if (gu_code == SkCode::MX8) {
+        const size_t w13_w_bytes = (2 * inter) * hidden;
+        const uint8_t* w13_w = body;
+        const uint8_t* w13_s = w13_w + w13_w_bytes;
+        for (size_t r = r0; r < r1; ++r) {
+            gu[r] = dot_mx8_f32_row(w13_w + r * hidden, w13_s + r * (hidden / 32), x_in, hidden);
+        }
+    } else {
+        const uint8_t* gu_ptr = body + inter * 2;
+        const size_t x_stride = hidden / SUB_G;
+        static thread_local std::vector<BlockQ8_1_G64> qx;
+        qx.resize(x_stride);
+        quantize_q8_1_g64(x_in, qx.data(), hidden);
+        const size_t row_bytes = (hidden / QK_S) * superblock_bytes(gu_code);
+        gemm_sk_q8_1(gu_ptr + r0 * row_bytes, gu_code, qx.data(), gu + r0, r1 - r0, hidden, 1);
+    }
+}
+
+void expert_m1_act(const float* gu, size_t j0, size_t j1, float* act) noexcept {
+    for (size_t j = j0; j < j1; ++j) act[j] = situ_scalar(gu[2 * j], gu[2 * j + 1], kSituBeta, kSituLb);
+}
+
+void expert_m1_dn_rows(const uint8_t* body, SkCode dn_code, uint32_t dn_offset, const float* act,
+                       size_t hidden, size_t inter, size_t r0, size_t r1, float* y) noexcept {
+    if (r1 <= r0) return;
+    if (dn_code == SkCode::SF4) {
+        float hdr[4];
+        std::memcpy(hdr, body, 16);
+        const float w2_outer = hdr[2] / hdr[3];
+        const size_t w2_p_bytes = hidden * (inter / 2);
+        const uint8_t* w2_p = body + dn_offset;
+        const uint8_t* w2_s = w2_p + w2_p_bytes;
+        for (size_t r = r0; r < r1; ++r) {
+            y[r] = dot_sf4_f32_row(w2_p + r * (inter / 2), w2_s + r * (inter / 16), w2_outer, act, inter);
+        }
+    } else if (dn_code == SkCode::MX8) {
+        const size_t w2_w_bytes = hidden * inter;
+        const uint8_t* w2_w = body + dn_offset;
+        const uint8_t* w2_s = w2_w + w2_w_bytes;
+        for (size_t r = r0; r < r1; ++r) {
+            y[r] = dot_mx8_f32_row(w2_w + r * inter, w2_s + r * (inter / 32), act, inter);
+        }
+    } else {
+        static thread_local std::vector<float> at;
+        static thread_local std::vector<BlockQ8_1_G64> qact;
+        at.resize(inter);
+        qact.resize(inter / SUB_G);
+        for (size_t j = 0; j < inter; ++j) {
+            uint16_t bits;
+            std::memcpy(&bits, body + 2 * j, 2);
+            const float inv_s = 1.0f / fp16_bits_to_f32(bits);
+            at[j] = act[j] * inv_s;
+        }
+        quantize_q8_1_g64(at.data(), qact.data(), inter);
+        const size_t pair_bytes = ((2 * inter) / QK_S) * superblock_bytes(dn_code);
+        gemv_paired2_sk_q8_1(body + dn_offset + (r0 / 2) * pair_bytes, dn_code, qact.data(), y + r0, r1 - r0, inter);
+    }
+}
+
 int32_t dspark_markov_step_f32(
     int32_t prev_token,
     float* state,
