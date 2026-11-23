@@ -1202,6 +1202,10 @@ class StrataEngine:
                     self.last[key] = int(value)
                 except ValueError:
                     pass
+        # an engine whose solo DONE carries no reused field (strata-inkling)
+        # still reports its RESUME line; fold it in so timings.cache_n / usage.cached_tokens show it.
+        if self.reused and "reused" not in self.last:
+            self.last["reused"] = self.reused
 
     @contextlib.contextmanager
     def _exclusive_control(self):
