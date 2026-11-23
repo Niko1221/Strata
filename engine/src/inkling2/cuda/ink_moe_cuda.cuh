@@ -268,6 +268,12 @@ __global__ void __launch_bounds__(32) k_ink_router_select_topk8(
 
 // Single-block (128 threads) device-side counting sort + tile_rows-row tile list builder for 128 experts!
 // Zero host sync! Capturable inside CUDA Graphs!
+#ifdef INK_MOE_STATS
+// measurement build only (-DINK_MOE_STATS): per window size M, how many MoE visits ran and how many different experts they touched in total
+__device__ unsigned long long g_ink_moe_calls[64];
+__device__ unsigned long long g_ink_moe_nact[64];
+#endif
+
 __global__ void __launch_bounds__(128) k_ink_moe_bin(
     const InkExpertDev* __restrict__ ex,
     const int32_t* __restrict__ topk_idx,
@@ -314,6 +320,9 @@ __global__ void __launch_bounds__(128) k_ink_moe_bin(
     if (t == 127) {
         tb.off[128] = s_off[127];
         *tb.nact = s_act[127];
+#ifdef INK_MOE_STATS
+        { const int mi = M < 63 ? M : 63; atomicAdd(&g_ink_moe_calls[mi], 1ull); atomicAdd(&g_ink_moe_nact[mi], (unsigned long long)s_act[127]); }
+#endif
         *tb.n_tiles = s_tcnt[127];
     }
     if (is_act) tb.active[s_act[t] - 1] = t;

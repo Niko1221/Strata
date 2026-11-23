@@ -110,6 +110,14 @@ public:
     }
 
     bool init(const InkModelFile& mf, const BackendOpts& opts, std::string& err) override {
+        if (const char* e = std::getenv("STRATA_INK_SPEC_BEAM")) spec_cfg_.beam = std::atoi(e);
+        if (const char* e = std::getenv("STRATA_INK_SPEC_COST")) spec_cfg_.cost = (float)std::atof(e);
+        if (const char* e = std::getenv("STRATA_INK_SPEC_PLAIN")) spec_cfg_.plain = (float)std::atof(e);
+        if (opts.spec_beam > 0) spec_cfg_.beam = opts.spec_beam;
+        if (opts.spec_cost > 0.0) spec_cfg_.cost = (float)opts.spec_cost;
+        if (opts.spec_plain >= 0.0) spec_cfg_.plain = (float)opts.spec_plain;
+        spec_cfg_.beam = std::max(1, std::min(8, spec_cfg_.beam));
+        spec_cfg_.log = std::getenv("STRATA_INK_SPEC_LOG") != nullptr;
         cleanup();
         int n_dev = 0;
         cudaError_t ce = cudaGetDeviceCount(&n_dev);
@@ -911,7 +919,7 @@ public:
         // 2. True W=4 Multi-Branch Sparse-MoE Bayes-Optimal Adaptive Beam Tree (M* in {3,4,5,6,8,10,12})!
         strata::ink::InkTreeSpec tr{};
         const int max_nodes = std::min(12, runner_->tree_cap);
-        dspark_->draft_beam_tree(anchor_tok, anchor_pos, /*beam_w=*/4, max_nodes, tr, /*adaptive_moe_ratio=*/4.2f);
+        dspark_->draft_beam_tree(anchor_tok, anchor_pos, spec_cfg_.beam, max_nodes, tr, spec_cfg_.cost, spec_cfg_.plain);
 
         // 3. Single CUDA-Graph 48-visit tree verify + exact GPU screened argmax (ZERO 6.4 MB logits D2H!)
         runner_->forward_tree_verify(tr, anchor_pos, 0, true);
@@ -950,10 +958,28 @@ public:
         }
         dspark_->ingest_taps_from(runner_->d_taps_compact, anchor_pos, n_emit);
 
+        if (spec_cfg_.log) {
+            static long st_steps = 0, st_emit = 0, st_nodes = 0; static double st_pred = 0.0; static long st_plain = 0;
+            ++st_steps; st_emit += n_emit; st_nodes += tr.M; st_pred += dspark_->last_pred_etok; if (tr.M == 1) ++st_plain;
+            if (st_steps % 200 == 0) std::fprintf(stderr, "[SPEC-STATS] steps=%ld mean_M=%.2f mean_pred_tokens=%.2f mean_actual_tokens=%.2f plain_steps=%ld\n", st_steps, (double)st_nodes / st_steps, st_pred / st_steps, (double)st_emit / st_steps, st_plain);
+        }
         tree_snap_ready_ = true;
         tree_snap_p0_ = anchor_pos;
         tree_snap_M_ = n_emit;
         for (int i = 0; i < n_emit; ++i) tree_snap_path_[i] = path[i];
+#ifdef INK_MOE_STATS
+        {
+            static int stat_calls = 0;
+            if (++stat_calls % 100 == 0) {
+                unsigned long long c[64], a[64];
+                cudaMemcpyFromSymbol(c, strata::ink::g_ink_moe_calls, sizeof(c));
+                cudaMemcpyFromSymbol(a, strata::ink::g_ink_moe_nact, sizeof(a));
+                std::fprintf(stderr, "[MOE-STATS] M:visits:mean-unique-experts");
+                for (int m = 1; m < 64; ++m) if (c[m]) std::fprintf(stderr, " %d:%llu:%.1f", m, c[m], (double)a[m] / (double)c[m]);
+                std::fputc(10, stderr);
+            }
+        }
+#endif
         if (out_drafted) *out_drafted = tr.M - 1;
         return n_emit;
     }
@@ -1021,6 +1047,8 @@ private:
     int gpu_id_ = 0;
     int max_slots_ = 1;
     int eff_max_ctx_ = 4096;
+    // The drafter's window shape: --draft-beam / --draft-cost / --draft-plain (or STRATA_INK_SPEC_BEAM / _COST / _PLAIN), STRATA_INK_SPEC_LOG=1 prints stats
+    struct SpecCfg { int beam = 4; float cost = 4.2f; float plain = 0.0f; bool log = false; } spec_cfg_;
     int dspark_slot_ = -1;
     KvDtype kv_dtype_ = KvDtype::FP16;
     std::string dev_info_;

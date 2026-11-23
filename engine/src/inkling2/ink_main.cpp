@@ -91,7 +91,7 @@ static int cmd_info(const std::string& file, const std::string& vision, const st
         images = vision_probe(vision, vi, verr) ? 1 : 0;
         if (!images) fprintf(stderr, "vision shard: %s\n", verr.c_str());
     }
-    printf("arch=inkling2_loop format=%s build=%s layers=%d visits=%d hidden=%d vocab=%d experts=%d eos=%d drafter=%s images=%d image_pad=%d parallel=%d\n",
+    printf("arch=inkling2_loop format=%s build=%s layers=%d visits=%d hidden=%d vocab=%d experts=%d eos=%d drafter=%s images=%d image_pad=%d parallel=%d spec_opts=1\n",
            source_kind_name(mf.kind),
            m.build.empty() ? "unknown" : m.build.c_str(),
            m.c.n_phys, m.c.n_visits, m.c.hidden, m.c.vocab_unpadded, m.c.n_experts, m.c.eos_token_id,
@@ -520,7 +520,18 @@ static int cmd_spec_check(const std::string& model_path, const BackendOpts& bopt
         }
         printf("\n[spec-check] steps=%ld (fused %ld, draft+verify %ld, single %ld), drafted %ld, emitted %ld\n", steps, spec_steps,
                draft_steps, single_steps, drafted_sum, emitted_sum);
+        if (const char* e = std::getenv("STRATA_SPEC_CHECK_IDS"); e && e[0] == '1') {   // the generated ids, for a quality check of the answer text
+            printf("[spec-check] IDS plain:");
+            for (size_t i = 0; i < a1.size(); ++i) printf("%c%d", i ? ',' : ' ', a1[i]);
+            printf("\n[spec-check] IDS drafter:");
+            for (size_t i = 0; i < b.size(); ++i) printf("%c%d", i ? ',' : ' ', b[i]);
+            printf("\n");
+        }
         if (!same) rc = 1;
+        if (const char* q = std::getenv("STRATA_SPEC_CHECK_QUICK"); q && q[0] == '1') {   // skip the verify-window comparisons
+            printf("[spec-check] RESULT: %s\n", rc ? "DIFFERS" : "identical");
+            return rc;
+        }
     }
 
     // (c) verify windows: M rows of one slot in one forward_batch against the B = 1 logits of the same positions
@@ -661,6 +672,14 @@ int main(int argc, char** argv) {
         } else if (a == "--draft") {
             cfg.draft_mode = next();
             cfg.bopts.enable_dspark = (cfg.draft_mode != "off");
+        } else if (a == "--draft-beam") {
+            cfg.bopts.spec_beam = std::atoi(next().c_str());
+        } else if (a == "--draft-cost") {
+            cfg.bopts.spec_cost = std::atof(next().c_str());
+        } else if (a == "--draft-adapt") {
+            cfg.bopts.spec_adapt = true;
+        } else if (a == "--draft-plain") {
+            cfg.bopts.spec_plain = std::atof(next().c_str());
         } else if (a == "--dspark") {
             cfg.bopts.dspark_path = next();
         } else if (a == "--vram-experts-gb") {

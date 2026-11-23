@@ -180,6 +180,7 @@ class InklingGgufImportTests(unittest.TestCase):
         data_dir.mkdir()
 
         args_ns = argparse.Namespace(
+            drafter="dspark",
             model="SQ-15",
             family="inkling-2-mini",
             context=32768,

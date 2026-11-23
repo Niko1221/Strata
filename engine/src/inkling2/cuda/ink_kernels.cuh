@@ -739,6 +739,17 @@ __global__ void __launch_bounds__(256) k_ink_mlp_res_cat_rms(
     }
 }
 
+// #6671: the post-MLP ShortConv + residual step in ONE compiled function, called by the one-token kernel and by the tree kernel, so that the FMA
+// contraction nvcc picks cannot differ between them (the two kernels had the same expression text and still gave different bits in some rows).
+// (nvcc inlined the __noinline__ copy anyway, so the arithmetic is now spelled with round-to-nearest intrinsics: no contraction is possible at all.)
+__device__ __forceinline__ float ink_mlp_sconv_step(float h0, float h1, float h2, float cur, float4 sw, float cur_io) {
+    float acc = __fmul_rn(h0, sw.x);
+    acc = __fadd_rn(acc, __fmul_rn(h1, sw.y));
+    acc = __fadd_rn(acc, __fmul_rn(h2, sw.z));
+    acc = __fadd_rn(acc, __fmul_rn(cur, sw.w));
+    return __fadd_rn(cur_io, __fmul_rn(__fadd_rn(cur, acc), 0.44721359549995793f));
+}
+
 // FUSED MoE 8-Slot Reduction + Post-MLP ShortConv4 + Residual Add (-48 launches & -48 [M,2304] DRAM round-trips!)
 __global__ void __launch_bounds__(256) k_ink_moe_reduce8_sconv_m1(
     const float* __restrict__ y_pair,     // [8, 2304]
@@ -754,8 +765,7 @@ __global__ void __launch_bounds__(256) k_ink_moe_reduce8_sconv_m1(
     const float h0 = history[0 * kInkHidden + c];
     const float h1 = history[1 * kInkHidden + c];
     const float h2 = history[2 * kInkHidden + c];
-    const float acc = h0 * sw.x + h1 * sw.y + h2 * sw.z + cur * sw.w;
-    cur_io[c] += (cur + acc) * 0.44721359549995793f;
+    cur_io[c] = ink_mlp_sconv_step(h0, h1, h2, cur, sw, cur_io[c]);
     history[0 * kInkHidden + c] = h1;
     history[1 * kInkHidden + c] = h2;
     history[2 * kInkHidden + c] = cur;
@@ -822,8 +832,7 @@ __global__ void __launch_bounds__(128) k_ink_moe_reduce8_sconv_tree(
         const float h1 = fetch((int)lag_idx[m * 3 + 1]);
         const float h0 = fetch((int)lag_idx[m * 3 + 2]);
         const float cur = s_x[m][tid];
-        const float acc = h0 * sw.x + h1 * sw.y + h2 * sw.z + cur * sw.w;
-        cur_io[(size_t)m * kInkHidden + c] += (cur + acc) * 0.44721359549995793f;
+        cur_io[(size_t)m * kInkHidden + c] = ink_mlp_sconv_step(h0, h1, h2, cur, sw, cur_io[(size_t)m * kInkHidden + c]);
     }
 }
 
@@ -970,6 +979,25 @@ __global__ void __launch_bounds__(256) k_ink_sconv4_save_hist(
     history[2 * C + c] = x[(size_t)(M - 1) * C + c];
 }
 
+// #6671: one compiled copy of the ShortConv tap + residual arithmetic, called by the one-token kernel (k_ink_sconv4_seq) and by the tree kernel
+// (k_ink_sconv4_tree), so that the FMA contraction cannot differ between a verify-window row and the same row decoded alone.
+// (explicit round-to-nearest intrinsics: nvcc inlines __noinline__ copies here, and then contracted the tree kernel and the one-token kernel differently.)
+__device__ __forceinline__ float ink_sconv_step(float h0, float h1, float h2, float cur, float4 sw, bool has_dyn, float4 dt, float scale, float out_old, bool add_to_out) {
+    float acc = __fmul_rn(h0, sw.x);
+    acc = __fadd_rn(acc, __fmul_rn(h1, sw.y));
+    acc = __fadd_rn(acc, __fmul_rn(h2, sw.z));
+    acc = __fadd_rn(acc, __fmul_rn(cur, sw.w));
+    if (has_dyn) {
+        float d = __fmul_rn(cur, dt.x);
+        d = __fadd_rn(d, __fmul_rn(h2, dt.y));
+        d = __fadd_rn(d, __fmul_rn(h1, dt.z));
+        d = __fadd_rn(d, __fmul_rn(h0, dt.w));
+        acc = __fadd_rn(acc, d);
+    }
+    const float res = __fmul_rn(__fadd_rn(cur, acc), scale);
+    return add_to_out ? __fadd_rn(out_old, res) : res;
+}
+
 // Single-slot / Prefill causal ShortConv over M consecutive tokens (updates history[3, C] in-place at end!)
 __global__ void __launch_bounds__(256) k_ink_sconv4_seq(
     const float* __restrict__ x,          // [M, C]
@@ -994,14 +1022,10 @@ __global__ void __launch_bounds__(256) k_ink_sconv4_seq(
 
     for (int m = 0; m < M; ++m) {
         const float cur = x[(size_t)m * C + c];
-        float acc = h0 * sw.x + h1 * sw.y + h2 * sw.z + cur * sw.w;
-        if (dyn_taps) {
-            const float4 dt = reinterpret_cast<const float4*>(dyn_taps + ((size_t)m * n_heads + hd) * 4)[0];
-            acc += cur * dt.x + h2 * dt.y + h1 * dt.z + h0 * dt.w;
-        }
-        const float res = (cur + acc) * scale;
+        float4 dt = make_float4(0.f, 0.f, 0.f, 0.f);
+        if (dyn_taps) dt = reinterpret_cast<const float4*>(dyn_taps + ((size_t)m * n_heads + hd) * 4)[0];
         const size_t oi = (size_t)m * C + c;
-        out[oi] = add_to_out ? (out[oi] + res) : res;
+        out[oi] = ink_sconv_step(h0, h1, h2, cur, sw, dyn_taps != nullptr, dt, scale, add_to_out ? out[oi] : 0.0f, add_to_out);
         h0 = h1;
         h1 = h2;
         h2 = cur;
@@ -1037,15 +1061,13 @@ __global__ void __launch_bounds__(256) k_ink_sconv4_batched(
     const float h1 = hist[1 * C + c];
     const float h2 = hist[2 * C + c];
     const float cur = x[(size_t)b * C + c];
-    float acc = h0 * sw.x + h1 * sw.y + h2 * sw.z + cur * sw.w;
+    float4 dt = make_float4(0.f, 0.f, 0.f, 0.f);
     if (dyn_taps) {
         const int hd = c / (C / n_heads);
-        const float4 dt = reinterpret_cast<const float4*>(dyn_taps + ((size_t)b * n_heads + hd) * 4)[0];
-        acc += cur * dt.x + h2 * dt.y + h1 * dt.z + h0 * dt.w;
+        dt = reinterpret_cast<const float4*>(dyn_taps + ((size_t)b * n_heads + hd) * 4)[0];
     }
-    const float res = (cur + acc) * scale;
     const size_t oi = (size_t)b * C + c;
-    out[oi] = add_to_out ? (out[oi] + res) : res;
+    out[oi] = ink_sconv_step(h0, h1, h2, cur, sw, dyn_taps != nullptr, dt, scale, add_to_out ? out[oi] : 0.0f, add_to_out);
     hist[0 * C + c] = h1;
     hist[1 * C + c] = h2;
     hist[2 * C + c] = cur;
@@ -1079,15 +1101,13 @@ __global__ void __launch_bounds__(256) k_ink_sconv4_tree(
     if (stage_v) stage_v[(size_t)m * kInkSconvCh + ch_off + c] = cur;
     const float4 sw = reinterpret_cast<const float4*>(static_w)[c];
     const float scale = dyn_taps ? (1.0f / 3.0f) : 0.44721359549995793f;
-    float acc = h0 * sw.x + h1 * sw.y + h2 * sw.z + cur * sw.w;
+    float4 dt = make_float4(0.f, 0.f, 0.f, 0.f);
     if (dyn_taps) {
         const int hd = c / (C / n_heads);
-        const float4 dt = reinterpret_cast<const float4*>(dyn_taps + ((size_t)m * n_heads + hd) * 4)[0];
-        acc += cur * dt.x + h2 * dt.y + h1 * dt.z + h0 * dt.w;
+        dt = reinterpret_cast<const float4*>(dyn_taps + ((size_t)m * n_heads + hd) * 4)[0];
     }
-    const float res = (cur + acc) * scale;
     const size_t oi = (size_t)m * C + c;
-    out[oi] = add_to_out ? (out[oi] + res) : res;
+    out[oi] = ink_sconv_step(h0, h1, h2, cur, sw, dyn_taps != nullptr, dt, scale, add_to_out ? out[oi] : 0.0f, add_to_out);
 }
 
 // ============================================================================
@@ -1375,7 +1395,9 @@ __global__ void __launch_bounds__(128) k_ink_gemv_multi_bf16(
     const uint4* wr = valid ? reinterpret_cast<const uint4*>(reinterpret_cast<const uint16_t*>(Wp) + (size_t)lrow * K) : nullptr;
     float acc[MAX_M] = {};
 
-    constexpr int KT = (MAX_M == 1) ? 2304 : ((MAX_M <= 8) ? 576 : 256);
+    // #6671: KT must be a multiple of 128 for MAX_M > 1 so a lane takes the same K items (k8 = lg, lg + 16, ...) as in the M = 1 single tile (2304):
+    // 576 (= 72 k8 per tile, 72 % 16 = 8) moved the items between lanes and so changed the sum order of every row of a verify tree
+    constexpr int KT = (MAX_M == 1) ? 2304 : ((MAX_M <= 8) ? 512 : 256);
     __shared__ alignas(16) float s_x[MAX_M][KT];
     for (int k0 = 0; k0 < K; k0 += KT) {
         const int kl = min(KT, K - k0);
@@ -2150,6 +2172,26 @@ __global__ void __launch_bounds__(256) k_ink_mul_sigmoid(float* __restrict__ x, 
 __global__ void __launch_bounds__(256) k_ink_add(float* __restrict__ dst, const float* __restrict__ a, const float* __restrict__ b, size_t n) {
     const size_t i = (size_t)blockIdx.x * 256 + threadIdx.x;
     if (i < n) dst[i] = a[i] + b[i];
+}
+
+// #6671 diagnostics (STRATA_INK_HASH=1): an order independent 64-bit hash of every FP32 bit of one row, so a verify window can be compared stage by
+// stage with the one-token steps.  Block per row, 256 threads.
+__global__ void __launch_bounds__(256) k_ink_dbg_hash_rows(const float* __restrict__ x, int D, unsigned long long* __restrict__ out, int slot, int nslots) {
+    __shared__ unsigned long long sh[256];
+    const float* row = x + (size_t)blockIdx.x * D;
+    unsigned long long acc = 0;
+    for (int d = threadIdx.x; d < D; d += 256) {
+        unsigned long long z = (unsigned long long)__float_as_uint(row[d]) + 0x9E3779B97F4A7C15ull * (unsigned long long)(d + 1);
+        z ^= z >> 30; z *= 0xBF58476D1CE4E5B9ull; z ^= z >> 27; z *= 0x94D049BB133111EBull; z ^= z >> 31;
+        acc += z;
+    }
+    sh[threadIdx.x] = acc;
+    __syncthreads();
+    for (int s = 128; s > 0; s >>= 1) {
+        if (threadIdx.x < s) sh[threadIdx.x] += sh[threadIdx.x + s];
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) out[(size_t)blockIdx.x * nslots + slot] = sh[0];
 }
 
 }  // namespace strata::ink
