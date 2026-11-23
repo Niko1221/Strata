@@ -581,3 +581,20 @@ decimals. Prompt speed is unchanged.
 
 The eight "no" controls measured neutral or slightly slower on that configuration (an internal measurement; the single-control table is not published); they stay available for other models and cards. Unsupported layouts retain their
 existing paths. Explicit projection overrides take precedence over shape selection.
+
+## Inkling-2-Mini on Battlemage
+
+The Inkling SYCL backend shares key and value reads across three query heads during prefill (at least 32 rows). For a single query with at least 1,024 positions it distributes the eight existing KV streams across workgroups. Single-token projections use SG16 GEMV. A fully resident SQ-20 model can also use vectorized SF4 and MX8 expert dots. The default expert prefill groups routes on the host, packs eligible transfers and uses the original per-expert oneMKL GEMMs.
+
+On a single card with resident experts, eligible prefill batches group routes on the host, gather inputs once, call oneMKL for each expert and scatter weighted outputs in top-8 order. For experts with SF4 gate/up and down weights, one SYCL kernel expands both FP16 panels into the existing oneMKL scratch buffer. With the 12-row XMX threshold, small resident SQ-20 experts handling 1–11 rows use compressed SF4/MX8 dots with the same per-lane reduction order as the separate kernels.
+
+| Process variable | Effect |
+|---|---|
+| `INK_SYCL_BMG_OPT=0` | Use the original Inkling SYCL projection, attention, controller and expert paths. For boolean overrides an explicit `1` enables the feature. Any other explicit value, including `true` or `on`, disables it. |
+| `INK_SYCL_BMG_PREFILL=0` | Use the original prompt kernels and host expert grouping. This controls shared-KV attention, tiled ShortConv, narrow paired projections, packed expert transfers and small-expert projections. |
+| `INK_SYCL_BMG_DECODE=0` | Use the original single-token attention, projections, controllers, residual mix, routing and expert tail. |
+| `INK_SYCL_STREAM_GEMV=0` | Use the original FP32 and BF16 decode projection geometry. The packed controller also falls back. |
+| `INK_SYCL_SQ20_DOT=0` | Use the original single-token top-8 router, expert plan, gate/up, down and output combination. |
+| `INK_SYCL_CTRL_BATCH=0` | Disable the packed controller cache. On a single GPU with resident experts, eligible rank-64 controllers project attention/K/V together and MLP separately. All cached weights must round-trip through BF16 exactly. The SQ-20 cache uses 54 MiB. Unsupported weights or unavailable storage use the original controller. |
+
+Configure the Inkling build with `-DSTRATA_BUILD_TESTS=ON`, build it, then run `ctest --test-dir build-inkling -R inkling_bmg_kernels --output-on-failure`. Add `-DSTRATA_INKLING_TEST_MODEL=/path/to/SQ-20.strata` to include the real SF4/MX8 expert checks. Without the model CTest covers the projection, attention, routing, convolution-history and controller tests.

@@ -43,8 +43,47 @@ inline void k_embed_sg16(const InkTensorInfo& eti, const float* norm_w, const in
     });
 }
 
+// For one token, each state/query pair can form its two reductions independently.
+inline void k_res_mix_decode(const float* blocks, const float* cur, const float* queries, float* out,
+                             int n_blocks, int stride, int n_queries, float* stats) {
+    const int states = n_blocks + 1;
+    Q().parallel_for(NR(states * n_queries, 256), [=](sycl::nd_item<1> it) INK_REQD_SG16 {
+        const int pair = it.get_group(0), state = pair % states, q = pair / states;
+        const float* x = state < n_blocks ? blocks + (size_t)state * stride : cur;
+        const float* query = queries + q * INK_D;
+        float sq = 0.0f, dot = 0.0f;
+        for (int d = it.get_local_id(0); d < INK_D; d += 256) {
+            sq += x[d] * x[d];
+            dot += x[d] * query[d];
+        }
+        auto* shared = lmem<float, 16>(it);
+        const float inv = sycl::rsqrt(wg_sum16(it, sq, shared) / (float)INK_D + INK_RMS_EPS);
+        const float score = wg_sum16(it, dot, shared) * inv * (1.0f / 48.0f);
+        if (it.get_local_id(0) == 0) { stats[pair * 2] = inv; stats[pair * 2 + 1] = score; }
+    });
+    Q().parallel_for(NR2(INK_D / 64, n_queries, 64), [=](sycl::nd_item<2> it) INK_REQD_SG16 {
+        const int q = it.get_group(0), d = it.get_global_id(1);
+        const float* st = stats + q * states * 2;
+        float peak = -1e30f, sum = 0.0f, p[8];
+        for (int s = 0; s < states; ++s) peak = sycl::fmax(peak, st[2 * s + 1]);
+        for (int s = 0; s < states; ++s) { p[s] = sycl::exp(st[2 * s + 1] - peak); sum += p[s]; }
+        const float inv_sum = 1.0f / sum;
+        float v = 0.0f;
+        for (int s = 0; s < states; ++s) {
+            p[s] *= inv_sum * st[2 * s];
+            v += p[s] * (s < n_blocks ? blocks[(size_t)s * stride + d] : cur[d]);
+        }
+        out[q * INK_D + d] = v;
+    });
+}
+
 inline void k_attn_res_mix_sg16(const float* blocks_buf, const float* cur_buf, const float* queries, float* out_buf,
-                                int n_blocks, int block_stride, int M, int n_queries) {
+                                int n_blocks, int block_stride, int M, int n_queries, float* stats = nullptr) {
+    static const bool split = ink_bmg_decode();
+    if (M == 1 && stats && split) {
+        k_res_mix_decode(blocks_buf, cur_buf, queries, out_buf, n_blocks, block_stride, n_queries, stats);
+        return;
+    }
     const int M_stride = M * INK_D;
     Q().submit([&](sycl::handler& h) {
         sycl::local_accessor<float, 1> sh(16, h);
@@ -110,9 +149,45 @@ inline void k_ctrl_cat_rms_sg16(const float* cur_buf, const float* msg_buf, floa
     });
 }
 
+inline void k_rms_norm_sg16(const float* x_in, const float* w, float* y_out, int D, int M) {
+    Q().parallel_for(NR(M, 256), [=](sycl::nd_item<1> it) INK_REQD_SG16 {
+        float* sh = lmem<float, 16>(it);
+        const int m = (int)it.get_group(0), tid = (int)it.get_local_id(0);
+        const float* xp = x_in + (size_t)m * D;
+        float ss = 0.0f;
+        for (int d = tid; d < D; d += 256) ss += xp[d] * xp[d];
+        const float inv = sycl::rsqrt(wg_sum16(it, ss, sh) / (float)D + INK_RMS_EPS);
+        float* yp = y_out + (size_t)m * D;
+        for (int d = tid; d < D; d += 256) yp[d] = xp[d] * inv * w[d];
+    });
+}
+
+inline void k_ctrl_apply_decode(const float* cur, const float* msg, const float* gates,
+                                const float* gain, const float* forget, float* out) {
+    Q().parallel_for(NR(INK_D / 16, 16), [=](sycl::nd_item<1> it) INK_REQD_SG16 {
+        const int d = it.get_global_id(0);
+        float sg = 0.0f, sf = 0.0f;
+        for (int r = 0; r < 64; r += 4) {
+            const auto g = *reinterpret_cast<const sycl::vec<float, 4>*>(gates + r);
+            const auto a = *reinterpret_cast<const sycl::vec<float, 4>*>(gain + d * 64 + r);
+            const auto b = *reinterpret_cast<const sycl::vec<float, 4>*>(forget + d * 64 + r);
+#pragma unroll
+            for (int i = 0; i < 4; ++i) { sg += a[i] * g[i]; sf += b[i] * g[i]; }
+        }
+        out[d] = (1.0f - sycl::tanh(sycl::clamp(sf, -15.0f, 15.0f))) * cur[d]
+               + sycl::tanh(sycl::clamp(sg, -15.0f, 15.0f)) * msg[d];
+    });
+}
+
 inline void k_ctrl_apply_norm_sg16(const float* cur_buf, const float* msg_buf, const float* gate_buf,
                                    const float* w_gain, const float* w_forget, const float* norm_w,
                                    float* out_buf, int M, int do_norm) {
+    static const bool split = ink_bmg_decode();
+    if (M == 1 && split) {
+        k_ctrl_apply_decode(cur_buf, msg_buf, gate_buf, w_gain, w_forget, out_buf);
+        if (do_norm) k_rms_norm_sg16(out_buf, norm_w, out_buf, INK_D, 1);
+        return;
+    }
     Q().submit([&](sycl::handler& h) {
         sycl::local_accessor<float, 1> sh(16, h);
         sycl::local_accessor<float, 1> g_sh(64, h);
@@ -142,23 +217,38 @@ inline void k_ctrl_apply_norm_sg16(const float* cur_buf, const float* msg_buf, c
     });
 }
 
-inline void k_rms_norm_sg16(const float* x_in, const float* w, float* y_out, int D, int M) {
-    Q().parallel_for(NR(M, 256), [=](sycl::nd_item<1> it) INK_REQD_SG16 {
-        float* sh = lmem<float, 16>(it);
-        const int m = (int)it.get_group(0), tid = (int)it.get_local_id(0);
-        const float* xp = x_in + (size_t)m * D;
-        float ss = 0.0f;
-        for (int d = tid; d < D; d += 256) ss += xp[d] * xp[d];
-        const float inv = sycl::rsqrt(wg_sum16(it, ss, sh) / (float)D + INK_RMS_EPS);
-        float* yp = y_out + (size_t)m * D;
-        for (int d = tid; d < D; d += 256) yp[d] = xp[d] * inv * w[d];
-    });
-}
-
 inline void k_add_sg16(const float* a, const float* b, float* out, int N) {
     Q().parallel_for(NR((N + 255) / 256, 256), [=](sycl::nd_item<1> it) INK_REQD_SG16 {
         const int i = (int)it.get_global_id(0);
         if (i < N) out[i] = a[i] + b[i];
+    });
+}
+
+inline void k_sconv4_prefill(const float* x, const float* weights, const float* taps,
+                             float* history, const int* slots, float* y, int rows, int channels) {
+    constexpr int tile = 8, threads = 64;
+    Q().parallel_for(NR2((channels + threads - 1) / threads, (rows + tile - 1) / tile, threads),
+                     [=](sycl::nd_item<2> it) INK_REQD_SG16 {
+        const int begin = it.get_group(0) * tile, c = it.get_global_id(1);
+        if (c >= channels) return;
+        float* hist = history + (size_t)slots[0] * 3 * channels + c;
+        const float* prefix = begin ? x + (size_t)(begin - 3) * channels + c : hist;
+        float h0 = prefix[0], h1 = prefix[channels], h2 = prefix[2 * channels];
+        const auto w = *reinterpret_cast<const sycl::vec<float, 4>*>(weights + 4 * c);
+        for (int m = begin; m < sycl::min(rows, begin + tile); ++m) {
+            const float cur = x[(size_t)m * channels + c];
+            float sum = h0 * w[0] + h1 * w[1] + h2 * w[2] + cur * w[3];
+            if (taps) {
+                const float* t = taps + ((size_t)m * 8 + (c >> 7)) * 4;
+                sum += cur * t[0] + h2 * t[1] + h1 * t[2] + h0 * t[3];
+            }
+            y[(size_t)m * channels + c] = (cur + sum) * (taps ? 1.0f / 3.0f : 0.4472135954999579f);
+            h0 = h1; h1 = h2; h2 = cur;
+        }
+        // Other tiles get their three causal inputs directly from x.
+        if (begin == 0) {
+            for (int j = 0; j < 3; ++j) hist[j * channels] = x[(size_t)(rows - 3 + j) * channels + c];
+        }
     });
 }
 
@@ -316,6 +406,154 @@ inline void k_relpos_sink_gqa_sg16(
     });
 }
 
+// Three query heads share a KV head in Inkling. Stream each KV vector once.
+inline void k_relpos_prefill_shared_kv(const float* q_buf, const float* r_buf, const float* positions_table,
+                                       const float* sinks, const float* gate, const half* k_cache,
+                                       const half* v_cache, const int* slots, const int* positions,
+                                       float* out, int rows, bool sliding, int window, int extent,
+                                       int stride) {
+    const float scale = 1.0f / std::sqrt((float)INK_HD);
+    Q().submit([&](sycl::handler& h) {
+        sycl::local_accessor<float, 1> partial(3 * 8 * (INK_HD + 2), h);
+        h.parallel_for(NR2(INK_NKV, rows, 128), [=](sycl::nd_item<2> it) INK_REQD_SG16 {
+            const int m = it.get_group(0), kh = it.get_group(1);
+            const int tid = it.get_local_id(1), sg = tid / 16, lane = tid % 16;
+            const size_t head = (size_t)m * INK_NH + 3 * kh;
+            const int pos = positions[m], start = sliding ? sycl::max(0, pos + 1 - window) : 0;
+            const size_t base = (size_t)slots[m] * stride;
+            float query[3][8], rel[3], peak[3], norm[3], accum[3][8] = {};
+            for (int j = 0; j < 3; ++j) {
+                for (int d = 0; d < 8; ++d)
+                    query[j][d] = q_buf[(head + j) * INK_HD + lane * 8 + d] * scale;
+                rel[j] = r_buf[(head + j) * INK_DREL + lane];
+                peak[j] = sg == 0 ? sinks[head + j] : -1e30f;
+                norm[j] = sg == 0 ? 1.0f : 0.0f;
+            }
+            for (int k = start + sg; k <= pos; k += 8) {
+                const int idx = sliding ? (k & 1023) : k;
+                const size_t off = ((base + idx) * INK_NKV + kh) * INK_HD + lane * 8;
+                const auto key = *reinterpret_cast<const sycl::vec<half, 8>*>(k_cache + off);
+                const auto val = *reinterpret_cast<const sycl::vec<half, 8>*>(v_cache + off);
+                const float rp = positions_table[(size_t)lane * 1025 + sycl::min(pos - k, extent)];
+#pragma unroll
+                for (int j = 0; j < 3; ++j) {
+                    float dot = 0.0f;
+                    for (int d = 0; d < 8; ++d)
+                        dot += query[j][d] * (float)key[d];
+                    const float score = sg_sum(it, dot) + sg_sum(it, rel[j] * rp);
+                    const float mx = sycl::fmax(peak[j], score);
+                    const float a = sycl::exp(peak[j] - mx), b = sycl::exp(score - mx);
+                    norm[j] = norm[j] * a + b;
+                    peak[j] = mx;
+                    for (int d = 0; d < 8; ++d)
+                        accum[j][d] = accum[j][d] * a + b * (float)val[d];
+                }
+            }
+            for (int j = 0; j < 3; ++j) {
+                const int off = (j * 8 + sg) * (INK_HD + 2);
+                if (lane == 0) {
+                    partial[off] = peak[j];
+                    partial[off + 1] = norm[j];
+                }
+                for (int d = 0; d < 8; ++d)
+                    partial[off + 2 + lane * 8 + d] = accum[j][d];
+            }
+            sycl::group_barrier(it.get_group());
+            if (sg >= 3)
+                return;
+            const int first = sg * 8 * (INK_HD + 2);
+            float peak_all = -1e30f, norm_all = 0.0f, v[8] = {};
+            for (int s = 0; s < 8; ++s)
+                peak_all = sycl::fmax(peak_all, partial[first + s * (INK_HD + 2)]);
+            for (int s = 0; s < 8; ++s) {
+                const int off = first + s * (INK_HD + 2);
+                const float w = sycl::exp(partial[off] - peak_all);
+                norm_all += partial[off + 1] * w;
+                for (int d = 0; d < 8; ++d)
+                    v[d] += partial[off + 2 + lane * 8 + d] * w;
+            }
+            const float inv = 1.0f / norm_all;
+            const size_t off = (head + sg) * INK_HD + lane * 8;
+            for (int d = 0; d < 8; ++d)
+                out[off + d] = (v[d] * inv) / (1.0f + sycl::exp(-gate[off + d]));
+        });
+    });
+}
+
+// A workgroup owns one of the original eight interleaved KV streams. Its
+// subgroups score eight independent keys, then fold them in original order.
+inline void k_relpos_decode_split_kv(const float* query, const float* rel, const float* table,
+                                     const float* sinks, const float* gate, const half* keys,
+                                     const half* values, int slot, int pos, float* out, float* partial,
+                                     bool sliding, int window, int extent, int stride) {
+    constexpr int pitch = INK_HD + 2;
+    const float scale = 1.0f / std::sqrt((float)INK_HD);
+    const int start = sliding ? std::max(0, pos + 1 - window) : 0;
+    Q().submit([&](sycl::handler& h) {
+        sycl::local_accessor<float, 1> scores(8, h);
+        sycl::local_accessor<half, 1> tile(8 * INK_HD, h);
+        h.parallel_for(NR2(8, INK_NH, 128), [=](sycl::nd_item<2> it) INK_REQD_SG16 {
+            const int head = it.get_group(0), stream = it.get_group(1), tid = it.get_local_id(1);
+            const int sg = tid / 16, lane = tid % 16, kh = head / 3;
+            const size_t base = (size_t)slot * stride;
+            float q[8];
+            for (int d = 0; d < 8; ++d)
+                q[d] = query[head * INK_HD + lane * 8 + d] * scale;
+            const float r = rel[head * INK_DREL + lane];
+            float peak = stream == 0 ? sinks[head] : -1e30f, norm = stream == 0 ? 1.0f : 0.0f, sum = 0.0f;
+            for (int block = start + stream; block <= pos; block += 64) {
+                const int k = block + 8 * sg;
+                if (k <= pos) {
+                    const int idx = sliding ? (k & 1023) : k;
+                    const auto key = *reinterpret_cast<const sycl::vec<half, 8>*>(
+                        keys + ((base + idx) * INK_NKV + kh) * INK_HD + lane * 8);
+                    const auto v = *reinterpret_cast<const sycl::vec<half, 8>*>(
+                        values + ((base + idx) * INK_NKV + kh) * INK_HD + lane * 8);
+#pragma unroll
+                    for (int d = 0; d < 8; ++d) tile[sg * INK_HD + lane * 8 + d] = v[d];
+                    float dot = 0.0f;
+                    for (int d = 0; d < 8; ++d)
+                        dot += q[d] * (float)key[d];
+                    const float score =
+                        sg_sum(it, dot) +
+                        sg_sum(it, r * table[(size_t)lane * 1025 + sycl::min(pos - k, extent)]);
+                    if (lane == 0)
+                        scores[sg] = score;
+                }
+                sycl::group_barrier(it.get_group());
+                for (int j = 0; j < 8 && block + 8 * j <= pos; ++j) {
+                    const float score = scores[j], mx = sycl::fmax(peak, score);
+                    const float a = sycl::exp(peak - mx), b = sycl::exp(score - mx);
+                    norm = norm * a + b;
+                    peak = mx;
+                    const float v = (float)tile[j * INK_HD + tid];
+                    sum = sum * a + b * v;
+                }
+                sycl::group_barrier(it.get_group());
+            }
+            float* dst = partial + (head * 8 + stream) * pitch;
+            if (tid == 0) {
+                dst[0] = peak;
+                dst[1] = norm;
+            }
+            dst[2 + tid] = sum;
+        });
+    });
+    Q().parallel_for(NR(INK_NH, 128), [=](sycl::nd_item<1> it) INK_REQD_SG16 {
+        const int head = it.get_group(0), d = it.get_local_id(0);
+        const float* src = partial + head * 8 * pitch;
+        float peak = -1e30f, norm = 0.0f, sum = 0.0f;
+        for (int s = 0; s < 8; ++s)
+            peak = sycl::fmax(peak, src[s * pitch]);
+        for (int s = 0; s < 8; ++s) {
+            const float w = sycl::exp(src[s * pitch] - peak);
+            norm += src[s * pitch + 1] * w;
+            sum += src[s * pitch + 2 + d] * w;
+        }
+        out[head * INK_HD + d] = (sum * (1.0f / norm)) / (1.0f + sycl::exp(-gate[head * INK_HD + d]));
+    });
+}
+
 inline void k_router_topk8_sg16(const float* r_logits, const float* r_bias, int* topk_idx, float* topk_w,
                                 float route_scale, int M) {
     Q().submit([&](sycl::handler& h) {
@@ -342,6 +580,74 @@ inline void k_router_topk8_sg16(const float* r_logits, const float* r_bias, int*
                 for (int k = 0; k < 8; ++k) { topk_idx[(size_t)m * 8 + k] = sel[k]; topk_w[(size_t)m * 8 + k] = pw[k] * inv; }
             }
         });
+    });
+}
+
+// One subgroup keeps all 128 candidates in registers. Resolve ties by expert ID.
+inline void k_sq20_decode_top8(const float *logits, const float *bias, int *ids, float *weights,
+                               float scale) {
+    Q().parallel_for(NR(1, 16), [=](sycl::nd_item<1> it) INK_REQD_SG16 {
+        const int lane = it.get_local_id(0);
+        const auto sg = it.get_sub_group();
+        float p[8], score[8], my_weight = 0.f, sum = 0.f;
+        int my_id = 0;
+#pragma unroll
+        for (int j = 0; j < 8; ++j) {
+            const int e = 16 * j + lane;
+            const float raw = 1.f / (1.f + sycl::exp(-logits[e]));
+            p[j] = sycl::isfinite(raw) ? raw : 0.f;
+            const float s = p[j] + bias[e];
+            score[j] = sycl::isfinite(s) ? s : -1e29f;
+        }
+        for (int rank = 0; rank < 8; ++rank) {
+            float best = -1e30f;
+            int local_id = 128;
+#pragma unroll
+            for (int j = 0; j < 8; ++j)
+                if (score[j] > best) {
+                    best = score[j];
+                    local_id = 16 * j + lane;
+                }
+            const float maximum = sycl::reduce_over_group(sg, best, sycl::maximum<float>());
+            int id = sycl::reduce_over_group(sg, best == maximum ? local_id : 128, sycl::minimum<int>());
+            if (id == 128)
+                id = rank;
+            const int j = id / 16;
+            const float chosen = sycl::select_from_group(sg, p[j], sycl::id<1>(id % 16));
+            if (rank == lane) {
+                my_id = id;
+                my_weight = chosen;
+            }
+            sum += chosen;
+            if (lane == id % 16)
+                score[j] = -1e30f;
+        }
+        const float inv = scale / (sum + 1e-20f);
+        if (lane < 8) {
+            ids[lane] = my_id;
+            weights[lane] = my_weight * inv;
+        }
+    });
+}
+
+// Single-token MLP ShortConv has static taps and consumes exactly one history slot.
+inline void k_sq20_decode_tail(const float *weighted, const float *taps, float *history, const int *slots,
+                               const float *residual, float *out) {
+    Q().parallel_for(NR(9, 256), [=](sycl::nd_item<1> it) INK_REQD_SG16 {
+        constexpr int D = 2304;
+        const int d = it.get_global_id(0);
+        float cur = 0.f;
+        for (int k = 0; k < 8; ++k)
+            cur += weighted[k * D + d];
+        float *h = history + (size_t)slots[0] * 3 * D + d;
+        const float *sw = taps + 4 * d;
+        const float h1 = h[D], h2 = h[2 * D];
+        const float acc = h[0] * sw[0] + h1 * sw[1] + h2 * sw[2] + cur * sw[3];
+        h[0] = h1;
+        h[D] = h2;
+        h[2 * D] = cur;
+        const float conv = (cur + acc) * 0.4472135954999579f;
+        out[d] = residual[d] + conv;
     });
 }
 

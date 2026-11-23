@@ -169,6 +169,34 @@ inline void k_sk_to_f16_rows_sg16(const uint8_t* W, int n0, int nc, int K, half*
 // 2. Fast Vectorized SG16 Dequant-to-FP16 Kernels for MoE Experts (By-Value!)
 // ============================================================================
 
+// Each lane expands one SF4 scale block. The two panels fit together in
+// the existing oneMKL weight scratch and stay live through both GEMMs.
+inline void k_unpack_sf4_expert_panels(InkSyExpertDev expert, half* weights) {
+    constexpr int gate_weights = 2304 * 2304;
+    constexpr int down_weights = 2304 * 1152;
+    constexpr int blocks = (gate_weights + down_weights) / 16;
+    Q().parallel_for(sycl::nd_range<1>{blocks, 256},
+                     [=](sycl::nd_item<1> it) INK_REQD_SG16 {
+        const int block = it.get_global_id(0);
+        const bool down = block >= gate_weights / 16;
+        const int index = down ? block - gate_weights / 16 : block;
+        const uint8_t* bytes = expert.body_ptr + (down ? expert.dn_off : 16);
+        const uint8_t* scales = bytes + (down ? down_weights : gate_weights) / 2;
+        const float* hdr = reinterpret_cast<const float*>(expert.body_ptr);
+        const float outer = down ? hdr[2] / hdr[3] : hdr[0] / hdr[1];
+        const float scale = e4m3_to_f32(scales[index]) * outer;
+        const auto codes = *reinterpret_cast<const sycl::vec<uint8_t, 8>*>(bytes + index * 8);
+        sycl::vec<uint32_t, 8> pairs;
+#pragma unroll
+        for (int j = 0; j < 8; ++j) {
+            const uint32_t lo = sycl::bit_cast<uint16_t>(half(e2m1_lut(codes[j] & 15) * scale));
+            const uint32_t hi = sycl::bit_cast<uint16_t>(half(e2m1_lut(codes[j] >> 4) * scale));
+            pairs[j] = lo | (hi << 16);
+        }
+        *reinterpret_cast<sycl::vec<uint32_t, 8>*>(weights + 16 * block) = pairs;
+    });
+}
+
 // Dequant expert w13 [2304, 2304] -> half (row 2r = gate, 2r+1 = up), 128-bit coalesced vector stores!
 inline void k_dequant_moe_gu_f16_sg16(InkSyExpertDev ed, half* w_f16) {
     Q().parallel_for(NR(144, 256), [=](sycl::nd_item<1> it) INK_REQD_SG16 {
@@ -487,32 +515,45 @@ inline bool ink_xmx_linear_sk(const uint8_t* W, int N, int K, const float* X, fl
     return true;
 }
 
-// Evaluate ONE MoE expert on Intel XMX (oneMKL FP16 DPAS) by-value (zero host-to-device metadata copy!)
+// x and y may be slices of a layer-wide packing or per-expert scratch.
+inline void ink_xmx_moe_project(InkSyExpertDev ed, const half* x, int n, float* y, bool fuse_sf4_panels = false) {
+    auto& sc = xmx_scratch();
+    sc.ensure_w(2304ul * 2304ul);
+    sc.ensure_moe(n);
+    half* down_weights = sc.w_f16;
+    constexpr size_t gate_elements = 2304ul * 2304;
+    if (fuse_sf4_panels && ed.gu_code == FMT_SF4 && ed.dn_code == FMT_SF4 &&
+        sc.w_cap >= gate_elements + 2304ul * 1152 && reinterpret_cast<uintptr_t>(sc.w_f16) % 32 == 0) {
+        k_unpack_sf4_expert_panels(ed, sc.w_f16);
+        down_weights += gate_elements;
+    } else {
+        k_dequant_moe_gu_f16_sg16(ed, sc.w_f16);
+    }
+    oneapi::mkl::blas::row_major::gemm(
+        Q(), oneapi::mkl::transpose::nontrans, oneapi::mkl::transpose::trans,
+        (std::int64_t)n, (std::int64_t)2304, (std::int64_t)2304,
+        1.0f, x, (std::int64_t)2304,
+        sc.w_f16, (std::int64_t)2304,
+        0.0f, sc.y_gu, (std::int64_t)2304);
+    k_moe_situ_invsq_f16_sg16(ed, sc.y_gu, n, sc.h_f16);
+    if (down_weights == sc.w_f16) k_dequant_moe_dn_f16_sg16(ed, sc.w_f16);
+    oneapi::mkl::blas::row_major::gemm(
+        Q(), oneapi::mkl::transpose::nontrans, oneapi::mkl::transpose::trans,
+        (std::int64_t)n, (std::int64_t)2304, (std::int64_t)1152,
+        1.0f, sc.h_f16, (std::int64_t)1152,
+        down_weights, (std::int64_t)1152,
+        0.0f, y, (std::int64_t)2304);
+}
+
 inline bool ink_xmx_moe_single(
     InkSyExpertDev ed, const float* x_in, const float* topk_w,
     const int* pair_list, int off, int n, float* y_pairs, sycl::event* out_ev = nullptr) {
     if (!xmx_enabled() || n < xmx_moe_min_n()) return false;
     auto& sc = xmx_scratch();
-    sc.ensure_w(2304ul * 2304ul);
     sc.ensure_x((size_t)n * 2304);
     sc.ensure_moe(n);
-
     k_moe_gather_f16_sg16(x_in, pair_list, off, n, sc.x_f16);
-    k_dequant_moe_gu_f16_sg16(ed, sc.w_f16);
-    oneapi::mkl::blas::row_major::gemm(
-        Q(), oneapi::mkl::transpose::nontrans, oneapi::mkl::transpose::trans,
-        (std::int64_t)n, (std::int64_t)2304, (std::int64_t)2304,
-        1.0f, sc.x_f16, (std::int64_t)2304,
-        sc.w_f16, (std::int64_t)2304,
-        0.0f, sc.y_gu, (std::int64_t)2304);
-    k_moe_situ_invsq_f16_sg16(ed, sc.y_gu, n, sc.h_f16);
-    k_dequant_moe_dn_f16_sg16(ed, sc.w_f16);
-    oneapi::mkl::blas::row_major::gemm(
-        Q(), oneapi::mkl::transpose::nontrans, oneapi::mkl::transpose::trans,
-        (std::int64_t)n, (std::int64_t)2304, (std::int64_t)1152,
-        1.0f, sc.h_f16, (std::int64_t)1152,
-        sc.w_f16, (std::int64_t)1152,
-        0.0f, sc.y_dn, (std::int64_t)2304);
+    ink_xmx_moe_project(ed, sc.x_f16, n, sc.y_dn);
     sycl::event ev = k_moe_scatter_w_sg16(sc.y_dn, topk_w, pair_list, off, n, y_pairs);
     if (out_ev) *out_ev = ev;
     return true;
@@ -521,6 +562,7 @@ inline bool ink_xmx_moe_single(
 inline bool ink_xmx_linear_bf16(const uint16_t*, int, int, const float*, float*, int) { return false; }
 inline bool ink_xmx_linear_q8row(const uint8_t*, int, int, const float*, float*, int, int) { return false; }
 template <int F> inline bool ink_xmx_linear_sk(const uint8_t*, int, int, const float*, float*, int) { return false; }
+inline void ink_xmx_moe_project(InkSyExpertDev, const half*, int, float*, bool = false) {}
 inline bool ink_xmx_moe_single(InkSyExpertDev, const float*, const float*, const int*, int, int, float*, sycl::event* = nullptr) { return false; }
 #endif
 
