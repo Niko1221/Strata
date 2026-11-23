@@ -27,12 +27,21 @@
 #include "strata/artifact/strata_reader.hpp"
 #include "strata/core/ink_names.hpp"
 #include "strata/core/mapped_pages.hpp"
+#include "ink_q8f_pack.h"
 #include "strata/quant/dequant.hpp"
 #include "strata/quant/sk_codecs.hpp"
 
 namespace ink2 {
 
 namespace gguf_detail {
+
+// Set by the CUDA front end (ink_main.cpp) before the model is opened: keep the dense attention matrices that the file stores as
+// Q8_0 exactly as stored (fmt 104: [rows][cols/32] fp16 scales, then [rows][cols] int8) instead of expanding them to rounded BF16.
+// Half the bytes to read per token and the file's real weights. Other backends never set it and keep BF16.
+inline bool& keep_q8_0_dense() {
+    static bool v = false;
+    return v;
+}
 
 inline bool has_gguf_magic(const std::string& path) {
     std::FILE* fp = std::fopen(path.c_str(), "rb");
@@ -483,6 +492,47 @@ struct GgufAdapter {
             return true;
         };
 
+        // A dense matrix: a Q8_0 one stays Q8_0 when the CUDA front end asked for it, anything else goes through copy_mat_bf16.
+        //   frag == false (the embedding table): fmt 104, as stored, row by row: [rows][cols/32] fp16 scales, then [rows][cols] int8.
+        //   frag == true (the attention matrices): fmt 105, in the order the int8 tensor-core GEMM reads (k_ink_gemm_q8f in
+        //   cuda/ink_kernels.cuh): per 16-row tile and 32-wide block 512 bytes, one 16-byte A fragment per lane, then the scales
+        //   [rows/16][cols/32][16] fp16.
+        auto copy_mat_dense = [&](const std::string& gguf_name, const std::string& canon_name, int64_t rows, int64_t cols, bool frag) -> bool {
+            const strata::TensorInfo* ti = nullptr;
+            const uint8_t* ptr = gguf_detail::keep_q8_0_dense() ? tensor_ptr(*model, gguf_name, ti) : nullptr;
+            if (!ptr || !ti || ti->type != 8 || (cols % 32) != 0 || ((rows * cols) % 256) != 0 || (frag && (rows % 16) != 0)) {
+                return copy_mat_bf16(gguf_name, canon_name, rows, cols);
+            }
+            const size_t nblk = static_cast<size_t>(cols / 32);
+            const size_t nr = static_cast<size_t>(rows);
+            const size_t nb = nr * nblk * 2 + nr * static_cast<size_t>(cols);
+            size_t off = align64(sec1_arena.size());
+            sec1_arena.resize(off + nb, 0);
+            uint8_t* out0 = sec1_arena.data() + off;
+            const size_t rb = nblk * 34;   // a Q8_0 block: fp16 d, then 32 int8
+            if (!frag) {
+                uint8_t* sc_out = out0;
+                uint8_t* q_out = out0 + nr * nblk * 2;
+                for (size_t r = 0; r < nr; ++r) {
+                    const uint8_t* src = ptr + r * rb;
+                    for (size_t b = 0; b < nblk; ++b) {
+                        std::memcpy(sc_out + (r * nblk + b) * 2, src + b * 34, 2);
+                        std::memcpy(q_out + r * static_cast<size_t>(cols) + b * 32, src + b * 34 + 2, 32);
+                    }
+                }
+            } else {
+                ink_q8f_pack(ptr, nr, static_cast<size_t>(cols), out0);
+            }
+            TInfoT out_ti;
+            out_ti.name = canon_name;
+            out_ti.fmt = frag ? 105 : 104; // F_Q8_0F / F_Q8_0
+            out_ti.shape = {rows, cols};
+            out_ti.off = off;
+            out_ti.bytes = nb;
+            m.trunk[canon_name] = std::move(out_ti);
+            return true;
+        };
+
         auto copy_vec_f32 = [&](const std::string& gguf_name, const std::string& canon_name, const std::vector<int64_t>& shape) -> bool {
             std::vector<float> v;
             if (!read_tensor_f32(*model, gguf_name, v, err)) return false;
@@ -517,7 +567,12 @@ struct GgufAdapter {
         const int q_dim = c.n_head * c.head_dim;
         const int kv_dim = c.n_kv * c.head_dim;
 
-        if (!copy_mat_bf16("token_embd.weight", "model.llm.embed.weight", c.vocab_padded, D)) return false;
+        // the CUDA embedding kernel finds the int8 plane of a Q8_0 table at 201,024 rows (kInkVocabPad, as for Q8_ROW)
+        if (c.vocab_padded == 201024) {
+            if (!copy_mat_dense("token_embd.weight", "model.llm.embed.weight", c.vocab_padded, D, false)) return false;
+        } else if (!copy_mat_bf16("token_embd.weight", "model.llm.embed.weight", c.vocab_padded, D)) {
+            return false;
+        }
         if (!copy_vec_f32("token_embd_norm.weight", "model.llm.embed_norm.weight", {D})) return false;
         if (!copy_mat_bf16("output.weight", "model.llm.unembed.weight", c.vocab_padded, D)) return false;
         if (!copy_vec_f32("output_norm.weight", "model.llm.norm.weight", {D})) return false;
@@ -570,13 +625,13 @@ struct GgufAdapter {
             const std::string p = "model.llm.layers." + std::to_string(il) + ".";
             const bool is_swa = (c.is_swa[il] != 0);
 
-            if (!copy_mat_bf16(b + "attn_q.weight", p + "attn.wq_du.weight", q_dim, D)) return false;
-            if (!copy_mat_bf16(b + "attn_k.weight", p + "attn.wk_dv.weight", kv_dim, D)) return false;
-            if (!copy_mat_bf16(b + "attn_v.weight", p + "attn.wv_dv.weight", kv_dim, D)) return false;
-            if (!copy_mat_bf16(nm(b, "attn_r.weight"), p + "attn.wr_du.weight", c.n_head * c.d_rel, D)) return false;
+            if (!copy_mat_dense(b + "attn_q.weight", p + "attn.wq_du.weight", q_dim, D, true)) return false;
+            if (!copy_mat_dense(b + "attn_k.weight", p + "attn.wk_dv.weight", kv_dim, D, true)) return false;
+            if (!copy_mat_dense(b + "attn_v.weight", p + "attn.wv_dv.weight", kv_dim, D, true)) return false;
+            if (!copy_mat_dense(nm(b, "attn_r.weight"), p + "attn.wr_du.weight", c.n_head * c.d_rel, D, true)) return false;
             if (!copy_mat_bf16(b + "attn_sink_proj.weight", p + "attn.attn_sink_proj.weight", c.n_head, D)) return false;
-            if (!copy_mat_bf16(b + "attn_gate.weight", p + "attn.gate_attn.weight", q_dim, D)) return false;
-            if (!copy_mat_bf16(b + "attn_output.weight", p + "attn.wo_ud.weight", D, q_dim)) return false;
+            if (!copy_mat_dense(b + "attn_gate.weight", p + "attn.gate_attn.weight", q_dim, D, true)) return false;
+            if (!copy_mat_dense(b + "attn_output.weight", p + "attn.wo_ud.weight", D, q_dim, true)) return false;
             if (!copy_vec_f32(b + "ffn_gate_inp.weight", p + "mlp.gate.weight", {c.n_experts, D})) return false;
             if (!copy_vec_f32(b + "exp_probs_b.bias", p + "mlp.gate.bias", {c.n_experts})) return false;
             if (!copy_vec_f32(b + "ffn_norm.weight", p + "mlp_norm.weight", {D})) return false;

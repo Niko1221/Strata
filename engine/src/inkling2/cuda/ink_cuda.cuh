@@ -211,6 +211,8 @@ enum InkFmt : int {
     FMT_F32   = 101,
     FMT_BF16  = 102,
     FMT_F16   = 103,
+    FMT_Q8_0  = 104,   // GGUF Q8_0 table as stored, row by row: [N][K/32] fp16 scales, then [N][K] int8 (the embedding; CUDA backend only)
+    FMT_Q8_0F = 105,   // GGUF Q8_0 dense matrix in mma fragment order for k_ink_gemm_q8f (CUDA, sm_80+): see the loader
 };
 
 __host__ __device__ constexpr int ink_sb_bytes(int fmt) {

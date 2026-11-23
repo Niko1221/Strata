@@ -278,6 +278,14 @@ public:
         for (;;) {
             runner_ = std::make_unique<strata::ink::InkCudaRunner>(model_);
             runner_->use_cuda_graph = vf_graph_ok && !model_.ep2_active && !model_.ls_active;
+            if (const char* pe = std::getenv("STRATA_INK_PROF"); pe && pe[0] == '1') {   // per-phase decode times, eager (no graph)
+                runner_->prof_enabled = true;
+                runner_->use_cuda_graph = false;
+                strata::ink::g_ink_moe_hook_ctx = runner_.get();
+                strata::ink::g_ink_moe_hook = [](int tag, void* ctx) {
+                    static_cast<strata::ink::InkCudaRunner*>(ctx)->prof_mark_end(8 + tag);
+                };
+            }
             try {
                 runner_->init(max_slots_, std::max(256, opts.max_ctx), chunk_try, cuda_kvd, kv_offload_mode);
                 break;
@@ -979,6 +987,15 @@ private:
 
 std::unique_ptr<InkBackend> make_cuda_backend() {
     return std::make_unique<InkCudaBackend>();
+}
+
+bool ink_cuda_q8f_supported(int gpu_index) {
+    int major = 0;
+    if (cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, gpu_index < 0 ? 0 : gpu_index) != cudaSuccess) {
+        cudaGetLastError();
+        return false;
+    }
+    return major >= 8;
 }
 
 }  // namespace ink2

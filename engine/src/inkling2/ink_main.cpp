@@ -341,10 +341,17 @@ static int cmd_dump_ref(const std::string& model_path, const std::string& out_pa
     const int32_t V = mf.m.c.vocab_unpadded;
     std::vector<float> logits(static_cast<size_t>(n_tok) * V);
     StepBatch batch;
-    for (int i = 0; i < n_tok; ++i) batch.push(0, i, ids[i], true);
-    if (!backend->forward_batch(batch, logits.data(), nullptr, err)) {
-        fprintf(stderr, "forward: %s\n", err.c_str());
-        return 1;
+    // INK_DUMP_CHUNK=n feeds the tokens n at a time (1 = the single-token decode kernels), default: all in one batch
+    int dump_chunk = n_tok;
+    if (const char* dc = std::getenv("INK_DUMP_CHUNK"); dc && std::atoi(dc) > 0) dump_chunk = std::min<int>(std::atoi(dc), n_tok);
+    for (int i0 = 0; i0 < n_tok; i0 += dump_chunk) {
+        const int i1 = std::min<int>(n_tok, i0 + dump_chunk);
+        batch.clear();
+        for (int i = i0; i < i1; ++i) batch.push(0, i, ids[i], true);
+        if (!backend->forward_batch(batch, logits.data() + static_cast<size_t>(i0) * V, nullptr, err)) {
+            fprintf(stderr, "forward: %s\n", err.c_str());
+            return 1;
+        }
     }
     FILE* f = std::fopen(out_path.c_str(), "wb");
     if (!f) { fprintf(stderr, "dump-ref: cannot write %s\n", out_path.c_str()); return 1; }
@@ -540,6 +547,15 @@ int main(int argc, char** argv) {
     if (mode_serve) {
         strata::core::set_serve_error_line(true);
     }
+
+#ifdef INKLING_ENABLE_CUDA
+    // One CUDA GPU (sm_80 or newer: the int8 tensor-core GEMM): a GGUF's Q8_0 dense matrices stay as stored (half the bytes of rounded BF16, the file's own weights).
+    // STRATA_INK_Q8_0_DENSE=0 goes back to BF16 (for A/B runs). Several GPUs and the CPU backend keep BF16.
+    if (!cfg.force_cpu && cfg.bopts.gpus == 1 && cfg.bopts.layer_split.empty() && ink2::ink_cuda_q8f_supported(cfg.bopts.gpu_index)) {
+        const char* q8e = std::getenv("STRATA_INK_Q8_0_DENSE");
+        ink2::gguf_detail::keep_q8_0_dense() = !(q8e && q8e[0] == '0');
+    }
+#endif
 
     if (mode_info) return cmd_info(info_file, cfg.vision_path, cfg.bopts.dspark_path);
     if (mode_export) return cmd_export_tokenizer(export_file, export_dir);

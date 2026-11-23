@@ -1681,6 +1681,8 @@ struct InkCudaRunner {
     int32_t* d_acc_path = nullptr;
     __nv_bfloat16 *d_x_bf16 = nullptr;
     __nv_bfloat16 *d_w_scratch = nullptr;  // [max_N, max_K] BF16 scratch for Q8_ROW / S_K cuBLAS prefill
+    int8_t* d_xq8 = nullptr;               // activations of a Q8_0 dense GEMM, quantized into the mma B-fragment order (k_ink_quant_x_q8f)
+    float*  d_xs8 = nullptr;               // and their scales, one per (token, 32-wide block)
 
     // Logits & screened argmax buffers
     float   *d_logits = nullptr;      // [logits_cap, 200058] (allocated lazily if full logits needed)
@@ -1764,24 +1766,54 @@ struct InkCudaRunner {
 
     // Optional per-stage profiler (active only when prof_enabled=true and graph disabled)
     bool prof_enabled = false;
-    double prof_ms[8] = {};  // 0=res/ctrl/norm, 1=dense_qkv, 2=sconv_clip_kv, 3=attn, 4=dense_wo, 5=moe, 6=other, 7=unembed
+    long prof_steps = 0;
+    double prof_ms[16] = {};  // 0=res/ctrl/norm, 1=dense_qkv, 2=sconv_clip_kv, 3=attn, 4=dense_wo, 5=moe, 6=other, 7=unembed
     cudaEvent_t ev_p0 = nullptr, ev_p1 = nullptr;
-    void prof_mark_start() { if (prof_enabled) INK_CK(cudaEventRecord(ev_p0, st)); }
+    // The marks only record events (no sync per phase), so the GPU stays fed and the phase times are the stream's own;
+    // prof_flush() adds them up once the step is done.
+    struct ProfPair { cudaEvent_t a, b; int idx; };
+    std::vector<cudaEvent_t> prof_pool;
+    std::vector<ProfPair> prof_pairs;
+    size_t prof_used = 0;
+    cudaEvent_t prof_prev = nullptr;
+    cudaEvent_t prof_next_ev() {
+        if (prof_used == prof_pool.size()) { cudaEvent_t e; INK_CK(cudaEventCreate(&e)); prof_pool.push_back(e); }
+        return prof_pool[prof_used++];
+    }
+    void prof_mark_start() {
+        if (!prof_enabled) return;
+        cudaEvent_t e = prof_next_ev();
+        INK_CK(cudaEventRecord(e, st));
+        prof_prev = e;
+    }
     void prof_mark_end(int idx) {
         if (!prof_enabled) return;
-        INK_CK(cudaEventRecord(ev_p1, st));
-        INK_CK(cudaEventSynchronize(ev_p1));
-        float ms = 0.0f;
-        INK_CK(cudaEventElapsedTime(&ms, ev_p0, ev_p1));
-        prof_ms[idx] += ms;
+        cudaEvent_t e = prof_next_ev();
+        INK_CK(cudaEventRecord(e, st));
+        if (prof_prev) prof_pairs.push_back({prof_prev, e, idx});
+        prof_prev = e;
+    }
+    void prof_flush() {
+        if (!prof_enabled || prof_pairs.empty()) { prof_used = 0; return; }
+        INK_CK(cudaStreamSynchronize(st));
+        for (const auto& p : prof_pairs) {
+            float ms = 0.0f;
+            INK_CK(cudaEventElapsedTime(&ms, p.a, p.b));
+            prof_ms[p.idx] += ms;
+        }
+        prof_pairs.clear();
+        prof_used = 0;
+        prof_prev = nullptr;
     }
     void prof_reset() { for (double& x : prof_ms) x = 0.0; }
     void prof_print(const char* tag, int iters) const {
         double tot = 0; for (double x : prof_ms) tot += x;
-        std::printf("[PROF %s / %d iters] total=%.2f ms/step | res_ctrl=%.2f dense_qkv=%.2f sconv_kv=%.2f attn=%.2f dense_wo=%.2f moe=%.2f unembed=%.2f\n",
+        std::fprintf(stderr, "[PROF %s / %d iters] total=%.2f ms/step | res_ctrl=%.2f dense_qkv=%.2f sconv_kv=%.2f attn=%.2f dense_wo=%.2f moe=%.2f unembed=%.2f\n",
                     tag, iters, tot / iters,
                     prof_ms[0] / iters, prof_ms[1] / iters, prof_ms[2] / iters, prof_ms[3] / iters,
                     prof_ms[4] / iters, prof_ms[5] / iters, prof_ms[7] / iters);
+        std::fprintf(stderr, "[PROF moe parts / %d iters] (the moe= above is what is left after these) router+topk=%.2f bin=%.2f gu(sf4/mx8/sk)=%.2f dn(sf4/mx8/sk)=%.2f gu(gguf)=%.2f dn(gguf)=%.2f ms/step\n",
+                    iters, prof_ms[8] / iters, prof_ms[9] / iters, prof_ms[10] / iters, prof_ms[11] / iters, prof_ms[12] / iters, prof_ms[13] / iters);
     }
 
     static size_t kv_bytes_per_visit_pos(InkKvDtype dt) noexcept {
@@ -2116,6 +2148,11 @@ struct InkCudaRunner {
 
         d_x_bf16    = dalloc<__nv_bfloat16>(MB * std::max(kInkDsparkInter, std::max(kInkQDim, kInkHidden)));
         d_w_scratch = dalloc<__nv_bfloat16>((size_t)kInkDsparkInter * kInkHidden);
+        {
+            const size_t mpad = (size_t)((max_batch + 7) / 8) * 8;
+            d_xq8 = dalloc<int8_t>(mpad * kInkQDim);
+            d_xs8 = dalloc<float>(mpad * (kInkQDim / 32));
+        }
 
         // Warmup cuBLAS Tensor Cores once at init (eliminates 61 ms first-call JIT tax from prompt #1!)
         {
@@ -2641,6 +2678,7 @@ struct InkCudaRunner {
             return is_fp16 ? XC_FP16 : gemm_fmt;
         }
         if (ti.fmt == FMT_F32) return XC_NONE;
+        if (ti.fmt == FMT_Q8_0F) return XC_NONE;   // quantizes its own activations (k_ink_quant_x_q8f)
         if (ti.fmt == FMT_Q8ROW) {
             if (M > 16 && cur_cc == 61 && (K % 4 == 0) && (N % 4 == 0) && N_override == 0) return XC_I8;
             const size_t cap = (size_t)kInkDsparkInter * kInkHidden;
@@ -2658,6 +2696,28 @@ struct InkCudaRunner {
         if (need != XC_NONE) x_cached = need;
     }
 
+    // Q8_0 dense matrices (FMT_Q8_0F): the activations are quantized once into the fragment order, then one GEMM launch for all the
+    // matrices of mp (see k_ink_gemm_q8f for the layout and why the result does not depend on M).
+    bool q8f_ok(int M, int K) const { return M >= 1 && M <= max_batch && K % 32 == 0 && K <= kInkQDim && d_xq8 != nullptr; }
+    void gemm_q8f(const InkMultiProj& mp, const float* X, int M, int K) {
+        const int nMT = (M + 7) / 8;
+        const int nKB = K >> 5;
+        const int total_warps = nMT * 8 * nKB;
+        k_ink_quant_x_q8f<<<(total_warps + 7) / 8, 256, 0, st>>>(X, d_xq8, d_xs8, M, K, nMT);
+        const int row_tiles = mp.cumN[mp.count] / 16;
+        const int gx = (row_tiles + 1) / 2;
+        // token tiles per warp: as many as fit, but split the tokens over more CTAs when the matrices are short of row tiles
+        // (the output projection has 144) so that about 1500 warps are in flight; the result does not depend on this choice
+        const int want_gy = std::max(1, (1536 + row_tiles - 1) / row_tiles);
+        int mtw = 1;
+        for (int c : {8, 4, 2}) { if (nMT >= c && (nMT + c - 1) / c >= std::min(want_gy, nMT)) { mtw = c; break; } }
+        const dim3 grid(gx, (nMT + mtw - 1) / mtw);
+        if (mtw == 8)      k_ink_gemm_q8f<8><<<grid, 64, 0, st>>>(mp, d_xq8, d_xs8, M, K, nMT);
+        else if (mtw == 4) k_ink_gemm_q8f<4><<<grid, 64, 0, st>>>(mp, d_xq8, d_xs8, M, K, nMT);
+        else if (mtw == 2) k_ink_gemm_q8f<2><<<grid, 64, 0, st>>>(mp, d_xq8, d_xs8, M, K, nMT);
+        else               k_ink_gemm_q8f<1><<<grid, 64, 0, st>>>(mp, d_xq8, d_xs8, M, K, nMT);
+    }
+
     // ---- Dense linear projection helper: Y[M, N] = X[M, K] @ W[N, K]^T ----
     void linear_multi(const std::string* names, float* const* Ys, int count, const float* X, int M, bool exact_fp32_x = false) {
         if (count <= 0) return;
@@ -2667,7 +2727,8 @@ struct InkCudaRunner {
         const bool cur_attn_fp16 = m.ls_active ? m.stage_trunk_attn_fp16[cur_stage] : m.trunk_attn_fp16;
         const bool is_fp16 = cur_attn_fp16 && (names[0].find(".attn.") != std::string::npos);
         const int bf16_gemv_max = is_fp16 ? 3 : ((exact_fp32_x || cur_cc < 80) ? 16 : 7);
-        bool can_fuse = (count <= 5) && ((ti0.fmt == FMT_BF16 && M <= bf16_gemv_max) || (ti0.fmt == FMT_Q8ROW && M <= 16));
+        bool can_fuse = (count <= 5) && ((ti0.fmt == FMT_BF16 && M <= bf16_gemv_max) || (ti0.fmt == FMT_Q8ROW && M <= 16) ||
+                                         (ti0.fmt == FMT_Q8_0F && q8f_ok(M, K)));
         InkMultiProj mp{};
         mp.count = count;
         mp.cumN[0] = 0;
@@ -2682,6 +2743,10 @@ struct InkCudaRunner {
         }
         if (can_fuse) {
             const int grid = (mp.cumN[count] + 7) / 8;
+            if (ti0.fmt == FMT_Q8_0F) {
+                gemm_q8f(mp, X, M, K);
+                return;
+            }
             if (ti0.fmt == FMT_BF16) {
                 if (is_fp16) {
                     if (M == 1)      k_ink_gemv_multi_bf16<1, true><<<grid, 128, 0, st>>>(mp, X, M, K);
@@ -2776,6 +2841,10 @@ struct InkCudaRunner {
                     cur_cc >= 80 ? CUBLAS_COMPUTE_32F_FAST_TF32 : CUBLAS_COMPUTE_32F,
                     CUBLAS_GEMM_DEFAULT_TENSOR_OP));
             }
+        } else if (ti.fmt == FMT_Q8_0F) {
+            InkMultiProj mp{};
+            mp.W[0] = W; mp.Y[0] = Y; mp.N[0] = N; mp.cumN[0] = 0; mp.cumN[1] = N; mp.count = 1;
+            gemm_q8f(mp, X, M, K);
         } else if (ti.fmt == FMT_Q8ROW) {
             if (M > 16 && cur_cc == 61 && (K % 4 == 0) && (N % 4 == 0) && N_override == 0) {
                 int8_t* x_i8 = reinterpret_cast<int8_t*>(d_x_bf16);
@@ -2964,7 +3033,9 @@ struct InkCudaRunner {
         // 3. Fused Q, K, V, R, Gate_Attn, Sinks projections (1 launch on SWA-no-msg at M<=16 -> 1,500+ GB/s!)
         prof_mark_end(0); prof_mark_start();
         const bool share_qkv = (in_q == in_k && in_q == in_v);
-        if (M <= 16 && share_qkv) {
+        // Q8_0 dense matrices: one fused launch (one activation quantization) at any batch size, prefill chunks included
+        const bool q8f_dense = (m.tinfo(p + ".attn.wq_du.weight").fmt == FMT_Q8_0F);
+        if ((M <= 16 || q8f_dense) && share_qkv) {
             const std::string names[5] = {
                 p + ".attn.wq_du.weight", p + ".attn.wr_du.weight", p + ".attn.gate_attn.weight",
                 p + ".attn.wk_dv.weight", p + ".attn.wv_dv.weight"
@@ -2972,7 +3043,7 @@ struct InkCudaRunner {
             float* ys[5] = { d_q, d_r, d_gate_attn, d_k_raw, d_v_raw };
             linear_multi(names, ys, 5, in_q, M, exact_x);
             linear(p + ".attn.attn_sink_proj.weight", in_q, d_sinks, M, 0, false, exact_x);
-        } else if (M <= 16) {
+        } else if (M <= 16 || q8f_dense) {
             const std::string names[3] = {
                 p + ".attn.wq_du.weight", p + ".attn.wr_du.weight", p + ".attn.gate_attn.weight"
             };
@@ -3446,6 +3517,11 @@ struct InkCudaRunner {
         }
         emit_48_visits(M, 0, slot0, p0, want_taps);
         if (M == 1 && m.hybrid.active && m.n_host_experts > 0) m.hybrid.step_promote(m.d_sec4, m.d_experts, st);
+        if (prof_enabled) {   // STRATA_INK_PROF=1: where one decode step goes (eager, events only), every 100 steps
+            prof_flush();
+            if (M != 1) prof_reset();
+            else if (++prof_steps % 100 == 0) { prof_print("DECODE-M1", (int)prof_steps); prof_steps = 0; prof_reset(); }
+        }
     }
 
     // Speculative Tree-32 / Block-8 verify (100% CUDA-Graph capturable with safe eager fallback!)
@@ -3541,6 +3617,16 @@ struct InkCudaRunner {
             return;
         }
         emit_48_visits(B, 1, 0, 0, want_taps);
+        if (prof_enabled) {   // STRATA_INK_PROF=1: the batched decode step, every 50 steps
+            prof_flush();
+            if (++prof_steps % 50 == 0) {
+                char tag[32];
+                std::snprintf(tag, sizeof(tag), "DECODE-B%d", B);
+                prof_print(tag, (int)prof_steps);
+                prof_steps = 0;
+                prof_reset();
+            }
+        }
     }
 
     // ---- Unembed + Softcap(30.0) + Argmax ----
@@ -3683,7 +3769,7 @@ struct InkCudaRunner {
         fr(d_pf_q); fr(d_pf_k); fr(d_pf_v); fr(d_pf_p); fr(d_pf_s); fr(d_pf_o); fr(d_pf_ot); fr(d_pf_m); fr(d_pf_l);
         fr(d_stage_k); fr(d_stage_v); fr(d_stage_sconv);
         fr(d_kv_desc_arr); fr(d_sconv_pool_arr); fr(d_acc_path);
-        fr(d_x_bf16); fr(d_w_scratch); fr(d_logits);
+        fr(d_x_bf16); fr(d_w_scratch); fr(d_logits); fr(d_xq8); fr(d_xs8);
         fr(d_dot_hat); fr(d_h_norm2); fr(d_max_lb); fr(d_cand_ids); fr(d_cand_cnt); fr(d_argmax);
         fr(d_tok_ids); fr(d_slots); fr(d_pos); fr(d_is_img); fr(d_img_emb); fr(d_sconv_lag); fr(d_tree_anc); fr(d_tree_dep);
         if (h_meta_pin) { cudaFreeHost(h_meta_pin); h_meta_pin = nullptr; }

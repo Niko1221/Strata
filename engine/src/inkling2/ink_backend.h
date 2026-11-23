@@ -135,6 +135,8 @@ std::unique_ptr<InkBackend> make_cpu_backend();
 
 #ifdef INKLING_ENABLE_CUDA
 std::unique_ptr<InkBackend> make_cuda_backend();
+// true when the GPU can run the Q8_0 dense path (int8 tensor-core GEMM: compute capability 8.0 or newer)
+bool ink_cuda_q8f_supported(int gpu_index);
 #endif
 #ifdef INKLING_ENABLE_EP_CUDA
 std::unique_ptr<InkBackend> make_ep_cuda_backend();
