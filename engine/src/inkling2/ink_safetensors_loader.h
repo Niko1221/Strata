@@ -9,6 +9,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <set>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -17,6 +18,7 @@
 #include "../image/vae/safetensors_lite.hpp"
 #include "ink_json.h"
 #include "strata/artifact/strata_reader.hpp"
+#include "strata/core/ink_dspark_layout.hpp"
 #include "strata/core/ink_names.hpp"
 #include "strata/core/ink_widen.hpp"
 #include "strata/quant/sk_codecs.hpp"
@@ -399,6 +401,8 @@ struct SafetensorsAdapter {
         }
 
         if (has_mtp) {
+            const size_t mtp_items0 = sec1_items.size();
+            const uint64_t mtp_total0 = sec1_total_bytes;
             for (const auto& kv : mtp_shard.st.tensors) {
                 const std::string& name = kv.first;
                 const auto& st_t = kv.second;
@@ -420,6 +424,18 @@ struct SafetensorsAdapter {
                 sec1_total_bytes = off + dst_bytes;
             }
             m.dspark.present = !m.dspark_tensors.empty();
+            // a drafter in a layout the runners do not read never stops the model: drop it, drafting is off for this start
+            std::set<std::string> plain_names;
+            for (const auto& kv : m.dspark_tensors) plain_names.insert(strata::core::ink_dspark_plain(kv.first));
+            std::string why;
+            if (m.dspark.present && !strata::core::ink_dspark_layout_check(plain_names, &why)) {
+                std::fprintf(stderr, "%s\n", strata::core::ink_dspark_layout_message(mtp_shard.path, why).c_str());
+                m.dspark_tensors.clear();
+                m.dspark.present = false;
+                has_mtp = false;
+                sec1_items.resize(mtp_items0);
+                sec1_total_bytes = mtp_total0;
+            }
         }
 
         // 5. Index all routed experts (NVFP4 -> SF4 code_id=15, MXFP8 -> MX8 code_id=16) with ZERO requantization!

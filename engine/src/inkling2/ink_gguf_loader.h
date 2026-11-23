@@ -17,6 +17,7 @@
 #include <filesystem>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -25,6 +26,7 @@
 #include "ink_safetensors_loader.h"
 #include "strata/artifact/gguf_reader.hpp"
 #include "strata/artifact/strata_reader.hpp"
+#include "strata/core/ink_dspark_layout.hpp"
 #include "strata/core/ink_names.hpp"
 #include "strata/core/mapped_pages.hpp"
 #include "ink_q8f_pack.h"
@@ -746,6 +748,7 @@ struct GgufAdapter {
         // 3. Optional external DSpark drafter (either mtp.safetensors or dspark-*.gguf!)
         //    Auto-discover companion dspark-*.gguf / mtp.safetensors in the model directory when not explicitly provided.
         std::string dspark_file = explicit_dspark;
+        const size_t dspark_arena0 = sec1_arena.size();
         if (dspark_file.empty()) {
             const size_t sep = path.find_last_of("/\\");
             const std::string dir_path = (sep != std::string::npos) ? path.substr(0, sep) : ".";
@@ -840,6 +843,21 @@ struct GgufAdapter {
                     }
                 }
                 m.dspark.present = !m.dspark_tensors.empty();
+            }
+            // A drafter in a layout this engine does not read (Unsloth's llama.cpp mainline "dflash" file of 2026-11-23, ...) never stops the model:
+            // say so once, drop it, and start with drafting off.
+            if (m.dspark.present) {
+                std::set<std::string> plain_names;
+                for (const auto& kv : m.dspark_tensors) plain_names.insert(strata::core::ink_dspark_plain(kv.first));
+                std::string why;
+                if (!strata::core::ink_dspark_layout_check(plain_names, &why)) {
+                    std::fprintf(stderr, "%s\n", strata::core::ink_dspark_layout_message(dspark_file, why).c_str());
+                    m.dspark_tensors.clear();
+                    m.dspark.present = false;
+                    has_dspark_st = false;
+                    dspark_gguf.reset();
+                    sec1_arena.resize(dspark_arena0);
+                }
             }
         }
 

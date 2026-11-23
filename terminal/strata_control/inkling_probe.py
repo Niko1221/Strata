@@ -27,6 +27,9 @@ except ImportError:  # run as a script from this folder
     from inkling_probe_prompts import CHAT_IDS, CODE_IDS
 
 MARGIN = 1.10          # the mixed gain drafting has to reach
+# how each probe request is decoded: code greedy (coding tools run cold), chat sampled the way a chat client asks (the drafter then takes the
+# sampled path, measured 2026-11-23 on an A6000: chat 0.91x sampled where greedy chat was 1.04x with the governor)
+GEN_OPTS = {"code": "temperature=0", "chat": "temperature=0.7 top_p=0.95 top_k=64 seed=7"}
 TOKENS = 128           # tokens decoded per probe request (64 was too short: the A6000 with SQ-20 measured 1.05 at 64 tokens, 1.14 at 128 against 1.19 in the long runs)
 REPS = 2               # requests per prompt and arm; the median is used
 READY_TIMEOUT = 900.0
@@ -175,7 +178,7 @@ def _arm(open_engine, args: list[str], prompts: dict, tokens: int, reps: int) ->
         speeds: dict[str, list[float]] = {k: [] for k in prompts}
         plan = [("warm", next(iter(prompts.values())), 16)] + [(k, v, tokens) for k in prompts for v in [prompts[k]] for _ in range(reps)]
         for name, ids, n in plan:
-            eng.send("GEN %d temperature=0 %s" % (n, ",".join(str(x) for x in ids)))
+            eng.send("GEN %d %s %s" % (n, GEN_OPTS.get(name, "temperature=0"), ",".join(str(x) for x in ids)))
             while True:
                 ln = eng.readline(STEP_TIMEOUT)
                 if ln is None or ln == "TIMEOUT" or ln.startswith("ERR"):
