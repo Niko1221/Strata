@@ -430,6 +430,8 @@ public:
     }
     // The entry with this identity: its index (SIZE_MAX: gone), or the entry itself (nullptr: gone; the pointer is
     // valid until the cache changes).
+    /// the serial of the i-th parked conversation (0 past the end), to walk the cache without taking anything
+    uint64_t serial_at(size_t i) const { return i < serials_.size() ? serials_[i] : 0; }
     size_t index_of(uint64_t serial) const {
         for (size_t i = 0; i < entries_.size(); ++i)
             if (serials_[i] == serial) return i;
