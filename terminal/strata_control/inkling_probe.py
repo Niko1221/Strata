@@ -10,6 +10,12 @@ Stdlib only; `python inkling_probe.py --exe ENGINE --out RESULT.json [--margin 1
 probe by hand. The decision is used on every backend (owner decision 2026-11-23: a slightly different answer is fine, a loss in speed is not)."""
 from __future__ import annotations
 
+import sys
+if sys.platform == "win32":
+    # CPython 3.12's WMI helper (_wmi, behind platform.system() / uname()) takes an access violation in a worker thread when WMI refuses the
+    # account (0x80041003) and the caller has already gone (DIAG-WINHOST-0216). Without _wmi, platform uses the registry and the environment.
+    sys.modules["_wmi"] = None
+
 import hashlib
 import json
 import os
@@ -112,6 +118,12 @@ class Engine:
     """One `--serve` engine process on its line protocol (stdin lines in, stdout lines out)."""
 
     def __init__(self, exe: str, args: list[str], env: dict | None = None, cwd: str | None = None):
+        try:
+            from strata_control.childenv import quiet_crash_env
+            env = quiet_crash_env(dict(os.environ if env is None else env))      # no debugger on a user's machine
+        except ImportError:                                                      # run by hand as a script outside the package
+            env = dict(os.environ if env is None else env)
+            env.setdefault("GGML_NO_BACKTRACE", "1")
         self.p = subprocess.Popen([exe, "--serve", *args], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                   env=env, cwd=cwd, bufsize=0)
         self.q: queue.Queue = queue.Queue()

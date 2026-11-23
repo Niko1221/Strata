@@ -166,6 +166,7 @@ STRATA_PROGRAMS = {
     "serve/images.py": 1,              # sd-cli (image_env)
     "serve/lifeline.py": 4,            # the wrapper every child goes through (ps, a watcher); no program of ours of its own
     "serve/winjob.py": 2,              # lifeline.popen's Windows start inside the job (suspended, then resumed) + the plain Popen off Windows: the caller's env as given
+    "strata_control/inkling_probe.py": 1,   # the launch-time drafting probe: the engine (quiet_crash_env on its environment)
     "strata_control/runtime.py": 4,    # the runtime host (inherits) and the server (quiet_crash_env on its environment); taskkill
     "strata_control/tune_api.py": 1,   # tuning worker (wrapped)
     "strata_control/tune_engine.py": 2,  # tuning engine (wrapped) + ps
