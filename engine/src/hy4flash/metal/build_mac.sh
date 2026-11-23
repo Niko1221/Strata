@@ -32,6 +32,12 @@ fi
 if [ "$T" = attb ] || [ "$T" = all ]; then
   clang++ $CXXF $INC $S/src/hy4flash/metal/hy4_attn_bench.cpp $O/mtl_rt.o $FW -o $O/hy4_attn_bench
 fi
+if [ "$T" = dqb ] || [ "$T" = all ]; then
+  clang++ $CXXF $INC $S/src/hy4flash/metal/hy4_dq_bench.cpp $O/mtl_rt.o $FW -o $O/hy4_dq_bench
+fi
+if [ "$T" = moeb ] || [ "$T" = all ]; then
+  clang++ $CXXF $INC $S/src/hy4flash/metal/hy4_moe_bench.cpp $O/mtl_rt.o $FW -o $O/hy4_moe_bench
+fi
 if [ "$T" = run ] || [ "$T" = all ]; then
   # Section 0 is read by the engine itself: the decompress-only zstd sources of engine/third_party/zstd-dec are built here (no libzstd, no sidecar manifest needed)
   Z=$S/third_party/zstd-dec
