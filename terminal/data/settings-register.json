@@ -17219,6 +17219,105 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_INK_SM120_PF",
+   "backends": [
+    "cuda"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/cuda/ink_moe_fp4_sm120.cu",
+     "line": 975,
+     "backend": "cuda",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": "128",
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "6e9415252e",
+   "first_date": "2026-11-23",
+   "since": null,
+   "last_commit": "6e9415252e",
+   "last_date": "2026-11-23",
+   "status": "rollback",
+   "owner": "inkling2/cuda",
+   "note": "strata-inkling CUDA sm_120 (0221 INKSPEED): L2 prefetch window in bytes per weight row (a multiple of 32) of the FP4 gate/up expert kernel, default 128 (gate/up phase 20.6 -> 13.1 ms at 64 slots on a 5090); 0 turns it off; A/B and rollback switch.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_SM120_PFD",
+   "backends": [
+    "cuda"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/cuda/ink_moe_fp4_sm120.cu",
+     "line": 976,
+     "backend": "cuda",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": "0",
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "6e9415252e",
+   "first_date": "2026-11-23",
+   "since": null,
+   "last_commit": "6e9415252e",
+   "last_date": "2026-11-23",
+   "status": "research",
+   "owner": "inkling2/cuda",
+   "note": "strata-inkling CUDA sm_120 (0221 INKSPEED): the same L2 prefetch window for the FP4 down expert kernel, default 0 (off; 256 / 576 B measured no gain); tuning switch.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_SM120_PF_MX8",
+   "backends": [
+    "cuda"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/cuda/ink_moe_fp4_sm120.cu",
+     "line": 984,
+     "backend": "cuda",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": "0",
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "4655f3b533",
+   "first_date": "2026-11-23",
+   "since": null,
+   "last_commit": "4655f3b533",
+   "last_date": "2026-11-23",
+   "status": "opt-in",
+   "owner": "inkling2/cuda",
+   "note": "strata-inkling CUDA sm_120 (0221 INKSPEED): L2 prefetch window of the MX8 gate/up expert kernel (layers 20-23 of a native NVFP4 file such as SQ-20), 1 = 128 B or a window in bytes, default 0 = off until its memcheck has run; becomes the default in 0.2.22.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_INK_SPEC",
    "backends": [
     "cuda-hip"
