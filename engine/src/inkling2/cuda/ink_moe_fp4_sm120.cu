@@ -977,6 +977,17 @@ static int sf4_pf_env(bool gu) {
     return gu ? v_gu : v_dn;
 }
 
+// The MX8 kernel (layers 20-23 of a native NVFP4 file, SQ-20) takes the same window only on request: STRATA_INK_SM120_PF_MX8 = 1 (128 B) or a window in bytes,
+// default 0 = no prefetch, which is the code path before the prefetch existed. It becomes the default once its memcheck has run.
+static int mx8_pf_env() {
+    static const int v = [] {
+        const char* e = std::getenv("STRATA_INK_SM120_PF_MX8");
+        const int x = e ? std::atoi(e) : 0;
+        return x == 1 ? 128 : (x >= 32 ? (x / 32) * 32 : 0);
+    }();
+    return v;
+}
+
 void moe_sf4_gu_tc(const uint8_t* sec4_base, const InkExpertDev* experts, InkMoeTables tb,
                    const uint8_t* xa, uint8_t* ha, int max_tiles, int tile_rows, cudaStream_t stream) {
     const int pf = sf4_pf_env(true);
@@ -999,18 +1010,18 @@ void moe_mx8_gu_tc(const uint8_t* sec4_base, const InkExpertDev* experts, InkMoe
                    const uint8_t* xq, const uint8_t* xsc, uint8_t* hq, uint8_t* hsc,
                    int max_tiles, int tile_rows, cudaStream_t stream) {
     const unsigned grid = (unsigned)std::min(std::max(1, max_tiles * (2 * kInter / kWR)), 2048);
-    if (tile_rows <= 16)      k_moe_mx8_tc<true, 16><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, xq, xsc, hq, hsc, nullptr, nullptr, sf4_pf_env(true));
-    else if (tile_rows <= 32) k_moe_mx8_tc<true, 32><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, xq, xsc, hq, hsc, nullptr, nullptr, sf4_pf_env(true));
-    else                      k_moe_mx8_tc<true, 64><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, xq, xsc, hq, hsc, nullptr, nullptr, sf4_pf_env(true));
+    if (tile_rows <= 16)      k_moe_mx8_tc<true, 16><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, xq, xsc, hq, hsc, nullptr, nullptr, mx8_pf_env());
+    else if (tile_rows <= 32) k_moe_mx8_tc<true, 32><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, xq, xsc, hq, hsc, nullptr, nullptr, mx8_pf_env());
+    else                      k_moe_mx8_tc<true, 64><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, xq, xsc, hq, hsc, nullptr, nullptr, mx8_pf_env());
 }
 
 void moe_mx8_dn_tc(const uint8_t* sec4_base, const InkExpertDev* experts, InkMoeTables tb,
                    const uint8_t* hq, const uint8_t* hsc, const float* topk_w, float* y_pair,
                    int max_tiles, int tile_rows, cudaStream_t stream) {
     const unsigned grid = (unsigned)std::min(std::max(1, max_tiles * (kHidden / kWR)), 2048);
-    if (tile_rows <= 16)      k_moe_mx8_tc<false, 16><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, hq, hsc, nullptr, nullptr, topk_w, y_pair, sf4_pf_env(false));
-    else if (tile_rows <= 32) k_moe_mx8_tc<false, 32><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, hq, hsc, nullptr, nullptr, topk_w, y_pair, sf4_pf_env(false));
-    else                      k_moe_mx8_tc<false, 64><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, hq, hsc, nullptr, nullptr, topk_w, y_pair, sf4_pf_env(false));
+    if (tile_rows <= 16)      k_moe_mx8_tc<false, 16><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, hq, hsc, nullptr, nullptr, topk_w, y_pair, 0);
+    else if (tile_rows <= 32) k_moe_mx8_tc<false, 32><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, hq, hsc, nullptr, nullptr, topk_w, y_pair, 0);
+    else                      k_moe_mx8_tc<false, 64><<<grid, kNT, 0, stream>>>(sec4_base, experts, tb, hq, hsc, nullptr, nullptr, topk_w, y_pair, 0);
 }
 
 void test_sf4_gemm_tc(const uint8_t* w_u8, const uint8_t* w_sc, float w_outer,
