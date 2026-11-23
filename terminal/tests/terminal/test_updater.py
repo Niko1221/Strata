@@ -820,6 +820,41 @@ class Cli(UpdaterCase):
         self.assertIn("Engine moved to the newer version: 0.1.45 -> 0.1.46", text)
         self.assertNotIn("rolled back", text)
 
+    # #6830: after a rollback the newer engine stays installed; the check says the person went back (person_chose) so the app's install job leaves it alone
+    def test_the_check_says_the_person_went_back_and_a_plain_update_still_switches(self):
+        self.install_current()
+        self.publish(("0.1.46", fx.GOOD_ENGINE))
+        code, text, _ = self.cli("update", *self.common())
+        self.assertEqual(code, 0, text)
+        self.assertEqual(self.resolved(), "0.1.46")
+        # nothing chosen yet: a newer engine in the feed is a plain update
+        code, text, _ = self.cli("components", "rollback", *self.common())
+        self.assertEqual(code, 0, text)
+        self.assertEqual(self.resolved(), "0.1.45")
+        section = updater.State(self.components).section("engine")
+        self.assertEqual(section.get("skipped"), ["0.1.46"])
+        self.assertTrue(section.get("pinned"))
+        code, text, _ = self.cli("update", "--check", "--json", *self.common())
+        engine = json.loads(text)["engine"]
+        self.assertEqual(engine["status"], "available", "an explicit update still offers it")
+        self.assertTrue(engine.get("person_chose"), "but the check says the person went back")
+        self.assertIn("you went back to 0.1.45", engine["note"])
+        self.assertEqual(engine.get("installed_locally") is not None, True)
+        # the explicit update switches (nothing to download)
+        code, text, _ = self.cli("update", *self.common())
+        self.assertEqual(code, 0, text)
+        self.assertEqual(self.resolved(), "0.1.46")
+        code, text, _ = self.cli("update", "--check", "--json", *self.common())
+        self.assertFalse(json.loads(text)["engine"].get("person_chose"))
+
+    def test_a_newer_engine_nobody_left_is_not_marked(self):
+        self.install_current()
+        self.publish(("0.1.46", fx.GOOD_ENGINE))
+        code, text, _ = self.cli("update", "--check", "--json", *self.common())
+        engine = json.loads(text)["engine"]
+        self.assertEqual(engine["status"], "available")
+        self.assertFalse(engine.get("person_chose"))
+
     def test_a_first_install_does_not_claim_a_previous_engine_is_kept(self):
         self.publish(("0.1.46", fx.GOOD_ENGINE))
         code, text, _ = self.cli("update", *self.common())

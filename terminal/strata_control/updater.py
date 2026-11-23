@@ -712,6 +712,15 @@ def _choose_engine(feed: feedmod.Feed, ctx: Context, state: State) -> tuple[dict
     if report["status"] == "available" and local:
         report["installed_locally"] = local
         report["download_bytes"] = 0
+        # #6830: the person went back to the engine in use (`strata components rollback`, Settings > Engine): it is pinned and the newer one is in "skipped".
+        # An explicit update still offers the newer engine (owner, 11-01), but anything that runs by itself (the app's install job: a model's settings, a
+        # download) must not switch back: SAFETY.md, "an engine is never updated by itself". `person_chose` says so; the app's engine step reads it.
+        pinned_name = section.get("pinned")
+        if pinned_name and getattr(installed, "root", None) is not None and installed.root.name == pinned_name \
+                and offered.version in (section.get("skipped") or []):
+            report["person_chose"] = True
+            report["note"] = (f"you went back to {installed.version} (the newer {offered.version} is installed and left alone); "
+                              "`strata update` or Update engine in Settings switches to it when you ask")
         if offered.version in (section.get("failed_unproven") or {}) and not ctx.force:
             # #5400: this engine was used without a test load (memory was short) and could not start the model; switching to it again by itself
             # would repeat that. The person can ask for it by name.
