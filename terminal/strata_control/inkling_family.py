@@ -121,16 +121,32 @@ def model_key(build: str) -> str:
 SOURCES_FILE = Path(__file__).resolve().parents[1] / "data" / "inkling-sources.json"
 SOURCE_ENV = "STRATA_INKLING_SOURCE"
 GGUF_SOURCE_ENV = "STRATA_INKLING_GGUF_SOURCE"
+MODELSCOPE_DEFAULT = "https://www.modelscope.cn"
+MODELSCOPE_STRATA_REPO = "strata-engine/Inkling-2-Mini-Strata"
+MODELSCOPE_GGUF_REPO = "unsloth/Inkling-2-Mini-GGUF"
+
+
+def _modelscope_base(env: dict, repo: str) -> str | None:
+    """ModelScope's folder for `repo` when setup was told `--source modelscope` / STRATA_SOURCE=modelscope, else None (#5938: the
+    generic download() only reroutes repositories in setup.py's HF_REVISIONS; the Inkling repositories are not there)."""
+    if (env.get("STRATA_SOURCE") or "").strip().lower() not in ("ms", "modelscope"):
+        return None
+    endpoint = (env.get("MODELSCOPE_ENDPOINT") or "").strip().rstrip("/") or MODELSCOPE_DEFAULT
+    return f"{endpoint}/models/{repo}/resolve/master"
 
 
 def sources(env: dict | None = None, cfg: dict | None = None, shipped: Path | None = None) -> list[dict]:
-    """Download sources for native `.strata` / tokenizer files in priority order: config `inkling_source`, env `STRATA_INKLING_SOURCE`, then shipped `inkling-sources.json`."""
+    """Download sources for native `.strata` / tokenizer files in priority order: config `inkling_source`, env `STRATA_INKLING_SOURCE`,
+    ModelScope when asked for, then shipped `inkling-sources.json`."""
     env = os.environ if env is None else env
     out: list[dict] = []
     for item in ((cfg or {}).get("inkling_source"),):
         out += _normalise(item)
     if env.get(SOURCE_ENV):
         out += _normalise(env[SOURCE_ENV])
+    ms = _modelscope_base(env, MODELSCOPE_STRATA_REPO)
+    if ms:
+        out += _normalise(ms)
     try:
         data = json.loads((shipped or SOURCES_FILE).read_text(encoding="utf-8"))
         out += _normalise(data.get("sources") if isinstance(data, dict) else data)
@@ -140,7 +156,7 @@ def sources(env: dict | None = None, cfg: dict | None = None, shipped: Path | No
 
 
 def gguf_sources(env: dict | None = None, cfg: dict | None = None, shipped: Path | None = None) -> list[dict]:
-    """Download sources for Unsloth GGUF files in priority order: config/env overrides first, then shipped `gguf_sources`."""
+    """Download sources for Unsloth GGUF files in priority order: config/env overrides first, ModelScope when asked for, then shipped `gguf_sources`."""
     env = os.environ if env is None else env
     out: list[dict] = []
     for item in ((cfg or {}).get("inkling_gguf_source"), (cfg or {}).get("inkling_source")):
@@ -149,6 +165,9 @@ def gguf_sources(env: dict | None = None, cfg: dict | None = None, shipped: Path
         out += _normalise(env[GGUF_SOURCE_ENV])
     if env.get(SOURCE_ENV):
         out += _normalise(env[SOURCE_ENV])
+    ms = _modelscope_base(env, MODELSCOPE_GGUF_REPO)
+    if ms:
+        out += _normalise(ms)
     try:
         data = json.loads((shipped or SOURCES_FILE).read_text(encoding="utf-8"))
         if isinstance(data, dict) and data.get("gguf_sources"):
