@@ -16508,13 +16508,13 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_hybrid.cuh",
-     "line": 1464,
+     "line": 1465,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/inkling2/cuda/ink_hybrid.cuh",
-     "line": 1778,
+     "line": 1788,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -16547,7 +16547,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_hybrid.cuh",
-     "line": 1776,
+     "line": 1786,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -16580,7 +16580,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_hybrid.cuh",
-     "line": 1779,
+     "line": 1789,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -16613,7 +16613,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_hybrid.cuh",
-     "line": 1382,
+     "line": 1383,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -16923,7 +16923,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_hybrid.cuh",
-     "line": 1495,
+     "line": 1496,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -16978,6 +16978,39 @@
    "status": "rollback",
    "owner": "program",
    "note": "strata-inkling CUDA start-up (0221 INKCUDA, #6644 #6792): an allocation that does not fit is met by a smaller workspace and then by dropping the drafter; =0 ends the engine on the first allocation that does not fit, as before.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_PIN_GB",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/cuda/ink_hybrid.cuh",
+     "line": 1541,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "2612ae5c0e",
+   "first_date": "2026-11-23",
+   "since": null,
+   "last_commit": "2612ae5c0e",
+   "last_date": "2026-11-23",
+   "status": "rollback",
+   "owner": "inkling2/cuda",
+   "note": "strata-inkling CUDA hybrid (0221 INKPLACE, owner decision): the cap in GiB on the pinned host expert arena. Unset: Windows pins up to min(16 GiB, 35% of the available RAM) and never if less than 8 GiB would stay available; Linux pins under 45% of the available RAM with no cap. =0 turns pinning off (pageable arena); a refused or failed pin falls back to the pageable path with one INFO line.",
    "retire_after": "",
    "retired_in": ""
   },
@@ -17325,7 +17358,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_hybrid.cuh",
-     "line": 1774,
+     "line": 1784,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -17457,7 +17490,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_hybrid.cuh",
-     "line": 1773,
+     "line": 1783,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -17490,7 +17523,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_hybrid.cuh",
-     "line": 2176,
+     "line": 2186,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -17523,7 +17556,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_hybrid.cuh",
-     "line": 2280,
+     "line": 2290,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -17556,7 +17589,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_hybrid.cuh",
-     "line": 2278,
+     "line": 2288,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -17589,7 +17622,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_hybrid.cuh",
-     "line": 2279,
+     "line": 2289,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -17622,7 +17655,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_hybrid.cuh",
-     "line": 1420,
+     "line": 1421,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -20519,7 +20552,7 @@
     },
     {
      "file": "engine/src/inkling2/cuda/ink_hybrid.cuh",
-     "line": 1775,
+     "line": 1785,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
