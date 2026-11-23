@@ -8,6 +8,7 @@
 #include "strata/kernels/iq_kernels.hpp"
 #include "strata/kernels/quantize_act.hpp"
 #include "strata/kernels/s2_expert_grouped.hpp"
+#include "strata/kernels/verify_kernels.hpp"
 #include "strata/kernels/window_limits.hpp"
 
 #include <algorithm>
@@ -174,6 +175,11 @@ void PeerExperts::close() {
         if (h_meta_) cudaFreeHost(h_meta_);
         if (d_gate_vals_) cudaFree(d_gate_vals_);
         if (h_gate_) cudaFreeHost((void*) h_gate_);
+        if (h_done_seq_) cudaFreeHost((void*) h_done_seq_);
+        if (d_res_peer_) cudaFree(d_res_peer_);
+        if (d_slot_off_peer_) cudaFree(d_slot_off_peer_);
+        if (d_plans_) cudaFree(d_plans_);
+        if (d_blocks_finished_arr_) cudaFree(d_blocks_finished_arr_);
         if (refill_ev_) cudaEventDestroy(refill_ev_);
         if (stream_) cudaStreamDestroy(stream_);
         if (refill_) cudaStreamDestroy(refill_);
@@ -187,9 +193,21 @@ void PeerExperts::close() {
     h_done_seq_ = nullptr;
     d_done_seq_ = nullptr;
     d_blocks_finished_ = nullptr;
+    d_res_peer_ = nullptr;
+    d_slot_off_peer_ = nullptr;
+    d_plans_ = nullptr;
+    d_blocks_finished_arr_ = nullptr;
+    for (int i = 0; i < 2; ++i) {
+        d_seq_[i] = nullptr;
+        d_target_flag_p_[i] = nullptr;
+        d_m_x_[i] = nullptr;
+        d_m_ids_[i] = nullptr;
+        d_m_ymiss_[i] = nullptr;
+    }
     h_target_flag_ = nullptr;
     d_target_flag_ = nullptr;
     signaled_target_flag_ = false;
+    autonomous_ = false;
     seq_ = 0;
     stream_ = refill_ = nullptr;
     refill_ev_ = nullptr;
@@ -316,6 +334,31 @@ bool PeerExperts::open(int device, const std::vector<std::pair<int32_t, int32_t>
         return false;
     }
     resident_ = (int64_t) pick.size();
+    static const bool auto_env = [] {
+        const char* e = std::getenv("STRATA_PEER_AUTONOMOUS");
+        return e != nullptr && std::atoi(e) != 0;
+    }();
+    if (auto_env && direct_mode()) {
+        if (cudaMalloc((void**) &d_res_peer_, res_.size() * sizeof(int32_t)) == cudaSuccess) {
+            cudaMemcpy(d_res_peer_, res_.data(), res_.size() * sizeof(int32_t), cudaMemcpyHostToDevice);
+        }
+        if (cache_.slot_offsets() != nullptr) {
+            size_t n_slots = (size_t) cache_.slots();
+            if (cudaMalloc((void**) &d_slot_off_peer_, (n_slots + 1) * sizeof(unsigned long long)) == cudaSuccess) {
+                cudaMemcpy(d_slot_off_peer_, cache_.slot_offsets(), (n_slots + 1) * sizeof(unsigned long long), cudaMemcpyHostToDevice);
+            }
+        }
+        cudaMalloc((void**) &d_plans_, 256 * sizeof(PeerPlanDevice));
+        cudaMalloc((void**) &d_blocks_finished_arr_, 256 * sizeof(int));
+        cudaMemset(d_blocks_finished_arr_, 0, 256 * sizeof(int));
+        autonomous_ = (d_res_peer_ != nullptr && d_plans_ != nullptr && d_blocks_finished_arr_ != nullptr);
+    } else {
+        autonomous_ = false;
+    }
+    if (auto_env) {
+        std::fprintf(stderr, "strata peer: autonomous mode %s (p2p=%d, direct=%d)\n",
+                     autonomous_ ? "ENABLED" : "disabled", (int) p2p_, (int) direct_mode());
+    }
     return true;
 }
 
@@ -342,8 +385,93 @@ void PeerExperts::set_target_flag(volatile uint32_t* h_flag) {
     }
 }
 
+bool PeerExperts::bind_verifier_buffers(int par, volatile uint32_t* h_seq, volatile uint32_t* h_flag,
+                                       const float* h_x, const int32_t* h_ids, float* h_ymiss) {
+    if (device_ < 0 || par < 0 || par >= 2) return false;
+    On on(device_);
+    bool ok = true;
+    if (h_seq) ok &= (cudaHostGetDevicePointer((void**) &d_seq_[par], (void*) h_seq, 0) == cudaSuccess);
+    if (h_flag) ok &= (cudaHostGetDevicePointer((void**) &d_target_flag_p_[par], (void*) h_flag, 0) == cudaSuccess);
+    if (h_x) ok &= (cudaHostGetDevicePointer((void**) &d_m_x_[par], (void*) h_x, 0) == cudaSuccess);
+    if (h_ids) ok &= (cudaHostGetDevicePointer((void**) &d_m_ids_[par], (void*) h_ids, 0) == cudaSuccess);
+    if (h_ymiss) ok &= (cudaHostGetDevicePointer((void**) &d_m_ymiss_[par], (void*) h_ymiss, 0) == cudaSuccess);
+    if (!ok) {
+        (void) cudaGetLastError();
+        std::fprintf(stderr, "strata peer: bind_verifier_buffers failed for par=%d\n", par);
+        return false;
+    }
+    if (par == 0 && d_target_flag_p_[0]) d_target_flag_ = d_target_flag_p_[0];
+    return true;
+}
+
+bool PeerExperts::launch_window(int par, int64_t lb, int64_t le, int T, int k, uint32_t want_flag_start, int G) {
+    if (device_ < 0 || par < 0 || par >= 2 || !autonomous_) return false;
+    uint32_t* const d_seq = d_seq_[par];
+    uint32_t* const d_flag = d_target_flag_p_[par];
+    const float* const d_x_m = d_m_x_[par];
+    const int32_t* const d_ids_m = d_m_ids_[par];
+    float* const d_ymiss_m = d_m_ymiss_[par];
+    if (!d_seq || !d_flag || !d_x_m || !d_ids_m || !d_ymiss_m || !d_plans_ || !d_res_peer_) return false;
+
+    if (G < 1) G = 1;
+    On on(device_);
+    const cudaStream_t s = stream_;
+    const auto& lay = strata::kernels::cpu::expert_layout();
+    if (!lay.native) return false;
+
+    const int64_t total_steps = (le - lb) * G;
+    for (int64_t step = 0; step < total_steps; ++step) {
+        const int64_t l = lb + step / G;
+        const int grp = (int) (step % G);
+        const uint32_t want = want_flag_start + (uint32_t) step;
+        const int tb = G == 2 ? (grp == 0 ? 0 : (T + 1) / 2) : 0;
+        const int te = G == 2 ? (grp == 0 ? (T + 1) / 2 : T) : T;
+        const int n = te - tb;
+        const int n_entries = n * k;
+        if (n_entries > CAP) return false;
+
+        const auto& f = lay.fmt[(size_t) l];
+
+        strata::kernels::wait_flag_ge(d_seq, want, s);
+
+        PeerPlanDevice* pl = d_plans_ + (step % 256);
+        strata::kernels::peer_plan(
+            d_ids_m + (size_t) tb * k, (int) n_entries, k,
+            d_res_peer_ + (size_t) l * (size_t) n_expert_, (int) n_expert_,
+            cache_.device_slot(0), d_slot_off_peer_, (long long) lay.blob_bytes(l),
+            pl->ptr, pl->start, pl->count, pl->dst, pl->tok, pl->out_row, s
+        );
+
+        const float* cur_x = d_x_m + (size_t) tb * H;
+        if (f.had_gu) {
+            strata::kernels::hadamard_rows(cur_x, d_x_, n, H, f.had_block, d_sx_, s);
+            strata::kernels::quantize_q8_1_rows(d_x_, n, H, d_q8_, s);
+        } else {
+            strata::kernels::quantize_q8_1_rows(cur_x, n, H, d_q8_, s);
+        }
+
+        auto L = strata::kernels::native_expert_layout(f.gu_type, f.d_type, f.n_embd, f.n_ff);
+        if (f.had_d) { L.had_block = f.had_block; L.d_signs = d_sh_; }
+        strata::kernels::native_expert_grouped(
+            L, pl->ptr, pl->start, pl->count, pl->dst, pl->tok,
+            CAP, CAP, d_q8_, d_scratch_, d_out_, s
+        );
+
+        strata::kernels::scatter_rows_and_signal_fixed_f32(
+            d_out_, d_ymiss_m + (size_t) tb * k * H, pl->out_row, pl->count + 1, (int) n_entries, H,
+            d_blocks_finished_arr_ + (step % 256), s, d_flag, want
+        );
+    }
+    return true;
+}
+
 bool PeerExperts::launch(int64_t layer, const float* x, const int32_t* ids, int64_t n_tok, int64_t k,
                          const int32_t* kind, std::string& err, float* out, uint32_t want_flag) {
+    if (autonomous_) {
+        signaled_target_flag_ = true;
+        launched_direct_ = true;
+        return true;
+    }
     const bool direct = direct_mode() && out != nullptr;
     struct Timer {
         double& acc;
@@ -436,6 +564,7 @@ bool PeerExperts::launch(int64_t layer, const float* x, const int32_t* ids, int6
 }
 
 bool PeerExperts::finish(float* out, std::string& err) {
+    if (autonomous_) return true;
     if (launched_rows_ == 0) return true;
     ++launches;
     if (signaled_target_flag_) {
@@ -578,6 +707,10 @@ void PeerExperts::apply_pending(bool wait) {
         else if (cudaEventQuery(refill_ev_) != cudaSuccess) return;
     }
     for (const auto& [i, slot] : pending_) res_[(size_t) i] = slot;
+    if (d_res_peer_) {
+        On on(device_);
+        cudaMemcpyAsync(d_res_peer_, res_.data(), res_.size() * sizeof(int32_t), cudaMemcpyHostToDevice, refill_);
+    }
     pending_.clear();
 }
 

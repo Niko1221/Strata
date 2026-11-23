@@ -33,6 +33,15 @@ namespace strata::core {
 void set_peer_portable(bool on);
 bool peer_portable();
 
+struct PeerPlanDevice {
+    unsigned long long ptr[64];
+    int32_t start[68];
+    int32_t count[4];
+    int32_t dst[64];
+    int32_t tok[64];
+    int32_t out_row[64];
+};
+
 class PeerExperts {
 public:
     PeerExperts() = default;
@@ -94,6 +103,11 @@ public:
     static bool direct_mode();
     void set_target_flag(volatile uint32_t* h_flag);
     bool signaled_target_flag() const { return signaled_target_flag_; }
+    bool bind_verifier_buffers(int par, volatile uint32_t* h_seq, volatile uint32_t* h_flag,
+                               const float* h_x, const int32_t* h_ids, float* h_ymiss);
+    bool launch_window(int par, int64_t lb, int64_t le, int T, int k, uint32_t want_flag_start, int G = 1);
+    bool autonomous() const { return autonomous_; }
+    void set_autonomous(bool on) { autonomous_ = on; }
     double gib() const { return cache_.gib(); }
     int64_t entries() const { return entries_; }      ///< routed entries the peer computed
     int64_t experts() const { return experts_; }      ///< distinct (layer, expert) the peer computed
@@ -137,6 +151,16 @@ private:
     uint32_t* d_target_flag_ = nullptr;
     bool signaled_target_flag_ = false;
     uint32_t seq_ = 0;
+    bool autonomous_ = false;
+    uint32_t* d_seq_[2] = {nullptr, nullptr};
+    uint32_t* d_target_flag_p_[2] = {nullptr, nullptr};
+    const float* d_m_x_[2] = {nullptr, nullptr};
+    const int32_t* d_m_ids_[2] = {nullptr, nullptr};
+    float* d_m_ymiss_[2] = {nullptr, nullptr};
+    int32_t* d_res_peer_ = nullptr;
+    unsigned long long* d_slot_off_peer_ = nullptr;
+    PeerPlanDevice* d_plans_ = nullptr;
+    int* d_blocks_finished_arr_ = nullptr;
 };
 
 }  // namespace strata::core

@@ -13478,6 +13478,7 @@ int main(int argc, char** argv) {
                     return 1;
                 }
             }
+            if (peer.valid()) ver_b.set_peer(&peer, 1);
             if (!ver_b.init(wt, g, ss, vh, native_head.loaded() ? &native_head : nullptr, o.spec, err)) {
                 std::fprintf(stderr, "strata serve: --pipeline-windows: the second verifier on CUDA0 (the first card): "
                                      "%s (raise --vram-reserve-mib by ~200, or --pipeline-windows 0)\n", err.c_str());
@@ -13493,6 +13494,7 @@ int main(int argc, char** argv) {
         if (use_df2) ver.set_taps(df2.tap_layers());
         if (batch_df2) ver.set_batch_taps(true);
 #endif
+        if (peer.valid()) ver.set_peer(&peer, 0);
         if (!ver.init(wt, g, ss, vh, native_head.loaded() || prefill_head_alias_bound ? &native_head : nullptr,
                       batch_max_t(), err) ||
             (use_mtp && !prefill_head_alias_bound && !mtp.bind(last_st && !mtp_first ? last_st->wt : wt, last_st ? &last_st->head : &native_head,
@@ -13501,7 +13503,13 @@ int main(int argc, char** argv) {
             return 1;
         }
         if (prefill_head_alias_bound) mtp.set_window_R(ver.final_R_all());
-        if (peer.valid()) peer.set_target_flag(ver.h_flag());
+        if (peer.valid()) {
+            peer.set_target_flag(ver.h_flag());
+            peer.bind_verifier_buffers(0, ver.h_seq(), ver.h_flag(), ver.h_x(), ver.h_ids(), ver.h_ymiss());
+            if (pipe) {
+                peer.bind_verifier_buffers(1, ver_b.h_seq(), ver_b.h_flag(), ver_b.h_x(), ver_b.h_ids(), ver_b.h_ymiss());
+            }
+        }
 #if defined(STRATA_HAVE_DFLASH2)
 #if defined(STRATA_HAVE_DFLASH2)
         // DFlash2 prompt taps on a layer split.  Every stage's prompt path taps the requested layers it runs into its own staging and hands them to its
@@ -24501,12 +24509,16 @@ int main(int argc, char** argv) {
 #if defined(STRATA_HAVE_DFLASH2)
         if (use_df2) ver.set_taps(df2.tap_layers());
 #endif
+        if (peer.valid()) ver.set_peer(&peer, 0);
         if (!ver.init(wt, g, ss, vh, native_head.loaded() ? &native_head : nullptr, o.spec, err)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
         }
         const bool use_mtp = !o.mtp.empty();
-        if (peer.valid()) peer.set_target_flag(ver.h_flag());
+        if (peer.valid()) {
+            peer.set_target_flag(ver.h_flag());
+            peer.bind_verifier_buffers(0, ver.h_seq(), ver.h_flag(), ver.h_x(), ver.h_ids(), ver.h_ymiss());
+        }
         if (use_mtp && !mtp.bind(wt, &native_head, ver.final_R_all(), err)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
