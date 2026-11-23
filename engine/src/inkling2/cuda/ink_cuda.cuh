@@ -26,15 +26,16 @@
 #include <cstdlib>
 #include <cstring>
 #include <chrono>
+#include "strata/core/device_error_exit.hpp"
 #include "strata/platform/cgroup_mem.hpp"
 
 #define INK_CK(call)                                                                                                  \
     do {                                                                                                              \
         cudaError_t _e = (call);                                                                                      \
         if (_e != cudaSuccess) {                                                                                      \
-            std::fprintf(stderr, "strata-inkling CUDA error %d (%s) at %s:%d\n", (int)_e, cudaGetErrorString(_e),     \
-                         __FILE__, __LINE__);                                                                         \
-            std::exit(3);                                                                                             \
+            char _what[256];                                                                                          \
+            std::snprintf(_what, sizeof(_what), "strata-inkling CUDA error %d at %s:%d", (int)_e, __FILE__, __LINE__);\
+            strata::core::exit_device_error(_what, cudaGetErrorString(_e));                                           \
         }                                                                                                             \
     } while (0)
 
@@ -42,8 +43,9 @@
     do {                                                                                                              \
         cublasStatus_t _s = (call);                                                                                   \
         if (_s != CUBLAS_STATUS_SUCCESS) {                                                                            \
-            std::fprintf(stderr, "strata-inkling cuBLAS error %d at %s:%d\n", (int)_s, __FILE__, __LINE__);           \
-            std::exit(3);                                                                                             \
+            char _what[256];                                                                                          \
+            std::snprintf(_what, sizeof(_what), "strata-inkling cuBLAS error %d at %s:%d", (int)_s, __FILE__, __LINE__); \
+            strata::core::exit_device_error(_what, "cublas error");                                                   \
         }                                                                                                             \
     } while (0)
 

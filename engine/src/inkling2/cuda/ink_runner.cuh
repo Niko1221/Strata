@@ -1949,8 +1949,8 @@ struct InkCudaRunner {
             const size_t swa_kv_bytes = (size_t)n_swa_g0 * max_slots * swa_ring * per_visit_pos;
             const size_t sconv_bytes  = (size_t)(n_swa_g0 + n_glob_g0) * max_slots * 3 * kInkSconvCh * 4;
             const size_t wddm_fl = InkCudaModel::wddm_safety_floor(vtot);
-            const size_t ws_reserve = ((max_slots >= 8) ? (1280ull << 20) : (640ull << 20))
-                                    + (m.man.has_dspark ? (160ull << 20) : 0ull)
+            const size_t ws_reserve = ((max_slots >= 8) ? (1280ull << 20) : (768ull << 20))
+                                    + (m.man.has_dspark ? (256ull << 20) : 0ull)
                                     + (wddm_fl / 2);
             const size_t avail_glob = (vfree > swa_kv_bytes + sconv_bytes + ws_reserve)
                 ? (vfree - swa_kv_bytes - sconv_bytes - ws_reserve) : 0u;

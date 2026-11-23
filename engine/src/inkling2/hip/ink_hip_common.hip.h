@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "strata/core/device_error_exit.hpp"
 #include "strata/hip_uma_guard.hpp"
 
 // ---- Compile-time architecture guards (strictly zero WMMA intrinsics on RDNA2 gfx103x!) ----
@@ -50,9 +51,9 @@
     do {                                                                                                               \
         hipError_t _e = (expr);                                                                                        \
         if (_e != hipSuccess) {                                                                                        \
-            std::fprintf(stderr, "[ink-hip] HIP error %d (%s) at %s:%d\n", (int)_e, hipGetErrorString(_e), __FILE__,   \
-                         __LINE__);                                                                                    \
-            std::exit(3);                                                                                              \
+            char _what[256];                                                                                           \
+            std::snprintf(_what, sizeof(_what), "[ink-hip] HIP error %d at %s:%d", (int)_e, __FILE__, __LINE__);       \
+            strata::core::exit_device_error(_what, hipGetErrorString(_e));                                             \
         }                                                                                                              \
     } while (0)
 

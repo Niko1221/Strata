@@ -413,13 +413,19 @@ inline void hy4_setenv(const char* k, const char* v, int) {
 inline double wddm_vram_floor_gb(size_t total_bytes) {
     const double tot_gib = (double)total_bytes / 1073741824.0;
 #ifdef _WIN32
-    // Hard Windows WDDM free-VRAM floor so desktop compositor, cuBLAS, and driver context never page or OOM (#6528):
-    // >= 12 GB cards keep >= 1.0 GiB free; 6-8 GB cards keep >= 600 MiB; 4 GB cards keep >= 450 MiB.
+    // Hard Windows WDDM free-VRAM floor so desktop compositor, cuBLAS, CUDA Graph, and KV growth never page or OOM (#6528, #6693):
+    // >= 30 GiB cards keep >= 2.00 GiB free; 20-30 GiB keep >= 1.50 GiB; 12-16 GiB keep >= 1.00 GiB; 6-8 GiB keep >= 600 MiB; 4 GiB keep >= 450 MiB.
+    if (tot_gib >= 30.0) return 2.15;   // 2.00 GiB
+    if (tot_gib >= 20.0) return 1.61;   // 1.50 GiB
     if (tot_gib >= 11.0) return 1.074;  // 1.00 GiB
     if (tot_gib >= 5.5)  return 0.644;  // 600 MiB
     return 0.483;                       // 450 MiB
 #else
-    if (tot_gib >= 11.0) return 0.50;
+    // Reserve safe VRAM headroom for cuBLAS workspaces, CUDA Graph capture, and KV growth (#6693):
+    // >= 30 GiB cards (e.g. 48 GB RTX 4090) keep >= 2.00 GiB free; 20-30 GiB keep >= 1.00 GiB; 12-16 GiB keep >= 0.65 GB.
+    if (tot_gib >= 30.0) return 2.15;   // 2.00 GiB
+    if (tot_gib >= 20.0) return 1.074;  // 1.00 GiB
+    if (tot_gib >= 11.0) return 0.65;
     if (tot_gib >= 5.5)  return 0.35;
     return 0.25;
 #endif
@@ -450,12 +456,13 @@ inline int plan_memory(int max_ctx, int chunk, size_t total, const std::string& 
         kv_q8 = atoi(getenv("HY4_KV_Q8")) != 0;
     }
     const double kv_row_b = kv_q8 ? 656.0 : 1152.0;
-    // Elastic KV initial sizing on single discrete cards (< 48 GB) so idle KV never starves hot experts on 4-12 GB cards:
+    // Elastic KV initial sizing on single discrete cards (< 44 GiB, i.e. <= 32 GB cards) so idle KV never starves hot experts on 4-32 GB cards:
     //   <= 8 GB -> init 4096 (step 4096); 12 GB -> init 8192 (step 8192); 16..32 GB -> init 16384 (step 16384).
+    // 48 GB cards (47.4 GiB >= 44 GiB) allocate full max_ctx KV directly without under-reserving (#6693).
     const double per_pos = 12.0 * kv_row_b + 12.0 * 512.0 + 12.0 * 64.0;
     int init_slots = max_ctx;
     int kv_step = 16384;
-    if (!multi_gpu && !getenv("HY4_KV_NO_GROW") && total < (48ull << 30)) {
+    if (!multi_gpu && !getenv("HY4_KV_NO_GROW") && total < (44ull << 30)) {
         const int target_init = (tot <= 9.0) ? 4096 : (tot <= 13.5 ? 8192 : 16384);
         kv_step = target_init;
         if (max_ctx > target_init) {
@@ -536,8 +543,13 @@ inline int plan_memory(int max_ctx, int chunk, size_t total, const std::string& 
         hy4_setenv("HY4_HOST_NEED_GB", b, 1);
     }
     if (!getenv("HY4_RESERVE_GB")) {
-        const double kv_res = (mask & 1) ? 0.0 : (init_slots < max_ctx ? kv_init_gb : (dev_pos ? dev_pos * per_pos / GB : (rows + pivg)));
-        // Compact double-buffered d_scratch[0..1]: 2x96 MiB on 8 GB, 2x160 MiB on 10-12 GB, 2x256 MiB on 16 GB, 2x384 MiB on 24-32 GB!
+        // Reserve full --max-context KV+IndexPool on >= 30 GB cards (e.g. 32/48/96 GB) so KV growth never starves VRAM or OOMs (#6693);
+        // on smaller cards with elastic KV, reserve initial KV (kv_grow_to reclaims vcache slabs on demand).
+        const double full_kv_gb = rows + pivg;
+        const double kv_res = (mask & 1) ? 0.0
+                            : (dev_pos ? (dev_pos * per_pos / GB)
+                            : ((init_slots < max_ctx && tot < 30.0) ? kv_init_gb : full_kv_gb));
+        // Compact double-buffered d_scratch[0..1]: 2x96 MiB on 8 GB, 2x160 MiB on 10-12 GB, 2x256 MiB on 16 GB, 2x384 MiB on 24-48 GB!
         const double pf_res = (mask != 0 || tot >= 64.0) ? 0.0
                             : (tot >= 21.5 ? 0.82 : (tot >= 14.5 ? 0.56 : (tot >= 10.0 ? 0.34 : 0.22)));
         const double vis_res = (multi_gpu && has_vision) ? 1.15 : 0.0;
@@ -1110,10 +1122,19 @@ inline bool load_experts_tiered(GpuModel& g, const std::string& path, size_t vra
         g.vcache_slots_per_slab = vcache_slot_sz > 0 ? std::max(1, (int)(slab_bytes / vcache_slot_sz)) : 1;
     }
     int actual_dyn = 0;
+    const double keep_res_gb = getenv("HY4_RESERVE_GB") ? std::max(0.0, atof(getenv("HY4_RESERVE_GB"))) : 0.0;
+    const size_t keep_res_bytes = (keep_res_gb > 0.0 && !gpu_is_uma()) ? (size_t)(keep_res_gb * 1073741824.0) : 0u;
     while (actual_dyn < dyn_slots) {
         const int take = std::min(g.vcache_slots_per_slab, dyn_slots - actual_dyn);
+        const size_t slab_b = (size_t)take * vcache_slot_sz;
+        if (keep_res_bytes > 0) {
+            size_t cur_fr = 0, cur_tot = 0;
+            if (hipMemGetInfo(&cur_fr, &cur_tot) == hipSuccess && cur_fr <= slab_b + keep_res_bytes) {
+                break;  // Never eat into reserved KV + workspace + VRAM safety headroom (#6693)
+            }
+        }
         uint8_t* slab = nullptr;
-        if (hipMalloc((void**)&slab, (size_t)take * vcache_slot_sz) != hipSuccess) { (void)hipGetLastError(); break; }
+        if (hipMalloc((void**)&slab, slab_b) != hipSuccess) { (void)hipGetLastError(); break; }
         g.vcache_slabs.push_back(slab);
         actual_dyn += take;
     }

@@ -187,7 +187,8 @@ static inline void sk_w8(device const uchar* pl, int j, thread float4& w0, threa
         w1 = float4(kS2Lut[p[1]]);
     } else if (F == 3) {
         device const uchar* p = pl + (j >> 2);
-        const uint h = uint(pl[64 + (j >> 3)]);
+        device const uchar* hp = pl + 64;
+        const uint h = uint(hp[j >> 3]);
         w0 = float4(kS2Lut[p[0]] + kS3Hi[h & 15u]);
         w1 = float4(kS2Lut[p[1]] + kS3Hi[h >> 4]);
     } else if (F == 4) {
@@ -196,7 +197,8 @@ static inline void sk_w8(device const uchar* pl, int j, thread float4& w0, threa
         w1 = float4(half4(kS4Lut[p[2]], kS4Lut[p[3]]));
     } else if (F == 5) {
         device const uchar* p = pl + (j >> 1);
-        const uint h = uint(pl[128 + (j >> 3)]);
+        device const uchar* hp = pl + 128;
+        const uint h = uint(hp[j >> 3]);
         w0 = float4(half4(kS4Lut[p[0]], kS4Lut[p[1]]) + kS5Hi[h & 15u]);
         w1 = float4(half4(kS4Lut[p[2]], kS4Lut[p[3]]) + kS5Hi[h >> 4]);
     } else if (F == 6) {

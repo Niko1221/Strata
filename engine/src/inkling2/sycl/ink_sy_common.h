@@ -28,6 +28,7 @@
 
 #include "../ink_json.h"
 #include "strata/artifact/strata_reader.hpp"
+#include "strata/core/device_error_exit.hpp"
 #ifdef INK_SYCL_WITH_MODEL_FILE
 #include "../ink_gguf_transcode.h"
 #endif
@@ -74,6 +75,20 @@ inline int& primary_gpu_index() {
 
 inline void set_primary_gpu_index(int idx) {
     primary_gpu_index() = idx < 0 ? 0 : idx;
+}
+
+// Pin SYCL device selection via ONEAPI_DEVICE_SELECTOR before first Q()/dev_caps() touch when --gpu N > 0
+// is requested on a single-GPU run and the user did not already export ONEAPI_DEVICE_SELECTOR.
+inline void apply_gpu_index(int gpu_index, int gpus = 1) {
+    ensure_l0_v1_default();
+    if (gpu_index > 0 && gpus < 2 && !std::getenv("ONEAPI_DEVICE_SELECTOR")) {
+        const char* be = std::getenv("INK_SYCL_BACKEND");
+        const std::string sel = ((be && std::string(be) == "opencl") ? "opencl:" : "level_zero:") + std::to_string(gpu_index);
+        sy_setenv("ONEAPI_DEVICE_SELECTOR", sel.c_str(), 1);
+        set_primary_gpu_index(0);
+    } else {
+        set_primary_gpu_index(gpu_index);
+    }
 }
 
 inline std::vector<sycl::device> enum_gpu_devices() {
@@ -215,8 +230,9 @@ inline T* dalloc(size_t n) {
     size_t cnt = n ? n : 1;
     T* p = sycl::malloc_device<T>(cnt, Q());
     if (!p) {
-        fprintf(stderr, "[ink_sycl] dalloc OOM (%zu bytes, total=%zu)\n", cnt * sizeof(T), dev_bytes_allocated());
-        std::exit(3);
+        char what[160];
+        std::snprintf(what, sizeof(what), "[ink_sycl] dalloc (%zu bytes, total=%zu)", cnt * sizeof(T), dev_bytes_allocated());
+        strata::core::exit_device_error(what, "out of device memory");
     }
     dev_bytes_allocated() += cnt * sizeof(T);
     return p;
@@ -227,8 +243,9 @@ inline T* halloc(size_t n) {
     size_t cnt = n ? n : 1;
     T* p = sycl::malloc_host<T>(cnt, Q());
     if (!p) {
-        fprintf(stderr, "[ink_sycl] halloc OOM (%zu bytes)\n", cnt * sizeof(T));
-        std::exit(3);
+        char what[160];
+        std::snprintf(what, sizeof(what), "[ink_sycl] halloc (%zu bytes)", cnt * sizeof(T));
+        strata::core::exit_device_error(what, "out of host USM memory");
     }
     return p;
 }

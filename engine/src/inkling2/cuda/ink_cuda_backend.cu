@@ -179,18 +179,19 @@ public:
         const size_t min_kv_bytes = (size_t)40 * max_slots_ * swa_r * per_visit_pos
                                   + (size_t)strata::ink::kInkVisits * max_slots_ * 3 * strata::ink::kInkSconvCh * 4
                                   + (size_t)8 * max_slots_ * init_glob * per_visit_pos;
-        // Include O(1) prefill ws (~114 MiB) + compact DSpark (~160 MiB) + activation ws (WDDM floor added inside loader!)
-        const size_t ws_pad = (max_slots_ >= 8) ? (1280ull << 20)
-                            : ((prop.totalGlobalMem >= (20ull << 30)) ? (960ull << 20)
-                             : (prop.totalGlobalMem <= (13ull << 30)) ? (512ull << 20)
-                                                                      : (640ull << 20));
+        // Include O(1) prefill ws (~114 MiB) + DSpark (~224 MiB when enabled) + activation ws (WDDM floor added inside loader!)
+        const bool build_screen = opts.enable_dspark && mf.m.dspark.present;
+        const size_t dspark_pad = build_screen ? (224ull << 20) : 0ull;
+        const size_t ws_pad = ((max_slots_ >= 8) ? (1280ull << 20)
+                             : ((prop.totalGlobalMem >= (20ull << 30)) ? (960ull << 20)
+                              : (prop.totalGlobalMem <= (13ull << 30)) ? (512ull << 20)
+                                                                       : (832ull << 20))) + dspark_pad;
         size_t min_reserve_bytes = min_kv_bytes + ws_pad;
         if (opts.vram_reserve_mib >= 0) {
             min_reserve_bytes = std::max(min_reserve_bytes, (size_t)opts.vram_reserve_mib << 20);
         }
 
         // Load .strata v1.1 / .gguf (Unsloth + ggml-org) / HF safetensors trunk + experts (Single-GPU, EP2, Layer-Split, or 4-tier GPU+RAM+SSD!)
-        const bool build_screen = opts.enable_dspark && mf.m.dspark.present;
         if (!model_.load_from_model_file(mf, gpu_id_, peer_gpu_id, (float)opts.ep_split, build_screen, err,
                                          min_reserve_bytes, gguf_detail::gguf_dequant_row_f32, gguf_detail::gguf_row_bytes,
                                          opts.vram_experts_gb, opts.ram_experts_gb, opts.ssd_experts,

@@ -63,7 +63,11 @@ public:
     }
 
     bool init(const InkModelFile& model, const BackendOpts& opts, std::string& err) override {
-        ink_sycl::set_primary_gpu_index(opts.gpu_index);
+        if (kv_dtype_is_int_quant(opts.kv_dtype)) {
+            err = "sycl: --kv k8v4/k8v8 is not supported on the SYCL backend (allocates fp16-sized pages); use --kv fp8 or fp16";
+            return false;
+        }
+        ink_sycl::apply_gpu_index(opts.gpu_index, opts.gpus);
         kv_dtype_ = opts.kv_dtype;
         const int par = std::max(1, std::min(64, opts.parallel));
         const int ctx = std::max(256, opts.max_ctx);
@@ -189,6 +193,10 @@ public:
     }
 
     bool selfcheck(std::string& err) override {
+        ink_sycl::apply_gpu_index(pending_gpu_index_, pending_gpus_);
+        if (mod_.path.empty() && runner_.mod == nullptr) {
+            return selfcheck_device(err);
+        }
         StepBatch b;
         b.push(0, 0, 1, true);
         std::vector<float> lg((size_t)mod_.man.c.vocab_unpadded);
@@ -201,16 +209,64 @@ public:
         return true;
     }
 
+    bool selfcheck_device(std::string& err) {
+        constexpr int N = 32, K = 64, M = 2;
+        std::vector<float> w((size_t)N * K), x((size_t)M * K);
+        for (size_t i = 0; i < w.size(); ++i) w[i] = std::sin((float)(i % 97)) * 0.5f - 0.25f;
+        for (size_t i = 0; i < x.size(); ++i) x[i] = std::cos((float)(i % 89)) * 0.5f;
+        float* wd = sycl::malloc_device<float>(w.size(), ink_sycl::Q());
+        float* xd = sycl::malloc_device<float>(x.size(), ink_sycl::Q());
+        float* yd = sycl::malloc_device<float>((size_t)M * N, ink_sycl::Q());
+        if (!wd || !xd || !yd) {
+            if (wd) sycl::free(wd, ink_sycl::Q());
+            if (xd) sycl::free(xd, ink_sycl::Q());
+            if (yd) sycl::free(yd, ink_sycl::Q());
+            err = "sycl selfcheck: device USM allocation failed";
+            return false;
+        }
+        ink_sycl::h2d_sync(wd, w.data(), w.size() * sizeof(float));
+        ink_sycl::h2d_sync(xd, x.data(), x.size() * sizeof(float));
+        ink_sycl::dzero(yd, (size_t)M * N * sizeof(float));
+        ink_sycl::k_linear_f32_sg16(wd, N, K, xd, yd, M);
+        std::vector<float> y((size_t)M * N, 0.0f);
+        ink_sycl::d2h(y.data(), yd, y.size() * sizeof(float));
+        ink_sycl::wait();
+        sycl::free(wd, ink_sycl::Q());
+        sycl::free(xd, ink_sycl::Q());
+        sycl::free(yd, ink_sycl::Q());
+        for (int m = 0; m < M; ++m) {
+            for (int n = 0; n < N; ++n) {
+                float ref = 0.0f;
+                for (int k = 0; k < K; ++k) ref += w[(size_t)n * K + k] * x[(size_t)m * K + k];
+                const float got = y[(size_t)m * N + n];
+                if (!std::isfinite(got) || std::fabs(ref - got) > 1e-4f * std::max(1.0f, std::fabs(ref))) {
+                    err = "sycl selfcheck F32 SG16 linear mismatch at (" + std::to_string(m) + "," + std::to_string(n) +
+                          "): ref=" + std::to_string(ref) + " got=" + std::to_string(got);
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
 private:
+    friend std::unique_ptr<InkBackend> make_sycl_backend(const BackendOpts* opts);
     ink_sycl::InkSyModel mod_;
     ink_sycl::InkSyRunner runner_;
     std::vector<uint8_t> slot_used_;
     int active_slots_ = 0;
     KvDtype kv_dtype_ = KvDtype::FP16;
+    int pending_gpu_index_ = 0;
+    int pending_gpus_ = 1;
 };
 
-std::unique_ptr<InkBackend> make_sycl_backend() {
-    return std::make_unique<SyclInkBackend>();
+std::unique_ptr<InkBackend> make_sycl_backend(const BackendOpts* opts) {
+    auto b = std::make_unique<SyclInkBackend>();
+    if (opts) {
+        b->pending_gpu_index_ = opts->gpu_index;
+        b->pending_gpus_ = opts->gpus;
+    }
+    return b;
 }
 
 }  // namespace ink2

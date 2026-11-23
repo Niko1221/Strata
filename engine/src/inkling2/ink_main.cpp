@@ -17,6 +17,7 @@
 #include "ink_manifest.h"
 #include "ink_serve.h"
 #include "ink_vision.h"
+#include "strata/core/device_error_exit.hpp"
 #include "strata/core/volta_forever.hpp"
 #if defined(__linux__) && defined(INKLING_ENABLE_HIP)
 #include "strata/platform/numa_balancing.hpp"
@@ -417,7 +418,11 @@ int main(int argc, char** argv) {
             else if (kv == "fp16" || kv == "f16") { cfg.bopts.kv_dtype = KvDtype::FP16; cfg.bopts.kv_dtype_auto = false; }
             else if (kv == "k8v8" || kv == "i8" || kv == "q8") { cfg.bopts.kv_dtype = KvDtype::K8V8; cfg.bopts.kv_dtype_auto = false; }
             else if (kv == "k8v4") { cfg.bopts.kv_dtype = KvDtype::K8V4; cfg.bopts.kv_dtype_auto = false; }
-            else { cfg.bopts.kv_dtype_auto = true; }
+            else if (kv == "auto") { cfg.bopts.kv_dtype_auto = true; }
+            else {
+                fprintf(stderr, "unknown --kv value '%s' (expected: auto, fp8, fp16, k8v8, k8v4)\n", kv.c_str());
+                std::exit(2);
+            }
         } else if (a == "--kv-offload") {
             cfg.bopts.kv_offload = next();
         } else if (a == "--draft") {
@@ -485,10 +490,10 @@ int main(int argc, char** argv) {
                    "  --version\n"
                    "  --info PATH [--vision VISION] [--dspark PATH]\n"
                    "  --export-tokenizer PATH OUT_DIR\n"
-                   "  --selfcheck [--native PATH] [--verify-hash] [--cpu] [--gpus 1|2] [--kv fp16|fp8|k8v8|k8v4]\n"
-                   "  --bench --native PATH [--parallel 1..64] [--gpus 1..4] [--layer-split auto|K1,K2,...] [--ep-split F] [--vram-experts-gb F] [--ram-experts-gb F] [--ssd-experts] [--vram-reserve-mib N] [--cpu-threads N] [--kv auto|fp16|fp8|k8v8|k8v4] [--kv-offload auto|on|off] [--prompt-len N] [--gen N]\n"
+                   "  --selfcheck [--native PATH] [--verify-hash] [--cpu] [--gpu N] [--gpus 1|2] [--kv auto|fp16|fp8|k8v8|k8v4]\n"
+                   "  --bench --native PATH [--parallel 1..64] [--gpu N] [--gpus 1..4] [--layer-split auto|K1,K2,...] [--ep-split F] [--vram-experts-gb F] [--ram-experts-gb F] [--ssd-experts] [--vram-reserve-mib N] [--cpu-threads N] [--kv auto|fp16|fp8|k8v8|k8v4] [--kv-offload auto|on|off] [--prompt-len N] [--gen N]\n"
                    "  --kld-eval REF.bin --native PATH\n"
-                   "  --serve --native PATH [--vision VISION] [--dspark PATH] [--max-context N] [--parallel 1..64] [--gpus 1..4] [--layer-split auto|K1,K2,...] [--kv auto|fp16|fp8|k8v8|k8v4] [--kv-offload auto|on|off] [--draft auto|dspark|off]\n",
+                   "  --serve --native PATH [--vision VISION] [--dspark PATH] [--max-context N] [--parallel 1..64] [--gpu N] [--gpus 1..4] [--layer-split auto|K1,K2,...] [--kv auto|fp16|fp8|k8v8|k8v4] [--kv-offload auto|on|off] [--draft auto|dspark|off]\n",
                    INKLING_VERSION);
             return 0;
         } else {
@@ -530,6 +535,10 @@ int main(int argc, char** argv) {
     // Auto-select FP8_E4M3 KV when parallel >= 16 unless user explicitly forced a format
     if (cfg.bopts.kv_dtype_auto && cfg.bopts.parallel >= 16) {
         cfg.bopts.kv_dtype = KvDtype::FP8_E4M3;
+    }
+
+    if (mode_serve) {
+        strata::core::set_serve_error_line(true);
     }
 
     if (mode_info) return cmd_info(info_file, cfg.vision_path, cfg.bopts.dspark_path);
