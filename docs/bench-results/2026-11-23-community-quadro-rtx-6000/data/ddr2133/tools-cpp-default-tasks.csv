@@ -1,0 +1,39 @@
+﻿"Task","Seed","Status","TaskSuccess","CriteriaPassed","Calls","ValidCalls","ValidCallRate","ToolErrors","Retries","UnintendedChangeCount","UnintendedPaths","Turns","TotalSec","Error","FinalAnswer","Transcript","Model","ModelPath","Repeat","LoadSec"
+"cpp-locate","20260927","passed","True","True","1","1","1","0","0","0","","2","4.295","","`NextSlot`","%USERPROFILE%\Documents\Projects\Strata\tools\bench\moe_compare\results\tools-cpp\20261120-074123-53f0bad8\00-Strata-Qwen3.8-Flash-Next-UD-IQ2_XS-dflash2-64k\01-cpp-locate.jsonl","Strata-Qwen3.8-Flash-Next-UD-IQ2_XS-dflash2-64k","http://127.0.0.1:8080","1",
+"cpp-tests","20260927","turn_limit","False","True","17","17","1","2","2","3","DataLogDlg.cpp;DataLogDlg.h;resource.h","12","47.115","","","%USERPROFILE%\Documents\Projects\Strata\tools\bench\moe_compare\results\tools-cpp\20261120-074123-53f0bad8\00-Strata-Qwen3.8-Flash-Next-UD-IQ2_XS-dflash2-64k\01-cpp-tests.jsonl","Strata-Qwen3.8-Flash-Next-UD-IQ2_XS-dflash2-64k","http://127.0.0.1:8080","1",
+"mfc-handler","20260927","passed","True","True","14","13","0.9286","2","2","0","","9","34.475","","Done — the verifier prints **PASS**.
+
+Changes made (no unrelated code touched):
+
+**resource.h**
+- Added `#define IDC_BTN_EXPORT 1004` (the next unused control ID, following `IDC_STATIC_STATUS 1003`).
+- Advanced the VS resource counter `_APS_NEXT_CONTROL_VALUE` from `1004` → `1005` so the resource editor stays consistent; no duplicate IDs.
+
+**DataLogDlg.h**
+- Declared `afx_msg void OnBnClickedExport();` alongside the other handler declarations.
+
+**DataLogDlg.cpp**
+- Added `ON_BN_CLICKED(IDC_BTN_EXPORT, &CDataLogDlg::OnBnClickedExport)` to the `CDataLogDlg` message map.
+- Implemented the handler:
+```cpp
+void CDataLogDlg::OnBnClickedExport()
+{
+    ExportSamples();
+}
+```
+
+Note: there is no `DataLog.rc` file in this workspace (only `resource.h`, `DataLogDlg.h/.cpp`, `pch.h`, `camera_tests.cpp`, `samples.csv`), so the button's dialog-template entry could not be added — only the ID symbol and handler wiring exist here. In a real project you'd also add the `PUSHBUTTON ""Export"" IDC_BTN_EXPORT ...` line to the `IDD_DATALOG_DIALOG` template in `DataLog.rc`.
+
+Verifier output: `.\verify_mfc.ps1` → `PASS`","%USERPROFILE%\Documents\Projects\Strata\tools\bench\moe_compare\results\tools-cpp\20261120-074123-53f0bad8\00-Strata-Qwen3.8-Flash-Next-UD-IQ2_XS-dflash2-64k\01-mfc-handler.jsonl","Strata-Qwen3.8-Flash-Next-UD-IQ2_XS-dflash2-64k","http://127.0.0.1:8080","1",
+"csv-stats","20260927","passed","True","True","1","1","1","0","0","0","","2","16.824","","**CAM-3 — 139.1**
+
+Per-camera averages (5 rows each):
+
+| Camera | Sum | Average |
+|---|---|---|
+| CAM-1 | 578.4 | 115.7 |
+| CAM-2 | 544.3 | 108.9 |
+| **CAM-3** | **695.6** | **139.1** |
+| CAM-4 | 502.5 | 100.5 |
+
+CAM-3 has the highest average mean_intensity at **139.1**.","%USERPROFILE%\Documents\Projects\Strata\tools\bench\moe_compare\results\tools-cpp\20261120-074123-53f0bad8\00-Strata-Qwen3.8-Flash-Next-UD-IQ2_XS-dflash2-64k\01-csv-stats.jsonl","Strata-Qwen3.8-Flash-Next-UD-IQ2_XS-dflash2-64k","http://127.0.0.1:8080","1",

@@ -1,0 +1,50 @@
+﻿"Task","Seed","Status","TaskSuccess","CriteriaPassed","Calls","ValidCalls","ValidCallRate","ToolErrors","Retries","UnintendedChangeCount","UnintendedPaths","Turns","TotalSec","Error","FinalAnswer","Transcript","Model","ModelPath","Repeat","LoadSec"
+"cpp-locate","20260927","passed","True","True","1","1","1","0","0","0","","2","4.678","","`NextSlot`","c:\Users\USER\Documents\Projects\Strata\results\tools-cpp-3200\20261120-154337-7d1246a1\00-Strata-UD-IQ2_XS-tuned-256k-ddr3200\01-cpp-locate.jsonl","Strata-UD-IQ2_XS-tuned-256k-ddr3200","http://127.0.0.1:8080","1",
+"cpp-tests","20260927","passed","True","True","12","12","1","2","2","0","","9","37.562","","`.\verify_cpp.ps1` now prints **PASS**.
+
+Two minimal fixes (tests untouched):
+
+1. **SampleStats.h — `Mean`** truncated because `int / std::size_t` was integer division (`Mean({1,2})` returned `1`, not `1.5`):
+   - `return sum / count;` → `return static_cast<double>(sum) / static_cast<double>(count);`
+   - The existing `count == 0` guard already satisfies `Mean(kPair, 0) == 0.0`.
+
+2. **FrameBuffer.h — `FrameBytes`** ignored `bytesPerPixel`, so it returned pixel count instead of byte count (307200 instead of 614400 for Mono16 640×480; 8 instead of 24 for RGB24 4×2):
+   - `... * format.height;` → `... * format.height * format.bytesPerPixel;`
+
+`MaxValue` and `NextSlot` already met their assertions, so they were left unchanged.
+
+Note: the workspace also contains `verify_mfc.ps1` (an MFC ""Export"" button feature check on `resource.h`/`DataLogDlg.*`). It currently fails with `FAIL: resource.h does not #define IDC_BTN_EXPORT`, but that is outside the scope you asked for, so I did not modify those files — say the word if you want that feature implemented too.","c:\Users\USER\Documents\Projects\Strata\results\tools-cpp-3200\20261120-154337-7d1246a1\00-Strata-UD-IQ2_XS-tuned-256k-ddr3200\01-cpp-tests.jsonl","Strata-UD-IQ2_XS-tuned-256k-ddr3200","http://127.0.0.1:8080","1",
+"mfc-handler","20260927","passed","True","True","15","14","0.9333","2","2","0","","11","43.596","","Done — `.\verify_mfc.ps1` prints **PASS**.
+
+Changes made (only what was required):
+
+1. **resource.h**
+   - Added `#define IDC_BTN_EXPORT 1004` (the next unused control ID, taken from `_APS_NEXT_CONTROL_VALUE`) after `IDC_STATIC_STATUS`.
+   - Advanced the Visual Studio counter: `#define _APS_NEXT_CONTROL_VALUE 1005`.
+
+2. **DataLogDlg.h**
+   - Added `afx_msg void OnBnClickedExport();` alongside the other `afx_msg` handlers.
+
+3. **DataLogDlg.cpp**
+   - Added `ON_BN_CLICKED(IDC_BTN_EXPORT, &CDataLogDlg::OnBnClickedExport)` to the `CDataLogDlg` message map.
+   - Implemented the handler:
+     ```cpp
+     void CDataLogDlg::OnBnClickedExport()
+     {
+         ExportSamples();
+     }
+     ```
+
+Verifier output: `PASS` (no duplicate control IDs, counters consistent, syntax check clean).","c:\Users\USER\Documents\Projects\Strata\results\tools-cpp-3200\20261120-154337-7d1246a1\00-Strata-UD-IQ2_XS-tuned-256k-ddr3200\01-mfc-handler.jsonl","Strata-UD-IQ2_XS-tuned-256k-ddr3200","http://127.0.0.1:8080","1",
+"csv-stats","20260927","passed","True","True","1","1","1","0","0","0","","2","12.812","","**CAM-3 — 139.1**
+
+Per-camera averages (5 rows each):
+
+| Camera | Sum | Average |
+|---|---|---|
+| CAM-1 | 578.4 | 115.7 |
+| CAM-2 | 544.3 | 108.9 |
+| **CAM-3** | **695.6** | **139.1** |
+| CAM-4 | 502.5 | 100.5 |
+
+CAM-3 has the highest average mean_intensity at **139.1**.","c:\Users\USER\Documents\Projects\Strata\results\tools-cpp-3200\20261120-154337-7d1246a1\00-Strata-UD-IQ2_XS-tuned-256k-ddr3200\01-csv-stats.jsonl","Strata-UD-IQ2_XS-tuned-256k-ddr3200","http://127.0.0.1:8080","1",

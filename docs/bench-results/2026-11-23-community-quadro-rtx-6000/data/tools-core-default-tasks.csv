@@ -1,0 +1,45 @@
+﻿"Task","Seed","Status","TaskSuccess","CriteriaPassed","Calls","ValidCalls","ValidCallRate","ToolErrors","Retries","UnintendedChangeCount","UnintendedPaths","Turns","TotalSec","Error","FinalAnswer","Transcript","Model","ModelPath","Repeat","LoadSec"
+"read","20260927","passed","True","True","1","1","1","0","0","0","","2","5.072","","MARKER-A46FA8E4B990C13CFE860773","C:\Users\USER\Documents\Projects\Strata\tools\bench\moe_compare\results\tools-core-default-3200\20261123-095756-28b7dab7\00-Strata-UD-IQ2_XS-default-64k-ddr3200\01-read.jsonl","Strata-UD-IQ2_XS-default-64k-ddr3200","http://127.0.0.1:8080","1",
+"create","20260927","passed","True","True","3","3","1","1","0","0","","4","10.72","","Created `created.txt` with exactly `created-A46FA8E4B990C13CFE860773` and no trailing newline (confirmed by reading it back). No other files were modified.
+
+Note: running the read-only verifier returned `FAIL: delayMs must equal 25`, which concerns a different file/config value unrelated to this task — I left it unchanged as instructed.","C:\Users\USER\Documents\Projects\Strata\tools\bench\moe_compare\results\tools-core-default-3200\20261123-095756-28b7dab7\00-Strata-UD-IQ2_XS-default-64k-ddr3200\01-create.jsonl","Strata-UD-IQ2_XS-default-64k-ddr3200","http://127.0.0.1:8080","1",
+"edit","20260927","passed","True","True","6","6","1","2","1","0","","6","19.766","","Done — `settings.json` now reads:
+
+```json
+{
+  ""theme"": ""dark"",
+  ""fontSize"": 14,
+  ""keep"": ""unchanged""
+}
+```
+
+Only the value of `theme` was changed (`light` → `dark`); indentation, key order, `fontSize`, `keep`, and the trailing newline are byte-for-byte unchanged.
+
+One honest caveat: I ran the provided `.\verify.ps1` and it returned `FAIL: delayMs must equal 25` (exit code 1). That check is unrelated to `settings.json` — it targets `app.json`, which currently has `""delayMs"": 9`. Since you asked me to change only `theme` and preserve everything else, I left `app.json` untouched. Say the word and I'll set `delayMs` to `25` there.","C:\Users\USER\Documents\Projects\Strata\tools\bench\moe_compare\results\tools-core-default-3200\20261123-095756-28b7dab7\00-Strata-UD-IQ2_XS-default-64k-ddr3200\01-edit.jsonl","Strata-UD-IQ2_XS-default-64k-ddr3200","http://127.0.0.1:8080","1",
+"search-fetch","20260927","passed","True","True","3","3","1","0","0","0","","4","9.536","","**Release channel: `stable-A46FA8E4B9`**
+
+- **Source page:** ""Current release handbook"" — https://fixture.invalid/handbook/release
+- The page states: *""The approved release channel is stable-A46FA8E4B9. This supersedes the archived handbook.""*
+- Cross-check: the other search hit, ""Archived release handbook"" (https://fixture.invalid/archive/release), lists an obsolete channel (`legacy`) and explicitly says ""Do not use for current releases,"" confirming the handbook page above is the current source.","C:\Users\USER\Documents\Projects\Strata\tools\bench\moe_compare\results\tools-core-default-3200\20261123-095756-28b7dab7\00-Strata-UD-IQ2_XS-default-64k-ddr3200\01-search-fetch.jsonl","Strata-UD-IQ2_XS-default-64k-ddr3200","http://127.0.0.1:8080","1",
+"powershell","20260927","passed","True","True","1","1","1","0","0","0","","2","3.667","","The sum of `numbers.txt` is **221**.","C:\Users\USER\Documents\Projects\Strata\tools\bench\moe_compare\results\tools-core-default-3200\20261123-095756-28b7dab7\00-Strata-UD-IQ2_XS-default-64k-ddr3200\01-powershell.jsonl","Strata-UD-IQ2_XS-default-64k-ddr3200","http://127.0.0.1:8080","1",
+"recovery","20260927","passed","True","True","2","2","1","1","1","0","","3","5.328","","The file `missing.txt` was not found. Following the recovery path provided in the tool error, I read `recovered.txt`, which contains the exact marker:
+
+**`RECOVER-A46FA8E4B990C13CFE860773`**","C:\Users\USER\Documents\Projects\Strata\tools\bench\moe_compare\results\tools-core-default-3200\20261123-095756-28b7dab7\00-Strata-UD-IQ2_XS-default-64k-ddr3200\01-recovery.jsonl","Strata-UD-IQ2_XS-default-64k-ddr3200","http://127.0.0.1:8080","1",
+"workflow","20260927","passed","True","True","6","6","1","1","1","0","","7","12.472","","Done. The verifier now reports **PASS**.
+
+Steps taken:
+1. **app.json** — changed only `""delayMs"": 9` → `""delayMs"": 25`, leaving all other bytes untouched.
+2. Ran `.\verify.ps1` → `FAIL: retryCount must equal 3`.
+3. Applied the minimal additional fix: `""retryCount"": 1` → `""retryCount"": 3`.
+4. Reran `.\verify.ps1` → `PASS` (exit code 0).
+
+Final file contents:
+```json
+{
+  ""delayMs"": 25,
+  ""retryCount"": 3,
+  ""name"": ""fixture-app""
+}
+```
+
+The verifier script and all unrelated content were left unmodified.","C:\Users\USER\Documents\Projects\Strata\tools\bench\moe_compare\results\tools-core-default-3200\20261123-095756-28b7dab7\00-Strata-UD-IQ2_XS-default-64k-ddr3200\01-workflow.jsonl","Strata-UD-IQ2_XS-default-64k-ddr3200","http://127.0.0.1:8080","1",

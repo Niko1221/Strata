@@ -1,0 +1,1 @@
+﻿@{ Configs = @( @{ Label = 'tuned-rerun'; Args = @('--vision', 'off', '--drafting', 'dflash2', '--kv', 'int8', '--set', 'STRATA_GRAPH_PRIO=1', '--set', 'STRATA_BF16_TC=1', '--set', 'STRATA_SELECT_SIMT=1') } ) }
