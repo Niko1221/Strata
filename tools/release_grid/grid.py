@@ -188,6 +188,14 @@ def cmd_run(a, data):
     rel = [parse_release(r) for r in ([a.prev] if a.prev else []) + [a.cand]]
     boxes = _csv(a.boxes)
     specs = build_specs(data, rel, boxes, _csv(a.models), a.tier, _csv(a.drafters), unmsys(a.trust))
+    if a.launch_parallel or a.tag:
+        for lst in specs.values():
+            for sp in lst:
+                if a.launch_parallel:
+                    sp["launch_extra"] = list(sp.get("launch_extra") or []) + ["--parallel", str(a.launch_parallel)]
+                    sp["parallel_flag"] = a.launch_parallel
+                if a.tag:
+                    sp["cell"] = sp["cell"] + "@" + a.tag                 # a separate result file for this variant of the cell
     if a.usage:
         for lst in specs.values():
             for sp in lst:
@@ -350,6 +358,8 @@ def main(argv=None) -> int:
     ap.add_argument("--declared", help="declared_changes.json: {cell-id glob: reason}")
     ap.add_argument("--floor-gb", default="25")
     ap.add_argument("--include-skipped", action="store_true")
+    ap.add_argument("--launch-parallel", type=int, help="start the engine with --parallel N (the Terminal accepts 1 to 8); without it the Terminal's own default (fit to the card) is used")
+    ap.add_argument("--tag", help="suffix for the cell id (a variant run of the same cell keeps its own result file)")
     ap.add_argument("--keys", help="fetch: explicit pin keys (ink/Vision, ink/mmproj-BF16, ...) instead of the cells' fetch models")
     ap.add_argument("--usage-cases", help="comma list of usage cases (coding,agent,vision,longdoc,chat,parallel)")
     ap.add_argument("--usage-long", help="document sizes in tokens for the longdoc case, e.g. 8000 or 30000,60000")

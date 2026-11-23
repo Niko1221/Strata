@@ -733,7 +733,7 @@ def run_cell(spec: dict, out_root: Path) -> dict:
     out_dir = out_root / label
     out_dir.mkdir(parents=True, exist_ok=True)
     log_path = out_dir / (cid + ".log")
-    res = {"cell": cid, "release": label, "box": spec["box"], "model": spec["model"], "drafter": spec["drafter"], "steps": {},
+    res = {"cell": cid, "release": label, "parallel_flag": spec.get("parallel_flag"), "box": spec["box"], "model": spec["model"], "drafter": spec["drafter"], "steps": {},
            "numbers": {}, "started": stamp(), "gpu": gpu_facts(), "host": socket.gethostname()}
     profile = dict(spec.get("profile") or {})
     steps = res["steps"]
