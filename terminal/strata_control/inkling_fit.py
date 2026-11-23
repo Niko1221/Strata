@@ -70,16 +70,16 @@ BUILDS = {
     "SQ-20": {"file": "Inkling-2-Mini-SQ-20.strata", "footprint_gb": 19.35, "dense_gb": 3.67, "bodies_gb": 15.68, "file_gb": 19.35, "format": "strata"},
     "SQ-15": {"file": "Inkling-2-Mini-SQ-15.strata", "footprint_gb": 14.35, "dense_gb": 2.07, "bodies_gb": 12.28, "file_gb": 14.35, "format": "strata"},
     "SQ-10": {"file": "Inkling-2-Mini-SQ-10.strata", "footprint_gb": 10.47, "dense_gb": 1.87, "bodies_gb": 8.60, "file_gb": 10.47, "format": "strata"},
-    "UD-Q8_K_XL": {"file": "Inkling-2-Mini-UD-Q8_K_XL.gguf", "footprint_gb": 22.87, "dense_gb": 2.45, "bodies_gb": 19.62, "file_gb": 22.87, "format": "gguf", "expert_elems_e9": {"BF16": 4.077, "NVFP4": 20.384}},
-    "UD-Q4_K_XL": {"file": "Inkling-2-Mini-UD-Q4_K_XL.gguf", "footprint_gb": 17.63, "dense_gb": 2.45, "bodies_gb": 15.80, "file_gb": 17.63, "format": "gguf", "expert_elems_e9": {"NVFP4": 20.384, "Q8_0": 4.077}},
-    "UD-Q4_K_M": {"file": "Inkling-2-Mini-UD-Q4_K_M.gguf", "footprint_gb": 16.61, "dense_gb": 2.45, "bodies_gb": 14.78, "file_gb": 16.61, "format": "gguf", "expert_elems_e9": {"NVFP4": 20.384, "Q5_K": 2.718, "Q8_0": 1.359}},
-    "UD-IQ4_XS": {"file": "Inkling-2-Mini-UD-IQ4_XS.gguf", "footprint_gb": 15.73, "dense_gb": 2.45, "bodies_gb": 14.04, "file_gb": 15.73, "format": "gguf", "expert_elems_e9": {"IQ4_NL": 0.340, "IQ4_XS": 0.679, "NVFP4": 20.384, "Q4_K": 0.679, "Q5_0": 1.019, "Q5_K": 1.359}},
-    "UD-Q3_K_XL": {"file": "Inkling-2-Mini-UD-Q3_K_XL.gguf", "footprint_gb": 13.63, "dense_gb": 2.45, "bodies_gb": 12.20, "file_gb": 13.63, "format": "gguf", "expert_elems_e9": {"IQ2_S": 2.038, "IQ2_XS": 0.679, "IQ3_S": 1.359, "IQ3_XXS": 3.397, "IQ4_NL": 1.359, "NVFP4": 14.948, "Q3_K": 0.679}},
-    "UD-IQ3_XXS": {"file": "Inkling-2-Mini-UD-IQ3_XXS.gguf", "footprint_gb": 11.66, "dense_gb": 2.45, "bodies_gb": 10.30, "file_gb": 11.66, "format": "gguf", "expert_elems_e9": {"IQ2_S": 6.115, "IQ2_XS": 0.679, "IQ2_XXS": 0.679, "IQ3_XXS": 8.833, "IQ4_NL": 1.359, "NVFP4": 6.795}},
-    "UD-Q2_K_XL": {"file": "Inkling-2-Mini-UD-Q2_K_XL.gguf", "footprint_gb": 9.14, "dense_gb": 2.45, "bodies_gb": 7.89, "file_gb": 9.14, "format": "gguf", "expert_elems_e9": {"IQ1_S": 4.077, "IQ2_S": 7.474, "IQ2_XS": 1.359, "IQ2_XXS": 3.397, "MXFP4": 0.340, "NVFP4": 3.737, "Q2_0": 4.077}},
-    "UD-IQ2_XXS": {"file": "Inkling-2-Mini-UD-IQ2_XXS.gguf", "footprint_gb": 8.49, "dense_gb": 2.45, "bodies_gb": 7.25, "file_gb": 8.49, "format": "gguf", "expert_elems_e9": {"IQ1_S": 4.077, "IQ2_S": 3.397, "IQ2_XS": 4.077, "IQ2_XXS": 4.756, "NVFP4": 2.378, "Q2_0": 5.776}},
-    "UD-IQ1_M": {"file": "Inkling-2-Mini-UD-IQ1_M.gguf", "footprint_gb": 8.02, "dense_gb": 2.45, "bodies_gb": 6.81, "file_gb": 8.02, "format": "gguf", "expert_elems_e9": {"IQ1_S": 4.077, "IQ2_S": 2.718, "IQ2_XS": 3.397, "IQ2_XXS": 6.115, "NVFP4": 1.019, "Q2_0": 7.135}},
-    "UD-IQ1_S": {"file": "Inkling-2-Mini-UD-IQ1_S.gguf", "footprint_gb": 7.76, "dense_gb": 2.45, "bodies_gb": 6.53, "file_gb": 7.76, "format": "gguf", "expert_elems_e9": {"IQ1_S": 4.077, "IQ2_S": 1.359, "IQ2_XS": 3.397, "IQ2_XXS": 7.474, "NVFP4": 0.340, "Q2_0": 7.814}},
+    "UD-Q8_K_XL": {"file": "Inkling-2-Mini-UD-Q8_K_XL.gguf", "footprint_gb": 22.87, "dense_gb": 2.45, "dense_gb_q8": 1.60, "bodies_gb": 19.62, "file_gb": 22.87, "format": "gguf", "expert_elems_e9": {"BF16": 4.077, "NVFP4": 20.384}},
+    "UD-Q4_K_XL": {"file": "Inkling-2-Mini-UD-Q4_K_XL.gguf", "footprint_gb": 17.63, "dense_gb": 2.45, "dense_gb_q8": 1.60, "bodies_gb": 15.80, "file_gb": 17.63, "format": "gguf", "expert_elems_e9": {"NVFP4": 20.384, "Q8_0": 4.077}},
+    "UD-Q4_K_M": {"file": "Inkling-2-Mini-UD-Q4_K_M.gguf", "footprint_gb": 16.61, "dense_gb": 2.45, "dense_gb_q8": 1.60, "bodies_gb": 14.78, "file_gb": 16.61, "format": "gguf", "expert_elems_e9": {"NVFP4": 20.384, "Q5_K": 2.718, "Q8_0": 1.359}},
+    "UD-IQ4_XS": {"file": "Inkling-2-Mini-UD-IQ4_XS.gguf", "footprint_gb": 15.73, "dense_gb": 2.45, "dense_gb_q8": 1.60, "bodies_gb": 14.04, "file_gb": 15.73, "format": "gguf", "expert_elems_e9": {"IQ4_NL": 0.340, "IQ4_XS": 0.679, "NVFP4": 20.384, "Q4_K": 0.679, "Q5_0": 1.019, "Q5_K": 1.359}},
+    "UD-Q3_K_XL": {"file": "Inkling-2-Mini-UD-Q3_K_XL.gguf", "footprint_gb": 13.63, "dense_gb": 2.45, "dense_gb_q8": 1.60, "bodies_gb": 12.20, "file_gb": 13.63, "format": "gguf", "expert_elems_e9": {"IQ2_S": 2.038, "IQ2_XS": 0.679, "IQ3_S": 1.359, "IQ3_XXS": 3.397, "IQ4_NL": 1.359, "NVFP4": 14.948, "Q3_K": 0.679}},
+    "UD-IQ3_XXS": {"file": "Inkling-2-Mini-UD-IQ3_XXS.gguf", "footprint_gb": 11.66, "dense_gb": 2.45, "dense_gb_q8": 1.60, "bodies_gb": 10.30, "file_gb": 11.66, "format": "gguf", "expert_elems_e9": {"IQ2_S": 6.115, "IQ2_XS": 0.679, "IQ2_XXS": 0.679, "IQ3_XXS": 8.833, "IQ4_NL": 1.359, "NVFP4": 6.795}},
+    "UD-Q2_K_XL": {"file": "Inkling-2-Mini-UD-Q2_K_XL.gguf", "footprint_gb": 9.14, "dense_gb": 2.45, "dense_gb_q8": 1.60, "bodies_gb": 7.89, "file_gb": 9.14, "format": "gguf", "expert_elems_e9": {"IQ1_S": 4.077, "IQ2_S": 7.474, "IQ2_XS": 1.359, "IQ2_XXS": 3.397, "MXFP4": 0.340, "NVFP4": 3.737, "Q2_0": 4.077}},
+    "UD-IQ2_XXS": {"file": "Inkling-2-Mini-UD-IQ2_XXS.gguf", "footprint_gb": 8.49, "dense_gb": 2.45, "dense_gb_q8": 1.60, "bodies_gb": 7.25, "file_gb": 8.49, "format": "gguf", "expert_elems_e9": {"IQ1_S": 4.077, "IQ2_S": 3.397, "IQ2_XS": 4.077, "IQ2_XXS": 4.756, "NVFP4": 2.378, "Q2_0": 5.776}},
+    "UD-IQ1_M": {"file": "Inkling-2-Mini-UD-IQ1_M.gguf", "footprint_gb": 8.02, "dense_gb": 2.45, "dense_gb_q8": 1.60, "bodies_gb": 6.81, "file_gb": 8.02, "format": "gguf", "expert_elems_e9": {"IQ1_S": 4.077, "IQ2_S": 2.718, "IQ2_XS": 3.397, "IQ2_XXS": 6.115, "NVFP4": 1.019, "Q2_0": 7.135}},
+    "UD-IQ1_S": {"file": "Inkling-2-Mini-UD-IQ1_S.gguf", "footprint_gb": 7.76, "dense_gb": 2.45, "dense_gb_q8": 1.60, "bodies_gb": 6.53, "file_gb": 7.76, "format": "gguf", "expert_elems_e9": {"IQ1_S": 4.077, "IQ2_S": 1.359, "IQ2_XS": 3.397, "IQ2_XXS": 7.474, "NVFP4": 0.340, "Q2_0": 7.814}},
 }
 STRATA_ORDER = ("SQ-20", "SQ-15", "SQ-10")       # primary recommended native .strata builds, best quality first
 GGUF_ORDER = (
@@ -239,6 +239,23 @@ EXPERT_BODY_OVERHEAD_BYTES = 2304 + 32          # sq_xd_dn[inter] FP16 + 64-byte
 N_EXPERTS_TOTAL = 3072
 
 
+# dense_gb (2.45) is the share when the loader expands the Q8_0 matrices to BF16; dense_gb_q8 (1.60) when it keeps them as the file has them (INKSPEED's
+# c60259fa6, load line trunk= 3.93 -> 2.9 GB on an sm_86 card). Both are what the engine really placed with no cap (--vram-experts-gb 50):
+#   BF16: RTX 3060 Ti 7.66 GiB free 2.24 GB, RTX 3060 11.63 GiB free 6.49 GB;  Q8_0: 3060 Ti 3.19 GB (703 / 721 experts), 3060 7.49 GB (1663 / 1681).
+# A GGUF build's dense share of the card depends on how the loader keeps the file's Q8_0 matrices: on ONE CUDA card of compute capability 8.0 or
+# newer, without a layer split, they stay Q8_0 (int8 tensor cores; the embedding too); everywhere else they are expanded to BF16 (c60259fa6,
+# STRATA_INK_Q8_0_DENSE=0 forces the BF16 way). The card's compute capability is not always known: unknown means the BF16 way (the larger share).
+Q8_DENSE_MIN_SM = 80
+
+
+def dense_gb_for(build: str, backend: str | None = None, sm: int | None = None, split: bool = False) -> float:
+    info = BUILDS[build]
+    if (info.get("format") == "gguf" and "dense_gb_q8" in info and str(backend or "").strip().lower() == "cuda"
+            and sm is not None and int(sm) >= Q8_DENSE_MIN_SM and not split):
+        return float(info["dense_gb_q8"])
+    return float(info["dense_gb"])
+
+
 def converted_expert_bytes_per_element(type_name: str) -> float:
     """Bytes per weight an expert tensor of this GGUF type takes in memory after the load-time conversion (NVFP4: its own, bit-exact SF4)."""
     if type_name == "NVFP4":
@@ -265,7 +282,7 @@ def bodies_gb_for(build: str, backend: str | None = None) -> float:
 def compute(build: str, vram_gib: float, ram_gib: float, ctx: int | None = None, vision: bool = False,
             parallel: int = 1, dspark: bool = True, kv_offload: str = "auto", *,
             extra_vram_gib: float = 0.0, backend: str | None = None,
-            desktop: bool = False, ram_free_gib: float | None = None, fp8_kv: bool | None = None) -> dict:
+            desktop: bool = False, ram_free_gib: float | None = None, fp8_kv: bool | None = None, sm: int | None = None) -> dict:
     """Placement of `build` on a discrete-GPU PC (vram_gib + optional extra_vram_gib + ram_gib): GB of experts in VRAM, in RAM, and on SSD.
 
     Implements the unified 4-tier adaptive contract (GPU -> RAM+CPU -> SSD) with Host KV Offloading (#552),
@@ -277,6 +294,7 @@ def compute(build: str, vram_gib: float, ram_gib: float, ctx: int | None = None,
     """
     info = dict(BUILDS[build])
     info["bodies_gb"] = bodies_gb_for(build, backend)      # GGUF experts a backend converts at load take their converted size
+    info["dense_gb"] = dense_gb_for(build, backend, sm, split=bool(extra_vram_gib and extra_vram_gib > 0))
     v_primary = float(vram_gib or 0.0)
     v_extra = max(0.0, float(extra_vram_gib or 0.0))
     v_gib = v_primary + v_extra
@@ -411,11 +429,11 @@ def compute_unified(build: str, pool_gib: float, ctx: int | None = None, vision:
 def place(build: str, vram_gib: float | None, ram_gib: float, unified: bool = False, ctx: int | None = None,
           vision: bool = False, parallel: int = 1, dspark: bool = True, *,
           extra_vram_gib: float = 0.0, backend: str | None = None,
-          desktop: bool = False, ram_free_gib: float | None = None, fp8_kv: bool | None = None) -> dict:
+          desktop: bool = False, ram_free_gib: float | None = None, fp8_kv: bool | None = None, sm: int | None = None) -> dict:
     if unified:
         return compute_unified(build, ram_gib, ctx, vision, parallel, dspark, backend=backend)
     return compute(build, vram_gib or 0.0, ram_gib, ctx, vision, parallel, dspark,
-                   extra_vram_gib=extra_vram_gib, backend=backend, desktop=desktop, ram_free_gib=ram_free_gib, fp8_kv=fp8_kv)
+                   extra_vram_gib=extra_vram_gib, backend=backend, desktop=desktop, ram_free_gib=ram_free_gib, fp8_kv=fp8_kv, sm=sm)
 
 
 def mode(placed: dict | float) -> str:
@@ -437,15 +455,15 @@ def mode(placed: dict | float) -> str:
 
 def fits(build: str, vram_gib: float | None, ram_gib: float, unified: bool = False, ctx: int | None = None,
          vision: bool = False, parallel: int = 1, *, extra_vram_gib: float = 0.0, backend: str | None = None,
-         desktop: bool = False, ram_free_gib: float | None = None) -> bool:
+         desktop: bool = False, ram_free_gib: float | None = None, sm: int | None = None) -> bool:
     return place(build, vram_gib, ram_gib, unified, ctx, vision, parallel, extra_vram_gib=extra_vram_gib, backend=backend,
-                 desktop=desktop, ram_free_gib=ram_free_gib)["ssd_gb"] <= 0.05
+                 desktop=desktop, ram_free_gib=ram_free_gib, sm=sm)["ssd_gb"] <= 0.05
 
 
 def recommend(vram_gib: float | None, ram_gib: float, unified: bool = False, ctx: int | None = None,
               vision: bool = False, *, preference: str = "quality", igpu: bool = False, arch: str | None = None,
               parallel: int = 1, extra_vram_gib: float = 0.0, backend: str | None = None,
-              desktop: bool = False, ram_free_gib: float | None = None) -> dict:
+              desktop: bool = False, ram_free_gib: float | None = None, sm: int | None = None) -> dict:
     """Automatic hardware auto-selection for Inkling-2-Mini (docs/10-GUI-TUI.md + Track 1E):
       - Radeon 780M (gfx1103) / Strix Point (gfx1150) iGPUs -> SQ-10 (coherent UMA/GTT, zero BIOS carve-out OOM)
       - >= 24 GiB discrete GPU (or combined multi-GPU VRAM) OR >= 32 GiB UMA -> SQ-20
@@ -488,12 +506,12 @@ def recommend(vram_gib: float | None, ram_gib: float, unified: bool = False, ctx
             best = "SQ-10"
             for cand in STRATA_ORDER:
                 pc = place(cand, vram_gib, ram_gib, False, ctx, vision, parallel, extra_vram_gib=extra_vram_gib, backend=backend,
-                           desktop=desktop, ram_free_gib=ram_free_gib)
+                           desktop=desktop, ram_free_gib=ram_free_gib, sm=sm)
                 if pc.get("full_vram") and pc["ssd_gb"] <= 0.05:
                     best = cand
                     break
     placed = place(best, vram_gib, ram_gib, use_unified, ctx, vision, parallel,
-                   extra_vram_gib=extra_vram_gib, backend=backend, desktop=desktop, ram_free_gib=ram_free_gib)
+                   extra_vram_gib=extra_vram_gib, backend=backend, desktop=desktop, ram_free_gib=ram_free_gib, sm=sm)
     return {
         "build": best,
         "placement": placed,
@@ -505,10 +523,10 @@ def recommend(vram_gib: float | None, ram_gib: float, unified: bool = False, ctx
 
 def rows(vram_gib: float | None, ram_gib: float, unified: bool = False, ctx: int | None = None,
          vision: bool = False, parallel: int = 1, *, desktop: bool = False, ram_free_gib: float | None = None,
-         backend: str | None = None) -> list[dict]:
+         backend: str | None = None, sm: int | None = None) -> list[dict]:
     out = []
     for b in ORDER:
-        placed = place(b, vram_gib, ram_gib, unified, ctx, vision, parallel, desktop=desktop, ram_free_gib=ram_free_gib, backend=backend)
+        placed = place(b, vram_gib, ram_gib, unified, ctx, vision, parallel, desktop=desktop, ram_free_gib=ram_free_gib, backend=backend, sm=sm)
         dl = BUILDS[b]["file_gb"] + (DSPARK_GGUF_GB if is_gguf_build(b) else 0.0)
         out.append({
             "build": b,
@@ -524,14 +542,14 @@ def rows(vram_gib: float | None, ram_gib: float, unified: bool = False, ctx: int
 
 def max_context(build: str, vram_gib: float | None, ram_gib: float, unified: bool = False, *, vision: bool = False,
                 parallel: int = 1, dspark: bool = True, backend: str | None = None, desktop: bool = False,
-                ram_free_gib: float | None = None) -> int:
+                ram_free_gib: float | None = None, sm: int | None = None) -> int:
     """The largest context (tokens) at which the build still starts with no expert on SSD, the experts that do not fit the card going to RAM
     (never refused, never a smaller build): 0 when even the smallest context needs the SSD.  The K/V of a longer context goes to RAM
     first (Host KV Offload), then the experts' share of the card shrinks."""
     best = 0
     for c in sorted({*CONTEXTS, 393216, 524288, MAX_CONTEXT}):
         placed = place(build, vram_gib, ram_gib, unified, c, vision, parallel, dspark, backend=backend, desktop=desktop,
-                       ram_free_gib=ram_free_gib)
+                       ram_free_gib=ram_free_gib, sm=sm)
         if placed["ssd_gb"] > 0.05 or not placed.get("kv_fits", True):
             break
         best = c
@@ -591,10 +609,10 @@ def multi_gpu_flags(gpus: list[dict], *, windows: bool = False) -> list[str]:
 
 def parallel_fits(build: str, vram_gib: float | None, ram_gib: float, unified: bool = False, ctx: int | None = None, parallel: int = 1,
                   *, vision: bool = False, dspark: bool = True, backend: str | None = None, desktop: bool = False,
-                  ram_free_gib: float | None = None, extra_vram_gib: float = 0.0) -> bool:
+                  ram_free_gib: float | None = None, extra_vram_gib: float = 0.0, sm: int | None = None) -> bool:
     """True when `parallel` request slots at `ctx` tokens can start: their K/V and per-slot buffers fit the card (or the pool) beside the
     dense weights (the experts that do not fit go to RAM or the SSD, which is the plan's business, not the slots')."""
-    kw = dict(backend=backend, desktop=desktop, ram_free_gib=ram_free_gib, extra_vram_gib=extra_vram_gib)
+    kw = dict(backend=backend, desktop=desktop, ram_free_gib=ram_free_gib, extra_vram_gib=extra_vram_gib, sm=sm)
     if bool(place(build, vram_gib, ram_gib, unified, ctx, vision, parallel, dspark, **kw).get("kv_fits", True)):
         return True
     # the engines that have an FP8 K/V (CUDA, HIP) pick it when FP16 does not fit; SYCL has none
@@ -604,13 +622,13 @@ def parallel_fits(build: str, vram_gib: float | None, ram_gib: float, unified: b
 
 def max_parallel(build: str, vram_gib: float | None, ram_gib: float, unified: bool = False, ctx: int | None = None, *,
                  requested: int | None = None, vision: bool = False, dspark: bool = True, backend: str | None = None,
-                 desktop: bool = False, ram_free_gib: float | None = None, extra_vram_gib: float = 0.0) -> dict:
+                 desktop: bool = False, ram_free_gib: float | None = None, extra_vram_gib: float = 0.0, sm: int | None = None) -> dict:
     """The largest number of request slots (1..MAX_PARALLEL) that fit at `ctx` tokens, and a plain answer for the `requested` count.
 
     {"max_parallel": N (0: not even one slot fits at this context), "requested": R, "fits": R <= N, "context": ctx,
      "max_context_at_requested": the largest context at which R slots fit (0: none), "message": one sentence for the user}"""
     n_ctx = DEFAULT_CONTEXT if ctx is None else int(ctx)
-    kw = dict(vision=vision, dspark=dspark, backend=backend, desktop=desktop, ram_free_gib=ram_free_gib, extra_vram_gib=extra_vram_gib)
+    kw = dict(vision=vision, dspark=dspark, backend=backend, desktop=desktop, ram_free_gib=ram_free_gib, extra_vram_gib=extra_vram_gib, sm=sm)
     best = 0
     for n in range(1, MAX_PARALLEL + 1):
         if parallel_fits(build, vram_gib, ram_gib, unified, n_ctx, n, **kw):
