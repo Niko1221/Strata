@@ -50410,6 +50410,72 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_VRAM_LEDGER",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/program/generate.cpp",
+     "line": 12370,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "",
+   "first_date": "",
+   "since": "",
+   "last_commit": "",
+   "last_date": "",
+   "status": "opt-in",
+   "owner": "program",
+   "note": "=1: a lending ledger per card's expert cache decides each prompt loan's first slot (the engine's slots - need stays as the check; a differing answer is printed and the engine's slot used); the VRAM reply gains ledger= (dev:live:expert slots:leases). Implies STRATA_VRAM_LEDGER_SHADOW",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_VRAM_LEDGER_SHADOW",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/program/generate.cpp",
+     "line": 12371,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "",
+   "first_date": "",
+   "since": "",
+   "last_commit": "",
+   "last_date": "",
+   "status": "opt-in",
+   "owner": "program",
+   "note": "=1: the per-card lending ledger is kept beside the lending code and asked the same questions (prompt loans, VRAM moves); a differing answer is printed, nothing reads it back",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_W4A8_CFG",
    "backends": [
     "cuda-hip"

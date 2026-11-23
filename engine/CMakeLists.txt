@@ -391,6 +391,11 @@ if(STRATA_BUILD_TESTS)
   target_include_directories(split_walk_test PRIVATE include)
   add_test(NAME split_walk_test COMMAND split_walk_test)
 
+  # STRATA_VRAM_LEDGER: the per-card expert-cache lending ledger (header-only arithmetic, pinned against split_lend_slots)
+  add_executable(vram_ledger_test tests/program/vram_ledger_test.cpp)
+  target_include_directories(vram_ledger_test PRIVATE include)
+  add_test(NAME vram_ledger_test COMMAND vram_ledger_test)
+
   # the prompt planner's host-memory model (#2824): header-only, no GPU
   add_executable(prefill_plan_test tests/program/prefill_plan_test.cpp)
   target_include_directories(prefill_plan_test PRIVATE include)
