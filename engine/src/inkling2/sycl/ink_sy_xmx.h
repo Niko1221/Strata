@@ -22,11 +22,7 @@ namespace ink_sycl {
 
 inline bool xmx_enabled() {
 #ifdef INK_SYCL_USE_ONEMKL
-    static const bool on = [] {
-        const char* e = std::getenv("INK_SYCL_NO_XMX");
-        return !(e && e[0] == '1');
-    }();
-    return on;
+    return !sy_no_xmx_requested();
 #else
     return false;
 #endif

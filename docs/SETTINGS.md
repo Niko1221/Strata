@@ -10,7 +10,7 @@ debugging and are kept in `terminal/data/settings-register.json`.
 A number or a word is set like any environment variable, for example `STRATA_KVA=1`. In the Terminal, `strata launch --set NAME=value`
 puts it in the model's run configuration.
 
-## Switches you can turn on (332)
+## Switches you can turn on (333)
 
 Off unless you set them. The last column says where each one is described.
 
@@ -157,7 +157,7 @@ Off unless you set them. The last column says where each one is described.
 | `STRATA_MEMORY_LIMIT_MIB` | on / off | NVIDIA and AMD | [DETAILS.md](DETAILS.md) |
 | `STRATA_METAL_ARENA_GB` | number | Mac | [MAC.md](MAC.md) |
 | `STRATA_METAL_CONTIG` | number | Mac | [MAC.md](MAC.md) |
-| `STRATA_METAL_EXP_CACHE_GB` | number | NVIDIA and AMD | - |
+| `STRATA_METAL_EXP_CACHE_GB` | number | Mac | - |
 | `STRATA_METAL_GYRO_TILES` | on / off | Mac | [MAC.md](MAC.md) |
 | `STRATA_METAL_KEEP_FREE_GB` | number | Mac | [MAC.md](MAC.md) |
 | `STRATA_METAL_KEEP_HOST_WEIGHTS` | on / off | Mac | [MAC.md](MAC.md) |
@@ -332,6 +332,7 @@ Off unless you set them. The last column says where each one is described.
 | `STRATA_STATE_HASH` | on / off | NVIDIA and AMD, Intel Arc | [SPLIT_SERVE.md](SPLIT_SERVE.md) |
 | `STRATA_SYCL_BMG_EXPERT_WINDOW` | on / off | Intel Arc | [INTEL.md](INTEL.md) |
 | `STRATA_SYCL_GEMM_STAGE` | on / off | Intel Arc | [INTEL.md](INTEL.md) |
+| `STRATA_SYCL_NO_XMX` | on / off | Intel Arc | [INTEL.md](INTEL.md) |
 | `STRATA_TEST_BELL_SLEEP_US` | number | NVIDIA and AMD | [BATCHING.md](BATCHING.md) |
 | `STRATA_TOPK_MULTI` | on / off | NVIDIA and AMD | [OLDER_GPUS.md](OLDER_GPUS.md) |
 | `STRATA_TOPK_OLD` | on / off | NVIDIA and AMD, Intel Arc | [AMD_HIP.md](AMD_HIP.md) |

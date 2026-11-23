@@ -1929,9 +1929,9 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL.md:433",
-    "docs/INTEL.md:533",
-    "docs/INTEL.md:534"
+    "docs/INTEL.md:457",
+    "docs/INTEL.md:557",
+    "docs/INTEL.md:558"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -4052,7 +4052,7 @@
    "launch_reads": [],
    "doc_mentions": [
     "docs/INTEL.md:217",
-    "docs/INTEL.md:422"
+    "docs/INTEL.md:446"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -4182,7 +4182,8 @@
   {
    "name": "STRATA_CPUEXP_COLD_IO",
    "backends": [
-    "cuda-hip"
+    "cuda-hip",
+    "sycl"
    ],
    "reads": [
     {
@@ -4194,7 +4195,7 @@
     {
      "file": "engine/src/hy4flash/sycl/sy_graph.h",
      "line": 224,
-     "backend": "cuda-hip",
+     "backend": "sycl",
      "fn": "getenv"
     }
    ],
@@ -5068,7 +5069,7 @@
    "launch_reads": [],
    "doc_mentions": [
     "docs/AMD_HIP.md:516",
-    "docs/INTEL.md:439",
+    "docs/INTEL.md:463",
     "docs/bench-results/2026-10-05-community-arc-b65/BUILD.md:3",
     "docs/bench-results/2026-10-05-community-arc-b65/BUILD.md:93",
     "docs/bench-results/2026-10-05-community-arc-b65/README.md:58",
@@ -8745,7 +8746,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL.md:435"
+    "docs/INTEL.md:459"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -9345,7 +9346,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL.md:429"
+    "docs/INTEL.md:453"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -10389,7 +10390,7 @@
    ],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL.md:348",
+    "docs/INTEL.md:371",
     "docs/RADEON_780M.md:84",
     "docs/STRIX_HALO.md:111"
    ],
@@ -10433,7 +10434,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL.md:348"
+    "docs/INTEL.md:371"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -10578,7 +10579,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL.md:512"
+    "docs/INTEL.md:536"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -11218,9 +11219,9 @@
    "launch_reads": [],
    "doc_mentions": [
     "docs/INTEL.md:271",
-    "docs/INTEL.md:420",
-    "docs/INTEL.md:517",
-    "docs/INTEL.md:531"
+    "docs/INTEL.md:444",
+    "docs/INTEL.md:541",
+    "docs/INTEL.md:555"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -15442,19 +15443,19 @@
   {
    "name": "STRATA_HY4_KERNELS",
    "backends": [
-    "cuda-hip"
+    "metal"
    ],
    "reads": [
     {
      "file": "engine/src/hy4flash/metal/hy4_metal_main.cpp",
      "line": 1662,
-     "backend": "cuda-hip",
+     "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "engine/src/hy4flash/metal/hy4_metal_main.cpp",
      "line": 1709,
-     "backend": "cuda-hip",
+     "backend": "metal",
      "fn": "getenv"
     }
    ],
@@ -17078,7 +17079,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL.md:434"
+    "docs/INTEL.md:458"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -19469,8 +19470,8 @@
    "launch_reads": [],
    "doc_mentions": [
     "docs/INTEL.md:219",
-    "docs/INTEL.md:407",
-    "docs/INTEL.md:427",
+    "docs/INTEL.md:430",
+    "docs/INTEL.md:451",
     "docs/INTEL_ARC.md:192"
    ],
    "first_commit": "4058aa782b",
@@ -20650,13 +20651,13 @@
   {
    "name": "STRATA_METAL_EXP_CACHE_GB",
    "backends": [
-    "cuda-hip"
+    "metal"
    ],
    "reads": [
     {
      "file": "engine/src/hy4flash/metal/hy4_metal_main.cpp",
      "line": 643,
-     "backend": "cuda-hip",
+     "backend": "metal",
      "fn": "getenv"
     }
    ],
@@ -22834,8 +22835,8 @@
    "launch_reads": [],
    "doc_mentions": [
     "docs/INTEL.md:134",
-    "docs/INTEL.md:416",
-    "docs/INTEL.md:427",
+    "docs/INTEL.md:439",
+    "docs/INTEL.md:451",
     "docs/INTEL_ARC.md:64",
     "docs/INTEL_ARC.md:147",
     "docs/INTEL_ARC.md:192",
@@ -23299,7 +23300,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL.md:430"
+    "docs/INTEL.md:454"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -23675,7 +23676,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL.md:431"
+    "docs/INTEL.md:455"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -23962,7 +23963,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL.md:430"
+    "docs/INTEL.md:454"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -31378,8 +31379,8 @@
    "launch_reads": [],
    "doc_mentions": [
     "docs/INTEL.md:273",
-    "docs/INTEL.md:419",
-    "docs/INTEL.md:536",
+    "docs/INTEL.md:442",
+    "docs/INTEL.md:560",
     "docs/release-notes-0.2.0.md:57"
    ],
    "first_commit": "4058aa782b",
@@ -34283,7 +34284,7 @@
    "launch_reads": [],
    "doc_mentions": [
     "docs/INTEL.md:210",
-    "docs/INTEL.md:426"
+    "docs/INTEL.md:450"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -34927,7 +34928,7 @@
     "docs/AMD_HIP_PERFORMANCE.md:15",
     "docs/AMD_HIP_PERFORMANCE.md:19",
     "docs/INTEL.md:242",
-    "docs/INTEL.md:424",
+    "docs/INTEL.md:448",
     "docs/INTEL_INT8_EXPERTS.md:15",
     "docs/INTEL_INT8_EXPERTS.md:16",
     "docs/INTEL_INT8_EXPERTS.md:18",
@@ -35340,7 +35341,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL.md:425"
+    "docs/INTEL.md:449"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -36788,9 +36789,9 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL.md:389",
-    "docs/INTEL.md:436",
-    "docs/INTEL.md:532"
+    "docs/INTEL.md:412",
+    "docs/INTEL.md:460",
+    "docs/INTEL.md:556"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -38195,7 +38196,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL.md:432"
+    "docs/INTEL.md:456"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -45942,7 +45943,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL.md:401"
+    "docs/INTEL.md:424"
    ],
    "first_commit": "f44ed40b8d",
    "first_date": "2026-11-22",
@@ -45977,7 +45978,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL.md:400"
+    "docs/INTEL.md:423"
    ],
    "first_commit": "f44ed40b8d",
    "first_date": "2026-11-22",
@@ -46315,7 +46316,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL.md:421"
+    "docs/INTEL.md:445"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -46456,7 +46457,7 @@
    "launch_reads": [],
    "doc_mentions": [
     "docs/INTEL.md:160",
-    "docs/INTEL.md:437"
+    "docs/INTEL.md:461"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -46802,6 +46803,42 @@
    "status": "research",
    "owner": "sycl",
    "note": "Opt-in (=1), off by default: adaptive routing mirror on the SYCL verify path (sycl_mirror_adapt, sycl/src/core/verify.cpp:75). Read from the code only; the integration lane measured nothing on it.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_SYCL_NO_XMX",
+   "backends": [
+    "sycl"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/sycl/ink_sy_common.h",
+     "line": 50,
+     "backend": "sycl",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/INTEL.md:321",
+    "docs/INTEL.md:443"
+   ],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "sycl/inkling2",
+   "note": "[reviewed] Inkling 2 Mini SYCL engine: 1 turns the oneMKL XMX GEMM path off (INK_SYCL_NO_XMX=1 is the older name). On Arc A-series (Alchemist, DG2) that GEMM gives last-bit differences between runs in prompt reading, so answers can vary slightly from run to run; with it off the logits repeat, at about 40% of the prompt speed (45 -> 17 tok/s on an A750, decode unchanged). Arc Pro B70 (Battlemage) is repeatable with XMX on. [docs/INTEL.md: Repeatable answers on an Alchemist card]",
    "retire_after": "",
    "retired_in": ""
   },
@@ -48487,7 +48524,7 @@
     "docs/BATCHING.md:126",
     "docs/DETAILS.md:1305",
     "docs/DETAILS.md:1780",
-    "docs/INTEL.md:401",
+    "docs/INTEL.md:424",
     "docs/bench-results/2026-10-05-community-arc-b65/benchy-v1/README.md:14",
     "docs/bench-results/2026-10-07-community-arc-b65-v01402/BUILD.md:109"
    ],
@@ -48710,7 +48747,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL.md:417",
+    "docs/INTEL.md:440",
     "docs/INTEL_ARC.md:197"
    ],
    "first_commit": "e7391915eb",
@@ -48825,7 +48862,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL.md:418",
+    "docs/INTEL.md:441",
     "docs/INTEL_ARC.md:188",
     "docs/STRIX_HALO.md:31"
    ],
@@ -49788,7 +49825,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL.md:428"
+    "docs/INTEL.md:452"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -49946,7 +49983,7 @@
     "docs/INTEL.md:212",
     "docs/INTEL.md:255",
     "docs/INTEL.md:265",
-    "docs/INTEL.md:415",
+    "docs/INTEL.md:438",
     "docs/INTEL_ARC.md:63",
     "docs/INTEL_ARC.md:153",
     "docs/INTEL_ARC.md:191",
