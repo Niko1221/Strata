@@ -223,7 +223,7 @@ std::vector<std::string> apply_nv_defaults(int major, int minor, uint64_t main_v
     const int cc = strata::cc_of(major, minor);
     const int mj = cc / 10, mn = cc % 10;
     std::vector<std::string> set;
-    bool fetch_set = false;
+    bool fetch_set = false, split_set = false;
     for (const auto& kv : nv_default_env(major, minor, strata::qwen_defaults_026(), main_vram_bytes)) {
         if (std::getenv(kv.first.c_str()) != nullptr) continue;   // the user's setting wins, whatever it is
 #if defined(_WIN32)
@@ -233,8 +233,10 @@ std::vector<std::string> apply_nv_defaults(int major, int minor, uint64_t main_v
 #endif
         set.push_back(kv.first);
         if (kv.first == "STRATA_ADAPT_FETCH") fetch_set = true;
+        if (kv.first == "STRATA_GDN_SPLIT") split_set = true;
     }
     adapt_fetch_default_flag() = fetch_set;
+    gdn_split_default_flag() = split_set;
     if (!set.empty()) {
         const bool sm86 = mj == 8 && mn == 6;
         const bool sm89 = mj == 8 && mn == 9;

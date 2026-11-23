@@ -5049,6 +5049,29 @@ int main(int argc, char** argv) {
 #endif
         o.lookup_max_t = strata::core::default_lookup_max_t(ld);
     }
+    // #6747: STRATA_GDN_SPLIT=1 (the sm_70 table's) holds kVerifyMaxT rows and has no batched commit, so it cannot run a lookup window past
+    // kVerifyMaxT: the 12-token default of the 8-row build ended the engine on the first request.  Drop the table's switch, or (a user's own
+    // STRATA_GDN_SPLIT=1) clamp the lookup window; never exit.
+    if (o.lookup_max_t > (int) strata::kernels::kVerifyMaxT) {
+        const char* gs = std::getenv("STRATA_GDN_SPLIT");
+        const auto fix = strata::core::gdn_split_window_fix(gs != nullptr && gs[0] == '1', strata::core::gdn_split_is_default(),
+                                                           o.lookup_max_t, (int) strata::kernels::kVerifyMaxT);
+        if (fix.drop_default_split) {
+#if defined(_WIN32)
+            _putenv_s("STRATA_GDN_SPLIT", "");
+#else
+            unsetenv("STRATA_GDN_SPLIT");
+#endif
+            strata::core::gdn_split_default_flag() = false;
+            std::fprintf(stderr, "strata generate: STRATA_GDN_SPLIT=1 (the sm_70 default) is dropped: a --lookup-max-t %d window is wider than this build's %d rows "
+                                 "and needs the batched GDN commit (STRATA_GDN_SPLIT=1 with --lookup-max-t %d, or a -DSTRATA_WINDOW_MAX_T=16 build, keeps the switch)\n",
+                         o.lookup_max_t, (int) strata::kernels::kVerifyMaxT, (int) strata::kernels::kVerifyMaxT);
+        } else if (fix.lookup_max_t != o.lookup_max_t) {
+            std::fprintf(stderr, "strata generate: STRATA_GDN_SPLIT=1 holds %d rows per window: --lookup-max-t %d is clamped to %d (unset STRATA_GDN_SPLIT for the wide window)\n",
+                         (int) strata::kernels::kVerifyMaxT, o.lookup_max_t, fix.lookup_max_t);
+            o.lookup_max_t = fix.lookup_max_t;
+        }
+    }
     if (o.lookup_max_t > 0 && o.suffix_draft > 0 && o.spec >= 2) {
         if (o.mtp_max_t == 0) o.mtp_max_t = o.spec;
         o.spec = std::max(o.spec, std::min(o.lookup_max_t, strata::kernels::kVerifyLongT));
