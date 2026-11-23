@@ -176,9 +176,9 @@ def plan(*, family: str, model: str, model_dir: Path, data_dir: Path, src: Path,
         draft_off = str(drafting or "").strip().lower() == "off"
         if dspark is not None and not draft_off:
             args += ["--dspark", str(dspark)]
-        draft_on = str(drafting or "").strip().lower() in ("dspark", "on", "auto")
+        asked = str(drafting or "").strip().lower()
         mode = "off" if (draft_off or (is_gguf and dspark is None)) else (
-            inkling_family.DEFAULT_DRAFTER if draft_on else inkling_family.default_drafting(backend))
+            "auto" if asked == "auto" else inkling_family.DEFAULT_DRAFTER if asked in ("dspark", "on") else inkling_family.default_drafting(backend))
         if mode == "off":
             args += ["--draft", "off"]
         cfg = {"exe": f"component:{inkling_family.COMPONENT}", "args": args, "cwd": str(src), "tokenizer": str(tokenizer),

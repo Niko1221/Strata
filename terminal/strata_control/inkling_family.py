@@ -43,8 +43,9 @@ EXACT_DRAFTING_BACKENDS: tuple = ()
 
 
 def default_drafting(backend: str | None = None) -> str:
-    """What a run config gets when the person chose nothing: "dspark" on a backend in EXACT_DRAFTING_BACKENDS, else "off"."""
-    return DEFAULT_DRAFTER if (backend or "cuda") in EXACT_DRAFTING_BACKENDS else "off"
+    """What a run config gets when the person chose nothing: "off" until the backend is in EXACT_DRAFTING_BACKENDS, then "auto" = a measured probe on
+    this card and placement decides (strata_control/inkling_probe.py: drafting only when it gains MARGIN, 1.10x, on a code + chat probe)."""
+    return "auto" if (backend or "cuda") in EXACT_DRAFTING_BACKENDS else "off"
 DEFAULT_VISION = True
 DEFAULT_PARALLEL = inkling_fit.DEFAULT_PARALLEL
 PARALLEL_CHOICES = inkling_fit.PARALLEL_CHOICES

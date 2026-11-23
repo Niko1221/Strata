@@ -27,12 +27,13 @@ class DraftingDefault(unittest.TestCase):
         args = inkling_kind.engine_args({"arch": "inkling2_loop", "args": ["--native", "m.strata"]}, announce=False)
         self.assertEqual(args[args.index("--draft") + 1], "off")
 
-    def test_a_proven_backend_turns_it_on_by_default(self):
+    def test_a_proven_backend_lets_a_measured_probe_decide(self):
         inkling_family.EXACT_DRAFTING_BACKENDS = ("cuda",)
-        self.assertEqual(inkling_family.default_drafting("cuda"), "dspark")
-        self.assertEqual(inkling_family.default_drafting(None), "dspark")
+        self.assertEqual(inkling_family.default_drafting("cuda"), "auto")
+        self.assertEqual(inkling_family.default_drafting(None), "auto")
         self.assertEqual(inkling_family.default_drafting("hip"), "off")
-        self.assertTrue(inkling_kind.wants_drafter({"backend": "cuda"}))
+        # "auto" is on only with a probe that says so (tests/terminal/test_inkling_probe.py); without one it is off
+        self.assertFalse(inkling_kind.wants_drafter({"backend": "cuda"}))
         self.assertFalse(inkling_kind.wants_drafter({"backend": "hip"}))
 
     def test_an_explicit_choice_wins_both_ways(self):
