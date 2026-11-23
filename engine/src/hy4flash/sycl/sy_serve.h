@@ -528,6 +528,17 @@ inline int hy4s_serve_main(const ServeOpts& o) {
         wait();
         // QUIT / EOF: leave without running the destructors. After some request mixes (cancel, errors) the teardown of the async Engram tasks / runtime threads did not return in
         // tests on p1006 (main thread in a futex wait for >60 s); everything the process holds (device memory, pinned memory, mmaps) is released by the OS.
+        // Drain EVERY GPU queue first: a command still in flight at _exit faults the xe driver's bcs
+        // engines on this driver stack (dual-B70 teardown bug) and can wedge the next launch.
+        // peers.release() drains its per-peer queues AND cleanly disables the p2p mappings probe_p2p
+        // enabled; GpuExperts::wait_all() drains its copy + compute queues; vcache.wait_copy() drains
+        // the promotion copy queue. release()/wait_copy() run unconditionally: a half-initialized
+        // peer (active()==false but a queue exists) must not keep its commands alive until _exit.
+        // This only waits/frees — nothing new is enqueued afterwards.
+        try { Q().wait(); } catch (...) {}
+        if (r.gx) try { r.gx->wait_all(); } catch (...) {}
+        try { vcache.wait_copy(); } catch (...) {}
+        try { peers.release(); } catch (...) {}
         hy4s_exit_fast(0);
     } catch (const sycl::exception& e) {
         proto("ERR sycl: %s", e.what());
