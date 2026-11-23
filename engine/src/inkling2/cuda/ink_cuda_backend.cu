@@ -281,9 +281,12 @@ public:
         if (opts.chunk_auto && !model_.ls_active) {
             const char* auto_env = std::getenv("STRATA_INK_CHUNK_AUTO");
             if (!(auto_env && std::atoi(auto_env) == 0)) {
-                chunk_try = std::max(chunk_try, strata::core::ink_auto_chunk(led_loaded, max_slots_));
-                std::fprintf(stderr, "[InkCUDA] prefill chunk %d (auto: %.0f MiB free after the experts, %d slot(s); --chunk N sets it)\n",
-                             chunk_try, led_loaded, max_slots_);
+                // the K/V still to be allocated for every slot to reach the context stays free of the chunk's working memory (kv offload on: it is host RAM)
+                const double kv_grow_mib = (kv_offload_mode == 1) ? 0.0
+                    : (double)8 * max_slots_ * std::max(0, std::max(256, opts.max_ctx) - init_glob) * (double)per_visit_pos / 1048576.0;
+                chunk_try = std::max(chunk_try, strata::core::ink_auto_chunk(led_loaded, max_slots_, kv_grow_mib));
+                std::fprintf(stderr, "[InkCUDA] prefill chunk %d (auto: %.0f MiB free after the experts, %.0f MiB of K/V still to grow, %d slot(s); --chunk N sets it)\n",
+                             chunk_try, led_loaded, kv_grow_mib, max_slots_);
             }
         }
         for (;;) {
