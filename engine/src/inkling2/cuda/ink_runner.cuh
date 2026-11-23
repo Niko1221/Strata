@@ -12,6 +12,7 @@
 #include "ink_moe_cuda.cuh"
 
 #include "strata/artifact/strata_reader.hpp"
+#include "strata/core/ink_kv_grow.hpp"
 
 #include <algorithm>
 #include <array>
@@ -2266,8 +2267,7 @@ struct InkCudaRunner {
         if (needed_pos <= kv_alloc_ctx) return true;
         if (needed_pos > max_ctx) return false;
         const int old_cap = kv_alloc_ctx;
-        int new_cap = std::min(max_ctx, std::max(needed_pos, ((old_cap + 8191) / 8192 + 1) * 8192));
-        new_cap = std::min(max_ctx, ((new_cap + 63) & ~63));
+        int new_cap = strata::core::ink_kv_next_cap(old_cap, needed_pos, max_ctx);
 
         const size_t per_pos = kv_bytes_per_visit_pos(kv_dtype);
         for (int s = 0; s < (m.ls_active ? m.n_stages : 1); ++s) {
@@ -2281,11 +2281,12 @@ struct InkCudaRunner {
             const int dev = m.ls_active ? m.stage_gpu[s] : m.primary_gpu;
             if (ink_cuda_mem_info(&vf, &vt, dev) != cudaSuccess) return false;
             const size_t floor_b = 256ull << 20;
-            const size_t need_b = (size_t)n_glob_s * max_slots * new_cap * per_pos;
-            if (vf <= floor_b + need_b) {
+            // #6770: the visits grow one at a time (new buffer, copy, free the old one), so the card needs the net growth
+            // plus one held old visit, not the whole new K/V next to the old one (that refused growth at about half the context).
+            if (!strata::core::ink_kv_grow_fits(vf, floor_b, n_glob_s, max_slots, old_cap, new_cap, per_pos)) {
                 const int tight_cap = std::min(max_ctx, ((needed_pos + 255) & ~255));
-                const size_t tight_b = (size_t)n_glob_s * max_slots * tight_cap * per_pos;
-                if (vf <= floor_b + tight_b) {
+                if (tight_cap <= old_cap ||
+                    !strata::core::ink_kv_grow_fits(vf, floor_b, n_glob_s, max_slots, old_cap, tight_cap, per_pos)) {
                     // VRAM cannot grow global KV further: seamlessly spill tail [kv_dev_ctx..new_cap-1] into mapped pinned host RAM!
                     if (kv_offload_mode >= 0 && kv_host_ctx == 0) {
                         const int hcap = new_cap - kv_dev_ctx;
