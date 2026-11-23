@@ -1,0 +1,136 @@
+"""#6733 / #6781: where the server sends an Inkling-2-Mini request decides whether the engine can reuse the conversation's cache.
+
+The real engine keeps ONE conversation per slot (the whole stream it holds, and the prompt-end checkpoint) and a request that does not
+continue it wipes it.  serve/server.py's routing used to look only at the whole held stream (never the checkpoint) and sent every
+request that arrived alone to slot 0 (GEN), so a short request between two turns of a chat (a title, a translation: LobeHub, Hermes)
+wiped the chat even with `--parallel 2`.  tools/inkling_mock_engine.py --cache-model has the engine's reuse rules; these tests read
+`usage.prompt_tokens_details.cached_tokens` of the replies over HTTP, as a client sees it.
+
+    python -m pytest serve/test_inkling_slot_routing.py
+"""
+from __future__ import annotations
+
+import json
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+TERMINAL = Path(__file__).resolve().parents[1]
+if str(TERMINAL) not in sys.path:
+    sys.path.insert(0, str(TERMINAL))
+
+from serve.test_inkling_serve_e2e import _MockServerHarness, _post_json  # noqa: E402
+
+REPLY = ("<|message_model|><|content_text|>Sure, here it is.<|end_message|><|content_model_end_sampling|>")
+BIG = "The quick brown fox jumps over the lazy dog. " * 70          # about 3,100 tokens: a long conversation (the toy tokenizer is per byte)
+
+
+class Harness(_MockServerHarness):
+    def __init__(self, tmp, *, parallel, extra=()):
+        super().__init__(tmp, [REPLY], parallel=parallel)
+        cfg = json.loads(self.cfg_path.read_text(encoding="utf-8"))
+        cfg["args"] = cfg["args"] + ["--cache-model", *extra]
+        self.cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
+
+
+class Client:
+    def __init__(self, base):
+        self.base = base
+
+    def chat(self, messages, **extra):
+        r = _post_json(f"{self.base}/v1/chat/completions",
+                       {"model": "inkling-2-mini-sq-20", "messages": messages, "max_tokens": 64, "temperature": 0, **extra}, timeout=60)
+        u = r["usage"]
+        return r["choices"][0]["message"].get("content") or "", u["prompt_tokens"], (u.get("prompt_tokens_details") or {}).get("cached_tokens", 0)
+
+
+def conversation(tag):
+    # (the test tokenizer's template has no system role: the long part is the first user message)
+    return [{"role": "user", "content": f"[{tag}] " + BIG + " first question"}]
+
+
+def next_turn(msgs, reply, question):
+    return msgs + [{"role": "assistant", "content": reply}, {"role": "user", "content": question}]
+
+
+class SlotRouting(unittest.TestCase):
+    def run_session(self, parallel, between=None, extra=()):
+        """turn 1, optionally a request in between, turn 2, turn 3 of one conversation: [(prompt_tokens, cached_tokens), ...]"""
+        with tempfile.TemporaryDirectory() as td:
+            with Harness(Path(td), parallel=parallel, extra=extra) as h:
+                c = Client(f"http://127.0.0.1:{h.port}")
+                got = []
+                msgs = conversation("A")
+                reply, p, k = c.chat(msgs)
+                got.append((p, k))
+                if between:
+                    c.chat(between)
+                msgs = next_turn(msgs, reply, "second question")
+                reply, p, k = c.chat(msgs)
+                got.append((p, k))
+                msgs = next_turn(msgs, reply, "third question")
+                _, p, k = c.chat(msgs)
+                got.append((p, k))
+                return got
+
+    def assertReused(self, row, label):
+        p, k = row
+        self.assertGreaterEqual(k, p - 90, f"{label}: {k} of {p} prompt tokens reused")
+
+    def assertNotReused(self, row, label):
+        self.assertEqual(row[1], 0, f"{label}: {row[1]} of {row[0]} reused")
+
+    def test_a_chat_reuses_its_prompt_one_slot_and_two(self):
+        for parallel in (1, 2):
+            with self.subTest(parallel=parallel):
+                t1, t2, t3 = self.run_session(parallel)
+                self.assertNotReused(t1, "turn 1")
+                self.assertReused(t2, "turn 2")
+                self.assertReused(t3, "turn 3")
+
+    def test_a_short_request_between_two_turns_does_not_wipe_the_chat_with_two_slots(self):
+        title = [{"role": "user", "content": "Name this conversation in three words."}]
+        t1, t2, t3 = self.run_session(2, between=title)
+        self.assertReused(t2, "turn 2 after a title request")
+        self.assertReused(t3, "turn 3")
+
+    def test_with_one_slot_the_short_request_still_replaces_the_chat(self):
+        # the engine has one conversation per slot: with `parallel 1` there is nowhere else for the title (the limit this fix cannot lift)
+        title = [{"role": "user", "content": "Name this conversation in three words."}]
+        t1, t2, t3 = self.run_session(1, between=title)
+        self.assertNotReused(t2, "turn 2 after a title request, one slot")
+        self.assertReused(t3, "turn 3 (the chat is back in the slot)")
+
+    def test_two_chats_each_keep_their_prompt_with_two_slots(self):
+        with tempfile.TemporaryDirectory() as td:
+            with Harness(Path(td), parallel=2) as h:
+                c = Client(f"http://127.0.0.1:{h.port}")
+                a, b = conversation("A"), conversation("B")
+                ra, _, _ = c.chat(a)                    # slot 0
+                title = [{"role": "user", "content": "short helper request"}]
+                c.chat(title)                           # slot 1
+                a = next_turn(a, ra, "second")
+                _, p, k = c.chat(a)
+                self.assertReused((p, k), "chat A, turn 2")
+                rb, _, _ = c.chat(b)                    # a new long chat: slot 0 (or whichever it wipes)
+                b = next_turn(b, rb, "second")
+                _, p, k = c.chat(b)
+                self.assertReused((p, k), "chat B, turn 2")
+
+    def test_a_follow_up_found_by_the_checkpoint_goes_to_the_slot_that_holds_it(self):
+        # the follow-up does not extend the whole held stream (the reply was not sent back token for token), only the checkpoint:
+        # the server must still recognise the slot.  A different assistant text than the one the mock produced:
+        with tempfile.TemporaryDirectory() as td:
+            with Harness(Path(td), parallel=2) as h:
+                c = Client(f"http://127.0.0.1:{h.port}")
+                a = conversation("A")
+                c.chat(a)
+                c.chat([{"role": "user", "content": "helper"}])      # a request in between
+                a2 = next_turn(a, "A reply the model never wrote", "second")
+                _, p, k = c.chat(a2)
+                self.assertReused((p, k), "turn 2 with a reply that is not the generated one")
+
+
+if __name__ == "__main__":
+    unittest.main()

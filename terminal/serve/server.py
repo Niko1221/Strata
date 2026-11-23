@@ -991,6 +991,10 @@ class StrataEngine:
         # what each slot's sessions hold (prompt + every token a window fed), so a conversation's next turn goes to
         # the slot that has its start (the engine checks it again); when the slot was last used
         self.slot_held: list[list[int]] = [[] for _ in range(self.batch)]
+        # Inkling-2-Mini: the prompt of the request a slot ran last (valid while slot_held[b] is not empty).  Its engine resumes the
+        # next turn at the end of that prompt (the prompt-end checkpoint), not only from the whole held stream: the reply it
+        # decoded (hidden thinking, a call's own spacing) is never sent back token for token (#6733)
+        self.slot_prompt: list[list[int]] = [[] for _ in range(self.batch)]
         self.slot_used = [0.0] * self.batch
         self.slot_live: list[dict | None] = [None] * self.batch   # /metrics: the request in each slot
         # #1012: the admission state belongs to the server, not to one engine process.  restart() runs this again
@@ -1970,6 +1974,29 @@ class StrataEngine:
             return any(not self.slot_busy[b] and self._slot_prefix(b, prompt, agreed) >= self.SLOT_PREFIX_MIN
                        for b in range(self.batch))
 
+    INKLING_ROUTE_MIN = 32       # a held prefix shorter than this does not decide the slot
+
+    def _inkling_route(self, prompt: list[int]) -> int:
+        """Inkling-2-Mini with several slots, nothing else running: where this prompt goes.  0 is the solo path (GEN: slot 0, where
+        the drafter works); another number is the slot BGEN reads it in (no drafts there).  The engine keeps one conversation per slot
+        and a request that does not continue it wipes it, so (#6733, the reports of LobeHub / Hermes titles, mstrent's table):
+        - the next turn of the conversation a free slot holds goes to that slot, whichever it is;
+        - a short request that continues nothing (a title, a translation) while slot 0 holds a long conversation goes to another
+          slot (an empty one, else the one used longest ago), and the conversation keeps slot 0 for its next turn;
+        - everything else takes slot 0 as before."""
+        with self.slot_cv:
+            agreed = {}
+            held = [0 if self.slot_busy[b] else self._slot_prefix(b, prompt, agreed) for b in range(self.batch)]
+            best = max(range(self.batch), key=lambda b: (held[b], b == 0))
+            if held[best] >= self.INKLING_ROUTE_MIN:
+                return best
+            if (not self.slot_busy[0] and len(self.slot_held[0]) >= self.SIDE_REQUEST_MIN and len(prompt) < self.SIDE_REQUEST_MIN):
+                free = [b for b in range(1, self.batch) if not self.slot_busy[b]]
+                if free:
+                    return min(free, key=lambda b: (bool(self.slot_held[b]), len(self.slot_held[b]) >= self.SIDE_REQUEST_MIN,
+                                                    self.slot_used[b]))
+            return 0
+
     def _shorter_waiting(self, plen: int) -> bool:
         """#656: someone waits for the control lines with a prompt under half this one's: worth giving way to."""
         with self.slot_cv:
@@ -2036,6 +2063,7 @@ class StrataEngine:
         stop_sent = False
         admission_pending, admission_before = False, None   # the admission's DONE is partial until BADM 0 or BDONE
         yields, solo_again, refused = 0, 0, 0
+        solo_leg = None     # Inkling: (the solo leg's prompt, where its tokens begin in `out`, the engine process): slot 0 holds it when this ends
         admit_wait, admit_since, admit_said = False, 0.0, False   # #1603: waiting for a slot, since when, said
         try:
             while True:   # a request in a slot that is left alone goes back to the solo path
@@ -2047,7 +2075,15 @@ class StrataEngine:
                     lines_q, sq = self.lines, self.slot_q           # (it holds no slot of the engine before: nothing to lose)
                 with self.slot_cv:
                     alone = not any(self.slot_busy) and self.waiting == 0
-                if alone and left > 1 and not (not embeddings and self._turn_in_slot(prompt)):
+                if getattr(self, "inkling_engine", False) and self.batch > 1:
+                    solo = alone and left > 1 and not embeddings and self._inkling_route(prompt) == 0
+                else:
+                    solo = alone and left > 1 and not (not embeddings and self._turn_in_slot(prompt))
+                if solo:
+                    if getattr(self, "inkling_engine", False) and self.batch:
+                        self.slot_held[0] = []              # the solo path is slot 0 of this engine: the read overwrites what it held
+                        self.slot_prompt[0] = list(prompt)
+                        solo_leg = (list(prompt), len(out), self.gen)
                     pf = self.pen_from_key(orig_len, len(prompt))
                     head = f"GENI {left}{leg_keys()}{pf} {embeddings}" if embeddings else f"GEN {left}{leg_keys()}{pf}"
                     self._last_done = None                  # (#879: this request's DONE decides below)
@@ -2203,6 +2239,7 @@ class StrataEngine:
                     if started is not None:
                         started()
                     self.slot_held[slot] = []               # the admission overwrites what the slot held
+                    self.slot_prompt[slot] = list(prompt)   # (Inkling: valid once the BDONE sets slot_held again)
                     adm_from = len(out)                     # (the admission's own token comes after these)
                     admission_pending, admission_before = True, self.last
                     phase = "admit"
@@ -2397,6 +2434,13 @@ class StrataEngine:
                 self.slot_busy, self.slot_claims, self.slot_held, self.slot_used, self.slot_live,
             )
             same = self.gen == born
+            if solo_leg is not None and same and solo_leg[2] == self.gen and slot != 0 and len(held):
+                # Inkling: slot 0 holds the solo leg's session: its prompt and every token fed (all but the last).  The next turn of
+                # this conversation (or its own continuation in a slot) finds it there; a short request that continues nothing is
+                # sent elsewhere (_inkling_route).  Written here, not after the leg: a client that stops at the stop token closes
+                # this generator at its last yield.
+                held[0] = (solo_leg[0] + out[solo_leg[1]:-1]) if len(out) > solo_leg[1] else []
+                used[0] = time.time()
             if reserved is not None and same and reserved < len(busy):
                 with self.slot_cv:
                     busy[reserved] = False
@@ -2455,6 +2499,13 @@ class StrataEngine:
             return 0
         if len(h) < len(prompt) and prompt[:len(h)] == h:
             return len(h)
+        if getattr(self, "inkling_engine", False):
+            # the engine's prompt-end checkpoint: the previous prompt but its last token (ink_serve.h prompt_ckpt_prefix)
+            ck = self.slot_prompt[b]
+            n = len(ck) - 1
+            if n >= 1 and len(prompt) > n and prompt[:n] == ck[:n]:
+                return n
+            return 0
         if self.TURN_ID not in h:
             return 0
         lo = self._slot_agree(b, prompt, agreed)
