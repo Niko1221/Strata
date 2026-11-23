@@ -495,7 +495,7 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
     const InkCfg& c = mf.m.c;
     const int V = c.vocab_unpadded;
     const int P = std::max(1, std::min(kMaxParallelSlots, cfg.bopts.parallel));
-    const int chunk_sz = std::max(1, cfg.bopts.chunk);
+    const int chunk_sz = std::max(1, backend.effective_chunk() > 0 ? backend.effective_chunk() : cfg.bopts.chunk);
     // STRATA_INK_PREFILL_CAP=N: tokens of prompt read per step while another slot decodes (default 0 = no cap, as before).
     // It only moves time between the request that reads and the ones that decode (measured on an RTX 5090, 4096-token prompt read
     // while another request decodes: cap 64 / 128 / 256 / none = decode 24 / 21 / 17 / 12.6 tok/s, prompt first token after

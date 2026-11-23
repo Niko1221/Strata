@@ -17,7 +17,8 @@ struct ImageRec;  // defined in ink_vision.h
 struct BackendOpts {
     int max_ctx = 32768;
     int parallel = 1;            // 1..64 concurrent slots
-    int chunk = 512;
+    int chunk = 512;             // prompt tokens per step; the CUDA backend picks a larger one by itself while chunk_auto (see strata/core/ink_chunk.hpp)
+    bool chunk_auto = true;      // false once --chunk is given; only the CUDA backend reads it, every other backend uses chunk as it is
     int gpu_index = 0;
     int gpus = 1;                // 1..4 (--gpus 2 / --gpus 0,1 / --layer-split auto)
     std::vector<int> gpu_ids;    // optional explicit GPU ordinals (--gpus 0,1 / --devices 0,1 / IK2_GPUS)
@@ -72,6 +73,7 @@ public:
     virtual std::string device_info() const = 0;
     virtual BackendStats stats() const = 0;
     virtual int effective_max_ctx() const { return 0; }
+    virtual int effective_chunk() const { return 0; }     // the prefill chunk the backend really runs with (0: opts.chunk)
 
     // Load Section 1 trunk + DSpark + 3x loop-weighted Section 4 experts into device/host memory
     virtual bool init(const InkModelFile& model, const BackendOpts& opts, std::string& err) = 0;

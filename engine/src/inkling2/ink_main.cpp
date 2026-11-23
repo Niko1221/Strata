@@ -169,8 +169,9 @@ static int cmd_bench(const std::string& model_path, const BackendOpts& bopts, in
     std::vector<float> logits(static_cast<size_t>(P) * V);
     StepBatch batch;
     double t_pf0 = now_s();
-    for (int p0 = 0; p0 < prompt_len; p0 += bo.chunk) {
-        int len = std::min(bo.chunk, prompt_len - p0);
+    const int chunk_run = std::max(1, backend->effective_chunk() > 0 ? backend->effective_chunk() : bo.chunk);
+    for (int p0 = 0; p0 < prompt_len; p0 += chunk_run) {
+        int len = std::min(chunk_run, prompt_len - p0);
         batch.clear();
         batch.capture_taps = use_dspark;
         for (int s = 0; s < P; ++s) {
@@ -738,6 +739,7 @@ int main(int argc, char** argv) {
             cfg.bopts.parallel = std::max(1, std::min(kMaxParallelSlots, std::atoi(next().c_str())));
         } else if (a == "--chunk") {
             cfg.bopts.chunk = std::max(1, std::atoi(next().c_str()));
+            cfg.bopts.chunk_auto = false;
         } else if (a == "--kv-dtype" || a == "--kv") {
             std::string kv = next();
             if (kv == "fp8" || kv == "fp8_e4m3") { cfg.bopts.kv_dtype = KvDtype::FP8_E4M3; cfg.bopts.kv_dtype_auto = false; }
