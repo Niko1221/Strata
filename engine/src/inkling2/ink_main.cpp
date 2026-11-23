@@ -464,6 +464,8 @@ static int cmd_batch_check(const std::string& model_path, const BackendOpts& bop
     const int V = mf.m.c.vocab_unpadded;
     const int P = static_cast<int>(ids.size());
     const int chunk = std::max(1, bo.chunk);
+    const char* sc_env = std::getenv("INK_BC_SOLO_CHUNK");    // the solo run's chunk size (default: the serve chunk)
+    const int solo_chunk = (sc_env && std::atoi(sc_env) > 0) ? std::atoi(sc_env) : chunk;
     StepBatch batch;
 
     // ---- solo: slot 0 only, the same chunking as the serve loop with one request
@@ -473,7 +475,7 @@ static int cmd_batch_check(const std::string& model_path, const BackendOpts& bop
         std::vector<float> lg(V);
         int pos = 0;
         while (pos < P) {
-            const int take = std::min(chunk, P - pos);
+            const int take = std::min(solo_chunk, P - pos);
             batch.clear();
             for (int k = 0; k < take; ++k) batch.push(0, pos + k, ids[pos + k], pos + k == P - 1);
             if (!backend->forward_batch(batch, (pos + take == P) ? lg.data() : nullptr, nullptr, err)) { fprintf(stderr, "solo prefill: %s\n", err.c_str()); return 1; }
