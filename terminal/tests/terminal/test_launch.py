@@ -1451,6 +1451,32 @@ class GpuRolesFlag(unittest.TestCase):
         self.assertEqual(installed_cards(saved), [0, 1])
         self.assertIsNone(cards_for_launch(S.LaunchSettings(family="qwen", model="IQ3_XXS"), catalog(HW_2X16), base=saved))
 
+    def test_q36_two_cards_get_peer_device_not_layer_split(self):
+        # qwen35moe (Qwen3.6-35B-A3B, its own engine path) has no layer split: --gpu 0,1 must add --peer-device,
+        # never a layer split (the engine refuses that flag and silently drops back to one GPU).
+        from strata_cli.launch.runner import apply_cards
+        cfg = {"exe": "/x/strata", "arch": "qwen35moe", "args": ["--native", "/m.gguf", "--max-context", "65536"]}
+        apply_cards(cfg, [0, 1])
+        self.assertEqual(cfg["gpu"], [0, 1])
+        self.assertNotIn("layer_split", cfg)
+        self.assertIn("--peer-device", cfg["args"])
+        self.assertEqual(cfg["args"][cfg["args"].index("--peer-device") + 1], "1")
+        # back to one card: the peer flag is removed, not left stale from an earlier two-card launch
+        apply_cards(cfg, [0])
+        self.assertEqual(cfg["gpu"], 0)
+        self.assertNotIn("--peer-device", cfg["args"])
+
+    def test_q36_kv_in_apply_choices_uses_its_own_widths_not_flash_nexts(self):
+        # Flash-Next's int8 default (and q4_0/k8v4) are not q36 --kv values; the preview must not write them.
+        from strata_cli.launch.runner import apply_choices
+        cfg = {"exe": "/x/strata", "arch": "qwen35moe", "args": ["--native", "/m.gguf", "--max-context", "65536"]}
+        out = apply_choices(cfg, S.LaunchSettings(family="qwen36", model="Q8_0", context=65536))
+        self.assertNotIn("--kv", out["args"])                       # no --kv asked: none written (the engine's own fp32 default)
+        out = apply_choices(cfg, S.LaunchSettings(family="qwen36", model="Q8_0", context=65536, kv="fp16"))
+        self.assertEqual(out["args"][out["args"].index("--kv") + 1], "fp16")
+        out = apply_choices(cfg, S.LaunchSettings(family="qwen36", model="Q8_0", context=65536, kv="int8"))
+        self.assertNotIn("--kv", out["args"])                       # a Flash-Next value: not q36's, so not written
+
 
 if __name__ == "__main__":
     unittest.main()

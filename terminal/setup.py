@@ -9841,8 +9841,14 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     ok(f"model: {fam['title']}")
     if fam.get("license"):
         say(f"  Its license: {fam['license']}")
-    if multi:
-        warn(f"{fam['title']} runs on one GPU so far: using GPU {gpu.get('index', 0)} ({gpu_name(gpu)}) only")
+    peer_gpu = None
+    if multi and len(multi) == 2 and not hip:        # the second-card expert tier (--peer-device): CUDA, two cards only so far
+        peer_gpu = next(i for i in multi if i != gpu.get("index", 0))
+        ok(f"{fam['title']}: GPU {gpu.get('index', 0)} ({gpu_name(gpu)}) main, GPU {peer_gpu} as a second-card expert "
+           "tier (--peer-device)")
+    elif multi:
+        warn(f"{fam['title']} runs on one GPU, or two together with --peer-device (not {len(multi)}): using GPU "
+             f"{gpu.get('index', 0)} ({gpu_name(gpu)}) only")
     names = list(fam["models"])
     if a.model and a.model not in names:
         fail(f"{fam['title']} has no {a.model} model file", "choose one of: " + ", ".join(names))
@@ -9899,9 +9905,12 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
             n = int(ask("How many requests at once (1 = one at a time)?", [str(i) for i in range(1, PARALLEL_MAX + 1)],
                         "1", a.yes))
             par = n if n > 1 else None
-    if a.rope_scaling or a.rope_scale or a.kv or a.resident_budget_gib is not None or a.low_ram not in (None, "auto"):
-        warn(f"--rope-scaling / --kv / --resident-budget-gib / --low-ram are Flash-Next settings: {fam['title']} "
+    if a.rope_scaling or a.rope_scale or a.resident_budget_gib is not None or a.low_ram not in (None, "auto"):
+        warn(f"--rope-scaling / --resident-budget-gib / --low-ram are Flash-Next settings: {fam['title']} "
              "does not use them")
+    kv = a.kv if a.kv in ("fp32", "fp16", "fp8", "fp4") else None   # q36's own --kv widths; Flash-Next's int8/q4_0/k8v4 do not apply here
+    if a.kv and kv is None:
+        warn(f"--kv {a.kv} is a Flash-Next memory format: {fam['title']} takes fp32, fp16, fp8 or fp4 - kept at its default (fp32)")
     folder = Path(a.gguf_dir) if a.gguf_dir else Path(a.models_dir) / tag
     published = fam["file"].format(q=model)           # the published file's name: its pinned size and SHA-256
     gguf = folder / published
@@ -9974,6 +9983,14 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
 
     step(7, "writing the start script")
     args = ["--native", str(gguf), "--max-context", str(ctx), "--prefill", "auto", "--mtp", str(fam["mtp"])]
+    if kv:
+        args += ["--kv", kv]
+        ok(f"KV cache: --kv {kv}")
+    if peer_gpu is not None:
+        args += ["--peer-device", "1"]                         # the engine numbers --gpu's cards 0, 1: the config below lists [main, peer], whatever order the cards were chosen in
+        if getattr(a, "peer_reserve_mib", None) is not None:
+            args += ["--peer-reserve-mib", str(a.peer_reserve_mib)]
+        ok(f"second-card expert tier: --peer-device 1 (GPU {peer_gpu})")
     if a.vram_reserve_mib is not None:             # VRAM left free for other programs: the experts take that much less
         vram = gpu.get("vram_gb", 0.0)
         if vram > 0:
@@ -9986,7 +10003,10 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
         cfg["cuda"] = 12
     if hip:
         cfg["backend"] = "hip"
-    if gpu.get("count", 1) > 1 or a.gpu is not None:
+    if peer_gpu is not None:
+        cfg["gpu"] = [gpu.get("index", 0), peer_gpu]    # both cards visible (CUDA_VISIBLE_DEVICES), the main card first: --peer-device 1 is the second
+        cfg["gpus_asked"] = True
+    elif gpu.get("count", 1) > 1 or a.gpu is not None:
         cfg["gpu"] = gpu["index"]
         cfg["gpus_asked"] = True
     if a.host:
@@ -11504,6 +11524,9 @@ def main() -> int:
     ap.add_argument("--vram-reserve-mib", type=int, metavar="N",
                     help="VRAM in MiB the engine leaves free for other programs (a game, another model; the engine's "
                          "default: 700); the expert cache takes that much less")
+    ap.add_argument("--peer-reserve-mib", type=int, metavar="N",
+                    help="Qwen3.6-35B-A3B on two GPUs (--gpus): VRAM in MiB the second-card expert tier (--peer-device) "
+                         "leaves free there (the engine's default: 600)")
     ap.add_argument("--mtp", choices=["on", "off"],
                     help="the draft layer (MTP): off starts the model without it, which frees about 1 GB of graphics memory "
                          "for the expert cache and takes less RAM, at the price of speed; it is kept in the run config "
