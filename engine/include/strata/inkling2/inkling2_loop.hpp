@@ -109,6 +109,24 @@ void eval_inkling2_expert_batch(
     void (*wait_down)(void*) = nullptr,
     void* wait_ctx = nullptr) noexcept;
 
+// Row-split evaluation of ONE expert for ONE token, so several CPU threads can share one expert at decode
+// (a hybrid decode step has only 2-4 RAM experts per layer, so one thread per expert leaves most cores idle).
+// Every output element is computed by the same code and in the same order as eval_inkling2_expert, so
+// the three phases below give bit-identical results for any split:
+//   1. expert_m1_gu_rows : gu[r], r in [r0, r1) of 2*inter (interleaved gate/up)
+//   2. expert_m1_act     : act[j] = SITU(gu[2j], gu[2j+1]), j in [j0, j1)
+//   3. expert_m1_dn_rows : y[r], r in [r0, r1) of hidden (r0 and r1 even)
+// Phase N+1 needs every result of phase N. r0 and r1 of phases 1 and 3 are multiples of 8 (or the end).
+// GGUF_RAW experts are covered when their tensor types have a quantized-dot kernel (Q4_K, Q5_K, Q6_K, Q8_0, ...);
+// expert_m1_splittable says whether this expert can be split (it reads the GGUF header of `body` for GGUF_RAW).
+bool expert_m1_splittable(strata::quant::sk::SkCode gu_code, strata::quant::sk::SkCode dn_code,
+                          const uint8_t* body, size_t hidden, size_t inter) noexcept;
+void expert_m1_gu_rows(const uint8_t* body, strata::quant::sk::SkCode gu_code, const float* x_in,
+                       size_t hidden, size_t inter, size_t r0, size_t r1, float* gu) noexcept;
+void expert_m1_act(const float* gu, size_t j0, size_t j1, float* act) noexcept;
+void expert_m1_dn_rows(const uint8_t* body, strata::quant::sk::SkCode dn_code, uint32_t dn_offset, const float* act,
+                       size_t hidden, size_t inter, size_t r0, size_t r1, float* y) noexcept;
+
 // DSpark Block-8 Recurrent Markov head step (one slot i in 1..block_size-1):
 // Updates state [rank] in-place and produces softcapped logits [V_unpadded] + deterministic first-max argmax token.
 int32_t dspark_markov_step_f32(

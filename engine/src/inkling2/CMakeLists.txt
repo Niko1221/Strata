@@ -222,6 +222,13 @@ if(EXISTS "${_ink_engine_root}/tests/quant/strata_v1_1_inkling2_test.cpp")
   target_link_libraries(strata_v1_1_inkling2_test PRIVATE strata_inkling_core)
 endif()
 
+# Row-split expert evaluation of the hybrid CPU pool (decode): bit-identical to eval_inkling2_expert for every split
+if(EXISTS "${_ink_engine_root}/tests/quant/ink_expert_split_test.cpp")
+  add_executable(ink_expert_split_test ${_ink_engine_root}/tests/quant/ink_expert_split_test.cpp)
+  target_link_libraries(ink_expert_split_test PRIVATE strata_inkling_core)
+  add_test(NAME ink_expert_split_test COMMAND ink_expert_split_test)
+endif()
+
 install(TARGETS strata-inkling RUNTIME DESTINATION bin COMPONENT inkling2)
 
 option(STRATA_INK_BUILD_PREFIX_TESTS "Build the GPU-free shared-prefix protocol regression" OFF)

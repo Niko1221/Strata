@@ -881,6 +881,16 @@ int main(int argc, char** argv) {
     std::mt19937_64 rng(42);
     std::vector<int32_t> hist = ids;
     int pos = static_cast<int>(ids.size());
+    // INK_LOGITS_HASH=1: FNV-1a of the raw logits bytes of every step on stderr (repeat-run fingerprint, bitwise).
+    const bool hash_logits = std::getenv("INK_LOGITS_HASH") && std::getenv("INK_LOGITS_HASH")[0] == '1';
+    auto logits_hash = [&](int step) {
+        if (!hash_logits) return;
+        uint64_t h = 1469598103934665603ull;
+        const unsigned char* p = reinterpret_cast<const unsigned char*>(logits.data());
+        for (size_t i = 0; i < logits.size() * sizeof(float); ++i) { h ^= p[i]; h *= 1099511628211ull; }
+        fprintf(stderr, "[logits-hash] step %d %016llx\n", step, static_cast<unsigned long long>(h));
+    };
+    logits_hash(-1);
     for (int g = 0; g < bench_gen; ++g) {
         int32_t tok = sample_logits(logits.data(), V, so, hist, rng);
         printf("%d%s", tok, (g + 1 == bench_gen) ? "\n" : ",");
@@ -893,6 +903,7 @@ int main(int argc, char** argv) {
             fprintf(stderr, "decode: %s\n", err.c_str());
             return 1;
         }
+        logits_hash(g);
     }
     return 0;
 }
