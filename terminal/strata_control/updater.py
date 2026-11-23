@@ -1391,7 +1391,11 @@ def default_test_start(stage_root: Path, component: ec.EngineComponent, ctx: Con
         cfg.pop("lib_dirs", None)
         if isinstance(cfg.get("args"), list):
             cfg["args"] = light_test_args(cfg["args"])
+        mine = sorted(str(k) for k in (cfg.get("env") if isinstance(cfg.get("env"), dict) else {}))
         cfg["env"] = {**(cfg.get("env") if isinstance(cfg.get("env"), dict) else {}), **TEST_ENV}
+        if mine:
+            # #6868: the person can see that the settings they put in their run config's "env" are in this test (and which file it read)
+            ctx.say("test", f"Testing engine {component.version} with the run config {source}, with its environment settings {', '.join(mine)}", component="engine")
         short = (ctx.memory_check or low_memory)(cfg)
         if short:
             # #5400: loading the model now would push this PC out of memory (other programs hold it). The engine gets the check an install with no
