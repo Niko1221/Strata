@@ -113,6 +113,23 @@ class CrashLoop(unittest.TestCase):
             svc._crash_times[:] = [t - S.Service.CRASH_LOOP_WINDOW_S - 1 for t in svc._crash_times]     # ten minutes pass between deaths
         self.assertEqual(eng.restarts, 10)
 
+    def test_an_engine_program_that_cannot_be_run_keeps_its_own_plain_error(self):
+        """No process ever existed (a missing program): every request gets "the engine could not be started: ..." at once, never the loop message
+        (serve.test_ready_timeout.SpawnFailure asks four requests in a row)."""
+        eng = DyingEngine("boom")
+        eng.proc = None
+
+        def restart():
+            eng.restarts += 1
+            raise OSError(2, "No such file or directory")
+        eng.restart = restart
+        svc = service(eng)
+        for _ in range(10):
+            with self.assertRaises(S.EngineDied) as cm:
+                svc.ensure_loaded()
+            self.assertIn("the engine could not be started", str(cm.exception))
+        self.assertEqual(eng.restarts, 10)
+
     def test_an_unloaded_model_is_not_a_crash(self):
         eng = DyingEngine("boom")
         eng.unloaded = True

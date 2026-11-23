@@ -4864,10 +4864,9 @@ class Service:
         times = self.__dict__.setdefault("_crash_times", [])
         now = time.time()
         times[:] = [t for t in times if now - t < self.CRASH_LOOP_WINDOW_S]
-        if pid is None:                                         # no process ever existed (the program would not start): each try counts, up to the limit
-            if len(times) < self.CRASH_LOOP_MAX:
-                times.append(now)
-        elif pid not in seen:
+        if pid is None:                                         # no process ever existed (the program is missing or cannot be run): that start already
+            return                                              # fails at once with its own plain reason ("the engine could not be started: ...")
+        if pid not in seen:
             seen.add(pid)
             times.append(now)
         if len(times) >= self.CRASH_LOOP_MAX:
