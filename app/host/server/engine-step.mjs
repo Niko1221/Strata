@@ -39,7 +39,7 @@ export function createEngineStep({ control, signal = null, onChange = () => {} }
       /* #6830: an engine the person chose or went back to (`strata components rollback`, Settings > Engine, `components use`) is pinned. A model's install or a change
          of its settings never switches it: the job used to run the updater for the newer engine still on disk, which dropped the pin and the skipped list and put the
          broken release back. The newer one stays offered in Settings > Engine and by `strata update`. */
-      if (usable && engine.pinned && engine.status === 'available') {
+      if (engine.status === 'available' && (engine.person_chose === true || (usable && engine.pinned))) {   // person_chose: Control's own word for it (5907fe7ff); pinned alone covers a pin whose newer engine is not on disk
         const here = engine.installed?.version ?? null, offered = engine.offered?.version ?? null;
         set({ state: 'current', version: here, percent: 100, message: `The engine you chose${here ? ` (${here})` : ''} stays in use.${offered ? ` A newer one (${offered}) is offered: Settings > Engine switches to it.` : ''}` });
         return { ...part };

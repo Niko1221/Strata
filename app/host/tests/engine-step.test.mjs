@@ -127,6 +127,21 @@ test('#6830: a pinned engine (rolled back to, or chosen in Settings) is never re
   assert.equal((await createEngineStep({ control: none }).run()).state, 'done');
 });
 
+test('#6830 (the word of the Control side): person_chose after a rollback keeps the engine in use and its pin; a settings save never calls the updater', async () => {
+  const c = control({
+    usable: true,
+    check: offer('available', { installed: { version: '0.1.64' }, offered: { version: '0.1.66' }, person_chose: true, installed_locally: '0.1.66', note: 'you went back to 0.1.64' }),
+    update: async () => { throw new Error('the updater must not run: it would drop the pin and the skip'); },
+  });
+  const part = await createEngineStep({ control: c }).run();
+  assert.deepEqual(c.calls, ['engine', 'updateCheck']);
+  assert.equal(part.state, 'current');
+  assert.equal(part.version, '0.1.64');
+  // the same check without it (nobody went back): the update with the model goes on as before
+  const free = control({ usable: true, check: offer('available', { installed: { version: '0.1.64' }, offered: { version: '0.1.66' } }), update: async () => ({ ok: true, results: [{ component: 'engine', status: 'updated', installed_after: { version: '0.1.66' } }] }) });
+  assert.equal((await createEngineStep({ control: free }).run()).state, 'done');
+});
+
 test('a first engine keeps the plain download words', async () => {
   const messages = [];
   const c = control({ check: offer(), update: async () => updated });
