@@ -17,11 +17,15 @@
 #include "ink_manifest.h"
 #include "ink_serve.h"
 #include "ink_vision.h"
+#include "strata/core/volta_forever.hpp"
+#if defined(__linux__) && defined(INKLING_ENABLE_HIP)
+#include "strata/platform/numa_balancing.hpp"
+#endif
 
 using namespace ink2;
 
 #ifndef INKLING_VERSION
-#define INKLING_VERSION "0.1.65"
+#define INKLING_VERSION "0.1.66"
 #endif
 
 static int cmd_export_tokenizer(const std::string& file, const std::string& dir) {
@@ -131,15 +135,29 @@ static int cmd_bench(const std::string& model_path, const BackendOpts& bopts, in
     }
     BackendOpts bo = bopts;
     bo.enable_dspark = use_dspark;
+    if (prompt_len + gen_len > bo.max_ctx) {
+        bo.max_ctx = prompt_len + gen_len + 16;
+    }
     auto backend = make_default_backend(force_cpu, &bo);
     if (!backend->init(mf, bo, err)) {
         fprintf(stderr, "init: %s\n", err.c_str());
         return 1;
     }
+    const int eff_ctx = (backend->effective_max_ctx() > 0) ? backend->effective_max_ctx() : bo.max_ctx;
+    if (prompt_len >= eff_ctx) {
+        fprintf(stderr, "[bench] clamping prompt_len %d -> %d to fit effective max_ctx=%d\n", prompt_len, std::max(1, eff_ctx - 1), eff_ctx);
+        prompt_len = std::max(1, eff_ctx - 1);
+    }
+    const int max_dec_steps = std::max(0, eff_ctx - prompt_len);
+    if (gen_len > max_dec_steps) {
+        fprintf(stderr, "[bench] clamping gen_len %d -> %d to fit effective max_ctx=%d (prompt=%d)\n",
+                gen_len, max_dec_steps, eff_ctx, prompt_len);
+        gen_len = max_dec_steps;
+    }
     const int P = std::max(1, std::min(kMaxParallelSlots, bo.parallel));
     const int V = mf.m.c.vocab_unpadded;
     for (int s = 0; s < P; ++s) {
-        if (!backend->alloc_slot(s, bo.max_ctx, bo.kv_dtype, err)) {
+        if (!backend->alloc_slot(s, eff_ctx, bo.kv_dtype, err)) {
             fprintf(stderr, "alloc_slot %d: %s\n", s, err.c_str());
             return 1;
         }
@@ -176,9 +194,9 @@ static int cmd_bench(const std::string& model_path, const BackendOpts& bopts, in
     int total_gen = 0;
     if (use_dspark && P == 1) {
         int cur_pos = prompt_len;
-        while (total_gen < gen_len) {
-            const int rem = gen_len - total_gen;
-            if (rem >= 2 && cur_pos + 12 < bo.max_ctx) {
+        while (total_gen < gen_len && cur_pos < eff_ctx) {
+            const int rem = std::min(gen_len - total_gen, eff_ctx - cur_pos);
+            if (rem >= 2 && cur_pos + 12 < eff_ctx) {
                 int32_t emitted[16]{};
                 int drafted = 0;
                 const int n_emit = backend->dspark_spec_step_greedy(
@@ -225,7 +243,7 @@ static int cmd_bench(const std::string& model_path, const BackendOpts& bopts, in
     double ppts = (P * prompt_len) / std::max(pf_s, 1e-9);
     double tps_agg = total_gen / std::max(dec_s, 1e-9);
     printf("[bench] backend=%s format=%s parallel=%d gpus=%d kv=%s prompt=%d gen=%d | prefill=%.1f ppts (%.2fs) | decode=%.1f tps agg (%.1f tps/slot, %.2fs)\n",
-           backend->backend_name(), source_kind_name(mf.kind), P, bo.gpus, kv_dtype_name(bo.kv_dtype),
+           backend->backend_name(), source_kind_name(mf.kind), P, bo.gpus, kv_dtype_name(backend->stats().kv_dtype),
            prompt_len, gen_len, ppts, pf_s, tps_agg, tps_agg / P, dec_s);
     return 0;
 }
@@ -339,6 +357,16 @@ static int cmd_dump_ref(const std::string& model_path, const std::string& out_pa
 }
 
 int main(int argc, char** argv) {
+#if defined(__linux__) && defined(INKLING_ENABLE_HIP)
+    if (const std::string nb = strata::platform::numa_balancing::keep_scanner_off(); !nb.empty()) {
+        std::fprintf(stderr, "%s\n", nb.c_str());
+    }
+#endif
+#if defined(INKLING_ENABLE_CUDA) || defined(INKLING_ENABLE_EP_CUDA)
+    if (strata::core::apply_default_cuda_module_loading()) {
+        std::fprintf(stderr, "[inkling] volta-forever detected: setting CUDA_MODULE_LOADING=LAZY\n");
+    }
+#endif
     ServeConfig cfg;
     cfg.version = INKLING_VERSION;
     bool mode_serve = false, mode_bench = false, mode_selfcheck = false, mode_info = false, mode_export = false;
@@ -390,6 +418,8 @@ int main(int argc, char** argv) {
             else if (kv == "k8v8" || kv == "i8" || kv == "q8") { cfg.bopts.kv_dtype = KvDtype::K8V8; cfg.bopts.kv_dtype_auto = false; }
             else if (kv == "k8v4") { cfg.bopts.kv_dtype = KvDtype::K8V4; cfg.bopts.kv_dtype_auto = false; }
             else { cfg.bopts.kv_dtype_auto = true; }
+        } else if (a == "--kv-offload") {
+            cfg.bopts.kv_offload = next();
         } else if (a == "--draft") {
             cfg.draft_mode = next();
             cfg.bopts.enable_dspark = (cfg.draft_mode != "off");
@@ -399,16 +429,43 @@ int main(int argc, char** argv) {
             cfg.bopts.vram_experts_gb = std::atof(next().c_str());
         } else if (a == "--ram-experts-gb") {
             cfg.bopts.ram_experts_gb = std::atof(next().c_str());
+        } else if (a == "--ssd-experts") {
+            cfg.bopts.ssd_experts = true;
         } else if (a == "--vram-reserve-mib") {
             cfg.bopts.vram_reserve_mib = std::atoi(next().c_str());
         } else if (a == "--cpu-threads") {
             cfg.bopts.cpu_threads = std::atoi(next().c_str());
         } else if (a == "--gpu") {
             cfg.bopts.gpu_index = std::atoi(next().c_str());
-        } else if (a == "--gpus") {
-            cfg.bopts.gpus = std::max(1, std::atoi(next().c_str()));
+        } else if (a == "--gpus" || a == "--devices") {
+            std::string spec = next();
+            if (spec.find(',') != std::string::npos || a == "--devices") {
+                cfg.bopts.gpu_ids.clear();
+                for (size_t pos = 0; pos < spec.size();) {
+                    size_t q = spec.find(',', pos);
+                    if (q == std::string::npos) q = spec.size();
+                    if (q > pos) {
+                        int id = std::atoi(spec.substr(pos, q - pos).c_str());
+                        if (id >= 0 && std::find(cfg.bopts.gpu_ids.begin(), cfg.bopts.gpu_ids.end(), id) == cfg.bopts.gpu_ids.end()) {
+                            cfg.bopts.gpu_ids.push_back(id);
+                        }
+                    }
+                    pos = q + 1;
+                }
+                if (!cfg.bopts.gpu_ids.empty()) {
+                    cfg.bopts.gpu_index = cfg.bopts.gpu_ids[0];
+                    cfg.bopts.gpus = static_cast<int>(cfg.bopts.gpu_ids.size());
+                } else {
+                    cfg.bopts.gpus = 1;
+                }
+            } else {
+                cfg.bopts.gpu_ids.clear();
+                cfg.bopts.gpus = std::max(1, std::atoi(spec.c_str()));
+            }
         } else if (a == "--ep-split") {
             cfg.bopts.ep_split = std::atof(next().c_str());
+        } else if (a == "--layer-split") {
+            cfg.bopts.layer_split = next();
         } else if (a == "--threads") {
             cfg.bopts.threads = std::atoi(next().c_str());
         } else if (a == "--cpu") {
@@ -429,9 +486,9 @@ int main(int argc, char** argv) {
                    "  --info PATH [--vision VISION] [--dspark PATH]\n"
                    "  --export-tokenizer PATH OUT_DIR\n"
                    "  --selfcheck [--native PATH] [--verify-hash] [--cpu] [--gpus 1|2] [--kv fp16|fp8|k8v8|k8v4]\n"
-                   "  --bench --native PATH [--parallel 1..64] [--gpus 1|2] [--ep-split F] [--vram-reserve-mib N] [--cpu-threads N] [--kv auto|fp16|fp8|k8v8|k8v4] [--prompt-len N] [--gen N]\n"
+                   "  --bench --native PATH [--parallel 1..64] [--gpus 1..4] [--layer-split auto|K1,K2,...] [--ep-split F] [--vram-experts-gb F] [--ram-experts-gb F] [--ssd-experts] [--vram-reserve-mib N] [--cpu-threads N] [--kv auto|fp16|fp8|k8v8|k8v4] [--kv-offload auto|on|off] [--prompt-len N] [--gen N]\n"
                    "  --kld-eval REF.bin --native PATH\n"
-                   "  --serve --native PATH [--vision VISION] [--dspark PATH] [--max-context N] [--parallel 1..64] [--gpus 1|2] [--draft auto|dspark|off]\n",
+                   "  --serve --native PATH [--vision VISION] [--dspark PATH] [--max-context N] [--parallel 1..64] [--gpus 1..4] [--layer-split auto|K1,K2,...] [--kv auto|fp16|fp8|k8v8|k8v4] [--kv-offload auto|on|off] [--draft auto|dspark|off]\n",
                    INKLING_VERSION);
             return 0;
         } else {
@@ -440,10 +497,34 @@ int main(int argc, char** argv) {
         }
     }
 
-    // Read optional IK2_EP_SPLIT env override (#6506)
+    // Read optional IK2_EP_SPLIT and IK2_GPUS env overrides (#6506)
     if (const char* ep_env = std::getenv("IK2_EP_SPLIT"); ep_env && *ep_env) {
         double v = std::atof(ep_env);
         if (v > 0.0 && v < 1.0) cfg.bopts.ep_split = v;
+    }
+    if (cfg.bopts.gpus == 1 && cfg.bopts.gpu_ids.empty()) {
+        if (const char* g_env = std::getenv("IK2_GPUS"); g_env && *g_env) {
+            std::string spec(g_env);
+            if (spec.find(',') != std::string::npos) {
+                for (size_t pos = 0; pos < spec.size();) {
+                    size_t q = spec.find(',', pos);
+                    if (q == std::string::npos) q = spec.size();
+                    if (q > pos) {
+                        int id = std::atoi(spec.substr(pos, q - pos).c_str());
+                        if (id >= 0 && std::find(cfg.bopts.gpu_ids.begin(), cfg.bopts.gpu_ids.end(), id) == cfg.bopts.gpu_ids.end()) {
+                            cfg.bopts.gpu_ids.push_back(id);
+                        }
+                    }
+                    pos = q + 1;
+                }
+                if (!cfg.bopts.gpu_ids.empty()) {
+                    cfg.bopts.gpu_index = cfg.bopts.gpu_ids[0];
+                    cfg.bopts.gpus = static_cast<int>(cfg.bopts.gpu_ids.size());
+                }
+            } else {
+                cfg.bopts.gpus = std::max(1, std::atoi(g_env));
+            }
+        }
     }
 
     // Auto-select FP8_E4M3 KV when parallel >= 16 unless user explicitly forced a format

@@ -27,7 +27,7 @@ struct SpecCfg {
     bool sabotage = false;   // test only: replace every draft token by a random id with conf 0.9 (acceptance ~0): the worst case for the controller
     int rv = 256;            // reduced-vocabulary draft chain: candidates per slot (0 = full lm_head per drafted token)
     bool tree = true;        // Tree-8 speculative verification (top-2 branching at uncertain slots within M <= 8 verify tile)
-    float early_cut = 0.08f; // early-exit draft chain when best remaining frontier reach prob < early_cut (0 = disabled)
+    float early_cut = 0.04f; // early-exit draft chain when best remaining frontier reach prob < early_cut (0 = disabled)
 };
 
 struct SpecStats {
@@ -50,7 +50,10 @@ public:
     // cost model
     double tp = 0;      // plain step ms (EMA)
     double tv[9] = {};  // verify ms by m (EMA), 0 = not measured
+    long tv_step[9] = {};  // spec_iters at last tv[m] measurement (for cold-start stale refresh)
+    int tv_cnt[9] = {};
     static constexpr double DM[8] = {16.0, 26.5, 35.6, 43.9, 51.4, 58.2, 64.8, 70.8};
+    static double dm_scale(int m) { return (5.1 + 0.127 * DM[std::max(1, std::min(m, 8)) - 1]) / 7.13; }
     // confidence calibration, buckets by conf
     static constexpr float EDGE[5] = {0.2f, 0.4f, 0.6f, 0.8f, 0.9f};
     static constexpr float MID[6] = {0.1f, 0.3f, 0.5f, 0.7f, 0.85f, 0.95f};
@@ -72,8 +75,18 @@ public:
         for (int b = 0; b < 6; ++b) { cn[b] = 2.0; cy[b] = 2.0 * MID[b]; }
         HCK(hipHostMalloc((void**)&h_arg, 64, hipHostMallocDefault));
         if (cfg.exact) {
+#if !HY4_CUDA && HY4_MMA
+            // #6614: On RDNA4 (gfx1200/gfx1201), forcing GEMV up to M=16 kicks DFly2 M=5..8 verify windows off Wave32 WMMA onto scalar GEMV!
+            // Keep M=5..8 on Wave32 WMMA unless --spec-check or HY4_SPEC_FORCE_GEMV=1 explicitly requests GEMV invariance.
+            const bool force_gemv = cfg.check || (getenv("HY4_SPEC_FORCE_GEMV") && atoi(getenv("HY4_SPEC_FORCE_GEMV")) != 0);
+            if (!skd::is_gfx12_device() || force_gemv) {
+                skd::moe_dec_max_m() = 16;
+                skd::lin_gemv_max_m() = 16;
+            }
+#else
             skd::moe_dec_max_m() = 16;
             skd::lin_gemv_max_m() = 16;
+#endif
         }
         if (cfg.K > DFLY_KMAX) cfg.K = DFLY_KMAX;
         if (cfg.K < 1) cfg.K = 1;
@@ -92,10 +105,24 @@ public:
         const int b = bucket(c);
         return cy[b] / cn[b];
     }
-    double tver(int m) const {  // verify ms for m tokens
-        if (tv[m] > 0) return tv[m];
-        const double base = tp > 0 ? tp : 46.0;
-        return base * (5.1 + 0.127 * DM[m - 1]) / 7.13;
+    double tver(int m) const {  // verify ms for m tokens (with stale cold-start refresh so early cold-vcache m=8 never locks out large windows)
+        // Find most recently measured m' != m to derive a fresh scale anchor if tv[m] is missing or stale
+        int ref_m = 0;
+        long best_st = -1;
+        for (int k = 2; k <= 8; ++k) {
+            if (tv[k] > 0 && tv_step[k] > best_st) { best_st = tv_step[k]; ref_m = k; }
+        }
+        const double est = (ref_m > 0) ? (tv[ref_m] * dm_scale(m) / dm_scale(ref_m))
+                                       : ((tp > 0 ? tp : 30.0) * dm_scale(m));
+        if (tv[m] <= 0) return est;
+        const long age = S.spec_iters - tv_step[m];
+        const long stale_age = r.hyb ? 6 : 12;
+        if (age > stale_age && tv[m] > est * 1.15) {
+            // Smoothly decay stale cold measurement toward fresh estimate so choose_m re-probes m
+            const double w = std::min(0.85, (double)(age - stale_age) / (r.hyb ? 12.0 : 24.0));
+            return tv[m] * (1.0 - w) + est * w;
+        }
+        return tv[m];
     }
     int choose_k(int K) const {
         if (!cfg.adaptive) return K;
@@ -187,10 +214,13 @@ public:
 
     void note_iter(double ms, int ntok, bool is_spec) {
         if (!cfg.adaptive || cfg.cut >= 0 || !is_spec) return;
+        // #6614: on hybrid GPU+CPU setups, ignore early cold-vcache warmup steps so one spike never locks DFly2 into plain mode for 256+ tokens.
+        if (r.hyb && S.spec_iters < 4) return;
         win.push_back({ms, ntok});
         while (win.size() > 8) win.pop_front();
         const int n = (int)win.size();
-        if (n < 3 || tp <= 0) return;
+        const int min_n = r.hyb ? 4 : 3;
+        if (n < min_n || tp <= 0) return;
         double sm = 0, st = 0;
         for (auto& w : win) { sm += w.ms; st += w.tok; }
         const double ratio = sm / st;  // ms per token
@@ -199,7 +229,7 @@ public:
             ++S.backoffs;
             plain_left = P;
             S.P_final = P;
-            P = std::min(P * 2, 256);
+            P = std::min(P * 2, r.hyb ? 64 : 256);
             win.clear();
             probing = false;
         } else if (n >= 8 && ratio < 0.9 * tp) {
@@ -454,7 +484,10 @@ public:
                 cy[b] += accepted_primary ? 1.0 : 0.0;
                 if (cn[b] > 200) { cn[b] *= 0.5; cy[b] *= 0.5; }
             }
-            tv[T] = tv[T] > 0 ? 0.7 * tv[T] + 0.3 * tver_ms : tver_ms;
+            const double alpha = (tv_cnt[T] < 4 || S.spec_iters < 16) ? 0.5 : 0.3;
+            tv[T] = tv[T] > 0 ? (1.0 - alpha) * tv[T] + alpha * tver_ms : tver_ms;
+            tv_step[T] = S.spec_iters;
+            ++tv_cnt[T];
             S.t_verify += tver_ms;
             S.verified_slots += Kp;
             S.accepted += n;

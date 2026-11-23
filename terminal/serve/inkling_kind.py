@@ -59,9 +59,11 @@ def probe(exe: str | None, args: list, cfg: dict | None = None, timeout: float =
     model = next((args[i + 1] for i, a in enumerate(args) if a in ("--native", "--model") and i + 1 < len(args)), None)
     if not exe or not model or not Path(str(exe)).is_file():
         return None
+    vision = next((args[i + 1] for i, a in enumerate(args) if a == "--vision" and i + 1 < len(args)), None)
+    dspark = next((args[i + 1] for i, a in enumerate(args) if a == "--dspark" and i + 1 < len(args)), None)
     try:
         st = Path(str(exe)).stat()
-        key = (str(exe), st.st_mtime_ns, st.st_size, str(model))
+        key = (str(exe), st.st_mtime_ns, st.st_size, str(model), str(vision or ""), str(dspark or ""))
     except OSError:
         return None
     if key in _PROBES:
@@ -72,8 +74,13 @@ def probe(exe: str | None, args: list, cfg: dict | None = None, timeout: float =
     if dirs:
         var = "PATH" if os.name == "nt" else ("DYLD_LIBRARY_PATH" if sys.platform == "darwin" else "LD_LIBRARY_PATH")
         env[var] = os.pathsep.join(dirs + ([env[var]] if env.get(var) else []))
+    cmd = [str(exe), "--info", str(model)]
+    if vision:
+        cmd += ["--vision", str(vision)]
+    if dspark:
+        cmd += ["--dspark", str(dspark)]
     try:
-        done = subprocess.run([str(exe), "--info", str(model)], capture_output=True, text=True, errors="replace",
+        done = subprocess.run(cmd, capture_output=True, text=True, errors="replace",
                               timeout=timeout, env=env, cwd=str(Path(str(exe)).parent))
         info = parse_info(done.stdout) if done.returncode == 0 else None
     except (OSError, subprocess.SubprocessError):
@@ -83,29 +90,107 @@ def probe(exe: str | None, args: list, cfg: dict | None = None, timeout: float =
 
 
 def drafter_args(cfg: dict, info: dict | None = None) -> list[str]:
-    return ["--draft", "dspark"] if wants_drafter(cfg) and (info or {}).get("drafter") == "dspark" else []
+    if not wants_drafter(cfg):
+        return ["--draft", "off"]
+    return ["--draft", "dspark"] if (info or {}).get("drafter") == "dspark" else []
+
+
+def drafting_info(args: list, info: dict | None = None) -> dict[str, str]:
+    """Metrics/status view of Inkling-2-Mini's built-in DSpark drafter (`drafting`: `"dspark"` | `"off"`)."""
+    items = [str(a) for a in (args or ())]
+    mode = None
+    for i in range(len(items) - 1):
+        if items[i] == "--draft":
+            mode = items[i + 1].strip().lower()
+    if mode == "off":
+        return {"drafting": "off", "drafting_note": ""}
+    if mode == "dspark" or (info or {}).get("drafter") == "dspark":
+        return {"drafting": "dspark", "drafting_note": ""}
+    return {"drafting": "off", "drafting_note": ""}
+
+
+def _local_gpu_ordinals(n_gpus: int, max_g: int) -> str:
+    """Map Helper..Main visibility order (`CUDA_VISIBLE_DEVICES`/`HIP_VISIBLE_DEVICES`/`ZE_AFFINITY_MASK`)
+    to Main-first local ordinals for `strata-inkling --gpus` (`gpu_ids[0]` is primary/Main)."""
+    use = min(max_g, n_gpus)
+    main = n_gpus - 1
+    helpers = list(range(n_gpus - use, main))
+    return ",".join(str(i) for i in [main, *helpers])
+
+
+def _strip_flag(args: list[str], flag: str) -> list[str]:
+    out: list[str] = []
+    i = 0
+    while i < len(args):
+        if args[i] == flag:
+            i += 2 if i + 1 < len(args) and not str(args[i + 1]).startswith("--") else 1
+            continue
+        out.append(args[i])
+        i += 1
+    return out
 
 
 def engine_args(cfg: dict, exe: str | None = None, *, announce: bool = True) -> list[str]:
-    """Build start args for `strata-inkling`, preserving `--parallel 1..64`, `--max-context`, `--vision`, and `--draft dspark`."""
+    """Build start args for `strata-inkling`, preserving `--parallel 1..64`, `--max-context`, `--vision`,
+    Main-first `--gpus` + `--layer-split`, and `--draft dspark|off`."""
     from strata_control import inkling_family, user_args
     args = list(cfg["args"])
     mine = user_args.capture(cfg)
     if mine:
         args = user_args.merge(args, mine)
+    # #6497: honor a configured CPU thread limit (`--pool-workers N`) on Inkling by translating it to `--threads N`.
+    if "--pool-workers" in args:
+        pw_val = None
+        out_args: list[str] = []
+        i = 0
+        while i < len(args):
+            if args[i] == "--pool-workers":
+                if i + 1 < len(args) and not str(args[i + 1]).startswith("--"):
+                    pw_val = str(args[i + 1])
+                    i += 2
+                else:
+                    i += 1
+            else:
+                out_args.append(args[i])
+                i += 1
+        args = out_args
+        if pw_val and pw_val.isdigit() and int(pw_val) > 0 and "--threads" not in args:
+            args += ["--threads", pw_val]
     # Propagate top-level cfg["parallel"] (1..64) into `--parallel <N>` when not explicitly in args
     par = cfg.get("parallel")
     if isinstance(par, int) and 1 <= par <= inkling_family.MAX_PARALLEL and "--parallel" not in args:
         if par > 1:
             args += ["--parallel", str(par)]
-    # Propagate 2-GPU selection (`cfg["gpu"] = [0, 1]`) into `--gpus 2` for dual-GPU Expert Parallelism
-    gpu_cfg = cfg.get("gpu")
-    if isinstance(gpu_cfg, (list, tuple)) and len(gpu_cfg) >= 2 and "--gpus" not in args:
-        args += ["--gpus", str(min(2, len(gpu_cfg)))]
+    # Propagate 2..4 GPU selection (`cfg["gpu"]` or `gpu_roles`) into Main-first `--gpus` and `--layer-split` (#6592, #6631).
+    # child_env() exposes GPUs in Helper..Main order, so local ordinal N-1 is Main and 0..N-2 are Helpers;
+    # strata-inkling puts gpu_ids[0] as primary GPU, so pass Main first (`1,0`, `2,0,1`, `3,0,1,2`).
+    from serve.server_parts.engines import gpu_list
+    n_gpus = len(gpu_list(cfg))
+    is_cuda = cfg.get("backend") not in ("hip", "sycl", "metal", "cpu")
+    mine_flags = {str(a) for a in (mine or ()) if str(a).startswith("--")}
+    if n_gpus >= 2:
+        max_g = 4 if is_cuda else 2
+        local_spec = _local_gpu_ordinals(n_gpus, max_g)
+        if "--gpus" not in args:
+            args += ["--gpus", local_spec]
+        elif "--gpus" not in mine_flags:
+            at = args.index("--gpus")
+            if at + 1 < len(args) and "," not in str(args[at + 1]):
+                args[at + 1] = local_spec
+        if is_cuda and "--layer-split" not in args and "--ep-split" not in args:
+            args += ["--layer-split", str(cfg["layer_split"]) if cfg.get("layer_split") else "auto"]
+        # Drop single-GPU expert caps when running multi-GPU unless the user explicitly pinned them in user_args.
+        if "--vram-experts-gb" not in mine_flags:
+            args = _strip_flag(args, "--vram-experts-gb")
+        if "--ram-experts-gb" not in mine_flags:
+            args = _strip_flag(args, "--ram-experts-gb")
     wants_images = "--vision" in args
-    need_draft = "--draft" not in args and wants_drafter(cfg)
+    want_draft = wants_drafter(cfg)
+    need_draft = "--draft" not in args and want_draft
     info = probe(exe, args, cfg) if (exe and (wants_images or need_draft)) else None
-    if need_draft:
+    if "--draft" not in args and not want_draft:
+        args += ["--draft", "off"]
+    elif need_draft:
         add = drafter_args(cfg, info)
         args += add
         if not add and announce:

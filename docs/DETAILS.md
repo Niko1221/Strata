@@ -737,33 +737,77 @@ tables per token). The scaling is fixed for the whole run, because the KV cache 
   `"capabilities": {"tools": true, "chat_completions": true}` on that model in Zed's settings.
 - **Claude Code:** set `ANTHROPIC_BASE_URL=http://127.0.0.1:8080` and `ANTHROPIC_MODEL` to a Claude model name it knows
   (Strata ignores the name), plus any `ANTHROPIC_AUTH_TOKEN` (or your `api_key`).
-- **OpenCode:** a starting point for `opencode.jsonc`. The field names are OpenCode's, so check its config docs if your version
+- **OpenCode:** a starting point for `opencode.json`. The field names are OpenCode's, so check its config docs if your version
   differs.
 
-  ```jsonc
+  ```json
   {
     "$schema": "https://opencode.ai/config.json",
-    "provider": {
+    "providers": {
       "strata": {
-        "npm": "@ai-sdk/openai-compatible",
         "name": "Strata (local)",
-        "options": { "baseURL": "http://127.0.0.1:8080/v1", "apiKey": "none" },  // or your api_key
+        "package": "@opencode/ai/providers/openai-compatible",
+        "settings": {
+          "baseURL": "http://127.0.0.1:8080/v1",
+          "apiKey": "strata-local"
+        },
         "models": {
-          "strata": {
-            "name": "Qwen3.8-Flash-Next (Strata)",
-            // context: what you chose in setup; output: what one reply may use (prompt + output must fit)
-            "limit": { "context": 262144, "output": 32768 },
-            "options": { "reasoningEffort": "high" },
-            "variants": {
-              "low": { "reasoningEffort": "low" },
-              "medium": { "reasoningEffort": "medium" },
-              "none": { "reasoningEffort": "none" }
-            }
+          "qwen3.8-flash-next-coder-iq1_m": {
+            "name": "Qwen3.8-Flash-Next Coder (local)",
+            "type": "chat",
+            "limit": {
+              "context": 262144,
+              "input": 258048,
+              "output": 32768
+            },
+            "capabilities": {
+              "tools": true,
+              "input": [
+                "text"
+              ],
+              "output": [
+                "text"
+              ],
+              "reasoning": {
+                "supported": true,
+                "effort": [
+                  "low",
+                  "medium",
+                  "high"
+                ],
+                "toggle": true
+              }
+            },
+            "compatibility": {
+              "reasoningField": "reasoning_content"
+            },
+            "variants": [
+              {
+                "id": "low",
+                "settings": {
+                  "reasoningEffort": "low"
+                },
+                "body": {
+                  "reasoning_budget_tokens": 2048
+                }
+              },
+              {
+                "id": "none",
+                "body": {
+                  "reasoning_effort": "none"
+                }
+              },
+              {
+                "id": "budget",
+                "body": {
+                  "reasoning_budget_tokens": 4096
+                }
+              }
+            ]
           }
         }
       }
-    },
-    "model": "strata/strata"
+    }
   }
   ```
 
@@ -789,8 +833,10 @@ system prompt with a billing header that changes on every request; the server pi
 | `"strata_prefix": {"messages": 1}` (per request, opt-in) | One long document, many questions. Marks where the document ends: `{"messages": 1}`, `{"message": 0, "chars": 210000}` or `{"tokens": 12345}`. The checkpoint at the boundary is pinned, so 20 questions cost one read of the document. One pinned prefix at a time per engine; needs `--prompt-cache 3` or more; a malformed field is a 400. See [RESEARCH_RUNS.md](RESEARCH_RUNS.md). |
 | `--conversation-cache-mib N`, `--conversation-cache-slots N` | Park conversations in a bounded host-RAM cache so alternating requests (controller and worker histories, sub-agents) reuse their prompts. Without `--conversation-cache-mib` the budget is 40% of the RAM left above `--conversation-cache-min-free-mib` once the model is loaded, at most 8192 MiB in steps of 256, off when under 1024; the engine log says which. `0` turns it off. It preserves histories; it does not run requests at once. With more clients taking turns than slots, the oldest parked conversation leaves and that client reads its whole prompt again when it returns ([measured with eight agents](#history--older-measurements)). |
 | `--conversation-cache-min-tokens N` | Park only conversations of at least N tokens, so short side requests do not evict a long conversation. Default `0` (park all). |
+| `--conversation-cache-swap-block-mib N` (opt-in) | Exchange compatible host K/V in blocks when switching between parked conversations, reusing the incoming buffers for the outgoing conversation. Set `N` to any whole number from 1 to 256 MiB (for example `17`); default `0` disables it and keeps the original switch and K/V retention. An existing retained K/V prefix that matches the current conversation uses the ordinary park and restore path instead of exchange. |
 | `--conversation-cache-park-gain N` (opt-in) | Park a conversation again only after it advanced N tokens past the copy it would replace. |
 | `--conversation-cache-rewind-keep N` (opt-in) | When a request continues this conversation and at most N of the engine's newest tokens lie past the point where it resumes (for example, the reasoning that a client strips and does not send back), the conversation is not parked. The follow-up then reads only its new tokens instead of first copying the conversation's whole K/V cache. Those N tokens are read again only if that earlier branch is used again. A request that shares only a small part of the conversation (for example only the system prompt) is parked as before. Default `0` parks as before. |
+| `--conversation-spill-persist` (opt-in) | Keep the SSD tier of the conversation cache across engine restarts and reboots. The tier then lives in `<data>/conversation-spill/fp-<model fingerprint>/`; at start the entries written by the same model and settings are adopted and found by token prefix like spills of the current run (a resumed session reads its tokens back from the SSD instead of prefilling them), and the folders of other models are removed. A second engine of the same model uses its own per-process folder. Entries have no time limit: one goes only when the size cap needs room (least recently used, read or written, first) or when a longer spill of the same conversation replaces it. Reading an entry leaves it on disk. Default off: a per-process folder removed when the engine ends. |
 | `--conversation-cache-min-free-mib N` | RAM floor, default 2560. Parking and session files are skipped when less than the snapshot plus the floor is available. |
 | `--memory-limit-mib N` (or `STRATA_MEMORY_LIMIT_MIB`) | Total RAM this engine's container may use, for when a container cannot see its own limit. Config `args`: `"--memory-limit-mib", "102400"`. `0` = none. |
 
@@ -835,6 +881,13 @@ allocation failures fall back to ordinary prompt processing. With `--layer-split
 stage. Parked snapshots are not kept across restarts; session files are. `STRATA_SNAPSHOT_FULL_CAPTURE=1` disables K/V
 retention for diagnostics. The Monitor tab's **Conversation cache** card shows parked, restored and evicted counts and the
 prompt tokens the cache gave back; `/metrics` has the same under `"conversation_cache"`.
+
+The opt-in block exchange is for the Qwen3.8-Flash-Next CUDA engine: a single, non-batched session with host-backed
+streaming K/V and a whole conversation returned from the RAM cache. A draft layer, if used, also needs a verified
+host-backed K/V pool. Borrowed prefixes, session file restores, SSD returns, layer splits, elastic or device-only K/V,
+unverified mappings, asynchronous snapshots and diagnostic captures use the original path. The exchange also falls back
+if the image and working block cannot fit without an eviction. The block is temporary; it is not a limit on the engine's
+total host RAM.
 
 ### Session files (disk)
 
@@ -975,6 +1028,9 @@ base_url = "http://127.0.0.1:8080/v1"
 wire_api = "responses"
 stream_idle_timeout_ms = 600000         # a first, long prompt can take minutes to read
 # env_key = "STRATA_API_KEY"            # only if the server has an api_key: the variable holding it
+
+[model_providers.strata.capabilities]
+remote_compaction = "unsupported"       # compact locally with ordinary requests (#6459)
 ```
 
 Run `codex` (or `codex exec "..."`). Codex warns `Model metadata for ... not found` for a local model name; that is expected.
@@ -1186,6 +1242,7 @@ them on your own card.
 | `STRATA_PCIE_BALANCE=1` | CUDA, one GPU, no `--batch`, no `--pcie-frac` | Each verify layer reads over PCIe the number of its missed experts that balances the two sides. | Helps an RTX A4000 arena (+5.6%), hurts others slightly. |
 | `STRATA_GDN_CHUNKED=1` | CUDA, 128 or more SMs by itself (`=2` forces it); HIP gfx1100-gfx1102, gfx1150, gfx1151 | The DeltaNet recurrence of the prompt in chunks of 32 tokens (CUDA) or 16-token WMMA chunks (HIP). Changes rounding. | 1.8x on the recurrence on an RTX 5090; slower on smaller cards. See [AMD_HIP.md](AMD_HIP.md#opt-in-chunked-prompt-gdn-on-gfx11). |
 | `STRATA_FS_SLOTS=N` | CUDA | Foresight swap space: N VRAM slots per layer refilled with missed and predicted experts. | The smaller cache cost more than the slots returned in every box measured. Left off. |
+| `STRATA_L3_PF=1` | CUDA, one GPU, a native pack with its experts in RAM, an AVX2 CPU; not with the NUMA split | After each layer the CPU workers run the next layer's router on this layer's input, pick its 4 most likely experts that are not in VRAM (`STRATA_L3_PF_TOP`, 1-16) and read them from RAM into their caches while the GPU works. The next batch of CPU work stops the reading. Each worker always computes the same rows of every expert (`STRATA_POOL_STATIC=1` alone), so it computes the rows it read; a native layer call then runs as two phases instead of `STRATA_POOL_DEP`'s one batch. The output does not change. The routers take 120 MiB of RAM. The startup log says when it is on or why it is off. | RTX 3090 at PCIe 4.0 x8 with a Ryzen 9 5950X and DDR4, against 0.1.64 with its defaults: decode +5.8% on short prompts and +6.0% on a 142K-174K token agent session. Top 2 to 8 gave about the same; static rows alone gave nothing. Measured on one machine only. |
 | `--prefill-head-alias` | `--serve`, one GPU | The output head's VRAM holds the prompt buffers while a prompt is read ([PREFILL_HEAD_ALIAS.md](PREFILL_HEAD_ALIAS.md)). | For 8 GB cards. |
 | `STRATA_EMB_REUSE_ACCOUNT=1` | CUDA | The planner counts the VRAM saved because the half-output buffer `bo` reuses the embedding buffer `emb`, so the auto chunk can grow. Changes prompt rounding. | Prompt about +3.9% on an RTX 3060, no KL measurement yet. |
 | `STRATA_VERIFY_ASYNC_LAUNCH=1` | CUDA, single-request verifier | Runs the CUDA graph launch of a verify window on a separate host thread so the caller keeps serving CPU expert doorbells. A diagnostic for Compute Sanitizer runs. | |
@@ -1405,6 +1462,7 @@ that one compute capability. The identity gate (10 prompts plus exact_pp 4K/20K,
 | Architecture | On by default | Off switch |
 | --- | --- | --- |
 | sm_86 (RTX 3050-3090, RTX A2000-A6000) | `STRATA_ADAPT_NOWAIT=1`, `STRATA_ADAPT_LAG=2`, `STRATA_CPU_IQ_ALL_EXACT1=1`, `STRATA_SIDE_MIXER=2`, `STRATA_ATTN_DAILY=1`, `STRATA_GR_UP75=1`, `STRATA_GU_SWIGLU=1`, `STRATA_QSA_ROWS=1`, `STRATA_B6_MMVQ_ROWS=1` | `STRATA_SM86_PERF=0` |
+| sm_70 (Tesla V100 / Titan V / Quadro GV100) | `STRATA_ADAPT_OVERLAP=1`, `STRATA_SM70_TABLE=1`, `STRATA_B6_MMVQ_ROWS=1`, `STRATA_TSUM=1`, `STRATA_SMALL_UNR=3`, `STRATA_GR_NORM_FAST=1`, `STRATA_SIDE_MIXER=2`, `STRATA_ARGMAX_ROWS_SM70=1`, `STRATA_LFUSE=1`, `STRATA_GDN_SPLIT=1`, `STRATA_SH_STREAM=1`, `STRATA_Q80_ROWS1=1`, `STRATA_NO_MMVQ_ROWS2=1`, `STRATA_CPU_IQ_ALL_EXACT1=1`, `STRATA_GR_Q8_DOWN_MODE=2`, `STRATA_GR_Q8_UP_COLS=16`, `STRATA_GR_Q8_UP_MODE=2`, `STRATA_SCORES_HALVE=1`, `STRATA_SCORES_THREAD=1`, `STRATA_TOPK_SAMPLE=1`, `STRATA_SELECT_LONG=1` | `STRATA_SM70_PERF=0` (and `STRATA_DEFAULTS=026`) |
 | sm_60 (Tesla P100) | `STRATA_ADAPT_NOWAIT=1`, `STRATA_ADAPT_LAG=2`, `STRATA_SIDE_MIXER=2`, `STRATA_FUSE_WAIT=2`, `STRATA_B6_MMVQ_ROWS=1`, `STRATA_FUSE_DECODE=1`, `STRATA_GR_UP75=1` | `STRATA_SM60_PERF=0` |
 | sm_120 (RTX 50 and RTX PRO Blackwell) | `STRATA_SIDE_MIXER=2`, `STRATA_ATTN_DAILY=1`, `STRATA_GR_UP75=1`, `STRATA_GR_DOWN_TG=1`, `STRATA_GU_SWIGLU=1` | `STRATA_SM120_PERF=0` |
 | sm_121 (GB10, DGX Spark) | the six of its own table ([DGX_SPARK_LINUX.md](DGX_SPARK_LINUX.md)), and of the sm_120 set `STRATA_ATTN_DAILY=1` and `STRATA_GR_DOWN_TG=2` (measured there, same bits); the rest of the sm_120 set measured level or slower on a GB10 and stays off | `STRATA_SM121_PERF=0` |
@@ -1547,6 +1605,7 @@ described in the sections above. Raw data is in [`docs/bench-results/`](bench-re
 | 0.1.40 | 4060 Ti + 5080 layer split, i9-14900KF | `--host-core last`: a decode that swung ±6% became steady, 8% faster on average |
 | 0.1.41 | Core i7-13700K (8 P + 8 E), RTX 5090, 64 GB, Windows 11, Swift 1.5 IQ3_XXS, 128K | `--pool-affinity measure`: `all` (15 workers) 6.7 ms per verify window in the CPU pool, 148 tok/s; `p-cores` (7 workers) 2.2 ms, 188-191 tok/s. Over four starts of one day `all` read 14.8, 21.9 and 25.3 ms against 6.1 to 6.2 for `p-cores`, and once `all` won |
 | 0.1.45 | Ryzen 5 5600X etc. | `STRATA_CPU_IQ_ALL_EXACT1`: per expert, one thread, IQ3_S -32% on Threadripper PRO 3975WX, -11% on Ryzen 5 5600X; Core Ultra 7 265 IQ3_S -60%. End to end: Xeon E5-2643 v3 + RTX A4000 CPU part -5% (decode +0.5%, +2.5% on story and code), Core Ultra 7 265 + RTX 3060 +0.4%, Threadripper + R9700 +0.4% |
+| 0.1.64 | RTX 3090 24 GB at PCIe 4.0 x8, Ryzen 9 5950X (16 cores, two 32 MiB L3), 96 GB DDR4, Linux; Flash-Next Huihui abliterated v2 UD-Q4_K_XL, 262K context, `--spec 4`, int8 KV; a fresh engine per run, interleaved | `STRATA_L3_PF=1` (top 4) against the same build without it (`STRATA_POOL_DEP` on, the default). 8 greedy chat prompts x 600 tokens, 3 rounds: 66.76 / 67.98 / 67.37 -> 70.54 / 71.58 / 71.79 tok/s (+5.8%). A recorded 34-turn agent session (prompts of 142K to 174K tokens sent as token ids, each turn capped at its recorded length), 3 rounds, total decode speed: 63.03 / 62.10 / 60.56 -> 65.63 / 66.81 / 64.31 tok/s (+6.0%); mean of per-turn speed 60.16 / 59.03 / 57.58 -> 62.52 / 63.39 / 61.83 (+6.2%). On 0.1.61, one run each, per-turn mean: top 2 61.14, top 3 61.04, top 4 61.16 to 63.40, top 6 61.60, top 8 61.29, top 2 per token row 62.12; static rows alone 65.17 / 60.66 / 64.30 tok/s on the chat prompts against 64.71 / 64.65 / 64.64 without. CPU time per missed expert 74 -> 60 us. The 200 tokens of a greedy one-shot run (`--adapt-every 100000 --pcie-frac 0`) were the same with it off, on, and on the build before it, and every window with the same position and drafts had the same hash. |
 
 ### Images
 

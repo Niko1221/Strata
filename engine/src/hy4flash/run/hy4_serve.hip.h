@@ -36,6 +36,7 @@
 
 #include "hy4_graph.hip.h"
 #include "hy4_spec.hip.h"
+#include "hy4_convcache.h"
 
 namespace hy4 {
 
@@ -46,6 +47,9 @@ struct ServeOpts {
     int index_topk = 2048;
     bool no_index = false, no_engram = false;
     bool session_reuse = false;
+    std::string cc_dir;      // --conversation-cache-dir: SSD conversation cache (hy4_convcache.h); empty = off
+    double cc_gib = 40.0;    // --conversation-cache-gib
+    int cc_min = 1024;       // --conversation-cache-min-tokens
     int tail_skip = 0;  // opt-in only (0 = OFF by default)
     std::string draft = "auto";  // auto = dfly2 when the file carries the drafter; off; dfly2 (error without it)
     std::string dfly_override;   // optional flat DFLYOVR1 or DFOV0001 binary overriding model.dfly_layers.* in VRAM
@@ -54,6 +58,12 @@ struct ServeOpts {
     int64_t image_max_pixels = 4194304;
     int primary_gpu = 0;
     std::vector<int> peer_devs;
+    double vram_experts_gb = -1.0;
+    double ram_experts_gb = -1.0;
+    std::string layer_split;
+#ifdef STRATA_HY4_DISTRIBUTED
+    RemoteExperts* remote_experts = nullptr;
+#endif
 };
 
 // ---- protocol output: one line at a time, flushed -------------------------------------------------------------------------------------------------------------
@@ -73,43 +83,46 @@ inline void proto(const char* fmt, ...) {
 
 // ---- stdin on its own thread: STOP is seen while a request runs -----------------------------------------------------------------------------------------------
 class LineInput {
+    struct State {
+        std::atomic<bool> stop{false};
+        std::mutex mutex;
+        std::condition_variable ready;
+        std::deque<std::string> lines;
+        bool eof = false;
+    };
+    std::shared_ptr<State> state_ = std::make_shared<State>();
+
 public:
-    std::atomic<bool> stop{false};
+    std::atomic<bool>& stop = state_->stop;
     void start() {
-        th_ = std::thread([this] {
+        std::thread([state = state_] {
             std::string line;
             while (std::getline(std::cin, line)) {
                 while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) line.pop_back();
                 if (line == "STOP") {
-                    stop.store(true);
+                    state->stop.store(true);
                     continue;
                 }
-                std::lock_guard<std::mutex> lk(m_);
-                q_.push_back(line);
-                cv_.notify_one();
+                const bool quit = line == "QUIT";
+                std::lock_guard<std::mutex> lk(state->mutex);
+                state->lines.push_back(std::move(line));
+                state->ready.notify_one();
+                if (quit) break;
             }
-            std::lock_guard<std::mutex> lk(m_);
-            eof_ = true;
-            cv_.notify_all();
-        });
-        th_.detach();
+            std::lock_guard<std::mutex> lk(state->mutex);
+            state->eof = true;
+            state->ready.notify_all();
+        }).detach();
     }
     // false at EOF with nothing left
     bool next(std::string& out) {
-        std::unique_lock<std::mutex> lk(m_);
-        cv_.wait(lk, [this] { return !q_.empty() || eof_; });
-        if (q_.empty()) return false;
-        out = q_.front();
-        q_.pop_front();
+        std::unique_lock<std::mutex> lk(state_->mutex);
+        state_->ready.wait(lk, [this] { return !state_->lines.empty() || state_->eof; });
+        if (state_->lines.empty()) return false;
+        out = std::move(state_->lines.front());
+        state_->lines.pop_front();
         return true;
     }
-
-private:
-    std::thread th_;
-    std::mutex m_;
-    std::condition_variable cv_;
-    std::deque<std::string> q_;
-    bool eof_ = false;
 };
 
 // ---- parsing a GEN line ---------------------------------------------------------------------------------------------------------------------------------------
@@ -153,7 +166,10 @@ inline bool parse_gen(const std::string& line, GenReq& r, std::string& err) {
         double d = atof(val.c_str());
         if (key == "temperature") r.s.temperature = (float)d;
         else if (key == "top_p") r.s.top_p = (float)d;
-        else if (key == "top_k") r.s.top_k = std::max(1, std::min(64, (int)d));
+        else if (key == "top_k") {
+            const int tk = (int)d;
+            r.s.top_k = (tk <= 0 || tk > 64) ? 64 : tk;
+        }
         else if (key == "min_p") r.s.min_p = (float)d;
         else if (key == "penalty_repeat") r.s.rep = (float)d;
         else if (key == "penalty_freq") r.s.freq = (float)d;
@@ -249,11 +265,31 @@ inline int hy4_serve_main(const ServeOpts& o) {
     size_t fr = 0, tot = 0;
     HCK(hipMemGetInfo(&fr, &tot));
     fprintf(stderr, "[gpu] %s %s free %.1f / %.1f GiB\n", p.name, gpu_arch(p), fr / 1073741824.0, tot / 1073741824.0);
-    const int serve_chunk = plan_memory(o.max_ctx, o.chunk, tot, o.model, !o.peer_devs.empty());
     GpuModel g;
     g.primary_gpu = o.primary_gpu;
     g.has_vision = !o.vision.empty();
+    g.draft_enabled = (o.draft != "off");
+    g.vram_experts_gb_cap = o.vram_experts_gb;
+    g.ram_experts_gb_cap = o.ram_experts_gb;
+    g.layer_split_spec = o.layer_split;
     g.peer_devs = o.peer_devs;
+    bool expert_split = !o.peer_devs.empty();
+    size_t min_peer_tot = 0;
+    for (int pd : o.peer_devs) {
+        HCK(hipSetDevice(pd));
+        size_t pfr = 0, ptot = 0;
+        HCK(hipMemGetInfo(&pfr, &ptot));
+        min_peer_tot = (min_peer_tot == 0) ? ptot : std::min(min_peer_tot, ptot);
+    }
+    if (!o.peer_devs.empty()) HCK(hipSetDevice(o.primary_gpu));
+#ifdef STRATA_HY4_DISTRIBUTED
+    if (o.remote_experts) {
+        g.expert_shard = 0;
+        expert_split = true;
+    }
+#endif
+    const int serve_chunk = plan_memory(o.max_ctx, o.chunk, tot, o.model, expert_split, !o.vision.empty(), (int)o.peer_devs.size(), min_peer_tot, fr, o.draft != "off");
+    g.planned_chunk = serve_chunk;
     double t_load0 = now_s();
     if (!load_gpu_model(g, o.model, true)) {
         proto("ERR cannot load %s", o.model.c_str());
@@ -272,6 +308,9 @@ inline int hy4_serve_main(const ServeOpts& o) {
     r.index_topk = o.index_topk;
     r.index_on = o.no_index ? 0 : 1;
     r.tail_skip = o.tail_skip;
+#ifdef STRATA_HY4_DISTRIBUTED
+    r.remote_experts = o.remote_experts;
+#endif
     std::string err;
     if (!r.init(o.no_engram ? std::string() : o.engram, err)) {
         proto("ERR init: %s", err.c_str());
@@ -281,17 +320,28 @@ inline int hy4_serve_main(const ServeOpts& o) {
     bool use_spec = false;
     if (o.draft != "off") {
         if (r.Tc < 8) {
-            if (o.draft == "dfly2") { proto("ERR --draft dfly2 needs --chunk >= 8"); return 2; }
-        } else if (df.init(err)) {
-            use_spec = true;
-            r.det_mix = true;
-        } else if (o.draft == "dfly2") {
-            proto("ERR --draft dfly2: %s", err.c_str());
-            return 2;
+            if (o.draft == "dfly2") {
+                fprintf(stderr, "[dfly2] chunk %d < 8; starting without drafter\n", r.Tc);
+            }
+        } else {
+            size_t df_fr = 0, df_tot = 0;
+            HCK(hipMemGetInfo(&df_fr, &df_tot));
+            const size_t df_need = (size_t)512 << 20;
+            if (df_fr < df_need && r.vcache_nslots > 0) r.vcache_release_vram(df_need);
+            if (df.init(err)) {
+                use_spec = true;
+                r.det_mix = true;
+            } else {
+                fprintf(stderr, "[dfly2] drafter unavailable (%s); continuing without drafter\n", err.c_str());
+                err.clear();
+            }
         }
     }
     std::unique_ptr<Spec> spec;
     if (use_spec) spec.reset(new Spec(r, df, o.spec));
+#ifdef STRATA_HY4_DISTRIBUTED
+    if (o.remote_experts) o.remote_experts->start(r.Tc);
+#endif
     const int V = r.c.vocab, EOS = r.c.eos, EOT = 120008;
     std::vector<int32_t> tok;
     tok.reserve((size_t)max_ctx + 16);  // a stable host buffer: the Engram prefetch thread reads it
@@ -312,8 +362,12 @@ inline int hy4_serve_main(const ServeOpts& o) {
         if (vision_probe(o.vision, vprobe, verr)) images_ok = true;
         else fprintf(stderr, "[vision] disabled: %s\n", verr.c_str());
     }
-    proto("INFO engine=hy4-serve-0 arch=hy4flash backend=hip model=%s layers=%d vocab=%d chunk=%d session_reuse=%d drafter=%s images=%d", base.c_str(), r.c.n_layers, V, r.Tc,
-          o.session_reuse ? 1 : 0, use_spec ? "dfly2" : "none", images_ok ? 1 : 0);
+    ConvCache cc;
+    if (!o.cc_dir.empty() && !cc.init(r, o.cc_dir, o.cc_gib, o.cc_min, o.model)) fprintf(stderr, "[convcache] off: cannot use %s\n", o.cc_dir.c_str());
+    const bool reuse = o.session_reuse || cc.on;
+    bool dirty = false;
+    proto("INFO engine=hy4-serve-0 arch=hy4flash backend=hip model=%s layers=%d vocab=%d chunk=%d session_reuse=%d drafter=%s images=%d conversation_cache=%d", base.c_str(), r.c.n_layers, V, r.Tc,
+          reuse ? 1 : 0, use_spec ? "dfly2" : "none", images_ok ? 1 : 0, cc.on ? cc.parked() : -1);
     proto("READY %d stop", max_ctx);
 
     LineInput in;
@@ -380,6 +434,7 @@ inline int hy4_serve_main(const ServeOpts& o) {
             venc.cancel = &in.stop;
             r.vcache_release_vram(1280ull << 20);  // reclaim ~1.25 GiB from tail vcache slabs for vision weights + encode scratch
             if (!venc.load(o.vision, ierr) || !vctx.setup(venc, r.st, q.ids, recs, r.Tc, ierr)) {
+                venc.unload();
                 if (in.stop.load()) {
                     proto("DONE 0 %d %.1f 0.0 cancel", T0, (now_s() - t_req) * 1000.0);
                     continue;
@@ -387,16 +442,55 @@ inline int hy4_serve_main(const ServeOpts& o) {
                 proto("ERR image: %s", ierr.c_str());
                 continue;
             }
-            fprintf(stderr, "[vision] %zu picture(s), %d image rows, encoded in %.2f s\n", recs.size(), vctx.n_rows, vctx.t_encode);
-            // keep the 0.93 GB of weights resident only when the card has room to spare (a 12 GB card does not): the next picture request then skips the load
+            fprintf(stderr, "[vision] %zu picture(s), %d image rows, encoded in %.2f s%s\n", recs.size(), vctx.n_rows, vctx.t_encode, venc.cpu_mode ? " (CPU)" : "");
+            // On <= 12 GB GPUs (or whenever free VRAM < 4 GiB, or CPU fallback), always unload Vision weights immediately after encoding
+            // so hot MoE experts and elastic KV keep full VRAM headroom (#6528).
             size_t vf = 0, vt = 0;
             HCK(hipMemGetInfo(&vf, &vt));
-            if (vf < ((size_t)4 << 30)) venc.unload();
+            if (venc.cpu_mode || vt < ((size_t)15 << 30) || vf < ((size_t)4 << 30)) venc.unload();
             r.vis = &vctx;
         }
-        // KV reuse: only a pure extension of what is resident
+        // KV reuse: pure extension, resident rewind (live or prompt-end ring copy), or parked SSD sequence
         int start = 0;
-        if (!has_images && o.session_reuse && fwd > 0 && fwd < T0 && (int)tok.size() >= fwd && std::equal(tok.begin(), tok.begin() + fwd, q.ids.begin())) start = fwd;
+        bool from_ck = false;
+        if (!has_images && reuse && fwd > 0 && (int)tok.size() >= fwd) {
+            const int n = ConvCache::common(tok.data(), fwd, q.ids);
+            if (n == fwd && fwd < T0) start = fwd;
+            else if (cc.on && n > 0) {
+                const int s_live = cc.start_for(n, fwd, T0);
+                const int s_ck = (cc.ck_pos > 0 && cc.ck_pos <= fwd) ? cc.start_for(n, cc.ck_pos, T0) : -1;
+                if (s_live > 0 && s_live >= s_ck) start = s_live;
+                else if (s_ck > 0) {
+                    start = s_ck;
+                    from_ck = true;
+                }
+            }
+        }
+        ConvCache::Pick pk;
+        if (cc.on && !has_images) {
+            pk = cc.best(q.ids);
+            if (pk.ent < 0 || pk.start <= start + 256) pk = ConvCache::Pick();
+        }
+        const bool same_conv = start > 0 && (cc.ck_pos > 0 ? start >= cc.ck_pos - 64 : fwd - start <= 512);
+        if (cc.on && dirty && fwd >= cc.min_tokens && (pk.ent >= 0 || !same_conv)) {
+            cc.park(r, tok, fwd);
+            dirty = false;
+        }
+        if (pk.ent >= 0) {
+            std::string cerr;
+            if (cc.restore(r, pk, cerr)) {
+                start = pk.start;
+                from_ck = false;
+                dirty = false;
+            } else {
+                fprintf(stderr, "[convcache] %s: reading the prompt instead\n", cerr.c_str());
+                start = 0;
+                from_ck = false;
+            }
+        } else if (from_ck) {
+            cc.restore_checkpoint(r);
+        }
+        if (start == 0 || pk.ent >= 0) cc.ck_pos = -1;
         tok.assign(q.ids.begin(), q.ids.end());
         fwd = 0;
         if (start > 0) proto("RESUME %d", start);
@@ -414,6 +508,7 @@ inline int hy4_serve_main(const ServeOpts& o) {
             done += T;
             if (done < T0) r.prefetch_engram(tok.data(), done, std::min(r.Tc, T0 - done));
             const bool last = done == T0;
+            if (done > start) dirty = true;
             if (last) {
                 r.head(T, T - 1);
                 if (use_spec) df.snap_h(0);
@@ -423,6 +518,7 @@ inline int hy4_serve_main(const ServeOpts& o) {
             const double ms = (now_s() - t0) * 1000.0;
             proto("PP %d %d %.0f %.1f", done, T0, ms, (done - start) / std::max(1e-9, ms / 1000.0));
             fwd = done;
+            if (last && !has_images) cc.checkpoint(r, T0);
             if (!last && in.stop.load()) {
                 cancelled = true;
                 break;
@@ -503,11 +599,12 @@ inline int hy4_serve_main(const ServeOpts& o) {
             return 1;
         }
         if (nonfinite) finish = "nonfinite";
-        if (!o.session_reuse || has_images) fwd = 0;
+        if (!reuse || has_images) fwd = 0;
         r.vis = nullptr;
         const double decode_ms = (now_s() - t1) * 1000.0;
         proto("DONE %d %d %.1f %.1f %s 0 0 %d", made, T0, prompt_ms, decode_ms, finish, start);
     }
+    if (cc.on && dirty && fwd >= cc.min_tokens) cc.park(r, tok, fwd);
     HCK(hipDeviceSynchronize());
     return 0;
 }

@@ -10,6 +10,7 @@
 #include "ink_dspark.cuh"
 #include "ink_runner.cuh"
 #include "ink_spec.cuh"
+#include "strata/core/volta_forever.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -70,16 +71,22 @@ class InkCudaBackend final : public InkBackend {
 public:
     ~InkCudaBackend() override { cleanup(); }
 
-    const char* backend_name() const noexcept override { return "cuda"; }
+    const char* backend_name() const noexcept override {
+        return model_.ls_active ? "cuda-ls" : (model_.ep2_active ? "cuda-ep2" : "cuda");
+    }
+
+    int effective_max_ctx() const override { return initialized_ ? eff_max_ctx_ : 0; }
+
+    bool dspark_ready() const override { return initialized_ && dspark_ && dspark_->ready; }
 
     std::string device_info() const override { return dev_info_; }
 
     BackendStats stats() const override {
         BackendStats st{};
         if (initialized_) {
-            st.vram_experts_loaded = model_.n_vram_experts;
+            st.vram_experts_loaded = model_.n_vram_experts + model_.n_peer_experts;
             st.ram_experts_loaded  = model_.n_host_experts;
-            st.total_experts       = model_.n_vram_experts + model_.n_host_experts;
+            st.total_experts       = model_.n_vram_experts + model_.n_peer_experts + model_.n_host_experts;
             size_t vf = 0, vt = 0;
             if (cudaMemGetInfo(&vf, &vt) == cudaSuccess) {
                 st.vram_total_bytes = vt;
@@ -96,8 +103,34 @@ public:
 
     bool init(const InkModelFile& mf, const BackendOpts& opts, std::string& err) override {
         cleanup();
-        gpu_id_ = opts.gpu_index;
-        cudaError_t ce = cudaSetDevice(gpu_id_);
+        int n_dev = 0;
+        cudaError_t ce = cudaGetDeviceCount(&n_dev);
+        if (ce != cudaSuccess || n_dev <= 0) {
+            err = std::string("cudaGetDeviceCount failed: ") + cudaGetErrorString(ce);
+            return false;
+        }
+        // Resolve primary + optional multi-GPU list (up to 4 GPUs!) from opts.gpu_ids / opts.gpu_index / opts.gpus
+        gpu_id_ = (opts.gpu_index >= 0 && opts.gpu_index < n_dev) ? opts.gpu_index : 0;
+        std::vector<int> all_gpus;
+        if (!opts.gpu_ids.empty()) {
+            for (int g : opts.gpu_ids) {
+                if (g >= 0 && g < n_dev && std::find(all_gpus.begin(), all_gpus.end(), g) == all_gpus.end() && all_gpus.size() < 4) {
+                    all_gpus.push_back(g);
+                }
+            }
+            if (!all_gpus.empty()) gpu_id_ = all_gpus[0];
+        } else if (opts.gpus >= 2 && n_dev >= 2) {
+            const int want = std::min(std::min(opts.gpus, n_dev), 4);
+            all_gpus.push_back(gpu_id_);
+            for (int g = 0; g < n_dev && (int)all_gpus.size() < want; ++g) {
+                if (g != gpu_id_) all_gpus.push_back(g);
+            }
+        } else {
+            all_gpus.push_back(gpu_id_);
+        }
+        const int peer_gpu_id = (all_gpus.size() >= 2) ? all_gpus[1] : -1;
+
+        ce = cudaSetDevice(gpu_id_);
         if (ce != cudaSuccess) {
             err = std::string("cudaSetDevice failed: ") + cudaGetErrorString(ce);
             return false;
@@ -108,58 +141,120 @@ public:
             err = std::string("cudaGetDeviceProperties failed: ") + cudaGetErrorString(ce);
             return false;
         }
-        char buf[512];
-        std::snprintf(buf, sizeof(buf), "%.200s (sm_%d%d, %d SMs, %.1f GiB VRAM, sm120_tc=%d)",
-                      prop.name, prop.major, prop.minor, prop.multiProcessorCount,
-                      (double)prop.totalGlobalMem / (1024.0 * 1024.0 * 1024.0),
-                      (int)strata::ink::sm120::available());
-        dev_info_ = buf;
+        const int sm_cc = prop.major * 10 + prop.minor;
 
-        // Compute exact minimum KV + ShortConv + workspace headroom for parallel slots before pinning experts!
+        // Compute exact minimum KV + ShortConv + workspace headroom BEFORE pinning experts!
+        // Keep lossless FP16 KV as default when Host KV Offload handles capacity (#552)!
         max_slots_ = std::max(1, std::min(kMaxParallelSlots, opts.parallel));
+        const int kv_offload_mode = (opts.kv_offload == "on") ? 1 : ((opts.kv_offload == "off") ? -1 : 0);
         kv_dtype_ = opts.kv_dtype;
-        if (opts.kv_dtype_auto && (max_slots_ >= 16 || prop.totalGlobalMem <= (13ull << 30)) && prop.totalGlobalMem < (40ull << 30)) {
-            kv_dtype_ = KvDtype::FP8_E4M3;
+        if (opts.kv_dtype_auto) {
+            if (max_slots_ >= 16) {
+                kv_dtype_ = KvDtype::FP8_E4M3;
+            } else if (kv_offload_mode < 0) {
+                if (prop.totalGlobalMem <= (13ull << 30)) {
+                    kv_dtype_ = KvDtype::FP8_E4M3;
+                } else if (sm_cc >= 89 && opts.max_ctx > 16384 && prop.totalGlobalMem < (40ull << 30)) {
+                    kv_dtype_ = KvDtype::FP8_E4M3;
+                }
+            }
         }
+        auto map_kvd = [](KvDtype d) -> strata::ink::InkKvDtype {
+            if (d == KvDtype::FP8_E4M3) return strata::ink::InkKvDtype::FP8;
+            if (d == KvDtype::K8V8)     return strata::ink::InkKvDtype::K8V8;
+            if (d == KvDtype::K8V4)     return strata::ink::InkKvDtype::K8V4;
+            return strata::ink::InkKvDtype::FP16;
+        };
+        const auto cuda_kvd = map_kvd(kv_dtype_);
+
         const int eff_chunk = std::max(64, opts.chunk);
         const size_t swa_r = (max_slots_ >= 16) ? (size_t)(strata::ink::kInkSwaWin + 32)
                                                 : (size_t)(strata::ink::kInkSwaWin + std::max(eff_chunk, 64));
-        const size_t bpe = (kv_dtype_ == KvDtype::FP8_E4M3) ? 2ull : 4ull;
-        const size_t sc_per_pos = (kv_dtype_ == KvDtype::FP8_E4M3) ? (size_t)(2 * strata::ink::kInkKVHeads * 4) : 0ull;
-        const size_t min_kv_bytes = (size_t)40 * max_slots_ * swa_r * ((size_t)strata::ink::kInkKVDim * bpe + sc_per_pos)
+        const size_t per_visit_pos = strata::ink::InkCudaRunner::kv_bytes_per_visit_pos(cuda_kvd);
+        const int init_glob = (kv_offload_mode == 1)
+            ? 0
+            : ((kv_offload_mode == 0 && prop.totalGlobalMem <= (13ull << 30))
+                ? std::min(std::max(256, opts.max_ctx), 2048)
+                : std::max(256, std::min(std::max(256, opts.max_ctx), (max_slots_ == 1) ? 8192 : 4096)));
+        const size_t min_kv_bytes = (size_t)40 * max_slots_ * swa_r * per_visit_pos
                                   + (size_t)strata::ink::kInkVisits * max_slots_ * 3 * strata::ink::kInkSconvCh * 4
-                                  + (size_t)8 * max_slots_ * 256 * ((size_t)strata::ink::kInkKVDim * bpe + sc_per_pos);
-        const size_t ws_pad = (max_slots_ >= 8) ? (1536ull << 20)
-                            : ((prop.totalGlobalMem >= (20ull << 30)) ? (1200ull << 20)
-                             : (prop.totalGlobalMem <= (13ull << 30)) ? (260ull << 20)
-                                                                      : (320ull << 20));
-        const size_t min_reserve_bytes = min_kv_bytes + ws_pad;
+                                  + (size_t)8 * max_slots_ * init_glob * per_visit_pos;
+        // Include O(1) prefill ws (~114 MiB) + compact DSpark (~160 MiB) + activation ws (WDDM floor added inside loader!)
+        const size_t ws_pad = (max_slots_ >= 8) ? (1280ull << 20)
+                            : ((prop.totalGlobalMem >= (20ull << 30)) ? (960ull << 20)
+                             : (prop.totalGlobalMem <= (13ull << 30)) ? (512ull << 20)
+                                                                      : (640ull << 20));
+        size_t min_reserve_bytes = min_kv_bytes + ws_pad;
+        if (opts.vram_reserve_mib >= 0) {
+            min_reserve_bytes = std::max(min_reserve_bytes, (size_t)opts.vram_reserve_mib << 20);
+        }
 
-        // Load .strata v1.1 trunk + experts (100% VRAM or 3x loop-weighted vram_load_order!)
+        // Load .strata v1.1 / .gguf (Unsloth + ggml-org) / HF safetensors trunk + experts (Single-GPU, EP2, Layer-Split, or 4-tier GPU+RAM+SSD!)
         const bool build_screen = opts.enable_dspark && mf.m.dspark.present;
-        if (!model_.load(mf.path, gpu_id_, build_screen, err, min_reserve_bytes)) return false;
+        if (!model_.load_from_model_file(mf, gpu_id_, peer_gpu_id, (float)opts.ep_split, build_screen, err,
+                                         min_reserve_bytes, gguf_detail::gguf_dequant_row_f32, gguf_detail::gguf_row_bytes,
+                                         opts.vram_experts_gb, opts.ram_experts_gb, opts.ssd_experts,
+                                         all_gpus, opts.layer_split, opts.threads)) {
+            return false;
+        }
 
-        auto cuda_kvd = (kv_dtype_ == KvDtype::FP8_E4M3) ? strata::ink::InkKvDtype::FP8
-                                                          : strata::ink::InkKvDtype::FP16;
+        {
+            char buf[512];
+            if (model_.ls_active) {
+                std::string s = "LayerSplit[";
+                for (int i = 0; i < model_.n_stages; ++i) {
+                    cudaDeviceProp sp{};
+                    cudaGetDeviceProperties(&sp, model_.stage_gpu[i]);
+                    if (i > 0) s += " + ";
+                    char part[128];
+                    std::snprintf(part, sizeof(part), "GPU%d:%.48s(%.0fG,L%d-%d)",
+                                  model_.stage_gpu[i], sp.name, (double)sp.totalGlobalMem / 1073741824.0,
+                                  model_.stage_l0[i], model_.stage_l1[i] - 1);
+                    s += part;
+                }
+                s += "]";
+                dev_info_ = s;
+            } else if (peer_gpu_id >= 0 && model_.ep2_active) {
+                cudaDeviceProp prop1{};
+                cudaGetDeviceProperties(&prop1, peer_gpu_id);
+                std::snprintf(buf, sizeof(buf), "GPU%d:%.120s + GPU%d:%.120s (sm_%d%d, %.1f+%.1f GiB VRAM, ep2=1)",
+                              gpu_id_, prop.name, peer_gpu_id, prop1.name, prop.major, prop.minor,
+                              (double)prop.totalGlobalMem / 1073741824.0, (double)prop1.totalGlobalMem / 1073741824.0);
+                dev_info_ = buf;
+            } else {
+                std::snprintf(buf, sizeof(buf), "%.200s (sm_%d%d, %d SMs, %.1f GiB VRAM, sm120_tc=%d)",
+                              prop.name, prop.major, prop.minor, prop.multiProcessorCount,
+                              (double)prop.totalGlobalMem / 1073741824.0, (int)strata::ink::sm120::available());
+                dev_info_ = buf;
+            }
+        }
 
         runner_ = std::make_unique<strata::ink::InkCudaRunner>(model_);
-        runner_->use_cuda_graph = true;
-        runner_->init(max_slots_, std::max(256, opts.max_ctx), std::max(64, opts.chunk), cuda_kvd);
+        const bool vf_graph_ok = strata::core::allow_1024_thread_cuda_graphs(
+            prop.major, prop.minor, strata::core::volta_forever_active());
+        runner_->use_cuda_graph = vf_graph_ok && !model_.ep2_active && !model_.ls_active;
+        if (!vf_graph_ok) {
+            std::fprintf(stderr, "[inkling-cuda] sm_70 under volta-forever: disabling 1024-thread CUDA Graph capture by default\n");
+        }
+        runner_->init(max_slots_, std::max(256, opts.max_ctx), std::max(64, opts.chunk), cuda_kvd, kv_offload_mode);
         eff_max_ctx_ = runner_->max_ctx;
 
-        if (opts.enable_dspark && model_.man.has_dspark) {
+        if (opts.enable_dspark && model_.man.has_dspark && !model_.ls_active) {
             dspark_ = std::make_unique<strata::ink::InkDSpark>(*runner_);
             dspark_->init(eff_max_ctx_, 512);
         }
 
-        // Allocate snapshot buffer (3.83 MB) + selected hidden gather buffers + pinned D2H logits staging
-        d_sconv_snap_ = strata::ink::dalloc<float>((size_t)strata::ink::kInkVisits * 3 * strata::ink::kInkSconvCh);
+        // Allocate snapshot buffer (3.83 MB) + selected hidden gather buffers
+        if (!model_.ls_active) {
+            d_sconv_snap_ = strata::ink::dalloc<float>((size_t)strata::ink::kInkVisits * 3 * strata::ink::kInkSconvCh);
+        }
         d_h_sel_      = strata::ink::dalloc<float>((size_t)runner_->max_batch * strata::ink::kInkHidden);
         d_sel_idx_    = strata::ink::dalloc<int32_t>(runner_->max_batch);
         slot_alloc_.assign(max_slots_, false);
         snap_active_.assign(max_slots_, false);
         snap_p0_.assign(max_slots_, 0);
         snap_M_.assign(max_slots_, 0);
+        prompt_ckpts_.assign(max_slots_, PromptCkpt{});
         initialized_ = true;
         return true;
     }
@@ -178,6 +273,7 @@ public:
         if (slot >= 0 && slot < max_slots_) {
             slot_alloc_[slot] = false;
             snap_active_[slot] = false;
+            if (slot < (int)prompt_ckpts_.size()) prompt_ckpts_[slot] = PromptCkpt{};
             if (slot == 0) tree_snap_ready_ = false;
         }
     }
@@ -186,11 +282,177 @@ public:
         if (!initialized_ || slot < 0 || slot >= max_slots_) return;
         runner_->reset_slot(slot);
         snap_active_[slot] = false;
+        if (slot < (int)prompt_ckpts_.size()) prompt_ckpts_[slot].valid = false;
         if (slot == 0) { dspark_slot_ = -1; tree_snap_ready_ = false; }
     }
 
+    // #6627: Save/restore slot's ShortConv (3.83 MB) + 40 SWA KV ring windows (<=160 MiB in host RAM) + DSpark SWA KV
+    // so multi-turn chats and exact repeats reuse the full prior prompt even if hidden thinking or trailing tokens diverged!
+    bool save_prompt_checkpoint(int slot, int seq_len) override {
+        if (!initialized_ || slot < 0 || slot >= max_slots_ || model_.ls_active || !d_sconv_snap_) return false;
+        if (seq_len <= 0 || max_slots_ > 8) return false;
+        auto& ck = prompt_ckpts_[slot];
+        ck.valid = false;
+        ck.seq_len = seq_len;
+        // 1. Copy 48-visit ShortConv state via d_sconv_snap_ -> host RAM (3.83 MB)
+        const size_t sc_elems = (size_t)strata::ink::kInkVisits * 3 * strata::ink::kInkSconvCh;
+        ck.sconv.resize(sc_elems);
+        strata::ink::k_ink_sconv_slot_copy<<<dim3(strata::ink::kInkVisits, 4), 256, 0, runner_->st>>>(
+            runner_->d_sconv_pool_arr, d_sconv_snap_, slot, runner_->max_slots, true);
+        INK_CK(cudaMemcpyAsync(ck.sconv.data(), d_sconv_snap_, sc_elems * sizeof(float), cudaMemcpyDeviceToHost, runner_->st));
+        // 2. Copy active SWA KV ring window [start_pos .. seq_len-1] for all 40 SWA visits
+        const int start_pos = std::max(0, seq_len - strata::ink::kInkSwaWin);
+        const int n_pos = seq_len - start_pos;
+        ck.swa_start = start_pos;
+        ck.swa_len = n_pos;
+        ck.swa_k.clear(); ck.swa_v.clear(); ck.swa_ksc.clear(); ck.swa_vsc.clear();
+        for (int v = 0; v < strata::ink::kInkVisits; ++v) {
+            const auto& kv = runner_->kv_desc[v];
+            if (!kv.is_swa) continue;
+            const int cap = kv.cap_pos;
+            const int p0 = start_pos % cap;
+            const int seg1 = std::min(n_pos, cap - p0);
+            const int seg2 = n_pos - seg1;
+            const size_t slot_base = (size_t)slot * cap;
+            auto copy_d2h = [&](const void* base, size_t elem_b, size_t stride_elems, std::vector<uint8_t>& dst) {
+                const size_t off = dst.size();
+                dst.resize(off + (size_t)n_pos * stride_elems * elem_b);
+                const uint8_t* bp = reinterpret_cast<const uint8_t*>(base);
+                INK_CK(cudaMemcpyAsync(dst.data() + off, bp + (slot_base + p0) * stride_elems * elem_b,
+                                       (size_t)seg1 * stride_elems * elem_b, cudaMemcpyDeviceToHost, runner_->st));
+                if (seg2 > 0) {
+                    INK_CK(cudaMemcpyAsync(dst.data() + off + (size_t)seg1 * stride_elems * elem_b,
+                                           bp + slot_base * stride_elems * elem_b,
+                                           (size_t)seg2 * stride_elems * elem_b, cudaMemcpyDeviceToHost, runner_->st));
+                }
+            };
+            if (kv.kv_fmt == 0) {
+                copy_d2h(kv.k_f16, sizeof(__half), strata::ink::kInkKVDim, ck.swa_k);
+                copy_d2h(kv.v_f16, sizeof(__half), strata::ink::kInkKVDim, ck.swa_v);
+            } else {
+                const size_t v_stride = (kv.kv_fmt == 3) ? (strata::ink::kInkKVDim / 2) : strata::ink::kInkKVDim;
+                copy_d2h(kv.k_f8, 1, strata::ink::kInkKVDim, ck.swa_k);
+                copy_d2h(kv.v_f8, 1, v_stride, ck.swa_v);
+                copy_d2h(kv.k_sc, sizeof(float), strata::ink::kInkKVHeads, ck.swa_ksc);
+                copy_d2h(kv.v_sc, sizeof(float), strata::ink::kInkKVHeads, ck.swa_vsc);
+            }
+        }
+        // 3. Save DSpark SWA-1025 context KV (layers 0 & 2) + f_rnn row at seq_len-1 for slot 0
+        ck.has_dspark = false;
+        if (slot == 0 && dspark_ && dspark_->ready && dspark_slot_ == 0) {
+            ck.dspark_k.clear(); ck.dspark_v.clear();
+            for (int il = 0; il < 3; ++il) {
+                if (model_.man.c.dspark_is_swa[il] == 0) continue;
+                const int cap = dspark_->ctx_cap[il];
+                const int s0 = std::max(0, seq_len - model_.man.c.dspark_swa_win);
+                const int np = seq_len - s0;
+                const int p0 = s0 % cap;
+                const int seg1 = std::min(np, cap - p0);
+                const int seg2 = np - seg1;
+                auto copy_ds = [&](const __half* src, std::vector<uint8_t>& dst) {
+                    const size_t row_b = (size_t)strata::ink::kInkKVDim * sizeof(__half);
+                    const size_t off = dst.size();
+                    dst.resize(off + (size_t)np * row_b);
+                    const uint8_t* bp = reinterpret_cast<const uint8_t*>(src);
+                    INK_CK(cudaMemcpyAsync(dst.data() + off, bp + (size_t)p0 * row_b, (size_t)seg1 * row_b, cudaMemcpyDeviceToHost, runner_->st));
+                    if (seg2 > 0) {
+                        INK_CK(cudaMemcpyAsync(dst.data() + off + (size_t)seg1 * row_b, bp, (size_t)seg2 * row_b, cudaMemcpyDeviceToHost, runner_->st));
+                    }
+                };
+                copy_ds(dspark_->d_ctx_k[il], ck.dspark_k);
+                copy_ds(dspark_->d_ctx_v[il], ck.dspark_v);
+            }
+            ck.dspark_frnn.resize(strata::ink::kInkHidden);
+            const int fr_slot = (seq_len - 1) % dspark_->frnn_cap;
+            INK_CK(cudaMemcpyAsync(ck.dspark_frnn.data(), dspark_->d_f_rnn + (size_t)fr_slot * strata::ink::kInkHidden,
+                                   (size_t)strata::ink::kInkHidden * sizeof(float), cudaMemcpyDeviceToHost, runner_->st));
+            ck.has_dspark = true;
+        }
+        INK_CK(cudaStreamSynchronize(runner_->st));
+        ck.valid = true;
+        return true;
+    }
+
+    bool restore_prompt_checkpoint(int slot, int seq_len) override {
+        if (!initialized_ || slot < 0 || slot >= max_slots_ || model_.ls_active || !d_sconv_snap_) return false;
+        if (slot >= (int)prompt_ckpts_.size()) return false;
+        const auto& ck = prompt_ckpts_[slot];
+        if (!ck.valid || ck.seq_len != seq_len) return false;
+        snap_active_[slot] = false;
+        if (slot == 0) tree_snap_ready_ = false;
+        // 1. Restore ShortConv state
+        const size_t sc_elems = (size_t)strata::ink::kInkVisits * 3 * strata::ink::kInkSconvCh;
+        INK_CK(cudaMemcpyAsync(d_sconv_snap_, ck.sconv.data(), sc_elems * sizeof(float), cudaMemcpyHostToDevice, runner_->st));
+        strata::ink::k_ink_sconv_slot_copy<<<dim3(strata::ink::kInkVisits, 4), 256, 0, runner_->st>>>(
+            runner_->d_sconv_pool_arr, d_sconv_snap_, slot, runner_->max_slots, false);
+        // 2. Restore 40 SWA KV ring windows (Global KV is append-only and already intact at [0..seq_len-1]!)
+        size_t ok = 0, ov = 0, oks = 0, ovs = 0;
+        const int start_pos = ck.swa_start;
+        const int n_pos = ck.swa_len;
+        for (int v = 0; v < strata::ink::kInkVisits; ++v) {
+            const auto& kv = runner_->kv_desc[v];
+            if (!kv.is_swa) continue;
+            const int cap = kv.cap_pos;
+            const int p0 = start_pos % cap;
+            const int seg1 = std::min(n_pos, cap - p0);
+            const int seg2 = n_pos - seg1;
+            const size_t slot_base = (size_t)slot * cap;
+            auto copy_h2d = [&](void* base, size_t elem_b, size_t stride_elems, const std::vector<uint8_t>& src, size_t& off) {
+                uint8_t* bp = reinterpret_cast<uint8_t*>(base);
+                INK_CK(cudaMemcpyAsync(bp + (slot_base + p0) * stride_elems * elem_b, src.data() + off,
+                                       (size_t)seg1 * stride_elems * elem_b, cudaMemcpyHostToDevice, runner_->st));
+                if (seg2 > 0) {
+                    INK_CK(cudaMemcpyAsync(bp + slot_base * stride_elems * elem_b,
+                                           src.data() + off + (size_t)seg1 * stride_elems * elem_b,
+                                           (size_t)seg2 * stride_elems * elem_b, cudaMemcpyHostToDevice, runner_->st));
+                }
+                off += (size_t)n_pos * stride_elems * elem_b;
+            };
+            if (kv.kv_fmt == 0) {
+                copy_h2d(kv.k_f16, sizeof(__half), strata::ink::kInkKVDim, ck.swa_k, ok);
+                copy_h2d(kv.v_f16, sizeof(__half), strata::ink::kInkKVDim, ck.swa_v, ov);
+            } else {
+                const size_t v_stride = (kv.kv_fmt == 3) ? (strata::ink::kInkKVDim / 2) : strata::ink::kInkKVDim;
+                copy_h2d(kv.k_f8, 1, strata::ink::kInkKVDim, ck.swa_k, ok);
+                copy_h2d(kv.v_f8, 1, v_stride, ck.swa_v, ov);
+                copy_h2d(kv.k_sc, sizeof(float), strata::ink::kInkKVHeads, ck.swa_ksc, oks);
+                copy_h2d(kv.v_sc, sizeof(float), strata::ink::kInkKVHeads, ck.swa_vsc, ovs);
+            }
+        }
+        // 3. Restore DSpark SWA-1025 context KV + f_rnn row for slot 0
+        if (slot == 0 && ck.has_dspark && dspark_ && dspark_->ready) {
+            size_t dk_o = 0, dv_o = 0;
+            for (int il = 0; il < 3; ++il) {
+                if (model_.man.c.dspark_is_swa[il] == 0) continue;
+                const int cap = dspark_->ctx_cap[il];
+                const int s0 = std::max(0, seq_len - model_.man.c.dspark_swa_win);
+                const int np = seq_len - s0;
+                const int p0 = s0 % cap;
+                const int seg1 = std::min(np, cap - p0);
+                const int seg2 = np - seg1;
+                auto copy_ds_h2d = [&](__half* dst, const std::vector<uint8_t>& src, size_t& off) {
+                    const size_t row_b = (size_t)strata::ink::kInkKVDim * sizeof(__half);
+                    uint8_t* bp = reinterpret_cast<uint8_t*>(dst);
+                    INK_CK(cudaMemcpyAsync(bp + (size_t)p0 * row_b, src.data() + off, (size_t)seg1 * row_b, cudaMemcpyHostToDevice, runner_->st));
+                    if (seg2 > 0) {
+                        INK_CK(cudaMemcpyAsync(bp, src.data() + off + (size_t)seg1 * row_b, (size_t)seg2 * row_b, cudaMemcpyHostToDevice, runner_->st));
+                    }
+                    off += (size_t)np * row_b;
+                };
+                copy_ds_h2d(dspark_->d_ctx_k[il], ck.dspark_k, dk_o);
+                copy_ds_h2d(dspark_->d_ctx_v[il], ck.dspark_v, dv_o);
+            }
+            const int fr_slot = (seq_len - 1) % dspark_->frnn_cap;
+            INK_CK(cudaMemcpyAsync(dspark_->d_f_rnn + (size_t)fr_slot * strata::ink::kInkHidden, ck.dspark_frnn.data(),
+                                   (size_t)strata::ink::kInkHidden * sizeof(float), cudaMemcpyHostToDevice, runner_->st));
+            dspark_slot_ = 0;
+        }
+        INK_CK(cudaStreamSynchronize(runner_->st));
+        return true;
+    }
+
     void snapshot_slot(int slot) override {
-        if (!initialized_ || slot < 0 || slot >= max_slots_) return;
+        if (!initialized_ || slot < 0 || slot >= max_slots_ || model_.ls_active || !d_sconv_snap_) return;
         strata::ink::k_ink_sconv_slot_copy<<<dim3(strata::ink::kInkVisits, 4), 256, 0, runner_->st>>>(
             runner_->d_sconv_pool_arr, d_sconv_snap_, slot, runner_->max_slots, true);
         snap_active_[slot] = true;
@@ -199,7 +461,7 @@ public:
     }
 
     void rollback_slot(int slot, int keep_len) override {
-        if (!initialized_ || slot < 0 || slot >= max_slots_) return;
+        if (!initialized_ || slot < 0 || slot >= max_slots_ || model_.ls_active || !d_sconv_snap_) return;
         if (snap_active_[slot]) {
             const int n_keep = std::max(0, std::min(snap_M_[slot], keep_len - snap_p0_[slot]));
             strata::ink::k_ink_sconv_slot_copy<<<dim3(strata::ink::kInkVisits, 4), 256, 0, runner_->st>>>(
@@ -239,6 +501,24 @@ public:
         }
         const int N = batch.n_tokens;
         if (N <= 0) return true;
+        // Defensive KV position bounds check + elastic global KV growth (fixes #6590B CUDA error 700 & CA1JEeAx!)
+        int max_pos_req = 0;
+        for (int i = 0; i < N; ++i) {
+            if (batch.pos[i] < 0 || batch.pos[i] >= eff_max_ctx_) {
+                err = "CUDA KV position " + std::to_string(batch.pos[i]) + " out of bounds [0, " + std::to_string(eff_max_ctx_) + ")";
+                return false;
+            }
+            if (batch.pos[i] > max_pos_req) max_pos_req = batch.pos[i];
+        }
+        if (!runner_->ensure_global_kv_cap(max_pos_req + 1)) {
+            err = "VRAM exhausted growing elastic global KV cache to " + std::to_string(max_pos_req + 1) + " tokens";
+            return false;
+        }
+        if (batch.capture_taps && dspark_ && dspark_->ready) {
+            if (!dspark_->ensure_ctx_cap(max_pos_req + 1)) {
+                dspark_->ready = false;
+            }
+        }
         tree_snap_ready_ = false;
         const int V = model_.man.c.vocab_unpadded;
 
@@ -448,8 +728,9 @@ public:
         int max_draft,
         int32_t* out_draft_ids,
         std::string& /*err*/) override {
-        if (!initialized_ || !dspark_ || !dspark_->ready || slot != 0 || dspark_slot_ != 0) return 0;
-        if (anchor_pos <= 0 || anchor_pos + 8 >= dspark_->max_ctx) return 0;
+        if (!initialized_ || model_.ls_active || !dspark_ || !dspark_->ready || slot != 0 || dspark_slot_ != 0) return 0;
+        if (anchor_pos <= 0 || anchor_pos + 8 >= eff_max_ctx_ || anchor_pos + 8 >= dspark_->max_ctx) return 0;
+        if (!runner_->ensure_global_kv_cap(anchor_pos + 8) || !dspark_->ensure_ctx_cap(anchor_pos + 8)) return 0;
         int32_t ids7[8] = {};
         float conf7[8] = {};
         dspark_->draft_block8(anchor_tok, anchor_pos, ids7, conf7);
@@ -482,8 +763,9 @@ public:
         int32_t* out_emitted,
         int* out_drafted,
         std::string& /*err*/) override {
-        if (!initialized_ || !dspark_ || !dspark_->ready || slot != 0 || dspark_slot_ != 0) return 0;
-        if (anchor_pos <= 0 || anchor_pos + 12 >= dspark_->max_ctx || max_emit < 1 || !out_emitted) return 0;
+        if (!initialized_ || model_.ls_active || !dspark_ || !dspark_->ready || slot != 0 || dspark_slot_ != 0) return 0;
+        if (anchor_pos <= 0 || anchor_pos + 12 >= eff_max_ctx_ || anchor_pos + 12 >= dspark_->max_ctx || max_emit < 1 || !out_emitted) return 0;
+        if (!runner_->ensure_global_kv_cap(anchor_pos + 12) || !dspark_->ensure_ctx_cap(anchor_pos + 12)) return 0;
 
         // 1. Snapshot slot-0 ShortConv pre-verify state (2.5 us) for exact mid-tree EOS rollback if needed!
         strata::ink::k_ink_sconv_slot_copy<<<dim3(strata::ink::kInkVisits, 4), 256, 0, runner_->st>>>(
@@ -580,8 +862,21 @@ private:
         if (d_sel_idx_)    { cudaFree(d_sel_idx_); d_sel_idx_ = nullptr; }
         if (h_logits_pin_) { cudaFreeHost(h_logits_pin_); h_logits_pin_ = nullptr; h_logits_cap_ = 0; }
         model_.free_all();
+        prompt_ckpts_.clear();
         initialized_ = false;
     }
+
+    struct PromptCkpt {
+        bool valid = false;
+        bool has_dspark = false;
+        int seq_len = 0;
+        int swa_start = 0;
+        int swa_len = 0;
+        std::vector<float> sconv;
+        std::vector<uint8_t> swa_k, swa_v, swa_ksc, swa_vsc;
+        std::vector<uint8_t> dspark_k, dspark_v;
+        std::vector<float> dspark_frnn;
+    };
 
     bool initialized_ = false;
     int gpu_id_ = 0;
@@ -603,6 +898,7 @@ private:
     std::vector<bool> snap_active_;
     std::vector<int> snap_p0_;
     std::vector<int> snap_M_;
+    std::vector<PromptCkpt> prompt_ckpts_;
     bool tree_snap_ready_ = false;
     int tree_snap_p0_ = 0;
     int tree_snap_M_ = 0;

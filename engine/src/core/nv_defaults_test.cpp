@@ -1,5 +1,6 @@
 // src/core/nv_defaults_test.cpp - the NVIDIA per-architecture default tables (no GPU needed): the sm_121 (GB10, DGX Spark) table, its
 // two off switches, and that no other card's table changed.
+#include "strata/core/emulate.hpp"
 #include "strata/core/nv_chunk.hpp"
 #include "strata/core/nv_defaults.hpp"
 #include "strata/prefill/nvfp4_prefill_mode.hpp"
@@ -36,6 +37,7 @@ int main() {
     using namespace strata::core;
     unset("STRATA_SM121_PERF");
     unset("STRATA_SM86_PERF");
+    unset("STRATA_SM70_PERF");
     unset("STRATA_SM60_PERF");
     unset("STRATA_EMULATE_CC");
     // GB10 (12.1): the five measured own-stack switches + 0.2.19 bit-exact pipeline/PLE/quant + native sm_121a mxf4nvf4
@@ -83,12 +85,12 @@ int main() {
         CHECK(nvfp4_fused_covers("w4a4", false, false));
         CHECK(!nvfp4_fused_covers("fp16", true, false));
     }
-    // sm_120 (RTX 50 / PRO Blackwell): BW-13/BW-G + 0.2.19 exact overlap/PLE/quant fusions, fused K-quant prefill, wide CPU share, native mxf4nvf4; STRATA_DEFAULTS=026 and STRATA_SM120_PERF=0 leave it out
+    // sm_120 (RTX 50 / PRO Blackwell): BW-13/BW-G (minus opt-in L2_PF per #6431) + 0.2.19 exact overlap/PLE/quant fusions, fused K-quant prefill, wide CPU share, native mxf4nvf4; STRATA_DEFAULTS=026 and STRATA_SM120_PERF=0 leave it out
     {
         unset("STRATA_SM120_PERF");
         const auto t = nv_default_env(12, 0, false);
-        CHECK(t.size() == 13 && find(t, "STRATA_HC_UPMIX") && *find(t, "STRATA_HC_UPMIX") == "1");
-        CHECK(find(t, "STRATA_L2_PF") && *find(t, "STRATA_L2_PF") == "1");                // BW-G
+        CHECK(t.size() == 12 && find(t, "STRATA_HC_UPMIX") && *find(t, "STRATA_HC_UPMIX") == "1");
+        CHECK(!find(t, "STRATA_L2_PF"));                                                   // #6431: opt-in on sm_120
         CHECK(find(t, "STRATA_Q80_ROWS1") && *find(t, "STRATA_Q80_ROWS1") == "1");
         CHECK(find(t, "STRATA_EXP_MODE") && *find(t, "STRATA_EXP_MODE") == "8");
         CHECK(find(t, "STRATA_SIDE_MIXER") && *find(t, "STRATA_SIDE_MIXER") == "2");
@@ -113,25 +115,54 @@ int main() {
         put("STRATA_SM120_PERF", "0");
         CHECK(nv_default_env(12, 0, false).empty());
         put("STRATA_SM120_PERF", "1");
-        CHECK(nv_default_env(12, 0, false).size() == 13);
+        CHECK(nv_default_env(12, 0, false).size() == 12);
         unset("STRATA_SM120_PERF");
     }
-    // sm_89 (RTX 40 / Ada Lovelace): 12 switches + VERIFY_DEVICE_HITS for > 16 GiB (RTX 4090 24 GB)
+    // sm_89 (RTX 40 / Ada Lovelace): 17 switches (#6462 bit-exact + 0.2.19; L2_PF opt-in per #6431, QFUSE opt-in per #6583) + VERIFY_DEVICE_HITS for > 16 GiB (RTX 4090 24 GB)
     {
         unset("STRATA_SM89_PERF");
         const auto t = nv_default_env(8, 9, false);
-        CHECK(t.size() == 12 && find(t, "STRATA_HC_UPMIX") && *find(t, "STRATA_HC_UPMIX") == "1");
-        CHECK(find(t, "STRATA_L2_PF") && *find(t, "STRATA_L2_PF") == "1");
+        CHECK(t.size() == 17 && find(t, "STRATA_HC_UPMIX") && *find(t, "STRATA_HC_UPMIX") == "1");
+        CHECK(find(t, "STRATA_ADAPT_LAG") && *find(t, "STRATA_ADAPT_LAG") == "2");
+        CHECK(find(t, "STRATA_ATTN_DAILY") && *find(t, "STRATA_ATTN_DAILY") == "1");
+        CHECK(find(t, "STRATA_PREFILL_CPU_SHARE_MAX") && *find(t, "STRATA_PREFILL_CPU_SHARE_MAX") == "6144");
         CHECK(find(t, "STRATA_PF_FUSED_KQ") && *find(t, "STRATA_PF_FUSED_KQ") == "1");
+        CHECK(!find(t, "STRATA_L2_PF"));    // #6431: opt-in on sm_89
+        CHECK(!find(t, "STRATA_QFUSE"));    // #6583: opt-in alongside GR_UP75 on sm_89
         CHECK(!find(t, "STRATA_HC_Q8"));
         CHECK(!find(t, "STRATA_VERIFY_DEVICE_HITS"));
+        const auto t12 = nv_default_env(8, 9, false, 12ull << 30);
+        CHECK(t12.size() == 18 && find(t12, "STRATA_ADAPT_FETCH") && *find(t12, "STRATA_ADAPT_FETCH") == "2");
+        CHECK(!find(t12, "STRATA_VERIFY_DEVICE_HITS"));
         const auto t24 = nv_default_env(8, 9, false, 24ull << 30);
-        CHECK(t24.size() == 13 && find(t24, "STRATA_VERIFY_DEVICE_HITS") && *find(t24, "STRATA_VERIFY_DEVICE_HITS") == "1");
+        CHECK(t24.size() == 18 && find(t24, "STRATA_VERIFY_DEVICE_HITS") && *find(t24, "STRATA_VERIFY_DEVICE_HITS") == "1");
+        CHECK(!find(t24, "STRATA_ADAPT_FETCH"));
         CHECK(nv_default_env(8, 9, true).empty());
         put("STRATA_SM89_PERF", "0");
         CHECK(nv_default_env(8, 9, false).empty());
         unset("STRATA_SM89_PERF");
     }
+    // sm_70 (Volta): 21 validated bit-exact switches; STRATA_DEFAULTS=026 and STRATA_SM70_PERF=0 leave it out
+    {
+        unset("STRATA_SM70_PERF");
+        const auto t = nv_default_env(7, 0, false);
+        CHECK(t.size() == 21);
+        CHECK(find(t, "STRATA_ADAPT_OVERLAP") && *find(t, "STRATA_ADAPT_OVERLAP") == "1");
+        CHECK(find(t, "STRATA_SM70_TABLE") && *find(t, "STRATA_SM70_TABLE") == "1");
+        CHECK(find(t, "STRATA_SELECT_LONG") && *find(t, "STRATA_SELECT_LONG") == "1");
+        CHECK(nv_default_env(7, 0, true).empty());
+        put("STRATA_SM70_PERF", "0");
+        CHECK(nv_default_env(7, 0, false).empty());
+        put("STRATA_SM70_PERF", "1");
+        CHECK(nv_default_env(7, 0, false).size() == 21);
+        unset("STRATA_SM70_PERF");
+    }
+    // nbald/volta-forever remapping: 7.5 -> 7.0 when active, other architectures untouched
+    CHECK(strata::cc_of(7, 5, false) == 75);
+    CHECK(strata::cc_of(7, 5, true) == 70);
+    CHECK(strata::cc_of(7, 0, true) == 70);
+    CHECK(strata::cc_of(8, 6, true) == 86);
+    CHECK(strata::cc_of(12, 0, true) == 120);
     // sm_100 and the older cards get nothing from this file; the sm_86 / sm_60 tables are unchanged by the flag
     CHECK(nv_default_env(10, 0, false).empty());
     CHECK(nv_default_env(7, 5, false).empty());
@@ -144,12 +175,17 @@ int main() {
         // repeatable output: sm_86 keeps ADAPT_LAG=2 but no longer turns ADAPT_NOWAIT on (option 2); sm_60 keeps both
         CHECK(!find(a, "STRATA_ADAPT_NOWAIT"));
         CHECK(find(a, "STRATA_ADAPT_LAG") && *find(a, "STRATA_ADAPT_LAG") == "2");
+        CHECK(find(a, "STRATA_GR_UP75") && *find(a, "STRATA_GR_UP75") == "1");
+        CHECK(!find(a, "STRATA_QFUSE"));   // #6583: opt-in on sm_86 (conflicts with GR_UP75 + 1-token self_commit)
         CHECK(find(p, "STRATA_ADAPT_NOWAIT") && *find(p, "STRATA_ADAPT_NOWAIT") == "1");
         CHECK(find(p, "STRATA_ADAPT_LAG") && *find(p, "STRATA_ADAPT_LAG") == "2");
-        // sm_86 > 16 GiB (RTX 3090 24 GB / A6000) gets VERIFY_DEVICE_HITS=1; <= 16 GiB (A4000 / 3060) does not
+        // sm_86 <= 13 GiB (RTX 3060/3070/3080) gets ADAPT_FETCH=2 (not under 026); 16 GiB (A4000) gets neither; > 16 GiB (3090/A6000) gets VERIFY_DEVICE_HITS=1
+        const auto a12 = nv_default_env(8, 6, false, 12ull << 30);
         const auto a16 = nv_default_env(8, 6, false, 16ull << 30);
         const auto a24 = nv_default_env(8, 6, false, 24ull << 30);
-        CHECK(!find(a16, "STRATA_VERIFY_DEVICE_HITS"));
+        CHECK(find(a12, "STRATA_ADAPT_FETCH") && *find(a12, "STRATA_ADAPT_FETCH") == "2");
+        CHECK(!find(nv_default_env(8, 6, true, 12ull << 30), "STRATA_ADAPT_FETCH"));
+        CHECK(!find(a16, "STRATA_VERIFY_DEVICE_HITS") && !find(a16, "STRATA_ADAPT_FETCH"));
         CHECK(find(a24, "STRATA_VERIFY_DEVICE_HITS") && *find(a24, "STRATA_VERIFY_DEVICE_HITS") == "1");
     }
     // round 0212: STRATA_MMQ_KQ=1 is a default for compute capability 8.0+ (owner yes 11-03), with its own off switches
@@ -215,7 +251,7 @@ int main() {
         unset("STRATA_PF_FUSED_SM86");
     }
     // the other tables are unchanged by it
-    CHECK(nv_default_env(12, 0, false).size() == 13);   // sm_120 0.2.19 default stack
+    CHECK(nv_default_env(12, 0, false).size() == 12);   // sm_120 default stack (#6431: L2_PF opt-in)
     // round 0212: the NVIDIA prompt-chunk ceiling of a bare `--prefill auto` (nv_chunk.hpp)
     CHECK(nv_chunk_ceiling(nullptr, false) == 32768);
     CHECK(nv_chunk_ceiling("1", false) == 32768);
@@ -229,6 +265,15 @@ int main() {
     CHECK(!nv_chunk_card_ok(5, 2) && !nv_chunk_card_ok(0, 0));
     CHECK(nv_chunk_card_ok(8, 0) && nv_chunk_card_ok(8, 6) && nv_chunk_card_ok(9, 0) && nv_chunk_card_ok(12, 0));
     CHECK(nv_chunk_step_down(32768) == 16384 && nv_chunk_step_down(16384) == 8192 && nv_chunk_step_down(8192) == 8192);
+    // #5199: <= 16.5 GiB cards keep bare --prefill auto at 8192 unless STRATA_NV_CHUNK is set explicitly; > 16.5 GiB keeps 32768
+    CHECK(nv_chunk_ceiling_for_vram(nullptr, false, 8ull << 30) == 0);
+    CHECK(nv_chunk_ceiling_for_vram(nullptr, false, 12ull << 30) == 0);
+    CHECK(nv_chunk_ceiling_for_vram(nullptr, false, 16ull << 30) == 0);
+    CHECK(nv_chunk_ceiling_for_vram("16", false, 16ull << 30) == 16384);
+    CHECK(nv_chunk_ceiling_for_vram("1", false, 16ull << 30) == 32768);
+    CHECK(nv_chunk_ceiling_for_vram(nullptr, false, 24ull << 30) == 32768);
+    CHECK(nv_chunk_ceiling_for_vram(nullptr, false, 0) == 32768);
+    CHECK(nv_chunk_ceiling_for_vram(nullptr, true, 24ull << 30) == 0);
     // the one-argument form reads STRATA_DEFAULTS
     put("STRATA_DEFAULTS", "026");
     CHECK(nv_default_env(12, 1).empty());

@@ -4,7 +4,7 @@
 # MIT License - Copyright (c) 2026 Niko1221 and the Strata contributors.
 
 if(NOT DEFINED STRATA_HIP_ARCHS OR "${STRATA_HIP_ARCHS}" STREQUAL "")
-  set(STRATA_HIP_ARCHS "gfx1200;gfx1201;gfx1100;gfx1101;gfx1102;gfx1103;gfx1150;gfx1151;gfx1030;gfx1031;gfx1032")
+  set(STRATA_HIP_ARCHS "gfx1200;gfx1201;gfx1100;gfx1101;gfx1102;gfx1103;gfx1150;gfx1151;gfx1152;gfx1153;gfx1170;gfx1171;gfx1172;gfx1250;gfx1030;gfx1031;gfx1032")
 endif()
 
 # Locate hipcc / AMD clang++ if not already configured by top-level hip_backend.cmake
@@ -50,6 +50,12 @@ endif()
 if(NOT "${_ink_rocm_root}" STREQUAL "")
   list(APPEND _ink_hip_extra_flags "--rocm-path=${_ink_rocm_root}")
 endif()
+if(DEFINED CMAKE_SYSROOT AND NOT "${CMAKE_SYSROOT}" STREQUAL "")
+  list(APPEND _ink_hip_extra_flags "--sysroot=${CMAKE_SYSROOT}")
+endif()
+if(DEFINED STRATA_INK_HIP_EXTRA_FLAGS AND NOT "${STRATA_INK_HIP_EXTRA_FLAGS}" STREQUAL "")
+  list(APPEND _ink_hip_extra_flags ${STRATA_INK_HIP_EXTRA_FLAGS})
+endif()
 if(DEFINED STRATA_ROCM_BITCODE_PATH AND NOT "${STRATA_ROCM_BITCODE_PATH}" STREQUAL "")
   list(APPEND _ink_hip_extra_flags "--rocm-device-lib-path=${STRATA_ROCM_BITCODE_PATH}")
 elseif(NOT "${_ink_rocm_root}" STREQUAL "" AND EXISTS "${_ink_rocm_root}/lib/llvm/amdgcn/bitcode")
@@ -75,6 +81,7 @@ add_custom_command(
           -Wall -Wextra -Wno-unused-function -Wno-unused-result
           "${_ink_hip_src}" -o "${_ink_hip_obj}"
   DEPENDS "${_ink_hip_src}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/../ink_gguf_transcode.h"
           "${CMAKE_CURRENT_SOURCE_DIR}/ink_hip_common.hip.h"
           "${CMAKE_CURRENT_SOURCE_DIR}/ink_hip_codecs.hip.h"
           "${CMAKE_CURRENT_SOURCE_DIR}/ink_hip_ops.hip.h"

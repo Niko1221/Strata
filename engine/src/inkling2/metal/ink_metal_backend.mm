@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#define INK_METAL_WITH_MODEL_FILE 1
 #include "ink_metal_runner.h"
 
 #ifdef INK_METAL_EMBEDDED_SHADERS
@@ -66,6 +67,10 @@ class MetalInkBackend final : public InkBackend {
 public:
     const char* backend_name() const noexcept override { return "metal"; }
 
+    int effective_max_ctx() const override { return runner_.max_ctx; }
+
+    bool dspark_ready() const override { return runner_.use_dspark; }
+
     std::string device_info() const override {
         return cx_.device_name() + " (workSet=" +
                std::to_string((int)(cx_.recommended_working_set() / (1024ull * 1024ull * 1024ull))) + " GiB)";
@@ -86,7 +91,12 @@ public:
 
     bool init(const InkModelFile& model, const BackendOpts& opts, std::string& err) override {
         kv_dtype_ = opts.kv_dtype;
-        if (!mod_.load(cx_, model.path, err)) return false;
+        const char* force_mf = std::getenv("INK_METAL_FORCE_MODEL_FILE");
+        if (model.kind == ModelSourceKind::Strata && !(force_mf && force_mf[0] == '1')) {
+            if (!mod_.load(cx_, model.path, err)) return false;
+        } else {
+            if (!mod_.load_from_model_file(cx_, model, err)) return false;
+        }
         const int par = std::max(1, std::min(64, opts.parallel));
         const int batch_cap = std::max(256, std::max(opts.chunk, par));
         if (!runner_.init(cx_, mod_, par, std::max(256, opts.max_ctx), batch_cap,
@@ -421,7 +431,8 @@ public:
     }
 
     bool encode_image(const ImageRec& img, std::vector<float>& out_embeds, std::string& err) override {
-        if (!runner_.vis.loaded || img.file.empty()) return false;
+        if (img.file.empty()) return false;
+        if (!runner_.ensure_vision(err)) return false;
         int ntok = 0;
         return runner_.vis.encode_image_file(cx_, img.file, out_embeds, ntok, err);
     }

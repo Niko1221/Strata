@@ -12,6 +12,8 @@
 
 #define INKLING_NO_STBI_IMPL
 #include "ink_backend.h"
+#include "ink_gguf_transcode.h"
+#include "../ink_cold_store.hpp"
 #include "ink_vision.h"
 #include "ink_hip_ops.hip.h"
 #include "ink_hip_tree.hip.h"
@@ -19,7 +21,11 @@
 #include "ink_hip_hybrid.hpp"
 #include "strata/hip_uma_guard.hpp"
 #include "strata/inkling2/inkling2_loop.hpp"
+#include "strata/platform/cgroup_mem.hpp"
 #include "strata/quant/sk_codecs.hpp"
+#if defined(__linux__)
+#include "strata/platform/numa_balancing.hpp"
+#endif
 
 #include <algorithm>
 #include <cmath>
@@ -219,6 +225,7 @@ struct VisitKvPool {
     bool is_swa = true;
     bool is_fp8 = false;
     bool is_uma = false;
+    bool host_offload = false;
     int max_slots = 1;
     int max_pages_per_slot = 16;
     int kv_dim = 1024;
@@ -245,6 +252,7 @@ struct VisitKvPool {
         free_pages.clear();
         h_pt.clear();
         cap_pages = used_pages = 0;
+        host_offload = false;
     }
 
     bool init(bool swa, bool fp8, bool uma, int n_slots, int max_pages, int kvd, std::string& err) {
@@ -252,6 +260,7 @@ struct VisitKvPool {
         is_swa = swa;
         is_fp8 = fp8;
         is_uma = uma;
+        host_offload = false;
         max_slots = n_slots;
         max_pages_per_slot = std::max(1, max_pages);
         kv_dim = kvd;
@@ -272,35 +281,101 @@ struct VisitKvPool {
         }
     }
 
-    bool grow_pool(int min_pages, hipStream_t st, std::string& err) {
-        int new_cap = std::max(min_pages, std::max(16, cap_pages * 2));
+    bool try_alloc_pool_buffers(int cap, bool use_host_mapped, GpuBuffer& nk, GpuBuffer& nv, GpuBuffer& nks, GpuBuffer& nvs) {
         const size_t elem_b = is_fp8 ? 1u : 2u;
         const size_t page_b = static_cast<size_t>(kKvPageTokens) * kv_dim * elem_b;
-
-        GpuBuffer nk, nv, nks, nvs;
-        if (!hip_ok(alloc_gpu_buffer(nk, static_cast<size_t>(new_cap) * page_b, is_uma), "kv grow k", err)) return false;
-        if (!hip_ok(alloc_gpu_buffer(nv, static_cast<size_t>(new_cap) * page_b, is_uma), "kv grow v", err)) {
+        const size_t kv_b = static_cast<size_t>(cap) * page_b;
+        if (alloc_gpu_buffer(nk, kv_b, use_host_mapped, /*prefer_uma_coherent=*/use_host_mapped) != hipSuccess) {
+            return false;
+        }
+        if (alloc_gpu_buffer(nv, kv_b, use_host_mapped, /*prefer_uma_coherent=*/use_host_mapped) != hipSuccess) {
             free_gpu_buffer(nk);
             return false;
         }
         if (is_fp8) {
-            const size_t sc_b = static_cast<size_t>(new_cap) * kKvPageTokens * sizeof(float);
-            if (!hip_ok(alloc_gpu_buffer(nks, sc_b, is_uma), "kv grow ks", err) ||
-                !hip_ok(alloc_gpu_buffer(nvs, sc_b, is_uma), "kv grow vs", err)) {
+            const size_t sc_b = static_cast<size_t>(cap) * kKvPageTokens * sizeof(float);
+            if (alloc_gpu_buffer(nks, sc_b, use_host_mapped, /*prefer_uma_coherent=*/use_host_mapped) != hipSuccess ||
+                alloc_gpu_buffer(nvs, sc_b, use_host_mapped, /*prefer_uma_coherent=*/use_host_mapped) != hipSuccess) {
                 free_gpu_buffer(nk); free_gpu_buffer(nv); free_gpu_buffer(nks); free_gpu_buffer(nvs);
                 return false;
             }
         }
+        return true;
+    }
+
+    bool grow_pool(int min_pages, hipStream_t st, std::string& err) {
+        const int max_total_pages = std::max(min_pages, max_slots * max_pages_per_slot);
+        const size_t elem_b = is_fp8 ? 1u : 2u;
+        const size_t page_b = static_cast<size_t>(kKvPageTokens) * kv_dim * elem_b;
+
+        int new_cap = std::min(max_total_pages, std::max(min_pages, std::max(16, cap_pages * 2)));
+        size_t vfree = 0, vtot = 0;
+        const bool have_vinfo = (!is_uma && !host_offload && hipMemGetInfo(&vfree, &vtot) == hipSuccess);
+        if (have_vinfo) {
+            // Avoid 3x doubling OOM spike on tight-VRAM 16 GB discrete GPUs (#6613 / #6621):
+            // step conservatively when free VRAM < 1.5 GiB or when doubling exceeds 70% of remaining VRAM.
+            const size_t need_bytes = static_cast<size_t>(new_cap) * page_b * 2u;
+            if (vfree < (1536ULL << 20) || need_bytes > (vfree * 7u) / 10u) {
+                const int step = (vfree < (512ULL << 20)) ? 8 : 32;
+                new_cap = std::min(max_total_pages, std::max(min_pages, cap_pages + step));
+            }
+        }
+
+        GpuBuffer nk, nv, nks, nvs;
+        bool use_host = (is_uma || host_offload);
+        if (!try_alloc_pool_buffers(new_cap, use_host, nk, nv, nks, nvs)) {
+            // Retry with exact min_pages before falling back to host-mapped pinned KV.
+            if (new_cap > min_pages) {
+                new_cap = min_pages;
+                if (!try_alloc_pool_buffers(new_cap, use_host, nk, nv, nks, nvs)) {
+                    (void)hipGetLastError();
+                }
+            } else {
+                (void)hipGetLastError();
+            }
+            if (!nk.dev_ptr && !use_host) {
+                // VRAM exhausted: seamlessly fall back to host-mapped pinned KV (zero kernel changes, zero OOM!).
+                use_host = true;
+                new_cap = std::min(max_total_pages, std::max(min_pages, cap_pages + 32));
+                if (!try_alloc_pool_buffers(new_cap, true, nk, nv, nks, nvs)) {
+                    new_cap = min_pages;
+                    if (!try_alloc_pool_buffers(new_cap, true, nk, nv, nks, nvs)) {
+                        err = "[ink-hip] kv grow failed in both VRAM and host-mapped pinned memory";
+                        return false;
+                    }
+                }
+                host_offload = true;
+                std::fprintf(stderr,
+                             "[ink-hip] %s KV pool VRAM tight (free=%.0f MiB) -> spilled to host-mapped pinned KV (cap=%d pages, fp8=%d)\n",
+                             is_swa ? "SWA" : "Global", have_vinfo ? (vfree / 1048576.0) : 0.0, new_cap, (int)is_fp8);
+            } else if (!nk.dev_ptr) {
+                err = "[ink-hip] kv grow allocation failed";
+                return false;
+            }
+        }
+
         if (cap_pages > 0) {
             const size_t old_b = static_cast<size_t>(cap_pages) * page_b;
-            if (!hip_ok(hipMemcpyAsync(nk.dev_ptr, k_pool.dev_ptr, old_b, hipMemcpyDeviceToDevice, st), "kv copy k", err)) return false;
-            if (!hip_ok(hipMemcpyAsync(nv.dev_ptr, v_pool.dev_ptr, old_b, hipMemcpyDeviceToDevice, st), "kv copy v", err)) return false;
+            if (!hip_ok(hipMemcpyAsync(nk.dev_ptr, k_pool.dev_ptr, old_b, hipMemcpyDefault, st), "kv copy k", err)) {
+                free_gpu_buffer(nk); free_gpu_buffer(nv); free_gpu_buffer(nks); free_gpu_buffer(nvs);
+                return false;
+            }
+            if (!hip_ok(hipMemcpyAsync(nv.dev_ptr, v_pool.dev_ptr, old_b, hipMemcpyDefault, st), "kv copy v", err)) {
+                free_gpu_buffer(nk); free_gpu_buffer(nv); free_gpu_buffer(nks); free_gpu_buffer(nvs);
+                return false;
+            }
             if (is_fp8) {
                 const size_t old_sc = static_cast<size_t>(cap_pages) * kKvPageTokens * sizeof(float);
-                if (!hip_ok(hipMemcpyAsync(nks.dev_ptr, k_scales.dev_ptr, old_sc, hipMemcpyDeviceToDevice, st), "kv copy ks", err)) return false;
-                if (!hip_ok(hipMemcpyAsync(nvs.dev_ptr, v_scales.dev_ptr, old_sc, hipMemcpyDeviceToDevice, st), "kv copy vs", err)) return false;
+                if (!hip_ok(hipMemcpyAsync(nks.dev_ptr, k_scales.dev_ptr, old_sc, hipMemcpyDefault, st), "kv copy ks", err) ||
+                    !hip_ok(hipMemcpyAsync(nvs.dev_ptr, v_scales.dev_ptr, old_sc, hipMemcpyDefault, st), "kv copy vs", err)) {
+                    free_gpu_buffer(nk); free_gpu_buffer(nv); free_gpu_buffer(nks); free_gpu_buffer(nvs);
+                    return false;
+                }
             }
-            if (!hip_ok(hipStreamSynchronize(st), "kv grow sync", err)) return false;
+            if (!hip_ok(hipStreamSynchronize(st), "kv grow sync", err)) {
+                free_gpu_buffer(nk); free_gpu_buffer(nv); free_gpu_buffer(nks); free_gpu_buffer(nvs);
+                return false;
+            }
         }
         free_gpu_buffer(k_pool); free_gpu_buffer(v_pool);
         free_gpu_buffer(k_scales); free_gpu_buffer(v_scales);
@@ -433,17 +508,33 @@ class HipBackend final : public InkBackend {
 public:
     ~HipBackend() override { cleanup(); }
 
-    const char* backend_name() const noexcept override { return "hip"; }
+    const char* backend_name() const noexcept override { return ep2_active_ ? "hip-ep2" : "hip"; }
+
+    int effective_max_ctx() const override { return max_ctx_; }
+
+    bool dspark_ready() const override { return has_dspark_; }
 
     std::string device_info() const override {
-        char buf[320];
-        std::snprintf(buf, sizeof(buf), "%s (%s, %d CUs, UMA=%d, eff=%.2f GiB, chunk<=%d, blasLt=%d, hybrid=%d)",
-                      mem_info_.device_name, mem_info_.arch_name, mem_info_.cu_count,
-                      mem_info_.is_uma ? 1 : 0,
-                      static_cast<double>(mem_info_.effective_total_bytes) / 1073741824.0,
-                      guard_.max_prefill_chunk,
-                      blaslt_.ready() ? 1 : 0,
-                      hybrid_.active() ? 1 : 0);
+        char buf[512];
+        if (ep2_active_) {
+            std::snprintf(buf, sizeof(buf),
+                          "%s (%s, %d CUs) + %s (%s, %d CUs) [EP-2GPU split=%.2f, p2p=%s, eff=%.2f GiB, chunk<=%d, blasLt=%d, hybrid=%d]",
+                          mem_info_.device_name, mem_info_.arch_name, mem_info_.cu_count,
+                          peer_mem_info_.device_name, peer_mem_info_.arch_name, peer_mem_info_.cu_count,
+                          ep_split_, ep2_p2p_ ? "on" : "pinned",
+                          static_cast<double>(mem_info_.effective_total_bytes + peer_mem_info_.effective_total_bytes) / 1073741824.0,
+                          guard_.max_prefill_chunk,
+                          blaslt_.ready() ? 1 : 0,
+                          hybrid_.active() ? 1 : 0);
+        } else {
+            std::snprintf(buf, sizeof(buf), "%s (%s, %d CUs, UMA=%d, eff=%.2f GiB, chunk<=%d, blasLt=%d, hybrid=%d)",
+                          mem_info_.device_name, mem_info_.arch_name, mem_info_.cu_count,
+                          mem_info_.is_uma ? 1 : 0,
+                          static_cast<double>(mem_info_.effective_total_bytes) / 1073741824.0,
+                          guard_.max_prefill_chunk,
+                          blaslt_.ready() ? 1 : 0,
+                          hybrid_.active() ? 1 : 0);
+        }
         return std::string(buf);
     }
 
@@ -451,9 +542,9 @@ public:
         BackendStats st;
         st.vram_experts_loaded = vram_experts_loaded_;
         st.ram_experts_loaded = ram_experts_loaded_;
-        st.total_experts = model_ ? model_->rd.expert_directory().size() : 0;
-        st.vram_used_bytes = vram_used_bytes();
-        st.vram_total_bytes = mem_info_.effective_total_bytes;
+        st.total_experts = !adj_dir_.empty() ? adj_dir_.size() : (model_ ? model_->expert_directory().size() : 0);
+        st.vram_used_bytes = vram_used_bytes() + (ep2_active_ ? peer_expert_gpu_arena_.bytes : 0);
+        st.vram_total_bytes = mem_info_.effective_total_bytes + (ep2_active_ ? peer_mem_info_.effective_total_bytes : 0);
         st.max_slots = max_slots_;
         for (const auto& s : slots_) if (s.allocated) ++st.active_slots;
         st.kv_dtype = default_kv_dtype_;
@@ -462,15 +553,131 @@ public:
 
     bool init(const InkModelFile& model, const BackendOpts& opts, std::string& err) override {
         cleanup();
+#if defined(__linux__)
+        if (const std::string nb = strata::platform::numa_balancing::keep_scanner_off(); !nb.empty()) {
+            std::fprintf(stderr, "%s\n", nb.c_str());
+        }
+#endif
         model_ = &model;
         opts_ = opts;
         c_ = model.m.c;
         dspark_cfg_ = model.m.dspark;
 
-        if (!hip_ok(hipSetDevice(opts.gpu_index), "hipSetDevice", err)) return false;
+        int dev_count = 0;
+        if (hipGetDeviceCount(&dev_count) != hipSuccess || dev_count < 1) {
+            err = "[ink-hip] no HIP devices visible";
+            return false;
+        }
+        gpu0_id_ = (!opts.gpu_ids.empty()) ? opts.gpu_ids[0] : opts.gpu_index;
+        gpu0_id_ = std::max(0, std::min(gpu0_id_, dev_count - 1));
+        gpu1_id_ = -1;
+        ep2_active_ = false;
+        ep2_p2p_ = false;
+        ep_split_ = std::clamp(opts.ep_split, 0.1, 0.9);
+
+        if (!hip_ok(hipSetDevice(gpu0_id_), "hipSetDevice", err)) return false;
         if (!hip_ok(hipStreamCreateWithFlags(&stream_, hipStreamNonBlocking), "hipStreamCreate", err)) return false;
 
-        mem_info_ = query_device_memory(opts.gpu_index);
+        mem_info_ = query_device_memory(gpu0_id_);
+#if defined(__linux__)
+        if (mem_info_.is_uma) {
+            if (std::FILE* osf = std::fopen("/proc/sys/kernel/osrelease", "r")) {
+                char osrel[256] = {0};
+                if (std::fgets(osrel, sizeof(osrel), osf) &&
+                    (std::strstr(osrel, "microsoft") || std::strstr(osrel, "Microsoft") || std::strstr(osrel, "WSL"))) {
+                    std::fprintf(stderr,
+                                 "[ink-hip] WARNING: WSL2 on integrated Ryzen APU (%s) hits ROCm 10.2 #10097 aperture faults; "
+                                 "use native Windows HIP or bounded bounce buffers\n",
+                                 mem_info_.arch_name);
+                }
+                std::fclose(osf);
+            }
+        }
+#endif
+
+        // Dual-GPU Expert Parallelism setup (--gpus 2 / --gpus 0,1 / --devices 0,1)
+        if ((opts.gpus >= 2 || opts.gpu_ids.size() >= 2) && dev_count >= 2) {
+            int g1 = -1;
+            if (opts.gpu_ids.size() >= 2) {
+                for (size_t k = 1; k < opts.gpu_ids.size(); ++k) {
+                    if (opts.gpu_ids[k] >= 0 && opts.gpu_ids[k] < dev_count && opts.gpu_ids[k] != gpu0_id_) {
+                        g1 = opts.gpu_ids[k];
+                        break;
+                    }
+                }
+            }
+            if (g1 < 0) g1 = (gpu0_id_ == 0) ? 1 : 0;
+            if (g1 >= 0 && g1 < dev_count && g1 != gpu0_id_) {
+                gpu1_id_ = g1;
+                if (!hip_ok(hipSetDevice(gpu1_id_), "hipSetDevice peer", err)) return false;
+                peer_mem_info_ = query_device_memory(gpu1_id_);
+                if (!hip_ok(hipStreamCreateWithFlags(&peer_stream_, hipStreamNonBlocking), "hipStreamCreate peer", err) ||
+                    !hip_ok(hipEventCreateWithFlags(&ev_g1_done_, hipEventDisableTiming), "hipEventCreate peer", err)) {
+                    (void)hipSetDevice(gpu0_id_);
+                    return false;
+                }
+                if (!hip_ok(hipSetDevice(gpu0_id_), "hipSetDevice restore0", err) ||
+                    !hip_ok(hipEventCreateWithFlags(&ev_g0_to_g1_, hipEventDisableTiming), "hipEventCreate g0", err)) {
+                    return false;
+                }
+                // Probe P2P with a 16-byte hardware roundtrip check; fall back to host-pinned bounce if unsupported or broken!
+                const char* force_pinned = std::getenv("INK_HIP_PEER_PINNED");
+                if (!(force_pinned && force_pinned[0] == '1')) {
+                    int p01 = 0, p10 = 0;
+                    if (hipDeviceCanAccessPeer(&p01, gpu0_id_, gpu1_id_) == hipSuccess &&
+                        hipDeviceCanAccessPeer(&p10, gpu1_id_, gpu0_id_) == hipSuccess &&
+                        p01 && p10) {
+                        (void)hipSetDevice(gpu0_id_);
+                        hipError_t e1 = hipDeviceEnablePeerAccess(gpu1_id_, 0);
+                        if (e1 == hipErrorPeerAccessAlreadyEnabled) { (void)hipGetLastError(); e1 = hipSuccess; }
+                        (void)hipSetDevice(gpu1_id_);
+                        hipError_t e2 = hipDeviceEnablePeerAccess(gpu0_id_, 0);
+                        if (e2 == hipErrorPeerAccessAlreadyEnabled) { (void)hipGetLastError(); e2 = hipSuccess; }
+                        if (e1 == hipSuccess && e2 == hipSuccess) {
+                            uint32_t h_tx[4] = {0x12345678u, 0xCAFEBABEu, 0xA5A55A5Au, 0xDEADBEEFu};
+                            uint32_t h_rx01[4] = {0, 0, 0, 0};
+                            uint32_t h_rx10[4] = {0, 0, 0, 0};
+                            uint32_t *d0 = nullptr, *d1 = nullptr;
+                            (void)hipSetDevice(gpu0_id_);
+                            hipError_t a0 = hipMalloc(&d0, sizeof(h_tx));
+                            (void)hipSetDevice(gpu1_id_);
+                            hipError_t a1 = hipMalloc(&d1, sizeof(h_tx));
+                            bool hw_ok = false;
+                            if (a0 == hipSuccess && a1 == hipSuccess) {
+                                (void)hipSetDevice(gpu0_id_);
+                                (void)hipMemcpy(d0, h_tx, sizeof(h_tx), hipMemcpyHostToDevice);
+                                (void)hipSetDevice(gpu1_id_);
+                                (void)hipMemset(d1, 0, sizeof(h_tx));
+                                hipError_t c01 = hipMemcpyPeer(d1, gpu1_id_, d0, gpu0_id_, sizeof(h_tx));
+                                (void)hipMemcpy(h_rx01, d1, sizeof(h_tx), hipMemcpyDeviceToHost);
+                                (void)hipSetDevice(gpu0_id_);
+                                (void)hipMemset(d0, 0, sizeof(h_tx));
+                                hipError_t c10 = hipMemcpyPeer(d0, gpu0_id_, d1, gpu1_id_, sizeof(h_tx));
+                                (void)hipMemcpy(h_rx10, d0, sizeof(h_tx), hipMemcpyDeviceToHost);
+                                hw_ok = (c01 == hipSuccess && c10 == hipSuccess &&
+                                         std::memcmp(h_tx, h_rx01, sizeof(h_tx)) == 0 &&
+                                         std::memcmp(h_tx, h_rx10, sizeof(h_tx)) == 0);
+                            }
+                            if (d0) { (void)hipSetDevice(gpu0_id_); (void)hipFree(d0); }
+                            if (d1) { (void)hipSetDevice(gpu1_id_); (void)hipFree(d1); }
+                            if (hw_ok) {
+                                ep2_p2p_ = true;
+                            } else {
+                                std::fprintf(stderr,
+                                             "[ink-hip] Hardware P2P roundtrip probe FAILED (GPU%d<->GPU%d); using pinned-host DMA fallback\n",
+                                             gpu0_id_, gpu1_id_);
+                                (void)hipSetDevice(gpu0_id_);
+                                if (hipDeviceDisablePeerAccess(gpu1_id_) != hipSuccess) (void)hipGetLastError();
+                                (void)hipSetDevice(gpu1_id_);
+                                if (hipDeviceDisablePeerAccess(gpu0_id_) != hipSuccess) (void)hipGetLastError();
+                            }
+                        }
+                    }
+                }
+                (void)hipSetDevice(gpu0_id_);
+                ep2_active_ = true;
+            }
+        }
         guard_ = compute_dispatch_guard(mem_info_.arch_name, mem_info_.cu_count, mem_info_.is_uma,
 #if defined(_WIN32)
                                         true
@@ -479,9 +686,11 @@ public:
 #endif
         );
 
-        // Auto-select FP8_E4M3 KV when high concurrency (>= 16) on <= 32 GiB GPU
+        // Auto-select FP8_E4M3 KV when high concurrency (>= 16) on <= 32 GiB GPU OR on <= 13 GiB discrete GPUs (8/10/12 GB)
         default_kv_dtype_ = opts.kv_dtype;
-        if (opts.kv_dtype_auto && opts.parallel >= 16 && mem_info_.effective_total_bytes <= 36ULL * 1073741824ULL) {
+        if (opts.kv_dtype_auto &&
+            ((opts.parallel >= 16 && mem_info_.effective_total_bytes <= 36ULL * 1073741824ULL) ||
+             (!mem_info_.is_uma && mem_info_.effective_total_bytes <= 13ULL * 1073741824ULL))) {
             default_kv_dtype_ = KvDtype::FP8_E4M3;
         }
         max_slots_ = std::max(1, std::min(kMaxParallelSlots, opts.parallel));
@@ -515,9 +724,9 @@ public:
             (void)alloc_gpu_buffer(d_exp_w2_f16_,  w2_b,  mem_info_.is_uma);
         }
 
-        // 1. Load Section 1 trunk + DSpark arena from .strata file
+        // 1. Load Section 1 trunk + DSpark arena (supports .strata v1.1, .gguf, and .safetensors!)
         std::vector<uint8_t> sec1;
-        if (!model.rd.read_section(1, sec1, err)) return false;
+        if (!model.read_section1(sec1, err)) return false;
 
         const std::string embed_k = "model.llm.embed.weight";
         const std::string unemb_k = "model.llm.unembed.weight";
@@ -718,7 +927,42 @@ public:
         // 3. Load Section 4 experts in 3x loop-weighted vram_load_order priority!
         // Uses strata::hip_uma::alloc_gpu_buffer so 780M (gfx1103) & 890M (gfx1150) with small 512M-4G BIOS carveout
         // seamlessly allocate coherent GTT UMA memory and fit SQ-10 (9.75 GiB) & SQ-15 (13.36 GiB) 100% on GPU!
-        const auto& dir = model.rd.expert_directory();
+        // For community .gguf (GGUF_RAW), preserve native lossless GGUF_RAW bytes for all 14 supported GGML types
+        // (Q4_K/Q5_K/Q6_K/Q8_0/IQ4_XS/IQ3_XXS/IQ4_NL/Q4_0/Q3_K/Q2_K/MXFP4/BF16/F16/F32) for zero transcode overhead
+        // and zero double-quant loss on VRAM, Peer GPU, AND RAM-spilled hybrid experts!
+        const bool force_sk_tc = (std::getenv("INK_HIP_FORCE_SK_TRANSCODE") && std::atoi(std::getenv("INK_HIP_FORCE_SK_TRANSCODE")) != 0);
+        adj_dir_ = model.expert_directory();
+        expert_native_gguf_.assign(adj_dir_.size(), 0);
+        size_t n_native_gguf = 0;
+        if (model.kind == ModelSourceKind::Gguf && model.gguf_adapter) {
+            const size_t hidden_sz = static_cast<size_t>(c_.hidden);
+            const size_t inter_sz  = static_cast<size_t>(c_.inter);
+            for (size_t idx = 0; idx < adj_dir_.size(); ++idx) {
+                auto& e = adj_dir_[idx];
+                if (e.gu_code_id != CODE_GGUF_RAW && e.dn_code_id != CODE_GGUF_RAW) continue;
+                const int il = static_cast<int>(idx) / c_.n_experts;
+                if (il < 0 || il >= static_cast<int>(model.gguf_adapter->layers.size())) continue;
+                const auto& lm = model.gguf_adapter->layers[il];
+                if (!force_sk_tc && gguf_type_has_hip_kernel(lm.gu_type) && gguf_type_has_hip_kernel(lm.dn_type)) {
+                    expert_native_gguf_[idx] = 1;
+                    ++n_native_gguf;
+                } else {
+                    const SkCode gu_c = transcode::choose_sk_code_for_ggml(lm.gu_type);
+                    const SkCode dn_c = transcode::choose_sk_code_for_ggml(lm.dn_type);
+                    uint32_t dn_off = 0, body_b = 0;
+                    transcode::transcoded_sk_expert_layout(gu_c, dn_c, hidden_sz, inter_sz, dn_off, body_b);
+                    e.gu_code_id = static_cast<uint8_t>(gu_c);
+                    e.dn_code_id = static_cast<uint8_t>(dn_c);
+                    e.dn_offset  = dn_off;
+                    e.body_bytes = body_b;
+                }
+            }
+            if (n_native_gguf > 0) {
+                std::fprintf(stderr, "[ink-hip] native lossless GGUF_RAW GPU kernels active for %zu/%zu experts (zero S_K transcode)\n",
+                             n_native_gguf, adj_dir_.size());
+            }
+        }
+        const auto& dir = adj_dir_;
         const size_t n_dir = dir.size();
         expert_gpu_offset_.assign(n_dir, static_cast<size_t>(-1));
         expert_ram_bodies_.resize(n_dir);
@@ -760,58 +1004,252 @@ public:
             }
         }
 
-        // Plan contiguous GPU arena for all experts fitting in static_vram_budget
+        // Plan contiguous GPU arena(s) for all experts fitting in GPU 0 (+ GPU 1 when Dual-GPU EP is active)
+        peer_expert_gpu_offset_.assign(n_dir, static_cast<size_t>(-1));
+        size_t peer_vram_budget = 0;
+        if (ep2_active_) {
+            const size_t peer_oh = peer_mem_info_.reserve_bytes + (768ULL << 20);
+            if (peer_mem_info_.effective_total_bytes > peer_oh) {
+                peer_vram_budget = peer_mem_info_.effective_total_bytes - peer_oh;
+            }
+            if (opts.vram_experts_gb >= 0.0) {
+                peer_vram_budget = std::min(peer_vram_budget, static_cast<size_t>(opts.vram_experts_gb * 1073741824.0));
+            }
+        }
         size_t arena_bytes = 0;
+        size_t peer_arena_bytes = 0;
         std::vector<uint16_t> gpu_plan;
+        std::vector<uint16_t> peer_gpu_plan;
         std::vector<uint16_t> ram_plan;
-        const size_t ram_cap = (opts.ram_experts_gb > 0.0)
-            ? static_cast<size_t>(opts.ram_experts_gb * 1073741824.0)
-            : static_cast<size_t>(-1);
+        size_t ram_cap = (opts.ssd_experts || opts.ram_experts_gb == 0.0)
+            ? 0u
+            : ((opts.ram_experts_gb > 0.0)
+                ? static_cast<size_t>(strata::platform::cgroup_mem::gib_to_bytes(opts.ram_experts_gb))
+                : static_cast<size_t>(-1));
+        if (opts.ram_experts_gb < 0.0 && !opts.ssd_experts) {
+            // Auto-cap RAM experts to safe available host memory so cold SSD streaming activates automatically on tight-RAM hosts!
+            uint64_t host_avail = 0;
+#ifdef __linux__
+            if (FILE* fp = std::fopen("/proc/meminfo", "r")) {
+                char key[64];
+                unsigned long long kb = 0;
+                char unit[32];
+                while (std::fscanf(fp, "%63[^:]: %llu %31s\n", key, &kb, unit) == 3) {
+                    if (std::strcmp(key, "MemAvailable") == 0) { host_avail = kb * 1024ull; break; }
+                }
+                std::fclose(fp);
+            }
+#endif
+            if (host_avail > 0) {
+                const uint64_t os_res = std::max<uint64_t>(2ULL << 30, std::min<uint64_t>(host_avail / 4, 4ULL << 30));
+                const size_t safe_host = static_cast<size_t>(host_avail > os_res ? (host_avail - os_res) : 0);
+                if (ram_cap > safe_host) ram_cap = safe_host;
+            }
+        }
+        {
+            const auto cg = strata::platform::cgroup_mem::probe_cgroup_room(strata::platform::cgroup_mem::kUnlimited);
+            if (cg.limited && cg.available_bytes != strata::platform::cgroup_mem::kUnlimited && cg.available_bytes > 0) {
+                const uint64_t reserve = std::min<uint64_t>(cg.available_bytes / 8, 2ULL << 30);
+                const size_t cg_cap = static_cast<size_t>(
+                    cg.available_bytes > reserve ? cg.available_bytes - reserve : 0);
+                if (ram_cap > cg_cap) ram_cap = cg_cap;
+            }
+        }
         size_t ram_bytes = 0;
 
         for (uint16_t idx : model.vram_load_order) {
             if (idx >= n_dir) continue;
             const size_t sz = dir[idx].body_bytes;
             const size_t aligned = (sz + 63u) & ~size_t(63u);
-            if (arena_bytes + aligned <= static_vram_budget) {
-                expert_gpu_offset_[idx] = arena_bytes;
-                arena_bytes += aligned;
-                gpu_plan.push_back(idx);
-            } else if (ram_bytes + sz <= ram_cap) {
-                ram_bytes += sz;
-                ram_plan.push_back(idx);
+            if (ep2_active_) {
+                const int il = static_cast<int>(idx) / c_.n_experts;
+                const int eid = static_cast<int>(dir[idx].expert_id);
+                const uint32_t hh = (static_cast<uint32_t>(eid) * 2654435761u + static_cast<uint32_t>(il) * 40503u) >> 8;
+                const int pref = ((hh % 10000u) < static_cast<uint32_t>(ep_split_ * 10000.0)) ? 1 : 0;
+                if (pref == 1 && peer_arena_bytes + aligned <= peer_vram_budget) {
+                    peer_expert_gpu_offset_[idx] = peer_arena_bytes;
+                    peer_arena_bytes += aligned;
+                    peer_gpu_plan.push_back(idx);
+                } else if (arena_bytes + aligned <= static_vram_budget) {
+                    expert_gpu_offset_[idx] = arena_bytes;
+                    arena_bytes += aligned;
+                    gpu_plan.push_back(idx);
+                } else if (peer_arena_bytes + aligned <= peer_vram_budget) {
+                    peer_expert_gpu_offset_[idx] = peer_arena_bytes;
+                    peer_arena_bytes += aligned;
+                    peer_gpu_plan.push_back(idx);
+                } else if (ram_bytes + sz <= ram_cap) {
+                    ram_bytes += sz;
+                    ram_plan.push_back(idx);
+                }
+            } else {
+                if (arena_bytes + aligned <= static_vram_budget) {
+                    expert_gpu_offset_[idx] = arena_bytes;
+                    arena_bytes += aligned;
+                    gpu_plan.push_back(idx);
+                } else if (ram_bytes + sz <= ram_cap) {
+                    ram_bytes += sz;
+                    ram_plan.push_back(idx);
+                }
             }
         }
+        if (ep2_active_ && peer_gpu_plan.empty()) {
+            ep2_active_ = false;
+        }
 
+        const int tc_threads = transcode::default_transcode_threads();
         if (arena_bytes > 0) {
             if (!hip_ok(alloc_gpu_buffer(expert_gpu_arena_, arena_bytes, mem_info_.is_uma), "expert GPU arena alloc", err)) {
                 return false;
             }
-            std::vector<uint8_t> tmp;
-            for (uint16_t idx : gpu_plan) {
-                if (!model.rd.read_expert_body(idx, tmp, err)) return false;
-                if ((dir[idx].gu_code_id == CODE_SF4 || dir[idx].dn_code_id == CODE_SF4) && tmp.size() >= 16) {
-                    float hdr[4];
-                    std::memcpy(hdr, tmp.data(), 16);
-                    expert_sf4_outer_[idx] = {hdr[0] / hdr[1], hdr[2] / hdr[3]};
+            if (model.kind == ModelSourceKind::Strata) {
+                std::vector<uint8_t> tmp;
+                for (uint16_t idx : gpu_plan) {
+                    if (!model.rd.read_expert_body(idx, tmp, err)) return false;
+                    if ((dir[idx].gu_code_id == CODE_SF4 || dir[idx].dn_code_id == CODE_SF4) && tmp.size() >= 16) {
+                        float hdr[4];
+                        std::memcpy(hdr, tmp.data(), 16);
+                        expert_sf4_outer_[idx] = {hdr[0] / hdr[1], hdr[2] / hdr[3]};
+                    }
+                    if (!hip_ok(hipMemcpy(expert_gpu_arena_.dev_ptr + expert_gpu_offset_[idx], tmp.data(),
+                                          tmp.size(), hipMemcpyHostToDevice),
+                                "expert H2D", err)) {
+                        return false;
+                    }
                 }
-                if (!hip_ok(hipMemcpy(expert_gpu_arena_.dev_ptr + expert_gpu_offset_[idx], tmp.data(),
-                                      tmp.size(), hipMemcpyHostToDevice),
-                            "expert H2D", err)) {
-                    return false;
+            } else {
+                // Multi-threaded streaming transcode in bounded 16-expert batches (< 128 MiB scratch, 0 temp files)
+                const size_t kBatch = 16;
+                for (size_t b0 = 0; b0 < gpu_plan.size(); b0 += kBatch) {
+                    const size_t bn = std::min(kBatch, gpu_plan.size() - b0);
+                    std::vector<std::vector<uint8_t>> bufs(bn);
+                    std::vector<uint32_t> dn_offs(bn, 0);
+                    std::vector<uint8_t> gu_c(bn, 0), dn_c(bn, 0);
+                    bool ok = transcode::parallel_run(bn, tc_threads, [&](size_t j, std::string& lerr) -> bool {
+                        return read_expert_for_hip(gpu_plan[b0 + j], bufs[j], dn_offs[j], gu_c[j], dn_c[j], lerr);
+                    }, err);
+                    if (!ok) return false;
+                    for (size_t j = 0; j < bn; ++j) {
+                        const uint16_t idx = gpu_plan[b0 + j];
+                        if ((gu_c[j] == CODE_SF4 || dn_c[j] == CODE_SF4) && bufs[j].size() >= 16) {
+                            float hdr[4];
+                            std::memcpy(hdr, bufs[j].data(), 16);
+                            expert_sf4_outer_[idx] = {hdr[0] / hdr[1], hdr[2] / hdr[3]};
+                        }
+                        if (!hip_ok(hipMemcpy(expert_gpu_arena_.dev_ptr + expert_gpu_offset_[idx], bufs[j].data(),
+                                              bufs[j].size(), hipMemcpyHostToDevice),
+                                    "expert H2D", err)) {
+                            return false;
+                        }
+                    }
                 }
             }
-            vram_experts_loaded_ = gpu_plan.size();
         }
-        for (uint16_t idx : ram_plan) {
-            if (!model.rd.read_expert_body(idx, expert_ram_bodies_[idx], err)) return false;
-            if ((dir[idx].gu_code_id == CODE_SF4 || dir[idx].dn_code_id == CODE_SF4) && expert_ram_bodies_[idx].size() >= 16) {
-                float hdr[4];
-                std::memcpy(hdr, expert_ram_bodies_[idx].data(), 16);
-                expert_sf4_outer_[idx] = {hdr[0] / hdr[1], hdr[2] / hdr[3]};
+        if (ep2_active_ && peer_arena_bytes > 0) {
+            if (!hip_ok(hipSetDevice(gpu1_id_), "hipSetDevice peer arena", err)) return false;
+            if (!hip_ok(alloc_gpu_buffer(peer_expert_gpu_arena_, peer_arena_bytes, peer_mem_info_.is_uma), "peer expert GPU arena alloc", err)) {
+                (void)hipSetDevice(gpu0_id_);
+                return false;
+            }
+            if (model.kind == ModelSourceKind::Strata) {
+                std::vector<uint8_t> tmp;
+                for (uint16_t idx : peer_gpu_plan) {
+                    if (!model.rd.read_expert_body(idx, tmp, err)) {
+                        (void)hipSetDevice(gpu0_id_);
+                        return false;
+                    }
+                    if ((dir[idx].gu_code_id == CODE_SF4 || dir[idx].dn_code_id == CODE_SF4) && tmp.size() >= 16) {
+                        float hdr[4];
+                        std::memcpy(hdr, tmp.data(), 16);
+                        expert_sf4_outer_[idx] = {hdr[0] / hdr[1], hdr[2] / hdr[3]};
+                    }
+                    if (!hip_ok(hipMemcpy(peer_expert_gpu_arena_.dev_ptr + peer_expert_gpu_offset_[idx], tmp.data(),
+                                          tmp.size(), hipMemcpyHostToDevice),
+                                "peer expert H2D", err)) {
+                        (void)hipSetDevice(gpu0_id_);
+                        return false;
+                    }
+                }
+            } else {
+                const size_t kBatch = 16;
+                for (size_t b0 = 0; b0 < peer_gpu_plan.size(); b0 += kBatch) {
+                    const size_t bn = std::min(kBatch, peer_gpu_plan.size() - b0);
+                    std::vector<std::vector<uint8_t>> bufs(bn);
+                    std::vector<uint32_t> dn_offs(bn, 0);
+                    std::vector<uint8_t> gu_c(bn, 0), dn_c(bn, 0);
+                    bool ok = transcode::parallel_run(bn, tc_threads, [&](size_t j, std::string& lerr) -> bool {
+                        return read_expert_for_hip(peer_gpu_plan[b0 + j], bufs[j], dn_offs[j], gu_c[j], dn_c[j], lerr);
+                    }, err);
+                    if (!ok) { (void)hipSetDevice(gpu0_id_); return false; }
+                    for (size_t j = 0; j < bn; ++j) {
+                        const uint16_t idx = peer_gpu_plan[b0 + j];
+                        if ((gu_c[j] == CODE_SF4 || dn_c[j] == CODE_SF4) && bufs[j].size() >= 16) {
+                            float hdr[4];
+                            std::memcpy(hdr, bufs[j].data(), 16);
+                            expert_sf4_outer_[idx] = {hdr[0] / hdr[1], hdr[2] / hdr[3]};
+                        }
+                        if (!hip_ok(hipMemcpy(peer_expert_gpu_arena_.dev_ptr + peer_expert_gpu_offset_[idx], bufs[j].data(),
+                                              bufs[j].size(), hipMemcpyHostToDevice),
+                                    "peer expert H2D", err)) {
+                            (void)hipSetDevice(gpu0_id_);
+                            return false;
+                        }
+                    }
+                }
+            }
+            if (!hip_ok(hipSetDevice(gpu0_id_), "hipSetDevice restore0 after peer arena", err)) return false;
+        }
+        vram_experts_loaded_ = gpu_plan.size() + peer_gpu_plan.size();
+        if (!ram_plan.empty()) {
+            if (model.kind == ModelSourceKind::Strata) {
+                for (uint16_t idx : ram_plan) {
+                    if (!model.rd.read_expert_body(idx, expert_ram_bodies_[idx], err)) return false;
+                    if ((dir[idx].gu_code_id == CODE_SF4 || dir[idx].dn_code_id == CODE_SF4) && expert_ram_bodies_[idx].size() >= 16) {
+                        float hdr[4];
+                        std::memcpy(hdr, expert_ram_bodies_[idx].data(), 16);
+                        expert_sf4_outer_[idx] = {hdr[0] / hdr[1], hdr[2] / hdr[3]};
+                    }
+                }
+            } else {
+                bool ok = transcode::parallel_run(ram_plan.size(), tc_threads, [&](size_t k, std::string& lerr) -> bool {
+                    const uint16_t idx = ram_plan[k];
+                    uint32_t dn_off = 0;
+                    uint8_t gu_c = 0, dn_c = 0;
+                    if (!read_expert_for_hip(idx, expert_ram_bodies_[idx], dn_off, gu_c, dn_c, lerr)) {
+                        return false;
+                    }
+                    if ((gu_c == CODE_SF4 || dn_c == CODE_SF4) && expert_ram_bodies_[idx].size() >= 16) {
+                        float hdr[4];
+                        std::memcpy(hdr, expert_ram_bodies_[idx].data(), 16);
+                        expert_sf4_outer_[idx] = {hdr[0] / hdr[1], hdr[2] / hdr[3]};
+                    }
+                    return true;
+                }, err);
+                if (!ok) return false;
             }
         }
         ram_experts_loaded_ = ram_plan.size();
+        if (model.kind == ModelSourceKind::Strata && vram_experts_loaded_ + ram_experts_loaded_ < n_dir && max_exp_bytes > 0) {
+            std::vector<InkColdExpertDesc> cdescs(n_dir);
+            const uint64_t sec4_off = model.rd.header().sections[4].file_offset;
+            for (size_t i = 0; i < n_dir; ++i) {
+                cdescs[i].file_off   = sec4_off + dir[i].body_offset;
+                cdescs[i].body_bytes = dir[i].body_bytes;
+                cdescs[i].dn_off     = dir[i].dn_offset;
+                cdescs[i].gu_code    = dir[i].gu_code_id;
+                cdescs[i].dn_code    = dir[i].dn_code_id;
+            }
+            const size_t ring_b = 512ULL << 20;
+            std::string cerr;
+            if (cold_store_.open(model.path, std::move(cdescs), max_exp_bytes, ring_b, 4, cerr)) {
+                std::fprintf(stderr, "[inkling-hip] GPU+SSD streaming active: %zu VRAM, %zu RAM, %zu SSD-only "
+                                     "(%d-slot ColdStore = %.0f MiB, direct=%d)\n",
+                             vram_experts_loaded_, ram_experts_loaded_,
+                             n_dir - vram_experts_loaded_ - ram_experts_loaded_,
+                             cold_store_.num_slots(), (double)cold_store_.pool_bytes() / 1048576.0,
+                             (int)cold_store_.is_direct());
+            }
+        }
 
         if (max_exp_bytes > 0 && vram_experts_loaded_ < n_dir) {
             if (!hip_ok(alloc_gpu_buffer(d_exp_stage_, max_exp_bytes, mem_info_.is_uma), "expert stage alloc", err)) {
@@ -822,44 +1260,116 @@ public:
             }
         }
 
-        // Build per-layer GPU expert descriptor tables [128] & per-layer codec class (0=all S_K, 1=all SF4, 2=MX8/mixed)
+        // Build per-layer GPU expert descriptor tables [128] & per-layer codec class (0=all S_K, 1=all SF4, 2=all MX8, 3=mixed)
         d_layer_exps_.resize(c_.n_phys);
         h_layer_exps_.resize(c_.n_phys);
+        peer_d_layer_exps_.resize(ep2_active_ ? c_.n_phys : 0);
         layer_all_gpu_.assign(c_.n_phys, true);
-        layer_gu_class_.assign(c_.n_phys, 2);
-        layer_dn_class_.assign(c_.n_phys, 2);
+        layer_all_ep2_.assign(c_.n_phys, true);
+        layer_gu_class_.assign(c_.n_phys, 3);
+        layer_dn_class_.assign(c_.n_phys, 3);
         for (int il = 0; il < c_.n_phys; ++il) {
             std::vector<GpuExpertDesc> tbl(c_.n_experts);
-            bool all_gu_sk = true, all_gu_sf4 = true;
-            bool all_dn_sk = true, all_dn_sf4 = true;
+            std::vector<GpuExpertDesc> peer_tbl(ep2_active_ ? c_.n_experts : 0);
+            bool all_gu_sk = true, all_gu_sf4 = true, all_gu_mx8 = true;
+            bool all_dn_sk = true, all_dn_sf4 = true, all_dn_mx8 = true;
             for (int e = 0; e < c_.n_experts; ++e) {
                 const int dir_idx = model.dir_index_of[il * c_.n_experts + e];
                 GpuExpertDesc d{};
+                GpuExpertDesc pd{};
                 if (dir_idx >= 0 && expert_gpu_offset_[dir_idx] != static_cast<size_t>(-1)) {
                     d.body = expert_gpu_arena_.dev_ptr + expert_gpu_offset_[dir_idx];
                     d.dn_offset = dir[dir_idx].dn_offset;
                     d.gu_code = dir[dir_idx].gu_code_id;
                     d.dn_code = dir[dir_idx].dn_code_id;
                     if (d.gu_code != CODE_SF4) all_gu_sf4 = false;
-                    if (d.gu_code == CODE_SF4 || d.gu_code == CODE_MX8) all_gu_sk = false;
+                    if (d.gu_code != CODE_MX8) all_gu_mx8 = false;
+                    if (d.gu_code == CODE_SF4 || d.gu_code == CODE_MX8 || d.gu_code == CODE_GGUF_RAW) all_gu_sk = false;
                     if (d.dn_code != CODE_SF4) all_dn_sf4 = false;
-                    if (d.dn_code == CODE_SF4 || d.dn_code == CODE_MX8) all_dn_sk = false;
+                    if (d.dn_code != CODE_MX8) all_dn_mx8 = false;
+                    if (d.dn_code == CODE_SF4 || d.dn_code == CODE_MX8 || d.dn_code == CODE_GGUF_RAW) all_dn_sk = false;
+                } else if (ep2_active_ && dir_idx >= 0 && peer_expert_gpu_offset_[dir_idx] != static_cast<size_t>(-1)) {
+                    pd.body = peer_expert_gpu_arena_.dev_ptr + peer_expert_gpu_offset_[dir_idx];
+                    pd.dn_offset = dir[dir_idx].dn_offset;
+                    pd.gu_code = dir[dir_idx].gu_code_id;
+                    pd.dn_code = dir[dir_idx].dn_code_id;
+                    layer_all_gpu_[il] = false;
+                    all_gu_sk = all_gu_sf4 = all_gu_mx8 = all_dn_sk = all_dn_sf4 = all_dn_mx8 = false;
                 } else {
                     layer_all_gpu_[il] = false;
-                    all_gu_sk = all_gu_sf4 = all_dn_sk = all_dn_sf4 = false;
+                    layer_all_ep2_[il] = false;
+                    all_gu_sk = all_gu_sf4 = all_gu_mx8 = all_dn_sk = all_dn_sf4 = all_dn_mx8 = false;
                 }
                 tbl[e] = d;
+                if (ep2_active_) peer_tbl[e] = pd;
             }
-            layer_gu_class_[il] = all_gu_sk ? 0 : (all_gu_sf4 ? 1 : 2);
-            layer_dn_class_[il] = all_dn_sk ? 0 : (all_dn_sf4 ? 1 : 2);
+            layer_gu_class_[il] = all_gu_sk ? 0 : (all_gu_sf4 ? 1 : (all_gu_mx8 ? 2 : 3));
+            layer_dn_class_[il] = all_dn_sk ? 0 : (all_dn_sf4 ? 1 : (all_dn_mx8 ? 2 : 3));
             h_layer_exps_[il] = tbl;
             if (!upload_raw(d_layer_exps_[il], tbl.data(), tbl.size() * sizeof(GpuExpertDesc), err)) return false;
+            if (ep2_active_) {
+                if (!hip_ok(hipSetDevice(gpu1_id_), "hipSetDevice peer tbl", err)) return false;
+                if (!hip_ok(alloc_gpu_buffer(peer_d_layer_exps_[il], peer_tbl.size() * sizeof(GpuExpertDesc), peer_mem_info_.is_uma), "peer tbl alloc", err) ||
+                    !hip_ok(hipMemcpy(peer_d_layer_exps_[il].dev_ptr, peer_tbl.data(), peer_tbl.size() * sizeof(GpuExpertDesc), hipMemcpyHostToDevice), "peer tbl H2D", err)) {
+                    (void)hipSetDevice(gpu0_id_);
+                    return false;
+                }
+                if (!hip_ok(hipSetDevice(gpu0_id_), "hipSetDevice restore0 tbl", err)) return false;
+            }
+        }
+        if (ep2_active_) {
+            std::fprintf(stderr,
+                         "[ink-hip] Dual-GPU EP2 active: GPU%d (%s, %zu exp, %.2f GiB) + GPU%d (%s, %zu exp, %.2f GiB), RAM=%zu | split=%.2f p2p=%s\n",
+                         gpu0_id_, mem_info_.device_name, gpu_plan.size(), arena_bytes / 1073741824.0,
+                         gpu1_id_, peer_mem_info_.device_name, peer_gpu_plan.size(), peer_arena_bytes / 1073741824.0,
+                         ram_plan.size(), ep_split_, ep2_p2p_ ? "on" : "pinned");
         }
 
         // 4. Initialize GPU Paged KV pools & 48-Visit ShortConv BF16 pools
         const int kv_dim = c_.n_kv * c_.head_dim;
         const int max_swa_pages = (c_.swa_win + kKvPageTokens - 1) / kKvPageTokens;
         const int max_glob_pages = (max_ctx_ + kKvPageTokens - 1) / kKvPageTokens;
+
+        // Post-load VRAM check (#6613 / #6621): auto-select FP8_E4M3 KV & cap max_prefill_chunk when remaining VRAM
+        // is tight (e.g. 16 GB RX 9070 XT running 14.35 GB SQ-15 at 32K or Windows RX 9060 XT 16 GB SQ-10 at 256K).
+        if (!mem_info_.is_uma) {
+            size_t post_free = 0, post_tot = 0;
+            if (hipMemGetInfo(&post_free, &post_tot) == hipSuccess) {
+                const size_t fp16_page_kv_b = static_cast<size_t>(kKvPageTokens) * kv_dim * 2u * 2u;  // K + V in FP16
+                const size_t fp16_kv_need =
+                    (static_cast<size_t>(c_.n_swa_visits) * max_slots_ * max_swa_pages +
+                     static_cast<size_t>(c_.n_global_visits) * max_slots_ * max_glob_pages) * fp16_page_kv_b;
+                const size_t sconv_need =
+                    static_cast<size_t>(c_.n_visits) * max_slots_ * 3u * (2u * kv_dim + 2u * c_.hidden) * sizeof(uint16_t);
+#if defined(_WIN32)
+                // Reserve 1.5 GiB on Windows WDDM so dedicated VRAM never crosses the ~92% PCIe paging cliff (#6621).
+                const size_t kv_headroom = (1536ULL << 20);
+#else
+                const size_t kv_headroom = (512ULL << 20);
+#endif
+                if (opts.kv_dtype_auto && default_kv_dtype_ == KvDtype::FP16 &&
+                    post_free < fp16_kv_need + sconv_need + kv_headroom) {
+                    default_kv_dtype_ = KvDtype::FP8_E4M3;
+                    std::fprintf(stderr,
+                                 "[ink-hip] Auto-selected FP8_E4M3 KV cache (post-load free=%.0f MiB, FP16 KV need=%.0f MiB for ctx=%d x slots=%d)\n",
+                                 post_free / 1048576.0, fp16_kv_need / 1048576.0, max_ctx_, max_slots_);
+                }
+                const bool tight_vram = (post_free < (2560ULL << 20))
+#if defined(_WIN32)
+                    || (post_tot <= (17ULL << 30) && post_free < (4096ULL << 20))
+#endif
+                    ;
+                if (tight_vram) {
+                    const int tight_chunk = (post_free < (1536ULL << 20)) ? 256 : 512;
+                    if (guard_.max_prefill_chunk > tight_chunk) {
+                        guard_.max_prefill_chunk = tight_chunk;
+                        std::fprintf(stderr,
+                                     "[ink-hip] Capped max_prefill_chunk=%d (post-load free=%.0f MiB) to avoid batch scratch VRAM spike\n",
+                                     tight_chunk, post_free / 1048576.0);
+                    }
+                }
+            }
+        }
         const bool is_fp8 = (default_kv_dtype_ == KvDtype::FP8_E4M3);
 
         swa_pools_.resize(c_.n_swa_visits);
@@ -2004,7 +2514,7 @@ public:
             err = "hip SF4 selfcheck failed: rel_l2=" + std::to_string(rel_l2);
             return false;
         }
-        if (model_) {
+        if (model_ && model_->kind == ModelSourceKind::Strata) {
             std::vector<uint8_t> s5;
             if (!model_->rd.read_section(5, s5, err)) return false;
             if (s5.empty()) { err = "Section 5 sq.selfcheck is empty"; return false; }
@@ -2094,17 +2604,31 @@ private:
         launch_bf16_linear(W, X, bias, Y, M, N, K, mem_info_.gen, stream_);
     }
 
+    bool read_expert_for_hip(size_t dir_idx, std::vector<uint8_t>& out_body,
+                             uint32_t& out_dn_off, uint8_t& out_gu_code, uint8_t& out_dn_code,
+                             std::string& err) const {
+        if (dir_idx < expert_native_gguf_.size() && expert_native_gguf_[dir_idx]) {
+            if (!model_->read_expert_body(dir_idx, out_body, err)) return false;
+            out_dn_off  = adj_dir_[dir_idx].dn_offset;
+            out_gu_code = adj_dir_[dir_idx].gu_code_id;
+            out_dn_code = adj_dir_[dir_idx].dn_code_id;
+            return true;
+        }
+        return transcode::read_or_transcode_expert(*model_, dir_idx, out_body, out_dn_off, out_gu_code, out_dn_code, err);
+    }
+
     // L3-Resident Expert Unpack-Once + hipBLASLt FP16 GEMM helper (used by both full-GPU prefill & double-buffered hybrid prefill!)
     void run_single_expert_blaslt(
         const uint8_t* body_dev, uint8_t gu_code, uint8_t dn_code, uint32_t dn_offset,
         float sf4_w13_outer, float sf4_w2_outer,
         const half_t* x_in_f16, float* gu_buf, half_t* act_buf, float* y_out_f32,
-        int m_e, int D, int inter) {
+        int m_e, int max_gu_rows, int D, int inter) {
         half_t* w13_f16 = reinterpret_cast<half_t*>(d_exp_w13_f16_.dev_ptr);
         half_t* w2_f16  = reinterpret_cast<half_t*>(d_exp_w2_f16_.dev_ptr);
         const int n13 = 2 * inter;
+        const int chunk_cap = std::max(1, max_gu_rows);
 
-        // 1. Unpack w13 [2*inter, D] -> L3/MALL-resident 11.8 MB FP16 buffer -> hipBLASLt FP16 GEMM!
+        // 1. Unpack w13 [2*inter, D] ONCE -> L3/MALL-resident 11.8 MB FP16 buffer -> chunked hipBLASLt FP16 GEMM + SITU!
         float alpha13 = 1.0f;
         if (gu_code == CODE_SF4) {
             const uint8_t* p = body_dev + 16;
@@ -2115,28 +2639,37 @@ private:
             const uint8_t* w = body_dev;
             const uint8_t* s = w + static_cast<size_t>(n13) * D;
             k_unpack_mx8_f16<<<(n13 * (D >> 5) + 255) / 256, 256, 0, stream_>>>(w, s, w13_f16, n13, D);
+        } else if (gu_code == CODE_GGUF_RAW) {
+            k_unpack_gguf_f16<<<(n13 * (D >> 3) + 255) / 256, 256, 0, stream_>>>(body_dev, 0, 1, w13_f16, n13, D, inter);
         } else {
             const uint8_t* gu_ptr = body_dev + static_cast<size_t>(inter) * 2;
             launch_unpack_sk_f16_dispatch(gu_ptr, gu_code, w13_f16, n13, D, stream_);
         }
-        if (!blaslt_.gemm_f16_f32(w13_f16, x_in_f16, gu_buf, m_e, n13, D, stream_, alpha13)) {
-            if (gu_code == CODE_SF4) {
-                const uint8_t* p = body_dev + 16;
-                launch_sf4_linear(p, p + static_cast<size_t>(n13) * (D >> 1), sf4_w13_outer, x_in_f16, gu_buf, m_e, n13, D, mem_info_.gen, stream_, false);
-            } else if (gu_code == CODE_MX8) {
-                launch_mx8_linear(body_dev, body_dev + static_cast<size_t>(n13) * D, x_in_f16, gu_buf, m_e, n13, D, mem_info_.gen, stream_);
-            } else {
-                launch_sk_linear(body_dev + static_cast<size_t>(inter) * 2, gu_code, x_in_f16, gu_buf, m_e, n13, D, mem_info_.gen, stream_);
+        const half_t* sq_dn = (dn_code != CODE_SF4 && dn_code != CODE_MX8 && dn_code != CODE_GGUF_RAW)
+            ? reinterpret_cast<const half_t*>(body_dev) : nullptr;
+        // Slice m_e by chunk_cap so gu_buf [max_gu_rows, 2*inter] NEVER overflows when m_e > B (#6580)!
+        for (int off = 0; off < m_e; off += chunk_cap) {
+            const int cur_m = std::min(chunk_cap, m_e - off);
+            const half_t* x_sub = x_in_f16 + static_cast<size_t>(off) * D;
+            half_t* act_sub = act_buf + static_cast<size_t>(off) * inter;
+            if (!blaslt_.gemm_f16_f32(w13_f16, x_sub, gu_buf, cur_m, n13, D, stream_, alpha13)) {
+                if (gu_code == CODE_SF4) {
+                    const uint8_t* p = body_dev + 16;
+                    launch_sf4_linear(p, p + static_cast<size_t>(n13) * (D >> 1), sf4_w13_outer, x_sub, gu_buf, cur_m, n13, D, mem_info_.gen, stream_, false);
+                } else if (gu_code == CODE_MX8) {
+                    launch_mx8_linear(body_dev, body_dev + static_cast<size_t>(n13) * D, x_sub, gu_buf, cur_m, n13, D, mem_info_.gen, stream_);
+                } else if (gu_code == CODE_GGUF_RAW) {
+                    launch_gguf_linear(body_dev, 0, 1, x_sub, gu_buf, cur_m, n13, D, inter, stream_);
+                } else {
+                    launch_sk_linear(body_dev + static_cast<size_t>(inter) * 2, gu_code, x_sub, gu_buf, cur_m, n13, D, mem_info_.gen, stream_);
+                }
             }
+            // 2. Fused SITU + optional S_K sq_xd_dn divide directly on FP32 gu_buf -> FP16 act_sub!
+            k_situ_interleaved_sq<<<(cur_m * inter + 255) / 256, 256, 0, stream_>>>(
+                gu_buf, sq_dn, act_sub, cur_m, inter, c_.situ_beta, c_.situ_lb);
         }
 
-        // 2. Fused SITU + optional S_K sq_xd_dn divide directly on FP32 gu_buf -> FP16 act_buf!
-        const half_t* sq_dn = (dn_code != CODE_SF4 && dn_code != CODE_MX8)
-            ? reinterpret_cast<const half_t*>(body_dev) : nullptr;
-        k_situ_interleaved_sq<<<(m_e * inter + 255) / 256, 256, 0, stream_>>>(
-            gu_buf, sq_dn, act_buf, m_e, inter, c_.situ_beta, c_.situ_lb);
-
-        // 3. Unpack w2 [D, inter] -> L3/MALL-resident 5.9 MB FP16 buffer -> hipBLASLt FP16 GEMM!
+        // 3. Unpack w2 [D, inter] ONCE -> L3/MALL-resident 5.9 MB FP16 buffer -> hipBLASLt FP16 GEMM!
         float alpha2 = 1.0f;
         if (dn_code == CODE_SF4) {
             const uint8_t* p = body_dev + dn_offset;
@@ -2147,6 +2680,8 @@ private:
             const uint8_t* w = body_dev + dn_offset;
             const uint8_t* s = w + static_cast<size_t>(D) * inter;
             k_unpack_mx8_f16<<<(D * (inter >> 5) + 255) / 256, 256, 0, stream_>>>(w, s, w2_f16, D, inter);
+        } else if (dn_code == CODE_GGUF_RAW) {
+            k_unpack_gguf_f16<<<(D * (inter >> 3) + 255) / 256, 256, 0, stream_>>>(body_dev, dn_offset, 0, w2_f16, D, inter, inter);
         } else {
             launch_unpack_sk_paired2_f16_dispatch(body_dev + dn_offset, dn_code, w2_f16, D, inter, stream_);
         }
@@ -2156,9 +2691,9 @@ private:
                 launch_sf4_linear(p, p + static_cast<size_t>(D) * (inter >> 1), sf4_w2_outer, act_buf, y_out_f32, m_e, D, inter, mem_info_.gen, stream_, false);
             } else if (dn_code == CODE_MX8) {
                 launch_mx8_linear(body_dev + dn_offset, body_dev + dn_offset + static_cast<size_t>(D) * inter, act_buf, y_out_f32, m_e, D, inter, mem_info_.gen, stream_);
+            } else if (dn_code == CODE_GGUF_RAW) {
+                launch_gguf_linear(body_dev, dn_offset, 0, act_buf, y_out_f32, m_e, D, inter, inter, stream_);
             } else {
-                // act_buf already divided by sq_xd_dn; pass nullptr? No, launch_sk_paired2_linear expects undivided act.
-                // Note: blaslt_.gemm_f16_f32 only fails if blaslt is disabled, which never enters this helper.
                 launch_sk_paired2_linear(body_dev + dn_offset, dn_code, reinterpret_cast<const half_t*>(body_dev), act_buf, y_out_f32, m_e, D, inter, stream_);
             }
         }
@@ -2202,6 +2737,173 @@ private:
         return tot;
     }
 
+    bool ensure_peer_scratch(int B, std::string& err) {
+        if (!ep2_active_ || B <= peer_scratch_B_) return true;
+        const int D = c_.hidden;
+        const int inter = c_.inter;
+        const size_t tot_pairs = static_cast<size_t>(B) * c_.top_k;
+        auto re0 = [&](GpuBuffer& b, size_t bytes) -> bool {
+            free_gpu_buffer(b);
+            return hip_ok(alloc_gpu_buffer(b, bytes, mem_info_.is_uma), "ep2 g0 scratch", err);
+        };
+        if (!re0(sc_peer_moe_out_, static_cast<size_t>(B) * D * sizeof(float))) return false;
+
+        if (!ep2_p2p_) {
+            if (h_ep_x_f16_) { (void)hipHostFree(h_ep_x_f16_); h_ep_x_f16_ = nullptr; }
+            if (h_ep_ids_)   { (void)hipHostFree(h_ep_ids_);   h_ep_ids_ = nullptr; }
+            if (h_ep_ws_)    { (void)hipHostFree(h_ep_ws_);    h_ep_ws_ = nullptr; }
+            if (h_ep_y1_)    { (void)hipHostFree(h_ep_y1_);    h_ep_y1_ = nullptr; }
+            if (!hip_ok(hipHostMalloc(reinterpret_cast<void**>(&h_ep_x_f16_), static_cast<size_t>(B) * D * sizeof(half_t), hipHostMallocDefault), "ep2 host x", err) ||
+                !hip_ok(hipHostMalloc(reinterpret_cast<void**>(&h_ep_ids_),   tot_pairs * sizeof(int32_t), hipHostMallocDefault), "ep2 host ids", err) ||
+                !hip_ok(hipHostMalloc(reinterpret_cast<void**>(&h_ep_ws_),    tot_pairs * sizeof(float), hipHostMallocDefault), "ep2 host ws", err) ||
+                !hip_ok(hipHostMalloc(reinterpret_cast<void**>(&h_ep_y1_),    static_cast<size_t>(B) * D * sizeof(float), hipHostMallocDefault), "ep2 host y1", err)) {
+                return false;
+            }
+        }
+
+        if (!hip_ok(hipSetDevice(gpu1_id_), "hipSetDevice peer scratch", err)) return false;
+        auto re1 = [&](GpuBuffer& b, size_t bytes) -> bool {
+            free_gpu_buffer(b);
+            return hip_ok(alloc_gpu_buffer(b, bytes, peer_mem_info_.is_uma), "ep2 g1 scratch", err);
+        };
+        const bool ok =
+            re1(peer_sc_mlp_f16_,    static_cast<size_t>(B) * D * sizeof(half_t)) &&
+            re1(peer_sc_topk_ids_,   tot_pairs * sizeof(int32_t)) &&
+            re1(peer_sc_topk_w_,     tot_pairs * sizeof(float)) &&
+            re1(peer_sc_moe_act_,    tot_pairs * inter * sizeof(half_t)) &&
+            re1(peer_sc_moe_out_,    static_cast<size_t>(B) * D * sizeof(float)) &&
+            re1(peer_sc_exp_off_,    129u * sizeof(int32_t)) &&
+            re1(peer_sc_exp_cur_,    129u * sizeof(int32_t)) &&
+            re1(peer_sc_bucket_tok_, tot_pairs * sizeof(int32_t)) &&
+            re1(peer_sc_slotk_bidx_, tot_pairs * sizeof(int32_t)) &&
+            re1(peer_sc_bucket_y_,   tot_pairs * D * sizeof(float));
+        (void)hipSetDevice(gpu0_id_);
+        if (!ok) return false;
+        peer_scratch_B_ = B;
+        return true;
+    }
+
+    // Launch GPU 1 peer experts asynchronously on peer_stream_ (overlaps with GPU 0 experts on stream_!).
+    bool launch_peer_moe_async(int ip, int B, const half_t* mlpf16_g0, const int32_t* tk_i_g0, const float* tk_w_g0, std::string& err) {
+        if (!ensure_peer_scratch(B, err)) return false;
+        const int D = c_.hidden;
+        const int tot_pairs = B * c_.top_k;
+        const size_t x_bytes = static_cast<size_t>(B) * D * sizeof(half_t);
+        const size_t idx_bytes = static_cast<size_t>(tot_pairs) * sizeof(int32_t);
+        const size_t w_bytes = static_cast<size_t>(tot_pairs) * sizeof(float);
+        const size_t y_bytes = static_cast<size_t>(B) * D * sizeof(float);
+
+        if (ep2_p2p_) {
+            if (!hip_ok(hipEventRecord(ev_g0_to_g1_, stream_), "ep2 rec g0", err)) return false;
+            if (!hip_ok(hipSetDevice(gpu1_id_), "ep2 set g1", err)) return false;
+            if (!hip_ok(hipStreamWaitEvent(peer_stream_, ev_g0_to_g1_, 0), "ep2 wait g0", err)) {
+                (void)hipSetDevice(gpu0_id_); return false;
+            }
+            if (!hip_ok(hipMemcpyPeerAsync(peer_sc_mlp_f16_.dev_ptr, gpu1_id_, mlpf16_g0, gpu0_id_, x_bytes, peer_stream_), "ep2 p2p x", err) ||
+                !hip_ok(hipMemcpyPeerAsync(peer_sc_topk_ids_.dev_ptr, gpu1_id_, tk_i_g0, gpu0_id_, idx_bytes, peer_stream_), "ep2 p2p ids", err) ||
+                !hip_ok(hipMemcpyPeerAsync(peer_sc_topk_w_.dev_ptr, gpu1_id_, tk_w_g0, gpu0_id_, w_bytes, peer_stream_), "ep2 p2p ws", err)) {
+                (void)hipSetDevice(gpu0_id_); return false;
+            }
+        } else {
+            if (!hip_ok(hipMemcpyAsync(h_ep_x_f16_, mlpf16_g0, x_bytes, hipMemcpyDeviceToHost, stream_), "ep2 d2h x", err) ||
+                !hip_ok(hipMemcpyAsync(h_ep_ids_, tk_i_g0, idx_bytes, hipMemcpyDeviceToHost, stream_), "ep2 d2h ids", err) ||
+                !hip_ok(hipMemcpyAsync(h_ep_ws_, tk_w_g0, w_bytes, hipMemcpyDeviceToHost, stream_), "ep2 d2h ws", err) ||
+                !hip_ok(hipStreamSynchronize(stream_), "ep2 sync g0->h", err)) {
+                return false;
+            }
+            if (!hip_ok(hipSetDevice(gpu1_id_), "ep2 set g1 bounce", err)) return false;
+            if (!hip_ok(hipMemcpyAsync(peer_sc_mlp_f16_.dev_ptr, h_ep_x_f16_, x_bytes, hipMemcpyHostToDevice, peer_stream_), "ep2 h2d x", err) ||
+                !hip_ok(hipMemcpyAsync(peer_sc_topk_ids_.dev_ptr, h_ep_ids_, idx_bytes, hipMemcpyHostToDevice, peer_stream_), "ep2 h2d ids", err) ||
+                !hip_ok(hipMemcpyAsync(peer_sc_topk_w_.dev_ptr, h_ep_ws_, w_bytes, hipMemcpyHostToDevice, peer_stream_), "ep2 h2d ws", err)) {
+                (void)hipSetDevice(gpu0_id_); return false;
+            }
+        }
+
+        const GpuExpertDesc* p_exps = reinterpret_cast<const GpuExpertDesc*>(peer_d_layer_exps_[ip].dev_ptr);
+        const half_t*  p_x   = reinterpret_cast<const half_t*>(peer_sc_mlp_f16_.dev_ptr);
+        const int32_t* p_tki = reinterpret_cast<const int32_t*>(peer_sc_topk_ids_.dev_ptr);
+        const float*   p_tkw = reinterpret_cast<const float*>(peer_sc_topk_w_.dev_ptr);
+        half_t*        p_act = reinterpret_cast<half_t*>(peer_sc_moe_act_.dev_ptr);
+        float*         p_by  = reinterpret_cast<float*>(peer_sc_bucket_y_.dev_ptr);
+        float*         p_out = reinterpret_cast<float*>(peer_sc_moe_out_.dev_ptr);
+
+        if (B <= 4) {
+            k_moe_direct_w13_situ<<<dim3((c_.inter + 3) / 4, tot_pairs), 256, 0, peer_stream_>>>(
+                p_exps, p_tki, p_x, p_act, B, c_.top_k, D, c_.inter, c_.situ_beta, c_.situ_lb);
+            k_moe_direct_w2_par<<<dim3((D + 7) / 8, tot_pairs), 256, 0, peer_stream_>>>(
+                p_exps, p_tki, p_act, p_by, B, c_.top_k, D, c_.inter);
+            k_moe_direct_reduce<<<dim3((D + 255) / 256, B), 256, 0, peer_stream_>>>(
+                p_by, p_tkw, p_out, B, c_.top_k, D);
+        } else {
+            int32_t* p_off = reinterpret_cast<int32_t*>(peer_sc_exp_off_.dev_ptr);
+            int32_t* p_cur = reinterpret_cast<int32_t*>(peer_sc_exp_cur_.dev_ptr);
+            int32_t* p_btk = reinterpret_cast<int32_t*>(peer_sc_bucket_tok_.dev_ptr);
+            int32_t* p_s2b = reinterpret_cast<int32_t*>(peer_sc_slotk_bidx_.dev_ptr);
+            if (B >= 16) {
+                (void)hipMemsetAsync(p_off, 0, 129 * sizeof(int32_t), peer_stream_);
+                const int cblks = std::min(64, (tot_pairs + 255) / 256);
+                k_moe_count_buckets<<<cblks, 256, 0, peer_stream_>>>(p_tki, p_off, tot_pairs);
+                k_moe_prefix_buckets<<<1, 128, 0, peer_stream_>>>(p_off, p_off, p_cur);
+                k_moe_scatter_buckets<<<(tot_pairs + 255) / 256, 256, 0, peer_stream_>>>(p_tki, p_cur, p_btk, p_s2b, tot_pairs, c_.top_k);
+            } else {
+                k_moe_build_buckets<<<1, 128, 0, peer_stream_>>>(p_tki, p_off, p_btk, p_s2b, B, c_.top_k);
+            }
+            if (peer_mem_info_.gen != AmdGen::Rdna2 && peer_mem_info_.gen != AmdGen::Unknown) {
+                const int mt = (B >= 1024) ? 8 : ((B >= 256) ? 4 : ((B >= 64) ? 2 : 1));
+                const dim3 g13((2 * c_.inter + 127) / 128, c_.n_experts, mt);
+                const dim3 g2((D + 127) / 128, c_.n_experts, mt);
+                if (B >= 64) {
+                    k_moe_grouped_w13_situ_wmma_128<<<g13, 256, 0, peer_stream_>>>(
+                        p_exps, p_off, p_btk, p_x, p_act, D, c_.inter, c_.situ_beta, c_.situ_lb);
+                    k_moe_grouped_w2_wmma_128<<<g2, 256, 0, peer_stream_>>>(
+                        p_exps, p_off, p_act, p_by, D, c_.inter);
+                } else {
+                    k_moe_grouped_w13_situ_wmma<<<g13, 256, 0, peer_stream_>>>(
+                        p_exps, p_off, p_btk, p_x, p_act, D, c_.inter, c_.situ_beta, c_.situ_lb);
+                    k_moe_grouped_w2_wmma<<<g2, 256, 0, peer_stream_>>>(
+                        p_exps, p_off, p_act, p_by, D, c_.inter);
+                }
+            } else {
+                k_moe_grouped_w13_situ<<<dim3((c_.inter + 3) / 4, c_.n_experts), 256, 0, peer_stream_>>>(
+                    p_exps, p_off, p_btk, p_x, p_act, D, c_.inter, c_.situ_beta, c_.situ_lb);
+                k_moe_grouped_w2<<<dim3((D + 7) / 8, c_.n_experts), 256, 0, peer_stream_>>>(
+                    p_exps, p_off, p_act, p_by, D, c_.inter);
+            }
+            k_moe_reduce_buckets_masked<<<dim3((D + 255) / 256, B), 256, 0, peer_stream_>>>(
+                p_exps, p_tki, p_by, p_s2b, p_tkw, p_out, B, c_.top_k, D);
+        }
+
+        if (ep2_p2p_) {
+            if (!hip_ok(hipMemcpyPeerAsync(sc_peer_moe_out_.dev_ptr, gpu0_id_, p_out, gpu1_id_, y_bytes, peer_stream_), "ep2 p2p y", err)) {
+                (void)hipSetDevice(gpu0_id_); return false;
+            }
+        } else {
+            if (!hip_ok(hipMemcpyAsync(h_ep_y1_, p_out, y_bytes, hipMemcpyDeviceToHost, peer_stream_), "ep2 d2h y", err)) {
+                (void)hipSetDevice(gpu0_id_); return false;
+            }
+        }
+        if (!hip_ok(hipEventRecord(ev_g1_done_, peer_stream_), "ep2 rec g1", err)) {
+            (void)hipSetDevice(gpu0_id_); return false;
+        }
+        return hip_ok(hipSetDevice(gpu0_id_), "ep2 restore g0", err);
+    }
+
+    bool finish_peer_moe_add(int B, float* moeout_g0, std::string& err) {
+        const int D = c_.hidden;
+        if (ep2_p2p_) {
+            if (!hip_ok(hipStreamWaitEvent(stream_, ev_g1_done_, 0), "ep2 wait g1", err)) return false;
+        } else {
+            if (!hip_ok(hipEventSynchronize(ev_g1_done_), "ep2 sync g1", err)) return false;
+            if (!hip_ok(hipMemcpyAsync(sc_peer_moe_out_.dev_ptr, h_ep_y1_, static_cast<size_t>(B) * D * sizeof(float),
+                                       hipMemcpyHostToDevice, stream_), "ep2 h2d y", err)) {
+                return false;
+            }
+        }
+        k_vec_add<<<(B * D + 255) / 256, 256, 0, stream_>>>(
+            moeout_g0, reinterpret_cast<const float*>(sc_peer_moe_out_.dev_ptr), moeout_g0, B * D);
+        return true;
+    }
+
     bool ensure_batch_scratch(int B, std::string& err) {
         if (B <= scratch_B_) return true;
         const int D = c_.hidden;
@@ -2211,6 +2913,9 @@ private:
         const int qkvrg_dim = 2 * q_dim + r_dim + 2 * kv_dim;
         const int inter = c_.inter;
         const int n_exp = c_.n_experts;
+        // #6580: Per-expert token count m_e can reach B * top_k (not just B). Cap single-expert scratch to
+        // moe_gu_cap <= 512 (9 MiB max for sc_moe_gu_) and chunk any m_e > moe_gu_cap safely in callers!
+        const int moe_gu_cap = std::max(B, std::min(B * c_.top_k, 512));
         const size_t x_bf16_k = static_cast<size_t>(std::max({2 * D, q_dim, 4096}));
         auto re = [&](GpuBuffer& b, size_t bytes) -> bool {
             free_gpu_buffer(b);
@@ -2236,12 +2941,12 @@ private:
             !re(sc_splitkv_part_, static_cast<size_t>(std::max(B, 4)) * c_.n_head * 4 * 130 * 4) ||
             !re(sc_o_proj_, static_cast<size_t>(B) * D * 4) ||
             !re(sc_a_sconv_, static_cast<size_t>(B) * D * 4) || !re(sc_mlp_in_, static_cast<size_t>(B) * D * 4) ||
-            !re(sc_mlp_f16_, static_cast<size_t>(B) * D * sizeof(half_t)) ||
+            !re(sc_mlp_f16_, static_cast<size_t>(moe_gu_cap) * D * sizeof(half_t)) ||
             !re(sc_r_logits_, static_cast<size_t>(B) * n_exp * 4) ||
             !re(sc_topk_ids_, static_cast<size_t>(B) * c_.top_k * 4) || !re(sc_topk_w_, static_cast<size_t>(B) * c_.top_k * 4) ||
             !re(sc_moe_act_, static_cast<size_t>(B) * c_.top_k * inter * sizeof(half_t)) ||
-            !re(sc_moe_gu_, static_cast<size_t>(B) * 2 * inter * 4) ||
-            !re(sc_moe_ye_, static_cast<size_t>(B) * D * 4) ||
+            !re(sc_moe_gu_, static_cast<size_t>(moe_gu_cap) * 2 * inter * 4) ||
+            !re(sc_moe_ye_, static_cast<size_t>(moe_gu_cap) * D * 4) ||
             !re(sc_exp_off_, 129 * 4) ||
             !re(sc_exp_cur_, 128 * 4) ||
             !re(sc_x_q8_, static_cast<size_t>(B) * D) ||
@@ -2253,7 +2958,7 @@ private:
             !re(sc_bucket_x_f16_, static_cast<size_t>(B) * c_.top_k * D * sizeof(half_t)) ||
             !re(sc_bucket_y_, static_cast<size_t>(B) * c_.top_k * D * 4) ||
             !re(sc_moe_out_, static_cast<size_t>(B) * D * 4) || !re(sc_m_sconv_, static_cast<size_t>(B) * D * 4) ||
-            !re(sc_exp_tok_idx_, static_cast<size_t>(B) * 4) || !re(sc_exp_tok_w_, static_cast<size_t>(B) * 4) ||
+            !re(sc_exp_tok_idx_, static_cast<size_t>(moe_gu_cap) * 4) || !re(sc_exp_tok_w_, static_cast<size_t>(moe_gu_cap) * 4) ||
             !re(sc_h_norm_, static_cast<size_t>(B) * D * 4) ||
             !re(sc_blk_ptrs_, 16 * sizeof(float*)) ||
             !re(sc_prelude_, static_cast<size_t>(B) * D * 4) || !re(sc_bank_out_, static_cast<size_t>(B) * D * 4)) {
@@ -2266,6 +2971,7 @@ private:
         for (int i = 0; i < 4; ++i) if (!re(sc_bank_[i], static_cast<size_t>(B) * D * 4)) return false;
         for (int k = 0; k < 4; ++k) if (!re(sc_taps_[k], static_cast<size_t>(B) * D * 4)) return false;
         scratch_B_ = B;
+        sc_moe_gu_cap_ = moe_gu_cap;
         return true;
     }
 
@@ -2283,29 +2989,38 @@ private:
 
     bool ensure_dspark_slot_cap(GpuSlotMeta& sl, int need_len, std::string& err) {
         if (need_len <= sl.dspark_cap) return true;
-        const int new_cap = std::max(need_len, std::max(256, sl.dspark_cap * 2));
+        const int max_cap = std::max(need_len, max_ctx_ + 16);
+        const int new_cap = std::min(max_cap, std::max(need_len, std::max(256, sl.dspark_cap * 2)));
         const int kv_dim = dspark_cfg_.n_kv * dspark_cfg_.head_dim;
         const int D = dspark_cfg_.hidden;
+        auto alloc_ds_buf = [&](GpuBuffer& dst, size_t bytes, const char* tag) -> bool {
+            if (alloc_gpu_buffer(dst, bytes, mem_info_.is_uma) == hipSuccess) return true;
+            if (!mem_info_.is_uma) {
+                (void)hipGetLastError();
+                if (alloc_gpu_buffer(dst, bytes, true, true) == hipSuccess) return true;
+            }
+            return hip_ok(hipErrorOutOfMemory, tag, err);
+        };
         for (int il = 0; il < dspark_cfg_.n_layers; ++il) {
             GpuBuffer nk, nv;
-            if (!hip_ok(alloc_gpu_buffer(nk, static_cast<size_t>(new_cap) * kv_dim * 2, mem_info_.is_uma), "ds k grow", err) ||
-                !hip_ok(alloc_gpu_buffer(nv, static_cast<size_t>(new_cap) * kv_dim * 2, mem_info_.is_uma), "ds v grow", err)) {
+            if (!alloc_ds_buf(nk, static_cast<size_t>(new_cap) * kv_dim * 2, "ds k grow") ||
+                !alloc_ds_buf(nv, static_cast<size_t>(new_cap) * kv_dim * 2, "ds v grow")) {
                 free_gpu_buffer(nk); free_gpu_buffer(nv);
                 return false;
             }
             if (sl.dspark_cap > 0) {
                 const size_t old_b = static_cast<size_t>(sl.dspark_cap) * kv_dim * 2;
-                (void)hipMemcpyAsync(nk.dev_ptr, sl.dspark_k[il].dev_ptr, old_b, hipMemcpyDeviceToDevice, stream_);
-                (void)hipMemcpyAsync(nv.dev_ptr, sl.dspark_v[il].dev_ptr, old_b, hipMemcpyDeviceToDevice, stream_);
+                (void)hipMemcpyAsync(nk.dev_ptr, sl.dspark_k[il].dev_ptr, old_b, hipMemcpyDefault, stream_);
+                (void)hipMemcpyAsync(nv.dev_ptr, sl.dspark_v[il].dev_ptr, old_b, hipMemcpyDefault, stream_);
             }
             (void)hipStreamSynchronize(stream_);
             free_gpu_buffer(sl.dspark_k[il]); free_gpu_buffer(sl.dspark_v[il]);
             sl.dspark_k[il] = nk; sl.dspark_v[il] = nv;
         }
         GpuBuffer nf;
-        if (!hip_ok(alloc_gpu_buffer(nf, static_cast<size_t>(new_cap) * D * 2, mem_info_.is_uma), "ds frnn grow", err)) return false;
+        if (!alloc_ds_buf(nf, static_cast<size_t>(new_cap) * D * 2, "ds frnn grow")) return false;
         if (sl.dspark_cap > 0) {
-            (void)hipMemcpyAsync(nf.dev_ptr, sl.dspark_frnn.dev_ptr, static_cast<size_t>(sl.dspark_cap) * D * 2, hipMemcpyDeviceToDevice, stream_);
+            (void)hipMemcpyAsync(nf.dev_ptr, sl.dspark_frnn.dev_ptr, static_cast<size_t>(sl.dspark_cap) * D * 2, hipMemcpyDefault, stream_);
             (void)hipStreamSynchronize(stream_);
         }
         free_gpu_buffer(sl.dspark_frnn);
@@ -3090,7 +3805,72 @@ private:
             // Fast Path B1 (Hybrid partial-VRAM, B <= 16): Strata Predictive CPU/RAM Hybrid (GPU VRAM+ElasticCache || Spin-Wait CPU Pool + 3x-Loop Async DMA Prefetch!)
             // Fast Path B2 (Hybrid partial-VRAM, B > 16): Chunked Double-Buffered GPU Matrix-Core Expert Streaming!
             bool fused_moe_post = false;
-            if (layer_all_gpu_[ip] && B <= 4) {
+            if (ep2_active_) {
+                // Dual-GPU Expert Parallelism: launch GPU 1 peer experts FIRST, then compute GPU 0 (+ optional hybrid RAM) in parallel!
+                if (!fused_router_f16) {
+                    k_f32_to_f16<<<(B * D + 255) / 256, 256, 0, stream_>>>(mlpin, mlpf16, B * D);
+                }
+                if (!launch_peer_moe_async(ip, B, mlpf16, tk_i, tk_w, err)) return false;
+
+                if (layer_all_ep2_[ip]) {
+                    const GpuExpertDesc* d_exps = reinterpret_cast<const GpuExpertDesc*>(d_layer_exps_[ip].dev_ptr);
+                    if (B <= 4) {
+                        k_moe_direct_w13_situ<<<dim3((c_.inter + 3) / 4, B * c_.top_k), 256, 0, stream_>>>(
+                            d_exps, tk_i, mlpf16, reinterpret_cast<half_t*>(sc_moe_act_.dev_ptr),
+                            B, c_.top_k, D, c_.inter, c_.situ_beta, c_.situ_lb);
+                        float* y_part = reinterpret_cast<float*>(sc_bucket_y_.dev_ptr);
+                        k_moe_direct_w2_par<<<dim3((D + 7) / 8, B * c_.top_k), 256, 0, stream_>>>(
+                            d_exps, tk_i, reinterpret_cast<const half_t*>(sc_moe_act_.dev_ptr),
+                            y_part, B, c_.top_k, D, c_.inter);
+                        k_moe_direct_reduce<<<dim3((D + 255) / 256, B), 256, 0, stream_>>>(
+                            y_part, tk_w, moeout, B, c_.top_k, D);
+                    } else {
+                        int32_t* d_off = reinterpret_cast<int32_t*>(sc_exp_off_.dev_ptr);
+                        int32_t* d_cur = reinterpret_cast<int32_t*>(sc_exp_cur_.dev_ptr);
+                        int32_t* d_btk = reinterpret_cast<int32_t*>(sc_bucket_tok_.dev_ptr);
+                        int32_t* d_s2b = reinterpret_cast<int32_t*>(sc_slotk_bidx_.dev_ptr);
+                        half_t*  d_act = reinterpret_cast<half_t*>(sc_moe_act_.dev_ptr);
+                        float*   d_by  = reinterpret_cast<float*>(sc_bucket_y_.dev_ptr);
+                        const int tot_pairs = B * c_.top_k;
+                        if (B >= 16) {
+                            (void)hipMemsetAsync(d_off, 0, 129 * sizeof(int32_t), stream_);
+                            const int cblks = std::min(64, (tot_pairs + 255) / 256);
+                            k_moe_count_buckets<<<cblks, 256, 0, stream_>>>(tk_i, d_off, tot_pairs);
+                            k_moe_prefix_buckets<<<1, 128, 0, stream_>>>(d_off, d_off, d_cur);
+                            k_moe_scatter_buckets<<<(tot_pairs + 255) / 256, 256, 0, stream_>>>(tk_i, d_cur, d_btk, d_s2b, tot_pairs, c_.top_k);
+                        } else {
+                            k_moe_build_buckets<<<1, 128, 0, stream_>>>(tk_i, d_off, d_btk, d_s2b, B, c_.top_k);
+                        }
+                        if (mem_info_.gen != AmdGen::Rdna2 && mem_info_.gen != AmdGen::Unknown) {
+                            const int mt = (B >= 1024) ? 8 : ((B >= 256) ? 4 : ((B >= 64) ? 2 : 1));
+                            const dim3 g13((2 * c_.inter + 127) / 128, c_.n_experts, mt);
+                            const dim3 g2((D + 127) / 128, c_.n_experts, mt);
+                            if (B >= 64) {
+                                k_moe_grouped_w13_situ_wmma_128<<<g13, 256, 0, stream_>>>(
+                                    d_exps, d_off, d_btk, mlpf16, d_act, D, c_.inter, c_.situ_beta, c_.situ_lb);
+                                k_moe_grouped_w2_wmma_128<<<g2, 256, 0, stream_>>>(
+                                    d_exps, d_off, d_act, d_by, D, c_.inter);
+                            } else {
+                                k_moe_grouped_w13_situ_wmma<<<g13, 256, 0, stream_>>>(
+                                    d_exps, d_off, d_btk, mlpf16, d_act, D, c_.inter, c_.situ_beta, c_.situ_lb);
+                                k_moe_grouped_w2_wmma<<<g2, 256, 0, stream_>>>(
+                                    d_exps, d_off, d_act, d_by, D, c_.inter);
+                            }
+                        } else {
+                            k_moe_grouped_w13_situ<<<dim3((c_.inter + 3) / 4, c_.n_experts), 256, 0, stream_>>>(
+                                d_exps, d_off, d_btk, mlpf16, d_act, D, c_.inter, c_.situ_beta, c_.situ_lb);
+                            k_moe_grouped_w2<<<dim3((D + 7) / 8, c_.n_experts), 256, 0, stream_>>>(
+                                d_exps, d_off, d_act, d_by, D, c_.inter);
+                        }
+                        k_moe_reduce_buckets_masked<<<dim3((D + 255) / 256, B), 256, 0, stream_>>>(
+                            d_exps, tk_i, d_by, d_s2b, tk_w, moeout, B, c_.top_k, D);
+                    }
+                    if (!finish_peer_moe_add(B, moeout, err)) return false;
+                }
+            }
+            if (ep2_active_ && layer_all_ep2_[ip]) {
+                // Already completed on GPU 0 || GPU 1 above!
+            } else if (layer_all_gpu_[ip] && B <= 4) {
                 if (!fused_router_f16) {
                     k_f32_to_f16<<<(B * D + 255) / 256, 256, 0, stream_>>>(mlpin, mlpf16, B * D);
                 }
@@ -3135,11 +3915,16 @@ private:
                     !hip_ok(hipStreamSynchronize(stream_), "moe off sync", err)) {
                     return false;
                 }
-                const auto& dir = model_->rd.expert_directory();
+                const auto& dir = adj_dir_;
                 for (int eid = 0; eid < c_.n_experts; ++eid) {
                     const int beg = h_off[eid];
                     const int m_e = h_off[eid + 1] - beg;
                     if (m_e <= 0) continue;
+                    if (beg < 0 || beg + m_e > B * c_.top_k || sc_moe_gu_cap_ <= 0) {
+                        err = "[ink-hip] Fast Path A2 MoE bucket out of bounds (beg=" + std::to_string(beg) +
+                              ", m_e=" + std::to_string(m_e) + ", pairs=" + std::to_string(B * c_.top_k) + ")";
+                        return false;
+                    }
                     const int dir_idx = model_->dir_index_of[ip * c_.n_experts + eid];
                     if (dir_idx < 0) continue;
                     const auto& ent = dir[dir_idx];
@@ -3149,8 +3934,9 @@ private:
                         expert_sf4_outer_[dir_idx].first, expert_sf4_outer_[dir_idx].second,
                         d_bx + static_cast<size_t>(beg) * D,
                         d_gu, d_act, d_by + static_cast<size_t>(beg) * D,
-                        m_e, D, c_.inter);
+                        m_e, sc_moe_gu_cap_, D, c_.inter);
                 }
+
                 k_moe_reduce_buckets<<<dim3((D + 255) / 256, B), 256, 0, stream_>>>(
                     d_by, d_s2b, tk_w, moeout, B, c_.top_k, D);
             } else if (layer_all_gpu_[ip]) {
@@ -3273,6 +4059,7 @@ private:
                     k_moe_grouped_w2<<<dim3((D + 7) / 8, c_.n_experts), 256, 0, stream_>>>(
                         d_exps, d_off, d_act, d_by, D, c_.inter);
                 }
+
                 k_moe_reduce_buckets<<<dim3((D + 255) / 256, B), 256, 0, stream_>>>(
                     d_by, d_s2b, tk_w, moeout, B, c_.top_k, D);
             } else if (hybrid_.active() && B <= 16) {
@@ -3288,7 +4075,7 @@ private:
                     !hip_ok(hipStreamSynchronize(stream_), "hyb route sync", err)) {
                     return false;
                 }
-                const auto& dir = model_->rd.expert_directory();
+                const auto& dir = adj_dir_;
                 const bool is_core_repeat_candidate = (ip >= c_.core_start && ip < c_.core_end && visit < (c_.core_start + 2 * (c_.core_end - c_.core_start)));
 
                 std::vector<GpuExpertDesc> step_exps = h_layer_exps_[ip];
@@ -3311,6 +4098,7 @@ private:
                         const float rw = h_ws[b * c_.top_k + k];
                         const int dir_idx = model_->dir_index_of[ip * c_.n_experts + eid];
                         if (dir_idx < 0) continue;
+                        if (ep2_active_ && peer_expert_gpu_offset_[dir_idx] != static_cast<size_t>(-1)) continue;  // handled by GPU 1!
                         if (step_exps[eid].body != nullptr) {
                             any_gpu_exp = true;
                             continue;
@@ -3334,9 +4122,17 @@ private:
                                 if (!expert_ram_bodies_[dir_idx].empty()) {
                                     host_body = expert_ram_bodies_[dir_idx].data();
                                     hybrid_.prefetch_async(dir_idx, host_body, dir[dir_idx].body_bytes, false);
+                                } else if (cold_store_.is_open()) {
+                                    int cslot = -1;
+                                    const uint8_t* cp = cold_store_.demand_wait(dir_idx, ip, cold_gen_, cslot);
+                                    if (!cp) { err = "hip cold_store mx8 read failed"; return false; }
+                                    disk_fallback_bufs.emplace_back(cp, cp + dir[dir_idx].body_bytes);
+                                    cold_store_.unpin_slot(cslot);
+                                    host_body = disk_fallback_bufs.back().data();
                                 } else {
                                     disk_fallback_bufs.emplace_back();
-                                    if (!model_->rd.read_expert_body(dir_idx, disk_fallback_bufs.back(), err)) return false;
+                                    uint32_t tmp_dn = 0; uint8_t tmp_gu = 0, tmp_dnc = 0;
+                                    if (!read_expert_for_hip(dir_idx, disk_fallback_bufs.back(), tmp_dn, tmp_gu, tmp_dnc, err)) return false;
                                     host_body = disk_fallback_bufs.back().data();
                                 }
                                 mi = static_cast<int>(mx8_stream_jobs.size());
@@ -3360,9 +4156,17 @@ private:
                             if (!expert_ram_bodies_[dir_idx].empty()) {
                                 host_body = expert_ram_bodies_[dir_idx].data();
                                 hybrid_.prefetch_async(dir_idx, host_body, dir[dir_idx].body_bytes, is_core_repeat_candidate);
+                            } else if (cold_store_.is_open()) {
+                                int cslot = -1;
+                                const uint8_t* cp = cold_store_.demand_wait(dir_idx, ip, cold_gen_, cslot);
+                                if (!cp) { err = "hip cold_store cpu read failed"; return false; }
+                                disk_fallback_bufs.emplace_back(cp, cp + dir[dir_idx].body_bytes);
+                                cold_store_.unpin_slot(cslot);
+                                host_body = disk_fallback_bufs.back().data();
                             } else {
                                 disk_fallback_bufs.emplace_back();
-                                if (!model_->rd.read_expert_body(dir_idx, disk_fallback_bufs.back(), err)) return false;
+                                uint32_t tmp_dn = 0; uint8_t tmp_gu = 0, tmp_dnc = 0;
+                                if (!read_expert_for_hip(dir_idx, disk_fallback_bufs.back(), tmp_dn, tmp_gu, tmp_dnc, err)) return false;
                                 host_body = disk_fallback_bufs.back().data();
                             }
                             ji = static_cast<int>(cpu_jobs.size());
@@ -3408,29 +4212,37 @@ private:
                     const auto& mj = mx8_stream_jobs[mi];
                     const int m = static_cast<int>(mj.tok_idx.size());
                     const uint8_t* body_dev = hybrid_.wait_prefill_stage(mi, stream_);
-                    (void)hipMemcpyAsync(sc_exp_tok_idx_.dev_ptr, mj.tok_idx.data(), m * 4, hipMemcpyHostToDevice, stream_);
-                    (void)hipMemcpyAsync(sc_exp_tok_w_.dev_ptr,   mj.tok_w.data(),   m * 4, hipMemcpyHostToDevice, stream_);
-                    k_gather_rows_f16<<<(m * D + 255) / 256, 256, 0, stream_>>>(
-                        mlpin, reinterpret_cast<const int32_t*>(sc_exp_tok_idx_.dev_ptr), mlpf16, m, D);
+                    const int chunk_cap = std::max(1, sc_moe_gu_cap_);
                     float* gu_buf = reinterpret_cast<float*>(sc_moe_gu_.dev_ptr);
                     half_t* act_buf = reinterpret_cast<half_t*>(sc_moe_act_.dev_ptr);
                     float* ye_buf = reinterpret_cast<float*>(sc_moe_ye_.dev_ptr);
-                    launch_mx8_linear(body_dev, body_dev + static_cast<size_t>(2 * c_.inter) * D, mlpf16, gu_buf, m, 2 * c_.inter, D, mem_info_.gen, stream_);
-                    k_situ_interleaved<<<(m * c_.inter + 255) / 256, 256, 0, stream_>>>(gu_buf, act_buf, m, c_.inter, c_.situ_beta, c_.situ_lb);
-                    launch_mx8_linear(body_dev + mj.dn_offset, body_dev + mj.dn_offset + static_cast<size_t>(D) * c_.inter, act_buf, ye_buf, m, D, c_.inter, mem_info_.gen, stream_);
+                    for (int off = 0; off < m; off += chunk_cap) {
+                        const int cur_m = std::min(chunk_cap, m - off);
+                        (void)hipMemcpyAsync(sc_exp_tok_idx_.dev_ptr, mj.tok_idx.data() + off, cur_m * 4, hipMemcpyHostToDevice, stream_);
+                        (void)hipMemcpyAsync(sc_exp_tok_w_.dev_ptr,   mj.tok_w.data() + off,   cur_m * 4, hipMemcpyHostToDevice, stream_);
+                        k_gather_rows_f16<<<(cur_m * D + 255) / 256, 256, 0, stream_>>>(
+                            mlpin, reinterpret_cast<const int32_t*>(sc_exp_tok_idx_.dev_ptr), mlpf16, cur_m, D);
+                        launch_mx8_linear(body_dev, body_dev + static_cast<size_t>(2 * c_.inter) * D, mlpf16, gu_buf, cur_m, 2 * c_.inter, D, mem_info_.gen, stream_);
+                        k_situ_interleaved<<<(cur_m * c_.inter + 255) / 256, 256, 0, stream_>>>(gu_buf, act_buf, cur_m, c_.inter, c_.situ_beta, c_.situ_lb);
+                        launch_mx8_linear(body_dev + mj.dn_offset, body_dev + mj.dn_offset + static_cast<size_t>(D) * c_.inter, act_buf, ye_buf, cur_m, D, c_.inter, mem_info_.gen, stream_);
+                        k_scatter_add_expert<<<(D + 255) / 256, 256, 0, stream_>>>(
+                            ye_buf, reinterpret_cast<const int32_t*>(sc_exp_tok_idx_.dev_ptr),
+                            reinterpret_cast<const float*>(sc_exp_tok_w_.dev_ptr), moeout, cur_m, D);
+                    }
                     hybrid_.mark_prefill_compute_done(mi, stream_);
                     if (mi + 2 < static_cast<int>(mx8_stream_jobs.size())) {
                         (void)hybrid_.stage_prefill_async(mi + 2, mx8_stream_jobs[mi + 2].body, dir[mx8_stream_jobs[mi + 2].dir_idx].body_bytes, true);
                     }
-                    k_scatter_add_expert<<<(D + 255) / 256, 256, 0, stream_>>>(
-                        ye_buf, reinterpret_cast<const int32_t*>(sc_exp_tok_idx_.dev_ptr),
-                        reinterpret_cast<const float*>(sc_exp_tok_w_.dev_ptr), moeout, m, D);
                 }
                 if (!cpu_jobs.empty()) {
                     hybrid_.pool().wait_and_reduce();
                     // Upload ONLY the tiny 9 KB/tok output vector (NOT 4.5 MB expert weights!) and accumulate!
                     (void)hipMemcpyAsync(hybrid_.d_cpu_y(), hybrid_.h_y(), static_cast<size_t>(B) * D * 4, hipMemcpyHostToDevice, stream_);
                     k_vec_add<<<(B * D + 255) / 256, 256, 0, stream_>>>(moeout, hybrid_.d_cpu_y(), moeout, B * D);
+                }
+                if (!disk_fallback_bufs.empty()) {
+                    (void)hipStreamSynchronize(hybrid_.dma_stream());
+                    (void)hipStreamSynchronize(stream_);
                 }
             } else {
                 // Fast Path B2: Chunked Double-Buffered GPU Matrix-Core Expert Streaming for Hybrid Prefill!
@@ -3453,7 +4265,7 @@ private:
                     return false;
                 }
 
-                const auto& dir = model_->rd.expert_directory();
+                const auto& dir = adj_dir_;
                 struct ActiveExp {
                     int eid, dir_idx, beg, m_e;
                     const uint8_t* dev_ptr;
@@ -3468,6 +4280,7 @@ private:
                     if (m_e <= 0) continue;
                     const int dir_idx = model_->dir_index_of[ip * c_.n_experts + eid];
                     if (dir_idx < 0) continue;
+                    if (ep2_active_ && peer_expert_gpu_offset_[dir_idx] != static_cast<size_t>(-1)) continue;  // handled by GPU 1!
                     const uint8_t* dev_p = nullptr;
                     if (expert_gpu_offset_[dir_idx] != static_cast<size_t>(-1)) {
                         dev_p = expert_gpu_arena_.dev_ptr + expert_gpu_offset_[dir_idx];
@@ -3480,16 +4293,29 @@ private:
                         const uint8_t* hp = nullptr;
                         if (!expert_ram_bodies_[dir_idx].empty()) {
                             hp = expert_ram_bodies_[dir_idx].data();
+                        } else if (cold_store_.is_open()) {
+                            int cslot = -1;
+                            const uint8_t* cp = cold_store_.demand_wait(dir_idx, ip, cold_gen_, cslot);
+                            if (!cp) { err = "hip cold_store prefill read failed"; return false; }
+                            disk_bufs.emplace_back(cp, cp + dir[dir_idx].body_bytes);
+                            cold_store_.unpin_slot(cslot);
+                            hp = disk_bufs.back().data();
                         } else {
                             disk_bufs.emplace_back();
-                            if (!model_->rd.read_expert_body(dir_idx, disk_bufs.back(), err)) return false;
+                            uint32_t tmp_dn = 0; uint8_t tmp_gu = 0, tmp_dnc = 0;
+                            if (!read_expert_for_hip(dir_idx, disk_bufs.back(), tmp_dn, tmp_gu, tmp_dnc, err)) return false;
                             hp = disk_bufs.back().data();
                         }
                         ram_exps.push_back({eid, dir_idx, beg, m_e, nullptr, hp});
                     }
                 }
 
-                auto exec_one = [&](const ActiveExp& ae, const uint8_t* body_dev) {
+                auto exec_one = [&](const ActiveExp& ae, const uint8_t* body_dev) -> bool {
+                    if (ae.beg < 0 || ae.m_e < 0 || ae.beg + ae.m_e > B * c_.top_k || sc_moe_gu_cap_ <= 0) {
+                        err = "[ink-hip] Fast Path B2 MoE bucket out of bounds (beg=" + std::to_string(ae.beg) +
+                              ", m_e=" + std::to_string(ae.m_e) + ", pairs=" + std::to_string(B * c_.top_k) + ")";
+                        return false;
+                    }
                     const auto& ent = dir[ae.dir_idx];
                     float sf4_w13 = expert_sf4_outer_[ae.dir_idx].first;
                     float sf4_w2  = expert_sf4_outer_[ae.dir_idx].second;
@@ -3504,28 +4330,39 @@ private:
                     float* y_slice = d_by + static_cast<size_t>(ae.beg) * D;
                     if (blaslt_.ready() && ae.m_e >= 8 && d_exp_w13_f16_.dev_ptr && d_exp_w2_f16_.dev_ptr) {
                         run_single_expert_blaslt(body_dev, ent.gu_code_id, ent.dn_code_id, ent.dn_offset,
-                                                 sf4_w13, sf4_w2, x_slice, d_gu, d_act, y_slice, ae.m_e, D, c_.inter);
+                                                 sf4_w13, sf4_w2, x_slice, d_gu, d_act, y_slice, ae.m_e, sc_moe_gu_cap_, D, c_.inter);
                     } else {
-                        if (ent.gu_code_id == CODE_SF4) {
-                            const uint8_t* p = body_dev + 16;
-                            launch_sf4_linear(p, p + static_cast<size_t>(2 * c_.inter) * (D >> 1), sf4_w13, x_slice, d_gu, ae.m_e, 2 * c_.inter, D, mem_info_.gen, stream_, false);
-                        } else if (ent.gu_code_id == CODE_MX8) {
-                            launch_mx8_linear(body_dev, body_dev + static_cast<size_t>(2 * c_.inter) * D, x_slice, d_gu, ae.m_e, 2 * c_.inter, D, mem_info_.gen, stream_);
-                        } else {
-                            launch_sk_linear(body_dev + static_cast<size_t>(c_.inter) * 2, ent.gu_code_id, x_slice, d_gu, ae.m_e, 2 * c_.inter, D, mem_info_.gen, stream_);
-                        }
-                        k_situ_interleaved<<<(ae.m_e * c_.inter + 255) / 256, 256, 0, stream_>>>(
-                            d_gu, d_act, ae.m_e, c_.inter, c_.situ_beta, c_.situ_lb);
-                        if (ent.dn_code_id == CODE_SF4) {
-                            const uint8_t* p = body_dev + ent.dn_offset;
-                            launch_sf4_linear(p, p + static_cast<size_t>(D) * (c_.inter >> 1), sf4_w2, d_act, y_slice, ae.m_e, D, c_.inter, mem_info_.gen, stream_, false);
-                        } else if (ent.dn_code_id == CODE_MX8) {
-                            launch_mx8_linear(body_dev + ent.dn_offset, body_dev + ent.dn_offset + static_cast<size_t>(D) * c_.inter, d_act, y_slice, ae.m_e, D, c_.inter, mem_info_.gen, stream_);
-                        } else {
-                            launch_sk_paired2_linear(body_dev + ent.dn_offset, ent.dn_code_id,
-                                                     reinterpret_cast<const half_t*>(body_dev), d_act, y_slice, ae.m_e, D, c_.inter, stream_);
+                        // #6580: Chunk m_e by sc_moe_gu_cap_ so d_gu [sc_moe_gu_cap_, 2*inter] NEVER overflows when m_e > B!
+                        for (int off = 0; off < ae.m_e; off += sc_moe_gu_cap_) {
+                            const int cur_m = std::min(sc_moe_gu_cap_, ae.m_e - off);
+                            const half_t* x_sub = x_slice + static_cast<size_t>(off) * D;
+                            float* y_sub = y_slice + static_cast<size_t>(off) * D;
+                            if (ent.gu_code_id == CODE_SF4) {
+                                const uint8_t* p = body_dev + 16;
+                                launch_sf4_linear(p, p + static_cast<size_t>(2 * c_.inter) * (D >> 1), sf4_w13, x_sub, d_gu, cur_m, 2 * c_.inter, D, mem_info_.gen, stream_, false);
+                            } else if (ent.gu_code_id == CODE_MX8) {
+                                launch_mx8_linear(body_dev, body_dev + static_cast<size_t>(2 * c_.inter) * D, x_sub, d_gu, cur_m, 2 * c_.inter, D, mem_info_.gen, stream_);
+                            } else if (ent.gu_code_id == CODE_GGUF_RAW) {
+                                launch_gguf_linear(body_dev, 0, 1, x_sub, d_gu, cur_m, 2 * c_.inter, D, c_.inter, stream_);
+                            } else {
+                                launch_sk_linear(body_dev + static_cast<size_t>(c_.inter) * 2, ent.gu_code_id, x_sub, d_gu, cur_m, 2 * c_.inter, D, mem_info_.gen, stream_);
+                            }
+                            k_situ_interleaved<<<(cur_m * c_.inter + 255) / 256, 256, 0, stream_>>>(
+                                d_gu, d_act, cur_m, c_.inter, c_.situ_beta, c_.situ_lb);
+                            if (ent.dn_code_id == CODE_SF4) {
+                                const uint8_t* p = body_dev + ent.dn_offset;
+                                launch_sf4_linear(p, p + static_cast<size_t>(D) * (c_.inter >> 1), sf4_w2, d_act, y_sub, cur_m, D, c_.inter, mem_info_.gen, stream_, false);
+                            } else if (ent.dn_code_id == CODE_MX8) {
+                                launch_mx8_linear(body_dev + ent.dn_offset, body_dev + ent.dn_offset + static_cast<size_t>(D) * c_.inter, d_act, y_sub, cur_m, D, c_.inter, mem_info_.gen, stream_);
+                            } else if (ent.dn_code_id == CODE_GGUF_RAW) {
+                                launch_gguf_linear(body_dev, ent.dn_offset, 0, d_act, y_sub, cur_m, D, c_.inter, c_.inter, stream_);
+                            } else {
+                                launch_sk_paired2_linear(body_dev + ent.dn_offset, ent.dn_code_id,
+                                                         reinterpret_cast<const half_t*>(body_dev), d_act, y_sub, cur_m, D, c_.inter, stream_);
+                            }
                         }
                     }
+                    return true;
                 };
 
                 // Kick off initial 2 RAM expert DMAs BEFORE running GPU-resident experts -> full PCIe overlap!
@@ -3534,14 +4371,19 @@ private:
                         (void)hybrid_.stage_prefill_async(p_i, ram_exps[p_i].host_ptr, dir[ram_exps[p_i].dir_idx].body_bytes, false);
                     }
                 }
-                for (const auto& ge : gpu_exps) exec_one(ge, ge.dev_ptr);
+                if (ep2_active_) {
+                    (void)hipMemsetAsync(d_by, 0, static_cast<size_t>(B) * c_.top_k * D * sizeof(float), stream_);
+                }
+                for (const auto& ge : gpu_exps) {
+                    if (!exec_one(ge, ge.dev_ptr)) return false;
+                }
 
                 for (int ri = 0; ri < static_cast<int>(ram_exps.size()); ++ri) {
                     const auto& re = ram_exps[ri];
                     const uint8_t* body_dev = nullptr;
                     if (hybrid_.active()) {
                         body_dev = hybrid_.wait_prefill_stage(ri, stream_);
-                        exec_one(re, body_dev);
+                        if (!exec_one(re, body_dev)) return false;
                         hybrid_.mark_prefill_compute_done(ri, stream_);
                         if (ri + 2 < static_cast<int>(ram_exps.size())) {
                             const auto& nxt = ram_exps[ri + 2];
@@ -3550,12 +4392,20 @@ private:
                     } else {
                         if (!hip_ok(hipMemcpyAsync(d_exp_stage_.dev_ptr, re.host_ptr, dir[re.dir_idx].body_bytes, hipMemcpyHostToDevice, stream_),
                                     "exp stage H2D", err)) return false;
-                        exec_one(re, d_exp_stage_.dev_ptr);
+                        if (!exec_one(re, d_exp_stage_.dev_ptr)) return false;
                     }
+                }
+
+                if (!disk_bufs.empty()) {
+                    if (hybrid_.active()) (void)hipStreamSynchronize(hybrid_.dma_stream());
+                    (void)hipStreamSynchronize(stream_);
                 }
 
                 k_moe_reduce_buckets<<<dim3((D + 255) / 256, B), 256, 0, stream_>>>(
                     d_by, d_s2b, tk_w, moeout, B, c_.top_k, D);
+            }
+            if (ep2_active_ && !layer_all_ep2_[ip]) {
+                if (!finish_peer_moe_add(B, moeout, err)) return false;
             }
 
             // Post-MLP ShortConv + residual add (already fused into k_moe_reduce_sconv_add for B<=4 decode!)
@@ -4256,6 +5106,7 @@ private:
                     k_moe_grouped_w2<<<dim3((D + 7) / 8, c_.n_experts), 256, 0, stream_>>>(
                         d_exps, d_off, d_act, d_by, D, c_.inter);
                 }
+
                 k_moe_reduce_buckets<<<dim3((D + 255) / 256, B), 256, 0, stream_>>>(
                     d_by, d_s2b, tk_w, moeout, B, c_.top_k, D);
             }
@@ -4429,6 +5280,34 @@ private:
         invalidate_graph();
         hybrid_.release();
         blaslt_.release();
+        if (peer_stream_ || ev_g1_done_ || peer_expert_gpu_arena_.dev_ptr || !peer_d_layer_exps_.empty() || peer_scratch_B_ > 0) {
+            if (gpu1_id_ >= 0) (void)hipSetDevice(gpu1_id_);
+            if (peer_stream_) {
+                (void)hipStreamSynchronize(peer_stream_);
+                (void)hipStreamDestroy(peer_stream_);
+                peer_stream_ = nullptr;
+            }
+            if (ev_g1_done_) { (void)hipEventDestroy(ev_g1_done_); ev_g1_done_ = nullptr; }
+            for (auto& b : peer_d_layer_exps_) free_gpu_buffer(b);
+            peer_d_layer_exps_.clear();
+            free_gpu_buffer(peer_expert_gpu_arena_);
+            free_gpu_buffer(peer_sc_mlp_f16_); free_gpu_buffer(peer_sc_topk_ids_); free_gpu_buffer(peer_sc_topk_w_);
+            free_gpu_buffer(peer_sc_moe_act_); free_gpu_buffer(peer_sc_moe_out_);
+            free_gpu_buffer(peer_sc_exp_off_); free_gpu_buffer(peer_sc_exp_cur_);
+            free_gpu_buffer(peer_sc_bucket_tok_); free_gpu_buffer(peer_sc_slotk_bidx_); free_gpu_buffer(peer_sc_bucket_y_);
+            peer_scratch_B_ = 0;
+            if (gpu0_id_ >= 0) (void)hipSetDevice(gpu0_id_);
+        }
+        if (ev_g0_to_g1_) { (void)hipEventDestroy(ev_g0_to_g1_); ev_g0_to_g1_ = nullptr; }
+        free_gpu_buffer(sc_peer_moe_out_);
+        if (h_ep_x_f16_) { (void)hipHostFree(h_ep_x_f16_); h_ep_x_f16_ = nullptr; }
+        if (h_ep_ids_)   { (void)hipHostFree(h_ep_ids_);   h_ep_ids_ = nullptr; }
+        if (h_ep_ws_)    { (void)hipHostFree(h_ep_ws_);    h_ep_ws_ = nullptr; }
+        if (h_ep_y1_)    { (void)hipHostFree(h_ep_y1_);    h_ep_y1_ = nullptr; }
+        peer_expert_gpu_offset_.clear();
+        layer_all_ep2_.clear();
+        ep2_active_ = false;
+        ep2_p2p_ = false;
         if (stream_) {
             (void)hipStreamSynchronize(stream_);
             (void)hipStreamDestroy(stream_);
@@ -4457,6 +5336,7 @@ private:
         trunk_bf16_.clear(); trunk_f32_.clear(); packed_trunk_.clear();
         static_sconv_.clear(); d_msg_queries_.clear(); dspark_bf16_.clear(); dspark_f32_.clear();
         d_layer_exps_.clear(); h_layer_exps_.clear();
+        adj_dir_.clear();
         free_gpu_buffer(expert_gpu_arena_); free_gpu_buffer(d_exp_stage_);
         free_gpu_buffer(d_exp_w13_f16_); free_gpu_buffer(d_exp_w2_f16_);
         free_gpu_buffer(d_dspark_state_); free_gpu_buffer(d_dspark_state2_); free_gpu_buffer(d_dspark_latent_);
@@ -4504,6 +5384,8 @@ private:
         for (int k = 0; k < 4; ++k) free_gpu_buffer(sc_taps_[k]);
         sc_blocks_.clear(); sc_bank_.clear();
         scratch_B_ = 0;
+        sc_moe_gu_cap_ = 0;
+        expert_native_gguf_.clear();
         vision_.release();
     }
 
@@ -4512,8 +5394,30 @@ private:
     InkCfg c_;
     DsparkCfg dspark_cfg_;
     DeviceMemoryInfo mem_info_;
+    DeviceMemoryInfo peer_mem_info_;
     DispatchGuard guard_;
     hipStream_t stream_ = nullptr;
+    int gpu0_id_ = 0;
+    int gpu1_id_ = -1;
+    bool ep2_active_ = false;
+    bool ep2_p2p_ = false;
+    double ep_split_ = 0.5;
+    hipStream_t peer_stream_ = nullptr;
+    hipEvent_t ev_g0_to_g1_ = nullptr;
+    hipEvent_t ev_g1_done_ = nullptr;
+    GpuBuffer peer_expert_gpu_arena_;
+    std::vector<size_t> peer_expert_gpu_offset_;
+    std::vector<GpuBuffer> peer_d_layer_exps_;
+    std::vector<bool> layer_all_ep2_;
+    int peer_scratch_B_ = 0;
+    GpuBuffer sc_peer_moe_out_;
+    GpuBuffer peer_sc_mlp_f16_, peer_sc_topk_ids_, peer_sc_topk_w_;
+    GpuBuffer peer_sc_moe_act_, peer_sc_moe_out_;
+    GpuBuffer peer_sc_exp_off_, peer_sc_exp_cur_, peer_sc_bucket_tok_, peer_sc_slotk_bidx_, peer_sc_bucket_y_;
+    half_t* h_ep_x_f16_ = nullptr;
+    int32_t* h_ep_ids_ = nullptr;
+    float* h_ep_ws_ = nullptr;
+    float* h_ep_y1_ = nullptr;
     HipBlasLtRunner blaslt_;
     HipHybridController hybrid_;
     int blaslt_min_m_ = 16;
@@ -4547,7 +5451,11 @@ private:
     GpuBuffer d_exp_stage_;
     GpuBuffer d_exp_w13_f16_, d_exp_w2_f16_;
     std::vector<size_t> expert_gpu_offset_;
+    std::vector<strata::artifact::StrataExpertEntry> adj_dir_;
+    std::vector<uint8_t> expert_native_gguf_;
     std::vector<std::vector<uint8_t>> expert_ram_bodies_;
+    InkColdStore cold_store_;
+    uint64_t cold_gen_ = 1;
     std::vector<std::pair<float, float>> expert_sf4_outer_;
     std::vector<GpuBuffer> d_layer_exps_;
     std::vector<std::vector<GpuExpertDesc>> h_layer_exps_;
@@ -4564,6 +5472,7 @@ private:
     GpuVisionState vision_;
 
     int scratch_B_ = 0;
+    int sc_moe_gu_cap_ = 0;
     GpuBuffer sc_slot_ids_, sc_pos_, sc_tok_ids_, sc_img_idx_, sc_want_idx_;
     GpuBuffer sc_grp_slot_, sc_grp_off_, sc_grp_tok_;
     GpuBuffer sc_x_bf16_, sc_qkvrg_out_;

@@ -12,18 +12,41 @@
 #include <string>
 #include <vector>
 
+#define INK_SYCL_WITH_MODEL_FILE 1
 #include "ink_sy_runner.h"
+
+namespace {
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((constructor(101)))
+#endif
+void ink_sycl_early_l0_v1_init() {
+    ink_sycl::ensure_l0_v1_default();
+}
+struct InkSyclEarlyInitGuard {
+    InkSyclEarlyInitGuard() { ink_sycl::ensure_l0_v1_default(); }
+};
+static InkSyclEarlyInitGuard g_ink_sycl_early_init_guard;
+}  // namespace
 
 namespace ink2 {
 
 class SyclInkBackend final : public InkBackend {
 public:
-    const char* backend_name() const noexcept override { return "sycl"; }
+    const char* backend_name() const noexcept override { return mod_.ep2_active ? "sycl-ep2" : "sycl"; }
+
+    bool dspark_ready() const override { return runner_.use_dspark; }
 
     std::string device_info() const override {
         const auto& d = ink_sycl::dev_caps();
-        return d.name + " (" + d.platform + ", " +
+        std::string info = d.name + " (" + d.platform + ", " +
                std::to_string((int)(d.global_mem / (1024ull * 1024ull * 1024ull))) + " GiB, SG16)";
+        if (mod_.ep2_active) {
+            info += " + " + mod_.ep2_dev1_name + " (" +
+                    std::to_string((int)(mod_.ep2_dev1_mem / (1024ull * 1024ull * 1024ull))) +
+                    " GiB) [EP-2GPU split=" + std::to_string(mod_.ep2_split) + ", " +
+                    (mod_.ep2_p2p ? "p2p" : "pinned") + "]";
+        }
+        return info;
     }
 
     BackendStats stats() const override {
@@ -31,8 +54,8 @@ public:
         s.total_experts = (size_t)mod_.man.c.n_phys * (size_t)mod_.man.c.n_experts;
         s.vram_experts_loaded = (size_t)mod_.n_vram_experts;
         s.ram_experts_loaded = (size_t)mod_.n_host_experts;
-        s.vram_used_bytes = ink_sycl::dev_bytes_allocated();
-        s.vram_total_bytes = ink_sycl::dev_caps().global_mem;
+        s.vram_used_bytes = ink_sycl::dev_bytes_allocated() + mod_.vram_expert_bytes_g1;
+        s.vram_total_bytes = ink_sycl::dev_caps().global_mem + (mod_.ep2_active ? mod_.ep2_dev1_mem : 0);
         s.active_slots = active_slots_;
         s.max_slots = runner_.max_slots;
         s.kv_dtype = kv_dtype_;
@@ -40,6 +63,7 @@ public:
     }
 
     bool init(const InkModelFile& model, const BackendOpts& opts, std::string& err) override {
+        ink_sycl::set_primary_gpu_index(opts.gpu_index);
         kv_dtype_ = opts.kv_dtype;
         const int par = std::max(1, std::min(64, opts.parallel));
         const int ctx = std::max(256, opts.max_ctx);
@@ -63,7 +87,12 @@ public:
         const size_t vis_est = !opts.vision_path.empty() ? (700ull << 20) : 0ull;
         const size_t hyb_xmx_est = (320ull << 20);  // Elastic VRAM cache ring (<=256 MiB) + XMX scratch (~32 MiB) + ping-pong
         const size_t extra_reserve = kv_est + dsp_kv + sc_est + act_est + vis_est + hyb_xmx_est;
-        if (!mod_.load(model.path, opts.vram_experts_gb, err, extra_reserve)) return false;
+        ink_sycl::ensure_l0_v1_default();
+        if (model.kind == ModelSourceKind::Strata) {
+            if (!mod_.load(model.path, opts.vram_experts_gb, err, extra_reserve, opts.gpus, opts.gpu_ids, opts.ep_split)) return false;
+        } else {
+            if (!mod_.load_from_model_file(model, opts.vram_experts_gb, err, extra_reserve)) return false;
+        }
         if (!runner_.init(mod_, par, ctx, batch_cap, opts.enable_dspark, err)) {
             return false;
         }

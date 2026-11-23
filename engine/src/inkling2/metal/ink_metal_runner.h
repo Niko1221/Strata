@@ -185,11 +185,12 @@ struct InkMetalRunner {
     mtl::Buffer bd_beam_st_in, bd_beam_st_out, bd_beam_lat, bd_beam_joint, bd_beam_rproj;
     mtl::Buffer bd_beam_toks, bd_beam_logp, bd_beam_pidx, bd_beam_pool;
 
-    // DSpark context KV caches (3 layers) + committed f_rnn [max_slots, max_ctx, 2304] (wait: only last committed f_rnn per slot is needed for decode!
-    // Store [max_slots, max_ctx] for ctx_kv, and [max_slots, 2304] for latest f_rnn + backup for rollback!)
+    // DSpark context KV caches (3 layers: layers 0 & 2 are compact SWA-1025 rings, layer 1 is global!)
     mtl::Buffer dsp_ctx_k[3], dsp_ctx_v[3];
+    int dsp_kv_stride[3] = {1025, 8192, 1025};
     mtl::Buffer dsp_frnn_slot;   // [max_slots, 2304] latest committed f_rnn (for pos = apos - 1)
     mtl::Buffer dsp_frnn_tmp;    // [max_batch, 2304]
+    std::string pending_vision_path;  // Lazy on-demand Vision loading (saves ~900 MiB wired RAM on 16/32 GB Macs!)
 
     // Workspace buffers for forward_batch (sized to max_batch)
     mtl::Buffer b_slot_ids, b_pos, b_tok_ids, b_is_img, b_img_emb;
@@ -379,8 +380,37 @@ struct InkMetalRunner {
         p_dsp_meff_beam4_top2_q8 = cx->pipeline(lib_dspark, "dspark_meff_beam4_top2_q8");
         p_dsp_beam4_select       = cx->pipeline(lib_dspark, "dspark_beam4_select");
 
-        // Allocate KV caches & ShortConv state pools
+        // Allocate KV caches & ShortConv state pools (WorkingSet-aware auto-ctx sizing for 16/24/32 GB Mac M1/M2/M3/M4!)
         const auto& c = mod->man.c;
+        {
+            const uint64_t ws_lim = cx->recommended_working_set();
+            const uint64_t cur_alloc = cx->allocated();
+            if (ws_lim > (4ull << 30)) {
+                const uint64_t os_headroom = (ws_lim <= (14ull << 30)) ? (1024ull << 20) : (1536ull << 20);
+                // SWA KV (40 visits) + ShortConv + workspaces + compact DSpark SWA layers (0 & 2)
+                const size_t swa_kv_b = 40ul * (size_t)max_slots * (size_t)c.swa_win * c.n_kv * c.head_dim * 4ul;
+                const size_t sc_b = (size_t)c.n_visits * (size_t)max_slots * 3ul * (2ul * c.n_kv * c.head_dim + 2ul * c.hidden) * 4ul;
+                const size_t ws_b = 512ull << 20;
+                const uint64_t fixed_need = cur_alloc + swa_kv_b + sc_b + ws_b + os_headroom;
+                const size_t per_pos_glob = (8ul + (use_dspark ? 1ul : 0ul)) * (size_t)max_slots * c.n_kv * c.head_dim * 4ul;
+                if (ws_lim > fixed_need && per_pos_glob > 0) {
+                    const int fit_ctx = (int)std::min<uint64_t>((uint64_t)max_ctx, ((ws_lim - fixed_need) / per_pos_glob) & ~63ull);
+                    if (fit_ctx < max_ctx) {
+                        const int clamped = std::max(1024, fit_ctx);
+                        fprintf(stderr, "[ink_metal] WorkingSet-aware auto-ctx: %d -> %d (alloc=%.2f GiB / workSet=%.2f GiB)\n",
+                                max_ctx, clamped, cur_alloc / 1073741824.0, ws_lim / 1073741824.0);
+                        max_ctx = clamped;
+                    }
+                } else if (ws_lim <= fixed_need) {
+                    if (max_batch > 256) max_batch = 256;
+                    if (max_ctx > 4096) {
+                        fprintf(stderr, "[ink_metal] Tight Unified WorkingSet (alloc=%.2f GiB / workSet=%.2f GiB): clamping ctx %d -> 4096\n",
+                                cur_alloc / 1073741824.0, ws_lim / 1073741824.0, max_ctx);
+                        max_ctx = 4096;
+                    }
+                }
+            }
+        }
         kv_k.resize(c.n_visits);
         kv_v.resize(c.n_visits);
         visit_kv_stride.resize(c.n_visits);
@@ -489,9 +519,10 @@ struct InkMetalRunner {
         b_taps4     = cx->alloc(4 * MB * D * 4);
 
         if (use_dspark) {
-            const size_t dkv = (size_t)max_slots * max_ctx * c.n_kv * c.head_dim * sizeof(uint16_t);
             const size_t dtkv = 32ul * c.n_kv * c.head_dim * sizeof(uint16_t);
             for (int l = 0; l < 3; ++l) {
+                dsp_kv_stride[l] = c.dspark_is_swa[l] ? std::min(max_ctx, c.dspark_swa_win) : max_ctx;
+                const size_t dkv = (size_t)max_slots * (size_t)dsp_kv_stride[l] * c.n_kv * c.head_dim * sizeof(uint16_t);
                 dsp_ctx_k[l] = cx->alloc(dkv);
                 dsp_ctx_v[l] = cx->alloc(dkv);
                 dsp_tree_k[l] = cx->alloc(dtkv);
@@ -583,11 +614,8 @@ struct InkMetalRunner {
             }
         }
 
-        if (!vision_path.empty()) {
-            if (!vis.load(*cx, lib_codecs, lib_vis, vision_path, &InkMetalModel::read_section0_json, err)) {
-                return false;
-            }
-        }
+        // Lazy on-demand Vision loading (saves ~900 MiB wired workingSet on 16/32 GB Macs during text-only chat!)
+        pending_vision_path = vision_path;
 
         // Optional Metal 4 Neural Accelerator (mpp::tensor_ops::matmul2d) pipelines & FP16 cache!
         if (lib_mpp >= 0) {
@@ -728,12 +756,22 @@ struct InkMetalRunner {
         }
 
         fprintf(stderr,
-                "[ink_metal] runner ready: slots=%d ctx=%d batch=%d dspark=%d vision=%d mpp=%d(trunk=%d,hot=%d) | KV=%.1f MiB SC=%.1f MiB TotalAlloc=%.2f GiB\n",
-                max_slots, max_ctx, max_batch, (int)use_dspark, (int)vis.loaded,
+                "[ink_metal] runner ready: slots=%d ctx=%d batch=%d dspark=%d vision=%s mpp=%d(trunk=%d,hot=%d) | KV=%.1f MiB SC=%.1f MiB TotalAlloc=%.2f GiB\n",
+                max_slots, max_ctx, max_batch, (int)use_dspark,
+                vis.loaded ? "loaded" : (pending_vision_path.empty() ? "off" : "lazy"),
                 (int)use_mpp, (int)use_mpp_trunk_f16, mpp_decomp_cap,
                 kv_bytes_tot / (1024.0 * 1024.0), sc_bytes_tot / (1024.0 * 1024.0),
                 cx->allocated() / (1024.0 * 1024.0 * 1024.0));
         return true;
+    }
+
+    bool ensure_vision(std::string& err) {
+        if (vis.loaded) return true;
+        if (pending_vision_path.empty()) {
+            err = "metal vision path not configured";
+            return false;
+        }
+        return vis.load(*cx, lib_codecs, lib_vis, pending_vision_path, &InkMetalModel::read_section0_json, err);
     }
 
     // Reset ShortConv state for a slot (called before starting a fresh sequence in slot `s`)
@@ -1589,8 +1627,9 @@ struct InkMetalRunner {
             // Router (exact FP32!) + Top-8 (+ fused M==1 moe_plan -> kills 48 barriers!) + MoE
             push_trunk_linear(ds, p + ".mlp.gate.weight", mtl::Arg::B(b_mlp_in), mtl::Arg::B(b_r_logits), M, -1, true, true);
             const size_t ex_off = (size_t)ip * c.n_experts * sizeof(InkExpertDev);
+            const bool layer_has_gguf = (((layer_gu_mask[ip] | layer_dn_mask[ip]) & (1u << FMT_GGUF_RAW)) != 0);
             const int mpp_moe_min_m = is_apple10 ? 10 : 16;
-            if (use_mpp && M >= mpp_moe_min_m) {
+            if (use_mpp && M >= mpp_moe_min_m && !layer_has_gguf) {
                 {
                     mtl::Dispatch d;
                     d.p = &p_router_topk8; d.grid[0] = (uint32_t)M; d.tg[0] = 128;
@@ -1622,64 +1661,72 @@ struct InkMetalRunner {
                 if (allow_128) {
                     mtl::Dispatch d128;
                     d128.p = &p_mpp_moe_gu_dir[gu_ci][3]; d128.ind_off = 7 * sizeof(uint32_t); d128.tg[0] = 128; d128.indirect = &b_mpp_meta;
-                    d128.args = {mod->sec4_arg(), mtl::Arg::B(mod->expert_dev_buf, ex_off),
-                                 mtl::Arg::B(b_mpp_xs), mtl::Arg::B(b_mpp_hs), mtl::Arg::B(b_mpp_tiles_128)};
+                    d128.args = {mod->sec4_arg(0), mtl::Arg::B(mod->expert_dev_buf, ex_off),
+                                 mtl::Arg::B(b_mpp_xs), mtl::Arg::B(b_mpp_hs), mtl::Arg::B(b_mpp_tiles_128),
+                                 mod->sec4_arg(1), mod->sec4_arg(2), mod->sec4_arg(3)};
                     ds.push_back(std::move(d128));
                 }
                 {
                     mtl::Dispatch d64;
                     d64.barrier = !allow_128;
                     d64.p = &p_mpp_moe_gu_dir[gu_ci][2]; d64.ind_off = 10 * sizeof(uint32_t); d64.tg[0] = 128; d64.indirect = &b_mpp_meta;
-                    d64.args = {mod->sec4_arg(), mtl::Arg::B(mod->expert_dev_buf, ex_off),
-                                mtl::Arg::B(b_mpp_xs), mtl::Arg::B(b_mpp_hs), mtl::Arg::B(b_mpp_tiles_64)};
+                    d64.args = {mod->sec4_arg(0), mtl::Arg::B(mod->expert_dev_buf, ex_off),
+                                mtl::Arg::B(b_mpp_xs), mtl::Arg::B(b_mpp_hs), mtl::Arg::B(b_mpp_tiles_64),
+                                mod->sec4_arg(1), mod->sec4_arg(2), mod->sec4_arg(3)};
                     ds.push_back(std::move(d64));
                 }
                 {
                     mtl::Dispatch d32;
                     d32.barrier = false;
                     d32.p = &p_mpp_moe_gu_dir[gu_ci][1]; d32.ind_off = 13 * sizeof(uint32_t); d32.tg[0] = 128; d32.indirect = &b_mpp_meta;
-                    d32.args = {mod->sec4_arg(), mtl::Arg::B(mod->expert_dev_buf, ex_off),
-                                mtl::Arg::B(b_mpp_xs), mtl::Arg::B(b_mpp_hs), mtl::Arg::B(b_mpp_tiles_32)};
+                    d32.args = {mod->sec4_arg(0), mtl::Arg::B(mod->expert_dev_buf, ex_off),
+                                mtl::Arg::B(b_mpp_xs), mtl::Arg::B(b_mpp_hs), mtl::Arg::B(b_mpp_tiles_32),
+                                mod->sec4_arg(1), mod->sec4_arg(2), mod->sec4_arg(3)};
                     ds.push_back(std::move(d32));
                 }
                 {
                     mtl::Dispatch d16;
                     d16.barrier = false;
                     d16.p = &p_mpp_moe_gu_dir[gu_ci][0]; d16.ind_off = 16 * sizeof(uint32_t); d16.tg[0] = 128; d16.indirect = &b_mpp_meta;
-                    d16.args = {mod->sec4_arg(), mtl::Arg::B(mod->expert_dev_buf, ex_off),
-                                mtl::Arg::B(b_mpp_xs), mtl::Arg::B(b_mpp_hs), mtl::Arg::B(b_mpp_tiles_16)};
+                    d16.args = {mod->sec4_arg(0), mtl::Arg::B(mod->expert_dev_buf, ex_off),
+                                mtl::Arg::B(b_mpp_xs), mtl::Arg::B(b_mpp_hs), mtl::Arg::B(b_mpp_tiles_16),
+                                mod->sec4_arg(1), mod->sec4_arg(2), mod->sec4_arg(3)};
                     ds.push_back(std::move(d16));
                 }
                 // All 4 w2 buckets (128, 64, 32, 16) write disjoint rows of YE -> run 100% CONCURRENTLY!
                 if (allow_128) {
                     mtl::Dispatch d128;
                     d128.p = &p_mpp_moe_dn_dir[dn_ci][3]; d128.ind_off = 7 * sizeof(uint32_t); d128.tg[0] = 128; d128.indirect = &b_mpp_meta;
-                    d128.args = {mod->sec4_arg(), mtl::Arg::B(mod->expert_dev_buf, ex_off),
-                                 mtl::Arg::B(b_mpp_hs), mtl::Arg::B(b_mpp_ye), mtl::Arg::B(b_mpp_tiles_128)};
+                    d128.args = {mod->sec4_arg(0), mtl::Arg::B(mod->expert_dev_buf, ex_off),
+                                 mtl::Arg::B(b_mpp_hs), mtl::Arg::B(b_mpp_ye), mtl::Arg::B(b_mpp_tiles_128),
+                                 mod->sec4_arg(1), mod->sec4_arg(2), mod->sec4_arg(3)};
                     ds.push_back(std::move(d128));
                 }
                 {
                     mtl::Dispatch d64;
                     d64.barrier = !allow_128;
                     d64.p = &p_mpp_moe_dn_dir[dn_ci][2]; d64.ind_off = 10 * sizeof(uint32_t); d64.tg[0] = 128; d64.indirect = &b_mpp_meta;
-                    d64.args = {mod->sec4_arg(), mtl::Arg::B(mod->expert_dev_buf, ex_off),
-                                mtl::Arg::B(b_mpp_hs), mtl::Arg::B(b_mpp_ye), mtl::Arg::B(b_mpp_tiles_64)};
+                    d64.args = {mod->sec4_arg(0), mtl::Arg::B(mod->expert_dev_buf, ex_off),
+                                mtl::Arg::B(b_mpp_hs), mtl::Arg::B(b_mpp_ye), mtl::Arg::B(b_mpp_tiles_64),
+                                mod->sec4_arg(1), mod->sec4_arg(2), mod->sec4_arg(3)};
                     ds.push_back(std::move(d64));
                 }
                 {
                     mtl::Dispatch d32;
                     d32.barrier = false;
                     d32.p = &p_mpp_moe_dn_dir[dn_ci][1]; d32.ind_off = 13 * sizeof(uint32_t); d32.tg[0] = 128; d32.indirect = &b_mpp_meta;
-                    d32.args = {mod->sec4_arg(), mtl::Arg::B(mod->expert_dev_buf, ex_off),
-                                mtl::Arg::B(b_mpp_hs), mtl::Arg::B(b_mpp_ye), mtl::Arg::B(b_mpp_tiles_32)};
+                    d32.args = {mod->sec4_arg(0), mtl::Arg::B(mod->expert_dev_buf, ex_off),
+                                mtl::Arg::B(b_mpp_hs), mtl::Arg::B(b_mpp_ye), mtl::Arg::B(b_mpp_tiles_32),
+                                mod->sec4_arg(1), mod->sec4_arg(2), mod->sec4_arg(3)};
                     ds.push_back(std::move(d32));
                 }
                 {
                     mtl::Dispatch d16;
                     d16.barrier = false;
                     d16.p = &p_mpp_moe_dn_dir[dn_ci][0]; d16.ind_off = 16 * sizeof(uint32_t); d16.tg[0] = 128; d16.indirect = &b_mpp_meta;
-                    d16.args = {mod->sec4_arg(), mtl::Arg::B(mod->expert_dev_buf, ex_off),
-                                mtl::Arg::B(b_mpp_hs), mtl::Arg::B(b_mpp_ye), mtl::Arg::B(b_mpp_tiles_16)};
+                    d16.args = {mod->sec4_arg(0), mtl::Arg::B(mod->expert_dev_buf, ex_off),
+                                mtl::Arg::B(b_mpp_hs), mtl::Arg::B(b_mpp_ye), mtl::Arg::B(b_mpp_tiles_16),
+                                mod->sec4_arg(1), mod->sec4_arg(2), mod->sec4_arg(3)};
                     ds.push_back(std::move(d16));
                 }
                 {
@@ -1742,9 +1789,10 @@ struct InkMetalRunner {
                             : (layer_homog_gu[ip] == 16) ? &p_moe_gu_mm_mx8 : &p_moe_gu_mm_gen;
                         d.ind_off = 8 * sizeof(uint32_t);
                         d.tg[0] = 256; d.indirect = &b_moe_meta;
-                        d.args = {mod->sec4_arg(), mtl::Arg::B(mod->expert_dev_buf, ex_off), mtl::Arg::B(b_mlp_in),
+                        d.args = {mod->sec4_arg(0), mtl::Arg::B(mod->expert_dev_buf, ex_off), mtl::Arg::B(b_mlp_in),
                                   mtl::Arg::B(b_moe_tiles), mtl::Arg::B(b_moe_uoff), mtl::Arg::B(b_moe_ucnt),
-                                  mtl::Arg::B(b_moe_pairs), mtl::Arg::B(b_moe_meta), mtl::Arg::B(b_moe_h)};
+                                  mtl::Arg::B(b_moe_pairs), mtl::Arg::B(b_moe_meta), mtl::Arg::B(b_moe_h),
+                                  mod->sec4_arg(1), mod->sec4_arg(2), mod->sec4_arg(3)};
                         ds.push_back(std::move(d));
                     }
                     {
@@ -1753,9 +1801,10 @@ struct InkMetalRunner {
                             : (layer_homog_dn[ip] == 16) ? &p_moe_dn_mm_mx8 : &p_moe_dn_mm_gen;
                         d.ind_off = 8 * sizeof(uint32_t);
                         d.tg[0] = 256; d.indirect = &b_moe_meta;
-                        d.args = {mod->sec4_arg(), mtl::Arg::B(mod->expert_dev_buf, ex_off), mtl::Arg::B(b_topk_w),
+                        d.args = {mod->sec4_arg(0), mtl::Arg::B(mod->expert_dev_buf, ex_off), mtl::Arg::B(b_topk_w),
                                   mtl::Arg::B(b_moe_tiles), mtl::Arg::B(b_moe_uoff), mtl::Arg::B(b_moe_ucnt),
-                                  mtl::Arg::B(b_moe_pairs), mtl::Arg::B(b_moe_meta), mtl::Arg::B(b_moe_h), mtl::Arg::B(b_moe_yp)};
+                                  mtl::Arg::B(b_moe_pairs), mtl::Arg::B(b_moe_meta), mtl::Arg::B(b_moe_h), mtl::Arg::B(b_moe_yp),
+                                  mod->sec4_arg(1), mod->sec4_arg(2), mod->sec4_arg(3)};
                         ds.push_back(std::move(d));
                     }
                 } else {
@@ -1772,9 +1821,10 @@ struct InkMetalRunner {
                         else if ((layer_gu_mask[ip] & ~kSk23Mask) == 0) { d.p = &p_moe_gu_sk23; d.ind_off = 2 * sizeof(uint32_t); }
                         else                               { d.p = &p_moe_gu;      d.ind_off = 2 * sizeof(uint32_t); }
                         d.tg[0] = 256; d.indirect = &b_moe_meta;
-                        d.args = {mod->sec4_arg(), mtl::Arg::B(mod->expert_dev_buf, ex_off), mtl::Arg::B(b_mlp_in),
+                        d.args = {mod->sec4_arg(0), mtl::Arg::B(mod->expert_dev_buf, ex_off), mtl::Arg::B(b_mlp_in),
                                   mtl::Arg::B(b_moe_uexp), mtl::Arg::B(b_moe_uoff), mtl::Arg::B(b_moe_ucnt),
-                                  mtl::Arg::B(b_moe_pairs), mtl::Arg::B(b_moe_meta), mtl::Arg::B(b_moe_h)};
+                                  mtl::Arg::B(b_moe_pairs), mtl::Arg::B(b_moe_meta), mtl::Arg::B(b_moe_h),
+                                  mod->sec4_arg(1), mod->sec4_arg(2), mod->sec4_arg(3)};
                         ds.push_back(std::move(d));
                     }
                     {
@@ -1788,9 +1838,10 @@ struct InkMetalRunner {
                         else if ((layer_dn_mask[ip] & ~kSk23Mask) == 0) { d.p = &p_moe_dn_sk23; d.ind_off = 5 * sizeof(uint32_t); }
                         else                               { d.p = &p_moe_dn;      d.ind_off = 2 * sizeof(uint32_t); }
                         d.tg[0] = 256; d.indirect = &b_moe_meta;
-                        d.args = {mod->sec4_arg(), mtl::Arg::B(mod->expert_dev_buf, ex_off), mtl::Arg::B(b_topk_w),
+                        d.args = {mod->sec4_arg(0), mtl::Arg::B(mod->expert_dev_buf, ex_off), mtl::Arg::B(b_topk_w),
                                   mtl::Arg::B(b_moe_uexp), mtl::Arg::B(b_moe_uoff), mtl::Arg::B(b_moe_ucnt),
-                                  mtl::Arg::B(b_moe_pairs), mtl::Arg::B(b_moe_meta), mtl::Arg::B(b_moe_h), mtl::Arg::B(b_moe_yp)};
+                                  mtl::Arg::B(b_moe_pairs), mtl::Arg::B(b_moe_meta), mtl::Arg::B(b_moe_h), mtl::Arg::B(b_moe_yp),
+                                  mod->sec4_arg(1), mod->sec4_arg(2), mod->sec4_arg(3)};
                         ds.push_back(std::move(d));
                     }
                 }
@@ -1933,7 +1984,7 @@ struct InkMetalRunner {
                     d.args = {mtl::Arg::B(b_k_raw), mtl::Arg::B(b_v_raw), mod->dw(dp + ".self_attn.k_norm_ctx.weight"),
                               mtl::Arg::B(dsp_ctx_k[dl]), mtl::Arg::B(dsp_ctx_v[dl]),
                               mtl::Arg::B(b_slot_ids), mtl::Arg::B(b_pos),
-                              mtl::Arg::V(max_ctx), mtl::Arg::V(c.dspark_rope_theta)};
+                              mtl::Arg::V(dsp_kv_stride[dl]), mtl::Arg::V(c.dspark_rope_theta)};
                     ds.push_back(std::move(d));
                 }
             }
@@ -2150,7 +2201,7 @@ struct InkMetalRunner {
                 da.args = {mtl::Arg::B(bd_q), mtl::Arg::B(bd_k), mtl::Arg::B(bd_v),
                            mtl::Arg::B(dsp_ctx_k[il]), mtl::Arg::B(dsp_ctx_v[il]), mtl::Arg::B(bd_ao),
                            mtl::Arg::V(slot), mtl::Arg::V(anchor_pos), mtl::Arg::V(is_swa),
-                           mtl::Arg::V(c.dspark_swa_win), mtl::Arg::V(max_ctx)};
+                           mtl::Arg::V(c.dspark_swa_win), mtl::Arg::V(dsp_kv_stride[il])};
                 ds.push_back(std::move(da));
             }
             if (use_mpp && use_dspark_f16) {
@@ -2334,7 +2385,7 @@ struct InkMetalRunner {
                 d.args = {mtl::Arg::B(dsp_tree_k[dl]), mtl::Arg::B(dsp_tree_v[dl]),
                           mtl::Arg::B(dsp_ctx_k[dl]), mtl::Arg::B(dsp_ctx_v[dl]),
                           mtl::Arg::B(b_tree_path), mtl::Arg::V(slot), mtl::Arg::V(anchor_pos),
-                          mtl::Arg::V(max_ctx)};
+                          mtl::Arg::V(dsp_kv_stride[dl])};
                 ds.push_back(std::move(d));
             }
         }
@@ -2427,7 +2478,7 @@ struct InkMetalRunner {
                 da.args = {mtl::Arg::B(bd_q), mtl::Arg::B(bd_k), mtl::Arg::B(bd_v),
                            mtl::Arg::B(dsp_ctx_k[il]), mtl::Arg::B(dsp_ctx_v[il]), mtl::Arg::B(bd_ao),
                            mtl::Arg::V(slot), mtl::Arg::V(anchor_pos), mtl::Arg::V(is_swa),
-                           mtl::Arg::V(c.dspark_swa_win), mtl::Arg::V(max_ctx)};
+                           mtl::Arg::V(c.dspark_swa_win), mtl::Arg::V(dsp_kv_stride[il])};
                 ds.push_back(std::move(da));
             }
             if (use_mpp && use_dspark_f16) {
@@ -2798,7 +2849,7 @@ struct InkMetalRunner {
                 da.args = {mtl::Arg::B(bd_q), mtl::Arg::B(bd_k), mtl::Arg::B(bd_v),
                            mtl::Arg::B(dsp_ctx_k[il]), mtl::Arg::B(dsp_ctx_v[il]), mtl::Arg::B(bd_ao),
                            mtl::Arg::V(slot), mtl::Arg::V(anchor_pos), mtl::Arg::V(is_swa),
-                           mtl::Arg::V(c.dspark_swa_win), mtl::Arg::V(max_ctx)};
+                           mtl::Arg::V(c.dspark_swa_win), mtl::Arg::V(dsp_kv_stride[il])};
                 ds.push_back(std::move(da));
             }
             if (use_mpp && use_dspark_f16) {

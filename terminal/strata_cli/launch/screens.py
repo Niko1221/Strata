@@ -92,9 +92,11 @@ def drafting_choice_available(ctx, family: str | None = None) -> bool:
 
 def flow_for(ctx, family: str | None = None) -> list[str]:
     """The steps of this computer: the Cards step exists only when two or more graphics cards can be used; the Drafting step only for
-    Qwen3.8-Flash-Next on a computer that can run DFlash2; Tencent Hy4-Flash skips Qwen-only steps (cards, drafting, parallel, tuning, advanced)."""
+    Qwen3.8-Flash-Next on a computer that can run DFlash2; Tencent Hy4-Flash skips Qwen-only steps (drafting, parallel, tuning, advanced)."""
     fam = family if family is not None else getattr(getattr(ctx, "settings", None), "family", None)
     if fam == "hy4-flash":
+        if len(ctx.computer.usable_gpus) >= 2:
+            return ["model", "cards", "folder", "context", "pictures", "access", "save"]
         return ["model", "folder", "context", "pictures", "access", "save"]
     if fam == "inkling-2-mini":
         if len(ctx.computer.usable_gpus) >= 2:
@@ -466,7 +468,7 @@ class ModelScreen(Base):
     step_id = "model"
     hints = "↑↓ choose   Enter next   o use my own files   Esc back   ? help"
     help_text = ("Pick the model. 'Needs' is the RAM + graphics memory the model's files take (the app's figure; the n-gram table stays on your SSD and is not counted). 'fits' means they fit the RAM and "
-                 "the graphics memory together; 'may run slower' means they do not, so part is read from the SSD while it answers. Neither is a block: you can still try it.")
+                 "the graphics memory together; 'may run slower' means part streams directly from your NVMe SSD (GPU + SSD or CPU + SSD with a bounded RAM ring and 0 swap). Neither is a block: you can still try it.")
 
     BINDINGS = Base.BINDINGS + [Binding("o", "own", "Own files", show=False)]
 
@@ -593,7 +595,6 @@ class ModelScreen(Base):
                     s.parallel = None
                 s.tune = "skip"
                 s.kv = None
-                s.gpu_roles = None
                 s.extra = {}
             r = next(x for x in self.rows if (x.family, x.model) == (fam, model))
             if r.verdict == "no":
@@ -653,7 +654,6 @@ class ModelScreen(Base):
                     s.parallel = None
                 s.tune = "skip"
                 s.kv = None
-                s.gpu_roles = None
                 s.extra = {}
             self.ctx.picked_in_list = False
             self.ctx.refresh_disk()                          # N1: these files need no download, so the list stops marking the row (and the Save screen its "!" line)
@@ -1407,6 +1407,7 @@ class AdvancedScreen(Base):
 
     BINDINGS = Base.BINDINGS + [
         Binding("e", "edit", show=False), Binding("delete", "reset", show=False), Binding("backspace", "reset", show=False),
+        Binding("ctrl+h", "reset", show=False),
         Binding("x", "experimental", show=False), Binding("slash", "filter", show=False), Binding("a", "add", show=False),
         Binding("c", "copy", show=False), Binding("n", "go_next", show=False), Binding("right", "go_next", show=False),
         Binding("tab", "scroll_command", show=False)]
@@ -1583,12 +1584,33 @@ class AdvancedScreen(Base):
         cur = self.menu().current
         if cur is None or cur.key in (None, "__add__"):
             return
-        if self.ctx.settings.extra.pop(cur.key, None) is not None:
+        key = cur.key
+        extra = self.ctx.settings.extra
+        popped = extra.pop(key, None)
+        if popped is None and isinstance(key, str) and key.startswith("--"):
+            popped = extra.pop(key[2:], None)
+        if popped is not None:
             self.ctx.invalidate_rows()
             self.rows = self.ctx.advanced_rows()
             self.build()
-            self.say(f"{cur.key} is back to the tuned value.")
+            self.say(f"{key} is back to the tuned value.")
             self.paint()
+            return
+        row = next((x for x in self.rows if x.name == key), None)
+        if row is not None and not row.known:
+            # #6519: an unknown (red-marked) flag coming from the installed or tuned config is not in s.extra yet;
+            # turning it off in s.extra removes it from this launch's command (pressing Del again puts it back).
+            extra[key] = "off"
+            self.ctx.invalidate_rows()
+            self.rows = self.ctx.advanced_rows()
+            self.build()
+            self.say(f"{key} turned off for this launch (Del again puts it back).")
+            self.paint()
+            return
+        if row is not None and row.tuned and row.tuned != row.default:
+            self.say(f"{key} is already at its tuned value.")
+        else:
+            self.say(f"{key} is already at its default value.")
 
     def action_experimental(self) -> None:
         if self.mode:

@@ -1573,6 +1573,9 @@ struct Prefill::Impl {
     PinnedUpload steps_up;
     int32_t* sel_ids = nullptr;
     float* sel_scores = nullptr;          // [sel_batch, max_blocks]
+    float* tp_ref_sc = nullptr;           // STRATA_SELECT_TWO_PASS_CHECK=1 when m.attn is too small: today's row and ids
+    int32_t* tp_ref_ids = nullptr;
+    size_t tp_ref_sc_n = 0, tp_ref_ids_n = 0;
     int64_t sel_batch = 256, max_blocks = 0;
     float* attn_scratch = nullptr;
     int64_t attn_batch = 32, cap = 0;
@@ -3893,6 +3896,14 @@ bool Prefill::arm_cpu_share_split(bool applies, double floor_ms, int pool_worker
 #endif
 }
 
+void Prefill::disarm_default_cpu_share() {
+    if (!g_share_default) return;
+    g_share_default = false;
+    g_share_limit_arch = 0;
+    g_share_nt_arch = 0;
+    if (cpu_share_explicit() == -2.0) g_stream_min_share = 0;
+}
+
 void Prefill::set_share_blocked(bool blocked) { g_share_blocked.store(blocked, std::memory_order_release); }
 
 void Prefill::fix_cpu_share(double share) { g_share_fixed = share >= 0.0 ? std::clamp(share, 0.0, 1.0) : -1.0; }
@@ -4927,7 +4938,9 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
             });
             cudaStreamWaitEvent(m.cs, m.copied[r % (size_t) m.ring], 0);
         };
+        size_t given_upto = 0;   // STRATA_I8_DEFER: the last count handed back to the stager
         auto give_back = [&](size_t upto) {
+            given_upto = upto;
             if (threaded_issue) a_consumed.store(upto, std::memory_order_release);
             else issue_until(upto + (size_t) m.ring);
         };
@@ -5382,11 +5395,8 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         // STRATA_SELECT_TWO_PASS_CHECK=1 (diagnostic, one GPU): today's scores and ids for the same
                         // queries, compared with the two-pass ones (counts at the prompt's end).  Their buffers are the
                         // rest of m.attn past the two-pass scratch when it is large enough (the attention below writes
-                        // m.attn after the comparison), else buffers of their own
+                        // m.attn after the comparison), else the stage's own buffers on its own card (freed with m.owned)
                         if (tp_call && tp_check) {
-                            static float* own_sc = nullptr;
-                            static int32_t* own_ids = nullptr;
-                            static size_t own_sc_n = 0, own_ids_n = 0;
                             const size_t want_sc = (size_t) m.sel_batch * (size_t) m.max_blocks, want_ids = (size_t) m.sel_batch * (size_t) m.cap;
                             const uint64_t at = (strata::kernels::qsa_two_pass_scratch_bytes(m.sel_batch, m.max_blocks) + 255u) & ~uint64_t(255u);
                             const uint64_t at_ids = at + (((uint64_t) want_sc * 4u + 255u) & ~uint64_t(255u));
@@ -5396,23 +5406,25 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                 ref_sc = reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(m.attn) + at);
                                 ref_ids = reinterpret_cast<int32_t*>(reinterpret_cast<uint8_t*>(m.attn) + at_ids);
                             } else {
-                                if (want_sc > own_sc_n || want_ids > own_ids_n) {
-                                    cudaStreamSynchronize(m.cs);
-                                    cudaFree(own_sc);
-                                    cudaFree(own_ids);
-                                    own_sc = nullptr;
-                                    own_ids = nullptr;
-                                    own_sc_n = own_ids_n = 0;
-                                    if (cudaMalloc((void**) &own_sc, want_sc * 4) != cudaSuccess ||
-                                        cudaMalloc((void**) &own_ids, want_ids * 4) != cudaSuccess) {
+                                // a larger need takes a new pair; the smaller one stays in m.owned until release
+                                if (want_sc > m.tp_ref_sc_n || want_ids > m.tp_ref_ids_n) {
+                                    float* own_sc = nullptr;
+                                    int32_t* own_ids = nullptr;
+                                    const bool ok = cudaMalloc((void**) &own_sc, want_sc * 4) == cudaSuccess &&
+                                                    cudaMalloc((void**) &own_ids, want_ids * 4) == cudaSuccess;
+                                    if (own_sc) m.owned.push_back(own_sc);
+                                    if (own_ids) m.owned.push_back(own_ids);
+                                    if (!ok) {
                                         err = "STRATA_SELECT_TWO_PASS_CHECK: no room for its buffers";
                                         return false;
                                     }
-                                    own_sc_n = want_sc;
-                                    own_ids_n = want_ids;
+                                    m.tp_ref_sc = own_sc;
+                                    m.tp_ref_ids = own_ids;
+                                    m.tp_ref_sc_n = want_sc;
+                                    m.tp_ref_ids_n = want_ids;
                                 }
-                                ref_sc = own_sc;
-                                ref_ids = own_ids;
+                                ref_sc = m.tp_ref_sc;
+                                ref_ids = m.tp_ref_ids;
                             }
                             if (!strata::kernels::qsa_block_scores_tc(st.idx_pooled, st.idx_dead, m.q_idx + t0 * kIdxQW, steps0, nb,
                                                                       m.max_blocks, s, ref_sc, m.cs, active)) {
@@ -7440,11 +7452,12 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             if (lay.native) {
                                 // plan v0.3 P6: a native pack's layer, dequantized by llama.cpp's own formulas
                                 const auto& f = lay.fmt[(size_t) l];
+                                constexpr int kNvfp4 = (int) strata::quant::Type::NVFP4;
                                 strata::kernels::iq_dequant_gu_f16(f.gu_type, blob_dev, blob_dev + f.up_off, f.n_ff, f.n_embd,
                                                                    m.dq_gu[q], m.cs,
-                                                                   f.tail_off ? (const float*) (blob_dev + f.tail_off) : nullptr);
+                                                                   (f.gu_type == kNvfp4 && f.tail_off) ? (const float*) (blob_dev + f.tail_off) : nullptr);
                                 strata::kernels::iq_dequant_f16(f.d_type, blob_dev + f.down_off, f.n_embd * f.n_ff, m.dq_d[q], m.cs,
-                                                                f.tail_off ? (const float*) (blob_dev + f.tail_off) + 2 : nullptr);
+                                                                (f.d_type == kNvfp4 && f.tail_off) ? (const float*) (blob_dev + f.tail_off) + 2 : nullptr);
                             } else {
                                 blob_dequant_f16(blob_dev, m.dq_gu[q], m.dq_d[q], m.cs);
                             }
@@ -7523,14 +7536,26 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             // pick only gives its slot back
                             size_t k = seq_start[(size_t) l];
                             const size_t kend = seq_start[(size_t) l + 1];
+                            // STRATA_I8_DEFER=1 (opt-in, the int8 expert groups only): a streamed entry the routing did not pick no longer
+                            // launches the open int8 group early.  Without it, every such entry while an int8 group holds ring slots runs the
+                            // experts gathered so far as a launch of their own (MMQ's flush only gathers, its GEMM still waits for the full
+                            // group; the int8 flush IS the launch), so a group of 16 experts is cut into fragments of one or a few experts and
+                            // tens of rows - the int8 kernels' least efficient shape.  With it, the entry's own slot gets its event at once and
+                            // the hand-back to the stager waits until the group has launched (the flush records the group's slot events; the
+                            // walk's `gg_nslots == 0 -> give_back(consumed)` then hands back everything up to here), so no slot of the open group
+                            // can be refilled before it is read.  The stager is held back by those entries meanwhile: when the entries not yet
+                            // handed back plus a full group would come near the ring, the early launch is kept.
+                            static const bool i8_defer = [] { const char* v = std::getenv("STRATA_I8_DEFER"); return v != nullptr && v[0] == '1'; }();
                             auto release_to = [&](int32_t e_stop) {
                                 while (k < kend && seq[k].e < e_stop) {
-                                    if (gg_nslots > 0) flush(0);   // the open group's slots get their event first
+                                    const bool defer = i8_defer && i8_l && gg_nslots > 0 &&
+                                                       (k + 1 - given_upto) + (size_t) strata::prefill::i8grp::kGroupMax + 2 < (size_t) m.ring;
+                                    if (gg_nslots > 0 && !defer) flush(0);   // the open group's slots get their event first
                                     const int sl = (int) (k % (size_t) m.ring);
                                     cudaEventRecord(m.used[sl], m.cs);
                                     m.used_of[sl] = sl;
                                     consumed = ++k;
-                                    give_back(consumed);
+                                    if (!defer) give_back(consumed);
                                 }
                             };
                             for (size_t j = 0; j < order.size(); ++j) {
@@ -8860,10 +8885,12 @@ bool Prefill::lm_run(const std::vector<Seg>& segs, int depth, const std::vector<
                     dq = (dq + 1) % DQ;
                     if (lay.native) {
                         const auto& f = lay.fmt[(size_t) l];
+                        constexpr int kNvfp4 = (int) strata::quant::Type::NVFP4;
                         strata::kernels::iq_dequant_gu_f16(f.gu_type, blob_dev, blob_dev + f.up_off, f.n_ff, f.n_embd,
-                                                           m.dq_gu[dq], cs, nullptr);
+                                                           m.dq_gu[dq], cs,
+                                                           (f.gu_type == kNvfp4 && f.tail_off) ? (const float*) (blob_dev + f.tail_off) : nullptr);
                         strata::kernels::iq_dequant_f16(f.d_type, blob_dev + f.down_off, f.n_embd * f.n_ff, m.dq_d[dq], cs,
-                                                        nullptr);
+                                                        (f.d_type == kNvfp4 && f.tail_off) ? (const float*) (blob_dev + f.tail_off) + 2 : nullptr);
                     } else {
                         blob_dequant_f16(blob_dev, m.dq_gu[dq], m.dq_d[dq], cs);
                     }

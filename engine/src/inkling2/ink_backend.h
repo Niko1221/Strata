@@ -19,15 +19,19 @@ struct BackendOpts {
     int parallel = 1;            // 1..64 concurrent slots
     int chunk = 512;
     int gpu_index = 0;
-    int gpus = 1;                // 1 or 2 (--gpus 2 activates Dual-GPU Expert Parallelism, #6506)
+    int gpus = 1;                // 1..4 (--gpus 2 / --gpus 0,1 / --layer-split auto)
+    std::vector<int> gpu_ids;    // optional explicit GPU ordinals (--gpus 0,1 / --devices 0,1 / IK2_GPUS)
     double ep_split = 0.5;       // GPU 1 expert share in (0, 1) (--ep-split / IK2_EP_SPLIT)
+    std::string layer_split;     // "", "auto", or "K1,K2,..." (2..4 GPUs pipeline layer split, zero duplicated KV/experts!)
     int vram_reserve_mib = -1;   // >= 0 reserves N MiB free VRAM & activates hybrid offload (#6520)
     int cpu_threads = 0;         // > 0 activates CUDA-Graph mapped-memory doorbell NUMA CPU expert pool (#6520)
     int threads = 0;             // 0 = auto
     double vram_experts_gb = -1.0; // <0 = auto (3x loop-weighted vram_load_order!)
-    double ram_experts_gb = -1.0;  // <0 = auto
+    double ram_experts_gb = -1.0;  // <0 = auto, 0 = GPU+SSD only (bounded 1-2 GiB DMA ring, 0 host arena)
+    bool ssd_experts = false;      // first-class GPU+SSD / CPU+SSD direct NVMe streaming mode
     KvDtype kv_dtype = KvDtype::FP16;
-    bool kv_dtype_auto = true;   // auto selects FP8_E4M3 when parallel >= 16 on <= 32 GiB GPU
+    bool kv_dtype_auto = true;   // default lossless FP16; Host KV Offload handles VRAM capacity (#552)
+    std::string kv_offload = "auto"; // "auto" | "on" | "off" (zero-copy mapped pinned host global KV spill)
     bool enable_dspark = true;
     std::string dspark_path;     // optional external mtp.safetensors or dspark-*.gguf
     std::string vision_path;
@@ -51,6 +55,7 @@ public:
     virtual const char* backend_name() const noexcept = 0;
     virtual std::string device_info() const = 0;
     virtual BackendStats stats() const = 0;
+    virtual int effective_max_ctx() const { return 0; }
 
     // Load Section 1 trunk + DSpark + 3x loop-weighted Section 4 experts into device/host memory
     virtual bool init(const InkModelFile& model, const BackendOpts& opts, std::string& err) = 0;
@@ -62,6 +67,20 @@ public:
     // Speculative rollback: restore KV + ShortConv state to `keep_len` (requires snapshot taken before verify!)
     virtual void snapshot_slot(int slot) = 0;
     virtual void rollback_slot(int slot, int keep_len) = 0;
+
+    // Optional prompt-end conversation checkpoint (#6627): saves/restores SWA KV + ShortConv + DSpark state at `seq_len`
+    // so multi-turn chats and exact repeats reuse the cached prompt even when hidden thinking or trailing tokens diverge.
+    virtual bool save_prompt_checkpoint(int slot, int seq_len) {
+        (void)slot; (void)seq_len;
+        return false;
+    }
+    virtual bool restore_prompt_checkpoint(int slot, int seq_len) {
+        (void)slot; (void)seq_len;
+        return false;
+    }
+
+    // Returns true when the on-device DSpark drafter is initialized and ready to serve drafts (#6633).
+    virtual bool dspark_ready() const { return false; }
 
     // Batched 48-visit forward across 1..64 active slots!
     // logits_out: [batch.count_logits(), vocab_unpadded] FP32 (already softcapped by 30*tanh(z/30) and sliced to 200058).
@@ -129,16 +148,11 @@ std::unique_ptr<InkBackend> make_sycl_backend();
 #endif
 
 inline std::unique_ptr<InkBackend> make_default_backend(bool force_cpu = false, const BackendOpts* opts = nullptr) {
+    (void)opts;
     if (!force_cpu) {
-#ifdef INKLING_ENABLE_EP_CUDA
-        // Prefer modular Dual-GPU EP / Graph-Doorbell Hybrid CUDA backend when --gpus >= 2, --cpu-threads > 0,
-        // --vram-reserve-mib >= 0, or when K8V8/K8V4 KV is selected (or when primary CUDA backend isn't built).
-        const bool need_ep_or_hybrid = opts && (
-            opts->gpus >= 2 || opts->cpu_threads > 0 || opts->vram_reserve_mib >= 0 ||
-            opts->kv_dtype == KvDtype::K8V8 || opts->kv_dtype == KvDtype::K8V4);
-        if (need_ep_or_hybrid) return make_ep_cuda_backend();
-#endif
 #ifdef INKLING_ENABLE_CUDA
+        // Primary InkCudaBackend natively supports .strata, .gguf, safetensors, FP16/FP8/K8V8/K8V4 KV,
+        // hybrid offload + GPU+SSD streaming, Dual-GPU EP, AND multi-GPU --layer-split!
         return make_cuda_backend();
 #elif defined(INKLING_ENABLE_EP_CUDA)
         return make_ep_cuda_backend();

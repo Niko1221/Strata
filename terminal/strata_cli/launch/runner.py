@@ -383,8 +383,12 @@ def auto_signals(catalog, s: S.LaunchSettings, family: str | None) -> dict:
 
 def apply_cards(cfg: dict, gpus: "list[int] | dict | None") -> None:
     """The graphics cards of THIS launch go into its run config, whatever card the model was installed with (no reinstall): one card is a number,
-    several are a list with the automatic layer split. None: the installed config's own choice stays.  A dict is the roles of every card
-    (strata_control/gpu_roles.mirror: "gpu_roles" plus the legacy "gpu" with the Main card last)."""
+    several are a list with the automatic layer split (or expert parallelism for native .strata engines). None: the installed config's own choice stays.
+    A dict is the roles of every card (strata_control/gpu_roles.mirror: "gpu_roles" plus the legacy "gpu" with the Main card last)."""
+    exe_low = str(cfg.get("exe") or "").replace("\\", "/").rsplit("/", 1)[-1].lower()
+    native_ep = (cfg.get("arch") in ("hy4flash", "inkling2_loop")
+                 or cfg.get("exe") in ("component:strata-hy4", "component:strata-inkling")
+                 or exe_low.startswith(("strata-hy4", "strata-inkling")))
     if isinstance(gpus, dict):
         for k in ("gpu", "gpu_order", "gpu_none", "gpu_roles", "gpu_cards"):
             cfg.pop(k, None)
@@ -392,7 +396,7 @@ def apply_cards(cfg: dict, gpus: "list[int] | dict | None") -> None:
         cfg["gpus_asked"] = True
         cfg.pop("hip_ordinal", None)
         on = gpus.get("gpu")
-        if isinstance(on, list) and len(on) > 1:
+        if isinstance(on, list) and len(on) > 1 and not native_ep:
             cfg["layer_split"] = cfg.get("layer_split") or "auto"
         else:
             cfg.pop("layer_split", None)
@@ -405,7 +409,7 @@ def apply_cards(cfg: dict, gpus: "list[int] | dict | None") -> None:
     cfg["gpu"] = gpus[0] if len(gpus) == 1 else gpus
     cfg["gpus_asked"] = True
     cfg.pop("hip_ordinal", None)                             # an old AMD config's ordinal of ITS card would win over the card named now
-    if len(gpus) > 1:
+    if len(gpus) > 1 and not native_ep:
         cfg["layer_split"] = cfg.get("layer_split") or "auto"
     else:
         cfg.pop("layer_split", None)
@@ -1267,7 +1271,10 @@ class Runner:
                 args.append("--set-default-data-dir")
         if s.model_path:
             p = Path(s.model_path)
-            args += ["--gguf-dir", str(p if p.is_dir() else p.parent)]
+            if fam == "inkling-2-mini" and p.is_file():
+                args += ["--gguf-dir", str(p)]
+            else:
+                args += ["--gguf-dir", str(p if p.is_dir() else p.parent)]
         if self.feed:                                     # --feed / STRATA_UPDATE_FEED: setup reads the signed feed from there too
             args += ["--feed", str(self.feed)]
         if s.gpu_roles:
@@ -1355,8 +1362,10 @@ class Runner:
             if s.model_path:
                 want = Path(s.model_path).expanduser().resolve()
                 folder = want if want.is_dir() else want.parent
-                ggufs = [Path(a) for a in args if a.lower().endswith(".gguf")]
-                if not ggufs or not all(_inside(g.resolve(), folder) for g in ggufs):
+                model_files = [Path(a) for a in args if a.lower().endswith((".gguf", ".strata"))]
+                if not model_files or not all(_inside(g.resolve(), folder) for g in model_files):
+                    return False
+                if want.is_file() and not any(g.resolve() == want for g in model_files):
                     return False
                 if s.data_dir:
                     packs = [Path(args[i + 1]) for i, a in enumerate(args[:-1]) if a == "--pack"]
@@ -1759,6 +1768,18 @@ class Runner:
         tag = cat.tag_of(s.family, s.model)
         data_dir = Path(s.data_dir) if s.data_dir else cat.data_dir()
         model_dir = Path(s.model_path) if s.model_path else data_dir / "models" / (fam.get("tag", "") + s.model)
+        if not s.model_path and not model_dir.is_dir():
+            # A previous --model-path launch saved the files' own folder in the installed config; reuse it when re-launched without --model-path.
+            installed = cat.installed_config(tag)
+            if installed is not None:
+                try:
+                    prev_args = [str(a) for a in read_config(installed).get("args") or []]
+                    if "--native" in prev_args and prev_args.index("--native") + 1 < len(prev_args):
+                        prev_dir = Path(prev_args[prev_args.index("--native") + 1]).parent
+                        if prev_dir.is_dir():
+                            model_dir = prev_dir
+                except Exception:                            # noqa: BLE001
+                    pass
         if model_dir.is_file():
             model_dir = model_dir.parent
         try:

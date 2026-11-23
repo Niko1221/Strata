@@ -345,7 +345,7 @@ def load_shared_settings(path, warn=print) -> dict:
     return out
 
 
-def clean_shared_defaults(d) -> dict:
+def clean_shared_defaults(d, hy4: bool = False) -> dict:
     """The Chat settings other apps get (POST /settings): only known keys, each checked; ValueError names a bad one."""
     if d is None:
         return {}
@@ -357,8 +357,9 @@ def clean_shared_defaults(d) -> dict:
             continue
         number = isinstance(value, (int, float)) and not isinstance(value, bool)
         if key == "reasoning_effort":
-            if value not in ("none", "low", "medium", "high"):
-                raise ValueError("reasoning_effort: none, low, medium or high")
+            if value not in ("none", "low", "medium", "high") + (("max",) if hy4 else ()):    # Hy4's template also has max
+                raise ValueError("reasoning_effort: none, low, medium, high or max" if hy4
+                                 else "reasoning_effort: none, low, medium or high")
         elif key == "temperature":
             if not number or not 0 <= value <= 2:
                 raise ValueError("temperature: 0..2")
@@ -615,11 +616,28 @@ MODEL_CARD_SAMPLING = {
                   "instruct": {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "presence_penalty": 1.5}},
     # Inkling-2-Mini: generation_config.json (temperature 1.0, nothing else; the thinking level is in the prompt)
     "inkling2": {"thinking": {"temperature": 1.0}, "instruct": {"temperature": 1.0}},
+    # Hy4-Flash (HY-4-Flash-200B): HuggingFace model card defaults when request/config omits sampling
+    "hy4flash": {"thinking": {"temperature": 0.9, "top_p": 1.0},
+                 "instruct": {"temperature": 0.9, "top_p": 1.0}},
 }
 
 
 # The card's penalties: a greedy request must not get them (see model_card_sampling)
 CARD_PENALTIES = ("presence_penalty", "frequency_penalty", "repetition_penalty")
+SAMPLING_PARAM_KEYS = (
+    "temperature", "top_p", "top_k", "min_p",
+    "presence_penalty", "frequency_penalty", "repetition_penalty",
+)
+
+
+def request_asks_sampling(*layers) -> bool:
+    """True when any layer explicitly specifies any sampling or penalty parameter."""
+    for layer in layers:
+        if isinstance(layer, dict):
+            for k in SAMPLING_PARAM_KEYS:
+                if layer.get(k) is not None:
+                    return True
+    return False
 
 
 def model_card_sampling(arch, thinking, greedy=False) -> dict:
