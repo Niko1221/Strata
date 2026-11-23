@@ -487,6 +487,11 @@ if(STRATA_BUILD_TESTS)
   target_include_directories(low_vram_rules_test PRIVATE include)
   add_test(NAME low_vram_rules_test COMMAND low_vram_rules_test)
 
+  # the serve watchdog's limits (STRATA_WATCHDOG_S / _IO_S) parse without undefined behaviour (#6861: negative seconds in the log)
+  add_executable(watchdog_limits_test src/core/watchdog_limits_test.cpp)
+  target_include_directories(watchdog_limits_test PRIVATE include)
+  add_test(NAME watchdog_limits_test COMMAND watchdog_limits_test)
+
   # #4870 mid-coverage adaptive defaults (every 2 / 192 swaps / decay 0.92) are opt-in (STRATA_ADAPT_MID=1): header-only rule, no GPU
   add_executable(adapt_coverage_rules_test src/core/adapt_coverage_rules_test.cpp)
   target_include_directories(adapt_coverage_rules_test PRIVATE include)
