@@ -188,5 +188,6 @@ above and is only mentioned for the quality numbers.
 - Laptop GPU clocks vary with temperature; the GPU reached 91 °C during the main run.
 - One run per configuration; the drafter's gain depends on the text, so other prompts will move these numbers.
 
+The whole laptop series with charts is collected in [wolffahrer/lokale-ki-benchmarks](https://github.com/wolffahrer/lokale-ki-benchmarks).
 The author documents local AI on consumer hardware (in German) on the KI SOUVERÄN channels:
 [YouTube](https://www.youtube.com/channel/UCE6Ch6g6Bo8v4ROpYDzOOxA) and [Telegram](https://t.me/lokale_ki).
