@@ -492,7 +492,10 @@ print(r.choices[0].message.content)
   `strata:live_tok_s`, `strata:last_hit_rate`, `strata:gpu_util`, `strata:ram_used_bytes`). A value the server does not have
   has no sample. With an API key, the scraper sends it as a bearer token. Ready-made files are in `docs/monitoring/`:
   `prometheus.yml`, `servicemonitor.yaml` and `grafana-strata.json`.
-- **Metadata.** `/models` and `/v1/models` list only the loaded model, with its context limit and input modalities. `/props` exposes
+- **Metadata.** `/models` and `/v1/models` list only the loaded model: the OpenAI fields (`id`, `object`, `created`,
+  `owned_by`), its context limit (`max_model_len`, `context_length`, `max_context_length`, `meta.n_ctx`), the answer cap
+  (`limit.output` and `meta.llamaswap.max_output_tokens`: the context less the engine's margin, lowered by a smaller
+  `max_tokens` from the app's Chat settings) and its input modalities. `/props` exposes
   the chat template, context limit, configured generation defaults, model path and engine version. `n_predict: -1` means no
   fixed output cap. `/slots` uses llama.cpp's names (`n_ctx`, `n_prompt_tokens`). `total_slots` is the number of `--batch` slots
   (1 without). These endpoints require the API key when one is configured and never load, unload or restart models.
