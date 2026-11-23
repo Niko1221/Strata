@@ -698,9 +698,9 @@
    "since": null,
    "last_commit": null,
    "last_date": null,
-   "status": "opt-in",
+   "status": "default",
    "owner": "program",
-   "note": "[reviewed] the #4870 mid-coverage adaptive tier (every 2, 192 swaps, decay 0.92 at 15-65% of the experts in VRAM) was on by default in 0.1.66 and measured up to 8% slower (chat and agent decode at 18.8% coverage) than the old values on an RX 7900 XT (#6791); on only with STRATA_ADAPT_MID=1 since 0.2.21. [rel0221/RESULTS-0221-PERF.md]",
+   "note": "[reviewed] the #4870 mid-coverage adaptive tier (every 2, 192 swaps, decay 0.92 at 15-65% of the experts in VRAM) was on by default in 0.1.66 and measured up to 8% slower (chat and agent decode at 18.8% coverage) than the old values on an RX 7900 XT (#6791); since 0.2.21 on for CUDA (+6..9% on an RTX A4000) and off for HIP; STRATA_ADAPT_MID=1 or 0 forces it. [rel0221/RESULTS-0221-PERF.md]",
    "retire_after": "",
    "retired_in": ""
   },
