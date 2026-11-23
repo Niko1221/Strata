@@ -1911,6 +1911,7 @@ struct InkCudaRunner {
 
     // Optional per-stage profiler (active only when prof_enabled=true and graph disabled)
     bool prof_enabled = false;
+    bool prof_prefill = false;   // STRATA_INK_PROF=2: also print the phases of every prefill chunk (M >= 64)
     long prof_steps = 0;
     double prof_ms[16] = {};  // 0=res/ctrl/norm, 1=dense_qkv, 2=sconv_clip_kv, 3=attn, 4=dense_wo, 5=moe, 6=other, 7=unembed
     cudaEvent_t ev_p0 = nullptr, ev_p1 = nullptr;
@@ -3688,7 +3689,14 @@ struct InkCudaRunner {
         if (dbg_hash_on) dbg_hash_print("fwd", M, h_pos, nullptr, tok_ids, nullptr, -1);
         if (prof_enabled) {   // STRATA_INK_PROF=1: where one decode step goes (eager, events only), every 100 steps
             prof_flush();
-            if (M != 1) prof_reset();
+            if (M != 1) {
+                if (prof_prefill && M >= 64) {   // STRATA_INK_PROF=2: one line per prefill chunk (the phases of this chunk, ms)
+                    char tag[32];
+                    std::snprintf(tag, sizeof(tag), "PREFILL-M%d", M);
+                    prof_print(tag, 1);
+                }
+                prof_reset();
+            }
             else if (++prof_steps % 100 == 0) { prof_print("DECODE-M1", (int)prof_steps); prof_steps = 0; prof_reset(); }
         }
     }

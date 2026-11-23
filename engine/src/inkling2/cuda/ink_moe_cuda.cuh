@@ -3595,6 +3595,8 @@ struct InkLayerMoeInfo {
     uint32_t sk_dn_mask = 0;
 };
 
+#include "ink_moe_prefill.cuh"   // k_ink_moe_pf_fp16tc: the 64-token-tile prefill MoE (sm_80..89), see the header
+
 template <int MAX_M>
 inline void launch_ink_moe_gu_sk_mask(
     dim3 grid, cudaStream_t st, uint32_t mask,
@@ -3676,7 +3678,12 @@ inline void launch_ink_moe_dispatch_only(
     const bool use_sm120_tc = (!force_exact_dec && M >= 24 && sm120::available());
     const bool use_fp16_tc  = (!use_sm120_tc && M >= 24 && ink_has_int8_tc());
     const bool use_wmma_tc  = (!use_sm120_tc && !use_fp16_tc && M >= 24 && ink_has_wmma_f16());
-    const int tile_rows = use_wmma_tc ? ((M <= 128) ? 16 : 64)
+    // Prefill chunks on sm_80..89: 64-token tiles per expert (the weight tile is decoded once per 64 tokens, not per 16); same arithmetic,
+    // bit-identical results.  STRATA_INK_PF_TILE=0 keeps the 16-token kernel.
+    static const bool pf_tile_env = [] { const char* e = std::getenv("STRATA_INK_PF_TILE"); return !(e && e[0] == '0'); }();
+    const bool use_pf_tile = pf_tile_env && use_fp16_tc && M >= kInkPrefillTileMinM && (info.has_sf4 || info.has_mx8);
+    const int tile_rows = use_pf_tile ? kInkPrefillTileRows
+                        : use_wmma_tc ? ((M <= 128) ? 16 : 64)
                                       : ((M <= 128 || use_fp16_tc) ? 16 : 64);
     k_ink_moe_bin<<<1, 128, 0, st>>>(experts, ws.topk_idx, M, tile_rows, ws.tb);
     ink_moe_mark(1);
@@ -3730,6 +3737,13 @@ inline void launch_ink_moe_dispatch_only(
                 sm120::moe_mx8_gu_tc(sec4_base, experts, ws.tb, ws.xq_mx8, ws.xsc_mx8, ws.hq_mx8, ws.hsc_mx8, mt, tile_rows, st);
                 sm120::moe_mx8_dn_tc(sec4_base, experts, ws.tb, ws.hq_mx8, ws.hsc_mx8, ws.topk_w, ws.y_pair, mt, tile_rows, st);
             }
+        } else if (use_fp16_tc && use_pf_tile) {
+            const int mt = ink_moe_max_tiles(M, kInkPrefillTileRows);
+            const unsigned grid = (unsigned)std::min(std::max(1, mt * 18), 4096);
+            k_ink_moe_pf_fp16tc<true, kInkPrefillTileRows / 8><<<grid, 256, 0, st>>>(sec4_base, experts, ws.tb, x_f32, nullptr, ws.h_f32);
+            ink_moe_mark(2);
+            k_ink_moe_pf_fp16tc<false, kInkPrefillTileRows / 8><<<grid, 256, 0, st>>>(sec4_base, experts, ws.tb, ws.h_f32, ws.topk_w, ws.y_pair);
+            ink_moe_mark(3);
         } else if (use_fp16_tc) {
             const int mt = ink_moe_max_tiles(M, 16);
             const unsigned grid = (unsigned)std::min(std::max(1, mt * 18), 2048);

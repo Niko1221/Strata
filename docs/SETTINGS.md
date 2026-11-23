@@ -399,6 +399,7 @@ version made it the default.
 | `STRATA_INK_MOE_V1` | on / off | NVIDIA and AMD | - | - |
 | `STRATA_INK_NO_CAND` | on / off | NVIDIA and AMD | - | - |
 | `STRATA_INK_OOM_RETRY` | number | NVIDIA and AMD | - | - |
+| `STRATA_INK_PF_TILE` | on / off | NVIDIA and AMD | - | - |
 | `STRATA_INK_PIN_GB` | on / off | NVIDIA and AMD | - | - |
 | `STRATA_INK_PROMOTE_ASYNC` | text | AMD | - | - |
 | `STRATA_INK_Q80_TC` | number | NVIDIA and AMD | - | - |

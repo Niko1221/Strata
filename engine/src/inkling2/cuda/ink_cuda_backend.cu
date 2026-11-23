@@ -303,8 +303,9 @@ public:
                 runner_->use_cuda_graph = false;
                 std::fprintf(stderr, "[InkCUDA] STRATA_INK_NO_GRAPH=1: CUDA Graph capture off (eager launches)\n");
             }
-            if (const char* pe = std::getenv("STRATA_INK_PROF"); pe && pe[0] == '1') {   // per-phase decode times, eager (no graph)
+            if (const char* pe = std::getenv("STRATA_INK_PROF"); pe && (pe[0] == '1' || pe[0] == '2')) {   // per-phase decode times, eager (no graph); 2 = prefill chunks too
                 runner_->prof_enabled = true;
+                runner_->prof_prefill = (pe[0] == '2');
                 runner_->use_cuda_graph = false;
                 strata::ink::g_ink_moe_hook_ctx = runner_.get();
                 strata::ink::g_ink_moe_hook = [](int tag, void* ctx) {
@@ -700,6 +701,47 @@ public:
         }
         const int N = batch.n_tokens;
         if (N <= 0) return true;
+        // STRATA_INK_STEPTIME=1: where one decode token of the serving loop goes, with the graph kept (diagnostic, off by default):
+        // host time between two steps (sampling, protocol, batch building), the step call's wall time (launches + head + top-K + sync)
+        // and the GPU span of the call (first event to the event after the top-K, before the sync).
+        struct StepTimeGuard {
+            static bool on() { static const bool v = [] { const char* e = std::getenv("STRATA_INK_STEPTIME"); return e && e[0] == '1'; }(); return v; }
+            bool act = false;
+            std::chrono::steady_clock::time_point t0;
+            cudaEvent_t e0 = nullptr;
+            cudaStream_t s = nullptr;
+            cudaEvent_t* e1_slot = nullptr;
+            StepTimeGuard(int N_, cudaStream_t st, cudaEvent_t* e1) : act(on() && N_ == 1), s(st), e1_slot(e1) {
+                if (!act) return;
+                t0 = std::chrono::steady_clock::now();
+                static cudaEvent_t ev0 = nullptr;
+                if (!ev0) cudaEventCreate(&ev0);
+                e0 = ev0;
+                cudaEventRecord(e0, s);
+            }
+            ~StepTimeGuard() {
+                if (!act) return;
+                static std::chrono::steady_clock::time_point last_end{};
+                static double s_between = 0, s_wall = 0, s_gpu = 0; static long s_n = 0, s_gpu_n = 0;
+                const auto t1 = std::chrono::steady_clock::now();
+                if (last_end.time_since_epoch().count() != 0) s_between += std::chrono::duration<double, std::milli>(t0 - last_end).count();
+                s_wall += std::chrono::duration<double, std::milli>(t1 - t0).count();
+                if (e1_slot && *e1_slot) {
+                    float ms = 0.0f;
+                    if (cudaEventElapsedTime(&ms, e0, *e1_slot) == cudaSuccess) { s_gpu += ms; ++s_gpu_n; }
+                }
+                ++s_n;
+                last_end = std::chrono::steady_clock::now();
+                if (s_n % 100 == 0) {
+                    std::fprintf(stderr, "[InkCUDA STEPTIME] %ld one-token steps: host between steps %.3f ms, step call wall %.3f ms, GPU span of the call %.3f ms (n=%ld)\n",
+                                 s_n, s_between / s_n, s_wall / s_n, s_gpu_n ? s_gpu / s_gpu_n : 0.0, s_gpu_n);
+                    s_between = s_wall = s_gpu = 0; s_n = s_gpu_n = 0;
+                }
+            }
+        };
+        static cudaEvent_t steptime_e1 = nullptr;
+        if (StepTimeGuard::on() && !steptime_e1) cudaEventCreate(&steptime_e1);
+        StepTimeGuard steptime_guard(N, runner_->st, &steptime_e1);
         // Defensive KV position bounds check + elastic global KV growth (fixes #6590B CUDA error 700 & CA1JEeAx!)
         int max_pos_req = 0;
         for (int i = 0; i < N; ++i) {
@@ -758,6 +800,7 @@ public:
             if (cand_out) {
                 // candidate rows: the 128 best (id, logit) of each wanted row and its finite flag; no full row leaves the card
                 INK_CK(topk_.run(runner_->d_logits, nw, V, runner_->st));
+                if (steptime_e1 && nw == 1 && StepTimeGuard::on()) cudaEventRecord(steptime_e1, runner_->st);
                 INK_CK(cudaStreamSynchronize(runner_->st));
                 const int kc = std::min(kInkCandidates, V);
                 for (int k = 0; k < nw; ++k) {
