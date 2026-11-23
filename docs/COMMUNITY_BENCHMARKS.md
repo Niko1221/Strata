@@ -73,6 +73,8 @@ and their limits. Report what you actually measured and label estimates separate
   IQ2_XS with adaptive cache E4/S24: 48.23 accepted-decode tok/s (median of 5) on a modified, locally built engine (not an official release; source commit and hashes in provenance.json, steps in REPRODUCE.md).
 - [2026-10-12: Radeon 780M (gfx1103), Ryzen 7 8745HS, 60 GB RAM, GTT 50 GiB](bench-results/2026-10-12-community-gfx1103/README.md):
   the gfx1103 port (native dot4, the gfx11 WMMA kernels, the exact speed switches and a calibrated hipBLASLt table), hand-built on ROCm 10.1, Q2_0 + MTP at 32K: prompts 90 tok/s plain, 186 with the table, 277 with the WMMA opt-ins (4K), decode 13.1 -> 14.3 tok/s; zero GPU resets.
+- [2026-11-23: 2x Quadro RTX 6000 24 GB (sm_75, NVLink, EP2), Xeon Gold 6138, 247 GiB RAM](bench-results/2026-11-23-community-quadro-rtx-6000-inkling-2-mini-sq-20/README.md):
+  `strata-inkling` 0.1.66 local sm_75 source build with the DSpark parity fix (PR #6824), **Inkling-2-Mini SQ-20** (bit-exact lossless), 131,072-token context, k8v4 KV, DSpark on, EP2 across both cards: chat decode 68.6 tok/s (64.6–102.8), 4K/16K fresh prompt 1978/1834 tok/s. **Custom track** — stock 0.1.66 DSpark is garbled on sm_75; this build makes it lossless (parity harness 44/128 → 128/128 exact), plain-decode baseline ~40 tok/s. Agent-tool suite not applicable (Inkling answers with tool calls, no content tokens).
 
 ## Run the standard benchmark
 
