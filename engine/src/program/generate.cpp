@@ -11193,7 +11193,8 @@ int main(int argc, char** argv) {
                                                                                      : "STRATA_GFX12_CHUNK";
         const char* force16 = std::getenv(chunk_env_name);
         const int64_t extra_slots = std::max<int64_t>(0, lend_slots(cand) - lend_slots(8192));
-        const uint64_t extra_mib = ((uint64_t) extra_slots * strata::kernels::cpu::expert_layout().max_blob) >> 20;
+        const uint64_t extra_mib = strata::core::prefill_loan_ram_mib(
+            ((uint64_t) extra_slots * strata::kernels::cpu::expert_layout().max_blob) >> 20, o.resident_cpu_experts);   // #6687: half without pinned experts
         const auto hm = strata::core::sample_host_memory();   // the cgroup / --memory-limit-mib cap counts too
         const uint64_t avail_mib = hm ? hm->available >> 20 : mem_sample().avail_mib;
         // --resident-experts pins its RAM copy after this point, and that copy also holds the lent slots' experts: what
