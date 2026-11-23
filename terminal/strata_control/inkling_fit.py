@@ -20,13 +20,19 @@ Multi-request parallelism (`--parallel 1|4|8|32|64`):
 from __future__ import annotations
 
 GIB_TO_GB = 1.073741824
-VRAM_DRIVER_GB = 1.60            # driver / WDDM / HIP / desktop compositor + runtime & O(1) prefill scratch (#6613)
+VRAM_DRIVER_GB = 1.30            # CUDA context + runtime + the engine's working buffers beside the weights, measured: 1.54 GB of non-expert use on a 12 GiB card (was 1.60 with the margin inside; the margin is now VRAM_SAFETY_GB)
 VRAM_HYBRID_WORKSPACE_GB = 0.85  # hybrid ping-pong DMA ring + staging buffers + desktop margin (#6587, #6613)
 KV_GROW_FACTOR = 1.60            # peak transient headroom for elastic/doubling KV pool growth (HIP grow_pool #6613)
 SPLIT_GPU_OVERHEAD_GB = 1.00     # per-extra-GPU runtime/trunk/comm overhead on multi-GPU layer-split
 DSPARK_BASE_GB = 0.11            # DSpark activation + compact SWA-1025 rings for layers 0 & 2
 DSPARK_KV_BYTES_PER_TOK = 4096   # 1 global DSpark layer (L1) x 8 kv_heads x 128 head_dim x 2 (K+V) x 2B (FP16)
 OS_RESERVE_GB = 4.50             # system RAM reserve on discrete or UMA hosts
+# #6644 #6792 #6739 #6662: the plan is made from the memory that is FREE now, and keeps a margin on top of what the engine measures.
+# Measured (RTX 3060 12 GB, A4000 16 GB, 4090 24 GB; strata-inkling memory ledger): after the experts, the K/V, the workspaces and the
+# drafter are in, 0.4-0.5 GiB of the card was left; the margin makes that about 0.7-0.8 GiB, and a card that drives a screen keeps more.
+VRAM_SAFETY_GB = 0.30            # taken off the card's free memory before anything is placed
+DESKTOP_RESERVE_GB = 0.80        # more, when the card drives a display: the desktop (browser, video) grows after the plan is made
+FREE_RAM_MARGIN_GB = 1.50        # free RAM that stays free beside the experts held in RAM
 UMA_RESERVE_GB = 5.00            # unified memory OS + driver reserve
 SSD_NEAR_RESIDENT_GB = 2.0
 VISION_GB = 0.637                # Inkling-2-Mini-Vision.strata (636,526,592 B, CPU / on-demand on <=12 GiB GPUs)
@@ -175,19 +181,24 @@ def non_expert_gb(ctx: int | None = None, parallel: int = 1, vision: bool = Fals
 
 def compute(build: str, vram_gib: float, ram_gib: float, ctx: int | None = None, vision: bool = False,
             parallel: int = 1, dspark: bool = True, kv_offload: str = "auto", *,
-            extra_vram_gib: float = 0.0, backend: str | None = None) -> dict:
+            extra_vram_gib: float = 0.0, backend: str | None = None,
+            desktop: bool = False, ram_free_gib: float | None = None) -> dict:
     """Placement of `build` on a discrete-GPU PC (vram_gib + optional extra_vram_gib + ram_gib): GB of experts in VRAM, in RAM, and on SSD.
 
     Implements the unified 4-tier adaptive contract (GPU -> RAM+CPU -> SSD) with Host KV Offloading (#552),
     CPU/on-demand Vision on <= 12.5 GiB GPUs, O(1) prefill & KV growth headroom (#6613), and WDDM floor so
     4/6/8/10/12/16/24/32+ GB GPUs never OOM even at 32K–128K context with DSpark and Vision enabled.
+
+    vram_gib is the card's FREE memory (what is left after the desktop and other programs), ram_free_gib the free RAM
+    (None: not known, the total in ram_gib counts); desktop says the card drives a display (a larger reserve) (#6662 #6739).
     """
     info = BUILDS[build]
     v_primary = float(vram_gib or 0.0)
     v_extra = max(0.0, float(extra_vram_gib or 0.0))
     v_gib = v_primary + v_extra
     split_overhead = SPLIT_GPU_OVERHEAD_GB if v_extra > 0.0 else 0.0
-    vram_gb = max(0.0, v_gib * GIB_TO_GB - split_overhead)
+    vram_gb = max(0.0, v_gib * GIB_TO_GB - split_overhead - (VRAM_SAFETY_GB if v_gib > 0.0 else 0.0)
+                  - (DESKTOP_RESERVE_GB if (desktop and v_gib > 0.0) else 0.0))
     ram_gb = float(ram_gib or 0.0) * GIB_TO_GB
     offload_mode = str(kv_offload or "auto").lower()
     backend_low = str(backend or "").strip().lower()
@@ -203,6 +214,9 @@ def compute(build: str, vram_gib: float, ram_gib: float, ctx: int | None = None,
     vision_in_vram = bool(vision and v_gib > 12.5)
     glob_kv = global_kv_gb(ctx, parallel, fp8_kv=fp8_kv)
     ram_avail_for_model = max(0.0, ram_gb - OS_RESERVE_GB - (VISION_GB if vision else 0.0))
+    if ram_free_gib is not None:        # the free RAM, not the installed RAM: what other programs hold is not there to give
+        ram_avail_for_model = max(0.0, min(ram_avail_for_model,
+                                           float(ram_free_gib) * GIB_TO_GB - FREE_RAM_MARGIN_GB - (VISION_GB if vision else 0.0)))
 
     # 1. Try 100%-VRAM expert residency with VRAM-resident global KV first
     full_need = dense_total + info["bodies_gb"] + non_expert_gb(
@@ -222,7 +236,9 @@ def compute(build: str, vram_gib: float, ram_gib: float, ctx: int | None = None,
     # 2. Try 100%-VRAM expert residency with Host KV Offloading (matches CUDA engine auto-offload on <= 13 GiB,
     # e.g. 12 GiB RTX 5070 + SQ-10 + lossless FP16 32K; 16 GiB cards keep global KV in VRAM so HIP never OOMs #6613).
     can_offload_kv = supports_host_kv and (effective_offload != "off") and (ram_avail_for_model >= glob_kv)
-    auto_offload_full = can_offload_kv and (effective_offload == "on" or v_gib <= 13.0)
+    # CUDA (named by the caller) at any card size: the experts all in the card with the K/V in RAM beats experts in RAM
+    # (measured: SQ-15 on an A4000 16 GB, RESULTS-0221-INKCUDA.md); an unnamed backend keeps the older rule (<= 13 GiB or asked)
+    auto_offload_full = can_offload_kv and (effective_offload == "on" or v_gib <= 13.0 or backend_low == "cuda")
     full_need_offload = dense_total + info["bodies_gb"] + non_expert_gb(
         ctx, parallel, vision=vision_in_vram, dspark=dspark, fp8_kv=fp8_kv, hybrid=False, host_offload_global_kv=True
     )
@@ -288,11 +304,12 @@ def compute_unified(build: str, pool_gib: float, ctx: int | None = None, vision:
 
 def place(build: str, vram_gib: float | None, ram_gib: float, unified: bool = False, ctx: int | None = None,
           vision: bool = False, parallel: int = 1, dspark: bool = True, *,
-          extra_vram_gib: float = 0.0, backend: str | None = None) -> dict:
+          extra_vram_gib: float = 0.0, backend: str | None = None,
+          desktop: bool = False, ram_free_gib: float | None = None) -> dict:
     if unified:
         return compute_unified(build, ram_gib, ctx, vision, parallel, dspark)
     return compute(build, vram_gib or 0.0, ram_gib, ctx, vision, parallel, dspark,
-                   extra_vram_gib=extra_vram_gib, backend=backend)
+                   extra_vram_gib=extra_vram_gib, backend=backend, desktop=desktop, ram_free_gib=ram_free_gib)
 
 
 def mode(placed: dict | float) -> str:
@@ -313,14 +330,16 @@ def mode(placed: dict | float) -> str:
 
 
 def fits(build: str, vram_gib: float | None, ram_gib: float, unified: bool = False, ctx: int | None = None,
-         vision: bool = False, parallel: int = 1, *, extra_vram_gib: float = 0.0, backend: str | None = None) -> bool:
-    return place(build, vram_gib, ram_gib, unified, ctx, vision, parallel,
-                 extra_vram_gib=extra_vram_gib, backend=backend)["ssd_gb"] <= 0.05
+         vision: bool = False, parallel: int = 1, *, extra_vram_gib: float = 0.0, backend: str | None = None,
+         desktop: bool = False, ram_free_gib: float | None = None) -> bool:
+    return place(build, vram_gib, ram_gib, unified, ctx, vision, parallel, extra_vram_gib=extra_vram_gib, backend=backend,
+                 desktop=desktop, ram_free_gib=ram_free_gib)["ssd_gb"] <= 0.05
 
 
 def recommend(vram_gib: float | None, ram_gib: float, unified: bool = False, ctx: int | None = None,
-              vision: bool = False, *, preference: str = "quality", igpu: bool = False, arch: str | None = None,
-              parallel: int = 1, extra_vram_gib: float = 0.0, backend: str | None = None) -> dict:
+              vision: bool = False, *, preference: str = "balanced", igpu: bool = False, arch: str | None = None,
+              parallel: int = 1, extra_vram_gib: float = 0.0, backend: str | None = None,
+              desktop: bool = False, ram_free_gib: float | None = None) -> dict:
     """Automatic hardware auto-selection for Inkling-2-Mini (docs/10-GUI-TUI.md + Track 1E):
       - Radeon 780M (gfx1103) / Strix Point (gfx1150) iGPUs -> SQ-10 (coherent UMA/GTT, zero BIOS carve-out OOM)
       - >= 24 GiB discrete GPU (or combined multi-GPU VRAM) OR >= 32 GiB UMA -> SQ-20
@@ -345,16 +364,29 @@ def recommend(vram_gib: float | None, ram_gib: float, unified: bool = False, ctx
             best = "SQ-10"
     else:
         use_unified = False
-        if v >= 22.0:
-            best = "SQ-20"
-        elif v >= 15.0:
-            best = "SQ-10" if (str(preference).lower() == "speed" or r < 20.0) else "SQ-15"
-        elif v >= 11.0:
-            best = "SQ-10" if (str(preference).lower() == "speed" or r < 24.0) else "SQ-15"
+        pref = str(preference).lower()
+        if pref == "quality":
+            # the biggest build that fits with part of its experts in RAM (slower: measured 4-8 tok/s for SQ-15 on a 12 GiB card)
+            if v >= 22.0:
+                best = "SQ-20"
+            elif v >= 15.0:
+                best = "SQ-10" if r < 20.0 else "SQ-15"
+            elif v >= 11.0:
+                best = "SQ-10" if r < 24.0 else "SQ-15"
+            else:
+                best = "SQ-10"
         else:
+            # balanced (the default; "speed" is the same): the best build whose experts all sit in the card (the K/V may be in RAM),
+            # else SQ-10.  Experts moved to RAM cost most of the speed (SQ-10 on a 3060: about 35 tok/s resident, 10 tok/s with 2.6 GB in RAM).
             best = "SQ-10"
+            for cand in STRATA_ORDER:
+                pc = place(cand, vram_gib, ram_gib, False, ctx, vision, parallel, extra_vram_gib=extra_vram_gib, backend=backend,
+                           desktop=desktop, ram_free_gib=ram_free_gib)
+                if pc.get("full_vram") and pc["ssd_gb"] <= 0.05:
+                    best = cand
+                    break
     placed = place(best, vram_gib, ram_gib, use_unified, ctx, vision, parallel,
-                   extra_vram_gib=extra_vram_gib, backend=backend)
+                   extra_vram_gib=extra_vram_gib, backend=backend, desktop=desktop, ram_free_gib=ram_free_gib)
     return {
         "build": best,
         "placement": placed,
@@ -365,10 +397,11 @@ def recommend(vram_gib: float | None, ram_gib: float, unified: bool = False, ctx
 
 
 def rows(vram_gib: float | None, ram_gib: float, unified: bool = False, ctx: int | None = None,
-         vision: bool = False, parallel: int = 1) -> list[dict]:
+         vision: bool = False, parallel: int = 1, *, desktop: bool = False, ram_free_gib: float | None = None,
+         backend: str | None = None) -> list[dict]:
     out = []
     for b in ORDER:
-        placed = place(b, vram_gib, ram_gib, unified, ctx, vision, parallel)
+        placed = place(b, vram_gib, ram_gib, unified, ctx, vision, parallel, desktop=desktop, ram_free_gib=ram_free_gib, backend=backend)
         dl = BUILDS[b]["file_gb"] + (DSPARK_GGUF_GB if is_gguf_build(b) else 0.0)
         out.append({
             "build": b,
