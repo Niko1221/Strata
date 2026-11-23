@@ -370,6 +370,7 @@ struct InkCudaModel {
                 dev.dn_code  = e.dn_code_id;
                 dev.tier     = 0;
                 h_exp[(size_t)il * man.c.n_experts + e.expert_id] = dev;
+                if ((e.gu_code_id == FMT_SF4 || e.gu_code_id == FMT_MX8) && e.dn_code_id != e.gu_code_id) moe_info[il].mixed_gu_dn = true;
                 if (e.gu_code_id == FMT_SF4) moe_info[il].has_sf4 = true;
                 else if (e.gu_code_id == FMT_MX8) moe_info[il].has_mx8 = true;
                 else {
@@ -1519,6 +1520,7 @@ struct InkCudaModel {
 
             // Upload layer's experts to owning GPU stage / EP2 / Host hybrid (updating PR#6593 sk_gu_mask / sk_dn_mask!)
             auto mark_info = [](InkLayerMoeInfo& mi, uint8_t gu_code, uint8_t dn_code) {
+                if ((gu_code == FMT_SF4 || gu_code == FMT_MX8) && dn_code != gu_code) mi.mixed_gu_dn = true;
                 if (gu_code == FMT_SF4)           mi.has_sf4  = true;
                 else if (gu_code == FMT_MX8)      mi.has_mx8  = true;
                 else if (gu_code == FMT_GGUF_RAW) mi.has_gguf = true;
