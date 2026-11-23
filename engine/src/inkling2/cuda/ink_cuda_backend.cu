@@ -84,6 +84,8 @@ public:
 
     int effective_max_ctx() const override { return initialized_ ? eff_max_ctx_ : 0; }
     int effective_chunk() const override { return initialized_ ? eff_chunk_run_ : 0; }
+    bool last_failure_is_kv_growth() const override { return kv_grow_failed_; }
+    int kv_capacity_tokens() const override { return (initialized_ && runner_) ? runner_->kv_alloc_ctx : 0; }
 
     bool dspark_ready() const override { return initialized_ && dspark_ && dspark_->ready; }
 
@@ -586,6 +588,7 @@ public:
         }
         const int N = batch.n_tokens;
         if (N <= 0) return true;
+        kv_grow_failed_ = false;
         // Defensive KV position bounds check + elastic global KV growth (fixes #6590B CUDA error 700 & CA1JEeAx!)
         int max_pos_req = 0;
         for (int i = 0; i < N; ++i) {
@@ -597,6 +600,7 @@ public:
         }
         if (!runner_->ensure_global_kv_cap(max_pos_req + 1)) {
             err = "VRAM exhausted growing elastic global KV cache to " + std::to_string(max_pos_req + 1) + " tokens";
+            kv_grow_failed_ = true;
             return false;
         }
         if (batch.capture_taps && dspark_ && dspark_->ready) {
@@ -968,6 +972,7 @@ private:
     int gpu_id_ = 0;
     int max_slots_ = 1;
     int eff_max_ctx_ = 4096;
+    bool kv_grow_failed_ = false;    // the last forward_batch ended only because the global K/V could not grow
     int eff_chunk_run_ = 0;          // the prefill chunk the runner really got (after auto / halve-on-fail)
     int dspark_slot_ = -1;
     KvDtype kv_dtype_ = KvDtype::FP16;

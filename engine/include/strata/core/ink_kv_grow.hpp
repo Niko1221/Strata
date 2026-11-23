@@ -37,6 +37,12 @@ inline bool ink_kv_grow_fits(size_t vfree, size_t floor_b, int n_glob, int slots
     return vfree > floor_b + ink_kv_grow_peak_bytes(n_glob, slots, old_cap, new_cap, per_pos);
 }
 
+// Host tail (positions) to map when the card cannot grow the K/V any further and the rest of the K/V goes to pinned host RAM: the WHOLE rest of the
+// context first, so the K/V never has to grow again (a spill sized to just the request that hit the limit made the next, longer request end the
+// engine: "VRAM exhausted growing elastic global KV cache to 40961 tokens", #6905), and only when that does not fit in host memory, just the request.
+inline int ink_kv_host_tail_full(int kv_dev_ctx, int max_ctx) { return std::max(0, max_ctx - kv_dev_ctx); }
+inline int ink_kv_host_tail_need(int kv_dev_ctx, int new_cap) { return std::max(0, new_cap - kv_dev_ctx); }
+
 // The capacity to grow to: the full step when it fits, else the tight one (just the request, 256-aligned), else 0 (no room:
 // the caller spills the tail to mapped host memory or refuses).
 inline int ink_kv_grow_target(size_t vfree, size_t floor_b, int n_glob, int slots, int old_cap, int needed_pos,

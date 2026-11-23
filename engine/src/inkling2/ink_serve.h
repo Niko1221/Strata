@@ -939,6 +939,21 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
         logits_buf.resize(static_cast<size_t>(std::max(1, n_want)) * V);
         std::string ferr;
         if (!backend.forward_batch(batch, n_want > 0 ? logits_buf.data() : nullptr, nullptr, ferr)) {
+            // The global K/V could not grow (no room in the card, none to spill to): the engine is fine. End the requests whose positions
+            // reach past what the K/V holds (reason "length": the context this card can serve), keep every other request, and go on (#6905).
+            if (backend.last_failure_is_kv_growth()) {
+                const int cap = backend.kv_capacity_tokens();
+                bool ended = false;
+                for (int i = 0; i < batch.n_tokens; ++i) {
+                    const int s = batch.slot_ids[i];
+                    if (batch.pos[i] >= cap && s >= 0 && s < P && reqs[s].active) {
+                        std::fprintf(stderr, "[ink-serve] slot %d ended at %d tokens: %s\n", s, batch.pos[i], ferr.c_str());
+                        finish_req(reqs[s], "length");
+                        ended = true;
+                    }
+                }
+                if (ended) continue;
+            }
             proto("ERR fatal GPU error: %s", ferr.c_str());
             return 1;
         }

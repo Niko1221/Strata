@@ -2289,8 +2289,13 @@ struct InkCudaRunner {
                 if (tight_cap <= old_cap ||
                     !strata::core::ink_kv_grow_fits(vf, floor_b, n_glob_s, max_slots, old_cap, tight_cap, per_pos)) {
                     // VRAM cannot grow global KV further: seamlessly spill tail [kv_dev_ctx..new_cap-1] into mapped pinned host RAM!
+                    // The whole rest of the context first, so the K/V never has to grow again (a tail sized to just this request made the next, longer
+                    // request end the engine, #6905); only when that does not fit in host memory, just what this request needs.
                     if (kv_offload_mode >= 0 && kv_host_ctx == 0) {
-                        const int hcap = new_cap - kv_dev_ctx;
+                      const int tails[2] = {strata::core::ink_kv_host_tail_full(kv_dev_ctx, max_ctx), strata::core::ink_kv_host_tail_need(kv_dev_ctx, new_cap)};
+                      for (int ti = 0; ti < 2; ++ti) {
+                        const int hcap = tails[ti];
+                        if (ti == 1 && hcap == tails[0]) break;
                         if (hcap > 0) {
                             if (m.ls_active) {
                                 for (int ss = 0; ss < m.n_stages; ++ss) {
@@ -2339,6 +2344,7 @@ struct InkCudaRunner {
                             }
                             for (int v = 0; v < kInkVisits; ++v) if (!kv_desc[v].is_swa) free_host_kv_visit(v);
                         }
+                      }
                     }
                     return false;
                 }

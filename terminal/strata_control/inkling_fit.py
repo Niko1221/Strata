@@ -31,6 +31,7 @@ OS_RESERVE_GB = 4.50             # system RAM reserve on discrete or UMA hosts
 # Measured (RTX 3060 12 GB, A4000 16 GB, 4090 24 GB; strata-inkling memory ledger): after the experts, the K/V, the workspaces and the
 # drafter are in, 0.4-0.5 GiB of the card was left; the margin makes that about 0.7-0.8 GiB, and a card that drives a screen keeps more.
 VRAM_SAFETY_GB = 0.30            # taken off the card's free memory before anything is placed
+KV_CARD_HEADROOM_GB = 0.50       # CUDA: the K/V stays in the card only with this much to spare; with less, the program that takes the memory next (browser, video) ends the growth (#6905)
 DESKTOP_RESERVE_GB = 0.80        # more, when the card drives a display: the desktop (browser, video) grows after the plan is made
 FREE_RAM_MARGIN_GB = 1.50        # free RAM that stays free beside the experts held in RAM
 UMA_RESERVE_GB = 5.00            # unified memory OS + driver reserve
@@ -330,7 +331,10 @@ def compute(build: str, vram_gib: float, ram_gib: float, ctx: int | None = None,
     full_need = dense_total + info["bodies_gb"] + non_expert_gb(
         ctx, parallel, vision=vision_in_vram, dspark=dspark, fp8_kv=fp8_kv, hybrid=False, host_offload_global_kv=False, backend=backend_low
     )
-    if vram_gb > 0.0 and effective_offload != "on" and full_need <= vram_gb:
+    # CUDA: a K/V that fills the card to within a few hundred MB grows into whatever the desktop takes next; with that little to spare the K/V goes to host RAM
+    # (the experts stay all in the card, the engine keeps the window of every slot there) when the RAM can hold it (#6905: a 16 GB card, 64K, vision, 0.4 GB to spare)
+    kv_headroom = KV_CARD_HEADROOM_GB if (backend_low == "cuda" and effective_offload == "auto" and glob_kv > 1.0) else 0.0
+    if vram_gb > 0.0 and effective_offload != "on" and full_need + kv_headroom <= vram_gb:
         return {
             "vram_gb": round(info["bodies_gb"], 2),
             "ram_gb": 0.0,
