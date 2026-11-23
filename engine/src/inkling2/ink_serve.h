@@ -458,6 +458,12 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
     const int V = c.vocab_unpadded;
     const int P = std::max(1, std::min(kMaxParallelSlots, cfg.bopts.parallel));
     const int chunk_sz = std::max(1, cfg.bopts.chunk);
+    // STRATA_INK_PREFILL_CAP=N: tokens of prompt read per step while another slot decodes (default 0 = no cap, as before).
+    // It only moves time between the request that reads and the ones that decode (measured on an RTX 5090, 4096-token prompt read
+    // while another request decodes: cap 64 / 128 / 256 / none = decode 24 / 21 / 17 / 12.6 tok/s, prompt first token after
+    // 2.75 / 1.63 / 1.05 / 0.88 s), so it is opt-in; answers are identical for every value.
+    int prefill_cap = 0;
+    if (const char* e = std::getenv("STRATA_INK_PREFILL_CAP"); e && *e) prefill_cap = std::max(0, std::atoi(e));
     const bool use_dspark = (cfg.draft_mode != "off") && mf.m.dspark.present && backend.dspark_ready();
 
     // Probe Vision shard lazily (zero VRAM/RAM until first image request)
@@ -918,6 +924,9 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
             logit_slots.push_back(s);
             --token_budget;
         }
+        // While some slot decodes, a prompt is read at most `prefill_cap` tokens per step: one step then costs the decode tokens plus
+        // that chunk, so the decoding slots keep their cadence while a long prompt is read (a 2048-token chunk was ~0.5 s per decode token).
+        if (prefill_cap > 0 && !logit_slots.empty()) token_budget = std::min(token_budget, prefill_cap);
 
         // Then fill remaining budget with chunked-prefill tokens across prefilling slots (round-robin!)
         if (token_budget > 0) {
@@ -979,6 +988,17 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
                 }
             }
         }
+
+        struct SampleProf {
+            bool on; double t0, fwd_ms; int rows;
+            ~SampleProf() {
+                if (!on || rows == 0) return;
+                static double s_fwd = 0, s_smp = 0; static long s_n = 0, s_rows = 0;
+                s_fwd += fwd_ms; s_smp += (now_s() - t0) * 1000.0; ++s_n; s_rows += rows;
+                if (s_n % 64 == 0) fprintf(stderr, "[ink_serve PROF] %ld steps, %.1f logit rows avg: forward_batch %.2f ms, sampling+protocol %.2f ms per step\n",
+                                           s_n, (double)s_rows / s_n, s_fwd / s_n, s_smp / s_n);
+            }
+        } smp_prof{std::getenv("STRATA_INK_PROF") != nullptr, now_s(), step_ms, n_want};
 
         // Sample next token for every slot that produced logits in this batch!
         for (int wi = 0; wi < n_want; ++wi) {

@@ -14,6 +14,7 @@
 #include "strata/core/volta_forever.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -282,6 +283,12 @@ public:
                 // diagnostic: launch every kernel of a step eagerly, as the layer-split / EP2 paths always do
                 runner_->use_cuda_graph = false;
                 std::fprintf(stderr, "[InkCUDA] STRATA_INK_NO_GRAPH=1: CUDA Graph capture off (eager launches)\n");
+            }
+            if (const char* pe = std::getenv("STRATA_INK_PROF"); pe && pe[0] == '1') {
+                // diagnostic: eager launches with a stream sync per phase (decode steps print a phase table to stderr; slower than normal)
+                runner_->prof_enabled = true;
+                runner_->use_cuda_graph = false;
+                std::fprintf(stderr, "[InkCUDA] STRATA_INK_PROF=1: eager launches, per-phase timing every 32 batched steps\n");
             }
             try {
                 runner_->init(max_slots_, std::max(256, opts.max_ctx), chunk_try, cuda_kvd, kv_offload_mode);
@@ -624,12 +631,31 @@ public:
                     h_src = d_h_sel_;
                 }
             }
+            const bool hp = runner_->prof_enabled;
+            auto hnow = [] { return std::chrono::steady_clock::now(); };
+            auto hms = [](std::chrono::steady_clock::time_point a, std::chrono::steady_clock::time_point b) { return std::chrono::duration<double, std::milli>(b - a).count(); };
+            auto hq0 = hnow();
             runner_->head_logits_from(h_src, nw);
+            if (hp) INK_CK(cudaStreamSynchronize(runner_->st));
+            auto hq1 = hnow();
             // Use pinned host staging buffer for full PCIe 5.0 DMA bandwidth (~50 GB/s vs ~12 GB/s pageable)!
             ensure_pinned_logits(nw, V);
             INK_CK(cudaMemcpyAsync(h_logits_pin_, runner_->d_logits,
                                    (size_t)nw * V * sizeof(float), cudaMemcpyDeviceToHost, runner_->st));
             INK_CK(cudaStreamSynchronize(runner_->st));
+            auto hq2 = hnow();
+            struct HostProfGuard {
+                bool on; double head, d2h; std::chrono::steady_clock::time_point t2; int nw;
+                ~HostProfGuard() {
+                    if (!on) return;
+                    static double s_head = 0, s_d2h = 0, s_cpy = 0; static long s_n = 0, s_rows = 0;
+                    s_head += head; s_d2h += d2h; s_cpy += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t2).count(); ++s_n; s_rows += nw;
+                    if (s_n % 32 == 0) {
+                        std::fprintf(stderr, "[InkCUDA PROF host] %ld logits batches (%.1f rows avg): unembed+softcap %.2f ms, D2H %.2f ms, copy to caller %.2f ms per batch\n",
+                                     s_n, (double)s_rows / s_n, s_head / s_n, s_d2h / s_n, s_cpy / s_n);
+                    }
+                }
+            } hpg{hp, hms(hq0, hq1), hms(hq1, hq2), hq2, nw};
             bool contiguous_dst = true;
             for (int k = 1; k < nw; ++k) if (dst_rows[k] != dst_rows[k - 1] + 1) { contiguous_dst = false; break; }
             if (contiguous_dst) {
@@ -778,7 +804,24 @@ public:
             const int B = (int)dec_orig.size();
             const bool want_taps = (taps_out != nullptr);
             runner_->has_img_step = false;
-            runner_->forward_batched(dec_toks.data(), dec_slots.data(), dec_pos.data(), B, want_taps);
+            {
+                static double p_step_ms = 0; static long p_n = 0, p_rows = 0;
+                const bool pf = runner_->prof_enabled;
+                auto tb0 = std::chrono::steady_clock::now();
+                runner_->forward_batched(dec_toks.data(), dec_slots.data(), dec_pos.data(), B, want_taps);
+                if (pf) {
+                    INK_CK(cudaStreamSynchronize(runner_->st));
+                    p_step_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tb0).count();
+                    ++p_n; p_rows += B;
+                    if (p_n % 32 == 0) {
+                        std::fprintf(stderr, "[InkCUDA PROF step] %ld batched steps, B avg %.1f, eager 48-visit step %.2f ms\n", p_n, (double)p_rows / p_n, p_step_ms / p_n);
+                        const double* pm = runner_->prof_ms;
+                        std::fprintf(stderr, "[InkCUDA PROF phases ms/step] res_ctrl=%.2f dense_qkv=%.2f sconv_kv=%.2f attn=%.2f dense_wo=%.2f moe=%.2f\n",
+                                     pm[0] / 32, pm[1] / 32, pm[2] / 32, pm[3] / 32, pm[4] / 32, pm[5] / 32);
+                        runner_->prof_reset();
+                    }
+                }
+            }
             if (taps_out) copy_host_taps(dec_orig);
             std::vector<int> loc_idx, dst_rows;
             for (int k = 0; k < B; ++k) {
