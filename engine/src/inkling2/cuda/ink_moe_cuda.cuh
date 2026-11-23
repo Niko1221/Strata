@@ -24,6 +24,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 
 namespace strata::ink {
 
@@ -2704,6 +2705,278 @@ __global__ void __launch_bounds__(256) k_ink_moe_sf4_mx8_fp16tc(
 }
 
 // ============================================================================
+// 4C'. The same exact FP16-Tensor-Core SF4 / MX8 MoE kernel (sm_80+), rewritten around its memory traffic. The first version loaded 2 KB of weights
+//      per block and step (one 16-byte load per thread), staged them through shared memory behind two barriers per 32 values of K, and had
+//      nothing in flight while it computed: at 32..64 tokens a visit cost about 3x what reading the experts costs. Here every warp decodes the
+//      weights of its own 16 rows straight into the mma fragments (no shared weights, no barriers in the K loop), loads one group of 32-value
+//      steps ahead of the one it computes, and only the activations are staged, 384 values of K at a time. The arithmetic is the old kernel's,
+//      operation for operation (SF4: per 16 values of K one mma then acc = fma(block scale, mma result, acc); MX8: both mmas of 32 values
+//      accumulate, then one fma with the block scale; K ascending), so the results are bit for bit the same.
+// ============================================================================
+__device__ __forceinline__ uint32_t sf4_byte_to_h2bits(uint32_t b) {
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 1000) && defined(CUDART_VERSION) && (CUDART_VERSION >= 12080)
+    __half2_raw r = __nv_cvt_fp4x2_to_halfraw2((__nv_fp4x2_storage_t)(uint8_t)b, __NV_E2M1);
+    return *reinterpret_cast<const uint32_t*>(&r);
+#else
+    const float2 f = e2m1x2_byte_to_f32x2((uint8_t)b);
+    const __half2 h = __floats2half2_rn(f.x, f.y);
+    return *reinterpret_cast<const uint32_t*>(&h);
+#endif
+}
+
+__device__ __forceinline__ uint32_t mx8_u16_to_h2bits(uint32_t u) {
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 890)
+    __half2_raw r = __nv_cvt_fp8x2_to_halfraw2((__nv_fp8x2_storage_t)(uint16_t)u, __NV_E4M3);
+    return *reinterpret_cast<const uint32_t*>(&r);
+#else
+    const float2 f = e4m3x2_to_f32x2((uint16_t)u);
+    const __half2 h = __floats2half2_rn(f.x, f.y);
+    return *reinterpret_cast<const uint32_t*>(&h);
+#endif
+}
+
+template <bool GU, int FMTV>   // FMTV: FMT_SF4 or FMT_MX8
+__global__ void __launch_bounds__(256) k_ink_moe_fp16tc_v2(
+    const uint8_t* __restrict__ sec4_base,
+    const InkExpertDev* __restrict__ experts,
+    InkMoeTables tb,
+    const float* __restrict__ act_f32,        // GU: x_f32 [M, 2304]; DN: h_f32 [P, 1152]
+    const float* __restrict__ topk_w,         // DN only
+    float* __restrict__ out_buf) {            // GU: h_f32 [P, 1152]; DN: y_pair [P, 2304]
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 800)
+    constexpr bool SF4   = (FMTV == FMT_SF4);
+    constexpr int kWR    = 128;
+    constexpr int TR     = 16;
+    constexpr int K      = GU ? kInkHidden : kInkInter;       // 2304 or 1152
+    constexpr int ROWS_N = GU ? (2 * kInkInter) : kInkHidden; // 2304
+    constexpr int NFB    = ROWS_N / kWR;                      // 18 blocks of 128 rows
+    constexpr int N32    = K / 32;                            // 72 or 36
+    constexpr int GQ     = SF4 ? 4 : 2;                       // 32-value steps per group
+    constexpr int WPK    = SF4 ? 1 : 2;                       // 16-byte weight loads per row and 32-value step
+    constexpr int NG     = N32 / GQ;
+    constexpr int KC     = 384;                               // activation values of K staged at a time
+    constexpr int GPC    = KC / (32 * GQ);                    // groups per staged chunk (divides NG)
+    static_assert(N32 % GQ == 0 && NG % GPC == 0, "tile shape");
+
+    __shared__ alignas(16) __half s_a[TR][KC + 8];   // 12,544 B (row stride 784 B = 16-byte aligned, bank-conflict free for the fragment reads)
+    __shared__ int32_t            s_row[TR];
+    __shared__ float              s_rw[TR];
+
+    const int tid  = threadIdx.x;
+    const int warp = tid >> 5;   // 0..7: rows 16*warp .. 16*warp+15 of the block
+    const int lane = tid & 31;
+    const int g    = lane >> 2;  // 0..7
+    const int tig  = lane & 3;   // 0..3
+
+    const int total_tiles = *tb.n_tiles;
+    const int nwork = total_tiles * NFB;
+
+    for (int w = blockIdx.x; w < nwork; w += gridDim.x) {
+        const int2 tl = tb.tiles[w / NFB];
+        const int fb = w % NFB;
+        const int e = tl.x;
+        const int row0 = tl.y;
+        const InkExpertDev ed = experts[e];
+        const int fmt = GU ? (int)ed.gu_code : (int)ed.dn_code;
+        if (ed.tier > 1 || fmt != FMTV) continue;
+        const int nrows = min(TR, tb.off[e + 1] - row0);
+        if (nrows <= 0) continue;
+
+        const uint8_t* body = sec4_base + ed.body_off;
+        float w_outer = 1.0f;
+        if constexpr (SF4) {
+            float hdr[4];
+            memcpy(hdr, body, 16);
+            w_outer = GU ? (hdr[0] / hdr[1]) : (hdr[2] / hdr[3]);
+        }
+
+        __syncthreads();
+        if (tid < TR) {
+            if (tid < nrows) {
+                s_row[tid] = GU ? tb.tok_idx[row0 + tid] : (row0 + tid);
+                if constexpr (!GU) s_rw[tid] = topk_w[tb.pairs[row0 + tid]];
+            } else {
+                s_row[tid] = -1;
+                if constexpr (!GU) s_rw[tid] = 0.0f;
+            }
+        }
+        __syncthreads();
+
+        auto phys_row_fn = [&](int r) -> int {
+            return GU ? (2 * (fb * 64 + 8 * (r >> 4) + (r & 7)) + ((r >> 3) & 1))
+                      : (fb * kWR + r);
+        };
+        constexpr size_t W_P_ROW = SF4 ? (K / 2) : K;
+        constexpr size_t W_S_ROW = SF4 ? (K / 16) : (K / 32);
+        const uint8_t* base_p = GU ? (SF4 ? (body + 16) : body) : (body + ed.dn_off);
+        const uint8_t* base_s = base_p + (size_t)ROWS_N * W_P_ROW;
+        const int pr0 = phys_row_fn(16 * warp + g);
+        const int pr1 = phys_row_fn(16 * warp + g + 8);
+        const uint4* wp0 = reinterpret_cast<const uint4*>(base_p + (size_t)pr0 * W_P_ROW);
+        const uint4* wp1 = reinterpret_cast<const uint4*>(base_p + (size_t)pr1 * W_P_ROW);
+        const uint8_t* sp0 = base_s + (size_t)pr0 * W_S_ROW;
+        const uint8_t* sp1 = base_s + (size_t)pr1 * W_S_ROW;
+
+        float acc[2][4] = {};
+        const bool on1 = 8 < nrows;
+
+        uint4 c0[GQ * WPK], c1[GQ * WPK], n0[GQ * WPK], n1[GQ * WPK];
+        uint32_t cs0[GQ], cs1[GQ], ns0[GQ], ns1[GQ];   // SF4: the two e4m3 block scales of a 32-value step; MX8: its ue8m0 scale
+        auto load_group = [&](int gi, uint4 (&d0)[GQ * WPK], uint4 (&d1)[GQ * WPK], uint32_t (&t0)[GQ], uint32_t (&t1)[GQ]) {
+#pragma unroll
+            for (int q = 0; q < GQ; ++q) {
+#pragma unroll
+                for (int p = 0; p < WPK; ++p) {
+                    d0[q * WPK + p] = wp0[((size_t)gi * GQ + q) * WPK + p];
+                    d1[q * WPK + p] = wp1[((size_t)gi * GQ + q) * WPK + p];
+                }
+                if constexpr (SF4) {
+                    t0[q] = reinterpret_cast<const uint16_t*>(sp0)[gi * GQ + q];
+                    t1[q] = reinterpret_cast<const uint16_t*>(sp1)[gi * GQ + q];
+                } else {
+                    t0[q] = sp0[gi * GQ + q];
+                    t1[q] = sp1[gi * GQ + q];
+                }
+            }
+        };
+        load_group(0, n0, n1, ns0, ns1);
+
+        for (int gi = 0; gi < NG; ++gi) {
+            if (gi % GPC == 0) {   // the next 384 values of K of the activations: staged as FP16 (clamped like the old kernel)
+                __syncthreads();
+                const int kbase = (gi / GPC) * KC;
+#pragma unroll
+                for (int i = 0; i < (TR * (KC / 4)) / 256; ++i) {
+                    const int f4 = tid + i * 256;
+                    const int r = f4 / (KC / 4);
+                    const int c4 = f4 % (KC / 4);
+                    __half2 h0 = __floats2half2_rn(0.0f, 0.0f), h1 = h0;
+                    if (r < nrows) {
+                        const float4 fv = *reinterpret_cast<const float4*>(act_f32 + (size_t)s_row[r] * K + kbase + c4 * 4);
+                        h0 = __floats2half2_rn(fminf(fmaxf(fv.x, -65504.0f), 65504.0f), fminf(fmaxf(fv.y, -65504.0f), 65504.0f));
+                        h1 = __floats2half2_rn(fminf(fmaxf(fv.z, -65504.0f), 65504.0f), fminf(fmaxf(fv.w, -65504.0f), 65504.0f));
+                    }
+                    *reinterpret_cast<__half2*>(&s_a[r][c4 * 4]) = h0;
+                    *reinterpret_cast<__half2*>(&s_a[r][c4 * 4 + 2]) = h1;
+                }
+                __syncthreads();
+            }
+#pragma unroll
+            for (int q = 0; q < GQ * WPK; ++q) { c0[q] = n0[q]; c1[q] = n1[q]; }
+#pragma unroll
+            for (int q = 0; q < GQ; ++q) { cs0[q] = ns0[q]; cs1[q] = ns1[q]; }
+            if (gi + 1 < NG) load_group(gi + 1, n0, n1, ns0, ns1);
+#pragma unroll
+            for (int q = 0; q < GQ; ++q) {
+                if constexpr (SF4) {
+#pragma unroll
+                    for (int sub = 0; sub < 2; ++sub) {
+                        // bytes t and t+4 of this row's 8 FP4 bytes (weights 2t, 2t+1 and 2t+8, 2t+9 of the 16) are this lane's A registers
+                        const uint32_t xa = sub ? c0[q].z : c0[q].x, ya = sub ? c0[q].w : c0[q].y;
+                        const uint32_t xb = sub ? c1[q].z : c1[q].x, yb = sub ? c1[q].w : c1[q].y;
+                        const uint32_t a0 = sf4_byte_to_h2bits((xa >> (8 * tig)) & 0xFFu);
+                        const uint32_t a2 = sf4_byte_to_h2bits((ya >> (8 * tig)) & 0xFFu);
+                        const uint32_t a1 = sf4_byte_to_h2bits((xb >> (8 * tig)) & 0xFFu);
+                        const uint32_t a3 = sf4_byte_to_h2bits((yb >> (8 * tig)) & 0xFFu);
+                        const float sc0 = e4m3_to_f32((uint8_t)((cs0[q] >> (8 * sub)) & 0xFFu)) * w_outer;
+                        const float sc1 = e4m3_to_f32((uint8_t)((cs1[q] >> (8 * sub)) & 0xFFu)) * w_outer;
+                        const int ko = (gi % GPC) * (32 * GQ) + q * 32 + sub * 16;
+                        const uint32_t b0_0 = *reinterpret_cast<const uint32_t*>(&s_a[g][ko + 2 * tig]);
+                        const uint32_t b0_1 = *reinterpret_cast<const uint32_t*>(&s_a[g][ko + 8 + 2 * tig]);
+                        float cv[4] = {};
+                        mma_m16n8k16_f16(cv, a0, a1, a2, a3, b0_0, b0_1);
+                        acc[0][0] = fmaf(sc0, cv[0], acc[0][0]);
+                        acc[0][1] = fmaf(sc0, cv[1], acc[0][1]);
+                        acc[0][2] = fmaf(sc1, cv[2], acc[0][2]);
+                        acc[0][3] = fmaf(sc1, cv[3], acc[0][3]);
+                        if (on1) {
+                            const uint32_t b1_0 = *reinterpret_cast<const uint32_t*>(&s_a[8 + g][ko + 2 * tig]);
+                            const uint32_t b1_1 = *reinterpret_cast<const uint32_t*>(&s_a[8 + g][ko + 8 + 2 * tig]);
+                            float dv[4] = {};
+                            mma_m16n8k16_f16(dv, a0, a1, a2, a3, b1_0, b1_1);
+                            acc[1][0] = fmaf(sc0, dv[0], acc[1][0]);
+                            acc[1][1] = fmaf(sc0, dv[1], acc[1][1]);
+                            acc[1][2] = fmaf(sc1, dv[2], acc[1][2]);
+                            acc[1][3] = fmaf(sc1, dv[3], acc[1][3]);
+                        }
+                    }
+                } else {
+                    // MX8: the 32 fp8 bytes of a row's step are two 16-byte loads (sub 0, sub 1); this lane's A registers are the 16-bit pairs
+                    // t and t+4 of each (bytes 2t, 2t+1 and 8+2t, 9+2t); both mmas of the step accumulate, then one fma with the block scale
+                    const float sc0 = ue8m0_to_f32(cs0[q]);
+                    const float sc1 = ue8m0_to_f32(cs1[q]);
+                    float cv[4] = {}, dv[4] = {};
+#pragma unroll
+                    for (int sub = 0; sub < 2; ++sub) {
+                        const uint4 va = c0[q * 2 + sub], vb = c1[q * 2 + sub];
+                        const uint32_t wa0 = (tig >> 1) ? va.y : va.x, wa1 = (tig >> 1) ? va.w : va.z;
+                        const uint32_t wb0 = (tig >> 1) ? vb.y : vb.x, wb1 = (tig >> 1) ? vb.w : vb.z;
+                        const int sh = 16 * (tig & 1);
+                        const uint32_t a0 = mx8_u16_to_h2bits((wa0 >> sh) & 0xFFFFu);
+                        const uint32_t a2 = mx8_u16_to_h2bits((wa1 >> sh) & 0xFFFFu);
+                        const uint32_t a1 = mx8_u16_to_h2bits((wb0 >> sh) & 0xFFFFu);
+                        const uint32_t a3 = mx8_u16_to_h2bits((wb1 >> sh) & 0xFFFFu);
+                        const int ko = (gi % GPC) * (32 * GQ) + q * 32 + sub * 16;
+                        const uint32_t b0_0 = *reinterpret_cast<const uint32_t*>(&s_a[g][ko + 2 * tig]);
+                        const uint32_t b0_1 = *reinterpret_cast<const uint32_t*>(&s_a[g][ko + 8 + 2 * tig]);
+                        mma_m16n8k16_f16(cv, a0, a1, a2, a3, b0_0, b0_1);
+                        if (on1) {
+                            const uint32_t b1_0 = *reinterpret_cast<const uint32_t*>(&s_a[8 + g][ko + 2 * tig]);
+                            const uint32_t b1_1 = *reinterpret_cast<const uint32_t*>(&s_a[8 + g][ko + 8 + 2 * tig]);
+                            mma_m16n8k16_f16(dv, a0, a1, a2, a3, b1_0, b1_1);
+                        }
+                    }
+                    acc[0][0] = fmaf(sc0, cv[0], acc[0][0]);
+                    acc[0][1] = fmaf(sc0, cv[1], acc[0][1]);
+                    acc[0][2] = fmaf(sc1, cv[2], acc[0][2]);
+                    acc[0][3] = fmaf(sc1, cv[3], acc[0][3]);
+                    if (on1) {
+                        acc[1][0] = fmaf(sc0, dv[0], acc[1][0]);
+                        acc[1][1] = fmaf(sc0, dv[1], acc[1][1]);
+                        acc[1][2] = fmaf(sc1, dv[2], acc[1][2]);
+                        acc[1][3] = fmaf(sc1, dv[3], acc[1][3]);
+                    }
+                }
+            }
+        }
+
+        if constexpr (GU) {
+            const int feat = fb * 64 + 8 * warp + g;
+#pragma unroll
+            for (int n = 0; n < 2; ++n) {
+                if (n == 1 && !on1) break;
+#pragma unroll
+                for (int c = 0; c < 2; ++c) {
+                    const int r = 8 * n + 2 * tig + c;
+                    if (r < nrows) {
+                        out_buf[(size_t)(row0 + r) * kInkInter + feat] = situ_f32(acc[n][c], acc[n][2 + c]);
+                    }
+                }
+            }
+        } else {
+            const int rbase = fb * kWR + 16 * warp;
+#pragma unroll
+            for (int n = 0; n < 2; ++n) {
+                if (n == 1 && !on1) break;
+#pragma unroll
+                for (int c = 0; c < 2; ++c) {
+                    const int r = 8 * n + 2 * tig + c;
+                    if (r < nrows) {
+                        const float sc = s_rw[r];
+                        float* dst = out_buf + (size_t)tb.pairs[row0 + r] * kInkHidden;
+                        dst[rbase + g + 0] = acc[n][c] * sc;
+                        dst[rbase + g + 8] = acc[n][2 + c] * sc;
+                    }
+                }
+            }
+        }
+    }
+#else
+    (void)sec4_base; (void)experts; (void)tb; (void)act_f32; (void)topk_w; (void)out_buf;
+#endif
+}
+
+// ============================================================================
 // 4D. Volta (sm_70 V100) & Turing (sm_75 RTX 2080 Ti) High-Occupancy 2x2-Tiled nvcuda::wmma FP16 Tensor Core MoE!
 //     Handles ALL .strata v1.1 expert codecs (SF4, MX8, S1_5..S8_K) with FP32 accumulation (125 TFLOPS on V100!)
 //     BN=128, BK=32, 256 threads (8 warps), 16.9 KB smem, 1-cycle s_e4[256] LUT, TR=64 (2x2 warp tiles) or TR=16!
@@ -3174,6 +3447,7 @@ __global__ void __launch_bounds__(256, 4) k_ink_moe_wmma_f16_bk64(
 // ============================================================================
 struct InkLayerMoeInfo {
     bool has_sf4  = false;
+    bool mixed_gu_dn = false;   // an SF4 / MX8 expert whose down matrix has the other format (the rewritten FP16-TC kernel needs a layer of one format)
     bool has_mx8  = false;
     bool has_sk   = false;
     bool has_gguf = false;
@@ -3319,8 +3593,24 @@ inline void launch_ink_moe_dispatch_only(
         } else if (use_fp16_tc) {
             const int mt = ink_moe_max_tiles(M, 16);
             const unsigned grid = (unsigned)std::min(std::max(1, mt * 18), 2048);
-            k_ink_moe_sf4_mx8_fp16tc<true><<<grid, 256, 0, st>>>(sec4_base, experts, ws.tb, x_f32, nullptr, ws.h_f32);
-            k_ink_moe_sf4_mx8_fp16tc<false><<<grid, 256, 0, st>>>(sec4_base, experts, ws.tb, ws.h_f32, ws.topk_w, ws.y_pair);
+            static const bool moe_v1 = [] { const char* e = std::getenv("STRATA_INK_MOE_V1"); return e && e[0] == '1'; }();
+            if (info.has_sf4 != info.has_mx8 && !info.has_sk && !info.has_gguf && !info.mixed_gu_dn && !moe_v1) {   // SF4-only or MX8-only layers: the rewritten kernel (same results bit for bit)
+                if (info.has_sf4) {
+                    k_ink_moe_fp16tc_v2<true, FMT_SF4><<<grid, 256, 0, st>>>(sec4_base, experts, ws.tb, x_f32, nullptr, ws.h_f32);
+                    ink_moe_mark(2);
+                    k_ink_moe_fp16tc_v2<false, FMT_SF4><<<grid, 256, 0, st>>>(sec4_base, experts, ws.tb, ws.h_f32, ws.topk_w, ws.y_pair);
+                } else {
+                    k_ink_moe_fp16tc_v2<true, FMT_MX8><<<grid, 256, 0, st>>>(sec4_base, experts, ws.tb, x_f32, nullptr, ws.h_f32);
+                    ink_moe_mark(2);
+                    k_ink_moe_fp16tc_v2<false, FMT_MX8><<<grid, 256, 0, st>>>(sec4_base, experts, ws.tb, ws.h_f32, ws.topk_w, ws.y_pair);
+                }
+                ink_moe_mark(3);
+            } else {
+                k_ink_moe_sf4_mx8_fp16tc<true><<<grid, 256, 0, st>>>(sec4_base, experts, ws.tb, x_f32, nullptr, ws.h_f32);
+                ink_moe_mark(2);
+                k_ink_moe_sf4_mx8_fp16tc<false><<<grid, 256, 0, st>>>(sec4_base, experts, ws.tb, ws.h_f32, ws.topk_w, ws.y_pair);
+                ink_moe_mark(3);
+            }
         } else {
             dim3 g16(kInkInter / 16, max_act);
             if (M == 1) {
