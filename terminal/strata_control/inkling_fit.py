@@ -66,16 +66,16 @@ BUILDS = {
     "SQ-20": {"file": "Inkling-2-Mini-SQ-20.strata", "footprint_gb": 19.35, "dense_gb": 3.67, "bodies_gb": 15.68, "file_gb": 19.35, "format": "strata"},
     "SQ-15": {"file": "Inkling-2-Mini-SQ-15.strata", "footprint_gb": 14.35, "dense_gb": 2.07, "bodies_gb": 12.28, "file_gb": 14.35, "format": "strata"},
     "SQ-10": {"file": "Inkling-2-Mini-SQ-10.strata", "footprint_gb": 10.47, "dense_gb": 1.87, "bodies_gb": 8.60, "file_gb": 10.47, "format": "strata"},
-    "UD-Q8_K_XL": {"file": "Inkling-2-Mini-UD-Q8_K_XL.gguf", "footprint_gb": 22.87, "dense_gb": 2.87, "bodies_gb": 20.00, "file_gb": 22.87, "format": "gguf"},
-    "UD-Q4_K_XL": {"file": "Inkling-2-Mini-UD-Q4_K_XL.gguf", "footprint_gb": 17.63, "dense_gb": 2.15, "bodies_gb": 15.48, "file_gb": 17.63, "format": "gguf"},
-    "UD-Q4_K_M": {"file": "Inkling-2-Mini-UD-Q4_K_M.gguf", "footprint_gb": 16.61, "dense_gb": 2.10, "bodies_gb": 14.51, "file_gb": 16.61, "format": "gguf"},
-    "UD-IQ4_XS": {"file": "Inkling-2-Mini-UD-IQ4_XS.gguf", "footprint_gb": 15.73, "dense_gb": 2.05, "bodies_gb": 13.68, "file_gb": 15.73, "format": "gguf"},
-    "UD-Q3_K_XL": {"file": "Inkling-2-Mini-UD-Q3_K_XL.gguf", "footprint_gb": 13.63, "dense_gb": 2.00, "bodies_gb": 11.63, "file_gb": 13.63, "format": "gguf"},
-    "UD-IQ3_XXS": {"file": "Inkling-2-Mini-UD-IQ3_XXS.gguf", "footprint_gb": 11.66, "dense_gb": 1.95, "bodies_gb": 9.71, "file_gb": 11.66, "format": "gguf"},
-    "UD-Q2_K_XL": {"file": "Inkling-2-Mini-UD-Q2_K_XL.gguf", "footprint_gb": 9.14, "dense_gb": 1.88, "bodies_gb": 7.26, "file_gb": 9.14, "format": "gguf"},
-    "UD-IQ2_XXS": {"file": "Inkling-2-Mini-UD-IQ2_XXS.gguf", "footprint_gb": 8.49, "dense_gb": 1.85, "bodies_gb": 6.64, "file_gb": 8.49, "format": "gguf"},
-    "UD-IQ1_M": {"file": "Inkling-2-Mini-UD-IQ1_M.gguf", "footprint_gb": 8.02, "dense_gb": 1.82, "bodies_gb": 6.20, "file_gb": 8.02, "format": "gguf"},
-    "UD-IQ1_S": {"file": "Inkling-2-Mini-UD-IQ1_S.gguf", "footprint_gb": 7.76, "dense_gb": 1.80, "bodies_gb": 5.96, "file_gb": 7.76, "format": "gguf"},
+    "UD-Q8_K_XL": {"file": "Inkling-2-Mini-UD-Q8_K_XL.gguf", "footprint_gb": 22.87, "dense_gb": 2.87, "bodies_gb": 20.00, "file_gb": 22.87, "format": "gguf", "expert_elems_e9": {"BF16": 4.077, "NVFP4": 20.384}},
+    "UD-Q4_K_XL": {"file": "Inkling-2-Mini-UD-Q4_K_XL.gguf", "footprint_gb": 17.63, "dense_gb": 2.15, "bodies_gb": 15.48, "file_gb": 17.63, "format": "gguf", "expert_elems_e9": {"NVFP4": 20.384, "Q8_0": 4.077}},
+    "UD-Q4_K_M": {"file": "Inkling-2-Mini-UD-Q4_K_M.gguf", "footprint_gb": 16.61, "dense_gb": 2.10, "bodies_gb": 14.51, "file_gb": 16.61, "format": "gguf", "expert_elems_e9": {"NVFP4": 20.384, "Q5_K": 2.718, "Q8_0": 1.359}},
+    "UD-IQ4_XS": {"file": "Inkling-2-Mini-UD-IQ4_XS.gguf", "footprint_gb": 15.73, "dense_gb": 2.05, "bodies_gb": 13.68, "file_gb": 15.73, "format": "gguf", "expert_elems_e9": {"IQ4_NL": 0.340, "IQ4_XS": 0.679, "NVFP4": 20.384, "Q4_K": 0.679, "Q5_0": 1.019, "Q5_K": 1.359}},
+    "UD-Q3_K_XL": {"file": "Inkling-2-Mini-UD-Q3_K_XL.gguf", "footprint_gb": 13.63, "dense_gb": 2.00, "bodies_gb": 11.63, "file_gb": 13.63, "format": "gguf", "expert_elems_e9": {"IQ2_S": 2.038, "IQ2_XS": 0.679, "IQ3_S": 1.359, "IQ3_XXS": 3.397, "IQ4_NL": 1.359, "NVFP4": 14.948, "Q3_K": 0.679}},
+    "UD-IQ3_XXS": {"file": "Inkling-2-Mini-UD-IQ3_XXS.gguf", "footprint_gb": 11.66, "dense_gb": 1.95, "bodies_gb": 9.71, "file_gb": 11.66, "format": "gguf", "expert_elems_e9": {"IQ2_S": 6.115, "IQ2_XS": 0.679, "IQ2_XXS": 0.679, "IQ3_XXS": 8.833, "IQ4_NL": 1.359, "NVFP4": 6.795}},
+    "UD-Q2_K_XL": {"file": "Inkling-2-Mini-UD-Q2_K_XL.gguf", "footprint_gb": 9.14, "dense_gb": 1.88, "bodies_gb": 7.26, "file_gb": 9.14, "format": "gguf", "expert_elems_e9": {"IQ1_S": 4.077, "IQ2_S": 7.474, "IQ2_XS": 1.359, "IQ2_XXS": 3.397, "MXFP4": 0.340, "NVFP4": 3.737, "Q2_0": 4.077}},
+    "UD-IQ2_XXS": {"file": "Inkling-2-Mini-UD-IQ2_XXS.gguf", "footprint_gb": 8.49, "dense_gb": 1.85, "bodies_gb": 6.64, "file_gb": 8.49, "format": "gguf", "expert_elems_e9": {"IQ1_S": 4.077, "IQ2_S": 3.397, "IQ2_XS": 4.077, "IQ2_XXS": 4.756, "NVFP4": 2.378, "Q2_0": 5.776}},
+    "UD-IQ1_M": {"file": "Inkling-2-Mini-UD-IQ1_M.gguf", "footprint_gb": 8.02, "dense_gb": 1.82, "bodies_gb": 6.20, "file_gb": 8.02, "format": "gguf", "expert_elems_e9": {"IQ1_S": 4.077, "IQ2_S": 2.718, "IQ2_XS": 3.397, "IQ2_XXS": 6.115, "NVFP4": 1.019, "Q2_0": 7.135}},
+    "UD-IQ1_S": {"file": "Inkling-2-Mini-UD-IQ1_S.gguf", "footprint_gb": 7.76, "dense_gb": 1.80, "bodies_gb": 5.96, "file_gb": 7.76, "format": "gguf", "expert_elems_e9": {"IQ1_S": 4.077, "IQ2_S": 1.359, "IQ2_XS": 3.397, "IQ2_XXS": 7.474, "NVFP4": 0.340, "Q2_0": 7.814}},
 }
 STRATA_ORDER = ("SQ-20", "SQ-15", "SQ-10")       # primary recommended native .strata builds, best quality first
 GGUF_ORDER = (
@@ -179,6 +179,46 @@ def non_expert_gb(ctx: int | None = None, parallel: int = 1, vision: bool = Fals
     )
 
 
+# Backends that cannot run every GGUF expert type natively transcode the GGUF_RAW experts at load (ink_gguf_transcode.h, choose_sk_code_for_ggml):
+# types of 4 bits per weight or less (Q2_K ... IQ1_S, IQ2_*, IQ3_*, IQ4_*, MXFP4, Q2_0, Q4_*) become S4_K, Q5_* / Q6_K become S6_K, Q8_* / F16 / BF16
+# become S8_K; NVFP4 stays a bit-exact SF4 copy. The converted experts take their S_K size in memory, not their file size: an IQ1_S expert grows 2.7x
+# (1.56 -> 4.19 bits per weight), so a plan that counts the file size leaves part of the experts with no place (#6729). CUDA keeps GGUF_RAW as it is.
+TRANSCODE_BACKENDS = ("hip", "sycl", "metal")
+SK_BYTES_PER_256 = {"S4_K": 134, "S6_K": 198, "S8_K": 262}            # strata/quant/sk_codecs.hpp superblock_bytes
+SK_CODE_OF_TYPE = {"S8_K": ("F32", "F16", "Q8_0", "Q8_1", "Q8_K", "BF16"), "S6_K": ("Q5_0", "Q5_1", "Q5_K", "Q6_K")}   # everything else: S4_K
+GGUF_TYPE_ELEMS_BYTES = {                                              # ggml type -> (elements per block, bytes per block)
+    "F32": (1, 4), "F16": (1, 2), "BF16": (1, 2), "Q4_0": (32, 18), "Q4_1": (32, 20), "Q5_0": (32, 22), "Q5_1": (32, 24), "Q8_0": (32, 34),
+    "Q2_K": (256, 84), "Q3_K": (256, 110), "Q4_K": (256, 144), "Q5_K": (256, 176), "Q6_K": (256, 210), "Q8_K": (256, 292),
+    "IQ1_S": (256, 50), "IQ1_M": (256, 56), "IQ2_XXS": (256, 66), "IQ2_XS": (256, 74), "IQ2_S": (256, 82), "IQ3_XXS": (256, 98),
+    "IQ3_S": (256, 110), "IQ4_NL": (32, 18), "IQ4_XS": (256, 136), "MXFP4": (32, 17), "NVFP4": (64, 36), "Q2_0": (64, 18),
+}
+EXPERT_BODY_OVERHEAD_BYTES = 2304 + 32          # sq_xd_dn[inter] FP16 + 64-byte alignment padding, per transcoded expert
+N_EXPERTS_TOTAL = 3072
+
+
+def converted_expert_bytes_per_element(type_name: str) -> float:
+    """Bytes per weight an expert tensor of this GGUF type takes in memory after the load-time conversion (NVFP4: its own, bit-exact SF4)."""
+    if type_name == "NVFP4":
+        el, by = GGUF_TYPE_ELEMS_BYTES["NVFP4"]
+        return by / el
+    for code, types in SK_CODE_OF_TYPE.items():
+        if type_name in types:
+            return SK_BYTES_PER_256[code] / 256.0
+    return SK_BYTES_PER_256["S4_K"] / 256.0
+
+
+def bodies_gb_for(build: str, backend: str | None = None) -> float:
+    """GB the routed experts of `build` take on `backend`: the file's size, or, where the backend converts GGUF experts at load, their converted size."""
+    info = BUILDS[build]
+    native = float(info["bodies_gb"])
+    elems = info.get("expert_elems_e9")
+    if info.get("format") != "gguf" or not elems or str(backend or "").strip().lower() not in TRANSCODE_BACKENDS:
+        return native
+    src = sum(e9 * 1e9 * GGUF_TYPE_ELEMS_BYTES[t][1] / GGUF_TYPE_ELEMS_BYTES[t][0] for t, e9 in elems.items())
+    dst = sum(e9 * 1e9 * converted_expert_bytes_per_element(t) for t, e9 in elems.items()) + N_EXPERTS_TOTAL * EXPERT_BODY_OVERHEAD_BYTES
+    return round(native * dst / src, 2)
+
+
 def compute(build: str, vram_gib: float, ram_gib: float, ctx: int | None = None, vision: bool = False,
             parallel: int = 1, dspark: bool = True, kv_offload: str = "auto", *,
             extra_vram_gib: float = 0.0, backend: str | None = None,
@@ -192,7 +232,8 @@ def compute(build: str, vram_gib: float, ram_gib: float, ctx: int | None = None,
     vram_gib is the card's FREE memory (what is left after the desktop and other programs), ram_free_gib the free RAM
     (None: not known, the total in ram_gib counts); desktop says the card drives a display (a larger reserve) (#6662 #6739).
     """
-    info = BUILDS[build]
+    info = dict(BUILDS[build])
+    info["bodies_gb"] = bodies_gb_for(build, backend)      # GGUF experts a backend converts at load take their converted size
     v_primary = float(vram_gib or 0.0)
     v_extra = max(0.0, float(extra_vram_gib or 0.0))
     v_gib = v_primary + v_extra
@@ -285,11 +326,11 @@ def compute(build: str, vram_gib: float, ram_gib: float, ctx: int | None = None,
 
 
 def compute_unified(build: str, pool_gib: float, ctx: int | None = None, vision: bool = False,
-                    parallel: int = 1, dspark: bool = True) -> dict:
+                    parallel: int = 1, dspark: bool = True, backend: str | None = None) -> dict:
     """Placement on a unified-memory / coherent-UMA host (Apple Silicon, Strix Halo, Strix Point 890M, Radeon 780M, DGX Spark)."""
     info = BUILDS[build]
     extra_dspark = DSPARK_GGUF_GB if (dspark and info.get("format") == "gguf") else 0.0
-    need_total = info["footprint_gb"] + extra_dspark
+    need_total = info["footprint_gb"] - info["bodies_gb"] + bodies_gb_for(build, backend) + extra_dspark
     fp8_kv = auto_fp8_kv(None, ctx, parallel)
     room = max(
         0.0,
@@ -317,7 +358,7 @@ def place(build: str, vram_gib: float | None, ram_gib: float, unified: bool = Fa
           extra_vram_gib: float = 0.0, backend: str | None = None,
           desktop: bool = False, ram_free_gib: float | None = None) -> dict:
     if unified:
-        return compute_unified(build, ram_gib, ctx, vision, parallel, dspark)
+        return compute_unified(build, ram_gib, ctx, vision, parallel, dspark, backend=backend)
     return compute(build, vram_gib or 0.0, ram_gib, ctx, vision, parallel, dspark,
                    extra_vram_gib=extra_vram_gib, backend=backend, desktop=desktop, ram_free_gib=ram_free_gib)
 
