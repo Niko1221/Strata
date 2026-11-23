@@ -1,6 +1,5 @@
 """0221 APPTUI, wiring DSPARK's launch-time drafting probe into `strata launch` (Runner.probe_drafting): before the first start of a placement, when the run config
-wants the measured choice, the engine is probed and the numbers are saved in the run config. Behind the exactness gate: with EXACT_DRAFTING_BACKENDS empty (today)
-nothing runs. The engine is DSPARK's fake one (tests/terminal/test_inkling_probe.py): no real engine is started."""
+wants the measured choice, the engine is probed and the numbers are saved in the run config. Every backend is probed (the bit-exact gate is gone, owner 2026-11-23). The engine is DSPARK's fake one (tests/terminal/test_inkling_probe.py): no real engine is started."""
 
 from __future__ import annotations
 
@@ -30,8 +29,6 @@ class ProbeWiring(unittest.TestCase):
         self.addCleanup(t.cleanup)
         self.path = Path(t.name) / "launch.json"
         self.started = []
-        saved = inkling_family.EXACT_DRAFTING_BACKENDS
-        self.addCleanup(setattr, inkling_family, "EXACT_DRAFTING_BACKENDS", saved)
 
     def runner(self, cfg=None):
         self.path.write_text(json.dumps(cfg or CFG), encoding="utf-8")
@@ -59,16 +56,7 @@ class ProbeWiring(unittest.TestCase):
             self.addCleanup(p.stop)
         r.probe_drafting()
 
-    def test_while_the_backend_is_not_proven_nothing_is_measured(self):
-        self.assertEqual(inkling_family.EXACT_DRAFTING_BACKENDS, ())
-        r = self.runner()
-        self.run_probe(r)
-        self.assertEqual(self.started, [])
-        self.assertNotIn("drafting_probe", self.saved())
-        self.assertEqual(r.said, [])
-
-    def test_a_proven_backend_is_probed_once_and_the_numbers_are_saved(self):
-        inkling_family.EXACT_DRAFTING_BACKENDS = ("cuda",)
+    def test_a_backend_is_probed_once_and_the_numbers_are_saved(self):
         r = self.runner()
         self.run_probe(r)
         self.assertEqual(len(self.started), 2)                       # plain, then drafting
@@ -83,12 +71,10 @@ class ProbeWiring(unittest.TestCase):
         self.assertEqual(self.started, [])
 
     def test_a_card_where_drafting_loses_is_saved_as_off(self):
-        inkling_family.EXACT_DRAFTING_BACKENDS = ("cuda",)
         self.run_probe(self.runner(), {"off": {"code": 11.0, "chat": 11.0}, "on": {"code": 9.5, "chat": 6.3}})
         self.assertEqual(self.saved()["drafting_probe"]["decision"], "off")
 
     def test_another_placement_is_measured_again(self):
-        inkling_family.EXACT_DRAFTING_BACKENDS = ("cuda",)
         r = self.runner()
         self.run_probe(r)
         cfg = self.saved()
@@ -98,7 +84,6 @@ class ProbeWiring(unittest.TestCase):
         self.assertEqual(len(self.started), 2)
 
     def test_an_explicit_choice_and_other_families_are_never_probed(self):
-        inkling_family.EXACT_DRAFTING_BACKENDS = ("cuda",)
         for cfg in (dict(CFG, drafting="dspark"), dict(CFG, drafting="off")):
             self.run_probe(self.runner(cfg))
         qwen = Runner(S.LaunchSettings(family="qwen", model="IQ3_XXS", context=32768), catalog=catalog(HW_12))
@@ -120,7 +105,6 @@ class ProbeWiring(unittest.TestCase):
         self.assertEqual(order, ["probe", "start"])
 
     def test_a_probe_that_fails_never_stops_the_launch(self):
-        inkling_family.EXACT_DRAFTING_BACKENDS = ("cuda",)
         r = self.runner()
         with mock.patch.object(P, "probe_run_config", side_effect=RuntimeError("engine would not start")), \
                 mock.patch("serve.server._component_exe", lambda ref, cfg: "/engine/strata-inkling"), \

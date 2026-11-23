@@ -2651,9 +2651,9 @@ class Runner:
         self.report_drafting()
 
     def probe_drafting(self) -> None:
-        """0221 DSPARK wiring: before the first start of a placement, when the run config wants the measured drafting choice (needs_drafting_probe: "auto" on a backend in
-        EXACT_DRAFTING_BACKENDS, no probe valid for this placement), the real engine is started plain and drafting, two prompts are decoded, and the numbers and the
-        decision are saved in the run config (strata_control/inkling_probe.py). Behind the exactness gate: while that list is empty this does nothing. A probe that cannot be
+        """0221 DSPARK wiring: before the first start of a placement, when the run config wants the measured drafting choice (needs_drafting_probe: "auto" on any backend,
+        no probe valid for this placement), the real engine is started plain and drafting, two prompts are decoded, and the numbers and the
+        decision are saved in the run config (strata_control/inkling_probe.py). The bit-exact gate is gone (owner 2026-11-23): every backend is measured. A probe that cannot be
         made never stops the launch: drafting stays off and the config says why."""
         if not self.is_inkling() or self.config_path is None:
             return
