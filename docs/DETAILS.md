@@ -874,8 +874,9 @@ in a RAM copy, as much as the RAM available at the start allows after a headroom
   tight memory limit the system can then swap part of it out: with a 51.75 GiB limit on an R9700 PC (explicit 45.24 GiB budget, one run)
   prompts read at 920 against 1,754 tok/s and decoding ran at 77.7 against 83.3 tok/s.
 
-Snapshots hold running state, checkpoints, used K/V pages and draft-layer K/V. They add host RAM, not VRAM. Oldest parked entries
-are evicted first. A new conversation that starts at a checkpoint inside a parked one (sub-agents that share a system prompt)
+Snapshots hold running state, checkpoints, used K/V pages and draft-layer K/V. They add host RAM, not VRAM. Unpinned parked
+entries are evicted oldest first, then redundant holders of pinned prefixes.
+The last holder of each prefix and the currently borrowed donor stay. A new conversation that starts at a checkpoint inside a parked one (sub-agents that share a system prompt)
 restores that prefix and leaves the parked conversation in place (the log says "borrowed"). Oversized snapshots or host
 allocation failures fall back to ordinary prompt processing. With `--layer-split` a parked conversation holds one image per
 stage. Parked snapshots are not kept across restarts; session files are. `STRATA_SNAPSHOT_FULL_CAPTURE=1` disables K/V
@@ -907,7 +908,7 @@ curl -X POST "http://127.0.0.1:8080/slots/0?action=restore" -H "Content-Type: ap
   dot or trailing dot or space. A save checks that the disk has room for the whole file plus `--session-min-free-mib` (engine
   argument, default 4096, `0` = no check).
 - `--session-save-reclaim` (engine argument, off by default) lets a save that fails its RAM check first release reconstructible
-  host caches (retained K/V, oldest unpinned parked conversations, unpinned checkpoints), and the server waits up to 30 s for
+  host caches (retained K/V, evictable parked conversations, unpinned checkpoints), and the server waits up to 30 s for
   RAM accounting to catch up. It trades later prefix-cache hits for room to save and cannot guarantee a save.
 - Clients still send their messages and images; the file holds engine state and token identity, not a chat export. A follow-up
   that continues the restored conversation reuses its state; a short tail may be read again. Only the deepest checkpoint is saved.
