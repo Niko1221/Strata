@@ -10,6 +10,7 @@
 #pragma once
 
 #include "ink_hip_common.hip.h"
+#include "ink_hip_promote_policy.h"
 #include "strata/inkling2/inkling2_loop.hpp"
 #include "strata/quant/sk_codecs.hpp"
 
@@ -307,7 +308,13 @@ public:
         if (s < 0) return nullptr;
         auto& sl = slots_[s];
         if (sl.dma_in_flight) {
-            if (hipEventQuery(sl.ready_ev) != hipSuccess) return nullptr;
+            // #6671: wait for the copy by default (see ink_hip_promote_policy.h); INK_HIP_PROMOTE_ASYNC=1 polls (timing dependent)
+            static const bool async_poll = ink_hip::ink_hip_promote_async_poll();
+            if (async_poll) {
+                if (hipEventQuery(sl.ready_ev) != hipSuccess) return nullptr;
+            } else {
+                if (hipEventSynchronize(sl.ready_ev) != hipSuccess) return nullptr;
+            }
             sl.dma_in_flight = false;
         }
         sl.last_use = ++clock_;
@@ -335,7 +342,13 @@ public:
         for (int i = 0; i < static_cast<int>(slots_.size()); ++i) {
             auto& sl = slots_[i];
             if (sl.dma_in_flight) {
-                if (hipEventQuery(sl.ready_ev) != hipSuccess) continue;
+                // the victim must not depend on which copies happen to be done: wait (INK_HIP_PROMOTE_ASYNC=1 skips the running ones)
+                static const bool async_poll = ink_hip::ink_hip_promote_async_poll();
+                if (async_poll) {
+                    if (hipEventQuery(sl.ready_ev) != hipSuccess) continue;
+                } else {
+                    if (hipEventSynchronize(sl.ready_ev) != hipSuccess) continue;
+                }
                 sl.dma_in_flight = false;
             }
             if (sl.dir_idx < 0) { victim = i; break; }

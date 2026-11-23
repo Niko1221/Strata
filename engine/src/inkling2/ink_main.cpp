@@ -8,6 +8,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <numeric>
 #include <string>
 #include <vector>
@@ -357,6 +358,231 @@ static int cmd_dump_ref(const std::string& model_path, const std::string& out_pa
     return 0;
 }
 
+// #6671: the drafter must be lossless.  --spec-check N: greedy-generate N tokens (a) one token per forward (B = 1), twice,
+// (b) through dspark_spec_step_greedy exactly as the serve loop calls it (with the same fallbacks), and (c) compare the
+// logits of an M-token verify window (forward_batch with M rows of one slot) bitwise against the B = 1 logits of the same
+// positions, for M = 2, 3, 4, 8.  Prints the first token where (a) and (b) differ and, for every window size, which rows
+// differ.  Exit 0: all identical, 1: something differs.
+static uint64_t fnv_f32(const float* p, size_t n) {
+    uint64_t h = 1469598103934665603ull;
+    const uint8_t* b = reinterpret_cast<const uint8_t*>(p);
+    for (size_t i = 0; i < n * 4; ++i) { h ^= b[i]; h *= 1099511628211ull; }
+    return h;
+}
+static int32_t argmax_f32(const float* lg, int V) {
+    int32_t best = 0;
+    for (int i = 1; i < V; ++i) if (lg[i] > lg[best]) best = i;
+    return best;
+}
+static int cmd_spec_check(const std::string& model_path, const BackendOpts& bopts, bool force_cpu,
+                          const std::vector<int32_t>& ids, int n_gen) {
+    InkModelFile mf;
+    std::string err;
+    if (!mf.open(model_path, err, false, bopts.dspark_path)) { fprintf(stderr, "open: %s\n", err.c_str()); return 1; }
+    BackendOpts bo = bopts;
+    bo.enable_dspark = true;
+    bo.parallel = 1;
+    if (static_cast<int>(ids.size()) + n_gen + 64 > bo.max_ctx) bo.max_ctx = static_cast<int>(ids.size()) + n_gen + 64;
+    auto backend = make_default_backend(force_cpu, &bo);
+    if (!backend->init(mf, bo, err)) { fprintf(stderr, "init: %s\n", err.c_str()); return 1; }
+    const int eff_ctx = (backend->effective_max_ctx() > 0) ? backend->effective_max_ctx() : bo.max_ctx;
+    if (!backend->alloc_slot(0, eff_ctx, bo.kv_dtype, err)) { fprintf(stderr, "alloc_slot: %s\n", err.c_str()); return 1; }
+    const int V = mf.m.c.vocab_unpadded;
+    const int P = static_cast<int>(ids.size());
+    std::vector<float> logits(static_cast<size_t>(V) * 9);
+    StepBatch batch;
+    auto prefill = [&]() -> bool {
+        backend->reset_slot(0);
+        for (int p0 = 0; p0 < P; p0 += bo.chunk) {
+            const int len = std::min(bo.chunk, P - p0);
+            batch.clear();
+            batch.capture_taps = true;
+            for (int k = 0; k < len; ++k) batch.push(0, p0 + k, ids[p0 + k], p0 + k == P - 1);
+            if (!backend->forward_batch(batch, (p0 + len == P) ? logits.data() : nullptr, nullptr, err)) {
+                fprintf(stderr, "prefill: %s\n", err.c_str());
+                return false;
+            }
+        }
+        return true;
+    };
+    const int kKeep = 16;                      // B = 1 logits kept for the window comparison
+    std::vector<std::vector<float>> keep;      // keep[k] = logits after feeding token k of the generated sequence
+    auto run_plain = [&](std::vector<int32_t>& out, std::vector<uint64_t>* hashes, bool keep_logits) -> bool {
+        if (!prefill()) return false;
+        int32_t next = argmax_f32(logits.data(), V);
+        out.assign(1, next);
+        int pos = P;
+        while (static_cast<int>(out.size()) < n_gen) {
+            batch.clear();
+            batch.capture_taps = true;
+            batch.push(0, pos++, next, true);
+            if (!backend->forward_batch(batch, logits.data(), nullptr, err)) { fprintf(stderr, "decode: %s\n", err.c_str()); return false; }
+            if (hashes) hashes->push_back(fnv_f32(logits.data(), V));
+            if (keep_logits && static_cast<int>(keep.size()) < kKeep) keep.emplace_back(logits.begin(), logits.begin() + V);
+            next = argmax_f32(logits.data(), V);
+            out.push_back(next);
+        }
+        return true;
+    };
+    std::vector<int32_t> a1, a2, b;
+    std::vector<uint64_t> h1, h2;
+    if (!run_plain(a1, &h1, true) || !run_plain(a2, &h2, false)) return 1;
+    int rc = 0;
+    size_t plain_diff = 0;
+    for (size_t i = 0; i < h1.size(); ++i) if (h1[i] != h2[i]) ++plain_diff;
+    printf("[spec-check] plain B=1 twice: tokens %s, logits hashes differ at %zu of %zu steps\n",
+           a1 == a2 ? "identical" : "DIFFER", plain_diff, h1.size());
+    if (a1 != a2 || plain_diff) rc = 1;
+    {   // one number per run for the repeat-run check: the logits hashes of every plain step and the token ids
+        uint64_t fp = 1469598103934665603ull;
+        for (uint64_t h : h1) { fp ^= h; fp *= 1099511628211ull; }
+        for (int32_t t : a1) { fp ^= static_cast<uint64_t>(static_cast<uint32_t>(t)); fp *= 1099511628211ull; }
+        printf("[spec-check] fingerprint (plain logits + ids) %016llx\n", static_cast<unsigned long long>(fp));
+    }
+
+    // (b) the speculative loop, the way ink_serve.h drives it
+    {
+        if (!prefill()) return 1;
+        int32_t next = argmax_f32(logits.data(), V);
+        b.assign(1, next);
+        int pos = P;
+        long steps = 0, spec_steps = 0, draft_steps = 0, single_steps = 0, drafted_sum = 0, emitted_sum = 0;
+        std::vector<float> lg9(static_cast<size_t>(V) * 9);
+        while (static_cast<int>(b.size()) < n_gen) {
+            ++steps;
+            const int rem = n_gen - static_cast<int>(b.size());
+            if (rem >= 2 && pos + 12 < eff_ctx) {
+                int32_t emitted[16]{};
+                int drafted = 0;
+                const int n_emit = backend->dspark_spec_step_greedy(0, next, pos, rem, emitted, &drafted, err);
+                if (n_emit < 0) { fprintf(stderr, "spec: %s\n", err.c_str()); return 1; }
+                if (n_emit > 0) {
+                    ++spec_steps;
+                    drafted_sum += drafted;
+                    emitted_sum += n_emit;
+                    for (int i = 0; i < n_emit && static_cast<int>(b.size()) < n_gen; ++i) b.push_back(emitted[i]);
+                    next = emitted[n_emit - 1];
+                    pos += n_emit;
+                    continue;
+                }
+                int32_t draft_ids[8]{};
+                const int nd = backend->dspark_draft(0, next, pos, std::min(7, rem - 1), draft_ids, err);
+                if (nd > 0) {
+                    ++draft_steps;
+                    backend->snapshot_slot(0);
+                    batch.clear();
+                    batch.capture_taps = true;
+                    batch.push(0, pos, next, true);
+                    for (int i = 0; i < nd; ++i) batch.push(0, pos + 1 + i, draft_ids[i], true);
+                    if (!backend->forward_batch(batch, lg9.data(), nullptr, err)) { fprintf(stderr, "verify: %s\n", err.c_str()); return 1; }
+                    int accepted = 0;
+                    for (int i = 0; i <= nd; ++i) {
+                        const int32_t tok = argmax_f32(lg9.data() + static_cast<size_t>(i) * V, V);
+                        b.push_back(tok);
+                        ++accepted;
+                        next = tok;
+                        if (i < nd && tok == draft_ids[i]) continue;
+                        break;
+                    }
+                    if (accepted <= nd) backend->rollback_slot(0, pos + accepted);
+                    pos += accepted;
+                    drafted_sum += nd;
+                    emitted_sum += accepted;
+                    continue;
+                }
+            }
+            batch.clear();
+            batch.capture_taps = true;
+            batch.push(0, pos++, next, true);
+            if (!backend->forward_batch(batch, logits.data(), nullptr, err)) { fprintf(stderr, "decode: %s\n", err.c_str()); return 1; }
+            next = argmax_f32(logits.data(), V);
+            b.push_back(next);
+            ++single_steps;
+        }
+        b.resize(std::min<size_t>(b.size(), static_cast<size_t>(n_gen)));
+        size_t first = 0;
+        while (first < b.size() && first < a1.size() && b[first] == a1[first]) ++first;
+        const bool same = first == b.size() && b.size() == a1.size();
+        printf("[spec-check] speculative vs plain over %zu tokens: %s", b.size(), same ? "identical" : "DIFFER");
+        if (!same) printf(" (first difference at generated token %zu: plain %d, speculative %d)", first,
+                          first < a1.size() ? a1[first] : -1, first < b.size() ? b[first] : -1);
+        {
+            uint64_t fb = 1469598103934665603ull;
+            for (int32_t t : b) { fb ^= static_cast<uint64_t>(static_cast<uint32_t>(t)); fb *= 1099511628211ull; }
+            printf("\n[spec-check] speculative ids fingerprint %016llx", static_cast<unsigned long long>(fb));
+        }
+        printf("\n[spec-check] steps=%ld (fused %ld, draft+verify %ld, single %ld), drafted %ld, emitted %ld\n", steps, spec_steps,
+               draft_steps, single_steps, drafted_sum, emitted_sum);
+        if (!same) rc = 1;
+    }
+
+    // (c) verify windows: M rows of one slot in one forward_batch against the B = 1 logits of the same positions
+    for (int M : {2, 3, 4, 8}) {
+        if (M > static_cast<int>(keep.size()) || M > static_cast<int>(a1.size())) continue;
+        if (!prefill()) return 1;
+        // keep[k] is the logits after feeding token a1[k] at position P + k (token a1[0] is fed first)
+        backend->snapshot_slot(0);   // as the serve loop does before a verify window
+        batch.clear();
+        batch.capture_taps = true;
+        for (int k = 0; k < M; ++k) batch.push(0, P + k, a1[k], true);
+        std::vector<float> lgm(static_cast<size_t>(V) * M);
+        if (!backend->forward_batch(batch, lgm.data(), nullptr, err)) { fprintf(stderr, "window: %s\n", err.c_str()); return 1; }
+        std::string rows;
+        int nd = 0;
+        double worst = 0;
+        for (int k = 0; k < M; ++k) {
+            const float* x = lgm.data() + static_cast<size_t>(k) * V;
+            const float* y = keep[k].data();
+            double mx = 0;
+            for (int i = 0; i < V; ++i) mx = std::max(mx, static_cast<double>(std::fabs(x[i] - y[i])));
+            const bool eq = std::memcmp(x, y, static_cast<size_t>(V) * 4) == 0;
+            if (!eq) { ++nd; rows += " " + std::to_string(k); worst = std::max(worst, mx); }
+        }
+        printf("[spec-check] window M=%d: %d of %d rows differ from B=1 (rows:%s) max|dlogit|=%.3g\n", M, nd, M, nd ? rows.c_str() : " none", worst);
+        if (nd) rc = 1;
+    }
+    // (d) where does a window row first leave the B = 1 values?  The trunk hidden state after visits 5, 23, 41 and 48
+    // (the taps the drafter reads), 8 rows against 8 single steps
+    if (static_cast<int>(a1.size()) >= 8) {
+        const int M = 8, D = mf.m.c.hidden;
+        std::vector<std::vector<float>> single_taps[4];
+        for (int t = 0; t < 4; ++t) single_taps[t].resize(M);
+        if (!prefill()) return 1;
+        for (int k = 0; k < M; ++k) {
+            batch.clear();
+            batch.capture_taps = true;
+            batch.push(0, P + k, a1[k], true);
+            TapCapture tc;
+            if (!backend->forward_batch(batch, logits.data(), &tc, err)) { fprintf(stderr, "taps single: %s\n", err.c_str()); return 1; }
+            for (int t = 0; t < 4; ++t) single_taps[t][k].assign(tc.taps[t].begin(), tc.taps[t].begin() + D);
+        }
+        if (!prefill()) return 1;
+        backend->snapshot_slot(0);
+        batch.clear();
+        batch.capture_taps = true;
+        for (int k = 0; k < M; ++k) batch.push(0, P + k, a1[k], true);
+        std::vector<float> lgm(static_cast<size_t>(V) * M);
+        TapCapture tcw;
+        if (!backend->forward_batch(batch, lgm.data(), &tcw, err)) { fprintf(stderr, "taps window: %s\n", err.c_str()); return 1; }
+        for (int t = 0; t < 4; ++t) {
+            std::string rows;
+            double worst = 0;
+            for (int k = 0; k < M; ++k) {
+                const float* x = tcw.taps[t].data() + static_cast<size_t>(k) * D;
+                const float* y = single_taps[t][k].data();
+                if (std::memcmp(x, y, static_cast<size_t>(D) * 4) != 0) {
+                    rows += " " + std::to_string(k);
+                    for (int i = 0; i < D; ++i) worst = std::max(worst, static_cast<double>(std::fabs(x[i] - y[i])));
+                }
+            }
+            printf("[spec-check] tap %d (after visit %d), window of %d vs single steps: rows differing:%s max|d|=%.3g\n", t,
+                   t == 0 ? 5 : t == 1 ? 23 : t == 2 ? 41 : 48, M, rows.empty() ? " none" : rows.c_str(), worst);
+        }
+    }
+    printf("[spec-check] RESULT: %s\n", rc ? "DIFFERS" : "identical");
+    return rc;
+}
+
 int main(int argc, char** argv) {
 #if defined(__linux__) && defined(INKLING_ENABLE_HIP)
     if (const std::string nb = strata::platform::numa_balancing::keep_scanner_off(); !nb.empty()) {
@@ -373,7 +599,7 @@ int main(int argc, char** argv) {
     bool mode_serve = false, mode_bench = false, mode_selfcheck = false, mode_info = false, mode_export = false;
     bool verify_hash = false;
     std::string info_file, export_file, export_dir, kld_ref, dump_ref, prompt_ids_str;
-    int bench_prompt = 64, bench_gen = 32;
+    int bench_prompt = 64, bench_gen = 32, spec_check_n = 0;
     float cli_temp = 0.0f;
 
     for (int i = 1; i < argc; ++i) {
@@ -481,6 +707,13 @@ int main(int argc, char** argv) {
             bench_gen = std::atoi(next().c_str());
         } else if (a == "--prompt-ids") {
             prompt_ids_str = next();
+            if (!prompt_ids_str.empty() && prompt_ids_str[0] == '@') {   // @file: the ids in a text file
+                std::ifstream pf(prompt_ids_str.substr(1), std::ios::binary);
+                if (!pf) { fprintf(stderr, "cannot read %s\n", prompt_ids_str.c_str() + 1); return 2; }
+                prompt_ids_str.assign(std::istreambuf_iterator<char>(pf), std::istreambuf_iterator<char>());
+            }
+        } else if (a == "--spec-check") {
+            spec_check_n = std::atoi(next().c_str());
         } else if (a == "--temp") {
             cli_temp = static_cast<float>(std::atof(next().c_str()));
         } else if (a == "--no-anti-loop") {
@@ -546,6 +779,15 @@ int main(int argc, char** argv) {
     if (mode_selfcheck) return cmd_selfcheck(cfg.model_path, cfg.force_cpu, verify_hash, cfg.bopts);
     if (!kld_ref.empty()) return cmd_kld_eval(cfg.model_path, kld_ref, cfg.bopts, cfg.force_cpu);
     if (!dump_ref.empty()) return cmd_dump_ref(cfg.model_path, dump_ref, prompt_ids_str, cfg.bopts, cfg.force_cpu);
+    if (spec_check_n > 0) {
+        std::vector<int32_t> sc_ids;
+        std::string sc_err;
+        if (prompt_ids_str.empty() || !parse_id_list(prompt_ids_str, sc_ids, sc_err)) {
+            fprintf(stderr, "--spec-check needs --prompt-ids (a list or @file)%s%s\n", sc_err.empty() ? "" : ": ", sc_err.c_str());
+            return 2;
+        }
+        return cmd_spec_check(cfg.model_path, cfg.bopts, cfg.force_cpu, sc_ids, spec_check_n);
+    }
     if (mode_bench) return cmd_bench(cfg.model_path, cfg.bopts, bench_prompt, bench_gen, cfg.force_cpu, cfg.bopts.enable_dspark);
 
     if (cfg.model_path.empty()) {

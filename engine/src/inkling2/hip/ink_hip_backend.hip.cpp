@@ -563,6 +563,19 @@ public:
         opts_ = opts;
         c_ = model.m.c;
         dspark_cfg_ = model.m.dspark;
+        // Debug only (--spec-check): STRATA_INK_TAP_VISITS=a,b,c,d takes the four host taps after those visits instead of the
+        // drafter's [5, 23, 41, 48]; the drafter reads the same taps, so use it with --draft off or in a check run only.
+        if (const char* tv = std::getenv("STRATA_INK_TAP_VISITS"); tv && tv[0] && dspark_cfg_.target_visits.size() >= 4) {
+            std::vector<int> vv;
+            for (const char* q = tv; *q;) {
+                char* ee = nullptr;
+                const long x = std::strtol(q, &ee, 10);
+                if (ee == q) break;
+                vv.push_back(static_cast<int>(x));
+                q = (*ee == ',') ? ee + 1 : ee;
+            }
+            if (vv.size() == 4) for (int i = 0; i < 4; ++i) dspark_cfg_.target_visits[i] = vv[i];
+        }
 
         if (kv_dtype_is_int_quant(opts.kv_dtype)) {
             err = "[ink-hip] --kv k8v4/k8v8 is not supported on the HIP backend (allocates fp16-sized pages); use --kv fp8 or fp16";
@@ -701,6 +714,10 @@ public:
         max_slots_ = std::max(1, std::min(kMaxParallelSlots, opts.parallel));
         max_ctx_ = std::max(256, opts.max_ctx);
 
+        if (const char* ev = std::getenv("STRATA_INK_EXACT_ROWS")) exact_verify_enabled_ = !(ev[0] == '0');
+        if (const char* ev = std::getenv("STRATA_INK_HASH"); ev && ev[0] == '1') {
+            dbg_hash_on_ = alloc_gpu_buffer(d_dbg_hash_, static_cast<size_t>(kTreeMaxM) * kDbgSlots * 8, mem_info_.is_uma) == hipSuccess;
+        }
         // Initialize dynamic hipBLASLt Tensile runner (RDNA3/3.5/4; cleanly falls back on RDNA2 or missing DLL/SO)
         (void)blaslt_.init(mem_info_.is_uma, mem_info_.gen);
         blaslt_.warmup(mem_info_.is_uma, stream_);
@@ -1775,7 +1792,9 @@ public:
             }
             return true;
         }
-        return forward_batch_chunk(batch, logits_out, taps_out, err);
+        const bool fb_ok = forward_batch_chunk(batch, logits_out, taps_out, err);
+        if (fb_ok && dbg_hash_on_) dbg_hash_print("fwd", B_tot, batch.pos.data(), -1, nullptr, batch.token_ids.data(), nullptr);
+        return fb_ok;
     }
 
     int dspark_draft(int slot, int32_t anchor_tok, int anchor_pos, int max_draft, int32_t* out_ids, std::string& err) override {
@@ -2373,6 +2392,7 @@ public:
         (void)hipMemcpyAsync(sc_img_idx_.dev_ptr, h_img, M * 4, hipMemcpyHostToDevice, stream_);
 
         if (!forward_tree_verify(M, slot, kv_gen_sum, err)) return 0;
+        if (dbg_hash_on_) dbg_hash_print("tree", M, h_pos, anchor_pos, t_dep, t_tok, t_par);
         if (tprof) (void)hipEventRecord(tev[2], stream_);
 
         int32_t h_argmax[kTreeMaxM];
@@ -2806,6 +2826,10 @@ private:
     }
 
     void launch_bf16_opt(const uint16_t* W, const float* X, const float* bias, float* Y, int M, int N, int K) {
+        if (exact_rows_ && M >= 2 && M <= 16) {
+            launch_bf16_rows_exact(W, X, bias, Y, M, N, K, mem_info_.gen, stream_);
+            return;
+        }
         if (blaslt_.ready() && M >= blaslt_min_m_ && N >= 64 && K >= 64) {
             const size_t need = static_cast<size_t>(M) * K * sizeof(uint16_t);
             if (sc_x_bf16_.bytes >= need) {
@@ -3385,6 +3409,7 @@ private:
                 slots_[s0].sconv_rec_n = B;
             }
         }
+        const ExactRowsScope exact_scope(exact_rows_, exact_verify_enabled_ && rec_slot >= 0);
 
         bool is_contiguous_single_slot = (!all_distinct_slots && n_groups == 1 && B >= 16);
         for (int b = 1; b < B && is_contiguous_single_slot; ++b) {
@@ -3673,7 +3698,7 @@ private:
                             target_in, msgs, 4, msg_ch, cg, cf, target_in, B, D);
                     }
                 } else if (is_bf) {
-                    if (B <= 4 && (D & 3) == 0) {
+                    if ((B <= 4 || exact_rows_) && (D & 3) == 0) {
                         k1_loop_ctrl_down_hiocc<true><<<dim3(c_.gate_rank, B), 256, 0, stream_>>>(
                             target_in, msgs, 4, msg_ch, ctrl_inv_c, ctrl_inv_m, bf16_ptr(cp + ".down_weight"), ctrl_gate, B, D, c_.gate_rank);
                     } else {
@@ -3683,7 +3708,7 @@ private:
                     k1_loop_ctrl_up<true><<<dim3((D + 63) / 64, B), 64, 0, stream_>>>(
                         target_in, msgs, 4, msg_ch, ctrl_gate, bf16_ptr(cp + ".gain_weight"), bf16_ptr(cp + ".forget_weight"), target_in, B, D, c_.gate_rank);
                 } else {
-                    if (B <= 4 && (D & 3) == 0) {
+                    if ((B <= 4 || exact_rows_) && (D & 3) == 0) {
                         k1_loop_ctrl_down_hiocc<false><<<dim3(c_.gate_rank, B), 256, 0, stream_>>>(
                             target_in, msgs, 4, msg_ch, ctrl_inv_c, ctrl_inv_m, f32_ptr(cp + ".down_weight"), ctrl_gate, B, D, c_.gate_rank);
                     } else {
@@ -3707,8 +3732,12 @@ private:
                                       trunk_bf16_.count(c1 + ".down_weight") == 0 &&
                                       trunk_bf16_.count(c2 + ".down_weight") == 0);
                 if (batch3_ctrl && (all_bf || all_f32)) {
+                    // On SWA visits all three controllers read in0. k1_loop_ctrl_up3 runs the channels as
+                    // unordered blocks of one launch, so channel 0 must not update in0 in place while the
+                    // k / v blocks still read it: it writes to mx3 (unused on SWA visits) and q_in follows.
+                    if (is_swa) q_in = mx3;
                     FPtr3 src_p = is_swa ? FPtr3{{in0, in0, in0}} : FPtr3{{in0, in1, in2}};
-                    MutFPtr3 dst_p{{in0, in1, in2}};
+                    MutFPtr3 dst_p{{q_in, in1, in2}};
                     float* ic3 = reinterpret_cast<float*>(sc_ctrl_tmp_.dev_ptr);
                     float* im3 = ic3 + 3 * B;
                     float* gt3 = im3 + 3 * B;
@@ -3744,7 +3773,7 @@ private:
 
             if (!attn_norm_done) {
                 if (has_msgs && (D & 3) == 0) {
-                    MutFPtr3 io_p{{in0, in1, in2}};
+                    MutFPtr3 io_p{{q_in, in1, in2}};
                     FPtr3 nw_p = is_swa
                         ? FPtr3{{f32_ptr(p + ".attn_norm.weight"), f32_ptr(p + ".attn_norm.weight"), f32_ptr(p + ".attn_norm.weight")}}
                         : FPtr3{{f32_ptr(p + ".q_input_norm.weight"), f32_ptr(p + ".k_input_norm.weight"), f32_ptr(p + ".v_input_norm.weight")}};
@@ -3822,7 +3851,12 @@ private:
                 launch_trunk_linear(p + ".attn.gate_attn.weight", q_in, gatea, B, q_dim, D);
             }
             if (!sink_done) {
-                launch_trunk_linear(p + ".attn.attn_sink_proj.weight", q_in, sinks, B, c_.n_head, D);
+                if (exact_rows_ && B >= 2 && sink_is_f32 && trunk_qkvrg_[ip].dev_ptr != nullptr && D <= 4096 && (D & 7) == 0) {
+                    // the one-token step projects the sinks inside k_bf16_gemv1_qkvrg: same arithmetic per row
+                    launch_f32_sink_rows_exact(f32_ptr(p + ".attn.attn_sink_proj.weight"), q_in, sinks, B, c_.n_head, D, stream_);
+                } else {
+                    launch_trunk_linear(p + ".attn.attn_sink_proj.weight", q_in, sinks, B, c_.n_head, D);
+                }
             }
             if (!is_swa) {
                 launch_trunk_linear(p + ".attn.k_sconv.weight_proj", k_in, k_dyn, B, c_.n_kv * 4, D);
@@ -3915,7 +3949,7 @@ private:
                         kvp.k_pool.dev_ptr, kvp.v_pool.dev_ptr, nullptr, nullptr,
                         aout, B, c_.n_head, c_.n_kv, swa_w, c_.rel_extent);
                 }
-            } else if (B <= 4) {
+            } else if (B <= 4 || exact_rows_) {   // #6671: the one-token kernel for every verify row
                 // 2-Stage FlashDecoding Split-KV (96 blocks x 8 waves = 768 waves at B=1 -> saturates ALL CUs!)
                 float* sp_part = reinterpret_cast<float*>(sc_splitkv_part_.dev_ptr);
                 if (is_fp8) {
@@ -3965,6 +3999,7 @@ private:
             }
 
             // O-proj + post-attention ShortConv + AttnRes block boundary rule (1-launch super-fused at B=1 distinct-slot!)
+            if (visit == 0) { dbg_hash(196, aout, B, q_dim); dbg_hash(193, q, B, q_dim); dbg_hash(194, k_cv, B, kv_dim); dbg_hash(195, v_cv, B, kv_dim); dbg_hash(197, k_raw, B, kv_dim); dbg_hash(198, sinks, B, c_.n_head); dbg_hash(199, gatea, B, q_dim); dbg_hash(200, rbias, B, c_.n_head * c_.rel_extent); dbg_hash(201, r_raw, B, c_.n_head * c_.d_rel); }
             pmark(4);
             const std::string wo_key = p + ".attn.wo_ud.weight";
             if (B == 1 && all_distinct_slots && rec_slot < 0 && q_dim <= 4096 && (q_dim & 7) == 0 && trunk_bf16_.count(wo_key) > 0) {
@@ -4013,14 +4048,17 @@ private:
             }
 
             // k4: Top-8/128 Sigmoid Router (fused with f32->f16 mlpin conversion for B<=4!)
+            dbg_hash(visit * 4 + 0, cur, B, D);
+            dbg_hash(visit * 4 + 1, mlpin, B, D);
             pmark(5);
-            if (B >= 8 && trunk_bf16_.count(p + ".mlp.gate.weight") > 0 &&
+            if (B >= 8 && !exact_rows_ && trunk_bf16_.count(p + ".mlp.gate.weight") > 0 &&
                 mem_info_.gen != AmdGen::Rdna2 && mem_info_.gen != AmdGen::Unknown) {
                 launch_bf16_opt(bf16_ptr(p + ".mlp.gate.weight"), mlpin, nullptr, rlog, B, c_.n_experts, D);
             } else {
                 launch_f32_linear(f32_ptr(p + ".mlp.gate.weight"), mlpin, nullptr, rlog, B, c_.n_experts, D, stream_, mem_info_.gen);
             }
-            const bool fused_router_f16 = (layer_all_gpu_[ip] && B <= 4 && (D & 3) == 0);
+            dbg_hash(visit * 4 + 3, rlog, B, c_.n_experts);
+            const bool fused_router_f16 = (layer_all_gpu_[ip] && (B <= 4 || exact_rows_) && (D & 3) == 0);
             if (fused_router_f16) {
                 k4_moe_router_topk_f16<<<B, 128, 0, stream_>>>(
                     rlog, f32_ptr(p + ".mlp.gate.bias"), mlpin, mlpf16, tk_i, tk_w, B, D, c_.top_k, c_.route_scale);
@@ -4100,7 +4138,7 @@ private:
             }
             if (ep2_active_ && layer_all_ep2_[ip]) {
                 // Already completed on GPU 0 || GPU 1 above!
-            } else if (layer_all_gpu_[ip] && B <= 4) {
+            } else if (layer_all_gpu_[ip] && (B <= 4 || exact_rows_)) {
                 if (!fused_router_f16) {
                     k_f32_to_f16<<<(B * D + 255) / 256, 256, 0, stream_>>>(mlpin, mlpf16, B * D);
                 }
@@ -4114,6 +4152,7 @@ private:
                 k_moe_direct_w2_par<<<dim3((D + 7) / 8, B * c_.top_k), 256, 0, stream_>>>(
                     d_exps, tk_i, reinterpret_cast<const half_t*>(sc_moe_act_.dev_ptr),
                     y_part, B, c_.top_k, D, c_.inter);
+                if (visit == 0) dbg_hash(202, y_part, B, c_.top_k * D);
                 if (all_distinct_slots && rec_slot < 0) {
                     const size_t vstride = static_cast<size_t>(max_slots_) * 3u * static_cast<size_t>(D) * sizeof(uint16_t);
                     k_moe_reduce_sconv_add<<<dim3((D + 255) / 256, B), 256, 0, stream_>>>(
@@ -4643,6 +4682,7 @@ private:
                 run_sconv(moeout, p + ".mlp_sconv", nullptr, d_sconv_mlp_all_, msc, D, 0, rsl ? &rsl->sconv_rec_mlp : nullptr, visit);
                 k_vec_add<<<(B * D + 255) / 256, 256, 0, stream_>>>(cur, msc, cur, B * D);
             }
+            dbg_hash(visit * 4 + 2, cur, B, D);
             pmark(8);
             pflush();
             ++visit;
@@ -4692,6 +4732,7 @@ private:
         run_attnres_norm(blk_ptrs, cur, f32_ptr("model.llm.attn_res.output_query"),
                          f32_ptr("model.llm.norm.weight"), h_norm);
         maybe_tap(c_.n_visits, h_norm);
+        dbg_hash(192, h_norm, B, D);
 
         if (use_graph) {
             if (do_dspark_ctx) {
@@ -4915,6 +4956,7 @@ private:
     // Exact 48-Visit Tree Verify + On-GPU Greedy Argmax (100% HIP-Graphable per tree size M=2..12!)
     bool forward_tree_verify(int B, int slot, uint64_t kv_gen_sum, std::string& err) {
         if (B < 1 || B > 12) return false;
+        const ExactRowsScope exact_scope(exact_rows_, exact_verify_enabled_);
         const int tprof_lvl = (std::getenv("STRATA_HIP_TREE_PROF") ? std::atoi(std::getenv("STRATA_HIP_TREE_PROF")) : 0);
         const bool tprof_detail = (tprof_lvl >= 2);
         hipGraphExec_t& g_exec = graph_tree_verify_exec_[B];
@@ -5057,7 +5099,7 @@ private:
                 k1_loop_ctrl_rms<<<B, 256, 0, stream_>>>(target_in, msgs, 4, msg_ch, ctrl_inv_c, ctrl_inv_m, B, D);
                 const bool is_bf = trunk_bf16_.count(cp + ".down_weight") > 0;
                 if (is_bf) {
-                    if (B <= 4 && (D & 3) == 0) {
+                    if ((B <= 4 || exact_rows_) && (D & 3) == 0) {
                         k1_loop_ctrl_down_hiocc<true><<<dim3(c_.gate_rank, B), 256, 0, stream_>>>(
                             target_in, msgs, 4, msg_ch, ctrl_inv_c, ctrl_inv_m, bf16_ptr(cp + ".down_weight"), ctrl_gate, B, D, c_.gate_rank);
                     } else {
@@ -5067,7 +5109,7 @@ private:
                     k1_loop_ctrl_up<true><<<dim3((D + 63) / 64, B), 64, 0, stream_>>>(
                         target_in, msgs, 4, msg_ch, ctrl_gate, bf16_ptr(cp + ".gain_weight"), bf16_ptr(cp + ".forget_weight"), target_in, B, D, c_.gate_rank);
                 } else {
-                    if (B <= 4 && (D & 3) == 0) {
+                    if ((B <= 4 || exact_rows_) && (D & 3) == 0) {
                         k1_loop_ctrl_down_hiocc<false><<<dim3(c_.gate_rank, B), 256, 0, stream_>>>(
                             target_in, msgs, 4, msg_ch, ctrl_inv_c, ctrl_inv_m, f32_ptr(cp + ".down_weight"), ctrl_gate, B, D, c_.gate_rank);
                     } else {
@@ -5091,8 +5133,12 @@ private:
                                       trunk_bf16_.count(c1 + ".down_weight") == 0 &&
                                       trunk_bf16_.count(c2 + ".down_weight") == 0);
                 if (batch3_ctrl && (all_bf || all_f32)) {
+                    // On SWA visits all three controllers read in0. k1_loop_ctrl_up3 runs the channels as
+                    // unordered blocks of one launch, so channel 0 must not update in0 in place while the
+                    // k / v blocks still read it: it writes to mx3 (unused on SWA visits) and q_in follows.
+                    if (is_swa) q_in = mx3;
                     FPtr3 src_p = is_swa ? FPtr3{{in0, in0, in0}} : FPtr3{{in0, in1, in2}};
-                    MutFPtr3 dst_p{{in0, in1, in2}};
+                    MutFPtr3 dst_p{{q_in, in1, in2}};
                     float* ic3 = reinterpret_cast<float*>(sc_ctrl_tmp_.dev_ptr);
                     float* im3 = ic3 + 3 * B;
                     float* gt3 = im3 + 3 * B;
@@ -5126,7 +5172,7 @@ private:
 
             if (!attn_norm_done) {
                 if (has_msgs && (D & 3) == 0) {
-                    MutFPtr3 io_p{{in0, in1, in2}};
+                    MutFPtr3 io_p{{q_in, in1, in2}};
                     FPtr3 nw_p = is_swa
                         ? FPtr3{{f32_ptr(p + ".attn_norm.weight"), f32_ptr(p + ".attn_norm.weight"), f32_ptr(p + ".attn_norm.weight")}}
                         : FPtr3{{f32_ptr(p + ".q_input_norm.weight"), f32_ptr(p + ".k_input_norm.weight"), f32_ptr(p + ".v_input_norm.weight")}};
@@ -5191,7 +5237,12 @@ private:
                 launch_trunk_linear(p + ".attn.gate_attn.weight", q_in, gatea, B, q_dim, D);
             }
             if (!sink_done) {
-                launch_trunk_linear(p + ".attn.attn_sink_proj.weight", q_in, sinks, B, c_.n_head, D);
+                if (exact_rows_ && B >= 2 && sink_is_f32 && trunk_qkvrg_[ip].dev_ptr != nullptr && D <= 4096 && (D & 7) == 0) {
+                    // the one-token step projects the sinks inside k_bf16_gemv1_qkvrg: same arithmetic per row
+                    launch_f32_sink_rows_exact(f32_ptr(p + ".attn.attn_sink_proj.weight"), q_in, sinks, B, c_.n_head, D, stream_);
+                } else {
+                    launch_trunk_linear(p + ".attn.attn_sink_proj.weight", q_in, sinks, B, c_.n_head, D);
+                }
             }
             if (!is_swa) {
                 launch_trunk_linear(p + ".attn.k_sconv.weight_proj", k_in, k_dyn, B, c_.n_kv * 4, D);
@@ -5235,7 +5286,16 @@ private:
             pm(3);
             VisitKvPool& kvp = is_swa ? swa_pools_[kv_slot] : glob_pools_[kv_slot];
             const int swa_w = is_swa ? c_.swa_win : 0;
-            if (is_fp8) {
+            if (exact_rows_ && !is_fp8) {
+                // #6671: the arithmetic of the one-token step (split-KV, four chunks), so tree row m = step at that position
+                float* sp_part = reinterpret_cast<float*>(sc_splitkv_part_.dev_ptr);
+                k3_flash_tree_splitkv_part<<<dim3(c_.n_head, B, 4), 256, 0, stream_>>>(
+                    q, rbias, sinks, d_tm, pos_dev,
+                    reinterpret_cast<const int32_t*>(kvp.d_pt.dev_ptr), kvp.max_pages_per_slot,
+                    kvp.k_pool.dev_ptr, kvp.v_pool.dev_ptr, tk_v, tv_v,
+                    sp_part, B, c_.n_head, c_.n_kv, swa_w, c_.rel_extent);
+                k3_flash_splitkv_reduce<4><<<dim3(c_.n_head, B), 32, 0, stream_>>>(sp_part, gatea, aout, B, c_.n_head);
+            } else if (is_fp8) {
                 k3_flash_swa_gqa_tree<true><<<dim3(c_.n_head, B), 128, 0, stream_>>>(
                     q, gatea, rbias, sinks, d_tm, pos_dev,
                     reinterpret_cast<const int32_t*>(kvp.d_pt.dev_ptr), kvp.max_pages_per_slot,
@@ -5251,6 +5311,7 @@ private:
             }
 
             // O-proj + Tree post-attn ShortConv + AttnRes block boundary
+            if (visit == 0) { dbg_hash(196, aout, B, q_dim); dbg_hash(193, q, B, q_dim); dbg_hash(194, k_cv, B, kv_dim); dbg_hash(195, v_cv, B, kv_dim); dbg_hash(197, k_raw, B, kv_dim); dbg_hash(198, sinks, B, c_.n_head); dbg_hash(199, gatea, B, q_dim); dbg_hash(200, rbias, B, c_.n_head * c_.rel_extent); dbg_hash(201, r_raw, B, c_.n_head * c_.d_rel); }
             pm(4);
             launch_trunk_linear(p + ".attn.wo_ud.weight", aout, oproj, B, D, q_dim);
             const size_t h_vstride = static_cast<size_t>(max_slots_) * 3u * static_cast<size_t>(D) * sizeof(uint16_t);
@@ -5280,14 +5341,17 @@ private:
                 k_rms_norm_rows<<<B, 256, 0, stream_>>>(mlpin, f32_ptr(p + ".mlp_norm.weight"), mlpin, B, D, c_.rms_eps);
             }
 
+            dbg_hash(visit * 4 + 0, cur, B, D);
+            dbg_hash(visit * 4 + 1, mlpin, B, D);
             pm(5);
-            if (B >= 8 && trunk_bf16_.count(p + ".mlp.gate.weight") > 0 &&
+            if (B >= 8 && !exact_rows_ && trunk_bf16_.count(p + ".mlp.gate.weight") > 0 &&
                 mem_info_.gen != AmdGen::Rdna2 && mem_info_.gen != AmdGen::Unknown) {
                 launch_bf16_opt(bf16_ptr(p + ".mlp.gate.weight"), mlpin, nullptr, rlog, B, c_.n_experts, D);
             } else {
                 launch_f32_linear(f32_ptr(p + ".mlp.gate.weight"), mlpin, nullptr, rlog, B, c_.n_experts, D, stream_, mem_info_.gen);
             }
-            const bool use_direct_moe = (B <= 6);
+            dbg_hash(visit * 4 + 3, rlog, B, c_.n_experts);
+            const bool use_direct_moe = (B <= 6 || exact_rows_);
             const bool fused_router_f16 = ((D & 3) == 0);
             if (fused_router_f16) {
                 k4_moe_router_topk_f16<<<B, 128, 0, stream_>>>(
@@ -5308,6 +5372,7 @@ private:
                 k_moe_direct_w2_par<<<dim3((D + 7) / 8, B * c_.top_k), 256, 0, stream_>>>(
                     d_exps, tk_i, reinterpret_cast<const half_t*>(sc_moe_act_.dev_ptr),
                     y_part, B, c_.top_k, D, c_.inter);
+                if (visit == 0) dbg_hash(202, y_part, B, c_.top_k * D);
                 k_moe_direct_reduce<<<dim3((D + 255) / 256, B), 256, 0, stream_>>>(
                     y_part, tk_w, moeout, B, c_.top_k, D);
             } else {
@@ -5349,6 +5414,7 @@ private:
                 reinterpret_cast<uint16_t*>(d_tree_rec_mlp_.dev_ptr) + visit * h_trec_st,
                 msc, B, D, 0);
             k_vec_add<<<(B * D + 255) / 256, 256, 0, stream_>>>(cur, msc, cur, B * D);
+            dbg_hash(visit * 4 + 2, cur, B, D);
             pm(8);
             pf();
             ++visit;
@@ -5386,6 +5452,7 @@ private:
         run_attnres_norm(blk_ptrs, cur, f32_ptr("model.llm.attn_res.output_query"),
                          f32_ptr("model.llm.norm.weight"), h_norm);
         maybe_tap(c_.n_visits, h_norm);
+        dbg_hash(192, h_norm, B, D);
 
         const auto& unemb_pk = packed_trunk_.at("model.llm.unembed.weight");
         const int V = c_.vocab_unpadded;
@@ -5653,6 +5720,36 @@ private:
     HipBlasLtRunner blaslt_;
     HipHybridController hybrid_;
     int blaslt_min_m_ = 16;
+    // #6671: while a drafter's verify window runs (the tree verify, the chain verify of a recorded single slot), every linear
+    // layer uses the kernels whose row m is the value the one-token step gives (launch_bf16_rows_exact).  STRATA_INK_EXACT_ROWS=0 turns it off.
+    bool exact_rows_ = false;
+    bool exact_verify_enabled_ = true;
+    // #6671 diagnostics (STRATA_INK_HASH=1): per row hashes of cur before the MoE (slot 4v), mlpin (4v+1), the router logits (4v+3),
+    // cur at the end of the visit (4v+2) and the final norm (192), printed as [HASH] lines by dbg_hash_print.
+    bool dbg_hash_on_ = false;
+    GpuBuffer d_dbg_hash_;
+    static constexpr int kDbgSlots = 208;
+    void dbg_hash(int slot, const float* ptr, int B, int dim) {
+        if (!dbg_hash_on_ || B > kTreeMaxM || !d_dbg_hash_.dev_ptr) return;
+        k_dbg_hash_rows<<<B, 256, 0, stream_>>>(ptr, dim, reinterpret_cast<unsigned long long*>(d_dbg_hash_.dev_ptr), slot, kDbgSlots);
+    }
+    void dbg_hash_print(const char* tag, int B, const int32_t* pos, int anchor, const int32_t* dep, const int32_t* tok, const int32_t* par) {
+        if (!dbg_hash_on_ || B > kTreeMaxM || !d_dbg_hash_.dev_ptr) return;
+        (void)hipStreamSynchronize(stream_);
+        std::vector<unsigned long long> h(static_cast<size_t>(B) * kDbgSlots);
+        (void)hipMemcpy(h.data(), d_dbg_hash_.dev_ptr, h.size() * 8, hipMemcpyDeviceToHost);
+        for (int b = 0; b < B; ++b) {
+            std::fprintf(stderr, "[HASH] %s B=%d row=%d pos=%d dep=%d anchor=%d tok=%d par=%d", tag, B, b, pos ? pos[b] : -1, dep ? dep[b] : 0, anchor,
+                         tok ? tok[b] : -1, par ? par[b] : b - 1);
+            for (int k = 0; k <= 202; ++k) std::fprintf(stderr, " %llx", h[static_cast<size_t>(b) * kDbgSlots + k]);
+            std::fputc('\n', stderr);
+        }
+    }
+    struct ExactRowsScope {
+        bool& f; bool old;
+        ExactRowsScope(bool& flag, bool on) : f(flag), old(flag) { f = on; }
+        ~ExactRowsScope() { f = old; }
+    };
     int blaslt_moe_min_b_ = 999999;
     bool use_i8_moe_wmma_ = true;
     KvDtype default_kv_dtype_ = KvDtype::FP16;

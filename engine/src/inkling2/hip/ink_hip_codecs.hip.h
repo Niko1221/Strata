@@ -1855,6 +1855,9 @@ __global__ void __launch_bounds__(256) k_bf16_gemv1_wo_sconv(
     float* __restrict__ cur,               // [D] FP32 (updated in-place!)
     float* __restrict__ blk_save,          // nullptr (non-boundary: cur += y) or [D] (boundary: blk_save=cur, cur=y)
     int D, int K) {
+    // #6671: no FMA contraction here, so the fused and the separate forms of this step round alike (a verify window
+    // runs the separate form row by row; the one-token step runs the fused one)
+#pragma clang fp contract(off)
     const int tid = threadIdx.x;
     const int wave = tid >> 5;
     const int lane = tid & 31;
@@ -2075,6 +2078,72 @@ __global__ void __launch_bounds__(256) k_bf16_gemv_lds_fdot2(
             const float sum = wave32_sum(acc[m]) + bv;
             if (lane == 0 && m < M) Y[static_cast<size_t>(m) * N + row] = sum;
         }
+    }
+}
+
+// #6671: the M = 1 GEMV (k_bf16_gemv1_lds, K <= 4096, K % 8 == 0) for MT rows at once, row for row the same arithmetic: the
+// same two accumulators over the same K order, the same wave32 sum, then the bias.  X is read from global memory (it is L2
+// resident) instead of LDS, which changes no bit.  The verify windows of a drafter use it so that row m of an M-row call is
+// the value the single-token step would have produced (k_bf16_gemv_lds_fdot2 rounds X and W to FP16 and so is not).
+template <int MT>
+__global__ void __launch_bounds__(256) k_bf16_gemv1_mr(
+    const uint16_t* __restrict__ W,
+    const float* __restrict__ X,
+    const float* __restrict__ bias,
+    float* __restrict__ Y,
+    int M, int N, int K) {
+    const int tid = threadIdx.x;
+    const int wave = tid >> 5;
+    const int lane = tid & 31;
+    const int row = blockIdx.x * 8 + wave;
+    if (row >= N) return;
+    const uint16_t* wr = W + static_cast<size_t>(row) * K;
+    float acc0[MT], acc1[MT];
+#pragma unroll
+    for (int m = 0; m < MT; ++m) { acc0[m] = 0.0f; acc1[m] = 0.0f; }
+    int k = lane * 8;
+    for (; k + 256 < K; k += 512) {
+        const uint4 wa = *reinterpret_cast<const uint4*>(wr + k);
+        const uint4 wb = *reinterpret_cast<const uint4*>(wr + k + 256);
+#pragma unroll
+        for (int m = 0; m < MT; ++m) {
+            if (m < M) {
+                const float* xp = X + static_cast<size_t>(m) * K;
+                const float4 xa0 = *reinterpret_cast<const float4*>(xp + k);
+                const float4 xa1 = *reinterpret_cast<const float4*>(xp + k + 4);
+                const float4 xb0 = *reinterpret_cast<const float4*>(xp + k + 256);
+                const float4 xb1 = *reinterpret_cast<const float4*>(xp + k + 260);
+                acc0[m] = fmaf(bf16_to_f32(wa.x & 0xFFFFu), xa0.x, fmaf(bf16_to_f32(wa.x >> 16), xa0.y,
+                          fmaf(bf16_to_f32(wa.y & 0xFFFFu), xa0.z, fmaf(bf16_to_f32(wa.y >> 16), xa0.w, acc0[m]))));
+                acc0[m] = fmaf(bf16_to_f32(wa.z & 0xFFFFu), xa1.x, fmaf(bf16_to_f32(wa.z >> 16), xa1.y,
+                          fmaf(bf16_to_f32(wa.w & 0xFFFFu), xa1.z, fmaf(bf16_to_f32(wa.w >> 16), xa1.w, acc0[m]))));
+                acc1[m] = fmaf(bf16_to_f32(wb.x & 0xFFFFu), xb0.x, fmaf(bf16_to_f32(wb.x >> 16), xb0.y,
+                          fmaf(bf16_to_f32(wb.y & 0xFFFFu), xb0.z, fmaf(bf16_to_f32(wb.y >> 16), xb0.w, acc1[m]))));
+                acc1[m] = fmaf(bf16_to_f32(wb.z & 0xFFFFu), xb1.x, fmaf(bf16_to_f32(wb.z >> 16), xb1.y,
+                          fmaf(bf16_to_f32(wb.w & 0xFFFFu), xb1.z, fmaf(bf16_to_f32(wb.w >> 16), xb1.w, acc1[m]))));
+            }
+        }
+    }
+    if (k < K) {
+        const uint4 wa = *reinterpret_cast<const uint4*>(wr + k);
+#pragma unroll
+        for (int m = 0; m < MT; ++m) {
+            if (m < M) {
+                const float* xp = X + static_cast<size_t>(m) * K;
+                const float4 xa0 = *reinterpret_cast<const float4*>(xp + k);
+                const float4 xa1 = *reinterpret_cast<const float4*>(xp + k + 4);
+                acc0[m] = fmaf(bf16_to_f32(wa.x & 0xFFFFu), xa0.x, fmaf(bf16_to_f32(wa.x >> 16), xa0.y,
+                          fmaf(bf16_to_f32(wa.y & 0xFFFFu), xa0.z, fmaf(bf16_to_f32(wa.y >> 16), xa0.w, acc0[m]))));
+                acc0[m] = fmaf(bf16_to_f32(wa.z & 0xFFFFu), xa1.x, fmaf(bf16_to_f32(wa.z >> 16), xa1.y,
+                          fmaf(bf16_to_f32(wa.w & 0xFFFFu), xa1.z, fmaf(bf16_to_f32(wa.w >> 16), xa1.w, acc0[m]))));
+            }
+        }
+    }
+    const float bv = bias ? bias[row] : 0.0f;
+#pragma unroll
+    for (int m = 0; m < MT; ++m) {
+        const float sum = wave32_sum(acc0[m] + acc1[m]) + bv;
+        if (lane == 0 && m < M) Y[static_cast<size_t>(m) * N + row] = sum;
     }
 }
 
@@ -3226,6 +3295,9 @@ __global__ void __launch_bounds__(256) k_moe_reduce_sconv_add(
     uint16_t* __restrict__ hist_pool,       // [max_slots, 3, D]
     float* __restrict__ cur,                // [B, D] (updated in-place!)
     int B, int top_k, int D) {
+    // #6671: no FMA contraction here, so the fused and the separate forms of this step round alike (a verify window
+    // runs the separate form row by row; the one-token step runs the fused one)
+#pragma clang fp contract(off)
     const int d = blockIdx.x * blockDim.x + threadIdx.x;
     const int b = blockIdx.y;
     if (b >= B || d >= D) return;
@@ -7132,6 +7204,79 @@ inline void launch_bf16_linear(
     } else {
         const dim3 grid((N + 63) / 64, (M + 63) / 64);
         k_bf16_wmma_f16<64, 64><<<grid, 128, 0, st>>>(W, X, bias, Y, M, N, K);
+    }
+}
+
+// #6671: M >= 2 rows with row for row the arithmetic launch_bf16_linear uses for M == 1 (same kernel family, same K order,
+// same sums), in chunks of at most 8 rows.  For the verify windows of a drafter: each row is the value the single-token
+// step gives.  The M-dependent paths of launch_bf16_linear (FP16 fdot2, WMMA, hipBLASLt) are not row invariant.
+inline void launch_bf16_rows_exact(
+    const uint16_t* W, const float* X, const float* bias, float* Y,
+    int M, int N, int K, strata::hip_uma::AmdGen gen, hipStream_t st) {
+    for (int m0 = 0; m0 < M; m0 += 8) {
+        const int mc = (M - m0) < 8 ? (M - m0) : 8;
+        const float* xs = X + static_cast<size_t>(m0) * K;
+        float* ys = Y + static_cast<size_t>(m0) * N;
+        if (mc == 1) {
+            launch_bf16_linear(W, xs, bias, ys, 1, N, K, gen, st);
+            continue;
+        }
+        const dim3 grid((N + 7) / 8);
+        if (K <= 4096 && (K & 7) == 0) {
+            if (mc <= 2)      k_bf16_gemv1_mr<2><<<grid, 256, 0, st>>>(W, xs, bias, ys, mc, N, K);
+            else if (mc <= 4) k_bf16_gemv1_mr<4><<<grid, 256, 0, st>>>(W, xs, bias, ys, mc, N, K);
+            else if (mc <= 6) k_bf16_gemv1_mr<6><<<grid, 256, 0, st>>>(W, xs, bias, ys, mc, N, K);
+            else              k_bf16_gemv1_mr<8><<<grid, 256, 0, st>>>(W, xs, bias, ys, mc, N, K);
+        } else {
+            if (mc <= 2)      k_bf16_gemv<2><<<grid, 256, 0, st>>>(W, xs, bias, ys, mc, N, K);
+            else if (mc <= 4) k_bf16_gemv<4><<<grid, 256, 0, st>>>(W, xs, bias, ys, mc, N, K);
+            else if (mc <= 6) k_bf16_gemv<6><<<grid, 256, 0, st>>>(W, xs, bias, ys, mc, N, K);
+            else              k_bf16_gemv<8><<<grid, 256, 0, st>>>(W, xs, bias, ys, mc, N, K);
+        }
+    }
+}
+
+// #6671: the attention sink projection of k_bf16_gemv1_qkvrg (M = 1: one wave per row of an FP32 weight, lane i adds float4 groups
+// i, i + 32, ... in turn, then the wave32 sum) for MT rows at once, row for row the same bits.
+template <int MT>
+__global__ void __launch_bounds__(256) k_f32_gemv1_sink_mr(
+    const float* __restrict__ W, const float* __restrict__ X, float* __restrict__ Y, int M, int N, int K) {
+    const int wave = threadIdx.x >> 5;
+    const int lane = threadIdx.x & 31;
+    const int row = blockIdx.x * 8 + wave;
+    if (row >= N) return;
+    const float4* w4 = reinterpret_cast<const float4*>(W + static_cast<size_t>(row) * K);
+    const int k4 = K >> 2;
+    float acc[MT];
+#pragma unroll
+    for (int m = 0; m < MT; ++m) acc[m] = 0.0f;
+    for (int i = lane; i < k4; i += 32) {
+        const float4 wv = w4[i];
+#pragma unroll
+        for (int m = 0; m < MT; ++m) {
+            if (m < M) {
+                const float4 xv = reinterpret_cast<const float4*>(X + static_cast<size_t>(m) * K)[i];
+                acc[m] = fmaf(wv.x, xv.x, fmaf(wv.y, xv.y, fmaf(wv.z, xv.z, fmaf(wv.w, xv.w, acc[m]))));
+            }
+        }
+    }
+#pragma unroll
+    for (int m = 0; m < MT; ++m) {
+        const float sum = wave32_sum(acc[m]);
+        if (lane == 0 && m < M) Y[static_cast<size_t>(m) * N + row] = sum;
+    }
+}
+
+inline void launch_f32_sink_rows_exact(const float* W, const float* X, float* Y, int M, int N, int K, hipStream_t st) {
+    for (int m0 = 0; m0 < M; m0 += 8) {
+        const int mc = (M - m0) < 8 ? (M - m0) : 8;
+        const dim3 grid((N + 7) / 8);
+        const float* xs = X + static_cast<size_t>(m0) * K;
+        float* ys = Y + static_cast<size_t>(m0) * N;
+        if (mc <= 2)      k_f32_gemv1_sink_mr<2><<<grid, 256, 0, st>>>(W, xs, ys, mc, N, K);
+        else if (mc <= 4) k_f32_gemv1_sink_mr<4><<<grid, 256, 0, st>>>(W, xs, ys, mc, N, K);
+        else if (mc <= 6) k_f32_gemv1_sink_mr<6><<<grid, 256, 0, st>>>(W, xs, ys, mc, N, K);
+        else              k_f32_gemv1_sink_mr<8><<<grid, 256, 0, st>>>(W, xs, ys, mc, N, K);
     }
 }
 
