@@ -290,6 +290,47 @@ inline constexpr size_t conversation_cache_swap_block_bytes(int mib) {
     return (size_t) mib << 20;
 }
 
+/// The conversation `e` snapshots was continued by the request whose tokens are `ids` (checkpoint chain `checks`), but not by
+/// appending: a client (an agent harness) re-renders the reply the engine generated, so `e`'s live tokens agree with `ids` up to
+/// a point L and differ after it, and `e`'s checkpoints deeper than L (taken in that rewritten tail) can never be a prefix of a
+/// request that follows `ids`.  Then `e` adds nothing the outgoing chain does not hold when
+///  - the rewritten tail is a minority of `e` (at most a quarter of its live tokens: a conversation that only shares a system
+///    prompt with `e` differs after that prompt and is kept), and
+///  - the deepest checkpoint of `e` that `ids` extends exists and the chain holds it (or `ids` is it): every resume `e` could
+///    give a request that follows `ids` is then given by the chain, as for a deepest checkpoint held (#342).
+/// Same pictures below that checkpoint; a pinned shared prefix is kept.  `e` is a SavedConversation or a spill Entry.
+template<class E>
+bool conversation_rewritten_tail_held(const E& e, const std::vector<int32_t>& ids,
+                                      const std::vector<ConversationImageKey>& images,
+                                      const std::vector<ConversationCheckpoint>& checks) {
+    const size_t n = e.live.ids.size();
+    if (n == 0) return false;
+    for (const auto& c : e.checkpoints) if (c.pinned) return false;
+    const size_t lim = std::min(n, ids.size());
+    size_t l = 0;
+    while (l < lim && e.live.ids[l] == ids[l]) ++l;
+    if (n - l > n / 4) return false;
+    const ConversationCheckpoint* p = nullptr;
+    for (const auto& c : e.checkpoints) {
+        if (c.ids.empty() || c.ids.size() > l || (p && c.ids.size() <= p->ids.size())) continue;
+        if (!std::equal(c.ids.begin(), c.ids.end(), ids.begin())) continue;
+        size_t within = 0;
+        for (const auto& m : images) if (m.start < (int64_t) c.ids.size()) ++within;
+        if (within != c.imgs.size()) continue;
+        bool ok = true;
+        for (const auto& k : c.imgs) {
+            bool found = false;
+            for (const auto& m : images) if (m == k) { found = true; break; }
+            if (!found) { ok = false; break; }
+        }
+        if (ok) p = &c;
+    }
+    if (!p) return false;
+    if (p->ids.size() == ids.size() && p->imgs == images) return true;
+    for (const auto& k : checks) if (k.ids == p->ids && k.imgs == p->imgs) return true;
+    return false;
+}
+
 class ConversationCache {
 public:
     struct Match {
@@ -553,6 +594,27 @@ public:
         }
         return true;
     }
+    /// STRATA_SUPERSEDE_DEBUG: one line per parked entry saying how it relates to the outgoing conversation (`ids`, `checkpoints`):
+    /// live tokens, the common prefix with `ids`, its checkpoint sizes, whether each rule would drop it.  Changes nothing.
+    std::string debug_supersede(const std::vector<int32_t>& ids, const std::vector<ConversationImageKey>& images,
+                                const std::vector<ConversationCheckpoint>& checkpoints, bool cvec) const {
+        std::string out;
+        char b[160];
+        for (size_t i = 0; i < entries_.size(); ++i) {
+            const auto& e = entries_[i];
+            size_t l = 0;
+            while (l < e.live.ids.size() && l < ids.size() && e.live.ids[l] == ids[l]) ++l;
+            std::snprintf(b, sizeof b, "  entry %zu: live %zu, common prefix %zu, cvec %d, prefix-ext %d, tail-held %d, checkpoints [", i,
+                          e.live.ids.size(), l, (int) (e.cvec == cvec), (int) live_extended_by(e, ids, images),
+                          (int) conversation_rewritten_tail_held(e, ids, images, checkpoints));
+            out += b;
+            for (const auto& c : e.checkpoints) { std::snprintf(b, sizeof b, "%zu ", c.ids.size()); out += b; }
+            out += "]; chain [";
+            for (const auto& c : checkpoints) { std::snprintf(b, sizeof b, "%zu ", c.ids.size()); out += b; }
+            out += "]\n";
+        }
+        return out;
+    }
     size_t drop_superseded(const std::vector<int32_t>& ids, const std::vector<ConversationImageKey>& images,
                            const std::vector<ConversationCheckpoint>& checkpoints, bool cvec,
                            std::vector<size_t>* dropped_tokens = nullptr) {
@@ -569,7 +631,8 @@ public:
             for (const auto& c : e.checkpoints)
                 if (!deepest || c.ids.size() > deepest->ids.size()) deepest = &c;
             if (e.cvec == cvec && !(guarded_ != 0 && serials_[i] == guarded_) &&
-                ((deepest && !deepest->ids.empty() && held(*deepest)) || live_extended_by(e, ids, images))) {
+                ((deepest && !deepest->ids.empty() && held(*deepest)) || live_extended_by(e, ids, images) ||
+                 conversation_rewritten_tail_held(e, ids, images, checkpoints))) {
                 if (dropped_tokens) dropped_tokens->push_back(e.live.ids.size());
                 bytes_ -= e.bytes();
                 erase(i);
@@ -600,8 +663,9 @@ public:
             const ConversationCheckpoint* deepest = nullptr;
             for (const auto& c : e.checkpoints)
                 if (!deepest || c.ids.size() > deepest->ids.size()) deepest = &c;
-            if (e.cvec != cvec || !deepest || deepest->ids.empty() || !held(*deepest) ||
-                (guarded_ != 0 && serials_[i] == guarded_))
+            if (e.cvec != cvec || (guarded_ != 0 && serials_[i] == guarded_) ||
+                !((deepest && !deepest->ids.empty() && held(*deepest)) ||
+                  conversation_rewritten_tail_held(e, ids, images, checkpoints)))
                 continue;
             for (const auto& c : e.checkpoints)
                 if (!held(c)) return true;

@@ -236,6 +236,40 @@ int main() {
     std::string err;
     check(!SpillNamespace().open(root / "notes.txt" / "sub", err) && !err.empty(), "a root that cannot be a folder is refused with a reason");
 
+    {   // an agent conversation (its reply re-rendered by the client): the parked newer snapshot deletes the spilled older one
+        auto agent = [](std::vector<int32_t> ids, std::vector<std::vector<int32_t>> ckpts) {
+            SavedConversation s;
+            s.live.ids = std::move(ids);
+            s.live.gdn.assign(1 << 20, 3);
+            s.cvec = true;
+            for (auto& k : ckpts) { ConversationCheckpoint c; c.ids = std::move(k); c.gdn.assign(4096, 4); s.checkpoints.push_back(std::move(c)); }
+            return s;
+        };
+        std::vector<int32_t> root, body, old_tail, new_tail;
+        for (int32_t i = 1; i <= 40; ++i) root.push_back(i);
+        for (int32_t i = 100; i < 180; ++i) body.push_back(i);
+        for (int32_t i = 500; i < 520; ++i) old_tail.push_back(i);
+        for (int32_t i = 600; i < 630; ++i) new_tail.push_back(i);
+        auto join = [](std::vector<int32_t> a, const std::vector<int32_t>& b) { a.insert(a.end(), b.begin(), b.end()); return a; };
+        const auto mid = join(root, std::vector<int32_t>(body.begin(), body.begin() + 40));
+        const fs::path d = fs::temp_directory_path() / ("strata-spill-agent-" + std::to_string(std::random_device{}()));
+        const SessionFileIdentity id{31, 41};
+        std::string er;
+        ConversationSpill sp;
+        check(sp.open(d, uint64_t(64) << 20, er), "agent: the tier opens");
+        const auto older = join(join(root, body), old_tail);
+        check(sp.put(agent(older, {root, mid, join(join(root, body), std::vector<int32_t>(old_tail.begin(), old_tail.begin() + 10))}), id, er) &&
+              sp.size() == 1, "agent: the older snapshot is spilled");
+        const auto next = join(join(join(root, body), new_tail), std::vector<int32_t>{700, 701});
+        const ConversationCheckpoint kroot = [&] { ConversationCheckpoint c; c.ids = root; return c; }();
+        const ConversationCheckpoint kmid = [&] { ConversationCheckpoint c; c.ids = mid; return c; }();
+        check(sp.drop_superseded(next, {}, true).empty() && sp.size() == 1, "agent: without the chain nothing is known");
+        check(sp.drop_superseded(next, {}, true, {kroot}).empty() && sp.size() == 1, "agent: a chain without the checkpoint keeps it");
+        check(sp.drop_superseded(next, {}, true, {kroot, kmid}) == std::vector<size_t>({older.size()}) && sp.size() == 0,
+              "agent: the chain holds the deepest checkpoint the new prompt extends: deleted");
+        std::error_code ec2;
+        fs::remove_all(d, ec2);
+    }
     // the entries: written as session files, the oldest go first, matched like the RAM cache, read back exactly
     {
         auto img = [](std::vector<int32_t> ids, uint8_t fill, std::vector<int32_t> ckpt = {}) {

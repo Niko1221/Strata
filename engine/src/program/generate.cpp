@@ -14275,6 +14275,10 @@ int main(int argc, char** argv) {
             // #342: before make_room evicts oldest-first, the copies of this conversation a turn back go (they hold
             // nothing the outgoing chain does not, apart from the tail this conversation rewrote)
             {
+                if (std::getenv("STRATA_SUPERSEDE_DEBUG") != nullptr)
+                    std::fprintf(stderr, "strata serve: supersede debug: parking %zu tokens, chain of %zu checkpoints, %zu parked\n%s",
+                                 src.ids.size(), src.checks.size(), conversations.size(),
+                                 conversations.debug_supersede(src.ids, src.imgs, src.checks, src.cvec).c_str());
                 std::vector<size_t> gone;
                 const size_t dropped = conversations.drop_superseded(src.ids, src.imgs, src.checks, src.cvec, &gone);
                 if (dropped)
@@ -14283,7 +14287,7 @@ int main(int argc, char** argv) {
                 // a longer snapshot of the same conversation makes the older ones useless, in RAM and on the SSD tier alike
                 // (never spilled, and a spilled one is deleted with its index file)
                 if (spill.enabled()) {
-                    const auto on_ssd = spill.drop_superseded(src.ids, src.imgs, src.cvec);
+                    const auto on_ssd = spill.drop_superseded(src.ids, src.imgs, src.cvec, src.checks);
                     gone.insert(gone.end(), on_ssd.begin(), on_ssd.end());
                 }
                 for (const size_t n : gone)
