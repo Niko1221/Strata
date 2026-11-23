@@ -159,3 +159,13 @@ test('every issue sentence exists in all nine languages and keeps its slots', as
 test('the notes the app itself writes into the file (ui_resource_baseline, ui_vision_device, ...) are not reported', () => {
   assert.deepEqual(checkRunConfig('{"ui_resource_baseline": {"parallel": 2}, "ui_vision_device": "cpu", "ui_resource_profile": "work"}'), { ok: true, issues: [] });
 });
+
+test('inkling_thinking_budget (Inkling-2-Mini default thinking budget, 0.2.21) is a known key with a number from 0 up, not flagged', () => {
+  assert.ok(KNOWN_KEYS.has('inkling_thinking_budget'));
+  const text = JSON.stringify({ exe: 'component:strata-inkling', arch: 'inkling2_loop', args: ['--native', 'Inkling-2-Mini-SQ-10.strata'], inkling_thinking_budget: 400 });
+  const ok = checkRunConfig(text);
+  assert.equal(ok.ok, true, JSON.stringify(ok.issues));
+  assert.equal(ok.issues.filter(i => i.key === 'inkling_thinking_budget').length, 0);
+  const bad = checkRunConfig(JSON.stringify({ exe: 'x', args: [], inkling_thinking_budget: -5 }));
+  assert.ok(bad.issues.some(i => i.key === 'inkling_thinking_budget'), 'a negative budget is reported');
+});
