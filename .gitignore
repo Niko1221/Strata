@@ -27,7 +27,7 @@ td.log
 
 # created by terminal/setup.py on the user's machine
 /terminal/.venv/
-/.venv/
+/.venv
 /terminal/build/
 /build/
 /engine/third_party/llama.cpp

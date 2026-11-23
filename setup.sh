@@ -6,7 +6,19 @@
 cd "$(dirname "$0")" || exit 1
 # the Terminal's sources and everything setup writes live in terminal/ (0.2.16 layout); an older clone's .venv moves there once
 if [ -f terminal/setup.py ]; then
-  [ -e terminal/.venv ] || { [ -x .venv/bin/python ] && mv .venv terminal/.venv; }
+  if [ ! -e terminal/.venv ] && [ -x .venv/bin/python ]; then
+    mv .venv terminal/.venv || exit 1
+  fi
+  # A moved environment's installed commands can still name their original interpreter.
+  if [ ! -e .venv ] && [ ! -L .venv ] && [ -x terminal/.venv/bin/python ]; then
+    old_bin="$(pwd -P)/.venv/bin/"
+    for tool in pip cmake ninja; do
+      if grep -Fq "$old_bin" "terminal/.venv/bin/$tool" 2>/dev/null; then
+        ln -sn terminal/.venv .venv || [ -x .venv/bin/python ] || exit 1
+        break
+      fi
+    done
+  fi
   cd terminal || exit 1
 fi
 # A bundled Python runtime (the python/ folder of the terminal archive) is used when it is there: nothing to find,
