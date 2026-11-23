@@ -86,6 +86,52 @@ inline void ink_top_k_ids(const float* lg, int V, int K, std::vector<int>& idx) 
     }
 }
 
+// The sampling step once the K best candidates are known: tv[i] is the logit of token ti[i], best first (larger logit first, the
+// smaller id first on equal logits), K = min(top_k, vocab, 128).  Shared by sample_logits (candidates found on the host) and the
+// candidate rows a backend returns (forward_batch_cand), so both give the same token for the same seed.
+inline int32_t ink_sample_top(const float* tv, const int* ti, int K, const SampleOpts& s, std::mt19937_64& rng) {
+    std::vector<double> p(K);
+    double mx = tv[0], sum = 0.0;
+    for (int i = 0; i < K; ++i) {
+        p[i] = std::exp((tv[i] - mx) / static_cast<double>(s.temperature));
+        sum += p[i];
+    }
+    for (double& x : p) x /= sum;
+    int keep = K;
+    if (s.min_p > 0.0f) {
+        const double thr = static_cast<double>(s.min_p) * p[0];
+        keep = 1;
+        while (keep < K && p[keep] >= thr) ++keep;
+    }
+    if (s.top_p < 1.0f) {
+        double c = 0.0;
+        int k2 = 0;
+        while (k2 < keep) {
+            c += p[k2++];
+            if (c >= static_cast<double>(s.top_p)) break;
+        }
+        keep = std::max(1, k2);
+    }
+    double z = 0.0;
+    for (int i = 0; i < keep; ++i) z += p[i];
+    std::uniform_real_distribution<double> u(0.0, z);
+    const double r = u(rng);
+    double c = 0.0;
+    for (int i = 0; i < keep; ++i) {
+        c += p[i];
+        if (r <= c) return ti[i];
+    }
+    return ti[keep - 1];
+}
+
+// Sampling from a candidate row (ink2::CandRows, `cand` = the row's kInkCandidates entries).  Only for a slot without penalties:
+// a penalty changes logits anywhere in the row before the best are picked, so such a slot needs its full row.
+inline int32_t sample_candidates(const float* cv, const int32_t* ci, int V, const SampleOpts& s, std::mt19937_64& rng) {
+    if (s.greedy()) return ci[0];
+    const int K = std::min(std::max(1, s.top_k), std::min(V, 128));
+    return ink_sample_top(cv, ci, K, s, rng);
+}
+
 inline int32_t sample_logits(float* lg, int V, const SampleOpts& s, const std::vector<int32_t>& hist, std::mt19937_64& rng) {
     if (s.penalties() && s.last_n > 0) {
         size_t start = static_cast<size_t>(std::max(0, s.pen_from));
@@ -112,38 +158,9 @@ inline int32_t sample_logits(float* lg, int V, const SampleOpts& s, const std::v
     const int K = std::min(std::max(1, s.top_k), std::min(V, 128));
     std::vector<int> idx;
     ink_top_k_ids(lg, V, K, idx);
-    std::vector<double> p(K);
-    double mx = lg[idx[0]], sum = 0.0;
-    for (int i = 0; i < K; ++i) {
-        p[i] = std::exp((lg[idx[i]] - mx) / static_cast<double>(s.temperature));
-        sum += p[i];
-    }
-    for (double& x : p) x /= sum;
-    int keep = K;
-    if (s.min_p > 0.0f) {
-        const double thr = static_cast<double>(s.min_p) * p[0];
-        keep = 1;
-        while (keep < K && p[keep] >= thr) ++keep;
-    }
-    if (s.top_p < 1.0f) {
-        double c = 0.0;
-        int k2 = 0;
-        while (k2 < keep) {
-            c += p[k2++];
-            if (c >= static_cast<double>(s.top_p)) break;
-        }
-        keep = std::max(1, k2);
-    }
-    double z = 0.0;
-    for (int i = 0; i < keep; ++i) z += p[i];
-    std::uniform_real_distribution<double> u(0.0, z);
-    const double r = u(rng);
-    double c = 0.0;
-    for (int i = 0; i < keep; ++i) {
-        c += p[i];
-        if (r <= c) return idx[i];
-    }
-    return idx[keep - 1];
+    std::vector<float> tv((size_t)K);
+    for (int i = 0; i < K; ++i) tv[(size_t)i] = lg[idx[(size_t)i]];
+    return ink_sample_top(tv.data(), idx.data(), K, s, rng);
 }
 
 inline bool finite_logits(const float* lg, int V) noexcept {
@@ -463,6 +480,8 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
     // while another request decodes: cap 64 / 128 / 256 / none = decode 24 / 21 / 17 / 12.6 tok/s, prompt first token after
     // 2.75 / 1.63 / 1.05 / 0.88 s), so it is opt-in; answers are identical for every value.
     int prefill_cap = 0;
+    // STRATA_INK_NO_CAND=1: always copy the full logit rows to the host (the old way) instead of the backend's candidate rows.
+    bool cand_ok = !(std::getenv("STRATA_INK_NO_CAND") && std::getenv("STRATA_INK_NO_CAND")[0] == '1');
     if (const char* e = std::getenv("STRATA_INK_PREFILL_CAP"); e && *e) prefill_cap = std::max(0, std::atoi(e));
     const bool use_dspark = (cfg.draft_mode != "off") && mf.m.dspark.present && backend.dspark_ready();
 
@@ -960,11 +979,25 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
         if (!merged_img_embeds.empty()) batch.img_embeds = merged_img_embeds.data();
 
         const int n_want = batch.count_logits();
-        logits_buf.resize(static_cast<size_t>(std::max(1, n_want)) * V);
+        // Candidate rows (the 128 best logits of each wanted row, exact) instead of the full 200058-float rows, when the backend can and
+        // no wanted slot needs its whole row (a penalty changes logits anywhere in it).  Many slots: 64 rows are 51 MB per step otherwise.
+        bool use_cand = cand_ok && n_want > 0 && backend.supports_candidates();
+        for (int wi = 0; use_cand && wi < n_want; ++wi) if (reqs[logit_slots[wi]].s.penalties()) use_cand = false;
         std::string ferr;
-        if (!backend.forward_batch(batch, n_want > 0 ? logits_buf.data() : nullptr, nullptr, ferr)) {
-            proto("ERR fatal GPU error: %s", ferr.c_str());
-            return 1;
+        CandRows cand;
+        if (use_cand) {
+            if (!backend.forward_batch_cand(batch, cand, ferr)) {
+                if (cand.rows != 0) { proto("ERR fatal GPU error: %s", ferr.c_str()); return 1; }
+                cand_ok = false;     // nothing ran: this and every later step takes the full-row path
+                use_cand = false;
+            }
+        }
+        if (!use_cand) {
+            logits_buf.resize(static_cast<size_t>(std::max(1, n_want)) * V);
+            if (!backend.forward_batch(batch, n_want > 0 ? logits_buf.data() : nullptr, nullptr, ferr)) {
+                proto("ERR fatal GPU error: %s", ferr.c_str());
+                return 1;
+            }
         }
         const double step_ms = (now_s() - t_step0) * 1000.0;
 
@@ -1004,8 +1037,8 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
         for (int wi = 0; wi < n_want; ++wi) {
             const int s = logit_slots[wi];
             auto& rq = reqs[s];
-            float* lg = logits_buf.data() + static_cast<size_t>(wi) * V;
-            if (!finite_logits(lg, V)) {
+            float* lg = use_cand ? nullptr : logits_buf.data() + static_cast<size_t>(wi) * V;
+            if (use_cand ? cand.finite[static_cast<size_t>(wi)] == 0 : !finite_logits(lg, V)) {
                 // Purge poisoned KV/ShortConv state so subsequent retries start clean (#879)!
                 rq.cached_prefix.clear();
                 backend.reset_slot(rq.slot);
@@ -1021,7 +1054,10 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
                 finish_req(rq, "length");
                 continue;
             }
-            int32_t tok = sample_logits(lg, V, rq.s, rq.hist, rq.rng);
+            int32_t tok = use_cand
+                ? sample_candidates(cand.val.data() + static_cast<size_t>(wi) * InkBackend::kInkCandidates,
+                                    cand.idx.data() + static_cast<size_t>(wi) * InkBackend::kInkCandidates, V, rq.s, rq.rng)
+                : sample_logits(lg, V, rq.s, rq.hist, rq.rng);
             rq.hist.push_back(tok);
             rq.gen_ids.push_back(tok);
             rq.next_tok = tok;

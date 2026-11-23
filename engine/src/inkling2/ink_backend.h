@@ -50,6 +50,16 @@ struct BackendStats {
     uint64_t expert_misses = 0;       // of those, the ones not in the card
 };
 
+// Candidate rows of forward_batch_cand: row r (in the order of the wanted-logits rows) holds `k` = min(kInkCandidates, vocab)
+// ids and logits in val / idx [r * kInkCandidates + 0 .. k), and finite[r] (1 = every 67th logit of the row is finite).
+struct CandRows {
+    int rows = 0;
+    int k = 0;
+    std::vector<float> val;
+    std::vector<int32_t> idx;
+    std::vector<uint8_t> finite;
+};
+
 class InkBackend {
 public:
     virtual ~InkBackend() = default;
@@ -91,6 +101,19 @@ public:
         float* logits_out,
         TapCapture* taps_out,
         std::string& err) = 0;
+
+    // The same step, but a row of logits is not copied to the host: the backend returns, per wanted row, the kInkCandidates best
+    // token ids with their logits (larger logit first, the smaller id first on equal logits - the order the sampler uses) and a
+    // flag telling whether the row's every 67th logit is finite (what the host check looked at).  That is 128 x 8 bytes per row
+    // instead of 200058 x 4, which is what limits many concurrent slots.  Exact by construction: the values are the very floats
+    // forward_batch would have copied.  A backend that cannot do it returns false from supports_candidates() (the default).
+    static constexpr int kInkCandidates = 128;
+    virtual bool supports_candidates() const noexcept { return false; }
+    virtual bool forward_batch_cand(const StepBatch& batch, CandRows& out, std::string& err) {
+        (void)batch; (void)out;
+        err = "this backend does not return candidate rows";
+        return false;
+    }
 
     // On-device DSpark Block-8 Recurrent Markov drafting for one slot.
     // Returns number of drafted tokens (0..max_draft, typically up to 7); returns 0 if unavailable/disabled.

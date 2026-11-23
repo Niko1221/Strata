@@ -10,6 +10,7 @@
 #include "ink_dspark.cuh"
 #include "ink_runner.cuh"
 #include "ink_spec.cuh"
+#include "ink_topk.cuh"
 #include "strata/core/arch_probe.hpp"
 #include "strata/core/volta_forever.hpp"
 
@@ -577,6 +578,31 @@ public:
         float* logits_out,
         TapCapture* taps_out,
         std::string& err) override {
+        return forward_batch_impl(batch, logits_out, nullptr, taps_out, err);
+    }
+
+    bool supports_candidates() const noexcept override { return initialized_; }
+
+    bool forward_batch_cand(const StepBatch& batch, CandRows& out, std::string& err) override {
+        if (!initialized_) { err = "CUDA backend not initialized"; return false; }
+        // the scratch is allocated before anything runs, so a failure here leaves the step untouched (the caller keeps the full-row path)
+        if (!topk_.ensure(std::max(64, batch.count_logits()))) { err = "no memory for the candidate scratch"; return false; }
+        const int V = model_.man.c.vocab_unpadded;
+        const int nrows = batch.count_logits();
+        out.rows = nrows;
+        out.k = std::min(kInkCandidates, V);
+        out.val.assign((size_t)nrows * kInkCandidates, 0.0f);
+        out.idx.assign((size_t)nrows * kInkCandidates, 0);
+        out.finite.assign((size_t)nrows, 1);
+        return forward_batch_impl(batch, nullptr, &out, nullptr, err);
+    }
+
+    bool forward_batch_impl(
+        const StepBatch& batch,
+        float* logits_out,
+        CandRows* cand_out,
+        TapCapture* taps_out,
+        std::string& err) {
         if (!initialized_) {
             err = "CUDA backend not initialized";
             return false;
@@ -618,7 +644,7 @@ public:
         // Helper: extract wanted logits rows from runner_->d_h_norm[0..M-1] into logits_out
         auto emit_selected_logits = [&](const std::vector<int>& local_idx, const std::vector<int>& dst_rows) {
             const int nw = (int)local_idx.size();
-            if (nw == 0 || !logits_out) return;
+            if (nw == 0 || (!logits_out && !cand_out)) return;
             const float* h_src = runner_->d_h_norm;
             if (nw == 1) {
                 h_src = runner_->d_h_norm + (size_t)local_idx[0] * strata::ink::kInkHidden;
@@ -638,6 +664,24 @@ public:
             runner_->head_logits_from(h_src, nw);
             if (hp) INK_CK(cudaStreamSynchronize(runner_->st));
             auto hq1 = hnow();
+            if (cand_out) {
+                // candidate rows: the 128 best (id, logit) of each wanted row and its finite flag; no full row leaves the card
+                INK_CK(topk_.run(runner_->d_logits, nw, V, runner_->st));
+                INK_CK(cudaStreamSynchronize(runner_->st));
+                const int kc = std::min(kInkCandidates, V);
+                for (int k = 0; k < nw; ++k) {
+                    const int dst = dst_rows[k];
+                    const uint64_t* keys = topk_.h_out + (size_t)k * strata::ink::kTopkCand;
+                    for (int j = 0; j < kc; ++j) {
+                        int32_t id = strata::ink::ink_topk_key_index(keys[j]);
+                        if (id < 0 || id >= V) id = 0;     // only a NaN logit can leave a pad key here
+                        cand_out->val[(size_t)dst * kInkCandidates + j] = strata::ink::ink_topk_key_value(keys[j]);
+                        cand_out->idx[(size_t)dst * kInkCandidates + j] = id;
+                    }
+                    cand_out->finite[dst] = topk_.h_fin[k] != 0 ? 1 : 0;
+                }
+                return;
+            }
             // Use pinned host staging buffer for full PCIe 5.0 DMA bandwidth (~50 GB/s vs ~12 GB/s pageable)!
             ensure_pinned_logits(nw, V);
             INK_CK(cudaMemcpyAsync(h_logits_pin_, runner_->d_logits,
@@ -980,6 +1024,7 @@ private:
         if (d_h_sel_)      { cudaFree(d_h_sel_); d_h_sel_ = nullptr; }
         if (d_sel_idx_)    { cudaFree(d_sel_idx_); d_sel_idx_ = nullptr; }
         if (h_logits_pin_) { cudaFreeHost(h_logits_pin_); h_logits_pin_ = nullptr; h_logits_cap_ = 0; }
+        topk_.free_all();
         model_.free_all();
         prompt_ckpts_.clear();
         initialized_ = false;
@@ -1013,6 +1058,7 @@ private:
     float* d_h_sel_ = nullptr;
     int32_t* d_sel_idx_ = nullptr;
     float* h_logits_pin_ = nullptr;
+    strata::ink::InkTopkScratch topk_;   // candidate rows (ink_topk.cuh)
     int h_logits_cap_ = 0;
     std::vector<bool> slot_alloc_;
     std::vector<bool> snap_active_;
