@@ -224,6 +224,26 @@ class TestInklingDialect(unittest.TestCase):
         self.assertEqual(got_ep[got_ep.index("--gpus") + 1], "1,0")
         self.assertNotIn("--layer-split", got_ep)
 
+    def test_ram_experts_zero_from_a_full_vram_plan_is_dropped(self):
+        # strata-inkling reads --ram-experts-gb 0 as GPU + SSD only: setup's 0.00 for a plan with every expert on the card
+        # must not send the experts a --vram-experts-gb cap or a bigger context pushes off the card to the SSD
+        base = ["--native", "Inkling-2-Mini-SQ-20.strata", "--max-context", "65536", "--vram-experts-gb", "19.86"]
+        got = inkling_kind.engine_args({"arch": "inkling2_loop", "backend": "cuda", "args": base + ["--ram-experts-gb", "0.00"]}, announce=False)
+        self.assertNotIn("--ram-experts-gb", got)
+        self.assertEqual(got[got.index("--vram-experts-gb") + 1], "19.86")
+
+        # a RAM tier the plan asked for stays
+        got_ram = inkling_kind.engine_args({"arch": "inkling2_loop", "backend": "cuda", "args": base + ["--ram-experts-gb", "4.63"]}, announce=False)
+        self.assertEqual(got_ram[got_ram.index("--ram-experts-gb") + 1], "4.63")
+
+        # GPU + SSD only, chosen by the plan (--ssd-experts) or by the person (user_args), stays
+        got_ssd = inkling_kind.engine_args(
+            {"arch": "inkling2_loop", "backend": "cuda", "args": base + ["--ram-experts-gb", "0", "--ssd-experts"]}, announce=False)
+        self.assertEqual(got_ssd[got_ssd.index("--ram-experts-gb") + 1], "0")
+        got_user = inkling_kind.engine_args(
+            {"arch": "inkling2_loop", "backend": "cuda", "args": list(base), "user_args": ["--ram-experts-gb", "0"]}, announce=False)
+        self.assertEqual(got_user[got_user.index("--ram-experts-gb") + 1], "0")
+
     def test_dspark_drafting_off_flag_and_drafting_info_6633(self):
         base = ["--native", "Inkling-2-Mini-SQ-20.strata", "--max-context", "32768"]
         # drafting: "off" MUST emit --draft off so strata-inkling does not default to auto/dspark

@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from serve.frontend import ChatTemplate, literal_tags, mark_think_literals, unmark_think_literals  # noqa: E402
 from serve.server import (ANSWER_RESERVE_MIN, CTX_SLACK, ByteTokenizer, EngineDied, EngineNonFinite, GpuBusy, MockEngine,  # noqa: E402
                           PP_DONE_TAIL, Service,
-                          StrataEngine, api_key_of, engine_args, key_matches, layer_split_value, prompt_progress,
+                          StrataEngine, Vision, api_key_of, engine_args, key_matches, layer_split_value, prompt_progress,
                           prompt_tokens_seen,
                           request_stats, request_timings, serve, start_failure_hint)
 from types import SimpleNamespace  # noqa: E402
@@ -33,6 +33,44 @@ ROOT = Path(__file__).resolve().parents[1]
 CTX = 4096
 ANSWER = "xy" * 1000                             # longer than the old 1024 fallback: one token per byte (#606: not
 #                                                one token repeated, which the server ends at 256)
+
+
+class VisionDecode(unittest.TestCase):
+    def test_native_decoder_failure_uses_existing_normalization_once(self):
+        for reply, expected_calls in (("ERR cannot read the image crop\nOK 450\n", 2),
+                                      ("ERR the vision encoder failed\n", 1)):
+            with self.subTest(reply=reply), tempfile.TemporaryDirectory() as temp:
+                vision = Vision.__new__(Vision)
+                vision.dir, vision.lock, vision.cache = Path(temp), threading.RLock(), {}
+                vision.cache_batches = 0
+                vision.proc = SimpleNamespace(stdin=io.StringIO(), stdout=io.StringIO(reply))
+                with mock.patch.object(Vision, 'load', return_value=b'original'), \
+                        mock.patch.object(Vision, 'normalize', side_effect=lambda data, force=False:
+                                     b'converted' if force else data) as normalize:
+                    if expected_calls == 2:
+                        encoded, tokens = vision.encode('crop')
+                        encoded.write_bytes(b'fake encoder output')
+                        self.assertEqual(tokens, 450)
+                        self.assertEqual(vision.encode('crop')[1], 450)
+                        self.assertEqual(vision.proc.stdin.getvalue().count('ENC '), 2)
+                        self.assertEqual(normalize.call_args_list[1].kwargs, {'force': True})
+                    else:
+                        with self.assertRaisesRegex(ValueError, 'vision encoder failed'):
+                            vision.encode('crop')
+                        self.assertEqual(normalize.call_count, 1)
+                self.assertFalse(list(Path(temp).glob('*.img')))
+
+    def test_failed_conversion_removes_temporary_image(self):
+        with tempfile.TemporaryDirectory() as temp:
+            vision = Vision.__new__(Vision)
+            vision.dir, vision.lock, vision.cache = Path(temp), threading.RLock(), {}
+            vision.cache_batches = 0
+            vision.proc = SimpleNamespace(stdin=io.StringIO(), stdout=io.StringIO('ERR cannot read the image crop\n'))
+            with mock.patch.object(Vision, 'load', return_value=b'original'), \
+                    mock.patch.object(Vision, 'normalize', side_effect=[b'original', ValueError('bad image')]):
+                with self.assertRaisesRegex(ValueError, 'bad image'):
+                    vision.encode('crop')
+            self.assertFalse(list(Path(temp).glob('*.img')))
 
 
 class RecordingEngine(MockEngine):
@@ -371,6 +409,8 @@ class ImageMarkers(unittest.TestCase):
     """#150: the text "<|image_pad|>" inside a message is text, not an image's place."""
 
     class FakeVision:
+        batch = staticmethod(contextlib.nullcontext)
+
         def __init__(self, d):
             self.dir = Path(d)
             self.rows = self.dir / "img.sve"
@@ -584,6 +624,7 @@ class VisionTempFiles(unittest.TestCase):
         pipe = Pipe()
         v = Vision.__new__(Vision)
         v.dir, v.lock, v.cache = Path(tempfile.mkdtemp(prefix="strata-vision-test-")), threading.Lock(), {}
+        v.cache_batches = 0
         v.proc = mock.Mock(stdin=pipe, stdout=mock.Mock(readline=lambda: "OK 7 1 1 1\n"))
         try:
             with mock.patch.object(Vision, "load", return_value=b""), \
@@ -6794,7 +6835,8 @@ class VisionCacheEviction(unittest.TestCase):
     def make(self, d):
         import serve.server as server
         v = server.Vision.__new__(server.Vision)
-        v.dir, v.cache, v.lock = d, {}, threading.Lock()
+        v.dir, v.cache, v.lock = d, {}, threading.RLock()
+        v.cache_batches = 0
         v.load = lambda src: src
 
         class Pipe:
@@ -6949,6 +6991,10 @@ class VisionShutdown(unittest.TestCase):
 
             class Proc:
                 stdin = io.StringIO()
+                stdout = None
+
+                def poll(self):
+                    return 0
 
                 def wait(self, timeout=None):
                     return 0
@@ -7723,3 +7769,66 @@ class ChatTemplateKwargsShape(unittest.TestCase):
             with self.subTest(chat_template_kwargs=ctk):
                 status, b = self.post({"model": "x", "max_tokens": 8, "messages": msgs, "chat_template_kwargs": ctk})
                 self.assertEqual(status, 200, b)
+
+
+class OpenAIModelOutputLimit(unittest.TestCase):
+    """#6402: /v1/models publishes the answer cap next to the context window.
+
+    Clients that size a request from the model list (OpenCode reads llama-swap's `meta.llamaswap.max_output_tokens`,
+    OpenAI-shaped ones read `limit.output`) had nothing to read here and fell back to their own guess."""
+
+    @classmethod
+    def setUpClass(cls):
+        tok = ByteTokenizer()
+        cls.svc = Service(MockEngine(tok, "ok", max_context=CTX), tok,
+                          ChatTemplate(ROOT / "serve/chat_template.jinja"), model_name="qwen3.8-flash-next-iq3_xxs")
+        cls.svc.set_aliases(["qwen"])
+        cls.httpd = serve(cls.svc, port=0)
+        cls.base = f"http://127.0.0.1:{cls.httpd.server_address[1]}"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+
+    def get(self, path):
+        with urllib.request.urlopen(self.base + path, timeout=30) as r:
+            return json.loads(r.read())
+
+    def tearDown(self):
+        self.svc.shared = {}                # POST /settings would set this; every test starts without it
+
+    def test_output_cap_is_the_context_less_the_engine_margin(self):
+        # the server never lets one answer run past ctx - CTX_SLACK (the same margin prepare() enforces), and a
+        # request with no max_tokens gets that whole room, so it is the largest answer this model can produce
+        m = self.get("/v1/models")["data"][0]
+        self.assertEqual(m["limit"]["context"], CTX)
+        self.assertEqual(m["limit"]["output"], CTX - CTX_SLACK)
+        self.assertEqual(m["meta"]["llamaswap"]["max_output_tokens"], CTX - CTX_SLACK)
+        self.assertEqual(m["meta"]["n_ctx"], CTX)                       # the existing key stays
+
+    def test_aliases_report_the_same_limit(self):
+        data = self.get("/v1/models")["data"]
+        self.assertEqual([m["limit"] for m in data], [{"context": CTX, "output": CTX - CTX_SLACK}] * 2)
+        self.assertEqual([m["meta"]["llamaswap"]["max_output_tokens"] for m in data], [CTX - CTX_SLACK] * 2)
+
+    def test_model_retrieve_carries_it_too(self):
+        for path in ("/v1/models/qwen", "/models/qwen"):
+            m = self.get(path)
+            self.assertEqual(m["limit"]["output"], CTX - CTX_SLACK)
+
+    def test_chat_settings_max_tokens_lowers_it(self):
+        # POST /settings {"max_tokens": 512} caps every request that sends none (see the /v1/messages path), so the
+        # published cap has to follow it down; a setting above the context room cannot raise it
+        self.svc.shared = {"max_tokens": 512}
+        self.assertEqual(self.get("/v1/models")["data"][0]["limit"]["output"], 512)
+        self.svc.shared = {"max_tokens": 100000}
+        self.assertEqual(self.get("/v1/models")["data"][0]["limit"]["output"], CTX - CTX_SLACK)
+
+    def test_it_follows_the_engine_context(self):
+        self.svc.engine.max_context = 8192
+        try:
+            m = self.get("/v1/models")["data"][0]
+            self.assertEqual((m["limit"]["context"], m["limit"]["output"]), (8192, 8192 - CTX_SLACK))
+        finally:
+            self.svc.engine.max_context = CTX

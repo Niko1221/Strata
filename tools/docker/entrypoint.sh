@@ -189,16 +189,20 @@ preset_exists=""
 if "$STRATA" launch --list-presets --output json 2>/dev/null | grep -q "\"name\": *\"$PRESET\""; then preset_exists=1; fi
 
 model_path="${MODEL_PATH:-${GGUF_DIR:-}}"
+has_model_file() {
+  for candidate in "$@"; do
+    [ -f "$candidate" ] && return 0
+  done
+  return 1
+}
 if [ -n "$model_path" ]; then
   # a folder that is not mounted (or a typo) must not end as "missing /xxx.gguf" after a minute of setup, and must never turn into a download
   if [ ! -e "$model_path" ]; then
     die "MODEL_PATH=$model_path is not in the container, so no model file can be found there. Mount your folder at that place, for example: -v /srv/gguf/IQ3_XXS:$model_path:ro (docs/DOCKER.md, \"Files you already have\"). Nothing was downloaded." 2
   elif [ -d "$model_path" ] \
-    && ! ls "$model_path"/*.gguf >/dev/null 2>&1 \
-    && ! ls "$model_path"/*.strata >/dev/null 2>&1 \
-    && ! ls "$model_path"/*.safetensors >/dev/null 2>&1 \
-    && ! { [ -f "$model_path/model.safetensors.index.json" ] && ls "$model_path"/tensors/*.safetensors >/dev/null 2>&1; }; then
-    sub=$(find "$model_path" -maxdepth 2 \( -name '*.gguf' -o -name '*.strata' -o -name '*.safetensors' \) 2>/dev/null | head -1)
+    && ! has_model_file "$model_path"/*.gguf "$model_path"/*.strata "$model_path"/*.safetensors \
+    && ! { [ -f "$model_path/model.safetensors.index.json" ] && has_model_file "$model_path"/tensors/*.safetensors; }; then
+    sub=$(find "$model_path" -maxdepth 2 -xtype f \( -name '*.gguf' -o -name '*.strata' -o -name '*.safetensors' \) 2>/dev/null | head -1)
     if [ -n "$sub" ]; then
       die "MODEL_PATH=$model_path has no .gguf, .strata or .safetensors files directly in it, but there are some in ${sub%/*}. Set MODEL_PATH=${sub%/*} (the folder that holds the shards of one model). Nothing was downloaded." 2
     fi

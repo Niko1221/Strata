@@ -389,7 +389,11 @@ and which smaller subset fits. Setup suggests `--draft-vocab en` on cards under 
 same prompt at temperature 0 can end in a different, equally good answer when drafting, cache state or a resumed conversation
 differ. `STRATA_IQ_MT_MIN=1` uses the multi-token kernels for every group, so the answer no longer depends on drafting (IQ3_S
 decode -1 to -3% on a Ryzen 7600). For byte-identical repeats also add `--prompt-cache 0 --adapt-swaps 0 --pcie-frac 0` to
-the engine args. `--pcie-frac 0` costs decode speed, so keep it for A/B runs.
+the engine args and `STRATA_PREFILL_CPU_SHARE=0` to the config's `"env"`, start every run with the same number of expert
+slots (a fixed `--expert-cache N`; the start prints the count), and leave the
+[route tail skip](#route-tail-skip-strata_route_tail_skip-off-by-default-since-0217) off. The CPU prompt share is
+[on by default](#on-by-default) where it applies and can change an answer slightly. `--pcie-frac 0` costs decode speed, so
+keep it for A/B runs.
 
 ---
 
@@ -492,7 +496,10 @@ print(r.choices[0].message.content)
   `strata:live_tok_s`, `strata:last_hit_rate`, `strata:gpu_util`, `strata:ram_used_bytes`). A value the server does not have
   has no sample. With an API key, the scraper sends it as a bearer token. Ready-made files are in `docs/monitoring/`:
   `prometheus.yml`, `servicemonitor.yaml` and `grafana-strata.json`.
-- **Metadata.** `/models` and `/v1/models` list only the loaded model, with its context limit and input modalities. `/props` exposes
+- **Metadata.** `/models` and `/v1/models` list only the loaded model: the OpenAI fields (`id`, `object`, `created`,
+  `owned_by`), its context limit (`max_model_len`, `context_length`, `max_context_length`, `meta.n_ctx`), the answer cap
+  (`limit.output` and `meta.llamaswap.max_output_tokens`: the context less the engine's margin, lowered by a smaller
+  `max_tokens` from the app's Chat settings) and its input modalities. `/props` exposes
   the chat template, context limit, configured generation defaults, model path and engine version. `n_predict: -1` means no
   fixed output cap. `/slots` uses llama.cpp's names (`n_ctx`, `n_prompt_tokens`). `total_slots` is the number of `--batch` slots
   (1 without). These endpoints require the API key when one is configured and never load, unload or restart models.
@@ -546,7 +553,7 @@ applies at the next start. Network, key, MCP and program keys are not editable t
 | `api_monitor` | off | Records requests for `/api-monitor`. |
 | `lazy_load` | off | Start without loading the model. |
 | `slot_save_path` | none | Enables session files. |
-| `host`, `api_key`, `cors_origins`, `trusted_origins`, `allowed_hosts` | local only | See [Network access](#network-access). |
+| `host`, `api_key`, `api_keys`, `cors_origins`, `trusted_origins`, `allowed_hosts` | local only | See [Network access](#network-access). |
 | `codex_thread_titles`, `codex_compaction_cache` | off | See [Codex CLI](#the-responses-api-and-codex-cli). |
 | `mcp_servers`, `mcp` | none | See [Tools from MCP servers](#tools-from-mcp-servers). |
 
@@ -712,6 +719,19 @@ tables per token). The scaling is fixed for the whole run, because the KV cache 
   Several keys (one per client, so one can be withdrawn): `--api-key key1,key2`, `"api_key": "key1,key2"` or
   `"api_key": ["key1", "key2"]`. `STRATA_API_KEY` sets one too. Streamed answers carry `X-Accel-Buffering: no`. When you
   open the web page through a proxy or tunnel whose address differs, add it: `"trusted_origins": ["https://strata.example.com"]`.
+- **Per-key limits:** `"api_keys": {"key": {"name": "...", "max_concurrent": N, "reserved_capacity": R}}` gives each
+  key its own admission limits (see #5004): `max_concurrent` is how many requests of that key may be inside at once,
+  and `reserved_capacity` keeps that many of a `"parallel"` server's slots for the key alone - the other keys, listed
+  or not, may hold at most `parallel - reserved` at once, whether the reserved key is using its slots or not.
+  A refused start names the entry (`api_keys entry 2`), never the key. What the gate does not do: it never cuts off
+  a request already decoding - a reservation protects the next request, not the one in flight. A request waiting at
+  its key's limit waits inside the request: a stream that was already acknowledged with its headers stays silent
+  until the gate opens or the wait expires with the queue's own 429 (`queue_wait_timeout`), and the wait counts
+  `queue_timeout` per wait - a request that waits at its key and then in the engine queue can spend up to twice
+  `queue_timeout` before that 429. `GET /status` counts a key's requests once they are admitted, not while they
+  wait, and the gate's own expiries are not in the `queue_timeouts` metric. The reservation is checked against the
+  `"parallel"` the server starts with; if the engine's slots shrink below the reservations later (VRAM fit), keys
+  without a reservation can lose their reach and their requests queue-time out until the next start.
 - **Browser pages (CORS):** off by default. `"cors_origins": ["https://chat.example.com"]` lets those origins call `/v1/*`;
   `["*"]` lets any page and is only sensible with an API key. It never opens `/settings`, `/unload` or the MCP tools. It
   belongs to the engine's own server; the desktop app answers browser pages on its own API address and already allows
@@ -1138,6 +1158,7 @@ every turn, is encoded once.
 | `"min_tokens": N` | Scales a small picture up to at least N tokens (passed to the encoder as `--min-tokens`). Qwen-VL grounding tasks want at least 1,024. A larger minimum changes image answers and costs encode time. |
 | `"mmproj"` | Points to another mmproj file of this model, for example a Q8_0 one (`llama-quantize mmproj-Qwen3.8-Flash-Next-BF16.gguf mmproj-Qwen3.8-Flash-Next-Q8_0.gguf Q8_0`): 590 MiB against 865 MiB, about 280 MiB less encoder RAM, and it can encode faster on the CPU. **Recommended for `--vision cpu`.** Embedding cosine against BF16 is 0.997-0.999. Setup downloads the BF16 file and keeps a file of your own that still exists. |
 | `"cuda_device": N` | Runs the encoder on a spare card (numbered like `nvidia-smi`). Lower `--vram-reserve-mib` in `"args"` to 700 as well. The card needs code in the ready-made encoder (RTX 20/30/40/50). |
+| `"env": {"NAME": "value"}` | Environment variables for the encoder only, on top of the config's top-level `"env"`, which the encoder also gets. AMD gfx1030 with the encoder on an engine card: `{"GPU_MAX_HW_QUEUES": "1"}` keeps the two processes within the 8 compute queues the kernel gives the card. Without it, the kernel logs `Runlist is getting oversubscribed`, and #267 verify hangs follow (#4668). |
 | `"elastic": false` | Keeps the GPU encoder on the card from the start (the NVIDIA one-GPU default is to start it with the first picture and stop it after `"elastic_idle_s"`, default 120, without one). `"elastic": true` asks for the on-demand start on any card; with `"vram_elastic": true` too the expert cache gives the room (`"elastic_mib"`; when it is not set: 2,048 MiB, or what the reader needs when the picture limit `"max_tokens"` is higher, for example 3,674 MiB at a limit of 16,384 or with no limit (0); the room is given back when the encoder stops), which turns `--kv-grow` off ([VRAM_ELASTIC.md](VRAM_ELASTIC.md#the-image-encoder-on-demand)). |
 
 On an NVIDIA card under 24 GB the CPU encoder is the default, because the GPU encoder takes ~850 expert slots of a 16 GB card's ~4,500
@@ -1177,7 +1198,7 @@ bits of the answer: a switch that changes rounding can change a greedy answer at
 
 | Setting | Applies to | Off switch | What it does |
 | --- | --- | --- | --- |
-| `STRATA_PREFILL_CPU_SHARE` (`auto`, cap `STRATA_PREFILL_CPU_SHARE_MAX=1024`) | CUDA, one GPU, no `--batch`, prompt chunks under 1,024 tokens | `STRATA_PREFILL_CPU_SHARE=0` | The CPU pool computes the experts few of the chunk's tokens route to, while the GPU works on the rest. `auto` measures per layer how long each side takes and checks that sharing pays. Skipped with one log line when RAM or commit is short. Output changes in the last bits. Layer split, batch slots and HIP keep it off unless you set it. On a layer split the explicit `STRATA_PREFILL_CPU_SHARE=auto` works (2x RTX 5090 with a PCIe 4.0 x2 + x8 board, UD-Q4_K_XL, one 1,024-token prompt 1,958 -> 986 ms). |
+| `STRATA_PREFILL_CPU_SHARE` (`auto`, limit `STRATA_PREFILL_CPU_SHARE_MAX=3072`) | CUDA: one GPU, or the server on a layer split of two cards; no `--batch`; prompt chunks under 3,072 tokens. HIP: one gfx12 card (under 2,304 tokens on Linux, where the fused IQ2_S / IQ4_XS prompt kernels are on by default; 3,072 on Windows or with `STRATA_PF_FUSED=0` / `STRATA_PF_FUSED_IQ2S=0`) or one discrete gfx1100/gfx1101/gfx1102 card | `STRATA_PREFILL_CPU_SHARE=0` | The CPU pool computes the experts few of the chunk's tokens route to, while the GPU works on the rest. `auto` measures per layer how long each side takes and checks that sharing pays. Skipped with one log line when RAM or commit is short; on one GPU the default is also not armed when the GPU cache holds every expert. Output changes in the last bits. `STRATA_PREFILL_CPU_SHARE_MAX=1024` keeps the old 1,024 limit; `STRATA_SWITCH_POINT` and `STRATA_PREFILL_CPU_SHARE_AUTO` move the limit where they are on. With `--batch` slots the share needs `STRATA_PREFILL_CPU_SHARE_BATCH=1` and a prompt read takes it only while no slot is decoding. Other HIP cards keep it off unless you set it, and so does a layer split of three or more cards unless the `STRATA_PREFILL_CPU_SHARE_AUTO` rule arms it. On a layer split the explicit `STRATA_PREFILL_CPU_SHARE=auto` works (2x RTX 5090 with a PCIe 4.0 x2 + x8 board, UD-Q4_K_XL, one 1,024-token prompt 1,958 -> 986 ms). |
 | `STRATA_PREFILL_CPU_SHARE_NT=N` (9-256) | CUDA, with the share on | unset (the share takes only experts of at most 8 tokens) | The CPU share may also take the experts up to N tokens of a chunk (cheapest first); the pool runs such an expert as jobs of 8 tokens that share its weights, each row the same bits whatever the job. Opt-in: the chunk limit `STRATA_PREFILL_CPU_SHARE_MAX` must be raised with it to reach 4K prompts. RTX 5090 on PCIe 4.0 x8 (14 GB/s), 32 pool workers on a Xeon 8352V, UD-Q4_K_XL, `STRATA_PREFILL_CPU_SHARE=auto STRATA_PREFILL_CPU_SHARE_NT=32 STRATA_PREFILL_CPU_SHARE_MAX=8192`: prompt of 1,024 / 2,048 / 4,096 / 8,192 / 12,000 tokens 1,292 -> 956 / 1,832 -> 1,392 / 4,272 -> 1,828 / 4,455 -> 3,244 / 4,694 -> 4,254 ms, 16K and up slower with a limit that high (5.0 -> 5.6 s at 16K); forced-token KL against the FP16 path (fixed share 0.5, N=64, limit 8192) 0.01155 against 0.01096 without the share (ratio 1.054 [0.993, 1.120]). |
 | `STRATA_PREFILL_CPU_SHARE_AUTO=0` | CUDA, one GPU, the default-armed CPU share, compute capability 12.0 (RTX 50 series, PRO Blackwell); `=1` asks for it on any CUDA card | `STRATA_PREFILL_CPU_SHARE_AUTO=0` (the share keeps its 3,072-token limit and 8-token experts) | The default share's chunk limit and expert width follow the card's PCIe link (the start-up probe), the experts the card does not hold and the CPU pool: a chunk streams every missing expert in one pass whose time F (bytes of the missing experts / the link) does not depend on the chunk, while the share path grows with it, so the share pays up to a length T* that grows with F. RTX 5090, UD-Q4_K_XL, 8,056 of 24,576 experts on the card, T* measured as where the share with 32-token experts meets the default: 4.2K tokens at 53.6 GB/s (F 0.97 s, 15 pool workers), 8.8K at 28.3 GB/s (1.83 s, 22 workers), 14.0K at 14.1 GB/s (3.67 s, 32 workers), 19.7K (32-token experts) and 25K (64-token experts) at 3.6 GB/s (14.4 s). The limit is 3.4 x F tokens (F in ms; a margin under T*), less above F = 3.67 s, between 3,072 and 20,480, scaled down for pools below 22 workers; experts of up to 32 tokens go to the CPU where the limit is above 3,072 (64 from F = 3 s). The engine prints one `CPU share rule:` line. `STRATA_PREFILL_CPU_SHARE_MAX` and `STRATA_PREFILL_CPU_SHARE_NT` set the two numbers by hand and win; an explicit `STRATA_PREFILL_CPU_SHARE` is taken as it is. Measured prompt time against the default (limit 3,072, 8-token experts): 14.1 GB/s 1K / 2K / 4K / 8K / 12K tokens x0.85 / 0.86 / 0.49 / 0.73 / 0.91 (4,273 -> 2,077 ms at 4K), 28.3 GB/s 4K 2,153 -> 1,425 ms; 53.6 GB/s unchanged. On a layer split of such cards the share is armed by default too when the stages' stream floors, summed, raise the limit above 3,072 (2x RTX 5090, PCIe 4.0 x2 + x8: 1K / 4K / 16K / 32K tokens x0.41 / 0.38 / 0.64 / 0.62 of the split without it, decode level); `STRATA_PREFILL_CPU_SHARE_AUTO=0` keeps the share off on a split. Output changes in the last bits where the CPU takes more than the default's experts: forced-token KL against the FP16 path 0.01096-0.01137 with the wide share against 0.01035-0.01119 without it (ratio 0.98-1.05, every interval contains 1). |
 | `STRATA_NO_KQ512=1` | x86 CPUs with AVX-512 VNNI, Unsloth UD-Q4_K_XL files | unset (on) | The CPU experts' Q4_K gate/up rows and Q5_1 / Q8_0 down rows run in 512-bit VNNI lanes for groups of 8 tokens and more (the CPU prompt share's jobs; a decode window's 2-7 token groups ran 1-6% slower on them), bit for bit what the one-token dot gives; checked against the build's own dot on first use. `STRATA_KQ512_MIN=N` moves the token floor. |

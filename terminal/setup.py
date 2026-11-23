@@ -5461,10 +5461,39 @@ def rocm_dev_missing(sysroot: Path) -> list:
     return [name for name, paths in need.items() if not any(p.is_file() for p in paths)]
 
 
+ROCM_LIB_SUBDIRS = ("lib", "lib64", "lib/x86_64-linux-gnu", "lib/x86_64-unknown-linux-gnu",
+                    "lib/aarch64-linux-gnu")
+
+
+def rocm_hipblas_dirs(root: Path) -> list[Path]:
+    """#6376: the folders under `root` that hold libhipblas.so*: AMD's /opt/rocm keeps them in lib/, Fedora's and
+    Arch's packages in lib64/, Debian's in a multiarch folder - each with hipcc in <root>/bin."""
+    return [root / d for d in ROCM_LIB_SUBDIRS if list((root / d).glob("libhipblas.so*"))]
+
+
+def rocm_prefixes(named: Path) -> list[Path]:
+    """#6376: the folders to try as a system ROCm's prefix, in order: the one named (ROCM_PATH, else /opt/rocm),
+    the folders above it (Fedora's ROCM_PATH=/usr/lib64/rocm names a folder that holds neither hipcc nor the
+    libraries, while /usr holds both), and last the prefix of the hipcc on PATH (a distro package install with no
+    ROCM_PATH at all, or one naming a folder that is not the ROCm prefix)."""
+    out = [named]
+    for up in (named.parent, named.parent.parent):
+        if up != up.parent and up not in out:
+            out.append(up)
+    exe = shutil.which("hipcc")
+    if exe:
+        prefix = Path(exe).resolve().parent.parent
+        if prefix not in out:
+            out.append(prefix)
+    return out
+
+
 def rocm_clang(root: Path) -> Path:
-    """#6071: ROCm's HIP compiler.  ROCm 7 and TheRock's wheels have <root>/llvm/bin/clang++; rocm-core 10.1 (Arch Linux)
-    has only <root>/lib/llvm/bin/clang++.  The first that exists; when neither does, the old place (callers name it)."""
-    for d in (root / "llvm" / "bin", root / "lib" / "llvm" / "bin"):
+    """#6071: ROCm's HIP compiler.  ROCm 7 and TheRock's wheels have <root>/llvm/bin/clang++; rocm-core 10.1 (Arch
+    Linux) has only <root>/lib/llvm/bin/clang++; Fedora's packages keep it in <root>/lib64/rocm/llvm/bin (#6376).
+    The first that exists; when none does, the old place (callers name it)."""
+    for d in (root / "llvm" / "bin", root / "lib" / "llvm" / "bin", root / "lib64" / "llvm" / "bin",
+              root / "lib64" / "rocm" / "llvm" / "bin"):
         if (d / "clang++").exists():
             return d / "clang++"
     return root / "llvm" / "bin" / "clang++"
@@ -5476,17 +5505,24 @@ def rocm_root(archs):
     TheRock wheels (rocm_wanted: a version per card family, from the family's index) installed into .venv."""
     archs = [archs] if isinstance(archs, str) else list(archs)
     sysroot = Path(os.environ.get("ROCM_PATH") or "/opt/rocm")
-    if (sysroot / "bin" / "hipcc").exists() and list((sysroot / "lib").glob("libhipblas.so*")):
-        ver = rocm_version(sysroot)
-        missing = rocm_dev_missing(sysroot)
+    for prefix in rocm_prefixes(sysroot):              # #6376: a distro splits hipcc, libraries and headers
+        libs = rocm_hipblas_dirs(prefix)
+        if not ((prefix / "bin" / "hipcc").exists() and libs):
+            continue
+        ver = rocm_version(prefix)
+        missing = rocm_dev_missing(prefix)
         if (ver is None or ver >= ROCM_SYSTEM_MIN) and not missing:
-            return sysroot, [str(sysroot / "lib")]
+            if prefix != sysroot:                      # say which folder was used: ROCM_PATH named another one
+                say(f"  System ROCm: {prefix} (this distribution keeps hipcc, the libraries and the development "
+                    "files in separate folders)")
+            return prefix, [str(p) for p in libs]
         if ver is not None and ver < ROCM_SYSTEM_MIN:
-            warn(f"the ROCm in {sysroot} is {ver[0]}.{ver[1]}; Strata needs {ROCM_SYSTEM_MIN[0]}.{ROCM_SYSTEM_MIN[1]} "
+            warn(f"the ROCm in {prefix} is {ver[0]}.{ver[1]}; Strata needs {ROCM_SYSTEM_MIN[0]}.{ROCM_SYSTEM_MIN[1]} "
                  "or newer: using AMD's wheels in .venv instead")
         else:                                          # #446: a runtime-only ROCm (no -dev packages): cmake would fail
-            warn(f"the ROCm in {sysroot} has no HIP development files ({', '.join(missing)}): using AMD's wheels in "
+            warn(f"the ROCm in {prefix} has no HIP development files ({', '.join(missing)}): using AMD's wheels in "
                  ".venv instead (or install them, e.g. AMD's amdrocm-core-dev package for your ROCm and card)")
+        break                                          # a ROCm that is there but unusable: the wheels path follows
     missing_wheels = [a for a in archs if a not in ROCM_INDEXES]
     if missing_wheels:                                 # gfx906: no TheRock wheels (7.x families only)
         fail(f"no ready-made ROCm wheels for {', '.join(missing_wheels)}: this card runs from a source build, "
@@ -10686,7 +10722,11 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     if mgpu_flags:
         args += mgpu_flags
     if not unified and len(ink_gpus) < 2:
-        args += ["--vram-experts-gb", f"{placed['vram_gb']:.2f}", "--ram-experts-gb", f"{placed['ram_gb']:.2f}"]
+        args += ["--vram-experts-gb", f"{placed['vram_gb']:.2f}"]
+        # strata-inkling reads --ram-experts-gb 0 as "no RAM tier, GPU + SSD only": a plan with every expert on the card leaves
+        # it out, so experts that do not fit after all (a bigger context, a --vram-experts-gb cap) go to RAM, not the SSD
+        if placed["ram_gb"] > 0.05 or placed.get("ssd_gb", 0.0) > 0.05:
+            args += ["--ram-experts-gb", f"{placed['ram_gb']:.2f}"]
         if placed.get("ssd_gb", 0.0) > 0.05:
             args += ["--ssd-experts"]
     cfg = {

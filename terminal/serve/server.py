@@ -282,6 +282,7 @@ from serve.server_parts.http_api import (  # noqa: F401  (moved unchanged, file 
     host_name,
     key_list,
     key_matches,
+    matched_key,
     lift_reasoning_effort_arg,
     linux_desktop,
     load_shared_settings,
@@ -2940,6 +2941,8 @@ class Vision:
     lines and writes each image's embeddings; results are cached by the image's hash, so a conversation that
     sends the same picture again (every turn, with most clients) encodes it once."""
 
+    cache_batches = 0   # requests inside batch(): their encoded files stay until they copied them
+
     @staticmethod
     def work_dir() -> Path:
         """#480: the directory for the encoder's files.  The engine reads the embeddings file named in a `GENI` line
@@ -2977,7 +2980,7 @@ class Vision:
         self.reader = None                              # "own" (Strata's) or "mtmd" (llama.cpp's) from the READY line; None for an older reader
         self.proc = None
         self.stopped = True
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
         self.cache: dict[str, tuple[Path, int]] = {}
         # opt-in (the vision section's "elastic": true, with the config's "vram_elastic"): the encoder starts with the
         # first picture and stops after elastic_idle_s without one; while it runs, the engine's expert cache keeps
@@ -2987,7 +2990,11 @@ class Vision:
         self.elastic_mib = self.elastic_ask_mib(cfg, self.max_tokens)
         self.elastic_idle_s = float(cfg.get("elastic_idle_s") or 120)
         if not lazy and not self.elastic:
-            self._start()
+            try:
+                self._start()
+            except Exception:
+                self.shutdown()
+                raise
 
     # What a picture may become when the config does not say (setup writes the same numbers, setup.VISION): an old, hand-edited or migrated
     # config without vision.max_tokens left the reader unclamped, and #3690 saw one picture become 93,700 image tokens (I7).  A key that is
@@ -3311,12 +3318,12 @@ class Vision:
             return False
 
     @staticmethod
-    def normalize(data: bytes) -> bytes:
+    def normalize(data: bytes, *, force: bool = False) -> bytes:
         """The formats strata-vision's decoder (stb_image) reads pass through; anything else is converted to PNG.
         A JPEG with an EXIF Orientation other than 1 is turned upright first (needs Pillow)."""
         jpeg = data[:3] == b"\xff\xd8\xff"
-        if (jpeg and not Vision._exif_rotated(data)) or data[:8] == b"\x89PNG\r\n\x1a\n" or data[:2] == b"BM" or \
-                data[:6] in (b"GIF87a", b"GIF89a"):
+        if not force and ((jpeg and not Vision._exif_rotated(data)) or data[:8] == b"\x89PNG\r\n\x1a\n" or data[:2] == b"BM" or \
+                data[:6] in (b"GIF87a", b"GIF89a")):
             return data
         try:
             import io
@@ -3341,6 +3348,26 @@ class Vision:
         out = io.BytesIO()
         im.save(out, format="PNG")
         return out.getvalue()
+
+    def _trim_cache(self):
+        """The caller holds self.lock; keep at most 64 images once no batch still needs their paths."""
+        while len(self.cache) > 64:
+            old = next(iter(self.cache))
+            self.cache.pop(old)[0].unlink(missing_ok=True)
+
+
+    @contextlib.contextmanager
+    def batch(self):
+        """Keep encoded files until a request has copied them.  Acquire the service FIFO before this lock."""
+        with self.lock:
+            self.cache_batches += 1
+            try:
+                yield
+            finally:
+                self.cache_batches -= 1
+                if not self.cache_batches:
+                    self._trim_cache()
+
 
     def encode_all(self, sources: list, cancel=None) -> list[tuple[Path, int]]:
         """encode() for every image of one request: the files of this request's earlier images are never evicted to
@@ -3374,6 +3401,13 @@ class Vision:
                 self.proc.stdin.flush()
                 try:
                     line = self._readline(VISION_ENCODE_S, "the image could not be read").strip()
+                    if line.startswith("ERR cannot read the image"):
+                        converted = self.normalize(data, force=True)
+                        if converted != data:
+                            img.write_bytes(converted)
+                            self.proc.stdin.write(f"ENC {img.name} {out.name}\n")
+                            self.proc.stdin.flush()
+                            line = self._readline(VISION_ENCODE_S, "the image could not be read").strip()
                 except RuntimeError as e:                 # silent for VISION_ENCODE_S: the encoder was ended (#1317)
                     self.stopped = True                   # alive() is False, so the next request starts it again
                     raise ValueError(str(e)) from None
@@ -3384,12 +3418,13 @@ class Vision:
                                                                      "the vision encoder stopped"))
             self.cache[key] = (out, int(line.split()[1]))
             self.warn_if_over_limit(self.cache[key][1])
-            held = {str(p) for p in keep} | {str(out)}
-            for old in list(self.cache):                               # oldest first, but never one still in use
-                if len(self.cache) <= 64:
-                    break
-                if str(self.cache[old][0]) not in held:
-                    self.cache.pop(old)[0].unlink(missing_ok=True)
+            if not self.cache_batches:
+                held = {str(p) for p in keep} | {str(out)}
+                for old in list(self.cache):                           # oldest first, but never one still in use
+                    if len(self.cache) <= 64:
+                        break
+                    if str(self.cache[old][0]) not in held:
+                        self.cache.pop(old)[0].unlink(missing_ok=True)
             return self.cache[key]
 
     def warn_if_over_limit(self, tokens: int) -> None:
@@ -3419,6 +3454,9 @@ class Vision:
                 proc.wait(timeout=10)
             except (OSError, subprocess.TimeoutExpired):
                 pass
+        for pipe in (proc.stdin, proc.stdout):
+            if pipe is not None:
+                pipe.close()
         self.stopped = True
 
     def shutdown(self):
@@ -3997,18 +4035,25 @@ def vision_card_off_igpu(env: dict, archs: dict[int, str] | None = None) -> int 
 def vision_env(cfg: dict, env: dict, archs: dict[int, str] | None = None) -> dict:
     """The image encoder's environment: the engine's, unless the config's vision section names its own "cuda_device"
     (numbered like nvidia-smi) - then the encoder runs on that card alone, so a spare GPU can hold it while the engine
-    keeps all of its own cards' VRAM (#408, Efs-O).  Without it, nothing changes."""
-    dev = (cfg.get("vision") or {}).get("cuda_device")
+    keeps all of its own cards' VRAM (#408, Efs-O).  The section's own "env" goes on top, for the encoder alone: the config's
+    top-level "env" reaches the encoder too, so a setting meant only for it (#4668: {"GPU_MAX_HW_QUEUES": "1"}, when the encoder
+    shares a gfx1030 card with the engine and their compute queues together exceed the 8 the kernel gives that card) would
+    otherwise cap the engine as well.  Without either, nothing changes."""
+    vision = cfg.get("vision") or {}
+    dev = vision.get("cuda_device")
     if dev is None and cfg.get("backend") == "hip":
         dev = vision_card_off_igpu(env, archs)
-    if dev is None:
+    own = vision.get("env") or {}
+    if dev is None and not own:
         return env
     env = dict(env)
-    if cfg.get("backend") == "hip":
-        env["HIP_VISIBLE_DEVICES"] = str(dev)
-    else:
-        env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-        env["CUDA_VISIBLE_DEVICES"] = str(dev)
+    if dev is not None:
+        if cfg.get("backend") == "hip":
+            env["HIP_VISIBLE_DEVICES"] = str(dev)
+        else:
+            env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+            env["CUDA_VISIBLE_DEVICES"] = str(dev)
+    env.update({str(k): str(v) for k, v in own.items()})
     return env
 
 
@@ -4050,6 +4095,8 @@ class Service:
         self.slot_save_path = None                    # --slot-save-path: /slots/0?action=save|restore (off when None)
         self.embeddings = threading.local()           # the current request's image embeddings file (GENI)
         self.api_key = ""                              # when set, /v1/* needs it (Bearer or x-api-key)
+        self.key_limits = None                         # #5004 (the config's "api_keys"): KeyLimits when some keys
+                                                       # carry their own limits; None = one shared pool, nothing counted
         # #458 (opt-in, the config's "effort_position": "end"): a non-default reasoning effort goes in a short system
         # turn before the answer instead of the top of the prompt, so switching it keeps the cached conversation
         self.effort_end = False
@@ -4428,6 +4475,18 @@ class Service:
         or the last one it reported while it restarts (max_context is 0 until READY, and a client that sizes its
         prompt from it would send nothing, #351).  Reporting only: requests are checked in prepare()."""
         return int(getattr(self.engine, "max_context", 0) or getattr(self.engine, "known_ctx", 0) or 0)
+
+    def output_cap(self) -> int:
+        """#6402: the most tokens one answer may run to, for a client that sizes a request from /v1/models.  That is
+        the room the context itself leaves (ctx - CTX_SLACK, the margin prepare() enforces) - a request with no
+        max_tokens gets exactly that - lowered by the web app's Chat setting for max_tokens when that is smaller
+        (the server sends it for every request that carries none).  No prompt is counted here: a prompt shortens
+        the room at request time, and fit_max_tokens shortens a request to what is left."""
+        room = max(0, self.reported_ctx() - CTX_SLACK)
+        shared = self.shared.get("max_tokens")
+        if isinstance(shared, int) and not isinstance(shared, bool) and shared > 0:
+            room = min(room, shared)
+        return room
 
     def has_vision(self) -> bool:
         """Whether this server can read images: either a separate vision encoder (Flash-Next)
@@ -5334,7 +5393,9 @@ class Service:
             # run on the GPU at the same time - an encode during a running request left that request stuck at
             # "reading the prompt" with CPU and GPU busy, for good (reproduced).  So encoding takes its turn in the
             # same FIFO as the requests.
-            with self._turn(cancel):
+        with (self._turn(cancel) if images else contextlib.nullcontext()), \
+                (self.vision.batch() if images and hasattr(self.vision, "batch") else contextlib.nullcontext()):
+            if images:
                 if not (hasattr(self.vision, "all_cached") and self.vision.all_cached(images)):
                     self._vision_up()
                 try:
@@ -5342,78 +5403,78 @@ class Service:
                                else [self.vision.encode(src) for src in images])
                 finally:
                     self.last_image_at = time.time()
-            # one <|image_pad|> per image -> one per image token.  Only the markers the template writes for an image
-            # (right after <|vision_start|>) are images: the same text inside a message (an agent reading these docs,
-            # #150) is kept as plain text, or it took an image's place and the counts no longer matched.
-            literal = self.tok.encode(IMAGE_PAD, parse_special=False)
-            out, k = [], 0
-            for j, t in enumerate(ids):
-                if t == pad and j > 0 and ids[j - 1] == start:
-                    # more pairs than images: text parts that cut both markers apart (the literal marks keep whole ones text)
-                    if k == len(encoded):
-                        raise ValueError("the prompt and its images do not match")
-                    out += [pad] * encoded[k][1]
-                    k += 1
-                elif t == pad:
-                    out += literal
-                else:
-                    out.append(t)
-            if k != len(encoded):
-                raise ValueError("the prompt and its images do not match")
-            ids = out
-        ctx = self.engine.max_context
-        if ctx <= 0:
-            if getattr(self.engine, "starting", False):   # #344: (re)starting, not a prompt that is too long
-                raise EngineStarting("the engine is starting (a minute or two); try again shortly")
-            # a failed restart leaves max_context 0: check against the last known context, so the request reaches
-            # run() - which starts the engine again - instead of failing with "exceeds the context (0)" forever
-            ctx = getattr(self.engine, "known_ctx", 0)
+                # one <|image_pad|> per image -> one per image token.  Only the markers the template writes for an image
+                # (right after <|vision_start|>) are images: the same text inside a message (an agent reading these docs,
+                # #150) is kept as plain text, or it took an image's place and the counts no longer matched.
+                literal = self.tok.encode(IMAGE_PAD, parse_special=False)
+                out, k = [], 0
+                for j, t in enumerate(ids):
+                    if t == pad and j > 0 and ids[j - 1] == start:
+                        # more pairs than images: text parts that cut both markers apart (the literal marks keep whole ones text)
+                        if k == len(encoded):
+                            raise ValueError("the prompt and its images do not match")
+                        out += [pad] * encoded[k][1]
+                        k += 1
+                    elif t == pad:
+                        out += literal
+                    else:
+                        out.append(t)
+                if k != len(encoded):
+                    raise ValueError("the prompt and its images do not match")
+                ids = out
+            ctx = self.engine.max_context
             if ctx <= 0:
-                raise EngineStarting("the engine is starting (a minute or two); try again shortly")
-        room = ctx - CTX_SLACK - len(ids)
-        if max_new is None or max_new <= 0 or (self.fit_max_tokens and room < 1):
-            if room < 1:
-                # A prompt refused for the context is not kept (#567): the client cannot resend it unchanged.  The
-                # other refusals (engine starting, images) keep it: the same prompt comes back and its encode is reused.
-                self.forget_prompt(encoded_ids)
-                raise ContextOverflow("request exceeds the context window: "
-                                      f"prompt ({len(ids)} tokens) leaves no room to answer in the context "
-                                      f"({ctx}); requests are never truncated", prompt=len(ids), context=ctx)
-            max_new = room
-        elif max_new > room:
-            floor = fit_floor(ctx)
-            if self.fit_max_tokens and room < floor:
-                # #5924: a clamp to a few hundred tokens left a thinking model no room to answer (or to write a tool
-                # call); agents resent the turn and wrote the same truncated sentence again and again.  The context is
-                # all but full: a 400 that says so makes the client compact (Claude Code reads "prompt is too long").
-                self.forget_prompt(encoded_ids)
-                raise ContextOverflow("request exceeds the context window: "
-                                      f"the prompt ({len(ids)} tokens) leaves {max(0, room)} of the {ctx}-token "
-                                      f"context, fewer than the {floor} an answer needs; Strata never truncates "
-                                      f"requests. Shorten the conversation, or send max_tokens {max(0, room)} or less",
-                                      prompt=len(ids), context=ctx, max_new=max_new, min_room=floor)
-            if not self.fit_max_tokens:
-                self.forget_prompt(encoded_ids)
-                raise ContextOverflow("request exceeds the context window: "
-                                      f"prompt ({len(ids)} tokens) + max tokens ({max_new}) exceeds the context "
-                                      f"({ctx}); requests are never truncated. Send a smaller "
-                                      f"max_tokens (at most {max(0, room)} here), or add \"fit_max_tokens\": true to the "
-                                      "model's strata-<model>.json to shorten it to the room left (#545)",
-                                      prompt=len(ids), context=ctx, max_new=max_new)
-            print(f"[strata] max_tokens {max_new} shortened to {max(1, room)}: the prompt ({len(ids)} tokens) leaves that much "
-                  f"of the context ({ctx}); \"fit_max_tokens\": false answers 400 instead", flush=True)
-            max_new = max(1, room)          # a shorter completion beats a 400 (the default)
-        if images:
-            # The request's images in one file for GENI (~10 MB a picture), written once nothing above refuses the
-            # request: one refused after it (the engine starting, no room) left it in the vision directory for good,
-            # one more for every retry of a 503.  run() deletes it; drop_embeddings() if run() never starts.
-            combined = combined_embeddings_path(self.vision.dir, sum(Path(p).stat().st_size for p, _ in encoded))
-            self.embeddings.path = combined             # first, so a half-written one is found as well
-            # #2228: each picture's key is its normalized bytes' hash (the encoder's file name), so the engine's
-            # conversation cache matches a picture by what it is, not by its embedding floats: a picture encoded again
-            # (an encoder restart, the cache's eviction) with other bits still matches its checkpoints
-            self.embeddings.keys = [Path(p).stem[:16] for p, _ in encoded]
-            write_temporary(combined, [p for p, _ in encoded])
+                if getattr(self.engine, "starting", False):   # #344: (re)starting, not a prompt that is too long
+                    raise EngineStarting("the engine is starting (a minute or two); try again shortly")
+                # a failed restart leaves max_context 0: check against the last known context, so the request reaches
+                # run() - which starts the engine again - instead of failing with "exceeds the context (0)" forever
+                ctx = getattr(self.engine, "known_ctx", 0)
+                if ctx <= 0:
+                    raise EngineStarting("the engine is starting (a minute or two); try again shortly")
+            room = ctx - CTX_SLACK - len(ids)
+            if max_new is None or max_new <= 0 or (self.fit_max_tokens and room < 1):
+                if room < 1:
+                    # A prompt refused for the context is not kept (#567): the client cannot resend it unchanged.  The
+                    # other refusals (engine starting, images) keep it: the same prompt comes back and its encode is reused.
+                    self.forget_prompt(encoded_ids)
+                    raise ContextOverflow("request exceeds the context window: "
+                                          f"prompt ({len(ids)} tokens) leaves no room to answer in the context "
+                                          f"({ctx}); requests are never truncated", prompt=len(ids), context=ctx)
+                max_new = room
+            elif max_new > room:
+                floor = fit_floor(ctx)
+                if self.fit_max_tokens and room < floor:
+                    # #5924: a clamp to a few hundred tokens left a thinking model no room to answer (or to write a tool
+                    # call); agents resent the turn and wrote the same truncated sentence again and again.  The context is
+                    # all but full: a 400 that says so makes the client compact (Claude Code reads "prompt is too long").
+                    self.forget_prompt(encoded_ids)
+                    raise ContextOverflow("request exceeds the context window: "
+                                          f"the prompt ({len(ids)} tokens) leaves {max(0, room)} of the {ctx}-token "
+                                          f"context, fewer than the {floor} an answer needs; Strata never truncates "
+                                          f"requests. Shorten the conversation, or send max_tokens {max(0, room)} or less",
+                                          prompt=len(ids), context=ctx, max_new=max_new, min_room=floor)
+                if not self.fit_max_tokens:
+                    self.forget_prompt(encoded_ids)
+                    raise ContextOverflow("request exceeds the context window: "
+                                          f"prompt ({len(ids)} tokens) + max tokens ({max_new}) exceeds the context "
+                                          f"({ctx}); requests are never truncated. Send a smaller "
+                                          f"max_tokens (at most {max(0, room)} here), or add \"fit_max_tokens\": true to the "
+                                          "model's strata-<model>.json to shorten it to the room left (#545)",
+                                          prompt=len(ids), context=ctx, max_new=max_new)
+                print(f"[strata] max_tokens {max_new} shortened to {max(1, room)}: the prompt ({len(ids)} tokens) leaves that much "
+                      f"of the context ({ctx}); \"fit_max_tokens\": false answers 400 instead", flush=True)
+                max_new = max(1, room)          # a shorter completion beats a 400 (the default)
+            if images:
+                # The request's images in one file for GENI (~10 MB a picture), written once nothing above refuses the
+                # request: one refused after it (the engine starting, no room) left it in the vision directory for good,
+                # one more for every retry of a 503.  run() deletes it; drop_embeddings() if run() never starts.
+                combined = combined_embeddings_path(self.vision.dir, sum(Path(p).stat().st_size for p, _ in encoded))
+                self.embeddings.path = combined             # first, so a half-written one is found as well
+                # #2228: each picture's key is its normalized bytes' hash (the encoder's file name), so the engine's
+                # conversation cache matches a picture by what it is, not by its embedding floats: a picture encoded again
+                # (an encoder restart, the cache's eviction) with other bits still matches its checkpoints
+                self.embeddings.keys = [Path(p).stem[:16] for p, _ in encoded]
+                write_temporary(combined, [p for p, _ in encoded])
         if req is not None and req.get("strata_prefix") is not None:
             req["strata_prefix"] = self.resolve_prefix(req["strata_prefix"], messages, tools, kwargs, ids, bool(images))
         return ids, kwargs.get("enable_thinking", True) is not False, max_new
@@ -5557,9 +5618,21 @@ class Service:
         ka = self.keep_awake
         if ka is not None:
             ka.acquire()
+        gate = self.key_limits
+        counted = False
         try:
+            if gate is not None:
+                # #5004 (the config's "api_keys"): hold this request within the limits of the key it arrived with
+                # before the engine queue.  The wait is the queue's own kind of wait: queue_timeout bounds it (the
+                # same 429 when it expires) and a client that hangs up ends it (ClientGone, like a prepared request
+                # whose client left).  The cancel Event carries the key's identity, stamped when it was watched.
+                gate.acquire(getattr(cancel, "_strata_key", None), cancel=cancel,
+                             deadline=None if self.queue_timeout_s is None else time.monotonic() + self.queue_timeout_s)
+                counted = True
             yield from self._run(ids, thinking, tools, max_new, sampling, cancel, force, declared_only, deferred)
         finally:
+            if counted:
+                gate.release(getattr(cancel, "_strata_key", None))
             if ka is not None:
                 ka.release()
 
@@ -6829,6 +6902,9 @@ def make_handler(svc: Service):
             request is HTTP/1.0 and fully read here, so no later bytes are expected - data is not a hang-up."""
             done = self.watch_done = threading.Event()
             self.cancel_event = cancel
+            # #5004 (the config's "api_keys"): carry the key this request arrived on to Service.run(), where the
+            # per-key limits count it.  Every inference path watches its cancel Event right after creating it.
+            cancel._strata_key = getattr(self, "key_id", None)
             with svc.status_lock:
                 svc.active_cancels.add(cancel)
             sock = self.connection
@@ -6913,11 +6989,14 @@ def make_handler(svc: Service):
             self.wfile.write(body)
 
         def _authorized(self) -> bool:
+            self.key_id = None                             # #5004: which configured key this request came with (None = keyless)
             if not svc.api_key:
                 return True
             auth = self.headers.get("Authorization", "")
             given = auth[7:].strip() if auth.lower().startswith("bearer ") else self.headers.get("x-api-key", "")
-            if key_matches(given, svc.api_key):
+            hit = matched_key(given, svc.api_key)
+            if hit is not None:
+                self.key_id = hit                          # #5004: the per-key limits count this request against it
                 return True
             self._json(401, {"error": {"type": "authentication_error", "message": "missing or wrong API key"}})
             return False
@@ -7279,17 +7358,25 @@ def make_handler(svc: Service):
                         s["tokens_per_s_mean"] = round(svc._tok_s_mean(), 1)
                 for k in ("started", "first_token"):
                     s.pop(k, None)
+                if svc.key_limits is not None:      # #5004: what each api_keys entry holds right now (names, never keys)
+                    s["api_keys"] = svc.key_limits.snapshot()
                 self._json(200, s)
             elif path in ("/v1/models", "/models") or path.startswith(("/v1/models/", "/models/")):
                 if self._authorized():
                     loaded = svc.loaded()
                     ctx = svc.reported_ctx()
                     created = int(getattr(svc, "started_at", 0) or time.time())
+                    cap = svc.output_cap()
+                    # #6402: the answer cap under the names clients already look for: OpenAI-shaped tools read
+                    # `limit.output` (with `limit.context` beside it), llama-swap's readers read
+                    # meta.llamaswap.max_output_tokens.  Without them a client guesses (1,024, 32k, or its own default)
                     # the context size under the names other APIs use too (vLLM's max_model_len, OpenRouter's
                     # context_length), so a client that sizes its window from /v1/models reads it
                     model = {"id": svc.model, "object": "model", "created": created, "owned_by": "strata",
                              "status": {"value": "loaded"},
-                             "max_model_len": ctx, "context_length": ctx, "max_context_length": ctx, "meta": {"n_ctx": ctx},
+                             "max_model_len": ctx, "context_length": ctx, "max_context_length": ctx,
+                             "limit": {"context": ctx, "output": cap},
+                             "meta": {"n_ctx": ctx, "llamaswap": {"max_output_tokens": cap}},
                              "architecture": {"input_modalities": ["text", "image"] if svc.has_vision() else ["text"],
                                               "output_modalities": ["text"]}}
                     if not loaded and (svc.idle_unload_s or getattr(svc.engine, "unloaded", False)):
@@ -8260,6 +8347,143 @@ def host_names_for(bind_host: str, allowed_hosts=(), trusted_origins=()) -> set[
     return names
 
 
+class KeyLimits:
+    """#5004 (the config's "api_keys"): what each key may have in flight, and what that leaves the others.
+
+    A request counts against the key it arrived with from the moment it enters `Service.run()` to the moment it
+    ends: the queue wait, the prompt read and the generation all count.  While its key is at a limit the request
+    waits - the queue's own kind of wait: `queue_timeout` bounds it and the same 429 answers its expiry, and a
+    client that hangs up mid-wait ends it (ClientGone, as for a prepared request whose client left).
+
+    * "max_concurrent": how many requests of that key the server holds at once.
+    * "reserved_capacity": slots of a "parallel" server that only this key may sit on.  Every other key's reach
+      shrinks by it - the others may hold at most `slots - reserved` at once, whether this key is using its
+      reservation or not: a reserved slot waits empty rather than being borrowed.  Nothing is ever moved off a
+      slot a request already holds (there is no preemption): the reservation holds at the next admission.
+
+    A key with no entry (a plain "api_key") shares `slots - every reservation`, and so does a request whose key
+    the server accepts but the block does not name.  Names are what GET /status and the logs show; the keys
+    themselves never leave the config.  The class exists only when the config lists "api_keys" - without it
+    nothing is counted and admission is exactly as before."""
+
+    OTHER = "(other keys)"                 # the shared bucket; api_key_limits_of refuses it as a name
+
+    def __init__(self, policies, slots):
+        self.policies = policies                      # api_key_limits_of()'s rows, in config order
+        self.by_key = {p["key"]: p for p in policies}
+        self.reserved_all = sum(p["reserved_capacity"] for p in policies)
+        self.slots = slots                            # callable: the engine's slots right now (its batch)
+        self.held = collections.Counter()             # name -> requests inside (self.OTHER for unlisted keys)
+        self.cv = threading.Condition()
+
+    def _row(self, key):
+        pol = self.by_key.get(key) if key is not None else None
+        return pol, self.OTHER if pol is None else pol["name"]
+
+    def _reach(self, pol) -> int:
+        # the slots this bucket may sit on: its own key's reservation counts for it, no other key's does
+        return max(0, self.slots() - (self.reserved_all - (pol["reserved_capacity"] if pol else 0)))
+
+    def _room(self, pol, name) -> bool:
+        reach = self._reach(pol)
+        if pol is not None and pol["max_concurrent"] is not None:
+            reach = min(reach, pol["max_concurrent"])
+        return self.held[name] < reach
+
+    def acquire(self, key, cancel=None, deadline=None) -> None:
+        """Wait until this key's figures leave room, then count the request.  Raises QueueWaitExpired when
+        `deadline` runs out (the handler turns it into the same 429 the engine queue's wait gets) and ClientGone
+        when `cancel` says the client already left."""
+        pol, name = self._row(key)
+        with self.cv:
+            while not self._room(pol, name):
+                if cancel is not None and cancel.is_set():
+                    raise ClientGone(f"the client disconnected while {name} waited for its api_keys limit to free")
+                left = deadline - time.monotonic() if deadline is not None else None
+                if left is not None and left <= 0:
+                    raise QueueWaitExpired(f"the inference queue wait deadline expired while {name} was at its "
+                                           "api_keys limit; retry later")
+                self.cv.wait(0.25 if left is None else min(0.25, left))
+            self.held[name] += 1
+
+    def release(self, key) -> None:
+        pol, name = self._row(key)
+        with self.cv:
+            self.held[name] -= 1
+            self.cv.notify_all()
+
+    def snapshot(self):
+        """What GET /status shows: names, counts and limits - never a key."""
+        return {"slots": self.slots(),
+                "keys": [{"name": p["name"], "inflight": self.held[p["name"]],
+                          "max_concurrent": p["max_concurrent"], "reserved_capacity": p["reserved_capacity"]}
+                         for p in self.policies],
+                "unlisted": {"inflight": self.held[self.OTHER], "max": self._reach(None)}}
+
+
+def api_key_limits_of(value, slots: int):
+    """#5004 (the config's "api_keys"): per-key admission limits, keyed by the key itself.  Every entry is a key
+    the server accepts, like the ones in "api_key"; its object names what that key may do:
+
+        "api_keys": {
+            "hermes-key":       {"name": "hermes", "max_concurrent": 1},
+            "home-assistant-key": {"name": "home assistant", "max_concurrent": 1, "reserved_capacity": 1}
+        }
+
+    "max_concurrent": requests of that key at once (default: as many as its reach).  "reserved_capacity": slots
+    of a "parallel" server kept for this key alone (default 0).  "name": what GET /status and the logs call it
+    (default: "key 1", "key 2", ... in order).  Like origins_of, a wrong entry stops the start rather than
+    limiting less or more than meant: a value that is not a whole number, a key that is empty or "none", a field
+    the server does not know, two entries sharing a name, or reservations that leave some key no slot at all
+    (`slots` is the "parallel" the server starts with; KeyLimits follows the engine's own batch from then on).
+    A wrong entry is named by its place in the block ("entry 2"), never by its key: a start that fails is read
+    off the console and pasted into reports, and the keys themselves stay inside the config.
+    Returns [{"key", "name", "max_concurrent", "reserved_capacity"}] in config order."""
+    if value is None or value == "" or value == {}:
+        return []
+    if not isinstance(value, dict):
+        raise ValueError('api_keys must be an object: {"the-key": {"max_concurrent": ..., "reserved_capacity": ...}}')
+    out = []
+    for i, (key, pol) in enumerate(value.items(), 1):
+        key = str(key).strip()
+        if not key or key.lower() == "none":
+            raise ValueError(f'api_keys entry {i} is not a usable key (empty, or "none")')
+        pol = {} if pol is None else pol
+        if not isinstance(pol, dict):
+            raise ValueError(f"api_keys entry {i} must be an object (or null)")
+        unknown = sorted(set(pol) - {"name", "max_concurrent", "reserved_capacity"})
+        if unknown:
+            raise ValueError(f'api_keys entry {i} says {", ".join(map(repr, unknown))}, '
+                             "which is not a limit (the fields are name, max_concurrent, reserved_capacity)")
+        name = str(pol.get("name") or f"key {i}").strip() or f"key {i}"
+        if name == KeyLimits.OTHER:
+            raise ValueError(f'api_keys entry {i} may not be named "{KeyLimits.OTHER}"')
+        mc = pol.get("max_concurrent")
+        if mc is not None and (isinstance(mc, bool) or not isinstance(mc, int) or mc < 1):
+            raise ValueError(f"api_keys entry {i}: max_concurrent must be a whole number of requests, at least 1")
+        rc = pol.get("reserved_capacity")
+        if rc is None:
+            rc = 0
+        if isinstance(rc, bool) or not isinstance(rc, int) or rc < 0:
+            raise ValueError(f"api_keys entry {i}: reserved_capacity must be a whole number of slots, 0 or more")
+        out.append({"key": key, "name": name, "max_concurrent": mc, "reserved_capacity": rc})
+    if len({p["name"] for p in out}) != len(out):
+        raise ValueError("api_keys: two entries share a name; names must differ (GET /status shows them)")
+    reserved_all = sum(p["reserved_capacity"] for p in out)
+    for p in out:
+        if slots - (reserved_all - p["reserved_capacity"]) < 1:
+            raise ValueError(f'api_keys: the reservations of the other keys leave "{p["name"]}" no slot of a '
+                             f"{slots}-slot server (raise \"parallel\" or lower \"reserved_capacity\")")
+        if p["max_concurrent"] and p["max_concurrent"] > slots - (reserved_all - p["reserved_capacity"]):
+            print(f'[strata] api_keys: "{p["name"]}" may run {p["max_concurrent"]} at once, but only '
+                  f"{slots - (reserved_all - p['reserved_capacity'])} of the {slots} slots are its reach (the rest "
+                  "are reserved): the limit that holds is the reach", flush=True)
+    if reserved_all >= slots:
+        print("[strata] api_keys: the reservations cover every slot: a request with a key that has no "
+              "reserved_capacity of its own never gets one", flush=True)
+    return out
+
+
 def serve(svc: Service, host="127.0.0.1", port=8095) -> ThreadingHTTPServer:
     svc.host_names = host_names_for(host, svc.allowed_hosts, svc.trusted_origins)
     svc.start_telemetry()
@@ -9045,6 +9269,24 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
     if a.strict_model or cfg.get("strict_model") is True:
         svc.strict_model = True
     svc.api_key = preflight_api_key
+    # #5004 (the config's "api_keys"): keys with their own admission limits.  They are keys the server accepts,
+    # so they join the accepted set before the telemetry-key clash check below sees it.  The reservations are
+    # sanity-checked against the "parallel" asked for here; KeyLimits follows the engine's own batch after that.
+    par = a.parallel if getattr(a, "parallel", None) is not None else cfg.get("parallel")
+    key_slots = par if isinstance(par, int) and not isinstance(par, bool) and par >= 1 else 1
+    try:
+        key_policies = api_key_limits_of(cfg.get("api_keys"), key_slots)
+    except ValueError as e:
+        raise SystemExit(f"[strata] config {e}")
+    if key_policies:
+        if no_key_chosen:
+            raise SystemExit('[strata] config "api_keys" and the choice to serve without a key contradict each other')
+        merged = key_list(svc.api_key)
+        merged += [p["key"] for p in key_policies if p["key"] not in merged]
+        svc.api_key = merged
+        svc.key_limits = KeyLimits(key_policies, lambda: max(1, int(getattr(svc.engine, "batch", 0) or 0)))
+        print(f"[strata] api_keys: {len(key_policies)} key(s) with their own limits "
+              f"({', '.join(p['name'] for p in key_policies)}); GET /status shows what each holds", flush=True)
     try:
         svc.telemetry_key = api_key_of(os.environ.get("STRATA_TELEMETRY_KEY") or cfg.get("telemetry_read_key", ""))
     except ValueError as e:
