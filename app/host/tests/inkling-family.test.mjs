@@ -138,7 +138,7 @@ test('inklingVisionShard, withoutInklingVision, runtimeVision, and markPictures 
 
 test('profile.mjs gives Inkling-2-Mini the local thinking menu (0.2.21) and run-config-check allows parallel 64', async () => {
   const { INKLING_LOCAL_EFFORTS, LOCAL_EFFORTS, buildProfile } = await import('../server/agent/profile.mjs');
-  assert.deepEqual(INKLING_LOCAL_EFFORTS, LOCAL_EFFORTS);
+  assert.deepEqual(INKLING_LOCAL_EFFORTS, { off: null, low: 'low', medium: 'medium', high: 'high', max: 'max' });
   const prof = buildProfile({
     local: [{ id: 'ink', label: 'Inkling-2-Mini SQ-20', baseUrl: 'http://127.0.0.1:8080/v1', modelId: 'inkling-2-mini-sq-20', context: 32768, vision: true, slots: 8 }],
   });

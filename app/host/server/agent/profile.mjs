@@ -231,8 +231,8 @@ export function compactionThreshold(context, outputBudget, env = process.env) {
 export const LOCAL_EFFORTS = Object.freeze({ off: null, low: 'low', medium: 'medium', high: 'high', max: 'high' });
 /** Thinking levels for Tencent Hy4-Flash: Off, High (default), Max (passes max through to strata-hy4's max reasoning budget). */
 export const HY4_LOCAL_EFFORTS = Object.freeze({ off: null, low: 'high', medium: 'high', high: 'high', max: 'max' });
-/** Inkling-2-Mini thinks (0.2.21): the same menu and the same wire values as the other local models (Off sends enable_thinking false, the rest enable_thinking true plus reasoning_effort). */
-export const INKLING_LOCAL_EFFORTS = LOCAL_EFFORTS;
+/** Inkling-2-Mini thinks (0.2.21). The server's levels: none/off 0, minimal 0.1, low 0.2, medium 0.7, high 0.9, xhigh and max 0.99. The menu's words go through as they are (Off sends enable_thinking false and no effort), Max as "max" (the other local models' server maps Max to high). */
+export const INKLING_LOCAL_EFFORTS = Object.freeze({ off: null, low: 'low', medium: 'medium', high: 'high', max: 'max' });
 /** The menu's words to the Harness's level names. */
 export const EFFORT_LEVEL = Object.freeze({ off: 'off', minimal: 'minimal', low: 'low', medium: 'medium', high: 'high', max: 'max' });
 /**
