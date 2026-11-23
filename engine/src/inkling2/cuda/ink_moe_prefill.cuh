@@ -59,6 +59,16 @@ __global__ void __launch_bounds__(256) k_ink_moe_pf_fp16tc(
         const int nrows = min(TR, tb.off[e + 1] - row0);
         if (nrows <= 0) continue;
         const int nnt = (nrows + 7) >> 3;   // n-tiles of 8 tokens that hold a real row (the rest of the tile is skipped)
+#ifdef INK_PF_FAULTTEST
+        // Test builds only (-DINK_PF_FAULTTEST, never in a release build): the first block of the grid reads one float far outside every
+        // allocation, so a compute-sanitizer memcheck that really covers this kernel must report an invalid global read here.  A clean
+        // memcheck on the release build only means something if the same filter reports this one on the test build.
+        if (blockIdx.x == 0 && tid == 0 && w == 0) {
+            volatile const float* bad = act_f32 + ((size_t)1 << 36);
+            const float v = *bad;
+            if (v == 123456.789f) out_buf[0] = v;
+        }
+#endif
 
         const uint8_t* body = sec4_base + ed.body_off;
         float w_outer = 1.0f;
