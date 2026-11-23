@@ -14195,9 +14195,22 @@ int main(int argc, char** argv) {
             if (segpool != nullptr || ckpt_pool.on()) (void) cudaDeviceSynchronize();
             // #342: before make_room evicts oldest-first, the copies of this conversation a turn back go (they hold
             // nothing the outgoing chain does not, apart from the tail this conversation rewrote)
-            if (const size_t dropped = conversations.drop_superseded(src.ids, src.imgs, src.checks, src.cvec))
-                std::fprintf(stderr, "strata serve: conversation cache: dropped %zu superseded cop%s of this "
-                             "conversation; parked=%zu\n", dropped, dropped == 1 ? "y" : "ies", conversations.size());
+            {
+                std::vector<size_t> gone;
+                const size_t dropped = conversations.drop_superseded(src.ids, src.imgs, src.checks, src.cvec, &gone);
+                if (dropped)
+                    std::fprintf(stderr, "strata serve: conversation cache: dropped %zu superseded cop%s of this "
+                                 "conversation; parked=%zu\n", dropped, dropped == 1 ? "y" : "ies", conversations.size());
+                // a longer snapshot of the same conversation makes the older ones useless, in RAM and on the SSD tier alike
+                // (never spilled, and a spilled one is deleted with its index file)
+                if (spill.enabled()) {
+                    const auto on_ssd = spill.drop_superseded(src.ids, src.imgs, src.cvec);
+                    gone.insert(gone.end(), on_ssd.begin(), on_ssd.end());
+                }
+                for (const size_t n : gone)
+                    std::fprintf(stderr, "strata serve: conversation cache: dropped superseded snapshot %zu tokens (extended by %zu)\n",
+                                 n, src.ids.size());
+            }
             // A layer split parks one image per stage: the first stage's (with the draft layer's K/V) and one per
             // later stage (without it - the draft ring is saved once).  The checkpoints are MOVED apart into their
             // stage parts for the capture and put back together whichever way this ends (no running state copied).

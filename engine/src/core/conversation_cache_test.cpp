@@ -566,7 +566,7 @@ int main() {
         check(cache.best(std::vector<int64_t>{1}, {}, true).tokens == 0, "short prompt cannot match");
         check(cache.best(std::vector<int64_t>{}, {}, true).tokens == 0, "empty prompt cannot match");
         cache.put(image({1, 2, 3}));
-        check(cache.best(a, {}, true).index == 1, "ties prefer most recently parked");
+        check(cache.best(a, {}, true).index == 0 && cache.size() == 1, "an equal snapshot replaces the older one (the newest serves)");
     }
     {
         auto s = image({1, 2, 3});
@@ -726,9 +726,11 @@ int main() {
             return std::pair<int64_t, int64_t>(a_found, b_found);
         };
         const auto baseline = replay(false, false);
-        check(baseline.first == 14 && baseline.second == 0, "baseline: A returns to its prompt-read state, B to nothing (as measured)");
+        // (measured before live-prefix supersession: B found nothing; the older parks of one conversation no longer
+        // fill the slots, so B's copy at 15 tokens survives to its third turn)
+        check(baseline.first == 14 && baseline.second == 15, "baseline: A returns to its prompt-read state, B to its last park");
         const auto parks_only = replay(true, false);
-        check(parks_only.first == 17 && parks_only.second == 0, "slot parks alone: A whole, B's copy evicted by a stale initial image");
+        check(parks_only.first == 17 && parks_only.second == 17, "slot parks alone: A whole, B whole (its stale initial image no longer evicts it)");
         const auto both = replay(true, true);
         check(both.first == 17 && both.second == 17, "slot parks + checkpoints back: both return whole");
     }
@@ -785,8 +787,9 @@ int main() {
         check(cache.parked_prefix_tokens({1, 2, 3, 4, 60, 70, 71}, {}, chain, true) == 5,
               "an appended tail keeps the reported depth at the parked one");
         SavedConversation no_cp = image({1, 2, 3, 9});
-        check(cache.put(std::move(no_cp)) && cache.parked_prefix_tokens({1, 2, 3, 9}, {}, {}, true) == 0,
-              "an entry without checkpoints is never reported");
+        check(cache.put(std::move(no_cp)) && cache.parked_prefix_tokens({1, 2, 3, 9}, {}, {}, true) == 4 &&
+              cache.parked_prefix_tokens({1, 2, 3, 8}, {}, {}, true) == 0,
+              "an entry without checkpoints is reported by its live length, only when the state extends it");
     }
     {
         // borrowing: a NEW conversation that starts with a checkpoint inside a parked one (a sibling subagent with
@@ -1125,6 +1128,26 @@ int main() {
         check(slots.put(std::move(p4)) && !slots.make_room(one) && slots.size() == 1 && slots.evictions() == 0,
               "one slot, held by a pin: refused, nothing evicted");
     }
+    {   // successive extensions of one conversation with every slot full: nothing is spilled; two conversations: the evicted one is
+        const size_t one = image({1,2,3}).bytes();
+        ConversationCache c(one * 8, 3);
+        std::vector<SavedConversation> sunk;
+        c.set_evict_sink([&](SavedConversation&& s) { sunk.push_back(std::move(s)); });
+        std::vector<int32_t> ids = {1,2,3};
+        for (int turn = 0; turn < 12; ++turn) {
+            ids.push_back(100 + turn);
+            { auto im = image({1}); im.live.ids = ids; check(c.put(std::move(im)), "an extension parks"); }
+        }
+        check(c.size() == 1 && sunk.empty() && c.evictions() == 0 && c.superseded() == 11,
+              "twelve turns of one conversation: one snapshot parked, nothing spilled");
+        ConversationCache d(one * 8, 2);
+        std::vector<SavedConversation> sunk2;
+        d.set_evict_sink([&](SavedConversation&& s) { sunk2.push_back(std::move(s)); });
+        check(d.put(image({1,2,3})) && d.put(image({4,5,6})) && d.put(image({7,8,9})) && sunk2.size() == 1 &&
+              sunk2[0].live.ids == std::vector<int32_t>({1,2,3}), "different conversations: the evicted one still spills");
+        check(d.put(image({4,5,6,7})) && d.size() == 2 && sunk2.size() == 1, "the extension replaces its own prefix, evicts no other");
+        check(d.parked_prefix_tokens(std::vector<int32_t>{7,8,9,1}, {}, {}, true) == 3, "park-gain sees the prefix entry");
+    }
     {   // P2: an evicted conversation goes to the sink (the SSD tier), whole; superseded copies and clear() do not
         const size_t one = image({1,2,3}).bytes();
         ConversationCache c(one * 2, 4);
@@ -1139,8 +1162,10 @@ int main() {
         auto chained = image({7,8,9,10});
         chained.checkpoints.push_back(ConversationCheckpoint{});
         chained.checkpoints.back().ids = {7,8,9};
-        check(c.drop_superseded(chained.live.ids, chained.live.imgs, chained.checkpoints, true) == 0 && sunk.size() == 2,
-              "(a parked entry with no checkpoint is never superseded)");
+        std::vector<size_t> gone;
+        check(c.drop_superseded(chained.live.ids, chained.live.imgs, chained.checkpoints, true, &gone) == 1 && sunk.size() == 2 &&
+              gone == std::vector<size_t>({3}) && c.size() == 0,
+              "a parked entry whose live tokens the new snapshot extends is dropped, never handed to the sink");
         c.put(image({11,12,13}));
         const size_t before = sunk.size();
         check(c.clear() > 0 && sunk.size() == before, "#879's clear() hands nothing over");
