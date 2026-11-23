@@ -776,7 +776,7 @@ struct InkMetalRunner {
 
     // Reset ShortConv state for a slot (called before starting a fresh sequence in slot `s`)
     void reset_slot(int s) {
-        if (s < 0 || s >= max_slots) return;
+        if (s < 0 || s >= max_slots || !mod || sc_hist_k.empty()) return;
         const auto& c = mod->man.c;
         const size_t sc_kv = 3ul * (c.n_kv * c.head_dim) * sizeof(float);
         const size_t sc_d  = 3ul * c.hidden * sizeof(float);
@@ -793,6 +793,7 @@ struct InkMetalRunner {
         std::vector<float> k, v, attn, mlp;
     };
     void snapshot_slot(int s, SlotSconvSnap& snap) const {
+        if (s < 0 || s >= max_slots || !mod || sc_hist_k.empty()) return;
         const auto& c = mod->man.c;
         const size_t nkv = 3ul * (c.n_kv * c.head_dim);
         const size_t nd  = 3ul * c.hidden;
@@ -808,6 +809,7 @@ struct InkMetalRunner {
         }
     }
     void restore_slot(int s, const SlotSconvSnap& snap) {
+        if (s < 0 || s >= max_slots || !mod || sc_hist_k.empty()) return;
         const auto& c = mod->man.c;
         const size_t nkv = 3ul * (c.n_kv * c.head_dim);
         const size_t nd  = 3ul * c.hidden;
@@ -3091,10 +3093,10 @@ struct InkMetalRunner {
         return out.M;
     }
 
+    bool compile_shaders(const std::string& kernel_dir, std::string& err);
+
 private:
     mtl::Pipeline p_copy_f32;
-
-    bool compile_shaders(const std::string& kernel_dir, std::string& err);
 };
 
 }  // namespace ink_metal

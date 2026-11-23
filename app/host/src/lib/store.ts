@@ -797,10 +797,20 @@ export function removeAgentAsk(sessionId: string, callId?: string) {
   const rest = callId === undefined ? [] : (state.agentAsks[sessionId] ?? []).filter(a => a.callId !== callId);
   if ((state.agentAsks[sessionId]?.length ?? 0) !== rest.length) setAsks(sessionId, rest);
 }
-/** Sends the person's answer to the agent, or a skip (answers null). A refusal comes back as an error for the card to say in words. */
+/** Sends the person's answer to the agent, or a skip (answers null). A refusal comes back as an error for the card to say in words.
+ *  A 409 (already answered / assistant moved on) clears the stale card instead of leaving a dead card behind (#6668). */
 export async function answerAgentAsk(sessionId: string, callId: string, answers: AgentAnswer[] | null) {
-  await api.post('/api/chat/answer', { sessionId, callId, ...(answers ? { answers } : { skip: true }) });
-  removeAgentAsk(sessionId, callId);
+  try {
+    await api.post('/api/chat/answer', { sessionId, callId, ...(answers ? { answers } : { skip: true }) });
+    removeAgentAsk(sessionId, callId);
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 409) {
+      removeAgentAsk(sessionId, callId);
+      pushToast('info', 'Question closed', error.message || 'That question was already answered, or the assistant moved on.');
+      return;
+    }
+    throw error;
+  }
 }
 
 /** Puts a turn or a selected passage above the message box. */
@@ -1847,6 +1857,24 @@ function markTurn(sessionId: string, turn: { abort: AbortController; agent: bool
   document.documentElement.dataset.streaming = liveTurns.size ? 'true' : 'false';
 }
 
+/** Stop a specific chat's turn (used by QuestionCard's Stop button and stopStreaming). */
+export function stopSession(sessionId: string) {
+  const turn = liveTurns.get(sessionId);
+  if (!sessionId || !turn) {
+    removeAgentAsk(sessionId);
+    return;
+  }
+  const abort = () => { turn.abort.abort(); removeAgentAsk(sessionId); };
+  void api.post<{ stopped: boolean; ended?: string }>('/api/chat/stop', { sessionId }).then(
+    result => {
+      if (!result.stopped && result.ended !== 'unconfirmed') abort();
+      // An agent turn that was told to stop but is slow to end must not leave the chat stuck.
+      else setTimeout(() => { if (liveTurns.get(sessionId) === turn) abort(); }, 30000);
+    },
+    abort,
+  );
+}
+
 /**
  * Stop the open chat's turn. The host is asked first: for an agent turn it cancels exactly this chat's
  * Harness session and answers only once the turn has ended, and the stream then closes by itself with
@@ -1854,17 +1882,7 @@ function markTurn(sessionId: string, turn: { abort: AbortController; agent: bool
  */
 export function stopStreaming() {
   const id = state.activeSession;
-  const turn = id ? liveTurns.get(id) : undefined;
-  if (!id || !turn) return;
-  const abort = () => { turn.abort.abort(); };
-  void api.post<{ stopped: boolean; ended?: string }>('/api/chat/stop', { sessionId: id }).then(
-    result => {
-      if (!result.stopped && result.ended !== 'unconfirmed') abort();
-      // An agent turn that was told to stop but is slow to end must not leave the chat stuck.
-      else setTimeout(() => { if (liveTurns.get(id) === turn) abort(); }, 30000);
-    },
-    abort,
-  );
+  if (id) stopSession(id);
 }
 
 /**

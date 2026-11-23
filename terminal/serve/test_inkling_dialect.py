@@ -307,6 +307,102 @@ class TestInklingDialect(unittest.TestCase):
         prefilled_out = "Red<|end_message|><|content_model_end_sampling|>"
         self.assertEqual(inkling_dialect.translate(prefilled_out), "Red")
 
+    def test_quoted_tags_in_thinking_and_text_never_leak_or_truncate_6675(self):
+        """#6675: quoting <|message_model|>, <|content_thinking|>, or <|end_message|> in thinking or
+        visible text must neither leak hidden thinking into content nor strip/truncate the answer."""
+        # 1. Exact #6675 scenario: thinking quotes both tags, then visible answer quotes both tags in a code span + DONE
+        raw_stream = (
+            "<|message_model|><|content_thinking|>"
+            "User wants: 'The header token is `<|message_model|>` and ends with `<|end_message|>`.'. "
+            "These look like special tokens. Repeating them is benign? Need double backticks. Final only."
+            "<|end_message|>"
+            "<|message_model|><|content_text|>"
+            "``The header token is `<|message_model|>` and ends with `<|end_message|>`.``\nDONE"
+            "<|end_message|><|content_model_end_sampling|>"
+        )
+        want = "``The header token is `<|message_model|>` and ends with `<|end_message|>`.``\nDONE"
+        for step in (1, 3, 7, 1000):
+            d = inkling_dialect.InklingDialect()
+            out = "".join(d.feed(raw_stream[i:i + step]) for i in range(0, len(raw_stream), step)) + d.feed(final=True)
+            self.assertEqual(out, want, f"step={step}")
+            self.assertNotIn("These look like special tokens", out)
+
+        # 2. Explaining serve/inkling_dialect.py: quoting <|message_model|> followed by <|content_thinking|> in visible text
+        explain = (
+            "<|message_model|><|content_text|>"
+            "Text before `<|message_model|>` and `<|content_thinking|>` and text after."
+            "<|end_message|><|content_model_end_sampling|>"
+        )
+        self.assertEqual(
+            inkling_dialect.translate(explain),
+            "Text before `<|message_model|>` and `<|content_thinking|>` and text after.",
+        )
+
+        # 3. Continuing directly from finish_prompt()'s <|message_model|><|content_text|> prefill
+        prefilled = (
+            "``The header token is `<|message_model|>` and ends with `<|end_message|>`.``\nDONE"
+            "<|end_message|><|content_model_end_sampling|>"
+        )
+        self.assertEqual(inkling_dialect.translate(prefilled), want)
+
+        # 4. Adjacent quoted + real <|end_message|> at the end of the answer
+        adjacent = "<|message_model|><|content_text|>The tag is <|end_message|><|end_message|><|content_model_end_sampling|>"
+        self.assertEqual(inkling_dialect.translate(adjacent), "The tag is <|end_message|>")
+
+        # 5. Token-aware feed_token(): ordinary BPE tokens never trigger tags even for <|content_model_end_sampling|>
+        d_tok = inkling_dialect.InklingDialect()
+        toks = [
+            ("<|message_model|>", True),
+            ("<|content_thinking|>", True),
+            ("Hidden <|end_message|> thinking <|content_text|> still hidden", False),
+            ("<|end_message|>", True),
+            ("<|message_model|>", True),
+            ("<|content_text|>", True),
+            ("Literal tags: <|message_model|>, <|content_thinking|>, <|end_message|>, <|content_model_end_sampling|>", False),
+            ("<|end_message|>", True),
+            ("<|content_model_end_sampling|>", True),
+        ]
+        chunks = []
+        for piece, sp in toks:
+            chunks.extend(d_tok.feed_token(piece, is_special=sp))
+        chunks.extend(d_tok.feed_channels("", final=True))
+        got_content = "".join(c for k, c in chunks if k == "content")
+        self.assertEqual(
+            got_content,
+            "Literal tags: <|message_model|>, <|content_thinking|>, <|end_message|>, <|content_model_end_sampling|>",
+        )
+
+        # 6. Quoted <|message_model|> inside tool call JSON args does not split/corrupt the tool call
+        payload = json.dumps({"name": "write_file", "args": {"content": "MSG = '<|message_model|>'"}})
+        tool_raw = f"<|message_model|>write_file<|content_invoke_tool_json|>{payload}<|end_message|><|content_model_end_sampling|>"
+        p = frontend.InklingOutputParser(tools=[{"name": "write_file", "parameters": {"type": "object"}}])
+        evs = p.feed(tool_raw) + p.finish("stop")
+        calls = [e.call for e in evs if e.kind == "tool_call" and e.call is not None]
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0].arguments["content"], "MSG = '<|message_model|>'")
+
+    def test_truncated_thinking_on_length_surfaces_reasoning_6682_and_bool_draft_off_6670(self):
+        # #6682: if max_tokens runs out inside <|content_thinking|> with zero visible answer, surface reasoning
+        p_cut = frontend.InklingOutputParser()
+        evs = p_cut.feed("<|message_model|><|content_thinking|>Working through the algorithm step by step")
+        evs += p_cut.finish("length")
+        self.assertEqual("".join(e.text for e in evs if e.kind == "content"), "")
+        self.assertIn("Working through the algorithm", "".join(e.text for e in evs if e.kind == "reasoning"))
+
+        # Normal stop or completed answer still discards thinking (preserves nothink contract)
+        p_ok = frontend.InklingOutputParser()
+        evs_ok = p_ok.feed("<|message_model|><|content_thinking|>Internal.<|end_message|><|message_model|><|content_text|>42<|end_message|>")
+        evs_ok += p_ok.finish("length")
+        self.assertEqual("".join(e.text for e in evs_ok if e.kind == "content"), "42")
+        self.assertEqual("".join(e.text for e in evs_ok if e.kind == "reasoning"), "")
+
+        # #6670: boolean False / "off" / "none" all emit --draft off
+        base = ["--native", "Inkling-2-Mini-SQ-20.strata", "--max-context", "32768"]
+        for val in ("off", False, "none"):
+            self.assertFalse(inkling_kind.wants_drafter({"drafting": val}), val)
+            args = inkling_kind.engine_args({"arch": "inkling2_loop", "drafting": val, "args": list(base)}, announce=False)
+            self.assertEqual(args[args.index("--draft") + 1], "off", val)
+
 
 if __name__ == "__main__":
     unittest.main()

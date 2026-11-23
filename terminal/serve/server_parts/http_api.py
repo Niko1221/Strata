@@ -314,7 +314,7 @@ SHARED_KEYS = ("reasoning_effort", "reasoning_budget_tokens", "temperature", "to
                "experimental_speed_projection")
 
 
-def load_shared_settings(path, warn=print) -> dict:
+def load_shared_settings(path, warn=print, *, hy4: bool = False) -> dict:
     """The Chat settings kept next to a config between starts, read so that one bad key cannot erase the others.
 
     The strict reader below belongs to POST /settings, where a client is there to be told which key is wrong and can
@@ -339,7 +339,7 @@ def load_shared_settings(path, warn=print) -> dict:
     out = {}
     for key, value in doc.items():
         try:
-            out.update(clean_shared_defaults({key: value}))
+            out.update(clean_shared_defaults({key: value}, hy4=hy4))
         except ValueError as e:
             warn(f"[strata] one Chat setting in {path} is skipped ({e}); the others still apply")
     return out
@@ -357,6 +357,10 @@ def clean_shared_defaults(d, hy4: bool = False) -> dict:
             continue
         number = isinstance(value, (int, float)) and not isinstance(value, bool)
         if key == "reasoning_effort":
+            if hy4 and value == "xhigh":
+                value = "max"
+            elif hy4 and value == "no_think":
+                value = "none"
             if value not in ("none", "low", "medium", "high") + (("max",) if hy4 else ()):    # Hy4's template also has max
                 raise ValueError("reasoning_effort: none, low, medium, high or max" if hy4
                                  else "reasoning_effort: none, low, medium or high")

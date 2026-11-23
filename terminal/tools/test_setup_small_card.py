@@ -61,8 +61,9 @@ class Plan(unittest.TestCase):
         plan = setup.unsloth_small_card_plan(8.0, 32768, "int8", 300, ctx_fixed=True, kv_fixed=True)
         self.assertEqual(plan[:2], (32768, "int8"))
 
-    def test_a_6gb_card_has_no_plan(self):
-        self.assertIsNone(setup.unsloth_small_card_plan(6.0, 8192, "int8", None))
+    def test_a_6gb_card_uses_zero_slot_streaming_and_sub_3_5gb_has_no_plan(self):
+        self.assertEqual(setup.unsloth_small_card_plan(6.0, 8192, "int8", None), (8192, "int8", False, 0.0))
+        self.assertIsNone(setup.unsloth_small_card_plan(3.0, 8192, "int8", None))
 
     def test_a_reserve_the_user_gave_is_counted(self):
         a = setup.unsloth_small_card_plan(8.0, 8192, "int8", 0)
@@ -77,9 +78,11 @@ class Words(unittest.TestCase):
         self.assertIn("very slow", text)
         self.assertIn("IQ3_XXS or IQ3_S", text)
 
-    def test_no_plan_says_the_start_will_probably_stop(self):
+    def test_no_plan_says_zero_slot_dense_streaming(self):
         lines = setup.unsloth_small_card_lines("UD-Q4_K_XL", 6.0, None, False)
-        self.assertTrue(any("will probably" in x for x in lines))
+        self.assertTrue(any("0-slot / dense-streaming" in x for x in lines))
+        lines8 = setup.unsloth_small_card_lines("UD-Q4_K_XL", 8.0, None, False)
+        self.assertTrue(any("0-slot dense-streaming" in x for x in lines8))
 
 
 class Main8GB(Base):

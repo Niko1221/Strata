@@ -1343,7 +1343,7 @@ def default_test_start(stage_root: Path, component: ec.EngineComponent, ctx: Con
     """Start the staged engine through the real start path (owner runtime, `component:<id>`, a saved model), wait for
     the one-token generation probe, and stop it. Everything runs in an isolated runtime, profile and component folder, so a
     user's own instances, profiles and engines are not involved. With no matching model installed the engine is only run with --version."""
-    target_comp = component.id or ec.COMPONENT_ID
+    target_comp = getattr(component, "id", None) or ec.COMPONENT_ID
     source = Path(ctx.run_config) if ctx.run_config else discover_run_config(ctx.environ, component_id=target_comp)
     if source is not None and _config_component_id(source) != target_comp:
         # #6589 / #6623: never test an engine against another engine component's run config (e.g. Hy4 `--engram` on `strata`)

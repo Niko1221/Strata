@@ -109,6 +109,13 @@ int main() {
     CHECK(gfx12_chunk_step_down(32768) == 16384);
     CHECK(gfx12_chunk_step_down(16384) == 8192);
     CHECK(gfx12_chunk_step_down(12288) == 8192);
+    // #6687: STRATA_PREFILL_RAM_RESERVE_MIB override and resident vs non-resident defaults
+    CHECK(prefill_ram_reserve_mib(nullptr, true) == 6144);
+    CHECK(prefill_ram_reserve_mib(nullptr, false) == 3072);
+    CHECK(prefill_ram_reserve_mib("2048", true) == 2048);
+    CHECK(prefill_ram_reserve_mib("0", false) == 0);
+    CHECK(prefill_ram_reserve_mib("-100", false) == 3072);
+    CHECK(prefill_ram_reserve_mib("bad", true) == 6144);
     if (fails == 0) std::printf("gfx12_extra_test: OK\n");
     return fails == 0 ? 0 : 1;
 }

@@ -452,6 +452,12 @@ export function ChatScreen() {
             textarea.current?.focus({ preventScroll: true });
     }, [setupVisible, readyForChat, session?.id, messageCount]);
     function submit() {
+        // While a QuestionCard is waiting above the composer, direct keyboard input to the question card instead of refusing with "still answering" (#6668).
+        if (session && getState().agentAsks[session.id]?.length) {
+            const askInput = document.querySelector<HTMLInputElement>('.askq .askq__own:not(:disabled)');
+            askInput?.focus();
+            return;
+        }
         const text = draft.trim();
         if (text === '/pause-for-update') { updateDraft(''); void pauseForUpdate(); return; }
         if (!text && !queuedPhotos.length)
@@ -653,6 +659,7 @@ function Composer({ draft, setDraft, loaded, streaming, onSubmit, onKey, session
     const canChat = hasModelToChat({ remote: chosenRemote(remoteProviders, remotePick), localLoaded: loaded, nativeReady: !!native?.instances.some(i => i.status === 'ready') });
     const whileBusy = useStore(s => s.whileBusy), parkedList = useStore(s => (session ? s.parked[session.id] : undefined)) ?? NO_PARKED;
     const quoteList = useStore(s => (session ? s.quotes[session.id] : undefined)) ?? NO_QUOTES;
+    const awaitingQuestion = useStore(s => !!(session && s.agentAsks[session.id]?.length));
     // A command that runs at once (/compact, /website) clears only the "/..." the person typed to find it, never a message they were writing
     // when they opened the menu with its button (PR #5092 review).
     const commands = useSlashCommands(() => { if (/^\/\S*$/.test(draft)) clearDraft(); }, setDraft);
@@ -689,9 +696,9 @@ function Composer({ draft, setDraft, loaded, streaming, onSubmit, onKey, session
           <GoalBar chatId={session?.id}/>
           {tr(quoteList.length ? <div className="quotes">{tr(quoteList.map(q => <div className="quote" key={q.id}><button type="button" className="quote__body" title={tr("Go to the quoted message")} onClick={() => document.querySelector(`[data-message-id="${CSS.escape(q.messageId)}"]`)?.scrollIntoView({ block: 'center', behavior: scrollBehavior() })}><span className="xs muted">{tr(q.role === 'user' ? "Quoting you" : "Quoting the assistant")}</span><span className="quote__text">{q.text}</span></button><IconBtn name="x" size={14} title={tr("Remove this quote")} onClick={() => removeQuote(session!.id, q.id)}/></div>))}</div> : null)}
           {tr(parkedList.length ? <div className="parked" role="status">{tr(parkedList.map((text, i) => <div className="parked__item" key={`${i}-${text}`}><span className="xs muted">{tr("Waiting to send")}</span><span className="parked__text" title={text}>{text}</span><IconBtn name="x" size={14} title={tr("Take back")} onClick={() => { const back = takeParked(session!.id, i); if (back !== undefined && !draft.trim()) setDraft(back); }}/></div>))}</div> : null)}
-          <div className="st-composer" style={{ boxShadow: 'var(--st-sh-bar)' }}>
+          <div className="st-composer" data-awaiting-answer={awaitingQuestion || undefined} style={{ boxShadow: 'var(--st-sh-bar)' }}>
           {tr(photos.length ? <ChatPhotos photos={photos} onRemove={id => removeChatPhoto(id, session?.id)}/> : null)}
-          <textarea ref={textareaRef} rows={1} value={draft} aria-label={tr("Message Strata")} placeholder={tr(canChat ? 'Message Strata…' : 'Try /time-skip, or load a model to chat…')} onFocus={() => setSlashDismissed(false)} onBlur={() => ime.current.reset()} onCompositionStart={() => ime.current.compositionStart()} onCompositionEnd={(e) => ime.current.compositionEnd(e.timeStamp)} onPaste={(e) => {
+          <textarea ref={textareaRef} rows={1} value={draft} disabled={awaitingQuestion} aria-label={tr("Message Strata")} placeholder={tr(awaitingQuestion ? 'Answer the question above to continue…' : canChat ? 'Message Strata…' : 'Try /time-skip, or load a model to chat…')} onFocus={() => setSlashDismissed(false)} onBlur={() => ime.current.reset()} onCompositionStart={() => ime.current.compositionStart()} onCompositionEnd={(e) => ime.current.compositionEnd(e.timeStamp)} onPaste={(e) => {
             // A picture on the clipboard (a screenshot, a copied image) is attached like a dropped file; text pastes as usual.
             const files = pastedFiles(e.clipboardData);
             if (!files.length)

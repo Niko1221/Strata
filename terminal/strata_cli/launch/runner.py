@@ -322,10 +322,18 @@ def apply_choices(cfg: dict, s: S.LaunchSettings) -> dict:
 
     if s.context:
         put("--max-context", str(int(s.context)))
-    if "--engram" in args or s.family == "inkling-2-mini" or str(cfg.get("arch") or "").lower() == "inkling2_loop":  # native .strata engines (strata-hy4, strata-inkling): context + Vision shard (--vision <file>), no Qwen KV format
+    if "--engram" in args or s.family == "inkling-2-mini" or str(cfg.get("arch") or "").lower() == "inkling2_loop":  # native .strata engines (strata-hy4, strata-inkling): context + Vision shard (--vision <file>)
         if s.vision == "off" and "--vision" in args:
             at = args.index("--vision")
             del args[at:at + 2]
+        is_ink = s.family == "inkling-2-mini" or str(cfg.get("arch") or "").lower() == "inkling2_loop"
+        if is_ink:
+            if s.kv:
+                eff_kv, _ = S.safe_inkling_kv(s.kv, cfg.get("backend"))
+                if eff_kv:
+                    put("--kv", eff_kv)
+            if str(s.drafting or "").strip().lower() == "off":
+                put("--draft", "off")
         cfg["args"] = args
         return cfg
     kv = s.kv or ("int8" if (s.context or 32768) > 8192 else "fp16")
@@ -697,8 +705,40 @@ def derive_config(base: dict, s: S.LaunchSettings, *, bool_flags: frozenset[str]
         cfg["log"] = log
     apply_cards(cfg, gpus)
     from strata_control import drafting as _drafting
+    exe_low = str(cfg.get("exe") or "").replace("\\", "/").rsplit("/", 1)[-1].lower()
+    is_inkling = (cfg.get("arch") == "inkling2_loop" or cfg.get("exe") == "component:strata-inkling"
+                  or exe_low.startswith("strata-inkling") or s.family == "inkling-2-mini")
+    is_hy4 = (cfg.get("arch") == "hy4flash" or cfg.get("exe") == "component:strata-hy4"
+              or exe_low.startswith("strata-hy4") or s.family == "hy4-flash")
+    is_native_strata = is_inkling or is_hy4
     drafting_off = _drafting.normalize(chosen if chosen is not None else cfg.get("drafting")) == "off"
-    if s.mtp == "off" or drafting_off:                       # no draft layer for this launch (serve/server.py applies "mtp": false at every start)
+    if is_inkling and isinstance(cfg.get("args"), list):
+        if drafting_off:
+            # #6670: strata-inkling defaults to dspark=1 unless --draft off is explicitly passed.
+            out_args: list[str] = []
+            i = 0
+            raw_args = [str(a) for a in cfg["args"]]
+            while i < len(raw_args):
+                if raw_args[i] == "--draft":
+                    i += 2 if i + 1 < len(raw_args) and not raw_args[i + 1].startswith("--") else 1
+                    continue
+                out_args.append(raw_args[i])
+                i += 1
+            cfg["args"] = out_args + ["--draft", "off"]
+        if s.kv:
+            eff_kv, _ = S.safe_inkling_kv(s.kv, cfg.get("backend"))
+            if eff_kv:
+                raw_args = [str(a) for a in cfg["args"]]
+                if "--kv" in raw_args:
+                    idx = raw_args.index("--kv")
+                    if idx + 1 < len(raw_args) and not raw_args[idx + 1].startswith("--"):
+                        raw_args[idx + 1] = eff_kv
+                    else:
+                        raw_args.insert(idx + 1, eff_kv)
+                else:
+                    raw_args += ["--kv", eff_kv]
+                cfg["args"] = raw_args
+    elif s.mtp == "off" or drafting_off:                     # no draft layer for this launch (serve/server.py applies "mtp": false at every start)
         from strata_control import draft_layer              # --drafting off: the written file carries no --mtp either (it was left in before)
         cfg["mtp"] = False
         draft_layer.apply(cfg)
@@ -707,6 +747,12 @@ def derive_config(base: dict, s: S.LaunchSettings, *, bool_flags: frozenset[str]
     if cfg.get("backend") == "sycl":                         # exactly two Arc B-series cards: --spec 2 (strata_control/intel_spec.py); the person's
         from strata_control import intel_spec                # own choices (user_args, an extra option below) come after it and win
         intel_spec.apply_for_launch(cfg)
+    # #6469: match app/host's --prompt-cache-spread default on Flash-Next/Gyro engines so all entry points agree and CLI/TUI gets spread cache compaction.
+    if not is_native_strata and isinstance(cfg.get("args"), list):
+        if cfg.get("prompt_cache_spread") is False:
+            cfg["args"] = [a for a in cfg["args"] if a != "--prompt-cache-spread"]
+        elif "--prompt-cache-spread" not in cfg["args"]:
+            cfg["args"] = [*cfg["args"], "--prompt-cache-spread"]
     word_flags = S.WORD_VALUE_FLAGS
     a_changes, e_changes = S.as_argv_changes(s.extra, bool_flags, word_flags) if s.extra else ({}, {})
     server_set = take_server_options(a_changes)              # a server setting (--set idle-unload=...) never rides to the engine
@@ -1247,8 +1293,27 @@ class Runner:
         if ctx:
             args += ["--context", str(ctx)]
         args += ["--vision", self.vision_word()]             # (Hy4-Flash: images are on by default; setup takes any word but no / none as "on")
-        if s.kv and not self.is_native_strata_family():      # (native .strata engines manage KV automatically)
+        if s.kv and not self.is_native_strata_family():      # Qwen/Gyro KV formats
             args += ["--kv", s.kv]
+        elif s.kv and self.is_inkling():
+            be = None
+            try:
+                from strata_control import engine_component
+                be = engine_component.detect_backend()[0]
+            except Exception:                                # noqa: BLE001
+                be = None
+            eff_kv, _ = S.safe_inkling_kv(s.kv, be)
+            if eff_kv:
+                args += ["--kv", eff_kv]
+        if self.is_inkling() and str(s.drafting or "").strip().lower() == "off":
+            args += ["--drafter", "off"]
+        if self.is_native_strata_family() and not WINDOWS and sys.platform != "darwin":
+            try:
+                from strata_control import engine_component
+                if engine_component.detect_backend()[0] == "sycl":
+                    args += ["--backend", "sycl"]            # #6691: route Inkling-2-Mini & Hy4-Flash through setup.py's Intel SYCL control path
+            except Exception:                                # noqa: BLE001
+                pass
         if fam in ("qwen", "coder"):
             args += ["--experimental-speed-projection", "off"]
         if s.draft_vocab and fam in modelstate.HELPER_FAMILIES:
@@ -1767,7 +1832,12 @@ class Runner:
         fam = families.get(s.family or "", {})
         tag = cat.tag_of(s.family, s.model)
         data_dir = Path(s.data_dir) if s.data_dir else cat.data_dir()
-        model_dir = Path(s.model_path) if s.model_path else data_dir / "models" / (fam.get("tag", "") + s.model)
+        if s.model_path:
+            model_dir = Path(s.model_path)
+        elif s.family in ("inkling-2-mini", "hy4-flash"):
+            model_dir = data_dir / "models" / s.family
+        else:
+            model_dir = data_dir / "models" / (fam.get("tag", "") + s.model)
         if not s.model_path and not model_dir.is_dir():
             # A previous --model-path launch saved the files' own folder in the installed config; reuse it when re-launched without --model-path.
             installed = cat.installed_config(tag)
@@ -1780,26 +1850,28 @@ class Runner:
                             model_dir = prev_dir
                 except Exception:                            # noqa: BLE001
                     pass
-        if model_dir.is_file():
+        if model_dir.is_file() and s.family not in ("inkling-2-mini", "hy4-flash"):
             model_dir = model_dir.parent
         try:
             backend = engine_component.detect_backend()[0]
         except Exception:                                    # noqa: BLE001
             backend = None
         pack_dir = data_dir / "packs" / tag.lower()
-        files = adopt.model_files(model_dir, s.family or "", fam) if fam.get("feed") else adopt.find_shards(model_dir)   # a feed model can be one GGUF
-        if backend == "sycl" and files and not (pack_dir / "experts.bin").exists() and not (
-                (pack_dir / "index.txt").exists() and (pack_dir / "tokenizer" / "vocab.json").exists()):
-            self.prepare_pack(model_dir, pack_dir, files)
+        if s.family not in ("inkling-2-mini", "hy4-flash"):
+            files = adopt.model_files(model_dir, s.family or "", fam) if fam.get("feed") else adopt.find_shards(model_dir)   # a feed model can be one GGUF
+            if backend == "sycl" and files and not (pack_dir / "experts.bin").exists() and not (
+                    (pack_dir / "index.txt").exists() and (pack_dir / "tokenizer" / "vocab.json").exists()):
+                self.prepare_pack(model_dir, pack_dir, files)
         cfg, problems = adopt.plan(family=s.family, model=s.model, model_dir=model_dir, data_dir=data_dir, src=cat.src,
                                    context=s.context or 32768, kv=s.kv, model_name=f"{fam.get('name', s.family)}-{s.model.lower()}", family_def=fam,
                                    log=cat.root / f"strata-{tag}.log", backend=backend,
-                                   vram_gb=float(cat.computer().main_vram_gb or 0), notes=self.notices, pack_name=tag.lower())
+                                   vram_gb=float(cat.computer().main_vram_gb or 0), notes=self.notices, pack_name=tag.lower(),
+                                   drafting=s.drafting)
         if cfg is None:
             if backend == "sycl":
                 raise LaunchError("Strata cannot start this model on the Intel Arc card yet: " + "; ".join(problems) + ".",
-                                  "Give the folder that holds the model's .gguf files with --model-path (Strata prepares them itself). "
-                                  "Intel cards do not download models yet; see docs/INTEL_ARC.md.", 5)
+                                  "Give the folder or file that holds the model's .gguf or .strata files with --model-path (Strata prepares them itself). "
+                                  "See docs/INTEL_ARC.md.", 5)
             raise LaunchError("The installer cannot set up this graphics card yet, and the files Strata would need to write the settings itself are not all there: "
                               + "; ".join(problems) + ".",
                               "Use model files that were prepared on this computer already (folder + pack): for an Intel Arc card the steps are in docs/INTEL_ARC.md (the Terminal carries tools/iq_pack.py for the pack). Or install on a computer with an NVIDIA or AMD card.", 5)

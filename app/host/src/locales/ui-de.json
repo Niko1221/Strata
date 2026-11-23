@@ -39,5 +39,13 @@
  "ui38": "Eigene Antwort eingeben",
  "ui39": "Antwort senden",
  "ui40": "Fragen an Sie",
- "ui41": "Der Assistent kann anhalten und Ihnen eine Frage mit Antworten zur Auswahl stellen, wenn er Ihre Entscheidung braucht."
+ "ui41": "Der Assistent kann anhalten und Ihnen eine Frage mit Antworten zur Auswahl stellen, wenn er Ihre Entscheidung braucht.",
+ "ui42": "Alle zutreffenden auswählen",
+ "ui43": "Eine Option wählen",
+ "ui44": "Notiz oder weiteres Detail hinzufügen (optional)",
+ "ui45": "Assistenten jetzt anhalten",
+ "ui46": "Diese Frage überspringen und den Assistenten fortfahren lassen",
+ "ui47": "Wird übersprungen…",
+ "ui48": "Wird gesendet…",
+ "ui49": "Beantworten Sie die Frage oben, um fortzufahren…"
 }

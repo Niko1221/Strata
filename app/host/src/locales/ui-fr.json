@@ -39,5 +39,13 @@
  "ui38": "Saisissez votre propre réponse",
  "ui39": "Envoyer la réponse",
  "ui40": "Questions pour vous",
- "ui41": "Permet à l’assistant de s’arrêter et de vous poser une question, avec des réponses à choisir, quand il a besoin de votre décision."
+ "ui41": "Permet à l’assistant de s’arrêter et de vous poser une question, avec des réponses à choisir, quand il a besoin de votre décision.",
+ "ui42": "Sélectionnez tout ce qui s’applique",
+ "ui43": "Choisissez une option",
+ "ui44": "Ajouter une note ou un détail supplémentaire (facultatif)",
+ "ui45": "Arrêter l’assistant maintenant",
+ "ui46": "Ignorer cette question et laisser l’assistant continuer",
+ "ui47": "Passage en cours…",
+ "ui48": "Envoi en cours…",
+ "ui49": "Répondez à la question ci-dessus pour continuer…"
 }

@@ -202,3 +202,28 @@ export function createChatStore({ dir, io = realIo, privateDir = () => {}, now =
     idle: () => chain,
   };
 }
+
+/**
+ * Drain any in-flight HTTP chat saves and then wait for chatStore's write queue to flush to disk,
+ * bounded by `timeoutMs` so host shutdown never drops the last edit or hangs indefinitely (#6661).
+ */
+export async function drainChatStore(chatStore, { inFlight = [], timeoutMs = 5000 } = {}) {
+  const limit = Number.isFinite(timeoutMs) && timeoutMs > 0 ? Math.floor(timeoutMs) : 5000;
+  let timer;
+  const wait = (async () => {
+    const active = [...inFlight];
+    if (active.length) await Promise.allSettled(active);
+    if (chatStore && typeof chatStore.idle === 'function') await chatStore.idle();
+    return true;
+  })();
+  const timedOut = new Promise(resolve => {
+    timer = setTimeout(() => resolve(false), limit);
+    timer.unref?.();
+  });
+  try {
+    const drained = await Promise.race([wait, timedOut]);
+    return { drained };
+  } finally {
+    clearTimeout(timer);
+  }
+}

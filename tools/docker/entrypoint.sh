@@ -7,9 +7,9 @@
 #   docker run ... strata sh           a shell
 #
 # Settings (all optional; names match the screens of `strata launch`):
-#   MODEL         model size, e.g. IQ3_XXS, Q2_0 (empty: Strata picks one for this card and says so)
-#   FAMILY        model family when a size is offered by several (qwen, swift, coder, ...)
-#   MODEL_PATH    GGUF files you already have, a folder or one .gguf, inside the container (mount it read-only)
+#   MODEL         model size, e.g. IQ3_XXS, Q2_0, SQ-10, SQ-64 (empty: Strata picks one for this card and says so)
+#   FAMILY        model family when a size is offered by several (qwen, qwen36, hy4-flash, inkling-2-mini, swift, coder, ...)
+#   MODEL_PATH    model files you already have: a folder or one .gguf, .strata, or .safetensors file inside the container (mount it read-only)
 #   ALLOW_DOWNLOAD  1: go on and download the model although model files of the older layout (/data/models) were left unread (default: stop)
 #   CONTEXT       32k, 64k, 128k, 256k or a number of tokens
 #   PARALLEL      requests answered at the same time, 1 to 8 (empty: fit to the card)
@@ -51,7 +51,7 @@ PORT="${PORT:-8080}"
 
 say()  { printf '%s\n' "$*"; }
 warn() { printf '[!] %s\n' "$*" >&2; }
-die()  { printf '[X] %s\n' "$*" >&2; exit "${2:-1}"; }
+die()  { printf '[X] %s\n' "$1" >&2; exit "${2:-1}"; }
 phase() { printf '%s\n' "$1" > "$PHASE_FILE" 2>/dev/null || true; }
 
 # Model files of the older layout that this image did not move (a folder you mounted at /data/models, or a move that failed) are not read here, and
@@ -59,7 +59,7 @@ phase() { printf '%s\n' "$1" > "$PHASE_FILE" 2>/dev/null || true; }
 # $1: MODEL_PATH (when it is set the files are named and nothing is lost), $2: the older models folder.
 legacy_models_guard() {
   [ -n "$1" ] && return 0
-  stuck=$(find "$2" -maxdepth 3 -name '*.gguf' 2>/dev/null | head -1)
+  stuck=$(find "$2" -maxdepth 3 \( -name '*.gguf' -o -name '*.strata' -o -name '*.safetensors' \) 2>/dev/null | head -1)
   [ -n "$stuck" ] || return 0
   msg="There are model files in ${stuck%/*} (the older image's place). This image keeps its models in /data/Strata-data/models and does not read them there, so it would download the model again (tens of GB). To use them: mount that folder read-only and set MODEL_PATH to the folder that holds the shards (docs/DOCKER.md, \"Files you already have\"), or put them in /data/Strata-data/models/<model folder>/. To download anyway: set ALLOW_DOWNLOAD=1. Nothing was downloaded."
   if [ "${ALLOW_DOWNLOAD:-0}" = "1" ]; then warn "$msg Going on, because ALLOW_DOWNLOAD=1."; else die "$msg" 2; fi
@@ -193,12 +193,16 @@ if [ -n "$model_path" ]; then
   # a folder that is not mounted (or a typo) must not end as "missing /xxx.gguf" after a minute of setup, and must never turn into a download
   if [ ! -e "$model_path" ]; then
     die "MODEL_PATH=$model_path is not in the container, so no model file can be found there. Mount your folder at that place, for example: -v /srv/gguf/IQ3_XXS:$model_path:ro (docs/DOCKER.md, \"Files you already have\"). Nothing was downloaded." 2
-  elif [ -d "$model_path" ] && ! ls "$model_path"/*.gguf "$model_path"/*.strata >/dev/null 2>&1; then
-    sub=$(find "$model_path" -maxdepth 2 \( -name '*.gguf' -o -name '*.strata' \) 2>/dev/null | head -1)
+  elif [ -d "$model_path" ] \
+    && ! ls "$model_path"/*.gguf >/dev/null 2>&1 \
+    && ! ls "$model_path"/*.strata >/dev/null 2>&1 \
+    && ! ls "$model_path"/*.safetensors >/dev/null 2>&1 \
+    && ! { [ -f "$model_path/model.safetensors.index.json" ] && ls "$model_path"/tensors/*.safetensors >/dev/null 2>&1; }; then
+    sub=$(find "$model_path" -maxdepth 2 \( -name '*.gguf' -o -name '*.strata' -o -name '*.safetensors' \) 2>/dev/null | head -1)
     if [ -n "$sub" ]; then
-      die "MODEL_PATH=$model_path has no .gguf or .strata files directly in it, but there are some in ${sub%/*}. Set MODEL_PATH=${sub%/*} (the folder that holds the shards of one model). Nothing was downloaded." 2
+      die "MODEL_PATH=$model_path has no .gguf, .strata or .safetensors files directly in it, but there are some in ${sub%/*}. Set MODEL_PATH=${sub%/*} (the folder that holds the shards of one model). Nothing was downloaded." 2
     fi
-    die "MODEL_PATH=$model_path holds no .gguf or .strata files. Mount the folder with the model's files (.gguf or .strata). Nothing was downloaded." 2
+    die "MODEL_PATH=$model_path holds no .gguf, .strata or .safetensors files. Mount the folder with the model's files (.gguf, .strata or .safetensors). Nothing was downloaded." 2
   fi
 fi
 legacy_models_guard "$model_path" "${STRATA_LEGACY_MODELS:-/data/models}"
@@ -289,7 +293,7 @@ trap on_term TERM INT
 RESET_INT='import os, signal, sys; signal.signal(signal.SIGINT, signal.SIG_DFL); os.execv(sys.argv[1], sys.argv[1:])'
 
 phase preparing
-if [ -n "${MODEL:-}" ]; then what="$MODEL${model_path:+ from $model_path}"
+if [ -n "${MODEL:-}" ]; then what="${FAMILY:+$FAMILY/}$MODEL${model_path:+ from $model_path}"
 elif [ -n "$model_path" ]; then what="the model files in $model_path"
 else what="the recommended model"; fi
 say "Starting Strata: $what (preset '$PRESET')."

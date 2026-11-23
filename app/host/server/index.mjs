@@ -49,7 +49,7 @@ import * as engine from './engine.mjs';
 import * as monitor from './monitor.mjs';
 import * as serving from './serving.mjs';
 import * as store from './store.mjs';
-import { createChatStore, storeFailure, validChatId } from './chat-store.mjs';
+import { createChatStore, drainChatStore, storeFailure, validChatId } from './chat-store.mjs';
 import { busyHelper, createHelperRecords, recordFor, validHelperId } from './chat-helper-records.mjs';
 import { makePrivateDir } from './private-file.mjs';
 import * as supervisor from './supervisor.mjs';
@@ -128,6 +128,14 @@ const insideApp = path => { const rel = relative(ROOT, resolve(path)); return re
 const hub = new EventHub();
 /** The chats, as files in the profile's data folder (chat-store.mjs). */
 const chatStore = createChatStore({ dir: store.DATA_DIR, privateDir: makePrivateDir });
+const inFlightChatSaves = new Set();
+const trackChatSave = fn => {
+  const p = Promise.resolve().then(fn);
+  const done = p.then(() => {}, () => {});
+  inFlightChatSaves.add(done);
+  done.finally(() => inFlightChatSaves.delete(done));
+  return p;
+};
 const helperRecords = createHelperRecords(chatStore.root);
 const modelProviders = createModelProviders({ directory: store.DATA_DIR, knownThinks: (connection, modelId) => visionProbe.knownThinks(connection, modelId), changed: value => hub.send('providers', withPictureAnswers(value)) });
 const imageModels = createImageModels({ dataDir: store.DATA_DIR, modelsDir: () => store.MODELS_DIR, real: models.REAL, changed: value => hub.send('image-models', value) });
@@ -224,7 +232,7 @@ const agent = createAgentBridge({
   bundledDir: resolve(HERE, '..', '..', 'harness'),
   defaultLocalId: () => native.defaultInstanceId(),
   localInstances: () => native.readyInstances().map(i => ({
-    id: i.id, label: i.label, baseUrl: `http://127.0.0.1:${i.port}/v1`, modelId: i.apiModelId,
+    id: i.id, label: i.label, baseUrl: `http://127.0.0.1:${i.port}/v1`, modelId: i.apiModelId, arch: i.arch ?? null,
     context: i.metrics?.engine?.max_context ?? i.context ?? undefined, key: i.key, vision: i.vision,
     // The engine's request slots: helper agents never outnumber them.
     slots: i.metrics?.live?.slots?.length || i.parallel || 1,
@@ -680,7 +688,7 @@ async function runTurn({ message, history = [], onFrame, signal, client, workspa
   if(native.hasLive()||nativeModelId){
     let instance;try{instance=native.resolveInstance(nativeModelId??native.state().defaultId);}catch(e){const message=plainNoModel(e.message);onFrame({type:'error',message});return {error:message};}const started=Date.now(),cancel=new AbortController();
     const entry=serving.open({client:client??'Strata chat',endpoint:'/chat/completions',model:instance.apiModelId,instanceId:instance.id,gpuIds:instance.gpus.map(String),cancel:()=>cancel.abort()});
-    try{serving.mark(entry.id,{state:'generating'});const applied=selectSkills(skillState,message,workspaceId);const hy4Local=/^hy4-flash/i.test(String(instance.model??instance.apiModelId??''));const inklingLocal=/^inkling-2-mini/i.test(String(instance.model??instance.apiModelId??''));const effortWord=hy4Local?({off:'none',minimal:'high',low:'high',medium:'high',high:'high',max:'max'}[String(thinking).toLowerCase()]??'high'):inklingLocal?'none':({off:'none',max:'high'}[String(thinking).toLowerCase()]??String(thinking).toLowerCase());const result=await proxyCompletion({baseUrl:`http://127.0.0.1:${instance.port}/v1`,modelId:instance.apiModelId,authorization:instance.key,message,history,images,extra:{strata_mcp:useTools===true,...(!inklingLocal&&thinkingBudget>0&&String(thinking).toLowerCase()!=='off'?{reasoning_budget_tokens:thinkingBudget}:{}),reasoning_effort:effortWord},systemPrompt:[SYSTEM_PROMPT,userRules.promptBlock(),skillInstructions(applied)].filter(Boolean).join('\n\n'),signal:signal?AbortSignal.any([signal,cancel.signal]):cancel.signal,onFrame:frame=>onFrame({...frame,requestId:entry.id,model:instance.label,contextMax:instance.metrics?.engine?.max_context??instance.context,skills:applied.map(s=>s.name)})});serving.mark(entry.id,{...result,usageSource:result.usageSource});serving.finish(entry.id,{tokensOut:result.tokensOut,durationMs:Date.now()-started});return result;}catch(e){serving.finish(entry.id,{durationMs:Date.now()-started,error:e.message});onFrame({type:'error',message:e.message,requestId:entry.id});return {error:e.message};}
+    try{serving.mark(entry.id,{state:'generating'});const applied=selectSkills(skillState,message,workspaceId);const hy4Local=instance.arch==='hy4flash'||/^hy4-flash/i.test(String(instance.model??instance.apiModelId??''));const inklingLocal=instance.arch==='inkling2_loop'||/^inkling-2-mini/i.test(String(instance.model??instance.apiModelId??''));const thinkKey=String(thinking).toLowerCase();const effortWord=hy4Local?(thinkKey==='xhigh'?'max':({off:'none',minimal:'high',low:'high',medium:'high',high:'high',max:'max'}[String(thinking).toLowerCase()]??'high')):inklingLocal?'none':({off:'none',max:'high'}[String(thinking).toLowerCase()]??(thinkKey==='xhigh'?'high':thinkKey));const result=await proxyCompletion({baseUrl:`http://127.0.0.1:${instance.port}/v1`,modelId:instance.apiModelId,authorization:instance.key,message,history,images,extra:{strata_mcp:useTools===true,...(!inklingLocal&&thinkingBudget>0&&String(thinking).toLowerCase()!=='off'?{reasoning_budget_tokens:thinkingBudget}:{}),reasoning_effort:effortWord},systemPrompt:[SYSTEM_PROMPT,userRules.promptBlock(),skillInstructions(applied)].filter(Boolean).join('\n\n'),signal:signal?AbortSignal.any([signal,cancel.signal]):cancel.signal,onFrame:frame=>onFrame({...frame,requestId:entry.id,model:instance.label,contextMax:instance.metrics?.engine?.max_context??instance.context,skills:applied.map(s=>s.name)})});serving.mark(entry.id,{...result,usageSource:result.usageSource});serving.finish(entry.id,{tokensOut:result.tokensOut,durationMs:Date.now()-started});return result;}catch(e){serving.finish(entry.id,{durationMs:Date.now()-started,error:e.message});onFrame({type:'error',message:e.message,requestId:entry.id});return {error:e.message};}
   }
   runtimeState();
   let instance;
@@ -1064,8 +1072,10 @@ async function api(req, res, path, method, url) {
     try {
       if (!id && method === 'GET') return json(res, 200, chatStore.list());
       if (id === 'import' && method === 'POST') {
-        const body = JSON.parse((await readRaw(req, 512 * 1024 * 1024)).toString('utf8') || '{}');
-        const result = await chatStore.importMany(body.sessions);
+        const result = await trackChatSave(async () => {
+          const body = JSON.parse((await readRaw(req, 512 * 1024 * 1024)).toString('utf8') || '{}');
+          return chatStore.importMany(body.sessions);
+        });
         for (const imported of result.imported) hub.send('chats', { id: imported, rev: chatStore.rev(imported), from });
         return json(res, 200, result);
       }
@@ -1077,14 +1087,16 @@ async function api(req, res, path, method, url) {
         return undefined;
       }
       if (id && method === 'PUT') {
-        const text = (await readRaw(req, 256 * 1024 * 1024)).toString('utf8');
-        const base = req.headers['x-strata-base-rev'];
-        const saved = await chatStore.save(id, text, { baseRev: typeof base === 'string' && /^\d+$/.test(base) ? Number(base) : null });
+        const saved = await trackChatSave(async () => {
+          const text = (await readRaw(req, 256 * 1024 * 1024)).toString('utf8');
+          const base = req.headers['x-strata-base-rev'];
+          return chatStore.save(id, text, { baseRev: typeof base === 'string' && /^\d+$/.test(base) ? Number(base) : null });
+        });
         hub.send('chats', { id, rev: saved.rev, from });
         return json(res, 200, saved);
       }
       if (id && method === 'DELETE') {
-        const removed = await chatStore.remove(id);
+        const removed = await trackChatSave(() => chatStore.remove(id));
         try { helperRecords.forget(id); } catch (err) { console.warn('[strata] Could not remove helper history:', err.code); }
         hub.send('chats', { id, deleted: true, from });
         return json(res, 200, removed);
@@ -2557,13 +2569,18 @@ server.listen(PORT, HOST, () => {
   if (control && process.env.STRATA_PACKAGED === '1') Promise.resolve(native.refresh(false)).catch(() => { /* the page's own read tells the person */ });
 });
 
+const CHAT_DRAIN_MS = Math.min(15000, Math.max(500, Number(process.env.STRATA_SHUTDOWN_CHAT_DRAIN_MS) || 5000));
 let stopping=false;
 const shutdown = async () => {
   if(stopping)return;stopping=true;
   clearInterval(taskTimer);tasks.close();
   const timeout=setTimeout(()=>process.exit(0),control?45000:10000);timeout.unref();   // stopping an engine through Control: drained (15 s), then ended; the shell's deadline is longer
-  server.close();server.closeAllConnections?.();
+  server.close();
+  // #6661: drain any in-flight or queued chat saves to disk before tearing down sockets and exiting.
+  await drainChatStore(chatStore, { inFlight: inFlightChatSaves, timeoutMs: CHAT_DRAIN_MS });
+  server.closeAllConnections?.();
   await Promise.allSettled([localShare.stop(),cloudflare.stop(),native.close(),agent.close()]);
+  await drainChatStore(chatStore, { timeoutMs: 1000 });
   process.exit(0);
 };
 // Every ordinary way of being told to stop takes the clean path: Ctrl+C, kill, the terminal closing (SIGHUP), Ctrl+Break.

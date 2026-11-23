@@ -11205,16 +11205,18 @@ int main(int argc, char** argv) {
             pin_mib = ((total > cached ? total - cached : 0) +
                        (uint64_t) std::max<int64_t>(0, lend_slots(8192)) * strata::kernels::cpu::expert_layout().max_blob) >> 20;
         }
-        if (avail_mib > 0 && avail_mib < pin_mib + extra_mib + 6144 && !(force16 != nullptr && std::strcmp(force16, "1") == 0)) {
+        const uint64_t ram_reserve_mib = strata::core::prefill_ram_reserve_mib(
+            std::getenv("STRATA_PREFILL_RAM_RESERVE_MIB"), o.resident_cpu_experts);
+        if (avail_mib > 0 && avail_mib < pin_mib + extra_mib + ram_reserve_mib && !(force16 != nullptr && std::strcmp(force16, "1") == 0)) {
             const int64_t next = strata::core::gfx12_chunk_step_down(cand);
             auto_ceiling = std::min<int64_t>(auto_ceiling, next);
             o.prefill_auto_max = std::min<int64_t>(o.prefill_auto_max, next);
             o.prefill_chunk = std::min<int64_t>(o.prefill_chunk, next);
             std::fprintf(stderr, "strata generate: %s: prompt chunks stay at %lld: %lld would lend %lld more cache slots "
                                  "(%llu MiB more held in RAM during a prompt), and %llu MiB of RAM is available for %llu MiB "
-                                 "of resident experts plus that (#2090; %s=1 takes the default ceiling anyway)\n",
+                                 "of resident experts plus that and %llu MiB reserve (#2090/#6687; %s=1 or STRATA_PREFILL_RAM_RESERVE_MIB=N overrides)\n",
                          o.prefill_raise_who, (long long) next, (long long) cand, (long long) extra_slots, (unsigned long long) extra_mib,
-                         (unsigned long long) avail_mib, (unsigned long long) pin_mib, chunk_env_name);
+                         (unsigned long long) avail_mib, (unsigned long long) pin_mib, (unsigned long long) ram_reserve_mib, chunk_env_name);
             cand = next;
             continue;
         }

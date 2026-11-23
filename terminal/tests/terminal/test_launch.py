@@ -321,7 +321,8 @@ class RunConfig(unittest.TestCase):
         self.assertIn("--mtp", base["args"])                                      # the installed config is never edited
         on = derive_config({**base, "mtp": False}, S.LaunchSettings(mtp="on"), bool_flags=frozenset())
         self.assertIs(on["mtp"], True)                                            # an explicit on beats an installed off
-        self.assertEqual(derive_config(base, S.LaunchSettings(), bool_flags=frozenset())["args"], base["args"])
+        self.assertEqual(derive_config(base, S.LaunchSettings(), bool_flags=frozenset())["args"],
+                         [*base["args"], "--prompt-cache-spread"])
 
     def test_settings_view_values_survive_the_next_launch(self):
         # About > Settings on the web page writes into the config this model started with (serve/runconfig.py saves there).
@@ -331,7 +332,7 @@ class RunConfig(unittest.TestCase):
         cfg = derive_config(self.BASE, S.LaunchSettings(), bool_flags=frozenset(), prev=prev)
         self.assertEqual((cfg["idle_unload_s"], cfg["reasoning_budget_tokens"], cfg["api_monitor"]), (300, 4000, True))
         self.assertEqual(cfg["sampling"], {"temperature": 0.4})
-        self.assertEqual(cfg["args"], self.BASE["args"])                          # nothing was added to the engine's command line
+        self.assertEqual(cfg["args"], [*self.BASE["args"], "--prompt-cache-spread"])  # #6469 spread enabled by default; no other args added
         plain = derive_config(self.BASE, S.LaunchSettings(), bool_flags=frozenset())    # no earlier start: nothing to carry
         self.assertNotIn("idle_unload_s", plain)
         lazy = derive_config({**self.BASE, "vision": True}, S.LaunchSettings(), bool_flags=frozenset(),

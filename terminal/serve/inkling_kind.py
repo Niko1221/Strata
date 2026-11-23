@@ -43,8 +43,11 @@ _PROBES: dict = {}
 
 def wants_drafter(cfg: dict) -> bool:
     from strata_control import inkling_family
-    choice = str(cfg.get("drafting") or inkling_family.DEFAULT_DRAFTER).lower()
-    return choice != "off"
+    raw = cfg.get("drafting")
+    if raw is False:
+        return False
+    choice = str(raw if raw not in (None, "") else inkling_family.DEFAULT_DRAFTER).strip().lower()
+    return choice not in ("off", "none", "false", "0")
 
 
 def parse_info(text: str) -> dict:
