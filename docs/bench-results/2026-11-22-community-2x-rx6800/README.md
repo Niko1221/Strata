@@ -75,4 +75,4 @@ Measured on 2026-11-22 by sudoagent1. Tested decode throughput, 67.7K-token fres
 - All runs had zero window-timeout errors and zero `oomd` events.
 - Under `P2` cached follow-ups on the winner-of-record config, mid-payload needle recall passed **4/4** in LP control and **2/2** in LP final confirm.
 - For `IQ2_XS` and `Q2_0`, 3/3 spot gates passed (12,129-token needle recall, `is_balanced` code task, and CPU-tower vision check).
-- `bench_decode.py` and `bench_prompt.py` are included in this directory for reproducibility (`STRATA_URL` / `STRATA_API_KEY` env-configurable, no credentials included).
+- `bench_decode.py`, `bench_prompt.py` and `strata_quality_gates.py` (the 3-gate battery: ~12K needle recall, bracket-balance coding task, in-memory PNG vision check) are included in this directory for reproducibility (`STRATA_URL` / `STRATA_API_KEY` env-configurable, no credentials included).
