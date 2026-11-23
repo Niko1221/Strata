@@ -26,6 +26,7 @@
 #include "strata/artifact/gguf_reader.hpp"
 #include "strata/artifact/strata_reader.hpp"
 #include "strata/core/ink_names.hpp"
+#include "strata/core/mapped_pages.hpp"
 #include "strata/quant/dequant.hpp"
 #include "strata/quant/sk_codecs.hpp"
 
@@ -776,6 +777,12 @@ struct GgufAdapter {
             }
         }
 
+        // The trunk, drafter and vision tensors are copied into sec1_arena by now: drop their mapped pages (everything but the routed experts).
+        for (size_t si = 0; si < model->size(); ++si)
+            for (const auto& t : model->shard(si).tensors())
+                if (t.name.find("_exps") == std::string::npos)
+                    strata::core::release_mapped_pages(model->shard(si).tensor_data(t), static_cast<size_t>(strata::tensor_payload_bytes(t)));
+
         // 4. Index routed experts (NVFP4 -> lossless SF4 code_id=15; all other GGUF quants -> lossless GGUF_RAW code_id=20!)
         layers.assign(c.n_phys, LayerExpertMeta{});
         expert_dir.clear();
@@ -942,6 +949,10 @@ struct GgufAdapter {
                     w2_s + r * (F / 16),
                     static_cast<int64_t>(F));
             }
+            // this expert is copied out of the mapping: give its pages back (gate and up are F rows each, down is D rows)
+            strata::core::release_mapped_pages(g_src, F * src_gu_row_b);
+            strata::core::release_mapped_pages(u_src, F * src_gu_row_b);
+            strata::core::release_mapped_pages(d_src, D * src_dn_row_b);
             return true;
         }
 
@@ -964,6 +975,9 @@ struct GgufAdapter {
             std::memcpy(out.data() + 32 + lm.gu_stride, lm.up_base + static_cast<size_t>(e) * lm.up_stride, lm.up_stride);
         }
         std::memcpy(out.data() + lm.dn_offset, lm.dn_base + static_cast<size_t>(e) * lm.dn_stride, lm.dn_stride);
+        strata::core::release_mapped_pages(lm.gu_base + static_cast<size_t>(e) * lm.gu_stride, lm.gu_stride);
+        if (!lm.is_fused_gu) strata::core::release_mapped_pages(lm.up_base + static_cast<size_t>(e) * lm.up_stride, lm.up_stride);
+        strata::core::release_mapped_pages(lm.dn_base + static_cast<size_t>(e) * lm.dn_stride, lm.dn_stride);
         return true;
     }
 };
