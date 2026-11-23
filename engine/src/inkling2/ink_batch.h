@@ -132,16 +132,17 @@ inline uint8_t f32_to_fp8_e4m3(float x) noexcept {
 
 // ---- Per-Slot Memory Footprint Estimator (exact Inkling-2-Mini geometry) ----
 struct SlotMemBudget {
-    size_t swa_kv_bytes = 0;     // 40 SWA visits x min(max_ctx, 1024) x 2 (K+V) x 1024 x elem_bytes
+    size_t swa_kv_bytes = 0;     // 40 SWA visits x min(max_ctx, swa ring) x 2 (K+V) x 1024 x elem_bytes
     size_t global_kv_bytes = 0;  // 8 Global visits x max_ctx x 2 (K+V) x 1024 x elem_bytes
     size_t sconv_bytes = 0;      // 48 visits x 3 lags x (1024+1024+2304+2304) x 2B = 3.83 MB
     size_t dspark_bytes = 0;     // 2 SWA-1025 + 1 Global KV + f_rnn ring
     size_t total_bytes() const { return swa_kv_bytes + global_kv_bytes + sconv_bytes + dspark_bytes; }
 };
 
-inline SlotMemBudget estimate_slot_bytes(int max_ctx, KvDtype kv_dtype, bool with_dspark) {
+// swa_ring_len: slots per sliding-window pool (the window itself, or window + batch slack where a backend keeps one)
+inline SlotMemBudget estimate_slot_bytes(int max_ctx, KvDtype kv_dtype, bool with_dspark, int swa_ring_len = 1024) {
     const size_t kv_dim = 8u * 128u;  // 1024
-    const size_t swa_len = static_cast<size_t>(std::min(max_ctx, 1024));
+    const size_t swa_len = static_cast<size_t>(std::min(max_ctx, swa_ring_len));
     // Bytes per token per visit for K + V combined
     size_t kv_tok_bytes = 2u * kv_dim * 2u;  // FP16: 4096 B
     if (kv_dtype == KvDtype::FP8_E4M3) kv_tok_bytes = 2u * kv_dim;

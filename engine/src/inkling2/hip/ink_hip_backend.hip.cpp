@@ -979,7 +979,7 @@ public:
             const size_t trunk_now = vram_used_bytes();
             // Reserve headroom for KV + activations + OS/desktop (always keep at least OS reserve + 768 MiB)
             const size_t kv_est = std::min<size_t>(
-                estimate_slot_bytes(std::min(max_ctx_, 4096), default_kv_dtype_, has_dspark_).total_bytes() * static_cast<size_t>(max_slots_),
+                estimate_slot_bytes(std::min(max_ctx_, 4096), default_kv_dtype_, has_dspark_, swa_ring(c_.swa_win)).total_bytes() * static_cast<size_t>(max_slots_),
                 mem_info_.effective_total_bytes / 4);
             const size_t overhead = mem_info_.reserve_bytes + trunk_now + kv_est + (768ULL << 20);
             if (mem_info_.effective_total_bytes > overhead) {
@@ -1331,7 +1331,8 @@ public:
 
         // 4. Initialize GPU Paged KV pools & 48-Visit ShortConv BF16 pools
         const int kv_dim = c_.n_kv * c_.head_dim;
-        const int max_swa_pages = (c_.swa_win + kKvPageTokens - 1) / kKvPageTokens;
+        // positions stay below max_ctx_, so a ring longer than the context never uses its last slots
+        const int max_swa_pages = (std::min(swa_ring(c_.swa_win), max_ctx_) + kKvPageTokens - 1) / kKvPageTokens;
         const int max_glob_pages = (max_ctx_ + kKvPageTokens - 1) / kKvPageTokens;
 
         // Post-load VRAM check (#6613 / #6621): auto-select FP8_E4M3 KV & cap max_prefill_chunk when remaining VRAM
@@ -1516,7 +1517,10 @@ public:
         if (B_tot <= 0) return true;
 
         // Enforce <= 1.0s TDR / MES chunk cap automatically on iGPUs & Windows WDDM!
-        const int chunk_cap = std::max(1, guard_.max_prefill_chunk);
+        // also <= kSwaRingSlack when the sliding-window ring can wrap (context longer than the window): a larger batch
+        // would overwrite keys its own queries read
+        const bool swa_can_wrap = c_.swa_win > 0 && max_ctx_ > c_.swa_win;
+        const int chunk_cap = std::max(1, swa_can_wrap ? std::min(guard_.max_prefill_chunk, kSwaRingSlack) : guard_.max_prefill_chunk);
         if (B_tot > chunk_cap) {
             const int V = c_.vocab_unpadded;
             const int D = c_.hidden;
@@ -2100,7 +2104,7 @@ public:
         // Pre-ensure KV pages for all possible committed positions anchor_pos .. anchor_pos + max_dep
         for (int d = 0; d <= max_dep; ++d) {
             const int p = anchor_pos + d;
-            const int swa_lp = (p % c_.swa_win) >> 6;
+            const int swa_lp = (p % swa_ring(c_.swa_win)) >> 6;
             const int glb_lp = p >> 6;
             for (int i = 0; i < c_.n_swa_visits; ++i) {
                 if (!swa_pools_[i].ensure_page(slot, swa_lp, stream_, err)) return 0;
@@ -3120,7 +3124,7 @@ private:
         for (int b = 0; b < B; ++b) {
             const int s = batch.slot_ids[b];
             const int p = batch.pos[b];
-            const int swa_lp = (p % c_.swa_win) >> 6;
+            const int swa_lp = (p % swa_ring(c_.swa_win)) >> 6;
             const int glb_lp = p >> 6;
             for (int i = 0; i < c_.n_swa_visits; ++i) {
                 if (!swa_pools_[i].ensure_page(s, swa_lp, stream_, err)) return false;
