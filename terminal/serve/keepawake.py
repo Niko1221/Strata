@@ -1,6 +1,11 @@
 """Opt-in "prevent_sleep" (#1727): while at least one request is running or queued, the PC is kept awake.
 
-Windows only.  SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED) keeps the system from idling into sleep
+Windows and macOS.  On a Mac the hold is a `caffeinate -i -w <this pid>` child (the system's own tool: no idle system sleep; the
+display may still turn off), started when the first request comes and ended when the last one is done; it also ends by itself if
+the server dies.  A Mac on battery otherwise idle-sleeps in the middle of a long request (seen: each reply took 550 or 1,050 s
+instead of 50 s, in steps of one ~500 s maintenance sleep).
+
+On Windows SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED) keeps the system from idling into sleep
 (not the display: no ES_DISPLAY_REQUIRED); ES_CONTINUOUS alone puts the normal behaviour back.  The state belongs
 to the thread that set it, so one daemon thread sets and clears it; it is cleared when idle and on exit.
 Elsewhere this does nothing.
@@ -23,6 +28,33 @@ def _windows_call():
     return fn
 
 
+def _mac_call(run=None):
+    """The same call shape as Windows' (flags in, 0 out): ES_SYSTEM_REQUIRED starts the caffeinate child, its absence ends it."""
+    import os
+    import subprocess
+    exe = "/usr/bin/caffeinate"
+    if run is None and not os.path.exists(exe):
+        raise OSError(f"{exe} is missing")
+    start = run or (lambda: subprocess.Popen([exe, "-i", "-w", str(os.getpid())], stdin=subprocess.DEVNULL,
+                                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+    state = {"child": None}
+
+    def call(flags: int) -> int:
+        child = state["child"]
+        if flags & ES_SYSTEM_REQUIRED:
+            if child is None or child.poll() is not None:
+                state["child"] = start()
+        elif child is not None:
+            state["child"] = None
+            try:
+                child.terminate()
+                child.wait(timeout=2)
+            except Exception:         # noqa: BLE001
+                pass
+        return 0
+    return call
+
+
 class KeepAwake:
     def __init__(self, call=None):
         self._call = call
@@ -36,16 +68,17 @@ class KeepAwake:
         """None when off.  On a system without SetThreadExecutionState: one line, and None."""
         if not enabled:
             return None
-        if not sys.platform.startswith("win"):
-            say('[strata] "prevent_sleep" is for Windows only: ignored here', flush=True)
+        mac = sys.platform == "darwin"
+        if not mac and not sys.platform.startswith("win"):
+            say('[strata] "prevent_sleep" is for Windows and macOS only: ignored here', flush=True)
             return None
         try:
-            ka = cls(_windows_call())
+            ka = cls(_mac_call() if mac else _windows_call())
         except (ImportError, AttributeError, OSError) as e:
             say(f'[strata] "prevent_sleep" could not be set up: {e}', flush=True)
             return None
         atexit.register(ka.close)
-        say('[strata] prevent_sleep: Windows stays awake while a request is running or queued', flush=True)
+        say(f'[strata] prevent_sleep: {"the Mac" if mac else "Windows"} stays awake while a request is running or queued', flush=True)
         return ka
 
     def _loop(self):

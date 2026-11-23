@@ -75,7 +75,44 @@ class KeepAwakeTests(unittest.TestCase):
         say.assert_not_called()
         with mock.patch("serve.keepawake.sys.platform", "linux"):
             self.assertIsNone(KeepAwake.create(True, say))
-        self.assertIn("Windows only", say.call_args[0][0])
+        self.assertIn("Windows and macOS only", say.call_args[0][0])
+
+    def test_mac_holds_with_a_caffeinate_child(self):
+        from serve.keepawake import _mac_call
+
+        class Child:
+            def __init__(self):
+                self.ended = False
+
+            def poll(self):
+                return 0 if self.ended else None
+
+            def terminate(self):
+                self.ended = True
+
+            def wait(self, timeout=None):
+                return 0
+
+        started = []
+
+        def run():
+            started.append(Child())
+            return started[-1]
+
+        ka = KeepAwake(_mac_call(run))
+        ka.acquire()
+        self.assertTrue(wait_for(lambda: len(started) == 1))
+        ka.acquire()
+        ka.release()
+        time.sleep(0.1)
+        self.assertEqual(len(started), 1)                     # one child for overlapping requests
+        self.assertFalse(started[0].ended)
+        ka.release()
+        self.assertTrue(wait_for(lambda: started[0].ended))   # idle: the Mac may sleep again
+        ka.acquire()
+        self.assertTrue(wait_for(lambda: len(started) == 2))  # a later request starts a new one
+        ka.close()
+        self.assertTrue(wait_for(lambda: started[1].ended))
 
     def test_service_holds_for_the_whole_request_including_early_close(self):
         tok = ByteTokenizer()

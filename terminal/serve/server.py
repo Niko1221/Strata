@@ -1310,6 +1310,8 @@ class StrataEngine:
                      "decode_ms": float(f[4]), "finish": f[5]}
         if len(f) >= 9:                                   # the conversation cache's fields (engine 0.1.3+)
             self.last.update(drafts_accepted=int(f[6]), drafts_offered=int(f[7]), reused=int(f[8]))
+        elif getattr(self, "reused", 0):                 # an engine whose DONE has no cache fields (strata-inkling) said it on RESUME:
+            self.last["reused"] = int(self.reused)        # without this, usage.prompt_tokens_details.cached_tokens was always 0
         if len(f) >= 11:                                  # decode hit rate fields
             self.last.update(hits=int(f[9]), lookups=int(f[10]))
         if len(f) >= 14:                                  # the expert tiers (engine 0.1.31+): RAM / file blobs, file MB
@@ -6756,6 +6758,12 @@ class Service:
         done = {"finish": finish, "completion_tokens": n, "reused": (timings or {}).get("cache_n", 0),
                 "timings": timings, "reasoning_tokens": thinking_n,
                 "reasoning_recoveries": recovery_count}
+        if self.inkling and (sampling or {}).get("strata_inkling_images"):
+            # a picture is one pad token here and ~1,300 positions in the engine: usage counts what the engine read and held,
+            # so cached_tokens (the engine's count) is never more than prompt_tokens
+            engine_prompt = int((getattr(self.engine, "last", None) or {}).get("prompt_tokens") or 0)
+            if engine_prompt > len(ids):
+                done["prompt_tokens"] = engine_prompt
         if stops is not None and stops.hit is not None:
             done["stop_sequence"] = stops.hit
             if finish == "length":

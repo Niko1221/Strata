@@ -37,6 +37,43 @@ class TestInklingDialect(unittest.TestCase):
         d = inkling_dialect.InklingDialect()
         self.assertEqual("".join(d.feed(ch) for ch in raw) + d.feed(final=True), "<think>Let me check 2 + 2 = 4.</think>The answer is 4.")
         self.assertEqual(d.calls, 0)
+        p = frontend.InklingOutputParser(tools=[])
+        events = [ev for ch in raw for ev in p.feed(ch)] + p.finish()
+        self.assertEqual("".join(ev.text for ev in events if ev.kind == "reasoning"), "Let me check 2 + 2 = 4.")
+        self.assertEqual("".join(ev.text for ev in events if ev.kind == "content"), "The answer is 4.")
+
+    def test_call_is_streamed_while_it_is_written(self):
+        tools = [{"name": "write_file", "parameters": {"type": "object"}}]
+        args = {"path": "a.py", "content": 'x = "}{" # </tool_call> <b>\n' * 40, "n": 3}
+        raw = (
+            "<|message_model|><|content_text|>Writing.<|end_message|>"
+            "<|message_model|>write_file<|content_invoke_tool_json|>"
+            + json.dumps({"name": "write_file", "args": args}, separators=(",", ":"))
+            + "<|end_message|><|message_model|>other<|content_invoke_tool_json|>"
+            + '{"name":"other","args":{"a":1}}<|end_message|><|content_model_end_sampling|>'
+        )
+        for step in (1, 7, len(raw)):
+            p = frontend.InklingOutputParser(tools=tools, stream_tools=True)
+            events = [ev for i in range(0, len(raw), step) for ev in p.feed(raw[i:i + step])] + p.finish("stop")
+            starts = [ev.call for ev in events if ev.kind == "tool_start"]
+            finals = [ev.call for ev in events if ev.kind == "tool_call"]
+            self.assertEqual([c.name for c in starts], ["write_file"])           # "other" is not declared: not streamed, not a call
+            self.assertEqual([c.id for c in finals], [starts[0].id])
+            pieces = "".join(ev.text for ev in events if ev.kind == "tool_args")
+            self.assertEqual(json.loads(pieces), args)
+            self.assertEqual(finals[0].arguments, args)
+            if step == 1:                                                        # the arguments came in many pieces, before the call ended
+                self.assertGreater(sum(1 for ev in events if ev.kind == "tool_args"), 100)
+                kinds = [ev.kind for ev in events]
+                self.assertLess(kinds.index("tool_args"), kinds.index("tool_call"))
+        # the output ends inside the arguments: the call was started and never completed
+        p = frontend.InklingOutputParser(tools=tools, stream_tools=True)
+        events = p.feed('<|message_model|>write_file<|content_invoke_tool_json|>{"name":"write_file","args":{"path":"a') + p.finish("length")
+        self.assertEqual([ev.kind for ev in events if ev.kind.startswith("tool")], ["tool_start", "tool_args"])
+        # without stream_tools nothing changes: one tool_call
+        p = frontend.InklingOutputParser(tools=tools)
+        events = p.feed(raw) + p.finish("stop")
+        self.assertEqual([ev.kind for ev in events if ev.kind.startswith("tool")], ["tool_call"])
 
     def test_tool_call_preserves_xml_chars_quotes_and_closing_tags(self):
         code = (
@@ -389,6 +426,8 @@ class TestInklingDialect(unittest.TestCase):
             "<|end_message|><|content_model_end_sampling|>"
         )
         want = "``The header token is `<|message_model|>` and ends with `<|end_message|>`.``\nDONE"
+        want_think = ("User wants: 'The header token is `<|message_model|>` and ends with `<|end_message|>`.'. "
+                      "These look like special tokens. Repeating them is benign? Need double backticks. Final only.")
         for step in (1, 3, 7, 1000):
             reasoning, out = self.channels(raw_stream, step)
             self.assertEqual(out, want, f"step={step}")                                  # the answer keeps its quoted tags
