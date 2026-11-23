@@ -1419,6 +1419,7 @@ public:
         for (auto& p : swa_pools_) p.free_slot_pages(slot);
         for (auto& p : glob_pools_) p.free_slot_pages(slot);
         slots_[slot].release();
+        if (slot < static_cast<int>(ckpts_.size())) ckpts_[slot].valid = false;  // its SWA pages are unmapped
     }
 
     void reset_slot(int slot) override {
@@ -1435,6 +1436,7 @@ public:
         sl.tree_ema_gain = 1.25f;
         sl.tree_cool_rem = 0;
         clear_slot_sconv(slot);
+        if (slot < static_cast<int>(ckpts_.size())) ckpts_[slot].valid = false;  // as in the CPU and CUDA backends
     }
 
     void snapshot_slot(int slot) override {
@@ -1511,9 +1513,181 @@ public:
         }
     }
 
+    // Prompt checkpoint (save_prompt_checkpoint / restore_prompt_checkpoint in ink_backend.h). The serve saves after
+    // reading prompt_len - 1 prompt tokens and restores when a later prompt starts with exactly those tokens, so
+    // seq_len is the same token count both times. Saved per slot:
+    //  - SWA visits: KV is a ring of swa_win positions in 64-token pages (page (p % swa_win) / 64, ensure_page), so the
+    //    slot's mapped ring pages are copied to pinned host memory, one copy per run of consecutive physical pages:
+    //    2 x n_swa_visits x 16 pages x 64 x kv_dim x 2 B, about 160 MiB per slot at BF16 KV (half at FP8, plus the
+    //    per-token scales). No VRAM is taken from the KV pools;
+    //  - ShortConv state (n_visits x 3 lags) goes to small device buffers through the snapshot_slot copy kernel;
+    //  - global-visit KV and the DSpark context are indexed by absolute position and are not written below seq_len
+    //    while the checkpoint is valid (forward_batch drops the checkpoint otherwise), so a restore only sets seq_len
+    //    back and caps dspark_len.
+    // All copies are queued on stream_ in order with the forward passes, so no host sync is needed.
+    static constexpr int kPromptCkptMaxSlots = 8;  // bounds pinned host RAM; same slot limit as the CUDA backend
+
+    bool save_prompt_checkpoint(int slot, int seq_len) override {
+        if (slot < 0 || slot >= max_slots_ || !slots_[slot].allocated || max_slots_ > kPromptCkptMaxSlots) return false;
+        if (swa_pools_.empty() || seq_len <= 0) return false;
+        if (static_cast<int>(ckpts_.size()) < max_slots_) ckpts_.resize(max_slots_);
+        PromptCkpt& ck = ckpts_[slot];
+        ck.valid = false;
+        // The SWA ring holds positions [seq_len - swa_win, seq_len) only when nothing past seq_len has been fed.
+        if (slots_[slot].seq_len != seq_len) return false;
+        const int n_pools = static_cast<int>(swa_pools_.size());
+        const int mpp = swa_pools_[0].max_pages_per_slot;
+        const bool fp8 = swa_pools_[0].is_fp8;
+        const size_t page_b = static_cast<size_t>(kKvPageTokens) * swa_pools_[0].kv_dim * (fp8 ? 1u : 2u);
+        const size_t sc_page_b = static_cast<size_t>(kKvPageTokens) * sizeof(float);
+        for (const VisitKvPool& kvp : swa_pools_) {
+            if (kvp.max_pages_per_slot != mpp || kvp.is_fp8 != fp8 || kvp.kv_dim != swa_pools_[0].kv_dim) return false;
+        }
+        if (!ck.alloc_host(static_cast<size_t>(n_pools) * mpp * page_b,
+                           fp8 ? static_cast<size_t>(n_pools) * mpp * sc_page_b : 0)) return false;
+        const int kv_dim = c_.n_kv * c_.head_dim;
+        const size_t kv_one = 3u * kv_dim * sizeof(uint16_t);
+        const size_t h_one  = 3u * c_.hidden * sizeof(uint16_t);
+        if (!ck.sc_k.dev_ptr) {
+            if (alloc_gpu_buffer(ck.sc_k, static_cast<size_t>(c_.n_visits) * kv_one, mem_info_.is_uma) != hipSuccess ||
+                alloc_gpu_buffer(ck.sc_v, static_cast<size_t>(c_.n_visits) * kv_one, mem_info_.is_uma) != hipSuccess ||
+                alloc_gpu_buffer(ck.sc_attn, static_cast<size_t>(c_.n_visits) * h_one, mem_info_.is_uma) != hipSuccess ||
+                alloc_gpu_buffer(ck.sc_mlp, static_cast<size_t>(c_.n_visits) * h_one, mem_info_.is_uma) != hipSuccess) {
+                (void)hipGetLastError();
+                ck.release();
+                return false;
+            }
+        }
+        // hipMemcpyDefault: the pools can be host-mapped (UMA, or the VRAM-tight fallback in grow_pool).
+        bool ok = true;
+        ck.phys.assign(static_cast<size_t>(n_pools) * mpp, -1);
+        for (int i = 0; i < n_pools && ok; ++i) {
+            const VisitKvPool& kvp = swa_pools_[i];
+            const int32_t* row = kvp.h_pt.data() + static_cast<size_t>(slot) * mpp;
+            for (int lp = 0; lp < mpp && ok;) {
+                const int32_t ph = row[lp];
+                if (ph < 0) { ++lp; continue; }
+                int n = 1;
+                while (lp + n < mpp && row[lp + n] == ph + n) ++n;
+                for (int k = 0; k < n; ++k) ck.phys[static_cast<size_t>(i) * mpp + lp + k] = ph + k;
+                const size_t hp = static_cast<size_t>(i) * mpp + lp;
+                ok = ok && hipMemcpyAsync(ck.h_k + hp * page_b, static_cast<const uint8_t*>(kvp.k_pool.dev_ptr) + ph * page_b,
+                                          n * page_b, hipMemcpyDefault, stream_) == hipSuccess;
+                ok = ok && hipMemcpyAsync(ck.h_v + hp * page_b, static_cast<const uint8_t*>(kvp.v_pool.dev_ptr) + ph * page_b,
+                                          n * page_b, hipMemcpyDefault, stream_) == hipSuccess;
+                if (fp8) {
+                    ok = ok && hipMemcpyAsync(ck.h_ks + hp * sc_page_b, static_cast<const uint8_t*>(kvp.k_scales.dev_ptr) + ph * sc_page_b,
+                                              n * sc_page_b, hipMemcpyDefault, stream_) == hipSuccess;
+                    ok = ok && hipMemcpyAsync(ck.h_vs + hp * sc_page_b, static_cast<const uint8_t*>(kvp.v_scales.dev_ptr) + ph * sc_page_b,
+                                              n * sc_page_b, hipMemcpyDefault, stream_) == hipSuccess;
+                }
+                lp += n;
+            }
+        }
+        if (!ok) { (void)hipGetLastError(); return false; }
+        k_sconv_snapshot_pair<<<dim3((kv_dim + 255) / 256, c_.n_visits), 256, 0, stream_>>>(
+            reinterpret_cast<const uint16_t*>(d_sconv_k_all_.dev_ptr),
+            reinterpret_cast<const uint16_t*>(d_sconv_v_all_.dev_ptr),
+            reinterpret_cast<uint16_t*>(ck.sc_k.dev_ptr),
+            reinterpret_cast<uint16_t*>(ck.sc_v.dev_ptr),
+            slot, max_slots_, c_.n_visits, kv_dim);
+        k_sconv_snapshot_pair<<<dim3((c_.hidden + 255) / 256, c_.n_visits), 256, 0, stream_>>>(
+            reinterpret_cast<const uint16_t*>(d_sconv_attn_all_.dev_ptr),
+            reinterpret_cast<const uint16_t*>(d_sconv_mlp_all_.dev_ptr),
+            reinterpret_cast<uint16_t*>(ck.sc_attn.dev_ptr),
+            reinterpret_cast<uint16_t*>(ck.sc_mlp.dev_ptr),
+            slot, max_slots_, c_.n_visits, c_.hidden);
+        if (hipGetLastError() != hipSuccess) return false;
+        ck.seq_len = seq_len;
+        ck.dspark_len = std::min(slots_[slot].dspark_len, seq_len);
+        ck.valid = true;
+        return true;
+    }
+
+    bool restore_prompt_checkpoint(int slot, int seq_len) override {
+        if (slot < 0 || slot >= max_slots_ || slot >= static_cast<int>(ckpts_.size()) || !slots_[slot].allocated) return false;
+        PromptCkpt& ck = ckpts_[slot];
+        if (!ck.valid || ck.seq_len != seq_len || swa_pools_.empty()) return false;
+        const int n_pools = static_cast<int>(swa_pools_.size());
+        const int mpp = swa_pools_[0].max_pages_per_slot;
+        if (ck.phys.size() != static_cast<size_t>(n_pools) * mpp) { ck.valid = false; return false; }
+        // The slot must still map the saved pages: only free_slot unmaps them, and grow_pool keeps page indices.
+        for (int i = 0; i < n_pools; ++i) {
+            const int32_t* row = swa_pools_[i].h_pt.data() + static_cast<size_t>(slot) * mpp;
+            for (int lp = 0; lp < mpp; ++lp) {
+                const int32_t want = ck.phys[static_cast<size_t>(i) * mpp + lp];
+                if (want >= 0 && row[lp] != want) { ck.valid = false; return false; }
+            }
+        }
+        const bool fp8 = swa_pools_[0].is_fp8;
+        const size_t page_b = static_cast<size_t>(kKvPageTokens) * swa_pools_[0].kv_dim * (fp8 ? 1u : 2u);
+        const size_t sc_page_b = static_cast<size_t>(kKvPageTokens) * sizeof(float);
+        bool ok = true;
+        for (int i = 0; i < n_pools && ok; ++i) {
+            const VisitKvPool& kvp = swa_pools_[i];
+            for (int lp = 0; lp < mpp && ok;) {
+                const int32_t ph = ck.phys[static_cast<size_t>(i) * mpp + lp];
+                if (ph < 0) { ++lp; continue; }
+                int n = 1;
+                while (lp + n < mpp && ck.phys[static_cast<size_t>(i) * mpp + lp + n] == ph + n) ++n;
+                const size_t hp = static_cast<size_t>(i) * mpp + lp;
+                ok = ok && hipMemcpyAsync(static_cast<uint8_t*>(kvp.k_pool.dev_ptr) + ph * page_b, ck.h_k + hp * page_b,
+                                          n * page_b, hipMemcpyDefault, stream_) == hipSuccess;
+                ok = ok && hipMemcpyAsync(static_cast<uint8_t*>(kvp.v_pool.dev_ptr) + ph * page_b, ck.h_v + hp * page_b,
+                                          n * page_b, hipMemcpyDefault, stream_) == hipSuccess;
+                if (fp8) {
+                    ok = ok && hipMemcpyAsync(static_cast<uint8_t*>(kvp.k_scales.dev_ptr) + ph * sc_page_b, ck.h_ks + hp * sc_page_b,
+                                              n * sc_page_b, hipMemcpyDefault, stream_) == hipSuccess;
+                    ok = ok && hipMemcpyAsync(static_cast<uint8_t*>(kvp.v_scales.dev_ptr) + ph * sc_page_b, ck.h_vs + hp * sc_page_b,
+                                              n * sc_page_b, hipMemcpyDefault, stream_) == hipSuccess;
+                }
+                lp += n;
+            }
+        }
+        if (!ok) { (void)hipGetLastError(); ck.valid = false; return false; }
+        // keep_steps = 0: all three lags come from the checkpoint (the rec arguments are not read).
+        const int kv_dim = c_.n_kv * c_.head_dim;
+        k_sconv_rollback_pair<<<dim3((kv_dim + 255) / 256, c_.n_visits), 256, 0, stream_>>>(
+            reinterpret_cast<const uint16_t*>(ck.sc_k.dev_ptr), reinterpret_cast<const uint16_t*>(ck.sc_k.dev_ptr),
+            reinterpret_cast<uint16_t*>(d_sconv_k_all_.dev_ptr),
+            reinterpret_cast<const uint16_t*>(ck.sc_v.dev_ptr), reinterpret_cast<const uint16_t*>(ck.sc_v.dev_ptr),
+            reinterpret_cast<uint16_t*>(d_sconv_v_all_.dev_ptr),
+            slot, max_slots_, c_.n_visits, 0, kv_dim);
+        k_sconv_rollback_pair<<<dim3((c_.hidden + 255) / 256, c_.n_visits), 256, 0, stream_>>>(
+            reinterpret_cast<const uint16_t*>(ck.sc_attn.dev_ptr), reinterpret_cast<const uint16_t*>(ck.sc_attn.dev_ptr),
+            reinterpret_cast<uint16_t*>(d_sconv_attn_all_.dev_ptr),
+            reinterpret_cast<const uint16_t*>(ck.sc_mlp.dev_ptr), reinterpret_cast<const uint16_t*>(ck.sc_mlp.dev_ptr),
+            reinterpret_cast<uint16_t*>(d_sconv_mlp_all_.dev_ptr),
+            slot, max_slots_, c_.n_visits, 0, c_.hidden);
+        if (hipGetLastError() != hipSuccess) { ck.valid = false; return false; }
+        auto& sl = slots_[slot];
+        sl.seq_len = seq_len;  // forward_batch only raises seq_len (std::max), so set it back here
+        sl.dspark_len = std::min(sl.dspark_len, ck.dspark_len);
+        sl.has_snap = false;
+        sl.sconv_rec_n = 0;
+        // DSpark's adaptive draft state restarts as for a fresh prompt (as in reset_slot)
+        sl.dspark_ema_acc = 0.50f;
+        sl.dspark_last_draft = 0;
+        sl.dspark_last_anchor = -1;
+        sl.dspark_skip_rem = 0;
+        sl.dspark_had_rollback = false;
+        sl.tree_ema_gain = 1.25f;
+        sl.tree_cool_rem = 0;
+        return true;
+    }
+
     bool forward_batch(const StepBatch& batch, float* logits_out, TapCapture* taps_out, std::string& err) override {
         const int B_tot = batch.n_tokens;
         if (B_tot <= 0) return true;
+        // A prompt checkpoint is only valid while nothing below its seq_len is written again.
+        if (!ckpts_.empty()) {
+            for (int b = 0; b < B_tot; ++b) {
+                const int s = batch.slot_ids[b];
+                if (s >= 0 && s < static_cast<int>(ckpts_.size()) && ckpts_[s].valid && batch.pos[b] < ckpts_[s].seq_len) {
+                    ckpts_[s].valid = false;
+                }
+            }
+        }
 
         // Enforce <= 1.0s TDR / MES chunk cap automatically on iGPUs & Windows WDDM!
         const int chunk_cap = std::max(1, guard_.max_prefill_chunk);
@@ -5319,6 +5493,8 @@ private:
         }
         for (auto& sl : slots_) sl.release();
         slots_.clear();
+        for (auto& ck : ckpts_) ck.release();
+        ckpts_.clear();
         for (auto& p : swa_pools_) p.release();
         for (auto& p : glob_pools_) p.release();
         swa_pools_.clear(); glob_pools_.clear();
@@ -5474,6 +5650,47 @@ private:
     GpuBuffer d_sconv_k_all_, d_sconv_v_all_, d_sconv_attn_all_, d_sconv_mlp_all_;
     std::vector<GpuSlotMeta> slots_;
     GpuVisionState vision_;
+
+    // Prompt checkpoint per slot (see save_prompt_checkpoint)
+    struct PromptCkpt {
+        bool valid = false;
+        int seq_len = 0;
+        int dspark_len = 0;
+        std::vector<int32_t> phys;  // [n_swa_visits * pages_per_slot] SWA page map when saved, -1 = unmapped
+        uint8_t* h_k = nullptr;     // pinned host copies of the slot's SWA ring pages [n_swa_visits * pages_per_slot][page]
+        uint8_t* h_v = nullptr;
+        uint8_t* h_ks = nullptr;    // FP8 KV: per-token scales of the same pages
+        uint8_t* h_vs = nullptr;
+        size_t kv_bytes = 0;
+        size_t sc_bytes = 0;
+        GpuBuffer sc_k, sc_v, sc_attn, sc_mlp;  // ShortConv state [n_visits, 3, C]
+
+        static void host_free(uint8_t*& p) noexcept { if (p) { (void)hipHostFree(p); p = nullptr; } }
+        bool alloc_host(size_t kvb, size_t scb) noexcept {
+            if (kvb == kv_bytes && scb == sc_bytes && h_k) return true;
+            host_free(h_k); host_free(h_v); host_free(h_ks); host_free(h_vs);
+            kv_bytes = sc_bytes = 0;
+            if (hipHostMalloc(reinterpret_cast<void**>(&h_k), kvb, hipHostMallocDefault) != hipSuccess ||
+                hipHostMalloc(reinterpret_cast<void**>(&h_v), kvb, hipHostMallocDefault) != hipSuccess ||
+                (scb && hipHostMalloc(reinterpret_cast<void**>(&h_ks), scb, hipHostMallocDefault) != hipSuccess) ||
+                (scb && hipHostMalloc(reinterpret_cast<void**>(&h_vs), scb, hipHostMallocDefault) != hipSuccess)) {
+                (void)hipGetLastError();
+                host_free(h_k); host_free(h_v); host_free(h_ks); host_free(h_vs);
+                return false;
+            }
+            kv_bytes = kvb;
+            sc_bytes = scb;
+            return true;
+        }
+        void release() noexcept {
+            host_free(h_k); host_free(h_v); host_free(h_ks); host_free(h_vs);
+            kv_bytes = sc_bytes = 0;
+            free_gpu_buffer(sc_k); free_gpu_buffer(sc_v); free_gpu_buffer(sc_attn); free_gpu_buffer(sc_mlp);
+            phys.clear();
+            valid = false;
+        }
+    };
+    std::vector<PromptCkpt> ckpts_;
 
     int scratch_B_ = 0;
     int sc_moe_gu_cap_ = 0;
