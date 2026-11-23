@@ -3080,8 +3080,11 @@ class InklingOutputParser(JsonOutputParser):
     def feed(self, delta: str) -> list[Event]:
         return self._dispatch(self._dialect.feed_channels(delta))
 
+    def feed_token(self, piece: str, *, is_special: bool) -> list[Event]:
+        return self._dispatch(self._dialect.feed_token(piece, is_special=is_special))
+
     def finish(self, reason: str | None = None) -> list[Event]:
-        out = self._dispatch(self._dialect.feed_channels("", final=True))
+        out = self._dispatch(self._dialect.feed_channels("", final=True, reason=reason))
         return out + super().finish(reason)
 
 
