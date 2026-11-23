@@ -13,31 +13,70 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 DOCKER = ROOT.parent / "tools" / "docker"
-SH = shutil.which("sh")
-BASH = shutil.which("bash")      # the full path: on Windows a bare "bash" can start the WSL launcher in System32 instead of Git bash
-CYGPATH = shutil.which("cygpath")
+def _posix_bin_dir() -> Path | None:
+    import os
+    if os.name == "nt":
+        git = shutil.which("git")
+        if git:
+            usr_bin = Path(git).resolve().parents[1] / "usr" / "bin"
+            if usr_bin.is_dir():
+                return usr_bin
+    return None
+
+
+_USR_BIN = _posix_bin_dir()
+
+
+def _find_posix_tool(name: str) -> str | None:
+    """Prefer Git's usr/bin on Windows so System32/bash.exe (the WSL stub) is never mistaken for Git bash."""
+    import os
+    if _USR_BIN is not None:
+        cand = shutil.which(name, path=str(_USR_BIN))
+        if cand:
+            return cand
+    found = shutil.which(name)
+    if found and os.name == "nt" and "system32" in found.lower():
+        try:
+            if subprocess.run([found, "--version"], capture_output=True, timeout=5).returncode != 0:
+                return None
+        except OSError:
+            return None
+    return found
+
+
+def _run_posix(cmd: list[str], *, env: dict[str, str] | None = None, check: bool = False):
+    import os
+    run_env = dict(os.environ if env is None else env)
+    if _USR_BIN is not None:
+        run_env["PATH"] = str(_USR_BIN) + os.pathsep + run_env.get("PATH", "")
+    return subprocess.run(cmd, capture_output=True, text=True, env=run_env, check=check)
+
+
+SH = _find_posix_tool("sh")
+BASH = _find_posix_tool("bash")
+CYGPATH = _find_posix_tool("cygpath")
 
 
 def sh_path(p) -> str:
     """The path as the shell reads it. Git bash on Windows wants /c/Users/..., not C:\\Users\\... (tar even takes `C:` for a host)."""
     if CYGPATH is None:
         return str(p)
-    return subprocess.run([CYGPATH, "-u", str(p)], capture_output=True, text=True, check=True).stdout.strip()
+    return _run_posix([CYGPATH, "-u", str(p)], check=True).stdout.strip()
 
 
 class Scripts(unittest.TestCase):
     @unittest.skipIf(SH is None, "needs sh")
     def test_shell_scripts_parse(self):
         for name in ("entrypoint.sh", "strata-wrapper.sh", "healthcheck.sh", "build.sh", "publish.sh"):
-            r = subprocess.run([SH, "-n", sh_path(DOCKER / name)], capture_output=True, text=True)
+            r = _run_posix([SH, "-n", sh_path(DOCKER / name)])
             self.assertEqual(r.returncode, 0, f"{name}: {r.stderr}")
 
     @unittest.skipIf(BASH is None, "needs bash")
     def test_smoke_test_parses_with_bash(self):           # it is a bash script (process substitution), not POSIX sh
-        r = subprocess.run([BASH, "-n", sh_path(DOCKER / "smoke-test.sh")], capture_output=True, text=True)
+        r = _run_posix([BASH, "-n", sh_path(DOCKER / "smoke-test.sh")])
         self.assertEqual(r.returncode, 0, r.stderr)
 
-    @unittest.skipIf(SH is None or shutil.which("tar") is None, "needs sh and tar")
+    @unittest.skipIf(SH is None or _find_posix_tool("tar") is None, "needs sh and tar")
     def test_build_script_exits_zero_after_assembling_a_context(self):
         """--ctx-only stops after the context is made (no docker needed). The EXIT trap once returned 1 there, so a good run reported failure."""
         import tempfile
@@ -48,8 +87,7 @@ class Scripts(unittest.TestCase):
             (pkg / "strata").write_text("#!/bin/sh\n", encoding="utf-8")
             (pkg / "strata").chmod(0o755)
             ctx = Path(tmp) / "ctx"
-            r = subprocess.run([SH, sh_path(DOCKER / "build.sh"), "--flavor", "cuda", "--engine", sh_path(pkg), "--ctx", sh_path(ctx), "--ctx-only"],
-                               capture_output=True, text=True)
+            r = _run_posix([SH, sh_path(DOCKER / "build.sh"), "--flavor", "cuda", "--engine", sh_path(pkg), "--ctx", sh_path(ctx), "--ctx-only"])
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             self.assertTrue((ctx / "Dockerfile").is_file())
             self.assertTrue((ctx / "terminal-src" / "docs" / "TERMINAL_LAUNCH.md").is_file())
@@ -61,9 +99,8 @@ class Scripts(unittest.TestCase):
             (hy4pkg / "engine-component.json").write_text('{"shape": "hy4", "entrypoint": "strata-hy4"}', encoding="utf-8")
             (hy4pkg / "strata-hy4").write_text("#!/bin/sh\n", encoding="utf-8")
             ctx2 = Path(tmp) / "ctx2"
-            r2 = subprocess.run([SH, sh_path(DOCKER / "build.sh"), "--flavor", "cuda", "--engine", sh_path(pkg),
-                                 "--shape-engine", f"hy4:{sh_path(hy4pkg)}", "--ctx", sh_path(ctx2), "--ctx-only"],
-                                capture_output=True, text=True)
+            r2 = _run_posix([SH, sh_path(DOCKER / "build.sh"), "--flavor", "cuda", "--engine", sh_path(pkg),
+                             "--shape-engine", f"hy4:{sh_path(hy4pkg)}", "--ctx", sh_path(ctx2), "--ctx-only"])
             self.assertEqual(r2.returncode, 0, r2.stdout + r2.stderr)
             self.assertTrue((ctx2 / "shapes" / "hy4" / "engine" / "hy4pkg" / "engine-component.json").is_file())
             self.assertTrue((ctx2 / "shapes" / "hy4" / "engine" / "hy4pkg" / "strata-hy4").is_file())
@@ -182,7 +219,7 @@ class LegacyModelsGuard(unittest.TestCase):
             env.pop("ALLOW_DOWNLOAD", None)
             if allow is not None:
                 env["ALLOW_DOWNLOAD"] = allow
-            return subprocess.run([SH, sh_path(script)], capture_output=True, text=True, env=env)
+            return _run_posix([SH, sh_path(script)], env=env)
 
     def test_files_in_the_older_place_stop_the_start_with_the_folder_named(self):
         import tempfile
@@ -236,7 +273,7 @@ class LegacyModelsGuard(unittest.TestCase):
                     encoding="utf-8",
                     newline="\n",
                 )
-                return subprocess.run([SH, sh_path(script)], capture_output=True, text=True)
+                return _run_posix([SH, sh_path(script)])
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -301,7 +338,7 @@ class Publishing(unittest.TestCase):
     @unittest.skipIf(SH is None, "needs sh")
     def test_publish_script_parses_and_defaults_to_not_pushing(self):
         path = DOCKER / "publish.sh"
-        self.assertEqual(subprocess.run([SH, "-n", sh_path(path)], capture_output=True, text=True).returncode, 0)
+        self.assertEqual(_run_posix([SH, "-n", sh_path(path)]).returncode, 0)
         text = path.read_text(encoding="utf-8")
         self.assertNotIn("\r", text)
         self.assertIn('push=""', text)                      # no --push, no docker push
