@@ -299,7 +299,7 @@ public:
         return restore_checkpoint(slot, seq_len, false);
     }
     bool supports_shared_checkpoint() const override {
-        return initialized_ && !model_.ls_active && d_sconv_snap_ != nullptr && max_slots_ <= 8;
+        return initialized_ && (model_.ls_active || d_sconv_snap_ != nullptr) && max_slots_ <= 8;   // (a layer split: the per-stage copies of save_checkpoint)
     }
     bool save_shared_checkpoint(int slot, int seq_len) override {
         return save_checkpoint(slot, seq_len, true);
@@ -342,7 +342,7 @@ public:
     }
 
     bool save_checkpoint(int slot, int seq_len, bool shared) {
-        if (!initialized_ || slot < 0 || slot >= max_slots_ || (model_.ls_active && shared) || (!model_.ls_active && !d_sconv_snap_)) return false;
+        if (!initialized_ || slot < 0 || slot >= max_slots_ || (!model_.ls_active && !d_sconv_snap_)) return false;
         if (seq_len <= 0 || max_slots_ > 8) return false;
         auto& ck = (shared ? shared_ckpts_ : prompt_ckpts_)[slot];
         ck.valid = false;
@@ -433,7 +433,7 @@ public:
     }
 
     bool restore_checkpoint(int slot, int seq_len, bool shared) {
-        if (!initialized_ || slot < 0 || slot >= max_slots_ || (model_.ls_active && shared) || (!model_.ls_active && !d_sconv_snap_)) return false;
+        if (!initialized_ || slot < 0 || slot >= max_slots_ || (!model_.ls_active && !d_sconv_snap_)) return false;
         const auto& ckpts = shared ? shared_ckpts_ : prompt_ckpts_;
         if (slot >= (int)ckpts.size()) return false;
         const auto& ck = ckpts[slot];
