@@ -148,4 +148,8 @@ export function validateMcpServers(servers,previous={}){
 
 const sensitive=name=>/KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL/i.test(name);
 export function publicNativeEnv(env){return Object.fromEntries(Object.entries(env).filter(([name])=>ENV_FLAG.test(name)).map(([name,value])=>[name,sensitive(name)?MASK:value]));}
+/** #6772: the env a panel saves, as a change to what is in the file NOW. `panel` is what the form holds, `base` what it loaded, `current` the file's env: an entry the form added or
+ *  changed is written, one it removed is removed, and everything else - an entry added to the file by hand while the panel was open - stays. Returns the public (masked) shape
+ *  that restoreNativeEnv takes. */
+export function mergeEnvChanges(panel,base,current){const out=publicNativeEnv(current??{});for(const [name,value] of Object.entries(panel??{}))if(base?.[name]!==value)out[name]=value;for(const name of Object.keys(base??{}))if(!(name in (panel??{})))delete out[name];return out;}
 export function restoreNativeEnv(env,previous={}){const result=Object.fromEntries(Object.entries(previous).filter(([name])=>!ENV_FLAG.test(name)));for(const [name,value] of Object.entries(env)){if(value===MASK){if(previous[name]===undefined)throw new Error(`Enter a new value for ${name}.`);result[name]=previous[name];}else result[name]=value;}return result;}

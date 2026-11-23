@@ -75,6 +75,27 @@ class InklingModelRoutingTest(unittest.TestCase):
         self.assertEqual(code3, 404)
         self.assertEqual(body3["error"]["code"], "model_not_found")
 
+    def test_other_catalog_size_names_rejected_6778(self):
+        """#6778: another size of the same family (iq3_s while iq3_xxs is loaded) is a different model: 404 naming the
+        loaded one, on all three routes - not the loaded model's answer."""
+        msgs = [{"role": "user", "content": "hi"}]
+        for asked in ("iq3_s", "q2_0", "UD-Q4_K_XL", "ud-iq4_xs-v31", "sq-15", "iq2_xs"):
+            for path, body in (("/v1/chat/completions", {"messages": msgs, "max_tokens": 8}),
+                               ("/v1/messages", {"messages": msgs, "max_tokens": 8}),
+                               ("/v1/responses", {"input": "hi", "max_output_tokens": 8})):
+                code, resp = self._post(path, {"model": asked, **body})
+                self.assertEqual(code, 404, f"{asked} {path}: {resp}")
+                self.assertEqual(resp["error"]["code"], "model_not_found")
+                self.assertIn(asked, resp["error"]["message"])
+                self.assertIn("iq3_xxs", resp["error"]["message"])
+
+    def test_family_prefixed_name_of_the_loaded_size_accepted_6778(self):
+        """"qwen3.8-flash-next-iq3_xxs" is the loaded "iq3_xxs" (also when it is not a configured alias)."""
+        msgs = [{"role": "user", "content": "hi"}]
+        code, body = self._post("/v1/chat/completions",
+                                {"model": "Qwen3.8-Flash-Next-IQ3_XXS", "messages": msgs, "max_tokens": 8})
+        self.assertEqual(code, 200, body)
+
     def test_loaded_model_alias_and_generic_names_accepted(self):
         msgs = [{"role": "user", "content": "hi"}]
         for asked, want in (

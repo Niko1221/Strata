@@ -293,6 +293,29 @@ class WindowsDetection(unittest.TestCase):
         self.assertEqual(g[0]["driver"], "32.0.21013.1000")
         self.assertEqual([setup.amd_problem(x) is None for x in g], [True, False, True])
 
+    def test_stale_driver_instance_without_a_size_does_not_hide_vram(self):
+        """#6801: a driver upgrade leaves an older display-class key for the same card (same PCI id and name) with no
+        qwMemorySize.  It came first, was taken, and the plan counted WMI's 4 GB on a 16 GB RX 6800."""
+        adapters = [{"name": "AMD Radeon RX 6800", "pnp": r"PCI\VEN_1002&DEV_73BF&SUBSYS_1&REV_C3\6&1", "ram": 4293918720,
+                     "driver": "32.0.21045.29003"}]
+        stale = {"DriverDesc": "AMD Radeon RX 6800", "MatchingDeviceId": r"PCI\VEN_1002&DEV_73BF&REV_C3",
+                 "DriverVersion": "32.0.21041.1000"}
+        older = {"DriverDesc": "AMD Radeon RX 6800", "MatchingDeviceId": r"PCI\VEN_1002&DEV_73BF&REV_C3",
+                 "HardwareInformation.qwMemorySize": 8 << 30, "DriverVersion": "32.0.21043.7012"}
+        live = {"DriverDesc": "AMD Radeon RX 6800", "MatchingDeviceId": r"PCI\VEN_1002&DEV_73BF&REV_C3",
+                "HardwareInformation.qwMemorySize": 17163091968, "DriverVersion": "32.0.21045.29003"}
+        ghost = {"DriverDesc": "AMD FirePro W5100", "MatchingDeviceId": r"PCI\VEN_1002&DEV_6649",
+                 "HardwareInformation.qwMemorySize": 4 << 30}
+        g = setup.amd_gpus_windows(adapters, [ghost, stale, older, live])
+        self.assertEqual(len(g), 1)
+        self.assertAlmostEqual(g[0]["vram_gb"], 15.98, places=1)          # the installed driver's key, not the stale 0002 and not 4 GB
+        self.assertEqual(g[0]["driver"], "32.0.21045.29003")
+        g = setup.amd_gpus_windows(adapters, [stale])                     # nothing with a size at all: WMI's figure, as before
+        self.assertAlmostEqual(g[0]["vram_gb"], 4293918720 / 2 ** 30)
+        adapters[0]["driver"] = ""                                        # no driver version from WMI: a key with a size still wins
+        g = setup.amd_gpus_windows(adapters, [stale, live])
+        self.assertAlmostEqual(g[0]["vram_gb"], 15.98, places=1)
+
     def test_rx_6800m_is_gfx1031(self):
         """#881: PCI 73DF (RX 6700 XT / 6750 XT / 6800M) is gfx1031, not an unknown id."""
         self.assertEqual(setup.win_amd_arch(0x73DF, "AMD Radeon RX 6800M"), "gfx1031")

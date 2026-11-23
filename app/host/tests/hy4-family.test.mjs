@@ -150,7 +150,7 @@ test('Hy4-Flash on-demand Vision fetch, Step 4 tune() vision preservation, and U
   assert.match(bridge, /known\.vision === false && vision === true/);
   assert.match(bridge, /isHy4Route = route\.kind === 'local' && \/\^hy4-flash\/i\.test/);
   assert.match(composer, /hy4Efforts = \['Off', 'High', 'Max'\]/);
-  assert.match(composer, /isHy4Active[\s\S]*'High' : 'Medium'/);
+  assert.match(composer, /isHy4Active[\s\S]*'High' : isInklingActive \? 'Low' : 'Medium'/);
   assert.match(models, /isHy4Selected = selectedFamily\?\.family === HY4_FAMILY/);
   assert.match(models, /!isHy4Selected \? <NativeTuneBadge/);
   assert.match(models, /!isHy4Selected \? <Btn icon="gauge"/);

@@ -107,9 +107,33 @@ def drafting_info(args: list, info: dict | None = None) -> dict[str, str]:
             mode = items[i + 1].strip().lower()
     if mode == "off":
         return {"drafting": "off", "drafting_note": ""}
+    # #6741: the engine says what it started with (INFO ... drafting=dspark|off). It leaves DSpark off when the CUDA layers are split across
+    # cards (and when it has no drafter or no room for it); the status used to repeat what was asked for and say "dspark" over an engine
+    # that ran without it. An older engine that does not say falls back to the asked mode, as before.
+    said = str((info or {}).get("drafting") or "").strip().lower()
+    if said == "dspark":
+        return {"drafting": "dspark", "drafting_note": ""}
+    if said == "off":
+        asked = mode == "dspark" or (info or {}).get("drafter") == "dspark"
+        return {"drafting": "off", "drafting_note": _drafting_off_note(items, info) if asked else ""}
     if mode == "dspark" or (info or {}).get("drafter") == "dspark":
         return {"drafting": "dspark", "drafting_note": ""}
     return {"drafting": "off", "drafting_note": ""}
+
+
+DRAFTING_SPLIT_NOTE = ("Drafting is off: DSpark does not run yet when the model's layers are split across several cards (CUDA). "
+                       "On one card, with the rest of the experts in RAM, it does (--gpu N).")
+DRAFTING_NO_DRAFTER_NOTE = "Drafting is off: no DSpark drafter was found next to the model."
+DRAFTING_LEFT_OFF_NOTE = "Drafting is off: the engine started without the DSpark drafter (see its log for why, often too little free graphics memory)."
+
+
+def _drafting_off_note(items: list[str], info: dict | None) -> str:
+    """Plain words for 'DSpark was asked for and the engine left it off' (#6741)."""
+    if (info or {}).get("drafter") == "none":
+        return DRAFTING_NO_DRAFTER_NOTE
+    if "--layer-split" in items or str((info or {}).get("backend") or "").endswith("-ls"):
+        return DRAFTING_SPLIT_NOTE
+    return DRAFTING_LEFT_OFF_NOTE
 
 
 def _local_gpu_ordinals(n_gpus: int, max_g: int) -> str:
