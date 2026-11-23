@@ -887,6 +887,19 @@ public:
         tree_snap_p0_ = anchor_pos;
         tree_snap_M_ = n_emit;
         for (int i = 0; i < n_emit; ++i) tree_snap_path_[i] = path[i];
+#ifdef INK_MOE_STATS
+        {
+            static int stat_calls = 0;
+            if (++stat_calls % 100 == 0) {
+                unsigned long long c[64], a[64];
+                cudaMemcpyFromSymbol(c, strata::ink::g_ink_moe_calls, sizeof(c));
+                cudaMemcpyFromSymbol(a, strata::ink::g_ink_moe_nact, sizeof(a));
+                std::fprintf(stderr, "[MOE-STATS] M:visits:mean-unique-experts");
+                for (int m = 1; m < 64; ++m) if (c[m]) std::fprintf(stderr, " %d:%llu:%.1f", m, c[m], (double)a[m] / (double)c[m]);
+                std::fputc(10, stderr);
+            }
+        }
+#endif
         if (out_drafted) *out_drafted = tr.M - 1;
         return n_emit;
     }
