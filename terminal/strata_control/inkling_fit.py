@@ -245,16 +245,15 @@ N_EXPERTS_TOTAL = 3072
 # A GGUF build's dense share of the card depends on how the loader keeps the file's Q8_0 matrices: on ONE CUDA card of compute capability 8.0 or
 # newer, without a layer split, they stay Q8_0 (int8 tensor cores; the embedding too); everywhere else they are expanded to BF16 (c60259fa6,
 # STRATA_INK_Q8_0_DENSE=0 forces the BF16 way). The card's compute capability is not always known: unknown means the BF16 way (the larger share).
-# Blackwell (sm 120 / 121) is the exception: the int8 dense GEMM is slower than BF16 there at one token (UD-Q4_K_XL decode on an RTX 5090 98 against 133
-# tok/s), so the loader keeps BF16 on major 12 and the planner uses the larger share (ink_cuda_q8f_supported in the engine has the same cut).
-Q8_DENSE_MIN_SM = 80
-Q8_DENSE_MAX_SM = 120        # exclusive
+# Only consumer Ampere (sm 86) keeps them: the int8 dense GEMM is slower than BF16 at one token on an RTX 4090 (sm 89: 95.4 against 103.7 tok/s) and on an
+# RTX 5090 (sm 120: 98 against 133), and sm 80 is unmeasured (ink_cuda_q8f_supported in the engine returns the same set).
+Q8_DENSE_SMS = (86,)
 
 
 def dense_gb_for(build: str, backend: str | None = None, sm: int | None = None, split: bool = False) -> float:
     info = BUILDS[build]
     if (info.get("format") == "gguf" and "dense_gb_q8" in info and str(backend or "").strip().lower() == "cuda"
-            and sm is not None and Q8_DENSE_MIN_SM <= int(sm) < Q8_DENSE_MAX_SM and not split):
+            and sm is not None and int(sm) in Q8_DENSE_SMS and not split):
         return float(info["dense_gb_q8"])
     return float(info["dense_gb"])
 

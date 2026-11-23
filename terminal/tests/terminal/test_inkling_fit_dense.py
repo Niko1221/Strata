@@ -49,9 +49,7 @@ class DenseShare(unittest.TestCase):
         q8 = F.dense_gb_for("UD-Q4_K_XL", "cuda", 86)
         bf16 = F.BUILDS["UD-Q4_K_XL"]["dense_gb"]
         self.assertLess(q8, bf16)
-        self.assertEqual(F.dense_gb_for("UD-Q4_K_XL", "cuda", 80), q8)              # Ampere and newer
-        self.assertEqual(F.dense_gb_for("UD-Q4_K_XL", "cuda", 89), q8)
-        for sm in (None, 61, 70, 75, 120, 121):                                       # unknown, older, or Blackwell (BF16 dense there): the larger share
+        for sm in (None, 61, 70, 75, 80, 89, 120, 121):                               # unknown, older, A100, Ada, Blackwell (BF16 dense there): the larger share
             self.assertEqual(F.dense_gb_for("UD-Q4_K_XL", "cuda", sm), bf16, sm)
         self.assertEqual(F.dense_gb_for("UD-Q4_K_XL", "cuda", 86, split=True), bf16)  # a layer split keeps BF16
         for be in (None, "hip", "sycl", "metal"):
