@@ -1067,19 +1067,37 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
         for (int wi = 0; use_cand && wi < n_want; ++wi) if (reqs[logit_slots[wi]].s.penalties()) use_cand = false;
         std::string ferr;
         CandRows cand;
+        bool fwd_ok = true;
         if (use_cand) {
-            if (!backend.forward_batch_cand(batch, cand, ferr)) {
-                if (cand.rows != 0) { proto("ERR fatal GPU error: %s", ferr.c_str()); return 1; }
-                cand_ok = false;     // nothing ran: this and every later step takes the full-row path
+            fwd_ok = backend.forward_batch_cand(batch, cand, ferr);
+            if (!fwd_ok && cand.rows == 0) {   // nothing ran (no room for the candidate scratch): this and every later step takes the full-row path
+                cand_ok = false;
                 use_cand = false;
+                fwd_ok = true;
             }
         }
         if (!use_cand) {
             logits_buf.resize(static_cast<size_t>(std::max(1, n_want)) * V);
-            if (!backend.forward_batch(batch, n_want > 0 ? logits_buf.data() : nullptr, nullptr, ferr)) {
-                proto("ERR fatal GPU error: %s", ferr.c_str());
-                return 1;
+            fwd_ok = backend.forward_batch(batch, n_want > 0 ? logits_buf.data() : nullptr, nullptr, ferr);
+        }
+        if (!fwd_ok) {
+            // The global K/V could not grow (no room in the card, none to spill to): the engine is fine. End the requests whose positions
+            // reach past what the K/V holds (reason "length": the context this card can serve), keep every other request, and go on (#6905).
+            if (backend.last_failure_is_kv_growth()) {
+                const int cap = backend.kv_capacity_tokens();
+                bool ended = false;
+                for (int i = 0; i < batch.n_tokens; ++i) {
+                    const int s = batch.slot_ids[i];
+                    if (batch.pos[i] >= cap && s >= 0 && s < P && reqs[s].active) {
+                        std::fprintf(stderr, "[ink-serve] slot %d ended at %d tokens: %s\n", s, batch.pos[i], ferr.c_str());
+                        finish_req(reqs[s], "length");
+                        ended = true;
+                    }
+                }
+                if (ended) continue;
             }
+            proto("ERR fatal GPU error: %s", ferr.c_str());
+            return 1;
         }
         const double step_ms = (now_s() - t_step0) * 1000.0;
 

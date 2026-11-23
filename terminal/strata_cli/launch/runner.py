@@ -475,6 +475,23 @@ def fit_parallel_for(catalog, s: S.LaunchSettings, vram_gb: float | None) -> int
     failed after the download): there setup's own rule for that model and context decides (own_path_parallel_recommend; 0 = one at a time),
     never more than the table's number."""
     table = S.fit_parallel(vram_gb)
+    if s.family == "inkling-2-mini":
+        # Every slot reserves K/V for the whole context; slots whose fp16 K/V does not fit next to the experts spill it to host RAM and a long session
+        # reads half of it over PCIe (Olares, 3 slots at 32K on 24 GB: decode 86 -> 44 tok/s after 30K tokens). The table's number, but no more
+        # slots than keep the K/V on the card (NVIDIA only; any other make or a failed look keeps the table). An explicit --parallel never gets here.
+        try:
+            from strata_control import inkling_fit
+            comp = catalog.computer()
+            gpus = comp.usable_gpus
+            if gpus and (comp.engine_vendor in (None, "nvidia")) and str(s.model or "") in inkling_fit.BUILDS:
+                arch = str(gpus[0].get("arch") or "")
+                # the card's total memory is not what is free: the driver and the desktop keep about 0.75 GiB
+                return inkling_fit.launch_parallel(str(s.model), max(0.0, float(vram_gb or 0.0) - 0.75), float(comp.ram_gb or 0.0),
+                                                   int(s.context or inkling_fit.DEFAULT_CONTEXT),
+                                                   table, backend="cuda", sm=int(arch) if arch.isdigit() else None)
+        except Exception:                                    # noqa: BLE001 - the table as before when the plan cannot be made
+            return table
+        return table
     try:
         setup = catalog.strata.setup_module()
         fam = (getattr(setup, "OWN_PATH_FAMILIES", None) or {}).get(s.family) if setup is not None else None

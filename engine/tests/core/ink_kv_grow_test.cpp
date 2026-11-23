@@ -82,6 +82,17 @@ int main() {
     CHECK(ink_kv_grow_target(kFloor, kFloor, n_glob, 1, 8192, 8193, max_ctx, kPerPos) == 0);
     CHECK(ink_kv_grow_target(0, kFloor, n_glob, 1, 8192, 8193, max_ctx, kPerPos) == 0);
 
+    // #6905: when the card cannot grow the K/V and the rest goes to host RAM, the host tail is the WHOLE rest of the context (so no later, longer request
+    // needs to grow it again), and only if that does not fit in host memory just what the request needs
+    CHECK(ink_kv_host_tail_full(40960, 65536) == 24576);       // the reporter: the card stopped at 40960 of a 64K context
+    CHECK(ink_kv_host_tail_need(40960, 49152) == 8192);
+    CHECK(ink_kv_host_tail_full(40960, 65536) > ink_kv_host_tail_need(40960, 41984));
+    CHECK(ink_kv_host_tail_full(65536, 65536) == 0);           // nothing left to map
+    CHECK(ink_kv_host_tail_full(70000, 65536) == 0);           // never negative
+    CHECK(ink_kv_host_tail_need(8192, 8192) == 0);
+    // a K/V that grew to its host tail serves every position up to max_ctx: dev + full tail == max_ctx
+    for (int dev : {256, 8192, 32768, 40960, 65471}) CHECK(dev + ink_kv_host_tail_full(dev, 65536) == 65536);
+
     if (failed) {
         std::fprintf(stderr, "ink_kv_grow_test: %d failed\n", failed);
         return 1;

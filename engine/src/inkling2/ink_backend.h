@@ -74,6 +74,10 @@ public:
     virtual BackendStats stats() const = 0;
     virtual int effective_max_ctx() const { return 0; }
     virtual int effective_chunk() const { return 0; }     // the prefill chunk the backend really runs with (0: opts.chunk)
+    // The last forward_batch failed only because the global K/V could not grow (no room in the card, none to spill to): the engine is fine, the
+    // requests whose positions reach kv_capacity_tokens() are the ones to end (#6905); every other failure is fatal.
+    virtual bool last_failure_is_kv_growth() const { return false; }
+    virtual int kv_capacity_tokens() const { return 0; }
 
     // Load Section 1 trunk + DSpark + 3x loop-weighted Section 4 experts into device/host memory
     virtual bool init(const InkModelFile& model, const BackendOpts& opts, std::string& err) = 0;

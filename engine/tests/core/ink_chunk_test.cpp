@@ -39,6 +39,14 @@ int main() {
     CHECK(ink_auto_chunk(12000.0, 64) == 512);
     CHECK(ink_auto_chunk(3500.0, 8) == 1024);
     CHECK(ink_auto_chunk(2000.0, 8) == 512);
+    // the K/V that still has to grow stays free of the chunk (RTX 4090, UD-Q4_K_XL, 5255 MiB free after the experts, 32K context, fp16: 896 MiB per slot to grow):
+    // 1 slot keeps 2048 (decode at 30K tokens 87.7 tok/s), 2 slots 1024, 3 slots 512 (with the K/V on the card 87; spilled to host 36 and 14.7 tok/s)
+    CHECK(ink_auto_chunk(5255.0, 1, 896.0) == 2048);
+    CHECK(ink_auto_chunk(5255.0, 2, 1792.0) == 1024);
+    CHECK(ink_auto_chunk(5255.0, 3, 2688.0) == 512);
+    CHECK(ink_auto_chunk(12000.0, 3, 2688.0) == 2048);        // a card with room for both
+    CHECK(ink_chunk_need_mib(2048, 1000.0) == ink_chunk_need_mib(2048) + 1000.0);
+    CHECK(ink_chunk_need_mib(512, -5.0) == ink_chunk_need_mib(512));
     // monotone: more free memory never gives a smaller chunk
     int last = 0;
     for (double f = 0.0; f <= 20000.0; f += 50.0) {

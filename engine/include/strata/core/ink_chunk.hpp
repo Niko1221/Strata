@@ -20,9 +20,13 @@ constexpr double kInkChunkBaseMiB = 1460.0;      // runner + K/V at chunk 512 (R
 constexpr double kInkChunkMiBPerToken = 0.87;    // working memory per chunk token above 512 (4090: 1822 / 2710 / 4558 MiB at 1024 / 2048 / 4096, 0.86 MiB per token)
 constexpr double kInkChunkMarginMiB = 1500.0;    // left free after the runner: K/V growth, the drafter, the desktop
 
-// Memory (MiB) that must be free after the experts are placed for `chunk` to be chosen.
-inline double ink_chunk_need_mib(int chunk) {
-    return kInkChunkBaseMiB + kInkChunkMiBPerToken * (chunk > kInkChunkDefault ? chunk - kInkChunkDefault : 0) + kInkChunkMarginMiB;
+// Memory (MiB) that must be free after the experts are placed for `chunk` to be chosen. kv_grow_mib: the global K/V that still has to be
+// allocated for every slot to reach the context (slots x (max_ctx - the window allocated at start) x the bytes of a position): working memory the
+// chunk must not take, or the K/V cannot grow on the card and its tail goes to host RAM (RTX 4090, UD-Q4_K_XL, 2 slots at 32K: decode at 30K tokens
+// fell from 91 to 36 tok/s, 3 slots 14.7, with the K/V on the card 87).
+inline double ink_chunk_need_mib(int chunk, double kv_grow_mib = 0.0) {
+    return kInkChunkBaseMiB + kInkChunkMiBPerToken * (chunk > kInkChunkDefault ? chunk - kInkChunkDefault : 0) + kInkChunkMarginMiB
+           + (kv_grow_mib > 0.0 ? kv_grow_mib : 0.0);
 }
 
 // Slots that share one step: the more of them, the smaller the prefill share one step may carry (a decoding slot waits for the whole step).
@@ -36,11 +40,11 @@ inline int ink_chunk_cap_for_slots(int slots) {
 }
 
 // The largest of 2048 / 1024 / 512 that fits `free_after_load_mib` and the slot cap; 512 when the memory is not known (< 0).
-inline int ink_auto_chunk(double free_after_load_mib, int slots) {
+inline int ink_auto_chunk(double free_after_load_mib, int slots, double kv_grow_mib = 0.0) {
     if (free_after_load_mib < 0.0) return kInkChunkDefault;
     const int cap = ink_chunk_cap_for_slots(slots);
     for (int c : {2048, 1024}) {
-        if (c <= cap && free_after_load_mib >= ink_chunk_need_mib(c)) return c;
+        if (c <= cap && free_after_load_mib >= ink_chunk_need_mib(c, kv_grow_mib)) return c;
     }
     return kInkChunkDefault;
 }

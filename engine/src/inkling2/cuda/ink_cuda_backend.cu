@@ -86,6 +86,8 @@ public:
 
     int effective_max_ctx() const override { return initialized_ ? eff_max_ctx_ : 0; }
     int effective_chunk() const override { return initialized_ ? eff_chunk_run_ : 0; }
+    bool last_failure_is_kv_growth() const override { return kv_grow_failed_; }
+    int kv_capacity_tokens() const override { return (initialized_ && runner_) ? runner_->kv_alloc_ctx : 0; }
 
     bool dspark_ready() const override { return initialized_ && dspark_ && dspark_->ready; }
 
@@ -290,9 +292,12 @@ public:
         if (opts.chunk_auto && !model_.ls_active) {
             const char* auto_env = std::getenv("STRATA_INK_CHUNK_AUTO");
             if (!(auto_env && std::atoi(auto_env) == 0)) {
-                chunk_try = std::max(chunk_try, strata::core::ink_auto_chunk(led_loaded, max_slots_));
-                std::fprintf(stderr, "[InkCUDA] prefill chunk %d (auto: %.0f MiB free after the experts, %d slot(s); --chunk N sets it)\n",
-                             chunk_try, led_loaded, max_slots_);
+                // the K/V still to be allocated for every slot to reach the context stays free of the chunk's working memory (kv offload on: it is host RAM)
+                const double kv_grow_mib = (kv_offload_mode == 1) ? 0.0
+                    : (double)8 * max_slots_ * std::max(0, std::max(256, opts.max_ctx) - init_glob) * (double)per_visit_pos / 1048576.0;
+                chunk_try = std::max(chunk_try, strata::core::ink_auto_chunk(led_loaded, max_slots_, kv_grow_mib));
+                std::fprintf(stderr, "[InkCUDA] prefill chunk %d (auto: %.0f MiB free after the experts, %.0f MiB of K/V still to grow, %d slot(s); --chunk N sets it)\n",
+                             chunk_try, led_loaded, kv_grow_mib, max_slots_);
             }
         }
         for (;;) {
@@ -742,6 +747,7 @@ public:
         static cudaEvent_t steptime_e1 = nullptr;
         if (StepTimeGuard::on() && !steptime_e1) cudaEventCreate(&steptime_e1);
         StepTimeGuard steptime_guard(N, runner_->st, &steptime_e1);
+        kv_grow_failed_ = false;
         // Defensive KV position bounds check + elastic global KV growth (fixes #6590B CUDA error 700 & CA1JEeAx!)
         int max_pos_req = 0;
         for (int i = 0; i < N; ++i) {
@@ -753,6 +759,7 @@ public:
         }
         if (!runner_->ensure_global_kv_cap(max_pos_req + 1)) {
             err = "VRAM exhausted growing elastic global KV cache to " + std::to_string(max_pos_req + 1) + " tokens";
+            kv_grow_failed_ = true;
             return false;
         }
         if (batch.capture_taps && dspark_ && dspark_->ready) {
@@ -1197,6 +1204,7 @@ private:
     int eff_max_ctx_ = 4096;
     // The drafter's window shape: --draft-beam / --draft-cost / --draft-plain (or STRATA_INK_SPEC_BEAM / _COST / _PLAIN), STRATA_INK_SPEC_LOG=1 prints stats
     struct SpecCfg { int beam = 4; float cost = 4.2f; float plain = 0.0f; bool log = false; } spec_cfg_;
+    bool kv_grow_failed_ = false;    // the last forward_batch ended only because the global K/V could not grow
     int eff_chunk_run_ = 0;          // the prefill chunk the runner really got (after auto / halve-on-fail)
     int dspark_slot_ = -1;
     KvDtype kv_dtype_ = KvDtype::FP16;
