@@ -165,6 +165,15 @@ options and never setup's default. The download includes the 28 GB n-gram table.
 | **Gyro-S** | 58.5 GB | 27.6 GB | the smallest option, for PCs with little memory; lower quality |
 | **Gyro-M** | 92.0 GB | 35 GB | about IQ3_XXS quality with about 20% less GPU memory |
 
+The **fits** label compares the model files (excluding the n-gram table) with
+the available RAM and VRAM together. Setup makes a separate decision about
+keeping experts in memory. It can select low-RAM mode when system RAM cannot
+hold the experts with about 10 GiB left for the OS and other buffers. In that
+mode, Strata keeps experts in RAM only if the experts outside the GPU cache
+still fit with that headroom. Otherwise it reads them through the OS file cache,
+which can mean repeated SSD reads. A model can show **fits** and still stream
+experts from disk.
+
 Gyro runs on NVIDIA and AMD (experimental), on Intel Arc under Linux, and on Apple Silicon Macs. It reads pictures.
 On an RTX 3060 12 GB and an R9700, Gyro-M decodes 16 to 21% slower than Q2_0. Details, measurements and credit:
 [GYRO.md](GYRO.md). Intel Arc: [INTEL_ARC.md](INTEL_ARC.md). Mac: [MAC.md](MAC.md#gyro-s-and-gyro-m-agentionais-trellis-experts).
