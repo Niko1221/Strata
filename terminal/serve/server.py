@@ -1366,6 +1366,12 @@ class StrataEngine:
                 keys += " image=" + hy4_kind.encode_path(p)
             for p in sampling.get("strata_inkling_images") or []:
                 keys += " image=" + inkling_kind.encode_path(p)
+            if inkling:
+                prefix = sampling.get("strata_prefix")
+                if isinstance(prefix, dict):
+                    pn = prefix.get("tokens")
+                    if isinstance(pn, int) and not isinstance(pn, bool) and pn > 0:
+                        keys += f" pin={pn}"
             return keys
         # setup's calibration (tools/calibrate.py): engine settings for this request only, measured without a restart
         tune = sampling.get("strata_tune")
@@ -5291,6 +5297,7 @@ class Service:
         self.embeddings.path = None
         self.embeddings.keys = None
         images = images_of(messages)
+        had_images = bool(images)
         self.embeddings.hy4 = self._drop_hy4_images(getattr(self.embeddings, "hy4", None))
         self.embeddings.inkling = self._drop_hy4_images(getattr(self.embeddings, "inkling", None))      # an earlier pass of this request left its files: gone first
         if images and (self.hy4 or self.inkling):                     # Hy4-Flash / Inkling-2-Mini: in-process engine reads pictures directly (INFO images=1)
@@ -5407,8 +5414,34 @@ class Service:
             # (an encoder restart, the cache's eviction) with other bits still matches its checkpoints
             self.embeddings.keys = [Path(p).stem[:16] for p, _ in encoded]
             write_temporary(combined, [p for p, _ in encoded])
+        auto_prefix = False
+        inkling_shared_ok = str((getattr(self.engine, "info", None) or {}).get("shared_prefix")) == "1"
+        if (req is not None and "strata_prefix" not in req and self.inkling and not had_images and
+                os.environ.get("STRATA_INKLING_SHARED_PREFIX") == "1" and inkling_shared_ok):
+            # Pin only leading instructions; never include conversation-specific user text.
+            count = 0
+            for message in messages:
+                if message.get("role") not in ("system", "developer"):
+                    break
+                count += 1
+            if 0 < count < len(messages):
+                req["strata_prefix"] = {"messages": count}
+                auto_prefix = True
         if req is not None and req.get("strata_prefix") is not None:
-            req["strata_prefix"] = self.resolve_prefix(req["strata_prefix"], messages, tools, kwargs, ids, bool(images))
+            req["strata_prefix"] = self.resolve_prefix(req["strata_prefix"], messages, tools, kwargs, ids, had_images)
+            if self.inkling and not inkling_shared_ok:
+                if req["strata_prefix"]:
+                    print("[strata] strata_prefix ignored: this Inkling engine does not advertise shared_prefix=1", flush=True)
+                req["strata_prefix"] = {}
+            elif auto_prefix:
+                # Preserve uncontended cold-prefill batch shapes: an arbitrary split changes CUDA arithmetic.
+                try:
+                    chunk = int((getattr(self.engine, "info", None) or {}).get("chunk", 0))
+                except (TypeError, ValueError):
+                    chunk = 0
+                n = req["strata_prefix"].get("tokens", 0)
+                n = (n // chunk) * chunk if chunk > 0 else 0
+                req["strata_prefix"] = {"tokens": n} if n > 0 else {}
         return ids, kwargs.get("enable_thinking", True) is not False, max_new
 
     PREFIX_END = "\u0001strata-prefix-end\u0001"          # marks where a message's shared part ends in the rendered prompt
@@ -5451,6 +5484,9 @@ class Service:
             kw = ({k: v for k, v in kwargs.items() if k not in ("reasoning_effort", "enable_thinking")}
                   if self.effort_end and (off or effort not in (None, "", "xhigh", "high")) else dict(kwargs))
             kw["add_generation_prompt"] = False
+            if self.inkling:
+                marked = inkling_dialect.prepare_messages(marked)
+                kw = inkling_dialect.template_kwargs(kw)
             text = self.template.render(marked, tools=marked_tools, **kw)
             cut = text.find(self.PREFIX_END)
             if cut >= 0:

@@ -79,6 +79,17 @@ public:
         return false;
     }
 
+    // Separate shared-prefix snapshot; valid only while this slot's global KV prefix is intact.
+    virtual bool supports_shared_checkpoint() const { return false; }
+    virtual bool save_shared_checkpoint(int slot, int seq_len) {
+        (void)slot; (void)seq_len;
+        return false;
+    }
+    virtual bool restore_shared_checkpoint(int slot, int seq_len) {
+        (void)slot; (void)seq_len;
+        return false;
+    }
+
     // Returns true when the on-device DSpark drafter is initialized and ready to serve drafts (#6633).
     virtual bool dspark_ready() const { return false; }
 
