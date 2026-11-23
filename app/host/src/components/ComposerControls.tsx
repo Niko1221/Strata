@@ -76,9 +76,10 @@ export function ComposerControls({ session, onPreview, onAttach, onError, onSlas
     const apiOnlyDefault = !!apiModel && apiModel.thinks !== true;
     const pictures = pictureStatus(native, remoteModel, providers);
     const isHy4Active = (!remoteModel && !!nativeModel && (nativeModel.arch === 'hy4flash' || /^hy4-flash/i.test(nativeModel.model) || /^hy4-flash/i.test(nativeModel.apiModelId ?? ''))) || (!!apiModel && /^hy4-flash/i.test(apiModel.id));
+    const isInklingActive = (!remoteModel && !!nativeModel && (nativeModel.arch === 'inkling2_loop' || /^inkling-2-mini/i.test(nativeModel.model) || /^inkling-2-mini/i.test(nativeModel.apiModelId ?? ''))) || (!!apiModel && /^inkling-2-mini/i.test(apiModel.id));   // Inkling's default level is Low (0.2.21)
     const activeEfforts = isHy4Active ? hy4Efforts : efforts;
     const mode = modes.find(m => m.value === session?.preferences?.mode) ?? modes[0];
-    const effort = activeEfforts.includes(session?.preferences?.thinking ?? '') ? session!.preferences!.thinking! : (isHy4Active ? 'High' : 'Medium');
+    const effort = activeEfforts.includes(session?.preferences?.thinking ?? '') ? session!.preferences!.thinking! : (isHy4Active ? 'High' : isInklingActive ? 'Low' : 'Medium');
     const budget = session?.preferences?.thinkingBudget ?? 0;
     const shortcut = MOD === '⌘' ? '⌘⇧A' : 'Ctrl+Shift+A';
     async function openFile(selected: File | undefined) {
