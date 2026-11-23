@@ -9,5 +9,5 @@ The kit's usage guide asks that the logo is scaled in proportion, kept clear of 
 
 Linger wordmark from [heylinger.com](https://heylinger.com) (the site's own `/media/linger-wordmark-dark.svg`). Downloaded 23 November 2026. The site publishes no light version and no brand kit:
 
-- `linger-logo-color.svg` is the site's file, unchanged, for light backgrounds.
-- `linger-logo-white.svg` is the same file with the dark ink (`#242B28`) changed to white for dark backgrounds; the orange accent is unchanged.
+- `linger-logo-color.svg` is the site's file for light backgrounds. The only change is 88 units of empty space above the artwork (`viewBox="0 -88 1218 466"`), so that with `align="middle"` its letters line up with the Olares wordmark (the g of Linger hangs below the line).
+- `linger-logo-white.svg` is the same file (with the same empty space) with the dark ink (`#242B28`) changed to white for dark backgrounds; the orange accent is unchanged.
