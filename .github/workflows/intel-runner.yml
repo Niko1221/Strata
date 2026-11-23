@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       job:
-        description: "which job: hy4 (the Hy4-Flash checks) or inkling (Inkling 2 Mini gates: UD-Q4_K_XL and SQ-20)"
+        description: "which job: hy4 (the Hy4-Flash checks), inkling (Inkling 2 Mini gates: UD-Q4_K_XL and SQ-20) or inkspeed (Inkling speed: branch against 96113f298)"
         required: false
         default: "hy4"
         type: choice
-        options: [hy4, inkling]
+        options: [hy4, inkling, inkspeed]
   push:
     branches: [ci/intel-runner]
 
@@ -22,7 +22,7 @@ concurrency:
 jobs:
   b70-hy4-sycl-verify:
     name: Arc Pro B70 HY-4 Flash SYCL (#6572 Greedy + Unit + AB/BA)
-    if: ${{ github.event_name == 'push' || inputs.job != 'inkling' }}
+    if: ${{ github.event_name == 'push' || inputs.job == 'hy4' || inputs.job == '' }}
     runs-on: [self-hosted, Linux, X64, Intel]
     timeout-minutes: 45
     env:
@@ -391,3 +391,29 @@ jobs:
       - name: Cleanup B70 scratch
         if: always()
         run: rm -rf "$RUNNER_TEMP/b70-ink" || true
+
+  b70-inkspeed:
+    name: "Arc Pro B70 Inkling 2 Mini SYCL speed (branch against 96113f298: UD-Q4_K_XL and SQ-20, decode / prefill / C8 / C32, profiler, graph)"
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.job == 'inkspeed' }}
+    runs-on: [self-hosted, Linux, X64, Intel]
+    timeout-minutes: 240
+    env:
+      NODE_OPTIONS: --use-system-ca
+      SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
+      REQUESTS_CA_BUNDLE: /etc/ssl/certs/ca-certificates.crt
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 20
+
+      - name: Build branch and base, run the speed matrix on both models
+        run: |
+          mkdir -p "$RUNNER_TEMP/b70-ink-speed"
+          bash .github/ci/inkspeed/b70_speed.sh "$PWD" 96113f298 "$RUNNER_TEMP/b70-ink-speed" 2>&1 | tee "$RUNNER_TEMP/b70-ink-speed.log"
+          echo "---- RESULT lines ----"
+          grep -E '^(RESULT|PROF|INFO|B70_INKSPEED|dmesg|downloaded|==)' "$RUNNER_TEMP/b70-ink-speed.log" || true
+
+      - name: Cleanup B70 scratch
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/b70-ink-speed" || true

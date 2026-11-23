@@ -27,6 +27,7 @@
 #include <vector>
 
 #include "../ink_json.h"
+#include "ink_sy_e2m1.h"
 #include "strata/artifact/strata_reader.hpp"
 #include "strata/core/device_error_exit.hpp"
 #ifdef INK_SYCL_WITH_MODEL_FILE
@@ -181,6 +182,68 @@ inline sycl::queue& Q_copy() {
 
 inline void wait() { Q().wait_and_throw(); }
 
+// Decode step profiler (off by default; every call below is a single bool test when off).
+//   INK_SY_TIMING=1  host submit time vs total time per decode step (no extra waits)
+//   INK_SY_PROF=1    wait() after each phase group: wall time per group, summed over decode steps
+// Only single-token steps (M == 1) are counted. A summary goes to stderr every 64 steps.
+enum SyProfCat { PF_MIX = 0, PF_QKV, PF_SCONV, PF_ATTN, PF_WO, PF_ROUTER, PF_MOE, PF_TAILV, PF_HEAD, PF_N };
+struct SyProf {
+    bool on = false, timing = false, step = false;
+    double last = 0.0, t_enter = 0.0, t_submit = 0.0;
+    double acc[PF_N] = {};
+    double sum_submit = 0.0, sum_total = 0.0;
+    long steps = 0;
+};
+inline SyProf& sy_prof() {
+    static SyProf p = [] {
+        SyProf q;
+        const char* e = std::getenv("INK_SY_PROF");
+        q.on = e && e[0] == '1';
+        const char* t = std::getenv("INK_SY_TIMING");
+        q.timing = (t && t[0] == '1') || q.on;
+        return q;
+    }();
+    return p;
+}
+inline void sy_prof_begin(int M) {
+    SyProf& p = sy_prof();
+    p.step = (M == 1) && (p.on || p.timing);
+    if (!p.step) return;
+    if (p.on) wait();
+    p.t_enter = p.last = now_s();
+}
+inline void sy_prof_mark(int cat) {
+    SyProf& p = sy_prof();
+    if (!p.step || !p.on) return;
+    wait();
+    const double t = now_s();
+    p.acc[cat] += t - p.last;
+    p.last = t;
+}
+inline void sy_prof_before_wait() {
+    SyProf& p = sy_prof();
+    if (!p.step) return;
+    p.t_submit = now_s();
+}
+inline void sy_prof_end() {
+    SyProf& p = sy_prof();
+    if (!p.step) return;
+    const double t = now_s();
+    p.sum_submit += p.t_submit - p.t_enter;
+    p.sum_total += t - p.t_enter;
+    ++p.steps;
+    if (p.steps % 64 == 0) {
+        const double n = (double)p.steps;
+        static const char* kNames[PF_N] = {"mix", "qkv", "sconv", "attn", "wo", "router", "moe", "tailv", "head"};
+        std::fprintf(stderr, "[ink_sy_prof] steps=%ld host-submit=%.2f ms total=%.2f ms per step", p.steps,
+                     p.sum_submit / n * 1e3, p.sum_total / n * 1e3);
+        if (p.on) {
+            for (int i = 0; i < PF_N; ++i) std::fprintf(stderr, " | %s=%.2f", kNames[i], p.acc[i] / n * 1e3);
+        }
+        std::fprintf(stderr, "\n");
+    }
+}
+
 struct SyDevCaps {
     std::string name;
     std::string platform;
@@ -254,7 +317,26 @@ inline void dfree(void* p) { if (p) sycl::free(p, Q()); }
 inline void h2d(void* d, const void* h, size_t b) { if (b) Q().memcpy(d, h, b); }
 inline void h2d_sync(void* d, const void* h, size_t b) { if (b) Q().memcpy(d, h, b).wait(); }
 inline void d2h(void* h, const void* d, size_t b) { if (b) Q().memcpy(h, d, b); }
-inline void d2d(void* dst, const void* src, size_t b) { if (b) Q().memcpy(dst, src, b); }
+// INK_SY_D2D_KERNEL=1 copies with a small kernel instead of queue.memcpy (same bytes, experiment for Level Zero copy-engine sync cost).
+inline bool d2d_kernel_mode() {
+    static const bool v = [] { const char* e = std::getenv("INK_SY_D2D_KERNEL"); return e && e[0] == '1'; }();
+    return v;
+}
+inline void d2d(void* dst, const void* src, size_t b) {
+    if (!b) return;
+    if (d2d_kernel_mode() && (b & 3) == 0 && (reinterpret_cast<uintptr_t>(dst) & 3) == 0 &&
+        (reinterpret_cast<uintptr_t>(src) & 3) == 0) {
+        uint32_t* d = static_cast<uint32_t*>(dst);
+        const uint32_t* s = static_cast<const uint32_t*>(src);
+        const size_t n = b >> 2;
+        Q().parallel_for(sycl::nd_range<1>(((n + 255) / 256) * 256, 256), [=](sycl::nd_item<1> it) INK_REQD_SG16 {
+            const size_t i = it.get_global_id(0);
+            if (i < n) d[i] = s[i];
+        });
+        return;
+    }
+    Q().memcpy(dst, src, b);
+}
 inline void dzero(void* d, size_t b) { if (b) Q().memset(d, 0, b); }
 
 inline sycl::nd_range<1> NR(size_t G, size_t B) { return sycl::nd_range<1>(G * B, B); }
@@ -313,13 +395,6 @@ inline float h2f_bits(uint16_t b) {
     return (float)sycl::bit_cast<half>(b);
 }
 
-inline float e2m1_lut(uint32_t nib) {
-    constexpr float kLut[16] = {
-        0.0f,  0.5f,  1.0f,  1.5f,  2.0f,  3.0f,  4.0f,  6.0f,
-       -0.0f, -0.5f, -1.0f, -1.5f, -2.0f, -3.0f, -4.0f, -6.0f
-    };
-    return kLut[nib & 15u];
-}
 
 inline float e4m3_to_f32(uint32_t c) {
     const uint32_t mag = c & 0x7Fu;
