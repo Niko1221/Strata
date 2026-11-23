@@ -8,9 +8,9 @@
 #include <memory>
 #include <vector>
 
-namespace ink2 {
+namespace strata::core {
 
-// Single scheduler thread. Only materialized boundaries can restart ShortConv.
+// Single scheduler thread. Only materialized boundaries can be restored.
 template <class Payload>
 class PrefixRadixCache {
     struct Node;
@@ -27,23 +27,29 @@ class PrefixRadixCache {
 public:
     explicit PrefixRadixCache(size_t limit) : limit_(limit) {}
 
-    template <class Compatible>
-    const Payload* find(const std::vector<int32_t>& tokens, size_t length, Compatible compatible, bool touch) {
+    template <class Token, class Compatible>
+    const Payload* find(const std::vector<Token>& tokens, size_t length, Compatible compatible, bool touch) {
         Node* node = &root_;
         Node* best = nullptr;
         size_t pos = 0;
         while (pos < length) {
-            auto it = node->children.find(tokens[pos]);
-            if (it == node->children.end()) break;
-            node = it->second.get();
-            if (node->edge.size() > length - pos ||
-                !std::equal(node->edge.begin(), node->edge.end(), tokens.begin() + pos)) break;
-            pos += node->edge.size();
+            node = match_edge(node, tokens, length, pos);
+            if (!node) break;
             if (node->state && compatible(*node->state)) best = node;
         }
         if (!best) return nullptr;
         if (touch) recent_.splice(recent_.begin(), recent_, best->recent);
         return best->state.get();
+    }
+
+    Payload* find_exact(const std::vector<int32_t>& tokens) {
+        Node* node = exact_node(tokens);
+        return node ? node->state.get() : nullptr;
+    }
+
+    void erase_exact(const std::vector<int32_t>& tokens) {
+        Node* node = exact_node(tokens);
+        if (node && node->state) remove(node);
     }
 
     // Allow for edge-vector capacity and two tree/map nodes (a leaf and a split).
@@ -109,9 +115,28 @@ public:
     }
 
 private:
-    void evict() {
-        Node* node = recent_.back();
-        recent_.pop_back();
+    template <class Token>
+    static Node* match_edge(Node* parent, const std::vector<Token>& tokens, size_t length, size_t& pos) {
+        const auto child = parent->children.find(static_cast<int32_t>(tokens[pos]));
+        if (child == parent->children.end()) return nullptr;
+        Node* node = child->second.get();
+        if (node->edge.size() > length - pos ||
+            !std::equal(node->edge.begin(), node->edge.end(), tokens.begin() + pos)) return nullptr;
+        pos += node->edge.size();
+        return node;
+    }
+
+    Node* exact_node(const std::vector<int32_t>& tokens) {
+        Node* node = &root_;
+        size_t pos = 0;
+        while (node && pos < tokens.size()) node = match_edge(node, tokens, tokens.size(), pos);
+        return node;
+    }
+
+    void evict() { remove(recent_.back()); }
+
+    void remove(Node* node) {
+        recent_.erase(node->recent);
         private_bytes_ -= node->charge;
         node->state.reset();
         while (node != &root_ && !node->state) {
@@ -139,4 +164,4 @@ private:
     Lru recent_;
 };
 
-} // namespace ink2
+} // namespace strata::core

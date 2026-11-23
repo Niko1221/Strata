@@ -354,6 +354,7 @@ int main(int argc, char** argv) {
 #ifdef STRATA_HY4_DISTRIBUTED
     bool mpi_experts = false;
 #endif
+    size_t radix_bytes = 0;
     std::string cc_dir;
     double cc_gib = 40.0;
     int cc_min = 1024;
@@ -442,6 +443,12 @@ int main(int argc, char** argv) {
         else if (a == "--spec-exact") scfg.exact = atoi(nxt().c_str()) != 0;
         else if (a == "--parity-m") parity_list = nxt();
         else if (a == "--session-reuse") session_reuse = atoi(nxt().c_str()) != 0;
+        else if (a == "--radix-cache-mib") {
+            if (!strata::core::parse_radix_mib(nxt(), radix_bytes)) {
+                fprintf(stderr, "--radix-cache-mib expects 0..8192\n");
+                return 2;
+            }
+        }
         else if (a == "--conversation-cache-dir") cc_dir = nxt();
         else if (a == "--conversation-cache-gib") cc_gib = atof(nxt().c_str());
         else if (a == "--conversation-cache-min-tokens") cc_min = atoi(nxt().c_str());
@@ -562,6 +569,7 @@ int main(int argc, char** argv) {
         so.no_index = no_index;
         so.no_engram = no_engram;
         so.session_reuse = session_reuse;
+        so.radix_bytes = radix_bytes;
         so.cc_dir = cc_dir;
         so.cc_gib = cc_gib;
         so.cc_min = cc_min;

@@ -25,7 +25,7 @@
 #include <vector>
 
 #include "ink_backend.h"
-#include "ink_radix_cache.h"
+#include "strata/core/prefix_radix_cache.hpp"
 #include "ink_batch.h"
 #include "ink_manifest.h"
 #include "ink_vision.h"
@@ -489,7 +489,7 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
     const size_t radix_bytes = cfg.bopts.radix_cache_bytes;
     bool radix_enabled = radix_bytes && backend.supports_radix_cache();
     constexpr int radix_interval = 512;
-    PrefixRadixCache<PrefixCheckpoint> radix(radix_bytes);
+    strata::core::PrefixRadixCache<PrefixCheckpoint> radix(radix_bytes);
     if (radix_bytes && !radix_enabled) {
         fprintf(stderr, "[Inkling] Radix prefix caching requires the CUDA backend without layer splitting\n");
     }

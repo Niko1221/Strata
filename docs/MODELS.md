@@ -240,6 +240,11 @@ Pictures, parallel requests, full measurements and limits: [QWEN36.md](QWEN36.md
 strata launch --family qwen36 --model UD-Q4_K_XL
 ```
 
+The CUDA/HIP Qwen3.6 engine accepts `--radix-cache-mib N` under `--serve`. A positive
+budget in MiB keeps attention rows and GDN restart state for text prompts even after another
+conversation takes the slot. The engine includes MTP state when drafting is enabled. See
+[shared prefix cache settings](#shared-prefix-cache-settings) for configuration and costs.
+
 ## Tencent Hy4-Flash
 
 [Tencent Hy4-Flash](https://huggingface.co/tencent/Hy4-flash) runs on its dedicated Strata shape engine (`strata-hy4`) using
@@ -256,6 +261,11 @@ directly from the SSD.
 ```sh
 strata launch --family hy4-flash --model SQ-64
 ```
+
+The CUDA/HIP `strata-hy4 --serve` runner accepts `--radix-cache-mib N` to keep text prompt
+prefixes in host RAM. It restores sliding-window and sparse attention state, including the
+indexer's pooled keys. The separate SYCL and Metal runners use their existing cache paths.
+See [shared prefix cache settings](#shared-prefix-cache-settings).
 
 ## Inkling-2-Mini
 
@@ -284,10 +294,14 @@ drafting and picture reading (`Inkling-2-Mini-Vision.strata`, 0.64 GB).
 strata launch --family inkling-2-mini --model SQ-15
 ```
 
-**Reusing text prompts on CUDA.** When requests share a long prefix, the Inkling engine can keep restart
-points in host RAM and reuse them across requests and slots. For example, add
-`"user_args": ["--radix-cache-mib", "768"]` to your Inkling server config, or pass
-`--radix-cache-mib 768` to `strata-inkling --serve`. The default is 0 (off). This budget covers cached
+The Inkling CUDA engine can share text prompt prefixes across requests and slots. Layer-split
+CUDA configurations and other Inkling backends use their existing serving paths.
+
+### Shared prefix cache settings
+
+For Inkling, Qwen3.6 or Hy4, add
+`"user_args": ["--radix-cache-mib", "768"]` to the model's server config, or pass
+`--radix-cache-mib 768` to the native engine under `--serve`. The default is 0 (off). This budget covers cached
 model state and tokens. The engine's ordinary working memory is separate. Requests share this cache
 across one engine process. Enable it for clients within the same trust boundary, since the returned
 reuse count reveals whether a token prefix is already present.
@@ -295,8 +309,7 @@ reuse count reveals whether a token prefix is already present.
 The engine saves a restart point every 512 prompt tokens and just before the final prompt token.
 On a hit it processes the remaining tokens normally. When the budget fills it evicts the least
 recently used restart points. A checkpoint too large for the budget is skipped. A cache miss still
-processes the prompt and can take longer because of checkpoint copies. Image prompts, layer-split
-CUDA configurations and other backends use their existing serving paths.
+processes the prompt and can take longer because of checkpoint copies. Image prompts use the existing serving path.
 
 ## Adding or switching models
 
