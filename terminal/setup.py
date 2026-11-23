@@ -5118,19 +5118,25 @@ def amd_gpus_windows(adapters=None, registry=None) -> list[dict]:
         if did is None:
             continue                                   # not an AMD (VEN_1002) PCI device
         vram, driver = 0.0, ""
+        match = None
         for k, r in enumerate(registry):               # the same card's driver instance: its 64-bit VRAM size
             if k in used or _pci_device_id(r.get("MatchingDeviceId")) != did:
                 continue
             if (r.get("DriverDesc") and ad.get("name") and "\ufffd" not in ad["name"]
                     and r["DriverDesc"].strip() != ad["name"].strip()):
                 continue
-            used.add(k)
+            if match is None:
+                match = k                              # use its driver metadata if no matching entry has a memory size
             mem = r.get("HardwareInformation.qwMemorySize")
             if isinstance(mem, bytes):
                 mem = int.from_bytes(mem[:8], "little")
-            vram = int(mem) / 2 ** 30 if isinstance(mem, int) and mem > 0 else 0.0
-            driver = str(r.get("DriverVersion") or "")
-            break
+            if isinstance(mem, int) and mem > 0:
+                vram = mem / 2 ** 30
+                match = k
+                break
+        if match is not None:
+            used.add(match)
+            driver = str(registry[match].get("DriverVersion") or "")
         if vram == 0.0 and ad.get("ram", 0) > 0:
             vram = ad["ram"] / 2 ** 30                 # WMI's 32-bit figure (at most 4 GB)
         arch = win_amd_arch(did, ad.get("name", ""))

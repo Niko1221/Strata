@@ -298,6 +298,19 @@ class WindowsDetection(unittest.TestCase):
         self.assertEqual(setup.win_amd_arch(0x73DF, "AMD Radeon RX 6800M"), "gfx1031")
         self.assertIsNone(setup.amd_problem({"arch": "gfx1031"}))
 
+    def test_ignores_a_stale_registry_match_without_memory_size(self):
+        adapter = {"name": "AMD Radeon RX 6800", "pnp": r"PCI\VEN_1002&DEV_73BF&REV_C3", "ram": 4293918720}
+        stale = {"DriverDesc": adapter["name"], "MatchingDeviceId": adapter["pnp"], "DriverVersion": "32.0.21041.1000"}
+        current = {**stale, "HardwareInformation.qwMemorySize": 17163091968, "DriverVersion": "32.0.21045.29003"}
+
+        card = setup.amd_gpus_windows([adapter], [stale, current])[0]
+        self.assertEqual(card["vram_gb"], 17163091968 / (1 << 30))
+        self.assertEqual(card["driver"], current["DriverVersion"])
+
+        fallback = setup.amd_gpus_windows([adapter], [stale])[0]
+        self.assertEqual(fallback["vram_gb"], adapter["ram"] / (1 << 30))
+        self.assertEqual(fallback["driver"], stale["DriverVersion"])
+
     def test_cpu_vision_build_uses_the_visual_studio_environment(self):
         """#881: build_vision_cpu on Windows hands cmake_build the vcvars file and a real .bat name (it passed None and
         an empty name before)."""
