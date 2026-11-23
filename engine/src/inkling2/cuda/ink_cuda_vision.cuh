@@ -4,8 +4,10 @@
 // engine fell back to the CPU reference for every picture (tens of seconds each, single-threaded).
 //
 // Loaded on the first picture from the weights CpuVisionEncoder reads.  By default every layer runs in FP32 (cuBLAS
-// SGEMM, about 1.3 GB of VRAM): the embeddings match the CPU reference (cosine 1.000000, max |diff| 1e-4 on a 1280x800
-// screenshot, 640 tokens, about 60-100 ms on an RTX 5090 against about 37 s on the CPU).  STRATA_INKLING_VIT_BF16=1
+// SGEMM): the embeddings match the CPU reference (cosine 1.000000, max |diff| 1e-4 on a 1280x800 screenshot, 640 tokens,
+// about 60-100 ms on an RTX 5090 against about 37 s on the CPU).  The weight matrices are stored in BF16 on the GPU (the
+// shard ships BF16, so this is exact) and expanded into one FP32 buffer before each SGEMM: 686 MiB of VRAM instead of
+// 1226 for FP32 copies, the same output (STRATA_INKLING_VIT_FP32=1 keeps FP32 copies).  STRATA_INKLING_VIT_BF16=1
 // keeps the matrices in BF16 as shipped (about 0.65 GB) and rounds the activations to BF16 for GemmEx, as the HIP
 // encoder does (mean cosine 0.9997, worst token 0.88 on the same picture).  Attention: FP32 SGEMM per head over blocks
 // of queries, so the score buffer stays near 64 MB for large pictures.  If loading fails (VRAM taken by the experts
@@ -34,6 +36,12 @@ namespace cuvit {
 __global__ void k_f32_to_bf16(const float* __restrict__ x, __nv_bfloat16* __restrict__ y, size_t n) {
     const size_t i = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
     if (i < n) y[i] = __float2bfloat16(x[i]);
+}
+
+// BF16 -> FP32 (exact): a weight kept in BF16 on the GPU is expanded before its FP32 SGEMM
+__global__ void k_bf16_to_f32(const __nv_bfloat16* __restrict__ x, float* __restrict__ y, size_t n) {
+    const size_t i = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i < n) y[i] = __bfloat162float(x[i]);
 }
 
 __global__ void k_add_bias_rows(float* __restrict__ y, const float* __restrict__ b, int rows, int cols) {
@@ -149,8 +157,11 @@ public:
     void release() {
         for (auto& kv : f32_) cudaFree(kv.second);
         for (auto& kv : bf16_) cudaFree(kv.second);
+        for (auto& kv : store_) cudaFree(kv.second.first);
+        if (wexp_) { cudaFree(wexp_); wexp_ = nullptr; }
         f32_.clear();
         bf16_.clear();
+        store_.clear();
         if (cublas_) { cublasDestroy(cublas_); cublas_ = nullptr; }
         if (st_) { cudaStreamDestroy(st_); st_ = nullptr; }
         loaded_ = false;
@@ -161,6 +172,12 @@ public:
         device_ = device;
         const char* e = std::getenv("STRATA_INKLING_VIT_BF16");
         bf16_weights_ = e && *e && std::strcmp(e, "0") != 0;
+        // FP32 compute keeps a matrix in BF16 on the GPU when every value is exactly a BF16 (the shard ships BF16), and expands
+        // it into an FP32 buffer before each SGEMM: the same FP32 numbers, about half the resident VRAM (STRATA_INKLING_VIT_FP32=1:
+        // keep them FP32 as before)
+        const char* e32 = std::getenv("STRATA_INKLING_VIT_FP32");
+        const bool keep_f32 = e32 && *e32 && std::strcmp(e32, "0") != 0;
+        size_t max_store = 0;
         if (!ok(cudaSetDevice(device_), "cudaSetDevice", err)) return false;
         CpuVisionEncoder host;
         if (!host.load(path, err)) return false;
@@ -171,22 +188,41 @@ public:
             release();
             return false;
         }
+        // a matrix as BF16 on the GPU: nullptr (err set, everything released) when the copy fails
+        auto upload_bf16 = [&](const std::vector<uint16_t>& hb) -> __nv_bfloat16* {
+            void* d = nullptr;
+            if (!ok(cudaMalloc(&d, hb.size() * 2), "vit weight", err) ||
+                !ok(cudaMemcpy(d, hb.data(), hb.size() * 2, cudaMemcpyHostToDevice), "vit weight H2D", err)) {
+                if (d) cudaFree(d);
+                release();
+                return nullptr;
+            }
+            return static_cast<__nv_bfloat16*>(d);
+        };
         for (const auto& kv : host.weights()) {
             const auto it = info_.T.find(kv.first);
             const bool matrix = it != info_.T.end() && it->second.shape.size() >= 2 &&
                                 kv.first.size() > 7 && kv.first.compare(kv.first.size() - 7, 7, ".weight") == 0;
             const std::vector<float>& w = kv.second;
-            if (matrix && bf16_weights_) {
-                std::vector<uint16_t> hb(w.size());
-                for (size_t i = 0; i < w.size(); ++i) hb[i] = f32_to_bf16_rne(w[i]);
-                void* d = nullptr;
-                if (!ok(cudaMalloc(&d, hb.size() * 2), "vit weight", err) ||
-                    !ok(cudaMemcpy(d, hb.data(), hb.size() * 2, cudaMemcpyHostToDevice), "vit weight H2D", err)) {
-                    if (d) cudaFree(d);
-                    release();
-                    return false;
+            std::vector<uint16_t> hb;
+            bool exact_bf16 = matrix && !keep_f32;      // FP32 compute: stored as BF16 only when that loses nothing
+            if (matrix && (bf16_weights_ || exact_bf16)) {
+                hb.resize(w.size());
+                for (size_t i = 0; i < w.size(); ++i) {
+                    hb[i] = f32_to_bf16_rne(w[i]);
+                    const uint32_t back = static_cast<uint32_t>(hb[i]) << 16;
+                    exact_bf16 = exact_bf16 && std::memcmp(&back, &w[i], 4) == 0;
                 }
-                bf16_[kv.first] = static_cast<__nv_bfloat16*>(d);
+            }
+            if (matrix && bf16_weights_) {
+                __nv_bfloat16* d = upload_bf16(hb);
+                if (!d) return false;
+                bf16_[kv.first] = d;
+            } else if (exact_bf16) {
+                __nv_bfloat16* d = upload_bf16(hb);
+                if (!d) return false;
+                store_[kv.first] = {d, w.size()};
+                max_store = std::max(max_store, w.size());
             } else {
                 void* d = nullptr;
                 if (!ok(cudaMalloc(&d, w.size() * 4), "vit vector", err) ||
@@ -197,6 +233,10 @@ public:
                 }
                 f32_[kv.first] = static_cast<float*>(d);
             }
+        }
+        if (max_store > 0 && !ok(cudaMalloc(reinterpret_cast<void**>(&wexp_), max_store * 4), "vit weight buffer", err)) {
+            release();
+            return false;
         }
         // Host copies the per-picture host work reads (position embedding, CLS)
         auto keep = [&](const char* name, std::vector<float>& dst) {
@@ -308,7 +348,6 @@ public:
         };
         auto free_all = [&]() { for (void* p : bufs) cudaFree(p); bufs.clear(); };
         float* d_patch = static_cast<float*>(dalloc(patch_buf.size() * 4));
-        float* d_pos = static_cast<float*>(dalloc(h_pos_add.size() * 4));
         float* d_rc = static_cast<float*>(dalloc(h_rc.size() * 4));
         float* d_rs = static_cast<float*>(dalloc(h_rs.size() * 4));
         float* cur = static_cast<float*>(dalloc(static_cast<size_t>(S) * D * 4));
@@ -316,14 +355,22 @@ public:
         float* q = static_cast<float*>(dalloc(static_cast<size_t>(S) * D * 4));
         float* k = static_cast<float*>(dalloc(static_cast<size_t>(S) * D * 4));
         float* v = static_cast<float*>(dalloc(static_cast<size_t>(S) * D * 4));
-        float* ao = static_cast<float*>(dalloc(static_cast<size_t>(S) * D * 4));
+        // Buffers are shared where their lives do not overlap (5 MP: about 480 MB of scratch instead of 840):
+        //   the position embedding is added before the first out_proj writes `proj`; the attention output `ao` is written after
+        //   q/k/v have read `nrm` and read before ln_2 writes it; the projector's `mid` / `dout` ([n_tok, 4096] / [n_tok, 2304],
+        //   n_tok = (S-1)/4) fit in q / k ([S, 1024]) once the layers are done; the MLP runs over blocks of rows.
         float* proj = static_cast<float*>(dalloc(static_cast<size_t>(S) * D * 4));
-        float* mlp = static_cast<float*>(dalloc(static_cast<size_t>(S) * vc.inter * 4));
-        float* mid = static_cast<float*>(dalloc(static_cast<size_t>(n_tok) * vc.proj_hidden * 4));
-        float* dout = static_cast<float*>(dalloc(static_cast<size_t>(n_tok) * vc.out_hidden * 4));
+        float* d_pos = proj;
+        float* ao = nrm;
+        const int mlp_rows = std::min(S, 2048);
+        float* mlp = static_cast<float*>(dalloc(static_cast<size_t>(mlp_rows) * vc.inter * 4));
+        float* mid = q;
+        float* dout = k;
         float* sc = static_cast<float*>(dalloc(static_cast<size_t>(qb) * S * 4));
-        __nv_bfloat16* xbf = static_cast<__nv_bfloat16*>(dalloc(static_cast<size_t>(rows_max) * cols_max * 2));
-        if (bufs.size() != 16) {   // dalloc keeps only what it got
+        // The BF16 activation copy is only read by the STRATA_INKLING_VIT_BF16 GemmEx path (about 100 MB at 5 MP)
+        __nv_bfloat16* xbf = bf16_weights_
+            ? static_cast<__nv_bfloat16*>(dalloc(static_cast<size_t>(rows_max) * cols_max * 2)) : nullptr;
+        if (bufs.size() != (bf16_weights_ ? 12u : 11u)) {   // dalloc keeps only what it got
             err = "vit: cudaMalloc failed for a picture of " + std::to_string(S) + " patches";
             free_all();
             return false;
@@ -354,6 +401,12 @@ public:
                 }
             } else {                    // FP32, as the CPU reference
                 const float* w = f(wname);
+                auto sit = store_.find(wname);
+                if (!w && sit != store_.end()) {   // kept in BF16: expand it (exactly) into the FP32 buffer first
+                    const size_t n = sit->second.second;
+                    k_bf16_to_f32<<<static_cast<unsigned>((n + 255) / 256), 256, 0, st_>>>(sit->second.first, wexp_, n);
+                    w = wexp_;
+                }
                 if (!w) { err = "vit: missing " + wname; good = false; return; }
                 if (cublasSgemm(cublas_, CUBLAS_OP_T, CUBLAS_OP_N, N, M, K, &one, w, K, x, K, &zero, y, N) !=
                     CUBLAS_STATUS_SUCCESS) {
@@ -404,9 +457,12 @@ public:
             linear(p + ".self_attn.out_proj.weight", ao, (p + ".self_attn.out_proj.bias").c_str(), proj, S, D, D);
             k_layerscale_res<<<grid(SD), 256, 0, st_>>>(cur, proj, f(p + ".ls_1.gamma"), S, D);
             k_layernorm<<<S, 256, 0, st_>>>(cur, f(p + ".ln_2.weight"), f(p + ".ln_2.bias"), nrm, D, vc.ln_eps);
-            linear(p + ".mlp.c_fc.weight", nrm, (p + ".mlp.c_fc.bias").c_str(), mlp, S, vc.inter, D);
-            k_gelu_exact<<<grid(static_cast<size_t>(S) * vc.inter), 256, 0, st_>>>(mlp, static_cast<size_t>(S) * vc.inter);
-            linear(p + ".mlp.c_proj.weight", mlp, (p + ".mlp.c_proj.bias").c_str(), proj, S, D, vc.inter);
+            for (int r0 = 0; r0 < S && good; r0 += mlp_rows) {
+                const int nr = std::min(mlp_rows, S - r0);
+                linear(p + ".mlp.c_fc.weight", nrm + static_cast<size_t>(r0) * D, (p + ".mlp.c_fc.bias").c_str(), mlp, nr, vc.inter, D);
+                k_gelu_exact<<<grid(static_cast<size_t>(nr) * vc.inter), 256, 0, st_>>>(mlp, static_cast<size_t>(nr) * vc.inter);
+                linear(p + ".mlp.c_proj.weight", mlp, (p + ".mlp.c_proj.bias").c_str(), proj + static_cast<size_t>(r0) * D, nr, D, vc.inter);
+            }
             k_layerscale_res<<<grid(SD), 256, 0, st_>>>(cur, proj, f(p + ".ls_2.gamma"), S, D);
         }
         // 3. Drop CLS, 2x2 merge projector: [n_tok, 4D] -> proj_in -> GELU -> proj_out
@@ -444,6 +500,8 @@ private:
     cublasHandle_t cublas_ = nullptr;
     std::unordered_map<std::string, float*> f32_;
     std::unordered_map<std::string, __nv_bfloat16*> bf16_;
+    std::unordered_map<std::string, std::pair<__nv_bfloat16*, size_t>> store_;   // FP32 compute, BF16 storage + its length (expanded into wexp_ per SGEMM)
+    float* wexp_ = nullptr;
     std::vector<float> h_cls_, h_cls_pos_, h_pos_emb_;
 };
 

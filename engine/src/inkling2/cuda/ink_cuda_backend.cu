@@ -1144,15 +1144,31 @@ public:
     bool encode_image(const ImageRec& img, std::vector<float>& out_embeds, std::string& err) override {
         if (vision_path_.empty() || vit_failed_) return false;
         std::string verr;
-        if (!vit_.loaded() && !vit_.load(vision_path_, gpu_id_, verr)) {
-            vit_failed_ = true;
-            fprintf(stderr, "[inkling2-vision] GPU encoder unavailable, using the CPU one: %s\n", verr.c_str());
-            return false;
+        if (!vit_.loaded()) {
+            size_t vf0 = 0, vt0 = 0, vf1 = 0, vt1 = 0;
+            (void)strata::ink::ink_cuda_mem_info(&vf0, &vt0, gpu_id_);
+            if (!vit_.load(vision_path_, gpu_id_, verr)) {
+                vit_failed_ = true;
+                fprintf(stderr, "[inkling2-vision] GPU encoder unavailable, using the CPU one: %s (%.0f MiB free VRAM)\n",
+                        verr.c_str(), (double)vf0 / 1048576.0);
+                return false;
+            }
+            (void)strata::ink::ink_cuda_mem_info(&vf1, &vt1, gpu_id_);
+            const size_t held = (vf0 > vf1) ? (vf0 - vf1) : 0u;
+            fprintf(stderr, "[inkling2-vision] GPU encoder loaded on CUDA device %d: %.0f MiB of VRAM, %.0f MiB free\n",
+                    gpu_id_, (double)held / 1048576.0, (double)vf1 / 1048576.0);
         }
+        const auto t0 = std::chrono::steady_clock::now();
         if (!vit_.encode(img, out_embeds, verr)) {
             fprintf(stderr, "[inkling2-vision] GPU encode failed, using the CPU one: %s\n", verr.c_str());
             (void)err;
             return false;
+        }
+        if (!vit_logged_first_) {
+            vit_logged_first_ = true;
+            const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+            fprintf(stderr, "[inkling2-vision] encoded the first picture on CUDA device %d: %dx%d grid, %d tokens, %.1f ms\n",
+                    gpu_id_, img.grid_h, img.grid_w, img.num_lm_tokens(), ms);
         }
         return true;
     }
@@ -1234,6 +1250,7 @@ private:
     std::string vision_path_;
     cuvit::CudaVit vit_;
     bool vit_failed_ = false;
+    bool vit_logged_first_ = false;
     strata::ink::InkCudaModel model_;
     std::unique_ptr<strata::ink::InkCudaRunner> runner_;
     std::unique_ptr<strata::ink::InkDSpark> dspark_;
