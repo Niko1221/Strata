@@ -214,7 +214,8 @@ class TestInklingFitAndHardwareSelection(unittest.TestCase):
                     self.assertTrue(p["full_vram"], (pool, b, p))
                 elif pool == 24 and b in ("SQ-15", "SQ-10", "UD-Q4_K_XL", "UD-Q4_K_M", "UD-IQ4_XS", "UD-Q3_K_XL", "UD-IQ3_XXS", "UD-Q2_K_XL", "UD-IQ2_XXS", "UD-IQ1_M", "UD-IQ1_S"):
                     self.assertTrue(p["full_vram"], (pool, b, p))
-                elif pool == 16 and b in ("SQ-10", "UD-Q2_K_XL", "UD-IQ2_XXS", "UD-IQ1_M", "UD-IQ1_S"):
+                # UD-Q2_K_XL: its routed experts are 7.89 GB (GGUF headers), not the 7.26 the table once said: 0.05 GB short of a 16 GiB pool
+                elif pool == 16 and b in ("SQ-10", "UD-IQ2_XXS", "UD-IQ1_M", "UD-IQ1_S"):
                     self.assertTrue(p["full_vram"], (pool, b, p))
 
     def test_kv_cache_scales_for_parallel_1_to_64(self):

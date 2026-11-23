@@ -722,12 +722,23 @@ struct GgufAdapter {
                     if (wfmt < 0) continue;
                     size_t off = align64(sec1_arena.size());
                     size_t nb = static_cast<size_t>(kv.second.end - kv.second.begin);
-                    sec1_arena.resize(off + nb, 0);
-                    if (!detail::read_slice_from_file(dspark_st.path, dspark_st.st.data_start + kv.second.begin,
-                                                      sec1_arena.data() + off, nb, err)) return false;
+                    // norm weights, biases and fuse_weight are read as F32 by the drafter (the GGUF drafter path widens them too)
+                    const bool widen = strata::core::ink_dspark_wants_f32(kv.first, kv.second.shape.size(), wfmt);
+                    if (widen) {
+                        std::vector<uint8_t> narrow(nb);
+                        if (!detail::read_slice_from_file(dspark_st.path, dspark_st.st.data_start + kv.second.begin,
+                                                          narrow.data(), nb, err)) return false;
+                        sec1_arena.resize(off + nb * 2, 0);
+                        strata::core::ink_widen16_to_f32(narrow.data(), wfmt, nb / 2, sec1_arena.data() + off);
+                        nb *= 2;
+                    } else {
+                        sec1_arena.resize(off + nb, 0);
+                        if (!detail::read_slice_from_file(dspark_st.path, dspark_st.st.data_start + kv.second.begin,
+                                                          sec1_arena.data() + off, nb, err)) return false;
+                    }
                     TInfoT ti;
                     ti.name = strata::core::ink_dspark_name(kv.first);
-                    ti.fmt = wfmt;
+                    ti.fmt = widen ? 101 : wfmt;
                     ti.shape = kv.second.shape;
                     ti.off = off;
                     ti.bytes = nb;
