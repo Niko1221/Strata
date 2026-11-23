@@ -736,6 +736,37 @@ class AdoptRules(unittest.TestCase):
             self.assertEqual(json.loads(out.read_text())["gpu"], 1)
             self.assertEqual(json.loads(installed.read_text())["gpu"], 0)
 
+    def test_inkling_kv_reaches_the_engine_for_a_gguf_and_a_strata_file_and_a_wrong_value_is_said(self):
+        """GRID, 0.2.20: `--kv k8v4` for an Inkling GGUF started with --model-path was accepted and not passed on (the engine arguments had no --kv), so the
+        8-bit comparison ran on the default. The allowed values now reach the engine whatever the file is, and a value the engine does not take is said."""
+        import json
+        from strata_control import tune_knobs
+        for name, native in (("gguf", "Inkling-2-Mini-UD-Q4_K_XL.gguf"), ("strata", "Inkling-2-Mini-SQ-10.strata")):
+            for backend, kv, want in (("cuda", "k8v4", "k8v4"), ("cuda", "k8v8", "k8v8"), ("cuda", "fp8", "fp8"), ("cuda", "fp16", "fp16"),
+                                      ("hip", "fp8", "fp8"), ("hip", "k8v4", "fp8"), ("sycl", "k8v8", "fp8"), ("metal", "fp16", "fp16")):
+                with self.subTest(file=name, backend=backend, kv=kv):
+                    base = {"exe": "component:strata-inkling", "arch": "inkling2_loop", "args": ["--native", f"/m/{native}", "--max-context", "32768"],
+                            **({"backend": backend} if backend != "cuda" else {})}
+                    cfg = derive_config(base, S.LaunchSettings(family="inkling-2-mini", kv=kv), bool_flags=tune_knobs.BOOL_FLAGS)
+                    self.assertEqual(cfg["args"][cfg["args"].index("--kv") + 1], want)
+                    self.assertEqual(cfg["args"].count("--kv"), 1)
+        # a Qwen format is not an Inkling one: nothing is written and the launch says so, in the notices and as a warning
+        self.assertIsNone(S.inkling_kv_note("k8v4", "cuda"))
+        self.assertIsNone(S.inkling_kv_note(None, "hip"))
+        self.assertIn("--kv int8 is not a memory format of Inkling-2-Mini (it takes fp16, fp8, k8v8, k8v4)", S.inkling_kv_note("int8", None))
+        self.assertIn("(it takes fp16, fp8)", S.inkling_kv_note("q4_0", "hip"))
+        self.assertIn("using --kv fp8 instead", S.inkling_kv_note("k8v4", "metal"))
+        with Home() as h:
+            installed = h.base / "strata-inkling-2-mini-sq-10.json"
+            installed.write_text(json.dumps({"exe": "component:strata-inkling", "arch": "inkling2_loop", "port": 8080,
+                                             "args": ["--native", "/m/Inkling-2-Mini-UD-Q4_K_XL.gguf", "--max-context", "32768"]}))
+            for kv, said in (("int8", "is not a memory format of Inkling-2-Mini"), ("k8v4", None)):
+                seen = []
+                r = Runner(S.LaunchSettings(family="inkling-2-mini", model="SQ-10", name="kv", kv=kv), catalog=catalog(HW_12), emit=seen.append)
+                cfg = json.loads(r.build_config(installed).read_text())
+                self.assertEqual("--kv" in cfg["args"], said is None, (kv, cfg["args"]))
+                self.assertEqual(any(said in n for n in r.notices) if said else bool(r.notices and any("--kv" in n for n in r.notices)), said is not None, (kv, r.notices))
+
     def test_a_card_the_installed_model_was_set_to_is_not_replaced_by_the_automatic_pick(self):
         """Two equal cards: the fit rule recommends card 0, so a person's earlier choice (setup --gpu 1, the app's card pick: "gpus_asked")
         must survive a `strata launch` that names no cards - in its order, with "gpu_order": "as_given" too."""

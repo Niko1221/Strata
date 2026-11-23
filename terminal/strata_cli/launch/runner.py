@@ -2199,6 +2199,11 @@ class Runner:
         cfg = derive_config(base, self.s, bool_flags=tune_knobs.BOOL_FLAGS,
                             log=str(launch_dir() / f"{self.name}.engine.log"), gpus=cards_for_launch(self.s, self.catalog, base=base),
                             prev=previous, defaults=defaults)
+        if self.is_inkling():                                # a --kv the Inkling engine does not take is said, never dropped quietly
+            kv_note = S.inkling_kv_note(self.s.kv, cfg.get("backend"))
+            if kv_note:
+                self.notices.append(kv_note)
+                self.emit("config", kv_note, None, level="warn")
         used = {k: _setting_of(cfg, k) for k in (cfg.get(USER_DEFAULTS_KEY) or {}) if _setting_of(cfg, k) == cfg[USER_DEFAULTS_KEY][k]}
         if used:
             self.emit("config", f"Using your defaults from {user_defaults_path()}: " + ", ".join(f"{k}={v if isinstance(v, str) else json.dumps(v)}" for k, v in used.items()) +

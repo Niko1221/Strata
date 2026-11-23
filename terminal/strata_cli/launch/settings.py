@@ -56,6 +56,22 @@ def safe_inkling_kv(kv: str | None, backend: str | None = None) -> tuple[str | N
     if val in ("k8v4", "k8v8"):
         return "fp8", True
     return None, False
+
+
+def inkling_kv_note(kv: str | None, backend: str | None = None) -> str | None:
+    """The sentence for a `--kv` that Inkling-2-Mini does not take as it was typed: a Qwen format (int8, q4_0) or a format this card's backend lacks (k8v4 / k8v8
+    on HIP, Metal and SYCL, which use fp8 instead). None when the value goes through as it is, or none was asked. Said at every launch, never dropped quietly
+    (0.2.20 accepted `--kv k8v4` for an Inkling GGUF and wrote none: the 8-bit comparison it was meant for ran on the default)."""
+    if not kv:
+        return None
+    val = str(kv).strip().lower()
+    eff, clamped = safe_inkling_kv(val, backend)
+    allowed = ", ".join(inkling_kv_modes(backend))
+    if eff is None:
+        return f"--kv {val} is not a memory format of Inkling-2-Mini (it takes {allowed}), so the engine's own default is used."
+    if clamped:
+        return f"Inkling-2-Mini on {backend or 'this card'} does not support --kv {val} (it takes {allowed}); using --kv {eff} instead."
+    return None
 DEFAULT_PORT = 8080
 
 #: How many requests the card can answer at once (the spec's "fit to card" default): by graphics memory.
