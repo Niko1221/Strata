@@ -138,6 +138,7 @@ public:
             slot_used_[slot] = 0;
             --active_slots_;
             runner_.reset_slot(slot);
+            if (slot < (int)prompt_ckpts_.size()) prompt_ckpts_[slot] = PromptCkpt{};
             if (last_ver_slot_ == slot) last_ver_slot_ = -1;
             if (last_tree_slot_ == slot) last_tree_slot_ = -1;
         }
@@ -151,8 +152,87 @@ public:
             slot_cooldown_[slot] = 0;
             slot_cd_len_[slot] = 8;
         }
+        if (slot >= 0 && slot < (int)prompt_ckpts_.size()) prompt_ckpts_[slot].valid = false;
         if (last_ver_slot_ == slot) last_ver_slot_ = -1;
         if (last_tree_slot_ == slot) last_tree_slot_ = -1;
+    }
+
+    // #6627 / #6904: prompt-end checkpoint on Metal. Saves the slot state that generation overwrites: the SWA ring
+    // KV of every sliding-window visit, the ShortConv state, DSpark's SWA context KV and its last f_rnn row. Global
+    // KV is append-only, so positions [0, seq_len) stay intact without a copy. Buffers are unified memory, so this is a
+    // host memcpy of ~170 MiB per slot (40 SWA visits x 1024 positions x K+V), done once per request after the prompt is read.
+    bool save_prompt_checkpoint(int slot, int seq_len) override {
+        if (slot < 0 || slot >= runner_.max_slots || seq_len <= 0 || runner_.max_slots > 4) return false;
+        if ((int)prompt_ckpts_.size() < runner_.max_slots) prompt_ckpts_.resize((size_t)runner_.max_slots);
+        auto& ck = prompt_ckpts_[slot];
+        ck.valid = false;
+        const auto& c = mod_.man.c;
+        const size_t row = (size_t)c.n_kv * c.head_dim * sizeof(uint16_t);
+        ck.k.resize((size_t)c.n_visits);
+        ck.v.resize((size_t)c.n_visits);
+        for (int v = 0; v < c.n_visits; ++v) {
+            const int stride = runner_.visit_kv_stride[v];
+            if (stride >= runner_.max_ctx) { ck.k[v].clear(); ck.v[v].clear(); continue; }   // global: append-only
+            const size_t bytes = (size_t)stride * row, off = (size_t)slot * bytes;
+            ck.k[v].assign(runner_.kv_k[v].as<uint8_t>() + off, runner_.kv_k[v].as<uint8_t>() + off + bytes);
+            ck.v[v].assign(runner_.kv_v[v].as<uint8_t>() + off, runner_.kv_v[v].as<uint8_t>() + off + bytes);
+        }
+        runner_.snapshot_slot(slot, ck.sc);
+        ck.dk.clear();
+        ck.dv.clear();
+        ck.frnn.clear();
+        if (runner_.use_dspark) {
+            ck.dk.resize(3);
+            ck.dv.resize(3);
+            for (int l = 0; l < 3; ++l) {
+                const int stride = runner_.dsp_kv_stride[l];
+                if (stride >= runner_.max_ctx) continue;                                      // global: append-only
+                const size_t bytes = (size_t)stride * row, off = (size_t)slot * bytes;
+                ck.dk[l].assign(runner_.dsp_ctx_k[l].as<uint8_t>() + off, runner_.dsp_ctx_k[l].as<uint8_t>() + off + bytes);
+                ck.dv[l].assign(runner_.dsp_ctx_v[l].as<uint8_t>() + off, runner_.dsp_ctx_v[l].as<uint8_t>() + off + bytes);
+            }
+            const size_t D = (size_t)c.hidden;
+            const float* fr = runner_.dsp_frnn_slot.as<float>() + (size_t)slot * D;
+            ck.frnn.assign(fr, fr + D);
+        }
+        ck.seq_len = seq_len;
+        ck.valid = true;
+        return true;
+    }
+
+    bool restore_prompt_checkpoint(int slot, int seq_len) override {
+        if (slot < 0 || slot >= (int)prompt_ckpts_.size()) return false;
+        const auto& ck = prompt_ckpts_[slot];
+        if (!ck.valid || ck.seq_len != seq_len) return false;
+        const auto& c = mod_.man.c;
+        const size_t row = (size_t)c.n_kv * c.head_dim * sizeof(uint16_t);
+        for (int v = 0; v < c.n_visits; ++v) {
+            if (ck.k[v].empty()) continue;
+            const size_t off = (size_t)slot * (size_t)runner_.visit_kv_stride[v] * row;
+            std::memcpy(runner_.kv_k[v].as<uint8_t>() + off, ck.k[v].data(), ck.k[v].size());
+            std::memcpy(runner_.kv_v[v].as<uint8_t>() + off, ck.v[v].data(), ck.v[v].size());
+        }
+        runner_.restore_slot(slot, ck.sc);
+        if (runner_.use_dspark) {
+            for (int l = 0; l < (int)ck.dk.size(); ++l) {
+                if (ck.dk[l].empty()) continue;
+                const size_t off = (size_t)slot * (size_t)runner_.dsp_kv_stride[l] * row;
+                std::memcpy(runner_.dsp_ctx_k[l].as<uint8_t>() + off, ck.dk[l].data(), ck.dk[l].size());
+                std::memcpy(runner_.dsp_ctx_v[l].as<uint8_t>() + off, ck.dv[l].data(), ck.dv[l].size());
+            }
+            if (!ck.frnn.empty()) {
+                std::memcpy(runner_.dsp_frnn_slot.as<float>() + (size_t)slot * ck.frnn.size(), ck.frnn.data(), ck.frnn.size() * 4);
+            }
+        }
+        if (slot < (int)slot_beam_depth_.size()) {        // DSpark's adaptive draft shape restarts as for a fresh prompt
+            slot_beam_depth_[slot] = runner_.is_apple10 ? 5 : 4;
+            slot_ema_gain_[slot] = 1.15;
+            slot_cooldown_[slot] = 0;
+            slot_cd_len_[slot] = 8;
+        }
+        if (last_ver_slot_ == slot) last_ver_slot_ = -1;
+        if (last_tree_slot_ == slot) last_tree_slot_ = -1;
+        return true;
     }
 
     void snapshot_slot(int slot) override {
@@ -525,6 +605,16 @@ private:
     std::vector<int32_t> last_tree_path_;
     int active_slots_ = 0;
     KvDtype kv_dtype_ = KvDtype::FP16;
+
+    struct PromptCkpt {                                   // #6627 prompt-end checkpoint (host copy, per slot)
+        bool valid = false;
+        int seq_len = 0;
+        std::vector<std::vector<uint8_t>> k, v;           // [n_visits] SWA ring KV; empty for global visits
+        ink_metal::InkMetalRunner::SlotSconvSnap sc;
+        std::vector<std::vector<uint8_t>> dk, dv;         // [3] DSpark SWA context KV; empty for global layers
+        std::vector<float> frnn;
+    };
+    std::vector<PromptCkpt> prompt_ckpts_;
 };
 
 std::unique_ptr<InkBackend> make_metal_backend() {
