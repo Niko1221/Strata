@@ -26,10 +26,18 @@ def _fit(hw, family, model, context, vram):
 
 
 class ResidentParallel(unittest.TestCase):
-    def test_olares_class_card_keeps_two_slots_on_the_card_at_32k_one_at_64k(self):
+    def test_a_24_gb_sm86_card_keeps_two_slots_on_the_card_at_32k_one_at_64k(self):
+        # only compute capability 8.6 keeps the GGUF's int8 dense tensors (1.60 GB: INKSPEED, 8e208f1e6 / cd568d5e2); that card holds the K/V of two slots
         free = 24.0 - 0.75
-        self.assertEqual(F.resident_parallel("UD-Q4_K_XL", free, 64.0, 32768, cap=4, backend="cuda", desktop=True, sm=120), 2)
-        self.assertEqual(F.resident_parallel("UD-Q4_K_XL", free, 64.0, 65536, cap=4, backend="cuda", desktop=True, sm=120), 1)
+        self.assertEqual(F.resident_parallel("UD-Q4_K_XL", free, 64.0, 32768, cap=4, backend="cuda", desktop=True, sm=86), 2)
+        self.assertEqual(F.resident_parallel("UD-Q4_K_XL", free, 64.0, 65536, cap=4, backend="cuda", desktop=True, sm=86), 1)
+
+    def test_a_24_gb_ada_or_blackwell_card_keeps_one_slot_with_the_bf16_dense_share(self):
+        # sm 8.9 and 12.0 budget the BF16 dense share (2.45 GB, the int8 path lost at C1 there): 0.85 GB less room for K/V, so the second slot spills at 32K.
+        # (the 4090 measurement of 2 slots at 30K, 79.8 tok/s, was made with the int8 trunk; with the BF16 trunk it is open, queued for 0.2.22)
+        free = 24.0 - 0.75
+        for sm in (89, 120):
+            self.assertEqual(F.resident_parallel("UD-Q4_K_XL", free, 64.0, 32768, cap=4, backend="cuda", desktop=True, sm=sm), 1, sm)
 
     def test_the_slots_are_what_the_plan_keeps_on_the_card(self):
         # the answer is the largest N whose plan says "K/V on the card" with the experts' share of one slot
@@ -71,10 +79,11 @@ class LaunchParallel(unittest.TestCase):
     def test_an_unknown_build_keeps_the_table(self):
         self.assertEqual(F.launch_parallel("no-such-build", 24.0, 64.0, 32768, 3), 3)
 
-    def test_the_24_gb_default_is_two_slots_for_the_gguf_at_32k_not_three(self):
+    def test_the_24_gb_default_is_never_the_tables_three_for_the_gguf_at_32k(self):
         self.assertEqual(S.fit_parallel(24.0), 3)
-        n = F.launch_parallel("UD-Q4_K_XL", 24.0 - 0.75, 64.0, 32768, 3, sm=120)
-        self.assertEqual(n, 2)
+        self.assertEqual(F.launch_parallel("UD-Q4_K_XL", 24.0 - 0.75, 64.0, 32768, 3, sm=86), 2)      # int8 dense share
+        self.assertEqual(F.launch_parallel("UD-Q4_K_XL", 24.0 - 0.75, 64.0, 32768, 3, sm=120), 1)     # BF16 dense share
+        self.assertEqual(F.launch_parallel("UD-Q4_K_XL", 24.0 - 0.75, 64.0, 32768, 3, sm=89), 1)
 
 
 class InTheLaunch(unittest.TestCase):
