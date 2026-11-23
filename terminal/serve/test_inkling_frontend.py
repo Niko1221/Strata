@@ -78,6 +78,12 @@ def test_family_text_and_effort(inkling):
     assert family_text("\n\nDone thinking.\n</think>\n\n") == "\n\nDone thinking." + INK_END + INK_HEAD + INK_TEXT
     assert effort_kwargs(False) == {"reasoning_effort": "none"}
     assert effort_kwargs("high") == {"reasoning_effort": "high"}
+    assert effort_kwargs(0.5) == {"reasoning_effort": 0.5}
+    assert effort_kwargs("0.3") == {"reasoning_effort": 0.3}
+    assert effort_kwargs(0) == {"reasoning_effort": 0.0}
+    for bad in (1.5, -0.1, "nan"):
+        with pytest.raises(ValueError):
+            effort_kwargs(bad)
 
 
 def test_qwen_unchanged():

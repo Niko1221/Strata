@@ -249,6 +249,15 @@ def effort_kwargs(value) -> dict:
     if _FAMILY == "inkling2" and not _INK_THINKS:
         from serve import inkling_dialect
         return {"reasoning_effort": inkling_dialect.normalize_effort(value)}
+    if _FAMILY == "inkling2" and not isinstance(value, bool):   # its template also takes the level itself, 0.0 to 0.99
+        try:
+            level = float(value)
+        except (TypeError, ValueError):
+            level = None
+        if level is not None:
+            if not 0.0 <= level <= 0.99:
+                raise ValueError(f"reasoning effort {value!r}: Inkling 2 takes a level from 0.0 to 0.99, or none, minimal, low, medium, high, xhigh")
+            return {"reasoning_effort": level}
     key = str(value).strip().lower()
     if key not in EFFORT:
         raise ValueError(f"unknown reasoning effort {value!r}: use none, low, medium or high")
