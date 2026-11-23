@@ -13501,6 +13501,7 @@ int main(int argc, char** argv) {
             return 1;
         }
         if (prefill_head_alias_bound) mtp.set_window_R(ver.final_R_all());
+        if (peer.valid()) peer.set_target_flag(ver.h_flag());
 #if defined(STRATA_HAVE_DFLASH2)
 #if defined(STRATA_HAVE_DFLASH2)
         // DFlash2 prompt taps on a layer split.  Every stage's prompt path taps the requested layers it runs into its own staging and hands them to its
@@ -24505,6 +24506,7 @@ int main(int argc, char** argv) {
             return 1;
         }
         const bool use_mtp = !o.mtp.empty();
+        if (peer.valid()) peer.set_target_flag(ver.h_flag());
         if (use_mtp && !mtp.bind(wt, &native_head, ver.final_R_all(), err)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
