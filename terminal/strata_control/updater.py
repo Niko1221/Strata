@@ -333,6 +333,8 @@ def detect_hardware(environ=None) -> dict:
     elif backend == "hip":
         hw["gfx"] = _gfx_names()
         hw["gpu_names"] = _amd_card_names()
+        if len(ec.hip_counted(hw["gfx"])) > 1:                 # several cards: the one the model runs on picks between builds (#6650)
+            hw["gfx_main"] = ec.hip_main_arch(ec.hip_cards_present(), environ) if os.name != "nt" else ""
     return hw
 
 
