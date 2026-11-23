@@ -347,7 +347,7 @@ def fits(build: str, vram_gib: float | None, ram_gib: float, unified: bool = Fal
 
 
 def recommend(vram_gib: float | None, ram_gib: float, unified: bool = False, ctx: int | None = None,
-              vision: bool = False, *, preference: str = "balanced", igpu: bool = False, arch: str | None = None,
+              vision: bool = False, *, preference: str = "quality", igpu: bool = False, arch: str | None = None,
               parallel: int = 1, extra_vram_gib: float = 0.0, backend: str | None = None,
               desktop: bool = False, ram_free_gib: float | None = None) -> dict:
     """Automatic hardware auto-selection for Inkling-2-Mini (docs/10-GUI-TUI.md + Track 1E):
@@ -386,8 +386,9 @@ def recommend(vram_gib: float | None, ram_gib: float, unified: bool = False, ctx
             else:
                 best = "SQ-10"
         else:
-            # balanced (the default; "speed" is the same): the best build whose experts all sit in the card (the K/V may be in RAM),
-            # else SQ-10.  Experts moved to RAM cost most of the speed (SQ-10 on a 3060: about 35 tok/s resident, 10 tok/s with 2.6 GB in RAM).
+            # balanced (or "speed"; NOT the default: the default stays "quality", the owner prefers the bigger builds and speed on small cards
+            # is for the engine to fix): the best build whose experts all sit in the card (the K/V may be in RAM), else SQ-10.
+            # Experts moved to RAM cost most of the speed today (SQ-10 on a 3060: about 35 tok/s resident, 10 tok/s with 2.6 GB in RAM).
             best = "SQ-10"
             for cand in STRATA_ORDER:
                 pc = place(cand, vram_gib, ram_gib, False, ctx, vision, parallel, extra_vram_gib=extra_vram_gib, backend=backend,

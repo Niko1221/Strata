@@ -42,13 +42,13 @@ class TestInklingFitAndHardwareSelection(unittest.TestCase):
         self.assertEqual(rec_16["mode"], "ram_vram_zero_ssd")
         self.assertTrue(rec_16["fits"])
         self.assertLessEqual(rec_16["placement"]["vram_gb"], 10.6)
-        rec_16_cuda = inkling_fit.recommend(vram_gib=16, ram_gib=32, backend="cuda")
+        rec_16_cuda = inkling_fit.recommend(vram_gib=16, ram_gib=32, backend="cuda", preference="balanced")
         self.assertEqual(rec_16_cuda["build"], "SQ-15")
         self.assertEqual(rec_16_cuda["mode"], "full_vram")
         self.assertGreater(rec_16_cuda["placement"]["host_kv_gb"], 0.5)
-        # a backend that is not named, or HIP, keeps SQ-10 (the K/V grow pool of #6613 has no room beside SQ-15)
+        # "balanced" with a backend that is not named, or HIP, keeps SQ-10 (the K/V grow pool of #6613 has no room beside SQ-15)
         for bkd in (None, "hip"):
-            rec_16_safe = inkling_fit.recommend(vram_gib=16, ram_gib=32, backend=bkd)
+            rec_16_safe = inkling_fit.recommend(vram_gib=16, ram_gib=32, backend=bkd, preference="balanced")
             self.assertEqual(rec_16_safe["build"], "SQ-10", bkd)
             self.assertEqual(rec_16_safe["mode"], "full_vram", bkd)
 
