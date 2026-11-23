@@ -3,21 +3,35 @@ export interface AgentQuestion { id: string; question: string; detail?: string; 
 export interface AgentAsk { callId: string; questions: AgentQuestion[]; agentName?: string }
 export interface AgentAnswer { id: string; selected: string[]; custom?: string }
 
+const isMultiFlag = (v: unknown): boolean => v === true || v === 1 || (typeof v === 'string' && v.trim().toLowerCase() === 'true');
+
 /** Reads the frame of the host defensively: a question that cannot be shown is left out. */
 export function readAsk(frame: { callId?: unknown; questions?: unknown; agentName?: unknown }): AgentAsk | null {
   const callId = typeof frame.callId === 'string' ? frame.callId : '';
+  const seenIds = new Set<string>();
   const questions = (Array.isArray(frame.questions) ? frame.questions : []).flatMap((q): AgentQuestion[] => {
     if (!q || typeof q !== 'object') return [];
     const o = q as Record<string, unknown>;
     if (typeof o.id !== 'string' || !o.id || typeof o.question !== 'string' || !o.question.trim()) return [];
+    let id = o.id;
+    for (let n = 2; seenIds.has(id); n++) id = `${o.id}-${n}`;
+    seenIds.add(id);
+    const seenLabels = new Set<string>();
     const options = (Array.isArray(o.options) ? o.options : []).flatMap((x): { label: string; description?: string }[] => {
       const p = x as Record<string, unknown> | null;
-      return p && typeof p.label === 'string' && p.label ? [{ label: p.label, ...(typeof p.description === 'string' && p.description ? { description: p.description } : {}) }] : [];
+      if (!p || typeof p.label !== 'string' || !p.label || seenLabels.has(p.label)) return [];
+      seenLabels.add(p.label);
+      return [{ label: p.label, ...(typeof p.description === 'string' && p.description ? { description: p.description } : {}) }];
     });
-    return [{ id: o.id, question: o.question, ...(typeof o.detail === 'string' && o.detail ? { detail: o.detail } : {}), ...(typeof o.header === 'string' && o.header ? { header: o.header } : {}), options, multiSelect: o.multiSelect === true }];
+    return [{ id, question: o.question, ...(typeof o.detail === 'string' && o.detail ? { detail: o.detail } : {}), ...(typeof o.header === 'string' && o.header ? { header: o.header } : {}), options, multiSelect: isMultiFlag(o.multiSelect) }];
   });
   const agentName = typeof frame.agentName === 'string' ? frame.agentName.trim().slice(0, 80) : '';
   return callId && questions.length ? { callId, questions, ...(agentName ? { agentName } : {}) } : null;
+}
+
+/** How many questions already have a selected option or custom text. */
+export function answeredCount(questions: readonly AgentQuestion[], answers: Record<string, { selected: string[]; custom: string }>): number {
+  return questions.reduce((n, q) => { const a = answers[q.id]; return n + (a && (a.selected.length > 0 || a.custom.trim().length > 0) ? 1 : 0); }, 0);
 }
 
 /** Whether every question has a choice or the person's own words, so the answer can be sent. */

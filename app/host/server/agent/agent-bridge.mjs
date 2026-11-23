@@ -577,8 +577,8 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
 
     // The model and the chat's thinking level (the Reasoning menu) are sent to the Harness when either changed. A level the route does
     // not have (an API model with its own vocabulary) is dropped and the model's own default stands: never an error for the person.
-    const isHy4Route = route.kind === 'local' && /^hy4-flash/i.test(String(route.modelId ?? ''));
-    const isInklingRoute = route.kind === 'local' && /^inkling-2-mini/i.test(String(route.modelId ?? ''));
+    const isHy4Route = route.kind === 'local' && /^hy4-flash/i.test(String(route.modelId ?? '')) || (route.kind === 'local' && route.arch === 'hy4flash');
+    const isInklingRoute = route.kind === 'local' && (/^inkling-2-mini/i.test(String(route.modelId ?? '')) || route.arch === 'inkling2_loop');
     const rawLevel = isInklingRoute ? 'off' : effortOf(thinking ?? (isHy4Route ? 'High' : 'Medium'));
     const level = isInklingRoute ? 'off' : (isHy4Route && (rawLevel === 'low' || rawLevel === 'medium' || rawLevel === 'minimal') ? 'high' : rawLevel);
     // Response settings the Harness cannot send itself (the thinking budget, the Expert sampling) go through this host's forwarding
@@ -694,6 +694,8 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
           void turn.stopChild(h).catch(e => log(`agent · helper limit: ${e.message}`));
         }
       }
+      const waitingForUser = [...questions.values()].some(q => q.chatId === chatId);
+      if (waitingForUser) { turn.lastActivity = Date.now(); return; }
       const toolRunning = [...projector.tools.values()].some(x => x.card?.state === 'running' || x.card?.state === 'proposed') || pending.size > 0 && pendingFor(chatId).length > 0;
       const limit = toolRunning ? stallToolMs : stallMs;
       const endStalled = sinceMs => {
@@ -727,7 +729,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       if (turn.finished) return;
       turn.finished = true;
       turn.snapshot.resolve();
-      for (const [k, v] of questions) if (v.chatId === chatId) questions.delete(k);
+      for (const [k, v] of questions) if (v.chatId === chatId) { questions.delete(k); emit({ type: 'agent-question-end', callId: v.callId }); }
       for (const [k, v] of pending) if (v.sessionId === sessionId) pending.delete(k);
       clearTimeout(turn.settleTimer);
       clearTimeout(turn.stopDeadline);
@@ -1643,6 +1645,7 @@ ${note.text}
     const outcome = skip ? 'next' : buildAnswer(entry.items, answers);
     await rt.gw.answerEvent({ clientId: entry.clientId ?? rt.clientId, eventId: entry.eventId, outcome });
     questions.delete(key);
+    chats.get(chatId)?.turn?.announceQuestion?.({ type: 'agent-question-end', callId });
     return { ok: true, skipped: !!skip };
   }
 

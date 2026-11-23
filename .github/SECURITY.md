@@ -17,7 +17,7 @@ Supported: the latest release. Fixes go into the next release, not into older on
 ## What the server exposes
 
 Strata runs a model on your PC and serves it over HTTP (`terminal/serve/server.py`). Out of the box it is reachable from
-this PC only. The details and every setting are in [docs/DETAILS.md](../docs/DETAILS.md) ("From other devices",
+this PC only. The details and every setting are in [docs/DETAILS.md](https://github.com/Niko1221/Strata/blob/main/docs/DETAILS.md) ("From other devices",
 "Host names", "Web pages without an API key", "Tools from MCP servers").
 
 - **Where it listens.** `127.0.0.1` by default. `--host 0.0.0.0` (or `"host"` in `strata-<model>.json`) opens it to
@@ -68,7 +68,7 @@ the model. The section above is about the engine's HTTP server. This is what the
   one it accepted (a replayed old feed) or expired, and checks every engine package against its SHA-256, its signed manifest and the
   card in your PC before it test-starts it and switches to it. Any failure keeps the engine you had. The app installer itself is signed
   with a separate key (Tauri's minisign key) that the app and the Terminal both check. The private keys are kept offline by the owner.
-  See [packaging/UPDATES.md](../tools/packaging/UPDATES.md).
+  See [packaging/UPDATES.md](https://github.com/Niko1221/Strata/blob/main/tools/packaging/UPDATES.md).
 
 ### How far to trust `curl | sh` and `irm | iex`
 
@@ -93,4 +93,4 @@ If that is not enough: save the script (`curl -fsSLO --connect-timeout 15 --max-
 run it from the file; or install the desktop app or build from source instead and check the code you build.
 
 Strata has not had an outside security audit yet.
-What Strata downloads, when it uses the internet, what stays on your PC and how downloads are checked is written up in [docs/SAFETY.md](../docs/SAFETY.md).
+What Strata downloads, when it uses the internet, what stays on your PC and how downloads are checked is written up in [docs/SAFETY.md](https://github.com/Niko1221/Strata/blob/main/docs/SAFETY.md).

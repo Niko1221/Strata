@@ -39,5 +39,13 @@
  "ui38": "Escribe tu propia respuesta",
  "ui39": "Enviar respuesta",
  "ui40": "Preguntas para ti",
- "ui41": "Permite que el asistente se detenga y te haga una pregunta, con respuestas para elegir, cuando necesita tu decisión."
+ "ui41": "Permite que el asistente se detenga y te haga una pregunta, con respuestas para elegir, cuando necesita tu decisión.",
+ "ui42": "Selecciona todas las que correspondan",
+ "ui43": "Elige una opción",
+ "ui44": "Añade una nota o detalle adicional (opcional)",
+ "ui45": "Detener al asistente ahora",
+ "ui46": "Omitir esta pregunta y dejar que el asistente continúe",
+ "ui47": "Omitiendo…",
+ "ui48": "Enviando…",
+ "ui49": "Responde la pregunta de arriba para continuar…"
 }
