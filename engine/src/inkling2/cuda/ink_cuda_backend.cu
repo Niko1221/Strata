@@ -10,6 +10,7 @@
 #include "ink_dspark.cuh"
 #include "ink_runner.cuh"
 #include "ink_spec.cuh"
+#include "strata/core/arch_probe.hpp"
 #include "strata/core/volta_forever.hpp"
 
 #include <algorithm>
@@ -61,6 +62,11 @@ __global__ void __launch_bounds__(256) k_ink_gather_rows(
     const float4* s4 = reinterpret_cast<const float4*>(src + (size_t)row * kInkHidden);
     float4* d4 = reinterpret_cast<float4*>(dst + (size_t)k * kInkHidden);
     for (int i = threadIdx.x; i < (kInkHidden / 4); i += 256) d4[i] = s4[i];
+}
+
+// Never launched: cudaFuncGetAttributes() on it says whether this binary holds GPU code for the card (#6759).
+__global__ void k_ink_arch_probe(int* p) {
+    if (p) *p = 1;
 }
 
 }  // namespace strata::ink
@@ -142,6 +148,18 @@ public:
             return false;
         }
         const int sm_cc = prop.major * 10 + prop.minor;
+
+        // A binary built without code for this card (the CUDA 13 packages hold sm_75 and newer) loads fine, then every kernel launch
+        // fails with "no kernel image" without a message and the logits stay 0: token id 0 forever (#6759). Say so before anything loads.
+        {
+            cudaFuncAttributes probe_attr{};
+            const cudaError_t pe = cudaFuncGetAttributes(&probe_attr, reinterpret_cast<const void*>(strata::ink::k_ink_arch_probe));
+            if (pe != cudaSuccess) {
+                cudaGetLastError();
+                err = strata::core::no_gpu_code_message("strata-inkling", prop.name, prop.major, prop.minor, cudaGetErrorString(pe));
+                return false;
+            }
+        }
 
         // Compute exact minimum KV + ShortConv + workspace headroom BEFORE pinning experts!
         // Keep lossless FP16 KV as default when Host KV Offload handles capacity (#552)!
