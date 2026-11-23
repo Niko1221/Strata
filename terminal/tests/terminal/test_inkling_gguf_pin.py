@@ -40,6 +40,41 @@ class GgufPin(unittest.TestCase):
             self.assertGreater(size, 100_000_000, name)
             self.assertEqual(len(sha), 64, name)
 
+    def test_both_layouts_of_a_main_gguf_are_known_the_drafter_has_one(self):
+        # the re-uploaded main files (KL 0.000000, top-1 100 percent against the pinned ones on the same engine, UD-Q4_K_XL, 2000 tokens, 2026-11-23)
+        for name, (size, sha) in F.ALT_GGUF_FILES.items():
+            self.assertIn(name, F.UNSLOTH_GGUF_FILES)
+            self.assertEqual(F.pins_for(name), [F.UNSLOTH_GGUF_FILES[name], (size, sha)])
+            self.assertEqual(size - F.UNSLOTH_GGUF_FILES[name][0], 1280, name)
+            self.assertNotEqual(sha, F.UNSLOTH_GGUF_FILES[name][1])
+        self.assertEqual(F.pins_for(F.DSPARK_GGUF_FILE), [F.UNSLOTH_GGUF_FILES[F.DSPARK_GGUF_FILE]])   # the new drafter layout is not readable
+        self.assertEqual(F.pins_for("Inkling-2-Mini-SQ-10.strata"), [F.FILES["Inkling-2-Mini-SQ-10.strata"]])
+        self.assertEqual(F.pins_for("nothing.gguf"), [])
+
+    def test_setup_accepts_a_file_in_either_layout(self):
+        import hashlib
+        import tempfile
+        from unittest import mock
+        import setup
+        old, new = b"hello", b"hello2"
+        files = {"X.gguf": (len(old), hashlib.sha256(old).hexdigest())}
+        alt = {"X.gguf": (len(new), hashlib.sha256(new).hexdigest())}
+        with tempfile.TemporaryDirectory() as td, mock.patch.object(F, "FILES", files), mock.patch.object(F, "ALT_GGUF_FILES", alt):
+            td = Path(td)
+            for body in (old, new):
+                p = td / ("f-%d" % len(body)) / "X.gguf"
+                p.parent.mkdir()
+                p.write_bytes(body)
+                a = mock.Mock(gguf_dir=None)
+                self.assertTrue(setup.inkling_have(a, p), body)
+                setup.inkling_verify(p, "X.gguf", False)          # passes, no exit
+            bad = td / "bad" / "X.gguf"
+            bad.parent.mkdir()
+            bad.write_bytes(b"hello22")                              # neither size
+            self.assertFalse(setup.inkling_have(mock.Mock(gguf_dir=None), bad))
+            with self.assertRaises(SystemExit):
+                setup.inkling_verify(bad, "X.gguf", False)
+
     def test_an_override_still_wins(self):
         src = F.gguf_sources(env={F.GGUF_SOURCE_ENV: "https://example.org/gguf"})
         self.assertEqual(src[0]["base"], "https://example.org/gguf")

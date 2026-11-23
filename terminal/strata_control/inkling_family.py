@@ -117,6 +117,35 @@ def files_of(build: str, vision: bool = DEFAULT_VISION, dspark: bool = True) -> 
     return out
 
 
+#: The same main GGUFs as Unsloth re-uploaded them on 2026-11-23 14:54 UTC (commit 19bf97a66719d0165f6f8082a9d59581912a3863 "Support mainline llama.cpp"):
+#: +1,280 bytes each, a renamed layout (arch inkling2_loop, 24 physical blocks, loop_*_ctrl_* tensors). The engine loads and answers from them, so a file a
+#: person already has in this form is accepted next to the pinned old one (downloads stay on the pinned commit, resolve/800c946d...). The re-uploaded drafter
+#: (503,889,952 bytes, dflash layout) is NOT listed: the engine cannot read it yet and drops it with a message.
+ALT_GGUF_FILES = {
+    "Inkling-2-Mini-UD-Q8_K_XL.gguf": (22_867_452_896, "2da51788d43a17e1f033bec420fa83ba9cb87ac1f0130dc9135a4d2ed2678b68"),
+    "Inkling-2-Mini-UD-Q4_K_XL.gguf": (17_629_760_736, "e64276656f072e9b2197a61723667cbdb71da66a716ffd966e572c21088f3cd3"),
+    "Inkling-2-Mini-UD-Q4_K_M.gguf": (16_610_544_608, "78fcedcf93c5d1bfe83e225513b71392bb52259be0eaa5f8899c856a2e5834ae"),
+    "Inkling-2-Mini-UD-IQ4_XS.gguf": (15_733_756_512, "374970bf6f151fc50da49419751c3e77b82e373a3b9445ded617bd386cd12163"),
+    "Inkling-2-Mini-UD-Q3_K_XL.gguf": (13_631_779_296, "e2d03e8c92ac21cff0e3309b95f40dfd27d1825184f0d2bc09db249797273639"),
+    "Inkling-2-Mini-UD-IQ3_XXS.gguf": (11_663_310_784, "fd9ccedae17c1bb89744612fbb46730b5275f2a342133d0419776bd1ae311657"),
+    "Inkling-2-Mini-UD-Q2_K_XL.gguf": (9_138_716_608, "b42841608ea380ddde5a3f1125081357128a3c71b80d006246de4e31292fc6c1"),
+    "Inkling-2-Mini-UD-IQ2_XXS.gguf": (8_486_237_632, "2f953a44281cf861b19ccfdb2ce65f7648e1e92bda4af3729893604fd907c544"),
+    "Inkling-2-Mini-UD-IQ1_M.gguf": (8_024_442_304, "af7b45e1c0097fb2602d4c69abf72a009cad78e54201da2265853f5ef11a514a"),
+    "Inkling-2-Mini-UD-IQ1_S.gguf": (7_764_293_056, "17a7ff34acb0e1fe878309962458e0633172c7f93ffe3b1c4f5f6b317dc317db"),
+}
+
+
+def pins_for(name: str) -> list[tuple[int, str | None]]:
+    """Every (bytes, sha256) a file of this name may have: the pinned one first, then the re-uploaded layout for the main GGUFs."""
+    out = []
+    got = FILES.get(name) or TOKENIZER_FILES.get(name)
+    if got:
+        out.append(got)
+    if name in ALT_GGUF_FILES:
+        out.append(ALT_GGUF_FILES[name])
+    return out
+
+
 def size_of(name: str) -> int | None:
     got = FILES.get(name) or TOKENIZER_FILES.get(name)
     return got[0] if got else None
