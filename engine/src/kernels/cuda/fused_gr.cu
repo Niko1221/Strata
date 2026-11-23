@@ -35,6 +35,7 @@ namespace strata::kernels {
 bool rdna_gr_enabled();
 void rdna_gr_read_multi(const FusedGrArgs* a, int n_tok, float* scratch, void* stream,
                         unsigned long long* sb = nullptr, int si = 0);
+void rdna_gr_init();
 }  // namespace strata::kernels
 
 namespace strata::kernels {
@@ -4742,6 +4743,7 @@ void fused_gr_check() {
     int dev = 0;
     cudaGetDevice(&dev);
     (void) gr_v3_default_on(dev);   // decided here, before any graph capture asks
+    rdna_gr_init();                 // HIP, STRATA_GR_FUSED=1: the fused read's barrier word, allocated outside any capture (#6730 / #6760)
 #if !defined(__HIPCC__)
     {
         static bool q8_carve_done[64] = {};

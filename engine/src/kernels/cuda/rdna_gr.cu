@@ -21,6 +21,7 @@ namespace strata::kernels {
 bool rdna_gr_enabled();
 void rdna_gr_read_multi(const FusedGrArgs* a, int n_tok, float* scratch, void* stream,
                         unsigned long long* sb = nullptr, int si = 0);
+void rdna_gr_init();
 
 #if defined(__HIP_PLATFORM_AMD__) && !defined(STRATA_HIP_GFX906)
 namespace {
@@ -506,14 +507,20 @@ __global__ void __launch_bounds__(TH) rdna_gr_fused(RdnaGr m) {
     if (b < UB) up_body<T, true, true>(m, b);
 }
 
+// The fused read is asked for with STRATA_GR_FUSED=1 only (any other value, 0 included, leaves it off and allocates nothing).
+bool gr_fused_requested() {
+    static const bool req = [] {
+        const char* v = std::getenv("STRATA_GR_FUSED");
+        return v != nullptr && v[0] == '1';
+    }();
+    return req;
+}
+
 template <int T>
 void launch_gr(const RdnaGr& m, cudaStream_t st, unsigned long long* sb, int si, int dev) {
     if (sb) gpu_stamp(sb, si, st);
     if (m.a[0].s_down != nullptr && m.a[0].s_up != nullptr) {
-        static const bool fused_req = [] {
-            const char* v = std::getenv("STRATA_GR_FUSED");
-            return v != nullptr && v[0] == '1';
-        }();
+        const bool fused_req = gr_fused_requested();
         constexpr int kFusedBlocks = (LR / (2 * WV) + 1) * 2 * HC;  // 168 blocks
         if (fused_req && m.bar != nullptr && sb == nullptr && dev >= 0 && dev < 64) {
             if (g_gr_can_fuse[dev] == 0) {
@@ -564,6 +571,18 @@ bool rdna_gr_enabled() {
     return arch_ok[dev] == 2;
 }
 
+// Once per card, from the verifier's init (fused_gr_check), outside any stream capture: the fused read's grid barrier word.
+void rdna_gr_init() {
+    if (!gr_fused_requested()) return;
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64 || g_gr_bar[dev] != nullptr) return;
+    unsigned* bar = nullptr;
+    if (cudaMalloc((void**) &bar, 64) == cudaSuccess) {
+        if (cudaMemset(bar, 0, 64) == cudaSuccess) g_gr_bar[dev] = bar;
+        else cudaFree(bar);
+    }
+}
+
 void rdna_gr_read_multi(const FusedGrArgs* a, int n_tok, float* scratch, void* stream,
                         unsigned long long* sb, int si) {
     RdnaGr m;
@@ -572,9 +591,8 @@ void rdna_gr_read_multi(const FusedGrArgs* a, int n_tok, float* scratch, void* s
     m.ss = scratch + (size_t) n_tok * 2 * HC * PR;
     int dev = 0;
     if (cudaGetDevice(&dev) == cudaSuccess && dev >= 0 && dev < 64) {
-        if (g_gr_bar[dev] == nullptr && std::getenv("STRATA_GR_FUSED") != nullptr) {
-            if (cudaMalloc(&g_gr_bar[dev], 64) == cudaSuccess) cudaMemset(g_gr_bar[dev], 0, 64);
-        }
+        // #6730 / #6760: the barrier word is made by rdna_gr_init() before any graph capture; a cudaMalloc here (the first call
+        // is the verifier's capture of its 1-token window) invalidated the capture and the engine exited. No word: the two-kernel read runs.
         m.bar = g_gr_bar[dev];
     }
     cudaStream_t st = (cudaStream_t) stream;
@@ -594,6 +612,7 @@ void rdna_gr_read_multi(const FusedGrArgs* a, int n_tok, float* scratch, void* s
 
 bool rdna_gr_enabled() { return false; }
 void rdna_gr_read_multi(const FusedGrArgs*, int, float*, void*, unsigned long long*, int) {}
+void rdna_gr_init() {}
 
 #endif
 
