@@ -263,6 +263,15 @@ def compute(build: str, vram_gib: float, ram_gib: float, ctx: int | None = None,
     in_vram = min(info["bodies_gb"], gpu_room)
     in_ram = min(info["bodies_gb"] - in_vram, ram_room)
     on_ssd = max(0.0, info["bodies_gb"] - in_vram - in_ram)
+    # A K/V that stays in the card (no room for it in RAM) must fit the card beside the dense weights even with every expert in RAM;
+    # a context whose K/V fits neither is not startable, whatever the experts do.
+    kv_fits = True
+    if not use_host_kv and vram_gb > 0.0:
+        kv_in_card = non_expert_gb(ctx, parallel, vision=vision_in_vram, dspark=dspark, fp8_kv=fp8_kv, hybrid=True,
+                                   host_offload_global_kv=False) - non_expert_gb(
+            ctx, parallel, vision=vision_in_vram, dspark=dspark, fp8_kv=fp8_kv, hybrid=True, host_offload_global_kv=True)
+        kv_fits = (vram_gb - dense_total - non_expert_gb(ctx, parallel, vision=vision_in_vram, dspark=dspark, fp8_kv=fp8_kv, hybrid=True,
+                                                         host_offload_global_kv=True) - kv_in_card) >= 0.0
     return {
         "vram_gb": round(in_vram, 2),
         "ram_gb": round(in_ram, 2),
@@ -271,6 +280,7 @@ def compute(build: str, vram_gib: float, ram_gib: float, ctx: int | None = None,
         "kv_dtype": kv_dtype,
         "kv_offload": "on" if use_host_kv else "off",
         "full_vram": False,
+        "kv_fits": kv_fits,
     }
 
 
@@ -413,6 +423,22 @@ def rows(vram_gib: float | None, ram_gib: float, unified: bool = False, ctx: int
             "mode": mode(placed),
         })
     return out
+
+
+def max_context(build: str, vram_gib: float | None, ram_gib: float, unified: bool = False, *, vision: bool = False,
+                parallel: int = 1, dspark: bool = True, backend: str | None = None, desktop: bool = False,
+                ram_free_gib: float | None = None) -> int:
+    """The largest context (tokens) at which the build still starts with no expert on SSD, the experts that do not fit the card going to RAM
+    (never refused, never a smaller build): 0 when even the smallest context needs the SSD.  The K/V of a longer context goes to RAM
+    first (Host KV Offload), then the experts' share of the card shrinks."""
+    best = 0
+    for c in sorted({*CONTEXTS, 393216, 524288, MAX_CONTEXT}):
+        placed = place(build, vram_gib, ram_gib, unified, c, vision, parallel, dspark, backend=backend, desktop=desktop,
+                       ram_free_gib=ram_free_gib)
+        if placed["ssd_gb"] > 0.05 or not placed.get("kv_fits", True):
+            break
+        best = c
+    return best
 
 
 def disk_gb(build: str, vision: bool = False, dspark: bool = True) -> float:

@@ -59,6 +59,34 @@ class FreeMemoryPlan(unittest.TestCase):
         self.assertAlmostEqual(float(got[3]), 0.85 / 1.073741824, places=2)
 
 
+class MaxContext(unittest.TestCase):
+    def test_a_bigger_model_on_a_smaller_card_is_planned_not_refused(self):
+        # a MoE: the experts that do not fit the card go to RAM; every build gets a context on every card class
+        for free in (3.7, 7.7, 11.63, 15.5):
+            for build in ("SQ-10", "SQ-20", "UD-Q4_K_XL", "UD-Q2_K_XL"):
+                pl = F.place(build, free, 64, False, 32768, backend="cuda", ram_free_gib=56.0)
+                self.assertLessEqual(pl["ssd_gb"], 0.05, (free, build, pl))
+                self.assertGreaterEqual(F.max_context(build, free, 64, False, backend="cuda", ram_free_gib=56.0), 32768, (free, build))
+
+    def test_the_context_follows_the_ram_the_kv_goes_to(self):
+        big = F.max_context("SQ-10", 7.7, 64, False, backend="cuda", ram_free_gib=56.0)
+        small = F.max_context("SQ-10", 7.7, 16, False, backend="cuda", ram_free_gib=10.0)
+        self.assertGreater(big, small)
+        self.assertGreaterEqual(small, 8192)
+        self.assertLessEqual(small, 131072)
+
+    def test_a_kv_that_fits_neither_the_card_nor_ram_is_flagged(self):
+        pl = F.place("SQ-10", 3.7, 16, False, 1048576, backend="cuda", ram_free_gib=10.0)
+        self.assertFalse(pl.get("kv_fits", True), pl)
+        ok = F.place("SQ-10", 3.7, 16, False, 32768, backend="cuda", ram_free_gib=10.0)
+        self.assertTrue(ok.get("kv_fits", True), ok)
+
+    def test_desktop_reserve_never_raises_the_context(self):
+        for build in ("SQ-10", "SQ-20"):
+            self.assertLessEqual(F.max_context(build, 7.7, 64, False, backend="cuda", desktop=True, ram_free_gib=56.0),
+                                 F.max_context(build, 7.7, 64, False, backend="cuda", ram_free_gib=56.0))
+
+
 class SetupReadsFreeMemory(unittest.TestCase):
     def test_ram_free_gb_linux_reads_memavailable(self):
         meminfo = "MemTotal:       65843200 kB\nMemFree:         1000000 kB\nMemAvailable:   33554432 kB\n"
