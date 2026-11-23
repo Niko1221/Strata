@@ -2265,6 +2265,9 @@ struct InkCudaRunner {
     bool ensure_global_kv_cap(int needed_pos) {
         if (needed_pos <= kv_alloc_ctx) return true;
         if (needed_pos > max_ctx) return false;
+        // Once the tail has spilled to mapped host RAM the cache is not grown again: the re-allocation below copies
+        // VRAM-only buffers of kv_alloc_ctx positions.
+        if (kv_host_ctx != 0) return false;
         const int old_cap = kv_alloc_ctx;
         int new_cap = std::min(max_ctx, std::max(needed_pos, ((old_cap + 8191) / 8192 + 1) * 8192));
         new_cap = std::min(max_ctx, ((new_cap + 63) & ~63));
@@ -2281,11 +2284,21 @@ struct InkCudaRunner {
             const int dev = m.ls_active ? m.stage_gpu[s] : m.primary_gpu;
             if (ink_cuda_mem_info(&vf, &vt, dev) != cudaSuccess) return false;
             const size_t floor_b = 256ull << 20;
-            const size_t need_b = (size_t)n_glob_s * max_slots * new_cap * per_pos;
+            // The growth below re-allocates one global visit at a time (new buffer, copy, free the old one), so at
+            // its peak this device holds the grown visits plus one old buffer that is not freed yet: the net growth
+            // of its n_glob_s visits plus one visit at the old capacity, not the whole new cache.
+            const size_t old_visit_b = (size_t)max_slots * old_cap * per_pos;
+            auto need_for = [&](int cap) {
+                return (size_t)n_glob_s * max_slots * (size_t)(cap - old_cap) * per_pos + old_visit_b;
+            };
+            const size_t need_b = need_for(new_cap);
             if (vf <= floor_b + need_b) {
                 const int tight_cap = std::min(max_ctx, ((needed_pos + 255) & ~255));
-                const size_t tight_b = (size_t)n_glob_s * max_slots * tight_cap * per_pos;
+                const size_t tight_b = need_for(tight_cap);
                 if (vf <= floor_b + tight_b) {
+                    std::fprintf(stderr, "[InkCUDA] Cannot grow elastic global KV %d -> %d tokens on GPU %d: %.0f MiB free, "
+                                         "growth needs %.0f MiB + %.0f MiB floor\n", old_cap, tight_cap, dev,
+                                 (double)vf / 1048576.0, (double)tight_b / 1048576.0, (double)floor_b / 1048576.0);
                     // VRAM cannot grow global KV further: seamlessly spill tail [kv_dev_ctx..new_cap-1] into mapped pinned host RAM!
                     if (kv_offload_mode >= 0 && kv_host_ctx == 0) {
                         const int hcap = new_cap - kv_dev_ctx;
