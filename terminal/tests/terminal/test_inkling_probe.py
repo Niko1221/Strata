@@ -2,6 +2,7 @@
 the probe driver on a fake engine, and how the run config's "auto" uses it."""
 import sys
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -70,7 +71,8 @@ class Placement(unittest.TestCase):
         self.assertEqual(key, P.placement_key(moved))
         def changed(**kw):
             return P.placement_key(dict(self.BASE, **kw))
-        self.assertNotEqual(key, changed(parallel=4))
+        self.assertEqual(key, changed(parallel=4))             # the slot count is not part of it (see placement_key)
+        self.assertEqual(key, changed(parallel=32, args=self.BASE["args"] + ["--parallel", "32"]))
         self.assertNotEqual(key, changed(gpu=1))
         self.assertNotEqual(key, changed(backend="hip"))
         self.assertNotEqual(key, changed(args=["--native", "/m/Inkling-2-Mini-SQ-15.strata", "--max-context", "32768", "--vram-experts-gb", "2.99",
@@ -87,7 +89,7 @@ class Placement(unittest.TestCase):
         P.record(cfg, {"decision": "on", "key": P.placement_key(cfg), "gains": {"code": 1.4, "chat": 1.1}})
         self.assertFalse(P.is_stale(cfg))
         self.assertEqual(P.decision_of(cfg), "on")
-        cfg["parallel"] = 4                                  # the placement changed: measure again
+        cfg["backend"] = "hip"                              # the placement changed: measure again
         self.assertTrue(P.is_stale(cfg))
         self.assertIsNone(P.decision_of(cfg))
         self.assertIn("measured for another placement", P.note(cfg))
@@ -173,8 +175,28 @@ class RunConfig(unittest.TestCase):
             self.assertFalse(inkling_kind.needs_drafting_probe(cfg))
             P.record(cfg, {"decision": "off", "key": P.placement_key(cfg), "gains": {"code": 0.8, "chat": 0.7}})
             self.assertFalse(inkling_kind.wants_drafter(cfg))
-            cfg["parallel"] = 4                              # another placement: measure again
+            cfg["args"] = cfg["args"] + ["--vram-experts-gb", "3.5"]     # another placement: measure again
             self.assertTrue(inkling_kind.needs_drafting_probe(cfg))
+
+    def test_a_probe_made_at_one_slot_holds_for_the_slots_of_the_real_start(self):
+        # rc1 regression (GRID, spark2): the launch's slot count is a profile override, so the hook probed the file config (parallel 1) and the start,
+        # with parallel 4 or 32, found no valid probe and ran with --draft off. 0.2.20 started --parallel 4 --draft dspark.
+        for backend in ("cuda", "hip", "metal"):
+            file_cfg = dict(self.CFG, backend=backend)
+            P.record(file_cfg, {"decision": "on", "key": P.placement_key(file_cfg), "gains": {"code": 1.73, "chat": 1.12}})
+            for slots in (2, 4, 32):
+                effective = dict(file_cfg, parallel=slots)                       # file + override, what the server starts from
+                self.assertFalse(inkling_kind.needs_drafting_probe(effective), (backend, slots))
+                self.assertTrue(inkling_kind.wants_drafter(effective), (backend, slots))
+                with mock.patch.object(inkling_kind, "probe", return_value={"arch": "x", "drafter": "dspark", "spec_opts": "1"}):
+                    args = inkling_kind.engine_args(dict(effective), "/e/strata-inkling", announce=False)
+                self.assertIn("--parallel", args)
+                self.assertEqual(args[args.index("--draft") + 1], "dspark", (backend, slots))
+            off = dict(file_cfg)
+            P.record(off, {"decision": "off", "key": P.placement_key(off), "gains": {"code": 0.9, "chat": 0.8}})
+            with mock.patch.object(inkling_kind, "probe", return_value={"arch": "x", "drafter": "dspark"}):
+                args = inkling_kind.engine_args(dict(off, parallel=4), "/e/strata-inkling", announce=False)
+            self.assertEqual(args[args.index("--draft") + 1], "off")           # an "off" decision is honoured at any slot count too
 
     def test_an_explicit_choice_is_never_overruled_and_an_explicit_off_never_probes(self):
         cfg = dict(self.CFG, drafting="auto")

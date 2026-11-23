@@ -41,7 +41,7 @@ REPS = 2               # requests per prompt and arm; the median is used
 READY_TIMEOUT = 900.0
 STEP_TIMEOUT = 300.0
 ON_ARGS = ["--draft", "dspark", "--draft-beam", "1", "--draft-adapt"]   # what a drafting run config starts with (inkling_kind.drafter_args)
-_PLACEMENT_FLAGS = ("--native", "--max-context", "--parallel", "--vram-experts-gb", "--ram-experts-gb", "--ssd-experts", "--kv", "--kv-offload",
+_PLACEMENT_FLAGS = ("--native", "--max-context", "--vram-experts-gb", "--ram-experts-gb", "--ssd-experts", "--kv", "--kv-offload",
                     "--vision", "--gpus", "--layer-split", "--dspark")
 
 
@@ -61,15 +61,18 @@ def decide(gains: dict, margin: float = MARGIN) -> str:
 
 
 def placement_key(cfg: dict) -> str:
-    """What a probe is valid for: the model file, context, parallel slots, expert placement, K/V, vision, GPU choice and backend of the run config.
-    A different value means the numbers no longer describe the run, so the probe is made again."""
+    """What a probe is valid for: the model file, context, expert placement, K/V, vision, GPU choice and backend of the run config.
+    A different value means the numbers no longer describe the run, so the probe is made again.
+    NOT the slot count (2026-11-23, rc1 regression): the engine drafts only while exactly one request is active, so the probe, which decodes one request, describes
+    a lone request at 1 slot and at 32 alike, and what the slots change in memory is already in the flags above. The slot count is a profile override of
+    `strata launch`: the probe hook reads the run config FILE (parallel 1) and the real start reads the file plus the override (parallel 4), so a key with
+    the slot count never matched at the start and every launch above 1 slot ran with `--draft off`."""
     args = [str(a) for a in (cfg.get("args") or [])]
     picked: dict[str, str] = {}
     for i, a in enumerate(args):
         if a in _PLACEMENT_FLAGS:
             nxt = args[i + 1] if i + 1 < len(args) and not args[i + 1].startswith("--") else ""
             picked[a] = os.path.basename(nxt) if a in ("--native", "--vision", "--dspark") else nxt
-    picked["parallel"] = str(cfg.get("parallel") or picked.get("--parallel") or 1)
     picked["backend"] = str(cfg.get("backend") or "cuda")
     picked["gpu"] = json.dumps(cfg.get("gpu"), sort_keys=True)
     return hashlib.sha1(json.dumps(picked, sort_keys=True).encode()).hexdigest()[:16]
