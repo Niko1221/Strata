@@ -990,15 +990,17 @@ std::unique_ptr<InkBackend> make_cuda_backend() {
 }
 
 bool ink_cuda_q8f_supported(int gpu_index) {
-    int major = 0;
-    if (cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, gpu_index < 0 ? 0 : gpu_index) != cudaSuccess) {
+    int major = 0, minor = 0;
+    const int dev = gpu_index < 0 ? 0 : gpu_index;
+    if (cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) != cudaSuccess ||
+        cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev) != cudaSuccess) {
         cudaGetLastError();
         return false;
     }
-    // sm_120 / sm_121 (Blackwell, major 12) keep the BF16 dense matrices: the int8 GEMM was measured slower there at one token (UD-Q4_K_XL decode on an
-    // RTX 5090 98 tok/s against 133 with BF16, SQ-20 unchanged); the Ampere / Ada gain (+7..10% on sm_86) is not lost by this. The terminal planner
-    // (inkling_fit.py, Q8_DENSE_MAX_SM) uses the same cut.
-    return major >= 8 && major != 12;
+    // The int8 tensor-core dense GEMM wins at one token on consumer Ampere (sm_86: +7..10% decode on an RTX A6000) and loses on the cards whose
+    // memory system the BF16 GEMV already saturates: RTX 4090 (sm_89) 95.4 against 103.7 tok/s at C1 (UD-Q4_K_XL, 8 slots equal), RTX 5090 (sm_120)
+    // 98 against 133. sm_80 (A100) is unmeasured and stays on BF16. The terminal planner (inkling_fit.py, Q8_DENSE_SMS) uses the same set.
+    return major == 8 && minor == 6;
 }
 
 }  // namespace ink2
