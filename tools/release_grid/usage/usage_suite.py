@@ -667,7 +667,7 @@ def case_parallel(c, a):
                     continue
                 t = r["text"].lower()
                 if w not in t:
-                    cross.append("client %d: its secret word %s is missing" % (i, w))
+                    cross.append("client %d (job %d): its secret word %s is missing; reply starts: %r" % (i, (i + k) % 3, w, r["text"][:80]))
                 for other in words:
                     o = other + str((i + 1) % 8)
                     if o != w and re.search(r"\b%s\b" % re.escape(o), t):
