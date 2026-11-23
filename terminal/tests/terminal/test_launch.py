@@ -804,6 +804,17 @@ class AdoptRules(unittest.TestCase):
             path = r.adopt_prepared_files("no NVIDIA GPU found (nvidia-smi did not answer)")
             self.assertTrue(path.is_file())
             self.assertTrue(r.notices and "wrote the run settings itself" in r.notices[0])
+            for key in ("mcp_servers", "mcpServers"):
+                with self.subTest(key=key):
+                    edited = json.loads(path.read_text())
+                    edited.pop("mcp_servers", None)
+                    edited.pop("mcpServers", None)
+                    overrides = {key: {"workspace-tools": {"url": "http://127.0.0.1:3000/mcp"}}, "mcp": {"timeout_s": 60}}
+                    path.write_text(json.dumps({**edited, **overrides}), encoding="utf-8")
+
+                    self.assertEqual(r.adopt_prepared_files("no NVIDIA GPU found"), path)
+                    saved = json.loads(path.read_text())
+                    self.assertEqual({k: saved[k] for k in overrides}, overrides)
             self.assertIsNone(r.adopt_prepared_files("not enough free disk space"))
             from strata_cli.launch.runner import LaunchError
             r2 = Runner(S.LaunchSettings(family="qwen", model="IQ3_S", context=32768, data_dir=str(d)), catalog=cat)
