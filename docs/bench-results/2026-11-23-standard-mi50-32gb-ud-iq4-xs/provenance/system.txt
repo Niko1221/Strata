@@ -1,0 +1,65 @@
+=== CPU / topology ===
+CPU(s):                                  12
+Modellname:                              AMD Ryzen 5 5600X 6-Core Processor
+Thread(s) pro Kern:                      2
+L1d Cache:                               192 KiB (6 Instanzen)
+L2 Cache:                                3 MiB (6 Instanzen)
+L3 Cache:                                32 MiB (1 Instanz)
+NUMA-Knoten:                             1
+NUMA-Knoten0 CPU(s):                     0-11
+
+=== RAM ===
+MemTotal:       65751816 kB
+MemAvailable:   10929516 kB
+SwapTotal:      131502908 kB
+DIMMs: 4 x 16 GiB DDR4, speed 3600 MT/s, configured 3600 MT/s, 1.2 V (dmidecode -t memory)
+Channels: dual channel, 2 DIMMs per channel (4 slots on AM4)
+Measured triad: 27.7 GB/s (6 threads, idle; 26.9 at 12 threads; 24.8 during a concurrent download)
+
+=== kernel / IOMMU ===
+Linux 7.2.15-1-omarchy x86_64
+kernel cmdline (relevant): amdgpu.ppfeaturemask=0xffffffff zswap.enabled=0 quiet splash; LUKS/root flags redacted
+iommu_groups=35 (IOMMU enabled)
+amdgpu params: ppfeaturemask=0xffffffff runpm=-1 aspm=-1 sched_policy=0
+
+=== MI50 32GB (compute) ===
+pci=0000:2f:00.0  driver=amdgpu
+link=16.0 GT/s PCIe 16 (engine probe: 28.6 GB/s host->device)
+vbios=113-D1631711-100  (full: 016.004.000.064.016969 [2021/05/07])
+vram=34342961152 bytes
+power_cap=130000000  power_cap_max=225000000  perf_level=auto
+sustained: sclk 1485-1725 MHz, junction 86-91 C, fan on motherboard nct6797 pwm4=89 (~684 rpm)
+
+=== RX 5700 XT (display only) ===
+pci=0000:25:00.0
+link=16.0 GT/s PCIe 16 
+vram=8573157376 bytes  vbios=113-1E4112U-O45
+
+=== storage ===
+nvme0n1 953,9G XG7000-1TB 2280
+expert load measured: 2.89 GiB/s
+
+=== cooling services ===
+active
+active
+
+=== software ===
+7.2.4
+AMD clang version 22.0.0git (/srcdest/rocm-llvm f58b06dce1f9c15707c5f808fd002e18c2accf7e)
+cmake version 4.4.4
+gcc (GCC) 16.2.1 20260810
+
+=== python (server venv) ===
+Python 3.14.8
+certifi==2026.11.20
+charset-normalizer==3.5.2
+idna==3.20
+Jinja2==3.1.6
+MarkupSafe==3.0.4
+numpy==2.5.5
+regex==2026.11.19
+requests==2.34.2
+urllib3==2.8.0
+
+=== launcher ===
+strata 0.2.16 (build 0.1.62; python 3.12.15 at <home>/.local/share/strata/components/control/0.1.62/python/bin/python3.12)

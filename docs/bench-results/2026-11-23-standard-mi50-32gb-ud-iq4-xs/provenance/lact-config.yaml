@@ -1,0 +1,24 @@
+version: 7
+daemon:
+  log_level: info
+  admin_group: wheel
+  disable_clocks_cleanup: false
+apply_settings_timer: 5
+gpus:
+  1002:731F-1DA2:E411-0000:2f:00.0:
+    fan_control_enabled: false
+    gpu_vf_curve:
+      2:
+        voltage: 1075
+        clockspeed: 2000
+  1002:731F-1DA2:E411-0000:25:00.0:
+    fan_control_enabled: false
+    gpu_vf_curve:
+      2:
+        voltage: 1075
+        clockspeed: 2000
+  1002:66A1-1002:0834-0000:2f:00.0:
+    fan_control_enabled: false
+    power_cap: 130.0
+current_profile: null
+auto_switch_profiles: false

@@ -1,0 +1,37 @@
+{
+ "source_commit": "c6f6427d9de9016fd92d13e29740f65625261df7",
+ "source_date": "2026-11-22T11:11:00+01:00",
+ "engine_version": "0.1.65",
+ "binary_sha256": "4767692562180e5d865bc1f5311fcdabffccbb72b0d7f45841f61a96ce0e20de",
+ "build_kind": "source build (not a release package)",
+ "cmake": [
+  "-S engine -B build-906",
+  "-G Unix Makefiles",
+  "-DSTRATA_HIP_GFX906=ON",
+  "-DCMAKE_HIP_ARCHITECTURES=gfx906",
+  "-DCMAKE_C_COMPILER=/opt/rocm/llvm/bin/clang",
+  "-DCMAKE_CXX_COMPILER=/opt/rocm/llvm/bin/clang++",
+  "-DSTRATA_BUILD_INKLING2=OFF",
+  "-DCMAKE_BUILD_TYPE=Release",
+  "-DCMAKE_CXX_FLAGS=-include <lab>/hip_host_fix.h (file contents in commands.md)"
+ ],
+ "patches": [
+  "STRATA_BUILD_INKLING2=OFF: the inkling2 subproject enables CUDA and fails without nvcc",
+  "host prelude that includes hip/hip_runtime.h and #undef __noinline__ before <format>: GCC 16 libstdc++ uses [[__gnu__::__noinline__]], which the HIP host_defines macro breaks"
+ ],
+ "compiler": {
+  "hipcc": "AMD clang 22.0.0",
+  "rocm": "7.2.4 (Arch packages)",
+  "gcc_headers": "16.2.1",
+  "cmake": "4.4.4"
+ },
+ "gfx906_notes": "rocBLAS gfx906 kernels present in /opt/rocm/lib/rocblas/library; hipBLASLt has no gfx906 kernels and is not used",
+ "model_preparation": {
+  "pack": "iq_pack.py --gguf ...-00001-of-00004.gguf --out packs/ud_iq4_xs --compat-bf16",
+  "pack_hashes": "provenance/hashes.txt",
+  "expert_profile": "terminal/data/expert-profile.bin, shipped profile, 24576 ranked pairs",
+  "draft_vocab": "latin subset (terminal/data/draft_vocab_latin.bin -> mtp/rt/draft_vocab.bin)",
+  "mtp": "tools/mtp_fetch.py from Qwen/Qwen3.8-Flash-Next revision de4b8e4d43b917e7706784d8bb445c9af86a3540, verified per tensor; mtp_pack.py --experts q2_0; mtp_rt.py",
+  "vision_reader": "not used in this run (images off); built separately"
+ }
+}
