@@ -6,7 +6,30 @@
 #include <cstring>
 #include <vector>
 
-#if defined(__AVX512F__) && defined(__AVX512VNNI__) && defined(__AVX512BW__)
+#if defined(STRATA_SK_TIER_NS)
+#define STRATA_SK_NS_OPEN namespace strata::quant::sk::STRATA_SK_TIER_NS {
+#define STRATA_SK_NS_CLOSE }
+#else
+#define STRATA_SK_NS_OPEN namespace strata::quant::sk {
+#define STRATA_SK_NS_CLOSE }
+#endif
+
+// Runtime-tiered x86 build (STRATA_SK_X86_TIERS, set by the CMake of the engines): this file is compiled three times, through the wrappers
+// sk_codecs_base.cpp / x86/sk_codecs_avx2.cpp / x86/sk_codecs_avx512.cpp, each with its own instruction-set flags and its own namespace
+// (strata::quant::sk::base / ::avx2 / ::avx512), and sk_dispatch.cpp picks one from strata::quant::caps() at run time.  So a CPU without AVX2
+// never executes an AVX2 instruction of this file (the SIGILL class of #6618), and no -march=native build host leaks wider code into the base
+// tier (STRATA_SK_TIER_BASE forces plain C++).  The tier files are built with -ffp-contract=off: the float steps are the base tier's
+// operations in the base tier's order, and the integer sums are exact in every tier, so the S_K dot products are BIT-identical across tiers.
+// Without STRATA_SK_X86_TIERS (hy4flash, Metal, the SYCL script) the file is one compile-time-selected TU in strata::quant::sk, as before.
+#if defined(STRATA_SK_TIER_BASE)
+// plain C++ (no SIMD include)
+#elif defined(STRATA_SK_TIER_AVX512)
+#include <immintrin.h>
+#define STRATA_SK_AVX512_VNNI 1
+#elif defined(STRATA_SK_TIER_AVX2)
+#include <immintrin.h>
+#define STRATA_SK_AVX2 1
+#elif defined(__AVX512F__) && defined(__AVX512VNNI__) && defined(__AVX512BW__)
 #include <immintrin.h>
 #define STRATA_SK_AVX512_VNNI 1
 #elif defined(__AVX2__)
@@ -23,7 +46,7 @@
 #define STRATA_SK_NEON_DOTPROD 1
 #endif
 
-namespace strata::quant::sk {
+STRATA_SK_NS_OPEN
 namespace {
 
 inline float fp16_to_fp32(uint16_t h) noexcept {
@@ -159,7 +182,21 @@ inline int32_t dot_i8_i8_64(const int8_t* w, const int8_t* x) noexcept {
     __m512i vwu = _mm512_xor_si512(vw, bias);  // w + 128 in u8
     __m512i acc = _mm512_dpbusd_epi32(_mm512_setzero_si512(), vwu, vx);
     __m512i sumx = _mm512_dpbusd_epi32(_mm512_setzero_si512(), _mm512_set1_epi8(1), vx);
-    return _mm512_reduce_add_epi32(acc) - 128 * _mm512_reduce_add_epi32(sumx);
+    return _mm512_reduce_add_epi32(_mm512_sub_epi32(acc, _mm512_slli_epi32(sumx, 7)));   // acc - 128 * sumx, one reduction
+#elif defined(STRATA_SK_AVX2)
+    // |w| as u8 against sign(x, w): the product of each pair stays within int16 (|w| <= 128, |x| <= 127), so VPMADDUBSW is exact
+    const __m256i w0 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(w));
+    const __m256i w1 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(w + 32));
+    const __m256i x0 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(x));
+    const __m256i x1 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(x + 32));
+    const __m256i p0 = _mm256_maddubs_epi16(_mm256_abs_epi8(w0), _mm256_sign_epi8(x0, w0));
+    const __m256i p1 = _mm256_maddubs_epi16(_mm256_abs_epi8(w1), _mm256_sign_epi8(x1, w1));
+    const __m256i ones = _mm256_set1_epi16(1);
+    const __m256i s = _mm256_add_epi32(_mm256_madd_epi16(p0, ones), _mm256_madd_epi16(p1, ones));
+    __m128i a = _mm_add_epi32(_mm256_castsi256_si128(s), _mm256_extracti128_si256(s, 1));
+    a = _mm_hadd_epi32(a, a);
+    a = _mm_hadd_epi32(a, a);
+    return _mm_cvtsi128_si32(a);
 #elif defined(STRATA_SK_NEON_DOTPROD)
     if (sk_has_neon_dp()) return dot_i8_i8_64_neon_dp(w, x);
     int32_t s = 0;
@@ -171,6 +208,43 @@ inline int32_t dot_i8_i8_64(const int8_t* w, const int8_t* x) noexcept {
     return s;
 #endif
 }
+
+#if defined(STRATA_SK_AVX2)
+// AVX2 unpackers (the integer results are the same as the scalar loops': exact).  16 bytes of 2-bit fields -> 64 u8 in two ymm
+// (element 4i + k = bits 2k..2k+1 of byte i); 32 bytes of nibbles -> 64 u8 (element 2i = low nibble of byte i); 8 bytes = 64 flag bits
+// (element j <- bit j) -> `value` in the flagged bytes of two ymm.
+inline void sk_avx2_2bit_16(const uint8_t* p, __m256i& u0, __m256i& u1) noexcept {
+    const __m128i v  = _mm_loadu_si128(reinterpret_cast<const __m128i*>(p));
+    const __m128i m3 = _mm_set1_epi8(3);
+    const __m128i a0 = _mm_and_si128(v, m3);
+    const __m128i a1 = _mm_and_si128(_mm_srli_epi16(v, 2), m3);
+    const __m128i a2 = _mm_and_si128(_mm_srli_epi16(v, 4), m3);
+    const __m128i a3 = _mm_and_si128(_mm_srli_epi16(v, 6), m3);
+    const __m128i p01l = _mm_unpacklo_epi8(a0, a1), p01h = _mm_unpackhi_epi8(a0, a1);
+    const __m128i p23l = _mm_unpacklo_epi8(a2, a3), p23h = _mm_unpackhi_epi8(a2, a3);
+    u0 = _mm256_set_m128i(_mm_unpackhi_epi16(p01l, p23l), _mm_unpacklo_epi16(p01l, p23l));
+    u1 = _mm256_set_m128i(_mm_unpackhi_epi16(p01h, p23h), _mm_unpacklo_epi16(p01h, p23h));
+}
+inline void sk_avx2_nibbles_32(const uint8_t* p, __m256i& u0, __m256i& u1) noexcept {
+    const __m256i v   = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(p));
+    const __m256i m0f = _mm256_set1_epi8(0x0F);
+    const __m256i lo  = _mm256_and_si256(v, m0f);
+    const __m256i hi  = _mm256_and_si256(_mm256_srli_epi16(v, 4), m0f);
+    const __m256i ul  = _mm256_unpacklo_epi8(lo, hi);
+    const __m256i uh  = _mm256_unpackhi_epi8(lo, hi);
+    u0 = _mm256_permute2x128_si256(ul, uh, 0x20);
+    u1 = _mm256_permute2x128_si256(ul, uh, 0x31);
+}
+inline void sk_avx2_flag_bytes_8(const uint8_t* p8, int value, __m256i& f0, __m256i& f1) noexcept {
+    const __m256i t = _mm256_broadcastsi128_si256(_mm_loadl_epi64(reinterpret_cast<const __m128i*>(p8)));
+    const __m256i idx0 = _mm256_setr_epi8(0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3);
+    const __m256i idx1 = _mm256_setr_epi8(4, 4, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 5, 5, 5, 5, 6, 6, 6, 6, 6, 6, 6, 6, 7, 7, 7, 7, 7, 7, 7, 7);
+    const __m256i sel = _mm256_set1_epi64x(static_cast<long long>(0x8040201008040201ull));
+    const __m256i val = _mm256_set1_epi8(static_cast<char>(value));
+    f0 = _mm256_and_si256(_mm256_cmpeq_epi8(_mm256_and_si256(_mm256_shuffle_epi8(t, idx0), sel), sel), val);
+    f1 = _mm256_and_si256(_mm256_cmpeq_epi8(_mm256_and_si256(_mm256_shuffle_epi8(t, idx1), sel), sel), val);
+}
+#endif
 
 inline void unpack_s2k_sb(const uint8_t* pl, uint8_t q[256]) noexcept {
 #if defined(STRATA_SK_AVX512_VNNI)
@@ -192,6 +266,13 @@ inline void unpack_s2k_sb(const uint8_t* pl, uint8_t q[256]) noexcept {
         _mm512_storeu_si512(q + c * 64, packed);
     }
     (void)v; (void)m3;
+#elif defined(STRATA_SK_AVX2)
+    for (int c = 0; c < 4; ++c) {
+        __m256i u0, u1;
+        sk_avx2_2bit_16(pl + c * 16, u0, u1);
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(q + c * 64), u0);
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(q + c * 64 + 32), u1);
+    }
 #else
     for (int i = 0; i < 64; ++i) {
         const uint8_t b = pl[i];
@@ -215,6 +296,14 @@ inline void unpack_s3k_sb(const uint8_t* pl, uint8_t q[256]) noexcept {
         vq = _mm512_mask_or_epi32(vq, static_cast<__mmask16>(0), vq, vq); // no-op, use byte mask below
         __m512i hi = _mm512_maskz_mov_epi8(static_cast<__mmask64>(mask64), bit4);
         _mm512_storeu_si512(q + c * 64, _mm512_or_si512(vq, hi));
+    }
+#elif defined(STRATA_SK_AVX2)
+    for (int c = 0; c < 4; ++c) {
+        __m256i u0, u1, f0, f1;
+        sk_avx2_2bit_16(pl + c * 16, u0, u1);
+        sk_avx2_flag_bytes_8(pl + 64 + c * 8, 4, f0, f1);
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(q + c * 64), _mm256_or_si256(u0, f0));
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(q + c * 64 + 32), _mm256_or_si256(u1, f1));
     }
 #else
     const uint8_t* p_lo = pl;
@@ -244,6 +333,13 @@ inline void unpack_s4k_sb(const uint8_t* pl, uint8_t q[256]) noexcept {
         __m512i q1 = _mm512_slli_epi16(_mm512_srli_epi16(w, 4), 8);
         _mm512_storeu_si512(q + c * 64, _mm512_or_si512(q0, q1));
     }
+#elif defined(STRATA_SK_AVX2)
+    for (int c = 0; c < 4; ++c) {
+        __m256i u0, u1;
+        sk_avx2_nibbles_32(pl + c * 32, u0, u1);
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(q + c * 64), u0);
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(q + c * 64 + 32), u1);
+    }
 #else
     for (int i = 0; i < 128; ++i) {
         const uint8_t b = pl[i];
@@ -264,6 +360,14 @@ inline void unpack_s5k_sb(const uint8_t* pl, uint8_t q[256]) noexcept {
         __m512i vq = _mm512_loadu_si512(q + c * 64);
         __m512i hi = _mm512_maskz_mov_epi8(static_cast<__mmask64>(mask64), bit16);
         _mm512_storeu_si512(q + c * 64, _mm512_or_si512(vq, hi));
+    }
+#elif defined(STRATA_SK_AVX2)
+    for (int c = 0; c < 4; ++c) {
+        __m256i u0, u1, f0, f1;
+        sk_avx2_nibbles_32(pl + c * 32, u0, u1);
+        sk_avx2_flag_bytes_8(pl + 128 + c * 8, 16, f0, f1);
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(q + c * 64), _mm256_or_si256(u0, f0));
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(q + c * 64 + 32), _mm256_or_si256(u1, f1));
     }
 #else
     const uint8_t* p_lo = pl;
@@ -292,6 +396,14 @@ inline void unpack_s6k_sb(const uint8_t* pl, uint8_t q[256]) noexcept {
         __m512i vh = _mm512_slli_epi16(_mm512_loadu_si512(hi + c * 64), 4);
         vh = _mm512_and_si512(vh, _mm512_set1_epi8(0x30));
         _mm512_storeu_si512(q + c * 64, _mm512_or_si512(vq, vh));
+    }
+#elif defined(STRATA_SK_AVX2)
+    for (int c = 0; c < 4; ++c) {
+        __m256i u0, u1, h0, h1;
+        sk_avx2_nibbles_32(pl + c * 32, u0, u1);
+        sk_avx2_2bit_16(pl + 128 + c * 16, h0, h1);   // fields 0..3 in every byte: a 16-bit shift by 4 moves no bit across a byte
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(q + c * 64), _mm256_or_si256(u0, _mm256_slli_epi16(h0, 4)));
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(q + c * 64 + 32), _mm256_or_si256(u1, _mm256_slli_epi16(h1, 4)));
     }
 #else
     const uint8_t* p_lo = pl;
@@ -541,7 +653,7 @@ void gemm_sk_q8_1(
         for (size_t r = 0; r < nrows; ++r) {
             const uint8_t* row = weights + r * row_bytes;
             if (m_tile == 1) {
-                out[t0 * nrows + r] = dot_sk_q8_1_row(row, code, xs + t0 * x_stride, ncols);
+                out[t0 * nrows + r] = (dot_sk_q8_1_row)(row, code, xs + t0 * x_stride, ncols);   // (f)(...): no ADL, so a tier calls its own copy, not the public dispatcher
                 continue;
             }
             float acc[16]{};
@@ -829,6 +941,57 @@ void dequant_mx8_row(
     }
 }
 
+float dot_f32(const float* a, const float* b, size_t n) noexcept {
+    size_t i = 0;
+#if defined(STRATA_SK_AVX512_VNNI)
+    __m512 s0 = _mm512_setzero_ps(), s1 = _mm512_setzero_ps(), s2 = _mm512_setzero_ps(), s3 = _mm512_setzero_ps();
+    for (; i + 64 <= n; i += 64) {
+        s0 = _mm512_fmadd_ps(_mm512_loadu_ps(a + i), _mm512_loadu_ps(b + i), s0);
+        s1 = _mm512_fmadd_ps(_mm512_loadu_ps(a + i + 16), _mm512_loadu_ps(b + i + 16), s1);
+        s2 = _mm512_fmadd_ps(_mm512_loadu_ps(a + i + 32), _mm512_loadu_ps(b + i + 32), s2);
+        s3 = _mm512_fmadd_ps(_mm512_loadu_ps(a + i + 48), _mm512_loadu_ps(b + i + 48), s3);
+    }
+    for (; i + 16 <= n; i += 16) s0 = _mm512_fmadd_ps(_mm512_loadu_ps(a + i), _mm512_loadu_ps(b + i), s0);
+    float s = _mm512_reduce_add_ps(_mm512_add_ps(_mm512_add_ps(s0, s1), _mm512_add_ps(s2, s3)));
+#elif defined(STRATA_SK_AVX2)
+    __m256 s0 = _mm256_setzero_ps(), s1 = _mm256_setzero_ps(), s2 = _mm256_setzero_ps(), s3 = _mm256_setzero_ps();
+    for (; i + 32 <= n; i += 32) {
+        s0 = _mm256_fmadd_ps(_mm256_loadu_ps(a + i), _mm256_loadu_ps(b + i), s0);
+        s1 = _mm256_fmadd_ps(_mm256_loadu_ps(a + i + 8), _mm256_loadu_ps(b + i + 8), s1);
+        s2 = _mm256_fmadd_ps(_mm256_loadu_ps(a + i + 16), _mm256_loadu_ps(b + i + 16), s2);
+        s3 = _mm256_fmadd_ps(_mm256_loadu_ps(a + i + 24), _mm256_loadu_ps(b + i + 24), s3);
+    }
+    for (; i + 8 <= n; i += 8) s0 = _mm256_fmadd_ps(_mm256_loadu_ps(a + i), _mm256_loadu_ps(b + i), s0);
+    const __m256 v = _mm256_add_ps(_mm256_add_ps(s0, s1), _mm256_add_ps(s2, s3));
+    __m128 h = _mm_add_ps(_mm256_castps256_ps128(v), _mm256_extractf128_ps(v, 1));
+    h = _mm_add_ps(h, _mm_movehl_ps(h, h));
+    h = _mm_add_ss(h, _mm_shuffle_ps(h, h, 1));
+    float s = _mm_cvtss_f32(h);
+#elif defined(STRATA_SK_NEON_DOTPROD)
+    float32x4_t s0 = vdupq_n_f32(0.0f), s1 = vdupq_n_f32(0.0f), s2 = vdupq_n_f32(0.0f), s3 = vdupq_n_f32(0.0f);
+    for (; i + 16 <= n; i += 16) {
+        s0 = vfmaq_f32(s0, vld1q_f32(a + i), vld1q_f32(b + i));
+        s1 = vfmaq_f32(s1, vld1q_f32(a + i + 4), vld1q_f32(b + i + 4));
+        s2 = vfmaq_f32(s2, vld1q_f32(a + i + 8), vld1q_f32(b + i + 8));
+        s3 = vfmaq_f32(s3, vld1q_f32(a + i + 12), vld1q_f32(b + i + 12));
+    }
+    for (; i + 4 <= n; i += 4) s0 = vfmaq_f32(s0, vld1q_f32(a + i), vld1q_f32(b + i));
+    float s = vaddvq_f32(vaddq_f32(vaddq_f32(s0, s1), vaddq_f32(s2, s3)));
+#else
+    // the plain 4-accumulator sum the CPU backend used before (the base tier is bit-identical to it)
+    float s0 = 0.0f, s1 = 0.0f, s2 = 0.0f, s3 = 0.0f;
+    for (; i + 4 <= n; i += 4) {
+        s0 += a[i + 0] * b[i + 0];
+        s1 += a[i + 1] * b[i + 1];
+        s2 += a[i + 2] * b[i + 2];
+        s3 += a[i + 3] * b[i + 3];
+    }
+    float s = (s0 + s1) + (s2 + s3);
+#endif
+    for (; i < n; ++i) s += a[i] * b[i];
+    return s;
+}
+
 float dot_mx8_f32_row(
     const uint8_t* weights_e4m3,
     const uint8_t* scales_ue8m0,
@@ -859,7 +1022,7 @@ void dequant_paired2_sk_rows(
     float* out_row1,
     size_t ncols) noexcept {
     std::vector<float> tmp(2 * ncols);
-    dequant_sk_row(pair_raw, code, tmp.data(), 2 * ncols);
+    (dequant_sk_row)(pair_raw, code, tmp.data(), 2 * ncols);   // no ADL: this tier's copy
     std::memcpy(out_row0, tmp.data(), ncols * sizeof(float));
     std::memcpy(out_row1, tmp.data() + ncols, ncols * sizeof(float));
 }
@@ -946,7 +1109,7 @@ void gemm_paired2_sk_q8_1(
     size_t ncols,
     size_t m) noexcept {
     if (m == 1) {
-        gemv_paired2_sk_q8_1(weights, code, xs, out, nrows, ncols);
+        (gemv_paired2_sk_q8_1)(weights, code, xs, out, nrows, ncols);   // no ADL: this tier's copy
         return;
     }
     const size_t n_pairs = nrows / 2;
@@ -1029,4 +1192,4 @@ void gemm_paired2_sk_q8_1(
     }
 }
 
-}  // namespace strata::quant::sk
+STRATA_SK_NS_CLOSE

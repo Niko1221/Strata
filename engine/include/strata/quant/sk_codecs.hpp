@@ -114,6 +114,10 @@ void dequant_mx8_row(
     float* out,
     size_t ncols) noexcept;
 
+// Dense float32 dot product (the CPU backend's trunk matmuls, attention scores): 4 accumulators of the tier's vector width (AVX-512 / AVX2 / NEON), plain 4-accumulator
+// C++ in the base tier.  Sums in lane order: differs from a sequential sum by float rounding only.
+float dot_f32(const float* a, const float* b, size_t n) noexcept;
+
 float dot_mx8_f32_row(
     const uint8_t* weights_e4m3,
     const uint8_t* scales_ue8m0,

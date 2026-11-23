@@ -61,27 +61,22 @@ std::vector<float> decode_section1_tensor(const uint8_t* sec1, const TInfo& ti) 
     return out;
 }
 
+// Dense float32 dot: the ISA tier of strata::quant::sk (AVX-512 / AVX2 / NEON, chosen at run time by caps(); plain 4-accumulator C++ on a CPU with none of them).
 inline float dot_f32_fast(const float* a, const float* b, int n) noexcept {
-    float s0 = 0.0f, s1 = 0.0f, s2 = 0.0f, s3 = 0.0f;
-    int i = 0;
-    for (; i + 4 <= n; i += 4) {
-        s0 += a[i + 0] * b[i + 0];
-        s1 += a[i + 1] * b[i + 1];
-        s2 += a[i + 2] * b[i + 2];
-        s3 += a[i + 3] * b[i + 3];
-    }
-    float s = (s0 + s1) + (s2 + s3);
-    for (; i < n; ++i) s += a[i] * b[i];
-    return s;
+    return strata::quant::sk::dot_f32(a, b, static_cast<size_t>(n));
 }
 
+// y[M, N] = x[M, K] . w[N, K]^T (+ bias).  Parallel over the weight rows, not over the activation rows: a one-token matmul (decode, M = 1) uses every thread, and
+// a prompt matmul reads each weight row from memory once and reuses it for all M rows from L1.  Every y[m][n] is the same dot product as before, so the result does
+// not depend on the thread count.  (It used to be parallel over m, and not at all when M * N < 4096: the q / k / v / o projections of a decode step ran on one thread.)
 void matmul_f32(const float* x, const float* w, float* y, int M, int N, int K, const float* bias = nullptr) {
-    #pragma omp parallel for schedule(static) if (M * N >= 4096)
-    for (int m = 0; m < M; ++m) {
-        const float* xm = x + static_cast<size_t>(m) * K;
-        float* ym = y + static_cast<size_t>(m) * N;
-        for (int n = 0; n < N; ++n) {
-            ym[n] = dot_f32_fast(xm, w + static_cast<size_t>(n) * K, K) + (bias ? bias[n] : 0.0f);
+    const bool par = static_cast<size_t>(M) * static_cast<size_t>(N) * static_cast<size_t>(K) >= (static_cast<size_t>(1) << 20);
+    #pragma omp parallel for schedule(static) if (par)
+    for (int n = 0; n < N; ++n) {
+        const float* wn = w + static_cast<size_t>(n) * K;
+        const float bn = bias ? bias[n] : 0.0f;
+        for (int m = 0; m < M; ++m) {
+            y[static_cast<size_t>(m) * N + n] = dot_f32_fast(x + static_cast<size_t>(m) * K, wn, K) + bn;
         }
     }
 }

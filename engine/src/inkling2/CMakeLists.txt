@@ -46,7 +46,6 @@ if(NOT TARGET strata_quant)
     ${_sq}/src/quant/act_ref.cpp
     ${_sq}/src/quant/dot_generic.cpp
     ${_sq}/src/quant/dequant.cpp
-    ${_sq}/src/quant/sk_codecs.cpp
   )
   target_include_directories(strata_quant PUBLIC ${_sq}/include PRIVATE ${_sq}/src/quant)
   if(NOT MSVC)
@@ -62,6 +61,24 @@ if(NOT TARGET strata_quant)
       ${_sq}/src/quant/x86/act_avx512.cpp
     )
     target_compile_definitions(strata_quant PRIVATE STRATA_QUANT_X86_TIERS=1)
+    # The S_K / SF4 / MX8 codecs (sk_codecs.cpp) as three tiers chosen at run time by sk_dispatch.cpp from caps() (see src/quant/sk_tiers.hpp):
+    # a CPU without AVX2 never executes an AVX2 instruction of them.  The tier files are -ffp-contract=off: S_K results are bit-identical per tier.
+    target_sources(strata_quant PRIVATE ${_sq}/src/quant/sk_dispatch.cpp ${_sq}/src/quant/sk_codecs_base.cpp
+                                        ${_sq}/src/quant/x86/sk_codecs_avx2.cpp ${_sq}/src/quant/x86/sk_codecs_avx512.cpp)
+    target_compile_definitions(strata_quant PRIVATE STRATA_SK_X86_TIERS=1)
+    if(MSVC)
+      set_source_files_properties(${_sq}/src/quant/x86/sk_codecs_avx2.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
+      if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+        set_source_files_properties(${_sq}/src/quant/x86/sk_codecs_avx512.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX512;/clang:-mavx512vnni;/clang:-ffp-contract=off")
+      else()
+        set_source_files_properties(${_sq}/src/quant/x86/sk_codecs_avx512.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX512")
+      endif()
+    else()
+      set_source_files_properties(${_sq}/src/quant/sk_codecs_base.cpp PROPERTIES COMPILE_OPTIONS "-ffp-contract=off;-mno-avx;-mno-avx2;-mno-fma;-mno-f16c")
+      set_source_files_properties(${_sq}/src/quant/x86/sk_codecs_avx2.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma;-mf16c;-ffp-contract=off")
+      set_source_files_properties(${_sq}/src/quant/x86/sk_codecs_avx512.cpp PROPERTIES
+                                  COMPILE_OPTIONS "-mavx512f;-mavx512bw;-mavx512vl;-mavx512dq;-mavx512vnni;-mavx2;-mfma;-mf16c;-ffp-contract=off")
+    endif()
     if(MSVC)
       set_source_files_properties(${_sq}/src/quant/x86/dot_avx2.cpp ${_sq}/src/quant/x86/act_avx2.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
       set_source_files_properties(${_sq}/src/quant/x86/dot_avx.cpp ${_sq}/src/quant/x86/act_avx.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX")
@@ -84,6 +101,10 @@ if(NOT TARGET strata_quant)
       set_source_files_properties(${_sq}/src/quant/arm/dot_neon.cpp ${_sq}/src/quant/arm/act_neon.cpp PROPERTIES COMPILE_OPTIONS "-march=armv8.2-a+dotprod+fp16+i8mm")
     endif()
   endif()
+  if(NOT _ink_cpu_x86)
+    # aarch64 and the rest: one compile-time-selected TU (NEON dotprod is checked at run time inside it); the x86 tiers are above
+    target_sources(strata_quant PRIVATE ${_sq}/src/quant/sk_codecs.cpp)
+  endif()
 endif()
 
 # Core Inkling-2-Mini + .strata v1.1 + Official HF safetensors + Community GGUF static library
@@ -92,6 +113,8 @@ add_library(strata_inkling_core STATIC
   ${CMAKE_CURRENT_SOURCE_DIR}/inkling2_loop.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/ink_cpu_backend.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/ink_host_avx2.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/ink_host_avx512.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/ink_host_avx512_gate.cpp
 )
 target_include_directories(strata_inkling_core PUBLIC
   ${_ink_engine_root}/include
@@ -124,6 +147,11 @@ if(_ink_cpu_x86)
       set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/ink_host_avx2.cpp PROPERTIES
         COMPILE_OPTIONS "/arch:AVX2"
         COMPILE_DEFINITIONS "INK_BUILD_HOST_AVX2=1")
+      # AVX-512 host kernels: this one file only, called only after caps().avx512 (a CPU without it never runs an instruction of it)
+      set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/ink_host_avx512.cpp PROPERTIES
+        COMPILE_OPTIONS "/arch:AVX512"
+        COMPILE_DEFINITIONS "INK_BUILD_HOST_AVX512=1")
+      target_compile_definitions(strata_inkling_core PRIVATE INK_HOST_AVX512_BUILT=1)
     endif()
   else()
     target_compile_options(strata_inkling_core PRIVATE -O3)
@@ -136,6 +164,11 @@ if(_ink_cpu_x86)
       set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/ink_host_avx2.cpp PROPERTIES
         COMPILE_OPTIONS "-O3;-mavx2;-mfma;-mf16c"
         COMPILE_DEFINITIONS "INK_BUILD_HOST_AVX2=1")
+      # AVX-512 (F, BW, VL, DQ; no VNNI, so Skylake-X runs it too): this one file only, behind caps().avx512
+      set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/ink_host_avx512.cpp PROPERTIES
+        COMPILE_OPTIONS "-O3;-mavx512f;-mavx512bw;-mavx512vl;-mavx512dq;-mavx2;-mfma;-mf16c"
+        COMPILE_DEFINITIONS "INK_BUILD_HOST_AVX512=1")
+      target_compile_definitions(strata_inkling_core PRIVATE INK_HOST_AVX512_BUILT=1)
     endif()
   endif()
 endif()
@@ -227,6 +260,28 @@ if(EXISTS "${_ink_engine_root}/tests/quant/ink_expert_split_test.cpp")
   add_executable(ink_expert_split_test ${_ink_engine_root}/tests/quant/ink_expert_split_test.cpp)
   target_link_libraries(ink_expert_split_test PRIVATE strata_inkling_core)
   add_test(NAME ink_expert_split_test COMMAND ink_expert_split_test)
+endif()
+# The fast lane's host dot kernels per ISA tier (AVX2, AVX-512) against plain C++: S_K bit-identical, SF4 / MX8 within a tolerance (no GPU)
+if(EXISTS "${_ink_engine_root}/tests/core/ink_host_simd_test.cpp")
+  add_executable(ink_host_simd_test ${_ink_engine_root}/tests/core/ink_host_simd_test.cpp)
+  target_link_libraries(ink_host_simd_test PRIVATE strata_inkling_core)
+  add_test(NAME ink_host_simd_test COMMAND ink_host_simd_test)
+endif()
+# The run-time ISA tiers of the S_K / SF4 / MX8 codecs (base / avx2 / avx512) against each other: S_K bit-identical (no GPU); x86 only
+if(_ink_cpu_x86 AND NOT TARGET sk_tier_test AND EXISTS "${_ink_engine_root}/tests/quant/sk_tier_test.cpp")
+  add_executable(sk_tier_test ${_ink_engine_root}/tests/quant/sk_tier_test.cpp)
+  target_include_directories(sk_tier_test PRIVATE ${_ink_engine_root}/src/quant)
+  target_link_libraries(sk_tier_test PRIVATE strata_quant)
+  add_test(NAME sk_tier_test COMMAND sk_tier_test)
+endif()
+if(_ink_cpu_x86 AND NOT TARGET sk_tier_bench AND EXISTS "${_ink_engine_root}/tests/quant/sk_tier_bench.cpp")
+  add_executable(sk_tier_bench ${_ink_engine_root}/tests/quant/sk_tier_bench.cpp)
+  target_include_directories(sk_tier_bench PRIVATE ${_ink_engine_root}/src/quant)
+  target_link_libraries(sk_tier_bench PRIVATE strata_quant)
+endif()
+if(EXISTS "${_ink_engine_root}/tests/core/ink_host_simd_bench.cpp")
+  add_executable(ink_host_simd_bench ${_ink_engine_root}/tests/core/ink_host_simd_bench.cpp)
+  target_link_libraries(ink_host_simd_bench PRIVATE strata_inkling_core)
 endif()
 
 install(TARGETS strata-inkling RUNTIME DESTINATION bin COMPONENT inkling2)

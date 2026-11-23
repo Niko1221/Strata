@@ -19,6 +19,7 @@
 #include "ink_moe_cuda.cuh"
 #include "../ink_cold_store.hpp"
 #include "../ink_host_avx2.h"
+#include "../ink_host_avx512.h"
 #include "strata/platform/commit.hpp"
 #include "strata/core/moe_wave_plan.hpp"
 #include "strata/core/ink_expert_policy.hpp"
@@ -129,6 +130,12 @@ struct InkHostExpertMeta {
 
 namespace host_eval {
 
+// AVX-512 host kernels (ink_host_avx512.cpp): true only when this binary has them and the CPU has AVX-512 F/DQ/BW/VL (else AVX2, then plain C++)
+inline bool host_use_avx512() noexcept {
+    static const bool v = host_avx512::available();
+    return v;
+}
+
 inline float f16_to_f32_h(uint16_t h) noexcept {
     const uint32_t s = (uint32_t)(h & 0x8000u) << 16;
     const uint32_t e = (h >> 10) & 0x1Fu;
@@ -187,6 +194,9 @@ inline const float* ue8m0_lut_h() noexcept {
 
 inline float dot_sf4_row_h(const uint8_t* p, const uint8_t* sc, float w_outer, const float* x, int cols) noexcept {
     const float* e4 = e4m3_lut_h();
+    if (host_use_avx512()) {
+        return host_avx512::dot_sf4_row(p, sc, w_outer, x, cols, e4);
+    }
     if (host_avx2::available()) {
         return host_avx2::dot_sf4_row(p, sc, w_outer, x, cols, e4);
     }
@@ -236,6 +246,9 @@ inline float dot_sf4_row_h(const uint8_t* p, const uint8_t* sc, float w_outer, c
 inline float dot_mx8_row_h(const uint8_t* w, const uint8_t* sc, const float* x, int cols) noexcept {
     const float* e4 = e4m3_lut_h();
     const float* u8 = ue8m0_lut_h();
+    if (host_use_avx512()) {
+        return host_avx512::dot_mx8_row(w, sc, x, cols, e4, u8);
+    }
     if (host_avx2::available()) {
         return host_avx2::dot_mx8_row(w, sc, x, cols, e4, u8);
     }
@@ -326,6 +339,9 @@ inline void s15_unpack64_h(const uint8_t* pl, int g, int8_t out[64]) noexcept {
 }
 
 inline float dot_sk_sub64_h(const uint8_t* pl, int fmt, int g, const InkQ8_1_G64& xb, float eff) noexcept {
+    if (host_use_avx512()) {
+        return host_avx512::dot_sk_sub64(pl, fmt, g, xb.qs, xb.d, xb.s, eff, s15_trit_lut_h());
+    }
     if (host_avx2::available()) {
         return host_avx2::dot_sk_sub64(pl, fmt, g, xb.qs, xb.d, xb.s, eff, s15_trit_lut_h());
     }
