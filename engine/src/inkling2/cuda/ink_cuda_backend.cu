@@ -995,7 +995,10 @@ bool ink_cuda_q8f_supported(int gpu_index) {
         cudaGetLastError();
         return false;
     }
-    return major >= 8;
+    // sm_120 / sm_121 (Blackwell, major 12) keep the BF16 dense matrices: the int8 GEMM was measured slower there at one token (UD-Q4_K_XL decode on an
+    // RTX 5090 98 tok/s against 133 with BF16, SQ-20 unchanged); the Ampere / Ada gain (+7..10% on sm_86) is not lost by this. The terminal planner
+    // (inkling_fit.py, Q8_DENSE_MAX_SM) uses the same cut.
+    return major >= 8 && major != 12;
 }
 
 }  // namespace ink2
