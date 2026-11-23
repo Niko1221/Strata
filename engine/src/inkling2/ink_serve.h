@@ -252,6 +252,7 @@ struct ParsedGen {
     int pin = 0;          // shared-prefix checkpoint boundary (tokens)
     bool prefill_only = false;
     bool slot_read = false;
+    bool no_ckpt = false; // ckpt=0: save no prompt-end checkpoint for this request and keep the slot's (a continuation pass)
 };
 
 inline bool parse_id_list(const std::string& s, std::vector<int32_t>& out, std::string& err) {
@@ -331,6 +332,7 @@ inline bool parse_gen_cmd(const std::string& line, ParsedGen& r, std::string& er
         }
         else if (key == "prefill") r.prefill_only = (d != 0.0);
         else if (key == "slot_read") r.slot_read = (d != 0.0);
+        else if (key == "ckpt") r.no_ckpt = (d == 0.0);
         else if (key == "image") r.images.push_back(pct_decode(val));
         else if (key == "hold") {
             size_t col = val.find(':');
@@ -489,7 +491,7 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
         if (kd == KvDtype::K8V4)     return "k8v4";
         return "fp16";
     }();
-    proto("INFO engine=strata-inkling-%s arch=inkling2_loop backend=%s model=%s layers=%d visits=%d vocab=%d chunk=%d batch_slots=%d slot_read=1 shared_prefix=%d kv_dtype=%s drafter=%s drafting=%s images=%d image_pad=%d parallel=%d",
+    proto("INFO engine=strata-inkling-%s arch=inkling2_loop backend=%s model=%s layers=%d visits=%d vocab=%d chunk=%d batch_slots=%d slot_read=1 shared_prefix=%d kv_dtype=%s drafter=%s drafting=%s images=%d image_pad=%d parallel=%d ckpt_key=1",
           cfg.version.c_str(), backend.backend_name(), base.c_str(), c.n_phys, c.n_visits, V, chunk_sz,
           P, backend.supports_shared_checkpoint() ? 1 : 0, kv_str,
           mf.m.dspark.present ? "dspark" : "none",
@@ -654,7 +656,9 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
         rq.pin = pg.images.empty() ? pg.pin : 0;
         rq.shared_pending = rq.pin > reuse && static_cast<int>(rq.shared_prefix.size()) != rq.pin;
         rq.reused_tokens = reuse;
-        rq.ckpt_pending = (pg.images.empty() && rq.prompt_len >= 16 && reuse < rq.prompt_len - 1);
+        // ckpt=0 (a later pass of one request: the thinking budget's wrap-up, a reply written again): the checkpoint of the
+        // request's first pass, at the end of the prompt the client sends back, stays; this pass's longer prompt would replace it.
+        rq.ckpt_pending = (pg.images.empty() && !pg.no_ckpt && rq.prompt_len >= 16 && reuse < rq.prompt_len - 1);
         rq.prefill_pos = reuse;
         rq.cur_pos = reuse;
         rq.hist = rq.prompt_ids;

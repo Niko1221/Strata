@@ -93,6 +93,7 @@ from serve.server_parts.base import (  # noqa: F401  (moved unchanged, file spli
     IMAGE_PAD,
     IM_END,
     KEEPALIVE_S,
+    KEEP_CKPT_KEY,
     LEFTOVER_SETTLE_S,
     LOOPBACK_NAMES,
     LOOP_CHECK_EVERY,
@@ -1380,6 +1381,8 @@ class StrataEngine:
                     pn = prefix.get("tokens")
                     if isinstance(pn, int) and not isinstance(pn, bool) and pn > 0:
                         keys += f" pin={pn}"
+                if sampling.get(KEEP_CKPT_KEY) is True:     # (the server sets it, only for an engine that says ckpt_key=1)
+                    keys += " ckpt=0"
             return keys
         # setup's calibration (tools/calibrate.py): engine settings for this request only, measured without a restart
         tune = sampling.get("strata_tune")
@@ -5929,6 +5932,7 @@ class Service:
                         hold_end = te[0] if len(te) == 1 else None
                     for ev in opening:
                         yield "event", ev
+                    pass_n = 0      # (the passes of this request sent so far)
                     while True:
                         segment_before = getattr(self.engine, "last", None)
                         segments_before = len(segments)     # (#879: a pass sent again leaves no segment)
@@ -5940,6 +5944,11 @@ class Service:
                             pass_sampling = {k: v for k, v in sampling.items() if k != HOLD_KEY}
                         else:
                             pass_sampling = sampling   # no hold: the engine gets the caller's own sampler object, as before P2
+                        if pass_n and self.inkling and str((getattr(self.engine, "info", None) or {}).get("ckpt_key")) == "1":
+                            # a later pass of this request (the thinking budget's wrap-up, a reply written again): the engine
+                            # keeps the checkpoint the first pass saved at the end of the prompt the client sends back next
+                            pass_sampling = {**(pass_sampling or {}), KEEP_CKPT_KEY: True}
+                        pass_n += 1
                         gen = self.engine.generate(prompt, max_new - n, pass_sampling, cancel, embeddings=emb) if emb \
                             else self.engine.generate(prompt, max_new - n, pass_sampling, cancel)
                         recover_prompt = None

@@ -135,6 +135,7 @@ REASONING_WRAP_UP = "\n\nI have thought about this long enough; time to give my 
 # continues from the live session.  Without it the engine ran a window or two past the cut, and the next pass read the
 # whole reasoning again from the checkpoint before it.  The server's own key in `sampling`, never a client's.
 HOLD_KEY = "_strata_hold"
+KEEP_CKPT_KEY = "_strata_keep_ckpt"     # Inkling: a later pass of one request - the engine keeps the slot's prompt-end checkpoint (ckpt=0; the server sets it)
 
 
 # #728: opt-in handling of reasoning that repeats whole passages (which the single-token guard above cannot see).

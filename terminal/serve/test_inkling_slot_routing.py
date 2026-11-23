@@ -145,6 +145,56 @@ class SlotRouting(unittest.TestCase):
                 _, p2, k2 = c.chat(next_turn(msgs, reply, "second"))
                 self.assertGreaterEqual(k2, p1 - 90, f"turn 2: {k2} of {p2} prompt tokens reused after a two-pass helper request")
 
+    def wrapped_up_chat(self, parallel, extra=()):
+        """turn 1 spends its thinking budget (a second pass: the prompt, what it wrote, the wrap-up); turn 2 is what a client sends back
+        (the prompt and the reply, no thinking): (p1, turn 2's prompt tokens, its cached tokens, the engine's GEN/BGEN lines)."""
+        think = "<|message_model|><|content_thinking|>" + "x" * 300
+        scripts = [think, REPLY, REPLY]
+        with tempfile.TemporaryDirectory() as td:
+            h = Harness(Path(td), parallel=parallel, extra=extra)
+            h.script_path.write_text(json.dumps([h.tok.encode(s, parse_special=True) for s in scripts]), encoding="utf-8")
+            with h:
+                c = Client(f"http://127.0.0.1:{h.port}")
+                msgs = conversation("A")
+                reply, p1, _ = c.chat(msgs, max_tokens=60)
+                _, p2, k2 = c.chat(next_turn(msgs, reply, "second"), max_tokens=60)
+                lines = h.record_path.read_text(encoding="utf-8").splitlines()
+        return p1, p2, k2, lines
+
+    def test_a_wrap_up_pass_does_not_replace_the_chats_checkpoint(self):
+        # turn 2 can only resume from turn 1's prompt-end checkpoint (the cached stream holds the thinking the client never sees);
+        # the wrap-up pass has a longer prompt and used to take that checkpoint over: nothing was reused after a wrap-up.
+        for parallel in (1, 2):
+            with self.subTest(parallel=parallel):
+                p1, p2, k2, lines = self.wrapped_up_chat(parallel)
+                self.assertEqual(len(lines), 3, lines)                    # turn 1's two passes, turn 2
+                self.assertNotIn("ckpt=0", lines[0])                      # the first pass saves its checkpoint
+                self.assertIn("ckpt=0", lines[1])                         # the later pass keeps it
+                self.assertNotIn("ckpt=0", lines[2])
+                self.assertGreaterEqual(k2, p1 - 90, f"turn 2: {k2} of {p2} prompt tokens reused after a wrap-up pass")
+
+    def test_an_engine_that_does_not_say_ckpt_key_is_never_sent_the_key(self):
+        # (an older engine answers an unknown key with an error): the mock without --cache-model has no ckpt_key in INFO
+        with tempfile.TemporaryDirectory() as td:
+            think = "<|message_model|><|content_thinking|>" + "x" * 300
+            h = Harness(Path(td), parallel=1)
+            h.cfg_path.write_text(json.dumps({**json.loads(h.cfg_path.read_text(encoding="utf-8")),
+                                              "args": [a for a in json.loads(h.cfg_path.read_text(encoding="utf-8"))["args"] if a != "--cache-model"]}),
+                                  encoding="utf-8")
+            h.script_path.write_text(json.dumps([h.tok.encode(s, parse_special=True) for s in (think, REPLY)]), encoding="utf-8")
+            with h:
+                Client(f"http://127.0.0.1:{h.port}").chat(conversation("A"), max_tokens=60)
+                lines = h.record_path.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(lines), 2, lines)
+        self.assertTrue(all("ckpt=" not in x for x in lines), lines)
+
+    def test_the_key_is_only_written_for_the_servers_own_flag(self):
+        from serve.server import StrataEngine
+        from serve.server_parts.base import KEEP_CKPT_KEY
+        self.assertIn(" ckpt=0", StrataEngine.sampling_keys({KEEP_CKPT_KEY: True}, inkling=True))
+        self.assertNotIn("ckpt", StrataEngine.sampling_keys({}, inkling=True))
+        self.assertNotIn("ckpt", StrataEngine.sampling_keys({"strata_checkpoint": False}, inkling=True))   # (a client's one-shot flag is not this)
+
     def test_two_chats_each_keep_their_prompt_with_two_slots(self):
         with tempfile.TemporaryDirectory() as td:
             with Harness(Path(td), parallel=2) as h:

@@ -27,11 +27,13 @@ class Engine:
             if line.startswith("READY "):
                 break
 
-    def request(self, ids, pin=20, slot=None):
+    def request(self, ids, pin=20, slot=None, ckpt=None):
         self.prefill_progress = []
         cmd = "GEN 3" if slot is None else f"BGEN {slot} 0"
         if pin is not None:
             cmd += f" pin={pin}"
+        if ckpt is not None:
+            cmd += f" ckpt={ckpt}"
         self.p.stdin.write(cmd + " " + ",".join(map(str, ids)) + "\n")
         self.p.stdin.flush()
         tokens, reuse = [], 0
@@ -93,6 +95,35 @@ class SharedPrefix(unittest.TestCase):
         again, reuse = self.engine.request(A)
         self.assertEqual(reuse, len(A) - 1)
         self.assertEqual(tokens, again)
+
+    def test_a_continuation_pass_with_ckpt_0_keeps_the_first_passs_checkpoint(self):
+        # the serve layer's thinking-budget wrap-up: pass 2 is the prompt, what pass 1 wrote and a wrap-up; the client's next
+        # turn carries the prompt and the reply only (no thinking), so it can only resume from pass 1's prompt-end checkpoint
+        self.assertEqual(self.engine.info.get("ckpt_key"), "1")
+        first, _ = self.engine.request(A, pin=None)
+        cont = A + first + [41, 42, 43, 44, 45, 46, 47, 48]
+        _, reuse = self.engine.request(cont, pin=None, ckpt=0)
+        self.assertEqual(reuse, len(A) + len(first) - 1)     # (the stream held: the prompt and what it fed, not the last token)
+        nxt = A + [51, 52, 53, 54, 55]
+        tokens, reuse = self.engine.request(nxt, pin=None)
+        self.assertEqual(reuse, len(A) - 1)
+        self.assertEqual(tokens, self.cold(nxt))
+
+    def test_without_ckpt_0_the_continuation_pass_replaces_the_checkpoint(self):
+        first, _ = self.engine.request(A, pin=None)
+        cont = A + first + [41, 42, 43, 44, 45, 46, 47, 48]
+        self.engine.request(cont, pin=None)
+        nxt = A + [51, 52, 53, 54, 55]
+        tokens, reuse = self.engine.request(nxt, pin=None)
+        self.assertEqual(reuse, 0)
+        self.assertEqual(tokens, self.cold(nxt))
+
+    def test_ckpt_0_in_a_batch_slot_keeps_that_slots_checkpoint(self):
+        self.engine.request(A, pin=None, slot=1)
+        cont = A + [41, 42, 43]
+        self.assertEqual(self.engine.request(cont, pin=None, slot=1, ckpt=0)[1], len(A))
+        nxt = A + [51, 52, 53, 54, 55]
+        self.assertEqual(self.engine.request(nxt, pin=None, slot=1)[1], len(A) - 1)
 
     def test_changed_instructions_cold_then_reusable(self):
         self.engine.request(A)

@@ -90,7 +90,7 @@ def main(argv=None) -> int:
     cache: dict[int, dict] = {}
     cache_lock = threading.Lock()
 
-    def admit(slot: int, ids: list[int]) -> int:
+    def admit(slot: int, ids: list[int], keep_ckpt: bool = False) -> int:
         with cache_lock:
             st = cache.setdefault(slot, {"cached": [], "ckpt": []})
             c, k = st["cached"], st["ckpt"]
@@ -105,7 +105,7 @@ def main(argv=None) -> int:
             if reuse:
                 say(f"RESUME {reuse}")
             st["pending"] = list(ids)
-            if not no_ckpt and len(ids) >= 16:
+            if not no_ckpt and not keep_ckpt and len(ids) >= 16:    # (ckpt=0: this pass saves none and keeps the slot's)
                 st["ckpt"] = list(ids[:-1])
             return reuse
 
@@ -115,7 +115,7 @@ def main(argv=None) -> int:
             st["cached"] = list(ids) + list(emitted[:-1])
 
     batch_info = f" batch_slots={par} slot_read=1" if (par > 1 or cache_model) else ""
-    say(f"INFO engine=mock-0 arch=inkling2_loop backend=mock build=SQ-20 layers=24 visits=48 "
+    say(f"INFO engine=mock-0 arch=inkling2_loop backend=mock build=SQ-20 layers=24 visits=48 {'ckpt_key=1 ' if cache_model else ''}"
         f"images={1 if caps.get('images') == '1' else 0} "
         f"drafter={'dspark' if opts.get('--draft', 'dspark') == 'dspark' else 'off'}{batch_info}")
     say(f"READY {ctx} stop" + (" hold holdb" if par > 1 else ""))
@@ -195,7 +195,7 @@ def main(argv=None) -> int:
             slot_stops[slot] = ev
             ptok = len(ids) + sum(IMAGE_TOKENS - 1 for _ in images)
             if cache_model:
-                reused = admit(slot, ids)
+                reused = admit(slot, ids, ("ckpt", "0") in [tuple(p) for p in pairs])
                 say(f"DONE 0 {ptok} 0.0 0.0 admit 0 0 {reused}")
             else:
                 say(f"DONE 0 {ptok} 0.0 0.0 admit")
@@ -226,7 +226,7 @@ def main(argv=None) -> int:
                 say(f"ERR image: {len(images)} files for {pads} image placeholders")
                 continue
             ptok = len(ids) + sum(IMAGE_TOKENS - 1 for _ in images)
-            reused = admit(0, ids) if cache_model else 0
+            reused = admit(0, ids, keys.get("ckpt") == "0") if cache_model else 0
             say(f"PP {ptok} 0 1.0")
             seq = next_script()
             gen = 0
