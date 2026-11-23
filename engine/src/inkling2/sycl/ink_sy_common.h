@@ -27,7 +27,6 @@
 #include <vector>
 
 #include "../ink_json.h"
-#include "ink_sy_e2m1.h"
 #include "strata/artifact/strata_reader.hpp"
 #include "strata/core/device_error_exit.hpp"
 #ifdef INK_SYCL_WITH_MODEL_FILE
@@ -395,6 +394,14 @@ inline float h2f_bits(uint16_t b) {
     return (float)sycl::bit_cast<half>(b);
 }
 
+
+inline float e2m1_lut(uint32_t nib) {
+    constexpr float kLut[16] = {
+        0.0f,  0.5f,  1.0f,  1.5f,  2.0f,  3.0f,  4.0f,  6.0f,
+       -0.0f, -0.5f, -1.0f, -1.5f, -2.0f, -3.0f, -4.0f, -6.0f
+    };
+    return kLut[nib & 15u];
+}
 
 inline float e4m3_to_f32(uint32_t c) {
     const uint32_t mag = c & 0x7Fu;

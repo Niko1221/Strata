@@ -27,7 +27,7 @@ build_tree "$REPO" "$W/opt" || exit 11
 echo "== build base ($BASE)"
 git -C "$REPO" archive "$BASE" | tar -x -C "$W/base-src"
 build_tree "$W/base-src" "$W/base" || exit 12
-OPT=$W/opt/strata-inkling; BASEX=$W/base/strata-inkling
+OPT=$W/opt/strata-inkling; BASEX=$W/base/strata-inkling; ident_n=0
 
 export ONEAPI_DEVICE_SELECTOR=level_zero:gpu SYCL_CACHE_PERSISTENT=0
 bench() {  # <tag> <exe> <model> <env "K=V K=V" or -> <bench args...>
@@ -58,21 +58,17 @@ run_model() {  # <label> <url> <file>
   echo "== $L 2. where the time goes (branch)"
   bench "$L-opt-timing" "$OPT" "$M" "INK_SY_TIMING=1" $P
   bench "$L-opt-prof"   "$OPT" "$M" "INK_SY_PROF=1"   $P
-  if [ "$L" = q4kxl ]; then
-    echo "== $L 3. runtime knobs (branch)"
-    bench "$L-opt-graph"   "$OPT" "$M" "INK_SY_GRAPH=1" $P
-    bench "$L-opt-d2dk"    "$OPT" "$M" "INK_SY_D2D_KERNEL=1" $P
-    bench "$L-opt-imm1"    "$OPT" "$M" "UR_L0_USE_IMMEDIATE_COMMANDLISTS=1" $P
-    bench "$L-opt-imm0"    "$OPT" "$M" "UR_L0_USE_IMMEDIATE_COMMANDLISTS=0" $P
-    bench "$L-opt-v2"      "$OPT" "$M" "UR_LOADER_USE_LEVEL_ZERO_V2=1" $P
-    bench "$L-opt-graph-imm1" "$OPT" "$M" "INK_SY_GRAPH=1 UR_L0_USE_IMMEDIATE_COMMANDLISTS=1" $P
-    echo "== $L 4. prefill chunk size, 4096-token prompt, 8 generated (branch)"
-    for r in 1 2; do
-      for ch in 256 512 1024 2048 4096; do
-        bench "$L-opt-chunk$ch-r$r" "$OPT" "$M" - --prompt-len 4096 --gen 8 --parallel 1 --chunk $ch
-      done
-    done
-  fi
+  echo "== $L 3. identical answers: logits of 64 ids (two runs each) and 48 greedy tokens of 96 ids, base against branch"
+  local I64 I96; I64=$(seq -s, 101 164); I96=$(seq -s, 1000 1095)
+  for tag in base opt base opt; do
+    local X=$OPT; [ $tag = base ] && X=$BASEX
+    ident_n=$((ident_n + 1))
+    timeout 1500 "$X" --native "$M" --gpus 1 --max-context 4096 --draft off --prompt-ids "$I64" --gen 16 --dump-ref "$W/logits.bin" > "$W/logs/id64.$ident_n.log" 2>&1
+    echo "IDENT $L logits64 $tag run $ident_n sha=$(sha256sum "$W/logits.bin" 2>/dev/null | cut -c1-16) ids=$(tail -n 1 "$W/logs/id64.$ident_n.log" | cut -c1-70)"
+    rm -f "$W/logits.bin"
+    timeout 1500 "$X" --native "$M" --gpus 1 --max-context 4096 --draft off --prompt-ids "$I96" --gen 48 > "$W/logs/g96.$ident_n.log" 2>&1
+    echo "IDENT $L greedy96 $tag run $ident_n md5=$(tail -n 1 "$W/logs/g96.$ident_n.log" | md5sum | cut -c1-12) $(tail -n 1 "$W/logs/g96.$ident_n.log" | cut -c1-90)"
+  done
   echo "== $L 5. parallel (C8 / C32 total decode), base vs branch"
   for par in 8 32; do
     bench "$L-base-par$par" "$BASEX" "$M" - --prompt-len 512 --gen 64 --parallel $par --max-context 4096
