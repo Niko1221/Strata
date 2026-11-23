@@ -53,6 +53,16 @@ __global__ void __launch_bounds__(256) k_ink_embed_norm(
             dst[d] = v;
             ss += v * v;
         }
+    } else if (emb_fmt == FMT_Q8_0) {
+        // Q8_0 as the GGUF stores it (FMT_Q8_0 in ink_cuda.cuh): [rows][D/32] fp16 scales, then [rows][D] int8; the value is exact in fp32
+        const int nblk = D >> 5;
+        const __half* scl = reinterpret_cast<const __half*>(emb_w) + (size_t)id * nblk;
+        const int8_t* qrow = reinterpret_cast<const int8_t*>(emb_w + (size_t)kInkVocabPad * nblk * 2) + (size_t)id * D;
+        for (int d = tid; d < D; d += 256) {
+            float v = (float)qrow[d] * __half2float(scl[d >> 5]);
+            dst[d] = v;
+            ss += v * v;
+        }
     } else if (emb_fmt == FMT_Q8ROW) {
         // Q8_ROW layout: [rows] float32 scales followed by [rows, D] int8
         const float sc = reinterpret_cast<const float*>(emb_w)[id];
@@ -1450,6 +1460,96 @@ __global__ void __launch_bounds__(128) k_ink_gemv_multi_bf16(
             if (lg == 0) Yp[(size_t)m * Np + lrow] = v;
         }
     }
+}
+
+// GGUF Q8_0 dense matrices on the int8 tensor cores, one kernel for every batch size (decode 1..64 slots and prefill chunks).
+//
+// Weights (format FMT_Q8_0F), a matrix [N rows][K cols] with N % 16 == 0 and K % 32 == 0, nKB = K/32:
+//   qpack  [N/16][nKB][32 lanes][16 B] int8: for lane (g = lane>>2, t = lane&3) the four 32-bit A registers of mma.m16n8k32 (s8):
+//          a0 = row g,   k t*4..t*4+3        a1 = row g+8, k t*4..t*4+3
+//          a2 = row g,   k 16+t*4..+3        a3 = row g+8, k 16+t*4..+3        (rows of the 16-row tile, k within the 32 block)
+//   scales [N/16][nKB][16] fp16: the Q8_0 block scale of each row of the tile.
+// Activations are quantized per token and 32-wide block the way Q8_1 does (scale = amax/127, q = round(x/scale)) into the B-fragment order:
+//   xq [nMT][nKB][32 lanes][8 B] (b0 = token g, k t*4..+3; b1 = token g, k 16+t*4..+3), xs [nMT][nKB][8] fp32, nMT = ceil(M/8).
+// Each output is  sum over the K/32 blocks, in block order, of  (int32 dot of the block) * (weight scale * activation scale)  in fp32 FMA:
+// the int32 sums are exact, the order is fixed, and nothing depends on M or on the other tokens, so a token gives the same bits
+// whether it is read in a prefill chunk or decoded alone or in a batch.
+__global__ void __launch_bounds__(256) k_ink_quant_x_q8f(const float* __restrict__ X, int8_t* __restrict__ xq, float* __restrict__ xs,
+                                                          int M, int K, int nMT) {
+    const int warp = (int)((blockIdx.x * 256u + threadIdx.x) >> 5);   // one warp per (padded token, 32-wide block)
+    const int lane = threadIdx.x & 31;
+    const int nKB = K >> 5;
+    if (warp >= nMT * 8 * nKB) return;
+    const int tok = warp / nKB, kb = warp % nKB;
+    const float v = (tok < M) ? X[(size_t)tok * K + (size_t)kb * 32 + lane] : 0.0f;
+    const float am = warp_max(fabsf(v));
+    const float d = am * (1.0f / 127.0f);
+    const float inv = d > 0.0f ? (127.0f / am) : 0.0f;
+    const int q = max(-127, min(127, __float2int_rn(v * inv)));
+    const int mt = tok >> 3, g = tok & 7;
+    const int half = lane >> 4, kk = lane & 15, t = kk >> 2, j = kk & 3;
+    xq[((size_t)(mt * nKB + kb) * 32 + g * 4 + t) * 8 + half * 4 + j] = (int8_t)q;
+    if (lane == 0) xs[(size_t)(mt * nKB + kb) * 8 + g] = d;
+}
+
+// One warp = 16 weight rows x up to MTW token tiles (8 tokens each); 2 warps per CTA; the row tiles of the (up to 5) matrices of `mp`
+// are concatenated like in the other multi-projection kernels. gridDim.y walks the token tiles in groups of MTW (prefill chunks).
+template <int MTW>
+__global__ void __launch_bounds__(64) k_ink_gemm_q8f(InkMultiProj mp, const int8_t* __restrict__ xq, const float* __restrict__ xs,
+                                                      int M, int K, int nMT) {
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 800)
+    const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
+    const int g = lane >> 2, t = lane & 3;
+    const int grow0 = (blockIdx.x * 2 + warp) * 16;
+    const uint8_t* Wp = nullptr;
+    float* Yp = nullptr;
+    int Np = 0, lrow = 0;
+    if (!ink_resolve_multi_proj(mp, grow0, Wp, Yp, Np, lrow)) return;
+    const int nKB = K >> 5;
+    const int rt = lrow >> 4;
+    const uint4* wq = reinterpret_cast<const uint4*>(Wp) + (size_t)rt * nKB * 32 + lane;
+    const __half* ws = reinterpret_cast<const __half*>(Wp + (size_t)Np * K) + (size_t)rt * nKB * 16;
+    const int mt0 = blockIdx.y * MTW;
+    const int nmt = min(MTW, nMT - mt0);
+    float acc[MTW][4] = {};
+    constexpr int UNR = (MTW == 1) ? 8 : ((MTW == 2) ? 4 : 2);   // more weight tiles in flight when there are few token tiles
+#pragma unroll UNR
+    for (int kb = 0; kb < nKB; ++kb) {
+        const uint4 a = wq[(size_t)kb * 32];
+        const float s0 = __half2float(ws[kb * 16 + g]);
+        const float s1 = __half2float(ws[kb * 16 + g + 8]);
+#pragma unroll
+        for (int i = 0; i < MTW; ++i) {
+            if (i < nmt) {
+                const size_t tb = (size_t)(mt0 + i) * nKB + kb;
+                const uint2 b = *reinterpret_cast<const uint2*>(xq + (tb * 32 + lane) * 8);
+                const float2 sx = *reinterpret_cast<const float2*>(xs + tb * 8 + 2 * t);
+                int32_t c[4] = {0, 0, 0, 0};
+                mma_m16n8k32_s8(c, a.x, a.y, a.z, a.w, b.x, b.y);
+                acc[i][0] = fmaf((float)c[0], s0 * sx.x, acc[i][0]);
+                acc[i][1] = fmaf((float)c[1], s0 * sx.y, acc[i][1]);
+                acc[i][2] = fmaf((float)c[2], s1 * sx.x, acc[i][2]);
+                acc[i][3] = fmaf((float)c[3], s1 * sx.y, acc[i][3]);
+            }
+        }
+    }
+#pragma unroll
+    for (int i = 0; i < MTW; ++i) {
+        if (i < nmt) {
+            const int tok0 = (mt0 + i) * 8 + 2 * t;
+            if (tok0 < M) {
+                Yp[(size_t)tok0 * Np + lrow + g] = acc[i][0];
+                Yp[(size_t)tok0 * Np + lrow + g + 8] = acc[i][2];
+            }
+            if (tok0 + 1 < M) {
+                Yp[(size_t)(tok0 + 1) * Np + lrow + g] = acc[i][1];
+                Yp[(size_t)(tok0 + 1) * Np + lrow + g + 8] = acc[i][3];
+            }
+        }
+    }
+#else
+    (void)mp; (void)xq; (void)xs; (void)M; (void)K; (void)nMT;
+#endif
 }
 
 // Zero-Extra-Launch 16-Lane M=1 Q8_ROW Multi-Projection GEMV (8 rows/CTA = 288 CTAs on wo_ud, inline L1 quantize -> eliminates 192 launches!)

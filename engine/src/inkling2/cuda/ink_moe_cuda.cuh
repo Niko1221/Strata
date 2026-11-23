@@ -3221,6 +3221,12 @@ inline void launch_ink_moe_dn_sk_mask(
 }
 
 // Standalone Top-8 / 128 exact sigmoid router (shared by single-GPU, hybrid, and Dual-GPU EP!)
+// STRATA_INK_PROF=1: the runner sets this to record an event at the end of each MoE sub-phase (router, bin, gate/up, down).
+// Tags 0..3 for SF4 / MX8 / S_K layers, 4..7 for layers with GGUF_RAW experts. Null (and free) otherwise.
+inline void (*g_ink_moe_hook)(int tag, void* ctx) = nullptr;
+inline void* g_ink_moe_hook_ctx = nullptr;
+inline void ink_moe_mark(int tag) { if (g_ink_moe_hook) g_ink_moe_hook(tag, g_ink_moe_hook_ctx); }
+
 inline void launch_ink_moe_router(
     cudaStream_t st,
     cublasHandle_t cublas,
@@ -3246,6 +3252,7 @@ inline void launch_ink_moe_router(
             CUBLAS_GEMM_DEFAULT_TENSOR_OP));
     }
     k_ink_router_select_topk8<<<M, 32, 0, st>>>(ws.r_logits, gate_b, ws.topk_idx, ws.topk_w, route_scale, M);
+    ink_moe_mark(0);
 }
 
 // Shared GPU expert execution helper (bins tier<=1 experts in `experts` and writes weighted outputs to ws.y_pair)
@@ -3267,6 +3274,7 @@ inline void launch_ink_moe_dispatch_only(
     const int tile_rows = use_wmma_tc ? ((M <= 128) ? 16 : 64)
                                       : ((M <= 128 || use_fp16_tc) ? 16 : 64);
     k_ink_moe_bin<<<1, 128, 0, st>>>(experts, ws.topk_idx, M, tile_rows, ws.tb);
+    ink_moe_mark(1);
 
     const int P = M * kInkTopK;
     const int max_act = std::min(P, kInkExperts);
@@ -3308,7 +3316,9 @@ inline void launch_ink_moe_dispatch_only(
             if (info.has_sf4) {
                 if (!quant_x_done) sm120::quantize_act_fp4(x_f32, M, kInkHidden, ws.xa_fp4, st);
                 sm120::moe_sf4_gu_tc(sec4_base, experts, ws.tb, ws.xa_fp4, ws.ha_fp4, mt, tile_rows, st);
+                ink_moe_mark(2);
                 sm120::moe_sf4_dn_tc(sec4_base, experts, ws.tb, ws.ha_fp4, ws.topk_w, ws.y_pair, mt, tile_rows, st);
+                ink_moe_mark(3);
             }
             if (info.has_mx8) {
                 if (!quant_x_done) sm120::quantize_act_mx8(x_f32, M, kInkHidden, ws.xq_mx8, ws.xsc_mx8, st);
@@ -3324,10 +3334,14 @@ inline void launch_ink_moe_dispatch_only(
             dim3 g16(kInkInter / 16, max_act);
             if (M == 1) {
                 k_ink_moe_gu_sf4_mx8<1><<<g16, 128, 0, st>>>(sec4_base, experts, ws.tb, x_f32, ws.h_f32);
+                ink_moe_mark(2);
                 k_ink_moe_dn_sf4_mx8<1><<<g16, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.h_f32, ws.topk_w, ws.y_pair);
+                ink_moe_mark(3);
             } else {
                 k_ink_moe_gu_sf4_mx8<4><<<g16, 128, 0, st>>>(sec4_base, experts, ws.tb, x_f32, ws.h_f32);
+                ink_moe_mark(2);
                 k_ink_moe_dn_sf4_mx8<4><<<g16, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.h_f32, ws.topk_w, ws.y_pair);
+                ink_moe_mark(3);
             }
         }
     }
@@ -3376,6 +3390,7 @@ inline void launch_ink_moe_dispatch_only(
         } else {
             k_ink_moe_gu_gguf_dp4a<16><<<g_gu, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.xq_g32, x_f32, ws.h_f32);
         }
+        ink_moe_mark(4);
         const int nblk_h = P * (kInkInter / 32);
         k_ink_quant_q8_1_g32<<<(nblk_h + 7) / 8, 256, 0, st>>>(ws.h_f32, ws.hq_g32, P, kInkInter);
         if (M == 1) {
@@ -3385,6 +3400,7 @@ inline void launch_ink_moe_dispatch_only(
         } else {
             k_ink_moe_dn_gguf_dp4a<16><<<g_dn, 128, 0, st>>>(sec4_base, experts, ws.tb, ws.hq_g32, ws.h_f32, ws.topk_w, ws.y_pair);
         }
+        ink_moe_mark(5);
     }
 }
 
