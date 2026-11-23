@@ -448,6 +448,34 @@ def prepare_messages(messages: list[dict]) -> list[dict]:
     return out
 
 
+def restore_history_openers(prompt: str) -> str:
+    """Put back the empty thinking turn in front of each earlier model run of a tools prompt, so multi-turn tool
+    conversations reuse the prompt cache.
+
+    `finish_prompt` ends every tools prompt with `<|message_model|><|content_thinking|><|end_message|>`, but the chat
+    template renders earlier assistant turns without it. The engine reuses only a prompt that starts with the previous
+    prompt minus its last token (its prompt-end checkpoint, #6627; looped SWA + ShortConv state cannot rewind further),
+    so the next agent turn never matched and every tool turn re-read the whole prompt. A model run starts at a
+    `<|message_model|>` that follows a non-model message; the empty thinking turn is inserted there unless present.
+    Idempotent."""
+    empty_think = f"{MSG_MODEL}{CONTENT_THINK}{END_MSG}"
+    boundary = END_MSG + MSG_MODEL
+    out, i = [], 0
+    while True:
+        j = prompt.find(boundary, i)
+        if j < 0:
+            out.append(prompt[i:])
+            return "".join(out)
+        k = j + len(END_MSG)
+        prev = prompt.rfind("<|message_", 0, j)
+        out.append(prompt[i:k])
+        prev_is_model = prev >= 0 and prompt.startswith(MSG_MODEL, prev)
+        trailing_opener = k + len(MSG_MODEL) == len(prompt)     # the open turn finish_prompt completes below
+        if not prev_is_model and not trailing_opener and not prompt.startswith(empty_think, k):
+            out.append(empty_think)
+        i = k
+
+
 def finish_prompt(prompt: str, *, has_tools: bool = False, forced: bool = False) -> str:
     """Append an explicit non-thinking turn opener to a rendered Inkling-2-Mini prompt (#6612, #6620, #6627).
 
@@ -464,6 +492,8 @@ def finish_prompt(prompt: str, *, has_tools: bool = False, forced: bool = False)
     if not prompt or forced:
         return prompt
     empty_think = f"{MSG_MODEL}{CONTENT_THINK}{END_MSG}"
+    if has_tools:
+        prompt = restore_history_openers(prompt)
     if prompt.endswith((CONTENT_TEXT, CONTENT_TOOL_JSON, CONTENT_TOOL_TEXT, empty_think)):
         return prompt
     if prompt.endswith(MSG_MODEL):

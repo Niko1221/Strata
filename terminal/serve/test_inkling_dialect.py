@@ -265,6 +265,28 @@ class TestInklingDialect(unittest.TestCase):
         # Forced tool call leaves prompt untouched
         self.assertEqual(inkling_dialect.finish_prompt(base_prompt, has_tools=True, forced=True), base_prompt)
 
+    def test_tool_turns_keep_previous_prompt_as_prefix_for_cache_reuse(self):
+        # Each agent turn's prompt must start with the previous turn's prompt minus its last token (the engine's
+        # prompt-end checkpoint); the template renders history without the empty thinking turn finish_prompt adds.
+        sys_ = "<|message_system|><|content_text|>SYS<|end_message|>"
+        user = "<|message_user|><|content_text|>Read a.py<|end_message|>"
+        call = ('<|message_model|>read_file<|content_invoke_tool_json|>{"name":"read_file","args":{"path":"a.py"}}'
+                "<|end_message|><|content_model_end_sampling|>")
+        tool = "<|message_tool|>read_file<|content_text|>print(1)<|end_message|>"
+        text = "<|message_model|><|content_text|>It prints 1.<|end_message|><|content_model_end_sampling|>"
+        user2 = "<|message_user|><|content_text|>Thanks<|end_message|>"
+        empty = "<|message_model|><|content_thinking|><|end_message|>"
+        turns = [sys_ + user, sys_ + user + call + tool, sys_ + user + call + tool + text + user2]
+        prompts = [inkling_dialect.finish_prompt(t, has_tools=True) for t in turns]
+        for prev, nxt in zip(prompts, prompts[1:]):
+            self.assertTrue(prev.endswith(empty))
+            self.assertTrue(nxt.startswith(prev[:-len("<|end_message|>")]), (prev, nxt))
+        self.assertEqual(prompts[1], sys_ + user + empty + call + tool + empty)
+        # Idempotent, and plain (no tools) prompts get no empty thinking turn.
+        self.assertEqual(inkling_dialect.finish_prompt(prompts[2], has_tools=True), prompts[2])
+        self.assertEqual(prompts[2].count(empty), 3)
+        self.assertNotIn(empty, inkling_dialect.finish_prompt(turns[2], has_tools=False))
+
     def test_dialect_hardening_prevents_empty_replies_on_missing_tags_and_yaml_6620(self):
         # 1. Model emits <|message_model|> followed directly by YAML/prose (omitting <|content_text|>):
         # header state flushes on newline / close instead of discarding the entire reply!
