@@ -3,7 +3,7 @@
 Measured 2026-11-23: one drafting step costs 0.7 to 5.4 plain decode steps depending on the card and where the experts live, so the same drafter
 is 4x faster on a 4060 with SQ-10 (plain decode 2 tok/s) and 2x slower on the same box with UD-Q4_K_XL (plain decode 11 tok/s). The card class alone
 cannot decide it, so at the first start of a model (and again whenever the placement changes) the engine is started twice, plain and with chain
-drafting, and a code prompt and a chat prompt are decoded for 64 tokens each. Drafting is chosen only when the mixed gain (geometric mean of the
+drafting, and a code prompt and a chat prompt are decoded for 128 tokens each. Drafting is chosen only when the mixed gain (geometric mean of the
 two gains) reaches MARGIN. The numbers go into the run config ("drafting_probe") and into the status note, so the choice can be explained.
 
 Stdlib only; `python inkling_probe.py --exe ENGINE --out RESULT.json [--margin 1.10] -- ENGINE ARGS (--native MODEL --max-context N ...)` runs one
@@ -27,7 +27,7 @@ except ImportError:  # run as a script from this folder
     from inkling_probe_prompts import CHAT_IDS, CODE_IDS
 
 MARGIN = 1.10          # the mixed gain drafting has to reach
-TOKENS = 64            # tokens decoded per probe request
+TOKENS = 128           # tokens decoded per probe request (64 was too short: the A6000 with SQ-20 measured 1.05 at 64 tokens, 1.14 at 128 against 1.19 in the long runs)
 REPS = 2               # requests per prompt and arm; the median is used
 READY_TIMEOUT = 900.0
 STEP_TIMEOUT = 300.0
@@ -230,6 +230,8 @@ def main(argv: list[str]) -> int:
     opts, args = argv[:cut], argv[cut + 1:]
     exe = out = None
     margin = MARGIN
+    tokens = TOKENS
+    on_args = None
     i = 0
     while i < len(opts):
         if opts[i] == "--exe":
@@ -238,6 +240,12 @@ def main(argv: list[str]) -> int:
         elif opts[i] == "--out":
             out = opts[i + 1]
             i += 2
+        elif opts[i] == "--tokens":
+            tokens = int(opts[i + 1])
+            i += 2
+        elif opts[i] == "--no-adapt":
+            on_args = [a for a in ON_ARGS if a != "--draft-adapt"]
+            i += 1
         elif opts[i] == "--margin":
             margin = float(opts[i + 1])
             i += 2
@@ -247,7 +255,7 @@ def main(argv: list[str]) -> int:
     if not exe:
         print("--exe is required")
         return 2
-    result = probe(lambda a: Engine(exe, a), args, margin=margin, key="")
+    result = probe(lambda a: Engine(exe, a), args, margin=margin, tokens=tokens, on_args=on_args, key="")
     text = json.dumps(result, indent=1)
     print(text)
     if out:

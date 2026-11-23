@@ -96,10 +96,10 @@ class Placement(unittest.TestCase):
         cfg = dict(self.BASE)
         self.assertEqual(P.note(cfg), "")
         P.record(cfg, {"decision": "off", "key": P.placement_key(cfg), "gains": {"code": 0.86, "chat": 0.75}, "plain_tps": {"code": 11.2, "chat": 10.8},
-                       "margin": 1.10, "tokens": 64})
+                       "margin": 1.10, "tokens": 128})
         text = P.note(cfg)
         self.assertTrue(text.startswith("Drafting off:"), text)
-        for part in ("64-token probe", "0.80x", "code 0.86x", "chat 0.75x", "plain decoding 11 tok/s", "needs 1.10x"):
+        for part in ("128-token probe", "0.80x", "code 0.86x", "chat 0.75x", "plain decoding 11 tok/s", "needs 1.10x"):
             self.assertIn(part, text)
 
 
@@ -125,7 +125,7 @@ class Driver(unittest.TestCase):
         self.assertAlmostEqual(res["gains"]["chat"], 1.1, places=2)
         self.assertAlmostEqual(res["plain_tps"]["code"], 40.0, places=1)
         self.assertAlmostEqual(res["mixed_gain"], 1.483, places=2)
-        self.assertEqual((res["margin"], res["tokens"], res["key"]), (1.10, 64, "k"))
+        self.assertEqual((res["margin"], res["tokens"], res["key"]), (1.10, 128, "k"))
 
     def test_a_card_where_drafting_loses_comes_out_off(self):
         res, _ = self.run_probe({"off": {"code": 11.0, "chat": 11.0}, "on": {"code": 9.5, "chat": 6.3}})   # the 4060 with UD-Q4_K_XL
