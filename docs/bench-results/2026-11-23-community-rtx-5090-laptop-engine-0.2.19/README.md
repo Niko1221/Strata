@@ -12,6 +12,8 @@ Median decode throughput with **0.2.19** was **141.4 tok/s at 4,096 prompt token
 reading at 32K and 128K is 15 to 20 % faster. A context sweep with our daily configuration stays between 126 and 154
 tok/s decode and 2,800 to 3,160 tok/s prompt from 8K to 196K tokens.
 
+![Decode and prompt speed over context on this laptop, Qwen3.8-Flash-Next and Inkling-2-Mini](context-sweep.svg)
+
 ## Hardware and software
 
 - NVIDIA GeForce RTX 5090 **Laptop** GPU, 24,463 MiB, laptop Dynamic Boost (power draw under load median 144.2 W, peak
