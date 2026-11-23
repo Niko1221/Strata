@@ -656,7 +656,7 @@ __global__ void __launch_bounds__(128) k3_flash_swa_gqa_tree(
 
     // 1. Attend to committed prefix [k_start, base_pos - 1] across all 4 waves
     for (int kp = k_start + wave; kp < base_pos; kp += 4) {
-        const int ring_p = (swa_window > 0) ? (kp % swa_window) : kp;
+        const int ring_p = (swa_window > 0) ? (kp % swa_ring(swa_window)) : kp;
         const int phys = pt_row[ring_p >> 6];
         const size_t tok_base = static_cast<size_t>(phys) * 64 + (ring_p & 63);
         const size_t base = tok_base * elems + kv_off;
@@ -1087,7 +1087,7 @@ __global__ void __launch_bounds__(256) k3_kv_commit_tree_all(
     const int tid = threadIdx.x;
 
     const KvVisitDesc vd = visits[v];
-    const int p = (vd.swa_window > 0) ? ((base_pos + k) % vd.swa_window) : (base_pos + k);
+    const int p = (vd.swa_window > 0) ? ((base_pos + k) % swa_ring(vd.swa_window)) : (base_pos + k);
     const int phys = vd.d_pt[slot * vd.max_pages_per_slot + (p >> 6)];
     const size_t tok_base = static_cast<size_t>(phys) * 64 + (p & 63);
     const size_t dst_base = tok_base * elems;

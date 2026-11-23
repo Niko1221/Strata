@@ -1524,7 +1524,7 @@ __global__ void __launch_bounds__(128) k2_qrkv_kvstore_relpos_fused(
         __syncthreads();
         if (tid < head_dim) {
             const int slot = slot_ids[m];
-            const int p = (swa_window > 0) ? (pos[m] % swa_window) : pos[m];
+            const int p = (swa_window > 0) ? (pos[m] % swa_ring(swa_window)) : pos[m];
             const int phys = page_table[slot * max_pages_per_slot + (p >> 6)];
             const size_t dst = (static_cast<size_t>(phys) * 64 + (p & 63)) * (n_kv * head_dim) + h * head_dim + tid;
             k_pool[dst] = static_cast<half_t>(v * s_fac);
@@ -1544,7 +1544,7 @@ __global__ void __launch_bounds__(128) k2_qrkv_kvstore_relpos_fused(
         __syncthreads();
         if (tid < head_dim) {
             const int slot = slot_ids[m];
-            const int p = (swa_window > 0) ? (pos[m] % swa_window) : pos[m];
+            const int p = (swa_window > 0) ? (pos[m] % swa_ring(swa_window)) : pos[m];
             const int phys = page_table[slot * max_pages_per_slot + (p >> 6)];
             const size_t dst = (static_cast<size_t>(phys) * 64 + (p & 63)) * (n_kv * head_dim) + h * head_dim + tid;
             v_pool[dst] = static_cast<half_t>(v * s_fac);
@@ -1580,7 +1580,7 @@ __global__ void __launch_bounds__(256) k3_kv_paged_store(
     const int elems = n_kv_heads * head_dim;
 
     const int slot = slot_ids[m];
-    const int p = (swa_window > 0) ? (pos[m] % swa_window) : pos[m];
+    const int p = (swa_window > 0) ? (pos[m] % swa_ring(swa_window)) : pos[m];
     const int lpage = p >> 6;
     const int poff = p & 63;
     const int phys = page_table[slot * max_pages_per_slot + lpage];
@@ -1745,7 +1745,7 @@ __global__ void __launch_bounds__(128) k3_flash_swa_gqa(
     const int32_t* pt_row = page_table + slot * max_pages_per_slot;
 
     for (int kp = k_start; kp <= cur_pos; ++kp) {
-        const int ring_p = (swa_window > 0) ? (kp % swa_window) : kp;
+        const int ring_p = (swa_window > 0) ? (kp % swa_ring(swa_window)) : kp;
         const int phys = pt_row[ring_p >> 6];
         const size_t tok_base = static_cast<size_t>(phys) * 64 + (ring_p & 63);
         const size_t base = tok_base * elems + kv_off;
@@ -1843,7 +1843,7 @@ __global__ void __launch_bounds__(128) k3_flash_swa_gqa_splitkv(
     const int32_t* pt_row = page_table + slot * max_pages_per_slot;
 
     for (int kp = k_start + wave; kp <= cur_pos; kp += 4) {
-        const int ring_p = (swa_window > 0) ? (kp % swa_window) : kp;
+        const int ring_p = (swa_window > 0) ? (kp % swa_ring(swa_window)) : kp;
         const int phys = pt_row[ring_p >> 6];
         const size_t tok_base = static_cast<size_t>(phys) * 64 + (ring_p & 63);
         const size_t base = tok_base * elems + kv_off;
@@ -1966,7 +1966,7 @@ __global__ void __launch_bounds__(256) k3_flash_splitkv_part(
     const int32_t* pt_row = page_table + slot * max_pages_per_slot;
 
     for (int kp = sp_beg + wave; kp < sp_end; kp += 8) {
-        const int ring_p = (swa_window > 0) ? (kp % swa_window) : kp;
+        const int ring_p = (swa_window > 0) ? (kp % swa_ring(swa_window)) : kp;
         const int phys = pt_row[ring_p >> 6];
         const size_t tok_base = static_cast<size_t>(phys) * 64 + (ring_p & 63);
         const size_t base = tok_base * elems + kv_off;
@@ -2195,7 +2195,7 @@ __global__ void __launch_bounds__(128) k3_flash_swa_gqa_prefill_wmma(
             const int kp = kb + r;
             half_t* dst = &kv.sK[r * LDK + c4 * 4];
             if (kp <= q_max_pos) {
-                const int ring_p = (swa_window > 0) ? (kp % swa_window) : kp;
+                const int ring_p = (swa_window > 0) ? (kp % swa_ring(swa_window)) : kp;
                 const int phys = pt_row[ring_p >> 6];
                 const size_t tok_base = static_cast<size_t>(phys) * 64 + (ring_p & 63);
                 const size_t base = tok_base * elems + kv_off + c4 * 4;
@@ -2297,7 +2297,7 @@ __global__ void __launch_bounds__(128) k3_flash_swa_gqa_prefill_wmma(
             const int kp = kb + r;
             const int d0 = c4 * 4;
             if (kp <= q_max_pos) {
-                const int ring_p = (swa_window > 0) ? (kp % swa_window) : kp;
+                const int ring_p = (swa_window > 0) ? (kp % swa_ring(swa_window)) : kp;
                 const int phys = pt_row[ring_p >> 6];
                 const size_t tok_base = static_cast<size_t>(phys) * 64 + (ring_p & 63);
                 const size_t base = tok_base * elems + kv_off + d0;

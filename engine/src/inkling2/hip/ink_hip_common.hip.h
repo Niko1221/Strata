@@ -59,6 +59,13 @@
 
 namespace strata::inkling2::hip {
 
+// Sliding-window KV ring: window + slack slots. A batch writes all its K/V before its queries read, so a ring of exactly
+// the window lets later tokens of a batch overwrite keys that earlier queries of the same batch still need (any batch
+// past position `window`). forward_batch splits batches at kSwaRingSlack tokens, so window + slack slots never wrap onto
+// a live key. The window itself (the attention mask) is unchanged.
+constexpr int kSwaRingSlack = 1024;
+__host__ __device__ __forceinline__ int swa_ring(int swa_window) { return swa_window > 0 ? swa_window + kSwaRingSlack : 0; }
+
 using half_t = _Float16;
 typedef _Float16 hv2 __attribute__((ext_vector_type(2)));
 typedef _Float16 hv8 __attribute__((ext_vector_type(8)));
