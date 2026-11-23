@@ -251,6 +251,26 @@ class Entrypoint(unittest.TestCase):
         self.assertIn("strata-a.json", out)
         self.assertIn("does not have", out)
 
+    def test_container_keeps_the_old_run_settings_when_the_new_image_cannot_start(self):
+        install = self.tmp / "data" / "install"
+        install.mkdir(parents=True)
+        gone = self.tmp / "opt" / "components" / "engine" / "0.1.46-cuda13" / "strata-vision"
+        stale = install / "strata-a.json"
+        settings = '{"vision": {"exe": "%s"}, "sampling": {"temperature": 0.4}}' % gone
+        stale.write_text(settings, encoding="utf-8")
+        older = install / "strata-a.json.before-image.older"
+        older.write_text("earlier settings", encoding="utf-8")
+
+        result = subprocess.run([SH, str(self.script)], env=self.env(STUB_ENGINE="none"),
+                                capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertFalse(stale.exists(), "the previous config's engine path must not be used")
+        self.assertEqual(older.read_text(encoding="utf-8"), "earlier settings")
+        kept = [path for path in install.glob("strata-a.json.before-image.*") if path != older]
+        self.assertEqual(len(kept), 1, result.stdout)
+        self.assertEqual(kept[0].read_text(encoding="utf-8"), settings)
+        self.assertIn(kept[0].name, result.stdout)
+
     def test_nvidia_card_without_gpu_access_ends_before_any_work(self):
         dev = self.tmp / "dev"
         dev.mkdir()

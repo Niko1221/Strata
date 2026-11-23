@@ -166,7 +166,8 @@ variable; the model and tuning stay in `/data`. Anything else: `docker exec stra
 `docker run --rm IMAGE strata launch --plan --family qwen --model q2_0` to see what a choice would do without starting anything.
 
 What is in the volume `/data`: `Strata-data/` (model files, the prepared pack), `state/` (presets, tuning, the key), `install/`
-(run settings and logs), `home/`. The engine and the Terminal are in the image, so updating the image never touches your files.
+(run settings and logs), `home/`. The engine and the Terminal are in the image. If an update needs to regenerate run settings
+because they refer to the old image's engine, the startup log gives the path of the saved settings in `/data/install/`.
 
 To keep it all on a big disk, mount a folder there instead of the named volume: `-v /mnt/big/strata:/data` (the folder must be writable by the
 container's user). Nothing large is written anywhere else in the container.
