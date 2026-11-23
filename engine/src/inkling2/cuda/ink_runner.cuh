@@ -1667,6 +1667,26 @@ struct InkCudaRunner {
     float *d_attn_out = nullptr, *d_wo_raw = nullptr, *d_wo_conv = nullptr;
     float *d_moe_in = nullptr, *d_moe_raw = nullptr, *d_moe_conv = nullptr;
     float *d_h_norm = nullptr;        // [max_batch, 2304] final output_norm hidden
+    // #6671 diagnostics (STRATA_INK_HASH=1): per row hashes of cur before the MoE (slot 4v), the MoE input (4v+1), the router logits (4v+3), cur at
+    // the end of the visit (4v+2) and the final norm (192); visit 0 also q, k, v after the clip (193..195), the attention output (196), the sinks (198)
+    bool dbg_hash_on = false;
+    unsigned long long* d_dbg_hash = nullptr;
+    static constexpr int kDbgSlots = 208;
+    void dbg_hash(int slot, const float* ptr, int rows, int dim) {
+        if (!dbg_hash_on || rows > 16 || rows < 1) return;
+        k_ink_dbg_hash_rows<<<rows, 256, 0, st>>>(ptr, dim, d_dbg_hash, slot, kDbgSlots);
+    }
+    void dbg_hash_print(const char* tag, int M, const int32_t* pos, const int32_t* dep, const int32_t* tok, const int32_t* par, int anchor) {
+        if (!dbg_hash_on || M > 16 || M < 1) return;
+        INK_CK(cudaStreamSynchronize(st));
+        std::vector<unsigned long long> h((size_t)M * kDbgSlots);
+        INK_CK(cudaMemcpy(h.data(), d_dbg_hash, h.size() * 8, cudaMemcpyDeviceToHost));
+        for (int b = 0; b < M; ++b) {
+            std::fprintf(stderr, "[HASH] %s B=%d row=%d pos=%d dep=%d anchor=%d tok=%d par=%d", tag, M, b, pos[b], dep ? dep[b] : 0, anchor, tok[b], par ? par[b] : b - 1);
+            for (int q = 0; q <= 198; ++q) std::fprintf(stderr, " %llx", h[(size_t)b * kDbgSlots + q]);
+            std::fputc('\n', stderr);
+        }
+    }
     float *d_taps[4] = {};            // [max_batch, 2304] taps at visits [5, 23, 41, 48]
     float *d_taps_compact[4] = {};    // [tree_cap, 2304] compacted accepted-path taps for DSpark
     float *d_ctrl_cat = nullptr, *d_ctrl_gate = nullptr, *d_ctrl_gain = nullptr, *d_ctrl_forget = nullptr;
@@ -1919,6 +1939,14 @@ struct InkCudaRunner {
         cur_moe_ws = &moe_ws;
 
         INK_CK(cudaSetDevice(m.primary_gpu));
+        {
+            const char* hv = std::getenv("STRATA_INK_HASH");
+            if (hv && hv[0] == '1') {
+                dbg_hash_on = true;
+                INK_CK(cudaMalloc(&d_dbg_hash, (size_t)16 * kDbgSlots * 8));
+                INK_CK(cudaMemset(d_dbg_hash, 0, (size_t)16 * kDbgSlots * 8));
+            }
+        }
         INK_CK(cudaStreamCreate(&st));
         INK_CK(cudaEventCreate(&ev_p0));
         INK_CK(cudaEventCreate(&ev_p1));
@@ -2101,7 +2129,7 @@ struct InkCudaRunner {
         d_ctrl_gate   = dalloc<float>(3ull * MB * kInkGateRank);
         d_ctrl_gain   = dalloc<float>(MB * kInkHidden);
         d_ctrl_forget = dalloc<float>(MB * kInkHidden);
-        const size_t sp_cap = std::max<size_t>((size_t)kInkAttnMaxSplits, (size_t)tree_cap * kInkAttnSplits);
+        const size_t sp_cap = std::max<size_t>((size_t)kInkAttnMaxSplits, (size_t)tree_cap * kInkAttnMaxSplits);   // #6671: a tree uses the M == 1 split count
         d_attn_pm     = dalloc<float>(sp_cap * kInkHeads);
         d_attn_pl     = dalloc<float>(sp_cap * kInkHeads);
         d_attn_po     = dalloc<float>(sp_cap * kInkHeads * kInkHeadDim);
@@ -3062,7 +3090,9 @@ struct InkCudaRunner {
             dim3 gr(kInkHeads, M);
             k_ink_rel_table<<<gr, 256, 0, st>>>(d_r, (const float*)m.trunk_ptr_stage(cur_stage, p + ".attn.rel_logits_proj.proj"), d_rel_table, M);
             if (M <= 16 || mode == 2) {
-                const int n_sp = (M == 1) ? (is_swa ? 16 : kInkAttnMaxSplits) : kInkAttnSplits;
+                // #6671: a verify tree uses the one-token step's split count, so row m is the value the step at that position gives (the key split, the
+                // warp walk and the merge are the same; only the count differed: 8 for M > 1 against 16 / 32 for M == 1)
+                const int n_sp = (M == 1 || mode == 2) ? (is_swa ? 16 : kInkAttnMaxSplits) : kInkAttnSplits;
                 dim3 gsp(kInkKVHeads, n_sp, M);
                 k_ink_flash_gqa_splitk<<<gsp, 128, 0, st>>>(
                     d_q, d_rel_table, d_sinks,
@@ -3178,6 +3208,8 @@ struct InkCudaRunner {
             run_sconv_uniform(d_wo_raw, m.d_sconv_attn[ip], nullptr, d_cur, kInkHidden, 2 * kInkKVDim, 0, true);
         }
 
+        dbg_hash(visit * 4 + 0, d_cur, M, kInkHidden);
+        if (visit == 0) { dbg_hash(193, d_q, M, kInkHeads * kInkHeadDim); dbg_hash(194, d_k, M, kInkKVDim); dbg_hash(195, d_v, M, kInkKVDim); dbg_hash(196, d_attn_out, M, kInkHeads * kInkHeadDim); dbg_hash(198, d_sinks, M, kInkHeads); }
         // 9. MoE Sublayer: Fused Pre-MLP Mix+CatRMS -> SITU MoE -> Fused Reduce8 + Post-MLP ShortConv4 + Add!
         const float* mlp_nw = (const float*)m.trunk_ptr_stage(cur_stage, p + ".mlp_norm.weight");
         {
@@ -3199,6 +3231,7 @@ struct InkCudaRunner {
             }
         }
         prof_mark_end(0); prof_mark_start();
+        dbg_hash(visit * 4 + 1, d_moe_in, M, kInkHidden);
 
         if (m.ep2_active && m.layer_has_peer[ip]) {
             launch_ink_moe_router(
@@ -3289,6 +3322,8 @@ struct InkCudaRunner {
             }
         }
         prof_mark_end(2);
+        dbg_hash(visit * 4 + 3, cur_moe_ws->r_logits, M, kInkExperts);
+        dbg_hash(visit * 4 + 2, d_cur, M, kInkHidden);
     }
 
     // ---- Full 48-Visit Body (Capturable inside a SINGLE CUDA Graph on single GPU, or Pipeline Layer-Split on 2..4 GPUs!) ----
@@ -3401,6 +3436,7 @@ struct InkCudaRunner {
             k_ink_attn_res_mix<<<M, 256, 0, st>>>(stp, (const float*)m.trunk_ptr("model.llm.attn_res.output_query"), d_moe_in, 1, M, kInkHidden);
             k_ink_rms_norm<<<M, 256, 0, st>>>(d_moe_in, (const float*)m.trunk_ptr("model.llm.norm.weight"), d_h_norm, nullptr, M, kInkHidden);
             if (want_taps) INK_CK(cudaMemcpyAsync(d_taps[3], d_h_norm, n_hid * 4, cudaMemcpyDeviceToDevice, st));
+            dbg_hash(192, d_h_norm, M, kInkHidden);
         }
     }
 
@@ -3442,10 +3478,12 @@ struct InkCudaRunner {
             }
             INK_CK(cudaGraphLaunch(exec, st));
             if (m.hybrid.active && m.n_host_experts > 0) m.hybrid.step_promote(m.d_sec4, m.d_experts, st);
+            if (dbg_hash_on) dbg_hash_print("fwd", M, h_pos, nullptr, tok_ids, nullptr, -1);
             return;
         }
         emit_48_visits(M, 0, slot0, p0, want_taps);
         if (M == 1 && m.hybrid.active && m.n_host_experts > 0) m.hybrid.step_promote(m.d_sec4, m.d_experts, st);
+        if (dbg_hash_on) dbg_hash_print("fwd", M, h_pos, nullptr, tok_ids, nullptr, -1);
     }
 
     // Speculative Tree-32 / Block-8 verify (100% CUDA-Graph capturable with safe eager fallback!)
@@ -3496,9 +3534,17 @@ struct InkCudaRunner {
                 graph_cache.push_back({key, exec});
             }
             INK_CK(cudaGraphLaunch(exec, st));
+            dbg_tree_print(tree, p0);
             return;
         }
         emit_48_visits(M, 2, slot0, p0, want_taps);
+        dbg_tree_print(tree, p0);
+    }
+    void dbg_tree_print(const InkTreeSpec& tree, int p0) {
+        if (!dbg_hash_on) return;
+        int32_t pos[kInkMaxTree], dep[kInkMaxTree], par[kInkMaxTree];
+        for (int i = 0; i < tree.M && i < kInkMaxTree; ++i) { pos[i] = p0 + (int)tree.depth[i]; dep[i] = (int)tree.depth[i]; par[i] = (int)tree.parent[i]; }
+        dbg_hash_print("tree", tree.M, pos, dep, tree.tok, par, p0);
     }
 
     // Batched multi-slot 1-token-per-slot step (B = 1..64 concurrent requests, with safe eager fallback!)

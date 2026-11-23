@@ -2152,4 +2152,24 @@ __global__ void __launch_bounds__(256) k_ink_add(float* __restrict__ dst, const 
     if (i < n) dst[i] = a[i] + b[i];
 }
 
+// #6671 diagnostics (STRATA_INK_HASH=1): an order independent 64-bit hash of every FP32 bit of one row, so a verify window can be compared stage by
+// stage with the one-token steps.  Block per row, 256 threads.
+__global__ void __launch_bounds__(256) k_ink_dbg_hash_rows(const float* __restrict__ x, int D, unsigned long long* __restrict__ out, int slot, int nslots) {
+    __shared__ unsigned long long sh[256];
+    const float* row = x + (size_t)blockIdx.x * D;
+    unsigned long long acc = 0;
+    for (int d = threadIdx.x; d < D; d += 256) {
+        unsigned long long z = (unsigned long long)__float_as_uint(row[d]) + 0x9E3779B97F4A7C15ull * (unsigned long long)(d + 1);
+        z ^= z >> 30; z *= 0xBF58476D1CE4E5B9ull; z ^= z >> 27; z *= 0x94D049BB133111EBull; z ^= z >> 31;
+        acc += z;
+    }
+    sh[threadIdx.x] = acc;
+    __syncthreads();
+    for (int s = 128; s > 0; s >>= 1) {
+        if (threadIdx.x < s) sh[threadIdx.x] += sh[threadIdx.x + s];
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) out[(size_t)blockIdx.x * nslots + slot] = sh[0];
+}
+
 }  // namespace strata::ink
