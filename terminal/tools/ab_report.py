@@ -90,6 +90,7 @@ def _card(results: dict, old: dict, new: dict, suites: list[str] | None = None) 
     if suites:
         chips[1] += " + " + ", ".join(suites)
     chips += [f"{a['version']} did not run" for a in results.get("arms", []) if a.get("status") != "ran"]
+    chips += [f"{a['version']} {_env(a)}" for a in results.get("arms", []) if a.get("status") == "ran" and a.get("env")]
     tile = lambda label, big, small: (f'<div class="tile"><div class="label">{e(label)}</div>'  # noqa: E731
                                       f'<div class="value">{e(big)}</div><div class="small">{e(small)}</div></div>')
     return f"""<section id="card{'-all' if suites else ''}"><div class="glow"></div>
@@ -118,6 +119,7 @@ def _rows(results: dict) -> str:
     for a in results.get("arms", []):
         reqs = (results.get("requests") or []) if a.get("status") == "ran" else ["—"]
         status = "ran" if a.get("status") == "ran" else f"did not run: {a.get('reason', '')}"
+        status += f", {_env(a)}" if a.get("env") else ""
         for q in reqs:
             d, p = _median(a, q, "decode"), _median(a, q, "prompt")
             cls = ' class="worse"' if a["version"] in worse else ""
@@ -256,8 +258,13 @@ def _worse(arms: list[dict], suite: str) -> dict[str, str]:
     return {v: best[0] for v, ok, n in counts if ok * best[2] < best[1] * n}
 
 
+def _env(arm: dict) -> str:
+    """"mit A=1, B=2" for a version started with extra environment variables (--env), else ""."""
+    return "mit " + ", ".join(f"{k}={v}" for k, v in arm["env"].items()) if arm.get("env") else ""
+
+
 def _notes(results: dict, arm: dict, worse: dict[str, str]) -> list[str]:
-    out = []
+    out = [_env(arm)] if arm.get("env") else []
     if arm["version"] in worse:
         out.append(f"weniger richtig als v{worse[arm['version']]}")
     ctx, n = results.get("context"), arm.get("n_ctx")

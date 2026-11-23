@@ -160,6 +160,12 @@ beginning. A run continues only when every setting that changes the requests is 
 `--engines` may add versions. A finished run is never continued. `--fresh` starts a new run. When a run was stopped hard,
 the check of the real install did not happen for that part, and the report says so.
 
+Every version starts with its own defaults; variables that start with `STRATA_` are not passed on. When one version does
+not start that way and a variable works around it, `--env 0.1.66:STRATA_HC_Q8_TC=0,STRATA_HC_Q8_BF16TC=0` starts only that
+version with them. Repeat `--env` for more versions. The report names the variables next to that version, so its numbers are
+not read as its defaults. A version that has not finished a start yet may join a run this way; a version that already ran
+keeps the variables it ran with, or a new run starts.
+
 Three optional test suites go beyond the four short requests. They need a git checkout of Strata that has the tag `v0.2.12`,
 because their texts are read from it, so every version and every run sees the same bytes. Every request uses temperature 0
 and seed 7. Each version gets a second start with one shared `--context` (default: the model's maximum), so the suites compare

@@ -499,6 +499,40 @@ class Resume(unittest.TestCase):
         self.assertEqual(len(m["launch"].call_args_list), 4)
         self.assertEqual(len(list((self.bench / "runs").iterdir())), 2)
 
+    def test_env_reaches_only_its_version(self):
+        code, results, m = self.run_tool(["--env", "0.1.56:STRATA_X=0,STRATA_Y=1"])
+        self.assertEqual(code, 0)
+        for c in m["launch"].call_args_list:
+            mine = c.args[0].parent.parent.name == "0.1.56"
+            self.assertEqual((c.args[1].get("STRATA_X"), c.args[1].get("STRATA_Y")), ("0", "1") if mine else (None, None))
+        self.assertEqual([a["env"] for a in results["arms"]], [{}, {"STRATA_X": "0", "STRATA_Y": "1"}])
+
+    def test_env_lets_a_failed_version_join_the_run(self):
+        failed = lambda control, env, *x, **kw: LaunchResult(control.parent.parent.name != "0.1.56", 12.0, "never rang")
+        self.run_tool(launch=mock.Mock(side_effect=failed))
+        code, results, m = self.run_tool(["--env", "0.1.56:STRATA_X=0"])
+        self.assertEqual({c.args[0].parent.parent.name for c in m["launch"].call_args_list}, {"0.1.56"})
+        self.assertEqual(len(list((self.bench / "runs").iterdir())), 1)
+        self.assertEqual(results["arms"][1]["env"], {"STRATA_X": "0"})
+
+    def test_env_for_a_version_that_already_ran_starts_a_new_run(self):
+        self.run_tool(["--engines", "0.1.55"])
+        with mock.patch("time.strftime", mock.Mock(side_effect=lambda f, *x: "20991231-235959" if f == "%Y%m%d-%H%M%S" else "x")):
+            code, results, m = self.run_tool(["--env", "0.1.55:STRATA_X=0"])
+        self.assertEqual(len(list((self.bench / "runs").iterdir())), 2)
+
+    def test_env_for_a_version_not_in_the_run_is_refused(self):
+        code, results, m = self.run_tool(["--env", "0.1.99:STRATA_X=0"])
+        self.assertEqual(code, 2)
+        m["launch"].assert_not_called()
+
+    def test_env_arguments_are_checked(self):
+        for bad in (["--env", "STRATA_X=0"], ["--env", "0.1.56:STRATA_X"], ["cfg.json", "A:", "--env", "0.1.56:STRATA_X=0"]):
+            with mock.patch("sys.stderr"), self.assertRaises(SystemExit):
+                ab_engine.parse_args((["--model-path", "m", "--engines", "0.1.56"] if bad[0] != "cfg.json" else []) + bad)
+        a = ab_engine.parse_args(["--model-path", "m", "--engines", "0.1.56", "--env", "0.1.56:A=1,B=x=y", "--env", "0.1.55:C=2"])
+        self.assertEqual(a.env, {"0.1.56": {"A": "1", "B": "x=y"}, "0.1.55": {"C": "2"}})
+
     def test_fresh_belongs_to_versions_mode(self):
         with mock.patch("sys.stderr"), self.assertRaises(SystemExit):
             ab_engine.parse_args(["cfg.json", "A:", "--fresh"])

@@ -204,15 +204,20 @@ def pick_pairs(releases: list[dict], target: str, backend: str, spec: str) -> tu
     return versions, pairs
 
 
-def find_unfinished(runs: Path, params: dict, versions: list[str], wanted: list[str]) -> tuple[Path, dict] | None:
+def find_unfinished(runs: Path, params: dict, versions: list[str], wanted: list[str],
+                    env: dict | None = None) -> tuple[Path, dict] | None:
     """The newest run with exactly these parameters and only versions among `versions`, when it still misses launches of
-    `wanted`; None when there is none or that run is complete (a finished run is never continued)."""
+    `wanted`; None when there is none or that run is complete (a finished run is never continued). A version with a finished
+    launch must keep its --env; a version without one may get a new one (a failed version can join with a workaround)."""
     for f in sorted(runs.glob("*/results.json"), reverse=True):
         try:
             saved = json.loads(f.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
         if saved.get("params") != params or "done" not in saved or not {x["version"] for x in saved["arms"]} <= set(versions):
+            continue
+        ran = {b.split(":")[1] for b in saved["done"]}
+        if any(x.get("env", {}) != (env or {}).get(x["version"], {}) for x in saved["arms"] if x["version"] in ran):
             continue
         return (f.parent, saved) if set(wanted) - set(saved["done"]) else None
     return None
@@ -260,14 +265,19 @@ def run_versions(a: argparse.Namespace) -> int:
         if a.run_code:
             print(RUN_CODE_WARNING, flush=True)
     for v in versions:
-        print(f"  v{v}: {pairs[v].engine_name} ({pairs[v].tag})", flush=True)
+        print(f"  v{v}: {pairs[v].engine_name} ({pairs[v].tag})"
+              + "".join(f" {k}={x}" for k, x in a.env.get(v, {}).items()), flush=True)
+    if set(a.env) - set(versions):
+        print(f"error: --env names {', '.join(sorted(set(a.env) - set(versions)))}, not among the versions of this run",
+              file=sys.stderr)
+        return 2
     # Everything that changes the bytes sent or the way a version starts; a run continues only with all of it the same.
     params = {"model": str(model), "backend": backend, "tune": a.tune, "max_new": a.max_new, "long_words": a.long_words,
               "suite": a.suite, "context": context, "think_tokens": a.think_tokens, "run_code": a.run_code,
               "corpus": ab_suites.CORPUS_REV if a.suite else None, "chars_per_token": ab_suites.CHARS_PER_TOKEN if a.suite else None}
     parts = ("base", "suites") if a.suite else ("base",)
     wanted = [f"{rnd}:{v}:{p}" for rnd in range(a.rounds) for v in versions for p in parts]
-    found = None if a.fresh else find_unfinished(bench / "runs", params, versions, wanted)
+    found = None if a.fresh else find_unfinished(bench / "runs", params, versions, wanted, a.env)
     saved = found[1] if found else {}
     done = list(saved.get("done", []))
     stamp = found[0].name if found else time.strftime("%Y%m%d-%H%M%S")
@@ -283,7 +293,7 @@ def run_versions(a: argparse.Namespace) -> int:
             if homes[v].name == saved.get("homes", {}).get(v):
                 try:
                     p = av.ensure_packages(pairs[v], bench / "packages")
-                    av.stop(av.provision_home(homes[v], p), av.isolated_env(homes[v], os.environ))
+                    av.stop(av.provision_home(homes[v], p), av.isolated_env(homes[v], os.environ) | a.env.get(v, {}))
                 except Exception:                                   # noqa: BLE001 - only a cleanup; a real problem shows in the run
                     pass
     try:
@@ -298,7 +308,9 @@ def run_versions(a: argparse.Namespace) -> int:
     data.mkdir(parents=True, exist_ok=True)
     arms = {v: {"version": v, "status": "skipped", "reason": "the run stopped before it", "setup_s": None, "start_s": [], "rows": [],
                 "n_ctx": None, "suites_status": "skipped" if a.suite else None,
-                "suites_reason": "the run stopped before it" if a.suite else "", "left_out": []} for v in versions}
+                "suites_reason": "the run stopped before it" if a.suite else "", "left_out": [], "env": a.env.get(v, {})} for v in versions}
+    for x in saved.get("arms", []):
+        x.pop("env", None)                   # the env of this session counts; find_unfinished kept it for versions that ran
     for x in saved.get("arms", []):     # rows of a launch that did not finish go; that launch runs again
         arms[x["version"]].update(x, rows=[r for r in x["rows"] if _block(x["version"], r) in done])
     sessions.append({"started": time.strftime("%Y-%m-%dT%H:%M:%S"), "checked": False, "changed": []})
@@ -330,7 +342,7 @@ def run_versions(a: argparse.Namespace) -> int:
         for v in versions:                                          # homes are per run: no preset or launch config of an earlier run
             try:
                 pkgs[v] = av.ensure_packages(pairs[v], bench / "packages")
-                env[v] = (av.provision_home(homes[v], pkgs[v]), av.isolated_env(homes[v], os.environ))
+                env[v] = (av.provision_home(homes[v], pkgs[v]), av.isolated_env(homes[v], os.environ) | a.env.get(v, {}))
             except Exception as e:                                  # noqa: BLE001 - one version that cannot be set up skips, the rest run
                 arms[v].update(reason=f"setup: {e}")
                 dead.add(v)
@@ -445,14 +457,25 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--think-tokens", type=int, help="versions mode: token budget of a thinking task (default 8192)")
     ap.add_argument("--fresh", action="store_true", help="versions mode: start a new run; by default an unfinished run with the "
                     "same settings continues and runs only its missing launches")
+    ap.add_argument("--env", action="append", default=[], metavar="VERSION:KEY=VALUE[,KEY=VALUE]",
+                    help="versions mode: extra environment variables for one version, e.g. a workaround "
+                    "`0.1.66:STRATA_HC_Q8_TC=0`; the report names them; repeat for more versions")
     ap.add_argument("--run-code", action="store_true", help="versions mode: run and test the code the think suite's model "
                     "writes; it runs on this PC with your user rights and is not isolated.")
     a = ap.parse_intermixed_args(argv)
-    if a.config is not None and (a.run_code or a.fresh or any(x is not None for x in (a.model_path, a.engines, a.tune, a.bench_dir, a.backend,
+    if a.config is not None and (a.run_code or a.fresh or a.env or any(x is not None for x in (a.model_path, a.engines, a.tune, a.bench_dir, a.backend,
                                                                           a.suite, a.context, a.think_tokens))):
-        ap.error("--model-path, --engines, --tune, --bench-dir, --backend, --suite, --context, --think-tokens, --run-code and --fresh "
+        ap.error("--model-path, --engines, --tune, --bench-dir, --backend, --suite, --context, --think-tokens, --run-code, --fresh and --env "
                  "belong to the versions mode, not to <config> <arms...>")
     a.suite = list(dict.fromkeys(x for x in (a.suite or "").split(",") if x))
+    env: dict[str, dict[str, str]] = {}
+    for spec in a.env:
+        v, _, pairs = spec.partition(":")
+        kv = [x.partition("=") for x in pairs.split(",") if x]
+        if not v or not kv or any(not k or not eq for k, eq, _ in kv):
+            ap.error(f"--env takes VERSION:KEY=VALUE[,KEY=VALUE], not {spec!r}")
+        env.setdefault(v, {}).update({k: x for k, _, x in kv})
+    a.env = env
     if any(x not in SUITES for x in a.suite):
         ap.error(f"--suite takes {', '.join(SUITES)}, not {a.suite!r}")
     if not a.suite and (a.run_code or a.context is not None or a.think_tokens is not None):

@@ -371,3 +371,12 @@ class BaseCorrectness(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EnvNote(unittest.TestCase):
+    def test_a_version_with_env_says_so_in_tables_and_card(self):
+        r = copy.deepcopy(RESULTS)
+        r["arms"][-1]["env"] = {"STRATA_HC_Q8_TC": "0"}
+        html = build_html(r)
+        self.assertIn("mit STRATA_HC_Q8_TC=0", html)
+        self.assertIn("0.1.56 mit STRATA_HC_Q8_TC=0", card(html))
