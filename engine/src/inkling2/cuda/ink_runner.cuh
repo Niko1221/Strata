@@ -2099,7 +2099,7 @@ struct InkCudaRunner {
         d_ctrl_gate   = dalloc<float>(3ull * MB * kInkGateRank);
         d_ctrl_gain   = dalloc<float>(MB * kInkHidden);
         d_ctrl_forget = dalloc<float>(MB * kInkHidden);
-        const size_t sp_cap = std::max<size_t>((size_t)kInkAttnMaxSplits, (size_t)tree_cap * kInkAttnSplits);
+        const size_t sp_cap = std::max<size_t>((size_t)kInkAttnMaxSplits, (size_t)tree_cap * kInkAttnMaxSplits);
         d_attn_pm     = dalloc<float>(sp_cap * kInkHeads);
         d_attn_pl     = dalloc<float>(sp_cap * kInkHeads);
         d_attn_po     = dalloc<float>(sp_cap * kInkHeads * kInkHeadDim);
@@ -2629,7 +2629,7 @@ struct InkCudaRunner {
         const int cur_cc = m.ls_active ? m.stage_cc[cur_stage] : m.sm_cc;
         const bool cur_attn_fp16 = m.ls_active ? m.stage_trunk_attn_fp16[cur_stage] : m.trunk_attn_fp16;
         const bool is_fp16 = cur_attn_fp16 && (names[0].find(".attn.") != std::string::npos);
-        const int bf16_gemv_max = is_fp16 ? 3 : ((exact_fp32_x || cur_cc < 80) ? 16 : 7);
+        const int bf16_gemv_max = is_fp16 ? 16 : ((exact_fp32_x || cur_cc < 80) ? 16 : 7);
         bool can_fuse = (count <= 5) && ((ti0.fmt == FMT_BF16 && M <= bf16_gemv_max) || (ti0.fmt == FMT_Q8ROW && M <= 16));
         InkMultiProj mp{};
         mp.count = count;
@@ -2648,7 +2648,9 @@ struct InkCudaRunner {
             if (ti0.fmt == FMT_BF16) {
                 if (is_fp16) {
                     if (M == 1)      k_ink_gemv_multi_bf16<1, true><<<grid, 128, 0, st>>>(mp, X, M, K);
-                    else             k_ink_gemv_multi_bf16<4, true><<<grid, 128, 0, st>>>(mp, X, M, K);
+                    else if (M <= 4) k_ink_gemv_multi_bf16<4, true><<<grid, 128, 0, st>>>(mp, X, M, K);
+                    else if (M <= 8) k_ink_gemv_multi_bf16<8, true><<<grid, 128, 0, st>>>(mp, X, M, K);
+                    else             k_ink_gemv_multi_bf16<16, true><<<grid, 128, 0, st>>>(mp, X, M, K);
                 } else {
                     if (M == 1)      k_ink_gemv_multi_bf16<1, false><<<grid, 128, 0, st>>>(mp, X, M, K);
                     else if (M <= 4) k_ink_gemv_multi_bf16<4, false><<<grid, 128, 0, st>>>(mp, X, M, K);
@@ -2687,14 +2689,16 @@ struct InkCudaRunner {
 
         if (ti.fmt == FMT_BF16) {
             const bool is_fp16 = cur_attn_fp16 && (tname.find(".attn.") != std::string::npos);
-            const int bf16_gemv_max = is_fp16 ? 3 : ((exact_fp32_x || cur_cc < 80) ? 16 : 7);
+            const int bf16_gemv_max = is_fp16 ? 16 : ((exact_fp32_x || cur_cc < 80) ? 16 : 7);
             if (M <= bf16_gemv_max) {
                 InkMultiProj mp{};
                 mp.W[0] = W; mp.Y[0] = Y; mp.N[0] = N; mp.cumN[0] = 0; mp.cumN[1] = N; mp.count = 1;
                 const int grid = (N + 7) / 8;
                 if (is_fp16) {
                     if (M == 1)      k_ink_gemv_multi_bf16<1, true><<<grid, 128, 0, st>>>(mp, X, M, K);
-                    else             k_ink_gemv_multi_bf16<4, true><<<grid, 128, 0, st>>>(mp, X, M, K);
+                    else if (M <= 4) k_ink_gemv_multi_bf16<4, true><<<grid, 128, 0, st>>>(mp, X, M, K);
+                    else if (M <= 8) k_ink_gemv_multi_bf16<8, true><<<grid, 128, 0, st>>>(mp, X, M, K);
+                    else             k_ink_gemv_multi_bf16<16, true><<<grid, 128, 0, st>>>(mp, X, M, K);
                 } else {
                     if (M == 1)      k_ink_gemv_multi_bf16<1, false><<<grid, 128, 0, st>>>(mp, X, M, K);
                     else if (M <= 4) k_ink_gemv_multi_bf16<4, false><<<grid, 128, 0, st>>>(mp, X, M, K);
@@ -3017,7 +3021,11 @@ struct InkCudaRunner {
             dim3 gr(kInkHeads, M);
             k_ink_rel_table<<<gr, 256, 0, st>>>(d_r, (const float*)m.trunk_ptr_stage(cur_stage, p + ".attn.rel_logits_proj.proj"), d_rel_table, M);
             if (M <= 16 || mode == 2) {
-                const int n_sp = (M == 1) ? (is_swa ? 16 : kInkAttnMaxSplits) : kInkAttnSplits;
+                // Bit-exact parity with M=1 decode: use the SAME split-K count for every M, so each key
+                // lands in the identical (split, warp) and accumulates in the identical fp32 order.
+                // (Was: M>1 used kInkAttnSplits=8 while M=1 used 16/32 -> different rounding -> argmax
+                //  flips -> speculative acceptance corrupted the output on sm_75.)
+                const int n_sp = is_swa ? 16 : kInkAttnMaxSplits;
                 dim3 gsp(kInkKVHeads, n_sp, M);
                 k_ink_flash_gqa_splitk<<<gsp, 128, 0, st>>>(
                     d_q, d_rel_table, d_sinks,
@@ -3503,7 +3511,8 @@ struct InkCudaRunner {
     void head_argmax_exact(int M, int32_t* h_out_ids) {
         prof_mark_start();
         const auto& ui = m.tinfo("model.llm.unembed.weight");
-        if (m.unembed_screen.ready && (ui.fmt == FMT_BF16 || ui.fmt == FMT_S6_K) && M <= kInkMaxTree) {
+        static const bool head_full = []{ const char* e = std::getenv("INK_HEAD_FULL"); return e && e[0] != '0'; }();
+        if (!head_full && m.unembed_screen.ready && (ui.fmt == FMT_BF16 || ui.fmt == FMT_S6_K) && M <= kInkMaxTree) {
             const int V = m.man.c.vocab_unpadded;
             const int g1 = (V + 7) / 8;
             for (int m0 = 0; m0 < M; m0 += 8) {

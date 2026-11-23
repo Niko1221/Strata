@@ -1375,7 +1375,10 @@ __global__ void __launch_bounds__(128) k_ink_gemv_multi_bf16(
     const uint4* wr = valid ? reinterpret_cast<const uint4*>(reinterpret_cast<const uint16_t*>(Wp) + (size_t)lrow * K) : nullptr;
     float acc[MAX_M] = {};
 
-    constexpr int KT = (MAX_M == 1) ? 2304 : ((MAX_M <= 8) ? 576 : 256);
+    // Fixed K-tile for ALL MAX_M so the per-token fp32 accumulation order is identical for M=1
+    // (plain decode) and M>1 (speculative verify) -> bit-exact parity. (Was MAX_M-dependent:
+    //  2304/576/256, which reordered the dot-product sum and broke DSpark losslessness on sm_75.)
+    constexpr int KT = 576;
     __shared__ alignas(16) float s_x[MAX_M][KT];
     for (int k0 = 0; k0 < K; k0 += KT) {
         const int kl = min(KT, K - k0);

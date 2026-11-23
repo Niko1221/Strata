@@ -743,12 +743,13 @@ public:
         int best_nd = std::min(2, cap);
         double cum_p = 1.0;
         double e_tok = 1.0;
+        static const double env_ratio = []{ const char* e = std::getenv("INK_MOE_RATIO"); return e ? std::atof(e) : 4.2; }();
         for (int k = 1; k <= cap; ++k) {
             cum_p *= std::max(0.0, std::min(1.0, (double)conf7[k - 1]));
             e_tok += cum_p;
             if (k >= 2 || k == cap) {
                 const double exp_frac = 1.0 - std::pow(15.0 / 16.0, (double)(k + 1));
-                const double rate = e_tok / (1.0 + 4.2 * exp_frac);
+                const double rate = e_tok / (1.0 + env_ratio * exp_frac);
                 if (rate > best_rate) { best_rate = rate; best_nd = k; }
             }
         }
@@ -774,8 +775,11 @@ public:
 
         // 2. True W=4 Multi-Branch Sparse-MoE Bayes-Optimal Adaptive Beam Tree (M* in {3,4,5,6,8,10,12})!
         strata::ink::InkTreeSpec tr{};
-        const int max_nodes = std::min(12, runner_->tree_cap);
-        dspark_->draft_beam_tree(anchor_tok, anchor_pos, /*beam_w=*/4, max_nodes, tr, /*adaptive_moe_ratio=*/4.2f);
+        static const int env_max_nodes = []{ const char* e = std::getenv("INK_MAX_NODES"); return e ? std::atoi(e) : 12; }();
+        static const int env_beam_w = []{ const char* e = std::getenv("INK_BEAM_W"); return e ? std::atoi(e) : 4; }();
+        static const float env_moe_ratio = []{ const char* e = std::getenv("INK_MOE_RATIO"); return e ? (float)std::atof(e) : 4.2f; }();
+        const int max_nodes = std::min(env_max_nodes, runner_->tree_cap);
+        dspark_->draft_beam_tree(anchor_tok, anchor_pos, env_beam_w, max_nodes, tr, env_moe_ratio);
 
         // 3. Single CUDA-Graph 48-visit tree verify + exact GPU screened argmax (ZERO 6.4 MB logits D2H!)
         runner_->forward_tree_verify(tr, anchor_pos, 0, true);
