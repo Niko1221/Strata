@@ -1670,8 +1670,9 @@ struct InkCudaRunner {
     // #6671 diagnostics (STRATA_INK_HASH=1): per row hashes of cur before the MoE (slot 4v), the MoE input (4v+1), the router logits (4v+3), cur at
     // the end of the visit (4v+2) and the final norm (192); visit 0 also q, k, v after the clip (193..195), the attention output (196), the sinks (198)
     bool dbg_hash_on = false;
+    int dbg_tap_visit = 0;   // STRATA_INK_HASH_VISIT: the visit whose inner stages (projections, attention, MoE) are hashed
     unsigned long long* d_dbg_hash = nullptr;
-    static constexpr int kDbgSlots = 208;
+    static constexpr int kDbgSlots = 212;
     void dbg_hash(int slot, const float* ptr, int rows, int dim) {
         if (!dbg_hash_on || rows > 16 || rows < 1) return;
         k_ink_dbg_hash_rows<<<rows, 256, 0, st>>>(ptr, dim, d_dbg_hash, slot, kDbgSlots);
@@ -1683,7 +1684,7 @@ struct InkCudaRunner {
         INK_CK(cudaMemcpy(h.data(), d_dbg_hash, h.size() * 8, cudaMemcpyDeviceToHost));
         for (int b = 0; b < M; ++b) {
             std::fprintf(stderr, "[HASH] %s B=%d row=%d pos=%d dep=%d anchor=%d tok=%d par=%d", tag, M, b, pos[b], dep ? dep[b] : 0, anchor, tok[b], par ? par[b] : b - 1);
-            for (int q = 0; q <= 198; ++q) std::fprintf(stderr, " %llx", h[(size_t)b * kDbgSlots + q]);
+            for (int q = 0; q <= 211; ++q) std::fprintf(stderr, " %llx", h[(size_t)b * kDbgSlots + q]);
             std::fputc('\n', stderr);
         }
     }
@@ -1943,6 +1944,7 @@ struct InkCudaRunner {
             const char* hv = std::getenv("STRATA_INK_HASH");
             if (hv && hv[0] == '1') {
                 dbg_hash_on = true;
+                if (const char* tv = std::getenv("STRATA_INK_HASH_VISIT")) dbg_tap_visit = std::atoi(tv);
                 INK_CK(cudaMalloc(&d_dbg_hash, (size_t)16 * kDbgSlots * 8));
                 INK_CK(cudaMemset(d_dbg_hash, 0, (size_t)16 * kDbgSlots * 8));
             }
@@ -3020,6 +3022,7 @@ struct InkCudaRunner {
             linear_cached(p + ".attn.wv_dv.weight", in_v, d_v_raw, M, share_qkv ? x_q : x_v);
         }
 
+        if (visit == dbg_tap_visit) { dbg_hash(201, in_q, M, kInkHidden); dbg_hash(199, d_q, M, kInkHeads * kInkHeadDim); dbg_hash(200, d_k_raw, M, kInkKVDim); dbg_hash(202, d_r, M, kInkHeads * kInkDRel); dbg_hash(203, d_gate_attn, M, kInkHeads * kInkHeadDim); }
         // 4. Dynamic K/V ShortConv tap projections on global layers
         float* k_dyn_ptr = nullptr;
         float* v_dyn_ptr = nullptr;
@@ -3199,6 +3202,8 @@ struct InkCudaRunner {
         // 8. Output projection wo + FUSED post-attn ShortConv + residual add / block boundary!
         linear(p + ".attn.wo_ud.weight", d_attn_out, d_wo_raw, M, 0, false, (mode == 2));
         prof_mark_end(4); prof_mark_start();
+        if (visit == dbg_tap_visit) dbg_hash(209, d_wo_raw, M, kInkHidden);
+        if (visit == dbg_tap_visit) { dbg_hash(210, d_sconv_pool[visit] + (size_t)(2 * kInkKVDim) * 3 * max_slots + (size_t)slot0 * 3 * kInkHidden, 1, 3 * kInkHidden); dbg_hash(211, d_cur, M, kInkHidden); }
         if (ip % m.man.c.block_size == 0) {
             INK_CK(cudaMemcpyAsync(d_blocks[n_blocks], d_cur, n_hid * 4, cudaMemcpyDeviceToDevice, st));
             block_ptrs[n_blocks] = d_blocks[n_blocks];
@@ -3209,7 +3214,7 @@ struct InkCudaRunner {
         }
 
         dbg_hash(visit * 4 + 0, d_cur, M, kInkHidden);
-        if (visit == 0) { dbg_hash(193, d_q, M, kInkHeads * kInkHeadDim); dbg_hash(194, d_k, M, kInkKVDim); dbg_hash(195, d_v, M, kInkKVDim); dbg_hash(196, d_attn_out, M, kInkHeads * kInkHeadDim); dbg_hash(198, d_sinks, M, kInkHeads); }
+        if (visit == dbg_tap_visit) { dbg_hash(193, d_q, M, kInkHeads * kInkHeadDim); dbg_hash(194, d_k, M, kInkKVDim); dbg_hash(195, d_v, M, kInkKVDim); dbg_hash(196, d_attn_out, M, kInkHeads * kInkHeadDim); dbg_hash(198, d_sinks, M, kInkHeads); }
         // 9. MoE Sublayer: Fused Pre-MLP Mix+CatRMS -> SITU MoE -> Fused Reduce8 + Post-MLP ShortConv4 + Add!
         const float* mlp_nw = (const float*)m.trunk_ptr_stage(cur_stage, p + ".mlp_norm.weight");
         {
@@ -3302,9 +3307,11 @@ struct InkCudaRunner {
                 (const float*)m.trunk_ptr_stage(cur_stage, p + ".mlp.gate.bias"),
                 d_moe_in, d_moe_raw, M, *cur_moe_ws, m.man.c.route_scale, (mode == 2), !fuse_moe_sconv);
             prof_mark_end(5); prof_mark_start();
+            if (visit == dbg_tap_visit) { dbg_hash(204, cur_moe_ws->y_pair, M, kInkTopK * kInkHidden); dbg_hash(205, cur_moe_ws->topk_w, M, kInkTopK); dbg_hash(206, reinterpret_cast<const float*>(cur_moe_ws->topk_idx), M, kInkTopK); }
             if (fuse_moe_sconv) {
                 constexpr int mlp_ch_off = 2 * kInkKVDim + kInkHidden;
                 float* hbase = d_sconv_pool[visit] + (size_t)mlp_ch_off * 3 * max_slots;
+                if (visit == dbg_tap_visit) { dbg_hash(207, hbase + (size_t)slot0 * 3 * kInkHidden, 1, 3 * kInkHidden); dbg_hash(208, d_cur, M, kInkHidden); }
                 if (mode == 0 && M == 1) {
                     k_ink_moe_reduce8_sconv_m1<<<(kInkHidden + 255) / 256, 256, 0, st>>>(
                         cur_moe_ws->y_pair, m.d_sconv_mlp[ip], hbase + (size_t)slot0 * 3 * kInkHidden, d_cur);
