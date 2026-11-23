@@ -86,7 +86,9 @@ int main() {
     CHECK(wddm_effective_reserve_mib(true, false, false, 700, 16 * GiB, "0") == 700); // STRATA_WDDM_VRAM_FLOOR=0 opt-out
     CHECK(wddm_effective_reserve_mib(false, false, false, 700, 16 * GiB) == 700);  // Linux/TCC/UMA untouched
 
-    CHECK(wddm_late_alloc_mib(true, false) == 384);
+    CHECK(wddm_late_alloc_mib(true, false) == 192);
+    CHECK(wddm_late_alloc_mib(true, false) >= 134 + 50);   // measured late allocation (RTX 5070, WDDM) plus a margin: the card ends at the reserve or more
+    CHECK(wddm_late_alloc_mib(true, false) <= wddm_late_alloc_mib(false, false));   // never more than the plain rule's price (#6836)
     CHECK(wddm_late_alloc_mib(false, false) == 256);
     CHECK(wddm_late_alloc_mib(true, true) == 0);
 
