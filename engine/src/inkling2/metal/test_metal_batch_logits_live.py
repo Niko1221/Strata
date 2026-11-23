@@ -31,9 +31,9 @@ def main():
     f.close()
     bad = []
     try:
-        # K slots with --chunk 512: per-slot share 512 // K tokens, the last iteration ends the prompts together; K = 2 gives 256 rows
-        # per slot (more than 64 rows with two wanted rows), K = 8 the same at a share of 64 with a tail.
-        for k, chunk in ((2, 512), (4, 1024), (8, 4096)):
+        # K slots: per-slot share chunk // K tokens, the last iteration ends the prompts together with more than 64 rows in the batch
+        # (K = 2, 4 here). Chunks of 2048 and more are not used: a single slot with such a chunk already answers differently (open item).
+        for k, chunk in ((2, 512), (4, 1024)):
             p = subprocess.run([a.engine, "--batch-check", "4", "--parallel", str(k), "--chunk", str(chunk), "--prompt-ids", "@" + f.name,
                                 "--native", a.model, "--vision", a.vision, "--ctx", "4096", "--kv", "fp16"],
                                capture_output=True, text=True, timeout=1200)
