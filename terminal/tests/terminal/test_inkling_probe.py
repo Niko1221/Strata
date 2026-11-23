@@ -153,45 +153,35 @@ class Driver(unittest.TestCase):
 class RunConfig(unittest.TestCase):
     CFG = {"arch": "inkling2_loop", "backend": "cuda", "args": ["--native", "m.strata", "--max-context", "32768"], "parallel": 1}
 
-    def setUp(self):
-        self._saved = inkling_family.EXACT_DRAFTING_BACKENDS
+    def test_auto_follows_the_probe_on_every_backend(self):
+        for backend in ("cuda", "hip", "sycl", "metal"):
+            cfg = dict(self.CFG, backend=backend)            # nothing chosen = auto
+            self.assertFalse(inkling_kind.wants_drafter(cfg))    # no probe yet: off, and the launcher is told to probe
+            self.assertTrue(inkling_kind.needs_drafting_probe(cfg))
+            P.record(cfg, {"decision": "on", "key": P.placement_key(cfg), "gains": {"code": 1.5, "chat": 1.2}})
+            self.assertTrue(inkling_kind.wants_drafter(cfg), backend)
+            self.assertFalse(inkling_kind.needs_drafting_probe(cfg))
+            P.record(cfg, {"decision": "off", "key": P.placement_key(cfg), "gains": {"code": 0.8, "chat": 0.7}})
+            self.assertFalse(inkling_kind.wants_drafter(cfg))
+            cfg["parallel"] = 4                              # another placement: measure again
+            self.assertTrue(inkling_kind.needs_drafting_probe(cfg))
 
-    def tearDown(self):
-        inkling_family.EXACT_DRAFTING_BACKENDS = self._saved
-
-    def test_auto_follows_the_probe_once_the_backend_may_draft(self):
-        inkling_family.EXACT_DRAFTING_BACKENDS = ("cuda",)
-        self.assertEqual(inkling_family.default_drafting("cuda"), "auto")
-        cfg = dict(self.CFG)                                 # nothing chosen = auto
-        self.assertFalse(inkling_kind.wants_drafter(cfg))    # no probe yet: off, and the launcher is told to probe
-        self.assertTrue(inkling_kind.needs_drafting_probe(cfg))
-        P.record(cfg, {"decision": "on", "key": P.placement_key(cfg), "gains": {"code": 1.5, "chat": 1.2}})
-        self.assertTrue(inkling_kind.wants_drafter(cfg))
-        self.assertFalse(inkling_kind.needs_drafting_probe(cfg))
-        P.record(cfg, {"decision": "off", "key": P.placement_key(cfg), "gains": {"code": 0.8, "chat": 0.7}})
-        self.assertFalse(inkling_kind.wants_drafter(cfg))
-        cfg["parallel"] = 4                                  # another placement: measure again
-        self.assertTrue(inkling_kind.needs_drafting_probe(cfg))
-
-    def test_nothing_is_probed_or_drafted_while_the_backend_is_not_proven(self):
-        self.assertEqual(inkling_family.EXACT_DRAFTING_BACKENDS, ())
+    def test_an_explicit_choice_is_never_overruled_and_an_explicit_off_never_probes(self):
         cfg = dict(self.CFG, drafting="auto")
-        P.record(cfg, {"decision": "on", "key": P.placement_key(cfg), "gains": {"code": 3.0, "chat": 3.0}})
-        self.assertFalse(inkling_kind.wants_drafter(cfg))
-        self.assertFalse(inkling_kind.needs_drafting_probe(cfg))
-        self.assertFalse(inkling_kind.needs_drafting_probe(dict(self.CFG)))
-        # an explicit choice is never overruled, and an explicit off never probes
+        self.assertTrue(inkling_kind.needs_drafting_probe(cfg))
         self.assertTrue(inkling_kind.wants_drafter(dict(self.CFG, drafting="dspark")))
         self.assertFalse(inkling_kind.needs_drafting_probe(dict(self.CFG, drafting="dspark")))
         self.assertFalse(inkling_kind.needs_drafting_probe(dict(self.CFG, drafting="off")))
+        off = dict(self.CFG, drafting="off")
+        P.record(off, {"decision": "on", "key": P.placement_key(off), "gains": {"code": 3.0, "chat": 3.0}})
+        self.assertFalse(inkling_kind.wants_drafter(off))
 
-    def test_the_status_note_reaches_the_engine_metrics_even_while_drafting_stays_off(self):
+    def test_the_status_note_reaches_the_engine_metrics(self):
         cfg = dict(self.CFG, drafting="off")
         P.record(cfg, {"decision": "on", "key": P.placement_key(cfg), "gains": {"code": 1.5, "chat": 1.2}, "plain_tps": {"code": 20, "chat": 20}})
         inkling_kind.engine_args(cfg, announce=True)
         info = inkling_kind.drafting_info(["--draft", "off"])
         self.assertIn("Drafting on:", info["drafting_note"])
-        self.assertIn("stays off until its answers are proven identical", info["drafting_note"])
         self.assertEqual(inkling_kind.drafting_info(["--draft", "off"])["drafting_note"], "")   # said once
 
 

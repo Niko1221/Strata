@@ -12,34 +12,18 @@ from serve import inkling_kind  # noqa: E402
 
 
 class DraftingDefault(unittest.TestCase):
-    def setUp(self):
-        self._saved = inkling_family.EXACT_DRAFTING_BACKENDS
-
-    def tearDown(self):
-        inkling_family.EXACT_DRAFTING_BACKENDS = self._saved
-
-    def test_off_until_a_backend_is_proven_exact(self):
-        self.assertEqual(inkling_family.EXACT_DRAFTING_BACKENDS, ())
+    def test_every_backend_starts_as_auto_and_is_off_until_a_probe_says_on(self):
         for backend in (None, "cuda", "hip", "sycl", "metal"):
-            self.assertEqual(inkling_family.default_drafting(backend), "off", backend)
-        self.assertFalse(inkling_kind.wants_drafter({}))
-        self.assertFalse(inkling_kind.wants_drafter({"backend": "cuda"}))
+            self.assertEqual(inkling_family.default_drafting(backend), "auto", backend)
+        self.assertFalse(hasattr(inkling_family, "EXACT_DRAFTING_BACKENDS"))      # no bit-exact gate any more (owner, 2026-11-23)
+        for cfg in ({}, {"backend": "cuda"}, {"backend": "hip"}, {"drafting": "auto"}):
+            self.assertFalse(inkling_kind.wants_drafter(cfg), cfg)                 # no valid probe yet: off (tests/terminal/test_inkling_probe.py)
         args = inkling_kind.engine_args({"arch": "inkling2_loop", "args": ["--native", "m.strata"]}, announce=False)
         self.assertEqual(args[args.index("--draft") + 1], "off")
-
-    def test_a_proven_backend_lets_a_measured_probe_decide(self):
-        inkling_family.EXACT_DRAFTING_BACKENDS = ("cuda",)
-        self.assertEqual(inkling_family.default_drafting("cuda"), "auto")
-        self.assertEqual(inkling_family.default_drafting(None), "auto")
-        self.assertEqual(inkling_family.default_drafting("hip"), "off")
-        # "auto" is on only with a probe that says so (tests/terminal/test_inkling_probe.py); without one it is off
-        self.assertFalse(inkling_kind.wants_drafter({"backend": "cuda"}))
-        self.assertFalse(inkling_kind.wants_drafter({"backend": "hip"}))
 
     def test_an_explicit_choice_wins_both_ways(self):
         self.assertTrue(inkling_kind.wants_drafter({"drafting": "dspark"}))
         self.assertTrue(inkling_kind.wants_drafter({"drafting": "dspark", "backend": "hip"}))
-        inkling_family.EXACT_DRAFTING_BACKENDS = ("cuda",)
         for val in ("off", "none", "false", "0", False):
             self.assertFalse(inkling_kind.wants_drafter({"drafting": val, "backend": "cuda"}), val)
 

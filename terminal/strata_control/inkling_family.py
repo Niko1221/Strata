@@ -35,17 +35,15 @@ DRAFTERS = ("off", "dspark")
 DRAFT_BEAM = 1
 #: `--draft-adapt`: per request, drafting goes off for 40 steps when the measured gain (tokens per step over the step cost) falls below 0.93.
 DRAFT_ADAPT = True
-#: Backends whose verify window gives bit-identical answers to plain decoding (greedy, the same tokens as `--draft off` at 600 / 4K / 16K
-#: and in a 5-run fingerprint). Drafting is on by default only there: the owner's rule is that a drafter must earn its place with measured
-#: speed AND identical output. 0221-DSPARK measured the opposite on every card (answers differ from token 4 to 330 on chat, prose, json and
-#: documents), so the list is empty until DETERM's verify-window fix is measured. `--drafting dspark` / "drafting": "dspark" still turn it on.
-EXACT_DRAFTING_BACKENDS: tuple = ()
 
 
 def default_drafting(backend: str | None = None) -> str:
-    """What a run config gets when the person chose nothing: "off" until the backend is in EXACT_DRAFTING_BACKENDS, then "auto" = a measured probe on
-    this card and placement decides (strata_control/inkling_probe.py: drafting only when it gains MARGIN, 1.10x, on a code + chat probe)."""
-    return "auto" if (backend or "cuda") in EXACT_DRAFTING_BACKENDS else "off"
+    """What a run config gets when the person chose nothing: "auto" = a measured probe on this card and placement decides
+    (strata_control/inkling_probe.py: drafting only when it gains MARGIN, 1.10x, on a code + chat probe; no valid probe yet = off).
+    Owner decision 2026-11-23: a slightly different answer is acceptable, a loss in speed is not, so the gate is the measured gain on every
+    backend, not bit-identical answers. `--drafting dspark` always turns drafting on, `--drafting off` always turns it off."""
+    return "auto"
+
 DEFAULT_VISION = True
 DEFAULT_PARALLEL = inkling_fit.DEFAULT_PARALLEL
 PARALLEL_CHOICES = inkling_fit.PARALLEL_CHOICES

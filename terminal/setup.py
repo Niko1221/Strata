@@ -10736,8 +10736,8 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
 
     step(7, "writing the start script")
     ink_backend = "hip" if hip else ("metal" if sys.platform == "darwin" else ("sycl" if getattr(a, "backend", None) == "sycl" else "cuda"))
-    # Drafting is on only when the person asked (--drafter dspark) or the backend's verify window is proven bit-identical to plain decoding
-    # (inkling_family.EXACT_DRAFTING_BACKENDS); otherwise the run config says "off" and `strata launch --drafting dspark` turns it on.
+    # Drafting follows a measured probe at the first start of this placement ("auto", inkling_probe.py) unless the person asked (--drafter dspark / off)
+    # A slightly different answer is accepted, a loss in speed is not (owner, 11-23); the run config starts as "auto".
     drafting_mode = "off" if (not want_dspark or (is_gguf and dspark_path is None)) else (
         inkling_family.DEFAULT_DRAFTER if drafter_asked == "dspark" else inkling_family.default_drafting(ink_backend))
     placed = inkling_fit.place(model, vram_gib, ram_gib, unified, ctx, bool(vision and vision_path is not None), dspark=(drafting_mode != "off"), **{**plan_extra, "backend": ink_backend})

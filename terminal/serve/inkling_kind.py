@@ -50,17 +50,17 @@ def wants_drafter(cfg: dict) -> bool:
     if choice == "auto":
         # measured at the first start of this placement (strata_control/inkling_probe.py); no valid probe yet = off, and needs_drafting_probe() says so
         from strata_control import inkling_probe
-        return (cfg.get("backend") or "cuda") in inkling_family.EXACT_DRAFTING_BACKENDS and inkling_probe.decision_of(cfg) == "on"
+        return inkling_probe.decision_of(cfg) == "on"
     return choice not in ("off", "none", "false", "0")
 
 
 def needs_drafting_probe(cfg: dict) -> bool:
-    """True when this run config wants the measured drafting choice ("drafting": "auto", or nothing chosen on a backend where drafting may be on) and
+    """True when this run config wants the measured drafting choice ("drafting": "auto", or nothing chosen) and
     has no probe valid for its current placement: the launcher should run strata_control.inkling_probe.probe_run_config before the real start."""
     from strata_control import inkling_family, inkling_probe
     raw = cfg.get("drafting")
     choice = str(raw if raw not in (None, "") else inkling_family.default_drafting(cfg.get("backend"))).strip().lower()
-    return (raw is not False and choice == "auto" and (cfg.get("backend") or "cuda") in inkling_family.EXACT_DRAFTING_BACKENDS
+    return (raw is not False and choice == "auto"
             and inkling_probe.is_stale(cfg))
 
 
@@ -230,8 +230,6 @@ def engine_args(cfg: dict, exe: str | None = None, *, announce: bool = True) -> 
     if announce and isinstance(cfg.get("drafting_probe"), dict):          # why drafting is on or off here, for /metrics and `strata launch --status`
         from strata_control import inkling_family, inkling_probe
         text = inkling_probe.note(cfg)
-        if text and not want_draft and inkling_probe.decision_of(cfg) == "on" and (cfg.get("backend") or "cuda") not in inkling_family.EXACT_DRAFTING_BACKENDS:
-            text += " Drafting stays off until its answers are proven identical to plain decoding on this backend."
         _NOTE["text"] = text
     if wants_images and (info or {}).get("images") != "1":
         at = args.index("--vision")
