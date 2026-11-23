@@ -3,7 +3,10 @@ from __future__ import annotations
 
 import json
 import sys
+import tempfile
 import unittest
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 TERMINAL = Path(__file__).resolve().parents[1]
@@ -11,6 +14,7 @@ if str(TERMINAL) not in sys.path:
     sys.path.insert(0, str(TERMINAL))
 
 from serve import frontend, inkling_dialect, inkling_kind, toolformat
+from serve.server import ByteTokenizer, MockEngine, Service, serve  # noqa: E402
 
 
 class TestInklingDialect(unittest.TestCase):
@@ -402,6 +406,215 @@ class TestInklingDialect(unittest.TestCase):
             self.assertFalse(inkling_kind.wants_drafter({"drafting": val}), val)
             args = inkling_kind.engine_args({"arch": "inkling2_loop", "drafting": val, "args": list(base)}, announce=False)
             self.assertEqual(args[args.index("--draft") + 1], "off", val)
+
+    def test_parser_state_follows_the_thinking_channel(self):
+        """The server reads parser.state to tell the model's thinking from its answer (thinking_n, #123's budget
+        wrap-up, #1053's close-retry). The dialect keeps the thinking to itself, so the state follows the channel
+        the dialect is in: by feed() and by feed_token()."""
+        p = frontend.InklingOutputParser()
+        self.assertEqual(p.state, "content")
+        for ch in "<|message_model|>":                # a tag that arrives a character at a time
+            p.feed(ch)
+        self.assertEqual(p.state, "content")           # the message header is not the thinking
+        for ch in "<|content_thinking|>":
+            p.feed(ch)
+        self.assertEqual(p.state, "reasoning")
+        self.assertEqual(p.feed("Working it out."), [])     # the thinking stays hidden
+        self.assertEqual(p.state, "reasoning")
+        evs = p.feed("<|end_message|><|message_model|><|content_text|>The answer is 4.")
+        self.assertEqual(p.state, "content")
+        self.assertEqual([(e.kind, e.text) for e in evs], [("content", "The answer is 4.")])
+
+        q = frontend.InklingOutputParser()             # the token-aware path the server uses with the Inkling engine
+        seen = []
+        for piece, special in (("<|message_model|>", True), ("<|content_thinking|>", True), ("hidden", False),
+                               ("<|end_message|>", True), ("<|message_model|>", True), ("<|content_text|>", True)):
+            q.feed_token(piece, is_special=special)
+            seen.append(q.state)
+        self.assertEqual(seen, ["content", "reasoning", "reasoning", "reasoning", "content", "content"])
+
+        r = frontend.InklingOutputParser()             # a reply cut inside its thinking is in the reasoning state
+        r.feed("<|message_model|><|content_thinking|>still thinking")
+        r.finish("length")
+        self.assertEqual(r.state, "reasoning")
+
+
+# A small Inkling-2-Mini template: the channel tags the dialect reads, and no thinking block of its own.
+_TEMPLATE = (
+    "<|message_system|><|content_text|>You are a helpful assistant.<|end_message|>"
+    "{%- if tools -%}<|message_system|>tool_declare<|content_xml|>{{ tools | tojson }}<|end_message|>{%- endif -%}"
+    "{%- for m in messages -%}"
+    "{%- if m.role == 'user' -%}<|message_user|><|content_text|>{{ m.content }}<|end_message|>"
+    "{%- elif m.role == 'assistant' -%}"
+    "{%- for tc in m.tool_calls or [] -%}<|message_model|>{{ tc.function.name }}<|content_invoke_tool_json|>"
+    "{{ tc.function.arguments | tojson }}<|end_message|>{%- endfor -%}"
+    "{%- if m.content -%}<|message_model|><|content_text|>{{ m.content }}<|end_message|>{%- endif -%}"
+    "{%- elif m.role == 'tool' -%}<|message_tool|><|content_text|>{{ m.content }}<|end_message|>{%- endif -%}"
+    "{%- endfor -%}"
+)
+
+
+class _InklingTokenizer(ByteTokenizer):
+    """ByteTokenizer with Inkling-2-Mini's channel tags for special tokens."""
+    SPECIALS = ByteTokenizer.SPECIALS + [inkling_dialect.MSG_MODEL, inkling_dialect.CONTENT_THINK,
+                                         inkling_dialect.CONTENT_TEXT, inkling_dialect.END_MSG,
+                                         inkling_dialect.CONTENT_TOOL_JSON, inkling_dialect.END_SAMPLING,
+                                         inkling_dialect.ENDOFTEXT]
+
+
+class _ThinkingInklingEngine(MockEngine):
+    """An Inkling-2-Mini that opens a real `<|content_thinking|>` turn (whatever opener the prompt ends with) and
+    would think until max_tokens. A prompt that ends that turn the way the model does (#123's wrap-up, #1053's
+    close-retry) gets ANSWER. Records every prompt it is given."""
+    inkling_engine = True
+    THOUGHT = "Let me think step by step about two plus two. " * 4          # 184 tokens (one per byte)
+    ANSWER = "The answer is 4."
+
+    def __init__(self, tok):
+        super().__init__(tok, "x", max_context=8192)
+        self.prompts = []
+
+    def reply(self, closed: bool) -> str:
+        return self.ANSWER if closed else f"{inkling_dialect.MSG_MODEL}{inkling_dialect.CONTENT_THINK}{self.THOUGHT}"
+
+    def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+        self.prompts.append(list(ids))
+        raw = self.tok.decode(ids)
+        close = inkling_dialect.close_thinking()
+        # closed: its own thinking is in the prompt and that turn is ended (a turn without tools opens with the
+        # same tags, before anything was thought)
+        closed = raw.endswith(close) and self.THOUGHT[:10] in raw[:-len(close)]
+        end = self.tok.encode(inkling_dialect.END_SAMPLING, parse_special=True)
+        for t in (self.tok.encode(self.reply(closed), parse_special=True) + end)[:max_new]:
+            if cancel.is_set():
+                return
+            yield t
+
+
+class _InklingCallingEngine(_ThinkingInklingEngine):
+    """The same model, answering the closed thinking with a tool invocation (the empty text message in between is
+    the model's own: a call opens a new message)."""
+    CALL = (f"{inkling_dialect.END_MSG}{inkling_dialect.MSG_MODEL}bash{inkling_dialect.CONTENT_TOOL_JSON}"
+            '{"name":"bash","args":{"cmd":"ls"}}' + inkling_dialect.END_MSG)
+
+    def reply(self, closed: bool) -> str:
+        return self.CALL if closed else super().reply(closed)
+
+
+class InklingThinkingControls(unittest.TestCase):
+    """#123 and #1053 on Inkling-2-Mini. On the model, a turn that needs planning opens a real `<|content_thinking|`
+    turn (a tool turn does, after the empty one the prompt ends with), and the server reads parser.state to bound
+    it. The thinking is closed with the model's own end of a thinking message: a Qwen `</think>` written inside
+    that channel closes nothing there."""
+
+    BASH = {"type": "function", "function": {"name": "bash", "description": "Runs a shell command.",
+                                             "parameters": {"type": "object", "properties": {"cmd": {"type": "string"}},
+                                                            "required": ["cmd"]}}}
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        tpl = Path(self.tmp.name) / "chat_template.jinja"
+        tpl.write_text(_TEMPLATE, encoding="utf-8")
+        self.tok = _InklingTokenizer()
+        self.template = frontend.ChatTemplate(tpl)
+        self.start(_ThinkingInklingEngine)
+
+    def tearDown(self):
+        self.stop()
+        self.tmp.cleanup()
+
+    def start(self, engine_cls):
+        self.engine = engine_cls(self.tok)
+        self.svc = Service(self.engine, self.tok, self.template)
+        self.assertIs(self.svc.parser_cls, frontend.InklingOutputParser)
+        self.httpd = serve(self.svc, port=0)
+        self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+
+    def stop(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+    def chat(self, **extra):
+        body = {"model": "m", "messages": [{"role": "user", "content": "2+2?"}], "max_tokens": 400, **extra}
+        req = urllib.request.Request(self.base + "/v1/chat/completions", data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return r.status, json.loads(r.read().decode())
+        except urllib.error.HTTPError as e:
+            with e:
+                return e.code, json.loads(e.read())
+
+    def test_the_budget_ends_the_thinking_the_way_the_model_does(self):
+        code, b = self.chat(tools=[self.BASH], reasoning_budget_tokens=20)
+        self.assertEqual(code, 200, b)
+        c = b["choices"][0]
+        self.assertEqual((c["message"]["content"], c["finish_reason"]), (_ThinkingInklingEngine.ANSWER, "stop"))
+        first, second = self.engine.prompts
+        opener = self.tok.encode(f"{inkling_dialect.MSG_MODEL}{inkling_dialect.CONTENT_THINK}", parse_special=True)
+        close = self.tok.encode(inkling_dialect.close_thinking(), parse_special=True)
+        # the prompt ends with an empty thinking turn; the model opened a real one
+        self.assertTrue(self.tok.decode(first).endswith(f"{inkling_dialect.MSG_MODEL}{inkling_dialect.CONTENT_THINK}"
+                                                        f"{inkling_dialect.END_MSG}"))
+        self.assertEqual(second[:len(first)], first)                  # continued from the prefix the engine holds
+        thought = second[len(first):-len(close)]
+        self.assertEqual(thought[:len(opener)], opener)
+        self.assertTrue(0 < len(thought) - len(opener) <= 20)           # the thinking the model was given before the wrap-up
+        self.assertEqual(second[-len(close):], close)                  # the model's end of a thinking message
+        self.assertNotIn("</think>", self.tok.decode(second))
+        self.assertEqual(b["usage"]["completion_tokens"],
+                         len(second) - len(first) + len(_ThinkingInklingEngine.ANSWER) + 1)
+        self.assertFalse(c["message"].get("reasoning_content"))       # an answered reply keeps its thinking hidden
+
+    def test_without_a_budget_the_thinking_is_left_to_the_model(self):
+        code, b = self.chat(tools=[self.BASH], max_tokens=60)
+        self.assertEqual(code, 200, b)
+        c = b["choices"][0]
+        self.assertEqual((c["finish_reason"], len(self.engine.prompts)), ("length", 1))
+        self.assertFalse(c["message"].get("content"))
+        self.assertTrue((c["message"].get("reasoning_content") or "").startswith("Let me think step by step"))   # #6682
+
+    def test_the_thinking_tokens_are_counted(self):
+        """The Responses API reports the thinking as reasoning tokens; the server's count reads parser.state."""
+        self.svc.reasoning_budget_tokens = 20
+        body = {"model": "m", "input": "2+2?", "max_output_tokens": 400}
+        req = urllib.request.Request(self.base + "/v1/responses", data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            b = json.loads(r.read().decode())
+        generated = len(self.engine.prompts[1]) - len(self.engine.prompts[0])
+        self.assertTrue(0 < b["usage"]["output_tokens_details"]["reasoning_tokens"] <= generated)
+
+    def test_a_call_made_after_the_wrap_up_is_a_call(self):
+        self.stop()
+        self.start(_InklingCallingEngine)
+        code, b = self.chat(tools=[self.BASH], reasoning_budget_tokens=20)
+        self.assertEqual(code, 200, b)
+        c = b["choices"][0]
+        self.assertEqual((c["finish_reason"], len(self.engine.prompts)), ("tool_calls", 2))
+        self.assertFalse(c["message"].get("content"))
+        call = c["message"]["tool_calls"][0]["function"]
+        self.assertEqual((call["name"], json.loads(call["arguments"])), ("bash", {"cmd": "ls"}))
+
+    def test_a_reply_that_stops_inside_its_thinking_is_closed_once_and_answers(self):
+        self.engine.THOUGHT = "Let me think: two plus two is four."
+        self.svc.reasoning_close_retry = True
+        code, b = self.chat()
+        self.assertEqual(code, 200, b)
+        c = b["choices"][0]
+        self.assertEqual((c["message"]["content"], c["finish_reason"]), (_ThinkingInklingEngine.ANSWER, "stop"))
+        first, second = self.engine.prompts
+        self.assertEqual(second[:len(first)], first)
+        self.assertTrue(self.tok.decode(second).endswith(inkling_dialect.close_thinking()))
+        self.assertNotIn("</think>", self.tok.decode(second))
+
+    def test_without_the_flag_that_reply_stays_empty(self):
+        self.engine.THOUGHT = "Let me think: two plus two is four."
+        code, b = self.chat()
+        self.assertEqual(code, 200, b)
+        c = b["choices"][0]
+        self.assertEqual((c["finish_reason"], len(self.engine.prompts)), ("stop", 1))
+        self.assertFalse(c["message"].get("content"))
 
 
 if __name__ == "__main__":
