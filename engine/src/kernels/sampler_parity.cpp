@@ -532,6 +532,35 @@ int main(int argc, char** argv) {
         cudaFree(db);
     }
 
+    // Per-row bias (logit_bias_stride == NV): each target row applies its OWN mask, so the kernel must add the
+    // bias at the row's offset.  Compare against a per-row pre-biased input through the same sampler.
+    {
+        std::vector<float> l(NV * NT), rows_bias(NV * NT, 0.0f), adjusted;
+        for (int t = 0; t < NT; ++t)
+            for (int v = 0; v < NV; ++v) l[t * NV + v] = float((v + 3 * t) % 19) / 4;
+        for (int t = 0; t < NT; ++t) {          // row t allows exactly one token: id 5 + t
+            for (int v = 0; v < NV; ++v) rows_bias[t * NV + v] = -std::numeric_limits<float>::infinity();
+            rows_bias[t * NV + (5 + t)] = 0.0f;
+        }
+        adjusted = l;
+        for (int t = 0; t < NT; ++t)
+            for (int v = 0; v < NV; ++v) adjusted[t * NV + v] += rows_bias[t * NV + v];
+        float* db = nullptr;
+        check(cudaMalloc(&db, (size_t) NV * NT * sizeof(float)), "per-row bias malloc");
+        check(cudaMemcpy(db, rows_bias.data(), rows_bias.size() * sizeof(float), cudaMemcpyHostToDevice), "per-row bias upload");
+        std::vector<int> hist(NT * 4, 7);
+        DeviceRows raw(l, NT, hist, 4), expected(adjusted, NT, hist, 4);
+        for (bool greedy : {true, false}) {
+            strata::kernels::SamplerParams p;
+            p.greedy = greedy; p.temperature = greedy ? 0 : 0.8f; p.seed = 71; p.top_k = 16;
+            const auto want = expected.sample(p, nullptr);       // CPU-side: the bias already added per row
+            p.logit_bias = db; p.logit_bias_stride = NV;
+            const auto got = raw.sample(p, nullptr);             // device-side: the stride offsets the bias row
+            if (got != want) ++bad;
+        }
+        cudaFree(db);
+    }
+
     // ---- fixture 1: plain greedy.  top_k = 0 (disabled), top_p = 1 (disabled), T = 1 -> argmax.
     {
         strata::kernels::SamplerParams p; p.top_k = 0; p.top_p = 1.0f; p.temperature = 1.0f; p.greedy = true;

@@ -110,5 +110,74 @@ class InvokeDialect(unittest.TestCase):
         self.assertEqual(calls(evs), [])
 
 
+# #6022 (Pi on /v1/chat/completions, Qwen3.8-Flash-Next IQ3_S and UD-IQ4_XS): the tool names Pi declares
+PI = [{"name": "bash", "parameters": {"properties": {"command": {"type": "string"}}, "required": ["command"]}},
+      {"name": "write", "parameters": {"properties": {"path": {"type": "string"}, "content": {"type": "string"}},
+                                       "required": ["path", "content"]}},
+      {"name": "read", "parameters": {"properties": {"path": {"type": "string"}}, "required": ["path"]}}]
+
+
+def run_pi(text, width=0, stream=True, recover=True, finish=None):
+    p = frontend.OutputParser(thinking=False, stream_tools=stream, recover=recover, tools=PI)
+    evs = []
+    for k in range(0, len(text), width or len(text) or 1):
+        evs += p.feed(text[k:k + (width or len(text))])
+    return evs + p.finish(finish)
+
+
+class InvokePrelude(unittest.TestCase):
+    """#6022: a line between `<tool_call>` and `<invoke>` - the `<function=function_calls>` wrapper or a bare `=` - and
+    the body closed by `</function>` instead of `</invoke>`; both turns ended with finish "stop" and no call."""
+    WRAPPED = ('<tool_call>\n<function=function_calls>\n<invoke name="bash">\n'
+               '<parameter name="command">winget search --name Paseo 2>&1 | head -15</parameter>\n'
+               '</function>\n</tool_call>')
+    BARE_EQ = ('<tool_call>\n=\n<invoke name="write">\n<parameter name="path">C:\\Users\\me\\codex-reply-54655.md\n'
+               '</parameter>\n<parameter=content>\n# reply\n</parameter>\n</function>\n</tool_call>')
+
+    def test_the_function_calls_wrapper_is_read(self):
+        for stream in (False, True):
+            for width in (0, 1, 2, 5, 13):
+                with self.subTest(stream=stream, width=width):
+                    evs = run_pi("Searching.\n" + self.WRAPPED, width, stream)
+                    self.assertEqual(calls(evs), [("bash", {"command": "winget search --name Paseo 2>&1 | head -15"})])
+                    self.assertEqual(text(evs), "Searching.")
+
+    def test_a_bare_equals_line_and_mixed_parameter_styles(self):
+        for width in (0, 1, 3, 11):
+            with self.subTest(width=width):
+                evs = run_pi(self.BARE_EQ, width)
+                self.assertEqual(calls(evs), [("write", {"path": "C:\\Users\\me\\codex-reply-54655.md",
+                                                         "content": "# reply"})])
+                self.assertEqual(text(evs).strip(), "")
+
+    def test_the_wrapper_around_a_closed_invoke(self):
+        raw = ('<tool_call>\n<function_calls>\n<invoke name="read">\n<parameter name="path">/a</parameter>\n</invoke>\n'
+               '</function_calls>\n</tool_call>\nDone.')
+        for width in (0, 1, 4):
+            with self.subTest(width=width):
+                evs = run_pi(raw, width)
+                self.assertEqual(calls(evs), [("read", {"path": "/a"})])
+                self.assertEqual(text(evs).strip(), "Done.")
+
+    def test_an_undeclared_name_after_the_wrapper_stays_text(self):
+        raw = self.WRAPPED.replace('"bash"', '"execute_bash"')
+        for width in (0, 1, 6):
+            with self.subTest(width=width):
+                evs = run_pi(raw, width)
+                self.assertEqual(calls(evs), [])
+                self.assertEqual(text(evs), raw)
+
+    def test_a_prelude_without_an_invoke_is_text(self):
+        for raw in ('<tool_call>\n=\nnothing here', '<tool_call>\n<function=function_calls>\n'):
+            for width in (0, 1, 3):
+                with self.subTest(raw=raw[-12:], width=width):
+                    evs = run_pi(raw, width)
+                    self.assertEqual((calls(evs), text(evs)), ([], raw))
+
+    def test_off_without_recovery_as_before(self):
+        for raw in (self.WRAPPED, self.BARE_EQ):
+            self.assertEqual(calls(run_pi(raw, 4, recover=False)), [])
+
+
 if __name__ == "__main__":
     unittest.main()
