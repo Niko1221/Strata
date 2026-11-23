@@ -556,6 +556,7 @@ struct InkSyRunner {
             const bool is_swa = (c.is_swa[ip] != 0);
 
             d2d(b_res, b_cur, (size_t)M_stride * 4);
+            sy_prof_fmark(FX_RES);
 
             // Attention-Residual mix before attention (ip > 0)
             if (ip > 0) {
@@ -569,6 +570,7 @@ struct InkSyRunner {
             } else {
                 d2d(b_in3, b_cur, (size_t)M_stride * 4);
             }
+            sy_prof_fmark(FX_ARM);
 
             // Cross-pass loop controllers (attn, k, v) + input RMSNorm
             if (has_msgs) {
@@ -578,12 +580,15 @@ struct InkSyRunner {
                     float* inp = b_in3 + (size_t)j * M_stride;
                     const float* mp = b_msgs + (size_t)j * M_stride;
                     k_ctrl_cat_rms_sg16(inp, mp, b_cat, M);
+                    sy_prof_fmark(FX_CCAT);
                     dispatch_linear(man.get(p + ".controllers." + cnames[j] + ".down_weight"), b_cat, b_ctrl_gate, M);
+                    sy_prof_fmark(FX_CLIN);
                     const std::string nkey = is_swa ? (p + ".attn_norm.weight") : (p + "." + nnames[j]);
                     k_ctrl_apply_norm_sg16(inp, mp, b_ctrl_gate,
                                            tf32(p + ".controllers." + cnames[j] + ".gain_weight"),
                                            tf32(p + ".controllers." + cnames[j] + ".forget_weight"),
                                            tf32(nkey), inp, M, 1);
+                    sy_prof_fmark(FX_CAPP);
                 }
             } else {
                 if (is_swa) {
@@ -663,21 +668,28 @@ struct InkSyRunner {
 
             // ---- MoE Sublayer ----
             d2d(b_res, b_cur, (size_t)M_stride * 4);
+            sy_prof_fmark(FX_RES);
             k_attn_res_mix_sg16(b_blocks, b_cur, tf32("model.llm.attn_res.mlp_queries." + std::to_string(ip)),
                                 b_mlp_in, n_blocks, block_stride, M, 1);
+            sy_prof_fmark(FX_MARM);
             if (has_msgs) {
                 const float* mp = b_msgs + 3 * M_stride;
                 k_ctrl_cat_rms_sg16(b_mlp_in, mp, b_cat, M);
+                sy_prof_fmark(FX_MCCAT);
                 dispatch_linear(man.get(p + ".controllers.mlp.down_weight"), b_cat, b_ctrl_gate, M);
+                sy_prof_fmark(FX_MCLIN);
                 k_ctrl_apply_norm_sg16(b_mlp_in, mp, b_ctrl_gate,
                                        tf32(p + ".controllers.mlp.gain_weight"),
                                        tf32(p + ".controllers.mlp.forget_weight"),
                                        tf32(p + ".mlp_norm.weight"), b_mlp_in, M, 1);
+                sy_prof_fmark(FX_MCAPP);
             } else {
                 k_rms_norm_sg16(b_mlp_in, tf32(p + ".mlp_norm.weight"), b_mlp_in, D, M);
+                sy_prof_fmark(FX_MNORM);
             }
 
             dispatch_linear(man.get(p + ".mlp.gate.weight"), b_mlp_in, b_r_logits, M);
+            sy_prof_fmark(FX_GATE);
             k_router_topk8_sg16(b_r_logits, tf32(p + ".mlp.gate.bias"), b_topk_idx, b_topk_w, c.route_scale, M);
             sy_prof_mark(PF_ROUTER);
 

@@ -184,12 +184,17 @@ inline void wait() { Q().wait_and_throw(); }
 // Decode step profiler (off by default; every call below is a single bool test when off).
 //   INK_SY_TIMING=1  host submit time vs total time per decode step (no extra waits)
 //   INK_SY_PROF=1    wait() after each phase group: wall time per group, summed over decode steps
+//   INK_SY_PROF=2    the same plus finer marks inside the mix and router groups (fx_*: residual copy, attention-residual mix, controller
+//                    concat, controller down linear, controller apply, norm, gate linear, top-k); each mark costs one wait(), so the
+//                    summary also prints the measured cost of an empty wait() and the number of marks per step
 // Only single-token steps (M == 1) are counted. A summary goes to stderr every 64 steps.
-enum SyProfCat { PF_MIX = 0, PF_QKV, PF_SCONV, PF_ATTN, PF_WO, PF_ROUTER, PF_MOE, PF_TAILV, PF_HEAD, PF_N };
+enum SyProfCat { PF_MIX = 0, PF_QKV, PF_SCONV, PF_ATTN, PF_WO, PF_ROUTER, PF_MOE, PF_TAILV, PF_HEAD,
+                 FX_RES, FX_ARM, FX_CCAT, FX_CLIN, FX_CAPP, FX_NORM, FX_MARM, FX_MCCAT, FX_MCLIN, FX_MCAPP, FX_MNORM, FX_GATE, FX_TOPK, PF_N };
 struct SyProf {
-    bool on = false, timing = false, step = false;
+    bool on = false, timing = false, step = false, fine = false;
     double last = 0.0, t_enter = 0.0, t_submit = 0.0;
     double acc[PF_N] = {};
+    long cnt[PF_N] = {};
     double sum_submit = 0.0, sum_total = 0.0;
     long steps = 0;
 };
@@ -197,7 +202,8 @@ inline SyProf& sy_prof() {
     static SyProf p = [] {
         SyProf q;
         const char* e = std::getenv("INK_SY_PROF");
-        q.on = e && e[0] == '1';
+        q.on = e && (e[0] == '1' || e[0] == '2');
+        q.fine = e && e[0] == '2';
         const char* t = std::getenv("INK_SY_TIMING");
         q.timing = (t && t[0] == '1') || q.on;
         return q;
@@ -217,7 +223,11 @@ inline void sy_prof_mark(int cat) {
     wait();
     const double t = now_s();
     p.acc[cat] += t - p.last;
+    ++p.cnt[cat];
     p.last = t;
+}
+inline void sy_prof_fmark(int cat) {   // a mark of the finer groups: only with INK_SY_PROF=2
+    if (sy_prof().fine) sy_prof_mark(cat);
 }
 inline void sy_prof_before_wait() {
     SyProf& p = sy_prof();
@@ -233,11 +243,22 @@ inline void sy_prof_end() {
     ++p.steps;
     if (p.steps % 64 == 0) {
         const double n = (double)p.steps;
-        static const char* kNames[PF_N] = {"mix", "qkv", "sconv", "attn", "wo", "router", "moe", "tailv", "head"};
+        static const char* kNames[PF_N] = {"mix", "qkv", "sconv", "attn", "wo", "router", "moe", "tailv", "head",
+                                           "fx_res", "fx_armix", "fx_ccat", "fx_clin", "fx_capp", "fx_norm",
+                                           "fx_mlp_armix", "fx_mlp_ccat", "fx_mlp_clin", "fx_mlp_capp", "fx_mlp_norm", "fx_gate", "fx_topk"};
         std::fprintf(stderr, "[ink_sy_prof] steps=%ld host-submit=%.2f ms total=%.2f ms per step", p.steps,
                      p.sum_submit / n * 1e3, p.sum_total / n * 1e3);
         if (p.on) {
-            for (int i = 0; i < PF_N; ++i) std::fprintf(stderr, " | %s=%.2f", kNames[i], p.acc[i] / n * 1e3);
+            for (int i = 0; i < PF_N; ++i) {
+                if (i >= FX_RES && p.cnt[i] == 0) continue;
+                std::fprintf(stderr, " | %s=%.2f", kNames[i], p.acc[i] / n * 1e3);
+                if (p.fine && i >= FX_RES) std::fprintf(stderr, "(%.0f marks)", (double)p.cnt[i] / n);
+            }
+            if (p.fine) {
+                const double t0 = now_s();
+                for (int i = 0; i < 200; ++i) wait();
+                std::fprintf(stderr, " | empty_wait=%.1f us", (now_s() - t0) / 200 * 1e6);
+            }
         }
         std::fprintf(stderr, "\n");
     }

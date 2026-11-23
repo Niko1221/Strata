@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       job:
-        description: "which job: hy4 (the Hy4-Flash checks), inkling (Inkling 2 Mini gates: UD-Q4_K_XL and SQ-20) or inkspeed (Inkling speed: branch against 96113f298)"
+        description: "which job: hy4 (the Hy4-Flash checks), inkling (Inkling 2 Mini gates: UD-Q4_K_XL and SQ-20) inkspeed (Inkling speed: branch against 96113f298) or inkmix (Inkling mix and router groups split per kernel, UD-Q4_K_XL, branch against 5ef71af9b)"
         required: false
         default: "hy4"
         type: choice
-        options: [hy4, inkling, inkspeed]
+        options: [hy4, inkling, inkspeed, inkmix]
   push:
     branches: [ci/intel-runner]
 
@@ -417,3 +417,29 @@ jobs:
       - name: Cleanup B70 scratch
         if: always()
         run: rm -rf "$RUNNER_TEMP/b70-ink-speed" || true
+
+  b70-inkmix:
+    name: "Arc Pro B70 Inkling 2 Mini SYCL mix/router split per kernel (UD-Q4_K_XL, branch against 5ef71af9b)"
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.job == 'inkmix' }}
+    runs-on: [self-hosted, Linux, X64, Intel]
+    timeout-minutes: 90
+    env:
+      NODE_OPTIONS: --use-system-ca
+      SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
+      REQUESTS_CA_BUNDLE: /etc/ssl/certs/ca-certificates.crt
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 20
+
+      - name: Build branch and base, split the mix and router groups
+        run: |
+          mkdir -p "$RUNNER_TEMP/b70-ink-mix"
+          bash .github/ci/inkspeed/b70_mixsplit.sh "$PWD" 5ef71af9b "$RUNNER_TEMP/b70-ink-mix" 2>&1 | tee "$RUNNER_TEMP/b70-ink-mix.log"
+          echo "---- RESULT lines ----"
+          grep -E '^(RESULT|PROF|IDENT|B70_INKMIX|downloaded|==)' "$RUNNER_TEMP/b70-ink-mix.log" || true
+
+      - name: Cleanup B70 scratch
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/b70-ink-mix" || true
