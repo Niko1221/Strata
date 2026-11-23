@@ -788,7 +788,8 @@ struct InkCudaModel {
         const std::string& layer_split_spec = "",
         int cpu_threads = 0) {
         // Fast zero-overhead path for single-GPU .strata v1.1!
-        const bool is_strata_fmt = (mf.m.format.rfind("strata", 0) == 0);
+        // The file's real kind decides, not the manifest's format string: a GGUF / safetensors file must never reach load() (the .strata reader).
+        const bool is_strata_fmt = mf.is_native_strata();
         const bool single_gpu_req = (gpu1 < 0) && (all_gpus.size() <= 1) && layer_split_spec.empty();
         if (is_strata_fmt && single_gpu_req) {
             return load(mf.path, gpu0, build_screen, err, extra_reserve_bytes, vram_experts_gb, ram_experts_gb, ssd_experts, cpu_threads);
