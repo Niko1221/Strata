@@ -27,6 +27,7 @@
 #include "ink_backend.h"
 #include "ink_batch.h"
 #include "ink_manifest.h"
+#include "ink_prompt_ckpt.h"
 #include "ink_vision.h"
 
 namespace ink2 {
@@ -417,7 +418,8 @@ struct ActiveReq {
     std::vector<int32_t> cached_prefix;       // tokens currently resident in slot KV
     std::vector<int32_t> prompt_ckpt_prefix;  // prompt-end checkpoint prefix saved before generation (#6627)
     int reused_tokens = 0;                    // prefix tokens reused for this request
-    bool ckpt_pending = false;                // true while prefilling up to prompt_len - 1 to save checkpoint
+    bool ckpt_pending = false;                // true while prefilling up to ckpt_pos to save checkpoint
+    int ckpt_pos = 0;                         // where the prompt checkpoint is saved (see prompt_ckpt_pos)
     double t_start = 0.0;
     double prompt_ms = 0.0;
     double decode_t0 = 0.0;
@@ -580,9 +582,9 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
             rq.active = false;
             return false;
         }
-        // Prefix reuse check (#6627): prefer full cached_prefix match, else restore prompt-end checkpoint!
-        // Because prompt_ckpt_prefix is saved at prompt_len - 1 before generation, BOTH multi-turn follow-ups
-        // (even if hidden thinking or stop tokens differed) AND exact repeats reuse the full prior prompt!
+        // Prefix reuse check (#6627): prefer full cached_prefix match, else restore the prompt checkpoint!
+        // prompt_ckpt_prefix is saved before generation in front of the assistant opener (prompt_ckpt_pos), so
+        // multi-turn follow-ups, tool-call loops and exact repeats all reuse the prior prompt up to that opener.
         int reuse = 0;
         bool used_ckpt = false;
         if (pg.images.empty()) {
@@ -617,7 +619,8 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
             proto("RESUME %d", reuse);
         }
         rq.reused_tokens = reuse;
-        rq.ckpt_pending = (pg.images.empty() && rq.prompt_len >= 16 && reuse < rq.prompt_len - 1);
+        rq.ckpt_pos = prompt_ckpt_pos(rq.prompt_ids, c.message_model_token_id);
+        rq.ckpt_pending = (pg.images.empty() && rq.prompt_len >= 16 && reuse < rq.ckpt_pos);
         rq.prefill_pos = reuse;
         rq.cur_pos = reuse;
         rq.hist = rq.prompt_ids;
@@ -913,9 +916,9 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
                     auto& rq = reqs[s];
                     const int rem = rq.prompt_len - rq.prefill_pos;
                     int take = std::min(rem, per_slot);
-                    // #6627: Pause 1 token before prompt_len so we save the exact prompt-end checkpoint at prompt_len - 1!
-                    if (rq.ckpt_pending && rq.prefill_pos < rq.prompt_len - 1 && rq.prefill_pos + take >= rq.prompt_len) {
-                        take = (rq.prompt_len - 1) - rq.prefill_pos;
+                    // #6627: Pause at ckpt_pos so we save the prompt checkpoint exactly there!
+                    if (rq.ckpt_pending && rq.prefill_pos < rq.ckpt_pos && rq.prefill_pos + take > rq.ckpt_pos) {
+                        take = rq.ckpt_pos - rq.prefill_pos;
                     }
                     const int img_base = static_cast<int>(merged_img_embeds.size()) / c.hidden;
                     if (!rq.img_embeds.empty()) {
@@ -943,7 +946,7 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
         }
         const double step_ms = (now_s() - t_step0) * 1000.0;
 
-        // Update prefill progress & emit PP lines (+ save prompt-end checkpoint at prompt_len - 1 for #6627!)
+        // Update prefill progress & emit PP lines (+ save the prompt checkpoint at ckpt_pos for #6627!)
         for (int s = 0; s < P; ++s) {
             if (prefill_fed[s] > 0) {
                 auto& rq = reqs[s];
@@ -951,7 +954,7 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
                 rq.prefill_pos += prefill_fed[s];
                 rq.cur_pos = rq.prefill_pos;
                 rq.prompt_ms += step_ms;
-                if (rq.ckpt_pending && rq.prefill_pos == rq.prompt_len - 1) {
+                if (rq.ckpt_pending && rq.prefill_pos == rq.ckpt_pos) {
                     rq.ckpt_pending = false;
                     if (backend.save_prompt_checkpoint(rq.slot, rq.prefill_pos)) {
                         rq.prompt_ckpt_prefix.assign(rq.prompt_ids.begin(), rq.prompt_ids.begin() + rq.prefill_pos);
