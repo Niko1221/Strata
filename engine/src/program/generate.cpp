@@ -37,6 +37,7 @@
 #include "strata/core/gfx12_chunk.hpp"
 #include "strata/core/nv_chunk.hpp"
 #include "strata/core/nv_defaults.hpp"
+#include "strata/core/adapt_coverage_rules.hpp"
 #include "strata/core/low_vram_rules.hpp"
 #include "strata/kernels/gfx_arch.hpp"
 #include "strata/core/batch_telemetry.hpp"
@@ -12071,7 +12072,7 @@ int main(int argc, char** argv) {
             for (const auto& stp : stages) live_slots += stp->cache.slots();
             const double cov = total_pairs > 0 ? (double) live_slots / (double) total_pairs : 0.0;
             if (o.adapt_every > 0 && o.adapt_swaps > 0 && live_slots > 0 && live_slots < total_pairs &&
-                cov >= 0.15 && cov <= 0.65) {
+                strata::core::adapt_mid_coverage_applies(cov, std::getenv("STRATA_ADAPT_MID"))) {   // opt-in since 0.2.21 (adapt_coverage_rules.hpp)
                 const int prev_ev = o.adapt_every, prev_sw = o.adapt_swaps;
                 const float prev_dc = o.adapt_decay;
                 if (!o.adapt_every_given) o.adapt_every = 2;
@@ -14849,8 +14850,9 @@ int main(int argc, char** argv) {
                                  "lower is skipped (answers differ slightly); it is off when STRATA_ROUTE_TAIL_SKIP is not set or is 0\n",
                          strata::core::tail_skip_rank(), strata::core::tail_skip_rank());
         // Issue #4870 + Track 6A + #6509 (v0.2.20): coverage-based adaptive defaults.
-        // - Mid-coverage (15%..65% of total layer-experts): faster 2 / 192 / 0.92 curve (+8% hit rate, +10% decode tok/s)
-        //   when not explicitly overridden on the CLI.
+        // - Mid-coverage (15%..65% of total layer-experts): faster 2 / 192 / 0.92 curve (+8% hit rate; the +10% decode tok/s were not
+        //   reproduced: up to 8% slower on an RX 7900 XT, slower in 10 of 13 cells, #6791), so it is opt-in (STRATA_ADAPT_MID=1) since 0.2.21;
+        //   --adapt-every / --adapt-swaps / --adapt-decay win over it either way.
         // - Tiny-cache (< 15% resident): anti-thrash dampening via low_vram_adapt_swaps + Zipf-head profile pinning.
         const int64_t total_expert_pairs = g.n_layers * g.n_expert;
         int64_t live_gpu_slots = xcache.slots();
@@ -14858,7 +14860,7 @@ int main(int argc, char** argv) {
         {
             const double cov = total_expert_pairs > 0 ? (double) live_gpu_slots / (double) total_expert_pairs : 0.0;
             if (!all_experts_resident && live_gpu_slots > 0 && o.adapt_every > 0 && o.adapt_swaps > 0 &&
-                cov >= 0.15 && cov <= 0.65) {
+                strata::core::adapt_mid_coverage_applies(cov, std::getenv("STRATA_ADAPT_MID"))) {
                 const int prev_ev = o.adapt_every, prev_sw = o.adapt_swaps;
                 const float prev_dc = o.adapt_decay;
                 if (!o.adapt_every_given) o.adapt_every = 2;
@@ -24455,7 +24457,7 @@ int main(int argc, char** argv) {
             for (const auto& stp : stages) live_slots += stp->cache.slots();
             const double cov = total_pairs > 0 ? (double) live_slots / (double) total_pairs : 0.0;
             if (o.adapt_every > 0 && o.adapt_swaps > 0 && live_slots > 0 && live_slots < total_pairs &&
-                cov >= 0.15 && cov <= 0.65) {
+                strata::core::adapt_mid_coverage_applies(cov, std::getenv("STRATA_ADAPT_MID"))) {
                 if (!o.adapt_every_given) o.adapt_every = 2;
                 if (!o.adapt_swaps_given) o.adapt_swaps = 192;
                 if (!o.adapt_decay_given) o.adapt_decay = 0.92f;
