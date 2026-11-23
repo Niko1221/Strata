@@ -340,59 +340,56 @@ inline bool parse_gen_cmd(const std::string& line, ParsedGen& r, std::string& er
 
 // ---- Non-blocking stdin reader thread ----
 class ServeInput {
+    struct State {
+        std::atomic<bool> solo_stop{false};
+        std::mutex mutex;
+        std::condition_variable ready;
+        std::deque<std::string> lines;
+        bool eof = false;
+    };
+    std::shared_ptr<State> state_ = std::make_shared<State>();
 public:
-    std::atomic<bool> solo_stop{false};
+    std::atomic<bool>& solo_stop = state_->solo_stop;
     void start() {
-        th_ = std::thread([this] {
+        std::thread([state = state_] {
             std::string line;
             while (std::getline(std::cin, line)) {
                 while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) line.pop_back();
-                if (line == "STOP") {
-                    solo_stop.store(true);
-                    std::lock_guard<std::mutex> lk(m_);
-                    q_.push_back(line);
-                    cv_.notify_one();
-                    continue;
-                }
-                std::lock_guard<std::mutex> lk(m_);
-                q_.push_back(std::move(line));
-                cv_.notify_one();
+                if (line == "STOP") state->solo_stop.store(true);
+                const bool quit = line == "QUIT";
+                std::lock_guard<std::mutex> lk(state->mutex);
+                state->lines.push_back(std::move(line));
+                state->ready.notify_one();
+                if (quit) break;
             }
-            std::lock_guard<std::mutex> lk(m_);
-            eof_ = true;
-            cv_.notify_all();
-        });
-        th_.detach();
+            std::lock_guard<std::mutex> lk(state->mutex);
+            state->eof = true;
+            state->ready.notify_all();
+        }).detach();
     }
 
     bool poll(std::string& out) {
-        std::lock_guard<std::mutex> lk(m_);
-        if (q_.empty()) return false;
-        out = std::move(q_.front());
-        q_.pop_front();
+        std::lock_guard<std::mutex> lk(state_->mutex);
+        if (state_->lines.empty()) return false;
+        out = std::move(state_->lines.front());
+        state_->lines.pop_front();
         return true;
     }
 
     bool wait_next(std::string& out) {
-        std::unique_lock<std::mutex> lk(m_);
-        cv_.wait(lk, [this] { return !q_.empty() || eof_; });
-        if (q_.empty()) return false;
-        out = std::move(q_.front());
-        q_.pop_front();
+        std::unique_lock<std::mutex> lk(state_->mutex);
+        state_->ready.wait(lk, [this] { return !state_->lines.empty() || state_->eof; });
+        if (state_->lines.empty()) return false;
+        out = std::move(state_->lines.front());
+        state_->lines.pop_front();
         return true;
     }
 
     bool is_eof() {
-        std::lock_guard<std::mutex> lk(m_);
-        return eof_ && q_.empty();
+        std::lock_guard<std::mutex> lk(state_->mutex);
+        return state_->eof && state_->lines.empty();
     }
 
-private:
-    std::thread th_;
-    std::mutex m_;
-    std::condition_variable cv_;
-    std::deque<std::string> q_;
-    bool eof_ = false;
 };
 
 struct ActiveReq {

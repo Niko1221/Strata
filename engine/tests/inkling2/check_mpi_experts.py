@@ -76,7 +76,9 @@ def measure(executable, model, mpi, draft, timeout):
             if runs[0]["reused"] or runs[1]["reused"] <= 0 or runs[2]["reused"]:
                 raise AssertionError("unexpected prefix reuse: " + str(runs))
             send("QUIT")
-            proc.stdin.close()
+            # Cover both immediate EOF and QUIT while the client's pipe stays open.
+            if draft == "off":
+                proc.stdin.close()
             if proc.wait(timeout=max(0, deadline - time.monotonic())):
                 raise RuntimeError("nonzero engine exit")
             clean_exit = True
