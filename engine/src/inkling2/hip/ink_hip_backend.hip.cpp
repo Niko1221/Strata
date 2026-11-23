@@ -712,6 +712,8 @@ public:
         // Fused zero-DRAM-write 2-launch INT8/FP16 WMMA Grouped-MoE beats unpack-once on both R9700 & Strix Halo
         // (10x less memory traffic, 300x fewer launches!). Keep unpack-once env-tunable via STRATA_HIPBLASLT_MOE_MIN_B.
         blaslt_moe_min_b_ = 999999;
+        // gfx906 has no WMMA: there unpack-once + rocBLAS FP16 GEMM is the faster MoE prefill (2.7x on an MI50).
+        if (blaslt_.rocblas_mode()) blaslt_moe_min_b_ = 16;
         if (const char* ev = std::getenv("STRATA_HIPBLASLT_MOE_MIN_B")) {
             const int v = std::atoi(ev);
             if (v >= 16) blaslt_moe_min_b_ = v;
