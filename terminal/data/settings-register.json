@@ -136,7 +136,7 @@
    "reads": [
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 8707,
+     "line": 8719,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -1434,13 +1434,13 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 6498,
+     "line": 6510,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 6498,
+     "line": 6510,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -1774,7 +1774,7 @@
    "launch_sets": [
     {
      "file": "terminal/setup.py",
-     "line": 4435,
+     "line": 4477,
      "value": "\"1\""
     }
    ],
@@ -1976,9 +1976,9 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL.md:433",
-    "docs/INTEL.md:533",
-    "docs/INTEL.md:534"
+    "docs/INTEL.md:438",
+    "docs/INTEL.md:538",
+    "docs/INTEL.md:539"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -2301,7 +2301,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 11447,
+     "line": 11459,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -3354,7 +3354,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 11616,
+     "line": 11628,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -3429,7 +3429,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 14293,
+     "line": 14305,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -3692,13 +3692,13 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 11057,
+     "line": 11069,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 11130,
+     "line": 11142,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -4098,8 +4098,8 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL.md:217",
-    "docs/INTEL.md:422"
+    "docs/INTEL.md:222",
+    "docs/INTEL.md:427"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -4251,7 +4251,7 @@
    "engine_sets": [
     {
      "file": "engine/src/hy4flash/run/hy4_main.hip.cpp",
-     "line": 465
+     "line": 473
     },
     {
      "file": "engine/src/hy4flash/sycl/sy_graph.h",
@@ -4643,7 +4643,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_runner.cuh",
-     "line": 663,
+     "line": 664,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -4676,7 +4676,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_runner.cuh",
-     "line": 661,
+     "line": 662,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -4745,7 +4745,7 @@
    "launch_sets": [
     {
      "file": "terminal/setup.py",
-     "line": 4433,
+     "line": 4475,
      "value": "\"1\""
     }
    ],
@@ -4846,7 +4846,7 @@
    "reads": [
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 14150,
+     "line": 14162,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -5115,7 +5115,7 @@
    "launch_reads": [],
    "doc_mentions": [
     "docs/AMD_HIP.md:516",
-    "docs/INTEL.md:439",
+    "docs/INTEL.md:444",
     "docs/bench-results/2026-10-05-community-arc-b65/BUILD.md:3",
     "docs/bench-results/2026-10-05-community-arc-b65/BUILD.md:93",
     "docs/bench-results/2026-10-05-community-arc-b65/README.md:58",
@@ -5226,7 +5226,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 11725,
+     "line": 11737,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -5369,7 +5369,7 @@
    "launch_reads": [
     {
      "file": "terminal/setup.py",
-     "line": 8935
+     "line": 8983
     }
    ],
    "doc_mentions": [
@@ -6424,7 +6424,7 @@
    "reads": [
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 7896,
+     "line": 7908,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -6917,13 +6917,13 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 7897,
+     "line": 7909,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 12905,
+     "line": 12917,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -7227,7 +7227,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 5760,
+     "line": 5772,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -7711,7 +7711,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 14161,
+     "line": 14173,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -7893,7 +7893,7 @@
    "reads": [
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 14113,
+     "line": 14125,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -8792,7 +8792,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL.md:435"
+    "docs/INTEL.md:440"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -8861,7 +8861,7 @@
    "launch_sets": [
     {
      "file": "terminal/setup.py",
-     "line": 4436,
+     "line": 4478,
      "value": "\"1\""
     }
    ],
@@ -9343,7 +9343,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 5366,
+     "line": 5378,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -9378,7 +9378,7 @@
    "reads": [
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 5258,
+     "line": 5270,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -9392,7 +9392,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL.md:429"
+    "docs/INTEL.md:434"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -9420,7 +9420,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 11743,
+     "line": 11755,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -9495,7 +9495,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 11752,
+     "line": 11764,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -10144,7 +10144,7 @@
     },
     {
      "file": "engine/src/prefill/kernels.cu",
-     "line": 3142,
+     "line": 3150,
      "backend": "cuda",
      "fn": "getenv"
     }
@@ -10211,19 +10211,19 @@
     },
     {
      "file": "engine/src/prefill/kernels.cu",
-     "line": 1304,
+     "line": 1312,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/prefill/kernels.cu",
-     "line": 1895,
+     "line": 1903,
      "backend": "hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/prefill/kernels.cu",
-     "line": 3185,
+     "line": 3193,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -10270,7 +10270,7 @@
    "reads": [
     {
      "file": "engine/src/prefill/kernels.cu",
-     "line": 1899,
+     "line": 1907,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -10389,7 +10389,7 @@
     },
     {
      "file": "engine/src/prefill/kernels.cu",
-     "line": 3050,
+     "line": 3058,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -10430,13 +10430,13 @@
    "launch_sets": [
     {
      "file": "terminal/setup.py",
-     "line": 4432,
+     "line": 4474,
      "value": "\"1\""
     }
    ],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL.md:348",
+    "docs/INTEL.md:353",
     "docs/RADEON_780M.md:84",
     "docs/STRIX_HALO.md:111"
    ],
@@ -10460,7 +10460,7 @@
    "reads": [
     {
      "file": "engine/src/prefill/kernels.cu",
-     "line": 3046,
+     "line": 3054,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -10480,7 +10480,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL.md:348"
+    "docs/INTEL.md:353"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -10501,7 +10501,7 @@
    "reads": [
     {
      "file": "engine/src/prefill/kernels.cu",
-     "line": 2239,
+     "line": 2247,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -10535,13 +10535,13 @@
    "reads": [
     {
      "file": "engine/src/prefill/kernels.cu",
-     "line": 3283,
+     "line": 3291,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/prefill/kernels.cu",
-     "line": 3303,
+     "line": 3311,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -10576,7 +10576,7 @@
    "launch_sets": [
     {
      "file": "terminal/setup.py",
-     "line": 4432,
+     "line": 4474,
      "value": "\"1\""
     }
    ],
@@ -10605,7 +10605,7 @@
    "reads": [
     {
      "file": "engine/src/prefill/kernels.cu",
-     "line": 959,
+     "line": 967,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -10625,7 +10625,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL.md:512"
+    "docs/INTEL.md:517"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -10647,7 +10647,7 @@
    "reads": [
     {
      "file": "engine/src/prefill/kernels.cu",
-     "line": 3123,
+     "line": 3131,
      "backend": "hip",
      "fn": "getenv"
     },
@@ -10682,7 +10682,7 @@
    "launch_sets": [
     {
      "file": "terminal/setup.py",
-     "line": 4432,
+     "line": 4474,
      "value": "\"1\""
     }
    ],
@@ -10744,7 +10744,7 @@
    "reads": [
     {
      "file": "engine/src/prefill/kernels.cu",
-     "line": 3180,
+     "line": 3188,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -10786,7 +10786,7 @@
    "reads": [
     {
      "file": "engine/src/prefill/kernels.cu",
-     "line": 3116,
+     "line": 3124,
      "backend": "hip",
      "fn": "getenv"
     },
@@ -10821,7 +10821,7 @@
    "launch_sets": [
     {
      "file": "terminal/setup.py",
-     "line": 4432,
+     "line": 4474,
      "value": "\"2\""
     }
    ],
@@ -10850,19 +10850,19 @@
    "reads": [
     {
      "file": "engine/src/prefill/kernels.cu",
-     "line": 3079,
+     "line": 3087,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/prefill/kernels.cu",
-     "line": 3284,
+     "line": 3292,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/prefill/kernels.cu",
-     "line": 3304,
+     "line": 3312,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -10909,7 +10909,7 @@
    "reads": [
     {
      "file": "engine/src/prefill/kernels.cu",
-     "line": 3153,
+     "line": 3161,
      "backend": "cuda",
      "fn": "getenv"
     }
@@ -10993,7 +10993,7 @@
    "launch_sets": [
     {
      "file": "terminal/setup.py",
-     "line": 4436,
+     "line": 4478,
      "value": "\"1\""
     }
    ],
@@ -11035,7 +11035,7 @@
     },
     {
      "file": "engine/src/prefill/kernels.cu",
-     "line": 3189,
+     "line": 3197,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -11079,7 +11079,7 @@
    "reads": [
     {
      "file": "engine/src/prefill/kernels.cu",
-     "line": 3199,
+     "line": 3207,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -11112,7 +11112,7 @@
    "reads": [
     {
      "file": "engine/src/prefill/kernels.cu",
-     "line": 3234,
+     "line": 3242,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -11145,7 +11145,7 @@
    "reads": [
     {
      "file": "engine/src/prefill/kernels.cu",
-     "line": 1343,
+     "line": 1351,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -11211,13 +11211,13 @@
    "reads": [
     {
      "file": "engine/src/prefill/kernels.cu",
-     "line": 2218,
+     "line": 2226,
      "backend": "hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/prefill/kernels.cu",
-     "line": 2264,
+     "line": 2272,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -11264,10 +11264,10 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL.md:271",
-    "docs/INTEL.md:420",
-    "docs/INTEL.md:517",
-    "docs/INTEL.md:531"
+    "docs/INTEL.md:276",
+    "docs/INTEL.md:425",
+    "docs/INTEL.md:522",
+    "docs/INTEL.md:536"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -11719,7 +11719,7 @@
     },
     {
      "file": "engine/src/prefill/kernels.cu",
-     "line": 1900,
+     "line": 1908,
      "backend": "hip",
      "fn": "getenv"
     },
@@ -14399,7 +14399,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 709,
+     "line": 726,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -14432,7 +14432,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 716,
+     "line": 733,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -14696,13 +14696,13 @@
    "reads": [
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 1829,
+     "line": 1848,
      "backend": "hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 1829,
+     "line": 1848,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -14887,7 +14887,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 722,
+     "line": 739,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -14920,13 +14920,13 @@
    "reads": [
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 3467,
+     "line": 3492,
      "backend": "hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 3467,
+     "line": 3492,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -15183,25 +15183,25 @@
    "reads": [
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 2084,
+     "line": 2103,
      "backend": "hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 2084,
+     "line": 2103,
      "backend": "hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 4918,
+     "line": 4960,
      "backend": "hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 4918,
+     "line": 4960,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -15542,11 +15542,11 @@
    "engine_sets": [
     {
      "file": "engine/src/hy4flash/run/hy4_main.hip.cpp",
-     "line": 458
+     "line": 466
     },
     {
      "file": "engine/src/hy4flash/run/hy4_main.hip.cpp",
-     "line": 464
+     "line": 472
     }
    ],
    "engine_defaults": [],
@@ -16386,7 +16386,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_hybrid.cuh",
-     "line": 1186,
+     "line": 1190,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -16408,6 +16408,204 @@
    "status": "default",
    "owner": "inkling2",
    "note": "Fraction of missed MoE experts streamed to GPU over PCIe concurrently with CPU workers during inkling2 decode/verify (-1=auto, 0=off, 0..1=fixed share).",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_EXACT_ROWS",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
+     "line": 717,
+     "backend": "hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "2d96ef73c5",
+   "first_date": "2026-11-23",
+   "since": null,
+   "last_commit": "2d96ef73c5",
+   "last_date": "2026-11-23",
+   "status": "rollback",
+   "owner": "backends/hip",
+   "note": "Inkling HIP engine. Unset (default): while a DSpark verify window runs, every linear layer, the attention, the router and the MoE use the kernels whose row m is the value the one-token step gives, so the drafter cannot change greedy output. =0: the old batch-size dependent kernels (speed A/B only). #6671.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_HASH",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
+     "line": 718,
+     "backend": "hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "2d96ef73c5",
+   "first_date": "2026-11-23",
+   "since": null,
+   "last_commit": "2d96ef73c5",
+   "last_date": "2026-11-23",
+   "status": "research",
+   "owner": "backends/hip",
+   "note": "Inkling HIP engine, debug: =1 prints an order independent hash of the hidden state per row and visit ([HASH] lines on stderr), for comparing a verify window with the one-token steps (phaseA-tests/rel0221/determ_hashcmp.py).",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_KEEP_MAPPED_PAGES",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/include/strata/core/mapped_pages.hpp",
+     "line": 26,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "8c2afbc2bf",
+   "first_date": "2026-11-23",
+   "since": null,
+   "last_commit": "8c2afbc2bf",
+   "last_date": "2026-11-23",
+   "status": "rollback",
+   "owner": "program",
+   "note": "strata-inkling GGUF loader (0221 INKCUDA): the pages of a range already copied out of the read-only mapping are given back to the OS; =1 keeps them (the old double count in the resident set).",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_OOM_RETRY",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
+     "line": 274,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "859276060a",
+   "first_date": "2026-11-23",
+   "since": null,
+   "last_commit": "859276060a",
+   "last_date": "2026-11-23",
+   "status": "rollback",
+   "owner": "program",
+   "note": "strata-inkling CUDA start-up (0221 INKCUDA, #6644 #6792): an allocation that does not fit is met by a smaller workspace and then by dropping the drafter; =0 ends the engine on the first allocation that does not fit, as before.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_TAP_VISITS",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
+     "line": 568,
+     "backend": "hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "2d96ef73c5",
+   "first_date": "2026-11-23",
+   "since": null,
+   "last_commit": "2d96ef73c5",
+   "last_date": "2026-11-23",
+   "status": "research",
+   "owner": "backends/hip",
+   "note": "Inkling HIP engine, debug (strata-inkling --spec-check): a,b,c,d moves the four host taps from visits 5,23,41,48 to other visits. The drafter reads the same taps; use with the drafter off.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_TEST_STEAL_MIB",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
+     "line": 265,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "859276060a",
+   "first_date": "2026-11-23",
+   "since": null,
+   "last_commit": "859276060a",
+   "last_date": "2026-11-23",
+   "status": "research",
+   "owner": "program",
+   "note": "test hook of strata-inkling's CUDA start-up allocation (0221 INKCUDA, #6644 #6792): holds N MiB of the card after the experts are placed, to imitate a plan that left too little. Not for use.",
    "retire_after": "",
    "retired_in": ""
   },
@@ -17123,7 +17321,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL.md:434"
+    "docs/INTEL.md:439"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -18639,7 +18837,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 6787,
+     "line": 6799,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -18752,7 +18950,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 6785,
+     "line": 6797,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -19068,7 +19266,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 8178,
+     "line": 8190,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -19283,7 +19481,7 @@
     },
     {
      "file": "engine/src/inkling2/cuda/ink_hybrid.cuh",
-     "line": 1185,
+     "line": 1189,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -19499,7 +19697,7 @@
    "reads": [
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 5442,
+     "line": 5454,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -19513,9 +19711,9 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL.md:219",
-    "docs/INTEL.md:407",
-    "docs/INTEL.md:427",
+    "docs/INTEL.md:224",
+    "docs/INTEL.md:412",
+    "docs/INTEL.md:432",
     "docs/INTEL_ARC.md:192"
    ],
    "first_commit": "4058aa782b",
@@ -19597,7 +19795,7 @@
    "launch_sets": [
     {
      "file": "terminal/setup.py",
-     "line": 4436,
+     "line": 4478,
      "value": "\"1\""
     }
    ],
@@ -19848,13 +20046,13 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 11268,
+     "line": 11280,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 11296,
+     "line": 11308,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -19903,7 +20101,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 11300,
+     "line": 11312,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -19990,7 +20188,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 5780,
+     "line": 5792,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -20036,7 +20234,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 5794,
+     "line": 5806,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -20121,13 +20319,13 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 11710,
+     "line": 11722,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 14071,
+     "line": 14083,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -21574,7 +21772,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 8155,
+     "line": 8167,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -22571,7 +22769,7 @@
    "launch_sets": [
     {
      "file": "terminal/setup.py",
-     "line": 11162,
+     "line": 11240,
      "value": "\"1\" if stream else \"0\""
     }
    ],
@@ -22858,13 +23056,13 @@
    "reads": [
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 5199,
+     "line": 5211,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 5463,
+     "line": 5475,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -22879,8 +23077,8 @@
    "launch_reads": [],
    "doc_mentions": [
     "docs/INTEL.md:134",
-    "docs/INTEL.md:416",
-    "docs/INTEL.md:427",
+    "docs/INTEL.md:421",
+    "docs/INTEL.md:432",
     "docs/INTEL_ARC.md:64",
     "docs/INTEL_ARC.md:147",
     "docs/INTEL_ARC.md:192",
@@ -23073,7 +23271,7 @@
    "launch_sets": [
     {
      "file": "terminal/setup.py",
-     "line": 4715,
+     "line": 4757,
      "value": "\"1\""
     }
    ],
@@ -23293,7 +23491,7 @@
    "launch_sets": [
     {
      "file": "terminal/setup.py",
-     "line": 4435,
+     "line": 4477,
      "value": "\"1\""
     }
    ],
@@ -23345,7 +23543,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL.md:430"
+    "docs/INTEL.md:435"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -23721,7 +23919,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL.md:431"
+    "docs/INTEL.md:436"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -24008,7 +24206,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL.md:430"
+    "docs/INTEL.md:435"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -26625,7 +26823,7 @@
    "launch_reads": [
     {
      "file": "terminal/setup.py",
-     "line": 8934
+     "line": 8982
     }
    ],
    "doc_mentions": [
@@ -28265,7 +28463,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 11578,
+     "line": 11590,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -28489,7 +28687,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL.md:278"
+    "docs/INTEL.md:283"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -30478,7 +30676,7 @@
    "launch_sets": [
     {
      "file": "terminal/setup.py",
-     "line": 4433,
+     "line": 4475,
      "value": "\"1\""
     }
    ],
@@ -31427,9 +31625,9 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL.md:273",
-    "docs/INTEL.md:419",
-    "docs/INTEL.md:536",
+    "docs/INTEL.md:278",
+    "docs/INTEL.md:424",
+    "docs/INTEL.md:541",
     "docs/release-notes-0.2.0.md:57"
    ],
    "first_commit": "4058aa782b",
@@ -32064,7 +32262,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 12117,
+     "line": 12129,
      "backend": "sycl",
      "fn": "pipe_dbg_env"
     }
@@ -32221,7 +32419,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 11908,
+     "line": 11920,
      "backend": "sycl",
      "fn": "pipe_dbg_env"
     }
@@ -32260,13 +32458,13 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 12427,
+     "line": 12439,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 12809,
+     "line": 12821,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -32306,7 +32504,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 11148,
+     "line": 11160,
      "backend": "sycl",
      "fn": "pipe_dbg_env"
     }
@@ -32412,7 +32610,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 11805,
+     "line": 11817,
      "backend": "sycl",
      "fn": "pipe_dbg_env"
     }
@@ -32452,7 +32650,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 12066,
+     "line": 12078,
      "backend": "sycl",
      "fn": "pipe_dbg_env"
     }
@@ -32525,7 +32723,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 12113,
+     "line": 12125,
      "backend": "sycl",
      "fn": "pipe_dbg_env"
     }
@@ -32565,7 +32763,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 7997,
+     "line": 8009,
      "backend": "sycl",
      "fn": "pipe_dbg_env"
     }
@@ -32638,7 +32836,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 11151,
+     "line": 11163,
      "backend": "sycl",
      "fn": "pipe_dbg_env"
     }
@@ -32678,7 +32876,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 11144,
+     "line": 11156,
      "backend": "sycl",
      "fn": "pipe_dbg_env"
     }
@@ -32718,7 +32916,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 11892,
+     "line": 11904,
      "backend": "sycl",
      "fn": "pipe_dbg_env"
     }
@@ -33007,7 +33205,7 @@
    "launch_sets": [
     {
      "file": "terminal/setup.py",
-     "line": 4437,
+     "line": 4479,
      "value": "\"1\""
     }
    ],
@@ -34278,7 +34476,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 6642,
+     "line": 6654,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -34337,7 +34535,7 @@
    "launch_reads": [],
    "doc_mentions": [
     "docs/INTEL.md:210",
-    "docs/INTEL.md:426"
+    "docs/INTEL.md:431"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -34702,7 +34900,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 6663,
+     "line": 6675,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -34980,8 +35178,8 @@
    "doc_mentions": [
     "docs/AMD_HIP_PERFORMANCE.md:15",
     "docs/AMD_HIP_PERFORMANCE.md:19",
-    "docs/INTEL.md:242",
-    "docs/INTEL.md:424",
+    "docs/INTEL.md:247",
+    "docs/INTEL.md:429",
     "docs/INTEL_INT8_EXPERTS.md:15",
     "docs/INTEL_INT8_EXPERTS.md:16",
     "docs/INTEL_INT8_EXPERTS.md:18",
@@ -35394,7 +35592,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL.md:425"
+    "docs/INTEL.md:430"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -36408,7 +36606,7 @@
    "reads": [
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 12122,
+     "line": 12134,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -36441,7 +36639,7 @@
    "reads": [
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 12253,
+     "line": 12265,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -36474,7 +36672,7 @@
    "reads": [
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 12540,
+     "line": 12552,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -36519,7 +36717,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 8041,
+     "line": 8053,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -36552,7 +36750,7 @@
    "reads": [
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 9346,
+     "line": 9358,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -36842,9 +37040,9 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL.md:389",
-    "docs/INTEL.md:436",
-    "docs/INTEL.md:532"
+    "docs/INTEL.md:394",
+    "docs/INTEL.md:441",
+    "docs/INTEL.md:537"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -38207,7 +38405,7 @@
    "launch_sets": [
     {
      "file": "terminal/setup.py",
-     "line": 4435,
+     "line": 4477,
      "value": "\"1\""
     }
    ],
@@ -38249,7 +38447,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL.md:432"
+    "docs/INTEL.md:437"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -38484,7 +38682,7 @@
    "launch_sets": [
     {
      "file": "terminal/setup.py",
-     "line": 4435,
+     "line": 4477,
      "value": "\"1\""
     }
    ],
@@ -38694,7 +38892,7 @@
    "launch_sets": [
     {
      "file": "terminal/setup.py",
-     "line": 4437,
+     "line": 4479,
      "value": "\"1\""
     }
    ],
@@ -39796,7 +39994,7 @@
    "launch_sets": [
     {
      "file": "terminal/setup.py",
-     "line": 3987,
+     "line": 4029,
      "value": "base.get(\"ramKeep\""
     }
    ],
@@ -40086,7 +40284,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 11364,
+     "line": 11376,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -40254,7 +40452,7 @@
    "launch_sets": [
     {
      "file": "terminal/setup.py",
-     "line": 8909,
+     "line": 8957,
      "value": "6"
     },
     {
@@ -40338,7 +40536,7 @@
    "launch_sets": [
     {
      "file": "terminal/setup.py",
-     "line": 7505,
+     "line": 7553,
      "value": "frozenset({\"0\""
     }
    ],
@@ -41020,7 +41218,7 @@
     },
     {
      "file": "terminal/setup.py",
-     "line": 4716,
+     "line": 4758,
      "value": "\"0\""
     },
     {
@@ -42430,7 +42628,7 @@
    "launch_sets": [
     {
      "file": "terminal/setup.py",
-     "line": 4437,
+     "line": 4479,
      "value": "\"1\""
     }
    ],
@@ -43371,7 +43569,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 11010,
+     "line": 11022,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -43432,13 +43630,13 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 8621,
+     "line": 8633,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 10983,
+     "line": 10995,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -44804,7 +45002,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 7397,
+     "line": 7409,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -44884,7 +45082,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 7223,
+     "line": 7235,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -44928,7 +45126,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 7627,
+     "line": 7639,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -44968,7 +45166,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 7625,
+     "line": 7637,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -45041,7 +45239,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 13226,
+     "line": 13238,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -45734,7 +45932,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 12971,
+     "line": 12983,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -45821,7 +46019,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 13025,
+     "line": 13037,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -46035,7 +46233,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL.md:401"
+    "docs/INTEL.md:406"
    ],
    "first_commit": "f44ed40b8d",
    "first_date": "2026-11-22",
@@ -46070,7 +46268,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL.md:400"
+    "docs/INTEL.md:405"
    ],
    "first_commit": "f44ed40b8d",
    "first_date": "2026-11-22",
@@ -46408,7 +46606,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL.md:421"
+    "docs/INTEL.md:426"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -46549,7 +46747,7 @@
    "launch_reads": [],
    "doc_mentions": [
     "docs/INTEL.md:160",
-    "docs/INTEL.md:437"
+    "docs/INTEL.md:442"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -48604,7 +48802,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 9450,
+     "line": 9462,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -48621,7 +48819,7 @@
     "docs/BATCHING.md:131",
     "docs/DETAILS.md:1327",
     "docs/DETAILS.md:1802",
-    "docs/INTEL.md:401",
+    "docs/INTEL.md:406",
     "docs/bench-results/2026-10-05-community-arc-b65/benchy-v1/README.md:14",
     "docs/bench-results/2026-10-07-community-arc-b65-v01402/BUILD.md:109"
    ],
@@ -48657,13 +48855,13 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 13814,
+     "line": 13826,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 13852,
+     "line": 13864,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -48799,7 +48997,7 @@
    "launch_sets": [
     {
      "file": "terminal/setup.py",
-     "line": 4436,
+     "line": 4478,
      "value": "\"1\""
     }
    ],
@@ -48844,7 +49042,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL.md:417",
+    "docs/INTEL.md:422",
     "docs/INTEL_ARC.md:197"
    ],
    "first_commit": "e7391915eb",
@@ -48959,7 +49157,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL.md:418",
+    "docs/INTEL.md:423",
     "docs/INTEL_ARC.md:188",
     "docs/STRIX_HALO.md:31"
    ],
@@ -49192,7 +49390,7 @@
    "reads": [
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 13736,
+     "line": 13748,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -49267,7 +49465,7 @@
    "reads": [
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 5314,
+     "line": 5326,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -49698,7 +49896,7 @@
    "reads": [
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 5345,
+     "line": 5357,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -49842,7 +50040,7 @@
    "reads": [
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 5332,
+     "line": 5344,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -49922,7 +50120,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/INTEL.md:428"
+    "docs/INTEL.md:433"
    ],
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
@@ -50045,19 +50243,25 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 5198,
+     "line": 5196,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 5498,
+     "line": 5210,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 5629,
+     "line": 5510,
+     "backend": "sycl",
+     "fn": "getenv"
+    },
+    {
+     "file": "engine/sycl/src/program/generate.cpp",
+     "line": 5641,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -50078,9 +50282,12 @@
     "docs/INTEL.md:112",
     "docs/INTEL.md:133",
     "docs/INTEL.md:212",
-    "docs/INTEL.md:255",
-    "docs/INTEL.md:265",
-    "docs/INTEL.md:415",
+    "docs/INTEL.md:214",
+    "docs/INTEL.md:216",
+    "docs/INTEL.md:217",
+    "docs/INTEL.md:260",
+    "docs/INTEL.md:270",
+    "docs/INTEL.md:420",
     "docs/INTEL_ARC.md:63",
     "docs/INTEL_ARC.md:153",
     "docs/INTEL_ARC.md:191",
@@ -50095,8 +50302,8 @@
    "first_commit": "4058aa782b",
    "first_date": "2026-11-17",
    "since": "v0.2.16",
-   "last_commit": "e7391915eb",
-   "last_date": "2026-11-22",
+   "last_commit": "a7eb7c6c86",
+   "last_date": "2026-11-23",
    "status": "opt-in",
    "owner": "sycl/core",
    "note": "[reviewed] SYCL setting with several release-note fixes; user-visible. [release-v0.1.43.1.md:28]",
@@ -50584,7 +50791,7 @@
    "reads": [
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 13952,
+     "line": 13964,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -50661,7 +50868,7 @@
     },
     {
      "file": "engine/sycl/src/program/generate.cpp",
-     "line": 9536,
+     "line": 9548,
      "backend": "sycl",
      "fn": "getenv"
     }
