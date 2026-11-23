@@ -31,6 +31,10 @@ macro(strata_quant_layer)
       set_source_files_properties(${_sq}/src/quant/x86/dot_avx.cpp ${_sq}/src/quant/x86/act_avx.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX")
       if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
         set_source_files_properties(${_sq}/src/quant/x86/dot_avx512.cpp ${_sq}/src/quant/x86/act_avx512.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX512;/clang:-mavx512vnni")
+      elseif(CMAKE_CXX_COMPILER_ID STREQUAL "IntelLLVM")
+        # icx (the SYCL engine's Windows build) reads /arch:AVX512 as Skylake-X's feature set and does not add VNNI: with /arch:AVX512 alone
+        # dot_avx512.cpp stops at "'__builtin_ia32_vpdpbusd256' needs target feature avx512vl,avx512vnni".  Naming VNNI compiles the TU clean.
+        set_source_files_properties(${_sq}/src/quant/x86/dot_avx512.cpp ${_sq}/src/quant/x86/act_avx512.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX512;-mavx512vnni")
       else()
         set_source_files_properties(${_sq}/src/quant/x86/dot_avx512.cpp ${_sq}/src/quant/x86/act_avx512.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX512")
       endif()
