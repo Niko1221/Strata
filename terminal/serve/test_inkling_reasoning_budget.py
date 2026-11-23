@@ -114,7 +114,7 @@ class InklingBudget(BudgetCase):
         self.start()
         content, reasoning, done = self.run_request(reasoning_budget_tokens=60)
         self.assertEqual(content, "The answer is 4.")
-        self.assertEqual(reasoning, "")                # still hidden
+        self.assertTrue(reasoning.startswith(self.THOUGHT[:50]))     # the thinking is the reasoning channel; it ends at the budget (and the wrap-up)
         self.assertEqual(done["finish"], "stop")
         passes = self.engine.passes
         self.assertEqual(len(passes), 2)

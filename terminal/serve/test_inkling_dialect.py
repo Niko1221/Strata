@@ -14,16 +14,28 @@ from serve import frontend, inkling_dialect, inkling_kind, toolformat
 
 
 class TestInklingDialect(unittest.TestCase):
-    def test_streaming_thinking_discarded_and_text_byte_by_byte(self):
+    @staticmethod
+    def channels(raw, step=1):
+        """(reasoning, content) the dialect streams for raw model output fed `step` characters at a time."""
+        d = inkling_dialect.InklingDialect()
+        out = []
+        for i in range(0, len(raw), step):
+            out += d.feed_channels(raw[i:i + step])
+        out += d.feed_channels("", final=True)
+        return "".join(t for k, t in out if k == "reasoning"), "".join(t for k, t in out if k == "content")
+
+    def test_streaming_thinking_is_the_reasoning_channel_and_text_byte_by_byte(self):
         raw = (
             "<|message_model|><|content_thinking|>Let me check 2 + 2 = 4.<|end_message|>"
             "<|message_model|><|content_text|>The answer is 4.<|end_message|>"
             "<|content_model_end_sampling|>"
         )
-        # Feed 1 character at a time: raw <|content_thinking|> is silently discarded (no thinking mode), text streams cleanly
+        # One character at a time: the thinking streams as reasoning, the text as content, and the text form wraps the thinking in <think>
+        reasoning, content = self.channels(raw, 1)
+        self.assertEqual(reasoning, "Let me check 2 + 2 = 4.")
+        self.assertEqual(content, "The answer is 4.")
         d = inkling_dialect.InklingDialect()
-        out = "".join(d.feed(ch) for ch in raw) + d.feed(final=True)
-        self.assertEqual(out, "The answer is 4.")
+        self.assertEqual("".join(d.feed(ch) for ch in raw) + d.feed(final=True), "<think>Let me check 2 + 2 = 4.</think>The answer is 4.")
         self.assertEqual(d.calls, 0)
 
     def test_tool_call_preserves_xml_chars_quotes_and_closing_tags(self):
@@ -57,7 +69,7 @@ class TestInklingDialect(unittest.TestCase):
             elif ev.kind == "tool_call" and ev.call is not None:
                 tool_calls.append({"name": ev.call.name, "arguments": ev.call.arguments})
 
-        self.assertEqual("".join(reasoning_parts), "")
+        self.assertEqual("".join(reasoning_parts), "Writing patch with < and > and </tool_call>.")
         self.assertEqual("".join(content_parts), "")
         self.assertEqual(len(tool_calls), 1)
         self.assertEqual(tool_calls[0]["name"], "write_file")
@@ -77,17 +89,31 @@ class TestInklingDialect(unittest.TestCase):
         calls = [ev.call for ev in events if ev.kind == "tool_call" and ev.call is not None]
         self.assertEqual([c.arguments["path"] for c in calls], ["a.py", "b.py"])
 
-    def test_no_thinking_mode_always_off(self):
-        # Inkling-2-Mini has no thinking mode: default is off ("none") and every input normalizes to "none"
-        for level in (None, "", "none", "off", "minimal", "low", "medium", "high", "max", "xhigh", 0.0, 0.9):
-            self.assertEqual(inkling_dialect.normalize_effort(level), "none")
-        self.assertEqual(inkling_dialect.template_kwargs({}), {"enable_thinking": False, "reasoning_effort": "none"})
-        for level in ("none", "minimal", "low", "medium", "high", "max"):
-            got = inkling_dialect.template_kwargs({"reasoning_effort": level})
-            self.assertEqual(got, {"enable_thinking": False, "reasoning_effort": "none"})
-        self.assertEqual(inkling_dialect.template_kwargs({"enable_thinking": True, "thinking_mode": "high"}), {"enable_thinking": False, "reasoning_effort": "none"})
+    def test_the_thinking_levels_reach_the_template_as_designed(self):
+        # none / 0 / enable_thinking false = level 0; low, medium, high, ... go through (like robertkarl/UnbiasedStrata); None = the default level
+        for level in ("none", "off", "no_think", "disabled", False, 0, 0.0, "0"):
+            self.assertEqual(inkling_dialect.normalize_effort(level), "none", level)
+        for level, word in (("minimal", "minimal"), ("low", "low"), ("medium", "medium"), ("med", "medium"), ("high", "high"), ("xhigh", "xhigh"),
+                            ("max", "max"), ("MAX", "max"), ("maximum", "max")):
+            self.assertEqual(inkling_dialect.normalize_effort(level), word, level)
+        self.assertEqual(inkling_dialect.normalize_effort(0.5), 0.5)                       # a number in (0, 0.99] goes through as it is
+        self.assertEqual(inkling_dialect.normalize_effort(5), "max")
+        self.assertEqual(inkling_dialect.normalize_effort(None), inkling_dialect.DEFAULT_EFFORT)
+        self.assertEqual(inkling_dialect.normalize_effort(""), inkling_dialect.DEFAULT_EFFORT)
+        with self.assertRaises(ValueError):
+            inkling_dialect.normalize_effort("extreme")
+        self.assertEqual(inkling_dialect.template_kwargs({"reasoning_effort": "high"}), {"enable_thinking": True, "reasoning_effort": "high"})
+        self.assertEqual(inkling_dialect.template_kwargs({"reasoning_effort": "none"}), {"enable_thinking": False, "reasoning_effort": "none"})
+        self.assertEqual(inkling_dialect.template_kwargs({"enable_thinking": False, "reasoning_effort": "high"}),
+                         {"enable_thinking": False, "reasoning_effort": "none"})        # enable_thinking false wins
+        d = inkling_dialect.template_kwargs({})
+        self.assertEqual(d["reasoning_effort"], inkling_dialect.DEFAULT_EFFORT)
+        self.assertTrue(d["enable_thinking"])
+        self.assertTrue(inkling_dialect.thinking_on({"reasoning_effort": "low"}))
+        self.assertFalse(inkling_dialect.thinking_on({"reasoning_effort": "none"}))
+        self.assertFalse(inkling_dialect.thinking_on({"enable_thinking": False}))
 
-    def test_chat_template_empty_kwargs_forces_effort_zero_and_caps_no_reasoning(self):
+    def test_chat_template_renders_level_zero_for_none_and_the_level_for_the_rest(self):
         import tempfile
         tpl_src = (
             "{%- set effort_map = {'none': 0.0, 'high': 0.9} -%}"
@@ -108,8 +134,9 @@ class TestInklingDialect(unittest.TestCase):
             p = Path(td) / "chat_template.jinja"
             p.write_text(tpl_src, encoding="utf-8")
             tpl = frontend.ChatTemplate(p)
-            rendered = tpl.render([{"role": "user", "content": "hi"}])
+            rendered = tpl.render([{"role": "user", "content": "hi"}], reasoning_effort="none")
             self.assertIn("Thinking effort level: 0<|end_message|>", rendered)
+            self.assertIn("Thinking effort level: 0.9<|end_message|>", tpl.render([{"role": "user", "content": "hi"}], reasoning_effort="high"))
             self.assertFalse(tpl.caps["supports_preserve_reasoning"])
             self.assertTrue(tpl.caps["supports_tools"])
 
@@ -264,6 +291,9 @@ class TestInklingDialect(unittest.TestCase):
         )
         # Forced tool call leaves prompt untouched
         self.assertEqual(inkling_dialect.finish_prompt(base_prompt, has_tools=True, forced=True), base_prompt)
+        # Thinking on (a level above 0): nothing is appended, the model opens its own thinking turn
+        self.assertEqual(inkling_dialect.finish_prompt(base_prompt, has_tools=False, thinking=True), base_prompt)
+        self.assertEqual(inkling_dialect.finish_prompt(base_prompt, has_tools=True, thinking=True), base_prompt)
 
     def test_dialect_hardening_prevents_empty_replies_on_missing_tags_and_yaml_6620(self):
         # 1. Model emits <|message_model|> followed directly by YAML/prose (omitting <|content_text|>):
@@ -294,7 +324,7 @@ class TestInklingDialect(unittest.TestCase):
             "<|message_model|><|content_thinking|>internal plan"
             "<|content_text|>Visible YAML answer.<|end_message|>"
         )
-        self.assertEqual(inkling_dialect.translate(direct_exit), "Visible YAML answer.")
+        self.assertEqual(self.channels(direct_exit), ("internal plan", "Visible YAML answer."))
 
         # 4. Truncated non-JSON inside <|content_invoke_tool_json|> on final=True releases text instead of bogus raw call
         truncated_prose = "<|message_model|>search_web<|content_invoke_tool_json|>services:\n  db:\n    image: postgres:16"
@@ -322,10 +352,11 @@ class TestInklingDialect(unittest.TestCase):
         )
         want = "``The header token is `<|message_model|>` and ends with `<|end_message|>`.``\nDONE"
         for step in (1, 3, 7, 1000):
-            d = inkling_dialect.InklingDialect()
-            out = "".join(d.feed(raw_stream[i:i + step]) for i in range(0, len(raw_stream), step)) + d.feed(final=True)
-            self.assertEqual(out, want, f"step={step}")
-            self.assertNotIn("These look like special tokens", out)
+            reasoning, out = self.channels(raw_stream, step)
+            self.assertEqual(out, want, f"step={step}")                                  # the answer keeps its quoted tags
+            self.assertNotIn("These look like special tokens", out)                      # the thinking does not leak into content ...
+            self.assertIn("These look like special tokens", reasoning)                  # ... it is the reasoning channel, quoted tags included
+            self.assertIn("<|message_model|>", reasoning)
 
         # 2. Explaining serve/inkling_dialect.py: quoting <|message_model|> followed by <|content_thinking|> in visible text
         explain = (
@@ -389,12 +420,12 @@ class TestInklingDialect(unittest.TestCase):
         self.assertEqual("".join(e.text for e in evs if e.kind == "content"), "")
         self.assertIn("Working through the algorithm", "".join(e.text for e in evs if e.kind == "reasoning"))
 
-        # Normal stop or completed answer still discards thinking (preserves nothink contract)
+        # A completed thinking block is the reasoning channel as well
         p_ok = frontend.InklingOutputParser()
         evs_ok = p_ok.feed("<|message_model|><|content_thinking|>Internal.<|end_message|><|message_model|><|content_text|>42<|end_message|>")
         evs_ok += p_ok.finish("length")
         self.assertEqual("".join(e.text for e in evs_ok if e.kind == "content"), "42")
-        self.assertEqual("".join(e.text for e in evs_ok if e.kind == "reasoning"), "")
+        self.assertEqual("".join(e.text for e in evs_ok if e.kind == "reasoning"), "Internal.")
 
         # #6670: boolean False / "off" / "none" all emit --draft off
         base = ["--native", "Inkling-2-Mini-SQ-20.strata", "--max-context", "32768"]

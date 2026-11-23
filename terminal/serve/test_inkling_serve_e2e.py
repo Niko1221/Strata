@@ -257,7 +257,7 @@ class TestInklingServeE2E(unittest.TestCase):
                     "messages": [{"role": "user", "content": "Say hi"}],
                 })
                 msg1 = r1["choices"][0]["message"]
-                self.assertFalse(msg1.get("reasoning_content"))
+                self.assertEqual(msg1.get("reasoning_content"), "Quick thought.")          # the thinking is returned, not discarded
                 self.assertEqual(msg1["content"], "Hello from Inkling!")
 
                 # 2. Tool call round-trip with XML special chars
@@ -295,17 +295,20 @@ class TestInklingServeE2E(unittest.TestCase):
                     "messages": [{"role": "user", "content": "Ping"}],
                 })
                 blocks = {b["type"]: b for b in r4["content"]}
-                self.assertNotIn("thinking", blocks)
+                self.assertEqual(blocks["thinking"]["thinking"], "Anthropic check.")      # a thinking block, as Anthropic shapes it
                 self.assertEqual(blocks["text"]["text"], "Anthropic OK.")
 
                 # Verify wire protocol recorded exact reasoning effort levels & image= key
                 lines = h.record_path.read_text(encoding="utf-8").splitlines()
                 self.assertEqual(len(lines), 4)
-                # Decode prompt tokens: Inkling-2-Mini has no thinking mode so all requests render Thinking effort level: 0.0
+                # Decode prompt tokens: each request's level reaches the template (low 0.2, max 0.99, the default level for the Anthropic one)
                 p1 = h.tok.decode([int(x) for x in lines[0].split()[-1].split(",")])
                 p2 = h.tok.decode([int(x) for x in lines[1].split()[-1].split(",")])
-                self.assertIn("Thinking effort level: 0.0", p1)
-                self.assertIn("Thinking effort level: 0.0", p2)
+                p4 = h.tok.decode([int(x) for x in lines[3].split()[-1].split(",")])
+                self.assertIn("Thinking effort level: 0.2", p1)
+                self.assertIn("Thinking effort level: 0.99", p2)
+                self.assertIn("Thinking effort level: 0.2", p4)
+                self.assertTrue(p1.endswith("Say hi<|end_message|><|message_model|>") or p1.endswith("<|end_message|>"))   # nothing forced after the user turn
                 self.assertIn("image=", lines[2])
 
     def test_concurrent_streaming_4_8_32_64(self):
@@ -331,7 +334,7 @@ class TestInklingServeE2E(unittest.TestCase):
                     self.assertEqual(len(results), conc)
                     for txt, thk in results:
                         self.assertEqual(txt, "Batch OK.", f"failed at c={conc}")
-                        self.assertEqual(thk, "", f"unexpected reasoning leaked at c={conc}")
+                        self.assertNotIn("Batch OK", thk, f"answer text in the reasoning at c={conc}")
 
     def test_quoted_channel_tags_as_ordinary_tokens_e2e_6675(self):
         """#6675 E2E: ordinary BPE tokens spelling <|message_model|> and <|end_message|> inside thinking
@@ -358,7 +361,7 @@ class TestInklingServeE2E(unittest.TestCase):
                     msg["content"],
                     "``The header token is `<|message_model|>` and ends with `<|end_message|>`.``\nDONE",
                 )
-                self.assertFalse(msg.get("reasoning_content"))
+                self.assertEqual(msg.get("reasoning_content"), "Hidden thought quoting `<|message_model|>` and `<|end_message|>`. Still hidden.")   # the reasoning channel, quoted tags intact
 
 
 if __name__ == "__main__":

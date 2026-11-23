@@ -30,13 +30,14 @@ EMPTY_THINK = "<|message_model|><|content_thinking|><|end_message|>"
 
 
 class ForcedCall(unittest.TestCase):
-    def test_a_named_tool_choice_is_a_tool_call_and_ends_the_prompt(self):
+    def check(self, level, before):
         with tempfile.TemporaryDirectory() as td:
             with _MockServerHarness(Path(td), [REMAINDER], parallel=1) as h:
                 base = f"http://127.0.0.1:{h.port}"
                 r = _post_json(f"{base}/v1/chat/completions", {
                     "model": "inkling-2-mini-sq-20", "messages": [{"role": "user", "content": "open a.py"}], "tools": TOOLS,
-                    "tool_choice": {"type": "function", "function": {"name": "read_file"}}, "max_tokens": 64, "temperature": 0})
+                    "tool_choice": {"type": "function", "function": {"name": "read_file"}}, "max_tokens": 64, "temperature": 0,
+                    "reasoning_effort": level})
                 msg = r["choices"][0]["message"]
                 self.assertEqual(r["choices"][0]["finish_reason"], "tool_calls")
                 self.assertEqual([c["function"]["name"] for c in msg["tool_calls"]], ["read_file"])
@@ -44,8 +45,14 @@ class ForcedCall(unittest.TestCase):
                 self.assertNotIn("<|message_model|>", msg.get("content") or "")
                 sent = Path(h.record_path).read_text(encoding="utf-8").splitlines()[-1].split()[-1].split(",")
                 ids = [int(x) for x in sent]
-                tail = h.tok.encode(EMPTY_THINK + FORCE, parse_special=True)
-                self.assertEqual(ids[-len(tail):], tail, "the prompt ends with the empty thinking turn and the forced opening")
+                tail = h.tok.encode(before + FORCE, parse_special=True)
+                self.assertEqual(ids[-len(tail):], tail, f"level {level}: the prompt ends with {before!r} and the forced opening")
+
+    def test_level_zero_ends_the_prompt_with_the_empty_thinking_turn_and_the_opening(self):
+        self.check("none", EMPTY_THINK)
+
+    def test_a_thinking_level_puts_the_opening_right_after_the_user_turn(self):
+        self.check("low", "")
 
 
 if __name__ == "__main__":

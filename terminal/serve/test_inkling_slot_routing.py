@@ -126,6 +126,25 @@ class SlotRouting(unittest.TestCase):
     def test_two_slots_never_say_it(self):
         self.assertEqual(self.server_log_after(2, 2), [])
 
+    def test_a_helper_request_that_needs_two_passes_stays_out_of_the_chats_slot(self):
+        # With thinking on, a short helper request spends its thinking budget, the server ends the thinking and sends a second pass (the prompt
+        # plus what it wrote plus the wrap-up).  That pass arrives while the first one's slot is still being released: it must wait for it,
+        # not take the one free slot (the chat's) because it is the only one free.
+        think = "<|message_model|><|content_thinking|>" + "x" * 300
+        scripts = [REPLY, think, "<|message_model|><|content_text|>Title<|end_message|><|content_model_end_sampling|>", REPLY]
+        with tempfile.TemporaryDirectory() as td:
+            h = Harness(Path(td), parallel=2)
+            h.tok = h.tok
+            encoded = [h.tok.encode(s, parse_special=True) for s in scripts]
+            h.script_path.write_text(json.dumps(encoded), encoding="utf-8")
+            with h:
+                c = Client(f"http://127.0.0.1:{h.port}")
+                msgs = conversation("A")
+                reply, p1, _ = c.chat(msgs)
+                c.chat([{"role": "user", "content": "Name this conversation in three words."}], max_tokens=24)
+                _, p2, k2 = c.chat(next_turn(msgs, reply, "second"))
+                self.assertGreaterEqual(k2, p1 - 90, f"turn 2: {k2} of {p2} prompt tokens reused after a two-pass helper request")
+
     def test_two_chats_each_keep_their_prompt_with_two_slots(self):
         with tempfile.TemporaryDirectory() as td:
             with Harness(Path(td), parallel=2) as h:

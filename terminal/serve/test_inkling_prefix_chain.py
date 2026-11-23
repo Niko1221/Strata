@@ -52,6 +52,8 @@ def conversation():
 
 
 class _Base(unittest.TestCase):
+    LEVEL = "none"      # the thinking level the requests of the class ask for
+
     @classmethod
     def setUpClass(cls):
         cls.tpl = frontend.ChatTemplate(TEMPLATE)
@@ -59,7 +61,7 @@ class _Base(unittest.TestCase):
 
     def render(self, messages, tools, kwargs=None):
         # the path a request takes: Service.render_prompt for an Inkling engine
-        return server.Service.render_prompt(self.svc, messages, tools, dict(kwargs or {}))
+        return server.Service.render_prompt(self.svc, messages, tools, {"reasoning_effort": self.LEVEL, **(kwargs or {})})
 
     def chain(self, conv, tools, kwargs=None):
         # a request ends at a user message or at the LAST result of a block of tool results (parallel calls come back together)
@@ -91,7 +93,7 @@ class TestRealTemplatePrefixChain(_Base):
         # the replay is for requests with tools only
         conv = conversation()[:2] + [{"role": "assistant", "content": "ok"}, {"role": "user", "content": "next"}]
         old = inkling_dialect.finish_prompt(
-            self.tpl.render(inkling_dialect.prepare_messages(conv), tools=None, **inkling_dialect.template_kwargs({})), has_tools=False)
+            self.tpl.render(inkling_dialect.prepare_messages(conv), tools=None, **inkling_dialect.template_kwargs({"reasoning_effort": "none"})), has_tools=False)
         self.assertEqual(self.render(conv, None), old)
 
     def test_the_prompt_ends_where_the_engine_answers_and_has_no_marker(self):
@@ -111,6 +113,12 @@ class TestRealTemplatePrefixChain(_Base):
         nxt = conv + [{"role": "assistant", "content": None, "tool_calls": [call(1, "read_file", path="setup.py")]},
                       {"role": "tool", "tool_call_id": "call_1", "content": "print('hi')"}]
         self.assertTrue(self.render(nxt, TOOLS).startswith(first))
+
+    def test_numbers_and_words_render_the_models_own_effort_number(self):
+        for ask, line in ((0, "0"), ("none", "0"), (0.5, "0.5"), (0.35, "0.35"), ("0.3", "0.3"), ("xhigh", "0.99"), (0.99, "0.99"), (5, "0.99"),
+                          ("minimal", "0.1"), ("low", "0.2"), ("medium", "0.7"), ("high", "0.9")):
+            prompt = self.render(conversation()[:2], None, {"reasoning_effort": ask})
+            self.assertIn(f"<|message_system|><|content_text|>Thinking effort level: {line}<|end_message|>", prompt, ask)
 
     def test_a_short_helper_request_does_not_change_the_conversations_prompt(self):
         # LobeHub / Hermes send a title request between two turns: it is another prompt, and the conversation's next prompt must still
@@ -170,6 +178,58 @@ def responses_requests():
         {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "thanks"}]},
     ]
     return [{"model": "m", "instructions": "You are a coding agent. Use the tools.", "input": items[:n]} for n in (1, 3, 5)]
+
+
+LEVEL_NUMBER = {"none": "0", "minimal": "0.1", "low": "0.2", "medium": "0.7", "high": "0.9", "max": "0.99"}
+
+
+class _LevelCases:
+    """What each thinking level does to the prompt (the model pack's real template): level 0 ends the prompt with the text opener (no tools) or the empty
+    thinking turn (tools); a level above 0 renders its number and appends nothing, the model opens its own thinking turn; the history chains either way."""
+
+    def effort_line(self):
+        return f"<|message_system|><|content_text|>Thinking effort level: {LEVEL_NUMBER[self.LEVEL]}<|end_message|>"
+
+    def test_the_levels_number_is_in_the_prompt(self):
+        for tools in (None, TOOLS):
+            self.assertIn(self.effort_line(), self.render(conversation()[:2], tools))
+
+    def test_the_prompt_ends_as_the_level_says(self):
+        for tools, zero_end in ((None, "<|message_model|><|content_text|>"), (TOOLS, _EMPTY_THINK)):
+            prompt = self.render(conversation()[:2], tools)
+            if self.LEVEL == "none":
+                self.assertTrue(prompt.endswith(zero_end), prompt[-80:])
+            else:
+                self.assertTrue(prompt.endswith("<|content_text|>open setup.py<|end_message|>"), prompt[-80:])     # nothing appended
+            self.assertNotIn(inkling_dialect._EMPTY_THINK_MARK, prompt)
+
+    def test_history_chains_with_and_without_tools(self):
+        self.chain(conversation(), TOOLS)
+        plain = [{"role": "user", "content": "a"}, {"role": "assistant", "content": "b"}, {"role": "user", "content": "c"},
+                 {"role": "assistant", "content": "d"}, {"role": "user", "content": "e"}]
+        self.chain(plain, None)
+
+    def test_no_empty_thinking_turn_is_replayed_above_level_zero(self):
+        prompt = self.render(conversation(), TOOLS)
+        n = prompt.count(_EMPTY_THINK)
+        self.assertEqual(n, (sum(1 for m in conversation() if m["role"] == "assistant") + 1) if self.LEVEL == "none" else 0)
+
+    def test_the_thinking_a_client_sends_back_is_rendered_once(self):
+        conv = conversation()
+        conv[2]["reasoning_content"] = "I should read it."
+        prompt = self.render(conv[:4], TOOLS)
+        self.assertEqual(prompt.count("<|content_thinking|>I should read it.<|end_message|>"), 1)
+
+    def test_a_forced_call_follows_the_prompt(self):
+        first = self.render(conversation()[:2], TOOLS) + inkling_dialect.force_text("<tool_call>\n<function=read_file>\n")
+        self.assertTrue(first.endswith('<|message_model|>read_file<|content_invoke_tool_json|>{"name":"read_file","args":'))
+        nxt = conversation()[:2] + [{"role": "assistant", "content": None, "tool_calls": [call(1, "read_file", path="setup.py")]},
+                                    {"role": "tool", "tool_call_id": "call_1", "content": "print('hi')"}]
+        self.assertTrue(self.render(nxt, TOOLS).startswith(first))
+
+
+for _level in ("none", "minimal", "low", "medium", "high", "max"):
+    globals()[f"TestLevel_{_level}"] = type(f"TestLevel_{_level}", (_LevelCases, _Base), {"LEVEL": _level})
 
 
 class TestProtocolsKeepThePrefix(_Base):

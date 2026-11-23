@@ -3068,6 +3068,7 @@ class InklingOutputParser(JsonOutputParser):
         from serve import inkling_dialect
         self._dialect = inkling_dialect.InklingDialect()
         self.wrap_up = inkling_dialect.REASONING_WRAP_UP       # what closes the thinking when its budget is spent (#6734)
+        self.wrap_up_short = inkling_dialect.END_MSG          # ... and when the room left to answer is short: just the block's end
 
     @property
     def reasoning_now(self) -> bool:

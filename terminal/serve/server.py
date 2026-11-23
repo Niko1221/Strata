@@ -72,6 +72,10 @@ from serve.server_parts.anthropic_api import (  # noqa: F401  (moved unchanged, 
 )
 from serve.server_parts.base import (  # noqa: F401  (moved unchanged, file split)
     ANSWER_RESERVE_MIN,
+    INKLING_ROOM_MIN_CAP,
+    NO_ANSWER_LENGTH,
+    NO_ANSWER_STOP,
+    INKLING_BUDGET_BY_EFFORT,
     ANSWER_ROOM_MIN_CAP,
     COALESCE_BURST_MS,
     COALESCE_MIN_REQS,
@@ -1995,6 +1999,9 @@ class StrataEngine:
             agreed = {}
             held = [0 if self.slot_busy[b] else self._slot_prefix(b, prompt, agreed) for b in range(self.batch)]
             best = max(range(self.batch), key=lambda b: (held[b], b == 0))
+            if os.environ.get("STRATA_DEBUG"):
+                print(f"[strata] route: prompt {len(prompt)} tokens, slots held {[len(x) for x in self.slot_held]}, busy {self.slot_busy}, "
+                      f"prefix per slot {held}", flush=True)
             if held[best] >= self.INKLING_ROUTE_MIN:
                 return best
             if (not self.slot_busy[0] and len(self.slot_held[0]) >= self.SIDE_REQUEST_MIN and len(prompt) < self.SIDE_REQUEST_MIN):
@@ -2168,12 +2175,14 @@ class StrataEngine:
                         # With none free the control lines are given back while waiting: a slot can be held by a read
                         # that gave way (BYIELD) and needs them to go on, so waiting with them is a deadlock - long,
                         # long, short at 0.25 s steps under parallel: 2 (ENGINE_REVIEW finding 1, reproduced in 0.1.41).
+                        pick_t0 = time.monotonic()      # (Inkling: how long a pass may wait for its own conversation's slot, see pick_slot)
                         while True:
                             deadline = getattr(cancel, "_strata_queue_deadline", None)
                             if deadline is not None and time.monotonic() >= deadline:
                                 raise QueueWaitExpired("the inference queue wait deadline expired; retry later")
+                            patience = pick_t0 + self.OWN_SLOT_WAIT_S
                             with self.slot_cv:
-                                slot = self.pick_slot(prompt)
+                                slot = self.pick_slot(prompt, patience_until=patience)
                                 if slot is not None:
                                     self.slot_busy[slot] = True
                                     self.slot_claims.add(slot)
@@ -2191,7 +2200,7 @@ class StrataEngine:
                                 self.ctl.release()
                                 holding = False
                             with self.slot_cv:
-                                if self.pick_slot(prompt) is None:
+                                if self.pick_slot(prompt, patience_until=patience) is None:
                                     if (ENGINE_STALL_S or 0) > 0 and time.monotonic() - admit_since >= ENGINE_STALL_S:
                                         # the stall check of #1317 only watches a request on the control lines; one
                                         # waiting here is covered by looking for a slot nobody owns, and by saying so
@@ -2202,7 +2211,7 @@ class StrataEngine:
                                                   f"for a free slot (busy: {busy}, in use: {sorted(self.slot_claims)}, "
                                                   f"ending: {sorted(self.slot_releasing)}) (issue #1603)", flush=True)
                                     self._reap_orphan_slots()
-                                if self.pick_slot(prompt) is None:
+                                if self.pick_slot(prompt, patience_until=patience) is None:
                                     wait_remaining = deadline - time.monotonic() if deadline is not None else 1.0
                                     self.slot_cv.wait(timeout=min(1.0, max(0, wait_remaining)))
                             if cancel.is_set():
@@ -2541,10 +2550,19 @@ class StrataEngine:
             return 0
         return i
 
-    def pick_slot(self, prompt: list[int]) -> int | None:
+    OWN_SLOT_WAIT_S = 5.0     # Inkling: a pass that continues a slot's request (a thinking budget's second pass) waits this long for that slot to be released
+
+    def pick_slot(self, prompt: list[int], patience_until: float | None = None) -> int | None:
         """A free slot for `prompt` (the caller holds slot_cv): the one whose held tokens are the longest start of the
         prompt (the engine then reads only the rest), else an empty one, else the one used longest ago - so the
         conversations other slots hold stay for their next turns.  None: every slot is busy."""
+        if patience_until is not None and getattr(self, "inkling_engine", False) and time.monotonic() < patience_until:
+            # a second pass of a request (the thinking budget's wrap-up: the prompt plus what the first pass wrote plus the wrap-up) arrives while
+            # the first pass's slot is still being released: it waits for that slot, instead of taking the only free one (the chat's) and wiping it
+            for b in range(self.batch):
+                sp = self.slot_prompt[b]
+                if self.slot_busy[b] and sp and len(prompt) > len(sp) and prompt[:len(sp)] == sp:
+                    return None
         free = [b for b in self.slot_order if not self.slot_busy[b]]
         if not free:
             return None
@@ -4100,6 +4118,11 @@ class Service:
         self.aliases: list[str] = []                  # #297: other names of the model (the config's `aliases`)
         self.strict_model: bool = os.environ.get("STRATA_STRICT_MODEL", "").strip().lower() in ("1", "true", "yes", "on")
         self.answer_room = True                       # 0.1.45: see ANSWER_ROOM_MIN_CAP (the config's "answer_room": false turns it off)
+        try:                                          # Inkling: one default thinking budget for every level (STRATA_INKLING_THINKING_BUDGET, tokens, 0 = none); None: by level
+            env_budget = os.environ.get("STRATA_INKLING_THINKING_BUDGET", "").strip()
+            self.inkling_thinking_budget = max(0, int(env_budget)) if env_budget else None
+        except ValueError:
+            self.inkling_thinking_budget = None
         self.reasoning_close_retry = False            # #1053 (opt-in): close the thinking once when a reply ends inside it
         self.codex_compaction_cache = False           # #924 (opt-in): a Codex compaction is rendered with its conversation's tools
         self.codex_thread_titles = False              # #923 (opt-in): answer Codex's thread-title turns without the engine
@@ -4499,6 +4522,20 @@ class Service:
             return True
         return bool((self.hy4 or self.inkling) and (getattr(self.engine, "info", None) or {}).get("images") == 1)
 
+    def inkling_default_budget(self, effort) -> int:
+        """Inkling's default thinking budget at a level: STRATA_INKLING_THINKING_BUDGET (or the config's inkling_thinking_budget) names one number
+        for every level (0: none); else the level's own (INKLING_BUDGET_BY_EFFORT)."""
+        if self.inkling_thinking_budget is not None:
+            return self.inkling_thinking_budget
+        word = effort if isinstance(effort, str) and effort in INKLING_BUDGET_BY_EFFORT else None
+        if word is None and effort is not None:                       # a number between the words: the next word up
+            try:
+                x = float(effort)
+                word = next(k for k, v in inkling_dialect.EFFORT_LEVEL.items() if v >= x)
+            except (TypeError, ValueError, StopIteration):
+                word = None
+        return INKLING_BUDGET_BY_EFFORT.get(word or inkling_dialect.normalize_effort(None), INKLING_BUDGET_BY_EFFORT["low"])
+
     def reasoning_budget(self, req) -> int | None:
         """#123: the most tokens this request may think, or None: the request's `reasoning_budget_tokens` (or, as
         llama.cpp reads it, `thinking_budget_tokens`; or vLLM's `thinking_token_budget`, or Qwen's `thinking_budget`: the
@@ -4512,6 +4549,8 @@ class Service:
                 value = req.get(alias)
         if value is None:
             value = self.reasoning_budget_tokens
+            if not value and not self.reasoning_budget_configured and getattr(self, "inkling", False):
+                value = self.inkling_default_budget(req.get("strata_effort"))   # Inkling: a default by level when neither the request nor the config says (0 = none)
         if isinstance(value, float) and value.is_integer():
             value = int(value)
         if isinstance(value, bool) or not isinstance(value, int):
@@ -5240,9 +5279,11 @@ class Service:
         empty thinking block).  The engine (--tail-role-token) checkpoints in front of that turn."""
         if self.hy4:                                   # Hy4's template reads reasoning_effort no_think | high | max (serve/hy4_dialect.py)
             return self.template.render(messages, tools=tools, **hy4_dialect.template_kwargs(kwargs))
-        if self.inkling:                               # Inkling-2-Mini: skip hidden <|content_thinking|> at the prompt boundary (#6612, #6620, #6627)
-            rendered = self.template.render(inkling_dialect.prepare_messages(messages, has_tools=bool(tools)), tools=tools, **inkling_dialect.template_kwargs(kwargs))
-            return inkling_dialect.finish_prompt(rendered, has_tools=bool(tools))
+        if self.inkling:                               # Inkling-2-Mini: the request's thinking level reaches the template; level 0 skips the thinking turn at the prompt boundary (#6612, #6620, #6627)
+            tk = inkling_dialect.template_kwargs(kwargs)
+            on = bool(tk["enable_thinking"])
+            rendered = self.template.render(inkling_dialect.prepare_messages(messages, has_tools=bool(tools), thinking=on), tools=tools, **tk)
+            return inkling_dialect.finish_prompt(rendered, has_tools=bool(tools), thinking=on)
         effort = kwargs.get("reasoning_effort")
         off = kwargs.get("enable_thinking") is False
         if not self.effort_end or (not off and effort in (None, "", "xhigh", "high")):
@@ -5506,7 +5547,12 @@ class Service:
                 n = req["strata_prefix"].get("tokens", 0)
                 n = (n // chunk) * chunk if chunk > 0 else 0
                 req["strata_prefix"] = {"tokens": n} if n > 0 else {}
-        return ids, kwargs.get("enable_thinking", True) is not False and not (force and self.inkling), max_new
+        if self.inkling:                       # the thinking level decides (a forced call skips the thinking)
+            word, level = inkling_dialect.effort_of(kwargs)
+            if isinstance(req, dict):
+                req["strata_effort"] = word      # (the default budget of this level: reasoning_budget)
+            return ids, level > 0.0 and not force, max_new
+        return ids, kwargs.get("enable_thinking", True) is not False, max_new
 
     PREFIX_END = "\u0001strata-prefix-end\u0001"          # marks where a message's shared part ends in the rendered prompt
 
@@ -5678,7 +5724,8 @@ class Service:
         # (the request's or the answer room's) applies to every request: the parser reports the hidden block (`reasoning_now`)
         think_budget = thinking or self.inkling
         budget = self.reasoning_budget(sampling) if think_budget else None
-        if think_budget and not budget and self.answer_room and max_new and max_new >= ANSWER_ROOM_MIN_CAP:
+        room_cap = INKLING_ROOM_MIN_CAP if self.inkling else ANSWER_ROOM_MIN_CAP     # Inkling: whatever max_tokens, the answer keeps its share
+        if think_budget and not budget and self.answer_room and max_new and max_new >= room_cap:
             # 0.1.45: max_tokens counts the thinking too.  A client that caps the reply at 8192 (the desktop agent's
             # harness sends max_completion_tokens: 8192 on every request) and a task the model thinks long about got
             # the cut-off in the middle of the thinking and NO answer.  So thinking is closed early enough to leave
@@ -5693,8 +5740,9 @@ class Service:
             # it has no answer.  Close the thinking early enough to leave room for one.
             reserve = min(max(ANSWER_RESERVE_MIN, max_new // 4), max_new // 2)
             if budget > max_new - reserve:
-                print(f"[strata] thinking capped at {max_new - reserve} of max_tokens {max_new} to leave room for "
-                      f"the answer (budget {budget})", flush=True)
+                if not self.inkling:                  # (Inkling: the default budget meets a small max_tokens all the time; the room is the rule)
+                    print(f"[strata] thinking capped at {max_new - reserve} of max_tokens {max_new} to leave room for "
+                          f"the answer (budget {budget})", flush=True)
                 budget = max(1, max_new - reserve)
         parser = self.parser_cls(thinking=thinking, tools=with_history_tools(tools, sampling), stream_tools=True,
                                  recover=self.tool_call_recovery, declared_only=declared_only,
@@ -5772,6 +5820,7 @@ class Service:
         # one arrived.  A reasoning-budget continuation is another native generation, not another API request,
         # so the generated reasoning must not become this request's cached input (#615).
         segments = []
+        image_prompt_tokens = 0                         # Inkling pictures: the prompt the engine read, with the pictures' tokens
         timed_out = False
         trace = getattr(self.request_trace, "record", None)
         waiting = time.perf_counter()
@@ -6054,6 +6103,29 @@ class Service:
                                   f"(coverage={repeat_coverage:.3f}); resuming the same output with the low-effort "
                                   "instruction (reasoning_loop_recovery)", flush=True)
                             continue
+                        if (self.inkling and finish == "stop" and not close_retried and not answered and not wrap and not opens
+                                and not repeated and not looped and (stops is None or stops.hit is None) and not cancel.is_set()
+                                and max_new - n > 8):
+                            # #6612 / #6620: the reply ended (its stop token) with no text and no call: the model wrote its hidden thinking and
+                            # stopped, or stopped at once.  Never hand the client an empty reply: close the thinking if it is open, open the
+                            # model's text turn, and let it answer, once.
+                            close_retried = True
+                            in_think = getattr(parser, "reasoning_now", False) and parser._dialect.state == "think"
+                            extra = self.tok.encode(("<|end_message|>" if in_think else "") + "<|message_model|><|content_text|>", parse_special=True)
+                            if max_new - n - len(extra) >= 1:
+                                print("[strata] the reply ended with no answer" + (" inside its thinking" if in_think else "")
+                                      + ": opening the answer and continuing once", flush=True)
+                                for t in extra:
+                                    n += 1
+                                    raw_ids.append(t)
+                                    thinking_n += (parser.state in ("reasoning", "rcall") or getattr(parser, "reasoning_now", False))
+                                    evs = cut(parser.feed(detok.push(t)))
+                                    self._note(n, evs, st, rate)
+                                    for ev in evs:
+                                        yield "event", ev
+                                prompt = prompt + seg + extra
+                                finish = "length"
+                                continue
                         if (self.reasoning_close_retry and thinking and finish == "stop" and not close_retried
                                 and not answered and not wrap and not opens and parser.state == "reasoning"
                                 and parser.buf != THINK_END         # #537: not after a held </think>, the end
@@ -6141,6 +6213,9 @@ class Service:
                             text = "\n" * (2 - (len(tail) - len(tail.rstrip("\n")))) + force
                         force = None
                         extra = self.tok.encode(text, parse_special=True)
+                        short = getattr(parser, "wrap_up_short", None)
+                        if wrap and short and max_new - n - len(extra) < max(8, (max_new - n) // 2):
+                            extra = self.tok.encode(short + (force or ""), parse_special=True)   # (Inkling: a bare <|end_message|> when room is short)
                         if max_new - n - len(extra) < 1:
                             break                       # no room left to answer: "length", as without a budget
                         if wrap:
@@ -6196,6 +6271,10 @@ class Service:
                             pcie_share = round(last["offloaded"] / routed, 3) \
                                 if last.get("offloaded") is not None and routed else None
                             seen = 0 if admission_rejected else prompt_tokens_seen(len(ids), last)   # #471: < len(ids) when cancelled mid-read; #3040
+                            if inkling_images and not admission_rejected and finish != "cancel":
+                                # Inkling's pictures are ONE placeholder id each in `ids`; the engine expands them to the picture's tokens and its DONE line
+                                # counts those (the prompt it really read): that is the prompt_tokens a client is told
+                                image_prompt_tokens = int(last.get("prompt_tokens") or 0)
                             self.history.append({
                                 "id": request_id,
                                 "projection": (sampling or {}).get("experimental_speed_projection") is not False
@@ -6288,10 +6367,19 @@ class Service:
                 Path(emb).unlink(missing_ok=True)
         if not parser_done:
             for ev in cut(parser.finish(finish)):
+                answered = answered or ev.kind in ("content", "tool_start", "tool_call") and bool((ev.text or "").strip() or ev.kind != "content")
                 yield "event", ev
         for ev in hold.release():                   # no retry (or its reply): the held text goes out as it is
+            answered = answered or ev.kind in ("content", "tool_start", "tool_call") and bool((ev.text or "").strip() or ev.kind != "content")
             yield "event", ev
         hold.armed = False
+        if (self.inkling and not answered and finish in ("stop", "length") and max_new and max_new > INKLING_ROOM_MIN_CAP
+                and not cancel.is_set()):
+            # Never a silent empty reply: nothing visible could be produced (the thinking took the whole token limit, or the model stopped with
+            # nothing to say even after the retry above).  Say so in the answer; finish_reason stays as it is.
+            note = (NO_ANSWER_LENGTH if finish == "length" else NO_ANSWER_STOP)
+            print(f"[strata] no answer could be produced ({finish}, {n} tokens, {thinking_n} of them thinking): the reply says so", flush=True)
+            yield "event", Event("content", note)
         if parser.rescued or parser.refused:
             self.totals["tool_calls_from_reasoning"] = self.totals.get("tool_calls_from_reasoning", 0) + parser.rescued
             print(f"[strata] tool calls inside the thinking: {parser.rescued} read as calls, {parser.refused} kept as "
@@ -6328,6 +6416,10 @@ class Service:
             # the held tail was not a stop string after all
             for ev in hold.push([Event("content", stops.flush())]):
                 yield "event", ev
+        if image_prompt_tokens > len(ids):
+            prompt_total = image_prompt_tokens
+        else:
+            prompt_total = None
         done = {"finish": finish, "completion_tokens": n, "reused": (timings or {}).get("cache_n", 0),
                 "timings": timings, "reasoning_tokens": thinking_n,
                 "reasoning_recoveries": recovery_count}
@@ -6337,6 +6429,8 @@ class Service:
                 # #4035: the stop string was found and cut from the answer, so the answer ended at it: "stop", not the token cap that fell on the
                 # same token (the Anthropic route already says stop_sequence)
                 done["finish"] = "stop"
+        if prompt_total:
+            done["prompt_tokens"] = prompt_total          # (a request with pictures: with their tokens; the other APIs read this)
         if rejected:
             done["rejected_tool_calls"] = rejected
         if markup_retried is not None:
@@ -6586,7 +6680,9 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
             last["usage"] = {"prompt_tokens": pt, "completion_tokens": x["completion_tokens"],
                              "total_tokens": pt + x["completion_tokens"],
                              # the part of the prompt the conversation cache already held (OpenAI's field)
-                             "prompt_tokens_details": {"cached_tokens": x.get("reused") or 0}}
+                             "prompt_tokens_details": {"cached_tokens": x.get("reused") or 0},
+                             # the tokens written while thinking (OpenAI's field): Inkling's hidden thinking counts too
+                             "completion_tokens_details": {"reasoning_tokens": x.get("reasoning_tokens") or 0}}
             if x.get("timings"):
                 last["timings"] = x["timings"]          # llama.cpp's field: the speed its clients show
             if x.get("rejected_tool_calls"):
@@ -6717,8 +6813,9 @@ def anthropic_events(svc: Service, req: dict, ids, thinking, tools, max_new, can
                 {"stop": "end_turn", "length": "max_tokens", "cancel": "end_turn"}[x["finish"]]
             # the final counts (message_start could only say the whole prompt): what was read now stays for the next
             # request, a cache write; input_tokens keeps the last token, as 0 makes Claude Code count the prompt twice (#1013)
-            reused = max(0, min(x.get("reused") or 0, len(ids) - 1))
-            read_now = len(ids) - reused
+            whole = max(len(ids), int(x.get("prompt_tokens") or 0))     # (pictures: their tokens count)
+            reused = max(0, min(x.get("reused") or 0, whole - 1))
+            read_now = whole - reused
             delta_event = {"type": "message_delta", "delta": {"stop_reason": stop, "stop_sequence": x.get("stop_sequence")},
                            "usage": {"input_tokens": 1, "cache_creation_input_tokens": read_now - 1,
                                      "cache_read_input_tokens": reused, "output_tokens": x["completion_tokens"]}}
@@ -9097,6 +9194,11 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
         per_replica = requested if isinstance(requested, int) and not isinstance(requested, bool) and requested > 0 else 1
         svc.requested_slots = per_replica * len(groups) if groups else per_replica
     svc.answer_room = cfg.get("answer_room") is not False
+    if cfg.get("inkling_thinking_budget") is not None:     # Inkling-2-Mini's default thinking budget (tokens, 0 = none); else STRATA_INKLING_THINKING_BUDGET
+        v = cfg["inkling_thinking_budget"]
+        if isinstance(v, bool) or not isinstance(v, int) or v < 0:
+            raise SystemExit(f"[strata] config \"inkling_thinking_budget\" must be a whole number of tokens (0: none), not {v!r}")
+        svc.inkling_thinking_budget = v
     svc.reasoning_close_retry = cfg.get("reasoning_close_retry") is True    # #1053: opt-in, off by default
     if cfg.get("images"):                               # image generation (serve/images.py), set up by setup --images
         icfg = {k: (os.path.abspath(os.path.join(cfg.get("cwd") or ".", v))
