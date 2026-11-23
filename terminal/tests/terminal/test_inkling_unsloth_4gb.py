@@ -63,8 +63,8 @@ class TestInklingUnslothDirectCatalog(unittest.TestCase):
             s_gguf = inkling_family.sources_for("Inkling-2-Mini-UD-Q2_K_XL.gguf")
             s_dspark = inkling_family.sources_for(inkling_family.DSPARK_GGUF_FILE)
             self.assertIn("strata-engine/Inkling-2-Mini-Strata", s_strata[0]["base"])
-            self.assertIn("unsloth/Inkling-2-Mini-GGUF", s_gguf[0]["base"])
-            self.assertIn("unsloth/Inkling-2-Mini-GGUF", s_dspark[0]["base"])
+            self.assertRegex(s_gguf[0]["base"], r"/unsloth/Inkling-2-Mini-GGUF/resolve/[a-f0-9]{40}$")
+            self.assertEqual(s_dspark[0]["base"], s_gguf[0]["base"])
 
         # STRATA_INKLING_SOURCE overrides both for local mirrors / offline testing
         with mock.patch.dict(os.environ, {"STRATA_INKLING_SOURCE": "http://127.0.0.1:19999/mirror"}, clear=False):
