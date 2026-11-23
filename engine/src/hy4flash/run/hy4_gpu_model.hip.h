@@ -15,6 +15,7 @@
 
 #include "hy4_io.h"
 #include "hy4_manifest.h"
+#include "hy4_uma_pool.h"
 #include "strata/artifact/strata_reader.hpp"
 #include "strata/platform/cgroup_mem.hpp"
 #if !HY4_CUDA
@@ -839,10 +840,22 @@ inline bool load_experts_tiered(GpuModel& g, const std::string& path, size_t vra
         all_al_bytes += sz;
         max_body_sz = std::max<size_t>(max_body_sz, (size_t)sz);
     }
+    // #6648: on unified memory (Strix Halo, 890M, 780M) the VRAM arena, the adaptive VRAM slots and the host-resident experts are ONE physical pool.
+    // The arena takes at most the safe RAM budget, there are no adaptive slots (they copy experts that also sit in host RAM), and the host-resident
+    // experts get what the arena leaves; the coldest ranks go to the SSD tier. A 128 GiB Strix Halo with SQ-128 at 128K took 97 GB of slots next to
+    // a 106 GB host arena and was killed by the OOM killer.
+    const bool uma_pool = ng == 1 && gpu_is_uma();
+    if (uma_pool) {
+        const uint64_t capped = uma_vram_budget(true, vram_budget, ram_budget_bytes);
+        if (capped < vram_budget)
+            fprintf(stderr, "[load] unified memory: GPU arena %.1f GB -> %.1f GB (the safe RAM budget; GPU and host experts share one pool)\n", vram_budget / 1e9, capped / 1e9);
+        vram_budget = (size_t)capped;
+    }
+    const uint64_t host_room_bytes = uma_host_room(uma_pool, ram_budget_bytes, vram_budget, all_al_bytes);
     // Cross-platform (Windows + Linux + macOS) automatic SSD cold-expert tier (#6556, #6528):
     // whenever host experts exceed safe MemAvailable / ullAvailPhys, auto-enable cpu_mode so ColdStore streams cold tail from SSD with 0 swap!
     const uint64_t est_host_need = all_al_bytes > vram_budget ? (all_al_bytes - vram_budget) : 0;
-    if (!cpu_mode && est_host_need > ram_budget_bytes) {
+    if (!cpu_mode && est_host_need > host_room_bytes) {
         cpu_mode = true;
         fprintf(stderr, "[load] host experts %.1f GB exceed safe RAM budget %.1f GB (avail %.1f / %.1f GiB); auto-enabling 4-tier CPU + SSD cold-expert streaming\n",
                 est_host_need / 1e9, ram_budget_gb, avail_gb, lim_gb);
@@ -863,6 +876,7 @@ inline bool load_experts_tiered(GpuModel& g, const std::string& path, size_t vra
             if ((double)max_body_sz > 1.20 * avg_body_sz) dyn_frac = 0.35;
         }
     }
+    dyn_frac = uma_dyn_frac(uma_pool, dyn_frac);
     size_t static_budget = vram_budget;
     int dyn_slots = 0;
     size_t dyn_bytes = 0;
@@ -1093,7 +1107,7 @@ inline bool load_experts_tiered(GpuModel& g, const std::string& path, size_t vra
         for (size_t i = 0; i < N; ++i)
             if (tier[i] == 2) host_total += al(dir[i].body_bytes);
         const double budget_gb = ram_budget_gb;
-        const uint64_t budget = ram_budget_bytes;
+        const uint64_t budget = host_room_bytes;
         if (host_total > budget) {
             uint64_t used2 = 0;
             bool cold = false;
