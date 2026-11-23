@@ -67,38 +67,33 @@ struct SampleOpts {
     bool penalties() const noexcept { return rep != 1.0f || freq != 0.0f || pres != 0.0f; }
 };
 
-inline int32_t sample_logits(float* lg, int V, const SampleOpts& s, const std::vector<int32_t>& hist, std::mt19937_64& rng) {
-    if (s.penalties() && s.last_n > 0) {
-        size_t start = static_cast<size_t>(std::max(0, s.pen_from));
-        if (hist.size() > start) {
-            size_t from = (hist.size() - start > static_cast<size_t>(s.last_n)) ? (hist.size() - static_cast<size_t>(s.last_n)) : start;
-            std::unordered_map<int32_t, int> cnt;
-            for (size_t i = from; i < hist.size(); ++i) ++cnt[hist[i]];
-            for (const auto& kv : cnt) {
-                if (kv.first < 0 || kv.first >= V) continue;
-                float& x = lg[kv.first];
-                if (s.rep != 1.0f) x = (x > 0.0f) ? (x / s.rep) : (x * s.rep);
-                x -= static_cast<float>(kv.second) * s.freq + (s.pres != 0.0f ? s.pres : 0.0f);
-            }
-        }
+// The K best token ids of lg[0..V-1], best first: larger logit first, the smaller id first on equal logits.  Exactly what
+// std::partial_sort over an iota with that order leaves in idx[0..K-1], but one pass over the row (about 0.1 ms for V = 200058
+// instead of a few ms), because every sampled token of every slot pays it on the host (#6779: 16..64 slots, temperature > 0).
+inline void ink_top_k_ids(const float* lg, int V, int K, std::vector<int>& idx) {
+    K = std::max(0, std::min(K, V));
+    idx.assign((size_t)K, 0);
+    if (K == 0) return;
+    std::vector<float> val((size_t)K);
+    int n = 0;
+    for (int i = 0; i < V; ++i) {
+        const float v = lg[i];
+        if (n == K && !(v > val[K - 1])) continue;   // a later id with an equal logit sorts after the kept ones
+        int j = (n < K) ? n++ : K - 1;
+        while (j > 0 && v > val[j - 1]) { val[j] = val[j - 1]; idx[j] = idx[j - 1]; --j; }
+        val[j] = v;
+        idx[j] = i;
     }
-    if (s.greedy()) {
-        int32_t best = 0;
-        float mx = lg[0];
-        for (int i = 1; i < V; ++i) {
-            if (lg[i] > mx) { mx = lg[i]; best = i; }
-        }
-        return best;
-    }
-    const int K = std::min(std::max(1, s.top_k), std::min(V, 128));
-    std::vector<int> idx(V);
-    std::iota(idx.begin(), idx.end(), 0);
-    std::partial_sort(idx.begin(), idx.begin() + K, idx.end(),
-                      [&](int a, int b) { return lg[a] > lg[b] || (lg[a] == lg[b] && a < b); });
+}
+
+// The sampling step once the K best candidates are known: tv[i] is the logit of token ti[i], best first (larger logit first, the
+// smaller id first on equal logits), K = min(top_k, vocab, 128).  Shared by sample_logits (candidates found on the host) and the
+// candidate rows a backend returns (forward_batch_cand), so both give the same token for the same seed.
+inline int32_t ink_sample_top(const float* tv, const int* ti, int K, const SampleOpts& s, std::mt19937_64& rng) {
     std::vector<double> p(K);
-    double mx = lg[idx[0]], sum = 0.0;
+    double mx = tv[0], sum = 0.0;
     for (int i = 0; i < K; ++i) {
-        p[i] = std::exp((lg[idx[i]] - mx) / static_cast<double>(s.temperature));
+        p[i] = std::exp((tv[i] - mx) / static_cast<double>(s.temperature));
         sum += p[i];
     }
     for (double& x : p) x /= sum;
@@ -124,9 +119,48 @@ inline int32_t sample_logits(float* lg, int V, const SampleOpts& s, const std::v
     double c = 0.0;
     for (int i = 0; i < keep; ++i) {
         c += p[i];
-        if (r <= c) return idx[i];
+        if (r <= c) return ti[i];
     }
-    return idx[keep - 1];
+    return ti[keep - 1];
+}
+
+// Sampling from a candidate row (ink2::CandRows, `cand` = the row's kInkCandidates entries).  Only for a slot without penalties:
+// a penalty changes logits anywhere in the row before the best are picked, so such a slot needs its full row.
+inline int32_t sample_candidates(const float* cv, const int32_t* ci, int V, const SampleOpts& s, std::mt19937_64& rng) {
+    if (s.greedy()) return ci[0];
+    const int K = std::min(std::max(1, s.top_k), std::min(V, 128));
+    return ink_sample_top(cv, ci, K, s, rng);
+}
+
+inline int32_t sample_logits(float* lg, int V, const SampleOpts& s, const std::vector<int32_t>& hist, std::mt19937_64& rng) {
+    if (s.penalties() && s.last_n > 0) {
+        size_t start = static_cast<size_t>(std::max(0, s.pen_from));
+        if (hist.size() > start) {
+            size_t from = (hist.size() - start > static_cast<size_t>(s.last_n)) ? (hist.size() - static_cast<size_t>(s.last_n)) : start;
+            std::unordered_map<int32_t, int> cnt;
+            for (size_t i = from; i < hist.size(); ++i) ++cnt[hist[i]];
+            for (const auto& kv : cnt) {
+                if (kv.first < 0 || kv.first >= V) continue;
+                float& x = lg[kv.first];
+                if (s.rep != 1.0f) x = (x > 0.0f) ? (x / s.rep) : (x * s.rep);
+                x -= static_cast<float>(kv.second) * s.freq + (s.pres != 0.0f ? s.pres : 0.0f);
+            }
+        }
+    }
+    if (s.greedy()) {
+        int32_t best = 0;
+        float mx = lg[0];
+        for (int i = 1; i < V; ++i) {
+            if (lg[i] > mx) { mx = lg[i]; best = i; }
+        }
+        return best;
+    }
+    const int K = std::min(std::max(1, s.top_k), std::min(V, 128));
+    std::vector<int> idx;
+    ink_top_k_ids(lg, V, K, idx);
+    std::vector<float> tv((size_t)K);
+    for (int i = 0; i < K; ++i) tv[(size_t)i] = lg[idx[(size_t)i]];
+    return ink_sample_top(tv.data(), idx.data(), K, s, rng);
 }
 
 inline bool finite_logits(const float* lg, int V) noexcept {
@@ -165,10 +199,8 @@ inline int32_t verify_draft_logits(
         }
     }
     const int K = std::min(std::max(1, s.top_k), std::min(V, 128));
-    std::vector<int> idx(V);
-    std::iota(idx.begin(), idx.end(), 0);
-    std::partial_sort(idx.begin(), idx.begin() + K, idx.end(),
-                      [&](int a, int b) { return lg[a] > lg[b] || (lg[a] == lg[b] && a < b); });
+    std::vector<int> idx;
+    ink_top_k_ids(lg, V, K, idx);
     std::vector<double> p(K);
     double mx = lg[idx[0]], sum = 0.0;
     for (int i = 0; i < K; ++i) {
@@ -464,6 +496,14 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
     const int V = c.vocab_unpadded;
     const int P = std::max(1, std::min(kMaxParallelSlots, cfg.bopts.parallel));
     const int chunk_sz = std::max(1, cfg.bopts.chunk);
+    // STRATA_INK_PREFILL_CAP=N: tokens of prompt read per step while another slot decodes (default 0 = no cap, as before).
+    // It only moves time between the request that reads and the ones that decode (measured on an RTX 5090, 4096-token prompt read
+    // while another request decodes: cap 64 / 128 / 256 / none = decode 24 / 21 / 17 / 12.6 tok/s, prompt first token after
+    // 2.75 / 1.63 / 1.05 / 0.88 s), so it is opt-in; answers are identical for every value.
+    int prefill_cap = 0;
+    // STRATA_INK_NO_CAND=1: always copy the full logit rows to the host (the old way) instead of the backend's candidate rows.
+    bool cand_ok = !(std::getenv("STRATA_INK_NO_CAND") && std::getenv("STRATA_INK_NO_CAND")[0] == '1');
+    if (const char* e = std::getenv("STRATA_INK_PREFILL_CAP"); e && *e) prefill_cap = std::max(0, std::atoi(e));
     const bool use_dspark = (cfg.draft_mode != "off") && mf.m.dspark.present && backend.dspark_ready();
     // STRATA_INK_SPEC=block: measurement switch, greedy requests use the linear block-8 drafter + batch verify instead of the beam tree
     const char* spec_env = std::getenv("STRATA_INK_SPEC");
@@ -979,6 +1019,9 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
             logit_slots.push_back(s);
             --token_budget;
         }
+        // While some slot decodes, a prompt is read at most `prefill_cap` tokens per step: one step then costs the decode tokens plus
+        // that chunk, so the decoding slots keep their cadence while a long prompt is read (a 2048-token chunk was ~0.5 s per decode token).
+        if (prefill_cap > 0 && !logit_slots.empty()) token_budget = std::min(token_budget, prefill_cap);
 
         // Then fill remaining budget with chunked-prefill tokens across prefilling slots (round-robin!)
         if (token_budget > 0) {
@@ -1015,11 +1058,25 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
         if (!merged_img_embeds.empty()) batch.img_embeds = merged_img_embeds.data();
 
         const int n_want = batch.count_logits();
-        logits_buf.resize(static_cast<size_t>(std::max(1, n_want)) * V);
+        // Candidate rows (the 128 best logits of each wanted row, exact) instead of the full 200058-float rows, when the backend can and
+        // no wanted slot needs its whole row (a penalty changes logits anywhere in it).  Many slots: 64 rows are 51 MB per step otherwise.
+        bool use_cand = cand_ok && n_want > 0 && backend.supports_candidates();
+        for (int wi = 0; use_cand && wi < n_want; ++wi) if (reqs[logit_slots[wi]].s.penalties()) use_cand = false;
         std::string ferr;
-        if (!backend.forward_batch(batch, n_want > 0 ? logits_buf.data() : nullptr, nullptr, ferr)) {
-            proto("ERR fatal GPU error: %s", ferr.c_str());
-            return 1;
+        CandRows cand;
+        if (use_cand) {
+            if (!backend.forward_batch_cand(batch, cand, ferr)) {
+                if (cand.rows != 0) { proto("ERR fatal GPU error: %s", ferr.c_str()); return 1; }
+                cand_ok = false;     // nothing ran: this and every later step takes the full-row path
+                use_cand = false;
+            }
+        }
+        if (!use_cand) {
+            logits_buf.resize(static_cast<size_t>(std::max(1, n_want)) * V);
+            if (!backend.forward_batch(batch, n_want > 0 ? logits_buf.data() : nullptr, nullptr, ferr)) {
+                proto("ERR fatal GPU error: %s", ferr.c_str());
+                return 1;
+            }
         }
         const double step_ms = (now_s() - t_step0) * 1000.0;
 
@@ -1051,12 +1108,23 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
             }
         }
 
+        struct SampleProf {
+            bool on; double t0, fwd_ms; int rows;
+            ~SampleProf() {
+                if (!on || rows == 0) return;
+                static double s_fwd = 0, s_smp = 0; static long s_n = 0, s_rows = 0;
+                s_fwd += fwd_ms; s_smp += (now_s() - t0) * 1000.0; ++s_n; s_rows += rows;
+                if (s_n % 64 == 0) fprintf(stderr, "[ink_serve PROF] %ld steps, %.1f logit rows avg: forward_batch %.2f ms, sampling+protocol %.2f ms per step\n",
+                                           s_n, (double)s_rows / s_n, s_fwd / s_n, s_smp / s_n);
+            }
+        } smp_prof{std::getenv("STRATA_INK_PROF") != nullptr, now_s(), step_ms, n_want};
+
         // Sample next token for every slot that produced logits in this batch!
         for (int wi = 0; wi < n_want; ++wi) {
             const int s = logit_slots[wi];
             auto& rq = reqs[s];
-            float* lg = logits_buf.data() + static_cast<size_t>(wi) * V;
-            if (!finite_logits(lg, V)) {
+            float* lg = use_cand ? nullptr : logits_buf.data() + static_cast<size_t>(wi) * V;
+            if (use_cand ? cand.finite[static_cast<size_t>(wi)] == 0 : !finite_logits(lg, V)) {
                 // Purge poisoned KV/ShortConv state so subsequent retries start clean (#879)!
                 rq.cached_prefix.clear();
                 rq.prompt_ckpt_prefix.clear();
@@ -1074,7 +1142,10 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
                 finish_req(rq, "length");
                 continue;
             }
-            int32_t tok = sample_logits(lg, V, rq.s, rq.hist, rq.rng);
+            int32_t tok = use_cand
+                ? sample_candidates(cand.val.data() + static_cast<size_t>(wi) * InkBackend::kInkCandidates,
+                                    cand.idx.data() + static_cast<size_t>(wi) * InkBackend::kInkCandidates, V, rq.s, rq.rng)
+                : sample_logits(lg, V, rq.s, rq.hist, rq.rng);
             rq.hist.push_back(tok);
             rq.gen_ids.push_back(tok);
             rq.next_tok = tok;

@@ -10,10 +10,12 @@
 #include "ink_dspark.cuh"
 #include "ink_runner.cuh"
 #include "ink_spec.cuh"
+#include "ink_topk.cuh"
 #include "strata/core/arch_probe.hpp"
 #include "strata/core/volta_forever.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -285,6 +287,11 @@ public:
         for (;;) {
             runner_ = std::make_unique<strata::ink::InkCudaRunner>(model_);
             runner_->use_cuda_graph = vf_graph_ok && !model_.ep2_active && !model_.ls_active;
+            if (const char* ng = std::getenv("STRATA_INK_NO_GRAPH"); ng && ng[0] == '1' && runner_->use_cuda_graph) {
+                // diagnostic: launch every kernel of a step eagerly, as the layer-split / EP2 paths always do
+                runner_->use_cuda_graph = false;
+                std::fprintf(stderr, "[InkCUDA] STRATA_INK_NO_GRAPH=1: CUDA Graph capture off (eager launches)\n");
+            }
             if (const char* pe = std::getenv("STRATA_INK_PROF"); pe && pe[0] == '1') {   // per-phase decode times, eager (no graph)
                 runner_->prof_enabled = true;
                 runner_->use_cuda_graph = false;
@@ -292,6 +299,7 @@ public:
                 strata::ink::g_ink_moe_hook = [](int tag, void* ctx) {
                     static_cast<strata::ink::InkCudaRunner*>(ctx)->prof_mark_end(8 + tag);
                 };
+                std::fprintf(stderr, "[InkCUDA] STRATA_INK_PROF=1: eager launches, per-phase timing (runner phases every 50 batched steps, host phases every 32)\n");
             }
             try {
                 runner_->init(max_slots_, std::max(256, opts.max_ctx), chunk_try, cuda_kvd, kv_offload_mode);
@@ -647,6 +655,31 @@ public:
         float* logits_out,
         TapCapture* taps_out,
         std::string& err) override {
+        return forward_batch_impl(batch, logits_out, nullptr, taps_out, err);
+    }
+
+    bool supports_candidates() const noexcept override { return initialized_; }
+
+    bool forward_batch_cand(const StepBatch& batch, CandRows& out, std::string& err) override {
+        if (!initialized_) { err = "CUDA backend not initialized"; return false; }
+        // the scratch is allocated before anything runs, so a failure here leaves the step untouched (the caller keeps the full-row path)
+        if (!topk_.ensure(std::max(64, batch.count_logits()))) { err = "no memory for the candidate scratch"; return false; }
+        const int V = model_.man.c.vocab_unpadded;
+        const int nrows = batch.count_logits();
+        out.rows = nrows;
+        out.k = std::min(kInkCandidates, V);
+        out.val.assign((size_t)nrows * kInkCandidates, 0.0f);
+        out.idx.assign((size_t)nrows * kInkCandidates, 0);
+        out.finite.assign((size_t)nrows, 1);
+        return forward_batch_impl(batch, nullptr, &out, nullptr, err);
+    }
+
+    bool forward_batch_impl(
+        const StepBatch& batch,
+        float* logits_out,
+        CandRows* cand_out,
+        TapCapture* taps_out,
+        std::string& err) {
         if (!initialized_) {
             err = "CUDA backend not initialized";
             return false;
@@ -688,7 +721,7 @@ public:
         // Helper: extract wanted logits rows from runner_->d_h_norm[0..M-1] into logits_out
         auto emit_selected_logits = [&](const std::vector<int>& local_idx, const std::vector<int>& dst_rows) {
             const int nw = (int)local_idx.size();
-            if (nw == 0 || !logits_out) return;
+            if (nw == 0 || (!logits_out && !cand_out)) return;
             const float* h_src = runner_->d_h_norm;
             if (nw == 1) {
                 h_src = runner_->d_h_norm + (size_t)local_idx[0] * strata::ink::kInkHidden;
@@ -701,12 +734,49 @@ public:
                     h_src = d_h_sel_;
                 }
             }
+            const bool hp = runner_->prof_enabled;
+            auto hnow = [] { return std::chrono::steady_clock::now(); };
+            auto hms = [](std::chrono::steady_clock::time_point a, std::chrono::steady_clock::time_point b) { return std::chrono::duration<double, std::milli>(b - a).count(); };
+            auto hq0 = hnow();
             runner_->head_logits_from(h_src, nw);
+            if (hp) INK_CK(cudaStreamSynchronize(runner_->st));
+            auto hq1 = hnow();
+            if (cand_out) {
+                // candidate rows: the 128 best (id, logit) of each wanted row and its finite flag; no full row leaves the card
+                INK_CK(topk_.run(runner_->d_logits, nw, V, runner_->st));
+                INK_CK(cudaStreamSynchronize(runner_->st));
+                const int kc = std::min(kInkCandidates, V);
+                for (int k = 0; k < nw; ++k) {
+                    const int dst = dst_rows[k];
+                    const uint64_t* keys = topk_.h_out + (size_t)k * strata::ink::kTopkCand;
+                    for (int j = 0; j < kc; ++j) {
+                        int32_t id = strata::ink::ink_topk_key_index(keys[j]);
+                        if (id < 0 || id >= V) id = 0;     // only a NaN logit can leave a pad key here
+                        cand_out->val[(size_t)dst * kInkCandidates + j] = strata::ink::ink_topk_key_value(keys[j]);
+                        cand_out->idx[(size_t)dst * kInkCandidates + j] = id;
+                    }
+                    cand_out->finite[dst] = topk_.h_fin[k] != 0 ? 1 : 0;
+                }
+                return;
+            }
             // Use pinned host staging buffer for full PCIe 5.0 DMA bandwidth (~50 GB/s vs ~12 GB/s pageable)!
             ensure_pinned_logits(nw, V);
             INK_CK(cudaMemcpyAsync(h_logits_pin_, runner_->d_logits,
                                    (size_t)nw * V * sizeof(float), cudaMemcpyDeviceToHost, runner_->st));
             INK_CK(cudaStreamSynchronize(runner_->st));
+            auto hq2 = hnow();
+            struct HostProfGuard {
+                bool on; double head, d2h; std::chrono::steady_clock::time_point t2; int nw;
+                ~HostProfGuard() {
+                    if (!on) return;
+                    static double s_head = 0, s_d2h = 0, s_cpy = 0; static long s_n = 0, s_rows = 0;
+                    s_head += head; s_d2h += d2h; s_cpy += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t2).count(); ++s_n; s_rows += nw;
+                    if (s_n % 32 == 0) {
+                        std::fprintf(stderr, "[InkCUDA PROF host] %ld logits batches (%.1f rows avg): unembed+softcap %.2f ms, D2H %.2f ms, copy to caller %.2f ms per batch\n",
+                                     s_n, (double)s_rows / s_n, s_head / s_n, s_d2h / s_n, s_cpy / s_n);
+                    }
+                }
+            } hpg{hp, hms(hq0, hq1), hms(hq1, hq2), hq2, nw};
             bool contiguous_dst = true;
             for (int k = 1; k < nw; ++k) if (dst_rows[k] != dst_rows[k - 1] + 1) { contiguous_dst = false; break; }
             if (contiguous_dst) {
@@ -855,7 +925,20 @@ public:
             const int B = (int)dec_orig.size();
             const bool want_taps = (taps_out != nullptr);
             runner_->has_img_step = false;
-            runner_->forward_batched(dec_toks.data(), dec_slots.data(), dec_pos.data(), B, want_taps);
+            {
+                static double p_step_ms = 0; static long p_n = 0, p_rows = 0;
+                const bool pf = runner_->prof_enabled;
+                auto tb0 = std::chrono::steady_clock::now();
+                runner_->forward_batched(dec_toks.data(), dec_slots.data(), dec_pos.data(), B, want_taps);
+                if (pf) {
+                    INK_CK(cudaStreamSynchronize(runner_->st));
+                    p_step_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tb0).count();
+                    ++p_n; p_rows += B;
+                    if (p_n % 32 == 0) {
+                        std::fprintf(stderr, "[InkCUDA PROF step] %ld batched steps, B avg %.1f, eager 48-visit step %.2f ms\n", p_n, (double)p_rows / p_n, p_step_ms / p_n);
+                    }
+                }
+            }
             if (taps_out) copy_host_taps(dec_orig);
             std::vector<int> loc_idx, dst_rows;
             for (int k = 0; k < B; ++k) {
@@ -1032,6 +1115,7 @@ private:
         if (d_h_sel_)      { cudaFree(d_h_sel_); d_h_sel_ = nullptr; }
         if (d_sel_idx_)    { cudaFree(d_sel_idx_); d_sel_idx_ = nullptr; }
         if (h_logits_pin_) { cudaFreeHost(h_logits_pin_); h_logits_pin_ = nullptr; h_logits_cap_ = 0; }
+        topk_.free_all();
         model_.free_all();
         prompt_ckpts_.clear();
         shared_ckpts_.clear();
@@ -1068,6 +1152,7 @@ private:
     float* d_h_sel_ = nullptr;
     int32_t* d_sel_idx_ = nullptr;
     float* h_logits_pin_ = nullptr;
+    strata::ink::InkTopkScratch topk_;   // candidate rows (ink_topk.cuh)
     int h_logits_cap_ = 0;
     std::vector<bool> slot_alloc_;
     std::vector<bool> snap_active_;
