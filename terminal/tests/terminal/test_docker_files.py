@@ -300,6 +300,14 @@ class LegacyModelsGuard(unittest.TestCase):
             r = check_path(empty)
             self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
             self.assertIn(".safetensors", r.stderr)
+            for name in ("model.gguf", "model.strata", "model.safetensors"):
+                with self.subTest(directory=name):
+                    dummy = empty / name
+                    dummy.mkdir()
+                    r = check_path(empty)
+                    dummy.rmdir()
+                    self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                    self.assertIn("holds no", r.stderr)
 
 
 class Document(unittest.TestCase):
