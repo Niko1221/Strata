@@ -138,8 +138,12 @@ inline bool finite_logits(const float* lg, int V) noexcept {
 inline bool detect_repetition_loop(const std::vector<int32_t>& gen_ids) noexcept {
     const size_t n = gen_ids.size();
     if (n < 64) return false;
-    for (size_t period = 1; period <= 32; ++period) {
-        const size_t need_reps = (period <= 4) ? 16 : 6;
+    // the upstream window (periods <= 32) is blind to prose loops whose
+    // cycle is a whole stanza ("It is a cathedral. ... a room." ~200 tokens) - those ran until the
+    // user aborted. Long periods get fewer required exact repeats (3): a loop proves itself in
+    // three turns of a 200-token cycle, while a legitimate refrain costs one extra occurrence.
+    for (size_t period = 1; period <= 512; ++period) {
+        const size_t need_reps = (period <= 4) ? 16 : (period <= 32) ? 6 : 3;
         if (n < period * need_reps) continue;
         bool match = true;
         for (size_t k = 0; k < period * (need_reps - 1); ++k) {
