@@ -656,3 +656,33 @@ def max_parallel(build: str, vram_gib: float | None, ram_gib: float, unified: bo
         msg = f"--parallel {want} does not fit at a context of {n_ctx} tokens on this {where}setup: the largest count that fits is {best}{tail}"
     return {"max_parallel": best, "requested": want, "fits": want is None or want <= best, "context": n_ctx,
             "max_context_at_requested": ctx_at_want, "message": msg}
+
+
+def resident_parallel(build: str, vram_gib: float | None, ram_gib: float, ctx: int | None = None, *, cap: int = MAX_PARALLEL, vision: bool = False,
+                      dspark: bool = True, backend: str | None = None, desktop: bool = False, ram_free_gib: float | None = None,
+                      sm: int | None = None, extra_vram_gib: float = 0.0) -> int:
+    """The largest number of request slots (1..cap) whose K/V stays on the card next to what one slot holds there: the plan keeps the K/V in the card
+    (kv_offload off) and gives the experts the same share of the card as for one slot. More slots than that spill their K/V to host RAM: the engine keeps
+    a window of every slot's positions on the card and reads the rest over PCIe (Olares, RTX 5090 Laptop 24 GB, UD-Q4_K_XL, 32K, 3 slots: 11,008 of
+    21,760 + 11,008 positions on the host, decode 86 tok/s after a short prompt, 82 after 4K, 44 after 30K).  Never below 1."""
+    kw = dict(vision=vision, dspark=dspark, backend=backend, desktop=desktop, ram_free_gib=ram_free_gib, sm=sm, extra_vram_gib=extra_vram_gib)
+    base = place(build, vram_gib, ram_gib, False, ctx, vision, 1, dspark, **{k: v for k, v in kw.items() if k not in ("vision", "dspark")})
+    best = 1
+    for n in range(2, max(1, int(cap)) + 1):
+        p = place(build, vram_gib, ram_gib, False, ctx, vision, n, dspark, **{k: v for k, v in kw.items() if k not in ("vision", "dspark")})
+        if (p.get("kv_offload") != "off" or float(p["vram_gb"]) < float(base["vram_gb"]) - 0.05
+                or float(p["ssd_gb"]) > float(base["ssd_gb"]) + 0.05):
+            break
+        best = n
+    return best
+
+
+def launch_parallel(build: str, vram_gib: float | None, ram_gib: float, ctx: int | None, table: int, *, backend: str | None = "cuda",
+                    sm: int | None = None, desktop: bool = True, dspark: bool = True) -> int:
+    """"Fit to your card" for Inkling-2-Mini (what `strata launch` uses when --parallel is not given): the VRAM table's number, but no more than the slots
+    whose K/V stays on the card (resident_parallel); an explicit --parallel is never touched by this.  The card is planned with the desktop reserve (the
+    free memory is not known here), so a headless card gets a safe, not the largest, number."""
+    if build not in BUILDS:
+        return table
+    return max(1, min(int(table), resident_parallel(build, vram_gib, ram_gib, ctx, cap=int(table), backend=backend, desktop=desktop, sm=sm, dspark=dspark)))
+
