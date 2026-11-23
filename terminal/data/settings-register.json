@@ -16367,6 +16367,138 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_INK_EXACT_ROWS",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
+     "line": 716,
+     "backend": "hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "2d96ef73c5",
+   "first_date": "2026-11-23",
+   "since": null,
+   "last_commit": "2d96ef73c5",
+   "last_date": "2026-11-23",
+   "status": "rollback",
+   "owner": "backends/hip",
+   "note": "Inkling HIP engine. Unset (default): while a DSpark verify window runs, every linear layer, the attention, the router and the MoE use the kernels whose row m is the value the one-token step gives, so the drafter cannot change greedy output. =0: the old batch-size dependent kernels (speed A/B only). #6671.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_HASH",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
+     "line": 717,
+     "backend": "hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "2d96ef73c5",
+   "first_date": "2026-11-23",
+   "since": null,
+   "last_commit": "2d96ef73c5",
+   "last_date": "2026-11-23",
+   "status": "research",
+   "owner": "backends/hip",
+   "note": "Inkling HIP engine, debug: =1 prints an order independent hash of the hidden state per row and visit ([HASH] lines on stderr), for comparing a verify window with the one-token steps (phaseA-tests/rel0221/determ_hashcmp.py).",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_PROMOTE_ASYNC",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_promote_policy.h",
+     "line": 22,
+     "backend": "hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "string",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "rollback",
+   "owner": "backends/hip",
+   "note": "Inkling HIP hybrid engine. Unset (default): a promoted expert is used only after its DMA copy has finished (the engine waits), so which experts run from VRAM and which on the CPU depends on the routing history only and the logits repeat. =1: poll the copy and use the CPU path while it runs (timing dependent, for speed experiments, not for answers that must repeat). #6671.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_TAP_VISITS",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
+     "line": 567,
+     "backend": "hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "2d96ef73c5",
+   "first_date": "2026-11-23",
+   "since": null,
+   "last_commit": "2d96ef73c5",
+   "last_date": "2026-11-23",
+   "status": "research",
+   "owner": "backends/hip",
+   "note": "Inkling HIP engine, debug (strata-inkling --spec-check): a,b,c,d moves the four host taps from visits 5,23,41,48 to other visits. The drafter reads the same taps; use with the drafter off.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_IO_PF_AHEAD",
    "backends": [
     "cuda-hip"
@@ -43517,6 +43649,39 @@
    "status": "default",
    "owner": "program",
    "note": "[auto] on by default for some GPU architectures only (sm_86 src/core/nv_defaults.cpp:156=200); opt-in elsewhere; the variable overrides it",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_SPEC_CHECK_STEPS",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/ink_main.cpp",
+     "line": 415,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "a0fb0fe080",
+   "first_date": "2026-11-23",
+   "since": null,
+   "last_commit": "a0fb0fe080",
+   "last_date": "2026-11-23",
+   "status": "research",
+   "owner": "inkling2",
+   "note": "strata-inkling --spec-check: =1 prints the logits hash of the prefill and of every plain step ([steps] lines), to compare two engine starts.",
    "retire_after": "",
    "retired_in": ""
   },

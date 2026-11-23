@@ -308,7 +308,7 @@ public:
         if (s < 0) return nullptr;
         auto& sl = slots_[s];
         if (sl.dma_in_flight) {
-            // #6671: wait for the copy by default (see ink_hip_promote_policy.h); INK_HIP_PROMOTE_ASYNC=1 polls (timing dependent)
+            // #6671: wait for the copy by default (see ink_hip_promote_policy.h); STRATA_INK_PROMOTE_ASYNC=1 polls (timing dependent)
             static const bool async_poll = ink_hip::ink_hip_promote_async_poll();
             if (async_poll) {
                 if (hipEventQuery(sl.ready_ev) != hipSuccess) return nullptr;
@@ -342,7 +342,7 @@ public:
         for (int i = 0; i < static_cast<int>(slots_.size()); ++i) {
             auto& sl = slots_[i];
             if (sl.dma_in_flight) {
-                // the victim must not depend on which copies happen to be done: wait (INK_HIP_PROMOTE_ASYNC=1 skips the running ones)
+                // the victim must not depend on which copies happen to be done: wait (STRATA_INK_PROMOTE_ASYNC=1 skips the running ones)
                 static const bool async_poll = ink_hip::ink_hip_promote_async_poll();
                 if (async_poll) {
                     if (hipEventQuery(sl.ready_ev) != hipSuccess) continue;
