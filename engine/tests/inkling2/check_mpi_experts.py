@@ -3,10 +3,9 @@ import argparse
 import json
 import os
 from pathlib import Path
-import queue
+import selectors
 import signal
 import subprocess
-import threading
 import time
 
 def measure(executable, model, mpi, draft, timeout):
@@ -19,37 +18,47 @@ def measure(executable, model, mpi, draft, timeout):
     prefixes = [[32, 383, 712, 1001] * 9, [32, 383, 712, 1001] * 9 + [201, 220, 311],
                 [253, 270, 415, 811] * 17]
     frames = ["GEN 8 temperature=0 " + ",".join(map(str, ids)) for ids in prefixes]
-    with subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
-                          bufsize=1, start_new_session=True) as proc:
-        inbox = queue.Queue()
+    with subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                          start_new_session=True) as proc, selectors.DefaultSelector() as monitor:
         deadline = time.monotonic() + timeout
-        def receive():
-            for line in proc.stdout:
-                inbox.put(line)
-            inbox.put(None)
-        reader = threading.Thread(target=receive, daemon=True)
-        reader.start()
+        monitor.register(proc.stdout, selectors.EVENT_READ)
+        buffer = bytearray()
         clean_exit = False
         def send(line):
-            proc.stdin.write(line + "\n")
+            proc.stdin.write((line + "\n").encode())
             proc.stdin.flush()
         def until(prefix):
             lines = []
+            last = ""
             while True:
-                try:
-                    line = inbox.get(timeout=max(0, deadline - time.monotonic()))
-                except queue.Empty as exc:
-                    raise TimeoutError(f"{executable} timed out waiting for {prefix}") from exc
-                if line is None:
-                    raise RuntimeError(f"engine exited before {prefix}: {lines[-1:]}")
-                words = line.strip().split()
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError(f"{executable} timed out waiting for {prefix}; last line: {last!r}")
+                end = buffer.find(b"\n")
+                if end < 0:
+                    if len(buffer) > 65536:
+                        raise ValueError("oversized native protocol line")
+                    if not monitor.select(remaining):
+                        continue
+                    chunk = os.read(proc.stdout.fileno(), 8192)
+                    if not chunk:
+                        raise RuntimeError(f"engine exited before {prefix}; last line: {last!r}")
+                    buffer.extend(chunk)
+                    continue
+                line = buffer[:end].decode(errors="replace")
+                del buffer[:end + 1]
+                last = line[-256:]
+                words = line.split()
                 if not words:
                     continue
-                if words[0] == "ERR":
-                    raise ValueError(line.rstrip())
-                lines.append(words)
+                if words[0] in ("ERR", "FATAL"):
+                    raise ValueError(last)
                 if words[0] == prefix:
-                    return lines
+                    return [*lines, words]
+                if (prefix == "READY" and words[0] == "INFO") or (prefix == "DONE" and words[0] == "T"):
+                    lines.append(words)
+                    if len(lines) > 8:
+                        raise ValueError("too many native result frames")
         try:
             startup = until("READY")
             info = next(row for row in startup if row[0] == "INFO")
@@ -61,8 +70,8 @@ def measure(executable, model, mpi, draft, timeout):
                 send(frame)
                 rows = until("DONE")
                 tokens = [int(row[1]) for row in rows if row[0] == "T"]
-                if not tokens:
-                    raise AssertionError("no generated tokens")
+                if not tokens or len(tokens) != int(rows[-1][1]):
+                    raise AssertionError("generated token count differs from DONE")
                 runs.append({"tokens":tokens,"reused":int(rows[-1][-1])})
             if runs[0]["reused"] or runs[1]["reused"] <= 0 or runs[2]["reused"]:
                 raise AssertionError("unexpected prefix reuse: " + str(runs))
@@ -84,9 +93,6 @@ def measure(executable, model, mpi, draft, timeout):
                         proc.wait(timeout=5)
                     except subprocess.TimeoutExpired:
                         continue
-                    reader.join(timeout=2)
-                    if not reader.is_alive():
-                        break
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)

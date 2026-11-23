@@ -15,7 +15,7 @@ bool valid_shard_directory(const std::vector<artifact::StrataExpertEntry>& entri
         for (size_t slot = 0; slot < Experts; ++slot) {
             const auto& entry = entries[layer * Experts + slot];
             if (entry.expert_id >= Experts || seen[entry.expert_id]) return false;
-            if (!entry.body_bytes || entry.body_offset > section_bytes ||
+            if (entry.dn_offset >= entry.body_bytes || entry.body_offset > section_bytes ||
                 entry.body_bytes > section_bytes - entry.body_offset) return false;
             seen[entry.expert_id] = true;
         }

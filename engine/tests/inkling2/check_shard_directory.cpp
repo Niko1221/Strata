@@ -9,6 +9,7 @@ int main() {
         entries[i].expert_id = (i + 1) % 4;
         entries[i].body_offset = i * 8;
         entries[i].body_bytes = 8;
+        entries[i].dn_offset = 4;
     }
     const auto valid = [&] { return strata::ink::valid_shard_directory<4>(entries, 2, 64); };
     if (!valid()) return 1;
@@ -24,7 +25,12 @@ int main() {
     if (valid()) return 5;
     entries.back().body_offset = 57;
     if (valid()) return 6;
-    entries.pop_back();
+    entries.back() = saved;
+    entries.back().dn_offset = entries.back().body_bytes;
     if (valid()) return 7;
+    ++entries.back().dn_offset;
+    if (valid()) return 8;
+    entries.pop_back();
+    if (valid()) return 9;
     std::puts("Inkling shard directory checks passed");
 }
