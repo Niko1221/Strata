@@ -444,6 +444,8 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
     const int P = std::max(1, std::min(kMaxParallelSlots, cfg.bopts.parallel));
     const int chunk_sz = std::max(1, cfg.bopts.chunk);
     const bool use_dspark = (cfg.draft_mode != "off") && mf.m.dspark.present && backend.dspark_ready();
+    // STRATA_INK_SPEC=block: measurement switch, greedy requests use the linear block-8 drafter + batch verify instead of the beam tree
+    const bool spec_tree = []() { const char* e = std::getenv("STRATA_INK_SPEC"); return !(e && std::string(e) == "block"); }();
 
     // Probe Vision shard lazily (zero VRAM/RAM until first image request)
     bool images_ok = false;
@@ -766,7 +768,7 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
             reqs[sole_slot].cur_pos + 8 < eff_max_ctx) {
             auto& rq = reqs[sole_slot];
             // 2a. Zero-D2H fused greedy Beam Tree speculative step (when greedy, no penalties, and headroom >= 12)
-            if (rq.s.greedy() && !rq.s.penalties() && rq.cur_pos + 12 < eff_max_ctx) {
+            if (spec_tree && rq.s.greedy() && !rq.s.penalties() && rq.cur_pos + 12 < eff_max_ctx) {
                 int32_t emitted[16]{};
                 int drafted = 0;
                 std::string serr;
