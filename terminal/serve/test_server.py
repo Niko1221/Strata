@@ -7723,3 +7723,66 @@ class ChatTemplateKwargsShape(unittest.TestCase):
             with self.subTest(chat_template_kwargs=ctk):
                 status, b = self.post({"model": "x", "max_tokens": 8, "messages": msgs, "chat_template_kwargs": ctk})
                 self.assertEqual(status, 200, b)
+
+
+class OpenAIModelOutputLimit(unittest.TestCase):
+    """#6402: /v1/models publishes the answer cap next to the context window.
+
+    Clients that size a request from the model list (OpenCode reads llama-swap's `meta.llamaswap.max_output_tokens`,
+    OpenAI-shaped ones read `limit.output`) had nothing to read here and fell back to their own guess."""
+
+    @classmethod
+    def setUpClass(cls):
+        tok = ByteTokenizer()
+        cls.svc = Service(MockEngine(tok, "ok", max_context=CTX), tok,
+                          ChatTemplate(ROOT / "serve/chat_template.jinja"), model_name="qwen3.8-flash-next-iq3_xxs")
+        cls.svc.set_aliases(["qwen"])
+        cls.httpd = serve(cls.svc, port=0)
+        cls.base = f"http://127.0.0.1:{cls.httpd.server_address[1]}"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+
+    def get(self, path):
+        with urllib.request.urlopen(self.base + path, timeout=30) as r:
+            return json.loads(r.read())
+
+    def tearDown(self):
+        self.svc.shared = {}                # POST /settings would set this; every test starts without it
+
+    def test_output_cap_is_the_context_less_the_engine_margin(self):
+        # the server never lets one answer run past ctx - CTX_SLACK (the same margin prepare() enforces), and a
+        # request with no max_tokens gets that whole room, so it is the largest answer this model can produce
+        m = self.get("/v1/models")["data"][0]
+        self.assertEqual(m["limit"]["context"], CTX)
+        self.assertEqual(m["limit"]["output"], CTX - CTX_SLACK)
+        self.assertEqual(m["meta"]["llamaswap"]["max_output_tokens"], CTX - CTX_SLACK)
+        self.assertEqual(m["meta"]["n_ctx"], CTX)                       # the existing key stays
+
+    def test_aliases_report_the_same_limit(self):
+        data = self.get("/v1/models")["data"]
+        self.assertEqual([m["limit"] for m in data], [{"context": CTX, "output": CTX - CTX_SLACK}] * 2)
+        self.assertEqual([m["meta"]["llamaswap"]["max_output_tokens"] for m in data], [CTX - CTX_SLACK] * 2)
+
+    def test_model_retrieve_carries_it_too(self):
+        for path in ("/v1/models/qwen", "/models/qwen"):
+            m = self.get(path)
+            self.assertEqual(m["limit"]["output"], CTX - CTX_SLACK)
+
+    def test_chat_settings_max_tokens_lowers_it(self):
+        # POST /settings {"max_tokens": 512} caps every request that sends none (see the /v1/messages path), so the
+        # published cap has to follow it down; a setting above the context room cannot raise it
+        self.svc.shared = {"max_tokens": 512}
+        self.assertEqual(self.get("/v1/models")["data"][0]["limit"]["output"], 512)
+        self.svc.shared = {"max_tokens": 100000}
+        self.assertEqual(self.get("/v1/models")["data"][0]["limit"]["output"], CTX - CTX_SLACK)
+
+    def test_it_follows_the_engine_context(self):
+        self.svc.engine.max_context = 8192
+        try:
+            m = self.get("/v1/models")["data"][0]
+            self.assertEqual((m["limit"]["context"], m["limit"]["output"]), (8192, 8192 - CTX_SLACK))
+        finally:
+            self.svc.engine.max_context = CTX

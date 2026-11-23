@@ -4429,6 +4429,18 @@ class Service:
         prompt from it would send nothing, #351).  Reporting only: requests are checked in prepare()."""
         return int(getattr(self.engine, "max_context", 0) or getattr(self.engine, "known_ctx", 0) or 0)
 
+    def output_cap(self) -> int:
+        """#6402: the most tokens one answer may run to, for a client that sizes a request from /v1/models.  That is
+        the room the context itself leaves (ctx - CTX_SLACK, the margin prepare() enforces) - a request with no
+        max_tokens gets exactly that - lowered by the web app's Chat setting for max_tokens when that is smaller
+        (the server sends it for every request that carries none).  No prompt is counted here: a prompt shortens
+        the room at request time, and fit_max_tokens shortens a request to what is left."""
+        room = max(0, self.reported_ctx() - CTX_SLACK)
+        shared = self.shared.get("max_tokens")
+        if isinstance(shared, int) and not isinstance(shared, bool) and shared > 0:
+            room = min(room, shared)
+        return room
+
     def has_vision(self) -> bool:
         """Whether this server can read images: either a separate vision encoder (Flash-Next)
         or an in-process Hy4-Flash / Inkling-2-Mini engine that reported `images=1`."""
@@ -7285,11 +7297,17 @@ def make_handler(svc: Service):
                     loaded = svc.loaded()
                     ctx = svc.reported_ctx()
                     created = int(getattr(svc, "started_at", 0) or time.time())
+                    cap = svc.output_cap()
+                    # #6402: the answer cap under the names clients already look for: OpenAI-shaped tools read
+                    # `limit.output` (with `limit.context` beside it), llama-swap's readers read
+                    # meta.llamaswap.max_output_tokens.  Without them a client guesses (1,024, 32k, or its own default)
                     # the context size under the names other APIs use too (vLLM's max_model_len, OpenRouter's
                     # context_length), so a client that sizes its window from /v1/models reads it
                     model = {"id": svc.model, "object": "model", "created": created, "owned_by": "strata",
                              "status": {"value": "loaded"},
-                             "max_model_len": ctx, "context_length": ctx, "max_context_length": ctx, "meta": {"n_ctx": ctx},
+                             "max_model_len": ctx, "context_length": ctx, "max_context_length": ctx,
+                             "limit": {"context": ctx, "output": cap},
+                             "meta": {"n_ctx": ctx, "llamaswap": {"max_output_tokens": cap}},
                              "architecture": {"input_modalities": ["text", "image"] if svc.has_vision() else ["text"],
                                               "output_modalities": ["text"]}}
                     if not loaded and (svc.idle_unload_s or getattr(svc.engine, "unloaded", False)):
