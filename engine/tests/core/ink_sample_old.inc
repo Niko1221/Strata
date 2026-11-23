@@ -1,7 +1,7 @@
 // The sampler of origin/main f65f2d614 (before ink_top_k_ids), verbatim, kept only so ink_sample_topk_test can compare token streams.
 // sample_logits and verify_draft_logits, namespace ink2old.
 namespace ink2old {
-using namespace ink2;
+using ink2::SampleOpts;
 inline int32_t sample_logits(float* lg, int V, const SampleOpts& s, const std::vector<int32_t>& hist, std::mt19937_64& rng) {
     if (s.penalties() && s.last_n > 0) {
         size_t start = static_cast<size_t>(std::max(0, s.pen_from));
@@ -68,7 +68,7 @@ inline int32_t verify_draft_logits(
     std::mt19937_64& rng, int32_t draft_tok, bool& accepted) {
     accepted = false;
     if (s.greedy()) {
-        const int32_t tok = sample_logits(lg, V, s, hist, rng);
+        const int32_t tok = ink2old::sample_logits(lg, V, s, hist, rng);   // (qualified: ADL would also find ink2::sample_logits)
         accepted = (tok == draft_tok);
         return tok;
     }
