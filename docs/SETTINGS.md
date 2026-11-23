@@ -157,7 +157,7 @@ Off unless you set them. The last column says where each one is described.
 | `STRATA_MEMORY_LIMIT_MIB` | on / off | NVIDIA and AMD | [DETAILS.md](DETAILS.md) |
 | `STRATA_METAL_ARENA_GB` | number | Mac | [MAC.md](MAC.md) |
 | `STRATA_METAL_CONTIG` | number | Mac | [MAC.md](MAC.md) |
-| `STRATA_METAL_EXP_CACHE_GB` | number | NVIDIA and AMD | - |
+| `STRATA_METAL_EXP_CACHE_GB` | number | Mac | - |
 | `STRATA_METAL_GYRO_TILES` | on / off | Mac | [MAC.md](MAC.md) |
 | `STRATA_METAL_KEEP_FREE_GB` | number | Mac | [MAC.md](MAC.md) |
 | `STRATA_METAL_KEEP_HOST_WEIGHTS` | on / off | Mac | [MAC.md](MAC.md) |
@@ -332,6 +332,7 @@ Off unless you set them. The last column says where each one is described.
 | `STRATA_STATE_HASH` | on / off | NVIDIA and AMD, Intel Arc | [SPLIT_SERVE.md](SPLIT_SERVE.md) |
 | `STRATA_SYCL_BMG_EXPERT_WINDOW` | on / off | Intel Arc | [INTEL.md](INTEL.md) |
 | `STRATA_SYCL_GEMM_STAGE` | on / off | Intel Arc | [INTEL.md](INTEL.md) |
+| `STRATA_SYCL_NO_XMX` | on / off | Intel Arc | [INTEL.md](INTEL.md) |
 | `STRATA_TEST_BELL_SLEEP_US` | number | NVIDIA and AMD | [BATCHING.md](BATCHING.md) |
 | `STRATA_TINY_CACHE` | on / off | NVIDIA and AMD | [DETAILS.md](DETAILS.md) |
 | `STRATA_TOPK_MULTI` | on / off | NVIDIA and AMD | [OLDER_GPUS.md](OLDER_GPUS.md) |

@@ -43,6 +43,17 @@ inline double now_s() {
     return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
+// STRATA_SYCL_NO_XMX=1 (or the older name INK_SYCL_NO_XMX=1) turns the oneMKL XMX GEMM path off. On Arc A-series (Alchemist / DG2) that GEMM
+// gives last-bit differences between runs in prompt reading; without it the logits repeat, at about 40% of the prompt speed (docs/INTEL.md).
+inline bool sy_no_xmx_requested() {
+    static const bool v = [] {
+        const char* e = std::getenv("STRATA_SYCL_NO_XMX");
+        if (!e || !e[0]) e = std::getenv("INK_SYCL_NO_XMX");
+        return e && e[0] == '1';
+    }();
+    return v;
+}
+
 inline void sy_setenv(const char* k, const char* v, int overwrite = 1) {
 #ifdef _WIN32
     if (!overwrite && std::getenv(k)) return;
@@ -207,7 +218,7 @@ inline const SyDevCaps& dev_caps() {
         for (auto s : dev.get_info<sycl::info::device::sub_group_sizes>()) {
             if (s == 16) c.has_sg16 = true;
         }
-        const bool no_xmx = std::getenv("INK_SYCL_NO_XMX") && std::getenv("INK_SYCL_NO_XMX")[0] == '1';
+        const bool no_xmx = sy_no_xmx_requested();
         if (!no_xmx && c.has_sg16) {
             // Xe2 Battlemage (B580 bmg_g21, Arc Pro B60/B70 bmg_g31, Lunar Lake) & PVC natively support SG16 XMX
             if (c.name.find("B5") != std::string::npos || c.name.find("B6") != std::string::npos ||
