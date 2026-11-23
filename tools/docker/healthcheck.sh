@@ -3,6 +3,7 @@
 # While the model downloads or loads (can take hours the first time) the container is "starting", not "unhealthy".
 KEY_FILE="${STRATA_KEY_FILE:-/data/state/api-key}"
 KEY="${API_KEY:-}"
+[ -z "$KEY" ] && [ -n "${API_KEY_FILE:-}" ] && [ -r "$API_KEY_FILE" ] && KEY=$(tr -d '\r\n' < "$API_KEY_FILE")
 [ -z "$KEY" ] && [ -r "$KEY_FILE" ] && KEY=$(cat "$KEY_FILE")
 exec /opt/strata/terminal/python/bin/python3 - "http://127.0.0.1:${PORT:-8080}/v1/models" "$KEY" <<'PY'
 import sys, urllib.request, json
