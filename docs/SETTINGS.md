@@ -10,7 +10,7 @@ debugging and are kept in `terminal/data/settings-register.json`.
 A number or a word is set like any environment variable, for example `STRATA_KVA=1`. In the Terminal, `strata launch --set NAME=value`
 puts it in the model's run configuration.
 
-## Switches you can turn on (332)
+## Switches you can turn on (333)
 
 Off unless you set them. The last column says where each one is described.
 
@@ -206,7 +206,7 @@ Off unless you set them. The last column says where each one is described.
 | `STRATA_PF_DENSE_FP4` | number | NVIDIA and AMD | - |
 | `STRATA_PF_DMA_PAGEABLE` | on / off | Intel Arc | [INTEL.md](INTEL.md) |
 | `STRATA_PF_FUSED_F16` | on / off | NVIDIA and AMD | [DETAILS.md](DETAILS.md) |
-| `STRATA_PF_FUSED_IQ2S` | text | NVIDIA and AMD | - |
+| `STRATA_PF_FUSED_IQ2S` | text | NVIDIA and AMD | [DETAILS.md](DETAILS.md) |
 | `STRATA_PF_FUSED_NATIVE` | on / off | NVIDIA and AMD | [AMD_HIP.md](AMD_HIP.md), [DETAILS.md](DETAILS.md) |
 | `STRATA_PF_FUSED_NT` | number | NVIDIA and AMD | [DETAILS.md](DETAILS.md) |
 | `STRATA_PF_FUSED_Q2N` | on / off | NVIDIA and AMD | [DETAILS.md](DETAILS.md), [release-notes-0.2.7.md](release-notes-0.2.7.md) |
@@ -245,7 +245,7 @@ Off unless you set them. The last column says where each one is described.
 | `STRATA_PREFILL_ALWAYS_BORROW` | on / off | NVIDIA and AMD | - |
 | `STRATA_PREFILL_AUTO_MAX` | number | NVIDIA and AMD, Intel Arc | [DETAILS.md](DETAILS.md) |
 | `STRATA_PREFILL_BORROW` | on / off | NVIDIA, AMD | [STRIX_HALO.md](STRIX_HALO.md), [STRIX_HALO_WINDOWS.md](STRIX_HALO_WINDOWS.md) |
-| `STRATA_PREFILL_CPU_SHARE_BATCH` | on / off | NVIDIA and AMD | - |
+| `STRATA_PREFILL_CPU_SHARE_BATCH` | on / off | NVIDIA and AMD | [DETAILS.md](DETAILS.md) |
 | `STRATA_PREFILL_CPU_SHARE_MAX` | number | NVIDIA and AMD | [DETAILS.md](DETAILS.md) |
 | `STRATA_PREFILL_CPU_SHARE_NT` | on / off | NVIDIA and AMD | [DETAILS.md](DETAILS.md) |
 | `STRATA_PREFILL_DENSE_I8_TC` | number | NVIDIA and AMD | - |
@@ -333,6 +333,7 @@ Off unless you set them. The last column says where each one is described.
 | `STRATA_SYCL_BMG_EXPERT_WINDOW` | on / off | Intel Arc | [INTEL.md](INTEL.md) |
 | `STRATA_SYCL_GEMM_STAGE` | on / off | Intel Arc | [INTEL.md](INTEL.md) |
 | `STRATA_TEST_BELL_SLEEP_US` | number | NVIDIA and AMD | [BATCHING.md](BATCHING.md) |
+| `STRATA_TINY_CACHE` | on / off | NVIDIA and AMD | [DETAILS.md](DETAILS.md) |
 | `STRATA_TOPK_MULTI` | on / off | NVIDIA and AMD | [OLDER_GPUS.md](OLDER_GPUS.md) |
 | `STRATA_TOPK_OLD` | on / off | NVIDIA and AMD, Intel Arc | [AMD_HIP.md](AMD_HIP.md) |
 | `STRATA_TQ_ISA` | on / off | CPU | [GYRO.md](GYRO.md) |
@@ -444,7 +445,7 @@ version made it the default.
 | `STRATA_SPLIT_CHUNK16K` | number | NVIDIA and AMD | v0.2.16 | [MULTI_GPU.md](MULTI_GPU.md) |
 | `STRATA_SPLIT_FEWER_PCT` | number | NVIDIA and AMD | - | [MULTI_GPU.md](MULTI_GPU.md) |
 | `STRATA_SPLIT_OWN` | on / off | NVIDIA and AMD, Intel Arc | v0.2.16 | [MULTI_GPU.md](MULTI_GPU.md), [README.md](bench-results/2026-10-02-community-2x5060ti/README.md), [README.md](bench-results/2026-10-06-community-2x-rx-7900-gre/README.md) |
-| `STRATA_SWITCH_POINT` | on / off | NVIDIA and AMD | v0.2.16 | - |
+| `STRATA_SWITCH_POINT` | on / off | NVIDIA and AMD | v0.2.16 | [DETAILS.md](DETAILS.md) |
 | `STRATA_SYCL_BF16_DET` | number | Intel Arc | v0.2.16 | - |
 | `STRATA_SYCL_BMG_ROUTED_EXPERTS` | on / off | Intel Arc | v0.2.20 | [INTEL.md](INTEL.md) |
 | `STRATA_SYCL_GDN_PREFILL_REG_QK` | on / off | Intel Arc | v0.2.16 | [INTEL.md](INTEL.md) |

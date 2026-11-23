@@ -91,6 +91,14 @@ inline int low_vram_auto_reserve_mib(bool discrete, bool reserve_given, int cur_
     return cur_reserve_mib;
 }
 
+/// The tiny-cache rules below (dampened --adapt-swaps, pinning the top quarter of the profile) are opt-in since 0.2.21: STRATA_TINY_CACHE=1.
+/// Measured against 0.1.65 on an RTX 5080 (sm_120, 16 GB, Qwen3.8-Flash-Next IQ2_XS, `--expert-cache 3000` = 12.2% of the experts, same
+/// binary, one engine start per arm and round, arms alternating, 5 rounds): with the rules on decode was -22% (code), -18% (chat), -13% (8K document);
+/// with the old swaps given explicitly (`--adapt-swaps 96`) -10% / -10% / -3%, and without the pinning as well (STRATA_CACHE_PIN_FRAC=0 and 96)
+/// -5.5% / -6.4% / -4.4%; with a 7.6% cache (`--expert-cache 1800`, 2 rounds so far) -25% / -18% / -18% with the rules on, -10% / -8% / -5% with 96 swaps.  The claim these rules were written on (a 96-swap default costs 14-26% on 8 and 12 GB cards) did not hold on this card.
+/// STRATA_CACHE_PIN_FRAC=<f> still pins by itself, and an explicit --adapt-swaps always wins.
+inline bool tiny_cache_rules_enabled(const char* env) noexcept { return env != nullptr && env[0] == '1' && env[1] == '\0'; }
+
 /// Dampened default --adapt-swaps when ExpertCache holds < 25% of total routed experts.
 /// Preserves explicit --adapt-swaps (including 0) and leaves >= 25% caches untouched.
 inline int low_vram_adapt_swaps(int cur_swaps, bool swaps_given, int64_t resident_slots, int64_t total_experts) noexcept {

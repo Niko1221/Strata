@@ -37,6 +37,7 @@
 #include "strata/core/gfx12_chunk.hpp"
 #include "strata/core/nv_chunk.hpp"
 #include "strata/core/nv_defaults.hpp"
+#include "strata/core/adapt_coverage_rules.hpp"
 #include "strata/core/low_vram_rules.hpp"
 #include "strata/kernels/gfx_arch.hpp"
 #include "strata/core/batch_telemetry.hpp"
@@ -11235,7 +11236,8 @@ int main(int argc, char** argv) {
                                                                                      : "STRATA_GFX12_CHUNK";
         const char* force16 = std::getenv(chunk_env_name);
         const int64_t extra_slots = std::max<int64_t>(0, lend_slots(cand) - lend_slots(8192));
-        const uint64_t extra_mib = ((uint64_t) extra_slots * strata::kernels::cpu::expert_layout().max_blob) >> 20;
+        const uint64_t extra_mib = strata::core::prefill_loan_ram_mib(
+            ((uint64_t) extra_slots * strata::kernels::cpu::expert_layout().max_blob) >> 20, o.resident_cpu_experts);   // #6687: half without pinned experts
         const auto hm = strata::core::sample_host_memory();   // the cgroup / --memory-limit-mib cap counts too
         const uint64_t avail_mib = hm ? hm->available >> 20 : mem_sample().avail_mib;
         // --resident-experts pins its RAM copy after this point, and that copy also holds the lent slots' experts: what
@@ -12114,7 +12116,7 @@ int main(int argc, char** argv) {
             for (const auto& stp : stages) live_slots += stp->cache.slots();
             const double cov = total_pairs > 0 ? (double) live_slots / (double) total_pairs : 0.0;
             if (o.adapt_every > 0 && o.adapt_swaps > 0 && live_slots > 0 && live_slots < total_pairs &&
-                cov >= 0.15 && cov <= 0.65) {
+                strata::core::adapt_mid_coverage_applies(cov, std::getenv("STRATA_ADAPT_MID"), strata::core::adapt_mid_default_on())) {   // CUDA on, HIP off since 0.2.21 (adapt_coverage_rules.hpp)
                 const int prev_ev = o.adapt_every, prev_sw = o.adapt_swaps;
                 const float prev_dc = o.adapt_decay;
                 if (!o.adapt_every_given) o.adapt_every = 2;
@@ -14905,8 +14907,9 @@ int main(int argc, char** argv) {
                                  "lower is skipped (answers differ slightly); it is off when STRATA_ROUTE_TAIL_SKIP is not set or is 0\n",
                          strata::core::tail_skip_rank(), strata::core::tail_skip_rank());
         // Issue #4870 + Track 6A + #6509 (v0.2.20): coverage-based adaptive defaults.
-        // - Mid-coverage (15%..65% of total layer-experts): faster 2 / 192 / 0.92 curve (+8% hit rate, +10% decode tok/s)
-        //   when not explicitly overridden on the CLI.
+        // - Mid-coverage (15%..65% of total layer-experts): faster 2 / 192 / 0.92 curve (+8% hit rate; decode +6..9% on an RTX A4000 (CUDA), but
+        //   up to 8% slower on an RX 7900 XT, slower in 10 of 13 cells, #6791), so since 0.2.21 it is on for the CUDA build and off for the HIP build;
+        //   STRATA_ADAPT_MID=1 / 0 forces either; --adapt-every / --adapt-swaps / --adapt-decay win over all of it.
         // - Tiny-cache (< 15% resident): anti-thrash dampening via low_vram_adapt_swaps + Zipf-head profile pinning.
         const int64_t total_expert_pairs = g.n_layers * g.n_expert;
         int64_t live_gpu_slots = xcache.slots();
@@ -14914,7 +14917,7 @@ int main(int argc, char** argv) {
         {
             const double cov = total_expert_pairs > 0 ? (double) live_gpu_slots / (double) total_expert_pairs : 0.0;
             if (!all_experts_resident && live_gpu_slots > 0 && o.adapt_every > 0 && o.adapt_swaps > 0 &&
-                cov >= 0.15 && cov <= 0.65) {
+                strata::core::adapt_mid_coverage_applies(cov, std::getenv("STRATA_ADAPT_MID"), strata::core::adapt_mid_default_on())) {
                 const int prev_ev = o.adapt_every, prev_sw = o.adapt_swaps;
                 const float prev_dc = o.adapt_decay;
                 if (!o.adapt_every_given) o.adapt_every = 2;
@@ -14925,7 +14928,7 @@ int main(int argc, char** argv) {
                                          "adaptive defaults every %d -> %d, swaps %d -> %d, decay %.2f -> %.2f\n",
                                  (long long) live_gpu_slots, (long long) total_expert_pairs, 100.0 * cov,
                                  prev_ev, o.adapt_every, prev_sw, o.adapt_swaps, prev_dc, o.adapt_decay);
-            } else if (cov < 0.15) {
+            } else if (cov < 0.15 && strata::core::tiny_cache_rules_enabled(std::getenv("STRATA_TINY_CACHE"))) {   // opt-in since 0.2.21 (#6782 / #6799)
                 const int damp = strata::core::low_vram_adapt_swaps(o.adapt_swaps, o.adapt_swaps_given, live_gpu_slots, total_expert_pairs);
                 if (damp != o.adapt_swaps) {
                     std::fprintf(stderr, "strata serve: tiny expert cache (%lld of %lld slots, %.1f%%): dampening adaptive swaps %d -> %d "
@@ -14938,7 +14941,9 @@ int main(int argc, char** argv) {
         }
         std::vector<uint8_t> pinned_pair;
         if (!profile.empty() && !host_res.empty() && live_gpu_slots > 0 && !all_experts_resident) {
-            const int64_t pin_n = strata::core::low_vram_pin_slots(live_gpu_slots, total_expert_pairs, std::getenv("STRATA_CACHE_PIN_FRAC"));
+            const char* pin_env = std::getenv("STRATA_CACHE_PIN_FRAC");
+            const int64_t pin_n = (strata::core::tiny_cache_rules_enabled(std::getenv("STRATA_TINY_CACHE")) || (pin_env != nullptr && pin_env[0] != '\0'))
+                                      ? strata::core::low_vram_pin_slots(live_gpu_slots, total_expert_pairs, pin_env) : 0;   // pinning: opt-in since 0.2.21
             if (pin_n > 0) {
                 pinned_pair.assign((size_t) total_expert_pairs, 0);
                 int64_t pinned_ct = 0;
@@ -24511,7 +24516,7 @@ int main(int argc, char** argv) {
             for (const auto& stp : stages) live_slots += stp->cache.slots();
             const double cov = total_pairs > 0 ? (double) live_slots / (double) total_pairs : 0.0;
             if (o.adapt_every > 0 && o.adapt_swaps > 0 && live_slots > 0 && live_slots < total_pairs &&
-                cov >= 0.15 && cov <= 0.65) {
+                strata::core::adapt_mid_coverage_applies(cov, std::getenv("STRATA_ADAPT_MID"), strata::core::adapt_mid_default_on())) {
                 if (!o.adapt_every_given) o.adapt_every = 2;
                 if (!o.adapt_swaps_given) o.adapt_swaps = 192;
                 if (!o.adapt_decay_given) o.adapt_decay = 0.92f;
