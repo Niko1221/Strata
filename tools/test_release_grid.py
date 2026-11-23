@@ -145,6 +145,23 @@ class Rules(unittest.TestCase):
         ok = gl.judge(self._res(fp="f2", dec=(100, 101, 100)), prev, {"*": "declared"})
         self.assertEqual(ok["verdict"], gl.PASS)
 
+    def test_targets_give_percentages_for_matching_models_only(self):
+        row = {"model": "ink-ud-q4kxl", "numbers": {"decode_tps": 150.0, "prefill_4k_tps": 2500.0}}
+        res = {"usage": {"cases": {"parallel": {"levels": {"64": {"throughput_tps": 1500.0}}}}}}
+        gl.add_reference(row, [{"label": "ink-5090", "model_glob": "ink-*", "decode_tps": 500, "prefill_tps": 10000, "c64_total_tps": 3000},
+                               {"label": "qwen-only", "model_glob": "qwen-*", "decode_tps": 1}], res)
+        self.assertEqual(len(row["targets"]), 1)
+        self.assertEqual((row["targets"][0]["decode_pct"], row["targets"][0]["prefill_pct"], row["targets"][0]["c64_pct"]), (30.0, 25.0, 50.0))
+        rec = {"model": "ink-sq20", "numbers": {"decode_tps": 40.0}}
+        gl.add_reference(rec, [{"label": "ink-record", "model_glob": "ink-*"}])
+        self.assertEqual(rec["targets"][0]["goal"], "record only")
+
+    def test_the_targets_in_cells_json_are_the_owners(self):
+        refs = gl.load_cells()["references"]
+        self.assertEqual((refs["ink-5090"]["decode_tps"], refs["ink-5090"]["c64_total_tps"], refs["ink-5090"]["prefill_tps"]), (500, 3000, 10000))
+        self.assertEqual((refs["ink-8gb"]["decode_tps"], refs["ink-12gb"]["decode_tps"]), (150, 300))
+        self.assertEqual(refs["a6000-ud-q4kxl"]["decode_tps"], 116)
+
     def test_summary_keeps_skips_and_marks_missing_cells(self):
         data = gl.load_cells()
         expected = gl.expand(data, boxes=["z440"])

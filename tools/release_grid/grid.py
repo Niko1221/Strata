@@ -87,7 +87,7 @@ def build_specs(data, releases, boxes=None, models=None, tier=None, drafters=Non
             spec = {
                 "cell": c["id"], "label": label, "box": c["box"], "model": c["model"], "drafter": c["drafter"], "family": c["family"],
                 "feed": feed, "trust": trust, "grid_dir": box["grid_dir"], "port": data["defaults"]["port"],
-                "env": box.get("env") or {}, "vram_class_gib": box.get("vram_class_gib"), "launch_extra": list(box.get("launch_extra") or []) + list(entry.get("launch_extra") or []),
+                "env": box.get("env") or {}, "vram_class_gib": box.get("vram_class_gib"), "ram_cap_gib": box.get("ram_cap_gib"), "launch_extra": list(box.get("launch_extra") or []) + list(entry.get("launch_extra") or []),
                 "profile": merged_profile(data, box, c["model"], entry),
             }
             if c["skip"]:
@@ -186,6 +186,15 @@ def cmd_run(a, data):
                 sp["profile"].update({"usage_suite": True, "vision": "on", "context": "64k", "cell_budget_s": 14400, "request_timeout_s": 1800, "ready_timeout_s": max(3000, sp["profile"].get("ready_timeout_s", 0))})
                 if a.usage == "only":
                     sp["profile"]["skip_standard"] = True
+                if a.usage_cases:
+                    sp["profile"]["usage_cases"] = _csv(a.usage_cases)
+                if a.usage_long:
+                    sp["profile"]["usage_long"] = a.usage_long
+                    sp["profile"]["context"] = "%d" % (max(int(x) for x in a.usage_long.split(",")) + 4096)
+                if a.usage_parallel:
+                    sp["profile"]["usage_parallel"] = a.usage_parallel
+                if a.usage_turns:
+                    sp["profile"]["usage_agent_turns"] = a.usage_turns
     work = Path(a.work)
     work.mkdir(parents=True, exist_ok=True)
     jobs_file = work / "jobs.json"
@@ -301,7 +310,12 @@ def cmd_summary(a, data):
     if not a.boxes:                                   # without --boxes: the boxes that ran, plus every cell that has a skip reason
         ran = {r.get("box") for r in results.values()}
         expected = [c for c in expected if c["box"] in ran or c.get("skip")]
-    refs = {bid: dict(data["references"][b["reference"]]) for bid, b in data["boxes"].items() if b.get("reference") in data.get("references", {})}
+    refs = {}
+    for bid, b in data["boxes"].items():
+        names = ([b["reference"]] if b.get("reference") else []) + list(b.get("targets") or [])
+        got = [dict(data["references"][n], label=n) for n in names if n in data.get("references", {})]
+        if got:
+            refs[bid] = got
     summary = gl.summarize(results, prev_results, declared, expected, refs)
     gl.write_summary(summary, results, work / ("summary-%s" % cand), title="Release grid: %s" % cand, release=cand, prev_label=prev)
     c = summary["counts"]
@@ -328,6 +342,10 @@ def main(argv=None) -> int:
     ap.add_argument("--declared", help="declared_changes.json: {cell-id glob: reason}")
     ap.add_argument("--floor-gb", default="25")
     ap.add_argument("--include-skipped", action="store_true")
+    ap.add_argument("--usage-cases", help="comma list of usage cases (coding,agent,vision,longdoc,chat,parallel)")
+    ap.add_argument("--usage-long", help="document sizes in tokens for the longdoc case, e.g. 8000 or 30000,60000")
+    ap.add_argument("--usage-parallel", help="client counts, e.g. 1,2,4")
+    ap.add_argument("--usage-turns", type=int)
     ap.add_argument("--usage", choices=["also", "only"], help="run the usage suite (usage/usage_suite.py) in each cell, after the standard checks (also) or instead of them (only)")
     ap.add_argument("--assets", default="C:/w-0221-grid-scratch/assets", help="owner-PC cache of downloaded release files (stage)")
     a = ap.parse_args(argv)

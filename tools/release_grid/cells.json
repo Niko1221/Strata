@@ -18,6 +18,10 @@
  },
  "references": {
   "_comment": "Published numbers to show a cell's distance from (the coordinator, 2026-11-23). A box with a reference field names the entry; the summary adds the percentage of the reference.",
+  "ink-5090": {"model_glob": "ink-*", "decode_tps": 500, "prefill_tps": 10000, "c64_total_tps": 3000, "source": "owner target, RTX 5090: decode 500 tok/s at C1, 3000+ total at C64, prefill 10000 tok/s"},
+  "ink-8gb": {"model_glob": "ink-*", "decode_tps": 150, "source": "owner target, 8 GB VRAM + 32 GB RAM: decode at least 150 tok/s"},
+  "ink-12gb": {"model_glob": "ink-*", "decode_tps": 300, "source": "owner target, 12 GB VRAM + 32 GB RAM: decode at least 300 tok/s"},
+  "ink-record": {"model_glob": "ink-*", "source": "owner: record prefill and decode at C1 and C32 (no number yet)"},
   "a6000-ud-q4kxl": {"model": "ink-ud-q4kxl", "decode_tps": 116, "decode_note": "at 47 tokens (112 at 4K)", "prefill_4k_tps": 2670, "source": "robertkarl/UnbiasedStrata, published RTX A6000 numbers"}
  },
  "models": {
@@ -61,7 +65,7 @@
  "boxes": {
   "vast0221-3060": {
    "jobq": "vast0221-3060", "ssh": "vast0221-3060", "os": "linux", "class": "NVIDIA sm_86 (RTX 3060 12 GB)", "backend": "nvidia",
-   "grid_dir": "/workspace/grid0221", "python": "python3", "locks": ["gpu"],
+   "grid_dir": "/workspace/grid0221", "python": "python3", "locks": ["gpu"], "targets": ["ink-12gb"],
    "profile": {"ready_timeout_s": 3000, "min_free_gib": 8},
    "models": {
     "qwen-ud-q4kxl": {"path": "/workspace/p0cuda/models/UD-Q4_K_XL", "profile": {"ready_timeout_s": 3600, "step_budget_s": 900, "agent_turns": 8}},
@@ -73,6 +77,23 @@
     "ink-ud-iq4xs": {"fetch": true},
     "hy4-sq64": {"fetch": true, "skip": "Hy4-Flash SQ-64 is a full-tier cell: not downloaded for the dry run"}
    }
+  },
+  "vast0221-5090": {
+   "jobq": "vast0221-5090", "ssh": "vast0221-5090", "os": "linux", "class": "NVIDIA sm_120 (RTX 5090 32 GB)", "backend": "nvidia",
+   "grid_dir": "/workspace/grid0221", "python": "python3", "locks": ["gpu"], "targets": ["ink-5090"],
+   "profile": {"ready_timeout_s": 3000},
+   "models": {"ink-ud-q4kxl": {"fetch": true}, "ink-ud-iq4xs": {"fetch": true}, "ink-sq20": {"fetch": true}, "ink-sq10": {"fetch": true}, "qwen-ud-q4kxl": {"fetch": true, "tier": "full"}, "qwen-pack-q2": {"fetch": true, "tier": "full"}}
+  },
+  "vast0221-4060": {
+   "jobq": "vast0221-4060", "ssh": "vast0221-4060", "os": "linux", "class": "NVIDIA sm_89 (RTX 4060 8 GB, engine RAM capped to 32 GB)", "backend": "nvidia",
+   "grid_dir": "/workspace/grid0221", "python": "python3", "locks": ["gpu"], "targets": ["ink-8gb"], "ram_cap_gib": 32,
+   "profile": {"ready_timeout_s": 3000},
+   "models": {"ink-ud-q4kxl": {"fetch": true}, "ink-ud-iq4xs": {"fetch": true}, "ink-sq20": {"fetch": true}, "ink-sq10": {"fetch": true}}
+  },
+  "vast0221-spark": {
+   "jobq": "vast0221-spark", "ssh": "vast0221-spark", "os": "linux", "class": "NVIDIA GB10 (DGX Spark class, sm_121, linux-aarch64)", "backend": "nvidia",
+   "grid_dir": "/workspace/grid0221", "python": "python3", "locks": ["gpu"], "targets": ["ink-record"],
+   "models": {"ink-ud-q4kxl": {"fetch": true}, "ink-ud-iq4xs": {"fetch": true}, "ink-sq20": {"fetch": true}}
   },
   "vast0221-a6000": {
    "jobq": "vast0221-a6000", "ssh": "vast0221-a6000", "os": "linux", "class": "NVIDIA sm_86 (RTX A6000 48 GB)", "backend": "nvidia",
@@ -100,7 +121,7 @@
   },
   "vast0221-4090b-v8": {
    "jobq": "vast0221-4090b", "ssh": "vast0221-4090b", "os": "linux", "class": "NVIDIA sm_89 held to an 8 GB card (RTX 4090 + VRAM hog)", "backend": "nvidia",
-   "grid_dir": "/workspace/grid0221", "python": "python3", "locks": ["gpu"], "vram_class_gib": 8,
+   "grid_dir": "/workspace/grid0221", "python": "python3", "locks": ["gpu"], "vram_class_gib": 8, "targets": ["ink-8gb"],
    "profile": {"ready_timeout_s": 3000},
    "models": {
     "ink-ud-q4kxl": {"files": ["/workspace/models/gguf/Inkling-2-Mini-UD-Q4_K_XL.gguf", "/workspace/models/gguf/dspark-Inkling-2-Mini-Q8_0.gguf"]},
@@ -109,7 +130,7 @@
   },
   "vast0221-4090b-v12": {
    "jobq": "vast0221-4090b", "ssh": "vast0221-4090b", "os": "linux", "class": "NVIDIA sm_89 held to a 12 GB card (RTX 4090 + VRAM hog)", "backend": "nvidia",
-   "grid_dir": "/workspace/grid0221", "python": "python3", "locks": ["gpu"], "vram_class_gib": 12,
+   "grid_dir": "/workspace/grid0221", "python": "python3", "locks": ["gpu"], "vram_class_gib": 12, "targets": ["ink-12gb"],
    "profile": {"ready_timeout_s": 3000},
    "models": {
     "ink-ud-q4kxl": {"files": ["/workspace/models/gguf/Inkling-2-Mini-UD-Q4_K_XL.gguf", "/workspace/models/gguf/dspark-Inkling-2-Mini-Q8_0.gguf"]},
@@ -196,7 +217,7 @@
   },
   "p1006": {
    "jobq": "p1006", "ssh": "p1006ssh.claryel.space", "os": "linux", "class": "Intel Arc A750 8 GB (SYCL)", "backend": "intel",
-   "grid_dir": "/data/grid0221", "python": "python3", "locks": ["gpu"], "profile_name": "slow",
+   "grid_dir": "/data/grid0221", "python": "python3", "locks": ["gpu"], "profile_name": "slow", "targets": ["ink-record"],
    "models": {
     "ink-ud-iq1s": {"files": ["/data/grid0221/models/ink-ud-iq1s/Inkling-2-Mini-UD-IQ1_S.gguf", "/data/grid0221/models/ink-ud-iq1s/dspark-Inkling-2-Mini-Q8_0.gguf"]},
     "ink-sq10": {"fetch": true},
@@ -213,7 +234,7 @@
   },
   "m1002": {
    "jobq": "m1002", "ssh": "m1002", "os": "mac", "class": "Apple M5 Max (Metal, 128 GB)", "backend": "metal",
-   "grid_dir": "~/strata-m5/grid0221", "python": "python3", "locks": [],
+   "grid_dir": "~/strata-m5/grid0221", "python": "python3", "locks": [], "targets": ["ink-record"],
    "wrapper": ["~/strata-m5/locks/lockrun.py", "grid0221", "--stream", "GRID", "--nice", "--max-min", "{minutes}", "--"],
    "profile": {"min_free_gib": 0, "guard_free_gib": 0, "guard_swap_growth_gib": 4},
    "models": {

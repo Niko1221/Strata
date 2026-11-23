@@ -231,16 +231,37 @@ def judge(result: dict, prev: dict = None, declared=None, tolerance: float = SPE
     return row
 
 
-def add_reference(row: dict, ref: dict):
-    """Distance from a published reference line: percent of its decode and 4K prefill rate (the numbers of the cell's model only)."""
+def usage_levels(result: dict) -> dict:
+    """{clients: level dict} of the usage suite's parallel case in a cell result, else {}."""
+    return (((result or {}).get("usage") or {}).get("cases") or {}).get("parallel", {}).get("levels") or {}
+
+
+def add_reference(row: dict, targets, result: dict = None):
+    """Distance from published or owner target lines: percent of each target's decode, prefill (4K) and C64 total rate.
+
+    Not a pass / fail rule yet: the row only carries the percentages, the table shows them. A target with `model_glob` applies to the matching models only.
+    """
+    import fnmatch
     num = row.get("numbers") or {}
-    out = {"source": ref.get("source")}
-    if num.get("decode_tps") and ref.get("decode_tps"):
-        out["decode_pct"] = round(100.0 * num["decode_tps"] / ref["decode_tps"], 1)
-    pre = num.get("prefill_4k_tps") or num.get("prefill_tps")
-    if pre and ref.get("prefill_4k_tps"):
-        out["prefill_pct"] = round(100.0 * pre / ref["prefill_4k_tps"], 1)
-    row["reference"] = out
+    out = []
+    for t in targets:
+        pat = t.get("model_glob") or t.get("model")
+        if pat and not fnmatch.fnmatch(row.get("model") or "", pat):
+            continue
+        d = {"target": t.get("label") or t.get("source") or "target"}
+        if num.get("decode_tps") and t.get("decode_tps"):
+            d["decode_pct"] = round(100.0 * num["decode_tps"] / t["decode_tps"], 1)
+        pre = num.get("prefill_4k_tps") or num.get("prefill_tps")
+        if pre and t.get("prefill_tps") or (pre and t.get("prefill_4k_tps")):
+            d["prefill_pct"] = round(100.0 * pre / (t.get("prefill_tps") or t.get("prefill_4k_tps")), 1)
+        lv = usage_levels(result)
+        c64 = (lv.get("64") or {}).get("throughput_tps")
+        if c64 and t.get("c64_total_tps"):
+            d["c64_pct"] = round(100.0 * c64 / t["c64_total_tps"], 1)
+        d["goal"] = ", ".join(k.replace("_tps", "").replace("_", " ") + " " + str(t[k]) for k in ("decode_tps", "prefill_tps", "prefill_4k_tps", "c64_total_tps") if t.get(k)) or "record only"
+        out.append(d)
+    if out:
+        row["targets"] = out
 
 
 def summarize(results: dict, prev_results: dict = None, declared=None, expected_cells=None, references=None) -> dict:
@@ -249,9 +270,9 @@ def summarize(results: dict, prev_results: dict = None, declared=None, expected_
     rows = []
     for cid, r in sorted(results.items()):
         row = judge(r, (prev_results or {}).get(cid), declared)
-        ref = (references or {}).get(r.get("box"))
-        if ref and ref.get("model") == r.get("model") and r.get("verdict") != SKIP:
-            add_reference(row, ref)
+        refs = (references or {}).get(r.get("box"))
+        if refs and r.get("verdict") != SKIP:
+            add_reference(row, refs, r)
         rows.append(row)
     for c in (expected_cells or []):
         if c["id"] not in results:
@@ -303,9 +324,10 @@ def render_markdown(summary: dict, results: dict, title="Release grid", release=
                 parts.append("fp " + ("same" if fp["note"] == "identical" else fp["verdict"]))
             vs = ", ".join(parts) or "-"
         why = "; ".join(r.get("reasons") or [])
-        rf = r.get("reference")
-        if rf and not why:
-            why = "vs published A6000 line: decode %s%%, prefill 4K %s%%" % (rf.get("decode_pct", "-"), rf.get("prefill_pct", "-"))
+        if r.get("targets") and not why:
+            why = "; ".join("%s: %s" % (t["target"], ", ".join(x for x in (
+                ("decode %s%%" % t["decode_pct"]) if "decode_pct" in t else "", ("prefill %s%%" % t["prefill_pct"]) if "prefill_pct" in t else "",
+                ("C64 %s%%" % t["c64_pct"]) if "c64_pct" in t else "") if x) or "recorded, no number yet") + " of (%s)" % t["goal"] for t in r["targets"])
         if not why and r.get("notes"):
             why = "(" + "; ".join(r["notes"][:2]) + ")"
         why = why.replace("|", "/").replace("\n", " ")
@@ -323,9 +345,9 @@ def render_markdown(summary: dict, results: dict, title="Release grid", release=
 def write_summary(summary: dict, results: dict, out_prefix, **kw):
     out_prefix = Path(out_prefix)
     out_prefix.parent.mkdir(parents=True, exist_ok=True)
-    out_prefix.with_suffix(".md").write_text(render_markdown(summary, results, **kw), encoding="utf-8")
+    Path(str(out_prefix) + ".md").write_text(render_markdown(summary, results, **kw), encoding="utf-8")
     payload = {"counts": summary["counts"], "rows": summary["rows"], "release": kw.get("release"), "previous": kw.get("prev_label")}
-    out_prefix.with_suffix(".json").write_text(json.dumps(payload, indent=1, sort_keys=True), encoding="utf-8")
+    Path(str(out_prefix) + ".json").write_text(json.dumps(payload, indent=1, sort_keys=True), encoding="utf-8")
 
 
 def have_room(free_gb: float, need_gb: float, floor_gb: float) -> bool:

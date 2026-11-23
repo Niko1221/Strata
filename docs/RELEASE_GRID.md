@@ -23,21 +23,56 @@ The agent session has an opt-in 30-minute version; it is not in the default list
 
 | Machine | Card class | Models it runs |
 |---|---|---|
-| `vast0221-3060` (rented) | NVIDIA sm_86, RTX 3060 12 GB | Qwen3.8-Flash-Next Unsloth UD-Q4_K_XL and the Q2_0 Strata pack; Inkling SQ-10 and the Unsloth UD-Q2_K_XL GGUF |
+| `vast0221-3060` (rented) | NVIDIA sm_86, RTX 3060 12 GB (a real small card: Inkling experts live in RAM) | Inkling Unsloth UD-Q4_K_XL, UD-IQ4_XS and SQ-20 first, then SQ-10; Qwen3.8-Flash-Next Unsloth UD-Q4_K_XL and the Q2_0 Strata pack |
+| `vast0221-a6000`, `vast0221-3090` (rented) | NVIDIA sm_86, 48 GB / 24 GB | Inkling UD-Q4_K_XL, UD-IQ4_XS, SQ-20; shown against the published A6000 line (see below) |
+| `vast0221-4090b-v8`, `-v12`, `-v16` | NVIDIA sm_89 held to an 8 / 12 / 16 GB card | Inkling UD-Q4_K_XL and SQ-20 with the experts in RAM (see "VRAM classes") |
+| `owner-5070` | NVIDIA sm_120, 12 GB, Windows | skipped in the runner (POSIX only); the usage suite runs by hand against a test-folder server |
 | `z440` | NVIDIA sm_86, 2x A4000 | skipped while its data disk has 8.8 GB free |
 | `vast0221-4090b` (rented) | NVIDIA sm_89, RTX 4090 24 GB | Qwen UD-Q4_K_XL and Q2_0 pack; Inkling SQ-10, SQ-20 and UD-Q4_K_XL; Hy4-Flash SQ-64 (full tier) |
 | `l620` | NVIDIA sm_120, RTX PRO 5000 | skipped: no internet and 4 GB free; needs a staged feed and a shared model copy |
-| `boxia-7900xt` | AMD RDNA3 (gfx1100) | Inkling UD-IQ1_S GGUF and SQ-10 |
-| `boxia-6700xt` | AMD RDNA2 (gfx1031) | Inkling UD-IQ1_S GGUF and SQ-10 |
+| `boxia-7900xt` | AMD RDNA3 (gfx1100) | Inkling UD-IQ3_XXS GGUF and SQ-10 |
+| `boxia-6700xt` | AMD RDNA2 (gfx1031) | Inkling UD-IQ3_XXS GGUF and SQ-10 |
 | `p620` | AMD RDNA4 (gfx1201) | Qwen IQ3_S pack; Inkling SQ-10 |
 | `p1006` | Intel Arc A750 (SYCL) | Inkling UD-IQ1_S GGUF and SQ-10 |
 | `github-b70` | Intel Arc Pro B70 | through the GitHub runner: the coordinator pushes `ci/intel-runner` and starts it; `grid.py planfile` writes the plan it runs |
 | `m1002` | Apple M5 Max (Metal) | skipped until its SQ-10 download is done; runs under `lockrun.py`, which holds both Mac locks |
-| `p2006` | CPU only | Inkling SQ-10; the Q2_0 pack (full tier) |
+| `p2006` | no discrete card; the Radeon 780M iGPU runs the HIP engine (the feed picks the rx7900 package) | Inkling SQ-10; the Q2_0 pack (full tier). The memory guard is off here: a HIP engine on this iGPU must never be killed mid-run |
 
 Every Qwen and Inkling model runs with the drafter on (the default a user gets) and off (`--drafting off`). Hy4-Flash has one setting.
 
 A skipped cell stays in the table with its reason. A box without room for a model is shown as skipped, not left out, so a gap in coverage is visible.
+
+## Priority and the published reference line
+
+The owner's order for Inkling is **Unsloth UD-Q4_K_XL, an Unsloth IQ quant (UD-IQ4_XS, UD-IQ3_XXS), then SQ-20**; `priority` in `cells.json` puts them first in every plan and every job queue. On the 24 GB and 48 GB sm_86 boxes (`reference` in `cells.json`) the table adds the percentage of robertkarl/UnbiasedStrata's published RTX A6000 line for UD-Q4_K_XL (decode about 116 tok/s at 47 tokens, 112 at 4K; prefill about 2 670 tok/s at 4K) to the "why" column.
+
+## Target lines
+
+The owner's Inkling speed targets are in `cells.json` (`references`, named by a box's `targets`). The table reports each cell as a percentage of its target; this is not a pass or fail rule yet.
+
+| Class | Target |
+|---|---|
+| RTX 5090 | decode 500 tok/s at C1, 3000+ total at C64, prefill 10 000 tok/s |
+| 8 GB VRAM + 32 GB RAM | decode at least 150 tok/s |
+| 12 GB VRAM + 32 GB RAM | decode at least 300 tok/s |
+| Strix Halo, Intel, DGX Spark, Metal | prefill and decode at C1 and C32 are recorded; no number yet |
+
+C32 and C64 come from the usage suite's parallel case (`--usage-parallel 1,32,64`). The 8 GB cell (`vast0221-4060`) caps the engine's own RAM at 32 GB: the memory guard stops the server when the anonymous memory of the processes started from the cell's HOME passes the cap, and the cell fails with that reason.
+
+## VRAM classes
+
+Inkling is a mixture of experts, so a 17.6 GB UD-Q4_K_XL or a 19.3 GB SQ-20 runs on an 8, 12 or 16 GB card with the experts in RAM. The grid never skips "big file on a small card". It runs the real small card where it has one (RTX 3060 12 GB), and otherwise a bigger card held to a smaller class: a cell with `vram_class_gib` starts `vram_hog` (an own process that holds the extra memory, built with `nvcc` from `vram_hog.cu`, stopped by the runner only), then starts the model the normal way, so the Terminal's planner sees an 8, 12 or 16 GB card. The result keeps the engine's expert split lines (experts in VRAM / RAM), the cache hit lines of the engine log and the server's own status keys beside the speed. A cell fails for "does not fit" only when the engine cannot start with the experts offloaded; the reason then names the RAM the box had.
+
+## The usage suite
+
+`tools/release_grid/usage/usage_suite.py` is a standalone runner against any OpenAI-compatible `strata serve` endpoint (other lanes use it too). Everything goes through the HTTP API, streamed so the time to first token is real; nothing uses `--bench`. The cases, in the order of the owner's list: coding (write a function, fix a bug, edit a 300-line file with a diff, explain code; the code is run), an agent loop of 15 to 25 turns with `read_file`, `write_file`, `run_tests` and `search` on a small repo with six bugs, vision (describe a drawn scene, read a drawn screenshot, read a drawn bar chart, compare two drawings; the pictures are drawn by the script, no personal or downloaded images), a long document of about 32K and 64K tokens, chat at thinking levels low, medium and high, and 1, 2, 4 and 8 parallel clients with their own secret words (cross-talk, stalls, throughput). Per case it records prefill tok/s, decode tok/s, time to first token, cached tokens and the counts of empty, looping and truncated replies, with pass or fail.
+
+```
+python tools/release_grid/usage/usage_suite.py --url http://127.0.0.1:8080 --out usage.json --md usage.md
+python tools/release_grid/grid.py run --cand v0.2.20 --boxes vast0221-4090b --models ink-sq20 --usage only     # inside a grid cell, after a user-path install
+```
+
+The vision case needs a server started with `--vision on`; without a picture reader it is a skip with that reason. Context: the 64K document needs a 64K context (`--usage` sets it).
 
 ## How to run it
 
@@ -52,6 +87,8 @@ python tools/release_grid/grid.py collect --cand ... --prev v0.2.20 --work OUTDI
 python tools/release_grid/grid.py summary --cand ... --prev v0.2.20 --work OUTDIR          # summary-<label>.md and .json
 ```
 
+A box without DNS (p620, l620) cannot reach the release folder: `grid.py stage --cand v0.2.20 --boxes p620` copies the files its card class needs (install.sh, the signed feed, the Terminal and the engine packages of its variant) to `<grid_dir>/feeds/<label>/`, and the runner serves that folder from a loopback thread.
+
 A release is a tag (`v0.2.20`: the GitHub release folder is its feed) or `LABEL=FEED`, where FEED is a URL, or a folder on the box that holds a test-signed feed (add `--trust <test-trust.json on the box>`). That is how a release candidate that is not published yet goes through the grid.
 
 `run` makes one jobq job per cell (the previous and the candidate release back to back), so a box's lock is free again between cells and the other work on the box is not held up for hours.
@@ -59,6 +96,8 @@ A release is a tag (`v0.2.20`: the GitHub release folder is its feed) or `LABEL=
 ## Models and disk
 
 `models.lock.json` pins every model file by size and SHA-256. It is generated by `fetch_models.py pin` from the tables the product itself trusts (`terminal/setup.py`, `inkling_family.py`, `hy4_family.py`), so the grid checks the same bytes setup checks. `fetch` downloads with resume and deletes any file whose SHA-256 differs. It refuses to start when the disk would be left with less than 25 GB.
+
+A shared copy another lane holds can vanish (INKOTHER replaced a GGUF on boxia while the grid was queued). The runner checks that every linked file exists and has the pinned size and says so plainly; `ln -f` of the file into `<grid_dir>/models/` keeps it alive without using disk (a hard link), and the first thing to do on a box with a shared copy.
 
 Several boxes are nearly full (boxia 7 GB free, p620 5 GB, l620 4 GB, z440 9 GB). A cell there points at a copy another lane already holds and the grid hard-links it into its own folder (no copy, nothing deleted). A box with no such copy gets a skip with the reason.
 

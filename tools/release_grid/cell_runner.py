@@ -524,12 +524,31 @@ def swap_used_gib() -> float:
     return 0.0
 
 
+def our_anon_rss_gib(home) -> float:
+    """Anonymous resident memory (RssAnon, not the file cache) of the processes started from this cell's HOME: the engine's own RAM."""
+    total = 0.0
+    for d in glob.glob("/proc/[0-9]*"):
+        try:
+            with open(d + "/cmdline", "rb") as f:
+                cmd = f.read().decode("utf-8", "replace")
+            if str(home) not in cmd:
+                continue
+            with open(d + "/status") as f:
+                for ln in f:
+                    if ln.startswith("RssAnon:"):
+                        total += int(ln.split()[1]) / 1048576.0
+        except OSError:
+            continue
+    return total
+
+
 class Guard(threading.Thread):
     """Watches free RAM and swap while a model runs; when either leaves its limit it stops the server (strata launch --stop) and says why."""
 
-    def __init__(self, min_free_gib, max_swap_growth_gib, stop_fn):
+    def __init__(self, min_free_gib, max_swap_growth_gib, stop_fn, rss_cap_gib=None, home=None):
         super().__init__(daemon=True)
         self.min_free, self.max_swap, self.stop_fn = min_free_gib, max_swap_growth_gib, stop_fn
+        self.rss_cap, self.home, self.peak_rss = rss_cap_gib, home, 0.0
         self.base_swap = swap_used_gib()
         self.tripped = None
         self.min_seen = None
@@ -542,6 +561,12 @@ class Guard(threading.Thread):
                 self.min_seen = avail if self.min_seen is None else min(self.min_seen, avail)
                 if self.min_free and avail < self.min_free:
                     self.trip("memory guard: only %.1f GiB RAM available (floor %.1f)" % (avail, self.min_free))
+                    return
+            if self.rss_cap and self.home:
+                rss = our_anon_rss_gib(self.home)
+                self.peak_rss = max(self.peak_rss, rss)
+                if rss > self.rss_cap:
+                    self.trip("memory cap: the engine holds %.1f GiB of anonymous RAM (cap %.1f GiB)" % (rss, self.rss_cap))
                     return
             grown = swap_used_gib() - self.base_swap
             if self.max_swap is not None and grown > self.max_swap:
@@ -825,7 +850,7 @@ def run_cell(spec: dict, out_root: Path) -> dict:
                 raise StopCell()
             res["vram_class_gib"] = spec["vram_class_gib"]
             res["hog_held_mib"] = hog.held_mib
-        guard = Guard(float(profile.get("guard_free_gib", 0)) or None, profile.get("guard_swap_growth_gib"), stop_server)
+        guard = Guard(float(profile.get("guard_free_gib", 0)) or None, profile.get("guard_swap_growth_gib"), stop_server, spec.get("ram_cap_gib"), home)
         guard.start()
         t_launch = now()
         say("%s: launching" % cid)
@@ -849,6 +874,8 @@ def run_cell(spec: dict, out_root: Path) -> dict:
             steps["memory_guard"] = step(FAIL, guard.tripped)
         if guard.min_seen is not None:
             res["numbers"]["min_ram_available_gib"] = round(guard.min_seen, 1)
+        if guard.peak_rss:
+            res["numbers"]["peak_engine_anon_ram_gib"] = round(guard.peak_rss, 1)
         elog = newest_engine_log(home, t_launch)
         if elog:
             res["engine_log"] = clip(find_cause(tail(elog, 400)) or "", 200)
