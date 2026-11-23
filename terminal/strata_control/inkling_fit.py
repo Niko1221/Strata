@@ -60,22 +60,26 @@ IGPU_SQ10_ARCHS = frozenset({"gfx1103", "gfx1150"})
 #: High-bandwidth unified-memory GPUs (DGX Spark GB10 sm_121, Strix Halo gfx1151) that scale to SQ-20 on >= 32 GiB UMA.
 BIG_UMA_ARCHS = frozenset({"121", "sm_121", "gfx1151"})
 
+#: GGUF builds: bodies_gb is the file's routed-expert bytes (read from the GGUF headers). The loader dequantises every non-expert tensor to BF16, so
+#: all ten builds load the same 3.93 GB trunk (the strata-inkling load line of UD-IQ4_XS and UD-Q4_K_XL). dense_gb = 2.45 is what it takes off the
+#: card in the plan, calibrated on the experts the engine really placed with the planner's flags:
+#: RTX 3060 Ti 7.66 GiB free 2.24 GB (plan 2.35), RTX 3060 11.63 GiB free 6.62 GB (plan 6.62), UD-IQ4_XS and UD-Q4_K_XL alike.
 #: name -> exact Section 1 (dense + DSpark) and Section 4 (expert bodies) sizes from the verified .strata v1.1 binaries,
 #: plus direct-download Unsloth Dynamic GGUF builds from unsloth/Inkling-2-Mini-GGUF.
 BUILDS = {
     "SQ-20": {"file": "Inkling-2-Mini-SQ-20.strata", "footprint_gb": 19.35, "dense_gb": 3.67, "bodies_gb": 15.68, "file_gb": 19.35, "format": "strata"},
     "SQ-15": {"file": "Inkling-2-Mini-SQ-15.strata", "footprint_gb": 14.35, "dense_gb": 2.07, "bodies_gb": 12.28, "file_gb": 14.35, "format": "strata"},
     "SQ-10": {"file": "Inkling-2-Mini-SQ-10.strata", "footprint_gb": 10.47, "dense_gb": 1.87, "bodies_gb": 8.60, "file_gb": 10.47, "format": "strata"},
-    "UD-Q8_K_XL": {"file": "Inkling-2-Mini-UD-Q8_K_XL.gguf", "footprint_gb": 22.87, "dense_gb": 2.87, "bodies_gb": 20.00, "file_gb": 22.87, "format": "gguf", "expert_elems_e9": {"BF16": 4.077, "NVFP4": 20.384}},
-    "UD-Q4_K_XL": {"file": "Inkling-2-Mini-UD-Q4_K_XL.gguf", "footprint_gb": 17.63, "dense_gb": 2.15, "bodies_gb": 15.48, "file_gb": 17.63, "format": "gguf", "expert_elems_e9": {"NVFP4": 20.384, "Q8_0": 4.077}},
-    "UD-Q4_K_M": {"file": "Inkling-2-Mini-UD-Q4_K_M.gguf", "footprint_gb": 16.61, "dense_gb": 2.10, "bodies_gb": 14.51, "file_gb": 16.61, "format": "gguf", "expert_elems_e9": {"NVFP4": 20.384, "Q5_K": 2.718, "Q8_0": 1.359}},
-    "UD-IQ4_XS": {"file": "Inkling-2-Mini-UD-IQ4_XS.gguf", "footprint_gb": 15.73, "dense_gb": 2.05, "bodies_gb": 13.68, "file_gb": 15.73, "format": "gguf", "expert_elems_e9": {"IQ4_NL": 0.340, "IQ4_XS": 0.679, "NVFP4": 20.384, "Q4_K": 0.679, "Q5_0": 1.019, "Q5_K": 1.359}},
-    "UD-Q3_K_XL": {"file": "Inkling-2-Mini-UD-Q3_K_XL.gguf", "footprint_gb": 13.63, "dense_gb": 2.00, "bodies_gb": 11.63, "file_gb": 13.63, "format": "gguf", "expert_elems_e9": {"IQ2_S": 2.038, "IQ2_XS": 0.679, "IQ3_S": 1.359, "IQ3_XXS": 3.397, "IQ4_NL": 1.359, "NVFP4": 14.948, "Q3_K": 0.679}},
-    "UD-IQ3_XXS": {"file": "Inkling-2-Mini-UD-IQ3_XXS.gguf", "footprint_gb": 11.66, "dense_gb": 1.95, "bodies_gb": 9.71, "file_gb": 11.66, "format": "gguf", "expert_elems_e9": {"IQ2_S": 6.115, "IQ2_XS": 0.679, "IQ2_XXS": 0.679, "IQ3_XXS": 8.833, "IQ4_NL": 1.359, "NVFP4": 6.795}},
-    "UD-Q2_K_XL": {"file": "Inkling-2-Mini-UD-Q2_K_XL.gguf", "footprint_gb": 9.14, "dense_gb": 1.88, "bodies_gb": 7.26, "file_gb": 9.14, "format": "gguf", "expert_elems_e9": {"IQ1_S": 4.077, "IQ2_S": 7.474, "IQ2_XS": 1.359, "IQ2_XXS": 3.397, "MXFP4": 0.340, "NVFP4": 3.737, "Q2_0": 4.077}},
-    "UD-IQ2_XXS": {"file": "Inkling-2-Mini-UD-IQ2_XXS.gguf", "footprint_gb": 8.49, "dense_gb": 1.85, "bodies_gb": 6.64, "file_gb": 8.49, "format": "gguf", "expert_elems_e9": {"IQ1_S": 4.077, "IQ2_S": 3.397, "IQ2_XS": 4.077, "IQ2_XXS": 4.756, "NVFP4": 2.378, "Q2_0": 5.776}},
-    "UD-IQ1_M": {"file": "Inkling-2-Mini-UD-IQ1_M.gguf", "footprint_gb": 8.02, "dense_gb": 1.82, "bodies_gb": 6.20, "file_gb": 8.02, "format": "gguf", "expert_elems_e9": {"IQ1_S": 4.077, "IQ2_S": 2.718, "IQ2_XS": 3.397, "IQ2_XXS": 6.115, "NVFP4": 1.019, "Q2_0": 7.135}},
-    "UD-IQ1_S": {"file": "Inkling-2-Mini-UD-IQ1_S.gguf", "footprint_gb": 7.76, "dense_gb": 1.80, "bodies_gb": 5.96, "file_gb": 7.76, "format": "gguf", "expert_elems_e9": {"IQ1_S": 4.077, "IQ2_S": 1.359, "IQ2_XS": 3.397, "IQ2_XXS": 7.474, "NVFP4": 0.340, "Q2_0": 7.814}},
+    "UD-Q8_K_XL": {"file": "Inkling-2-Mini-UD-Q8_K_XL.gguf", "footprint_gb": 22.87, "dense_gb": 2.45, "bodies_gb": 19.62, "file_gb": 22.87, "format": "gguf", "expert_elems_e9": {"BF16": 4.077, "NVFP4": 20.384}},
+    "UD-Q4_K_XL": {"file": "Inkling-2-Mini-UD-Q4_K_XL.gguf", "footprint_gb": 17.63, "dense_gb": 2.45, "bodies_gb": 15.80, "file_gb": 17.63, "format": "gguf", "expert_elems_e9": {"NVFP4": 20.384, "Q8_0": 4.077}},
+    "UD-Q4_K_M": {"file": "Inkling-2-Mini-UD-Q4_K_M.gguf", "footprint_gb": 16.61, "dense_gb": 2.45, "bodies_gb": 14.78, "file_gb": 16.61, "format": "gguf", "expert_elems_e9": {"NVFP4": 20.384, "Q5_K": 2.718, "Q8_0": 1.359}},
+    "UD-IQ4_XS": {"file": "Inkling-2-Mini-UD-IQ4_XS.gguf", "footprint_gb": 15.73, "dense_gb": 2.45, "bodies_gb": 14.04, "file_gb": 15.73, "format": "gguf", "expert_elems_e9": {"IQ4_NL": 0.340, "IQ4_XS": 0.679, "NVFP4": 20.384, "Q4_K": 0.679, "Q5_0": 1.019, "Q5_K": 1.359}},
+    "UD-Q3_K_XL": {"file": "Inkling-2-Mini-UD-Q3_K_XL.gguf", "footprint_gb": 13.63, "dense_gb": 2.45, "bodies_gb": 12.20, "file_gb": 13.63, "format": "gguf", "expert_elems_e9": {"IQ2_S": 2.038, "IQ2_XS": 0.679, "IQ3_S": 1.359, "IQ3_XXS": 3.397, "IQ4_NL": 1.359, "NVFP4": 14.948, "Q3_K": 0.679}},
+    "UD-IQ3_XXS": {"file": "Inkling-2-Mini-UD-IQ3_XXS.gguf", "footprint_gb": 11.66, "dense_gb": 2.45, "bodies_gb": 10.30, "file_gb": 11.66, "format": "gguf", "expert_elems_e9": {"IQ2_S": 6.115, "IQ2_XS": 0.679, "IQ2_XXS": 0.679, "IQ3_XXS": 8.833, "IQ4_NL": 1.359, "NVFP4": 6.795}},
+    "UD-Q2_K_XL": {"file": "Inkling-2-Mini-UD-Q2_K_XL.gguf", "footprint_gb": 9.14, "dense_gb": 2.45, "bodies_gb": 7.89, "file_gb": 9.14, "format": "gguf", "expert_elems_e9": {"IQ1_S": 4.077, "IQ2_S": 7.474, "IQ2_XS": 1.359, "IQ2_XXS": 3.397, "MXFP4": 0.340, "NVFP4": 3.737, "Q2_0": 4.077}},
+    "UD-IQ2_XXS": {"file": "Inkling-2-Mini-UD-IQ2_XXS.gguf", "footprint_gb": 8.49, "dense_gb": 2.45, "bodies_gb": 7.25, "file_gb": 8.49, "format": "gguf", "expert_elems_e9": {"IQ1_S": 4.077, "IQ2_S": 3.397, "IQ2_XS": 4.077, "IQ2_XXS": 4.756, "NVFP4": 2.378, "Q2_0": 5.776}},
+    "UD-IQ1_M": {"file": "Inkling-2-Mini-UD-IQ1_M.gguf", "footprint_gb": 8.02, "dense_gb": 2.45, "bodies_gb": 6.81, "file_gb": 8.02, "format": "gguf", "expert_elems_e9": {"IQ1_S": 4.077, "IQ2_S": 2.718, "IQ2_XS": 3.397, "IQ2_XXS": 6.115, "NVFP4": 1.019, "Q2_0": 7.135}},
+    "UD-IQ1_S": {"file": "Inkling-2-Mini-UD-IQ1_S.gguf", "footprint_gb": 7.76, "dense_gb": 2.45, "bodies_gb": 6.53, "file_gb": 7.76, "format": "gguf", "expert_elems_e9": {"IQ1_S": 4.077, "IQ2_S": 1.359, "IQ2_XS": 3.397, "IQ2_XXS": 7.474, "NVFP4": 0.340, "Q2_0": 7.814}},
 }
 STRATA_ORDER = ("SQ-20", "SQ-15", "SQ-10")       # primary recommended native .strata builds, best quality first
 GGUF_ORDER = (
@@ -105,18 +109,39 @@ def is_big_uma_arch(arch: str | None, name: str | None = None) -> bool:
     return "gb10" in low or "dgx spark" in low or "strix halo" in low
 
 
-def dspark_gb(ctx: int | None = None, enabled: bool = True) -> float:
+# --parallel N: what a slot costs on each backend (read from the engines' allocation code; CUDA and SYCL numbers also from runs).
+#  - CUDA (ink_runner.cuh init): the on-device global K/V is capped at 4096 tokens per slot from 2 slots on (the rest of the context goes to the
+#    mapped host K/V), the SWA ring is 1056 positions from 16 slots, the workspaces grow from 768 to 1280 MiB from 8 slots.
+#  - HIP: paged on-demand K/V pools sized by estimate_slot_bytes(min(ctx, 4096)) x slots (ink_batch.h): the same 4096-token active window.
+#  - SYCL (ink_sy_runner.h init): every slot gets its K/V up front and in FP16: slots x max_ctx x 32 KiB for the 8 global visits (no FP8, no
+#    paging, no host K/V), the drafter K/V slots x max_ctx x 12 KiB. A request of 32 slots at 32K tokens is 34 GB of K/V (Arc A750 8 GB: dalloc
+#    256 MiB, out of device memory, 0 of 3072 experts in VRAM).
+SLOT_WORKSPACE_EXTRA_GB = 0.54          # the extra 512 MiB of workspaces CUDA reserves from 8 slots on (applied to every backend: not measured elsewhere)
+DSPARK_KV_BYTES_PER_TOK_SYCL = 12288    # 3 drafter layers x K+V x 1024 x FP16, per slot and token (ink_sy_runner.h dsp_ctx_k/v)
+SLOT_BACKENDS_FULL_CTX = ("sycl",)      # backends that allocate every slot's K/V at the full context, in FP16
+
+
+def _full_ctx_slots(backend: str | None) -> bool:
+    return str(backend or "").strip().lower() in SLOT_BACKENDS_FULL_CTX
+
+
+def dspark_gb(ctx: int | None = None, enabled: bool = True, parallel: int = 1, backend: str | None = None) -> float:
     """DSpark drafter KV + scratch footprint in GB for `ctx` tokens (0 when drafting is disabled)."""
     if not enabled:
         return 0.0
     n = DEFAULT_CONTEXT if ctx is None else max(1024, int(ctx))
+    if _full_ctx_slots(backend):
+        slots = max(1, min(MAX_PARALLEL, int(parallel or 1)))
+        return round(DSPARK_BASE_GB + slots * n * DSPARK_KV_BYTES_PER_TOK_SYCL / 1e9, 3)
     return round(DSPARK_BASE_GB + n * DSPARK_KV_BYTES_PER_TOK / 1e9, 3)
 
 
-def kv_cache_gb(ctx: int | None = None, parallel: int = 1, fp8_kv: bool = False) -> float:
+def kv_cache_gb(ctx: int | None = None, parallel: int = 1, fp8_kv: bool = False, backend: str | None = None) -> float:
     """KV + SWA-1024 + ShortConv state in GB for `ctx` context tokens across `parallel` concurrent request slots."""
     n = DEFAULT_CONTEXT if ctx is None else max(1024, int(ctx))
     slots = max(1, min(MAX_PARALLEL, int(parallel or 1)))
+    if _full_ctx_slots(backend):
+        return round(slots * (n * GLOBAL_KV_BYTES_PER_TOK_FP16 / 1e9 + SWA_AND_SCONV_GB_FP16), 3)
     if fp8_kv or slots >= 16:
         per_tok = GLOBAL_KV_BYTES_PER_TOK_FP8 / 1e9
         fixed = SWA_AND_SCONV_GB_FP8
@@ -129,10 +154,13 @@ def kv_cache_gb(ctx: int | None = None, parallel: int = 1, fp8_kv: bool = False)
     return round(slots * (active_ctx * per_tok + fixed), 3)
 
 
-def auto_fp8_kv(vram_gib: float | None, ctx: int | None = None, parallel: int = 1, kv_offload: str = "auto") -> bool:
+def auto_fp8_kv(vram_gib: float | None, ctx: int | None = None, parallel: int = 1, kv_offload: str = "auto",
+                backend: str | None = None) -> bool:
     """Whether FP8 KV is auto-selected. With Host KV Offload ('auto'/'on'), lossless FP16 stays default (#552)
     except at high concurrency (parallel >= 16) where 40 SWA rings dominate VRAM."""
     slots = max(1, min(MAX_PARALLEL, int(parallel or 1)))
+    if _full_ctx_slots(backend):
+        return False                    # the SYCL runner has no FP8 K/V
     if slots >= 16:
         return True
     if str(kv_offload or "auto").lower() == "off":
@@ -141,10 +169,12 @@ def auto_fp8_kv(vram_gib: float | None, ctx: int | None = None, parallel: int = 
     return False
 
 
-def global_kv_gb(ctx: int | None = None, parallel: int = 1, fp8_kv: bool = False) -> float:
+def global_kv_gb(ctx: int | None = None, parallel: int = 1, fp8_kv: bool = False, backend: str | None = None) -> float:
     """Global KV cache size in GB across the 8 global visits (spillable to mapped pinned host RAM via --kv-offload)."""
     n = DEFAULT_CONTEXT if ctx is None else max(1024, int(ctx))
     slots = max(1, min(MAX_PARALLEL, int(parallel or 1)))
+    if _full_ctx_slots(backend):
+        return round(slots * n * GLOBAL_KV_BYTES_PER_TOK_FP16 / 1e9, 3)
     if fp8_kv or slots >= 16:
         per_tok = GLOBAL_KV_BYTES_PER_TOK_FP8 / 1e9
         active_ctx = min(n, 4096) if slots >= 16 else n
@@ -154,25 +184,38 @@ def global_kv_gb(ctx: int | None = None, parallel: int = 1, fp8_kv: bool = False
     return round(slots * active_ctx * per_tok, 3)
 
 
-def swa_sconv_gb(parallel: int = 1, fp8_kv: bool = False) -> float:
+def global_kv_total_gb(ctx: int | None = None, parallel: int = 1, fp8_kv: bool = False) -> float:
+    """All the global K/V of `parallel` slots at `ctx` tokens: what the mapped host K/V holds when the engine offloads it. Measured (strata-inkling, RTX 3060,
+    SQ-10, ctx 32768): the host share is slots x (ctx - the on-device window) x bytes per token, 3.4 GiB at 4 slots (FP16) ... 31.7 GiB at 64 slots (FP8)."""
+    n = DEFAULT_CONTEXT if ctx is None else max(1024, int(ctx))
+    slots = max(1, min(MAX_PARALLEL, int(parallel or 1)))
+    per_tok = (GLOBAL_KV_BYTES_PER_TOK_FP8 if (fp8_kv or slots >= 16) else GLOBAL_KV_BYTES_PER_TOK_FP16) / 1e9
+    return round(slots * n * per_tok, 3)
+
+
+def swa_sconv_gb(parallel: int = 1, fp8_kv: bool = False, backend: str | None = None) -> float:
     """VRAM-resident 40x SWA-1024 + ShortConv state in GB."""
     slots = max(1, min(MAX_PARALLEL, int(parallel or 1)))
-    fixed = SWA_AND_SCONV_GB_FP8 if (fp8_kv or slots >= 16) else SWA_AND_SCONV_GB_FP16
+    fixed = SWA_AND_SCONV_GB_FP16 if _full_ctx_slots(backend) else (SWA_AND_SCONV_GB_FP8 if (fp8_kv or slots >= 16) else SWA_AND_SCONV_GB_FP16)
     return round(slots * fixed, 3)
 
 
 def non_expert_gb(ctx: int | None = None, parallel: int = 1, vision: bool = False, *,
                   dspark: bool = True, fp8_kv: bool = False, hybrid: bool = False,
-                  host_offload_global_kv: bool = False) -> float:
+                  host_offload_global_kv: bool = False, backend: str | None = None) -> float:
     """Video memory kept free of expert bodies: driver/desktop + hybrid workspace + DSpark KV + KV/SWA/ShortConv (+ peak KV growth margin + Vision shard)."""
+    slots = max(1, min(MAX_PARALLEL, int(parallel or 1)))
     if host_offload_global_kv:
-        kv_vram = swa_sconv_gb(parallel, fp8_kv=fp8_kv)
+        kv_vram = swa_sconv_gb(parallel, fp8_kv=fp8_kv, backend=backend)
     else:
-        kv_vram = round(global_kv_gb(ctx, parallel, fp8_kv=fp8_kv) * KV_GROW_FACTOR + swa_sconv_gb(parallel, fp8_kv=fp8_kv), 3)
+        grow = 1.0 if _full_ctx_slots(backend) else KV_GROW_FACTOR       # SYCL allocates the whole K/V once: there is no growth to leave room for
+        kv_vram = round(global_kv_gb(ctx, parallel, fp8_kv=fp8_kv, backend=backend) * grow
+                        + swa_sconv_gb(parallel, fp8_kv=fp8_kv, backend=backend), 3)
     return round(
         VRAM_DRIVER_GB
         + (VRAM_HYBRID_WORKSPACE_GB if hybrid else 0.0)
-        + dspark_gb(ctx, enabled=dspark)
+        + (SLOT_WORKSPACE_EXTRA_GB if slots >= 8 else 0.0)
+        + dspark_gb(ctx, enabled=dspark, parallel=parallel, backend=backend)
         + kv_vram
         + (VISION_GB if vision else 0.0),
         3,
@@ -222,7 +265,7 @@ def bodies_gb_for(build: str, backend: str | None = None) -> float:
 def compute(build: str, vram_gib: float, ram_gib: float, ctx: int | None = None, vision: bool = False,
             parallel: int = 1, dspark: bool = True, kv_offload: str = "auto", *,
             extra_vram_gib: float = 0.0, backend: str | None = None,
-            desktop: bool = False, ram_free_gib: float | None = None) -> dict:
+            desktop: bool = False, ram_free_gib: float | None = None, fp8_kv: bool | None = None) -> dict:
     """Placement of `build` on a discrete-GPU PC (vram_gib + optional extra_vram_gib + ram_gib): GB of experts in VRAM, in RAM, and on SSD.
 
     Implements the unified 4-tier adaptive contract (GPU -> RAM+CPU -> SSD) with Host KV Offloading (#552),
@@ -247,13 +290,17 @@ def compute(build: str, vram_gib: float, ram_gib: float, ctx: int | None = None,
     # HIP and SYCL keep global KV in VRAM (#6613).
     supports_host_kv = backend_low not in ("hip", "sycl")
     effective_offload = offload_mode if supports_host_kv else "off"
-    fp8_kv = auto_fp8_kv(v_gib, ctx, parallel, kv_offload=effective_offload)
+    if fp8_kv is None:      # None: the planner's rule (FP16 unless the card is small or the slots many); True / False: the caller's choice
+        fp8_kv = auto_fp8_kv(v_gib, ctx, parallel, kv_offload=effective_offload, backend=backend_low)
+    elif _full_ctx_slots(backend_low):
+        fp8_kv = False
     kv_dtype = "fp8" if fp8_kv else "fp16"
     extra_dspark_weights = DSPARK_GGUF_GB if (dspark and info.get("format") == "gguf") else 0.0
     dense_total = info["dense_gb"] + extra_dspark_weights
     # Vision stays in host RAM / CPU on <= 12.5 GiB GPUs so it never steals ~0.64 GB of hot 3x-looped expert VRAM!
     vision_in_vram = bool(vision and v_gib > 12.5)
-    glob_kv = global_kv_gb(ctx, parallel, fp8_kv=fp8_kv)
+    # the K/V that goes to the host (CUDA only): every slot's whole context, not the on-device window the card keeps (#--parallel measured, see global_kv_total_gb)
+    glob_kv = global_kv_total_gb(ctx, parallel, fp8_kv=fp8_kv) if supports_host_kv else global_kv_gb(ctx, parallel, fp8_kv=fp8_kv, backend=backend_low)
     ram_avail_for_model = max(0.0, ram_gb - OS_RESERVE_GB - (VISION_GB if vision else 0.0))
     if ram_free_gib is not None:        # the free RAM, not the installed RAM: what other programs hold is not there to give
         ram_avail_for_model = max(0.0, min(ram_avail_for_model,
@@ -261,7 +308,7 @@ def compute(build: str, vram_gib: float, ram_gib: float, ctx: int | None = None,
 
     # 1. Try 100%-VRAM expert residency with VRAM-resident global KV first
     full_need = dense_total + info["bodies_gb"] + non_expert_gb(
-        ctx, parallel, vision=vision_in_vram, dspark=dspark, fp8_kv=fp8_kv, hybrid=False, host_offload_global_kv=False
+        ctx, parallel, vision=vision_in_vram, dspark=dspark, fp8_kv=fp8_kv, hybrid=False, host_offload_global_kv=False, backend=backend_low
     )
     if vram_gb > 0.0 and effective_offload != "on" and full_need <= vram_gb:
         return {
@@ -281,7 +328,7 @@ def compute(build: str, vram_gib: float, ram_gib: float, ctx: int | None = None,
     # (measured: SQ-15 on an A4000 16 GB, RESULTS-0221-INKCUDA.md); an unnamed backend keeps the older rule (<= 13 GiB or asked)
     auto_offload_full = can_offload_kv and (effective_offload == "on" or v_gib <= 13.0 or backend_low == "cuda")
     full_need_offload = dense_total + info["bodies_gb"] + non_expert_gb(
-        ctx, parallel, vision=vision_in_vram, dspark=dspark, fp8_kv=fp8_kv, hybrid=False, host_offload_global_kv=True
+        ctx, parallel, vision=vision_in_vram, dspark=dspark, fp8_kv=fp8_kv, hybrid=False, host_offload_global_kv=True, backend=backend_low
     )
     if vram_gb > 0.0 and auto_offload_full and full_need_offload <= vram_gb:
         return {
@@ -298,7 +345,7 @@ def compute(build: str, vram_gib: float, ram_gib: float, ctx: int | None = None,
     use_host_kv = can_offload_kv and (effective_offload == "on" or v_gib <= 13.0 or glob_kv > 1.5)
     host_kv_used = glob_kv if use_host_kv else 0.0
     gpu_room = max(0.0, vram_gb - dense_total - non_expert_gb(
-        ctx, parallel, vision=vision_in_vram, dspark=dspark, fp8_kv=fp8_kv, hybrid=True, host_offload_global_kv=use_host_kv
+        ctx, parallel, vision=vision_in_vram, dspark=dspark, fp8_kv=fp8_kv, hybrid=True, host_offload_global_kv=use_host_kv, backend=backend_low
     ))
     ram_room = max(0.0, ram_avail_for_model - host_kv_used)
     in_vram = min(info["bodies_gb"], gpu_room)
@@ -307,12 +354,18 @@ def compute(build: str, vram_gib: float, ram_gib: float, ctx: int | None = None,
     # A K/V that stays in the card (no room for it in RAM) must fit the card beside the dense weights even with every expert in RAM;
     # a context whose K/V fits neither is not startable, whatever the experts do.
     kv_fits = True
-    if not use_host_kv and vram_gb > 0.0:
-        kv_in_card = non_expert_gb(ctx, parallel, vision=vision_in_vram, dspark=dspark, fp8_kv=fp8_kv, hybrid=True,
-                                   host_offload_global_kv=False) - non_expert_gb(
-            ctx, parallel, vision=vision_in_vram, dspark=dspark, fp8_kv=fp8_kv, hybrid=True, host_offload_global_kv=True)
-        kv_fits = (vram_gb - dense_total - non_expert_gb(ctx, parallel, vision=vision_in_vram, dspark=dspark, fp8_kv=fp8_kv, hybrid=True,
-                                                         host_offload_global_kv=True) - kv_in_card) >= 0.0
+    if vram_gb > 0.0:
+        # What the slots add to what one slot already needs (the start-up of ONE slot on a tiny card is measured: SQ-10 starts on 4 GiB with every
+        # expert in RAM, the engine shrinks its workspaces): the per-slot SWA rings / ShortConv state / drafter K/V / workspaces of N slots,
+        # and the global K/V when it is not moved to the host. That must fit the card beside the dense weights and the one-slot base.
+        one = dict(vision=vision_in_vram, dspark=dspark, fp8_kv=fp8_kv, hybrid=True, host_offload_global_kv=True, backend=backend_low)
+        base = non_expert_gb(ctx, 1, **one)
+        slot_extra = max(0.0, non_expert_gb(ctx, parallel, **one) - base)
+        kv_in_card = 0.0
+        if not use_host_kv:
+            kv_in_card = non_expert_gb(ctx, parallel, **{**one, "host_offload_global_kv": False}) - non_expert_gb(ctx, parallel, **one)
+        room = vram_gb - dense_total - base
+        kv_fits = (room - slot_extra - kv_in_card) >= 0.0 if (not use_host_kv or slot_extra > 0.0) else True
     return {
         "vram_gb": round(in_vram, 2),
         "ram_gb": round(in_ram, 2),
@@ -330,14 +383,14 @@ def compute_unified(build: str, pool_gib: float, ctx: int | None = None, vision:
     """Placement on a unified-memory / coherent-UMA host (Apple Silicon, Strix Halo, Strix Point 890M, Radeon 780M, DGX Spark)."""
     info = BUILDS[build]
     extra_dspark = DSPARK_GGUF_GB if (dspark and info.get("format") == "gguf") else 0.0
-    need_total = info["footprint_gb"] - info["bodies_gb"] + bodies_gb_for(build, backend) + extra_dspark
-    fp8_kv = auto_fp8_kv(None, ctx, parallel)
+    need_total = info["dense_gb"] + bodies_gb_for(build, backend) + extra_dspark
+    fp8_kv = auto_fp8_kv(None, ctx, parallel, backend=backend)
     room = max(
         0.0,
         float(pool_gib or 0.0) * GIB_TO_GB
         - UMA_RESERVE_GB
-        - dspark_gb(ctx, enabled=dspark)
-        - kv_cache_gb(ctx, parallel, fp8_kv=fp8_kv)
+        - dspark_gb(ctx, enabled=dspark, parallel=parallel, backend=backend)
+        - kv_cache_gb(ctx, parallel, fp8_kv=fp8_kv, backend=backend)
         - (VISION_GB if vision else 0.0),
     )
     held = min(need_total, room)
@@ -356,11 +409,11 @@ def compute_unified(build: str, pool_gib: float, ctx: int | None = None, vision:
 def place(build: str, vram_gib: float | None, ram_gib: float, unified: bool = False, ctx: int | None = None,
           vision: bool = False, parallel: int = 1, dspark: bool = True, *,
           extra_vram_gib: float = 0.0, backend: str | None = None,
-          desktop: bool = False, ram_free_gib: float | None = None) -> dict:
+          desktop: bool = False, ram_free_gib: float | None = None, fp8_kv: bool | None = None) -> dict:
     if unified:
         return compute_unified(build, ram_gib, ctx, vision, parallel, dspark, backend=backend)
     return compute(build, vram_gib or 0.0, ram_gib, ctx, vision, parallel, dspark,
-                   extra_vram_gib=extra_vram_gib, backend=backend, desktop=desktop, ram_free_gib=ram_free_gib)
+                   extra_vram_gib=extra_vram_gib, backend=backend, desktop=desktop, ram_free_gib=ram_free_gib, fp8_kv=fp8_kv)
 
 
 def mode(placed: dict | float) -> str:
@@ -532,3 +585,50 @@ def multi_gpu_flags(gpus: list[dict], *, windows: bool = False) -> list[str]:
     if n < 2:
         return []
     return ["--gpus", str(n), "--layer-split", "auto"]
+
+
+def parallel_fits(build: str, vram_gib: float | None, ram_gib: float, unified: bool = False, ctx: int | None = None, parallel: int = 1,
+                  *, vision: bool = False, dspark: bool = True, backend: str | None = None, desktop: bool = False,
+                  ram_free_gib: float | None = None, extra_vram_gib: float = 0.0) -> bool:
+    """True when `parallel` request slots at `ctx` tokens can start: their K/V and per-slot buffers fit the card (or the pool) beside the
+    dense weights (the experts that do not fit go to RAM or the SSD, which is the plan's business, not the slots')."""
+    kw = dict(backend=backend, desktop=desktop, ram_free_gib=ram_free_gib, extra_vram_gib=extra_vram_gib)
+    if bool(place(build, vram_gib, ram_gib, unified, ctx, vision, parallel, dspark, **kw).get("kv_fits", True)):
+        return True
+    # the engines that have an FP8 K/V (CUDA, HIP) pick it when FP16 does not fit; SYCL has none
+    return not _full_ctx_slots(backend) and bool(
+        place(build, vram_gib, ram_gib, unified, ctx, vision, parallel, dspark, fp8_kv=True, **kw).get("kv_fits", True))
+
+
+def max_parallel(build: str, vram_gib: float | None, ram_gib: float, unified: bool = False, ctx: int | None = None, *,
+                 requested: int | None = None, vision: bool = False, dspark: bool = True, backend: str | None = None,
+                 desktop: bool = False, ram_free_gib: float | None = None, extra_vram_gib: float = 0.0) -> dict:
+    """The largest number of request slots (1..MAX_PARALLEL) that fit at `ctx` tokens, and a plain answer for the `requested` count.
+
+    {"max_parallel": N (0: not even one slot fits at this context), "requested": R, "fits": R <= N, "context": ctx,
+     "max_context_at_requested": the largest context at which R slots fit (0: none), "message": one sentence for the user}"""
+    n_ctx = DEFAULT_CONTEXT if ctx is None else int(ctx)
+    kw = dict(vision=vision, dspark=dspark, backend=backend, desktop=desktop, ram_free_gib=ram_free_gib, extra_vram_gib=extra_vram_gib)
+    best = 0
+    for n in range(1, MAX_PARALLEL + 1):
+        if parallel_fits(build, vram_gib, ram_gib, unified, n_ctx, n, **kw):
+            best = n
+        else:
+            break                              # the cost only grows with the slots
+    want = None if requested is None else max(1, min(MAX_PARALLEL, int(requested)))
+    ctx_at_want = 0
+    if want is not None and want > best:
+        for c in sorted(set(CONTEXTS + [1024, 2048, 4096]), reverse=True):
+            if c < n_ctx and parallel_fits(build, vram_gib, ram_gib, unified, c, want, **kw):
+                ctx_at_want = c
+                break
+    where = f"{backend} " if backend else ""
+    if want is None or want <= best:
+        msg = f"{best} slots fit at a context of {n_ctx} tokens" if best else f"not even one slot fits at a context of {n_ctx} tokens"
+    elif best == 0:
+        msg = f"--parallel {want} does not fit at a context of {n_ctx} tokens on this {where}setup: not even one slot fits; use a smaller context"
+    else:
+        tail = f"; {want} slots fit up to a context of {ctx_at_want} tokens" if ctx_at_want else ""
+        msg = f"--parallel {want} does not fit at a context of {n_ctx} tokens on this {where}setup: the largest count that fits is {best}{tail}"
+    return {"max_parallel": best, "requested": want, "fits": want is None or want <= best, "context": n_ctx,
+            "max_context_at_requested": ctx_at_want, "message": msg}
