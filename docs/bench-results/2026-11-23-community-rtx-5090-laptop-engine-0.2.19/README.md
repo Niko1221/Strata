@@ -123,5 +123,6 @@ peak; page file 0.52 GiB before, 2.05 GiB peak.
   all seven starts of the daily and the series configuration came up.
 - Not evaluated: sampled decoding speed, vision, `--batch`, sustained thermal load.
 
+The whole laptop series with charts is collected in [wolffahrer/lokale-ki-benchmarks](https://github.com/wolffahrer/lokale-ki-benchmarks).
 The author documents local AI on consumer hardware (in German) on the KI SOUVERÄN channels:
 [YouTube](https://www.youtube.com/channel/UCE6Ch6g6Bo8v4ROpYDzOOxA) and [Telegram](https://t.me/lokale_ki).
