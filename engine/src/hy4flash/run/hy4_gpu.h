@@ -72,6 +72,7 @@
 #define hipHostMalloc(p, n, f) cudaHostAlloc((p), (n), (f))
 #define hipHostFree cudaFreeHost
 #define hipSetDevice cudaSetDevice
+#define hipDeviceGetPCIBusId cudaDeviceGetPCIBusId
 #define hipHostMallocMapped cudaHostAllocMapped
 #define hipHostRegister cudaHostRegister
 #define hipGetLastError cudaGetLastError
