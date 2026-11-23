@@ -246,5 +246,59 @@ class TestUnlock4GbAndIssue6587(unittest.TestCase):
         self.assertEqual(models._inkling_build_for_bytes(7_764_291_776, "Inkling-2-Mini-UD-IQ1_S.gguf"), "UD-IQ1_S")
 
 
+class TestSetupRamExpertsFlag(unittest.TestCase):
+    """strata-inkling reads --ram-experts-gb 0 as GPU + SSD only, so setup writes it only for a plan with a RAM or SSD tier."""
+
+    def _install_args(self, model: str, gpu: dict, ram_gb: float) -> list[str]:
+        import setup
+        from tests.terminal.test_inkling_gguf_import import make_fake_strata, write_fake_o200k_files
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir, install_dir, eng_dir = root / "data", root / "install", root / "eng"
+            for d in (data_dir, install_dir, eng_dir):
+                d.mkdir()
+            (eng_dir / inkling_family.EXE).write_bytes(b"exe")
+            args_ns = argparse.Namespace(
+                model=model, family="inkling-2-mini", context=65536, vision="no", yes=True, no_start=True, gguf_dir=None,
+                models_dir=str(data_dir / "models"), data_dir=str(data_dir), backend=None, gpu=None, host=None, api_key=None,
+                browser=None, port=8080,
+            )
+
+            def fake_fetch(_a, name, folder, _own):
+                folder.mkdir(parents=True, exist_ok=True)
+                p = folder / name
+                p.write_bytes(make_fake_strata())
+                write_fake_o200k_files(folder)
+                return p
+
+            with mock.patch.object(setup, "home", return_value=install_dir), \
+                 mock.patch.object(setup, "data_folder_for", return_value=(data_dir, "explicit")), \
+                 mock.patch.object(setup, "pip_install"), \
+                 mock.patch.object(setup, "free_gb", return_value=500.0), \
+                 mock.patch.object(setup, "inkling_fetch", side_effect=fake_fetch), \
+                 mock.patch.object(setup, "inkling_tokenizer_dir", return_value=root / "tok"), \
+                 mock.patch.object(setup, "engine_step", return_value=(None, eng_dir, {"component": "strata-inkling"}, [], gpu, "none")), \
+                 mock.patch.object(setup, "engine_exe", return_value="component:strata-inkling"), \
+                 mock.patch.object(setup, "write_run_script", return_value=install_dir / "run.bat"):
+                rc = setup.install_inkling2(args_ns, "inkling-2-mini", gpu, False, False, None, False, 8080, ram_gb, None)
+            self.assertEqual(rc, 0)
+            cfg_path = next(install_dir.glob("strata-inkling-2-mini-*.json"))
+            return json.loads(cfg_path.read_text(encoding="utf-8"))["args"]
+
+    def test_full_vram_plan_leaves_ram_experts_out(self):
+        gpu = {"index": 0, "name": "NVIDIA GeForce RTX 3090", "vendor": "nvidia", "vram_gb": 24.0, "count": 1}
+        args = self._install_args("SQ-20", gpu, 64.0)
+        self.assertIn("--vram-experts-gb", args)
+        self.assertNotIn("--ram-experts-gb", args)
+        self.assertNotIn("--ssd-experts", args)
+
+    def test_ram_tier_plan_keeps_ram_experts(self):
+        gpu = {"index": 0, "name": "NVIDIA GeForce RTX 3060", "vendor": "nvidia", "vram_gb": 12.0, "count": 1}
+        args = self._install_args("SQ-15", gpu, 64.0)
+        self.assertIn("--ram-experts-gb", args)
+        self.assertGreater(float(args[args.index("--ram-experts-gb") + 1]), 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()

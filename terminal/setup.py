@@ -10686,7 +10686,11 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     if mgpu_flags:
         args += mgpu_flags
     if not unified and len(ink_gpus) < 2:
-        args += ["--vram-experts-gb", f"{placed['vram_gb']:.2f}", "--ram-experts-gb", f"{placed['ram_gb']:.2f}"]
+        args += ["--vram-experts-gb", f"{placed['vram_gb']:.2f}"]
+        # strata-inkling reads --ram-experts-gb 0 as "no RAM tier, GPU + SSD only": a plan with every expert on the card leaves
+        # it out, so experts that do not fit after all (a bigger context, a --vram-experts-gb cap) go to RAM, not the SSD
+        if placed["ram_gb"] > 0.05 or placed.get("ssd_gb", 0.0) > 0.05:
+            args += ["--ram-experts-gb", f"{placed['ram_gb']:.2f}"]
         if placed.get("ssd_gb", 0.0) > 0.05:
             args += ["--ssd-experts"]
     cfg = {

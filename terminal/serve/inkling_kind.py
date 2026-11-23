@@ -187,6 +187,16 @@ def engine_args(cfg: dict, exe: str | None = None, *, announce: bool = True) -> 
             args = _strip_flag(args, "--vram-experts-gb")
         if "--ram-experts-gb" not in mine_flags:
             args = _strip_flag(args, "--ram-experts-gb")
+    # strata-inkling reads --ram-experts-gb 0 as "no RAM tier, GPU + SSD only", but setup used to write 0.00 for a plan with every
+    # expert on the card: drop that 0 (unless the person set it, or the plan streams from the SSD) so experts that do not fit go to RAM
+    if "--ram-experts-gb" in args and "--ram-experts-gb" not in mine_flags and "--ssd-experts" not in args:
+        at = args.index("--ram-experts-gb")
+        try:
+            zero = at + 1 < len(args) and float(args[at + 1]) <= 0.0
+        except ValueError:
+            zero = False
+        if zero:
+            args = _strip_flag(args, "--ram-experts-gb")
     wants_images = "--vision" in args
     want_draft = wants_drafter(cfg)
     need_draft = "--draft" not in args and want_draft
