@@ -101,7 +101,7 @@ prompt-speed run with `on` and `off` from an RX 7000 or Strix Halo card.
 | Step | What setup does |
 | --- | --- |
 | Detection | Finds the card through the kernel's KFD topology. Integrated Radeon GPUs are listed as not supported (Strix Halo has its own page). |
-| ROCm | Uses a system ROCm 7 in `/opt/rocm` (or `$ROCM_PATH`) with hipcc and hipBLAS when present. Otherwise, or when it is older than 7.0, installs ROCm into `.venv` from AMD's TheRock wheels (about 10 GB, no sudo). |
+| ROCm | Uses a system ROCm 7 with hipcc and hipBLAS when present: `/opt/rocm` (or `$ROCM_PATH`) as AMD installs it, or the layout a distribution's packages use, where hipcc is in `<prefix>/bin`, the libraries in `<prefix>/lib64` or a multiarch folder and the headers in `<prefix>/include` (Fedora, Arch, Debian). Otherwise, or when it is older than 7.0, installs ROCm into `.venv` from AMD's TheRock wheels (about 10 GB, no sudo). |
 | Engine | Compiles it for the card's architecture (10-20 minutes, once; again when you pick another architecture). Needs a C++ compiler and git (`sudo apt install build-essential git`). |
 | Tuning table | Uses `tools/hip/<arch>-hipblaslt-<version>.txt` only when it matches both the architecture and the installed hipBLASLt version. Otherwise it says so and uses plain hipBLAS. On gfx103x the same role falls to a rocBLAS table. |
 | Pictures | On by default. CPU reader under 24 GB of VRAM, GPU reader from 24 GB; `--vision gpu` / `--vision cpu` switch it. If the GPU reader cannot start, the CPU reader is used. |

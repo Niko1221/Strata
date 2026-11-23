@@ -750,5 +750,98 @@ class TdrPointer(unittest.TestCase):
             self.assertIn(env, (Path(setup.__file__).resolve().parent.parent / "engine" / "src/prefill/prefill.cpp").read_text(encoding="utf-8"))
 
 
+class RocmSplitLayout(unittest.TestCase):
+    """#6376: a distro ROCm whose pieces are not under one root (Fedora: hipcc in /usr/bin, libraries in
+    /usr/lib64, headers in /usr/include) is used like AMD's /opt/rocm.  Every prefix below is a temp folder:
+    no ROCm, no AMD card, no downloads."""
+
+    def prefix(self, d, *, hipcc=True, libs=("lib64/libhipblas.so.3",), dev=True, version=(7, 2)):
+        p = Path(d)
+        rels = (["bin/hipcc"] if hipcc else []) + list(libs)
+        if dev:
+            rels += ["lib64/cmake/hip-lang/hip-lang-config.cmake", "include/hip/hip_runtime.h"]
+        if version:
+            rels.append("include/rocm-core/rocm_version.h")
+        for rel in rels:
+            f = p / rel
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text(f"#define ROCM_VERSION_MAJOR {version[0]}\n#define ROCM_VERSION_MINOR {version[1]}\n"
+                         if rel.endswith("rocm_version.h") else "")
+        if hipcc:
+            (p / "bin/hipcc").chmod(0o755)              # shutil.which only answers for an executable file
+        return p
+
+    def env(self, **kw):
+        env = {k: v for k, v in setup.os.environ.items() if k not in ("ROCM_PATH",)}
+        env.update(kw)
+        env.setdefault("PATH", str(self._empty_bin))   # no hipcc on PATH unless a test puts one there
+        return mock.patch.dict(setup.os.environ, env, clear=True)
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self._empty_bin = Path(self._tmp.name) / "empty-bin"
+        self._empty_bin.mkdir()
+
+    def test_fedora_rocm_path_usr(self):
+        """ROCM_PATH=/usr: the compiler is in /usr/bin and the libraries in /usr/lib64."""
+        base = Path(self._tmp.name) / "fedora"
+        usr = self.prefix(base / "usr")
+        with self.env(ROCM_PATH=str(usr)):
+            root, dirs = setup.rocm_root(["gfx1100"])
+        self.assertEqual(root, usr)
+        self.assertEqual(dirs, [str(usr / "lib64")])
+
+    def test_fedora_rocm_path_inside_the_library_folder(self):
+        """ROCM_PATH=/usr/lib64/rocm (where Fedora keeps rocm's own clang): that folder holds neither the compiler
+        nor the libraries, so the prefix above it is the one used."""
+        base = Path(self._tmp.name) / "fedora2"
+        usr = self.prefix(base / "usr")
+        (usr / "lib64/rocm/llvm/bin").mkdir(parents=True)
+        (usr / "lib64/rocm/llvm/bin/clang++").write_text("")
+        with self.env(ROCM_PATH=str(usr / "lib64/rocm")):
+            root, dirs = setup.rocm_root(["gfx1100"])
+        self.assertEqual(root, usr)
+        self.assertEqual(dirs, [str(usr / "lib64")])
+
+    def test_hipcc_on_path_without_rocm_path(self):
+        """No ROCM_PATH at all (a distro package install): the hipcc on PATH names the prefix."""
+        base = Path(self._tmp.name) / "nopath"
+        usr = self.prefix(base / "usr")
+        with self.env(PATH=str(usr / "bin")):
+            root, dirs = setup.rocm_root(["gfx1100"])
+        self.assertEqual(root, usr)
+        self.assertEqual(dirs, [str(usr / "lib64")])
+
+    def test_debian_multiarch_library_folder(self):
+        """A Debian ROCm keeps the libraries in lib/x86_64-linux-gnu, not in lib/."""
+        base = Path(self._tmp.name) / "debian"
+        root_ = self.prefix(base / "usr-new", libs=("lib/x86_64-linux-gnu/libhipblas.so.2",),
+                            dev=False)
+        (root_ / "lib64/cmake/hip-lang").mkdir(parents=True)
+        (root_ / "lib64/cmake/hip-lang/hip-lang-config.cmake").write_text("")
+        (root_ / "include/hip").mkdir(parents=True)
+        (root_ / "include/hip/hip_runtime.h").write_text("")
+        with self.env(ROCM_PATH=str(root_)):
+            root, dirs = setup.rocm_root(["gfx1100"])
+        self.assertEqual(root, root_)
+        self.assertEqual(dirs, [str(root_ / "lib/x86_64-linux-gnu")])
+
+    def test_a_prefix_without_the_libraries_is_not_used(self):
+        """hipcc alone is not a system ROCm: the wheels path follows (here it stops at the two-family check)."""
+        base = Path(self._tmp.name) / "partial"
+        usr = self.prefix(base / "usr", libs=())
+        with self.env(ROCM_PATH=str(usr)):
+            with self.assertRaises(SystemExit):
+                setup.rocm_root(["gfx1100", "gfx1201"])
+
+    def test_clang_under_lib64_rocm(self):
+        """Fedora's compiler: <prefix>/lib64/rocm/llvm/bin/clang++ (rocm_clang had only llvm/ and lib/llvm/)."""
+        root_ = Path(self._tmp.name) / "usr-clang"
+        (root_ / "lib64/rocm/llvm/bin").mkdir(parents=True)
+        (root_ / "lib64/rocm/llvm/bin/clang++").write_text("")
+        self.assertEqual(setup.rocm_clang(root_), root_ / "lib64/rocm/llvm/bin/clang++")
+
+
 if __name__ == "__main__":
     unittest.main()
