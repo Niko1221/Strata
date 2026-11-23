@@ -104,7 +104,8 @@ target_link_libraries(strata_inkling_core PUBLIC strata_zstd_dec strata_quant)
 # Strata's own trellis rows and activation rotation, compiled into the core so the standalone build needs no ggml.
 # In the full engine build strata_kernels_cpu already has them (and the real CPU probes); the standalone build
 # compiles the few files it needs plus a small probe shim.
-if(TARGET strata_kernels_cpu)
+# strata_kernels_cpu carries tq_cpu.cpp and the AVX trellis units only with STRATA_NATIVE_EXPERTS
+if(TARGET strata_kernels_cpu AND STRATA_NATIVE_EXPERTS)
   target_link_libraries(strata_inkling_core PUBLIC strata_kernels_cpu)
 else()
 target_sources(strata_inkling_core PRIVATE

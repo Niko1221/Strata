@@ -272,7 +272,10 @@ public:
             loaded_bytes += dir[idx].body_bytes;
             ++n_loaded;
         }
-        if (n_loaded < dir.size() && max_exp_bytes > 0) {
+        // The cold store reads .strata section-4 bodies at file offsets; a GGUF's expert bodies are assembled by
+        // read_expert_body (header + slices of the GGUF tensors), so GGUF experts that are not preloaded use the
+        // direct reads below instead.
+        if (n_loaded < dir.size() && max_exp_bytes > 0 && model.kind != ModelSourceKind::Gguf) {
             std::vector<InkColdExpertDesc> cdescs(dir.size());
             const uint64_t sec4_off = model.rd.header().sections[4].file_offset;
             for (size_t i = 0; i < dir.size(); ++i) {

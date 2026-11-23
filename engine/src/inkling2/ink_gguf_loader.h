@@ -318,6 +318,7 @@ struct GgufAdapter {
             err = "prism.hadamard.weight_names is missing or too long";
             return false;
         }
+        std::vector<uint8_t> gate_f(static_cast<size_t>(n_phys), 0), up_f(static_cast<size_t>(n_phys), 0);
         for (const auto& nv : names->items) {
             // blk.N.ffn_{gate_up,gate,up,down}_exps.weight: the routed experts only
             const std::string& n = nv.s;
@@ -328,9 +329,19 @@ struct GgufAdapter {
                 return false;
             }
             const std::string r(role);
-            if (r == "gate_up_exps" || r == "gate_exps" || r == "up_exps") layers[il].had_gu = true;
+            if (r == "gate_up_exps") { gate_f[il] = up_f[il] = 1; }
+            else if (r == "gate_exps") gate_f[il] = 1;
+            else if (r == "up_exps") up_f[il] = 1;
             else if (r == "down_exps") layers[il].had_dn = true;
             else { err = "prism.hadamard folds " + n + "; only the routed experts can be rotated"; return false; }
+        }
+        for (int il = 0; il < n_phys; ++il) {
+            // gate and up share one input: the rotation applies to both or to neither
+            if (gate_f[il] != up_f[il]) {
+                err = "prism.hadamard folds only one of gate/up in layer " + std::to_string(il);
+                return false;
+            }
+            layers[il].had_gu = gate_f[il] != 0;
         }
         strata::kernels::cpu::HadamardSpec h;
         h.block = block;
@@ -359,6 +370,7 @@ struct GgufAdapter {
                     if (x != 1 && x != -1) { err = "prism.hadamard sign values must be +1/-1"; return false; }
                     s[static_cast<size_t>(i)] = static_cast<float>(x);
                 }
+                if (h.signs.count(static_cast<int>(w))) { err = "prism.hadamard repeats sign width " + std::to_string(w); return false; }
                 h.signs[static_cast<int>(w)] = std::move(s);
                 at += static_cast<size_t>(w);
             }
@@ -934,6 +946,10 @@ struct GgufAdapter {
                     err = "GGUF: missing gate/up expert tensors in layer " + std::to_string(il);
                     return false;
                 }
+                if (ti_up->type != ti_gu->type) {   // the expert header has one gate/up type
+                    err = "GGUF: layer " + std::to_string(il) + " has gate and up experts of different types";
+                    return false;
+                }
                 lm.gu_type = ti_gu->type;
                 lm.gu_stride = static_cast<size_t>(strata::tensor_payload_bytes(*ti_gu) / static_cast<uint64_t>(c.n_experts));
                 lm.up_stride = static_cast<size_t>(strata::tensor_payload_bytes(*ti_up) / static_cast<uint64_t>(c.n_experts));
@@ -997,9 +1013,18 @@ struct GgufAdapter {
         }
 
         cpu_only = has_hadamard;
+        bool any_tq = false;
         for (const auto& l : layers) {
-            cpu_only |= strata::kernels::cpu::tq_supported(static_cast<int>(l.gu_type)) ||
-                        strata::kernels::cpu::tq_supported(static_cast<int>(l.dn_type));
+            any_tq |= strata::kernels::cpu::tq_supported(static_cast<int>(l.gu_type)) ||
+                      strata::kernels::cpu::tq_supported(static_cast<int>(l.dn_type));
+        }
+        cpu_only |= any_tq;
+        // the CPU trellis rows take whole 128-value blocks and at most kTqMaxN input values
+        if (any_tq && (D % 128 != 0 || c.inter % 128 != 0 ||
+                       D > strata::kernels::cpu::kTqMaxN || c.inter > strata::kernels::cpu::kTqMaxN)) {
+            err = "GGUF: trellis-coded experts need widths that are multiples of 128 and at most " +
+                  std::to_string(strata::kernels::cpu::kTqMaxN);
+            return false;
         }
 
         // 5. 3x loop-weighted vram_load_order

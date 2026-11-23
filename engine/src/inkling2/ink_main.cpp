@@ -105,13 +105,23 @@ static int cmd_info(const std::string& file, const std::string& vision, const st
 static bool hip_runs_these_experts(const InkModelFile& mf) {
 #if defined(INKLING_ENABLE_HIP) && !defined(INKLING_ENABLE_CUDA) && !defined(INKLING_ENABLE_EP_CUDA)
     if (const char* ev = std::getenv("INK_TQ_FORCE_CPU"); ev && std::atoi(ev) != 0) return false;
+    // a forced S_K transcode cannot decode trellis types
+    if (const char* ev = std::getenv("INK_HIP_FORCE_SK_TRANSCODE"); ev && std::atoi(ev) != 0) return false;
     if (!mf.gguf_adapter) return false;
     if (mf.gguf_adapter->has_hadamard && strata::kernels::cpu::hadamard_spec().block != 128) return false;
-    auto hip_tq = [](uint32_t t) { return t == 144u || t == 145u || t == 146u; };
-    for (const auto& lm : mf.gguf_adapter->layers) {
-        for (uint32_t t : {lm.gu_type, lm.dn_type}) {
-            if (strata::kernels::cpu::tq_supported(static_cast<int>(t)) && !hip_tq(t)) return false;
+    // the types hip_gguf_decode_8_f16 decodes (gguf_type_has_hip_kernel): a layer with any other type would be
+    // transcoded to S_K, which cannot read trellis blocks, so such files stay on the CPU backend
+    auto hip_native = [](uint32_t t) {
+        switch (t) {
+            case 0: case 1: case 2: case 8: case 10: case 11: case 12: case 13: case 14: case 16: case 17: case 18:
+            case 19: case 20: case 21: case 22: case 23: case 30: case 39: case 40: case 42: case 144: case 145: case 146:
+                return true;
+            default:
+                return false;
         }
+    };
+    for (const auto& lm : mf.gguf_adapter->layers) {
+        if (!hip_native(lm.gu_type) || !hip_native(lm.dn_type)) return false;
     }
     return true;
 #else

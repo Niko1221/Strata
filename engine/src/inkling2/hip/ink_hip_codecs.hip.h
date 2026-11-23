@@ -42,6 +42,7 @@ struct HipGgufExpertHeader {
 };
 static_assert(sizeof(HipGgufExpertHeader) == 32, "HipGgufExpertHeader must be 32 B");
 
+// keep in step with hip_runs_these_experts() in ink_main.cpp (which decides whether such files go to HIP)
 __host__ __device__ inline bool gguf_type_has_hip_kernel(uint32_t t) noexcept {
     switch (t) {
         case 0: case 1: case 2: case 8:
