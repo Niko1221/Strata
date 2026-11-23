@@ -3691,6 +3691,56 @@ struct InkCudaRunner {
         }
     }
 
+    // Launch probe for the cold-expert lane (STRATA_INK_EXACT unset): the same short run of decode steps is timed with the CPU lane and with
+    // the card's own copy-in lane (exact), on the placement the loaders made (the tier is paused and learns nothing), and the faster one is kept:
+    // the CPU lane unless the card's copy is clearly (10%) faster, because a CPU lane is the default of this engine and the probe is noisy.
+    // Runs once after the runner exists, before any request; a slot is reset when a request takes it, so the probe leaves no state behind.
+    void pick_cold_lane() {
+        auto& h = m.hybrid;
+        if (h.lane_pref != 0 || !h.active || m.n_host_experts == 0) return;   // forced lane, or nothing is cold
+        if (m.ls_active || has_img_step) {
+            std::fprintf(stderr, "[InkHybrid] cold experts: no launch probe on this configuration, computed on the CPU where they are\n");
+            return;
+        }
+        // The first 24 token ids of a plain chat prompt (the chat template's header and a user question): the experts they route to are those of real text,
+        // not of random ids, so the probe's share of cold experts is close to a request's.
+        static const int32_t kProbeTok[24] = {200002, 200004, 34182, 279, 154554, 150628, 25, 220, 15, 200010, 200000, 200004,
+                                              40, 150480, 149882, 150617, 153048, 13, 153611, 154845, 30, 200010, 200001, 200004};
+        constexpr int kWarm = 6, kTimed = 18;
+        const auto run_lane = [&](bool exact) -> double {
+            h.set_lane(exact);
+            for (auto& e : graph_cache) if (e.exec) cudaGraphExecDestroy(e.exec);
+            graph_cache.clear();
+            std::vector<double> ms;
+            for (int i = 0; i < kWarm + kTimed; ++i) {
+                int32_t tok = kProbeTok[i];
+                const auto t0 = std::chrono::steady_clock::now();
+                forward_seq(&tok, i, 1, 0, false);
+                INK_CK(cudaStreamSynchronize(st));
+                if (i >= kWarm) ms.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+            }
+            std::sort(ms.begin(), ms.end());
+            return ms[ms.size() / 2];
+        };
+        h.probing = true;
+        const double t_cpu = run_lane(false);
+        const double t_card = run_lane(true);
+        h.probing = false;
+        const bool exact = t_card < 0.9 * t_cpu;
+        h.set_lane(exact);
+        for (auto& e : graph_cache) if (e.exec) cudaGraphExecDestroy(e.exec);
+        graph_cache.clear();
+        if (h.d_use_cnt) INK_CK(cudaMemsetAsync(h.d_use_cnt, 0, (size_t)h.n_layers * h.n_experts * sizeof(float), st));
+        if (h.d_stat) INK_CK(cudaMemsetAsync(h.d_stat, 0, 2 * sizeof(unsigned long long), st));
+        std::fill(h.h_use_batch.begin(), h.h_use_batch.end(), 0.0f);   // the eager copy lane counted its routing here
+        if (h.d_trace_n) { INK_CK(cudaMemsetAsync(h.d_trace_n, 0, 4, st)); h.trace_flushed = 0; }
+        INK_CK(cudaStreamSynchronize(st));
+        std::fprintf(stderr, "[InkHybrid] cold experts: launch probe (%d decode steps each): CPU lane %.1f ms/token, copy into the card %.1f ms/token -> %s%s\n",
+                     kTimed, t_cpu, t_card, exact ? "copied into the card and computed by its kernels (identical answers wherever an expert lives)"
+                                                  : "computed on the CPU where they are (the answer can differ from an all-resident run in rounding)",
+                     " (STRATA_INK_EXACT=1 or 0 forces a lane)");
+    }
+
     // Speculative Tree-32 / Block-8 verify (100% CUDA-Graph capturable with safe eager fallback!)
     void forward_tree_verify(const InkTreeSpec& tree, int p0, int slot0, bool want_taps) {
         if (m.ls_active && cur_stage != 0) bind_stage(0);

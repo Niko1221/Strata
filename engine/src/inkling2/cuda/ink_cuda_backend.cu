@@ -337,6 +337,8 @@ public:
         std::fprintf(stderr, "[InkCUDA] memory: %.0f MiB free after load, runner+KV took %.0f MiB (max_batch=%d), DSpark took %.0f MiB, %.0f MiB free now\n",
                      led_loaded, led_loaded - led_runner, runner_->max_batch, led_runner - free_mib(), free_mib());
 
+        runner_->pick_cold_lane();   // STRATA_INK_EXACT unset: time the CPU lane and the copy-in lane for the cold experts once, keep the faster
+
         // Allocate snapshot buffer (3.83 MB) + selected hidden gather buffers
         if (!model_.ls_active) {
             d_sconv_snap_ = strata::ink::dalloc<float>((size_t)strata::ink::kInkVisits * 3 * strata::ink::kInkSconvCh);

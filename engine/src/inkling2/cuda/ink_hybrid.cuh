@@ -488,7 +488,7 @@ inline void eval_gguf_raw_batch_h(
         const size_t rb = strata::quant::row_bytes((int)hdr.gu_type, D);
         const auto* dk = (ti && ti->has_dot) ? strata::quant::dot_kernel(qt, arith) : nullptr;
         const auto* dk4 = (ti && ti->has_dot) ? strata::quant::dot_x4_kernel(qt, arith) : nullptr;
-        const auto* ak = (dk && ti && ti->act != qt) ? strata::quant::act_kernel(ti->act, arith) : nullptr;
+        const auto* ak = (dk && ti && (ti->act != qt || ti->act == strata::quant::Type::Q8_0)) ? strata::quant::act_kernel(ti->act, arith) : nullptr;
         const size_t act_rb = ak ? strata::quant::row_bytes((int)ti->act, D) : 0;
         const uint8_t* w_base = body + sizeof(InkGgufExpertHeader);
         if (dk && ak && act_rb > 0 && rb > 0) {
@@ -551,7 +551,7 @@ inline void eval_gguf_raw_batch_h(
         const size_t rb = strata::quant::row_bytes((int)hdr.dn_type, I);
         const auto* dk = (ti && ti->has_dot) ? strata::quant::dot_kernel(qt, arith) : nullptr;
         const auto* dk4 = (ti && ti->has_dot) ? strata::quant::dot_x4_kernel(qt, arith) : nullptr;
-        const auto* ak = (dk && ti && ti->act != qt) ? strata::quant::act_kernel(ti->act, arith) : nullptr;
+        const auto* ak = (dk && ti && (ti->act != qt || ti->act == strata::quant::Type::Q8_0)) ? strata::quant::act_kernel(ti->act, arith) : nullptr;
         const size_t act_rb = ak ? strata::quant::row_bytes((int)ti->act, I) : 0;
         const uint8_t* w_base = body + em.dn_off;
         if (dk && ak && act_rb > 0 && rb > 0) {
@@ -906,7 +906,7 @@ inline bool expert_splittable(const InkHostExpertMeta& em, const uint8_t* body) 
             const auto* ti = strata::quant::type_info(qt);
             const size_t rb = strata::quant::row_bytes((int)types[k], dims[k]);
             const auto* dk = (ti && ti->has_dot) ? strata::quant::dot_kernel(qt, arith) : nullptr;
-            const auto* ak = (dk && ti && ti->act != qt) ? strata::quant::act_kernel(ti->act, arith) : nullptr;
+            const auto* ak = (dk && ti && (ti->act != qt || ti->act == strata::quant::Type::Q8_0)) ? strata::quant::act_kernel(ti->act, arith) : nullptr;
             const size_t act_rb = ak ? strata::quant::row_bytes((int)ti->act, dims[k]) : 0;
             if (!(dk && ak && act_rb > 0 && rb > 0)) return false;
             if (act_rb > (k == 0 ? 3072u : 2048u)) return false;
@@ -1340,9 +1340,21 @@ struct InkHybridEngine {
     float* d_v_y    = nullptr;   // device mirror for fast scatter
     int32_t* d_v_p  = nullptr;   // device pair indices
     double dec_pcie_share = -1.0; // -1 = auto, 0 = 100% CPU, 1 = 100% PCIe DMA (STRATA_INK_DEC_PCIE_SHARE)
-    bool exact_mode = true;      // default ON (STRATA_INK_EXACT=0: the CPU computes cold experts, faster but not bit-identical to the card): no CPU compute of experts, so the result of a token does not depend on where an expert is
-    bool exact_graph = false;    // exact mode with the cold experts of a decode visit staged by the card inside the graph (needs the pinned arena)
-    bool needs_eager() const noexcept { return exact_mode && !exact_graph; }   // exact mode without the in-graph staging: decode runs eagerly (host sync per visit)
+    // Cold-expert lane at decode. STRATA_INK_EXACT unset = auto: a short launch probe times both lanes on this machine and keeps the faster one
+    // (fast, the CPU lane, unless the card's copy is clearly faster); =0 forces the CPU lane (fast, not bit-identical to the card), =1 forces
+    // exact (the card copies every cold expert in and computes it itself: the same bits wherever an expert lives, PCIe bound).
+    int lane_pref = 0;           // 0 auto, 1 exact, 2 fast
+    bool exact_mode = false;     // the lane in use now (set by set_lane)
+    bool stage_ready = false;    // the in-graph staging of exact mode is prepared (pinned arena, staging buffers)
+    bool probing = false;        // the launch probe is running: the tier does not move and does not learn
+    double dec_share_user = -1.0;
+    bool exact_graph = false;    // exact lane with the cold experts of a decode visit staged by the card inside the graph (needs the pinned arena)
+    bool needs_eager() const noexcept { return exact_mode && !exact_graph; }   // exact lane without the in-graph staging: decode runs eagerly (host sync per visit)
+    void set_lane(bool exact) noexcept {
+        exact_mode = exact;
+        exact_graph = exact && stage_ready;
+        dec_pcie_share = exact ? 1.0 : dec_share_user;   // exact: every cold expert is copied into the card
+    }
     uint32_t* d_key_bytes = nullptr;
     uint8_t* d_stage = nullptr;
     size_t stage_slot_bytes = 0;
@@ -1350,7 +1362,7 @@ struct InkHybridEngine {
 
     // After the loaders: prepare the in-graph staging of exact mode (the arena must be pinned: the card reads it).
     void exact_prepare() {
-        if (!exact_mode || !active || ssd_only || !sec4_is_pinned || !h_sec4_pinned || host_meta.empty()) return;
+        if (lane_pref == 2 || !active || ssd_only || !sec4_is_pinned || !h_sec4_pinned || host_meta.empty() || stage_ready) return;
         if (const char* e = std::getenv("STRATA_INK_EXACT_GRAPH")) if (e[0] == '0') return;   // keep the eager copy path (for A/B)
         size_t mx = 0;
         std::vector<uint32_t> kb(host_meta.size(), 0u);
@@ -1364,8 +1376,8 @@ struct InkHybridEngine {
         INK_CK(cudaMemcpy(d_key_bytes, kb.data(), kb.size() * 4, cudaMemcpyHostToDevice));
         d_stage_state = dalloc<InkStageState>(1);
         INK_CK(cudaMemset(d_stage_state, 0, sizeof(InkStageState)));
-        exact_graph = true;
-        std::fprintf(stderr, "[InkHybrid] exact mode: cold experts are staged by the card inside the graph (%zu x %.2f MB staging)\n", (size_t)kInkTopK, (double)stage_slot_bytes / 1e6);
+        stage_ready = true;
+        exact_graph = exact_mode;
     }
     uint32_t promo_step = 0;      // cadence counter so step_promote does NOT sync every single token!
     // Expert-cache statistics of the batched path (M <= 16, i.e. decode): every routed expert counted, and those that were not in the card
@@ -1376,6 +1388,8 @@ struct InkHybridEngine {
     unsigned long long* d_stat = nullptr;   // [2]
     // CPU-pool profile of the M = 1 doorbell path (printed by STATS when STRATA_INK_CPU_PROF is set)
     std::atomic<uint64_t> prof_ns{0}, prof_visits{0}, prof_jobs{0}, prof_bytes{0};
+    std::atomic<uint64_t> prof_plan_ns{0}, prof_own_ns{0}, prof_wait_ns{0}, prof_wbusy_ns{0}, prof_wtask_n{0};   // where a visit's wall time goes (row-shared path)
+    bool prof_on = false;
 
     // Routing trace (STRATA_INK_TRACE=<file>): device ring of kind-0 records (decode, M = 1), host records of kind 1 (batched rows).
     InkTraceRec* d_trace = nullptr;
@@ -1435,6 +1449,9 @@ struct InkHybridEngine {
             const double ns = (double)prof_ns.load(), by = (double)prof_bytes.load(), vis = (double)prof_visits.load(), jobs = (double)prof_jobs.load();
             std::fprintf(stderr, "[InkCpuProf] threads=%d visits=%.0f jobs=%.0f (%.2f experts/visit) cpu wall %.3f s = %.1f us/visit; %.2f GB read = %.2f GB/s aggregate, %.2f GB/s per thread; %.2f MB/expert\n",
                          n_threads, vis, jobs, jobs / vis, ns * 1e-9, ns * 1e-3 / vis, by * 1e-9, by / ns, by / ns / std::max(1, n_threads), by / std::max(1.0, jobs) * 1e-6);
+            std::fprintf(stderr, "[InkCpuProf] per visit: read bell + plan %.1f us, master's own share %.1f us, then waiting for the others %.1f us; the other threads busy %.1f us each (of %d)\n",
+                         (double)prof_plan_ns.load() * 1e-3 / vis, (double)prof_own_ns.load() * 1e-3 / vis, (double)prof_wait_ns.load() * 1e-3 / vis,
+                         (double)prof_wbusy_ns.load() * 1e-3 / vis / std::max(1, n_threads - 1), n_threads - 1);
         }
         if (trace_fp) {   // a STATS request marks the end of a request in the trace (kind 2)
             uint32_t dn = 0;
@@ -1741,10 +1758,13 @@ struct InkHybridEngine {
         if (const char* e = std::getenv("STRATA_INK_SPLIT")) split_experts = (e[0] != '0');
         if (const char* e = std::getenv("STRATA_L3_PF")) l3_pf_enabled = (e[0] != '0');
         if (const char* e = std::getenv("STRATA_INK_DEC_PCIE_SHARE")) dec_pcie_share = std::max(0.0, std::min(1.0, std::atof(e)));
-        if (const char* e = std::getenv("STRATA_INK_EXACT")) exact_mode = (e[0] != '0');
-        std::fprintf(stderr, "[InkHybrid] cold experts: %s\n", exact_mode ? "copied into the card and computed by its kernels (exact: the same bits wherever an expert lives)"
-                                                                       : "computed on the CPU where they are (STRATA_INK_EXACT=0: faster, not bit-identical to the card)");
-        if (exact_mode) dec_pcie_share = 1.0;   // every cold expert is copied into the card and computed by the card's own kernels: the same bits wherever the expert lives
+        dec_share_user = dec_pcie_share;
+        prof_on = std::getenv("STRATA_INK_CPU_PROF") != nullptr;
+        if (const char* e = std::getenv("STRATA_INK_EXACT")) lane_pref = (e[0] != '0') ? 1 : 2;
+        set_lane(lane_pref == 1);
+        if (lane_pref != 0)
+            std::fprintf(stderr, "[InkHybrid] cold experts: %s\n", lane_pref == 1 ? "copied into the card and computed by its kernels (STRATA_INK_EXACT=1: the same bits wherever an expert lives)"
+                                                                                : "computed on the CPU where they are (STRATA_INK_EXACT=0)");
         INK_CK(cudaHostAlloc(&h_bell, sizeof(InkMappedDoorbell), cudaHostAllocMapped));
         std::memset(h_bell, 0, sizeof(InkMappedDoorbell));
         INK_CK(cudaHostGetDevicePointer(&d_bell, h_bell, 0));
@@ -1824,7 +1844,13 @@ struct InkHybridEngine {
                     }
                     seen = g;
                     if (work_mode == 2) {
-                        run_row_tasks();
+                        if (prof_on) {
+                            const auto tb0 = std::chrono::steady_clock::now();
+                            run_row_tasks();
+                            prof_wbusy_ns.fetch_add((uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - tb0).count(), std::memory_order_relaxed);
+                        } else {
+                            run_row_tasks();
+                        }
                     } else if (work_mode == 1) {
                         while (true) {
                             const int gi = verify_next.fetch_add(1, std::memory_order_relaxed);
@@ -1871,6 +1897,7 @@ struct InkHybridEngine {
                 std::memcpy(cur_x, const_cast<const float*>(h_bell->x), kInkHidden * sizeof(float));
                 work_done.store(0, std::memory_order_relaxed);
                 if (plan_row_tasks()) {   // the experts' rows are shared by all the threads (the latency of a visit is its slowest chunk, not its slowest expert)
+                    const auto tq1 = std::chrono::steady_clock::now();
                     work_mode = 2;
                     work_gen.fetch_add(1, std::memory_order_release);
                     if (workers_sleeping.load(std::memory_order_acquire) > 0) {
@@ -1878,8 +1905,15 @@ struct InkHybridEngine {
                         wake_cv.notify_all();
                     }
                     run_row_tasks();
+                    const auto tq2 = std::chrono::steady_clock::now();
                     while (work_done.load(std::memory_order_acquire) < n_threads - 1) std::this_thread::yield();
                     work_mode = 0;
+                    if (prof_on) {
+                        const auto tq3 = std::chrono::steady_clock::now();
+                        prof_plan_ns.fetch_add((uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(tq1 - prof_t0).count(), std::memory_order_relaxed);
+                        prof_own_ns.fetch_add((uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(tq2 - tq1).count(), std::memory_order_relaxed);
+                        prof_wait_ns.fetch_add((uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(tq3 - tq2).count(), std::memory_order_relaxed);
+                    }
                 } else {
                 if (n_threads > 1 && cur_nj > 1) {
                     work_gen.fetch_add(1, std::memory_order_release);
@@ -2302,6 +2336,7 @@ struct InkHybridEngine {
     // every tier_round_rows tokens; the usage counters come back by an asynchronous copy (the round runs when the copy has arrived), so
     // nothing here waits for the card. Without the tier it is the older periodic promotion (M = 1 only).
     void step_after(int rows, uint8_t* d_sec4, InkExpertDev* const d_experts[24], cudaStream_t st) {
+        if (probing) return;
         trace_flush(false);
         if (!active) return;
         if (!tier_on) {
@@ -2441,7 +2476,7 @@ inline void launch_ink_moe_hybrid(
     }
     k_ink_router_select_topk8<<<M, 32, 0, st>>>(ws.r_logits, gate_b, ws.topk_idx, ws.topk_w, route_scale, M);
 
-    if (M == 1 && hyb.exact_graph) {
+    if (M == 1 && hyb.exact_mode && hyb.exact_graph) {
         // exact mode: the card copies the cold experts in and computes them itself (see k_ink_stage_plan)
         k_ink_stage_plan<<<1, 32, 0, st>>>(ip, const_cast<InkExpertDev*>(experts), ws.topk_idx, hyb.d_key_bytes, hyb.d_stage, hyb.stage_slot_bytes,
                                             sec4_base, hyb.d_stage_state, hyb.d_use_cnt, hyb.d_stat);
