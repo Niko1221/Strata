@@ -53,6 +53,26 @@ std::vector<std::string> apply_nv_defaults(int major, int minor, uint64_t main_v
 inline bool& adapt_fetch_default_flag() { static bool v = false; return v; }
 inline bool adapt_fetch_is_default() { return adapt_fetch_default_flag(); }
 
+/// Whether apply_nv_defaults put STRATA_GDN_SPLIT in the environment (the sm_70 table), as opposed to the user's own setting.
+inline bool& gdn_split_default_flag() { static bool v = false; return v; }
+inline bool gdn_split_is_default() { return gdn_split_default_flag(); }
+
+/// #6747: STRATA_GDN_SPLIT=1 keeps kVerifyMaxT token rows per thread and has no batched commit, so a window past kVerifyMaxT tokens
+/// (the 12-token --lookup-max-t default of the 8-row build) cannot use it: the first such window ended the engine with
+/// "gdn_step_norm_multi: invalid arguments" on a V100 default build.  The rule, once the lookup window is known:
+///   - the switch is off, or the window fits (lookup_max_t <= verify_max_t): nothing to do;
+///   - the switch is the table's default: drop the switch (the wide window stays, as it was before the sm_70 table existed);
+///   - the user set the switch: keep it and clamp the lookup window to verify_max_t (a warning, never an exit).
+struct GdnSplitWindowFix {
+    bool drop_default_split;
+    int lookup_max_t;
+};
+inline GdnSplitWindowFix gdn_split_window_fix(bool split_on, bool split_from_default, int lookup_max_t, int verify_max_t) {
+    if (!split_on || lookup_max_t <= verify_max_t) return {false, lookup_max_t};
+    if (split_from_default) return {true, lookup_max_t};
+    return {false, verify_max_t};
+}
+
 }  // namespace strata::core
 
 namespace strata::core {
