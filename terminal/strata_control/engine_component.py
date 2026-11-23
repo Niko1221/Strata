@@ -437,9 +437,16 @@ def _hash_settled(path: Path, digest: str) -> str | None:
     return actual
 
 
+#: Files (path, size, modification time in ns, recorded SHA-256) whose content was read in this process and matched. The quick check a listing makes
+#: hashes the engine's entrypoint (170 MB on Windows CUDA); the setup screens asked about the engine on every key and read it every time, which is
+#: what made `strata launch` take seconds per key on a PC with a slow disk or a virus checker (#6278, #5940). A file that changed has another size or
+#: time and is read again; `full=True` (a start) never uses this.
+_HASHED_OK: set = set()
+
+
 def verify(component: EngineComponent, *, full: bool = False) -> None:
     """Raise IntegrityProblem unless the files are what the manifest says. `full` hashes every file; without it only
-    the entrypoint is hashed (sizes are always checked)."""
+    the entrypoint is hashed (sizes are always checked), once per file as it is on disk (see _HASHED_OK)."""
     # extended-length paths: under a long user name an AMD engine's files pass 259 characters, which Windows (long paths off)
     # reports as "missing" for an ordinary path
     folder = longpath.long_path(component.root)
@@ -457,10 +464,16 @@ def verify(component: EngineComponent, *, full: bool = False) -> None:
         if info.st_size != size:
             raise IntegrityProblem(f"{rel} is {info.st_size} bytes, the manifest says {size}")
         if full or rel == component.entrypoint:
+            seen = (str(target), info.st_size, info.st_mtime_ns, digest)
+            if not full and seen in _HASHED_OK:
+                continue                           # the quick check a listing makes: this very file was read and matched a moment ago (#6278)
             actual = _hash_settled(target, digest)
             if actual != digest:
                 raise IntegrityProblem(f"{rel} does not match its recorded SHA-256 (expected {digest[:12]}, "
                                        f"found {actual[:12] if actual else 'unreadable'})")
+            if len(_HASHED_OK) >= 64:
+                _HASHED_OK.clear()
+            _HASHED_OK.add(seen)
     if os.name != "nt" and not os.access(component.exe, os.X_OK):
         raise IntegrityProblem(f"{component.entrypoint} is not executable")
 
@@ -550,12 +563,15 @@ def detect_backend(environ=None) -> tuple[str | None, str]:
     probes = (("cuda", ("nvidia-smi", "--query-gpu=name", "--format=csv,noheader")),
               ("hip", ("rocminfo",) if os.name != "nt" else ("hipInfo",)),
               ("sycl", ("sycl-ls",)))
-    vendors_here = {a.get("vendor") for a in adapters}
     vendor_of = {"cuda": "10de", "hip": "1002", "sycl": "8086"}
+    # only a card of a make Strata has an engine for can say "this PC has no card of that make". A virtual adapter (Microsoft's
+    # Virtual Render Driver, vendor 1414, in a Hyper-V GPU-PV guest, #4718) names no make, so it must not hide the NVIDIA card
+    # that nvidia-smi still reports inside the guest.
+    vendors_here = {a.get("vendor") for a in adapters} & set(vendor_of.values())
     for backend, command in probes:
         if vendors_here and vendor_of[backend] not in vendors_here:
             continue                                  # the adapters list no card of this make: a tool that answers is a leftover
-        tool = shutil.which(command[0])
+        tool = nvidia_smi_path() if command[0] == "nvidia-smi" else shutil.which(command[0])
         if not tool:
             continue
         try:
@@ -682,10 +698,13 @@ def _drm_vendor_backend(root: str = "/sys/class/drm") -> str | None:
 #: Strix Halo, 0x1586, is in WIN_AMD_UMA_IDS), so an integrated Radeon beside a card never counts as "the GPU".
 WIN_AMD_DEVICE_ARCH = {0x744C: "gfx1100", 0x7448: "gfx1100", 0x745E: "gfx1100", 0x747E: "gfx1101", 0x7480: "gfx1102",
                        0x7590: "gfx1200", 0x7550: "gfx1201", 0x7551: "gfx1201",
-                       0x73BF: "gfx1030", 0x73AF: "gfx1030", 0x73A5: "gfx1030", 0x73DF: "gfx1031",
+                       0x73BF: "gfx1030", 0x73AF: "gfx1030", 0x73A5: "gfx1030", 0x73A1: "gfx1030", 0x73DF: "gfx1031",
                        0x73FF: "gfx1032", 0x73EF: "gfx1032", 0x73E3: "gfx1032"}
-WIN_AMD_UMA_IDS = {0x1586: "gfx1151"}                                   # Strix Halo: unified memory, supported
-WIN_AMD_IGPU_IDS = {0x150E, 0x1114, 0x1902, 0x15BF, 0x15C8, 0x164F, 0x1900, 0x1901, 0x1681, 0x1638, 0x1636, 0x15D8, 0x15E7}
+WIN_AMD_UMA_IDS = {0x1586: "gfx1151",                                   # Strix Halo (8060S/8050S/8040S): unified memory, supported
+                   0x150E: "gfx1150",                                   # Strix Point (890M/880M): unified memory, supported
+                   0x15BF: "gfx1103", 0x15C8: "gfx1103", 0x164F: "gfx1103",  # Phoenix (780M/760M/740M): unified memory, supported
+                   0x1900: "gfx1103", 0x1901: "gfx1103"}                # Hawk Point (780M/760M): unified memory, supported
+WIN_AMD_IGPU_IDS = {0x1114, 0x1902, 0x164E, 0x1681, 0x1638, 0x1636, 0x15D8, 0x15E7}
 _WIN_DISPLAY_CLASS = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
 
 
@@ -826,23 +845,33 @@ def _windows_display_adapters_registry() -> list[dict]:
 
 
 def windows_amd_cards(adapters: list[dict] | None = None) -> list[dict]:
-    """The AMD graphics cards (not an integrated Radeon) among the Windows display adapters, each with the architecture Strata
-    runs it as ("" when the id is not in the table but the adapter has 3 GB or more of its own memory, so it is no APU)."""
-    cards = []
+    """The AMD graphics devices Strata supports among the Windows display adapters. Discrete Radeon cards always take
+    precedence over integrated UMA APUs when both are present; when only a supported UMA APU (Strix Halo gfx1151,
+    Strix Point 890M/880M gfx1150, or Radeon 780M/760M/740M gfx1103) is present, it is returned."""
+    discrete = []
+    uma = []
     for adapter in (windows_display_adapters() if adapters is None else adapters):
         if adapter.get("vendor") != "1002":
             continue
         device = adapter.get("device")
-        arch = WIN_AMD_DEVICE_ARCH.get(device) or WIN_AMD_UMA_IDS.get(device) or ""
-        if not arch and device not in WIN_AMD_IGPU_IDS:
+        d_arch = WIN_AMD_DEVICE_ARCH.get(device) or ""
+        u_arch = WIN_AMD_UMA_IDS.get(device) or ""
+        if d_arch:
+            discrete.append({"arch": d_arch, "name": adapter.get("name", ""), "device": device})
+            continue
+        if u_arch:
+            uma.append({"arch": u_arch, "name": adapter.get("name", ""), "device": device})
+            continue
+        if device not in WIN_AMD_IGPU_IDS:
             guess = gfx_from_name(adapter.get("name", ""))              # a card whose id is not in the table: its name says
-            if guess in ("gfx1103", "gfx1150", "gfx1152"):               # (those are integrated Radeons)
+            if guess in ("gfx1151", "gfx1150", "gfx1103"):
+                uma.append({"arch": guess, "name": adapter.get("name", ""), "device": device})
                 continue
-            arch = guess
-        if not arch and (device in WIN_AMD_IGPU_IDS or float(adapter.get("vram_gb") or 0) < 3.0):
-            continue                                                    # an integrated Radeon (512 MB of carve-out)
-        cards.append({"arch": arch, "name": adapter.get("name", ""), "device": device})
-    return cards
+            if guess == "gfx1152":                                      # Krackan Point: still unvalidated
+                continue
+            if guess or float(adapter.get("vram_gb") or 0) >= 3.0:
+                discrete.append({"arch": guess, "name": adapter.get("name", ""), "device": device})
+    return discrete if discrete else uma
 
 
 def _windows_vendor_backend(adapters: list[dict] | None = None) -> str | None:
@@ -922,7 +951,10 @@ def hip_archs_from_pci(drm_root: str = "/sys/class/drm", lspci: bool = True) -> 
                             ids.append(int(found.group(1), 16))
             except (OSError, subprocess.SubprocessError):
                 pass
-    return sorted({WIN_AMD_DEVICE_ARCH.get(i) or WIN_AMD_UMA_IDS.get(i) or "" for i in ids} - {""})
+    discrete = sorted({WIN_AMD_DEVICE_ARCH[i] for i in ids if i in WIN_AMD_DEVICE_ARCH})
+    if discrete:
+        return discrete
+    return sorted({WIN_AMD_UMA_IDS[i] for i in ids if i in WIN_AMD_UMA_IDS})
 
 
 _SMI_CACHE: dict = {}
@@ -941,8 +973,29 @@ def _smi_query(field_name: str) -> list[str]:
     return list(found)
 
 
-def _smi_query_now(field_name: str) -> list[str]:
+def _driver_store_smi(base: str | None = None) -> str | None:
+    """#4718: in a Hyper-V GPU-PV guest the NVIDIA driver is copied from the host into C:\\Windows\\System32\\HostDriverStore\\FileRepository\\nv*\\ and
+    nothing puts that folder on PATH, so `nvidia-smi` is not found although it works there.  The newest nvidia-smi.exe of that store, or None.
+    Plain string paths (no pathlib): the tests set os.name to "nt" on Linux."""
+    import glob
+    root = base or os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "HostDriverStore", "FileRepository")
+    try:
+        found = sorted(glob.glob(os.path.join(root, "nv*", "nvidia-smi.exe")), key=os.path.getmtime, reverse=True)
+    except OSError:
+        return None
+    return found[0] if found else None
+
+
+def nvidia_smi_path() -> str | None:
+    """nvidia-smi on PATH, else (Windows only) the one in the driver store of a GPU-PV guest; None when there is none."""
     tool = shutil.which("nvidia-smi")
+    if tool:
+        return tool
+    return _driver_store_smi() if os.name == "nt" else None
+
+
+def _smi_query_now(field_name: str) -> list[str]:
+    tool = nvidia_smi_path()
     if not tool:
         return []
     try:
@@ -1028,7 +1081,7 @@ def driver_notice(have: str | None, need: str) -> str:
 
 #: The AMD card families a person knows by the box they bought, for the one plain line when a build is for another family.
 HIP_FAMILIES = (("RX 9000", ("gfx1200", "gfx1201")), ("RX 7000", ("gfx1100", "gfx1101", "gfx1102")), ("RX 6000", ("gfx1030", "gfx1031", "gfx1032")),
-                ("Ryzen AI Max", ("gfx1151",)))
+                ("Ryzen AI Max", ("gfx1151",)), ("Ryzen AI 300", ("gfx1150",)), ("Radeon 780M", ("gfx1103",)))
 
 
 def hip_family(arch: str) -> str:
@@ -1101,6 +1154,9 @@ def resolve(root: Path | None = None, *, backend: str | None = None, target: str
     archs_here = cuda_archs_present() if wanted == "cuda" else []
     driver_here = nvidia_driver_version() if wanted == "cuda" else None
     hip_here = hip_archs_present() if wanted == "hip" else []
+    if wanted == "hip" and not hip_here and os.name != "nt":
+        hip_here = hip_archs_from_pci()
+    hip_here_base = {a.split(":", 1)[0].lower() for a in hip_here}
     have_runtime = runtime if runtime is not None else runtime_version()
     for item in found:
         label = f"{item.version} {item.platform}-{item.backend}"
@@ -1122,7 +1178,7 @@ def resolve(root: Path | None = None, *, backend: str | None = None, target: str
             reasons.append(f"{label} has code for {', '.join(item.cuda_archs)}, this PC's GPU is "
                            f"{', '.join(archs_here)}")
             continue
-        if item.hip_archs and hip_here and not set(item.hip_archs) & set(hip_here):
+        if item.hip_archs and hip_here_base and not ({a.split(":", 1)[0].lower() for a in item.hip_archs} & hip_here_base):
             reasons.append(f"{label} has code for {', '.join(item.hip_archs)}, this PC's GPU is "
                            f"{', '.join(hip_here)}")
             arch_blocked.append(item)

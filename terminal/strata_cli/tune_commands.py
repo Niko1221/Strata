@@ -260,9 +260,54 @@ def _hw_hash(identity: dict[str, Any]) -> str:
     return tune_machine.stable_hash((identity.get("hardware") or {}).get("hard"))
 
 
+HY4_NO_TUNING = "Tencent Hy4-Flash needs no tuning: its speed and memory placement are set automatically by strata-hy4."
+INKLING_NO_TUNING = "Inkling-2-Mini needs no tuning: its speed and memory placement are set automatically by strata-inkling."
+
+
+def _is_inkling_target_name(target: str) -> bool:
+    from serve import inkling_kind
+    t = (target or "").strip().lower()
+    if t.startswith("inkling-2-mini") or "/inkling-2-mini" in t or t in ("sq-10", "sq-15", "sq-20"):
+        return True
+    if "/" in t:
+        fam, _, size = t.partition("/")
+        if fam.strip() == "inkling-2-mini" or size.strip() in ("sq-10", "sq-15", "sq-20"):
+            return True
+    try:
+        p = Path(target)
+        if p.is_file():
+            raw = json.loads(p.read_text(encoding="utf-8-sig"))
+            if isinstance(raw, dict) and inkling_kind.is_inkling(raw):
+                return True
+    except (OSError, ValueError):
+        pass
+    return False
+
+
+def _is_hy4_target_name(target: str) -> bool:
+    from serve import hy4_kind
+    t = (target or "").strip().lower()
+    if t.startswith("hy4-flash") or "/hy4-flash" in t or t in ("sq-32", "sq-64", "sq-96", "sq-128"):
+        return True
+    if "/" in t:
+        fam, _, size = t.partition("/")
+        if fam.strip() == "hy4-flash" or size.strip() in ("sq-32", "sq-64", "sq-96", "sq-128"):
+            return True
+    try:
+        p = Path(target).expanduser()
+        if p.is_file():
+            raw = json.loads(p.read_text(encoding="utf-8-sig"))
+            if isinstance(raw, dict) and hy4_kind.is_hy4(raw):
+                return True
+    except (OSError, ValueError):
+        pass
+    return False
+
+
 # --------------------------------------------------------------------------- tune auto
 
 def auto(a: argparse.Namespace) -> int:
+    from serve import hy4_kind, inkling_kind
     from strata_control import autotune, engine_component, presets, tune_knobs, tuning
     from strata_control.tune_session import WorkerSession
 
@@ -271,7 +316,15 @@ def auto(a: argparse.Namespace) -> int:
         goal, reserve = _parse_goal(a.goal)
         cfg_path, cfg = _load_target(a.target)
     except Exception as e:  # noqa: BLE001
+        if _is_hy4_target_name(getattr(a, "target", "")):
+            return _fail(HY4_NO_TUNING, 2, machine)
+        if _is_inkling_target_name(getattr(a, "target", "")):
+            return _fail(INKLING_NO_TUNING, 2, machine)
         return _fail(str(e), getattr(e, "exit_code", 2), machine)
+    if hy4_kind.is_hy4(cfg) or _is_hy4_target_name(getattr(a, "target", "")):
+        return _fail(HY4_NO_TUNING, 2, machine)
+    if inkling_kind.is_inkling(cfg) or _is_inkling_target_name(getattr(a, "target", "")):
+        return _fail(INKLING_NO_TUNING, 2, machine)
     if not 0 <= a.leave_ram <= 50:
         return _fail("--leave-ram is a percentage from 0 to 50", 2, machine)
     if a.leave_ram and goal == "speed":
@@ -569,9 +622,17 @@ def _recheck(a: argparse.Namespace, machine: bool) -> int:
     stale = presets.staleness(preset, ident)
     if stale["state"] == "hard":
         return _fail("this PC changed too much for a re-check (" + "; ".join(stale["reasons"]) + "): tune again with strata tune auto", 5, machine)
-    engine_changed = int((preset.get("identity", {}).get("engine") or {}).get("tuning_epoch") or 0) != \
-        int((ident.get("engine") or {}).get("tuning_epoch") or 0)
-    opts = autotune.Options(use=(preset.get("choices") or {}).get("use", "chat"))
+    saved_choices = preset.get("choices") or {}
+    choices = presets.choices_from_config(cfg)
+    # The CLI can pick a benchmark goal that is not written into the model config.
+    choices["goal"] = saved_choices.get("goal", choices["goal"])
+    slot = presets.slot_key(choices, (ident.get("model") or {}).get("sha256_shard1"))
+    if preset.get("slot") != slot:
+        return _fail("these choices differ from the saved tuning: tune again or use the original choices", 5, machine)
+    old_identity = preset.get("identity") or {}
+    compare_baseline = (presets.engine_changed(old_identity.get("engine") or {}, ident.get("engine") or {})
+                        or old_identity.get("memory_policy") != ident.get("memory_policy"))
+    opts = autotune.Options(use=saved_choices.get("use", "chat"))
     ctx = autotune.context_from_config(cfg, engine_backend=(ident.get("engine") or {}).get("backend"), opts=opts,
                                        engine_flags=tuning.engine_flag_inventory(
                                            Path(exe), wanted=tuning.dimension_flags() | tune_knobs.arm_flags()))
@@ -588,7 +649,7 @@ def _recheck(a: argparse.Namespace, machine: bool) -> int:
         _write_status(a.status_file, state)
         say(p["message"])
 
-    out = autotune.recheck(session, [str(x) for x in cfg.get("args") or []], preset, ctx=ctx, engine_changed=engine_changed,
+    out = autotune.recheck(session, [str(x) for x in cfg.get("args") or []], preset, ctx=ctx, engine_changed=compare_baseline,
                            progress=progress)
     out["identity"] = ident
     updated = presets.record_recheck(preset["id"], out)

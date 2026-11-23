@@ -43,7 +43,13 @@ class TheMapping(unittest.TestCase):
         ((["POSIX"], ["C.UTF-8"], []), "cjk"),
         (([], [], []), "cjk"),
         ((["en-US"], ["en-US"], ["en-US"]), "cjk"),          # English only: the default, untouched
-        ((["ar-SA"], ["he-IL"], ["hi-IN", "th-TH"]), "cjk"),   # scripts the files do not cover
+        ((["he-IL"], ["hi-IN"], ["th-TH"]), "cjk"),          # scripts the files do not cover
+        ((["ar-SA"], [], []), "arabic"),                     # #6578: Arabic script
+        ((["en-US"], ["ar-EG"], []), "arabic"),
+        ((["fa-IR"], [], []), "arabic"),
+        ((["ur-PK"], [], []), "arabic"),
+        ((["uz-Arab"], [], []), "arabic"),
+        ((["ar-SA"], ["zh-CN"], []), "cjk"),                 # CJK still wins over Arabic
         ((["uk"], [], []), "cyrillic"),
         ((["bg"], [], []), "cyrillic"),
         ((["sr-Cyrl"], [], []), "cyrillic"),
@@ -82,6 +88,7 @@ class TheMapping(unittest.TestCase):
     def test_tags(self):
         for tag, want in (("en", ""), ("en-US", ""), ("en-Latn-US", ""), ("C", ""), ("POSIX", ""), ("C.UTF-8", ""), ("", ""), (None, ""), ("zh-Hans", "cjk"), ("zh_TW.UTF-8", "cjk"),
                           ("yue-HK", "cjk"), ("ja", "cjk"), ("ko_KR.eucKR", "cjk"), ("x-Jpan", "cjk"), ("ru", "cyrillic"), ("uz-Cyrl", "cyrillic"), ("uz", "latin"), ("de@euro", "latin"),
+                          ("ar", "arabic"), ("ar-SA", "arabic"), ("fa_IR.UTF-8", "arabic"), ("ur", "arabic"), ("pa-Arab", "arabic"),
                           ("nonsense", "")):
             self.assertEqual(drafting.script_of_language(tag), want, tag)
 
@@ -169,6 +176,9 @@ class ThePickAtStart(unittest.TestCase):
         decision, cfg = self.start({"ui": ["de-DE"]})
         self.assertEqual(self.vocab_of(cfg), DATA / "draft_vocab_latin.bin")
         self.assertEqual(decision.vocab, "draft vocabulary: draft_vocab_latin.bin (by this computer's language: de)")
+        decision, cfg = self.start({"ui": ["en-US"], "region": ["ar-SA"]})
+        self.assertEqual(self.vocab_of(cfg), DATA / "draft_vocab_arabic.bin")
+        self.assertEqual(decision.vocab, "draft vocabulary: draft_vocab_arabic.bin (by this computer's language: ar)")
         self.assertNotIn("draft_vocab", cfg, "the pick is worked out at each start and never saved")
         self.assertEqual((decision.drafter, decision.note), ("dflash2", ""))
 
@@ -178,7 +188,7 @@ class ThePickAtStart(unittest.TestCase):
             self.assertEqual(self.vocab_of(cfg), self.mtp / "draft_vocab.bin", signals)
 
     def test_a_saved_choice_always_wins_also_the_default_one(self):
-        for saved in ("cjk", "en", "cyrillic", "fr", "latin"):
+        for saved in ("cjk", "en", "cyrillic", "fr", "latin", "arabic"):
             decision, cfg = self.start({"ui": ["ru-RU"]}, {"draft_vocab": saved})
             self.assertEqual(self.vocab_of(cfg), self.mtp / "draft_vocab.bin", saved)        # the copy setup put there; the pick does not touch it
             self.assertEqual(decision.vocab, "draft vocabulary: draft_vocab.bin (set by you)", saved)
@@ -263,7 +273,7 @@ class TheShippedFiles(unittest.TestCase):
 
 class ThePackagingLists(unittest.TestCase):
     """data/ goes into every package whole (packaging/package_terminal.py INSTALLER_DATA is the folder, not a list of files), so a choice's file is in the Terminal's installer bundle, the app's Control
-    component (apps/desktop/scripts/stage-control.py takes the same name) and the Mac's Control. The Mac ENGINE folder (metal/data) carries only the default file, by design: the other choices are read from Control's data/."""
+    component (app/desktop/scripts/stage-control.py takes the same name) and the Mac's Control. The Mac ENGINE folder (metal/data) carries only the default file, by design: the other choices are read from Control's data/."""
 
     def test_the_installer_data_is_the_whole_folder_and_leaves_no_registered_file_out(self):
         sys.path.insert(0, str(ROOT.parent / "tools" / "packaging"))

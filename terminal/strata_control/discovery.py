@@ -353,6 +353,11 @@ def footprint(cfg: dict, config: Path | None = None) -> Footprint:
         v = _flag_value(args, flag)
         if v and v.lower().endswith(".gguf") and Path(v) not in fp.weights and flag != "--ple-gguf":
             fp.weights.append(Path(v))
+    if not fp.weights and str(cfg.get("arch") or "").lower() in ("hy4flash", "inkling2_loop"):
+        for flag in ("--native", "--engram"):
+            v = _flag_value(args, flag)
+            if v and v.lower().endswith(".strata") and Path(v) not in fp.weights:
+                fp.weights.append(Path(v))
     if not fp.weights:
         fp.weights = [Path(a) for a in args if a.lower().endswith(".gguf")][:1]
     pack = _flag_value(args, "--pack")
@@ -364,6 +369,9 @@ def footprint(cfg: dict, config: Path | None = None) -> Footprint:
         fp.mmproj = Path(str(vision["mmproj"]))
         fp.pictures_wanted = True
     elif "--vision" in args:
+        v = _flag_value(args, "--vision")
+        if v and not v.startswith("--") and v.lower().endswith(".strata"):
+            fp.mmproj = Path(v)
         fp.pictures_wanted = True
     fp.data_dir = data_dir_of(fp)
     return fp
@@ -388,8 +396,13 @@ def _models_chain(first: Path) -> tuple[Path, list[Path]]:
 
 def data_dir_of(fp: Footprint) -> Path | None:
     """The data folder an installed model lives in: the parent of its ``packs`` folder, else the one holding ``models`` (a nest of
-    ``models`` dirs counts as one, ``_models_chain``)."""
+    ``models`` dirs counts as one, ``_models_chain``).  A ready-made pack downloaded into ``models/<owner>--<repo>/pack`` sits under
+    ``models``, so its data folder is the one holding ``models``."""
     if fp.pack is not None:
+        if fp.pack.parent.name.lower() != "packs":
+            for parent in fp.pack.parents:
+                if parent.name.lower() == "models":
+                    return _models_chain(parent)[0]
         return fp.pack.parent.parent
     if fp.mtp is not None and fp.mtp.name.lower() == "rt":
         return fp.mtp.parent.parent

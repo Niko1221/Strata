@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <vector>
 
 namespace strata::program::split_rules {
@@ -144,6 +145,16 @@ inline size_t pick_with_headroom(const std::vector<Placement>& c, double tol) {
 
 constexpr double kLinkScaleMin = 4.0;
 
+/// STRATA_SPLIT_LINK_MIN (BW-MG, opt-in): the gap (the fastest stage's link / this stage's) from which the miss term is scaled; unset, empty or anything that is not a number >= 1 keeps kLinkScaleMin.
+/// 2x RTX 5090 on a PCIe 4.0 x8 + x2 board (14.1 and 3.6 GB/s probed, a gap of 3.92): auto K=24 reads a 4K prompt in 5,950 ms against 4,270 on the x8 card alone; with the gap read as 3 the split
+/// puts fewer layers on the x2 card (RESULTS-BW-E.md).
+inline double link_scale_min_resolve(const char* env) {
+    if (env == nullptr || env[0] == '\0') return kLinkScaleMin;
+    char* end = nullptr;
+    const double v = std::strtod(env, &end);
+    return end != env && v >= 1.0 ? v : kLinkScaleMin;
+}
+
 /// Per stage: the factor on its miss term, from the probed H2D GB/s of each stage (<= 0: not probed -> 1.0).
 inline std::vector<double> link_miss_scale(const std::vector<double>& gbps, double min_ratio = kLinkScaleMin) {
     double fastest = 0.0;
@@ -156,6 +167,19 @@ inline std::vector<double> link_miss_scale(const std::vector<double>& gbps, doub
         s[i] = r >= min_ratio ? (r > 64.0 ? 64.0 : r) : 1.0;
     }
     return s;
+}
+
+// ---- the gate-off fallback must still load.  When no placement can start the prompt path the search chooses by decode speed
+// alone, and nothing checked that a later stage's cache can hold anything; a later stage with no room for one expert slot ends
+// the start ("layer split, CUDA1 expert cache: no room").  2x 8 GB (RTX 3060 Ti + RTX 3070 Ti) with DFlash2 on CUDA1: the PCIe
+// probe put the link gap at 3.66-4.33, on both sides of kLinkScaleMin, and the K=45 it picked below the step could not load.
+// So the fallback first keeps to placements in which every later stage holds at least one slot; with none, it picks as before.
+
+/// held[i]: the expert slots stage i's cache holds in the search's fill.  True when a stage after the first holds none.
+inline bool later_stage_empty(const std::vector<int64_t>& held) {
+    for (size_t i = 1; i < held.size(); ++i)
+        if (held[i] <= 0) return true;
+    return false;
 }
 
 /// The smallest spare room over the stages of `cuts`: room[i] - session(lb, le) - need(lb, le), where `need_prefix[l]`

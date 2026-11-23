@@ -6,6 +6,7 @@
 #include "strata/artifact/dequant.hpp"
 #include "strata/kernels/f16_bits.hpp"
 #include "strata/ngram/ple_reader.hpp"
+#include "strata/core/progress.hpp"
 #include "strata/platform/memory.hpp"
 
 #include <cerrno>
@@ -25,6 +26,10 @@
 #include <thread>
 #include <vector>
 #include <stdexcept>
+
+#if defined(__AVX__) && !defined(__AVX2__)
+#include <immintrin.h>
+#endif
 
 #if defined(_WIN32)
 // `PrefetchVirtualMemory` (memoryapi.h, Windows 8+) is the whole point of the change in `gather` below.
@@ -138,11 +143,29 @@ void iq4nl_dequant_row(const uint8_t* row, float* out160) {
         std::memcpy(&dbits, blk, 2);
         const float d = f32_from_f16(dbits);
         const uint8_t* qs = blk + 2;
+        // The halves use the same scalar multiply order, including signed zero and non-finite scales.
+#if defined(__AVX__) && !defined(__AVX2__)
+        const __m128i table = _mm_loadu_si128(reinterpret_cast<const __m128i*>(kIq4Nl));
+        const __m128i mask = _mm_set1_epi8(15);
+        const __m128i codes = _mm_loadu_si128(reinterpret_cast<const __m128i*>(qs));
+        __m128i lo = _mm_shuffle_epi8(table, _mm_and_si128(codes, mask));
+        __m128i hi = _mm_shuffle_epi8(table, _mm_and_si128(_mm_srli_epi16(codes, 4), mask));
+        const __m128 scale = _mm_set1_ps(d);
+        for (int j = 0; j < 16; j += 4) {
+            _mm_storeu_ps(out160 + b * 32 + j,
+                          _mm_mul_ps(scale, _mm_cvtepi32_ps(_mm_cvtepi8_epi32(lo))));
+            _mm_storeu_ps(out160 + b * 32 + j + 16,
+                          _mm_mul_ps(scale, _mm_cvtepi32_ps(_mm_cvtepi8_epi32(hi))));
+            lo = _mm_srli_si128(lo, 4);
+            hi = _mm_srli_si128(hi, 4);
+        }
+#else
         // SPLIT HALVES: qs[j] holds elements j and j+16, not 2j and 2j+1.
         for (int j = 0; j < 16; ++j) {
             out160[b * 32 + j] = d * (float) kIq4Nl[qs[j] & 0x0F];
             out160[b * 32 + j + 16] = d * (float) kIq4Nl[qs[j] >> 4];
         }
+#endif
     }
 }
 
@@ -267,6 +290,7 @@ struct PleTable::Impl {
     strata::ngram::PleReader::Ticket ticket;
     bool pending = false;
     bool locked = false;
+    bool faulted = false;   // true when --ple-io ram already touched/locked every page in RAM (skip per-row madvise!)
     // the table is shared by the prompt path and the decode windows; they can use it at once (one on a worker thread)
     std::recursive_mutex mu;
     uint32_t rows[PLE_N_HEADS] = {};
@@ -517,6 +541,7 @@ bool PleTable::open(const std::string& gguf_path, std::string& err, const PleIoO
                                      "but may be reclaimed\n", std::strerror(why));
         }
 #endif
+        impl_->faulted = true;
     }
     impl_->mode = io.mode;
     return true;
@@ -561,6 +586,7 @@ void PleTable::close() {
     impl_->reader.close();
     impl_->pending = false;
     impl_->locked = false;   // the unmap below releases the lock
+    impl_->faulted = false;
     impl_->mode = PleIo::Mmap;
     delete impl_->file;
     impl_->file = nullptr;
@@ -735,11 +761,81 @@ bool PleTable::gather_batch(const uint32_t* rows, size_t n_tokens, float* out, s
         }
 #endif
     };
+    // Parallelize large in-memory/mmap prompt batches (n >= 2048 rows = >= 128 tokens) across up to 8 CPU threads:
+    // each row reads immutable `impl_->data` and writes disjoint `out + i * PLE_HEAD_DIM` via `impl_->decode`, so the
+    // decoded floats are bit-for-bit identical to the serial loop while eliminating the ~40 ms single-thread FP8/BF16
+    // PLE dequant stall on NVFP4 and non-IQ4_NL tables.
+    const unsigned max_thr = std::thread::hardware_concurrency();
+    const unsigned n_thr = (impl_->data != nullptr && n >= 2048 && max_thr > 1) ? std::min(8u, max_thr) : 1u;
+    if (n_thr > 1u) {
+        const bool in_ram = impl_->locked || impl_->faulted;
+        const uint8_t* data = impl_->data;
+        const uint64_t n_rows = impl_->n_rows;
+        const size_t rb = impl_->rb;
+        const auto decode_fn = [&](uint32_t row, float* dst) {
+            if (row >= n_rows) {
+                std::memset(dst, 0, (size_t) PLE_HEAD_DIM * sizeof(float));
+                return false;
+            }
+            impl_->decode(data + (size_t) row * rb, dst);
+            return true;
+        };
+        std::atomic<uint64_t> valid_rows{0};
+        if (in_ram) {
+            // --ple-io ram already faulted/locked every page into RAM: skip 32K+ per-row madvise syscalls and run ONE
+            // thread-team pass over the whole batch.
+            const unsigned use_thr = std::min<unsigned>(n_thr, (unsigned) ((n + 255) / 256));
+            std::vector<std::thread> workers;
+            workers.reserve(use_thr - 1u);
+            auto work = [&](unsigned tid) {
+                const size_t lo = (n * tid) / use_thr;
+                const size_t hi = (n * (tid + 1u)) / use_thr;
+                uint64_t ok = 0;
+                for (size_t i = lo; i < hi; ++i) ok += decode_fn(rows[i], out + i * PLE_HEAD_DIM) ? 1u : 0u;
+                valid_rows.fetch_add(ok, std::memory_order_relaxed);
+            };
+            for (unsigned tid = 1u; tid < use_thr; ++tid) workers.emplace_back(work, tid);
+            work(0u);
+            for (auto& th : workers) th.join();
+            strata::core::progress_beat();
+            impl_->bytes_read += valid_rows.load(std::memory_order_relaxed) * (uint64_t) rb;
+            return true;
+        }
+        hint(0, std::min(n, kWin));
+        for (size_t w = 0; w < n; w += kWin) {
+            if (w + kWin < n) hint(w + kWin, std::min(n, w + 2 * kWin));
+            const size_t e = std::min(n, w + kWin);
+            const size_t cnt = e - w;
+            const unsigned use_thr = std::min<unsigned>(n_thr, (unsigned) ((cnt + 255) / 256));
+            if (use_thr <= 1u) {
+                uint64_t ok = 0;
+                for (size_t i = w; i < e; ++i) ok += decode_fn(rows[i], out + i * PLE_HEAD_DIM) ? 1u : 0u;
+                valid_rows.fetch_add(ok, std::memory_order_relaxed);
+            } else {
+                std::vector<std::thread> workers;
+                workers.reserve(use_thr - 1u);
+                auto work = [&](unsigned tid) {
+                    const size_t lo = w + (cnt * tid) / use_thr;
+                    const size_t hi = w + (cnt * (tid + 1u)) / use_thr;
+                    uint64_t ok = 0;
+                    for (size_t i = lo; i < hi; ++i) ok += decode_fn(rows[i], out + i * PLE_HEAD_DIM) ? 1u : 0u;
+                    valid_rows.fetch_add(ok, std::memory_order_relaxed);
+                };
+                for (unsigned tid = 1u; tid < use_thr; ++tid) workers.emplace_back(work, tid);
+                work(0u);
+                for (auto& th : workers) th.join();
+            }
+            strata::core::progress_beat();
+        }
+        impl_->bytes_read += valid_rows.load(std::memory_order_relaxed) * (uint64_t) rb;
+        return true;
+    }
     hint(0, std::min(n, kWin));
     for (size_t w = 0; w < n; w += kWin) {
         if (w + kWin < n) hint(w + kWin, std::min(n, w + 2 * kWin));
         const size_t e = std::min(n, w + kWin);
         for (size_t i = w; i < e; ++i) read_row(rows[i], out + i * PLE_HEAD_DIM);
+        strata::core::progress_beat();   // #4682, #3952: a window of demand faults that came back is progress for the serve watchdog
     }
     return true;
 }

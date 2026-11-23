@@ -129,7 +129,7 @@ class CatalogRules(unittest.TestCase):
             self.assertEqual((rec["family"], rec["model"]), ("qwen", "IQ3_XXS"))
 
     def test_fit_on_matches_native_fit_ts(self):
-        # apps/host/src/lib/native-fit.ts: memory = experts + 1; GPU holds experts up to vram - 5; RAM holds up to ram - 10; the rest spills
+        # app/host/src/lib/native-fit.ts: memory = experts + 1; GPU holds experts up to vram - 5; RAM holds up to ram - 10; the rest spills
         f = fit_on({"experts_gb": 42.9, "ram_needed_gb": 60}, 64.0, 12.0)
         self.assertEqual((f["memoryGb"], f["vramUseGb"], f["spillGb"]), (43.9, 12.0, 0.0))
         self.assertAlmostEqual(f["ramUseGb"], 35.9, places=1)
@@ -146,7 +146,9 @@ class CatalogRules(unittest.TestCase):
             cat = catalog(hw)
             rows = {r.model: r for r in cat.rows()}
             self.assertEqual(set(rows), {"Q2_0", "IQ3_XXS", "IQ3_S", "Gyro-S", "Gyro-M", "UD-IQ1_M",
-                                "UD-Q2_0", "UD-IQ2_XS", "UD-Q2_K_XL", "UD-IQ3_XXS", "UD-Q3_K_XL", "UD-IQ4_XS-v31", "UD-Q4_K_XL", "UD-Q5_K_XL", "UD-Q6_K_XL"})   # Unsloth's sets (round 0214: the Mac app repacks them)
+                                "UD-Q2_0", "UD-IQ2_XS", "UD-Q2_K_XL", "UD-IQ3_XXS", "UD-Q3_K_XL", "UD-IQ4_XS-v31", "UD-Q4_K_XL", "UD-Q5_K_XL", "UD-Q6_K_XL",
+                                "SQ-64", "SQ-96", "SQ-128",
+                                "SQ-20", "SQ-15", "SQ-10", "UD-IQ1_S", "UD-IQ2_XXS", "UD-IQ4_XS", "UD-Q4_K_M", "UD-Q8_K_XL"})   # Unsloth's sets + Hy4-Flash + Inkling-2-Mini builds on Mac
             self.assertEqual([r.model for r in rows.values() if r.recommended], ["Q2_0"])
             self.assertEqual((rows["Q2_0"].verdict, rows["Q2_0"].words), ("slower", "may run slower"))
             self.assertEqual(rows["IQ3_S"].verdict, "slower")
@@ -1176,13 +1178,13 @@ class ConnectCommand(unittest.TestCase):
     def test_list_and_unknown_names(self):
         code, out, _ = run_cli(["connect"])
         self.assertEqual(code, 0)
-        for h in ("opencode", "codex", "claude-code", "omp", "pi", "hermes", "openclaw", "deepseek-harness"):
+        for h in ("opencode", "codex", "claude-code", "cline", "omp", "pi", "hermes", "openclaw", "deepseek-harness"):
             self.assertIn(h, out)
         code, out, err = run_cli(["connect", "opncode"])
         self.assertEqual(code, 2)
         self.assertIn("Did you mean 'opencode'", err)
         code, out, _ = run_cli(["connect", "--output", "json"])
-        self.assertEqual(len(json.loads(out)["harnesses"]), 8)
+        self.assertEqual(len(json.loads(out)["harnesses"]), len(harness.HARNESSES))
 
     def test_prints_the_config_with_a_masked_key(self):
         code, out, err = run_cli(["connect", "opencode", "--url", "http://127.0.0.1:8123", "--key", "sk-strata-abcdefghij1234", "--model", "m1"])
@@ -1217,13 +1219,13 @@ class ConnectCommand(unittest.TestCase):
     def test_write_keeps_a_backup_and_merges(self):
         target = Path(os.environ["HOME"]) / ".config" / "opencode" / "opencode.json"
         target.parent.mkdir(parents=True)
-        target.write_text(json.dumps({"theme": "dark", "provider": {"other": {"a": 1}}}))
+        target.write_text(json.dumps({"theme": "dark", "providers": {"other": {"a": 1}}}))
         code, out, err = run_cli(["connect", "opencode", "--url", "http://127.0.0.1:8080", "--key", "sk-x1234567890abc", "--write", "--yes"])
         self.assertEqual(code, 0, err)
         data = json.loads(target.read_text())
         self.assertEqual(data["theme"], "dark")
-        self.assertIn("other", data["provider"])
-        self.assertIn("strata", data["provider"])
+        self.assertIn("other", data["providers"])
+        self.assertIn("strata", data["providers"])
         backups = list(target.parent.glob("opencode.json.strata-bak-*"))
         self.assertEqual(len(backups), 1)
         self.assertEqual(json.loads(backups[0].read_text())["theme"], "dark")
@@ -1256,18 +1258,18 @@ class ConnectCommand(unittest.TestCase):
 
     def test_all_eight_are_tested_configs(self):
         self.assertEqual([h.id for h in harness.HARNESSES],
-                         ["opencode", "codex", "claude-code", "omp", "pi", "hermes", "openclaw", "deepseek-harness"])
+                         ["opencode", "codex", "claude-code", "cline", "omp", "pi", "hermes", "openclaw", "deepseek-harness"])
         for h in harness.HARNESSES:
             self.assertTrue(h.tested, h.id)
             self.assertIn("tested", h.status)
 
     def test_opencode_has_limit_input_and_the_15k_compaction_buffer(self):
         cfg = json.loads(self.render("opencode")["files"][0]["text"])
-        m = cfg["provider"]["strata"]["models"]["qwen3.8-flash-next-q2_0"]
+        m = cfg["providers"]["strata"]["models"]["qwen3.8-flash-next-q2_0"]
         self.assertEqual(m["limit"], {"context": 32768, "input": 28672, "output": 4096})
         self.assertEqual(cfg["compaction"]["buffer"], 13672)                  # 28672 - 15000
-        self.assertEqual(cfg["provider"]["strata"]["options"]["baseURL"], "http://127.0.0.1:18900/v1")
-        self.assertEqual(cfg["provider"]["strata"]["options"]["apiKey"], "strata-local")
+        self.assertEqual(cfg["providers"]["strata"]["settings"]["baseURL"], "http://127.0.0.1:18900/v1")
+        self.assertEqual(cfg["providers"]["strata"]["settings"]["apiKey"], "strata-local")
 
     def test_codex_uses_responses_and_the_key_variable(self):
         out = self.render("codex", key="sk-real")

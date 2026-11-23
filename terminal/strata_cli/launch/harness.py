@@ -75,7 +75,7 @@ class Harness:
     id: str
     title: str
     speaks: str
-    tested: str = ""                   # "opencode 1.19.3": the version the config was tested with
+    tested: str = ""                   # "opencode 2.2.3": the version the config was tested with
     files: list[FileSpec] = field(default_factory=list)
     env: Callable[[Target], dict[str, str]] | None = None
     limits: Callable[[Target], list[str]] | None = None
@@ -97,15 +97,48 @@ def _j(obj) -> str:
 
 # ------------------------------------------------------------------------------------------------ the eight
 
+def _is_hy4(t: Target) -> bool:
+    return (t.model or "").strip().lower().startswith("hy4-flash")
+
+
+def _is_inkling(t: Target) -> bool:
+    return (t.model or "").strip().lower().startswith("inkling-2-mini")
+
+
+def _display_name(t: Target) -> str:
+    m = (t.model or "").lower()
+    if m.startswith("hy4-flash"):
+        return "Tencent Hy4-Flash (Strata, local)"
+    if m.startswith("inkling-2-mini"):
+        return "Inkling-2-Mini (Strata, local)"
+    if m.startswith("qwen3.6") or m.startswith("qwen36"):
+        return "Qwen3.6-35B-A3B (Strata, local)"
+    return "Qwen3.8-Flash-Next (Strata, local)"
+
+
 def opencode_file(t: Target) -> str:
-    return _j({"$schema": "https://opencode.ai/config.json", "model": f"strata/{t.model}", "small_model": f"strata/{t.model}",
-               "autoupdate": False,
+    return _j({"$schema": "https://opencode.ai/config.json", "model": f"strata/{t.model}",
                "compaction": {"auto": True, "buffer": max(1024, t.input_limit - compact_at(t))},
                "share": "disabled",
-               "provider": {"strata": {"npm": "@ai-sdk/openai-compatible", "name": "Strata (local)",
-                                       "options": {"baseURL": t.base, "apiKey": t.key},
-                                       "models": {t.model: {"name": "Qwen3.8-Flash-Next (local)", "tool_call": True, "reasoning": True,
-                                                            "limit": {"context": t.context, "input": t.input_limit, "output": t.output_cap}}}}}})
+               "providers": {"strata": {"package": "@opencode/ai/providers/openai-compatible", "name": "Strata (local)",
+                                        "settings": {"baseURL": t.base, "apiKey": t.key},
+                                        "models": {t.model: {
+                                            "name": _display_name(t),
+                                            "type": "chat",
+                                            "capabilities": {
+                                                "tools": True,
+                                                "input": ["text"],
+                                                "output": ["text"],
+                                                "reasoning": {"supported": not _is_inkling(t), "effort": ["low", "medium", "high"],
+                                                              "toggle": not _is_inkling(t)},
+                                            },
+                                            "compatibility": {"reasoningField": "reasoning_content"},
+                                            "variants": [
+                                                {"id": "low", "settings": {"reasoningEffort": "low"}, "body": {"reasoning_budget_tokens": 2048}},
+                                                {"id": "none", "body": {"reasoning_effort": "none"}},
+                                                {"id": "budget", "body": {"reasoning_budget_tokens": 4096}},
+                                            ],
+                                            "limit": {"context": t.context, "input": t.input_limit, "output": t.output_cap}}}}}})
 
 
 def codex_file(t: Target) -> str:
@@ -113,7 +146,13 @@ def codex_file(t: Target) -> str:
             f"model_auto_compact_token_limit = {compact_at(t)}\nmodel_reasoning_summary = \"auto\"\napproval_policy = \"never\"\n"
             'sandbox_mode = "workspace-write"\ncheck_for_update_on_startup = false\n\n[model_providers.strata]\n'
             f'name = "Strata (local)"\nbase_url = "{t.base}"\nwire_api = "responses"\nenv_key = "STRATA_API_KEY"\n'
-            "stream_idle_timeout_ms = 600000\n")
+            "stream_idle_timeout_ms = 600000\n\n[model_providers.strata.capabilities]\nremote_compaction = \"unsupported\"\n")
+
+
+def cline_file(t: Target) -> str:
+    return _j({"apiProvider": "openai", "openAiBaseUrl": t.base, "openAiApiKey": t.key, "openAiModelId": t.model,
+               "openAiModelInfo": {"maxTokens": t.output_cap, "contextWindow": t.context, "supportsImages": True,
+                                   "supportsPromptCache": True, "inputPrice": 0, "outputPrice": 0}})
 
 
 def claude_env(t: Target) -> dict[str, str]:
@@ -129,28 +168,37 @@ def claude_file(t: Target) -> str:
 
 
 def omp_models(t: Target) -> str:
+    if _is_inkling(t):
+        return ("providers:\n  strata:\n    baseUrl: " + t.base + "\n    api: openai-completions\n    auth: none\n    compat:\n"
+                "      supportsDeveloperRole: false\n    models:\n      - id: " + t.model + "\n        name: " + _display_name(t) + "\n"
+                "        reasoning: false\n        input: [text]\n        contextWindow: " + str(t.context) + "\n        maxTokens: " + str(t.output_cap) + "\n"
+                "        cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0}\n")
+    efforts = "[high, max]" if _is_hy4(t) else "[minimal, low, medium, high]"
+    default_level = "high" if _is_hy4(t) else "medium"
     return ("providers:\n  strata:\n    baseUrl: " + t.base + "\n    api: openai-completions\n    auth: none\n    compat:\n"
-            "      supportsDeveloperRole: false\n    models:\n      - id: " + t.model + "\n        name: Qwen3.8-Flash-Next (Strata, local)\n"
+            "      supportsDeveloperRole: false\n    models:\n      - id: " + t.model + "\n        name: " + _display_name(t) + "\n"
             "        reasoning: true\n        input: [text]\n        contextWindow: " + str(t.context) + "\n        maxTokens: " + str(t.output_cap) +
-            "\n        thinking:\n          mode: effort\n          efforts: [minimal, low, medium, high]\n          defaultLevel: medium\n"
+            f"\n        thinking:\n          mode: effort\n          efforts: {efforts}\n          defaultLevel: {default_level}\n"
             "        cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0}\n")
 
 
 def omp_config(t: Target) -> str:
-    return ("modelRoles:\n  default: strata/" + t.model + "\ndefaultThinkingLevel: medium\ncompaction:\n  enabled: true\n  thresholdTokens: "
+    level = "off" if _is_inkling(t) else ("high" if _is_hy4(t) else "medium")
+    return ("modelRoles:\n  default: strata/" + t.model + f"\ndefaultThinkingLevel: {level}\ncompaction:\n  enabled: true\n  thresholdTokens: "
             + str(compact_at(t)) + "\n  keepRecentTokens: 4000\n  methodOrder:\n    - soft\n  idleEnabled: false\nsetupVersion: 2\n")
 
 
 def pi_models(t: Target) -> str:
     return _j({"providers": {"strata": {"baseUrl": t.base, "api": "openai-completions", "apiKey": t.key,
                                         "compat": {"supportsDeveloperRole": False, "supportsReasoningEffort": False},
-                                        "models": [{"id": t.model, "name": "Qwen3.8-Flash-Next (Strata, local)", "reasoning": True,
+                                        "models": [{"id": t.model, "name": _display_name(t), "reasoning": not _is_inkling(t),
                                                     "input": ["text"], "contextWindow": t.context, "maxTokens": t.output_cap,
                                                     "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0}}]}}})
 
 
 def pi_settings(t: Target) -> str:
-    return _j({"defaultProvider": "strata", "defaultModel": t.model, "defaultThinkingLevel": "medium",
+    level = "off" if _is_inkling(t) else ("high" if _is_hy4(t) else "medium")
+    return _j({"defaultProvider": "strata", "defaultModel": t.model, "defaultThinkingLevel": level,
                "compaction": {"enabled": True, "reserveTokens": max(1024, t.context - compact_at(t)), "keepRecentTokens": 4000}})
 
 
@@ -163,7 +211,7 @@ def openclaw_file(t: Target) -> str:
     return _j({"models": {"mode": "merge", "providers": {"strata": {
         "baseUrl": t.base, "apiKey": t.key, "api": "openai-completions",
         "models": [{"id": t.model, "name": f"{t.model} (Strata)", "contextWindow": t.context,
-                    "contextTokens": int(t.context * 23192 / 32768), "maxTokens": t.output_cap, "reasoning": True, "input": ["text"],
+                    "contextTokens": int(t.context * 23192 / 32768), "maxTokens": t.output_cap, "reasoning": not _is_inkling(t), "input": ["text"],
                     "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0}}]}}},
         "agents": {"defaults": {"model": {"primary": f"strata/{t.model}"},
                                 "compaction": {"enabled": True, "notifyUser": True, "keepRecentTokens": 4000}}}})
@@ -187,11 +235,19 @@ def _limits_claude(t: Target) -> list[str]:
     out = ["ANTHROPIC_BASE_URL is the server address %s without /v1: Claude Code adds /v1/messages itself (with /v1 in it the requests go to /v1/v1/messages)." % t.url,
            "Set CLAUDE_CODE_MAX_CONTEXT_TOKENS to the served context (%d here) and CLAUDE_CODE_MAX_OUTPUT_TOKENS=%d: without them Claude Code "
            "assumes a 100K window and never compacts, or compacts on every turn." % (t.context, t.output_cap),
+           'Set "anthropic_thinking": "on_request" in strata-<model>.json (or run-defaults.json) so Claude Code\'s short helper and auto-compaction summary requests do not spend their output room thinking (#6460).',
+           "Set --conversation-cache-min-tokens 2048 (for example --conversation-cache-min-tokens 2048 --conversation-cache-slots 8) so Claude Code's small side requests (titles, summaries) do not evict your main parked conversation (#6463).",
            "No Anthropic login or credential is used; the token is only checked by your own server.",
            "The notice [claude-code:unrecognized_model] on stderr is harmless."]
     if t.context <= 40960:
         out.append("Its full prompt is 15.6K tokens (20 tools): with a 32K window use CLAUDE_CODE_SIMPLE=1 (3 tools, 1.25K tokens), as set here.")
     return out
+
+
+def _limits_cline(t: Target) -> list[str]:
+    return ["Select 'OpenAI Compatible' in Cline's API Provider settings and point Base URL at %s with Model ID %s." % (t.base, t.model),
+            "Set Context Window Size to %d and Max Output Tokens to %d; enable Supports Images when vision is on." % (t.context, t.output_cap),
+            "No cloud key is needed: any API key text works when Strata runs locally without an API key."]
 
 
 def _limits_omp(t: Target) -> list[str]:
@@ -228,7 +284,7 @@ def _limits_dsh(t: Target) -> list[str]:
 
 
 HARNESSES: list[Harness] = [
-    Harness("opencode", "OpenCode", "chat + tools", tested="opencode 1.19.3",
+    Harness("opencode", "OpenCode", "chat + tools", tested="opencode 2.2.3",
             files=[FileSpec("~/.config/opencode/opencode.json", "json", opencode_file, merge=True)], limits=_limits_opencode,
             run='opencode run "your task"', install="npm i -g opencode-ai"),
     Harness("codex", "Codex CLI", "responses + tools", tested="codex-cli 0.163.0",
@@ -237,6 +293,9 @@ HARNESSES: list[Harness] = [
     Harness("claude-code", "Claude Code", "messages + tools", tested="Claude Code 2.1.302",
             files=[FileSpec("~/.claude/settings.json", "json", claude_file, merge=True)], env=claude_env, limits=_limits_claude,
             run='claude -p "your task"', install="npm i -g @anthropic-ai/claude-code", aliases=("claude",)),
+    Harness("cline", "Cline", "chat + tools", tested="Cline 3.17",
+            files=[FileSpec("~/.cline/strata-provider.json", "json", cline_file, merge=True)], limits=_limits_cline,
+            install="Install Cline in VS Code (saoudrizwan.claude-dev)"),
     Harness("omp", "oh-my-pi (omp)", "chat + tools", tested="omp 18.11.2",
             files=[FileSpec("~/.omp/agent/models.yml", "yaml", omp_models), FileSpec("~/.omp/agent/config.yml", "yaml", omp_config)],
             limits=_limits_omp, run='omp -p "your task"', install="curl -fsSL https://omp.sh/install | sh", aliases=("oh-my-pi",)),
@@ -293,12 +352,13 @@ def expand(path: str) -> Path:
     return Path(os.path.expanduser(path))
 
 
-def write_file(spec: dict, *, backup: bool = True, if_unchanged: bool = False) -> dict:
+def write_file(spec: dict, *, backup: bool = True, if_unchanged: bool = False, dry_run: bool = False) -> dict:
     """Write one rendered file. An existing file is copied to `<name>.strata-bak-<time>` first; a JSON file with `merge` keeps the
     keys it already had (the new ones win on the same key). With `if_unchanged`, a file that already holds exactly the text this
-    call would write (after the merge) is left alone: no write, no backup, action `unchanged`. Returns {path, backup, action}."""
+    call would write (after the merge) is left alone: no write, no backup, action `unchanged`. With `dry_run`, nothing on disk is
+    created or modified and the planned action is returned (`would_create`, `would_merge`, `would_replace`, or `unchanged`).
+    Returns {path, backup, action}."""
     path = expand(spec["path"])
-    path.parent.mkdir(parents=True, exist_ok=True)
     existed = path.is_file()
     text = spec["text"]
     if existed and spec.get("merge") and spec["kind"] == "json":
@@ -316,34 +376,39 @@ def write_file(spec: dict, *, backup: bool = True, if_unchanged: bool = False) -
         # platform's line ends, UTF-8 without a BOM), so a file with other line ends or a BOM is written again in that form (#5957)
         try:
             if path.read_bytes() == final.replace("\n", os.linesep).encode("utf-8"):
-                try:
-                    os.chmod(path, 0o600)           # left as it is, but private like a written one: it can hold the API key
-                except OSError:
-                    pass
+                if not dry_run:
+                    try:
+                        os.chmod(path, 0o600)       # left as it is, but private like a written one: it can hold the API key
+                    except OSError:
+                        pass
                 return {"path": str(path), "backup": None, "action": "unchanged"}
         except OSError:
             pass                                    # a file we cannot read is not a file we can promise is unchanged
-    bak = None
-    if existed and backup:
-        bak = path.with_name(path.name + ".strata-bak-" + time.strftime("%Y%m%d-%H%M%S"))
+    bak = path.with_name(path.name + ".strata-bak-" + time.strftime("%Y%m%d-%H%M%S")) if existed and backup else None
+    action = "merged" if existed and spec.get("merge") and spec["kind"] == "json" else ("replaced" if existed else "created")
+    if dry_run:
+        return {"path": str(path), "backup": str(bak) if bak else None, "action": "would_" + action.rstrip("d") if action != "merged" else "would_merge"}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if bak is not None:
         shutil.copy2(path, bak)
     path.write_text(final, encoding="utf-8")
     try:
         os.chmod(path, 0o600)                       # it can hold the API key
     except OSError:
         pass
-    return {"path": str(path), "backup": str(bak) if bak else None,
-            "action": "merged" if existed and spec.get("merge") and spec["kind"] == "json" else ("replaced" if existed else "created")}
+    return {"path": str(path), "backup": str(bak) if bak else None, "action": action}
 
 
 def _keep_output_cap(old, merged) -> None:
     """The output cap in a config being rewritten (in place on `merged`): a value the person set stays, so does a larger one from a newer Strata. The value
     older Strata versions wrote on every window (OUTPUT_CAP, 4,096) is the generated default and is replaced, or the files written before #5006 would keep
-    the cap that breaks compaction for ever. OpenCode's limit.output and Claude Code's CLAUDE_CODE_MAX_OUTPUT_TOKENS."""
+    the cap that breaks compaction for ever. OpenCode's limit.output (both v2 `providers` and v1 `provider`) and Claude Code's CLAUDE_CODE_MAX_OUTPUT_TOKENS."""
     if not (isinstance(old, dict) and isinstance(merged, dict)):
         return
-    models = ((old.get("provider") or {}).get("strata") or {}).get("models")
-    new_models = ((merged.get("provider") or {}).get("strata") or {}).get("models")
+    old_providers = old.get("providers") or old.get("provider")
+    new_providers = merged.get("providers") or merged.get("provider")
+    models = ((old_providers or {}).get("strata") or {}).get("models") if isinstance(old_providers, dict) else None
+    new_models = ((new_providers or {}).get("strata") or {}).get("models") if isinstance(new_providers, dict) else None
     if isinstance(models, dict) and isinstance(new_models, dict):
         for name, entry in models.items():
             was = ((entry or {}).get("limit") or {}).get("output") if isinstance(entry, dict) else None

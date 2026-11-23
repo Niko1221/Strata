@@ -194,6 +194,22 @@ DRAFT_HEAD_HINT = ("a smaller draft vocabulary needs less VRAM: --draft-vocab cy
                    "keeps it; or a smaller --context in setup.")
 
 
+COMMIT_FAIL_HINT = ("Windows could promise only {left:.1f} GiB more memory (RAM + page file) while this start plans {planned:.1f} GiB "
+                    "and keeps {floor:.1f} GiB free, so the engine may have run out of memory it can be given while RAM was still "
+                    "free. A bigger page file helps: set it to \"System managed\" (System > About > Advanced system settings > "
+                    "Performance > Advanced > Virtual memory), or start with a smaller context.")
+
+
+def commit_failure_hint(text: str) -> str:
+    """#5133 / #3725: a start that ended after the engine's own Windows commit-limit warning (#1607: "N GiB of it is left, but this
+    run plans M GiB") is told the page file is the thing to change; "" when the start's log has no such warning."""
+    from serve import commit_limit
+    warned = commit_limit.commit_warning(text)
+    if not warned:
+        return ""
+    return ". memory: " + COMMIT_FAIL_HINT.format(left=warned["left_gib"], planned=warned["planned_gib"], floor=warned["floor_gib"])
+
+
 def start_failure_hint(log: str | None, offset: int) -> str:
     """#474: what to change when the engine stopped at the start because the MTP draft head did not fit the VRAM
     left: the engine's own `strata mtp:` lines after that failure (0.1.36+: what it needs, what is free, the smaller
@@ -207,7 +223,7 @@ def start_failure_hint(log: str | None, offset: int) -> str:
     except (OSError, ValueError):
         return ""
     if DRAFT_HEAD_FAIL not in text:
-        return ""
+        return commit_failure_hint(text)
     said = [x.strip()[len("strata mtp: "):] for x in text.splitlines()
             if x.strip().startswith("strata mtp: ") and ("draft head over" in x or "hint:" in x)]
     return ". mtp: " + DRAFT_HEAD_FAIL + ". " + (" ".join(said) if said else "Hint: " + DRAFT_HEAD_HINT)
@@ -455,6 +471,29 @@ def read_engine_stage_log(path: str | None, start: int, limit: int = 2 << 20) ->
     return []
 
 
+def helper_gpus(cfg: dict, env: dict | None) -> list[tuple[int, str]]:
+    """The cards the engine uses beside the ones the config's "gpu" names - helper expert caches
+    (--expert-cache-device1..3, CUDA1..3) and a peer tier (--peer-device N) - as (nvidia-smi number, role). The engine
+    names them by CUDA ordinal; CUDA_VISIBLE_DEVICES with CUDA_DEVICE_ORDER=PCI_BUS_ID maps an ordinal to its card.
+    Empty when that list is missing or ambiguous: the Monitor then shows the configured cards only, as before."""
+    order = visible_device_order(env, cfg.get("backend"))
+    if len(order) < 2:
+        return []
+    args = [str(a) for a in (cfg.get("args") or [])]
+    found: list[tuple[int, str]] = []
+    for i, a in enumerate(args[:-1]):
+        value = args[i + 1]
+        ordinal, role = None, None
+        m = re.fullmatch(r"--expert-cache-device([123])", a)
+        if m and (value == "auto" or (value.isdigit() and int(value) > 0)):
+            ordinal, role = int(m.group(1)), "helper cache"
+        elif a == "--peer-device" and value.isdigit() and int(value) > 0:
+            ordinal, role = int(value), "peer tier"
+        if ordinal is not None and ordinal < len(order) and all(order[ordinal] != g for g, _ in found):
+            found.append((order[ordinal], role))
+    return found
+
+
 def visible_device_order(env: dict | None, backend: str | None) -> list[int]:
     """Map engine ordinals to OS GPU indices only when the visibility list is unambiguous."""
     if backend not in (None, "cuda", "hip"):
@@ -548,6 +587,8 @@ def vision_log_size(log=None) -> int:
     """How long the encoder's stderr file is now (0 when there is none): a start reads only what it wrote after this."""
     try:
         name = getattr(log, "name", None)
+        if not isinstance(name, (str, bytes, os.PathLike)):  # #6467: never pass an int fd from os.fdopen()
+            return 0
         return os.path.getsize(name) if name else 0
     except (OSError, TypeError):
         return 0
@@ -558,7 +599,7 @@ def vision_log_tail(log=None, limit: int = 16384, since: int = 0) -> str:
     is none or it cannot be read), but nothing from before `since` (the file's size when this start began: a log that several starts share)."""
     try:
         name = getattr(log, "name", None)
-        if name:
+        if isinstance(name, (str, bytes, os.PathLike)) and name:  # #6467: open(int) would wrap and close the log fd
             with open(name, "rb") as f:
                 f.seek(0, 2)
                 f.seek(max(since, f.tell() - limit))
@@ -782,6 +823,14 @@ def parallel_args(cfg: dict, args: list[str]) -> list[str]:
         if isinstance(n, int) and not isinstance(n, bool) and n >= 1:
             args[args.index("--batch") + 1] = str(min(n, SPLIT_MAX_LANES))
         return []
+    if cfg.get("arch") in ("inkling2_loop", "inkling2", "inkling2_loop_text"):
+        # Inkling-2-Mini supports native 1..64 continuous batching (`--parallel 1|4|8|32|64`)!
+        if "--parallel" in args or "--batch" in args or "--slots" in args:
+            return []
+        n = cfg.get("parallel")
+        if isinstance(n, bool) or not isinstance(n, int) or n <= 1:
+            return []
+        return ["--parallel", str(min(n, 64))]
     if "--batch" in args or "--slots" in args:
         return []
     n = cfg.get("parallel")
@@ -1019,9 +1068,9 @@ def pick_hip_devices(devices: list[dict]) -> tuple[list[int] | None, str | None]
 
 
 def parallel_slots(cfg: dict) -> int:
-    """How many batch slots the config asks for (0 = none): the args' own --batch/--slots, else "parallel"."""
+    """How many batch slots the config asks for (0 = none): the args' own --batch/--slots/--parallel, else "parallel"."""
     args = list(cfg.get("args") or [])
-    for k in ("--batch", "--slots"):
+    for k in ("--batch", "--slots", "--parallel"):
         if k in args:
             try:
                 return int(args[args.index(k) + 1])
