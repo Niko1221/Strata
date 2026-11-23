@@ -456,7 +456,7 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
     // STRATA_INK_SPEC=adapt: greedy drafting stays on only while one verify window is worth its cost. Per request, after every 12 speculative
     // steps: the smoothed tokens per step / (spec step ms / plain step ms) below 0.93 turns drafting off for 40 plain steps, then it probes again. The plain step
     // time is measured on the first 4 decode steps of the first request and refreshed by every plain step after that.
-    const bool spec_adapt = (spec_env && std::string(spec_env) == "adapt");
+    const bool spec_adapt = (spec_env && std::string(spec_env) == "adapt") || cfg.bopts.spec_adapt;
     double gov_t_plain = 0.0, gov_t_spec = 0.0;
 
     // Probe Vision shard lazily (zero VRAM/RAM until first image request)

@@ -104,6 +104,8 @@ def drafter_args(cfg: dict, info: dict | None = None) -> list[str]:
         beam = cfg.get("draft_beam", inkling_family.DRAFT_BEAM)
         if isinstance(beam, int) and not isinstance(beam, bool) and 1 <= beam <= 8:
             out += ["--draft-beam", str(beam)]
+        if cfg.get("draft_adapt", inkling_family.DRAFT_ADAPT) is True:
+            out += ["--draft-adapt"]
     return out
 
 

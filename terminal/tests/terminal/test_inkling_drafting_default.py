@@ -44,12 +44,12 @@ class DraftingDefault(unittest.TestCase):
 
     def test_the_window_shape_goes_to_an_engine_that_takes_it(self):
         cfg = {"arch": "inkling2_loop", "drafting": "dspark", "args": ["--native", "m.strata"]}
-        self.assertEqual(inkling_kind.drafter_args(cfg, {"drafter": "dspark", "spec_opts": "1"}), ["--draft", "dspark", "--draft-beam", "1"])
+        self.assertEqual(inkling_kind.drafter_args(cfg, {"drafter": "dspark", "spec_opts": "1"}), ["--draft", "dspark", "--draft-beam", "1", "--draft-adapt"])
         # an older engine (no spec_opts) is not given a flag it would refuse
         self.assertEqual(inkling_kind.drafter_args(cfg, {"drafter": "dspark"}), ["--draft", "dspark"])
         # the run config can ask for the beam tree
         cfg4 = dict(cfg, draft_beam=4)
-        self.assertEqual(inkling_kind.drafter_args(cfg4, {"drafter": "dspark", "spec_opts": "1"}), ["--draft", "dspark", "--draft-beam", "4"])
+        self.assertEqual(inkling_kind.drafter_args(cfg4, {"drafter": "dspark", "spec_opts": "1"}), ["--draft", "dspark", "--draft-beam", "4", "--draft-adapt"])
         # no drafter in the file: nothing
         self.assertEqual(inkling_kind.drafter_args(cfg, {"drafter": "none", "spec_opts": "1"}), [])
         # drafting off still emits --draft off (#6670)

@@ -33,6 +33,8 @@ DRAFTERS = ("off", "dspark")
 #: Window shape the engine is told to use when drafting is on (`--draft-beam`): 1 = one linear chain, the block drafter; 4 = the beam tree.
 #: Measured 2026-11-23 (0221-DSPARK): the chain is as fast as the tree on CUDA (within 3 percent either way) and simpler.
 DRAFT_BEAM = 1
+#: `--draft-adapt`: per request, drafting goes off for 40 steps when the measured gain (tokens per step over the step cost) falls below 0.93.
+DRAFT_ADAPT = True
 #: Backends whose verify window gives bit-identical answers to plain decoding (greedy, the same tokens as `--draft off` at 600 / 4K / 16K
 #: and in a 5-run fingerprint). Drafting is on by default only there: the owner's rule is that a drafter must earn its place with measured
 #: speed AND identical output. 0221-DSPARK measured the opposite on every card (answers differ from token 4 to 330 on chat, prose, json and
