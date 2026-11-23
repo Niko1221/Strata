@@ -31,7 +31,7 @@
    "reads": [
     {
      "file": "engine/src/kernels/cpu/native_expert.cpp",
-     "line": 449,
+     "line": 450,
      "backend": "cpu",
      "fn": "getenv"
     }
@@ -64,13 +64,13 @@
    "reads": [
     {
      "file": "engine/src/kernels/cpu/native_expert.cpp",
-     "line": 452,
+     "line": 453,
      "backend": "cpu",
      "fn": "getenv"
     },
     {
      "file": "engine/src/kernels/cpu/native_expert.cpp",
-     "line": 452,
+     "line": 453,
      "backend": "cpu",
      "fn": "getenv"
     }
@@ -103,7 +103,7 @@
    "reads": [
     {
      "file": "engine/src/kernels/cpu/native_expert.cpp",
-     "line": 453,
+     "line": 454,
      "backend": "cpu",
      "fn": "getenv"
     }
@@ -4526,7 +4526,7 @@
    "reads": [
     {
      "file": "engine/src/kernels/cpu/native_expert.cpp",
-     "line": 588,
+     "line": 589,
      "backend": "cpu",
      "fn": "getenv"
     }
@@ -7435,6 +7435,45 @@
    "status": "research",
    "owner": "core",
    "note": "[auto] off unless set, not documented for users",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_DOT_X4",
+   "backends": [
+    "cpu"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/kernels/cpu/native_expert.cpp",
+     "line": 736,
+     "backend": "cpu",
+     "fn": "getenv"
+    },
+    {
+     "file": "engine/src/kernels/cpu/native_expert.cpp",
+     "line": 861,
+     "backend": "cpu",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "string",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "66f2ee2b0a",
+   "first_date": "2026-11-23",
+   "since": null,
+   "last_commit": "66f2ee2b0a",
+   "last_date": "2026-11-23",
+   "status": "opt-in",
+   "owner": "kernels/cpu",
+   "note": "CPU native expert path (0221 QPERF, #6552): =1 uses the 4-row dot kernels (dot_x4) for Q4_K / IQ4_XS and similar; off by default because they are slower than four 1-row calls where memory is the limit (0.24-0.52x on Zen 4, 0.29-0.32x on Zen 3) and only faster on some Intel cores; same bits either way. STRATA_NO_DOT_X4 still forces them off.",
    "retire_after": "",
    "retired_in": ""
   },
@@ -18205,7 +18244,7 @@
    "reads": [
     {
      "file": "engine/src/kernels/cpu/native_expert.cpp",
-     "line": 553,
+     "line": 554,
      "backend": "cpu",
      "fn": "getenv"
     }
@@ -18275,7 +18314,7 @@
    "reads": [
     {
      "file": "engine/src/kernels/cpu/native_expert.cpp",
-     "line": 623,
+     "line": 624,
      "backend": "cpu",
      "fn": "getenv"
     }
@@ -18343,7 +18382,7 @@
    "reads": [
     {
      "file": "engine/src/kernels/cpu/native_expert.cpp",
-     "line": 632,
+     "line": 633,
      "backend": "cpu",
      "fn": "getenv"
     }
@@ -18376,7 +18415,7 @@
    "reads": [
     {
      "file": "engine/src/kernels/cpu/native_expert.cpp",
-     "line": 636,
+     "line": 637,
      "backend": "cpu",
      "fn": "getenv"
     }
@@ -18457,13 +18496,13 @@
     },
     {
      "file": "engine/src/kernels/cpu/native_expert.cpp",
-     "line": 544,
+     "line": 545,
      "backend": "cpu",
      "fn": "getenv"
     },
     {
      "file": "engine/src/kernels/cpu/native_expert.cpp",
-     "line": 797,
+     "line": 798,
      "backend": "cpu",
      "fn": "getenv"
     }
@@ -18933,13 +18972,13 @@
    "reads": [
     {
      "file": "engine/src/kernels/cpu/native_expert.cpp",
-     "line": 658,
+     "line": 659,
      "backend": "cpu",
      "fn": "getenv"
     },
     {
      "file": "engine/src/kernels/cpu/native_expert.cpp",
-     "line": 798,
+     "line": 799,
      "backend": "cpu",
      "fn": "getenv"
     }
@@ -18982,13 +19021,13 @@
    "reads": [
     {
      "file": "engine/src/kernels/cpu/native_expert.cpp",
-     "line": 662,
+     "line": 663,
      "backend": "cpu",
      "fn": "getenv"
     },
     {
      "file": "engine/src/kernels/cpu/native_expert.cpp",
-     "line": 808,
+     "line": 809,
      "backend": "cpu",
      "fn": "getenv"
     }
@@ -26422,19 +26461,19 @@
    "reads": [
     {
      "file": "engine/src/kernels/cpu/native_expert.cpp",
-     "line": 735,
+     "line": 736,
      "backend": "cpu",
      "fn": "getenv"
     },
     {
      "file": "engine/src/kernels/cpu/native_expert.cpp",
-     "line": 860,
+     "line": 861,
      "backend": "cpu",
      "fn": "getenv"
     }
    ],
    "parse": "flag",
-   "default_state": "on",
+   "default_state": null,
    "code_default": null,
    "engine_sets": [],
    "engine_defaults": [],
@@ -26445,8 +26484,8 @@
    "first_commit": "7aaa789a94",
    "first_date": "2026-11-22",
    "since": "v0.2.20",
-   "last_commit": "7aaa789a94",
-   "last_date": "2026-11-22",
+   "last_commit": "66f2ee2b0a",
+   "last_date": "2026-11-23",
    "status": "rollback",
    "owner": "quant/x86",
    "note": "disable 4-row shared-activation AVX-512 VNNI dot_*_x4 kernels and fall back to single-row dots",
@@ -26462,13 +26501,13 @@
    "reads": [
     {
      "file": "engine/src/kernels/cpu/native_expert.cpp",
-     "line": 583,
+     "line": 584,
      "backend": "cpu",
      "fn": "getenv"
     },
     {
      "file": "engine/src/kernels/cpu/native_expert.cpp",
-     "line": 840,
+     "line": 841,
      "backend": "cpu",
      "fn": "getenv"
     },
@@ -26509,13 +26548,13 @@
    "reads": [
     {
      "file": "engine/src/kernels/cpu/native_expert.cpp",
-     "line": 553,
+     "line": 554,
      "backend": "cpu",
      "fn": "getenv"
     },
     {
      "file": "engine/src/kernels/cpu/native_expert.cpp",
-     "line": 575,
+     "line": 576,
      "backend": "cpu",
      "fn": "getenv"
     },
@@ -26562,7 +26601,7 @@
    "reads": [
     {
      "file": "engine/src/kernels/cpu/native_expert.cpp",
-     "line": 796,
+     "line": 797,
      "backend": "cpu",
      "fn": "getenv"
     }
@@ -26595,7 +26634,7 @@
    "reads": [
     {
      "file": "engine/src/kernels/cpu/native_expert.cpp",
-     "line": 622,
+     "line": 623,
      "backend": "cpu",
      "fn": "getenv"
     }
@@ -26628,7 +26667,7 @@
    "reads": [
     {
      "file": "engine/src/kernels/cpu/native_expert.cpp",
-     "line": 567,
+     "line": 568,
      "backend": "cpu",
      "fn": "getenv"
     }
@@ -26661,7 +26700,7 @@
    "reads": [
     {
      "file": "engine/src/kernels/cpu/native_expert.cpp",
-     "line": 604,
+     "line": 605,
      "backend": "cpu",
      "fn": "getenv"
     }
@@ -26727,13 +26766,13 @@
    "reads": [
     {
      "file": "engine/src/kernels/cpu/native_expert.cpp",
-     "line": 661,
+     "line": 662,
      "backend": "cpu",
      "fn": "getenv"
     },
     {
      "file": "engine/src/kernels/cpu/native_expert.cpp",
-     "line": 807,
+     "line": 808,
      "backend": "cpu",
      "fn": "getenv"
     }
@@ -27040,13 +27079,13 @@
    "reads": [
     {
      "file": "engine/src/kernels/cpu/native_expert.cpp",
-     "line": 728,
+     "line": 729,
      "backend": "cpu",
      "fn": "getenv"
     },
     {
      "file": "engine/src/kernels/cpu/native_expert.cpp",
-     "line": 853,
+     "line": 854,
      "backend": "cpu",
      "fn": "getenv"
     }
@@ -27081,13 +27120,13 @@
    "reads": [
     {
      "file": "engine/src/kernels/cpu/native_expert.cpp",
-     "line": 721,
+     "line": 722,
      "backend": "cpu",
      "fn": "getenv"
     },
     {
      "file": "engine/src/kernels/cpu/native_expert.cpp",
-     "line": 848,
+     "line": 849,
      "backend": "cpu",
      "fn": "getenv"
     }
@@ -27122,7 +27161,7 @@
    "reads": [
     {
      "file": "engine/src/kernels/cpu/native_expert.cpp",
-     "line": 821,
+     "line": 822,
      "backend": "cpu",
      "fn": "getenv"
     }
@@ -27155,7 +27194,7 @@
    "reads": [
     {
      "file": "engine/src/kernels/cpu/native_expert.cpp",
-     "line": 426,
+     "line": 427,
      "backend": "cpu",
      "fn": "getenv"
     }
@@ -27188,7 +27227,7 @@
    "reads": [
     {
      "file": "engine/src/kernels/cpu/native_expert.cpp",
-     "line": 420,
+     "line": 421,
      "backend": "cpu",
      "fn": "getenv"
     }
@@ -39189,7 +39228,7 @@
    "reads": [
     {
      "file": "engine/src/kernels/cpu/native_expert.cpp",
-     "line": 822,
+     "line": 823,
      "backend": "cpu",
      "fn": "getenv"
     }
@@ -42235,7 +42274,7 @@
    "reads": [
     {
      "file": "engine/src/kernels/cpu/native_expert.cpp",
-     "line": 249,
+     "line": 250,
      "backend": "cpu",
      "fn": "getenv"
     }
@@ -42268,7 +42307,7 @@
    "reads": [
     {
      "file": "engine/src/kernels/cpu/native_expert.cpp",
-     "line": 267,
+     "line": 268,
      "backend": "cpu",
      "fn": "getenv"
     }
@@ -42301,7 +42340,7 @@
    "reads": [
     {
      "file": "engine/src/kernels/cpu/native_expert.cpp",
-     "line": 256,
+     "line": 257,
      "backend": "cpu",
      "fn": "getenv"
     }
