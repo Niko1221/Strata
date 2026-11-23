@@ -4057,4 +4057,26 @@ __global__ void __launch_bounds__(64) k_vit_full_attn(
     O[(static_cast<size_t>(qi) * H + h) * hd + d] = o_acc / fmaxf(sum_e, 1e-30f);
 }
 
+// ---- expert-input rotation for Hadamard-folded GGUF experts (include/strata/kernels/cpu/hadamard.hpp) ----
+// y = H_128 (s * x) per 128-value block, H normalized (1/sqrt(128)), natural (Sylvester) order: the same arithmetic
+// as strata::kernels::cpu::hadamard_rotate.  grid (n / 128, rows), 128 threads; in place.
+template<typename T>
+__global__ void __launch_bounds__(128) k_rot128_rows(T* __restrict__ x, const float* __restrict__ signs, int n) {
+    __shared__ float v[128];
+    const int tid = threadIdx.x;
+    T* row = x + static_cast<size_t>(blockIdx.y) * n + static_cast<size_t>(blockIdx.x) * 128;
+    const float sg = signs ? signs[blockIdx.x * 128 + tid] : 1.0f;
+    v[tid] = static_cast<float>(row[tid]) * sg;
+    __syncthreads();
+#pragma unroll
+    for (int len = 1; len < 128; len <<= 1) {
+        const bool lo = ((tid / len) & 1) == 0;
+        const float a = v[tid], b = v[lo ? tid + len : tid - len];
+        __syncthreads();
+        v[tid] = lo ? (a + b) : (b - a);
+        __syncthreads();
+    }
+    row[tid] = static_cast<T>(v[tid] * 0.08838834764831845f);   // 1/sqrt(128)
+}
+
 }  // namespace strata::inkling2::hip

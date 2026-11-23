@@ -356,6 +356,224 @@ void bench_sf4_bw(strata::hip_uma::AmdGen gen, bool is_uma) {
     strata::hip_uma::free_gpu_buffer(d_y);
 }
 
+// ---- trellis (TQ2_T / TQK6 / TQK7) + NVFP4 decode, and the 128-block expert-input rotation ----
+__global__ void k_test_gguf_decode8(uint32_t t, const uint8_t* row, int ncols, uint16_t* out) {
+    const int g = blockIdx.x * blockDim.x + threadIdx.x;
+    if (g * 8 >= ncols) return;
+    const uint4 v = hip_gguf_decode_8_f16(t, row, g * 8, 1.0f);
+    const uint32_t w[4] = {v.x, v.y, v.z, v.w};
+    for (int k = 0; k < 4; ++k) { out[g * 8 + 2 * k] = w[k] & 0xFFFFu; out[g * 8 + 2 * k + 1] = w[k] >> 16; }
+}
+float host_h2f(uint16_t h) { _Float16 x; std::memcpy(&x, &h, 2); return static_cast<float>(x); }
+float host_ue4m3(uint8_t x) {
+    if (x == 0 || x == 0x7F) return 0.0f;
+    const int e = (x >> 3) & 0xF, m = x & 7;
+    return (e == 0 ? std::ldexp(static_cast<float>(m), -9) : std::ldexp(1.0f + m / 8.0f, e - 7)) * 0.5f;
+}
+// host reference: trellis states the word-wise way (as kernels/cuda/iq_kernels.cu tq_states4), points from tq_lut_f16
+void host_tq_ref(uint32_t t, const uint8_t* blk, const std::vector<uint16_t>& lut, float* y) {
+    const float d = host_h2f(static_cast<uint16_t>(blk[0] | (blk[1] << 8)));
+    const uint8_t* qs = blk + 2;
+    for (int st = 0; st < 32; ++st) {
+        uint32_t s;
+        if (t == 144u) s = (static_cast<uint32_t>(qs[(st + 31) & 31]) << 8) | qs[st];
+        else {
+            const int K = (t == 145u) ? 6 : 7, nw = 2 * K, off = (31 - st) * K, wb = off >> 4, r = off & 15;
+            auto w16 = [&](int i) { i %= nw; return static_cast<uint64_t>(qs[2 * i] | (qs[2 * i + 1] << 8)); };
+            const uint64_t v = w16(wb) | (w16(wb + 1) << 16);
+            s = static_cast<uint32_t>(v >> r) & 0xFFFFu;
+        }
+        const uint32_t x = (s & TQ_STATE_MASK) * 0x9e3779b1u, pa = x >> 21, pb = (x >> 10) & 2047u;
+        y[4 * st + 0] = host_h2f(lut[2 * pa]) * d;     y[4 * st + 1] = host_h2f(lut[2 * pa + 1]) * d;
+        y[4 * st + 2] = host_h2f(lut[2 * pb]) * d;     y[4 * st + 3] = host_h2f(lut[2 * pb + 1]) * d;
+    }
+}
+void host_nvfp4_ref(const uint8_t* blk, float* y) {   // ggml dequantize_row_nvfp4, one 64-value block
+    static const int8_t kv[16] = {0, 1, 2, 3, 4, 6, 8, 12, 0, -1, -2, -3, -4, -6, -8, -12};
+    for (int sb = 0; sb < 4; ++sb) {
+        const float d = host_ue4m3(blk[sb]);
+        for (int j = 0; j < 8; ++j) {
+            const uint8_t q = blk[4 + sb * 8 + j];
+            y[sb * 16 + j] = kv[q & 15] * d;
+            y[sb * 16 + j + 8] = kv[q >> 4] * d;
+        }
+    }
+}
+bool test_tq_nvfp4_decode() {
+    std::vector<uint16_t> lut(4096);
+    INK_HCK(hipMemcpyFromSymbol(lut.data(), HIP_SYMBOL(tq_lut_f16), sizeof(uint16_t) * 4096, 0, hipMemcpyDeviceToHost));
+    std::mt19937 rng(1234);
+    bool ok = true;
+    const uint32_t types[4] = {144u, 145u, 146u, 40u};
+    for (uint32_t t : types) {
+        const int ncols = 1152;   // a down row; multiple of 128 and 64
+        const size_t rb = hip_gguf_row_bytes(t, ncols);
+        std::vector<uint8_t> row(rb);
+        for (auto& b : row) b = static_cast<uint8_t>(rng());
+        const int bsz = (t == 40u) ? 64 : 128, bb = static_cast<int>(rb / (ncols / bsz));
+        for (int b = 0; b < ncols / bsz; ++b) {            // sane scales: fp16 d in [0.5, 2) for trellis, UE4M3 < 0x7F for NVFP4
+            uint8_t* blk = row.data() + static_cast<size_t>(b) * bb;
+            if (t == 40u) { for (int k = 0; k < 4; ++k) blk[k] &= 0x7Eu; }
+            else { const _Float16 d = static_cast<_Float16>(0.5f + (rng() % 1000) / 666.0f); std::memcpy(blk, &d, 2); }
+        }
+        std::vector<float> ref(ncols);
+        for (int b = 0; b < ncols / bsz; ++b) {
+            const uint8_t* blk = row.data() + static_cast<size_t>(b) * bb;
+            if (t == 40u) host_nvfp4_ref(blk, ref.data() + b * 64); else host_tq_ref(t, blk, lut, ref.data() + b * 128);
+        }
+        uint8_t* d_row = nullptr; uint16_t* d_out = nullptr;
+        INK_HCK(hipMalloc(&d_row, rb)); INK_HCK(hipMalloc(&d_out, ncols * 2));
+        INK_HCK(hipMemcpy(d_row, row.data(), rb, hipMemcpyHostToDevice));
+        k_test_gguf_decode8<<<(ncols / 8 + 127) / 128, 128>>>(t, d_row, ncols, d_out);
+        std::vector<uint16_t> got(ncols);
+        INK_HCK(hipMemcpy(got.data(), d_out, ncols * 2, hipMemcpyDeviceToHost));
+        INK_HCK(hipFree(d_row)); INK_HCK(hipFree(d_out));
+        int bad = 0; double maxd = 0.0;
+        for (int i = 0; i < ncols; ++i) {
+            const float r16 = static_cast<float>(static_cast<_Float16>(ref[i]));   // the decoder rounds to fp16
+            const double dd = std::fabs(static_cast<double>(host_h2f(got[i])) - r16);
+            maxd = std::max(maxd, dd);
+            if (dd > 1e-3 * std::max(1.0, std::fabs(static_cast<double>(r16)))) ++bad;
+        }
+        std::printf("[ink-hip-test] gguf decode type %u: %d/%d off, max|d| %.3g %s\n", t, bad, ncols, maxd, bad ? "FAIL" : "PASS");
+        ok &= (bad == 0);
+    }
+    return ok;
+}
+
+// IQ2_XXS / IQ2_XS / IQ2_S / IQ1_S / Q2_0 decode against ggml's dequantize_row_* (transcribed), grids read back from the device
+template<typename T, size_t N> std::vector<T> sym_vec(const T (&sym)[N]) {
+    std::vector<T> v(N);
+    INK_HCK(hipMemcpyFromSymbol(v.data(), HIP_SYMBOL(sym), sizeof(T) * N, 0, hipMemcpyDeviceToHost));
+    return v;
+}
+void host_iq_ref(uint32_t t, const uint8_t* blk, const std::vector<uint64_t>& grid, const std::vector<uint8_t>& ks, float* y) {
+    const float d = host_h2f(static_cast<uint16_t>(blk[0] | (blk[1] << 8)));
+    if (t == 42u) { for (int j = 0; j < 64; ++j) y[j] = static_cast<float>(((blk[2 + j / 4] >> ((j % 4) * 2)) & 3) - 1) * d; return; }
+    for (int ib32 = 0; ib32 < 8; ++ib32) {
+        for (int l = 0; l < 4; ++l) {
+            float* yy = y + ib32 * 32 + l * 8;
+            if (t == 19u) {
+                const uint16_t qh = static_cast<uint16_t>(blk[34 + 2 * ib32] | (blk[35 + 2 * ib32] << 8));
+                const float dl = d * (2 * ((qh >> 12) & 7) + 1), delta = (qh & 0x8000) ? -0.125f : 0.125f;
+                const uint64_t g = grid[blk[2 + 4 * ib32 + l] | (((qh >> 3 * l) & 7) << 8)];
+                for (int j = 0; j < 8; ++j) yy[j] = dl * (static_cast<int8_t>((g >> (8 * j)) & 0xFF) + delta);
+                continue;
+            }
+            uint64_t g; uint8_t sg; float dl;
+            if (t == 16u) {
+                uint32_t aux[2]; std::memcpy(aux, blk + 2 + 8 * ib32, 8);
+                dl = d * (0.5f + (aux[1] >> 28)) * 0.25f;
+                g = grid[reinterpret_cast<const uint8_t*>(aux)[l]]; sg = ks[(aux[1] >> 7 * l) & 127];
+            } else if (t == 17u) {
+                uint16_t q; std::memcpy(&q, blk + 2 + 2 * (4 * ib32 + l), 2);
+                const uint8_t sc = blk[66 + ib32];
+                dl = d * (0.5f + ((l < 2) ? (sc & 0xf) : (sc >> 4))) * 0.25f;
+                g = grid[q & 511]; sg = ks[q >> 9];
+            } else {
+                const uint8_t sc = blk[74 + ib32];
+                dl = d * (0.5f + ((l < 2) ? (sc & 0xf) : (sc >> 4))) * 0.25f;
+                g = grid[blk[2 + 4 * ib32 + l] | ((blk[66 + ib32] << (8 - 2 * l)) & 0x300)];
+                sg = blk[2 + 32 + 4 * ib32 + l];
+            }
+            for (int j = 0; j < 8; ++j) yy[j] = dl * static_cast<float>((g >> (8 * j)) & 0xFF) * ((sg & (1u << j)) ? -1.f : 1.f);
+        }
+    }
+}
+void host_iq3s_ref(const uint8_t* blk, const std::vector<uint32_t>& grid, float* y) {   // ggml dequantize_row_iq3_s, one block
+    const float d = host_h2f(static_cast<uint16_t>(blk[0] | (blk[1] << 8)));
+    const uint8_t* qs = blk + 2; const uint8_t* qh = blk + 66; const uint8_t* signs = blk + 74; const uint8_t* scales = blk + 106;
+    for (int ib32 = 0; ib32 < 8; ib32 += 2) {
+        const float db1 = d * (1 + 2 * (scales[ib32 / 2] & 0xf)), db2 = d * (1 + 2 * (scales[ib32 / 2] >> 4));
+        for (int half = 0; half < 2; ++half) {
+            const float db = half ? db2 : db1;
+            for (int l = 0; l < 4; ++l) {
+                const uint32_t g1 = grid[qs[2 * l + 0] | ((qh[half] << (8 - 2 * l)) & 256)];
+                const uint32_t g2 = grid[qs[2 * l + 1] | ((qh[half] << (7 - 2 * l)) & 256)];
+                for (int j = 0; j < 4; ++j) {
+                    y[j + 0] = db * ((g1 >> (8 * j)) & 0xFF) * ((signs[l] & (1u << j)) ? -1.f : 1.f);
+                    y[j + 4] = db * ((g2 >> (8 * j)) & 0xFF) * ((signs[l] & (1u << (j + 4))) ? -1.f : 1.f);
+                }
+                y += 8;
+            }
+            qs += 8; signs += 4;
+        }
+        qh += 2;
+    }
+}
+bool test_iq_q2_decode() {
+    const auto g16 = sym_vec(kHipIq2xxsGrid), g17 = sym_vec(kHipIq2xsGrid), g22 = sym_vec(kHipIq2sGrid), g19 = sym_vec(kHipIq1sGrid);
+    const auto ks = sym_vec(kHipKsignsIq2xs);
+    const auto g21 = sym_vec(kHipIq3sGrid);
+    std::mt19937 rng(4321);
+    bool ok = true;
+    const uint32_t types[6] = {16u, 17u, 22u, 19u, 42u, 21u};
+    for (uint32_t t : types) {
+        const int ncols = 2304;
+        const size_t rb = hip_gguf_row_bytes(t, ncols);
+        const int bsz = (t == 42u) ? 64 : 256, bb = static_cast<int>(rb / (ncols / bsz));
+        std::vector<uint8_t> row(rb);
+        for (auto& b : row) b = static_cast<uint8_t>(rng());
+        for (int b = 0; b < ncols / bsz; ++b) { const _Float16 d = static_cast<_Float16>(0.01f + (rng() % 1000) / 50000.0f); std::memcpy(row.data() + static_cast<size_t>(b) * bb, &d, 2); }
+        const std::vector<uint64_t>& grid = (t == 16u) ? g16 : (t == 17u) ? g17 : (t == 22u) ? g22 : g19;
+        std::vector<float> ref(ncols);
+        for (int b = 0; b < ncols / bsz; ++b) {
+            if (t == 21u) host_iq3s_ref(row.data() + static_cast<size_t>(b) * bb, g21, ref.data() + b * bsz);
+            else host_iq_ref(t, row.data() + static_cast<size_t>(b) * bb, grid, ks, ref.data() + b * bsz);
+        }
+        uint8_t* d_row = nullptr; uint16_t* d_out = nullptr;
+        INK_HCK(hipMalloc(&d_row, rb)); INK_HCK(hipMalloc(&d_out, ncols * 2));
+        INK_HCK(hipMemcpy(d_row, row.data(), rb, hipMemcpyHostToDevice));
+        k_test_gguf_decode8<<<(ncols / 8 + 127) / 128, 128>>>(t, d_row, ncols, d_out);
+        std::vector<uint16_t> got(ncols);
+        INK_HCK(hipMemcpy(got.data(), d_out, ncols * 2, hipMemcpyDeviceToHost));
+        INK_HCK(hipFree(d_row)); INK_HCK(hipFree(d_out));
+        int bad = 0; double maxd = 0.0;
+        for (int i = 0; i < ncols; ++i) {
+            const float r16 = static_cast<float>(static_cast<_Float16>(ref[i]));
+            const double dd = std::fabs(static_cast<double>(host_h2f(got[i])) - r16);
+            maxd = std::max(maxd, dd);
+            if (dd > 1e-3 * std::max(1e-2, std::fabs(static_cast<double>(r16)))) ++bad;
+        }
+        std::printf("[ink-hip-test] gguf decode type %u: %d/%d off, max|d| %.3g %s\n", t, bad, ncols, maxd, bad ? "FAIL" : "PASS");
+        ok &= (bad == 0);
+    }
+    return ok;
+}
+bool test_rot128() {
+    std::mt19937 rng(77);
+    std::normal_distribution<float> nd(0.0f, 1.0f);
+    const int rows = 5, n = 2304;
+    std::vector<float> x(static_cast<size_t>(rows) * n), sg(n);
+    for (auto& v : x) v = nd(rng);
+    for (auto& v : sg) v = (rng() & 1) ? 1.0f : -1.0f;
+    std::vector<float> ref = x;
+    for (int r = 0; r < rows; ++r) {                // strata::kernels::cpu::hadamard_rotate, block 128
+        float* v0 = ref.data() + static_cast<size_t>(r) * n;
+        for (int i = 0; i < n; ++i) v0[i] *= sg[i];
+        for (int b0 = 0; b0 < n; b0 += 128) {
+            float* v = v0 + b0;
+            for (int len = 1; len < 128; len <<= 1)
+                for (int i = 0; i < 128; i += len << 1)
+                    for (int j = i; j < i + len; ++j) { const float a = v[j], c = v[j + len]; v[j] = a + c; v[j + len] = a - c; }
+            for (int i = 0; i < 128; ++i) v[i] *= 1.0f / std::sqrt(128.0f);
+        }
+    }
+    float *d_x = nullptr, *d_s = nullptr;
+    INK_HCK(hipMalloc(&d_x, x.size() * 4)); INK_HCK(hipMalloc(&d_s, n * 4));
+    INK_HCK(hipMemcpy(d_x, x.data(), x.size() * 4, hipMemcpyHostToDevice));
+    INK_HCK(hipMemcpy(d_s, sg.data(), n * 4, hipMemcpyHostToDevice));
+    k_rot128_rows<float><<<dim3(n / 128, rows), 128>>>(d_x, d_s, n);
+    std::vector<float> got(x.size());
+    INK_HCK(hipMemcpy(got.data(), d_x, x.size() * 4, hipMemcpyDeviceToHost));
+    INK_HCK(hipFree(d_x)); INK_HCK(hipFree(d_s));
+    double maxd = 0.0;
+    for (size_t i = 0; i < got.size(); ++i) maxd = std::max(maxd, static_cast<double>(std::fabs(got[i] - ref[i])));
+    const bool ok = maxd < 1e-4;
+    std::printf("[ink-hip-test] rot128 rows=%d n=%d: max|d| %.3g %s\n", rows, n, maxd, ok ? "PASS" : "FAIL");
+    return ok;
+}
+
 }  // namespace
 
 int main() {
@@ -383,6 +601,9 @@ int main() {
     ok &= test_sf4(gen, is_uma);
     ok &= test_mx8(gen, is_uma);
     ok &= test_flash_swa_and_dspark(is_uma);
+    ok &= test_tq_nvfp4_decode();
+    ok &= test_iq_q2_decode();
+    ok &= test_rot128();
     bench_sf4_bw(gen, is_uma);
 
     std::printf("[ink-hip-test] OVERALL: %s\n", ok ? "PASS" : "FAIL");

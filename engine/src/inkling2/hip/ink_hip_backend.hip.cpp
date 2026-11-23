@@ -20,6 +20,7 @@
 #include "ink_hip_blaslt.hpp"
 #include "ink_hip_hybrid.hpp"
 #include "strata/hip_uma_guard.hpp"
+#include "strata/kernels/cpu/hadamard.hpp"
 #include "strata/inkling2/inkling2_loop.hpp"
 #include "strata/platform/cgroup_mem.hpp"
 #include "strata/quant/sk_codecs.hpp"
@@ -966,6 +967,27 @@ public:
                              n_native_gguf, adj_dir_.size());
             }
         }
+        rot_gu_.assign(c_.n_phys, 0);
+        rot_dn_.assign(c_.n_phys, 0);
+        if (model.kind == ModelSourceKind::Gguf && model.gguf_adapter && model.gguf_adapter->has_hadamard) {
+            namespace kc = strata::kernels::cpu;
+            if (kc::hadamard_spec().block != 128) {
+                err = "[ink-hip] expert rotation block " + std::to_string(kc::hadamard_spec().block) + " is not supported (128 only)";
+                return false;
+            }
+            for (int il = 0; il < c_.n_phys && il < static_cast<int>(model.gguf_adapter->layers.size()); ++il) {
+                rot_gu_[il] = model.gguf_adapter->layers[il].had_gu ? 1 : 0;
+                rot_dn_[il] = model.gguf_adapter->layers[il].had_dn ? 1 : 0;
+                has_rot_ = has_rot_ || rot_gu_[il] || rot_dn_[il];
+            }
+            if ((c_.hidden % 128) != 0 || (c_.inter % 128) != 0) { err = "[ink-hip] expert rotation needs widths divisible by 128"; return false; }
+            if (const float* sd = kc::hadamard_signs(c_.hidden)) {
+                if (!upload_raw(d_rot_sign_d_, sd, static_cast<size_t>(c_.hidden) * sizeof(float), err)) return false;
+            }
+            if (const float* sf = kc::hadamard_signs(c_.inter)) {
+                if (!upload_raw(d_rot_sign_f_, sf, static_cast<size_t>(c_.inter) * sizeof(float), err)) return false;
+            }
+        }
         const auto& dir = adj_dir_;
         const size_t n_dir = dir.size();
         expert_gpu_offset_.assign(n_dir, static_cast<size_t>(-1));
@@ -1306,6 +1328,15 @@ public:
                 }
                 tbl[e] = d;
                 if (ep2_active_) peer_tbl[e] = pd;
+            }
+            if ((rot_gu_[il] || rot_dn_[il]) && ep2_active_) {   // ep2_active_ is final here (the placement may have dropped GPU 1)
+                err = "[ink-hip] rotated GGUF experts are not supported with the 2-GPU expert split yet (use one GPU or --cpu)";
+                return false;
+            }
+            if ((rot_gu_[il] || rot_dn_[il]) && !layer_all_gpu_[il]) {
+                err = "[ink-hip] layer " + std::to_string(il) + " has rotated GGUF experts that do not all fit in GPU memory; the "
+                      "CPU/RAM hybrid path cannot rotate them yet (lower --max-context/--parallel, or use --cpu)";
+                return false;
             }
             layer_gu_class_[il] = all_gu_sk ? 0 : (all_gu_sf4 ? 1 : (all_gu_mx8 ? 2 : 3));
             layer_dn_class_[il] = all_dn_sk ? 0 : (all_dn_sf4 ? 1 : (all_dn_mx8 ? 2 : 3));
@@ -2548,6 +2579,24 @@ private:
         if (b.dev_ptr && b.bytes > 0) (void)hipMemset(b.dev_ptr, 0, b.bytes);
     }
 
+    // rotate rows x n of a buffer in place on stream_ (no-op for layers without rotation)
+    template<typename T>
+    void rot_rows(T* x, int rows, int n, const GpuBuffer& signs) {
+        if (rows <= 0) return;
+        k_rot128_rows<T><<<dim3(n / 128, rows), 128, 0, stream_>>>(x, reinterpret_cast<const float*>(signs.dev_ptr), n);
+    }
+    // the routed-expert input of layer ip after the router read it: rotate mlpin (f32) and refresh the f16 copy if the
+    // fused router already wrote it
+    void rot_moe_input(int ip, float* mlpin, half_t* mlpf16, int B, bool f16_written) {
+        if (!has_rot_ || !rot_gu_[ip]) return;
+        rot_rows(mlpin, B, c_.hidden, d_rot_sign_d_);
+        if (f16_written) k_f32_to_f16<<<(B * c_.hidden + 255) / 256, 256, 0, stream_>>>(mlpin, mlpf16, B * c_.hidden);
+    }
+    void rot_moe_act(int ip, half_t* act, int rows) {
+        if (!has_rot_ || !rot_dn_[ip]) return;
+        rot_rows(act, rows, c_.inter, d_rot_sign_f_);
+    }
+
     bool upload_raw(GpuBuffer& dst, const void* src, size_t bytes, std::string& err) {
         if (!hip_ok(alloc_gpu_buffer(dst, bytes, mem_info_.is_uma), "alloc_gpu_buffer", err)) return false;
         if (bytes > 0 && !hip_ok(hipMemcpy(dst.dev_ptr, src, bytes, hipMemcpyHostToDevice), "hipMemcpy H2D", err)) return false;
@@ -2630,7 +2679,7 @@ private:
         const uint8_t* body_dev, uint8_t gu_code, uint8_t dn_code, uint32_t dn_offset,
         float sf4_w13_outer, float sf4_w2_outer,
         const half_t* x_in_f16, float* gu_buf, half_t* act_buf, float* y_out_f32,
-        int m_e, int max_gu_rows, int D, int inter) {
+        int m_e, int max_gu_rows, int D, int inter, bool rot_dn = false) {
         half_t* w13_f16 = reinterpret_cast<half_t*>(d_exp_w13_f16_.dev_ptr);
         half_t* w2_f16  = reinterpret_cast<half_t*>(d_exp_w2_f16_.dev_ptr);
         const int n13 = 2 * inter;
@@ -2675,6 +2724,7 @@ private:
             // 2. Fused SITU + optional S_K sq_xd_dn divide directly on FP32 gu_buf -> FP16 act_sub!
             k_situ_interleaved_sq<<<(cur_m * inter + 255) / 256, 256, 0, stream_>>>(
                 gu_buf, sq_dn, act_sub, cur_m, inter, c_.situ_beta, c_.situ_lb);
+            if (rot_dn) rot_rows(act_sub, cur_m, inter, d_rot_sign_f_);   // down weights stored rotated: h -> H(s*h)
         }
 
         // 3. Unpack w2 [D, inter] ONCE -> L3/MALL-resident 5.9 MB FP16 buffer -> hipBLASLt FP16 GEMM!
@@ -3805,6 +3855,7 @@ private:
             } else {
                 k4_moe_router_topk<<<B, 128, 0, stream_>>>(rlog, f32_ptr(p + ".mlp.gate.bias"), tk_i, tk_w, B, c_.top_k, c_.route_scale);
             }
+            rot_moe_input(ip, mlpin, mlpf16, B, fused_router_f16);
 
             // MoE Expert Execution:
             // Fast Path A1 (B <= 4, all GPU-resident): 2-launch ZERO-SYNC parallel-expert direct MoE (2,304 blocks!)
@@ -3826,6 +3877,7 @@ private:
                         k_moe_direct_w13_situ<<<dim3((c_.inter + 3) / 4, B * c_.top_k), 256, 0, stream_>>>(
                             d_exps, tk_i, mlpf16, reinterpret_cast<half_t*>(sc_moe_act_.dev_ptr),
                             B, c_.top_k, D, c_.inter, c_.situ_beta, c_.situ_lb);
+                        rot_moe_act(ip, reinterpret_cast<half_t*>(sc_moe_act_.dev_ptr), B * c_.top_k);
                         float* y_part = reinterpret_cast<float*>(sc_bucket_y_.dev_ptr);
                         k_moe_direct_w2_par<<<dim3((D + 7) / 8, B * c_.top_k), 256, 0, stream_>>>(
                             d_exps, tk_i, reinterpret_cast<const half_t*>(sc_moe_act_.dev_ptr),
@@ -3856,17 +3908,20 @@ private:
                             if (B >= 64) {
                                 k_moe_grouped_w13_situ_wmma_128<<<g13, 256, 0, stream_>>>(
                                     d_exps, d_off, d_btk, mlpf16, d_act, D, c_.inter, c_.situ_beta, c_.situ_lb);
+                                rot_moe_act(ip, reinterpret_cast<half_t*>(sc_moe_act_.dev_ptr), B * c_.top_k);
                                 k_moe_grouped_w2_wmma_128<<<g2, 256, 0, stream_>>>(
                                     d_exps, d_off, d_act, d_by, D, c_.inter);
                             } else {
                                 k_moe_grouped_w13_situ_wmma<<<g13, 256, 0, stream_>>>(
                                     d_exps, d_off, d_btk, mlpf16, d_act, D, c_.inter, c_.situ_beta, c_.situ_lb);
+                                rot_moe_act(ip, reinterpret_cast<half_t*>(sc_moe_act_.dev_ptr), B * c_.top_k);
                                 k_moe_grouped_w2_wmma<<<g2, 256, 0, stream_>>>(
                                     d_exps, d_off, d_act, d_by, D, c_.inter);
                             }
                         } else {
                             k_moe_grouped_w13_situ<<<dim3((c_.inter + 3) / 4, c_.n_experts), 256, 0, stream_>>>(
                                 d_exps, d_off, d_btk, mlpf16, d_act, D, c_.inter, c_.situ_beta, c_.situ_lb);
+                            rot_moe_act(ip, reinterpret_cast<half_t*>(sc_moe_act_.dev_ptr), B * c_.top_k);
                             k_moe_grouped_w2<<<dim3((D + 7) / 8, c_.n_experts), 256, 0, stream_>>>(
                                 d_exps, d_off, d_act, d_by, D, c_.inter);
                         }
@@ -3887,6 +3942,7 @@ private:
                 k_moe_direct_w13_situ<<<dim3((c_.inter + 3) / 4, B * c_.top_k), 256, 0, stream_>>>(
                     d_exps, tk_i, mlpf16, reinterpret_cast<half_t*>(sc_moe_act_.dev_ptr),
                     B, c_.top_k, D, c_.inter, c_.situ_beta, c_.situ_lb);
+                rot_moe_act(ip, reinterpret_cast<half_t*>(sc_moe_act_.dev_ptr), B * c_.top_k);
                 pmark(7);
                 float* y_part = reinterpret_cast<float*>(sc_bucket_y_.dev_ptr);
                 k_moe_direct_w2_par<<<dim3((D + 7) / 8, B * c_.top_k), 256, 0, stream_>>>(
@@ -3942,7 +3998,7 @@ private:
                         expert_sf4_outer_[dir_idx].first, expert_sf4_outer_[dir_idx].second,
                         d_bx + static_cast<size_t>(beg) * D,
                         d_gu, d_act, d_by + static_cast<size_t>(beg) * D,
-                        m_e, sc_moe_gu_cap_, D, c_.inter);
+                        m_e, sc_moe_gu_cap_, D, c_.inter, has_rot_ && rot_dn_[ip]);
                 }
 
                 k_moe_reduce_buckets<<<dim3((D + 255) / 256, B), 256, 0, stream_>>>(
@@ -4005,6 +4061,8 @@ private:
                                     d_exps, d_off, d_btk, mlpf16, d_act, D, c_.inter, c_.situ_beta, c_.situ_lb);
                             }
                         }
+                        // every gate/up variant above (S_K / SF4 / MX8 transcoded, i8 or not, GGUF_RAW) leaves h in d_act
+                        rot_moe_act(ip, reinterpret_cast<half_t*>(sc_moe_act_.dev_ptr), B * c_.top_k);
                         pmark(7);
                         if (use_i8_moe_wmma_ && layer_dn_class_[ip] == 0) {
                             const int nb64 = tot_pairs * (c_.inter >> 6);
@@ -4041,12 +4099,15 @@ private:
                         if (small_i8 && layer_gu_class_[ip] == 0) {
                             k_moe_grouped_w13_situ_wmma_sk_i8<<<g13, 256, 0, stream_>>>(
                                 d_exps, d_off, d_btk, mlpf16, d_act, D, c_.inter, c_.situ_beta, c_.situ_lb);
+                            rot_moe_act(ip, reinterpret_cast<half_t*>(sc_moe_act_.dev_ptr), B * c_.top_k);
                         } else if (small_i8 && layer_gu_class_[ip] == 1) {
                             k_moe_grouped_w13_situ_wmma_sf4_i8<<<g13, 256, 0, stream_>>>(
                                 d_exps, d_off, d_btk, mlpf16, d_act, D, c_.inter, c_.situ_beta, c_.situ_lb);
+                            rot_moe_act(ip, reinterpret_cast<half_t*>(sc_moe_act_.dev_ptr), B * c_.top_k);
                         } else {
                             k_moe_grouped_w13_situ_wmma<<<g13, 256, 0, stream_>>>(
                                 d_exps, d_off, d_btk, mlpf16, d_act, D, c_.inter, c_.situ_beta, c_.situ_lb);
+                            rot_moe_act(ip, reinterpret_cast<half_t*>(sc_moe_act_.dev_ptr), B * c_.top_k);
                         }
                         pmark(7);
                         if (small_i8 && layer_dn_class_[ip] == 0) {
@@ -4064,6 +4125,7 @@ private:
                     k_f32_to_f16<<<(B * D + 255) / 256, 256, 0, stream_>>>(mlpin, mlpf16, B * D);
                     k_moe_grouped_w13_situ<<<dim3((c_.inter + 3) / 4, c_.n_experts), 256, 0, stream_>>>(
                         d_exps, d_off, d_btk, mlpf16, d_act, D, c_.inter, c_.situ_beta, c_.situ_lb);
+                    rot_moe_act(ip, reinterpret_cast<half_t*>(sc_moe_act_.dev_ptr), B * c_.top_k);
                     k_moe_grouped_w2<<<dim3((D + 7) / 8, c_.n_experts), 256, 0, stream_>>>(
                         d_exps, d_off, d_act, d_by, D, c_.inter);
                 }
@@ -4210,6 +4272,7 @@ private:
                     k_moe_direct_w13_situ<<<dim3((c_.inter + 3) / 4, B * c_.top_k), 256, 0, stream_>>>(
                         d_exps, tk_i, mlpf16, reinterpret_cast<half_t*>(sc_moe_act_.dev_ptr),
                         B, c_.top_k, D, c_.inter, c_.situ_beta, c_.situ_lb);
+                    rot_moe_act(ip, reinterpret_cast<half_t*>(sc_moe_act_.dev_ptr), B * c_.top_k);
                     k_moe_direct_w2_reduce<<<dim3((D + 7) / 8, B), 256, 0, stream_>>>(
                         d_exps, tk_i, tk_w, reinterpret_cast<const half_t*>(sc_moe_act_.dev_ptr),
                         moeout, B, c_.top_k, D, c_.inter);
@@ -4338,7 +4401,8 @@ private:
                     float* y_slice = d_by + static_cast<size_t>(ae.beg) * D;
                     if (blaslt_.ready() && ae.m_e >= 8 && d_exp_w13_f16_.dev_ptr && d_exp_w2_f16_.dev_ptr) {
                         run_single_expert_blaslt(body_dev, ent.gu_code_id, ent.dn_code_id, ent.dn_offset,
-                                                 sf4_w13, sf4_w2, x_slice, d_gu, d_act, y_slice, ae.m_e, sc_moe_gu_cap_, D, c_.inter);
+                                                 sf4_w13, sf4_w2, x_slice, d_gu, d_act, y_slice, ae.m_e, sc_moe_gu_cap_, D, c_.inter,
+                                                 has_rot_ && rot_dn_[ip]);
                     } else {
                         // #6580: Chunk m_e by sc_moe_gu_cap_ so d_gu [sc_moe_gu_cap_, 2*inter] NEVER overflows when m_e > B!
                         for (int off = 0; off < ae.m_e; off += sc_moe_gu_cap_) {
@@ -5073,6 +5137,7 @@ private:
             } else {
                 k4_moe_router_topk<<<B, 128, 0, stream_>>>(rlog, f32_ptr(p + ".mlp.gate.bias"), tk_i, tk_w, B, c_.top_k, c_.route_scale);
             }
+            rot_moe_input(ip, mlpin, mlpf16, B, fused_router_f16);
 
             const GpuExpertDesc* d_exps = reinterpret_cast<const GpuExpertDesc*>(d_layer_exps_[ip].dev_ptr);
             if (use_direct_moe) {
@@ -5081,6 +5146,7 @@ private:
                 k_moe_direct_w13_situ<<<dim3((c_.inter + 3) / 4, B * c_.top_k), 256, 0, stream_>>>(
                     d_exps, tk_i, mlpf16, reinterpret_cast<half_t*>(sc_moe_act_.dev_ptr),
                     B, c_.top_k, D, c_.inter, c_.situ_beta, c_.situ_lb);
+                rot_moe_act(ip, reinterpret_cast<half_t*>(sc_moe_act_.dev_ptr), B * c_.top_k);
                 pm(7);
                 float* y_part = reinterpret_cast<float*>(sc_bucket_y_.dev_ptr);
                 k_moe_direct_w2_par<<<dim3((D + 7) / 8, B * c_.top_k), 256, 0, stream_>>>(
@@ -5103,6 +5169,7 @@ private:
                     pm(6);
                     k_moe_grouped_w13_situ_wmma<<<g13, 256, 0, stream_>>>(
                         d_exps, d_off, d_btk, mlpf16, d_act, D, c_.inter, c_.situ_beta, c_.situ_lb);
+                    rot_moe_act(ip, reinterpret_cast<half_t*>(sc_moe_act_.dev_ptr), B * c_.top_k);
                     pm(7);
                     k_moe_grouped_w2_wmma<<<g2, 256, 0, stream_>>>(
                         d_exps, d_off, d_act, d_by, D, c_.inter);
@@ -5110,6 +5177,7 @@ private:
                     pm(6);
                     k_moe_grouped_w13_situ<<<dim3((c_.inter + 3) / 4, c_.n_experts), 256, 0, stream_>>>(
                         d_exps, d_off, d_btk, mlpf16, d_act, D, c_.inter, c_.situ_beta, c_.situ_lb);
+                    rot_moe_act(ip, reinterpret_cast<half_t*>(sc_moe_act_.dev_ptr), B * c_.top_k);
                     pm(7);
                     k_moe_grouped_w2<<<dim3((D + 7) / 8, c_.n_experts), 256, 0, stream_>>>(
                         d_exps, d_off, d_act, d_by, D, c_.inter);
@@ -5286,6 +5354,11 @@ private:
 
     void cleanup() {
         invalidate_graph();
+        free_gpu_buffer(d_rot_sign_d_);
+        free_gpu_buffer(d_rot_sign_f_);
+        has_rot_ = false;
+        rot_gu_.clear();
+        rot_dn_.clear();
         hybrid_.release();
         blaslt_.release();
         if (peer_stream_ || ev_g1_done_ || peer_expert_gpu_arena_.dev_ptr || !peer_d_layer_exps_.empty() || peer_scratch_B_ > 0) {
@@ -5408,6 +5481,10 @@ private:
     int gpu0_id_ = 0;
     int gpu1_id_ = -1;
     bool ep2_active_ = false;
+    // Hadamard-folded GGUF experts: per physical layer, whether the gate/up input and the down input are rotated
+    std::vector<uint8_t> rot_gu_, rot_dn_;
+    bool has_rot_ = false;
+    GpuBuffer d_rot_sign_d_, d_rot_sign_f_;   // sign vectors for widths hidden and inter (empty: identity)
     bool ep2_p2p_ = false;
     double ep_split_ = 0.5;
     hipStream_t peer_stream_ = nullptr;

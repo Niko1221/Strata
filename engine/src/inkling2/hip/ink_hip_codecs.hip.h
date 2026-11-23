@@ -11,6 +11,8 @@
 #pragma once
 
 #include "ink_hip_common.hip.h"
+#include "third_party/ggml/ggml-common-tq.h"
+#include "ink_hip_iq_tables.hip.h"   // IQ1_S / IQ2_* grids (generated from ggml-common.h)   // trellis block structs + the fp16 codebook tq_lut_f16 (__device__ here)
 
 namespace strata::inkling2::hip {
 
@@ -45,6 +47,9 @@ __host__ __device__ inline bool gguf_type_has_hip_kernel(uint32_t t) noexcept {
         case 0: case 1: case 2: case 8:
         case 10: case 11: case 12: case 13: case 14:
         case 18: case 20: case 23: case 30: case 39:
+        case 40:                      // NVFP4
+        case 16: case 17: case 19: case 21: case 22: case 42:   // IQ2_XXS / IQ2_XS / IQ1_S / IQ3_S / IQ2_S / Q2_0
+        case 144: case 145: case 146: // TQ2_T / TQK6 / TQK7 (trellis)
             return true;
         default:
             return false;
@@ -64,6 +69,16 @@ __host__ __device__ inline size_t hip_gguf_row_bytes(uint32_t t, int K) noexcept
         case 11: return static_cast<size_t>(K >> 8) * 110u;
         case 10: return static_cast<size_t>(K >> 8) * 84u;
         case 39: return static_cast<size_t>(K >> 5) * 17u;
+        case 40: return static_cast<size_t>(K >> 6) * 36u;   // NVFP4: 64 elems = 4 UE4M3 + 32 B
+        case 16: return static_cast<size_t>(K >> 8) * 66u;   // IQ2_XXS
+        case 17: return static_cast<size_t>(K >> 8) * 74u;   // IQ2_XS
+        case 22: return static_cast<size_t>(K >> 8) * 82u;   // IQ2_S
+        case 19: return static_cast<size_t>(K >> 8) * 50u;   // IQ1_S
+        case 21: return static_cast<size_t>(K >> 8) * 110u;  // IQ3_S: d + qs[64] + qh[8] + signs[32] + scales[4]
+        case 42: return static_cast<size_t>(K >> 6) * 18u;   // Q2_0: 64 elems = fp16 d + 16 B
+        case 144: return static_cast<size_t>(K >> 7) * 34u;  // TQ2_T: 128 elems = fp16 d + 32 B
+        case 145: return static_cast<size_t>(K >> 7) * 26u;  // TQK6: fp16 d + 24 B
+        case 146: return static_cast<size_t>(K >> 7) * 30u;  // TQK7: fp16 d + 28 B
         case 1:
         case 30: return static_cast<size_t>(K) * 2u;
         case 0:  return static_cast<size_t>(K) * 4u;
@@ -137,6 +152,36 @@ __device__ __forceinline__ float ld_fp16_as_f32(const uint8_t* p) {
 }
 
 // Decode 8 consecutive weights starting at 8-aligned `col` from a single GGUF row into uint4 (8 x FP16 for fdot2/WMMA)
+
+// ---- trellis (TQ2_T / TQK6 / TQK7) and NVFP4 decode, as ggml's to_float (ggml-common-tq.h, dequantize_row_nvfp4) ----
+// Trellis step t of a 128-value block (weights 4t..4t+3): TQ2_T state s_t = qs[(t + 31) % 32] << 8 | qs[t]; TQK the 16
+// stream bits from bit (31 - t)*K, LSB-first, circular over the block's 32*K bits.
+__device__ __forceinline__ uint32_t hip_tq_state(uint32_t t_type, const uint8_t* __restrict__ qs, int t) {
+    if (t_type == 144u) return (static_cast<uint32_t>(qs[(t + 31) & 31]) << 8) | qs[t];
+    // the 16 bits from bit (31 - t)*K of the circular 32*K-bit stream: two 16-bit words (r + 16 <= 31), as tq_states4
+    const int K = (t_type == 145u) ? 6 : 7, nw = 2 * K;
+    const int off = (31 - t) * K, wb = off >> 4, r = off & 15;
+    const int wb1 = (wb + 1 >= nw) ? wb + 1 - nw : wb + 1;
+    const uint32_t w0 = static_cast<uint32_t>(qs[2 * wb]) | (static_cast<uint32_t>(qs[2 * wb + 1]) << 8);
+    const uint32_t w1 = static_cast<uint32_t>(qs[2 * wb1]) | (static_cast<uint32_t>(qs[2 * wb1 + 1]) << 8);
+    return ((w0 | (w1 << 16)) >> r) & 0xFFFFu;
+}
+__device__ __forceinline__ void hip_tq_step4(uint32_t s, float d, float* w) {
+    const uint32_t x = (s & TQ_STATE_MASK) * 0x9e3779b1u;
+    const uint32_t pa = x >> 21, pb = (x >> 10) & 2047u;
+    w[0] = static_cast<float>(__builtin_bit_cast(_Float16, tq_lut_f16[2 * pa]))     * d;
+    w[1] = static_cast<float>(__builtin_bit_cast(_Float16, tq_lut_f16[2 * pa + 1])) * d;
+    w[2] = static_cast<float>(__builtin_bit_cast(_Float16, tq_lut_f16[2 * pb]))     * d;
+    w[3] = static_cast<float>(__builtin_bit_cast(_Float16, tq_lut_f16[2 * pb + 1])) * d;
+}
+__device__ __forceinline__ float hip_ue4m3_f32(uint32_t x) {   // ggml_ue4m3_to_fp32 (includes its 0.5 factor)
+    if (x == 0u || x == 0x7Fu) return 0.0f;
+    const int e = (x >> 3) & 0xF, m = x & 7;
+    const float raw = (e == 0) ? ldexpf(static_cast<float>(m), -9) : ldexpf(1.0f + static_cast<float>(m) / 8.0f, e - 7);
+    return raw * 0.5f;
+}
+__device__ __constant__ int8_t kHipFp4Doubled[16] = {0, 1, 2, 3, 4, 6, 8, 12, 0, -1, -2, -3, -4, -6, -8, -12};
+
 __device__ __forceinline__ uint4 hip_gguf_decode_8_f16(uint32_t t, const uint8_t* __restrict__ row, int col, float ext_scale) {
     float w[8] = {0, 0, 0, 0, 0, 0, 0, 0};
     if (t == 12u) {  // Q4_K: 256 elems = 144 B
@@ -290,6 +335,78 @@ __device__ __forceinline__ uint4 hip_gguf_decode_8_f16(uint32_t t, const uint8_t
         const uint8_t* qp = qs + n128 * 32 + l32;
 #pragma unroll
         for (int k = 0; k < 8; ++k) w[k] = static_cast<float>((qp[k] >> shift) & 3u) * dl + ml;
+    } else if (t == 144u || t == 145u || t == 146u) {  // trellis: 128 elems a block, steps of 4
+        const int bytes = (t == 144u) ? 34 : ((t == 145u) ? 26 : 30);
+        const int b = col >> 7, t0 = (col & 127) >> 2;   // col is a multiple of 8: steps t0, t0 + 1
+        const uint8_t* blk = row + static_cast<size_t>(b) * bytes;
+        const float d = ld_fp16_as_f32(blk) * ext_scale;
+        hip_tq_step4(hip_tq_state(t, blk + 2, t0), d, w);
+        hip_tq_step4(hip_tq_state(t, blk + 2, t0 + 1), d, w + 4);
+    } else if (t == 16u || t == 17u || t == 22u || t == 19u) {  // IQ2_XXS / IQ2_XS / IQ2_S / IQ1_S, as ggml's dequantize_row_*
+        const int b = col >> 8, idx = col & 255, ib32 = idx >> 5, l = (idx & 31) >> 3;   // one 8-value grid entry
+        const int bytes = (t == 16u) ? 66 : ((t == 17u) ? 74 : ((t == 22u) ? 82 : 50));
+        const uint8_t* blk = row + static_cast<size_t>(b) * bytes;
+        const float d = ld_fp16_as_f32(blk) * ext_scale;
+        if (t == 19u) {
+            const uint8_t* qs = blk + 2;
+            const uint32_t qh = static_cast<uint32_t>(blk[34 + 2 * ib32]) | (static_cast<uint32_t>(blk[35 + 2 * ib32]) << 8);
+            const float dl = d * static_cast<float>(2 * ((qh >> 12) & 7u) + 1);
+            const float delta = (qh & 0x8000u) ? -0.125f : 0.125f;
+            const uint64_t g = kHipIq1sGrid[qs[4 * ib32 + l] | (((qh >> (3 * l)) & 7u) << 8)];
+#pragma unroll
+            for (int k = 0; k < 8; ++k) w[k] = dl * (static_cast<float>(static_cast<int8_t>((g >> (8 * k)) & 0xFFu)) + delta);
+        } else {
+            uint64_t g; uint32_t sg; float dl;
+            if (t == 16u) {
+                const uint8_t* q = blk + 2 + 8 * ib32;
+                const uint32_t a1 = q[4] | (q[5] << 8) | (q[6] << 16) | (static_cast<uint32_t>(q[7]) << 24);
+                dl = d * (0.5f + static_cast<float>(a1 >> 28)) * 0.25f;
+                g = kHipIq2xxsGrid[q[l]];
+                sg = kHipKsignsIq2xs[(a1 >> (7 * l)) & 127u];
+            } else if (t == 17u) {
+                const uint8_t* q = blk + 2 + 8 * ib32 + 2 * l;
+                const uint32_t v = q[0] | (q[1] << 8);
+                dl = d * (0.5f + static_cast<float>((blk[66 + ib32] >> (4 * (l >> 1))) & 15u)) * 0.25f;
+                g = kHipIq2xsGrid[v & 511u];
+                sg = kHipKsignsIq2xs[v >> 9];
+            } else {
+                const uint8_t* qs = blk + 2;
+                dl = d * (0.5f + static_cast<float>((blk[74 + ib32] >> (4 * (l >> 1))) & 15u)) * 0.25f;
+                g = kHipIq2sGrid[qs[4 * ib32 + l] | ((static_cast<uint32_t>(blk[66 + ib32]) << (8 - 2 * l)) & 0x300u)];
+                sg = qs[32 + 4 * ib32 + l];
+            }
+#pragma unroll
+            for (int k = 0; k < 8; ++k) w[k] = dl * static_cast<float>((g >> (8 * k)) & 0xFFu) * ((sg >> k) & 1u ? -1.0f : 1.0f);
+        }
+    } else if (t == 21u) {  // IQ3_S, as ggml's dequantize_row_iq3_s: one 8-value group = two 4-value grid entries
+        const int b = col >> 8, idx = col & 255, ib32 = idx >> 5, l = (idx & 31) >> 3;
+        const uint8_t* blk = row + static_cast<size_t>(b) * 110u;
+        const float d = ld_fp16_as_f32(blk) * ext_scale;
+        const uint8_t* qs = blk + 2 + 8 * ib32 + 2 * l;
+        const uint32_t qh = blk[66 + ib32];
+        const uint32_t sg = blk[74 + 4 * ib32 + l];
+        const float db = d * static_cast<float>(1 + 2 * ((blk[106 + (ib32 >> 1)] >> (4 * (ib32 & 1))) & 15u));
+        const uint32_t g1 = kHipIq3sGrid[qs[0] | ((qh << (8 - 2 * l)) & 256u)];
+        const uint32_t g2 = kHipIq3sGrid[qs[1] | ((qh << (7 - 2 * l)) & 256u)];
+#pragma unroll
+        for (int k = 0; k < 4; ++k) {
+            w[k]     = db * static_cast<float>((g1 >> (8 * k)) & 0xFFu) * ((sg >> k) & 1u ? -1.0f : 1.0f);
+            w[k + 4] = db * static_cast<float>((g2 >> (8 * k)) & 0xFFu) * ((sg >> (k + 4)) & 1u ? -1.0f : 1.0f);
+        }
+    } else if (t == 42u) {  // Q2_0: 64 elems = fp16 d + 16 B, 2 bits LSB-first, value (q - 1) * d
+        const int b = col >> 6, i = col & 63;
+        const uint8_t* blk = row + static_cast<size_t>(b) * 18u;
+        const float d = ld_fp16_as_f32(blk) * ext_scale;
+        const uint8_t* q = blk + 2 + (i >> 2);
+#pragma unroll
+        for (int k = 0; k < 8; ++k) w[k] = static_cast<float>(static_cast<int>((q[k >> 2] >> (2 * (k & 3))) & 3u) - 1) * d;
+    } else if (t == 40u) {  // NVFP4: 64 elems = 4 UE4M3 sub-scales + 32 B; sub-block s: low nibbles 0..7, high 8..15
+        const int b = col >> 6, i = col & 63, sb = i >> 4, hi = (i & 15) >= 8;
+        const uint8_t* blk = row + static_cast<size_t>(b) * 36u;
+        const float d = hip_ue4m3_f32(blk[sb]) * ext_scale;
+        const uint8_t* qp = blk + 4 + sb * 8;
+#pragma unroll
+        for (int k = 0; k < 8; ++k) w[k] = static_cast<float>(kHipFp4Doubled[hi ? (qp[k] >> 4) : (qp[k] & 15u)]) * d;
     } else if (t == 39u) {  // MXFP4: 32 elems = 17 B
         const int b = col >> 5, in32 = col & 31;
         const uint8_t* blk = row + static_cast<size_t>(b) * 17u;
