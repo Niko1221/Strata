@@ -441,6 +441,143 @@ static int cmd_ring_check(const std::string& model_path, const BackendOpts& bopt
     return ok ? 0 : 1;
 }
 
+static int32_t argmax_f32(const float* lg, int V);
+// --batch-check N [--parallel K] --prompt-ids ...: the same request alone in slot 0 versus inside a batch of K slots (K - 1 other
+// requests of the same length, made from the same ids rotated), scheduled the way ink_serve.h does it (decode tokens first, the rest of
+// the chunk budget split round-robin over the prefilling slots).  Slot 0 is teacher-forced with the tokens of its solo greedy run, so
+// both runs see the same positions; per step it prints the KL of the batched logits against the solo logits, whether the top-1 agrees
+// and the logit gap of the solo top-2 (a near-tie flips on rounding, a wide gap does not).  Exit 1 when a step's KL is above 0.05.
+static int cmd_batch_check(const std::string& model_path, const BackendOpts& bopts, bool force_cpu,
+                           const std::vector<int32_t>& ids, int n_gen) {
+    InkModelFile mf;
+    std::string err;
+    if (!mf.open(model_path, err, false, bopts.dspark_path)) { fprintf(stderr, "open: %s\n", err.c_str()); return 1; }
+    BackendOpts bo = bopts;
+    bo.enable_dspark = false;
+    const int K = std::max(1, bo.parallel);
+    if (static_cast<int>(ids.size()) + n_gen + 64 > bo.max_ctx) bo.max_ctx = static_cast<int>(ids.size()) + n_gen + 64;
+    auto backend = make_default_backend(force_cpu, &bo);
+    if (!backend->init(mf, bo, err)) { fprintf(stderr, "init: %s\n", err.c_str()); return 1; }
+    const int eff_ctx = (backend->effective_max_ctx() > 0) ? backend->effective_max_ctx() : bo.max_ctx;
+    for (int s = 0; s < K; ++s)
+        if (!backend->alloc_slot(s, eff_ctx, bo.kv_dtype, err)) { fprintf(stderr, "alloc_slot: %s\n", err.c_str()); return 1; }
+    const int V = mf.m.c.vocab_unpadded;
+    const int P = static_cast<int>(ids.size());
+    const int chunk = std::max(1, bo.chunk);
+    StepBatch batch;
+
+    // ---- solo: slot 0 only, the same chunking as the serve loop with one request
+    std::vector<std::vector<float>> solo;       // solo[0] = logits after the prompt, solo[k] after decode step k
+    std::vector<int32_t> toks;                  // the greedy tokens fed back
+    {
+        std::vector<float> lg(V);
+        int pos = 0;
+        while (pos < P) {
+            const int take = std::min(chunk, P - pos);
+            batch.clear();
+            for (int k = 0; k < take; ++k) batch.push(0, pos + k, ids[pos + k], pos + k == P - 1);
+            if (!backend->forward_batch(batch, (pos + take == P) ? lg.data() : nullptr, nullptr, err)) { fprintf(stderr, "solo prefill: %s\n", err.c_str()); return 1; }
+            pos += take;
+        }
+        solo.push_back(lg);
+        for (int g = 0; g < n_gen; ++g) {
+            const int32_t t = argmax_f32(solo.back().data(), V);
+            toks.push_back(t);
+            batch.clear();
+            batch.push(0, P + g, t, true);
+            if (!backend->forward_batch(batch, lg.data(), nullptr, err)) { fprintf(stderr, "solo decode: %s\n", err.c_str()); return 1; }
+            solo.push_back(lg);
+        }
+    }
+    for (int s = 0; s < K; ++s) backend->reset_slot(s);
+
+    // ---- batched: K slots, slot 0 the same request (teacher-forced), the others rotated copies that decode greedily
+    std::vector<std::vector<int32_t>> pr(K);
+    for (int s = 0; s < K; ++s) {
+        pr[s].resize(P);
+        for (int i = 0; i < P; ++i) pr[s][i] = ids[(i + s * 997) % P];
+    }
+    std::vector<int> fed(K, 0), npos(K, 0);
+    std::vector<int32_t> next(K, -1);
+    std::vector<int> gdone(K, 0);
+    std::vector<std::vector<float>> bat(1 + n_gen);
+    std::vector<float> lgbuf;
+    int s0_have = 0;                            // solo-indexed logits of slot 0 collected so far
+    int guard = 0;
+    while (s0_have < 1 + n_gen && ++guard < 1000000) {
+        batch.clear();
+        std::vector<int> want_slots;
+        int budget = std::max(chunk, K);
+        std::vector<int> take(K, 0);
+        for (int s = 0; s < K; ++s) {
+            if (fed[s] < P || gdone[s] >= n_gen + 1) continue;
+            const int32_t t = (s == 0) ? toks[gdone[0] - 1] : next[s];
+            batch.push(s, P + gdone[s] - 1, t, true);
+            want_slots.push_back(s);
+            --budget;
+        }
+        if (budget > 0) {
+            std::vector<int> pf;
+            for (int s = 0; s < K; ++s) if (fed[s] < P) pf.push_back(s);
+            if (!pf.empty()) {
+                const int per = std::max(1, budget / static_cast<int>(pf.size()));
+                for (int s : pf) {
+                    take[s] = std::min(P - fed[s], per);
+                    for (int k = 0; k < take[s]; ++k) {
+                        const bool last = fed[s] + k == P - 1;
+                        batch.push(s, fed[s] + k, pr[s][fed[s] + k], last);
+                        if (last) want_slots.push_back(s);
+                    }
+                }
+            }
+        }
+        const int n_want = batch.count_logits();
+        lgbuf.assign(static_cast<size_t>(std::max(1, n_want)) * V, 0.0f);
+        if (!backend->forward_batch(batch, n_want > 0 ? lgbuf.data() : nullptr, nullptr, err)) { fprintf(stderr, "batched: %s\n", err.c_str()); return 1; }
+        // the rows come back in batch order
+        for (size_t r = 0; r < want_slots.size(); ++r) {
+            const int s = want_slots[r];
+            const float* row = lgbuf.data() + r * static_cast<size_t>(V);
+            if (s == 0) {
+                bat[gdone[0]].assign(row, row + V);
+                ++s0_have;
+            }
+            next[s] = argmax_f32(row, V);
+            ++gdone[s];
+        }
+        for (int s = 0; s < K; ++s) fed[s] += take[s];
+        for (int s = 0; s < K; ++s) if (take[s] > 0 && fed[s] == P) { /* its first logits row was taken above */ }
+    }
+    if (s0_have < 1 + n_gen) { fprintf(stderr, "batch-check: scheduler did not finish\n"); return 1; }
+
+    int rc = 0, flips = 0, wide_flips = 0;
+    double kld_max = 0.0, kld_sum = 0.0;
+    int first_flip = -1;
+    for (int g = 0; g <= n_gen; ++g) {
+        const float* p_lg = solo[g].data();
+        const float* q_lg = bat[g].data();
+        int bp = 0, bq = 0;
+        for (int v = 1; v < V; ++v) { if (p_lg[v] > p_lg[bp]) bp = v; if (q_lg[v] > q_lg[bq]) bq = v; }
+        float second = -1e30f;
+        for (int v = 0; v < V; ++v) if (v != bp && p_lg[v] > second) second = p_lg[v];
+        const float gap = p_lg[bp] - second;
+        double zp = 0.0, zq = 0.0;
+        for (int v = 0; v < V; ++v) { zp += std::exp(p_lg[v] - p_lg[bp]); zq += std::exp(q_lg[v] - q_lg[bq]); }
+        const double lzp = p_lg[bp] + std::log(zp), lzq = q_lg[bq] + std::log(zq);
+        double kld = 0.0;
+        for (int v = 0; v < V; ++v) { const double lp = p_lg[v] - lzp, lq = q_lg[v] - lzq; kld += std::exp(lp) * (lp - lq); }
+        kld_sum += kld;
+        kld_max = std::max(kld_max, kld);
+        if (bp != bq) { ++flips; if (first_flip < 0) first_flip = g; if (gap > 0.5f) ++wide_flips; }
+        if (g < 4 || bp != bq || kld > 0.01)
+            printf("[batch-check] step %d: KL %.6f top1 %s (solo %d, batched %d) solo top1-top2 gap %.4f\n", g, kld, bp == bq ? "same" : "DIFFERENT", bp, bq, gap);
+        if (kld > 0.05) rc = 1;
+    }
+    printf("[batch-check] K=%d slots, prompt %d tokens, %d steps: mean KL %.6f, max KL %.6f, top-1 flips %d (first at step %d, with a solo gap above 0.5: %d)\n",
+           K, P, n_gen + 1, kld_sum / (n_gen + 1), kld_max, flips, first_flip, wide_flips);
+    return rc;
+}
+
 // #6671: the drafter must be lossless.  --spec-check N: greedy-generate N tokens (a) one token per forward (B = 1), twice,
 // (b) through dspark_spec_step_greedy exactly as the serve loop calls it (with the same fallbacks), and (c) compare the
 // logits of an M-token verify window (forward_batch with M rows of one slot) bitwise against the B = 1 logits of the same
@@ -700,7 +837,7 @@ int main(int argc, char** argv) {
     bool mode_serve = false, mode_bench = false, mode_selfcheck = false, mode_info = false, mode_export = false;
     bool verify_hash = false;
     std::string info_file, export_file, export_dir, kld_ref, dump_ref, prompt_ids_str;
-    int bench_prompt = 64, bench_gen = 32, spec_check_n = 0, ring_check_stride = 0;
+    int bench_prompt = 64, bench_gen = 32, spec_check_n = 0, ring_check_stride = 0, batch_check_n = 0;
     float cli_temp = 0.0f;
 
     for (int i = 1; i < argc; ++i) {
@@ -822,6 +959,8 @@ int main(int argc, char** argv) {
                 if (!pf) { fprintf(stderr, "cannot read %s\n", prompt_ids_str.c_str() + 1); return 2; }
                 prompt_ids_str.assign(std::istreambuf_iterator<char>(pf), std::istreambuf_iterator<char>());
             }
+        } else if (a == "--batch-check") {
+            batch_check_n = std::atoi(next().c_str());
         } else if (a == "--spec-check") {
             spec_check_n = std::atoi(next().c_str());
         } else if (a == "--ring-check") {
@@ -908,6 +1047,15 @@ int main(int argc, char** argv) {
             return 2;
         }
         return cmd_ring_check(cfg.model_path, cfg.bopts, cfg.force_cpu, rc_ids, ring_check_stride);
+    }
+    if (batch_check_n > 0) {
+        std::vector<int32_t> bc_ids;
+        std::string bc_err;
+        if (prompt_ids_str.empty() || !parse_id_list(prompt_ids_str, bc_ids, bc_err)) {
+            fprintf(stderr, "--batch-check needs --prompt-ids (a list or @file)\n");
+            return 2;
+        }
+        return cmd_batch_check(cfg.model_path, cfg.bopts, cfg.force_cpu, bc_ids, batch_check_n);
     }
     if (spec_check_n > 0) {
         std::vector<int32_t> sc_ids;
