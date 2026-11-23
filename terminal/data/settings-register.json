@@ -16501,6 +16501,39 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_INK_CHUNK_AUTO",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
+     "line": 291,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "faceebb50c",
+   "first_date": "2026-11-23",
+   "since": null,
+   "last_commit": "faceebb50c",
+   "last_date": "2026-11-23",
+   "status": "rollback",
+   "owner": "inkling2/cuda",
+   "note": "strata-inkling CUDA (0221 INKCUDA): without --chunk the prefill chunk is picked from the memory left after the experts (2048 / 1024 / 512) and capped by the slot count (2048 for 1-3 slots, 1024 for 4-15, 512 from 16); =0 keeps the old fixed 512. --chunk always wins. Tokens are identical to 512 (up to 30K on a 4090), prefill +9-11 percent in serve, +30 percent in bench on a 5090.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_INK_CPU_PROF",
    "backends": [
     "cuda-hip"
@@ -16890,7 +16923,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 290,
+     "line": 301,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -16956,7 +16989,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 283,
+     "line": 285,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -17061,7 +17094,7 @@
     },
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 295,
+     "line": 306,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -17160,7 +17193,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/ink_main.cpp",
-     "line": 891,
+     "line": 893,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -17226,7 +17259,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 114,
+     "line": 116,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -17259,7 +17292,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 115,
+     "line": 117,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -17292,7 +17325,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 121,
+     "line": 123,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -17325,7 +17358,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 116,
+     "line": 118,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -17457,7 +17490,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 274,
+     "line": 276,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -44853,7 +44886,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/ink_main.cpp",
-     "line": 605,
+     "line": 606,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -44886,7 +44919,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/ink_main.cpp",
-     "line": 613,
+     "line": 614,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -44919,7 +44952,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/ink_main.cpp",
-     "line": 500,
+     "line": 501,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -44952,7 +44985,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/ink_main.cpp",
-     "line": 497,
+     "line": 498,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
