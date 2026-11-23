@@ -36,14 +36,20 @@ def explain(name: str, *, family: str | None = None, data_dir: str | None = None
         where = f"from the installed run config {installed}" if installed is not None and base != Path(catalog.data_dir()) else "the data folder strata launch uses"
     trace = catalog.model_folder_trace(base, fam, size)
     folder = Path(trace["folder"])
-    files = []
+    gguf_files, strata_files = [], []
     if folder.is_dir():
         try:
             for f in sorted(folder.glob("*.gguf")):
                 if f.is_file():
-                    files.append({"name": f.name, "bytes": f.stat().st_size, "picture_reader": f.name.lower().startswith("mmproj")})
+                    gguf_files.append({"name": f.name, "bytes": f.stat().st_size,
+                                       "picture_reader": f.name.lower().startswith("mmproj")})
+            for f in sorted(folder.glob("*.strata")):     # Inkling-2-Mini and Hy4-Flash are native .strata builds
+                if f.is_file():
+                    strata_files.append({"name": f.name, "bytes": f.stat().st_size,
+                                         "picture_reader": "vision" in f.name.lower()})
         except OSError:
             pass
+    files = [*gguf_files, *strata_files]
     others: list[str] = []
     models = base / "models"
     if trace["rule"] == "fallback":
@@ -58,11 +64,11 @@ def explain(name: str, *, family: str | None = None, data_dir: str | None = None
     return {"family": fam, "model": size, "tag": tag, "data_dir": str(base), "data_dir_from": where, "models_dir_exists": models.is_dir(),
             "tried": [{"path": str(t["path"]), "rule": t["rule"], "exists": bool(t["exists"])} for t in trace["tried"]],
             "folder": str(folder), "rule": trace["rule"], "found": trace["rule"] != "fallback",
-            "gguf_files": files, "weights_bytes": weights, "other_folders": others}
+            "gguf_files": gguf_files, "strata_files": strata_files, "weights_bytes": weights, "other_folders": others}
 
 
 def words(r: dict) -> str:
-    lines = [f"{r['family']}/{r['model']} (folder tag {r['tag']})",
+    lines = [f"{r['family']}/{r['model']} (run config tag {r['tag']})",
              f"Data folder: {r['data_dir']} ({r['data_dir_from']})"]
     if not r["models_dir_exists"]:
         lines.append(f"There is no models folder in it ({Path(r['data_dir']) / 'models'}).")
@@ -71,12 +77,13 @@ def words(r: dict) -> str:
         lines.append(f"  {t['path']}  {'there' if t['exists'] else 'not there'}  ({RULE_WORDS[t['rule']]})")
     if r["found"]:
         lines.append(f"Uses: {r['folder']} ({RULE_WORDS[r['rule']]})")
-        if r["gguf_files"]:
-            lines.append(f"Model files: {len([f for f in r['gguf_files'] if not f['picture_reader']])}, {r['weights_bytes'] / 1e9:.1f} GB")
-            for f in r["gguf_files"]:
+        files = [*r["gguf_files"], *r.get("strata_files", [])]
+        if files:
+            lines.append(f"Model files: {len([f for f in files if not f['picture_reader']])}, {r['weights_bytes'] / 1e9:.1f} GB")
+            for f in files:
                 lines.append(f"  {f['name']}  {f['bytes'] / 1e9:.2f} GB" + ("  (picture reader)" if f["picture_reader"] else ""))
         else:
-            lines.append("The folder has no .gguf files, so strata launch will download the model.")
+            lines.append("The folder has no .gguf or .strata files, so strata launch will download the model.")
     else:
         lines.append(f"Not found. strata launch would download the model into {r['folder']}.")
         if r["other_folders"]:

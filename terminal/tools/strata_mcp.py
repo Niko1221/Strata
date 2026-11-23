@@ -2627,7 +2627,13 @@ class Tools:
             vision = "yes" if can_read else "no"
         target = self.check_data_dir(data_dir) if data_dir else s.data_dir()
         tag = (families[family].get("tag", "") + model)
-        have_dir = target / "models" / tag
+        if md.get("inkling") or md.get("hy4"):
+            # Hy4-Flash and Inkling-2-Mini keep every build in one family folder (models/inkling-2-mini, models/hy4-flash), not under
+            # the run config's tag: the install page named a folder setup never creates (#4887's sibling, app plan).
+            from strata_control import hy4_family, inkling_family
+            have_dir = target / "models" / (inkling_family.FAMILY if md.get("inkling") else hy4_family.FAMILY)
+        else:
+            have_dir = target / "models" / tag
         ready_dir = ready_pack_dir(target, md)                 # a ready-made pack (NVFP4): setup keeps it under <owner>--<repo>, not under the family tag (#4892)
         # An Intel Arc (Linux, the SYCL engine): setup.py's `--backend sycl` in its CONTROL mode prepares the model's files and writes the run config, as the
         # Terminal does (strata_control/intel_app.py); it downloads nothing. NVIDIA and AMD never come here.
@@ -2655,7 +2661,12 @@ class Tools:
             else:
                 have_files = inkling_family.local_files(target / "models" / inkling_family.FAMILY)
                 md = {**md, "download_gb": round(sum(inkling_family.size_of(n) / 1e9 for n in inkling_family.files_of(model, vision != "no") if n not in have_files), 1)}
-        partly = (have_dir.is_dir() and any(have_dir.glob("*.gguf*"))) or bool(gguf_dir) \
+        if md.get("inkling") or md.get("hy4"):
+            expected = expected_files(s.setup_module(), family, model, target / "models", False)
+            partly = any(Path(f["path"]).is_file() for f in expected if f.get("role") != "vision")
+        else:
+            partly = have_dir.is_dir() and any(have_dir.glob("*.gguf*"))
+        partly = partly or bool(gguf_dir) \
             or (ready_dir is not None and ready_dir.is_dir() and any(ready_dir.glob("*.gguf*")))   # a local folder: nothing to download
         repack_gb = 0 if (md.get("hy4") or md.get("inkling")) else (s.mac().repacked_gb(model) if mac and s.mac() else 0)
         vision_extra = 0 if (md.get("hy4") or md.get("inkling")) else (1 if vision in ("yes", "gpu", "cpu") else 0)

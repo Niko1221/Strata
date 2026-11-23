@@ -49,6 +49,22 @@ class Explain(unittest.TestCase):
         self.assertIn("Uses: " + str(folder), text)
         self.assertIn("Model files: 2, 0.0 GB", text)
 
+    def test_an_inkling_strata_folder_lists_its_files(self):
+        folder = self.data / "models" / "inkling-2-mini"
+        folder.mkdir(parents=True)
+        (folder / "Inkling-2-Mini-SQ-15.strata").write_bytes(b"x" * 1000)
+        (folder / "Inkling-2-Mini-Vision.strata").write_bytes(b"x" * 10)
+        r = self.run_it("SQ-15", family="inkling-2-mini")
+        self.assertEqual((r["family"], r["model"], r["rule"], r["found"]), ("inkling-2-mini", "SQ-15", "exact", True))
+        self.assertEqual([f["name"] for f in r["strata_files"]], ["Inkling-2-Mini-SQ-15.strata", "Inkling-2-Mini-Vision.strata"])
+        self.assertEqual(sorted(f["picture_reader"] for f in r["strata_files"]), [False, True])
+        self.assertEqual(r["weights_bytes"], 1000)
+        text = ME.words(r)
+        self.assertIn("Model files: 1, 0.0 GB", text)
+        self.assertIn("Inkling-2-Mini-SQ-15.strata", text)
+        self.assertIn("(picture reader)", text)
+        self.assertNotIn("no .gguf or .strata", text)
+
     def test_the_lower_case_tag_and_another_letter_case(self):
         (self.data / "models" / "iq3_s").mkdir(parents=True)
         r = self.run_it("IQ3_S")

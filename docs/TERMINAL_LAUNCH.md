@@ -218,7 +218,8 @@ already exist. Nothing is copied or moved.
 
 `strata models explain NAME` (`IQ3_S`, `iq3_s` or `qwen/IQ3_S`) shows where `strata launch` looks for that model's files: the data folder it
 uses, each folder name it tries under `models/` (setup's spelling, the lower-case tag, the same name in other letter case) and whether it is there,
-the folder it will use and the `.gguf` files in it. When none is there it names the folders that are. `--data-dir FOLDER` looks in another data
+the folder it will use and the `.gguf` and `.strata` files in it. Hy4-Flash and Inkling-2-Mini keep every build in one family folder
+(`models/hy4-flash`, `models/inkling-2-mini`), so that folder is named once. When none is there it names the folders that are. `--data-dir FOLDER` looks in another data
 folder, `--output json` prints the same as JSON. It only reads folder names and file sizes.
 
 ## When there is no engine for this computer
