@@ -10475,13 +10475,13 @@ def inkling_fetch_local_vision(a, folder: Path, data: Path) -> Path | None:
     return got
 
 
-def inkling_find_local_dspark(folder: Path) -> Path | None:
+def inkling_find_local_dspark(folder: Path, reads_mtp: bool = True) -> Path | None:
     """Find an optional local DSpark drafter file (dspark*.gguf or mtp.safetensors) beside an Inkling GGUF."""
     for base in (folder, folder / "dspark"):
         if not base.is_dir():
             continue
         mtp = base / "mtp.safetensors"                  # the original checkpoint first: a dspark*.gguf may be Unsloth's newer layout, which this engine cannot read
-        if mtp.is_file():
+        if mtp.is_file() and reads_mtp:                 # (an engine that does not list dspark_f32_widen=1 drafts nothing from it)
             return mtp
         ggufs = sorted(p for p in base.glob("dspark*.gguf") if p.is_file())
         if ggufs:
@@ -10622,26 +10622,40 @@ def inkling_fetch(a, name: str, folder: Path, own: bool) -> Path:
     fail(f"no source lists {name}")
 
 
-def inkling_fetch_drafter(a, folder: Path, own: bool) -> Path | None:
-    """The DSpark drafter of a downloaded GGUF build. An install that already holds a complete drafter keeps it (no second download).
-    Otherwise the original checkpoint of Thinking Machines (mtp.safetensors, BF16, 636 MB, pinned commit + SHA-256) is fetched, and when that
-    cannot be fetched or does not check out, Unsloth's pinned Q8_0 file (402 MB, the same weights). Both take the same memory on the card
-    (measured: DSpark took 416 MiB with either; the engine holds the matrices as BF16 in both cases), so the card size does not matter."""
-    names = [inkling_family.MTP_FILE, inkling_family.DSPARK_GGUF_FILE]
+def inkling_engine_reads_mtp(engine_program, model_file, lib_dirs=()) -> bool:
+    """Whether the installed engine can use the original mtp.safetensors: it says so on its --info line (dspark_f32_widen=1). The flag, not the
+    version, decides, so older, newer and custom builds are told apart by what they report; an engine that is missing, does not run or says nothing
+    counts as one that cannot (Unsloth's Q8_0 file is used then)."""
+    if engine_program is None or model_file is None:
+        return False
+    from serve import inkling_kind
+    info = inkling_kind.probe(str(engine_program), ["--native", str(model_file)], {"lib_dirs": [str(d) for d in (lib_dirs or ())]})
+    return inkling_family.engine_reads_mtp(info)
+
+
+def inkling_fetch_drafter(a, folder: Path, own: bool, reads_mtp: bool = True) -> Path | None:
+    """The DSpark drafter of a downloaded GGUF build, chosen by what the installed engine can read (reads_mtp: see inkling_engine_reads_mtp).
+    An engine that reads it: the original checkpoint of Thinking Machines (mtp.safetensors, BF16, 636 MB, pinned commit + SHA-256), or the file an
+    install already has; when the original cannot be fetched or does not check out, Unsloth's pinned Q8_0 file (402 MB, the same weights).
+    An engine that does not: Unsloth's pinned Q8_0 file only; an mtp.safetensors on disk stays there and is not passed. Both take the same memory
+    on the card (measured: DSpark took 416 MiB with either; the engine holds the matrices as BF16 in both cases)."""
+    names = [inkling_family.MTP_FILE, inkling_family.DSPARK_GGUF_FILE] if reads_mtp else [inkling_family.DSPARK_GGUF_FILE]
     for n in names:
         if inkling_have(a, folder / n):
             ok(f"drafter: DSpark ({n}) already downloaded")
             inkling_verify(folder / n, n, own)
             return folder / n
     what = {inkling_family.MTP_FILE: "the original checkpoint (BF16, from Thinking Machines' repository)",
-            inkling_family.DSPARK_GGUF_FILE: "Unsloth's Q8_0 copy of the same checkpoint"}
+            inkling_family.DSPARK_GGUF_FILE: "Unsloth's Q8_0 copy of the same checkpoint" + ("" if reads_mtp else " (this engine cannot read the original file)")}
+    say(f"  drafter: DSpark, {what[names[0]]}: {names[0]} ({inkling_family.size_of(names[0]) / 1e6:.0f} MB)")
+    if len(names) == 1:
+        return inkling_fetch(a, names[0], folder, own)
     global fail
     real_fail = fail
 
     def soft_fail(msg, hint=None, **detail):                  # a failed first try is not the end of setup: no "Setup stopped", no error event
         warn(f"{msg}" + (f" ({hint})" if hint else ""))
         sys.exit(1)
-    say(f"  drafter: DSpark, {what[names[0]]}: {names[0]} ({inkling_family.size_of(names[0]) / 1e6:.0f} MB)")
     fail = soft_fail
     try:
         return inkling_fetch(a, names[0], folder, own)
@@ -10787,10 +10801,6 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
                 fetch_vision = True                          # step 5 downloads it (the engine comes first, as for any download)
         else:
             ok("images: off")
-        if is_gguf and want_dspark:
-            dspark_path = inkling_find_local_dspark(folder)
-            if dspark_path is not None:
-                ok(f"drafter: DSpark ({dspark_path.name})")
     else:
         ok("images: " + ("on (Inkling-2-Mini-Vision.strata, 0.64 GB lossless BF16)" if vision else "off"))
         files = inkling_family.files_of(model, vision, dspark=False)
@@ -10827,13 +10837,18 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
             vision_path = inkling_fetch_local_vision(a, folder, data)
             if vision_path is None:
                 vision = False
+        if is_gguf and want_dspark:                     # after the engine step: which file it can read decides
+            dspark_path = inkling_find_local_dspark(folder, inkling_engine_reads_mtp(engine_program, model_file, lib_dirs))
+            if dspark_path is not None:
+                ok(f"drafter: DSpark ({dspark_path.name})")
     else:
         step(5, f"downloading {fam['title']} {model}")
         files = inkling_family.files_of(model, vision, dspark=False)
         paths = {n: inkling_fetch(a, n, folder, own) for n in files}
         model_file = paths[files[0]]
         vision_path = paths.get(inkling_family.VISION_FILE) if vision else None
-        dspark_path = inkling_fetch_drafter(a, folder, own) if (is_gguf and want_dspark) else None
+        reads_mtp = inkling_engine_reads_mtp(engine_program, model_file, lib_dirs) if (is_gguf and want_dspark) else True
+        dspark_path = inkling_fetch_drafter(a, folder, own, reads_mtp) if (is_gguf and want_dspark) else None
         if dspark_path is not None:
             ok(f"drafter: DSpark ({dspark_path.name})")
         ok(f"model file: {model_file}")

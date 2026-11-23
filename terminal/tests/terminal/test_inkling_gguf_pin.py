@@ -86,7 +86,7 @@ class GgufPin(unittest.TestCase):
         self.assertEqual(F.sources_for(F.MTP_FILE, env=env)[0]["base"], "https://example.org/d")
         self.assertEqual(F.sources_for(F.MTP_FILE, env=env)[-1]["base"], F.MTP_BASE)
 
-    def _drafter(self, have=(), failing=()):
+    def _drafter(self, have=(), failing=(), reads_mtp=True):
         import tempfile
         from unittest import mock
         import setup
@@ -102,7 +102,7 @@ class GgufPin(unittest.TestCase):
                 mock.patch.object(setup, "inkling_fetch", side_effect=fetch), \
                 mock.patch.object(setup, "inkling_have", side_effect=lambda a, p: p.name in have), \
                 mock.patch.object(setup, "inkling_verify"):
-            got = setup.inkling_fetch_drafter(mock.Mock(), Path(td), False)
+            got = setup.inkling_fetch_drafter(mock.Mock(), Path(td), False, reads_mtp)
         return got.name, calls
 
     def test_setup_fetches_the_original_drafter_first(self):
@@ -117,14 +117,75 @@ class GgufPin(unittest.TestCase):
         self.assertEqual(self._drafter(have=(F.DSPARK_GGUF_FILE,)), (F.DSPARK_GGUF_FILE, []))     # no second download
         self.assertEqual(self._drafter(have=(F.MTP_FILE,)), (F.MTP_FILE, []))
 
-    def test_a_local_folder_prefers_the_original_drafter(self):
+    def test_an_engine_without_the_flag_gets_unsloths_q8_file_only(self):
+        # measured on Metal: an engine without the widen drafts nothing from mtp.safetensors (1.0 tokens per step), so setup does not fetch or pass it
+        self.assertEqual(self._drafter(reads_mtp=False), (F.DSPARK_GGUF_FILE, [F.DSPARK_GGUF_FILE]))
+        self.assertEqual(self._drafter(reads_mtp=False, have=(F.MTP_FILE,)), (F.DSPARK_GGUF_FILE, [F.DSPARK_GGUF_FILE]))     # on disk, not used
+        self.assertEqual(self._drafter(reads_mtp=False, have=(F.MTP_FILE, F.DSPARK_GGUF_FILE)), (F.DSPARK_GGUF_FILE, []))
+        with self.assertRaises(SystemExit):
+            self._drafter(reads_mtp=False, failing=(F.DSPARK_GGUF_FILE,))                                                   # no fallback to the unreadable file
+
+    def test_the_flag_decides_not_the_version(self):
+        from unittest import mock
+        import setup
+        from serve import inkling_kind
+        self.assertTrue(F.engine_reads_mtp({"arch": "inkling2_loop", "dspark_f32_widen": "1"}))
+        for info in (None, {}, {"arch": "inkling2_loop", "spec_opts": "1"}, {"dspark_f32_widen": "0"}):
+            self.assertFalse(F.engine_reads_mtp(info), info)
+        with mock.patch.object(inkling_kind, "probe", return_value={"arch": "x", "dspark_f32_widen": "1"}) as pr:
+            self.assertTrue(setup.inkling_engine_reads_mtp("/e/strata-inkling", "/m/x.gguf", ["/lib"]))
+            self.assertEqual(pr.call_args[0][1], ["--native", "/m/x.gguf"])
+        with mock.patch.object(inkling_kind, "probe", return_value={"arch": "x"}):
+            self.assertFalse(setup.inkling_engine_reads_mtp("/e/strata-inkling", "/m/x.gguf"))
+        with mock.patch.object(inkling_kind, "probe", return_value=None):
+            self.assertFalse(setup.inkling_engine_reads_mtp("/e/strata-inkling", "/m/x.gguf"))
+        self.assertFalse(setup.inkling_engine_reads_mtp(None, "/m/x.gguf"))                    # no engine: the file every engine reads
+
+    def test_a_start_with_an_engine_that_cannot_read_mtp_uses_the_q8_file_beside_it(self):
+        import tempfile
+        from serve import inkling_kind
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            mtp, q8 = td / "mtp.safetensors", td / F.DSPARK_GGUF_FILE
+            args = ["--native", "m.gguf", "--dspark", str(mtp)]
+            old, new = {"arch": "x", "drafter": "dspark"}, {"arch": "x", "drafter": "dspark", "dspark_f32_widen": "1"}
+            self.assertEqual(inkling_kind.fit_dspark(args, new, False), (args, new))             # a capable engine keeps it
+            self.assertEqual(inkling_kind.fit_dspark(args, None, False), (args, None))
+            other = ["--native", "m.gguf", "--dspark", str(q8)]
+            self.assertEqual(inkling_kind.fit_dspark(other, old, False), (other, old))           # the Q8_0 file is always fine
+            out, info = inkling_kind.fit_dspark(args, old, False)                                 # incapable, no Q8_0 beside it: no drafter
+            self.assertEqual(out, ["--native", "m.gguf"])
+            self.assertEqual(info["drafter"], "none")
+            q8.write_bytes(b"x")
+            out, info = inkling_kind.fit_dspark(args, old, False)                                 # incapable, Q8_0 beside it: that one
+            self.assertEqual(out, ["--native", "m.gguf", "--dspark", str(q8)])
+            self.assertEqual(info["drafter"], "dspark")
+            self.assertEqual(args[3], str(mtp))                                                   # the caller's list is not changed
+
+    def test_engine_args_passes_the_file_the_engine_reads(self):
+        import tempfile
+        from unittest import mock
+        from serve import inkling_kind
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            (td / F.DSPARK_GGUF_FILE).write_bytes(b"x")
+            cfg = {"args": ["--native", str(td / "m.gguf"), "--dspark", str(td / "mtp.safetensors")], "drafting": "dspark", "backend": "cuda"}
+            for flag, want in (({}, F.DSPARK_GGUF_FILE), ({"dspark_f32_widen": "1"}, "mtp.safetensors")):
+                with mock.patch.object(inkling_kind, "probe", return_value={"arch": "x", "drafter": "dspark", **flag}):
+                    args = inkling_kind.engine_args(dict(cfg), "/e/strata-inkling", announce=False)
+                self.assertEqual(Path(args[args.index("--dspark") + 1]).name, want, flag)
+                self.assertIn("dspark", args[args.index("--draft") + 1])
+
+    def test_a_local_folder_prefers_the_original_drafter_only_for_an_engine_that_reads_it(self):
         import tempfile
         import setup
         with tempfile.TemporaryDirectory() as td:
             td = Path(td)
-            (td / "dspark-Inkling-2-Mini-Q8_0.gguf").write_bytes(b"x")
-            self.assertEqual(setup.inkling_find_local_dspark(td).name, "dspark-Inkling-2-Mini-Q8_0.gguf")
             (td / "mtp.safetensors").write_bytes(b"x")
+            self.assertEqual(setup.inkling_find_local_dspark(td).name, "mtp.safetensors")
+            self.assertIsNone(setup.inkling_find_local_dspark(td, False))                        # only the original there, and this engine cannot read it
+            (td / "dspark-Inkling-2-Mini-Q8_0.gguf").write_bytes(b"x")
+            self.assertEqual(setup.inkling_find_local_dspark(td, False).name, "dspark-Inkling-2-Mini-Q8_0.gguf")
             self.assertEqual(setup.inkling_find_local_dspark(td).name, "mtp.safetensors")
 
     def test_an_override_still_wins(self):

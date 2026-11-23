@@ -186,6 +186,32 @@ def _strip_flag(args: list[str], flag: str) -> list[str]:
     return out
 
 
+def fit_dspark(args: list, info: dict | None, announce: bool = True) -> tuple[list, dict | None]:
+    """The drafter file this engine can read. An engine that does not list dspark_f32_widen=1 in its --info line cannot use the original
+    mtp.safetensors (it drafts nothing the target accepts): the Unsloth Q8_0 file beside it is passed instead, and with none the run starts without a
+    drafter. The file stays on disk, and a newer engine (the GUI engine picker) takes it again at the next start."""
+    from strata_control import inkling_family
+    if not info or "--dspark" not in args:
+        return args, info
+    i = args.index("--dspark")
+    if i + 1 >= len(args):
+        return args, info
+    path = Path(str(args[i + 1]))
+    if path.name.lower() != inkling_family.MTP_FILE or inkling_family.engine_reads_mtp(info):
+        return args, info
+    out = list(args)
+    alt = path.with_name(inkling_family.DSPARK_GGUF_FILE)
+    if alt.is_file():
+        out[i + 1] = str(alt)
+        if announce:
+            print(f"[strata] this engine cannot read {inkling_family.MTP_FILE}; the drafter {alt.name} is used", flush=True)
+        return out, info
+    del out[i:i + 2]
+    if announce:
+        print(f"[strata] this engine cannot read {inkling_family.MTP_FILE} and there is no {alt.name} beside it: starting without the drafter", flush=True)
+    return out, {**info, "drafter": "none"}
+
+
 def engine_args(cfg: dict, exe: str | None = None, *, announce: bool = True) -> list[str]:
     """Build start args for `strata-inkling`, preserving `--parallel 1..64`, `--max-context`, `--vision`,
     Main-first `--gpus` + `--layer-split`, and `--draft dspark|off`."""
@@ -254,6 +280,7 @@ def engine_args(cfg: dict, exe: str | None = None, *, announce: bool = True) -> 
     want_draft = wants_drafter(cfg)
     need_draft = "--draft" not in args and want_draft
     info = probe(exe, args, cfg) if (exe and (wants_images or need_draft)) else None
+    args, info = fit_dspark(args, info, announce)
     if "--draft" not in args and not want_draft:
         args += ["--draft", "off"]
     elif need_draft:
