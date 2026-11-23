@@ -36,6 +36,7 @@
 
 #include "hy4_graph.hip.h"
 #include "hy4_spec.hip.h"
+#include "strata/core/radix_state_cache.hpp"
 #include "hy4_convcache.h"
 
 namespace hy4 {
@@ -47,6 +48,7 @@ struct ServeOpts {
     int index_topk = 2048;
     bool no_index = false, no_engram = false;
     bool session_reuse = false;
+    size_t radix_bytes = 0;
     std::string cc_dir;      // --conversation-cache-dir: SSD conversation cache (hy4_convcache.h); empty = off
     double cc_gib = 40.0;    // --conversation-cache-gib
     int cc_min = 1024;       // --conversation-cache-min-tokens
@@ -363,8 +365,44 @@ inline int hy4_serve_main(const ServeOpts& o) {
         else fprintf(stderr, "[vision] disabled: %s\n", verr.c_str());
     }
     ConvCache cc;
-    if (!o.cc_dir.empty() && !cc.init(r, o.cc_dir, o.cc_gib, o.cc_min, o.model)) fprintf(stderr, "[convcache] off: cannot use %s\n", o.cc_dir.c_str());
-    const bool reuse = o.session_reuse || cc.on;
+    if (!o.cc_dir.empty() && o.radix_bytes && r.kv_q8) {
+        fprintf(stderr, "[convcache] SSD format requires FP16 MLA rows; using the RAM radix cache for Q8 KV\n");
+    } else if (!o.cc_dir.empty() && !cc.init(r, o.cc_dir, o.cc_gib, o.cc_min, o.model)) fprintf(stderr, "[convcache] off: cannot use %s\n", o.cc_dir.c_str());
+    strata::core::RadixStateCache radix(o.radix_bytes);
+    const bool reuse = o.session_reuse || cc.on || radix.enabled();
+    const size_t mla_bytes = mla_cache_bytes(1, r.kv_q8);
+    auto sparse = [&](int begin, int end) {
+        strata::core::PrefixLayout rows;
+        for (int l = 0; l < r.c.n_layers; ++l) {
+            if (r.c.is_swa[l]) continue;
+            rows.push_back({reinterpret_cast<uint8_t*>(r.kcache[l]) + begin * mla_bytes, (end - begin) * mla_bytes});
+            if (!r.ivg.empty() && r.ivg[l]) {
+                rows.push_back({r.ivg[l] + static_cast<size_t>(begin) * 256, static_cast<size_t>(end - begin) * ConvCache::IVG_B});
+                // Only completed four-token groups have a pooled key.
+                rows.push_back({r.pooled[l] + static_cast<size_t>(begin / 4) * 128,
+                                static_cast<size_t>(end / 4 - begin / 4) * ConvCache::POOL_B});
+            }
+        }
+        return rows;
+    };
+    auto window = [&](int end) {
+        strata::core::PrefixLayout rows;
+        const int count = std::min(end, r.c.window);
+        const int first = (end - count) % r.ring;
+        const int head = std::min(count, r.ring - first);
+        for (int l = 0; l < r.c.n_layers; ++l) {
+            if (!r.c.is_swa[l]) continue;
+            auto* base = reinterpret_cast<uint8_t*>(r.kcache[l]);
+            rows.push_back({base + first * mla_bytes, head * mla_bytes});
+            rows.push_back({base, (count - head) * mla_bytes});
+        }
+        return rows;
+    };
+    auto copy = [&](const strata::core::PrefixRows& row, uint8_t* host, bool restore) {
+        if (restore) HCK(hipMemcpyAsync(row.ptr, host, row.width, hipMemcpyDefault, r.st));
+        else HCK(hipMemcpyAsync(host, row.ptr, row.width, hipMemcpyDefault, r.st));
+    };
+    auto finish_copy = [&] { HCK(hipStreamSynchronize(r.st)); };
     bool dirty = false;
     proto("INFO engine=hy4-serve-0 arch=hy4flash backend=hip model=%s layers=%d vocab=%d chunk=%d session_reuse=%d drafter=%s images=%d conversation_cache=%d", base.c_str(), r.c.n_layers, V, r.Tc,
           reuse ? 1 : 0, use_spec ? "dfly2" : "none", images_ok ? 1 : 0, cc.on ? cc.parked() : -1);
@@ -466,17 +504,31 @@ inline int hy4_serve_main(const ServeOpts& o) {
                 }
             }
         }
-        ConvCache::Pick pk;
-        if (cc.on && !has_images) {
-            pk = cc.best(q.ids);
-            if (pk.ent < 0 || pk.start <= start + 256) pk = ConvCache::Pick();
-        }
+        auto disk_pick = [&] {
+            ConvCache::Pick pick;
+            if (cc.on && !has_images) pick = cc.best(q.ids);
+            if (pick.start <= start + 256) return ConvCache::Pick{};
+            return pick;
+        };
+        auto pk = disk_pick();
+        const auto* checkpoint = radix.enabled() && !has_images ? radix.find(q.ids) : nullptr;
+        if (checkpoint && (checkpoint->length <= start || checkpoint->length < pk.start)) checkpoint = nullptr;
+        strata::core::RadixStateCache::Cursor cursor;
         const bool same_conv = start > 0 && (cc.ck_pos > 0 ? start >= cc.ck_pos - 64 : fwd - start <= 512);
-        if (cc.on && dirty && fwd >= cc.min_tokens && (pk.ent >= 0 || !same_conv)) {
+        if (cc.on && dirty && fwd >= cc.min_tokens && (checkpoint || pk.ent >= 0 || !same_conv)) {
             cc.park(r, tok, fwd);
+            // Parking may erase entries or change their indices. Keep a valid
+            // disk fallback if a RAM restore subsequently runs out of memory.
+            if (radix.enabled() && pk.ent >= 0) pk = disk_pick();
             dirty = false;
         }
-        if (pk.ent >= 0) {
+        if (checkpoint && radix.restore(*checkpoint, cursor, sparse, window, copy, finish_copy)) {
+            // A saved prefix was previously allocated by this runner. Elastic
+            // backing can move to host memory, so resolve each pointer afresh.
+            start = checkpoint->length;
+            cc.ck_pos = -1;
+            dirty = false;
+        } else if (pk.ent >= 0) {
             std::string cerr;
             if (cc.restore(r, pk, cerr)) {
                 start = pk.start;
@@ -500,7 +552,8 @@ inline int hy4_serve_main(const ServeOpts& o) {
         bool cancelled = false, failed = false;
         r.prefetch_engram(tok.data(), done, std::min(r.Tc, T0 - done));
         while (done < T0) {
-            int T = std::min(r.Tc, T0 - done);
+            const int T = radix.enabled() && !has_images ? strata::core::radix_chunk(done, T0 - done, r.Tc)
+                                                         : std::min(r.Tc, T0 - done);
             if (!r.forward_chunk(tok.data(), done, T, err)) {
                 failed = true;
                 break;
@@ -518,6 +571,7 @@ inline int hy4_serve_main(const ServeOpts& o) {
             const double ms = (now_s() - t0) * 1000.0;
             proto("PP %d %d %.0f %.1f", done, T0, ms, (done - start) / std::max(1e-9, ms / 1000.0));
             fwd = done;
+            if (radix.enabled() && !has_images && !last) radix.save(tok, done, cursor, sparse, window, copy, finish_copy);
             if (last && !has_images) cc.checkpoint(r, T0);
             if (!last && in.stop.load()) {
                 cancelled = true;
@@ -598,7 +652,15 @@ inline int hy4_serve_main(const ServeOpts& o) {
             proto("ERR forward: %s", err.c_str());
             return 1;
         }
-        if (nonfinite) finish = "nonfinite";
+        if (nonfinite) {
+            finish = "nonfinite";
+            if (radix.enabled()) {
+                radix.clear();
+                fwd = 0;
+                dirty = false;
+                cc.ck_pos = -1;
+            }
+        }
         if (!reuse || has_images) fwd = 0;
         r.vis = nullptr;
         const double decode_ms = (now_s() - t1) * 1000.0;

@@ -436,6 +436,16 @@ int main(int argc, char** argv) {
             cfg.bopts.ram_experts_gb = std::atof(next().c_str());
         } else if (a == "--ssd-experts") {
             cfg.bopts.ssd_experts = true;
+        } else if (a == "--radix-cache-mib") {
+            const auto value = next();
+            char* end = nullptr;
+            const long mib = std::strtol(value.c_str(), &end, 10);
+            if (value.empty() || *end || mib < 0 || mib > 8192 ||
+                static_cast<unsigned long>(mib) > (SIZE_MAX >> 20)) {
+                fprintf(stderr, "--radix-cache-mib expects 0..8192\n");
+                return 2;
+            }
+            cfg.bopts.radix_cache_bytes = static_cast<size_t>(mib) << 20;
         } else if (a == "--vram-reserve-mib") {
             cfg.bopts.vram_reserve_mib = std::atoi(next().c_str());
         } else if (a == "--cpu-threads") {
@@ -493,7 +503,7 @@ int main(int argc, char** argv) {
                    "  --selfcheck [--native PATH] [--verify-hash] [--cpu] [--gpu N] [--gpus 1|2] [--kv auto|fp16|fp8|k8v8|k8v4]\n"
                    "  --bench --native PATH [--parallel 1..64] [--gpu N] [--gpus 1..4] [--layer-split auto|K1,K2,...] [--ep-split F] [--vram-experts-gb F] [--ram-experts-gb F] [--ssd-experts] [--vram-reserve-mib N] [--cpu-threads N] [--kv auto|fp16|fp8|k8v8|k8v4] [--kv-offload auto|on|off] [--prompt-len N] [--gen N]\n"
                    "  --kld-eval REF.bin --native PATH\n"
-                   "  --serve --native PATH [--vision VISION] [--dspark PATH] [--max-context N] [--parallel 1..64] [--gpu N] [--gpus 1..4] [--layer-split auto|K1,K2,...] [--kv auto|fp16|fp8|k8v8|k8v4] [--kv-offload auto|on|off] [--draft auto|dspark|off]\n",
+                   "  --serve --native PATH [--vision VISION] [--dspark PATH] [--max-context N] [--parallel 1..64] [--gpu N] [--gpus 1..4] [--layer-split auto|K1,K2,...] [--kv auto|fp16|fp8|k8v8|k8v4] [--kv-offload auto|on|off] [--draft auto|dspark|off] [--radix-cache-mib 0..8192]\n",
                    INKLING_VERSION);
             return 0;
         } else {

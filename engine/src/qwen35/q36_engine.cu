@@ -19,6 +19,7 @@
 #include "strata/artifact/dequant.hpp"
 #include "strata/artifact/gguf_reader.hpp"
 #include "strata/core/family_layout.hpp"
+#include "strata/core/radix_state_cache.hpp"
 #include "strata/kernels/fused_gdn.hpp"
 #include "strata/kernels/iq_kernels.hpp"
 #include "strata/kernels/native_mmvq.hpp"
@@ -2259,6 +2260,39 @@ struct Engine {
                      (double) fr / (1 << 30));
     }
 
+    // Attention rows are head-major with a full context pitch. Include the
+    // optional MTP attention block and quantization scales in the same layout.
+    strata::core::PrefixLayout radix_kv(int begin, int end) const {
+        strata::core::PrefixLayout rows;
+        const auto& g = m->g;
+        auto add = [&](float* ptr, size_t width) {
+            if (ptr && width) rows.push_back({reinterpret_cast<uint8_t*>(ptr) + begin * width,
+                static_cast<size_t>(end - begin) * width, static_cast<size_t>(g.n_head_kv),
+                static_cast<size_t>(ctx) * width});
+        };
+        const size_t rb = kv_row_bytes(g.head_dim, kv_mode), sb = kv_scale_bytes(g.head_dim, kv_mode);
+        const size_t layers = m->layers.size() + (m->has_mtp && mtp_d > 0 ? 1 : 0);
+        for (size_t l = 0; l < layers; ++l) {
+            add(kc[l], rb);
+            add(vc[l], rb);
+            add(ksc[l], sb);
+            add(vsc[l], sb);
+        }
+        return rows;
+    }
+
+    strata::core::PrefixLayout radix_gdn() const {
+        strata::core::PrefixLayout state;
+        const auto& g = m->g;
+        for (size_t l = 0; l < conv.size(); ++l) {
+            if (!conv[l]) continue;
+            state.push_back({conv[l], static_cast<size_t>(g.ssm_conv_channels) * (g.ssm_d_conv - 1) * sizeof(float)});
+            state.push_back({S[l], static_cast<size_t>(g.ssm_v_heads) * g.ssm_state_size * g.ssm_state_size * sizeof(float)});
+        }
+        state.push_back({hlast, static_cast<size_t>(g.n_embd) * sizeof(float)});
+        return state;
+    }
+
     /// The recurrent state and the cache to a fresh sequence.
     void reset() {
         const auto& g = m->g;
@@ -3686,7 +3720,7 @@ struct Engine {
     /// token's logits stay in `logits` (its greedy pick in `pick`), hlast its normed hidden.  With the MTP block the
     /// prompt also runs through it (its K / V for every position: row q reads h_{q-1} and token q).  on_chunk(done) runs
     /// after every chunk; false ends the read there (a cancelled request): the tokens processed are returned.
-    template <class F> int64_t process(const int32_t* toks, int64_t n, F on_chunk_) {
+    template <class F> int64_t process(const int32_t* toks, int64_t n, F on_chunk_, bool radix_prompt = false) {
         const int N = (int) m->g.n_embd;
         auto on_chunk = [&](int64_t done) -> bool {   // a callback returning void never cancels
             if constexpr (std::is_void_v<decltype(on_chunk_(done))>) {
@@ -3696,7 +3730,7 @@ struct Engine {
                 return on_chunk_(done);
             }
         };
-        if (n == 1) {
+        if (n == 1 && !radix_prompt) {
             CK(cudaStreamSynchronize(st));   // the pinned staging is free again
             hpin[0] = toks[0];
             hpin[1] = (int32_t) pos;
@@ -3717,8 +3751,9 @@ struct Engine {
             on_chunk(1);
             return 1;
         }
-        for (int64_t i = 0; i < n; i += tmax) {
-            const int T = (int) std::min<int64_t>(tmax, n - i);
+        for (int64_t i = 0; i < n;) {
+            const int T = radix_prompt ? strata::core::radix_chunk((int)pos, (int)(n - i), tmax)
+                                       : (int) std::min<int64_t>(tmax, n - i);
             CK(cudaStreamSynchronize(st));
             hpin[1] = (int32_t) pos;
             CK(cudaMemcpyAsync(tok, toks + i, (size_t) T * 4, cudaMemcpyHostToDevice, st));
@@ -3740,9 +3775,10 @@ struct Engine {
             ckpt_maybe();   // (a prompt chunk crossed a multiple of the checkpoint interval)
             mtab_now = nullptr;
             map_on = false;
-            if (!on_chunk(i + T)) {
+            i += T;
+            if (!on_chunk(i)) {
                 if (m->hybrid) rebalance(hybrid_swaps_after_prompt);
-                return i + T;
+                return i;
             }
         }
         if (m->hybrid) rebalance(hybrid_swaps_after_prompt);
@@ -4736,7 +4772,8 @@ struct Serve {
     // takes ~0.15 s at 512 tokens, a window ~0.012 s: more windows give the decoding slots more of the time a read takes)
     int read_windows = 1;
 
-    explicit Serve(Engine& e) : E(e), slots((size_t) e.n_sess) {
+    strata::core::RadixStateCache radix;
+    explicit Serve(Engine& e, size_t radix_bytes) : E(e), slots((size_t) e.n_sess), radix(radix_bytes) {
         if (const char* v = std::getenv("STRATA_Q36_READ_WINDOWS")) read_windows = std::max(0, std::min(64, std::atoi(v)));
     }
 
@@ -5093,6 +5130,9 @@ struct Serve {
         const int s = adm ? slot : pick_session(ids, ir.imgs);
         Engine::Sess& ss = E.sess[(size_t) s];
         size_t reuse = resume_len(ss, ids, ir.imgs);
+        const bool radix_prompt = radix.enabled() && !geni;
+        const auto* checkpoint = radix_prompt ? radix.find(ids) : nullptr;
+        strata::core::RadixStateCache::Cursor cursor;
         if (adm) {   // another session holding more of this prompt (the conversation was read alone): copy its state
             int src = -1;
             size_t best = reuse;
@@ -5101,12 +5141,31 @@ struct Serve {
                 const size_t l = resume_len(E.sess[(size_t) i], ids, ir.imgs);
                 if (l > best) { best = l; src = i; }
             }
-            if (src >= 0) {
+            if (src >= 0 && (!checkpoint || best >= (size_t)checkpoint->length)) {
                 E.copy_session(src, s);
                 reuse = best;
             }
         }
         E.select(s);
+        auto kv = [&](int begin, int end) { return E.radix_kv(begin, end); };
+        auto state = [&](int) { return E.radix_gdn(); };
+        auto copy = [&](const strata::core::PrefixRows& row, uint8_t* host, bool restore) {
+            const size_t pitch = row.pitch ? row.pitch : row.width;
+            if (restore) CK(cudaMemcpy2DAsync(row.ptr, pitch, host, row.width, row.width, row.count, cudaMemcpyHostToDevice, E.st));
+            else CK(cudaMemcpy2DAsync(host, row.width, row.ptr, pitch, row.width, row.count, cudaMemcpyDeviceToHost, E.st));
+        };
+        auto finish_copy = [&] { CK(cudaStreamSynchronize(E.st)); };
+        if (checkpoint && static_cast<size_t>(checkpoint->length) > reuse &&
+            radix.restore(*checkpoint, cursor, kv, state, copy, finish_copy)) {
+            reuse = checkpoint->length;
+            ss.ckpts.clear();
+            ss.ckpt_next = 0;
+            ss.ckpt_last_k = -1;
+            E.pos = ss.pos = checkpoint->length;
+            E.set_delta(0);  // radix entries are text-only
+            ss.live.assign(ids.begin(), ids.begin() + reuse);
+            ss.imgs.clear();
+        }
         if (reuse == 0) {
             E.reset();   // (no prefix, or none the session holds a GDN checkpoint at or below: read the prompt afresh)
             ss.live.clear();
@@ -5134,6 +5193,7 @@ struct Serve {
         const int64_t fresh = (int64_t) (ids.size() - reuse);
         bool cancelled = false;
         const int64_t got = E.process(ids.data() + reuse, fresh, [&](int64_t done) -> bool {
+            if (radix_prompt && radix.enabled()) radix.save(ids, (int)(reuse + done), cursor, kv, state, copy, finish_copy);
             std::printf("PP %lld %lld %.0f %.1f\n", (long long) done, (long long) fresh, ms_since(t0),
                         (double) done / std::max(1e-9, ms_since(t0) / 1000.0));
             std::fflush(stdout);
@@ -5146,7 +5206,7 @@ struct Serve {
             }
             if (stop.load() && done < fresh) { cancelled = true; return false; }
             return true;
-        });
+        }, radix_prompt);
         ss.live.insert(ss.live.end(), ids.begin() + (long) reuse, ids.begin() + (long) reuse + (long) got);
         ss.imgs.clear();
         bool cut = false;
@@ -5329,8 +5389,8 @@ struct Serve {
     }
 };
 
-int serve(Engine& E) {
-    Serve sv(E);
+int serve(Engine& E, size_t radix_bytes) {
+    Serve sv(E, radix_bytes);
     return sv.run();
 }
 
@@ -5344,6 +5404,7 @@ int strata::qwen35::run(int argc, char** argv) {
     bool warm = true;
     int expert_slots = 0, batch = 0, draft_vocab = -1;
     bool serve_mode = false, graph = true, vision = false, batch_mtp = false;
+    size_t radix_bytes = 0;
     int kv_mode = KV_FP32;   // --kv: fp32 (the default), fp16, fp8 (int8) or fp4 (q4_0, rotated)
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -5353,6 +5414,12 @@ int strata::qwen35::run(int argc, char** argv) {
         };
         // strata's names where they mean the same thing (the family switch passes strata's command line on)
         if (a == "--model" || a == "--native") model = next();
+        else if (a == "--radix-cache-mib") {
+            if (!strata::core::parse_radix_mib(next(), radix_bytes)) {
+                std::fprintf(stderr, "--radix-cache-mib expects 0..8192\n");
+                return 2;
+            }
+        }
         else if (a == "--max-new") n_gen = std::atoi(next().c_str());
         else if (a == "--no-token-graph") graph = false;
         else if (a == "--pool-workers") cpu_threads = std::atoi(next().c_str());
@@ -5559,7 +5626,7 @@ int strata::qwen35::run(int argc, char** argv) {
     E.bmtp = (batch_mtp || (std::getenv("STRATA_BATCH_MTP") != nullptr && std::string(std::getenv("STRATA_BATCH_MTP")) != "0")) && E.n_sess > 1 && E.mtp_d > 0;
     if (batch_mtp && !E.bmtp) std::fprintf(stderr, "strata-q36: --batch-mtp needs --batch N (2 or more) and --mtp N: ignored\n");
     if (warm) E.warmup();
-    if (serve_mode) return serve(E);
+    if (serve_mode) return serve(E, radix_bytes);
     if (bench_pp > 0 || bench_tg > 0) {
         // llama-bench's shapes: a prompt of bench_pp tokens from a fresh state, then bench_tg tokens one at a time
         std::vector<int32_t> toks((size_t) std::max(bench_pp, 1));

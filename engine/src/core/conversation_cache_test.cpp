@@ -36,6 +36,55 @@ SavedConversation image(std::initializer_list<int32_t> ids, bool cvec = true) {
     return s;
 }
 
+void radix_matches_parked_scan() {
+    ConversationCache scan(8 << 20, 4), radix(8 << 20, 4, 0, true);
+    auto park = [&](const SavedConversation& s, bool exchange = false) {
+        SavedConversation a = s, b = s;
+        if (exchange) {
+            check(scan.put_exchanged(std::move(a)) && radix.put_exchanged(std::move(b)), "exchange indexed entry");
+        } else {
+            check(scan.put(std::move(a)) && radix.put(std::move(b)), "park indexed entry");
+        }
+    };
+    auto verify = [&](const std::vector<int64_t>& prompt, bool cvec, const std::vector<ConversationImageKey>& images = {}) {
+        const auto a = scan.best(prompt, images, cvec), b = radix.best(prompt, images, cvec);
+        check(a.index == b.index && a.tokens == b.tokens && a.live == b.live && a.serial == b.serial,
+              "radix index preserves the parked scan match");
+        return b;
+    };
+    auto first = image({1, 2, 3});
+    first.checkpoints.push_back(image({1, 2}).live);
+    first.checkpoints.push_back(first.live);
+    park(first);
+    check(verify({1, 2, 3, 4}, true).live, "live state wins its own equal-length tie");
+    park(image({1, 2, 3}, false), true);
+    park(image({1, 2}, true));
+    check(verify({1, 2, 7}, true).live, "newest matching branch wins the tie");
+    check(verify({1, 2, 3}, false).tokens == 0, "the last prompt token is left for verification");
+    check(verify({1, 2, 3, 4}, false).tokens == 3, "keep image-state steering namespaces distinct");
+    auto multimodal = image({1, 2, 3, 4});
+    multimodal.live.imgs.push_back({2, 9});
+    park(multimodal);
+    check(verify({1, 2, 3, 4, 5}, true).tokens == 3, "text cannot match image rows");
+    check(verify({1, 2, 3, 4, 5}, true, multimodal.live.imgs).tokens == 4, "image matching uses the native scan");
+    const auto taken = verify({1, 2, 7}, true);
+    check(scan.take(taken.index).live.ids == radix.take(taken.index).live.ids, "take the newest match");
+    check(!verify({1, 2, 7}, true).live, "older checkpoint survives removal of equal-length live state");
+    park(image({10, 11}));
+    park(image({12, 13}));
+    check(verify({1, 2, 7}, true).tokens == 0, "eviction removes stale radix references");
+    check(scan.clear() == radix.clear(), "clear indexed entries");
+    check(verify({12, 13, 14}, true).tokens == 0, "clear invalidates indexed matches");
+
+    ConversationCache small(16 << 10, 4, 0, true);
+    auto large_key = image({});
+    large_key.live.ids.assign(4096 / sizeof(int32_t), 3);
+    auto continuation = large_key.live.ids;
+    continuation.push_back(4);
+    check(small.put(std::move(large_key)) && small.best(continuation, {}, true).tokens == 1024,
+          "metadata budget exhaustion falls back to the parked scan");
+}
+
 struct ThrowingPool : SegmentPoolBudget {
     size_t idle = 0, reclaims = 0, expected_size = 0;
     uint64_t old_serial = 0, new_serial = 0;
@@ -239,6 +288,7 @@ void publication_allocation_failures() {
 }
 
 int main() {
+    radix_matches_parked_scan();
     publication_allocation_failures();
     pool_reclaim_allocation_failure();
     {

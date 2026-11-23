@@ -3,6 +3,7 @@
 #pragma once
 
 #include "strata/core/conversation_buffer.hpp"
+#include "strata/core/prefix_radix_cache.hpp"
 
 #include <algorithm>
 #include <array>
@@ -11,7 +12,9 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <list>
 #include <memory>
+#include <new>
 #include <string_view>
 #include <system_error>
 #include <type_traits>
@@ -291,6 +294,18 @@ inline constexpr size_t conversation_cache_swap_block_bytes(int mib) {
 }
 
 class ConversationCache {
+    struct RadixMatch {
+        uint64_t serial;
+        bool live;
+        bool cvec;
+    };
+    struct RadixMatches {
+        size_t length;
+        std::list<RadixMatch> parked;
+        size_t bytes() const { return sizeof(*this) + parked.size() * (sizeof(RadixMatch) + 2 * sizeof(void*)); }
+    };
+    using RadixIndex = PrefixRadixCache<RadixMatches>;
+
 public:
     struct Match {
         size_t index = 0;
@@ -299,8 +314,18 @@ public:
         uint64_t serial = 0;   // the entry's identity; its index shifts when entries before it go
     };
 
-    ConversationCache(size_t budget, size_t slots, int64_t min_tokens = 0)
-        : budget_(budget), slots_(slots), min_tokens_(min_tokens) {}
+    ConversationCache(size_t budget, size_t slots, int64_t min_tokens = 0, bool radix = false)
+        : budget_(budget), slots_(slots), min_tokens_(min_tokens) {
+        // The index is metadata only. The existing cache owns and budgets the native states.
+        index_budget_ = std::min(budget / 64, size_t{16} << 20);
+        if (radix && enabled() && index_budget_) {
+            try {
+                radix_ = std::make_unique<RadixIndex>(index_budget_);
+            } catch (const std::bad_alloc&) {
+                // The existing cache can still use its linear lookup.
+            }
+        }
+    }
     bool enabled() const { return budget_ != 0 && slots_ != 0; }
     /// `--conversation-cache-min-tokens`: whether a conversation of this length is worth one of `slots`.  Every
     /// parked conversation costs a whole slot whatever its length, so a client that interleaves short side requests
@@ -375,6 +400,20 @@ public:
 
     template<class Token>
     Match best(const std::vector<Token>& prompt, const std::vector<ConversationImageKey>& images, bool cvec) const {
+        if (radix_ && images.empty() && !prompt.empty()) {
+            const RadixMatch* match = nullptr;
+            const auto* prefix = radix_->find(prompt, prompt.size() - 1, [&](const RadixMatches& node) {
+                for (auto it = node.parked.rbegin(); it != node.parked.rend(); ++it) {
+                    if (it->cvec != cvec) continue;
+                    match = &*it;
+                    return true;
+                }
+                return false;
+            }, false);
+            if (!prefix) return {};
+            const size_t index = index_of(match->serial);
+            if (index != SIZE_MAX) return {index, static_cast<int64_t>(prefix->length), match->live, match->serial};
+        }
         Match best;
         // Ties prefer the most recently parked branch. The caller prefers its
         // already-active state when that offers the same prefix length.
@@ -405,9 +444,10 @@ public:
     }
 
     SavedConversation take(size_t index) {
+        unindex(entries_.at(index), serials_.at(index));
         SavedConversation out = std::move(entries_.at(index));
         bytes_ -= out.bytes();
-        erase(index);
+        erase_entry(index);
         return out;
     }
 
@@ -519,6 +559,8 @@ public:
         const size_t n = entries_.size();
         entries_.clear();
         serials_.clear();
+        if (radix_) radix_->clear();
+        index_bytes_ = 0;
         bytes_ = 0;
         reuse_ = {};
         return n;
@@ -551,7 +593,8 @@ public:
             if (e.cvec == cvec && deepest && !deepest->ids.empty() && held(*deepest) &&
                 !(guarded_ != 0 && serials_[i] == guarded_)) {
                 bytes_ -= e.bytes();
-                erase(i);
+                unindex(e, serials_[i]);
+                erase_entry(i);
                 ++dropped;
                 continue;
             }
@@ -617,6 +660,7 @@ public:
         entries_.push_back(std::move(image));
         serials_.push_back(next_serial_++);
         bytes_ += n;
+        index_entry(entries_.back(), serials_.back());
         return true;
     }
 
@@ -643,10 +687,60 @@ public:
         entries_.back() = std::move(staged);
         ++next_serial_;
         bytes_ += n;
+        index_entry(entries_.back(), serials_.back());
         return true;
     }
 
 private:
+    static size_t index_charge(size_t tokens) {
+        return RadixIndex::index_bytes(tokens) + sizeof(RadixMatches) + sizeof(RadixMatch) + 4 * sizeof(void*);
+    }
+
+    void index_entry(const SavedConversation& image, uint64_t serial) {
+        if (!radix_) return;
+        auto add = [&](const ConversationCheckpoint& c, bool live) {
+            if (c.ids.empty() || !c.imgs.empty()) return true;
+            auto* node = radix_->find_exact(c.ids);
+            if (node && node->parked.back().serial == serial) return true;
+            const size_t charge = index_charge(c.ids.size());
+            if (charge > index_budget_ - index_bytes_) return false;
+            const RadixMatch ref{serial, live, image.cvec};
+            if (node) node->parked.push_back(ref);
+            else radix_->insert(c.ids, std::make_unique<RadixMatches>(RadixMatches{c.ids.size(), {ref}}));
+            index_bytes_ += charge;
+            return true;
+        };
+        try {
+            if (add(image.live, true) &&
+                std::all_of(image.checkpoints.begin(), image.checkpoints.end(),
+                            [&](const ConversationCheckpoint& c) { return add(c, false); })) return;
+        } catch (const std::bad_alloc&) {
+            // Parking already succeeded. Continue with the original scan if indexing fails.
+        }
+        radix_.reset();
+    }
+
+    void unindex(const SavedConversation& image, uint64_t serial) {
+        if (!radix_) return;
+        auto remove = [&](const ConversationCheckpoint& c) {
+            if (c.ids.empty() || !c.imgs.empty()) return;
+            auto* node = radix_->find_exact(c.ids);
+            if (!node) return;
+            const auto it = std::find_if(node->parked.begin(), node->parked.end(),
+                                         [&](const RadixMatch& ref) { return ref.serial == serial; });
+            if (it == node->parked.end()) return;
+            node->parked.erase(it);
+            if (node->parked.empty()) radix_->erase_exact(c.ids);
+            index_bytes_ -= index_charge(c.ids.size());
+        };
+        try {
+            remove(image.live);
+            for (const auto& c : image.checkpoints) remove(c);
+        } catch (const std::bad_alloc&) {
+            radix_.reset();
+        }
+    }
+
     // gives the pool's idle bytes back as far as images + idle + `incoming` would pass the budget (images alone never
     // need more than the loop in make_room leaves them)
     void trim_pool(size_t incoming_and_held) {
@@ -660,15 +754,16 @@ private:
         for (size_t i = 0; i < entries_.size(); ++i) {
             if (entries_[i].pinned() || (guarded_ != 0 && serials_[i] == guarded_)) continue;
             bytes_ -= entries_[i].bytes();
+            unindex(entries_[i], serials_[i]);
             SavedConversation victim = sink_ ? std::move(entries_[i]) : SavedConversation{};
-            erase(i);
+            erase_entry(i);
             ++evictions_;
             if (sink_) sink_(std::move(victim));   // (its RAM is freed when the sink is done with it)
             return true;
         }
         return false;
     }
-    void erase(size_t index) {
+    void erase_entry(size_t index) {
         entries_.erase(entries_.begin() + (std::ptrdiff_t) index);
         serials_.erase(serials_.begin() + (std::ptrdiff_t) index);
     }
@@ -678,6 +773,8 @@ private:
     std::deque<uint64_t> serials_;          // entries_[i]'s identity, never reused
     uint64_t next_serial_ = 1, guarded_ = 0;
     bool guard_blocked_ = false;
+    std::unique_ptr<RadixIndex> radix_;
+    size_t index_budget_ = 0, index_bytes_ = 0;
     ConversationKvReuse reuse_;
     SegmentPoolBudget* pool_ = nullptr;   // STRATA_PARK_SEGPOOL_MIB (not owned)
     std::function<void(SavedConversation&&)> sink_;   // P2: where an evicted conversation goes (set_evict_sink)

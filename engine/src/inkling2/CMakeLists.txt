@@ -215,4 +215,10 @@ if(EXISTS "${_ink_engine_root}/tests/quant/strata_v1_1_inkling2_test.cpp")
   target_link_libraries(strata_v1_1_inkling2_test PRIVATE strata_inkling_core)
 endif()
 
+if(EXISTS "${_ink_engine_root}/tests/inkling2/radix_serve_mock.cpp")
+  add_executable(inkling_radix_serve_mock EXCLUDE_FROM_ALL
+    ${_ink_engine_root}/tests/inkling2/radix_serve_mock.cpp)
+  target_link_libraries(inkling_radix_serve_mock PRIVATE strata_inkling_core)
+endif()
+
 install(TARGETS strata-inkling RUNTIME DESTINATION bin COMPONENT inkling2)

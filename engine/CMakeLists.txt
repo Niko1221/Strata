@@ -185,6 +185,10 @@ option(STRATA_OWN_CPU_QUANT "CPU expert pool on the Strata quant layer (src/quan
 
 if(STRATA_BUILD_CONVERSATION_TESTS)
   enable_testing()
+  add_executable(radix_state_cache_test tests/core/radix_state_cache_test.cpp)
+  target_include_directories(radix_state_cache_test PRIVATE include)
+  add_test(NAME radix_state_cache_test COMMAND radix_state_cache_test)
+
   add_executable(conversation_cache_test src/core/conversation_cache_test.cpp)
   target_include_directories(conversation_cache_test PRIVATE include)
   add_test(NAME conversation_cache_test COMMAND conversation_cache_test)

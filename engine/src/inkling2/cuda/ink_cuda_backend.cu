@@ -68,6 +68,48 @@ __global__ void __launch_bounds__(256) k_ink_gather_rows(
 namespace ink2 {
 
 class InkCudaBackend final : public InkBackend {
+    struct PromptCkpt {
+        bool valid = false;
+        bool has_dspark = false;
+        int seq_len = 0;
+        int swa_start = 0;
+        int swa_len = 0;
+        std::vector<float> sconv;
+        std::vector<uint8_t> swa_k, swa_v, swa_ksc, swa_vsc;
+        std::vector<uint8_t> dspark_k, dspark_v;
+        std::vector<float> dspark_frnn;
+    };
+
+    // Immutable append-only rows from [begin, end). Branches retain the exact
+    // chunks their slot was restored from; a copied slot never borrows mutable KV.
+    struct GlobalChunk {
+        GlobalChunk(std::shared_ptr<const GlobalChunk> parent, int end, size_t bytes, size_t& total)
+            : parent(std::move(parent)), end(end), data(bytes), total(total) {
+            charge = sizeof(*this) + data.capacity();
+            chain_bytes = charge + (this->parent ? this->parent->chain_bytes : 0);
+            total += charge;
+        }
+        ~GlobalChunk() { total -= charge; }
+        std::shared_ptr<const GlobalChunk> parent;
+        int end;
+        std::vector<uint8_t> data;
+        size_t& total;
+        size_t charge, chain_bytes;
+    };
+
+    struct RadixCheckpoint final : PrefixCheckpoint {
+        explicit RadixCheckpoint(int length) : PrefixCheckpoint(length) {}
+        size_t bytes() const override {
+            return sizeof(*this) + state.sconv.capacity() * sizeof(float) +
+                state.swa_k.capacity() + state.swa_v.capacity() +
+                state.swa_ksc.capacity() + state.swa_vsc.capacity() +
+                state.dspark_k.capacity() + state.dspark_v.capacity() +
+                state.dspark_frnn.capacity() * sizeof(float);
+        }
+        PromptCkpt state;
+        std::shared_ptr<const GlobalChunk> global;
+    };
+
 public:
     ~InkCudaBackend() override { cleanup(); }
 
@@ -245,6 +287,8 @@ public:
             dspark_->init(eff_max_ctx_, 512);
         }
 
+        radix_requested_ = opts.radix_cache_bytes && !model_.ls_active;
+        if (radix_requested_) slot_prefix_.resize(max_slots_);
         // Allocate snapshot buffer (3.83 MB) + selected hidden gather buffers
         if (!model_.ls_active) {
             d_sconv_snap_ = strata::ink::dalloc<float>((size_t)strata::ink::kInkVisits * 3 * strata::ink::kInkSconvCh);
@@ -275,6 +319,7 @@ public:
             slot_alloc_[slot] = false;
             snap_active_[slot] = false;
             if (slot < (int)prompt_ckpts_.size()) prompt_ckpts_[slot] = PromptCkpt{};
+            if (radix_requested_) slot_prefix_[slot].reset();
             if (slot == 0) tree_snap_ready_ = false;
         }
     }
@@ -282,9 +327,127 @@ public:
     void reset_slot(int slot) override {
         if (!initialized_ || slot < 0 || slot >= max_slots_) return;
         runner_->reset_slot(slot);
+        if (radix_requested_) slot_prefix_[slot].reset();
         snap_active_[slot] = false;
         if (slot < (int)prompt_ckpts_.size()) prompt_ckpts_[slot].valid = false;
         if (slot == 0) { dspark_slot_ = -1; tree_snap_ready_ = false; }
+    }
+
+    bool supports_radix_cache() const override {
+        return initialized_ && radix_requested_ && d_sconv_snap_;
+    }
+
+    size_t shared_prefix_bytes() const override { return shared_bytes_; }
+
+    std::unique_ptr<PrefixCheckpoint> save_prefix(int slot, int seq_len, const ReservePrefix& reserve) override {
+        if (!supports_radix_cache() || slot < 0 || slot >= max_slots_ || seq_len <= 0) return {};
+        auto parent = slot_prefix_[slot].lock();
+        if (parent && parent->end >= seq_len) parent.reset();
+        const int begin = parent ? parent->end : 0;
+        size_t global_bytes = 0;
+        if (!visit_global_kv(slot, begin, seq_len, [&](void*, size_t bytes, bool) { global_bytes += bytes; })) return {};
+        const bool has_drafter = slot == 0 && dspark_ && dspark_->ready && dspark_slot_ == 0;
+        if (has_drafter) {
+            visit_drafter_global(begin, seq_len, [&](void*, size_t bytes) { global_bytes += bytes; });
+        }
+        const size_t sc_elems = static_cast<size_t>(strata::ink::kInkVisits) * 3 * strata::ink::kInkSconvCh;
+        const size_t swa_rows = std::min(seq_len, strata::ink::kInkSwaWin);
+        size_t k_bytes = 0, v_bytes = 0, scale_bytes = 0;
+        for (const auto& kv : runner_->kv_desc) {
+            if (!kv.is_swa) continue;
+            const size_t row = strata::ink::kInkKVDim * (kv.kv_fmt == 0 ? sizeof(__half) : 1);
+            k_bytes += swa_rows * row;
+            v_bytes += swa_rows * (kv.kv_fmt == 3 ? row / 2 : row);
+            if (kv.kv_fmt != 0) scale_bytes += swa_rows * strata::ink::kInkKVHeads * sizeof(float);
+        }
+        size_t draft_bytes = 0;
+        if (has_drafter) {
+            for (int il = 0; il < 3; ++il) {
+                if (model_.man.c.dspark_is_swa[il]) {
+                    draft_bytes += static_cast<size_t>(std::min(seq_len, model_.man.c.dspark_swa_win)) *
+                                   strata::ink::kInkKVDim * sizeof(__half);
+                }
+            }
+        }
+        const size_t frnn = has_drafter ? strata::ink::kInkHidden : 0;
+        const size_t private_bytes = sizeof(RadixCheckpoint) + (sc_elems + frnn) * sizeof(float) +
+                                     k_bytes + v_bytes + 2 * scale_bytes + 2 * draft_bytes;
+        if (!reserve(private_bytes + sizeof(GlobalChunk) + global_bytes, parent ? parent->chain_bytes : 0)) return {};
+
+        // Complete all host allocations before scheduling any DMA into this checkpoint.
+        auto checkpoint = std::make_unique<RadixCheckpoint>(seq_len);
+        auto& state = checkpoint->state;
+        state.sconv.reserve(sc_elems);
+        state.swa_k.reserve(k_bytes);
+        state.swa_v.reserve(v_bytes);
+        state.swa_ksc.reserve(scale_bytes);
+        state.swa_vsc.reserve(scale_bytes);
+        state.dspark_k.reserve(draft_bytes);
+        state.dspark_v.reserve(draft_bytes);
+        state.dspark_frnn.reserve(frnn);
+        auto chunk = std::make_shared<GlobalChunk>(std::move(parent), seq_len, global_bytes, shared_bytes_);
+        checkpoint->global = chunk;
+        INK_CK(cudaStreamSynchronize(runner_->st));
+        size_t offset = 0;
+        visit_global_kv(slot, begin, seq_len, [&](void* ptr, size_t bytes, bool device) {
+            auto* dst = chunk->data.data() + offset;
+            if (device) INK_CK(cudaMemcpyAsync(dst, ptr, bytes, cudaMemcpyDeviceToHost, runner_->st));
+            else std::memcpy(dst, ptr, bytes);
+            offset += bytes;
+        });
+        if (has_drafter) {
+            visit_drafter_global(begin, seq_len, [&](void* ptr, size_t bytes) {
+                INK_CK(cudaMemcpyAsync(chunk->data.data() + offset, ptr, bytes, cudaMemcpyDeviceToHost, runner_->st));
+                offset += bytes;
+            });
+        }
+        save_prompt_state(slot, seq_len, checkpoint->state);
+        slot_prefix_[slot] = chunk;
+        return checkpoint;
+    }
+
+    bool prefix_compatible(int slot, const PrefixCheckpoint& source) const override {
+        const auto& checkpoint = static_cast<const RadixCheckpoint&>(source);
+        return slot != 0 || !dspark_ || !dspark_->ready || checkpoint.state.has_dspark;
+    }
+
+    bool restore_prefix(int slot, const PrefixCheckpoint& source) override {
+        if (!supports_radix_cache() || slot < 0 || slot >= max_slots_) return false;
+        const auto& checkpoint = static_cast<const RadixCheckpoint&>(source);
+        const int seq_len = checkpoint.length;
+        // A non-drafter slot never records DSpark state. Replay normally instead of feeding a partial drafter state to slot 0.
+        if (slot == 0 && dspark_ && dspark_->ready &&
+            (!checkpoint.state.has_dspark || !dspark_->ensure_ctx_cap(seq_len))) return false;
+        // A slot retains its append-only rows even after decoding. Copy only
+        // segments after its common ancestor with the destination checkpoint.
+        auto resident = slot_prefix_[slot].lock();
+        auto* common = checkpoint.global.get();
+        const auto* live = resident.get();
+        while (live && common && live != common) {
+            if (live->end >= common->end) live = live->parent.get();
+            else common = common->parent.get();
+        }
+        if (!live) common = nullptr;
+        prompt_ckpts_[slot].valid = false;
+        for (auto* chunk = checkpoint.global.get(); chunk != common; chunk = chunk->parent.get()) {
+            size_t offset = 0;
+            const int begin = chunk->parent ? chunk->parent->end : 0;
+            visit_global_kv(slot, begin, chunk->end, [&](void* ptr, size_t bytes, bool device) {
+                const auto* src = chunk->data.data() + offset;
+                if (device) INK_CK(cudaMemcpyAsync(ptr, src, bytes, cudaMemcpyHostToDevice, runner_->st));
+                else std::memcpy(ptr, src, bytes);
+                offset += bytes;
+            });
+            if (slot == 0 && dspark_ && dspark_->ready && checkpoint.state.has_dspark) {
+                visit_drafter_global(begin, chunk->end, [&](void* ptr, size_t bytes) {
+                    INK_CK(cudaMemcpyAsync(ptr, chunk->data.data() + offset, bytes, cudaMemcpyHostToDevice, runner_->st));
+                    offset += bytes;
+                });
+            }
+        }
+        restore_prompt_state(slot, seq_len, checkpoint.state);
+        slot_prefix_[slot] = checkpoint.global;
+        return true;
     }
 
     // #6627: Save/restore slot's ShortConv (3.83 MB) + 40 SWA KV ring windows (<=160 MiB in host RAM) + DSpark SWA KV
@@ -292,7 +455,10 @@ public:
     bool save_prompt_checkpoint(int slot, int seq_len) override {
         if (!initialized_ || slot < 0 || slot >= max_slots_ || model_.ls_active || !d_sconv_snap_) return false;
         if (seq_len <= 0 || max_slots_ > 8) return false;
-        auto& ck = prompt_ckpts_[slot];
+        return save_prompt_state(slot, seq_len, prompt_ckpts_[slot]);
+    }
+
+    bool save_prompt_state(int slot, int seq_len, PromptCkpt& ck) {
         ck.valid = false;
         ck.seq_len = seq_len;
         // 1. Copy 48-visit ShortConv state via d_sconv_snap_ -> host RAM (3.83 MB)
@@ -343,7 +509,7 @@ public:
         if (slot == 0 && dspark_ && dspark_->ready && dspark_slot_ == 0) {
             ck.dspark_k.clear(); ck.dspark_v.clear();
             for (int il = 0; il < 3; ++il) {
-                if (model_.man.c.dspark_is_swa[il] == 0) continue;
+                if (!model_.man.c.dspark_is_swa[il]) continue;
                 const int cap = dspark_->ctx_cap[il];
                 const int s0 = std::max(0, seq_len - model_.man.c.dspark_swa_win);
                 const int np = seq_len - s0;
@@ -377,7 +543,12 @@ public:
     bool restore_prompt_checkpoint(int slot, int seq_len) override {
         if (!initialized_ || slot < 0 || slot >= max_slots_ || model_.ls_active || !d_sconv_snap_) return false;
         if (slot >= (int)prompt_ckpts_.size()) return false;
-        const auto& ck = prompt_ckpts_[slot];
+        const bool restored = restore_prompt_state(slot, seq_len, prompt_ckpts_[slot]);
+        if (restored && radix_requested_) slot_prefix_[slot].reset();
+        return restored;
+    }
+
+    bool restore_prompt_state(int slot, int seq_len, const PromptCkpt& ck) {
         if (!ck.valid || ck.seq_len != seq_len) return false;
         snap_active_[slot] = false;
         if (slot == 0) tree_snap_ready_ = false;
@@ -424,7 +595,7 @@ public:
         if (slot == 0 && ck.has_dspark && dspark_ && dspark_->ready) {
             size_t dk_o = 0, dv_o = 0;
             for (int il = 0; il < 3; ++il) {
-                if (model_.man.c.dspark_is_swa[il] == 0) continue;
+                if (!model_.man.c.dspark_is_swa[il]) continue;
                 const int cap = dspark_->ctx_cap[il];
                 const int s0 = std::max(0, seq_len - model_.man.c.dspark_swa_win);
                 const int np = seq_len - s0;
@@ -690,7 +861,9 @@ public:
         for (int s : slot_order) {
             const auto& idxs = by_slot[s];
             const bool is_img = (batch.img_embeds && idxs[0] < (int)batch.img_embed_idx.size() && batch.img_embed_idx[idxs[0]] >= 0);
-            if (idxs.size() == 1 && !is_img && !snap_active_[s]) {
+            // Slot zero needs every DSpark tap, including a one-token step at a checkpoint boundary.
+            const bool drafter_taps = radix_requested_ && batch.capture_taps && s == 0 && dspark_ && dspark_->ready;
+            if (idxs.size() == 1 && !is_img && !snap_active_[s] && !drafter_taps) {
                 dec_orig.push_back(idxs[0]);
                 dec_toks.push_back(batch.token_ids[idxs[0]]);
                 dec_slots.push_back(s);
@@ -848,6 +1021,54 @@ public:
     }
 
 private:
+    // Use the same per-slot layout as the attention kernels. Device capacity
+    // can grow between save and restore, so traverse device and host rows in
+    // logical order for each component rather than serializing raw slabs.
+    template <class Transfer>
+    bool visit_global_kv(int slot, int begin, int seq_len, Transfer transfer) {
+        if (seq_len > runner_->kv_alloc_ctx) return false;
+        for (int v = 0; v < strata::ink::kInkVisits; ++v) {
+            const auto& kv = runner_->kv_desc[v];
+            if (kv.is_swa) continue;
+            if (seq_len > kv.cap_pos) return false;
+            const int dev_start = std::min(begin, kv.dev_cap);
+            const int host_start = begin - dev_start;
+            const int dev_rows = std::min(seq_len, kv.dev_cap) - dev_start;
+            const int host_rows = seq_len - begin - dev_rows;
+            auto component = [&](void* device, void* host, size_t row_bytes) {
+                if (dev_rows) transfer(static_cast<uint8_t*>(device) +
+                    (static_cast<size_t>(slot) * kv.dev_cap + dev_start) * row_bytes, dev_rows * row_bytes, true);
+                if (host_rows) transfer(static_cast<uint8_t*>(host) +
+                    (static_cast<size_t>(slot) * kv.host_cap + host_start) * row_bytes, host_rows * row_bytes, false);
+            };
+            if (kv.kv_fmt == 0) {
+                const size_t row = strata::ink::kInkKVDim * sizeof(__half);
+                component(kv.k_f16, runner_->host_kv_raw_k[v], row);
+                component(kv.v_f16, runner_->host_kv_raw_v[v], row);
+            } else {
+                component(kv.k_f8, runner_->host_kv_raw_k[v], strata::ink::kInkKVDim);
+                component(kv.v_f8, runner_->host_kv_raw_v[v],
+                          kv.kv_fmt == 3 ? strata::ink::kInkKVDim / 2 : strata::ink::kInkKVDim);
+                const size_t row = strata::ink::kInkKVHeads * sizeof(float);
+                component(kv.k_sc, runner_->host_kv_raw_ksc[v], row);
+                component(kv.v_sc, runner_->host_kv_raw_vsc[v], row);
+            }
+        }
+        return true;
+    }
+
+    template <class Transfer>
+    void visit_drafter_global(int begin, int end, Transfer transfer) {
+        constexpr size_t width = strata::ink::kInkKVDim;
+        const size_t offset = static_cast<size_t>(begin) * width;
+        const size_t bytes = static_cast<size_t>(end - begin) * width * sizeof(__half);
+        for (int il = 0; il < 3; ++il) {
+            if (model_.man.c.dspark_is_swa[il]) continue;
+            transfer(dspark_->d_ctx_k[il] + offset, bytes);
+            transfer(dspark_->d_ctx_v[il] + offset, bytes);
+        }
+    }
+
     void ensure_pinned_logits(int nw, int V) {
         if (nw <= h_logits_cap_ && h_logits_pin_) return;
         if (h_logits_pin_) { cudaFreeHost(h_logits_pin_); h_logits_pin_ = nullptr; }
@@ -867,18 +1088,6 @@ private:
         initialized_ = false;
     }
 
-    struct PromptCkpt {
-        bool valid = false;
-        bool has_dspark = false;
-        int seq_len = 0;
-        int swa_start = 0;
-        int swa_len = 0;
-        std::vector<float> sconv;
-        std::vector<uint8_t> swa_k, swa_v, swa_ksc, swa_vsc;
-        std::vector<uint8_t> dspark_k, dspark_v;
-        std::vector<float> dspark_frnn;
-    };
-
     bool initialized_ = false;
     int gpu_id_ = 0;
     int max_slots_ = 1;
@@ -890,6 +1099,9 @@ private:
     strata::ink::InkCudaModel model_;
     std::unique_ptr<strata::ink::InkCudaRunner> runner_;
     std::unique_ptr<strata::ink::InkDSpark> dspark_;
+    size_t shared_bytes_ = 0;
+    bool radix_requested_ = false;
+    std::vector<std::weak_ptr<const GlobalChunk>> slot_prefix_;
     float* d_sconv_snap_ = nullptr;
     float* d_h_sel_ = nullptr;
     int32_t* d_sel_idx_ = nullptr;
