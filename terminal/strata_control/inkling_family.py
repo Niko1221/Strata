@@ -84,6 +84,16 @@ FILES = {
 MTP_FILE = "mtp.safetensors"
 MTP_COMMIT = "1fb4134b9a74f9681054f4ef82e4bf1f458a2337"
 MTP_BASE = f"https://huggingface.co/thinkingmachines/Inkling-2-Mini/resolve/{MTP_COMMIT}"
+#: An engine reads mtp.safetensors (BF16 norms / biases widened to F32) only when its `--info` line lists this key (0221-DSPARK, measured on Metal: an
+#: engine without the widen gets 1.0 tokens per step from the same file, every draft rejected, while Unsloth's Q8_0 file gives 3 to 7). The flag, not
+#: the version, decides: builds of any age and custom builds are told apart by what they say.
+ENGINE_MTP_FLAG = "dspark_f32_widen"
+
+
+def engine_reads_mtp(info: dict | None) -> bool:
+    return str((info or {}).get(ENGINE_MTP_FLAG)) == "1"
+
+
 DRAFTER_FILES = {
     MTP_FILE: (635_801_416, "7c3b651317f01f73bcf4e1dceba66ef8b7e1a1eac6bc171e882e690a4b10a1d2"),
 }
