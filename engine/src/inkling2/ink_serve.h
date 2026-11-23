@@ -426,6 +426,11 @@ struct ActiveReq {
     bool cancelled = false;
     bool admitted = false;
     bool slot_read = false;
+    // STRATA_INK_SPEC=adapt governor state (measurement experiment, see run_serve_loop)
+    int gov_plain_left = 0;    // plain decode steps still to run before the next speculative probe
+    int gov_calib_left = 0;    // plain steps to run first to learn what one plain step costs
+    int gov_win_steps = 0;     // speculative steps in the current window
+    int gov_win_emit = 0;      // tokens those steps produced
 };
 
 struct ServeConfig {
@@ -445,7 +450,13 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
     const int chunk_sz = std::max(1, cfg.bopts.chunk);
     const bool use_dspark = (cfg.draft_mode != "off") && mf.m.dspark.present && backend.dspark_ready();
     // STRATA_INK_SPEC=block: measurement switch, greedy requests use the linear block-8 drafter + batch verify instead of the beam tree
-    const bool spec_tree = []() { const char* e = std::getenv("STRATA_INK_SPEC"); return !(e && std::string(e) == "block"); }();
+    const char* spec_env = std::getenv("STRATA_INK_SPEC");
+    const bool spec_tree = !(spec_env && std::string(spec_env) == "block");
+    // STRATA_INK_SPEC=adapt: greedy drafting stays on only while one verify window is worth its cost. Per request, after every 8 speculative
+    // steps: tokens per step / (spec step ms / plain step ms) < 1 turns drafting off for 48 plain steps, then it probes again. The plain step
+    // time is measured on the first 4 decode steps of the first request and refreshed by every plain step after that.
+    const bool spec_adapt = (spec_env && std::string(spec_env) == "adapt");
+    double gov_t_plain = 0.0, gov_t_spec = 0.0;
 
     // Probe Vision shard lazily (zero VRAM/RAM until first image request)
     bool images_ok = false;
@@ -624,6 +635,8 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
         rq.cur_pos = reuse;
         rq.hist = rq.prompt_ids;
         rq.next_tok = -1;
+        rq.gov_plain_left = 0; rq.gov_win_steps = 0; rq.gov_win_emit = 0;
+        rq.gov_calib_left = (spec_adapt && gov_t_plain <= 0.0) ? 4 : 0;
         return true;
     };
 
@@ -765,7 +778,8 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
         // 2. Fast-path: Single-stream DSpark Adaptive Beam Tree (greedy) / Block-8 Rejection Sampling (temperature >= 0) (#6633)!
         if (use_dspark && n_active == 1 && reqs[sole_slot].prefill_pos >= reqs[sole_slot].prompt_len &&
             reqs[sole_slot].generated + 2 <= reqs[sole_slot].max_new &&
-            reqs[sole_slot].cur_pos + 8 < eff_max_ctx) {
+            reqs[sole_slot].cur_pos + 8 < eff_max_ctx &&
+            !(spec_adapt && (reqs[sole_slot].gov_plain_left > 0 || reqs[sole_slot].gov_calib_left > 0))) {
             auto& rq = reqs[sole_slot];
             // 2a. Zero-D2H fused greedy Beam Tree speculative step (when greedy, no penalties, and headroom >= 12)
             if (spec_tree && rq.s.greedy() && !rq.s.penalties() && rq.cur_pos + 12 < eff_max_ctx) {
@@ -773,6 +787,7 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
                 int drafted = 0;
                 std::string serr;
                 const int max_emit = rq.max_new - rq.generated;
+                const double gov_t0 = now_s();
                 const int n_emit = backend.dspark_spec_step_greedy(
                     rq.slot, rq.next_tok, rq.cur_pos, max_emit, emitted, &drafted, serr);
                 if (n_emit < 0) {
@@ -781,6 +796,19 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
                 }
                 if (n_emit > 0) {
                     rq.drafts_offered += drafted;
+                    if (spec_adapt) {
+                        const double ms = (now_s() - gov_t0) * 1000.0;
+                        gov_t_spec = (gov_t_spec <= 0.0) ? ms : 0.8 * gov_t_spec + 0.2 * ms;
+                        rq.gov_win_steps += 1;
+                        rq.gov_win_emit += n_emit;
+                        if (rq.gov_win_steps >= 8) {
+                            const double per_step = static_cast<double>(rq.gov_win_emit) / rq.gov_win_steps;
+                            const double gain = (gov_t_plain > 0.0 && gov_t_spec > 0.0) ? per_step / (gov_t_spec / gov_t_plain) : 2.0;
+                            if (gain < 1.0) rq.gov_plain_left = 48;
+                            rq.gov_win_steps = 0;
+                            rq.gov_win_emit = 0;
+                        }
+                    }
                     int kept = 0;
                     bool done = false;
                     const char* fin = nullptr;
@@ -1035,6 +1063,18 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
                     else if (hit_len) finish_req(rq, "length");
                     else if (hit_loop) finish_req(rq, "stop");
                 }
+            }
+        }
+        if (spec_adapt && use_dspark && n_active == 1 && n_want == 1 && prefill_fed[sole_slot] == 0) {
+            // one plain decode step: its whole cost, forward + host sampling + output
+            const double ms = (now_s() - t_step0) * 1000.0;
+            auto& rg = reqs[sole_slot];
+            if (rg.gov_calib_left > 0) {
+                --rg.gov_calib_left;
+                if (rg.gov_calib_left < 3) gov_t_plain = (gov_t_plain <= 0.0) ? ms : std::min(gov_t_plain, ms);  // the first step may capture the graph
+            } else {
+                if (rg.gov_plain_left > 0) --rg.gov_plain_left;
+                gov_t_plain = (gov_t_plain <= 0.0) ? ms : 0.9 * gov_t_plain + 0.1 * ms;
             }
         }
     }
