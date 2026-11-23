@@ -84,6 +84,26 @@ foreach(_f IN LISTS _src_files)
   if(_rel MATCHES "^src/image/")
     continue()
   endif()
+  # src/inkling2 is likewise its own project - its CMakeLists opens
+  # project(strata_inkling) and the engine adds the folder only behind
+  # STRATA_BUILD_INKLING+STRATA_BUILD_INKLING2; neither strata nor strata-device
+  # links any strata_inkling target. With v0.2.19 it gained real device lanes:
+  # an NVIDIA subfolder (add_subdirectory(cuda) under STRATA_ENABLE_CUDA: the
+  # Inkling backend ink_cuda_backend.cu, ink_moe_fp4_sm120.cu, ink_cuda_main.cu)
+  # and its own custom-compiled HIP backend under hip/ (gated by
+  # STRATA_ENABLE_HIP - which hybrid builds leave OFF). The plugin units at its
+  # root (ep_dual_gpu.cu, hybrid_doorbell.cu) compile only into
+  # strata_inkling_ep_cuda, CUDA-gated, and no HIP-lane object names their
+  # symbols; a hip-src copy of any of them cannot even resolve the family's
+  # headers, because the mirror breaks their relative includes - cuda/ units
+  # hit the ink_backend.h beside the inkling2 root, and ep_dual_gpu.cu pulls
+  # ink_safetensors_loader.h, whose ../image/vae/safetensors_lite.hpp sits in
+  # the src/image family kept out of HIP reach just above. The whole family
+  # joins the dsv41/split/image exclusions (found by the hybrid link gate on
+  # momo).
+  if(_rel MATCHES "^src/inkling2/")
+    continue()
+  endif()
   if(_rel MATCHES "\\.cu$")
     # Keep the .cu name so a sibling #include "foo.cu" still resolves, and
     # compile a .hip link of the same file. Tests, benches, and the NVFP4
