@@ -115,8 +115,11 @@ public:
             for (const auto& j : *jobs) {
                 const auto gu = static_cast<strata::quant::sk::SkCode>(j.gu_code);
                 const auto dn = static_cast<strata::quant::sk::SkCode>(j.dn_code);
-                if (j.tok_idx.size() != 1 || !j.body || !strata::inkling2::expert_m1_splittable(gu, dn) ||
-                    (static_cast<size_t>(D) % 8) != 0 || (static_cast<size_t>(inter) % 64) != 0) { ok = false; break; }
+                if (j.tok_idx.size() != 1 || !j.body || (static_cast<size_t>(D) % 8) != 0 || (static_cast<size_t>(inter) % 64) != 0 ||
+                    !strata::inkling2::expert_m1_splittable(gu, dn, j.body, static_cast<size_t>(D), static_cast<size_t>(inter))) {
+                    ok = false;
+                    break;
+                }
             }
             if (ok) {
                 const size_t nj = jobs->size();
