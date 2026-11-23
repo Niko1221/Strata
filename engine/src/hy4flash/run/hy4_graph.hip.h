@@ -2625,9 +2625,10 @@ public:
                 cpu.wait();
                 t_cpu_wait += now_s() - t_cpu0;
                 HCK(hipMemcpyAsync(d_zcpu, h_zcpu, nz * 4, hipMemcpyHostToDevice, st));
-                hipLaunchKernelGGL(k_add_inplace, dim3((nz + 255) / 256), dim3(256), 0, st, zout_f, (const float*)d_zcpu, nz);
+                { PS _q(this, "add_f2h"); hipLaunchKernelGGL(k_add_f2h, dim3((nz + 255) / 256), dim3(256), 0, st, zout_f, (const float*)d_zcpu, z_h, nz); }
+            } else {
+                { PS _q(this, "f2h"); hipLaunchKernelGGL(k_f2h, dim3((nz + 255) / 256), dim3(256), 0, st, zout_f, z_h, nz); }
             }
-            { PS _q(this, "f2h"); hipLaunchKernelGGL(k_f2h, dim3((nz + 255) / 256), dim3(256), 0, st, zout_f, z_h, nz); }
             const bool w16_ok = !dump && Tc >= 2048;
             lin(pm + ".routed_expert_up_proj.weight", z_h, F2, T, w16_ok ? (__half*)F1 : nullptr);  // [T][3072]
             lin(pm + ".shared_experts.gate_proj.weight", cur_h, F1, T, w16_ok ? (__half*)(F1 + (size_t)T * 5120) : nullptr);
