@@ -5178,8 +5178,9 @@ class Service:
         if self.hy4:                                   # Hy4's template reads reasoning_effort no_think | high | max (serve/hy4_dialect.py)
             return self.template.render(messages, tools=tools, **hy4_dialect.template_kwargs(kwargs))
         if self.inkling:                               # Inkling-2-Mini: skip hidden <|content_thinking|> at the prompt boundary (#6612, #6620, #6627)
-            rendered = self.template.render(inkling_dialect.prepare_messages(messages), tools=tools, **inkling_dialect.template_kwargs(kwargs))
-            return inkling_dialect.finish_prompt(rendered, has_tools=bool(tools))
+            ikw = inkling_dialect.template_kwargs(kwargs)
+            rendered = self.template.render(inkling_dialect.prepare_messages(messages), tools=tools, **ikw)
+            return inkling_dialect.finish_prompt(rendered, has_tools=bool(tools), thinking=ikw["reasoning_effort"] != "none")
         effort = kwargs.get("reasoning_effort")
         off = kwargs.get("enable_thinking") is False
         if not self.effort_end or (not off and effort in (None, "", "xhigh", "high")):

@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import unittest
+from unittest import mock
 from pathlib import Path
 
 TERMINAL = Path(__file__).resolve().parents[1]
@@ -77,8 +79,9 @@ class TestInklingDialect(unittest.TestCase):
         calls = [ev.call for ev in events if ev.kind == "tool_call" and ev.call is not None]
         self.assertEqual([c.arguments["path"] for c in calls], ["a.py", "b.py"])
 
+    @mock.patch.dict(os.environ, {"STRATA_INKLING_EFFORT": ""})
     def test_no_thinking_mode_always_off(self):
-        # Inkling-2-Mini has no thinking mode: default is off ("none") and every input normalizes to "none"
+        # Default (STRATA_INKLING_EFFORT unset): thinking is off ("none") and every input normalizes to "none"
         for level in (None, "", "none", "off", "minimal", "low", "medium", "high", "max", "xhigh", 0.0, 0.9):
             self.assertEqual(inkling_dialect.normalize_effort(level), "none")
         self.assertEqual(inkling_dialect.template_kwargs({}), {"enable_thinking": False, "reasoning_effort": "none"})
@@ -86,6 +89,31 @@ class TestInklingDialect(unittest.TestCase):
             got = inkling_dialect.template_kwargs({"reasoning_effort": level})
             self.assertEqual(got, {"enable_thinking": False, "reasoning_effort": "none"})
         self.assertEqual(inkling_dialect.template_kwargs({"enable_thinking": True, "thinking_mode": "high"}), {"enable_thinking": False, "reasoning_effort": "none"})
+
+    @mock.patch.dict(os.environ, {"STRATA_INKLING_EFFORT": "high"})
+    def test_opt_in_thinking_effort_streams_reasoning(self):
+        # Server opted in: its level is the default, a request may pick another one or turn thinking off
+        self.assertEqual(inkling_dialect.normalize_effort(None), "high")
+        self.assertEqual(inkling_dialect.normalize_effort("low"), "low")
+        self.assertEqual(inkling_dialect.normalize_effort("unknown-level"), "high")
+        self.assertEqual(inkling_dialect.template_kwargs({}), {"enable_thinking": True, "reasoning_effort": "high"})
+        self.assertEqual(inkling_dialect.template_kwargs({"reasoning_effort": "none"}), {"enable_thinking": False, "reasoning_effort": "none"})
+        self.assertEqual(inkling_dialect.template_kwargs({"enable_thinking": False, "reasoning_effort": "max"}),
+                         {"enable_thinking": False, "reasoning_effort": "none"})
+        # The prompt ends at the model turn opener so the model writes <|content_thinking|> itself (idempotent)
+        base = "<|message_user|><|content_text|>What is 17 * 23?<|end_message|>"
+        self.assertEqual(inkling_dialect.finish_prompt(base, has_tools=True, thinking=True), base + "<|message_model|>")
+        self.assertEqual(inkling_dialect.finish_prompt(base + "<|message_model|>", thinking=True), base + "<|message_model|>")
+        # Thinking streams as reasoning (also across a quoted <|end_message|>), the answer stays content, no duplicate
+        raw = ("<|message_model|><|content_thinking|>17 * 23 = 391, the tag <|end_message|> quoted.<|end_message|>"
+               "<|message_model|><|content_text|>391<|end_message|><|content_model_end_sampling|>")
+        p = frontend.InklingOutputParser()
+        evs = [ev for i in range(0, len(raw), 4) for ev in p.feed(raw[i:i + 4])] + p.finish("stop")
+        self.assertEqual("".join(e.text for e in evs if e.kind == "content"), "391")
+        self.assertEqual("".join(e.text for e in evs if e.kind == "reasoning"), "17 * 23 = 391, the tag <|end_message|> quoted.")
+        p_cut = frontend.InklingOutputParser()
+        evs = p_cut.feed("<|message_model|><|content_thinking|>Working step by step") + p_cut.finish("length")
+        self.assertEqual("".join(e.text for e in evs if e.kind == "reasoning"), "Working step by step")
 
     def test_chat_template_empty_kwargs_forces_effort_zero_and_caps_no_reasoning(self):
         import tempfile

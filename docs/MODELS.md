@@ -264,6 +264,11 @@ engine (`strata-inkling`). Both [Strata's native `.strata` v1.1 builds](https://
 and [Unsloth's Dynamic GGUFs](https://huggingface.co/unsloth/Inkling-2-Mini-GGUF) are supported, with built-in DSpark speculative
 drafting and picture reading (`Inkling-2-Mini-Vision.strata`, 0.64 GB).
 
+Strata serves Inkling-2-Mini with thinking off. To let it think before answering, start the server with
+`STRATA_INKLING_EFFORT=<level>` (`minimal`, `low`, `medium`, `high`, `xhigh` or `max`). That level becomes the default,
+a request can pick its own `reasoning_effort` or send `enable_thinking: false`, and the thinking arrives as
+`reasoning_content`. Answers take longer and use more tokens.
+
 **Strata native `.strata` builds**
 
 | Build | File size | Typical hardware | In plain words |

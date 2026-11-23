@@ -19,6 +19,7 @@ and multiline code losslessly while reusing all downstream OpenAI / Anthropic / 
 from __future__ import annotations
 
 import json
+import os
 import re
 
 MSG_MODEL = "<|message_model|>"
@@ -120,7 +121,9 @@ def _parse_tool_body(header_name: str, body: str, kind: str, *, truncated: bool 
 class InklingDialect:
     """Stateful streaming translator: one instance per assistant reply."""
 
-    def __init__(self):
+    def __init__(self, stream_think: bool | None = None):
+        # Opt-in thinking (STRATA_INKLING_EFFORT): stream <|content_thinking|> as reasoning instead of hiding it.
+        self.stream_think = thinking_enabled() if stream_think is None else bool(stream_think)
         self.state = "idle"          # idle | header | think | think_end | text | text_end | tool_json | tool_text
         self.buf = ""
         self.header_acc = ""
@@ -225,7 +228,11 @@ class InklingDialect:
             self._in_think = False
         return "".join(parts)
 
-    def _append_think(self, chunk: str) -> None:
+    def _append_think(self, chunk: str, out: list[tuple[str, str]] | None = None) -> None:
+        if self.stream_think and out is not None:
+            if chunk:
+                out.append(("reasoning", chunk))
+            return
         if chunk and len(self._think_acc) < _MAX_THINK_ACC:
             self._think_acc += chunk[:_MAX_THINK_ACC - len(self._think_acc)]
 
@@ -233,8 +240,8 @@ class InklingDialect:
         if not chunk:
             return
         if self.state == "think":
-            # Inkling-2-Mini has no thinking mode (off / "none" only): keep hidden unless truncated with no answer (#6682).
-            self._append_think(chunk)
+            # Thinking off (default): keep hidden unless truncated with no answer (#6682). Opt-in: stream as reasoning.
+            self._append_think(chunk, out)
             return
         elif self.state == "think_end":
             # Lookahead after <|end_message|> in thinking (#6675): only another structural tag confirms end-of-thinking;
@@ -242,7 +249,7 @@ class InklingDialect:
             if not chunk.strip():
                 self._end_ws += chunk
                 return
-            self._append_think(END_MSG + self._end_ws + chunk)
+            self._append_think(END_MSG + self._end_ws + chunk, out)
             self._end_ws = ""
             self.state = "think"
             return
@@ -311,7 +318,7 @@ class InklingDialect:
                 return
             if self.state == "think_end":
                 # Second <|end_message|> after a quoted one inside thinking: keep absorbing the first and hold the second
-                self._append_think(END_MSG + self._end_ws)
+                self._append_think(END_MSG + self._end_ws, out)
                 self._end_ws = ""
                 return
             if self.state == "text":
@@ -396,24 +403,44 @@ def translate(text: str) -> str:
     return InklingDialect().feed(text, final=True)
 
 
-# ---- thinking mode: Inkling-2-Mini has NO thinking mode (default is off / "none", and that's it) ----
+# ---- thinking mode: off ("none") by default. The chat template also takes effort levels; a server opts in with
+# STRATA_INKLING_EFFORT=<level> (minimal | low | medium | high | xhigh | max). Then that level is the default, requests
+# may pick their own `reasoning_effort` (or `enable_thinking: false`), and thinking streams as reasoning_content. ----
 DEFAULT_EFFORT = "none"
+LEVELS = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
 EFFORT = {
     "none": "none", "off": "none", "no_think": "none", "disabled": "none", "false": "none", "0": "none", "0.0": "none",
+    **{level: level for level in LEVELS[1:]},
 }
 
 
+def server_effort() -> str:
+    """Server-wide thinking level from STRATA_INKLING_EFFORT; unset or unknown -> `"none"` (thinking off)."""
+    raw = os.environ.get("STRATA_INKLING_EFFORT", "").strip().lower()
+    return EFFORT.get(raw, DEFAULT_EFFORT) if raw else DEFAULT_EFFORT
+
+
+def thinking_enabled() -> bool:
+    return server_effort() != "none"
+
+
 def normalize_effort(value=None) -> str:
-    """Inkling-2-Mini has no thinking mode: always normalizes to `"none"` (`Thinking effort level: 0`)."""
-    return DEFAULT_EFFORT
+    """Thinking off unless the server opted in; then the request's level, or the server level when unset/unknown."""
+    base = server_effort()
+    if base == "none" or value is False:
+        return "none"
+    if value is None or value == "":
+        return base
+    return EFFORT.get(str(value).strip().lower(), base)
 
 
 def template_kwargs(kwargs: dict) -> dict:
-    """Normalize kwargs for Inkling-2-Mini's chat_template.jinja: always enforces thinking off (`reasoning_effort="none"`)."""
+    """Normalize kwargs for Inkling-2-Mini's chat_template.jinja (`reasoning_effort="none"` unless opted in)."""
     out = dict(kwargs)
     out.pop("thinking_mode", None)
-    out["enable_thinking"] = False
-    out["reasoning_effort"] = DEFAULT_EFFORT
+    effort = "none" if out.get("enable_thinking") is False else normalize_effort(out.get("reasoning_effort"))
+    out["enable_thinking"] = effort != "none"
+    out["reasoning_effort"] = effort
     return out
 
 
@@ -448,7 +475,7 @@ def prepare_messages(messages: list[dict]) -> list[dict]:
     return out
 
 
-def finish_prompt(prompt: str, *, has_tools: bool = False, forced: bool = False) -> str:
+def finish_prompt(prompt: str, *, has_tools: bool = False, forced: bool = False, thinking: bool = False) -> str:
     """Append an explicit non-thinking turn opener to a rendered Inkling-2-Mini prompt (#6612, #6620, #6627).
 
     Inkling-2-Mini's `chat_template.jinja` ends at `<|end_message|>` with no assistant opener, so even with
@@ -460,9 +487,15 @@ def finish_prompt(prompt: str, *, has_tools: bool = False, forced: bool = False)
       model immediately selects either `<|message_model|><|content_text|>` or a tool invocation without wasting
       tokens or looping inside hidden thinking.
     Idempotent if the prompt already carries an opener or when a forced tool-call opener will be appended.
+    With `thinking=True` (opt-in effort) only `<|message_model|>` is appended, so the model opens
+    `<|content_thinking|>` itself and the streaming translator sees the channel tag.
     """
     if not prompt or forced:
         return prompt
+    if thinking:
+        if prompt.endswith((MSG_MODEL, CONTENT_THINK, CONTENT_TEXT, CONTENT_TOOL_JSON, CONTENT_TOOL_TEXT)):
+            return prompt
+        return prompt + MSG_MODEL
     empty_think = f"{MSG_MODEL}{CONTENT_THINK}{END_MSG}"
     if prompt.endswith((CONTENT_TEXT, CONTENT_TOOL_JSON, CONTENT_TOOL_TEXT, empty_think)):
         return prompt
