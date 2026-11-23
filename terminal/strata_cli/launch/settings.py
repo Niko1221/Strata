@@ -21,6 +21,9 @@ SCHEMA = "strata.launch/1"
 FALLBACK_CONTEXTS = (8192, 32768, 65536, 131072, 204800, 262144, 393216, 524288)
 
 ACCESS_KINDS = ("local", "lan", "address", "cloudflare", "tailscale")
+#: Where the picture reader runs, in the words the plan, the summary and the running-server line all use (#0221 APPTUI: the plan said "the reader runs on the processor", the running line "pictures gpu").
+PICTURE_WORDS = {"off": "off", "on": "on", "cpu": "on (the picture reader runs on the processor)", "gpu": "on (the picture reader runs on the graphics card)"}
+PICTURE_SHORT = {"off": "off", "on": "on", "cpu": "on, read by the processor", "gpu": "on, read by the graphics card"}   # the same, for inside a bracket
 ACCESS_WORDS = {"local": "This computer only", "lan": "My local network", "address": "One address only", "cloudflare": "Cloudflare tunnel",
                 "tailscale": "Tailscale"}
 TUNE_MODES = ("quick", "thorough", "skip")

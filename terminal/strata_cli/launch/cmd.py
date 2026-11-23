@@ -29,7 +29,7 @@ examples:
 """
 
 
-PICTURE_WORDS = {"off": "off", "on": "on", "cpu": "on (the reader runs on the processor)", "gpu": "on (the reader runs on the graphics card)"}
+PICTURE_WORDS = S.PICTURE_WORDS
 
 
 def _choice(label: str, options: tuple[str, ...]):

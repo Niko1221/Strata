@@ -871,6 +871,25 @@ class DownloadPace:
         return f" Finishing the last pieces ({size} left{pace})."
 
 
+class PictureOrder:
+    """0221 APPTUI: setup prints the picture reader's last figure again after the reader's check ("Downloading the picture reader: 11.1 of 11.1 GB" came back after
+    "Checking that the model files are complete"), so the lines read as if the download had started over. Once the reader was downloaded and its check shown, that
+    complete figure is stale and is not shown again."""
+
+    def __init__(self) -> None:
+        self.prev: str | None = None
+        self.checked = False
+
+    def stale(self, phase: str | None, dl: dict | None) -> bool:
+        if phase == "pictures" and self.checked and dl and float(dl.get("percent") or 0) >= 99.5:
+            return True
+        if phase == "verify" and self.prev == "pictures":
+            self.checked = True
+        if phase:
+            self.prev = phase
+        return False
+
+
 class SteadyBar:
     """S13: one bar for the whole model download that never moves back. Setup checks each finished file (a progress line of its own, 0 to 100 % of THAT file)
     between the downloads, and the bar followed it: 61 % (52 GB), 32 %, 96 %, then 69 % when the next file began (VAST V2, a real Hugging Face download). While
@@ -1664,6 +1683,7 @@ class Runner:
         job = self.progress_job()
         pace, last_dl = DownloadPace(), None                 # T12: the last pieces of a big download crawl; say so
         steady = SteadyBar()
+        reader_order = PictureOrder()
         step_seen, step_since, quiet_since, said = None, time.monotonic(), time.monotonic(), None
         for line in self._read_lines(p):
             if self.cancel.is_set():
@@ -1688,6 +1708,8 @@ class Runner:
             if prog.get("step") != step_seen:
                 step_seen, step_since = prog.get("step"), time.monotonic()
             said = (label, phase) if label else None
+            if reader_order.stale(phase, dl):
+                continue                                     # the reader was downloaded and its check was shown: the same figure again as "Downloading the picture reader" is not news
             if phase == "waiting":                           # setup is waiting for a server to answer: say which one (netpolicy's line)
                 self.emit("model", label, None, step=prog.get("step"))
             elif phase == "pictures" and dl and not is_reader_file(dl.get("file")):
@@ -2470,7 +2492,7 @@ class Runner:
         if c.get("context"):
             bits.append(f"context {S.context_label(c['context'])}")
         if c.get("vision"):
-            bits.append(f"pictures {c['vision']}")
+            bits.append(f"pictures {S.PICTURE_SHORT.get(c['vision'], c['vision'])}")
         if c.get("access"):
             bits.append(f"access {S.ACCESS_WORDS.get(c['access'], c['access'])}")
         return f"{row['name']} is serving on port {row['port']}" + (f" ({', '.join(bits)})" if bits else "")
@@ -2877,9 +2899,14 @@ class Runner:
             shape = self.model_shape()
             if shape:
                 from strata_control import shape_engine
-                found = shape_engine.find(shape, Path(self.components_dir) if self.components_dir else None, full=False, title=self.model_title())
-                engine = bool(found.usable)
-                here = [found.version] if found.installed and found.version else []
+                try:
+                    found = shape_engine.find(shape, Path(self.components_dir) if self.components_dir else None, full=False, title=self.model_title())
+                    engine = bool(found.usable)
+                    here = [found.version] if found.installed and found.version else []
+                except engine_component.EngineIntegrityError:
+                    engine, here = False, ["installed"]          # an engine is here that did not pass the check: said as such below
+                except engine_component.EngineMissing:
+                    engine, here = False, []                     # none for this model's shape here: the plan says it is downloaded first (it used to say nothing: the error left engine True)
             else:
                 report = engine_component.status(Path(self.components_dir) if self.components_dir else None)
                 engine = bool(report.get("usable"))
@@ -2914,6 +2941,9 @@ class Runner:
                 text += " To skip the draft layer (a little slower, less memory), add --mtp off."
             if any(p["kind"] == "dflash2" for p in parts):
                 text += " To skip the DFlash2 drafter, add --drafting mtp."
+            room = self.room_words(gb)
+            if room:
+                text += " " + room
         if not engine and here:
             # B03: an engine IS installed, but this plan cannot use it (its signature cannot be checked here, or it is for another card): not "missing"
             text += (f" An engine ({', '.join(here[:3])}) is installed, but it did not pass Strata's check on this computer, so Strata looks for a working one "
@@ -2923,6 +2953,21 @@ class Runner:
         if intel:
             text += " For the Intel card Strata builds the model's pack from your files itself, once; it takes a few minutes and downloads nothing."
         return {"gb": gb, "parts": parts, "engine_missing": not engine and not here, "engine_usable": engine, "own_files": st.own_files, "text": text}
+
+    def room_words(self, gb: float) -> str:
+        """The free-disk check of the plan, in words: the room on the drive the download goes to against what is downloaded. "" when it cannot be read."""
+        s = self.s
+        try:
+            data = Path(s.data_dir).expanduser() if s.data_dir else (self.existing_data_dir() or self.catalog.data_dir())
+            probe = next((q for q in (data, *data.parents) if q.exists()), None)
+            free = self.catalog.disk_free(probe) if probe is not None else None
+        except Exception:                                    # noqa: BLE001 - a plan that cannot read the disk still shows the rest
+            return ""
+        if free is None:
+            return ""
+        if free < gb * 1.05 + 1:
+            return f"Not enough room: {free:.0f} GB are free where it goes ({data}). Choose a bigger drive with --data-dir."
+        return f"{free:.0f} GB are free where it goes ({data})."
 
     def ready_pack_gap(self) -> dict | None:
         """For a ready-made pack family (NVFP4): what setup would still fetch into its models folder for these choices, {gb, folder, free_gb}, or None."""
