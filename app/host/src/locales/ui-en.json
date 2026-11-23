@@ -39,5 +39,13 @@
  "ui38": "Type your own answer",
  "ui39": "Send answer",
  "ui40": "Questions for you",
- "ui41": "Lets the assistant stop and ask you a question, with answers to pick from, when it needs your decision."
+ "ui41": "Lets the assistant stop and ask you a question, with answers to pick from, when it needs your decision.",
+ "ui42": "Select all that apply",
+ "ui43": "Choose one",
+ "ui44": "Add a note or extra detail (optional)",
+ "ui45": "Stop the assistant now",
+ "ui46": "Skip this question and let the assistant continue",
+ "ui47": "Skipping…",
+ "ui48": "Sending…",
+ "ui49": "Answer the question above to continue…"
 }

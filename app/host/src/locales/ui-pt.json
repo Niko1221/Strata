@@ -39,5 +39,13 @@
  "ui38": "Digite a sua própria resposta",
  "ui39": "Enviar resposta",
  "ui40": "Perguntas para você",
- "ui41": "Permite que o assistente pare e faça uma pergunta, com respostas para escolher, quando precisa da sua decisão."
+ "ui41": "Permite que o assistente pare e faça uma pergunta, com respostas para escolher, quando precisa da sua decisão.",
+ "ui42": "Selecione todas as opções aplicáveis",
+ "ui43": "Escolha uma opção",
+ "ui44": "Adicionar uma nota ou detalhe extra (opcional)",
+ "ui45": "Parar o assistente agora",
+ "ui46": "Pular esta pergunta e deixar o assistente continuar",
+ "ui47": "Pulando…",
+ "ui48": "Enviando…",
+ "ui49": "Responda à pergunta acima para continuar…"
 }

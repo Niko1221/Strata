@@ -255,7 +255,9 @@ export function connectionReasoningFormat(conn) {
 
 export function connectionReasoningEfforts(conn, model) {
   const format = connectionReasoningFormat(conn);
+  if (/^inkling-2-mini/i.test(String(model?.id ?? ''))) return null;
   if (model.reasoning === false || (model.reasoning !== true && conn.reasoningFormat !== format)) return null;
+  if (/^hy4-flash/i.test(String(model?.id ?? '')) && (format === 'strata' || format === 'effort')) return HY4_LOCAL_EFFORTS;
   switch (format) {
     case 'strata': return LOCAL_EFFORTS;
     case 'openrouter': return OPENROUTER_EFFORTS;
@@ -264,7 +266,10 @@ export function connectionReasoningEfforts(conn, model) {
     default: return null;
   }
 }
-export const effortOf = value => EFFORT_LEVEL[String(value ?? '').toLowerCase()] ?? null;
+export const effortOf = value => {
+  const key = String(value ?? '').toLowerCase();
+  return key === 'xhigh' ? 'max' : (EFFORT_LEVEL[key] ?? null);
+};
 
 /**
  * Output budget for an API model. The connection's own maximum output is used when it is known (`maxOutput`, read from the provider's model
@@ -337,8 +342,8 @@ export function buildProfile({ local = [], connections = [], gate = true, tools 
     // does not authenticate gets a fixed placeholder; one that does gets its real key, by reference.
     env[keyEnv] = inst.key || 'strata-local';
     const context = inst.context ?? 32768;
-    const isInklingModel = /^inkling-2-mini/i.test(String(inst.modelId ?? ''));
-    const isHy4Model = /^hy4-flash/i.test(String(inst.modelId ?? ''));
+    const isInklingModel = inst.arch === 'inkling2_loop' || /^inkling-2-mini/i.test(String(inst.modelId ?? ''));
+    const isHy4Model = inst.arch === 'hy4flash' || /^hy4-flash/i.test(String(inst.modelId ?? ''));
     providers[route] = {
       displayName: inst.label ? `Strata (local) ${inst.label}` : 'Strata (local)',
       api: 'openai-completions',
@@ -362,7 +367,7 @@ export function buildProfile({ local = [], connections = [], gate = true, tools 
     compaction.push({ provider: route, model: inst.modelId, headroomTokens: compactionHeadroom(context, localOutputBudget(context)), thresholdRatio: thresholdRatio() });
     slots = Math.max(slots, Number.isFinite(inst.slots) && inst.slots >= 1 ? Math.floor(inst.slots) : 1);
     const shaped = addShaped(route, providers[route], inst.baseUrl);
-    routes.push({ route, fp: fingerprint(providers[route], env[keyEnv]), kind: 'local', connectionName: 'this computer', instanceId: inst.id, modelId: inst.modelId, name: inst.label || inst.modelId, contextWindow: context, vision: !!inst.vision, ...(shaped ? { shaped } : {}) });
+    routes.push({ route, fp: fingerprint(providers[route], env[keyEnv]), kind: 'local', connectionName: 'this computer', instanceId: inst.id, modelId: inst.modelId, arch: inst.arch ?? null, name: inst.label || inst.modelId, contextWindow: context, vision: !!inst.vision, ...(shaped ? { shaped } : {}) });
   });
 
   connections.forEach(conn => {

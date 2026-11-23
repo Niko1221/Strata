@@ -75,8 +75,8 @@ export function ComposerControls({ session, onPreview, onAttach, onError, onSlas
     // A model on an API takes a reasoning effort when its provider says it can think (OpenRouter's model list); otherwise the provider decides.
     const apiOnlyDefault = !!apiModel && apiModel.thinks !== true;
     const pictures = pictureStatus(native, remoteModel, providers);
-    const isHy4Active = !remoteModel && !!nativeModel && /^hy4-flash/i.test(nativeModel.model);
-    const isInklingActive = !remoteModel && !!nativeModel && /^inkling-2-mini/i.test(nativeModel.model);
+    const isHy4Active = (!remoteModel && !!nativeModel && (nativeModel.arch === 'hy4flash' || /^hy4-flash/i.test(nativeModel.model) || /^hy4-flash/i.test(nativeModel.apiModelId ?? ''))) || (!!apiModel && /^hy4-flash/i.test(apiModel.id));
+    const isInklingActive = (!remoteModel && !!nativeModel && (nativeModel.arch === 'inkling2_loop' || /^inkling-2-mini/i.test(nativeModel.model) || /^inkling-2-mini/i.test(nativeModel.apiModelId ?? ''))) || (!!apiModel && /^inkling-2-mini/i.test(apiModel.id));
     const activeEfforts = isHy4Active ? hy4Efforts : efforts;
     const mode = modes.find(m => m.value === session?.preferences?.mode) ?? modes[0];
     const effort = isInklingActive ? 'Off' : (activeEfforts.includes(session?.preferences?.thinking ?? '') ? session!.preferences!.thinking! : (isHy4Active ? 'High' : 'Medium'));
