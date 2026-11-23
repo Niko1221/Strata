@@ -23,6 +23,7 @@
 #include "strata/platform/commit.hpp"
 #include "strata/core/moe_wave_plan.hpp"
 #include "strata/core/ink_expert_policy.hpp"
+#include "strata/core/ink_pin_rule.hpp"
 #include "strata/quant/act.hpp"
 #include "strata/quant/dequant.hpp"
 #include "strata/quant/dot.hpp"
@@ -1531,17 +1532,26 @@ struct InkHybridEngine {
         if (numa_mask) std::fprintf(stderr, "[InkHybrid] host expert arena: pages interleaved over the NUMA nodes (mask 0x%lx)\n", numa_mask);
 #endif
 #ifdef _WIN32
-        const bool try_pin = (bytes <= (8ull << 30)) && (avail == 0 || (double)bytes < 0.35 * (double)avail);
+        constexpr bool kWindows = true;
 #else
-        const bool try_pin = (avail == 0 || (double)bytes < 0.45 * (double)avail);
+        constexpr bool kWindows = false;
 #endif
-        if (try_pin) {
+        // may the arena be page-locked? (core/ink_pin_rule.hpp: Windows min(16 GiB, 35% of the available RAM) and 8 GiB must stay available, Linux 45%;
+        // STRATA_INK_PIN_GB=<n> sets the cap in GiB, =0 turns pinning off.) Whatever happens, the start continues on the pageable path.
+        const strata::InkPinRule pin_rule = strata::ink_pin_rule(kWindows, (uint64_t)bytes, avail, std::getenv("STRATA_INK_PIN_GB"));
+        if (pin_rule.pin) {
             if (cudaHostAlloc(&h_sec4_pinned, bytes, cudaHostAllocDefault) == cudaSuccess) {
                 sec4_is_pinned = true;
+                std::fprintf(stderr, "[InkHybrid] host expert arena %.2f GB pinned (%s; available RAM %.1f GB): the card reads the cold experts itself\n",
+                             (double)bytes / 1e9, pin_rule.why, (double)avail / 1e9);
                 return h_sec4_pinned;
             }
             (void)cudaGetLastError();
             h_sec4_pinned = nullptr;
+            std::fprintf(stderr, "[InkHybrid] host expert arena %.2f GB: pinning failed (cudaHostAlloc), using pageable memory\n", (double)bytes / 1e9);
+        } else {
+            std::fprintf(stderr, "[InkHybrid] host expert arena %.2f GB not pinned (%s; available RAM %.1f GB): pageable memory with a pinned bounce ring\n",
+                         (double)bytes / 1e9, pin_rule.why, (double)avail / 1e9);
         }
         sec4_is_pinned = false;
 #ifdef _WIN32
