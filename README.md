@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="exstrata-logo-dark.svg">
-    <img src="exstrata-logo.svg" alt="exstrata" width="340">
+    <img src="exstrata-logo.svg" alt="exstrata" width="484">
   </picture>
 </p>
 
