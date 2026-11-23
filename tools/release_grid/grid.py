@@ -39,11 +39,17 @@ GH_DOWNLOAD = "https://github.com/Niko1221/Strata/releases/download/%s"
 
 
 # ---------------------------------------------------------------------------------------------------------------- plan
+def unmsys(path):
+    """Git Bash rewrites an argument like /workspace/x into C:/Program Files/Git/workspace/x before Python sees it: undo that (set MSYS_NO_PATHCONV=1 to avoid it)."""
+    m = re.match(r"^[A-Za-z]:/Program Files/Git(/.*)$", path or "")
+    return m.group(1) if m else path
+
+
 def parse_release(text: str):
     """'v0.2.20' -> (label, feed url); 'main-abc=/data/feeds/main' -> (label, folder or url)."""
     if "=" in text:
         label, feed = text.split("=", 1)
-        return label.strip(), feed.strip()
+        return label.strip(), unmsys(feed.strip())
     if re.fullmatch(r"v\d+\.\d+\.\d+(\.\d+)?", text):
         return text, GH_DOWNLOAD % text
     raise SystemExit("release %r: use a tag like v0.2.20 or LABEL=FEED" % text)
@@ -179,7 +185,7 @@ def cmd_plan(a, data):
 def cmd_run(a, data):
     rel = [parse_release(r) for r in ([a.prev] if a.prev else []) + [a.cand]]
     boxes = _csv(a.boxes)
-    specs = build_specs(data, rel, boxes, _csv(a.models), a.tier, _csv(a.drafters), a.trust)
+    specs = build_specs(data, rel, boxes, _csv(a.models), a.tier, _csv(a.drafters), unmsys(a.trust))
     if a.usage:
         for lst in specs.values():
             for sp in lst:
