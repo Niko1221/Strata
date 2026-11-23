@@ -1,0 +1,85 @@
+Engine log lines behind results.json: the RAM pin line the run started with, and the largest 'prompt N tokens = ...' line it produced.  Copied verbatim from each run's engine log.
+
+== K119-default   (swift-IQ3_S_G8, shipped component 0.1.66)   what: stock defaults, ~123K cold prompt
+FileExpertSource: mapped pinned cache complement ready: resident 36.36 GiB, pinned 36.36 GiB in 11 s; page-locked and mapped
+strata serve: prompt 123062 tokens = 0 reused + 123062 read in 81233 ms (1514.9 tok/s), 8 generated in 190 ms (42.2 tok/s), drafts accepted 5 of 6, 6 checkpoints
+
+== P0-parity   (swift-IQ3_S_G8, source build, patch present but STRATA_PF_SLOT_EVENTS=1)   what: old per-slot path on the source build (parity control)
+FileExpertSource: mapped pinned cache complement ready: resident 36.97 GiB, pinned 36.97 GiB in 11 s; page-locked and mapped
+strata serve: prompt 123452 tokens = 0 reused + 123452 read in 83817 ms (1472.9 tok/s), 8 generated in 188 ms (42.6 tok/s), drafts accepted 5 of 6, 6 checkpoints
+
+== P1-batch   (swift-IQ3_S_G8, source build with the patch)   what: batch event + COPY_WAIT_DEDUPE=1
+FileExpertSource: mapped pinned cache complement ready: resident 36.91 GiB, pinned 36.91 GiB in 11 s; page-locked and mapped
+strata serve: prompt 122947 tokens = 0 reused + 122947 read in 74264 ms (1655.5 tok/s), 8 generated in 189 ms (42.4 tok/s), drafts accepted 5 of 6, 6 checkpoints
+
+== P2-stack   (swift-IQ3_S_G8, source build with the patch)   what: batch event + dedupe + EVENT_EVERY=128 + GPU_MAX_HW_QUEUES=8
+FileExpertSource: mapped pinned cache complement ready: resident 36.90 GiB, pinned 36.90 GiB in 11 s; page-locked and mapped
+strata serve: prompt 122952 tokens = 0 reused + 122952 read in 61772 ms (1990.4 tok/s), 8 generated in 185 ms (43.1 tok/s), drafts accepted 5 of 6, 6 checkpoints
+
+== P3-nohwq   (swift-IQ3_S_G8, source build with the patch)   what: batch event + dedupe + EVENT_EVERY=128, no GPU_MAX_HW_QUEUES (best run)
+FileExpertSource: mapped pinned cache complement ready: resident 36.93 GiB, pinned 36.93 GiB in 12 s; page-locked and mapped
+strata serve: prompt 123210 tokens = 0 reused + 123210 read in 61728 ms (1996.0 tok/s), 8 generated in 184 ms (43.5 tok/s), drafts accepted 5 of 6, 6 checkpoints
+
+== E1-ev128   (swift-IQ3_S_G8, shipped component 0.1.66)   what: negative control: EVENT_EVERY=128 alone, no patch
+FileExpertSource: mapped pinned cache complement ready: resident 36.74 GiB, pinned 36.74 GiB in 11 s; page-locked and mapped
+strata serve: prompt 123043 tokens = 0 reused + 123043 read in 80011 ms (1537.8 tok/s), 8 generated in 187 ms (42.8 tok/s), drafts accepted 5 of 6, 6 checkpoints
+
+== E2-hwq8   (swift-IQ3_S_G8, shipped component 0.1.66)   what: negative control: GPU_MAX_HW_QUEUES=8 alone
+FileExpertSource: mapped pinned cache complement ready: resident 36.72 GiB, pinned 36.72 GiB in 11 s; page-locked and mapped
+strata serve: prompt 123006 tokens = 0 reused + 123006 read in 85545 ms (1437.9 tok/s), 8 generated in 188 ms (42.6 tok/s), drafts accepted 5 of 6, 6 checkpoints
+
+== E3-both   (swift-IQ3_S_G8, shipped component 0.1.66)   what: negative control: both env flags on stock, no patch
+FileExpertSource: mapped pinned cache complement ready: resident 36.74 GiB, pinned 36.74 GiB in 11 s; page-locked and mapped
+strata serve: prompt 122992 tokens = 0 reused + 122992 read in 77476 ms (1587.5 tok/s), 8 generated in 186 ms (43.0 tok/s), drafts accepted 5 of 6, 6 checkpoints
+
+== K119-hr2   (swift-IQ3_S_G8, shipped component 0.1.66)   what: negative control: STRATA_RESIDENT_HEADROOM_GIB=2; this run also pinned nothing (complement pinned 0.00 GiB), so it mixes two effects
+FileExpertSource: locked resident cache complement ready: resident 42.45 GiB, pinned 0.00 GiB in 35 s; page-locking refused (out of memory); locked 43463 MiB via working-set minimum + VirtualLock
+strata serve: prompt 123053 tokens = 0 reused + 123053 read in 91825 ms (1340.1 tok/s), 8 generated in 199 ms (40.3 tok/s), drafts accepted 5 of 6, 6 checkpoints
+
+== K119-tuned   (swift-IQ3_S_G8, shipped component 0.1.66)   what: negative control: headroom 2 AND --prefill auto:65536, and again complement pinned 0.00 GiB - the three are not isolated from each other
+FileExpertSource: locked resident cache complement ready: resident 41.69 GiB, pinned 0.00 GiB in 33 s; page-locking refused (out of memory); locked 42686 MiB via working-set minimum + VirtualLock
+strata serve: prompt 122922 tokens = 0 reused + 122922 read in 92244 ms (1332.6 tok/s), 8 generated in 198 ms (40.4 tok/s), drafts accepted 5 of 6, 6 checkpoints
+
+== R1-int8   (swift-IQ3_S_G8, shipped component 0.1.66)   what: stock, ~36K cold prompt, STRATA_PF_F16=0
+FileExpertSource: mapped pinned cache complement ready: resident 36.26 GiB, pinned 36.26 GiB in 11 s; page-locked and mapped
+strata serve: prompt 36714 tokens = 0 reused + 36714 read in 27786 ms (1321.3 tok/s), 8 generated in 185 ms (43.2 tok/s), drafts accepted 5 of 6, 2 checkpoints
+
+== R2-h11p-default   (swift-IQ3_S_G8, shipped component 0.1.66)   what: stock, ~36K cold prompt, gfx11 defaults
+FileExpertSource: mapped pinned cache complement ready: resident 36.44 GiB, pinned 36.44 GiB in 11 s; page-locked and mapped
+strata serve: prompt 36642 tokens = 0 reused + 36642 read in 27501 ms (1332.4 tok/s), 8 generated in 184 ms (43.6 tok/s), drafts accepted 5 of 6, 2 checkpoints
+
+== R3-f16   (swift-IQ3_S_G8, shipped component 0.1.66)   what: stock, ~36K cold prompt, STRATA_PF_F16=1
+FileExpertSource: mapped pinned cache complement ready: resident 36.40 GiB, pinned 36.40 GiB in 11 s; page-locked and mapped
+strata serve: prompt 36611 tokens = 0 reused + 36611 read in 27623 ms (1325.4 tok/s), 8 generated in 182 ms (43.9 tok/s), drafts accepted 5 of 6, 2 checkpoints
+
+== F2-patched   (swift-IQ3_S_G8, source build with the patch)   what: ~36K cold prompt, dedupe + EVENT_EVERY=128
+FileExpertSource: mapped pinned cache complement ready: resident 36.40 GiB, pinned 36.40 GiB in 11 s; page-locked and mapped
+strata serve: prompt 36507 tokens = 0 reused + 36507 read in 19518 ms (1870.4 tok/s), 8 generated in 144 ms (55.6 tok/s), drafts accepted 5 of 6, 2 checkpoints
+
+== F1-shipped   (swift-IQ3_S_G8, shipped component 0.1.66)   what: short 2,391-token prompt on stock (short-prompt reference)
+FileExpertSource: mapped pinned cache complement ready: resident 36.35 GiB, pinned 36.35 GiB in 11 s; page-locked and mapped
+strata serve: prompt 2391 tokens = 0 reused + 2391 read in 4425 ms (540.3 tok/s), 580 generated in 10508 ms (55.2 tok/s), drafts accepted 371 of 484, 1 checkpoints
+
+== X1-shipped   (swift-IQ3_XXS, shipped component 0.1.66)   what: stock, ~124K cold prompt
+strata generate: expert arena: locked 11275 MiB in 4800 regions via working-set minimum + VirtualLock (11275 MiB of holes); pin by need: 5549 ranges registered (29694 MiB), the cap was reached; large pages skipped (STRATA_NO_LARGEPAGES); using 4 KB pages
+strata serve: prompt 124305 tokens = 0 reused + 124305 read in 69380 ms (1791.7 tok/s), 8 generated in 126 ms (63.5 tok/s), drafts accepted 5 of 5, 6 checkpoints
+
+== X3-shipped   (swift-IQ3_XXS, shipped component 0.1.66)   what: stock, same prompt again (repeat)
+strata generate: expert arena: locked 11275 MiB in 4800 regions via working-set minimum + VirtualLock (11275 MiB of holes); pin by need: 5549 ranges registered (29694 MiB), the cap was reached; large pages skipped (STRATA_NO_LARGEPAGES); using 4 KB pages
+strata serve: prompt 124305 tokens = 0 reused + 124305 read in 69567 ms (1786.8 tok/s), 8 generated in 131 ms (60.9 tok/s), drafts accepted 5 of 6, 6 checkpoints
+
+== X2-patched   (swift-IQ3_XXS, engine-patched-0.1.66-batch)   what: patched, but the RAM pin degraded this run
+strata generate: expert arena: locked 36613 MiB in 437 regions via working-set minimum + VirtualLock (36613 MiB of holes); pin by need: 436 ranges registered (4356 MiB), the driver refused the next one; left unregistered: the GPU alias [0x3198e6000, +14 MiB) of the range at 000001C6D8C81000 covers memory in use at 0x31a400000 (private memory, from 000000031A400000) (#3431); large pages skipped (STRATA_NO_LARGEPAGES); using 4 KB pages
+strata serve: prompt 124305 tokens = 0 reused + 124305 read in 67862 ms (1831.7 tok/s), 8 generated in 149 ms (53.6 tok/s), drafts accepted 5 of 5, 6 checkpoints
+
+== X4-patched   (swift-IQ3_XXS, engine-patched-0.1.66-batch)   what: patched + dedupe + EVENT_EVERY=128
+strata generate: expert arena: locked 11275 MiB in 4800 regions via working-set minimum + VirtualLock (11275 MiB of holes); pin by need: 5549 ranges registered (29694 MiB), the cap was reached; large pages skipped (STRATA_NO_LARGEPAGES); using 4 KB pages
+strata serve: prompt 124305 tokens = 0 reused + 124305 read in 56821 ms (2187.6 tok/s), 8 generated in 136 ms (58.9 tok/s), drafts accepted 5 of 6, 6 checkpoints
+
+== X5-patched   (swift-IQ3_XXS, engine-patched-0.1.66-batch)   what: patched + dedupe + EVENT_EVERY=128 (repeat)
+strata generate: expert arena: locked 11275 MiB in 4800 regions via working-set minimum + VirtualLock (11275 MiB of holes); pin by need: 5549 ranges registered (29694 MiB), the cap was reached; large pages skipped (STRATA_NO_LARGEPAGES); using 4 KB pages
+strata serve: prompt 124305 tokens = 0 reused + 124305 read in 56776 ms (2189.4 tok/s), 8 generated in 134 ms (59.5 tok/s), drafts accepted 5 of 6, 6 checkpoints
+
+== X6-patched   (swift-IQ3_XXS, engine-patched-0.1.66-batch)   what: patched + dedupe + EVENT_EVERY=128 (repeat)
+strata generate: expert arena: locked 11275 MiB in 4800 regions via working-set minimum + VirtualLock (11275 MiB of holes); pin by need: 5549 ranges registered (29694 MiB), the cap was reached; large pages skipped (STRATA_NO_LARGEPAGES); using 4 KB pages
+strata serve: prompt 124305 tokens = 0 reused + 124305 read in 56810 ms (2188.1 tok/s), 8 generated in 132 ms (60.5 tok/s), drafts accepted 5 of 6, 6 checkpoints
