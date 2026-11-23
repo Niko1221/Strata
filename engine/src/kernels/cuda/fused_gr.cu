@@ -2196,6 +2196,7 @@ __device__ __forceinline__ uint32_t q8_ld16(const uint8_t* p) { return *(const u
 #else
 __device__ __forceinline__ uint32_t q8_ld16(const uint8_t* p) { return __ldg(reinterpret_cast<const uint16_t*>(p)); }
 #endif
+__device__ __forceinline__ uint32_t q8_smem_ld16(const uint8_t* p) { return *reinterpret_cast<const uint16_t*>(p); }
 __device__ __forceinline__ float q8_half(uint32_t h) { return __half2float(__ushort_as_half((unsigned short) h)); }
 __device__ __forceinline__ float4 q8_four(uint32_t q, float d) {
     return make_float4(d * (float) (int8_t) (q & 255u), d * (float) (int8_t) ((q >> 8) & 255u),
@@ -3402,8 +3403,8 @@ __global__ void __launch_bounds__(THREADS) gr_down_q8_bf16tc_kernel(GrMulti m, f
         for (int b = b_start; b < b_end; ++b) {
             const uint8_t* blk0 = w0 + b * Q8B;
             const uint8_t* blk1 = w1 + b * Q8B;
-            const float dw0 = q8_half(q8_ld16(blk0));
-            const float dw1 = q8_half(q8_ld16(blk1));
+            const float dw0 = q8_half(q8_smem_ld16(blk0));
+            const float dw1 = q8_half(q8_smem_ld16(blk1));
             const int8_t* q0 = reinterpret_cast<const int8_t*>(blk0 + 2);
             const int8_t* q1 = reinterpret_cast<const int8_t*>(blk1 + 2);
             float db[4] = {0.0f, 0.0f, 0.0f, 0.0f};
@@ -3523,8 +3524,8 @@ __global__ void __launch_bounds__(THREADS) gr_up_q8_bf16tc_kernel(GrMulti m, con
     for (int b = b_start; b < b_end; ++b) {
         const uint8_t* blk0 = w0 + b * Q8B;
         const uint8_t* blk1 = w1 + b * Q8B;
-        const float dw0 = q8_half(q8_ld16(blk0));
-        const float dw1 = q8_half(q8_ld16(blk1));
+        const float dw0 = q8_half(q8_smem_ld16(blk0));
+        const float dw1 = q8_half(q8_smem_ld16(blk1));
         const int8_t* q0 = reinterpret_cast<const int8_t*>(blk0 + 2);
         const int8_t* q1 = reinterpret_cast<const int8_t*>(blk1 + 2);
         float db[4] = {0.0f, 0.0f, 0.0f, 0.0f};
@@ -3705,12 +3706,12 @@ __global__ void __launch_bounds__(THREADS) gr_down_q8_tc_kernel(GrMulti m, float
     for (int b = b_start; b < b_end; ++b) {
         const uint8_t* blk0 = w0 + b * Q8B;
         const uint8_t* blk1 = w1 + b * Q8B;
-        const float dw0 = q8_half(q8_ld16(blk0));
-        const float dw1 = q8_half(q8_ld16(blk1));
-        const uint32_t a0 = q8_ld16(blk0 + 2 + tig * 4) | (q8_ld16(blk0 + 4 + tig * 4) << 16);
-        const uint32_t a2 = q8_ld16(blk0 + 18 + tig * 4) | (q8_ld16(blk0 + 20 + tig * 4) << 16);
-        const uint32_t a1 = q8_ld16(blk1 + 2 + tig * 4) | (q8_ld16(blk1 + 4 + tig * 4) << 16);
-        const uint32_t a3 = q8_ld16(blk1 + 18 + tig * 4) | (q8_ld16(blk1 + 20 + tig * 4) << 16);
+        const float dw0 = q8_half(q8_smem_ld16(blk0));
+        const float dw1 = q8_half(q8_smem_ld16(blk1));
+        const uint32_t a0 = q8_smem_ld16(blk0 + 2 + tig * 4) | (q8_smem_ld16(blk0 + 4 + tig * 4) << 16);
+        const uint32_t a2 = q8_smem_ld16(blk0 + 18 + tig * 4) | (q8_smem_ld16(blk0 + 20 + tig * 4) << 16);
+        const uint32_t a1 = q8_smem_ld16(blk1 + 2 + tig * 4) | (q8_smem_ld16(blk1 + 4 + tig * 4) << 16);
+        const uint32_t a3 = q8_smem_ld16(blk1 + 18 + tig * 4) | (q8_smem_ld16(blk1 + 20 + tig * 4) << 16);
         const uint32_t b0 = (g < T) ? *reinterpret_cast<const uint32_t*>(&xs_q[g][b * 32 + tig * 4]) : 0u;
         const uint32_t b1 = (g < T) ? *reinterpret_cast<const uint32_t*>(&xs_q[g][b * 32 + 16 + tig * 4]) : 0u;
         int32_t d[4] = {0, 0, 0, 0};
@@ -3840,12 +3841,12 @@ __global__ void __launch_bounds__(THREADS) gr_up_q8_tc_kernel(GrMulti m, const f
     for (int b = b_start; b < b_end; ++b) {
         const uint8_t* blk0 = w0 + b * Q8B;
         const uint8_t* blk1 = w1 + b * Q8B;
-        const float dw0 = q8_half(q8_ld16(blk0));
-        const float dw1 = q8_half(q8_ld16(blk1));
-        const uint32_t a0 = q8_ld16(blk0 + 2 + tig * 4) | (q8_ld16(blk0 + 4 + tig * 4) << 16);
-        const uint32_t a2 = q8_ld16(blk0 + 18 + tig * 4) | (q8_ld16(blk0 + 20 + tig * 4) << 16);
-        const uint32_t a1 = q8_ld16(blk1 + 2 + tig * 4) | (q8_ld16(blk1 + 4 + tig * 4) << 16);
-        const uint32_t a3 = q8_ld16(blk1 + 18 + tig * 4) | (q8_ld16(blk1 + 20 + tig * 4) << 16);
+        const float dw0 = q8_half(q8_smem_ld16(blk0));
+        const float dw1 = q8_half(q8_smem_ld16(blk1));
+        const uint32_t a0 = q8_smem_ld16(blk0 + 2 + tig * 4) | (q8_smem_ld16(blk0 + 4 + tig * 4) << 16);
+        const uint32_t a2 = q8_smem_ld16(blk0 + 18 + tig * 4) | (q8_smem_ld16(blk0 + 20 + tig * 4) << 16);
+        const uint32_t a1 = q8_smem_ld16(blk1 + 2 + tig * 4) | (q8_smem_ld16(blk1 + 4 + tig * 4) << 16);
+        const uint32_t a3 = q8_smem_ld16(blk1 + 18 + tig * 4) | (q8_smem_ld16(blk1 + 20 + tig * 4) << 16);
         const uint32_t b0 = (g < T) ? *reinterpret_cast<const uint32_t*>(&lo_q[g][b * 32 + tig * 4]) : 0u;
         const uint32_t b1 = (g < T) ? *reinterpret_cast<const uint32_t*>(&lo_q[g][b * 32 + 16 + tig * 4]) : 0u;
         int32_t d[4] = {0, 0, 0, 0};
