@@ -138,6 +138,7 @@
 #include "strata/prefill/share_rules.hpp"
 #include "strata/platform/host_limits.hpp"
 #include "strata/program/split_ring.hpp"
+#include "strata/program/vram_ledger.hpp"
 #include "strata/program/prefill_plan.hpp"
 #include "strata/program/draft_kv_plan.hpp"
 #include "strata/program/message_boundary.hpp"
@@ -12334,6 +12335,7 @@ int main(int argc, char** argv) {
             int32_t first_now = -1;        // where its buffers are laid out now
             int64_t lent_chunk = 0;
             std::vector<std::pair<int32_t, int32_t>> lent;
+            int ledger_lease = -1;   // STRATA_VRAM_LEDGER(_SHADOW): this loan's lease on its card's ledger (-1: none)
         };
         // bytes -> slots for one cache: exact when it knows its per-slot offsets (a native pack's blobs differ
         // per layer), otherwise max_blob each.
@@ -12360,6 +12362,87 @@ int main(int argc, char** argv) {
         // keeps the pinned-share rule.  STRATA_SPLIT_RING=N: N slots on a split; 0: the pinned-share rule.
         // (decided above, before the lend regions were sized: a no-op here unless the resident RAM mode skipped it)
         decide_split_ring();
+        // STRATA_VRAM_LEDGER_SHADOW=1 keeps one lending ledger per card's expert cache (include/strata/program/vram_ledger.hpp)
+        // BESIDE the code that lends: each prompt loan and the picture reader's VRAM moves are asked of the ledger too, and
+        // a differing answer is printed ("strata ledger: ... DIFFERS"); nothing reads the ledger back.  STRATA_VRAM_LEDGER=1
+        // lets the ledger DECIDE each prompt loan's first slot, with the engine's own `slots - need` kept as the check (a
+        // differing answer is printed and the engine's slot is used).  Either one adds the cards' ledgers to the VRAM reply.
+        static const bool ledger_decides = [] { const char* v = std::getenv("STRATA_VRAM_LEDGER"); return v != nullptr && v[0] == '1'; }();
+        static const bool ledger_shadow = ledger_decides || [] { const char* v = std::getenv("STRATA_VRAM_LEDGER_SHADOW"); return v != nullptr && v[0] == '1'; }();
+        struct LedgerCard {
+            strata::core::ExpertCache* cache = nullptr;
+            int dev = 0;
+            strata::program::vram_ledger::Card card;
+        };
+        std::vector<LedgerCard> ledger;
+        int64_t ledger_diffs = 0;
+        auto ledger_of = [&](const strata::core::ExpertCache* c) -> LedgerCard* {
+            for (LedgerCard& L : ledger)
+                if (L.cache == c) return &L;
+            return nullptr;
+        };
+        auto ledger_diff = [&](const LedgerCard& L, const std::string& what) {
+            ++ledger_diffs;
+            if (ledger_diffs <= 20)
+                std::fprintf(stderr, "strata ledger: CUDA%d: DIFFERS: %s (difference %lld)\n", L.dev, what.c_str(), (long long) ledger_diffs);
+            else if (ledger_diffs % 100 == 0)
+                std::fprintf(stderr, "strata ledger: %lld differences so far\n", (long long) ledger_diffs);
+        };
+        auto ledger_leases = [](const LedgerCard& L) {
+            std::string s;
+            for (const auto& l : L.card.leases()) {
+                if (!l.active) continue;
+                if (!s.empty()) s += ',';
+                s += l.name + "@" + std::to_string(l.lo) + "-" + std::to_string(l.hi);
+            }
+            return s.empty() ? std::string("-") : s;
+        };
+        auto ledger_print = [&](const LedgerCard& L, const char* why) {
+            std::fprintf(stderr, "strata ledger: CUDA%d %s: live %lld of %lld slots, experts %lld, leases %s\n", L.dev, why,
+                         (long long) L.card.live(), (long long) L.card.full(), (long long) L.card.expert_slots(), ledger_leases(L).c_str());
+        };
+        if (ledger_shadow) {
+            const uint64_t max_blob = (uint64_t) strata::kernels::cpu::expert_layout().max_blob;
+            auto add_card = [&](strata::core::ExpertCache& xc, int dev) {
+                std::vector<uint64_t> off;
+                if (const uint64_t* so = xc.slot_offsets()) off.assign(so, so + xc.full_slots() + 1);
+                LedgerCard L{&xc, dev, strata::program::vram_ledger::Card(xc.full_slots(), std::move(off), max_blob)};
+                if (xc.slots() < xc.full_slots()) L.card.shrink_to(xc.slots());
+                ledger.push_back(std::move(L));
+            };
+            add_card(xcache, 0);   // the order of pf_parts: CUDA0's cache, then each stage's
+            for (auto& st : stages) add_card(st->cache, st->dev);
+            std::fprintf(stderr, "strata ledger: %s: %zu card ledger(s)%s\n", ledger_decides ? "STRATA_VRAM_LEDGER=1" : "STRATA_VRAM_LEDGER_SHADOW=1",
+                         ledger.size(), ledger_decides ? " decide the prompt loans (the engine's arithmetic stays as the check)"
+                                                       : " kept beside the lending code (they decide nothing)");
+            for (const LedgerCard& L : ledger) ledger_print(L, "at start");
+        }
+        // a prompt loan of `need` bytes that the engine puts at [first, slots()): the ledger is asked for the same bytes with
+        // the engine's floor (g_lend_keep slots left to the experts)
+        auto ledger_lend = [&](PfPart& p, uint64_t need, int64_t first) {
+            LedgerCard* L = ledger_of(p.cache);
+            if (L == nullptr) return;
+            if (p.ledger_lease >= 0) {
+                ledger_diff(*L, "a new prompt loan while the last one's lease is still out");
+                L->card.release(p.ledger_lease);
+            }
+            const int64_t hi = p.cache->slots();
+            p.ledger_lease = L->card.lend_tail("prompt", need, g_lend_keep);
+            if (p.ledger_lease < 0) {
+                ledger_diff(*L, "prompt loan [" + std::to_string(first) + ", " + std::to_string(hi) + ") of " + std::to_string(need) +
+                                    " bytes: refused (the ledger has room for " + std::to_string(L->card.available(g_lend_keep)) + " bytes)");
+                return;
+            }
+            const auto& l = L->card.leases()[(size_t) p.ledger_lease];
+            if (l.lo != first || l.hi != hi)
+                ledger_diff(*L, "prompt loan: the engine's [" + std::to_string(first) + ", " + std::to_string(hi) + "), the ledger's [" +
+                                    std::to_string(l.lo) + ", " + std::to_string(l.hi) + ") for " + std::to_string(need) + " bytes");
+        };
+        auto ledger_release = [&](PfPart& p) {
+            if (p.ledger_lease < 0) return;
+            if (LedgerCard* L = ledger_of(p.cache)) L->card.release(p.ledger_lease);
+            p.ledger_lease = -1;
+        };
         std::vector<PfPart> pf_parts;
         int64_t pf_plan_chunk = 0;   // #2824: the host-aware plan's chunk for prompts longer than o.prefill_chunk (0: none)
 #if defined(STRATA_PREFILL_FUSED) && !defined(STRATA_PREFILL_MMQ)
@@ -16483,6 +16566,18 @@ int main(int argc, char** argv) {
                 p.first_now = -1;   // laid out again at the next loan
             }
         };
+        // STRATA_VRAM_LEDGER: the caches' ends moved (external room); the ledger refuses a shrink while a loan is out
+        auto ledger_vram_sync = [&]() {
+            if (!ledger_shadow) return;
+            for (LedgerCard& L : ledger) {
+                if (L.card.live() == L.cache->slots()) continue;
+                const int64_t was = L.card.live();
+                if (!L.card.shrink_to(L.cache->slots()))
+                    ledger_diff(L, "VRAM: the cache went " + std::to_string(was) + " -> " + std::to_string(L.cache->slots()) +
+                                       " slots; the ledger refuses it (a loan is out)");
+                ledger_print(L, "after VRAM");
+            }
+        };
         auto vram_command = [&](const std::string& cmd, std::string& e) -> bool {
             // Grammar (back-compat kept): `VRAM` = every card to start reserve; `VRAM <reserve_mib>` = every card;
             // `VRAM <reserve_mib> <dev>` = ONE card only (CUDA device id).
@@ -16557,7 +16652,7 @@ int main(int argc, char** argv) {
                     }
                     const bool shrunk = cd.c->shrink(keep, e);
                     strata::core::evict_slots_past(host_res, cd.c->slots(), cd.lo, cd.hi, g.n_expert, vram_evicted);
-                    if (!shrunk) { relend(); res_upload(); return false; }
+                    if (!shrunk) { ledger_vram_sync(); relend(); res_upload(); return false; }
                 } else if (mapped < cd.c->full_bytes()) {
                     std::string gerr;
                     if (!cd.c->grow(mapped + ((int64_t) fb - want_free), gerr)) note = " (" + gerr + ")";
@@ -16584,7 +16679,7 @@ int main(int argc, char** argv) {
                                 (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(layer))) {
                             e = "VRAM: refilling a cache failed: " + e;
                             vram_evicted.swap(keep_out);
-                            relend();
+                            ledger_vram_sync(); relend();
                             res_upload();
                             return false;
                         }
@@ -16592,10 +16687,10 @@ int main(int argc, char** argv) {
                         host_res[(size_t) pick] = slot;
                     }
                     vram_evicted.swap(keep_out);
-                    if (!cd.c->sync_queued(e)) { e = "VRAM: " + e; relend(); res_upload(); return false; }
+                    if (!cd.c->sync_queued(e)) { e = "VRAM: " + e; ledger_vram_sync(); relend(); res_upload(); return false; }
                 }
             }
-            relend();
+            ledger_vram_sync(); relend();
             res_upload();
             cudaMemGetInfo(&free_b, &total_b);
             long long sum_slots = 0, sum_full = 0;
@@ -16622,6 +16717,13 @@ int main(int argc, char** argv) {
                          cards.size(), (long long) (free_b >> 20), (long long) o.prefill_chunk,
                          std::chrono::duration<double, std::milli>(Clock::now() - t0).count(), note.c_str());
             std::string extra = " cards=" + card_detail;
+            if (ledger_shadow) {   // STRATA_VRAM_LEDGER: dev:live:expert slots:leases (name@lo-hi, comma-separated), | between cards
+                std::string ld;
+                for (const LedgerCard& L : ledger)
+                    ld += (ld.empty() ? "" : "|") + std::to_string(L.dev) + ":" + std::to_string(L.card.live()) + ":" +
+                          std::to_string(L.card.expert_slots()) + ":" + ledger_leases(L);
+                extra += " ledger=" + ld + " ledger_differences=" + std::to_string(ledger_diffs);
+            }
             if (dev_sel >= 0) {
                 char d[80];
                 std::snprintf(d, sizeof d, " device=%d vram_free_on_device_mib=%lld", dev_sel, dev_free);
@@ -20421,10 +20523,12 @@ int main(int argc, char** argv) {
 #endif
                 p.lent.clear();
                 p.lent_chunk = 0;
+                ledger_release(p);   // STRATA_VRAM_LEDGER: the loan's slots are the experts' again
                 return true;
             };
             auto refill_one = [&](PfPart& p, std::string& e) -> bool {
                 if (p.lent.empty()) {
+                    ledger_release(p);   // STRATA_VRAM_LEDGER: a loan that evicted nothing
                     if (p.lent_chunk > 0 && p.cache != nullptr && p.first_now >= 0) {
                         const strata::core::OnDevice on(p.dev);
                         if (!p.cache->scrub_loan_boundary(p.first_now, e) || !p.cache->sync_queued(e)) return false;
@@ -20459,6 +20563,9 @@ int main(int argc, char** argv) {
                                  std::chrono::duration<double, std::milli>(Clock::now() - t_rf).count());
                     std::fflush(stderr);
                 }
+                for (PfPart& p : pf_parts) ledger_release(p);   // STRATA_VRAM_LEDGER: loans that evicted nothing too
+                if (ledger_shadow && trace)
+                    for (const LedgerCard& L : ledger) ledger_print(L, "after the refill");
                 return true;
             };
             // lend the slots `tokens` batched prompt tokens need: the prompt path's buffers for min(chunk, tokens
@@ -20530,10 +20637,13 @@ int main(int argc, char** argv) {
                         // resident again would hand the next window a prompt buffer in place of an expert
                         if (!refill_one(p, e)) return false;
                     }
+                    if (ledger_shadow && p.lent.empty()) ledger_release(p);   // STRATA_VRAM_LEDGER: a loan that evicted nothing is replaced here
                     const strata::core::OnDevice on(p.dev);
                     int64_t want_p = want;
                     int64_t tail_p = -1;   // the tail the layout is laid out with (-1: floor - 1)
                     int32_t first = p.first_now;
+                    uint64_t ledger_need = 0;   // STRATA_VRAM_LEDGER: the bytes part_slots priced the loan from
+                    bool ledger_took = false;   // STRATA_VRAM_LEDGER=1: the ledger placed this loan (its lease is out already)
                     // --prefill-head-alias: the loan laid out at start (slot 1 on) is kept; a hybrid layout cannot relayout.
                     // (STRATA_MTP_ROOM_MIN's room is not one: its slots are the drafter's own bytes, so a roomed
                     // request lends and is laid out exactly as any other - a relayout re-carves the room with it.)
@@ -20586,10 +20696,28 @@ int main(int argc, char** argv) {
                                          "auto chunk's (%lld slots): starting it earlier (#2090)\n", (long long) want_p,
                                          (long long) need_p, (long long) (p.cache->slots() - p.first));
                         first = (int32_t) (p.cache->slots() - need_p);
+                        if (ledger_shadow)   // part_slots(p, want_p, tail_p)'s own figure
+                            ledger_need = strata::program::split_part_figure(on_part_device, p.dev, [&] {
+                                return strata::prefill::Prefill::bytes_needed(g, *p.ses, want_p, srcp != nullptr, tail_p);
+                            });
+                        if (ledger_decides) {   // the ledger decides the first slot; the line above is the check
+                            ledger_lend(p, ledger_need, first);
+                            const LedgerCard* L = ledger_of(p.cache);
+                            if (p.ledger_lease >= 0 && L != nullptr && L->card.leases()[(size_t) p.ledger_lease].lo == first &&
+                                L->card.leases()[(size_t) p.ledger_lease].hi == p.cache->slots()) {
+                                first = (int32_t) L->card.leases()[(size_t) p.ledger_lease].lo;
+                                ledger_took = true;
+                            } else {
+                                ledger_release(p);   // ledger_lend printed the difference; the engine's slot is used
+                            }
+                        }
                     }
                     if (want_p != p.sp->chunk() || first != p.first_now || (tail_p >= 0 && tail_p != p.sp->layout_tail())) {
                         const auto t_rl = Clock::now();
-                        if (!p.sp->relayout(want_p, p.cache->device_slot(first), part_bytes(p, first), e, tail_p)) return false;
+                        if (!p.sp->relayout(want_p, p.cache->device_slot(first), part_bytes(p, first), e, tail_p)) {
+                            ledger_release(p);   // a loan that was not laid out is not out
+                            return false;
+                        }
                         p.first_now = first;
                         if (tail_p >= 0) {
                             static bool said = false;
@@ -20615,7 +20743,10 @@ int main(int argc, char** argv) {
                             }
                         }
                     p.lent_chunk = want_p;
+                    if (ledger_shadow && !o.prefill_head_alias && !ledger_took) ledger_lend(p, ledger_need, first);
                 }
+                if (ledger_shadow && trace)
+                    for (const LedgerCard& L : ledger) ledger_print(L, "after a loan");
                 for (const PfPart& p : pf_parts)
                     if (p.first >= 0) seg_lend = std::max(seg_lend, p.lent_chunk);
                 if (any) res_upload();
