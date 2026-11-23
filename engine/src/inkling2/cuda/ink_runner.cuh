@@ -10,6 +10,7 @@
 #include "ink_kernels.cuh"
 #include "ink_manifest.hpp"
 #include "ink_moe_cuda.cuh"
+#include "ink_shard_directory.h"
 
 #include "strata/artifact/strata_reader.hpp"
 
@@ -353,6 +354,11 @@ struct InkCudaModel {
         const auto& hdr = rd.header();
         trunk_bytes = (size_t)hdr.sections[1].byte_length;
         sec4_bytes  = (size_t)hdr.sections[4].byte_length;
+        if (expert_rank >= 0 && (man.c.n_phys != kInkPhysLayers || man.c.n_experts != kInkExperts ||
+                !valid_shard_directory<kInkExperts>(rd.expert_directory(), kInkPhysLayers, sec4_bytes))) {
+            err = "invalid native Inkling expert shard directory";
+            return false;
+        }
 
         double t0 = now_s();
         // 1. Load Section 1 (Contiguous GPU Trunk + DSpark) in one DMA transfer
@@ -393,11 +399,6 @@ struct InkCudaModel {
         INK_CK(ink_cuda_mem_info(&vfree, &vtot));
         const auto& dir = rd.expert_directory();
         const int n_total = (int)dir.size();  // 24 * 128 = 3072
-        if (expert_rank >= 0 && (man.c.n_phys != kInkPhysLayers || man.c.n_experts != kInkExperts ||
-                                 n_total != kInkPhysLayers * kInkExperts)) {
-            err = "unsupported Inkling expert layout";
-            return false;
-        }
         std::vector<InkExpertDev> h_exp(n_total);
         for (int il = 0; il < man.c.n_phys; ++il) {
             moe_info[il] = {};

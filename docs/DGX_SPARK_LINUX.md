@@ -234,6 +234,9 @@ adding model options. Both binaries must use the same source revision and
 CUDA build settings. Run the hardware check under a wall-time limit.
 
 ```sh
-timeout 15m python3 engine/tests/inkling2/check_mpi_experts.py \
+c++ -std=c++17 -Iengine/include -Iengine/src/inkling2/cuda \
+  engine/tests/inkling2/check_shard_directory.cpp -o /tmp/check-inkling-directory
+/tmp/check-inkling-directory
+python3 engine/tests/inkling2/check_mpi_experts.py \
   --single "$INKLING" --pair "$MPI_LAUNCHER" --model "$MODEL"
 ```
