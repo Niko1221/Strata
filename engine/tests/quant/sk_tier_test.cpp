@@ -59,6 +59,7 @@ bool same(const void* a, const void* b, size_t n) { return std::memcmp(a, b, n) 
         static float dotsf4(const uint8_t* p, const uint8_t* s, float os, const float* x, size_t n) { return NS::dot_sf4_f32_row(p, s, os, x, n); } \
         static void deqmx8(const uint8_t* w, const uint8_t* s, float* o, size_t n) { NS::dequant_mx8_row(w, s, o, n); } \
         static float dotmx8(const uint8_t* w, const uint8_t* s, const float* x, size_t n) { return NS::dot_mx8_f32_row(w, s, x, n); } \
+        static float dotf32(const float* a, const float* b, size_t n) { return NS::dot_f32(a, b, n); } \
     }
 TIER_API(base);
 TIER_API(avx2);
@@ -124,6 +125,23 @@ void compare_tier(const char* name) {
         base_t::fwht(x.data(), o0.data(), 256);
         T::fwht(x.data(), o1.data(), 256);
         CHECK(same(o0.data(), o1.data(), 1024), "%s fwht64_f32", name);
+    }
+    // dense float dot: the base tier is the old sequential 4-accumulator sum bit for bit; the vector tiers sum in lane order (rounding only)
+    for (size_t n : {1u, 3u, 4u, 7u, 16u, 33u, 64u, 100u, 128u, 2304u, 4097u}) {
+        std::vector<float> a(n), b(n);
+        for (auto& v : a) v = (float)((int)(rng() % 2001) - 1000) * 0.002f;
+        for (auto& v : b) v = (float)((int)(rng() % 2001) - 1000) * 0.002f;
+        float s0 = 0.0f, s1 = 0.0f, s2 = 0.0f, s3 = 0.0f;
+        size_t i = 0;
+        for (; i + 4 <= n; i += 4) { s0 += a[i] * b[i]; s1 += a[i + 1] * b[i + 1]; s2 += a[i + 2] * b[i + 2]; s3 += a[i + 3] * b[i + 3]; }
+        float old_sum = (s0 + s1) + (s2 + s3);
+        for (; i < n; ++i) old_sum += a[i] * b[i];
+        const float base_sum = base_t::dotf32(a.data(), b.data(), n);
+        CHECK(same(&old_sum, &base_sum, 4), "base dot_f32 n %zu is not the old sequential sum: %.9g vs %.9g", n, base_sum, old_sum);
+        double mag = 0;
+        for (size_t k = 0; k < n; ++k) mag += std::fabs((double)a[k] * b[k]);
+        const float t = T::dotf32(a.data(), b.data(), n);
+        CHECK(std::fabs((double)t - base_sum) <= 1e-5 * mag + 1e-30, "%s dot_f32 n %zu: %.9g vs %.9g", name, n, t, base_sum);
     }
     // SF4 and MX8
     for (size_t nc : {16u, 48u, 2304u, 1152u}) {

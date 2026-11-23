@@ -44,17 +44,7 @@ inline float fp16_bits_to_f32(uint16_t h) noexcept {
 }
 
 inline float dot_f32(const float* a, const float* b, size_t n) noexcept {
-    float s0 = 0.0f, s1 = 0.0f, s2 = 0.0f, s3 = 0.0f;
-    size_t i = 0;
-    for (; i + 4 <= n; i += 4) {
-        s0 += a[i + 0] * b[i + 0];
-        s1 += a[i + 1] * b[i + 1];
-        s2 += a[i + 2] * b[i + 2];
-        s3 += a[i + 3] * b[i + 3];
-    }
-    float s = (s0 + s1) + (s2 + s3);
-    for (; i < n; ++i) s += a[i] * b[i];
-    return s;
+    return strata::quant::sk::dot_f32(a, b, n);   // the run-time ISA tier (AVX-512 / AVX2 / NEON; plain C++ on a CPU with none)
 }
 
 }  // namespace

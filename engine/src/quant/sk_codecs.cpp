@@ -941,6 +941,57 @@ void dequant_mx8_row(
     }
 }
 
+float dot_f32(const float* a, const float* b, size_t n) noexcept {
+    size_t i = 0;
+#if defined(STRATA_SK_AVX512_VNNI)
+    __m512 s0 = _mm512_setzero_ps(), s1 = _mm512_setzero_ps(), s2 = _mm512_setzero_ps(), s3 = _mm512_setzero_ps();
+    for (; i + 64 <= n; i += 64) {
+        s0 = _mm512_fmadd_ps(_mm512_loadu_ps(a + i), _mm512_loadu_ps(b + i), s0);
+        s1 = _mm512_fmadd_ps(_mm512_loadu_ps(a + i + 16), _mm512_loadu_ps(b + i + 16), s1);
+        s2 = _mm512_fmadd_ps(_mm512_loadu_ps(a + i + 32), _mm512_loadu_ps(b + i + 32), s2);
+        s3 = _mm512_fmadd_ps(_mm512_loadu_ps(a + i + 48), _mm512_loadu_ps(b + i + 48), s3);
+    }
+    for (; i + 16 <= n; i += 16) s0 = _mm512_fmadd_ps(_mm512_loadu_ps(a + i), _mm512_loadu_ps(b + i), s0);
+    float s = _mm512_reduce_add_ps(_mm512_add_ps(_mm512_add_ps(s0, s1), _mm512_add_ps(s2, s3)));
+#elif defined(STRATA_SK_AVX2)
+    __m256 s0 = _mm256_setzero_ps(), s1 = _mm256_setzero_ps(), s2 = _mm256_setzero_ps(), s3 = _mm256_setzero_ps();
+    for (; i + 32 <= n; i += 32) {
+        s0 = _mm256_fmadd_ps(_mm256_loadu_ps(a + i), _mm256_loadu_ps(b + i), s0);
+        s1 = _mm256_fmadd_ps(_mm256_loadu_ps(a + i + 8), _mm256_loadu_ps(b + i + 8), s1);
+        s2 = _mm256_fmadd_ps(_mm256_loadu_ps(a + i + 16), _mm256_loadu_ps(b + i + 16), s2);
+        s3 = _mm256_fmadd_ps(_mm256_loadu_ps(a + i + 24), _mm256_loadu_ps(b + i + 24), s3);
+    }
+    for (; i + 8 <= n; i += 8) s0 = _mm256_fmadd_ps(_mm256_loadu_ps(a + i), _mm256_loadu_ps(b + i), s0);
+    const __m256 v = _mm256_add_ps(_mm256_add_ps(s0, s1), _mm256_add_ps(s2, s3));
+    __m128 h = _mm_add_ps(_mm256_castps256_ps128(v), _mm256_extractf128_ps(v, 1));
+    h = _mm_add_ps(h, _mm_movehl_ps(h, h));
+    h = _mm_add_ss(h, _mm_shuffle_ps(h, h, 1));
+    float s = _mm_cvtss_f32(h);
+#elif defined(STRATA_SK_NEON_DOTPROD)
+    float32x4_t s0 = vdupq_n_f32(0.0f), s1 = vdupq_n_f32(0.0f), s2 = vdupq_n_f32(0.0f), s3 = vdupq_n_f32(0.0f);
+    for (; i + 16 <= n; i += 16) {
+        s0 = vfmaq_f32(s0, vld1q_f32(a + i), vld1q_f32(b + i));
+        s1 = vfmaq_f32(s1, vld1q_f32(a + i + 4), vld1q_f32(b + i + 4));
+        s2 = vfmaq_f32(s2, vld1q_f32(a + i + 8), vld1q_f32(b + i + 8));
+        s3 = vfmaq_f32(s3, vld1q_f32(a + i + 12), vld1q_f32(b + i + 12));
+    }
+    for (; i + 4 <= n; i += 4) s0 = vfmaq_f32(s0, vld1q_f32(a + i), vld1q_f32(b + i));
+    float s = vaddvq_f32(vaddq_f32(vaddq_f32(s0, s1), vaddq_f32(s2, s3)));
+#else
+    // the plain 4-accumulator sum the CPU backend used before (the base tier is bit-identical to it)
+    float s0 = 0.0f, s1 = 0.0f, s2 = 0.0f, s3 = 0.0f;
+    for (; i + 4 <= n; i += 4) {
+        s0 += a[i + 0] * b[i + 0];
+        s1 += a[i + 1] * b[i + 1];
+        s2 += a[i + 2] * b[i + 2];
+        s3 += a[i + 3] * b[i + 3];
+    }
+    float s = (s0 + s1) + (s2 + s3);
+#endif
+    for (; i < n; ++i) s += a[i] * b[i];
+    return s;
+}
+
 float dot_mx8_f32_row(
     const uint8_t* weights_e4m3,
     const uint8_t* scales_ue8m0,

@@ -19,6 +19,7 @@
                           size_t ncols) noexcept;                                                                                    \
     void dequant_mx8_row(const uint8_t* weights_e4m3, const uint8_t* scales_ue8m0, float* out, size_t ncols) noexcept;              \
     float dot_mx8_f32_row(const uint8_t* weights_e4m3, const uint8_t* scales_ue8m0, const float* x, size_t ncols) noexcept;         \
+    float dot_f32(const float* a, const float* b, size_t n) noexcept;                                                              \
     void dequant_paired2_sk_rows(const uint8_t* pair_raw, SkCode code, float* out_row0, float* out_row1, size_t ncols) noexcept;    \
     void gemv_paired2_sk_q8_1(const uint8_t* weights, SkCode code, const BlockQ8_1_G64* x, float* out, size_t nrows,               \
                               size_t ncols) noexcept;                                                                                \

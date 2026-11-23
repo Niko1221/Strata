@@ -18,6 +18,7 @@ struct Table {
     float (*dot_sf4_f32_row)(const uint8_t*, const uint8_t*, float, const float*, size_t) noexcept;
     void (*dequant_mx8_row)(const uint8_t*, const uint8_t*, float*, size_t) noexcept;
     float (*dot_mx8_f32_row)(const uint8_t*, const uint8_t*, const float*, size_t) noexcept;
+    float (*dot_f32)(const float*, const float*, size_t) noexcept;
     void (*dequant_paired2_sk_rows)(const uint8_t*, SkCode, float*, float*, size_t) noexcept;
     void (*gemv_paired2_sk_q8_1)(const uint8_t*, SkCode, const BlockQ8_1_G64*, float*, size_t, size_t) noexcept;
     void (*gemm_paired2_sk_q8_1)(const uint8_t*, SkCode, const BlockQ8_1_G64*, float*, size_t, size_t, size_t) noexcept;
@@ -27,7 +28,7 @@ struct Table {
 #define STRATA_SK_TABLE(ns, name)                                                                                                    \
     Table {                                                                                                                          \
         &ns::quantize_q8_1_g64, &ns::fwht64_f32, &ns::dequant_sk_row, &ns::dot_sk_q8_1_row, &ns::gemm_sk_q8_1,                       \
-        &ns::dequant_sf4_row, &ns::dot_sf4_f32_row, &ns::dequant_mx8_row, &ns::dot_mx8_f32_row, &ns::dequant_paired2_sk_rows,        \
+        &ns::dequant_sf4_row, &ns::dot_sf4_f32_row, &ns::dequant_mx8_row, &ns::dot_mx8_f32_row, &ns::dot_f32, &ns::dequant_paired2_sk_rows,  \
         &ns::gemv_paired2_sk_q8_1, &ns::gemm_paired2_sk_q8_1, name                                                                   \
     }
 
@@ -66,6 +67,7 @@ void dequant_mx8_row(const uint8_t* weights_e4m3, const uint8_t* scales_ue8m0, f
 float dot_mx8_f32_row(const uint8_t* weights_e4m3, const uint8_t* scales_ue8m0, const float* x, size_t ncols) noexcept {
     return table().dot_mx8_f32_row(weights_e4m3, scales_ue8m0, x, ncols);
 }
+float dot_f32(const float* a, const float* b, size_t n) noexcept { return table().dot_f32(a, b, n); }
 void dequant_paired2_sk_rows(const uint8_t* pair_raw, SkCode code, float* out_row0, float* out_row1, size_t ncols) noexcept {
     table().dequant_paired2_sk_rows(pair_raw, code, out_row0, out_row1, ncols);
 }
