@@ -993,6 +993,17 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   add_executable(fused_gr_bench src/kernels/fused_gr_bench.cpp)
   target_include_directories(fused_gr_bench PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(fused_gr_bench PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+  if(STRATA_BUILD_TESTS AND STRATA_ENABLE_CUDA)
+    # #6714 / #6713: the Q8_0 hyper-connection Tensor Core reads (sm_80+) on a real card; a trapping kernel or a wrong read fails the test
+    # (it also runs clean under compute-sanitizer --tool memcheck). 1 iteration, T = 1..8.
+    foreach(_mode "1;0" "2;0" "0;1" "0;2")
+      list(GET _mode 0 _tc)
+      list(GET _mode 1 _bf)
+      add_test(NAME fused_gr_q8_tc_${_tc}_bf16tc_${_bf} COMMAND fused_gr_bench 1 1 8)
+      set_tests_properties(fused_gr_q8_tc_${_tc}_bf16tc_${_bf} PROPERTIES
+        ENVIRONMENT "STRATA_HC_Q8_TC=${_tc};STRATA_HC_Q8_BF16TC=${_bf}" TIMEOUT 300)
+    endforeach()
+  endif()
   add_executable(router_chain_bench src/kernels/router_chain_bench.cpp)
   target_include_directories(router_chain_bench PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(router_chain_bench PRIVATE strata_kernels ${_strata_gpu_runtime_target})
