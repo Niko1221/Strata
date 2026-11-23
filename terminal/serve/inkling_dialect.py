@@ -469,3 +469,11 @@ def finish_prompt(prompt: str, *, has_tools: bool = False, forced: bool = False)
     if prompt.endswith(MSG_MODEL):
         return prompt + (f"{CONTENT_THINK}{END_MSG}" if has_tools else CONTENT_TEXT)
     return prompt + (empty_think if has_tools else f"{MSG_MODEL}{CONTENT_TEXT}")
+
+
+def close_thinking() -> str:
+    """End an open `<|content_thinking|>` turn where the server ends it instead of the model (#123's budget wrap-up
+    and #1053's close-retry in the server): the end of the thinking message, then the opener `finish_prompt` gives a
+    turn without tools. The Qwen wrap-up is not in this dialect: a `</think>` written inside the thinking channel
+    closes nothing there, and the model can go on writing its answer in that channel, where it is not shown."""
+    return f"{END_MSG}{MSG_MODEL}{CONTENT_TEXT}"

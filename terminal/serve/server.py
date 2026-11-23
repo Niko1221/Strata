@@ -5964,7 +5964,9 @@ class Service:
                             # #1053: the model wrote its reasoning and stopped before </think>: the client would get
                             # an empty answer.  Close the thinking once and let it answer.
                             close_retried = True
-                            extra = self.tok.encode(REASONING_CLOSE, parse_special=True)
+                            # Inkling-2-Mini ends a thinking message with its channel tags, not with </think>
+                            extra = self.tok.encode(inkling_dialect.close_thinking() if self.inkling else REASONING_CLOSE,
+                                                    parse_special=True)
                             if max_new - n - len(extra) >= 1:
                                 print("[strata] the reply ended inside its thinking with no answer: closing the "
                                       "thinking once and continuing (reasoning_close_retry)", flush=True)
@@ -6039,7 +6041,10 @@ class Service:
                         # thinking ended, after the blank line the template puts before a call.
                         if wrap:
                             budget = st["thinking_budget"] = None
-                            text = REASONING_WRAP_UP + (force or "")
+                            # Inkling-2-Mini ends a thinking message with its channel tags: its own wrap-up, then the
+                            # forced opening (a </think> inside the channel closes nothing there)
+                            text = ((inkling_dialect.close_thinking() if self.inkling else REASONING_WRAP_UP)
+                                    + (force or ""))
                         else:
                             text = "\n" * (2 - (len(tail) - len(tail.rstrip("\n")))) + force
                         force = None

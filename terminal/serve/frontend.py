@@ -3073,17 +3073,34 @@ class InklingOutputParser(JsonOutputParser):
         for kind, chunk in chunks:
             if kind == "reasoning":
                 out.append(Event("reasoning", chunk))
+                self.state = "reasoning"
             elif chunk:
+                if self.state == "reasoning":      # the dialect has left the thinking channel
+                    self.state = "content"
                 out.extend(super().feed(chunk))
         return out
 
+    def _follow_channel(self) -> None:
+        """`state` says whether the model is thinking: the server counts the thinking tokens on it and reads it for
+        the #123 budget wrap-up and #1053's close-retry. The thinking is not sent through `feed()` as text (the
+        dialect keeps it), so follow the channel the dialect is in. The parser's call-reading states are left alone."""
+        if self._dialect.state in ("think", "think_end"):
+            self.state = "reasoning"
+        elif self.state == "reasoning":
+            self.state = "content"
+
     def feed(self, delta: str) -> list[Event]:
-        return self._dispatch(self._dialect.feed_channels(delta))
+        out = self._dispatch(self._dialect.feed_channels(delta))
+        self._follow_channel()
+        return out
 
     def feed_token(self, piece: str, *, is_special: bool) -> list[Event]:
-        return self._dispatch(self._dialect.feed_token(piece, is_special=is_special))
+        out = self._dispatch(self._dialect.feed_token(piece, is_special=is_special))
+        self._follow_channel()
+        return out
 
     def finish(self, reason: str | None = None) -> list[Event]:
+        self._follow_channel()                    # the channel the reply ended in (the final pass resets the dialect)
         out = self._dispatch(self._dialect.feed_channels("", final=True, reason=reason))
         return out + super().finish(reason)
 
