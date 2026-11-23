@@ -486,6 +486,27 @@ inline void k_gemm_q8row_sg16(const uint8_t* W, int N, int K, const float* X, fl
 
 // F32 SG16 Linear (exact FP32 for routers, controllers, dynamic sconv weight_proj, attn_sink_proj)
 inline void k_linear_f32_sg16(const float* W, int N, int K, const float* X, float* Y, int M) {
+    if (N <= 1024) {
+        // Few rows (the loop controllers, the router, the dynamic conv taps): one sub-group per row and one row per work-group, so the rows
+        // spread over the whole GPU instead of N/16 work-groups; the arithmetic of a row is the code below, bit for bit.
+        Q().parallel_for(NR((size_t)N, 16), [=](sycl::nd_item<1> it) INK_REQD_SG16 {
+            const int row = (int)it.get_group(0), lane = (int)it.get_local_id(0);
+            const float* wp = W + (size_t)row * K;
+            for (int m0 = 0; m0 < M; m0 += 4) {
+                const int mm = sycl::min(4, M - m0);
+                float a[4] = {0, 0, 0, 0};
+                for (int k = lane; k < K; k += 16) {
+                    const float w = wp[k];
+                    for (int i = 0; i < mm; ++i) a[i] += w * X[(size_t)(m0 + i) * K + k];
+                }
+                for (int i = 0; i < mm; ++i) {
+                    const float v = sg_sum(it, a[i]);
+                    if (lane == 0) Y[(size_t)(m0 + i) * N + row] = v;
+                }
+            }
+        });
+        return;
+    }
     Q().parallel_for(NR((N + 15) / 16, 256), [=](sycl::nd_item<1> it) INK_REQD_SG16 {
         const int sg = (int)it.get_local_id(0) >> 4, lane = (int)it.get_local_id(0) & 15;
         const int row = (int)it.get_group(0) * 16 + sg;
