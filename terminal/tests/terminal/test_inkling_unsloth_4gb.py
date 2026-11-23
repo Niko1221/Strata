@@ -171,10 +171,11 @@ class TestInklingUnslothDirectCatalog(unittest.TestCase):
                 rc = setup.install_inkling2(args_ns, "inkling-2-mini", gpu_4gb, False, False, None, False, 8080, 16.0, None)
 
             self.assertEqual(rc, 0)
+            # the model, the picture reader, then the drafter: the original mtp.safetensors (it takes the same card memory as Unsloth's Q8_0 copy)
             self.assertEqual(fetched, [
                 "Inkling-2-Mini-UD-Q2_K_XL.gguf",
-                inkling_family.DSPARK_GGUF_FILE,
                 inkling_family.VISION_FILE,
+                inkling_family.MTP_FILE,
             ])
             cfg_path = install_dir / "strata-inkling-2-mini-ud-q2_k_xl.json"
             self.assertTrue(cfg_path.is_file())

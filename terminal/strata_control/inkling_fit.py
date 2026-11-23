@@ -36,7 +36,7 @@ FREE_RAM_MARGIN_GB = 1.50        # free RAM that stays free beside the experts h
 UMA_RESERVE_GB = 5.00            # unified memory OS + driver reserve
 SSD_NEAR_RESIDENT_GB = 2.0
 VISION_GB = 0.637                # Inkling-2-Mini-Vision.strata (636,526,592 B, CPU / on-demand on <=12 GiB GPUs)
-DSPARK_GGUF_GB = 0.402           # dspark-Inkling-2-Mini-Q8_0.gguf (402,278,560 B)
+DSPARK_GGUF_GB = 0.636           # the drafter file of a GGUF build: mtp.safetensors (635,801,416 B, BF16, the default); Unsloth's Q8_0 copy is 0.402 GB (small cards, fallback)
 DEFAULT_CONTEXT = 32768          # docs/10-GUI-TUI.md default: 32K (up to 1M available)
 CONTEXTS = [8192, 32768, 65536, 131072, 262144]
 MAX_CONTEXT = 1048576
