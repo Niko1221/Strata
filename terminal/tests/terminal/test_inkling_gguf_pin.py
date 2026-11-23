@@ -75,6 +75,58 @@ class GgufPin(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 setup.inkling_verify(bad, "X.gguf", False)
 
+    def test_the_drafter_is_the_original_checkpoint_pinned_by_commit(self):
+        # thinkingmachines/Inkling-2-Mini mtp.safetensors: Apache-2.0, not gated; the upload commit (later commits only touch README / config)
+        self.assertEqual(F.DRAFTER_FILES[F.MTP_FILE], (635_801_416, "7c3b651317f01f73bcf4e1dceba66ef8b7e1a1eac6bc171e882e690a4b10a1d2"))
+        self.assertEqual(F.pins_for(F.MTP_FILE), [F.DRAFTER_FILES[F.MTP_FILE]])
+        src = F.sources_for(F.MTP_FILE, env={})
+        self.assertEqual(F.urls_for(F.MTP_FILE, src[0]),
+                         ["https://huggingface.co/thinkingmachines/Inkling-2-Mini/resolve/1fb4134b9a74f9681054f4ef82e4bf1f458a2337/mtp.safetensors"])
+        env = {F.DRAFTER_SOURCE_ENV: "https://example.org/d"}
+        self.assertEqual(F.sources_for(F.MTP_FILE, env=env)[0]["base"], "https://example.org/d")
+        self.assertEqual(F.sources_for(F.MTP_FILE, env=env)[-1]["base"], F.MTP_BASE)
+
+    def _drafter(self, have=(), failing=()):
+        import tempfile
+        from unittest import mock
+        import setup
+        calls = []
+
+        def fetch(a, name, folder, own):
+            calls.append(name)
+            if name in failing:
+                raise SystemExit(1)
+            return folder / name
+
+        with tempfile.TemporaryDirectory() as td, \
+                mock.patch.object(setup, "inkling_fetch", side_effect=fetch), \
+                mock.patch.object(setup, "inkling_have", side_effect=lambda a, p: p.name in have), \
+                mock.patch.object(setup, "inkling_verify"):
+            got = setup.inkling_fetch_drafter(mock.Mock(), Path(td), False)
+        return got.name, calls
+
+    def test_setup_fetches_the_original_drafter_first(self):
+        self.assertEqual(self._drafter(), (F.MTP_FILE, [F.MTP_FILE]))
+
+    def test_setup_falls_back_to_unsloths_copy_when_the_original_cannot_be_fetched(self):
+        self.assertEqual(self._drafter(failing=(F.MTP_FILE,)), (F.DSPARK_GGUF_FILE, [F.MTP_FILE, F.DSPARK_GGUF_FILE]))
+        with self.assertRaises(SystemExit):
+            self._drafter(failing=(F.MTP_FILE, F.DSPARK_GGUF_FILE))
+
+    def test_setup_keeps_a_drafter_the_install_already_has(self):
+        self.assertEqual(self._drafter(have=(F.DSPARK_GGUF_FILE,)), (F.DSPARK_GGUF_FILE, []))     # no second download
+        self.assertEqual(self._drafter(have=(F.MTP_FILE,)), (F.MTP_FILE, []))
+
+    def test_a_local_folder_prefers_the_original_drafter(self):
+        import tempfile
+        import setup
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            (td / "dspark-Inkling-2-Mini-Q8_0.gguf").write_bytes(b"x")
+            self.assertEqual(setup.inkling_find_local_dspark(td).name, "dspark-Inkling-2-Mini-Q8_0.gguf")
+            (td / "mtp.safetensors").write_bytes(b"x")
+            self.assertEqual(setup.inkling_find_local_dspark(td).name, "mtp.safetensors")
+
     def test_an_override_still_wins(self):
         src = F.gguf_sources(env={F.GGUF_SOURCE_ENV: "https://example.org/gguf"})
         self.assertEqual(src[0]["base"], "https://example.org/gguf")

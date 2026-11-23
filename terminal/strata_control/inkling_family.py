@@ -77,6 +77,16 @@ FILES = {
     VISION_FILE: (636_526_592, "6589eff47f9c20bc3a032faa3d449f10bf4f04a84cc6b2ee8a44d51d2b6fc677"),
     **UNSLOTH_GGUF_FILES,
 }
+#: The drafter of a GGUF build: the ORIGINAL checkpoint file of Thinking Machines (Apache-2.0, not gated, anonymous download), pinned to the commit of the
+#: upload (later commits only touch README / config). BF16, 635,801,416 bytes. Measured 2026-11-23 (0221-DSPARK): the same tensors as Unsloth's old Q8_0 drafter
+#: (every F32/BF16 tensor bit for bit; the 2-D matrices 0.55 percent relative RMS from Q8_0), the engine reads it beside any GGUF. Unsloth's pinned Q8_0 file
+#: (DSPARK_GGUF_FILE, 402 MB) is the fallback when this one cannot be fetched and the file kept by an install that already has it.
+MTP_FILE = "mtp.safetensors"
+MTP_COMMIT = "1fb4134b9a74f9681054f4ef82e4bf1f458a2337"
+MTP_BASE = f"https://huggingface.co/thinkingmachines/Inkling-2-Mini/resolve/{MTP_COMMIT}"
+DRAFTER_FILES = {
+    MTP_FILE: (635_801_416, "7c3b651317f01f73bcf4e1dceba66ef8b7e1a1eac6bc171e882e690a4b10a1d2"),
+}
 #: Auxiliary tokenizer files hosted beside the `.strata` weights (Section 0 embeds chat_template + config; tokenizer.json holds the 200K o200k BPE vocab/merges).
 TOKENIZER_FILES = {
     TOKENIZER_FILE: (26_178_678, None),
@@ -138,7 +148,7 @@ ALT_GGUF_FILES = {
 def pins_for(name: str) -> list[tuple[int, str | None]]:
     """Every (bytes, sha256) a file of this name may have: the pinned one first, then the re-uploaded layout for the main GGUFs."""
     out = []
-    got = FILES.get(name) or TOKENIZER_FILES.get(name)
+    got = FILES.get(name) or TOKENIZER_FILES.get(name) or DRAFTER_FILES.get(name)
     if got:
         out.append(got)
     if name in ALT_GGUF_FILES:
@@ -147,12 +157,12 @@ def pins_for(name: str) -> list[tuple[int, str | None]]:
 
 
 def size_of(name: str) -> int | None:
-    got = FILES.get(name) or TOKENIZER_FILES.get(name)
+    got = FILES.get(name) or TOKENIZER_FILES.get(name) or DRAFTER_FILES.get(name)
     return got[0] if got else None
 
 
 def sha256_of(name: str) -> str | None:
-    got = FILES.get(name) or TOKENIZER_FILES.get(name)
+    got = FILES.get(name) or TOKENIZER_FILES.get(name) or DRAFTER_FILES.get(name)
     return got[1] if got else None
 
 
@@ -201,8 +211,24 @@ def gguf_sources(env: dict | None = None, cfg: dict | None = None, shipped: Path
     return out
 
 
+DRAFTER_SOURCE_ENV = "STRATA_INKLING_DRAFTER_SOURCE"
+
+
+def drafter_sources(env: dict | None = None, cfg: dict | None = None) -> list[dict]:
+    """Download sources for mtp.safetensors: config inkling_drafter_source, env STRATA_INKLING_DRAFTER_SOURCE, STRATA_INKLING_SOURCE, then the pinned original repository."""
+    env = os.environ if env is None else env
+    out = _normalise((cfg or {}).get("inkling_drafter_source"))
+    if env.get(DRAFTER_SOURCE_ENV):
+        out += _normalise(env[DRAFTER_SOURCE_ENV])
+    if env.get(SOURCE_ENV):                                    # a local mirror of everything (tests, offline installs)
+        out += _normalise(env[SOURCE_ENV])
+    return out + [{"kind": "http", "base": MTP_BASE, "files": {}}]
+
+
 def sources_for(name: str, env: dict | None = None, cfg: dict | None = None, shipped: Path | None = None) -> list[dict]:
     """Return the prioritized download sources for `name` (Unsloth GGUF repo for GGUF files, Strata repo for .strata/tokenizer)."""
+    if name in DRAFTER_FILES:
+        return drafter_sources(env=env, cfg=cfg)
     if name in UNSLOTH_GGUF_FILES or str(name).lower().endswith(".gguf"):
         return gguf_sources(env=env, cfg=cfg, shipped=shipped)
     return sources(env=env, cfg=cfg, shipped=shipped)

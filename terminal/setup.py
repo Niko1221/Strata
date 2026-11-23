@@ -10424,12 +10424,12 @@ def inkling_find_local_dspark(folder: Path) -> Path | None:
     for base in (folder, folder / "dspark"):
         if not base.is_dir():
             continue
+        mtp = base / "mtp.safetensors"                  # the original checkpoint first: a dspark*.gguf may be Unsloth's newer layout, which this engine cannot read
+        if mtp.is_file():
+            return mtp
         ggufs = sorted(p for p in base.glob("dspark*.gguf") if p.is_file())
         if ggufs:
             return ggufs[0]
-        mtp = base / "mtp.safetensors"
-        if mtp.is_file():
-            return mtp
     return None
 
 
@@ -10551,6 +10551,36 @@ def inkling_fetch(a, name: str, folder: Path, own: bool) -> Path:
     if last is not None:
         raise last
     fail(f"no source lists {name}")
+
+
+def inkling_fetch_drafter(a, folder: Path, own: bool) -> Path | None:
+    """The DSpark drafter of a downloaded GGUF build. An install that already holds a complete drafter keeps it (no second download).
+    Otherwise the original checkpoint of Thinking Machines (mtp.safetensors, BF16, 636 MB, pinned commit + SHA-256) is fetched, and when that
+    cannot be fetched or does not check out, Unsloth's pinned Q8_0 file (402 MB, the same weights). Both take the same memory on the card
+    (measured: DSpark took 416 MiB with either; the engine holds the matrices as BF16 in both cases), so the card size does not matter."""
+    names = [inkling_family.MTP_FILE, inkling_family.DSPARK_GGUF_FILE]
+    for n in names:
+        if inkling_have(a, folder / n):
+            ok(f"drafter: DSpark ({n}) already downloaded")
+            inkling_verify(folder / n, n, own)
+            return folder / n
+    what = {inkling_family.MTP_FILE: "the original checkpoint (BF16, from Thinking Machines' repository)",
+            inkling_family.DSPARK_GGUF_FILE: "Unsloth's Q8_0 copy of the same checkpoint"}
+    global fail
+    real_fail = fail
+
+    def soft_fail(msg, hint=None, **detail):                  # a failed first try is not the end of setup: no "Setup stopped", no error event
+        warn(f"{msg}" + (f" ({hint})" if hint else ""))
+        sys.exit(1)
+    say(f"  drafter: DSpark, {what[names[0]]}: {names[0]} ({inkling_family.size_of(names[0]) / 1e6:.0f} MB)")
+    fail = soft_fail
+    try:
+        return inkling_fetch(a, names[0], folder, own)
+    except SystemExit:
+        warn(f"{names[0]} could not be fetched; using {what[names[1]]}: {names[1]} ({inkling_family.size_of(names[1]) / 1e6:.0f} MB)")
+    finally:
+        fail = real_fail
+    return inkling_fetch(a, names[1], folder, own)
 
 
 def inkling_tokenizer_dir(a, model: Path, folder: Path, out: Path, engine: Path | None, own: bool, *, data: Path | None = None) -> Path | None:
@@ -10690,13 +10720,16 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
                 ok(f"drafter: DSpark ({dspark_path.name})")
     else:
         ok("images: " + ("on (Inkling-2-Mini-Vision.strata, 0.64 GB lossless BF16)" if vision else "off"))
-        files = inkling_family.files_of(model, vision, dspark=want_dspark)
+        files = inkling_family.files_of(model, vision, dspark=False)
         left = 0.0
-        for n in files:
+        drafter = []
+        if is_gguf and want_dspark and not any(inkling_have(a, folder / d) for d in (inkling_family.MTP_FILE, inkling_family.DSPARK_GGUF_FILE)):
+            drafter = [inkling_family.MTP_FILE]
+        for n in files + drafter:
             p = folder / n
             if not inkling_have(a, p):
                 part = p.with_name(p.name + ".part")
-                left += (inkling_family.FILES[n][0] - (part.stat().st_size if part.is_file() else 0)) / 1e9
+                left += (inkling_family.size_of(n) - (part.stat().st_size if part.is_file() else 0)) / 1e9
         if left and free_gb(folder) < left:
             fail(f"not enough free disk space in {folder}: need ~{left:.1f} GB, {free_gb(folder):.1f} GB free",
                  ("use --data-dir on a bigger drive (strata launch --data-dir)" if CONTROL else "use --models-dir on a bigger drive"))
@@ -10719,11 +10752,11 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
         ok(f"model file: {model_file}")
     else:
         step(5, f"downloading {fam['title']} {model}")
-        files = inkling_family.files_of(model, vision, dspark=want_dspark)
+        files = inkling_family.files_of(model, vision, dspark=False)
         paths = {n: inkling_fetch(a, n, folder, own) for n in files}
         model_file = paths[files[0]]
         vision_path = paths.get(inkling_family.VISION_FILE) if vision else None
-        dspark_path = paths.get(inkling_family.DSPARK_GGUF_FILE) if (is_gguf and want_dspark) else None
+        dspark_path = inkling_fetch_drafter(a, folder, own) if (is_gguf and want_dspark) else None
         if dspark_path is not None:
             ok(f"drafter: DSpark ({dspark_path.name})")
         ok(f"model file: {model_file}")
