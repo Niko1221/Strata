@@ -166,8 +166,13 @@ def plan(*, family: str, model: str, model_dir: Path, data_dir: Path, src: Path,
                                    Path(data_dir) / "models" / inkling_family.FAMILY / inkling_family.VISION_FILE)
                        if c.is_file()), None)
         if vision is None and is_gguf:
+            # An Unsloth GGUF folder carries mmproj-BF16.gguf, the picture reader of llama.cpp. strata-inkling does not read that file (given as
+            # --vision it stops with "vision shard: Invalid .strata magic" and --info reports images=0, #6643 #6597): its picture reader is
+            # Inkling-2-Mini-Vision.strata, which Strata fetches when pictures are turned on. So the GGUF's mmproj is never handed to the engine.
             mmprojs = sorted(p for p in folder.glob("mmproj*.gguf") if p.is_file())
-            vision = mmprojs[0] if mmprojs else None
+            if mmprojs and notes is not None:
+                notes.append(f"{mmprojs[0].name} next to the model is a llama.cpp picture reader that Inkling-2-Mini's engine cannot read; "
+                             f"Strata uses {inkling_family.VISION_FILE} (0.64 GB) for pictures and downloads it when you turn pictures on.")
         if vision is not None:
             args += ["--vision", str(vision)]
         dspark = next((p for p in sorted(folder.glob("dspark*.gguf")) if p.is_file()), None) if is_gguf else None
