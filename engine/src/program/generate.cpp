@@ -13987,6 +13987,7 @@ int main(int argc, char** argv) {
             size_t cleaned = 0;
             size_t adopted = 0;
             std::optional<strata::core::SessionFileIdentity> persist_id;
+            const bool parts_mode = cap > 0 && std::getenv("STRATA_SPILL_PARTS") != nullptr;
             if (cap > 0 && o.conversation_spill_persist) {   // the stable folder is named by the model's fingerprint: known before the first spill
                 try {
                     std::string e;
@@ -13996,12 +13997,17 @@ int main(int argc, char** argv) {
                                               "a folder of this process is used\n", e.c_str());
                 } catch (...) {}
             }
-            if (cap > 0 && !spill.open(root, cap, why, &cleaned, persist_id ? &*persist_id : nullptr, &adopted)) cap = 0;
+            // V3: parts entries are adopted from a per-process folder and extended in place; the stable folder holds classic
+            // `.meta` entries only (adopt_locked deletes everything else in it), so a parts run passes no persist identity.  Its
+            // entries still survive a restart through SpillNamespace::adopt_parts.  Classic --conversation-spill-persist is unchanged.
+            const bool persist_here = persist_id.has_value() && !parts_mode;
+            if (cap > 0 && !spill.open(root, cap, why, &cleaned, persist_here ? &*persist_id : nullptr, &adopted)) cap = 0;
+            if (cap > 0 && std::getenv("STRATA_SPILL_PARTS") != nullptr) spill.set_parts_mode(true);
             if (cap > 0) {
                 std::fprintf(stderr, "strata serve: conversation cache: SSD tier in %s, up to %llu MiB%s%s\n", spill.dir().string().c_str(),
                              (unsigned long long) (cap >> 20),
                              cleaned ? (", " + std::to_string(cleaned) + " folder" + (cleaned == 1 ? "" : "s") +
-                                        (persist_id ? " of other models or ended engines removed" : " of ended engines removed")).c_str() : "",
+                                        (persist_here ? " of other models or ended engines removed" : " of ended engines removed")).c_str() : "",
                              spill.persistent() ? (", kept across restarts: " + std::to_string(adopted) + " conversation" +
                                                    (adopted == 1 ? "" : "s") + " adopted from the last run, " +
                                                    std::to_string(spill.bytes() >> 20) + " MiB").c_str() : "");
@@ -14012,6 +14018,26 @@ int main(int argc, char** argv) {
         std::mutex spill_cost_mu;   // (the background writer measures writes while the serve loop asks the rule)
         // On the serve thread: whether `img` goes to the SSD tier at all - the tier is on, one stage, the cost rule says it pays -
         // and the model's identity is known (it is fingerprinted once, here, never on the writer thread).
+        // P4: the identity is what a read-back is checked against; a restarted engine that only inherited an entry has
+        // never parked anything, so it had no identity and its own entries were "usable=0" (never read back).  Form it
+        // on the first read too, not only on the first park.
+        auto ensure_spill_id = [&]() -> bool {
+            if (spill_id) return true;
+            try {
+                std::string e;
+                strata::core::SessionFileIdentity id;
+                if (!session_identity(id, e, {})) {
+                    std::fprintf(stderr, "strata serve: conversation cache: no SSD tier from now on: the model cannot be "
+                                         "fingerprinted (%s)\n", e.c_str());
+                    spill.close();
+                    return false;
+                }
+                spill_id = id;
+                return true;
+            } catch (...) {
+                return false;
+            }
+        };
         auto spill_ready = [&](const strata::core::SavedConversation& img, const char* why) -> bool {
             if (!spill.enabled() || !img.stage_images.empty()) return false;
             const int64_t tokens = (int64_t) img.live.ids.size();
@@ -14026,22 +14052,7 @@ int main(int argc, char** argv) {
                     return false;
                 }
             }
-            if (!spill_id) {
-                try {
-                    std::string e;
-                    strata::core::SessionFileIdentity id;
-                    if (!session_identity(id, e, {})) {
-                        std::fprintf(stderr, "strata serve: conversation cache: no SSD tier from now on: the model cannot be "
-                                             "fingerprinted (%s)\n", e.c_str());
-                        spill.close();
-                        return false;
-                    }
-                    spill_id = id;
-                } catch (...) {
-                    return false;
-                }
-            }
-            return true;
+            return ensure_spill_id();
         };
         // Writes one parked conversation to the SSD tier (on either thread, once spill_ready said yes); its SSD serial, 0 when it
         // could not be written.  Never throws.
@@ -14270,10 +14281,25 @@ int main(int argc, char** argv) {
             // estimate must stay uncapped: it counts the retained buffers'
             // capacity and directories, and put() charges that same true size -
             // a capped figure would under-evict and overfill the budget.
+            // P3 (2026-11-23): the RAM tier cannot take this image (bigger than the budget, or the cache is full of parks
+            // that all fit better).  The SSD tier can still hold it: the image is written out and freed, and the next
+            // request for this conversation reads it back instead of re-prefilling it whole (measured on this host: a
+            // 100k-token conversation is 2.8 GiB of K/V, and re-prefilling it costs about 45 s of TTFT on every turn).
+            // One home only: an image is either parked in RAM or on the SSD tier.
+            bool ssd_only = false;
+            auto spill_can_hold = [&](size_t bytes) -> bool {
+                if (!spill.enabled() || n_st != 0) return false;
+                return bytes + (size_t(1) << 20) <= spill.budget().cap;
+            };
             if (!conversations.make_room(estimate, held)) {
-                std::fprintf(stderr, "strata serve: conversation cache: skip parking (snapshot %zu MiB exceeds available budget)\n",
-                             estimate >> 20);
-                return true;
+                if (!spill_can_hold(estimate)) {
+                    std::fprintf(stderr, "strata serve: conversation cache: skip parking (snapshot %zu MiB exceeds available budget)\n",
+                                 estimate >> 20);
+                    return true;
+                }
+                ssd_only = true;
+                std::fprintf(stderr, "strata serve: conversation cache: parking %zu tokens to the SSD tier only (%zu MiB): "
+                                     "the RAM cache cannot admit it\n", src.ids.size(), estimate >> 20);
             }
             const auto t0 = Clock::now();
             try {
@@ -14337,12 +14363,26 @@ int main(int argc, char** argv) {
                     }
                 }
                 if (!fits) {
-                    std::fprintf(stderr, "strata serve: conversation cache: skip parking (physical RAM admission; need %zu MiB plus %lld MiB floor, %s; evicted %zu, %zu still parked%s%s)\n",
-                                 additional >> 20, (long long) o.conversation_cache_min_free_mib, ram_note(mem).c_str(),
-                                 evicted, conversations.size(),
-                                 no_progress ? "; the last eviction gave no memory back, so the rest stay parked" : "",
-                                 cannot_help_note.c_str());
-                    return true;
+                    // P3 (2026-11-23): a park that goes to the SSD tier only is not kept in RAM: its capture needs the
+                    // image's bytes for a moment (the retained K/V are already there), not the floor a parked one holds.
+                    const auto mem2 = strata::core::sample_host_memory();
+                    const uint64_t avail2 = mem2 && mem2->available ? mem2->available : 0;
+                    const uint64_t margin = (uint64_t) 256 << 20;
+                    if (!ssd_only && spill_can_hold(estimate) && avail2 >= (uint64_t) additional + margin) {
+                        ssd_only = true;
+                        std::fprintf(stderr, "strata serve: conversation cache: parking %zu tokens to the SSD tier only (%zu MiB): "
+                                             "the RAM tier refused it (need %zu MiB plus the %lld MiB floor, %llu MiB available, "
+                                             "evicted %zu); only the capture fits\n",
+                                     src.ids.size(), estimate >> 20, additional >> 20, (long long) o.conversation_cache_min_free_mib,
+                                     (unsigned long long) (avail2 >> 20), evicted);
+                    } else {
+                        std::fprintf(stderr, "strata serve: conversation cache: skip parking (physical RAM admission; need %zu MiB plus %lld MiB floor, %s; evicted %zu, %zu still parked%s%s)\n",
+                                     additional >> 20, (long long) o.conversation_cache_min_free_mib, ram_note(mem).c_str(),
+                                     evicted, conversations.size(),
+                                     no_progress ? "; the last eviction gave no memory back, so the rest stay parked" : "",
+                                     cannot_help_note.c_str());
+                        return true;
+                    }
                 }
                 if (evicted)
                     std::fprintf(stderr, "strata serve: conversation cache: evicted %zu parked conversation%s to admit this snapshot (%zu MiB plus %lld MiB floor)\n",
@@ -14386,6 +14426,22 @@ int main(int argc, char** argv) {
                             std::move(stage_reuse[k]), &reused_bytes))
                         return false;
                     image.stage_images.push_back(std::move(part));
+                }
+                if (ssd_only) {
+                    // The RAM tier refused this park; the image exists now, so it goes to the SSD tier instead of being
+                    // thrown away.  The writer takes it (it frees the RAM once written: spill_reclaim on the next
+                    // request), and the next request for this conversation is restored from it.
+                    if (spill_writer && spill_ready(image, "the RAM cache cannot admit it")) {
+                        const size_t ssm = (size_t) image.bytes() >> 20;
+                        spill_writer->push(std::move(image));
+                        std::fprintf(stderr, "strata serve: conversation cache: parked %zu tokens on the SSD tier only (%zu MiB; "
+                                             "the RAM cache cannot admit it)\n", src.ids.size(), ssm);
+                        return true;
+                    }
+                    if (spill_put(image, "the RAM cache cannot admit it")) return true;
+                    std::fprintf(stderr, "strata serve: conversation cache: skip parking (the RAM cache cannot admit it and the "
+                                         "SSD tier did not take it)\n");
+                    return true;
                 }
                 auto mem_after = strata::core::sample_host_memory();
                 // (the park pools' idle memory is the first RAM to go back here too: a park the check refuses with the pools held would pass without them)
@@ -19180,6 +19236,10 @@ int main(int argc, char** argv) {
                         from_live = false;
                     }
             }
+            if (std::getenv("STRATA_CACHE_DEBUG") != nullptr)
+                std::fprintf(stderr, "cache dbg: resume=%lld source=%s live=%lld live_ok=%d checks=%zu prompt=%zu\n",
+                             (long long) resume, from_live ? "live" : (resume > 0 ? "checkpoint" : "none"),
+                             (long long) live.size(), (int) live_ok, checks.size(), ids.size());
             // STRATA_SLOT_CKPT_MOVE: a turn checkpoint a batch admission moved into its slot is still one of the main
             // session's while the main session holds its tokens (the cells below it are the ones it was taken over):
             // it is restored there as one of `checks` would be (lent_slot: the slot that keeps it).  moved_in: the length
@@ -19267,6 +19327,9 @@ int main(int argc, char** argv) {
                 }
             }
             const auto parked = conversations.best(ids, req_imgs, want_cvec);
+            if (std::getenv("STRATA_CACHE_DEBUG") != nullptr)
+                std::fprintf(stderr, "cache dbg: ram parked tokens=%lld live=%d of %zu entries; resume was %lld\n",
+                             (long long) parked.tokens, (int) parked.live, conversations.size(), (long long) resume);
             // STRATA_SLOT_READ (opt-in: =1, with STRATA_PIPED_MTP; asked for by the server with slot_read=1, which then
             // takes DONE and BADM without a token): the next turn of the conversation an idle slot holds is read IN
             // that slot - its new tokens as rows of the slot's own windows in the pipelined groups, all kept - instead
@@ -19430,7 +19493,7 @@ int main(int argc, char** argv) {
                         if (mi.first > m.first) { m = mi; at = i; }
                     }
                     if (at != SIZE_MAX && m.first > floor_tokens) {
-                        if (done[at].serial != 0) spill.drop_serial(done[at].serial);
+                        if (done[at].serial != 0 && !spill.parts_mode()) spill.drop_serial(done[at].serial);
                         std::fprintf(stderr, "strata serve: conversation cache: took %zu tokens back from the SSD writer, still in "
                                              "RAM, in %.1f ms (this prompt starts with %lld of them)\n",
                                      done[at].item.live.ids.size(),
@@ -19442,9 +19505,19 @@ int main(int argc, char** argv) {
                 }   // (the other written ones are freed here: they are on the SSD tier)
             }
             spill_reclaim();   // what the writer finished meanwhile is on the SSD tier: its RAM goes back before this request parks
+            if (std::getenv("STRATA_SPILL_DEBUG") != nullptr)
+                std::fprintf(stderr, "spill dbg: enabled=%d size=%zu stages=%zu spill_id=%d resume=%lld slot=%lld parked=%lld\n",
+                             (int) spill.enabled(), spill.size(), stages.size(), (int) (bool) spill_id,
+                             (long long) resume, (long long) slot_tokens, (long long) parked.tokens);
             if (!from_ssd && spill.enabled() && spill.size() > 0 && stages.empty()) {
                 const auto sp = spill.best(ids, req_imgs, want_cvec);
+                if (sp.tokens > 0) ensure_spill_id();   // P4: an entry read back needs the identity (see above)
                 const auto sp_entry = sp.tokens > 0 ? spill.find(sp.serial) : std::nullopt;
+                if (std::getenv("STRATA_CACHE_DEBUG") != nullptr)
+                    std::fprintf(stderr, "cache dbg: ssd best tokens=%lld entry=%d usable=%d (needs > max(resume %lld, slot %lld, parked %lld))\n",
+                                 (long long) sp.tokens, (int) (sp_entry.has_value()),
+                                 (int) (sp_entry && sp.tokens > std::max({resume, slot_tokens, parked.tokens}) && spill_id),
+                                 (long long) resume, (long long) slot_tokens, (long long) parked.tokens);
                 if (sp_entry && sp.tokens > std::max({resume, slot_tokens, parked.tokens}) && spill_id) {
                     const auto t0 = Clock::now();
                     const size_t sp_tokens = sp_entry->live.ids.size();
@@ -19497,6 +19570,7 @@ int main(int argc, char** argv) {
             // state. Invalid entries can safely fall back to its existing prefix.
             if (incoming && incoming->stage_images.size() != stages.size()) {
                 std::fprintf(stderr, "strata serve: conversation cache: discard snapshot (stage count)\n");
+                if (from_ssd) spill.drop_serial(taken.serial);   // a poisoned SSD entry is not tried again
                 incoming.reset();
             }
             if (incoming) for (size_t i = 0; i < stages.size(); ++i) {
@@ -19505,6 +19579,7 @@ int main(int argc, char** argv) {
                         use_mtp && !mtp_first && i + 1 == stages.size() ? &mtp.kv_state() : nullptr, err)) {   // the draft: the last stage's
                     std::fprintf(stderr, "strata serve: conversation cache: discard invalid stage snapshot (%s)\n",
                                  err.c_str());
+                    if (from_ssd) spill.drop_serial(taken.serial);   // a poisoned SSD entry is not tried again
                     incoming.reset();
                     err.clear();
                     break;
@@ -19513,6 +19588,7 @@ int main(int argc, char** argv) {
             if (incoming && !strata::core::conversation_snapshot_validate(*incoming, ss, g,
                     use_mtp && (stages.empty() || mtp_first) ? &mtp.kv_state() : nullptr, err)) {
                 std::fprintf(stderr, "strata serve: conversation cache: discard invalid snapshot (%s)\n", err.c_str());
+                if (from_ssd) spill.drop_serial(taken.serial);   // a poisoned SSD entry is not tried again
                 incoming.reset();
                 err.clear();
             }
@@ -19924,6 +20000,14 @@ int main(int argc, char** argv) {
                 }
                 cvec_cached = incoming->cvec;
                 resume = taken.tokens;   // (parked.tokens unless the image came from the SSD tier)
+                // Never resume past the tokens the restored image really carries: a parts entry adopted from an older
+                // index can only claim its bytes (its ids are unbound), and its index may hold more tokens than the ids.
+                if (resume > (int64_t) live.size()) {
+                    if (std::getenv("STRATA_SPILL_DEBUG") != nullptr)
+                        std::fprintf(stderr, "spill parts: resume clamped from %lld to %lld tokens\n", (long long) resume,
+                                     (long long) live.size());
+                    resume = (int64_t) live.size();
+                }
                 from_live = taken.live;
                 if (!swapped_parked && std::getenv("STRATA_SNAPSHOT_FULL_CAPTURE") == nullptr) {
                     std::vector<std::vector<strata::core::ConversationKv>> stage_kv;   // every stage's, for its next park

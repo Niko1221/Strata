@@ -12,6 +12,11 @@
 #include <fstream>
 #include <string>
 
+#include <iterator>
+#if !defined(_WIN32)
+#include <unistd.h>
+#endif
+
 using namespace strata::core;
 namespace fs = std::filesystem;
 
@@ -338,6 +343,202 @@ int main() {
         }
         sp.close();
     }
+#if !defined(_WIN32)
+    // v3 parts entries (the durable-commit spec, A-D): the index is the commit point, an append reuses the blocks already
+    // on the disk instead of rewriting them, and an entry whose bytes or ids cannot be verified is never handed out.
+    {
+        const SessionFileIdentity id{11, 22};
+        auto fill = [](ConversationBuffer& b, uint8_t seed) {
+            b.visit(0, b.size(), [&](uint8_t* p, size_t n, size_t off) {
+                for (size_t i = 0; i < n; ++i) p[i] = (uint8_t) ((off + i) * 31u + seed);   // equal prefixes stay equal
+                return true;
+            });
+        };
+        // `cells` INT8 K/V cells a layer of a 2-layer image: every part's size depends only on `cells`, so a grown image
+        // appends to each part (the old bytes are a prefix of the new ones).
+        auto kv_img = [&](std::vector<int32_t> ids, int64_t cells, uint8_t seed) {
+            SavedConversation s;
+            s.live.ids = ids;
+            s.live.gdn.assign(4096, seed);
+            s.cvec = true;
+            s.kv.resize(2);
+            for (auto& k : s.kv) {
+                k.format = 0;
+                k.cells = cells;
+                k.heads = 2;
+                k.head_dim = 256;
+                k.page_size = 4;
+                k.pooled_rows = cells / 4 + 1;
+                k.idx_dim = 128;
+                k.k.resize((size_t) cells * 512);
+                k.v.resize((size_t) cells * 512);
+                k.k_scale.resize((size_t) cells * 16);
+                k.v_scale.resize((size_t) cells * 16);
+                k.pooled.resize((size_t) (cells / 4 + 1) * 128 * 4);
+                for (size_t p = 0; p < 5; ++p) fill(spill_parts::part_of(k, p), (uint8_t) (seed + p));
+            }
+            return s;
+        };
+        auto same_kv = [](const SavedConversation& a, const SavedConversation& b) {
+            if (a.kv.size() != b.kv.size() || a.live.ids != b.live.ids) return false;
+            for (size_t i = 0; i < a.kv.size(); ++i) {
+                const ConversationKv& x = a.kv[i];
+                const ConversationKv& y = b.kv[i];
+                if (x.cells != y.cells || x.format != y.format || x.pooled_rows != y.pooled_rows || !(x.k == y.k) ||
+                    !(x.v == y.v) || !(x.k_scale == y.k_scale) || !(x.v_scale == y.v_scale) || !(x.pooled == y.pooled))
+                    return false;
+            }
+            return true;
+        };
+        const uint64_t tier = uint64_t(256) << 20;
+
+        // (i) append reuse: one conversation grows, its entry keeps folder and serial, and it reads back as the new image
+        {
+            const fs::path proot = root / "parts-append";
+            ConversationSpill sp;
+            check(sp.open(proot, tier, err) && sp.enabled(), "a parts tier opens");
+            sp.set_parts_mode(true);
+            const SavedConversation a8 = kv_img({1, 2, 3, 4}, 512, 3);
+            uint64_t first = 0;
+            check(sp.put(a8, id, err, &first) && sp.size() == 1 && sp.entry(0).serial == first, "a first parts entry");
+            const fs::path dir = sp.entry(0).file;
+            check(fs::exists(dir / "parts.idx") && fs::exists(dir / "ids.bin"), "the entry's index and ids");
+            const uint64_t bytes8 = sp.bytes();
+            const SavedConversation a16 = kv_img({1, 2, 3, 4, 5, 6}, 1024, 3);
+            // the write's own account (stderr, STRATA_SPILL_DEBUG) is what says whether the old blocks were kept
+            const fs::path slog = root / "append.log";
+            std::fflush(stderr);
+            const int saved = ::dup(STDERR_FILENO);
+            std::FILE* lf = std::fopen(slog.c_str(), "w");
+            check(saved >= 0 && lf != nullptr, "the write log is redirected");
+            if (lf != nullptr) ::dup2(::fileno(lf), STDERR_FILENO);
+            ::setenv("STRATA_SPILL_DEBUG", "1", 1);
+            uint64_t grown = 0;
+            const bool put_ok = sp.put(a16, id, err, &grown);
+            std::fflush(stderr);
+            ::unsetenv("STRATA_SPILL_DEBUG");
+            if (lf != nullptr) {
+                ::dup2(saved, STDERR_FILENO);
+                std::fclose(lf);
+            }
+            if (saved >= 0) ::close(saved);
+            std::ifstream lr(slog);
+            const std::string log_text((std::istreambuf_iterator<char>(lr)), std::istreambuf_iterator<char>());
+            check(put_ok && grown == first && sp.size() == 1 && sp.entry(0).file == dir,
+                  "a grown image appends in place: same folder, same serial");
+            check(sp.bytes() > bytes8, "the entry accounts the bytes it now holds");
+            check(log_text.find("appended in place") != std::string::npos, "the write appended to the entry it already had");
+            check(log_text.find("MiB kept") != std::string::npos, "and it kept the old blocks (they were not rewritten)");
+            SavedConversation back;
+            check(sp.take_serial(first, id, {}, back, err) && same_kv(back, a16), "the appended entry reads back byte for byte");
+            check(sp.find(first).has_value(), "a read keeps the folder listed: the next park extends that generation");
+            const SavedConversation other = kv_img({9, 9, 9}, 512, 7);
+            uint64_t second = 0;
+            check(sp.put(other, id, err, &second) && second != first && sp.size() == 2 && sp.entry(1).file != dir,
+                  "another conversation's image gets a folder of its own");
+            sp.close();
+        }
+
+        // (ii) a part that does not match its index is dropped at adopt, never handed out
+        {
+            const fs::path proot = root / "parts-corrupt";
+            uint64_t serial = 0;
+            fs::path dir;
+            {
+                ConversationSpill sp;
+                std::string e;
+                check(sp.open(proot, tier, e), "the corrupting tier opens");
+                sp.set_parts_mode(true);
+                check(sp.put(kv_img({2, 4, 6}, 512, 5), id, e, &serial), "one entry to corrupt");
+                dir = sp.entry(0).file;
+                sp.close();
+            }
+            {
+                std::fstream f(dir / "kv-0-0.bin", std::ios::in | std::ios::out | std::ios::binary);
+                f.seekp(16);
+                f.put('\x7f');   // one byte inside the committed K
+            }
+            ConversationSpill sp;
+            check(sp.open(proot, tier, err) && sp.size() == 0 && !fs::exists(dir),
+                  "a part whose bytes do not match the index is dropped, its folder with it");
+            sp.close();
+        }
+
+        // (iii) an unreferenced tail is harmless (the old generation still reads); a truncated part drops the entry
+        {
+            const fs::path proot = root / "parts-tail";
+            uint64_t serial = 0;
+            fs::path dir;
+            const SavedConversation img = kv_img({3, 1, 4}, 512, 8);
+            {
+                ConversationSpill sp;
+                std::string e;
+                check(sp.open(proot, tier, e), "the tail tier opens");
+                sp.set_parts_mode(true);
+                check(sp.put(img, id, e, &serial), "one entry to cut");
+                dir = sp.entry(0).file;
+                sp.close();
+            }
+            {   // bytes past the index's extents (an append that died before its commit): the old generation still reads
+                const fs::path part = dir / "kv-0-0.bin";
+                fs::resize_file(part, fs::file_size(part) + 4096, ec);
+            }
+            {
+                ConversationSpill sp;
+                check(sp.open(proot, tier, err) && sp.size() == 1, "a part with garbage past its committed size is kept");
+                SavedConversation back;
+                check(sp.take_serial(serial, id, {}, back, err) && same_kv(back, img), "and it still reads back the old generation");
+                const fs::path part = sp.find(serial)->file / "kv-0-0.bin";
+                sp.close();
+                fs::resize_file(part, fs::file_size(part) / 3, ec);   // now below the committed size
+            }
+            ConversationSpill sp;
+            check(sp.open(proot, tier, err) && sp.size() == 0, "a part that lost committed bytes drops the entry");
+            sp.close();
+        }
+
+        // (iv) ids that do not match the index: the entry donates its bytes, it is never matched to a prompt
+        {
+            const fs::path proot = root / "parts-ids";
+            uint64_t serial = 0;
+            fs::path dir;
+            // longer than chain_of's 4096-id window, so the chain survives the turn even though the ids are stale
+            const std::vector<int32_t> ids_a(4096, 5);
+            const SavedConversation img = kv_img(ids_a, 512, 2);
+            {
+                ConversationSpill sp;
+                std::string e;
+                check(sp.open(proot, tier, e), "the ids tier opens");
+                sp.set_parts_mode(true);
+                check(sp.put(img, id, e, &serial), "one entry with ids");
+                dir = sp.entry(0).file;
+                sp.close();
+            }
+            {
+                uint64_t len = 0, hash = 0;
+                std::string e;
+                const SavedConversation stale = kv_img({7, 7, 7}, 512, 2);   // another conversation's ids
+                check(spill_parts::write_ids(dir, stale, len, hash, e), "a stale ids sidecar is written");
+            }
+            ConversationSpill sp;
+            check(sp.open(proot, tier, err) && sp.size() == 1, "an entry whose ids do not match the index is kept for its bytes");
+            sp.set_parts_mode(true);
+            check(sp.entry(0).live.ids.empty(), "it carries no ids");
+            check(sp.best(std::vector<int32_t>{5, 5, 5, 5}, {}, true).tokens == 0 &&
+                  sp.best(std::vector<int32_t>{7, 7, 7}, {}, true).tokens == 0,
+                  "no prompt matches it: bytes only");
+            std::vector<int32_t> ids_b = ids_a;
+            ids_b.push_back(5);
+            ids_b.push_back(5);
+            const SavedConversation grown = kv_img(ids_b, 1024, 2);
+            uint64_t again = 0;
+            check(sp.put(grown, id, err, &again) && again == serial && sp.size() == 1,
+                  "the next park still extends its bytes");
+            sp.close();
+        }
+    }
+#endif
+
     fs::remove_all(root, ec);
     std::printf("conversation_spill_test: %d checks, %d failed\n", checks, failures);
     return failures == 0 ? 0 : 1;
