@@ -123,7 +123,7 @@ class AdoptFeedModels(unittest.TestCase):
         t = Tree(self.root, "x", ["Q4R-00001-of-00002.gguf", "Q4R-00002-of-00002.gguf"])
         cfg, problems = t.plan("q4rehearsal-a", "X", {"title": "x", "tag": "x-"})
         self.assertIsNone(cfg)
-        self.assertEqual(problems, ["Strata can write the settings itself only for the Qwen3.8-Flash-Next, Swift, Coder and Gyro files, not for q4rehearsal-a"])
+        self.assertEqual(problems, ["Strata can write the settings itself only for the Qwen3.8-Flash-Next, Swift, Coder, Gyro, Inkling-2-Mini and Hy4-Flash files, not for q4rehearsal-a"])
 
     def test_the_built_in_families_are_what_they_were(self):
         t = Tree(self.root, "q2_0", ["Qwen3.8-Flash-Next-Q2_0-00001-of-00002.gguf", "Qwen3.8-Flash-Next-Q2_0-00002-of-00002.gguf"])

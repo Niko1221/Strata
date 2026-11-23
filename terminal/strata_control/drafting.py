@@ -577,8 +577,16 @@ def gguf_facts(path: Any) -> dict[str, Any] | None:
                     break                                   # the words follow: everything wanted comes before them
                 if etype in _GGUF_SCALAR:
                     pos += count * _GGUF_SCALAR[etype]
+                elif etype == 8:                            # #6695: string arrays (general.tags, general.languages) before <arch>.block_count
+                    if count > (len(head) - pos) // 8:
+                        break
+                    for _ in range(count):
+                        (slen,) = struct.unpack_from("<Q", head, pos)
+                        pos += 8 + slen
+                        if pos > len(head):
+                            break
                 else:
-                    break                                   # an array of words before the tokens: not looked into
+                    break                                   # nested arrays before the tokens: not looked into
             else:
                 break
             if pos > len(head):

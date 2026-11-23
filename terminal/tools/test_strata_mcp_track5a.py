@@ -24,6 +24,14 @@ import strata_mcp as M  # noqa: E402
 def _make_sparse(path: Path, size: int) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "wb") as fh:
+        if os.name == "nt" and size > 0:
+            import ctypes
+            import msvcrt
+            handle = msvcrt.get_osfhandle(fh.fileno())
+            returned = ctypes.c_ulong(0)
+            ctypes.windll.kernel32.DeviceIoControl(
+                ctypes.c_void_p(handle), 0x000900C4, None, 0, None, 0, ctypes.byref(returned), None
+            )
         if size > 0:
             fh.seek(size - 1)
             fh.write(b"\0")
