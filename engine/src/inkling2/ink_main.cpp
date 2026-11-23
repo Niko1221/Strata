@@ -365,6 +365,81 @@ static int cmd_dump_ref(const std::string& model_path, const std::string& out_pa
     return 0;
 }
 
+// #6878: a prompt run as batches must give the logits the one-token steps give, at every position (the SWA K/V ring must not let a later token of
+// a batch overwrite a key an earlier query of that batch still reads).  --ring-check STRIDE: feed the prompt ids (a) in batches of INK_RING_CHECK_BATCH
+// tokens (default 4096, one forward_batch each) and (b) one token per forward, and compare the logits of every STRIDE-th position (and the last 8):
+// KL of the one-token distribution from the batch one, top-1 agreement, and the same for the rows after position swa_win only.  The two paths are
+// different kernels, so they differ by rounding (KL below 1e-3 on SQ-class packs); a ring overwrite gives KL of order 1 and a top-1 agreement far below.
+// Exit 0 when the median KL after the window is below 0.02 and the top-1 agreement above 90%.
+static int32_t argmax_f32(const float* lg, int V);
+static int cmd_ring_check(const std::string& model_path, const BackendOpts& bopts, bool force_cpu, const std::vector<int32_t>& ids, int stride) {
+    InkModelFile mf;
+    std::string err;
+    if (!mf.open(model_path, err, false, bopts.dspark_path)) { fprintf(stderr, "open: %s\n", err.c_str()); return 1; }
+    auto backend = make_default_backend(force_cpu, &bopts);
+    if (!backend->init(mf, bopts, err) || !backend->alloc_slot(0, bopts.max_ctx, bopts.kv_dtype, err)) { fprintf(stderr, "init: %s\n", err.c_str()); return 1; }
+    const int n = static_cast<int>(ids.size());
+    const int V = mf.m.c.vocab_unpadded;
+    const int win = mf.m.c.swa_win;
+    int piece = 4096;
+    if (const char* e = std::getenv("INK_RING_CHECK_BATCH"); e && std::atoi(e) > 0) piece = std::atoi(e);
+    stride = std::max(1, stride);
+    std::vector<int> rows;
+    for (int i = 0; i < n; ++i) if (i % stride == 0 || i >= n - 8) rows.push_back(i);
+    std::vector<float> A(rows.size() * static_cast<size_t>(V)), B(rows.size() * static_cast<size_t>(V));
+    StepBatch batch;
+    std::vector<float> lg(static_cast<size_t>(piece) * V);
+    for (int i0 = 0; i0 < n; i0 += piece) {
+        const int i1 = std::min(n, i0 + piece);
+        batch.clear();
+        for (int i = i0; i < i1; ++i) batch.push(0, i, ids[i], true);
+        if (!backend->forward_batch(batch, lg.data(), nullptr, err)) { fprintf(stderr, "forward: %s\n", err.c_str()); return 1; }
+        for (size_t r = 0; r < rows.size(); ++r)
+            if (rows[r] >= i0 && rows[r] < i1) std::memcpy(A.data() + r * V, lg.data() + static_cast<size_t>(rows[r] - i0) * V, sizeof(float) * V);
+    }
+    backend->reset_slot(0);
+    size_t r = 0;
+    for (int i = 0; i < n; ++i) {
+        batch.clear();
+        batch.push(0, i, ids[i], true);
+        if (!backend->forward_batch(batch, lg.data(), nullptr, err)) { fprintf(stderr, "step: %s\n", err.c_str()); return 1; }
+        if (r < rows.size() && rows[r] == i) { std::memcpy(B.data() + r * V, lg.data(), sizeof(float) * V); ++r; }
+    }
+    auto logsm = [&](const float* x, std::vector<double>& out) {
+        double m = x[0];
+        for (int i = 1; i < V; ++i) m = std::max<double>(m, x[i]);
+        double s = 0;
+        for (int i = 0; i < V; ++i) s += std::exp(static_cast<double>(x[i]) - m);
+        const double ls = std::log(s);
+        out.resize(V);
+        for (int i = 0; i < V; ++i) out[i] = static_cast<double>(x[i]) - m - ls;
+    };
+    std::vector<double> la, lb;
+    std::vector<double> kl_all, kl_late;
+    int top_all = 0, top_late = 0, n_late = 0;
+    for (size_t k = 0; k < rows.size(); ++k) {
+        const float* a = A.data() + k * V;
+        const float* b = B.data() + k * V;
+        logsm(b, la);   // reference: the one-token steps
+        logsm(a, lb);   // batch
+        double kl = 0;
+        for (int i = 0; i < V; ++i) kl += std::exp(la[i]) * (la[i] - lb[i]);
+        const bool same_top = argmax_f32(a, V) == argmax_f32(b, V);
+        kl_all.push_back(kl);
+        top_all += same_top;
+        if (rows[k] >= win) { kl_late.push_back(kl); top_late += same_top; ++n_late; }
+    }
+    auto med = [](std::vector<double> v) { if (v.empty()) return 0.0; std::sort(v.begin(), v.end()); return v[v.size() / 2]; };
+    auto mx = [](const std::vector<double>& v) { double m = 0; for (double x : v) m = std::max(m, x); return m; };
+    printf("[ring-check] %d tokens, batches of %d, %zu rows compared (stride %d), swa_win %d, backend %s\n", n, piece, rows.size(), stride, win, backend->backend_name());
+    printf("[ring-check] all rows: KL median %.3g max %.3g, top-1 agreement %.1f%%\n", med(kl_all), mx(kl_all), 100.0 * top_all / std::max<size_t>(1, rows.size()));
+    printf("[ring-check] rows at position >= %d (%d rows): KL median %.3g max %.3g, top-1 agreement %.1f%%\n", win, n_late, med(kl_late), mx(kl_late),
+           n_late ? 100.0 * top_late / n_late : 100.0);
+    const bool ok = n_late == 0 || (med(kl_late) < 0.02 && 100.0 * top_late / n_late > 90.0);
+    printf("[ring-check] RESULT: %s\n", ok ? "ok" : "BATCH LOGITS DIFFER FROM THE ONE-TOKEN STEPS AFTER THE WINDOW");
+    return ok ? 0 : 1;
+}
+
 // #6671: the drafter must be lossless.  --spec-check N: greedy-generate N tokens (a) one token per forward (B = 1), twice,
 // (b) through dspark_spec_step_greedy exactly as the serve loop calls it (with the same fallbacks), and (c) compare the
 // logits of an M-token verify window (forward_batch with M rows of one slot) bitwise against the B = 1 logits of the same
@@ -624,7 +699,7 @@ int main(int argc, char** argv) {
     bool mode_serve = false, mode_bench = false, mode_selfcheck = false, mode_info = false, mode_export = false;
     bool verify_hash = false;
     std::string info_file, export_file, export_dir, kld_ref, dump_ref, prompt_ids_str;
-    int bench_prompt = 64, bench_gen = 32, spec_check_n = 0;
+    int bench_prompt = 64, bench_gen = 32, spec_check_n = 0, ring_check_stride = 0;
     float cli_temp = 0.0f;
 
     for (int i = 1; i < argc; ++i) {
@@ -747,6 +822,8 @@ int main(int argc, char** argv) {
             }
         } else if (a == "--spec-check") {
             spec_check_n = std::atoi(next().c_str());
+        } else if (a == "--ring-check") {
+            ring_check_stride = std::atoi(next().c_str());
         } else if (a == "--temp") {
             cli_temp = static_cast<float>(std::atof(next().c_str()));
         } else if (a == "--no-anti-loop") {
@@ -821,6 +898,15 @@ int main(int argc, char** argv) {
     if (mode_selfcheck) return cmd_selfcheck(cfg.model_path, cfg.force_cpu, verify_hash, cfg.bopts);
     if (!kld_ref.empty()) return cmd_kld_eval(cfg.model_path, kld_ref, cfg.bopts, cfg.force_cpu);
     if (!dump_ref.empty()) return cmd_dump_ref(cfg.model_path, dump_ref, prompt_ids_str, cfg.bopts, cfg.force_cpu);
+    if (ring_check_stride > 0) {
+        std::vector<int32_t> rc_ids;
+        std::string rc_err;
+        if (prompt_ids_str.empty() || !parse_id_list(prompt_ids_str, rc_ids, rc_err)) {
+            fprintf(stderr, "--ring-check needs --prompt-ids (a list or @file)%s%s\n", rc_err.empty() ? "" : ": ", rc_err.c_str());
+            return 2;
+        }
+        return cmd_ring_check(cfg.model_path, cfg.bopts, cfg.force_cpu, rc_ids, ring_check_stride);
+    }
     if (spec_check_n > 0) {
         std::vector<int32_t> sc_ids;
         std::string sc_err;
