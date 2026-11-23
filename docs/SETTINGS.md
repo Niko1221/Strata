@@ -350,10 +350,10 @@ Off unless you set them. The last column says where each one is described.
 | `STRATA_VHEAD_BITPLANE` | number | NVIDIA and AMD | - |
 | `STRATA_VOLTA_FOREVER` | text | NVIDIA and AMD | - |
 | `STRATA_VRAM_FREE` | on / off | NVIDIA and AMD | [DETAILS.md](DETAILS.md), [release-notes-0.2.7.md](release-notes-0.2.7.md) |
-| `STRATA_WATCHDOG_S` | number | NVIDIA and AMD, Intel Arc | [DETAILS.md](DETAILS.md) |
+| `STRATA_WATCHDOG_S` | text | NVIDIA and AMD, Intel Arc | [DETAILS.md](DETAILS.md) |
 | `STRATA_WDDM_BUDGET` | number | AMD, Intel Arc | [AMD_HIP.md](AMD_HIP.md) |
 
-## Switches that go back to earlier behaviour (117)
+## Switches that go back to earlier behaviour (118)
 
 These behaviours are on by default. Setting the switch returns the earlier behaviour; the notes in the register say which
 version made it the default.
@@ -393,6 +393,7 @@ version made it the default.
 | `STRATA_INK_EXACT_GRAPH` | on / off | NVIDIA and AMD | - | - |
 | `STRATA_INK_EXACT_ROWS` | on / off | AMD | - | - |
 | `STRATA_INK_KEEP_MAPPED_PAGES` | on / off | NVIDIA and AMD | - | - |
+| `STRATA_INK_MOE_V1` | on / off | NVIDIA and AMD | - | - |
 | `STRATA_INK_NO_CAND` | on / off | NVIDIA and AMD | - | - |
 | `STRATA_INK_OOM_RETRY` | number | NVIDIA and AMD | - | - |
 | `STRATA_INK_PROMOTE_ASYNC` | text | AMD | - | - |
