@@ -55,8 +55,25 @@ class FreeMemoryPlan(unittest.TestCase):
         got = S.inkling_expert_flags(placed)
         self.assertEqual(got[0], "--vram-experts-gb")
         self.assertEqual(got[2], "--ram-experts-gb")
-        self.assertAlmostEqual(float(got[1]), 7.75 / 1.073741824, places=2)      # 7.22 GiB, not 7.75
-        self.assertAlmostEqual(float(got[3]), 0.85 / 1.073741824, places=2)
+        self.assertAlmostEqual(float(got[1]), 7.75 / 1.073741824, delta=0.011)   # 7.22 GiB, not 7.75 (rounded up to the flag's 0.01)
+        self.assertAlmostEqual(float(got[3]), 0.85 / 1.073741824, delta=0.011)
+        self.assertGreaterEqual(float(got[1]), 7.75 / 1.073741824)
+        self.assertGreaterEqual(float(got[3]), 0.85 / 1.073741824)
+
+    def test_a_flag_never_cuts_an_expert_off_a_plan_that_holds_them_all(self):
+        """UD-Q4_K_XL on a 32 GB card: the experts are 15.80 GB (3072 of them, 4.48 MB each in the NVFP4 layers). The cap written for the plan must
+        hold every one: the 14.42 GiB of the old table (15.48 GB) left 38 experts on the host and put the engine on the hybrid path (RTX 5090:
+        prefill -5.8%, decode -2.6%)."""
+        placed = F.place("UD-Q4_K_XL", 31.0, 64, False, 32768, False, dspark=False, backend="cuda", ram_free_gib=56.0)
+        self.assertTrue(placed["full_vram"], placed)
+        cap_gb = float(S.inkling_expert_flags(placed)[1]) * 1.073741824
+        self.assertGreaterEqual(cap_gb, 15.80 + 0.05)                            # the real bytes of the experts, and slack
+        self.assertLess(cap_gb, 15.80 * 1.05)
+        for gb in (0.0, 1.234, 8.0, 14.7119):                                    # no figure is ever rounded below itself
+            p = {"vram_gb": gb, "ram_gb": gb / 3, "full_vram": False}
+            f = S.inkling_expert_flags(p)
+            self.assertGreaterEqual(float(f[1]) * 1.073741824 + 1e-9, gb)
+            self.assertGreaterEqual(float(f[3]) * 1.073741824 + 1e-9, gb / 3)
 
 
 class MaxContext(unittest.TestCase):

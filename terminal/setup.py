@@ -10461,8 +10461,12 @@ def inkling_pc(gpu, ram) -> tuple:
 def inkling_expert_flags(placed) -> list:
     """--vram-experts-gb / --ram-experts-gb for a planner placement.  The planner counts GB (10^9 bytes); strata-inkling reads the two
     flags as GiB (2^30 bytes): written as they were, the engine's cap sat 7.4% above the plan (#6792)."""
-    return ["--vram-experts-gb", f"{placed['vram_gb'] / inkling_fit.GIB_TO_GB:.2f}",
-            "--ram-experts-gb", f"{placed['ram_gb'] / inkling_fit.GIB_TO_GB:.2f}"]
+    # Rounded UP to the 0.01 GiB the flag carries: an exact figure rounded down cuts the last expert off (UD-Q4_K_XL: 15.48 GB written as 14.42 GiB left
+    # 38 of 3072 experts on the host, the hybrid path, 6% slower), and a plan that holds every expert in the card gets 0.05 GiB (about 11 experts) of slack.
+    slack = 0.05 if placed.get("full_vram") else 0.0
+    up = lambda gb, extra=0.0: math.ceil((gb / inkling_fit.GIB_TO_GB + extra) * 100 - 1e-6) / 100          # noqa: E731
+    return ["--vram-experts-gb", f"{up(placed['vram_gb'], slack):.2f}",
+            "--ram-experts-gb", f"{up(placed['ram_gb']):.2f}"]
 
 
 def inkling_plan_extra(gpu) -> dict:
