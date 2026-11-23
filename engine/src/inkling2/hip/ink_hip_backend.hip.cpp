@@ -3481,8 +3481,12 @@ private:
                                       trunk_bf16_.count(c1 + ".down_weight") == 0 &&
                                       trunk_bf16_.count(c2 + ".down_weight") == 0);
                 if (batch3_ctrl && (all_bf || all_f32)) {
+                    // On SWA visits all three controllers read in0. k1_loop_ctrl_up3 runs the channels as
+                    // unordered blocks of one launch, so channel 0 must not update in0 in place while the
+                    // k / v blocks still read it: it writes to mx3 (unused on SWA visits) and q_in follows.
+                    if (is_swa) q_in = mx3;
                     FPtr3 src_p = is_swa ? FPtr3{{in0, in0, in0}} : FPtr3{{in0, in1, in2}};
-                    MutFPtr3 dst_p{{in0, in1, in2}};
+                    MutFPtr3 dst_p{{q_in, in1, in2}};
                     float* ic3 = reinterpret_cast<float*>(sc_ctrl_tmp_.dev_ptr);
                     float* im3 = ic3 + 3 * B;
                     float* gt3 = im3 + 3 * B;
@@ -3518,7 +3522,7 @@ private:
 
             if (!attn_norm_done) {
                 if (has_msgs && (D & 3) == 0) {
-                    MutFPtr3 io_p{{in0, in1, in2}};
+                    MutFPtr3 io_p{{q_in, in1, in2}};
                     FPtr3 nw_p = is_swa
                         ? FPtr3{{f32_ptr(p + ".attn_norm.weight"), f32_ptr(p + ".attn_norm.weight"), f32_ptr(p + ".attn_norm.weight")}}
                         : FPtr3{{f32_ptr(p + ".q_input_norm.weight"), f32_ptr(p + ".k_input_norm.weight"), f32_ptr(p + ".v_input_norm.weight")}};
@@ -4865,8 +4869,12 @@ private:
                                       trunk_bf16_.count(c1 + ".down_weight") == 0 &&
                                       trunk_bf16_.count(c2 + ".down_weight") == 0);
                 if (batch3_ctrl && (all_bf || all_f32)) {
+                    // On SWA visits all three controllers read in0. k1_loop_ctrl_up3 runs the channels as
+                    // unordered blocks of one launch, so channel 0 must not update in0 in place while the
+                    // k / v blocks still read it: it writes to mx3 (unused on SWA visits) and q_in follows.
+                    if (is_swa) q_in = mx3;
                     FPtr3 src_p = is_swa ? FPtr3{{in0, in0, in0}} : FPtr3{{in0, in1, in2}};
-                    MutFPtr3 dst_p{{in0, in1, in2}};
+                    MutFPtr3 dst_p{{q_in, in1, in2}};
                     float* ic3 = reinterpret_cast<float*>(sc_ctrl_tmp_.dev_ptr);
                     float* im3 = ic3 + 3 * B;
                     float* gt3 = im3 + 3 * B;
@@ -4900,7 +4908,7 @@ private:
 
             if (!attn_norm_done) {
                 if (has_msgs && (D & 3) == 0) {
-                    MutFPtr3 io_p{{in0, in1, in2}};
+                    MutFPtr3 io_p{{q_in, in1, in2}};
                     FPtr3 nw_p = is_swa
                         ? FPtr3{{f32_ptr(p + ".attn_norm.weight"), f32_ptr(p + ".attn_norm.weight"), f32_ptr(p + ".attn_norm.weight")}}
                         : FPtr3{{f32_ptr(p + ".q_input_norm.weight"), f32_ptr(p + ".k_input_norm.weight"), f32_ptr(p + ".v_input_norm.weight")}};
