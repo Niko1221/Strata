@@ -516,7 +516,18 @@ static int cmd_spec_check(const std::string& model_path, const BackendOpts& bopt
         }
         printf("\n[spec-check] steps=%ld (fused %ld, draft+verify %ld, single %ld), drafted %ld, emitted %ld\n", steps, spec_steps,
                draft_steps, single_steps, drafted_sum, emitted_sum);
+        if (const char* e = std::getenv("STRATA_SPEC_CHECK_IDS"); e && e[0] == '1') {   // the generated ids, for a quality check of the answer text
+            printf("[spec-check] IDS plain:");
+            for (size_t i = 0; i < a1.size(); ++i) printf("%c%d", i ? ',' : ' ', a1[i]);
+            printf("\n[spec-check] IDS drafter:");
+            for (size_t i = 0; i < b.size(); ++i) printf("%c%d", i ? ',' : ' ', b[i]);
+            printf("\n");
+        }
         if (!same) rc = 1;
+        if (const char* q = std::getenv("STRATA_SPEC_CHECK_QUICK"); q && q[0] == '1') {   // skip the verify-window comparisons
+            printf("[spec-check] RESULT: %s\n", rc ? "DIFFERS" : "identical");
+            return rc;
+        }
     }
 
     // (c) verify windows: M rows of one slot in one forward_batch against the B = 1 logits of the same positions
