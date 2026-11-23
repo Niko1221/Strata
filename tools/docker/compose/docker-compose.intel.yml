@@ -4,17 +4,18 @@
 #   cp .env.example .env
 #   docker compose -f docker-compose.intel.yml up -d
 #
-# Images: ghcr.io/niko1221/strata (published from 0.2.1 on). To use one you built yourself: STRATA_IMAGE=strata:0.2.7-<flavor> docker compose up -d
+# Images: ghcr.io/niko1221/strata (published from 0.2.1 on). To use one you built yourself: STRATA_IMAGE=strata:0.2.20-<flavor> docker compose up -d
 services:
   strata:
-    image: ${STRATA_IMAGE:-ghcr.io/niko1221/strata:0.2.7-sycl}
+    image: ${STRATA_IMAGE:-ghcr.io/niko1221/strata:0.2.20-sycl}
     container_name: strata
     restart: unless-stopped
     ports:
       - "${STRATA_BIND:-127.0.0.1}:${STRATA_PORT:-8080}:8080"
     environment:
+      FAMILY: ${FAMILY:-}                    # qwen, hy4-flash, inkling-2-mini, ...
       MODEL: ${MODEL:-}
-      MODEL_PATH: ${MODEL_PATH:-}            # GGUF files you already have, as seen inside the container (mount them below)
+      MODEL_PATH: ${MODEL_PATH:-}            # .gguf, .strata, or .safetensors files you already have, as seen inside the container (mount them below)
       CONTEXT: ${CONTEXT:-32k}
       PARALLEL: ${PARALLEL:-}
       VISION: ${VISION:-off}
