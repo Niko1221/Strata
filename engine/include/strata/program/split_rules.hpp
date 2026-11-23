@@ -202,8 +202,8 @@ inline int64_t min_spare(const std::vector<int64_t>& cuts, int64_t n_layers, con
 // cache decreases the misses.  A much slower card can cost more time than its cache saves.
 //
 // The example of #6758 is an RTX 4090 (PCIe x16) with an RTX 3060 (PCIe x4), IQ3_S and 48 layers.  The search chose K=10
-// at a predicted 27.0 ms per decode window.  The best split run decoded at 34.6 tok/s.  The RTX 4090 alone decoded at
-// 62 to 74 tok/s.
+// at a predicted 27.0 ms per decode window.  The same model predicts 17.5 ms for the RTX 4090 alone.  #6758 has the
+// measured runs.
 //
 // The same model thus also predicts the chosen placement without its first stages, down to the last card alone.  The
 // layers of a removed stage go to the next stage.  The last stage always stays, because it holds the head.  The engine
