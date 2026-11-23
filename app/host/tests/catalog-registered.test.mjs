@@ -8,7 +8,7 @@ const locales = new URL('../src/locales/', import.meta.url);
 const lib = new URL('../src/lib/', import.meta.url);
 const files = readdirSync(locales);
 const families = [...new Set(files.map(f => /^(.+)-en\.json$/.exec(f)?.[1]).filter(Boolean))];
-const langs = ['zh', 'ja', 'de', 'fr', 'es', 'ru', 'pt', 'ko', 'he'];
+const langs = ['zh', 'ja', 'de', 'fr', 'es', 'ru', 'pt', 'ko', 'he', 'it'];
 
 test('every catalog family is loaded by every language catalog, and its English file by i18n.ts', () => {
   assert.ok(families.length >= 15, `families found: ${families.join(', ')}`);

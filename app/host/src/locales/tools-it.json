@@ -1,0 +1,6 @@
+{
+  "tl01": "Usa un nome server semplice di massimo 32 caratteri: lettere, numeri, trattini o trattini bassi.",
+  "tl02": "Questi server di strumenti sono stati esclusi perché i loro nomi non sono consentiti: {0}. Un nome può contenere fino a 32 lettere, numeri, trattini o trattini bassi.",
+  "tl03": "Questi server di strumenti sono stati esclusi perché non hanno un programma o un indirizzo web: {0}.",
+  "tl04": "Questi server di strumenti sono stati esclusi perché un altro ha quasi lo stesso nome: {0}."
+}

@@ -1,0 +1,16 @@
+{
+  "fixa01": "Controllo di ciò che il computer può eseguire…",
+  "fixa02": "Richiede pochi secondi.",
+  "fixa03": "Restanti da scaricare",
+  "fixa04": "Download di un piccolo modulo ausiliario che velocizza le risposte. Avviene una sola volta.",
+  "fixa05": "Controllo ancora in corso. Al primo avvio può richiedere fino a un minuto.",
+  "contextOptimizerHint": "Consente a un piccolo modello locale di selezionare estratti da vecchi messaggi dell'assistente e risultati di strumenti quando l'assistente di codifica libera spazio. Disattivato di default. Se la selezione fallisce, subentra il riassunto standard.",
+  "contextOptimizerConfigure": "Configura modello locale",
+  "contextOptimizerEnable": "Attiva Ottimizzatore di contesto",
+  "contextOptimizerTimeout": "Timeout in secondi",
+  "contextOptimizerUnavailable": "Le impostazioni dell'Ottimizzatore di contesto non sono disponibili.",
+  "contextOptimizerTest": "Testa modello",
+  "contextOptimizerTestSuccess": "Test del modello superato ({0} ms).",
+  "contextOptimizerTestFailure": "Il modello locale non ha restituito una selezione utilizzabile. Controlla server, ID modello e timeout.",
+  "contextOptimizerSaved": "Salvato. La prossima richiesta dell'assistente applicherà le modifiche al termine delle chat attive."
+}
