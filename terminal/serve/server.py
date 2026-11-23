@@ -3678,10 +3678,11 @@ def engine_args(cfg: dict, exe: str | None = None, *, announce: bool = True) -> 
     shaped = {**cfg, "args": args, **({"user_args": mine} if mine else {})}
     backend, archs = drafting.hardware_for(cfg.get("backend"))   # #5109: the config's engine family, not an idle card of another vendor
     parallel_n = cfg.get("parallel")
+    binary = engine_binary(exe, cfg) if exe else None
     decision = drafting.apply(shaped, klass=drafting.card_class(archs) if archs else drafting_card_class(), data_dir=drafting.data_dir_of(args), backend=backend, archs=archs,
                               vram_mib=drafting_vram_mib(cfg, backend, archs),
                               slots=parallel_n if isinstance(parallel_n, int) and not isinstance(parallel_n, bool) else 0,
-                              engine=engine_binary(exe, cfg) if exe else exe,
+                              engine=binary,
                               stages=len(gpu_list(cfg)) if layer_split_of(cfg) else 1)
     args = shaped["args"]
     if announce:
@@ -3747,6 +3748,11 @@ def engine_args(cfg: dict, exe: str | None = None, *, announce: bool = True) -> 
             args += ["--vram-segment-mib", str(seg)]
     args += parallel_args(cfg, args)
     args += pool_cores_args(cfg, args)
+    # Older engines and the SYCL engine can use the prompt cache but do not understand this checkpoint policy.
+    if "--prompt-cache-spread" in args and binary and engine_has_text(binary, b"--prompt-cache-spread") is False:
+        args = [arg for arg in args if arg != "--prompt-cache-spread"]
+        if announce:
+            print("[strata] This engine does not support spreading prompt cache checkpoints, so it uses its usual checkpoint policy.", flush=True)
     args = conversation_cache_min_tokens_args(args, exe or cfg.get("exe"))
     return draft_costs_args(cfg, learned_profile_args(cfg, args), exe or cfg.get("exe"))
 
