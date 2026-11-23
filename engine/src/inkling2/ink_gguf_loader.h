@@ -25,6 +25,7 @@
 #include "ink_safetensors_loader.h"
 #include "strata/artifact/gguf_reader.hpp"
 #include "strata/artifact/strata_reader.hpp"
+#include "strata/core/ink_names.hpp"
 #include "strata/quant/dequant.hpp"
 #include "strata/quant/sk_codecs.hpp"
 
@@ -724,12 +725,12 @@ struct GgufAdapter {
                     if (!detail::read_slice_from_file(dspark_st.path, dspark_st.st.data_start + kv.second.begin,
                                                       sec1_arena.data() + off, nb, err)) return false;
                     TInfoT ti;
-                    ti.name = kv.first;
+                    ti.name = strata::core::ink_dspark_name(kv.first);
                     ti.fmt = wfmt;
                     ti.shape = kv.second.shape;
                     ti.off = off;
                     ti.bytes = nb;
-                    m.dspark_tensors[kv.first] = std::move(ti);
+                    m.dspark_tensors[ti.name] = std::move(ti);
                 }
                 m.dspark.present = !m.dspark_tensors.empty();
             } else if (gguf_detail::has_gguf_magic(dspark_file)) {
@@ -740,42 +741,7 @@ struct GgufAdapter {
                     return false;
                 }
                 // Map all 54 tensors from Unsloth/llama.cpp dspark-*.gguf (dflash arch) to canonical DSpark names
-                auto map_dspark_name = [](const std::string& n) -> std::string {
-                    if (n == "dspark_fuse.weight" || n == "dspark.fuse_weight" || n == "fuse_weight") return "fuse_weight";
-                    if (n == "mask_embd.weight" || n == "dspark.mask_embed" || n == "mask_embed") return "mask_embed";
-                    if (n == "output_norm.weight" || n == "dspark.output_norm.weight" || n == "norm.weight") return "norm.weight";
-                    if (n == "dspark_norm.weight") return "markov_head.dflare_norm.weight";
-                    if (n == "dspark_hidden_out.weight") return "markov_head.hidden_out.weight";
-                    if (n == "dspark_hidden_out.bias") return "markov_head.hidden_out.bias";
-                    if (n == "markov_w1.weight") return "markov_head.markov_w1.weight";
-                    if (n == "joint_proj.weight") return "markov_head.rnn_proj.weight";
-                    if (n == "joint_proj.bias") return "markov_head.rnn_proj.bias";
-                    if (n.rfind("blk.", 0) == 0) {
-                        size_t dot = n.find('.', 4);
-                        if (dot != std::string::npos) {
-                            std::string idx = n.substr(4, dot - 4);
-                            std::string rest = n.substr(dot + 1);
-                            std::string lp = "layers." + idx + ".";
-                            if (rest == "dflare_norm.weight") return lp + "dflare_norm.weight";
-                            if (rest == "attn_norm.weight") return lp + "input_layernorm.weight";
-                            if (rest == "ffn_norm.weight") return lp + "post_attention_layernorm.weight";
-                            if (rest == "ffn_down.weight") return lp + "mlp.down_proj.weight";
-                            if (rest == "ffn_gate.weight") return lp + "mlp.gate_proj.weight";
-                            if (rest == "ffn_up.weight") return lp + "mlp.up_proj.weight";
-                            if (rest == "attn_q.weight") return lp + "self_attn.q_proj.weight";
-                            if (rest == "attn_k.weight") return lp + "self_attn.k_proj.weight";
-                            if (rest == "attn_v.weight") return lp + "self_attn.v_proj.weight";
-                            if (rest == "attn_k_ctx.weight") return lp + "self_attn.k_proj_ctx.weight";
-                            if (rest == "attn_v_ctx.weight") return lp + "self_attn.v_proj_ctx.weight";
-                            if (rest == "attn_output.weight") return lp + "self_attn.o_proj.weight";
-                            if (rest == "attn_q_norm.weight") return lp + "self_attn.q_norm.weight";
-                            if (rest == "attn_k_norm.weight") return lp + "self_attn.k_norm.weight";
-                            if (rest == "attn_k_ctx_norm.weight") return lp + "self_attn.k_norm_ctx.weight";
-                        }
-                    }
-                    if (n.rfind("dspark.", 0) == 0) return n.substr(7);
-                    return n;
-                };
+                auto map_dspark_name = [](const std::string& n) -> std::string { return strata::core::ink_dspark_plain_from_gguf(n); };
                 for (size_t si = 0; si < dspark_gguf->size(); ++si) {
                     for (const auto& t : dspark_gguf->shard(si).tensors()) {
                         std::vector<float> v;
@@ -787,7 +753,8 @@ struct GgufAdapter {
                         size_t nb = v.size() * sizeof(uint16_t);
                         bool keep_f32 = (sh.size() <= 1 || cn == "fuse_weight" || cn.find("norm") != std::string::npos || cn.find("bias") != std::string::npos);
                         TInfoT ti;
-                        ti.name = cn;
+                        // Backends ask for "dspark.<name>" (#6762, #6784, #6717): the drafter GGUF carries plain names.
+                        ti.name = strata::core::ink_dspark_name(cn);
                         ti.shape = sh;
                         ti.off = off;
                         if (keep_f32) {
@@ -802,7 +769,7 @@ struct GgufAdapter {
                             ti.fmt = 102;
                         }
                         ti.bytes = nb;
-                        m.dspark_tensors[cn] = std::move(ti);
+                        m.dspark_tensors[ti.name] = std::move(ti);
                     }
                 }
                 m.dspark.present = !m.dspark_tensors.empty();
