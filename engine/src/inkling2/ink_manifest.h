@@ -115,6 +115,7 @@ struct InkCfg {
     int eos_token_id = 200006;  // <|content_model_end_sampling|>
     int eot_token_id = 199999;  // <|endoftext|>
     int image_token_id = 200054;
+    int message_model_token_id = 200001;  // <|message_model|>: the assistant turn opener
     int max_position_embeddings = 1048576;
 
     float rms_eps = 1e-6f;
