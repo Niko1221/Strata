@@ -844,7 +844,18 @@ public:
         // 2. True W=4 Multi-Branch Sparse-MoE Bayes-Optimal Adaptive Beam Tree (M* in {3,4,5,6,8,10,12})!
         strata::ink::InkTreeSpec tr{};
         const int max_nodes = std::min(12, runner_->tree_cap);
-        dspark_->draft_beam_tree(anchor_tok, anchor_pos, /*beam_w=*/4, max_nodes, tr, /*adaptive_moe_ratio=*/4.2f);
+        // STRATA_INK_SPEC_BEAM (default 4; 1 = a linear chain, the block drafter), STRATA_INK_SPEC_COST (the MoE share of a verify step, default 4.2),
+        // STRATA_INK_SPEC_PLAIN (0 = off; 1.0 = a step whose expected tokens do not pay for the verify window runs as one plain token; above 1 favours plain)
+        static const struct SpecCfg {
+            int beam = 4; float cost = 4.2f; float plain = 0.0f; bool log = false;
+            SpecCfg() {
+                if (const char* e = std::getenv("STRATA_INK_SPEC_BEAM")) beam = std::max(1, std::min(8, std::atoi(e)));
+                if (const char* e = std::getenv("STRATA_INK_SPEC_COST")) cost = (float)std::atof(e);
+                if (const char* e = std::getenv("STRATA_INK_SPEC_PLAIN")) plain = (float)std::atof(e);
+                log = std::getenv("STRATA_INK_SPEC_LOG") != nullptr;
+            }
+        } spec_cfg;
+        dspark_->draft_beam_tree(anchor_tok, anchor_pos, spec_cfg.beam, max_nodes, tr, spec_cfg.cost, spec_cfg.plain);
 
         // 3. Single CUDA-Graph 48-visit tree verify + exact GPU screened argmax (ZERO 6.4 MB logits D2H!)
         runner_->forward_tree_verify(tr, anchor_pos, 0, true);
@@ -883,6 +894,11 @@ public:
         }
         dspark_->ingest_taps_from(runner_->d_taps_compact, anchor_pos, n_emit);
 
+        if (spec_cfg.log) {
+            static long st_steps = 0, st_emit = 0, st_nodes = 0; static double st_pred = 0.0; static long st_plain = 0;
+            ++st_steps; st_emit += n_emit; st_nodes += tr.M; st_pred += dspark_->last_pred_etok; if (tr.M == 1) ++st_plain;
+            if (st_steps % 200 == 0) std::fprintf(stderr, "[SPEC-STATS] steps=%ld mean_M=%.2f mean_pred_tokens=%.2f mean_actual_tokens=%.2f plain_steps=%ld\n", st_steps, (double)st_nodes / st_steps, st_pred / st_steps, (double)st_emit / st_steps, st_plain);
+        }
         tree_snap_ready_ = true;
         tree_snap_p0_ = anchor_pos;
         tree_snap_M_ = n_emit;
