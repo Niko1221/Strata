@@ -28,8 +28,21 @@ TOKENIZER_FILE = "tokenizer.json"
 CHAT_TEMPLATE_FILE = "chat_template.jinja"
 DEFAULT_CONTEXT = inkling_fit.DEFAULT_CONTEXT
 CONTEXTS = inkling_fit.CONTEXTS
-DEFAULT_DRAFTER = "dspark"
+DEFAULT_DRAFTER = "dspark"      # the drafter used when drafting is on (Inkling's one checkpoint: mtp.safetensors / the Unsloth GGUF / the SQ pack's copy)
 DRAFTERS = ("off", "dspark")
+#: Window shape the engine is told to use when drafting is on (`--draft-beam`): 1 = one linear chain, the block drafter; 4 = the beam tree.
+#: Measured 2026-11-23 (0221-DSPARK): the chain is as fast as the tree on CUDA (within 3 percent either way) and simpler.
+DRAFT_BEAM = 1
+#: Backends whose verify window gives bit-identical answers to plain decoding (greedy, the same tokens as `--draft off` at 600 / 4K / 16K
+#: and in a 5-run fingerprint). Drafting is on by default only there: the owner's rule is that a drafter must earn its place with measured
+#: speed AND identical output. 0221-DSPARK measured the opposite on every card (answers differ from token 4 to 330 on chat, prose, json and
+#: documents), so the list is empty until DETERM's verify-window fix is measured. `--drafting dspark` / "drafting": "dspark" still turn it on.
+EXACT_DRAFTING_BACKENDS: tuple = ()
+
+
+def default_drafting(backend: str | None = None) -> str:
+    """What a run config gets when the person chose nothing: "dspark" on a backend in EXACT_DRAFTING_BACKENDS, else "off"."""
+    return DEFAULT_DRAFTER if (backend or "cuda") in EXACT_DRAFTING_BACKENDS else "off"
 DEFAULT_VISION = True
 DEFAULT_PARALLEL = inkling_fit.DEFAULT_PARALLEL
 PARALLEL_CHOICES = inkling_fit.PARALLEL_CHOICES

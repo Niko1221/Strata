@@ -46,7 +46,7 @@ def wants_drafter(cfg: dict) -> bool:
     raw = cfg.get("drafting")
     if raw is False:
         return False
-    choice = str(raw if raw not in (None, "") else inkling_family.DEFAULT_DRAFTER).strip().lower()
+    choice = str(raw if raw not in (None, "") else inkling_family.default_drafting(cfg.get("backend"))).strip().lower()
     return choice not in ("off", "none", "false", "0")
 
 
@@ -93,9 +93,18 @@ def probe(exe: str | None, args: list, cfg: dict | None = None, timeout: float =
 
 
 def drafter_args(cfg: dict, info: dict | None = None) -> list[str]:
+    from strata_control import inkling_family
     if not wants_drafter(cfg):
         return ["--draft", "off"]
-    return ["--draft", "dspark"] if (info or {}).get("drafter") == "dspark" else []
+    if (info or {}).get("drafter") != "dspark":
+        return []
+    out = ["--draft", "dspark"]
+    # an engine that lists spec_opts=1 takes the window shape: one linear chain (the block drafter) unless the run config says otherwise
+    if (info or {}).get("spec_opts") == "1":
+        beam = cfg.get("draft_beam", inkling_family.DRAFT_BEAM)
+        if isinstance(beam, int) and not isinstance(beam, bool) and 1 <= beam <= 8:
+            out += ["--draft-beam", str(beam)]
+    return out
 
 
 def drafting_info(args: list, info: dict | None = None) -> dict[str, str]:

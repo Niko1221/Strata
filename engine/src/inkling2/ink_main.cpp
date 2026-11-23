@@ -90,7 +90,7 @@ static int cmd_info(const std::string& file, const std::string& vision, const st
         images = vision_probe(vision, vi, verr) ? 1 : 0;
         if (!images) fprintf(stderr, "vision shard: %s\n", verr.c_str());
     }
-    printf("arch=inkling2_loop format=%s build=%s layers=%d visits=%d hidden=%d vocab=%d experts=%d eos=%d drafter=%s images=%d image_pad=%d parallel=%d\n",
+    printf("arch=inkling2_loop format=%s build=%s layers=%d visits=%d hidden=%d vocab=%d experts=%d eos=%d drafter=%s images=%d image_pad=%d parallel=%d spec_opts=1\n",
            source_kind_name(mf.kind),
            m.build.empty() ? "unknown" : m.build.c_str(),
            m.c.n_phys, m.c.n_visits, m.c.hidden, m.c.vocab_unpadded, m.c.n_experts, m.c.eos_token_id,

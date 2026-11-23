@@ -179,8 +179,10 @@ class TestInklingUnslothDirectCatalog(unittest.TestCase):
             cfg_path = install_dir / "strata-inkling-2-mini-ud-q2_k_xl.json"
             self.assertTrue(cfg_path.is_file())
             cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
-            self.assertEqual(cfg["drafting"], "dspark")
-            self.assertIn("--dspark", cfg["args"])
+            # the drafter file is fetched, but drafting is off until a backend is proven bit-exact (0221-DSPARK): `strata launch --drafting dspark` turns it on
+            self.assertEqual(cfg["drafting"], "off")
+            self.assertNotIn("--dspark", cfg["args"])
+            self.assertEqual(cfg["args"][cfg["args"].index("--draft") + 1], "off")
             self.assertIn("--vision", cfg["args"])
             # 4 GB GPU gets --vram-experts-gb 0.00 so trunk sits in VRAM and experts stream from RAM
             vi = cfg["args"].index("--vram-experts-gb")
