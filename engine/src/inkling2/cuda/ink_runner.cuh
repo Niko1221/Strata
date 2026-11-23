@@ -12,6 +12,7 @@
 #include "ink_moe_cuda.cuh"
 
 #include "strata/artifact/strata_reader.hpp"
+#include "strata/core/ink_kv_grow.hpp"
 
 #include <algorithm>
 #include <array>
@@ -787,7 +788,8 @@ struct InkCudaModel {
         const std::string& layer_split_spec = "",
         int cpu_threads = 0) {
         // Fast zero-overhead path for single-GPU .strata v1.1!
-        const bool is_strata_fmt = (mf.m.format.rfind("strata", 0) == 0);
+        // The file's real kind decides, not the manifest's format string: a GGUF / safetensors file must never reach load() (the .strata reader).
+        const bool is_strata_fmt = mf.is_native_strata();
         const bool single_gpu_req = (gpu1 < 0) && (all_gpus.size() <= 1) && layer_split_spec.empty();
         if (is_strata_fmt && single_gpu_req) {
             return load(mf.path, gpu0, build_screen, err, extra_reserve_bytes, vram_experts_gb, ram_experts_gb, ssd_experts, cpu_threads);
@@ -2266,8 +2268,7 @@ struct InkCudaRunner {
         if (needed_pos <= kv_alloc_ctx) return true;
         if (needed_pos > max_ctx) return false;
         const int old_cap = kv_alloc_ctx;
-        int new_cap = std::min(max_ctx, std::max(needed_pos, ((old_cap + 8191) / 8192 + 1) * 8192));
-        new_cap = std::min(max_ctx, ((new_cap + 63) & ~63));
+        int new_cap = strata::core::ink_kv_next_cap(old_cap, needed_pos, max_ctx);
 
         const size_t per_pos = kv_bytes_per_visit_pos(kv_dtype);
         for (int s = 0; s < (m.ls_active ? m.n_stages : 1); ++s) {
@@ -2281,11 +2282,12 @@ struct InkCudaRunner {
             const int dev = m.ls_active ? m.stage_gpu[s] : m.primary_gpu;
             if (ink_cuda_mem_info(&vf, &vt, dev) != cudaSuccess) return false;
             const size_t floor_b = 256ull << 20;
-            const size_t need_b = (size_t)n_glob_s * max_slots * new_cap * per_pos;
-            if (vf <= floor_b + need_b) {
+            // #6770: the visits grow one at a time (new buffer, copy, free the old one), so the card needs the net growth
+            // plus one held old visit, not the whole new K/V next to the old one (that refused growth at about half the context).
+            if (!strata::core::ink_kv_grow_fits(vf, floor_b, n_glob_s, max_slots, old_cap, new_cap, per_pos)) {
                 const int tight_cap = std::min(max_ctx, ((needed_pos + 255) & ~255));
-                const size_t tight_b = (size_t)n_glob_s * max_slots * tight_cap * per_pos;
-                if (vf <= floor_b + tight_b) {
+                if (tight_cap <= old_cap ||
+                    !strata::core::ink_kv_grow_fits(vf, floor_b, n_glob_s, max_slots, old_cap, tight_cap, per_pos)) {
                     // VRAM cannot grow global KV further: seamlessly spill tail [kv_dev_ctx..new_cap-1] into mapped pinned host RAM!
                     if (kv_offload_mode >= 0 && kv_host_ctx == 0) {
                         const int hcap = new_cap - kv_dev_ctx;
@@ -2484,7 +2486,8 @@ struct InkCudaRunner {
             if (norm_w) k_ink_rms_norm<<<M, 256, 0, st>>>(out, norm_w, out, nullptr, M, D);
         } else {
             const float alpha = 1.0f, beta = 0.0f;
-            if (!exact_fp32 && m.sm_cc >= 70 && m.sm_cc < 80) {
+            const int ctl_cc = m.ls_active ? m.stage_cc[cur_stage] : m.sm_cc;   // the stage that runs this, not the first card (#6796)
+            if (!exact_fp32 && ctl_cc >= 70 && ctl_cc < 80) {
                 // Volta sm_70 (V100) / Turing sm_75 (2080 Ti): 125 TFLOPS FP16 TC for loop controller GEMMs (4x faster than FP32!)
                 __half* x_h = reinterpret_cast<__half*>(d_x_bf16);
                 __half* w_h = reinterpret_cast<__half*>(d_w_scratch);
@@ -2510,7 +2513,7 @@ struct InkCudaRunner {
                     w_h, CUDA_R_16F, kInkGateRank, x_h, CUDA_R_16F, kInkGateRank, &beta,
                     d_ctrl_forget, CUDA_R_32F, D, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP));
             } else {
-                const cublasComputeType_t ctype = (!exact_fp32 && m.sm_cc >= 80) ? CUBLAS_COMPUTE_32F_FAST_TF32 : CUBLAS_COMPUTE_32F;
+                const cublasComputeType_t ctype = (!exact_fp32 && ctl_cc >= 80) ? CUBLAS_COMPUTE_32F_FAST_TF32 : CUBLAS_COMPUTE_32F;
                 INK_CUBLAS_CK(cublasGemmEx(
                     cublas, CUBLAS_OP_T, CUBLAS_OP_N, kInkGateRank, M, D2, &alpha,
                     w_down, CUDA_R_32F, D2, d_ctrl_cat, CUDA_R_32F, D2, &beta,
@@ -2621,6 +2624,40 @@ struct InkCudaRunner {
         }
     }
 
+    // Tracks which converted representation of a shared X buffer is currently valid in d_x_bf16.
+    enum XCacheFmt { XC_NONE = 0, XC_BF16 = 1, XC_FP16 = 2, XC_I8 = 3 };
+
+    XCacheFmt linear_x_cache_fmt(const std::string& tname, int M, int N_override, bool exact_fp32_x) const {
+        const auto& ti = m.tinfo(tname);
+        const int N = N_override > 0 ? N_override : (int)ti.rows();
+        const int K = (int)ti.cols();
+        const int cur_cc = m.ls_active ? m.stage_cc[cur_stage] : m.sm_cc;
+        const bool cur_attn_fp16 = m.ls_active ? m.stage_trunk_attn_fp16[cur_stage] : m.trunk_attn_fp16;
+        const XCacheFmt gemm_fmt = (cur_cc >= 80) ? XC_BF16 : ((cur_cc >= 70) ? XC_FP16 : XC_NONE);
+        if (ti.fmt == FMT_BF16) {
+            const bool is_fp16 = cur_attn_fp16 && (tname.find(".attn.") != std::string::npos);
+            const int bf16_gemv_max = is_fp16 ? 3 : ((exact_fp32_x || cur_cc < 80) ? 16 : 7);
+            if (M <= bf16_gemv_max) return XC_NONE;
+            return is_fp16 ? XC_FP16 : gemm_fmt;
+        }
+        if (ti.fmt == FMT_F32) return XC_NONE;
+        if (ti.fmt == FMT_Q8ROW) {
+            if (M > 16 && cur_cc == 61 && (K % 4 == 0) && (N % 4 == 0) && N_override == 0) return XC_I8;
+            const size_t cap = (size_t)kInkDsparkInter * kInkHidden;
+            const size_t max_tile = (cur_cc < 70) ? (cap / 3) : cap;
+            if (M <= 16 || (size_t)N * K > max_tile) return XC_NONE;
+            return gemm_fmt;
+        }
+        return gemm_fmt;
+    }
+
+    void linear_cached(const std::string& tname, const float* X, float* Y, int M, XCacheFmt& x_cached, bool exact_fp32_x = false) {
+        const XCacheFmt need = linear_x_cache_fmt(tname, M, 0, exact_fp32_x);
+        const bool reuse = (need != XC_NONE && need == x_cached);
+        linear(tname, X, Y, M, 0, reuse, exact_fp32_x);
+        if (need != XC_NONE) x_cached = need;
+    }
+
     // ---- Dense linear projection helper: Y[M, N] = X[M, K] @ W[N, K]^T ----
     void linear_multi(const std::string* names, float* const* Ys, int count, const float* X, int M, bool exact_fp32_x = false) {
         if (count <= 0) return;
@@ -2655,26 +2692,32 @@ struct InkCudaRunner {
                     else if (M <= 8) k_ink_gemv_multi_bf16<8, false><<<grid, 128, 0, st>>>(mp, X, M, K);
                     else             k_ink_gemv_multi_bf16<16, false><<<grid, 128, 0, st>>>(mp, X, M, K);
                 }
-            } else if ((K % 64) == 0 && K <= kInkQDim && (cur_cc == 61 || cur_cc >= 75)) {
+                return;
+            }
+            if ((K % 64) == 0 && K <= kInkQDim && (cur_cc == 61 || cur_cc >= 75)) {
                 if (M == 1) {
                     k_ink_gemv_multi_q8row_m1<<<grid, 128, 0, st>>>(mp, X, K);
-                } else {
-                    const int nblk = M * (K / 64);
+                    return;
+                }
+                const int nblk = M * (K / 64);
+                if (cur_moe_ws && (size_t)nblk <= (size_t)cur_moe_ws->cap_M * (kInkHidden / 64)) {
                     k_ink_quant_q8_1<<<(nblk + 7) / 8, 256, 0, st>>>(X, cur_moe_ws->xq_sk, M, K);
                     if (M <= 4)      k_ink_gemv_multi_q8row_preq<4><<<grid, 128, 0, st>>>(mp, cur_moe_ws->xq_sk, M, K);
                     else if (M <= 8) k_ink_gemv_multi_q8row_preq<8><<<grid, 128, 0, st>>>(mp, cur_moe_ws->xq_sk, M, K);
                     else             k_ink_gemv_multi_q8row_preq<16><<<grid, 128, 0, st>>>(mp, cur_moe_ws->xq_sk, M, K);
+                    return;
                 }
-            } else {
-                const int g4 = (mp.cumN[count] + 3) / 4;
-                if (M == 1)      k_ink_gemv_multi_q8row<1><<<g4, 128, 0, st>>>(mp, X, M, K);
-                else if (M <= 4) k_ink_gemv_multi_q8row<4><<<g4, 128, 0, st>>>(mp, X, M, K);
-                else if (M <= 8) k_ink_gemv_multi_q8row<8><<<g4, 128, 0, st>>>(mp, X, M, K);
-                else             k_ink_gemv_multi_q8row<16><<<g4, 128, 0, st>>>(mp, X, M, K);
             }
+            const int g4 = (mp.cumN[count] + 3) / 4;
+            if (M == 1)      k_ink_gemv_multi_q8row<1><<<g4, 128, 0, st>>>(mp, X, M, K);
+            else if (M <= 4) k_ink_gemv_multi_q8row<4><<<g4, 128, 0, st>>>(mp, X, M, K);
+            else if (M <= 8) k_ink_gemv_multi_q8row<8><<<g4, 128, 0, st>>>(mp, X, M, K);
+            else             k_ink_gemv_multi_q8row<16><<<g4, 128, 0, st>>>(mp, X, M, K);
             return;
         }
-        for (int i = 0; i < count; ++i) linear(names[i], X, Ys[i], M, 0, i > 0, exact_fp32_x);
+        // Mixed-format or non-fusible projections: only reuse d_x_bf16 when a prior projection populated the same format.
+        XCacheFmt x_cached = XC_NONE;
+        for (int i = 0; i < count; ++i) linear_cached(names[i], X, Ys[i], M, x_cached, exact_fp32_x);
     }
 
     void linear(const std::string& tname, const float* X, float* Y, int M, int N_override = 0, bool reuse_x_bf16 = false, bool exact_fp32_x = false) {
@@ -2768,7 +2811,7 @@ struct InkCudaRunner {
                         return;
                     }
                     const int nblk = M * (K / 64);
-                    if ((size_t)nblk <= (size_t)cur_moe_ws->cap_M * (kInkHidden / 64)) {
+                    if (cur_moe_ws && (size_t)nblk <= (size_t)cur_moe_ws->cap_M * (kInkHidden / 64)) {
                         k_ink_quant_q8_1<<<(nblk + 7) / 8, 256, 0, st>>>(X, cur_moe_ws->xq_sk, M, K);
                         if (M <= 4)      k_ink_gemv_multi_q8row_preq<4><<<grid, 128, 0, st>>>(mp, cur_moe_ws->xq_sk, M, K);
                         else if (M <= 8) k_ink_gemv_multi_q8row_preq<8><<<grid, 128, 0, st>>>(mp, cur_moe_ws->xq_sk, M, K);
@@ -2800,7 +2843,7 @@ struct InkCudaRunner {
                 if (ti.fmt == FMT_S5_K)      k_ink_sk_to_bf16<FMT_S5_K><<<dg, 256, 0, st>>>(Wsub, w_dst, nt, K);
                 else if (ti.fmt == FMT_S6_K) k_ink_sk_to_bf16<FMT_S6_K><<<dg, 256, 0, st>>>(Wsub, w_dst, nt, K);
                 else                         k_ink_sk_to_bf16<FMT_S8_K><<<dg, 256, 0, st>>>(Wsub, w_dst, nt, K);
-                gemm_bf16_compat(w_dst, X, Y + n0, M, nt, K, N, n0 > 0, true);
+                gemm_bf16_compat(w_dst, X, Y + n0, M, nt, K, N, (n0 > 0) || reuse_x_bf16, true);
             }
         }
     }
@@ -2939,12 +2982,14 @@ struct InkCudaRunner {
             linear(p + ".attn.wk_dv.weight", in_k, d_k_raw, M, 0, false, exact_x);
             linear(p + ".attn.wv_dv.weight", in_v, d_v_raw, M, 0, false, exact_x);
         } else {
-            linear(p + ".attn.wq_du.weight", in_q, d_q, M, 0, false);
-            linear(p + ".attn.wr_du.weight", in_q, d_r, M, 0, true);
-            linear(p + ".attn.gate_attn.weight", in_q, d_gate_attn, M, 0, true);
-            linear(p + ".attn.attn_sink_proj.weight", in_q, d_sinks, M, 0, false);
-            linear(p + ".attn.wk_dv.weight", in_k, d_k_raw, M, 0, share_qkv);
-            linear(p + ".attn.wv_dv.weight", in_v, d_v_raw, M, 0, share_qkv);
+            XCacheFmt x_q = XC_NONE;
+            linear_cached(p + ".attn.wq_du.weight", in_q, d_q, M, x_q);
+            linear_cached(p + ".attn.wr_du.weight", in_q, d_r, M, x_q);
+            linear_cached(p + ".attn.gate_attn.weight", in_q, d_gate_attn, M, x_q);
+            linear_cached(p + ".attn.attn_sink_proj.weight", in_q, d_sinks, M, x_q);
+            XCacheFmt x_k = XC_NONE, x_v = XC_NONE;
+            linear_cached(p + ".attn.wk_dv.weight", in_k, d_k_raw, M, share_qkv ? x_q : x_k);
+            linear_cached(p + ".attn.wv_dv.weight", in_v, d_v_raw, M, share_qkv ? x_q : x_v);
         }
 
         // 4. Dynamic K/V ShortConv tap projections on global layers

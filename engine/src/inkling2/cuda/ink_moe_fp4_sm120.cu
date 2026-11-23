@@ -20,6 +20,7 @@
 //   bytes [40..47]: padding
 #include "ink_moe_fp4_sm120.cuh"
 #include "ink_cuda.cuh"
+#include "strata/core/ink_caps.hpp"
 
 #if defined(CUDART_VERSION) && (CUDART_VERSION >= 12080)
 #include <cuda_fp4.h>
@@ -920,22 +921,16 @@ bool available() {
 #if !defined(CUDART_VERSION) || (CUDART_VERSION < 12080)
     return false;
 #else
-    static int cached = -1;
-    if (cached >= 0) return cached != 0;
+    // per device (#6796, #6808): a cache filled on stage 0 told an sm_86 stage that it could run the sm_120 FP4 kernels
+    static strata::core::PerDeviceFlag flag;
     int dev = 0;
-    cudaDeviceProp p{};
-    if (cudaGetDevice(&dev) != cudaSuccess || cudaGetDeviceProperties(&p, dev) != cudaSuccess) {
-        cached = 0;
-        return false;
-    }
-    if (p.major != 12 || (p.minor != 0 && p.minor != 1)) {
-        cached = 0;
-        return false;
-    }
-    cudaFuncAttributes attr{};
-    cached = (cudaFuncGetAttributes(&attr, (const void*)k_moe_sf4_tc<true, 64>) == cudaSuccess &&
-              attr.binaryVersion >= 120) ? 1 : 0;
-    return cached != 0;
+    if (cudaGetDevice(&dev) != cudaSuccess) return false;
+    return flag.get(dev, [dev] {
+        cudaDeviceProp p{};
+        if (cudaGetDeviceProperties(&p, dev) != cudaSuccess || !strata::core::ink_cap_sm120(p.major, p.minor)) return false;
+        cudaFuncAttributes attr{};
+        return cudaFuncGetAttributes(&attr, (const void*)k_moe_sf4_tc<true, 64>) == cudaSuccess && attr.binaryVersion >= 120;
+    });
 #endif
 }
 

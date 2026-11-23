@@ -677,9 +677,10 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
         }
         if (line == "STATS") {
             auto st = backend.stats();
-            proto("STATS active_slots=%d max_slots=%d vram_experts=%zu ram_experts=%zu total_experts=%zu kv=%s",
+            proto("STATS active_slots=%d max_slots=%d vram_experts=%zu ram_experts=%zu total_experts=%zu kv=%s expert_selections=%llu expert_misses=%llu",
                   st.active_slots, st.max_slots, st.vram_experts_loaded, st.ram_experts_loaded, st.total_experts,
-                  st.kv_dtype == KvDtype::FP8_E4M3 ? "fp8" : "fp16");
+                  st.kv_dtype == KvDtype::FP8_E4M3 ? "fp8" : "fp16",
+                  (unsigned long long)st.expert_selections, (unsigned long long)st.expert_misses);
             return true;
         }
         if (line == "STOP") {

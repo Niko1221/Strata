@@ -992,6 +992,10 @@ struct InkHybridEngine {
     int32_t* d_v_p  = nullptr;   // device pair indices
     double dec_pcie_share = -1.0; // -1 = auto, 0 = 100% CPU, 1 = 100% PCIe DMA (STRATA_INK_DEC_PCIE_SHARE)
     uint32_t promo_step = 0;      // cadence counter so step_promote does NOT sync every single token!
+    // Expert-cache statistics of the batched path (M <= 16, i.e. decode): every routed expert counted, and those that were not in the card
+    // (host RAM or SSD) counted as misses; STATS reports the hit rate (the share of routed experts served from the card).
+    uint64_t stat_selections = 0;
+    uint64_t stat_misses = 0;
     bool l3_pf_enabled = true;    // STRATA_L3_PF: idle-worker next-layer L3 prefetch
     std::atomic<uint32_t> pf_gen{0};
     int pf_layer = -1, pf_n = 0;
@@ -1628,10 +1632,12 @@ inline void launch_ink_moe_hybrid(
             for (int i = 0; i < M * kInkTopK; ++i) {
                 const int e = h_idx[i];
                 const int key = ip * kInkExperts + e;
+                if (e >= 0 && e < kInkExperts) ++hyb.stat_selections;
                 if (e >= 0 && e < kInkExperts && hyb.host_meta[key].body != nullptr &&
                     (hyb.key_to_slot.empty() || hyb.key_to_slot[key] < 0)) {
                     if (ecnt[e] == 0) host_list.push_back(e);
                     ++ecnt[e];
+                    ++hyb.stat_misses;
                 }
             }
             // Zero-cliff small-spill fast path: when <= 6 cold experts miss (~2-6 MB) and PCIe staging is ready,

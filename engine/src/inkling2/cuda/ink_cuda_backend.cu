@@ -10,6 +10,7 @@
 #include "ink_dspark.cuh"
 #include "ink_runner.cuh"
 #include "ink_spec.cuh"
+#include "strata/core/arch_probe.hpp"
 #include "strata/core/volta_forever.hpp"
 
 #include <algorithm>
@@ -63,6 +64,11 @@ __global__ void __launch_bounds__(256) k_ink_gather_rows(
     for (int i = threadIdx.x; i < (kInkHidden / 4); i += 256) d4[i] = s4[i];
 }
 
+// Never launched: cudaFuncGetAttributes() on it says whether this binary holds GPU code for the card (#6759).
+__global__ void k_ink_arch_probe(int* p) {
+    if (p) *p = 1;
+}
+
 }  // namespace strata::ink
 
 namespace ink2 {
@@ -97,6 +103,8 @@ public:
             for (bool a : slot_alloc_) if (a) ++act;
             st.active_slots = act;
             st.kv_dtype = kv_dtype_;
+            st.expert_selections = model_.hybrid.stat_selections;
+            st.expert_misses = model_.hybrid.stat_misses;
         }
         return st;
     }
@@ -142,6 +150,18 @@ public:
             return false;
         }
         const int sm_cc = prop.major * 10 + prop.minor;
+
+        // A binary built without code for this card (the CUDA 13 packages hold sm_75 and newer) loads fine, then every kernel launch
+        // fails with "no kernel image" without a message and the logits stay 0: token id 0 forever (#6759). Say so before anything loads.
+        {
+            cudaFuncAttributes probe_attr{};
+            const cudaError_t pe = cudaFuncGetAttributes(&probe_attr, reinterpret_cast<const void*>(strata::ink::k_ink_arch_probe));
+            if (pe != cudaSuccess) {
+                cudaGetLastError();
+                err = strata::core::no_gpu_code_message("strata-inkling", prop.name, prop.major, prop.minor, cudaGetErrorString(pe));
+                return false;
+            }
+        }
 
         // Compute exact minimum KV + ShortConv + workspace headroom BEFORE pinning experts!
         // Keep lossless FP16 KV as default when Host KV Offload handles capacity (#552)!
@@ -230,20 +250,69 @@ public:
             }
         }
 
-        runner_ = std::make_unique<strata::ink::InkCudaRunner>(model_);
         const bool vf_graph_ok = strata::core::allow_1024_thread_cuda_graphs(
             prop.major, prop.minor, strata::core::volta_forever_active());
-        runner_->use_cuda_graph = vf_graph_ok && !model_.ep2_active && !model_.ls_active;
         if (!vf_graph_ok) {
             std::fprintf(stderr, "[inkling-cuda] sm_70 under volta-forever: disabling 1024-thread CUDA Graph capture by default\n");
         }
-        runner_->init(max_slots_, std::max(256, opts.max_ctx), std::max(64, opts.chunk), cuda_kvd, kv_offload_mode);
+        // Memory ledger (what each start-up step took from the card), so a plan that leaves too little can be seen in the log (#6644 #6792).
+        auto free_mib = [&]() -> double {
+            size_t vf = 0, vt = 0;
+            if (strata::ink::ink_cuda_mem_info(&vf, &vt, gpu_id_) != cudaSuccess) return -1.0;
+            return (double)vf / 1048576.0;
+        };
+        // Test hook: STRATA_INK_TEST_STEAL_MIB=N holds N MiB of the card after the experts are placed, to imitate a plan that left too little.
+        if (const char* steal = std::getenv("STRATA_INK_TEST_STEAL_MIB")) {
+            const long long mib = std::atoll(steal);
+            if (mib > 0 && cudaMalloc(&d_test_steal_, (size_t)mib << 20) != cudaSuccess) { d_test_steal_ = nullptr; cudaGetLastError(); }
+        }
+        const double led_loaded = free_mib();
+
+        // The experts are already in the card, so a start-up allocation that does not fit is met by a smaller workspace (the
+        // prefill chunk is halved down to 64) instead of ending the engine (#6644 #6792); the drafter is dropped last of all.
+        // STRATA_INK_OOM_RETRY=0 turns the retry off (the engine then ends on the first allocation that does not fit, as before).
+        const char* retry_env = std::getenv("STRATA_INK_OOM_RETRY");
+        strata::ink::ink_alloc_throws() = !(retry_env && std::atoi(retry_env) == 0);
+        struct ThrowGuard { ~ThrowGuard() { strata::ink::ink_alloc_throws() = false; } } throw_guard;
+        int chunk_try = std::max(64, opts.chunk);
+        for (;;) {
+            runner_ = std::make_unique<strata::ink::InkCudaRunner>(model_);
+            runner_->use_cuda_graph = vf_graph_ok && !model_.ep2_active && !model_.ls_active;
+            try {
+                runner_->init(max_slots_, std::max(256, opts.max_ctx), chunk_try, cuda_kvd, kv_offload_mode);
+                break;
+            } catch (const strata::ink::InkAllocFailure& ex) {
+                runner_->free_all();
+                runner_.reset();
+                cudaGetLastError();
+                if (chunk_try <= 64) {
+                    err = std::string(ex.what()) + "; not enough free GPU memory for the working buffers even at the smallest size. "
+                          "Use a smaller --max-context, a lower --vram-experts-gb, or close other programs that use the card.";
+                    return false;
+                }
+                const int next = std::max(64, chunk_try / 2);
+                std::fprintf(stderr, "[InkCUDA] not enough free GPU memory for the working buffers at chunk %d (%s); retrying with chunk %d\n",
+                             chunk_try, ex.what(), next);
+                chunk_try = next;
+            }
+        }
         eff_max_ctx_ = runner_->max_ctx;
+        const double led_runner = free_mib();
 
         if (opts.enable_dspark && model_.man.has_dspark && !model_.ls_active) {
             dspark_ = std::make_unique<strata::ink::InkDSpark>(*runner_);
-            dspark_->init(eff_max_ctx_, 512);
+            try {
+                dspark_->init(eff_max_ctx_, 512);
+            } catch (const strata::ink::InkAllocFailure& ex) {
+                dspark_->free_all();
+                dspark_.reset();
+                cudaGetLastError();
+                std::fprintf(stderr, "[InkCUDA] DSpark drafter turned off: not enough free GPU memory for it (%s)\n", ex.what());
+            }
         }
+        strata::ink::ink_alloc_throws() = false;
+        std::fprintf(stderr, "[InkCUDA] memory: %.0f MiB free after load, runner+KV took %.0f MiB (max_batch=%d), DSpark took %.0f MiB, %.0f MiB free now\n",
+                     led_loaded, led_loaded - led_runner, runner_->max_batch, led_runner - free_mib(), free_mib());
 
         // Allocate snapshot buffer (3.83 MB) + selected hidden gather buffers
         if (!model_.ls_active) {
@@ -926,6 +995,7 @@ private:
         if (dspark_) { dspark_->free_all(); dspark_.reset(); }
         if (runner_) { runner_->free_all(); runner_.reset(); }
         if (d_sconv_snap_) { cudaFree(d_sconv_snap_); d_sconv_snap_ = nullptr; }
+        if (d_test_steal_) { cudaFree(d_test_steal_); d_test_steal_ = nullptr; }
         if (d_h_sel_)      { cudaFree(d_h_sel_); d_h_sel_ = nullptr; }
         if (d_sel_idx_)    { cudaFree(d_sel_idx_); d_sel_idx_ = nullptr; }
         if (h_logits_pin_) { cudaFreeHost(h_logits_pin_); h_logits_pin_ = nullptr; h_logits_cap_ = 0; }
@@ -959,6 +1029,7 @@ private:
     std::unique_ptr<strata::ink::InkCudaRunner> runner_;
     std::unique_ptr<strata::ink::InkDSpark> dspark_;
     float* d_sconv_snap_ = nullptr;
+    void* d_test_steal_ = nullptr;   // STRATA_INK_TEST_STEAL_MIB test hook
     float* d_h_sel_ = nullptr;
     int32_t* d_sel_idx_ = nullptr;
     float* h_logits_pin_ = nullptr;
