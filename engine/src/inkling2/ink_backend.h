@@ -62,6 +62,11 @@ public:
     // Speculative rollback: restore KV + ShortConv state to `keep_len` (requires snapshot taken before verify!)
     virtual void snapshot_slot(int slot) = 0;
     virtual void rollback_slot(int slot, int keep_len) = 0;
+    // prompt-end park for the cross-turn prompt cache. Own buffers (the
+    // speculative snapshot above is shared with the beam path), so drafting and the cache coexist.
+    // False = unsupported (the serve layer then keeps the strict full-stream resume only).
+    virtual bool snapshot_prompt(int slot) { (void)slot; return false; }
+    virtual bool restore_prompt(int slot) { (void)slot; return false; }
 
     // Batched 48-visit forward across 1..64 active slots!
     // logits_out: [batch.count_logits(), vocab_unpadded] FP32 (already softcapped by 30*tanh(z/30) and sliced to 200058).

@@ -327,6 +327,13 @@ struct ActiveReq {
     std::vector<int32_t> hist;
     std::vector<int32_t> gen_ids;
     std::vector<int32_t> cached_prefix;  // tokens currently resident in slot KV
+    // cross-turn prompt cache. `parked_prompt` is the prompt of the
+    // prompt-end park (snapshot_prompt at prefill end, own buffers - `parked_snap`); a next turn
+    // that re-renders this prompt restores it and re-reads only the delta, so the generated tail
+    // (incl. the model's hidden thinking, which clients never echo) no longer breaks reuse.
+    // The SWA ring is parked too: its slack only survives ~max_batch tail tokens.
+    std::vector<int32_t> parked_prompt;
+    bool parked_snap = false;
     double t_start = 0.0;
     double prompt_ms = 0.0;
     double decode_t0 = 0.0;
@@ -478,13 +485,33 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
             const int lim = std::min(static_cast<int>(rq.cached_prefix.size()), rq.prompt_len - 1);
             while (reuse < lim && rq.cached_prefix[reuse] == rq.prompt_ids[reuse]) ++reuse;
             if (reuse != static_cast<int>(rq.cached_prefix.size())) {
+                // why the parked prefix was refused, as one line of engine log
+                std::fprintf(stderr,
+                    "[ink-serve] prefix cache refused: prompt_len=%d cached=%zu matched=%d\n",
+                    rq.prompt_len, rq.cached_prefix.size(), reuse);
                 reuse = 0;  // Safe reset when SWA/ShortConv state diverged
             }
         }
         if (reuse == 0) {
-            backend.reset_slot(rq.slot);
-            rq.cached_prefix.clear();
-        } else {
+            // the strict match above fails on every turn 2+ because the
+            // reply's generated tail (incl. hidden thinking) is never echoed back token-for-token.
+            // But the previous PROMPT always matches (the history renders again), and rollback_slot
+            // restores the exact parked prompt-end state. Resume there and re-read only the delta.
+            if (pg.images.empty() && rq.parked_snap && !rq.parked_prompt.empty()
+                && rq.parked_prompt.size() < (size_t)rq.prompt_len
+                && std::equal(rq.parked_prompt.begin(), rq.parked_prompt.end(), rq.prompt_ids.begin())
+                && backend.restore_prompt(rq.slot)) {
+                rq.parked_snap = false;   // the park is consumed
+                reuse = static_cast<int>(rq.parked_prompt.size());
+                rq.cached_prefix.assign(rq.prompt_ids.begin(), rq.prompt_ids.begin() + reuse);
+            } else {
+                backend.reset_slot(rq.slot);
+                rq.cached_prefix.clear();
+                rq.parked_snap = false;      // the reset invalidates the parked snapshot; re-park at this prompt's end
+                rq.parked_prompt.clear();
+            }
+        }
+        if (reuse > 0) {
             proto("RESUME %d", reuse);
         }
         rq.prefill_pos = reuse;
@@ -806,6 +833,16 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
                 rq.prefill_pos += prefill_fed[s];
                 rq.cur_pos = rq.prefill_pos;
                 rq.prompt_ms += step_ms;
+                // the prompt is fully read - park the prompt-end state so the
+                // next turn can resume here. snapshot_prompt parks into its own buffers (SWA ring +
+                // ShortConv), so the DSpark beam path keeps the speculative snapshot to itself.
+                if (rq.prefill_pos >= rq.prompt_len && !rq.parked_snap && rq.img_embeds.empty()) {
+                    if (backend.snapshot_prompt(rq.slot)) {
+                        rq.parked_prompt.assign(rq.prompt_ids.begin(), rq.prompt_ids.end());
+                        rq.parked_snap = true;
+                        std::fprintf(stderr, "[ink-serve] PARKED slot=%d len=%d\n", rq.slot, rq.prompt_len);
+                    }
+                }
                 if (rq.is_solo || !rq.admitted) {
                     const double ppts = step_ms > 0.0 ? (prefill_fed[s] * 1000.0 / step_ms) : 0.0;
                     proto("PP %d %d %.1f %.1f", rq.prefill_pos, rq.prompt_len, rq.prompt_ms, ppts);

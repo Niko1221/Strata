@@ -154,6 +154,7 @@ public:
 
         // Allocate snapshot buffer (3.83 MB) + selected hidden gather buffers + pinned D2H logits staging
         d_sconv_snap_ = strata::ink::dalloc<float>((size_t)strata::ink::kInkVisits * 3 * strata::ink::kInkSconvCh);
+        d_sconv_park_ = strata::ink::dalloc<float>((size_t)strata::ink::kInkVisits * 3 * strata::ink::kInkSconvCh);
         d_h_sel_      = strata::ink::dalloc<float>((size_t)runner_->max_batch * strata::ink::kInkHidden);
         d_sel_idx_    = strata::ink::dalloc<int32_t>(runner_->max_batch);
         slot_alloc_.assign(max_slots_, false);
@@ -196,6 +197,23 @@ public:
         snap_active_[slot] = true;
         snap_M_[slot] = 0;
         if (slot == 0) tree_snap_ready_ = false;
+    }
+
+    // prompt-end park for the cross-turn prompt cache - own sconv buffer
+    // plus the runner's SWA-ring park, so the speculative snapshot/rollback stay untouched.
+    bool snapshot_prompt(int slot) override {
+        if (!initialized_ || slot < 0 || slot >= max_slots_) return false;
+        if (!runner_->park_swa_ring(slot)) return false;
+        strata::ink::k_ink_sconv_slot_copy<<<dim3(strata::ink::kInkVisits, 4), 256, 0, runner_->st>>>(
+            runner_->d_sconv_pool_arr, d_sconv_park_, slot, runner_->max_slots, true);
+        return true;
+    }
+    bool restore_prompt(int slot) override {
+        if (!initialized_ || slot < 0 || slot >= max_slots_) return false;
+        if (!runner_->unpark_swa_ring(slot)) return false;
+        strata::ink::k_ink_sconv_slot_copy<<<dim3(strata::ink::kInkVisits, 4), 256, 0, runner_->st>>>(
+            runner_->d_sconv_pool_arr, d_sconv_park_, slot, runner_->max_slots, false);
+        return true;
     }
 
     void rollback_slot(int slot, int keep_len) override {
@@ -595,6 +613,7 @@ private:
     std::unique_ptr<strata::ink::InkCudaRunner> runner_;
     std::unique_ptr<strata::ink::InkDSpark> dspark_;
     float* d_sconv_snap_ = nullptr;
+    float* d_sconv_park_ = nullptr;   // prompt-end park (cross-turn prompt cache)
     float* d_h_sel_ = nullptr;
     int32_t* d_sel_idx_ = nullptr;
     float* h_logits_pin_ = nullptr;

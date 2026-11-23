@@ -384,6 +384,13 @@ struct InkCudaRunner {
 
     // KV Cache (48 visits: 40 SWA, 8 Global)
     InkKvVisitDesc kv_desc[kInkVisits]{};
+    // prompt-end park for the cross-turn prompt cache (see park_swa_ring).
+    static constexpr int kParkSlots = 4;      // park memory scales with slots; most run configs use parallel=1
+    int park_slots_ = 0;
+    uint8_t* d_park_k[kInkVisits]{};          // SWA ring K/V slices (raw bytes), one slice per parked slot
+    uint8_t* d_park_v[kInkVisits]{};
+    uint8_t* d_park_ks[kInkVisits]{};         // FP8 per-head scales
+    uint8_t* d_park_vs[kInkVisits]{};
     // ShortConv state pool: [48 visits] x 4 states (k [1024], v [1024], attn [2304], mlp [2304]) -> 1 contiguous buffer!
     // Layout: visit -> [max_slots, 3, 6656] F32 (or 256 MB for 64 slots)
     float* d_sconv_pool[kInkVisits] = {};
@@ -553,6 +560,21 @@ struct InkCudaRunner {
             }
             d_sconv_pool[v] = dalloc<float>((size_t)max_slots * 3 * kInkSconvCh);
             INK_CK(cudaMemset(d_sconv_pool[v], 0, (size_t)max_slots * 3 * kInkSconvCh * sizeof(float)));
+        }
+
+        // SWA-ring park buffers for the cross-turn prompt cache
+        park_slots_ = (max_slots <= kParkSlots) ? max_slots : kParkSlots;
+        for (int v = 0; v < kInkVisits; ++v) {
+            const auto& pd = kv_desc[v];
+            if (!pd.is_swa) continue;
+            const size_t pb = (size_t)park_slots_ * pd.cap_pos * kInkKVHeads * kInkHeadDim * (pd.is_fp8 ? 1u : 2u);
+            d_park_k[v] = dalloc<uint8_t>(pb);
+            d_park_v[v] = dalloc<uint8_t>(pb);
+            if (pd.is_fp8) {
+                const size_t sb = (size_t)park_slots_ * pd.cap_pos * kInkKVHeads * sizeof(float);
+                d_park_ks[v] = dalloc<uint8_t>(sb);
+                d_park_vs[v] = dalloc<uint8_t>(sb);
+            }
         }
 
         const size_t MB = (size_t)max_batch;
@@ -1026,6 +1048,54 @@ struct InkCudaRunner {
                 gemm_bf16_compat(w_dst, X, Y + n0, M, nt, K, N, n0 > 0, true);
             }
         }
+    }
+
+    // park/unpark one slot's SWA ring at the prompt end. A resume point's
+    // attention window lives in the ring, whose slack only survives ~max_batch tail tokens - a longer
+    // reply clobbers it (why upstream demands a strict full-stream match). Global KV is
+    // position-addressed and stays valid below the park point, so only the SWA ring is copied.
+    // True = parked. Independent of the speculative snapshot, so drafting and the cache coexist.
+    bool park_swa_ring(int slot) {
+        if (slot < 0 || slot >= park_slots_) return false;
+        for (int v = 0; v < kInkVisits; ++v) {
+            const auto& d = kv_desc[v];
+            if (!d.is_swa) continue;
+            const size_t bpe = d.is_fp8 ? 1u : 2u;
+            const size_t bytes = (size_t)d.cap_pos * kInkKVHeads * kInkHeadDim * bpe;
+            const size_t off = (size_t)slot * bytes;
+            const uint8_t* sk = d.is_fp8 ? (const uint8_t*)d.k_f8 : (const uint8_t*)d.k_f16;
+            const uint8_t* sv = d.is_fp8 ? (const uint8_t*)d.v_f8 : (const uint8_t*)d.v_f16;
+            INK_CK(cudaMemcpyAsync(d_park_k[v] + off, sk + off, bytes, cudaMemcpyDeviceToDevice, st));
+            INK_CK(cudaMemcpyAsync(d_park_v[v] + off, sv + off, bytes, cudaMemcpyDeviceToDevice, st));
+            if (d.is_fp8) {
+                const size_t sb = (size_t)d.cap_pos * kInkKVHeads * sizeof(float);
+                const size_t so = (size_t)slot * sb;
+                INK_CK(cudaMemcpyAsync(d_park_ks[v] + so, (const uint8_t*)d.k_sc + so, sb, cudaMemcpyDeviceToDevice, st));
+                INK_CK(cudaMemcpyAsync(d_park_vs[v] + so, (const uint8_t*)d.v_sc + so, sb, cudaMemcpyDeviceToDevice, st));
+            }
+        }
+        return true;
+    }
+    bool unpark_swa_ring(int slot) {
+        if (slot < 0 || slot >= park_slots_) return false;
+        for (int v = 0; v < kInkVisits; ++v) {
+            const auto& d = kv_desc[v];
+            if (!d.is_swa) continue;
+            const size_t bpe = d.is_fp8 ? 1u : 2u;
+            const size_t bytes = (size_t)d.cap_pos * kInkKVHeads * kInkHeadDim * bpe;
+            const size_t off = (size_t)slot * bytes;
+            uint8_t* dk = d.is_fp8 ? (uint8_t*)d.k_f8 : (uint8_t*)d.k_f16;
+            uint8_t* dv = d.is_fp8 ? (uint8_t*)d.v_f8 : (uint8_t*)d.v_f16;
+            INK_CK(cudaMemcpyAsync(dk + off, d_park_k[v] + off, bytes, cudaMemcpyDeviceToDevice, st));
+            INK_CK(cudaMemcpyAsync(dv + off, d_park_v[v] + off, bytes, cudaMemcpyDeviceToDevice, st));
+            if (d.is_fp8) {
+                const size_t sb = (size_t)d.cap_pos * kInkKVHeads * sizeof(float);
+                const size_t so = (size_t)slot * sb;
+                INK_CK(cudaMemcpyAsync((uint8_t*)d.k_sc + so, d_park_ks[v] + so, sb, cudaMemcpyDeviceToDevice, st));
+                INK_CK(cudaMemcpyAsync((uint8_t*)d.v_sc + so, d_park_vs[v] + so, sb, cudaMemcpyDeviceToDevice, st));
+            }
+        }
+        return true;
     }
 
     void ensure_pf_attn(int K_len) {
