@@ -297,6 +297,29 @@ int main() {
               "#6425 Q8_0 with --prefill 1024 keeps streamed staging cleanly");
     }
 
+    // STRATA_Q36_STAGING_ONE: one staging buffer (408 MiB) fits where the pair (816 MiB) does not —
+    // the 200k/q8_0 case on 8 GiB, 655 MiB free; slots stay 0 (the 512 MiB slack rule), streaming stays on.
+    {
+        constexpr size_t MiB = (size_t) 1 << 20;
+        strata::qwen35::HybridIn in;
+        in.fr = 655 * MiB;              // free after the weights, the 200k q8_0 context and the sessions
+        in.budget2 = 527 * MiB;         // fr - --vram-reserve-mib 128
+        in.per_slot = 41 * 1600000ull;  // Q8_0 stride, about 1.6 MiB an expert
+        in.n_layers = 41;
+        in.tail = 64 << 10;
+        in.outputs = 128 * MiB + 64 * 1024;
+        in.staging_full = 408 * MiB;    // one buffer
+        in.streamed = true;
+        in.ne = 256;
+        const strata::qwen35::HybridPlan one = strata::qwen35::hybrid_plan(in);
+        check(one.fits && !one.dropped_staging && one.staging == in.staging_full && one.S == 0,
+              "STRATA_Q36_STAGING_ONE: one 408 MiB staging buffer fits 655 MiB free, no slots");
+        in.staging_full = 816 * MiB;    // the pair does not fit: dropped staging (the pair plan)
+        const strata::qwen35::HybridPlan pair = strata::qwen35::hybrid_plan(in);
+        check(pair.fits && pair.dropped_staging && pair.staging == 0,
+              "STRATA_Q36_STAGING_ONE: the staging pair drops on the same 655 MiB free");
+    }
+
     if (g_fail) {
         std::fprintf(stderr, "q36_metadata_test: %d of %d checks FAILED\n", g_fail, g_checks);
         return 1;
