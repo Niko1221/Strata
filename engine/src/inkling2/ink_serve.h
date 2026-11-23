@@ -67,6 +67,25 @@ struct SampleOpts {
     bool penalties() const noexcept { return rep != 1.0f || freq != 0.0f || pres != 0.0f; }
 };
 
+// The K best token ids of lg[0..V-1], best first: larger logit first, the smaller id first on equal logits.  Exactly what
+// std::partial_sort over an iota with that order leaves in idx[0..K-1], but one pass over the row (about 0.1 ms for V = 200058
+// instead of a few ms), because every sampled token of every slot pays it on the host (#6779: 16..64 slots, temperature > 0).
+inline void ink_top_k_ids(const float* lg, int V, int K, std::vector<int>& idx) {
+    K = std::max(0, std::min(K, V));
+    idx.assign((size_t)K, 0);
+    if (K == 0) return;
+    std::vector<float> val((size_t)K);
+    int n = 0;
+    for (int i = 0; i < V; ++i) {
+        const float v = lg[i];
+        if (n == K && !(v > val[K - 1])) continue;   // a later id with an equal logit sorts after the kept ones
+        int j = (n < K) ? n++ : K - 1;
+        while (j > 0 && v > val[j - 1]) { val[j] = val[j - 1]; idx[j] = idx[j - 1]; --j; }
+        val[j] = v;
+        idx[j] = i;
+    }
+}
+
 inline int32_t sample_logits(float* lg, int V, const SampleOpts& s, const std::vector<int32_t>& hist, std::mt19937_64& rng) {
     if (s.penalties() && s.last_n > 0) {
         size_t start = static_cast<size_t>(std::max(0, s.pen_from));
@@ -91,10 +110,8 @@ inline int32_t sample_logits(float* lg, int V, const SampleOpts& s, const std::v
         return best;
     }
     const int K = std::min(std::max(1, s.top_k), std::min(V, 128));
-    std::vector<int> idx(V);
-    std::iota(idx.begin(), idx.end(), 0);
-    std::partial_sort(idx.begin(), idx.begin() + K, idx.end(),
-                      [&](int a, int b) { return lg[a] > lg[b] || (lg[a] == lg[b] && a < b); });
+    std::vector<int> idx;
+    ink_top_k_ids(lg, V, K, idx);
     std::vector<double> p(K);
     double mx = lg[idx[0]], sum = 0.0;
     for (int i = 0; i < K; ++i) {
@@ -165,10 +182,8 @@ inline int32_t verify_draft_logits(
         }
     }
     const int K = std::min(std::max(1, s.top_k), std::min(V, 128));
-    std::vector<int> idx(V);
-    std::iota(idx.begin(), idx.end(), 0);
-    std::partial_sort(idx.begin(), idx.begin() + K, idx.end(),
-                      [&](int a, int b) { return lg[a] > lg[b] || (lg[a] == lg[b] && a < b); });
+    std::vector<int> idx;
+    ink_top_k_ids(lg, V, K, idx);
     std::vector<double> p(K);
     double mx = lg[idx[0]], sum = 0.0;
     for (int i = 0; i < K; ++i) {
