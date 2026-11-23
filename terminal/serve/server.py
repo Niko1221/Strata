@@ -4394,7 +4394,8 @@ class Service:
     def check_model(self, req) -> dict | None:
         """#6621: reject mismatched Strata catalog model IDs (e.g. requesting `inkling-2-mini-sq-10` while Qwen is
         loaded) and, when strict_model is enabled (--strict-model / strict_model: true / STRATA_STRICT_MODEL=1), any
-        unrecognized model ID.  Generic client placeholders ('gpt-4', 'x', etc.) stay accepted by default (#297)."""
+        unrecognized model ID.  Generic client placeholders ('gpt-4', 'x', etc.) and the loaded model's family base
+        alias (e.g. 'hy4-flash' when serving 'hy4-flash-sq-64') stay accepted by default (#297)."""
         asked = req.get("model") if isinstance(req, dict) else None
         if not isinstance(asked, str) or not asked.strip():
             return None
@@ -4403,8 +4404,14 @@ class Service:
         if asked_s in names:
             return None
         asked_l = asked_s.lower()
-        if asked_l in {n.strip().lower() for n in names if n}:
+        loaded_l = {n.strip().lower() for n in names if n}
+        if asked_l in loaded_l:
             return None
+        if not self.strict_model:
+            if any(n.startswith(asked_l + "-") for n in loaded_l):
+                return None
+            if (self.hy4 and asked_l == "hy4-flash") or (self.inkling and asked_l == "inkling-2-mini"):
+                return None
         is_strata_id = any(asked_l.startswith(p) for p in self._STRATA_MODEL_PREFIXES)
         if not self.strict_model and not is_strata_id:
             return None
@@ -4875,7 +4882,7 @@ class Service:
 
     def set_shared(self, defaults) -> dict:
         """The Chat settings every client gets for what it leaves out; {} / None = clients use their own again."""
-        self.shared = clean_shared_defaults(defaults)
+        self.shared = clean_shared_defaults(defaults, hy4=self.hy4)
         if self.shared_path:
             try:
                 if self.shared:
@@ -5595,6 +5602,15 @@ class Service:
         parser = self.parser_cls(thinking=thinking, tools=with_history_tools(tools, sampling), stream_tools=True,
                                  recover=self.tool_call_recovery, declared_only=declared_only,
                                  deferred=deferred or self.undeclared_tool_calls == "call")   # #4622: opt-in, as for a deferred tool
+        inkling_special_ids = None
+        if self.inkling and hasattr(parser, "feed_token"):
+            types = getattr(self.tok, "token_types", None)
+            toks = getattr(self.tok, "tokens", None)
+            if types and toks:
+                inkling_special_ids = {
+                    i for i, ty in enumerate(types)
+                    if ty == 3 and i < len(toks) and toks[i] in inkling_dialect.ALL_CHANNEL_TAGS
+                }
         detok, n, finish = Detokenizer(self.tok), 0, "length"
         run_tok, run_len, repeated = None, 0, False     # #606: the current run of one repeated token
         thinking_n = 0                                  # tokens written while thinking (Responses' reasoning_tokens)
@@ -5824,7 +5840,10 @@ class Service:
                                     break
                                 piece = detok.push(t)
                                 tail = (tail + piece)[-2:]
-                                evs = cut(parser.feed(piece))
+                                if inkling_special_ids is not None:
+                                    evs = cut(parser.feed_token(piece, is_special=(t in inkling_special_ids)))
+                                else:
+                                    evs = cut(parser.feed(piece))
                                 self._note(n, evs, st, rate)
                                 last_print = self._progress(last_print, st=st)
                                 for ev in evs:
@@ -7230,6 +7249,7 @@ def make_handler(svc: Service):
                 self.wfile.write(body)
             elif path in ("/health", "/api/health"):
                 self._json(200, {"status": "ok", "max_context": svc.reported_ctx(), "model": svc.model,
+                                 "family": svc.family,
                                  "images": svc.has_vision(), "api_key": bool(svc.api_key),
                                  "image_generation": svc.images is not None,
                                  "loaded": svc.loaded(), "service": "strata"})
@@ -7264,9 +7284,11 @@ def make_handler(svc: Service):
                 if self._authorized():
                     loaded = svc.loaded()
                     ctx = svc.reported_ctx()
+                    created = int(getattr(svc, "started_at", 0) or time.time())
                     # the context size under the names other APIs use too (vLLM's max_model_len, OpenRouter's
                     # context_length), so a client that sizes its window from /v1/models reads it
-                    model = {"id": svc.model, "object": "model", "status": {"value": "loaded"},
+                    model = {"id": svc.model, "object": "model", "created": created, "owned_by": "strata",
+                             "status": {"value": "loaded"},
                              "max_model_len": ctx, "context_length": ctx, "max_context_length": ctx, "meta": {"n_ctx": ctx},
                              "architecture": {"input_modalities": ["text", "image"] if svc.has_vision() else ["text"],
                                               "output_modalities": ["text"]}}
@@ -7278,7 +7300,8 @@ def make_handler(svc: Service):
                     data = [model, *({**model, "id": x, "alias_of": svc.model} for x in svc.aliases)]
                     data = data if loaded else []
                     if svc.images is not None:            # the image model: POST /v1/images/generations
-                        data.append({"id": svc.images.model, "object": "model", "status": {"value": "loaded"},
+                        data.append({"id": svc.images.model, "object": "model", "created": created, "owned_by": "strata",
+                                     "status": {"value": "loaded"},
                                      "architecture": {"input_modalities": ["text"], "output_modalities": ["image"]}})
                     if path in ("/v1/models", "/models"):
                         self._json(200, {"object": "list", "data": data})
@@ -7438,12 +7461,14 @@ def make_handler(svc: Service):
                         self._json(503, {"error": {"type": "server_error", "message": str(e)}})
                     return
                 if path in ("/v1/chat/completions", "/v1/messages", "/v1/responses"):
-                    model_err = svc.check_model(req)
-                    if model_err is not None:
-                        self._json(404, responses_error_body(model_err["message"], "invalid_request_error",
-                                                             code="model_not_found")
-                                   if path == "/v1/responses" else {"error": model_err})
-                        return
+                    check_model = getattr(svc, "check_model", None)
+                    if callable(check_model):
+                        model_err = check_model(req)
+                        if model_err is not None:
+                            self._json(404, responses_error_body(model_err["message"], "invalid_request_error",
+                                                                 code="model_not_found")
+                                       if path == "/v1/responses" else {"error": model_err})
+                            return
                     self.record = svc.begin_request(path, req)
                 if path == "/v1/responses":
                     self._responses(req)
@@ -9139,7 +9164,7 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
         svc.config_path = a.config                      # #564: the web page's Settings view
     if a.config:                                        # the Chat settings shared with other apps, from last time
         svc.shared_path = str(Path(a.config).with_suffix("")) + ".shared-settings.json"
-        svc.shared = load_shared_settings(svc.shared_path)      # #4933: one unknown key no longer clears the rest
+        svc.shared = load_shared_settings(svc.shared_path, hy4=svc.hy4)   # #4933: one unknown key no longer clears the rest
         if svc.shared:
             print("[strata] other apps use the Chat settings: " +
                   ", ".join(f"{k}={v}" for k, v in svc.shared.items()), flush=True)

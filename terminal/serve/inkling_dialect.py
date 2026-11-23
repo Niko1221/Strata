@@ -31,11 +31,19 @@ END_MSG = "<|end_message|>"
 END_SAMPLING = "<|content_model_end_sampling|>"
 ENDOFTEXT = "<|endoftext|>"
 
+ALL_CHANNEL_TAGS = frozenset((
+    MSG_MODEL, CONTENT_THINK, CONTENT_TEXT, CONTENT_TOOL_JSON, CONTENT_TOOL_TEXT,
+    CONTENT_XML, END_MSG, END_SAMPLING, ENDOFTEXT,
+))
 _HEADER_TAGS = (CONTENT_THINK, CONTENT_TEXT, CONTENT_TOOL_JSON, CONTENT_TOOL_TEXT, CONTENT_XML, END_MSG, END_SAMPLING, ENDOFTEXT, MSG_MODEL)
 _IDLE_TAGS = (MSG_MODEL, CONTENT_THINK, CONTENT_TEXT, CONTENT_TOOL_JSON, CONTENT_TOOL_TEXT, CONTENT_XML, END_MSG, END_SAMPLING, ENDOFTEXT)
-_BODY_TAGS = (END_MSG, END_SAMPLING, ENDOFTEXT, MSG_MODEL)
+_THINK_TAGS = (END_MSG, CONTENT_TEXT, END_SAMPLING, ENDOFTEXT)
+_TEXT_TAGS = (END_MSG, END_SAMPLING, ENDOFTEXT)
+_TOOL_TAGS = (END_MSG, END_SAMPLING, ENDOFTEXT)
+_AFTER_END_TAGS = (MSG_MODEL, CONTENT_THINK, CONTENT_TEXT, CONTENT_TOOL_JSON, CONTENT_TOOL_TEXT, CONTENT_XML, END_MSG, END_SAMPLING, ENDOFTEXT)
 _MAX_TAG = max(len(t) for t in _HEADER_TAGS)
 _MAX_HEADER_CHARS = 128
+_MAX_THINK_ACC = 65536
 
 
 def _safe_json_call(name: str, arguments) -> str:
@@ -113,19 +121,28 @@ class InklingDialect:
     """Stateful streaming translator: one instance per assistant reply."""
 
     def __init__(self):
-        self.state = "idle"          # idle | header | think | text | tool_json | tool_text
+        self.state = "idle"          # idle | header | think | think_end | text | text_end | tool_json | tool_text
         self.buf = ""
         self.header_acc = ""
         self.tool_acc = ""
+        self._think_acc = ""
+        self._end_ws = ""
+        self._emitted_visible = False
         self.calls = 0
         self._in_think = False
 
     def _tags_for(self):
-        if self.state in ("idle", "think"):
+        if self.state == "idle":
             return _IDLE_TAGS
+        if self.state == "think":
+            return _THINK_TAGS
         if self.state == "header":
             return _HEADER_TAGS
-        return _BODY_TAGS
+        if self.state == "text":
+            return _TEXT_TAGS
+        if self.state in ("think_end", "text_end"):
+            return _AFTER_END_TAGS
+        return _TOOL_TAGS
 
     def _split(self, tags):
         best, which = -1, None
@@ -146,7 +163,7 @@ class InklingDialect:
             return -1, None, len(self.buf) - 1
         return -1, None, -1
 
-    def feed_channels(self, text: str = "", final: bool = False) -> list[tuple[str, str]]:
+    def feed_channels(self, text: str = "", final: bool = False, reason: str | None = None) -> list[tuple[str, str]]:
         """Stream raw Inkling-2-Mini output into typed `("reasoning" | "content", text)` chunks.
         Tool invocations are emitted in the `"content"` channel as `<tool_call>\\n{...}\\n</tool_call>` JSON frames."""
         self.buf += text
@@ -161,15 +178,38 @@ class InklingDialect:
                 break
             chunk, self.buf = self.buf[:i], self.buf[i + len(tag):]
             self._emit_typed(chunk, out)
-            self._handle_tag_typed(tag, out)
+            if tag in self._tags_for():
+                self._handle_tag_typed(tag, out)
+            else:
+                self._emit_typed(tag, out)
         if final:
-            self._finish_typed(out)
+            self._finish_typed(out, reason=reason)
         return out
 
-    def feed(self, text: str = "", final: bool = False) -> str:
+    def feed_token(self, piece: str, *, is_special: bool) -> list[tuple[str, str]]:
+        """Token-aware streaming entry point (#6675): ordinary BPE tokens (`is_special=False`) are emitted as
+        literal text in the current channel and can never trigger structural channel transitions even when they
+        spell `<|message_model|>`, `<|content_thinking|>`, or `<|end_message|>`. Real special channel tokens
+        (`is_special=True`) drive the state machine directly."""
+        out: list[tuple[str, str]] = []
+        if not piece:
+            return out
+        if self.buf:
+            pending, self.buf = self.buf, ""
+            self._emit_typed(pending, out)
+        if is_special and piece in ALL_CHANNEL_TAGS:
+            if piece in self._tags_for():
+                self._handle_tag_typed(piece, out)
+            else:
+                self._emit_typed(piece, out)
+            return out
+        self._emit_typed(piece, out)
+        return out
+
+    def feed(self, text: str = "", final: bool = False, reason: str | None = None) -> str:
         """Stream raw Inkling-2-Mini output into `<think>...</think>` + text + `<tool_call>...</tool_call>` string."""
         parts: list[str] = []
-        for kind, chunk in self.feed_channels(text, final=final):
+        for kind, chunk in self.feed_channels(text, final=final, reason=reason):
             if kind == "reasoning":
                 if not self._in_think:
                     parts.append("<think>")
@@ -185,20 +225,54 @@ class InklingDialect:
             self._in_think = False
         return "".join(parts)
 
+    def _append_think(self, chunk: str) -> None:
+        if chunk and len(self._think_acc) < _MAX_THINK_ACC:
+            self._think_acc += chunk[:_MAX_THINK_ACC - len(self._think_acc)]
+
     def _emit_typed(self, chunk: str, out: list[tuple[str, str]]) -> None:
         if not chunk:
             return
         if self.state == "think":
-            # Inkling-2-Mini has no thinking mode (off / "none" only): silently discard any raw <|content_thinking|> span.
+            # Inkling-2-Mini has no thinking mode (off / "none" only): keep hidden unless truncated with no answer (#6682).
+            self._append_think(chunk)
             return
-        elif self.state in ("idle", "text"):
+        elif self.state == "think_end":
+            # Lookahead after <|end_message|> in thinking (#6675): only another structural tag confirms end-of-thinking;
+            # ordinary text means <|end_message|> was quoted inside thinking, so stay in think without leaking!
+            if not chunk.strip():
+                self._end_ws += chunk
+                return
+            self._append_think(END_MSG + self._end_ws + chunk)
+            self._end_ws = ""
+            self.state = "think"
+            return
+        elif self.state == "text_end":
+            # Lookahead after <|end_message|> in visible text (#6675): ordinary text means <|end_message|> was quoted
+            # literally in the answer, so restore it verbatim and continue in text state!
+            if not chunk.strip():
+                self._end_ws += chunk
+                return
+            out.append(("content", END_MSG + self._end_ws + chunk))
+            self._emitted_visible = True
+            self._end_ws = ""
+            self.state = "text"
+            return
+        elif self.state == "idle":
             out.append(("content", chunk))
+            if chunk.strip():
+                self._emitted_visible = True
+                self.state = "text"
+        elif self.state == "text":
+            out.append(("content", chunk))
+            if chunk.strip():
+                self._emitted_visible = True
         elif self.state == "header":
             self.header_acc += chunk
             # A real Inkling tool-name header is short and single-line; if newlines or >128 chars arrive without a
             # `<|content_*|>` tag, the model omitted `<|content_text|>` and is writing plain text (#6620).
             if "\n" in self.header_acc or len(self.header_acc) > _MAX_HEADER_CHARS:
                 out.append(("content", self.header_acc))
+                self._emitted_visible = True
                 self.header_acc = ""
                 self.state = "text"
         elif self.state in ("tool_json", "tool_text"):
@@ -211,15 +285,45 @@ class InklingDialect:
                 if "<tool_call>" in rendered:
                     self.calls += 1
                 out.append(("content", rendered))
+                self._emitted_visible = True
             self.tool_acc = ""
             self.header_acc = ""
         elif self.state == "header":
             if self.header_acc:
                 out.append(("content", self.header_acc))
+                self._emitted_visible = True
             self.header_acc = ""
+        elif self.state in ("think", "think_end"):
+            self._think_acc = ""
+            self._end_ws = ""
+        elif self.state == "text_end":
+            self._end_ws = ""
 
     def _handle_tag_typed(self, tag: str, out: list[tuple[str, str]]) -> None:
         if tag in (END_SAMPLING, ENDOFTEXT):
+            self._close_channel_typed(out)
+            self.state = "idle"
+            return
+        if tag == END_MSG:
+            if self.state == "think":
+                self._end_ws = ""
+                self.state = "think_end"
+                return
+            if self.state == "think_end":
+                # Second <|end_message|> after a quoted one inside thinking: keep absorbing the first and hold the second
+                self._append_think(END_MSG + self._end_ws)
+                self._end_ws = ""
+                return
+            if self.state == "text":
+                self._end_ws = ""
+                self.state = "text_end"
+                return
+            if self.state == "text_end":
+                # Adjacent quoted + real <|end_message|> in visible text (#6675): emit the first, hold the second
+                out.append(("content", END_MSG + self._end_ws))
+                self._emitted_visible = True
+                self._end_ws = ""
+                return
             self._close_channel_typed(out)
             self.state = "idle"
             return
@@ -228,38 +332,50 @@ class InklingDialect:
             self.state = "header"
             self.header_acc = ""
             return
-        if tag == END_MSG:
-            self._close_channel_typed(out)
-            self.state = "idle"
-            return
         if tag == CONTENT_THINK:
+            self._close_channel_typed(out)
             self.header_acc = ""
+            self._think_acc = ""
             self.state = "think"
             return
         if tag == CONTENT_TEXT:
+            if self.state in ("think", "think_end", "text_end"):
+                self._close_channel_typed(out)
             self.header_acc = ""
             self.state = "text"
             return
         if tag == CONTENT_TOOL_JSON:
+            if self.state in ("think", "think_end", "text_end"):
+                self._close_channel_typed(out)
             self.state = "tool_json"
             self.tool_acc = ""
             return
         if tag in (CONTENT_TOOL_TEXT, CONTENT_XML):
+            if self.state in ("think", "think_end", "text_end"):
+                self._close_channel_typed(out)
             self.state = "tool_text"
             self.tool_acc = ""
             return
 
-    def _finish_typed(self, out: list[tuple[str, str]]) -> None:
+    def _finish_typed(self, out: list[tuple[str, str]], reason: str | None = None) -> None:
         if self.state == "header" and self.header_acc:
             out.append(("content", self.header_acc))
+            self._emitted_visible = True
         elif self.state in ("tool_json", "tool_text") and (self.tool_acc.strip() or self.header_acc.strip()):
             rendered = _parse_tool_body(self.header_acc, self.tool_acc, self.state, truncated=True)
             if rendered:
                 if "<tool_call>" in rendered:
                     self.calls += 1
                 out.append(("content", rendered))
+                self._emitted_visible = True
+        elif reason == "length" and self.state in ("think", "think_end") and not self._emitted_visible and self._think_acc.strip():
+            # #6682: when max_tokens expires inside <|content_thinking|> before any visible answer or tool call,
+            # surface the truncated thinking in the reasoning channel instead of a silent empty 200 OK.
+            out.append(("reasoning", self._think_acc))
         self.header_acc = ""
         self.tool_acc = ""
+        self._think_acc = ""
+        self._end_ws = ""
         self.state = "idle"
 
 

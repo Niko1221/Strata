@@ -333,6 +333,33 @@ class TestInklingServeE2E(unittest.TestCase):
                         self.assertEqual(txt, "Batch OK.", f"failed at c={conc}")
                         self.assertEqual(thk, "", f"unexpected reasoning leaked at c={conc}")
 
+    def test_quoted_channel_tags_as_ordinary_tokens_e2e_6675(self):
+        """#6675 E2E: ordinary BPE tokens spelling <|message_model|> and <|end_message|> inside thinking
+        and visible text must preserve the visible answer verbatim and never leak hidden thinking."""
+        with tempfile.TemporaryDirectory() as td:
+            h = _MockServerHarness(Path(td), ["placeholder"], parallel=1)
+            # Build exact token sequence: real special channel tags + ordinary (parse_special=False) quoted tags
+            ids = (
+                h.tok.encode("<|message_model|><|content_thinking|>", parse_special=True)
+                + h.tok.encode("Hidden thought quoting `<|message_model|>` and `<|end_message|>`. Still hidden.", parse_special=False)
+                + h.tok.encode("<|end_message|><|message_model|><|content_text|>", parse_special=True)
+                + h.tok.encode("``The header token is `<|message_model|>` and ends with `<|end_message|>`.``\nDONE", parse_special=False)
+                + h.tok.encode("<|end_message|><|content_model_end_sampling|>", parse_special=True)
+            )
+            h.script_path.write_text(json.dumps([ids]), encoding="utf-8")
+            with h:
+                base = f"http://127.0.0.1:{h.port}"
+                r = _post_json(f"{base}/v1/chat/completions", {
+                    "model": "inkling-2-mini",
+                    "messages": [{"role": "user", "content": "Repeat the tags"}],
+                })
+                msg = r["choices"][0]["message"]
+                self.assertEqual(
+                    msg["content"],
+                    "``The header token is `<|message_model|>` and ends with `<|end_message|>`.``\nDONE",
+                )
+                self.assertFalse(msg.get("reasoning_content"))
+
 
 if __name__ == "__main__":
     unittest.main()
