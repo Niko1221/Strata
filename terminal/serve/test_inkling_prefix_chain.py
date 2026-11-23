@@ -50,7 +50,7 @@ def conversation():
     ]
 
 
-class TestRealTemplatePrefixChain(unittest.TestCase):
+class _Base(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tpl = frontend.ChatTemplate(TEMPLATE)
@@ -71,6 +71,8 @@ class TestRealTemplatePrefixChain(unittest.TestCase):
                                                f"{pa[max(0, k - 40):k + 40]!r} vs {pb[max(0, k - 40):k + 40]!r}")
         return prompts
 
+
+class TestRealTemplatePrefixChain(_Base):
     def test_with_tools_every_prompt_starts_with_the_one_before(self):
         self.chain(conversation(), TOOLS)
 
@@ -116,6 +118,84 @@ class TestRealTemplatePrefixChain(unittest.TestCase):
         a, b = self.render(conv[:4], TOOLS), self.render(conv[:6], TOOLS)
         self.assertTrue(b.startswith(a))
         self.assertEqual(a.count("<|content_thinking|>I should read it.<|end_message|>"), 1)
+
+
+def _flat_tools():
+    return [{"name": t["function"]["name"], "description": t["function"]["description"], "parameters": t["function"]["parameters"]} for t in TOOLS]
+
+
+def openai_requests():
+    """The same session as three growing /v1/chat/completions bodies (what pi, Hermes and the desktop agent send)."""
+    full = conversation()
+    cuts = [2, 4, 6, 9, 11, 13]       # after the first user turn, each tool result block and each later user turn
+    return [{"model": "m", "messages": full[:n], "tools": TOOLS} for n in cuts]
+
+
+def anthropic_requests():
+    """... as /v1/messages bodies (Claude Code style): the system prompt on its own, tool_use / tool_result blocks."""
+    blocks = [
+        {"role": "user", "content": "open setup.py"},
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "read_file", "input": {"path": "setup.py"}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "print('hi')"}]},
+        {"role": "assistant", "content": [{"type": "text", "text": "It prints hi. Running it."},
+                                          {"type": "tool_use", "id": "t2", "name": "run", "input": {"cmd": "python setup.py"}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t2", "content": "hi"}]},
+        {"role": "assistant", "content": [{"type": "text", "text": "Done."}]},
+        {"role": "user", "content": "thanks"},
+    ]
+    return [{"model": "m", "system": "You are a coding agent. Use the tools.", "messages": blocks[:n], "tools": [
+        {"name": t["function"]["name"], "description": t["function"]["description"], "input_schema": t["function"]["parameters"]} for t in TOOLS]}
+        for n in (1, 3, 5, 7)]
+
+
+def responses_requests():
+    """... as /v1/responses bodies (Codex style): function_call / function_call_output items."""
+    items = [
+        {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "open setup.py"}]},
+        {"type": "function_call", "call_id": "c1", "name": "read_file", "arguments": json.dumps({"path": "setup.py"})},
+        {"type": "function_call_output", "call_id": "c1", "output": "print('hi')"},
+        {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "It prints hi."}]},
+        {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "thanks"}]},
+    ]
+    return [{"model": "m", "instructions": "You are a coding agent. Use the tools.", "input": items[:n]} for n in (1, 3, 5)]
+
+
+class TestProtocolsKeepThePrefix(_Base):
+    """The prompt a request becomes after serve's own conversion (tool ids dropped, arguments parsed, the system prompt moved), for the
+    three wire formats: each one's prompt starts with the previous request's."""
+
+    def prompts(self, requests, convert):
+        out = []
+        for req in requests:
+            messages, tools, kwargs = convert(req)
+            out.append(self.render(messages, tools if tools is not None else TOOLS_FLAT, kwargs))
+        return out
+
+    def assert_chain(self, prompts, label):
+        for i, (pa, pb) in enumerate(zip(prompts, prompts[1:])):
+            k = next((n for n, (x, y) in enumerate(zip(pa, pb)) if x != y), min(len(pa), len(pb)))
+            self.assertTrue(pb.startswith(pa), f"{label}: request {i + 2} stops matching request {i + 1} at char {k}: "
+                                               f"{pa[max(0, k - 40):k + 40]!r} vs {pb[max(0, k - 40):k + 40]!r}")
+
+    def test_openai_chat_completions(self):
+        self.assert_chain(self.prompts(openai_requests(), frontend.openai_to_messages), "openai")
+
+    def test_anthropic_messages(self):
+        self.assert_chain(self.prompts(anthropic_requests(), frontend.anthropic_to_messages), "anthropic")
+
+    def test_responses(self):
+        from serve import responses
+        reqs = responses_requests()
+        prompts = []
+        for req in reqs:
+            messages = responses.input_messages(req)
+            if req.get("instructions"):
+                messages = [{"role": "system", "content": req["instructions"]}] + messages
+            prompts.append(self.render(messages, TOOLS_FLAT, {}))
+        self.assert_chain(prompts, "responses")
+
+
+TOOLS_FLAT = _flat_tools()
 
 
 if __name__ == "__main__":
