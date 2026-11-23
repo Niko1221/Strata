@@ -5190,6 +5190,18 @@ int main(int argc, char **argv) try {
     if (o.expert_cache > 0) {
         std::fprintf(stderr, "strata generate: expert cache %lld slots, %.2f GiB of VRAM; policy is\n",
                      (long long) xcache.slots(), xcache.gib());
+        // #4698: STRATA_VERIFY_NO_HOST=1 with the host arena (no --stream-experts) and fewer slots than experts: no host serves the rest and the device plan
+        // cannot read a pageable arena, so a reply came out as '!' x 256.  Refused here, before the fill reads anything, naming the setting.
+        if (!multi_gpu && srcp == &arena_src &&
+            strata::arena_refuses_no_host(std::getenv("STRATA_VERIFY_NO_HOST"), true, (long long) g.n_layers * (long long) g.n_expert,
+                                          (long long) xcache.slots())) {
+            std::fprintf(stderr, "strata generate: REFUSED: STRATA_VERIFY_NO_HOST=1 with the host expert arena (no --stream-experts): the VRAM cache holds "
+                                 "%lld of %lld experts and nothing answers for the rest, so replies come out as garbage ('!' x N, #4698) or the window "
+                                 "hangs. Use --stream-experts (its pinned mirror is read by the device plan), or set STRATA_VERIFY_NO_HOST=0 where the "
+                                 "card runs the arena (an i915 card)\n",
+                         (long long) xcache.slots(), (long long) g.n_layers * (long long) g.n_expert);
+            refuse_exit(2);
+        }
         // #6448: on an integrated GPU the auto cache took all the room the shared pool has and nothing mirrors the rest
         // (below), so a cache with fewer slots than the model has experts ends in the refusal after the fill.  It is
         // refused here instead, with the same words: the fill would first read every slot's expert from the disk (tens of

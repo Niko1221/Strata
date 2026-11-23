@@ -211,6 +211,11 @@ moves about 26 GB; bigger chunks read faster.
   cache holds every expert, else 0.
 - `STRATA_VERIFY_NO_HOST=1` is required whenever part of the experts is not in VRAM (`strata-sycl.sh` sets it). Without it the
   host/GPU handshake is not visible across the bus on `xe` and the logits turn NaN a few tokens in.
+- **`STRATA_VERIFY_NO_HOST=1` and the host arena refuse each other (#4698).** With the switch on and no `--stream-experts`, the experts the
+  VRAM cache does not hold sit in an ordinary pageable RAM arena that the device plan cannot read, and nothing else answers for them: a
+  reply came out as `!` x 256 on an Arc Pro B70. The engine now stops at the start with `REFUSED: STRATA_VERIFY_NO_HOST=1 with the host
+  expert arena`. Use `--stream-experts`, or `STRATA_VERIFY_NO_HOST=0` on a card that runs the arena (an `i915` card). A cache that holds
+  every expert never reads the arena and is not refused.
 - On `xe`, setup writes `terminal/data/expert-profile-sycl.bin`, a ranking built from the routing of 45 varied prompts, so the cache
   holds the experts a chat, code or non-English prompt uses (`terminal/tools/make_profile_mix.py`, `terminal/tools/collect_profile_traces.py`).
   An `i915` card keeps the shipped profile.
