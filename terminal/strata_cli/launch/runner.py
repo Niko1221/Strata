@@ -1326,6 +1326,8 @@ class Runner:
                 args += ["--kv", eff_kv]
         if self.is_inkling() and str(s.drafting or "").strip().lower() == "off":
             args += ["--drafter", "off"]
+        if self.is_inkling() and s.parallel and int(s.parallel) > 1:
+            args += ["--parallel", str(int(s.parallel))]     # setup plans the experts in graphics memory with room for these slots
         if self.is_native_strata_family() and not WINDOWS and sys.platform != "darwin":
             try:
                 from strata_control import engine_component

@@ -10597,7 +10597,8 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
         for i, c in enumerate(ctxs, 1):
             say(f"  {i}) {c // 1024}K tokens" + ("   (recommended)" if c == inkling_family.DEFAULT_CONTEXT else ""))
         ctx = ctxs[int(ask("Context?", [str(i) for i in range(1, len(ctxs) + 1)], str(ctxs.index(inkling_family.DEFAULT_CONTEXT) + 1), a.yes)) - 1]
-    placed = inkling_fit.place(model, vram_gib, ram_gib, unified, ctx, vision)
+    par = max(1, min(inkling_family.MAX_PARALLEL, int(getattr(a, "parallel", None) or 1)))     # --parallel N: the slots the planner makes room for (0221 APPTUI: it planned for one)
+    placed = inkling_fit.place(model, vram_gib, ram_gib, unified, ctx, vision, parallel=par)
     mode = inkling_fit.mode(placed)
     if mode == "cross_tier_ssd":
         warn(f"{model} exceeds this PC's memory: about {placed['ssd_gb']:.1f} GB stream from SSD ({rec['build']} fits better)")
@@ -10678,7 +10679,7 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     step(7, "writing the start script")
     drafting_mode = "off" if (not want_dspark or (is_gguf and dspark_path is None)) else inkling_family.DEFAULT_DRAFTER
     ink_backend = "hip" if hip else ("metal" if sys.platform == "darwin" else ("sycl" if getattr(a, "backend", None) == "sycl" else "cuda"))
-    placed = inkling_fit.place(model, vram_gib, ram_gib, unified, ctx, bool(vision and vision_path is not None), dspark=(drafting_mode != "off"), backend=ink_backend)
+    placed = inkling_fit.place(model, vram_gib, ram_gib, unified, ctx, bool(vision and vision_path is not None), parallel=par, dspark=(drafting_mode != "off"), backend=ink_backend)
     args = ["--native", str(model_file), "--max-context", str(ctx)]
     kv_asked = str(getattr(a, "kv", None) or "").strip().lower()
     if kv_asked in ("fp16", "fp8", "k8v8", "k8v4"):
@@ -10709,7 +10710,7 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
         "lib_dirs": lib_dirs,
         "port": port,
         "drafting": drafting_mode,
-        "parallel": inkling_family.DEFAULT_PARALLEL,
+        "parallel": par if par > 1 else inkling_family.DEFAULT_PARALLEL,
     }
     if use_ink_ls:
         cfg["layer_split"] = "auto"
