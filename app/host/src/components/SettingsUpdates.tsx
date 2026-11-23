@@ -8,7 +8,7 @@ import { nativeAction, useNative, type NativeJob } from '../lib/native';
 import { NativeProgress } from './NativeModels';
 import { EngineUpdateDialog } from './EngineUpdateDialog';
 import { currentUpdateFailure, jobErrorText, updateFinishedAfter } from '../lib/native-job-diagnostics';
-import { appVersionLabel } from '../lib/app-version';
+import { appVersionLabel, releaseVersionBadge } from '../lib/app-version';
 import { fetchUpdateCheck, publishUpdateCheck, useInstalledVersions, useLastUpdateCheck } from '../lib/update-check';
 import { shownEngineVersion } from '../lib/engine-version';
 /** A check from an earlier day shows its date too, because the result is kept between visits. */
@@ -20,7 +20,7 @@ function checkedLabel(at: string) {
 export function SettingsUpdates() {
     const native = useNative();
     const [confirm, setConfirm] = useState('');
-    const appVersion = appVersionLabel(useStore(s => s.setup?.app.version), native?.version);
+    const appVersion = releaseVersionBadge(appVersionLabel(useStore(s => s.setup?.app.version), native?.version));
     const engineVersion = useStore(s => s.engine?.engine.version);
     const [checking, setChecking] = useState(false);
     // Opening Settings shows the last check kept on this computer. The network is touched only when "Check for updates" is pressed.
@@ -74,7 +74,7 @@ export function SettingsUpdates() {
         const labels: Record<SoftwareUpdate['status'], string> = { available: 'Update available', current: 'Up to date', unavailable: 'Check unavailable', error: 'Check failed', 'no-releases': 'No release yet' };
         return <div className="settings-version" data-update={update?.status}>
       <Icon name={name === 'Strata' ? 'layers' : 'engine'} size={20}/>
-      <span><strong>{tr(name)}</strong><small>{tr(version ?? 'Version unavailable')}</small>{tr(!checking && update ? <small className="settings-version__message">{tr(update.message)}</small> : null)}{tr(!checking && name === 'Strata' && update?.details ? <details className="native-settings-diagnostic"><summary className="small">{tr("Details")}</summary><p className="small muted">{update.details}</p></details> : null)}</span>
+      <span><strong>{tr(name)}</strong><small>{tr(version ?? 'Version unavailable')}</small>{tr(!checking && update ? <small className="settings-version__message">{tr(update.message)}</small> : null)}{tr(!checking && name === 'Strata' && update?.installPathWarning ? <small className="settings-version__message" role="status">{update.installPathWarning}</small> : null)}{tr(!checking && name === 'Strata' && update?.details ? <details className="native-settings-diagnostic"><summary className="small">{tr("Details")}</summary><p className="small muted">{update.details}</p></details> : null)}</span>
       {tr(!checking && update?.status === 'available' ? (native?.available ? <Btn size="sm" variant="primary" disabled={!!active || (name === 'Engine' && !native.installed?.models.length && !native.capabilities.componentUpdates)} onClick={() => setConfirm(name === 'Strata' ? 'update-strata' : 'update-engine')}>{tr("Update available")}</Btn> : update.releaseUrl ? <a className="st-btn st-btn--secondary st-btn--sm" href={update.releaseUrl} target="_blank" rel="noreferrer" title={tr("Open the release page to update this installation")}>{tr("Update available")}<Icon name="download" size={15}/></a> : <span className="settings-version__label">{tr(labels[update.status])}</span>) : <span className="settings-version__label">{tr(checking ? 'Checking…' : update ? labels[update.status] : version === 'Not installed' ? 'Not installed' : 'Installed')}</span>)}
     </div>;
     }
@@ -87,14 +87,14 @@ export function SettingsUpdates() {
     </div>
     {tr(active ? <NativeProgress job={active}/> : null)}{tr([currentUpdateFailure(native?.jobs ?? [])].filter((j): j is NativeJob => !!j).map(j => <p role="alert" key={j.id} className="small inline-error">{tr(jobErrorText(j, native?.jobs ?? []))}</p>))}
     <EngineUpdateDialog open={confirm === 'update-engine' && withModel} onClose={() => setConfirm('')}/>
-    <Dialog open={!!confirm && !(confirm === 'update-engine' && withModel)} compact title={tr(confirm === 'update-strata' ? 'Update Strata?' : 'Update engine?')} onClose={() => setConfirm('')} actions={<><Btn onClick={() => setConfirm('')}>{tr("Cancel")}</Btn><Btn variant="primary" disabled={!!active || (native?.instances.length ?? 0) > 0} onClick={() => void operate(confirm)}>{tr("Update")}</Btn></>}><p>{tr("The native installer updates the installation. Model files and settings are kept. Unload native models before updating.")}</p>{tr((native?.instances.length ?? 0) > 0 ? <p className="small muted">{tr("Open Models and unload the running native models first.")}</p> : null)}</Dialog>
+    <Dialog open={!!confirm && !(confirm === 'update-engine' && withModel)} compact title={tr(confirm === 'update-strata' ? 'Update Strata?' : 'Update engine?')} onClose={() => setConfirm('')} actions={<><Btn onClick={() => setConfirm('')}>{tr("Cancel")}</Btn><Btn variant="primary" disabled={!!active || (native?.instances.length ?? 0) > 0} onClick={() => void operate(confirm)}>{tr("Update")}</Btn></>}><p>{tr("The native installer updates the installation. Model files and settings are kept. Unload native models before updating.")}</p>{tr(confirm === 'update-strata' && result?.strata?.installPathWarning ? <p className="small muted" role="status">{result.strata.installPathWarning}</p> : null)}{tr((native?.instances.length ?? 0) > 0 ? <p className="small muted">{tr("Open Models and unload the running native models first.")}</p> : null)}</Dialog>
   </>;
 }
 
-/** "Strata 0.2.16 · Engine 0.1.62": the app's own version first, the engine's beside it (About). */
+/** "Strata 0.2.20 · Engine 0.1.66": the app's own version first, the engine's beside it (About). */
 export function AboutVersions() {
     const native = useNative();
-    const app = appVersionLabel(useStore(s => s.setup?.app.version), native?.version);
+    const app = releaseVersionBadge(appVersionLabel(useStore(s => s.setup?.app.version), native?.version));
     const engineVersion = useStore(s => s.engine?.engine.version);
     const engine = shownEngineVersion(native, engineVersion);
     return <p className="settings-about-version"><strong>{tr("Strata")} {app ?? ''}</strong>{engine ? <span className="muted"> · {tr("Engine")} {engine}</span> : null}</p>;

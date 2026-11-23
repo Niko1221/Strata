@@ -10,19 +10,26 @@ const ROLE_WORD: Record<Role, string> = { main: 'Main', helper: 'Helper', off: '
 const HINT: Record<Role, string> = { main: 'Does the main work', helper: 'Holds part of the model', off: 'Not used' };
 
 /** The one plain line above the cards, built from translated pieces. */
-export function recommendationLine(cards: RoleCard[], vendor?: string | null): string {
-  const rec = recommend(cards, vendor);
+export function recommendationLine(cards: RoleCard[], vendor?: string | null, memoryGb?: number | null): string {
+  const rec = recommend(cards, vendor, { modelMemoryGb: memoryGb });
   if (rec.main === null) return tr('No graphics card that Strata can use was found.');
   const byi = new Map(cards.map(c => [c.index, c]));
   const m = byi.get(rec.main)!;
   if (cards.length === 1) return tr('Strata will use your {0}.', [shortName(m)]);
   const why = { same: 'the cards are alike', memory: 'it has more memory', faster: 'it is faster', only: 'it is the only card', none: '' }[rec.why];
-  let s = tr('{0} is Main: {1}.', [shortName(m), tr(why)]);
   const helpers = Object.keys(rec.roles).map(Number).filter(i => rec.roles[i] === 'helper').map(i => shortName(byi.get(i)!));
-  if (helpers.length) s += ' ' + tr(helpers.length > 1 ? '{0} help.' : '{0} helps.', [helpers.join(', ')]);
+  let s: string;
+  if (helpers.length && rec.why === 'same' && helpers.every(h => h === shortName(m))) {
+    // 0217 item 12: alike cards are said once (the same words as the Terminal's sentence)
+    s = helpers.length === 1 ? tr('Both cards are {0}, so they are alike: one is Main and the other helps.', [shortName(m)])
+      : tr('All {0} cards are {1}, so they are alike: one is Main and the others help.', [helpers.length + 1, shortName(m)]);
+  } else {
+    s = tr('{0} is Main: {1}.', [shortName(m), tr(why)]);
+    if (helpers.length) s += ' ' + tr(helpers.length > 1 ? '{0} help.' : '{0} helps.', [helpers.join(', ')]);
+  }
   for (const i of Object.keys(rec.roles).map(Number)) if (rec.roles[i] === 'off') {
     const code = rec.reasons[i], c = byi.get(i)!;
-    s += ' ' + tr('{0} starts Off: {1}', [shortName(c), code === 'cannot_run' ? tr('Strata cannot run it.') : code === 'igpu' ? tr('built-in graphics.') : tr('{0} GB or less.', [OFF_AT_OR_BELOW_GB])]);
+    s += ' ' + tr('{0} starts Off: {1}', [shortName(c), code === 'cannot_run' ? tr('Strata cannot run it.') : code === 'igpu' ? tr('built-in graphics.') : code === 'separate' ? `${tr('Not used')}.` : tr('{0} GB or less.', [OFF_AT_OR_BELOW_GB])]);
   }
   return s;
 }
@@ -69,7 +76,7 @@ export function GpuRoles({ cards, roles, custom, recommendedRoles, vendor, onCha
 }) {
   const titleId = useId();
   const [note, setNote] = useState('');
-  const rec = { ...recommend(cards, vendor), ...(recommendedRoles ? { roles: recommendedRoles } : {}) };
+  const rec = { ...recommend(cards, vendor, { modelMemoryGb: memoryGb }), ...(recommendedRoles ? { roles: recommendedRoles } : {}) };
   const single = cards.length === 1;
   const warns = warnings(roles, cards, { spillGb, engineRunsCpuOnly });
   const cardWarn = (i: number) => warns.filter(w => w.card === i);
@@ -95,7 +102,7 @@ export function GpuRoles({ cards, roles, custom, recommendedRoles, vendor, onCha
     </div>
     <div className="gpuroles__reco" data-custom={custom}>
       <Icon name="bolt" size={18}/>
-      <p><strong>{tr(custom ? 'Your choice.' : 'Recommended.')}</strong> {custom ? tr('You changed the roles. Strata will use exactly these.') : recommendationLine(cards, vendor)}</p>
+      <p><strong>{tr(custom ? 'Your choice.' : 'Recommended.')}</strong> {custom ? tr('You changed the roles. Strata will use exactly these.') : recommendationLine(cards, vendor, memoryGb)}</p>
     </div>
     <div className="gpuroles__rows" role="list">
       {cards.map(c => {

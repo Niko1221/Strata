@@ -9,6 +9,11 @@ import { Btn, ErrorNotice, Select } from './ui';
 import { draftingChoices } from '../lib/drafting';
 import { NativeMcpEditor } from './NativeMcpEditor';
 import { choiceOptions, choiceValue, isNumberChoice, withChoice } from '../lib/speed-choice';
+import { HY4_FAMILY, INKLING_FAMILY } from '../lib/native-catalog';
+/** Native engine fields that apply only to the Qwen Flash-Next engine (strata-hy4 ignores them). */
+const HY4_HIDDEN_FIELDS = new Set(['mtp', 'batchMtp', 'layer_split', 'gpu_order', 'split_skip_if_fits', 'vram_elastic', 'vram_reserve_mib', 'prompt_cache_spread', 'vision_tokens', 'vision_min_tokens', 'parallel', 'effort_position', 'anthropic_thinking']);
+/** Native engine fields that Inkling-2-Mini (strata-inkling) ignores — no thinking mode, and `parallel` (1..64) IS shown! */
+const INKLING_HIDDEN_FIELDS = new Set(['mtp', 'batchMtp', 'layer_split', 'gpu_order', 'split_skip_if_fits', 'vram_elastic', 'vram_reserve_mib', 'prompt_cache_spread', 'vision_tokens', 'vision_min_tokens', 'reasoning_budget_tokens', 'effort_position', 'anthropic_thinking']);
 /** One of the speed features: what it is called, what it does, whether it is on by default, and the engine environment it writes outside its default (server/native-settings.mjs). */
 interface SpeedSwitch {
     id: string;
@@ -20,7 +25,7 @@ interface SpeedSwitch {
     legacy?: Record<string, string>;
     /** The Expert settings group the row is in (Speed when not given). */
     group?: string;
-    /** The two option names instead of On / Off (no row has them since the picture reader row went in 0.2.16). */
+    /** The two option names instead of On / Off (only the route tail skip choice has them since 0.2.17: its default option's word is "Off (default)"). */
     words?: { on: string; off: string };
     /** A value to choose instead of on / off (STRATA_ROUTE_TAIL_SKIP): [value, word] besides the default, which writes no entry. */
     choices?: [string, string][];
@@ -124,10 +129,13 @@ export function NativeSettings({ model }: {
       {error ? <><ErrorNotice message={tr('Couldn’t load model settings.')} next={tr('Check that the engine is connected and this model is installed, then try again.')} onRetry={() => setRevision(value => value + 1)}/><details className="native-settings-diagnostic"><summary className="small">{tr('Details')}</summary><p className="small muted">{error}</p></details></> : <p className="small muted" role="status">{tr('Reading saved settings…')}</p>}
     </details>;
     const family = (native?.catalog?.families ?? []).find(f => f.sizes.some(s => s.id === model))?.family ?? null;
-    const draftingOffered = !!draftingChoices(family, native?.capabilities?.dflash2);
-    const rows = (native?.fields ?? []).filter(f => (f.id !== 'drafting' || draftingOffered) && `${tr(f.label)} ${f.id} ${tr(f.group)}`.toLowerCase().includes(query.toLowerCase()));
+    const isHy4 = family === HY4_FAMILY || /^hy4-flash/i.test(model);
+    const isInkling = family === INKLING_FAMILY || /^inkling-2-mini/i.test(model);
+    const draftingOpts = isHy4 ? ['dfly2', 'off'] : isInkling ? ['dspark', 'off'] : draftingChoices(family, native?.capabilities?.dflash2);
+    const draftingOffered = !!draftingOpts;
+    const rows = (native?.fields ?? []).filter(f => (f.id !== 'drafting' || draftingOffered) && (!isHy4 || !HY4_HIDDEN_FIELDS.has(f.id)) && (!isInkling || !INKLING_HIDDEN_FIELDS.has(f.id)) && `${tr(f.label)} ${f.id} ${tr(f.group)}`.toLowerCase().includes(query.toLowerCase())).map(f => f.id === 'drafting' && draftingOpts ? { ...f, choices: draftingOpts } : f);
     const switchRows = switches.filter(sw => `${tr(sw.label)} ${sw.id} ${tr(switchGroup(sw))}`.toLowerCase().includes(query.toLowerCase()));
-    // A choice switch (owner, 0.2.16: STRATA_ROUTE_TAIL_SKIP): the default writes no entry, every other choice writes its value (src/lib/speed-choice.ts).
+    // A choice switch (owner, 0.2.16: STRATA_ROUTE_TAIL_SKIP): the default writes no entry, every other choice writes its value (src/lib/speed-choice.ts). 0.2.17: the default is Off, On is 7.
     const choiceRow = (sw: SpeedSwitch) => { const known = choiceValue(sw, values.env), numbered = isNumberChoice(sw, known);
         return <label className="native-setting-row" key={sw.id}><span><strong>{tr(sw.label)}</strong><small>{tr(sw.hint)}</small>{tr(numbered && sw.choiceNote ? <small>{tr(sw.choiceNote)}</small> : null)}</span><Select ariaLabel={tr(sw.label)} value={known} options={choiceOptions(sw)} onChange={v => change('env', withChoice(sw, values.env, v))}/></label>; };
     const switchRow = (sw: SpeedSwitch) => sw.choices?.length ? choiceRow(sw) : <label className="native-setting-row" key={sw.id}><span><strong>{tr(sw.label)}</strong><small>{tr(sw.hint)}</small></span><Select ariaLabel={tr(sw.label)} value={switchIsOn(sw, values.env) ? 'on' : 'off'} options={sw.words ? [{ value: sw.default, label: sw.words[sw.default] }, { value: sw.default === 'on' ? 'off' : 'on', label: sw.words[sw.default === 'on' ? 'off' : 'on'] }] : sw.default === 'on' ? [{ value: 'on', label: 'On (recommended)' }, { value: 'off', label: 'Off' }] : [{ value: 'off', label: 'Off (recommended)' }, { value: 'on', label: 'On' }]} onChange={v => changeSwitch(sw, v === 'on')}/></label>;

@@ -75,7 +75,7 @@ What the person chose is saved by `tools-settings.mjs` (inside the host's settin
 
 - Tool groups (`tools-catalog.mjs`): each is one switch in plain words and is one or more preset plugins (`withoutDisabled`); `fetch` and `search` are the two halves of the Harness's `tool-web` (both off drops it). Goals off: `/goal` answers that goals are turned off.
 - Web search needs no account. The default is DuckDuckGo's HTML result page (`../web-search-ddg.mjs`), with Bing's plain result page (`../web-search-bing.mjs`) as the second source. Manners, because DuckDuckGo refuses a program that asks fast: a browser User-Agent and the page's own request shape (Referer, Origin, Sec-Fetch-*), one request at a time per source, 2.5 to 4 s apart (random), at most 8 a minute, a 30 minute session cache per question, a cooldown after a refusal that doubles (1, 2, 4 ... 10 minutes, `Retry-After` honoured) during which that source gets no request, no lite-page follow-up after a refusal, one retry for a timeout or a 5xx, a 15 s limit. When every source refuses, the tool answers one plain sentence (`LIMITED_SENTENCE`: "Web search is limited right now. Try again in a minute, or add a search key (Exa, Perplexity or DeepSeek) in Settings -> Tools -> Web search.") plus an instruction to the model not to retry; the turn guard in `agent-bridge.mjs` (see Turn guard) stops a model that retries anyway. **The results come from DuckDuckGo or Bing**; they are not ranked or filtered here. The person may switch to Exa, Perplexity or DeepSeek with their own key (`../web-search-keyed.mjs`; DeepSeek uses the Harness's own provider): the key is saved in the settings file, reaches the agent only as the environment variable `STRATA_SEARCH_KEY`, never the profile file and never the screen (it only learns `keySet`). A keyed service without its key falls back to DuckDuckGo. The profile pins `web.searchProvider` to the chosen id so two usable backends cannot make the choice ambiguous.
-- The browser: Playwright's MCP server (`@playwright/mcp`, staged next to the Harness by `apps/desktop/scripts/stage-harness.mjs`) on the person's own Chrome, Edge or Chromium (`browser-probe.mjs`), `--isolated` so it never sees their profile. Tools appear as `mcp__browser__browser_*`. In Manual, opening a page, clicking, typing, uploading, running a script in the page and closing tabs ask (plain reasons: "Open the web page ...", "Click on the page: ..."); looking (snapshot, screenshot, console, network, waiting, listing tabs) does not. Plan refuses every connected tool. The screen says plainly when no browser, or no tool server, is found.
+- The browser: Playwright's MCP server (`@playwright/mcp`, staged next to the Harness by `app/desktop/scripts/stage-harness.mjs`) on the person's own Chrome, Edge or Chromium (`browser-probe.mjs`), `--isolated` so it never sees their profile. Tools appear as `mcp__browser__browser_*`. In Manual, opening a page, clicking, typing, uploading, running a script in the page and closing tabs ask (plain reasons: "Open the web page ...", "Click on the page: ..."); looking (snapshot, screenshot, console, network, waiting, listing tabs) does not. Plan refuses every connected tool. The screen says plainly when no browser, or no tool server, is found.
 - The person's own tools: `instructions` (the tool returns their text; look-only, never asks), `command` (runs their command with the assistant's text in the `STRATA_INPUT` environment variable, never spliced into the command line; asks in Manual, refused in Plan) and `server` (a web address or a program, added as `mcp__custom-<name>__*`; asks in Manual). Instruction and command tools are served by `custom-tools-mcp.mjs` (stdio MCP) from a JSON file the settings module rewrites on every change, so a switch in Settings is seen without a restart.
 - `strata-gate.mjs` implements the Manual/Plan rules above (`planDecision`, `browserDecision`, the look-only instruction server).
 
@@ -93,15 +93,16 @@ What the person chose is saved by `tools-settings.mjs` (inside the host's settin
 
 ## Thinking and the output budget
 
-The Harness staging script (`apps/desktop/scripts/stage-harness.mjs`) applies Strata's guarded pi-ai 1.1.0 patch to its staged copy
+The Harness staging script (`app/desktop/scripts/stage-harness.mjs`) applies Strata's guarded pi-ai 1.1.0 patch to its staged copy
 (`harness-budget.mjs`, #3684): below 64K the context safety room is at most `min(4096, floor(contextWindow / 16))` and never more
 than half the estimated remaining room, so an 8K window keeps output room after a tool result instead of ending with a one-token
 cap. The caller's output cap and the one-token floor remain; windows of 64K or more keep the previous calculation. `BUNDLE.json.patches`
-records the patch identity, the dependency version and the before/after SHA-256. Unknown dependency bytes stop staging for review.
-Source and already-installed Harness copies are not changed.
+records the patch identity, the dependency version and the before/after SHA-256. The desktop build checks those bytes again and
+patches a reused stage that contains the known original. Unknown dependency bytes stop the build. The installed Harness is separate.
 
-- A local route is reasoning-capable (`reasoning: true`) with `compat.thinkingFormat: 'chat-template'`: the request carries `chat_template_kwargs {enable_thinking, reasoning_effort}`, which the Strata server reads (a top-level `enable_thinking` is ignored by it, which is why pi-ai's `qwen` format left the model thinking). The chat's Reasoning menu travels as `thinking` in the stream body; the bridge sends it with `session/selectModel` (`reasoningEffort`) whenever the model or the level changed; a level a route does not have is dropped (never an error). API routes keep the provider default (the menu is disabled for them in the UI).
-- `localOutputBudget(context)` is 30 percent of the window, at least 4096 and at most 32768 (9,830 tokens at 32K, 19,660 at 64K). The Harness's automatic compaction reads it as the room a reply reserves (the request header), and it is NOT the ceiling of a request: `plugins/strata-context.mjs` raises what the adapter sends to half the window, at most 64K tokens (`reply-cut.mjs` `replyCap`; pi-ai clamps it to the window minus the prompt), because a thinking model that writes a whole file in one call was cut inside the call at 19,660 and lost it (AGENT-LOST). A reply that is cut anyway is announced in the chat, the agent is asked to go on in smaller pieces (twice at most), and the file being written is streamed to the page as `agent-tool-draft` frames (name, size, lines, tail of the text). App-loaded models get `fit_max_tokens: true` so the engine clamps instead of answering 400. Sampling is not set here: the Harness sends none, so the server's own defaults apply.
+- Local routes send `chat_template_kwargs {enable_thinking, reasoning_effort}`. The bridge applies the chat's Reasoning setting through `session/selectModel` when the model or effort changes. Each model advertises the efforts its route supports.
+- The Harness reserves 30 percent of the local context window for replies (usually 4,096 to 32,768 tokens). The adapter can request up to half the window, capped at 64K. The native server measures the rendered prompt, including tools and images, before decoding. Local agent requests with tools require up to 1,024 tokens of reply room, respecting any lower explicit output cap. If that room is unavailable, the server reports context overflow so the chat can be compacted. The chat reports a cutoff and can continue an unfinished tool draft or visible answer within the shared recovery budget. The draft is streamed in `agent-tool-draft` frames.
+- After a provider or model switch, new requests retain visible messages and tool calls with their results. Reasoning blocks and provider replay metadata are replayed only to their original route and model. Compaction summarizes the task, verified results, open work, and relevant paths.
 
 ## Tasks
 
@@ -129,13 +130,21 @@ If a Harness update renames those tools the wrapping does nothing and `tests/age
 
 ## Reasoning for API models
 
-A model on OpenRouter whose model list names `reasoning` in `supported_parameters` gets `reasoning: true` and the efforts `{off: none, low, medium, high, max: xhigh}` and the `openrouter` thinking format, so the Reasoning menu works and the choice reaches OpenRouter as `reasoning: { effort }`. Other API models keep the provider's own default (the menu stays greyed).
+OpenRouter sends `reasoning: { effort }` for models whose list advertises `reasoning`. Custom OpenAI Chat connections can select a **Reasoning format** in Settings > Models. Auto recognizes OpenRouter and the DeepSeek preset. Choose Strata for a Strata server, DeepSeek for `thinking` with `reasoning_effort`, Reasoning effort for endpoints that accept `reasoning_effort` alone, or Provider default to let the endpoint choose. A model that explicitly reports no reasoning support keeps the menu disabled.
 
 ## Pictures
 
 Pictures are on by default for every model that can read them: an API model reads them unless the person switched it off (Settings > Models > "Read pictures with this model") or its server says it cannot; a local model reads them when it was loaded with Read pictures (on by default). `src/lib/pictures.ts` is the one answer used by the composer and by Send; the agent route declares image input from the same flag.
 
 ## Turn guard (`turn-guard.mjs`)
+
+`progress-guard.mjs` follows the parent and each helper separately. Four copies of the same tool call and result, or twelve steps
+without a new successful result, stop the run. New results reset the step budget. A repeated passage can also stop a live reasoning
+stream. While helpers are still working, the parent progress guard defers to their own guards. A helper's stop leaves its siblings
+running. The stop reason is shown in the work log or chat and replayed when the chat reconnects.
+
+An empty provider completion is reported immediately. Provider retries are reserved for transient failures. When the assistant
+finishes without a final answer, the chat tells the person where to find the work already done.
 
 A turn that keeps failing the same way is stopped by the app, never left to the model.
 
@@ -152,7 +161,7 @@ A model sometimes writes a tool call the Strata server cannot run: a tool it was
 - **Read on the way through.** A local model's route, and an OpenAI-style server on this computer or network, always go through the host's forwarding endpoint (`llm-shape.mjs`), even with every Response setting at its default. Request and reply pass byte for byte; the endpoint reads only a reply line that names one of the two fields and records it with the request's user messages and declared tools. A cloud route is never forwarded. Stop closes the forwarded request at once.
 - **Whose turn.** At the end of a turn the bridge takes a marker when one of its request's user messages is a text this turn sent (the message, a correction, a nudge, a queued message) and it was recorded after the turn's newest own event (the start, a tool card, a text sent, a helper's report). The newest user message of a request is not used: the Harness adds its own notes after it. A marker that fits two running chats (the same words in both) is used by neither.
 - **What happens.** The turn does not end. The status line says "Asking the model to fix its tool call…", and the model gets a user-role message in the same session: "Tool error: no such tool: exec. Nothing was run. The tools you can call are: … Did you mean pwsh?" (the last sentence only with `closest_declared`), or "Tool error: your tool call could not be read …". Nothing guessed ever runs; a close name is only named.
-- **Capped.** Two corrections in a row per turn; a tool call that runs starts the count again. The third bad reply ends the turn with one sentence ("The model wrote tool calls that Strata could not run, twice in a row, …"; catalog family `guic`). Only a turn that ended normally is checked: a reply cut by the length limit keeps the cut path above, and goal runs are not checked.
+- **Capped.** Malformed tool calls and output cutoffs share at most two recovery prompts per turn. A successful tool call keeps its result and the recovery count. A reasoning-only cutoff stops with a chat note. Goal runs keep their own completion path.
 - **Rollback.** `STRATA_AGENT_FORWARD=0` in the app's environment goes back to forwarding only while a Response setting differs; then nothing is corrected. Nobody needs it in normal use.
 - Tests: `tests/agent-tool-fix.test.mjs` (the texts, the matching, the forwarder byte for byte and its Stop; with the real Harness, the scripted model's `badseq` script).
 
@@ -164,6 +173,34 @@ A model sometimes writes a tool call the Strata server cannot run: a tool it was
 - **Visible:** `compaction/start` shows "Summarizing earlier messages..." in the status line; `compaction/end` adds one plain line to the reply. The projector also sends a `context` frame after every model request, so the meter follows the running turn.
 - **A refusal that is left** (`CONTEXT_WINDOW_EXCEEDED`) is a plain sentence with the engine's text under Details and the buttons "Summarize and continue" and "Start a new chat". "Try sending the message again" is for other errors only.
 - Tests: `tests/agent-context.test.mjs` (arithmetic; the real Harness against the scripted worker with `window`, `charsPerToken` and `noCount`), `tests/oversize.test.mjs`, `tests/context-ui.test.mjs`. The run against a real engine is `scripts/context-e2e.mjs`.
+
+### Context Optimizer
+
+Under **Settings → Appearance → General → Context Optimizer**, enter the `/v1` address of a local OpenAI-compatible chat server
+and the exact model ID it reports. Use **Test model** to check the selection format with synthetic text. Set the timeout, then
+enable and save. Strata applies the new settings when the next assistant request can safely reload the Harness.
+
+The switch starts off. The optimizer uses the desktop coding assistant's existing automatic and `/compact` paths.
+On each eligible compaction it asks a small model to rank excerpts from the old region. Strata copies validated selections in
+conversation order and preserves user and developer text from that region. The Harness writes the checkpoint and keeps the original
+events and recent conversation. The helper receives candidate text and a short user excerpt. Its input excludes the system prompt,
+tool schemas, model reasoning and attachments. It can return only a list of supplied IDs.
+
+Start the model server separately on the same computer. The host uses HTTP on `127.0.0.1` or `[::1]` without credentials or redirects.
+Both CPU and GPU model servers can implement this interface. Strata does not install, download or start a helper model.
+For example, with an existing llama.cpp installation and compatible GGUF:
+
+```sh
+llama-server --model "path/to/small-instruct.gguf" --alias context-helper --host 127.0.0.1 --port 8081 -c 8192 -ngl 0
+```
+
+Use `http://127.0.0.1:8081/v1` and `context-helper` in Settings. Use a text instruct model that reliably returns JSON.
+The helper cannot select excerpts from the recent tail because the Harness supplies only the older region for compaction.
+Strata also keeps the strongest exact term match to the last user message in that older region when it fits.
+There is one attempt per compaction, with a bounded number of batches and one overall timeout. If the endpoint fails or
+the region contains attachments, exceeds the input budget, or cannot shrink enough with user text intact, the normal
+summarizer handles the original request. The internal `/strata-context` command reports the latest attempt for that session,
+including byte counts and elapsed time or a fallback reason.
 
 ## History / older measurements
 

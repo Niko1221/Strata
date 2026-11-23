@@ -88,6 +88,17 @@ class Decision(TempDir):
         self.assertIn("100500", d.message)
         self.assertIn("plain hipBLAS", d.message)
 
+    def test_v2_kernel_name_table_is_reused_across_rocm_10_2_plus(self):
+        pkg = fake_package(self.root, version=100600, tables=())
+        v2_file = fake_table(pkg / "tuning", "gfx1201", 100500, header=f"{ht.HEADER_V2} gfx1201 100500")
+        v2_file.write_text("# V2 kernel-name table\nSTRATA_HIPBLASLT_TUNING_V2 gfx1201 100500\n"
+                           "bf16 128 2560 128 4096 73754 Cijk_Ailk_Bljk_BBS_BH_MT128x128x32\n", encoding="utf-8")
+        d = ht.resolve(pkg, ["gfx1201"], environ=ON)
+        self.assertEqual(d.path, pkg / "tuning" / "gfx1201-hipblaslt-100500.txt")
+        # V1 remains strictly bound to its exact version even on >= 100500
+        pkg_v1 = fake_package(self.root / "v1only", version=100600, tables=(("gfx1201", 100500),))
+        self.assertIsNone(ht.resolve(pkg_v1, ["gfx1201"], environ=ON).path)
+
     def test_a_card_without_a_table_in_the_package_gets_plain_hipblas_and_one_line(self):
         pkg = fake_package(self.root)
         d = ht.resolve(pkg, ["gfx1200"], environ=ON)
@@ -145,7 +156,7 @@ class Decision(TempDir):
     def test_the_default_is_the_owners_decision(self):
         """A table changes the bits of the prompt's dense GEMMs (notes-021-hip.md); the owner chose: on by default for Strix Halo only."""
         self.assertFalse(ht.AUTO_USES_TABLE)
-        self.assertEqual(ht.AUTO_ARCHS, ("gfx1151",))
+        self.assertEqual(ht.AUTO_ARCHS, ("gfx1151", "gfx1150", "gfx1103"))
 
     def test_auto_uses_the_table_on_strix_halo_only(self):
         for arch, used in (("gfx1151", True), ("gfx1201", False), ("gfx1100", False)):
@@ -155,6 +166,33 @@ class Decision(TempDir):
             d = ht.resolve(pkg, [arch], environ=AUTO)
             self.assertEqual(d.path is not None, used, (arch, d.message))
             self.assertIsNone(ht.resolve(pkg, [arch], environ={ht.SWITCH: "off"}).path)
+
+    def test_gfx1103_auto_requires_cwsr_disabled_on_linux(self):
+        pkg = fake_package(self.root, version=100401, tables=(("gfx1103", 100401),))
+        with mock.patch.object(ht, "amdgpu_cwsr_disabled", return_value=False):
+            d = ht.resolve(pkg, ["gfx1103"], environ=AUTO)
+            self.assertIsNone(d.path)
+            self.assertEqual(d.level, "warn")
+            self.assertIn("amdgpu.cwsr_enable=0", d.message)
+            # explicit on still forces the table
+            d_on = ht.resolve(pkg, ["gfx1103"], environ=ON)
+            self.assertEqual(d_on.path, pkg / "tuning" / "gfx1103-hipblaslt-100401.txt")
+        with mock.patch.object(ht, "amdgpu_cwsr_disabled", return_value=True):
+            d_ok = ht.resolve(pkg, ["gfx1103"], environ=AUTO)
+            self.assertEqual(d_ok.path, pkg / "tuning" / "gfx1103-hipblaslt-100401.txt")
+
+    def test_amdgpu_cwsr_disabled_reads_sysfs_and_cmdline(self):
+        sysfs = self.root / "cwsr_enable"
+        cmdline = self.root / "cmdline"
+        sysfs.write_text("1\n", encoding="utf-8")
+        cmdline.write_text("ro quiet splash\n", encoding="utf-8")
+        self.assertIs(ht.amdgpu_cwsr_disabled(platform="linux", sysfs_path=sysfs, cmdline_path=cmdline), False)
+        self.assertIsNone(ht.amdgpu_cwsr_disabled(platform="win32", sysfs_path=sysfs, cmdline_path=cmdline))
+        sysfs.write_text("0\n", encoding="utf-8")
+        self.assertIs(ht.amdgpu_cwsr_disabled(platform="linux", sysfs_path=sysfs, cmdline_path=cmdline), True)
+        sysfs.write_text("-1\n", encoding="utf-8")
+        cmdline.write_text("ro amdgpu.cwsr_enable=0 quiet\n", encoding="utf-8")
+        self.assertIs(ht.amdgpu_cwsr_disabled(platform="linux", sysfs_path=sysfs, cmdline_path=cmdline), True)
 
     def test_a_table_the_person_set_is_never_replaced(self):
         pkg = fake_package(self.root)

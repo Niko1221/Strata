@@ -6,6 +6,7 @@
 #include "strata/kernels/gfx_arch.hpp"
 #include "strata/kernels/router_top10.hpp"
 #include "strata/core/emulate.hpp"
+#include "strata/core/per_device_flag.hpp"
 #include "strata/core/device_error_exit.hpp"
 
 #include <cuda_fp16.h>
@@ -41,6 +42,8 @@ __device__ __forceinline__ float warp_max(float v) {
 }
 __device__ __forceinline__ uint16_t bf(float f) {
     uint32_t u = __float_as_uint(f);
+    // a NaN stays a quiet NaN, as in bf16_bits.hpp: the rounding add would carry it into -0 or inf
+    if ((u & 0x7fffffffu) > 0x7f800000u) return (uint16_t) ((u >> 16) | 64u);
     u += 0x7fffu + ((u >> 16) & 1u);
     return (uint16_t) (u >> 16);
 }
@@ -180,6 +183,7 @@ __global__ void gr_mix_r_kernel(const float* __restrict__ R, const float* __rest
 // weights - the same thread-to-element mapping (256 threads, stride 256) and block_sum, so rs and the BF16 image are
 // the same bits, and R is not read back
 constexpr int GRW_PER = (N + 255) / 256;
+constexpr int GRW_PER4 = ((N / 4) + 255) / 256;
 __global__ void __launch_bounds__(256) gr_write_norm_rs_kernel(float* __restrict__ R, const float* __restrict__ bo,
                                                                const float* __restrict__ inj, int64_t inj_ld,
                                                                const float* __restrict__ w, float eps,
@@ -192,6 +196,50 @@ __global__ void __launch_bounds__(256) gr_write_norm_rs_kernel(float* __restrict
     float* r = R + row * N;
     const int64_t xo = t * ldx + (int64_t) c * N;
     const float sc = 2.0f * sigm(inj[t * inj_ld + c] / (float) HC);
+    if constexpr ((N & 3) == 0) {
+        if ((((uintptr_t) r | (uintptr_t) (bo + t * N) | (uintptr_t) (w + c * N)) & 15u) == 0 &&
+            (((uintptr_t) (xn16 + xo)) & 7u) == 0 && (xn16_lo == nullptr || (((uintptr_t) (xn16_lo + xo)) & 7u) == 0)) {
+            constexpr int N4 = N / 4;
+            float4* r4 = reinterpret_cast<float4*>(r);
+            const float4* bo4 = reinterpret_cast<const float4*>(bo + t * N);
+            const float4* w4 = reinterpret_cast<const float4*>(w + c * N);
+            uint2* x4 = reinterpret_cast<uint2*>(xn16 + xo);
+            uint2* xlo4 = xn16_lo ? reinterpret_cast<uint2*>(xn16_lo + xo) : nullptr;
+            float4 v[GRW_PER4];
+            float ss = 0.0f;
+            int k = 0;
+#pragma unroll
+            for (int d4 = threadIdx.x; d4 < N4; d4 += 256, ++k) {
+                const float4 rv = r4[d4];
+                const float4 bv = bo4[d4];
+                const float4 xv = make_float4(fmaf(bv.x, sc, rv.x), fmaf(bv.y, sc, rv.y),
+                                              fmaf(bv.z, sc, rv.z), fmaf(bv.w, sc, rv.w));
+                r4[d4] = xv;
+                v[k] = xv;
+                ss += (xv.x * xv.x + xv.y * xv.y) + (xv.z * xv.z + xv.w * xv.w);
+            }
+            const float rs = rsqrtf(block_sum(ss, sh) / (float) N + eps);
+            if (threadIdx.x == 0) rs_out[row] = rs;
+            k = 0;
+#pragma unroll
+            for (int d4 = threadIdx.x; d4 < N4; d4 += 256, ++k) {
+                const float4 wv = w4[d4];
+                const float y0 = v[k].x * rs * wv.x, y1 = v[k].y * rs * wv.y;
+                const float y2 = v[k].z * rs * wv.z, y3 = v[k].w * rs * wv.w;
+                const uint16_t h0 = act16(y0), h1 = act16(y1), h2 = act16(y2), h3 = act16(y3);
+                const uint16_t o0 = f16img ? bf_to_hf_conv(h0) : h0;
+                const uint16_t o1 = f16img ? bf_to_hf_conv(h1) : h1;
+                const uint16_t o2 = f16img ? bf_to_hf_conv(h2) : h2;
+                const uint16_t o3 = f16img ? bf_to_hf_conv(h3) : h3;
+                x4[d4] = make_uint2((uint32_t) o0 | ((uint32_t) o1 << 16), (uint32_t) o2 | ((uint32_t) o3 << 16));
+                if (xlo4) {
+                    const uint16_t l0 = bf_lo(y0, h0), l1 = bf_lo(y1, h1), l2 = bf_lo(y2, h2), l3 = bf_lo(y3, h3);
+                    xlo4[d4] = make_uint2((uint32_t) l0 | ((uint32_t) l1 << 16), (uint32_t) l2 | ((uint32_t) l3 << 16));
+                }
+            }
+            return;
+        }
+    }
     float v[GRW_PER];
     float ss = 0.0f;
     int k = 0;
@@ -1803,9 +1851,14 @@ __global__ void __launch_bounds__(S) gdn_out_norm_loop_kernel(const float* __res
         } else {
             // STRATA_GDN_NOY=1: nothing reads the FP32 result (403 MB per 16K chunk).  The FP16 value is what the
             // compiler makes of hf(v) next to the store: v_fma_mixlo_f16, the product rounded to FP16 once
+#if defined(__gfx900__)
+            // gfx900 has no v_fma_mix (gfx906+): the FP32 product rounded to FP16, which may differ in the last bit
+            y16[o16] = hf(bp * sg);
+#else
             unsigned r;
             asm("v_fma_mixlo_f16 %0, %1, %2, 0" : "=v"(r) : "v"(sg), "v"(bp));
             y16[o16] = (uint16_t) r;
+#endif
         }
     }
 }
@@ -2879,7 +2932,11 @@ bool f16_range_read(float& max_abs, unsigned long long& over, bool reset) {
     union { unsigned u; float f; } c; c.u = bits; max_abs = c.f; over = o;
     if (reset) {
         const unsigned z = 0; const unsigned long long zz = 0;
-        cudaMemcpyToSymbol(g_f16_range_max, &z, sizeof z); cudaMemcpyToSymbol(g_f16_range_over, &zz, sizeof zz);
+        /* both writes must run even when the first fails, else the untouched symbol keeps a stale
+           cumulative count and the next read reports it after a reset was requested */
+        const cudaError_t e_max = cudaMemcpyToSymbol(g_f16_range_max, &z, sizeof z);
+        const cudaError_t e_over = cudaMemcpyToSymbol(g_f16_range_over, &zz, sizeof zz);
+        if (e_max != cudaSuccess || e_over != cudaSuccess) { cudaGetLastError(); return false; }
     }
     return true;
 #endif
@@ -2920,12 +2977,14 @@ void gr_mix_r(const float* R, const float* rs, const float* w_norm, const float*
 bool gr_upmix(const uint16_t* lo16, const uint16_t* w_up, const float* R, const float* rs, const float* w_norm,
               float* mixed, uint16_t* mixed16, uint16_t* mixed_h, int64_t T, void* stream) {
 #if defined(__HIPCC__)
-    static const bool gfx11 = [] {
-        int dev = 0;
+    // per card (#4431): a gfx11 + gfx12 layer split asks this from both; a process-wide answer made by the first card launched the gfx11 kernel on the other
+    static strata::core::PerDeviceFlag<> gfx11_dev;
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess) { cudaGetLastError(); return false; }
+    const bool gfx11 = gfx11_dev.get(dev, [](int d) {
         cudaDeviceProp p;
-        if (cudaGetDevice(&dev) != cudaSuccess || cudaGetDeviceProperties(&p, dev) != cudaSuccess) return false;
-        return strata::kernels::gfx_arch_is_gfx11_wmma(p.gcnArchName);
-    }();
+        return cudaGetDeviceProperties(&p, d) == cudaSuccess && strata::kernels::gfx_arch_is_gfx11_wmma(p.gcnArchName);
+    });
     if (!gfx11 || T <= 0) return false;
     gr_upmix_kernel<<<dim3(N / UM_D, (unsigned) ((T + UM_T - 1) / UM_T)), 512, 0, (cudaStream_t) stream>>>(
         lo16, w_up, R, rs, w_norm, mixed, mixed16, mixed_h, T);
@@ -3023,7 +3082,10 @@ static void gdn_recurrence_impl(int variant, float* state, const float* h, const
         // STRATA_GDN_CHUNKED=1 (opt-in): the chunked recurrence on the gfx11 matrix cores, FP16 operands (other bits;
         // a shorter chunk or another part takes the kernels below)
         static const bool chunked = gdn_chunked_env() != 0;   // (unset: gdn_rec_wmma applies the gfx12 length gate)
-        if (chunked && !serial && gdn_rec_wmma(state, h, gate, beta, z, gamma, eps, y, y16, T, (cudaStream_t) stream, ld16)) {
+        // only with the output: the scan fuses the output normalization (it reads z / gamma and writes y16), which the
+        // KVA state-only call passes as null - that combination faulted the device ("unspecified launch failure")
+        if (chunked && !serial && with_out &&
+            gdn_rec_wmma(state, h, gate, beta, z, gamma, eps, y, y16, T, (cudaStream_t) stream, ld16)) {
             check("gdn_recurrence (chunked, WMMA)");
             return;
         }

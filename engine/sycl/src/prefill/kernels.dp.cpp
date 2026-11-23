@@ -1,5 +1,6 @@
 // src/prefill/kernels.cu - see include/strata/prefill/kernels.hpp.
 #define DPCT_PROFILING_ENABLED
+#include "bmg_gdn_tiles.hpp"
 #include <sycl/sycl.hpp>
 #include "strata/kprof.hpp"
 #include <dpct/dpct.hpp>
@@ -1031,6 +1032,69 @@ __dpct_inline__ void gdn_rec_cols_pipe_local_kernel(float* state,const float* h,
     for(int r=0;r<RPG;++r)base[r*stride]=st[r];
 }
 
+// Each lane owns a value column and 32 rows of its state. The four row groups
+// sum in the same order as the column kernel. Consecutive tokens can load Q, K,
+// V and gates together, but the update of the second token uses the new state.
+inline void gdn_register_qk_pair(sycl::nd_item<1> it, const sycl::local_accessor<float, 1>& partial,
+                                 float* state, const float* h, const float* gate,
+                                 const float* beta, float* out, int64_t T) {
+    const auto sg = it.get_sub_group();
+    const int tid = it.get_local_linear_id(), group = it.get_group_linear_id();
+    const int rg = tid / CB, c = tid % CB, lane = c % 16;
+    const int head = group / NCB, col = (group % NCB) * CB + c;
+    const size_t stride = size_t(HV) * S;
+    float* column = state + (size_t(rg * RPG) * HV + head) * S + col;
+    float st[RPG];
+#pragma unroll
+    for (int r = 0; r < RPG; ++r) st[r] = column[r * stride];
+
+    struct Inputs {
+        float q[2], k[2], value, decay, beta;
+    };
+    auto load = [&](int64_t t) {
+        const float* row = h + t * C;
+        const float* q = row + (head % HK) * S + rg * RPG + lane;
+        const float* k = q + HK * S;
+        return Inputs{{q[0], q[16]}, {k[0], k[16]}, row[2 * HK * S + head * S + col],
+                      sycl::native::exp(gate[t * HV + head]), beta[t * HV + head]};
+    };
+    auto update = [&](int64_t t, const Inputs& input) {
+        float dot = 0.0f;
+#pragma unroll
+        for (int r = 0; r < RPG; ++r)
+            dot = sycl::fma(st[r], sycl::group_broadcast(sg, input.k[r / 16], r % 16), dot);
+        partial[tid] = dot;
+        it.barrier(sycl::access::fence_space::local_space);
+        const float sum = partial[c] + partial[CB + c] + partial[2 * CB + c] + partial[3 * CB + c];
+        const float delta = (input.value - input.decay * sum) * input.beta;
+        float value = 0.0f;
+#pragma unroll
+        for (int r = 0; r < RPG; ++r) {
+            const float key = sycl::group_broadcast(sg, input.k[r / 16], r % 16);
+            const float query = sycl::group_broadcast(sg, input.q[r / 16], r % 16);
+            st[r] = sycl::fma(input.decay, st[r], key * delta);
+            value = sycl::fma(st[r], query, value);
+        }
+        partial[RG * CB + tid] = value;
+        it.barrier(sycl::access::fence_space::local_space);
+        if (rg == 0)
+            out[(t * HV + head) * S + col] =
+                (partial[4 * CB + c] + partial[5 * CB + c] + partial[6 * CB + c] + partial[7 * CB + c]) *
+                sycl::rsqrt(float(S));
+    };
+
+    int64_t t = 0;
+    for (; t + 1 < T; t += 2) {
+        const Inputs first = load(t);
+        const Inputs second = load(t + 1);
+        update(t, first);
+        update(t + 1, second);
+    }
+    if (t < T) update(t, load(t));
+#pragma unroll
+    for (int r = 0; r < RPG; ++r) column[r * stride] = st[r];
+}
+
 #if !defined(__HIPCC__)
 // The recurrence with one thread for the three value heads that share a key head (head % HK): column c of heads
 // qh, qh + 16 and qh + 32, row group rg.  gdn_rec_cols_pipe_kernel spends its time in shared memory, not in
@@ -1855,7 +1919,8 @@ __dpct_inline__ void moe_combine_kernel(const float *__restrict__ Dm,
                                         const float *__restrict__ w,
                                         const float *__restrict__ shared,
                                         const float *__restrict__ sg,
-                                        float *__restrict__ bo, int64_t T) {
+                                        float *__restrict__ bo, int64_t T,
+                                        const float *__restrict__ row_sd) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
     const int64_t i =
         (int64_t)item_ct1.get_group(2) * item_ct1.get_local_range(2) +
@@ -1864,9 +1929,11 @@ __dpct_inline__ void moe_combine_kernel(const float *__restrict__ Dm,
     const int64_t t = i / N, d = i % N;
     float s = 0.0f;
 #pragma unroll
-    for (int k = 0; k < KU; ++k)
-        s = sycl::fma((float)(w[t * KU + k]),
-                      (float)(Dm[(int64_t)slot[t * KU + k] * N + d]), s);
+    for (int k = 0; k < KU; ++k) {
+        const int64_t r = slot[t * KU + k];
+        const float v = row_sd ? Dm[r * N + d] * row_sd[r] : Dm[r * N + d];
+        s = sycl::fma((float)(w[t * KU + k]), v, s);
+    }
     bo[i] = s + shared[i] * sigm(sg[t]);
 }
 
@@ -1881,7 +1948,8 @@ adjust the code, or use smaller sub-group size to avoid high register pressure.
 __dpct_inline__ void moe_combine4_kernel(
     const float *__restrict__ Dm, const int32_t *__restrict__ slot,
     const float *__restrict__ w, const sycl::float4 *__restrict__ shared,
-    const float *__restrict__ sg, sycl::float4 *__restrict__ bo, int64_t T) {
+    const float *__restrict__ sg, sycl::float4 *__restrict__ bo, int64_t T,
+    const float *__restrict__ row_sd) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
     const int64_t i =
         (int64_t)item_ct1.get_group(2) * item_ct1.get_local_range(2) +
@@ -1894,15 +1962,19 @@ __dpct_inline__ void moe_combine4_kernel(
 #pragma unroll
     for (int k = 0; k < KU; ++k) {
         ww[k] = w[t * KU + k];
-        v[k] = *reinterpret_cast<const sycl::float4 *>(
-            Dm + (int64_t)slot[t * KU + k] * N + d);
+        const int64_t r = slot[t * KU + k];
+        v[k] = *reinterpret_cast<const sycl::float4 *>(Dm + r * N + d);
+        if (row_sd) {
+            const float sd = row_sd[r];
+            v[k] = sycl::float4(v[k].x() * sd, v[k].y() * sd, v[k].z() * sd, v[k].w() * sd);
+        }
     }
 #pragma unroll
     for (int k = 0; k < KU; ++k) {
         s.x() = sycl::fma(ww[k], v[k].x(), s.x());
-            s.y() = sycl::fma(ww[k], v[k].y(), s.y());
+        s.y() = sycl::fma(ww[k], v[k].y(), s.y());
         s.z() = sycl::fma(ww[k], v[k].z(), s.z());
-            s.w() = sycl::fma(ww[k], v[k].w(), s.w());
+        s.w() = sycl::fma(ww[k], v[k].w(), s.w());
     }
     const float g = sigm(sg[t]);
     const sycl::float4 sh = shared[i];
@@ -2540,9 +2612,61 @@ void gdn_gates(const float* ab, const float* dt, const float* ssm_a, float* gate
     }
     check("gdn_gates");
 }
-void gdn_conv(float* history, const float* qkv, const float* conv_w, float* h, int64_t T, float eps, void* stream) {
-    static const bool serial = std::getenv("STRATA_GDN_CONV_SERIAL") != nullptr;   // the old walk (A/B)
-    if (serial || T <= CONV_TILE) {
+// One subgroup owns all 128 channels of a head. Keep four 32-channel
+// partials in registers, reproducing the separate convolution and L2 reduction.
+static void bmg_conv_normalize(sycl::queue& q, const float* hist, const float* qkv,
+                               const float* weight, float* out, int64_t tokens, float eps) {
+    constexpr int Tile = 8, heads = C / 128, subgroups = 4;
+    const size_t work = size_t((tokens + Tile - 1) / Tile) * heads;
+    strata::kprof::kp(q, __FILE__, __func__, __LINE__)->parallel_for(
+                   sycl::nd_range<1>(work * 32, subgroups * 32),
+                   [=](sycl::nd_item<1> it) [[sycl::reqd_sub_group_size(32)]] {
+        const auto sg = it.get_sub_group();
+        const size_t group = it.get_group(0) * subgroups + sg.get_group_linear_id();
+        const int head = group % heads, lane = sg.get_local_linear_id();
+        const int64_t first = group / heads * Tile;
+        float prev[4][3], weights[4][4];
+#pragma unroll
+        for (int i = 0; i < 4; ++i) {
+            const int c = head * 128 + i * 32 + lane;
+#pragma unroll
+            for (int j = 0; j < 3; ++j)
+                prev[i][j] = first >= 3 ? qkv[(first - 3 + j) * C + c] : hist[c * 3 + j];
+#pragma unroll
+            for (int j = 0; j < 4; ++j) weights[i][j] = weight[c * 4 + j];
+        }
+        for (int64_t t = first; t < sycl::min(first + Tile, tokens); ++t) {
+            float val[4];
+#pragma unroll
+            for (int i = 0; i < 4; ++i) {
+                const int c = head * 128 + i * 32 + lane;
+                const float x = qkv[t * C + c];
+                const float z = prev[i][0] * weights[i][0] + prev[i][1] * weights[i][1] +
+                                prev[i][2] * weights[i][2] + x * weights[i][3];
+                val[i] = z / (1.0f + sycl::native::exp(-z));
+                prev[i][0] = prev[i][1]; prev[i][1] = prev[i][2]; prev[i][2] = x;
+            }
+            if (head < 2 * HK) {
+                float sums[4];
+#pragma unroll
+                for (int i = 0; i < 4; ++i) {
+                    float square = val[i] * val[i];
+#pragma unroll
+                    for (int step = 16; step > 0; step >>= 1)
+                        square += sycl::permute_group_by_xor(sg, square, step);
+                    sums[i] = sycl::group_broadcast(sg, square, 0);
+                }
+                const float inv = sycl::rsqrt(sums[0] + sums[1] + sums[2] + sums[3] + eps);
+#pragma unroll
+                for (int i = 0; i < 4; ++i) val[i] *= inv;
+            }
+#pragma unroll
+            for (int i = 0; i < 4; ++i) out[t * C + head * 128 + i * 32 + lane] = val[i];
+        }
+    });
+}
+void gdn_conv_impl(float* history, const float* qkv, const float* conv_w, float* h, int64_t T, float eps, void* stream, GdnConvPath path) {
+    if (path == GdnConvPath::Serial) {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
@@ -2555,9 +2679,12 @@ void gdn_conv(float* history, const float* qkv, const float* conv_w, float* h, i
                     gdn_conv_kernel(history, qkv, conv_w, h, T);
                 });
     } else {
-        static const bool fused = [] { const char* v = std::getenv("STRATA_GDN_CONVL2"); return v && std::atoi(v) != 0; }();
-        if (fused) {
-            {
+        auto* queue = strata::q_of(stream);
+        const bool tiled = path == GdnConvPath::Battlemage;
+        if (tiled || path == GdnConvPath::FusedL2) {
+            if (tiled) {
+                bmg_conv_normalize(*queue, history, qkv, conv_w, h, T, eps);
+            } else {
                 auto exp_props = sycl::ext::oneapi::experimental::properties{
                     sycl::ext::oneapi::experimental::use_root_sync};
 
@@ -2643,6 +2770,23 @@ void gdn_conv(float* history, const float* qkv, const float* conv_w, float* h, i
     }
     check("gdn_conv");
 }
+GdnConvPath select_gdn_conv_path(const sycl::queue& queue, int64_t rows) {
+    // Explicit convolution settings retain their existing precedence, including CONVL2=0.
+    static const bool serial = std::getenv("STRATA_GDN_CONV_SERIAL") != nullptr;
+    static const char* const convl2 = std::getenv("STRATA_GDN_CONVL2");
+    static const bool automatic = convl2 == nullptr;
+    static const bool fused = convl2 && std::atoi(convl2) != 0;
+    if (serial || rows <= CONV_TILE) return GdnConvPath::Serial;
+    if (fused) return GdnConvPath::FusedL2;
+    if (automatic && S == 128 && C % 512 == 0 && use_bmg_gdn_tiles(queue, rows))
+        return GdnConvPath::Battlemage;
+    return GdnConvPath::SeparateL2;
+}
+
+void gdn_conv(float* history, const float* qkv, const float* conv_w, float* h, int64_t T, float eps, void* stream) {
+    const auto path = select_gdn_conv_path(*strata::q_of(stream), T);
+    gdn_conv_impl(history, qkv, conv_w, h, T, eps, stream, path);
+}
 // Variant 6, the Xe sub-group recurrence (gdn_xe.hpp): one barrier per token instead of five, the same bits.  Arc A770
 // (Coder IQ1_M, 128K context, int8 KV): recurrence 1.83 -> 0.92 s on an 8K prompt (+5% prompt tok/s), 7.3 -> 3.65 s on
 // 32K (+8%), the same output tokens.  On by default on Alchemist only (not measured on other cards).
@@ -2653,6 +2797,14 @@ static bool gdn_xe_device(void* stream) {
     const bool sg16 = std::find(subgroups.begin(), subgroups.end(), size_t(16)) != subgroups.end();
     return sg16 && device.is_gpu() && device.get_info<sycl::info::device::vendor_id>() == 0x8086;
 }
+// Paired register loads require the Flash-Next head geometry and a subgroup of 16.
+static bool gdn_use_paired_inputs(void* stream, int64_t tokens) {
+    if (S != 128 || HK != 16 || HV != 48 || tokens < 128) return false;
+    const auto& queue = *strata::q_of(stream);
+    if (queue.get_backend() != sycl::backend::ext_oneapi_level_zero) return false;
+    return strata::intel_gpu_gen(queue.get_device()) == strata::IntelGpuGen::Battlemage && gdn_xe_device(stream);
+}
+
 static bool gdn_xe_on(void* stream) {
     static const bool on = [stream] {
         const char* v = std::getenv("STRATA_GDN_XE");
@@ -2759,20 +2911,31 @@ void gdn_recurrence_variant(int variant, float* state, const float* h, const flo
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
 
-            if([]{const char* e=std::getenv("STRATA_SYCL_GDN_PREFILL_REG_QK");return e&&e[0]=='1';}()){
+            const char* reg_qk = std::getenv("STRATA_SYCL_GDN_PREFILL_REG_QK");
+            if ((!reg_qk || reg_qk[0] == '1') && gdn_use_paired_inputs(stream, T)) {
+                strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)->submit([&](sycl::handler& cgh) {
+                    sycl::local_accessor<float, 1> partial(2 * RG * CB, cgh);
+                    cgh.parallel_for<class GdnPairedRegisterQk>(
+                        sycl::nd_range<1>(HV * S * RG, RG * CB),
+                        [=](sycl::nd_item<1> it) [[sycl::reqd_sub_group_size(16)]] {
+                            gdn_register_qk_pair(it, partial, state, h, gate, beta, y, T);
+                        });
+                });
+            } else if (reg_qk && reg_qk[0] == '1') {
                 strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class gdn_rec_cols_pipe_local_probe>>(
                     sycl::nd_range<3>(sycl::range(1,1,HV*NCB)*sycl::range(1,RG,CB),sycl::range(1,RG,CB)),exp_props,
                     [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(16)]] {gdn_rec_cols_pipe_local_kernel(state,h,gate,beta,y,T);});
-            }else
-            strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
-                ->template parallel_for<
-                    dpct_kernel_name<class gdn_rec_cols_pipe_kernel_c6cea3>>(
-                    sycl::nd_range<3>(sycl::range(1, 1, HV * NCB) *
-                                          sycl::range(1, RG, CB),
-                                      sycl::range(1, RG, CB)),
-                    exp_props, [=](sycl::nd_item<3> item_ct1) {
-                        gdn_rec_cols_pipe_kernel(state, h, gate, beta, y, T);
-                    });
+            } else {
+                strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+                    ->template parallel_for<
+                        dpct_kernel_name<class gdn_rec_cols_pipe_kernel_c6cea3>>(
+                        sycl::nd_range<3>(sycl::range(1, 1, HV * NCB) *
+                                              sycl::range(1, RG, CB),
+                                          sycl::range(1, RG, CB)),
+                        exp_props, [=](sycl::nd_item<3> item_ct1) {
+                            gdn_rec_cols_pipe_kernel(state, h, gate, beta, y, T);
+                        });
+            }
         } else {
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
@@ -3009,7 +3172,7 @@ void gather_rows16(const uint16_t* x16, const int32_t* src, uint16_t* dst16, int
 }
 void moe_combine(const float* Dm, const int32_t* slot, const float* w, const float* shared, const float* sg, float* bo,
                  int64_t T, void* stream, const float* row_sd) {
-    if (row_sd != nullptr) { std::fprintf(stderr, "moe_combine: per-row scales (NVFP4) are CUDA only\n"); std::exit(1); }
+    if (T <= 0) return;
 #ifndef STRATA_W_NO_COMB
     if (((reinterpret_cast<uintptr_t>(Dm) | reinterpret_cast<uintptr_t>(shared) | reinterpret_cast<uintptr_t>(bo)) & 15) == 0) {
         {
@@ -3027,7 +3190,7 @@ void moe_combine(const float* Dm, const int32_t* slot, const float* w, const flo
                         moe_combine4_kernel(
                             Dm, slot, w,
                             reinterpret_cast<const sycl::float4 *>(shared), sg,
-                            reinterpret_cast<sycl::float4 *>(bo), T);
+                            reinterpret_cast<sycl::float4 *>(bo), T, row_sd);
                     });
         }
         check("moe_combine");
@@ -3044,7 +3207,7 @@ void moe_combine(const float* Dm, const int32_t* slot, const float* w, const flo
                                       sycl::range(1, 1, 256),
                                   sycl::range(1, 1, 256)),
                 exp_props, [=](sycl::nd_item<3> item_ct1) {
-                    moe_combine_kernel(Dm, slot, w, shared, sg, bo, T);
+                    moe_combine_kernel(Dm, slot, w, shared, sg, bo, T, row_sd);
                 });
     }
     check("moe_combine");

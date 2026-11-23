@@ -18,7 +18,7 @@
 #   --release-tag TAG    the release, for example v0.2.7; the image version is the tag without the leading v
 #   --source DIR|URL     use this folder or URL (with strata-feed.json, its .sig and the archives) instead of the GitHub release
 #   --version V          image version (default: the tag without v)
-#   --flavors LIST       comma separated (default: all that the release has: cuda13 cuda12 rocm-gfx120x rocm-gfx110x rocm-gfx1151 sycl)
+#   --flavors LIST       comma separated (default: all that the release has: cuda13 cuda12 rocm-gfx120x rocm-gfx110x rocm-gfx1151 rocm-igpu sycl)
 #   --image NAME         image repository (default ghcr.io/niko1221/strata)
 #   --work DIR           where packages are unpacked (default a temporary folder, removed at the end)
 #   --push               push the images (default: build only)
@@ -62,21 +62,30 @@ trap cleanup EXIT
 
 built=""
 # one flavor at a time: the package is deleted after its image is built, so the disk never holds more than one
-flavor_list=${flavors:-cuda13,cuda12,rocm-gfx120x,rocm-gfx110x,rocm-gfx1151,sycl}
+flavor_list=${flavors:-cuda13,cuda12,rocm-gfx120x,rocm-gfx110x,rocm-gfx1151,rocm-igpu,sycl}
 for flavor in $(echo "$flavor_list" | tr ',' ' '); do
   echo "=== $flavor"
   src_arg="--release-tag $tag"; [ -n "$source" ] && src_arg="--source $source"
   # a failed fetch (bad signature, bad hash) must stop the run: it is not a skipped flavor
   $PY "$here/fetch-engines.py" --out "$work" --skip-missing --flavors "$flavor" $src_arg > "$work/.fetch.out"
   line=$(tail -1 "$work/.fetch.out")
-  bflavor=$(echo "$line" | cut -f2); folder=$(echo "$line" | cut -f3)
+  bflavor=$(echo "$line" | cut -f2); folder=$(echo "$line" | cut -f3); hy4_folder=$(echo "$line" | cut -f4); ink_folder=$(echo "$line" | cut -f5)
   if [ "$folder" = "SKIP" ] || [ -z "$folder" ]; then echo "$flavor: no package in this release, skipped"; continue; fi
   img="$image:$version-$flavor"
-  "$here/build.sh" --flavor "$bflavor" --engine "$folder" --tag "$img" --version "$version" --repo "$repo"
+  set -- --flavor "$bflavor" --engine "$folder" --tag "$img" --version "$version" --repo "$repo"
+  if [ -n "$hy4_folder" ] && [ -d "$hy4_folder" ]; then
+    set -- "$@" --shape-engine "hy4:$hy4_folder"
+  fi
+  if [ -n "$ink_folder" ] && [ -d "$ink_folder" ]; then
+    set -- "$@" --shape-engine "inkling2:$ink_folder"
+  fi
+  "$here/build.sh" "$@"
   [ -n "$latest" ] && docker tag "$img" "$image:latest-$flavor"
   # the image starts and its Terminal runs (no GPU needed for this)
   docker run --rm --entrypoint /opt/strata/terminal/bin/strata "$img" --version
   rm -rf "$folder"
+  [ -n "$hy4_folder" ] && rm -rf "$hy4_folder"
+  [ -n "$ink_folder" ] && rm -rf "$ink_folder"
   if [ -n "$push" ]; then
     docker push "$img"
     [ -n "$latest" ] && docker push "$image:latest-$flavor"
