@@ -149,6 +149,13 @@ if(COMMAND strata_utf8_manifest)
   strata_utf8_manifest(strata-inkling)
 endif()
 
+# The host S_K row kernels (ink_host_avx2.cpp) against a scalar reference, bit for bit (no GPU; skips itself on a CPU without AVX2)
+if(STRATA_BUILD_TESTS)
+  add_executable(ink_host_sk_test ${_ink_engine_root}/tests/core/ink_host_sk_test.cpp)
+  target_link_libraries(ink_host_sk_test PRIVATE strata_inkling_core)
+  add_test(NAME ink_host_sk_test COMMAND ink_host_sk_test)
+endif()
+
 # Optional GPU backend plug-ins (automatically wired when backend lane lands its subfolder!)
 if(STRATA_ENABLE_CUDA)
   if(MSVC AND NOT DEFINED CMAKE_CUDA_RUNTIME_LIBRARY)
