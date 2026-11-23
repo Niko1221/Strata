@@ -10575,6 +10575,9 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
         vram_gib = sum(float(g.get("vram_gb") or 0.0) for g in ink_gpus)
         mode_desc = "pipeline layer-split" if use_ink_ls else "dual-GPU expert parallelism"
         ok("GPUs: " + " + ".join(gpu_name(c) for c in ink_gpus) + f" ({mode_desc})")
+        if use_ink_ls and is_cuda_ink and str(getattr(a, "drafter", None) or "").strip().lower() != "off":
+            warn("DSpark drafting does not run yet when the layers are split across several NVIDIA cards, so it decodes without it (#6741). "
+                 "On one card with the rest of the experts in RAM it does: add --gpu N to use one card")
     vision = a.vision not in ("no", "none")
     want_ctx = a.context or inkling_family.DEFAULT_CONTEXT
     lines = inkling_menu_lines(vram_gib, ram_gib, unified, want_ctx, vision, igpu=igpu, arch=arch)

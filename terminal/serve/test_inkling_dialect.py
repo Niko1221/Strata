@@ -238,6 +238,24 @@ class TestInklingDialect(unittest.TestCase):
         self.assertEqual(inkling_kind.drafting_info(base, {"drafter": "dspark"}), {"drafting": "dspark", "drafting_note": ""})
         self.assertEqual(inkling_kind.drafting_info(base, {"drafter": "none"}), {"drafting": "off", "drafting_note": ""})
 
+    def test_drafting_info_follows_what_the_engine_started_with_6741(self):
+        """#6741: on two cards the CUDA engine says `drafting=off` (layer split runs no DSpark); the status said "dspark" because the
+        asked mode was repeated.  The engine's own INFO wins, and an asked-for DSpark that is off carries the reason."""
+        split = ["--native", "m.strata", "--gpus", "1,0", "--layer-split", "auto", "--draft", "dspark"]
+        got = inkling_kind.drafting_info(split, {"drafter": "dspark", "drafting": "off", "backend": "cuda-ls"})
+        self.assertEqual(got["drafting"], "off")
+        self.assertEqual(got["drafting_note"], inkling_kind.DRAFTING_SPLIT_NOTE)
+        one = ["--native", "m.strata", "--draft", "dspark"]
+        self.assertEqual(inkling_kind.drafting_info(one, {"drafter": "dspark", "drafting": "dspark", "backend": "cuda"}),
+                         {"drafting": "dspark", "drafting_note": ""})
+        self.assertEqual(inkling_kind.drafting_info(one, {"drafter": "none", "drafting": "off"}),
+                         {"drafting": "off", "drafting_note": inkling_kind.DRAFTING_NO_DRAFTER_NOTE})
+        self.assertEqual(inkling_kind.drafting_info(one, {"drafter": "dspark", "drafting": "off", "backend": "cuda"}),
+                         {"drafting": "off", "drafting_note": inkling_kind.DRAFTING_LEFT_OFF_NOTE})
+        # asked off and off: no note
+        self.assertEqual(inkling_kind.drafting_info(split[:-2] + ["--draft", "off"], {"drafter": "dspark", "drafting": "off"}),
+                         {"drafting": "off", "drafting_note": ""})
+
     def test_finish_prompt_skips_hidden_thinking_for_plain_and_tool_turns_6612_6627(self):
         base_prompt = (
             "<|message_system|><|content_text|>Thinking effort level: 0<|end_message|>"
