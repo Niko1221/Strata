@@ -417,9 +417,12 @@ def template_kwargs(kwargs: dict) -> dict:
     return out
 
 
-def prepare_messages(messages: list[dict]) -> list[dict]:
+def prepare_messages(messages: list[dict], *, has_tools: bool = False) -> list[dict]:
     """Canonicalize assistant tool_call arguments from JSON strings to dicts so Inkling-2-Mini's chat_template.jinja
-    never raises `tool call arguments must be a parsed object, not a JSON string`."""
+    never raises `tool call arguments must be a parsed object, not a JSON string`.
+
+    With `has_tools` the history also gets the empty thinking turn `finish_prompt` forces (see `_mark_forced_thinking`);
+    pass the same `has_tools` to `finish_prompt`, which takes the marker out again."""
     out = []
     for m in messages:
         if not isinstance(m, dict) or not m.get("tool_calls"):
@@ -445,6 +448,31 @@ def prepare_messages(messages: list[dict]) -> list[dict]:
                 fn["arguments"] = {}
             new_calls.append({**tc, "function": fn})
         out.append({**m, "tool_calls": new_calls} if changed else m)
+    return _mark_forced_thinking(out) if has_tools else out
+
+
+# A private-use marker, put in an assistant message's `reasoning_content` and removed again by `finish_prompt`.
+_EMPTY_THINK_MARK = "\ue000strata-inkling-empty-thinking\ue001"
+
+
+def _mark_forced_thinking(messages: list[dict]) -> list[dict]:
+    """With tools, `finish_prompt` ends every prompt with an empty thinking turn and the model answers after it. When
+    that answer comes back in the history, the template leaves the turn out (it renders a thinking turn only for a
+    non-empty `reasoning_content`), so the next prompt stops matching the previous one right before the answer and the
+    engine reads the whole conversation again on every turn of an agent.  Give each earlier assistant turn that has no
+    thinking of its own a marker as its `reasoning_content`: the template then writes the thinking turn where the model
+    wrote it, from the structure of the messages, and `finish_prompt` empties the marker.  Left alone: the last message
+    (a prefilled reply), a named assistant, an assistant turn with neither text nor tool calls, and everything when
+    a message already contains the marker."""
+    if not messages or _EMPTY_THINK_MARK in json.dumps(messages, ensure_ascii=False, default=str):
+        return messages
+    last = len(messages) - 1
+    out = []
+    for i, m in enumerate(messages):
+        if (i != last and isinstance(m, dict) and m.get("role") == "assistant" and not m.get("reasoning_content")
+                and not m.get("name") and (m.get("tool_calls") or m.get("content"))):
+            m = {**m, "reasoning_content": _EMPTY_THINK_MARK}
+        out.append(m)
     return out
 
 
@@ -461,6 +489,8 @@ def finish_prompt(prompt: str, *, has_tools: bool = False, forced: bool = False)
       tokens or looping inside hidden thinking.
     Idempotent if the prompt already carries an opener or when a forced tool-call opener will be appended.
     """
+    if _EMPTY_THINK_MARK in prompt:
+        prompt = prompt.replace(_EMPTY_THINK_MARK, "")
     if not prompt or forced:
         return prompt
     empty_think = f"{MSG_MODEL}{CONTENT_THINK}{END_MSG}"
