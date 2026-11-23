@@ -412,11 +412,18 @@ static int cmd_spec_check(const std::string& model_path, const BackendOpts& bopt
         int32_t next = argmax_f32(logits.data(), V);
         out.assign(1, next);
         int pos = P;
+        static const bool dump_steps = [] { const char* e = std::getenv("STRATA_SPEC_CHECK_STEPS"); return e && e[0] == '1'; }();
+        // STRATA_SPEC_CHECK_SNAP=1: value-neutral work between the prompt and the first decode step (a ShortConv snapshot: allocations
+        // and two read-only kernels, what a prompt checkpoint save does); the answer must not change
+        static const bool neutral_snap = [] { const char* e = std::getenv("STRATA_SPEC_CHECK_SNAP"); return e && e[0] == '1'; }();
+        if (neutral_snap) backend->snapshot_slot(0);
+        if (hashes && dump_steps) printf("[steps] prefill %016llx top1 %d\n", static_cast<unsigned long long>(fnv_f32(logits.data(), V)), next);
         while (static_cast<int>(out.size()) < n_gen) {
             batch.clear();
             batch.capture_taps = true;
             batch.push(0, pos++, next, true);
             if (!backend->forward_batch(batch, logits.data(), nullptr, err)) { fprintf(stderr, "decode: %s\n", err.c_str()); return false; }
+            if (hashes && dump_steps) printf("[steps] %zu %016llx top1 %d\n", hashes->size(), static_cast<unsigned long long>(fnv_f32(logits.data(), V)), argmax_f32(logits.data(), V));
             if (hashes) hashes->push_back(fnv_f32(logits.data(), V));
             if (keep_logits && static_cast<int>(keep.size()) < kKeep) keep.emplace_back(logits.begin(), logits.begin() + V);
             next = argmax_f32(logits.data(), V);
