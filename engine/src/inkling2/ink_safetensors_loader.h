@@ -17,6 +17,7 @@
 #include "../image/vae/safetensors_lite.hpp"
 #include "ink_json.h"
 #include "strata/artifact/strata_reader.hpp"
+#include "strata/core/ink_names.hpp"
 #include "strata/quant/sk_codecs.hpp"
 
 namespace ink2 {
@@ -404,12 +405,13 @@ struct SafetensorsAdapter {
                 uint64_t off = align64(sec1_total_bytes);
                 uint64_t sz  = st_t.end - st_t.begin;
                 TInfoT ti;
-                ti.name = name;
+                // Backends ask for "dspark.<name>" (#6762): put the prefix on a plain mtp.safetensors name.
+                ti.name = strata::core::ink_dspark_name(name);
                 ti.fmt = wfmt;
                 ti.shape = st_t.shape;
                 ti.off = off;
                 ti.bytes = sz;
-                m.dspark_tensors[name] = std::move(ti);
+                m.dspark_tensors[ti.name] = std::move(ti);
                 sec1_items.push_back({name, true, 0, &st_t, off, sz});
                 sec1_total_bytes = off + sz;
             }
