@@ -10502,14 +10502,16 @@ def inkling_have(a, dst: Path) -> bool:
         return False
     if done(dst) or bool(getattr(a, "gguf_dir", None)):
         return True
-    pin = inkling_family.FILES.get(dst.name) or inkling_family.TOKENIZER_FILES.get(dst.name)
-    return bool(pin and dst.stat().st_size == pin[0] and not dst.with_name(dst.name + ".part").exists())
+    pins = inkling_family.pins_for(dst.name)
+    return bool(pins and any(dst.stat().st_size == p[0] for p in pins) and not dst.with_name(dst.name + ".part").exists())
 
 
 def inkling_verify(dst: Path, name: str, own: bool) -> None:
-    pin = inkling_family.FILES.get(name) or inkling_family.TOKENIZER_FILES.get(name)
-    if not pin:
+    pins = inkling_family.pins_for(name)
+    if not pins:
         return
+    have = dst.stat().st_size if dst.exists() else -1
+    pin = next((p for p in pins if p[0] == have), pins[0])       # a file in the re-uploaded layout is checked against its own size and sha
     size, sha = pin
     if sha:
         verify_sha256(dst, size, sha, own=own)
