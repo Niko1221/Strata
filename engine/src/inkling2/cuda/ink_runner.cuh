@@ -1223,7 +1223,27 @@ struct InkCudaRunner {
                     (mode == 2) ? d_tree_anc : nullptr, (mode == 2) ? d_tree_dep : nullptr,
                     p0_val, d_attn_pm, d_attn_pl, d_attn_po, M);
                 k_ink_flash_gqa_merge<<<gr, 128, 0, st>>>(d_attn_pm, d_attn_pl, d_attn_po, d_gate_attn, d_attn_out, M);
-            } else if (mode == 0 && M >= 128 && (m.sm_cc >= 70 || m.sm_cc == 60) && (d_pf_q != nullptr || [&](){ size_t vf=0,vt=0; cudaMemGetInfo(&vf,&vt); return vf > (480ull<<20); }())) {
+            } else if (mode == 0 && M >= 128 && (m.sm_cc >= 70 || m.sm_cc == 60) && [&]() {
+                // Fix: the gate below only asked
+                // for 480 MB free, but ensure_pf_attn's scratch grows ~112 KB per PROMPT token and
+                // dalloc exit()s on OOM - which deadlocked the process on a stdio lock mid-prefill
+                // (stuck at "reading the prompt: 14,336 of 15,686"). Take the tensor-core path only
+                // when its scratch fits free VRAM; otherwise fall through to the streaming
+                // attention path, which works at any prompt length.
+                const int g_k = is_swa ? std::max(0, p0_val - kInkSwaWin + 1) : 0;
+                const size_t g_cap = (size_t)std::max((p0_val + M) - g_k, 2048);
+                const auto g_pf_bytes = [](size_t cap, int heads, int hd, int batch) {
+                    return (size_t)heads * (4ull * hd + 3072ull) * cap
+                         + (size_t)heads * ((size_t)batch + 1024) * hd * 2;
+                };
+                const size_t g_need = g_pf_bytes(g_cap, kInkHeads, kInkHeadDim, max_batch) + (256ull << 20);
+                if (d_pf_q && g_cap <= (size_t)std::max(pf_kv_cap, 2048)) return true;  // already held
+                size_t g_vf = 0, g_vt = 0;
+                if (cudaMemGetInfo(&g_vf, &g_vt) != cudaSuccess) return false;
+                const size_t g_held = d_pf_q
+                    ? g_pf_bytes((size_t)std::max(pf_kv_cap, 2048), kInkHeads, kInkHeadDim, max_batch) : 0;
+                return g_vf + g_held > g_need + (480ull << 20);
+            }()) {
                 // High-speed Causal/SWA-Sliced Tensor Core Prefill Attention (BF16 on sm_80+, FP16 on sm_60..75!)
                 const bool use_fp16_pf = (m.sm_cc < 80);
                 const cudaDataType_t pf_dt = use_fp16_pf ? CUDA_R_16F : CUDA_R_16BF;
