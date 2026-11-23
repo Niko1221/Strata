@@ -1947,6 +1947,9 @@ std::atomic<int64_t> g_req_vram_free_mib{-1};
 /// The free VRAM the serve start-up line reported ("MiB of VRAM free with everything loaded"; -1 before it or when it did not run): the first
 /// request's note is said only when the free memory fell since then or is under 512 MiB (strata/core/vram_request_notice.hpp).
 std::atomic<int64_t> g_startup_vram_free_mib{-1};
+/// 0.2.21 (QPERF): the auto expert cache's own measurement of what the load allocates after the cache.  Free MiB once the slots were written (-1: no
+/// auto cache), the draft head and the other priced buffers bound after it, and what was priced for the rest.  The start-up line prints the difference.
+std::atomic<int64_t> g_cache_free_after_write_mib{-1}, g_cache_priced_bound_mib{0}, g_cache_priced_late_mib{0};
 /// AMD on Linux: the driver's paused-GPU counter (ms, strata/core/gpu_pause_time.hpp) when the current request began;
 /// -1 before the first request, when not available, and in every other build.  Read once per request, never per step.
 std::atomic<int64_t> g_req_gpu_pause_ms{-1};
@@ -9070,6 +9073,7 @@ int main(int argc, char** argv) {
     // shrink loop (after cudaMemset(xcache)) never leave Windows WDDM below the free-VRAM safety floor.
     bool wddm_discrete = false;
     int64_t post_cache_extra_b = 0;   // prefill_mib + mtp_bind + late_alloc_b (added to reserve + pipe_first)
+    int64_t post_cache_late_b = 0;    // the late_alloc_b part of it (0 when it was not priced)
     if (o.expert_cache < 0) {
         // Ensure background GEMM library warm-up finished before measuring free VRAM (avoids racing cuBLAS/hipBLAS init).
         if (g_warm_thr.joinable()) g_warm_thr.join();
@@ -9219,7 +9223,8 @@ int main(int argc, char** argv) {
         const int64_t late_mib = strata::core::wddm_late_alloc_mib(wddm_discrete, strata::qwen_defaults_026(), strata::core::kLateAllocMib);
         strata::core::AutoCacheSlots auto_slots = strata::core::auto_cache_slots(
             (int64_t) free_b, reserve, blob, min_slots, late_mib);
-        post_cache_extra_b = (prefill_mib << 20) + mtp_bind + (auto_slots.late_priced ? (late_mib << 20) : 0);
+        post_cache_late_b = auto_slots.late_priced ? (late_mib << 20) : 0;
+        post_cache_extra_b = (prefill_mib << 20) + mtp_bind + post_cache_late_b;
         int64_t slots = auto_slots.slots;
         if (!profile.empty()) slots = std::min<int64_t>(slots, (int64_t) profile.size());
 #if defined(STRATA_GPU_METAL)
@@ -9685,7 +9690,12 @@ int main(int argc, char** argv) {
             // #6128: include mtp_bind, owned prefill buffers, and unpriced late allocations (cuBLAS, verify, graph
             // capture) in `want` so shrinking stops ONLY when post-load free VRAM stays >= vram_reserve_mib!
             const int64_t want = ((int64_t) o.vram_reserve_mib << 20) + pipe_first + post_cache_extra_b;
-            const int64_t slack = wddm_discrete ? 0 : (64ll << 20);
+            // 32 MiB under WDDM (0 before 0.2.21): the slot count rounds down, so the free figure after the write is a few MiB under `want` by
+            // construction (902 against 904 MiB on the RTX 5070), and a shortage of 2 MiB then took a 64 MiB margin plus a re-write of the cache
+            const int64_t slack = wddm_discrete ? (32ll << 20) : (64ll << 20);
+            g_cache_free_after_write_mib.store((int64_t) (free_b >> 20));
+            g_cache_priced_bound_mib.store((pipe_first + post_cache_extra_b - post_cache_late_b) >> 20);
+            g_cache_priced_late_mib.store(post_cache_late_b >> 20);
             if ((int64_t) free_b >= want - slack) break;
             // short by (want - free); a figure of 0 only says "at least": the first two such reads give back 1 GiB
             // each (under WDDM the free figure read before the allocation runs ~0.7 GiB high), later ones a quarter
@@ -16080,6 +16090,13 @@ int main(int argc, char** argv) {
             g_startup_vram_free_mib.store(free_mib);   // the first request's note compares with this
             if (free_mib >= 256) {
                 std::fprintf(stderr, "strata serve: %lld MiB of VRAM free with everything loaded\n", (long long) free_mib);
+                if (g_cache_free_after_write_mib.load() >= 0)   // QPERF: what the load took after the expert cache, against what the cache sizing priced
+                    std::fprintf(stderr, "strata serve: after the expert cache was written %lld MiB were free; %lld MiB were taken since (priced: %lld MiB of draft "
+                                         "head and buffers + %lld MiB for the rest), %lld MiB of it for the rest\n",
+                                 (long long) g_cache_free_after_write_mib.load(),
+                                 (long long) (g_cache_free_after_write_mib.load() - free_mib), (long long) g_cache_priced_bound_mib.load(),
+                                 (long long) g_cache_priced_late_mib.load(),
+                                 (long long) (g_cache_free_after_write_mib.load() - free_mib - g_cache_priced_bound_mib.load()));
 #ifdef _WIN32
                 if (free_mib < 512 && o.prefill_auto)   // #1275: said, never changed (the chunk is the operator's to cap)
                     std::fprintf(stderr, "strata serve: that is little room for the verify windows' buffers under WDDM; if the "
