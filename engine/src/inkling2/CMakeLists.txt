@@ -216,3 +216,14 @@ if(EXISTS "${_ink_engine_root}/tests/quant/strata_v1_1_inkling2_test.cpp")
 endif()
 
 install(TARGETS strata-inkling RUNTIME DESTINATION bin COMPONENT inkling2)
+
+option(STRATA_INK_BUILD_PREFIX_TESTS "Build the GPU-free shared-prefix protocol regression" OFF)
+if(STRATA_INK_BUILD_PREFIX_TESTS)
+  enable_testing()
+  find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  add_executable(ink_prefix_mock ink_prefix_mock.cpp)
+  target_link_libraries(ink_prefix_mock PRIVATE strata_inkling_core)
+  add_test(NAME ink_shared_prefix COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_shared_prefix.py $<TARGET_FILE:ink_prefix_mock>)
+  set_tests_properties(ink_shared_prefix PROPERTIES TIMEOUT 30)
+endif()
