@@ -978,13 +978,15 @@ public:
         } else {
             const size_t trunk_now = vram_used_bytes();
             // Reserve headroom for KV + activations + OS/desktop (always keep at least OS reserve + 768 MiB)
-            const size_t kv_est = std::min<size_t>(
-                estimate_slot_bytes(std::min(max_ctx_, 4096), default_kv_dtype_, has_dspark_).total_bytes() * static_cast<size_t>(max_slots_),
-                mem_info_.effective_total_bytes / 4);
-            const size_t overhead = mem_info_.reserve_bytes + trunk_now + kv_est + (768ULL << 20);
-            if (mem_info_.effective_total_bytes > overhead) {
-                vram_budget = mem_info_.effective_total_bytes - overhead;
-            }
+            // The K/V of every slot that will run and the batch scratch of the biggest step are reserved BEFORE the card is filled with experts (no cap
+            // at a quarter of the card: 32 clients need 32 slots; a plan without them ended with "scratch alloc: out of memory" at the first batch).
+            const size_t kv_est =
+                estimate_slot_bytes(std::min(max_ctx_, 4096), default_kv_dtype_, has_dspark_).total_bytes() * static_cast<size_t>(max_slots_);
+            ink2::BatchGeom bg;
+            bg.hidden = c_.hidden; bg.n_head = c_.n_head; bg.head_dim = c_.head_dim; bg.n_kv = c_.n_kv; bg.d_rel = c_.d_rel;
+            bg.rel_extent = c_.rel_extent; bg.inter = c_.inter; bg.n_experts = c_.n_experts; bg.top_k = c_.top_k;
+            const size_t scratch_est = estimate_batch_scratch_bytes(bg, std::max(max_slots_, std::min(guard_.max_prefill_chunk, 512)));
+            vram_budget = plan_expert_vram_budget(mem_info_.effective_total_bytes, mem_info_.reserve_bytes, trunk_now, kv_est, scratch_est, 768ULL << 20);
         }
 
         // Check whether all experts fit in vram_budget; if hybrid (partial VRAM), reserve elastic VRAM cache inside budget!

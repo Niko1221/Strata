@@ -158,6 +158,49 @@ inline SlotMemBudget estimate_slot_bytes(int max_ctx, KvDtype kv_dtype, bool wit
     return b;
 }
 
+// ---- Batch scratch of B rows (the buffers a backend allocates for a step of B tokens / slots): the HIP backend's ensure_batch_scratch(B) as a formula ----
+// Backends must reserve this (and the K/V of every slot they will run) BEFORE they fill the card with experts: a plan made without it ends with
+// "scratch alloc: out of memory" at the first batch of 32 clients (INKOTHER, boxia, --bench --parallel 32).
+struct BatchGeom {
+    int hidden = 2304, n_head = 24, head_dim = 128, n_kv = 8, d_rel = 16, rel_extent = 1024, inter = 1152, n_experts = 128, top_k = 8;
+};
+inline size_t estimate_batch_scratch_bytes(const BatchGeom& g, int B) {
+    const size_t b = static_cast<size_t>(std::max(1, B));
+    const size_t D = static_cast<size_t>(g.hidden);
+    const size_t q_dim = static_cast<size_t>(g.n_head) * g.head_dim;
+    const size_t kv_dim = static_cast<size_t>(g.n_kv) * g.head_dim;
+    const size_t r_dim = static_cast<size_t>(g.n_head) * g.d_rel;
+    const size_t qkvrg = 2 * q_dim + r_dim + 2 * kv_dim;
+    const size_t inter = static_cast<size_t>(g.inter);
+    const size_t top_k = static_cast<size_t>(g.top_k);
+    const size_t gu_cap = std::max<size_t>(b, std::min<size_t>(b * top_k, 512));
+    const size_t x_bf16_k = std::max<size_t>({2 * D, q_dim, 4096});
+    size_t t = 0;
+    t += b * 4 * 7 + (b + 1) * 4;                              // slot ids, positions, token ids, image index, wanted index, group slot / token, group offsets
+    t += std::max<size_t>(b, 1025) * x_bf16_k * 2;             // bf16 activations
+    t += b * qkvrg * 4;
+    t += 41 * b * D * 4;                                       // the [B, D] fp32 buffers (cur, res, inputs, mixes, messages, control, blocks, bank, taps ...)
+    t += 3 * b * q_dim * 4 + 4 * b * kv_dim * 4 + b * r_dim * 4;   // q, gate, attention out / k, v raw and conv / r
+    t += b * g.n_head * static_cast<size_t>(g.rel_extent) * 4 + b * g.n_head * 4;
+    t += 2 * b * g.n_kv * 16;
+    t += std::max<size_t>(b, 4) * g.n_head * 4 * 130 * 4;      // split-KV partials
+    t += gu_cap * D * 2 + gu_cap * 2 * inter * 4 + gu_cap * D * 4 + 2 * gu_cap * 4;   // MoE per-expert scratch
+    t += b * static_cast<size_t>(g.n_experts) * 4 + 2 * b * top_k * 4;
+    t += b * top_k * inter * 2;
+    t += (129 + 128) * 4;
+    t += b * D + b * (D >> 4) * 4 + b * top_k * inter + b * top_k * (inter >> 4) * 4;   // int8 activations and scales
+    t += 2 * b * top_k * 4 + b * top_k * D * 2 + b * top_k * D * 4;
+    return t;
+}
+
+// Bytes of expert bodies a card may take: the card minus the runtime's reserve, the weights already in it, the K/V of every slot that will run (no
+// cap: 32 clients need 32 slots) and the batch scratch, minus a margin. 0 when nothing is left (the experts then go to RAM).
+inline size_t plan_expert_vram_budget(size_t card_bytes, size_t reserve_bytes, size_t resident_bytes, size_t kv_bytes_all_slots,
+                                      size_t scratch_bytes, size_t margin_bytes) {
+    const size_t overhead = reserve_bytes + resident_bytes + kv_bytes_all_slots + scratch_bytes + margin_bytes;
+    return card_bytes > overhead ? card_bytes - overhead : 0;
+}
+
 // ---- Paged KV Cache for a single slot (on-demand 64-token page allocation -> tiny footprint for active slots!) ----
 // Supports FP16, FP8_E4M3, K8V8 (per-64 INT8 K + INT8 V), and K8V4 (per-64 INT8 K + 4-bit asymmetric V)
 struct SlotKvPages {
