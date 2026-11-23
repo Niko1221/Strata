@@ -192,6 +192,8 @@ void group(const int32_t*, int64_t, int, int, void*, int32_t*, int32_t*, void*) 
 void group_bounds(const int32_t*, int, void*, void*) {}
 void experts(const Batch&, int, int64_t, const void*, const void*, const int32_t*, void*, float*, void*) {}
 bool native_supported(int, int) { return false; }
+void want_dm_f16(bool) {}                    // the F16 down rows are a fused-kernel path (STRATA_PREFILL_MMQ off)
+bool dm_f16_used() { return false; }
 void quantize_act_native(const float*, int64_t, int64_t, void*, void*) {}
 void experts_native(const Batch&, const NativeGeom&, int, int64_t, const void*, const void*, const int32_t*, void*,
                     float*, void*) {}
@@ -777,7 +779,7 @@ int64_t g_ring_small_max = 0;
 inline bool fused_ring() {
     if (const int ov = strata::prefill::pf_fused_override().load(std::memory_order_relaxed); ov == 0 || ov == strata::prefill::kPfFusedKernelsOnly)
         return false;   // the small-card prompt path decided on MMQ's layout
-    if (core::peer_portable()) return false;   // multi-GPU: --peer-device keeps the MMQ path and its buffer sizes
+    if (core::peer_prompt()) return false;   // multi-GPU: --peer-device keeps the MMQ path and its buffer sizes
     const strata::kernels::cpu::ExpertLayout& lay = strata::kernels::cpu::expert_layout();
     // the Q2_0 pack: fused::enabled().  A native pack: native_supported() alone - it implies enabled() wherever the Q2_0
     // kernels exist, and on gfx12 (the native kernels only) enabled() is false while the native layers do run fused.
@@ -5686,8 +5688,9 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     const int mmq_gt = lay.native ? lay.fmt[(size_t) l].gu_type : 42;
                     const int mmq_dt = lay.native ? lay.fmt[(size_t) l].d_type : 42;
                     // --peer-device with MMQ: MMQ only, whether or not the peer took the prompt path (set_peer can decline), as
-                    // fused_ring() sized the ring and the buffers for it.  Without MMQ the share is always declined: the
-                    // kernels the walk picks without the flag, in MMQ's buffer layout (own_only_line.hpp peer_keeps_mmq)
+                    // fused_ring() sized the ring and the buffers for it.  Expert parallelism sets peer_portable() for its
+                    // mapped host regions but has no PeerPrefill (m.pp), so m.pp (--peer-device only) gates MMQ here;
+                    // without MMQ the share is always declined (own_only_line.hpp peer_keeps_mmq).
                     const bool no_peer = !m.pp && !strata::prefill::peer_keeps_mmq(core::peer_portable(), kPfOwnOnlyBuild);
                     const bool fused_only = mmq_plan().any && mmq_plan().fo[(size_t) l];
                     // a Hadamard-folded layer (APR / Gyro) on the fused kernels: only the trellis pairs (CUDA, STRATA_PF_FUSED_TQ=1: native_supported
@@ -8184,7 +8187,7 @@ int64_t Prefill::lm_prepare(int64_t n, std::string& why, int64_t cap) {
     // no layer-major form
     const bool split = stage_lb_ != 0 || stage_le_ != g.n_layers || next_ != nullptr;
     if (hand_in_ != nullptr) { why = "a layer split's chunk hand-off is in use"; return 0; }
-    if (m.pp || helper_ != nullptr || core::peer_portable()) { why = "a peer GPU"; return 0; }
+    if (m.pp || helper_ != nullptr || core::peer_prompt()) { why = "a peer GPU"; return 0; }
     // the PLE block (layer 1) reads the token history: on a split it runs in a first stage that holds layers 0 and 1
     // (a later stage never reaches it)
     if (split && m.ss->ple.ready() && stage_lb_ <= 1 && !(stage_lb_ == 0 && stage_le_ >= 2)) {

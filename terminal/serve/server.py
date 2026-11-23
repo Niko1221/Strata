@@ -8899,8 +8899,17 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
                 raise SystemExit(f"[strata] config {e}")
             print(f"[strata] layer split across GPUs {gpu_list(cfg)} ({split})", flush=True)
         elif len(gpu_list(cfg)) > 1:
-            print(f"[strata] GPUs {gpu_list(cfg)}: the later card(s) serve as the peer expert tier (--peer-device)",
-                  flush=True)
+            args = cfg.get("args") or []
+            if "--expert-parallel-device" in args:
+                print(f"[strata] GPUs {gpu_list(cfg)}: the cards compute every layer's experts together "
+                      "(--expert-parallel-device)", flush=True)
+            elif any(a in args for a in ("--expert-cache-device1", "--expert-cache-device2",
+                                         "--expert-cache-device3")):
+                print(f"[strata] GPUs {gpu_list(cfg)}: the later card(s) hold the primary's overflow experts "
+                      "(--expert-cache-device1..3)", flush=True)
+            else:
+                print(f"[strata] GPUs {gpu_list(cfg)}: the later card(s) serve as the peer expert tier (--peer-device)",
+                      flush=True)
         # a relative "exe" is the config's cwd's: Windows' CreateProcess resolves "engine/strata.exe" against nothing
         # it is told about (WinError 2), so it is made absolute here
         if engine_component.is_reference(cfg["exe"]):      # "component:strata-engine": the engine package for this PC

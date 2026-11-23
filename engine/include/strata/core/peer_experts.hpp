@@ -32,6 +32,9 @@ namespace strata::core {
 /// the peer card writes into are then allocated with cudaHostAllocPortable; without a peer the flag stays off.
 void set_peer_portable(bool on);
 bool peer_portable();
+/// --peer-device only (not --expert-parallel-device): the prompt keeps the MMQ path and its buffer sizes for the peer
+void set_peer_prompt(bool on);
+bool peer_prompt();
 
 class PeerExperts {
 public:
