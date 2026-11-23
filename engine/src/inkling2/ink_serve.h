@@ -431,6 +431,7 @@ struct ActiveReq {
     int gov_calib_left = 0;    // plain steps to run first to learn what one plain step costs
     int gov_win_steps = 0;     // speculative steps in the current window
     int gov_win_emit = 0;      // tokens those steps produced
+    double gov_gain = -1.0;    // smoothed gain of the last windows (< 0: none yet)
 };
 
 struct ServeConfig {
@@ -452,8 +453,8 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
     // STRATA_INK_SPEC=block: measurement switch, greedy requests use the linear block-8 drafter + batch verify instead of the beam tree
     const char* spec_env = std::getenv("STRATA_INK_SPEC");
     const bool spec_tree = !(spec_env && std::string(spec_env) == "block");
-    // STRATA_INK_SPEC=adapt: greedy drafting stays on only while one verify window is worth its cost. Per request, after every 8 speculative
-    // steps: tokens per step / (spec step ms / plain step ms) < 1 turns drafting off for 48 plain steps, then it probes again. The plain step
+    // STRATA_INK_SPEC=adapt: greedy drafting stays on only while one verify window is worth its cost. Per request, after every 12 speculative
+    // steps: the smoothed tokens per step / (spec step ms / plain step ms) below 0.93 turns drafting off for 40 plain steps, then it probes again. The plain step
     // time is measured on the first 4 decode steps of the first request and refreshed by every plain step after that.
     const bool spec_adapt = (spec_env && std::string(spec_env) == "adapt");
     double gov_t_plain = 0.0, gov_t_spec = 0.0;
@@ -635,7 +636,7 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
         rq.cur_pos = reuse;
         rq.hist = rq.prompt_ids;
         rq.next_tok = -1;
-        rq.gov_plain_left = 0; rq.gov_win_steps = 0; rq.gov_win_emit = 0;
+        rq.gov_plain_left = 0; rq.gov_win_steps = 0; rq.gov_win_emit = 0; rq.gov_gain = -1.0;
         rq.gov_calib_left = (spec_adapt && gov_t_plain <= 0.0) ? 4 : 0;
         return true;
     };
@@ -801,10 +802,11 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
                         gov_t_spec = (gov_t_spec <= 0.0) ? ms : 0.8 * gov_t_spec + 0.2 * ms;
                         rq.gov_win_steps += 1;
                         rq.gov_win_emit += n_emit;
-                        if (rq.gov_win_steps >= 8) {
+                        if (rq.gov_win_steps >= 12) {
                             const double per_step = static_cast<double>(rq.gov_win_emit) / rq.gov_win_steps;
                             const double gain = (gov_t_plain > 0.0 && gov_t_spec > 0.0) ? per_step / (gov_t_spec / gov_t_plain) : 2.0;
-                            if (gain < 1.0) rq.gov_plain_left = 48;
+                            rq.gov_gain = (rq.gov_gain < 0.0) ? gain : 0.5 * rq.gov_gain + 0.5 * gain;
+                            if (rq.gov_gain < 0.93) { rq.gov_plain_left = 40; rq.gov_gain = -1.0; }
                             rq.gov_win_steps = 0;
                             rq.gov_win_emit = 0;
                         }
