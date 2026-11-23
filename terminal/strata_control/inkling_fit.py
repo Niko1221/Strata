@@ -295,8 +295,10 @@ def compute(build: str, vram_gib: float, ram_gib: float, ctx: int | None = None,
     elif _full_ctx_slots(backend_low):
         fp8_kv = False
     kv_dtype = "fp8" if fp8_kv else "fp16"
-    extra_dspark_weights = DSPARK_GGUF_GB if (dspark and info.get("format") == "gguf") else 0.0
-    dense_total = info["dense_gb"] + extra_dspark_weights
+    # The Q8_0 drafter file (0.40 GB) is NOT a further charge on a discrete card: measured on an RTX 3060 Ti 8 GB (SQ-10 and UD-Q4_K_XL, free
+    # 7.66 GiB, ctx 32768) the engine places only 81 / 41 fewer experts (0.23 / 0.19 GB) with the drafter on, and its ledger shows DSpark taking 78-80 MiB;
+    # the planner charged 0.25 GB for SQ and 0.65 GB for GGUF (0.40 of it for the weights), 0.45 GB too much on a tight card. Unified memory still holds it.
+    dense_total = info["dense_gb"]
     # Vision stays in host RAM / CPU on <= 12.5 GiB GPUs so it never steals ~0.64 GB of hot 3x-looped expert VRAM!
     vision_in_vram = bool(vision and v_gib > 12.5)
     # the K/V that goes to the host (CUDA only): every slot's whole context, not the on-device window the card keeps (#--parallel measured, see global_kv_total_gb)
