@@ -173,6 +173,16 @@ class SlotRouting(unittest.TestCase):
                 self.assertNotIn("ckpt=0", lines[2])
                 self.assertGreaterEqual(k2, p1 - 90, f"turn 2: {k2} of {p2} prompt tokens reused after a wrap-up pass")
 
+    def test_the_env_knob_turns_the_prompt_checkpoint_off_on_every_pass(self):
+        # STRATA_INKLING_PROMPT_CKPT=0 (an exactness A/B against an engine that has no checkpoint): no pass saves one
+        import os
+        from unittest import mock
+        with mock.patch.dict(os.environ, {"STRATA_INKLING_PROMPT_CKPT": "0"}):
+            p1, p2, k2, lines = self.wrapped_up_chat(1)
+        self.assertEqual(len(lines), 3, lines)
+        self.assertTrue(all("ckpt=0" in x for x in lines), lines)
+        self.assertEqual(k2, 0)
+
     def test_an_engine_that_does_not_say_ckpt_key_is_never_sent_the_key(self):
         # (an older engine answers an unknown key with an error): the mock without --cache-model has no ckpt_key in INFO
         with tempfile.TemporaryDirectory() as td:
