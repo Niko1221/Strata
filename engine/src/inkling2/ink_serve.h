@@ -458,6 +458,20 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
     // time is measured on the first 4 decode steps of the first request and refreshed by every plain step after that.
     const bool spec_adapt = (spec_env && std::string(spec_env) == "adapt") || cfg.bopts.spec_adapt;
     double gov_t_plain = 0.0, gov_t_spec = 0.0;
+    // one speculative step (the greedy tree step or the sampled block step) took `ms` and produced `n_emit` tokens
+    auto gov_step = [&](ActiveReq& rq, int n_emit, double ms) {
+        gov_t_spec = (gov_t_spec <= 0.0) ? ms : 0.8 * gov_t_spec + 0.2 * ms;
+        rq.gov_win_steps += 1;
+        rq.gov_win_emit += n_emit;
+        if (rq.gov_win_steps >= 12) {
+            const double per_step = static_cast<double>(rq.gov_win_emit) / rq.gov_win_steps;
+            const double gain = (gov_t_plain > 0.0 && gov_t_spec > 0.0) ? per_step / (gov_t_spec / gov_t_plain) : 2.0;
+            rq.gov_gain = (rq.gov_gain < 0.0) ? gain : 0.5 * rq.gov_gain + 0.5 * gain;
+            if (rq.gov_gain < 0.93) { rq.gov_plain_left = 40; rq.gov_gain = -1.0; }
+            rq.gov_win_steps = 0;
+            rq.gov_win_emit = 0;
+        }
+    };
 
     // Probe Vision shard lazily (zero VRAM/RAM until first image request)
     bool images_ok = false;
@@ -797,20 +811,7 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
                 }
                 if (n_emit > 0) {
                     rq.drafts_offered += drafted;
-                    if (spec_adapt) {
-                        const double ms = (now_s() - gov_t0) * 1000.0;
-                        gov_t_spec = (gov_t_spec <= 0.0) ? ms : 0.8 * gov_t_spec + 0.2 * ms;
-                        rq.gov_win_steps += 1;
-                        rq.gov_win_emit += n_emit;
-                        if (rq.gov_win_steps >= 12) {
-                            const double per_step = static_cast<double>(rq.gov_win_emit) / rq.gov_win_steps;
-                            const double gain = (gov_t_plain > 0.0 && gov_t_spec > 0.0) ? per_step / (gov_t_spec / gov_t_plain) : 2.0;
-                            rq.gov_gain = (rq.gov_gain < 0.0) ? gain : 0.5 * rq.gov_gain + 0.5 * gain;
-                            if (rq.gov_gain < 0.93) { rq.gov_plain_left = 40; rq.gov_gain = -1.0; }
-                            rq.gov_win_steps = 0;
-                            rq.gov_win_emit = 0;
-                        }
-                    }
+                    if (spec_adapt) gov_step(rq, n_emit, (now_s() - gov_t0) * 1000.0);
                     int kept = 0;
                     bool done = false;
                     const char* fin = nullptr;
@@ -846,6 +847,7 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
             int32_t draft_ids[8]{};
             std::string derr;
             const int max_d = std::min(7, rq.max_new - rq.generated - 1);
+            const double gov_b0 = now_s();
             int nd = backend.dspark_draft(rq.slot, rq.next_tok, rq.cur_pos, max_d, draft_ids, derr);
             if (nd > 0) {
                 backend.snapshot_slot(rq.slot);
@@ -906,6 +908,7 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
                         backend.rollback_slot(rq.slot, rq.cur_pos + accepted);
                     }
                     rq.cur_pos += accepted;
+                    if (spec_adapt) gov_step(rq, accepted, (now_s() - gov_b0) * 1000.0);
                 } else if (fin) {
                     finish_req(rq, fin);
                 }

@@ -27,7 +27,7 @@ class FakeEngine:
         self.sent.append(line)
         if line.startswith("GEN"):
             n = int(line.split()[1])
-            ids = line.split()[3].split(",")
+            ids = line.split()[-1].split(",")
             kind = "code" if len(ids) == len(P.CODE_IDS) else "chat"
             tps = self.speeds[kind]
             self.lines.append("DONE %d %d 10.0 %.1f length 0 0 0" % (n, len(ids), n / tps * 1000.0))
@@ -109,11 +109,21 @@ class Driver(unittest.TestCase):
     def run_probe(self, speeds=None, fail_arm=None, base=None):
         started = []
 
+        self.engines = []
+
         def open_engine(args):
             started.append(list(args))
-            return FakeEngine(args, speeds or self.SPEEDS, fail=(fail_arm is not None and len(started) == fail_arm))
+            e = FakeEngine(args, speeds or self.SPEEDS, fail=(fail_arm is not None and len(started) == fail_arm))
+            self.engines.append(e)
+            return e
         res = P.probe(open_engine, base or ["--native", "m.strata", "--max-context", "32768"], key="k")
         return res, started
+
+    def test_code_is_decoded_greedy_and_chat_sampled(self):
+        self.run_probe()
+        sent = [l for l in self.engines[0].sent if l.startswith("GEN")]
+        self.assertTrue(any(" temperature=0 " in l and l.split()[-1].count(",") + 1 == len(P.CODE_IDS) for l in sent))
+        self.assertTrue(any("temperature=0.7 top_p=0.95 top_k=64 seed=7" in l and l.split()[-1].count(",") + 1 == len(P.CHAT_IDS) for l in sent))
 
     def test_plain_first_then_chain_drafting_and_the_numbers_are_recorded(self):
         res, started = self.run_probe()
