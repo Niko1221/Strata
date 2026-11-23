@@ -133,8 +133,15 @@ foreach(_f IN LISTS _src_files)
     # gdn_harness.cu is the GDN parity harness: an add_executable test target
     # whose fixture header lives in tests/gdn/ - outside the src/ mirror - so
     # it is the test class the glob already skips; upstream just did not name
-    # it _test/_bench/_parity.
-    if(_rel MATCHES "/mmq_nvfp4|/mmq_kq_lib\\.cu|/ggml_cuda_host\\.cu|/gdn_chunk\\.cu$|/moe_ws(_gu_iq2|_gu_iq3|_down)?\\.cu$|/gdn_harness\\.cu$|/moe_iq4_w4a8\\.cu$|_test\\.cu|_bench\\.cu|_parity\\.cu")
+    # it _test/_bench/_parity. hip_unsloth_verify.cu (upstream 9e3ad2778, v0.2.19)
+    # joins it: a standalone verification harness with its own main(), outside
+    # upstream's default HIP pool entirely (the plain HIP build never compiles
+    # it). The glob must not collect a second main() regardless of naming:
+    # prefix-hip.py renames every HIP global - main included - to hipdual_*, so
+    # two globbed mains collide as one hipdual_main in strata_hip_kernels.a
+    # (q36ref.cu already contributes one; upstream builds it as its own
+    # strata-q36ref executable, never beside strata).
+    if(_rel MATCHES "/mmq_nvfp4|/mmq_kq_lib\\.cu|/ggml_cuda_host\\.cu|/gdn_chunk\\.cu$|/moe_ws(_gu_iq2|_gu_iq3|_down)?\\.cu$|/gdn_harness\\.cu$|/moe_iq4_w4a8\\.cu$|_test\\.cu|_bench\\.cu|_parity\\.cu|_verify\\.cu")
       continue()
     endif()
     # Upstream's absent-twin contract: a .cu with a sibling <name>_absent.cpp
