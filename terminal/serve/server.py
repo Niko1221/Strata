@@ -4390,6 +4390,14 @@ class Service:
     _STRATA_MODEL_PREFIXES = (
         "inkling-2-mini", "hy4-flash", "qwen3.8-flash-next", "qwen3.6-", "qwen3.5-",
     )
+    # #6778: the catalog's own size names ("iq3_s", "q2_0", "ud-q4_k_xl", "ud-iq4_xs-v31", "sq-15", "gyro-s") are Strata ids
+    # too: a client set to one of them while another size is loaded gets the error, not the loaded model's answer.
+    _STRATA_SIZE_NAME = re.compile(r"(?:(?:ud-)?i?q\d_[0-9a-z_]+(?:-v\d+)?|sq-\d+|gyro-[a-z])\Z")
+    _FAMILY_PREFIX = re.compile(r"(?:qwen3\.8-flash-next|qwen3\.6-35b-a3b|hy4-flash|inkling-2-mini)-")
+
+    @classmethod
+    def is_strata_model_id(cls, asked_l: str) -> bool:
+        return asked_l.startswith(cls._STRATA_MODEL_PREFIXES) or bool(cls._STRATA_SIZE_NAME.match(asked_l))
 
     def check_model(self, req) -> dict | None:
         """#6621: reject mismatched Strata catalog model IDs (e.g. requesting `inkling-2-mini-sq-10` while Qwen is
@@ -4407,12 +4415,15 @@ class Service:
         loaded_l = {n.strip().lower() for n in names if n}
         if asked_l in loaded_l:
             return None
+        bare = lambda s: self._FAMILY_PREFIX.sub("", s, count=1)       # noqa: E731 - "qwen3.8-flash-next-iq3_s" is "iq3_s"
+        if bare(asked_l) in {bare(n) for n in loaded_l}:
+            return None
         if not self.strict_model:
             if any(n.startswith(asked_l + "-") for n in loaded_l):
                 return None
             if (self.hy4 and asked_l == "hy4-flash") or (self.inkling and asked_l == "inkling-2-mini"):
                 return None
-        is_strata_id = any(asked_l.startswith(p) for p in self._STRATA_MODEL_PREFIXES)
+        is_strata_id = self.is_strata_model_id(asked_l)
         if not self.strict_model and not is_strata_id:
             return None
         aliases_note = f" (aliases: {', '.join(self.aliases)})" if self.aliases else ""
