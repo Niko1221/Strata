@@ -16453,13 +16453,19 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_hybrid.cuh",
-     "line": 1434,
+     "line": 1448,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    },
+    {
+     "file": "engine/src/inkling2/cuda/ink_hybrid.cuh",
+     "line": 1762,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
    ],
    "parse": "flag",
-   "default_state": null,
+   "default_state": "off",
    "code_default": null,
    "engine_sets": [],
    "engine_defaults": [],
@@ -16470,7 +16476,7 @@
    "first_commit": "afe925f971",
    "first_date": "2026-11-23",
    "since": null,
-   "last_commit": "afe925f971",
+   "last_commit": "0b58d83200",
    "last_date": "2026-11-23",
    "status": "research",
    "owner": "inkling2/cuda",
@@ -16486,7 +16492,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_hybrid.cuh",
-     "line": 1743,
+     "line": 1760,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -16519,7 +16525,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_hybrid.cuh",
-     "line": 1744,
+     "line": 1763,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -16536,11 +16542,11 @@
    "first_commit": "7d1ae1e5d6",
    "first_date": "2026-11-23",
    "since": null,
-   "last_commit": "7d1ae1e5d6",
+   "last_commit": "0b58d83200",
    "last_date": "2026-11-23",
-   "status": "rollback",
+   "status": "default",
    "owner": "inkling2/cuda",
-   "note": "strata-inkling CUDA hybrid (0221 INKPLACE): cold experts are copied into the card and computed by the card's own kernels (exact: the same bits wherever an expert lives); =0 computes them on the CPU where they are (fast, not bit-identical). The default follows INKPLACE's last gate.",
+   "note": "strata-inkling CUDA hybrid (0221 INKPLACE): which lane computes the cold experts. Unset (default) = speed-first: a short launch probe times the CPU lane and the card copy-in lane on this placement and keeps the CPU lane unless the copy-in lane is at least 10% faster, with one INFO line. =1 forces the copy-in lane (identical bits wherever an expert lives, PCIe bound); =0 forces the CPU lane.",
    "retire_after": "",
    "retired_in": ""
   },
@@ -16552,7 +16558,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_hybrid.cuh",
-     "line": 1354,
+     "line": 1366,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -16796,7 +16802,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_hybrid.cuh",
-     "line": 1462,
+     "line": 1479,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -17165,7 +17171,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_hybrid.cuh",
-     "line": 1741,
+     "line": 1758,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -17264,7 +17270,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_hybrid.cuh",
-     "line": 1740,
+     "line": 1757,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -17297,7 +17303,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_hybrid.cuh",
-     "line": 2126,
+     "line": 2160,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -17330,7 +17336,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_hybrid.cuh",
-     "line": 2230,
+     "line": 2264,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -17363,7 +17369,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_hybrid.cuh",
-     "line": 2228,
+     "line": 2262,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -17396,7 +17402,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_hybrid.cuh",
-     "line": 2229,
+     "line": 2263,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -17429,7 +17435,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_hybrid.cuh",
-     "line": 1390,
+     "line": 1404,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -20326,7 +20332,7 @@
     },
     {
      "file": "engine/src/inkling2/cuda/ink_hybrid.cuh",
-     "line": 1742,
+     "line": 1759,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -23614,7 +23620,7 @@
    "launch_sets": [
     {
      "file": "terminal/setup.py",
-     "line": 11270,
+     "line": 11320,
      "value": "\"1\" if stream else \"0\""
     }
    ],
