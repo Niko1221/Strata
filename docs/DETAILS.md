@@ -518,7 +518,7 @@ in the chat page, in `chat.py` (`/think low`) or over the API:
 | OpenAI | `"reasoning_effort": "none" \| "low" \| "medium" \| "high"` (also `"reasoning": {"effort": ...}` or `"chat_template_kwargs": {"enable_thinking": false}`) |
 | Anthropic | `"output_config": {"effort": "low" \| "medium" \| "high"}`, `"thinking": {"type": "disabled"}`, or `"thinking": {"type": "enabled", "budget_tokens": N}` (under 2K = low, under 8K = medium, more = high; also the hard budget) |
 
-Without a setting the model uses its own default, **high**. `none` answers at once. The levels are instructions the model was
+Without a setting the model uses its own default, **high** (Inkling-2-Mini: **low**, with its own numeric levels: [MODELS.md](MODELS.md#inkling-2-mini-thinking-levels)). `none` answers at once. The levels are instructions the model was
 trained with, not a hard token limit.
 
 ### Config keys (`strata-<model>.json`, outside `"args"`)
@@ -533,7 +533,8 @@ applies at the next start. Network, key, MCP and program keys are not editable t
 | --- | --- | --- |
 | `reasoning_effort` | model default (high) | Level for requests that name none. The engine has no such option; `--reasoning-effort` in `"args"` is moved here with a note. A request's level and the web page's shared Chat settings win. |
 | `reasoning_budget_tokens` | `0` (no budget) | Caps the thinking at N tokens: the server ends it with a short wrap-up line and `</think>` and the model answers from there. The wrap-up counts as output tokens. A request may send the budget as `reasoning_budget_tokens`, or under the name another provider uses: `thinking_token_budget` (vLLM), `thinking_budget` (Qwen) or `thinking_budget_tokens` (llama.cpp), which is what pi's `thinkingTokenBudgetField` sends. `reasoning_budget_tokens` wins over them, and of the others the first in that order does; a request's own value wins over the config's. |
-| `answer_room` | on | A request with thinking on, no budget and `max_tokens` of 1,024 or more gets one: thinking is wrapped up when a quarter of the cap (at least 512 tokens) is left. Requests without `max_tokens` get three quarters of the context. `false` turns it off. Clients should not cap the reply far below what the context allows. |
+| `inkling_thinking_budget` | by level | Inkling-2-Mini only: the default thinking budget, in tokens, for a request (and config) that names none. One number for every level; `0` none. Unset: 1,024 at `none` / `minimal`, 2,048 at `low`, 4,096 at `medium`, 8,192 at `high`, 16,384 at `xhigh` / `max`. `STRATA_INKLING_THINKING_BUDGET` in the environment does the same, `STRATA_INKLING_EFFORT` sets the default thinking level (`low`). See [MODELS.md](MODELS.md#inkling-2-mini-thinking-levels). |
+| `answer_room` | on | A request with thinking on, no budget and `max_tokens` of 1,024 or more gets one: thinking is wrapped up when a quarter of the cap (at least 512 tokens) is left. Requests without `max_tokens` get three quarters of the context. `false` turns it off. Clients should not cap the reply far below what the context allows. Inkling-2-Mini keeps the share for any `max_tokens` of 16 or more, thinking or not. |
 | `reasoning_close_retry` | off | Closes the thinking once and continues when a reply ended inside its thinking with no answer and no tool call (#1053). |
 | `reasoning_loop_recovery` | off | `"stop"` ends, `"recover"` (or `true`) restarts once, a reply whose reasoning repeats whole passages. Checked every 512 output tokens. It can mistake repeated useful code for a loop, so keep the answer quality alongside the completion rate when testing it (#728). |
 | `repeat_stop_tokens` | `256` | A reply that repeats one token this many times in a row ends as `"length"`. `0` turns it off. |

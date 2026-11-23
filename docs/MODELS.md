@@ -293,6 +293,35 @@ drafting and picture reading (`Inkling-2-Mini-Vision.strata`, 0.64 GB).
 strata launch --family inkling-2-mini --model SQ-15
 ```
 
+### Inkling-2-Mini: thinking levels
+
+Inkling-2-Mini is trained with a **number** for how much it should think: the chat template writes `Thinking effort level: <n>` ahead of
+the conversation, `0` meaning no thinking. Strata sends the number the model was trained with and keeps names for convenience:
+
+| You send | Level written | Notes |
+| --- | --- | --- |
+| `"none"`, `"off"`, `0`, `"chat_template_kwargs": {"enable_thinking": false}`, Anthropic `"thinking": {"type": "disabled"}` | `0` | No thinking pass; the answer starts at once. |
+| `"minimal"` | `0.1` | |
+| `"low"` | `0.2` | **The default** when a request names none (config `reasoning_effort`, or `STRATA_INKLING_EFFORT`, changes it). |
+| `"medium"` | `0.7` | Anthropic `budget_tokens` 2K to 8K. |
+| `"high"` | `0.9` | |
+| `"xhigh"`, `"max"` | `0.99` | |
+| a number from 0 to 0.99 (`"reasoning_effort": 0.5`) | that number | Passed to the template as it is; above 0.99 is 0.99. |
+
+A level above 0 lets the model write its thinking before the answer or a tool call. It comes back where each API puts thinking: chat
+completions `message.reasoning_content` (streamed as `delta.reasoning_content`), Anthropic messages a `thinking` content block, the
+Responses API a `reasoning` output item with `reasoning_text` content. The thinking tokens are counted in
+`usage.completion_tokens_details.reasoning_tokens` (Responses: `output_tokens_details.reasoning_tokens`).
+
+**The thinking cannot run away.** A request's own `reasoning_budget_tokens` (or Anthropic `budget_tokens`) is the limit; without one
+the default of its level applies: 1,024 tokens at `none` and `minimal`, 2,048 at `low`, 4,096 at `medium`, 8,192 at `high`, 16,384 at
+`xhigh` and `max`. `STRATA_INKLING_THINKING_BUDGET=<tokens>` (config `inkling_thinking_budget`) sets one number for every level, `0`
+none; a request's `reasoning_budget_tokens: 0` turns the default off for that request. When the budget is spent the server ends the
+thinking with a short wrap-up and the model answers. Whatever `max_tokens` is, a quarter of it (at least 512 tokens, but never more
+than half of it) stays for the answer. A reply that still ends with no text and no tool call is retried once with the answer
+opened, and if nothing visible can be produced the reply says so (`[No answer: ...]`) with `finish_reason` left as it was: never an
+empty string. See [DETAILS.md](DETAILS.md) for the settings.
+
 ## Adding or switching models
 
 - **In the app:** the Models page lists every model with its size and whether it fits your computer. Pick one and press the install button.

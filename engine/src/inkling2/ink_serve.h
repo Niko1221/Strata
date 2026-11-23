@@ -249,8 +249,10 @@ struct ParsedGen {
     SampleOpts s;
     std::vector<int32_t> ids;
     std::vector<std::string> images;
+    int pin = 0;          // shared-prefix checkpoint boundary (tokens)
     bool prefill_only = false;
     bool slot_read = false;
+    bool no_ckpt = false; // ckpt=0: save no prompt-end checkpoint for this request and keep the slot's (a continuation pass)
 };
 
 inline bool parse_id_list(const std::string& s, std::vector<int32_t>& out, std::string& err) {
@@ -319,8 +321,18 @@ inline bool parse_gen_cmd(const std::string& line, ParsedGen& r, std::string& er
         else if (key == "penalty_last_n") r.s.last_n = static_cast<int>(d);
         else if (key == "pen_from") r.s.pen_from = static_cast<int>(d);
         else if (key == "seed") r.s.seed = std::strtoull(val.c_str(), nullptr, 10);
+        else if (key == "pin") {
+            char* end = nullptr;
+            const long n = std::strtol(val.c_str(), &end, 10);
+            if (end == val.c_str() || *end || n <= 0 || n > INT32_MAX) {
+                err = "bad pin boundary";
+                return false;
+            }
+            r.pin = static_cast<int>(n);
+        }
         else if (key == "prefill") r.prefill_only = (d != 0.0);
         else if (key == "slot_read") r.slot_read = (d != 0.0);
+        else if (key == "ckpt") r.no_ckpt = (d == 0.0);
         else if (key == "image") r.images.push_back(pct_decode(val));
         else if (key == "hold") {
             size_t col = val.find(':');
@@ -417,6 +429,9 @@ struct ActiveReq {
     std::vector<int32_t> cached_prefix;       // tokens currently resident in slot KV
     std::vector<int32_t> prompt_ckpt_prefix;  // prompt-end checkpoint prefix saved before generation (#6627)
     int reused_tokens = 0;                    // prefix tokens reused for this request
+    std::vector<int32_t> shared_prefix;
+    int pin = 0;
+    bool shared_pending = false;
     bool ckpt_pending = false;                // true while prefilling up to prompt_len - 1 to save checkpoint
     double t_start = 0.0;
     double prompt_ms = 0.0;
@@ -476,9 +491,9 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
         if (kd == KvDtype::K8V4)     return "k8v4";
         return "fp16";
     }();
-    proto("INFO engine=strata-inkling-%s arch=inkling2_loop backend=%s model=%s layers=%d visits=%d vocab=%d chunk=%d batch_slots=%d slot_read=1 kv_dtype=%s drafter=%s drafting=%s images=%d image_pad=%d parallel=%d",
+    proto("INFO engine=strata-inkling-%s arch=inkling2_loop backend=%s model=%s layers=%d visits=%d vocab=%d chunk=%d batch_slots=%d slot_read=1 shared_prefix=%d kv_dtype=%s drafter=%s drafting=%s images=%d image_pad=%d parallel=%d ckpt_key=1",
           cfg.version.c_str(), backend.backend_name(), base.c_str(), c.n_phys, c.n_visits, V, chunk_sz,
-          P, kv_str,
+          P, backend.supports_shared_checkpoint() ? 1 : 0, kv_str,
           mf.m.dspark.present ? "dspark" : "none",
           use_dspark ? "dspark" : "off",
           images_ok ? 1 : 0, c.image_token_id, kMaxParallelSlots);
@@ -580,11 +595,15 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
             rq.active = false;
             return false;
         }
+        if (pg.images.empty() && pg.pin >= rq.prompt_len) {
+            err = "bad pin boundary";
+            rq.active = false;
+            return false;
+        }
         // Prefix reuse check (#6627): prefer full cached_prefix match, else restore prompt-end checkpoint!
         // Because prompt_ckpt_prefix is saved at prompt_len - 1 before generation, BOTH multi-turn follow-ups
         // (even if hidden thinking or stop tokens differed) AND exact repeats reuse the full prior prompt!
         int reuse = 0;
-        bool used_ckpt = false;
         if (pg.images.empty()) {
             int full_match = 0;
             if (!rq.cached_prefix.empty() && static_cast<int>(rq.cached_prefix.size()) < rq.prompt_len) {
@@ -600,24 +619,46 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
                 while (m < plen && rq.prompt_ckpt_prefix[m] == rq.prompt_ids[m]) ++m;
                 if (m == plen) ckpt_match = plen;
             }
-            if (full_match > 0 && full_match >= ckpt_match) {
+            int shared_match = 0;
+            if (pg.pin > 0 && static_cast<int>(rq.shared_prefix.size()) == pg.pin &&
+                std::equal(rq.shared_prefix.begin(), rq.shared_prefix.end(), rq.prompt_ids.begin())) {
+                shared_match = pg.pin;
+            }
+            if (shared_match > full_match && shared_match > ckpt_match &&
+                backend.restore_shared_checkpoint(rq.slot, shared_match)) {
+                reuse = shared_match;
+                rq.cached_prefix = rq.shared_prefix;
+                // The next branch overwrites global KV after the shared boundary.
+                rq.prompt_ckpt_prefix.clear();
+            } else if (full_match > 0 && full_match >= ckpt_match) {
                 reuse = full_match;
             } else if (ckpt_match > 0 && backend.restore_prompt_checkpoint(rq.slot, ckpt_match)) {
                 reuse = ckpt_match;
                 rq.cached_prefix = rq.prompt_ckpt_prefix;
-                used_ckpt = true;
+            } else if (shared_match > 0 && shared_match > full_match &&
+                       backend.restore_shared_checkpoint(rq.slot, shared_match)) {
+                reuse = shared_match;
+                rq.cached_prefix = rq.shared_prefix;
+                rq.prompt_ckpt_prefix.clear();
+            } else if (full_match > 0) {
+                reuse = full_match;
             }
         }
-        (void)used_ckpt;
         if (reuse == 0) {
             backend.reset_slot(rq.slot);
             rq.cached_prefix.clear();
             rq.prompt_ckpt_prefix.clear();
+            rq.shared_prefix.clear();
         } else {
             proto("RESUME %d", reuse);
         }
+        if (reuse < static_cast<int>(rq.shared_prefix.size())) rq.shared_prefix.clear();
+        rq.pin = pg.images.empty() ? pg.pin : 0;
+        rq.shared_pending = rq.pin > reuse && static_cast<int>(rq.shared_prefix.size()) != rq.pin;
         rq.reused_tokens = reuse;
-        rq.ckpt_pending = (pg.images.empty() && rq.prompt_len >= 16 && reuse < rq.prompt_len - 1);
+        // ckpt=0 (a later pass of one request: the thinking budget's wrap-up, a reply written again): the checkpoint of the
+        // request's first pass, at the end of the prompt the client sends back, stays; this pass's longer prompt would replace it.
+        rq.ckpt_pending = (pg.images.empty() && !pg.no_ckpt && rq.prompt_len >= 16 && reuse < rq.prompt_len - 1);
         rq.prefill_pos = reuse;
         rq.cur_pos = reuse;
         rq.hist = rq.prompt_ids;
@@ -670,6 +711,8 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
                 if (s >= 0 && s < P && !reqs[s].active && parse_id_list(line.substr(sp + 1), cids, cerr)) {
                     backend.reset_slot(s);
                     reqs[s].cached_prefix.clear();
+                    reqs[s].prompt_ckpt_prefix.clear();
+                    reqs[s].shared_prefix.clear();
                     proto("BCOK %d %zu", s, cids.size());
                 }
             }
@@ -838,6 +881,7 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
                         // Never leave poisoned KV/ShortConv prefix cached across retries (#879)!
                         rq.cached_prefix.clear();
                         rq.prompt_ckpt_prefix.clear();
+                        rq.shared_prefix.clear();
                         backend.reset_slot(rq.slot);
                         finish_req(rq, "nonfinite");
                         done = true;
@@ -917,6 +961,9 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
                     if (rq.ckpt_pending && rq.prefill_pos < rq.prompt_len - 1 && rq.prefill_pos + take >= rq.prompt_len) {
                         take = (rq.prompt_len - 1) - rq.prefill_pos;
                     }
+                    if (rq.shared_pending && rq.prefill_pos < rq.pin) {
+                        take = std::min(take, rq.pin - rq.prefill_pos);
+                    }
                     const int img_base = static_cast<int>(merged_img_embeds.size()) / c.hidden;
                     if (!rq.img_embeds.empty()) {
                         merged_img_embeds.insert(merged_img_embeds.end(), rq.img_embeds.begin(), rq.img_embeds.end());
@@ -951,6 +998,13 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
                 rq.prefill_pos += prefill_fed[s];
                 rq.cur_pos = rq.prefill_pos;
                 rq.prompt_ms += step_ms;
+                if (rq.shared_pending && rq.prefill_pos == rq.pin) {
+                    rq.shared_pending = false;
+                    rq.shared_prefix.clear();
+                    if (backend.save_shared_checkpoint(rq.slot, rq.pin)) {
+                        rq.shared_prefix.assign(rq.prompt_ids.begin(), rq.prompt_ids.begin() + rq.pin);
+                    }
+                }
                 if (rq.ckpt_pending && rq.prefill_pos == rq.prompt_len - 1) {
                     rq.ckpt_pending = false;
                     if (backend.save_prompt_checkpoint(rq.slot, rq.prefill_pos)) {
@@ -972,6 +1026,8 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
             if (!finite_logits(lg, V)) {
                 // Purge poisoned KV/ShortConv state so subsequent retries start clean (#879)!
                 rq.cached_prefix.clear();
+                rq.prompt_ckpt_prefix.clear();
+                rq.shared_prefix.clear();
                 backend.reset_slot(rq.slot);
                 finish_req(rq, "nonfinite");
                 continue;

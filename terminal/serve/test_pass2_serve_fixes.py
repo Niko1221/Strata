@@ -205,10 +205,11 @@ class TestHy4AndInklingEffortAndWebUI6680(unittest.TestCase):
         self.assertEqual(got["hy4"]["sharedMax"], {"reasoning_effort": "max"})
         self.assertEqual(got["hy4"]["sharedXhigh"], {"reasoning_effort": "max"})
 
-        self.assertTrue(got["inkling"]["fieldHidden"])
-        self.assertTrue(got["inkling"]["showHidden"])
-        self.assertEqual(got["inkling"]["effort"], "none")
-        self.assertEqual(got["inkling"]["shared"], {})
+        # Inkling-2-Mini has its own thinking levels (none = 0, low 0.2, medium 0.7, high 0.9): the selector is shown, like Qwen's
+        self.assertFalse(got["inkling"]["fieldHidden"])
+        self.assertFalse(got["inkling"]["showHidden"])
+        self.assertEqual(got["inkling"]["effort"], "high")
+        self.assertEqual(got["inkling"]["shared"], {"reasoning_effort": "high"})
 
         self.assertFalse(got["qwen"]["fieldHidden"])
         self.assertFalse(got["qwen"]["seg3"])

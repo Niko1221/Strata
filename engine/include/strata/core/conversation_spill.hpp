@@ -437,6 +437,20 @@ public:
         drop_locked(i);
         return true;
     }
+    /// A snapshot of the same conversation is being parked, grown past these tokens: deletes the entries (file and index file)
+    /// whose live tokens are a prefix of `image_live` (same steering and pictures) - they would never be read again.  Returns the
+    /// token counts of the deleted entries.
+    std::vector<size_t> drop_superseded(const std::vector<int32_t>& ids, const std::vector<ConversationImageKey>& imgs, bool cvec) {
+        SavedConversation image_live;   // (tokens and pictures only)
+        image_live.live.ids = ids;
+        image_live.live.imgs = imgs;
+        image_live.cvec = cvec;
+        std::lock_guard<std::mutex> lk(mu_);
+        std::vector<size_t> out;
+        for (size_t i = entries_.size(); i-- > 0;)
+            if (superseded_by(entries_[i], image_live)) { out.push_back(entries_[i].live.ids.size()); drop_locked(i); }
+        return out;
+    }
     /// Drops every entry and keeps the tier open (#879: after non-finite logits no parked conversation is kept).  Returns how many.
     size_t clear() {
         std::lock_guard<std::mutex> lk(mu_);

@@ -16,7 +16,7 @@ KNOWN = {
     "--version": 0, "--info": 1, "--serve": 0, "--native": 1, "--model": 1, "--vision": 1,
     "--max-context": 1, "--parallel": 1, "--batch": 1, "--slots": 1, "--kv-dtype": 1,
     "--chunk": 1, "--gpu": 1, "--draft": 1, "--vram-experts-gb": 1, "--ram-experts-gb": 1,
-    "--threads": 1, "--script": 1, "--record": 1, "--delay": 1,
+    "--threads": 1, "--script": 1, "--record": 1, "--delay": 1, "--cache-model": 0, "--no-ckpt": 0,
 }
 SAMPLING = {"temperature", "top_p", "top_k", "min_p", "penalty_repeat", "penalty_freq", "penalty_present", "penalty_last_n", "seed"}
 IGNORED = {"pcie_frac", "spec_min_p", "prefill_pipe", "ckpt", "hold"}
@@ -80,8 +80,42 @@ def main(argv=None) -> int:
         scripts = data if data and isinstance(data[0], list) else [data]
     record = open(opts["--record"], "a", encoding="utf-8") if "--record" in opts else None
     caps = caps_of(os.environ)
-    batch_info = f" batch_slots={par} slot_read=1" if par > 1 else ""
-    say(f"INFO engine=mock-0 arch=inkling2_loop backend=mock build=SQ-20 layers=24 visits=48 "
+    # --cache-model: the real engine's reuse rules (ink_serve.h prepare_req), per slot: the tokens resident in the slot (`cached`:
+    # the prompt and what it fed but the last token) and the prompt-end checkpoint (`ckpt`: the prompt but its last token).  A request
+    # resumes at the longer of "the whole cached stream is the start of the prompt" and "the checkpoint is", else reads from token 0;
+    # GEN is slot 0.  `RESUME n` and the DONE line's reused field say what was kept (what the server reports as cached_tokens).
+    # --no-ckpt: an engine that cannot take a checkpoint (the layer split: both hooks return false).
+    cache_model = "--cache-model" in opts
+    no_ckpt = "--no-ckpt" in opts
+    cache: dict[int, dict] = {}
+    cache_lock = threading.Lock()
+
+    def admit(slot: int, ids: list[int], keep_ckpt: bool = False) -> int:
+        with cache_lock:
+            st = cache.setdefault(slot, {"cached": [], "ckpt": []})
+            c, k = st["cached"], st["ckpt"]
+            full = len(c) if c and len(c) < len(ids) and ids[:len(c)] == c else 0
+            ckm = len(k) if k and len(k) < len(ids) and ids[:len(k)] == k else 0
+            if full > 0 and full >= ckm:
+                reuse = full
+            elif ckm > 0:
+                reuse, st["cached"] = ckm, list(k)
+            else:
+                reuse, st["cached"], st["ckpt"] = 0, [], []
+            if reuse:
+                say(f"RESUME {reuse}")
+            st["pending"] = list(ids)
+            if not no_ckpt and not keep_ckpt and len(ids) >= 16:    # (ckpt=0: this pass saves none and keeps the slot's)
+                st["ckpt"] = list(ids[:-1])
+            return reuse
+
+    def settle(slot: int, ids: list[int], emitted: list[int]) -> None:
+        with cache_lock:
+            st = cache.setdefault(slot, {"cached": [], "ckpt": []})
+            st["cached"] = list(ids) + list(emitted[:-1])
+
+    batch_info = f" batch_slots={par} slot_read=1" if (par > 1 or cache_model) else ""
+    say(f"INFO engine=mock-0 arch=inkling2_loop backend=mock build=SQ-20 layers=24 visits=48 {'ckpt_key=1 ' if cache_model else ''}"
         f"images={1 if caps.get('images') == '1' else 0} "
         f"drafter={'dspark' if opts.get('--draft', 'dspark') == 'dspark' else 'off'}{batch_info}")
     say(f"READY {ctx} stop" + (" hold holdb" if par > 1 else ""))
@@ -104,6 +138,7 @@ def main(argv=None) -> int:
         ptok = len(ids) + sum(IMAGE_TOKENS - 1 for _ in images)
         gen = 0
         reason = "stop"
+        emitted: list[int] = []
         for tid in seq:
             if stop_ev.is_set():
                 reason = "stop"
@@ -114,12 +149,15 @@ def main(argv=None) -> int:
             if delay > 0:
                 time.sleep(delay)
             say(f"BT {slot} {tid}")
+            emitted.append(tid)
             gen += 1
             if tid == EOS_ID:
                 break
         else:
             if gen >= max_new:
                 reason = "length"
+        if cache_model:
+            settle(slot, ids, emitted)
         say(f"BDONE {slot} {gen} {reason} 1.0 read=1.0")
 
     for raw in sys.stdin:
@@ -156,7 +194,11 @@ def main(argv=None) -> int:
             ev = threading.Event()
             slot_stops[slot] = ev
             ptok = len(ids) + sum(IMAGE_TOKENS - 1 for _ in images)
-            say(f"DONE 0 {ptok} 0.0 0.0 admit")
+            if cache_model:
+                reused = admit(slot, ids, ("ckpt", "0") in [tuple(p) for p in pairs])
+                say(f"DONE 0 {ptok} 0.0 0.0 admit 0 0 {reused}")
+            else:
+                say(f"DONE 0 {ptok} 0.0 0.0 admit")
             say(f"BADM {slot} 1")
             threading.Thread(target=run_bgen, args=(slot, max_new, ids, images, ev), daemon=True).start()
             continue
@@ -184,10 +226,12 @@ def main(argv=None) -> int:
                 say(f"ERR image: {len(images)} files for {pads} image placeholders")
                 continue
             ptok = len(ids) + sum(IMAGE_TOKENS - 1 for _ in images)
+            reused = admit(0, ids, keys.get("ckpt") == "0") if cache_model else 0
             say(f"PP {ptok} 0 1.0")
             seq = next_script()
             gen = 0
             reason = "stop"
+            emitted = []
             for tid in seq:
                 if single_stop.is_set():
                     reason = "stop"
@@ -198,13 +242,18 @@ def main(argv=None) -> int:
                 if delay > 0:
                     time.sleep(delay)
                 say(f"T {tid}")
+                emitted.append(tid)
                 gen += 1
                 if tid == EOS_ID:
                     break
             else:
                 if gen >= max_new:
                     reason = "length"
-            say(f"DONE {gen} {ptok} 1.0 1.0 {reason}")
+            if cache_model:
+                settle(0, ids, emitted)
+                say(f"DONE {gen} {ptok} 1.0 1.0 {reason} 0 0 {reused}")
+            else:
+                say(f"DONE {gen} {ptok} 1.0 1.0 {reason}")
             continue
         say(f"ERR unknown command {line.split()[0]}")
     return 0
