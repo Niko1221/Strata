@@ -5944,9 +5944,10 @@ class Service:
                             pass_sampling = {k: v for k, v in sampling.items() if k != HOLD_KEY}
                         else:
                             pass_sampling = sampling   # no hold: the engine gets the caller's own sampler object, as before P2
-                        if pass_n and self.inkling and str((getattr(self.engine, "info", None) or {}).get("ckpt_key")) == "1":
+                        if (pass_n or os.environ.get("STRATA_INKLING_PROMPT_CKPT") == "0") and self.inkling and str((getattr(self.engine, "info", None) or {}).get("ckpt_key")) == "1":
                             # a later pass of this request (the thinking budget's wrap-up, a reply written again): the engine
                             # keeps the checkpoint the first pass saved at the end of the prompt the client sends back next
+                            # (STRATA_INKLING_PROMPT_CKPT=0: no pass saves one: for an exactness A/B against an engine that has none)
                             pass_sampling = {**(pass_sampling or {}), KEEP_CKPT_KEY: True}
                         pass_n += 1
                         gen = self.engine.generate(prompt, max_new - n, pass_sampling, cancel, embeddings=emb) if emb \
