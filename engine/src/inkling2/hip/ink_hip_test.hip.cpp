@@ -282,7 +282,7 @@ bool test_flash_swa_and_dspark(bool is_uma) {
         reinterpret_cast<const int32_t*>(d_pos.dev_ptr),
         reinterpret_cast<const int32_t*>(d_pt.dev_ptr), pages_per_slot,
         d_kp.dev_ptr, d_vp.dev_ptr, nullptr, nullptr, reinterpret_cast<float*>(d_out.dev_ptr),
-        B, n_qh, n_kvh, 1024, 0);
+        B, n_qh, n_kvh, 1024, 1024, 0);
     INK_HCK(hipDeviceSynchronize());
 
     std::vector<float> h_out(h_q.size());
