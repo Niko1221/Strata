@@ -104,6 +104,32 @@ int main() {
                   "supersede: entries that are no prefix stay");
             check(s.best(std::vector<int32_t>{1, 2, 3, 4, 5, 6, 0}, {}, true).tokens == 6, "supersede: the grown one serves the resume");
         }
+        {   // a snapshot parked in RAM that extends a spilled one deletes it (file, index file, entry) at once; a restart finds the newest
+            ConversationSpill s;
+            std::string e2;
+            size_t ad = 0;
+            check(s.open(proot, cap, e2, nullptr, &A, &ad), "drop: open");
+            while (s.size() > 0) s.drop(0);
+            check(s.put(img({1, 2, 3}, 1), A, e2) && s.put(img({50, 51}, 2), A, e2) && s.size() == 2, "drop: two spilled");
+            const auto old = s.best(std::vector<int32_t>{1, 2, 3, 0}, {}, true);
+            const fs::path oldf = s.find(old.serial)->file;
+            const fs::path oldm = fs::path(oldf).replace_extension(".meta");
+            check(fs::exists(oldf) && fs::exists(oldm), "drop: the files are there");
+            check(s.drop_superseded({1, 2}, {}, true).empty() && s.drop_superseded({1, 2, 3, 4}, {}, false).empty() && s.size() == 2,
+                  "drop: a shorter or a differently steered image supersedes nothing");
+            const auto gone = s.drop_superseded({1, 2, 3, 4, 5}, {}, true);
+            check(gone == std::vector<size_t>({3}) && s.size() == 1 && !fs::exists(oldf) && !fs::exists(oldm) && !s.find(old.serial),
+                  "drop: the superseded spill is deleted with its index file and entry");
+            check(s.put(img({1, 2, 3, 4, 5, 6}, 3), A, e2) && s.size() == 2, "drop: the newest is spilled later");
+        }
+        {   // restart adoption: only the newest snapshot of the conversation is found
+            ConversationSpill s;
+            size_t ad = 0;
+            check(s.open(proot, cap, e, nullptr, &A, &ad) && ad == 2 && s.size() == 2, "adopt: two entries after the drop");
+            bool short_one = false;
+            for (size_t k = 0; k < s.size(); ++k) if (s.entry(k).live.ids.size() == 3) short_one = true;
+            check(s.best(std::vector<int32_t>{1, 2, 3, 4, 5, 6, 7}, {}, true).tokens == 6 && !short_one, "adopt: the newest serves the conversation");
+        }
         {   // the same model, other settings: the files are not this run's
             ConversationSpill s;
             check(s.open(proot, cap, e, nullptr, &A2, &adopted) && adopted == 0 && s.size() == 0, "restart: another config fingerprint adopts nothing");
