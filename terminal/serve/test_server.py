@@ -1838,6 +1838,70 @@ class SharedPrefix(unittest.TestCase):
         self.assertEqual(req, {"temperature": 0})
         self.assertEqual(ids, self.svc.prepare(self.MSGS, None, {}, 16)[0])
 
+    def test_inkling_auto_prefix_requires_opt_in_and_engine_capability(self):
+        svc = Service(MockEngine(self.tok, "ok", max_context=CTX), self.tok,
+                      ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        svc.inkling = True
+        svc.engine.info = {"shared_prefix": 1, "chunk": "8"}
+        with mock.patch.dict(os.environ, {"STRATA_INKLING_SHARED_PREFIX": "0"}):
+            req = {}
+            svc.prepare(self.MSGS, None, {}, 16, req=req)
+            self.assertNotIn("strata_prefix", req)
+        with mock.patch.dict(os.environ, {"STRATA_INKLING_SHARED_PREFIX": "1"}):
+            req = {}
+            first, _, _ = svc.prepare(self.MSGS, None, {}, 16, req=req)
+            n = req["strata_prefix"]["tokens"]
+            self.assertEqual(n % 8, 0)
+            self.assertIn(f"pin={n}", StrataEngine.sampling_keys(req, inkling=True).split())
+            self.assertNotIn(f"pin={n}", StrataEngine.sampling_keys(req, hy4=True).split())
+            exact = svc.resolve_prefix({"messages": 1}, self.MSGS, None, {}, first)["tokens"]
+            self.assertLess(exact - n, 8)
+            changed = [self.MSGS[0], {"role": "user", "content": "A different conversation"}]
+            second, _, _ = svc.prepare(changed, None, {}, 16, req={})
+            self.assertEqual(first[:n], second[:n])
+            svc.engine.info = {}
+            req = {}
+            svc.prepare(self.MSGS, None, {}, 16, req=req)
+            self.assertNotIn("strata_prefix", req)
+
+    def test_inkling_auto_prefix_preserves_explicit_boundary_and_skips_no_system(self):
+        svc = Service(MockEngine(self.tok, "ok", max_context=CTX), self.tok,
+                      ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        svc.inkling = True
+        svc.engine.info = {"shared_prefix": "1"}
+        with mock.patch.dict(os.environ, {"STRATA_INKLING_SHARED_PREFIX": "1"}):
+            req = {"strata_prefix": {"tokens": 5}}
+            svc.prepare(self.MSGS, None, {}, 16, req=req)
+            self.assertEqual(req["strata_prefix"], {"tokens": 5})
+            self.assertIn("pin=5", StrataEngine.sampling_keys(req, inkling=True).split())
+            req = {}
+            svc.prepare(self.MSGS[1:], None, {}, 16, req=req)
+            self.assertNotIn("strata_prefix", req)
+            # Without shared_prefix=1, explicit strata_prefix drops cleanly instead of sending pin=.
+            svc.engine.info = {}
+            req = {"strata_prefix": {"tokens": 5}}
+            with contextlib.redirect_stdout(io.StringIO()):
+                svc.prepare(self.MSGS, None, {}, 16, req=req)
+            self.assertEqual(req["strata_prefix"], {})
+            self.assertFalse([k for k in StrataEngine.sampling_keys(req, inkling=True).split() if k.startswith("pin=")])
+
+    def test_inkling_prefix_skipped_when_request_has_images(self):
+        svc = Service(MockEngine(self.tok, "ok", max_context=CTX), self.tok,
+                      ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        svc.inkling = True
+        svc.engine.info = {"shared_prefix": 1, "chunk": 8, "images": 1}
+        msgs = [self.MSGS[0], {"role": "user", "content": [
+            {"type": "image", "source": "fake.png"}, {"type": "text", "text": "describe"}]}]
+        with mock.patch.dict(os.environ, {"STRATA_INKLING_SHARED_PREFIX": "1"}), \
+                mock.patch("serve.server.inkling_kind.write_images", return_value=["/tmp/fake.png"]):
+            req = {}
+            svc.prepare(msgs, None, {}, 16, req=req)
+            self.assertNotIn("strata_prefix", req)
+            req = {"strata_prefix": {"tokens": 5}}
+            with contextlib.redirect_stdout(io.StringIO()):
+                svc.prepare(msgs, None, {}, 16, req=req)
+            self.assertEqual(req["strata_prefix"], {})
+
 
 class GpuChoice(unittest.TestCase):
     """Issue #51: the config's \"gpu\" reaches the engine as CUDA_VISIBLE_DEVICES, numbered like nvidia-smi."""
