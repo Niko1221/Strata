@@ -56,6 +56,36 @@ class PlanWords(unittest.TestCase):
         self.assertIn("--data-dir", plan["text"])
 
 
+class DiskBeforeStopping(PlanWords):
+    """Found on the NVIDIA Linux box: `launch --model SQ-15 --restart` stopped the serving SQ-10 first, then setup failed for lack of disk, and nothing served."""
+
+    def runner_with_a_server(self, free_gb):
+        r = self.runner()
+        r._stop_first = ["strata-e2e-main"]
+        for p in (mock.patch.object(Runner, "download_plan", lambda self: {"gb": 15.0, "parts": [{"kind": "weights", "label": "the model", "gb": 14.3}]}),
+                  mock.patch.object(Catalog, "disk_free", lambda self, path: free_gb)):
+            p.start()
+            self.addCleanup(p.stop)
+        return r
+
+    def test_nothing_is_stopped_when_the_model_cannot_be_downloaded(self):
+        from strata_cli.launch.runner import LaunchError
+        r = self.runner_with_a_server(7.7)
+        with mock.patch("strata_control.runtime.stop") as stop:
+            with self.assertRaises(LaunchError) as caught:
+                r.stop_before_setup()
+        stop.assert_not_called()
+        self.assertIn("Nothing was stopped: the running model keeps serving.", str(caught.exception))
+        self.assertIn("14.3 GB", str(caught.exception))
+        self.assertIn("7.7 GB are free", str(caught.exception))
+
+    def test_with_room_the_running_server_is_stopped_as_before(self):
+        r = self.runner_with_a_server(60.0)
+        with mock.patch("strata_control.runtime.stop") as stop, mock.patch("strata_cli.launch.access.stop_tunnel"):
+            r.stop_before_setup()
+        stop.assert_called_once()
+
+
 class PictureWords(unittest.TestCase):
     def test_the_plan_and_the_running_line_say_the_same(self):
         self.assertEqual(S.PICTURE_WORDS["cpu"], "on (the picture reader runs on the processor)")

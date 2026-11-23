@@ -2542,6 +2542,7 @@ class Runner:
         after the engine is here and before the model is prepared. Nothing runs when no restart was decided."""
         from strata_control import runtime
         from strata_control.profiles import ProfileError
+        self.refuse_before_stopping_for_disk()
         self.stop_others()
         name, self._stop_own = self._stop_own, None
         if not name:
@@ -2552,6 +2553,24 @@ class Runner:
             acc.stop_tunnel(name)
         except ProfileError as e:
             raise LaunchError(f"The running server {name[7:]} could not be stopped: {e}.", "Run `strata launch --stop` first.", 6) from None
+
+    def refuse_before_stopping_for_disk(self) -> None:
+        """0221 APPTUI (found in the end-to-end pass): switching to a model that cannot be downloaded for lack of disk stopped the model that was serving first
+        ("Stopping e2e-main so the new choices can use port ..."), and setup then failed on the disk: nothing was left serving. When a server would be stopped and the
+        model's files alone need more room than the drive has, say so before anything is stopped."""
+        if not (self._stop_first or self._stop_own):
+            return
+        try:
+            plan = self.download_plan()
+            need = sum(float(p["gb"]) for p in plan.get("parts") or [] if p.get("kind") == "weights")
+            data = Path(self.s.data_dir).expanduser() if self.s.data_dir else (self.existing_data_dir() or self.catalog.data_dir())
+            probe = next((q for q in (data, *data.parents) if q.exists()), None)
+            free = self.catalog.disk_free(probe) if probe is not None else None
+        except Exception:                                    # noqa: BLE001 - a check that cannot be made lets the launch go on, as before
+            return
+        if free is not None and need > 0.05 and need > free:
+            raise LaunchError(f"Not enough free disk space in {data}: the model needs about {need:.1f} GB and {free:.1f} GB are free. Nothing was stopped: the running model keeps serving.",
+                              "Use --data-dir on a bigger drive (strata launch --data-dir), or free some space.", 6)
 
     def checked(self) -> None:
         cb, self.after_check = self.after_check, None
