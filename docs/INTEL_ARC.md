@@ -498,6 +498,20 @@ Three things to expect on this card.
 - **Do not leave `UR_L0_DEBUG=1` set.** It writes millions of lines and seconds per handshake, and looks like a driver
   hang (#5505).
 
+Measured on 0.1.65 and reported by an Arc A770 owner with **two** A770 16 GB cards (issue #5236), Coder IQ2_XS
+(68 GB, 18,558 experts) with the mirror: `18558 of 18558 experts mirrored (24.95 GiB)`, 6018 slots on card 0. A
+3137-token prompt with 128 greedy tokens read at **174.2 tok/s** and decoded at **12.90 tok/s** on card 0 (166.3 and
+10.80 on card 1). Two limits on that configuration:
+
+- A 16K prompt stops at the first verify window (`--spec 4`, position 12189 of 12194) - the window's wait, not the
+  prompt; `--spec 0` and the wait's exact text are the next checks.
+- `--layer-split 2` is refused: the second card's 6773 slots leave 16,779 experts neither resident nor mirrored, and
+  `STRATA_STAGE_TRIM=1` does not close it. The host mirror and the host plan cover the first stage only, so a
+  two-card split under `STRATA_VERIFY_NO_HOST` is unsupported until the mirror covers later stages.
+
+Two build-environment traps, reported on the same run: `api-ms-win-crt-*.dll` are not in the root of `System32` but
+under `System32\downlevel\`, and `vc_redist.x64` returns `0x80070666` when a newer runtime is already installed.
+
 ## Reporting a problem
 
 Open an issue with the card, the driver version, the `sycl-ls` output, the oneAPI version, the model and flags, and the engine's
