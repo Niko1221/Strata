@@ -713,6 +713,28 @@ public:
         }
         max_slots_ = std::max(1, std::min(kMaxParallelSlots, opts.parallel));
         max_ctx_ = std::max(256, opts.max_ctx);
+        // SWA KV ring. forward_batch_chunk stores K/V of all B batch tokens before attention reads the ring, so a
+        // ring of exactly swa_win positions lets a later token of the same batch overwrite a key that an earlier
+        // query of that batch still needs (ring slot (p - swa_win + j) % swa_win == (p + j) % swa_win).
+        // A ring of swa_win + S positions is safe for any batch whose per-slot position span is <= S + 1, so the
+        // ring gets the prefill chunk as margin (as the CUDA backend: swa_ring = kInkSwaWin + max_batch,
+        // cuda/ink_runner.cuh) and forward_batch splits larger batches at S. Rounded to whole 64-token pages, capped
+        // at max_ctx (positions below the ring size never wrap). STRATA_INK_SWA_RING=N overrides the ring size
+        // (N = swa_win restores the old exact-window ring and its overwrite, for A/B checks only).
+        {
+            const int win = std::max(1, c_.swa_win);
+            int ring = win + std::max(opts.chunk, 64);
+            if (const char* e = std::getenv("STRATA_INK_SWA_RING"); e && *e) {
+                const int v = std::atoi(e);
+                if (v >= win) ring = v;
+            }
+            ring = (ring + kKvPageTokens - 1) / kKvPageTokens * kKvPageTokens;
+            const int ctx_cap = (std::max(max_ctx_, win) + kKvPageTokens - 1) / kKvPageTokens * kKvPageTokens;
+            swa_ring_ = std::max(win, std::min(ring, ctx_cap));
+            swa_span_cap_ = (swa_ring_ > win && swa_ring_ < ctx_cap) ? (swa_ring_ - win) : 0;
+            std::fprintf(stderr, "[ink-hip] SWA KV ring %d positions (window %d, forward_batch span cap %d)\n",
+                         swa_ring_, win, swa_span_cap_);
+        }
 
         if (const char* ev = std::getenv("STRATA_INK_EXACT_ROWS")) exact_verify_enabled_ = !(ev[0] == '0');
         if (const char* ev = std::getenv("STRATA_INK_HASH"); ev && ev[0] == '1') {
@@ -998,8 +1020,12 @@ public:
             // Reserve headroom for KV + activations + OS/desktop (always keep at least OS reserve + 768 MiB)
             // The K/V of every slot that will run and the batch scratch of the biggest step are reserved BEFORE the card is filled with experts (no cap
             // at a quarter of the card: 32 clients need 32 slots; a plan without them ended with "scratch alloc: out of memory" at the first batch).
+            // (#6878: a slot's SWA pools grow past position swa_win up to the ring, which the slot estimate does not count.)
             const size_t kv_est =
-                estimate_slot_bytes(std::min(max_ctx_, 4096), default_kv_dtype_, has_dspark_).total_bytes() * static_cast<size_t>(max_slots_);
+                (estimate_slot_bytes(std::min(max_ctx_, 4096), default_kv_dtype_, has_dspark_).total_bytes() +
+                 static_cast<size_t>(c_.n_swa_visits) * static_cast<size_t>(std::max(0, std::min(swa_ring_, std::min(max_ctx_, 4096)) - c_.swa_win)) *
+                     2u * static_cast<size_t>(c_.n_kv * c_.head_dim) * (default_kv_dtype_ == KvDtype::FP8_E4M3 ? 1u : 2u)) *
+                static_cast<size_t>(max_slots_);
             ink2::BatchGeom bg;
             bg.hidden = c_.hidden; bg.n_head = c_.n_head; bg.head_dim = c_.head_dim; bg.n_kv = c_.n_kv; bg.d_rel = c_.d_rel;
             bg.rel_extent = c_.rel_extent; bg.inter = c_.inter; bg.n_experts = c_.n_experts; bg.top_k = c_.top_k;
@@ -1442,7 +1468,7 @@ public:
 
         // 4. Initialize GPU Paged KV pools & 48-Visit ShortConv BF16 pools
         const int kv_dim = c_.n_kv * c_.head_dim;
-        const int max_swa_pages = (c_.swa_win + kKvPageTokens - 1) / kKvPageTokens;
+        const int max_swa_pages = (swa_ring_ + kKvPageTokens - 1) / kKvPageTokens;
         const int max_glob_pages = (max_ctx_ + kKvPageTokens - 1) / kKvPageTokens;
 
         // Post-load VRAM check (#6613 / #6621): auto-select FP8_E4M3 KV & cap max_prefill_chunk when remaining VRAM
@@ -1627,9 +1653,10 @@ public:
     // Prompt checkpoint (save_prompt_checkpoint / restore_prompt_checkpoint in ink_backend.h). The serve saves after
     // reading prompt_len - 1 prompt tokens and restores when a later prompt starts with exactly those tokens, so
     // seq_len is the same token count both times. Saved per slot:
-    //  - SWA visits: KV is a ring of swa_win positions in 64-token pages (page (p % swa_win) / 64, ensure_page), so the
-    //    slot's mapped ring pages are copied to pinned host memory, one copy per run of consecutive physical pages:
-    //    2 x n_swa_visits x 16 pages x 64 x kv_dim x 2 B, about 160 MiB per slot at BF16 KV (half at FP8, plus the
+    //  - SWA visits: KV is a ring of swa_ring_ positions (swa_win plus the batch-span margin, #6878) in 64-token pages
+    //    (page (p % swa_ring_) / 64, ensure_page), so the slot's mapped ring pages are copied to pinned host memory, one
+    //    copy per run of consecutive physical pages: 2 x n_swa_visits x (swa_ring_ / 64) pages x 64 x kv_dim x 2 B, about
+    //    160 MiB per slot at BF16 KV with a 1024 ring and 240 MiB with the default 1536 ring (half at FP8, plus the
     //    per-token scales). No VRAM is taken from the KV pools;
     //  - ShortConv state (n_visits x 3 lags) goes to small device buffers through the snapshot_slot copy kernel;
     //  - global-visit KV and the DSpark context are indexed by absolute position and are not written below seq_len
@@ -1644,7 +1671,7 @@ public:
         if (static_cast<int>(ckpts_.size()) < max_slots_) ckpts_.resize(max_slots_);
         PromptCkpt& ck = ckpts_[slot];
         ck.valid = false;
-        // The SWA ring holds positions [seq_len - swa_win, seq_len) only when nothing past seq_len has been fed.
+        // The SWA ring holds positions [seq_len - swa_win, seq_len) (and older ones up to the ring size) only when nothing past seq_len has been fed.
         if (slots_[slot].seq_len != seq_len) return false;
         const int n_pools = static_cast<int>(swa_pools_.size());
         const int mpp = swa_pools_[0].max_pages_per_slot;
@@ -1787,6 +1814,27 @@ public:
         return true;
     }
 
+    // Largest batch forward_batch_chunk takes in one go: the TDR / VRAM guard cap, and the SWA ring margin when the
+    // batch could overwrite in-window keys: some slot reaches position swa_ring_ (the ring wraps) and its positions in
+    // this batch span more than swa_span_cap_. Split sub-batches then hold <= swa_span_cap_ tokens, so each slot's
+    // span stays within the margin (a slot's positions are consecutive in batch order).
+    int batch_token_cap(const StepBatch& batch) const {
+        const int cap = std::max(1, guard_.max_prefill_chunk);
+        if (swa_span_cap_ <= 0 || batch.n_tokens <= swa_span_cap_) return cap;
+        int lo[kMaxParallelSlots], hi[kMaxParallelSlots];
+        for (int s = 0; s < kMaxParallelSlots; ++s) { lo[s] = 0x3fffffff; hi[s] = -1; }
+        for (int b = 0; b < batch.n_tokens; ++b) {
+            const int s = batch.slot_ids[b];
+            if (s < 0 || s >= kMaxParallelSlots) return std::min(cap, swa_span_cap_);
+            lo[s] = std::min(lo[s], batch.pos[b]);
+            hi[s] = std::max(hi[s], batch.pos[b]);
+        }
+        for (int s = 0; s < kMaxParallelSlots; ++s) {
+            if (hi[s] >= swa_ring_ && hi[s] - lo[s] + 1 > swa_span_cap_) return std::min(cap, swa_span_cap_);
+        }
+        return cap;
+    }
+
     bool forward_batch(const StepBatch& batch, float* logits_out, TapCapture* taps_out, std::string& err) override {
         const int B_tot = batch.n_tokens;
         if (B_tot <= 0) return true;
@@ -1800,8 +1848,8 @@ public:
             }
         }
 
-        // Enforce <= 1.0s TDR / MES chunk cap automatically on iGPUs & Windows WDDM!
-        const int chunk_cap = std::max(1, guard_.max_prefill_chunk);
+        // Enforce <= 1.0s TDR / MES chunk cap automatically on iGPUs & Windows WDDM, and the SWA ring margin
+        const int chunk_cap = batch_token_cap(batch);
         if (B_tot > chunk_cap) {
             const int V = c_.vocab_unpadded;
             const int D = c_.hidden;
@@ -2387,7 +2435,7 @@ public:
         // Pre-ensure KV pages for all possible committed positions anchor_pos .. anchor_pos + max_dep
         for (int d = 0; d <= max_dep; ++d) {
             const int p = anchor_pos + d;
-            const int swa_lp = (p % c_.swa_win) >> 6;
+            const int swa_lp = (p % swa_ring_) >> 6;
             const int glb_lp = p >> 6;
             for (int i = 0; i < c_.n_swa_visits; ++i) {
                 if (!swa_pools_[i].ensure_page(slot, swa_lp, stream_, err)) return 0;
@@ -2417,7 +2465,7 @@ public:
                     reinterpret_cast<float*>(kvp.v_scales.dev_ptr),
                     reinterpret_cast<const int32_t*>(kvp.d_pt.dev_ptr),
                     kvp.max_pages_per_slot,
-                    is_swa ? c_.swa_win : 0
+                    is_swa ? swa_ring_ : 0
                 };
             }
             if (!hip_ok(hipMemcpyAsync(d_tree_kv_descs_.dev_ptr, h_descs.data(),
@@ -3412,7 +3460,7 @@ private:
         for (int b = 0; b < B; ++b) {
             const int s = batch.slot_ids[b];
             const int p = batch.pos[b];
-            const int swa_lp = (p % c_.swa_win) >> 6;
+            const int swa_lp = (p % swa_ring_) >> 6;
             const int glb_lp = p >> 6;
             for (int i = 0; i < c_.n_swa_visits; ++i) {
                 if (!swa_pools_[i].ensure_page(s, swa_lp, stream_, err)) return false;
@@ -3928,6 +3976,7 @@ private:
             const int r_sc_stride = (trunk_f32_.at(r_sc_k).bytes >= static_cast<size_t>(c_.n_head) * c_.d_rel * 4) ? c_.d_rel : 0;
             VisitKvPool& kvp = is_swa ? swa_pools_[kv_slot] : glob_pools_[kv_slot];
             const int swa_w = is_swa ? c_.swa_win : 0;
+            const int swa_r = is_swa ? swa_ring_ : 0;
             if (!is_fp8 && c_.head_dim <= 128 && c_.d_rel <= 16 && (c_.rel_extent & 3) == 0) {
                 k2_qrkv_kvstore_relpos_fused<<<dim3(2 * c_.n_head + 2 * c_.n_kv, B), 128, 0, stream_>>>(
                     q, f32_ptr(q_sc_k), q_sc_stride,
@@ -3939,7 +3988,7 @@ private:
                     reinterpret_cast<half_t*>(kvp.k_pool.dev_ptr),
                     reinterpret_cast<half_t*>(kvp.v_pool.dev_ptr),
                     !is_swa, c_.qk_l2_clip, c_.rel_l2_clip, c_.rms_eps,
-                    B, c_.n_head, c_.n_kv, c_.head_dim, c_.d_rel, swa_w, c_.rel_extent);
+                    B, c_.n_head, c_.n_kv, c_.head_dim, c_.d_rel, swa_r, c_.rel_extent);
             } else {
                 if (c_.head_dim <= 128 && c_.d_rel <= 32) {
                     k2_qrkv_norm_clip_fused<<<dim3(2 * c_.n_head + 2 * c_.n_kv, B), 128, 0, stream_>>>(
@@ -3961,13 +4010,13 @@ private:
                         reinterpret_cast<const int32_t*>(kvp.d_pt.dev_ptr), kvp.max_pages_per_slot,
                         kvp.k_pool.dev_ptr, kvp.v_pool.dev_ptr,
                         reinterpret_cast<float*>(kvp.k_scales.dev_ptr), reinterpret_cast<float*>(kvp.v_scales.dev_ptr),
-                        B, c_.n_kv, c_.head_dim, swa_w);
+                        B, c_.n_kv, c_.head_dim, swa_r);
                 } else {
                     k3_kv_paged_store<false><<<B, 256, 0, stream_>>>(
                         k_cv, v_cv, reinterpret_cast<const int32_t*>(sc_slot_ids_.dev_ptr), pos_dev,
                         reinterpret_cast<const int32_t*>(kvp.d_pt.dev_ptr), kvp.max_pages_per_slot,
                         kvp.k_pool.dev_ptr, kvp.v_pool.dev_ptr, nullptr, nullptr,
-                        B, c_.n_kv, c_.head_dim, swa_w);
+                        B, c_.n_kv, c_.head_dim, swa_r);
                 }
                 k_relpos_bias_proj<<<dim3(c_.n_head, B), 256, 0, stream_>>>(
                     r_raw, f32_ptr(p + ".attn.rel_logits_proj.proj"), pos_dev, rbias, B, c_.n_head, c_.d_rel, c_.rel_extent);
@@ -3983,13 +4032,13 @@ private:
                         reinterpret_cast<const int32_t*>(kvp.d_pt.dev_ptr), kvp.max_pages_per_slot,
                         kvp.k_pool.dev_ptr, kvp.v_pool.dev_ptr,
                         reinterpret_cast<const float*>(kvp.k_scales.dev_ptr), reinterpret_cast<const float*>(kvp.v_scales.dev_ptr),
-                        aout, B, c_.n_head, c_.n_kv, swa_w, c_.rel_extent);
+                        aout, B, c_.n_head, c_.n_kv, swa_w, swa_r, c_.rel_extent);
                 } else {
                     k3_flash_swa_gqa_prefill_wmma<false><<<fgrid, 128, 0, stream_>>>(
                         q, gatea, rbias, sinks, batch.slot_ids[0], batch.pos[0],
                         reinterpret_cast<const int32_t*>(kvp.d_pt.dev_ptr), kvp.max_pages_per_slot,
                         kvp.k_pool.dev_ptr, kvp.v_pool.dev_ptr, nullptr, nullptr,
-                        aout, B, c_.n_head, c_.n_kv, swa_w, c_.rel_extent);
+                        aout, B, c_.n_head, c_.n_kv, swa_w, swa_r, c_.rel_extent);
                 }
             } else if (B <= 4 || exact_rows_) {   // #6671: the one-token kernel for every verify row
                 // 2-Stage FlashDecoding Split-KV (96 blocks x 8 waves = 768 waves at B=1 -> saturates ALL CUs!)
@@ -4000,13 +4049,13 @@ private:
                         reinterpret_cast<const int32_t*>(kvp.d_pt.dev_ptr), kvp.max_pages_per_slot,
                         kvp.k_pool.dev_ptr, kvp.v_pool.dev_ptr,
                         reinterpret_cast<const float*>(kvp.k_scales.dev_ptr), reinterpret_cast<const float*>(kvp.v_scales.dev_ptr),
-                        sp_part, B, c_.n_head, c_.n_kv, swa_w, c_.rel_extent);
+                        sp_part, B, c_.n_head, c_.n_kv, swa_w, swa_r, c_.rel_extent);
                 } else {
                     k3_flash_splitkv_part<false, 4><<<dim3(c_.n_head, B, 4), 256, 0, stream_>>>(
                         q, rbias, sinks, reinterpret_cast<const int32_t*>(sc_slot_ids_.dev_ptr), pos_dev,
                         reinterpret_cast<const int32_t*>(kvp.d_pt.dev_ptr), kvp.max_pages_per_slot,
                         kvp.k_pool.dev_ptr, kvp.v_pool.dev_ptr, nullptr, nullptr,
-                        sp_part, B, c_.n_head, c_.n_kv, swa_w, c_.rel_extent);
+                        sp_part, B, c_.n_head, c_.n_kv, swa_w, swa_r, c_.rel_extent);
                 }
                 k3_flash_splitkv_reduce<4><<<dim3(c_.n_head, B), 32, 0, stream_>>>(
                     sp_part, gatea, aout, B, c_.n_head);
@@ -4017,13 +4066,13 @@ private:
                         reinterpret_cast<const int32_t*>(kvp.d_pt.dev_ptr), kvp.max_pages_per_slot,
                         kvp.k_pool.dev_ptr, kvp.v_pool.dev_ptr,
                         reinterpret_cast<const float*>(kvp.k_scales.dev_ptr), reinterpret_cast<const float*>(kvp.v_scales.dev_ptr),
-                        aout, B, c_.n_head, c_.n_kv, swa_w, c_.rel_extent);
+                        aout, B, c_.n_head, c_.n_kv, swa_w, swa_r, c_.rel_extent);
                 } else {
                     k3_flash_swa_gqa_splitkv<false><<<dim3(c_.n_head, B), 128, 0, stream_>>>(
                         q, gatea, rbias, sinks, reinterpret_cast<const int32_t*>(sc_slot_ids_.dev_ptr), pos_dev,
                         reinterpret_cast<const int32_t*>(kvp.d_pt.dev_ptr), kvp.max_pages_per_slot,
                         kvp.k_pool.dev_ptr, kvp.v_pool.dev_ptr, nullptr, nullptr,
-                        aout, B, c_.n_head, c_.n_kv, swa_w, c_.rel_extent);
+                        aout, B, c_.n_head, c_.n_kv, swa_w, swa_r, c_.rel_extent);
                 }
             } else if (is_fp8) {
                 k3_flash_swa_gqa<true><<<dim3((c_.n_head + 3) / 4, B), 128, 0, stream_>>>(
@@ -4031,13 +4080,13 @@ private:
                     reinterpret_cast<const int32_t*>(kvp.d_pt.dev_ptr), kvp.max_pages_per_slot,
                     kvp.k_pool.dev_ptr, kvp.v_pool.dev_ptr,
                     reinterpret_cast<const float*>(kvp.k_scales.dev_ptr), reinterpret_cast<const float*>(kvp.v_scales.dev_ptr),
-                    aout, B, c_.n_head, c_.n_kv, swa_w, c_.rel_extent);
+                    aout, B, c_.n_head, c_.n_kv, swa_w, swa_r, c_.rel_extent);
             } else {
                 k3_flash_swa_gqa<false><<<dim3((c_.n_head + 3) / 4, B), 128, 0, stream_>>>(
                     q, gatea, rbias, sinks, reinterpret_cast<const int32_t*>(sc_slot_ids_.dev_ptr), pos_dev,
                     reinterpret_cast<const int32_t*>(kvp.d_pt.dev_ptr), kvp.max_pages_per_slot,
                     kvp.k_pool.dev_ptr, kvp.v_pool.dev_ptr, nullptr, nullptr,
-                    aout, B, c_.n_head, c_.n_kv, swa_w, c_.rel_extent);
+                    aout, B, c_.n_head, c_.n_kv, swa_w, swa_r, c_.rel_extent);
             }
 
             // O-proj + post-attention ShortConv + AttnRes block boundary rule (1-launch super-fused at B=1 distinct-slot!)
@@ -5342,6 +5391,7 @@ private:
             pm(3);
             VisitKvPool& kvp = is_swa ? swa_pools_[kv_slot] : glob_pools_[kv_slot];
             const int swa_w = is_swa ? c_.swa_win : 0;
+            const int swa_r = is_swa ? swa_ring_ : 0;
             if (exact_rows_ && !is_fp8) {
                 // #6671: the arithmetic of the one-token step (split-KV, four chunks), so tree row m = step at that position
                 float* sp_part = reinterpret_cast<float*>(sc_splitkv_part_.dev_ptr);
@@ -5349,7 +5399,7 @@ private:
                     q, rbias, sinks, d_tm, pos_dev,
                     reinterpret_cast<const int32_t*>(kvp.d_pt.dev_ptr), kvp.max_pages_per_slot,
                     kvp.k_pool.dev_ptr, kvp.v_pool.dev_ptr, tk_v, tv_v,
-                    sp_part, B, c_.n_head, c_.n_kv, swa_w, c_.rel_extent);
+                    sp_part, B, c_.n_head, c_.n_kv, swa_w, swa_r, c_.rel_extent);
                 k3_flash_splitkv_reduce<4><<<dim3(c_.n_head, B), 32, 0, stream_>>>(sp_part, gatea, aout, B, c_.n_head);
             } else if (is_fp8) {
                 k3_flash_swa_gqa_tree<true><<<dim3(c_.n_head, B), 128, 0, stream_>>>(
@@ -5357,13 +5407,13 @@ private:
                     reinterpret_cast<const int32_t*>(kvp.d_pt.dev_ptr), kvp.max_pages_per_slot,
                     kvp.k_pool.dev_ptr, kvp.v_pool.dev_ptr,
                     reinterpret_cast<const float*>(kvp.k_scales.dev_ptr), reinterpret_cast<const float*>(kvp.v_scales.dev_ptr),
-                    tk_v, tv_v, aout, B, c_.n_head, c_.n_kv, swa_w, c_.rel_extent);
+                    tk_v, tv_v, aout, B, c_.n_head, c_.n_kv, swa_w, swa_r, c_.rel_extent);
             } else {
                 k3_flash_swa_gqa_tree<false><<<dim3(c_.n_head, B), 128, 0, stream_>>>(
                     q, gatea, rbias, sinks, d_tm, pos_dev,
                     reinterpret_cast<const int32_t*>(kvp.d_pt.dev_ptr), kvp.max_pages_per_slot,
                     kvp.k_pool.dev_ptr, kvp.v_pool.dev_ptr, nullptr, nullptr,
-                    tk_v, tv_v, aout, B, c_.n_head, c_.n_kv, swa_w, c_.rel_extent);
+                    tk_v, tv_v, aout, B, c_.n_head, c_.n_kv, swa_w, swa_r, c_.rel_extent);
             }
 
             // O-proj + Tree post-attn ShortConv + AttnRes block boundary
@@ -5813,6 +5863,8 @@ private:
     bool has_dspark_ = false;
     int max_slots_ = 1;
     int max_ctx_ = 32768;
+    int swa_ring_ = 1024;   // SWA KV ring positions per slot (init: window + batch span margin, see there)
+    int swa_span_cap_ = 0;  // max tokens per forward_batch_chunk so the ring margin holds (0 = no extra cap)
 
     std::vector<GpuBuffer> trunk_qkvrg_;
     std::unordered_map<std::string, GpuBuffer> trunk_bf16_;
