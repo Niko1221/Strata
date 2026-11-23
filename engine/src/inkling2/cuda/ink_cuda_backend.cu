@@ -11,6 +11,7 @@
 #include "ink_runner.cuh"
 #include "ink_spec.cuh"
 #include "strata/core/arch_probe.hpp"
+#include "strata/core/ink_chunk.hpp"
 #include "strata/core/volta_forever.hpp"
 
 #include <algorithm>
@@ -82,6 +83,7 @@ public:
     }
 
     int effective_max_ctx() const override { return initialized_ ? eff_max_ctx_ : 0; }
+    int effective_chunk() const override { return initialized_ ? eff_chunk_run_ : 0; }
 
     bool dspark_ready() const override { return initialized_ && dspark_ && dspark_->ready; }
 
@@ -275,6 +277,15 @@ public:
         strata::ink::ink_alloc_throws() = !(retry_env && std::atoi(retry_env) == 0);
         struct ThrowGuard { ~ThrowGuard() { strata::ink::ink_alloc_throws() = false; } } throw_guard;
         int chunk_try = std::max(64, opts.chunk);
+        // No --chunk: the memory left after the experts decides (strata/core/ink_chunk.hpp); STRATA_INK_CHUNK_AUTO=0 keeps the old 512.
+        if (opts.chunk_auto && !model_.ls_active) {
+            const char* auto_env = std::getenv("STRATA_INK_CHUNK_AUTO");
+            if (!(auto_env && std::atoi(auto_env) == 0)) {
+                chunk_try = std::max(chunk_try, strata::core::ink_auto_chunk(led_loaded, max_slots_));
+                std::fprintf(stderr, "[InkCUDA] prefill chunk %d (auto: %.0f MiB free after the experts, %d slot(s); --chunk N sets it)\n",
+                             chunk_try, led_loaded, max_slots_);
+            }
+        }
         for (;;) {
             runner_ = std::make_unique<strata::ink::InkCudaRunner>(model_);
             runner_->use_cuda_graph = vf_graph_ok && !model_.ep2_active && !model_.ls_active;
@@ -297,6 +308,7 @@ public:
             }
         }
         eff_max_ctx_ = runner_->max_ctx;
+        eff_chunk_run_ = std::max(1, std::min(chunk_try, runner_->max_batch));
         const double led_runner = free_mib();
 
         if (opts.enable_dspark && model_.man.has_dspark && !model_.ls_active) {
@@ -953,6 +965,7 @@ private:
     int gpu_id_ = 0;
     int max_slots_ = 1;
     int eff_max_ctx_ = 4096;
+    int eff_chunk_run_ = 0;          // the prefill chunk the runner really got (after auto / halve-on-fail)
     int dspark_slot_ = -1;
     KvDtype kv_dtype_ = KvDtype::FP16;
     std::string dev_info_;

@@ -442,7 +442,7 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
     const InkCfg& c = mf.m.c;
     const int V = c.vocab_unpadded;
     const int P = std::max(1, std::min(kMaxParallelSlots, cfg.bopts.parallel));
-    const int chunk_sz = std::max(1, cfg.bopts.chunk);
+    const int chunk_sz = std::max(1, backend.effective_chunk() > 0 ? backend.effective_chunk() : cfg.bopts.chunk);
     const bool use_dspark = (cfg.draft_mode != "off") && mf.m.dspark.present && backend.dspark_ready();
 
     // Probe Vision shard lazily (zero VRAM/RAM until first image request)
