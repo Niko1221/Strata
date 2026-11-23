@@ -3,6 +3,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -35,6 +36,7 @@ struct BackendOpts {
     bool enable_dspark = true;
     std::string dspark_path;     // optional external mtp.safetensors or dspark-*.gguf
     std::string vision_path;
+    size_t radix_cache_bytes = 0;
 };
 
 struct BackendStats {
@@ -47,6 +49,17 @@ struct BackendStats {
     int max_slots = 1;
     KvDtype kv_dtype = KvDtype::FP16;
 };
+
+struct PrefixCheckpoint {
+    explicit PrefixCheckpoint(int length) : length(length) {}
+    virtual ~PrefixCheckpoint() = default;
+    // Private checkpoint bytes. Shared append-only chunks are accounted separately.
+    virtual size_t bytes() const = 0;
+    const int length;
+};
+
+// Evict before allocating. The second argument counts shared bytes pinned by the new checkpoint.
+using ReservePrefix = std::function<bool(size_t additional, size_t pinned)>;
 
 class InkBackend {
 public:
@@ -78,6 +91,13 @@ public:
         (void)slot; (void)seq_len;
         return false;
     }
+
+    virtual bool supports_radix_cache() const { return false; }
+    virtual size_t shared_prefix_bytes() const { return 0; }
+    virtual std::unique_ptr<PrefixCheckpoint> save_prefix(int, int, const ReservePrefix&) { return {}; }
+    virtual bool prefix_compatible(int, const PrefixCheckpoint&) const { return true; }
+    // A rejected restore leaves the current slot valid for a shorter candidate.
+    virtual bool restore_prefix(int, const PrefixCheckpoint&) { return false; }
 
     // Returns true when the on-device DSpark drafter is initialized and ready to serve drafts (#6633).
     virtual bool dspark_ready() const { return false; }

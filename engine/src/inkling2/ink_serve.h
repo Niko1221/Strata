@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "ink_backend.h"
+#include "ink_radix_cache.h"
 #include "ink_batch.h"
 #include "ink_manifest.h"
 #include "ink_vision.h"
@@ -417,6 +418,7 @@ struct ActiveReq {
     std::vector<int32_t> cached_prefix;       // tokens currently resident in slot KV
     std::vector<int32_t> prompt_ckpt_prefix;  // prompt-end checkpoint prefix saved before generation (#6627)
     int reused_tokens = 0;                    // prefix tokens reused for this request
+    bool text_prefix = false;
     bool ckpt_pending = false;                // true while prefilling up to prompt_len - 1 to save checkpoint
     double t_start = 0.0;
     double prompt_ms = 0.0;
@@ -483,6 +485,14 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
           use_dspark ? "dspark" : "off",
           images_ok ? 1 : 0, c.image_token_id, kMaxParallelSlots);
     proto("READY %d stop hold holdb", eff_max_ctx);
+
+    const size_t radix_bytes = cfg.bopts.radix_cache_bytes;
+    bool radix_enabled = radix_bytes && backend.supports_radix_cache();
+    constexpr int radix_interval = 512;
+    PrefixRadixCache<PrefixCheckpoint> radix(radix_bytes);
+    if (radix_bytes && !radix_enabled) {
+        fprintf(stderr, "[Inkling] Radix prefix caching requires the CUDA backend without layer splitting\n");
+    }
 
     std::vector<ActiveReq> reqs(P);
     std::unordered_map<std::string, int> req_id_to_slot;
@@ -583,32 +593,47 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
         // Prefix reuse check (#6627): prefer full cached_prefix match, else restore prompt-end checkpoint!
         // Because prompt_ckpt_prefix is saved at prompt_len - 1 before generation, BOTH multi-turn follow-ups
         // (even if hidden thinking or stop tokens differed) AND exact repeats reuse the full prior prompt!
-        int reuse = 0;
-        bool used_ckpt = false;
-        if (pg.images.empty()) {
-            int full_match = 0;
+        int reuse = 0, full_match = 0, ckpt_match = 0;
+        if (pg.images.empty() && (!radix_bytes || rq.text_prefix)) {
             if (!rq.cached_prefix.empty() && static_cast<int>(rq.cached_prefix.size()) < rq.prompt_len) {
                 const int clen = static_cast<int>(rq.cached_prefix.size());
                 int m = 0;
                 while (m < clen && rq.cached_prefix[m] == rq.prompt_ids[m]) ++m;
                 if (m == clen) full_match = clen;
             }
-            int ckpt_match = 0;
             if (!rq.prompt_ckpt_prefix.empty() && static_cast<int>(rq.prompt_ckpt_prefix.size()) < rq.prompt_len) {
                 const int plen = static_cast<int>(rq.prompt_ckpt_prefix.size());
                 int m = 0;
                 while (m < plen && rq.prompt_ckpt_prefix[m] == rq.prompt_ids[m]) ++m;
                 if (m == plen) ckpt_match = plen;
             }
-            if (full_match > 0 && full_match >= ckpt_match) {
-                reuse = full_match;
-            } else if (ckpt_match > 0 && backend.restore_prompt_checkpoint(rq.slot, ckpt_match)) {
+        }
+        const PrefixCheckpoint* checkpoint = nullptr;
+        if (radix_enabled && pg.images.empty()) {
+            checkpoint = radix.find(rq.prompt_ids, rq.prompt_len - 1, [&](const PrefixCheckpoint& state) {
+                return backend.prefix_compatible(rq.slot, state);
+            }, true);
+        }
+        reuse = full_match;
+        auto try_radix = [&] {
+            if (checkpoint->length > reuse && backend.restore_prefix(rq.slot, *checkpoint)) {
+                reuse = checkpoint->length;
+                rq.cached_prefix.assign(rq.prompt_ids.begin(), rq.prompt_ids.begin() + reuse);
+                rq.prompt_ckpt_prefix.clear();
+            }
+            checkpoint = nullptr;
+        };
+        if (checkpoint && checkpoint->length > ckpt_match) try_radix();
+        if (ckpt_match > reuse) {
+            if (backend.restore_prompt_checkpoint(rq.slot, ckpt_match)) {
                 reuse = ckpt_match;
                 rq.cached_prefix = rq.prompt_ckpt_prefix;
-                used_ckpt = true;
+            } else if (!radix_enabled) {
+                reuse = 0;
             }
         }
-        (void)used_ckpt;
+        if (checkpoint) try_radix();
+        rq.text_prefix = pg.images.empty();
         if (reuse == 0) {
             backend.reset_slot(rq.slot);
             rq.cached_prefix.clear();
@@ -670,6 +695,7 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
                 if (s >= 0 && s < P && !reqs[s].active && parse_id_list(line.substr(sp + 1), cids, cerr)) {
                     backend.reset_slot(s);
                     reqs[s].cached_prefix.clear();
+                    if (radix_enabled) reqs[s].prompt_ckpt_prefix.clear();
                     proto("BCOK %d %zu", s, cids.size());
                 }
             }
@@ -838,6 +864,7 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
                         // Never leave poisoned KV/ShortConv prefix cached across retries (#879)!
                         rq.cached_prefix.clear();
                         rq.prompt_ckpt_prefix.clear();
+                        if (radix_enabled) radix.clear();
                         backend.reset_slot(rq.slot);
                         finish_req(rq, "nonfinite");
                         done = true;
@@ -917,6 +944,10 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
                     if (rq.ckpt_pending && rq.prefill_pos < rq.prompt_len - 1 && rq.prefill_pos + take >= rq.prompt_len) {
                         take = (rq.prompt_len - 1) - rq.prefill_pos;
                     }
+                    if (radix_enabled && rq.text_prefix) {
+                        const int until_boundary = radix_interval - rq.prefill_pos % radix_interval;
+                        take = std::min(take, until_boundary);
+                    }
                     const int img_base = static_cast<int>(merged_img_embeds.size()) / c.hidden;
                     if (!rq.img_embeds.empty()) {
                         merged_img_embeds.insert(merged_img_embeds.end(), rq.img_embeds.begin(), rq.img_embeds.end());
@@ -951,10 +982,38 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
                 rq.prefill_pos += prefill_fed[s];
                 rq.cur_pos = rq.prefill_pos;
                 rq.prompt_ms += step_ms;
-                if (rq.ckpt_pending && rq.prefill_pos == rq.prompt_len - 1) {
+                const int pos = rq.prefill_pos;
+                bool saved = false;
+                if (radix_enabled && rq.text_prefix && pos >= 16 && pos < rq.prompt_len &&
+                    (pos % radix_interval == 0 || pos == rq.prompt_len - 1)) {
+                    const auto* existing = radix.find(rq.prompt_ids, pos, [&](const PrefixCheckpoint& state) {
+                        return backend.prefix_compatible(s, state);
+                    }, false);
+                    saved = existing && existing->length == pos;
+                    if (!saved) {
+                        auto reserve = [&](size_t additional, size_t pinned) {
+                            return radix.reserve(additional + radix.index_bytes(pos), pinned,
+                                                 [&] { return backend.shared_prefix_bytes(); });
+                        };
+                        try {
+                            auto checkpoint = backend.save_prefix(s, pos, reserve);
+                            if (checkpoint) {
+                                radix.insert(rq.prompt_ids, std::move(checkpoint));
+                                saved = true;
+                            }
+                        } catch (const std::bad_alloc&) {
+                            radix.clear();
+                            radix_enabled = false;
+                            fprintf(stderr, "[Inkling] Host allocation failed; disabling radix prefix caching\n");
+                        }
+                    }
+                }
+                if (rq.ckpt_pending && pos == rq.prompt_len - 1) {
                     rq.ckpt_pending = false;
-                    if (backend.save_prompt_checkpoint(rq.slot, rq.prefill_pos)) {
-                        rq.prompt_ckpt_prefix.assign(rq.prompt_ids.begin(), rq.prompt_ids.begin() + rq.prefill_pos);
+                    if (saved) {
+                        rq.prompt_ckpt_prefix.clear();
+                    } else if (backend.save_prompt_checkpoint(s, pos)) {
+                        rq.prompt_ckpt_prefix.assign(rq.prompt_ids.begin(), rq.prompt_ids.begin() + pos);
                     }
                 }
                 if (rq.is_solo || !rq.admitted) {
@@ -972,6 +1031,10 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
             if (!finite_logits(lg, V)) {
                 // Purge poisoned KV/ShortConv state so subsequent retries start clean (#879)!
                 rq.cached_prefix.clear();
+                if (radix_enabled) {
+                    radix.clear();
+                    rq.prompt_ckpt_prefix.clear();
+                }
                 backend.reset_slot(rq.slot);
                 finish_req(rq, "nonfinite");
                 continue;
