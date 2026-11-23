@@ -1,0 +1,17 @@
+{
+ "samples": 529,
+ "interval_s": 1,
+ "host_ram_used_gib_first": 14.902,
+ "host_ram_used_gib_peak": 15.267,
+ "host_ram_total_gib": 61.677,
+ "page_file_used_gib_first": 0.52,
+ "page_file_used_gib_peak": 0.52,
+ "gpu_memory_used_mib_peak": 24104,
+ "gpu_power_w_median_under_load": 156.51,
+ "gpu_power_w_peak_sample": 175.21,
+ "gpu_temp_c_peak": 91,
+ "pcie_under_load": [
+  "Gen4 x8"
+ ],
+ "note": "system-wide host RAM (total - available), sampled once per second by monitor.py; raw telemetry not included"
+}

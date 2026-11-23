@@ -1,0 +1,2 @@
+[strata] Monitor: watching GPU 0 (main) (as nvidia-smi numbers them)
+ready: http://127.0.0.1:18096/v1  (OpenAI: /v1/chat/completions, Anthropic: /v1/messages, context 131072 tokens, images on)

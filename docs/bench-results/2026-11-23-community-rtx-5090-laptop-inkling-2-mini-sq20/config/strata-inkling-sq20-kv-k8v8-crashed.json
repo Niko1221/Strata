@@ -1,0 +1,28 @@
+{
+ "exe": "<strata>\\engine\\strata-inkling.exe",
+ "args": [
+  "--native",
+  "<models>\\Inkling-2-Mini\\Inkling-2-Mini-SQ-20.strata",
+  "--max-context",
+  "131072",
+  "--vision",
+  "<models>\\Inkling-2-Mini\\Inkling-2-Mini-Vision.strata",
+  "--vram-experts-gb",
+  "15.68",
+  "--ram-experts-gb",
+  "0.00",
+  "--kv",
+  "k8v8"
+ ],
+ "cwd": "<strata>",
+ "tokenizer": "<strata-data>\\packs\\inkling-2-mini-sq-20\\tokenizer",
+ "model_name": "inkling-2-mini-sq-20",
+ "arch": "inkling2_loop",
+ "log": "<bench>\\engine-128k-k8v8.log",
+ "lib_dirs": [
+  "<cuda-13.3>\\bin"
+ ],
+ "port": 18096,
+ "drafting": "dspark",
+ "parallel": 1
+}

@@ -1,0 +1,79 @@
+[
+  {
+    "label": "warmup",
+    "status": "ok",
+    "expected_prompt_tokens": null,
+    "request_sha256": "b63e57873441a996a529b246a66cf12de70a7c671777f99329354d5c195f788f",
+    "client_ttft_s": null,
+    "client_elapsed_s": 2.2605960000000778,
+    "finish_reason": "length",
+    "usage": {
+      "prompt_tokens": 20,
+      "completion_tokens": 16,
+      "total_tokens": 36,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "engine": {
+      "id": "764e90580ae7",
+      "projection": null,
+      "time": 1795459099.143073,
+      "duration_s": 2.3,
+      "finish": "length",
+      "gen": 1,
+      "prompt_tokens": 20,
+      "reused": null,
+      "output_tokens": 16,
+      "first_engine_token_s": 0.827,
+      "prompt_total": 20,
+      "prompt_read": null,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 16,
+      "prompt_ms": 825.9,
+      "decode_ms": 1430.8,
+      "decode_tok_s": 11.2,
+      "hit_rate": null,
+      "pcie_share": null,
+      "ram_blobs": null,
+      "file_blobs": null,
+      "file_mb": null,
+      "drafts_offered": null,
+      "drafts_accepted": null
+    },
+    "memory": {
+      "peak_host_ram_used_gib": 20.76,
+      "peak_gpu_memory_used_mib": 17626
+    },
+    "text": "",
+    "visible_text": false
+  },
+  {
+    "label": "tokens-4096-run-1",
+    "status": "failed",
+    "error": "RuntimeError('no tokens generated for tokens-4096-run-1')",
+    "expected_prompt_tokens": 4096,
+    "request_sha256": "96d8c7d7e077dc323a8587d0e07fb05d1c1b5490bc227e1994081b74faa3b7d7",
+    "client_elapsed_s": 11.129077899999174,
+    "text": ""
+  },
+  {
+    "label": "tokens-4096-run-2",
+    "status": "failed",
+    "error": "RuntimeError('no tokens generated for tokens-4096-run-2')",
+    "expected_prompt_tokens": 4096,
+    "request_sha256": "ffc6b3d50f84aaf4c366540fdeb3a4379ff2793fd4cd126542f7ea542e9c60e0",
+    "client_elapsed_s": 15.97016319999966,
+    "text": ""
+  },
+  {
+    "label": "tokens-4096-run-3",
+    "status": "failed",
+    "error": "RuntimeError('no tokens generated for tokens-4096-run-3')",
+    "expected_prompt_tokens": 4096,
+    "request_sha256": "e99b42c41ce4082f33ef620477bd36be4a03edc63bbaa73095c274c2200c6957",
+    "client_elapsed_s": 15.837339599999723,
+    "text": ""
+  }
+]

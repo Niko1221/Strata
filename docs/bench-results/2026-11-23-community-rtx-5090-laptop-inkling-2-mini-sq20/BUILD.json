@@ -1,0 +1,13 @@
+{
+ "source": "local",
+ "version": "0.1.65",
+ "archs": [
+  120
+ ],
+ "vision": "gpu",
+ "cuda_dirs": [
+  "<cuda-13.3>\\bin"
+ ],
+ "src": "74bd933a3b393f60",
+ "vision_src": "29860247cd8712ed"
+}
