@@ -1,6 +1,6 @@
 # Community benchmark: Inkling-2-Mini SQ-20 on an RTX 5090 Laptop GPU (24 GB), Strata 0.2.19
 
-Measured on 2026-11-23 (19:28–21:17 local time) by [wolffahrer](https://github.com/wolffahrer) on the same Windows 11
+Measured on 2026-11-23 (19:28–22:05 local time) by [wolffahrer](https://github.com/wolffahrer) on the same Windows 11
 gaming laptop (Schenker XMG NEO 16, A25) as the earlier Qwen3.8-Flash-Next entries
 [0.1.40.1](../2026-10-06-community-rtx-5090-laptop/README.md) and
 [0.1.40.3](../2026-10-08-community-rtx-5090-laptop-engine-0.1.40.3/README.md). The same evening's Qwen3.8-Flash-Next
@@ -10,7 +10,10 @@ so the two models can be compared on one machine.
 Short version: with the DSpark drafter on, decode was **103.9 tok/s at 3.1K prompt tokens, 80.4 at 24K and 59.9 at
 49K**; prompt throughput fell from 2,830 to 1,018 tok/s over the same range. The whole model sits in VRAM, so host RAM
 stays low (15.3 GiB system-wide peak). Four things behaved differently from what the setup and docs suggest; they are
-listed under [Issues found](#issues-found) and are the main reason for this report.
+listed under [Issues found](#issues-found) and are the main reason for this report. With `--kv fp8` the full
+131,072-token context fits, at about 20 % less decode speed on short prompts.
+
+![Decode and prompt speed over context, Inkling-2-Mini vs Qwen3.8-Flash-Next on the same laptop](context-sweep.svg)
 
 ## Hardware and software
 
@@ -107,6 +110,25 @@ prompt tokens, 96.2 / 3,310 at 8,192 ([logs/engine-bench-and-raw-replies.log](lo
 
 The second slot adds about 10 % total throughput on this card.
 
+**Getting the full context: `--kv fp8`** ([runs/F-kv-fp8-131k](runs/F-kv-fp8-131k/), two runs per length). With FP8 KV
+the engine keeps `--max-context 131072` (no auto-sizing line), DSpark on:
+
+| Prompt tokens | Prompt tok/s | Decode tok/s | Engine TTFT s |
+| ---: | ---: | ---: | ---: |
+| 3,127 | 2,468.4 [2,331.5–2,605.4] | 79.2 [77.2–81.2] | 1.27 |
+| 24,301 | 1,640.7 [1,634.6–1,646.8] | 60.0 [55.6–64.5] | 14.81 |
+| 48,693 | 1,086.6 [1,060.7–1,112.4] | 53.4 [51.3–55.5] | 44.84 |
+| 73,119 | 777.9 [771.2–784.6] | 43.5 [41.6–45.3] | 94.01 |
+| 93,759 | 634.5 [633.3–635.8] | 45.9 [45.8–46.1] | 147.76 |
+
+Decode is 11–23 % lower than with FP16 KV up to 49K; prompt reading is about the same. Needles with FP8 KV: 3 of 3 at
+34,612 tokens; the three "128k" cases were refused with HTTP 400 because this tokenizer turns that haystack into more
+than 131,072 tokens ([needles-kv-fp8.json](needles-kv-fp8.json)), so long recall above 67K remains untested.
+
+**`--chunk 128` instead of 512** ([runs/H-chunk-128](runs/H-chunk-128/)): the context limit moves only from 73,280 to
+75,200 tokens, and prompt reading halves (1,200 tok/s at 3.1K, 939 at 24K). Decode 112.1 / 73.1 tok/s. Not worth it on
+this card; FP8 KV is the setting that buys context.
+
 **Memory:** peak GPU memory 24,104 MiB. Host RAM in use (system-wide) 14.9 GiB before load, 15.3 GiB peak; page file
 unchanged at 0.52 GiB.
 
@@ -117,11 +139,20 @@ unchanged at 0.52 GiB.
   because the hidden thinking span used up the cap ([needles-cap40.json](needles-cap40.json)).
 - **Coding check:** 10/10 tests passed, 801 generated tokens, 6.6 s ([coding-check.json](coding-check.json)).
 - Besides these synthetic runs we ran our own task suite (52 tasks, German prompts: tool calls, JSON extraction,
-  arithmetic and logic, code with hidden tests, exact instruction following, long context; three passes at
-  temperature 0 / 0.7 / 0.7). Inkling-2-Mini passed 129 of 148 runs, Qwen3.8-Flash-Next Q2_0 on the same build passed
-  141 of 148. Two Inkling misses are the 96K-token tasks, which the server refuses above the 73,280-token limit.
-  A second Inkling pass at thinking effort 0.1 (local change, see below) passed 131 of 148 and needed 9.3 instead of
-  11.5 minutes. The tasks are private and not part of this report.
+  arithmetic and logic, code with hidden tests, exact instruction following, long context; three passes, the first
+  greedy with the long-context tasks, then two sampled). The tasks are private and not part of this report.
+
+  | Setting | Passed | Time for all tasks |
+  | --- | ---: | ---: |
+  | Qwen3.8-Flash-Next Q2_0, same build, temperature 0 / 0.7 / 0.7 | 141 of 148 (95.3 %) | 9.7 min |
+  | Inkling-2-Mini, Strata default (effort 0), temperature 0 / 0.7 / 0.7 | 129 of 148 (87.2 %) | 11.5 min |
+  | Inkling-2-Mini, effort 0.1 (local change, see below), same temperatures | 131 of 148 (88.5 %) | 9.3 min |
+  | Inkling-2-Mini, effort 0.1, temperature 1.0, top_p 1, top_k 0, min_p 0, seeds 1–3 | 132 of 148 (89.2 %) | 10.5 min |
+
+  Two misses in every Inkling row are the 96K-token tasks, which the server refuses above the 73,280-token limit.
+  Inkling was ahead on JSON extraction and arithmetic, behind on tool calls and exact instruction following. Note for
+  the last row: the server passes `top_k=0` to the engine as 64 candidates (the sampled path keeps at most 64).
+  Per-group chart: [quality-52-tasks.svg](quality-52-tasks.svg).
 
 ## Issues found
 
@@ -143,7 +174,8 @@ unchanged at 0.52 GiB.
    [logs/engine-log-kv-k8v8-crash.txt](logs/engine-log-kv-k8v8-crash.txt), [runs/kv-k8v8-crash](runs/kv-k8v8-crash/).
    Only tried once, on this laptop.
 5. Smaller: `strata_control/inkling_fit.place()` reports SQ-20 at 131,072 context with vision as fitting fully in
-   24 GB, while the engine then caps the context at 73,280 for lack of free VRAM.
+   24 GB, while the engine then caps the context at 73,280 for lack of free VRAM. With `--kv fp8` it fits; setup
+   could suggest that on 24 GB cards.
 
 For the second quality pass, `inkling_dialect.template_kwargs()` was changed locally to pass `reasoning_effort=0.1`
 when an environment variable is set (the chat template accepts 0.0 to 0.99). This is not part of the build measured
@@ -151,7 +183,7 @@ above and is only mentioned for the quality numbers.
 
 ## Limitations
 
-- Not evaluated: sampled decoding, vision, tool use through the speed scripts, sustained thermal load, the SQ-10 and
+- Not evaluated: sampled decoding speed, vision, tool use through the speed scripts, sustained thermal load, the SQ-10 and
   SQ-15 packs, two GPUs.
 - Laptop GPU clocks vary with temperature; the GPU reached 91 °C during the main run.
 - One run per configuration; the drafter's gain depends on the text, so other prompts will move these numbers.
