@@ -14690,6 +14690,39 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_HIP_CPU_SPLIT",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_hybrid.hpp",
+     "line": 331,
+     "backend": "hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "on",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "6cb548ffb1",
+   "first_date": "2026-11-23",
+   "since": null,
+   "last_commit": "6cb548ffb1",
+   "last_date": "2026-11-23",
+   "status": "rollback",
+   "owner": "inkling2/hip",
+   "note": "strata-inkling HIP hybrid decode (0221 INKSPEED, #6727): every single-token RAM expert job is split over row slices of the CPU pool and summed in a fixed order (same bits for any slicing); =0 gives each expert to one thread (the old way).",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_HIP_DSPARK_PROF",
    "backends": [
     "hip"
@@ -14697,13 +14730,13 @@
    "reads": [
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 1850,
+     "line": 1890,
      "backend": "hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 1850,
+     "line": 1890,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -14841,6 +14874,39 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_HIP_HYB_PROF",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/hip/ink_hip_hybrid.hpp",
+     "line": 40,
+     "backend": "hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "6cb548ffb1",
+   "first_date": "2026-11-23",
+   "since": null,
+   "last_commit": "6cb548ffb1",
+   "last_date": "2026-11-23",
+   "status": "research",
+   "owner": "inkling2/hip",
+   "note": "strata-inkling HIP hybrid decode (0221 INKSPEED): =1 prints where a hybrid decode step goes (GPU wait, CPU wait, copies); diagnostic.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_HIP_MAPPED_COHERENT",
    "backends": [
     "cuda-hip",
@@ -14921,13 +14987,13 @@
    "reads": [
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 3494,
+     "line": 3534,
      "backend": "hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 3494,
+     "line": 3534,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -15184,25 +15250,25 @@
    "reads": [
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 2105,
+     "line": 2145,
      "backend": "hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 2105,
+     "line": 2145,
      "backend": "hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 4962,
+     "line": 5016,
      "backend": "hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 4962,
+     "line": 5016,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -16829,7 +16895,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/ink_serve.h",
-     "line": 1120,
+     "line": 1123,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -23548,7 +23614,7 @@
    "launch_sets": [
     {
      "file": "terminal/setup.py",
-     "line": 11265,
+     "line": 11270,
      "value": "\"1\" if stream else \"0\""
     }
    ],
