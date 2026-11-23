@@ -15,6 +15,7 @@
 
 #include "strata/core/conversation_cache.hpp"
 #include "strata/core/conversation_file.hpp"
+#include "strata/core/conversation_spill_parts.hpp"
 
 #include <algorithm>
 #include <condition_variable>
@@ -24,6 +25,7 @@
 #include <functional>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <thread>
 #include <utility>
 #include <cstdio>
@@ -214,16 +216,17 @@ public:
         }
         root_ = root;
         dir_ = dir;
+        adopt_parts(root, dir);   // V3: the parts entries dead processes left behind become this process's
         return true;
     }
     void close() {
         if (dir_.empty()) return;
         spill_detail::unlock(lock_);
         lock_ = spill_detail::no_lock();
-        if (!persistent_) {
-            std::error_code ec;
-            std::filesystem::remove_all(dir_, ec);
-        }
+        std::error_code ec;
+        // V3: parts entries are what a later process reuses blocks from, so they outlive this one (the next start adopts
+        // them); a stable folder is kept whole as well.
+        if (!persistent_ && !holds_parts(dir_)) std::filesystem::remove_all(dir_, ec);
         persistent_ = false;
         dir_.clear();
     }
@@ -235,9 +238,51 @@ public:
         return dir_ / ("conv-" + std::to_string(serial) + ".session");
     }
 
+    /// V3: whether `dir` holds parts entries (folders named `parts-*`): they carry the disk blocks a later process reuses, so
+    /// a dead folder that has them is kept for the next start instead of cleaned.
+    static bool holds_parts(const std::filesystem::path& dir) {
+        std::error_code ec;
+        for (std::filesystem::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+            if (!it->is_directory()) continue;
+            if (it->path().filename().string().rfind("parts-", 0) == 0) return true;
+        }
+        return false;
+    }
+
+    /// V3: moves the parts entries under the dead folders of `root` into `mine`, so put() finds the same conversation's
+    /// earlier entry (and its blocks) as it would have before a restart.  A folder a live engine still holds is left alone.
+    static void adopt_parts(const std::filesystem::path& root, const std::filesystem::path& mine) {
+        std::error_code ec;
+        for (std::filesystem::directory_iterator it(root, ec), end; !ec && it != end; it.increment(ec)) {
+            const std::filesystem::path p = it->path();
+            std::error_code e2;
+            if (p == mine || it->is_symlink(e2) || !it->is_directory(e2)) continue;
+            if (!spill_detail::is_namespace_name(p.filename().string()) || !holds_parts(p)) continue;
+            const spill_detail::LockHandle h = spill_detail::try_lock(p / ".lock");
+            if (h == spill_detail::no_lock()) continue;   // a live engine still owns it
+            spill_detail::unlock(h);
+            for (std::filesystem::directory_iterator jt(p, e2), jend; !e2 && jt != jend; jt.increment(e2)) {
+                if (!jt->is_directory()) continue;
+                const std::string nm = jt->path().filename().string();
+                if (nm.rfind("parts-", 0) != 0) continue;
+                if (nm.size() > 5 && nm.compare(nm.size() - 5, 5, ".read") == 0) {
+                    // A parts entry a dead process was reading when it died: its index is not the committed one.
+                    std::filesystem::remove_all(jt->path(), e2);
+                    continue;
+                }
+                std::filesystem::path to = mine / nm;
+                for (unsigned n = 1; std::filesystem::exists(to, e2); ++n)
+                    to = mine / (nm + "-" + std::to_string(n));
+                std::filesystem::rename(jt->path(), to, e2);
+            }
+            if (!holds_parts(p)) std::filesystem::remove_all(p, e2);
+        }
+    }
+
     /// Removes the folders under `root` that are named like a namespace, are real folders (not links) and whose lock can be
     /// taken - no process holds them.  Returns how many went.  Everything else under `root` is left alone.
     /// With `persist`, the unheld `fp-<hex>` folders other than `keep` go too (another model's spilled conversations).
+    /// A folder that holds parts entries is kept (V3: adopted by the next open()), and counted as cleaned.
     static size_t clean_dead(const std::filesystem::path& root, bool persist = false, const std::string& keep = {}) {
         size_t n = 0;
         std::error_code ec;
@@ -249,6 +294,7 @@ public:
             const spill_detail::LockHandle h = spill_detail::try_lock(p / ".lock");
             if (h == spill_detail::no_lock()) continue;   // a live engine holds it (or it cannot be checked): kept
             spill_detail::unlock(h);
+            if (holds_parts(p)) { ++n; continue; }        // V3: adopted by the next open()
             std::filesystem::remove_all(p, e2);
             if (!e2) ++n;
         }
@@ -261,14 +307,20 @@ private:
     bool persistent_ = false;
 };
 
-/// The SSD tier's entries: parked conversations written as session files into this process's namespace, oldest first.
-/// What stays in RAM per entry is only what matching needs: the token ids and picture keys of its live state and of each
-/// checkpoint (no running state, no K/V).  put() deletes the oldest entries when the budget needs the room, and never
-/// leaves a partial file behind; take() reads an entry back under the caller's read limits and removes it either way (a
-/// file that does not read back is not tried again).
-/// Thread-safe (P2 step 2c: a background writer puts while the serve loop matches and takes): the entry list and the budget are
-/// under one lock, a file is written and read outside it, and an entry is reached by its serial (an index can shift when the
-/// writer drops the oldest).  An entry is listed only once its file is complete.
+/// The SSD tier's entries: parked conversations written into this process's namespace, oldest first.  What stays in RAM per
+/// entry is only what matching needs: the token ids and picture keys of its live state and of each checkpoint (no running
+/// state, no K/V).  put() deletes the oldest entries when the budget needs the room.  Thread-safe (P2 step 2c: a background
+/// writer puts while the serve loop matches and takes): the entry list and the budget are under one lock, a file is written
+/// and read outside it, and an entry is reached by its serial (an index can shift when the writer drops the oldest).  An
+/// entry is listed only once its file is complete.
+///
+/// Durability (v3): a parts entry's `parts.idx` is its commit point.  The new generation is written into the same folder,
+/// next to the generation the index currently names - appended past that index's extents when the old bytes are a prefix of
+/// the new ones, or into a fresh folder otherwise - and the index is renamed into place only after the part bytes, the ids
+/// sidecar and the folder are flushed.  Until that rename the previous generation is what a reader sees (this process after
+/// a failed write, the next process after adopt); the in-memory entry and the previous folder are dropped only after the
+/// commit.  A parts entry whose bytes or ids cannot be verified is never handed to the engine: it is dropped, or listed for
+/// its bytes only.
 class ConversationSpill {
 public:
     struct Entry {
@@ -279,6 +331,8 @@ public:
         uint64_t used = 0;                               // last use (written, matched-and-read): the least recently used goes first
         ConversationCheckpoint live;                     // ids and images only
         std::vector<ConversationCheckpoint> checkpoints;   // ids and images only
+        bool parts = false;                              // V3: `file` names a parts folder, not a session file
+        uint64_t chain = 0;                              // V3: the conversation this entry belongs to
     };
 
     /// `persist`: the tier lives in the stable folder of persist->model and keeps its entries across restarts: those of the files
@@ -289,20 +343,25 @@ public:
               const SessionFileIdentity* persist = nullptr, size_t* adopted = nullptr) {
         std::lock_guard<std::mutex> lk(mu_);
         entries_.clear();
+        reading_.clear();   // nothing is in flight: a previous tier's reads ended with it
         budget_ = SpillBudget{cap, 0, 0};
         tick_ = 0;
         next_serial_ = 1;
         if (adopted) *adopted = 0;
         const bool ok = ns_.open(root, error, cleaned, persist ? &persist->model : nullptr);
-        if (ok && ns_.persistent()) {
+        if (!ok) return false;
+        if (ns_.persistent()) {
             const size_t n = adopt_locked(*persist);
             if (adopted) *adopted = n;
+        } else {
+            adopt_parts_locked();   // V3: the parts entries a previous process left are this tier's disk reuse
         }
-        return ok;
+        return true;
     }
     bool persistent() const { std::lock_guard<std::mutex> lk(mu_); return ns_.persistent(); }
     bool enabled() const { std::lock_guard<std::mutex> lk(mu_); return enabled_locked(); }
     size_t size() const { std::lock_guard<std::mutex> lk(mu_); return entries_.size(); }
+    /// The disk bytes this tier holds: the one ledger that adopted entries are charged to as well.
     uint64_t bytes() const { std::lock_guard<std::mutex> lk(mu_); return budget_.used; }
     SpillBudget budget() const { std::lock_guard<std::mutex> lk(mu_); return budget_; }
     Entry entry(size_t i) const { std::lock_guard<std::mutex> lk(mu_); return entries_.at(i); }
@@ -313,14 +372,19 @@ public:
         return i == SIZE_MAX ? std::nullopt : std::optional<Entry>(entries_[i]);
     }
     std::filesystem::path dir() const { std::lock_guard<std::mutex> lk(mu_); return ns_.dir(); }
+    /// V3 (experimental, STRATA_SPILL_PARTS=1): entries are parts folders (conversation_spill_parts.hpp), so a
+    /// conversation written again extends the blocks it already has instead of being written whole.
+    void set_parts_mode(bool on) { std::lock_guard<std::mutex> lk(mu_); parts_ = on; }
+    bool parts_mode() const { std::lock_guard<std::mutex> lk(mu_); return parts_; }
 
     /// Writes `image` as an entry (its serial in `*serial_out`).  False (with `error`) when the tier is off, the image is larger
-    /// than the whole tier, or the write failed; nothing of this call is then left on the disk.  The file is written outside the
-    /// lock, under a budget reserved for it.
+    /// than the whole tier, or the write failed; nothing of this call is then listed, and the previous generation (if this was
+    /// an append) is still what the folder's index names.  The write happens outside the lock, under a budget reserved for it.
     bool put(const SavedConversation& image, const SessionFileIdentity& id, std::string& error, uint64_t* serial_out = nullptr) {
         const uint64_t need = (uint64_t) image.bytes() + (uint64_t(1) << 20);   // the payload and the file's own tables
-        uint64_t serial = 0;
-        std::filesystem::path f;
+        uint64_t serial = 0, chain = 0, prev_serial = 0;
+        bool parts = false;
+        std::filesystem::path prev_dir, f;
         {
             std::lock_guard<std::mutex> lk(mu_);
             if (!enabled_locked()) { error = "the SSD tier is off"; return false; }
@@ -329,41 +393,125 @@ public:
                 if (entries_.empty()) { error = "no room in the SSD tier"; return false; }
                 size_t victim = SIZE_MAX;   // an entry this one extends goes first (it would go anyway), then the least recently used
                 for (size_t i = 0; i < entries_.size() && victim == SIZE_MAX; ++i)
-                    if (superseded_by(entries_[i], image)) victim = i;
-                drop_locked(victim != SIZE_MAX ? victim : lru_locked());
+                    if (reading_.count(entries_[i].serial) == 0 && superseded_by(entries_[i], image)) victim = i;
+                if (victim == SIZE_MAX)   // the least recently used entry no read or write holds
+                    for (size_t i = 0; i < entries_.size(); ++i)
+                        if (reading_.count(entries_[i].serial) == 0 &&
+                            (victim == SIZE_MAX || entries_[i].used < entries_[victim].used))
+                            victim = i;
+                if (victim == SIZE_MAX) { error = "no room in the SSD tier"; return false; }   // every entry is in flight
+                drop_locked(victim);
             }
             serial = next_serial_++;
-            f = ns_.file_for(serial);
+            parts = parts_;
+            if (parts) {
+                chain = chain_of(image);
+                for (size_t i = entries_.size(); i-- > 0;) {
+                    if (!entries_[i].parts) continue;
+                    if (reading_.count(entries_[i].serial) != 0) continue;   // being read, or extended, right now
+                    // The same chain, or the parked conversation is a strict prefix of this one: chain_of hashes only the
+                    // first 4096 ids, so a shorter conversation's chain changes on every turn while its ids still extend.
+                    bool same = entries_[i].chain == chain;
+                    if (!same && !entries_[i].live.ids.empty() && entries_[i].live.ids.size() < image.live.ids.size())
+                        same = std::equal(entries_[i].live.ids.begin(), entries_[i].live.ids.end(), image.live.ids.begin());
+                    if (!same) continue;
+                    prev_dir = entries_[i].file;
+                    prev_serial = entries_[i].serial;
+                    break;
+                }
+                if (prev_dir.empty()) {   // not listed any more (adopted folder, lost index): ask the directories
+                    std::error_code ec;
+                    for (std::filesystem::directory_iterator it(ns_.dir(), ec), end; !ec && it != end; it.increment(ec)) {
+                        if (!it->is_directory()) continue;
+                        const auto nm = it->path().filename().string();
+                        if (nm.rfind("parts-", 0) != 0) continue;
+                        if (nm.size() > 5 && nm.compare(nm.size() - 5, 5, ".read") == 0) continue;   // a read in flight
+                        if (reading_.count(spill_parts::serial_of(it->path())) != 0) continue;
+                        spill_parts::Meta m;
+                        if (!spill_parts::read_meta(it->path() / "parts.idx", m, error)) { error.clear(); continue; }
+                        if (m.chain != chain || m.model != id.model || m.config != id.config) continue;
+                        prev_dir = it->path();
+                        prev_serial = spill_parts::serial_of(prev_dir);
+                    }
+                }
+                // Pin the previous entry for the whole write: no take_serial may rename (and read) the folder this write is
+                // about to append to, and no drop may remove it.
+                if (prev_serial != 0) reading_.insert(prev_serial);
+                if (std::getenv("STRATA_SPILL_DEBUG") != nullptr)
+                    std::fprintf(stderr, "spill parts: put %llu chain %016llx entries %zu prev %s\n",
+                                 (unsigned long long) serial, (unsigned long long) chain, entries_.size(),
+                                 prev_dir.empty() ? "-" : prev_dir.filename().string().c_str());
+            } else {
+                f = ns_.file_for(serial);
+            }
         }
         size_t written = 0;
-        const bool ok = session_file_write(f.string(), image, id, written, error);
+        uint64_t entry_bytes = 0;
+        spill_parts::Placement place;
+        const bool ok = parts
+                            ? spill_parts::write_entry(ns_.dir(), serial, prev_dir, prev_serial, image, id, chain, place,
+                                                       entry_bytes, error)
+                            : session_file_write(f.string(), image, id, written, error);
         if (!ok) {
             std::error_code ec;
-            std::filesystem::remove(f, ec);
+            // An append leaves the previous generation's folder alone here (only bytes past its extents can remain); a fresh
+            // folder and a session file are ours to remove.
+            if (parts) {
+                if (!place.appended && !place.dir.empty()) std::filesystem::remove_all(place.dir, ec);
+            } else {
+                std::filesystem::remove(f, ec);
+            }
         }
         Entry e;
         if (ok) {
-            e.serial = serial; e.file = f; e.bytes = written; e.cvec = image.cvec;
+            e.serial = parts ? place.serial : serial;
+            e.file = parts ? place.dir : f;
+            e.bytes = parts ? entry_bytes : (uint64_t) written;
+            e.cvec = image.cvec;
+            e.parts = parts;
+            e.chain = chain;
             e.live = stub(image.live);
             for (const auto& c : image.checkpoints) e.checkpoints.push_back(stub(c));
         }
         std::lock_guard<std::mutex> lk(mu_);
-        budget_.finish(need, ok ? written : 0);
-        if (ok && ns_.persistent() && !meta_write(f, e, id)) {
+        budget_.finish(need, ok ? e.bytes : 0);
+        if (parts && prev_serial != 0) {   // the write ended: this entry may be read or dropped again
+            reading_.erase(prev_serial);
+            idle_cv_.notify_all();
+        }
+        if (!ok) return false;
+        if (!parts && ns_.persistent() && !meta_write(f, e, id)) {   // the index beside a persistent entry
             std::error_code ec;
             std::filesystem::remove(f, ec);
-            budget_.drop(written);
+            budget_.drop(e.bytes);
             error = "the entry's index file could not be written";
             return false;
         }
-        if (!ok) return false;
         e.used = ++tick_;
-        // the same conversation grown: an entry whose tokens are a prefix of this one's is served by this one in full
-        for (size_t i = entries_.size(); i-- > 0;)
-            if (superseded_by(entries_[i], image)) drop_locked(i);
-        entries_.push_back(std::move(e));
-        while (budget_.over() && entries_.size() > 1) drop_locked(lru_locked());   // (a file larger than its estimate)
-        if (serial_out) *serial_out = serial;
+        if (parts && place.appended) {
+            const size_t pi = index_locked(place.serial);
+            if (pi != SIZE_MAX) {   // the same folder now holds the newer generation
+                budget_.drop(entries_[pi].bytes);
+                entries_[pi] = std::move(e);
+            } else {
+                entries_.push_back(std::move(e));
+            }
+        } else {
+            // the same conversation grown: an entry whose tokens are a prefix of this one's is served by this one in full
+            for (size_t i = entries_.size(); i-- > 0;)
+                if (reading_.count(entries_[i].serial) == 0 && superseded_by(entries_[i], image)) drop_locked(i);
+            entries_.push_back(std::move(e));
+            if (parts && prev_serial != 0) {   // the new generation replaced it
+                const size_t pi = index_locked(prev_serial);
+                if (pi != SIZE_MAX) drop_locked(pi);
+            }
+        }
+        while (budget_.over() && entries_.size() > 1) {   // (a file larger than its estimate)
+            const size_t victim = drop_candidate_locked();
+            if (victim == SIZE_MAX) break;   // every entry is in flight
+            drop_locked(victim);
+        }
+        if (serial_out) *serial_out = parts ? place.serial : serial;
         return true;
     }
 
@@ -376,27 +524,47 @@ public:
         for (size_t i = entries_.size(); i-- > 0;) {
             const Entry& e = entries_[i];
             if (e.cvec != cvec) continue;
+            if (reading_.count(e.serial) != 0) continue;   // its folder is being read or extended: not now
             auto consider = [&](const ConversationCheckpoint& c, bool live) {
                 const int64_t n = conversation_prefix(c, prompt, images);
                 if (n > m.tokens) m = {i, n, live, e.serial};
             };
             consider(e.live, true);
             for (const auto& c : e.checkpoints) consider(c, false);
+            if (std::getenv("STRATA_SPILL_DEBUG") != nullptr)
+                std::fprintf(stderr, "spill best dbg: serial %llu parts %d live %zu checks %zu prefix %lld prompt %zu cvec %d\n",
+                             (unsigned long long) e.serial, (int) e.parts, e.live.ids.size(), e.checkpoints.size(),
+                             (long long) conversation_prefix(e.live, prompt, images), prompt.size(), (int) e.cvec);
         }
         return m;
     }
 
-    /// Reads entry `serial` back into `out` (bounded by `limits`, the identity checked) and removes the entry.  False: `out` is
-    /// unchanged and the entry is gone (or was not there).  The file is read outside the lock: the entry leaves the list first.
+    /// Reads entry `serial` back into `out` (bounded by `limits`, the identity checked).  False: `out` is unchanged and the
+    /// entry is not tried again.  A session file is consumed by the read (the upstream rule: the file does not read back is
+    /// not kept).  A parts entry's folder is the disk generation a later park extends, so a successful read keeps it listed;
+    /// the file is read outside the lock, out of every scan's way (`<dir>.read`) and pinned for that time.
     bool take_serial(uint64_t serial, const SessionFileIdentity& id, const SessionReadLimits& limits, SavedConversation& out,
                      std::string& error) {
-        std::filesystem::path f;
+        std::filesystem::path f, back;
+        bool parts = false, moved = false;
         {
-            std::lock_guard<std::mutex> lk(mu_);
+            std::unique_lock<std::mutex> lk(mu_);
+            if (index_locked(serial) == SIZE_MAX) { error = "no such SSD entry"; return false; }
+            // A put() that extends this entry pins it: wait for that write to end, so this read sees one whole generation.
+            idle_cv_.wait(lk, [&] { return reading_.count(serial) == 0; });
             const size_t i = index_locked(serial);
             if (i == SIZE_MAX) { error = "no such SSD entry"; return false; }
             f = entries_[i].file;
-            if (ns_.persistent()) {   // kept: a restart finds it again; the next spill that extends it replaces it
+            parts = entries_[i].parts;
+            if (parts) {
+                back = f;
+                std::filesystem::path t = f;
+                t += ".read";
+                std::error_code ec;
+                std::filesystem::rename(f, t, ec);
+                if (!ec) { f = t; moved = true; entries_[i].file = t; }
+                reading_.insert(serial);
+            } else if (ns_.persistent()) {   // kept: a restart finds it again; the next spill that extends it replaces it
                 entries_[i].used = ++tick_;
                 std::error_code ec;
                 std::filesystem::last_write_time(meta_path(f), std::filesystem::file_time_type::clock::now(), ec);
@@ -408,12 +576,36 @@ public:
         const bool keep = persistent_now();
         SavedConversation image;
         size_t read = 0;
-        const bool ok = session_file_read(f.string(), id, image, read, error, limits);
-        if (!keep) {
-            std::error_code ec;
-            std::filesystem::remove(f, ec);
-        } else if (!ok) {
-            drop_serial(serial);   // (a file that does not read back is not tried again)
+        uint64_t read_parts = 0;
+        const bool ok = parts ? spill_parts::read_entry(f, id, limits, image, read_parts, error)
+                              : session_file_read(f.string(), id, image, read, error, limits);
+        if (!parts) {
+            if (!keep) {
+                std::error_code ec;
+                std::filesystem::remove(f, ec);
+            } else if (!ok) {
+                drop_serial(serial);   // (a file that does not read back is not tried again)
+            }
+        } else {
+            {
+                std::lock_guard<std::mutex> lk(mu_);
+                reading_.erase(serial);
+                idle_cv_.notify_all();
+                const size_t i = index_locked(serial);
+                if (i == SIZE_MAX) {   // the tier was closed under us: take our copy of the folder out
+                    std::error_code ec;
+                    std::filesystem::remove_all(f, ec);
+                } else if (ok) {
+                    if (moved) {
+                        std::error_code ec;
+                        std::filesystem::rename(f, back, ec);
+                        if (!ec) entries_[i].file = back;
+                    }
+                } else {
+                    drop_locked(i);   // a generation that does not read back is not tried again
+                }
+            }
+            (void) read_parts;
         }
         if (ok) out = std::move(image);
         return ok;
@@ -429,29 +621,128 @@ public:
     }
 
     void drop(size_t i) { std::lock_guard<std::mutex> lk(mu_); drop_locked(i); }
-    /// Drops entry `serial` and its file; false when it was not listed.
+    /// Drops entry `serial` and its file; false when it was not listed (or is in flight).
     bool drop_serial(uint64_t serial) {
         std::lock_guard<std::mutex> lk(mu_);
         const size_t i = index_locked(serial);
         if (i == SIZE_MAX) return false;
-        drop_locked(i);
-        return true;
+        return drop_locked(i);
     }
-    /// Drops every entry and keeps the tier open (#879: after non-finite logits no parked conversation is kept).  Returns how many.
+    /// Drops every entry it can and keeps the tier open (#879: after non-finite logits no parked conversation is kept).  An
+    /// entry in flight is left for its own read or write to end.  Returns how many went.
     size_t clear() {
         std::lock_guard<std::mutex> lk(mu_);
-        const size_t n = entries_.size();
-        while (!entries_.empty()) drop_locked(entries_.size() - 1);
+        size_t n = 0;
+        for (size_t i = entries_.size(); i-- > 0;)
+            if (drop_locked(i)) ++n;
         return n;
     }
     void close() {
         std::lock_guard<std::mutex> lk(mu_);
-        if (!ns_.persistent()) while (!entries_.empty()) drop_locked(entries_.size() - 1);   // (a stable folder keeps its entries)
+        for (size_t i = entries_.size(); i-- > 0;) {
+            if (entries_[i].parts) {
+                // V3: a parts folder stays on the disk for the next process to adopt and reuse (SpillNamespace::close
+                // keeps the namespace folder); only this process's accounting leaves here.
+                budget_.drop(entries_[i].bytes);
+                entries_.erase(entries_.begin() + (std::ptrdiff_t) i);
+            } else if (!ns_.persistent()) {
+                drop_locked(i);   // (a stable folder keeps its entries)
+            }
+        }
         entries_.clear();
+        reading_.clear();
         ns_.close();
     }
 
 private:
+    /// V3: lists the parts entries a previous process left in this folder (SpillNamespace::open() adopted their folders).
+    /// Each one is verified once here - every block hash and the tail hash, then the ids sidecar against the ids identity the
+    /// index recorded - and a folder that cannot be verified is removed: it is not a generation this tier may hand out.  An
+    /// entry whose ids do not match is kept for its bytes only: put() can still extend it, best() never matches it.
+    void adopt_parts_locked() {
+        struct Candidate {
+            std::filesystem::path dir;
+            uint64_t serial = 0;
+            spill_parts::Meta meta;
+            uint64_t bytes = 0;
+        };
+        std::vector<Candidate> found;
+        std::error_code ec;
+        for (std::filesystem::directory_iterator it(ns_.dir(), ec), end; !ec && it != end; it.increment(ec)) {
+            if (!it->is_directory()) continue;
+            const std::string nm = it->path().filename().string();
+            if (nm.rfind("parts-", 0) != 0) continue;
+            std::error_code e2;
+            if (nm.size() > 5 && nm.compare(nm.size() - 5, 5, ".read") == 0) {
+                // A read a process died in: nothing holds the folder open now, and its index is not committed.
+                std::filesystem::remove_all(it->path(), e2);
+                continue;
+            }
+            spill_parts::Meta m;
+            std::string err;
+            if (!spill_parts::read_meta(it->path() / "parts.idx", m, err)) {
+                std::filesystem::remove_all(it->path(), e2);   // no index to read: nothing here to reuse
+                continue;
+            }
+            std::string verr;
+            if (!spill_parts::verify_entry(it->path(), m, verr)) {
+                std::fprintf(stderr, "spill parts: entry %llu dropped: %s\n",
+                             (unsigned long long) spill_parts::serial_of(it->path()), verr.c_str());
+                std::filesystem::remove_all(it->path(), e2);
+                continue;
+            }
+            const uint64_t bytes = spill_parts::folder_bytes(it->path());
+            if (bytes == 0 || bytes > budget_.cap) {
+                std::filesystem::remove_all(it->path(), e2);
+                continue;
+            }
+            spill_parts::cleanup_folder(it->path(), m.state_gen);   // state generations and scratch a crash left behind
+            found.push_back(Candidate{it->path(), spill_parts::serial_of(it->path()), std::move(m), bytes});
+        }
+        // Oldest first, by serial: a folder name would sort `parts-10` before `parts-9`.
+        std::sort(found.begin(), found.end(), [](const Candidate& a, const Candidate& b) { return a.serial < b.serial; });
+        const bool debug = std::getenv("STRATA_SPILL_DEBUG") != nullptr;
+        std::set<uint64_t> seen;
+        for (Candidate& c : found) {
+            // A folder renamed for a collision (parts-1-1) has no serial of its own: it gets a fresh one, never a duplicate.
+            if (c.serial == 0 || seen.count(c.serial) != 0) c.serial = next_serial_++;
+            else if (next_serial_ <= c.serial) next_serial_ = c.serial + 1;
+            seen.insert(c.serial);
+            Entry e;
+            e.serial = c.serial;
+            e.file = c.dir;
+            e.bytes = c.bytes;
+            e.parts = true;
+            e.chain = c.meta.chain;
+            e.cvec = c.meta.cvec != 0;   // best() skips entries whose cvec differs, so adoption must carry it
+            // The ids are the entry's identity: they must be the ids the index was written for, by length and by hash, or
+            // this parked image is not this entry's conversation (a stale sidecar left by an interrupted append).
+            ConversationCheckpoint live;
+            std::vector<ConversationCheckpoint> checks;
+            std::string ierr;
+            bool ids_ok = false;
+            if (spill_parts::read_ids(c.dir, live, checks, ierr)) {
+                uint64_t len = 0, hash = 0;
+                spill_parts::ids_identity(live, len, hash);
+                ids_ok = len == c.meta.ids_len && hash == c.meta.ids_hash;
+            }
+            if (ids_ok) {
+                e.live = stub(live);
+                for (const auto& ck : checks) e.checkpoints.push_back(stub(ck));
+            } else if (debug) {
+                std::fprintf(stderr, "spill parts: adopted %s without ids (%s): bytes only\n",
+                             c.dir.filename().string().c_str(), ierr.empty() ? "the ids do not match the index" : ierr.c_str());
+            }
+            if (debug)
+                std::fprintf(stderr, "spill parts: adopted %s chain %016llx as serial %llu, %zu live ids, %llu MiB\n",
+                             c.dir.filename().string().c_str(), (unsigned long long) c.meta.chain,
+                             (unsigned long long) e.serial, e.live.ids.size(), (unsigned long long) (c.bytes >> 20));
+            entries_.push_back(std::move(e));
+            budget_.used += c.bytes;   // the one ledger: an adopted folder is disk this tier holds
+        }
+        // The disk cap still bounds what a restart inherits: the oldest entries go first, their folders with them.
+        while (budget_.used > budget_.cap && !entries_.empty()) drop_locked(0);
+    }
     bool enabled_locked() const { return ns_.is_open() && budget_.cap > 0; }
     size_t index_locked(uint64_t serial) const {
         for (size_t i = 0; i < entries_.size(); ++i)
@@ -593,12 +884,25 @@ private:
         while (budget_.over() && entries_.size() > 1) drop_locked(lru_locked());   // (the cap is now smaller than what was kept)
         return entries_.size();
     }
-    void drop_locked(size_t i) {
+    bool drop_locked(size_t i) {
+        if (i >= entries_.size()) return false;
+        if (reading_.count(entries_[i].serial) != 0) return false;   // in flight: its own path drops it
         std::error_code ec;
-        std::filesystem::remove(meta_path(entries_.at(i).file), ec);
-        std::filesystem::remove(entries_.at(i).file, ec);
+        if (entries_[i].parts) {
+            std::filesystem::remove_all(entries_[i].file, ec);
+        } else {
+            std::filesystem::remove(meta_path(entries_[i].file), ec);
+            std::filesystem::remove(entries_[i].file, ec);
+        }
         budget_.drop(entries_[i].bytes);
         entries_.erase(entries_.begin() + (std::ptrdiff_t) i);
+        return true;
+    }
+    /// The entry to drop when the budget needs room: the first one not in flight (SIZE_MAX when every entry is).
+    size_t drop_candidate_locked() const {
+        for (size_t i = 0; i < entries_.size(); ++i)
+            if (reading_.count(entries_[i].serial) == 0) return i;
+        return SIZE_MAX;
     }
     static ConversationCheckpoint stub(const ConversationCheckpoint& c) {
         ConversationCheckpoint s;
@@ -606,11 +910,30 @@ private:
         s.imgs = c.imgs;
         return s;
     }
+    /// V3: the prefix of a conversation that does not change as it grows - what identifies its parts entry
+    static uint64_t chain_of(const SavedConversation& s) {
+        const std::vector<int32_t>& ids = s.live.ids;
+        const size_t n = ids.size() < 4096 ? ids.size() : 4096;
+        uint64_t h = 0xcbf29ce484222325ull;
+        for (size_t i = 0; i < n; ++i) {
+            const uint32_t v = (uint32_t) ids[i];
+            for (int b = 0; b < 4; ++b) { h ^= (v >> (8 * b)) & 0xffu; h *= 0x100000001b3ull; }
+        }
+        h ^= (uint64_t) s.layer_lo * 0x9e3779b97f4a7c15ull; h *= 0x100000001b3ull;
+        h ^= (uint64_t) s.layer_hi; h *= 0x100000001b3ull;
+        h ^= (uint64_t) (s.cvec ? 1 : 0);
+        return h;
+    }
     mutable std::mutex mu_;
+    bool parts_ = false;
     SpillNamespace ns_;
     SpillBudget budget_;
     std::vector<Entry> entries_;
     uint64_t next_serial_ = 1, tick_ = 0;
+    /// Serials whose folder a put() is extending or a take_serial() is reading: not dropped, not matched by put().
+    std::set<uint64_t> reading_;
+    /// A take_serial() waiting for a put() that extends the same entry (and a put() waiting for a read to end).
+    std::condition_variable idle_cv_;
 };
 
 /// The best prefix a parked image gives `prompt`, by the RAM cache's rule (its live state or a checkpoint, same pictures, same
