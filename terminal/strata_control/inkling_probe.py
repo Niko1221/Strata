@@ -7,7 +7,7 @@ drafting, and a code prompt and a chat prompt are decoded for 128 tokens each. D
 two gains) reaches MARGIN. The numbers go into the run config ("drafting_probe") and into the status note, so the choice can be explained.
 
 Stdlib only; `python inkling_probe.py --exe ENGINE --out RESULT.json [--margin 1.10] -- ENGINE ARGS (--native MODEL --max-context N ...)` runs one
-probe by hand. The decision is used only where drafting may be on by default at all (inkling_family.EXACT_DRAFTING_BACKENDS)."""
+probe by hand. The decision is used on every backend (owner decision 2026-11-23: a slightly different answer is fine, a loss in speed is not)."""
 from __future__ import annotations
 
 import hashlib
