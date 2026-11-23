@@ -94,7 +94,7 @@ def build_specs(data, releases, boxes=None, models=None, tier=None, drafters=Non
                 feed = "%s/feeds/%s" % (box["grid_dir"].rstrip("/"), label)     # no DNS on the box: grid.py stage copied the release files there
             spec = {
                 "cell": c["id"], "label": label, "box": c["box"], "model": c["model"], "drafter": c["drafter"], "family": c["family"],
-                "feed": feed, "trust": trust, "grid_dir": box["grid_dir"], "port": data["defaults"]["port"],
+                "feed": feed, "trust": (None if feed.startswith(GH_DOWNLOAD % "") or "/feeds/v" in feed else trust), "grid_dir": box["grid_dir"], "port": data["defaults"]["port"],
                 "env": box.get("env") or {}, "vram_class_gib": box.get("vram_class_gib"), "ram_cap_gib": box.get("ram_cap_gib"), "launch_extra": list(box.get("launch_extra") or []) + list(entry.get("launch_extra") or []),
                 "profile": merged_profile(data, box, c["model"], entry),
             }
