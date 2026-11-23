@@ -1013,5 +1013,62 @@ class GoneVersionPathsInTheTestStart(UpdaterCase):
         self.assertEqual(json.loads(self.config.read_text())["cwd"], str(gone), "the person's run config is not written by a test start")
 
 
+class RunConfigEnvInTheTestStart(UpdaterCase):
+    """#6868: the app note and the issue thread tell people to put STRATA_HC_Q8_TC=0 and STRATA_HC_Q8_BF16TC=0 in the model's run config "env" so the
+    update's test start has them too. The test start writes the config's env into the sandbox config the server reads, and the server hands exactly that
+    env to the engine (serve.server.child_env), so those lines reach the engine under test, together with the test's own STRATA_PLE_AUTO_RAM=0."""
+
+    def test_the_run_config_env_is_in_the_sandbox_config_and_in_the_engine_environment(self):
+        from strata_control import profiles, runtime
+        from serve.server import child_env
+        self.install_current()
+        cfg = json.loads(self.config.read_text())
+        cfg["env"] = {"STRATA_HC_Q8_TC": "0", "STRATA_HC_Q8_BF16TC": "0", "STRATA_HC_Q8": "0"}
+        self.config.write_text(json.dumps(cfg), encoding="utf-8")
+        folder = fx.build_package(self.root / "lazy", "0.1.46", key=self.key)
+        stage = self.root / "stage"
+        (stage / "engine").mkdir(parents=True)
+        shutil.copytree(folder, stage / "engine" / folder.name)
+        component = ec.read_manifest(stage / "engine" / folder.name)
+        seen = []
+
+        def start(name, **kw):
+            profile, _ = profiles.load(name)
+            seen.append(json.loads(Path(profile["source_config"]).read_text(encoding="utf-8")))
+            return {"ok": True, "state": "ready", "generation_ready": True}
+
+        with mock.patch.dict(os.environ, {"STRATA_HC_Q8_TC": "1", "STRATA_HC_Q8_BF16TC": "1"}), \
+                mock.patch.object(runtime, "start", side_effect=start), mock.patch.object(runtime, "stop", return_value={}):
+            updater.default_test_start(stage, component, self.ctx())
+            self.assertEqual(len(seen), 1)
+            self.assertEqual(seen[0]["env"], {"STRATA_HC_Q8_TC": "0", "STRATA_HC_Q8_BF16TC": "0", "STRATA_HC_Q8": "0", **updater.TEST_ENV})
+            engine_env = child_env(seen[0])            # what serve.server gives the engine it starts from that config
+            self.assertEqual((engine_env["STRATA_HC_Q8_TC"], engine_env["STRATA_HC_Q8_BF16TC"], engine_env["STRATA_HC_Q8"]), ("0", "0", "0"),
+                             "the config's env wins over the shell's, for the test start as for a normal start")
+            self.assertEqual(engine_env["STRATA_PLE_AUTO_RAM"], "0")
+        self.assertNotIn("STRATA_PLE_AUTO_RAM", json.loads(self.config.read_text()).get("env", {}), "the person's run config is not written by a test start")
+
+    def test_a_real_test_start_gives_the_stub_engine_the_run_config_env(self):
+        """The whole path, nothing mocked: the real runtime starts the real server from the sandbox config, which starts the stub engine; the stub
+        writes the environment it got. (The shell has the opposite values, and the config's must win.)"""
+        self.install_current()
+        cfg = json.loads(self.config.read_text())
+        cfg["env"] = {"STRATA_HC_Q8_TC": "0", "STRATA_HC_Q8_BF16TC": "0"}
+        self.config.write_text(json.dumps(cfg), encoding="utf-8")
+        engine = fx.GOOD_ENGINE.replace(
+            "if '--version' in sys.argv:",
+            "Path(os.environ['FAKE_ENGINE_MARK'] + '.env').write_text(' '.join(f\"{k}={os.environ.get(k)}\" for k in "
+            "('STRATA_HC_Q8_TC', 'STRATA_HC_Q8_BF16TC', 'STRATA_PLE_AUTO_RAM')))\nif '--version' in sys.argv:", 1)
+        folder = fx.build_package(self.root / "lazy", "0.1.46", engine_source=engine, key=self.key)
+        stage = self.root / "stage"
+        (stage / "engine").mkdir(parents=True)
+        shutil.copytree(folder, stage / "engine" / folder.name)
+        component = ec.read_manifest(stage / "engine" / folder.name)
+        with mock.patch.dict(os.environ, {"STRATA_HC_Q8_TC": "1", "STRATA_HC_Q8_BF16TC": "1"}):
+            result = updater.default_test_start(stage, component, self.ctx())
+        self.assertEqual(result["generation_ready"], True)
+        self.assertEqual((self.root / "ran.txt.env").read_text(), "STRATA_HC_Q8_TC=0 STRATA_HC_Q8_BF16TC=0 STRATA_PLE_AUTO_RAM=0")
+
+
 if __name__ == "__main__":
     unittest.main()

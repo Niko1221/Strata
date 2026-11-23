@@ -336,6 +336,12 @@ def apply_choices(cfg: dict, s: S.LaunchSettings) -> dict:
                 put("--draft", "off")
         cfg["args"] = args
         return cfg
+    q36 = str(cfg.get("arch") or "").lower() == "qwen35moe"     # its own --kv widths (fp32 default, fp16/fp8/fp4), not Flash-Next's int8/q4_0/k8v4
+    if q36:
+        if s.kv in ("fp32", "fp16", "fp8", "fp4"):
+            put("--kv", s.kv)
+        cfg["args"] = args
+        return cfg
     kv = s.kv or ("int8" if (s.context or 32768) > 8192 else "fp16")
     if "--kv" in args or s.kv:
         put("--kv", kv)
@@ -397,6 +403,7 @@ def apply_cards(cfg: dict, gpus: "list[int] | dict | None") -> None:
     native_ep = (cfg.get("arch") in ("hy4flash", "inkling2_loop")
                  or cfg.get("exe") in ("component:strata-hy4", "component:strata-inkling")
                  or exe_low.startswith(("strata-hy4", "strata-inkling")))
+    q36 = cfg.get("arch") == "qwen35moe"               # its own engine path (OWN_PATH_FAMILIES): --peer-device, not --layer-split
     if isinstance(gpus, dict):
         for k in ("gpu", "gpu_order", "gpu_none", "gpu_roles", "gpu_cards"):
             cfg.pop(k, None)
@@ -404,10 +411,12 @@ def apply_cards(cfg: dict, gpus: "list[int] | dict | None") -> None:
         cfg["gpus_asked"] = True
         cfg.pop("hip_ordinal", None)
         on = gpus.get("gpu")
-        if isinstance(on, list) and len(on) > 1 and not native_ep:
+        if isinstance(on, list) and len(on) > 1 and not native_ep and not q36:
             cfg["layer_split"] = cfg.get("layer_split") or "auto"
         else:
             cfg.pop("layer_split", None)
+        if q36:
+            apply_q36_peer(cfg, on if isinstance(on, list) else None)
         return
     if not gpus:
         return
@@ -417,10 +426,29 @@ def apply_cards(cfg: dict, gpus: "list[int] | dict | None") -> None:
     cfg["gpu"] = gpus[0] if len(gpus) == 1 else gpus
     cfg["gpus_asked"] = True
     cfg.pop("hip_ordinal", None)                             # an old AMD config's ordinal of ITS card would win over the card named now
-    if len(gpus) > 1 and not native_ep:
+    if len(gpus) > 1 and not native_ep and not q36:
         cfg["layer_split"] = cfg.get("layer_split") or "auto"
     else:
         cfg.pop("layer_split", None)
+    if q36:
+        apply_q36_peer(cfg, gpus if len(gpus) > 1 else None)
+
+
+def apply_q36_peer(cfg: dict, gpus: "list[int] | None") -> None:
+    """Qwen3.6-35B-A3B (arch qwen35moe) has no layer split: two cards mean the second-card expert tier instead
+    (--peer-device). One card, or none chosen: --peer-device is dropped, same as the engine not seeing a second
+    card to begin with."""
+    args = [str(a) for a in cfg.get("args") or []]
+
+    def strip(flag: str) -> list[str]:
+        while flag in args:
+            i = args.index(flag)
+            del args[i:i + 2]
+        return args
+    strip("--peer-device")
+    if gpus and len(gpus) == 2:
+        args += ["--peer-device", "1"]                 # cfg["gpu"] = [main, peer]: the engine's second --gpu slot is ordinal 1
+    cfg["args"] = args
 
 
 def installed_cards(base: dict | None, usable: list[dict] | None = None) -> list[int] | None:

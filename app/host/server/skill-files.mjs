@@ -6,7 +6,7 @@
  * list (bundled, written, added, edited, switched on or off) into one folder the Harness is told to scan (`materializeSkills`), every time
  * anything changes. The Harness watches that folder, so a skill saved in the app is there for the next message without a restart.
  */
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 /** The note a skill's agent folder keeps of the files it copied from the skill's own folder, so a file taken out there is taken out here too (#6245). */
@@ -98,7 +98,9 @@ export function writeCreatedSkill(root, { name, description, body }) {
 
 /**
  * Make `root` hold exactly the skills the agent may use: one folder each, a SKILL.md with frontmatter. A skill switched off is written
- * with `disable-model-invocation` (the agent does not offer it); folders of skills that are gone are removed. Only this folder is touched.
+ * with `disable-model-invocation` (the agent does not offer it). Folders of skills that are gone are moved to `skills-removed` next to `root`, but only
+ * folders Strata wrote (named in `.strata-skills.json`, or holding `.strata-copied.json`): a folder the person put in `root` is never removed, and a
+ * skill whose name it shares is written under another name (#6857). Only this folder is touched.
  * A skill that comes from a folder of its own (`folders`: skill id -> that folder) brings the rest of the folder along (`copySkillExtras`).
  * @param {string} root
  * @param {Array<{id: string, name: string, description?: string, body?: string, enabled?: boolean}>} skills
@@ -107,12 +109,14 @@ export function writeCreatedSkill(root, { name, description, body }) {
 export function materializeSkills(root, skills, folders = {}) {
   const folderOf = id => (folders instanceof Map ? folders.get(id) : folders?.[id]);
   mkdirSync(root, { recursive: true });
+  const manifest = readOwned(root);
   const keep = new Set();
   for (const s of skills) {
     const slug = skillSlug(s.id.replace(/^(?:ws|my)-/, '') || s.name);
     if (!slug || !s.body?.trim()) continue;
     let unique = slug, n = 2;
-    while (keep.has(unique)) unique = `${slug}-${n++}`;
+    // A folder the person put here by hand is theirs: a skill with the same name goes under another name instead of over it (#6857).
+    while (keep.has(unique) || isForeign(root, unique, manifest)) unique = `${slug}-${n++}`;
     keep.add(unique);
     const dir = join(root, unique);
     mkdirSync(dir, { recursive: true });
@@ -124,6 +128,67 @@ export function materializeSkills(root, skills, folders = {}) {
     const from = folderOf(s.id);
     if (from) { try { copySkillExtras(from, dir); } catch (e) { console.warn(`skills · could not copy the files of "${unique}":`, e.message); } }
   }
-  for (const entry of readdirSync(root, { withFileTypes: true })) if (entry.isDirectory() && !keep.has(entry.name)) rmSync(join(root, entry.name), { recursive: true, force: true });
+  // Only a folder Strata wrote is ever taken away, and it is moved aside, not deleted (#6857). Everything else in this folder is the person's.
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    if (!entry.isDirectory() || keep.has(entry.name) || !isOwned(root, entry.name, manifest)) continue;
+    try { moveAside(root, entry.name); } catch (e) { console.warn(`skills · could not move the folder of the removed skill "${entry.name}" aside; it stays:`, e.message); }
+  }
+  writeOwned(root, [...keep]);
   return [...keep];
+}
+
+/** The note the agent skills folder keeps of the folders Strata wrote in it. Not a folder, so the agent's scan skips it. */
+const OWNED = '.strata-skills.json';
+/** Where a removed skill's folder goes: next to the agent skills folder, outside what the agent scans. */
+export const SKILLS_REMOVED = 'skills-removed';
+const KEEP_REMOVED = 40;
+
+/** The folder names Strata wrote here the last time, or null when there is no note yet (a folder from 0.2.20 or older). */
+function readOwned(root) {
+  try {
+    const note = JSON.parse(readFileSync(join(root, OWNED), 'utf8'));
+    if (Array.isArray(note?.folders)) return new Set(note.folders.filter(name => typeof name === 'string' && name && !/[\\/]/.test(name) && name !== '..'));
+  } catch { /* no note yet, or one that cannot be read */ }
+  return null;
+}
+
+function writeOwned(root, names) {
+  const note = JSON.stringify({ folders: [...names].sort() });
+  let same = false; try { same = readFileSync(join(root, OWNED), 'utf8') === note; } catch { /* not there yet */ }
+  if (!same) writeFileSync(join(root, OWNED), note);
+}
+
+/** A folder Strata made: named in the note, or holding the copy note of `copySkillExtras` (every folder 0.2.20 wrote for a skill that has a folder of its own). */
+function isOwned(root, name, manifest) {
+  return Boolean(manifest?.has(name)) || existsSync(join(root, name, COPIED));
+}
+
+/** What `skillFileText` writes: a frontmatter of name, optional title, a quoted description, optional hidden flag, then the body. */
+function looksWritten(root, name) {
+  try {
+    const text = readFileSync(join(root, name, 'SKILL.md'), 'utf8');
+    return text.startsWith(`---\nname: ${name}\n`) && /^---\nname: [^\n]*\n(?:title: "[^\n]*"\n)?description: "[^\n]*"\n(?:disable-model-invocation: true\n)?---\n\n/.test(text);
+  } catch { return false; }
+}
+
+/** A folder at `name` that Strata did not make. Folders from before the note existed that look like what Strata writes are taken for its own once, so an upgrade does not leave a twin. */
+function isForeign(root, name, manifest) {
+  if (!existsSync(join(root, name))) return false;
+  if (isOwned(root, name, manifest)) return false;
+  return !(manifest === null && looksWritten(root, name));
+}
+
+/** Move a folder Strata wrote out of the scanned folder into `skills-removed/<name>-<time>`, so a skill whose source went missing for a moment can be put back. */
+function moveAside(root, name) {
+  const from = join(root, name), bin = join(dirname(root), SKILLS_REMOVED);
+  mkdirSync(bin, { recursive: true });
+  const to = join(bin, `${name}-${new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)}-${Math.random().toString(36).slice(2, 6)}`);
+  try { renameSync(from, to); } catch {
+    cpSync(from, to, { recursive: true });                  // a rename can fail on Windows while a watcher holds the folder
+    rmSync(from, { recursive: true, force: true });
+  }
+  try {
+    const old = readdirSync(bin, { withFileTypes: true }).filter(e => e.isDirectory()).map(e => e.name).sort();
+    for (const gone of old.slice(0, Math.max(0, old.length - KEEP_REMOVED))) rmSync(join(bin, gone), { recursive: true, force: true });
+  } catch { /* the backups are a convenience */ }
 }

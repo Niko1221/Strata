@@ -2753,6 +2753,19 @@ class PcieShare(unittest.TestCase):
         self.assertIn("expert cache 60.0% hit (+20.0% of the routed experts over PCIe)", out.getvalue())
 
 
+class PromptCacheSpread(unittest.TestCase):
+    def test_only_a_known_unsupported_engine_loses_the_cache_spread_flag(self):
+        cfg = {"backend": "sycl", "args": ["--native", "model.gguf", "--prompt-cache-spread"]}
+        with tempfile.TemporaryDirectory() as folder:
+            old = Path(folder) / "old-strata"
+            old.write_bytes(b"strata --native --serve")
+            new = Path(folder) / "new-strata"
+            new.write_bytes(b"strata --native --serve --prompt-cache-spread")
+            self.assertEqual(engine_args(cfg, str(old), announce=False), ["--native", "model.gguf"])
+            self.assertEqual(engine_args(cfg, str(new), announce=False), cfg["args"])
+            self.assertEqual(engine_args(cfg, announce=False), cfg["args"])
+
+
 class PeerDevice(unittest.TestCase):
     """#665: several GPUs in the config are a layer split, but --peer-device uses the second card as an expert-cache
     tier, and the engine refuses it beside --layer-split: the server must not add one then."""
