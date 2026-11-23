@@ -87,6 +87,32 @@ test('an engine that is already current downloads nothing; one with no package f
   assert.match(none.details, /windows-x86_64/);
 });
 
+test('a model install keeps a usable engine the user pinned even when a newer version is offered', async () => {
+  const pinned = '0.1.64-linux-x86_64-cuda-cuda12';
+  const c = control({
+    usable: true,
+    check: offer('available', { installed: { version: '0.1.64', folder: pinned }, offered: { version: '0.1.66' },
+      pinned, download_bytes: 0 }),
+    update: async () => updated,
+  });
+  const part = await createEngineStep({ control: c }).run();
+  assert.equal(part.state, 'current');
+  assert.equal(part.version, '0.1.64');
+  assert.deepEqual(c.calls, ['engine', 'updateCheck']);
+});
+
+test('a stale pin does not block acquiring a usable engine for the model', async () => {
+  const c = control({
+    usable: true,
+    check: offer('available', { installed: { version: '0.1.45', folder: '0.1.45-linux-x86_64-cuda-cuda12' },
+      pinned: '0.1.44-linux-x86_64-cuda-cuda12' }),
+    update: async () => updated,
+  });
+  const part = await createEngineStep({ control: c }).run();
+  assert.equal(part.state, 'done');
+  assert.deepEqual(c.calls, ['engine', 'updateCheck', ['update', true, false]]);
+});
+
 test('without a component updater the step is skipped and never throws', async () => {
   const part = await createEngineStep({ control: {} }).run();
   assert.equal(part.state, 'skipped');
