@@ -1508,6 +1508,60 @@ __global__ void __launch_bounds__(256) k_gemv_bf16_multi_k64(const uint16_t* __r
         if (j == 0 && row < N) Y[(size_t) t * ldy + row] = x;
     }
 }
+// opt-in (--verify-tc 1): the same products on tensor cores, mma m16n8k16 with the prefill's hgemm numbers (fp16
+// weights and inputs, fp32 accumulation).  A warp takes 16 rows x the 8 vectors over a K slice (64-column chunks,
+// strided over the block's 8 warps); the warps' partial tiles are added in warp order (deterministic).  Within a
+// chunk the 16 columns a lane loads (2 x 16 B per row: whole 32 B sectors) are spread over the 4 mma steps; the
+// vectors' columns follow the same permutation, so the dot products are the same sums in another order.  Not decode's
+// GEMV order: greedy --spec output can differ from the default path, hence opt-in.  K % 64 == 0, CUDA sm_80+.
+__device__ __forceinline__ uint32_t h2bits(float a, float b) {
+    const __half2 h = __floats2half2_rn(a, b);
+    return *reinterpret_cast<const uint32_t*>(&h);
+}
+__global__ void __launch_bounds__(256) k_gemv_bf16_tc(const uint16_t* __restrict__ W, const float* __restrict__ X, int ldx,
+                                                      float* __restrict__ Y, int ldy, int N, int K, int T) {
+#if !defined(STRATA_USE_HIP) && defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
+    __shared__ float4 red[8][32];
+    const int lane = threadIdx.x & 31, wp = threadIdx.x >> 5, g = lane >> 2, c = lane & 3, row0 = blockIdx.x * 16;
+    const uint4* wa = reinterpret_cast<const uint4*>(W + (size_t) min(row0 + g, N - 1) * K);
+    const uint4* wb = reinterpret_cast<const uint4*>(W + (size_t) min(row0 + g + 8, N - 1) * K);
+    const float4* x = reinterpret_cast<const float4*>(X + (size_t) min(g, T - 1) * ldx);
+    const bool xv = g < T;
+    float acc[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+#pragma unroll 2
+    for (int ch = wp; ch < K / 64; ch += 8) {
+        const int o = ch * 8 + c * 2;   // this lane's columns of the chunk: 16c .. 16c + 15 (uint4 2c, 2c + 1)
+        const uint4 a0 = __ldg(wa + o), a1 = __ldg(wa + o + 1), b0 = __ldg(wb + o), b1 = __ldg(wb + o + 1);
+        float4 xq[4];
+#pragma unroll
+        for (int q = 0; q < 4; ++q) xq[q] = xv ? __ldg(x + ch * 16 + c * 4 + q) : make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+        const uint32_t ra[8] = {a0.x, a0.y, a0.z, a0.w, a1.x, a1.y, a1.z, a1.w};
+        const uint32_t rb[8] = {b0.x, b0.y, b0.z, b0.w, b1.x, b1.y, b1.z, b1.w};
+#pragma unroll
+        for (int s = 0; s < 4; ++s) {   // step s: the lane's columns 4s .. 4s + 3 (logical k 2c, 2c+1 and 2c+8, 2c+9)
+            const uint32_t A0 = h2bits(bf16lo(ra[2 * s]), bf16hi(ra[2 * s])), A1 = h2bits(bf16lo(rb[2 * s]), bf16hi(rb[2 * s]));
+            const uint32_t A2 = h2bits(bf16lo(ra[2 * s + 1]), bf16hi(ra[2 * s + 1]));
+            const uint32_t A3 = h2bits(bf16lo(rb[2 * s + 1]), bf16hi(rb[2 * s + 1]));
+            const uint32_t B0 = h2bits(xq[s].x, xq[s].y), B1 = h2bits(xq[s].z, xq[s].w);
+            asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\n"
+                         : "+f"(acc[0]), "+f"(acc[1]), "+f"(acc[2]), "+f"(acc[3])
+                         : "r"(A0), "r"(A1), "r"(A2), "r"(A3), "r"(B0), "r"(B1));
+        }
+    }
+    red[wp][lane] = make_float4(acc[0], acc[1], acc[2], acc[3]);
+    __syncthreads();
+    if (threadIdx.x < 128) {   // (lane l, element q): row g or g + 8 (q / 2), vector 2c + q % 2
+        const int l = threadIdx.x >> 2, q = threadIdx.x & 3;
+        float v = 0.0f;
+#pragma unroll
+        for (int u = 0; u < 8; ++u) v += reinterpret_cast<const float*>(&red[u][l])[q];
+        const int row = row0 + (l >> 2) + (q >> 1) * 8, t = (l & 3) * 2 + (q & 1);
+        if (t < T && row < N) Y[(size_t) t * ldy + row] = v;
+    }
+#else
+    __trap();
+#endif
+}
 // grouped experts: the rows of one expert (blockIdx.y = tile of kb_moe_plan; with T <= SMALL_T an expert has at most
 // SMALL_T rows, one tile) times its weights, read once.  C[r][n] = factor_e * W_e[n] . A[arow(r)], arow = rows[r] or r.
 // R rows per warp; each word's weights decoded once for all the tile's rows; inputs read from L1 / L2.
@@ -2634,6 +2688,7 @@ size_t ex_layer_off(int l) {   // offset of layer l's first expert in the reside
 }
 size_t pool_slot(bool nv) { return ex_bytes(nv ? 0 : NL - 1); }   // bytes of a pool_nv / pool_mx slot (offload)
 int g_slot = 0;   // the layer application being built (host side, baked into the launches)
+bool g_verify_tc = false;   // --verify-tc 1: small-T dense products on tensor cores (k_gemv_bf16_tc)
 int g_rpw = 4;    // decode GEMV rows per warp, upper bound (INK2_RPW: 1, 2, 4, 8)
 int g_sel_rpw = 2;   // expert (selected) GEMV rows per warp (INK2_SEL_RPW: 1, 2, 4, 8)
 int g_grp_r = 4;   // small-T grouped expert GEMV rows per warp (INK2_GRP_R: 1, 2, 4)
@@ -4413,6 +4468,10 @@ void gemv_multi(const DMat& W, int first, int n, const float* X, int ldx, float*
         k_gemv_bf16_multi_rows<<<(unsigned) n, 256>>>(W.d + (size_t) first * W.k, X, ldx, Y, ldy, W.k, T);
         return;
     }
+    if (g_verify_tc && W.k % 64 == 0) {
+        k_gemv_bf16_tc<<<(unsigned) ((n + 15) / 16), 256>>>(W.d + (size_t) first * W.k, X, ldx, Y, ldy, n, W.k, T);
+        return;
+    }
     int R = 4;   // as gemv(): fewer rows per warp while the grid is short
     while (R > 1 && (n + 8 * R - 1) / (8 * R) < g_gemv_min_blocks) R /= 2;
     const unsigned g = (unsigned) ((n + 8 * R - 1) / (8 * R));
@@ -5468,6 +5527,7 @@ int main(int argc, char** argv) {
         else if (a == "--graph") E.graph = std::atoi(v) != 0;
         else if (a == "--chunk") PF.TP = std::atoi(v);
         else if (a == "--tc") PF.tc = std::atoi(v) != 0;
+        else if (a == "--verify-tc") g_verify_tc = std::atoi(v) != 0;
         else if (a == "--vram-reserve-mib") E.reserve_mib = std::atoi(v);
         else if (a == "--spec") spec = std::atoi(v) != 0;
         else if (a == "--cpu-threads") E.cpu_threads = std::atoi(v);
@@ -5498,7 +5558,7 @@ int main(int argc, char** argv) {
     if (E.grow) vmm_init();
     if (dir.empty() || (ids.empty() && !serve && vis_pixels.empty())) {
         std::fprintf(stderr, "usage: strata-ink2 --model DIR (--serve | --tokens IDS | --tokens-file F) [--n N] [--ctx N] "
-                             "[--chunk N] [--tc 0|1] [--kv f16|fp16|f32|i8|int8|i8r|k8v4|k8v8] [--kv-grow 1 [--kv-grow-step N]] [--vram-reserve-mib N [--cpu-threads N]] [--spec 0|1] [--dump-logits F] [--conversation-cache-mib N [--conversation-cache-min-tokens N]] [--image FILE ... [--image-max-tokens N] [--dump-image-emb F]] [--vis-pixels F]\n");
+                             "[--chunk N] [--tc 0|1] [--verify-tc 0|1] [--kv f16|fp16|f32|i8|int8|i8r|k8v4|k8v8] [--kv-grow 1 [--kv-grow-step N]] [--vram-reserve-mib N [--cpu-threads N]] [--spec 0|1] [--dump-logits F] [--conversation-cache-mib N [--conversation-cache-min-tokens N]] [--image FILE ... [--image-max-tokens N] [--dump-image-emb F]] [--vis-pixels F]\n");
         return 2;
     }
     if (serve && PF.TP <= 0) { std::fprintf(stderr, "--serve needs --chunk > 0\n"); return 2; }
@@ -5515,6 +5575,13 @@ int main(int argc, char** argv) {
     // until IQ3_S / IQ4_NL / Q8_0 CPU dots and a GGUF drafter exist
     if (g_is_gguf && E.cpu) { std::fprintf(stderr, "--cpu-threads: not with a GGUF model (no GGUF CPU expert kernels yet)\n"); return 2; }
     if (g_is_gguf && spec) { std::fprintf(stderr, "--spec: not with a GGUF model (no drafter for it yet)\n"); return 2; }
+    if (g_verify_tc) {   // mma m16n8k16 f16: CUDA sm_80+
+        int cc = 0;
+#if !defined(STRATA_USE_HIP)
+        cudaDeviceGetAttribute(&cc, cudaDevAttrComputeCapabilityMajor, 0);
+#endif
+        if (cc < 8) { std::fprintf(stderr, "[ink2] --verify-tc 1 ignored: it needs a CUDA card of compute capability 8.0 or later\n"); g_verify_tc = false; }
+    }
     if (g_is_gguf) {   // --model FILE.gguf: llama.cpp's merged inkling2_loop layout
         const std::string e = gg_open(dir, gg);
         if (!e.empty()) { std::fprintf(stderr, "%s\n", e.c_str()); return 1; }
