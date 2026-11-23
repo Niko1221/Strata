@@ -14872,7 +14872,7 @@ int main(int argc, char** argv) {
                                          "adaptive defaults every %d -> %d, swaps %d -> %d, decay %.2f -> %.2f\n",
                                  (long long) live_gpu_slots, (long long) total_expert_pairs, 100.0 * cov,
                                  prev_ev, o.adapt_every, prev_sw, o.adapt_swaps, prev_dc, o.adapt_decay);
-            } else if (cov < 0.15) {
+            } else if (cov < 0.15 && strata::core::tiny_cache_rules_enabled(std::getenv("STRATA_TINY_CACHE"))) {   // opt-in since 0.2.21 (#6782 / #6799)
                 const int damp = strata::core::low_vram_adapt_swaps(o.adapt_swaps, o.adapt_swaps_given, live_gpu_slots, total_expert_pairs);
                 if (damp != o.adapt_swaps) {
                     std::fprintf(stderr, "strata serve: tiny expert cache (%lld of %lld slots, %.1f%%): dampening adaptive swaps %d -> %d "
@@ -14885,7 +14885,9 @@ int main(int argc, char** argv) {
         }
         std::vector<uint8_t> pinned_pair;
         if (!profile.empty() && !host_res.empty() && live_gpu_slots > 0 && !all_experts_resident) {
-            const int64_t pin_n = strata::core::low_vram_pin_slots(live_gpu_slots, total_expert_pairs, std::getenv("STRATA_CACHE_PIN_FRAC"));
+            const char* pin_env = std::getenv("STRATA_CACHE_PIN_FRAC");
+            const int64_t pin_n = (strata::core::tiny_cache_rules_enabled(std::getenv("STRATA_TINY_CACHE")) || (pin_env != nullptr && pin_env[0] != '\0'))
+                                      ? strata::core::low_vram_pin_slots(live_gpu_slots, total_expert_pairs, pin_env) : 0;   // pinning: opt-in since 0.2.21
             if (pin_n > 0) {
                 pinned_pair.assign((size_t) total_expert_pairs, 0);
                 int64_t pinned_ct = 0;
