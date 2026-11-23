@@ -1037,14 +1037,21 @@ struct InkSyclModel {
             ti.bytes = kv.second.bytes;
             man.T[kv.first] = std::move(ti);
         }
+        // The GGUF / safetensors loader keys DSpark tensors by their canonical names without the "dspark."
+        // prefix ("fuse_weight", "layers.0.dflare_norm.weight": ink_gguf_loader.h, map_dspark_name), while
+        // the .strata manifest and this runner's lookups use the prefixed form ("dspark.fuse_weight").
+        // Register every entry under the prefixed key so both sources resolve (the HIP backend normalises
+        // the other way and strips the prefix). Without this a GGUF model with --dspark exits 2 at the first
+        // draft: "missing dspark tensor dspark.fuse_weight".
         for (const auto& kv : mf.m.dspark_tensors) {
+            const std::string key = kv.first.rfind("dspark.", 0) == 0 ? kv.first : "dspark." + kv.first;
             InkTensorInfo ti;
-            ti.name = kv.second.name.empty() ? kv.first : kv.second.name;
+            ti.name = kv.second.name.empty() ? key : kv.second.name;
             ti.fmt = kv.second.fmt;
             ti.shape = kv.second.shape;
             ti.off = kv.second.off;
             ti.bytes = kv.second.bytes;
-            man.D[kv.first] = std::move(ti);
+            man.D[key] = std::move(ti);
         }
 
         // 2. Upload Section 1 (Trunk + DSpark) into <= 3.2 GiB device slabs
