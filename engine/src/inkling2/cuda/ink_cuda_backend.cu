@@ -278,6 +278,11 @@ public:
         for (;;) {
             runner_ = std::make_unique<strata::ink::InkCudaRunner>(model_);
             runner_->use_cuda_graph = vf_graph_ok && !model_.ep2_active && !model_.ls_active;
+            if (const char* ng = std::getenv("STRATA_INK_NO_GRAPH"); ng && ng[0] == '1' && runner_->use_cuda_graph) {
+                // diagnostic: launch every kernel of a step eagerly, as the layer-split / EP2 paths always do
+                runner_->use_cuda_graph = false;
+                std::fprintf(stderr, "[InkCUDA] STRATA_INK_NO_GRAPH=1: CUDA Graph capture off (eager launches)\n");
+            }
             try {
                 runner_->init(max_slots_, std::max(256, opts.max_ctx), chunk_try, cuda_kvd, kv_offload_mode);
                 break;
