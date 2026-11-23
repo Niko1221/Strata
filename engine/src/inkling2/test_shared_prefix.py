@@ -8,6 +8,9 @@ ENGINE = sys.argv.pop(1)
 PREFIX = list(range(1, 21))
 A = PREFIX + [21, 22, 23, 24]
 B = PREFIX + [31, 32, 33, 34]
+# The engine keeps one KV store per conversation and picks the store by what it holds, not by the slot number.  The mock has two
+# stores: a prompt that shares nothing with A takes the second, so the next request that fits neither has to evict the first.
+OTHER = [60, 59, 58, 57, 56, 55, 54, 53]
 
 
 class Engine:
@@ -138,14 +141,16 @@ class SharedPrefix(unittest.TestCase):
 
     def test_shorter_rewind_invalidates_later_checkpoints(self):
         self.engine.request(A)
+        self.engine.request(OTHER, pin=None)
         shorter = PREFIX[:10] + [45, 46]
         self.assertEqual(self.engine.request(shorter, pin=10)[1], 0)
         self.assertEqual(self.engine.request(B)[1], 0)
 
-    def test_slots_never_restore_each_others_state(self):
+    def test_a_store_serves_its_conversation_whatever_slot_names_it(self):
+        # the slot number is the request's name on the protocol lines; the store is the one that holds the most of the prompt
         self.assertEqual(self.engine.request(A, slot=0)[1], 0)
-        self.assertEqual(self.engine.request(B, slot=1)[1], 0)
-        self.assertEqual(self.engine.request(B, slot=0)[1], 20)
+        self.assertEqual(self.engine.request(B, slot=1)[1], 20)             # the shared prefix A's store read
+        self.assertEqual(self.engine.request(B, slot=0)[1], len(B) - 1)     # B's prompt-end checkpoint, in that store
         self.assertEqual(self.engine.request(A, slot=1)[1], 20)
 
     def test_unsupported_checkpoint_falls_back_to_prefill(self):
@@ -158,6 +163,7 @@ class SharedPrefix(unittest.TestCase):
 
     def test_unpinned_branch_does_not_reuse_stale_global_kv(self):
         self.engine.request(A)
+        self.engine.request(OTHER, pin=None)
         unpinned = PREFIX[:10] + [44] * 15
         self.assertEqual(self.engine.request(unpinned, pin=None)[1], 0)
         tokens, reuse = self.engine.request(B)
@@ -184,13 +190,14 @@ class SharedPrefix(unittest.TestCase):
         self.addCleanup(no_ckpt.close)
         self.assertEqual(no_ckpt.info.get("shared_prefix"), "0")
 
-    def test_bco_reset_invalidates_shared_checkpoint(self):
+    def test_bco_leaves_the_stores_alone(self):
+        # BCO reads nothing, and the store a request runs in is chosen when the request comes: no store is reset for it
         self.assertEqual(self.engine.request(A, slot=0)[1], 0)
         self.engine.p.stdin.write("BCO 0 1,2,3\n")
         self.engine.p.stdin.flush()
         self.assertTrue(self.engine.p.stdout.readline().startswith("BCOK 0 "))
         tokens, reuse = self.engine.request(B)
-        self.assertEqual(reuse, 0)
+        self.assertEqual(reuse, 20)
         self.assertEqual(tokens, self.cold(B))
 
     def test_concurrent_slots_warm_and_reuse_independently(self):
@@ -211,7 +218,7 @@ class SharedPrefix(unittest.TestCase):
             if line.startswith("BDONE 1 "):
                 slot1_done = True
         tokens, reuse = self.engine.request(B)
-        self.assertEqual(reuse, 20)
+        self.assertEqual(reuse, len(B) - 1)       # the store that read B itself, from its prompt-end checkpoint
         self.assertEqual(tokens, self.cold(B))
 
 

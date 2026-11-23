@@ -115,6 +115,19 @@ public:
     // Returns true when the on-device DSpark drafter is initialized and ready to serve drafts (#6633).
     virtual bool dspark_ready() const { return false; }
 
+    // Checkpoints: the state of a slot at its current position that a plain truncation cannot bring back - the ShortConv taps, the
+    // drafter's recurrent state and the sliding-window layers' KV rings (a ring entry is overwritten 1024 tokens later, so a slot
+    // cannot be rolled back past what it has written since).  The KV of the global layers is indexed by position and needs no copy.
+    // ckpt_save returns a handle (>= 0), or -1 when the backend has no checkpoints; then a prompt that does not continue the slot's
+    // tokens exactly is read from its first token, as before.
+    virtual int ckpt_save(int slot) { (void)slot; return -1; }
+    virtual bool ckpt_restore(int slot, int handle) { (void)slot; (void)handle; return false; }
+    virtual void ckpt_free(int handle) { (void)handle; }
+    virtual size_t ckpt_bytes() const { return 0; }     // the size of one checkpoint
+    // Copy what a checkpoint does not carry - the position-indexed KV of positions [0, n_pos) - from one slot to another, so that a
+    // checkpoint taken in `src_slot` can be restored into `dst_slot` (a conversation starts from a prefix another one has read).
+    virtual bool kv_copy_prefix(int dst_slot, int src_slot, int n_pos) { (void)dst_slot; (void)src_slot; (void)n_pos; return false; }
+
     // Batched 48-visit forward across 1..64 active slots!
     // logits_out: [batch.count_logits(), vocab_unpadded] FP32 (already softcapped by 30*tanh(z/30) and sliced to 200058).
     virtual bool forward_batch(

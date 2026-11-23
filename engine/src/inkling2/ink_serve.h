@@ -5,6 +5,7 @@
 #pragma once
 
 #include <algorithm>
+#include <climits>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -459,17 +460,39 @@ struct ActiveReq {
     std::vector<int32_t> hist;
     std::vector<int32_t> gen_ids;
     std::vector<int32_t> cached_prefix;       // tokens currently resident in slot KV
-    std::vector<int32_t> prompt_ckpt_prefix;  // prompt-end checkpoint prefix saved before generation (#6627)
+    std::vector<int32_t> prompt_ckpt_prefix;  // prompt-end checkpoint prefix (#6627): used on a backend without ckpt_save
     int reused_tokens = 0;                    // prefix tokens reused for this request
     std::vector<int32_t> shared_prefix;
     int pin = 0;
     bool shared_pending = false;
-    bool ckpt_pending = false;                // true while prefilling up to prompt_len - 1 to save checkpoint
+    bool no_ckpt = false;                     // ckpt=0: this request takes no mark at its prompt's end
+    bool ckpt_pending = false;                // true while prefilling up to prompt_len - 1 to save that checkpoint
+    // A picture's positions hold the same pad token whatever the picture is, so the tokens alone cannot say that two prompts agree
+    // there: position -> the picture's content hash (mixed with the pad's index in it), for what the slot holds and for this prompt.
+    std::unordered_map<int, uint64_t> cached_sig;
+    std::unordered_map<int, uint64_t> prompt_sig;
+    struct Ckpt { int pos; int handle; };
+    std::vector<Ckpt> ckpts;             // the slot's checkpoints, ascending by position (InkBackend::ckpt_save)
+    // `slot` is the request's name on the protocol lines.  `phys` is the backend slot (KV store) it runs in: the engine picks, for
+    // each request, the idle store that already holds the most of its prompt, so every conversation keeps its own cache whatever
+    // slot number the server names (it sends every request that runs alone as GEN = slot 0).  -1: holds no store.
+    int phys = -1;
     double t_start = 0.0;
     double prompt_ms = 0.0;
     double decode_t0 = 0.0;
     int drafts_offered = 0;
     int drafts_accepted = 0;
+    // drafting under sampling (temperature > 0): how many tokens to draft, plain steps left before the next try,
+    // and the measured cost of a plain step and of a drafted token
+    int sp_len = 3;
+    int sp_cool = 0;
+    int sp_steps = 0;
+    int sp_cools = 0;
+    int sp_fail = 0;
+    int sp_win_tok = 0;
+    double sp_win_ms = 0.0;
+    double sp_plain_ms = 0.0;
+    double sp_tok_ms = 0.0;
     bool cancelled = false;
     bool admitted = false;
     bool slot_read = false;
@@ -490,6 +513,30 @@ struct ServeConfig {
     bool anti_loop = true;
     std::string version = "0.1.69";
 };
+
+inline uint64_t ink_fnv1a(const uint8_t* p, size_t n, uint64_t h = 1469598103934665603ULL) {
+    for (size_t i = 0; i < n; ++i) { h ^= p[i]; h *= 1099511628211ULL; }
+    return h;
+}
+
+inline bool ink_hash_file(const std::string& path, uint64_t& out) {
+    FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) return false;
+    uint64_t h = 1469598103934665603ULL;
+    static uint8_t buf[1 << 16];
+    size_t n, total = 0;
+    while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) { h = ink_fnv1a(buf, n, h); total += n; }
+    std::fclose(f);
+    out = h ^ (static_cast<uint64_t>(total) * 0x9E3779B97F4A7C15ULL);
+    if (out == 0) out = 1;
+    return true;
+}
+
+inline int ink_env_int(const char* name, int dflt, int lo, int hi) {
+    const char* v = std::getenv(name);
+    if (!v || !*v) return dflt;
+    return std::max(lo, std::min(hi, std::atoi(v)));
+}
 
 inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& backend) {
     const InkCfg& c = mf.m.c;
@@ -527,6 +574,8 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
             rq.gov_win_emit = 0;
         }
     };
+    const bool cache_trace = std::getenv("STRATA_INK_CACHE_TRACE") != nullptr;
+    const bool sample_draft = [] { const char* e = std::getenv("STRATA_INK_SAMPLE_DRAFT"); return !e || std::atoi(e) != 0; }();
 
     // Probe Vision shard lazily (zero VRAM/RAM until first image request)
     bool images_ok = false;
@@ -576,8 +625,215 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
         return tok == c.eos_token_id || tok == c.eot_token_id;
     };
 
+    // ---- checkpoints.  A prompt that does not continue a slot's tokens exactly used to be read from token 0 (the sliding-window
+    // layers cannot be rolled back).  The client of an agent rewrites the last assistant turn on every request (it drops the
+    // thinking, re-serializes the call), so that was the usual case: a 60k-token conversation was read again on every step.
+    // Now a slot keeps checkpoints - one before the last token of each prompt (the next request shares at least that much), and one every
+    // STRATA_INK_CKPT_EVERY tokens of a long read - and a prompt that diverges is resumed from the nearest one before the divergence.
+    // The periodic ones sit on a fixed grid (every multiple of STRATA_INK_CKPT_EVERY tokens: the read stops there), so the cache is
+    // a chunked prefix cache: two conversations that start the same way have their checkpoints at the same places, and one can
+    // start from the other's (see store_acquire: the shared tools and system prompt are read once, whichever store read them).
+    // A checkpoint is ~164 MiB of host memory (ckpt_bytes), so the number kept per store is also bounded by a budget for all stores
+    // together (STRATA_INK_CKPT_MB, 6 GiB): 16 each up to two stores, 12 with three, 4 with eight.  A backend without checkpoints
+    // (ckpt_bytes 0) gets none, and then no read is split for them.
+    int ckpt_max = ink_env_int("STRATA_INK_CKPT_MAX", 16, 0, 256);                  // per store; 0 turns checkpoints off
+    {
+        const size_t one = backend.ckpt_bytes();
+        const size_t budget = static_cast<size_t>(ink_env_int("STRATA_INK_CKPT_MB", 6144, 0, 1 << 20)) << 20;
+        if (one == 0) ckpt_max = 0;
+        else ckpt_max = std::min(ckpt_max, static_cast<int>(budget / one / static_cast<size_t>(P)));
+        if (one != 0 && ckpt_max == 1) ckpt_max = 2;       // (one grid mark and the mark before the prompt's end)
+    }
+    const int ckpt_every = ink_env_int("STRATA_INK_CKPT_EVERY", 8192, 0, 1 << 24);  // the chunk; 0: only where a prompt ends
+    const int fork_min = ink_env_int("STRATA_INK_FORK_MIN", 2048, 1, 1 << 24);      // a prefix of another store shorter than this is read again
+    auto ckpt_drop_from = [&](ActiveReq& rq, int pos) {         // free the checkpoints at positions >= pos
+        while (!rq.ckpts.empty() && rq.ckpts.back().pos >= pos) {
+            backend.ckpt_free(rq.ckpts.back().handle);
+            rq.ckpts.pop_back();
+        }
+    };
+    auto ckpt_take = [&](ActiveReq& rq, int pos) {
+        if (ckpt_max <= 0 || pos <= 0) return;
+        if (!rq.ckpts.empty() && rq.ckpts.back().pos >= pos) return;
+        if (static_cast<int>(rq.ckpts.size()) >= ckpt_max) {
+            // full: drop the one whose neighbours are closest together (the first, nearest the shared system prompt, stays)
+            size_t drop = rq.ckpts.size() - 1;
+            int best = INT_MAX;
+            for (size_t i = 1; i < rq.ckpts.size(); ++i) {
+                const int next = (i + 1 < rq.ckpts.size()) ? rq.ckpts[i + 1].pos : pos;
+                const int gap = next - rq.ckpts[i - 1].pos;
+                if (gap < best) { best = gap; drop = i; }
+            }
+            backend.ckpt_free(rq.ckpts[drop].handle);
+            rq.ckpts.erase(rq.ckpts.begin() + static_cast<long>(drop));
+        }
+        const int h = backend.ckpt_save(rq.phys);
+        if (h >= 0) rq.ckpts.push_back({pos, h});
+    };
+    auto slot_forget = [&](ActiveReq& rq) {                    // the slot holds nothing any more
+        ckpt_drop_from(rq, 0);
+        rq.cached_prefix.clear();
+        rq.cached_sig.clear();
+        rq.prompt_ckpt_prefix.clear();
+        rq.shared_prefix.clear();
+    };
+    // ---- KV stores.  While a request runs, the store's tokens / picture marks / checkpoints live in its ActiveReq (cached_prefix,
+    // cached_sig, ckpts); between requests they rest here.
+    struct KvStore {
+        std::vector<int32_t> prefix;
+        std::unordered_map<int, uint64_t> sig;
+        std::vector<ActiveReq::Ckpt> ckpts;
+        std::vector<int32_t> pckpt;      // the prompt-end checkpoint's tokens (ActiveReq::prompt_ckpt_prefix)
+        std::vector<int32_t> shared;     // the shared-prefix checkpoint's tokens (ActiveReq::shared_prefix)
+        bool busy = false;
+        uint64_t used = 0;
+    };
+    std::vector<KvStore> stores(static_cast<size_t>(P));
+    uint64_t store_tick = 0;
+    auto store_release = [&](ActiveReq& rq) {
+        if (rq.phys < 0) return;
+        KvStore& st = stores[static_cast<size_t>(rq.phys)];
+        st.prefix.swap(rq.cached_prefix);
+        st.sig.swap(rq.cached_sig);
+        st.ckpts.swap(rq.ckpts);
+        st.pckpt.swap(rq.prompt_ckpt_prefix);
+        st.shared.swap(rq.shared_prefix);
+        rq.prompt_ckpt_prefix.clear();
+        rq.shared_prefix.clear();
+        rq.cached_prefix.clear();
+        rq.cached_sig.clear();
+        rq.ckpts.clear();
+        st.busy = false;
+        st.used = ++store_tick;
+        rq.phys = -1;
+    };
+    // how many leading positions of the prompt a store can serve: all it holds when the prompt continues it, else its last
+    // checkpoint at or before the place where they part
+    // (ckpt_handle, when asked for: the checkpoint that serves it, and then only a checkpoint counts - a state that can be copied)
+    auto held_usable = [&](const std::vector<int32_t>& prefix, const std::unordered_map<int, uint64_t>& sig,
+                           const std::vector<ActiveReq::Ckpt>& ckpts, const ActiveReq& rq, int* ckpt_handle) -> int {
+        const int held = static_cast<int>(prefix.size());
+        if (held == 0) return 0;
+        const int lim = std::min(held, rq.prompt_len - 1);
+        int agree = 0;
+        while (agree < lim && prefix[static_cast<size_t>(agree)] == rq.prompt_ids[static_cast<size_t>(agree)]) ++agree;
+        for (const auto& kv : sig) {
+            if (kv.first >= agree) continue;
+            auto it = rq.prompt_sig.find(kv.first);
+            if (it == rq.prompt_sig.end() || it->second != kv.second) agree = kv.first;
+        }
+        for (const auto& kv : rq.prompt_sig) {
+            if (kv.first >= agree) continue;
+            auto it = sig.find(kv.first);
+            if (it == sig.end() || it->second != kv.second) agree = kv.first;
+        }
+        if (!ckpt_handle && agree == held) return held;
+        int best = 0;
+        for (const auto& ck : ckpts) if (ck.pos <= agree) { best = ck.pos; if (ckpt_handle) *ckpt_handle = ck.handle; }
+        return best;
+    };
+    // the prompt-end checkpoint (#6627) serves a prompt without pictures that begins with all of its tokens
+    auto pckpt_usable = [&](const std::vector<int32_t>& pk, const ActiveReq& rq) -> int {
+        const int plen = static_cast<int>(pk.size());
+        if (plen == 0 || plen >= rq.prompt_len || !rq.prompt_sig.empty()) return 0;
+        for (int i = 0; i < plen; ++i) if (pk[static_cast<size_t>(i)] != rq.prompt_ids[static_cast<size_t>(i)]) return 0;
+        return plen;
+    };
+    // the shared-prefix checkpoint (pin=N) serves a prompt without pictures that names the same boundary and begins with its tokens
+    auto shared_usable = [&](const std::vector<int32_t>& sh, const ActiveReq& rq) -> int {
+        if (rq.pin <= 0 || static_cast<int>(sh.size()) != rq.pin || rq.pin >= rq.prompt_len || !rq.prompt_sig.empty()) return 0;
+        return std::equal(sh.begin(), sh.end(), rq.prompt_ids.begin()) ? rq.pin : 0;
+    };
+    auto store_acquire = [&](ActiveReq& rq) {
+        // 1. the store that holds this conversation: the prompt continues it, or reaches its newest mark - the one before the last
+        //    token of the prompt it read last (the next turn, a retry).  A store that shares less - the same tools and system
+        //    prompt, an earlier part of the history - keeps its conversation: this request starts from its marks in another store (4).
+        int pick = -1, pick_use = 0;
+        for (int i = 0; i < P; ++i) {
+            const KvStore& st = stores[static_cast<size_t>(i)];
+            if (st.busy || st.prefix.empty()) continue;
+            // (a backend without ckpt_save: what its prompt-end or shared-prefix checkpoint serves counts as reaching the newest mark)
+            const int held_use = held_usable(st.prefix, st.sig, st.ckpts, rq, nullptr);
+            const int use = held_use > 0 ? held_use : std::max(pckpt_usable(st.pckpt, rq), shared_usable(st.shared, rq));
+            const int newest = held_use == 0 ? 0 : st.ckpts.empty() ? static_cast<int>(st.prefix.size()) : st.ckpts.back().pos;
+            if (use > 0 && use >= newest &&
+                (use > pick_use || (use == pick_use && pick >= 0 && st.used > stores[static_cast<size_t>(pick)].used))) {
+                pick = i;
+                pick_use = use;
+            }
+        }
+        // 2. else an empty store, 3. else the one used longest ago (the other conversations keep theirs)
+        if (pick < 0) for (int i = 0; i < P; ++i) if (!stores[static_cast<size_t>(i)].busy && stores[static_cast<size_t>(i)].prefix.empty()) { pick = i; break; }
+        if (pick < 0) for (int i = 0; i < P; ++i) {
+            if (stores[static_cast<size_t>(i)].busy) continue;
+            if (pick < 0 || stores[static_cast<size_t>(i)].used < stores[static_cast<size_t>(pick)].used) pick = i;
+        }
+        if (pick < 0) pick = rq.slot;                     // cannot happen: at most P requests, one store each
+        KvStore& st = stores[static_cast<size_t>(pick)];
+        st.busy = true;
+        rq.phys = pick;
+        rq.cached_prefix.swap(st.prefix);
+        rq.cached_sig.swap(st.sig);
+        rq.ckpts.swap(st.ckpts);
+        rq.prompt_ckpt_prefix.swap(st.pckpt);
+        rq.shared_prefix.swap(st.shared);
+        st.pckpt.clear();
+        st.shared.clear();
+        st.prefix.clear();
+        st.sig.clear();
+        st.ckpts.clear();
+        // 4. the chunked prefix cache across stores: when another store - idle, or running another request - has a checkpoint
+        //    deeper into this prompt than this store can serve, start from that one (its KV up to there is copied over)
+        const int own = held_usable(rq.cached_prefix, rq.cached_sig, rq.ckpts, rq, nullptr);
+        int src_phys = -1, src_pos = 0, src_handle = -1;
+        const std::vector<int32_t>* src_prefix = nullptr;
+        const std::unordered_map<int, uint64_t>* src_sig = nullptr;
+        auto consider = [&](int phys, const std::vector<int32_t>& pf, const std::unordered_map<int, uint64_t>& sg,
+                            const std::vector<ActiveReq::Ckpt>& ck) {
+            int h = -1;
+            const int use = held_usable(pf, sg, ck, rq, &h);
+            if (h >= 0 && use > src_pos) { src_phys = phys; src_pos = use; src_handle = h; src_prefix = &pf; src_sig = &sg; }
+        };
+        for (int i = 0; i < P; ++i) {
+            if (i == pick || stores[static_cast<size_t>(i)].busy) continue;
+            consider(i, stores[static_cast<size_t>(i)].prefix, stores[static_cast<size_t>(i)].sig, stores[static_cast<size_t>(i)].ckpts);
+        }
+        for (const auto& q : reqs) {
+            if (&q == &rq || !q.active || q.phys < 0 || q.phys == pick) continue;
+            consider(q.phys, q.cached_prefix, q.cached_sig, q.ckpts);
+        }
+        if (src_phys >= 0 && src_pos >= own + fork_min) {
+          if (!(backend.kv_copy_prefix(pick, src_phys, src_pos) && backend.ckpt_restore(pick, src_handle))) {
+            backend.reset_slot(pick);            // a copy that stopped half way: this store's KV is no longer what its tokens say
+            slot_forget(rq);
+          } else {
+            ckpt_drop_from(rq, 0);
+            rq.cached_prefix.assign(src_prefix->begin(), src_prefix->begin() + src_pos);
+            rq.cached_sig.clear();
+            for (const auto& kv : *src_sig) if (kv.first < src_pos) rq.cached_sig[kv.first] = kv.second;
+            const int h = backend.ckpt_save(pick);
+            if (h >= 0) rq.ckpts.push_back({src_pos, h});
+            fprintf(stderr, "[inkling2] prefix cache: %d tokens taken from store %d into store %d\n", src_pos, src_phys, pick);
+          }
+        }
+    };
+
+    // a picture seen before is not encoded again (3 to 6 s each; an agent sends the same screenshot with every later request)
+    struct ImgCacheEnt { uint64_t hash; ImageRec meta; std::vector<float> emb; uint64_t used; };
+    std::vector<ImgCacheEnt> img_cache;
+    uint64_t img_cache_tick = 0;
+    const int img_cache_max = ink_env_int("STRATA_INK_IMAGE_CACHE", 16, 0, 1024);
+
     auto finish_req = [&](ActiveReq& rq, const char* reason) {
+        if (std::string(reason) == "nonfinite" && rq.phys >= 0) {
+            // the state has taken in a token that gave non-finite logits: nothing of this store may be continued or copied
+            backend.reset_slot(rq.phys);
+            slot_forget(rq);
+        }
         const double dec_ms = (rq.decode_t0 > 0.0) ? (now_s() - rq.decode_t0) * 1000.0 : 0.0;
+        if (cache_trace && !rq.s.greedy() && rq.generated > 0)
+            fprintf(stderr, "[ink_serve] sampled drafting: generated=%d drafts=%d:%d cooldowns=%d plain=%.1fms drafted_tok=%.1fms len=%d\n",
+                    rq.generated, rq.drafts_offered, rq.drafts_accepted, rq.sp_cools, rq.sp_plain_ms, rq.sp_tok_ms, rq.sp_len);
         if (rq.is_solo) {
             // Emit full 9-field DONE line so server.py _parse_done() records drafts_accepted, drafts_offered, reused (#6633, #6627)!
             proto("DONE %d %d %.1f %.1f %s %d %d %d",
@@ -604,6 +860,7 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
     };
 
     auto prepare_req = [&](const ParsedGen& pg, ActiveReq& rq, std::string& err) -> bool {
+        for (auto& q : reqs) if (!q.active) store_release(q);     // the stores of the requests that have ended are free again
         rq.active = true;
         rq.is_solo = (pg.cmd == "GEN");
         rq.is_ext_gen = (pg.cmd == "GENERATE");
@@ -618,12 +875,14 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
         rq.slot_read = pg.slot_read;
         rq.drafts_offered = 0;
         rq.drafts_accepted = 0;
+        rq.sp_len = 3; rq.sp_cool = 0; rq.sp_steps = 0; rq.sp_cools = 0; rq.sp_fail = 0; rq.sp_win_tok = 0; rq.sp_win_ms = 0.0; rq.sp_plain_ms = 0.0; rq.sp_tok_ms = 0.0;
         rq.t_start = now_s();
         rq.prompt_ms = 0.0;
         rq.decode_t0 = 0.0;
         rq.gen_ids.clear();
         rq.img_embeds.clear();
         rq.prompt_img_idx.clear();
+        rq.prompt_sig.clear();
 
         if (!pg.images.empty()) {
             if (!images_ok) {
@@ -632,10 +891,22 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
                 return false;
             }
             std::vector<ImageRec> recs;
+            std::vector<uint64_t> hashes;
             for (const auto& f : pg.images) {
+                uint64_t hsh = 0;
+                ImgCacheEnt* hit = nullptr;
+                if (!ink_hash_file(f, hsh)) hsh = 0;         // (the hash also says which picture a position shows: taken with the cache off too)
+                if (img_cache_max > 0 && hsh != 0) {
+                    for (auto& e : img_cache) if (e.hash == hsh) { hit = &e; break; }
+                }
+                if (hit) hit->used = ++img_cache_tick;       // not the one a new picture of this request pushes out
                 ImageRec rc;
-                if (!prepare_picture(f, vprobe.c, rc, err)) { rq.active = false; return false; }
+                if (hit) {
+                    rc = hit->meta;                  // the sizes only: the pixels are not needed again
+                    rc.file = f;
+                } else if (!prepare_picture(f, vprobe.c, rc, err)) { rq.active = false; return false; }
                 recs.push_back(std::move(rc));
+                hashes.push_back(hsh);
             }
             if (!expand_image_pads(pg.ids, c.image_token_id, recs, rq.prompt_ids, rq.prompt_img_idx, err)) {
                 rq.active = false;
@@ -645,12 +916,47 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
             for (size_t k = 0; k < recs.size(); ++k) {
                 std::vector<float> emb;
                 std::string verr;
-                if (!backend.encode_image(recs[k], emb, verr)) {
-                    if (!cpu_vit.loaded && !cpu_vit.load(cfg.vision_path, err)) { rq.active = false; return false; }
-                    if (!cpu_vit.encode(recs[k], emb, err)) { rq.active = false; return false; }
+                ImgCacheEnt* hit = nullptr;
+                if (hashes[k] != 0) for (auto& e : img_cache) if (e.hash == hashes[k]) { hit = &e; break; }
+                if (hit) {
+                    hit->used = ++img_cache_tick;
+                    emb = hit->emb;
+                } else {
+                    if (recs[k].pixel_values.empty()) {      // it was a hit when the request was read, and has been pushed out since
+                        ImageRec again;
+                        if (!prepare_picture(pg.images[k], vprobe.c, again, err)) { rq.active = false; return false; }
+                        recs[k] = std::move(again);
+                    }
+                    if (!backend.encode_image(recs[k], emb, verr)) {
+                        if (!cpu_vit.loaded && !cpu_vit.load(cfg.vision_path, err)) { rq.active = false; return false; }
+                        if (!cpu_vit.encode(recs[k], emb, err)) { rq.active = false; return false; }
+                    }
+                    if (img_cache_max > 0 && hashes[k] != 0) {
+                        if (static_cast<int>(img_cache.size()) >= img_cache_max) {
+                            size_t old = 0;
+                            for (size_t e = 1; e < img_cache.size(); ++e) if (img_cache[e].used < img_cache[old].used) old = e;
+                            img_cache.erase(img_cache.begin() + static_cast<long>(old));
+                        }
+                        ImageRec meta = recs[k];
+                        std::vector<float>().swap(meta.pixel_values);
+                        img_cache.push_back({hashes[k], std::move(meta), emb, ++img_cache_tick});
+                    }
                 }
                 rq.img_embeds.insert(rq.img_embeds.end(), emb.begin(), emb.end());
                 proto("IMG %zu %d %d %d", k, recs[k].grid_h, recs[k].grid_w, recs[k].num_lm_tokens());
+            }
+            // which picture each pad position shows (prompt_img_idx counts the pads over all pictures of the prompt, in order)
+            {
+                std::vector<uint64_t> row_hash;
+                for (size_t k = 0; k < recs.size(); ++k) {
+                    const uint64_t hk = hashes[k] ? hashes[k] : (0xD1B54A32D192ED03ULL + static_cast<uint64_t>(rq.t_start * 1e6) + k);
+                    for (int j = 0; j < recs[k].num_lm_tokens(); ++j)
+                        row_hash.push_back((hk ^ (static_cast<uint64_t>(j) * 0x9E3779B97F4A7C15ULL)) | 1ULL);
+                }
+                for (size_t i = 0; i < rq.prompt_img_idx.size(); ++i) {
+                    const int r = rq.prompt_img_idx[i];
+                    if (r >= 0) rq.prompt_sig[static_cast<int>(i)] = (static_cast<size_t>(r) < row_hash.size()) ? row_hash[static_cast<size_t>(r)] : 1ULL;
+                }
             }
         } else {
             rq.prompt_ids = pg.ids;
@@ -668,65 +974,82 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
             rq.active = false;
             return false;
         }
-        // Prefix reuse check (#6627): prefer full cached_prefix match, else restore prompt-end checkpoint!
-        // Because prompt_ckpt_prefix is saved at prompt_len - 1 before generation, BOTH multi-turn follow-ups
-        // (even if hidden thinking or stop tokens differed) AND exact repeats reuse the full prior prompt!
+        rq.pin = pg.images.empty() ? pg.pin : 0;
+        rq.no_ckpt = pg.no_ckpt;
+        store_acquire(rq);
+        // Prefix reuse: how far this prompt agrees with what the store holds (tokens, and the same picture at every picture position)
         int reuse = 0;
-        if (pg.images.empty()) {
-            int full_match = 0;
-            if (!rq.cached_prefix.empty() && static_cast<int>(rq.cached_prefix.size()) < rq.prompt_len) {
-                const int clen = static_cast<int>(rq.cached_prefix.size());
-                int m = 0;
-                while (m < clen && rq.cached_prefix[m] == rq.prompt_ids[m]) ++m;
-                if (m == clen) full_match = clen;
+        if (!rq.cached_prefix.empty()) {
+            const int held = static_cast<int>(rq.cached_prefix.size());
+            const int lim = std::min(held, rq.prompt_len - 1);
+            int agree = 0;
+            while (agree < lim && rq.cached_prefix[agree] == rq.prompt_ids[agree]) ++agree;
+            for (const auto& kv : rq.cached_sig) {
+                if (kv.first >= agree) continue;
+                auto it = rq.prompt_sig.find(kv.first);
+                if (it == rq.prompt_sig.end() || it->second != kv.second) agree = kv.first;
             }
-            int ckpt_match = 0;
-            if (!rq.prompt_ckpt_prefix.empty() && static_cast<int>(rq.prompt_ckpt_prefix.size()) < rq.prompt_len) {
-                const int plen = static_cast<int>(rq.prompt_ckpt_prefix.size());
-                int m = 0;
-                while (m < plen && rq.prompt_ckpt_prefix[m] == rq.prompt_ids[m]) ++m;
-                if (m == plen) ckpt_match = plen;
+            for (const auto& kv : rq.prompt_sig) {
+                if (kv.first >= agree) continue;
+                auto it = rq.cached_sig.find(kv.first);
+                if (it == rq.cached_sig.end() || it->second != kv.second) agree = kv.first;
             }
-            int shared_match = 0;
-            if (pg.pin > 0 && static_cast<int>(rq.shared_prefix.size()) == pg.pin &&
-                std::equal(rq.shared_prefix.begin(), rq.shared_prefix.end(), rq.prompt_ids.begin())) {
-                shared_match = pg.pin;
+            if (agree == held) {
+                reuse = held;                    // the prompt continues the slot: nothing to restore
+            } else {
+                // the slot went on past where the prompt leaves it (SWA/ShortConv state): back to the nearest checkpoint before that
+                int pick = -1;
+                for (size_t i = 0; i < rq.ckpts.size(); ++i) if (rq.ckpts[i].pos <= agree) pick = static_cast<int>(i);
+                if (pick >= 0 && backend.ckpt_restore(rq.phys, rq.ckpts[static_cast<size_t>(pick)].handle)) {
+                    reuse = rq.ckpts[static_cast<size_t>(pick)].pos;
+                    ckpt_drop_from(rq, reuse + 1);
+                    rq.cached_prefix.resize(static_cast<size_t>(reuse));
+                    for (auto it = rq.cached_sig.begin(); it != rq.cached_sig.end();) {
+                        if (it->first >= reuse) it = rq.cached_sig.erase(it); else ++it;
+                    }
+                }
             }
-            if (shared_match > full_match && shared_match > ckpt_match &&
-                backend.restore_shared_checkpoint(rq.slot, shared_match)) {
-                reuse = shared_match;
-                rq.cached_prefix = rq.shared_prefix;
-                // The next branch overwrites global KV after the shared boundary.
-                rq.prompt_ckpt_prefix.clear();
-            } else if (full_match > 0 && full_match >= ckpt_match) {
-                reuse = full_match;
-            } else if (ckpt_match > 0 && backend.restore_prompt_checkpoint(rq.slot, ckpt_match)) {
-                reuse = ckpt_match;
+        }
+        // A backend without ckpt_save (ckpt_max == 0) may still have the prompt-end checkpoint (#6627): the prompt this store
+        // read last, up to its last token.  It serves the next turn and the same prompt sent again.  And the shared-prefix
+        // checkpoint (pin=N): the first N tokens, kept apart for a new conversation that starts the same way.  The deeper one first.
+        if (reuse == 0 && ckpt_max == 0) {
+            const int plen = pckpt_usable(rq.prompt_ckpt_prefix, rq);
+            const int shared = shared_usable(rq.shared_prefix, rq);
+            if (plen > 0 && plen >= shared && backend.restore_prompt_checkpoint(rq.phys, plen)) {
+                reuse = plen;
                 rq.cached_prefix = rq.prompt_ckpt_prefix;
-            } else if (shared_match > 0 && shared_match > full_match &&
-                       backend.restore_shared_checkpoint(rq.slot, shared_match)) {
-                reuse = shared_match;
+                rq.cached_sig.clear();
+            } else if (shared > 0 && backend.restore_shared_checkpoint(rq.phys, shared)) {
+                reuse = shared;
                 rq.cached_prefix = rq.shared_prefix;
-                rq.prompt_ckpt_prefix.clear();
-            } else if (full_match > 0) {
-                reuse = full_match;
+                rq.cached_sig.clear();
+                rq.prompt_ckpt_prefix.clear();       // the next branch overwrites the global KV after the shared boundary
+            } else if (plen > 0 && plen < shared && backend.restore_prompt_checkpoint(rq.phys, plen)) {
+                reuse = plen;
+                rq.cached_prefix = rq.prompt_ckpt_prefix;
+                rq.cached_sig.clear();
             }
+        }
+        if (cache_trace) {
+            std::string cks;
+            for (const auto& ck : rq.ckpts) cks += " " + std::to_string(ck.pos);
+            fprintf(stderr, "[inkling2] cache: slot %d store %d prompt %d reuse %d held %zu marks:%s\n", rq.slot, rq.phys, rq.prompt_len, reuse,
+                    rq.cached_prefix.size(), cks.c_str());
         }
         if (reuse == 0) {
-            backend.reset_slot(rq.slot);
-            rq.cached_prefix.clear();
-            rq.prompt_ckpt_prefix.clear();
-            rq.shared_prefix.clear();
+            backend.reset_slot(rq.phys);
+            slot_forget(rq);
         } else {
             proto("RESUME %d", reuse);
+            if (reuse == rq.prompt_len - 1 && !rq.no_ckpt) ckpt_take(rq, reuse);   // no read stops here any more: the mark for this prompt sent again
         }
         if (reuse < static_cast<int>(rq.shared_prefix.size())) rq.shared_prefix.clear();
-        rq.pin = pg.images.empty() ? pg.pin : 0;
-        rq.shared_pending = rq.pin > reuse && static_cast<int>(rq.shared_prefix.size()) != rq.pin;
+        rq.shared_pending = ckpt_max == 0 && rq.pin > reuse && static_cast<int>(rq.shared_prefix.size()) != rq.pin;
         rq.reused_tokens = reuse;
         // ckpt=0 (a later pass of one request: the thinking budget's wrap-up, a reply written again): the checkpoint of the
         // request's first pass, at the end of the prompt the client sends back, stays; this pass's longer prompt would replace it.
-        rq.ckpt_pending = (pg.images.empty() && !pg.no_ckpt && rq.prompt_len >= 16 && reuse < rq.prompt_len - 1);
+        rq.ckpt_pending = (ckpt_max == 0 && pg.images.empty() && !pg.no_ckpt && rq.prompt_len >= 16 && reuse < rq.prompt_len - 1);
         rq.prefill_pos = reuse;
         rq.cur_pos = reuse;
         rq.hist = rq.prompt_ids;
@@ -780,10 +1103,7 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
                 std::vector<int32_t> cids;
                 std::string cerr;
                 if (s >= 0 && s < P && !reqs[s].active && parse_id_list(line.substr(sp + 1), cids, cerr)) {
-                    backend.reset_slot(s);
-                    reqs[s].cached_prefix.clear();
-                    reqs[s].prompt_ckpt_prefix.clear();
-                    reqs[s].shared_prefix.clear();
+                    // (nothing is read here, and the store a request runs in is chosen when it comes: no store is reset for it)
                     proto("BCOK %d %zu", s, cids.size());
                 }
             }
@@ -873,21 +1193,32 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
             continue;
         }
 
-        // 2. Fast-path: Single-stream DSpark Adaptive Beam Tree (greedy) / Block-8 Rejection Sampling (temperature >= 0) (#6633)!
-        if (use_dspark && n_active == 1 && reqs[sole_slot].prefill_pos >= reqs[sole_slot].prompt_len &&
-            reqs[sole_slot].generated + 2 <= reqs[sole_slot].max_new &&
-            reqs[sole_slot].cur_pos + 8 < eff_max_ctx &&
-            !(spec_adapt && (reqs[sole_slot].gov_plain_left > 0 || reqs[sole_slot].gov_calib_left > 0))) {
+        // 2. Fast-path: Single-stream DSpark Adaptive Beam Tree / Block-8 speculative step (when decoding)
+        // Under sampling the drafted tokens are checked against a token sampled from the model's own distribution at each
+        // position (accepted while they are equal), so the output distribution is the model's.  It pays only where the
+        // model is confident, so a request first times plain steps, then drafts while a drafted token costs less.
+        // (STRATA_INK_SPEC=adapt / --draft-adapt: no drafting either while the governor runs its plain steps)
+        bool spec_now = use_dspark && n_active == 1 && reqs[sole_slot].prefill_pos >= reqs[sole_slot].prompt_len &&
+            reqs[sole_slot].generated + 2 <= reqs[sole_slot].max_new && reqs[sole_slot].cur_pos + 8 < eff_max_ctx &&
+            !(spec_adapt && (reqs[sole_slot].gov_plain_left > 0 || reqs[sole_slot].gov_calib_left > 0));
+        if (spec_now && !reqs[sole_slot].s.greedy()) {
             auto& rq = reqs[sole_slot];
-            // 2a. Zero-D2H fused greedy Beam Tree speculative step (when greedy, no penalties, and headroom >= 12)
-            if (spec_tree && rq.s.greedy() && !rq.s.penalties() && rq.cur_pos + 12 < eff_max_ctx) {
+            if (!sample_draft || rq.s.hold_budget > 0 || rq.sp_plain_ms <= 0.0) spec_now = false;
+            else if (rq.sp_cool > 0) { --rq.sp_cool; spec_now = false; }
+        }
+        if (spec_now) {
+            auto& rq = reqs[sole_slot];
+            const bool sampled = !rq.s.greedy();
+            const double t_spec0 = now_s();
+            // 2a. Zero-D2H fused greedy Beam Tree speculative step (when no penalties and headroom >= 12)
+            if (spec_tree && !sampled && !rq.s.penalties() && rq.cur_pos + 12 < eff_max_ctx) {
                 int32_t emitted[16]{};
                 int drafted = 0;
                 std::string serr;
                 const int max_emit = rq.max_new - rq.generated;
                 const double gov_t0 = now_s();
                 const int n_emit = backend.dspark_spec_step_greedy(
-                    rq.slot, rq.next_tok, rq.cur_pos, max_emit, emitted, &drafted, serr);
+                    rq.phys, rq.next_tok, rq.cur_pos, max_emit, emitted, &drafted, serr);
                 if (n_emit < 0) {
                     proto("ERR fatal GPU error: %s", serr.c_str());
                     return 1;
@@ -919,7 +1250,7 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
                         rq.cur_pos += n_emit;
                     } else {
                         if (kept < n_emit) {
-                            backend.rollback_slot(rq.slot, rq.cur_pos + kept);
+                            backend.rollback_slot(rq.phys, rq.cur_pos + kept);
                         }
                         rq.cur_pos += kept;
                         if (fin) finish_req(rq, fin);
@@ -929,16 +1260,16 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
             }
             int32_t draft_ids[8]{};
             std::string derr;
-            const int max_d = std::min(7, rq.max_new - rq.generated - 1);
+            const int max_d = std::min(sampled ? rq.sp_len : 7, rq.max_new - rq.generated - 1);
             const double gov_b0 = now_s();
-            int nd = backend.dspark_draft(rq.slot, rq.next_tok, rq.cur_pos, max_d, draft_ids, derr);
+            int nd = backend.dspark_draft(rq.phys, rq.next_tok, rq.cur_pos, max_d, draft_ids, derr);
             if (nd > 0) {
-                backend.snapshot_slot(rq.slot);
+                backend.snapshot_slot(rq.phys);
                 batch.clear();
                 batch.capture_taps = true;
-                batch.push(rq.slot, rq.cur_pos, rq.next_tok, true);
+                batch.push(rq.phys, rq.cur_pos, rq.next_tok, true);
                 for (int i = 0; i < nd; ++i) {
-                    batch.push(rq.slot, rq.cur_pos + 1 + i, draft_ids[i], true);
+                    batch.push(rq.phys, rq.cur_pos + 1 + i, draft_ids[i], true);
                 }
                 logits_buf.resize(static_cast<size_t>(nd + 1) * V);
                 std::string ferr;
@@ -953,11 +1284,6 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
                 for (int i = 0; i <= nd; ++i) {
                     float* lg = logits_buf.data() + static_cast<size_t>(i) * V;
                     if (!finite_logits(lg, V)) {
-                        // Never leave poisoned KV/ShortConv prefix cached across retries (#879)!
-                        rq.cached_prefix.clear();
-                        rq.prompt_ckpt_prefix.clear();
-                        rq.shared_prefix.clear();
-                        backend.reset_slot(rq.slot);
                         finish_req(rq, "nonfinite");
                         done = true;
                         break;
@@ -989,11 +1315,30 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
                 if (!done) {
                     if (accepted <= nd) {
                         // Rolled back to anchor + accepted tokens
-                        backend.rollback_slot(rq.slot, rq.cur_pos + accepted);
+                        backend.rollback_slot(rq.phys, rq.cur_pos + accepted);
                     }
                     rq.cur_pos += accepted;
                     if (spec_adapt) gov_step(rq, accepted, (now_s() - gov_b0) * 1000.0);
+                    if (sampled) {
+                        // accepted = tokens this step produced.  Draft longer after a full accept, shorter after a miss,
+                        // and go back to plain steps for a while when a drafted token costs more than a plain one.
+                        const double spec_ms = (now_s() - t_spec0) * 1000.0;
+                        rq.sp_win_ms += spec_ms; rq.sp_win_tok += accepted; ++rq.sp_steps;
+                        rq.sp_len = (accepted > nd) ? std::min(7, nd + 1) : std::max(1, std::min(7, accepted));
+                        if (rq.sp_steps >= 6) {      // judged over a window: one missed draft says little
+                            rq.sp_tok_ms = rq.sp_win_ms / std::max(1, rq.sp_win_tok);
+                            if (rq.sp_tok_ms > rq.sp_plain_ms) {
+                                rq.sp_cool = std::min(48, 8 << std::min(3, rq.sp_fail)); ++rq.sp_fail; ++rq.sp_cools; rq.sp_len = 2;
+                            } else {
+                                rq.sp_fail = 0;
+                            }
+                            rq.sp_steps = 0; rq.sp_win_ms = 0.0; rq.sp_win_tok = 0;
+                        }
+                    }
                 } else if (fin) {
+                    // the positions past the last kept token hold drafted tokens that were never accepted
+                    if (accepted <= nd) backend.rollback_slot(rq.phys, rq.cur_pos + accepted);
+                    rq.cur_pos += accepted;
                     finish_req(rq, fin);
                 }
                 continue;
@@ -1018,7 +1363,7 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
                 finish_req(rq, "length");
                 continue;
             }
-            batch.push(s, rq.cur_pos, rq.next_tok, true);
+            batch.push(rq.phys, rq.cur_pos, rq.next_tok, true);
             logit_slots.push_back(s);
             --token_budget;
         }
@@ -1036,8 +1381,17 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
                     auto& rq = reqs[s];
                     const int rem = rq.prompt_len - rq.prefill_pos;
                     int take = std::min(rem, per_slot);
-                    // #6627: Pause 1 token before prompt_len so we save the exact prompt-end checkpoint at prompt_len - 1!
-                    if (rq.ckpt_pending && rq.prefill_pos < rq.prompt_len - 1 && rq.prefill_pos + take >= rq.prompt_len) {
+                    if (ckpt_max > 0) {
+                        // the prompt's last token is read in a step of its own: the checkpoint taken before it serves the next turn
+                        // and also this same prompt sent again (a retry, a regenerate), which has to read at least one token
+                        if (rem > 1 && take == rem) take = rem - 1;
+                        // ... and a read stops at every multiple of the chunk, where a checkpoint is taken
+                        if (ckpt_every > 0) {
+                            const int next_mark = (rq.prefill_pos / ckpt_every + 1) * ckpt_every;
+                            if (rq.prefill_pos + take > next_mark) take = next_mark - rq.prefill_pos;
+                        }
+                    } else if (rq.ckpt_pending && rq.prefill_pos < rq.prompt_len - 1 && rq.prefill_pos + take >= rq.prompt_len) {
+                        // #6627: Pause 1 token before prompt_len so we save the exact prompt-end checkpoint at prompt_len - 1!
                         take = (rq.prompt_len - 1) - rq.prefill_pos;
                     }
                     if (rq.shared_pending && rq.prefill_pos < rq.pin) {
@@ -1051,7 +1405,7 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
                         const int p_i = rq.prefill_pos + k;
                         const bool is_last = (p_i == rq.prompt_len - 1);
                         int img_idx = (rq.prompt_img_idx[p_i] >= 0) ? (img_base + rq.prompt_img_idx[p_i]) : -1;
-                        batch.push(s, p_i, rq.prompt_ids[p_i], is_last, img_idx);
+                        batch.push(rq.phys, p_i, rq.prompt_ids[p_i], is_last, img_idx);
                         if (is_last) logit_slots.push_back(s);
                     }
                     prefill_fed[s] = take;
@@ -1087,8 +1441,9 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
                 const int cap = backend.kv_capacity_tokens();
                 bool ended = false;
                 for (int i = 0; i < batch.n_tokens; ++i) {
-                    const int s = batch.slot_ids[i];
-                    if (batch.pos[i] >= cap && s >= 0 && s < P && reqs[s].active) {
+                    int s = -1;       // the batch names the store (phys); the request that runs in it
+                    for (int q = 0; q < P; ++q) if (reqs[q].active && reqs[q].phys == batch.slot_ids[i]) { s = q; break; }
+                    if (batch.pos[i] >= cap && s >= 0) {
                         std::fprintf(stderr, "[ink-serve] slot %d ended at %d tokens: %s\n", s, batch.pos[i], ferr.c_str());
                         finish_req(reqs[s], "length");
                         ended = true;
@@ -1100,26 +1455,42 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
             return 1;
         }
         const double step_ms = (now_s() - t_step0) * 1000.0;
+        if (n_active == 1 && batch.n_tokens == 1 && !reqs[sole_slot].s.greedy()) {
+            auto& rq = reqs[sole_slot];
+            rq.sp_plain_ms = rq.sp_plain_ms <= 0.0 ? step_ms : 0.8 * rq.sp_plain_ms + 0.2 * step_ms;
+        }
 
         // Update prefill progress & emit PP lines (+ save prompt-end checkpoint at prompt_len - 1 for #6627!)
         for (int s = 0; s < P; ++s) {
             if (prefill_fed[s] > 0) {
                 auto& rq = reqs[s];
-                for (int k = 0; k < prefill_fed[s]; ++k) rq.cached_prefix.push_back(rq.prompt_ids[rq.prefill_pos + k]);
+                for (int k = 0; k < prefill_fed[s]; ++k) {
+                    rq.cached_prefix.push_back(rq.prompt_ids[rq.prefill_pos + k]);
+                    if (!rq.prompt_sig.empty()) {
+                        auto it = rq.prompt_sig.find(rq.prefill_pos + k);
+                        if (it != rq.prompt_sig.end()) rq.cached_sig[rq.prefill_pos + k] = it->second;
+                    }
+                }
                 rq.prefill_pos += prefill_fed[s];
                 rq.cur_pos = rq.prefill_pos;
                 rq.prompt_ms += step_ms;
                 if (rq.shared_pending && rq.prefill_pos == rq.pin) {
                     rq.shared_pending = false;
                     rq.shared_prefix.clear();
-                    if (backend.save_shared_checkpoint(rq.slot, rq.pin)) {
+                    if (backend.save_shared_checkpoint(rq.phys, rq.pin)) {
                         rq.shared_prefix.assign(rq.prompt_ids.begin(), rq.prompt_ids.begin() + rq.pin);
                     }
                 }
-                if (rq.ckpt_pending && rq.prefill_pos == rq.prompt_len - 1) {
+                // a checkpoint where the prompt ends (before anything is generated), and every ckpt_every tokens on the way there
+                // (ckpt=0, a continuation pass: no mark at this prompt's end, the marks of the request's first pass stay the newest)
+                if (ckpt_max > 0) {
+                    if ((rq.prefill_pos == rq.prompt_len - 1 && !rq.no_ckpt) || (ckpt_every > 0 && rq.prefill_pos % ckpt_every == 0)) ckpt_take(rq, rq.prefill_pos);
+                } else if (rq.ckpt_pending && rq.prefill_pos == rq.prompt_len - 1) {
                     rq.ckpt_pending = false;
-                    if (backend.save_prompt_checkpoint(rq.slot, rq.prefill_pos)) {
+                    if (backend.save_prompt_checkpoint(rq.phys, rq.prefill_pos)) {
                         rq.prompt_ckpt_prefix.assign(rq.prompt_ids.begin(), rq.prompt_ids.begin() + rq.prefill_pos);
+                    } else {
+                        rq.prompt_ckpt_prefix.clear();
                     }
                 }
                 if (rq.is_solo || !rq.admitted) {
@@ -1147,10 +1518,6 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
             float* lg = use_cand ? nullptr : logits_buf.data() + static_cast<size_t>(wi) * V;
             if (use_cand ? cand.finite[static_cast<size_t>(wi)] == 0 : !finite_logits(lg, V)) {
                 // Purge poisoned KV/ShortConv state so subsequent retries start clean (#879)!
-                rq.cached_prefix.clear();
-                rq.prompt_ckpt_prefix.clear();
-                rq.shared_prefix.clear();
-                backend.reset_slot(rq.slot);
                 finish_req(rq, "nonfinite");
                 continue;
             }
