@@ -4814,6 +4814,67 @@ class Service:
                              "card's temperature and power, and the log; a request after "
                              f"{self.FATAL_GPU_WINDOW_S / 60:g} minutes tries again")
 
+    CRASH_LOOP_MAX = 3           # deaths of the engine (of any kind) within CRASH_LOOP_WINDOW_S: after that it is not started again for a while
+    CRASH_LOOP_WINDOW_S = 600.0
+    #: The engine's own words for the Q8_0 tensor-core fault (#6713: `__ldg` on shared memory in the hyper-connection kernels of engine 0.1.66): the known workaround.
+    LAYER0_WORDS = ("layer 0 never rang", "operation not supported on global/shared address space")
+
+    def _engine_last_words(self) -> str:
+        """The last error line the engine left: its own ERR line, else the end of its log since this start; '' when there is none."""
+        eng = self.engine
+        why = str(getattr(eng, "last_err", None) or "").strip()
+        if not why and hasattr(eng, "_crash_tail"):
+            try:
+                why = str(eng._crash_tail() or "").strip()
+            except Exception:                                   # noqa: BLE001 - a message about a crash never fails on reading the log
+                why = ""
+        lines = [x.strip() for x in why.splitlines() if x.strip()]
+        return lines[-1][:300] if lines else ""
+
+    def _crash_loop_text(self, count: int, why: str) -> str:
+        eng = self.engine
+        log = getattr(eng, "log_path", None)
+        window = f"{self.CRASH_LOOP_WINDOW_S / 60:g} minutes"
+        text = (f"The engine stopped {count} times in {window}, so it is not started again for now (restarting does not help when the same fault "
+                f"repeats). The last thing it said: {why or 'nothing (see the log)'}. ")
+        if log:
+            text += f"Its log: {log}. "
+        seen = why
+        try:                                                    # the fault's own line may be above the last one
+            with open(log, "rb") as f:
+                f.seek(0, 2)
+                f.seek(max(0, f.tell() - 16384))
+                seen += " " + f.read().decode("utf-8", "replace")
+        except (OSError, TypeError, ValueError):
+            pass
+        if any(w in seen for w in self.LAYER0_WORDS):
+            text += ("This is the known fault of the Q8_0 tensor-core kernels (#6713, fixed in Strata 0.2.21): update to 0.2.21, or put "
+                     "STRATA_HC_Q8_TC=0 and STRATA_HC_Q8_BF16TC=0 (both) in the model's run config \"env\" and start the model again. ")
+        text += f"A request after {window} tries again; restarting the model from Strata does too."
+        return text
+
+    def _note_crash_loop(self, code) -> None:
+        """#6896 #6830 #6849: an engine that dies at its start or on its first request was started again by every request that found it
+        dead, for ever (375 starts in five hours, nothing said). Three deaths within ten minutes mean another start will not help: then
+        the server stops starting it and answers 503 with the engine's last error line, its log and, for the known Q8_0 fault, the way out.
+        One death counts once however many requests find it dead; after the window it tries again. (A fatal GPU error has its own
+        counter above, with its own words.)"""
+        pid = getattr(getattr(self.engine, "proc", None), "pid", None)
+        seen = self.__dict__.setdefault("_crash_pids", set())
+        times = self.__dict__.setdefault("_crash_times", [])
+        now = time.time()
+        times[:] = [t for t in times if now - t < self.CRASH_LOOP_WINDOW_S]
+        if pid is None:                                         # no process ever existed (the program is missing or cannot be run): that start already
+            return                                              # fails at once with its own plain reason ("the engine could not be started: ...")
+        if pid not in seen:
+            seen.add(pid)
+            times.append(now)
+        if len(times) >= self.CRASH_LOOP_MAX:
+            why = self._engine_last_words()
+            print(f"[strata] the engine stopped {len(times)} times in {self.CRASH_LOOP_WINDOW_S / 60:g} minutes (exit code {code}); "
+                  f"not starting it again for now. The last thing it said: {why or 'nothing'}", flush=True)
+            raise EngineDied(self._crash_loop_text(len(times), why))
+
     def ensure_loaded(self):
         """Start the engine if it is not running (unloaded, or it died - issue #27), after the before_load hook and
         the free-VRAM check.  The caller holds self.fifo."""
@@ -4894,6 +4955,7 @@ class Service:
         else:
             code = self.engine.exit_code() if hasattr(self.engine, "exit_code") else None
             self._note_fatal_gpu_exit(code)
+            self._note_crash_loop(code)
             print(f"[strata] the engine had stopped (exit code {code}); starting it again "
                   "(a minute or two) ...", flush=True)
         try:
