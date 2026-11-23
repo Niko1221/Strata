@@ -89,6 +89,12 @@ which is why the 16 GB card at 128K stays without the drafter.
   0.2 apart. With `--cpu-threads` the CPU also computes a check's experts that are not on the card (same answer as
   with every expert on the card over those 512 tokens); it pays only where most experts are on the card (the table
   under [What setup chooses](#what-setup-chooses)).
+- `--verify-tc 1` (off by default) runs the dense products of a `--spec` check and of the drafter (up to 8 vectors,
+  matrices of more than 256 rows) on tensor cores: fp16 weights and inputs, fp32 accumulation, the numbers of the
+  prompt path's products. Without it, those products follow plain decoding's order. CUDA cards of compute capability
+  8.0 or later. RTX 3090, every expert on the card, `--kv i8r`, a check at every step, three runs each: 36.0 ms per
+  check without, 32.6 with. With the expert routing fixed, the 8-token prompt lane is at mean KL 3.0e-7 against the
+  fp32 token path, against 8.7e-8 without the flag, top-1 100%.
 
 **Conversations and pictures**
 
