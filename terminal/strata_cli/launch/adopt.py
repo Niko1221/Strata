@@ -314,5 +314,13 @@ def plan(*, family: str, model: str, model_dir: Path, data_dir: Path, src: Path,
 
 
 def write(path: Path, cfg: dict) -> None:
+    # Adopting the same model again rebuilds its engine settings, but its MCP servers and limits are user settings.
+    try:
+        old = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (FileNotFoundError, ValueError):
+        old = None
+    if isinstance(old, dict):
+        saved_mcp = {key: old[key] for key in ("mcp_servers", "mcpServers", "mcp") if key in old}
+        cfg = {**saved_mcp, **cfg}
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     Path(path).write_text(json.dumps(cfg, indent=1) + "\n", encoding="utf-8")
