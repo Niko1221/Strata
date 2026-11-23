@@ -190,6 +190,7 @@ __global__ void __launch_bounds__(256) gr_write_norm_rs_kernel(float* __restrict
                                                                float* __restrict__ rs_out, uint16_t* __restrict__ xn16,
                                                                uint16_t* __restrict__ xn16_lo, int64_t ldx, int f16img) {
     __shared__ float sh[32];
+    __shared__ __align__(16) float xs[N];   // the vector path's row, read back in the scalar thread order
     const int64_t row = blockIdx.x;                 // t * 4 + c
     const int64_t t = row / HC;
     const int c = (int) (row % HC);
@@ -205,8 +206,11 @@ __global__ void __launch_bounds__(256) gr_write_norm_rs_kernel(float* __restrict
             const float4* w4 = reinterpret_cast<const float4*>(w + c * N);
             uint2* x4 = reinterpret_cast<uint2*>(xn16 + xo);
             uint2* xlo4 = xn16_lo ? reinterpret_cast<uint2*>(xn16_lo + xo) : nullptr;
+            // #6776: the vector loads and stores stay, but the sum of squares must keep the scalar path's order
+            // (thread t adds x*x over d = t + 256 k, k ascending), or rs differs in the last bit and the BF16 rows
+            // flip near-ties.  The written row goes through shared memory so each thread can read its own
+            // d = t + 256 k elements; x*x + ss is the same expression as gr_norm_rs_kernel's loop.
             float4 v[GRW_PER4];
-            float ss = 0.0f;
             int k = 0;
 #pragma unroll
             for (int d4 = threadIdx.x; d4 < N4; d4 += 256, ++k) {
@@ -216,8 +220,12 @@ __global__ void __launch_bounds__(256) gr_write_norm_rs_kernel(float* __restrict
                                               fmaf(bv.z, sc, rv.z), fmaf(bv.w, sc, rv.w));
                 r4[d4] = xv;
                 v[k] = xv;
-                ss += (xv.x * xv.x + xv.y * xv.y) + (xv.z * xv.z + xv.w * xv.w);
+                reinterpret_cast<float4*>(xs)[d4] = xv;
             }
+            __syncthreads();
+            float ss = 0.0f;
+#pragma unroll
+            for (int d = threadIdx.x; d < N; d += 256) ss += xs[d] * xs[d];
             const float rs = rsqrtf(block_sum(ss, sh) / (float) N + eps);
             if (threadIdx.x == 0) rs_out[row] = rs;
             k = 0;
