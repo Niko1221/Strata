@@ -314,7 +314,7 @@ from serve.server_parts.openai_api import (  # noqa: F401  (moved unchanged, fil
     openai_collect,
 )
 from serve.frontend import (CALL_END, CALL_START, FUNC_END, FUNC_START, THINK_END, ChatTemplate, Event, OutputParser,  # noqa: E402
-                            parser_for_template, anthropic_to_messages, anthropic_tools,
+                            INK_STOP, Ink2OutputParser, family_text, inkling_force, is_inkling, parser_for_template, anthropic_to_messages, anthropic_tools,
                             forced_call, images_of, literal_tags, mark_think_literals, openai_to_messages, require_messages,
                             tool_choice_of, unmark_think_literals)
 from serve.mcp import McpCancelled, hub_from_config, resolve_image_results  # noqa: E402
@@ -425,6 +425,31 @@ QUEUE_BEAT_S = 10.0         # a request waiting for the single turn sends a keep
 # it blocked once the socket buffers are full - and that thread holds the engine's turn.  A write that makes no progress
 # for this long ends the request as a disconnect (the engine is stopped, the turn given back).  0: no limit, as before.
 STREAM_WRITE_TIMEOUT_S = float(os.environ.get("STRATA_STREAM_WRITE_TIMEOUT_S", "60") or 0)
+INKLING_NO_IMAGES = ("this Inkling 2 engine does not read images (a GGUF model is text only here, or the engine predates "
+                     "images: one that reads them says images=1 at its start); send the text of the picture instead")
+
+def inkling_picture(data: bytes) -> bytes:
+    """A picture for strata-ink2: Vision.normalize, then a JPEG decoded by Pillow and handed over as an uncompressed BMP.
+    The reference (transformers' processor) decodes with libjpeg-turbo; the engine's stb_image decodes ~3 % of a photo's
+    pixels a few levels off, and that alone moves the ViT's output by ~2 % (measured on a 960x686 JPEG: rel-L2 2.4e-2
+    against 2.7e-5 for the same pixels as a PNG).  Pillow is the same libjpeg-turbo, so the pixels are the reference's."""
+    data = Vision.normalize(data)
+    if data[:3] != b"\xff\xd8\xff":
+        return data
+    try:
+        import io
+        from PIL import Image
+        im = Image.open(io.BytesIO(data), formats=["JPEG"])
+        im = im.convert("RGB")
+        out = io.BytesIO()
+        im.save(out, format="BMP")
+        return out.getvalue()
+    except ImportError:   # CBA: without Pillow the engine decodes the JPEG itself (stb_image: close, not the reference's pixels)
+        return data
+    except Exception as e:  # noqa: BLE001 - Pillow could not read what normalize passed through
+        raise ValueError(f"the image could not be read ({e})") from None
+
+
 # Reads that had no timeout (#1317).  A blocking read of the image encoder's pipe or of the engine's READY line that
 # never returned held the request turn for good: the engine then sat idle in its command loop, so no watchdog could
 # fire and every later request queued behind it (the "lost step" class of #481).  Generous on purpose: a cold model
@@ -4161,10 +4186,26 @@ class Service:
                 else PromptEncoder(tokenizer)
 
     def set_family(self, family: str | None) -> None:
-        """The model family (None: the Qwen form this server was written for)."""
+        """The model family (None: the Qwen form this server was written for).  Inkling 2 has two engines on the same template:
+        strata-inkling (Service.inkling, by its program's name: upstream's dialect, thinking off) and strata-ink2, any other
+        engine on Inkling 2's template (its effort words, Ink2OutputParser and the settings below)."""
+        ink2 = family in (None, "inkling2") and not getattr(self, "inkling", False) and is_inkling(getattr(self.template, "source", None))
+        if ink2:
+            family = "inkling2"
+            self.parser_cls = Ink2OutputParser
+            # CBA: the tool-markup retry writes a Qwen user turn into the reply; off until it has an Inkling spelling
+            self.tool_markup_retry = False
+            # its reply ends with <|content_model_end_sampling|> (generation_config.json's eos); <|endoftext|> is one token
+            # in its o200k vocabulary too, but it is the pad, so end_token_ids' Qwen rule would miss the end
+            self.stop_ids = set(self.tok.encode(INK_STOP, parse_special=True))
+            self._force_text = inkling_force
         self.family = family
         import serve.frontend as _frontend
-        _frontend.use_family(family)
+        _frontend.use_family(family, thinks=ink2)
+        if ink2:   # /props: upstream sets False for strata-inkling (it drops the thinking); strata-ink2 keeps it, as the template does
+            hist = [{"role": "user", "content": "q"}, {"role": "assistant", "content": "a", "reasoning_content": "strata_caps_reasoning"},
+                    {"role": "user", "content": "q"}]
+            self.template.caps = {**self.template.caps, "supports_preserve_reasoning": "strata_caps_reasoning" in self.template.render(hist)}
 
     _force_text = None
 
@@ -4431,10 +4472,16 @@ class Service:
 
     def has_vision(self) -> bool:
         """Whether this server can read images: either a separate vision encoder (Flash-Next)
-        or an in-process Hy4-Flash / Inkling-2-Mini engine that reported `images=1`."""
+        or an engine that reads them itself (engine_reads_images) and reported `images=1`."""
         if self.vision is not None:
             return True
-        return bool((self.hy4 or self.inkling) and (getattr(self.engine, "info", None) or {}).get("images") == 1)
+        return self.engine_reads_images() and (getattr(self.engine, "info", None) or {}).get("images") == 1
+
+    def engine_reads_images(self) -> bool:
+        """The engine decodes and encodes the pictures itself, from the files named by `image=<path>` keys on its GEN
+        line (protocol 1.6b), never through the separate picture reader: Hy4-Flash, and both Inkling 2 engines (strata-ink2's
+        ViT runs in the engine; the template's one <|unused_200054|> per picture becomes rows x cols image tokens there)."""
+        return bool(self.hy4 or self.inkling or self.family == "inkling2")
 
     def reasoning_budget(self, req) -> int | None:
         """#123: the most tokens this request may think, or None: the request's `reasoning_budget_tokens` (or, as
@@ -5300,14 +5347,16 @@ class Service:
         images = images_of(messages)
         self.embeddings.hy4 = self._drop_hy4_images(getattr(self.embeddings, "hy4", None))
         self.embeddings.inkling = self._drop_hy4_images(getattr(self.embeddings, "inkling", None))      # an earlier pass of this request left its files: gone first
-        if images and (self.hy4 or self.inkling):                     # Hy4-Flash / Inkling-2-Mini: in-process engine reads pictures directly (INFO images=1)
+        if images and self.engine_reads_images():                     # Hy4-Flash, Inkling 2: the engine reads the pictures itself (INFO images=1); never the separate picture reader
             kind_mod = inkling_kind if self.inkling else hy4_kind
             if (getattr(self.engine, "info", None) or {}).get("images") != 1:
-                raise ValueError(kind_mod.NO_IMAGES_REPLY)
+                raise ValueError(INKLING_NO_IMAGES if self.family == "inkling2" and not self.inkling else kind_mod.NO_IMAGES_REPLY)
             if self.offline and any(src.startswith(("http://", "https://")) for src in images):
                 raise ValueError("offline mode cannot download an image URL; send a data: image instead")
+            # strata-ink2: Pillow's JPEG pixels (inkling_picture), its files named like Hy4-Flash's (the image= keys of the GEN line)
             written = kind_mod.write_images(
-                images, lambda s: fetched[s] if s in fetched else Vision.load(s), Vision.normalize, cancel)
+                images, lambda s: fetched[s] if s in fetched else Vision.load(s),
+                inkling_picture if self.family == "inkling2" and not self.inkling else Vision.normalize, cancel)
             if self.inkling:
                 self.embeddings.inkling = written
             else:
@@ -5964,7 +6013,7 @@ class Service:
                             # #1053: the model wrote its reasoning and stopped before </think>: the client would get
                             # an empty answer.  Close the thinking once and let it answer.
                             close_retried = True
-                            extra = self.tok.encode(REASONING_CLOSE, parse_special=True)
+                            extra = self.tok.encode(family_text(REASONING_CLOSE), parse_special=True)
                             if max_new - n - len(extra) >= 1:
                                 print("[strata] the reply ended inside its thinking with no answer: closing the "
                                       "thinking once and continuing (reasoning_close_retry)", flush=True)
@@ -6041,9 +6090,10 @@ class Service:
                             budget = st["thinking_budget"] = None
                             text = REASONING_WRAP_UP + (force or "")
                         else:
-                            text = "\n" * (2 - (len(tail) - len(tail.rstrip("\n")))) + force
+                            text = force if self.family == "inkling2" else \
+                                "\n" * (2 - (len(tail) - len(tail.rstrip("\n")))) + force   # (Inkling: no blank line between messages)
                         force = None
-                        extra = self.tok.encode(text, parse_special=True)
+                        extra = self.tok.encode(family_text(text), parse_special=True)
                         if max_new - n - len(extra) < 1:
                             break                       # no room left to answer: "length", as without a budget
                         if wrap:
@@ -8850,7 +8900,8 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
         except (OSError, ValueError):
             pass
         try:
-            tok = ST.Tokenizer(tokens, merges, types, tcfg.get("pre") or "qwen35", tcfg.get("special_ids") or None)
+            tok = ST.Tokenizer(tokens, merges, types, tcfg.get("pre") or "qwen35", tcfg.get("special_ids") or None,
+                               bool(tcfg.get("ignore_merges")))
         except ST.UnknownPreTokenizer as e:             # a model with its own splitting rule: stop here, never split with another's
             ap.error(f"the model's tokenizer ({tpath}): {e}")
     hub = hub_from_config(cfg, a.mcp_config)            # before the minutes of loading: a bad entry stops here

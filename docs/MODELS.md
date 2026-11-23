@@ -284,6 +284,59 @@ drafting and picture reading (`Inkling-2-Mini-Vision.strata`, 0.64 GB).
 strata launch --family inkling-2-mini --model SQ-15
 ```
 
+### The official checkpoint (`strata-ink2`)
+
+Setup's Inkling family also takes the official checkpoint (`./setup.sh --family inkling-2-mini --model official`,
+or `--family inkling2` for short), which runs its own engine, `strata-ink2`; the rest of this section is about it.
+
+[Inkling-2-Mini](https://huggingface.co/thinkingmachines/Inkling-2-Mini) by Thinking Machines Lab (Apache 2.0): a
+mixture of experts with 128 experts per layer, 8 active, NVFP4 and MXFP8 experts. Strata reads the published
+checkpoint as it is (a 20.2 GB download at a pinned revision, every file checked against its size and SHA-256) with
+its own engine program, `strata-ink2`, which setup compiles for your card. NVIDIA cards (RTX 20 series or newer) and AMD RDNA cards (ROCm) on
+Linux only so far; it is not in the app or in `strata launch` yet. It reads pictures itself (send them in the chat
+page or as `image_url`; nothing is loaded for them until the first one, then about 0.65 GB of RAM). A request's
+`reasoning_effort` is the template's thinking level: a word (none 0.0, minimal 0.1, low 0.2, medium 0.7, high 0.9,
+xhigh 0.99) or the level itself, 0.0 to 0.99; 0.9 when the request gives none. The model still thinks briefly at
+none. Setup also
+gives it a conversation cache in RAM (`--conversation-cache-mib`, 4096 or 2048 MiB depending on the RAM left, off
+with a note below that): an agent's next turn then reads only what is new, even when the agent drops the model's
+reasoning from its history.
+
+```sh
+./setup.sh --family inkling2
+```
+
+Setup picks how it runs from the card:
+
+- **Every expert fits on the card** (24 GB cards up to a 64K context): they stay there, with the checkpoint's draft
+  layer (`mtp.safetensors`) for faster answers. Measured on an RTX 3090: 19.3 GiB of graphics memory at an 8K context,
+  21.2 GiB at 64K; the conversation memory takes 36,864 bytes a token.
+- **Otherwise** (8 to 16 GB cards, or a longer context): the card keeps the most used experts and the others stay in
+  RAM (about 32 GB of RAM; the engine's peak was 16.8 GiB); the CPU computes the experts a token needs that the card
+  does not hold, one thread per physical core of each CPU socket (`--cpu-threads`, AVX2 needed). The conversation
+  memory grows into the card as it is used (`--kv-grow 1`) and gives the room back to the experts afterwards.
+  `--vram-reserve-mib N` keeps N MiB of the card free for other programs (1500 by default on a card that drives a
+  display, less where the card has no room for it).
+
+  The engine keeps at least 64 expert slots of each kind (about 2.5 GB) at every point of a conversation: a long
+  prompt is read in smaller pieces near that limit, and a prompt that does not fit even then gets a plain error ("the
+  context is full") while the model keeps running. Setup picks the longest context that never reaches that point,
+  counting what a desktop already holds on the card, with 16-bit conversation memory where it reaches 32K and 8-bit
+  (`--kv i8r`, the closest 8-bit format to full precision) where it does not:
+
+  | Card | Context | Conversation memory |
+  | --- | ---: | --- |
+  | 8 GB, nothing else on it | 32K | 16-bit |
+  | 8 GB driving a desktop | 32K | 8-bit (`i8r`) |
+  | 12 GB driving a desktop | 64K | 16-bit |
+  | 16 GB driving a desktop | 128K | 16-bit |
+
+  Measured on an RTX 3090 set up as an 8 GB card with a 500 MiB desktop and 8-bit memory: a 30K-token prompt read
+  and answered (83 s to the end of the answer's 1,450 tokens), a 55K-token prompt refused with "the context is full"
+  after 41K tokens, and the next request answered by the same engine.
+
+The run config (`strata-inkling-2-mini-official.json`) holds the engine's arguments; they can be edited there. Every flag and its measured effect: [INKLING2.md](INKLING2.md).
+
 ## Adding or switching models
 
 - **In the app:** the Models page lists every model with its size and whether it fits your computer. Pick one and press the install button.

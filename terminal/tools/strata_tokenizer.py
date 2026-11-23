@@ -94,6 +94,7 @@ O200K_PATTERN = (
     r"|\s+"
 )
 O200K_PRES = ("o200k", "o200k_base", "gpt-4o", "inkling", "inkling2")
+GPT4O_PATTERN = O200K_PATTERN   # the name tools/inkling2/tok_check.py checks against the model's tokenizer.json
 
 
 # The `qwen2` pre-tokenizer (Qwen2 / Qwen3-Next; llama.cpp LLAMA_VOCAB_PRE_TYPE_QWEN2,
@@ -154,10 +155,12 @@ def pre_tokenizer_kind(pre) -> str | None:
 
 class Tokenizer:
     def __init__(self, tokens: list[str], merges: list[str], token_types: list[int] | None = None,
-                 pre: str = "qwen35", special_ids: dict[str, int] | None = None):
+                 pre: str = "qwen35", special_ids: dict[str, int] | None = None, ignore_merges: bool = False):
         self.tokens = tokens
         self.pre = pre
-        self.ignore_merges = pre in O200K_PRES
+        # HF BPE `ignore_merges` (a pack's tokenizer.json says it; the o200k rule implies it): a pre-token piece that is
+        # itself a vocab entry is that one token, whatever the merges would make of it
+        self.ignore_merges = bool(ignore_merges) or pre in O200K_PRES
         if pre_tokenizer_kind(pre) is None:
             # Not a fallback: another model's pre-tokenizer splits text differently, so encoding with the qwen35 rule would
             # change every prompt without any error (llama.cpp has one rule per `tokenizer.ggml.pre` type for the same reason).
@@ -286,7 +289,7 @@ class Tokenizer:
                     sp["tokenizer.ggml.eos_token_id"] = int(ids[eos])
             except Exception:
                 pass
-        return cls([str(x) for x in tokens], merges, [types.get(i, 1) for i in range(n)], pre, sp)
+        return cls([str(x) for x in tokens], merges, [types.get(i, 1) for i in range(n)], pre, sp, bool(m.get("ignore_merges")))
 
     # -------------------------------------------------------------- the algorithm
     def _bpe(self, word: str) -> list[str]:

@@ -100,7 +100,10 @@ WORDS = {
 
 def family_of(cfg: dict, gguf: Path | None, asked: str | None = None) -> str | None:
     """The family whose picture file this model uses; None for one this step does not handle. ``asked`` is the catalog's family (the app knows it);
-    without it the model's own file name and name decide (Swift's files are called Swift-..., Qwen3.6's start with Qwen3.6)."""
+    without it the model's own file name and name decide (Swift's files are called Swift-..., Qwen3.6's start with Qwen3.6).
+    strata-ink2 (the official Inkling checkpoint): "inkling2", whatever was asked - it reads the ViT from the checkpoint folder itself."""
+    if Path(str(cfg.get("exe") or "").replace("\\", "/")).name.lower().startswith("strata-ink2"):
+        return "inkling2"
     if asked:
         low = asked.lower()
         if low in ("hy4-flash", "inkling-2-mini"):
@@ -448,6 +451,9 @@ def fetch(config_path: str | Path, *, engine_dir: str | Path, asked: str = "yes"
     foot = discovery.footprint(cfg, config)
     gguf = foot.weights[0] if foot.weights else None
     name = family_of(cfg, gguf, family)
+    if name == "inkling2":                             # strata-ink2: nothing to fetch, no --vision file (never Inkling-2-Mini-Vision.strata)
+        return {"mmproj": None, "vision": None, "fetched": False, "family": name, "data_dir": None,
+                "note": "strata-ink2 reads pictures with the ViT of its checkpoint folder: nothing to download"}
     if name == "hy4-flash":
         return _fetch_hy4(config, cfg, foot, data_dir=data_dir, progress=progress, cancel=cancel, endpoint=endpoint, online=online)
     if name == "inkling-2-mini":

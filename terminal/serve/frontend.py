@@ -82,7 +82,8 @@ class ChatTemplate:
         elif self._is_inkling2:
             from serve import inkling_dialect
             messages = inkling_dialect.prepare_messages(messages)
-            kwargs = inkling_dialect.template_kwargs(kwargs)
+            if not _INK_THINKS:                         # strata-inkling runs thinking off; strata-ink2 takes the effort words
+                kwargs = inkling_dialect.template_kwargs(kwargs)
         return self.template.render(messages=messages, tools=tools, add_generation_prompt=add_generation_prompt,
                                     **kwargs)
 
@@ -183,23 +184,54 @@ EFFORT = {"none": None, "off": None, "minimal": None, "disabled": None, "false":
 
 
 _EFFORT_QWEN = dict(EFFORT)
-_FAMILY: str | None = None
+# Inkling 2's template takes the words themselves (none 0.0, minimal 0.1, low 0.2, medium 0.7, high 0.9, xhigh/max 0.99)
+_EFFORT_INKLING = {"none": "none", "off": "none", "minimal": "minimal", "disabled": "none", "false": "none",
+                   "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max", "maximum": "max"}
+_FAMILY: str | None = None   # the model family this server runs (None: the Qwen form)
+# Inkling 2 has two engines on the same official template: strata-inkling runs it thinking off (serve/inkling_dialect.py, the default
+# here), strata-ink2 takes the template's effort words (Service.set_family turns this on for it)
+_INK_THINKS = False
 
 
-def use_family(family: str | None) -> None:
-    """The reasoning-effort words of the model family this server runs (module state, like ENV_TO_USER): Qwen, Hy4-Flash, or Inkling-2-Mini."""
-    global _FAMILY
-    _FAMILY = family
+def is_inkling(source: str | None) -> bool:
+    """Inkling 2's chat template: messages are <|message_model|><|content_KIND|>...<|end_message|>."""
+    return INK_THINK in (source or "")
+
+
+def use_family(family: str | None, thinks: bool = False) -> None:
+    """The reasoning-effort words of the model family this server runs (module state, like ENV_TO_USER): the Qwen table,
+    Hy4-Flash's (its template knows no_think, high and max: serve/hy4_dialect.py) or Inkling 2's."""
+    global _FAMILY, _INK_THINKS
+    _FAMILY, _INK_THINKS = family, family == "inkling2" and thinks
     EFFORT.clear()
     if family == "hy4":
         from serve import hy4_dialect
         EFFORT.update(hy4_dialect.EFFORT)
         return
-    if family == "inkling2":
+    if family == "inkling2" and not _INK_THINKS:
         from serve import inkling_dialect
         EFFORT.update(inkling_dialect.EFFORT)
         return
-    EFFORT.update(_EFFORT_QWEN)
+    EFFORT.update(_EFFORT_INKLING if family == "inkling2" else _EFFORT_QWEN)
+
+
+def family_text(text: str) -> str:
+    """Text the server writes into the reply itself (the thinking's close, a wrap-up) in this family's spelling: for Inkling 2,
+    </think> and the blank line after it are the end of the thinking message and the start of the text one."""
+    if _FAMILY != "inkling2":
+        return text
+    return re.sub(r"\n?</think>\n*", INK_CLOSE, text)
+
+
+def inkling_force(force: str | None) -> str | None:
+    """forced_call's opening (`<tool_call>\\n<function=NAME>\\n`) in Inkling 2's form: the call message's header and the start
+    of its JSON body, so the model can only write the arguments."""
+    if not force:
+        return force
+    m = re.search(r"<function=([^>\n]*)>", force)
+    if m is None:   # CBA: "required" among several tools opens a model message only; the model may still write text
+        return INK_HEAD
+    return f'{INK_HEAD}{m.group(1)}{INK_CALL}{{"name":{json.dumps(m.group(1), ensure_ascii=False)},"args":'
 
 
 def effort_kwargs(value) -> dict:
@@ -207,14 +239,25 @@ def effort_kwargs(value) -> dict:
     if value is None or value == "":
         return {}
     if value is False:
-        return {"reasoning_effort": "none"} if _FAMILY == "inkling2" else {"enable_thinking": False}
+        if _FAMILY != "inkling2":
+            return {"enable_thinking": False}
+        value = "false"   # Inkling 2's template takes the words: "false" is its "none"
     if _FAMILY == "hy4":
         from serve import hy4_dialect
         mode = hy4_dialect.normalize_effort(value)
         return {"enable_thinking": False} if mode == "no_think" else {"reasoning_effort": mode}
-    if _FAMILY == "inkling2":
+    if _FAMILY == "inkling2" and not _INK_THINKS:
         from serve import inkling_dialect
         return {"reasoning_effort": inkling_dialect.normalize_effort(value)}
+    if _FAMILY == "inkling2" and not isinstance(value, bool):   # its template also takes the level itself, 0.0 to 0.99
+        try:
+            level = float(value)
+        except (TypeError, ValueError):
+            level = None
+        if level is not None:
+            if not 0.0 <= level <= 0.99:
+                raise ValueError(f"reasoning effort {value!r}: Inkling 2 takes a level from 0.0 to 0.99, or none, minimal, low, medium, high, xhigh")
+            return {"reasoning_effort": level}
     key = str(value).strip().lower()
     if key not in EFFORT:
         raise ValueError(f"unknown reasoning effort {value!r}: use none, low, medium or high")
@@ -660,10 +703,16 @@ def _order_chat_tool_results(messages: list[dict]) -> None:
                 rank = {cid: n for n, cid in enumerate(calls)}
                 messages[i:j] = sorted(messages[i:j], key=lambda m: rank[m["_call_id"]])
         i = j
+    names = {}                                  # Inkling 2 heads a result with its tool's name (<|message_tool|>NAME)
     for message in messages:
-        message.pop("_call_id", None)
+        cid = message.pop("_call_id", None)
+        if (_FAMILY == "inkling2" and message["role"] == "tool" and not message.get("name") and isinstance(cid, str)
+                and cid in names):
+            message["name"] = names[cid]
         for call in message.get("tool_calls") or []:
-            call.pop("_call_id", None)
+            cid = call.pop("_call_id", None)
+            if isinstance(cid, str):            # a client's id may be anything (a list, a number)
+                names[cid] = call["function"].get("name")
 
 
 def openai_to_messages(req: dict) -> tuple[list[dict], list[dict] | None, dict]:
@@ -680,6 +729,8 @@ def openai_to_messages(req: dict) -> tuple[list[dict], list[dict] | None, dict]:
         out = {"role": role, "content": _parts_of(content) if images else _text_of(content)}
         if role == "tool":
             out["_call_id"] = m.get("tool_call_id")
+            if _FAMILY == "inkling2" and isinstance(m.get("name"), str) and m["name"]:
+                out["name"] = m["name"]
         if m.get("reasoning_content"):
             out["reasoning_content"] = m["reasoning_content"]
         if m.get("tool_calls"):
@@ -710,7 +761,7 @@ def openai_to_messages(req: dict) -> tuple[list[dict], list[dict] | None, dict]:
         raise ValueError("chat_template_kwargs must be an object")
     for k, v in ctk.items():
         if k == "enable_thinking" and not v:
-            kwargs = {"enable_thinking": False}
+            kwargs = effort_kwargs(False)               # Inkling 2: its template reads no enable_thinking, only the effort "none"
         elif k in ("reasoning_effort", "thinking_mode") and "enable_thinking" not in kwargs:
             kwargs.update(effort_kwargs(v))
     return _env_to_user(_late_system_to_user(messages)), tools, kwargs
@@ -911,7 +962,7 @@ def anthropic_to_messages(req: dict, think_unasked: bool = True) -> tuple[list[d
     if isinstance(bt, int) and not isinstance(bt, bool) and bt > 0 and req.get("reasoning_budget_tokens") is None:
         req["reasoning_budget_tokens"] = bt
     if isinstance(thinking, dict) and thinking.get("type") == "disabled":
-        kwargs["enable_thinking"] = False
+        kwargs.update(effort_kwargs(False))
     elif effort:
         kwargs.update(effort_kwargs(effort))
     elif isinstance(thinking, dict) and thinking.get("budget_tokens"):
@@ -923,7 +974,7 @@ def anthropic_to_messages(req: dict, think_unasked: bool = True) -> tuple[list[d
         # and allow a few dozen tokens, which the model otherwise spent thinking and answered with no text at all.
         # A config's reasoning_effort still applies: Service.with_shared sets output_config before this runs.  A
         # request that gives its own reasoning_budget_tokens (#123) asks for thinking, so it thinks as before.
-        kwargs["enable_thinking"] = False
+        kwargs.update(effort_kwargs(False))
     return _env_to_user(_late_system_to_user(messages)), tools, kwargs
 
 
@@ -943,6 +994,10 @@ class Event:
 
 
 THINK_END = "</think>"
+# Inkling 2's message markers (Ink2OutputParser): a header, three content kinds, a message's end, the reply's end
+INK_HEAD, INK_THINK, INK_TEXT = "<|message_model|>", "<|content_thinking|>", "<|content_text|>"
+INK_CALL, INK_END, INK_STOP = "<|content_invoke_tool_json|>", "<|end_message|>", "<|content_model_end_sampling|>"
+INK_CLOSE = INK_END + INK_HEAD + INK_TEXT       # the thinking's end as the model writes it
 CALL_START = "<tool_call>"
 CALL_END = "</tool_call>"
 FUNCTION_CALLS_START = "<function_calls>"     # #6022: Claude's dialect's wrapper around its `<invoke>` calls (recover)
@@ -3032,6 +3087,93 @@ class JsonOutputParser(OutputParser):
                  recover: bool = False, declared_only: bool = False, deferred: bool = False):
         super().__init__(thinking=thinking, tools=tools, stream_tools=stream_tools, recover=True,
                          declared_only=declared_only, deferred=deferred)
+
+
+class Ink2OutputParser(JsonOutputParser):
+    """strata-ink2's parser (Service.set_family picks it; strata-inkling keeps InklingOutputParser, which drops the thinking).
+    Inkling 2 writes its reply as messages, <|message_model|>[NAME]<|content_KIND|>BODY<|end_message|>, KIND thinking, text
+    or invoke_tool_json (BODY {"name": NAME, "args": {...}}), and ends with <|content_model_end_sampling|>.  The markers become the
+    form JsonOutputParser reads (the thinking closed by </think>, each call a <tool_call> JSON) and the rest is its own."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._raw, self._sec, self._closed, self._call = "", None, False, ""
+
+    def feed(self, delta: str) -> list[Event]:
+        if not delta and not self._raw:
+            return super().feed("")
+        self._raw += delta
+        out = []
+        while self._raw:
+            i = self._raw.find("<|")
+            if i != 0:
+                text = self._raw[:i] if i > 0 else self._raw[:-1] if self._raw.endswith("<") else self._raw
+                if not text:                    # a lone "<" that may start a marker: held back
+                    break
+                self._raw = self._raw[len(text):]
+                out += self._body(text)
+                continue
+            j = self._raw.find("|>")
+            if j < 0:
+                if len(self._raw) < 48:         # a marker split across deltas: held back until it is whole
+                    break
+                out += self._body(self._raw[:2])
+                self._raw = self._raw[2:]
+                continue
+            tag, self._raw = self._raw[:j + 2], self._raw[j + 2:]
+            out += self._marker(tag)
+        return out
+
+    def _body(self, text: str) -> list[Event]:
+        if self._sec in ("think", "text"):
+            return super().feed(text)
+        if self._sec == "call":
+            self._call += text
+        return []                               # the header's NAME (it is in the call's JSON too)
+
+    def _close(self) -> list[Event]:
+        if self._closed:
+            return []
+        self._closed = True
+        return super().feed(THINK_END) if self.state == "reasoning" else []
+
+    def _marker(self, tag: str) -> list[Event]:
+        if tag == INK_HEAD or tag == INK_STOP:
+            self._sec = None
+        elif tag == INK_THINK:
+            self._sec = "think"
+        elif tag == INK_TEXT:
+            out, self._sec = self._close(), "text"
+            return out
+        elif tag == INK_CALL:
+            out, self._sec, self._call = self._close(), "call", ""
+            return out
+        elif tag == INK_END:
+            sec, self._sec = self._sec, None
+            if sec == "think":
+                return self._close()
+            if sec == "call":
+                return super().feed(self._wrap(self._call))
+        elif self._sec in ("think", "text"):
+            return super().feed(tag)            # not a marker of the reply's form: text
+        return []
+
+    @staticmethod
+    def _wrap(body: str) -> str:
+        try:
+            call = json.loads(body)
+            body = json.dumps({"name": call["name"], "arguments": call.get("args", {})}, ensure_ascii=False)
+        except (ValueError, TypeError, KeyError):
+            pass                                # not the form: JsonOutputParser's recovery reads it, or it stays text
+        return f"{CALL_START}\n{body}\n{CALL_END}"
+
+    def finish(self, reason: str | None = None) -> list[Event]:
+        raw, self._raw = self._raw, ""
+        out = self._body(raw) if raw else []
+        if self._sec == "call" and self._call:  # cut inside a call: its opening and body, unclosed, as JsonOutputParser has them
+            out += super().feed(f"{CALL_START}\n{self._call}")
+        self._sec, self._call = None, ""
+        return out + super().finish(reason)
 
 
 class Hy4OutputParser(OutputParser):

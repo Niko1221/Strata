@@ -109,7 +109,7 @@ def _display_name(t: Target) -> str:
     m = (t.model or "").lower()
     if m.startswith("hy4-flash"):
         return "Tencent Hy4-Flash (Strata, local)"
-    if m.startswith("inkling-2-mini"):
+    if m.startswith(("inkling-2-mini", "inkling2")):  # (inkling2-mini: strata-ink2, which thinks: the default reasoning entry)
         return "Inkling-2-Mini (Strata, local)"
     if m.startswith("qwen3.6") or m.startswith("qwen36"):
         return "Qwen3.6-35B-A3B (Strata, local)"
