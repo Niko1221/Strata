@@ -33,8 +33,9 @@ struct ServeOpts {
     int threads = 6;
     int gx_mb = 384;
     int kv_host_above = 24000;
-    double vram_experts_gb = -1.0;  // < 0: auto from free VRAM
-    double ram_experts_gb = -1.0;   // < 0: auto from RAM budget
+    double vram_experts_gb = -1.0;       // < 0: auto from free VRAM
+    double peer_vram_experts_gb = -1.0;  // < 0: same as vram_experts_gb (peer GPUs hold ONLY experts, so a larger budget fits)
+    double ram_experts_gb = -1.0;        // < 0: auto from RAM budget
     bool hi_act = false;
     bool no_index = false, no_engram = false;
     bool session_reuse = false;
@@ -280,7 +281,7 @@ inline int hy4s_serve_main(const ServeOpts& o) {
         // Size VRAM expert cache + unified CPU expert pool AFTER trunk/KV/DFly2 are allocated!
         const size_t gx_reserve = o.gx_mb > 0 ? ((size_t)o.gx_mb * 2 / 3 + 220) * (1ull << 20) : 0;
         const size_t host_oh = r.kv_host_bytes + g.host_bytes_total + ((size_t)std::max(o.gx_mb, 0) << 20) + (640ull << 20);
-        if (!setup_experts_unified(o.model, o.threads, o.vram_experts_gb, o.ram_experts_gb, gx_reserve, host_oh, o.hi_act, vcache, ucx, err, o.peer_devs, &peers)) {
+        if (!setup_experts_unified(o.model, o.threads, o.vram_experts_gb, o.ram_experts_gb, gx_reserve, host_oh, o.hi_act, vcache, ucx, err, o.peer_devs, &peers, o.peer_vram_experts_gb)) {
             proto("ERR experts: %s", err.c_str());
             return 1;
         }
