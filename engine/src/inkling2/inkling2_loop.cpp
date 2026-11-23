@@ -2,6 +2,8 @@
 // MIT License - Copyright (c) 2026 Strata contributors
 #include "strata/inkling2/inkling2_loop.hpp"
 #include "strata/artifact/gguf_reader.hpp"
+#include "strata/kernels/cpu/hadamard.hpp"
+#include "strata/kernels/cpu/tq_cpu.hpp"
 #include "strata/quant/act.hpp"
 #include "strata/quant/dequant.hpp"
 #include "strata/quant/dot.hpp"
@@ -55,6 +57,41 @@ inline float dot_f32(const float* a, const float* b, size_t n) noexcept {
     float s = (s0 + s1) + (s2 + s3);
     for (; i < n; ++i) s += a[i] * b[i];
     return s;
+}
+
+
+// prism.hadamard: the input of a rotated expert weight is H_b (s * x) per block of b values (hadamard.hpp).  Returns x
+// itself when the weight is not rotated, else the rotated copy held in `buf`.
+const float* rotate_expert_input(const float* x, size_t m, size_t n, bool rotated, std::vector<float>& buf) {
+    if (!rotated) return x;
+    const auto& spec = strata::kernels::cpu::hadamard_spec();
+    buf.assign(x, x + m * n);
+    const float* signs = strata::kernels::cpu::hadamard_signs(static_cast<int>(n));
+    for (size_t t = 0; t < m; ++t) {
+        strata::kernels::cpu::hadamard_rotate(buf.data() + t * n, static_cast<int>(n), spec.block, signs);
+    }
+    return buf.data();
+}
+
+// Trellis-coded rows (TQ2_T / TQK6 / TQK7 / TQP*) against m tokens: out[t * out_stride + r] = w_r . x_t for rows [0, rows),
+// through Strata's CPU trellis kernels with Q8_0 activations (as ggml-cpu's vec_dot for these types).
+void tq_expert_rows(int type, const uint8_t* w, size_t row_b, size_t n, size_t rows, const float* x, size_t m,
+                    float* out, size_t out_stride) {
+    namespace kc = strata::kernels::cpu;
+    const size_t q_rb = (n / 32) * 34;  // block_q8_0: fp16 scale + 32 int8
+    const auto* ak = strata::quant::act_kernel(strata::quant::Type::Q8_0, strata::quant::default_arith());
+    std::vector<uint8_t> qa(m * q_rb);
+    for (size_t t = 0; t < m; ++t) ak->fn(x + t * n, qa.data() + t * q_rb, static_cast<int64_t>(n));
+    for (size_t t0 = 0; t0 < m; t0 += kc::kTqMaxTokens) {
+        const int nt = static_cast<int>(std::min<size_t>(kc::kTqMaxTokens, m - t0));
+        const void* acts[kc::kTqMaxTokens];
+        float* outs[kc::kTqMaxTokens];
+        for (int k = 0; k < nt; ++k) {
+            acts[k] = qa.data() + (t0 + k) * q_rb;
+            outs[k] = out + (t0 + k) * out_stride;
+        }
+        kc::tq_rows(kc::tq_isa(), type, w, row_b, static_cast<int>(n), acts, nt, outs, 0, static_cast<int>(rows));
+    }
 }
 
 }  // namespace
@@ -225,6 +262,22 @@ void eval_inkling2_expert_batch(
         const size_t row_b = (be > 0) ? (hidden / static_cast<size_t>(be)) * static_cast<size_t>(bb) : 0;
         const uint8_t* w_base = body + sizeof(GgufExpertHeader);
         const bool interleaved = (hdr.flags & 1u) != 0;
+        // prism.hadamard: a rotated gate/up takes H_b (s * x), never x itself
+        std::vector<float> x_rot;
+        const float* x_gu = rotate_expert_input(x_in, m, hidden, (hdr.flags & 2u) != 0, x_rot);
+        if (strata::kernels::cpu::tq_supported(static_cast<int>(hdr.gu_type)) && row_b > 0) {
+            tq_expert_rows(static_cast<int>(hdr.gu_type), w_base, row_b, hidden, 2 * inter, x_gu, m, gu.data(), 2 * inter);
+            // split layout -> interleaved (even = gate, odd = up), with the per-expert scales
+            std::vector<float> tmp(2 * inter);
+            for (size_t t = 0; t < m; ++t) {
+                float* g = gu.data() + t * (2 * inter);
+                if (!interleaved) {
+                    for (size_t j = 0; j < inter; ++j) { tmp[2 * j] = g[j]; tmp[2 * j + 1] = g[inter + j]; }
+                    std::memcpy(g, tmp.data(), 2 * inter * sizeof(float));
+                }
+                for (size_t j = 0; j < inter; ++j) { g[2 * j] *= hdr.gate_scale; g[2 * j + 1] *= hdr.up_scale; }
+            }
+        } else {
 
         const auto qt = static_cast<strata::quant::Type>(hdr.gu_type);
         const auto* ti = strata::quant::type_info(qt);
@@ -237,7 +290,7 @@ void eval_inkling2_expert_batch(
         if (dk && ak && act_rb > 0 && row_b > 0) {
             std::vector<uint8_t> qa(m * act_rb);
             for (size_t t = 0; t < m; ++t) {
-                ak->fn(x_in + t * hidden, qa.data() + t * act_rb, static_cast<int64_t>(hidden));
+                ak->fn(x_gu + t * hidden, qa.data() + t * act_rb, static_cast<int64_t>(hidden));
             }
             if (interleaved) {
                 size_t r = 0;
@@ -320,23 +373,24 @@ void eval_inkling2_expert_batch(
                     deq_row(w_base + r * row_b);
                     const float sc = ((r & 1u) == 0) ? hdr.gate_scale : hdr.up_scale;
                     for (size_t t = 0; t < m; ++t) {
-                        gu[t * (2 * inter) + r] = dot_f32(wrow.data(), x_in + t * hidden, hidden) * sc;
+                        gu[t * (2 * inter) + r] = dot_f32(wrow.data(), x_gu + t * hidden, hidden) * sc;
                     }
                 }
             } else {
                 for (size_t j = 0; j < inter; ++j) {
                     deq_row(w_base + j * row_b);
                     for (size_t t = 0; t < m; ++t) {
-                        gu[t * (2 * inter) + 2 * j + 0] = dot_f32(wrow.data(), x_in + t * hidden, hidden) * hdr.gate_scale;
+                        gu[t * (2 * inter) + 2 * j + 0] = dot_f32(wrow.data(), x_gu + t * hidden, hidden) * hdr.gate_scale;
                     }
                 }
                 for (size_t j = 0; j < inter; ++j) {
                     deq_row(w_base + (inter + j) * row_b);
                     for (size_t t = 0; t < m; ++t) {
-                        gu[t * (2 * inter) + 2 * j + 1] = dot_f32(wrow.data(), x_in + t * hidden, hidden) * hdr.up_scale;
+                        gu[t * (2 * inter) + 2 * j + 1] = dot_f32(wrow.data(), x_gu + t * hidden, hidden) * hdr.up_scale;
                     }
                 }
             }
+        }
         }
     } else if (gu_code == SkCode::SF4) {
         float hdr[4];
@@ -405,6 +459,12 @@ void eval_inkling2_expert_batch(
         strata::block_geometry(hdr.dn_type, be, bb);
         const size_t row_b = (be > 0) ? (inter / static_cast<size_t>(be)) * static_cast<size_t>(bb) : 0;
         const uint8_t* w2_base = body + dn_offset;
+        std::vector<float> h_rot;
+        const float* h_in = rotate_expert_input(act.data(), m, inter, (hdr.flags & 4u) != 0, h_rot);
+        if (strata::kernels::cpu::tq_supported(static_cast<int>(hdr.dn_type)) && row_b > 0) {
+            tq_expert_rows(static_cast<int>(hdr.dn_type), w2_base, row_b, inter, hidden, h_in, m, y_out, hidden);
+            for (size_t i = 0; i < m * hidden; ++i) y_out[i] *= hdr.dn_scale;
+        } else {
 
         const auto qt = static_cast<strata::quant::Type>(hdr.dn_type);
         const auto* ti = strata::quant::type_info(qt);
@@ -417,7 +477,7 @@ void eval_inkling2_expert_batch(
         if (dk && ak && act_rb > 0 && row_b > 0) {
             std::vector<uint8_t> qa(m * act_rb);
             for (size_t t = 0; t < m; ++t) {
-                ak->fn(act.data() + t * inter, qa.data() + t * act_rb, static_cast<int64_t>(inter));
+                ak->fn(h_in + t * inter, qa.data() + t * act_rb, static_cast<int64_t>(inter));
             }
             size_t r = 0;
             if (dk4) {
@@ -461,9 +521,10 @@ void eval_inkling2_expert_batch(
                     strata::quant::dequant_row(qt, src, wrow.data(), static_cast<int64_t>(inter));
                 }
                 for (size_t t = 0; t < m; ++t) {
-                    y_out[t * hidden + r] = dot_f32(wrow.data(), act.data() + t * inter, inter) * hdr.dn_scale;
+                    y_out[t * hidden + r] = dot_f32(wrow.data(), h_in + t * inter, inter) * hdr.dn_scale;
                 }
             }
+        }
         }
     } else if (dn_code == SkCode::SF4) {
         float hdr[4];

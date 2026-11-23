@@ -99,6 +99,35 @@ target_include_directories(strata_inkling_core PUBLIC
   ${_ink_engine_root}/third_party/stb
 )
 target_link_libraries(strata_inkling_core PUBLIC strata_zstd_dec strata_quant)
+
+# Trellis-coded routed experts (TQ2_T / TQK6 / TQK7 / TQP*) and prism.hadamard-rotated experts on the CPU:
+# Strata's own trellis rows and activation rotation, compiled into the core so the standalone build needs no ggml.
+# In the full engine build strata_kernels_cpu already has them (and the real CPU probes); the standalone build
+# compiles the few files it needs plus a small probe shim.
+if(TARGET strata_kernels_cpu)
+  target_link_libraries(strata_inkling_core PUBLIC strata_kernels_cpu)
+else()
+target_sources(strata_inkling_core PRIVATE
+  ${_ink_engine_root}/src/kernels/cpu/tq_cpu.cpp
+  ${_ink_engine_root}/src/kernels/cpu/hadamard.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/ink_tq_isa.cpp
+)
+target_include_directories(strata_inkling_core PRIVATE ${_ink_engine_root}/third_party/ggml ${_ink_engine_root}/src/kernels/cpu)
+if(_ink_cpu_x86)
+  target_sources(strata_inkling_core PRIVATE
+    ${_ink_engine_root}/src/kernels/cpu/tq_avx2.cpp
+    ${_ink_engine_root}/src/kernels/cpu/tq_avx512.cpp
+  )
+  if(MSVC)
+    set_source_files_properties(${_ink_engine_root}/src/kernels/cpu/tq_avx2.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
+    set_source_files_properties(${_ink_engine_root}/src/kernels/cpu/tq_avx512.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX512")
+  else()
+    set_source_files_properties(${_ink_engine_root}/src/kernels/cpu/tq_avx2.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma;-mf16c")
+    set_source_files_properties(${_ink_engine_root}/src/kernels/cpu/tq_avx512.cpp PROPERTIES COMPILE_OPTIONS
+                                "-mavx512f;-mavx512bw;-mavx512vl;-mavx512vnni;-mavx512vbmi;-mavx2;-mfma;-mf16c")
+  endif()
+endif()
+endif()
 if(WIN32)
   target_compile_definitions(strata_inkling_core PUBLIC _CRT_SECURE_NO_WARNINGS)
 endif()
