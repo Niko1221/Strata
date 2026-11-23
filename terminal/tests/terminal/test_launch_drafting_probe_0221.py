@@ -78,7 +78,7 @@ class ProbeWiring(unittest.TestCase):
         r = self.runner()
         self.run_probe(r)
         cfg = self.saved()
-        cfg["parallel"] = 4
+        cfg["args"] = ["--native", "m.strata", "--max-context", "65536"]      # another context: another placement (the slot count is not part of the key)
         self.started.clear()
         self.run_probe(self.runner(cfg))
         self.assertEqual(len(self.started), 2)
