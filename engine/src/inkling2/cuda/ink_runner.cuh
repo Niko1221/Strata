@@ -20,6 +20,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <map>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -383,6 +384,13 @@ struct InkCudaModel {
         }
 
         double t1 = now_s();
+        {   // which codecs the experts use (the CPU path's speed depends on it): gate_up code / down code -> count, body bytes
+            std::map<int, std::pair<int, size_t>> hist;
+            for (const auto& e : dir) { auto& h = hist[(int)e.gu_code_id * 100 + (int)e.dn_code_id]; ++h.first; h.second += e.body_bytes; }
+            std::fprintf(stderr, "[InkCUDA] expert codecs (gate_up/down code: count, mean MB):");
+            for (const auto& kv : hist) std::fprintf(stderr, " %d/%d: %d, %.2f;", kv.first / 100, kv.first % 100, kv.second.first, (double)kv.second.second / kv.second.first / 1e6);
+            std::fprintf(stderr, "\n");
+        }
         // Guaranteed headroom BEFORE sizing VRAM experts: KV init + O(1) prefill ws (144 MiB) + DSpark + runner ws + OS/WDDM floor!
         const size_t wddm_floor = wddm_safety_floor(vtot);
         const size_t base_reserve = ((vtot >= (20ull << 30)) ? (1600ull << 20)
@@ -457,6 +465,31 @@ struct InkCudaModel {
                     ++n_host_experts;
                 }
             }
+            // Adaptive hot-expert tier (see InkHybridEngine::tier_plan): the card's expert bytes become a pool of slots that follows the
+            // router; every expert then has a host copy (RAM for the card's share on top of the host share, checked against what is available).
+            bool tier_mode = false;
+            if (n_host_experts > 0 && n_ssd_experts == 0 && vram_used > 0 && !ssd_experts && InkHybridEngine::tier_enabled_env()) {
+                size_t add = 0;
+                for (int di = 0; di < n_total; ++di) if (in_vram[di]) add += (size_t)((dir[di].body_bytes + 63ull) & ~63ull);
+                const uint64_t avail_ram = ink_ram_available_bytes();
+                if (avail_ram == 0 || avail_ram > (uint64_t)(host_used + add) + (5ull << 30)) tier_mode = true;
+                else std::fprintf(stderr, "[InkTier] off: the host copy of the card's experts (%.2f GiB more) does not fit the available RAM (%.2f GiB, %.2f GiB already planned)\n",
+                                  (double)add / 1073741824.0, (double)avail_ram / 1073741824.0, (double)host_used / 1073741824.0);
+            }
+            if (tier_mode) {
+                const int E = man.c.n_experts;
+                std::vector<size_t> kb(n_total, 0);
+                std::vector<int> ord_keys;
+                ord_keys.reserve(order.size());
+                for (uint16_t di : order) {
+                    const int key = (di / E) * E + dir[di].expert_id;
+                    kb[(size_t)key] = dir[di].body_bytes;
+                    ord_keys.push_back(key);
+                }
+                std::vector<double> kw(n_total, 1.0);
+                for (int key = 0; key < n_total; ++key) { const int il = key / E; if (il >= man.c.core_start && il < man.c.core_end) kw[(size_t)key] = 3.0; }
+                hybrid.tier_plan(kb, ord_keys, vram_used, kw);
+            }
             // #6617: Allocate ping-pong prefill staging buffers BEFORE d_sec4 and the pinned host arena so
             // pinned-RAM VRAM page tables can never starve pf_buf to 0 MB and silently skip host experts!
             if (n_host_experts > 0) {
@@ -464,6 +497,26 @@ struct InkCudaModel {
                 if (!hybrid.alloc_pf_stage(max_exp_bytes)) {
                     err = "not enough free VRAM for the 2x prefill staging buffers required by host experts; close other GPU apps or use a smaller pack";
                     return false;
+                }
+            }
+            if (tier_mode) {
+                if (hybrid.tier_alloc()) {
+                    const int E = man.c.n_experts;
+                    size_t n_start = 0;
+                    for (int di = 0; di < n_total; ++di) {
+                        if (in_vram[di]) {
+                            in_vram[di] = 0;
+                            in_ram[di] = 1;
+                            host_used += (size_t)((dir[di].body_bytes + 63ull) & ~63ull);
+                        }
+                        if (hybrid.tier_slot_ptr((di / E) * E + dir[di].expert_id)) ++n_start;
+                    }
+                    vram_used = 0;
+                    n_vram_experts = n_start;
+                    n_host_experts = (size_t)n_total - n_start;
+                } else {
+                    tier_mode = false;
+                    std::fprintf(stderr, "[InkTier] off: the card has no room for the slot pool (%.2f GiB)\n", (double)hybrid.tier_pool_bytes / 1073741824.0);
                 }
             }
             INK_CK(cudaMalloc(&d_sec4, std::max<size_t>(256, vram_used)));
@@ -543,6 +596,13 @@ struct InkCudaModel {
                     dev.tier = 2;  // CPU Doorbell (M=1) + Ping-Pong DMA Streaming (M>=2)!
                     layer_has_host[il] = true;
                     h_cur += (size_t)((e.body_bytes + 63ull) & ~63ull);
+                    if (tier_mode) {   // starts in a slot of the hot tier: bytes into the slot, table entry on the card (the host copy stays)
+                        if (uint8_t* sp = hybrid.tier_slot_ptr(key)) {
+                            INK_CK(cudaMemcpy(sp, tmp_body.data(), e.body_bytes, cudaMemcpyHostToDevice));
+                            dev.body_off = (uint64_t)((intptr_t)sp - (intptr_t)d_sec4);
+                            dev.tier = 0;
+                        }
+                    }
                 } else {
                     // Cold SSD expert: ZERO host RAM allocated at startup! Streamed via pinned InkColdStore DMA ring!
                     hybrid.host_meta[key].body       = nullptr;
@@ -1276,13 +1336,65 @@ struct InkCudaModel {
             }
         }
 
+        // Adaptive hot-expert tier (one GPU, experts partly in RAM): the card's expert bytes become a pool of slots that follows the router;
+        // every expert then has a host copy. Needs the RAM for the card's share on top of the host share (checked against what is available).
+        bool tier_mode = false;
+        std::vector<int> tier_key_of_di;
+        if (!ls_active && !ep2_active && n_host_experts > 0 && u0 > 0 && !ssd_experts && InkHybridEngine::tier_enabled_env()) {
+            size_t add = 0;
+            for (int di = 0; di < n_total; ++di) if (target_tier[di] == 0) add += (eff_bytes[di] + 63ull) & ~63ull;
+            const uint64_t avail_ram = ink_ram_available_bytes();
+            if (avail_ram == 0 || avail_ram > (uint64_t)(uh + add) + (5ull << 30)) tier_mode = true;
+            else std::fprintf(stderr, "[InkTier] off: the host copy of the card's experts (%.2f GiB more) does not fit the available RAM (%.2f GiB, %.2f GiB already planned)\n",
+                              (double)add / 1073741824.0, (double)avail_ram / 1073741824.0, (double)uh / 1073741824.0);
+        }
+        if (tier_mode) {
+            const int E = man.c.n_experts;
+            tier_key_of_di.assign(n_total, 0);
+            std::vector<size_t> kb(n_total, 0);
+            for (int di = 0; di < n_total; ++di) {
+                const int key = (di / E) * E + dir[di].expert_id;
+                tier_key_of_di[di] = key;
+                kb[(size_t)key] = eff_bytes[di];
+            }
+            std::vector<int> ord_keys;
+            ord_keys.reserve(order.size());
+            for (uint16_t di : order) ord_keys.push_back(tier_key_of_di[di]);
+            // pool = the bytes the static fill would have used
+            std::vector<double> kw(n_total, 1.0);
+            for (int key = 0; key < n_total; ++key) { const int il = key / E; if (il >= man.c.core_start && il < man.c.core_end) kw[(size_t)key] = 3.0; }
+            hybrid.tier_plan(kb, ord_keys, u0, kw);
+            max_body_all = 0;
+            for (int di = 0; di < n_total; ++di) max_body_all = std::max<size_t>(max_body_all, eff_bytes[di]);
+        }
+
         // #6617: Allocate ping-pong prefill staging buffers BEFORE d_sec4 and host pinned arena!
         INK_CK(cudaSetDevice(primary_gpu));
         if (n_host_experts > 0) {
             hybrid.start_workers(cpu_threads);
-            if (!hybrid.alloc_pf_stage(max_exp_b)) {
+            if (!hybrid.alloc_pf_stage(tier_mode ? max_body_all : max_exp_b)) {
                 err = "not enough free VRAM for the 2x prefill staging buffers required by host experts; close other GPU apps or use a smaller quant";
                 return false;
+            }
+        }
+        if (tier_mode) {
+            if (hybrid.tier_alloc()) {
+                // every expert is now a host expert; the ones that start in a slot are copied into it below
+                int n_start = 0;
+                size_t uh2 = 0;
+                for (int di = 0; di < n_total; ++di) {
+                    if (target_tier[di] == 0) { target_tier[di] = 2; }
+                    uh2 += (eff_bytes[di] + 63ull) & ~63ull;
+                    if (hybrid.tier_slot_ptr(tier_key_of_di[di])) ++n_start;
+                }
+                uh = uh2;
+                u0 = 0;
+                n_vram_experts = (size_t)n_start;
+                n_host_experts = (size_t)(n_total - n_start);
+                max_exp_b = max_body_all;
+            } else {
+                tier_mode = false;
+                std::fprintf(stderr, "[InkTier] off: the card has no room for the slot pool (%.2f GiB)\n", (double)hybrid.tier_pool_bytes / 1073741824.0);
             }
         }
         sec4_bytes = u0;
@@ -1456,6 +1568,14 @@ struct InkCudaModel {
                     d1.body_off = 0;           d1.tier = 3;
                     layer_has_host[il] = true;
                     mark_info(moe_info[il], layer_gu_code[r], layer_dn_code[r]);
+                    if (tier_mode) {
+                        // starts in a slot of the hot tier: bytes into the slot, table entry on the card (the host copy stays: it is what a swap demotes to)
+                        if (uint8_t* sp = hybrid.tier_slot_ptr(key)) {
+                            INK_CK(cudaMemcpy(sp, body.data(), body.size(), cudaMemcpyHostToDevice));
+                            d0.body_off = (uint64_t)((intptr_t)sp - (intptr_t)d_sec4);
+                            d0.tier = 0;
+                        }
+                    }
                 }
                 h_exp0[key] = d0;
                 h_exp1[key] = d1;
@@ -3435,17 +3555,17 @@ struct InkCudaRunner {
                     use_cuda_graph = false;
                     std::fprintf(stderr, "[InkCUDA] CUDA Graph capture unavailable (err=%d): falling back to eager mode\n", (int)ge);
                     emit_48_visits(M, 0, slot0, p0, want_taps);
-                    if (m.hybrid.active && m.n_host_experts > 0) m.hybrid.step_promote(m.d_sec4, m.d_experts, st);
+                    if (m.hybrid.active && m.n_host_experts > 0) m.hybrid.step_after(1, m.d_sec4, m.d_experts, st);
                     return;
                 }
                 graph_cache.push_back({key, exec});
             }
             INK_CK(cudaGraphLaunch(exec, st));
-            if (m.hybrid.active && m.n_host_experts > 0) m.hybrid.step_promote(m.d_sec4, m.d_experts, st);
+            if (m.hybrid.active && m.n_host_experts > 0) m.hybrid.step_after(1, m.d_sec4, m.d_experts, st);
             return;
         }
         emit_48_visits(M, 0, slot0, p0, want_taps);
-        if (M == 1 && m.hybrid.active && m.n_host_experts > 0) m.hybrid.step_promote(m.d_sec4, m.d_experts, st);
+        if (m.hybrid.active && m.n_host_experts > 0) m.hybrid.step_after(M <= 16 ? M : 0, m.d_sec4, m.d_experts, st);
     }
 
     // Speculative Tree-32 / Block-8 verify (100% CUDA-Graph capturable with safe eager fallback!)
@@ -3499,6 +3619,7 @@ struct InkCudaRunner {
             return;
         }
         emit_48_visits(M, 2, slot0, p0, want_taps);
+        if (m.hybrid.active && m.n_host_experts > 0) m.hybrid.step_after(M, m.d_sec4, m.d_experts, st);   // the hot tier learns from verify steps too
     }
 
     // Batched multi-slot 1-token-per-slot step (B = 1..64 concurrent requests, with safe eager fallback!)
@@ -3538,9 +3659,11 @@ struct InkCudaRunner {
                 graph_cache.push_back({key, exec});
             }
             INK_CK(cudaGraphLaunch(exec, st));
+            if (m.hybrid.active && m.n_host_experts > 0) m.hybrid.step_after(B, m.d_sec4, m.d_experts, st);
             return;
         }
         emit_48_visits(B, 1, 0, 0, want_taps);
+        if (m.hybrid.active && m.n_host_experts > 0) m.hybrid.step_after(B, m.d_sec4, m.d_experts, st);
     }
 
     // ---- Unembed + Softcap(30.0) + Argmax ----
