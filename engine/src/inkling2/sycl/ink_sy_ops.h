@@ -70,8 +70,9 @@ inline void wg_sum16_multi(const It& it, float (&v)[N], P sh) {
 // One work-group per (token, query): the queries are independent, and every query repeats the (cheap) block norms, so the values are bit for bit
 // those of the one-group-does-everything kernel; the S block norms and the S dot products are each reduced in one batch (two barriers) instead
 // of one after the other.
+// copy_cur (optional): the kernel also writes its current-stream input to copy_cur (the residual of the sublayer), replacing a separate d2d copy.
 inline void k_attn_res_mix_sg16(const float* blocks_buf, const float* cur_buf, const float* queries, float* out_buf,
-                                int n_blocks, int block_stride, int M, int n_queries) {
+                                int n_blocks, int block_stride, int M, int n_queries, float* copy_cur = nullptr) {
     const int M_stride = M * INK_D;
     Q().submit([&](sycl::handler& h) {
         sycl::local_accessor<float, 1> sh(8 * 16, h);
@@ -122,6 +123,9 @@ inline void k_attn_res_mix_sg16(const float* blocks_buf, const float* cur_buf, c
                 float acc = 0.0f;
                 for (int s = 0; s < S; ++s) acc += probs[s] * sp[s][d];
                 dst[d] = acc;
+            }
+            if (copy_cur != nullptr && q == 0) {
+                for (int d = tid; d < INK_D; d += 256) copy_cur[(size_t)m * INK_D + d] = cur_buf[(size_t)m * INK_D + d];
             }
         });
     });
