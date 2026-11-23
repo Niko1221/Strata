@@ -5845,9 +5845,24 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             } else {
                                 fused::experts(b, (int) m.g->n_expert, T * K, m.GU, m.Xq, m.src_dev, m.H, m.Dm, m.cs);
                             }
-                            for (size_t kk = k0; kk < k; ++kk) {
-                                cudaEventRecord(m.used[kk % (size_t) m.ring], m.cs);
-                                m.used_of[kk % (size_t) m.ring] = (int) (kk % (size_t) m.ring);
+                            // One event releases the batch's slots (the MMQ group's idiom at the flush below):
+                            // give_back hands them back together and the consumer waited on the batch's last copy
+                            // only, so a record per slot was ~128 WDDM submissions a batch for the same release.
+                            // The issuer's per-slot waits then share one event and collapse with
+                            // STRATA_PREFILL_COPY_WAIT_DEDUPE=1. STRATA_PF_SLOT_EVENTS=1: the earlier per-slot records.
+                            static const bool slot_events = [] {
+                                const char* v = std::getenv("STRATA_PF_SLOT_EVENTS");
+                                return v != nullptr && v[0] == '1';
+                            }();
+                            if (k > k0 && !slot_events) {
+                                const int rel = (int) ((k - 1) % (size_t) m.ring);
+                                cudaEventRecord(m.used[rel], m.cs);
+                                for (size_t kk = k0; kk < k; ++kk) m.used_of[kk % (size_t) m.ring] = rel;
+                            } else {
+                                for (size_t kk = k0; kk < k; ++kk) {
+                                    cudaEventRecord(m.used[kk % (size_t) m.ring], m.cs);
+                                    m.used_of[kk % (size_t) m.ring] = (int) (kk % (size_t) m.ring);
+                                }
                             }
                             if (k > k0) {
                                 consumed = k;
