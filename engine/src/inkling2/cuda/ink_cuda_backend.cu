@@ -303,8 +303,9 @@ public:
                 runner_->use_cuda_graph = false;
                 std::fprintf(stderr, "[InkCUDA] STRATA_INK_NO_GRAPH=1: CUDA Graph capture off (eager launches)\n");
             }
-            if (const char* pe = std::getenv("STRATA_INK_PROF"); pe && pe[0] == '1') {   // per-phase decode times, eager (no graph)
+            if (const char* pe = std::getenv("STRATA_INK_PROF"); pe && (pe[0] == '1' || pe[0] == '2')) {   // per-phase decode times, eager (no graph); 2 = prefill chunks too
                 runner_->prof_enabled = true;
+                runner_->prof_prefill = (pe[0] == '2');
                 runner_->use_cuda_graph = false;
                 strata::ink::g_ink_moe_hook_ctx = runner_.get();
                 strata::ink::g_ink_moe_hook = [](int tag, void* ctx) {
