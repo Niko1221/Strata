@@ -487,6 +487,11 @@ if(STRATA_BUILD_TESTS)
   target_include_directories(low_vram_rules_test PRIVATE include)
   add_test(NAME low_vram_rules_test COMMAND low_vram_rules_test)
 
+  # the 4-row dot kernels of the native expert path are opt-in (STRATA_DOT_X4=1; #6552): header-only rule
+  add_executable(dot_x4_policy_test src/core/dot_x4_policy_test.cpp)
+  target_include_directories(dot_x4_policy_test PRIVATE include)
+  add_test(NAME dot_x4_policy_test COMMAND dot_x4_policy_test)
+
   # the serve watchdog's limits (STRATA_WATCHDOG_S / _IO_S) parse without undefined behaviour (#6861: negative seconds in the log)
   add_executable(watchdog_limits_test src/core/watchdog_limits_test.cpp)
   target_include_directories(watchdog_limits_test PRIVATE include)
