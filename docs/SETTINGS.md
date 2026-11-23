@@ -10,7 +10,7 @@ debugging and are kept in `terminal/data/settings-register.json`.
 A number or a word is set like any environment variable, for example `STRATA_KVA=1`. In the Terminal, `strata launch --set NAME=value`
 puts it in the model's run configuration.
 
-## Switches you can turn on (334)
+## Switches you can turn on (336)
 
 Off unless you set them. The last column says where each one is described.
 
@@ -117,6 +117,8 @@ Off unless you set them. The last column says where each one is described.
 | `STRATA_I8_GRF` | number | Intel Arc | [INTEL_INT8_EXPERTS.md](INTEL_INT8_EXPERTS.md) |
 | `STRATA_I8_MT` | number | Intel Arc | [INTEL_INT8_EXPERTS.md](INTEL_INT8_EXPERTS.md) |
 | `STRATA_I8_WG` | number | Intel Arc | [INTEL_INT8_EXPERTS.md](INTEL_INT8_EXPERTS.md) |
+| `STRATA_INK_NUMA` | on / off | NVIDIA and AMD | - |
+| `STRATA_INK_PREFILL_CAP` | number | NVIDIA and AMD | - |
 | `STRATA_IO_PF_AHEAD` | number | NVIDIA and AMD | [DETAILS.md](DETAILS.md) |
 | `STRATA_IO_PF_GATE` | number | NVIDIA and AMD | [DETAILS.md](DETAILS.md), [release-notes-0.2.0.md](release-notes-0.2.0.md) |
 | `STRATA_IO_PF_GATE_LO` | number | NVIDIA and AMD | [DETAILS.md](DETAILS.md) |
@@ -351,7 +353,7 @@ Off unless you set them. The last column says where each one is described.
 | `STRATA_WATCHDOG_S` | number | NVIDIA and AMD, Intel Arc | [DETAILS.md](DETAILS.md) |
 | `STRATA_WDDM_BUDGET` | number | AMD, Intel Arc | [AMD_HIP.md](AMD_HIP.md) |
 
-## Switches that go back to earlier behaviour (111)
+## Switches that go back to earlier behaviour (117)
 
 These behaviours are on by default. Setting the switch returns the earlier behaviour; the notes in the register say which
 version made it the default.
@@ -387,10 +389,16 @@ version made it the default.
 | `STRATA_IGPU_DEFAULTS` | on / off | NVIDIA and AMD | v0.2.16 | [AMD_HIP.md](AMD_HIP.md) |
 | `STRATA_IGPU_PROMPT_SET` | on / off | NVIDIA and AMD | v0.2.16 | [AMD_HIP.md](AMD_HIP.md), [RADEON_780M.md](RADEON_780M.md), [release-notes-0.2.1.md](release-notes-0.2.1.md) |
 | `STRATA_IL_PAD` | number | NVIDIA and AMD | v0.2.16 | - |
+| `STRATA_INK_EXACT` | on / off | NVIDIA and AMD | - | - |
+| `STRATA_INK_EXACT_GRAPH` | on / off | NVIDIA and AMD | - | - |
 | `STRATA_INK_EXACT_ROWS` | on / off | AMD | - | - |
 | `STRATA_INK_KEEP_MAPPED_PAGES` | on / off | NVIDIA and AMD | - | - |
+| `STRATA_INK_NO_CAND` | on / off | NVIDIA and AMD | - | - |
 | `STRATA_INK_OOM_RETRY` | number | NVIDIA and AMD | - | - |
 | `STRATA_INK_PROMOTE_ASYNC` | text | AMD | - | - |
+| `STRATA_INK_Q8_0_DENSE` | on / off | NVIDIA and AMD | - | - |
+| `STRATA_INK_SPLIT` | on / off | NVIDIA and AMD | - | - |
+| `STRATA_INK_TIER` | on / off | NVIDIA and AMD | - | - |
 | `STRATA_IQ_MT_MIN` | on / off | NVIDIA and AMD, CPU | v0.2.16 | [BATCHING.md](BATCHING.md), [DETAILS.md](DETAILS.md), [OLDER_GPUS.md](OLDER_GPUS.md) |
 | `STRATA_KEEP_MAPPING` | on / off | NVIDIA and AMD | v0.2.16 | - |
 | `STRATA_KV_HOST_DMA` | on / off | NVIDIA and AMD, Intel Arc | v0.2.16 | [TROUBLESHOOTING.md](TROUBLESHOOTING.md) |

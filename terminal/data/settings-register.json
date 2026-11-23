@@ -4644,7 +4644,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_runner.cuh",
-     "line": 664,
+     "line": 725,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -4677,7 +4677,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_runner.cuh",
-     "line": 662,
+     "line": 723,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -14697,13 +14697,13 @@
    "reads": [
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 1848,
+     "line": 1850,
      "backend": "hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 1848,
+     "line": 1850,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -14921,13 +14921,13 @@
    "reads": [
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 3492,
+     "line": 3494,
      "backend": "hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 3492,
+     "line": 3494,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -15184,25 +15184,25 @@
    "reads": [
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 2103,
+     "line": 2105,
      "backend": "hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 2103,
+     "line": 2105,
      "backend": "hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 4960,
+     "line": 4962,
      "backend": "hip",
      "fn": "getenv"
     },
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
-     "line": 4960,
+     "line": 4962,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -16380,6 +16380,39 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_INK_CPU_PROF",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/cuda/ink_hybrid.cuh",
+     "line": 1434,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "afe925f971",
+   "first_date": "2026-11-23",
+   "since": null,
+   "last_commit": "afe925f971",
+   "last_date": "2026-11-23",
+   "status": "research",
+   "owner": "inkling2/cuda",
+   "note": "strata-inkling CUDA hybrid (0221 INKPLACE): prints how long the CPU lane spent on the cold experts; diagnostic.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_INK_DEC_PCIE_SHARE",
    "backends": [
     "cuda-hip"
@@ -16387,7 +16420,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_hybrid.cuh",
-     "line": 1190,
+     "line": 1743,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -16409,6 +16442,72 @@
    "status": "default",
    "owner": "inkling2",
    "note": "Fraction of missed MoE experts streamed to GPU over PCIe concurrently with CPU workers during inkling2 decode/verify (-1=auto, 0=off, 0..1=fixed share).",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_EXACT",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/cuda/ink_hybrid.cuh",
+     "line": 1744,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "7d1ae1e5d6",
+   "first_date": "2026-11-23",
+   "since": null,
+   "last_commit": "7d1ae1e5d6",
+   "last_date": "2026-11-23",
+   "status": "rollback",
+   "owner": "inkling2/cuda",
+   "note": "strata-inkling CUDA hybrid (0221 INKPLACE): cold experts are copied into the card and computed by the card's own kernels (exact: the same bits wherever an expert lives); =0 computes them on the CPU where they are (fast, not bit-identical). The default follows INKPLACE's last gate.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_EXACT_GRAPH",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/cuda/ink_hybrid.cuh",
+     "line": 1354,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "7d1ae1e5d6",
+   "first_date": "2026-11-23",
+   "since": null,
+   "last_commit": "7d1ae1e5d6",
+   "last_date": "2026-11-23",
+   "status": "rollback",
+   "owner": "inkling2/cuda",
+   "note": "strata-inkling CUDA hybrid exact mode (0221 INKPLACE): the cold experts' copies run inside the decode CUDA graph; =0 keeps the eager copy path (A/B).",
    "retire_after": "",
    "retired_in": ""
   },
@@ -16448,9 +16547,16 @@
   {
    "name": "STRATA_INK_HASH",
    "backends": [
+    "cuda-hip",
     "hip"
    ],
    "reads": [
+    {
+     "file": "engine/src/inkling2/cuda/ink_runner.cuh",
+     "line": 2098,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    },
     {
      "file": "engine/src/inkling2/hip/ink_hip_backend.hip.cpp",
      "line": 718,
@@ -16470,11 +16576,44 @@
    "first_commit": "2d96ef73c5",
    "first_date": "2026-11-23",
    "since": null,
-   "last_commit": "2d96ef73c5",
+   "last_commit": "78038c0f2c",
    "last_date": "2026-11-23",
    "status": "research",
    "owner": "backends/hip",
    "note": "Inkling HIP engine, debug: =1 prints an order independent hash of the hidden state per row and visit ([HASH] lines on stderr), for comparing a verify window with the one-token steps (phaseA-tests/rel0221/determ_hashcmp.py).",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_HASH_VISIT",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/cuda/ink_runner.cuh",
+     "line": 2101,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "ba65268084",
+   "first_date": "2026-11-23",
+   "since": null,
+   "last_commit": "ba65268084",
+   "last_date": "2026-11-23",
+   "status": "research",
+   "owner": "inkling2/cuda",
+   "note": "strata-inkling CUDA, debug (0221 DETERM): which visit STRATA_INK_HASH / the tap dump reports.",
    "retire_after": "",
    "retired_in": ""
   },
@@ -16512,6 +16651,111 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_INK_NO_CAND",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/ink_serve.h",
+     "line": 505,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    },
+    {
+     "file": "engine/src/inkling2/ink_serve.h",
+     "line": 505,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "f42a9aa714",
+   "first_date": "2026-11-23",
+   "since": null,
+   "last_commit": "f42a9aa714",
+   "last_date": "2026-11-23",
+   "status": "rollback",
+   "owner": "inkling2",
+   "note": "strata-inkling serve (0221 INKSPEED, #6779): =1 returns the full logit rows to the host sampler instead of the 128 best candidates of each row (GPU top-K); same tokens, slower at many slots.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_NO_GRAPH",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
+     "line": 290,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "080da82d3b",
+   "first_date": "2026-11-23",
+   "since": null,
+   "last_commit": "080da82d3b",
+   "last_date": "2026-11-23",
+   "status": "research",
+   "owner": "inkling2/cuda",
+   "note": "strata-inkling CUDA (0221 INKSPEED, #6798): =1 launches every kernel of a step eagerly (no CUDA Graph); diagnostic, 5-8% slower.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_NUMA",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/cuda/ink_hybrid.cuh",
+     "line": 1462,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "afe925f971",
+   "first_date": "2026-11-23",
+   "since": null,
+   "last_commit": "afe925f971",
+   "last_date": "2026-11-23",
+   "status": "opt-in",
+   "owner": "inkling2/cuda",
+   "note": "strata-inkling CUDA hybrid: =1 binds the CPU expert pool to NUMA nodes (Linux); no difference was measured on a 2-socket EPYC, so it stays off.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_INK_OOM_RETRY",
    "backends": [
     "cuda-hip"
@@ -16519,7 +16763,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 274,
+     "line": 283,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -16545,6 +16789,78 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_INK_PREFILL_CAP",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/ink_serve.h",
+     "line": 506,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "e32fa5334c",
+   "first_date": "2026-11-23",
+   "since": null,
+   "last_commit": "e32fa5334c",
+   "last_date": "2026-11-23",
+   "status": "opt-in",
+   "owner": "inkling2",
+   "note": "strata-inkling serve (0221 INKSPEED, #6779): N = most prompt tokens read per step while another request decodes (default 0 = off). Moves time between the reader and the decoders; tokens do not change.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_PROF",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/ink_serve.h",
+     "line": 1120,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    },
+    {
+     "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
+     "line": 295,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "e32fa5334c",
+   "first_date": "2026-11-23",
+   "since": null,
+   "last_commit": "c60259fa6a",
+   "last_date": "2026-11-23",
+   "status": "research",
+   "owner": "inkling2/cuda",
+   "note": "strata-inkling CUDA (0221 INKSPEED): =1 launches eagerly and prints where a decode step goes (runner phases, MoE parts, host phases); diagnostic.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_INK_PROMOTE_ASYNC",
    "backends": [
     "hip"
@@ -16566,14 +16882,245 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [],
-   "first_commit": null,
-   "first_date": null,
+   "first_commit": "258e09f22d",
+   "first_date": "2026-11-23",
    "since": null,
-   "last_commit": null,
-   "last_date": null,
+   "last_commit": "258e09f22d",
+   "last_date": "2026-11-23",
    "status": "rollback",
    "owner": "backends/hip",
    "note": "Inkling HIP hybrid engine. Unset (default): a promoted expert is used only after its DMA copy has finished (the engine waits), so which experts run from VRAM and which on the CPU depends on the routing history only and the logits repeat. =1: poll the copy and use the CPU path while it runs (timing dependent, for speed experiments, not for answers that must repeat). #6671.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_Q8_0_DENSE",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/ink_main.cpp",
+     "line": 814,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "on",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "c60259fa6a",
+   "first_date": "2026-11-23",
+   "since": null,
+   "last_commit": "c60259fa6a",
+   "last_date": "2026-11-23",
+   "status": "rollback",
+   "owner": "inkling2/cuda",
+   "note": "strata-inkling CUDA, one GPU sm_80+ (0221 INKSPEED): a GGUF's Q8_0 dense matrices stay Q8_0 and run on the int8 tensor cores; =0 goes back to BF16 (A/B).",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_SPEC",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/ink_serve.h",
+     "line": 509,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "7a2518ceaa",
+   "first_date": "2026-11-23",
+   "since": null,
+   "last_commit": "953e154174",
+   "last_date": "2026-11-23",
+   "status": "research",
+   "owner": "inkling2",
+   "note": "strata-inkling serve (0221 DSPARK): =block / =adapt, drafting measurement experiments (the linear block-8 drafter, the adaptive governor); off unless set.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_SPEC_BEAM",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
+     "line": 114,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "e0ab3e241f",
+   "first_date": "2026-11-23",
+   "since": null,
+   "last_commit": "0ac2242558",
+   "last_date": "2026-11-23",
+   "status": "research",
+   "owner": "inkling2/cuda",
+   "note": "strata-inkling CUDA drafter (0221 DSPARK): the window shape of the drafter's tree step (1 = one linear chain); the same as --draft-beam.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_SPEC_COST",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
+     "line": 115,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "float",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "e0ab3e241f",
+   "first_date": "2026-11-23",
+   "since": null,
+   "last_commit": "0ac2242558",
+   "last_date": "2026-11-23",
+   "status": "research",
+   "owner": "inkling2/cuda",
+   "note": "strata-inkling CUDA drafter (0221 DSPARK): the cost the chain fall-back counts for a verify step; the same as --draft-cost.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_SPEC_LOG",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
+     "line": 121,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "e0ab3e241f",
+   "first_date": "2026-11-23",
+   "since": null,
+   "last_commit": "0ac2242558",
+   "last_date": "2026-11-23",
+   "status": "research",
+   "owner": "inkling2/cuda",
+   "note": "strata-inkling CUDA drafter (0221 DSPARK): prints the drafter's window decisions; diagnostic.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_SPEC_PLAIN",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
+     "line": 116,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "float",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "e0ab3e241f",
+   "first_date": "2026-11-23",
+   "since": null,
+   "last_commit": "0ac2242558",
+   "last_date": "2026-11-23",
+   "status": "research",
+   "owner": "inkling2/cuda",
+   "note": "strata-inkling CUDA drafter (0221 DSPARK): below this chance the step falls back to one plain token; the same as --draft-plain.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_SPLIT",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/cuda/ink_hybrid.cuh",
+     "line": 1741,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "afe925f971",
+   "first_date": "2026-11-23",
+   "since": null,
+   "last_commit": "afe925f971",
+   "last_date": "2026-11-23",
+   "status": "rollback",
+   "owner": "inkling2/cuda",
+   "note": "strata-inkling CUDA hybrid (0221 INKPLACE): the cold experts' rows are shared by the CPU pool; =0 gives each expert to one thread (the old way).",
    "retire_after": "",
    "retired_in": ""
   },
@@ -16618,7 +17165,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/cuda/ink_cuda_backend.cu",
-     "line": 265,
+     "line": 274,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -16640,6 +17187,204 @@
    "status": "research",
    "owner": "program",
    "note": "test hook of strata-inkling's CUDA start-up allocation (0221 INKCUDA, #6644 #6792): holds N MiB of the card after the experts are placed, to imitate a plan that left too little. Not for use.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_THREADS",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/cuda/ink_hybrid.cuh",
+     "line": 1740,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "afe925f971",
+   "first_date": "2026-11-23",
+   "since": null,
+   "last_commit": "afe925f971",
+   "last_date": "2026-11-23",
+   "status": "research",
+   "owner": "inkling2/cuda",
+   "note": "strata-inkling CUDA hybrid: the size of the CPU expert pool (1 to 128), for sweeps; the default follows the machine's cores.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_TIER",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/cuda/ink_hybrid.cuh",
+     "line": 2126,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "on",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "afe925f971",
+   "first_date": "2026-11-23",
+   "since": null,
+   "last_commit": "afe925f971",
+   "last_date": "2026-11-23",
+   "status": "rollback",
+   "owner": "inkling2/cuda",
+   "note": "strata-inkling CUDA hybrid (0221 INKPLACE): an adaptive hot-expert tier that keeps the experts the routing asks for in the card; =0 keeps the static fill.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_TIER_LOG",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/cuda/ink_hybrid.cuh",
+     "line": 2230,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "afe925f971",
+   "first_date": "2026-11-23",
+   "since": null,
+   "last_commit": "afe925f971",
+   "last_date": "2026-11-23",
+   "status": "research",
+   "owner": "inkling2/cuda",
+   "note": "strata-inkling CUDA hybrid (0221 INKPLACE): prints each tier round; diagnostic.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_TIER_ROWS",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/cuda/ink_hybrid.cuh",
+     "line": 2228,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "afe925f971",
+   "first_date": "2026-11-23",
+   "since": null,
+   "last_commit": "afe925f971",
+   "last_date": "2026-11-23",
+   "status": "research",
+   "owner": "inkling2/cuda",
+   "note": "strata-inkling CUDA hybrid (0221 INKPLACE): rows between tier rounds, for sweeps.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_TIER_SWAPS",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/cuda/ink_hybrid.cuh",
+     "line": 2229,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "afe925f971",
+   "first_date": "2026-11-23",
+   "since": null,
+   "last_commit": "afe925f971",
+   "last_date": "2026-11-23",
+   "status": "research",
+   "owner": "inkling2/cuda",
+   "note": "strata-inkling CUDA hybrid (0221 INKPLACE): swaps per tier round, for sweeps.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_TRACE",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/cuda/ink_hybrid.cuh",
+     "line": 1390,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "afe925f971",
+   "first_date": "2026-11-23",
+   "since": null,
+   "last_commit": "afe925f971",
+   "last_date": "2026-11-23",
+   "status": "research",
+   "owner": "inkling2/cuda",
+   "note": "strata-inkling CUDA hybrid (0221 INKPLACE): path of a routing trace file (which experts each token asked for); diagnostic.",
    "retire_after": "",
    "retired_in": ""
   },
@@ -19515,7 +20260,7 @@
     },
     {
      "file": "engine/src/inkling2/cuda/ink_hybrid.cuh",
-     "line": 1189,
+     "line": 1742,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -22803,7 +23548,7 @@
    "launch_sets": [
     {
      "file": "terminal/setup.py",
-     "line": 11262,
+     "line": 11265,
      "value": "\"1\" if stream else \"0\""
     }
    ],
@@ -43809,14 +44554,14 @@
    "retired_in": ""
   },
   {
-   "name": "STRATA_SPEC_CHECK_SNAP",
+   "name": "STRATA_SPEC_CHECK_IDS",
    "backends": [
     "cuda-hip"
    ],
    "reads": [
     {
      "file": "engine/src/inkling2/ink_main.cpp",
-     "line": 418,
+     "line": 530,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -43830,14 +44575,80 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [],
-   "first_commit": null,
-   "first_date": null,
+   "first_commit": "eb2c0b23d5",
+   "first_date": "2026-11-23",
    "since": null,
-   "last_commit": null,
-   "last_date": null,
-   "status": "",
-   "owner": "",
-   "note": "",
+   "last_commit": "eb2c0b23d5",
+   "last_date": "2026-11-23",
+   "status": "research",
+   "owner": "inkling2",
+   "note": "strata-inkling --spec-check (0221 DETERM): =1 prints the generated ids of the plain and the drafter run, for a quality check of the answer text.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_SPEC_CHECK_QUICK",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/ink_main.cpp",
+     "line": 538,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "eb2c0b23d5",
+   "first_date": "2026-11-23",
+   "since": null,
+   "last_commit": "eb2c0b23d5",
+   "last_date": "2026-11-23",
+   "status": "research",
+   "owner": "inkling2",
+   "note": "strata-inkling --spec-check (0221 DETERM): =1 skips the verify-window comparisons and reports plain against drafter only.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_SPEC_CHECK_SNAP",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/inkling2/ink_main.cpp",
+     "line": 425,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "3ebe837242",
+   "first_date": "2026-11-23",
+   "since": null,
+   "last_commit": "3ebe837242",
+   "last_date": "2026-11-23",
+   "status": "research",
+   "owner": "inkling2",
+   "note": "strata-inkling --spec-check (0221 DETERM): =1 inserts value-neutral work (a ShortConv snapshot) before the first decode step; the answer must not change.",
    "retire_after": "",
    "retired_in": ""
   },
@@ -43849,7 +44660,7 @@
    "reads": [
     {
      "file": "engine/src/inkling2/ink_main.cpp",
-     "line": 415,
+     "line": 422,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -43863,11 +44674,11 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [],
-   "first_commit": null,
-   "first_date": null,
+   "first_commit": "a0fb0fe080",
+   "first_date": "2026-11-23",
    "since": null,
-   "last_commit": null,
-   "last_date": null,
+   "last_commit": "8459706424",
+   "last_date": "2026-11-23",
    "status": "research",
    "owner": "inkling2",
    "note": "strata-inkling --spec-check: =1 prints the logits hash of the prefill and of every plain step ([steps] lines), to compare two engine starts.",
