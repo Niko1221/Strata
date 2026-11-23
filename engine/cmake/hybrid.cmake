@@ -137,6 +137,24 @@ foreach(_f IN LISTS _src_files)
     if(_rel MATCHES "/mmq_nvfp4|/mmq_kq_lib\\.cu|/ggml_cuda_host\\.cu|/gdn_chunk\\.cu$|/moe_ws(_gu_iq2|_gu_iq3|_down)?\\.cu$|/gdn_harness\\.cu$|/moe_iq4_w4a8\\.cu$|_test\\.cu|_bench\\.cu|_parity\\.cu")
       continue()
     endif()
+    # Upstream's absent-twin contract: a .cu with a sibling <name>_absent.cpp
+    # is a unit upstream never compiles for HIP - the plain HIP build names the
+    # stub instead (backends/hip.cmake lists moe_fp4_tc_absent, dense_fp4_tc_absent,
+    # moe_fp8_mxf_tc_absent and nvfp4_decode_sm120_absent as strata_pf_own /
+    # strata_kernels sources; backends/cuda.cmake compiles the real units only
+    # into the sm_120-gated strata_pf_fp4 and its kernels lane). The glob already
+    # compiles the stub .cpp on the HIP side, so compiling the real unit beside
+    # it duplicates the stubs' symbols - and for the Blackwell tensor-core units
+    # upstream added with v0.2.19 (dense_fp4_tc.cu, moe_fp4_tc.cu,
+    # moe_fp8_mxf_tc.cu, nvfp4_decode_sm120.cu) it fails outright: their
+    # cuda_fp4.h and sm_120a intrinsics do not exist in HIP clang (hip link gate
+    # on momo, 'cuda_fp4.h' file not found). The twin marker keeps this
+    # exclusion self-maintaining for units upstream adds later.
+    get_filename_component(_stem "${_rel}" NAME_WE)
+    get_filename_component(_twin_dir "${_rel}" DIRECTORY)
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_twin_dir}/${_stem}_absent.cpp")
+      continue()
+    endif()
     string(REGEX REPLACE "\\.cu$" ".hip" _rel_out "${_rel}")
     set(_compile TRUE)
   else()
