@@ -524,8 +524,10 @@
     "131072",
     "--kv",
     "int8",
+    "--kv-resident",
+    "32768",
     "--resident-budget-gib",
-    "15",
+    "13",
     "--vision",
     "--vram-reserve-mib",
     "700"
@@ -819,8 +821,10 @@
     "131072",
     "--kv",
     "int8",
+    "--kv-resident",
+    "32768",
     "--resident-budget-gib",
-    "31",
+    "29",
     "--vision"
    ],
    "cwd": "<T>",
@@ -841,7 +845,7 @@
    "model_name": "qwen3.8-flash-next-unsloth-ud-q4_k_xl",
    "port": 8080,
    "tokenizer": "<T>/data/packs/unsloth-ud-q4_k_xl/tokenizer",
-   "ui_budget_work_gib": 24,
+   "ui_budget_work_gib": 22,
    "vision": {
     "exe": "<T>/engine/<VEXE>",
     "gpu": false,

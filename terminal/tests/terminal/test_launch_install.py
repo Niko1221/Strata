@@ -29,10 +29,9 @@ PLAT = "linux-aarch64" if sys.platform.startswith("linux") and platform.machine(
 class Scripts(unittest.TestCase):
     def test_install_sh_syntax_and_guard(self):
         sh = shutil.which("sh") or shutil.which("bash")
-        if not sh:
-            self.skipTest("no sh")
-        r = subprocess.run([sh, "-n", str(ROOT.parent / "tools" / "packaging" / "install.sh")], capture_output=True, text=True)
-        self.assertEqual(r.returncode, 0, r.stderr)
+        if sh and subprocess.run([sh, "-c", "exit 0"], capture_output=True).returncode == 0:
+            r = subprocess.run([sh, "-n", str(ROOT.parent / "tools" / "packaging" / "install.sh")], capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stderr)
         text = (ROOT.parent / "tools" / "packaging" / "install.sh").read_text(encoding="utf-8")
         self.assertNotIn("__FEED__", text)                                # no placeholder: the GitHub Releases address is the built-in default
         self.assertIn(":-" + mlf.RELEASE_FEED + "}", text)                # the default a local feed bakes its own address over

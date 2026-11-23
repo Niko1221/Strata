@@ -1862,13 +1862,23 @@ def _cpuid_avx2() -> bool:
 
 
 def gpus():
-    """Every NVIDIA GPU, numbered as nvidia-smi numbers them (by PCI bus, the order the engine is told to use)."""
-    s = out(["nvidia-smi", "--query-gpu=index,name,memory.total,compute_cap,driver_version",
+    """Every NVIDIA GPU, numbered as nvidia-smi numbers them (by PCI bus, the order the engine is told to use).
+    Queries memory.free alongside memory.total (#6662) while tolerating 5-column test stubs."""
+    s = out(["nvidia-smi", "--query-gpu=index,name,memory.total,compute_cap,driver_version,memory.free",
              "--format=csv,noheader,nounits"])
     found = []
     for line in s.strip().splitlines():
         try:
-            idx, name, mem, cc, drv = [x.strip() for x in line.split(",")]
+            parts = [x.strip() for x in line.split(",")]
+            if len(parts) < 5:
+                continue
+            idx, name, mem, cc, drv = parts[:5]
+            free_gb_val = None
+            if len(parts) >= 6:
+                try:
+                    free_gb_val = float(parts[5]) / 1024.0
+                except ValueError:
+                    free_gb_val = None
             try:
                 mem_gb = float(mem) / 1024.0   # nvidia-smi nounits: MiB
             except ValueError:
@@ -1878,14 +1888,32 @@ def gpus():
                 # Strix Halo's is (amd_apply_uma): the GPU may use all of the RAM but the OS's share, and none of it is extra room
                 # beside the RAM (dedicated_gb 0), so the low-RAM rules do not count it twice
                 shared = max(0.0, ram_gb() - UMA_OS_LEFT_GB)
-                found.append({"index": int(idx), "name": name, "vram_gb": shared, "arch": cc.replace(".", ""),
-                              "driver": drv, "uma": True, "dedicated_gb": 0.0, "shared_gb": shared})
+                entry = {"index": int(idx), "name": name, "vram_gb": shared, "arch": cc.replace(".", ""),
+                         "driver": drv, "uma": True, "dedicated_gb": 0.0, "shared_gb": shared}
+                if free_gb_val is not None:
+                    entry["free_gb"] = free_gb_val
+                found.append(entry)
                 continue
-            found.append({"index": int(idx), "name": name, "vram_gb": mem_gb, "arch": cc.replace(".", ""),
-                          "driver": drv})
+            entry = {"index": int(idx), "name": name, "vram_gb": mem_gb, "arch": cc.replace(".", ""),
+                     "driver": drv}
+            if free_gb_val is not None:
+                entry["free_gb"] = free_gb_val
+            found.append(entry)
         except ValueError:
             continue
     return found
+
+
+def effective_vram_gb(g) -> float:
+    """Usable VRAM of card `g`: when `free_gb` was reported by nvidia-smi (#6662), use min(vram_gb, free_gb)
+    so cards held by the desktop/browser/another process don't over-pick tiers; otherwise fall back to vram_gb."""
+    if not isinstance(g, dict):
+        return 0.0
+    total = float(g.get("vram_gb") or 0.0)
+    free = g.get("free_gb")
+    if isinstance(free, (int, float)) and not isinstance(free, bool) and free >= 0.0 and not g.get("uma"):
+        return min(total, float(free))
+    return total
 
 
 def gpu_drives_display(g) -> bool:
@@ -4066,7 +4094,7 @@ def flash_vision_encoder(asked: str, gpu: dict) -> str:
     """#2406: which encoder a Flash-Next images answer gets on NVIDIA.  "yes" (the question's y, or --vision yes) means the
     GPU encoder on a card of 24 GB and more and the CPU encoder below that: a picture then takes a few seconds, the text
     keeps the ~1 GB of VRAM for experts.  --vision gpu is always kept (with a note on a small card); --vision cpu is kept."""
-    vram = float((gpu or {}).get("vram_gb") or 0.0)
+    vram = effective_vram_gb(gpu)
     small = 0 < vram < IMAGES_GPU_ENCODER_MIN_VRAM_GB
     if asked == "gpu" and small:
         warn(f"the GPU image encoder keeps ~1.4 GB of VRAM that a {vram:.0f} GB card would use for experts (measured 3-5% "
@@ -4576,9 +4604,9 @@ def amd_apply_uma(g: dict, gtt_gb: float = 0.0, ram: float | None = None) -> dic
 
 
 def low_ram_vram(g) -> float:
-    """The GPU memory the low-RAM mode may count as room beside the RAM: a discrete card's VRAM; an APU's BIOS
-    carve-out only (its shared memory is the RAM itself)."""
-    return g.get("dedicated_gb", 0.0) if g.get("uma") else g["vram_gb"]
+    """The GPU memory the low-RAM mode may count as room beside the RAM: a discrete card's usable VRAM
+    (respecting free_gb when known, #6662); an APU's BIOS carve-out only (its shared memory is the RAM itself)."""
+    return g.get("dedicated_gb", 0.0) if g.get("uma") else effective_vram_gb(g)
 
 
 def amd_mem_text(g) -> str:
@@ -9253,6 +9281,9 @@ def intel_control_setup(a) -> int:
         cards = intel_app.arc_cards()
         if not cards:
             fail("no Intel Arc card Strata can use was found in this computer")
+        data, _elsewhere = data_folder_for(a)
+        if getattr(a, "models_dir", None) is None:
+            a.models_dir = str(data / "models")
         sel_cards = _select_sycl_cards(a, cards)
         main_gpu = {**sel_cards[-1], "count": len(cards)}
         multi = sel_cards if len(sel_cards) > 1 else []
@@ -9949,7 +9980,7 @@ def hy4_pc(gpu, ram) -> tuple:
         return None, float(g["unified_gb"]), True
     if g.get("uma"):
         return None, float(g.get("vram_gb") or ram) / hy4_fit.GIB_TO_GB, True
-    return float(g.get("vram_gb") or 0.0), float(ram), False
+    return effective_vram_gb(g), float(ram), False
 
 
 def hy4_menu_lines(vram_gib, ram_gib, unified, ctx=None, vision=hy4_family.DEFAULT_VISION, extra_vram_gib=0.0) -> list:
@@ -10315,7 +10346,10 @@ def inkling_local_source(a, model: str | None = None) -> tuple[Path, Path, bool]
     if model and model in inkling_fit.BUILDS:
         pinned = raw / inkling_family.build_file(model)
         if pinned.is_file():
-            return pinned, raw, False
+            return pinned, raw, pinned.suffix.lower() == ".gguf"
+    if (raw / "config.json").is_file() and any(
+            p.is_file() and p.name.lower() != "mtp.safetensors" for p in raw.glob("*.safetensors")):
+        return raw, raw, False
     ggufs = sorted(p for p in raw.glob("*.gguf") if p.is_file() and not aux_re.match(p.name))
     if ggufs:
         first_shard = next((p for p in ggufs if (m := shard_re.match(p.name)) and m.group(2) == "00001"), None)
@@ -10379,7 +10413,7 @@ def inkling_pc(gpu, ram) -> tuple:
         v = float(g.get("vram_gb") or 0.0)
         pool = float(ram) if (igpu or v <= 0.0) else max(float(ram), v / inkling_fit.GIB_TO_GB)
         return None, pool, True, igpu, arch
-    return float(g.get("vram_gb") or 0.0), float(ram), False, False, arch
+    return effective_vram_gb(g), float(ram), False, False, arch
 
 
 def inkling_menu_lines(vram_gib, ram_gib, unified, ctx=None, vision=inkling_family.DEFAULT_VISION, *, igpu=False, arch=None) -> list:
@@ -10568,6 +10602,8 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     data, _ = data_folder_for(a)
     vision_path: Path | None = None
     dspark_path: Path | None = None
+    drafter_asked = str(getattr(a, "drafter", None) or "").strip().lower()
+    want_dspark = drafter_asked != "off"
     if local_src:
         if vision:
             vision_path = inkling_find_local_vision(folder, data, is_gguf)
@@ -10578,13 +10614,13 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
                 warn("no local Inkling-2-Mini Vision shard or mmproj found beside the model; starting text-only")
         else:
             ok("images: off")
-        if is_gguf:
+        if is_gguf and want_dspark:
             dspark_path = inkling_find_local_dspark(folder)
             if dspark_path is not None:
                 ok(f"drafter: DSpark ({dspark_path.name})")
     else:
         ok("images: " + ("on (Inkling-2-Mini-Vision.strata, 0.64 GB lossless BF16)" if vision else "off"))
-        files = inkling_family.files_of(model, vision, dspark=True)
+        files = inkling_family.files_of(model, vision, dspark=want_dspark)
         left = 0.0
         for n in files:
             p = folder / n
@@ -10613,11 +10649,11 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
         ok(f"model file: {model_file}")
     else:
         step(5, f"downloading {fam['title']} {model}")
-        files = inkling_family.files_of(model, vision, dspark=True)
+        files = inkling_family.files_of(model, vision, dspark=want_dspark)
         paths = {n: inkling_fetch(a, n, folder, own) for n in files}
         model_file = paths[files[0]]
         vision_path = paths.get(inkling_family.VISION_FILE) if vision else None
-        dspark_path = paths.get(inkling_family.DSPARK_GGUF_FILE) if is_gguf else None
+        dspark_path = paths.get(inkling_family.DSPARK_GGUF_FILE) if (is_gguf and want_dspark) else None
         if dspark_path is not None:
             ok(f"drafter: DSpark ({dspark_path.name})")
         ok(f"model file: {model_file}")
@@ -10631,12 +10667,21 @@ def install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
         ok(f"tokenizer: {tokdir}")
 
     step(7, "writing the start script")
-    drafting_mode = "off" if (is_gguf and dspark_path is None) else inkling_family.DEFAULT_DRAFTER
-    placed = inkling_fit.place(model, vram_gib, ram_gib, unified, ctx, bool(vision and vision_path is not None), dspark=(drafting_mode != "off"))
+    drafting_mode = "off" if (not want_dspark or (is_gguf and dspark_path is None)) else inkling_family.DEFAULT_DRAFTER
+    ink_backend = "hip" if hip else ("metal" if sys.platform == "darwin" else ("sycl" if getattr(a, "backend", None) == "sycl" else "cuda"))
+    placed = inkling_fit.place(model, vram_gib, ram_gib, unified, ctx, bool(vision and vision_path is not None), dspark=(drafting_mode != "off"), backend=ink_backend)
     args = ["--native", str(model_file), "--max-context", str(ctx)]
+    kv_asked = str(getattr(a, "kv", None) or "").strip().lower()
+    if kv_asked in ("fp16", "fp8", "k8v8", "k8v4"):
+        if ink_backend in ("hip", "metal", "sycl") and kv_asked in ("k8v4", "k8v8"):
+            warn(f"--kv {kv_asked} is not supported for {fam['title']} on {ink_backend}; using --kv fp8 instead")
+            kv_asked = "fp8"
+        args += ["--kv", kv_asked]
+    if drafting_mode == "off":
+        args += ["--draft", "off"]
     if vision and vision_path is not None:
         args += ["--vision", str(vision_path)]
-    if dspark_path is not None:
+    if dspark_path is not None and drafting_mode != "off":
         args += ["--dspark", str(dspark_path)]
     if mgpu_flags:
         args += mgpu_flags
@@ -11194,7 +11239,7 @@ def main() -> int:
     ap.add_argument("--rope-scale", type=float,
                     help="the extension factor, finite and >= 1 (default: the final context over the trained "
                          "262144, at least 1 - 1.5 for 384K, 2 for 512K, 1 inside the trained range)")
-    ap.add_argument("--kv", choices=["int8", "q4_0", "k8v4", "fp16"],
+    ap.add_argument("--kv", choices=["int8", "q4_0", "k8v4", "fp16", "fp8", "k8v8"],
                     help="KV cache precision above 8K context: int8 (default), q4_0 (half the memory, a little less "
                          "precise) k8v4 (hybrid: INT8 K + 4-bit V, 816 B/cell) or fp16 (16-bit, twice the memory of int8)")
     ap.add_argument("--vision", choices=["yes", "no", "none", "gpu", "cpu"],
@@ -11313,7 +11358,7 @@ def main() -> int:
                     help="the draft layer (MTP): off starts the model without it, which frees about 1 GB of graphics memory "
                          "for the expert cache and takes less RAM, at the price of speed; it is kept in the run config "
                          "(\"mtp\": false) and a later setup run does not undo it. on: back to the default")
-    ap.add_argument("--drafter", choices=["mtp", "dflash2", "dfly2"],
+    ap.add_argument("--drafter", choices=["mtp", "dflash2", "dfly2", "dspark", "off"],
                     help="which drafter this model will use. dflash2: the MTP draft layer's ~5 GB are not downloaded (the DFlash2 drafter is fetched by `strata drafting fetch`); "
                          "the arguments keep the --mtp folder so a later switch to the MTP works. mtp (the default): the draft layer is fetched as before. Nothing is written about it "
                          "in the run config: the choice is its \"drafting\" key")

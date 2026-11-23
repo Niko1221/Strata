@@ -96,8 +96,10 @@ def resolved_drafting(drafting: str | None, family: str | None, *, model_name: s
 
 
 def drafting_for_family(choice: str | None, family: str | None) -> str | None:
-    """The Drafting choice to keep when the model changes to `family`: DFlash2/MTP/Off belong to Qwen3.8-Flash-Next (qwen, gyro, unsloth); any other model (Coder;
-    Swift; NVFP4) goes back to Auto (None), so a choice made for one model never rides along to another. An unknown family keeps it."""
+    """The Drafting choice to keep when the model changes to `family`: DFlash2/MTP/Off belong to Qwen3.8-Flash-Next (qwen, gyro, unsloth);
+    native .strata models (Inkling-2-Mini, Hy4-Flash) keep 'off' or 'auto'; any other model (Coder, Swift, NVFP4) goes back to Auto (None)."""
+    if family in ("inkling-2-mini", "hy4-flash"):
+        return choice if choice in ("auto", "off") else None
     from strata_control import drafting as _d
     return choice if (not family or family in _d.SUPPORTED_FAMILIES) else None
 
