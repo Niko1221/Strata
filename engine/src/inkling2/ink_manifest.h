@@ -444,6 +444,8 @@ struct InkModelFile {
     ModelSourceKind kind = ModelSourceKind::Strata;
     strata::artifact::StrataFileReader rd;
     std::unique_ptr<SafetensorsAdapter> st_adapter;
+    /// GGUF experts that only the CPU backend runs (trellis-coded types, prism.hadamard rotation)
+    bool cpu_only_experts() const { return kind == ModelSourceKind::Gguf && gguf_adapter && gguf_adapter->cpu_only; }
     std::unique_ptr<GgufAdapter> gguf_adapter;
     InkManifest m;
     // Direct lookup: dir_index_of[phys_layer * n_experts + expert_id] -> index in expert_directory()

@@ -89,6 +89,9 @@ add_custom_command(
           "${CMAKE_CURRENT_SOURCE_DIR}/ink_hip_blaslt.hpp"
           "${CMAKE_CURRENT_SOURCE_DIR}/ink_hip_hybrid.hpp"
           "${CMAKE_CURRENT_SOURCE_DIR}/../../../include/strata/hip_uma_guard.hpp"
+          "${CMAKE_CURRENT_SOURCE_DIR}/ink_hip_iq_tables.hip.h"
+          "${CMAKE_CURRENT_SOURCE_DIR}/../../../third_party/ggml/ggml-common-tq.h"
+          "${CMAKE_CURRENT_SOURCE_DIR}/../../../include/strata/kernels/cpu/hadamard.hpp"
   COMMENT "Compiling strata-inkling multi-gen HIP backend (${STRATA_HIP_ARCHS})"
   VERBATIM
 )

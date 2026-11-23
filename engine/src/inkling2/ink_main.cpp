@@ -98,8 +98,48 @@ static int cmd_info(const std::string& file, const std::string& vision, const st
     return 0;
 }
 
+// GGUF experts that only the CPU and HIP backends run (trellis-coded types, prism.hadamard rotation). They go to the
+// GPU only in a HIP build whose default backend is HIP (no CUDA compiled in), and only when the HIP decoder has every
+// trellis type in the file (TQ2_T / TQK6 / TQK7) and the rotation block is 128; otherwise, and with INK_TQ_FORCE_CPU=1,
+// the CPU backend runs them.
+static bool hip_runs_these_experts(const InkModelFile& mf) {
+#if defined(INKLING_ENABLE_HIP) && !defined(INKLING_ENABLE_CUDA) && !defined(INKLING_ENABLE_EP_CUDA)
+    if (const char* ev = std::getenv("INK_TQ_FORCE_CPU"); ev && std::atoi(ev) != 0) return false;
+    // a forced S_K transcode cannot decode trellis types
+    if (const char* ev = std::getenv("INK_HIP_FORCE_SK_TRANSCODE"); ev && std::atoi(ev) != 0) return false;
+    if (!mf.gguf_adapter) return false;
+    if (mf.gguf_adapter->has_hadamard && strata::kernels::cpu::hadamard_spec().block != 128) return false;
+    // the types hip_gguf_decode_8_f16 decodes (gguf_type_has_hip_kernel): a layer with any other type would be
+    // transcoded to S_K, which cannot read trellis blocks, so such files stay on the CPU backend
+    auto hip_native = [](uint32_t t) {
+        switch (t) {
+            case 0: case 1: case 2: case 8: case 10: case 11: case 12: case 13: case 14: case 16: case 17: case 18:
+            case 19: case 20: case 21: case 22: case 23: case 30: case 39: case 40: case 42: case 144: case 145: case 146:
+                return true;
+            default:
+                return false;
+        }
+    };
+    for (const auto& lm : mf.gguf_adapter->layers) {
+        if (!hip_native(lm.gu_type) || !hip_native(lm.dn_type)) return false;
+    }
+    return true;
+#else
+    (void)mf;
+    return false;
+#endif
+}
+
+static std::unique_ptr<InkBackend> make_backend_for(const InkModelFile& mf, bool force_cpu, const BackendOpts* opts) {
+    if (!force_cpu && mf.cpu_only_experts() && !hip_runs_these_experts(mf)) {
+        fprintf(stderr, "[ink] this GGUF has trellis-coded or Hadamard-rotated experts this GPU backend cannot run: using the CPU backend\n");
+        force_cpu = true;
+    }
+    return make_default_backend(force_cpu, opts);
+}
+
 static int cmd_selfcheck(const std::string& model_path, bool force_cpu, bool verify_hash, const BackendOpts& bopts) {
-    auto backend = make_default_backend(force_cpu, &bopts);
+    std::unique_ptr<InkBackend> backend;
     std::string err;
     InkModelFile mf;
     if (!model_path.empty()) {
@@ -114,11 +154,13 @@ static int cmd_selfcheck(const std::string& model_path, bool force_cpu, bool ver
                 return 1;
             }
         }
+        backend = make_backend_for(mf, force_cpu, &bopts);
         if (!backend->init(mf, bopts, err)) {
             fprintf(stderr, "[selfcheck] FAIL init: %s\n", err.c_str());
             return 1;
         }
     }
+    if (!backend) backend = make_default_backend(force_cpu, &bopts);
     if (!backend->selfcheck(err)) {
         fprintf(stderr, "[selfcheck] FAIL: %s\n", err.c_str());
         return 1;
@@ -139,7 +181,7 @@ static int cmd_bench(const std::string& model_path, const BackendOpts& bopts, in
     if (prompt_len + gen_len > bo.max_ctx) {
         bo.max_ctx = prompt_len + gen_len + 16;
     }
-    auto backend = make_default_backend(force_cpu, &bo);
+    auto backend = make_backend_for(mf, force_cpu, &bo);
     if (!backend->init(mf, bo, err)) {
         fprintf(stderr, "init: %s\n", err.c_str());
         return 1;
@@ -193,6 +235,7 @@ static int cmd_bench(const std::string& model_path, const BackendOpts& bopts, in
 
     double t_dec0 = now_s();
     int total_gen = 0;
+    long spec_steps = 0, spec_emitted = 0, spec_drafted = 0;
     if (use_dspark && P == 1) {
         int cur_pos = prompt_len;
         while (total_gen < gen_len && cur_pos < eff_ctx) {
@@ -203,6 +246,7 @@ static int cmd_bench(const std::string& model_path, const BackendOpts& bopts, in
                 const int n_emit = backend->dspark_spec_step_greedy(
                     0, next_tok[0], cur_pos, rem, emitted, &drafted, err);
                 if (n_emit < 0) { fprintf(stderr, "bench spec err: %s\n", err.c_str()); return 1; }
+                if (n_emit > 0) { ++spec_steps; spec_emitted += n_emit; spec_drafted += drafted; }
                 if (n_emit > 0) {
                     next_tok[0] = emitted[n_emit - 1];
                     cur_pos += n_emit;
@@ -246,6 +290,10 @@ static int cmd_bench(const std::string& model_path, const BackendOpts& bopts, in
     printf("[bench] backend=%s format=%s parallel=%d gpus=%d kv=%s prompt=%d gen=%d | prefill=%.1f ppts (%.2fs) | decode=%.1f tps agg (%.1f tps/slot, %.2fs)\n",
            backend->backend_name(), source_kind_name(mf.kind), P, bo.gpus, kv_dtype_name(backend->stats().kv_dtype),
            prompt_len, gen_len, ppts, pf_s, tps_agg, tps_agg / P, dec_s);
+    if (spec_steps > 0) {
+        printf("[bench] dspark: %ld spec steps, %ld tokens emitted (%.2f per step), %ld drafted\n",
+               spec_steps, spec_emitted, static_cast<double>(spec_emitted) / spec_steps, spec_drafted);
+    }
     return 0;
 }
 
@@ -273,7 +321,7 @@ static int cmd_kld_eval(const std::string& model_path, const std::string& ref_pa
     InkModelFile mf;
     std::string err;
     if (!mf.open(model_path, err, false, bopts.dspark_path)) { fprintf(stderr, "open: %s\n", err.c_str()); return 1; }
-    auto backend = make_default_backend(force_cpu, &bopts);
+    auto backend = make_backend_for(mf, force_cpu, &bopts);
     if (!backend->init(mf, bopts, err) || !backend->alloc_slot(0, bopts.max_ctx, bopts.kv_dtype, err)) {
         fprintf(stderr, "init: %s\n", err.c_str());
         return 1;
@@ -322,11 +370,11 @@ static int cmd_kld_eval(const std::string& model_path, const std::string& ref_pa
 
 // Dump teacher-forced FP32 reference logits for --kld-eval parity checks across formats & backends
 static int cmd_dump_ref(const std::string& model_path, const std::string& out_path,
-                        const std::string& prompt_ids_str, const BackendOpts& bopts, bool force_cpu) {
+                        const std::string& prompt_ids_str, const BackendOpts& bopts, bool force_cpu, int dump_chunk = 0) {
     InkModelFile mf;
     std::string err;
     if (!mf.open(model_path, err, false, bopts.dspark_path)) { fprintf(stderr, "open: %s\n", err.c_str()); return 1; }
-    auto backend = make_default_backend(force_cpu, &bopts);
+    auto backend = make_backend_for(mf, force_cpu, &bopts);
     if (!backend->init(mf, bopts, err) || !backend->alloc_slot(0, bopts.max_ctx, bopts.kv_dtype, err)) {
         fprintf(stderr, "init: %s\n", err.c_str());
         return 1;
@@ -340,11 +388,17 @@ static int cmd_dump_ref(const std::string& model_path, const std::string& out_pa
     const int32_t n_tok = static_cast<int32_t>(ids.size());
     const int32_t V = mf.m.c.vocab_unpadded;
     std::vector<float> logits(static_cast<size_t>(n_tok) * V);
-    StepBatch batch;
-    for (int i = 0; i < n_tok; ++i) batch.push(0, i, ids[i], true);
-    if (!backend->forward_batch(batch, logits.data(), nullptr, err)) {
-        fprintf(stderr, "forward: %s\n", err.c_str());
-        return 1;
+    // dump_chunk > 0: feed the prompt in batches of that many tokens (1 = token-by-token decode, 512 = the server's
+    // default prompt chunks); 0 = one batch, as before.
+    const int step = dump_chunk > 0 ? dump_chunk : n_tok;
+    for (int p0 = 0; p0 < n_tok; p0 += step) {
+        StepBatch batch;
+        const int len = std::min(step, n_tok - p0);
+        for (int i = p0; i < p0 + len; ++i) batch.push(0, i, ids[i], true);
+        if (!backend->forward_batch(batch, logits.data() + static_cast<size_t>(p0) * V, nullptr, err)) {
+            fprintf(stderr, "forward: %s\n", err.c_str());
+            return 1;
+        }
     }
     FILE* f = std::fopen(out_path.c_str(), "wb");
     if (!f) { fprintf(stderr, "dump-ref: cannot write %s\n", out_path.c_str()); return 1; }
@@ -373,6 +427,7 @@ int main(int argc, char** argv) {
     bool mode_serve = false, mode_bench = false, mode_selfcheck = false, mode_info = false, mode_export = false;
     bool verify_hash = false;
     std::string info_file, export_file, export_dir, kld_ref, dump_ref, prompt_ids_str;
+    int dump_chunk = 0;
     int bench_prompt = 64, bench_gen = 32;
     float cli_temp = 0.0f;
 
@@ -401,6 +456,8 @@ int main(int argc, char** argv) {
             kld_ref = next();
         } else if (a == "--dump-ref") {
             dump_ref = next();
+        } else if (a == "--dump-chunk") {
+            dump_chunk = std::max(0, std::atoi(next().c_str()));
         } else if (a == "--native" || a == "--model") {
             cfg.model_path = next();
         } else if (a == "--vision") {
@@ -545,7 +602,7 @@ int main(int argc, char** argv) {
     if (mode_export) return cmd_export_tokenizer(export_file, export_dir);
     if (mode_selfcheck) return cmd_selfcheck(cfg.model_path, cfg.force_cpu, verify_hash, cfg.bopts);
     if (!kld_ref.empty()) return cmd_kld_eval(cfg.model_path, kld_ref, cfg.bopts, cfg.force_cpu);
-    if (!dump_ref.empty()) return cmd_dump_ref(cfg.model_path, dump_ref, prompt_ids_str, cfg.bopts, cfg.force_cpu);
+    if (!dump_ref.empty()) return cmd_dump_ref(cfg.model_path, dump_ref, prompt_ids_str, cfg.bopts, cfg.force_cpu, dump_chunk);
     if (mode_bench) return cmd_bench(cfg.model_path, cfg.bopts, bench_prompt, bench_gen, cfg.force_cpu, cfg.bopts.enable_dspark);
 
     if (cfg.model_path.empty()) {
@@ -561,7 +618,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    auto backend = make_default_backend(cfg.force_cpu, &cfg.bopts);
+    auto backend = make_backend_for(mf, cfg.force_cpu, &cfg.bopts);
     if (!backend->init(mf, cfg.bopts, err)) {
         if (mode_serve) proto("ERR init: %s", err.c_str());
         else fprintf(stderr, "init: %s\n", err.c_str());
