@@ -2609,6 +2609,7 @@ class Runner:
             except ProfileError as e:
                 raise LaunchError(f"The running server could not be stopped: {e}.", "Run `strata launch --stop` first.", 6) from None
         self.check_port_free()
+        self.probe_drafting()
         self._marks = self.log_marks()                       # what the logs already held: only this attempt's lines are ever quoted
         self.emit("start", "Starting the engine and loading the model. The first start can take a few minutes.", None)
         done = threading.Event()
@@ -2648,6 +2649,31 @@ class Runner:
         warmed = bool(r.get("generation_ready"))
         self.emit("start", "The model is loaded and answering." + (MAC_FIRST_ANSWER if not warmed and self.mac_first_start() else ""), 100)
         self.report_drafting()
+
+    def probe_drafting(self) -> None:
+        """0221 DSPARK wiring: before the first start of a placement, when the run config wants the measured drafting choice (needs_drafting_probe: "auto" on a backend in
+        EXACT_DRAFTING_BACKENDS, no probe valid for this placement), the real engine is started plain and drafting, two prompts are decoded, and the numbers and the
+        decision are saved in the run config (strata_control/inkling_probe.py). Behind the exactness gate: while that list is empty this does nothing. A probe that cannot be
+        made never stops the launch: drafting stays off and the config says why."""
+        if not self.is_inkling() or self.config_path is None:
+            return
+        try:
+            from serve import inkling_kind
+            needs = getattr(inkling_kind, "needs_drafting_probe", None)         # (a tree without the probe has none)
+            if needs is None:
+                return
+            cfg = read_config(self.config_path)
+            if not needs(cfg):
+                return
+            from strata_control import inkling_probe
+            from serve.server import _component_exe, child_env
+            exe = _component_exe(cfg["exe"], cfg)
+            args = inkling_kind.engine_args(cfg, exe, announce=False)
+            self.emit("start", "Measuring whether drafting makes this model faster on this computer (two short runs; once for this setup)…", None)
+            inkling_probe.probe_run_config(cfg, exe, args, env=child_env(cfg), cwd=cfg.get("cwd"))
+            _atomic_mod.write_text(self.config_path, json.dumps(cfg, indent=1))
+        except Exception as e:                               # noqa: BLE001 - a measurement is never a reason to stop a launch
+            self.emit("start", f"The drafting measurement could not be made ({type(e).__name__}: {e}); drafting stays off.", None, level="warn")
 
     _marks: dict | None = None
 
