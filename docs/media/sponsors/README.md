@@ -6,3 +6,8 @@ Olares wordmarks from the official brand kit linked on [olares.com/one](https://
 - `olares-logo-white.svg` is the kit's `logo_white.svg`, for dark backgrounds.
 
 The kit's usage guide asks that the logo is scaled in proportion, kept clear of other elements and not recoloured. Names and brand marks belong to their owners.
+
+Linger wordmark from [heylinger.com](https://heylinger.com) (the site's own `/media/linger-wordmark-dark.svg`). Downloaded 23 November 2026. The site publishes no light version and no brand kit:
+
+- `linger-logo-color.svg` is the site's file, unchanged, for light backgrounds.
+- `linger-logo-white.svg` is the same file with the dark ink (`#242B28`) changed to white for dark backgrounds; the orange accent is unchanged.
