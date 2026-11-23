@@ -8,6 +8,7 @@
 #include "strata/core/defaults_026.hpp"
 #include "strata/core/expert_nibble.hpp"
 #include "strata/core/sm75_series.hpp"
+#include "strata/core/pack_quant.hpp"
 #include "strata/core/sm120_series.hpp"
 #include "strata/core/dispatch_stats.hpp"
 #include "strata/kernels/gfx_arch.hpp"
@@ -6201,7 +6202,11 @@ int exp_mode() {
         // layout in windows of 4+ tokens (sm75_down_em below).  STRATA_SM75_EXP=0 keeps the CUDA layout.
         // (off unless STRATA_SM75_PERF=1; STRATA_SM75_EXP=0 / 1 forces it off / on)
         const bool turing = strata::sm75_switch("STRATA_SM75_EXP", major, minor);
-        per_dev[dev] = 1 + ((major == 7 && minor == 0 && sm70 != nullptr && std::atoi(sm70) != 0) || p100 || p40 || gb10 ? 8 : turing ? 4 : kExpModeDefault);
+        // Turing's default inside the series is per pack: the grouped mode 8 for the i-quant packs
+        // (IQ2_XS / IQ3_XXS / IQ3_S; measured the fastest grouped layout there, +2.7% to +12.3% single-stream
+        // decode over mode 4) and mode 4 for Q2_0 (see the comment above).
+        const bool turing_m8 = turing && strata::core::native_pack_iquant();
+        per_dev[dev] = 1 + ((major == 7 && minor == 0 && sm70 != nullptr && std::atoi(sm70) != 0) || p100 || p40 || gb10 ? 8 : turing ? (turing_m8 ? 8 : 4) : kExpModeDefault);
     }
     return per_dev[dev] - 1;
 #endif

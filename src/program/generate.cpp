@@ -29,6 +29,7 @@
 #include "strata/core/run_manifest.hpp"
 #include "strata/core/device.hpp"
 #include "strata/core/remote_expert_opt.hpp"
+#include "strata/core/pack_quant.hpp"
 #include "strata/core/expert_cache.hpp"
 #include "strata/core/expert_nibble.hpp"
 #include "strata/core/conversation_snapshot.hpp"
@@ -4678,6 +4679,16 @@ int main(int argc, char** argv) {
         }
     }
     const bool native_pack = strata::kernels::cpu::expert_layout().native;
+    // Turing's expert-mode default asks whether this pack is an i-quant family (mode 8) or Q2_0 (mode 4);
+    // set once here while the layout is in hand, read later by exp_mode() at kernel launch.  ggml types:
+    // IQ2_XS 17, IQ3_XXS 18, IQ3_S 21, Q2_0 42.
+    strata::core::native_pack_iquant() = [&] {
+        if (!native_pack) return false;
+        const auto& l = strata::kernels::cpu::expert_layout();
+        if (l.fmt.empty()) return false;
+        const int g = l.fmt[0].gu_type;
+        return g == 17 || g == 18 || g == 21;
+    }();
     // STRATA_MMQ_DIRECT: the room each sized expert slot keeps after its blob (0 unless it is on: the slot costs and
     // the arena are then today's, byte for byte)
     const int64_t slot_guard = native_pack ? (int64_t) strata::prefill::Prefill::slot_guard_bytes() : 0;

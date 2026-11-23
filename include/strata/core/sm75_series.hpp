@@ -21,11 +21,12 @@
 
 namespace strata {
 
-/// STRATA_SM75_PERF=1 (read once)
+/// STRATA_SM75_PERF=1 (read once); default ON for the series: sm_75 cards take the bitwise Turing kernels
+/// unless STRATA_SM75_PERF=0 is set.  Non-7.5 cards are unaffected (sm75_default/sm75_switch gate on is_sm75).
 inline bool sm75_series() {
     static const bool on = [] {
         const char* e = std::getenv("STRATA_SM75_PERF");
-        return e != nullptr && std::atoi(e) != 0;
+        return e == nullptr || std::atoi(e) != 0;   // default ON; STRATA_SM75_PERF=0 opts out
     }();
     return on;
 }
