@@ -15,6 +15,7 @@
 
 #include "hy4_io.h"
 #include "hy4_manifest.h"
+#include "hy4_plan_math.h"
 #include "hy4_uma_pool.h"
 #include "strata/artifact/strata_reader.hpp"
 #include "strata/platform/cgroup_mem.hpp"
@@ -487,7 +488,8 @@ inline int plan_memory(int max_ctx, int chunk, size_t total, const std::string& 
     const double dfly_gb = has_draft ? 0.28 : 0.0;  // DFly2 runtime KV/logit/graph buffers (allocated AFTER Runner::init)
     auto est_work_gb = [&](int c) {
         // Aliased work_arena (max(2*c*16384*4, moe_ws_bytes(c))) + qa_h/H1/x/z/etc (~0.195 MB/tok) + SWA rings (30*(512+c)*kv_row_b) + misc 0.22 GB
-        const double arena = std::max(2.0 * c * 16384.0 * 4.0, (double)c * 16.0 * 1536.0 * 6.0) / GB;
+        // #6744: the score buffer (chunk x (max_ctx / 4 + 8) floats) is part of the arena and grows with the context
+        const double arena = (double)work_arena_bytes((uint64_t)(2.0 * c * 16384.0 * 4.0), (uint64_t)c, (uint64_t)max_ctx, (uint64_t)((double)c * 16.0 * 1536.0 * 6.0)) / GB;
         return arena + c * 0.195e6 / GB + 0.22 + 30.0 * (512.0 + c) * kv_row_b / GB;
     };
     if (chunk <= 0) {
