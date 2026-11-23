@@ -165,11 +165,14 @@ def plan(*, family: str, model: str, model_dir: Path, data_dir: Path, src: Path,
         vision = next((c for c in (folder / inkling_family.VISION_FILE,
                                    Path(data_dir) / "models" / inkling_family.FAMILY / inkling_family.VISION_FILE)
                        if c.is_file()), None)
-        if vision is None and is_gguf:
-            mmprojs = sorted(p for p in folder.glob("mmproj*.gguf") if p.is_file())
-            vision = mmprojs[0] if mmprojs else None
         if vision is not None:
             args += ["--vision", str(vision)]
+        elif notes is not None:                              # 0221 APPTUI: the mmproj*.gguf beside an Unsloth GGUF is llama.cpp's projector; strata-inkling reads its own Vision.strata only
+            beside = sorted(p.name for p in folder.glob("mmproj*.gguf") if p.is_file()) if is_gguf else []
+            notes.append((f"The {beside[0]} beside the model is llama.cpp's picture projector, which Strata's engine does not read. " if beside
+                          else "No picture reader was found beside the model. ")
+                         + f"Images will not work until {inkling_family.VISION_FILE} (0.64 GB) is in {folder} or in "
+                           f"{Path(data_dir) / 'models' / inkling_family.FAMILY}; `strata launch --vision on` downloads it.")
         dspark = next((p for p in sorted(folder.glob("dspark*.gguf")) if p.is_file()), None) if is_gguf else None
         if dspark is None and is_st and (folder / "mtp.safetensors").is_file():
             dspark = folder / "mtp.safetensors"

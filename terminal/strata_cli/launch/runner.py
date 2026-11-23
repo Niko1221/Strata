@@ -1297,6 +1297,9 @@ class Runner:
         if (desc or {}).get("images") in (None, "off"):
             note = ("Pictures could not be switched on: this engine does not carry the picture reader, or this model cannot read pictures, "
                     "so it will answer text only.")
+            if self.is_inkling():                            # 0221 APPTUI: the real reason, and the way to add it
+                note = ("Images will not work: no picture reader file (Inkling-2-Mini-Vision.strata, 0.64 GB) is installed for this model, so it answers text only. "
+                        "`strata launch --vision on` downloads it, or put the file next to the model files.")
             self.notices.append(note)
             self.emit("model", note, 100, level="warn")
 
@@ -1716,8 +1719,7 @@ class Runner:
                 self.emit("model", label, None, step=prog.get("step"))
             elif phase == "pictures" and dl and not is_reader_file(dl.get("file")):
                 # 0217 item 18: the figures are the MODEL's last download line ("75.8 of 75.8 GB", 99 %), not the picture reader's (0.9 GB): say what is fetched, with its own size
-                from strata_control.discovery import MMPROJ_GB
-                self.emit("model", f"{label} ({MMPROJ_GB:.1f} GB)", None, step=prog.get("step"))
+                self.emit("model", f"{label} ({self.picture_reader_gb():.1f} GB)", None, step=prog.get("step"))
             elif dl and dl.get("total_gb", 0) >= 0.05 and not (s.model_path and phase == "download"):
                 if phase == "download" and already is None:
                     already = float(dl["percent"]) >= 99.5
@@ -2873,7 +2875,7 @@ class Runner:
         not on this computer yet also the draft layer and the picture reader that setup fetches after it. 0 when everything is here."""
         from strata_control import engine_component
         from strata_control import discovery
-        from strata_control.discovery import MMPROJ_GB, MTP_FETCH_GB
+        from strata_control.discovery import MTP_FETCH_GB
         s = self.s
         st = self.model_state()
         parts = [{"kind": p.kind, "label": p.label, "gb": round(p.gb, 1)} for p in st.parts if p.gb >= 0.05]     # a part already on disk is not a download
@@ -2897,7 +2899,7 @@ class Runner:
                 # setup's rule, not any mmproj*.gguf: the pinned name (lane NET 4b; which file setup accepts is unchanged)
                 has_reader = modelstate.reader_present(self.catalog, s.family, homes, own=own)
                 if wants_pictures and "mmproj" not in have and not has_reader:
-                    parts.append({"kind": "mmproj", "label": "the picture reader", "gb": MMPROJ_GB})
+                    parts.append({"kind": "mmproj", "label": "the picture reader", "gb": self.picture_reader_gb()})
             except OSError:
                 pass
         try:
@@ -2974,6 +2976,17 @@ class Runner:
         if intel:
             text += " For the Intel card Strata builds the model's pack from your files itself, once; it takes a few minutes and downloads nothing."
         return {"gb": gb, "parts": parts, "engine_missing": not engine and not here, "engine_usable": engine, "own_files": st.own_files, "text": text}
+
+    def picture_reader_gb(self) -> float:
+        """The size of the picture reader this model fetches: Inkling-2-Mini's Vision.strata is 0.64 GB (the shown 0.9 GB is the Qwen projector's)."""
+        from strata_control.discovery import MMPROJ_GB
+        if self.is_inkling():
+            try:
+                from strata_control import inkling_family
+                return round((inkling_family.size_of(inkling_family.VISION_FILE) or MMPROJ_GB * 1e9) / 1e9, 2)
+            except Exception:                                # noqa: BLE001
+                return MMPROJ_GB
+        return MMPROJ_GB
 
     def room_words(self, gb: float) -> str:
         """The free-disk check of the plan, in words: the room on the drive the download goes to against what is downloaded. "" when it cannot be read."""

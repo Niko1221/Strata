@@ -18,6 +18,11 @@ class RestartStopsTheOldServerFirst(unittest.TestCase):
         p = mock.patch.object(Catalog, "hardware", lambda self, fresh=False: dict(HW_12, disk_free_gb=500.0))
         p.start()
         self.addCleanup(p.stop)
+        # the free-space reading of the disk check before anything is stopped (Runner.refuse_before_stopping_for_disk): not the machine's own disk
+        self.free_gb = 500.0
+        q = mock.patch.object(Catalog, "disk_free", lambda cat, path: self.free_gb)
+        q.start()
+        self.addCleanup(q.stop)
 
     def runner(self, **kw):
         r = Runner(S.LaunchSettings(family="qwen", model="IQ3_XXS", context=32768, name="gyro"), catalog=catalog(), **kw)
@@ -55,6 +60,23 @@ class RestartStopsTheOldServerFirst(unittest.TestCase):
         rows = [{"profile": "launch-gyro-s-32k", "name": "gyro-s-32k", "port": 8080, "choices": {"context": 32768}}]
         order = self.run_to_the_model_step(r, rows)
         self.assertEqual(order, ["engine", "stop launch-gyro-s-32k", "prepare the model"])
+
+    def test_a_model_that_cannot_be_downloaded_for_lack_of_disk_stops_nothing(self):
+        """0221 APPTUI: with a restart that would stop the serving model, a drive too small for the new model's files refuses first and the serving model keeps serving."""
+        self.free_gb = 20.0
+        r = self.runner(restart=True)
+        rows = [{"profile": r.profile, "name": r.name, "port": 8080, "choices": {**r.choices(), "context": 65536}}]
+        order = []
+        with mock.patch.object(Runner, "serving_launches", lambda self: rows), \
+                mock.patch.object(Runner, "ensure_engine", lambda self: order.append("engine")), \
+                mock.patch.object(Runner, "ensure_model", side_effect=AssertionError("must not prepare")), \
+                mock.patch("strata_control.runtime.stop", side_effect=AssertionError("must not stop")), \
+                mock.patch("strata_cli.launch.access.stop_tunnel"):
+            with self.assertRaises(LaunchError) as caught:
+                r.run()
+        self.assertEqual(order, ["engine"])
+        self.assertIn("Nothing was stopped: the running model keeps serving.", str(caught.exception))
+        self.assertIn("20.0 GB are free", str(caught.exception))
 
     def test_nothing_is_stopped_when_nothing_is_running(self):
         r = self.runner(restart=True)
