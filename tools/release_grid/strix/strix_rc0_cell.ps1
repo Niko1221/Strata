@@ -9,7 +9,7 @@ $py     = "C:\strata-test\jobq-python\python.exe"
 $exe    = "C:\strata-test\rc0\inkling\strata-inkling.exe"
 $model  = "C:\strata-test\models\inkling\Inkling-2-Mini-UD-Q4_K_XL.gguf"
 $tok    = "C:\strata-test\models\inkling\tok"
-$src    = "$root\term"                                   # rc0's terminal folder (tip 4251d80bb) is $src\terminal ; its serve is $src\terminal\serve\server.py
+$src    = "$root\term"                                   # rc0's terminal folder (tip 4251d80bb) was copied by scp -r to $src itself (not $src\terminal): its serve is $src\serve\server.py
 $out    = "$root\results\rc0-4251d80bb"
 New-Item -ItemType Directory -Force -Path $out | Out-Null
 "DIRECT engine + serve run on Strix (rc0 HIP strata-inkling.exe behind rc0 serve/server.py); not the grid's strata launch path; UD-Q4_K_XL, drafter off" | Set-Content "$out\LABEL.txt"
@@ -31,8 +31,10 @@ foreach ($r in $runs) {
             cwd = $src; tokenizer = $tok; model_name = "inkling-2-mini-ud-q4_k_xl"; log = "$o\srv.log"; host = "127.0.0.1"; port = $r.port }
   ($cfg | ConvertTo-Json -Depth 5) | Set-Content "$o\cfg.json" -Encoding ascii
   $env:PYTHONUNBUFFERED = "1"
-  $srv = Start-Process -FilePath $py -ArgumentList @("$src\terminal\serve\server.py", "--engine", "strata", "--config", "$o\cfg.json", "--port", "$($r.port)", "--no-api-key") `
-         -WorkingDirectory "$src\terminal" -RedirectStandardOutput "$o\server.out" -RedirectStandardError "$o\server.err" -NoNewWindow -PassThru
+  $srv = $null
+  $srv = Start-Process -ErrorAction Stop -FilePath $py -ArgumentList @("$src\serve\server.py", "--engine", "strata", "--config", "$o\cfg.json", "--port", "$($r.port)", "--no-api-key") `
+         -WorkingDirectory "$src" -RedirectStandardOutput "$o\server.out" -RedirectStandardError "$o\server.err" -NoNewWindow -PassThru
+  if (-not $srv) { "server $($r.name) could not be started: stopping"; break }
   "server $($r.name) pid $($srv.Id), --parallel $($r.par), context $($r.ctx)"
   $ready = $false
   $t0 = Get-Date

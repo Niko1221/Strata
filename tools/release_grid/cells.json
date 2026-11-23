@@ -903,6 +903,48 @@
      "tier": "full"
     }
    }
+  },
+  "olares": {
+   "jobq": "olares",
+   "ssh": "olares",
+   "os": "linux",
+   "class": "NVIDIA sm_120 (RTX 5090 Laptop 24 GB, Olares One; the owner's 24 GB laptop class)",
+   "backend": "nvidia",
+   "grid_dir": "~/strata-work/grid0221",
+   "python": "python3",
+   "locks": [
+    "gpu"
+   ],
+   "targets": [
+    "ink-record"
+   ],
+   "note": "Lent: our files only under ~/strata-work, no sudo, never touch Olares services or pods; keep at least 20 GB disk and 16 GB RAM free (83 GB disk free at the start).",
+   "profile": {
+    "ready_timeout_s": 3000,
+    "min_free_gib": 16,
+    "guard_free_gib": 8,
+    "guard_swap_growth_gib": 1.0
+   },
+   "models": {
+    "ink-ud-q4kxl": {
+     "fetch": true,
+     "vision_files": [
+      "~/strata-work/grid0221/models/Inkling-2-Mini-mmproj-BF16/mmproj-BF16.gguf"
+     ]
+    },
+    "ink-ud-iq4xs": {
+     "fetch": true,
+     "vision_files": [
+      "~/strata-work/grid0221/models/Inkling-2-Mini-mmproj-BF16/mmproj-BF16.gguf"
+     ]
+    },
+    "ink-sq20": {
+     "fetch": true,
+     "vision_files": [
+      "~/strata-work/grid0221/models/Inkling-2-Mini-Vision/Inkling-2-Mini-Vision.strata"
+     ]
+    }
+   }
   }
  }
 }
