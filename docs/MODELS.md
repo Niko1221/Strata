@@ -284,6 +284,13 @@ drafting and picture reading (`Inkling-2-Mini-Vision.strata`, 0.64 GB).
 strata launch --family inkling-2-mini --model SQ-15
 ```
 
+**The DSpark drafter (speculative drafting)** is optional and off unless you turn it on: `strata launch ... --drafting dspark` (back off with `--drafting off`).
+It is one small model (the original `mtp.safetensors`; the Unsloth `dspark-...-Q8_0.gguf` and the copy inside the SQ builds are the same weights) that
+guesses a few tokens ahead; the big model then checks them in one pass. Measured on RTX 3090 / A6000 / 5090 class cards with the whole model in VRAM:
+code, code edits, JSON, tool calls and repeated text come out 1.2x to 2.4x faster; chat and prose are 3 to 17 percent slower; summaries of long documents
+are about even. On cards that keep experts in RAM and decode slowly (about 8 tokens per second or less) it is 1.5x to 4x faster on everything. It needs about
+1 GiB more video memory, and its answers can differ from plain decoding after a few dozen tokens (the checking pass uses different arithmetic).
+
 ## Adding or switching models
 
 - **In the app:** the Models page lists every model with its size and whether it fits your computer. Pick one and press the install button.
