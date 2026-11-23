@@ -339,6 +339,14 @@ public:
                     if (batch.want_logits[m]) { st.logits_last_only_idx = m; break; }
                 }
                 if (!runner_.forward_batch(st, logits_out, nullptr, err)) return false;
+            } else if (st.M > 64) {
+                // The runner computes the unembed for the FIRST min(M, 64) rows of the batch. With several requests ending their
+                // prompt in one batch of more than 64 rows, the wanted rows lie further down and came back as zeros (greedy token 0):
+                // the more slots, the more of the first replies were wrong (0.2.21 GRID: 9 of 32 clients at --parallel 32).
+                if (n_want > 64) { err = "metal: more than 64 logits rows in one batch"; return false; }
+                st.logits_last_only_idx = -1;
+                for (int m = 0; m < st.M; ++m) if (batch.want_logits[m]) st.logits_rows.push_back(m);
+                if (!runner_.forward_batch(st, logits_out, nullptr, err)) return false;
             } else {
                 const int V = mod_.man.c.vocab_unpadded;
                 std::vector<float> all_lg((size_t)st.M * V);

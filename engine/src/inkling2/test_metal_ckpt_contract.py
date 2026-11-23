@@ -50,5 +50,19 @@ class MetalPromptCheckpoint(unittest.TestCase):
         self.assertEqual(len(re.findall(r"drop_ckpt\(slot\);", SRC)), 3)
 
 
+class MetalBatchLogits(unittest.TestCase):
+    """The runner unembeds the first min(M, 64) rows of a batch; a batch of more than 64 rows with several wanted rows (several requests
+    ending their prompt together, --parallel > 1) must be told which rows to read (0.2.21 GRID: wrong first tokens at --parallel 32)."""
+
+    def test_backend_names_the_rows_when_the_batch_is_longer_than_64(self):
+        self.assertRegex(SRC, r"(?s)st\.M > 64.*?logits_rows\.push_back\(m\)")
+
+    def test_runner_gathers_those_rows(self):
+        runner = open(os.path.join(HERE, "metal", "ink_metal_runner.h"), encoding="utf-8").read()
+        self.assertIn("std::vector<int> logits_rows;", runner)
+        self.assertIn("b_h_gather", runner)
+        self.assertIn("step.logits_rows[j]", runner)
+
+
 if __name__ == "__main__":
     unittest.main()
