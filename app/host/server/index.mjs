@@ -1749,19 +1749,25 @@ async function api(req, res, path, method, url) {
       const instructions = String(body.body ?? '').trim();
       if (!name) throw new Error('Give the skill a name.');
       if (!instructions) throw new Error('Write the instructions the assistant should follow.');
-      // The form's own choices are kept: a skill created with "Skill enabled" off stays off (QA F04), and its trigger phrases are saved with it.
+      const onlyIn = body.onlyIn || null;
+      if (onlyIn !== null && !workspaces.some(w => w.id === onlyIn)) throw new Error('Choose an available workspace.');
+      // Keep the creation options with the skill, including its workspace scope.
       const triggers = body.triggers === undefined ? [] : skillEdit({ triggers: body.triggers }).triggers;
       const id = writeCreatedSkill(CREATED_SKILLS, { name, description: String(body.description ?? '').trim().slice(0, 400), body: instructions.slice(0, 40000) });
       const newId = `my-${id}`, off = body.enabled === false;
-      if (off || triggers.length) {
+      if (off || onlyIn !== null || triggers.length) {
         const saved = store.get();
         store.update({
-          ...(off ? { skillPreferences: { ...saved.skillPreferences, [newId]: { enabled: false, onlyIn: null } } } : {}),
+          ...(off || onlyIn !== null ? { skillPreferences: { ...saved.skillPreferences, [newId]: { enabled: !off, onlyIn } } } : {}),
           ...(triggers.length ? { skillEdits: { ...saved.skillEdits, [newId]: { ...saved.skillEdits?.[newId], triggers } } } : {}),
         });
       }
       const before = new Map(skillState.map(s => [s.id, s]));
-      skillState = skills().map(s => before.has(s.id) ? { ...s, enabled: before.get(s.id).enabled, onlyIn: before.get(s.id).onlyIn ?? null, useCount: before.get(s.id).useCount, lastUsedAt: before.get(s.id).lastUsedAt } : { ...s, enabled: s.id === newId && off ? false : s.enabled, onlyIn: null, useCount: 0, lastUsedAt: null });
+      skillState = skills().map(s => {
+        const existing = before.get(s.id);
+        if (existing) return { ...s, enabled: existing.enabled, onlyIn: existing.onlyIn ?? null, useCount: existing.useCount, lastUsedAt: existing.lastUsedAt };
+        return { ...s, enabled: s.id === newId ? !off : s.enabled, onlyIn: s.id === newId ? onlyIn : null, useCount: 0, lastUsedAt: null };
+      });
       syncAgentSkills();
       hub.send('skills', skillState);
       return json(res, 201, { id: newId, skills: skillState });

@@ -23,7 +23,7 @@ async function startHost(home) {
   return { call, stop: async () => { child.kill(); await stopped; } };
 }
 
-test('a skill created with Skill enabled off is saved off, kept after a restart, and an enabled one stays on', { timeout: 60000 }, async () => {
+test('a new skill keeps its enabled state, trigger phrases and workspace scope after restart', { timeout: 60000 }, async () => {
   const home = await mkdtemp(join(tmpdir(), 'strata-qa2-skill-'));
   let host = await startHost(home);
   try {
@@ -36,6 +36,11 @@ test('a skill created with Skill enabled off is saved off, kept after a restart,
     assert.equal(on.data.skills.find(s => s.id === on.data.id).enabled, true);
     const plain = await host.call('/api/skills', 'POST', { name: 'QA no flag', body: 'Older callers send no flag.' });
     assert.equal(plain.data.skills.find(s => s.id === plain.data.id).enabled, true, 'no flag keeps the old behaviour: on');
+    assert.equal(plain.data.skills.find(s => s.id === plain.data.id).onlyIn, null);
+    const scoped = await host.call('/api/skills', 'POST', { name: 'QA scoped skill', body: 'Workspace-specific instructions.', onlyIn: 'root' });
+    assert.equal(scoped.status, 201);
+    assert.equal(scoped.data.skills.find(s => s.id === scoped.data.id).onlyIn, 'root');
+    assert.equal((await host.call('/api/skills', 'POST', { name: 'QA missing workspace', body: 'Instructions.', onlyIn: 'missing' })).status, 400);
     assert.equal((await host.call('/api/skills', 'POST', { name: 'Bad', body: 'x', triggers: 'not a list' })).status, 400);
     await host.stop();
     host = await startHost(home);
@@ -43,6 +48,8 @@ test('a skill created with Skill enabled off is saved off, kept after a restart,
     assert.equal(again.find(s => s.id === off.data.id).enabled, false, 'still off after a restart');
     assert.deepEqual(again.find(s => s.id === off.data.id).triggers, ['qa check', 'disabled']);
     assert.equal(again.find(s => s.id === on.data.id).enabled, true);
+    assert.equal(again.find(s => s.id === scoped.data.id).onlyIn, 'root');
+    assert.equal(again.some(s => s.id === 'my-qa-missing-workspace'), false);
   } finally { await host.stop(); await rm(home, { recursive: true, force: true, maxRetries: 3 }).catch(() => {}); }
 });
 
