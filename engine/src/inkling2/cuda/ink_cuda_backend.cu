@@ -103,6 +103,8 @@ public:
             for (bool a : slot_alloc_) if (a) ++act;
             st.active_slots = act;
             st.kv_dtype = kv_dtype_;
+            st.expert_selections = model_.hybrid.stat_selections;
+            st.expert_misses = model_.hybrid.stat_misses;
         }
         return st;
     }

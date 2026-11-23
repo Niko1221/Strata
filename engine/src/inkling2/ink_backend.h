@@ -46,6 +46,8 @@ struct BackendStats {
     int active_slots = 0;
     int max_slots = 1;
     KvDtype kv_dtype = KvDtype::FP16;
+    uint64_t expert_selections = 0;   // routed experts counted on the batched path (decode), 0 when the backend does not count
+    uint64_t expert_misses = 0;       // of those, the ones not in the card
 };
 
 class InkBackend {
