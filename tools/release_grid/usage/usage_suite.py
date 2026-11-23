@@ -39,6 +39,7 @@ import urllib.request
 import zlib
 
 PASS, FAIL, SKIP = "pass", "fail", "skip"
+SPEED_PROMPT_P = "Write a long, detailed essay about the history of the printing press, from Gutenberg to the modern day."
 
 
 # ===================================================================================================== the client
@@ -322,7 +323,7 @@ REPO_FILES = {
                           "def test_title():\n    assert text.title('hello world') == 'Hello World'\n\n"
                           "def test_area():\n    assert abs(geo.area_circle(2) - 12.566370614359172) < 1e-9\n\n"
                           "def test_perimeter():\n    assert geo.perimeter_rect(2, 3) == 10\n\n"
-                          "def run():\n    import traceback\n    bad = 0\n    for n, f in sorted(globals().items()):\n        if n.startswith('test_'):\n            try:\n                f(); print('PASS', n)\n            except Exception:\n                bad += 1; print('FAIL', n, traceback.format_exc().splitlines()[-1])\n    print('%d failed' % bad)\n    sys.exit(1 if bad else 0)\n\n"
+                          "def run():\n    import traceback\n    bad = 0\n    for n, f in sorted(globals().items()):\n        if n.startswith('test_'):\n            try:\n                f(); print('PASS', n)\n            except Exception:\n                bad += 1; print('FAIL', n, traceback.format_exc().splitlines()[-1]); break\n    print('%d failed' % bad)\n    sys.exit(1 if bad else 0)\n\n"
                           "if __name__ == '__main__':\n    run()\n"),
 }
 
@@ -687,10 +688,26 @@ def case_parallel(c, a):
                "throughput_tps": round(toks / wall, 1) if wall else None, "decode_tps_median": round(statistics.median(dec), 1) if dec else None,
                "slowest_request_s": round(max(walls), 1) if walls else None, "errors": len(errors), "cross_talk": len(cross), "stall": stall,
                "empty": sum(rc.empty for rc in recs), "truncated": sum(rc.trunc for rc in recs), "looping": sum(rc.loops for rc in recs)}
+        # decode burst: n clients, the same short prompt, 200 tokens each: total decode throughput of the engine at this concurrency
+        bres = []
+
+        def burst(i):
+            bres.append(c.chat([{"role": "user", "content": SPEED_PROMPT_P}], temperature=0, max_tokens=200, reasoning_effort="none", timeout=min(c.timeout, 1200)))
+        bt0 = time.time()
+        bth = [threading.Thread(target=burst, args=(i,)) for i in range(n)]
+        for t in bth:
+            t.start()
+        for t in bth:
+            t.join()
+        bwall = time.time() - bt0
+        btoks = sum(r.get("completion_tokens") or 0 for r in bres if not r.get("error"))
+        lvl["burst_tps"] = round(btoks / bwall, 1) if bwall else None
+        lvl["burst_errors"] = sum(1 for r in bres if r.get("error"))
+        lvl["cross_samples"] = cross[:3]
         results[str(n)] = lvl
         good = not errors and not cross and not stall and not lvl["empty"]
         ok &= good
-        notes.append("%d clients: %s tok/s total, %s tok/s per request, slowest %s s%s" % (n, lvl["throughput_tps"], lvl["decode_tps_median"], lvl["slowest_request_s"],
+        notes.append("%d clients: decode burst %s tok/s total; mixed work %s tok/s total, %s tok/s per request, slowest %s s%s" % (n, lvl["burst_tps"], lvl["throughput_tps"], lvl["decode_tps_median"], lvl["slowest_request_s"],
                                                                                           "" if good else "  FAIL: " + "; ".join((errors + cross)[:2] or ["stall" if stall else "empty reply"])))
     d = {"verdict": PASS if ok else FAIL, "notes": notes, "levels": results, "requests": sum(v["requests"] for v in results.values()),
          "empty": sum(v["empty"] for v in results.values()), "truncated": sum(v["truncated"] for v in results.values()),
@@ -720,9 +737,9 @@ def markdown(res, title="Usage suite"):
             r.get("cached_tokens", "-"), r.get("empty", 0), r.get("looping", 0), r.get("truncated", 0), notes[:420]))
     par = (res["cases"].get("parallel") or {}).get("levels")
     if par:
-        lines += ["", "| clients | total tok/s | per-request decode tok/s | slowest request s | errors | cross-talk | stall |", "|---|---|---|---|---|---|---|"]
+        lines += ["", "| clients | decode burst total tok/s | mixed work total tok/s | per-request decode tok/s | slowest request s | errors | cross-talk | stall |", "|---|---|---|---|---|---|---|---|"]
         for k, v in par.items():
-            lines.append("| %s | %s | %s | %s | %s | %s | %s |" % (k, fmt(v["throughput_tps"]), fmt(v["decode_tps_median"]), fmt(v["slowest_request_s"]), v["errors"], v["cross_talk"], v["stall"]))
+            lines.append("| %s | %s | %s | %s | %s | %s | %s | %s |" % (k, fmt(v.get("burst_tps")), fmt(v["throughput_tps"]), fmt(v["decode_tps_median"]), fmt(v["slowest_request_s"]), v["errors"], v["cross_talk"], v["stall"]))
     return "\n".join(lines) + "\n"
 
 

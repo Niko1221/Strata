@@ -98,6 +98,7 @@ CAUSES = [
     (r"did not become ready", "the server did not become ready"),
     (r"no (supported|usable) (graphics|gpu|card)|no engine for this", "no engine for this computer"),
     (r"not enough (free )?(ram|memory)|memory guard", "not enough memory"),
+    (r"tokenizer is missing|tokenizer.*not found", "the model's tokenizer files are missing (they are downloaded beside the model; a box without DNS cannot)"),
 ]
 
 
@@ -827,7 +828,7 @@ def run_cell(spec: dict, out_root: Path) -> dict:
         # ---- launch
         port = free_port(int(spec.get("port", 18770)))
         cmd = [strata, "launch", "--yes", "--no-tui", "--restart", "--no-api-key", "--port", str(port), "--feed", feed,
-               "--context", str(profile.get("context", "32k")), "--vision", str(profile.get("vision", "off")), "--tune", "skip", "--model-path", model_path]
+               "--data-dir", str(grid_dir / "data"), "--context", str(profile.get("context", "32k")), "--vision", str(profile.get("vision", "off")), "--tune", "skip", "--model-path", model_path]
         cmd += list(model.get("launch_args") or [])
         if spec["drafter"] == "off":
             cmd += ["--drafting", "off"]
@@ -859,6 +860,9 @@ def run_cell(spec: dict, out_root: Path) -> dict:
         launch_txt = tail(out_dir / (cid + ".launch.txt"), 30)
         if rc != 0:
             cause = find_cause(launch_txt, tail(elog, 80) if elog else "") or ("timed out" if rc is None else "")
+            if not cause:                                   # no known pattern: the Terminal's own last "strata:" line is the best reason there is
+                last = [ln for ln in launch_txt.splitlines() if ln.startswith("strata")]
+                cause = clip(last[-1], 300) if last else ""
             if "out of memory" in cause:
                 cause += " (box RAM available before the start: %.0f GiB%s)" % (mi.get("MemAvailable", 0), "; VRAM class %s GiB" % spec["vram_class_gib"] if spec.get("vram_class_gib") else "")
             steps["launch"] = step(FAIL, "strata launch exited %s%s" % (rc, (": " + cause) if cause else ""), seconds=round(secs),

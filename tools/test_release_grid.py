@@ -418,7 +418,7 @@ class UsageSuite(unittest.TestCase):
         repo = us.Repo()
         green, out = repo.run_tests()
         self.assertFalse(green)
-        self.assertEqual(out.count("FAIL"), 6)
+        self.assertEqual(out.count("FAIL"), 1)             # fail-fast: one failing test per run, so every fix needs a run
         repo.files["mathkit/stats.py"] = "def mean(xs):\n    return sum(xs) / len(xs)\n\n\ndef maximum(xs):\n    return max(xs)\n"
         repo.files["mathkit/text.py"] = "def words(s):\n    return s.split()\n\n\ndef title(s):\n    return s.title()\n"
         repo.files["mathkit/geo.py"] = "import math\n\n\ndef area_circle(r):\n    return math.pi * r * r\n\n\ndef perimeter_rect(w, h):\n    return 2 * (w + h)\n"

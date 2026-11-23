@@ -255,7 +255,7 @@ def add_reference(row: dict, targets, result: dict = None):
         if pre and t.get("prefill_tps") or (pre and t.get("prefill_4k_tps")):
             d["prefill_pct"] = round(100.0 * pre / (t.get("prefill_tps") or t.get("prefill_4k_tps")), 1)
         lv = usage_levels(result)
-        c64 = (lv.get("64") or {}).get("throughput_tps")
+        c64 = (lv.get("64") or {}).get("burst_tps") or (lv.get("64") or {}).get("throughput_tps")
         if c64 and t.get("c64_total_tps"):
             d["c64_pct"] = round(100.0 * c64 / t["c64_total_tps"], 1)
         d["goal"] = ", ".join(k.replace("_tps", "").replace("_", " ") + " " + str(t[k]) for k in ("decode_tps", "prefill_tps", "prefill_4k_tps", "c64_total_tps") if t.get(k)) or "record only"
