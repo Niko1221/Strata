@@ -5046,7 +5046,7 @@ def _win_display_adapters() -> list[dict]:
     """The display adapters present ({"name", "pnp"}), from Win32_VideoController."""
     ps = ("[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "      # the pipe is read as UTF-8 (#4675)
           "Get-CimInstance Win32_VideoController | ForEach-Object { $_.Name + '|' + $_.PNPDeviceID + '|' + "
-          "$_.AdapterRAM }")
+          "$_.AdapterRAM + '|' + $_.DriverVersion }")
     text = out(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps])
     found = []
     for line in (text or "").splitlines():
@@ -5054,7 +5054,8 @@ def _win_display_adapters() -> list[dict]:
         if len(parts) >= 2 and parts[1]:
             ram = parts[2] if len(parts) > 2 else ""
             found.append({"name": parts[0].strip(), "pnp": parts[1].strip(),
-                          "ram": int(ram) if ram.strip().isdigit() else 0})
+                          "ram": int(ram) if ram.strip().isdigit() else 0,
+                          "driver": parts[3].strip() if len(parts) > 3 else ""})
     return found
 
 
@@ -5118,19 +5119,24 @@ def amd_gpus_windows(adapters=None, registry=None) -> list[dict]:
         if did is None:
             continue                                   # not an AMD (VEN_1002) PCI device
         vram, driver = 0.0, ""
-        for k, r in enumerate(registry):               # the same card's driver instance: its 64-bit VRAM size
+        cands = []
+        for k, r in enumerate(registry):               # the same card's driver instances (a driver upgrade leaves the older ones, #6801)
             if k in used or _pci_device_id(r.get("MatchingDeviceId")) != did:
                 continue
             if (r.get("DriverDesc") and ad.get("name") and "\ufffd" not in ad["name"]
                     and r["DriverDesc"].strip() != ad["name"].strip()):
                 continue
-            used.add(k)
             mem = r.get("HardwareInformation.qwMemorySize")
             if isinstance(mem, bytes):
                 mem = int.from_bytes(mem[:8], "little")
-            vram = int(mem) / 2 ** 30 if isinstance(mem, int) and mem > 0 else 0.0
+            mem = int(mem) if isinstance(mem, int) and mem > 0 else 0
+            live = bool(ad.get("driver")) and str(r.get("DriverVersion") or "") == str(ad["driver"])
+            cands.append((mem > 0, live, k, mem, r))
+        if cands:                                      # one with a size first, then the installed driver's, then the first
+            _has, _live, k, mem, r = max(cands, key=lambda c: (c[0], c[1], -c[2]))
+            used.add(k)
+            vram = mem / 2 ** 30
             driver = str(r.get("DriverVersion") or "")
-            break
         if vram == 0.0 and ad.get("ram", 0) > 0:
             vram = ad["ram"] / 2 ** 30                 # WMI's 32-bit figure (at most 4 GB)
         arch = win_amd_arch(did, ad.get("name", ""))
