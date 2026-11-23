@@ -379,6 +379,12 @@ class InklingDialect:
         self.state = "idle"
 
 
+# #6734: what the server writes into the model's hidden thinking when its budget (reasoning_budget_tokens) is spent: a short
+# sentence and the block's own end.  The model then opens its next turn itself (`<|message_model|>` and the text, or a call).
+# The Qwen wrap-up ends in `</think>`, which Inkling does not use.
+REASONING_WRAP_UP = "\n\nI have thought about this long enough; time to give my answer.<|end_message|>"
+
+
 def force_text(force):
     """Translate Qwen-style forced tool call opener into Inkling-2-Mini's native invocation prefix."""
     if not isinstance(force, str):

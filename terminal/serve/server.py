@@ -5581,16 +5581,20 @@ class Service:
             req_values = {k: v for k, v in (sampling or {}).items() if v is not None}
             sampling = {**defaults, **req_values}
         # #123: read after the merge, so a budget shared through POST /settings is seen like the other keys
-        budget = self.reasoning_budget(sampling) if thinking else None
-        if thinking and not budget and self.answer_room and max_new and max_new >= ANSWER_ROOM_MIN_CAP:
+        # #6734: Inkling-2-Mini writes hidden thinking whatever the request asks for (even with its effort at "none"), so its budget
+        # (the request's or the answer room's) applies to every request: the parser reports the hidden block (`reasoning_now`)
+        think_budget = thinking or self.inkling
+        budget = self.reasoning_budget(sampling) if think_budget else None
+        if think_budget and not budget and self.answer_room and max_new and max_new >= ANSWER_ROOM_MIN_CAP:
             # 0.1.45: max_tokens counts the thinking too.  A client that caps the reply at 8192 (the desktop agent's
             # harness sends max_completion_tokens: 8192 on every request) and a task the model thinks long about got
             # the cut-off in the middle of the thinking and NO answer.  So thinking is closed early enough to leave
             # the answer its quarter of the cap (the budget's wrap-up: a short closing sentence, </think>, the answer).
             # A request with a budget of its own, or max_tokens below ANSWER_ROOM_MIN_CAP, is left as it was.
             budget = max_new - min(max(ANSWER_RESERVE_MIN, max_new // 4), max_new // 2)
-            if max_new <= 32768: print(f"[strata] thinking limited to {budget} of max_tokens {max_new} so the answer has room "
-                  "(\"answer_room\": false in the config turns this off)", flush=True)
+            if max_new <= 32768 and thinking:
+                print(f"[strata] thinking limited to {budget} of max_tokens {max_new} so the answer has room "
+                      "(\"answer_room\": false in the config turns this off)", flush=True)
         if budget and max_new and max_new > 0:
             # #984: a budget at or near max_tokens never fires before the reply is cut off while still thinking, so
             # it has no answer.  Close the thinking early enough to leave room for one.
@@ -5832,7 +5836,7 @@ class Service:
                                     break
                                 raw_ids.append(t)
                                 seg.append(t)
-                                thinking_n += parser.state in ("reasoning", "rcall")
+                                thinking_n += (parser.state in ("reasoning", "rcall") or getattr(parser, "reasoning_now", False))
                                 run_len = run_len + 1 if t == run_tok else 1
                                 run_tok = t
                                 if self.repeat_stop_tokens and run_len >= self.repeat_stop_tokens:
@@ -5873,7 +5877,7 @@ class Service:
                                             recover_prompt = focused_recovery_prompt(self.tok, ids, raw_ids)
                                             if recover_prompt is not None:
                                                 break
-                                if budget and parser.state == "reasoning":
+                                if budget and (parser.state == "reasoning" or getattr(parser, "reasoning_now", False)):
                                     thought += 1
                                     # at a clean point: no tag held back, no character split across tokens
                                     if thought >= budget and parser.clean and not detok.pending():
@@ -6039,7 +6043,7 @@ class Service:
                         # thinking ended, after the blank line the template puts before a call.
                         if wrap:
                             budget = st["thinking_budget"] = None
-                            text = REASONING_WRAP_UP + (force or "")
+                            text = (getattr(parser, "wrap_up", None) or REASONING_WRAP_UP) + (force or "")
                         else:
                             text = "\n" * (2 - (len(tail) - len(tail.rstrip("\n")))) + force
                         force = None
@@ -6052,7 +6056,7 @@ class Service:
                         for t in extra:
                             n += 1
                             raw_ids.append(t)
-                            thinking_n += parser.state in ("reasoning", "rcall")
+                            thinking_n += (parser.state in ("reasoning", "rcall") or getattr(parser, "reasoning_now", False))
                             evs = cut(parser.feed(detok.push(t)))
                             self._note(n, evs, st, rate)
                             for ev in evs:
